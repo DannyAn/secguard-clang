@@ -1,0 +1,78 @@
+package planner
+
+import (
+	"encoding/json"
+)
+
+type EvidenceItem struct {
+	Type              string             `json:"type"`
+	VulnerabilityType string             `json:"vulnerability_type"`
+	SuspicionLevel    string             `json:"suspicion_level,omitempty"`
+	Target            TargetInfo         `json:"target"`
+	Evidence          []EvidenceFragment `json:"evidence"`
+}
+
+type TargetInfo struct {
+	File     string `json:"file,omitempty"`
+	Function string `json:"function"`
+	Line     int    `json:"line"`
+	Variable string `json:"variable"`
+}
+
+type EvidenceFragment struct {
+	Type   string `json:"type"`
+	Detail string `json:"detail,omitempty"`
+}
+
+type PipelineSummary struct {
+	SeedCount      int           `json:"seed_count"`
+	Filters        []FilterStats `json:"filters"`
+	FinalCount     int           `json:"final_count"`
+	ShortCircuited bool          `json:"short_circuited"`
+}
+
+type FilterStats struct {
+	Name        string `json:"name"`
+	InputCount  int    `json:"input_count"`
+	OutputCount int    `json:"output_count"`
+}
+
+type PlanResult struct {
+	VulnerabilityType string          `json:"vulnerability_type"`
+	Candidates        []EvidenceItem  `json:"candidates"`
+	Summary           PipelineSummary `json:"summary"`
+}
+
+func (r *PlanResult) ToJSON() ([]byte, error) {
+	return json.MarshalIndent(r, "", "  ")
+}
+
+func (r *PlanResult) CandidateCount() int {
+	return len(r.Candidates)
+}
+
+func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceItem {
+	item := EvidenceItem{
+		Type:              spec.EvidenceType,
+		VulnerabilityType: spec.Name,
+		Target: TargetInfo{
+			File:     fileName,
+			Function: c.FunctionName,
+			Line:     c.Line,
+			Variable: c.VariableName,
+		},
+		Evidence: spec.BuildEvidence(c),
+	}
+	if c.SuspicionLevel != "" {
+		item.SuspicionLevel = c.SuspicionLevel
+	} else {
+		item.SuspicionLevel = spec.DefaultSuspicion
+	}
+	if c.GuardStrength == "weak" {
+		item.Evidence = append(item.Evidence, EvidenceFragment{
+			Type:   "weak_guard",
+			Detail: "guard exists but is insufficient (partial protection, needs AI review)",
+		})
+	}
+	return item
+}

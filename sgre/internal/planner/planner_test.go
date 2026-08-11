@@ -1,0 +1,225 @@
+package planner
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+
+	"github.com/kongan/secguard-lite/internal/db"
+)
+
+func setupConvergenceTestData(s *mockStore) {
+	fileID, _ := s.InsertFile(context.Background(), &db.File{Path: "test.c", Language: "c"})
+
+	funcA, _ := s.InsertFunction(context.Background(), &db.Function{FileID: fileID, Name: "foo", StartLine: 1, EndLine: 20})
+	funcB, _ := s.InsertFunction(context.Background(), &db.Function{FileID: fileID, Name: "bar", StartLine: 21, EndLine: 40})
+	funcC, _ := s.InsertFunction(context.Background(), &db.Function{FileID: fileID, Name: "safe_func", StartLine: 41, EndLine: 60})
+
+	loc1, _ := s.InsertLocation(context.Background(), &db.Location{FileID: fileID, Line: 10})
+	loc2, _ := s.InsertLocation(context.Background(), &db.Location{FileID: fileID, Line: 30})
+	loc3, _ := s.InsertLocation(context.Background(), &db.Location{FileID: fileID, Line: 50})
+
+	s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "NULL_VALUE", EntityID: funcA, LocationID: loc1, Properties: `{"variable":"p","origin":"malloc"}`})
+	s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "NULL_VALUE", EntityID: funcB, LocationID: loc2, Properties: `{"variable":"q","origin":"return"}`})
+
+	s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "DEREFERENCE", EntityID: funcA, LocationID: loc1, Properties: `{"variable":"p","expression":"p->field"}`})
+	s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "DEREFERENCE", EntityID: funcB, LocationID: loc2, Properties: `{"variable":"q","expression":"*q"}`})
+	s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "DEREFERENCE", EntityID: funcC, LocationID: loc3, Properties: `{"variable":"r","expression":"r[0]"}`})
+
+	s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "NULL_GUARD", EntityID: funcC, LocationID: loc3, Properties: `{"variable":"r","condition":"NULL_CHECK","scope_start":45,"scope_end":60}`})
+
+	nodeA, _ := s.GetOrCreateGraphNode(context.Background(), "function", funcA, "")
+	nodeB, _ := s.GetOrCreateGraphNode(context.Background(), "function", funcB, "")
+	nodeC, _ := s.GetOrCreateGraphNode(context.Background(), "function", funcC, "")
+
+	s.InsertGraphEdge(context.Background(), &db.GraphEdge{SrcID: nodeA, DstID: nodeB, EdgeType: "CALL"})
+	s.InsertGraphEdge(context.Background(), &db.GraphEdge{SrcID: nodeB, DstID: nodeC, EdgeType: "CALL"})
+
+	varNode1, _ := s.GetOrCreateGraphNode(context.Background(), "variable_ref", funcA, `{"name":"p"}`)
+	varNode2, _ := s.GetOrCreateGraphNode(context.Background(), "variable_ref", funcB, `{"name":"q"}`)
+	s.InsertGraphEdge(context.Background(), &db.GraphEdge{SrcID: varNode1, DstID: varNode2, EdgeType: "DATA_FLOW", Properties: `{"variable":"p"}`})
+}
+
+func TestPlan_EndToEnd_ConvergencePipeline(t *testing.T) {
+	s := newMockStore()
+	setupConvergenceTestData(s)
+
+	p := NewPlanner(s, nil, nil)
+	ctx := context.Background()
+
+	result, err := p.Plan(ctx, "null-deref")
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+
+	if result.VulnerabilityType != "null-deref" {
+		t.Errorf("expected vulnerability_type 'null-deref', got %q", result.VulnerabilityType)
+	}
+
+	if result.Summary.SeedCount != 3 {
+		t.Errorf("expected seed count 3 (3 dereferences), got %d", result.Summary.SeedCount)
+	}
+
+	if len(result.Summary.Filters) != 7 {
+		t.Errorf("expected 7 filter stats, got %d", len(result.Summary.Filters))
+	}
+
+	expectedFilters := []string{"non_nullable_array_suppress", "array_oob_precedence", "nullable_source", "call_reach", "guard", "safe_function_exclude", "bounds_check"}
+	for i, name := range expectedFilters {
+		if i >= len(result.Summary.Filters) {
+			t.Errorf("missing filter %s", name)
+			continue
+		}
+		if result.Summary.Filters[i].Name != name {
+			t.Errorf("filter %d: expected %s, got %s", i, name, result.Summary.Filters[i].Name)
+		}
+	}
+
+	if result.Summary.Filters[0].InputCount != 3 {
+		t.Errorf("Filter 0 input: expected 3, got %d", result.Summary.Filters[0].InputCount)
+	}
+	if result.Summary.Filters[0].OutputCount != 3 {
+		t.Errorf("Filter 0 output: expected 3 (no non-nullable arrays in mock data), got %d", result.Summary.Filters[0].OutputCount)
+	}
+	if result.Summary.Filters[2].OutputCount != 2 {
+		t.Errorf("Filter 2 output: expected 2 (funcA and funcB have NULL_VALUE, funcC does not), got %d", result.Summary.Filters[2].OutputCount)
+	}
+}
+
+func TestPlan_EndToEnd_JSONOutput(t *testing.T) {
+	s := newMockStore()
+	setupConvergenceTestData(s)
+
+	p := NewPlanner(s, nil, nil)
+	ctx := context.Background()
+
+	result, err := p.Plan(ctx, "null-deref")
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+
+	data, err := result.ToJSON()
+	if err != nil {
+		t.Fatalf("ToJSON failed: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("JSON output is not valid: %v", err)
+	}
+
+	if parsed["vulnerability_type"] != "null-deref" {
+		t.Errorf("expected vulnerability_type 'null-deref', got %v", parsed["vulnerability_type"])
+	}
+}
+
+func TestPlan_EndToEnd_Max30Candidates(t *testing.T) {
+	s := newMockStore()
+	fileID, _ := s.InsertFile(context.Background(), &db.File{Path: "test.c"})
+	funcID, _ := s.InsertFunction(context.Background(), &db.Function{FileID: fileID, Name: "foo", StartLine: 1, EndLine: 200})
+
+	s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "NULL_VALUE", EntityID: funcID, Properties: `{"variable":"p"}`})
+
+	for i := 0; i < 40; i++ {
+		loc, _ := s.InsertLocation(context.Background(), &db.Location{FileID: fileID, Line: i + 1})
+		s.InsertEvent(context.Background(), &db.SecurityEvent{
+			EventType:  "DEREFERENCE",
+			EntityID:   funcID,
+			LocationID: loc,
+			Properties: `{"variable":"p","expression":"p->f"}`,
+		})
+	}
+
+	p := NewPlanner(s, nil, nil)
+	result, err := p.Plan(context.Background(), "null-deref")
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+
+	if len(result.Candidates) > 30 {
+		t.Errorf("expected at most 30 candidates, got %d", len(result.Candidates))
+	}
+}
+
+func TestPlan_EndToEnd_ShortCircuit(t *testing.T) {
+	s := newMockStore()
+	fileID, _ := s.InsertFile(context.Background(), &db.File{Path: "test.c"})
+	funcID, _ := s.InsertFunction(context.Background(), &db.Function{FileID: fileID, Name: "foo", StartLine: 1, EndLine: 10})
+
+	loc, _ := s.InsertLocation(context.Background(), &db.Location{FileID: fileID, Line: 5})
+	s.InsertEvent(context.Background(), &db.SecurityEvent{
+		EventType:  "DEREFERENCE",
+		EntityID:   funcID,
+		LocationID: loc,
+		Properties: `{"variable":"p","expression":"p->f"}`,
+	})
+
+	p := NewPlanner(s, nil, nil)
+	result, err := p.Plan(context.Background(), "null-deref")
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+
+	if !result.Summary.ShortCircuited {
+		t.Error("expected short-circuit when Filter 1 produces 0 candidates (no NULL_VALUE events)")
+	}
+	if len(result.Candidates) != 0 {
+		t.Errorf("expected 0 candidates after short-circuit, got %d", len(result.Candidates))
+	}
+}
+
+func TestPlan_EndToEnd_UnsupportedVulnType(t *testing.T) {
+	s := newMockStore()
+	p := NewPlanner(s, nil, nil)
+
+	_, err := p.Plan(context.Background(), "unsupported-type")
+	if err == nil {
+		t.Error("expected error for unsupported vulnerability type")
+	}
+}
+
+func TestPlan_EndToEnd_FilterLogging(t *testing.T) {
+	s := newMockStore()
+	setupConvergenceTestData(s)
+
+	p := NewPlanner(s, nil, nil)
+	result, err := p.Plan(context.Background(), "null-deref")
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+
+	for _, f := range result.Summary.Filters {
+		if f.InputCount < 0 || f.OutputCount < 0 {
+			t.Errorf("filter %s has negative counts: input=%d output=%d", f.Name, f.InputCount, f.OutputCount)
+		}
+		if f.OutputCount > f.InputCount {
+			t.Errorf("filter %s output (%d) > input (%d)", f.Name, f.OutputCount, f.InputCount)
+		}
+	}
+}
+
+func TestPlan_EndToEnd_EvidenceItemStructure(t *testing.T) {
+	s := newMockStore()
+	setupConvergenceTestData(s)
+
+	p := NewPlanner(s, nil, nil)
+	result, err := p.Plan(context.Background(), "null-deref")
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+
+	for _, item := range result.Candidates {
+		if item.Type != "NULL_DEREFERENCE" {
+			t.Errorf("expected type NULL_DEREFERENCE, got %s", item.Type)
+		}
+		if item.Target.Function == "" {
+			t.Error("evidence item missing function name")
+		}
+		if item.Target.Variable == "" {
+			t.Error("evidence item missing variable name")
+		}
+		if len(item.Evidence) == 0 {
+			t.Error("evidence item has no evidence fragments")
+		}
+	}
+}
