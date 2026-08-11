@@ -1,0 +1,170 @@
+{"time":"2026-08-11T16:33:38.243378+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"alloc_user_buffer"}
+{"time":"2026-08-11T16:33:38.245735+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"alloc_objects"}
+{"time":"2026-08-11T16:33:38.247489+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"main"}
+{"time":"2026-08-11T16:33:38.251051+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"demo_race_condition"}
+{"time":"2026-08-11T16:33:38.252649+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"thread_deadlock_a"}
+{"time":"2026-08-11T16:33:38.25417+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"thread_deadlock_b"}
+{"time":"2026-08-11T16:33:38.25568+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"demo_deadlock"}
+{"time":"2026-08-11T16:33:38.257463+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"thread_writer"}
+{"time":"2026-08-11T16:33:38.260658+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"demo_data_race"}
+{"time":"2026-08-11T16:33:38.262246+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"unsafe_handler"}
+{"time":"2026-08-11T16:33:38.264491+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"demo_unsafe_signal"}
+{"time":"2026-08-11T16:33:38.266688+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"main"}
+{"time":"2026-08-11T16:33:38.269078+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"generate_token_weak"}
+{"time":"2026-08-11T16:33:38.270087+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"generate_token_strong"}
+{"time":"2026-08-11T16:33:38.271067+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"encrypt_data_weak"}
+{"time":"2026-08-11T16:33:38.272577+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"encrypt_data_good"}
+{"time":"2026-08-11T16:33:38.273832+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"setup_encryption_weak"}
+{"time":"2026-08-11T16:33:38.274942+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"setup_encryption_strong"}
+{"time":"2026-08-11T16:33:38.275991+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"main"}
+{"time":"2026-08-11T16:33:38.28126+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"create_record"}
+{"time":"2026-08-11T16:33:38.285077+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"allocate_and_forget"}
+{"time":"2026-08-11T16:33:38.286929+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"mismatched_free_example"}
+{"time":"2026-08-11T16:33:38.290484+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"bad_cast_example"}
+{"time":"2026-08-11T16:33:38.291935+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"main"}
+{"time":"2026-08-11T16:33:38.298823+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"main"}
+{"time":"2026-08-11T16:33:38.300128+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"safe_annex_k_functions"}
+{"time":"2026-08-11T16:33:38.302416+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"safe_command_execution"}
+{"time":"2026-08-11T16:33:38.303501+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"safe_posix_functions"}
+{"time":"2026-08-11T16:33:38.304763+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"safe_sql_query"}
+{"time":"2026-08-11T16:33:38.307184+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"process_user_data"}
+{"time":"2026-08-11T16:33:38.307871+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"process_user_data_unsafe"}
+{"time":"2026-08-11T16:33:38.308716+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"SafeQuery_prepare"}
+{"time":"2026-08-11T16:33:38.309939+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"SafeQuery_bind_text"}
+{"time":"2026-08-11T16:33:38.310999+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"SafeQuery_exec"}
+{"time":"2026-08-11T16:33:38.311943+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"SafeQuery_free"}
+{"time":"2026-08-11T16:33:38.312862+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"lookup_user"}
+{"time":"2026-08-11T16:33:38.314083+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"lookup_user_unsafe"}
+{"time":"2026-08-11T16:33:38.315449+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"copy_message_unsafe"}
+{"time":"2026-08-11T16:33:38.315892+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"LockGuard_create"}
+{"time":"2026-08-11T16:33:38.316318+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"LockGuard_release"}
+{"time":"2026-08-11T16:33:38.31673+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"increment_counter"}
+{"time":"2026-08-11T16:33:38.317228+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"increment_unprotected"}
+{"time":"2026-08-11T16:33:38.31818+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"ResourceHandle_create"}
+{"time":"2026-08-11T16:33:38.320375+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"_scoped_destroy"}
+{"time":"2026-08-11T16:33:38.321282+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"process_buffer"}
+{"time":"2026-08-11T16:33:38.322441+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"process_buffer_unsafe"}
+{"time":"2026-08-11T16:33:38.324152+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"is_safe_input"}
+{"time":"2026-08-11T16:33:38.327033+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"FileCache_create"}
+{"time":"2026-08-11T16:33:38.329243+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"process_file"}
+{"time":"2026-08-11T16:33:38.33095+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"parse_task_name"}
+{"time":"2026-08-11T16:33:38.332551+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"format_task_desc"}
+{"time":"2026-08-11T16:33:38.334098+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"log_user_message"}
+{"time":"2026-08-11T16:33:38.336984+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"validate_user_input"}
+{"time":"2026-08-11T16:33:38.341575+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"get_user_size"}
+{"time":"2026-08-11T16:33:38.344904+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"main"}
+{"time":"2026-08-11T16:33:38.347129+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"execute_user_command"}
+{"time":"2026-08-11T16:33:38.349215+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"execute_safe"}
+{"time":"2026-08-11T16:33:38.370278+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"main"}
+{"time":"2026-08-11T16:33:38.371733+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"run_user_command"}
+{"time":"2026-08-11T16:33:38.378401+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"store_registry_credential"}
+{"time":"2026-08-11T16:33:38.380916+08:00","level":"WARN","msg":"memory_leak: CFG construction degenerate, using path-insensitive fallback","function":"main"}
+{"time":"2026-08-11T16:33:38.664814+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"alloc_user_buffer"}
+{"time":"2026-08-11T16:33:38.668728+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"alloc_objects"}
+{"time":"2026-08-11T16:33:38.672315+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"main"}
+{"time":"2026-08-11T16:33:38.679704+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"demo_race_condition"}
+{"time":"2026-08-11T16:33:38.684013+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"thread_deadlock_a"}
+{"time":"2026-08-11T16:33:38.687616+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"thread_deadlock_b"}
+{"time":"2026-08-11T16:33:38.69132+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"demo_deadlock"}
+{"time":"2026-08-11T16:33:38.697191+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"thread_writer"}
+{"time":"2026-08-11T16:33:38.704403+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"demo_data_race"}
+{"time":"2026-08-11T16:33:38.70884+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"unsafe_handler"}
+{"time":"2026-08-11T16:33:38.712308+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"demo_unsafe_signal"}
+{"time":"2026-08-11T16:33:38.715827+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"main"}
+{"time":"2026-08-11T16:33:38.720992+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"generate_token_weak"}
+{"time":"2026-08-11T16:33:38.723293+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"generate_token_strong"}
+{"time":"2026-08-11T16:33:38.725388+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"encrypt_data_weak"}
+{"time":"2026-08-11T16:33:38.728299+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"encrypt_data_good"}
+{"time":"2026-08-11T16:33:38.730633+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"setup_encryption_weak"}
+{"time":"2026-08-11T16:33:38.732919+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"setup_encryption_strong"}
+{"time":"2026-08-11T16:33:38.735726+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"main"}
+{"time":"2026-08-11T16:33:38.744859+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"create_record"}
+{"time":"2026-08-11T16:33:38.750961+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"allocate_and_forget"}
+{"time":"2026-08-11T16:33:38.753991+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"mismatched_free_example"}
+{"time":"2026-08-11T16:33:38.76055+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"bad_cast_example"}
+{"time":"2026-08-11T16:33:38.763466+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"main"}
+{"time":"2026-08-11T16:33:38.776512+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"main"}
+{"time":"2026-08-11T16:33:38.77951+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"safe_annex_k_functions"}
+{"time":"2026-08-11T16:33:38.784366+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"safe_command_execution"}
+{"time":"2026-08-11T16:33:38.787271+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"safe_posix_functions"}
+{"time":"2026-08-11T16:33:38.789706+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"safe_sql_query"}
+{"time":"2026-08-11T16:33:38.794566+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"process_user_data"}
+{"time":"2026-08-11T16:33:38.795838+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"process_user_data_unsafe"}
+{"time":"2026-08-11T16:33:38.797286+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"SafeQuery_prepare"}
+{"time":"2026-08-11T16:33:38.7992+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"SafeQuery_bind_text"}
+{"time":"2026-08-11T16:33:38.800927+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"SafeQuery_exec"}
+{"time":"2026-08-11T16:33:38.802539+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"SafeQuery_free"}
+{"time":"2026-08-11T16:33:38.804312+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"lookup_user"}
+{"time":"2026-08-11T16:33:38.806483+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"lookup_user_unsafe"}
+{"time":"2026-08-11T16:33:38.809492+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"copy_message_unsafe"}
+{"time":"2026-08-11T16:33:38.810335+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"LockGuard_create"}
+{"time":"2026-08-11T16:33:38.81179+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"LockGuard_release"}
+{"time":"2026-08-11T16:33:38.812591+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"increment_counter"}
+{"time":"2026-08-11T16:33:38.813376+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"increment_unprotected"}
+{"time":"2026-08-11T16:33:38.814546+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"ResourceHandle_create"}
+{"time":"2026-08-11T16:33:38.818306+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"_scoped_destroy"}
+{"time":"2026-08-11T16:33:38.819931+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"process_buffer"}
+{"time":"2026-08-11T16:33:38.82192+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"process_buffer_unsafe"}
+{"time":"2026-08-11T16:33:38.824711+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"is_safe_input"}
+{"time":"2026-08-11T16:33:38.831531+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"FileCache_create"}
+{"time":"2026-08-11T16:33:38.835885+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"process_file"}
+{"time":"2026-08-11T16:33:38.83835+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"parse_task_name"}
+{"time":"2026-08-11T16:33:38.841455+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"format_task_desc"}
+{"time":"2026-08-11T16:33:38.84505+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"log_user_message"}
+{"time":"2026-08-11T16:33:38.852462+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"validate_user_input"}
+{"time":"2026-08-11T16:33:38.861805+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"get_user_size"}
+{"time":"2026-08-11T16:33:38.868451+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"main"}
+{"time":"2026-08-11T16:33:38.872182+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"execute_user_command"}
+{"time":"2026-08-11T16:33:38.87622+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"execute_safe"}
+{"time":"2026-08-11T16:33:38.918479+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"main"}
+{"time":"2026-08-11T16:33:38.922058+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"run_user_command"}
+{"time":"2026-08-11T16:33:38.936985+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"store_registry_credential"}
+{"time":"2026-08-11T16:33:38.942642+08:00","level":"WARN","msg":"uninit: CFG construction degenerate, using conservative fallback","function":"main"}
+{"time":"2026-08-11T16:33:39.636288+08:00","level":"INFO","msg":"filter applied","filter":"call_reach","input":30,"output":30}
+{"time":"2026-08-11T16:33:39.636356+08:00","level":"INFO","msg":"filter applied","filter":"safe_function_exclude","input":30,"output":28}
+{"time":"2026-08-11T16:33:39.636545+08:00","level":"INFO","msg":"filter applied","filter":"bounds_check","input":28,"output":28}
+{"time":"2026-08-11T16:33:39.654935+08:00","level":"INFO","msg":"filter applied","filter":"call_reach","input":5,"output":5}
+{"time":"2026-08-11T16:33:39.654989+08:00","level":"INFO","msg":"filter applied","filter":"safe_function_exclude","input":5,"output":5}
+{"time":"2026-08-11T16:33:39.655138+08:00","level":"INFO","msg":"filter applied","filter":"bounds_check","input":5,"output":5}
+{"time":"2026-08-11T16:33:39.672778+08:00","level":"INFO","msg":"filter applied","filter":"call_reach","input":1,"output":1}
+{"time":"2026-08-11T16:33:39.672831+08:00","level":"INFO","msg":"filter applied","filter":"safe_function_exclude","input":1,"output":1}
+{"time":"2026-08-11T16:33:39.672988+08:00","level":"INFO","msg":"filter applied","filter":"bounds_check","input":1,"output":1}
+{"time":"2026-08-11T16:33:39.690477+08:00","level":"INFO","msg":"filter applied","filter":"call_reach","input":2,"output":2}
+{"time":"2026-08-11T16:33:39.690532+08:00","level":"INFO","msg":"filter applied","filter":"safe_function_exclude","input":2,"output":2}
+{"time":"2026-08-11T16:33:39.690688+08:00","level":"INFO","msg":"filter applied","filter":"bounds_check","input":2,"output":2}
+{"time":"2026-08-11T16:33:39.708017+08:00","level":"INFO","msg":"filter applied","filter":"call_reach","input":1,"output":1}
+{"time":"2026-08-11T16:33:39.70807+08:00","level":"INFO","msg":"filter applied","filter":"safe_function_exclude","input":1,"output":1}
+{"time":"2026-08-11T16:33:39.708219+08:00","level":"INFO","msg":"filter applied","filter":"bounds_check","input":1,"output":1}
+{"time":"2026-08-11T16:33:39.726478+08:00","level":"INFO","msg":"filter applied","filter":"call_reach","input":3,"output":3}
+{"time":"2026-08-11T16:33:39.72653+08:00","level":"INFO","msg":"filter applied","filter":"safe_function_exclude","input":3,"output":3}
+{"time":"2026-08-11T16:33:39.726686+08:00","level":"INFO","msg":"filter applied","filter":"bounds_check","input":3,"output":3}
+{"time":"2026-08-11T16:33:39.74465+08:00","level":"INFO","msg":"filter applied","filter":"call_reach","input":8,"output":8}
+{"time":"2026-08-11T16:33:39.744706+08:00","level":"INFO","msg":"filter applied","filter":"safe_function_exclude","input":8,"output":7}
+{"time":"2026-08-11T16:33:39.744853+08:00","level":"INFO","msg":"filter applied","filter":"bounds_check","input":7,"output":7}
+{"time":"2026-08-11T16:33:39.762497+08:00","level":"INFO","msg":"filter applied","filter":"call_reach","input":2,"output":2}
+{"time":"2026-08-11T16:33:39.762552+08:00","level":"INFO","msg":"filter applied","filter":"safe_function_exclude","input":2,"output":2}
+{"time":"2026-08-11T16:33:39.762707+08:00","level":"INFO","msg":"filter applied","filter":"bounds_check","input":2,"output":2}
+{"time":"2026-08-11T16:33:39.780495+08:00","level":"INFO","msg":"filter applied","filter":"call_reach","input":15,"output":15}
+{"time":"2026-08-11T16:33:39.780556+08:00","level":"INFO","msg":"filter applied","filter":"safe_function_exclude","input":15,"output":13}
+{"time":"2026-08-11T16:33:39.780633+08:00","level":"INFO","msg":"filter applied","filter":"has_release","input":13,"output":2}
+{"time":"2026-08-11T16:33:39.78271+08:00","level":"INFO","msg":"filter applied","filter":"non_nullable_array_suppress","input":93,"output":73}
+{"time":"2026-08-11T16:33:39.783034+08:00","level":"INFO","msg":"filter applied","filter":"array_oob_precedence","input":73,"output":73}
+{"time":"2026-08-11T16:33:39.783124+08:00","level":"INFO","msg":"filter applied","filter":"nullable_source","input":73,"output":41}
+{"time":"2026-08-11T16:33:39.801286+08:00","level":"INFO","msg":"filter applied","filter":"call_reach","input":41,"output":41}
+{"time":"2026-08-11T16:33:39.801516+08:00","level":"INFO","msg":"filter applied","filter":"guard","input":41,"output":35}
+{"time":"2026-08-11T16:33:39.801536+08:00","level":"INFO","msg":"filter applied","filter":"safe_function_exclude","input":35,"output":25}
+{"time":"2026-08-11T16:33:39.80187+08:00","level":"INFO","msg":"filter applied","filter":"bounds_check","input":25,"output":25}
+{"time":"2026-08-11T16:33:39.819912+08:00","level":"INFO","msg":"filter applied","filter":"call_reach","input":2,"output":2}
+{"time":"2026-08-11T16:33:39.819965+08:00","level":"INFO","msg":"filter applied","filter":"safe_function_exclude","input":2,"output":2}
+{"time":"2026-08-11T16:33:39.820118+08:00","level":"INFO","msg":"filter applied","filter":"bounds_check","input":2,"output":2}
+{"time":"2026-08-11T16:33:39.83789+08:00","level":"INFO","msg":"filter applied","filter":"call_reach","input":29,"output":29}
+{"time":"2026-08-11T16:33:39.83794+08:00","level":"INFO","msg":"filter applied","filter":"safe_function_exclude","input":29,"output":29}
+{"time":"2026-08-11T16:33:39.838031+08:00","level":"INFO","msg":"filter applied","filter":"has_release","input":29,"output":5}
+{"time":"2026-08-11T16:33:39.85598+08:00","level":"INFO","msg":"filter applied","filter":"call_reach","input":17,"output":17}
+{"time":"2026-08-11T16:33:39.856039+08:00","level":"INFO","msg":"filter applied","filter":"safe_function_exclude","input":17,"output":15}
+{"time":"2026-08-11T16:33:39.856199+08:00","level":"INFO","msg":"filter applied","filter":"bounds_check","input":15,"output":15}
+{"time":"2026-08-11T16:33:39.874165+08:00","level":"INFO","msg":"filter applied","filter":"call_reach","input":3,"output":3}
+{"time":"2026-08-11T16:33:39.874218+08:00","level":"INFO","msg":"filter applied","filter":"safe_function_exclude","input":3,"output":3}
+{"time":"2026-08-11T16:33:39.875769+08:00","level":"INFO","msg":"lifetime filter: removed false positive","variable":"entry","free_line":25,"use_line":29,"function":"alloc_entry"}
+{"time":"2026-08-11T16:33:39.877164+08:00","level":"INFO","msg":"lifetime filter: removed false positive","variable":"entry","free_line":25,"use_line":30,"function":"alloc_entry"}
+{"time":"2026-08-11T16:33:39.87841+08:00","level":"INFO","msg":"filter applied","filter":"lifetime","input":3,"output":1}

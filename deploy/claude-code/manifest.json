@@ -1,0 +1,44 @@
+{
+  "name": "secguard",
+  "version": "0.1.0",
+  "description": "AI-Augmented Program Security Analysis Platform",
+  "runtime": "external-process",
+  "binary": "secguard",
+  "commands": {
+    "index": {
+      "usage": "secguard index <path>",
+      "description": "Index a C codebase into sgre.db",
+      "output": "JSON summary with files_indexed, functions_indexed, files_skipped"
+    },
+    "plan": {
+      "usage": "secguard plan <vuln-type>",
+      "description": "Run convergence pipeline for a vulnerability type",
+      "output": "JSON Security Evidence Package with <=15 converged candidates"
+    },
+    "query": {
+      "usage": "secguard query <skill>",
+      "description": "Run a named skill query",
+      "output": "JSON evidence package"
+    },
+    "report": {
+      "usage": "secguard report",
+      "description": "Output all findings as JSON",
+      "output": "JSON array of findings"
+    }
+  },
+  "consumption": {
+    "method": "JSON.parse(stdout)",
+    "contract": "Receives converged evidence packages (<=15 items), never raw candidates. AI Agent reasons over evidence and produces findings.",
+    "finding_writeback": {
+      "table": "findings",
+      "fields": ["rule_id", "severity", "confidence", "evidence", "status"],
+      "format": "Insert via secguard CLI or direct SQLite insert"
+    }
+  },
+  "database": {
+    "file": "sgre.db",
+    "type": "SQLite",
+    "permissions": "0600",
+    "no_server_required": true
+  }
+}

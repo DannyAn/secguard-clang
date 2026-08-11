@@ -1,0 +1,3457 @@
+{
+  "schema_version": "1.0",
+  "indexer_version": "secguardian-index 0.18.0",
+  "capability_profile": {
+    "files": 15,
+    "call_sites": 74,
+    "string_literals": 84,
+    "declarations": 130,
+    "function_contexts": 63
+  },
+  "assignment_count": 302,
+  "assignments": [
+    {
+      "rule_id": "memory.buffer_overflow",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 45,
+      "column": 0,
+      "caller": "parse_packet",
+      "kind": "memcpy",
+      "arguments": [
+        "&packet->header",
+        "header",
+        "sizeof(PacketHeader)"
+      ]
+    },
+    {
+      "rule_id": "semantics.api",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 45,
+      "column": 0,
+      "caller": "parse_packet",
+      "kind": "memcpy",
+      "arguments": [
+        "&packet->header",
+        "header",
+        "sizeof(PacketHeader)"
+      ]
+    },
+    {
+      "rule_id": "memory.integer",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 44,
+      "column": 0,
+      "caller": "leak_in_path",
+      "kind": "malloc",
+      "arguments": [
+        "1024"
+      ]
+    },
+    {
+      "rule_id": "memory.leak",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 44,
+      "column": 0,
+      "caller": "leak_in_path",
+      "kind": "malloc",
+      "arguments": [
+        "1024"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 44,
+      "column": 0,
+      "caller": "leak_in_path",
+      "kind": "malloc",
+      "arguments": [
+        "1024"
+      ]
+    },
+    {
+      "rule_id": "memory.must",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 44,
+      "column": 0,
+      "caller": "leak_in_path",
+      "kind": "malloc",
+      "arguments": [
+        "1024"
+      ]
+    },
+    {
+      "rule_id": "memory.null",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 44,
+      "column": 0,
+      "caller": "leak_in_path",
+      "kind": "malloc",
+      "arguments": [
+        "1024"
+      ]
+    },
+    {
+      "rule_id": "memory.integer",
+      "signal_field": "call_sites",
+      "file": "concurrency.c",
+      "line": 104,
+      "column": 0,
+      "caller": "demo_unsafe_signal",
+      "kind": "malloc",
+      "arguments": [
+        "128"
+      ]
+    },
+    {
+      "rule_id": "memory.leak",
+      "signal_field": "call_sites",
+      "file": "concurrency.c",
+      "line": 104,
+      "column": 0,
+      "caller": "demo_unsafe_signal",
+      "kind": "malloc",
+      "arguments": [
+        "128"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "concurrency.c",
+      "line": 104,
+      "column": 0,
+      "caller": "demo_unsafe_signal",
+      "kind": "malloc",
+      "arguments": [
+        "128"
+      ]
+    },
+    {
+      "rule_id": "memory.must",
+      "signal_field": "call_sites",
+      "file": "concurrency.c",
+      "line": 104,
+      "column": 0,
+      "caller": "demo_unsafe_signal",
+      "kind": "malloc",
+      "arguments": [
+        "128"
+      ]
+    },
+    {
+      "rule_id": "memory.null",
+      "signal_field": "call_sites",
+      "file": "concurrency.c",
+      "line": 104,
+      "column": 0,
+      "caller": "demo_unsafe_signal",
+      "kind": "malloc",
+      "arguments": [
+        "128"
+      ]
+    },
+    {
+      "rule_id": "memory.integer",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 68,
+      "column": 0,
+      "caller": "mismatched_free_example",
+      "kind": "malloc",
+      "arguments": [
+        "64"
+      ]
+    },
+    {
+      "rule_id": "memory.leak",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 68,
+      "column": 0,
+      "caller": "mismatched_free_example",
+      "kind": "malloc",
+      "arguments": [
+        "64"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 68,
+      "column": 0,
+      "caller": "mismatched_free_example",
+      "kind": "malloc",
+      "arguments": [
+        "64"
+      ]
+    },
+    {
+      "rule_id": "memory.must",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 68,
+      "column": 0,
+      "caller": "mismatched_free_example",
+      "kind": "malloc",
+      "arguments": [
+        "64"
+      ]
+    },
+    {
+      "rule_id": "memory.null",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 68,
+      "column": 0,
+      "caller": "mismatched_free_example",
+      "kind": "malloc",
+      "arguments": [
+        "64"
+      ]
+    },
+    {
+      "rule_id": "memory.integer",
+      "signal_field": "call_sites",
+      "file": "concurrency.c",
+      "line": 100,
+      "column": 0,
+      "caller": "unsafe_handler",
+      "kind": "malloc",
+      "arguments": [
+        "64"
+      ]
+    },
+    {
+      "rule_id": "memory.leak",
+      "signal_field": "call_sites",
+      "file": "concurrency.c",
+      "line": 100,
+      "column": 0,
+      "caller": "unsafe_handler",
+      "kind": "malloc",
+      "arguments": [
+        "64"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "concurrency.c",
+      "line": 100,
+      "column": 0,
+      "caller": "unsafe_handler",
+      "kind": "malloc",
+      "arguments": [
+        "64"
+      ]
+    },
+    {
+      "rule_id": "memory.must",
+      "signal_field": "call_sites",
+      "file": "concurrency.c",
+      "line": 100,
+      "column": 0,
+      "caller": "unsafe_handler",
+      "kind": "malloc",
+      "arguments": [
+        "64"
+      ]
+    },
+    {
+      "rule_id": "memory.null",
+      "signal_field": "call_sites",
+      "file": "concurrency.c",
+      "line": 100,
+      "column": 0,
+      "caller": "unsafe_handler",
+      "kind": "malloc",
+      "arguments": [
+        "64"
+      ]
+    },
+    {
+      "rule_id": "memory.must",
+      "signal_field": "call_sites",
+      "file": "parser.c",
+      "line": 93,
+      "column": 0,
+      "caller": "create_insecure_file",
+      "kind": "fopen",
+      "arguments": [
+        "\"/etc/app/config.conf\"",
+        "\"w\""
+      ]
+    },
+    {
+      "rule_id": "resource.leak",
+      "signal_field": "call_sites",
+      "file": "parser.c",
+      "line": 93,
+      "column": 0,
+      "caller": "create_insecure_file",
+      "kind": "fopen",
+      "arguments": [
+        "\"/etc/app/config.conf\"",
+        "\"w\""
+      ]
+    },
+    {
+      "rule_id": "resource.leak",
+      "signal_field": "call_sites",
+      "file": "system.c",
+      "line": 57,
+      "column": 0,
+      "caller": "toctou_safe",
+      "kind": "open",
+      "arguments": [
+        "\"/safe_dir\"",
+        "O_RDONLY"
+      ]
+    },
+    {
+      "rule_id": "memory.must",
+      "signal_field": "call_sites",
+      "file": "system.c",
+      "line": 71,
+      "column": 0,
+      "caller": "create_temp_file_unsafe",
+      "kind": "fopen",
+      "arguments": [
+        "\"/tmp/myapp.log\"",
+        "\"w\""
+      ]
+    },
+    {
+      "rule_id": "resource.leak",
+      "signal_field": "call_sites",
+      "file": "system.c",
+      "line": 71,
+      "column": 0,
+      "caller": "create_temp_file_unsafe",
+      "kind": "fopen",
+      "arguments": [
+        "\"/tmp/myapp.log\"",
+        "\"w\""
+      ]
+    },
+    {
+      "rule_id": "resource.leak",
+      "signal_field": "call_sites",
+      "file": "system.c",
+      "line": 102,
+      "column": 0,
+      "caller": "write_log_safe",
+      "kind": "open",
+      "arguments": [
+        "\"/var/log/myapp.log\"",
+        "O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW",
+        "0644"
+      ]
+    },
+    {
+      "rule_id": "memory.must",
+      "signal_field": "call_sites",
+      "file": "system.c",
+      "line": 93,
+      "column": 0,
+      "caller": "write_log_unsafe",
+      "kind": "fopen",
+      "arguments": [
+        "\"/var/log/myapp.log\"",
+        "\"a\""
+      ]
+    },
+    {
+      "rule_id": "resource.leak",
+      "signal_field": "call_sites",
+      "file": "system.c",
+      "line": 93,
+      "column": 0,
+      "caller": "write_log_unsafe",
+      "kind": "fopen",
+      "arguments": [
+        "\"/var/log/myapp.log\"",
+        "\"a\""
+      ]
+    },
+    {
+      "rule_id": "memory.buffer_overflow",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 99,
+      "column": 0,
+      "caller": "alloc_user_buffer",
+      "kind": "strcpy",
+      "arguments": [
+        "buf",
+        "\"initialized\""
+      ]
+    },
+    {
+      "rule_id": "semantics.api",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 99,
+      "column": 0,
+      "caller": "alloc_user_buffer",
+      "kind": "strcpy",
+      "arguments": [
+        "buf",
+        "\"initialized\""
+      ]
+    },
+    {
+      "rule_id": "memory.buffer_overflow",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 69,
+      "column": 0,
+      "caller": "mismatched_free_example",
+      "kind": "strcpy",
+      "arguments": [
+        "buf",
+        "\"test\""
+      ]
+    },
+    {
+      "rule_id": "semantics.api",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 69,
+      "column": 0,
+      "caller": "mismatched_free_example",
+      "kind": "strcpy",
+      "arguments": [
+        "buf",
+        "\"test\""
+      ]
+    },
+    {
+      "rule_id": "memory.buffer_overflow",
+      "signal_field": "call_sites",
+      "file": "p2_raii_memory.c",
+      "line": 62,
+      "column": 0,
+      "caller": "process_buffer_unsafe",
+      "kind": "memcpy",
+      "arguments": [
+        "buf",
+        "input",
+        "len"
+      ]
+    },
+    {
+      "rule_id": "semantics.api",
+      "signal_field": "call_sites",
+      "file": "p2_raii_memory.c",
+      "line": 62,
+      "column": 0,
+      "caller": "process_buffer_unsafe",
+      "kind": "memcpy",
+      "arguments": [
+        "buf",
+        "input",
+        "len"
+      ]
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "call_sites",
+      "file": "crypto.c",
+      "line": 37,
+      "column": 0,
+      "caller": "generate_token_strong",
+      "kind": "RAND_bytes",
+      "arguments": [
+        "buf",
+        "sizeof(buf)"
+      ]
+    },
+    {
+      "rule_id": "memory.buffer_overflow",
+      "signal_field": "call_sites",
+      "file": "p1_safecopy_wrapper.c",
+      "line": 47,
+      "column": 0,
+      "caller": "process_user_data_unsafe",
+      "kind": "memcpy",
+      "arguments": [
+        "buf",
+        "user_input",
+        "strlen(user_input)"
+      ]
+    },
+    {
+      "rule_id": "semantics.api",
+      "signal_field": "call_sites",
+      "file": "p1_safecopy_wrapper.c",
+      "line": 47,
+      "column": 0,
+      "caller": "process_user_data_unsafe",
+      "kind": "memcpy",
+      "arguments": [
+        "buf",
+        "user_input",
+        "strlen(user_input)"
+      ]
+    },
+    {
+      "rule_id": "memory.buffer_overflow",
+      "signal_field": "call_sites",
+      "file": "parser.c",
+      "line": 77,
+      "column": 0,
+      "caller": "validate_user_input",
+      "kind": "strcpy",
+      "arguments": [
+        "buf",
+        "user_input"
+      ]
+    },
+    {
+      "rule_id": "semantics.api",
+      "signal_field": "call_sites",
+      "file": "parser.c",
+      "line": 77,
+      "column": 0,
+      "caller": "validate_user_input",
+      "kind": "strcpy",
+      "arguments": [
+        "buf",
+        "user_input"
+      ]
+    },
+    {
+      "rule_id": "memory.double",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 102,
+      "column": 0,
+      "caller": "alloc_user_buffer",
+      "kind": "free",
+      "arguments": [
+        "buf"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 102,
+      "column": 0,
+      "caller": "alloc_user_buffer",
+      "kind": "free",
+      "arguments": [
+        "buf"
+      ]
+    },
+    {
+      "rule_id": "memory.use",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 102,
+      "column": 0,
+      "caller": "alloc_user_buffer",
+      "kind": "free",
+      "arguments": [
+        "buf"
+      ]
+    },
+    {
+      "rule_id": "memory.double",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 17,
+      "column": 0,
+      "caller": "heap_overflow_example",
+      "kind": "free",
+      "arguments": [
+        "buf"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 17,
+      "column": 0,
+      "caller": "heap_overflow_example",
+      "kind": "free",
+      "arguments": [
+        "buf"
+      ]
+    },
+    {
+      "rule_id": "memory.use",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 17,
+      "column": 0,
+      "caller": "heap_overflow_example",
+      "kind": "free",
+      "arguments": [
+        "buf"
+      ]
+    },
+    {
+      "rule_id": "memory.double",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 53,
+      "column": 0,
+      "caller": "leak_in_path",
+      "kind": "free",
+      "arguments": [
+        "buf"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 53,
+      "column": 0,
+      "caller": "leak_in_path",
+      "kind": "free",
+      "arguments": [
+        "buf"
+      ]
+    },
+    {
+      "rule_id": "memory.use",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 53,
+      "column": 0,
+      "caller": "leak_in_path",
+      "kind": "free",
+      "arguments": [
+        "buf"
+      ]
+    },
+    {
+      "rule_id": "memory.double",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 75,
+      "column": 0,
+      "caller": "mismatched_free_example",
+      "kind": "free",
+      "arguments": [
+        "buf"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 75,
+      "column": 0,
+      "caller": "mismatched_free_example",
+      "kind": "free",
+      "arguments": [
+        "buf"
+      ]
+    },
+    {
+      "rule_id": "memory.use",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 75,
+      "column": 0,
+      "caller": "mismatched_free_example",
+      "kind": "free",
+      "arguments": [
+        "buf"
+      ]
+    },
+    {
+      "rule_id": "memory.double",
+      "signal_field": "call_sites",
+      "file": "p2_raii_memory.c",
+      "line": 64,
+      "column": 0,
+      "caller": "process_buffer_unsafe",
+      "kind": "free",
+      "arguments": [
+        "buf"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "p2_raii_memory.c",
+      "line": 64,
+      "column": 0,
+      "caller": "process_buffer_unsafe",
+      "kind": "free",
+      "arguments": [
+        "buf"
+      ]
+    },
+    {
+      "rule_id": "memory.use",
+      "signal_field": "call_sites",
+      "file": "p2_raii_memory.c",
+      "line": 64,
+      "column": 0,
+      "caller": "process_buffer_unsafe",
+      "kind": "free",
+      "arguments": [
+        "buf"
+      ]
+    },
+    {
+      "rule_id": "memory.double",
+      "signal_field": "call_sites",
+      "file": "parser.c",
+      "line": 103,
+      "column": 0,
+      "caller": "process_large_request",
+      "kind": "free",
+      "arguments": [
+        "buf"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "parser.c",
+      "line": 103,
+      "column": 0,
+      "caller": "process_large_request",
+      "kind": "free",
+      "arguments": [
+        "buf"
+      ]
+    },
+    {
+      "rule_id": "memory.use",
+      "signal_field": "call_sites",
+      "file": "parser.c",
+      "line": 103,
+      "column": 0,
+      "caller": "process_large_request",
+      "kind": "free",
+      "arguments": [
+        "buf"
+      ]
+    },
+    {
+      "rule_id": "injection.command_injection",
+      "signal_field": "call_sites",
+      "file": "system.c",
+      "line": 15,
+      "column": 0,
+      "caller": "execute_user_command",
+      "kind": "system",
+      "arguments": [
+        "cmd"
+      ]
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "call_sites",
+      "file": "system.c",
+      "line": 15,
+      "column": 0,
+      "caller": "execute_user_command",
+      "kind": "system",
+      "arguments": [
+        "cmd"
+      ]
+    },
+    {
+      "rule_id": "injection.command_injection",
+      "signal_field": "call_sites",
+      "file": "p3_edge_case.c",
+      "line": 28,
+      "column": 0,
+      "caller": "run_admin_command",
+      "kind": "system",
+      "arguments": [
+        "cmd"
+      ]
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "call_sites",
+      "file": "p3_edge_case.c",
+      "line": 28,
+      "column": 0,
+      "caller": "run_admin_command",
+      "kind": "system",
+      "arguments": [
+        "cmd"
+      ]
+    },
+    {
+      "rule_id": "resource.leak",
+      "signal_field": "call_sites",
+      "file": "system.c",
+      "line": 61,
+      "column": 0,
+      "caller": "toctou_safe",
+      "kind": "close",
+      "arguments": [
+        "dir_fd"
+      ]
+    },
+    {
+      "rule_id": "memory.buffer_overflow",
+      "signal_field": "call_sites",
+      "file": "p2_bounds_checked.c",
+      "line": 14,
+      "column": 0,
+      "caller": "copy_message",
+      "kind": "memcpy",
+      "arguments": [
+        "dst",
+        "src",
+        "user_len"
+      ]
+    },
+    {
+      "rule_id": "semantics.api",
+      "signal_field": "call_sites",
+      "file": "p2_bounds_checked.c",
+      "line": 14,
+      "column": 0,
+      "caller": "copy_message",
+      "kind": "memcpy",
+      "arguments": [
+        "dst",
+        "src",
+        "user_len"
+      ]
+    },
+    {
+      "rule_id": "memory.buffer_overflow",
+      "signal_field": "call_sites",
+      "file": "p2_bounds_checked.c",
+      "line": 37,
+      "column": 0,
+      "caller": "copy_message_unsafe",
+      "kind": "memcpy",
+      "arguments": [
+        "dst",
+        "src",
+        "user_len"
+      ]
+    },
+    {
+      "rule_id": "semantics.api",
+      "signal_field": "call_sites",
+      "file": "p2_bounds_checked.c",
+      "line": 37,
+      "column": 0,
+      "caller": "copy_message_unsafe",
+      "kind": "memcpy",
+      "arguments": [
+        "dst",
+        "src",
+        "user_len"
+      ]
+    },
+    {
+      "rule_id": "memory.buffer_overflow",
+      "signal_field": "call_sites",
+      "file": "p2_bounds_checked.c",
+      "line": 30,
+      "column": 0,
+      "caller": "copy_to_stack_buffer",
+      "kind": "memcpy",
+      "arguments": [
+        "dst",
+        "src",
+        "user_len"
+      ]
+    },
+    {
+      "rule_id": "semantics.api",
+      "signal_field": "call_sites",
+      "file": "p2_bounds_checked.c",
+      "line": 30,
+      "column": 0,
+      "caller": "copy_to_stack_buffer",
+      "kind": "memcpy",
+      "arguments": [
+        "dst",
+        "src",
+        "user_len"
+      ]
+    },
+    {
+      "rule_id": "memory.buffer_overflow",
+      "signal_field": "call_sites",
+      "file": "p1_safecopy_wrapper.c",
+      "line": 28,
+      "column": 0,
+      "caller": "SafeCopy_strcpy",
+      "kind": "memcpy",
+      "arguments": [
+        "dst->ptr",
+        "src",
+        "len"
+      ]
+    },
+    {
+      "rule_id": "semantics.api",
+      "signal_field": "call_sites",
+      "file": "p1_safecopy_wrapper.c",
+      "line": 28,
+      "column": 0,
+      "caller": "SafeCopy_strcpy",
+      "kind": "memcpy",
+      "arguments": [
+        "dst->ptr",
+        "src",
+        "len"
+      ]
+    },
+    {
+      "rule_id": "memory.buffer_overflow",
+      "signal_field": "call_sites",
+      "file": "p1_safecopy_wrapper.c",
+      "line": 18,
+      "column": 0,
+      "caller": "SafeCopy_copy",
+      "kind": "memcpy",
+      "arguments": [
+        "dst->ptr",
+        "src",
+        "n"
+      ]
+    },
+    {
+      "rule_id": "semantics.api",
+      "signal_field": "call_sites",
+      "file": "p1_safecopy_wrapper.c",
+      "line": 18,
+      "column": 0,
+      "caller": "SafeCopy_copy",
+      "kind": "memcpy",
+      "arguments": [
+        "dst->ptr",
+        "src",
+        "n"
+      ]
+    },
+    {
+      "rule_id": "memory.double",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 53,
+      "column": 0,
+      "caller": "release_entry",
+      "kind": "free",
+      "arguments": [
+        "entry"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 53,
+      "column": 0,
+      "caller": "release_entry",
+      "kind": "free",
+      "arguments": [
+        "entry"
+      ]
+    },
+    {
+      "rule_id": "memory.use",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 53,
+      "column": 0,
+      "caller": "release_entry",
+      "kind": "free",
+      "arguments": [
+        "entry"
+      ]
+    },
+    {
+      "rule_id": "memory.double",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 51,
+      "column": 0,
+      "caller": "release_entry",
+      "kind": "free",
+      "arguments": [
+        "entry->buffer"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 51,
+      "column": 0,
+      "caller": "release_entry",
+      "kind": "free",
+      "arguments": [
+        "entry->buffer"
+      ]
+    },
+    {
+      "rule_id": "memory.use",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 51,
+      "column": 0,
+      "caller": "release_entry",
+      "kind": "free",
+      "arguments": [
+        "entry->buffer"
+      ]
+    },
+    {
+      "rule_id": "resource.leak",
+      "signal_field": "call_sites",
+      "file": "system.c",
+      "line": 50,
+      "column": 0,
+      "caller": "check_then_open",
+      "kind": "fclose",
+      "arguments": [
+        "f"
+      ]
+    },
+    {
+      "rule_id": "resource.leak",
+      "signal_field": "call_sites",
+      "file": "parser.c",
+      "line": 94,
+      "column": 0,
+      "caller": "create_insecure_file",
+      "kind": "fclose",
+      "arguments": [
+        "f"
+      ]
+    },
+    {
+      "rule_id": "resource.leak",
+      "signal_field": "call_sites",
+      "file": "system.c",
+      "line": 74,
+      "column": 0,
+      "caller": "create_temp_file_unsafe",
+      "kind": "fclose",
+      "arguments": [
+        "f"
+      ]
+    },
+    {
+      "rule_id": "resource.leak",
+      "signal_field": "call_sites",
+      "file": "system.c",
+      "line": 35,
+      "column": 0,
+      "caller": "read_user_file",
+      "kind": "fclose",
+      "arguments": [
+        "f"
+      ]
+    },
+    {
+      "rule_id": "resource.leak",
+      "signal_field": "call_sites",
+      "file": "system.c",
+      "line": 96,
+      "column": 0,
+      "caller": "write_log_unsafe",
+      "kind": "fclose",
+      "arguments": [
+        "f"
+      ]
+    },
+    {
+      "rule_id": "memory.double",
+      "signal_field": "call_sites",
+      "file": "p3_edge_case.c",
+      "line": 78,
+      "column": 0,
+      "caller": "FileCache_cleanup",
+      "kind": "free",
+      "arguments": [
+        "fc"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "p3_edge_case.c",
+      "line": 78,
+      "column": 0,
+      "caller": "FileCache_cleanup",
+      "kind": "free",
+      "arguments": [
+        "fc"
+      ]
+    },
+    {
+      "rule_id": "memory.use",
+      "signal_field": "call_sites",
+      "file": "p3_edge_case.c",
+      "line": 78,
+      "column": 0,
+      "caller": "FileCache_cleanup",
+      "kind": "free",
+      "arguments": [
+        "fc"
+      ]
+    },
+    {
+      "rule_id": "memory.double",
+      "signal_field": "call_sites",
+      "file": "p3_edge_case.c",
+      "line": 75,
+      "column": 0,
+      "caller": "FileCache_cleanup",
+      "kind": "free",
+      "arguments": [
+        "fc->buffer"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "p3_edge_case.c",
+      "line": 75,
+      "column": 0,
+      "caller": "FileCache_cleanup",
+      "kind": "free",
+      "arguments": [
+        "fc->buffer"
+      ]
+    },
+    {
+      "rule_id": "memory.use",
+      "signal_field": "call_sites",
+      "file": "p3_edge_case.c",
+      "line": 75,
+      "column": 0,
+      "caller": "FileCache_cleanup",
+      "kind": "free",
+      "arguments": [
+        "fc->buffer"
+      ]
+    },
+    {
+      "rule_id": "resource.leak",
+      "signal_field": "call_sites",
+      "file": "system.c",
+      "line": 84,
+      "column": 0,
+      "caller": "create_temp_file_safe",
+      "kind": "close",
+      "arguments": [
+        "fd"
+      ]
+    },
+    {
+      "rule_id": "resource.leak",
+      "signal_field": "call_sites",
+      "file": "system.c",
+      "line": 60,
+      "column": 0,
+      "caller": "toctou_safe",
+      "kind": "close",
+      "arguments": [
+        "fd"
+      ]
+    },
+    {
+      "rule_id": "resource.leak",
+      "signal_field": "call_sites",
+      "file": "system.c",
+      "line": 105,
+      "column": 0,
+      "caller": "write_log_safe",
+      "kind": "close",
+      "arguments": [
+        "fd"
+      ]
+    },
+    {
+      "rule_id": "memory.double",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 63,
+      "column": 0,
+      "caller": "cleanup_entries",
+      "kind": "free",
+      "arguments": [
+        "g_entries[i]"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 63,
+      "column": 0,
+      "caller": "cleanup_entries",
+      "kind": "free",
+      "arguments": [
+        "g_entries[i]"
+      ]
+    },
+    {
+      "rule_id": "memory.use",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 63,
+      "column": 0,
+      "caller": "cleanup_entries",
+      "kind": "free",
+      "arguments": [
+        "g_entries[i]"
+      ]
+    },
+    {
+      "rule_id": "memory.double",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 61,
+      "column": 0,
+      "caller": "cleanup_entries",
+      "kind": "free",
+      "arguments": [
+        "g_entries[i]->buffer"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 61,
+      "column": 0,
+      "caller": "cleanup_entries",
+      "kind": "free",
+      "arguments": [
+        "g_entries[i]->buffer"
+      ]
+    },
+    {
+      "rule_id": "memory.use",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 61,
+      "column": 0,
+      "caller": "cleanup_entries",
+      "kind": "free",
+      "arguments": [
+        "g_entries[i]->buffer"
+      ]
+    },
+    {
+      "rule_id": "memory.double",
+      "signal_field": "call_sites",
+      "file": "concurrency.c",
+      "line": 99,
+      "column": 0,
+      "caller": "unsafe_handler",
+      "kind": "free",
+      "arguments": [
+        "g_global_ptr"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "concurrency.c",
+      "line": 99,
+      "column": 0,
+      "caller": "unsafe_handler",
+      "kind": "free",
+      "arguments": [
+        "g_global_ptr"
+      ]
+    },
+    {
+      "rule_id": "memory.use",
+      "signal_field": "call_sites",
+      "file": "concurrency.c",
+      "line": 99,
+      "column": 0,
+      "caller": "unsafe_handler",
+      "kind": "free",
+      "arguments": [
+        "g_global_ptr"
+      ]
+    },
+    {
+      "rule_id": "memory.double",
+      "signal_field": "call_sites",
+      "file": "p2_raii_memory.c",
+      "line": 29,
+      "column": 0,
+      "caller": "ResourceHandle_destroy",
+      "kind": "free",
+      "arguments": [
+        "h"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "p2_raii_memory.c",
+      "line": 29,
+      "column": 0,
+      "caller": "ResourceHandle_destroy",
+      "kind": "free",
+      "arguments": [
+        "h"
+      ]
+    },
+    {
+      "rule_id": "memory.use",
+      "signal_field": "call_sites",
+      "file": "p2_raii_memory.c",
+      "line": 29,
+      "column": 0,
+      "caller": "ResourceHandle_destroy",
+      "kind": "free",
+      "arguments": [
+        "h"
+      ]
+    },
+    {
+      "rule_id": "memory.double",
+      "signal_field": "call_sites",
+      "file": "p2_raii_memory.c",
+      "line": 25,
+      "column": 0,
+      "caller": "ResourceHandle_destroy",
+      "kind": "free",
+      "arguments": [
+        "h->data"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "p2_raii_memory.c",
+      "line": 25,
+      "column": 0,
+      "caller": "ResourceHandle_destroy",
+      "kind": "free",
+      "arguments": [
+        "h->data"
+      ]
+    },
+    {
+      "rule_id": "memory.use",
+      "signal_field": "call_sites",
+      "file": "p2_raii_memory.c",
+      "line": 25,
+      "column": 0,
+      "caller": "ResourceHandle_destroy",
+      "kind": "free",
+      "arguments": [
+        "h->data"
+      ]
+    },
+    {
+      "rule_id": "memory.buffer_overflow",
+      "signal_field": "call_sites",
+      "file": "p2_raii_memory.c",
+      "line": 46,
+      "column": 0,
+      "caller": "process_buffer",
+      "kind": "memcpy",
+      "arguments": [
+        "handle->data",
+        "input",
+        "len"
+      ]
+    },
+    {
+      "rule_id": "semantics.api",
+      "signal_field": "call_sites",
+      "file": "p2_raii_memory.c",
+      "line": 46,
+      "column": 0,
+      "caller": "process_buffer",
+      "kind": "memcpy",
+      "arguments": [
+        "handle->data",
+        "input",
+        "len"
+      ]
+    },
+    {
+      "rule_id": "memory.integer",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 51,
+      "column": 0,
+      "caller": "parse_packet",
+      "kind": "malloc",
+      "arguments": [
+        "header->data_size"
+      ]
+    },
+    {
+      "rule_id": "memory.leak",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 51,
+      "column": 0,
+      "caller": "parse_packet",
+      "kind": "malloc",
+      "arguments": [
+        "header->data_size"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 51,
+      "column": 0,
+      "caller": "parse_packet",
+      "kind": "malloc",
+      "arguments": [
+        "header->data_size"
+      ]
+    },
+    {
+      "rule_id": "memory.must",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 51,
+      "column": 0,
+      "caller": "parse_packet",
+      "kind": "malloc",
+      "arguments": [
+        "header->data_size"
+      ]
+    },
+    {
+      "rule_id": "memory.null",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 51,
+      "column": 0,
+      "caller": "parse_packet",
+      "kind": "malloc",
+      "arguments": [
+        "header->data_size"
+      ]
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "call_sites",
+      "file": "crypto.c",
+      "line": 70,
+      "column": 0,
+      "caller": "setup_encryption_weak",
+      "kind": "RAND_bytes",
+      "arguments": [
+        "key",
+        "7"
+      ]
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "call_sites",
+      "file": "crypto.c",
+      "line": 60,
+      "column": 0,
+      "caller": "encrypt_data_good",
+      "kind": "RAND_bytes",
+      "arguments": [
+        "key",
+        "sizeof(key)"
+      ]
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "call_sites",
+      "file": "crypto.c",
+      "line": 80,
+      "column": 0,
+      "caller": "setup_encryption_strong",
+      "kind": "RAND_bytes",
+      "arguments": [
+        "key",
+        "sizeof(key)"
+      ]
+    },
+    {
+      "rule_id": "memory.integer",
+      "signal_field": "call_sites",
+      "file": "p2_raii_memory.c",
+      "line": 59,
+      "column": 0,
+      "caller": "process_buffer_unsafe",
+      "kind": "malloc",
+      "arguments": [
+        "len"
+      ]
+    },
+    {
+      "rule_id": "memory.leak",
+      "signal_field": "call_sites",
+      "file": "p2_raii_memory.c",
+      "line": 59,
+      "column": 0,
+      "caller": "process_buffer_unsafe",
+      "kind": "malloc",
+      "arguments": [
+        "len"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "p2_raii_memory.c",
+      "line": 59,
+      "column": 0,
+      "caller": "process_buffer_unsafe",
+      "kind": "malloc",
+      "arguments": [
+        "len"
+      ]
+    },
+    {
+      "rule_id": "memory.must",
+      "signal_field": "call_sites",
+      "file": "p2_raii_memory.c",
+      "line": 59,
+      "column": 0,
+      "caller": "process_buffer_unsafe",
+      "kind": "malloc",
+      "arguments": [
+        "len"
+      ]
+    },
+    {
+      "rule_id": "memory.null",
+      "signal_field": "call_sites",
+      "file": "p2_raii_memory.c",
+      "line": 59,
+      "column": 0,
+      "caller": "process_buffer_unsafe",
+      "kind": "malloc",
+      "arguments": [
+        "len"
+      ]
+    },
+    {
+      "rule_id": "memory.double",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 63,
+      "column": 0,
+      "caller": "parse_packet",
+      "kind": "free",
+      "arguments": [
+        "packet"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 63,
+      "column": 0,
+      "caller": "parse_packet",
+      "kind": "free",
+      "arguments": [
+        "packet"
+      ]
+    },
+    {
+      "rule_id": "memory.use",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 63,
+      "column": 0,
+      "caller": "parse_packet",
+      "kind": "free",
+      "arguments": [
+        "packet"
+      ]
+    },
+    {
+      "rule_id": "memory.buffer_overflow",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 52,
+      "column": 0,
+      "caller": "parse_packet",
+      "kind": "memcpy",
+      "arguments": [
+        "packet->data",
+        "raw_data + HEADER_SIZE",
+        "header->data_size"
+      ]
+    },
+    {
+      "rule_id": "semantics.api",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 52,
+      "column": 0,
+      "caller": "parse_packet",
+      "kind": "memcpy",
+      "arguments": [
+        "packet->data",
+        "raw_data + HEADER_SIZE",
+        "header->data_size"
+      ]
+    },
+    {
+      "rule_id": "memory.double",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 62,
+      "column": 0,
+      "caller": "parse_packet",
+      "kind": "free",
+      "arguments": [
+        "packet->data"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 62,
+      "column": 0,
+      "caller": "parse_packet",
+      "kind": "free",
+      "arguments": [
+        "packet->data"
+      ]
+    },
+    {
+      "rule_id": "memory.use",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 62,
+      "column": 0,
+      "caller": "parse_packet",
+      "kind": "free",
+      "arguments": [
+        "packet->data"
+      ]
+    },
+    {
+      "rule_id": "memory.double",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 86,
+      "column": 0,
+      "caller": "cleanup_packets",
+      "kind": "free",
+      "arguments": [
+        "packet_queue[i]"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 86,
+      "column": 0,
+      "caller": "cleanup_packets",
+      "kind": "free",
+      "arguments": [
+        "packet_queue[i]"
+      ]
+    },
+    {
+      "rule_id": "memory.use",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 86,
+      "column": 0,
+      "caller": "cleanup_packets",
+      "kind": "free",
+      "arguments": [
+        "packet_queue[i]"
+      ]
+    },
+    {
+      "rule_id": "memory.double",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 85,
+      "column": 0,
+      "caller": "cleanup_packets",
+      "kind": "free",
+      "arguments": [
+        "packet_queue[i]->data"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 85,
+      "column": 0,
+      "caller": "cleanup_packets",
+      "kind": "free",
+      "arguments": [
+        "packet_queue[i]->data"
+      ]
+    },
+    {
+      "rule_id": "memory.use",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 85,
+      "column": 0,
+      "caller": "cleanup_packets",
+      "kind": "free",
+      "arguments": [
+        "packet_queue[i]->data"
+      ]
+    },
+    {
+      "rule_id": "memory.must",
+      "signal_field": "call_sites",
+      "file": "system.c",
+      "line": 46,
+      "column": 0,
+      "caller": "check_then_open",
+      "kind": "fopen",
+      "arguments": [
+        "path",
+        "\"r\""
+      ]
+    },
+    {
+      "rule_id": "resource.leak",
+      "signal_field": "call_sites",
+      "file": "system.c",
+      "line": 46,
+      "column": 0,
+      "caller": "check_then_open",
+      "kind": "fopen",
+      "arguments": [
+        "path",
+        "\"r\""
+      ]
+    },
+    {
+      "rule_id": "memory.must",
+      "signal_field": "call_sites",
+      "file": "system.c",
+      "line": 31,
+      "column": 0,
+      "caller": "read_user_file",
+      "kind": "fopen",
+      "arguments": [
+        "path",
+        "\"r\""
+      ]
+    },
+    {
+      "rule_id": "resource.leak",
+      "signal_field": "call_sites",
+      "file": "system.c",
+      "line": 31,
+      "column": 0,
+      "caller": "read_user_file",
+      "kind": "fopen",
+      "arguments": [
+        "path",
+        "\"r\""
+      ]
+    },
+    {
+      "rule_id": "memory.buffer_overflow",
+      "signal_field": "call_sites",
+      "file": "windows.c",
+      "line": 22,
+      "column": 0,
+      "caller": "write_user_file",
+      "kind": "strcat",
+      "arguments": [
+        "path",
+        "filename"
+      ]
+    },
+    {
+      "rule_id": "semantics.api",
+      "signal_field": "call_sites",
+      "file": "windows.c",
+      "line": 22,
+      "column": 0,
+      "caller": "write_user_file",
+      "kind": "strcat",
+      "arguments": [
+        "path",
+        "filename"
+      ]
+    },
+    {
+      "rule_id": "memory.double",
+      "signal_field": "call_sites",
+      "file": "p1_safequery_wrapper.c",
+      "line": 32,
+      "column": 0,
+      "caller": "SafeQuery_free",
+      "kind": "free",
+      "arguments": [
+        "q"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "p1_safequery_wrapper.c",
+      "line": 32,
+      "column": 0,
+      "caller": "SafeQuery_free",
+      "kind": "free",
+      "arguments": [
+        "q"
+      ]
+    },
+    {
+      "rule_id": "memory.use",
+      "signal_field": "call_sites",
+      "file": "p1_safequery_wrapper.c",
+      "line": 32,
+      "column": 0,
+      "caller": "SafeQuery_free",
+      "kind": "free",
+      "arguments": [
+        "q"
+      ]
+    },
+    {
+      "rule_id": "memory.buffer_overflow",
+      "signal_field": "call_sites",
+      "file": "p1_safequery_wrapper.c",
+      "line": 49,
+      "column": 0,
+      "caller": "lookup_user_unsafe",
+      "kind": "sprintf",
+      "arguments": [
+        "query",
+        "\"SELECT * FROM users WHERE name = '%s'\"",
+        "username"
+      ]
+    },
+    {
+      "rule_id": "semantics.api",
+      "signal_field": "call_sites",
+      "file": "p1_safequery_wrapper.c",
+      "line": 49,
+      "column": 0,
+      "caller": "lookup_user_unsafe",
+      "kind": "sprintf",
+      "arguments": [
+        "query",
+        "\"SELECT * FROM users WHERE name = '%s'\"",
+        "username"
+      ]
+    },
+    {
+      "rule_id": "memory.integer",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 42,
+      "column": 0,
+      "caller": "parse_packet",
+      "kind": "malloc",
+      "arguments": [
+        "sizeof(NetworkPacket)"
+      ]
+    },
+    {
+      "rule_id": "memory.leak",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 42,
+      "column": 0,
+      "caller": "parse_packet",
+      "kind": "malloc",
+      "arguments": [
+        "sizeof(NetworkPacket)"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 42,
+      "column": 0,
+      "caller": "parse_packet",
+      "kind": "malloc",
+      "arguments": [
+        "sizeof(NetworkPacket)"
+      ]
+    },
+    {
+      "rule_id": "memory.must",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 42,
+      "column": 0,
+      "caller": "parse_packet",
+      "kind": "malloc",
+      "arguments": [
+        "sizeof(NetworkPacket)"
+      ]
+    },
+    {
+      "rule_id": "memory.null",
+      "signal_field": "call_sites",
+      "file": "network.c",
+      "line": 42,
+      "column": 0,
+      "caller": "parse_packet",
+      "kind": "malloc",
+      "arguments": [
+        "sizeof(NetworkPacket)"
+      ]
+    },
+    {
+      "rule_id": "memory.buffer_overflow",
+      "signal_field": "call_sites",
+      "file": "parser.c",
+      "line": 31,
+      "column": 0,
+      "caller": "format_task_desc",
+      "kind": "sprintf",
+      "arguments": [
+        "task->command",
+        "\"Task[%s]: %s\"",
+        "task->name",
+        "description"
+      ]
+    },
+    {
+      "rule_id": "semantics.api",
+      "signal_field": "call_sites",
+      "file": "parser.c",
+      "line": 31,
+      "column": 0,
+      "caller": "format_task_desc",
+      "kind": "sprintf",
+      "arguments": [
+        "task->command",
+        "\"Task[%s]: %s\"",
+        "task->name",
+        "description"
+      ]
+    },
+    {
+      "rule_id": "memory.buffer_overflow",
+      "signal_field": "call_sites",
+      "file": "parser.c",
+      "line": 20,
+      "column": 0,
+      "caller": "parse_task_name",
+      "kind": "strcpy",
+      "arguments": [
+        "task->name",
+        "input"
+      ]
+    },
+    {
+      "rule_id": "semantics.api",
+      "signal_field": "call_sites",
+      "file": "parser.c",
+      "line": 20,
+      "column": 0,
+      "caller": "parse_task_name",
+      "kind": "strcpy",
+      "arguments": [
+        "task->name",
+        "input"
+      ]
+    },
+    {
+      "rule_id": "memory.integer",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 10,
+      "column": 0,
+      "caller": "heap_overflow_example",
+      "kind": "malloc",
+      "arguments": [
+        "user_len"
+      ]
+    },
+    {
+      "rule_id": "memory.leak",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 10,
+      "column": 0,
+      "caller": "heap_overflow_example",
+      "kind": "malloc",
+      "arguments": [
+        "user_len"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 10,
+      "column": 0,
+      "caller": "heap_overflow_example",
+      "kind": "malloc",
+      "arguments": [
+        "user_len"
+      ]
+    },
+    {
+      "rule_id": "memory.must",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 10,
+      "column": 0,
+      "caller": "heap_overflow_example",
+      "kind": "malloc",
+      "arguments": [
+        "user_len"
+      ]
+    },
+    {
+      "rule_id": "memory.null",
+      "signal_field": "call_sites",
+      "file": "memory_extra.c",
+      "line": 10,
+      "column": 0,
+      "caller": "heap_overflow_example",
+      "kind": "malloc",
+      "arguments": [
+        "user_len"
+      ]
+    },
+    {
+      "rule_id": "memory.integer",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 95,
+      "column": 0,
+      "caller": "alloc_user_buffer",
+      "kind": "malloc",
+      "arguments": [
+        "user_size"
+      ]
+    },
+    {
+      "rule_id": "memory.leak",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 95,
+      "column": 0,
+      "caller": "alloc_user_buffer",
+      "kind": "malloc",
+      "arguments": [
+        "user_size"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 95,
+      "column": 0,
+      "caller": "alloc_user_buffer",
+      "kind": "malloc",
+      "arguments": [
+        "user_size"
+      ]
+    },
+    {
+      "rule_id": "memory.must",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 95,
+      "column": 0,
+      "caller": "alloc_user_buffer",
+      "kind": "malloc",
+      "arguments": [
+        "user_size"
+      ]
+    },
+    {
+      "rule_id": "memory.null",
+      "signal_field": "call_sites",
+      "file": "allocator.c",
+      "line": 95,
+      "column": 0,
+      "caller": "alloc_user_buffer",
+      "kind": "malloc",
+      "arguments": [
+        "user_size"
+      ]
+    },
+    {
+      "rule_id": "memory.integer",
+      "signal_field": "call_sites",
+      "file": "parser.c",
+      "line": 102,
+      "column": 0,
+      "caller": "process_large_request",
+      "kind": "malloc",
+      "arguments": [
+        "user_size"
+      ]
+    },
+    {
+      "rule_id": "memory.leak",
+      "signal_field": "call_sites",
+      "file": "parser.c",
+      "line": 102,
+      "column": 0,
+      "caller": "process_large_request",
+      "kind": "malloc",
+      "arguments": [
+        "user_size"
+      ]
+    },
+    {
+      "rule_id": "memory.mismatched_free",
+      "signal_field": "call_sites",
+      "file": "parser.c",
+      "line": 102,
+      "column": 0,
+      "caller": "process_large_request",
+      "kind": "malloc",
+      "arguments": [
+        "user_size"
+      ]
+    },
+    {
+      "rule_id": "memory.must",
+      "signal_field": "call_sites",
+      "file": "parser.c",
+      "line": 102,
+      "column": 0,
+      "caller": "process_large_request",
+      "kind": "malloc",
+      "arguments": [
+        "user_size"
+      ]
+    },
+    {
+      "rule_id": "memory.null",
+      "signal_field": "call_sites",
+      "file": "parser.c",
+      "line": 102,
+      "column": 0,
+      "caller": "process_large_request",
+      "kind": "malloc",
+      "arguments": [
+        "user_size"
+      ]
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "allocator.c",
+      "line": 100,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "allocator.c",
+      "line": 99,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "memory.uninitialized",
+      "signal_field": "struct_inits",
+      "file": "allocator.c",
+      "line": 13,
+      "column": 0,
+      "caller": "",
+      "kind": "no_init",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "allocator.c",
+      "line": 24,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "allocator.c",
+      "line": 30,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "allocator.c",
+      "line": 38,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "allocator.c",
+      "line": 51,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "allocator.c",
+      "line": 52,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "allocator.c",
+      "line": 61,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "allocator.c",
+      "line": 62,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "allocator.c",
+      "line": 79,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "memory.uninitialized",
+      "signal_field": "struct_inits",
+      "file": "allocator.c",
+      "line": 20,
+      "column": 0,
+      "caller": "",
+      "kind": "partial_init",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "concurrency.c",
+      "line": 111,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "concurrency.c",
+      "line": 112,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "concurrency.c",
+      "line": 113,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "concurrency.c",
+      "line": 114,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "concurrency.c",
+      "line": 115,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "concurrency.c",
+      "line": 116,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "concurrency.c",
+      "line": 26,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "concurrency.c",
+      "line": 79,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "concurrency.c",
+      "line": 98,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "crypto.c",
+      "line": 12,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "crypto.c",
+      "line": 17,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "crypto.c",
+      "line": 18,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "crypto.c",
+      "line": 20,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "crypto.c",
+      "line": 21,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "crypto.c",
+      "line": 54,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "crypto.c",
+      "line": 62,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "crypto.c",
+      "line": 74,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "crypto.c",
+      "line": 81,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "crypto.c",
+      "line": 85,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "crypto.c",
+      "line": 88,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "memory_extra.c",
+      "line": 108,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "memory_extra.c",
+      "line": 113,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "memory_extra.c",
+      "line": 117,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "memory_extra.c",
+      "line": 58,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "memory_extra.c",
+      "line": 69,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "memory_extra.c",
+      "line": 74,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "memory_extra.c",
+      "line": 80,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "memory_extra.c",
+      "line": 95,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "memory_extra.c",
+      "line": 98,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "memory.uninitialized",
+      "signal_field": "struct_inits",
+      "file": "memory_extra.c",
+      "line": 36,
+      "column": 0,
+      "caller": "",
+      "kind": "partial_init",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "network.c",
+      "line": 75,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "memory.uninitialized",
+      "signal_field": "struct_inits",
+      "file": "network.c",
+      "line": 18,
+      "column": 0,
+      "caller": "",
+      "kind": "no_init",
+      "arguments": []
+    },
+    {
+      "rule_id": "memory.uninitialized",
+      "signal_field": "struct_inits",
+      "file": "network.c",
+      "line": 23,
+      "column": 0,
+      "caller": "",
+      "kind": "no_init",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "network.c",
+      "line": 45,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "network.c",
+      "line": 52,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "network.c",
+      "line": 55,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "network.c",
+      "line": 56,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "network.c",
+      "line": 62,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "network.c",
+      "line": 76,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "network.c",
+      "line": 85,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "network.c",
+      "line": 99,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "memory.uninitialized",
+      "signal_field": "struct_inits",
+      "file": "network.c",
+      "line": 42,
+      "column": 0,
+      "caller": "",
+      "kind": "partial_init",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "p0_safe_functions.c",
+      "line": 11,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "p0_safe_functions.c",
+      "line": 22,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "p0_safe_functions.c",
+      "line": 26,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "p0_safe_functions.c",
+      "line": 33,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "p0_safe_functions.c",
+      "line": 37,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "p0_safe_functions.c",
+      "line": 54,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "p0_safe_functions.c",
+      "line": 55,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "p0_safe_functions.c",
+      "line": 60,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "p0_safe_functions.c",
+      "line": 69,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "p0_safe_functions.c",
+      "line": 77,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "p0_safe_functions.c",
+      "line": 86,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "p1_safecopy_wrapper.c",
+      "line": 15,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "p1_safecopy_wrapper.c",
+      "line": 18,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "p1_safecopy_wrapper.c",
+      "line": 26,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "p1_safecopy_wrapper.c",
+      "line": 28,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "p1_safecopy_wrapper.c",
+      "line": 29,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "p1_safequery_wrapper.c",
+      "line": 38,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "p1_safequery_wrapper.c",
+      "line": 49,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "p1_safequery_wrapper.c",
+      "line": 17,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "p1_safequery_wrapper.c",
+      "line": 18,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "p1_safequery_wrapper.c",
+      "line": 23,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "p1_safequery_wrapper.c",
+      "line": 27,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "p1_safequery_wrapper.c",
+      "line": 31,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "p2_lock_guard.c",
+      "line": 20,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "p2_raii_memory.c",
+      "line": 18,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "p2_raii_memory.c",
+      "line": 25,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "p2_raii_memory.c",
+      "line": 27,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "p2_raii_memory.c",
+      "line": 46,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "p2_raii_memory.c",
+      "line": 50,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "memory.uninitialized",
+      "signal_field": "struct_inits",
+      "file": "p2_raii_memory.c",
+      "line": 15,
+      "column": 0,
+      "caller": "",
+      "kind": "partial_init",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "p3_edge_case.c",
+      "line": 16,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "p3_edge_case.c",
+      "line": 27,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "p3_edge_case.c",
+      "line": 69,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "p3_edge_case.c",
+      "line": 75,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "p3_edge_case.c",
+      "line": 76,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "memory.uninitialized",
+      "signal_field": "struct_inits",
+      "file": "p3_edge_case.c",
+      "line": 67,
+      "column": 0,
+      "caller": "",
+      "kind": "partial_init",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "parser.c",
+      "line": 31,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "parser.c",
+      "line": 41,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "parser.c",
+      "line": 52,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "parser.c",
+      "line": 63,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "parser.c",
+      "line": 69,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "parser.c",
+      "line": 93,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "parser.c",
+      "line": 94,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "memory.uninitialized",
+      "signal_field": "struct_inits",
+      "file": "parser.c",
+      "line": 56,
+      "column": 0,
+      "caller": "",
+      "kind": "no_init",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "parser.c",
+      "line": 20,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "parser.c",
+      "line": 31,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "validation.input",
+      "signal_field": "pointer_validations",
+      "file": "parser.c",
+      "line": 33,
+      "column": 0,
+      "caller": "",
+      "kind": "param_check",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "system.c",
+      "line": 102,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "system.c",
+      "line": 104,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "system.c",
+      "line": 116,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "system.c",
+      "line": 121,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "system.c",
+      "line": 127,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "system.c",
+      "line": 133,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "system.c",
+      "line": 137,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "system.c",
+      "line": 14,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "system.c",
+      "line": 141,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "system.c",
+      "line": 142,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "system.c",
+      "line": 20,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "system.c",
+      "line": 22,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "system.c",
+      "line": 30,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "system.c",
+      "line": 57,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "system.c",
+      "line": 67,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "system.c",
+      "line": 71,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "system.c",
+      "line": 73,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "system.c",
+      "line": 80,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "system.c",
+      "line": 83,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "system.c",
+      "line": 93,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "system.c",
+      "line": 95,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "windows.c",
+      "line": 10,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "windows.c",
+      "line": 66,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "windows.c",
+      "line": 69,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "windows.c",
+      "line": 70,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "windows.c",
+      "line": 87,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "windows.c",
+      "line": 88,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    },
+    {
+      "rule_id": "cpp.crypto.hardcoded_secrets",
+      "signal_field": "string_literals",
+      "file": "windows.c",
+      "line": 89,
+      "column": 0,
+      "caller": "",
+      "kind": "",
+      "arguments": []
+    }
+  ]
+}
