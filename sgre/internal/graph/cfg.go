@@ -1,7 +1,7 @@
 package graph
 
 import (
-	"github.com/kongan/secguard-lite/internal/parser"
+	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
 type Scope struct {

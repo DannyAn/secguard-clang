@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 
-	"github.com/kongan/secguard-lite/internal/cli"
+	"github.com/DannyAn/secguard-clang/internal/cli"
 )
 
 func main() {

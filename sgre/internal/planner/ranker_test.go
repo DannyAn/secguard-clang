@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/kongan/secguard-lite/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/db"
 )
 
 func TestSeverityValue(t *testing.T) {

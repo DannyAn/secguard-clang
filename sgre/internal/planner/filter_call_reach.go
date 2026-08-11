@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/kongan/secguard-lite/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/db"
 )
 
 type CallReachFilter struct {

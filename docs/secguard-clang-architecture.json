@@ -1,0 +1,176 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "SecGuard-Clang Architecture",
+    "subtitle": "AI-augmented C security analysis: from source code to converged evidence",
+    "output": "secguard-clang-architecture.html",
+    "quality_profile": "showcase",
+    "viewBox": [1540, 620],
+    "repository": {
+      "url": "https://github.com/DannyAn/secguard-clang",
+      "revision": "6d12136d49a67782802d7fdb610eed278b5ddda7"
+    },
+    "views": [
+      {
+        "id": "pipeline",
+        "label": "Analysis pipeline",
+        "focus": ["source", "cli", "indexer", "graph", "detectors", "planner", "agent"],
+        "note": "Follow the main path from C source code to converged evidence packages."
+      },
+      {
+        "id": "storage",
+        "label": "Four storage layers",
+        "focus": ["indexer", "graph", "detectors", "agent", "db"],
+        "note": "Each pipeline stage writes its own stable layer in SQLite."
+      },
+      {
+        "id": "evidence-contract",
+        "label": "Evidence contract",
+        "focus": ["planner", "db", "agent"],
+        "note": "The AI agent sees only converged evidence, never raw candidates."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "source",
+      "type": "external",
+      "label": "C Codebase",
+      "sublabel": "target source tree",
+      "tag": "*.c",
+      "pos": [40, 120],
+      "size": [170, 70]
+    },
+    {
+      "id": "cli",
+      "type": "backend",
+      "label": "secguard CLI",
+      "sublabel": "index · scan · plan · report",
+      "tag": "JSON stdout",
+      "sources": [{ "path": "sgre/internal/cli/root.go" }],
+      "pos": [250, 120],
+      "size": [180, 70]
+    },
+    {
+      "id": "indexer",
+      "type": "backend",
+      "label": "Tree-sitter Indexer",
+      "sublabel": "Layer 1 program facts",
+      "tag": "incremental",
+      "sources": [{ "path": "sgre/internal/indexer/indexer.go" }],
+      "pos": [460, 120],
+      "size": [180, 70]
+    },
+    {
+      "id": "graph",
+      "type": "backend",
+      "label": "Semantic Graph Builder",
+      "sublabel": "CALL · DATA_FLOW · CFG",
+      "tag": "Layer 2",
+      "sources": [{ "path": "sgre/internal/graph/call_graph.go" }],
+      "pos": [670, 120],
+      "size": [180, 70]
+    },
+    {
+      "id": "detectors",
+      "type": "backend",
+      "label": "Security Detectors",
+      "sublabel": "17 detectors",
+      "tag": "Layer 3",
+      "sources": [{ "path": "sgre/internal/evidence/registry.go" }],
+      "pos": [880, 120],
+      "size": [180, 70]
+    },
+    {
+      "id": "planner",
+      "type": "backend",
+      "label": "Convergence Planner",
+      "sublabel": "~600 → ~10 evidence packages",
+      "tag": "4-level filters",
+      "sources": [{ "path": "sgre/internal/planner/planner.go" }],
+      "pos": [1090, 120],
+      "size": [180, 76]
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "SQLite sgre.db",
+      "sublabel": "4-layer semantic store",
+      "tag": "pure-Go",
+      "sources": [{ "path": "sgre/internal/db/schema.go" }],
+      "pos": [950, 330],
+      "size": [200, 80]
+    },
+    {
+      "id": "report",
+      "type": "backend",
+      "label": "Report Writer",
+      "sublabel": "SARIF 2.1 · markdown",
+      "tag": "scan output",
+      "sources": [{ "path": "sgre/internal/report/protocol.go" }],
+      "pos": [700, 330],
+      "size": [170, 70]
+    },
+    {
+      "id": "agent",
+      "type": "external",
+      "label": "AI Agent",
+      "sublabel": "security-auditor",
+      "tag": "converged evidence only",
+      "sources": [{ "path": "extension/shared/agent-body.md" }],
+      "pos": [1300, 120],
+      "size": [190, 70]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "SecGuard core (sgre/)",
+      "wraps": ["cli", "indexer", "graph", "detectors", "planner", "db", "report"]
+    },
+    {
+      "kind": "security-group",
+      "label": "Evidence contract",
+      "wraps": ["planner", "db", "agent"]
+    }
+  ],
+  "connections": [
+    { "id": "source-to-cli", "from": "source", "to": "cli", "label": "target code", "labelDy": 62 },
+    { "id": "cli-to-indexer", "from": "cli", "to": "indexer", "label": "index", "labelDy": 62 },
+    { "id": "indexer-to-graph", "from": "indexer", "to": "graph", "label": "Layer 1 facts", "labelDy": 62 },
+    { "id": "graph-to-detectors", "from": "graph", "to": "detectors", "label": "semantic graph", "labelDy": 62 },
+    { "id": "detectors-to-planner", "from": "detectors", "to": "planner", "label": "security events", "labelDy": 62 },
+    { "id": "planner-to-agent", "from": "planner", "to": "agent", "label": "evidence packages", "variant": "security", "labelDy": 62 },
+    { "id": "db-to-report", "from": "db", "to": "report", "label": "read" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Pipeline",
+      "items": [
+        "Tree-sitter writes Layer 1 program facts",
+        "Semantic graph adds CALL and DATA_FLOW edges",
+        "17 detectors emit ~600 security events"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Convergence",
+      "items": [
+        "4-level filter chain shrinks ~600 to ~10",
+        "Quality-ranked cap at 30 candidates",
+        "AI agent receives evidence packages, never raw candidates"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Storage",
+      "items": [
+        "Layers: facts → graph → events → findings",
+        "Pure-Go modernc.org/sqlite, no CGo",
+        "Findings are written only by the AI agent"
+      ]
+    }
+  ]
+}

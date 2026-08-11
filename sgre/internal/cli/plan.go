@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/kongan/secguard-lite/internal/parser"
-	"github.com/kongan/secguard-lite/internal/planner"
-	"github.com/kongan/secguard-lite/internal/report"
+	"github.com/DannyAn/secguard-clang/internal/parser"
+	"github.com/DannyAn/secguard-clang/internal/planner"
+	"github.com/DannyAn/secguard-clang/internal/report"
 )
 
 func runPlanCmd(ctx context.Context, args []string) int {

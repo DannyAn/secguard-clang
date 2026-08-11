@@ -6,10 +6,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/kongan/secguard-lite/internal/evidence"
-	"github.com/kongan/secguard-lite/internal/graph"
-	"github.com/kongan/secguard-lite/internal/indexer"
-	"github.com/kongan/secguard-lite/internal/parser"
+	"github.com/DannyAn/secguard-clang/internal/evidence"
+	"github.com/DannyAn/secguard-clang/internal/graph"
+	"github.com/DannyAn/secguard-clang/internal/indexer"
+	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
 func runIndexCmd(ctx context.Context, args []string) int {

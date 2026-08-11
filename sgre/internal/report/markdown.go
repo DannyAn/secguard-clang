@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/kongan/secguard-lite/internal/planner"
+	"github.com/DannyAn/secguard-clang/internal/planner"
 )
 
 func (o *ScanOutput) writeReport(packages []*planner.PlanResult, indexSummary IndexSummary) error {

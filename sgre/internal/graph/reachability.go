@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/kongan/secguard-lite/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/db"
 )
 
 func IsReachable(ctx context.Context, store db.Store, entryNodeID, targetNodeID int64, edgeType string) (bool, error) {

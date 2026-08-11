@@ -1,4 +1,4 @@
-# SecGuard-Lite
+# SecGuard-Clang
 
 AI-Augmented Program Security Analysis Platform — solves the Candidate Explosion problem by transforming C code into a queryable program semantic graph (SQLite) and converging ~600 raw candidates to ~10 evidence packages via a 4-level filter pipeline.
 

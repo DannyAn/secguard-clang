@@ -1,9 +1,9 @@
 package skills
 
 import (
-	"github.com/kongan/secguard-lite/internal/db"
-	"github.com/kongan/secguard-lite/internal/log"
-	"github.com/kongan/secguard-lite/internal/planner"
+	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/log"
+	"github.com/DannyAn/secguard-clang/internal/planner"
 )
 
 type NullDerefSkill struct {

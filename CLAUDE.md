@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Go Module Location
 
-The Go module lives in **`sgre/`** (module `github.com/kongan/secguard-lite`), not the repo root. The repo root holds the extension/deploy scaffolding and docs. **Run all `go` commands from `sgre/`.** The repo root is not a git repository.
+The Go module lives in **`sgre/`** (module `github.com/DannyAn/secguard-clang`), not the repo root. The repo root holds the extension/deploy scaffolding and docs. **Run all `go` commands from `sgre/`.** The repo root is not a git repository.
 
 ## Build & Test
 
@@ -27,7 +27,7 @@ go test -run TestSecurity ./internal/evidence/   # security test fixtures (needs
 
 ## What This Is
 
-SecGuard-Lite is an AI-augmented C security analyzer. It transforms a C codebase into a queryable semantic graph in SQLite, emits raw security "candidates" from detectors, then runs a **convergence pipeline** to shrink ~600 raw candidates to ~10 high-quality evidence packages that an AI agent classifies. The whole point is solving the *candidate explosion* problem — the AI agent must only ever see converged evidence, never raw candidates.
+SecGuard-Clang is an AI-augmented C security analyzer. It transforms a C codebase into a queryable semantic graph in SQLite, emits raw security "candidates" from detectors, then runs a **convergence pipeline** to shrink ~600 raw candidates to ~10 high-quality evidence packages that an AI agent classifies. The whole point is solving the *candidate explosion* problem — the AI agent must only ever see converged evidence, never raw candidates.
 
 ```
 Source Code → Tree-sitter Indexer → Semantic Graph Builder → Security Event Detectors

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/kongan/secguard-lite/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/db"
 )
 
 func TestEndToEnd_FullWorkflow(t *testing.T) {

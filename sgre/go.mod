@@ -1,4 +1,4 @@
-module github.com/kongan/secguard-lite
+module github.com/DannyAn/secguard-clang
 
 go 1.25.0
 

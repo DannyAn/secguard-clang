@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"sort"
 
-	"github.com/kongan/secguard-lite/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/db"
 )
 
 var criticalAPIs = map[string]bool{

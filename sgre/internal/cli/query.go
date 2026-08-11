@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/kongan/secguard-lite/internal/skills"
+	"github.com/DannyAn/secguard-clang/internal/skills"
 )
 
 func runQueryCmd(ctx context.Context, args []string) int {

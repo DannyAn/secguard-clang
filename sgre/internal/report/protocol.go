@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/kongan/secguard-lite/internal/planner"
+	"github.com/DannyAn/secguard-clang/internal/planner"
 )
 
 const (

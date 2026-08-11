@@ -6,12 +6,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/kongan/secguard-lite/internal/db"
-	"github.com/kongan/secguard-lite/internal/graph"
-	"github.com/kongan/secguard-lite/internal/indexer"
-	"github.com/kongan/secguard-lite/internal/log"
-	"github.com/kongan/secguard-lite/internal/parser"
-	"github.com/kongan/secguard-lite/internal/planner"
+	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
+	"github.com/DannyAn/secguard-clang/internal/indexer"
+	"github.com/DannyAn/secguard-clang/internal/log"
+	"github.com/DannyAn/secguard-clang/internal/parser"
+	"github.com/DannyAn/secguard-clang/internal/planner"
 )
 
 func fixturePath(name string) string {

@@ -7,7 +7,7 @@
 | 创建日期 | 2026-08-11 |
 | 状态 | 草案（待评审） |
 | 关联需求规格 | `docs/spec-build-packages.md` v1.2 |
-| 关联项目 | secguard-lite（Go module `github.com/kongan/secguard-lite`，位于 `sgre/`） |
+| 关联项目 | secguard-lite（Go module `github.com/DannyAn/secguard-clang`，位于 `sgre/`） |
 | 作者 | spec-design-agent |
 
 ---

@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/kongan/secguard-lite/internal/db"
-	"github.com/kongan/secguard-lite/internal/log"
-	"github.com/kongan/secguard-lite/internal/parser"
+	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/log"
+	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
 type Indexer struct {
