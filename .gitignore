@@ -1,0 +1,22 @@
+.arts/
+.claude/
+.opencode/
+.codeartsdoer/
+.remember/
+bin/
+extension/dist/
+lib/
+obj/
+dist/
+out/
+package-lock.json
+packages.lock.json
+yarn.lock
+
+# Go build artifacts
+sgre/secguard
+sgre/.gocache/
+sgre/.gotmp/
+sgre/.tmpdir/
+*.db
+*.sarif
