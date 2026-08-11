@@ -1,0 +1,213 @@
+package db
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+)
+
+const SchemaDDL = `
+-- Pragmas
+PRAGMA foreign_keys = ON;
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+
+-- ============================================================
+-- Layer 1: Program Facts (most stable, vulnerability-agnostic)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS files (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    path        TEXT NOT NULL UNIQUE,
+    language    TEXT DEFAULT 'c',
+    checksum    TEXT,
+    loc         INTEGER,
+    created_at  INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS functions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id      INTEGER NOT NULL,
+    name         TEXT,
+    signature    TEXT,
+    return_type  TEXT,
+    is_static    BOOLEAN,
+    start_line   INTEGER,
+    end_line     INTEGER,
+    FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS variables (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    function_id      INTEGER,
+    name             TEXT,
+    type             TEXT,
+    storage_class    TEXT DEFAULT 'auto' CHECK (storage_class IN ('auto', 'static', 'register', 'heap')),
+    declaration_line INTEGER,
+    is_pointer       BOOLEAN,
+    is_nullable      BOOLEAN,
+    source_kind      TEXT,
+    FOREIGN KEY(function_id) REFERENCES functions(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS expressions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    function_id  INTEGER,
+    text         TEXT,
+    line         INTEGER,
+    expr_type    TEXT,
+    FOREIGN KEY(function_id) REFERENCES functions(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS types (
+    id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    name  TEXT NOT NULL,
+    kind  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS locations (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id  INTEGER NOT NULL,
+    line     INTEGER,
+    column   INTEGER,
+    FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+);
+
+-- ============================================================
+-- Layer 2: Semantic Graph (unified graph model)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS graph_nodes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL,
+    entity_id   INTEGER NOT NULL,
+    properties  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS graph_edges (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    src_id      INTEGER NOT NULL,
+    dst_id      INTEGER NOT NULL,
+    edge_type   TEXT NOT NULL CHECK (edge_type IN (
+        'CALL', 'DATA_FLOW', 'OWNERSHIP_TRANSFER', 'RELEASE', 'BRANCH', 'ALIAS'
+    )),
+    properties  TEXT,
+    FOREIGN KEY(src_id) REFERENCES graph_nodes(id) ON DELETE CASCADE,
+    FOREIGN KEY(dst_id) REFERENCES graph_nodes(id) ON DELETE CASCADE
+);
+
+-- ============================================================
+-- Layer 3: Security Evidence (unified event model)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS security_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type  TEXT NOT NULL CHECK (event_type IN (
+        'NULL_VALUE', 'DEREFERENCE', 'NULL_GUARD',
+        'MEMORY_ALLOC', 'MEMORY_RELEASE',
+        'RESOURCE_ACQUIRE', 'RESOURCE_RELEASE',
+        'VARIABLE_DECLARE', 'VALUE_USE', 'VALUE_INIT',
+        'BUFFER_ACCESS', 'INTEGER_OP', 'INJECTION',
+        'USE_AFTER_FREE', 'DOUBLE_FREE', 'FORMAT_STRING',
+        'INTEGER_OVERFLOW', 'RACE_CONDITION', 'HARDCODED_SECRET',
+        'DEADLOCK', 'CRYPTO_MISUSE'
+    )),
+    entity_id   INTEGER,
+    location_id INTEGER,
+    properties  TEXT,
+    FOREIGN KEY(location_id) REFERENCES locations(id) ON DELETE SET NULL
+);
+
+-- ============================================================
+-- Layer 4: Findings (AI Agent output, most variable)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS findings (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_id       TEXT NOT NULL,
+    severity      TEXT CHECK (severity IN ('critical', 'high', 'medium', 'low', 'info')),
+    confidence    REAL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    evidence      TEXT,
+    status        TEXT DEFAULT 'open' CHECK (status IN ('open', 'confirmed', 'suspected', 'dismissed')),
+    file_path     TEXT,
+    line_number   INTEGER,
+    function_name TEXT,
+    properties    TEXT,
+    scan_id       TEXT,
+    created_at    INTEGER
+);
+
+-- ============================================================
+-- Scan Stats (pipeline statistics per scan per vulnerability type)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS scan_stats (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id       TEXT NOT NULL,
+    vuln_type     TEXT NOT NULL,
+    seed_count    INTEGER NOT NULL,
+    final_count   INTEGER NOT NULL,
+    filter_chain  TEXT,
+    created_at    INTEGER
+);
+
+-- ============================================================
+-- Function Summary (AI Agent key input)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS function_summary (
+    function_id        INTEGER PRIMARY KEY,
+    return_nullable    BOOLEAN,
+    parameter_nullable TEXT,
+    side_effect        TEXT,
+    summary_json       TEXT,
+    FOREIGN KEY(function_id) REFERENCES functions(id) ON DELETE CASCADE
+);
+
+-- ============================================================
+-- Performance Indexes
+-- ============================================================
+
+CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
+CREATE INDEX IF NOT EXISTS idx_files_checksum ON files(checksum);
+
+CREATE INDEX IF NOT EXISTS idx_functions_file_id ON functions(file_id);
+CREATE INDEX IF NOT EXISTS idx_functions_name ON functions(name);
+
+CREATE INDEX IF NOT EXISTS idx_variables_function_id ON variables(function_id);
+CREATE INDEX IF NOT EXISTS idx_variables_is_pointer ON variables(is_pointer);
+CREATE INDEX IF NOT EXISTS idx_variables_storage_class ON variables(storage_class);
+
+CREATE INDEX IF NOT EXISTS idx_expressions_function_id ON expressions(function_id);
+
+CREATE INDEX IF NOT EXISTS idx_locations_file_id ON locations(file_id);
+
+CREATE INDEX IF NOT EXISTS idx_graph_nodes_entity ON graph_nodes(entity_type, entity_id);
+
+CREATE INDEX IF NOT EXISTS idx_graph_edges_src ON graph_edges(src_id);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_dst ON graph_edges(dst_id);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_type ON graph_edges(edge_type);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_src_type ON graph_edges(src_id, edge_type);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_dst_type ON graph_edges(dst_id, edge_type);
+
+CREATE INDEX IF NOT EXISTS idx_security_events_type ON security_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_security_events_entity ON security_events(entity_id);
+CREATE INDEX IF NOT EXISTS idx_security_events_location ON security_events(location_id);
+CREATE INDEX IF NOT EXISTS idx_security_events_type_entity ON security_events(event_type, entity_id);
+
+CREATE INDEX IF NOT EXISTS idx_findings_rule_id ON findings(rule_id);
+CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status);
+CREATE INDEX IF NOT EXISTS idx_findings_severity ON findings(severity);
+CREATE INDEX IF NOT EXISTS idx_findings_file ON findings(file_path);
+CREATE INDEX IF NOT EXISTS idx_findings_scan_id ON findings(scan_id);
+
+CREATE INDEX IF NOT EXISTS idx_scan_stats_scan_id ON scan_stats(scan_id);
+CREATE INDEX IF NOT EXISTS idx_scan_stats_vuln_type ON scan_stats(vuln_type);
+`
+
+func InitSchema(ctx context.Context, db *sql.DB) error {
+	if _, err := db.ExecContext(ctx, SchemaDDL); err != nil {
+		return fmt.Errorf("db: init schema: exec ddl: %w", err)
+	}
+	return nil
+}
