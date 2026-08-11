@@ -1,0 +1,12 @@
+{
+  "name": "zhuque-secguard",
+  "displayName": "Zhuque SecGuard",
+  "description": "AI-augmented C program security analysis platform with 4-level convergence pipeline",
+  "version": "0.1.0",
+  "author": {
+    "name": "Zhuque Security",
+    "url": "https://github.com/kongan/secguard-lite"
+  },
+  "license": "Proprietary",
+  "keywords": ["security", "static-analysis", "c-language", "vulnerability-detection"]
+}

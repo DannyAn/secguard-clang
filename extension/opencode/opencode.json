@@ -1,0 +1,35 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "security-auditor": {
+      "mode": "subagent",
+
+      "temperature": 0.1,
+      "steps": 30,
+      "permission": {
+        "edit": "deny",
+        "bash": "deny",
+        "read": "allow",
+        "grep": "allow",
+        "glob": "allow",
+        "skill": "allow",
+        "secguard_scan": "allow",
+        "secguard_index": "allow",
+        "secguard_plan": "allow",
+        "secguard_report": "allow",
+        "secguard_status": "allow",
+        "secguard_db": "allow"
+      }
+    }
+  },
+  "permission": {
+    "external_directory": "allow",
+    "secguard_scan": "allow",
+    "secguard_index": "allow",
+    "secguard_plan": "allow",
+    "secguard_report": "allow",
+    "secguard_status": "allow",
+    "secguard_db": "allow"
+  },
+  "plugin": ["secguard-context"]
+}
