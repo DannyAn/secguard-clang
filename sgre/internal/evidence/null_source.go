@@ -1,0 +1,250 @@
+package evidence
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/kongan/secguard-lite/internal/db"
+	"github.com/kongan/secguard-lite/internal/log"
+	"github.com/kongan/secguard-lite/internal/parser"
+)
+
+type NullSourceDetector struct {
+	store  db.Store
+	parser *parser.Parser
+	logger *log.Logger
+}
+
+func NewNullSourceDetector(store db.Store, p *parser.Parser, logger *log.Logger) *NullSourceDetector {
+	return &NullSourceDetector{store: store, parser: p, logger: logger}
+}
+
+func (d *NullSourceDetector) Name() string { return "null_source" }
+
+func (d *NullSourceDetector) Detect(ctx context.Context) (DetectResult, error) {
+	result := DetectResult{}
+
+	funcs, err := d.store.ListFunctions(ctx)
+	if err != nil {
+		return result, fmt.Errorf("null source: list functions: %w", err)
+	}
+
+	for _, f := range funcs {
+		file, _ := d.store.GetFileByID(ctx, f.FileID)
+		if file == nil {
+			continue
+		}
+		source, err := os.ReadFile(file.Path)
+		if err != nil {
+			continue
+		}
+		tree, err := d.parser.Parse(source, file.Path)
+		if err != nil {
+			continue
+		}
+
+		d.detectReturnNull(ctx, f, file, tree.RootNode(), &result)
+		d.detectMallocResult(ctx, f, file, tree.RootNode(), &result)
+		d.detectExternalCall(ctx, f, file, tree.RootNode(), &result)
+
+		tree.Close()
+	}
+
+	return result, nil
+}
+
+func (d *NullSourceDetector) detectReturnNull(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {
+	returns := root.FindAll("return_statement")
+	for _, ret := range returns {
+		if ret.StartLine() < f.StartLine || ret.StartLine() > f.EndLine {
+			continue
+		}
+		text := ret.Text()
+		if strings.Contains(text, "NULL") || (strings.Contains(text, "return") && strings.Contains(text, " 0")) {
+			locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: ret.StartLine(), Column: ret.StartColumn()})
+			props, _ := json.Marshal(map[string]string{"variable": "<return>", "origin": "return"})
+			_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
+				EventType:  "NULL_VALUE",
+				EntityID:   f.ID,
+				LocationID: locID,
+				Properties: string(props),
+			})
+			if err == nil {
+				result.EventsCreated++
+				d.store.UpdateReturnNullable(ctx, f.ID, true)
+			}
+		}
+	}
+}
+
+func (d *NullSourceDetector) detectMallocResult(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {
+	allocators := []string{"malloc", "calloc", "realloc"}
+
+	checkNode := func(node parser.Node) {
+		text := node.Text()
+		for _, a := range allocators {
+			if strings.Contains(text, a) {
+				children := node.NamedChildren()
+				if len(children) < 2 {
+					return
+				}
+				lhs := children[0]
+				varName := ""
+				if lhs.Kind() == "identifier" {
+					varName = lhs.Text()
+				} else {
+					for _, child := range lhs.NamedChildren() {
+						if child.Kind() == "identifier" {
+							varName = child.Text()
+							break
+						}
+					}
+				}
+				if varName != "" {
+					locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: node.StartLine()})
+					props, _ := json.Marshal(map[string]string{"variable": varName, "origin": a})
+					_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
+						EventType:  "NULL_VALUE",
+						EntityID:   f.ID,
+						LocationID: locID,
+						Properties: string(props),
+					})
+					if err == nil {
+						result.EventsCreated++
+					}
+				}
+				return
+			}
+		}
+	}
+
+	for _, assign := range root.FindAll("assignment_expression") {
+		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+			continue
+		}
+		checkNode(assign)
+	}
+
+	for _, init := range root.FindAll("init_declarator") {
+		if init.StartLine() < f.StartLine || init.StartLine() > f.EndLine {
+			continue
+		}
+		checkNode(init)
+	}
+}
+
+func (d *NullSourceDetector) detectExternalCall(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {
+	knownFuncs := d.getKnownFunctionNames(ctx)
+	nullableFuncs := d.getNullableReturnFunctions(ctx)
+
+	checkNode := func(node parser.Node) {
+		children := node.NamedChildren()
+		if len(children) < 2 {
+			return
+		}
+		lhs := children[0]
+		rhs := children[1]
+		varName := ""
+		if lhs.Kind() == "identifier" {
+			varName = lhs.Text()
+		} else {
+			for _, child := range lhs.NamedChildren() {
+				if child.Kind() == "identifier" {
+					varName = child.Text()
+					break
+				}
+			}
+		}
+		if varName == "" {
+			return
+		}
+		callExpr := rhs
+		if rhs.Kind() == "cast_expression" {
+			for _, child := range rhs.NamedChildren() {
+				if child.Kind() == "call_expression" {
+					callExpr = child
+					break
+				}
+			}
+		}
+		if callExpr.Kind() != "call_expression" {
+			return
+		}
+		callName := extractCallName(callExpr)
+		if callName == "" || isAllocator(callName) {
+			return
+		}
+		if knownFuncs[callName] && !nullableFuncs[callName] {
+			return
+		}
+		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: node.StartLine()})
+		props, _ := json.Marshal(map[string]string{"variable": varName, "origin": "external_call", "function": callName})
+		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
+			EventType:  "NULL_VALUE",
+			EntityID:   f.ID,
+			LocationID: locID,
+			Properties: string(props),
+		})
+		if err == nil {
+			result.EventsCreated++
+		}
+	}
+
+	for _, assign := range root.FindAll("assignment_expression") {
+		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+			continue
+		}
+		checkNode(assign)
+	}
+
+	for _, init := range root.FindAll("init_declarator") {
+		if init.StartLine() < f.StartLine || init.StartLine() > f.EndLine {
+			continue
+		}
+		checkNode(init)
+	}
+}
+
+func (d *NullSourceDetector) getKnownFunctionNames(ctx context.Context) map[string]bool {
+	funcs, _ := d.store.ListFunctions(ctx)
+	m := make(map[string]bool, len(funcs))
+	for _, f := range funcs {
+		m[f.Name] = true
+	}
+	return m
+}
+
+func (d *NullSourceDetector) getNullableReturnFunctions(ctx context.Context) map[string]bool {
+	funcs, _ := d.store.ListFunctions(ctx)
+	m := make(map[string]bool)
+	for _, f := range funcs {
+		sum, err := d.store.GetSummaryByFunction(ctx, f.ID)
+		if err != nil || sum == nil {
+			continue
+		}
+		if sum.ReturnNullable {
+			m[f.Name] = true
+		}
+	}
+	return m
+}
+
+func isAllocator(name string) bool {
+	switch name {
+	case "malloc", "calloc", "realloc", "free":
+		return true
+	}
+	return false
+}
+
+func extractCallName(node parser.Node) string {
+	for _, child := range node.NamedChildren() {
+		if child.Kind() == "identifier" {
+			return child.Text()
+		}
+	}
+	return ""
+}
