@@ -1,0 +1,143 @@
+# SecGuard Output Protocol
+
+## Overview
+
+SecGuard scan results are written to a structured directory under `.codeagent/zhuque-secguard/`. Each scan produces a uniquely-identified directory containing SARIF 2.1 output, a human-readable Markdown report, and per-finding Markdown files organized by vulnerability type. The SQLite database is stored at `.codeagent/zhuque-secguard/.sgre/sgre.db` (sibling of `scans/`).
+
+## Directory Structure
+
+```
+<project-root>/
+├── .codeagent/
+│   └── zhuque-secguard/
+│       ├── .sgre/
+│       │   └── sgre.db                 # SQLite database (program graph + findings)
+│       └── scans/
+│           ├── latest -> 2026-08-11_143022_a1b2   # symlink to most recent scan
+│           ├── latest.txt                          # fallback on symlink-unsupported FS
+│           ├── 2026-08-09_202844_a3f2/             # historical scan (preserved)
+│           │   ├── sarif.sarif         # SARIF 2.1 (machine-readable)
+│           │   ├── report.md           # Human-readable summary
+│           │   ├── scan.log            # NDJSON runtime log for this scan
+│           │   ├── buffer-overflow/
+│           │   │   ├── 001_allocator_c_31.md
+│           │   │   ├── 002_parser_c_87.md
+│           │   │   └── ...
+│           │   ├── null-deref/
+│           │   │   └── 001_main_c_42.md
+│           │   ├── use-after-free/
+│           │   ├── double-free/
+│           │   ├── memory-leak/
+│           │   ├── injection/
+│           │   ├── resource-leak/
+│           │   ├── uninit/
+│           │   └── format-string/
+│           └── 2026-08-11_143022_a1b2/             # most recent scan
+│               ├── sarif.sarif
+│               ├── report.md
+│               ├── scan.log
+│               └── ...
+```
+
+## Scan ID Format
+
+The scan ID is a timestamp plus a 4-character cryptographically random hexadecimal suffix: `YYYY-MM-DD_HHMMSS_<4-hex>` (e.g., `2026-08-09_202844_a3f2`). The timestamp prefix preserves human-readability (when the scan ran) and lexicographic sortability (scans sort chronologically by directory name). The 4-char hex suffix provides 65,536 possible values per second, making same-second collisions negligible. Generated using `crypto/rand` (Go) or `crypto.randomBytes` (TypeScript/Node).
+
+## Scan Artifact Retention
+
+All scan directories under `scans/` are preserved indefinitely across scan rounds. Running a new scan does NOT delete, overwrite, or modify any files in previously-created `scans/<scan_id>/` directories. There is no automatic rotation or cleanup policy; cleanup is the user's responsibility (out of scope for this feature).
+
+The `security_events` SQLite table is a transient detector working table, cleared via `DELETE FROM security_events` at the start of each scan round. This DB clear does NOT affect filesystem scan artifacts or per-scan log files. The `findings` and `scan_stats` tables accumulate across scans, tagged by `scan_id`.
+
+## Latest Symlink
+
+After each scan completes and all artifacts are written, a `latest` symlink is atomically created or updated in `scans/`:
+
+- **Path**: `scans/latest` → `scans/<scan_id>` (most recent completed scan)
+- **Target**: Relative (the scan_id directory name only, e.g., `2026-08-11_143022_a1b2`), so the project root remains relocatable.
+- **Atomic update**: A temp symlink `scans/.latest.tmp.<pid>` is created first, then `rename(2)` atomically replaces `scans/latest`. This ensures no window exists where `latest` is absent or broken, even under concurrent reads.
+- **Fallback**: On filesystems that do not support symbolic links (e.g., Windows without developer mode), a regular file `scans/latest.txt` is created containing the scan_id string. The `latest` symlink and `latest.txt` are mutually exclusive.
+- **Non-fatal**: If the symlink update fails, the scan still succeeds. A warning is emitted to stderr.
+- **Consumer usage**:
+  - POSIX: `cat scans/latest/report.md` or `cat scans/latest/sarif.sarif`
+  - Windows fallback: Read `scans/latest.txt` to get the scan_id, then access `scans/<scan_id>/report.md`
+
+## File Formats
+
+### sarif.sarif
+
+SARIF (Static Analysis Results Interchange Format) 2.1. Contains:
+- `$schema`: `https://json.schemastore.org/sarif-2.1.0.json`
+- `version`: `2.1.0`
+- `runs[0].tool.driver.name`: `SecGuard`
+- `runs[0].results[]`: One entry per finding with `ruleId` (CWE), `level` (error/warning/note), `message.text`, and `locations[]` with artifact URI and region (line/column).
+
+Vulnerability type to CWE mapping:
+| Vuln Type | CWE |
+|-----------|-----|
+| null-deref | CWE-476 |
+| buffer-overflow | CWE-120 |
+| memory-leak | CWE-401 |
+| injection | CWE-78 |
+| resource-leak | CWE-911 |
+| uninit | CWE-457 |
+| use-after-free | CWE-416 |
+| double-free | CWE-415 |
+| format-string | CWE-134 |
+
+### report.md
+
+Human-readable summary with:
+- Header with scan timestamp and target path
+- Summary table: vulnerability type, count, severity breakdown
+- Findings table: # | Type | Severity | Confidence | Location | Variable | Status
+- Path to SARIF file and per-finding directories
+
+### Per-finding Markdown (`<vuln-type>/NNN_<file>_<line>.md`)
+
+Each finding gets its own Markdown file with sections:
+- **Location**: file:line, function name
+- **Evidence**: detector name, rule ID (CWE), confidence score, description
+- **Classification**: status (confirmed/suspected/dismissed), severity
+- **Fix Suggestion**: recommended code fix (if available)
+
+Filename format: `NNN_<filename>_<line>.md` where NNN is a zero-padded sequence number within the vulnerability type directory.
+
+### scan.log
+
+Newline-delimited JSON (NDJSON) runtime log for the scan round. Each line is a structured JSON object emitted by the Go `slog` JSON handler, containing `time`, `level`, `msg`, and any structured key-value pairs. Example:
+
+```json
+{"time":"2026-08-11T14:30:22.123Z","level":"INFO","msg":"indexer starting","path":"/abs/path","files":42}
+{"time":"2026-08-11T14:30:23.456Z","level":"WARN","msg":"memory_leak: CFG construction degenerate","function":"get_ptr"}
+```
+
+The file is created at scan start (truncated if it exists) and closed/flushed before the `latest` symlink is updated, so `scans/latest/scan.log` is always complete when `latest` is resolved. If the log file cannot be created or written, the scan continues with stderr-only logging and emits a warning.
+
+## Database Location
+
+The SQLite database (`sgre.db`) is stored at `.codeagent/zhuque-secguard/.sgre/sgre.db` (sibling of `scans/`). This directory is created automatically by the `secguard_scan` and `secguard_index` tools if it does not exist. The database contains:
+- Program graph tables: `files`, `functions`, `call_graph_edges`, `data_flow_edges`, `global_vars`, `type_aliases`
+- Security event tables: `security_events`, `function_summaries`
+- Findings table: `findings` (written by `secguard_report` tool)
+
+## Tool Integration
+
+| Tool | DB Path | Output Dir |
+|------|---------|------------|
+| `secguard_scan` | `.codeagent/zhuque-secguard/.sgre/sgre.db` (auto-created) | `.codeagent/zhuque-secguard/scans/<scan-id>/` (auto-created) |
+| `secguard_index` | `.codeagent/zhuque-secguard/.sgre/sgre.db` (auto-created) | N/A |
+| `secguard_plan` | `.codeagent/zhuque-secguard/.sgre/sgre.db` | N/A |
+| `secguard_status` | `.codeagent/zhuque-secguard/.sgre/sgre.db` | N/A |
+| `secguard_report` | `.codeagent/zhuque-secguard/.sgre/sgre.db` (auto-created) | N/A |
+| `secguard_db` | `.codeagent/zhuque-secguard/.sgre/sgre.db` (read-only) | N/A |
+
+## Agent Workflow
+
+1. Call `secguard_scan` → returns `output_dir`, `sarif`, `report_md`, `db_path`, `scan_id`
+2. Read `report.md` for human-readable summary (or read `scans/latest/report.md` directly — the `latest` symlink always points to the most recent completed scan, so CI/CD pipelines can use a fixed path without parsing the scan_id)
+3. Read per-finding Markdown files in `<vuln-type>/` subdirectories for detailed evidence
+4. Load matching skills for classification guidance
+5. Classify each finding as confirmed/suspected/false-positive
+6. Call `secguard_report` with `findings` array to persist classification
+7. Present summary table to user, referencing SARIF and Markdown output paths
