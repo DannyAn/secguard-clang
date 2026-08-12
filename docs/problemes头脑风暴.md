@@ -187,7 +187,7 @@ Agent 推理能力被切碎
 skill 数量增长失控
 Repository Facts 无法复用
 
-按照这个模式，则建议 secguard-lite v2 最终结构
+按照这个模式，则建议 secguard-clang v2 最终结构
 
 不要 20 个散 skill。
 
@@ -238,7 +238,7 @@ initialization/
 核心思想：一个 skill 是一个安全领域专家，而不是一个漏洞检测器。
 建议这个阶段要在阶段一的基础上，再做一次 skill 合并。如果阶段一功能验证通过，那么这个阶段是完全可行的。
 
-面向安全语义域的比较完整的 secguard-lite v2 skill taxonomy。
+面向安全语义域的比较完整的 secguard-clang v2 skill taxonomy。
 
 目标：
 
@@ -248,7 +248,7 @@ initialization/
 能映射回具体 CWE
 Repository Facts 可复用 
 
-secguard-lite Security Reasoning Skills
+secguard-clang Security Reasoning Skills
 ```
 skills/
 

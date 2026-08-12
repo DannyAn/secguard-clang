@@ -7,7 +7,7 @@
 | 创建日期 | 2026-08-11 |
 | 状态 | 草案（待评审） |
 | 关联需求规格 | `docs/spec-build-packages.md` v1.2 |
-| 关联项目 | secguard-lite（Go module `github.com/DannyAn/secguard-clang`，位于 `sgre/`） |
+| 关联项目 | secguard-clang（Go module `github.com/DannyAn/secguard-clang`，位于 `sgre/`） |
 | 作者 | spec-design-agent |
 
 ---
@@ -16,7 +16,7 @@
 
 ### 1.1 上下文视图
 
-本设计覆盖 SecGuard-Lite 的"构建 → 打包 → 发行 → 安装 → 验证 → 卸载"全生命周期工具链。系统边界内的输入为：源码树（`sgre/` + `extension/`）、`VERSION` 文件、git 标签；输出为：三个发行 zip 包（统一包 + OpenCode 专用包 + ClaudeCode 专用包）及其 sha256 校验文件，以及用户环境中的安装结果与安装清单。
+本设计覆盖 SecGuard-Clang 的"构建 → 打包 → 发行 → 安装 → 验证 → 卸载"全生命周期工具链。系统边界内的输入为：源码树（`sgre/` + `extension/`）、`VERSION` 文件、git 标签；输出为：三个发行 zip 包（统一包 + OpenCode 专用包 + ClaudeCode 专用包）及其 sha256 校验文件，以及用户环境中的安装结果与安装清单。
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────┐

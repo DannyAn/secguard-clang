@@ -41,7 +41,7 @@
 - **依赖**：无
 - **版本**：第一版本必须
 - **实现步骤**：
-  1. 在项目根目录 `/Users/kongan/workbench/github/secguard-lite/` 创建 `VERSION` 文件
+  1. 在项目根目录 `/Users/kongan/workbench/github/secguard-clang/` 创建 `VERSION` 文件
   2. 内容为单行版本号，如 `1.2.0`（无前导 `v`，无尾部换行外的空白）
   3. 此文件作为 `resolve_version` 的第二优先级来源（REQ-VER-01），并被打入发行包顶层
 - **验证方式**：

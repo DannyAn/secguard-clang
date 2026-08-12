@@ -8,7 +8,7 @@
 | 修改日期 | 2026-08-11 |
 | 状态 | 草案（待评审）——已更新：补充 uninstall.sh 与安装验证 |
 | 作者 | spec-requirement-agent |
-| 关联项目 | secguard-lite |
+| 关联项目 | secguard-clang |
 
 ---
 
@@ -16,7 +16,7 @@
 
 ### 1.1 背景
 
-SecGuard-Lite 是 AI 增强的 C 语言安全分析器。当前根目录 `build.sh` 仅构建 Go 二进制到 `bin/secguard`，不具备发行打包能力。项目已存在 `extension/dist/build-packages.sh` 实现了基础打包，但存在以下缺陷：
+SecGuard-Clang 是 AI 增强的 C 语言安全分析器。当前根目录 `build.sh` 仅构建 Go 二进制到 `bin/secguard`，不具备发行打包能力。项目已存在 `extension/dist/build-packages.sh` 实现了基础打包，但存在以下缺陷：
 
 - 版本号硬编码为 `0.1.0`，无版本管理机制
 - 仅构建当前平台二进制，无跨平台（darwin/linux × amd64/arm64）支持

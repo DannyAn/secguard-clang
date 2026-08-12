@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "author": {
     "name": "Zhuque Security",
-    "url": "https://github.com/kongan/secguard-lite"
+    "url": "https://github.com/kongan/secguard-clang"
   },
   "license": "Proprietary",
   "keywords": ["security", "static-analysis", "c-language", "vulnerability-detection", "buffer-overflow", "null-deref", "memory-leak", "injection"]
