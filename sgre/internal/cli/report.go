@@ -299,6 +299,37 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry) error {
 		b.WriteString(" n/a |\n\n")
 	}
 
+	// AI Value Summary: make the human impact of the AI classification layer
+	// explicit and auditable. Every converged candidate should receive a
+	// classification; a nonzero "without AI classification" count is a process
+	// gap (e.g. a candidate whose skill was not loaded), not a design feature.
+	classifiedByAI := totalConfirmed + totalSuspected + totalDismissed
+	unclassified := totalFinal - classifiedByAI
+	if unclassified < 0 {
+		unclassified = 0
+	}
+	b.WriteString("## AI Value Summary\n\n")
+	b.WriteString("| Metric | Value |\n")
+	b.WriteString("|--------|-------|\n")
+	fmt.Fprintf(&b, "| Raw evidence seeds | %d |\n", totalSeed)
+	fmt.Fprintf(&b, "| Converged candidates (after pipeline filters) | %d |\n", totalFinal)
+	fmt.Fprintf(&b, "| Candidates classified by AI | %d |\n", classifiedByAI)
+	fmt.Fprintf(&b, "| Candidates without AI classification | %d |\n", unclassified)
+	fmt.Fprintf(&b, "| AI confirmed (actionable, with fix suggestion) | %d |\n", totalConfirmed)
+	fmt.Fprintf(&b, "| AI suspected (needs human decision) | %d |\n", totalSuspected)
+	fmt.Fprintf(&b, "| AI dismissed (false positives, evidence recorded) | %d |\n", totalDismissed)
+	fmt.Fprintf(&b, "| Actionable findings for human review | %d |\n", totalConfirmed+totalSuspected)
+	if totalSeed > 0 {
+		fmt.Fprintf(&b, "| Pipeline filter efficiency | %.0f%% |\n", float64(totalSeed-totalFinal)/float64(totalSeed)*100)
+	} else {
+		b.WriteString("| Pipeline filter efficiency | n/a |\n")
+	}
+	if totalClassified > 0 {
+		fmt.Fprintf(&b, "| AI accuracy (confirmed / confirmed+dismissed) | %.0f%% |\n\n", float64(totalConfirmed)/float64(totalClassified)*100)
+	} else {
+		b.WriteString("| AI accuracy (confirmed / confirmed+dismissed) | n/a |\n\n")
+	}
+
 	b.WriteString("## Filter Chain Details\n\n")
 	for _, a := range audits {
 		b.WriteString(fmt.Sprintf("### %s\n\n", a.VulnType))
