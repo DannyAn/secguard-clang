@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"path/filepath"
 	"testing"
@@ -161,6 +162,25 @@ func assertNoEvent(t *testing.T, store db.Store, eventType, fixture string) {
 	if len(events) > 0 {
 		t.Errorf("%s: expected 0 %s events (safe pattern), got %d", fixture, eventType, len(events))
 	}
+}
+
+func assertEventCategory(t *testing.T, store db.Store, eventType, category, fixture string) {
+	t.Helper()
+	ctx := context.Background()
+	events, err := store.ListEventsByType(ctx, eventType)
+	if err != nil {
+		t.Fatalf("%s: failed to list events: %v", fixture, err)
+	}
+	for _, e := range events {
+		var props map[string]interface{}
+		if json.Unmarshal([]byte(e.Properties), &props) != nil {
+			continue
+		}
+		if props["category"] == category {
+			return
+		}
+	}
+	t.Errorf("%s: expected %s event with category %q, got %d events", fixture, eventType, category, len(events))
 }
 
 func TestSecurity_TC01_NullReturn(t *testing.T) {

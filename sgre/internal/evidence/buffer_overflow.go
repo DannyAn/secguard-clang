@@ -50,6 +50,7 @@ func (d *BufferOverflowDetector) Detect(ctx context.Context) (DetectResult, erro
 
 		d.detectUnsafeCalls(ctx, f, file, root, &result)
 		d.detectArrayOOB(ctx, f, file, root, &result)
+		d.detectFormatOverflow(ctx, f, file, root, &result)
 
 		tree.Close()
 	}
@@ -287,8 +288,13 @@ func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Funct
 		arrName := children[0].Text()
 		indexExpr := children[1].Text()
 
-		arrSize := findArraySize(root, arrName)
+		arrSize := findArraySize(root, f, arrName)
+		kind := subscriptAccessKind(root, f, sub)
 		isOOB := false
+		category := "array_oob_read"
+		if kind == "write" {
+			category = "array_oob_write"
+		}
 
 		if isConstantIndex(indexExpr) {
 			idx := parseConstantIndex(indexExpr)
@@ -296,11 +302,30 @@ func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Funct
 				if idx >= arrSize {
 					isOOB = true
 				}
-			} else if arrSize == 0 {
-				continue
+			} else if arrSize == 0 && idx >= 0 {
+				if alloc, ok := heapAllocationSize(root, f, arrName); ok {
+					if constAlloc := parseConstantIndex(alloc); constAlloc > 0 && idx >= constAlloc {
+						isOOB = true
+						category = "heap_oob_write"
+						if kind != "write" {
+							category = "heap_oob_read"
+						}
+					}
+				}
 			}
 		} else if arrSize > 0 && isLoopBoundOverflow(root, f, sub, arrSize) {
 			isOOB = true
+		} else if arrSize == 0 {
+			// Heap pointer indexed inside a loop: flag only when the loop upper
+			// bound provably exceeds the allocation size, e.g.
+			// malloc(user_len) with `i < user_len + 10`.
+			if alloc, ok := heapAllocationSize(root, f, arrName); ok && isLoopBoundOverflowForHeap(root, f, sub, alloc) {
+				isOOB = true
+				category = "heap_oob_write"
+				if kind != "write" {
+					category = "heap_oob_read"
+				}
+			}
 		}
 		// A non-constant index (e.g. `buf[i]`, `g_entries[i]`, `p->data[i]`)
 		// is not, by itself, evidence of an out-of-bounds access: proving that
@@ -308,13 +333,13 @@ func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Funct
 		// previous catch-all `else if !isConstantIndex(indexExpr)` flagged every
 		// variable-index subscript, emitting ~17 false positives on the
 		// benchmark. Only report OOB when it is provable (constant index past a
-		// known array size, or a loop bound that provably overruns it).
+		// known array size, a loop bound that provably overruns it, or a heap
+		// allocation whose loop bound provably overruns the allocation size).
 
 		if !isOOB {
 			continue
 		}
 
-		category := "buffer_overflow"
 		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: sub.StartLine()})
 		props, _ := json.Marshal(map[string]string{
 			"array":      arrName,
@@ -334,8 +359,11 @@ func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Funct
 	}
 }
 
-func findArraySize(root parser.Node, arrName string) int {
+func findArraySize(root parser.Node, f *db.Function, arrName string) int {
 	for _, decl := range root.FindAll("declaration") {
+		if decl.StartLine() < f.StartLine || decl.StartLine() > f.EndLine {
+			continue
+		}
 		for _, ad := range decl.FindAll("array_declarator") {
 			if extractDeclaratorName(ad) == arrName {
 				for _, child := range ad.NamedChildren() {
@@ -426,4 +454,338 @@ func isConstantIndex(expr string) bool {
 		}
 	}
 	return len(expr) > 0
+}
+
+// formatOverflowAPIs are printf-family calls that write an unboundedly
+// formatted string into a caller-provided destination with no size argument.
+var formatOverflowAPIs = map[string]bool{
+	"sprintf":   true,
+	"wsprintfA": true,
+	"wsprintfW": true,
+}
+
+// detectFormatOverflow flags sprintf/wsprintf calls whose destination is a
+// fixed-capacity buffer and whose source arguments are not compile-time
+// constants (or whose literal output provably exceeds the capacity). It skips
+// calls whose formatted buffer feeds an injection sink: there, injection is
+// the dominant root cause and reporting the same call as a buffer overflow
+// would double-count one defect.
+func (d *BufferOverflowDetector) detectFormatOverflow(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {
+	for _, call := range root.FindAll("call_expression") {
+		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+			continue
+		}
+		callName := extractCallName(call)
+		if !formatOverflowAPIs[callName] {
+			continue
+		}
+		args := extractCallArgs(call)
+		if len(args) < 2 {
+			continue
+		}
+		dst := strings.TrimSpace(args[0])
+		capacity := findArraySize(root, f, dst)
+		if capacity <= 0 {
+			capacity = findFieldArraySize(root, dst)
+		}
+		if capacity <= 0 {
+			continue
+		}
+		if hasPrecedingBoundsCheck(root, f, call.StartLine()) {
+			continue
+		}
+		if destFeedsInjectionSink(root, f, dst, call.StartLine()) {
+			continue
+		}
+		if !formatCanOverflow(args, capacity) {
+			continue
+		}
+
+		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
+		props, _ := json.Marshal(map[string]string{
+			"function":   callName,
+			"category":   "format_overflow",
+			"expression": call.Text(),
+		})
+		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
+			EventType:  "BUFFER_ACCESS",
+			EntityID:   f.ID,
+			LocationID: locID,
+			Properties: string(props),
+		})
+		if err == nil {
+			result.EventsCreated++
+		}
+	}
+}
+
+func formatCanOverflow(args []string, capacity int) bool {
+	nonConst := false
+	staticLen := 0
+	for i := 2; i < len(args); i++ {
+		l, ok := constantStringLength(strings.TrimSpace(args[i]))
+		if !ok {
+			nonConst = true
+			continue
+		}
+		staticLen += l
+	}
+	if nonConst {
+		return true
+	}
+	return staticLen >= capacity
+}
+
+func destFeedsInjectionSink(root parser.Node, f *db.Function, dst string, afterLine int) bool {
+	for _, call := range root.FindAll("call_expression") {
+		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+			continue
+		}
+		if call.StartLine() <= afterLine {
+			continue
+		}
+		if !apikb.InjectionAPIs[extractCallName(call)] {
+			continue
+		}
+		for _, arg := range extractCallArgs(call) {
+			if tokenEquals(strings.TrimSpace(arg), dst) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func tokenEquals(arg, name string) bool {
+	if arg == name {
+		return true
+	}
+	for _, part := range strings.FieldsFunc(arg, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_')
+	}) {
+		if part == name {
+			return true
+		}
+	}
+	return false
+}
+
+func findFieldArraySize(root parser.Node, dst string) int {
+	field := ""
+	if idx := strings.LastIndex(dst, "->"); idx >= 0 {
+		field = strings.TrimSpace(dst[idx+2:])
+	} else if idx := strings.LastIndex(dst, "."); idx >= 0 {
+		field = strings.TrimSpace(dst[idx+1:])
+	}
+	if field == "" {
+		return 0
+	}
+	for _, fd := range root.FindAll("field_declaration") {
+		for _, ad := range fd.FindAll("array_declarator") {
+			if arrayDeclaratorName(ad) != field {
+				continue
+			}
+			for _, child := range ad.NamedChildren() {
+				if child.Kind() == "number_literal" {
+					if n := parseConstantIndex(child.Text()); n > 0 {
+						return n
+					}
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// arrayDeclaratorName returns the declared name of an array declarator,
+// handling both plain identifiers and struct field identifiers
+// (field_identifier), which extractDeclaratorName does not cover.
+func arrayDeclaratorName(node parser.Node) string {
+	for _, child := range node.NamedChildren() {
+		if child.Kind() == "identifier" || child.Kind() == "field_identifier" {
+			return child.Text()
+		}
+		if child.Kind() == "pointer_declarator" {
+			return arrayDeclaratorName(child)
+		}
+	}
+	return ""
+}
+
+// subscriptAccessKind reports whether a subscript expression is an assignment
+// target (write) or appears on the read side (read).
+func subscriptAccessKind(root parser.Node, f *db.Function, sub parser.Node) string {
+	subText := sub.Text()
+	for _, assign := range root.FindAll("assignment_expression") {
+		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+			continue
+		}
+		if assign.StartLine() != sub.StartLine() {
+			continue
+		}
+		children := assign.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		if children[0].Text() == subText || strings.Contains(children[0].Text(), subText) {
+			return "write"
+		}
+	}
+	for _, upd := range root.FindAll("update_expression") {
+		if upd.StartLine() < f.StartLine || upd.StartLine() > f.EndLine {
+			continue
+		}
+		if upd.StartLine() == sub.StartLine() && strings.Contains(upd.Text(), subText) {
+			return "write"
+		}
+	}
+	return "read"
+}
+
+// heapAllocationSize returns the size expression of a variable's
+// malloc/calloc/realloc allocation within the function (e.g. "user_len"),
+// or false when no allocation is visible.
+func heapAllocationSize(root parser.Node, f *db.Function, varName string) (string, bool) {
+	checkRHS := func(lhsText string, rhs parser.Node) (string, bool) {
+		if lhsText != varName {
+			return "", false
+		}
+		call := unwrapAllocationCall(rhs)
+		if call == nil {
+			return "", false
+		}
+		name := extractCallName(*call)
+		if name != "malloc" && name != "calloc" && name != "realloc" {
+			return "", false
+		}
+		args := callNamedArguments(*call)
+		if len(args) == 0 {
+			return "", false
+		}
+		return strings.TrimSpace(args[0].Text()), true
+	}
+
+	for _, decl := range root.FindAll("init_declarator") {
+		if decl.StartLine() < f.StartLine || decl.StartLine() > f.EndLine {
+			continue
+		}
+		children := decl.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		if expr, ok := checkRHS(extractVarFromDeclarator(children[0]), children[1]); ok {
+			return expr, true
+		}
+	}
+	for _, assign := range root.FindAll("assignment_expression") {
+		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+			continue
+		}
+		children := assign.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		if expr, ok := checkRHS(children[0].Text(), children[1]); ok {
+			return expr, true
+		}
+	}
+	return "", false
+}
+
+func unwrapAllocationCall(node parser.Node) *parser.Node {
+	if node.Kind() == "call_expression" {
+		return &node
+	}
+	for _, child := range node.NamedChildren() {
+		if call := unwrapAllocationCall(child); call != nil {
+			return call
+		}
+	}
+	return nil
+}
+
+// isLoopBoundOverflowForHeap flags a heap-pointer subscript when the enclosing
+// loop bound provably exceeds the allocation size, e.g. `malloc(user_len)`
+// with `for (i = 0; i < user_len + 10; i++) buf[i]`.
+func isLoopBoundOverflowForHeap(root parser.Node, f *db.Function, sub parser.Node, allocExpr string) bool {
+	for _, forNode := range root.FindAll("for_statement") {
+		if forNode.StartLine() < f.StartLine || forNode.EndLine() > f.EndLine {
+			continue
+		}
+		if sub.StartLine() < forNode.StartLine() || sub.StartLine() > forNode.EndLine() {
+			continue
+		}
+		condText := ""
+		initText := ""
+		for _, child := range forNode.NamedChildren() {
+			text := child.Text()
+			if isRelationalCondition(text) {
+				condText = text
+			} else if strings.Contains(text, "=") && !strings.Contains(text, "<") && !strings.Contains(text, ">") {
+				initText = text
+			}
+		}
+		if condText == "" {
+			continue
+		}
+		if idx := extractLoopIndex(initText); idx != "" && !strings.Contains(sub.Text(), idx) {
+			continue
+		}
+		bound := extractLoopBound(condText)
+		if bound == "" {
+			continue
+		}
+		if allocExpr != "" && strings.Contains(bound, allocExpr) && positiveOffset(bound, allocExpr) > 0 {
+			return true
+		}
+		if constAlloc := parseConstantIndex(allocExpr); constAlloc > 0 {
+			if boundConst := parseConstantIndex(bound); boundConst > constAlloc {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func extractLoopBound(cond string) string {
+	for _, op := range []string{"<=", ">=", "<", ">"} {
+		if !strings.Contains(cond, op) {
+			continue
+		}
+		parts := strings.SplitN(cond, op, 2)
+		if len(parts) != 2 {
+			continue
+		}
+		bound := strings.TrimSpace(parts[1])
+		if idx := strings.Index(bound, ";"); idx >= 0 {
+			bound = bound[:idx]
+		}
+		return strings.TrimSpace(bound)
+	}
+	return ""
+}
+
+func extractLoopIndex(init string) string {
+	init = strings.SplitN(init, "=", 2)[0]
+	fields := strings.Fields(init)
+	if len(fields) == 0 {
+		return ""
+	}
+	return strings.TrimPrefix(fields[len(fields)-1], "*")
+}
+
+func positiveOffset(bound, allocExpr string) int {
+	i := strings.Index(bound, allocExpr)
+	if i < 0 {
+		return 0
+	}
+	rest := strings.TrimSpace(bound[i+len(allocExpr):])
+	if strings.Contains(rest, " - ") {
+		return 0
+	}
+	nums := extractNumbers(rest)
+	if len(nums) == 0 {
+		return 0
+	}
+	return nums[0]
 }
