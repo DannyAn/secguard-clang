@@ -92,17 +92,7 @@ func (d *NullSourceDetector) detectMallocResult(ctx context.Context, f *db.Funct
 					return
 				}
 				lhs := children[0]
-				varName := ""
-				if lhs.Kind() == "identifier" {
-					varName = lhs.Text()
-				} else {
-					for _, child := range lhs.NamedChildren() {
-						if child.Kind() == "identifier" {
-							varName = child.Text()
-							break
-						}
-					}
-				}
+				varName := assignedVariable(lhs)
 				if varName != "" {
 					locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: node.StartLine()})
 					props, _ := json.Marshal(map[string]string{"variable": varName, "origin": a})
@@ -147,17 +137,7 @@ func (d *NullSourceDetector) detectExternalCall(ctx context.Context, f *db.Funct
 		}
 		lhs := children[0]
 		rhs := children[1]
-		varName := ""
-		if lhs.Kind() == "identifier" {
-			varName = lhs.Text()
-		} else {
-			for _, child := range lhs.NamedChildren() {
-				if child.Kind() == "identifier" {
-					varName = child.Text()
-					break
-				}
-			}
-		}
+		varName := assignedVariable(lhs)
 		if varName == "" {
 			return
 		}
@@ -242,6 +222,28 @@ func isAllocator(name string) bool {
 
 func extractCallName(node parser.Node) string {
 	for _, child := range node.NamedChildren() {
+		if child.Kind() == "identifier" {
+			return child.Text()
+		}
+	}
+	return ""
+}
+
+// assignedVariable returns the storage location a value is assigned into,
+// matching the dereference detector's attribution so that a NULL_VALUE source
+// and a later DEREFERENCE resolve to the same variable. A field access is
+// attributed by its full path text ("p->data"), not its first identifier
+// ("p"), so that `p->data = malloc()` marks `p->data` (and only `p->data`) as
+// nullable rather than suppressing every deref of `p`.
+func assignedVariable(lhs parser.Node) string {
+	switch lhs.Kind() {
+	case "identifier":
+		return lhs.Text()
+	case "field_expression", "subscript_expression":
+		return lhs.Text()
+	}
+	// *p = ... and other shapes: attribute to the first identifier inside.
+	for _, child := range lhs.NamedChildren() {
 		if child.Kind() == "identifier" {
 			return child.Text()
 		}

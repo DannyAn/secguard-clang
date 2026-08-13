@@ -73,7 +73,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 		cfg := graph.BuildCFG(root, f.StartLine, f.EndLine)
 		cfgValid := cfg != nil && cfg.Root != nil && len(cfg.Root.Children) > 0
 		if !cfgValid && d.logger != nil {
-			d.logger.Warn("memory_leak: CFG construction degenerate, using path-insensitive fallback",
+			d.logger.Debug("memory_leak: CFG construction degenerate, using path-insensitive fallback",
 				"function", f.Name,
 			)
 		}

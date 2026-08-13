@@ -123,7 +123,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 	cfg := graph.BuildCFG(root, f.StartLine, f.EndLine)
 	cfgValid := cfg != nil && cfg.Root != nil && len(cfg.Root.Children) > 0
 	if !cfgValid && d.logger != nil {
-		d.logger.Warn("uninit: CFG construction degenerate, using conservative fallback",
+		d.logger.Debug("uninit: CFG construction degenerate, using conservative fallback",
 			"function", f.Name,
 		)
 	}
@@ -155,52 +155,54 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		}
 	}
 
+	// scanUses reports uses of uninitialized variables among the identifiers
+	// within node at the given line. Identifiers that are the operand of an
+	// address-of (`&x`) are write targets, not reads, so they are skipped;
+	// skipName (e.g. the callee of a call) is also excluded.
+	scanUses := func(node parser.Node, line int, skipName string) {
+		addressed := addressedArgs(node)
+		for _, id := range node.FindAll("identifier") {
+			name := id.Text()
+			if name == skipName || addressed[name] {
+				continue
+			}
+			checkUse(line, name)
+		}
+	}
+
 	for _, ret := range root.FindAll("return_statement") {
 		if ret.StartLine() < f.StartLine || ret.StartLine() > f.EndLine {
 			continue
 		}
-		for _, id := range ret.FindAll("identifier") {
-			checkUse(ret.StartLine(), id.Text())
-		}
+		scanUses(ret, ret.StartLine(), "")
 	}
 
 	for _, call := range root.FindAll("call_expression") {
 		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
 			continue
 		}
-		for _, id := range call.FindAll("identifier") {
-			name := id.Text()
-			if name != extractCallName(call) {
-				checkUse(call.StartLine(), name)
-			}
-		}
+		scanUses(call, call.StartLine(), extractCallName(call))
 	}
 
 	for _, ifNode := range root.FindAll("if_statement") {
 		if ifNode.StartLine() < f.StartLine || ifNode.StartLine() > f.EndLine {
 			continue
 		}
-		for _, id := range ifNode.FindAll("identifier") {
-			checkUse(ifNode.StartLine(), id.Text())
-		}
+		scanUses(ifNode, ifNode.StartLine(), "")
 	}
 
 	for _, whileNode := range root.FindAll("while_statement") {
 		if whileNode.StartLine() < f.StartLine || whileNode.StartLine() > f.EndLine {
 			continue
 		}
-		for _, id := range whileNode.FindAll("identifier") {
-			checkUse(whileNode.StartLine(), id.Text())
-		}
+		scanUses(whileNode, whileNode.StartLine(), "")
 	}
 
 	for _, forNode := range root.FindAll("for_statement") {
 		if forNode.StartLine() < f.StartLine || forNode.StartLine() > f.EndLine {
 			continue
 		}
-		for _, id := range forNode.FindAll("identifier") {
-			checkUse(forNode.StartLine(), id.Text())
-		}
+		scanUses(forNode, forNode.StartLine(), "")
 	}
 }
 
@@ -344,6 +346,11 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {
 	structVars := make(map[string]int)
 	initializedFields := make(map[string]bool)
+	// A struct passed by address to a KNOWN initializer (memset(&s, 0, ...),
+	// or an output-param filler) has its fields written by the callee, so it
+	// is not a definite partial-init defect. An arbitrary `&s` to an unknown
+	// function is conservatively kept (cf. TC16 interprocedural uninit).
+	initializedVars := outputParamInitializedVars(root, f)
 
 	for _, decl := range root.FindAll("declaration") {
 		if decl.StartLine() < f.StartLine || decl.StartLine() > f.EndLine {
@@ -389,6 +396,9 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 		}
 		varName := children[0].Text()
 		if _, isStruct := structVars[varName]; !isStruct {
+			continue
+		}
+		if initializedVars[varName] {
 			continue
 		}
 		if !initializedFields[text] {
@@ -442,8 +452,63 @@ var outputParamInitializers = map[string]bool{
 	"strtol":                true,
 	"strtoul":               true,
 	"wcstombs":              true,
+	"memset":                true,
+	"bzero":                 true,
+	"CreateProcessA":        true,
+	"CreateProcessW":        true,
+	"CreateProcessAsA":      true,
+	"CreateProcessAsW":      true,
 }
 
 func isOutputParamInitializer(name string) bool {
 	return outputParamInitializers[name]
+}
+
+// addressedArgs returns the set of variable names whose address is taken
+// (`&x`) within node. Address-of parses as a pointer_expression (the same node
+// as a `*p` dereference); only `&`-prefixed nodes count. A `&x` argument is a
+// write target for the callee, not a read of x's current value, so it must
+// never be treated as a use-before-init.
+func addressedArgs(node parser.Node) map[string]bool {
+	addressed := make(map[string]bool)
+	for _, ptr := range node.FindAll("pointer_expression") {
+		if !strings.HasPrefix(strings.TrimSpace(ptr.Text()), "&") {
+			continue
+		}
+		if name := extractVarName(ptr); name != "" {
+			addressed[name] = true
+		}
+	}
+	return addressed
+}
+
+// outputParamInitializedVars returns the set of variable names within f whose
+// address is passed (`&x`) to a KNOWN output-parameter initializer (memset,
+// bzero, OpenProcessToken, CreateProcessA, ...). These callees are known to
+// write through the pointer, so the variable is considered initialized —
+// unlike an arbitrary `&x` to an unknown function, which may or may not write
+// (conservatively treated as uninitialized, cf.
+// TestSecurity_TC16_UninitInterprocedural).
+func outputParamInitializedVars(root parser.Node, f *db.Function) map[string]bool {
+	initialized := make(map[string]bool)
+	for _, call := range root.FindAll("call_expression") {
+		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+			continue
+		}
+		if !isOutputParamInitializer(extractCallName(call)) {
+			continue
+		}
+		for _, child := range call.NamedChildren() {
+			if child.Kind() != "argument_list" {
+				continue
+			}
+			for _, arg := range child.NamedChildren() {
+				argText := arg.Text()
+				if strings.HasPrefix(argText, "&") {
+					initialized[strings.TrimPrefix(argText, "&")] = true
+				}
+			}
+		}
+	}
+	return initialized
 }

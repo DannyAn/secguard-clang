@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
@@ -87,17 +88,42 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 }
 
 func isResourceAcquirer(name string) bool {
+	// Safe wrappers (LockGuard_*, ResourceHandle_*) are RAII framework entry
+	// points whose lifecycle is managed by the framework, not a leak.
+	if apikb.IsSafeWrapper(name) {
+		return false
+	}
 	lower := strings.ToLower(name)
 	if strings.Contains(lower, "unlock") || strings.Contains(lower, "release") || strings.Contains(lower, "destroy") || strings.Contains(lower, "close") || strings.Contains(lower, "join") || strings.Contains(lower, "deinit") {
 		return false
 	}
-	acquirers := []string{"fopen", "open", "socket", "connect", "accept", "lock", "acquire", "create"}
+	acquirers := []string{"fopen", "open", "socket", "connect", "accept", "lock", "acquire"}
 	for _, a := range acquirers {
 		if strings.Contains(lower, a) {
 			return true
 		}
 	}
-	return false
+	// Windows resource-creating functions are prefixed with "create"
+	// (CreateFileA, CreateMutexW, ...). A custom `Xxx_create` wrapper is a
+	// memory allocator handled by the memory-leak detector, not a resource
+	// leak, so match the prefix only.
+	return strings.HasPrefix(lower, "create")
+}
+
+// isLockAcquirer reports whether name acquires a lock via a pointer argument
+// (e.g. sg_lock(&mutex), pthread_mutex_lock(&m)). This is distinct from
+// isResourceAcquirer: the `&arg` scan must only flag lock/semaphore
+// acquisition, otherwise out-parameters of unrelated calls (CreateProcessA's
+// &si/&pi, OpenProcessToken's &hToken) are misread as acquired resources.
+func isLockAcquirer(name string) bool {
+	if apikb.IsSafeWrapper(name) {
+		return false
+	}
+	lower := strings.ToLower(name)
+	if strings.Contains(lower, "unlock") {
+		return false
+	}
+	return strings.Contains(lower, "lock") || strings.Contains(lower, "acquire")
 }
 
 func isResourceReleaser(name string) bool {
@@ -161,7 +187,7 @@ func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function,
 			continue
 		}
 		callName := extractCallName(call)
-		if isResourceAcquirer(callName) && !isAllocator(callName) {
+		if isLockAcquirer(callName) {
 			for _, child := range call.NamedChildren() {
 				if child.Kind() == "argument_list" {
 					for _, arg := range child.NamedChildren() {

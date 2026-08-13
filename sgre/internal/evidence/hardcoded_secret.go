@@ -137,8 +137,11 @@ func (d *HardcodedSecretDetector) detectRegSetValueEx(ctx context.Context, root 
 		if !secretVarPattern.MatchString(valueName) {
 			continue
 		}
-		valueData := args[4]
-		if !strings.HasPrefix(valueData, "\"") {
+		// The value argument is often a cast-prefixed literal, e.g.
+		// (BYTE*)"P@ssw0rd!" or (const BYTE*)"secret". Extract the string
+		// literal rather than requiring the arg to start with a quote.
+		valueData := extractStringLiteral(args[4])
+		if valueData == "" {
 			continue
 		}
 
@@ -180,6 +183,21 @@ func extractInitializerValue(init parser.Node) string {
 		}
 	}
 	return ""
+}
+
+// extractStringLiteral returns the contents of the first double-quoted string
+// in text, ignoring any cast prefix such as (BYTE*) or (const BYTE*). It
+// returns "" when text contains no string literal.
+func extractStringLiteral(text string) string {
+	start := strings.IndexByte(text, '"')
+	if start < 0 {
+		return ""
+	}
+	end := strings.IndexByte(text[start+1:], '"')
+	if end < 0 {
+		return ""
+	}
+	return text[start+1 : start+1+end]
 }
 
 func isNumericLiteral(s string) bool {

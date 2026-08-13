@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
@@ -66,16 +67,19 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 		if callName == "" {
 			continue
 		}
-		if isSafeFunction(callName) || isSafeWrapper(callName) {
+		if apikb.IsSafeFunction(callName) || apikb.IsSafeWrapper(callName) {
 			continue
 		}
-		if injectionAPIs[callName] {
+		if apikb.InjectionAPIs[callName] {
 			continue
 		}
-		if !bufferOverflowAPIs[callName] {
+		if !apikb.BufferOverflowAPIs[callName] {
 			continue
 		}
 		if hasPrecedingBoundsCheck(root, f, call.StartLine()) {
+			continue
+		}
+		if suppressConstantStringCopy(root, f, call) {
 			continue
 		}
 		category := "buffer_overflow"
@@ -96,6 +100,115 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 			result.EventsCreated++
 		}
 	}
+}
+
+// suppressConstantStringCopy reports whether a strcpy/strcat call copies a
+// compile-time string literal into a destination whose allocation size is a
+// provably-large-enough constant. `strcpy(malloc(256), "temporary")` is safe
+// (the literal is 10 bytes, the buffer 256), so flagging it is a false
+// positive. The rule is deliberately conservative: it only suppresses when the
+// source is a plain literal and the destination is malloc/calloc/realloc with
+// a numeric size >= literal length + 1 — fixed arrays and unknown sizes are
+// still flagged.
+func suppressConstantStringCopy(root parser.Node, f *db.Function, call parser.Node) bool {
+	args := callNamedArguments(call)
+	if len(args) < 2 {
+		return false
+	}
+	srcLen, ok := constantStringLength(args[1].Text())
+	if !ok {
+		return false
+	}
+	dstName := strings.TrimSpace(args[0].Text())
+	size := constantAllocationSize(root, f, dstName)
+	return size >= srcLen+1
+}
+
+func callNamedArguments(call parser.Node) []parser.Node {
+	for _, child := range call.NamedChildren() {
+		if child.Kind() == "argument_list" {
+			return child.NamedChildren()
+		}
+	}
+	return nil
+}
+
+// constantStringLength returns the character length of a plain string literal
+// (no escape sequences). Escapes make the length nontrivial to compute, so
+// those are rejected (ok=false) and left to be flagged conservatively.
+func constantStringLength(exprText string) (int, bool) {
+	t := strings.TrimSpace(exprText)
+	if len(t) < 2 || t[0] != '"' || t[len(t)-1] != '"' {
+		return 0, false
+	}
+	inner := t[1 : len(t)-1]
+	if strings.Contains(inner, `\`) {
+		return 0, false
+	}
+	return len(inner), true
+}
+
+// constantAllocationSize returns the byte count of a malloc/calloc/realloc
+// whose size argument is a numeric constant, or 0 when the variable's
+// allocation size is not a known constant.
+func constantAllocationSize(root parser.Node, f *db.Function, varName string) int {
+	check := func(node parser.Node) int {
+		children := node.NamedChildren()
+		if len(children) < 2 {
+			return 0
+		}
+		if assignedVariable(children[0]) != varName {
+			return 0
+		}
+		rhs := children[1]
+		if rhs.Kind() == "cast_expression" {
+			for _, c := range rhs.NamedChildren() {
+				if c.Kind() == "call_expression" {
+					rhs = c
+					break
+				}
+			}
+		}
+		if rhs.Kind() != "call_expression" {
+			return 0
+		}
+		name := extractCallName(rhs)
+		if name != "malloc" && name != "calloc" && name != "realloc" {
+			return 0
+		}
+		callArgs := callNamedArguments(rhs)
+		if len(callArgs) == 0 {
+			return 0
+		}
+		n := parseConstantIndex(strings.TrimSpace(callArgs[0].Text()))
+		if n <= 0 {
+			return 0
+		}
+		if name == "calloc" && len(callArgs) >= 2 {
+			if m := parseConstantIndex(strings.TrimSpace(callArgs[1].Text())); m > 0 {
+				return n * m
+			}
+		}
+		return n
+	}
+
+	for _, assign := range root.FindAll("assignment_expression") {
+		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+			continue
+		}
+		if n := check(assign); n > 0 {
+			return n
+		}
+	}
+	for _, init := range root.FindAll("init_declarator") {
+		if init.StartLine() < f.StartLine || init.StartLine() > f.EndLine {
+			continue
+		}
+		if n := check(init); n > 0 {
+			return n
+		}
+	}
+	return 0
 }
 
 func hasPrecedingBoundsCheck(root parser.Node, f *db.Function, callLine int) bool {
@@ -188,9 +301,14 @@ func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Funct
 			}
 		} else if arrSize > 0 && isLoopBoundOverflow(root, f, sub, arrSize) {
 			isOOB = true
-		} else if !isConstantIndex(indexExpr) {
-			isOOB = true
 		}
+		// A non-constant index (e.g. `buf[i]`, `g_entries[i]`, `p->data[i]`)
+		// is not, by itself, evidence of an out-of-bounds access: proving that
+		// requires bounds-check dataflow the detector does not yet have. The
+		// previous catch-all `else if !isConstantIndex(indexExpr)` flagged every
+		// variable-index subscript, emitting ~17 false positives on the
+		// benchmark. Only report OOB when it is provable (constant index past a
+		// known array size, or a loop bound that provably overruns it).
 
 		if !isOOB {
 			continue
