@@ -3,7 +3,7 @@ description: SecGuard security auditor — analyzes code for vulnerabilities usi
 mode: subagent
 
 temperature: 0.1
-steps: 30
+steps: 200
 permission:
   edit: deny
   bash: deny
