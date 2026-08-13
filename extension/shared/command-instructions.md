@@ -11,14 +11,14 @@ Parse the arguments as follows:
    - A single vulnerability type: `buffer-overflow`
    - A comma-separated list of types: `double-free,format-string`
    - The keyword `all` (equivalent to no filter — full scan mode)
-4. If no second token is present, default to **full scan mode** (all 14 types).
+4. If no second token is present, default to **full scan mode** (all 15 types).
 5. For backward compatibility, `--type <value>`, `--types=<value>`, etc. are also accepted — if any token starts with `--type`, extract the value from the next token or after `=` and use it as the type filter instead of the positional second token.
 
-## Valid Vulnerability Types (14)
+## Valid Vulnerability Types (15)
 
 null-deref, buffer-overflow, memory-leak, injection, resource-leak, uninit,
 use-after-free, double-free, format-string, integer-overflow, race-condition,
-hardcoded-secret, deadlock, crypto-misuse
+hardcoded-secret, deadlock, crypto-misuse, out-of-bounds
 
 The keyword `all` is also accepted as the type filter value and is equivalent to no filter (full scan mode).
 
@@ -27,9 +27,9 @@ The keyword `all` is also accepted as the type filter value and is equivalent to
 Before proceeding, validate the type filter:
 - If the filter is absent or `all` → full scan mode. Skip type validation.
 - Otherwise, split the filter by comma, trim whitespace from each segment, drop empty segments, and deduplicate.
-- Each remaining segment must exactly match one of the 14 valid types above (case-sensitive, kebab-case).
+- Each remaining segment must exactly match one of the 15 valid types above (case-sensitive, kebab-case).
 - If ANY segment is invalid, STOP immediately and emit this error:
-  "Invalid vulnerability type '<invalid_type>'. Valid types: null-deref, buffer-overflow, memory-leak, injection, resource-leak, uninit, use-after-free, double-free, format-string, integer-overflow, race-condition, hardcoded-secret, deadlock, crypto-misuse. Example: /secguard src/ buffer-overflow"
+  "Invalid vulnerability type '<invalid_type>'. Valid types: null-deref, buffer-overflow, memory-leak, injection, resource-leak, uninit, use-after-free, double-free, format-string, integer-overflow, race-condition, hardcoded-secret, deadlock, crypto-misuse, out-of-bounds. Example: /secguard src/ buffer-overflow"
   Do NOT proceed with any scan or tool call.
 
 ## Mode Selection
