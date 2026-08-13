@@ -38,6 +38,21 @@ func TestRaceCondition_TOCTOU(t *testing.T) {
 	assertHasEvent(t, store, "RACE_CONDITION", "toctou")
 }
 
+func TestRaceCondition_SharedDataRace(t *testing.T) {
+	store := runIndexAndDetect(t, "tc37_data_race.c")
+	assertEventCategory(t, store, "RACE_CONDITION", "shared_data_race", "tc37_data_race")
+}
+
+func TestRaceCondition_LockedCounterNoRace(t *testing.T) {
+	store := runIndexAndDetect(t, "tc38_locked_counter.c")
+	assertNoEvent(t, store, "RACE_CONDITION", "tc38_locked_counter")
+}
+
+func TestOutOfBoundsRead_ArrayRead(t *testing.T) {
+	store := runIndexAndDetect(t, "tc39_oob_read.c")
+	assertEventCategory(t, store, "BUFFER_ACCESS", "array_oob_read", "tc39_oob_read")
+}
+
 func TestHardcodedSecret_Password(t *testing.T) {
 	store := runIndexAndDetect(t, "tc27_hardcoded_secret.c")
 	assertHasEvent(t, store, "HARDCODED_SECRET", "hardcoded_secret")
