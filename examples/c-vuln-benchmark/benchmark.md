@@ -1,8 +1,17 @@
 # FP Verification Benchmark — 误报消减基准测试
 
-> 验证 FEATURE-003 三轮验证管道的精度和召回率。
-> Ground truth 定义在 [expected-results.json](expected-results.json) 中。
-> **当前状态: INVALID / 不可作为发布门禁。** 源码演进后行号锚点已漂移。已修复 detector ID 引用（web.sql-injection → injection.command_injection; concurrency.race-condition → concurrency.lock; memory.buffer-overflow → memory.buffer_overflow; memory.memory_leak → memory.leak）。P2-03 对未知 `void *dst` 容量也不能证明安全。先运行 `scripts/validate-benchmark.py` 修复基线，再计算 precision/recall。
+> 验证多层过滤收敛管道的精度和召回率。
+> Ground truth 定义在 [expected-results.json](expected-results.json) 中（每个用例带机器可读的 `expect` 字段）。
+> **当前状态: VALID。** 行号锚点与 detector ID 已对齐当前源码；门禁脚本 `scripts/validate-benchmark.py` 可直接计算 precision/recall（当前 100% precision / ~85% recall，2 个已知 detector 覆盖缺口见下）。
+>
+> ```bash
+> secguard scan examples/c-vuln-benchmark/src > /tmp/scan.json
+> python3 scripts/validate-benchmark.py \
+>   --scan /tmp/scan.json \
+>   --expected examples/c-vuln-benchmark/expected-results.json
+> ```
+>
+> **已知 detector 覆盖缺口（召回，非误报）**：`PH1-01` 整数溢出 `malloc(count * obj_size)` 未被 `integer-overflow` detector 捕获；`PH1-06` 注册表凭据 `RegSetValueExA` 未被 `hardcoded-secret` detector 捕获。二者均为后续单点增强项。
 
 ## 测试规模
 
