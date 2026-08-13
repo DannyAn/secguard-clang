@@ -68,6 +68,11 @@ func runScanCmd(ctx context.Context, args []string) int {
 		}
 	}()
 
+	// Emit an explicit lifecycle entry so the scan log is never empty even when
+	// no detector emits a Warn/Info line (e.g. after the CFG-degenerate warnings
+	// were demoted to Debug). This also gives the log a stable first record.
+	logger.Info("scan started", "scan_id", scanID, "target", absPath)
+
 	p := parser.NewParser()
 
 	idx := indexer.NewIndexer(store, logger)
@@ -93,6 +98,8 @@ func runScanCmd(ctx context.Context, args []string) int {
 	evidencePackages := []map[string]interface{}{}
 	totalCandidates := 0
 	filesWithCandidates := map[string]bool{}
+	var dismissedByVuln []report.VulnTypeDismissed
+	totalDropped := 0
 	for _, vulnType := range planner.AllVulnTypes() {
 		pl := planner.NewPlanner(store, p, logger)
 		result, err := pl.Plan(ctx, vulnType)
@@ -113,6 +120,16 @@ func runScanCmd(ctx context.Context, args []string) int {
 			FinalCount:  len(result.Candidates),
 			FilterChain: string(filterChainJSON),
 		})
+
+		if len(result.Summary.Dropped) > 0 {
+			dismissedByVuln = append(dismissedByVuln, report.VulnTypeDismissed{
+				VulnerabilityType: vulnType,
+				DroppedCount:      len(result.Summary.Dropped),
+				DroppedByReason:   result.Summary.DroppedByReason,
+				Dropped:           result.Summary.Dropped,
+			})
+			totalDropped += len(result.Summary.Dropped)
+		}
 
 		for _, c := range result.Candidates {
 			if c.Target.File != "" {
@@ -231,6 +248,14 @@ func runScanCmd(ctx context.Context, args []string) int {
 	}
 
 	report.PrintScanSummary(os.Stderr, summaryData)
+
+	if err := report.WriteDismissed(scanDir, report.DismissedSummary{
+		ScanID:       scanID,
+		TotalDropped: totalDropped,
+		ByVulnType:   dismissedByVuln,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to write dismissed ledger: %v\n", err)
+	}
 
 	return 0
 }

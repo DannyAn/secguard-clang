@@ -3,6 +3,7 @@ package report
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,16 +13,17 @@ import (
 )
 
 const (
-	CodeagentDir  = ".codeagent"
-	ProductDir    = "zhuque-secguard"
-	ScansDir      = "scans"
-	SgreDir       = ".sgre"
-	DbName        = "sgre.db"
-	SarifFile     = "sarif.sarif"
-	ReportFile    = "report.md"
-	LatestName    = "latest"
-	LatestTxtName = "latest.txt"
-	ScanLogFile   = "scan.log"
+	CodeagentDir   = ".codeagent"
+	ProductDir     = "zhuque-secguard"
+	ScansDir       = "scans"
+	SgreDir        = ".sgre"
+	DbName         = "sgre.db"
+	SarifFile      = "sarif.sarif"
+	ReportFile     = "report.md"
+	LatestName     = "latest"
+	LatestTxtName  = "latest.txt"
+	ScanLogFile    = "scan.log"
+	DismissedFile  = "dismissed.json"
 )
 
 type ScanOutput struct {
@@ -90,4 +92,37 @@ type IndexSummary struct {
 	FilesIndexed     int `json:"files_indexed"`
 	FunctionsIndexed int `json:"functions_indexed"`
 	FilesSkipped     int `json:"files_skipped"`
+}
+
+// DismissedSummary is the persisted ledger of every candidate a filter dropped,
+// keyed by vulnerability type. It turns the convergence pipeline's hard
+// truncation into an auditable trail: each drop carries a filter name and a
+// human-readable reason, so "~600 raw candidates → ~10 findings" can be
+// explained rather than asserted.
+type DismissedSummary struct {
+	ScanID       string              `json:"scan_id"`
+	TotalDropped int                 `json:"total_dropped"`
+	ByVulnType   []VulnTypeDismissed `json:"by_vuln_type"`
+}
+
+type VulnTypeDismissed struct {
+	VulnerabilityType string              `json:"vulnerability_type"`
+	DroppedCount      int                 `json:"dropped_count"`
+	DroppedByReason   map[string]int      `json:"dropped_by_reason,omitempty"`
+	Dropped           []planner.Dismissed `json:"dropped"`
+}
+
+// WriteDismissed writes the dismissed ledger to DismissedFile inside scanDir.
+func WriteDismissed(scanDir string, summary DismissedSummary) error {
+	if err := os.MkdirAll(scanDir, 0755); err != nil {
+		return fmt.Errorf("create scan dir: %w", err)
+	}
+	data, err := json.MarshalIndent(summary, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal dismissed: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(scanDir, DismissedFile), data, 0644); err != nil {
+		return fmt.Errorf("write dismissed: %w", err)
+	}
+	return nil
 }
