@@ -2,7 +2,7 @@
 
 > 验证多层过滤收敛管道的精度和召回率。
 > Ground truth 定义在 [expected-results.json](expected-results.json) 中（每个用例带机器可读的 `expect` 字段）。
-> **当前状态: VALID。** 行号锚点与 detector ID 已对齐当前源码；门禁脚本 `scripts/validate-benchmark.py` 可直接计算 precision/recall（当前 100% precision / ~85% recall，2 个已知 detector 覆盖缺口见下）。
+> **当前状态: VALID。** 行号锚点与 detector ID 已对齐当前源码；门禁脚本 `scripts/validate-benchmark.py` 可直接计算 precision/recall（当前 34 用例口径 100% precision / 100% recall）。
 >
 > ```bash
 > secguard scan examples/c-vuln-benchmark/src > /tmp/scan.json
@@ -11,21 +11,26 @@
 >   --expected examples/c-vuln-benchmark/expected-results.json
 > ```
 >
-> **已知 detector 覆盖缺口（召回，非误报）**：`PH1-01` 整数溢出 `malloc(count * obj_size)` 未被 `integer-overflow` detector 捕获；`PH1-06` 注册表凭据 `RegSetValueExA` 未被 `hardcoded-secret` detector 捕获。二者均为后续单点增强项。
+> **历史 detector 覆盖缺口（已闭环）**：`PH1-01` 整数溢出 `malloc(count * obj_size)` 与 `PH1-06` 注册表凭据 `RegSetValueExA` 曾未被 detector 捕获，现均已产出候选。
 
 ## 测试规模
 
 | 指标 | 数值 |
 |------|------|
-| 源文件 | 7 |
-| 总测试用例 | 18 |
+| 源文件 | 15 |
+| 总测试用例 | 34 |
+| Phase 0（P0-P3/TP） | 18 |
+| Phase 1（CWE-190/362/798/667/327） | 12 |
+| Phase 2（扩展典型漏洞） | 4 |
 | 应完全不产生 Finding (P0: Detector EXCLUDE) | 7 |
 | 应产生 Finding 但被 P1 抑制 | 3 |
 | 应产生 Finding 但被 P2 抑制 | 4 |
 | 应产生 Finding 且 P3 confirmed (真阳性) | 2 |
 | 应产生 Finding 且 P3 suspected (需人工确认) | 2 |
+| Phase 1 confirmed | 9 |
+| Phase 2 confirmed | 4 |
 | **总误报应消减数** | **14** |
-| **最终 Certified Finding** | **4** |
+| **最终 Certified Finding（全 34 用例）** | **17** |
 
 ## 分类定义
 
@@ -45,13 +50,13 @@
 
 | # | 文件 | 行 | 安全函数 | EXCLUDE 模式 |
 |---|------|----|---------|-------------|
-| P0-01 | p0_safe_functions.c | 24 | `memcpy_s(dst, sizeof(dst), ...)` | `memcpy_s\(dst,\s*sizeof\(dst\)` |
-| P0-02 | p0_safe_functions.c | 28 | `strcpy_s(dst, sizeof(dst), ...)` | `strcpy_s\(dst,\s*sizeof\(dst\)` |
-| P0-03 | p0_safe_functions.c | 32 | `sprintf_s(dst, sizeof(dst), ...)` | `sprintf_s\(buf,\s*sizeof\(buf\)` |
-| P0-04 | p0_safe_functions.c | 36 | `strcat_s(dst, sizeof(dst), ...)` | `strcat_s\(dst,\s*sizeof\(dst\)` |
-| P0-05 | p0_safe_functions.c | 44 | `snprintf + sizeof + 返回值检查` | `snprintf\([^)]*sizeof\([^)]*\).*\n.*if\s*\(.*written` |
-| P0-06 | p0_safe_functions.c | 65 | `execve("/bin/ping", argv, NULL)` | `execve\(` |
-| P0-07 | p0_safe_functions.c | 94 | `sqlite3_prepare_v2 + sqlite3_bind_text` | `sqlite3_bind_text\|PreparedStatement` |
+| P0-01 | p0_safe_functions.c | 14 | `memcpy_s(dst, sizeof(dst), ...)` | `memcpy_s\(dst,\s*sizeof\(dst\)` |
+| P0-02 | p0_safe_functions.c | 18 | `strcpy_s(dst, sizeof(dst), ...)` | `strcpy_s\(dst,\s*sizeof\(dst\)` |
+| P0-03 | p0_safe_functions.c | 22 | `sprintf_s(dst, sizeof(dst), ...)` | `sprintf_s\(buf,\s*sizeof\(buf\)` |
+| P0-04 | p0_safe_functions.c | 26 | `strcat_s(dst, sizeof(dst), ...)` | `strcat_s\(dst,\s*sizeof\(dst\)` |
+| P0-05 | p0_safe_functions.c | 37 | `snprintf + sizeof + 返回值检查` | `snprintf\([^)]*sizeof\([^)]*\).*\n.*if\s*\(.*written` |
+| P0-06 | p0_safe_functions.c | 55 | `execve("/bin/ping", argv, NULL)` | `execve\(` |
+| P0-07 | p0_safe_functions.c | 86 | `sqlite3_prepare_v2 + sqlite3_bind_text` | `sqlite3_bind_text\|PreparedStatement` |
 
 **期望**: 0 Finding。若 regex 回退精度不足产生 Finding → P2 应作为第二防线抑制。
 
@@ -63,8 +68,8 @@
 
 | # | 文件 | 行 | 触发 Detector | 安全机制 | P1 期望 |
 |---|------|----|-------------|---------|--------|
-| P1-01 | p1_safecopy_wrapper.c | 24 | memory.buffer_overflow | SafeCopy_copy 保证 bounds_checked | **exempted** |
-| P1-02 | p1_safecopy_wrapper.c | 31 | memory.buffer_overflow | SafeCopy_strcpy 保证 bounds_checked | **exempted** |
+| P1-01 | p1_safecopy_wrapper.c | 18 | memory.buffer_overflow | SafeCopy_copy 保证 bounds_checked | **exempted** |
+| P1-02 | p1_safecopy_wrapper.c | 28 | memory.buffer_overflow | SafeCopy_strcpy 保证 bounds_checked | **exempted** |
 | P1-03 | p1_safequery_wrapper.c | 38 | injection.command_injection | SafeQuery 保证 prepared_statement | **exempted** |
 
 **期望**: 3/3 Finding → P1 exempted → dismissed.
@@ -77,10 +82,10 @@
 
 | # | 文件 | 行 | 触发 Detector | 反证 | P2 期望 |
 |---|------|----|-------------|------|--------|
-| P2-01 | p2_raii_memory.c | 29 | memory.memory_leak | ResourceHandle RAII (构造分配+析构释放) | **counter_evidence_found** |
-| P2-02 | p2_lock_guard.c | 40 | concurrency.lock | LockGuard mutex 守卫 | **counter_evidence_found** |
-| P2-03 | p2_bounds_checked.c | 28 | memory.buffer_overflow | `if (user_len > MAX_MSG_SIZE) return` bounds check | **counter_evidence_found** |
-| P2-04 | p2_bounds_checked.c | 41 | memory.buffer_overflow | `if (user_len >= sizeof(dst)) return` sizeof guard | **counter_evidence_found** |
+| P2-01 | p2_raii_memory.c | 16 | memory.memory_leak | ResourceHandle RAII (构造分配+析构释放) | **counter_evidence_found** |
+| P2-02 | p2_lock_guard.c | 27 | concurrency.lock | LockGuard mutex 守卫 | **counter_evidence_found** |
+| P2-03 | p2_bounds_checked.c | 14 | memory.buffer_overflow | `if (user_len > MAX_MSG_SIZE) return` bounds check | **counter_evidence_found** |
+| P2-04 | p2_bounds_checked.c | 30 | memory.buffer_overflow | `if (user_len >= sizeof(dst)) return` sizeof guard | **counter_evidence_found** |
 
 **期望**: 4/4 Finding → P2 counter_evidence_found → dismissed.
 
@@ -92,8 +97,8 @@
 
 | # | 文件 | 行 | 触发 Detector | 有保护但不充分 | P3 期望 |
 |---|------|----|-------------|--------------|--------|
-| P3-01 | p3_edge_case.c | 40 | injection.command_injection | is_safe_input 过滤分号但不防御 &&, \|\|, \$() | **suspected** |
-| P3-02 | p3_edge_case.c | 60 | concurrency.lock | pthread_mutex_lock 保护了读取但 lock-unlock 间有 TOCTOU 窗口 | **suspected** |
+| P3-01 | p3_edge_case.c | 28 | injection.command_injection | is_safe_input 过滤分号但不防御 &&, \|\|, \$() | **suspected** |
+| P3-02 | p3_edge_case.c | 49 | concurrency.lock | pthread_mutex_lock 保护了读取但 lock-unlock 间有 TOCTOU 窗口 | **suspected** |
 
 **期望**: 2/2 Finding → P3 suspected → 保留在 Certified Finding 中标记需人工确认。
 
@@ -105,12 +110,23 @@
 
 | # | 文件 | 行 | 触发 Detector | 漏洞 | 期望 |
 |---|------|----|-------------|------|------|
-| TP-01 | p1_safecopy_wrapper.c | 62 | memory.buffer_overflow | `memcpy(buf, user_input, strlen(user_input))` 无 bounds check | P3 **confirmed** |
-| TP-02 | p1_safequery_wrapper.c | 53 | injection.command_injection | `sprintf(query, "SELECT ... '%s'", username)` 字符串拼接 SQL | P3 **confirmed** |
+| TP-01 | p1_safecopy_wrapper.c | 47 | memory.buffer_overflow | `memcpy(buf, user_input, strlen(user_input))` 无 bounds check | P3 **confirmed** |
+| TP-02 | p1_safequery_wrapper.c | 49 | injection.command_injection | `sprintf(query, "SELECT ... '%s'", username)` 字符串拼接 SQL | P3 **confirmed** |
 
 **期望**: 2/2 Finding → P3 confirmed → Certified Finding.
 
 ---
+
+### Phase 2 — 扩展典型漏洞（本轮新增）
+
+| # | 文件 | 行 | 检测器 | 漏洞 | 期望 |
+|---|------|----|--------|------|------|
+| OB-01 | memory_extra.c | 15 | buffer-overflow (heap_oob_write) | `malloc(user_len)` 后循环 `i < user_len + 10` 写 `buf[i]` | finding |
+| OB-02 | parser.c | 31 | buffer-overflow (format_overflow) | `sprintf(task->command, "Task[%s]: %s", task->name, description)` 写 256 字节字段 | finding |
+| RA-01 | concurrency.c | 15 | race-condition (shared_data_race) | 两个 pthread 线程无锁 `g_shared_counter++` | finding |
+| OOB-01 | parser.c | 86 | out-of-bounds (CWE-125) | `int arr[10]`，循环 `i <= 10` 读 `arr[i]` | finding |
+
+**说明**：`array_oob_read`/`heap_oob_read` 事件由新增的 `out-of-bounds`（CWE-125）类型消费，写侧事件仍由 `buffer-overflow`（CWE-787）消费。经典数据竞争（至少一次写 + 无锁）为 confirmed；TOCTOU 有部分锁保护（读在锁内、变更在锁外）应为 suspected 人工确认。
 
 ## Benchmark 指标
 

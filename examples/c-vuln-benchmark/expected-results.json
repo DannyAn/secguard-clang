@@ -1,15 +1,17 @@
 {
-  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327)。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。",
+  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327) + 4 个测试用例 (Phase 2: heap OOB write / format overflow / data race / OOB read)。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。",
   "_benchmark_doc": "benchmark.md",
   "_validator": "scripts/validate-benchmark.py",
   "summary": {
-    "total_test_cases": 30,
+    "total_test_cases": 34,
     "phase0_test_cases": 18,
     "phase1_test_cases": 12,
-    "expected_final_certified": 13,
+    "phase2_test_cases": 4,
+    "expected_final_certified": 17,
     "expected_no_finding": 17,
     "phase1_confirmed": 9,
     "phase1_safe_excluded": 3,
+    "phase2_confirmed": 4,
     "target_precision": "100%",
     "phase1_cwes": ["CWE-190", "CWE-362", "CWE-798", "CWE-667", "CWE-327"]
   },
@@ -74,6 +76,15 @@
     {"id": "PH1-11", "category": "phase1_crypto_misuse", "file": "src/crypto.c", "line": 37,
      "code": "RAND_bytes(buf, sizeof(buf));", "cwe": "CWE-327", "detector": "crypto_misuse", "expect": "no_finding"},
     {"id": "PH1-12", "category": "phase1_crypto_misuse", "file": "src/crypto.c", "line": 59,
-     "code": "unsigned char key[32]; RAND_bytes(key, sizeof(key));", "cwe": "CWE-327", "detector": "crypto_misuse", "expect": "no_finding"}
+     "code": "unsigned char key[32]; RAND_bytes(key, sizeof(key));", "cwe": "CWE-327", "detector": "crypto_misuse", "expect": "no_finding"},
+
+    {"id": "OB-01", "category": "phase2_heap_oob_write", "file": "src/memory_extra.c", "line": 15,
+     "code": "buf[i] = 'A' after malloc(user_len)", "cwe": "CWE-787", "detector": "buffer_overflow", "expect": "finding"},
+    {"id": "OB-02", "category": "phase2_format_overflow", "file": "src/parser.c", "line": 31,
+     "code": "sprintf(task->command, \"Task[%s]: %s\", task->name, description)", "cwe": "CWE-787", "detector": "buffer_overflow", "expect": "finding"},
+    {"id": "RA-01", "category": "phase2_data_race", "file": "src/concurrency.c", "line": 15,
+     "code": "g_shared_counter++ in two pthread threads without lock", "cwe": "CWE-362", "detector": "race_condition", "expect": "finding"},
+    {"id": "OOB-01", "category": "phase2_out_of_bounds", "file": "src/parser.c", "line": 86,
+     "code": "secret = arr[i] with i <= 10 on int arr[10]", "cwe": "CWE-125", "detector": "out_of_bounds", "expect": "finding"}
   ]
 }

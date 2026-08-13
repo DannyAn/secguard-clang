@@ -76,14 +76,20 @@ Vulnerability type to CWE mapping:
 | Vuln Type | CWE |
 |-----------|-----|
 | null-deref | CWE-476 |
-| buffer-overflow | CWE-120 |
+| buffer-overflow | CWE-787 |
 | memory-leak | CWE-401 |
 | injection | CWE-78 |
-| resource-leak | CWE-911 |
+| resource-leak | CWE-404 |
 | uninit | CWE-457 |
 | use-after-free | CWE-416 |
 | double-free | CWE-415 |
 | format-string | CWE-134 |
+| integer-overflow | CWE-190 |
+| race-condition | CWE-362 |
+| hardcoded-secret | CWE-798 |
+| deadlock | CWE-667 |
+| crypto-misuse | CWE-327 |
+| out-of-bounds | CWE-125 |
 
 ### report.md
 
@@ -92,6 +98,11 @@ Human-readable summary with:
 - Summary table: vulnerability type, count, severity breakdown
 - Findings table: # | Type | Severity | Confidence | Location | Variable | Status
 - Path to SARIF file and per-finding directories
+
+The summary header reports both `Functions indexed` (functions parsed during
+this run; unchanged files are skipped, so a re-scan reports 0) and
+`Functions in index` (total functions available in the program graph for the
+current repository).
 
 ### Per-finding Markdown (`<vuln-type>/NNN_<file>_<line>.md`)
 

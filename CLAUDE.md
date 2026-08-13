@@ -70,7 +70,7 @@ Schema is in `internal/db/schema.go` (`SchemaDDL`). CRUD is split per entity in 
 
 ```
 secguard index <path>    Index a C codebase
-secguard scan <path>     Full pipeline: index + plan all 14 vuln types + report
+secguard scan <path>     Full pipeline: index + plan all 15 vuln types + report
 secguard status          Index status (files, functions, staleness)
 secguard query <skill>   Run a skill query
 secguard plan <vuln>     Run convergence for one vulnerability type
@@ -100,6 +100,13 @@ Scan output is written to `.codeagent/zhuque-secguard/scans/<scan-id>/` (`scan-i
 - `sgre/testdata/phase1`–`phase7` — staged fixtures for the pipeline phases.
 - `sgre/testdata/perf/gen_codebase.go` — generates large synthetic codebases for perf testing: `go run testdata/perf/gen_codebase.go testdata/perf/large_codebase 100 50`.
 
-## Supported Vulnerability Types (14)
+## Supported Vulnerability Types (15)
 
 `null-deref`, `buffer-overflow`, `memory-leak`, `injection`, `resource-leak`, `uninit`, `use-after-free`, `double-free`, `format-string`, `integer-overflow`, `race-condition`, `hardcoded-secret`, `deadlock`, `crypto-misuse` — each registered as a `VulnTypeSpec` in `internal/planner/registry.go`, each with a corresponding agent skill under `.claude/skills/`.
+
+`out-of-bounds` (CWE-125) is the 15th type. It shares the
+`BUFFER_ACCESS` seed event with `buffer-overflow`: read-flavored categories
+(`array_oob_read`, `heap_oob_read`) route to it, write-flavored categories
+(`buffer_overflow`, `array_oob_write`, `heap_oob_write`, `format_overflow`)
+route to `buffer-overflow`. The split lives in the `Categories` field of each
+`VulnTypeSpec`.

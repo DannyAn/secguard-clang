@@ -1,6 +1,6 @@
 ---
 name: race-condition
-description: Classify race condition evidence — TOCTOU (access→fopen) and shared-state (lock→unlock→mutate) patterns. Maps to CWE-362.
+description: Classify race condition evidence — TOCTOU (access→fopen), shared-state (lock→unlock→mutate), and classic shared-variable data races in pthread code. Maps to CWE-362.
 license: MIT
 compatibility: opencode
 metadata:
@@ -23,6 +23,12 @@ metadata:
 - Pattern: `mutex_lock` → `check` → `mutex_unlock` → `mutate`
 - Check and mutation not atomic; another thread can change state between unlock and mutate
 
+#### Classic Data Race (CWE-362)
+- **RACE_CONDITION event** with category `shared_data_race`
+- Pattern: a file-scope variable accessed by two or more `pthread_create` thread functions, with at least one write, and no `pthread_mutex_lock`/`unlock` scope around the access
+- Examples: `g_shared_counter++` in two threads, writer/reader pairs on `g_flag`/`g_data`
+- The event carries `thread_functions`, `thread_instances`, `access_lines` and `write_lines` properties
+
 ### Safe Patterns (P0 Exclusion)
 
 | Safe Pattern | Why Safe |
@@ -38,10 +44,13 @@ metadata:
 |-----------|---------------|
 | `access()` + `fopen()` on same path, no atomicity | **confirmed** |
 | `access()` + `open()` with `O_NOFOLLOW` | **false-positive** |
-| Lock-unlock-mutate with shared variable | **confirmed** |
+| Lock-unlock-mutate with shared variable (check in lock, mutate outside) | **suspected** (partial protection, needs human review) |
 | Lock held through check + mutate | **false-positive** |
 | `access()` + `fopen()` in same function, path is local | **suspected** (may be safe if path not attacker-controlled) |
 | Check-then-act with no shared state | **false-positive** |
+| Shared variable, >= 2 pthread threads, >= 1 write, no lock | **confirmed** |
+| Shared variable, all accesses inside lock scope | **false-positive** |
+| Shared variable accessed by only one thread function | **false-positive** (no concurrent access) |
 
 ### Fix Suggestions
 - Replace `access()` + `fopen()` with direct `fopen()` and error check

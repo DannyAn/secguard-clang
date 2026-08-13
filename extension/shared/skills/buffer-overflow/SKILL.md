@@ -1,20 +1,29 @@
 ---
 name: buffer-overflow
-description: Classify buffer overflow evidence — BUFFER_ACCESS events from unsafe memcpy/strcpy/sprintf/strcat calls. Maps to CWE-120, CWE-787.
+description: Classify buffer overflow evidence — BUFFER_ACCESS events from unsafe memcpy/strcpy/sprintf/strcat calls, array/heap out-of-bounds writes, and format overflow. Maps to CWE-787.
 license: MIT
 compatibility: opencode
 metadata:
-  cwe: CWE-120
+  cwe: CWE-787
   severity: HIGH
 ---
 
-## Buffer Overflow Analysis (CWE-120, CWE-787)
+## Buffer Overflow Analysis (CWE-787)
 
 ### Evidence Pattern
 A buffer-overflow candidate has:
 - **BUFFER_ACCESS event**: An unsafe function call (memcpy, strcpy, sprintf, strcat, gets)
 - **No bounds check**: No guard checking buffer capacity before the unsafe call
 - **Reachable**: The function is reachable from an entry point
+
+Detector categories that route to this type:
+- `buffer_overflow` — unsafe copy API call (memcpy/strcpy/strcat/gets/...)
+- `array_oob_write` — constant index or loop bound past a fixed-size array, as a write
+- `heap_oob_write` — loop bound provably exceeds a `malloc`/`calloc` size (e.g. `malloc(user_len)` + `i < user_len + 10`)
+- `format_overflow` — `sprintf`/`wsprintf` into a known-capacity buffer with a non-constant source
+
+Read-flavored events (`array_oob_read`, `heap_oob_read`) belong to the
+`out-of-bounds` type (CWE-125), not this one.
 
 ### Safe Function Alternatives (P0 Exclusion)
 
@@ -42,7 +51,11 @@ A buffer-overflow candidate has:
 | Unsafe call inside safe wrapper | **false-positive** |
 | `memcpy` with `sizeof(dst)` as size | **false-positive** |
 | `strncpy` with `sizeof(dst) - 1` + null terminate | **false-positive** |
-| Array access with variable index, no bounds check | **suspected** |
+| Array write with constant index >= array size | **confirmed** |
+| Loop bound provably exceeds array/heap allocation size (write) | **confirmed** |
+| `sprintf(dst, ..., var)` into known-capacity `dst`, no size arg | **confirmed** |
+| `sprintf` whose destination feeds `system`/`sqlite3_exec`/`CreateProcessA` | **false-positive** for buffer-overflow (injection is the root cause; SQL/command injection covers it) |
+| Array access with variable index, no provable bound | **suspected** |
 
 ### Fix Suggestions
 - Replace with safe function: `memcpy_s(dst, sizeof(dst), src, n)`
