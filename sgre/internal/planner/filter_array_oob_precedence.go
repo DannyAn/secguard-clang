@@ -2,7 +2,6 @@ package planner
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -18,10 +17,10 @@ func NewArrayOOBPrecedenceFilter(store db.Store) *ArrayOOBPrecedenceFilter {
 
 func (f *ArrayOOBPrecedenceFilter) Name() string { return "array_oob_precedence" }
 
-func (f *ArrayOOBPrecedenceFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, error) {
+func (f *ArrayOOBPrecedenceFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, []Dismissed, error) {
 	bofEvents, err := f.store.ListEventsByType(ctx, "BUFFER_ACCESS")
 	if err != nil {
-		return nil, fmt.Errorf("array oob precedence filter: %w", err)
+		return nil, nil, fmt.Errorf("array oob precedence filter: %w", err)
 	}
 
 	bofLocations := make(map[string]bool)
@@ -35,20 +34,22 @@ func (f *ArrayOOBPrecedenceFilter) Apply(ctx context.Context, candidates []Candi
 		}
 	}
 
-	var result []Candidate
-	for _, c := range candidates {
-		if c.NonNullable && c.LocationID > 0 {
-			loc, _ := f.store.GetLocationByID(ctx, c.LocationID)
-			if loc != nil {
-				key := fmt.Sprintf("%d:%d", loc.FileID, loc.Line)
-				if bofLocations[key] {
-					continue
+	kept, dropped := partition(candidates,
+		func(c Candidate) bool {
+			if c.NonNullable && c.LocationID > 0 {
+				loc, _ := f.store.GetLocationByID(ctx, c.LocationID)
+				if loc != nil {
+					key := fmt.Sprintf("%d:%d", loc.FileID, loc.Line)
+					if bofLocations[key] {
+						return false
+					}
 				}
 			}
-		}
-		result = append(result, c)
-	}
-	return result, nil
+			return true
+		},
+		func(c Candidate) string {
+			return "array out-of-bounds BUFFER_ACCESS already covers this location"
+		},
+		f.Name())
+	return kept, dropped, nil
 }
-
-var _ = json.Marshal

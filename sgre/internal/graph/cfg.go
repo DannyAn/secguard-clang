@@ -17,6 +17,11 @@ type CFG struct {
 	Root *Scope
 }
 
+// BuildCFG builds a coarse, line-number-based control-flow approximation. It
+// only descends into `if`/loop bodies that have a compound_statement child, so
+// flat functions (no block-scoped branch bodies) yield a CFG whose Root has no
+// children. Callers treat that as "degenerate" and fall back to a conservative
+// path-insensitive decision rather than trusting CanReach.
 func BuildCFG(root parser.Node, funcStart, funcEnd int) *CFG {
 	scopeRoot := &Scope{StartLine: funcStart, EndLine: funcEnd}
 	cfg := &CFG{Root: scopeRoot}
@@ -123,6 +128,11 @@ func (s *Scope) findInnermost(line int) *Scope {
 	return s
 }
 
+// CanReach answers whether a use at useLine can be reached from a free/early
+// exit at freeLine using only line ranges and the presence of a return/break/
+// continue inside the innermost scope. It is a conservative line-order
+// heuristic, not a real dataflow: it defaults to "reachable" whenever it cannot
+// prove otherwise, so a degenerate CFG never causes a true leak to be dropped.
 func (cfg *CFG) CanReach(freeLine, useLine int) bool {
 	freeScope := cfg.findInnermostScope(freeLine)
 

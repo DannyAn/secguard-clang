@@ -8,6 +8,16 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/db"
 )
 
+// setupBenchmarkData builds a mock store with 18 BUFFER_ACCESS events across
+// the P0 (safe API), P1 (safe wrapper), P2 (bounds-checked), P3 (weak guard)
+// and TP (true positive) benchmark tiers.
+//
+// Bounds-check suppression (P2) happens at the detector level — the
+// buffer-overflow detector's hasPrecedingBoundsCheck simply does not emit a
+// BUFFER_ACCESS event for a guarded call — so the planner's buffer-overflow
+// chain is call_reach + safe_function_exclude only. The P2/P3 tiers are
+// therefore modelled here as ordinary BUFFER_ACCESS events that pass through
+// the planner (the detector would already have suppressed the real P2 case).
 func setupBenchmarkData(s *mockStore) {
 	ctx := context.Background()
 	fileID, _ := s.InsertFile(ctx, &db.File{Path: "benchmark/src", Language: "c"})
@@ -34,11 +44,6 @@ func setupBenchmarkData(s *mockStore) {
 		props, _ := json.Marshal(map[string]string{"function": funcName, "category": category})
 		s.InsertEvent(ctx, &db.SecurityEvent{EventType: "BUFFER_ACCESS", EntityID: funcID, LocationID: locID, Properties: string(props)})
 	}
-	insertGuardEvent := func(funcID int64, line int, cond string, strength string) {
-		locID, _ := s.InsertLocation(ctx, &db.Location{FileID: fileID, Line: line})
-		props, _ := json.Marshal(map[string]interface{}{"condition": cond, "scope_start": line, "scope_end": line + 10, "strength": strength})
-		s.InsertEvent(ctx, &db.SecurityEvent{EventType: "NULL_GUARD", EntityID: funcID, LocationID: locID, Properties: string(props)})
-	}
 
 	insertBufferEvent(p0Func, 24, "memcpy_s", "buffer_overflow")
 	insertBufferEvent(p0Func, 28, "strcpy_s", "buffer_overflow")
@@ -53,18 +58,12 @@ func setupBenchmarkData(s *mockStore) {
 	insertBufferEvent(p1Func2, 38, "SafeQuery_exec", "command_injection")
 
 	insertBufferEvent(p2Func, 28, "memcpy", "buffer_overflow")
-	insertGuardEvent(p2Func, 27, "NULL_CHECK", "strong")
 	insertBufferEvent(p2Func, 41, "memcpy", "buffer_overflow")
-	insertGuardEvent(p2Func, 40, "NULL_CHECK", "strong")
 	insertBufferEvent(p2Func2, 40, "g_counter", "race_condition")
-	insertGuardEvent(p2Func2, 39, "TRUTH_CHECK", "strong")
 	insertBufferEvent(p2Func3, 29, "malloc", "memory_leak")
-	insertGuardEvent(p2Func3, 28, "TRUTH_CHECK", "strong")
 
 	insertBufferEvent(p3Func, 40, "system", "command_injection")
-	insertGuardEvent(p3Func, 39, "TRUTH_CHECK", "weak")
 	insertBufferEvent(p3Func2, 60, "g_account_balance", "race_condition")
-	insertGuardEvent(p3Func2, 55, "NULL_CHECK", "weak")
 
 	insertBufferEvent(tpFunc, 62, "memcpy", "buffer_overflow")
 	insertBufferEvent(tpFunc2, 53, "sprintf", "sql_injection")
@@ -76,176 +75,75 @@ func setupBenchmarkData(s *mockStore) {
 	}
 }
 
+// TestBenchmark_ConvergencePipeline verifies the buffer-overflow chain:
+// 18 seeds → safe_function_exclude drops P0 (7 safe APIs) + P1 (3 safe
+// wrappers) → 8 remain (P2/P3/TP pass through to the AI agent for review).
 func TestBenchmark_ConvergencePipeline(t *testing.T) {
 	ctx := context.Background()
 	s := newMockStore()
 	setupBenchmarkData(s)
 
 	allEvents, _ := s.ListEventsByType(ctx, "BUFFER_ACCESS")
-	totalPotential := len(allEvents)
-	if totalPotential != 18 {
-		t.Errorf("expected 18 potential findings (BUFFER_ACCESS events), got %d", totalPotential)
+	if len(allEvents) != 18 {
+		t.Errorf("expected 18 BUFFER_ACCESS events, got %d", len(allEvents))
 	}
 
 	safeFilter := NewSafeFunctionFilter(s)
-	afterSafe, err := safeFilter.Apply(ctx, toCandidates(allEvents, s, ctx))
+	afterSafe, _, err := safeFilter.Apply(ctx, toCandidates(allEvents, s, ctx))
 	if err != nil {
 		t.Fatalf("safe function filter failed: %v", err)
 	}
 	if len(afterSafe) != 8 {
-		t.Errorf("after safe function filter: expected 8 (18-7 P0-3 P1), got %d", len(afterSafe))
+		t.Errorf("after safe function filter: expected 8 (18 - 7 P0 - 3 P1), got %d", len(afterSafe))
 	}
-
-	boundsFilter := NewBoundsCheckFilter(s)
-	afterBounds, err := boundsFilter.Apply(ctx, afterSafe)
-	if err != nil {
-		t.Fatalf("bounds check filter failed: %v", err)
-	}
-	if len(afterBounds) != 4 {
-		t.Errorf("after bounds check filter: expected 4 (2 TP confirmed + 2 P3 suspected), got %d", len(afterBounds))
-	}
-
-	suspectedCount := 0
-	confirmedCount := 0
-	for _, c := range afterBounds {
-		if c.SuspicionLevel == "suspected" {
-			suspectedCount++
-		} else {
-			confirmedCount++
-		}
-	}
-	if suspectedCount != 2 {
-		t.Errorf("expected 2 suspected (P3 edge cases), got %d", suspectedCount)
-	}
-	if confirmedCount != 2 {
-		t.Errorf("expected 2 confirmed (TP true positives), got %d", confirmedCount)
-	}
-
-	t.Logf("Convergence: 18 → safe_filter → 8 → bounds_check → 4 (2 TP confirmed + 2 P3 suspected)")
-	t.Logf("P3 edge cases retained with suspicion_level='suspected' for AI agent court review.")
 }
 
-func TestBenchmark_P3SuspectedRetention(t *testing.T) {
+// TestBenchmark_SafeFunctionFilter verifies safe API and safe-wrapper exclusion.
+func TestBenchmark_SafeFunctionFilter(t *testing.T) {
 	ctx := context.Background()
 	s := newMockStore()
 	setupBenchmarkData(s)
 
-	allEvents, _ := s.ListEventsByType(ctx, "BUFFER_ACCESS")
-	candidates := toCandidates(allEvents, s, ctx)
-
-	safeFilter := NewSafeFunctionFilter(s)
-	afterSafe, _ := safeFilter.Apply(ctx, candidates)
-
-	boundsFilter := NewBoundsCheckFilter(s)
-	afterBounds, _ := boundsFilter.Apply(ctx, afterSafe)
-
-	p3Func, _ := s.GetFunctionByName(ctx, "run_admin_command")
-	p3Func2, _ := s.GetFunctionByName(ctx, "check_and_transfer")
-	p3FuncID := int64(0)
-	p3Func2ID := int64(0)
-	if p3Func != nil {
-		p3FuncID = p3Func.ID
-	}
-	if p3Func2 != nil {
-		p3Func2ID = p3Func2.ID
-	}
-
-	for _, c := range afterBounds {
-		if c.FunctionID == p3FuncID || c.FunctionID == p3Func2ID {
-			if c.GuardStrength != "weak" {
-				t.Errorf("P3 candidate %s: expected guard_strength='weak', got %q", c.FunctionName, c.GuardStrength)
-			}
-			if c.SuspicionLevel != "suspected" {
-				t.Errorf("P3 candidate %s: expected suspicion_level='suspected', got %q", c.FunctionName, c.SuspicionLevel)
-			}
-			if !c.IsGuarded {
-				t.Errorf("P3 candidate %s: expected is_guarded=true", c.FunctionName)
-			}
+	safeFuncs := []string{"memcpy_s", "strcpy_s", "sprintf_s", "strcat_s", "snprintf", "execve", "sqlite3_prepare_v2"}
+	for _, name := range safeFuncs {
+		c := Candidate{VariableName: name}
+		result, _, err := NewSafeFunctionFilter(s).Apply(ctx, []Candidate{c})
+		if err != nil {
+			t.Fatalf("filter failed: %v", err)
+		}
+		if len(result) != 0 {
+			t.Errorf("safe function %s should be excluded", name)
 		}
 	}
 
-	for _, c := range afterBounds {
-		if c.FunctionID != p3FuncID && c.FunctionID != p3Func2ID {
-			if c.SuspicionLevel == "suspected" {
-				t.Errorf("non-P3 candidate %s should not be suspected", c.FunctionName)
-			}
+	safeWraps := []string{"SafeCopy_copy", "SafeCopy_strcpy", "SafeQuery_exec", "ResourceHandle_create", "LockGuard_create"}
+	for _, name := range safeWraps {
+		c := Candidate{FunctionName: name}
+		result, _, err := NewSafeFunctionFilter(s).Apply(ctx, []Candidate{c})
+		if err != nil {
+			t.Fatalf("filter failed: %v", err)
+		}
+		if len(result) != 0 {
+			t.Errorf("safe wrapper %s should be excluded", name)
+		}
+	}
+
+	unsafeFuncs := []string{"memcpy", "strcpy", "sprintf", "system", "sqlite3_exec"}
+	for _, name := range unsafeFuncs {
+		c := Candidate{VariableName: name}
+		result, _, err := NewSafeFunctionFilter(s).Apply(ctx, []Candidate{c})
+		if err != nil {
+			t.Fatalf("filter failed: %v", err)
+		}
+		if len(result) != 1 {
+			t.Errorf("unsafe function %s should NOT be excluded", name)
 		}
 	}
 }
 
-func TestBenchmark_EvidenceItemSuspicionLevel(t *testing.T) {
-	ctx := context.Background()
-	s := newMockStore()
-	setupBenchmarkData(s)
-
-	allEvents, _ := s.ListEventsByType(ctx, "BUFFER_ACCESS")
-	candidates := toCandidates(allEvents, s, ctx)
-
-	safeFilter := NewSafeFunctionFilter(s)
-	afterSafe, _ := safeFilter.Apply(ctx, candidates)
-
-	boundsFilter := NewBoundsCheckFilter(s)
-	afterBounds, _ := boundsFilter.Apply(ctx, afterSafe)
-
-	for _, c := range afterBounds {
-		spec, _ := GetVulnTypeSpec("buffer-overflow")
-		item := newEvidenceItem(c, spec, "")
-		if c.SuspicionLevel == "suspected" {
-			if item.SuspicionLevel != "suspected" {
-				t.Errorf("evidence item for %s: expected suspicion_level='suspected'", c.FunctionName)
-			}
-			hasWeakGuard := false
-			for _, frag := range item.Evidence {
-				if frag.Type == "weak_guard" {
-					hasWeakGuard = true
-				}
-			}
-			if !hasWeakGuard {
-				t.Errorf("evidence item for %s: expected weak_guard evidence fragment", c.FunctionName)
-			}
-		} else {
-			if item.SuspicionLevel != "suspected" {
-				t.Errorf("evidence item for %s: expected suspicion_level='suspected' for buffer-overflow, got %q", c.FunctionName, item.SuspicionLevel)
-			}
-		}
-	}
-}
-
-func TestBenchmark_StrongGuardDismissal(t *testing.T) {
-	ctx := context.Background()
-	s := newMockStore()
-	setupBenchmarkData(s)
-
-	allEvents, _ := s.ListEventsByType(ctx, "BUFFER_ACCESS")
-	candidates := toCandidates(allEvents, s, ctx)
-
-	safeFilter := NewSafeFunctionFilter(s)
-	afterSafe, _ := safeFilter.Apply(ctx, candidates)
-
-	boundsFilter := NewBoundsCheckFilter(s)
-	afterBounds, _ := boundsFilter.Apply(ctx, afterSafe)
-
-	p2Func, _ := s.GetFunctionByName(ctx, "copy_message")
-	p2Func2, _ := s.GetFunctionByName(ctx, "increment_counter")
-	p2Func3, _ := s.GetFunctionByName(ctx, "process_buffer")
-
-	p2FuncIDs := map[int64]bool{}
-	if p2Func != nil {
-		p2FuncIDs[p2Func.ID] = true
-	}
-	if p2Func2 != nil {
-		p2FuncIDs[p2Func2.ID] = true
-	}
-	if p2Func3 != nil {
-		p2FuncIDs[p2Func3.ID] = true
-	}
-	for _, c := range afterBounds {
-		if p2FuncIDs[c.FunctionID] {
-			t.Errorf("P2 candidate %s with strong guard should be dismissed, but was retained", c.FunctionName)
-		}
-	}
-}
-
+// TestBenchmark_PipelineByVulnType verifies the end-to-end Plan for
+// buffer-overflow: 18 seeds converge (dedup + rank + cap) without exceeding
+// the candidate cap.
 func TestBenchmark_PipelineByVulnType(t *testing.T) {
 	ctx := context.Background()
 	s := newMockStore()
@@ -260,51 +158,8 @@ func TestBenchmark_PipelineByVulnType(t *testing.T) {
 	if result.Summary.SeedCount != 18 {
 		t.Errorf("expected 18 seeds, got %d", result.Summary.SeedCount)
 	}
-
 	if result.CandidateCount() > 30 {
 		t.Errorf("candidates should be capped at 30, got %d", result.CandidateCount())
-	}
-}
-
-func TestBenchmark_SafeFunctionFilter(t *testing.T) {
-	ctx := context.Background()
-	s := newMockStore()
-	setupBenchmarkData(s)
-
-	safeFuncs := []string{"memcpy_s", "strcpy_s", "sprintf_s", "strcat_s", "snprintf", "execve", "sqlite3_prepare_v2"}
-	for _, name := range safeFuncs {
-		c := Candidate{VariableName: name}
-		result, err := NewSafeFunctionFilter(s).Apply(ctx, []Candidate{c})
-		if err != nil {
-			t.Fatalf("filter failed: %v", err)
-		}
-		if len(result) != 0 {
-			t.Errorf("safe function %s should be excluded", name)
-		}
-	}
-
-	safeWraps := []string{"SafeCopy_copy", "SafeCopy_strcpy", "SafeQuery_exec", "ResourceHandle_create", "LockGuard_create"}
-	for _, name := range safeWraps {
-		c := Candidate{FunctionName: name}
-		result, err := NewSafeFunctionFilter(s).Apply(ctx, []Candidate{c})
-		if err != nil {
-			t.Fatalf("filter failed: %v", err)
-		}
-		if len(result) != 0 {
-			t.Errorf("safe wrapper %s should be excluded", name)
-		}
-	}
-
-	unsafeFuncs := []string{"memcpy", "strcpy", "sprintf", "system", "sqlite3_exec"}
-	for _, name := range unsafeFuncs {
-		c := Candidate{VariableName: name}
-		result, err := NewSafeFunctionFilter(s).Apply(ctx, []Candidate{c})
-		if err != nil {
-			t.Fatalf("filter failed: %v", err)
-		}
-		if len(result) != 1 {
-			t.Errorf("unsafe function %s should NOT be excluded", name)
-		}
 	}
 }
 

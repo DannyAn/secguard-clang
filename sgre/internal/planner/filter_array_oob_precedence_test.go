@@ -26,7 +26,7 @@ func TestArrayOOBPrecedence_NullDerefSuppressed(t *testing.T) {
 	}
 
 	f := NewArrayOOBPrecedenceFilter(s)
-	result, err := f.Apply(context.Background(), candidates)
+	result, _, err := f.Apply(context.Background(), candidates)
 	if err != nil {
 		t.Fatalf("Apply failed: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestArrayOOBPrecedence_HeapPointerRetained(t *testing.T) {
 	}
 
 	f := NewArrayOOBPrecedenceFilter(s)
-	result, err := f.Apply(context.Background(), candidates)
+	result, _, err := f.Apply(context.Background(), candidates)
 	if err != nil {
 		t.Fatalf("Apply failed: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestArrayOOBPrecedence_NoBufferAccessEvent(t *testing.T) {
 	}
 
 	f := NewArrayOOBPrecedenceFilter(s)
-	result, err := f.Apply(context.Background(), candidates)
+	result, _, err := f.Apply(context.Background(), candidates)
 	if err != nil {
 		t.Fatalf("Apply failed: %v", err)
 	}

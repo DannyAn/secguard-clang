@@ -17,14 +17,14 @@ func NewCallReachFilter(store db.Store) *CallReachFilter {
 
 func (f *CallReachFilter) Name() string { return "call_reach" }
 
-func (f *CallReachFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, error) {
+func (f *CallReachFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, []Dismissed, error) {
 	if len(candidates) == 0 {
-		return candidates, nil
+		return candidates, nil, nil
 	}
 
 	funcs, err := f.store.ListFunctions(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("filter call reach: list functions: %w", err)
+		return nil, nil, fmt.Errorf("filter call reach: list functions: %w", err)
 	}
 
 	funcNodeMap := make(map[int64]int64)
@@ -49,13 +49,17 @@ func (f *CallReachFilter) Apply(ctx context.Context, candidates []Candidate) ([]
 		}
 	}
 
-	var result []Candidate
+	kept := make([]Candidate, 0, len(candidates))
+	var dropped []Dismissed
 	for _, c := range candidates {
 		nodeID, ok := funcNodeMap[c.FunctionID]
 		if ok && reachableSet[nodeID] {
 			c.IsReachable = true
-			result = append(result, c)
+			kept = append(kept, c)
+			continue
 		}
+		dropped = dismiss(dropped, c, f.Name(),
+			fmt.Sprintf("function %s is not reachable from an entry point", c.FunctionName))
 	}
-	return result, nil
+	return kept, dropped, nil
 }

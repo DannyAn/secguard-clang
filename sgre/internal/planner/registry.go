@@ -12,7 +12,13 @@ type VulnTypeSpec struct {
 	EvidenceType     string
 	DefaultSuspicion string
 	FilterChain      string
-	BuildEvidence    func(c Candidate) []EvidenceFragment
+	// ConvergeByVariable collapses multiple candidates for the same
+	// (function, variable) into one. This is correct for variable-centric
+	// types where a single nullable/tainted variable yields one DEREFERENCE
+	// event per use site (null-deref) — one root cause should surface as one
+	// finding, not one finding per dereferenced line.
+	ConvergeByVariable bool
+	BuildEvidence      func(c Candidate) []EvidenceFragment
 }
 
 var vulnTypeRegistry = map[string]*VulnTypeSpec{}
@@ -58,17 +64,39 @@ func AllSeedEventTypes() []string {
 
 func init() {
 	RegisterVulnType(&VulnTypeSpec{
-		Name:             "null-deref",
-		SeedEventType:    "DEREFERENCE",
-		EvidenceType:     "NULL_DEREFERENCE",
-		DefaultSuspicion: "confirmed",
-		FilterChain:      "null-deref",
+		Name:               "null-deref",
+		SeedEventType:      "DEREFERENCE",
+		EvidenceType:       "NULL_DEREFERENCE",
+		DefaultSuspicion:   "confirmed",
+		FilterChain:        "null-deref",
+		ConvergeByVariable: true,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
-			return []EvidenceFragment{
-				{Type: "nullable_source", Detail: fmt.Sprintf("variable %s has NULL_VALUE source", c.VariableName)},
-				{Type: "call_path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
-				{Type: "data_flow", Detail: fmt.Sprintf("NULL value propagates to dereference at line %d", c.Line)},
+			fragments := make([]EvidenceFragment, 0, 3)
+			if c.HasNullableSource {
+				fragments = append(fragments, EvidenceFragment{
+					Type:   "nullable_source",
+					Detail: fmt.Sprintf("variable %s is assigned a possibly-null value before the dereference at line %d", c.VariableName, c.Line),
+				})
 			}
+			if c.IsReachable {
+				fragments = append(fragments, EvidenceFragment{
+					Type:   "call_path",
+					Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName),
+				})
+			}
+			if c.HasDataFlow {
+				fragments = append(fragments, EvidenceFragment{
+					Type:   "data_flow",
+					Detail: fmt.Sprintf("NULL value propagates to dereference at line %d", c.Line),
+				})
+			}
+			if len(fragments) == 0 {
+				fragments = append(fragments, EvidenceFragment{
+					Type:   "dereference",
+					Detail: fmt.Sprintf("dereference of %s at line %d", c.VariableName, c.Line),
+				})
+			}
+			return fragments
 		},
 	})
 

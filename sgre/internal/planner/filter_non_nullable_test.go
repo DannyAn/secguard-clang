@@ -10,7 +10,7 @@ func TestNonNullableFilter_StackArraySuppressed(t *testing.T) {
 	candidates := []Candidate{
 		{VariableName: "buf", NonNullable: true, Line: 10},
 	}
-	result, err := f.Apply(context.Background(), candidates)
+	result, _, err := f.Apply(context.Background(), candidates)
 	if err != nil {
 		t.Fatalf("Apply failed: %v", err)
 	}
@@ -24,7 +24,7 @@ func TestNonNullableFilter_StaticArraySuppressed(t *testing.T) {
 	candidates := []Candidate{
 		{VariableName: "buf", NonNullable: true, Line: 5},
 	}
-	result, err := f.Apply(context.Background(), candidates)
+	result, _, err := f.Apply(context.Background(), candidates)
 	if err != nil {
 		t.Fatalf("Apply failed: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestNonNullableFilter_HeapPointerRetained(t *testing.T) {
 	candidates := []Candidate{
 		{VariableName: "ptr", NonNullable: false, Line: 10},
 	}
-	result, err := f.Apply(context.Background(), candidates)
+	result, _, err := f.Apply(context.Background(), candidates)
 	if err != nil {
 		t.Fatalf("Apply failed: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestNonNullableFilter_FunctionParamRetained(t *testing.T) {
 	candidates := []Candidate{
 		{VariableName: "buf", NonNullable: false, Line: 10},
 	}
-	result, err := f.Apply(context.Background(), candidates)
+	result, _, err := f.Apply(context.Background(), candidates)
 	if err != nil {
 		t.Fatalf("Apply failed: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestNonNullableFilter_MixedCandidates(t *testing.T) {
 		{VariableName: "arr", NonNullable: true, Line: 30},
 		{VariableName: "p", NonNullable: false, Line: 40},
 	}
-	result, err := f.Apply(context.Background(), candidates)
+	result, _, err := f.Apply(context.Background(), candidates)
 	if err != nil {
 		t.Fatalf("Apply failed: %v", err)
 	}

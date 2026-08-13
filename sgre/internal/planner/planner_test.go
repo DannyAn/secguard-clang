@@ -60,11 +60,11 @@ func TestPlan_EndToEnd_ConvergencePipeline(t *testing.T) {
 		t.Errorf("expected seed count 3 (3 dereferences), got %d", result.Summary.SeedCount)
 	}
 
-	if len(result.Summary.Filters) != 7 {
-		t.Errorf("expected 7 filter stats, got %d", len(result.Summary.Filters))
+	if len(result.Summary.Filters) != 6 {
+		t.Errorf("expected 6 filter stats, got %d", len(result.Summary.Filters))
 	}
 
-	expectedFilters := []string{"non_nullable_array_suppress", "array_oob_precedence", "nullable_source", "call_reach", "guard", "safe_function_exclude", "bounds_check"}
+	expectedFilters := []string{"non_nullable_array_suppress", "array_oob_precedence", "nullable_source", "call_reach", "guard", "safe_function_exclude"}
 	for i, name := range expectedFilters {
 		if i >= len(result.Summary.Filters) {
 			t.Errorf("missing filter %s", name)
@@ -221,5 +221,33 @@ func TestPlan_EndToEnd_EvidenceItemStructure(t *testing.T) {
 		if len(item.Evidence) == 0 {
 			t.Error("evidence item has no evidence fragments")
 		}
+	}
+}
+
+func TestDeduplicateCandidates_ConvergeByVariable(t *testing.T) {
+	// A single nullable variable dereferenced at many sites is one defect, so
+	// null-deref (convergeByVariable=true) collapses it to one finding per
+	// (function, variable), keeping the earliest dereference line.
+	cands := []Candidate{
+		{FileID: 1, FunctionName: "parse_packet", VariableName: "packet", Line: 45},
+		{FileID: 1, FunctionName: "parse_packet", VariableName: "packet", Line: 51},
+		{FileID: 1, FunctionName: "parse_packet", VariableName: "packet", Line: 62},
+		{FileID: 1, FunctionName: "parse_packet", VariableName: "packet->data", Line: 56},
+	}
+
+	got := deduplicateCandidates(cands, true)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 converged candidates (packet, packet->data), got %d", len(got))
+	}
+	if got[0].VariableName != "packet" || got[0].Line != 45 {
+		t.Errorf("expected first candidate packet@45, got %s@%d", got[0].VariableName, got[0].Line)
+	}
+	if got[1].VariableName != "packet->data" {
+		t.Errorf("expected second candidate packet->data, got %s", got[1].VariableName)
+	}
+
+	// Without convergence each dereference line is a distinct candidate.
+	if gotAll := deduplicateCandidates(cands, false); len(gotAll) != 4 {
+		t.Errorf("expected 4 candidates without convergence, got %d", len(gotAll))
 	}
 }

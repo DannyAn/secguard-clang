@@ -87,6 +87,17 @@ func (s *mockStore) ListFunctionsByFile(ctx context.Context, fileID int64) ([]*d
 }
 func (s *mockStore) ListFunctions(ctx context.Context) ([]*db.Function, error) { return s.funcs, nil }
 
+func (s *mockStore) DeleteFunctionsByFile(ctx context.Context, fileID int64) error {
+	kept := s.funcs[:0]
+	for _, f := range s.funcs {
+		if f.FileID != fileID {
+			kept = append(kept, f)
+		}
+	}
+	s.funcs = kept
+	return nil
+}
+
 func (s *mockStore) InsertVariable(ctx context.Context, v *db.Variable) (int64, error) {
 	return s.nextID, nil
 }

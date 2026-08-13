@@ -17,25 +17,26 @@ func NewNullableSourceFilter(store db.Store) *NullableSourceFilter {
 
 func (f *NullableSourceFilter) Name() string { return "nullable_source" }
 
-func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, error) {
-	nullEvents, err := f.store.ListEventsByType(ctx, "NULL_VALUE")
+func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, []Dismissed, error) {
+	models, err := buildNullModel(ctx, f.store)
 	if err != nil {
-		return nil, fmt.Errorf("filter nullable source: %w", err)
-	}
-	nullFuncs := make(map[int64]bool)
-	for _, e := range nullEvents {
-		nullFuncs[e.EntityID] = true
+		return nil, nil, fmt.Errorf("filter nullable source: %w", err)
 	}
 
-	var result []Candidate
+	kept := make([]Candidate, 0, len(candidates))
+	var dropped []Dismissed
 	for _, c := range candidates {
 		if c.NonNullable {
+			dropped = dismiss(dropped, c, f.Name(), "variable is non-nullable")
 			continue
 		}
-		if nullFuncs[c.FunctionID] {
-			c.HasNullableSource = true
-			result = append(result, c)
+		if !models[c.FunctionID].hasSource(c.VariableName, c.Line) {
+			dropped = dismiss(dropped, c, f.Name(),
+				fmt.Sprintf("no nullable source for variable %s before line %d", c.VariableName, c.Line))
+			continue
 		}
+		c.HasNullableSource = true
+		kept = append(kept, c)
 	}
-	return result, nil
+	return kept, dropped, nil
 }

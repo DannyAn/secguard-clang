@@ -24,15 +24,18 @@ func NewLifetimeFilter(store db.Store, p *parser.Parser, logger *log.Logger) *Li
 
 func (f *LifetimeFilter) Name() string { return "lifetime" }
 
-func (f *LifetimeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, error) {
-	var result []Candidate
+func (f *LifetimeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, []Dismissed, error) {
+	kept := make([]Candidate, 0, len(candidates))
+	var dropped []Dismissed
 	for _, c := range candidates {
 		if f.isFalsePositive(ctx, c) {
+			dropped = dismiss(dropped, c, f.Name(),
+				fmt.Sprintf("variable %s is freed then used on an unreachable path", c.VariableName))
 			continue
 		}
-		result = append(result, c)
+		kept = append(kept, c)
 	}
-	return result, nil
+	return kept, dropped, nil
 }
 
 func (f *LifetimeFilter) isFalsePositive(ctx context.Context, c Candidate) bool {
@@ -87,5 +90,3 @@ func (f *LifetimeFilter) isFalsePositive(ctx context.Context, c Candidate) bool 
 
 	return false
 }
-
-var _ = fmt.Sprintf

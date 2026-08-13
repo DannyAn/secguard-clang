@@ -2,7 +2,6 @@ package planner
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -37,19 +36,18 @@ func (p *Planner) getFilters(chain string) []Filter {
 			NewCallReachFilter(p.store),
 			NewGuardFilter(p.store),
 			NewSafeFunctionFilter(p.store),
-			NewBoundsCheckFilter(p.store),
 		}
 	case "memory-leak":
 		return []Filter{
 			NewCallReachFilter(p.store),
 			NewSafeFunctionFilter(p.store),
-			NewMemoryReleaseFilter(p.store),
+			NewReleaseFilter(p.store, "MEMORY_RELEASE"),
 		}
 	case "resource-leak":
 		return []Filter{
 			NewCallReachFilter(p.store),
 			NewSafeFunctionFilter(p.store),
-			NewResourceReleaseFilter(p.store),
+			NewReleaseFilter(p.store, "RESOURCE_RELEASE"),
 		}
 	case "lifetime":
 		return []Filter{
@@ -58,10 +56,14 @@ func (p *Planner) getFilters(chain string) []Filter {
 			NewLifetimeFilter(p.store, p.parser, p.logger),
 		}
 	default:
+		// Bounds-check suppression already happens in the buffer-overflow
+		// detector (hasPrecedingBoundsCheck / constant-index analysis); there is
+		// no bounds-check *event* for a filter to read, and the previous
+		// BoundsCheckFilter wrongly keyed on NULL_GUARD events at function
+		// granularity. So the default chain is call-reach + safe-function only.
 		return []Filter{
 			NewCallReachFilter(p.store),
 			NewSafeFunctionFilter(p.store),
-			NewBoundsCheckFilter(p.store),
 		}
 	}
 }
@@ -85,6 +87,7 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 
 	candidates := seed
 	shortCircuited := false
+	var dismissed []Dismissed
 	for _, filter := range filters {
 		inputCount := len(candidates)
 		if inputCount == 0 {
@@ -97,12 +100,15 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 			break
 		}
 
-		filtered, err := filter.Apply(ctx, candidates)
+		filtered, dropped, err := filter.Apply(ctx, candidates)
 		if err != nil {
 			if p.logger != nil {
 				p.logger.Warn("filter failed", "filter", filter.Name(), "error", err)
 			}
 			filtered = candidates
+			dropped = nil
+		} else {
+			dismissed = append(dismissed, dropped...)
 		}
 
 		outputCount := len(filtered)
@@ -121,11 +127,19 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 
 	summary.ShortCircuited = shortCircuited
 	summary.FinalCount = len(candidates)
+	summary.Dropped = dismissed
+	if len(dismissed) > 0 {
+		summary.DroppedByReason = make(map[string]int)
+		for _, d := range dismissed {
+			summary.DroppedByReason[d.Filter]++
+		}
+	}
 
-	candidates = deduplicateCandidates(candidates)
+	candidates = deduplicateCandidates(candidates, spec.ConvergeByVariable)
 
 	result := &PlanResult{
 		VulnerabilityType: vulnType,
+		Candidates:        make([]EvidenceItem, 0),
 		Summary:           summary,
 	}
 
@@ -159,14 +173,7 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, eventType string) ([
 
 	var candidates []Candidate
 	for _, e := range events {
-		var props struct {
-			Variable    string `json:"variable"`
-			Expression  string `json:"expression"`
-			Function    string `json:"function"`
-			Category    string `json:"category"`
-			NonNullable string `json:"non_nullable"`
-		}
-		json.Unmarshal([]byte(e.Properties), &props)
+		props := parseEventProps(e.Properties)
 
 		fn, _ := p.store.GetFunctionByID(ctx, e.EntityID)
 		funcName := ""
@@ -184,9 +191,21 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, eventType string) ([
 			}
 		}
 
+		// The variable is the primary identity for dedup and variable-level
+		// analysis. Fall back to the expression only for display/dedup of
+		// types that carry no variable (e.g. integer-overflow, format-string).
 		varName := props.Variable
 		if varName == "" {
 			varName = props.Expression
+		}
+
+		// The API name is the called function (or the registry API for the
+		// RegSetValueEx branch), kept distinct from the variable so that
+		// SafeFunctionFilter can do exact lookups rather than substring
+		// matching against expression text.
+		apiName := props.Function
+		if apiName == "" {
+			apiName = props.API
 		}
 
 		candidates = append(candidates, Candidate{
@@ -194,6 +213,7 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, eventType string) ([
 			FunctionID:   e.EntityID,
 			FunctionName: funcName,
 			VariableName: varName,
+			APIName:      apiName,
 			LocationID:   e.LocationID,
 			FileID:       fileID,
 			Line:         line,
@@ -204,11 +224,18 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, eventType string) ([
 	return candidates, nil
 }
 
-func deduplicateCandidates(candidates []Candidate) []Candidate {
+func deduplicateCandidates(candidates []Candidate, convergeByVariable bool) []Candidate {
 	seen := make(map[string]bool)
 	result := make([]Candidate, 0, len(candidates))
 	for _, c := range candidates {
-		key := fmt.Sprintf("%d:%d:%s:%s", c.FileID, c.Line, c.FunctionName, c.VariableName)
+		var key string
+		if convergeByVariable {
+			// One finding per (function, variable): a single nullable variable
+			// dereferenced at many sites is one defect, not many.
+			key = fmt.Sprintf("%d:%s:%s", c.FileID, c.FunctionName, c.VariableName)
+		} else {
+			key = fmt.Sprintf("%d:%d:%s:%s", c.FileID, c.Line, c.FunctionName, c.VariableName)
+		}
 		if seen[key] {
 			continue
 		}
