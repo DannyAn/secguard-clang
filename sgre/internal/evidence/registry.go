@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"time"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -26,7 +27,11 @@ func AllDetectors(store db.Store, p *parser.Parser, logger *log.Logger) []Detect
 
 func RunAllDetectors(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) {
 	for _, det := range AllDetectors(store, p, logger) {
+		start := time.Now()
 		det.Detect(ctx)
+		if logger != nil {
+			logger.Info("detector timing", "detector", det.Name(), "elapsed_ms", time.Since(start).Milliseconds())
+		}
 	}
 }
 

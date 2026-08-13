@@ -42,11 +42,21 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 		if err != nil {
 			continue
 		}
-		tree, err := d.parser.Parse(source, file.Path)
+		tree, err := d.parser.ParseCached(source, file.Path)
 		if err != nil {
 			continue
 		}
-		root := tree.RootNode()
+
+		// Bind every FindAll walk to this function's own subtree rather than the
+		// whole file. The three sub-detectors plus BuildCFG issue ~21 full-file
+		// walks per function when handed the file root; scoping to the function
+		// body collapses that to a single full-file walk (locating the function)
+		// and leaves the rest bounded by the function's size. This is the dominant
+		// cost of the uninit detector on large codebases.
+		root, ok := functionRoot(tree.RootNode(), f.StartLine)
+		if !ok {
+			continue
+		}
 
 		d.detectStackUninit(ctx, f, file, root, &result)
 		d.detectHeapUninit(ctx, f, file, root, &result)
@@ -56,6 +66,18 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 	}
 
 	return result, nil
+}
+
+// functionRoot returns the function_definition subtree whose declaration starts
+// at startLine. The indexer records a function's StartLine/EndLine from the
+// function_definition node itself, so StartLine is an exact key.
+func functionRoot(root parser.Node, startLine int) (parser.Node, bool) {
+	for _, fn := range root.FindAll("function_definition") {
+		if fn.StartLine() == startLine {
+			return fn, true
+		}
+	}
+	return parser.Node{}, false
 }
 
 func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {

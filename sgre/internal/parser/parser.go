@@ -8,24 +8,79 @@ import (
 )
 
 type Parser struct {
-	parser *sitter.Parser
+	lang    *sitter.Language
+	parser  *sitter.Parser
+	cache   map[string]*Tree
+	parsers map[string]*sitter.Parser
 }
 
 type Tree struct {
-	tree *sitter.Tree
-	src  []byte
+	tree   *sitter.Tree
+	src    []byte
+	cached bool
 }
 
 func NewParser() *Parser {
-	p := sitter.NewParser()
 	lang := sitter.NewLanguage(tree_sitter_c.Language())
+	p := sitter.NewParser()
 	p.SetLanguage(lang)
-	return &Parser{parser: p}
+	return &Parser{
+		lang:    lang,
+		parser:  p,
+		cache:   make(map[string]*Tree),
+		parsers: make(map[string]*sitter.Parser),
+	}
 }
 
+// Parse parses source with the parser's shared instance. This is only safe for
+// sequential callers that finish using (and Close) the returned tree before the
+// next Parse on this parser — the indexer and the planner lifetime filter follow
+// that pattern.
 func (p *Parser) Parse(source []byte, filename string) (*Tree, error) {
 	tree := p.parser.Parse(source, nil)
 	return &Tree{tree: tree, src: source}, nil
+}
+
+// ParseCached is Parse with a per-file cache keyed by filename. The scan runs
+// every detector and graph builder over the same set of files, and each of them
+// previously re-parsed every file once per function — ~15K parses on a
+// 1000-function codebase, which dominated the wall clock. Caching collapses that
+// to one parse per file.
+//
+// tree-sitter reuses the memory of trees a parser returns on its *next* parse,
+// so a cached tree would be invalidated the moment another file was parsed on
+// the same parser. Each file therefore gets its own dedicated parser, used
+// exactly once; the parser is kept alive alongside the tree and released in
+// CloseAll. The returned tree is owned by this Parser (Close is a no-op).
+func (p *Parser) ParseCached(source []byte, filename string) (*Tree, error) {
+	if t, ok := p.cache[filename]; ok {
+		return t, nil
+	}
+	ps := sitter.NewParser()
+	ps.SetLanguage(p.lang)
+	tree := ps.Parse(source, nil)
+	t := &Tree{tree: tree, src: source, cached: true}
+	p.cache[filename] = t
+	p.parsers[filename] = ps
+	return t, nil
+}
+
+// CloseAll releases every cached tree and its dedicated parser. Call it once,
+// after the scan, instead of relying on per-detector Close (which is a no-op for
+// cached trees).
+func (p *Parser) CloseAll() {
+	for _, t := range p.cache {
+		if t != nil && t.tree != nil {
+			t.tree.Close()
+		}
+	}
+	for _, ps := range p.parsers {
+		if ps != nil {
+			ps.Close()
+		}
+	}
+	p.cache = nil
+	p.parsers = nil
 }
 
 func (t *Tree) RootNode() Node {
@@ -41,6 +96,9 @@ func (t *Tree) Source() []byte {
 }
 
 func (t *Tree) Close() {
+	if t.cached {
+		return // owned by the Parser cache; released in CloseAll
+	}
 	t.tree.Close()
 }
 
@@ -143,9 +201,26 @@ func (n Node) String() string {
 	return fmt.Sprintf("%s at line %d", n.Kind(), n.StartLine())
 }
 
+// walkNode visits n and every named descendant in pre-order. It deliberately
+// avoids n.NamedChildren(), which allocates a fresh []Node on every node — with
+// ~50K nodes per file re-walked once per function across ~15 detectors, that
+// per-node allocation adds up to hundreds of millions of allocations and is the
+// dominant cost of the whole scan. An explicit stack with NamedChildCount/
+// NamedChild keeps the traversal allocation-light (one amortized slice).
 func walkNode(n Node, visit func(Node)) {
-	visit(n)
-	for _, child := range n.NamedChildren() {
-		walkNode(child, visit)
+	stack := make([]Node, 0, 64)
+	stack = append(stack, n)
+	for len(stack) > 0 {
+		node := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		visit(node)
+		count := int(node.node.NamedChildCount())
+		for i := count - 1; i >= 0; i-- {
+			child := node.node.NamedChild(uint(i))
+			if child == nil {
+				continue
+			}
+			stack = append(stack, Node{node: *child, src: node.src})
+		}
 	}
 }

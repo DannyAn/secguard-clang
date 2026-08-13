@@ -32,28 +32,53 @@ func (d *NullSourceDetector) Detect(ctx context.Context) (DetectResult, error) {
 		return result, fmt.Errorf("null source: list functions: %w", err)
 	}
 
+	// Pass 1: return-null and malloc sources. detectReturnNull populates the
+	// function_summary return-nullability that detectExternalCall consults, so it
+	// must complete for every function before the external-call pass builds its
+	// nullable-function map. The previous single-pass version called
+	// getNullableReturnFunctions once per function (an O(F^2) run of DB reads)
+	// and still read a half-populated map.
 	for _, f := range funcs {
-		file, _ := d.store.GetFileByID(ctx, f.FileID)
-		if file == nil {
+		file, root, ok := d.rootFor(ctx, f)
+		if !ok {
 			continue
 		}
-		source, err := os.ReadFile(file.Path)
-		if err != nil {
-			continue
-		}
-		tree, err := d.parser.Parse(source, file.Path)
-		if err != nil {
-			continue
-		}
+		d.detectReturnNull(ctx, f, file, root, &result)
+		d.detectMallocResult(ctx, f, file, root, &result)
+	}
 
-		d.detectReturnNull(ctx, f, file, tree.RootNode(), &result)
-		d.detectMallocResult(ctx, f, file, tree.RootNode(), &result)
-		d.detectExternalCall(ctx, f, file, tree.RootNode(), &result)
+	knownFuncs := d.getKnownFunctionNames(ctx)
+	nullableFuncs := d.getNullableReturnFunctions(ctx)
 
-		tree.Close()
+	// Pass 2: external-call sources, now that nullableFuncs is complete.
+	for _, f := range funcs {
+		file, root, ok := d.rootFor(ctx, f)
+		if !ok {
+			continue
+		}
+		d.detectExternalCall(ctx, f, file, root, &result, knownFuncs, nullableFuncs)
 	}
 
 	return result, nil
+}
+
+// rootFor returns the parsed root node for a function, reusing the parser's
+// per-file cache so each file is read and parsed at most once across the
+// detector's two passes.
+func (d *NullSourceDetector) rootFor(ctx context.Context, f *db.Function) (*db.File, parser.Node, bool) {
+	file, _ := d.store.GetFileByID(ctx, f.FileID)
+	if file == nil {
+		return nil, parser.Node{}, false
+	}
+	source, err := os.ReadFile(file.Path)
+	if err != nil {
+		return nil, parser.Node{}, false
+	}
+	tree, err := d.parser.ParseCached(source, file.Path)
+	if err != nil {
+		return nil, parser.Node{}, false
+	}
+	return file, tree.RootNode(), true
 }
 
 func (d *NullSourceDetector) detectReturnNull(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {
@@ -126,10 +151,7 @@ func (d *NullSourceDetector) detectMallocResult(ctx context.Context, f *db.Funct
 	}
 }
 
-func (d *NullSourceDetector) detectExternalCall(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {
-	knownFuncs := d.getKnownFunctionNames(ctx)
-	nullableFuncs := d.getNullableReturnFunctions(ctx)
-
+func (d *NullSourceDetector) detectExternalCall(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult, knownFuncs map[string]bool, nullableFuncs map[string]bool) {
 	checkNode := func(node parser.Node) {
 		children := node.NamedChildren()
 		if len(children) < 2 {

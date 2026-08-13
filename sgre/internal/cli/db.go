@@ -10,13 +10,15 @@ import (
 )
 
 func runDbCmd(ctx context.Context, args []string) int {
-	dbPath, remaining := parseDBFlag(args)
+	dbPath, dbExplicit, remaining := parseDBFlag(args)
 
 	if len(remaining) == 0 {
 		WriteErrorJSON("db requires a SQL query argument")
 		return 1
 	}
 	query := strings.Join(remaining, " ")
+
+	dbPath = resolveDBPath(dbExplicit, dbPath, ".")
 
 	queryUpper := strings.ToUpper(strings.TrimSpace(query))
 	if !strings.HasPrefix(queryUpper, "SELECT") && !strings.HasPrefix(queryUpper, "WITH") {

@@ -53,7 +53,7 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 		if err != nil {
 			continue
 		}
-		tree, err := d.parser.Parse(source, file.Path)
+		tree, err := d.parser.ParseCached(source, file.Path)
 		if err != nil {
 			continue
 		}

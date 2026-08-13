@@ -12,12 +12,16 @@ import (
 )
 
 func runPlanCmd(ctx context.Context, args []string) int {
-	dbPath, remaining := parseDBFlag(args)
+	dbPath, dbExplicit, remaining := parseDBFlag(args)
+	maxCand := parseIntFlag(remaining, "max-candidates")
+	remaining = removeFlag(remaining, "max-candidates")
 	if len(remaining) == 0 {
 		WriteErrorJSON("plan requires a vulnerability type argument")
 		return 1
 	}
 	vulnType := remaining[0]
+
+	dbPath = resolveDBPath(dbExplicit, dbPath, ".")
 
 	store, err := openStore(ctx, dbPath)
 	if err != nil {
@@ -35,7 +39,6 @@ func runPlanCmd(ctx context.Context, args []string) int {
 	logger := defaultLogger()
 	p := planner.NewPlanner(store, parser.NewParser(), logger)
 
-	maxCand := parseIntFlag(remaining, "max-candidates")
 	if maxCand > 0 {
 		p.SetMaxCandidates(maxCand)
 	}

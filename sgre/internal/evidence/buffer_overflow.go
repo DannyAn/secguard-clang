@@ -42,7 +42,7 @@ func (d *BufferOverflowDetector) Detect(ctx context.Context) (DetectResult, erro
 		if err != nil {
 			continue
 		}
-		tree, err := d.parser.Parse(source, file.Path)
+		tree, err := d.parser.ParseCached(source, file.Path)
 		if err != nil {
 			continue
 		}

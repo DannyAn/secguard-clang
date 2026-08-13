@@ -61,7 +61,7 @@ func (d *InjectionDetector) Detect(ctx context.Context) (DetectResult, error) {
 		if err != nil {
 			continue
 		}
-		tree, err := d.parser.Parse(source, file.Path)
+		tree, err := d.parser.ParseCached(source, file.Path)
 		if err != nil {
 			continue
 		}

@@ -115,9 +115,15 @@ func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *Inde
 	}
 	defer tree.Close()
 
+	// tree-sitter reports ERROR/MISSING nodes for constructs the C grammar cannot
+	// fully resolve — most commonly calling-convention macros like `CJSON_CDECL`
+	// in function-pointer typedefs and preprocessor-guarded declarations. These do
+	// not mean the file is malformed or that the AST is unusable; indexing proceeds
+	// on the best-effort tree either way. Genuine parse failures surface separately
+	// via the "failed to index file" warning in Index.
 	if tree.HasError() {
 		if idx.logger != nil {
-			idx.logger.Warn("file has syntax errors, indexing partial AST", "file", filePath)
+			idx.logger.Debug("parse produced error nodes (typically preprocessor/macro artifacts); indexing best-effort AST", "file", filePath)
 		}
 	}
 

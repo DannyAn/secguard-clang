@@ -58,7 +58,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 		if err != nil {
 			continue
 		}
-		tree, err := d.parser.Parse(source, file.Path)
+		tree, err := d.parser.ParseCached(source, file.Path)
 		if err != nil {
 			continue
 		}
@@ -364,7 +364,7 @@ func (d *MemoryLeakDetector) functionHasFrees(ctx context.Context, f *db.Functio
 	if err != nil {
 		return false
 	}
-	tree, err := d.parser.Parse(source, file.Path)
+	tree, err := d.parser.ParseCached(source, file.Path)
 	if err != nil {
 		return false
 	}

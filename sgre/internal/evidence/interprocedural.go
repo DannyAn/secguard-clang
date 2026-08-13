@@ -31,162 +31,170 @@ func (d *InterproceduralDetector) Detect(ctx context.Context) (DetectResult, err
 		return result, fmt.Errorf("interprocedural: list functions: %w", err)
 	}
 
-	funcByID := make(map[int64]*db.Function)
+	funcByName := make(map[string][]*db.Function)
 	for i := range funcs {
-		funcByID[funcs[i].ID] = funcs[i]
+		funcByName[funcs[i].Name] = append(funcByName[funcs[i].Name], funcs[i])
 	}
 
-	type paramDeref struct {
-		paramName string
-		paramIdx  int
+	// Load the three event tables ONCE and index them by (function, variable).
+	// The previous implementation re-issued these queries inside the per-function
+	// and per-callee/caller loops, which made the detector quadratic in the
+	// number of functions — roughly 172K full-file parses on a 1000-function
+	// codebase, which presented as a hang.
+	derefVars, err := d.loadEventVarIndex(ctx, "DEREFERENCE")
+	if err != nil {
+		return result, fmt.Errorf("interprocedural: load dereference events: %w", err)
 	}
-	derefParams := make(map[int64][]paramDeref)
-	guardedParams := make(map[int64]map[string]bool)
+	guardVars, err := d.loadEventVarIndex(ctx, "NULL_GUARD")
+	if err != nil {
+		return result, fmt.Errorf("interprocedural: load guard events: %w", err)
+	}
+	nullVars, err := d.loadEventVarIndex(ctx, "NULL_VALUE")
+	if err != nil {
+		return result, fmt.Errorf("interprocedural: load null events: %w", err)
+	}
 
-	for _, f := range funcs {
-		params := d.extractParamNames(ctx, f)
-		if len(params) == 0 {
+	// Parse each source file exactly once and reuse the tree for both parameter
+	// extraction and call-site scanning.
+	treeCache := make(map[int64]*parser.Tree)
+	defer func() {
+		for _, t := range treeCache {
+			if t != nil {
+				t.Close()
+			}
+		}
+	}()
+
+	// Group functions by file, then parse each file exactly once to collect both
+	// parameter names and the call expressions inside each function body.
+	funcsByFile := make(map[int64][]*db.Function)
+	for i := range funcs {
+		funcsByFile[funcs[i].FileID] = append(funcsByFile[funcs[i].FileID], funcs[i])
+	}
+
+	callsByFunc := make(map[int64][]parser.Node)
+	paramsByFunc := make(map[int64][]string, len(funcs))
+	for fileID, fileFuncs := range funcsByFile {
+		tree := d.treeFor(ctx, treeCache, fileID)
+		if tree == nil {
 			continue
 		}
+		root := tree.RootNode()
 
-		derefEvents, _ := d.store.ListEventsByType(ctx, "DEREFERENCE")
-		for _, e := range derefEvents {
-			if e.EntityID != f.ID {
-				continue
+		paramsByLine := make(map[int][]string, len(fileFuncs))
+		for _, fnNode := range root.FindAll("function_definition") {
+			paramsByLine[fnNode.StartLine()] = findParamsInDefinition(fnNode)
+		}
+		for _, f := range fileFuncs {
+			if params := paramsByLine[f.StartLine]; len(params) > 0 {
+				paramsByFunc[f.ID] = params
 			}
-			var props map[string]string
-			json.Unmarshal([]byte(e.Properties), &props)
-			varName := props["variable"]
-			for idx, p := range params {
-				if p == varName {
-					derefParams[f.ID] = append(derefParams[f.ID], paramDeref{paramName: varName, paramIdx: idx})
+		}
+
+		for _, call := range root.FindAll("call_expression") {
+			for _, f := range fileFuncs {
+				if call.StartLine() >= f.StartLine && call.StartLine() <= f.EndLine {
+					callsByFunc[f.ID] = append(callsByFunc[f.ID], call)
+					break
 				}
 			}
 		}
+	}
 
-		guardEvents, _ := d.store.ListEventsByType(ctx, "NULL_GUARD")
-		for _, e := range guardEvents {
-			if e.EntityID != f.ID {
-				continue
+	// Per callee: the positional indices of parameters that are both dereferenced
+	// in the callee body and not null-guarded there.
+	unguardedByCallee := make(map[int64]map[int]string)
+	for calleeID, derefSet := range derefVars {
+		guarded := guardVars[calleeID]
+		unguarded := make(map[int]string)
+		for idx, param := range paramsByFunc[calleeID] {
+			if derefSet[param] && !guarded[param] {
+				unguarded[idx] = param
 			}
-			var props map[string]string
-			json.Unmarshal([]byte(e.Properties), &props)
-			varName := props["variable"]
-			if guardedParams[f.ID] == nil {
-				guardedParams[f.ID] = make(map[string]bool)
-			}
-			guardedParams[f.ID][varName] = true
+		}
+		if len(unguarded) > 0 {
+			unguardedByCallee[calleeID] = unguarded
 		}
 	}
 
-	for calleeID, derefs := range derefParams {
-		callee := funcByID[calleeID]
-		if callee == nil {
-			continue
-		}
-
-		unguardedParams := make(map[int]string)
-		for _, pd := range derefs {
-			if guardedParams[calleeID] != nil && guardedParams[calleeID][pd.paramName] {
+	// Walk each caller's call expressions once; for every call to a callee with
+	// an unguarded dereferenced parameter, emit a DEREFERENCE where the caller
+	// passes a NULL_VALUE variable into that parameter position.
+	for _, caller := range funcs {
+		for _, call := range callsByFunc[caller.ID] {
+			callees := funcByName[extractCallName(call)]
+			if len(callees) == 0 {
 				continue
 			}
-			unguardedParams[pd.paramIdx] = pd.paramName
-		}
-		if len(unguardedParams) == 0 {
-			continue
-		}
-
-		for _, caller := range funcs {
-			if caller.ID == calleeID {
-				continue
-			}
-			file, _ := d.store.GetFileByID(ctx, caller.FileID)
-			if file == nil {
-				continue
-			}
-			source, err := os.ReadFile(file.Path)
-			if err != nil {
-				continue
-			}
-			tree, err := d.parser.Parse(source, file.Path)
-			if err != nil {
-				continue
-			}
-			root := tree.RootNode()
-
-			for _, call := range root.FindAll("call_expression") {
-				if call.StartLine() < caller.StartLine || call.StartLine() > caller.EndLine {
+			args := callNamedArguments(call)
+			for _, callee := range callees {
+				unguarded := unguardedByCallee[callee.ID]
+				if len(unguarded) == 0 {
 					continue
 				}
-				callName := extractCallName(call)
-				if callName != callee.Name {
-					continue
-				}
-
-				argIdx := 0
-				for _, child := range call.NamedChildren() {
-					if child.Kind() != "argument_list" {
+				for argIdx, arg := range args {
+					paramName, isUnguarded := unguarded[argIdx]
+					if !isUnguarded || arg.Kind() != "identifier" {
 						continue
 					}
-					for _, arg := range child.NamedChildren() {
-						argVarName := ""
-						if arg.Kind() == "identifier" {
-							argVarName = arg.Text()
-						}
-						if argVarName == "" {
-							argIdx++
-							continue
-						}
-
-						paramName, isUnguarded := unguardedParams[argIdx]
-						if !isUnguarded {
-							argIdx++
-							continue
-						}
-
-						nullEvents, _ := d.store.ListEventsByType(ctx, "NULL_VALUE")
-						hasNullSource := false
-						for _, ne := range nullEvents {
-							if ne.EntityID != caller.ID {
-								continue
-							}
-							var nprops map[string]string
-							json.Unmarshal([]byte(ne.Properties), &nprops)
-							if nprops["variable"] == argVarName {
-								hasNullSource = true
-								break
-							}
-						}
-
-						if hasNullSource {
-							locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine()})
-							props, _ := json.Marshal(map[string]string{
-								"variable":   argVarName,
-								"expression": argVarName + "->" + paramName,
-								"origin":     "interprocedural",
-								"callee":     callee.Name,
-							})
-							d.store.InsertEvent(ctx, &db.SecurityEvent{
-								EventType:  "DEREFERENCE",
-								EntityID:   caller.ID,
-								LocationID: locID,
-								Properties: string(props),
-							})
-							result.EventsCreated++
-						}
-						argIdx++
+					argVarName := arg.Text()
+					if !nullVars[caller.ID][argVarName] {
+						continue
 					}
+
+					locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: caller.FileID, Line: call.StartLine()})
+					props, _ := json.Marshal(map[string]string{
+						"variable":   argVarName,
+						"expression": argVarName + "->" + paramName,
+						"origin":     "interprocedural",
+						"callee":     callee.Name,
+					})
+					d.store.InsertEvent(ctx, &db.SecurityEvent{
+						EventType:  "DEREFERENCE",
+						EntityID:   caller.ID,
+						LocationID: locID,
+						Properties: string(props),
+					})
+					result.EventsCreated++
 				}
 			}
-			tree.Close()
 		}
 	}
 
 	return result, nil
 }
 
-func (d *InterproceduralDetector) extractParamNames(ctx context.Context, f *db.Function) []string {
-	file, _ := d.store.GetFileByID(ctx, f.FileID)
+// loadEventVarIndex returns, for a given event type, a map from function ID to
+// the set of variable names that event type references.
+func (d *InterproceduralDetector) loadEventVarIndex(ctx context.Context, eventType string) (map[int64]map[string]bool, error) {
+	events, err := d.store.ListEventsByType(ctx, eventType)
+	if err != nil {
+		return nil, err
+	}
+	index := make(map[int64]map[string]bool)
+	for _, e := range events {
+		var props map[string]string
+		if err := json.Unmarshal([]byte(e.Properties), &props); err != nil {
+			continue
+		}
+		varName := props["variable"]
+		if varName == "" {
+			continue
+		}
+		if index[e.EntityID] == nil {
+			index[e.EntityID] = make(map[string]bool)
+		}
+		index[e.EntityID][varName] = true
+	}
+	return index, nil
+}
+
+// treeFor parses the file once and caches the tree, keyed by file ID.
+func (d *InterproceduralDetector) treeFor(ctx context.Context, cache map[int64]*parser.Tree, fileID int64) *parser.Tree {
+	if t, ok := cache[fileID]; ok {
+		return t
+	}
+	file, _ := d.store.GetFileByID(ctx, fileID)
 	if file == nil {
 		return nil
 	}
@@ -194,26 +202,25 @@ func (d *InterproceduralDetector) extractParamNames(ctx context.Context, f *db.F
 	if err != nil {
 		return nil
 	}
-	tree, err := d.parser.Parse(source, file.Path)
+	tree, err := d.parser.ParseCached(source, file.Path)
 	if err != nil {
 		return nil
 	}
-	defer tree.Close()
+	cache[fileID] = tree
+	return tree
+}
 
-	root := tree.RootNode()
-	for _, fnNode := range root.FindAll("function_definition") {
-		if fnNode.StartLine() != f.StartLine {
-			continue
+// findParamsInDefinition returns the parameter names of a single
+// function_definition node, or nil if no declarator is found.
+func findParamsInDefinition(fnNode parser.Node) []string {
+	for _, child := range fnNode.NamedChildren() {
+		if child.Kind() == "function_declarator" {
+			return extractParamsFromDeclarator(child)
 		}
-		for _, child := range fnNode.NamedChildren() {
-			if child.Kind() == "function_declarator" {
-				return extractParamsFromDeclarator(child)
-			}
-			if child.Kind() == "pointer_declarator" {
-				for _, gc := range child.NamedChildren() {
-					if gc.Kind() == "function_declarator" {
-						return extractParamsFromDeclarator(gc)
-					}
+		if child.Kind() == "pointer_declarator" {
+			for _, gc := range child.NamedChildren() {
+				if gc.Kind() == "function_declarator" {
+					return extractParamsFromDeclarator(gc)
 				}
 			}
 		}

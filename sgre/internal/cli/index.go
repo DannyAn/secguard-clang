@@ -13,7 +13,7 @@ import (
 )
 
 func runIndexCmd(ctx context.Context, args []string) int {
-	dbPath, remaining := parseDBFlag(args)
+	dbPath, dbExplicit, remaining := parseDBFlag(args)
 	if len(remaining) == 0 {
 		WriteErrorJSON("index requires a path argument")
 		return 1
@@ -30,6 +30,8 @@ func runIndexCmd(ctx context.Context, args []string) int {
 		return 1
 	}
 
+	dbPath = resolveDBPath(dbExplicit, dbPath, absPath)
+
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
 		WriteErrorJSON(fmt.Sprintf("failed to create db directory: %v", err))
 		return 1
@@ -44,6 +46,7 @@ func runIndexCmd(ctx context.Context, args []string) int {
 
 	logger := defaultLogger()
 	p := parser.NewParser()
+	defer p.CloseAll()
 
 	idx := indexer.NewIndexer(store, logger)
 	result, err := idx.Index(ctx, absPath)

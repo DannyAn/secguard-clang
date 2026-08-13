@@ -92,7 +92,7 @@ func (b *CallGraphBuilder) extractCalls(f *db.Function, file *db.File) []string 
 	if err != nil {
 		return nil
 	}
-	tree, err := b.parser.Parse(source, file.Path)
+	tree, err := b.parser.ParseCached(source, file.Path)
 	if err != nil {
 		return nil
 	}

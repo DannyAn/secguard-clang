@@ -75,7 +75,9 @@ func removeFlag(args []string, flag string) []string {
 }
 
 func runReportCmd(ctx context.Context, args []string) int {
-	dbPath, remaining := parseDBFlag(args)
+	dbPath, dbExplicit, remaining := parseDBFlag(args)
+
+	dbPath = resolveDBPath(dbExplicit, dbPath, ".")
 
 	store, err := openStore(ctx, dbPath)
 	if err != nil {

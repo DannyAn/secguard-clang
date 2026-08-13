@@ -38,7 +38,7 @@ func (b *DataFlowBuilder) Build(ctx context.Context) (*BuildResult, error) {
 		if err != nil {
 			continue
 		}
-		tree, err := b.parser.Parse(source, file.Path)
+		tree, err := b.parser.ParseCached(source, file.Path)
 		if err != nil {
 			continue
 		}

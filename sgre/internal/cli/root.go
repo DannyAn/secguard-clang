@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
+	"github.com/DannyAn/secguard-clang/internal/report"
 )
 
 const Version = "0.1.0"
@@ -58,28 +60,51 @@ Usage:
   secguard db <sql>        Execute SQL query on sgre.db, return JSON
 
 Flags:
-  --db <path>    Path to sgre.db (default: ./sgre.db)
+  --db <path>    Path to sgre.db (default: .codeagent/zhuque-secguard/.sgre/sgre.db)
   --help         Show usage
   --version      Show version`)
 }
 
-func parseDBFlag(args []string) (string, []string) {
-	dbPath := "./sgre.db"
-	var remaining []string
+// parseDBFlag extracts an optional --db flag. explicit reports whether the flag
+// was actually present, so callers can tell "no flag given" apart from the
+// legacy ./sgre.db default and substitute the canonical per-project path.
+func parseDBFlag(args []string) (dbPath string, explicit bool, remaining []string) {
+	dbPath = "./sgre.db"
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--db" && i+1 < len(args) {
 			dbPath = args[i+1]
+			explicit = true
 			i++
 		} else if strings.HasPrefix(args[i], "--db=") {
 			dbPath = args[i][5:]
+			explicit = true
 		} else {
 			remaining = append(remaining, args[i])
 		}
 	}
-	return dbPath, remaining
+	return dbPath, explicit, remaining
+}
+
+// resolveDBPath returns the DB path a command should open: the explicit --db
+// value when given, otherwise the canonical location under projectRoot
+// (.codeagent/zhuque-secguard/.sgre/sgre.db) so intermediate results never land
+// as a stray sgre.db in the source tree.
+func resolveDBPath(explicit bool, dbPath, projectRoot string) string {
+	if explicit {
+		return dbPath
+	}
+	return report.GetDbPath(projectRoot)
 }
 
 func openStore(ctx context.Context, dbPath string) (db.Store, error) {
+	// Ensure the parent directory exists so a default canonical path
+	// (.codeagent/zhuque-secguard/.sgre/sgre.db) opens cleanly on first use
+	// rather than failing on a missing directory.
+	if abs, err := filepath.Abs(dbPath); err == nil {
+		if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
+			return nil, err
+		}
+	}
 	d, err := db.Open(ctx, dbPath)
 	if err != nil {
 		return nil, err

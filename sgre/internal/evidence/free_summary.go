@@ -35,7 +35,7 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser) s
 		if err != nil {
 			continue
 		}
-		tree, err := p.Parse(source, file.Path)
+		tree, err := p.ParseCached(source, file.Path)
 		if err != nil {
 			continue
 		}

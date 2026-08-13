@@ -9,12 +9,14 @@ import (
 )
 
 func runQueryCmd(ctx context.Context, args []string) int {
-	dbPath, remaining := parseDBFlag(args)
+	dbPath, dbExplicit, remaining := parseDBFlag(args)
 	if len(remaining) == 0 {
 		WriteErrorJSON("query requires a skill name argument")
 		return 1
 	}
 	skillName := remaining[0]
+
+	dbPath = resolveDBPath(dbExplicit, dbPath, ".")
 
 	store, err := openStore(ctx, dbPath)
 	if err != nil {

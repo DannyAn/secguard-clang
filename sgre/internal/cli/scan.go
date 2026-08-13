@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/evidence"
@@ -20,7 +21,7 @@ import (
 )
 
 func runScanCmd(ctx context.Context, args []string) int {
-	dbPath, remaining := parseDBFlag(args)
+	dbPath, dbExplicit, remaining := parseDBFlag(args)
 	outputDir := parseStringFlag(remaining, "output-dir")
 	remaining = removeFlag(remaining, "output-dir")
 	if len(remaining) == 0 {
@@ -37,6 +38,11 @@ func runScanCmd(ctx context.Context, args []string) int {
 		WriteErrorJSON(fmt.Sprintf("target path does not exist: %v", err))
 		return 1
 	}
+
+	// Without an explicit --db, the database belongs under the target repo's
+	// .codeagent dir (sibling of the scan output), never as a stray sgre.db in
+	// the source tree.
+	dbPath = resolveDBPath(dbExplicit, dbPath, absPath)
 
 	var scanID string
 	var scanDir string
@@ -74,26 +80,35 @@ func runScanCmd(ctx context.Context, args []string) int {
 	logger.Info("scan started", "scan_id", scanID, "target", absPath)
 
 	p := parser.NewParser()
+	defer p.CloseAll()
 
 	idx := indexer.NewIndexer(store, logger)
+	idxStart := time.Now()
 	indexResult, err := idx.Index(ctx, absPath)
 	if err != nil {
 		WriteErrorJSON(fmt.Sprintf("index failed: %v", err))
 		return 1
 	}
+	logger.Info("phase timing", "phase", "index", "elapsed_ms", time.Since(idxStart).Milliseconds())
 
 	cgBuilder := graph.NewCallGraphBuilder(store, p, logger)
+	cgStart := time.Now()
 	cgBuilder.Build(ctx)
+	logger.Info("phase timing", "phase", "call_graph", "elapsed_ms", time.Since(cgStart).Milliseconds())
 
 	dfBuilder := graph.NewDataFlowBuilder(store, p, logger)
+	dfStart := time.Now()
 	dfBuilder.Build(ctx)
+	logger.Info("phase timing", "phase", "data_flow", "elapsed_ms", time.Since(dfStart).Milliseconds())
 
 	if err := store.ClearSecurityEvents(ctx); err != nil {
 		WriteErrorJSON(fmt.Sprintf("failed to clear security events: %v", err))
 		return 1
 	}
 
+	detStart := time.Now()
 	evidence.RunAllDetectors(ctx, store, p, logger)
+	logger.Info("phase timing", "phase", "detectors_total", "elapsed_ms", time.Since(detStart).Milliseconds())
 
 	evidencePackages := []map[string]interface{}{}
 	totalCandidates := 0
@@ -102,7 +117,9 @@ func runScanCmd(ctx context.Context, args []string) int {
 	totalDropped := 0
 	for _, vulnType := range planner.AllVulnTypes() {
 		pl := planner.NewPlanner(store, p, logger)
+		planStart := time.Now()
 		result, err := pl.Plan(ctx, vulnType)
+		logger.Info("phase timing", "phase", "plan_"+vulnType, "elapsed_ms", time.Since(planStart).Milliseconds())
 		if err != nil {
 			evidencePackages = append(evidencePackages, map[string]interface{}{
 				"vulnerability_type": vulnType,
@@ -283,7 +300,8 @@ type nopCloser struct{}
 func (nopCloser) Close() error { return nil }
 
 func runStatusCmd(ctx context.Context, args []string) int {
-	dbPath, _ := parseDBFlag(args)
+	dbPath, dbExplicit, _ := parseDBFlag(args)
+	dbPath = resolveDBPath(dbExplicit, dbPath, ".")
 
 	if _, err := os.Stat(dbPath); err != nil {
 		WriteJSON(map[string]interface{}{
