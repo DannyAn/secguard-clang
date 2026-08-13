@@ -13,6 +13,7 @@ type SummaryData struct {
 	TotalCandidates  int
 	FilesIndexed     int
 	FunctionsIndexed int
+	FunctionsInIndex int
 	TypeBreakdown    []TypeBreakdownEntry
 	ReportPath       string
 	SarifPath        string
@@ -37,7 +38,8 @@ func BuildScanSummary(data SummaryData) string {
 	fmt.Fprintf(&b, "| Scan Dir | %s |\n", data.ScanDir)
 	fmt.Fprintf(&b, "| Total Candidates | %d |\n", data.TotalCandidates)
 	fmt.Fprintf(&b, "| Files Indexed | %d |\n", data.FilesIndexed)
-	fmt.Fprintf(&b, "| Functions Indexed | %d |\n\n", data.FunctionsIndexed)
+	fmt.Fprintf(&b, "| Functions Indexed | %d |\n", data.FunctionsIndexed)
+	fmt.Fprintf(&b, "| Functions In Index | %d |\n\n", data.FunctionsInIndex)
 
 	b.WriteString("### Candidates by Type\n\n")
 	if len(data.TypeBreakdown) == 0 || data.TotalCandidates == 0 {

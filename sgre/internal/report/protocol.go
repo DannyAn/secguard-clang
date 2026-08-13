@@ -13,17 +13,17 @@ import (
 )
 
 const (
-	CodeagentDir   = ".codeagent"
-	ProductDir     = "zhuque-secguard"
-	ScansDir       = "scans"
-	SgreDir        = ".sgre"
-	DbName         = "sgre.db"
-	SarifFile      = "sarif.sarif"
-	ReportFile     = "report.md"
-	LatestName     = "latest"
-	LatestTxtName  = "latest.txt"
-	ScanLogFile    = "scan.log"
-	DismissedFile  = "dismissed.json"
+	CodeagentDir  = ".codeagent"
+	ProductDir    = "zhuque-secguard"
+	ScansDir      = "scans"
+	SgreDir       = ".sgre"
+	DbName        = "sgre.db"
+	SarifFile     = "sarif.sarif"
+	ReportFile    = "report.md"
+	LatestName    = "latest"
+	LatestTxtName = "latest.txt"
+	ScanLogFile   = "scan.log"
+	DismissedFile = "dismissed.json"
 )
 
 type ScanOutput struct {
@@ -91,6 +91,7 @@ func (o *ScanOutput) Write(packages []*planner.PlanResult, indexSummary IndexSum
 type IndexSummary struct {
 	FilesIndexed     int `json:"files_indexed"`
 	FunctionsIndexed int `json:"functions_indexed"`
+	FunctionsInIndex int `json:"functions_in_index"`
 	FilesSkipped     int `json:"files_skipped"`
 }
 

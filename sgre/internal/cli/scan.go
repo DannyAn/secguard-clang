@@ -195,6 +195,8 @@ func runScanCmd(ctx context.Context, args []string) int {
 	}
 
 	scansDir := filepath.Dir(scanDir)
+	funcs, _ := store.ListFunctions(ctx)
+	functionsInIndex := len(funcs)
 	summaryData := report.SummaryData{
 		ScanID:           scanID,
 		TargetPath:       absPath,
@@ -202,6 +204,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 		TotalCandidates:  totalCandidates,
 		FilesIndexed:     indexResult.FilesIndexed,
 		FunctionsIndexed: indexResult.FunctionsIndexed,
+		FunctionsInIndex: functionsInIndex,
 		TypeBreakdown:    typeBreakdown,
 		ReportPath:       filepath.Join(scanDir, report.ReportFile),
 		SarifPath:        filepath.Join(scanDir, report.SarifFile),
@@ -215,9 +218,10 @@ func runScanCmd(ctx context.Context, args []string) int {
 		"total_candidates":      totalCandidates,
 		"files_with_candidates": filesList,
 		"index_summary": map[string]interface{}{
-			"files_indexed":     indexResult.FilesIndexed,
-			"functions_indexed": indexResult.FunctionsIndexed,
-			"files_skipped":     indexResult.FilesSkipped,
+			"files_indexed":      indexResult.FilesIndexed,
+			"functions_indexed":  indexResult.FunctionsIndexed,
+			"functions_in_index": functionsInIndex,
+			"files_skipped":      indexResult.FilesSkipped,
 		},
 		"existing_findings": findingsList,
 		"target_path":       absPath,
@@ -248,6 +252,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 	if err := scanOutput.Write(planResults, report.IndexSummary{
 		FilesIndexed:     indexResult.FilesIndexed,
 		FunctionsIndexed: indexResult.FunctionsIndexed,
+		FunctionsInIndex: functionsInIndex,
 		FilesSkipped:     indexResult.FilesSkipped,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to write output: %v\n", err)

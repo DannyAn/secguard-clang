@@ -21,6 +21,7 @@ func (o *ScanOutput) writeReport(packages []*planner.PlanResult, indexSummary In
 	b.WriteString("|--------|-------|\n")
 	b.WriteString(fmt.Sprintf("| Files indexed | %d |\n", indexSummary.FilesIndexed))
 	b.WriteString(fmt.Sprintf("| Functions indexed | %d |\n", indexSummary.FunctionsIndexed))
+	b.WriteString(fmt.Sprintf("| Functions in index | %d |\n", indexSummary.FunctionsInIndex))
 
 	totalCandidates := 0
 	for _, pkg := range packages {

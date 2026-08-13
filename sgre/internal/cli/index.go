@@ -65,11 +65,13 @@ func runIndexCmd(ctx context.Context, args []string) int {
 
 	evidence.RunAllDetectors(ctx, store, p, logger)
 
+	funcs, _ := store.ListFunctions(ctx)
 	WriteJSON(map[string]interface{}{
-		"status":            "ok",
-		"files_indexed":     result.FilesIndexed,
-		"functions_indexed": result.FunctionsIndexed,
-		"files_skipped":     result.FilesSkipped,
+		"status":             "ok",
+		"files_indexed":      result.FilesIndexed,
+		"functions_indexed":  result.FunctionsIndexed,
+		"functions_in_index": len(funcs),
+		"files_skipped":      result.FilesSkipped,
 	})
 	return 0
 }
