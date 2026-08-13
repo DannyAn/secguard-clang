@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -28,6 +30,15 @@ type dfFreeEvent struct {
 	line     int
 	indirect bool
 	callee   string
+	global   string
+}
+
+type globalDFEntry struct {
+	slot       string
+	line       int
+	callee     string
+	victims    []string
+	firstFrees []int
 }
 
 func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
@@ -63,8 +74,69 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 			byVar[fe.varName] = append(byVar[fe.varName], fe)
 		}
 
+		// Global-slot double frees (e.g. cleanup_entries() frees g_entries[]
+		// entries that release_entry() already freed) are one defect for the
+		// dangling slot, not one per stored local variable. Collapse them into
+		// a single event labeled with the global slot so the finding names the
+		// real victim instead of a variable whose slot may have been
+		// overwritten (allocator.c main: e1/e2/e3 aliasing).
+		collective := make(map[string]*globalDFEntry)
+		mergedVars := make(map[string]bool)
 		for varName, events := range byVar {
 			if len(events) < 2 {
+				continue
+			}
+			second := events[1]
+			if second.global == "" {
+				continue
+			}
+			key := fmt.Sprintf("%s:%d", second.global, second.line)
+			e := collective[key]
+			if e == nil {
+				e = &globalDFEntry{slot: second.global, line: second.line, callee: second.callee}
+				collective[key] = e
+			}
+			e.victims = append(e.victims, varName)
+			e.firstFrees = append(e.firstFrees, events[0].line)
+			mergedVars[varName] = true
+		}
+
+		keys := make([]string, 0, len(collective))
+		for key := range collective {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			e := collective[key]
+			sort.Strings(e.victims)
+			sort.Ints(e.firstFrees)
+			props := map[string]interface{}{
+				"variable":     e.slot + "[]",
+				"second_free":  e.line,
+				"category":     "double_free",
+				"indirect":     true,
+				"first_callee": e.callee,
+				"victims":      strings.Join(e.victims, ","),
+			}
+			if len(e.firstFrees) > 0 {
+				props["first_free"] = e.firstFrees[0]
+				props["first_free_lines"] = joinInts(e.firstFrees)
+			}
+			propsJSON, _ := json.Marshal(props)
+			locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: e.line})
+			_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
+				EventType:  "DOUBLE_FREE",
+				EntityID:   f.ID,
+				LocationID: locID,
+				Properties: string(propsJSON),
+			})
+			if err == nil {
+				result.EventsCreated++
+			}
+		}
+
+		for varName, events := range byVar {
+			if mergedVars[varName] || len(events) < 2 {
 				continue
 			}
 			for i := 1; i < len(events); i++ {
@@ -208,6 +280,7 @@ func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, root parser.Node,
 					line:     callLine,
 					indirect: true,
 					callee:   callName,
+					global:   globalName,
 				})
 			}
 		}
