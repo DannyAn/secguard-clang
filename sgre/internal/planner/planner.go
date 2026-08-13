@@ -74,7 +74,7 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 		return nil, err
 	}
 
-	seed, err := p.seedCandidatesByType(ctx, spec.SeedEventType)
+	seed, err := p.seedCandidatesByType(ctx, spec)
 	if err != nil {
 		return nil, fmt.Errorf("planner: seed: %w", err)
 	}
@@ -135,7 +135,7 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 		}
 	}
 
-	candidates = deduplicateCandidates(candidates, spec.ConvergeByVariable)
+	candidates = deduplicateCandidates(candidates, spec)
 
 	result := &PlanResult{
 		VulnerabilityType: vulnType,
@@ -165,8 +165,8 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 	return result, nil
 }
 
-func (p *Planner) seedCandidatesByType(ctx context.Context, eventType string) ([]Candidate, error) {
-	events, err := p.store.ListEventsByType(ctx, eventType)
+func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) ([]Candidate, error) {
+	events, err := p.store.ListEventsByType(ctx, spec.SeedEventType)
 	if err != nil {
 		return nil, fmt.Errorf("seed candidates: %w", err)
 	}
@@ -194,6 +194,10 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, eventType string) ([
 		// The variable is the primary identity for dedup and variable-level
 		// analysis. Fall back to the expression only for display/dedup of
 		// types that carry no variable (e.g. integer-overflow, format-string).
+		if len(spec.Categories) > 0 && !containsString(spec.Categories, props.Category) {
+			continue
+		}
+
 		varName := props.Variable
 		if varName == "" {
 			varName = props.Expression
@@ -214,6 +218,7 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, eventType string) ([
 			FunctionName: funcName,
 			VariableName: varName,
 			APIName:      apiName,
+			Category:     props.Category,
 			LocationID:   e.LocationID,
 			FileID:       fileID,
 			Line:         line,
@@ -224,23 +229,34 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, eventType string) ([
 	return candidates, nil
 }
 
-func deduplicateCandidates(candidates []Candidate, convergeByVariable bool) []Candidate {
-	seen := make(map[string]bool)
+func deduplicateCandidates(candidates []Candidate, spec *VulnTypeSpec) []Candidate {
+	seen := make(map[string]int)
 	result := make([]Candidate, 0, len(candidates))
 	for _, c := range candidates {
-		var key string
-		if convergeByVariable {
-			// One finding per (function, variable): a single nullable variable
-			// dereferenced at many sites is one defect, not many.
-			key = fmt.Sprintf("%d:%s:%s", c.FileID, c.FunctionName, c.VariableName)
-		} else {
-			key = fmt.Sprintf("%d:%d:%s:%s", c.FileID, c.Line, c.FunctionName, c.VariableName)
-		}
-		if seen[key] {
+		key := spec.dedupKey(c)
+		if idx, ok := seen[key]; ok {
+			// Keep the earliest line for the same root cause so merged findings
+			// anchor at the source (e.g. sprintf) rather than the sink
+			// (sqlite3_exec) when both events collapse into one.
+			if c.Line < result[idx].Line {
+				result[idx] = c
+			}
 			continue
 		}
-		seen[key] = true
+		seen[key] = len(result)
 		result = append(result, c)
 	}
 	return result
+}
+
+func (spec *VulnTypeSpec) dedupKey(c Candidate) string {
+	if spec.ConvergeKey != nil {
+		return spec.ConvergeKey(c)
+	}
+	if spec.ConvergeByVariable {
+		// One finding per (function, variable): a single nullable variable
+		// dereferenced at many sites is one defect, not many.
+		return fmt.Sprintf("%d:%s:%s", c.FileID, c.FunctionName, c.VariableName)
+	}
+	return fmt.Sprintf("%d:%d:%s:%s", c.FileID, c.Line, c.FunctionName, c.VariableName)
 }

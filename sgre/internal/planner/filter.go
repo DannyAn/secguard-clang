@@ -67,6 +67,7 @@ type Candidate struct {
 	FunctionName      string  `json:"function_name"`
 	VariableName      string  `json:"variable_name"`
 	APIName           string  `json:"api_name,omitempty"`
+	Category          string  `json:"category,omitempty"`
 	LocationID        int64   `json:"location_id"`
 	FileID            int64   `json:"file_id"`
 	Line              int     `json:"line"`

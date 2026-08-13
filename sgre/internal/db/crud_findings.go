@@ -10,6 +10,7 @@ import (
 var SupportedFindingCWEs = map[string]bool{
 	"CWE-476": true,
 	"CWE-787": true,
+	"CWE-125": true,
 	"CWE-401": true,
 	"CWE-78":  true,
 	"CWE-89":  true,

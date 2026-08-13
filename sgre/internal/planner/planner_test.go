@@ -235,7 +235,7 @@ func TestDeduplicateCandidates_ConvergeByVariable(t *testing.T) {
 		{FileID: 1, FunctionName: "parse_packet", VariableName: "packet->data", Line: 56},
 	}
 
-	got := deduplicateCandidates(cands, true)
+	got := deduplicateCandidates(cands, &VulnTypeSpec{ConvergeByVariable: true})
 	if len(got) != 2 {
 		t.Fatalf("expected 2 converged candidates (packet, packet->data), got %d", len(got))
 	}
@@ -247,7 +247,42 @@ func TestDeduplicateCandidates_ConvergeByVariable(t *testing.T) {
 	}
 
 	// Without convergence each dereference line is a distinct candidate.
-	if gotAll := deduplicateCandidates(cands, false); len(gotAll) != 4 {
+	if gotAll := deduplicateCandidates(cands, &VulnTypeSpec{}); len(gotAll) != 4 {
 		t.Errorf("expected 4 candidates without convergence, got %d", len(gotAll))
+	}
+}
+
+func TestPlan_CategorySplit_BufferAccess(t *testing.T) {
+	ctx := context.Background()
+	s := newMockStore()
+	fileID, _ := s.InsertFile(ctx, &db.File{Path: "t.c", Language: "c"})
+	fid, _ := s.InsertFunction(ctx, &db.Function{FileID: fileID, Name: "oob", StartLine: 1, EndLine: 20})
+	loc1, _ := s.InsertLocation(ctx, &db.Location{FileID: fileID, Line: 5})
+	loc2, _ := s.InsertLocation(ctx, &db.Location{FileID: fileID, Line: 6})
+	s.InsertEvent(ctx, &db.SecurityEvent{EventType: "BUFFER_ACCESS", EntityID: fid, LocationID: loc1, Properties: `{"category":"array_oob_read","expression":"arr[i]"}`})
+	s.InsertEvent(ctx, &db.SecurityEvent{EventType: "BUFFER_ACCESS", EntityID: fid, LocationID: loc2, Properties: `{"category":"array_oob_write","expression":"buf[i]"}`})
+
+	node, _ := s.GetOrCreateGraphNode(ctx, "function", fid, "")
+	entry, _ := s.GetOrCreateGraphNode(ctx, "function", 0, `{"entry":true}`)
+	s.InsertGraphEdge(ctx, &db.GraphEdge{SrcID: entry, DstID: node, EdgeType: "CALL"})
+
+	p := NewPlanner(s, nil, nil)
+
+	readResult, err := p.Plan(ctx, "out-of-bounds")
+	if err != nil {
+		t.Fatalf("Plan(out-of-bounds) failed: %v", err)
+	}
+	if readResult.Summary.SeedCount != 1 || readResult.CandidateCount() != 1 {
+		t.Errorf("out-of-bounds should seed only the array_oob_read event, got seeds=%d candidates=%d",
+			readResult.Summary.SeedCount, readResult.CandidateCount())
+	}
+
+	writeResult, err := p.Plan(ctx, "buffer-overflow")
+	if err != nil {
+		t.Fatalf("Plan(buffer-overflow) failed: %v", err)
+	}
+	if writeResult.Summary.SeedCount != 1 || writeResult.CandidateCount() != 1 {
+		t.Errorf("buffer-overflow should seed only the array_oob_write event, got seeds=%d candidates=%d",
+			writeResult.Summary.SeedCount, writeResult.CandidateCount())
 	}
 }

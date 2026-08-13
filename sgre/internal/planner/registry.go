@@ -18,7 +18,19 @@ type VulnTypeSpec struct {
 	// event per use site (null-deref) — one root cause should surface as one
 	// finding, not one finding per dereferenced line.
 	ConvergeByVariable bool
-	BuildEvidence      func(c Candidate) []EvidenceFragment
+	// Categories, when non-empty, restricts the seed events to those whose
+	// properties.category is listed. Detectors emit one event type with
+	// multiple categories (BUFFER_ACCESS: unsafe call vs array OOB read vs
+	// heap OOB write), and each category can seed a different vulnerability
+	// type (e.g. buffer-overflow vs out-of-bounds).
+	Categories []string
+	// ConvergeKey overrides the dedup identity when multiple events in one
+	// function/line/category represent the same root cause, e.g. srand() and
+	// rand() for one weak PRNG defect, sprintf()+sqlite3_exec() for one SQL
+	// injection, or the same integer overflow surfaced by two expressions on
+	// one line.
+	ConvergeKey   func(c Candidate) string
+	BuildEvidence func(c Candidate) []EvidenceFragment
 }
 
 var vulnTypeRegistry = map[string]*VulnTypeSpec{}
@@ -106,6 +118,7 @@ func init() {
 		EvidenceType:     "BUFFER_OVERFLOW",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "default",
+		Categories:       []string{"buffer_overflow", "array_oob_write", "heap_oob_write", "format_overflow"},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
 				{Type: "buffer_access", Detail: fmt.Sprintf("buffer access in function %s at line %d", c.FunctionName, c.Line)},
@@ -134,6 +147,9 @@ func init() {
 		EvidenceType:     "INJECTION",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "default",
+		ConvergeKey: func(c Candidate) string {
+			return fmt.Sprintf("injection:%d:%s:%s", c.FileID, c.FunctionName, c.Category)
+		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
 				{Type: "unsafe_call", Detail: fmt.Sprintf("unsafe function call in %s at line %d", c.FunctionName, c.Line)},
@@ -218,6 +234,9 @@ func init() {
 		EvidenceType:     "INTEGER_OVERFLOW",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "default",
+		ConvergeKey: func(c Candidate) string {
+			return fmt.Sprintf("integer-overflow:%d:%s:%d", c.FileID, c.FunctionName, c.Line)
+		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
 				{Type: "integer_overflow", Detail: fmt.Sprintf("arithmetic overflow in size calculation in %s at line %d", c.FunctionName, c.Line)},
@@ -233,6 +252,12 @@ func init() {
 		DefaultSuspicion: "suspected",
 		FilterChain:      "default",
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
+			if c.Category == "shared_data_race" {
+				return []EvidenceFragment{
+					{Type: "data_race", Detail: fmt.Sprintf("unsynchronized shared-variable access in %s at line %d", c.FunctionName, c.Line)},
+					{Type: "call_path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
+				}
+			}
 			return []EvidenceFragment{
 				{Type: "toctou", Detail: fmt.Sprintf("time-of-check-time-of-use in %s at line %d", c.FunctionName, c.Line)},
 				{Type: "call_path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
@@ -272,6 +297,9 @@ func init() {
 		EvidenceType:     "CRYPTO_MISUSE",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "default",
+		ConvergeKey: func(c Candidate) string {
+			return fmt.Sprintf("crypto-misuse:%d:%s:%s", c.FileID, c.FunctionName, c.Category)
+		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
 				{Type: "crypto_misuse", Detail: fmt.Sprintf("weak crypto in %s at line %d", c.FunctionName, c.Line)},
@@ -279,4 +307,28 @@ func init() {
 			}
 		},
 	})
+
+	RegisterVulnType(&VulnTypeSpec{
+		Name:             "out-of-bounds",
+		SeedEventType:    "BUFFER_ACCESS",
+		EvidenceType:     "OUT_OF_BOUNDS",
+		DefaultSuspicion: "suspected",
+		FilterChain:      "default",
+		Categories:       []string{"array_oob_read", "heap_oob_read"},
+		BuildEvidence: func(c Candidate) []EvidenceFragment {
+			return []EvidenceFragment{
+				{Type: "out_of_bounds", Detail: fmt.Sprintf("out-of-bounds access in function %s at line %d", c.FunctionName, c.Line)},
+				{Type: "call_path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
+			}
+		},
+	})
+}
+
+func containsString(s []string, v string) bool {
+	for _, item := range s {
+		if item == v {
+			return true
+		}
+	}
+	return false
 }

@@ -69,6 +69,7 @@ var allSkillSpecs = []skillSpec{
 	{"hardcoded-secret", "trust", "Detects hardcoded passwords, API keys, tokens in source code"},
 	{"deadlock", "concurrency", "Detects lock-order inversion via lock graph cycle detection"},
 	{"crypto-misuse", "crypto", "Detects weak crypto algorithms, undersized keys, weak PRNG"},
+	{"out-of-bounds", "boundary", "Detects out-of-bounds access (array and heap reads, CWE-125)"},
 }
 
 func DefaultRegistry(store db.Store, logger *log.Logger) *Registry {

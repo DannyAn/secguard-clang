@@ -142,8 +142,11 @@ func TestBenchmark_SafeFunctionFilter(t *testing.T) {
 }
 
 // TestBenchmark_PipelineByVulnType verifies the end-to-end Plan for
-// buffer-overflow: 18 seeds converge (dedup + rank + cap) without exceeding
-// the candidate cap.
+// buffer-overflow: only BUFFER_ACCESS events whose properties.category is a
+// write flavor (buffer_overflow/array_oob_write/heap_oob_write/
+// format_overflow) seed this type; read/OOB-read and unrelated categories do
+// not leak in. The mock's 10 buffer_overflow-category events converge without
+// exceeding the candidate cap.
 func TestBenchmark_PipelineByVulnType(t *testing.T) {
 	ctx := context.Background()
 	s := newMockStore()
@@ -155,8 +158,8 @@ func TestBenchmark_PipelineByVulnType(t *testing.T) {
 		t.Fatalf("plan failed: %v", err)
 	}
 
-	if result.Summary.SeedCount != 18 {
-		t.Errorf("expected 18 seeds, got %d", result.Summary.SeedCount)
+	if result.Summary.SeedCount != 10 {
+		t.Errorf("expected 10 buffer_overflow-category seeds, got %d", result.Summary.SeedCount)
 	}
 	if result.CandidateCount() > 30 {
 		t.Errorf("candidates should be capped at 30, got %d", result.CandidateCount())
