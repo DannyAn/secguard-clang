@@ -68,6 +68,14 @@ func (s *store) ListFunctions(ctx context.Context) ([]*Function, error) {
 	return scanFunctions(rows)
 }
 
+func (s *store) DeleteFunctionsByFile(ctx context.Context, fileID int64) error {
+	_, err := s.exec.ExecContext(ctx, `DELETE FROM functions WHERE file_id = ?`, fileID)
+	if err != nil {
+		return fmt.Errorf("db: delete functions by file: %w", err)
+	}
+	return nil
+}
+
 func scanFunctions(rows *sql.Rows) ([]*Function, error) {
 	var funcs []*Function
 	for rows.Next() {

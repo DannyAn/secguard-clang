@@ -2,6 +2,7 @@ package indexer
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -113,6 +114,49 @@ func TestIndexer_NonexistentPath(t *testing.T) {
 	_, err := idx.Index(ctx, "/nonexistent/path/that/does/not/exist")
 	if err == nil {
 		t.Error("expected error for nonexistent path, got nil")
+	}
+}
+
+func TestIndexer_ReindexChangedFile_NoDuplicateFunctions(t *testing.T) {
+	s := db.NewTestStore(t)
+	idx := NewIndexer(s, testLogger())
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "changed.c")
+	if err := os.WriteFile(path, []byte("int a(void) { return 0; }\nint b(void) { return 1; }\n"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("first Index failed: %v", err)
+	}
+	if n, _ := s.ListFunctions(ctx); len(n) != 2 {
+		t.Fatalf("expected 2 functions after first index, got %d", len(n))
+	}
+
+	// Rewrite the file with one function removed and one added; the re-index
+	// must delete stale rows rather than leaving duplicates.
+	if err := os.WriteFile(path, []byte("int a(void) { return 0; }\nint c(void) { return 2; }\n"), 0644); err != nil {
+		t.Fatalf("rewrite file: %v", err)
+	}
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("second Index failed: %v", err)
+	}
+
+	funcs, _ := s.ListFunctions(ctx)
+	if len(funcs) != 2 {
+		t.Fatalf("expected 2 functions after re-index of changed file, got %d", len(funcs))
+	}
+	names := map[string]bool{}
+	for _, f := range funcs {
+		names[f.Name] = true
+	}
+	if !names["a"] || !names["c"] {
+		t.Errorf("expected functions a and c, got %v", names)
+	}
+	if names["b"] {
+		t.Errorf("stale function b should have been removed on re-index")
 	}
 }
 

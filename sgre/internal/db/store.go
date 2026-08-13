@@ -19,6 +19,7 @@ type FunctionStore interface {
 	GetFunctionByName(ctx context.Context, name string) (*Function, error)
 	ListFunctionsByFile(ctx context.Context, fileID int64) ([]*Function, error)
 	ListFunctions(ctx context.Context) ([]*Function, error)
+	DeleteFunctionsByFile(ctx context.Context, fileID int64) error
 }
 
 type VariableStore interface {

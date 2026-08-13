@@ -90,6 +90,12 @@ func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *Inde
 	if existing != nil {
 		idx.store.UpdateFileChecksum(ctx, existing.ID, checksum, loc)
 		fileID = existing.ID
+		// The file changed: drop the previously-indexed functions for it so the
+		// re-index below does not leave stale duplicate rows (the DB has no
+		// upsert-on-name for functions, only INSERT).
+		if err := idx.store.DeleteFunctionsByFile(ctx, fileID); err != nil {
+			return fmt.Errorf("delete stale functions: %w", err)
+		}
 	} else {
 		fileID, err = idx.store.InsertFile(ctx, &db.File{
 			Path:     filePath,
