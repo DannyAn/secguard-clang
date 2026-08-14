@@ -30,6 +30,7 @@ func (p *Planner) getFilters(chain string) []Filter {
 	switch chain {
 	case "null-deref":
 		return []Filter{
+			NewTypeExprFilter(),
 			NewNonNullableFilter(),
 			NewArrayOOBPrecedenceFilter(p.store),
 			NewNullableSourceFilter(p.store),
@@ -223,6 +224,7 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			FileID:       fileID,
 			Line:         line,
 			NonNullable:  props.NonNullable == "true",
+			IsTypeExpr:   props.IsTypeExpr == "true",
 		})
 	}
 

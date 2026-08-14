@@ -78,5 +78,6 @@ type Candidate struct {
 	GuardStrength     string  `json:"guard_strength"`
 	SuspicionLevel    string  `json:"suspicion_level"`
 	NonNullable       bool    `json:"non_nullable"`
+	IsTypeExpr        bool    `json:"is_type_expr"`
 	QualityScore      float64 `json:"quality_score"`
 }

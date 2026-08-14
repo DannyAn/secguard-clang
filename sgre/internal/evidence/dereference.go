@@ -104,6 +104,9 @@ func (d *DereferenceDetector) detectArraySubscript(ctx context.Context, f *db.Fu
 func (d *DereferenceDetector) insertDerefEvent(ctx context.Context, f *db.Function, file *db.File, root, node parser.Node, varName, expr string, result *DetectResult) {
 	locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: node.StartLine(), Column: node.StartColumn()})
 	propsMap := map[string]string{"variable": varName, "expression": expr}
+	if isInsideTypeExpr(node) {
+		propsMap["is_type_expr"] = "true"
+	}
 	if isNonNullableArray(root, varName) {
 		propsMap["non_nullable"] = "true"
 	}
@@ -117,6 +120,23 @@ func (d *DereferenceDetector) insertDerefEvent(ctx context.Context, f *db.Functi
 	if err == nil {
 		result.EventsCreated++
 	}
+}
+
+// isInsideTypeExpr reports whether node sits lexically inside a sizeof or
+// alignof expression. Dereferences there (sizeof(*p), sizeof(p->field),
+// sizeof(arr[0])) are compile-time type expressions, not runtime pointer
+// dereferences, so they can never be a null-dereference. The dereference
+// detector tags them is_type_expr=true rather than suppressing them outright,
+// so the raw event stream other consumers read (interprocedural null
+// propagation) is unchanged; only the null-deref filter chain drops them.
+func isInsideTypeExpr(node parser.Node) bool {
+	for n := &node; n != nil; n = n.Parent() {
+		switch n.Kind() {
+		case "sizeof_expression", "alignof_expression":
+			return true
+		}
+	}
+	return false
 }
 
 func isNonNullableArray(root parser.Node, varName string) bool {

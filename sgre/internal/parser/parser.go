@@ -173,6 +173,17 @@ func (n Node) ChildByFieldName(name string) *Node {
 	return &Node{node: *child, src: n.src}
 }
 
+// Parent returns the enclosing node, or nil at the root. It lets detectors walk
+// from a node up to an enclosing construct (e.g. a sizeof_expression) without
+// re-searching the whole tree.
+func (n Node) Parent() *Node {
+	parent := n.node.Parent()
+	if parent == nil {
+		return nil
+	}
+	return &Node{node: *parent, src: n.src}
+}
+
 func (n Node) FindAll(kind string) []Node {
 	var results []Node
 	walkNode(n, func(node Node) {

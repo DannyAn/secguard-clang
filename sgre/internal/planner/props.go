@@ -12,6 +12,7 @@ type eventProps struct {
 	Function     string `json:"function"`
 	Category     string `json:"category"`
 	NonNullable  string `json:"non_nullable"`
+	IsTypeExpr   string `json:"is_type_expr"`
 	Condition    string `json:"condition"`
 	ScopeStart   int    `json:"scope_start"`
 	ScopeEnd     int    `json:"scope_end"`
