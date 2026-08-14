@@ -326,6 +326,9 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		if unary.StartLine() < f.StartLine || unary.StartLine() > f.EndLine {
 			continue
 		}
+		if isInsideTypeExpr(unary) {
+			continue
+		}
 		text := unary.Text()
 		if !strings.HasPrefix(text, "*") {
 			continue
@@ -340,6 +343,9 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		if ptr.StartLine() < f.StartLine || ptr.StartLine() > f.EndLine {
 			continue
 		}
+		if isInsideTypeExpr(ptr) {
+			continue
+		}
 		children := ptr.NamedChildren()
 		if len(children) == 0 {
 			continue
@@ -352,6 +358,9 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 
 	for _, field := range root.FindAll("field_expression") {
 		if field.StartLine() < f.StartLine || field.StartLine() > f.EndLine {
+			continue
+		}
+		if isInsideTypeExpr(field) {
 			continue
 		}
 		children := field.NamedChildren()
