@@ -2,7 +2,7 @@
 
 > 验证多层过滤收敛管道的精度和召回率。
 > Ground truth 定义在 [expected-results.json](expected-results.json) 中（每个用例带机器可读的 `expect` 字段）。
-> **当前状态: VALID。** 行号锚点与 detector ID 已对齐当前源码；门禁脚本 `scripts/validate-benchmark.py` 可直接计算 precision/recall（当前 34 用例口径 100% precision / 100% recall）。
+> **当前状态: VALID。** 行号锚点与 detector ID 已对齐当前源码；门禁脚本 `scripts/validate-benchmark.py` 可直接计算 precision/recall（当前 35 用例口径 100% precision / 100% recall）。
 >
 > ```bash
 > secguard scan examples/c-vuln-benchmark/src > /tmp/scan.json
@@ -17,11 +17,12 @@
 
 | 指标 | 数值 |
 |------|------|
-| 源文件 | 15 |
-| 总测试用例 | 34 |
+| 源文件 | 16 |
+| 总测试用例 | 35 |
 | Phase 0（P0-P3/TP） | 18 |
 | Phase 1（CWE-190/362/798/667/327） | 12 |
 | Phase 2（扩展典型漏洞） | 4 |
+| Phase 3（CWE-476 sizeof FP 抑制） | 1 |
 | 应完全不产生 Finding (P0: Detector EXCLUDE) | 7 |
 | 应产生 Finding 但被 P1 抑制 | 3 |
 | 应产生 Finding 但被 P2 抑制 | 4 |
@@ -127,6 +128,18 @@
 | OOB-01 | parser.c | 86 | out-of-bounds (CWE-125) | `int arr[10]`，循环 `i <= 10` 读 `arr[i]` | finding |
 
 **说明**：`array_oob_read`/`heap_oob_read` 事件由新增的 `out-of-bounds`（CWE-125）类型消费，写侧事件仍由 `buffer-overflow`（CWE-787）消费。经典数据竞争（至少一次写 + 无锁）为 confirmed；TOCTOU 有部分锁保护（读在锁内、变更在锁外）应为 suspected 人工确认。
+
+---
+
+### Phase 3 — null-deref sizeof 伪解引用（本轮新增）
+
+| # | 文件 | 行 | 检测器 | 反证 | 期望 |
+|---|------|----|--------|------|------|
+| ND-01 | null_deref_sizeof.c | 17 | null-deref (CWE-476) | `sizeof(node->value)` 是编译期类型表达式，非运行时解引用 | no_finding |
+
+**说明**：`sizeof(p->field)` / `sizeof(p[0])` 对可能为 NULL 的指针求值不会在运行时解引用，
+故 `sizeof_pseudo_deref` 过滤规则（null-deref 链第一级）必须抑制该候选。此用例把这条
+站点级规则锁进基准门禁，防止后续重构破坏它。
 
 ## Benchmark 指标
 

@@ -1,17 +1,19 @@
 {
-  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327) + 4 个测试用例 (Phase 2: heap OOB write / format overflow / data race / OOB read)。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。",
+  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327) + 4 个测试用例 (Phase 2: heap OOB write / format overflow / data race / OOB read) + 1 个测试用例 (Phase 3: null-deref sizeof FP 抑制)。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。",
   "_benchmark_doc": "benchmark.md",
   "_validator": "scripts/validate-benchmark.py",
   "summary": {
-    "total_test_cases": 34,
+    "total_test_cases": 35,
     "phase0_test_cases": 18,
     "phase1_test_cases": 12,
     "phase2_test_cases": 4,
+    "phase3_test_cases": 1,
     "expected_final_certified": 17,
-    "expected_no_finding": 17,
+    "expected_no_finding": 18,
     "phase1_confirmed": 9,
     "phase1_safe_excluded": 3,
     "phase2_confirmed": 4,
+    "phase3_null_deref": 1,
     "target_precision": "100%",
     "phase1_cwes": ["CWE-190", "CWE-362", "CWE-798", "CWE-667", "CWE-327"]
   },
@@ -85,6 +87,9 @@
     {"id": "RA-01", "category": "phase2_data_race", "file": "src/concurrency.c", "line": 15,
      "code": "g_shared_counter++ in two pthread threads without lock", "cwe": "CWE-362", "detector": "race_condition", "expect": "finding"},
     {"id": "OOB-01", "category": "phase2_out_of_bounds", "file": "src/parser.c", "line": 86,
-     "code": "secret = arr[i] with i <= 10 on int arr[10]", "cwe": "CWE-125", "detector": "out_of_bounds", "expect": "finding"}
+     "code": "secret = arr[i] with i <= 10 on int arr[10]", "cwe": "CWE-125", "detector": "out_of_bounds", "expect": "finding"},
+
+    {"id": "ND-01", "category": "phase3_null_deref_sizeof", "file": "src/null_deref_sizeof.c", "line": 17,
+     "code": "sizeof(node->value) on a malloc'd (nullable) pointer", "cwe": "CWE-476", "detector": "null_deref", "expect": "no_finding"}
   ]
 }
