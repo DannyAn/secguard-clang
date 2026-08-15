@@ -176,3 +176,49 @@ func TestDefiniteInitFilter_ChainedAssign(t *testing.T) {
 		}
 	}
 }
+
+func TestDefiniteInitFilter_ForInitLoopCounter(t *testing.T) {
+	// A loop counter declared bare (`unsigned i;`) but initialized in a for-init
+	// (`for (i = 0; ...)`) is definitely initialized before a later use — it
+	// must not be flagged. This is the redis hnsw.c loop-counter pattern that
+	// previously flooded uninit.
+	src := `float f(const float *x, const float *y, unsigned dim) {
+    unsigned i;
+    for (i = 0; i + 15 < dim; i += 16) {
+        x[i] = 0;
+    }
+    for (; i < dim; i++) {
+        x[i] = 0;
+    }
+    return 0;
+}
+`
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "forinit.c")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewUninitVariableDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "uninit")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	for _, c := range result.Candidates {
+		if c.Target.Variable == "i" {
+			t.Errorf("expected for-init loop counter i to be definitely initialized, got candidate at line %d", c.Target.Line)
+		}
+	}
+}

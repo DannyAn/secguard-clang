@@ -186,10 +186,14 @@ type assignPair struct {
 // directAssignments returns the (lhs, rhs) pairs of assignment_expression /
 // init_declarator nodes that are DIRECT children of stmt, without recursing into
 // nested statements. A while/if/for/switch header node must not inherit the
-// assignments inside its body.
+// assignments inside its body. A bare assignment_expression is handled because a
+// for-initializer (`for (i = 0; ...)`) is parsed directly as an
+// assignment_expression, not wrapped in an expression_statement.
 func directAssignments(stmt parser.Node) []assignPair {
 	var pairs []assignPair
 	switch stmt.Kind() {
+	case "assignment_expression":
+		pairs = appendChainedAssign(pairs, stmt)
 	case "expression_statement":
 		for _, child := range stmt.NamedChildren() {
 			if child.Kind() != "assignment_expression" {
