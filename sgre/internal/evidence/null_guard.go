@@ -27,8 +27,15 @@ func (d *NullGuardDetector) Detect(ctx context.Context) (DetectResult, error) {
 
 	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		ifs := root.FindAll("if_statement")
+		whiles := root.FindAll("while_statement")
+		fors := root.FindAll("for_statement")
+		// Iterator-style guards live in loop conditions:
+		//   while ((e = dictNext(di)) != NULL) { e->val; }
+		// The loop body is only entered when the iterator returned non-null, so
+		// a deref inside is guarded. if/while/for all expose a "condition" field.
+		condNodes := append(append(append([]parser.Node{}, ifs...), whiles...), fors...)
 		for _, f := range funcs {
-			d.detectGuards(ctx, f, file, ifs, &result)
+			d.detectGuards(ctx, f, file, condNodes, &result)
 			d.detectEarlyReturnGuards(ctx, f, file, ifs, &result)
 		}
 	})
@@ -54,10 +61,13 @@ func (d *NullGuardDetector) detectGuards(ctx context.Context, f *db.Function, fi
 			continue
 		}
 
-		consequence := ifNode.ChildByFieldName("consequence")
+		// if uses "consequence", while/for use "body"; either delimits the
+		// guarded scope.
 		scopeEnd := f.EndLine
-		if consequence != nil {
+		if consequence := ifNode.ChildByFieldName("consequence"); consequence != nil {
 			scopeEnd = consequence.EndLine()
+		} else if body := ifNode.ChildByFieldName("body"); body != nil {
+			scopeEnd = body.EndLine()
 		}
 
 		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: ifNode.StartLine()})
@@ -144,23 +154,14 @@ func extractGuardedVariable(cond parser.Node) string {
 	if text == "" {
 		return ""
 	}
-	if strings.Contains(text, "==") {
-		parts := strings.SplitN(text, "==", 2)
-		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			p = strings.Trim(p, "()")
-			if p != "NULL" && p != "0" && p != "((void *)0)" {
-				return p
-			}
-		}
-	}
-	if strings.Contains(text, "!=") {
-		parts := strings.SplitN(text, "!=", 2)
-		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			p = strings.Trim(p, "()")
-			if p != "NULL" && p != "0" && p != "((void *)0)" {
-				return p
+	for _, op := range []string{"==", "!="} {
+		if strings.Contains(text, op) {
+			parts := strings.SplitN(text, op, 2)
+			for _, p := range parts {
+				p = guardVarName(p)
+				if p != "" && p != "NULL" && p != "0" && p != "((void *)0)" {
+					return p
+				}
 			}
 		}
 	}
@@ -172,6 +173,21 @@ func extractGuardedVariable(cond parser.Node) string {
 		}
 	}
 	return ""
+}
+
+// guardVarName normalises one operand of a null comparison: it trims
+// parentheses and, for an assignment-in-condition (`(e = dictNext()) != NULL`),
+// returns the assignment target `e` rather than the whole `e = dictNext()`.
+func guardVarName(operand string) string {
+	t := strings.TrimSpace(operand)
+	for strings.HasPrefix(t, "(") && strings.HasSuffix(t, ")") {
+		t = strings.TrimSpace(t[1 : len(t)-1])
+	}
+	if i := strings.Index(t, "="); i > 0 {
+		t = strings.TrimSpace(t[:i])
+	}
+	t = strings.TrimPrefix(t, "*")
+	return strings.TrimSpace(t)
 }
 
 func classifyGuard(condText string) string {
