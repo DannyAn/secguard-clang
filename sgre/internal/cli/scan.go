@@ -24,6 +24,8 @@ func runScanCmd(ctx context.Context, args []string) int {
 	dbPath, dbExplicit, remaining := parseDBFlag(args)
 	outputDir := parseStringFlag(remaining, "output-dir")
 	remaining = removeFlag(remaining, "output-dir")
+	excludeDirs, hasExclude := parseExcludeFlag(remaining)
+	remaining = removeFlag(remaining, "exclude")
 	if len(remaining) == 0 {
 		remaining = []string{"."}
 	}
@@ -83,6 +85,9 @@ func runScanCmd(ctx context.Context, args []string) int {
 	defer p.CloseAll()
 
 	idx := indexer.NewIndexer(store, logger)
+	if hasExclude {
+		idx.SetExcludeDirs(excludeDirs)
+	}
 	idxStart := time.Now()
 	indexResult, err := idx.Index(ctx, absPath)
 	if err != nil {

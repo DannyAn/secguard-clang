@@ -14,6 +14,8 @@ import (
 
 func runIndexCmd(ctx context.Context, args []string) int {
 	dbPath, dbExplicit, remaining := parseDBFlag(args)
+	excludeDirs, hasExclude := parseExcludeFlag(remaining)
+	remaining = removeFlag(remaining, "exclude")
 	if len(remaining) == 0 {
 		WriteErrorJSON("index requires a path argument")
 		return 1
@@ -49,6 +51,9 @@ func runIndexCmd(ctx context.Context, args []string) int {
 	defer p.CloseAll()
 
 	idx := indexer.NewIndexer(store, logger)
+	if hasExclude {
+		idx.SetExcludeDirs(excludeDirs)
+	}
 	result, err := idx.Index(ctx, absPath)
 	if err != nil {
 		WriteErrorJSON(fmt.Sprintf("index failed: %v", err))

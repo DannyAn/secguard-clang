@@ -74,6 +74,34 @@ func removeFlag(args []string, flag string) []string {
 	return result
 }
 
+// parseExcludeFlag extracts a comma-separated `--exclude` directory list.
+// present reports whether the flag was given at all; when it is, dirs is the
+// (possibly empty) parsed list and the caller overrides the default excludes.
+func parseExcludeFlag(args []string) (dirs []string, present bool) {
+	for i, a := range args {
+		if a == "--exclude" {
+			if i+1 < len(args) {
+				return splitComma(args[i+1]), true
+			}
+			return []string{}, true
+		}
+		if strings.HasPrefix(a, "--exclude=") {
+			return splitComma(strings.TrimPrefix(a, "--exclude=")), true
+		}
+	}
+	return nil, false
+}
+
+func splitComma(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if t := strings.TrimSpace(part); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 func runReportCmd(ctx context.Context, args []string) int {
 	dbPath, dbExplicit, remaining := parseDBFlag(args)
 

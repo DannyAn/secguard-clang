@@ -63,9 +63,10 @@ Usage:
   secguard db <sql>        Execute SQL query on sgre.db, return JSON
 
 Flags:
-  --db <path>    Path to sgre.db (default: .codeagent/zhuque-secguard/.sgre/sgre.db)
-  --help         Show usage
-  --version      Show version`)
+  --db <path>         Path to sgre.db (default: .codeagent/zhuque-secguard/.sgre/sgre.db)
+  --exclude <dirs>    Comma-separated directory basenames to skip (default: deps,third_party,vendor,external,node_modules)
+  --help              Show usage
+  --version           Show version`)
 }
 
 // parseDBFlag extracts an optional --db flag. explicit reports whether the flag
