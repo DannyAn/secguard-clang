@@ -17,6 +17,7 @@ const ALL_VULN_TYPES = [
   "hardcoded-secret",
   "deadlock",
   "crypto-misuse",
+  "out-of-bounds",
 ]
 
 function resolveWorkDir(context: { worktree?: string, directory?: string }): string {
@@ -68,7 +69,7 @@ export const SecGuardContextPlugin: Plugin = async ({
     tool: {
       secguard_quick_scan: tool({
         description:
-          "Quick scan: check if sgre.db exists and is fresh, run scan only if needed. Returns evidence packages for all 14 or a filtered subset of vulnerability types.",
+          "Quick scan: check if sgre.db exists and is fresh, run scan only if needed. Returns evidence packages for all 15 or a filtered subset of vulnerability types.",
         args: {
           force: tool.schema
             .boolean()
@@ -78,7 +79,7 @@ export const SecGuardContextPlugin: Plugin = async ({
             .string()
             .optional()
             .describe(
-              `Optional filter: comma-separated vulnerability types. Default: all 14 types. Valid types: ${ALL_VULN_TYPES.join(", ")}`
+              `Optional filter: comma-separated vulnerability types. Default: all 15 types. Valid types: ${ALL_VULN_TYPES.join(", ")}`
             ),
         },
         async execute(args, context) {

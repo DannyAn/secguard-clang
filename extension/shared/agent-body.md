@@ -52,6 +52,28 @@ Determine the audit mode from the parsed arguments provided by the command. If n
 - No guard, reachable, nullable source, data flow to deref → confirmed
 - **Only report findings for pipeline-supported vulnerability types**: null-deref (CWE-476), buffer-overflow (CWE-787), memory-leak (CWE-401), injection (CWE-78/CWE-89), resource-leak (CWE-404), uninit (CWE-457), use-after-free (CWE-416), double-free (CWE-415), format-string (CWE-134), integer-overflow (CWE-190), race-condition (CWE-362), hardcoded-secret (CWE-798), deadlock (CWE-667), crypto-misuse (CWE-327), out-of-bounds (CWE-125). Do NOT persist findings for CWE types outside the pipeline's coverage. If you observe such issues by reading source code, note them as **observations** in your report summary — do NOT call `secguard_report` for them.
 
+## Pipeline Confidence Tiers
+
+Each evidence candidate carries a `suspicion_level` field (`confirmed`,
+`suspected`, or `possible`) that the convergence pipeline computed from graph
+evidence. It is a **prior**, distinct from your final classification — use it to
+budget your effort, not to pre-judge the answer:
+
+- **confirmed** — a flow filter or the detector *proved* the pattern on the
+  semantic graph (a null source reaches the dereference, a freed state reaches
+  the use, an uninitialized declaration reaches the read, a constant index
+  overruns a known array). Spend minimal effort: verify the reported file:line,
+  then confirm or dismiss — do NOT re-derive the dataflow.
+- **suspected** — a heuristic recognized the pattern but the graph could not
+  prove it (an unguarded `strcpy`, a weak-PRNG call, a data race). This is where
+  your depth budget belongs: read the source and reason.
+- **possible** — the pattern is only theoretical (e.g. unsigned wraparound inside
+  a bounds check, which would require an operand to reach SIZE_MAX). Triage these
+  last and promote one only when you can show a reachable, realistic overflow.
+
+Your persisted classification (`confirmed`/`suspected`/`false-positive`) is what
+matters; `suspicion_level` only tells you how hard to look.
+
 ## Output Format
 
 The `secguard_scan` and `secguard_plan` tool outputs include a `_summary` field

@@ -103,15 +103,19 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 	}
 }
 
-// suppressConstantStringCopy reports whether a strcpy/strcat call copies a
-// compile-time string literal into a destination whose allocation size is a
-// provably-large-enough constant. `strcpy(malloc(256), "temporary")` is safe
-// (the literal is 10 bytes, the buffer 256), so flagging it is a false
-// positive. The rule is deliberately conservative: it only suppresses when the
-// source is a plain literal and the destination is malloc/calloc/realloc with
-// a numeric size >= literal length + 1 — fixed arrays and unknown sizes are
-// still flagged.
+// suppressConstantStringCopy reports whether a strcpy call copies a compile-time
+// string literal into a destination whose capacity is provably large enough.
+// `strcpy(malloc(256), "temporary")` is safe (the literal is 10 bytes, the
+// buffer 256), as is `strcpy(dst, "hello")` into `char dst[8]`. The rule is
+// deliberately conservative: it only suppresses when the source is a plain
+// literal and the destination's capacity (a malloc/calloc/realloc constant or a
+// local fixed array) is a known numeric >= literal length + 1. It is restricted
+// to strcpy — strcat appends to existing content, so "source fits in total
+// capacity" does not prove safety.
 func suppressConstantStringCopy(root parser.Node, f *db.Function, call parser.Node) bool {
+	if extractCallName(call) != "strcpy" {
+		return false
+	}
 	args := callNamedArguments(call)
 	if len(args) < 2 {
 		return false
@@ -121,8 +125,21 @@ func suppressConstantStringCopy(root parser.Node, f *db.Function, call parser.No
 		return false
 	}
 	dstName := strings.TrimSpace(args[0].Text())
-	size := constantAllocationSize(root, f, dstName)
-	return size >= srcLen+1
+	if size := constantAllocationSize(root, f, dstName); size > 0 {
+		return size >= srcLen+1
+	}
+	// A local fixed array `char dst[256]; strcpy(dst, "x")` is precise within
+	// the function.
+	if size := findArraySize(root, f, dstName); size > 0 {
+		return size >= srcLen+1
+	}
+	// A struct field fixed array `char id[4]; strcpy(log->id, "bad")` is safe
+	// when the field name has ONE unambiguous size across the file
+	// (findFieldArraySize returns 0 when multiple structs disagree).
+	if size := findFieldArraySize(root, dstName); size > 0 {
+		return size >= srcLen+1
+	}
+	return false
 }
 
 func callNamedArguments(call parser.Node) []parser.Node {
@@ -580,6 +597,12 @@ func findFieldArraySize(root parser.Node, dst string) int {
 	if field == "" {
 		return 0
 	}
+	// Collect every fixed array size declared for this field name across the
+	// file. The field name alone does not identify the struct, so suppress only
+	// when every match agrees on the size; otherwise return 0 (unknown) and
+	// leave the copy flagged conservatively.
+	seen := 0
+	sizes := make(map[int]bool)
 	for _, fd := range root.FindAll("field_declaration") {
 		for _, ad := range fd.FindAll("array_declarator") {
 			if arrayDeclaratorName(ad) != field {
@@ -588,11 +611,15 @@ func findFieldArraySize(root parser.Node, dst string) int {
 			for _, child := range ad.NamedChildren() {
 				if child.Kind() == "number_literal" {
 					if n := parseConstantIndex(child.Text()); n > 0 {
-						return n
+						sizes[n] = true
+						seen = n
 					}
 				}
 			}
 		}
+	}
+	if len(sizes) == 1 {
+		return seen
 	}
 	return 0
 }

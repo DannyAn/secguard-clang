@@ -191,6 +191,10 @@ func (s *mockStore) ListGraphEdgesToNode(ctx context.Context, dst int64, et stri
 	return nil, nil
 }
 func (s *mockStore) ReachableFromEntry(ctx context.Context, entry int64, et string) ([]int64, error) {
+	return s.ReachableFromEntries(ctx, []int64{entry}, et)
+}
+
+func (s *mockStore) ReachableFromEntries(ctx context.Context, entries []int64, et string) ([]int64, error) {
 	visited := make(map[int64]bool)
 	var result []int64
 	var dfs func(node int64)
@@ -206,7 +210,9 @@ func (s *mockStore) ReachableFromEntry(ctx context.Context, entry int64, et stri
 			}
 		}
 	}
-	dfs(entry)
+	for _, entry := range entries {
+		dfs(entry)
+	}
 	return result, nil
 }
 

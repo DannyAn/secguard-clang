@@ -28,25 +28,28 @@ func (f *CallReachFilter) Apply(ctx context.Context, candidates []Candidate) ([]
 	}
 
 	funcNodeMap := make(map[int64]int64)
+	var entryNodeIDs []int64
 	for _, fn := range funcs {
 		nodes, _ := f.store.ListGraphNodesByEntity(ctx, "function", fn.ID)
 		if len(nodes) > 0 {
 			funcNodeMap[fn.ID] = nodes[0].ID
 		}
+		if fn.Name == "main" || fn.IsStatic == false {
+			if nodeID, ok := funcNodeMap[fn.ID]; ok {
+				entryNodeIDs = append(entryNodeIDs, nodeID)
+			}
+		}
 	}
 
 	reachableSet := make(map[int64]bool)
-	for _, fn := range funcs {
-		if fn.Name == "main" || fn.IsStatic == false {
-			nodeID, ok := funcNodeMap[fn.ID]
-			if !ok {
-				continue
-			}
-			reachable, _ := f.store.ReachableFromEntry(ctx, nodeID, "CALL")
-			for _, r := range reachable {
-				reachableSet[r] = true
-			}
-		}
+	// One multi-source traversal covers every entry point, instead of one
+	// recursive CTE per non-static function (which dominated scan wall time).
+	reachable, err := f.store.ReachableFromEntries(ctx, entryNodeIDs, "CALL")
+	if err != nil {
+		return nil, nil, fmt.Errorf("filter call reach: %w", err)
+	}
+	for _, r := range reachable {
+		reachableSet[r] = true
 	}
 
 	kept := make([]Candidate, 0, len(candidates))

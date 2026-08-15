@@ -47,6 +47,13 @@ The pipeline is a chain of packages, each writing to the next layer of the DB:
 
 **How a vulnerability type is wired end-to-end** (the piece that spans many files): an evidence detector emits a `security_events` row → a `VulnTypeSpec` registered in `internal/planner/registry.go` maps the type to its seed event + filter chain → `getFilters()` in `planner.go` supplies the filters → a matching agent skill in `.claude/skills/<type>/SKILL.md` gives the AI agent classification rules. Adding a vuln type touches all four of these.
 
+**Graph-based convergence** (the `graph` layer is consumed, not just built): `internal/graph/control_flow.go` builds a statement-level CFG (`BuildStmtCFG`, with `Reaches`/`ReachesAvoiding`/`NodeAt`), and `internal/planner/null_flow.go` exposes a reusable *reaching-sources* dataflow engine (`flowAnalyzer.analyzeFlow`, `flowResult.reaching`/`reachingAtExit`) — a monotone set-of-source-IDs lattice with gen/kill/copy. This engine is the shared best practice that came out of the null-deref spike and is consumed by:
+
+- **null-deref** — `NullableSourceFilter` (`filter_nullable_source.go`) seeds gen from `NULL_VALUE` events, kill from definite non-null reassignments (`v = &x` / `v = ""` / `v = arr`), copy from stored `DATA_FLOW` edges + AST assignments; it drops a dereference only when no null source can reach it. Falls back to the old line-order heuristic when the parser/file is unavailable (mock tests).
+- **use-after-free** — `LifetimeFilter` (`filter_lifetime.go`) uses `BuildStmtCFG.Reaches(freeNode, useNode)` to drop only free→use pairs on mutually-exclusive branches, replacing the old coarse `graph.BuildCFG`/`CanReach`.
+
+See `examples/nullflow-demo/` for a runnable null-deref sample. `memory-leak`/`resource-leak` still do path analysis in the detector (`memory_leak.go`'s `hasLeakingPath`, old `graph.BuildCFG`); migrating them to the new CFG needs ownership-transfer-aware analysis (return-to-caller / store-to-global), not plain reachability, so it is left as a follow-up.
+
 ### The 4-Layer Data Model (SQLite `sgre.db`)
 
 - **Layer 1 — Program Facts** (most stable): `files`, `functions`, `variables`, `expressions`, `types`, `locations`

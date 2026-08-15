@@ -31,6 +31,12 @@ type VulnTypeSpec struct {
 	// one line.
 	ConvergeKey   func(c Candidate) string
 	BuildEvidence func(c Candidate) []EvidenceFragment
+	// CategoryConfidence overrides DefaultSuspicion per event category. A
+	// category is "confirmed" when the detector *proved* the defect (e.g. a
+	// constant index past a known array size), versus "suspected" when it only
+	// recognized a heuristic pattern (e.g. an unguarded strcpy). The AI agent
+	// then spends its depth only on the suspected tier.
+	CategoryConfidence map[string]string
 }
 
 var vulnTypeRegistry = map[string]*VulnTypeSpec{}
@@ -119,6 +125,13 @@ func init() {
 		DefaultSuspicion: "suspected",
 		FilterChain:      "default",
 		Categories:       []string{"buffer_overflow", "array_oob_write", "heap_oob_write", "format_overflow"},
+		// Provable out-of-bounds writes (a constant index past a known array or
+		// allocation size) are confirmed by the detector itself; an unguarded
+		// unsafe call or sprintf remains a heuristic suspicion.
+		CategoryConfidence: map[string]string{
+			"array_oob_write": "confirmed",
+			"heap_oob_write":  "confirmed",
+		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
 				{Type: "buffer_access", Detail: fmt.Sprintf("buffer access in function %s at line %d", c.FunctionName, c.Line)},
@@ -177,7 +190,7 @@ func init() {
 		SeedEventType:    "VALUE_USE",
 		EvidenceType:     "UNINIT_USE",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "default",
+		FilterChain:      "uninit",
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
 				{Type: "uninit_use", Detail: fmt.Sprintf("uninitialized variable used in function %s at line %d", c.FunctionName, c.Line)},
@@ -192,6 +205,8 @@ func init() {
 		EvidenceType:     "USE_AFTER_FREE",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "lifetime",
+		// One freed variable used at many sites is one defect, not one per use.
+		ConvergeByVariable: true,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
 				{Type: "use_after_free", Detail: fmt.Sprintf("variable freed then used in function %s at line %d", c.FunctionName, c.Line)},
@@ -205,7 +220,9 @@ func init() {
 		SeedEventType:    "DOUBLE_FREE",
 		EvidenceType:     "DOUBLE_FREE",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "default",
+		FilterChain:      "double-free",
+		// One variable freed twice is one defect, not one per (first,second) pair.
+		ConvergeByVariable: true,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
 				{Type: "double_free", Detail: fmt.Sprintf("variable freed twice in function %s at line %d", c.FunctionName, c.Line)},
@@ -234,6 +251,15 @@ func init() {
 		EvidenceType:     "INTEGER_OVERFLOW",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "default",
+		// size_calc_overflow (malloc(a * b)) is a concrete CWE-190 pattern and
+		// stays "suspected"; the wraparound-in-a-bounds-check pattern (the
+		// arithmetic lives in the guard itself) is a theoretical wraparound —
+		// correct code most of the time — so it is tiered down to "possible" so
+		// the AI agent does not spend its depth budget on it.
+		CategoryConfidence: map[string]string{
+			"size_calc_overflow": "suspected",
+			"integer_overflow":   "possible",
+		},
 		ConvergeKey: func(c Candidate) string {
 			return fmt.Sprintf("integer-overflow:%d:%s:%d", c.FileID, c.FunctionName, c.Line)
 		},
@@ -315,6 +341,12 @@ func init() {
 		DefaultSuspicion: "suspected",
 		FilterChain:      "default",
 		Categories:       []string{"array_oob_read", "heap_oob_read"},
+		// A read-flavored OOB is only emitted when the detector proved the
+		// index outruns the array/allocation, so it is confirmed, not suspected.
+		CategoryConfidence: map[string]string{
+			"array_oob_read": "confirmed",
+			"heap_oob_read":  "confirmed",
+		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
 				{Type: "out_of_bounds", Detail: fmt.Sprintf("out-of-bounds access in function %s at line %d", c.FunctionName, c.Line)},

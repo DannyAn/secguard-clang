@@ -108,25 +108,47 @@ func isArithmeticOp(expr parser.Node) bool {
 	return false
 }
 
+// isInBoundsCheck reports whether expr is an operand of a relational comparison
+// (<, <=, >, >=) that itself lives in an if/while condition — i.e. the guard
+// computes the same arithmetic that can wrap. This is deliberately narrower
+// than "any arithmetic inside any if": equality checks (strcmp(...) == 0,
+// rot == len-1), constant-folded allocations (malloc(7 + 3*sizeof(int)) ==
+// NULL), and bare pointer arithmetic passed to a call are not overflow guards
+// and must not be flagged. The structural Parent() walk replaces the earlier
+// line-range heuristic, which matched any arithmetic within a few lines of any
+// if-condition and produced ~10 noise candidates on zlib (gun.c's strcmp loops,
+// etc.).
 func (d *IntegerOverflowDetector) isInBoundsCheck(root parser.Node, expr parser.Node, f *db.Function) bool {
-	exprLine := expr.StartLine()
-	for _, ifStmt := range root.FindAll("if_statement") {
-		if ifStmt.StartLine() < f.StartLine || ifStmt.StartLine() > f.EndLine {
-			continue
-		}
-		cond := ifStmt.ChildByFieldName("condition")
-		if cond == nil {
-			continue
-		}
-		if cond.StartLine() <= exprLine && cond.EndLine() >= exprLine {
-			return true
-		}
-		if cond.StartLine() >= exprLine-5 && cond.StartLine() <= exprLine+5 {
-			condText := cond.Text()
-			exprText := expr.Text()
-			if strings.Contains(condText, exprText) {
+	for p := expr.Parent(); p != nil; p = p.Parent() {
+		switch p.Kind() {
+		case "binary_expression":
+			if isRelationalComparison(*p) {
 				return true
 			}
+		case "if_statement", "while_statement", "for_statement",
+			"expression_statement", "return_statement", "compound_statement":
+			// Reached a condition/statement boundary without an intervening
+			// relational comparison: the arithmetic is not a guard operand.
+			return false
+		}
+	}
+	return false
+}
+
+// isRelationalComparison reports whether node is a binary_expression whose
+// top-level operator is a relational comparison (<, <=, >, >=). It reads the
+// operator token from the node's direct children — not the whole text, which
+// would be fooled by `->` member access inside an operand (e.g. `x->y == NULL`
+// contains `>` and must NOT be treated as relational). Equality, logical, and
+// bit-shift operators have their own token kinds and are excluded.
+func isRelationalComparison(node parser.Node) bool {
+	if node.Kind() != "binary_expression" {
+		return false
+	}
+	for _, child := range node.Children() {
+		switch child.Kind() {
+		case "<", ">", "<=", ">=":
+			return true
 		}
 	}
 	return false
@@ -197,7 +219,7 @@ func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, ro
 					locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: expr.StartLine(), Column: expr.StartColumn()})
 					props, _ := json.Marshal(map[string]string{
 						"expression": expr.Text(),
-						"category":   "integer_overflow",
+						"category":   "size_calc_overflow",
 					})
 					_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
 						EventType:  "INTEGER_OVERFLOW",

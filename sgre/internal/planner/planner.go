@@ -33,7 +33,7 @@ func (p *Planner) getFilters(chain string) []Filter {
 			NewTypeExprFilter(),
 			NewNonNullableFilter(),
 			NewArrayOOBPrecedenceFilter(p.store),
-			NewNullableSourceFilter(p.store),
+			NewNullableSourceFilter(p.store).WithParser(p.parser, p.logger),
 			NewCallReachFilter(p.store),
 			NewGuardFilter(p.store),
 			NewSafeFunctionFilter(p.store),
@@ -55,6 +55,18 @@ func (p *Planner) getFilters(chain string) []Filter {
 			NewCallReachFilter(p.store),
 			NewSafeFunctionFilter(p.store),
 			NewLifetimeFilter(p.store, p.parser, p.logger),
+		}
+	case "uninit":
+		return []Filter{
+			NewCallReachFilter(p.store),
+			NewDefiniteInitFilter(p.store, p.parser, p.logger),
+			NewSafeFunctionFilter(p.store),
+		}
+	case "double-free":
+		return []Filter{
+			NewCallReachFilter(p.store),
+			NewSafeFunctionFilter(p.store),
+			NewDoubleFreeFilter(p.store, p.parser, p.logger),
 		}
 	default:
 		// Bounds-check suppression already happens in the buffer-overflow
@@ -213,18 +225,29 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			apiName = props.API
 		}
 
+		// Default the suspicion to the type-level tier, then let a per-category
+		// override (detector-proved categories) or a later flow filter (which
+		// upgrades to "confirmed" when the graph proves the pattern) refine it.
+		suspicion := spec.DefaultSuspicion
+		if spec.CategoryConfidence != nil {
+			if override := spec.CategoryConfidence[props.Category]; override != "" {
+				suspicion = override
+			}
+		}
+
 		candidates = append(candidates, Candidate{
-			DerefEventID: e.ID,
-			FunctionID:   e.EntityID,
-			FunctionName: funcName,
-			VariableName: varName,
-			APIName:      apiName,
-			Category:     props.Category,
-			LocationID:   e.LocationID,
-			FileID:       fileID,
-			Line:         line,
-			NonNullable:  props.NonNullable == "true",
-			IsTypeExpr:   props.IsTypeExpr == "true",
+			DerefEventID:   e.ID,
+			FunctionID:     e.EntityID,
+			FunctionName:   funcName,
+			VariableName:   varName,
+			APIName:        apiName,
+			Category:       props.Category,
+			LocationID:     e.LocationID,
+			FileID:         fileID,
+			Line:           line,
+			NonNullable:    props.NonNullable == "true",
+			IsTypeExpr:     props.IsTypeExpr == "true",
+			SuspicionLevel: suspicion,
 		})
 	}
 

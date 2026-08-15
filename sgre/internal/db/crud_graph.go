@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 )
 
@@ -110,20 +111,32 @@ func (s *store) ListGraphEdgesToNode(ctx context.Context, dstID int64, edgeType 
 }
 
 func (s *store) ReachableFromEntry(ctx context.Context, entryNodeID int64, edgeType string) ([]int64, error) {
+	return s.ReachableFromEntries(ctx, []int64{entryNodeID}, edgeType)
+}
+
+func (s *store) ReachableFromEntries(ctx context.Context, entryNodeIDs []int64, edgeType string) ([]int64, error) {
+	if len(entryNodeIDs) == 0 {
+		return nil, nil
+	}
+	seeds, err := json.Marshal(entryNodeIDs)
+	if err != nil {
+		return nil, fmt.Errorf("db: reachable from entries: marshal seeds: %w", err)
+	}
 	rows, err := s.exec.QueryContext(ctx, `
 		WITH RECURSIVE reach(node) AS (
-			SELECT ? UNION
+			SELECT CAST(value AS INTEGER) FROM json_each(?)
+			UNION
 			SELECT ge.dst_id FROM graph_edges ge JOIN reach r ON ge.src_id = r.node WHERE ge.edge_type = ?
-		) SELECT DISTINCT node FROM reach`, entryNodeID, edgeType)
+		) SELECT DISTINCT node FROM reach`, string(seeds), edgeType)
 	if err != nil {
-		return nil, fmt.Errorf("db: reachable from entry: %w", err)
+		return nil, fmt.Errorf("db: reachable from entries: %w", err)
 	}
 	defer rows.Close()
 	var ids []int64
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("db: reachable from entry: scan: %w", err)
+			return nil, fmt.Errorf("db: reachable from entries: scan: %w", err)
 		}
 		ids = append(ids, id)
 	}

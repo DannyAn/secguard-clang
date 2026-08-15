@@ -17,6 +17,7 @@ const VULN_TYPES = [
   "hardcoded-secret",
   "deadlock",
   "crypto-misuse",
+  "out-of-bounds",
 ] as const
 
 const VULN_TYPES_STR = VULN_TYPES.join(", ")
@@ -44,6 +45,7 @@ const CWE_MAP: Record<string, string> = {
   "hardcoded-secret": "CWE-798",
   "deadlock": "CWE-667",
   "crypto-misuse": "CWE-327",
+  "out-of-bounds": "CWE-125",
 }
 
 function printPlanSummary(w: { write(s: string): boolean }, goJson: any): void {

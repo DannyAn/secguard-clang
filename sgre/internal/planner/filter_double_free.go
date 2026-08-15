@@ -10,26 +10,28 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
-type LifetimeFilter struct {
+// DoubleFreeFilter converges the double-free stream with the same freed-state
+// dataflow as the UAF lifetime filter: gen = first free(p), kill = p = <non-alias
+// reassignment>, copy = p = q. A candidate is suppressed when the freed state
+// from the first free no longer reaches the second free (the pointer was
+// reassigned in between, so the second free frees a different block).
+type DoubleFreeFilter struct {
 	store  db.Store
 	parser *parser.Parser
 	logger *log.Logger
 }
 
-func NewLifetimeFilter(store db.Store, p *parser.Parser, logger *log.Logger) *LifetimeFilter {
-	return &LifetimeFilter{store: store, parser: p, logger: logger}
+func NewDoubleFreeFilter(store db.Store, p *parser.Parser, logger *log.Logger) *DoubleFreeFilter {
+	return &DoubleFreeFilter{store: store, parser: p, logger: logger}
 }
 
-func (f *LifetimeFilter) Name() string { return "lifetime" }
+func (f *DoubleFreeFilter) Name() string { return "double_free_flow" }
 
-func (f *LifetimeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, []Dismissed, error) {
+func (f *DoubleFreeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, []Dismissed, error) {
 	if f.parser == nil {
 		return candidates, nil, nil
 	}
 
-	// Group by function so each function's free/reassignment dataflow is built
-	// once. gen = free(p); kill = p = <anything non-alias> (reassignment clears
-	// the freed state); copy = p = q (alias inherits the freed state).
 	byFunc := make(map[int64][]Candidate)
 	for _, c := range candidates {
 		byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
@@ -45,21 +47,20 @@ func (f *LifetimeFilter) Apply(ctx context.Context, candidates []Candidate) ([]C
 			kept = append(kept, c)
 			continue
 		}
-		useLine := c.Line
-		if !flow.reaching(c.VariableName, useLine) {
+		if !flow.reaching(c.VariableName, c.Line) {
 			dropped = dismiss(dropped, c, f.Name(),
-				fmt.Sprintf("variable %s is reassigned or the free does not reach the use at line %d", c.VariableName, useLine))
+				fmt.Sprintf("variable %s is reassigned before the second free at line %d", c.VariableName, c.Line))
 			continue
 		}
-		// The freed state provably reaches the use without a reassignment: the
-		// graph confirms this is a real use-after-free.
+		// The first-free state provably reaches the second free with no
+		// reassignment in between: the graph confirms a true double-free.
 		c.SuspicionLevel = "confirmed"
 		kept = append(kept, c)
 	}
 	return kept, dropped, nil
 }
 
-func (f *LifetimeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate) map[int64]*flowResult {
+func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate) map[int64]*flowResult {
 	flows := make(map[int64]*flowResult, len(byFunc))
 	for fid, cs := range byFunc {
 		fn, err := f.store.GetFunctionByID(ctx, fid)
@@ -82,17 +83,15 @@ func (f *LifetimeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Cand
 				continue
 			}
 			var props struct {
-				FreeLine int    `json:"free_line"`
-				Variable string `json:"variable"`
+				FirstFree int    `json:"first_free"`
+				Variable  string `json:"variable"`
 			}
-			if json.Unmarshal([]byte(event.Properties), &props) != nil || props.FreeLine == 0 || props.Variable == "" {
+			if json.Unmarshal([]byte(event.Properties), &props) != nil || props.FirstFree == 0 || props.Variable == "" {
 				continue
 			}
-			genByLine[props.FreeLine] = append(genByLine[props.FreeLine], props.Variable)
+			genByLine[props.FirstFree] = append(genByLine[props.FirstFree], props.Variable)
 		}
 
-		// kill: a whole-variable reassignment (p = <non-alias>) clears the freed
-		// state. p = q is a copy handled by the flow engine's AST copy step.
 		killByLine := make(map[int][]string)
 		forEachAssignment(body, func(lhs, rhs parser.Node) {
 			if lhs.Kind() != "identifier" {

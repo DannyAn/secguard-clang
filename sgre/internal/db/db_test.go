@@ -183,6 +183,44 @@ func TestStore_ReachableFromEntry(t *testing.T) {
 	}
 }
 
+func TestStore_ReachableFromEntries(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	// Two disjoint entry components: A->B and X->Y->Z.
+	nodeA, _ := s.InsertGraphNode(ctx, &GraphNode{EntityType: "function", EntityID: 1})
+	nodeB, _ := s.InsertGraphNode(ctx, &GraphNode{EntityType: "function", EntityID: 2})
+	nodeX, _ := s.InsertGraphNode(ctx, &GraphNode{EntityType: "function", EntityID: 3})
+	nodeY, _ := s.InsertGraphNode(ctx, &GraphNode{EntityType: "function", EntityID: 4})
+	nodeZ, _ := s.InsertGraphNode(ctx, &GraphNode{EntityType: "function", EntityID: 5})
+
+	s.InsertGraphEdge(ctx, &GraphEdge{SrcID: nodeA, DstID: nodeB, EdgeType: "CALL"})
+	s.InsertGraphEdge(ctx, &GraphEdge{SrcID: nodeX, DstID: nodeY, EdgeType: "CALL"})
+	s.InsertGraphEdge(ctx, &GraphEdge{SrcID: nodeY, DstID: nodeZ, EdgeType: "CALL"})
+
+	reachable, err := s.ReachableFromEntries(ctx, []int64{nodeA, nodeX}, "CALL")
+	if err != nil {
+		t.Fatalf("ReachableFromEntries failed: %v", err)
+	}
+	got := make(map[int64]bool, len(reachable))
+	for _, id := range reachable {
+		got[id] = true
+	}
+	for _, want := range []int64{nodeA, nodeB, nodeX, nodeY, nodeZ} {
+		if !got[want] {
+			t.Errorf("expected node %d reachable, got %v", want, reachable)
+		}
+	}
+	if len(reachable) != 5 {
+		t.Errorf("expected 5 reachable nodes across two components, got %d: %v", len(reachable), reachable)
+	}
+
+	// Empty seed set returns empty.
+	if empty, err := s.ReachableFromEntries(ctx, nil, "CALL"); err != nil || len(empty) != 0 {
+		t.Errorf("expected empty result for no entries, got %v err=%v", empty, err)
+	}
+}
+
 func TestStore_WithTx_RollbackOnError(t *testing.T) {
 	ctx := context.Background()
 	s := NewTestStore(t)

@@ -56,6 +56,7 @@ const CWE_MAP: Record<string, string> = {
   "hardcoded-secret": "CWE-798",
   "deadlock": "CWE-667",
   "crypto-misuse": "CWE-327",
+  "out-of-bounds": "CWE-125",
 }
 
 function cweForType(vulnType: string): string {
@@ -111,7 +112,7 @@ function printScanSummary(
 
 export default tool({
   description:
-    "Run full SecGuard security scan: index codebase, run all 17 detectors, apply convergence pipeline for all 14 vulnerability types. Writes SARIF 2.1 + report.md + per-finding Markdown to .codeagent/zhuque-secguard/scans/<scan_id>/, stores DB at .codeagent/zhuque-secguard/.sgre/sgre.db. Returns JSON with evidence_packages, total_candidates, files_with_candidates, output_dir.",
+    "Run full SecGuard security scan: index codebase, run all 17 detectors, apply convergence pipeline for all 15 vulnerability types. Writes SARIF 2.1 + report.md + per-finding Markdown to .codeagent/zhuque-secguard/scans/<scan_id>/, stores DB at .codeagent/zhuque-secguard/.sgre/sgre.db. Returns JSON with evidence_packages, total_candidates, files_with_candidates, output_dir.",
   args: {
     path: tool.schema
       .string()

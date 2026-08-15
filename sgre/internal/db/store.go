@@ -59,6 +59,11 @@ type GraphEdgeStore interface {
 	ListGraphEdgesFromNode(ctx context.Context, srcID int64, edgeType string) ([]*GraphEdge, error)
 	ListGraphEdgesToNode(ctx context.Context, dstID int64, edgeType string) ([]*GraphEdge, error)
 	ReachableFromEntry(ctx context.Context, entryNodeID int64, edgeType string) ([]int64, error)
+	// ReachableFromEntries returns the union of nodes reachable from any of the
+	// given entry nodes over edges of edgeType, in a single graph traversal.
+	// It is the multi-source form of ReachableFromEntry and exists so the
+	// call-reach filter can avoid one recursive query per entry function.
+	ReachableFromEntries(ctx context.Context, entryNodeIDs []int64, edgeType string) ([]int64, error)
 }
 
 type SecurityEventStore interface {

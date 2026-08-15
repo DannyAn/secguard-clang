@@ -97,7 +97,13 @@ func isResourceAcquirer(name string) bool {
 	if strings.Contains(lower, "unlock") || strings.Contains(lower, "release") || strings.Contains(lower, "destroy") || strings.Contains(lower, "close") || strings.Contains(lower, "join") || strings.Contains(lower, "deinit") {
 		return false
 	}
-	acquirers := []string{"fopen", "open", "socket", "connect", "accept", "lock", "acquire"}
+	// Note: "lock" is deliberately NOT in this list. Lock acquisition is
+	// handled separately by isLockAcquirer on the `&mutex` argument, and a
+	// substring "lock" here would match memory-allocator names like
+	// allocate_new_datablock / block_get (which contain "lock" inside
+	// "block"/"datablock") and misreport every datablock field write as a
+	// resource leak.
+	acquirers := []string{"fopen", "open", "socket", "connect", "accept", "acquire"}
 	for _, a := range acquirers {
 		if strings.Contains(lower, a) {
 			return true
@@ -121,6 +127,12 @@ func isLockAcquirer(name string) bool {
 	}
 	lower := strings.ToLower(name)
 	if strings.Contains(lower, "unlock") {
+		return false
+	}
+	// "block"/"datablock" contain "lock" as a suffix but are memory/block
+	// helpers, not lock acquirers. block_init(&zip->block) was misreported as a
+	// lock acquisition for every central-directory block field.
+	if strings.Contains(lower, "block") {
 		return false
 	}
 	return strings.Contains(lower, "lock") || strings.Contains(lower, "acquire")
@@ -202,7 +214,51 @@ func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function,
 		}
 	}
 
+	// An "open"-named call that actually returns an error code (e.g.
+	// err = unzOpenCurrentFilePassword(...) compared against UNZ_OK) is not a
+	// resource acquisition. Drop such variables.
+	for varName := range acquires {
+		if isErrorCodeVar(root, f, varName) {
+			delete(acquires, varName)
+		}
+	}
+
 	return acquires
+}
+
+// isErrorCodeVar reports whether varName is used as an error code — compared
+// against a named constant ending in "_OK"/"OK" (UNZ_OK, Z_OK, ZIP_OK, ...) —
+// rather than as a resource handle (compared against NULL, -1, or
+// INVALID_HANDLE_VALUE). A variable compared against UNZ_OK holds a status
+// code, so `err = unzOpenCurrentFilePassword(...)` is not a leaked resource.
+func isErrorCodeVar(root parser.Node, f *db.Function, varName string) bool {
+	for _, be := range root.FindAll("binary_expression") {
+		if be.StartLine() < f.StartLine || be.StartLine() > f.EndLine {
+			continue
+		}
+		children := be.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		lhs, rhs := children[0], children[1]
+		if lhs.Kind() == "identifier" && lhs.Text() == varName && isOKConstant(rhs) {
+			return true
+		}
+		if rhs.Kind() == "identifier" && rhs.Text() == varName && isOKConstant(lhs) {
+			return true
+		}
+	}
+	return false
+}
+
+// isOKConstant reports whether node is a named constant that looks like an
+// error-success code: "OK" or something ending in "_OK" (Z_OK, UNZ_OK, ZIP_OK).
+func isOKConstant(node parser.Node) bool {
+	if node.Kind() != "identifier" {
+		return false
+	}
+	upper := strings.ToUpper(node.Text())
+	return upper == "OK" || strings.HasSuffix(upper, "_OK")
 }
 
 func (d *ResourceLeakDetector) findReleases(ctx context.Context, f *db.Function, file *db.File, root parser.Node) map[string]int {

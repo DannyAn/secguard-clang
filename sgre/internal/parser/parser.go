@@ -7,6 +7,26 @@ import (
 	tree_sitter_c "github.com/tree-sitter/tree-sitter-c/bindings/go"
 )
 
+// cTypeKeywords are C keywords that can never be variable names. When a macro
+// appears in a type position (`z_const unsigned char FAR *p`), tree-sitter can
+// mis-parse `char`/`int`/... as an identifier instead of a primitive_type, so
+// detectors must treat these tokens as types, not as variable names.
+var cTypeKeywords = map[string]bool{
+	"char": true, "int": true, "unsigned": true, "signed": true,
+	"short": true, "long": true, "float": true, "double": true, "void": true,
+	"const": true, "volatile": true, "static": true, "auto": true,
+	"register": true, "extern": true, "typedef": true, "inline": true,
+	"restrict": true, "struct": true, "union": true, "enum": true,
+	"_Bool": true, "_Complex": true, "_Imaginary": true, "sizeof": true,
+}
+
+// IsCTypeKeyword reports whether name is a C keyword that cannot be a variable
+// name. Detectors use it to avoid treating type keywords mis-parsed as
+// identifiers (from macros in type positions) as variables.
+func IsCTypeKeyword(name string) bool {
+	return cTypeKeywords[name]
+}
+
 type Parser struct {
 	lang    *sitter.Language
 	parser  *sitter.Parser

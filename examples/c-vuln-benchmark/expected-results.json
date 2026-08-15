@@ -1,19 +1,21 @@
 {
-  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327) + 4 个测试用例 (Phase 2: heap OOB write / format overflow / data race / OOB read) + 1 个测试用例 (Phase 3: null-deref sizeof FP 抑制)。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。",
+  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327) + 4 个测试用例 (Phase 2: heap OOB write / format overflow / data race / OOB read) + 4 个测试用例 (Phase 3: null-deref sizeof + 流敏感 FP 抑制) + 3 个测试用例 (Phase 4: uninit 流敏感收敛，来自 zlib 生产环境缺陷)。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。",
   "_benchmark_doc": "benchmark.md",
   "_validator": "scripts/validate-benchmark.py",
   "summary": {
-    "total_test_cases": 35,
+    "total_test_cases": 42,
     "phase0_test_cases": 18,
     "phase1_test_cases": 12,
     "phase2_test_cases": 4,
-    "phase3_test_cases": 1,
-    "expected_final_certified": 17,
-    "expected_no_finding": 18,
+    "phase3_test_cases": 4,
+    "phase4_test_cases": 4,
+    "expected_final_certified": 21,
+    "expected_no_finding": 21,
     "phase1_confirmed": 9,
     "phase1_safe_excluded": 3,
     "phase2_confirmed": 4,
-    "phase3_null_deref": 1,
+    "phase3_null_deref": 4,
+    "phase4_uninit": 4,
     "target_precision": "100%",
     "phase1_cwes": ["CWE-190", "CWE-362", "CWE-798", "CWE-667", "CWE-327"]
   },
@@ -90,6 +92,22 @@
      "code": "secret = arr[i] with i <= 10 on int arr[10]", "cwe": "CWE-125", "detector": "out_of_bounds", "expect": "finding"},
 
     {"id": "ND-01", "category": "phase3_null_deref_sizeof", "file": "src/null_deref_sizeof.c", "line": 17,
-     "code": "sizeof(node->value) on a malloc'd (nullable) pointer", "cwe": "CWE-476", "detector": "null_deref", "expect": "no_finding"}
+     "code": "sizeof(node->value) on a malloc'd (nullable) pointer", "cwe": "CWE-476", "detector": "null_deref", "expect": "no_finding"},
+
+    {"id": "ND-02", "category": "phase3_null_flow", "file": "src/p5_null_flow.c", "line": 19,
+     "code": "return p->value after unchecked malloc", "cwe": "CWE-476", "detector": "null_deref", "expect": "finding"},
+    {"id": "ND-03", "category": "phase3_null_flow", "file": "src/p5_null_flow.c", "line": 26,
+     "code": "return p->value after p = &g_fallback (reassignment kill)", "cwe": "CWE-476", "detector": "null_deref", "expect": "no_finding"},
+    {"id": "ND-04", "category": "phase3_null_flow", "file": "src/p5_null_flow.c", "line": 35,
+     "code": "return p[0] after if(p==NULL) p=\"\" (guard-default literal)", "cwe": "CWE-476", "detector": "null_deref", "expect": "no_finding"},
+
+    {"id": "P4-01", "category": "phase4_uninit", "file": "src/p4_uninit.c", "line": 19,
+     "code": "return a+1 with uninitialized int a", "cwe": "CWE-457", "detector": "uninit", "expect": "finding"},
+    {"id": "P4-02", "category": "phase4_uninit", "file": "src/p4_uninit.c", "line": 27,
+     "code": "return p.x+p.y after p.x/p.y field assignment", "cwe": "CWE-457", "detector": "uninit", "expect": "no_finding"},
+    {"id": "P4-03", "category": "phase4_uninit", "file": "src/p4_uninit.c", "line": 34,
+     "code": "return x where x assigned only in a single-line while body (line-keyed collision)", "cwe": "CWE-457", "detector": "uninit", "expect": "finding"},
+    {"id": "P4-04", "category": "phase4_uninit", "file": "src/p4_uninit.c", "line": 40,
+     "code": "int b = a reads uninitialized a (copy-uninit)", "cwe": "CWE-457", "detector": "uninit", "expect": "finding"}
   ]
 }

@@ -64,14 +64,14 @@ export default tool({
     const dbPath = path.join(sgreDir, "sgre.db")
 
     if (args.findings && args.findings.length > 0) {
-      const supportedCWEs = new Set(["CWE-476", "CWE-787", "CWE-401", "CWE-78", "CWE-89", "CWE-404", "CWE-457", "CWE-416", "CWE-415", "CWE-134", "CWE-190", "CWE-362", "CWE-798", "CWE-667", "CWE-327"])
+      const supportedCWEs = new Set(["CWE-476", "CWE-787", "CWE-125", "CWE-401", "CWE-78", "CWE-89", "CWE-404", "CWE-457", "CWE-416", "CWE-415", "CWE-134", "CWE-190", "CWE-362", "CWE-798", "CWE-667", "CWE-327"])
       const errors: string[] = []
       let skipped = 0
       const scanId = args.scan_id || ""
       for (const finding of args.findings) {
         const cweNorm = finding.rule_id.toUpperCase().trim()
         if (!supportedCWEs.has(cweNorm)) {
-          errors.push(`${finding.file}:${finding.line} — unsupported rule_id "${finding.rule_id}": not a pipeline-detected vulnerability type. Supported: CWE-476, CWE-787, CWE-401, CWE-78, CWE-89, CWE-404, CWE-457, CWE-416, CWE-415, CWE-134, CWE-190, CWE-362, CWE-798, CWE-667, CWE-327`)
+          errors.push(`${finding.file}:${finding.line} — unsupported rule_id "${finding.rule_id}": not a pipeline-detected vulnerability type. Supported: CWE-476, CWE-787, CWE-125, CWE-401, CWE-78, CWE-89, CWE-404, CWE-457, CWE-416, CWE-415, CWE-134, CWE-190, CWE-362, CWE-798, CWE-667, CWE-327`)
           skipped++
           continue
         }
