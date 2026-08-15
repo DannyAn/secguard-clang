@@ -89,6 +89,9 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 		if suppressConstantStringCopy(bc, f, call) {
 			continue
 		}
+		if suppressExactFitCopy(bc, f, call) {
+			continue
+		}
 		category := "buffer_overflow"
 
 		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
@@ -819,4 +822,46 @@ func positiveOffset(bound, allocExpr string) int {
 		return 0
 	}
 	return nums[0]
+}
+
+// suppressExactFitCopy reports whether a sized copy (memcpy/memmove/strncpy/
+// strncat) copies exactly as many bytes as the destination was allocated for
+// (or fewer: alloc size = copy size + a positive offset). `p = malloc(n);
+// memcpy(p, src, n)` is an exact-fit copy and safe, as is `p = malloc(n+1);
+// memcpy(p, src, n)`. The check is deliberately conservative: it only fires
+// when the destination's allocation size expression is textually equal to, or
+// a positive-constant superset of, the copy size expression.
+func suppressExactFitCopy(bc *bufCtx, f *db.Function, call parser.Node) bool {
+	name := extractCallName(call)
+	var sizeIdx int
+	switch name {
+	case "memcpy", "memmove", "strncpy", "strncat":
+		sizeIdx = 2
+	default:
+		return false // strcpy/strcat carry no size; handled by other rules
+	}
+	args := callNamedArguments(call)
+	if len(args) <= sizeIdx {
+		return false
+	}
+	dstName := strings.TrimSpace(args[0].Text())
+	copySize := strings.TrimSpace(args[sizeIdx].Text())
+	allocExpr, ok := heapAllocationSize(bc, f, dstName)
+	if !ok {
+		return false
+	}
+	allocExpr = strings.TrimSpace(allocExpr)
+	if copySize == "" || allocExpr == "" {
+		return false
+	}
+	// Exact fit: malloc(n) then memcpy(..., n).
+	if copySize == allocExpr {
+		return true
+	}
+	// Alloc is the copy size plus a positive offset: malloc(n + 1) then
+	// memcpy(..., n) fits. Only a leading "+" is trusted as positive here.
+	if rest := strings.TrimPrefix(allocExpr, copySize); strings.HasPrefix(strings.TrimSpace(rest), "+") {
+		return true
+	}
+	return false
 }
