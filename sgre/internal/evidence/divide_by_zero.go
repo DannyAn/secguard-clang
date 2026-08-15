@@ -49,6 +49,12 @@ func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error)
 				if !possiblyZeroDivisor(divisor) {
 					continue
 				}
+				// Floating-point division by zero is well-defined by IEEE 754
+				// (yields +/-Inf/NaN), not a crash or a memory-safety defect, so it is
+				// out of scope for CWE-369. Only integer / and % can trap.
+				if isFloatDivisionText(expr.Text()) {
+					continue
+				}
 
 				locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: expr.StartLine(), Column: expr.StartColumn()})
 				props, _ := json.Marshal(map[string]string{
@@ -98,9 +104,32 @@ func possiblyZeroDivisor(divisor string) bool {
 	if strings.Contains(t, "sizeof") {
 		return false
 	}
-	// A bare numeric literal (integer or float) is safe unless it is zero.
-	if _, err := strconv.ParseFloat(t, 64); err == nil {
-		return t == "0" || t == "0.0"
+	// A numeric literal (integer or float) is safe unless it is zero. Strip C
+	// integer-literal suffixes first (10u, 10U, 10ul, 10ULL, ...) so that
+	// "2147483647u" is recognized as a non-zero constant rather than a variable.
+	stripped := strings.TrimRight(t, "uUlL")
+	if _, err := strconv.ParseFloat(stripped, 64); err == nil {
+		return stripped == "0" || stripped == "0.0"
 	}
 	return true
+}
+
+// isFloatDivisionText reports whether a division expression involves a
+// floating-point literal (a `.`, an exponent `e`/`E`, or an `f`/`F` suffix on a
+// numeric literal). Floating-point division by zero yields ±Inf/NaN per IEEE
+// 754 and is not a crash or memory-safety defect, so such expressions are
+// excluded from CWE-369 (which is about integer division/modulo trapping).
+func isFloatDivisionText(text string) bool {
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		// decimal point immediately followed by a digit: 0.5, .5, 0.0f
+		if c == '.' && i+1 < len(text) && text[i+1] >= '0' && text[i+1] <= '9' {
+			return true
+		}
+		// exponent: digit followed by e/E followed by digit (1e6, 1e-6)
+		if (c == 'e' || c == 'E') && i > 0 && text[i-1] >= '0' && text[i-1] <= '9' {
+			return true
+		}
+	}
+	return false
 }

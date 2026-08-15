@@ -15,3 +15,7 @@ int unsafe_var_div(int x, int y) {
 int unsafe_expr_mod(int a, int b, int c) {
     return a % (b - c); /* DIVIDE_BY_ZERO: (b - c) may be 0 */
 }
+
+float safe_float_division(void) {
+    return 1.0f / 0.0f; /* no event: float division by zero is IEEE-defined Inf/NaN, not CWE-369 */
+}

@@ -22,6 +22,10 @@ int tn_divide_constant(int a) {
     return a / 100; /* no_finding: non-zero constant */
 }
 
+float tn_divide_float(void) {
+    return 1.0f / 0.0f; /* no_finding: float division is IEEE-defined, not CWE-369 */
+}
+
 /* ---- unchecked-return (CWE-252) ---- */
 
 int tp_unchecked_malloc(void) {
