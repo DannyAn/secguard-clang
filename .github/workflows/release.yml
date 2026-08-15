@@ -1,0 +1,104 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Static musl-linked Linux x86_64 — runs on any glibc/musl distro.
+          - name: linux-amd64
+            os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            cc: musl-gcc
+            apt: musl-tools
+          # Native macOS arm64 — for the developer's own machine.
+          - name: darwin-arm64
+            os: macos-latest
+            goos: darwin
+            goarch: arm64
+            cc: clang
+            apt: ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: true
+          cache-dependency-path: sgre/go.sum
+
+      - name: Install Linux cross toolchain
+        if: matrix.apt != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.apt }}
+
+      - name: Build
+        env:
+          CGO_ENABLED: '1'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CC: ${{ matrix.cc }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cd sgre
+          artifact="secguard-${version}-${{ matrix.name }}"
+          if [ "${{ matrix.name }}" = "linux-amd64" ]; then
+            go build -trimpath \
+              -ldflags "-linkmode external -extldflags '-static' -X github.com/DannyAn/secguard-clang/internal/cli.Version=${version}" \
+              -o "../${artifact}" ./cmd/secguard
+          else
+            go build -trimpath \
+              -ldflags "-X github.com/DannyAn/secguard-clang/internal/cli.Version=${version}" \
+              -o "../${artifact}" ./cmd/secguard
+          fi
+          echo "Built ${artifact}"
+          file "../${artifact}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: secguard-${{ matrix.name }}
+          path: secguard-*-${{ matrix.name }}
+          if-no-files-found: error
+
+  release:
+    name: create release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * | tee SHA256SUMS
+          ls -la
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: CHANGELOG.md
+          files: |
+            dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
