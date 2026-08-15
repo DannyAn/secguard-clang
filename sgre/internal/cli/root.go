@@ -35,6 +35,8 @@ func Execute(ctx context.Context, args []string) int {
 		return runStatusCmd(ctx, args[1:])
 	case "query":
 		return runQueryCmd(ctx, args[1:])
+	case "types":
+		return runTypesCmd()
 	case "plan":
 		return runPlanCmd(ctx, args[1:])
 	case "report":
@@ -42,7 +44,7 @@ func Execute(ctx context.Context, args []string) int {
 	case "db":
 		return runDbCmd(ctx, args[1:])
 	default:
-		WriteErrorJSON(fmt.Sprintf("unknown command %q; available: index, scan, status, query, plan, report, db", args[0]))
+		WriteErrorJSON(fmt.Sprintf("unknown command %q; available: index, scan, status, query, types, plan, report, db", args[0]))
 		return 1
 	}
 }
@@ -55,6 +57,7 @@ Usage:
   secguard scan <path>     Full pipeline: index + plan all vuln types + report
   secguard status          Show index status (files, functions, staleness)
   secguard query <skill>   Run a skill query
+  secguard types           List all vulnerability types + CWE (JSON)
   secguard plan <vuln>     Run convergence pipeline for a vulnerability type
   secguard report          Output all findings as JSON
   secguard db <sql>        Execute SQL query on sgre.db, return JSON
