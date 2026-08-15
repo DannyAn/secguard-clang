@@ -25,11 +25,12 @@ type EvidenceFragment struct {
 }
 
 type PipelineSummary struct {
-	SeedCount       int           `json:"seed_count"`
-	Filters         []FilterStats `json:"filters"`
-	FinalCount      int           `json:"final_count"`
-	ShortCircuited  bool          `json:"short_circuited"`
-	Dropped         []Dismissed   `json:"dropped,omitempty"`
+	SeedCount       int            `json:"seed_count"`
+	Filters         []FilterStats  `json:"filters"`
+	FinalCount      int            `json:"final_count"`
+	DedupedCount    int            `json:"deduped_count"`
+	ShortCircuited  bool           `json:"short_circuited"`
+	Dropped         []Dismissed    `json:"dropped,omitempty"`
 	DroppedByReason map[string]int `json:"dropped_by_reason,omitempty"`
 }
 

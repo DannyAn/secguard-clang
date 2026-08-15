@@ -159,6 +159,7 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 	}
 
 	candidates = deduplicateCandidates(candidates, spec)
+	summary.DedupedCount = len(candidates)
 
 	result := &PlanResult{
 		VulnerabilityType: vulnType,
