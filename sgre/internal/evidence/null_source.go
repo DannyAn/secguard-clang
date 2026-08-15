@@ -44,7 +44,7 @@ func (d *NullSourceDetector) Detect(ctx context.Context) (DetectResult, error) {
 		return result, fmt.Errorf("null source: %w", err)
 	}
 
-	knownFuncs := d.getKnownFunctionNames(ctx)
+	knownFuncs, retTypes := d.getKnownFunctionNames(ctx)
 	nullableFuncs := d.getNullableReturnFunctions(ctx)
 
 	// Pass 2: external-call sources, now that nullableFuncs is complete.
@@ -52,7 +52,7 @@ func (d *NullSourceDetector) Detect(ctx context.Context) (DetectResult, error) {
 		assigns := root.FindAll("assignment_expression")
 		inits := root.FindAll("init_declarator")
 		for _, f := range funcs {
-			d.detectExternalCall(ctx, f, file, assigns, inits, &result, knownFuncs, nullableFuncs)
+			d.detectExternalCall(ctx, f, file, assigns, inits, &result, knownFuncs, retTypes, nullableFuncs)
 		}
 	})
 	return result, err
@@ -183,7 +183,7 @@ func isNullLiteral(text string) bool {
 	return false
 }
 
-func (d *NullSourceDetector) detectExternalCall(ctx context.Context, f *db.Function, file *db.File, assigns, inits []parser.Node, result *DetectResult, knownFuncs map[string]bool, nullableFuncs map[string]bool) {
+func (d *NullSourceDetector) detectExternalCall(ctx context.Context, f *db.Function, file *db.File, assigns, inits []parser.Node, result *DetectResult, knownFuncs map[string]bool, retTypes map[string]string, nullableFuncs map[string]bool) {
 	checkNode := func(node parser.Node) {
 		children := node.NamedChildren()
 		if len(children) < 2 {
@@ -209,6 +209,15 @@ func (d *NullSourceDetector) detectExternalCall(ctx context.Context, f *db.Funct
 		}
 		callName := extractCallName(callExpr)
 		if callName == "" || isAllocator(callName) {
+			return
+		}
+		// A function returning a non-pointer primitive (int/size_t/...)
+		// can never be null — skip it. This is the dominant false-null-source
+		// (redis: sdslen/atoi/snprintf/strlen were treated as nullable).
+		if neverNullFunctions[callName] {
+			return
+		}
+		if rt, ok := retTypes[callName]; ok && neverNullReturnTypes[rt] {
 			return
 		}
 		if knownFuncs[callName] && !nullableFuncs[callName] {
@@ -241,13 +250,38 @@ func (d *NullSourceDetector) detectExternalCall(ctx context.Context, f *db.Funct
 	}
 }
 
-func (d *NullSourceDetector) getKnownFunctionNames(ctx context.Context) map[string]bool {
+func (d *NullSourceDetector) getKnownFunctionNames(ctx context.Context) (map[string]bool, map[string]string) {
 	funcs, _ := d.store.ListFunctions(ctx)
-	m := make(map[string]bool, len(funcs))
+	known := make(map[string]bool, len(funcs))
+	retTypes := make(map[string]string, len(funcs))
 	for _, f := range funcs {
-		m[f.Name] = true
+		known[f.Name] = true
+		retTypes[f.Name] = f.ReturnType
 	}
-	return m
+	return known, retTypes
+}
+
+// neverNullReturnTypes are C primitive types that can never hold a pointer.
+// A function returning one of these cannot return NULL. Deliberately excludes
+// "char"/"unsigned char"/struct names/typedefs: those may be `T *` in disguise
+// (the indexer stores the base type name without the `*`).
+var neverNullReturnTypes = map[string]bool{
+	"size_t": true, "ssize_t": true, "int": true, "long": true, "short": true,
+	"double": true, "float": true, "unsigned": true, "unsigned int": true,
+	"unsigned long": true, "unsigned short": true, "unsigned long long": true,
+	"long long": true, "int64_t": true, "uint64_t": true, "int32_t": true,
+	"uint32_t": true, "int16_t": true, "uint16_t": true, "int8_t": true,
+	"uint8_t": true, "bool": true, "_Bool": true,
+}
+
+// neverNullFunctions are libc/posix functions whose return is never a null
+// pointer (non-pointer return). Pointer-returning "can be null" functions
+// (strchr, strstr, strtok, memchr, fopen, ...) are deliberately NOT listed.
+var neverNullFunctions = map[string]bool{
+	"atoi": true, "atol": true, "atoll": true, "strtol": true, "strtoul": true,
+	"strtoll": true, "strtoull": true, "strtod": true, "strtof": true,
+	"strlen": true, "strcmp": true, "strncmp": true, "snprintf": true,
+	"sprintf": true, "vsnprintf": true, "abs": true, "labs": true, "llabs": true,
 }
 
 func (d *NullSourceDetector) getNullableReturnFunctions(ctx context.Context) map[string]bool {
