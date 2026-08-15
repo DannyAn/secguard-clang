@@ -136,7 +136,10 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		// A field passed by address to any function (`getShort(&s.f)`) is an
 		// output-param: the callee writes s.f, so the base struct s is being
 		// initialized field-by-field. Without this, structs filled through
-		// getter/read calls were reported as wholly uninitialized.
+		// getter/read calls were reported as wholly uninitialized. A whole
+		// variable is deliberately NOT treated this way: an output-param may
+		// write only on its success path (cf. TC16 init_via_ptr), so `&x` alone
+		// does not prove x is initialized on every path.
 		for _, child := range call.NamedChildren() {
 			if child.Kind() != "argument_list" {
 				continue

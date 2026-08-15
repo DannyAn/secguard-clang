@@ -25,7 +25,7 @@ func NewPlanner(store db.Store, p *parser.Parser, logger *log.Logger) *Planner {
 		store:          store,
 		parser:         p,
 		logger:         logger,
-		MaxCandidates:  30,
+		MaxCandidates:  200,
 		callReachCache: &callReachCache{},
 	}
 }
