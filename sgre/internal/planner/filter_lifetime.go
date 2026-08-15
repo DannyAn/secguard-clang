@@ -105,7 +105,7 @@ func (f *LifetimeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Cand
 		})
 
 		analyzer := newFlowAnalyzer(f.store, f.parser)
-		flows[fid] = analyzer.analyzeFlow(ctx, fn, body, root, genByLine, killByLine, false)
+		flows[fid] = analyzer.analyzeFlow(ctx, fn, body, root, genByLine, killByLine, false, false)
 	}
 	return flows
 }

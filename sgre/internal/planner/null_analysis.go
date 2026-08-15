@@ -23,6 +23,10 @@ type nullSource struct {
 	variable string
 	line     int
 	origin   string
+	// definite marks an EXPLICIT null assignment (`p = NULL`), as opposed to a
+	// possible-null source (malloc/fopen/function-return). A definite source
+	// reaching a dereference is a certain null-deref, not a maybe.
+	definite bool
 }
 
 // nullModel is the L1 null model for a single function.
@@ -59,6 +63,7 @@ func buildNullModel(ctx context.Context, store db.Store) (map[int64]*nullModel, 
 			variable: props.Variable,
 			line:     line,
 			origin:   props.Origin,
+			definite: props.Definite == "true",
 		})
 	}
 

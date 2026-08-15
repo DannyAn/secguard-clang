@@ -66,6 +66,10 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 		if fm != nil {
 			if fm.reaching(c.VariableName, c.Line) {
 				c.HasNullableSource = true
+				// Must-null: an EXPLICIT null assignment (`p = NULL`) reaches the
+				// dereference — the pointer is certainly null, so sgre determines
+				// this directly (the AI need not re-derive the nullness).
+				c.HasDefiniteNull = fm.reachingDefinite(c.VariableName, c.Line)
 				kept = append(kept, c)
 			} else {
 				dropped = dismiss(dropped, c, f.Name(),

@@ -70,6 +70,10 @@ type flowResult struct {
 	// genAt records which variables gain a source at each node, so a source on
 	// the same statement as the queried point still counts.
 	genAt map[int]map[string]bool
+	// definite is a second, separate dataflow seeded only with EXPLICIT null
+	// assignments (`p = NULL`). A source reaching here means the pointer is
+	// CERTAINLY null — a must-null result, distinct from the may-null `reaching`.
+	definite *flowResult
 }
 
 // reaching reports whether variable has a reaching source at line.
@@ -85,6 +89,16 @@ func (m *flowResult) reaching(variable string, line int) bool {
 		return true
 	}
 	return m.genAt[n.ID][variable]
+}
+
+// reachingDefinite reports whether an EXPLICIT null assignment (`p = NULL`)
+// reaches the dereference with no intervening kill — i.e. the pointer is
+// certainly null. This is the must-null tier the AI does not need to re-derive.
+func (m *flowResult) reachingDefinite(variable string, line int) bool {
+	if m == nil || m.definite == nil {
+		return false
+	}
+	return m.definite.reaching(variable, line)
 }
 
 // reachingAtExit reports whether variable has a reaching source at the function
@@ -109,10 +123,18 @@ type nodeEffects struct {
 // function, given its parsed body and the NULL_VALUE sources observed in it.
 func (a *flowAnalyzer) analyzeFunction(ctx context.Context, fn *db.Function, body parser.Node, fileRoot parser.Node, sources []nullSource) *flowResult {
 	genByLine := make(map[int][]string)
+	definiteGenByLine := make(map[int][]string)
 	for _, s := range sources {
 		genByLine[s.line] = append(genByLine[s.line], s.variable)
+		if s.definite {
+			definiteGenByLine[s.line] = append(definiteGenByLine[s.line], s.variable)
+		}
 	}
-	return a.analyzeFlow(ctx, fn, body, fileRoot, genByLine, nil, true)
+	res := a.analyzeFlow(ctx, fn, body, fileRoot, genByLine, nil, true, false)
+	if res != nil && len(definiteGenByLine) > 0 {
+		res.definite = a.analyzeFlow(ctx, fn, body, fileRoot, definiteGenByLine, nil, false, true)
+	}
+	return res
 }
 
 // analyzeFlow builds and runs the reaching-sources dataflow for one function.
@@ -120,7 +142,7 @@ func (a *flowAnalyzer) analyzeFunction(ctx context.Context, fn *db.Function, bod
 // source there (a kill clears all of the variable's sources). nonNullKills
 // additionally treats AST-level definite non-null reassignments (&x, "", arr)
 // as kills; it is enabled only for null-deref.
-func (a *flowAnalyzer) analyzeFlow(ctx context.Context, fn *db.Function, body parser.Node, fileRoot parser.Node, genByLine, killByLine map[int][]string, nonNullKills bool) *flowResult {
+func (a *flowAnalyzer) analyzeFlow(ctx context.Context, fn *db.Function, body parser.Node, fileRoot parser.Node, genByLine, killByLine map[int][]string, nonNullKills, definiteKills bool) *flowResult {
 	if body.Kind() != "compound_statement" {
 		return nil
 	}
@@ -134,7 +156,7 @@ func (a *flowAnalyzer) analyzeFlow(ctx context.Context, fn *db.Function, body pa
 		if n.Kind != "stmt" {
 			continue
 		}
-		effects[n.ID] = a.collectNodeEffects(n, genByLine, killByLine, dfgByLine, arrays, nonNullKills)
+		effects[n.ID] = a.collectNodeEffects(n, genByLine, killByLine, dfgByLine, arrays, nonNullKills, definiteKills)
 	}
 
 	nodeIn := runDataflow(cfg, effects)
@@ -142,7 +164,7 @@ func (a *flowAnalyzer) analyzeFlow(ctx context.Context, fn *db.Function, body pa
 }
 
 // collectNodeEffects extracts the transfer effects for a single statement node.
-func (a *flowAnalyzer) collectNodeEffects(n *graph.StmtNode, genByLine, killByLine map[int][]string, dfgByLine map[int][]copyPair, arrays map[string]bool, nonNullKills bool) *nodeEffects {
+func (a *flowAnalyzer) collectNodeEffects(n *graph.StmtNode, genByLine, killByLine map[int][]string, dfgByLine map[int][]copyPair, arrays map[string]bool, nonNullKills, definiteKills bool) *nodeEffects {
 	e := &nodeEffects{gen: map[string]bool{}, kill: map[string]bool{}, copy: map[string]string{}}
 
 	// gen/kill: event sources recorded at this statement's line.
@@ -165,6 +187,11 @@ func (a *flowAnalyzer) collectNodeEffects(n *graph.StmtNode, genByLine, killByLi
 		if rv := rhsVarName(rhs); rv != "" {
 			e.copy[name] = rv
 		} else if nonNullKills && definitelyNonNull(rhs, arrays) {
+			e.kill[name] = true
+		} else if definiteKills {
+			// Must-null flow: ANY reassignment other than a variable copy
+			// (p = malloc(), p = f(), p = 5, ...) replaces the old value, so the
+			// old DEFINITE-null source no longer holds — kill it.
 			e.kill[name] = true
 		}
 	})

@@ -8,6 +8,7 @@ type EvidenceItem struct {
 	Type              string             `json:"type"`
 	VulnerabilityType string             `json:"vulnerability_type"`
 	SuspicionLevel    string             `json:"suspicion_level,omitempty"`
+	HasDefiniteNull   bool               `json:"has_definite_null,omitempty"`
 	Target            TargetInfo         `json:"target"`
 	Evidence          []EvidenceFragment `json:"evidence"`
 }
@@ -58,6 +59,7 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 	item := EvidenceItem{
 		Type:              spec.EvidenceType,
 		VulnerabilityType: spec.Name,
+		HasDefiniteNull:   c.HasDefiniteNull,
 		Target: TargetInfo{
 			File:     fileName,
 			Function: c.FunctionName,

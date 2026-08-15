@@ -37,6 +37,7 @@ func (d *NullSourceDetector) Detect(ctx context.Context) (DetectResult, error) {
 		for _, f := range funcs {
 			d.detectReturnNull(ctx, f, file, returns, &result)
 			d.detectMallocResult(ctx, f, file, assigns, inits, &result)
+			d.detectExplicitNull(ctx, f, file, assigns, inits, &result)
 		}
 	})
 	if err != nil {
@@ -123,6 +124,63 @@ func (d *NullSourceDetector) detectMallocResult(ctx context.Context, f *db.Funct
 		}
 		checkNode(init)
 	}
+}
+
+// detectExplicitNull records a DEFINITE null source: `p = NULL` / `p = nullptr`
+// / `p = (void*)0`. Unlike malloc/fopen (which may or may not return NULL),
+// an explicit null assignment means the pointer IS null, so a later dereference
+// is a definite null-deref (the must-analysis tier the AI does not need to
+// re-derive). It deliberately skips bare `0` (ambiguous with a zero int).
+func (d *NullSourceDetector) detectExplicitNull(ctx context.Context, f *db.Function, file *db.File, assigns, inits []parser.Node, result *DetectResult) {
+	checkNode := func(node parser.Node) {
+		children := node.NamedChildren()
+		if len(children) < 2 {
+			return
+		}
+		varName := assignedVariable(children[0])
+		if varName == "" {
+			return
+		}
+		if !isNullLiteral(children[1].Text()) {
+			return
+		}
+		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: node.StartLine()})
+		props, _ := json.Marshal(map[string]string{"variable": varName, "origin": "explicit_null", "definite": "true"})
+		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
+			EventType:  "NULL_VALUE",
+			EntityID:   f.ID,
+			LocationID: locID,
+			Properties: string(props),
+		})
+		if err == nil {
+			result.EventsCreated++
+		}
+	}
+
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
+			continue
+		}
+		checkNode(assign)
+	}
+	for _, init := range inits {
+		if !funcLineRange(f, init.StartLine()) {
+			continue
+		}
+		checkNode(init)
+	}
+}
+
+// isNullLiteral reports whether an expression is an explicit null pointer
+// constant (NULL, nullptr, or a (void*)0 cast). Bare 0 is excluded because it
+// is ambiguous with a zero integer value.
+func isNullLiteral(text string) bool {
+	t := strings.TrimSpace(text)
+	switch t {
+	case "NULL", "nullptr", "(void*)0", "(void *)0", "((void*)0)", "((void *)0)":
+		return true
+	}
+	return false
 }
 
 func (d *NullSourceDetector) detectExternalCall(ctx context.Context, f *db.Function, file *db.File, assigns, inits []parser.Node, result *DetectResult, knownFuncs map[string]bool, nullableFuncs map[string]bool) {

@@ -72,6 +72,7 @@ type Candidate struct {
 	FileID            int64   `json:"file_id"`
 	Line              int     `json:"line"`
 	HasNullableSource bool    `json:"has_nullable_source"`
+	HasDefiniteNull   bool    `json:"has_definite_null"`
 	IsReachable       bool    `json:"is_reachable"`
 	HasDataFlow       bool    `json:"has_data_flow"`
 	IsGuarded         bool    `json:"is_guarded"`

@@ -89,8 +89,13 @@ func init() {
 		FilterChain:        "null-deref",
 		ConvergeByVariable: true,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
-			fragments := make([]EvidenceFragment, 0, 3)
-			if c.HasNullableSource {
+			fragments := make([]EvidenceFragment, 0, 4)
+			if c.HasDefiniteNull {
+				fragments = append(fragments, EvidenceFragment{
+					Type:   "definite_null",
+					Detail: fmt.Sprintf("variable %s is assigned NULL and dereferenced at line %d with no intervening reassignment (certain null-deref)", c.VariableName, c.Line),
+				})
+			} else if c.HasNullableSource {
 				fragments = append(fragments, EvidenceFragment{
 					Type:   "nullable_source",
 					Detail: fmt.Sprintf("variable %s is assigned a possibly-null value before the dereference at line %d", c.VariableName, c.Line),
