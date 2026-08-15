@@ -30,7 +30,10 @@ func (d *DereferenceDetector) Detect(ctx context.Context) (DetectResult, error) 
 		nonNullable := collectNonNullableArrays(root)
 
 		memberNodes := root.FindAll("field_expression")
-		derefNodes := root.FindAll("unary_expression")
+		// `*p` parses as a pointer_expression, not a unary_expression — the
+		// previous FindAll("unary_expression") never matched a dereference and
+		// silently skipped every `*p` / `*p++` deref.
+		derefNodes := root.FindAll("pointer_expression")
 		subscriptNodes := root.FindAll("subscript_expression")
 
 		for _, f := range funcs {
