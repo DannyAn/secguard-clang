@@ -7,12 +7,13 @@ import (
 )
 
 // DefaultExcludeDirs are the directory basenames skipped by default when no
-// explicit --exclude is given. They are vendored third-party / build /
-// dependency directories whose contents are not the audited project's own
-// code — scanning them floods the convergence pipeline with noise (e.g. redis's
-// deps/ jemalloc+lua+hiredis produced the bulk of null-deref candidates).
+// explicit --exclude is given. They are vendored third-party / build / test /
+// fuzzing directories whose contents are not the audited project's own
+// production code — scanning them floods the convergence pipeline with noise
+// (redis's deps/ + tests/ produced the bulk of null-deref/uninit candidates).
 var DefaultExcludeDirs = []string{
 	"deps", "third_party", "third-party", "vendor", "external", "node_modules",
+	"tests", "test", "fuzzing",
 }
 
 // WalkCFiles walks rootPath and returns every .c/.h file, skipping any

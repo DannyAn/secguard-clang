@@ -64,7 +64,7 @@ Usage:
 
 Flags:
   --db <path>         Path to sgre.db (default: .codeagent/zhuque-secguard/.sgre/sgre.db)
-  --exclude <dirs>    Comma-separated directory basenames to skip (default: deps,third_party,vendor,external,node_modules)
+  --exclude <dirs>    Comma-separated directory basenames to skip (default: deps,third_party,vendor,external,node_modules,tests,test,fuzzing)
   --help              Show usage
   --version           Show version`)
 }
