@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
@@ -44,119 +43,72 @@ type globalDFEntry struct {
 func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	funcs, err := d.store.ListFunctions(ctx)
-	if err != nil {
-		return result, fmt.Errorf("double_free: list functions: %w", err)
-	}
-
 	summaries := buildFuncSummaries(ctx, d.store, d.parser)
 
-	for _, f := range funcs {
-		file, _ := d.store.GetFileByID(ctx, f.FileID)
-		if file == nil {
-			continue
-		}
-		source, err := os.ReadFile(file.Path)
-		if err != nil {
-			continue
-		}
-		tree, err := d.parser.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-		root := tree.RootNode()
+	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		inits := root.FindAll("init_declarator")
+		assigns := root.FindAll("assignment_expression")
+		calls := root.FindAll("call_expression")
 
-		globalStores := d.findGlobalStoredVars(f, root, summaries)
-		freeEvents := d.findAllFreeEvents(f, root, summaries, globalStores)
+		for _, f := range funcs {
+			globalStores := d.findGlobalStoredVars(f, inits, assigns, summaries)
+			freeEvents := d.findAllFreeEvents(f, calls, summaries, globalStores)
 
-		byVar := make(map[string][]dfFreeEvent)
-		for _, fe := range freeEvents {
-			byVar[fe.varName] = append(byVar[fe.varName], fe)
-		}
+			byVar := make(map[string][]dfFreeEvent)
+			for _, fe := range freeEvents {
+				byVar[fe.varName] = append(byVar[fe.varName], fe)
+			}
 
-		// Global-slot double frees (e.g. cleanup_entries() frees g_entries[]
-		// entries that release_entry() already freed) are one defect for the
-		// dangling slot, not one per stored local variable. Collapse them into
-		// a single event labeled with the global slot so the finding names the
-		// real victim instead of a variable whose slot may have been
-		// overwritten (allocator.c main: e1/e2/e3 aliasing).
-		collective := make(map[string]*globalDFEntry)
-		mergedVars := make(map[string]bool)
-		for varName, events := range byVar {
-			if len(events) < 2 {
-				continue
+			// Global-slot double frees (e.g. cleanup_entries() frees g_entries[]
+			// entries that release_entry() already freed) are one defect for the
+			// dangling slot, not one per stored local variable. Collapse them into
+			// a single event labeled with the global slot so the finding names the
+			// real victim instead of a variable whose slot may have been
+			// overwritten (allocator.c main: e1/e2/e3 aliasing).
+			collective := make(map[string]*globalDFEntry)
+			mergedVars := make(map[string]bool)
+			for varName, events := range byVar {
+				if len(events) < 2 {
+					continue
+				}
+				second := events[1]
+				if second.global == "" {
+					continue
+				}
+				key := fmt.Sprintf("%s:%d", second.global, second.line)
+				e := collective[key]
+				if e == nil {
+					e = &globalDFEntry{slot: second.global, line: second.line, callee: second.callee}
+					collective[key] = e
+				}
+				e.victims = append(e.victims, varName)
+				e.firstFrees = append(e.firstFrees, events[0].line)
+				mergedVars[varName] = true
 			}
-			second := events[1]
-			if second.global == "" {
-				continue
-			}
-			key := fmt.Sprintf("%s:%d", second.global, second.line)
-			e := collective[key]
-			if e == nil {
-				e = &globalDFEntry{slot: second.global, line: second.line, callee: second.callee}
-				collective[key] = e
-			}
-			e.victims = append(e.victims, varName)
-			e.firstFrees = append(e.firstFrees, events[0].line)
-			mergedVars[varName] = true
-		}
 
-		keys := make([]string, 0, len(collective))
-		for key := range collective {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			e := collective[key]
-			sort.Strings(e.victims)
-			sort.Ints(e.firstFrees)
-			props := map[string]interface{}{
-				"variable":     e.slot + "[]",
-				"second_free":  e.line,
-				"category":     "double_free",
-				"indirect":     true,
-				"first_callee": e.callee,
-				"victims":      strings.Join(e.victims, ","),
+			keys := make([]string, 0, len(collective))
+			for key := range collective {
+				keys = append(keys, key)
 			}
-			if len(e.firstFrees) > 0 {
-				props["first_free"] = e.firstFrees[0]
-				props["first_free_lines"] = joinInts(e.firstFrees)
-			}
-			propsJSON, _ := json.Marshal(props)
-			locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: e.line})
-			_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-				EventType:  "DOUBLE_FREE",
-				EntityID:   f.ID,
-				LocationID: locID,
-				Properties: string(propsJSON),
-			})
-			if err == nil {
-				result.EventsCreated++
-			}
-		}
-
-		for varName, events := range byVar {
-			if mergedVars[varName] || len(events) < 2 {
-				continue
-			}
-			for i := 1; i < len(events); i++ {
-				locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: events[i].line})
+			sort.Strings(keys)
+			for _, key := range keys {
+				e := collective[key]
+				sort.Strings(e.victims)
+				sort.Ints(e.firstFrees)
 				props := map[string]interface{}{
-					"variable":    varName,
-					"first_free":  events[0].line,
-					"second_free": events[i].line,
-					"category":    "double_free",
+					"variable":     e.slot + "[]",
+					"second_free":  e.line,
+					"category":     "double_free",
+					"indirect":     true,
+					"first_callee": e.callee,
+					"victims":      strings.Join(e.victims, ","),
 				}
-				if events[0].indirect || events[i].indirect {
-					props["indirect"] = true
-				}
-				if events[0].callee != "" {
-					props["first_callee"] = events[0].callee
-				}
-				if events[i].callee != "" {
-					props["second_callee"] = events[i].callee
+				if len(e.firstFrees) > 0 {
+					props["first_free"] = e.firstFrees[0]
+					props["first_free_lines"] = joinInts(e.firstFrees)
 				}
 				propsJSON, _ := json.Marshal(props)
+				locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: e.line})
 				_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
 					EventType:  "DOUBLE_FREE",
 					EntityID:   f.ID,
@@ -167,19 +119,50 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 					result.EventsCreated++
 				}
 			}
+
+			for varName, events := range byVar {
+				if mergedVars[varName] || len(events) < 2 {
+					continue
+				}
+				for i := 1; i < len(events); i++ {
+					locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: events[i].line})
+					props := map[string]interface{}{
+						"variable":    varName,
+						"first_free":  events[0].line,
+						"second_free": events[i].line,
+						"category":    "double_free",
+					}
+					if events[0].indirect || events[i].indirect {
+						props["indirect"] = true
+					}
+					if events[0].callee != "" {
+						props["first_callee"] = events[0].callee
+					}
+					if events[i].callee != "" {
+						props["second_callee"] = events[i].callee
+					}
+					propsJSON, _ := json.Marshal(props)
+					_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
+						EventType:  "DOUBLE_FREE",
+						EntityID:   f.ID,
+						LocationID: locID,
+						Properties: string(propsJSON),
+					})
+					if err == nil {
+						result.EventsCreated++
+					}
+				}
+			}
 		}
-
-		tree.Close()
-	}
-
-	return result, nil
+	})
+	return result, err
 }
 
-func (d *DoubleFreeDetector) findGlobalStoredVars(f *db.Function, root parser.Node, summaries summaryMap) map[string][]string {
+func (d *DoubleFreeDetector) findGlobalStoredVars(f *db.Function, inits, assigns []parser.Node, summaries summaryMap) map[string][]string {
 	stores := make(map[string][]string)
 
-	for _, decl := range root.FindAll("init_declarator") {
-		if decl.StartLine() < f.StartLine || decl.StartLine() > f.EndLine {
+	for _, decl := range inits {
+		if !funcLineRange(f, decl.StartLine()) {
 			continue
 		}
 		children := decl.NamedChildren()
@@ -203,8 +186,8 @@ func (d *DoubleFreeDetector) findGlobalStoredVars(f *db.Function, root parser.No
 		}
 	}
 
-	for _, assign := range root.FindAll("assignment_expression") {
-		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
 		children := assign.NamedChildren()
@@ -231,11 +214,11 @@ func (d *DoubleFreeDetector) findGlobalStoredVars(f *db.Function, root parser.No
 	return stores
 }
 
-func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, root parser.Node, summaries summaryMap, globalStores map[string][]string) []dfFreeEvent {
+func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.Node, summaries summaryMap, globalStores map[string][]string) []dfFreeEvent {
 	var events []dfFreeEvent
 
-	for _, call := range root.FindAll("call_expression") {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		callName := extractCallName(call)

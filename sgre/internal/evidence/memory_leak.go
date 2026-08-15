@@ -49,115 +49,108 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 		}
 	}
 
-	for _, f := range funcs {
-		file, _ := d.store.GetFileByID(ctx, f.FileID)
-		if file == nil {
-			continue
-		}
-		source, err := os.ReadFile(file.Path)
-		if err != nil {
-			continue
-		}
-		tree, err := d.parser.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-		root := tree.RootNode()
+	err = forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
+		funcDefs := root.FindAll("function_definition")
+		calls := root.FindAll("call_expression")
+		returns := root.FindAll("return_statement")
+		assigns := root.FindAll("assignment_expression")
+		inits := root.FindAll("init_declarator")
+		decls := root.FindAll("declaration")
+		ifs := root.FindAll("if_statement")
 
-		allocs := d.findAllocations(ctx, f, file, root, &result)
-		frees := d.findFrees(ctx, f, file, root)
-		returnLines := findReturnLines(root, f)
+		for _, f := range fileFuncs {
+			allocs := d.findAllocations(ctx, f, file, assigns, inits)
+			frees := d.findFrees(ctx, f, file, calls)
+			returnLines := findReturnLinesFrom(returns, f)
 
-		isRAII := raiiCreateFuncs[f.ID]
+			isRAII := raiiCreateFuncs[f.ID]
 
-		body := extractFunctionBody(root, f.StartLine)
-		cfg := graph.BuildStmtCFG(body, f.EndLine)
-		cfgValid := body.Kind() == "compound_statement"
-		localVars := findLocalVars(root, f)
+			body := extractFunctionBodyFrom(funcDefs, f.StartLine)
+			cfg := graph.BuildStmtCFG(body, f.EndLine)
+			cfgValid := body.Kind() == "compound_statement"
+			localVars := findLocalVarsFrom(decls, f)
 
-		for varName, allocLine := range allocs {
-			freeLines, hasFree := frees[varName]
-			isReturned := isReturnedToCaller(varName, root, f)
-			filteredReturns := filterNullGuardReturns(root, returnLines, varName)
-			nullGuardReturns := subtractLines(returnLines, filteredReturns)
-			escapeLines := findEscapeLines(root, f, varName, localVars)
+			for varName, allocLine := range allocs {
+				freeLines, hasFree := frees[varName]
+				isReturned := isReturnedToCaller(varName, returns, f)
+				filteredReturns := filterNullGuardReturns(ifs, returnLines, varName)
+				nullGuardReturns := subtractLines(returnLines, filteredReturns)
+				escapeLines := findEscapeLines(assigns, f, varName, localVars)
 
-			shouldReportLeak := false
-			shouldReportRelease := false
+				shouldReportLeak := false
+				shouldReportRelease := false
 
-			if isReturned {
-				shouldReportRelease = true
-			} else if !hasFree {
-				// A malloc with no free is still not a leak when its result
-				// escapes at the allocation site (stored to a global/array).
-				if containsLine(escapeLines, allocLine) {
+				if isReturned {
 					shouldReportRelease = true
-				} else {
-					shouldReportLeak = true
-				}
-			} else if cfgValid {
-				if hasLeakingPath(cfg, allocLine, freeLines, nullGuardReturns, escapeLines) {
-					shouldReportLeak = true
+				} else if !hasFree {
+					// A malloc with no free is still not a leak when its result
+					// escapes at the allocation site (stored to a global/array).
+					if containsLine(escapeLines, allocLine) {
+						shouldReportRelease = true
+					} else {
+						shouldReportLeak = true
+					}
+				} else if cfgValid {
+					if hasLeakingPath(cfg, allocLine, freeLines, nullGuardReturns, escapeLines) {
+						shouldReportLeak = true
+					} else {
+						shouldReportRelease = true
+					}
 				} else {
 					shouldReportRelease = true
 				}
-			} else {
-				shouldReportRelease = true
-			}
 
-			if shouldReportLeak && !isRAII {
-				locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: allocLine})
-				props, _ := json.Marshal(map[string]string{
-					"variable": varName,
-					"origin":   "malloc",
-				})
-				d.store.InsertEvent(ctx, &db.SecurityEvent{
-					EventType:  "MEMORY_ALLOC",
-					EntityID:   f.ID,
-					LocationID: locID,
-					Properties: string(props),
-				})
-				result.EventsCreated++
-			}
-
-			if shouldReportRelease {
-				locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: allocLine})
-				props, _ := json.Marshal(map[string]string{
-					"variable": varName,
-					"origin":   "malloc",
-				})
-				d.store.InsertEvent(ctx, &db.SecurityEvent{
-					EventType:  "MEMORY_ALLOC",
-					EntityID:   f.ID,
-					LocationID: locID,
-					Properties: string(props),
-				})
-				releaseLine := allocLine
-				if len(freeLines) > 0 {
-					releaseLine = freeLines[0]
+				if shouldReportLeak && !isRAII {
+					locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: allocLine})
+					props, _ := json.Marshal(map[string]string{
+						"variable": varName,
+						"origin":   "malloc",
+					})
+					d.store.InsertEvent(ctx, &db.SecurityEvent{
+						EventType:  "MEMORY_ALLOC",
+						EntityID:   f.ID,
+						LocationID: locID,
+						Properties: string(props),
+					})
+					result.EventsCreated++
 				}
-				releaseLocID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: releaseLine})
-				releaseProps, _ := json.Marshal(map[string]string{
-					"variable": varName,
-					"origin":   "free",
-				})
-				d.store.InsertEvent(ctx, &db.SecurityEvent{
-					EventType:  "MEMORY_RELEASE",
-					EntityID:   f.ID,
-					LocationID: releaseLocID,
-					Properties: string(releaseProps),
-				})
-				result.EventsCreated += 2
+
+				if shouldReportRelease {
+					locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: allocLine})
+					props, _ := json.Marshal(map[string]string{
+						"variable": varName,
+						"origin":   "malloc",
+					})
+					d.store.InsertEvent(ctx, &db.SecurityEvent{
+						EventType:  "MEMORY_ALLOC",
+						EntityID:   f.ID,
+						LocationID: locID,
+						Properties: string(props),
+					})
+					releaseLine := allocLine
+					if len(freeLines) > 0 {
+						releaseLine = freeLines[0]
+					}
+					releaseLocID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: releaseLine})
+					releaseProps, _ := json.Marshal(map[string]string{
+						"variable": varName,
+						"origin":   "free",
+					})
+					d.store.InsertEvent(ctx, &db.SecurityEvent{
+						EventType:  "MEMORY_RELEASE",
+						EntityID:   f.ID,
+						LocationID: releaseLocID,
+						Properties: string(releaseProps),
+					})
+					result.EventsCreated += 2
+				}
 			}
 		}
-
-		tree.Close()
-	}
-
-	return result, nil
+	})
+	return result, err
 }
 
-func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) map[string]int {
+func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function, file *db.File, assigns, inits []parser.Node) map[string]int {
 	allocs := make(map[string]int)
 
 	checkNode := func(node parser.Node) {
@@ -189,15 +182,15 @@ func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function
 		}
 	}
 
-	for _, assign := range root.FindAll("assignment_expression") {
-		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
 		checkNode(assign)
 	}
 
-	for _, init := range root.FindAll("init_declarator") {
-		if init.StartLine() < f.StartLine || init.StartLine() > f.EndLine {
+	for _, init := range inits {
+		if !funcLineRange(f, init.StartLine()) {
 			continue
 		}
 		checkNode(init)
@@ -206,11 +199,10 @@ func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function
 	return allocs
 }
 
-func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file *db.File, root parser.Node) map[string][]int {
+func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node) map[string][]int {
 	frees := make(map[string][]int)
-	calls := root.FindAll("call_expression")
 	for _, call := range calls {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		callName := extractCallName(call)
@@ -230,22 +222,22 @@ func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file
 	return frees
 }
 
-func findReturnLines(root parser.Node, f *db.Function) []int {
+func findReturnLinesFrom(returns []parser.Node, f *db.Function) []int {
 	var returnLines []int
-	for _, ret := range root.FindAll("return_statement") {
-		if ret.StartLine() >= f.StartLine && ret.StartLine() <= f.EndLine {
+	for _, ret := range returns {
+		if funcLineRange(f, ret.StartLine()) {
 			returnLines = append(returnLines, ret.StartLine())
 		}
 	}
 	return returnLines
 }
 
-func filterNullGuardReturns(root parser.Node, returnLines []int, varName string) []int {
+func filterNullGuardReturns(ifs []parser.Node, returnLines []int, varName string) []int {
 	if varName == "" {
 		return returnLines
 	}
 	guarded := make(map[int]bool)
-	for _, ifStmt := range root.FindAll("if_statement") {
+	for _, ifStmt := range ifs {
 		cond := ifStmt.ChildByFieldName("condition")
 		if cond == nil {
 			continue
@@ -327,10 +319,10 @@ func hasLeakingPath(cfg *graph.StmtCFG, allocLine int, freeLines []int, nullGuar
 // function: it is stored into a subscript/field, or assigned to an identifier
 // that is not a local of the function (a global/static). A value that escapes
 // is transferred ownership, not leaked.
-func findEscapeLines(root parser.Node, f *db.Function, varName string, localVars map[string]bool) []int {
+func findEscapeLines(assigns []parser.Node, f *db.Function, varName string, localVars map[string]bool) []int {
 	var lines []int
-	for _, assign := range root.FindAll("assignment_expression") {
-		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
 		children := assign.NamedChildren()
@@ -373,10 +365,10 @@ func findEscapeLines(root parser.Node, f *db.Function, varName string, localVars
 }
 
 // findLocalVars returns the names of variables declared inside the function.
-func findLocalVars(root parser.Node, f *db.Function) map[string]bool {
+func findLocalVarsFrom(decls []parser.Node, f *db.Function) map[string]bool {
 	locals := make(map[string]bool)
-	for _, decl := range root.FindAll("declaration") {
-		if decl.StartLine() < f.StartLine || decl.StartLine() > f.EndLine {
+	for _, decl := range decls {
+		if !funcLineRange(f, decl.StartLine()) {
 			continue
 		}
 		for _, child := range decl.NamedChildren() {
@@ -435,9 +427,9 @@ func subtractLines(all, remove []int) []int {
 	return out
 }
 
-func isReturnedToCaller(varName string, root parser.Node, f *db.Function) bool {
-	for _, ret := range root.FindAll("return_statement") {
-		if ret.StartLine() < f.StartLine || ret.StartLine() > f.EndLine {
+func isReturnedToCaller(varName string, returns []parser.Node, f *db.Function) bool {
+	for _, ret := range returns {
+		if !funcLineRange(f, ret.StartLine()) {
 			continue
 		}
 		for _, child := range ret.NamedChildren() {

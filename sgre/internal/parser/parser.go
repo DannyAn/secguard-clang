@@ -135,6 +135,14 @@ func (n Node) Text() string {
 	return string(n.src[n.node.StartByte():n.node.EndByte()])
 }
 
+func (n Node) StartByte() int {
+	return int(n.node.StartByte())
+}
+
+func (n Node) EndByte() int {
+	return int(n.node.EndByte())
+}
+
 func (n Node) StartLine() int {
 	return int(n.node.StartPosition().Row) + 1
 }

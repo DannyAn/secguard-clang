@@ -3,8 +3,6 @@ package evidence
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -27,39 +25,19 @@ func (d *NullGuardDetector) Name() string { return "null_guard" }
 func (d *NullGuardDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	funcs, err := d.store.ListFunctions(ctx)
-	if err != nil {
-		return result, fmt.Errorf("null guard: list functions: %w", err)
-	}
-
-	for _, f := range funcs {
-		file, _ := d.store.GetFileByID(ctx, f.FileID)
-		if file == nil {
-			continue
+	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		ifs := root.FindAll("if_statement")
+		for _, f := range funcs {
+			d.detectGuards(ctx, f, file, ifs, &result)
+			d.detectEarlyReturnGuards(ctx, f, file, ifs, &result)
 		}
-		source, err := os.ReadFile(file.Path)
-		if err != nil {
-			continue
-		}
-		tree, err := d.parser.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-		root := tree.RootNode()
-
-		d.detectGuards(ctx, f, file, root, &result)
-		d.detectEarlyReturnGuards(ctx, f, file, root, &result)
-
-		tree.Close()
-	}
-
-	return result, nil
+	})
+	return result, err
 }
 
-func (d *NullGuardDetector) detectGuards(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {
-	ifs := root.FindAll("if_statement")
+func (d *NullGuardDetector) detectGuards(ctx context.Context, f *db.Function, file *db.File, ifs []parser.Node, result *DetectResult) {
 	for _, ifNode := range ifs {
-		if ifNode.StartLine() < f.StartLine || ifNode.StartLine() > f.EndLine {
+		if !funcLineRange(f, ifNode.StartLine()) {
 			continue
 		}
 		condition := ifNode.ChildByFieldName("condition")
@@ -101,10 +79,9 @@ func (d *NullGuardDetector) detectGuards(ctx context.Context, f *db.Function, fi
 	}
 }
 
-func (d *NullGuardDetector) detectEarlyReturnGuards(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {
-	ifs := root.FindAll("if_statement")
+func (d *NullGuardDetector) detectEarlyReturnGuards(ctx context.Context, f *db.Function, file *db.File, ifs []parser.Node, result *DetectResult) {
 	for _, ifNode := range ifs {
-		if ifNode.StartLine() < f.StartLine || ifNode.StartLine() > f.EndLine {
+		if !funcLineRange(f, ifNode.StartLine()) {
 			continue
 		}
 		condition := ifNode.ChildByFieldName("condition")

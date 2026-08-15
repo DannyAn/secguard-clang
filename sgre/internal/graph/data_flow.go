@@ -24,39 +24,23 @@ func NewDataFlowBuilder(store db.Store, p *parser.Parser, logger *log.Logger) *D
 func (b *DataFlowBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	result := &BuildResult{}
 
-	funcs, err := b.store.ListFunctions(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("data flow: list functions: %w", err)
-	}
+	err := forEachFile(ctx, b.store, b.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		decls := root.FindAll("declaration")
+		assigns := root.FindAll("assignment_expression")
+		returns := root.FindAll("return_statement")
 
-	for _, f := range funcs {
-		file, _ := b.store.GetFileByID(ctx, f.FileID)
-		if file == nil {
-			continue
+		for _, f := range funcs {
+			b.detectPointerDeclarations(ctx, f, decls, result)
+			b.detectPointerAssignments(ctx, f, assigns, result)
+			b.detectPointerReturns(ctx, f, returns, result)
 		}
-		source, err := readFile(file.Path)
-		if err != nil {
-			continue
-		}
-		tree, err := b.parser.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-
-		b.detectPointerDeclarations(ctx, f, tree.RootNode(), result)
-		b.detectPointerAssignments(ctx, f, tree.RootNode(), result)
-		b.detectPointerReturns(ctx, f, tree.RootNode(), result)
-
-		tree.Close()
-	}
-
-	return result, nil
+	})
+	return result, err
 }
 
-func (b *DataFlowBuilder) detectPointerDeclarations(ctx context.Context, f *db.Function, root parser.Node, result *BuildResult) {
-	decls := root.FindAll("declaration")
+func (b *DataFlowBuilder) detectPointerDeclarations(ctx context.Context, f *db.Function, decls []parser.Node, result *BuildResult) {
 	for _, decl := range decls {
-		if decl.StartLine() < f.StartLine || decl.StartLine() > f.EndLine {
+		if !funcLineRange(f, decl.StartLine()) {
 			continue
 		}
 		pointerDeclarators := decl.FindAll("pointer_declarator")
@@ -87,10 +71,9 @@ func (b *DataFlowBuilder) detectPointerDeclarations(ctx context.Context, f *db.F
 	}
 }
 
-func (b *DataFlowBuilder) detectPointerAssignments(ctx context.Context, f *db.Function, root parser.Node, result *BuildResult) {
-	assigns := root.FindAll("assignment_expression")
+func (b *DataFlowBuilder) detectPointerAssignments(ctx context.Context, f *db.Function, assigns []parser.Node, result *BuildResult) {
 	for _, assign := range assigns {
-		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
 		children := assign.NamedChildren()
@@ -133,10 +116,9 @@ func (b *DataFlowBuilder) detectPointerAssignments(ctx context.Context, f *db.Fu
 	}
 }
 
-func (b *DataFlowBuilder) detectPointerReturns(ctx context.Context, f *db.Function, root parser.Node, result *BuildResult) {
-	returns := root.FindAll("return_statement")
+func (b *DataFlowBuilder) detectPointerReturns(ctx context.Context, f *db.Function, returns []parser.Node, result *BuildResult) {
 	for _, ret := range returns {
-		if ret.StartLine() < f.StartLine || ret.StartLine() > f.EndLine {
+		if !funcLineRange(f, ret.StartLine()) {
 			continue
 		}
 		for _, child := range ret.NamedChildren() {

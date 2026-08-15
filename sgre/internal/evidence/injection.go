@@ -3,8 +3,6 @@ package evidence
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -47,40 +45,20 @@ var commandInjectionSinks = map[string]bool{
 func (d *InjectionDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	funcs, err := d.store.ListFunctions(ctx)
-	if err != nil {
-		return result, fmt.Errorf("injection: list functions: %w", err)
-	}
-
-	for _, f := range funcs {
-		file, _ := d.store.GetFileByID(ctx, f.FileID)
-		if file == nil {
-			continue
+	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		calls := root.FindAll("call_expression")
+		for _, f := range funcs {
+			d.detectCommandInjection(ctx, f, file, calls, &result)
+			d.detectTaintFlowInjection(ctx, f, file, calls, &result)
+			d.detectSQLInjection(ctx, f, file, calls, &result)
 		}
-		source, err := os.ReadFile(file.Path)
-		if err != nil {
-			continue
-		}
-		tree, err := d.parser.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-		root := tree.RootNode()
-
-		d.detectCommandInjection(ctx, f, file, root, &result)
-		d.detectTaintFlowInjection(ctx, f, file, root, &result)
-		d.detectSQLInjection(ctx, f, file, root, &result)
-
-		tree.Close()
-	}
-
-	return result, nil
+	})
+	return result, err
 }
 
-func (d *InjectionDetector) detectCommandInjection(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {
-	calls := root.FindAll("call_expression")
+func (d *InjectionDetector) detectCommandInjection(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node, result *DetectResult) {
 	for _, call := range calls {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		callName := extractCallName(call)
@@ -112,10 +90,9 @@ func (d *InjectionDetector) detectCommandInjection(ctx context.Context, f *db.Fu
 	}
 }
 
-func (d *InjectionDetector) detectSQLInjection(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {
-	calls := root.FindAll("call_expression")
+func (d *InjectionDetector) detectSQLInjection(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node, result *DetectResult) {
 	for _, call := range calls {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		callName := extractCallName(call)
@@ -140,9 +117,8 @@ func (d *InjectionDetector) detectSQLInjection(ctx context.Context, f *db.Functi
 		}
 	}
 
-	sprintfCalls := root.FindAll("call_expression")
-	for _, call := range sprintfCalls {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		callName := extractCallName(call)
@@ -171,12 +147,12 @@ func (d *InjectionDetector) detectSQLInjection(ctx context.Context, f *db.Functi
 	}
 }
 
-func (d *InjectionDetector) detectTaintFlowInjection(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {
+func (d *InjectionDetector) detectTaintFlowInjection(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node, result *DetectResult) {
 	formattedBuffers := make(map[string]int)
 
 	wsprintfNames := map[string]bool{"wsprintfA": true, "wsprintfW": true, "sprintf": true, "snprintf": true}
-	for _, call := range root.FindAll("call_expression") {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		callName := extractCallName(call)
@@ -197,8 +173,8 @@ func (d *InjectionDetector) detectTaintFlowInjection(ctx context.Context, f *db.
 	}
 
 	processSinks := map[string]bool{"CreateProcessA": true, "CreateProcessW": true, "CreateProcessAsA": true, "CreateProcessAsW": true}
-	for _, call := range root.FindAll("call_expression") {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		callName := extractCallName(call)

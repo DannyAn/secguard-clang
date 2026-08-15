@@ -3,8 +3,6 @@ package evidence
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 	"regexp"
 	"strings"
 
@@ -40,33 +38,16 @@ var highEntropyHints = []string{
 func (d *HardcodedSecretDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	funcs, err := d.store.ListFunctions(ctx)
-	if err != nil {
-		return result, fmt.Errorf("hardcoded_secret: list functions: %w", err)
-	}
+	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		// The previous loop processed each file once, at the first function's
+		// iteration, and attributed every file-scoped event to that function.
+		if len(funcs) == 0 {
+			return
+		}
+		f := funcs[0]
 
-	processedFiles := make(map[int64]bool)
-	for _, f := range funcs {
-		file, _ := d.store.GetFileByID(ctx, f.FileID)
-		if file == nil {
-			continue
-		}
-		if processedFiles[file.ID] {
-			continue
-		}
-		processedFiles[file.ID] = true
-
-		source, err := os.ReadFile(file.Path)
-		if err != nil {
-			continue
-		}
-		tree, err := d.parser.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-		root := tree.RootNode()
-
-		for _, init := range root.FindAll("init_declarator") {
+		inits := root.FindAll("init_declarator")
+		for _, init := range inits {
 			varName := ""
 			for _, id := range init.FindAll("identifier") {
 				varName = id.Text()
@@ -115,16 +96,14 @@ func (d *HardcodedSecretDetector) Detect(ctx context.Context) (DetectResult, err
 			}
 		}
 
-		d.detectRegSetValueEx(ctx, root, file, &result)
-
-		tree.Close()
-	}
-
-	return result, nil
+		calls := root.FindAll("call_expression")
+		d.detectRegSetValueEx(ctx, calls, file, &result)
+	})
+	return result, err
 }
 
-func (d *HardcodedSecretDetector) detectRegSetValueEx(ctx context.Context, root parser.Node, file *db.File, result *DetectResult) {
-	for _, call := range root.FindAll("call_expression") {
+func (d *HardcodedSecretDetector) detectRegSetValueEx(ctx context.Context, calls []parser.Node, file *db.File, result *DetectResult) {
+	for _, call := range calls {
 		callName := extractCallName(call)
 		if callName != "RegSetValueExA" && callName != "RegSetValueExW" && callName != "RegSetValueEx" {
 			continue

@@ -168,6 +168,15 @@ func (s *mockStore) ListGraphNodesByEntity(ctx context.Context, et string, eid i
 	}
 	return result, nil
 }
+func (s *mockStore) ListGraphNodesByEntityType(ctx context.Context, et string) ([]*db.GraphNode, error) {
+	var result []*db.GraphNode
+	for _, n := range s.nodes {
+		if n.EntityType == et {
+			result = append(result, n)
+		}
+	}
+	return result, nil
+}
 
 func (s *mockStore) InsertGraphEdge(ctx context.Context, e *db.GraphEdge) (int64, error) {
 	e.ID = s.nextID

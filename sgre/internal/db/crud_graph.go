@@ -66,6 +66,24 @@ func (s *store) ListGraphNodesByEntity(ctx context.Context, entityType string, e
 	return nodes, rows.Err()
 }
 
+func (s *store) ListGraphNodesByEntityType(ctx context.Context, entityType string) ([]*GraphNode, error) {
+	rows, err := s.exec.QueryContext(ctx,
+		`SELECT id, entity_type, entity_id, properties FROM graph_nodes WHERE entity_type = ?`, entityType)
+	if err != nil {
+		return nil, fmt.Errorf("db: list graph nodes by entity type: %w", err)
+	}
+	defer rows.Close()
+	var nodes []*GraphNode
+	for rows.Next() {
+		n := &GraphNode{}
+		if err := rows.Scan(&n.ID, &n.EntityType, &n.EntityID, &n.Properties); err != nil {
+			return nil, fmt.Errorf("db: scan graph node: %w", err)
+		}
+		nodes = append(nodes, n)
+	}
+	return nodes, rows.Err()
+}
+
 func (s *store) InsertGraphEdge(ctx context.Context, e *GraphEdge) (int64, error) {
 	res, err := s.exec.ExecContext(ctx,
 		`INSERT INTO graph_edges (src_id, dst_id, edge_type, properties) VALUES (?, ?, ?, ?)`,

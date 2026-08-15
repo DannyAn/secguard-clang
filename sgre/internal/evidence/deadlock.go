@@ -3,8 +3,6 @@ package evidence
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -33,11 +31,6 @@ func (d *DeadlockDetector) Capabilities() []string {
 func (d *DeadlockDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	funcs, err := d.store.ListFunctions(ctx)
-	if err != nil {
-		return result, fmt.Errorf("deadlock: list functions: %w", err)
-	}
-
 	type lockEdge struct {
 		from string
 		to   string
@@ -49,52 +42,42 @@ func (d *DeadlockDetector) Detect(ctx context.Context) (DetectResult, error) {
 
 	var allEdges []lockEdge
 
-	for _, f := range funcs {
-		file, _ := d.store.GetFileByID(ctx, f.FileID)
-		if file == nil {
-			continue
-		}
-		source, err := os.ReadFile(file.Path)
-		if err != nil {
-			continue
-		}
-		tree, err := d.parser.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-		root := tree.RootNode()
-
-		held := []string{}
-		for _, call := range root.FindAll("call_expression") {
-			if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
-				continue
-			}
-			callName := extractCallName(call)
-			mutexName := extractMutexArg(call)
-			if mutexName == "" {
-				continue
-			}
-
-			if callName == "pthread_mutex_lock" || callName == "pthread_rwlock_wrlock" || callName == "EnterCriticalSection" {
-				for _, h := range held {
-					if h != mutexName {
-						allEdges = append(allEdges, lockEdge{from: h, to: mutexName, file: file, line: call.StartLine(), fn: f.Name, fnID: f.ID})
-					}
+	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		calls := root.FindAll("call_expression")
+		for _, f := range funcs {
+			held := []string{}
+			for _, call := range calls {
+				if !funcLineRange(f, call.StartLine()) {
+					continue
 				}
-				held = append(held, mutexName)
-			}
-			if callName == "pthread_mutex_unlock" || callName == "pthread_rwlock_unlock" || callName == "LeaveCriticalSection" {
-				newHeld := []string{}
-				for _, h := range held {
-					if h != mutexName {
-						newHeld = append(newHeld, h)
-					}
+				callName := extractCallName(call)
+				mutexName := extractMutexArg(call)
+				if mutexName == "" {
+					continue
 				}
-				held = newHeld
+
+				if callName == "pthread_mutex_lock" || callName == "pthread_rwlock_wrlock" || callName == "EnterCriticalSection" {
+					for _, h := range held {
+						if h != mutexName {
+							allEdges = append(allEdges, lockEdge{from: h, to: mutexName, file: file, line: call.StartLine(), fn: f.Name, fnID: f.ID})
+						}
+					}
+					held = append(held, mutexName)
+				}
+				if callName == "pthread_mutex_unlock" || callName == "pthread_rwlock_unlock" || callName == "LeaveCriticalSection" {
+					newHeld := []string{}
+					for _, h := range held {
+						if h != mutexName {
+							newHeld = append(newHeld, h)
+						}
+					}
+					held = newHeld
+				}
 			}
 		}
-
-		tree.Close()
+	})
+	if err != nil {
+		return result, err
 	}
 
 	edges := make(map[string][]lockEdge)

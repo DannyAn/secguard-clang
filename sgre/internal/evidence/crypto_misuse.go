@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -58,52 +57,33 @@ var weakPrngFunctions = map[string]bool{
 func (d *CryptoMisuseDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	funcs, err := d.store.ListFunctions(ctx)
-	if err != nil {
-		return result, fmt.Errorf("crypto_misuse: list functions: %w", err)
-	}
+	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		calls := root.FindAll("call_expression")
+		for _, f := range funcs {
+			for _, call := range calls {
+				if !funcLineRange(f, call.StartLine()) {
+					continue
+				}
+				callName := extractCallName(call)
 
-	processedFiles := make(map[int64]bool)
-	for _, f := range funcs {
-		file, _ := d.store.GetFileByID(ctx, f.FileID)
-		if file == nil {
-			continue
-		}
+				if reason, ok := weakCryptoFunctions[callName]; ok {
+					d.emitCryptoEvent(ctx, file, f, call, callName, reason, "weak_algorithm", &result)
+				}
 
-		source, err := os.ReadFile(file.Path)
-		if err != nil {
-			continue
-		}
-		tree, err := d.parser.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-		root := tree.RootNode()
-
-		for _, call := range root.FindAll("call_expression") {
-			if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
-				continue
-			}
-			callName := extractCallName(call)
-
-			if reason, ok := weakCryptoFunctions[callName]; ok {
-				d.emitCryptoEvent(ctx, file, f, call, callName, reason, "weak_algorithm", &result)
-			}
-
-			if weakPrngFunctions[callName] {
-				d.emitCryptoEvent(ctx, file, f, call, callName, "weak PRNG for security context", "weak_random", &result)
+				if weakPrngFunctions[callName] {
+					d.emitCryptoEvent(ctx, file, f, call, callName, "weak PRNG for security context", "weak_random", &result)
+				}
 			}
 		}
 
-		if !processedFiles[file.ID] {
-			processedFiles[file.ID] = true
-			d.detectUndersizedKey(ctx, root, file, f, &result)
+		// Undersized-key scan runs once per file; the previous loop ran it at
+		// the first function's iteration and attributed it to that function.
+		if len(funcs) > 0 {
+			decls := root.FindAll("declaration")
+			d.detectUndersizedKey(ctx, decls, file, funcs[0], &result)
 		}
-
-		tree.Close()
-	}
-
-	return result, nil
+	})
+	return result, err
 }
 
 func (d *CryptoMisuseDetector) emitCryptoEvent(ctx context.Context, file *db.File, f *db.Function, call parser.Node, callName, reason, category string, result *DetectResult) {
@@ -125,8 +105,8 @@ func (d *CryptoMisuseDetector) emitCryptoEvent(ctx context.Context, file *db.Fil
 	}
 }
 
-func (d *CryptoMisuseDetector) detectUndersizedKey(ctx context.Context, root parser.Node, file *db.File, f *db.Function, result *DetectResult) {
-	for _, decl := range root.FindAll("declaration") {
+func (d *CryptoMisuseDetector) detectUndersizedKey(ctx context.Context, decls []parser.Node, file *db.File, f *db.Function, result *DetectResult) {
+	for _, decl := range decls {
 		text := decl.Text()
 		if !strings.Contains(text, "key") && !strings.Contains(text, "Key") {
 			continue

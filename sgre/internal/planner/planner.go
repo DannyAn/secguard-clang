@@ -14,10 +14,20 @@ type Planner struct {
 	parser        *parser.Parser
 	logger        *log.Logger
 	MaxCandidates int
+	// callReachCache shares the call-graph reachability across all Plan()
+	// calls, since every vulnerability type runs the call-reach filter over
+	// the same graph.
+	callReachCache *callReachCache
 }
 
 func NewPlanner(store db.Store, p *parser.Parser, logger *log.Logger) *Planner {
-	return &Planner{store: store, parser: p, logger: logger, MaxCandidates: 30}
+	return &Planner{
+		store:          store,
+		parser:         p,
+		logger:         logger,
+		MaxCandidates:  30,
+		callReachCache: &callReachCache{},
+	}
 }
 
 func (p *Planner) SetMaxCandidates(n int) {
@@ -34,37 +44,37 @@ func (p *Planner) getFilters(chain string) []Filter {
 			NewNonNullableFilter(),
 			NewArrayOOBPrecedenceFilter(p.store),
 			NewNullableSourceFilter(p.store).WithParser(p.parser, p.logger),
-			NewCallReachFilter(p.store),
+			NewCallReachFilter(p.store, p.callReachCache),
 			NewGuardFilter(p.store),
 			NewSafeFunctionFilter(p.store),
 		}
 	case "memory-leak":
 		return []Filter{
-			NewCallReachFilter(p.store),
+			NewCallReachFilter(p.store, p.callReachCache),
 			NewSafeFunctionFilter(p.store),
 			NewReleaseFilter(p.store, "MEMORY_RELEASE"),
 		}
 	case "resource-leak":
 		return []Filter{
-			NewCallReachFilter(p.store),
+			NewCallReachFilter(p.store, p.callReachCache),
 			NewSafeFunctionFilter(p.store),
 			NewReleaseFilter(p.store, "RESOURCE_RELEASE"),
 		}
 	case "lifetime":
 		return []Filter{
-			NewCallReachFilter(p.store),
+			NewCallReachFilter(p.store, p.callReachCache),
 			NewSafeFunctionFilter(p.store),
 			NewLifetimeFilter(p.store, p.parser, p.logger),
 		}
 	case "uninit":
 		return []Filter{
-			NewCallReachFilter(p.store),
+			NewCallReachFilter(p.store, p.callReachCache),
 			NewDefiniteInitFilter(p.store, p.parser, p.logger),
 			NewSafeFunctionFilter(p.store),
 		}
 	case "double-free":
 		return []Filter{
-			NewCallReachFilter(p.store),
+			NewCallReachFilter(p.store, p.callReachCache),
 			NewSafeFunctionFilter(p.store),
 			NewDoubleFreeFilter(p.store, p.parser, p.logger),
 		}
@@ -75,7 +85,7 @@ func (p *Planner) getFilters(chain string) []Filter {
 		// BoundsCheckFilter wrongly keyed on NULL_GUARD events at function
 		// granularity. So the default chain is call-reach + safe-function only.
 		return []Filter{
-			NewCallReachFilter(p.store),
+			NewCallReachFilter(p.store, p.callReachCache),
 			NewSafeFunctionFilter(p.store),
 		}
 	}

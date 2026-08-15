@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"os"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -28,61 +27,47 @@ type summaryMap map[string]*FuncSummary
 func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser) summaryMap {
 	summaries := make(summaryMap)
 
-	funcs, err := store.ListFunctions(ctx)
-	if err != nil {
-		return summaries
-	}
+	forEachFile(ctx, store, p, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		funcDefs := root.FindAll("function_definition")
+		calls := root.FindAll("call_expression")
+		returns := root.FindAll("return_statement")
+		assigns := root.FindAll("assignment_expression")
 
-	for _, f := range funcs {
-		file, _ := store.GetFileByID(ctx, f.FileID)
-		if file == nil {
-			continue
-		}
-		source, err := os.ReadFile(file.Path)
-		if err != nil {
-			continue
-		}
-		tree, err := p.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-		root := tree.RootNode()
+		for _, f := range funcs {
+			params := extractFunctionParamsFrom(funcDefs, f.StartLine)
 
-		params := extractFunctionParams(root, f.StartLine)
-
-		s := &FuncSummary{
-			ParamDirectFrees: make(map[int]bool),
-			ParamFieldFrees:  make(map[int][]string),
-			ParamWrites:      computeParamWrites(root, f, params),
-		}
-
-		s.ParamDirectFrees, s.ParamFieldFrees = computeParamFrees(root, f, params)
-
-		for _, call := range root.FindAll("call_expression") {
-			if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
-				continue
+			s := &FuncSummary{
+				ParamDirectFrees: make(map[int]bool),
+				ParamFieldFrees:  make(map[int][]string),
+				ParamWrites:      computeParamWrites(funcDefs, f, params),
 			}
-			if extractCallName(call) != "free" {
-				continue
+
+			s.ParamDirectFrees, s.ParamFieldFrees = computeParamFrees(funcDefs, f, params)
+
+			for _, call := range calls {
+				if !funcLineRange(f, call.StartLine()) {
+					continue
+				}
+				if extractCallName(call) != "free" {
+					continue
+				}
+				args := getCallArgs(call)
+				if len(args) == 0 {
+					continue
+				}
+				globalName := extractGlobalFromArrayAccess(args[0])
+				if globalName != "" && !contains(s.GlobalFrees, globalName) {
+					s.GlobalFrees = append(s.GlobalFrees, globalName)
+				}
 			}
-			args := getCallArgs(call)
-			if len(args) == 0 {
-				continue
-			}
-			globalName := extractGlobalFromArrayAccess(args[0])
-			if globalName != "" && !contains(s.GlobalFrees, globalName) {
-				s.GlobalFrees = append(s.GlobalFrees, globalName)
+
+			s.ReturnStores = findReturnStoresFrom(returns, assigns, f)
+
+			if len(s.ParamDirectFrees) > 0 || len(s.ParamFieldFrees) > 0 || len(s.GlobalFrees) > 0 || len(s.ReturnStores) > 0 || len(s.ParamWrites) > 0 {
+				summaries[f.Name] = s
 			}
 		}
-
-		s.ReturnStores = findReturnStores(root, f)
-
-		if len(s.ParamDirectFrees) > 0 || len(s.ParamFieldFrees) > 0 || len(s.GlobalFrees) > 0 || len(s.ReturnStores) > 0 || len(s.ParamWrites) > 0 {
-			summaries[f.Name] = s
-		}
-
-		tree.Close()
-	}
+	})
 
 	return summaries
 }
@@ -91,9 +76,9 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser) s
 // through that pointer parameter on EVERY path to exit. It builds the function
 // CFG and checks whether the exit is reachable from the entry without passing a
 // write-through statement; if it is reachable, some path skips the write.
-func computeParamWrites(root parser.Node, f *db.Function, params []string) map[int]bool {
+func computeParamWrites(funcDefs []parser.Node, f *db.Function, params []string) map[int]bool {
 	result := make(map[int]bool)
-	body := extractFunctionBody(root, f.StartLine)
+	body := extractFunctionBodyFrom(funcDefs, f.StartLine)
 	if body.Kind() != "compound_statement" {
 		return result
 	}
@@ -130,10 +115,10 @@ func computeParamWrites(root parser.Node, f *db.Function, params []string) map[i
 // resumes only on paths where the free did NOT happen, so propagating it would
 // be a false positive (cf. gz_look freeing state->out on a malloc-failure path).
 // A NULL-guard `if (p != NULL) free(p)` falls through, so it is unconditional.
-func computeParamFrees(root parser.Node, f *db.Function, params []string) (map[int]bool, map[int][]string) {
+func computeParamFrees(funcDefs []parser.Node, f *db.Function, params []string) (map[int]bool, map[int][]string) {
 	direct := make(map[int]bool)
 	field := make(map[int][]string)
-	body := extractFunctionBody(root, f.StartLine)
+	body := extractFunctionBodyFrom(funcDefs, f.StartLine)
 	if body.Kind() != "compound_statement" {
 		return direct, field
 	}
@@ -277,8 +262,8 @@ func chainedWriteTargets(assign parser.Node) []string {
 
 // extractFunctionBody returns the compound_statement body of the
 // function_definition whose start line matches startLine.
-func extractFunctionBody(root parser.Node, startLine int) parser.Node {
-	for _, fn := range root.FindAll("function_definition") {
+func extractFunctionBodyFrom(funcDefs []parser.Node, startLine int) parser.Node {
+	for _, fn := range funcDefs {
 		if fn.StartLine() != startLine {
 			continue
 		}
@@ -289,13 +274,13 @@ func extractFunctionBody(root parser.Node, startLine int) parser.Node {
 	return parser.Node{}
 }
 
-func findReturnStores(root parser.Node, f *db.Function) []string {
+func findReturnStoresFrom(returns, assigns []parser.Node, f *db.Function) []string {
 	var stores []string
 	seen := make(map[string]bool)
 
 	hasReturn := false
-	for _, ret := range root.FindAll("return_statement") {
-		if ret.StartLine() >= f.StartLine && ret.StartLine() <= f.EndLine {
+	for _, ret := range returns {
+		if funcLineRange(f, ret.StartLine()) {
 			hasReturn = true
 			break
 		}
@@ -304,8 +289,8 @@ func findReturnStores(root parser.Node, f *db.Function) []string {
 		return nil
 	}
 
-	for _, assign := range root.FindAll("assignment_expression") {
-		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
 		children := assign.NamedChildren()
@@ -367,8 +352,8 @@ func getCallArgs(call parser.Node) []parser.Node {
 	return nil
 }
 
-func extractFunctionParams(root parser.Node, startLine int) []string {
-	for _, fnNode := range root.FindAll("function_definition") {
+func extractFunctionParamsFrom(funcDefs []parser.Node, startLine int) []string {
+	for _, fnNode := range funcDefs {
 		if fnNode.StartLine() != startLine {
 			continue
 		}
@@ -402,11 +387,11 @@ type aliasInfo struct {
 	field   string
 }
 
-func findAliases(f *db.Function, root parser.Node) map[string]aliasInfo {
+func findAliases(f *db.Function, inits []parser.Node) map[string]aliasInfo {
 	aliases := make(map[string]aliasInfo)
 
-	for _, decl := range root.FindAll("init_declarator") {
-		if decl.StartLine() < f.StartLine || decl.StartLine() > f.EndLine {
+	for _, decl := range inits {
+		if !funcLineRange(f, decl.StartLine()) {
 			continue
 		}
 		children := decl.NamedChildren()

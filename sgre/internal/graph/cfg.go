@@ -22,17 +22,44 @@ type CFG struct {
 // flat functions (no block-scoped branch bodies) yield a CFG whose Root has no
 // children. Callers treat that as "degenerate" and fall back to a conservative
 // path-insensitive decision rather than trusting CanReach.
+//
+// It collects the if/loop nodes with whole-tree FindAll calls and delegates to
+// BuildCFGFromLists. Callers that already hold those nodes (e.g. a detector
+// looping many functions in one file) should call BuildCFGFromLists directly
+// to avoid one whole-tree FindAll per function.
 func BuildCFG(root parser.Node, funcStart, funcEnd int) *CFG {
+	return BuildCFGFromLists(funcStart, funcEnd,
+		root.FindAll("if_statement"),
+		root.FindAll("while_statement"),
+		root.FindAll("for_statement"),
+		root.FindAll("do_statement"))
+}
+
+// BuildCFGFromLists builds the same coarse CFG as BuildCFG, but from
+// pre-collected if/while/for/do nodes shared across functions in a file. It
+// filters each list by line range at the top level and by byte containment in
+// recursion instead of running a whole-tree FindAll per function, which was
+// the dominant uninit-detector cost (one full-file walk per function per
+// control-flow kind).
+func BuildCFGFromLists(funcStart, funcEnd int, ifs, whiles, fors, dos []parser.Node) *CFG {
 	scopeRoot := &Scope{StartLine: funcStart, EndLine: funcEnd}
 	cfg := &CFG{Root: scopeRoot}
-	cfg.buildScopes(root, scopeRoot, funcStart, funcEnd)
+	inside := func(n parser.Node) bool {
+		return n.StartLine() >= funcStart && n.EndLine() <= funcEnd
+	}
+	cfg.buildScopes(scopeRoot, ifs, whiles, fors, dos, inside)
 	return cfg
 }
 
-func (cfg *CFG) buildScopes(root parser.Node, parent *Scope, start, end int) {
-	ifNodes := root.FindAll("if_statement")
-	for _, ifNode := range ifNodes {
-		if ifNode.StartLine() < start || ifNode.EndLine() > end {
+// buildScopes selects control-flow nodes matching `inside` and descends into
+// their branch bodies. The predicate uses line ranges at the top level and
+// byte containment in recursion: a branch body (compound_statement) starts
+// strictly after its enclosing if/loop keyword, so byte containment never
+// re-selects the enclosing node — the recursion cannot self-loop the way a
+// line-range-only filter can when `{` shares a line with the `if` keyword.
+func (cfg *CFG) buildScopes(parent *Scope, ifs, whiles, fors, dos []parser.Node, inside func(parser.Node) bool) {
+	for _, ifNode := range ifs {
+		if !inside(ifNode) {
 			continue
 		}
 
@@ -58,7 +85,7 @@ func (cfg *CFG) buildScopes(root parser.Node, parent *Scope, start, end int) {
 			}
 			consScope.HasExit, consScope.ExitLine = hasEarlyExit(consNode)
 			parent.Children = append(parent.Children, consScope)
-			cfg.buildScopes(consNode, consScope, consScope.StartLine, consScope.EndLine)
+			cfg.buildScopes(consScope, ifs, whiles, fors, dos, within(consNode))
 		}
 
 		if hasAlt {
@@ -69,13 +96,13 @@ func (cfg *CFG) buildScopes(root parser.Node, parent *Scope, start, end int) {
 			}
 			altScope.HasExit, altScope.ExitLine = hasEarlyExit(altNode)
 			parent.Children = append(parent.Children, altScope)
-			cfg.buildScopes(altNode, altScope, altScope.StartLine, altScope.EndLine)
+			cfg.buildScopes(altScope, ifs, whiles, fors, dos, within(altNode))
 		}
 	}
 
-	for _, loopKind := range []string{"for_statement", "while_statement", "do_statement"} {
-		for _, loopNode := range root.FindAll(loopKind) {
-			if loopNode.StartLine() < start || loopNode.EndLine() > end {
+	for _, loopList := range [][]parser.Node{whiles, fors, dos} {
+		for _, loopNode := range loopList {
+			if !inside(loopNode) {
 				continue
 			}
 			for _, child := range loopNode.NamedChildren() {
@@ -87,10 +114,21 @@ func (cfg *CFG) buildScopes(root parser.Node, parent *Scope, start, end int) {
 					}
 					loopScope.HasExit, loopScope.ExitLine = hasEarlyExit(child)
 					parent.Children = append(parent.Children, loopScope)
-					cfg.buildScopes(child, loopScope, loopScope.StartLine, loopScope.EndLine)
+					cfg.buildScopes(loopScope, ifs, whiles, fors, dos, within(child))
 				}
 			}
 		}
+	}
+}
+
+// within reports whether node lies strictly inside the byte range of scopeNode,
+// i.e. it is a descendant (or the node itself) of scopeNode. It is the hoisted
+// replacement for scopeNode.FindAll(kind): byte containment, unlike line
+// containment, excludes the enclosing if/loop whose body scopeNode is.
+func within(scopeNode parser.Node) func(parser.Node) bool {
+	start, end := scopeNode.StartByte(), scopeNode.EndByte()
+	return func(n parser.Node) bool {
+		return n.StartByte() >= start && n.EndByte() <= end
 	}
 }
 

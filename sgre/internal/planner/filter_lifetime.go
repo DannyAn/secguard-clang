@@ -61,6 +61,7 @@ func (f *LifetimeFilter) Apply(ctx context.Context, candidates []Candidate) ([]C
 
 func (f *LifetimeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate) map[int64]*flowResult {
 	flows := make(map[int64]*flowResult, len(byFunc))
+	cache := newFileParseCache(f.parser)
 	for fid, cs := range byFunc {
 		fn, err := f.store.GetFunctionByID(ctx, fid)
 		if err != nil || fn == nil {
@@ -70,7 +71,7 @@ func (f *LifetimeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Cand
 		if err != nil || file == nil {
 			continue
 		}
-		body, root := readFunctionBody(f.parser, fn, file)
+		body, root := cache.get(file, fn)
 		if body.Kind() != "compound_statement" {
 			continue
 		}

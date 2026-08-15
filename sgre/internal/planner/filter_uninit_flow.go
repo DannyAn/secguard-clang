@@ -47,7 +47,7 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 		byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
 	}
 
-	flows, roots := f.buildFlows(ctx, byFunc)
+	flows, files := f.buildFlows(ctx, byFunc)
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -67,12 +67,13 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 		// reaching the use only via the "not compiled" branch is an
 		// inconsistent path (e.g. crc32.c's `#if N > 1 crc1 = 0` ... `#if N > 1
 		// word1 = crc1 ^ ...`).
-		if flow.reaching(c.VariableName, c.Line) && f.hasCoveringAssign(ctx, roots[c.FunctionID], c) {
+		reaching := flow.reaching(c.VariableName, c.Line)
+		if reaching && f.hasCoveringAssign(ctx, files[c.FileID], c) {
 			dropped = dismiss(dropped, c, f.Name(),
 				fmt.Sprintf("variable %s is assigned under the same preprocessor condition before the use at line %d", c.VariableName, c.Line))
 			continue
 		}
-		if flow.reaching(c.VariableName, c.Line) {
+		if reaching {
 			// The uninitialized declaration provably reaches the use: the graph
 			// confirms a genuine uninitialized-variable read.
 			c.SuspicionLevel = "confirmed"
@@ -99,9 +100,10 @@ func (f *DefiniteInitFilter) isStackUninit(ctx context.Context, c Candidate) boo
 	return props.Origin == "stack_uninit"
 }
 
-func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate) (map[int64]*flowResult, map[int64]parser.Node) {
+func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate) (map[int64]*flowResult, map[int64]*hoistedUninitFile) {
 	flows := make(map[int64]*flowResult, len(byFunc))
-	roots := make(map[int64]parser.Node, len(byFunc))
+	files := make(map[int64]*hoistedUninitFile)
+	cache := newFileParseCache(f.parser)
 	for fid := range byFunc {
 		fn, err := f.store.GetFunctionByID(ctx, fid)
 		if err != nil || fn == nil {
@@ -111,14 +113,16 @@ func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]
 		if err != nil || file == nil {
 			continue
 		}
-		body, root := readFunctionBody(f.parser, fn, file)
+		body, root := cache.get(file, fn)
 		if body.Kind() != "compound_statement" {
 			continue
 		}
 		flows[fid] = buildDefiniteInitFlow(fn, body, root)
-		roots[fid] = root
+		if _, ok := files[file.ID]; !ok {
+			files[file.ID] = hoistUninitFile(root)
+		}
 	}
-	return flows, roots
+	return flows, files
 }
 
 // buildDefiniteInitFlow runs the reaching-sources dataflow for uninitialized
@@ -279,6 +283,30 @@ func assignBaseName(lhs parser.Node) string {
 	return ""
 }
 
+// hoistedUninitFile holds the whole-file node lists the definite-init filter
+// scans. They are collected once per file (hoistUninitFile) instead of once per
+// candidate/function, which was the dominant remaining cost of the uninit
+// filter (hasCoveringAssign issued ~9 whole-tree FindAll walks per candidate).
+type hoistedUninitFile struct {
+	assigns                          []parser.Node
+	ifs, whiles, fors, dos, switches []parser.Node
+	preprocIfs, preprocIfdefs, preprocIfndefs []parser.Node
+}
+
+func hoistUninitFile(root parser.Node) *hoistedUninitFile {
+	return &hoistedUninitFile{
+		assigns:        root.FindAll("assignment_expression"),
+		ifs:            root.FindAll("if_statement"),
+		whiles:         root.FindAll("while_statement"),
+		fors:           root.FindAll("for_statement"),
+		dos:            root.FindAll("do_statement"),
+		switches:       root.FindAll("switch_statement"),
+		preprocIfs:     root.FindAll("preproc_if"),
+		preprocIfdefs:  root.FindAll("preproc_ifdef"),
+		preprocIfndefs: root.FindAll("preproc_ifndef"),
+	}
+}
+
 // hasCoveringAssign reports whether c.VariableName has an assignment before
 // c.Line whose compile-time (preprocessor) conditions AND runtime control-flow
 // scopes are both subsets of the use's. Such an assignment happens on every
@@ -286,17 +314,20 @@ func assignBaseName(lhs parser.Node) string {
 // reaches the use, so the use cannot read an uninitialized value on any
 // consistent compilation (the "not compiled" branch that the CFG models as a
 // runtime alternative is inconsistent with the use's own condition).
-func (f *DefiniteInitFilter) hasCoveringAssign(ctx context.Context, root parser.Node, c Candidate) bool {
+func (f *DefiniteInitFilter) hasCoveringAssign(ctx context.Context, hf *hoistedUninitFile, c Candidate) bool {
+	if hf == nil {
+		return false
+	}
 	fn, err := f.store.GetFunctionByID(ctx, c.FunctionID)
 	if err != nil || fn == nil {
 		return false
 	}
-	usePreproc := preprocConditionKeys(root, fn, c.Line)
+	usePreproc := preprocConditionKeys(hf, fn, c.Line)
 	if len(usePreproc) == 0 {
 		return false
 	}
-	useRuntime := runtimeScopeKeys(root, fn, c.Line)
-	for _, assign := range root.FindAll("assignment_expression") {
+	useRuntime := runtimeScopeKeys(hf, fn, c.Line)
+	for _, assign := range hf.assigns {
 		if assign.StartLine() < fn.StartLine || assign.StartLine() > fn.EndLine {
 			continue
 		}
@@ -310,11 +341,11 @@ func (f *DefiniteInitFilter) hasCoveringAssign(ctx context.Context, root parser.
 		if assignBaseName(children[0]) != c.VariableName {
 			continue
 		}
-		assignPreproc := preprocConditionKeys(root, fn, assign.StartLine())
+		assignPreproc := preprocConditionKeys(hf, fn, assign.StartLine())
 		if len(assignPreproc) == 0 || !isSubset(assignPreproc, usePreproc) {
 			continue
 		}
-		assignRuntime := runtimeScopeKeys(root, fn, assign.StartLine())
+		assignRuntime := runtimeScopeKeys(hf, fn, assign.StartLine())
 		if isSubset(assignRuntime, useRuntime) {
 			return true
 		}
@@ -324,17 +355,17 @@ func (f *DefiniteInitFilter) hasCoveringAssign(ctx context.Context, root parser.
 
 // runtimeScopeKeys returns the normalized keys of every runtime conditional
 // (if/while/for/do/switch) that contains line within fn.
-func runtimeScopeKeys(root parser.Node, fn *db.Function, line int) []string {
+func runtimeScopeKeys(hf *hoistedUninitFile, fn *db.Function, line int) []string {
 	var keys []string
-	for _, kind := range []string{"if_statement", "while_statement", "for_statement", "do_statement", "switch_statement"} {
-		for _, stmt := range root.FindAll(kind) {
+	for _, list := range [][]parser.Node{hf.ifs, hf.whiles, hf.fors, hf.dos, hf.switches} {
+		for _, stmt := range list {
 			if stmt.StartLine() < fn.StartLine || stmt.StartLine() > fn.EndLine {
 				continue
 			}
 			if line < stmt.StartLine() || line > stmt.EndLine() {
 				continue
 			}
-			keys = append(keys, fmt.Sprintf("%s@%d", kind, stmt.StartLine()))
+			keys = append(keys, fmt.Sprintf("%s@%d", stmt.Kind(), stmt.StartLine()))
 		}
 	}
 	sort.Strings(keys)
@@ -343,17 +374,17 @@ func runtimeScopeKeys(root parser.Node, fn *db.Function, line int) []string {
 
 // preprocConditionKeys returns the normalized condition keys of every
 // #ifdef/#ifndef/#if region that contains line within fn.
-func preprocConditionKeys(root parser.Node, fn *db.Function, line int) []string {
+func preprocConditionKeys(hf *hoistedUninitFile, fn *db.Function, line int) []string {
 	var keys []string
-	for _, kind := range []string{"preproc_ifdef", "preproc_ifndef", "preproc_if"} {
-		for _, pp := range root.FindAll(kind) {
+	for _, list := range [][]parser.Node{hf.preprocIfdefs, hf.preprocIfndefs, hf.preprocIfs} {
+		for _, pp := range list {
 			if pp.StartLine() < fn.StartLine || pp.StartLine() > fn.EndLine {
 				continue
 			}
 			if line < pp.StartLine() || line > pp.EndLine() {
 				continue
 			}
-			keys = append(keys, preprocKey(kind, pp))
+			keys = append(keys, preprocKey(pp.Kind(), pp))
 		}
 	}
 	sort.Strings(keys)

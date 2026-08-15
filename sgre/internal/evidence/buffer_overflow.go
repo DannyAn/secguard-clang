@@ -3,8 +3,6 @@ package evidence
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
@@ -28,40 +26,48 @@ func (d *BufferOverflowDetector) Name() string { return "buffer_overflow" }
 func (d *BufferOverflowDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	funcs, err := d.store.ListFunctions(ctx)
-	if err != nil {
-		return result, fmt.Errorf("buffer_overflow: list functions: %w", err)
-	}
-
-	for _, f := range funcs {
-		file, _ := d.store.GetFileByID(ctx, f.FileID)
-		if file == nil {
-			continue
+	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		bc := &bufCtx{
+			root:    root,
+			calls:   root.FindAll("call_expression"),
+			subs:    root.FindAll("subscript_expression"),
+			ifs:     root.FindAll("if_statement"),
+			decls:   root.FindAll("declaration"),
+			assigns: root.FindAll("assignment_expression"),
+			updates: root.FindAll("update_expression"),
+			fors:    root.FindAll("for_statement"),
+			inits:   root.FindAll("init_declarator"),
+			fields:  root.FindAll("field_declaration"),
 		}
-		source, err := os.ReadFile(file.Path)
-		if err != nil {
-			continue
+
+		for _, f := range funcs {
+			d.detectUnsafeCalls(ctx, f, file, bc, &result)
+			d.detectArrayOOB(ctx, f, file, bc, &result)
+			d.detectFormatOverflow(ctx, f, file, bc, &result)
 		}
-		tree, err := d.parser.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-		root := tree.RootNode()
-
-		d.detectUnsafeCalls(ctx, f, file, root, &result)
-		d.detectArrayOOB(ctx, f, file, root, &result)
-		d.detectFormatOverflow(ctx, f, file, root, &result)
-
-		tree.Close()
-	}
-
-	return result, nil
+	})
+	return result, err
 }
 
-func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {
-	calls := root.FindAll("call_expression")
-	for _, call := range calls {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+// bufCtx holds the per-file node lists a buffer-overflow scan needs, fetched
+// once per file instead of once per subscript/call (the previous behavior did a
+// whole-tree FindAll inside every per-node helper).
+type bufCtx struct {
+	root    parser.Node
+	calls   []parser.Node
+	subs    []parser.Node
+	ifs     []parser.Node
+	decls   []parser.Node
+	assigns []parser.Node
+	updates []parser.Node
+	fors    []parser.Node
+	inits   []parser.Node
+	fields  []parser.Node
+}
+
+func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, result *DetectResult) {
+	for _, call := range bc.calls {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		callName := extractCallName(call)
@@ -77,10 +83,10 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 		if !apikb.BufferOverflowAPIs[callName] {
 			continue
 		}
-		if hasPrecedingBoundsCheck(root, f, call.StartLine()) {
+		if hasPrecedingBoundsCheck(bc.ifs, f, call.StartLine()) {
 			continue
 		}
-		if suppressConstantStringCopy(root, f, call) {
+		if suppressConstantStringCopy(bc, f, call) {
 			continue
 		}
 		category := "buffer_overflow"
@@ -112,7 +118,7 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 // local fixed array) is a known numeric >= literal length + 1. It is restricted
 // to strcpy — strcat appends to existing content, so "source fits in total
 // capacity" does not prove safety.
-func suppressConstantStringCopy(root parser.Node, f *db.Function, call parser.Node) bool {
+func suppressConstantStringCopy(bc *bufCtx, f *db.Function, call parser.Node) bool {
 	if extractCallName(call) != "strcpy" {
 		return false
 	}
@@ -125,18 +131,18 @@ func suppressConstantStringCopy(root parser.Node, f *db.Function, call parser.No
 		return false
 	}
 	dstName := strings.TrimSpace(args[0].Text())
-	if size := constantAllocationSize(root, f, dstName); size > 0 {
+	if size := constantAllocationSize(bc, f, dstName); size > 0 {
 		return size >= srcLen+1
 	}
 	// A local fixed array `char dst[256]; strcpy(dst, "x")` is precise within
 	// the function.
-	if size := findArraySize(root, f, dstName); size > 0 {
+	if size := findArraySize(bc, f, dstName); size > 0 {
 		return size >= srcLen+1
 	}
 	// A struct field fixed array `char id[4]; strcpy(log->id, "bad")` is safe
 	// when the field name has ONE unambiguous size across the file
 	// (findFieldArraySize returns 0 when multiple structs disagree).
-	if size := findFieldArraySize(root, dstName); size > 0 {
+	if size := findFieldArraySize(bc, dstName); size > 0 {
 		return size >= srcLen+1
 	}
 	return false
@@ -169,7 +175,7 @@ func constantStringLength(exprText string) (int, bool) {
 // constantAllocationSize returns the byte count of a malloc/calloc/realloc
 // whose size argument is a numeric constant, or 0 when the variable's
 // allocation size is not a known constant.
-func constantAllocationSize(root parser.Node, f *db.Function, varName string) int {
+func constantAllocationSize(bc *bufCtx, f *db.Function, varName string) int {
 	check := func(node parser.Node) int {
 		children := node.NamedChildren()
 		if len(children) < 2 {
@@ -210,16 +216,16 @@ func constantAllocationSize(root parser.Node, f *db.Function, varName string) in
 		return n
 	}
 
-	for _, assign := range root.FindAll("assignment_expression") {
-		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+	for _, assign := range bc.assigns {
+		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
 		if n := check(assign); n > 0 {
 			return n
 		}
 	}
-	for _, init := range root.FindAll("init_declarator") {
-		if init.StartLine() < f.StartLine || init.StartLine() > f.EndLine {
+	for _, init := range bc.inits {
+		if !funcLineRange(f, init.StartLine()) {
 			continue
 		}
 		if n := check(init); n > 0 {
@@ -229,8 +235,7 @@ func constantAllocationSize(root parser.Node, f *db.Function, varName string) in
 	return 0
 }
 
-func hasPrecedingBoundsCheck(root parser.Node, f *db.Function, callLine int) bool {
-	ifs := root.FindAll("if_statement")
+func hasPrecedingBoundsCheck(ifs []parser.Node, f *db.Function, callLine int) bool {
 	for _, ifNode := range ifs {
 		if ifNode.StartLine() < f.StartLine || ifNode.StartLine() >= callLine {
 			continue
@@ -288,10 +293,9 @@ func hasCapacityExpression(text string) bool {
 	return false
 }
 
-func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {
-	subscripts := root.FindAll("subscript_expression")
-	for _, sub := range subscripts {
-		if sub.StartLine() < f.StartLine || sub.StartLine() > f.EndLine {
+func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, result *DetectResult) {
+	for _, sub := range bc.subs {
+		if !funcLineRange(f, sub.StartLine()) {
 			continue
 		}
 		text := sub.Text()
@@ -305,8 +309,8 @@ func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Funct
 		arrName := children[0].Text()
 		indexExpr := children[1].Text()
 
-		arrSize := findArraySize(root, f, arrName)
-		kind := subscriptAccessKind(root, f, sub)
+		arrSize := findArraySize(bc, f, arrName)
+		kind := subscriptAccessKind(bc, f, sub)
 		isOOB := false
 		category := "array_oob_read"
 		if kind == "write" {
@@ -320,7 +324,7 @@ func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Funct
 					isOOB = true
 				}
 			} else if arrSize == 0 && idx >= 0 {
-				if alloc, ok := heapAllocationSize(root, f, arrName); ok {
+				if alloc, ok := heapAllocationSize(bc, f, arrName); ok {
 					if constAlloc := parseConstantIndex(alloc); constAlloc > 0 && idx >= constAlloc {
 						isOOB = true
 						category = "heap_oob_write"
@@ -330,13 +334,13 @@ func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Funct
 					}
 				}
 			}
-		} else if arrSize > 0 && isLoopBoundOverflow(root, f, sub, arrSize) {
+		} else if arrSize > 0 && isLoopBoundOverflow(bc, f, sub, arrSize) {
 			isOOB = true
 		} else if arrSize == 0 {
 			// Heap pointer indexed inside a loop: flag only when the loop upper
 			// bound provably exceeds the allocation size, e.g.
 			// malloc(user_len) with `i < user_len + 10`.
-			if alloc, ok := heapAllocationSize(root, f, arrName); ok && isLoopBoundOverflowForHeap(root, f, sub, alloc) {
+			if alloc, ok := heapAllocationSize(bc, f, arrName); ok && isLoopBoundOverflowForHeap(bc, f, sub, alloc) {
 				isOOB = true
 				category = "heap_oob_write"
 				if kind != "write" {
@@ -376,9 +380,9 @@ func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Funct
 	}
 }
 
-func findArraySize(root parser.Node, f *db.Function, arrName string) int {
-	for _, decl := range root.FindAll("declaration") {
-		if decl.StartLine() < f.StartLine || decl.StartLine() > f.EndLine {
+func findArraySize(bc *bufCtx, f *db.Function, arrName string) int {
+	for _, decl := range bc.decls {
+		if !funcLineRange(f, decl.StartLine()) {
 			continue
 		}
 		for _, ad := range decl.FindAll("array_declarator") {
@@ -397,8 +401,8 @@ func findArraySize(root parser.Node, f *db.Function, arrName string) int {
 	return 0
 }
 
-func isLoopBoundOverflow(root parser.Node, f *db.Function, sub parser.Node, arrSize int) bool {
-	for _, forNode := range root.FindAll("for_statement") {
+func isLoopBoundOverflow(bc *bufCtx, f *db.Function, sub parser.Node, arrSize int) bool {
+	for _, forNode := range bc.fors {
 		if forNode.StartLine() < f.StartLine || forNode.EndLine() > f.EndLine {
 			continue
 		}
@@ -487,9 +491,9 @@ var formatOverflowAPIs = map[string]bool{
 // calls whose formatted buffer feeds an injection sink: there, injection is
 // the dominant root cause and reporting the same call as a buffer overflow
 // would double-count one defect.
-func (d *BufferOverflowDetector) detectFormatOverflow(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {
-	for _, call := range root.FindAll("call_expression") {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+func (d *BufferOverflowDetector) detectFormatOverflow(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, result *DetectResult) {
+	for _, call := range bc.calls {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		callName := extractCallName(call)
@@ -501,17 +505,17 @@ func (d *BufferOverflowDetector) detectFormatOverflow(ctx context.Context, f *db
 			continue
 		}
 		dst := strings.TrimSpace(args[0])
-		capacity := findArraySize(root, f, dst)
+		capacity := findArraySize(bc, f, dst)
 		if capacity <= 0 {
-			capacity = findFieldArraySize(root, dst)
+			capacity = findFieldArraySize(bc, dst)
 		}
 		if capacity <= 0 {
 			continue
 		}
-		if hasPrecedingBoundsCheck(root, f, call.StartLine()) {
+		if hasPrecedingBoundsCheck(bc.ifs, f, call.StartLine()) {
 			continue
 		}
-		if destFeedsInjectionSink(root, f, dst, call.StartLine()) {
+		if destFeedsInjectionSink(bc, f, dst, call.StartLine()) {
 			continue
 		}
 		if !formatCanOverflow(args, capacity) {
@@ -553,9 +557,9 @@ func formatCanOverflow(args []string, capacity int) bool {
 	return staticLen >= capacity
 }
 
-func destFeedsInjectionSink(root parser.Node, f *db.Function, dst string, afterLine int) bool {
-	for _, call := range root.FindAll("call_expression") {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+func destFeedsInjectionSink(bc *bufCtx, f *db.Function, dst string, afterLine int) bool {
+	for _, call := range bc.calls {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		if call.StartLine() <= afterLine {
@@ -587,7 +591,7 @@ func tokenEquals(arg, name string) bool {
 	return false
 }
 
-func findFieldArraySize(root parser.Node, dst string) int {
+func findFieldArraySize(bc *bufCtx, dst string) int {
 	field := ""
 	if idx := strings.LastIndex(dst, "->"); idx >= 0 {
 		field = strings.TrimSpace(dst[idx+2:])
@@ -603,7 +607,7 @@ func findFieldArraySize(root parser.Node, dst string) int {
 	// leave the copy flagged conservatively.
 	seen := 0
 	sizes := make(map[int]bool)
-	for _, fd := range root.FindAll("field_declaration") {
+	for _, fd := range bc.fields {
 		for _, ad := range fd.FindAll("array_declarator") {
 			if arrayDeclaratorName(ad) != field {
 				continue
@@ -641,10 +645,10 @@ func arrayDeclaratorName(node parser.Node) string {
 
 // subscriptAccessKind reports whether a subscript expression is an assignment
 // target (write) or appears on the read side (read).
-func subscriptAccessKind(root parser.Node, f *db.Function, sub parser.Node) string {
+func subscriptAccessKind(bc *bufCtx, f *db.Function, sub parser.Node) string {
 	subText := sub.Text()
-	for _, assign := range root.FindAll("assignment_expression") {
-		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+	for _, assign := range bc.assigns {
+		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
 		if assign.StartLine() != sub.StartLine() {
@@ -658,8 +662,8 @@ func subscriptAccessKind(root parser.Node, f *db.Function, sub parser.Node) stri
 			return "write"
 		}
 	}
-	for _, upd := range root.FindAll("update_expression") {
-		if upd.StartLine() < f.StartLine || upd.StartLine() > f.EndLine {
+	for _, upd := range bc.updates {
+		if !funcLineRange(f, upd.StartLine()) {
 			continue
 		}
 		if upd.StartLine() == sub.StartLine() && strings.Contains(upd.Text(), subText) {
@@ -672,7 +676,7 @@ func subscriptAccessKind(root parser.Node, f *db.Function, sub parser.Node) stri
 // heapAllocationSize returns the size expression of a variable's
 // malloc/calloc/realloc allocation within the function (e.g. "user_len"),
 // or false when no allocation is visible.
-func heapAllocationSize(root parser.Node, f *db.Function, varName string) (string, bool) {
+func heapAllocationSize(bc *bufCtx, f *db.Function, varName string) (string, bool) {
 	checkRHS := func(lhsText string, rhs parser.Node) (string, bool) {
 		if lhsText != varName {
 			return "", false
@@ -692,8 +696,8 @@ func heapAllocationSize(root parser.Node, f *db.Function, varName string) (strin
 		return strings.TrimSpace(args[0].Text()), true
 	}
 
-	for _, decl := range root.FindAll("init_declarator") {
-		if decl.StartLine() < f.StartLine || decl.StartLine() > f.EndLine {
+	for _, decl := range bc.inits {
+		if !funcLineRange(f, decl.StartLine()) {
 			continue
 		}
 		children := decl.NamedChildren()
@@ -704,8 +708,8 @@ func heapAllocationSize(root parser.Node, f *db.Function, varName string) (strin
 			return expr, true
 		}
 	}
-	for _, assign := range root.FindAll("assignment_expression") {
-		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+	for _, assign := range bc.assigns {
+		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
 		children := assign.NamedChildren()
@@ -734,8 +738,8 @@ func unwrapAllocationCall(node parser.Node) *parser.Node {
 // isLoopBoundOverflowForHeap flags a heap-pointer subscript when the enclosing
 // loop bound provably exceeds the allocation size, e.g. `malloc(user_len)`
 // with `for (i = 0; i < user_len + 10; i++) buf[i]`.
-func isLoopBoundOverflowForHeap(root parser.Node, f *db.Function, sub parser.Node, allocExpr string) bool {
-	for _, forNode := range root.FindAll("for_statement") {
+func isLoopBoundOverflowForHeap(bc *bufCtx, f *db.Function, sub parser.Node, allocExpr string) bool {
+	for _, forNode := range bc.fors {
 		if forNode.StartLine() < f.StartLine || forNode.EndLine() > f.EndLine {
 			continue
 		}

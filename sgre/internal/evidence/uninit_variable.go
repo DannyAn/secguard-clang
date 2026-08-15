@@ -3,8 +3,6 @@ package evidence
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -28,66 +26,42 @@ func (d *UninitVariableDetector) Name() string { return "uninit_variable" }
 func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	funcs, err := d.store.ListFunctions(ctx)
-	if err != nil {
-		return result, fmt.Errorf("uninit: list functions: %w", err)
-	}
-
 	summaries := buildFuncSummaries(ctx, d.store, d.parser)
 
-	for _, f := range funcs {
-		file, _ := d.store.GetFileByID(ctx, f.FileID)
-		if file == nil {
-			continue
-		}
-		source, err := os.ReadFile(file.Path)
-		if err != nil {
-			continue
-		}
-		tree, err := d.parser.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
+	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		// The three sub-detectors plus BuildCFG used to issue ~21 whole-tree
+		// FindAll walks per function when handed the file root (and one
+		// full-file walk per function just to locate the function subtree);
+		// hoisting every scan here collapses that to a single walk per kind
+		// per file. The per-function loops below filter by line range.
+		decls := root.FindAll("declaration")
+		assigns := root.FindAll("assignment_expression")
+		calls := root.FindAll("call_expression")
+		inits := root.FindAll("init_declarator")
+		returns := root.FindAll("return_statement")
+		unarys := root.FindAll("unary_expression")
+		ptrs := root.FindAll("pointer_expression")
+		fields := root.FindAll("field_expression")
+		ifs := root.FindAll("if_statement")
+		whiles := root.FindAll("while_statement")
+		fors := root.FindAll("for_statement")
+		dos := root.FindAll("do_statement")
 
-		// Bind every FindAll walk to this function's own subtree rather than the
-		// whole file. The three sub-detectors plus BuildCFG issue ~21 full-file
-		// walks per function when handed the file root; scoping to the function
-		// body collapses that to a single full-file walk (locating the function)
-		// and leaves the rest bounded by the function's size. This is the dominant
-		// cost of the uninit detector on large codebases.
-		root, ok := functionRoot(tree.RootNode(), f.StartLine)
-		if !ok {
-			continue
+		for _, f := range funcs {
+			d.detectStackUninit(ctx, f, file, decls, assigns, calls, returns, inits, ifs, whiles, fors, dos, summaries, &result)
+			d.detectHeapUninit(ctx, f, file, inits, assigns, unarys, ptrs, fields, &result)
+			d.detectStructPartialUninit(ctx, f, file, decls, assigns, calls, fields, summaries, &result)
 		}
-
-		d.detectStackUninit(ctx, f, file, root, summaries, &result)
-		d.detectHeapUninit(ctx, f, file, root, &result)
-		d.detectStructPartialUninit(ctx, f, file, root, summaries, &result)
-
-		tree.Close()
-	}
-
-	return result, nil
+	})
+	return result, err
 }
 
-// functionRoot returns the function_definition subtree whose declaration starts
-// at startLine. The indexer records a function's StartLine/EndLine from the
-// function_definition node itself, so StartLine is an exact key.
-func functionRoot(root parser.Node, startLine int) (parser.Node, bool) {
-	for _, fn := range root.FindAll("function_definition") {
-		if fn.StartLine() == startLine {
-			return fn, true
-		}
-	}
-	return parser.Node{}, false
-}
-
-func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, root parser.Node, summaries summaryMap, result *DetectResult) {
+func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, decls, assigns, calls, returns, inits, ifs, whiles, fors, dos []parser.Node, summaries summaryMap, result *DetectResult) {
 	uninitVars := make(map[string]int)
 	assignSites := make(map[string][]int)
 
-	for _, decl := range root.FindAll("declaration") {
-		if decl.StartLine() < f.StartLine || decl.StartLine() > f.EndLine {
+	for _, decl := range decls {
+		if !funcLineRange(f, decl.StartLine()) {
 			continue
 		}
 		isStatic := false
@@ -120,8 +94,8 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		}
 	}
 
-	for _, assign := range root.FindAll("assignment_expression") {
-		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
 		children := assign.NamedChildren()
@@ -130,8 +104,8 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		}
 	}
 
-	for _, call := range root.FindAll("call_expression") {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		callName := extractCallName(call)
@@ -185,7 +159,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		}
 	}
 
-	cfg := graph.BuildCFG(root, f.StartLine, f.EndLine)
+	cfg := graph.BuildCFGFromLists(f.StartLine, f.EndLine, ifs, whiles, fors, dos)
 	cfgValid := cfg != nil && cfg.Root != nil && len(cfg.Root.Children) > 0
 	if !cfgValid && d.logger != nil {
 		d.logger.Debug("uninit: CFG construction degenerate, using conservative fallback",
@@ -212,7 +186,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		if !cfgValid {
 			allInIf := true
 			for _, s := range sites {
-				if !isInIfRange(root, f, s) {
+				if !isInIfRange(ifs, f, s) {
 					allInIf = false
 					break
 				}
@@ -240,15 +214,15 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		}
 	}
 
-	for _, ret := range root.FindAll("return_statement") {
-		if ret.StartLine() < f.StartLine || ret.StartLine() > f.EndLine {
+	for _, ret := range returns {
+		if !funcLineRange(f, ret.StartLine()) {
 			continue
 		}
 		scanUses(ret, ret.StartLine(), "")
 	}
 
-	for _, call := range root.FindAll("call_expression") {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		scanUses(call, call.StartLine(), extractCallName(call))
@@ -258,8 +232,8 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 	// (`int b = a;` reads uninitialized a). The LHS is a write target, so only
 	// the RHS is scanned. This closes the copy-uninit gap (a used to initialize
 	// b was previously never reported).
-	for _, assign := range root.FindAll("assignment_expression") {
-		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
 		children := assign.NamedChildren()
@@ -279,8 +253,8 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 			checkUse(assign.StartLine(), name)
 		}
 	}
-	for _, init := range root.FindAll("init_declarator") {
-		if init.StartLine() < f.StartLine || init.StartLine() > f.EndLine {
+	for _, init := range inits {
+		if !funcLineRange(f, init.StartLine()) {
 			continue
 		}
 		children := init.NamedChildren()
@@ -295,8 +269,8 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 	// identifier in the body (including the variables being assigned there) up
 	// to the statement's start line — so a variable assigned at the top of a
 	// loop body looked "used before init" at the loop's opening line.
-	for _, ifNode := range root.FindAll("if_statement") {
-		if ifNode.StartLine() < f.StartLine || ifNode.StartLine() > f.EndLine {
+	for _, ifNode := range ifs {
+		if !funcLineRange(f, ifNode.StartLine()) {
 			continue
 		}
 		if cond := ifNode.ChildByFieldName("condition"); cond != nil {
@@ -304,8 +278,8 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		}
 	}
 
-	for _, whileNode := range root.FindAll("while_statement") {
-		if whileNode.StartLine() < f.StartLine || whileNode.StartLine() > f.EndLine {
+	for _, whileNode := range whiles {
+		if !funcLineRange(f, whileNode.StartLine()) {
 			continue
 		}
 		if cond := whileNode.ChildByFieldName("condition"); cond != nil {
@@ -313,8 +287,8 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		}
 	}
 
-	for _, forNode := range root.FindAll("for_statement") {
-		if forNode.StartLine() < f.StartLine || forNode.StartLine() > f.EndLine {
+	for _, forNode := range fors {
+		if !funcLineRange(f, forNode.StartLine()) {
 			continue
 		}
 		cond := forNode.ChildByFieldName("condition")
@@ -389,8 +363,8 @@ func hasUnassignedPath(cfg *graph.CFG, funcEntry int, useLine int, assignLines [
 	return true
 }
 
-func isInIfRange(root parser.Node, f *db.Function, line int) bool {
-	for _, ifNode := range root.FindAll("if_statement") {
+func isInIfRange(ifs []parser.Node, f *db.Function, line int) bool {
+	for _, ifNode := range ifs {
 		if ifNode.StartLine() >= f.StartLine && ifNode.StartLine() <= f.EndLine {
 			if line >= ifNode.StartLine() && line <= ifNode.EndLine() {
 				return true
@@ -400,7 +374,7 @@ func isInIfRange(root parser.Node, f *db.Function, line int) bool {
 	return false
 }
 
-func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {
+func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Function, file *db.File, inits, assigns, unarys, ptrs, fields []parser.Node, result *DetectResult) {
 	mallocVars := make(map[string]int) // varName -> line of the malloc assignment
 
 	checkInit := func(node parser.Node) {
@@ -431,14 +405,14 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		}
 	}
 
-	for _, init := range root.FindAll("init_declarator") {
-		if init.StartLine() < f.StartLine || init.StartLine() > f.EndLine {
+	for _, init := range inits {
+		if !funcLineRange(f, init.StartLine()) {
 			continue
 		}
 		checkInit(init)
 	}
-	for _, assign := range root.FindAll("assignment_expression") {
-		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
 		checkInit(assign)
@@ -447,8 +421,8 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 	// A whole-var reassignment after the malloc (p = &x, p = other) redirects p
 	// away from the allocated memory, so p is no longer an "uninitialized heap
 	// block". A re-malloc (p = malloc(...) again) keeps it allocated.
-	for _, assign := range root.FindAll("assignment_expression") {
-		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
 		children := assign.NamedChildren()
@@ -483,8 +457,8 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 	}
 
 	writtenThroughPtr := make(map[string]bool)
-	for _, assign := range root.FindAll("assignment_expression") {
-		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
 		text := assign.Text()
@@ -495,8 +469,8 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		}
 	}
 
-	for _, unary := range root.FindAll("unary_expression") {
-		if unary.StartLine() < f.StartLine || unary.StartLine() > f.EndLine {
+	for _, unary := range unarys {
+		if !funcLineRange(f, unary.StartLine()) {
 			continue
 		}
 		if isInsideTypeExpr(unary) {
@@ -512,8 +486,8 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		}
 	}
 
-	for _, ptr := range root.FindAll("pointer_expression") {
-		if ptr.StartLine() < f.StartLine || ptr.StartLine() > f.EndLine {
+	for _, ptr := range ptrs {
+		if !funcLineRange(f, ptr.StartLine()) {
 			continue
 		}
 		if isInsideTypeExpr(ptr) {
@@ -529,8 +503,8 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		}
 	}
 
-	for _, field := range root.FindAll("field_expression") {
-		if field.StartLine() < f.StartLine || field.StartLine() > f.EndLine {
+	for _, field := range fields {
+		if !funcLineRange(f, field.StartLine()) {
 			continue
 		}
 		if isInsideTypeExpr(field) {
@@ -547,7 +521,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 	}
 }
 
-func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, f *db.Function, file *db.File, root parser.Node, summaries summaryMap, result *DetectResult) {
+func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, f *db.Function, file *db.File, decls, assigns, calls, fields []parser.Node, summaries summaryMap, result *DetectResult) {
 	structVars := make(map[string]int)
 	initializedFields := make(map[string]bool)
 	// A struct passed by address to a KNOWN initializer (memset(&s, 0, ...),
@@ -555,10 +529,10 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 	// pointer parameter on every path — has its fields written by the callee,
 	// so it is not a definite partial-init defect. An arbitrary `&s` to an
 	// unknown/conditional function is conservatively kept (cf. TC16).
-	initializedVars := outputParamInitializedVars(root, f, summaries)
+	initializedVars := outputParamInitializedVars(calls, f, summaries)
 
-	for _, decl := range root.FindAll("declaration") {
-		if decl.StartLine() < f.StartLine || decl.StartLine() > f.EndLine {
+	for _, decl := range decls {
+		if !funcLineRange(f, decl.StartLine()) {
 			continue
 		}
 		hasInit := false
@@ -587,8 +561,8 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 	// to write b/c, not read.
 	writePaths := make(map[string]bool)
 
-	for _, assign := range root.FindAll("assignment_expression") {
-		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
 		children := assign.NamedChildren()
@@ -617,8 +591,8 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 	// A field passed by address to a function (`getShort(&s.f)`) is written by
 	// the callee (output-param), so it counts as initialized. This is the common
 	// "fill a struct field-by-field through getter/read calls" idiom.
-	for _, call := range root.FindAll("call_expression") {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		for _, child := range call.NamedChildren() {
@@ -641,8 +615,8 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 		}
 	}
 
-	for _, field := range root.FindAll("field_expression") {
-		if field.StartLine() < f.StartLine || field.StartLine() > f.EndLine {
+	for _, field := range fields {
+		if !funcLineRange(f, field.StartLine()) {
 			continue
 		}
 		children := field.NamedChildren()
@@ -829,10 +803,10 @@ func isValueFieldBase(id parser.Node) bool {
 // that position is written on every path (see FuncSummary.ParamWrites). An
 // arbitrary `&x` to an unknown/conditional function is conservatively kept
 // (cf. TestSecurity_TC16_UninitInterprocedural).
-func outputParamInitializedVars(root parser.Node, f *db.Function, summaries summaryMap) map[string]bool {
+func outputParamInitializedVars(calls []parser.Node, f *db.Function, summaries summaryMap) map[string]bool {
 	initialized := make(map[string]bool)
-	for _, call := range root.FindAll("call_expression") {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		callName := extractCallName(call)

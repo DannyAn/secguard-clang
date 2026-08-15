@@ -103,6 +103,7 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 	analyzer := newFlowAnalyzer(f.store, f.parser)
 	analyzer.dfgCopies = analyzer.loadDFGCopies(ctx, funcIDs)
 
+	cache := newFileParseCache(f.parser)
 	results := make(map[int64]*flowResult, len(byFunc))
 	for fid := range byFunc {
 		fn, err := f.store.GetFunctionByID(ctx, fid)
@@ -113,7 +114,7 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 		if err != nil || file == nil {
 			continue
 		}
-		body, root := readFunctionBody(f.parser, fn, file)
+		body, root := cache.get(file, fn)
 		if body.Kind() != "compound_statement" {
 			continue
 		}

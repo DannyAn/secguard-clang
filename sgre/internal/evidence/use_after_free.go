@@ -3,8 +3,6 @@ package evidence
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -35,82 +33,67 @@ type freeSite struct {
 func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	funcs, err := d.store.ListFunctions(ctx)
-	if err != nil {
-		return result, fmt.Errorf("use_after_free: list functions: %w", err)
-	}
-
 	summaries := buildFuncSummaries(ctx, d.store, d.parser)
 
-	for _, f := range funcs {
-		file, _ := d.store.GetFileByID(ctx, f.FileID)
-		if file == nil {
-			continue
-		}
-		source, err := os.ReadFile(file.Path)
-		if err != nil {
-			continue
-		}
-		tree, err := d.parser.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-		root := tree.RootNode()
+	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		calls := root.FindAll("call_expression")
+		inits := root.FindAll("init_declarator")
+		ptrs := root.FindAll("pointer_expression")
+		fields := root.FindAll("field_expression")
 
-		aliases := findAliases(f, root)
-		freeSites := d.findAllFreeSites(f, root, summaries, aliases)
-		useSites := d.findUseSites(f, root)
+		for _, f := range funcs {
+			aliases := findAliases(f, inits)
+			freeSites := d.findAllFreeSites(f, calls, summaries, aliases)
+			useSites := d.findUseSites(f, ptrs, fields, calls)
 
-		for _, fs := range freeSites {
-			for _, use := range useSites[fs.varName] {
-				if use.line <= fs.line {
-					continue
-				}
-				// A whole-variable free (free(p)) dangles every later use of p
-				// and its fields; a field free (free(p->msg) directly or via a
-				// callee) only dangles later uses of THAT field — reading
-				// p->mode after free(p->msg) is not a use-after-free.
-				if fs.field != "" && use.field != fs.field {
-					continue
-				}
-				locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: use.line})
-				props := map[string]interface{}{
-					"variable":  fs.varName,
-					"free_line": fs.line,
-					"use_line":  use.line,
-					"category":  "use_after_free",
-				}
-				if fs.indirect {
-					props["indirect"] = true
-					props["callee"] = fs.callee
-				}
-				if fs.field != "" {
-					props["freed_field"] = fs.field
-				}
-				propsJSON, _ := json.Marshal(props)
-				_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-					EventType:  "USE_AFTER_FREE",
-					EntityID:   f.ID,
-					LocationID: locID,
-					Properties: string(propsJSON),
-				})
-				if err == nil {
-					result.EventsCreated++
+			for _, fs := range freeSites {
+				for _, use := range useSites[fs.varName] {
+					if use.line <= fs.line {
+						continue
+					}
+					// A whole-variable free (free(p)) dangles every later use of p
+					// and its fields; a field free (free(p->msg) directly or via a
+					// callee) only dangles later uses of THAT field — reading
+					// p->mode after free(p->msg) is not a use-after-free.
+					if fs.field != "" && use.field != fs.field {
+						continue
+					}
+					locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: use.line})
+					props := map[string]interface{}{
+						"variable":  fs.varName,
+						"free_line": fs.line,
+						"use_line":  use.line,
+						"category":  "use_after_free",
+					}
+					if fs.indirect {
+						props["indirect"] = true
+						props["callee"] = fs.callee
+					}
+					if fs.field != "" {
+						props["freed_field"] = fs.field
+					}
+					propsJSON, _ := json.Marshal(props)
+					_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
+						EventType:  "USE_AFTER_FREE",
+						EntityID:   f.ID,
+						LocationID: locID,
+						Properties: string(propsJSON),
+					})
+					if err == nil {
+						result.EventsCreated++
+					}
 				}
 			}
 		}
-
-		tree.Close()
-	}
-
-	return result, nil
+	})
+	return result, err
 }
 
-func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, root parser.Node, summaries summaryMap, aliases map[string]aliasInfo) []freeSite {
+func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.Node, summaries summaryMap, aliases map[string]aliasInfo) []freeSite {
 	var sites []freeSite
 
-	for _, call := range root.FindAll("call_expression") {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		callName := extractCallName(call)
@@ -190,7 +173,7 @@ type useSite struct {
 	field string
 }
 
-func (d *UseAfterFreeDetector) findUseSites(f *db.Function, root parser.Node) map[string][]useSite {
+func (d *UseAfterFreeDetector) findUseSites(f *db.Function, ptrs, fields, calls []parser.Node) map[string][]useSite {
 	useSites := make(map[string][]useSite)
 
 	addUse := func(varName, field string, line int) {
@@ -218,8 +201,8 @@ func (d *UseAfterFreeDetector) findUseSites(f *db.Function, root parser.Node) ma
 		return "", ""
 	}
 
-	for _, deref := range root.FindAll("pointer_expression") {
-		if deref.StartLine() < f.StartLine || deref.StartLine() > f.EndLine {
+	for _, deref := range ptrs {
+		if !funcLineRange(f, deref.StartLine()) {
 			continue
 		}
 		if !strings.HasPrefix(deref.Text(), "*") {
@@ -232,16 +215,16 @@ func (d *UseAfterFreeDetector) findUseSites(f *db.Function, root parser.Node) ma
 		}
 	}
 
-	for _, field := range root.FindAll("field_expression") {
-		if field.StartLine() < f.StartLine || field.StartLine() > f.EndLine {
+	for _, field := range fields {
+		if !funcLineRange(f, field.StartLine()) {
 			continue
 		}
 		base, fld := extractFieldAccess(field)
 		addUse(base, fld, field.StartLine())
 	}
 
-	for _, call := range root.FindAll("call_expression") {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		callName := extractCallName(call)

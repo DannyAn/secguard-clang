@@ -51,6 +51,10 @@ type GraphNodeStore interface {
 	GetGraphNodeByID(ctx context.Context, id int64) (*GraphNode, error)
 	GetOrCreateGraphNode(ctx context.Context, entityType string, entityID int64, properties string) (int64, error)
 	ListGraphNodesByEntity(ctx context.Context, entityType string, entityID int64) ([]*GraphNode, error)
+	// ListGraphNodesByEntityType returns every graph node of a given entity
+	// type in one query. It exists so callers building an entity->node map
+	// (e.g. the call-reach filter) avoid one query per entity.
+	ListGraphNodesByEntityType(ctx context.Context, entityType string) ([]*GraphNode, error)
 }
 
 type GraphEdgeStore interface {

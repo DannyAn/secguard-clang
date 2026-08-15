@@ -3,8 +3,6 @@ package evidence
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -33,65 +31,46 @@ var printfFamily = map[string]bool{
 func (d *FormatStringDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	funcs, err := d.store.ListFunctions(ctx)
-	if err != nil {
-		return result, fmt.Errorf("format_string: list functions: %w", err)
-	}
+	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		calls := root.FindAll("call_expression")
+		for _, f := range funcs {
+			for _, call := range calls {
+				if !funcLineRange(f, call.StartLine()) {
+					continue
+				}
+				callName := extractCallName(call)
+				if !printfFamily[callName] {
+					continue
+				}
 
-	for _, f := range funcs {
-		file, _ := d.store.GetFileByID(ctx, f.FileID)
-		if file == nil {
-			continue
-		}
-		source, err := os.ReadFile(file.Path)
-		if err != nil {
-			continue
-		}
-		tree, err := d.parser.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-		root := tree.RootNode()
+				formatArg := d.extractFormatArg(call)
+				if formatArg == "" {
+					continue
+				}
+				if d.isStringLiteral(formatArg) {
+					continue
+				}
 
-		for _, call := range root.FindAll("call_expression") {
-			if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
-				continue
-			}
-			callName := extractCallName(call)
-			if !printfFamily[callName] {
-				continue
-			}
-
-			formatArg := d.extractFormatArg(call)
-			if formatArg == "" {
-				continue
-			}
-			if d.isStringLiteral(formatArg) {
-				continue
-			}
-
-			locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
-			props, _ := json.Marshal(map[string]string{
-				"function":   callName,
-				"format_arg": formatArg,
-				"expression": call.Text(),
-				"category":   "format_string",
-			})
-			_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-				EventType:  "FORMAT_STRING",
-				EntityID:   f.ID,
-				LocationID: locID,
-				Properties: string(props),
-			})
-			if err == nil {
-				result.EventsCreated++
+				locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
+				props, _ := json.Marshal(map[string]string{
+					"function":   callName,
+					"format_arg": formatArg,
+					"expression": call.Text(),
+					"category":   "format_string",
+				})
+				_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
+					EventType:  "FORMAT_STRING",
+					EntityID:   f.ID,
+					LocationID: locID,
+					Properties: string(props),
+				})
+				if err == nil {
+					result.EventsCreated++
+				}
 			}
 		}
-
-		tree.Close()
-	}
-
-	return result, nil
+	})
+	return result, err
 }
 
 func (d *FormatStringDetector) extractFormatArg(call parser.Node) string {

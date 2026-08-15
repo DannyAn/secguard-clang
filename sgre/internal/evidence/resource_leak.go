@@ -3,8 +3,6 @@ package evidence
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
@@ -28,63 +26,48 @@ func (d *ResourceLeakDetector) Name() string { return "resource_leak" }
 func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	funcs, err := d.store.ListFunctions(ctx)
-	if err != nil {
-		return result, fmt.Errorf("resource_leak: list functions: %w", err)
-	}
+	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		assigns := root.FindAll("assignment_expression")
+		inits := root.FindAll("init_declarator")
+		calls := root.FindAll("call_expression")
+		binaries := root.FindAll("binary_expression")
 
-	for _, f := range funcs {
-		file, _ := d.store.GetFileByID(ctx, f.FileID)
-		if file == nil {
-			continue
-		}
-		source, err := os.ReadFile(file.Path)
-		if err != nil {
-			continue
-		}
-		tree, err := d.parser.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-		root := tree.RootNode()
+		for _, f := range funcs {
+			acquires := d.findAcquires(ctx, f, file, assigns, inits, calls, binaries, &result)
+			releases := d.findReleases(ctx, f, file, calls)
 
-		acquires := d.findAcquires(ctx, f, file, root, &result)
-		releases := d.findReleases(ctx, f, file, root)
-
-		for varName, acquireLine := range acquires {
-			locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: acquireLine})
-			props, _ := json.Marshal(map[string]string{
-				"variable": varName,
-				"origin":   "resource_acquire",
-			})
-			d.store.InsertEvent(ctx, &db.SecurityEvent{
-				EventType:  "RESOURCE_ACQUIRE",
-				EntityID:   f.ID,
-				LocationID: locID,
-				Properties: string(props),
-			})
-			result.EventsCreated++
-
-			if releaseLine, released := releases[varName]; released {
-				releaseLocID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: releaseLine})
-				releaseProps, _ := json.Marshal(map[string]string{
+			for varName, acquireLine := range acquires {
+				locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: acquireLine})
+				props, _ := json.Marshal(map[string]string{
 					"variable": varName,
-					"origin":   "resource_release",
+					"origin":   "resource_acquire",
 				})
 				d.store.InsertEvent(ctx, &db.SecurityEvent{
-					EventType:  "RESOURCE_RELEASE",
+					EventType:  "RESOURCE_ACQUIRE",
 					EntityID:   f.ID,
-					LocationID: releaseLocID,
-					Properties: string(releaseProps),
+					LocationID: locID,
+					Properties: string(props),
 				})
 				result.EventsCreated++
+
+				if releaseLine, released := releases[varName]; released {
+					releaseLocID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: releaseLine})
+					releaseProps, _ := json.Marshal(map[string]string{
+						"variable": varName,
+						"origin":   "resource_release",
+					})
+					d.store.InsertEvent(ctx, &db.SecurityEvent{
+						EventType:  "RESOURCE_RELEASE",
+						EntityID:   f.ID,
+						LocationID: releaseLocID,
+						Properties: string(releaseProps),
+					})
+					result.EventsCreated++
+				}
 			}
 		}
-
-		tree.Close()
-	}
-
-	return result, nil
+	})
+	return result, err
 }
 
 func isResourceAcquirer(name string) bool {
@@ -149,7 +132,7 @@ func isResourceReleaser(name string) bool {
 	return false
 }
 
-func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) map[string]int {
+func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function, file *db.File, assigns, inits, calls, binaries []parser.Node, result *DetectResult) map[string]int {
 	acquires := make(map[string]int)
 
 	checkNode := func(node parser.Node) {
@@ -181,21 +164,21 @@ func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function,
 		}
 	}
 
-	for _, assign := range root.FindAll("assignment_expression") {
-		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
 		checkNode(assign)
 	}
-	for _, init := range root.FindAll("init_declarator") {
-		if init.StartLine() < f.StartLine || init.StartLine() > f.EndLine {
+	for _, init := range inits {
+		if !funcLineRange(f, init.StartLine()) {
 			continue
 		}
 		checkNode(init)
 	}
 
-	for _, call := range root.FindAll("call_expression") {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		callName := extractCallName(call)
@@ -218,7 +201,7 @@ func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function,
 	// err = unzOpenCurrentFilePassword(...) compared against UNZ_OK) is not a
 	// resource acquisition. Drop such variables.
 	for varName := range acquires {
-		if isErrorCodeVar(root, f, varName) {
+		if isErrorCodeVar(binaries, f, varName) {
 			delete(acquires, varName)
 		}
 	}
@@ -231,9 +214,9 @@ func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function,
 // rather than as a resource handle (compared against NULL, -1, or
 // INVALID_HANDLE_VALUE). A variable compared against UNZ_OK holds a status
 // code, so `err = unzOpenCurrentFilePassword(...)` is not a leaked resource.
-func isErrorCodeVar(root parser.Node, f *db.Function, varName string) bool {
-	for _, be := range root.FindAll("binary_expression") {
-		if be.StartLine() < f.StartLine || be.StartLine() > f.EndLine {
+func isErrorCodeVar(binaries []parser.Node, f *db.Function, varName string) bool {
+	for _, be := range binaries {
+		if !funcLineRange(f, be.StartLine()) {
 			continue
 		}
 		children := be.NamedChildren()
@@ -261,11 +244,11 @@ func isOKConstant(node parser.Node) bool {
 	return upper == "OK" || strings.HasSuffix(upper, "_OK")
 }
 
-func (d *ResourceLeakDetector) findReleases(ctx context.Context, f *db.Function, file *db.File, root parser.Node) map[string]int {
+func (d *ResourceLeakDetector) findReleases(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node) map[string]int {
 	releases := make(map[string]int)
 
-	for _, call := range root.FindAll("call_expression") {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		callName := extractCallName(call)

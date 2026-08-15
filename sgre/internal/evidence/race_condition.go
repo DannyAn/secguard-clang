@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -43,112 +42,88 @@ var useFunctions = map[string]bool{
 func (d *RaceConditionDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	funcs, err := d.store.ListFunctions(ctx)
-	if err != nil {
-		return result, fmt.Errorf("race_condition: list functions: %w", err)
-	}
-
 	// Pre-pass: per-file global variable sets, mutex names, and pthread_create
 	// thread targets. The data-race detector needs cross-function context, so
 	// it cannot run inside the per-function loop below.
 	fileInfos := make(map[int64]*fileInfo)
 	threadCounts := make(map[string]int)
-	for _, f := range funcs {
-		file, _ := d.store.GetFileByID(ctx, f.FileID)
-		if file == nil {
-			continue
+	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		calls := root.FindAll("call_expression")
+		fileInfos[file.ID] = &fileInfo{
+			globals: d.collectGlobalVars(root, file.ID, funcs),
+			mutexes: d.collectMutexVars(root),
 		}
-		source, err := os.ReadFile(file.Path)
-		if err != nil {
-			continue
+		for _, f := range funcs {
+			d.collectThreadTargets(calls, f, threadCounts)
 		}
-		tree, err := d.parser.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-		root := tree.RootNode()
-		if _, ok := fileInfos[f.FileID]; !ok {
-			fileInfos[f.FileID] = &fileInfo{
-				globals: d.collectGlobalVars(root, f.FileID, funcs),
-				mutexes: d.collectMutexVars(root),
-			}
-		}
-		d.collectThreadTargets(root, f, threadCounts)
-		tree.Close()
+	})
+	if err != nil {
+		return result, err
 	}
 
-	for _, f := range funcs {
-		file, _ := d.store.GetFileByID(ctx, f.FileID)
-		if file == nil {
-			continue
-		}
-		source, err := os.ReadFile(file.Path)
-		if err != nil {
-			continue
-		}
-		tree, err := d.parser.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-		root := tree.RootNode()
+	err = forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		ifs := root.FindAll("if_statement")
+		calls := root.FindAll("call_expression")
+		assigns := root.FindAll("assignment_expression")
+		updates := root.FindAll("update_expression")
+		ids := root.FindAll("identifier")
 
-		for _, ifStmt := range root.FindAll("if_statement") {
-			if ifStmt.StartLine() < f.StartLine || ifStmt.StartLine() > f.EndLine {
-				continue
-			}
-			cond := ifStmt.ChildByFieldName("condition")
-			if cond == nil {
-				continue
-			}
-			checkCall := d.findCheckCall(*cond)
-			if checkCall == nil {
-				continue
-			}
-			checkArg := extractFirstArg(*checkCall)
-			if checkArg == "" {
-				continue
-			}
-			consequence := ifStmt.ChildByFieldName("consequence")
-			if consequence == nil {
-				continue
-			}
-			for _, useCall := range consequence.FindAll("call_expression") {
-				useName := extractCallName(useCall)
-				if !useFunctions[useName] {
+		for _, f := range funcs {
+			for _, ifStmt := range ifs {
+				if !funcLineRange(f, ifStmt.StartLine()) {
 					continue
 				}
-				useArg := extractFirstArg(useCall)
-				if useArg == checkArg {
-					locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: checkCall.StartLine(), Column: checkCall.StartColumn()})
-					props, _ := json.Marshal(map[string]string{
-						"check_function": extractCallName(*checkCall),
-						"use_function":   useName,
-						"path_arg":       checkArg,
-						"category":       "toctou",
-					})
-					_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-						EventType:  "RACE_CONDITION",
-						EntityID:   f.ID,
-						LocationID: locID,
-						Properties: string(props),
-					})
-					if err == nil {
-						result.EventsCreated++
+				cond := ifStmt.ChildByFieldName("condition")
+				if cond == nil {
+					continue
+				}
+				checkCall := d.findCheckCall(*cond)
+				if checkCall == nil {
+					continue
+				}
+				checkArg := extractFirstArg(*checkCall)
+				if checkArg == "" {
+					continue
+				}
+				consequence := ifStmt.ChildByFieldName("consequence")
+				if consequence == nil {
+					continue
+				}
+				for _, useCall := range consequence.FindAll("call_expression") {
+					useName := extractCallName(useCall)
+					if !useFunctions[useName] {
+						continue
 					}
-					break
+					useArg := extractFirstArg(useCall)
+					if useArg == checkArg {
+						locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: checkCall.StartLine(), Column: checkCall.StartColumn()})
+						props, _ := json.Marshal(map[string]string{
+							"check_function": extractCallName(*checkCall),
+							"use_function":   useName,
+							"path_arg":       checkArg,
+							"category":       "toctou",
+						})
+						_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
+							EventType:  "RACE_CONDITION",
+							EntityID:   f.ID,
+							LocationID: locID,
+							Properties: string(props),
+						})
+						if err == nil {
+							result.EventsCreated++
+						}
+						break
+					}
 				}
 			}
+
+			d.detectLockUnlockPattern(ctx, calls, assigns, f, file, &result)
+			if threadCounts[f.Name] > 0 {
+				d.detectSharedDataRace(ctx, f, file, fileInfos[file.ID], threadCounts, assigns, updates, ids, calls, &result)
+			}
 		}
-
-		d.detectLockUnlockPattern(ctx, root, f, file, &result)
-		if threadCounts[f.Name] > 0 {
-			d.detectSharedDataRace(ctx, f, root, file, fileInfos[f.FileID], threadCounts, &result)
-		}
-
-		tree.Close()
-	}
-
-	return result, nil
+	})
+	return result, err
 }
 
 type fileInfo struct {
@@ -230,9 +205,9 @@ func (d *RaceConditionDetector) collectMutexVars(root parser.Node) map[string]bo
 	return mutexes
 }
 
-func (d *RaceConditionDetector) collectThreadTargets(root parser.Node, f *db.Function, counts map[string]int) {
-	for _, call := range root.FindAll("call_expression") {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+func (d *RaceConditionDetector) collectThreadTargets(calls []parser.Node, f *db.Function, counts map[string]int) {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		if extractCallName(call) != "pthread_create" {
@@ -249,11 +224,11 @@ func (d *RaceConditionDetector) collectThreadTargets(root parser.Node, f *db.Fun
 // accessed (at least one write) by two or more pthread_create thread instances
 // without lock protection. Access inside a pthread_mutex_lock/unlock scope is
 // considered protected; mutex variables themselves are ignored.
-func (d *RaceConditionDetector) detectSharedDataRace(ctx context.Context, f *db.Function, root parser.Node, file *db.File, info *fileInfo, threadCounts map[string]int, result *DetectResult) {
+func (d *RaceConditionDetector) detectSharedDataRace(ctx context.Context, f *db.Function, file *db.File, info *fileInfo, threadCounts map[string]int, assigns, updates, ids, calls []parser.Node, result *DetectResult) {
 	if info == nil {
 		return
 	}
-	accesses := d.functionGlobalAccesses(f, root, info, d.lockRanges(root, f))
+	accesses := d.functionGlobalAccesses(f, info, assigns, updates, ids, d.lockRanges(calls, f))
 
 	names := make([]string, 0, len(accesses))
 	for name := range accesses {
@@ -319,7 +294,7 @@ func firstWrite(acc *globalAccess) (int, string) {
 	return line, fn
 }
 
-func (d *RaceConditionDetector) functionGlobalAccesses(f *db.Function, root parser.Node, info *fileInfo, lockRanges [][2]int) map[string]*globalAccess {
+func (d *RaceConditionDetector) functionGlobalAccesses(f *db.Function, info *fileInfo, assigns, updates, ids []parser.Node, lockRanges [][2]int) map[string]*globalAccess {
 	accesses := make(map[string]*globalAccess)
 
 	inLock := func(line int) bool {
@@ -332,8 +307,8 @@ func (d *RaceConditionDetector) functionGlobalAccesses(f *db.Function, root pars
 	}
 
 	assignTargets := make(map[int]string)
-	for _, assign := range root.FindAll("assignment_expression") {
-		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
 		children := assign.NamedChildren()
@@ -342,15 +317,15 @@ func (d *RaceConditionDetector) functionGlobalAccesses(f *db.Function, root pars
 		}
 	}
 	updateLines := make(map[int]bool)
-	for _, upd := range root.FindAll("update_expression") {
-		if upd.StartLine() < f.StartLine || upd.StartLine() > f.EndLine {
+	for _, upd := range updates {
+		if !funcLineRange(f, upd.StartLine()) {
 			continue
 		}
 		updateLines[upd.StartLine()] = true
 	}
 
-	for _, id := range root.FindAll("identifier") {
-		if id.StartLine() < f.StartLine || id.StartLine() > f.EndLine {
+	for _, id := range ids {
+		if !funcLineRange(f, id.StartLine()) {
 			continue
 		}
 		name := id.Text()
@@ -383,11 +358,11 @@ func (d *RaceConditionDetector) functionGlobalAccesses(f *db.Function, root pars
 	return accesses
 }
 
-func (d *RaceConditionDetector) lockRanges(root parser.Node, f *db.Function) [][2]int {
+func (d *RaceConditionDetector) lockRanges(calls []parser.Node, f *db.Function) [][2]int {
 	locks := make(map[int]string)
 	unlocks := make(map[int]string)
-	for _, call := range root.FindAll("call_expression") {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		name := extractCallName(call)
@@ -440,11 +415,11 @@ func (d *RaceConditionDetector) findCheckCall(cond parser.Node) *parser.Node {
 	return nil
 }
 
-func (d *RaceConditionDetector) detectLockUnlockPattern(ctx context.Context, root parser.Node, f *db.Function, file *db.File, result *DetectResult) {
+func (d *RaceConditionDetector) detectLockUnlockPattern(ctx context.Context, calls, assigns []parser.Node, f *db.Function, file *db.File, result *DetectResult) {
 	lockLines := make(map[int]string)
 	unlockLines := make(map[int]string)
-	for _, call := range root.FindAll("call_expression") {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		callName := extractCallName(call)
@@ -476,7 +451,7 @@ func (d *RaceConditionDetector) detectLockUnlockPattern(ctx context.Context, roo
 		return
 	}
 
-	for _, assign := range root.FindAll("assignment_expression") {
+	for _, assign := range assigns {
 		if assign.StartLine() <= unlockLine || assign.StartLine() > f.EndLine {
 			continue
 		}

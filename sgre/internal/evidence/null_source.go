@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -27,64 +26,40 @@ func (d *NullSourceDetector) Name() string { return "null_source" }
 func (d *NullSourceDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	funcs, err := d.store.ListFunctions(ctx)
-	if err != nil {
-		return result, fmt.Errorf("null source: list functions: %w", err)
-	}
-
 	// Pass 1: return-null and malloc sources. detectReturnNull populates the
 	// function_summary return-nullability that detectExternalCall consults, so it
 	// must complete for every function before the external-call pass builds its
-	// nullable-function map. The previous single-pass version called
-	// getNullableReturnFunctions once per function (an O(F^2) run of DB reads)
-	// and still read a half-populated map.
-	for _, f := range funcs {
-		file, root, ok := d.rootFor(ctx, f)
-		if !ok {
-			continue
+	// nullable-function map.
+	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		returns := root.FindAll("return_statement")
+		assigns := root.FindAll("assignment_expression")
+		inits := root.FindAll("init_declarator")
+		for _, f := range funcs {
+			d.detectReturnNull(ctx, f, file, returns, &result)
+			d.detectMallocResult(ctx, f, file, assigns, inits, &result)
 		}
-		d.detectReturnNull(ctx, f, file, root, &result)
-		d.detectMallocResult(ctx, f, file, root, &result)
+	})
+	if err != nil {
+		return result, fmt.Errorf("null source: %w", err)
 	}
 
 	knownFuncs := d.getKnownFunctionNames(ctx)
 	nullableFuncs := d.getNullableReturnFunctions(ctx)
 
 	// Pass 2: external-call sources, now that nullableFuncs is complete.
-	for _, f := range funcs {
-		file, root, ok := d.rootFor(ctx, f)
-		if !ok {
-			continue
+	err = forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		assigns := root.FindAll("assignment_expression")
+		inits := root.FindAll("init_declarator")
+		for _, f := range funcs {
+			d.detectExternalCall(ctx, f, file, assigns, inits, &result, knownFuncs, nullableFuncs)
 		}
-		d.detectExternalCall(ctx, f, file, root, &result, knownFuncs, nullableFuncs)
-	}
-
-	return result, nil
+	})
+	return result, err
 }
 
-// rootFor returns the parsed root node for a function, reusing the parser's
-// per-file cache so each file is read and parsed at most once across the
-// detector's two passes.
-func (d *NullSourceDetector) rootFor(ctx context.Context, f *db.Function) (*db.File, parser.Node, bool) {
-	file, _ := d.store.GetFileByID(ctx, f.FileID)
-	if file == nil {
-		return nil, parser.Node{}, false
-	}
-	source, err := os.ReadFile(file.Path)
-	if err != nil {
-		return nil, parser.Node{}, false
-	}
-	tree, err := d.parser.ParseCached(source, file.Path)
-	if err != nil {
-		return nil, parser.Node{}, false
-	}
-	return file, tree.RootNode(), true
-}
-
-func (d *NullSourceDetector) detectReturnNull(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {
-	returns := root.FindAll("return_statement")
+func (d *NullSourceDetector) detectReturnNull(ctx context.Context, f *db.Function, file *db.File, returns []parser.Node, result *DetectResult) {
 	for _, ret := range returns {
-		if ret.StartLine() < f.StartLine || ret.StartLine() > f.EndLine {
+		if !funcLineRange(f, ret.StartLine()) {
 			continue
 		}
 		text := ret.Text()
@@ -105,7 +80,7 @@ func (d *NullSourceDetector) detectReturnNull(ctx context.Context, f *db.Functio
 	}
 }
 
-func (d *NullSourceDetector) detectMallocResult(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {
+func (d *NullSourceDetector) detectMallocResult(ctx context.Context, f *db.Function, file *db.File, assigns, inits []parser.Node, result *DetectResult) {
 	allocators := []string{"malloc", "calloc", "realloc"}
 
 	checkNode := func(node parser.Node) {
@@ -136,22 +111,21 @@ func (d *NullSourceDetector) detectMallocResult(ctx context.Context, f *db.Funct
 		}
 	}
 
-	for _, assign := range root.FindAll("assignment_expression") {
-		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
 		checkNode(assign)
 	}
-
-	for _, init := range root.FindAll("init_declarator") {
-		if init.StartLine() < f.StartLine || init.StartLine() > f.EndLine {
+	for _, init := range inits {
+		if !funcLineRange(f, init.StartLine()) {
 			continue
 		}
 		checkNode(init)
 	}
 }
 
-func (d *NullSourceDetector) detectExternalCall(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult, knownFuncs map[string]bool, nullableFuncs map[string]bool) {
+func (d *NullSourceDetector) detectExternalCall(ctx context.Context, f *db.Function, file *db.File, assigns, inits []parser.Node, result *DetectResult, knownFuncs map[string]bool, nullableFuncs map[string]bool) {
 	checkNode := func(node parser.Node) {
 		children := node.NamedChildren()
 		if len(children) < 2 {
@@ -195,15 +169,14 @@ func (d *NullSourceDetector) detectExternalCall(ctx context.Context, f *db.Funct
 		}
 	}
 
-	for _, assign := range root.FindAll("assignment_expression") {
-		if assign.StartLine() < f.StartLine || assign.StartLine() > f.EndLine {
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
 		checkNode(assign)
 	}
-
-	for _, init := range root.FindAll("init_declarator") {
-		if init.StartLine() < f.StartLine || init.StartLine() > f.EndLine {
+	for _, init := range inits {
+		if !funcLineRange(f, init.StartLine()) {
 			continue
 		}
 		checkNode(init)

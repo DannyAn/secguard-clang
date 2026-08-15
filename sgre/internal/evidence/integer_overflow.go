@@ -3,8 +3,6 @@ package evidence
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -39,63 +37,44 @@ var sizeFunctions = map[string]bool{
 func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	funcs, err := d.store.ListFunctions(ctx)
-	if err != nil {
-		return result, fmt.Errorf("integer_overflow: list functions: %w", err)
-	}
-
-	for _, f := range funcs {
-		file, _ := d.store.GetFileByID(ctx, f.FileID)
-		if file == nil {
-			continue
-		}
-		source, err := os.ReadFile(file.Path)
-		if err != nil {
-			continue
-		}
-		tree, err := d.parser.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-		root := tree.RootNode()
-
+	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		binaryExprs := root.FindAll("binary_expression")
-		for _, expr := range binaryExprs {
-			if expr.StartLine() < f.StartLine || expr.StartLine() > f.EndLine {
-				continue
-			}
-			if !isArithmeticOp(expr) {
-				continue
-			}
-			if !d.isInBoundsCheck(root, expr, f) {
-				continue
-			}
-			if !d.feedsIntoSizeCall(root, expr, f) {
-				continue
+		calls := root.FindAll("call_expression")
+		for _, f := range funcs {
+			for _, expr := range binaryExprs {
+				if !funcLineRange(f, expr.StartLine()) {
+					continue
+				}
+				if !isArithmeticOp(expr) {
+					continue
+				}
+				if !d.isInBoundsCheck(expr, f) {
+					continue
+				}
+				if !d.feedsIntoSizeCall(calls, expr, f) {
+					continue
+				}
+
+				locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: expr.StartLine(), Column: expr.StartColumn()})
+				props, _ := json.Marshal(map[string]string{
+					"expression": expr.Text(),
+					"category":   "integer_overflow",
+				})
+				_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
+					EventType:  "INTEGER_OVERFLOW",
+					EntityID:   f.ID,
+					LocationID: locID,
+					Properties: string(props),
+				})
+				if err == nil {
+					result.EventsCreated++
+				}
 			}
 
-			locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: expr.StartLine(), Column: expr.StartColumn()})
-			props, _ := json.Marshal(map[string]string{
-				"expression": expr.Text(),
-				"category":   "integer_overflow",
-			})
-			_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-				EventType:  "INTEGER_OVERFLOW",
-				EntityID:   f.ID,
-				LocationID: locID,
-				Properties: string(props),
-			})
-			if err == nil {
-				result.EventsCreated++
-			}
+			d.detectSizeCalcOverflow(ctx, calls, f, file, &result)
 		}
-
-		d.detectSizeCalcOverflow(ctx, root, f, file, &result)
-
-		tree.Close()
-	}
-
-	return result, nil
+	})
+	return result, err
 }
 
 func isArithmeticOp(expr parser.Node) bool {
@@ -118,7 +97,7 @@ func isArithmeticOp(expr parser.Node) bool {
 // line-range heuristic, which matched any arithmetic within a few lines of any
 // if-condition and produced ~10 noise candidates on zlib (gun.c's strcmp loops,
 // etc.).
-func (d *IntegerOverflowDetector) isInBoundsCheck(root parser.Node, expr parser.Node, f *db.Function) bool {
+func (d *IntegerOverflowDetector) isInBoundsCheck(expr parser.Node, f *db.Function) bool {
 	for p := expr.Parent(); p != nil; p = p.Parent() {
 		switch p.Kind() {
 		case "binary_expression":
@@ -154,11 +133,11 @@ func isRelationalComparison(node parser.Node) bool {
 	return false
 }
 
-func (d *IntegerOverflowDetector) feedsIntoSizeCall(root parser.Node, expr parser.Node, f *db.Function) bool {
+func (d *IntegerOverflowDetector) feedsIntoSizeCall(calls []parser.Node, expr parser.Node, f *db.Function) bool {
 	exprText := expr.Text()
 	operands := extractOperands(expr)
-	for _, call := range root.FindAll("call_expression") {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		callName := extractCallName(call)
@@ -201,9 +180,9 @@ func extractOperands(expr parser.Node) []string {
 // check" pattern (the arithmetic lives in an if-condition), so this is a
 // separate path: a multiplication of two variables, with no sizeof and no
 // constant operand, feeding straight into malloc/calloc/memcpy/etc.
-func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, root parser.Node, f *db.Function, file *db.File, result *DetectResult) {
-	for _, call := range root.FindAll("call_expression") {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
+func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, calls []parser.Node, f *db.Function, file *db.File, result *DetectResult) {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		if !sizeFunctions[extractCallName(call)] {

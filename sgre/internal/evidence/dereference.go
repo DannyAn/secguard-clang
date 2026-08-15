@@ -3,8 +3,6 @@ package evidence
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -26,40 +24,27 @@ func (d *DereferenceDetector) Name() string { return "dereference" }
 func (d *DereferenceDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	funcs, err := d.store.ListFunctions(ctx)
-	if err != nil {
-		return result, fmt.Errorf("dereference: list functions: %w", err)
-	}
+	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		// Precompute the non-nullable-array set ONCE per file; the previous
+		// code ran root.FindAll per dereference node (O(nodes) traversals).
+		nonNullable := collectNonNullableArrays(root)
 
-	for _, f := range funcs {
-		file, _ := d.store.GetFileByID(ctx, f.FileID)
-		if file == nil {
-			continue
+		memberNodes := root.FindAll("field_expression")
+		derefNodes := root.FindAll("unary_expression")
+		subscriptNodes := root.FindAll("subscript_expression")
+
+		for _, f := range funcs {
+			d.detectMemberAccess(ctx, f, file, memberNodes, nonNullable, &result)
+			d.detectExplicitDeref(ctx, f, file, derefNodes, nonNullable, &result)
+			d.detectArraySubscript(ctx, f, file, subscriptNodes, nonNullable, &result)
 		}
-		source, err := os.ReadFile(file.Path)
-		if err != nil {
-			continue
-		}
-		tree, err := d.parser.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-		root := tree.RootNode()
-
-		d.detectMemberAccess(ctx, f, file, root, &result)
-		d.detectExplicitDeref(ctx, f, file, root, &result)
-		d.detectArraySubscript(ctx, f, file, root, &result)
-
-		tree.Close()
-	}
-
-	return result, nil
+	})
+	return result, err
 }
 
-func (d *DereferenceDetector) detectMemberAccess(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {
-	nodes := root.FindAll("field_expression")
+func (d *DereferenceDetector) detectMemberAccess(ctx context.Context, f *db.Function, file *db.File, nodes []parser.Node, nonNullable map[string]bool, result *DetectResult) {
 	for _, node := range nodes {
-		if node.StartLine() < f.StartLine || node.StartLine() > f.EndLine {
+		if !funcLineRange(f, node.StartLine()) {
 			continue
 		}
 		text := node.Text()
@@ -67,14 +52,13 @@ func (d *DereferenceDetector) detectMemberAccess(ctx context.Context, f *db.Func
 			continue
 		}
 		varName := extractPointerFromField(node)
-		d.insertDerefEvent(ctx, f, file, root, node, varName, text, result)
+		d.insertDerefEvent(ctx, f, file, node, varName, text, nonNullable, result)
 	}
 }
 
-func (d *DereferenceDetector) detectExplicitDeref(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {
-	nodes := root.FindAll("unary_expression")
+func (d *DereferenceDetector) detectExplicitDeref(ctx context.Context, f *db.Function, file *db.File, nodes []parser.Node, nonNullable map[string]bool, result *DetectResult) {
 	for _, node := range nodes {
-		if node.StartLine() < f.StartLine || node.StartLine() > f.EndLine {
+		if !funcLineRange(f, node.StartLine()) {
 			continue
 		}
 		text := node.Text()
@@ -82,14 +66,13 @@ func (d *DereferenceDetector) detectExplicitDeref(ctx context.Context, f *db.Fun
 			continue
 		}
 		varName := text[1:]
-		d.insertDerefEvent(ctx, f, file, root, node, varName, text, result)
+		d.insertDerefEvent(ctx, f, file, node, varName, text, nonNullable, result)
 	}
 }
 
-func (d *DereferenceDetector) detectArraySubscript(ctx context.Context, f *db.Function, file *db.File, root parser.Node, result *DetectResult) {
-	nodes := root.FindAll("subscript_expression")
+func (d *DereferenceDetector) detectArraySubscript(ctx context.Context, f *db.Function, file *db.File, nodes []parser.Node, nonNullable map[string]bool, result *DetectResult) {
 	for _, node := range nodes {
-		if node.StartLine() < f.StartLine || node.StartLine() > f.EndLine {
+		if !funcLineRange(f, node.StartLine()) {
 			continue
 		}
 		children := node.NamedChildren()
@@ -97,17 +80,17 @@ func (d *DereferenceDetector) detectArraySubscript(ctx context.Context, f *db.Fu
 			continue
 		}
 		varName := children[0].Text()
-		d.insertDerefEvent(ctx, f, file, root, node, varName, node.Text(), result)
+		d.insertDerefEvent(ctx, f, file, node, varName, node.Text(), nonNullable, result)
 	}
 }
 
-func (d *DereferenceDetector) insertDerefEvent(ctx context.Context, f *db.Function, file *db.File, root, node parser.Node, varName, expr string, result *DetectResult) {
+func (d *DereferenceDetector) insertDerefEvent(ctx context.Context, f *db.Function, file *db.File, node parser.Node, varName, expr string, nonNullable map[string]bool, result *DetectResult) {
 	locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: node.StartLine(), Column: node.StartColumn()})
 	propsMap := map[string]string{"variable": varName, "expression": expr}
 	if isInsideTypeExpr(node) {
 		propsMap["is_type_expr"] = "true"
 	}
-	if isNonNullableArray(root, varName) {
+	if nonNullable[varName] {
 		propsMap["non_nullable"] = "true"
 	}
 	props, _ := json.Marshal(propsMap)
@@ -122,6 +105,35 @@ func (d *DereferenceDetector) insertDerefEvent(ctx context.Context, f *db.Functi
 	}
 }
 
+// collectNonNullableArrays returns the set of array variable names in the file
+// that are NOT function parameters (so they are definitely non-null). It runs
+// the two traversals ONCE per file instead of once per dereference node.
+func collectNonNullableArrays(root parser.Node) map[string]bool {
+	params := make(map[string]bool)
+	for _, param := range root.FindAll("parameter_declaration") {
+		for _, child := range param.NamedChildren() {
+			if child.Kind() == "identifier" {
+				params[child.Text()] = true
+			}
+		}
+		if n := extractDeclaratorName(param); n != "" {
+			params[n] = true
+		}
+	}
+	arrays := make(map[string]bool)
+	for _, decl := range root.FindAll("declaration") {
+		for _, ad := range decl.FindAll("array_declarator") {
+			if n := extractDeclaratorName(ad); n != "" {
+				arrays[n] = true
+			}
+		}
+	}
+	for name := range params {
+		delete(arrays, name)
+	}
+	return arrays
+}
+
 // isInsideTypeExpr reports whether node sits lexically inside a sizeof or
 // alignof expression. Dereferences there (sizeof(*p), sizeof(p->field),
 // sizeof(arr[0])) are compile-time type expressions, not runtime pointer
@@ -134,44 +146,6 @@ func isInsideTypeExpr(node parser.Node) bool {
 		switch n.Kind() {
 		case "sizeof_expression", "alignof_expression":
 			return true
-		}
-	}
-	return false
-}
-
-func isNonNullableArray(root parser.Node, varName string) bool {
-	if varName == "" {
-		return false
-	}
-	if isFunctionParameter(root, varName) {
-		return false
-	}
-	for _, decl := range root.FindAll("declaration") {
-		for _, ad := range decl.FindAll("array_declarator") {
-			if extractDeclaratorName(ad) == varName {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func isFunctionParameter(root parser.Node, varName string) bool {
-	for _, param := range root.FindAll("parameter_declaration") {
-		for _, ad := range param.FindAll("array_declarator") {
-			if extractDeclaratorName(ad) == varName {
-				return true
-			}
-		}
-		for _, pd := range param.FindAll("pointer_declarator") {
-			if extractDeclaratorName(pd) == varName {
-				return true
-			}
-		}
-		for _, child := range param.NamedChildren() {
-			if child.Kind() == "identifier" && child.Text() == varName {
-				return true
-			}
 		}
 	}
 	return false

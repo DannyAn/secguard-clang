@@ -399,27 +399,34 @@ func (a *flowAnalyzer) loadDFGCopies(ctx context.Context, funcIDs []int64) map[i
 	}
 
 	// Resolve variable_ref node IDs to (function, name, line), but only for
-	// functions we actually analyze.
+	// functions we actually analyze. One bulk query for every variable_ref node
+	// (rather than one query per function) avoids an N+1 query storm over a
+	// large codebase.
+	want := make(map[int64]bool, len(funcIDs))
+	for _, fid := range funcIDs {
+		want[fid] = true
+	}
 	nameByNode := make(map[int64]string)
 	lineByNode := make(map[int64]int)
 	funcByNode := make(map[int64]int64)
-	for _, fid := range funcIDs {
-		nodes, err := a.store.ListGraphNodesByEntity(ctx, "variable_ref", fid)
-		if err != nil {
+	nodes, err := a.store.ListGraphNodesByEntityType(ctx, "variable_ref")
+	if err != nil {
+		return result
+	}
+	for _, n := range nodes {
+		if !want[n.EntityID] {
 			continue
 		}
-		for _, n := range nodes {
-			var props struct {
-				Name string `json:"name"`
-				Line int    `json:"line"`
-			}
-			if json.Unmarshal([]byte(n.Properties), &props) != nil || props.Name == "" {
-				continue
-			}
-			nameByNode[n.ID] = props.Name
-			lineByNode[n.ID] = props.Line
-			funcByNode[n.ID] = fid
+		var props struct {
+			Name string `json:"name"`
+			Line int    `json:"line"`
 		}
+		if json.Unmarshal([]byte(n.Properties), &props) != nil || props.Name == "" {
+			continue
+		}
+		nameByNode[n.ID] = props.Name
+		lineByNode[n.ID] = props.Line
+		funcByNode[n.ID] = n.EntityID
 	}
 
 	for _, e := range edges {
@@ -454,26 +461,51 @@ func (a *flowAnalyzer) loadDFGCopies(ctx context.Context, funcIDs []int64) map[i
 	return result
 }
 
-// readFunctionBody parses the function's file and returns the function's
-// compound_statement body and the file root, or nil if unavailable.
-func readFunctionBody(p *parser.Parser, fn *db.Function, file *db.File) (parser.Node, parser.Node) {
+// fileParseCache lazily parses each file once and caches its root plus a map
+// from function-definition start line to the function's compound_statement
+// body. It replaces the per-function readFunctionBody, which re-walked the
+// whole tree looking for function_definition once per function — a dominant
+// remaining cost of the flow filters over a large codebase.
+type fileParseCache struct {
+	parser *parser.Parser
+	roots  map[int64]parser.Node
+	bodies map[int64]map[int]parser.Node
+}
+
+func newFileParseCache(p *parser.Parser) *fileParseCache {
+	return &fileParseCache{parser: p, roots: make(map[int64]parser.Node), bodies: make(map[int64]map[int]parser.Node)}
+}
+
+// get returns fn's compound_statement body and the file root, parsing the file
+// at most once. The (body, root) order matches the old readFunctionBody.
+func (fc *fileParseCache) get(file *db.File, fn *db.Function) (parser.Node, parser.Node) {
+	bodies, ok := fc.bodies[file.ID]
+	if !ok {
+		root, m := functionBodiesForFile(fc.parser, file)
+		fc.roots[file.ID] = root
+		fc.bodies[file.ID] = m
+		bodies = m
+	}
+	return bodies[fn.StartLine], fc.roots[file.ID]
+}
+
+// functionBodiesForFile parses file and returns its root plus a map from each
+// function definition's start line to its compound_statement body.
+func functionBodiesForFile(p *parser.Parser, file *db.File) (parser.Node, map[int]parser.Node) {
 	source, err := os.ReadFile(file.Path)
 	if err != nil {
-		return parser.Node{}, parser.Node{}
+		return parser.Node{}, nil
 	}
 	tree, err := p.ParseCached(source, file.Path)
 	if err != nil {
-		return parser.Node{}, parser.Node{}
+		return parser.Node{}, nil
 	}
 	root := tree.RootNode()
+	bodies := make(map[int]parser.Node)
 	for _, def := range root.FindAll("function_definition") {
-		if def.StartLine() != fn.StartLine {
-			continue
-		}
-		body := def.FindFirst("compound_statement")
-		if body != nil {
-			return *body, root
+		if body := def.FindFirst("compound_statement"); body != nil {
+			bodies[def.StartLine()] = *body
 		}
 	}
-	return parser.Node{}, root
+	return root, bodies
 }
