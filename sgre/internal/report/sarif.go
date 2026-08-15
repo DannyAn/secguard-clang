@@ -80,6 +80,11 @@ var vulnToCWE = map[string]string{
 	"deadlock":         "CWE-667",
 	"crypto-misuse":    "CWE-327",
 	"out-of-bounds":    "CWE-125",
+	"divide-by-zero":   "CWE-369",
+	"unchecked-return": "CWE-252",
+	"path-traversal":   "CWE-22",
+	"sizeof-misuse":    "CWE-467",
+	"signed-compare":   "CWE-681",
 }
 
 func VulnToCWE(vulnType string) string {

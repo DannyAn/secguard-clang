@@ -70,6 +70,11 @@ var allSkillSpecs = []skillSpec{
 	{"deadlock", "concurrency", "Detects lock-order inversion via lock graph cycle detection"},
 	{"crypto-misuse", "crypto", "Detects weak crypto algorithms, undersized keys, weak PRNG"},
 	{"out-of-bounds", "boundary", "Detects out-of-bounds access (array and heap reads, CWE-125)"},
+	{"divide-by-zero", "boundary", "Detects division/modulo by a possibly-zero divisor (CWE-369)"},
+	{"unchecked-return", "boundary", "Detects unchecked malloc/fopen/read return values (CWE-252)"},
+	{"path-traversal", "input", "Detects non-literal paths into filesystem sinks (CWE-22)"},
+	{"sizeof-misuse", "boundary", "Detects sizeof on pointer variables in size contexts (CWE-467/468)"},
+	{"signed-compare", "boundary", "Detects unsigned values compared with zero/negative (CWE-681/195)"},
 }
 
 func DefaultRegistry(store db.Store, logger *log.Logger) *Registry {

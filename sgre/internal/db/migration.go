@@ -10,7 +10,82 @@ func migrateSchema(ctx context.Context, db *sql.DB) error {
 	if err := migrateFindingsTable(ctx, db); err != nil {
 		return fmt.Errorf("migrate findings: %w", err)
 	}
+	if err := migrateSecurityEventsTable(ctx, db); err != nil {
+		return fmt.Errorf("migrate security events: %w", err)
+	}
 	return nil
+}
+
+// migrateSecurityEventsTable recreates the security_events table when its
+// event_type CHECK constraint predates the newer event types (added when new
+// detectors were introduced). SQLite cannot ALTER a CHECK constraint, so the
+// table is rebuilt in place, preserving any existing rows.
+func migrateSecurityEventsTable(ctx context.Context, db *sql.DB) error {
+	var tableExists bool
+	err := db.QueryRowContext(ctx,
+		"SELECT count(*) > 0 FROM sqlite_master WHERE type='table' AND name='security_events'",
+	).Scan(&tableExists)
+	if err != nil {
+		return err
+	}
+	if !tableExists {
+		return nil
+	}
+
+	var createSQL string
+	if err := db.QueryRowContext(ctx,
+		"SELECT sql FROM sqlite_master WHERE type='table' AND name='security_events'",
+	).Scan(&createSQL); err != nil {
+		return err
+	}
+	// The newest event type acts as the sentinel for a current constraint.
+	if contains(createSQL, "'DIVIDE_BY_ZERO'") {
+		return nil
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	steps := []string{
+		`ALTER TABLE security_events RENAME TO security_events_old`,
+		`CREATE TABLE security_events (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			event_type  TEXT NOT NULL CHECK (event_type IN (
+				'NULL_VALUE', 'DEREFERENCE', 'NULL_GUARD',
+				'MEMORY_ALLOC', 'MEMORY_RELEASE',
+				'RESOURCE_ACQUIRE', 'RESOURCE_RELEASE',
+				'VARIABLE_DECLARE', 'VALUE_USE', 'VALUE_INIT',
+				'BUFFER_ACCESS', 'INTEGER_OP', 'INJECTION',
+				'USE_AFTER_FREE', 'DOUBLE_FREE', 'FORMAT_STRING',
+				'INTEGER_OVERFLOW', 'RACE_CONDITION', 'HARDCODED_SECRET',
+				'DEADLOCK', 'CRYPTO_MISUSE',
+				'DIVIDE_BY_ZERO', 'UNCHECKED_RETURN', 'PATH_TRAVERSAL',
+				'SIZEOF_MISUSE', 'SIGNED_COMPARE'
+			)),
+			entity_id   INTEGER,
+			location_id INTEGER,
+			properties  TEXT,
+			FOREIGN KEY(location_id) REFERENCES locations(id) ON DELETE SET NULL
+		)`,
+		`INSERT INTO security_events (id, event_type, entity_id, location_id, properties)
+		 SELECT id, event_type, entity_id, location_id, properties FROM security_events_old`,
+		`DROP TABLE security_events_old`,
+		`CREATE INDEX IF NOT EXISTS idx_security_events_type ON security_events(event_type)`,
+		`CREATE INDEX IF NOT EXISTS idx_security_events_entity ON security_events(entity_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_security_events_location ON security_events(location_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_security_events_type_entity ON security_events(event_type, entity_id)`,
+	}
+
+	for _, sql := range steps {
+		if _, err := tx.ExecContext(ctx, sql); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
 }
 
 func migrateFindingsTable(ctx context.Context, db *sql.DB) error {

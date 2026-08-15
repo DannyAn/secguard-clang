@@ -354,6 +354,76 @@ func init() {
 			}
 		},
 	})
+
+	RegisterVulnType(&VulnTypeSpec{
+		Name:             "divide-by-zero",
+		SeedEventType:    "DIVIDE_BY_ZERO",
+		EvidenceType:     "DIVIDE_BY_ZERO",
+		DefaultSuspicion: "suspected",
+		FilterChain:      "default",
+		BuildEvidence: func(c Candidate) []EvidenceFragment {
+			return []EvidenceFragment{
+				{Type: "divide_by_zero", Detail: fmt.Sprintf("possible division by zero in function %s at line %d", c.FunctionName, c.Line)},
+				{Type: "call_path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
+			}
+		},
+	})
+
+	RegisterVulnType(&VulnTypeSpec{
+		Name:             "unchecked-return",
+		SeedEventType:    "UNCHECKED_RETURN",
+		EvidenceType:     "UNCHECKED_RETURN",
+		DefaultSuspicion: "suspected",
+		FilterChain:      "default",
+		BuildEvidence: func(c Candidate) []EvidenceFragment {
+			return []EvidenceFragment{
+				{Type: "unchecked_return", Detail: fmt.Sprintf("return value of %s is not checked in function %s at line %d", c.APIName, c.FunctionName, c.Line)},
+				{Type: "call_path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
+			}
+		},
+	})
+
+	RegisterVulnType(&VulnTypeSpec{
+		Name:             "path-traversal",
+		SeedEventType:    "PATH_TRAVERSAL",
+		EvidenceType:     "PATH_TRAVERSAL",
+		DefaultSuspicion: "suspected",
+		FilterChain:      "default",
+		BuildEvidence: func(c Candidate) []EvidenceFragment {
+			return []EvidenceFragment{
+				{Type: "path_traversal", Detail: fmt.Sprintf("non-literal path passed to %s in function %s at line %d", c.APIName, c.FunctionName, c.Line)},
+				{Type: "call_path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
+			}
+		},
+	})
+
+	RegisterVulnType(&VulnTypeSpec{
+		Name:             "sizeof-misuse",
+		SeedEventType:    "SIZEOF_MISUSE",
+		EvidenceType:     "SIZEOF_MISUSE",
+		DefaultSuspicion: "suspected",
+		FilterChain:      "default",
+		BuildEvidence: func(c Candidate) []EvidenceFragment {
+			return []EvidenceFragment{
+				{Type: "sizeof_misuse", Detail: fmt.Sprintf("sizeof applied to pointer variable %s in function %s at line %d", c.VariableName, c.FunctionName, c.Line)},
+				{Type: "call_path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
+			}
+		},
+	})
+
+	RegisterVulnType(&VulnTypeSpec{
+		Name:             "signed-compare",
+		SeedEventType:    "SIGNED_COMPARE",
+		EvidenceType:     "SIGNED_COMPARE",
+		DefaultSuspicion: "suspected",
+		FilterChain:      "default",
+		BuildEvidence: func(c Candidate) []EvidenceFragment {
+			return []EvidenceFragment{
+				{Type: "signed_compare", Detail: fmt.Sprintf("unsigned value compared with zero/negative at line %d in function %s", c.Line, c.FunctionName)},
+				{Type: "call_path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
+			}
+		},
+	})
 }
 
 func containsString(s []string, v string) bool {
