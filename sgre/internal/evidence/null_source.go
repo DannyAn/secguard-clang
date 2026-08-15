@@ -63,20 +63,28 @@ func (d *NullSourceDetector) detectReturnNull(ctx context.Context, f *db.Functio
 		if !funcLineRange(f, ret.StartLine()) {
 			continue
 		}
-		text := ret.Text()
-		if strings.Contains(text, "NULL") || (strings.Contains(text, "return") && strings.Contains(text, " 0")) {
-			locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: ret.StartLine(), Column: ret.StartColumn()})
-			props, _ := json.Marshal(map[string]string{"variable": "<return>", "origin": "return"})
-			_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-				EventType:  "NULL_VALUE",
-				EntityID:   f.ID,
-				LocationID: locID,
-				Properties: string(props),
-			})
-			if err == nil {
-				result.EventsCreated++
-				d.store.UpdateReturnNullable(ctx, f.ID, true)
-			}
+		// Inspect the return VALUE, not the raw text: `return foo(x, 0)` must
+		// not be read as `return 0` (the previous substring match on " 0"
+		// treated every `return call(..., 0)` as nullable).
+		children := ret.NamedChildren()
+		if len(children) == 0 {
+			continue
+		}
+		expr := strings.TrimSpace(children[0].Text())
+		if !isNullLiteral(expr) && expr != "0" {
+			continue
+		}
+		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: ret.StartLine(), Column: ret.StartColumn()})
+		props, _ := json.Marshal(map[string]string{"variable": "<return>", "origin": "return"})
+		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
+			EventType:  "NULL_VALUE",
+			EntityID:   f.ID,
+			LocationID: locID,
+			Properties: string(props),
+		})
+		if err == nil {
+			result.EventsCreated++
+			d.store.UpdateReturnNullable(ctx, f.ID, true)
 		}
 	}
 }
