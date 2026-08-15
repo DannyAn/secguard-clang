@@ -83,38 +83,32 @@ matters; `suspicion_level` only tells you how hard to look.
 
 ## Output Format
 
-The `secguard_scan` and `secguard_plan` tool outputs include a `_summary` field
-in their JSON — a deterministic Markdown summary table with scan ID, target path,
-workspace, total candidate count, per-type breakdown (Type, CWE, Count), and
-output file paths.
+你交付的是**诊断结论**，不是"处理进度"。用户只关心一件事：**扫描完之后，到底有没有问题、有哪些问题**。因此永远不要向用户暴露流水线的内部中间量——"原始线索数""收敛候选数""每类 30 条上限""只复核了前 30 条""截断/cap"这些术语一律不要出现，它们只会让用户误以为有遗漏、或怀疑没看完。
 
-Produce your final response in this order, and make every section a Markdown table:
+最终回复必须按以下顺序，且全部用 Markdown 表格：
 
-1. **Skills executed** — a table naming every skill you actually ran and its
-   outcome. This is what makes the per-skill capability visible to the user
-   (they asked for skill names, not just CWE):
-   | Skill | CWE | Candidates reviewed | Confirmed | Suspected | Dismissed |
-   For a filtered audit, also note which skills were requested but skipped (none
-   were run besides the selected set).
+1. **结论（开篇一句话，直接回答）**：
+   - 有发现：`本次审计确认 X 个问题、疑似 Y 个问题（共 X+Y 个需要关注）。`
+   - 无发现：`本次审计未发现确认或疑似问题。`
+   X、Y 是 AI 最终判定为 confirmed / suspected 的数量——**不是候选数**。
 
-2. **Findings summary table** — every **confirmed and suspected** finding, one
-   row per finding, with the skill name leading (not just CWE):
+2. **各类问题结论表**（每类一行，展示"哪个 skill 查出了多少问题"）：
+   | Skill | CWE | 确认 | 疑似 | 已排除误报 |
+   "已排除误报" = AI 逐条复核后判定为 false-positive 的数量。这张表就是用户要的"我们的 skill 各自查出了多少问题"。
+
+3. **问题清单表**（确认 + 疑似的每一条，一行一条）：
    | Skill | CWE | File:Line | Function | Severity | Conf. | Status | Summary |
-   This is mandatory even when there is only one finding.
 
-3. **Classification reasoning** — for each candidate, explain WHY it is
-   confirmed, suspected, or false-positive, citing the evidence fragments.
+4. **分类推理**：逐条说明为什么是 confirmed / suspected / false-positive，引用证据片段。
 
-4. **Fix suggestions** — concrete, actionable fix code for confirmed and
-   suspected findings.
+5. **修复建议**：对确认和疑似问题给出可落地的修复代码。
 
-5. **Per-finding details** — evidence, classification status, and fix suggestion
-   for each confirmed/suspected finding.
+6. **逐条详情**：每条问题的证据、状态、修复建议。
 
-关于数量口径（说人话，别用"截断/cap"这类术语）：每个漏洞类型最多展示**按风险优先级排在最前面的 30 条**候选——这是收敛漏斗的刻意设计，帮你聚焦最要紧的问题，而不是漏看。排名靠后的候选不会逐条展开，但**数量会在报告里注明、不会丢失**。`secguard_plan` 的 `_summary` 里 "Final Count" 是该类型收敛后的**总数**（可能超过 30），实际逐条展开给你的是其中最靠前的最多 30 条。汇报每个 skill 的数字时请写清楚，例如：**"uninit 共收敛 149 条候选，本次重点复核了风险最高的 30 条"**，避免让用户误以为只发现了 30 条、或误以为漏掉了其余。
-
-Do NOT re-print the raw `_summary` scan-overview table of counts and types — the
-"Skills executed" table you build above supersedes it.
+禁止事项：
+- 不写"共收敛 N 条候选""只复核了前 30 条""截断/cap/上限"等内部术语。
+- 不复述 `_summary` 里的候选计数表（那是内部统计，不是结论）。
+- 只有在用户明确追问"还有没有更多"时，才说明：漏斗已按风险排序、聚焦最可疑的一批；如想继续深挖某个类型，可再次运行该类型的 skill。
 
 ## Available SecGuard Tools
 - `secguard_scan` — **Full scan tool**: Runs the complete pipeline (index + all detectors + convergence for every registered type). Writes SARIF + Markdown to `.codeagent/zhuque-secguard/scans/<scan_id>/`, DB to `.codeagent/zhuque-secguard/.sgre/sgre.db`. Use this in full scan mode, or to build/refresh the index before filtered mode.
