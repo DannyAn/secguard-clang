@@ -64,7 +64,7 @@ Usage:
 
 Flags:
   --db <path>         Path to sgre.db (default: .codeagent/zhuque-secguard/.sgre/sgre.db)
-  --exclude <dirs>    Comma-separated directory basenames to skip (default: deps,third_party,vendor,external,node_modules,tests,test,fuzzing)
+  --exclude <dirs>    Comma-separated directory basenames to skip (default: deps,third_party,vendor,external,node_modules,tests,test,fuzzing,contrib,examples)
   --max-candidates N  Max candidates surfaced per vuln type (default 200)
   --help              Show usage
   --version           Show version`)

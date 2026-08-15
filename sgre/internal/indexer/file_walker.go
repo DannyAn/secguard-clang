@@ -13,7 +13,7 @@ import (
 // (redis's deps/ + tests/ produced the bulk of null-deref/uninit candidates).
 var DefaultExcludeDirs = []string{
 	"deps", "third_party", "third-party", "vendor", "external", "node_modules",
-	"tests", "test", "fuzzing",
+	"tests", "test", "fuzzing", "contrib", "examples",
 }
 
 // WalkCFiles walks rootPath and returns every .c/.h file, skipping any
