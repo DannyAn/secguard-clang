@@ -40,8 +40,8 @@ The pipeline is a chain of packages, each writing to the next layer of the DB:
 
 1. **`internal/indexer`** — walks `*.c` files, parses with tree-sitter, and writes Layer-1 facts. Incremental: files unchanged by checksum are skipped.
 2. **`internal/graph`** — builds the semantic graph (call graph, data flow, reachability, CFG) on top of the indexed facts.
-3. **`internal/evidence`** — 17 detectors (`null_source.go`, `dereference.go`, `buffer_overflow.go`, ...). Each detector implements the `Detector` interface and writes `security_events`. **Detectors self-register in `registry.go` via `init()`** — adding a detector means a new `RegisterDetector` line, nothing else.
-4. **`internal/planner`** — the convergence pipeline. `Planner.Plan()` seeds candidates by event type, runs a per-vuln-type filter chain, dedups, ranks, and caps at `MaxCandidates` (30). Filters implement the `Filter` interface (`Apply(ctx, []Candidate) ([]Candidate, error)`).
+3. **`internal/evidence`** — 22 detectors (`null_source.go`, `dereference.go`, `buffer_overflow.go`, ...). Each detector implements the `Detector` interface and writes `security_events`. **Detectors self-register in `registry.go` via `init()`** — adding a detector means a new `RegisterDetector` line, nothing else.
+4. **`internal/planner`** — the convergence pipeline. `Planner.Plan()` seeds candidates by event type, runs a per-vuln-type filter chain, dedups, and ranks — it returns **all** deduped candidates (no cap/truncation; the AI agent reviews every one in batches). Filters implement the `Filter` interface (`Apply(ctx, []Candidate) ([]Candidate, error)`).
 5. **`internal/agent`** — formats converged evidence for the AI agent consumer.
 6. **`internal/report`** — writes SARIF 2.1, a markdown summary, and per-finding markdown files.
 
@@ -77,7 +77,7 @@ Schema is in `internal/db/schema.go` (`SchemaDDL`). CRUD is split per entity in 
 
 ```
 secguard index <path>    Index a C codebase
-secguard scan <path>     Full pipeline: index + plan all 15 vuln types + report
+secguard scan <path>     Full pipeline: index + plan all registered vuln types + report
 secguard status          Index status (files, functions, staleness)
 secguard query <skill>   Run a skill query
 secguard plan <vuln>     Run convergence for one vulnerability type
@@ -107,11 +107,20 @@ Scan output is written to `.codeagent/zhuque-secguard/scans/<scan-id>/` (`scan-i
 - `sgre/testdata/phase1`–`phase7` — staged fixtures for the pipeline phases.
 - `sgre/testdata/perf/gen_codebase.go` — generates large synthetic codebases for perf testing: `go run testdata/perf/gen_codebase.go testdata/perf/large_codebase 100 50`.
 
-## Supported Vulnerability Types (15)
+## Supported Vulnerability Types (20)
 
-`null-deref`, `buffer-overflow`, `memory-leak`, `injection`, `resource-leak`, `uninit`, `use-after-free`, `double-free`, `format-string`, `integer-overflow`, `race-condition`, `hardcoded-secret`, `deadlock`, `crypto-misuse` — each registered as a `VulnTypeSpec` in `internal/planner/registry.go`, each with a corresponding agent skill under `.claude/skills/`.
+Each is registered as a `VulnTypeSpec` in `internal/planner/registry.go` and has a
+corresponding agent skill under `.claude/skills/`. The authoritative runtime list
+is `secguard types` — do not hardcode this list in tooling (see the OpenCode tool
+wrappers, which defer type validation to the binary).
 
-`out-of-bounds` (CWE-125) is the 15th type. It shares the
+`null-deref`, `buffer-overflow`, `memory-leak`, `injection`, `resource-leak`,
+`uninit`, `use-after-free`, `double-free`, `format-string`, `integer-overflow`,
+`race-condition`, `hardcoded-secret`, `deadlock`, `crypto-misuse`,
+`out-of-bounds`, `divide-by-zero`, `unchecked-return`, `path-traversal`,
+`sizeof-misuse`, `signed-compare`.
+
+`out-of-bounds` (CWE-125) shares the
 `BUFFER_ACCESS` seed event with `buffer-overflow`: read-flavored categories
 (`array_oob_read`, `heap_oob_read`) route to it, write-flavored categories
 (`buffer_overflow`, `array_oob_write`, `heap_oob_write`, `format_overflow`)

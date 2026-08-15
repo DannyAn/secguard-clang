@@ -2,26 +2,6 @@ import { tool } from "@opencode-ai/plugin"
 import path from "path"
 import fs from "fs"
 
-const VULN_TYPES = [
-  "null-deref",
-  "buffer-overflow",
-  "memory-leak",
-  "injection",
-  "resource-leak",
-  "uninit",
-  "use-after-free",
-  "double-free",
-  "format-string",
-  "integer-overflow",
-  "race-condition",
-  "hardcoded-secret",
-  "deadlock",
-  "crypto-misuse",
-  "out-of-bounds",
-] as const
-
-const VULN_TYPES_STR = VULN_TYPES.join(", ")
-
 function findSecguard(context: { worktree?: string, directory?: string }): string {
   let dir = context.worktree || context.directory || "."
   if (dir === "/") dir = "."
@@ -30,6 +10,10 @@ function findSecguard(context: { worktree?: string, directory?: string }): strin
   return "secguard"
 }
 
+// Display-only CWE lookup for the stderr summary. The authoritative type list
+// and CWE mapping lives in the Go binary (`secguard types`) — do NOT hardcode a
+// type allowlist here, or it will drift from the registry and silently reject
+// newly-added types. Unknown types render as "CWE-Other" in the summary only.
 const CWE_MAP: Record<string, string> = {
   "null-deref": "CWE-476",
   "buffer-overflow": "CWE-787",
@@ -46,6 +30,11 @@ const CWE_MAP: Record<string, string> = {
   "deadlock": "CWE-667",
   "crypto-misuse": "CWE-327",
   "out-of-bounds": "CWE-125",
+  "divide-by-zero": "CWE-369",
+  "unchecked-return": "CWE-252",
+  "path-traversal": "CWE-22",
+  "sizeof-misuse": "CWE-467",
+  "signed-compare": "CWE-681",
 }
 
 function printPlanSummary(w: { write(s: string): boolean }, goJson: any): void {
@@ -53,6 +42,7 @@ function printPlanSummary(w: { write(s: string): boolean }, goJson: any): void {
   const cwe = CWE_MAP[vulnType] ?? "CWE-Other"
   const seedCount = goJson?.summary?.seed_count ?? 0
   const finalCount = goJson?.summary?.final_count ?? 0
+  const dedupedCount = goJson?.summary?.deduped_count ?? 0
   const filters = goJson?.summary?.filters ?? []
   const candidates = goJson?.candidates ?? []
 
@@ -62,7 +52,8 @@ function printPlanSummary(w: { write(s: string): boolean }, goJson: any): void {
   out += `| Vulnerability Type | ${vulnType} |\n`
   out += `| CWE | ${cwe} |\n`
   out += `| Seed Count | ${seedCount} |\n`
-  out += `| Final Count | ${finalCount} |\n\n`
+  out += `| Final Count | ${finalCount} |\n`
+  out += `| Deduped Count | ${dedupedCount} |\n\n`
 
   if (filters.length > 0) {
     out += "### Filter Chain\n\n"
@@ -96,38 +87,22 @@ function printPlanSummary(w: { write(s: string): boolean }, goJson: any): void {
 
 export default tool({
   description:
-    "Run the SecGuard convergence pipeline for a specific vulnerability type. Returns <=30 converged evidence candidates as JSON. The pipeline applies 4 filters: nullable source, call reachability, data flow, guard existence.",
+    "Run the SecGuard convergence pipeline for ONE vulnerability type. Returns ALL deduped, risk-ranked evidence candidates (no cap) as JSON. Call `secguard types` first to discover the valid type names — this tool passes the type through to the binary, which rejects unknown names with its own authoritative list.",
   args: {
     vuln_type: tool.schema
       .string()
       .describe(
-        `Vulnerability type: ${VULN_TYPES_STR}`
+        "Kebab-case vulnerability type name. Get the current list from `secguard types` (e.g. null-deref, buffer-overflow, out-of-bounds, integer-overflow)."
       ),
-    max_candidates: tool.schema
-      .number()
-      .optional()
-      .describe("Maximum candidates to retain after convergence (default: 30). Increase for codebases with many true positives in one vulnerability type."),
   },
   async execute(args, context) {
-    if (!VULN_TYPES.includes(args.vuln_type as any)) {
-      return JSON.stringify({
-        error: `Invalid vulnerability type '${args.vuln_type}'. Valid types: ${VULN_TYPES_STR}. Example: secguard_plan vuln_type=buffer-overflow`,
-        vuln_type: args.vuln_type,
-      }, null, 2)
-    }
-
     let workDir = context.worktree || context.directory || "."
     if (workDir === "/") workDir = "."
     const secguardBin = findSecguard(context)
     const dbPath = path.join(workDir, ".codeagent", "zhuque-secguard", ".sgre", "sgre.db")
 
     try {
-      let cmd
-      if (args.max_candidates && args.max_candidates > 0) {
-        cmd = Bun.$`${secguardBin} plan --db ${dbPath} --max-candidates ${args.max_candidates} ${args.vuln_type}`
-      } else {
-        cmd = Bun.$`${secguardBin} plan --db ${dbPath} ${args.vuln_type}`
-      }
+      const cmd = Bun.$`${secguardBin} plan --db ${dbPath} ${args.vuln_type}`
       const result = await cmd.cwd(workDir).quiet().text()
 
       try {
