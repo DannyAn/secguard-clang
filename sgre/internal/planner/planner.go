@@ -10,10 +10,9 @@ import (
 )
 
 type Planner struct {
-	store         db.Store
-	parser        *parser.Parser
-	logger        *log.Logger
-	MaxCandidates int
+	store  db.Store
+	parser *parser.Parser
+	logger *log.Logger
 	// callReachCache shares the call-graph reachability across all Plan()
 	// calls, since every vulnerability type runs the call-reach filter over
 	// the same graph.
@@ -25,14 +24,7 @@ func NewPlanner(store db.Store, p *parser.Parser, logger *log.Logger) *Planner {
 		store:          store,
 		parser:         p,
 		logger:         logger,
-		MaxCandidates:  200,
 		callReachCache: &callReachCache{},
-	}
-}
-
-func (p *Planner) SetMaxCandidates(n int) {
-	if n > 0 {
-		p.MaxCandidates = n
 	}
 }
 
@@ -167,14 +159,12 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 		Summary:           summary,
 	}
 
-	maxCand := p.MaxCandidates
-	if maxCand <= 0 {
-		maxCand = 30
-	}
+	// Rank by risk so the AI processes highest-risk candidates first, but do
+	// NOT truncate: every deduped candidate is handed to the AI for review.
+	// The former max-candidates cap silently hid the tail (redis null-deref
+	// 1060 deduped but only 200 surfaced). The AI reviews all of them, in
+	// batches if its step budget requires.
 	candidates = RankCandidates(ctx, candidates, p.store)
-	if len(candidates) > maxCand {
-		candidates = candidates[:maxCand]
-	}
 
 	for _, c := range candidates {
 		fileName := ""

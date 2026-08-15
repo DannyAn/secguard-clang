@@ -13,8 +13,6 @@ import (
 
 func runPlanCmd(ctx context.Context, args []string) int {
 	dbPath, dbExplicit, remaining := parseDBFlag(args)
-	maxCand := parseIntFlag(remaining, "max-candidates")
-	remaining = removeFlag(remaining, "max-candidates")
 	if len(remaining) == 0 {
 		WriteErrorJSON("plan requires a vulnerability type argument")
 		return 1
@@ -38,10 +36,6 @@ func runPlanCmd(ctx context.Context, args []string) int {
 
 	logger := defaultLogger()
 	p := planner.NewPlanner(store, parser.NewParser(), logger)
-
-	if maxCand > 0 {
-		p.SetMaxCandidates(maxCand)
-	}
 
 	result, err := p.Plan(ctx, vulnType)
 	if err != nil {

@@ -26,8 +26,6 @@ func runScanCmd(ctx context.Context, args []string) int {
 	remaining = removeFlag(remaining, "output-dir")
 	excludeDirs, hasExclude := parseExcludeFlag(remaining)
 	remaining = removeFlag(remaining, "exclude")
-	maxCand := parseIntFlag(remaining, "max-candidates")
-	remaining = removeFlag(remaining, "max-candidates")
 	if len(remaining) == 0 {
 		remaining = []string{"."}
 	}
@@ -124,9 +122,6 @@ func runScanCmd(ctx context.Context, args []string) int {
 	totalDropped := 0
 	for _, vulnType := range planner.AllVulnTypes() {
 		pl := planner.NewPlanner(store, p, logger)
-		if maxCand > 0 {
-			pl.SetMaxCandidates(maxCand)
-		}
 		planStart := time.Now()
 		result, err := pl.Plan(ctx, vulnType)
 		logger.Info("phase timing", "phase", "plan_"+vulnType, "elapsed_ms", time.Since(planStart).Milliseconds())

@@ -83,7 +83,7 @@ matters; `suspicion_level` only tells you how hard to look.
 
 ## Output Format
 
-你交付的是**诊断结论**，不是"处理进度"。用户只关心一件事：**扫描完之后，到底有没有问题、有哪些问题**。因此永远不要向用户暴露流水线的内部中间量——"原始线索数""收敛候选数""每类 30 条上限""只复核了前 30 条""截断/cap"这些术语一律不要出现，它们只会让用户误以为有遗漏、或怀疑没看完。
+你交付的是**诊断结论**，不是"处理进度"。用户只关心一件事：**扫描完之后，到底有没有问题、有哪些问题**。因此永远不要向用户暴露流水线的内部中间量——"原始线索数""收敛候选数""截断/cap/上限"这些术语一律不要出现，它们只会让用户误以为有遗漏、或怀疑没看完。
 
 最终回复必须按以下顺序，且全部用 Markdown 表格：
 
@@ -105,19 +105,18 @@ matters; `suspicion_level` only tells you how hard to look.
 
 6. **逐条详情**：每条问题的证据、状态、修复建议。
 
-关于"还有多少没看"（诚实但不说黑话）：
-- 不要用"截断/cap/上限/丢弃"这类内部术语，也不要甩出"原始线索 4 万条"这种中间量。
-- 每个 `secguard_plan` 结果的 `summary` 里有 `deduped_count`（去重后的可疑点总数）和实际返回给你的候选数（本次复核的）。当 `deduped_count` 大于你实际复核的数量时，在"各类问题结论表"下方补一句大白话，例如：
-  `注：null-deref 去重后共 1060 个可疑点，本次按风险复核了前 200 个；如需继续，可对该类型单独深挖。`
-- 这句话是"如实呈现"，不是"漏报"——它让用户知道还有多少，同时明确这是按风险排序后的聚焦。
+关于"复核多少"（关键口径，务必遵守）：
+- 每个 `secguard_plan` 结果返回该类型**去重后的全部候选**（`summary.deduped_count` = 总数），**不截断**。你的职责是**全部逐条复核**、判定、落库，而不是只挑一部分。
+- 如果一个类型候选很多（上百上千条），按风险从高到低**分批复核**：每批约 200 条，`secguard_report` 每批增量落库一次，直到全部复核完。**候选多不是只复核一部分的理由**——用户要的是"全部复核后"的完整结论。
+- 报告里如实写"该类型共 N 个可疑点，已全部复核"（而不是"只看了前 200 个"）。
 
 禁止事项：
-- 不写"共收敛 N 条候选""只复核了前 30 条""截断/cap/上限/丢弃"等内部术语。
+- 不写"共收敛 N 条候选""只复核了前 200 条""截断/cap/上限/丢弃"等内部术语。
 - 不复述 `_summary` 里的候选计数表（那是内部统计，不是结论）。
 
 ## Available SecGuard Tools
 - `secguard_scan` — **Full scan tool**: Runs the complete pipeline (index + all detectors + convergence for every registered type). Writes SARIF + Markdown to `.codeagent/zhuque-secguard/scans/<scan_id>/`, DB to `.codeagent/zhuque-secguard/.sgre/sgre.db`. Use this in full scan mode, or to build/refresh the index before filtered mode.
-- `secguard_plan` — **Filtered scan tool**: Runs convergence for ONE vulnerability type only. Returns the top-ranked evidence candidates (at most `--max-candidates`, default 200) as JSON. Use this in filtered mode, once per selected type. Requires an existing index — call `secguard_scan` or `secguard_index` first if no index exists.
+- `secguard_plan` — **Filtered scan tool**: Runs convergence for ONE vulnerability type only. Returns ALL deduped, risk-ranked evidence candidates (no cap) as JSON. Use this in filtered mode, once per selected type. Requires an existing index — call `secguard_scan` or `secguard_index` first if no index exists.
 - `secguard_types` (invoked as `secguard types`) — **Type list tool**: Returns the current list of vulnerability types (`name` + `cwe`). Always call this first to discover/validate the type list; do not hardcode types or counts.
 - `secguard_report` — Write findings (with `findings` arg) or read all findings (no arg). Only findings with pipeline-supported CWE rule_ids are accepted. Findings for other CWE types are rejected — report those as observations in your summary text instead. Pass `scan_id` and `output_dir` to auto-generate `audit-report.md` with per-skill pipeline statistics (seed count, final count, filter efficiency, AI confirmed/suspected/dismissed counts).
 - `secguard_db` — Read-only SQL queries (SELECT only). Use for inspecting the **findings** table (your own output) and **files**/**functions** tables (for location cross-reference). **Do NOT query the `security_events` table** — it contains raw pre-convergence candidates that bypass the pipeline. Do NOT use `secguard_db` to recover candidates the pipeline did not surface. Only reason over evidence packages returned by `secguard_scan` / `secguard_plan`.

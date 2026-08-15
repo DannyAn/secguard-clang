@@ -117,14 +117,15 @@ func TestRankCandidates_HighSeveritySurvivesCap(t *testing.T) {
 	}
 
 	p := NewPlanner(s, nil, nil)
-	p.SetMaxCandidates(30)
 	result, err := p.Plan(context.Background(), "null-deref")
 	if err != nil {
 		t.Fatalf("Plan failed: %v", err)
 	}
 
-	if len(result.Candidates) > 30 {
-		t.Errorf("expected at most 30 candidates, got %d", len(result.Candidates))
+	// No cap: every deduped candidate is returned (the result count equals the
+	// summary's deduped_count — nothing is silently truncated).
+	if len(result.Candidates) != result.Summary.DedupedCount {
+		t.Errorf("expected no truncation: got %d candidates but deduped_count=%d", len(result.Candidates), result.Summary.DedupedCount)
 	}
 }
 
