@@ -4,26 +4,47 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 )
 
+// SupportedFindingCWEs is the set of CWE rule_ids the pipeline can detect and
+// therefore persist as findings. Keep in sync with the 20 VulnTypeSpec entries
+// in internal/planner/registry.go (each type carries a CWE). CWE-89 is retained
+// for backward compatibility with older injection findings.
 var SupportedFindingCWEs = map[string]bool{
-	"CWE-476": true,
-	"CWE-787": true,
-	"CWE-125": true,
-	"CWE-401": true,
-	"CWE-78":  true,
-	"CWE-89":  true,
-	"CWE-404": true,
-	"CWE-457": true,
-	"CWE-416": true,
-	"CWE-415": true,
-	"CWE-134": true,
-	"CWE-190": true,
-	"CWE-362": true,
-	"CWE-798": true,
-	"CWE-667": true,
-	"CWE-327": true,
+	"CWE-476": true, // null-deref
+	"CWE-787": true, // buffer-overflow
+	"CWE-125": true, // out-of-bounds
+	"CWE-401": true, // memory-leak
+	"CWE-78":  true, // injection (command)
+	"CWE-89":  true, // injection (SQL, legacy)
+	"CWE-404": true, // resource-leak
+	"CWE-457": true, // uninit
+	"CWE-416": true, // use-after-free
+	"CWE-415": true, // double-free
+	"CWE-134": true, // format-string
+	"CWE-190": true, // integer-overflow
+	"CWE-362": true, // race-condition
+	"CWE-798": true, // hardcoded-secret
+	"CWE-667": true, // deadlock
+	"CWE-327": true, // crypto-misuse
+	"CWE-369": true, // divide-by-zero
+	"CWE-252": true, // unchecked-return
+	"CWE-22":  true, // path-traversal
+	"CWE-681": true, // signed-compare
+	"CWE-467": true, // sizeof-misuse
+}
+
+// SupportedCWEsList returns the sorted, comma-joined list of supported CWEs for
+// error messages. Single source of truth, so it can never drift from the map.
+func SupportedCWEsList() string {
+	list := make([]string, 0, len(SupportedFindingCWEs))
+	for cwe := range SupportedFindingCWEs {
+		list = append(list, cwe)
+	}
+	sort.Strings(list)
+	return strings.Join(list, ", ")
 }
 
 func (s *store) InsertFinding(ctx context.Context, f *Finding) (int64, error) {

@@ -142,7 +142,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 
 		cweNorm := strings.ToUpper(strings.TrimSpace(finding.RuleID))
 		if cweNorm != "" && !db.SupportedFindingCWEs[cweNorm] {
-			WriteErrorJSON(fmt.Sprintf("unsupported rule_id %q: SecGuard pipeline does not detect this vulnerability type. Supported CWEs: CWE-476, CWE-787, CWE-125, CWE-401, CWE-78, CWE-89, CWE-404, CWE-457, CWE-416, CWE-415, CWE-134, CWE-190, CWE-362, CWE-798, CWE-667, CWE-327. Agent-observed findings for unsupported types should be reported as observations, not persisted.", finding.RuleID))
+			WriteErrorJSON(fmt.Sprintf("unsupported rule_id %q: SecGuard pipeline does not detect this vulnerability type. Supported CWEs: %s. Agent-observed findings for unsupported types should be reported as observations, not persisted.", finding.RuleID, db.SupportedCWEsList()))
 			return 1
 		}
 
@@ -188,6 +188,9 @@ func runReportCmd(ctx context.Context, args []string) int {
 			"CWE-798": "hardcoded-secret", "CWE-667": "deadlock",
 			"CWE-327": "crypto-misuse",
 			"CWE-125": "out-of-bounds",
+			"CWE-369": "divide-by-zero", "CWE-252": "unchecked-return",
+			"CWE-22": "path-traversal", "CWE-681": "signed-compare",
+			"CWE-467": "sizeof-misuse",
 		}
 
 		scanFindings, _ := store.ListFindingsByScanID(ctx, scanID)
