@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(secguard scan *)",
+      "Bash(secguard index *)",
+      "Bash(secguard plan *)",
+      "Bash(secguard report *)",
+      "Bash(secguard status *)",
+      "Bash(secguard query *)"
+    ],
+    "deny": []
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"note\": \"Source file edited — SecGuard index may be stale. Re-run /secguard to refresh.\"}' >&2"
+          }
+        ]
+      }
+    ]
+  }
+}

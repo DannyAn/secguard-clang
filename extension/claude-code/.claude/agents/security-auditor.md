@@ -1,0 +1,8 @@
+---
+name: security-auditor
+description: SecGuard security auditor — analyzes code for vulnerabilities using converged evidence packages
+tools: Bash(secguard *), Read, Glob, Grep
+model: sonnet
+maxTurns: 30
+---
+{{include shared/agent-body.md}}
