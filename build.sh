@@ -5,11 +5,10 @@ set -euo pipefail
 # Usage: ./build.sh [options]
 #   --test       Run tests before building
 #   --install    Install binary to ~/.local/bin (default: ./bin/secguard)
-#   --package    Build distribution packages (zip) to ./dist/
+#   --package    Build distribution package (single zip) to ./dist/
 #   --version <v>  Explicit version (for --package)
-#   --os <os>    Filter target OS for --package (darwin|linux)
+#   --os <os>    Filter target OS for --package (darwin|linux|windows)
 #   --arch <a>   Filter target arch for --package (amd64|arm64)
-#   --target <t> Package type for --package (master|opencode|claude-code|all)
 #   --help       Show usage
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -23,7 +22,6 @@ DO_PACKAGE=false
 EXPLICIT_VERSION=""
 OS_FILTER=""
 ARCH_FILTER=""
-TARGET_FILTER=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -33,18 +31,16 @@ while [[ $# -gt 0 ]]; do
         --version) EXPLICIT_VERSION="$2"; shift 2 ;;
         --os)      OS_FILTER="$2"; shift 2 ;;
         --arch)    ARCH_FILTER="$2"; shift 2 ;;
-        --target)  TARGET_FILTER="$2"; shift 2 ;;
         --help|-h)
             echo "Usage: $0 [options]"
             echo ""
             echo "Options:"
             echo "  --test         Run tests before building"
             echo "  --install      Install binary to $INSTALL_DIR (default: $OUTPUT)"
-            echo "  --package      Build distribution packages (zip) to ./dist/"
+            echo "  --package      Build distribution package (single zip) to ./dist/"
             echo "  --version <v>  Explicit version (for --package)"
-            echo "  --os <os>      Filter target OS (darwin|linux) for --package"
+            echo "  --os <os>      Filter target OS (darwin|linux|windows) for --package"
             echo "  --arch <a>     Filter target arch (amd64|arm64) for --package"
-            echo "  --target <t>   Package type (master|opencode|claude-code|all) for --package"
             exit 0 ;;
         *) echo "Unknown option: $1 (use --help)"; exit 1 ;;
     esac
@@ -56,7 +52,6 @@ if [ "$DO_PACKAGE" = true ]; then
     [ -n "$EXPLICIT_VERSION" ] && pkg_args+=(--version "$EXPLICIT_VERSION")
     [ -n "$OS_FILTER" ] && pkg_args+=(--os "$OS_FILTER")
     [ -n "$ARCH_FILTER" ] && pkg_args+=(--arch "$ARCH_FILTER")
-    [ -n "$TARGET_FILTER" ] && pkg_args+=(--target "$TARGET_FILTER")
     [ "$RUN_TEST" = true ] && pkg_args+=(--test)
     exec "$SCRIPT_DIR/extension/dist/build-packages.sh" ${pkg_args[@]+"${pkg_args[@]}"}
 fi

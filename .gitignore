@@ -4,12 +4,18 @@
 .opencode/
 .codeartsdoer/
 .remember/
-bin/
-extension/dist/
-lib/
-obj/
-dist/
-out/
+/bin/
+# extension/dist/ 下的构建脚本要入库（release.yml / 本地 build.sh --package 依赖），
+# 只忽略其中的产物；注意顶层 /dist/ 必须锚定，否则会误伤 extension/dist/。
+extension/dist/*.zip
+extension/dist/*.zip.sha256
+extension/dist/.inject_block
+extension/dist/.tmp-*
+/lib/
+/obj/
+/dist/
+/out/
+.tools/
 package-lock.json
 packages.lock.json
 yarn.lock
@@ -19,5 +25,6 @@ sgre/secguard
 sgre/.gocache/
 sgre/.gotmp/
 sgre/.tmpdir/
+sgre/.zig-cache/
 *.db
 *.sarif

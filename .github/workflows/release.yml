@@ -23,13 +23,31 @@ jobs:
             goarch: amd64
             cc: musl-gcc
             apt: musl-tools
-          # Native macOS arm64 — for the developer's own machine.
+            static: '1'
+          # Windows x86_64 — cross-compiled from Linux via zig (mingw-w64).
+          - name: windows-amd64
+            os: ubuntu-latest
+            goos: windows
+            goarch: amd64
+            cc: zig
+            apt: ''
+            static: ''
+          # Native macOS arm64 (Apple Silicon).
           - name: darwin-arm64
             os: macos-latest
             goos: darwin
             goarch: arm64
             cc: clang
             apt: ''
+            static: ''
+          # Intel macOS x86_64 — cross-compiled on the arm64 runner via clang.
+          - name: darwin-amd64
+            os: macos-latest
+            goos: darwin
+            goarch: amd64
+            cc: clang
+            apt: ''
+            static: ''
     steps:
       - uses: actions/checkout@v4
 
@@ -45,37 +63,54 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.apt }}
 
+      - name: Install zig (for windows cross-compile)
+        if: matrix.cc == 'zig'
+        run: |
+          curl -fsSL https://ziglang.org/download/0.14.1/zig-linux-x86_64-0.14.1.tar.xz -o /tmp/zig.tar.xz
+          tar -xJf /tmp/zig.tar.xz -C /tmp
+          echo "/tmp/zig-linux-x86_64-0.14.1" >> "$GITHUB_PATH"
+
       - name: Build
         env:
           CGO_ENABLED: '1'
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CC: ${{ matrix.cc }}
         run: |
           version="${GITHUB_REF_NAME#v}"
           cd sgre
-          artifact="secguard-${version}-${{ matrix.name }}"
-          if [ "${{ matrix.name }}" = "linux-amd64" ]; then
-            go build -trimpath \
-              -ldflags "-linkmode external -extldflags '-static' -X github.com/DannyAn/secguard-clang/internal/cli.Version=${version}" \
-              -o "../${artifact}" ./cmd/secguard
-          else
-            go build -trimpath \
-              -ldflags "-X github.com/DannyAn/secguard-clang/internal/cli.Version=${version}" \
-              -o "../${artifact}" ./cmd/secguard
-          fi
+          artifact="../secguard-${{ matrix.goos }}-${{ matrix.goarch }}"
+          case "${{ matrix.cc }}" in
+            musl-gcc)
+              CC=musl-gcc go build -trimpath \
+                -ldflags "-linkmode external -extldflags '-static' -X github.com/DannyAn/secguard-clang/internal/cli.Version=${version}" \
+                -o "${artifact}" ./cmd/secguard
+              ;;
+            zig)
+              [ "${{ matrix.goos }}" = "windows" ] && artifact="${artifact}.exe"
+              CC="zig cc -target x86_64-windows-gnu" \
+              CXX="zig c++ -target x86_64-windows-gnu" \
+              go build -trimpath \
+                -ldflags "-X github.com/DannyAn/secguard-clang/internal/cli.Version=${version}" \
+                -o "${artifact}" ./cmd/secguard
+              ;;
+            *)
+              go build -trimpath \
+                -ldflags "-X github.com/DannyAn/secguard-clang/internal/cli.Version=${version}" \
+                -o "${artifact}" ./cmd/secguard
+              ;;
+          esac
           echo "Built ${artifact}"
-          file "../${artifact}"
+          file "${artifact}" || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: secguard-${{ matrix.name }}
-          path: secguard-*-${{ matrix.name }}
+          name: secguard-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: secguard-${{ matrix.goos }}-${{ matrix.goarch }}*
           if-no-files-found: error
 
   release:
-    name: create release
+    name: assemble & publish release
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -86,11 +121,12 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Checksums
+      - name: Assemble single distribution zip
         run: |
-          cd dist
-          sha256sum * | tee SHA256SUMS
-          ls -la
+          sudo apt-get update
+          sudo apt-get install -y zip
+          ls -la dist
+          bash extension/dist/build-packages.sh --assemble-only --version "${GITHUB_REF_NAME#v}"
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -99,6 +135,7 @@ jobs:
           name: ${{ github.ref_name }}
           body_path: CHANGELOG.md
           files: |
-            dist/*
+            dist/secguard-*.zip
+            dist/SHA256SUMS
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

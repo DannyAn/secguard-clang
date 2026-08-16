@@ -1,0 +1,310 @@
+#!/bin/bash
+set -euo pipefail
+
+# install.sh — SecGuard 统一包安装脚本（模板）
+# 打包时占位标记会被替换为 sg_* 函数定义（内联注入）
+# 此脚本自包含，无外部依赖
+
+# @@SG_LIB_INJECT@@
+
+PKG_DIR="$(cd "$(dirname "$0")" && pwd)"
+PKG_VERSION="$(cat "$PKG_DIR/VERSION" 2>/dev/null || echo unknown)"
+
+# 参数默认值
+TARGET="all"
+PREFIX=""
+BIN_DIR=""
+NO_BINARY=false
+DO_UNINSTALL=false
+DO_VERIFY=false
+YES=false
+
+usage() {
+    cat <<EOF
+SecGuard v${PKG_VERSION} Installer
+Usage: install.sh [options]
+
+Options:
+  --target <opencode|claude-code|all>  Target platform (default: all)
+  --prefix <path>                      Override install root
+                                       OpenCode default: ~/.config/opencode
+                                       ClaudeCode default: ~/.claude
+  --bin-dir <path>                     Binary install dir (default: /usr/local/bin)
+  --no-binary                          Skip binary installation
+  --uninstall                          Uninstall mode
+  --verify                             Verify installation
+  --yes, -y                            Skip confirmation prompts
+  --help, -h                           Show this help
+
+Environment overrides:
+  OPENCODE_DIR   Default: ~/.config/opencode
+  CLAUDE_DIR     Default: ~/.claude
+  BIN_DIR        Default: /usr/local/bin
+EOF
+}
+
+# 参数解析
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --target)    TARGET="$2"; shift 2 ;;
+        --target=*)  TARGET="${1#--target=}"; shift ;;
+        --prefix)    PREFIX="$2"; shift 2 ;;
+        --prefix=*)  PREFIX="${1#--prefix=}"; shift ;;
+        --bin-dir)   BIN_DIR="$2"; shift 2 ;;
+        --bin-dir=*) BIN_DIR="${1#--bin-dir=}"; shift ;;
+        --no-binary) NO_BINARY=true; shift ;;
+        --uninstall) DO_UNINSTALL=true; shift ;;
+        --verify)    DO_VERIFY=true; shift ;;
+        --yes|-y)    YES=true; shift ;;
+        --help|-h)   usage; exit 0 ;;
+        *)           echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+# 互斥检查
+if [ "$DO_UNINSTALL" = true ] && [ "$DO_VERIFY" = true ]; then
+    echo "ERROR: --uninstall and --verify are mutually exclusive" >&2
+    exit 2
+fi
+
+# 路径解析
+OC_PREFIX="${PREFIX:-${OPENCODE_DIR:-$HOME/.config/opencode}}"
+CC_PREFIX="${PREFIX:-${CLAUDE_DIR:-$HOME/.claude}}"
+if [ -n "$BIN_DIR" ]; then
+    : # use explicit
+else
+    BIN_DIR="${BIN_DIR_ENV:-/usr/local/bin}"
+fi
+OC_TARGET_DIR="$OC_PREFIX/extensions/zhuque-secguard"
+CC_TARGET_DIR="$CC_PREFIX/skills/zhuque-secguard"
+OC_MANIFEST="$OC_PREFIX/.secguard-install-manifest"
+CC_MANIFEST="$CC_PREFIX/.secguard-install-manifest"
+
+# 已安装文件记录
+SG_FILES_LOG=""
+sg_init_files_log() {
+    SG_FILES_LOG=$(mktemp)
+}
+sg_record_file() {
+    echo "$1" >> "$SG_FILES_LOG"
+}
+sg_files_csv() {
+    if [ -n "$SG_FILES_LOG" ] && [ -f "$SG_FILES_LOG" ]; then
+        paste -sd, "$SG_FILES_LOG" 2>/dev/null || true
+    fi
+}
+sg_cleanup_files_log() {
+    [ -n "$SG_FILES_LOG" ] && rm -f "$SG_FILES_LOG" 2>/dev/null || true
+}
+
+# 复制文件并记录
+sg_cp_record() {
+    local src="$1"
+    local dst="$2"
+    cp "$src" "$dst"
+    sg_record_file "$(cd "$(dirname "$dst")" && pwd)/$(basename "$dst")"
+}
+
+# 安装 OpenCode extension
+install_opencode() {
+    echo "[opencode] Installing to $OC_TARGET_DIR"
+    local src="$PKG_DIR/opencode"
+    mkdir -p "$OC_TARGET_DIR"/{commands,agents,tools,plugins,skills}
+
+    [ -f "$src/extension.json" ] && sg_cp_record "$src/extension.json" "$OC_TARGET_DIR/extension.json"
+    [ -f "$src/opencode.json" ]  && sg_cp_record "$src/opencode.json"  "$OC_TARGET_DIR/opencode.json"
+
+    local f
+    for f in "$src"/commands/*.md; do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/commands/$(basename "$f")"; done
+    for f in "$src"/agents/*.md;   do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/agents/$(basename "$f")"; done
+    for f in "$src"/tools/*.ts;    do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/tools/$(basename "$f")"; done
+    for f in "$src"/plugins/*.ts;  do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/plugins/$(basename "$f")"; done
+
+    # skills（来自 shared/skills）
+    local skill_dir skill_name
+    for skill_dir in "$PKG_DIR"/shared/skills/*/; do
+        [ -d "$skill_dir" ] || continue
+        skill_name=$(basename "$skill_dir")
+        mkdir -p "$OC_TARGET_DIR/skills/$skill_name"
+        sg_cp_record "$skill_dir/SKILL.md" "$OC_TARGET_DIR/skills/$skill_name/SKILL.md"
+    done
+
+    # 写 manifest
+    local files_csv
+    files_csv=$(sg_files_csv)
+    sg_write_install_manifest "$OC_MANIFEST" "$PKG_VERSION" "opencode" "" "$files_csv"
+    echo "[opencode] Done"
+}
+
+# 安装 ClaudeCode plugin
+install_claude_code() {
+    echo "[claude-code] Installing to $CC_TARGET_DIR"
+    local src="$PKG_DIR/claude-code"
+    mkdir -p "$CC_TARGET_DIR"/{.claude-plugin,commands,agents,hooks,skills}
+
+    [ -f "$src/.claude-plugin/plugin.json" ] && sg_cp_record "$src/.claude-plugin/plugin.json" "$CC_TARGET_DIR/.claude-plugin/plugin.json"
+    [ -f "$src/hooks/hooks.json" ] && sg_cp_record "$src/hooks/hooks.json" "$CC_TARGET_DIR/hooks/hooks.json"
+
+    local f
+    for f in "$src"/.claude/commands/*.md; do [ -f "$f" ] && sg_cp_record "$f" "$CC_TARGET_DIR/commands/$(basename "$f")"; done
+    for f in "$src"/.claude/agents/*.md;   do [ -f "$f" ] && sg_cp_record "$f" "$CC_TARGET_DIR/agents/$(basename "$f")"; done
+
+    # skills
+    local skill_dir skill_name
+    for skill_dir in "$PKG_DIR"/shared/skills/*/; do
+        [ -d "$skill_dir" ] || continue
+        skill_name=$(basename "$skill_dir")
+        mkdir -p "$CC_TARGET_DIR/skills/$skill_name"
+        sg_cp_record "$skill_dir/SKILL.md" "$CC_TARGET_DIR/skills/$skill_name/SKILL.md"
+    done
+
+    # 合并权限
+    echo "[claude-code] Merging permissions into $CC_PREFIX/settings.json"
+    sg_merge_permissions "$CC_PREFIX/settings.json"
+
+    # 写 manifest
+    local files_csv
+    files_csv=$(sg_files_csv)
+    sg_write_install_manifest "$CC_MANIFEST" "$PKG_VERSION" "claude-code" "" "$files_csv"
+    echo "[claude-code] Done"
+}
+
+# 安装二进制
+install_binary() {
+    if [ "$NO_BINARY" = true ]; then
+        echo "[binary] Skipped (--no-binary)"
+        return 0
+    fi
+    local cur_os cur_arch
+    cur_os=$(sg_detect_os)
+    cur_arch=$(sg_detect_arch)
+    local bin
+    if ! bin=$(sg_select_binary "$PKG_DIR" "$cur_os" "$cur_arch"); then
+        return 1
+    fi
+    # 确定可写 bin_dir
+    local target_bin_dir="$BIN_DIR"
+    if [ ! -w "$BIN_DIR" ] && [ "$EUID" -ne 0 ] 2>/dev/null; then
+        target_bin_dir="$HOME/.local/bin"
+        mkdir -p "$target_bin_dir"
+        echo "[binary] $BIN_DIR not writable, using $target_bin_dir"
+    fi
+    mkdir -p "$target_bin_dir"
+    if [ "$cur_os" = "windows" ]; then
+        cp "$bin" "$target_bin_dir/secguard.exe"
+        sg_record_file "$target_bin_dir/secguard.exe"
+        echo "[binary] Installed to $target_bin_dir/secguard.exe"
+    else
+        cp "$bin" "$target_bin_dir/secguard"
+        chmod +x "$target_bin_dir/secguard"
+        sg_record_file "$target_bin_dir/secguard"
+        echo "[binary] Installed to $target_bin_dir/secguard"
+    fi
+}
+
+# 检查并卸载旧版本
+check_and_uninstall_old() {
+    local manifest="$1"
+    local platform="$2"
+    if [ -f "$manifest" ]; then
+        local old_version
+        old_version=$(python3 -c "
+import json
+try:
+    with open('''$manifest''') as f: print(json.load(f).get('version',''))
+except: print('')
+" 2>/dev/null) || old_version=""
+        if [ -n "$old_version" ] && [ "$old_version" != "$PKG_VERSION" ]; then
+            echo "[info] Detected old version $old_version, uninstalling first..."
+            sg_uninstall_platform "$platform" "" "" "$manifest" "true" 2>/dev/null || true
+        fi
+    fi
+}
+
+# ── 主逻辑 ──
+
+if [ "$DO_VERIFY" = true ]; then
+    sg_verify_platform "$TARGET" "$PREFIX" "$BIN_DIR" "$PKG_VERSION"
+    exit $?
+fi
+
+if [ "$DO_UNINSTALL" = true ]; then
+    echo "SecGuard v${PKG_VERSION} — Uninstalling (target: $TARGET)"
+    echo "========================================================"
+    yes_flag="false"
+    [ "$YES" = true ] && yes_flag="true"
+    case "$TARGET" in
+        opencode)
+            sg_uninstall_platform "opencode" "$OC_PREFIX" "$BIN_DIR" "$OC_MANIFEST" "$yes_flag"
+            ;;
+        claude-code)
+            sg_uninstall_platform "claude-code" "$CC_PREFIX" "$BIN_DIR" "$CC_MANIFEST" "$yes_flag"
+            ;;
+        all)
+            sg_uninstall_platform "opencode" "$OC_PREFIX" "$BIN_DIR" "$OC_MANIFEST" "$yes_flag"
+            sg_uninstall_platform "claude-code" "$CC_PREFIX" "$BIN_DIR" "$CC_MANIFEST" "$yes_flag"
+            ;;
+        *) echo "Unknown target: $TARGET" >&2; exit 2 ;;
+    esac
+    echo ""
+    echo "Uninstall complete."
+    exit 0
+fi
+
+# 安装模式
+echo "SecGuard v${PKG_VERSION} — Installing (target: $TARGET)"
+echo "========================================================"
+echo "  Package: $PKG_DIR"
+echo ""
+
+sg_init_files_log
+
+# 卸载旧版本
+case "$TARGET" in
+    opencode|all)    check_and_uninstall_old "$OC_MANIFEST" "opencode" ;;
+esac
+case "$TARGET" in
+    claude-code|all) check_and_uninstall_old "$CC_MANIFEST" "claude-code" ;;
+esac
+
+# 执行安装
+case "$TARGET" in
+    opencode)
+        install_opencode
+        install_binary
+        ;;
+    claude-code)
+        install_claude_code
+        install_binary
+        ;;
+    all)
+        install_opencode
+        echo ""
+        install_claude_code
+        echo ""
+        install_binary
+        ;;
+    *) echo "Unknown target: $TARGET" >&2; sg_cleanup_files_log; exit 2 ;;
+esac
+
+sg_cleanup_files_log
+
+echo ""
+echo "╔══════════════════════════════════════════════════════════╗"
+echo "║              Installation Complete                       ║"
+echo "╠══════════════════════════════════════════════════════════╣"
+case "$TARGET" in
+    opencode|all)
+        echo "║  OpenCode:  $OC_TARGET_DIR"
+        ;;
+esac
+case "$TARGET" in
+    claude-code|all)
+        echo "║  ClaudeCode: $CC_TARGET_DIR"
+        ;;
+esac
+echo "║  Command:   /secguard [path]"
+echo "╚══════════════════════════════════════════════════════════╝"
+echo ""
+echo "Verify with: ./install.sh --verify"
+echo "Uninstall with: ./uninstall.sh --target $TARGET --yes"
