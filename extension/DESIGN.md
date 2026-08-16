@@ -117,15 +117,15 @@ security-auditor subagent activated
 ## Installation
 
 ```bash
-# Install for both platforms
-./extension/install.sh all
+# Install for both platforms (build binary + install both)
+./deploy.sh all
 
 # Install for specific platform only
-./extension/install.sh opencode
-./extension/install.sh claude-code
+./deploy.sh opencode
+./deploy.sh claude-code
 
-# Build binary only
-./extension/install.sh binary
+# Build binary only (no install)
+./build.sh
 ```
 
 The installer copies shared skills into both `.opencode/skills/` and `.claude/skills/`, then copies platform-specific files into their respective directories.

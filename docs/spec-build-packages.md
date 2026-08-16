@@ -390,7 +390,7 @@ bin/secguard-<os>-<arch>
 | `release/uninstall-claude-code.sh` | **新增**：ClaudeCode 专用卸载脚本，含权限移除，自包含 |
 | `release/lib.sh` | **新增**：构建侧共享函数库，含 `expand_includes` 等公共函数与卸载底层函数（单一真实来源）。**仅**被源码树中运行的 `build-packages.sh`、`deploy.sh` 通过 `source` 复用；**不打入任何 zip 包**；zip 内 `install.sh`/`uninstall.sh` 不 source 它，所需函数在打包时由 `build-packages.sh` 内联注入 |
 | `deploy.sh` | 改为 `source release/lib.sh` 复用 `expand_includes`（消除重复实现）；其余开发模式部署行为不变，与发行包安装并存 |
-| `extension/install.sh` | 删除或改为薄包装：其重复的 `expand_includes` 实现移除，统一由 `lib.sh` 提供 |
+| `extension/install.sh` | 已删除：其重复的 `expand_includes` 实现移除，统一由 `lib.sh` 提供 |
 | `VERSION` | 新增（根目录）：版本号来源 |
 
 ---

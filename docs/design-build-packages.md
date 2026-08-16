@@ -113,7 +113,7 @@
 | `release/install-opencode.sh` | 重构为 `.tmpl`：对齐路径 `extensions/zhuque-secguard/`；新增 `--prefix`/`--bin-dir`/`--uninstall`/`--verify`/`--yes`；自包含 |
 | `release/install-claude-code.sh` | 重构为 `.tmpl`：对齐路径 `skills/zhuque-secguard/`；权限合并；新增相同参数；自包含 |
 | `deploy.sh` | 移除内联 `expand_includes`，改为 `source "$SCRIPT_DIR/release/lib.sh"`；其余开发部署行为不变 |
-| `extension/install.sh` | 删除（其 `expand_includes` 重复实现移除，统一由 `lib.sh` 提供；若仍有本地安装需求，改为调用 `release/install.sh.tmpl` 注入后副本） |
+| `extension/install.sh` | 已删除（其 `expand_includes` 重复实现移除，统一由 `lib.sh` 提供；若仍有本地安装需求，改为调用 `release/install.sh.tmpl` 注入后副本） |
 
 #### 2.1.3 不变文件
 
@@ -959,7 +959,7 @@ bin/
 - 其余 `deploy.sh` 行为（`build_binary`、`install_opencode`、`install_claude_code`、`merge_claude_permissions`、`sync_project_local`、验证）不变，与发行包安装并存。
 - `merge_claude_permissions` 可保留在 `deploy.sh`（开发模式专用），或也迁入 `lib.sh` 可注入区复用 `sg_merge_permissions`。推荐后者以进一步 DRY。
 
-### 13.3 extension/install.sh 处置
+### 13.3 extension/install.sh 处置（已删除）
 
 - 删除该文件（其 `expand_includes` 重复实现移除）。
 - 若开发者需本地试运行安装，使用 `release/build-packages.sh` 生成的注入后副本，或直接运行 `deploy.sh`。

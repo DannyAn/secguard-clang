@@ -24,7 +24,7 @@
 | T8 | 重构 build-packages.sh 为打包核心 | T1, T3, T4, T5, T6, T7 | 第一版本 |
 | T9 | 扩展根目录 build.sh 集成 --package | T8 | 第一版本 |
 | T10 | 重构 deploy.sh 复用 lib.sh | T3 | 第一版本 |
-| T11 | 删除 extension/install.sh | T10 | 第一版本 |
+| T11 | 删除 extension/install.sh ✅ | T10 | 第一版本 |
 | T12 | 端到端集成验证 | T1–T11 | 第一版本 |
 | T13 | 可重复构建增强（固定时间戳） | T12 | 后续优化 |
 | T14 | 启发式清理与降级增强 | T12 | 后续优化 |
@@ -329,9 +329,9 @@
 
 ---
 
-### T11：删除 extension/install.sh
+### T11：删除 extension/install.sh（已完成）
 
-- **涉及文件**：`extension/install.sh`（删除）
+- **涉及文件**：`extension/install.sh`（已删除）
 - **依赖**：T10
 - **版本**：第一版本必须
 - **实现步骤**：
