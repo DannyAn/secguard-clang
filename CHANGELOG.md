@@ -2,6 +2,14 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.1.3] - 2026-08-17
+
+安装验证后的缺陷修复（Bugfix release）。
+
+### 修复
+
+- **skill 缺少 YAML frontmatter**：为 `uninit` 与 `resource-leak` 两个 skill 的 `SKILL.md` 补充 YAML frontmatter（`name` / `description` / `license` / `compatibility` / `metadata`）。此前 OpenCode 因缺少 frontmatter 无法识别并加载这两个 skill，导致扫描时 agent 报 `Skill "uninit" not found`；其余 18 个 skill 均已具备 frontmatter。
+
 ## [0.1.2] - 2026-08-16
 
 生产环境审计暴露的缺陷修复（Bugfix release）。重点解决扫描输出截断、上下文爆炸、CWE 缺口与检测器归属错误，并修复 Windows/Linux 交叉编译与发布组装流程，使 CI 发布可端到端跑通。

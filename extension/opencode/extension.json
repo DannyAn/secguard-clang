@@ -2,7 +2,7 @@
   "name": "zhuque-secguard",
   "displayName": "Zhuque SecGuard",
   "description": "AI-augmented C program security analysis platform with 4-level convergence pipeline",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "author": {
     "name": "Zhuque Security",
     "url": "https://github.com/DannyAn/secguard-clang"
