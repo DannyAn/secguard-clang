@@ -66,9 +66,9 @@ jobs:
       - name: Install zig (for windows cross-compile)
         if: matrix.cc == 'zig'
         run: |
-          curl -fsSL https://ziglang.org/download/0.14.1/zig-linux-x86_64-0.14.1.tar.xz -o /tmp/zig.tar.xz
+          curl -fsSL https://ziglang.org/download/0.14.1/zig-x86_64-linux-0.14.1.tar.xz -o /tmp/zig.tar.xz
           tar -xJf /tmp/zig.tar.xz -C /tmp
-          echo "/tmp/zig-linux-x86_64-0.14.1" >> "$GITHUB_PATH"
+          echo "/tmp/zig-x86_64-linux-0.14.1" >> "$GITHUB_PATH"
 
       - name: Build
         env:
