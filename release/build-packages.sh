@@ -12,7 +12,7 @@ set -euo pipefail
 # 任何目标构建失败都会中止（不再静默回退本机，避免发布缺平台的包）。
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SGRE_DIR="$PROJECT_ROOT/sgre"
 EXTENSION_DIR="$PROJECT_ROOT/extension"
 DIST_DIR="$PROJECT_ROOT/dist"

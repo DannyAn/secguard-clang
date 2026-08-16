@@ -53,7 +53,7 @@ if [ "$DO_PACKAGE" = true ]; then
     [ -n "$OS_FILTER" ] && pkg_args+=(--os "$OS_FILTER")
     [ -n "$ARCH_FILTER" ] && pkg_args+=(--arch "$ARCH_FILTER")
     [ "$RUN_TEST" = true ] && pkg_args+=(--test)
-    exec "$SCRIPT_DIR/extension/dist/build-packages.sh" ${pkg_args[@]+"${pkg_args[@]}"}
+    exec "$SCRIPT_DIR/release/build-packages.sh" ${pkg_args[@]+"${pkg_args[@]}"}
 fi
 
 # ── Default: build binary only (original behavior) ──

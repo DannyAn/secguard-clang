@@ -12,7 +12,7 @@ EXT_DIR="$SCRIPT_DIR/extension"
 SHARED_DIR="$EXT_DIR/shared"
 
 # 加载共享函数库（expand_includes 等由 lib.sh 提供）
-source "$SCRIPT_DIR/extension/dist/lib.sh"
+source "$SCRIPT_DIR/release/lib.sh"
 
 OPENCODE_BASE="${OPENCODE_DIR:-$HOME/.config/opencode}"
 CLAUDE_BASE="${CLAUDE_DIR:-$HOME/.claude}"

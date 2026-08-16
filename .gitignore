@@ -5,12 +5,9 @@
 .codeartsdoer/
 .remember/
 /bin/
-# extension/dist/ 下的构建脚本要入库（release.yml / 本地 build.sh --package 依赖），
-# 只忽略其中的产物；注意顶层 /dist/ 必须锚定，否则会误伤 extension/dist/。
-extension/dist/*.zip
-extension/dist/*.zip.sha256
-extension/dist/.inject_block
-extension/dist/.tmp-*
+# release/ 是发布/安装脚本（入库）；install.sh 由 install.sh.tmpl 打包时生成，不入库。
+# 发布产物统一输出到顶层 /dist/（下面 /dist/ 已锚定忽略）。
+release/install.sh
 /lib/
 /obj/
 /dist/
