@@ -257,16 +257,15 @@ build_master() {
 # ── 执行打包 ──
 build_master
 
-# ── 生成校验和 ──
+# ── 生成校验和（写入相对文件名，便于下游校验）──
 echo ""
 echo "[sha256] Generating checksums..."
 ZIP_FILE="$DIST_DIR/secguard-${version}.zip"
+ZIP_BASENAME="$(basename "$ZIP_FILE")"
 if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$ZIP_FILE" > "$ZIP_FILE.sha256"
-    sha256sum "$ZIP_FILE" > "$DIST_DIR/SHA256SUMS"
+    ( cd "$DIST_DIR" && sha256sum "$ZIP_BASENAME" > "$ZIP_BASENAME.sha256" && sha256sum "$ZIP_BASENAME" > SHA256SUMS )
 else
-    shasum -a 256 "$ZIP_FILE" > "$ZIP_FILE.sha256"
-    shasum -a 256 "$ZIP_FILE" > "$DIST_DIR/SHA256SUMS"
+    ( cd "$DIST_DIR" && shasum -a 256 "$ZIP_BASENAME" > "$ZIP_BASENAME.sha256" && shasum -a 256 "$ZIP_BASENAME" > SHA256SUMS )
 fi
 echo "  → secguard-${version}.zip.sha256"
 echo "  → SHA256SUMS"
