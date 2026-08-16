@@ -23,7 +23,7 @@
 │                        构建侧（源码树内运行）                          │
 │                                                                     │
 │  build.sh ──┬─ 无 --package → 原有构建行为（向后兼容）                │
-│             └─ --package → extension/dist/build-packages.sh          │
+│             └─ --package → release/build-packages.sh          │
 │                                  │                                  │
 │                                  ├── source lib.sh（共享函数）        │
 │                                  ├── resolve_version()               │
@@ -62,11 +62,11 @@
 
 系统由三层组成：
 
-1. **共享函数层（`extension/dist/lib.sh`）**：构建侧公共函数的唯一真实来源。分为两个区域：
+1. **共享函数层（`release/lib.sh`）**：构建侧公共函数的唯一真实来源。分为两个区域：
    - **构建侧专用区**：`resolve_version`、`build_target`、`write_manifest`、`sha256_file` 等，仅在源码树中运行，不注入发行包。
    - **可注入区**（`# @@SG_INJECT_START@@` ~ `# @@SG_INJECT_END@@` 标记包裹）：`sg_expand_includes`、`sg_select_binary`、`sg_write_install_manifest`、`sg_read_install_manifest`、`sg_merge_permissions`、`sg_remove_permissions`、`sg_uninstall_platform`、`sg_verify_platform`、`sg_confirm_action` 等，全部以 `sg_` 前缀命名，打包时内联注入到 zip 内 `install.sh`/`uninstall.sh`。
 
-2. **打包核心层（`extension/dist/build-packages.sh`）**：编排版本解析、跨平台构建、模板展开、三包组装、内联注入、校验和与 manifest 生成。
+2. **打包核心层（`release/build-packages.sh`）**：编排版本解析、跨平台构建、模板展开、三包组装、内联注入、校验和与 manifest 生成。
 
 3. **安装/卸载/验证层（发行包内 `install.sh` + `uninstall.sh`）**：自包含脚本，运行时仅依赖 bash + python3 + 标准工具（`cp`/`mkdir`/`rm`/`uname`/`shasum`/`zip` 不需要），通过内联注入的 `sg_*` 函数完成全部工作。
 
@@ -94,26 +94,26 @@
 | 文件路径 | 职责 | 是否打入 zip |
 |----------|------|--------------|
 | `VERSION` | 根目录版本号来源（单行文本，如 `1.2.0`） | 打入统一包顶层、各专用包根 |
-| `extension/dist/lib.sh` | 构建侧共享函数库（构建专用区 + 可注入区），单一真实来源 | **不打入任何 zip** |
-| `extension/dist/uninstall.sh` | 源码树中的卸载脚本模板（含 `# @@SG_LIB_INJECT@@` 占位标记），打包时注入 `sg_*` 后放入 zip | 以注入后副本打入 zip |
-| `extension/dist/uninstall-opencode.sh` | OpenCode 专用卸载脚本模板 | 以注入后副本打入 OpenCode zip |
-| `extension/dist/uninstall-claude-code.sh` | ClaudeCode 专用卸载脚本模板 | 以注入后副本打入 ClaudeCode zip |
-| `extension/dist/install.sh.tmpl` | 统一包 install.sh 模板（含占位标记与平台分发逻辑） | 以注入后副本打入统一包 |
-| `extension/dist/install-opencode.sh.tmpl` | OpenCode 专用 install.sh 模板 | 以注入后副本打入 OpenCode zip |
-| `extension/dist/install-claude-code.sh.tmpl` | ClaudeCode 专用 install.sh 模板 | 以注入后副本打入 ClaudeCode zip |
+| `release/lib.sh` | 构建侧共享函数库（构建专用区 + 可注入区），单一真实来源 | **不打入任何 zip** |
+| `release/uninstall.sh` | 源码树中的卸载脚本模板（含 `# @@SG_LIB_INJECT@@` 占位标记），打包时注入 `sg_*` 后放入 zip | 以注入后副本打入 zip |
+| `release/uninstall-opencode.sh` | OpenCode 专用卸载脚本模板 | 以注入后副本打入 OpenCode zip |
+| `release/uninstall-claude-code.sh` | ClaudeCode 专用卸载脚本模板 | 以注入后副本打入 ClaudeCode zip |
+| `release/install.sh.tmpl` | 统一包 install.sh 模板（含占位标记与平台分发逻辑） | 以注入后副本打入统一包 |
+| `release/install-opencode.sh.tmpl` | OpenCode 专用 install.sh 模板 | 以注入后副本打入 OpenCode zip |
+| `release/install-claude-code.sh.tmpl` | ClaudeCode 专用 install.sh 模板 | 以注入后副本打入 ClaudeCode zip |
 
-> 说明：现有 `extension/dist/install.sh`、`install-opencode.sh`、`install-claude-code.sh` 将重构为 `.tmpl` 模板（含占位标记）。打包时 `build-packages.sh` 对模板执行"内联注入"生成最终脚本。源码树中保留一份已注入的 `install.sh`（供开发者本地试运行）由 `build-packages.sh --sync-templates` 同步生成，非必须。
+> 说明：现有 `release/install.sh`、`install-opencode.sh`、`install-claude-code.sh` 将重构为 `.tmpl` 模板（含占位标记）。打包时 `build-packages.sh` 对模板执行"内联注入"生成最终脚本。源码树中保留一份已注入的 `install.sh`（供开发者本地试运行）由 `build-packages.sh --sync-templates` 同步生成，非必须。
 
 #### 2.1.2 修改文件
 
 | 文件路径 | 改造内容 |
 |----------|----------|
 | `build.sh` | 新增 `--package`/`--dist`/`--version`/`--os`/`--arch`/`--target` 参数；无 `--package` 时行为完全不变（向后兼容，AC-11） |
-| `extension/dist/build-packages.sh` | 重构为打包核心：`source lib.sh`；版本解析；跨平台构建；模板展开；三包组装；内联注入；校验和；manifest |
-| `extension/dist/install-opencode.sh` | 重构为 `.tmpl`：对齐路径 `extensions/zhuque-secguard/`；新增 `--prefix`/`--bin-dir`/`--uninstall`/`--verify`/`--yes`；自包含 |
-| `extension/dist/install-claude-code.sh` | 重构为 `.tmpl`：对齐路径 `skills/zhuque-secguard/`；权限合并；新增相同参数；自包含 |
-| `deploy.sh` | 移除内联 `expand_includes`，改为 `source "$SCRIPT_DIR/extension/dist/lib.sh"`；其余开发部署行为不变 |
-| `extension/install.sh` | 删除（其 `expand_includes` 重复实现移除，统一由 `lib.sh` 提供；若仍有本地安装需求，改为调用 `extension/dist/install.sh.tmpl` 注入后副本） |
+| `release/build-packages.sh` | 重构为打包核心：`source lib.sh`；版本解析；跨平台构建；模板展开；三包组装；内联注入；校验和；manifest |
+| `release/install-opencode.sh` | 重构为 `.tmpl`：对齐路径 `extensions/zhuque-secguard/`；新增 `--prefix`/`--bin-dir`/`--uninstall`/`--verify`/`--yes`；自包含 |
+| `release/install-claude-code.sh` | 重构为 `.tmpl`：对齐路径 `skills/zhuque-secguard/`；权限合并；新增相同参数；自包含 |
+| `deploy.sh` | 移除内联 `expand_includes`，改为 `source "$SCRIPT_DIR/release/lib.sh"`；其余开发部署行为不变 |
+| `extension/install.sh` | 删除（其 `expand_includes` 重复实现移除，统一由 `lib.sh` 提供；若仍有本地安装需求，改为调用 `release/install.sh.tmpl` 注入后副本） |
 
 #### 2.1.3 不变文件
 
@@ -124,18 +124,18 @@
 ```text
 build.sh
   └─(无 --package)─→ 原有 go build（不变）
-  └─(--package)───→ extension/dist/build-packages.sh
-                      ├─ source ─→ extension/dist/lib.sh
+  └─(--package)───→ release/build-packages.sh
+                      ├─ source ─→ release/lib.sh
                       ├─ 读取 ──→ VERSION / git describe
                       ├─ 读取 ──→ sgre/（go build）
                       ├─ 读取 ──→ extension/{shared,opencode,claude-code}/
-                      ├─ 模板 ──→ extension/dist/install*.sh.tmpl
-                      ├─ 模板 ──→ extension/dist/uninstall*.sh（模板）
+                      ├─ 模板 ──→ release/install*.sh.tmpl
+                      ├─ 模板 ──→ release/uninstall*.sh（模板）
                       ├─ 注入 ──→ lib.sh 可注入区 → 生成 zip 内脚本
                       └─ 输出 ──→ dist/*.zip + dist/*.sha256
 
 deploy.sh
-  └─ source ─→ extension/dist/lib.sh（复用 sg_expand_includes / expand_includes）
+  └─ source ─→ release/lib.sh（复用 sg_expand_includes / expand_includes）
 
 zip 内 install.sh / uninstall.sh
   └─ 内联 ─→ sg_* 函数（打包时注入，运行时无外部依赖）
@@ -293,7 +293,7 @@ sg_verify_platform 主流程：
 
 ## 4. lib.sh 函数清单
 
-> 所有函数定义于 `extension/dist/lib.sh`。可注入区函数以 `sg_` 前缀命名，由 `# @@SG_INJECT_START@@` / `# @@SG_INJECT_END@@` 标记包裹。构建侧专用函数无前缀。
+> 所有函数定义于 `release/lib.sh`。可注入区函数以 `sg_` 前缀命名，由 `# @@SG_INJECT_START@@` / `# @@SG_INJECT_END@@` 标记包裹。构建侧专用函数无前缀。
 
 ### 4.1 构建侧专用函数（不注入）
 
@@ -948,13 +948,13 @@ bin/
 ### 13.1 build.sh 向后兼容（AC-11）
 
 - 无 `--package`/`--dist` 参数时，`build.sh` 执行原有逻辑：`go build -o bin/secguard ./cmd/secguard`，`--test`/`--install`/`--help` 行为不变。
-- 新增参数仅在 `--package` 时生效，透传给 `extension/dist/build-packages.sh`。
-- 实现方式：在现有参数解析循环中新增 `--package`/`--version`/`--os`/`--arch`/`--target` 分支，设置 `DO_PACKAGE=true` 及相应变量；脚本末尾 `if [ "$DO_PACKAGE" = true ]; then exec extension/dist/build-packages.sh ...; fi`，在原有构建逻辑之后。
+- 新增参数仅在 `--package` 时生效，透传给 `release/build-packages.sh`。
+- 实现方式：在现有参数解析循环中新增 `--package`/`--version`/`--os`/`--arch`/`--target` 分支，设置 `DO_PACKAGE=true` 及相应变量；脚本末尾 `if [ "$DO_PACKAGE" = true ]; then exec release/build-packages.sh ...; fi`，在原有构建逻辑之后。
 
 ### 13.2 deploy.sh 改造（REQ-LIB-02 / NFR-MAINT-01 / AC-15）
 
 - 移除 `deploy.sh` 内联的 `expand_includes()` 函数（第 103-122 行）。
-- 在脚本头部加入：`source "$SCRIPT_DIR/extension/dist/lib.sh"`。
+- 在脚本头部加入：`source "$SCRIPT_DIR/release/lib.sh"`。
 - `lib.sh` 中 `expand_includes` 包装 `sg_expand_includes`，签名兼容（`deploy.sh` 调用 `expand_includes "$f" "$out"`，`lib.sh` 中 `expand_includes() { sg_expand_includes "$1" "$2" "$SHARED_DIR"; }`，或调整 `deploy.sh` 调用传 `$SHARED_DIR`）。
 - 其余 `deploy.sh` 行为（`build_binary`、`install_opencode`、`install_claude_code`、`merge_claude_permissions`、`sync_project_local`、验证）不变，与发行包安装并存。
 - `merge_claude_permissions` 可保留在 `deploy.sh`（开发模式专用），或也迁入 `lib.sh` 可注入区复用 `sg_merge_permissions`。推荐后者以进一步 DRY。
@@ -962,7 +962,7 @@ bin/
 ### 13.3 extension/install.sh 处置
 
 - 删除该文件（其 `expand_includes` 重复实现移除）。
-- 若开发者需本地试运行安装，使用 `extension/dist/build-packages.sh` 生成的注入后副本，或直接运行 `deploy.sh`。
+- 若开发者需本地试运行安装，使用 `release/build-packages.sh` 生成的注入后副本，或直接运行 `deploy.sh`。
 
 ### 13.4 现有 dist/ 产物
 
@@ -1002,7 +1002,7 @@ bin/
 ## 附录 A：lib.sh 可注入区结构示意
 
 ```bash
-# extension/dist/lib.sh
+# release/lib.sh
 # 构建侧共享函数库。构建脚本 source 本文件复用；
 # zip 内 install.sh/uninstall.sh 不 source 本文件，所需函数由打包时内联注入。
 
@@ -1118,7 +1118,7 @@ sg_write_install_manifest ...
 
 2. **双 manifest**：包内 `manifest.json`（描述包内容，可重复构建）+ 安装后 `.secguard-install-manifest`（记录绝对路径，供跨版本卸载）。manifest 缺失时启发式清理降级。
 
-3. **路径对齐 deploy.sh**：发行包安装路径与开发部署路径完全一致（`extensions/zhuque-secguard/`、`skills/zhuque-secguard/`），修复现有 `extension/dist/install.sh` 装装到根目录的 bug。
+3. **路径对齐 deploy.sh**：发行包安装路径与开发部署路径完全一致（`extensions/zhuque-secguard/`、`skills/zhuque-secguard/`），修复现有 `release/install.sh` 装装到根目录的 bug。
 
 4. **CGO 跨平台回退**：逐目标构建，失败警告跳过，全失败回退本机，不中断整体打包（NFR-REL-02）。
 

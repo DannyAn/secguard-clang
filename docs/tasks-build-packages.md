@@ -54,11 +54,11 @@
 
 ### T2：实现 lib.sh 可注入区（sg_* 函数）
 
-- **涉及文件**：`extension/dist/lib.sh`（新建）
+- **涉及文件**：`release/lib.sh`（新建）
 - **依赖**：无
 - **版本**：第一版本必须
 - **实现步骤**：
-  1. 创建 `extension/dist/lib.sh`，文件头注释说明：构建侧 source 复用；zip 内脚本不 source，函数由打包时内联注入
+  1. 创建 `release/lib.sh`，文件头注释说明：构建侧 source 复用；zip 内脚本不 source，函数由打包时内联注入
   2. 写入可注入区起始标记：`# @@SG_INJECT_START@@`
   3. 实现以下 `sg_` 前缀函数（全部位于标记区间内，不得引用包外路径或 `source` 外部文件）：
      - `sg_expand_includes(input_file, output_file, shared_dir)`：模板展开，将 `{{include shared/<name>}}` 替换为对应文件内容；用 python3 处理多行替换（避免 sed 跨平台差异）；同时展开 `skills/*/SKILL.md` 引用
@@ -78,20 +78,20 @@
      - `Bash(secguard scan *)`、`Bash(secguard index *)`、`Bash(secguard plan *)`、`Bash(secguard report *)`、`Bash(secguard status *)`、`Bash(secguard query *)`、`Bash(secguard db *)`
   6. 所有 JSON 操作用 python3 heredoc，不依赖 `jq`
 - **验证方式**：
-  - `bash -n extension/dist/lib.sh` 语法检查通过
-  - `grep -c '^sg_' extension/dist/lib.sh` ≥ 12（至少 12 个 sg_ 函数）
-  - `awk '/@@SG_INJECT_START@@/{f=1} /@@SG_INJECT_END@@/{f=0} f' extension/dist/lib.sh | grep -c 'sg_'` ≥ 12（全部在标记区间内）
+  - `bash -n release/lib.sh` 语法检查通过
+  - `grep -c '^sg_' release/lib.sh` ≥ 12（至少 12 个 sg_ 函数）
+  - `awk '/@@SG_INJECT_START@@/{f=1} /@@SG_INJECT_END@@/{f=0} f' release/lib.sh | grep -c 'sg_'` ≥ 12（全部在标记区间内）
   - 手动 source 后调用 `sg_detect_os`、`sg_detect_arch` 输出当前平台
 
 ---
 
 ### T3：实现 lib.sh 构建侧专用函数
 
-- **涉及文件**：`extension/dist/lib.sh`（续写，在 `@@SG_INJECT_END@@` 之后）
+- **涉及文件**：`release/lib.sh`（续写，在 `@@SG_INJECT_END@@` 之后）
 - **依赖**：T2
 - **版本**：第一版本必须
 - **实现步骤**：
-  1. 在 `extension/dist/lib.sh` 的 `# @@SG_INJECT_END@@` 之后追加构建侧专用函数区（不注入 zip）
+  1. 在 `release/lib.sh` 的 `# @@SG_INJECT_END@@` 之后追加构建侧专用函数区（不注入 zip）
   2. 定义全局路径变量（文件顶部或函数内计算）：`PROJECT_ROOT`、`SGRE_DIR=$PROJECT_ROOT/sgre`、`DIST_DIR=$PROJECT_ROOT/dist`、`EXTENSION_DIR=$PROJECT_ROOT/extension`、`LIB_SH` 自身路径
   3. 实现以下函数：
      - `resolve_version(explicit)`：三级回退——`$1` 非空用之；否则读 `VERSION` 文件去空白；否则 `git describe --tags --always --dirty`；否则 `0.0.0-dev`（design §9.1 伪代码）
@@ -103,10 +103,10 @@
      - `inject_into(template_path, inject_block)`：用 python3 将 `$inject_block` 替换模板中的 `# @@SG_LIB_INJECT@@` 占位标记，stdout 输出注入后完整脚本；断言占位标记存在否则失败（design §5.2）
   4. 文件末尾不加任何执行逻辑（纯函数库，供 source）
 - **验证方式**：
-  - `bash -n extension/dist/lib.sh` 语法通过
-  - `source extension/dist/lib.sh && resolve_version "9.9.9"` 输出 `9.9.9`
-  - `source extension/dist/lib.sh && resolve_version ""` 输出 `1.2.0`（依赖 T1）
-  - `source extension/dist/lib.sh && extract_inject_block extension/dist/lib.sh | grep -c 'sg_'` ≥ 12
+  - `bash -n release/lib.sh` 语法通过
+  - `source release/lib.sh && resolve_version "9.9.9"` 输出 `9.9.9`
+  - `source release/lib.sh && resolve_version ""` 输出 `1.2.0`（依赖 T1）
+  - `source release/lib.sh && extract_inject_block release/lib.sh | grep -c 'sg_'` ≥ 12
 
 ---
 
@@ -114,11 +114,11 @@
 
 ### T4：创建统一包 install.sh.tmpl 模板
 
-- **涉及文件**：`extension/dist/install.sh.tmpl`（新建，取代现有 `extension/dist/install.sh`）
+- **涉及文件**：`release/install.sh.tmpl`（新建，取代现有 `release/install.sh`）
 - **依赖**：T2（需知可用 sg_* 函数签名）
 - **版本**：第一版本必须
 - **实现步骤**：
-  1. 创建 `extension/dist/install.sh.tmpl`，shebang `#!/bin/bash`，`set -euo pipefail`
+  1. 创建 `release/install.sh.tmpl`，shebang `#!/bin/bash`，`set -euo pipefail`
   2. 在 shebang 之后、任何逻辑之前写入占位标记：`# @@SG_LIB_INJECT@@`（打包时由 `inject_into` 替换为 sg_* 函数定义）
   3. **禁止**出现任何 `source .../lib.sh` 语句（REQ-LIB-04）
   4. 定义 `PKG_DIR="$(cd "$(dirname "$0")" && pwd)"`、`PKG_VERSION="$(cat "$PKG_DIR/VERSION" 2>/dev/null || echo unknown)"`
@@ -143,19 +143,19 @@
        g. 打印安装摘要
   9. `--help` 输出用法（参数表）
 - **验证方式**：
-  - `bash -n extension/dist/install.sh.tmpl` 语法通过
-  - `grep 'source.*lib\.sh' extension/dist/install.sh.tmpl` 无匹配（自包含保证）
-  - `grep '@@SG_LIB_INJECT@@' extension/dist/install.sh.tmpl` 有且仅有一处匹配
+  - `bash -n release/install.sh.tmpl` 语法通过
+  - `grep 'source.*lib\.sh' release/install.sh.tmpl` 无匹配（自包含保证）
+  - `grep '@@SG_LIB_INJECT@@' release/install.sh.tmpl` 有且仅有一处匹配
 
 ---
 
 ### T5：创建统一包 uninstall.sh 模板
 
-- **涉及文件**：`extension/dist/uninstall.sh`（新建模板，含占位标记）
+- **涉及文件**：`release/uninstall.sh`（新建模板，含占位标记）
 - **依赖**：T2
 - **版本**：第一版本必须
 - **实现步骤**：
-  1. 创建 `extension/dist/uninstall.sh`，shebang `#!/bin/bash`，`set -euo pipefail`
+  1. 创建 `release/uninstall.sh`，shebang `#!/bin/bash`，`set -euo pipefail`
   2. 写入占位标记 `# @@SG_LIB_INJECT@@`
   3. **禁止** `source .../lib.sh`
   4. 定义 `PKG_DIR`、`PKG_VERSION`（同 T4）
@@ -165,17 +165,17 @@
   8. manifest 均不存在时：警告并回退启发式清理——按约定路径删除 `extensions/zhuque-secguard/`、`skills/zhuque-secguard/`、`<bin-dir>/secguard`（基础版，T14 增强）
   9. `--help` 输出用法
 - **验证方式**：
-  - `bash -n extension/dist/uninstall.sh` 语法通过
-  - `grep 'source.*lib\.sh' extension/dist/uninstall.sh` 无匹配
-  - `grep '@@SG_LIB_INJECT@@' extension/dist/uninstall.sh` 有且仅有一处匹配
+  - `bash -n release/uninstall.sh` 语法通过
+  - `grep 'source.*lib\.sh' release/uninstall.sh` 无匹配
+  - `grep '@@SG_LIB_INJECT@@' release/uninstall.sh` 有且仅有一处匹配
 
 ---
 
 ### T6：创建 OpenCode 专用 install/uninstall 模板
 
 - **涉及文件**：
-  - `extension/dist/install-opencode.sh.tmpl`（新建，重构现有 `install-opencode.sh`）
-  - `extension/dist/uninstall-opencode.sh`（新建模板）
+  - `release/install-opencode.sh.tmpl`（新建，重构现有 `install-opencode.sh`）
+  - `release/uninstall-opencode.sh`（新建模板）
 - **依赖**：T2
 - **版本**：第一版本必须
 - **实现步骤**：
@@ -190,7 +190,7 @@
   2. **uninstall-opencode.sh**：
      - 同 install-opencode 的卸载子模式，无 `--target`，调用 `sg_uninstall_platform "opencode" ...`
 - **验证方式**：
-  - `bash -n extension/dist/install-opencode.sh.tmpl` 与 `bash -n extension/dist/uninstall-opencode.sh` 语法通过
+  - `bash -n release/install-opencode.sh.tmpl` 与 `bash -n release/uninstall-opencode.sh` 语法通过
   - 两文件均含 `@@SG_LIB_INJECT@@` 且无 `source.*lib\.sh`
 
 ---
@@ -198,8 +198,8 @@
 ### T7：创建 ClaudeCode 专用 install/uninstall 模板
 
 - **涉及文件**：
-  - `extension/dist/install-claude-code.sh.tmpl`（新建，重构现有 `install-claude-code.sh`）
-  - `extension/dist/uninstall-claude-code.sh`（新建模板）
+  - `release/install-claude-code.sh.tmpl`（新建，重构现有 `install-claude-code.sh`）
+  - `release/uninstall-claude-code.sh`（新建模板）
 - **依赖**：T2
 - **版本**：第一版本必须
 - **实现步骤**：
@@ -224,7 +224,7 @@
 
 ### T8：重构 build-packages.sh 为打包核心
 
-- **涉及文件**：`extension/dist/build-packages.sh`（重写）
+- **涉及文件**：`release/build-packages.sh`（重写）
 - **依赖**：T1, T3, T4, T5, T6, T7
 - **版本**：第一版本必须
 - **实现步骤**：
@@ -270,9 +270,9 @@
   18. 打印产物列表（路径、大小、sha256，REQ-BUILD-05）
   19. 排除规则（design §11.4）：`-x "*.gocache*" -x "*.gotmp*" -x "*.db" -x "*.DS_Store" -x "*__pycache__*" -x "*.env" -x "*credentials*" -x "*.key" -x "*.pem"`
 - **验证方式**：
-  - `bash -n extension/dist/build-packages.sh` 语法通过
+  - `bash -n release/build-packages.sh` 语法通过
   - `cd sgre && go build ./...` 通过（确保 build_target 目标正确）
-  - 执行 `extension/dist/build-packages.sh --target master --os darwin --arch arm64` 后 `dist/secguard-<version>.zip` 存在且 `dist/secguard-<version>.zip.sha256` 存在
+  - 执行 `release/build-packages.sh --target master --os darwin --arch arm64` 后 `dist/secguard-<version>.zip` 存在且 `dist/secguard-<version>.zip.sha256` 存在
   - 解压统一包后 `install.sh` 内含 `sg_select_binary` 函数定义（注入成功）、无 `source.*lib\.sh`
   - `shasum -c dist/secguard-*.sha256` 校验通过
 
@@ -291,7 +291,7 @@
   3. 在原有构建逻辑之后（或之前，但须保证无 `--package` 时不影响原逻辑）加入：
      ```bash
      if [ "$DO_PACKAGE" = true ]; then
-         exec "$SCRIPT_DIR/extension/dist/build-packages.sh" \
+         exec "$SCRIPT_DIR/release/build-packages.sh" \
              ${EXPLICIT_VERSION:+--version "$EXPLICIT_VERSION"} \
              ${OS_FILTER:+--os "$OS_FILTER"} \
              ${ARCH_FILTER:+--arch "$ARCH_FILTER"} \
@@ -317,7 +317,7 @@
 - **实现步骤**：
   1. 读取现有 `deploy.sh`，定位内联 `expand_includes()` 函数定义（约第 103-122 行）
   2. 移除该内联函数定义
-  3. 在脚本头部（路径变量定义之后）加入：`source "$SCRIPT_DIR/extension/dist/lib.sh"`
+  3. 在脚本头部（路径变量定义之后）加入：`source "$SCRIPT_DIR/release/lib.sh"`
   4. 检查 `deploy.sh` 中对 `expand_includes` 的调用签名：若原调用为 `expand_includes "$f" "$out"`（两参），需改为 `expand_includes "$f" "$out" "$SHARED_DIR"`（三参，与 lib.sh 签名一致）；或调整 lib.sh 中 `expand_includes` 包装为兼容两参（默认 SHARED_DIR）—— 推荐前者更显式
   5. 可选：将 `deploy.sh` 内联的 `merge_claude_permissions` 也改为调用 `sg_merge_permissions`（进一步 DRY，design §13.2 推荐）
   6. 其余 `deploy.sh` 行为（`build_binary`、`install_opencode`、`install_claude_code`、`sync_project_local`、验证）不变
@@ -338,7 +338,7 @@
   1. 确认 `extension/install.sh` 的 `expand_includes` 重复实现已由 `lib.sh` 统一提供
   2. 确认无其它脚本/文档引用 `extension/install.sh`（用 grep 检查）
   3. 删除该文件
-  4. 若有引用，更新引用指向 `extension/dist/install.sh.tmpl`（注入后副本）或 `deploy.sh`
+  4. 若有引用，更新引用指向 `release/install.sh.tmpl`（注入后副本）或 `deploy.sh`
 - **验证方式**：
   - `[ ! -f extension/install.sh ]` 为真
   - `grep -r 'extension/install.sh' --include='*.sh' --include='*.md' .` 无引用（或引用已更新）
@@ -371,7 +371,7 @@
   16. **验证 AC-18**：重新安装后 `./uninstall.sh --target all --yes` 与 `./install.sh --uninstall --target all --yes` 效果一致
   17. **验证 AC-05**：解压 OpenCode 专用包，目录结构可被 OpenCode 直接作为 extension 加载（extension.json 在根目录）
   18. **验证 AC-06**：解压 ClaudeCode 专用包，`.claude-plugin/plugin.json` 在根目录，可被 ClaudeCode 发现
-  19. **验证 AC-15**：`extension/dist/lib.sh` 存在且定义 `expand_includes`；`grep 'source.*lib\.sh' extension/dist/build-packages.sh deploy.sh` 均有匹配
+  19. **验证 AC-15**：`release/lib.sh` 存在且定义 `expand_includes`；`grep 'source.*lib\.sh' release/build-packages.sh deploy.sh` 均有匹配
   20. **验证 AC-16**：`grep 'source.*lib\.sh'` 在 zip 内 install.sh、uninstall.sh 均无匹配
   21. **记录结果**：将每项 AC 的通过/失败状态记录到验证报告（可临时写入 `docs/verification-report.md`，验证通过后可删除）
 - **验证方式**：
@@ -384,7 +384,7 @@
 
 ### T13：可重复构建增强（固定时间戳）
 
-- **涉及文件**：`extension/dist/lib.sh`（`write_manifest` 函数）、`extension/dist/build-packages.sh`
+- **涉及文件**：`release/lib.sh`（`write_manifest` 函数）、`release/build-packages.sh`
 - **依赖**：T12
 - **版本**：后续优化
 - **实现步骤**：
@@ -399,7 +399,7 @@
 
 ### T14：启发式清理与降级增强
 
-- **涉及文件**：`extension/dist/lib.sh`（`sg_uninstall_platform` 函数）
+- **涉及文件**：`release/lib.sh`（`sg_uninstall_platform` 函数）
 - **依赖**：T12
 - **版本**：后续优化
 - **实现步骤**：

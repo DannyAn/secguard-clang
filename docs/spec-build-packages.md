@@ -16,17 +16,17 @@
 
 ### 1.1 背景
 
-SecGuard-Clang 是 AI 增强的 C 语言安全分析器。当前根目录 `build.sh` 仅构建 Go 二进制到 `bin/secguard`，不具备发行打包能力。项目已存在 `extension/dist/build-packages.sh` 实现了基础打包，但存在以下缺陷：
+SecGuard-Clang 是 AI 增强的 C 语言安全分析器。当前根目录 `build.sh` 仅构建 Go 二进制到 `bin/secguard`，不具备发行打包能力。项目已存在 `release/build-packages.sh` 实现了基础打包，但存在以下缺陷：
 
 - 版本号硬编码为 `0.1.0`，无版本管理机制
 - 仅构建当前平台二进制，无跨平台（darwin/linux × amd64/arm64）支持
 - 无校验和（sha256）生成
-- 未集成到根目录 `build.sh`，开发者需单独运行 `extension/dist/build-packages.sh`
+- 未集成到根目录 `build.sh`，开发者需单独运行 `release/build-packages.sh`
 - 专用扩展包（opencode/claude-code）内未包含独立 `install.sh`，依赖统一包的安装脚本
 - 安装脚本无卸载能力、无幂等性保证、无安装清单记录
 - README/安装提示仅列出 4 个 skills，实际有 14 个
 - 统一包安装到 `~/.config/opencode/` 与 `~/.claude/`，与 `deploy.sh` 的 `extensions/zhuque-secguard/`、`skills/zhuque-secguard/` 路径不一致
-- `deploy.sh`、`extension/install.sh`、`extension/dist/build-packages.sh`、`extension/dist/install.sh` 四个脚本各自重复实现了同一个 `expand_includes()` 函数（约 15 行），改一处须改四处，违反 DRY
+- `deploy.sh`、`extension/install.sh`、`release/build-packages.sh`、`release/install.sh` 四个脚本各自重复实现了同一个 `expand_includes()` 函数（约 15 行），改一处须改四处，违反 DRY
 - 缺少独立的卸载入口脚本，用户须以 `install.sh --uninstall` 形式卸载，不直观
 - 缺少安装后的健康检查/验证能力，无法快速诊断"装了但没装对"的问题
 
@@ -36,7 +36,7 @@ SecGuard-Clang 是 AI 增强的 C 语言安全分析器。当前根目录 `build
 2. **OpenCode 专用扩展包**：构建一个可直接被 OpenCode 作为 extension 加载的 `.zip`。
 3. **ClaudeCode 专用扩展包**：构建一个可作为 ClaudeCode plugin/extension 安装的 `.zip`。
 4. 将打包能力集成到根目录 `build.sh`，保留原有 `--test`/`--install` 行为。
-5. 消除 `expand_includes` 等公共函数的重复实现，统一维护于 `extension/dist/lib.sh`，同时保证发行包安装脚本自包含可移植。
+5. 消除 `expand_includes` 等公共函数的重复实现，统一维护于 `release/lib.sh`，同时保证发行包安装脚本自包含可移植。
 6. 提供独立的 `uninstall.sh` 卸载入口与 `install.sh --verify` 安装验证能力，便于运维与故障诊断。
 
 ### 1.3 利益相关者
@@ -158,8 +158,8 @@ SecGuard-Clang 是 AI 增强的 C 语言安全分析器。当前根目录 `build
 
 > 设计原则：**构建侧共享 + 安装侧自包含**。构建脚本在源码树中运行，路径固定，可安全 `source` 公共函数库；发行包安装脚本解压到用户环境独立运行，路径不可控，必须自包含。
 
-- **REQ-LIB-01**：**THE SYSTEM SHALL** 在 `extension/dist/lib.sh` 中维护构建侧公共函数，至少包含 `expand_includes()`（模板展开），作为该函数的唯一真实来源（single source of truth）。
-- **REQ-LIB-02**：**WHEN** `build-packages.sh` 与 `deploy.sh` 运行 **THE SYSTEM SHALL** 通过 `source extension/dist/lib.sh` 加载公共函数，不得各自重复实现 `expand_includes`（消除当前 4 处重复实现）。
+- **REQ-LIB-01**：**THE SYSTEM SHALL** 在 `release/lib.sh` 中维护构建侧公共函数，至少包含 `expand_includes()`（模板展开），作为该函数的唯一真实来源（single source of truth）。
+- **REQ-LIB-02**：**WHEN** `build-packages.sh` 与 `deploy.sh` 运行 **THE SYSTEM SHALL** 通过 `source release/lib.sh` 加载公共函数，不得各自重复实现 `expand_includes`（消除当前 4 处重复实现）。
 - **REQ-LIB-03**：**WHEN** 生成任一 zip 包内 `install.sh` 或 `uninstall.sh` **THE build-packages.sh SHALL** 将 `expand_includes` 等展开函数以源码形式**内联注入**到该脚本文件体中，使该脚本运行时不依赖外部 `lib.sh`。
 - **REQ-LIB-04**：**THE 任一 zip 包内 install.sh 或 uninstall.sh SHALL** 不包含 `source .../lib.sh` 或任何引用包外路径的 `source` 语句，确保解压到任意路径均可独立运行（可移植）。
 - **REQ-LIB-05**：**WHEN** `lib.sh` 中 `expand_includes` 实现变更 **THE SYSTEM SHALL** 仅修改 `lib.sh` 一处，构建脚本通过 `source` 自动获得新实现，安装/卸载脚本通过打包时内联注入自动获得新实现（无需手工同步多份副本）。
@@ -200,7 +200,7 @@ SecGuard-Clang 是 AI 增强的 C 语言安全分析器。当前根目录 `build
 ### 3.1 可移植性
 - **NFR-PORT-01**：打包脚本须在 macOS（bash 3.2+）与 Linux（bash 4+）上运行。
 - **NFR-PORT-02**：安装脚本须在 macOS 与 Linux 上运行，不依赖 `gnu coreutils` 特有选项（避免 `sed -i` 差异，优先 python3 处理文本）。
-- **NFR-PORT-03**：zip 包内 `install.sh`、`uninstall.sh` 须可解压到任意路径独立运行，不依赖源码树中 `extension/dist/lib.sh` 的存在。
+- **NFR-PORT-03**：zip 包内 `install.sh`、`uninstall.sh` 须可解压到任意路径独立运行，不依赖源码树中 `release/lib.sh` 的存在。
 
 ### 3.2 可靠性
 - **NFR-REL-01**：打包须可重复构建——相同输入（源码、版本、目标）产生字节相同的 zip（排除时间戳影响，zip 使用固定时间戳或 `zip -X`）。
@@ -215,7 +215,7 @@ SecGuard-Clang 是 AI 增强的 C 语言安全分析器。当前根目录 `build
 - **NFR-PERF-01**：打包（含 4 目标二进制构建 + 3 个 zip）须在 5 分钟内完成（典型开发机）。
 
 ### 3.5 可维护性
-- **NFR-MAINT-01**（构建侧共享）：`extension/dist/lib.sh` 为公共函数（`expand_includes` 等）的唯一真实来源；`build-packages.sh` 与 `deploy.sh` 在源码树中运行，路径固定，**须通过 `source extension/dist/lib.sh` 复用**，不得重复实现（DRY，消除当前 4 个脚本各自重复 `expand_includes` 的问题）。
+- **NFR-MAINT-01**（构建侧共享）：`release/lib.sh` 为公共函数（`expand_includes` 等）的唯一真实来源；`build-packages.sh` 与 `deploy.sh` 在源码树中运行，路径固定，**须通过 `source release/lib.sh` 复用**，不得重复实现（DRY，消除当前 4 个脚本各自重复 `expand_includes` 的问题）。
 - **NFR-MAINT-01a**（安装侧自包含）：zip 包内 `install.sh`、`uninstall.sh` 解压到用户环境独立运行，路径不可控，**不得 `source` 外部 `lib.sh`**；打包时由 `build-packages.sh` 将展开函数**内联注入**到生成的脚本中，使其运行时自包含、无外部依赖、可移植。
 - **NFR-MAINT-02**：新增 skill 须自动被打包包含（glob `skills/*/SKILL.md`），无需修改打包脚本。
 
@@ -305,7 +305,7 @@ secguard-<version>/
     hooks/hooks.json
 ```
 
-> 注：`extension/dist/lib.sh` **不打入**任何 zip 包，仅存在于源码树供构建脚本 `source`。
+> 注：`release/lib.sh` **不打入**任何 zip 包，仅存在于源码树供构建脚本 `source`。
 
 **OpenCode 专用包** `secguard-extension-opencode-<version>.zip`（根目录即 extension）：
 ```
@@ -365,7 +365,7 @@ bin/secguard-<os>-<arch>
 | AC-12 | 在 macOS arm64 上安装统一包，自动选择 `secguard-darwin-arm64` 二进制 |
 | AC-13 | 安装路径与 `deploy.sh` 一致（`extensions/zhuque-secguard/`、`skills/zhuque-secguard/`） |
 | AC-14 | ClaudeCode 安装后 `~/.claude/settings.json` 含 7 项 secguard 权限，重复安装不重复添加 |
-| AC-15 | `extension/dist/lib.sh` 存在且定义 `expand_includes`；`build-packages.sh` 与 `deploy.sh` 均通过 `source` 引用，无重复实现 |
+| AC-15 | `release/lib.sh` 存在且定义 `expand_includes`；`build-packages.sh` 与 `deploy.sh` 均通过 `source` 引用，无重复实现 |
 | AC-16 | 任一 zip 包内 `install.sh` 不含 `source .../lib.sh` 语句，解压到任意临时目录可独立运行 |
 | AC-17 | 修改 `lib.sh` 中 `expand_includes` 实现后，重新打包生成的 `install.sh` 自动包含新实现，无需手工同步 |
 | AC-18 | 统一包与各专用包内均存在可执行的 `uninstall.sh`；直接执行 `./uninstall.sh` 可完成卸载，效果等价于 `install.sh --uninstall` |
@@ -381,15 +381,15 @@ bin/secguard-<os>-<arch>
 | 资产 | 处置 |
 |------|------|
 | `build.sh` | 扩展：新增 `--package` 等参数，调用打包逻辑 |
-| `extension/dist/build-packages.sh` | 重构为打包核心，修复版本/跨平台/校验和/skills 列表/路径一致性；`source lib.sh` 复用公共函数；打包时将展开函数与卸载函数内联注入各 `install.sh` 与 `uninstall.sh` |
-| `extension/dist/install.sh` | 重构：新增 `--target`/`--prefix`/`--uninstall`/`--verify`、manifest、幂等、路径对齐 deploy.sh；自包含（展开函数与卸载函数由打包时内联注入，不 source lib.sh） |
-| `extension/dist/uninstall.sh` | **新增**：独立卸载脚本，与 install.sh 平级；接受 `--target`/`--prefix`/`--bin-dir`/`--yes`；依据 manifest 卸载（支持跨版本）；卸载 ClaudeCode 时移除 settings.json 权限项；自包含（卸载逻辑由打包时内联注入，不 source lib.sh）；功能等价于 `install.sh --uninstall`，共享同一份底层卸载函数 |
-| `extension/dist/install-opencode.sh` | 重构：专用安装，对齐路径，自包含；新增 `--verify` |
-| `extension/dist/install-claude-code.sh` | 重构：专用安装，权限合并，对齐路径，自包含；新增 `--verify` |
-| `extension/dist/uninstall-opencode.sh` | **新增**：OpenCode 专用卸载脚本，自包含 |
-| `extension/dist/uninstall-claude-code.sh` | **新增**：ClaudeCode 专用卸载脚本，含权限移除，自包含 |
-| `extension/dist/lib.sh` | **新增**：构建侧共享函数库，含 `expand_includes` 等公共函数与卸载底层函数（单一真实来源）。**仅**被源码树中运行的 `build-packages.sh`、`deploy.sh` 通过 `source` 复用；**不打入任何 zip 包**；zip 内 `install.sh`/`uninstall.sh` 不 source 它，所需函数在打包时由 `build-packages.sh` 内联注入 |
-| `deploy.sh` | 改为 `source extension/dist/lib.sh` 复用 `expand_includes`（消除重复实现）；其余开发模式部署行为不变，与发行包安装并存 |
+| `release/build-packages.sh` | 重构为打包核心，修复版本/跨平台/校验和/skills 列表/路径一致性；`source lib.sh` 复用公共函数；打包时将展开函数与卸载函数内联注入各 `install.sh` 与 `uninstall.sh` |
+| `release/install.sh` | 重构：新增 `--target`/`--prefix`/`--uninstall`/`--verify`、manifest、幂等、路径对齐 deploy.sh；自包含（展开函数与卸载函数由打包时内联注入，不 source lib.sh） |
+| `release/uninstall.sh` | **新增**：独立卸载脚本，与 install.sh 平级；接受 `--target`/`--prefix`/`--bin-dir`/`--yes`；依据 manifest 卸载（支持跨版本）；卸载 ClaudeCode 时移除 settings.json 权限项；自包含（卸载逻辑由打包时内联注入，不 source lib.sh）；功能等价于 `install.sh --uninstall`，共享同一份底层卸载函数 |
+| `release/install-opencode.sh` | 重构：专用安装，对齐路径，自包含；新增 `--verify` |
+| `release/install-claude-code.sh` | 重构：专用安装，权限合并，对齐路径，自包含；新增 `--verify` |
+| `release/uninstall-opencode.sh` | **新增**：OpenCode 专用卸载脚本，自包含 |
+| `release/uninstall-claude-code.sh` | **新增**：ClaudeCode 专用卸载脚本，含权限移除，自包含 |
+| `release/lib.sh` | **新增**：构建侧共享函数库，含 `expand_includes` 等公共函数与卸载底层函数（单一真实来源）。**仅**被源码树中运行的 `build-packages.sh`、`deploy.sh` 通过 `source` 复用；**不打入任何 zip 包**；zip 内 `install.sh`/`uninstall.sh` 不 source 它，所需函数在打包时由 `build-packages.sh` 内联注入 |
+| `deploy.sh` | 改为 `source release/lib.sh` 复用 `expand_includes`（消除重复实现）；其余开发模式部署行为不变，与发行包安装并存 |
 | `extension/install.sh` | 删除或改为薄包装：其重复的 `expand_includes` 实现移除，统一由 `lib.sh` 提供 |
 | `VERSION` | 新增（根目录）：版本号来源 |
 
@@ -399,7 +399,7 @@ bin/secguard-<os>-<arch>
 
 - **假设-1**：构建机已安装 Go 1.25+、python3、zip。
 - **假设-2**：跨平台 CGO 交叉编译可能需要对应 C 工具链；缺失时回退本机构建（REQ-BIN-04）。
-- **假设-3**：`lib.sh` 仅在源码树中被 `source`，其路径相对于仓库根固定为 `extension/dist/lib.sh`，构建脚本可安全引用。
+- **假设-3**：`lib.sh` 仅在源码树中被 `source`，其路径相对于仓库根固定为 `release/lib.sh`，构建脚本可安全引用。
 - **风险-1**：macOS 自带 `zip` 与 Linux `zip` 时间戳处理差异，可能影响可重复构建（NFR-REL-01），需用 `zip -X` 或固定时间。
 - **风险-2**：ClaudeCode plugin 加载机制可能变化，须以 `deploy.sh` 当前路径为准。
 - **风险-3**：内联注入展开函数会增大 `install.sh`/`uninstall.sh` 体积（约 15 行），须保证注入位置与脚本其余逻辑无变量名冲突（建议注入函数加 `sg_` 前缀，如 `sg_expand_includes`）。

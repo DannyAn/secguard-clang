@@ -92,7 +92,7 @@ secguard db <sql>        Execute a SQL query, return JSON
 SecGuard targets two AI-agent platforms with a **shared-core + thin-wrapper** design:
 
 - `extension/shared/` is the single source of truth: agent skills (`SKILL.md` files), `agent-body.md` (the security-auditor prompt), `command-instructions.md`.
-- `extension/opencode/` and `extension/claude-code/` are thin platform wrappers using `{{include shared/...}}` directives, expanded at install time by `extension/install.sh`.
+- `extension/opencode/` and `extension/claude-code/` are thin platform wrappers using `{{include shared/...}}` directives, expanded at build time by `release/build-packages.sh`.
 - The **installed copies** live at `.opencode/` and `.claude/` in the repo root. The `security-auditor` subagent (`.claude/agents/security-auditor.md`) is the consumer: it runs `secguard scan/plan`, loads per-type skills for classification, and persists findings.
 - `.claude/settings.json` pre-approves `Bash(secguard *)` and emits a staleness hint on any `Edit|Write` (re-run `/secguard` after editing source).
 - **Edit `extension/shared/`, never the installed copies** — the installed files are generated.
