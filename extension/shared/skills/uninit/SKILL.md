@@ -1,3 +1,13 @@
+---
+name: uninit
+description: Classify uninitialized variable evidence — VALUE_USE events where a local variable is read before any assignment on some execution path. Maps to CWE-457.
+license: MIT
+compatibility: opencode
+metadata:
+  cwe: CWE-457
+  severity: MEDIUM
+---
+
 # Uninitialized Variable Analysis (CWE-457)
 
 ## Pattern
