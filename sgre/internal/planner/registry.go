@@ -37,6 +37,16 @@ type VulnTypeSpec struct {
 	// recognized a heuristic pattern (e.g. an unguarded strcpy). The AI agent
 	// then spends its depth only on the suspected tier.
 	CategoryConfidence map[string]string
+	// CWE is the canonical CWE identifier for this vulnerability type (e.g.
+	// "CWE-476"). It is the single source of truth for the CWE↔vuln-type
+	// mapping — every consumer (report, db, cli, extension) must derive from
+	// here, never hardcode a parallel map.
+	CWE string
+	// LegacyCWEs are historically-used CWE identifiers still accepted for
+	// backward-compatible finding persistence (e.g. CWE-89 for SQL injection
+	// now mapped to CWE-78). They are included in AllCWEs() so old findings
+	// remain writable, but VulnToCWE returns only the canonical CWE.
+	LegacyCWEs []string
 }
 
 var vulnTypeRegistry = map[string]*VulnTypeSpec{}
@@ -80,9 +90,53 @@ func AllSeedEventTypes() []string {
 	return result
 }
 
+// CWEForType returns the canonical CWE identifier for a vulnerability type,
+// or "" if the type is not registered. Callers that need a fallback (e.g.
+// SARIF) should return "CWE-Other" themselves — this function stays pure.
+func CWEForType(vulnType string) string {
+	if spec, ok := vulnTypeRegistry[vulnType]; ok {
+		return spec.CWE
+	}
+	return ""
+}
+
+// TypeForCWE returns the vulnerability type whose canonical CWE matches the
+// given CWE identifier (uppercased, trimmed). Returns "" if no type matches.
+// This is used by the audit report to bucket findings by vuln-type.
+func TypeForCWE(cwe string) string {
+	cweNorm := strings.ToUpper(strings.TrimSpace(cwe))
+	for name, spec := range vulnTypeRegistry {
+		if strings.ToUpper(spec.CWE) == cweNorm {
+			return name
+		}
+	}
+	return ""
+}
+
+// AllCWEs returns the set of all CWE identifiers the pipeline can detect and
+// persist as findings — every registered type's canonical CWE plus all
+// LegacyCWEs. This is the single source of truth for db.SupportedFindingCWEs;
+// cli/root.go injects it at startup so the db layer never drifts from the
+// registry.
+func AllCWEs() map[string]bool {
+	out := make(map[string]bool)
+	for _, spec := range vulnTypeRegistry {
+		if spec.CWE != "" {
+			out[strings.ToUpper(spec.CWE)] = true
+		}
+		for _, legacy := range spec.LegacyCWEs {
+			if legacy != "" {
+				out[strings.ToUpper(legacy)] = true
+			}
+		}
+	}
+	return out
+}
+
 func init() {
 	RegisterVulnType(&VulnTypeSpec{
 		Name:               "null-deref",
+		CWE:                "CWE-476",
 		SeedEventType:      "DEREFERENCE",
 		EvidenceType:       "NULL_DEREFERENCE",
 		DefaultSuspicion:   "confirmed",
@@ -125,6 +179,7 @@ func init() {
 
 	RegisterVulnType(&VulnTypeSpec{
 		Name:             "buffer-overflow",
+		CWE:              "CWE-787",
 		SeedEventType:    "BUFFER_ACCESS",
 		EvidenceType:     "BUFFER_OVERFLOW",
 		DefaultSuspicion: "suspected",
@@ -147,6 +202,7 @@ func init() {
 
 	RegisterVulnType(&VulnTypeSpec{
 		Name:             "memory-leak",
+		CWE:              "CWE-401",
 		SeedEventType:    "MEMORY_ALLOC",
 		EvidenceType:     "MEMORY_LEAK",
 		DefaultSuspicion: "suspected",
@@ -161,6 +217,8 @@ func init() {
 
 	RegisterVulnType(&VulnTypeSpec{
 		Name:             "injection",
+		CWE:              "CWE-78",
+		LegacyCWEs:       []string{"CWE-89"},
 		SeedEventType:    "INJECTION",
 		EvidenceType:     "INJECTION",
 		DefaultSuspicion: "suspected",
@@ -178,6 +236,7 @@ func init() {
 
 	RegisterVulnType(&VulnTypeSpec{
 		Name:             "resource-leak",
+		CWE:              "CWE-404",
 		SeedEventType:    "RESOURCE_ACQUIRE",
 		EvidenceType:     "RESOURCE_LEAK",
 		DefaultSuspicion: "suspected",
@@ -192,6 +251,7 @@ func init() {
 
 	RegisterVulnType(&VulnTypeSpec{
 		Name:             "uninit",
+		CWE:              "CWE-457",
 		SeedEventType:    "VALUE_USE",
 		EvidenceType:     "UNINIT_USE",
 		DefaultSuspicion: "suspected",
@@ -206,6 +266,7 @@ func init() {
 
 	RegisterVulnType(&VulnTypeSpec{
 		Name:             "use-after-free",
+		CWE:              "CWE-416",
 		SeedEventType:    "USE_AFTER_FREE",
 		EvidenceType:     "USE_AFTER_FREE",
 		DefaultSuspicion: "suspected",
@@ -222,6 +283,7 @@ func init() {
 
 	RegisterVulnType(&VulnTypeSpec{
 		Name:             "double-free",
+		CWE:              "CWE-415",
 		SeedEventType:    "DOUBLE_FREE",
 		EvidenceType:     "DOUBLE_FREE",
 		DefaultSuspicion: "suspected",
@@ -238,6 +300,7 @@ func init() {
 
 	RegisterVulnType(&VulnTypeSpec{
 		Name:             "format-string",
+		CWE:              "CWE-134",
 		SeedEventType:    "FORMAT_STRING",
 		EvidenceType:     "FORMAT_STRING_VULN",
 		DefaultSuspicion: "suspected",
@@ -252,6 +315,7 @@ func init() {
 
 	RegisterVulnType(&VulnTypeSpec{
 		Name:             "integer-overflow",
+		CWE:              "CWE-190",
 		SeedEventType:    "INTEGER_OVERFLOW",
 		EvidenceType:     "INTEGER_OVERFLOW",
 		DefaultSuspicion: "suspected",
@@ -278,6 +342,7 @@ func init() {
 
 	RegisterVulnType(&VulnTypeSpec{
 		Name:             "race-condition",
+		CWE:              "CWE-362",
 		SeedEventType:    "RACE_CONDITION",
 		EvidenceType:     "RACE_CONDITION",
 		DefaultSuspicion: "suspected",
@@ -298,6 +363,7 @@ func init() {
 
 	RegisterVulnType(&VulnTypeSpec{
 		Name:             "hardcoded-secret",
+		CWE:              "CWE-798",
 		SeedEventType:    "HARDCODED_SECRET",
 		EvidenceType:     "HARDCODED_SECRET",
 		DefaultSuspicion: "confirmed",
@@ -311,6 +377,7 @@ func init() {
 
 	RegisterVulnType(&VulnTypeSpec{
 		Name:             "deadlock",
+		CWE:              "CWE-667",
 		SeedEventType:    "DEADLOCK",
 		EvidenceType:     "DEADLOCK",
 		DefaultSuspicion: "suspected",
@@ -324,6 +391,8 @@ func init() {
 
 	RegisterVulnType(&VulnTypeSpec{
 		Name:             "crypto-misuse",
+		CWE:              "CWE-327",
+		LegacyCWEs:       []string{"CWE-326", "CWE-338"},
 		SeedEventType:    "CRYPTO_MISUSE",
 		EvidenceType:     "CRYPTO_MISUSE",
 		DefaultSuspicion: "suspected",
@@ -341,6 +410,7 @@ func init() {
 
 	RegisterVulnType(&VulnTypeSpec{
 		Name:             "out-of-bounds",
+		CWE:              "CWE-125",
 		SeedEventType:    "BUFFER_ACCESS",
 		EvidenceType:     "OUT_OF_BOUNDS",
 		DefaultSuspicion: "suspected",
@@ -362,6 +432,7 @@ func init() {
 
 	RegisterVulnType(&VulnTypeSpec{
 		Name:             "divide-by-zero",
+		CWE:              "CWE-369",
 		SeedEventType:    "DIVIDE_BY_ZERO",
 		EvidenceType:     "DIVIDE_BY_ZERO",
 		DefaultSuspicion: "suspected",
@@ -376,6 +447,7 @@ func init() {
 
 	RegisterVulnType(&VulnTypeSpec{
 		Name:             "unchecked-return",
+		CWE:              "CWE-252",
 		SeedEventType:    "UNCHECKED_RETURN",
 		EvidenceType:     "UNCHECKED_RETURN",
 		DefaultSuspicion: "suspected",
@@ -390,6 +462,7 @@ func init() {
 
 	RegisterVulnType(&VulnTypeSpec{
 		Name:             "path-traversal",
+		CWE:              "CWE-22",
 		SeedEventType:    "PATH_TRAVERSAL",
 		EvidenceType:     "PATH_TRAVERSAL",
 		DefaultSuspicion: "suspected",
@@ -404,6 +477,7 @@ func init() {
 
 	RegisterVulnType(&VulnTypeSpec{
 		Name:             "sizeof-misuse",
+		CWE:              "CWE-467",
 		SeedEventType:    "SIZEOF_MISUSE",
 		EvidenceType:     "SIZEOF_MISUSE",
 		DefaultSuspicion: "suspected",
@@ -418,6 +492,7 @@ func init() {
 
 	RegisterVulnType(&VulnTypeSpec{
 		Name:             "signed-compare",
+		CWE:              "CWE-681",
 		SeedEventType:    "SIGNED_COMPARE",
 		EvidenceType:     "SIGNED_COMPARE",
 		DefaultSuspicion: "suspected",

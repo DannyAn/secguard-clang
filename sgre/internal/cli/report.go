@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/planner"
 )
 
 func parseStringFlag(args []string, flag string) string {
@@ -146,6 +147,22 @@ func runReportCmd(ctx context.Context, args []string) int {
 			return 1
 		}
 
+		// Validate scan_id exists so findings can never be silently attached to
+		// a nonexistent scan (e.g. a stale or typo'd id from the agent). An
+		// empty scan_id is allowed for backward compatibility with callers that
+		// don't track scans.
+		if finding.ScanID != "" {
+			stats, err := store.ListScanStats(ctx, finding.ScanID)
+			if err != nil {
+				WriteErrorJSON(fmt.Sprintf("failed to validate scan_id: %v", err))
+				return 1
+			}
+			if len(stats) == 0 {
+				WriteErrorJSON(fmt.Sprintf("unknown scan_id %q: no scan_stats found for this id. Run 'secguard scan' first, or pass the scan_id from the scan output.", finding.ScanID))
+				return 1
+			}
+		}
+
 		id, err := store.InsertFinding(ctx, finding)
 		if err != nil {
 			WriteErrorJSON(fmt.Sprintf("failed to write finding: %v", err))
@@ -179,27 +196,13 @@ func runReportCmd(ctx context.Context, args []string) int {
 			return 1
 		}
 
-		cweToVulnType := map[string]string{
-			"CWE-476": "null-deref", "CWE-787": "buffer-overflow", "CWE-401": "memory-leak",
-			"CWE-78": "injection", "CWE-89": "injection", "CWE-404": "resource-leak",
-			"CWE-457": "uninit", "CWE-416": "use-after-free",
-			"CWE-415": "double-free", "CWE-134": "format-string",
-			"CWE-190": "integer-overflow", "CWE-362": "race-condition",
-			"CWE-798": "hardcoded-secret", "CWE-667": "deadlock",
-			"CWE-327": "crypto-misuse",
-			"CWE-125": "out-of-bounds",
-			"CWE-369": "divide-by-zero", "CWE-252": "unchecked-return",
-			"CWE-22": "path-traversal", "CWE-681": "signed-compare",
-			"CWE-467": "sizeof-misuse",
-		}
-
 		scanFindings, _ := store.ListFindingsByScanID(ctx, scanID)
 		type vulnCounts struct {
 			confirmed, suspected, dismissed int
 		}
 		countsByVuln := make(map[string]*vulnCounts)
 		for _, f := range scanFindings {
-			vt := cweToVulnType[strings.ToUpper(f.RuleID)]
+			vt := planner.TypeForCWE(f.RuleID)
 			if vt == "" {
 				continue
 			}

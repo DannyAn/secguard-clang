@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"time"
 
@@ -19,6 +20,11 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/planner"
 	"github.com/DannyAn/secguard-clang/internal/report"
 )
+
+// scanIDPattern validates the basename of an explicit --output-dir to prevent
+// path traversal and arbitrary scan_id injection. The format matches what
+// report.generateScanID produces: YYYY-MM-DD_HHMMSS_xxxx (4-char suffix).
+var scanIDPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}_\d{6}_[0-9A-Za-z]{4}$`)
 
 func runScanCmd(ctx context.Context, args []string) int {
 	dbPath, dbExplicit, remaining := parseDBFlag(args)
@@ -59,6 +65,10 @@ func runScanCmd(ctx context.Context, args []string) int {
 	var scanDir string
 	if outputDir != "" {
 		scanID = filepath.Base(outputDir)
+		if !scanIDPattern.MatchString(scanID) {
+			WriteErrorJSON(fmt.Sprintf("invalid --output-dir: basename %q does not match scan_id format YYYY-MM-DD_HHMMSS_xxxx. Omit --output-dir to let secguard generate it, or pass a directory whose basename matches the format.", scanID))
+			return 1
+		}
 		scanDir = outputDir
 	} else {
 		so := report.NewScanOutput(projectRoot)
@@ -170,12 +180,13 @@ func runScanCmd(ctx context.Context, args []string) int {
 		totalCandidates += len(result.Candidates)
 		evidencePackages = append(evidencePackages, map[string]interface{}{
 			"vulnerability_type": vulnType,
+			"cwe":                report.VulnToCWE(vulnType),
 			"summary":            result.Summary,
 			"candidates":         result.Candidates,
 		})
 	}
 
-	findings, _ := store.ListFindings(ctx)
+	findings, _ := store.ListFindingsByScanID(ctx, scanID)
 	findingsList := make([]map[string]interface{}, 0, len(findings))
 	for _, f := range findings {
 		findingsList = append(findingsList, map[string]interface{}{

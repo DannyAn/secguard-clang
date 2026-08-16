@@ -11,36 +11,9 @@ function findSecguard(context: { worktree?: string, directory?: string }): strin
   return "secguard"
 }
 
-// Display-only CWE lookup for the stderr summary. The authoritative type list
-// and CWE mapping lives in the Go binary (`secguard types`) — do NOT hardcode a
-// type allowlist here, or it will drift from the registry and silently reject
-// newly-added types. Unknown types render as "CWE-Other" in the summary only.
-const CWE_MAP: Record<string, string> = {
-  "null-deref": "CWE-476",
-  "buffer-overflow": "CWE-787",
-  "memory-leak": "CWE-401",
-  "injection": "CWE-78",
-  "resource-leak": "CWE-404",
-  "uninit": "CWE-457",
-  "use-after-free": "CWE-416",
-  "double-free": "CWE-415",
-  "format-string": "CWE-134",
-  "integer-overflow": "CWE-190",
-  "race-condition": "CWE-362",
-  "hardcoded-secret": "CWE-798",
-  "deadlock": "CWE-667",
-  "crypto-misuse": "CWE-327",
-  "out-of-bounds": "CWE-125",
-  "divide-by-zero": "CWE-369",
-  "unchecked-return": "CWE-252",
-  "path-traversal": "CWE-22",
-  "sizeof-misuse": "CWE-467",
-  "signed-compare": "CWE-681",
-}
-
 function printPlanSummary(w: { write(s: string): boolean }, goJson: any): void {
   const vulnType = goJson?.vulnerability_type ?? "N/A"
-  const cwe = CWE_MAP[vulnType] ?? "CWE-Other"
+  const cwe = goJson?.cwe ?? "CWE-Other"
   const seedCount = goJson?.summary?.seed_count ?? 0
   const finalCount = goJson?.summary?.final_count ?? 0
   const dedupedCount = goJson?.summary?.deduped_count ?? 0
@@ -109,10 +82,30 @@ export default tool({
       try {
         const goJson = JSON.parse(result.trim())
         printPlanSummary(process.stderr, goJson)
-      } catch {
-      }
 
-      return result.trim()
+        const vulnType = goJson?.vulnerability_type ?? args.vuln_type
+        const cwe = goJson?.cwe ?? ""
+        const candidates = goJson?.candidates ?? []
+        const summary = goJson?.summary ?? {}
+
+        const compactCandidates = candidates.map((c: any, i: number) => ({
+          n: i + 1,
+          fn: c?.target?.function ?? "?",
+          file: c?.target?.file ?? "?",
+          line: c?.target?.line ?? 0,
+          variable: c?.target?.variable ?? "",
+          suspicion: c?.suspicion_level ?? "",
+        }))
+
+        return JSON.stringify({
+          vulnerability_type: vulnType,
+          cwe: cwe,
+          deduped_count: summary?.deduped_count ?? candidates.length,
+          candidates: compactCandidates,
+        }, null, 2)
+      } catch {
+        return result.trim()
+      }
     } catch (e: any) {
       const err = e?.stderr?.toString()?.trim() || e?.message || String(e)
       return JSON.stringify({ error: err, vuln_type: args.vuln_type, db_path: dbPath }, null, 2)

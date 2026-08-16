@@ -45,7 +45,7 @@ The pipeline is a chain of packages, each writing to the next layer of the DB:
 5. **`internal/agent`** — formats converged evidence for the AI agent consumer.
 6. **`internal/report`** — writes SARIF 2.1, a markdown summary, and per-finding markdown files.
 
-**How a vulnerability type is wired end-to-end** (the piece that spans many files): an evidence detector emits a `security_events` row → a `VulnTypeSpec` registered in `internal/planner/registry.go` maps the type to its seed event + filter chain → `getFilters()` in `planner.go` supplies the filters → a matching agent skill in `.claude/skills/<type>/SKILL.md` gives the AI agent classification rules. Adding a vuln type touches all four of these.
+**How a vulnerability type is wired end-to-end** (the piece that spans many files): an evidence detector emits a `security_events` row → a `VulnTypeSpec` registered in `internal/planner/registry.go` maps the type to its **CWE** (`VulnTypeSpec.CWE` — the single source of truth for the CWE↔vuln-type mapping; `report.VulnToCWE`, `db.SupportedFindingCWEs`, `planner.TypeForCWE`, and `secguard types` all derive from it, never hardcode a parallel map), seed event + filter chain → `getFilters()` in `planner.go` supplies the filters → a matching agent skill in `.claude/skills/<type>/SKILL.md` gives the AI agent classification rules. Adding a vuln type touches all four of these (and the CWE comes for free from the `VulnTypeSpec`).
 
 **Graph-based convergence** (the `graph` layer is consumed, not just built): `internal/graph/control_flow.go` builds a statement-level CFG (`BuildStmtCFG`, with `Reaches`/`ReachesAvoiding`/`NodeAt`), and `internal/planner/null_flow.go` exposes a reusable *reaching-sources* dataflow engine (`flowAnalyzer.analyzeFlow`, `flowResult.reaching`/`reachingAtExit`) — a monotone set-of-source-IDs lattice with gen/kill/copy. This engine is the shared best practice that came out of the null-deref spike and is consumed by:
 
@@ -112,7 +112,10 @@ Scan output is written to `.codeagent/zhuque-secguard/scans/<scan-id>/` (`scan-i
 Each is registered as a `VulnTypeSpec` in `internal/planner/registry.go` and has a
 corresponding agent skill under `.claude/skills/`. The authoritative runtime list
 is `secguard types` — do not hardcode this list in tooling (see the OpenCode tool
-wrappers, which defer type validation to the binary).
+wrappers, which defer type validation to the binary). Each `VulnTypeSpec` carries
+its `CWE` field; `planner.AllCWEs()` / `CWEForType()` / `TypeForCWE()` are the
+only derived APIs — `db.SupportedFindingCWEs` is injected from `planner.AllCWEs()`
+at CLI startup (`cli/root.go`), and the TS tool wrappers never hardcode CWE lists.
 
 `null-deref`, `buffer-overflow`, `memory-leak`, `injection`, `resource-leak`,
 `uninit`, `use-after-free`, `double-free`, `format-string`, `integer-overflow`,

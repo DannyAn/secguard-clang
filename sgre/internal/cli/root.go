@@ -9,6 +9,7 @@ import (
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
+	"github.com/DannyAn/secguard-clang/internal/planner"
 	"github.com/DannyAn/secguard-clang/internal/report"
 )
 
@@ -18,6 +19,11 @@ import (
 var Version = "0.1.1"
 
 func Execute(ctx context.Context, args []string) int {
+	// Sync the db layer's supported-CWE set from the planner registry so the
+	// two never drift. This is the single injection point — every VulnTypeSpec
+	// carries its CWE, and AllCWEs() is the authoritative set.
+	db.SetSupportedCWEs(planner.AllCWEs())
+
 	if len(args) == 0 {
 		printUsage()
 		return 0

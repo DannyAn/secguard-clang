@@ -2,12 +2,22 @@ package cli
 
 import (
 	"context"
-
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 )
+
+// securityEventsPattern blocks any reference to the security_events table —
+// as a table name or as a string literal argument (e.g. pragma_table_info).
+// It uses word boundaries so it catches main.security_events,
+// "security_events", and pragma_table_info('security_events') alike. A
+// determined caller can still split the string ('security_'||'events') to
+// leak only the schema (column names), not row data; that is accepted as a
+// non-fatal limitation of SQL-layer filtering. The pipeline boundary is
+// primarily enforced by the agent prompt + converged-evidence-only output.
+var securityEventsPattern = regexp.MustCompile(`(?i)\bsecurity_events\b`)
 
 func runDbCmd(ctx context.Context, args []string) int {
 	dbPath, dbExplicit, remaining := parseDBFlag(args)
@@ -26,7 +36,7 @@ func runDbCmd(ctx context.Context, args []string) int {
 		return 1
 	}
 
-	if strings.Contains(strings.ToLower(query), "security_events") {
+	if securityEventsPattern.MatchString(query) {
 		WriteErrorJSON("Querying the 'security_events' table is prohibited. This table contains raw pre-convergence candidates. Use secguard_scan or secguard_plan to obtain converged evidence packages.")
 		return 1
 	}

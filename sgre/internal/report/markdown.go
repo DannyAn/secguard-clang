@@ -34,10 +34,7 @@ func (o *ScanOutput) writeReport(packages []*planner.PlanResult, indexSummary In
 	b.WriteString("| Skill | CWE | Count |\n")
 	b.WriteString("|-------|-----|-------|\n")
 	for _, pkg := range packages {
-		cwe := vulnToCWE[pkg.VulnerabilityType]
-		if cwe == "" {
-			cwe = "CWE-Other"
-		}
+		cwe := VulnToCWE(pkg.VulnerabilityType)
 		b.WriteString(fmt.Sprintf("| %s | %s | %d |\n", pkg.VulnerabilityType, cwe, len(pkg.Candidates)))
 	}
 	b.WriteString("\n")
@@ -46,10 +43,7 @@ func (o *ScanOutput) writeReport(packages []*planner.PlanResult, indexSummary In
 		if len(pkg.Candidates) == 0 {
 			continue
 		}
-		cwe := vulnToCWE[pkg.VulnerabilityType]
-		if cwe == "" {
-			cwe = "CWE-Other"
-		}
+		cwe := VulnToCWE(pkg.VulnerabilityType)
 		b.WriteString(fmt.Sprintf("## %s (%s)\n\n", pkg.VulnerabilityType, cwe))
 		b.WriteString(fmt.Sprintf("| # | Function | File:Line | Variable | Suspicion |\n"))
 		b.WriteString(fmt.Sprintf("|---|----------|-----------|----------|----------|\n"))
@@ -81,10 +75,7 @@ func (o *ScanOutput) writePerFinding(packages []*planner.PlanResult) error {
 		}
 
 		for i, c := range pkg.Candidates {
-			cwe := vulnToCWE[pkg.VulnerabilityType]
-			if cwe == "" {
-				cwe = "CWE-Other"
-			}
+			cwe := VulnToCWE(pkg.VulnerabilityType)
 
 			fileShort := shortFile(c.Target.File)
 			safeName := sanitizeFilename(fileShort)

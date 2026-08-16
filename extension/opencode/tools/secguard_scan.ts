@@ -1,7 +1,6 @@
 import { tool } from "@opencode-ai/plugin"
 import path from "path"
 import fs from "fs"
-import crypto from "crypto"
 
 function findSecguard(context: { worktree?: string, directory?: string }): string {
   for (const dir of [context.directory, context.worktree, "."]) {
@@ -12,71 +11,14 @@ function findSecguard(context: { worktree?: string, directory?: string }): strin
   return "secguard"
 }
 
-function generateScanId(): string {
-  const now = new Date()
-  const pad = (n: number) => String(n).padStart(2, "0")
-  const ts = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
-  const suffix = crypto.randomBytes(2).toString("hex")
-  return `${ts}_${suffix}`
-}
-
-function updateLatestSymlink(scansDir: string, scanId: string): void {
-  const target = scanId
-  const tmpName = `.latest.tmp.${process.pid}`
-  const tmpPath = path.join(scansDir, tmpName)
-  const latestPath = path.join(scansDir, "latest")
-  try {
-    try { fs.unlinkSync(tmpPath) } catch {}
-    fs.symlinkSync(target, tmpPath)
-    fs.renameSync(tmpPath, latestPath)
-    try { fs.unlinkSync(path.join(scansDir, "latest.txt")) } catch {}
-  } catch {
-    try {
-      const txtTmp = path.join(scansDir, `.latest.txt.tmp.${process.pid}`)
-      fs.writeFileSync(txtTmp, scanId)
-      fs.renameSync(txtTmp, path.join(scansDir, "latest.txt"))
-      try { fs.unlinkSync(latestPath) } catch {}
-    } catch (e2) {
-      process.stderr.write(`warning: failed to update latest pointer: ${e2}\n`)
-    }
-  }
-}
-
-const CWE_MAP: Record<string, string> = {
-  "null-deref": "CWE-476",
-  "buffer-overflow": "CWE-787",
-  "memory-leak": "CWE-401",
-  "injection": "CWE-78",
-  "resource-leak": "CWE-404",
-  "uninit": "CWE-457",
-  "use-after-free": "CWE-416",
-  "double-free": "CWE-415",
-  "format-string": "CWE-134",
-  "integer-overflow": "CWE-190",
-  "race-condition": "CWE-362",
-  "hardcoded-secret": "CWE-798",
-  "deadlock": "CWE-667",
-  "crypto-misuse": "CWE-327",
-  "out-of-bounds": "CWE-125",
-  "divide-by-zero": "CWE-369",
-  "unchecked-return": "CWE-252",
-  "path-traversal": "CWE-22",
-  "sizeof-misuse": "CWE-467",
-  "signed-compare": "CWE-681",
-}
-
-function cweForType(vulnType: string): string {
-  return CWE_MAP[vulnType] ?? "CWE-Other"
-}
-
 function printScanSummary(
   w: { write(s: string): boolean },
   goJson: any,
   targetPath: string,
   workspace: string,
-  outputDir: string,
 ): void {
   const scanId = goJson?.scan_id ?? "N/A"
+  const scanDir = goJson?.scan_dir ?? "N/A"
   const totalCandidates = goJson?.total_candidates ?? 0
   const filesIndexed = goJson?.index_summary?.files_indexed ?? "N/A"
   const functionsIndexed = goJson?.index_summary?.functions_indexed ?? "N/A"
@@ -88,7 +30,7 @@ function printScanSummary(
   out += `| Scan ID | ${scanId} |\n`
   out += `| Target | ${targetPath} |\n`
   out += `| Workspace | ${workspace} |\n`
-  out += `| Scan Dir | ${outputDir} |\n`
+  out += `| Scan Dir | ${scanDir} |\n`
   out += `| Total Candidates | ${totalCandidates} |\n`
   out += `| Files Indexed | ${filesIndexed} |\n`
   out += `| Functions Indexed | ${functionsIndexed} |\n\n`
@@ -102,15 +44,16 @@ function printScanSummary(
     out += "|-------|-----|-------|\n"
     for (const p of nonEmpty) {
       const vt = p?.vulnerability_type ?? "unknown"
+      const cwe = p?.cwe ?? "CWE-Other"
       const count = p?.candidates?.length ?? 0
-      out += `| ${vt} | ${cweForType(vt)} | ${count} |\n`
+      out += `| ${vt} | ${cwe} | ${count} |\n`
     }
     out += "\n"
   }
 
   out += "### Output Files\n\n"
-  out += `- Report: ${path.join(outputDir, "report.md")}\n`
-  out += `- SARIF: ${path.join(outputDir, "sarif.sarif")}\n`
+  out += `- Report: ${path.join(scanDir, "report.md")}\n`
+  out += `- SARIF: ${path.join(scanDir, "sarif.sarif")}\n`
   out += `- Latest: ${path.join(workspace, ".codeagent", "zhuque-secguard", "scans", "latest")}\n`
 
   w.write(out)
@@ -118,7 +61,7 @@ function printScanSummary(
 
 export default tool({
   description:
-    "Run full SecGuard security scan: index codebase, run all registered detectors, apply the convergence pipeline for every registered vulnerability type. Writes SARIF 2.1 + report.md + per-finding Markdown to .codeagent/zhuque-secguard/scans/<scan_id>/, stores DB at .codeagent/zhuque-secguard/.sgre/sgre.db. Returns JSON with evidence_packages, total_candidates, files_with_candidates, output_dir.",
+    "Run full SecGuard security scan: index codebase, run all registered detectors, apply the convergence pipeline for every registered vulnerability type. Writes SARIF 2.1 + report.md + per-finding Markdown to .codeagent/zhuque-secguard/scans/<scan_id>/, stores DB at .codeagent/zhuque-secguard/.sgre/sgre.db. Returns JSON with evidence_packages, total_candidates, files_with_candidates, output_dir. The Go binary generates scan_id, creates the scan directory, and updates the latest symlink — this wrapper only invokes the binary and parses its JSON output.",
   args: {
     path: tool.schema
       .string()
@@ -135,55 +78,50 @@ export default tool({
     if (!fs.existsSync(sgreDir)) fs.mkdirSync(sgreDir, { recursive: true })
     const dbPath = path.join(sgreDir, "sgre.db")
 
-    const scanId = generateScanId()
-    const outputDir = path.join(workDir, ".codeagent", "zhuque-secguard", "scans", scanId)
-    // Do NOT pre-create outputDir here: the Go binary creates it via its scan
-    // logger once the scan actually starts. Pre-creating it leaves an empty
-    // <scan_id>/ dir behind whenever the binary fails early (e.g. OOM-killed
-    // with exit 137), which produces spurious empty scan directories.
-
     try {
-      const result = await Bun.$`${secguardBin} scan --db ${dbPath} --output-dir ${outputDir} ${targetPath}`
+      // Do NOT pass --output-dir: the Go binary generates the scan_id, creates
+      // the scan directory, writes SARIF/report.md/scan.log, and updates the
+      // latest symlink atomically. This wrapper reads scan_id and scan_dir
+      // from the binary's JSON output so there is a single source of truth.
+      const result = await Bun.$`${secguardBin} scan --db ${dbPath} ${targetPath}`
         .cwd(workDir)
         .quiet()
         .text()
 
-      const scansDir = path.join(workDir, ".codeagent", "zhuque-secguard", "scans")
-      updateLatestSymlink(scansDir, scanId)
-
       try {
         const goJson = JSON.parse(result.trim())
-        printScanSummary(process.stderr, goJson, targetPath, workDir, outputDir)
-        const summaryFromGo = typeof goJson?._summary === "string" ? goJson._summary : undefined
+        const scanId = goJson?.scan_id ?? ""
+        const scanDir = goJson?.scan_dir ?? ""
+        const totalCandidates = goJson?.total_candidates ?? 0
+        const filesIndexed = goJson?.index_summary?.files_indexed ?? 0
+        const functionsIndexed = goJson?.index_summary?.functions_indexed ?? 0
+        const packages = goJson?.evidence_packages ?? []
+        printScanSummary(process.stderr, goJson, targetPath, workDir)
 
-        const summary = JSON.stringify({
-          output_dir: outputDir,
-          sarif: path.join(outputDir, "sarif.sarif"),
-          report_md: path.join(outputDir, "report.md"),
-          db_path: dbPath,
-          scan_id: scanId,
-          raw: result.trim(),
-          target_path: targetPath,
-          workspace: workDir,
-          _summary: summaryFromGo,
-        }, null, 2)
-        return summary
-      } catch {
+        const typeCounts: Record<string, number> = {}
+        for (const p of packages) {
+          const vt = p?.vulnerability_type ?? "unknown"
+          typeCounts[vt] = p?.candidates?.length ?? 0
+        }
+
         return JSON.stringify({
-          output_dir: outputDir,
-          sarif: path.join(outputDir, "sarif.sarif"),
-          report_md: path.join(outputDir, "report.md"),
-          db_path: dbPath,
           scan_id: scanId,
-          raw: result.trim(),
+          output_dir: scanDir,
+          report_md: path.join(scanDir, "report.md"),
+          sarif: path.join(scanDir, "sarif.sarif"),
+          db_path: dbPath,
+          total_candidates: totalCandidates,
+          files_indexed: filesIndexed,
+          functions_indexed: functionsIndexed,
+          candidates_by_type: typeCounts,
           target_path: targetPath,
-          workspace: workDir,
-          _summary: undefined,
         }, null, 2)
+      } catch {
+        return result.trim()
       }
     } catch (e: any) {
       const err = e?.stderr?.toString()?.trim() || e?.message || String(e)
-      return JSON.stringify({ error: "Scan failed: " + err, db_path: dbPath, output_dir: outputDir, target: targetPath, target_path: targetPath, workspace: workDir }, null, 2)
+      return JSON.stringify({ error: "Scan failed: " + err, db_path: dbPath, target_path: targetPath, workspace: workDir }, null, 2)
     }
   },
 })

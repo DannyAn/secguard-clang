@@ -64,31 +64,11 @@ type sarifRegion struct {
 	StartLine int `json:"startLine"`
 }
 
-var vulnToCWE = map[string]string{
-	"null-deref":       "CWE-476",
-	"buffer-overflow":  "CWE-787",
-	"memory-leak":      "CWE-401",
-	"injection":        "CWE-78",
-	"resource-leak":    "CWE-404",
-	"uninit":           "CWE-457",
-	"use-after-free":   "CWE-416",
-	"double-free":      "CWE-415",
-	"format-string":    "CWE-134",
-	"integer-overflow": "CWE-190",
-	"race-condition":   "CWE-362",
-	"hardcoded-secret": "CWE-798",
-	"deadlock":         "CWE-667",
-	"crypto-misuse":    "CWE-327",
-	"out-of-bounds":    "CWE-125",
-	"divide-by-zero":   "CWE-369",
-	"unchecked-return": "CWE-252",
-	"path-traversal":   "CWE-22",
-	"sizeof-misuse":    "CWE-467",
-	"signed-compare":   "CWE-681",
-}
-
+// VulnToCWE returns the canonical CWE identifier for a vulnerability type,
+// or "CWE-Other" if the type is not registered. The mapping is derived from
+// planner.VulnTypeSpec.CWE — the single source of truth in planner/registry.go.
 func VulnToCWE(vulnType string) string {
-	cwe := vulnToCWE[vulnType]
+	cwe := planner.CWEForType(vulnType)
 	if cwe == "" {
 		return "CWE-Other"
 	}
@@ -101,7 +81,7 @@ func (o *ScanOutput) writeSarif(packages []*planner.PlanResult) error {
 
 	rulesSeen := map[string]bool{}
 	for _, pkg := range packages {
-		cwe := vulnToCWE[pkg.VulnerabilityType]
+		cwe := planner.CWEForType(pkg.VulnerabilityType)
 		if cwe == "" {
 			cwe = "CWE-Other"
 		}

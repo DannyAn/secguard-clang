@@ -73,6 +73,7 @@ func runPlanCmd(ctx context.Context, args []string) int {
 
 	output := map[string]interface{}{
 		"vulnerability_type": result.VulnerabilityType,
+		"cwe":                report.VulnToCWE(result.VulnerabilityType),
 		"candidates":         result.Candidates,
 		"summary":            result.Summary,
 		"_summary":           summaryStr,

@@ -9,9 +9,11 @@ import (
 )
 
 // SupportedFindingCWEs is the set of CWE rule_ids the pipeline can detect and
-// therefore persist as findings. Keep in sync with the 20 VulnTypeSpec entries
-// in internal/planner/registry.go (each type carries a CWE). CWE-89 is retained
-// for backward compatibility with older injection findings.
+// therefore persist as findings. It is seeded with a built-in default for
+// standalone db-package tests; cli/root.go overrides it at startup with
+// planner.AllCWEs() so the set always matches the live registry — never edit
+// this default map by hand when adding a vuln type, only add the CWE to the
+// VulnTypeSpec in planner/registry.go.
 var SupportedFindingCWEs = map[string]bool{
 	"CWE-476": true, // null-deref
 	"CWE-787": true, // buffer-overflow
@@ -34,6 +36,14 @@ var SupportedFindingCWEs = map[string]bool{
 	"CWE-22":  true, // path-traversal
 	"CWE-681": true, // signed-compare
 	"CWE-467": true, // sizeof-misuse
+}
+
+// SetSupportedCWEs replaces the supported-CWE set at CLI startup with the
+// planner-derived set, so the db layer never drifts from the registry. Must
+// be called exactly once before any InsertFinding call, from the main goroutine
+// (not concurrently with finding writes).
+func SetSupportedCWEs(cwes map[string]bool) {
+	SupportedFindingCWEs = cwes
 }
 
 // SupportedCWEsList returns the sorted, comma-joined list of supported CWEs for

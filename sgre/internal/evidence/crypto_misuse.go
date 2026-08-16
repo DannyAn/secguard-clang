@@ -76,11 +76,12 @@ func (d *CryptoMisuseDetector) Detect(ctx context.Context) (DetectResult, error)
 			}
 		}
 
-		// Undersized-key scan runs once per file; the previous loop ran it at
-		// the first function's iteration and attributed it to that function.
+		// Undersized-key scan runs once per file. For each declaration, find
+		// the function whose [StartLine, EndLine] range contains the decl line,
+		// so the event is attributed to the correct function (not funcs[0]).
 		if len(funcs) > 0 {
 			decls := root.FindAll("declaration")
-			d.detectUndersizedKey(ctx, decls, file, funcs[0], &result)
+			d.detectUndersizedKey(ctx, decls, file, funcs, &result)
 		}
 	})
 	return result, err
@@ -105,7 +106,7 @@ func (d *CryptoMisuseDetector) emitCryptoEvent(ctx context.Context, file *db.Fil
 	}
 }
 
-func (d *CryptoMisuseDetector) detectUndersizedKey(ctx context.Context, decls []parser.Node, file *db.File, f *db.Function, result *DetectResult) {
+func (d *CryptoMisuseDetector) detectUndersizedKey(ctx context.Context, decls []parser.Node, file *db.File, funcs []*db.Function, result *DetectResult) {
 	for _, decl := range decls {
 		text := decl.Text()
 		if !strings.Contains(text, "key") && !strings.Contains(text, "Key") {
@@ -123,9 +124,16 @@ func (d *CryptoMisuseDetector) detectUndersizedKey(ctx context.Context, decls []
 							"reason":   "key size < 16 bytes (minimum 128-bit)",
 							"category": "undersized_key",
 						})
+						owner := funcs[0]
+						for _, fn := range funcs {
+							if funcLineRange(fn, decl.StartLine()) {
+								owner = fn
+								break
+							}
+						}
 						d.store.InsertEvent(ctx, &db.SecurityEvent{
 							EventType:  "CRYPTO_MISUSE",
-							EntityID:   f.ID,
+							EntityID:   owner.ID,
 							LocationID: locID,
 							Properties: string(props),
 						})

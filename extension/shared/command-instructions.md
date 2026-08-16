@@ -51,13 +51,14 @@ Before proceeding, validate the type filter:
 Target path: <parsed path>
 
 Instructions:
-1. Run a full security scan on the target path using `secguard_scan`. Results are written to `.codeagent/zhuque-secguard/scans/<scan_id>/` (SARIF 2.1 + report.md + per-finding Markdown). The database is stored at `.codeagent/zhuque-secguard/.sgre/sgre.db`.
-2. Read `report.md` from the output directory for the human-readable summary.
-3. For each vulnerability type present in the results, load the corresponding skill for classification guidance.
-4. Reason over each evidence package — classify as confirmed, suspected, or false-positive.
-5. Cross-reference evidence with source code when needed (read per-finding Markdown files in `<vuln-type>/` subdirectories for detailed evidence).
-6. Write confirmed and suspected findings to the SecGuard database using `secguard_report`. Pass `scan_id` and `output_dir` from the scan output.
-7. Present the result as a formal Markdown report: (a) report header `代码仓：<repo abs path>；扫描目录：<scanned dir abs path>`; (b) one-line summary `本次审计确认 X 个问题、疑似 Y 个问题。`; (c) **per-skill overview table** `| Skill | 类别 | 确认 | 疑似 | 已排除误报 |`; (d) **findings table** `| Skill | 文件:行号 | 函数 | 严重度 | 结论 | 说明 |`; (e) **observations table** `| Skill | 说明 |` only if some types are not persisted. Do NOT include pipeline internals (seed/final/deduped counts, cap, recall, benchmark, TP/FP, rule_id whitelist, scan_id) in the report. Reference the SARIF file path for machine-readable output.
+1. Run a full security scan on the target path using `secguard_scan`. The tool returns a summary (scan_id, output_dir, total_candidates, candidates_by_type) — NOT the full candidate list. Results are written to `.codeagent/zhuque-secguard/scans/<scan_id>/` (SARIF 2.1 + report.md + per-finding Markdown). The database is stored at `.codeagent/zhuque-secguard/.sgre/sgre.db`.
+2. Read `report.md` from the output directory — it lists every candidate in a compact table grouped by vulnerability type. This is your primary classification input.
+3. **Process types one at a time** (per-type batch loop) to avoid context exhaustion:
+   a. For each vulnerability type with candidates > 0, load ONLY the skill for that type.
+   b. Reason over each candidate of that type — classify as confirmed, suspected, or false-positive.
+   c. Cross-reference evidence with source code when needed — read at most 5 source files per type batch, only at the reported file:line. Do NOT read all source files up front.
+   d. Write findings for THIS type only using `secguard_report` (incremental — one type at a time, not all types in one call). Pass `scan_id` and `output_dir` from the scan output. Include dismissed (false-positive) findings with a one-line evidence explaining why they are safe.
+4. After all type batches are processed, present the result as a formal Markdown report: (a) report header `代码仓：<repo abs path>；扫描目录：<scanned dir abs path>`; (b) one-line summary `本次审计确认 X 个问题、疑似 Y 个问题。`; (c) **per-skill overview table** `| Skill | 类别 | 确认 | 疑似 | 已排除误报 |`; (d) **findings table** `| Skill | 文件:行号 | 函数 | 严重度 | 结论 | 说明 |`; (e) **observations table** `| Skill | 说明 |` only if some types are not persisted. Do NOT include pipeline internals (seed/final/deduped counts, cap, recall, benchmark, TP/FP, rule_id whitelist, scan_id) in the report. Reference the SARIF file path for machine-readable output.
 
 ## Filtered Workflow
 
@@ -65,14 +66,14 @@ Target path: <parsed path>
 Selected types: <parsed type filter>
 
 Instructions:
-1. Review the index status from the inline status check at the top of this prompt. If `"indexed": true` and the index is fresh, proceed to step 2. If the inline check is unavailable or shows no index, call `secguard_status` to verify. If no index exists or the index is stale, call `secguard_scan` to build/refresh the index. Note the `scan_id` and `output_dir` from this call — they are needed for `secguard_report` later. The evidence packages from this scan are NOT used for classification; only the index is needed.
-2. For each SELECTED vulnerability type only, call `secguard_plan` with `vuln_type=<type>`. Do not plan unselected types. Collect evidence packages from all calls. If a `secguard_plan` call fails, record the failure and continue with the remaining selected types.
-3. Read per-finding Markdown files from the `<vuln-type>/` subdirectories for each type that returned results.
-4. Load ONLY the skill(s) for the selected type(s). Do NOT load skills for unselected types.
-5. Reason over each evidence package — classify as confirmed, suspected, or false-positive.
-6. Cross-reference evidence with source code when needed (read per-finding Markdown files in `<vuln-type>/` subdirectories for detailed evidence).
-7. Write confirmed and suspected findings using `secguard_report`. Pass `scan_id` and `output_dir` from step 1 (or from the most recent `secguard_scan` call) so findings are associated with the scan.
-8. Present the result as a formal Markdown report for the SELECTED type(s) only: report header (`代码仓` + `扫描目录`), one-line summary, **per-skill overview table** `| Skill | 类别 | 确认 | 疑似 | 已排除误报 |`, and **findings table** `| Skill | 文件:行号 | 函数 | 严重度 | 结论 | 说明 |`. State which skills were executed and which were skipped. If any selected types failed during step 2, note them. Do NOT include pipeline internals (seed/final/deduped counts, cap, recall, benchmark, TP/FP, rule_id whitelist, scan_id) in the report. Reference the SARIF file path for machine-readable output.
+1. Review the index status from the inline status check at the top of this prompt. If `"indexed": true` and the index is fresh, proceed to step 2. If the inline check is unavailable or shows no index, call `secguard_status` to verify. If no index exists or the index is stale, call `secguard_scan` to build/refresh the index. Note the `scan_id` and `output_dir` from this call — they are needed for `secguard_report` later.
+2. **Per-type batch loop**: For each SELECTED vulnerability type only:
+   a. Call `secguard_plan` with `vuln_type=<type>`. If the call fails, record the failure and continue with the remaining selected types.
+   b. Load ONLY the skill for this type.
+   c. Reason over each candidate — classify as confirmed, suspected, or false-positive.
+   d. Cross-reference evidence with source code when needed — read at most 5 source files per type, only at the reported file:line.
+   e. Write findings for THIS type only using `secguard_report` (incremental). Pass `scan_id` and `output_dir` from step 1.
+3. Present the result as a formal Markdown report for the SELECTED type(s) only: report header (`代码仓` + `扫描目录`), one-line summary, **per-skill overview table** `| Skill | 类别 | 确认 | 疑似 | 已排除误报 |`, and **findings table** `| Skill | 文件:行号 | 函数 | 严重度 | 结论 | 说明 |`. State which skills were executed and which were skipped. If any selected types failed during step 2, note them. Do NOT include pipeline internals (seed/final/deduped counts, cap, recall, benchmark, TP/FP, rule_id whitelist, scan_id) in the report. Reference the SARIF file path for machine-readable output.
 
 ## Usage Examples
 

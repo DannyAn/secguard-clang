@@ -19,7 +19,7 @@ yarn.lock
 
 # Go build artifacts
 sgre/secguard
-sgre/.gocache/
+sgre/.gocache*/
 sgre/.gotmp/
 sgre/.tmpdir/
 sgre/.zig-cache/
