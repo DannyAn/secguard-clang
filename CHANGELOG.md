@@ -2,6 +2,33 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.1.2] - 2026-08-16
+
+生产环境审计暴露的缺陷修复（Bugfix release）。重点解决扫描输出截断、上下文爆炸、CWE 缺口与检测器归属错误，并修复 Windows/Linux 交叉编译与发布组装流程，使 CI 发布可端到端跑通。
+
+### 修复
+
+- **扫描输出截断**：`secguard_scan` / `secguard_plan` 工具不再透传原始 JSON（曾导致 117KB+ 的工具输出被截断），改为只返回元数据（`scan_id`、`output_dir`、各类型候选计数）；Agent 改从 `report.md` 读取候选详情。
+- **上下文爆炸**：重写 `agent-body.md` / `command-instructions.md` 的 Full/Filtered 工作流为按类型分批处理——每批只加载 1 个 skill、读取 ≤5 个源文件、写入 1 种类型的 findings，消除一次性「加载全部 skills + 读取全部源码」的模式。
+- **CWE 缺口**：`crypto-misuse` 的 `VulnTypeSpec` 增加 `LegacyCWEs`（`CWE-326`/`CWE-338`），`injection` 保留 `CWE-89` 作为遗留 CWE；`AllCWEs()` 现返回 23 项（20 个规范 CWE + 3 个遗留 CWE），历史 finding 可继续写入。
+- **findings 表结构未文档化**：`agent-body.md` 记录 findings 表列名（`file_path`、`line_number`，而非 `file`/`line`），避免 Agent 猜列名导致查询失败。
+- **检测器函数归属错误**：`detectUndersizedKey` 按声明行所在函数（`funcLineRange`）归属 undersized-key 事件，此前所有事件都被错误归属到 `funcs[0]`。
+- **CWE 单一事实来源**：`VulnTypeSpec` 新增 `CWE` 字段并派生 `AllCWEs()` / `CWEForType()` / `TypeForCWE()`；`db.SupportedFindingCWEs` 在启动时由 `planner.AllCWEs()` 注入，`report` 不再硬编码 CWE→类型映射。
+- **跨扫描隔离**：`secguard scan` 的 findings 列表改为按 `scan_id` 过滤（`ListFindingsByScanID`），不再把其它扫描的 findings 混入当前输出。
+- **scan_id 校验**：显式 `--output-dir` 的 basename 必须匹配 `YYYY-MM-DD_HHMMSS_xxxx` 格式（防路径穿越 / 任意 scan_id 注入）；`report` 写入 finding 前校验 `scan_id` 存在。
+- **`security_events` 查询封堵**：`secguard db` 对该表的禁用改为词边界正则，覆盖 `main.security_events`、字符串字面量与 `pragma_table_info('security_events')` 等变体。
+
+### 构建与 CI
+
+- **zig 0.14.1 下载 URL**：修正 artifact 命名（`zig-linux-x86_64-…` → `zig-x86_64-linux-…`），旧 URL 返回 404 导致 Windows 交叉编译（进而整个发布）失败。
+- **Windows 交叉编译环境**：与 `lib.sh build_target` 对齐，补充 `CGO_CFLAGS/CGO_CXXFLAGS`、本地 zig cache、`TMPDIR`、`GOFLAGS`，修复 tree-sitter-c cgo 交叉编译的 `AccessDenied`。
+- **`ZIG` 未绑定变量**：`build-packages.sh` 在 `set -u` 下将 `ZIG` 初始化为空，修复 `--assemble-only` 步骤的 `ZIG: unbound variable`。
+- **claude-code 源包装文件未被追踪**：`.gitignore` 把 `.claude/` 锚定为根目录 `/.claude/`，并追踪 `extension/claude-code/.claude/` 下的源包装文件，修复 CI checkout 缺失导致的 assemble 失败（`cannot stat .../commands/secguard.md`）。
+
+### 变更
+
+- **发布工具目录重命名**：`extension/dist/` 重命名为顶层 `release/`（构建/安装工具而非分发产物），`dist/` 保持为唯一分发输出目录；移除过时的 `deploy/` 目录，文档路径同步更新。
+
 ## [0.1.1] - 2026-08-16
 
 部署验证后的缺陷修复（Bugfix release）。

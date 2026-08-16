@@ -14,7 +14,7 @@ func (o *ScanOutput) writeReport(packages []*planner.PlanResult, indexSummary In
 
 	b.WriteString("# SecGuard Security Scan Report\n\n")
 	b.WriteString(fmt.Sprintf("**Scan ID:** %s\n", o.ScanID))
-	b.WriteString(fmt.Sprintf("**Tool:** zhuque-secguard v0.1.1\n\n"))
+	b.WriteString(fmt.Sprintf("**Tool:** zhuque-secguard v0.1.2\n\n"))
 
 	b.WriteString("## Summary\n\n")
 	b.WriteString("| Metric | Value |\n")
