@@ -15,7 +15,7 @@ import (
 // Version is the release version. It is a var (not const) so `go build
 // -ldflags "-X github.com/DannyAn/secguard-clang/internal/cli.Version=<v>"`
 // can inject the release version at build time; the fallback matches VERSION.
-var Version = "0.1.0"
+var Version = "0.1.1"
 
 func Execute(ctx context.Context, args []string) int {
 	if len(args) == 0 {

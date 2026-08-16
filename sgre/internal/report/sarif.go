@@ -156,7 +156,7 @@ func (o *ScanOutput) writeSarif(packages []*planner.PlanResult) error {
 			Tool: sarifTool{
 				Driver: sarifDriver{
 					Name:    "zhuque-secguard",
-					Version: "0.1.0",
+					Version: "0.1.1",
 					Rules:   rules,
 				},
 			},

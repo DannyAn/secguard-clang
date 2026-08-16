@@ -2,6 +2,19 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.1.1] - 2026-08-16
+
+部署验证后的缺陷修复（Bugfix release）。
+
+### 修复
+
+- **`.codeagent` 输出位置**：扫描结果现在解析到启动目录（被扫描项目），而不是 git 仓库根，避免在嵌套项目（如 `examples/c-vuln-benchmark/src`）下审计时把结果写到仓库根。
+- **单次扫描单目录**：`secguard_scan` 不再预创建输出目录（改由 Go 二进制创建），并移除遗留的 `secguard_quick_scan` 工具，一次扫描只产生一个 scan 目录。
+- **报告表格**：汇总/报告表增加 `Skill` 列、报告头（代码仓绝对路径 + 扫描目录）与简洁的观察项表。
+- **`/secguard` 直接执行**：命令 frontmatter 不再声明 `agent:`，避免被包装成 subagent 转发后被压成纯文本，表格直接作为终端输出。
+- **agent 模式**：`security-auditor` 由 `subagent` 改为 `all`，可被直接调用，也为后续按 skill 并发调度预留编排能力。
+- **安装/卸载清理**：install/uninstall 会清理旧版平铺式安装（`~/.config/opencode` 下的 tools/skills/agents），避免与新扩展目录并存漂移。
+
 ## [0.1.0] - 2026-08-15
 
 首个可部署版本（First deployable release）。
