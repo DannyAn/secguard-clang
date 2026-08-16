@@ -1,50 +1,15 @@
-import { type Plugin, tool } from "@opencode-ai/plugin"
+import { type Plugin } from "@opencode-ai/plugin"
 import path from "path"
 import fs from "fs"
 
-// Display/validation list for the legacy `secguard_quick_scan` tool only. The
-// authoritative type list is `secguard types` (in the Go binary) — this array is
-// only a convenience default and must be kept in sync manually if new types are
-// added to the registry.
-const ALL_VULN_TYPES = [
-  "null-deref",
-  "buffer-overflow",
-  "memory-leak",
-  "injection",
-  "resource-leak",
-  "uninit",
-  "use-after-free",
-  "double-free",
-  "format-string",
-  "integer-overflow",
-  "race-condition",
-  "hardcoded-secret",
-  "deadlock",
-  "crypto-misuse",
-  "out-of-bounds",
-  "divide-by-zero",
-  "unchecked-return",
-  "path-traversal",
-  "sizeof-misuse",
-  "signed-compare",
-]
-
 function resolveWorkDir(context: { worktree?: string, directory?: string }): string {
-  let dir = context.worktree || context.directory || "."
+  let dir = context.directory || context.worktree || "."
   if (dir === "/") dir = "."
   return dir
 }
 
-function findSecguard(dir: string): string {
-  const bundled = path.join(dir, ".opencode/bin/secguard")
-  if (fs.existsSync(bundled)) return bundled
-  return "secguard"
-}
-
 export const SecGuardContextPlugin: Plugin = async ({
-  project,
   client,
-  $,
   directory,
   worktree,
 }) => {
@@ -73,83 +38,6 @@ export const SecGuardContextPlugin: Plugin = async ({
           } catch {}
         }
       }
-    },
-
-    tool: {
-      secguard_quick_scan: tool({
-        description:
-          "Quick scan: check if sgre.db exists and is fresh, run scan only if needed. Returns evidence packages for all registered or a filtered subset of vulnerability types.",
-        args: {
-          force: tool.schema
-            .boolean()
-            .optional()
-            .describe("Force re-index even if DB exists"),
-          vuln_types: tool.schema
-            .string()
-            .optional()
-            .describe(
-              `Optional filter: comma-separated vulnerability types. Default: all registered types. Valid types: ${ALL_VULN_TYPES.join(", ")}`
-            ),
-        },
-        async execute(args, context) {
-          const dir = resolveWorkDir(context)
-          const secguardBin = findSecguard(dir)
-          const dbPath = path.join(dir, ".codeagent", "zhuque-secguard", ".sgre", "sgre.db")
-          const exists = fs.existsSync(dbPath)
-
-          let selectedTypes: string[] = [...ALL_VULN_TYPES]
-          if (args.vuln_types) {
-            const requested = args.vuln_types
-              .split(",")
-              .map(t => t.trim())
-              .filter(t => t.length > 0)
-            const invalid = requested.filter(t => !ALL_VULN_TYPES.includes(t as any))
-            if (invalid.length > 0) {
-              return JSON.stringify({
-                error: `Invalid vulnerability type(s): ${invalid.join(", ")}. Valid types: ${ALL_VULN_TYPES.join(", ")}`,
-              }, null, 2)
-            }
-            selectedTypes = [...new Set(requested)]
-          }
-
-          if (exists && !args.force) {
-            try {
-              const status = await $`${secguardBin} status --db ${dbPath}`
-                .cwd(dir)
-                .quiet()
-                .text()
-              const statusJson = JSON.parse(status.trim())
-              if (statusJson.stale === false) {
-                const packages = []
-                for (const vt of selectedTypes) {
-                  const planResult = await $`${secguardBin} plan --db ${dbPath} ${vt}`
-                    .cwd(dir)
-                    .quiet()
-                    .text()
-                    .catch(() => "{}")
-                  packages.push({
-                    vulnerability_type: vt,
-                    ...JSON.parse(planResult.trim() || "{}"),
-                  })
-                }
-                return JSON.stringify(
-                  { evidence_packages: packages, cached: true },
-                  null,
-                  2
-                )
-              }
-            } catch {}
-          }
-
-          const scanResult = await $`${secguardBin} scan --db ${dbPath} ${dir}`
-            .cwd(dir)
-            .quiet()
-            .text()
-            .catch(() => '{"evidence_packages":[]}')
-
-          return scanResult.trim()
-        },
-      }),
     },
   }
 }

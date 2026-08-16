@@ -30,9 +30,9 @@ func (o *ScanOutput) writeReport(packages []*planner.PlanResult, indexSummary In
 	b.WriteString(fmt.Sprintf("| Total candidates | %d |\n", totalCandidates))
 	b.WriteString(fmt.Sprintf("| Vulnerability types | %d |\n\n", len(packages)))
 
-	b.WriteString("## Candidates by Type\n\n")
-	b.WriteString("| Type | CWE | Count |\n")
-	b.WriteString("|------|-----|-------|\n")
+	b.WriteString("## Candidates by Skill\n\n")
+	b.WriteString("| Skill | CWE | Count |\n")
+	b.WriteString("|-------|-----|-------|\n")
 	for _, pkg := range packages {
 		cwe := vulnToCWE[pkg.VulnerabilityType]
 		if cwe == "" {

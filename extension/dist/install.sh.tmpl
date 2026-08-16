@@ -123,6 +123,7 @@ sg_cp_record() {
 install_opencode() {
     echo "[opencode] Installing to $OC_TARGET_DIR"
     local src="$PKG_DIR/opencode"
+    sg_cleanup_legacy_flat "$OC_PREFIX" "$PKG_DIR"
     mkdir -p "$OC_TARGET_DIR"/{commands,agents,tools,plugins,skills}
 
     [ -f "$src/extension.json" ] && sg_cp_record "$src/extension.json" "$OC_TARGET_DIR/extension.json"

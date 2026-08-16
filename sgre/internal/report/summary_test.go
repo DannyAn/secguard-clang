@@ -52,9 +52,9 @@ func TestBuildScanSummary_TypeBreakdown(t *testing.T) {
 	out := BuildScanSummary(data)
 
 	checks := []string{
-		"### Candidates by Type",
-		"| Type | CWE | Count |",
-		"|------|-----|-------|",
+		"### Candidates by Skill",
+		"| Skill | CWE | Count |",
+		"|-------|-----|-------|",
 		"| null-deref | CWE-476 | 5 |",
 		"| buffer-overflow | CWE-787 | 3 |",
 		"| memory-leak | CWE-401 | 7 |",
@@ -77,8 +77,8 @@ func TestBuildScanSummary_OmitsZeroCount(t *testing.T) {
 	if !strings.Contains(out, "No issues found.") {
 		t.Error("expected 'No issues found.' message for zero candidates")
 	}
-	if strings.Contains(out, "| Type | CWE | Count |") {
-		t.Error("should not contain type breakdown table for zero candidates")
+	if strings.Contains(out, "| Skill | CWE | Count |") {
+		t.Error("should not contain skill breakdown table for zero candidates")
 	}
 }
 

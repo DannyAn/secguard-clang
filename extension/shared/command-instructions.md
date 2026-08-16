@@ -36,6 +36,16 @@ Before proceeding, validate the type filter:
 - **Full scan mode** (no filter or `all`): Follow the Full Scan Workflow below.
 - **Filtered mode** (one or more specific types): Follow the Filtered Workflow below.
 
+## Classification Rules
+
+- Safe functions (`memcpy_s`, `strcpy_s`, `execve`, `sqlite3_prepare_v2`) → false-positive
+- Safe wrappers (`SafeCopy`, `SafeQuery`, `ResourceHandle`, `LockGuard`) → false-positive
+- RAII patterns (create+destroy pairs) → false-positive for leak
+- Bounds check before an unsafe call → false-positive for buffer-overflow
+- Partial validation (blacklist only, TOCTOU window) → suspected
+- No guard + reachable + nullable source + data flow to deref → confirmed
+- Only persist findings for pipeline-supported types (those returned by `secguard types`). Other issues go in the **observations table**, do NOT call `secguard_report` for them.
+
 ## Full Scan Workflow
 
 Target path: <parsed path>
@@ -47,7 +57,7 @@ Instructions:
 4. Reason over each evidence package — classify as confirmed, suspected, or false-positive.
 5. Cross-reference evidence with source code when needed (read per-finding Markdown files in `<vuln-type>/` subdirectories for detailed evidence).
 6. Write confirmed and suspected findings to the SecGuard database using `secguard_report`. Pass `scan_id` and `output_dir` from the scan output.
-7. Present the result as two Markdown tables: (a) **Skills executed** — `| Skill | CWE | Candidates reviewed | Confirmed | Suspected | Dismissed |`; (b) **Findings summary** — `| Skill | CWE | File:Line | Function | Severity | Conf. | Status | Summary |`. Reference the SARIF file path for machine-readable output.
+7. Present the result as a formal Markdown report: (a) report header `代码仓：<repo abs path>；扫描目录：<scanned dir abs path>`; (b) one-line summary `本次审计确认 X 个问题、疑似 Y 个问题。`; (c) **per-skill overview table** `| Skill | 类别 | 确认 | 疑似 | 已排除误报 |`; (d) **findings table** `| Skill | 文件:行号 | 函数 | 严重度 | 结论 | 说明 |`; (e) **observations table** `| Skill | 说明 |` only if some types are not persisted. Do NOT include pipeline internals (seed/final/deduped counts, cap, recall, benchmark, TP/FP, rule_id whitelist, scan_id) in the report. Reference the SARIF file path for machine-readable output.
 
 ## Filtered Workflow
 
@@ -62,7 +72,7 @@ Instructions:
 5. Reason over each evidence package — classify as confirmed, suspected, or false-positive.
 6. Cross-reference evidence with source code when needed (read per-finding Markdown files in `<vuln-type>/` subdirectories for detailed evidence).
 7. Write confirmed and suspected findings using `secguard_report`. Pass `scan_id` and `output_dir` from step 1 (or from the most recent `secguard_scan` call) so findings are associated with the scan.
-8. Present the result as two Markdown tables for the SELECTED type(s) only: (a) **Skills executed** — `| Skill | CWE | Candidates reviewed | Confirmed | Suspected | Dismissed |`; (b) **Findings summary** — `| Skill | CWE | File:Line | Function | Severity | Conf. | Status | Summary |`. State which skills were executed and which were skipped. If any selected types failed during step 2, note them. Reference the SARIF file path for machine-readable output.
+8. Present the result as a formal Markdown report for the SELECTED type(s) only: report header (`代码仓` + `扫描目录`), one-line summary, **per-skill overview table** `| Skill | 类别 | 确认 | 疑似 | 已排除误报 |`, and **findings table** `| Skill | 文件:行号 | 函数 | 严重度 | 结论 | 说明 |`. State which skills were executed and which were skipped. If any selected types failed during step 2, note them. Do NOT include pipeline internals (seed/final/deduped counts, cap, recall, benchmark, TP/FP, rule_id whitelist, scan_id) in the report. Reference the SARIF file path for machine-readable output.
 
 ## Usage Examples
 

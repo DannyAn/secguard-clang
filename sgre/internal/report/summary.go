@@ -41,12 +41,12 @@ func BuildScanSummary(data SummaryData) string {
 	fmt.Fprintf(&b, "| Functions Indexed | %d |\n", data.FunctionsIndexed)
 	fmt.Fprintf(&b, "| Functions In Index | %d |\n\n", data.FunctionsInIndex)
 
-	b.WriteString("### Candidates by Type\n\n")
+	b.WriteString("### Candidates by Skill\n\n")
 	if len(data.TypeBreakdown) == 0 || data.TotalCandidates == 0 {
 		b.WriteString("No issues found.\n\n")
 	} else {
-		b.WriteString("| Type | CWE | Count |\n")
-		b.WriteString("|------|-----|-------|\n")
+		b.WriteString("| Skill | CWE | Count |\n")
+		b.WriteString("|-------|-----|-------|\n")
 		for _, entry := range data.TypeBreakdown {
 			fmt.Fprintf(&b, "| %s | %s | %d |\n", entry.Type, entry.CWE, entry.Count)
 		}

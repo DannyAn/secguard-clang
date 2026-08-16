@@ -386,12 +386,19 @@ print(m.get('bin_path', '') or '')
         sg_remove_permissions "$cc_prefix/settings.json" 2>/dev/null || true
     fi
 
-    # 清理空目录（自底向上）
+    # 清理目录残留：manifest 逐文件删除会留下空目录树，且平台过滤会漏掉
+    # 全局 command（不在 extensions/ 下），这里对专属目录/文件做兜底清理。
     if [ "$platform" = "all" ] || [ "$platform" = "opencode" ]; then
+        rm -rf "$oc_prefix/extensions/zhuque-secguard" 2>/dev/null || true
+        rm -f "$oc_prefix/commands/secguard.md" 2>/dev/null || true
         rmdir "$oc_prefix/extensions" 2>/dev/null || true
+        rmdir "$oc_prefix/commands" 2>/dev/null || true
     fi
     if [ "$platform" = "all" ] || [ "$platform" = "claude-code" ]; then
+        rm -rf "$cc_prefix/skills/zhuque-secguard" 2>/dev/null || true
+        rm -f "$cc_prefix/commands/secguard.md" 2>/dev/null || true
         rmdir "$cc_prefix/skills" 2>/dev/null || true
+        rmdir "$cc_prefix/commands" 2>/dev/null || true
     fi
 
     # 若 manifest 中所有文件已删，删除 manifest
@@ -492,6 +499,31 @@ sg_verify_platform() {
     [ "$fail" -eq 0 ]
 }
 
+# 清理旧版"平铺式"安装遗留（迁移到 extensions/ 之前的设计）。
+# 早期版本把 tools/skills/agents 直接装到 $OC_PREFIX 下，现在统一收敛到
+# $OC_PREFIX/extensions/zhuque-secguard/。安装与卸载都会调用，避免两处定义漂移
+# （尤其避免 de-drift 整改后旧副本仍残留硬编码类型清单）。仅移除 secguard 自身文件，
+# 其它工具的平铺内容（如 $OC_PREFIX/skills/arkcli-*）不受影响。
+# 用法：sg_cleanup_legacy_flat <oc_prefix> <pkg_dir>
+sg_cleanup_legacy_flat() {
+    local oc_prefix="$1"
+    local pkg_dir="$2"
+    local f skill_dir skill_name
+    # 旧平铺工具
+    for f in "$oc_prefix"/tools/secguard_*.ts; do
+        [ -f "$f" ] && rm -f "$f"
+    done
+    # 旧平铺 skills（按 shared/skills 的权威清单逐个比对删除）
+    for skill_dir in "$pkg_dir"/shared/skills/*/; do
+        [ -d "$skill_dir" ] || continue
+        skill_name=$(basename "$skill_dir")
+        [ -d "$oc_prefix/skills/$skill_name" ] && rm -rf "$oc_prefix/skills/$skill_name"
+    done
+    # 旧平铺 agent / plugin
+    rm -f "$oc_prefix/agents/security-auditor.md"
+    rm -f "$oc_prefix/plugins/secguard-context.ts"
+}
+
 # @@SG_INJECT_END@@
 # ──────────────────────────────────────────────────────────────
 # 可注入区结束
@@ -553,7 +585,7 @@ build_target() {
         arm64) zig_arch="aarch64" ;;
         *)     zig_arch="$goarch" ;;
     esac
-    local cc cxx
+    local cc cxx cflags=""
     case "$goos" in
         linux)
             [ -z "$zig" ] && { echo "ERROR: zig required for linux cross-compile (set ZIG or add to PATH)" >&2; return 1; }
@@ -564,6 +596,9 @@ build_target() {
             [ -z "$zig" ] && { echo "ERROR: zig required for windows cross-compile (set ZIG or add to PATH)" >&2; return 1; }
             cc="$zig cc -target ${zig_arch}-windows-gnu"
             cxx="$zig c++ -target ${zig_arch}-windows-gnu"
+            # cgo 导出头在 Windows 目标下会触发 tree-sitter 回调重声明的
+            # -Wdll-attribute-on-redeclaration 警告，属已知良性噪音，静默之。
+            cflags="-Wno-dll-attribute-on-redeclaration"
             out="$DIST_DIR/$bin_name.exe"
             ;;
         *)
@@ -574,7 +609,7 @@ build_target() {
     (
         cd "$SGRE_DIR"
         GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=1 \
-        CC="$cc" CXX="$cxx" \
+        CC="$cc" CXX="$cxx" CGO_CFLAGS="$cflags" CGO_CXXFLAGS="$cflags" \
         GONOSUMDB='*' GOFLAGS=-mod=mod \
         GOCACHE="$SGRE_DIR/.gocache" TMPDIR="$SGRE_DIR/.gotmp" \
         ZIG_GLOBAL_CACHE_DIR="$SGRE_DIR/.zig-cache/global" \

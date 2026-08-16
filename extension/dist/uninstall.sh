@@ -62,12 +62,14 @@ echo "========================================================"
 
 case "$TARGET" in
     opencode)
+        sg_cleanup_legacy_flat "$OC_PREFIX" "$PKG_DIR"
         sg_uninstall_platform "opencode" "$OC_PREFIX" "$BIN_DIR" "$OC_MANIFEST" "$yes_flag"
         ;;
     claude-code)
         sg_uninstall_platform "claude-code" "$CC_PREFIX" "$BIN_DIR" "$CC_MANIFEST" "$yes_flag"
         ;;
     all)
+        sg_cleanup_legacy_flat "$OC_PREFIX" "$PKG_DIR"
         sg_uninstall_platform "opencode" "$OC_PREFIX" "$BIN_DIR" "$OC_MANIFEST" "$yes_flag"
         echo ""
         sg_uninstall_platform "claude-code" "$CC_PREFIX" "$BIN_DIR" "$CC_MANIFEST" "$yes_flag"

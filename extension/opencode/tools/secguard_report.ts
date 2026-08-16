@@ -3,10 +3,11 @@ import path from "path"
 import fs from "fs"
 
 function findSecguard(context: { worktree?: string, directory?: string }): string {
-  let dir = context.worktree || context.directory || "."
-  if (dir === "/") dir = "."
-  const bundled = path.join(dir, ".opencode/bin/secguard")
-  if (fs.existsSync(bundled)) return bundled
+  for (const dir of [context.directory, context.worktree, "."]) {
+    if (!dir || dir === "/") continue
+    const bundled = path.join(dir, ".opencode/bin/secguard")
+    if (fs.existsSync(bundled)) return bundled
+  }
   return "secguard"
 }
 
@@ -56,7 +57,7 @@ export default tool({
       .describe("Output directory for audit report. If provided, audit-report.md is generated after writing findings."),
   },
   async execute(args, context) {
-    let workDir = context.worktree || context.directory || "."
+    let workDir = context.directory || context.worktree || "."
     if (workDir === "/") workDir = "."
     const secguardBin = findSecguard(context)
     const sgreDir = path.join(workDir, ".codeagent", "zhuque-secguard", ".sgre")

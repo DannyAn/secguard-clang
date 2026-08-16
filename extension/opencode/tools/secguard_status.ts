@@ -3,10 +3,11 @@ import path from "path"
 import fs from "fs"
 
 function findSecguard(context: { worktree?: string, directory?: string }): string {
-  let dir = context.worktree || context.directory || "."
-  if (dir === "/") dir = "."
-  const bundled = path.join(dir, ".opencode/bin/secguard")
-  if (fs.existsSync(bundled)) return bundled
+  for (const dir of [context.directory, context.worktree, "."]) {
+    if (!dir || dir === "/") continue
+    const bundled = path.join(dir, ".opencode/bin/secguard")
+    if (fs.existsSync(bundled)) return bundled
+  }
   return "secguard"
 }
 
@@ -15,7 +16,7 @@ export default tool({
     "Check SecGuard index status: whether sgre.db exists, when it was last updated, how many files/functions are indexed, and whether the index is stale (source files changed since last index).",
   args: {},
   async execute(_args, context) {
-    let workDir = context.worktree || context.directory || "."
+    let workDir = context.directory || context.worktree || "."
     if (workDir === "/") workDir = "."
     const secguardBin = findSecguard(context)
     const dbPath = path.join(workDir, ".codeagent", "zhuque-secguard", ".sgre", "sgre.db")

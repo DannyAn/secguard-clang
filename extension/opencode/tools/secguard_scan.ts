@@ -4,10 +4,11 @@ import fs from "fs"
 import crypto from "crypto"
 
 function findSecguard(context: { worktree?: string, directory?: string }): string {
-  let dir = context.worktree || context.directory || "."
-  if (dir === "/") dir = "."
-  const bundled = path.join(dir, ".opencode/bin/secguard")
-  if (fs.existsSync(bundled)) return bundled
+  for (const dir of [context.directory, context.worktree, "."]) {
+    if (!dir || dir === "/") continue
+    const bundled = path.join(dir, ".opencode/bin/secguard")
+    if (fs.existsSync(bundled)) return bundled
+  }
   return "secguard"
 }
 
@@ -97,8 +98,8 @@ function printScanSummary(
   if (nonEmpty.length === 0) {
     out += "No issues found.\n\n"
   } else {
-    out += "| Type | CWE | Count |\n"
-    out += "|------|-----|-------|\n"
+    out += "| Skill | CWE | Count |\n"
+    out += "|-------|-----|-------|\n"
     for (const p of nonEmpty) {
       const vt = p?.vulnerability_type ?? "unknown"
       const count = p?.candidates?.length ?? 0
@@ -125,7 +126,7 @@ export default tool({
       .describe("Target path to scan. Defaults to current workspace root."),
   },
   async execute(args, context) {
-    let workDir = context.worktree || context.directory || "."
+    let workDir = context.directory || context.worktree || "."
     if (workDir === "/") workDir = "."
     const secguardBin = findSecguard(context)
     const targetPath = args.path || workDir
@@ -136,7 +137,10 @@ export default tool({
 
     const scanId = generateScanId()
     const outputDir = path.join(workDir, ".codeagent", "zhuque-secguard", "scans", scanId)
-    fs.mkdirSync(outputDir, { recursive: true })
+    // Do NOT pre-create outputDir here: the Go binary creates it via its scan
+    // logger once the scan actually starts. Pre-creating it leaves an empty
+    // <scan_id>/ dir behind whenever the binary fails early (e.g. OOM-killed
+    // with exit 137), which produces spurious empty scan directories.
 
     try {
       const result = await Bun.$`${secguardBin} scan --db ${dbPath} --output-dir ${outputDir} ${targetPath}`
