@@ -56,7 +56,8 @@ while [ $# -gt 0 ]; do
 done
 
 # ── 定位 zig（跨平台 C 编译器，linux/windows 交叉必需）──
-if [ -z "${ZIG:-}" ]; then
+ZIG="${ZIG:-}"
+if [ -z "$ZIG" ]; then
     if [ -x "$PROJECT_ROOT/.tools/zig/zig" ]; then
         export ZIG="$PROJECT_ROOT/.tools/zig/zig"
         export PATH="$PROJECT_ROOT/.tools/zig:$PATH"
