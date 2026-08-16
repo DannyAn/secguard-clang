@@ -87,8 +87,15 @@ jobs:
               ;;
             zig)
               [ "${{ matrix.goos }}" = "windows" ] && artifact="${artifact}.exe"
+              mkdir -p .zig-cache/global .zig-cache/local .gotmp
               CC="zig cc -target x86_64-windows-gnu" \
               CXX="zig c++ -target x86_64-windows-gnu" \
+              CGO_CFLAGS="-Wno-dll-attribute-on-redeclaration" \
+              CGO_CXXFLAGS="-Wno-dll-attribute-on-redeclaration" \
+              GONOSUMDB='*' GOFLAGS=-mod=mod \
+              ZIG_GLOBAL_CACHE_DIR="$(pwd)/.zig-cache/global" \
+              ZIG_LOCAL_CACHE_DIR="$(pwd)/.zig-cache/local" \
+              TMPDIR="$(pwd)/.gotmp" \
               go build -trimpath \
                 -ldflags "-X github.com/DannyAn/secguard-clang/internal/cli.Version=${version}" \
                 -o "${artifact}" ./cmd/secguard
