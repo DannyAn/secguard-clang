@@ -32,7 +32,13 @@ func runIndexCmd(ctx context.Context, args []string) int {
 		return 1
 	}
 
-	dbPath = resolveDBPath(dbExplicit, dbPath, absPath)
+	// DB lives at the project root (cwd), not under the index target, so
+	// `secguard index ./src` and `secguard plan <type>` resolve the same DB.
+	projectRoot, err := os.Getwd()
+	if err != nil || projectRoot == "" {
+		projectRoot = absPath
+	}
+	dbPath = resolveDBPath(dbExplicit, dbPath, projectRoot)
 
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
 		WriteErrorJSON(fmt.Sprintf("failed to create db directory: %v", err))

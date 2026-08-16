@@ -134,6 +134,13 @@ install_opencode() {
     for f in "$src"/tools/*.ts;    do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/tools/$(basename "$f")"; done
     for f in "$src"/plugins/*.ts;  do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/plugins/$(basename "$f")"; done
 
+    # 全局 command（在扩展目录之外也可用 /secguard）
+    echo "[opencode] Global command: $OC_PREFIX/commands/"
+    mkdir -p "$OC_PREFIX/commands"
+    for f in "$src"/commands/*.md; do
+        [ -f "$f" ] && sg_cp_record "$f" "$OC_PREFIX/commands/$(basename "$f")"
+    done
+
     # skills（来自 shared/skills）
     local skill_dir skill_name
     for skill_dir in "$PKG_DIR"/shared/skills/*/; do
@@ -162,6 +169,13 @@ install_claude_code() {
     local f
     for f in "$src"/.claude/commands/*.md; do [ -f "$f" ] && sg_cp_record "$f" "$CC_TARGET_DIR/commands/$(basename "$f")"; done
     for f in "$src"/.claude/agents/*.md;   do [ -f "$f" ] && sg_cp_record "$f" "$CC_TARGET_DIR/agents/$(basename "$f")"; done
+
+    # 全局 command（在插件目录之外也可用 /secguard）
+    echo "[claude-code] Global command: $CC_PREFIX/commands/"
+    mkdir -p "$CC_PREFIX/commands"
+    for f in "$src"/.claude/commands/*.md; do
+        [ -f "$f" ] && sg_cp_record "$f" "$CC_PREFIX/commands/$(basename "$f")"
+    done
 
     # skills
     local skill_dir skill_name

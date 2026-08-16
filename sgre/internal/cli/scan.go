@@ -41,10 +41,19 @@ func runScanCmd(ctx context.Context, args []string) int {
 		return 1
 	}
 
-	// Without an explicit --db, the database belongs under the target repo's
+	// .codeagent lives at the PROJECT ROOT — the directory the scan was launched
+	// from (cwd) — never under the scan target. Auditing a subdir like `./src`
+	// must still write .codeagent to the project root, so index + plan + report
+	// all agree on one DB/scan location regardless of the target path.
+	projectRoot, err := os.Getwd()
+	if err != nil || projectRoot == "" {
+		projectRoot = absPath
+	}
+
+	// Without an explicit --db, the database belongs under the project root's
 	// .codeagent dir (sibling of the scan output), never as a stray sgre.db in
 	// the source tree.
-	dbPath = resolveDBPath(dbExplicit, dbPath, absPath)
+	dbPath = resolveDBPath(dbExplicit, dbPath, projectRoot)
 
 	var scanID string
 	var scanDir string
@@ -52,7 +61,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 		scanID = filepath.Base(outputDir)
 		scanDir = outputDir
 	} else {
-		so := report.NewScanOutput(absPath)
+		so := report.NewScanOutput(projectRoot)
 		scanID = so.ScanID
 		scanDir = so.ScanDir
 	}
@@ -248,7 +257,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 	}
 
 	scanOutput := &report.ScanOutput{
-		RootDir:    absPath,
+		RootDir:    projectRoot,
 		ScanDir:    scanDir,
 		SarifPath:  filepath.Join(scanDir, report.SarifFile),
 		ReportPath: filepath.Join(scanDir, report.ReportFile),

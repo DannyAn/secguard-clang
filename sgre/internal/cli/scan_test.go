@@ -339,3 +339,36 @@ func TestScanCmd_JSONEnvelopeHasSummaryField(t *testing.T) {
 		t.Error("_summary field does not contain summary table format")
 	}
 }
+
+func TestScanOutput_CodeagentAtProjectRoot(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	srcDir := filepath.Join(root, "src")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestCFile(t, srcDir)
+
+	// Run the scan from the project root (cwd), targeting the src subdir, using
+	// the DEFAULT db/output resolution (no --db, no --output-dir).
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(oldwd) }()
+
+	if code := runScanCmd(ctx, []string{"src"}); code != 0 {
+		t.Fatalf("scan failed with code %d", code)
+	}
+
+	// .codeagent must be at the project root, never under the scan target.
+	if _, err := os.Stat(filepath.Join(root, ".codeagent")); err != nil {
+		t.Fatalf(".codeagent missing at project root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(srcDir, ".codeagent")); err == nil {
+		t.Fatal(".codeagent leaked into scan target src/ — should be at project root")
+	}
+}
