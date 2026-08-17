@@ -237,9 +237,19 @@ func runScanCmd(ctx context.Context, args []string) int {
 	}
 	summaryStr := report.BuildScanSummary(summaryData)
 
+	// candidates_by_type: 摘要（每类型候选数），替代完整 evidence_packages。
+	// 完整 evidence_packages 写到 report.md/SARIF，不放入 stdout——避免 398KB+ 输出
+	// 触发 OpenCode 截断、污染 agent 上下文、诱导读取 tool-output 截断文件。
+	candidatesByType := make(map[string]int, len(evidencePackages))
+	for _, ep := range evidencePackages {
+		vt, _ := ep["vulnerability_type"].(string)
+		cands, _ := ep["candidates"].([]planner.EvidenceItem)
+		candidatesByType[vt] = len(cands)
+	}
+
 	output := map[string]interface{}{
 		"scan_id":               scanID,
-		"evidence_packages":     evidencePackages,
+		"candidates_by_type":    candidatesByType,
 		"total_candidates":      totalCandidates,
 		"files_with_candidates": filesList,
 		"index_summary": map[string]interface{}{
@@ -253,9 +263,6 @@ func runScanCmd(ctx context.Context, args []string) int {
 		"scan_dir":          scanDir,
 		"_summary":          summaryStr,
 	}
-
-	jsonBytes, _ := json.MarshalIndent(output, "", "  ")
-	fmt.Fprintln(os.Stdout, string(jsonBytes))
 
 	planResults := make([]*planner.PlanResult, 0, len(evidencePackages))
 	for _, ep := range evidencePackages {
@@ -281,6 +288,12 @@ func runScanCmd(ctx context.Context, args []string) int {
 		FilesSkipped:     indexResult.FilesSkipped,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to write output: %v\n", err)
+		output["report_error"] = fmt.Sprintf("failed to write report: %v", err)
+		// 先输出 JSON（含 report_error）让调用方知道扫描完成但落盘失败，
+		// 然后返回非 0 退出码强制暴露失败——不再静默返回 0。
+		jsonBytes, _ := json.MarshalIndent(output, "", "  ")
+		fmt.Fprintln(os.Stdout, string(jsonBytes))
+		return 1
 	} else {
 		if logCloser != nil {
 			if cerr := logCloser.Close(); cerr != nil {
@@ -288,11 +301,37 @@ func runScanCmd(ctx context.Context, args []string) int {
 			}
 			logCloser = nil
 		}
+		// 强制落盘验证：Write() 返回 nil 不代表文件实际存在（磁盘满、NFS 延迟、
+		// 权限问题在写入过程中发生等）。逐个检查输出契约文件存在且非空，
+		// 任一缺失则视为致命错误——不再静默返回 0 让 agent 误读"成功"。
+		for _, f := range []string{scanOutput.ReportPath, scanOutput.SarifPath} {
+			info, statErr := os.Stat(f)
+			if statErr != nil {
+				output["report_error"] = fmt.Sprintf("output file not persisted: %s: %v", f, statErr)
+				fmt.Fprintf(os.Stderr, "FATAL: %s\n", output["report_error"])
+				jsonBytes, _ := json.MarshalIndent(output, "", "  ")
+				fmt.Fprintln(os.Stdout, string(jsonBytes))
+				return 1
+			}
+			if info.Size() == 0 {
+				output["report_error"] = fmt.Sprintf("output file is empty: %s", f)
+				fmt.Fprintf(os.Stderr, "FATAL: %s\n", output["report_error"])
+				jsonBytes, _ := json.MarshalIndent(output, "", "  ")
+				fmt.Fprintln(os.Stdout, string(jsonBytes))
+				return 1
+			}
+		}
 		scansDir := filepath.Dir(scanOutput.ScanDir)
 		if serr := report.UpdateLatest(scansDir, scanOutput.ScanID); serr != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to update latest symlink: %v\n", serr)
 		}
 	}
+
+	// 先写完 report.md/SARIF 再输出 JSON，确保调用方拿到 JSON 时 report.md 一定存在
+	// （或 JSON 中含 report_error 字段）。原先 JSON 在 Write 之前输出，若 Write 失败
+	// 调用方仍认为扫描成功，但 report.md 不存在，导致 agent 读取报错 File not found。
+	jsonBytes, _ := json.MarshalIndent(output, "", "  ")
+	fmt.Fprintln(os.Stdout, string(jsonBytes))
 
 	report.PrintScanSummary(os.Stderr, summaryData)
 

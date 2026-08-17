@@ -2,6 +2,31 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.1.5] - 2026-08-17
+
+狗粮测试（生产冒烟测试）后的全面自检与修复。重点解决管道死锁导致 report.md 不落盘、Agent 上下文被原始候选污染、findings 不持久化、DB schema 不可发现等致命问题。
+
+### 修复
+
+- **管道死锁导致 report.md 不落盘**：`secguard scan` 原先将 398KB+ JSON（含完整 `evidence_packages`）输出到 stdout 后才写 `report.md`，stdout 管道缓冲区仅 64KB 导致 Go 进程阻塞在 `fmt.Fprintln`，永远执行不到 `Write()`。修复：移除 `evidence_packages`，替换为 `candidates_by_type` 摘要（stdout 从 398KB→几 KB）；JSON 输出移到 `Write()` 之后；新增强制落盘验证（`os.Stat` 检查 `report.md` + `sarif.sarif` 存在且非空，失败返回退出码 1）。
+- **`secguard plan`/`secguard query` 候选污染 Agent 上下文**：原先完整 candidates 直接输出到 stdout（上千行），触发 OpenCode 截断并存到 `~/.local/share/opencode/tool-output/`，诱导 Agent 读取截断文件并触发权限弹窗。修复：candidates 写入文件（`plan-<vuln>-<ts>.json`），stdout 只返回摘要 + `candidates_file` 路径。
+- **`secguard_scan`/`secguard_plan` catch 分支返回原始大输出**：工具异常时不再透传原始大输出，改用正则提取 `scan_id`/`scan_dir` 返回精简信息，避免触发 OpenCode 截断。
+- **安装包二进制权限检测失败**：`release/lib.sh` 的 `sg_select_binary()` 移移除 `[ -x "$candidate" ]` 检查（zip 解压后权限为 644 无 +x 位），仅保留 `[ -f "$candidate" ]`。
+- **`secguard report` 无 findings 时返回 `[]`**：改为返回 `{findings:[], count:0, message:"..."}`，避免 Agent 误判命令出错。
+- **Agent 报告引用不存在的 SARIF 文件**：`agent-body.md` 新增 SARIF 存在性验证指令——引用前先读 `<scan_dir>/sarif.sarif` 确认文件存在且非空。
+
+### 特性
+
+- **`secguard schema` 命令**（新增）：返回 5 张 Agent 可查询表（`findings`、`scan_stats`、`files`、`functions`、`security_events`）的列名、类型、约束与示例查询。Agent 不再需要猜列名（如误用 `vulnerability_type` 而非 `vuln_type`）。支持 `secguard schema`（全部表）和 `secguard schema <table>`（单表）。
+- **`secguard_schema` OpenCode 工具**（新增）：`secguard schema` 的 OpenCode 工具包装，已注册到 `opencode.json` 权限列表和 Claude Code `settings.json`。
+- **Agent findings 落盘强制指导**：`agent-body.md` 新增 `secguard_report` 具体调用示例（含 JSON payload 格式）和写后读回验证步骤——写完 findings 后调 `secguard_report`（无 `findings` 参数）确认 `count > 0`，失败则停止报告。
+
+### 变更
+
+- **stdout 是控制通道，不是数据通道**：完整数据（candidates、evidence packages）写文件，stdout 只返回摘要 + 文件路径。这是本轮修复的核心设计原则，贯穿 `scan`/`plan`/`query` 三个命令。
+- **Claude Code 权限补全**：`.claude/settings.json` 新增 `Bash(secguard types *)`、`Bash(secguard db *)`、`Bash(secguard schema *)` 权限。
+- **`agent-body.md` 工具调用指导**：明确区分 OpenCode 工具名（`secguard_scan`）与 bash 命令名（`secguard scan`），避免 Agent 混淆。
+
 ## [0.1.3] - 2026-08-17
 
 安装验证后的缺陷修复（Bugfix release）。

@@ -16,7 +16,7 @@ import (
 // Version is the release version. It is a var (not const) so `go build
 // -ldflags "-X github.com/DannyAn/secguard-clang/internal/cli.Version=<v>"`
 // can inject the release version at build time; the fallback matches VERSION.
-var Version = "0.1.3"
+var Version = "0.1.5"
 
 func Execute(ctx context.Context, args []string) int {
 	// Sync the db layer's supported-CWE set from the planner registry so the
@@ -52,8 +52,10 @@ func Execute(ctx context.Context, args []string) int {
 		return runReportCmd(ctx, args[1:])
 	case "db":
 		return runDbCmd(ctx, args[1:])
+	case "schema":
+		return runSchemaCmd(args[1:])
 	default:
-		WriteErrorJSON(fmt.Sprintf("unknown command %q; available: index, scan, status, query, types, plan, report, db", args[0]))
+		WriteErrorJSON(fmt.Sprintf("unknown command %q; available: index, scan, status, query, types, plan, report, db, schema", args[0]))
 		return 1
 	}
 }
@@ -70,6 +72,7 @@ Usage:
   secguard plan <vuln>     Run convergence pipeline for a vulnerability type
   secguard report          Output all findings as JSON
   secguard db <sql>        Execute SQL query on sgre.db, return JSON
+  secguard schema [table]  Show DB schema for agent-queryable tables
 
 Flags:
   --db <path>         Path to sgre.db (default: .codeagent/zhuque-secguard/.sgre/sgre.db)

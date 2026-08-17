@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/DannyAn/secguard-clang/internal/parser"
 	"github.com/DannyAn/secguard-clang/internal/planner"
@@ -83,7 +85,26 @@ func runPlanCmd(ctx context.Context, args []string) int {
 		WriteErrorJSON(fmt.Sprintf("failed to serialize result: %v", err))
 		return 1
 	}
-	fmt.Fprintln(os.Stdout, string(data))
+
+	// 完整 candidates 写到文件，stdout 只返回摘要 + 文件路径。
+	// 避免大量 candidates（259+ 条）打印到 agent 上下文。
+	candidatesFile := filepath.Join(filepath.Dir(dbPath), fmt.Sprintf("plan-%s-%d.json", vulnType, time.Now().Unix()))
+	if werr := os.WriteFile(candidatesFile, data, 0644); werr != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to write candidates file: %v\n", werr)
+	}
+
+	summaryOutput := map[string]interface{}{
+		"vulnerability_type": result.VulnerabilityType,
+		"cwe":                report.VulnToCWE(result.VulnerabilityType),
+		"deduped_count":      result.Summary.DedupedCount,
+		"seed_count":         result.Summary.SeedCount,
+		"final_count":        result.Summary.FinalCount,
+		"candidate_count":    len(result.Candidates),
+		"candidates_file":    candidatesFile,
+		"filters":            filters,
+	}
+	summaryData, _ := json.MarshalIndent(summaryOutput, "", "  ")
+	fmt.Fprintln(os.Stdout, string(summaryData))
 
 	report.PrintPlanSummary(os.Stderr, planSummaryData)
 

@@ -88,16 +88,18 @@ sg_select_binary() {
     local exts=("")
     # Windows 二进制带 .exe 后缀，优先匹配 .exe 再回退无后缀
     [ "$os" = "windows" ] && exts=(".exe" "")
+    # 仅检查文件存在，不检查 -x 执行位：zip 解压后源二进制权限可能为 644，
+    # install_binary() 复制到目标目录后会 chmod +x，源文件无需可执行权限。
     local ext candidate
     for ext in "${exts[@]}"; do
         candidate="$pkg_dir/secguard-${os}-${arch}${ext}"
-        if [ -f "$candidate" ] && [ -x "$candidate" ]; then
+        if [ -f "$candidate" ]; then
             echo "$candidate"
             return 0
         fi
         # 也尝试 bin/ 子目录（ClaudeCode 专用包）
         candidate="$pkg_dir/bin/secguard-${os}-${arch}${ext}"
-        if [ -f "$candidate" ] && [ -x "$candidate" ]; then
+        if [ -f "$candidate" ]; then
             echo "$candidate"
             return 0
         fi

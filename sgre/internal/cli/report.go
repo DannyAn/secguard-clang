@@ -271,8 +271,13 @@ func runReportCmd(ctx context.Context, args []string) int {
 		return 1
 	}
 
-	if findings == nil {
-		findings = []*db.Finding{}
+	if len(findings) == 0 {
+		WriteJSON(map[string]interface{}{
+			"findings": []interface{}{},
+			"count":    0,
+			"message":  "no findings in database; run 'secguard report --write ...' to persist findings after classifying candidates",
+		})
+		return 0
 	}
 	WriteJSON(findings)
 	return 0

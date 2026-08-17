@@ -7,7 +7,10 @@
       "Bash(secguard plan *)",
       "Bash(secguard report *)",
       "Bash(secguard status *)",
-      "Bash(secguard query *)"
+      "Bash(secguard query *)",
+      "Bash(secguard types *)",
+      "Bash(secguard db *)",
+      "Bash(secguard schema *)"
     ],
     "deny": []
   },

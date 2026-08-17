@@ -85,26 +85,36 @@ export default tool({
 
         const vulnType = goJson?.vulnerability_type ?? args.vuln_type
         const cwe = goJson?.cwe ?? ""
-        const candidates = goJson?.candidates ?? []
-        const summary = goJson?.summary ?? {}
+        const dedupedCount = goJson?.deduped_count ?? goJson?.candidate_count ?? 0
+        const candidatesFile = goJson?.candidates_file ?? ""
 
-        const compactCandidates = candidates.map((c: any, i: number) => ({
-          n: i + 1,
-          fn: c?.target?.function ?? "?",
-          file: c?.target?.file ?? "?",
-          line: c?.target?.line ?? 0,
-          variable: c?.target?.variable ?? "",
-          suspicion: c?.suspicion_level ?? "",
-        }))
+        // 从 candidates_file 读取完整 candidates（plan 命令现在把完整数据写文件，
+        // stdout 只有摘要）。如果文件读取失败，返回摘要让 agent 回退到 report.md。
+        let compactCandidates: any[] = []
+        if (candidatesFile && fs.existsSync(candidatesFile)) {
+          const fileContent = fs.readFileSync(candidatesFile, "utf-8")
+          const fullJson = JSON.parse(fileContent.trim())
+          const candidates = fullJson?.candidates ?? []
+          compactCandidates = candidates.map((c: any, i: number) => ({
+            n: i + 1,
+            fn: c?.target?.function ?? "?",
+            file: c?.target?.file ?? "?",
+            line: c?.target?.line ?? 0,
+            variable: c?.target?.variable ?? "",
+            suspicion: c?.suspicion_level ?? "",
+          }))
+        }
 
         return JSON.stringify({
           vulnerability_type: vulnType,
           cwe: cwe,
-          deduped_count: summary?.deduped_count ?? candidates.length,
+          deduped_count: dedupedCount,
           candidates: compactCandidates,
         }, null, 2)
       } catch {
-        return result.trim()
+        // 不返回原始 result（候选多时可能触发 OpenCode 截断）。返回精简错误，
+        // agent 可从 report.md 获取该类型的候选列表。
+        return JSON.stringify({ error: "Plan output unparseable; read report.md for this type's candidates.", vuln_type: args.vuln_type, db_path: dbPath }, null, 2)
       }
     } catch (e: any) {
       const err = e?.stderr?.toString()?.trim() || e?.message || String(e)

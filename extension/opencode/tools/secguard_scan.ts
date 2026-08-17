@@ -96,18 +96,29 @@ export default tool({
         const filesIndexed = goJson?.index_summary?.files_indexed ?? 0
         const functionsIndexed = goJson?.index_summary?.functions_indexed ?? 0
         const packages = goJson?.evidence_packages ?? []
+        const candidatesByType = goJson?.candidates_by_type ?? {}
         printScanSummary(process.stderr, goJson, targetPath, workDir)
 
+        const reportError = goJson?.report_error ?? ""
+
         const typeCounts: Record<string, number> = {}
-        for (const p of packages) {
-          const vt = p?.vulnerability_type ?? "unknown"
-          typeCounts[vt] = p?.candidates?.length ?? 0
+        // 优先用 Go 提供的 candidates_by_type 摘要；回退到 evidence_packages（向后兼容）
+        if (candidatesByType && typeof candidatesByType === "object" && Object.keys(candidatesByType).length > 0) {
+          for (const [vt, count] of Object.entries(candidatesByType)) {
+            typeCounts[vt] = count as number
+          }
+        } else {
+          for (const p of packages) {
+            const vt = p?.vulnerability_type ?? "unknown"
+            typeCounts[vt] = p?.candidates?.length ?? 0
+          }
         }
 
-        return JSON.stringify({
+        const reportMdPath = path.join(scanDir, "report.md")
+        const response: Record<string, any> = {
           scan_id: scanId,
           output_dir: scanDir,
-          report_md: path.join(scanDir, "report.md"),
+          report_md: reportMdPath,
           sarif: path.join(scanDir, "sarif.sarif"),
           db_path: dbPath,
           total_candidates: totalCandidates,
@@ -115,9 +126,42 @@ export default tool({
           functions_indexed: functionsIndexed,
           candidates_by_type: typeCounts,
           target_path: targetPath,
-        }, null, 2)
+        }
+        // 强制落盘验证：检查 report.md 实际存在且非空。如果不存在或为空，
+        // 覆盖 report_error 让 agent 知道落盘失败，不要去读不存在的文件。
+        if (reportError) {
+          response.report_error = reportError
+        } else {
+          try {
+            const stat = fs.statSync(reportMdPath)
+            if (stat.size === 0) {
+              response.report_error = `report.md is empty at ${reportMdPath} — scan output was not persisted.`
+            }
+          } catch {
+            response.report_error = `report.md not found at ${reportMdPath} — scan may have completed but output was not persisted.`
+          }
+        }
+        return JSON.stringify(response, null, 2)
       } catch {
-        return result.trim()
+        // JSON.parse 失败时，绝不返回原始 result（可能含完整 evidence_packages，
+        // 达 100KB+ 会触发 OpenCode 截断并存到 ~/.local/share/opencode/tool-output/，
+        // 诱导 agent 去读那个截断文件并触发权限弹窗）。改用正则提取 scan_id/scan_dir，
+        // 返回精简信息——agent 通过 report.md 获取完整候选列表（见 agent-body.md）。
+        const m = (re: RegExp) => result.match(re)?.[1] ?? ""
+        const scanId = m(/"scan_id"\s*:\s*"([^"]+)"/)
+        const scanDir = m(/"scan_dir"\s*:\s*"([^"]+)"/)
+        if (scanDir) {
+          return JSON.stringify({
+            scan_id: scanId,
+            output_dir: scanDir,
+            report_md: path.join(scanDir, "report.md"),
+            sarif: path.join(scanDir, "sarif.sarif"),
+            db_path: dbPath,
+            target_path: targetPath,
+            warning: "Scan completed but JSON was too large to parse inline. Read report.md for the full candidate list.",
+          }, null, 2)
+        }
+        return JSON.stringify({ error: "Scan output unparseable; check report.md in the scan directory.", db_path: dbPath, target_path: targetPath }, null, 2)
       }
     } catch (e: any) {
       const err = e?.stderr?.toString()?.trim() || e?.message || String(e)
