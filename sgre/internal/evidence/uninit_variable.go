@@ -45,10 +45,10 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 		ifs := root.FindAll("if_statement")
 		whiles := root.FindAll("while_statement")
 		fors := root.FindAll("for_statement")
-		dos := root.FindAll("do_statement")
+		funcDefs := root.FindAll("function_definition")
 
 		for _, f := range funcs {
-			d.detectStackUninit(ctx, f, file, decls, assigns, calls, returns, inits, ifs, whiles, fors, dos, summaries, &result)
+			d.detectStackUninit(ctx, f, file, decls, assigns, calls, returns, inits, ifs, whiles, fors, funcDefs, summaries, &result)
 			d.detectHeapUninit(ctx, f, file, inits, assigns, unarys, ptrs, fields, &result)
 			d.detectStructPartialUninit(ctx, f, file, decls, assigns, calls, fields, summaries, &result)
 		}
@@ -56,7 +56,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 	return result, err
 }
 
-func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, decls, assigns, calls, returns, inits, ifs, whiles, fors, dos []parser.Node, summaries summaryMap, result *DetectResult) {
+func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, decls, assigns, calls, returns, inits, ifs, whiles, fors, funcDefs []parser.Node, summaries summaryMap, result *DetectResult) {
 	uninitVars := make(map[string]int)
 	assignSites := make(map[string][]int)
 
@@ -162,8 +162,9 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		}
 	}
 
-	cfg := graph.BuildCFGFromLists(f.StartLine, f.EndLine, ifs, whiles, fors, dos)
-	cfgValid := cfg != nil && cfg.Root != nil && len(cfg.Root.Children) > 0
+	body := extractFunctionBodyFrom(funcDefs, f.StartLine)
+	cfg := graph.BuildStmtCFG(body, f.EndLine)
+	cfgValid := body.Kind() == "compound_statement"
 	if !cfgValid && d.logger != nil {
 		d.logger.Debug("uninit: CFG construction degenerate, using conservative fallback",
 			"function", f.Name,
@@ -182,7 +183,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 			d.insertValueUseEvent(ctx, f, file, useLine, name, "stack_uninit", result)
 			return
 		}
-		if cfgValid && hasUnassignedPath(cfg, f.StartLine, useLine, sites) {
+		if cfgValid && hasUnassignedPath(cfg, name, useLine, sites) {
 			d.insertValueUseEvent(ctx, f, file, useLine, name, "stack_uninit", result)
 			return
 		}
@@ -340,30 +341,77 @@ func forInitWrites(forNode parser.Node) map[string]bool {
 	return writes
 }
 
-func hasUnassignedPath(cfg *graph.CFG, funcEntry int, useLine int, assignLines []int) bool {
-	if cfg == nil || cfg.Root == nil {
+// hasUnassignedPath reports whether there is a control-flow path from the
+// function entry to the use that avoids every assignment to varName before the
+// use — i.e. the variable may be read uninitialized. It uses the statement-level
+// CFG (BuildStmtCFG), replacing the old scope-tree approximation (BuildCFGFromLists).
+//
+// The avoid set is built from the CFG nodes whose statement ACTUALLY assigns
+// varName (not cfg.NodeAt(line), which resolves to the enclosing control-flow
+// header when several statements share a line, e.g. `while (c) { x = n; n--; }`).
+func hasUnassignedPath(cfg *graph.StmtCFG, varName string, useLine int, assignLines []int) bool {
+	if cfg == nil {
 		return false
 	}
+	useNode := cfg.NodeAt(useLine)
+	if useNode == nil {
+		return false // cannot locate the use; conservative (no report here)
+	}
+	avoid := make(map[int]bool)
 	for _, a := range assignLines {
 		if a >= useLine {
 			continue
 		}
-		scope := cfg.FindInnermostScope(a)
-		if scope == cfg.Root {
-			return false
+		for _, n := range cfg.Nodes {
+			if n.Kind != "stmt" || n.StartLine != a {
+				continue
+			}
+			if assignsVar(n.Stmt, varName) {
+				avoid[n.ID] = true
+			}
 		}
 	}
-	useScope := cfg.FindInnermostScope(useLine)
-	for _, a := range assignLines {
-		if a >= useLine {
-			continue
+	return cfg.ReachesAvoiding(cfg.Entry, avoid, useNode.ID)
+}
+
+// assignsVar reports whether stmt directly assigns varName, covering every
+// target of a chained assignment (`code = first = index = 0`), a plain
+// assignment_expression (a for-init `i=0`), and a declaration initializer
+// (`int x = ...`). A control-flow header that merely contains the line is not a
+// match.
+func assignsVar(stmt parser.Node, varName string) bool {
+	var assigns []parser.Node
+	switch stmt.Kind() {
+	case "assignment_expression":
+		assigns = []parser.Node{stmt}
+	case "expression_statement":
+		for _, child := range stmt.NamedChildren() {
+			if child.Kind() == "assignment_expression" {
+				assigns = append(assigns, child)
+			}
 		}
-		assignScope := cfg.FindInnermostScope(a)
-		if assignScope == useScope {
-			return false
+	case "declaration":
+		for _, child := range stmt.NamedChildren() {
+			if child.Kind() != "init_declarator" {
+				continue
+			}
+			c := child.NamedChildren()
+			if len(c) >= 1 && extractVarName(c[0]) == varName {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+	for _, a := range assigns {
+		for _, name := range chainedWriteTargets(a) {
+			if name == varName {
+				return true
+			}
 		}
 	}
-	return true
+	return false
 }
 
 func isInIfRange(ifs []parser.Node, f *db.Function, line int) bool {

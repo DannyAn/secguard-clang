@@ -387,9 +387,10 @@ type aliasInfo struct {
 	field   string
 }
 
-func findAliases(f *db.Function, inits []parser.Node) map[string]aliasInfo {
+func findAliases(f *db.Function, inits, assigns []parser.Node) map[string]aliasInfo {
 	aliases := make(map[string]aliasInfo)
 
+	// Declaration initializers: `int *q = p;` / `int *q = p->f;`.
 	for _, decl := range inits {
 		if !funcLineRange(f, decl.StartLine()) {
 			continue
@@ -405,20 +406,43 @@ func findAliases(f *db.Function, inits []parser.Node) map[string]aliasInfo {
 		if aliasVar == "" {
 			continue
 		}
+		recordAlias(aliases, aliasVar, rhs)
+	}
 
-		if rhs.Kind() == "identifier" {
-			aliases[aliasVar] = aliasInfo{baseVar: rhs.Text(), field: ""}
+	// Plain assignments: `q = p;` / `q = p->f;`. The previous version only
+	// scanned init_declarator, so `p = malloc(); q = p; free(p); *q` was missed
+	// (q is an alias of p established by a statement, not a declaration).
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
+			continue
 		}
-
-		if rhs.Kind() == "field_expression" {
-			baseVar, fieldName := extractFieldAccess(rhs)
-			if baseVar != "" {
-				aliases[aliasVar] = aliasInfo{baseVar: baseVar, field: fieldName}
-			}
+		children := assign.NamedChildren()
+		if len(children) < 2 {
+			continue
 		}
+		lhs := children[0]
+		if lhs.Kind() != "identifier" {
+			continue
+		}
+		recordAlias(aliases, lhs.Text(), children[1])
 	}
 
 	return aliases
+}
+
+// recordAlias records that aliasVar aliases the object denoted by rhs (a bare
+// identifier, or a field access base.field).
+func recordAlias(aliases map[string]aliasInfo, aliasVar string, rhs parser.Node) {
+	if rhs.Kind() == "identifier" {
+		aliases[aliasVar] = aliasInfo{baseVar: rhs.Text(), field: ""}
+		return
+	}
+	if rhs.Kind() == "field_expression" {
+		baseVar, fieldName := extractFieldAccess(rhs)
+		if baseVar != "" {
+			aliases[aliasVar] = aliasInfo{baseVar: baseVar, field: fieldName}
+		}
+	}
 }
 
 func extractVarFromDeclarator(node parser.Node) string {

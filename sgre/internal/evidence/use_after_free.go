@@ -38,11 +38,12 @@ func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error)
 	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		calls := root.FindAll("call_expression")
 		inits := root.FindAll("init_declarator")
+		assigns := root.FindAll("assignment_expression")
 		ptrs := root.FindAll("pointer_expression")
 		fields := root.FindAll("field_expression")
 
 		for _, f := range funcs {
-			aliases := findAliases(f, inits)
+			aliases := findAliases(f, inits, assigns)
 			freeSites := d.findAllFreeSites(f, calls, summaries, aliases)
 			useSites := d.findUseSites(f, ptrs, fields, calls)
 

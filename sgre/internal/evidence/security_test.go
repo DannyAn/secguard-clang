@@ -223,14 +223,18 @@ func TestSecurity_TC07_ResleakFile(t *testing.T) {
 
 func TestSecurity_TC08_ResleakErrorPath(t *testing.T) {
 	store := runIndexAndDetect(t, "tc08_resleak_error_path.c")
+	// The error path returns without fclose, so the resource leaks on that path:
+	// ACQUIRE with NO RELEASE (the planner's ReleaseFilter keeps it as a leak).
 	assertHasEvent(t, store, "RESOURCE_ACQUIRE", "TC08")
-	assertHasEvent(t, store, "RESOURCE_RELEASE", "TC08")
+	assertNoEvent(t, store, "RESOURCE_RELEASE", "TC08")
 }
 
 func TestSecurity_TC09_ResleakSocket(t *testing.T) {
 	store := runIndexAndDetect(t, "tc09_resleak_socket.c")
+	// `return fd` transfers ownership to the caller (consistent with the
+	// memory-leak detector's return-to-caller rule), so it is released, not leaked.
 	assertHasEvent(t, store, "RESOURCE_ACQUIRE", "TC09")
-	assertNoEvent(t, store, "RESOURCE_RELEASE", "TC09")
+	assertHasEvent(t, store, "RESOURCE_RELEASE", "TC09")
 }
 
 func TestSecurity_TC10_ResleakLock(t *testing.T) {

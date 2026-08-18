@@ -3,6 +3,7 @@ package evidence
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -80,42 +81,126 @@ func (d *DeadlockDetector) Detect(ctx context.Context) (DetectResult, error) {
 		return result, err
 	}
 
-	edges := make(map[string][]lockEdge)
+	// Lock-order graph: mutex -> set of mutexes acquired while holding it.
+	adj := make(map[string]map[string]bool)
 	for _, e := range allEdges {
-		key := e.from + "->" + e.to
-		edges[key] = append(edges[key], e)
+		if adj[e.from] == nil {
+			adj[e.from] = make(map[string]bool)
+		}
+		adj[e.from][e.to] = true
+		if adj[e.to] == nil {
+			adj[e.to] = make(map[string]bool)
+		}
 	}
 
-	for _, e1 := range allEdges {
-		reverseKey := e1.to + "->" + e1.from
-		if reverse, ok := edges[reverseKey]; ok {
-			for _, e2 := range reverse {
-				if e1.from != e1.to && e2.fn != e1.fn {
-					locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: e1.file.ID, Line: e1.line})
-					props, _ := json.Marshal(map[string]string{
-						"mutex_a":          e1.from,
-						"mutex_b":          e1.to,
-						"function":         e1.fn,
-						"reverse_function": e2.fn,
-						"category":         "deadlock",
-					})
-					_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-						EventType:  "DEADLOCK",
-						EntityID:   e1.fnID,
-						LocationID: locID,
-						Properties: string(props),
-					})
-					if err == nil {
-						result.EventsCreated++
-					}
-					break
-				}
+	// Strongly connected components of size ≥2 are lock-order cycles: any cycle
+	// (A→B, B→C, C→A) is a deadlock risk, not only the 2-cycles the previous
+	// reverse-pair check found.
+	for _, scc := range tarjanSCC(adj) {
+		if len(scc) < 2 {
+			continue
+		}
+		sort.Strings(scc)
+		var anchor lockEdge
+		ok := false
+		for _, e := range allEdges {
+			if containsString(scc, e.from) && containsString(scc, e.to) {
+				anchor, ok = e, true
+				break
 			}
-			break
+		}
+		if !ok {
+			continue
+		}
+		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: anchor.file.ID, Line: anchor.line})
+		props, _ := json.Marshal(map[string]string{
+			"mutex_a":  scc[0],
+			"mutex_b":  scc[1],
+			"function": anchor.fn,
+			"category": "deadlock",
+			"cycle":    strings.Join(scc, "->"),
+		})
+		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
+			EventType:  "DEADLOCK",
+			EntityID:   anchor.fnID,
+			LocationID: locID,
+			Properties: string(props),
+		})
+		if err == nil {
+			result.EventsCreated++
 		}
 	}
 
 	return result, nil
+}
+
+// tarjanSCC returns the strongly connected components of the directed graph adj
+// (node -> successor set). A component of ≥2 nodes, or a self-loop, is a cycle.
+func tarjanSCC(adj map[string]map[string]bool) [][]string {
+	index := 0
+	indices := make(map[string]int)
+	low := make(map[string]int)
+	onStack := make(map[string]bool)
+	var stack []string
+	var sccs [][]string
+
+	var strongConnect func(v string)
+	strongConnect = func(v string) {
+		indices[v] = index
+		low[v] = index
+		index++
+		stack = append(stack, v)
+		onStack[v] = true
+
+		for w := range adj[v] {
+			if _, seen := indices[w]; !seen {
+				strongConnect(w)
+				if low[w] < low[v] {
+					low[v] = low[w]
+				}
+			} else if onStack[w] {
+				if indices[w] < low[v] {
+					low[v] = indices[w]
+				}
+			}
+		}
+
+		if low[v] == indices[v] {
+			var scc []string
+			for {
+				w := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				onStack[w] = false
+				scc = append(scc, w)
+				if w == v {
+					break
+				}
+			}
+			sccs = append(sccs, scc)
+		}
+	}
+
+	nodes := make([]string, 0, len(adj))
+	for n := range adj {
+		nodes = append(nodes, n)
+	}
+	sort.Strings(nodes)
+	for _, n := range nodes {
+		if _, seen := indices[n]; !seen {
+			strongConnect(n)
+		}
+	}
+	return sccs
+}
+
+// containsString reports whether ss contains s.
+func containsString(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func extractMutexArg(call parser.Node) string {

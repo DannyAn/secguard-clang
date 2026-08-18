@@ -7,6 +7,7 @@ import (
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -31,12 +32,48 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 		inits := root.FindAll("init_declarator")
 		calls := root.FindAll("call_expression")
 		binaries := root.FindAll("binary_expression")
+		returns := root.FindAll("return_statement")
+		decls := root.FindAll("declaration")
+		ifs := root.FindAll("if_statement")
+		funcDefs := root.FindAll("function_definition")
 
 		for _, f := range funcs {
 			acquires := d.findAcquires(ctx, f, file, assigns, inits, calls, binaries, &result)
 			releases := d.findReleases(ctx, f, file, calls)
 
+			returnLines := findReturnLinesFrom(returns, f)
+			localVars := findLocalVarsFrom(decls, f)
+			body := extractFunctionBodyFrom(funcDefs, f.StartLine)
+			cfg := graph.BuildStmtCFG(body, f.EndLine)
+			cfgValid := body.Kind() == "compound_statement"
+
 			for varName, acquireLine := range acquires {
+				releaseLines, hasRelease := releases[varName]
+				isReturned := isReturnedToCaller(varName, returns, f)
+				filteredReturns := filterNullGuardReturns(ifs, returnLines, varName)
+				nullGuardReturns := subtractLines(returnLines, filteredReturns)
+				escapeLines := findEscapeLines(assigns, f, varName, localVars)
+
+				// shouldReportRelease=true emits a RESOURCE_RELEASE event, which
+				// the planner's ReleaseFilter uses to drop the leak candidate. A
+				// leak is therefore "ACQUIRE without RELEASE".
+				shouldReportRelease := false
+
+				if isReturned {
+					// Ownership transferred to the caller.
+					shouldReportRelease = true
+				} else if !hasRelease {
+					// Escaped at the acquisition site (stored to a non-local) is
+					// transferred ownership; otherwise it is a leak.
+					shouldReportRelease = containsLine(escapeLines, acquireLine)
+				} else if cfgValid {
+					// Path-sensitive: released on all paths iff no path from the
+					// acquire reaches the exit avoiding every release/escape/guard.
+					shouldReportRelease = !hasLeakingPath(cfg, acquireLine, releaseLines, nullGuardReturns, escapeLines)
+				} else {
+					shouldReportRelease = true
+				}
+
 				locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: acquireLine})
 				props, _ := json.Marshal(map[string]string{
 					"variable": varName,
@@ -50,7 +87,11 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 				})
 				result.EventsCreated++
 
-				if releaseLine, released := releases[varName]; released {
+				if shouldReportRelease {
+					releaseLine := acquireLine
+					if len(releaseLines) > 0 {
+						releaseLine = releaseLines[0]
+					}
 					releaseLocID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: releaseLine})
 					releaseProps, _ := json.Marshal(map[string]string{
 						"variable": varName,
@@ -244,8 +285,8 @@ func isOKConstant(node parser.Node) bool {
 	return upper == "OK" || strings.HasSuffix(upper, "_OK")
 }
 
-func (d *ResourceLeakDetector) findReleases(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node) map[string]int {
-	releases := make(map[string]int)
+func (d *ResourceLeakDetector) findReleases(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node) map[string][]int {
+	releases := make(map[string][]int)
 
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
@@ -260,10 +301,10 @@ func (d *ResourceLeakDetector) findReleases(ctx context.Context, f *db.Function,
 				for _, arg := range child.NamedChildren() {
 					argText := arg.Text()
 					if strings.HasPrefix(argText, "&") {
-						releases[strings.TrimPrefix(argText, "&")] = call.StartLine()
+						releases[strings.TrimPrefix(argText, "&")] = append(releases[strings.TrimPrefix(argText, "&")], call.StartLine())
 					}
 					if arg.Kind() == "identifier" {
-						releases[argText] = call.StartLine()
+						releases[argText] = append(releases[argText], call.StartLine())
 					}
 				}
 			}

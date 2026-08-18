@@ -72,11 +72,14 @@ func (d *InjectionDetector) detectCommandInjection(ctx context.Context, f *db.Fu
 		}
 
 		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
+		// variable: the sink argument when it is a bare identifier, so the
+		// planner's taint filter can track it (system(buf) -> variable "buf").
 		props, _ := json.Marshal(map[string]string{
 			"function":   callName,
 			"category":   "command_injection",
 			"taint":      taint,
 			"expression": call.Text(),
+			"variable":   bareCommandArg(call),
 		})
 		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
 			EventType:  "INJECTION",
@@ -207,6 +210,25 @@ func (d *InjectionDetector) detectTaintFlowInjection(ctx context.Context, f *db.
 			}
 		}
 	}
+}
+
+// bareCommandArg returns the first argument of a command-injection sink when it
+// is a bare identifier (system(buf) -> "buf"), else "".
+func bareCommandArg(call parser.Node) string {
+	args := extractCallArgs(call)
+	if len(args) == 0 {
+		return ""
+	}
+	arg := strings.TrimSpace(args[0])
+	for i, c := range arg {
+		if !(c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (i > 0 && c >= '0' && c <= '9')) {
+			return ""
+		}
+	}
+	if arg == "" {
+		return ""
+	}
+	return arg
 }
 
 func isConstantCommandArg(call parser.Node) bool {

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -67,6 +68,7 @@ func (d *RaceConditionDetector) Detect(ctx context.Context) (DetectResult, error
 		assigns := root.FindAll("assignment_expression")
 		updates := root.FindAll("update_expression")
 		ids := root.FindAll("identifier")
+		funcDefs := root.FindAll("function_definition")
 
 		for _, f := range funcs {
 			for _, ifStmt := range ifs {
@@ -118,10 +120,13 @@ func (d *RaceConditionDetector) Detect(ctx context.Context) (DetectResult, error
 			}
 
 			d.detectLockUnlockPattern(ctx, calls, assigns, f, file, &result)
-			if threadCounts[f.Name] > 0 {
-				d.detectSharedDataRace(ctx, f, file, fileInfos[file.ID], threadCounts, assigns, updates, ids, calls, &result)
-			}
 		}
+
+		// Cross-function data race: aggregate every thread function's accesses
+		// to each global and intersect their locksets, so a race between two
+		// DIFFERENT thread functions (t1 under m1, t2 under m2) is caught — the
+		// per-function pass only saw a single function's own accesses.
+		d.detectCrossFunctionDataRace(ctx, file, funcs, funcDefs, fileInfos[file.ID], threadCounts, assigns, updates, ids, calls, &result)
 	})
 	return result, err
 }
@@ -137,6 +142,10 @@ type globalAccess struct {
 	reads       []int
 	unprotected []int
 	writeFuncs  map[int]string
+	// lockset is the intersection of the held-mutex sets across every access to
+	// this global in the function. Empty means no single mutex consistently
+	// protects the accesses — the classic lockset race signal.
+	lockset map[string]bool
 }
 
 // collectGlobalVars gathers top-level (file-scope) variable names by
@@ -220,59 +229,97 @@ func (d *RaceConditionDetector) collectThreadTargets(calls []parser.Node, f *db.
 	}
 }
 
-// detectSharedDataRace flags classic data races: a file-scope variable that is
-// accessed (at least one write) by two or more pthread_create thread instances
-// without lock protection. Access inside a pthread_mutex_lock/unlock scope is
-// considered protected; mutex variables themselves are ignored.
-func (d *RaceConditionDetector) detectSharedDataRace(ctx context.Context, f *db.Function, file *db.File, info *fileInfo, threadCounts map[string]int, assigns, updates, ids, calls []parser.Node, result *DetectResult) {
+// detectCrossFunctionDataRace flags classic data races across ALL thread
+// functions of a file: a file-scope variable accessed (with at least one write)
+// by two or more pthread_create thread instances whose locksets have no common
+// mutex. Unlike the previous per-function pass, this intersects the locksets of
+// DIFFERENT thread functions, so `t1` writing g under m1 while `t2` writes g
+// under m2 is caught even though each function is created only once.
+func (d *RaceConditionDetector) detectCrossFunctionDataRace(ctx context.Context, file *db.File, funcs []*db.Function, funcDefs []parser.Node, info *fileInfo, threadCounts map[string]int, assigns, updates, ids, calls []parser.Node, result *DetectResult) {
 	if info == nil {
 		return
 	}
-	accesses := d.functionGlobalAccesses(f, info, assigns, updates, ids, d.lockRanges(calls, f))
 
-	names := make([]string, 0, len(accesses))
-	for name := range accesses {
+	type globalAgg struct {
+		funcLocksets map[string]map[string]bool // function name -> its lockset intersection
+		writeLine    int
+		writeFuncID  int64
+	}
+	agg := make(map[string]*globalAgg)
+
+	for _, f := range funcs {
+		if threadCounts[f.Name] <= 0 {
+			continue
+		}
+		body := extractFunctionBodyFrom(funcDefs, f.StartLine)
+		heldByLine := d.mustHoldByLine(body, f.EndLine, calls, f)
+		accesses := d.functionGlobalAccesses(f, info, assigns, updates, ids, heldByLine)
+		for name, acc := range accesses {
+			if len(acc.writes) == 0 {
+				continue // reads alone do not constitute a data race here
+			}
+			g := agg[name]
+			if g == nil {
+				g = &globalAgg{funcLocksets: make(map[string]map[string]bool)}
+				agg[name] = g
+			}
+			g.funcLocksets[f.Name] = acc.lockset
+			if g.writeLine == 0 {
+				g.writeLine, _ = firstWrite(acc)
+				g.writeFuncID = f.ID
+			}
+		}
+	}
+
+	names := make([]string, 0, len(agg))
+	for name := range agg {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 
 	for _, globalName := range names {
-		acc := accesses[globalName]
+		g := agg[globalName]
 		instances := 0
-		for fnName := range acc.funcs {
-			instances += threadCounts[fnName]
-		}
-		if instances < 2 || len(acc.writes) == 0 || len(acc.unprotected) == 0 {
-			continue
-		}
-		writeLine, writeFunc := firstWrite(acc)
-		if writeFunc != f.Name {
-			// Emit once per variable, from the function holding the first write.
-			continue
-		}
-		threadFuncs := make([]string, 0, len(acc.funcs))
-		for fnName := range acc.funcs {
-			threadFuncs = append(threadFuncs, fnName)
+		threadFuncs := make([]string, 0, len(g.funcLocksets))
+		for fn := range g.funcLocksets {
+			instances += threadCounts[fn]
+			threadFuncs = append(threadFuncs, fn)
 		}
 		sort.Strings(threadFuncs)
 
-		accessLines := append([]int{}, acc.writes...)
-		accessLines = append(accessLines, acc.reads...)
-		sort.Ints(accessLines)
-		sort.Ints(acc.writes)
+		// Cross-function lockset intersection: every thread function's accesses
+		// must share a common mutex; otherwise they race.
+		common := map[string]bool{}
+		first := true
+		for _, ls := range g.funcLocksets {
+			if first {
+				for m := range ls {
+					common[m] = true
+				}
+				first = false
+				continue
+			}
+			for m := range common {
+				if !ls[m] {
+					delete(common, m)
+				}
+			}
+		}
+		if instances < 2 || len(common) != 0 {
+			continue
+		}
 
-		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: writeLine})
+		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: g.writeLine})
 		props, _ := json.Marshal(map[string]interface{}{
 			"variable":         globalName,
 			"category":         "shared_data_race",
 			"thread_functions": strings.Join(threadFuncs, ","),
 			"thread_instances": fmt.Sprintf("%d", instances),
-			"access_lines":     joinInts(accessLines),
-			"write_lines":      joinInts(acc.writes),
+			"write_line":       fmt.Sprintf("%d", g.writeLine),
 		})
 		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
 			EventType:  "RACE_CONDITION",
-			EntityID:   f.ID,
+			EntityID:   g.writeFuncID,
 			LocationID: locID,
 			Properties: string(props),
 		})
@@ -294,17 +341,8 @@ func firstWrite(acc *globalAccess) (int, string) {
 	return line, fn
 }
 
-func (d *RaceConditionDetector) functionGlobalAccesses(f *db.Function, info *fileInfo, assigns, updates, ids []parser.Node, lockRanges [][2]int) map[string]*globalAccess {
+func (d *RaceConditionDetector) functionGlobalAccesses(f *db.Function, info *fileInfo, assigns, updates, ids []parser.Node, heldByLine map[int]map[string]bool) map[string]*globalAccess {
 	accesses := make(map[string]*globalAccess)
-
-	inLock := func(line int) bool {
-		for _, r := range lockRanges {
-			if line >= r[0] && line <= r[1] {
-				return true
-			}
-		}
-		return false
-	}
 
 	assignTargets := make(map[int]string)
 	for _, assign := range assigns {
@@ -351,42 +389,113 @@ func (d *RaceConditionDetector) functionGlobalAccesses(f *db.Function, info *fil
 		} else if !containsInt(acc.reads, line) {
 			acc.reads = append(acc.reads, line)
 		}
-		if !inLock(line) && !containsInt(acc.unprotected, line) {
+		ls := heldByLine[line]
+		if ls == nil {
+			ls = map[string]bool{}
+		}
+		if acc.lockset == nil {
+			acc.lockset = ls
+		} else {
+			for m := range acc.lockset {
+				if !ls[m] {
+					delete(acc.lockset, m)
+				}
+			}
+		}
+		if len(ls) == 0 && !containsInt(acc.unprotected, line) {
 			acc.unprotected = append(acc.unprotected, line)
 		}
 	}
 	return accesses
 }
 
-func (d *RaceConditionDetector) lockRanges(calls []parser.Node, f *db.Function) [][2]int {
-	locks := make(map[int]string)
-	unlocks := make(map[int]string)
+// mustHoldByLine returns, per source line, the set of mutexes DEFINITELY held
+// when execution reaches that line — a forward must-analysis over the statement
+// CFG. A mutex is held iff every path from the function entry to the line
+// acquires it without a subsequent release, so a conditionally-acquired mutex
+// (`if (c) lock(m); ...`) is NOT treated as protecting a later access (the
+// previous line-range [lock, unlock] approximation wrongly treated it as held).
+//
+// It is computed per mutex via a two-state reachability (held / not-held): a
+// node is "not held" iff it is reachable from the entry without holding the
+// mutex, and "held" otherwise.
+func (d *RaceConditionDetector) mustHoldByLine(body parser.Node, funcEnd int, calls []parser.Node, f *db.Function) map[int]map[string]bool {
+	cfg := graph.BuildStmtCFG(body, funcEnd)
+
+	mutexSet := make(map[string]bool)
+	lockAt := make(map[int]string)
+	unlockAt := make(map[int]string)
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		name := extractCallName(call)
+		if name != "pthread_mutex_lock" && name != "pthread_mutex_unlock" {
+			continue
+		}
 		args := extractCallArgs(call)
 		if len(args) == 0 {
 			continue
 		}
 		mutex := strings.TrimPrefix(strings.TrimSpace(args[0]), "&")
-		switch name {
-		case "pthread_mutex_lock":
-			locks[call.StartLine()] = mutex
-		case "pthread_mutex_unlock":
-			unlocks[call.StartLine()] = mutex
-		}
-	}
-	var ranges [][2]int
-	for ll, m1 := range locks {
-		for ul, m2 := range unlocks {
-			if ul > ll && m1 == m2 {
-				ranges = append(ranges, [2]int{ll, ul})
+		mutexSet[mutex] = true
+		if node := cfg.NodeAt(call.StartLine()); node != nil {
+			switch name {
+			case "pthread_mutex_lock":
+				lockAt[node.ID] = mutex
+			case "pthread_mutex_unlock":
+				unlockAt[node.ID] = mutex
 			}
 		}
 	}
-	return ranges
+
+	// notHeld[m] = set of nodes reachable from entry without holding m.
+	notHeld := make(map[string]map[int]bool, len(mutexSet))
+	for m := range mutexSet {
+		notHeld[m] = make(map[int]bool)
+		type state struct{ node, held int }
+		visited := make(map[state]bool)
+		queue := []state{{cfg.Entry, 0}}
+		visited[state{cfg.Entry, 0}] = true
+		notHeld[m][cfg.Entry] = true
+		for len(queue) > 0 {
+			s := queue[0]
+			queue = queue[1:]
+			for _, succ := range cfg.Nodes[s.node].Succs {
+				held := s.held
+				if lockAt[s.node] == m {
+					held = 1
+				}
+				if unlockAt[s.node] == m {
+					held = 0
+				}
+				ns := state{succ, held}
+				if visited[ns] {
+					continue
+				}
+				visited[ns] = true
+				if held == 0 {
+					notHeld[m][succ] = true
+				}
+				queue = append(queue, ns)
+			}
+		}
+	}
+
+	result := make(map[int]map[string]bool)
+	for _, node := range cfg.Nodes {
+		if node.Kind != "stmt" {
+			continue
+		}
+		held := make(map[string]bool)
+		for m := range mutexSet {
+			if !notHeld[m][node.ID] {
+				held[m] = true
+			}
+		}
+		result[node.StartLine] = held
+	}
+	return result
 }
 
 func containsInt(s []int, n int) bool {
