@@ -47,7 +47,7 @@ func TestSchemaDDL_ContainsFunctionSummaryTable(t *testing.T) {
 }
 
 func TestSchemaDDL_EdgeTypeCheckConstraint(t *testing.T) {
-	edgeTypes := []string{"CALL", "DATA_FLOW", "OWNERSHIP_TRANSFER", "RELEASE", "BRANCH", "ALIAS"}
+	edgeTypes := []string{"CALL", "DATA_FLOW", "OWNERSHIP_TRANSFER", "RELEASE", "ALIAS", "PARAM_BINDING", "RETURN"}
 	for _, et := range edgeTypes {
 		if !strings.Contains(SchemaDDL, et) {
 			t.Errorf("SchemaDDL missing edge_type enum value: %s", et)

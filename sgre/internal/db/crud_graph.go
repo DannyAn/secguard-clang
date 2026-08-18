@@ -37,8 +37,14 @@ func (s *store) GetGraphNodeByID(ctx context.Context, id int64) (*GraphNode, err
 
 func (s *store) GetOrCreateGraphNode(ctx context.Context, entityType string, entityID int64, properties string) (int64, error) {
 	var id int64
+	// The node identity is (entity_type, entity_id, properties): two variable_ref
+	// nodes with different names/lines must be distinct nodes, otherwise every
+	// DATA_FLOW / ALIAS edge in a function collapses onto a single self-loop.
+	// The previous query keyed only on (entity_type, entity_id), so all variable
+	// refs in one function shared one node and the persisted dataflow edges were
+	// semantically broken (their src/dst resolved to the same variable).
 	err := s.exec.QueryRowContext(ctx,
-		`SELECT id FROM graph_nodes WHERE entity_type = ? AND entity_id = ? LIMIT 1`, entityType, entityID).Scan(&id)
+		`SELECT id FROM graph_nodes WHERE entity_type = ? AND entity_id = ? AND properties = ? LIMIT 1`, entityType, entityID, properties).Scan(&id)
 	if err == nil {
 		return id, nil
 	}

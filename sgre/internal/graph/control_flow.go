@@ -32,7 +32,10 @@ type StmtCFG struct {
 // NodeAt returns the innermost real statement node containing line, or nil if
 // no statement contains it. It prefers the smallest line range so a dereference
 // inside a nested block resolves to the block's statement rather than an outer
-// wrapper.
+// wrapper. When two statements share one line (a control-flow header and its
+// single-statement body, e.g. `if (c) return -1;`), it prefers the LEAF
+// statement over the header: the header's range covers the leaf but the leaf is
+// the innermost real statement.
 func (cfg *StmtCFG) NodeAt(line int) *StmtNode {
 	var best *StmtNode
 	for _, n := range cfg.Nodes {
@@ -42,11 +45,34 @@ func (cfg *StmtCFG) NodeAt(line int) *StmtNode {
 		if line < n.StartLine || line > n.EndLine {
 			continue
 		}
-		if best == nil || (n.EndLine-n.StartLine) < (best.EndLine-best.StartLine) {
+		if best == nil {
+			best = n
+			continue
+		}
+		bestRange := best.EndLine - best.StartLine
+		nRange := n.EndLine - n.StartLine
+		if nRange < bestRange {
+			best = n
+			continue
+		}
+		if nRange == bestRange && isControlFlowHeader(best) && !isControlFlowHeader(n) {
 			best = n
 		}
 	}
 	return best
+}
+
+// isControlFlowHeader reports whether a statement node wraps control flow (an
+// if/loop/switch/preprocessor conditional), as opposed to a leaf statement
+// (assignment, declaration, return, call, ...). It is used by NodeAt to resolve
+// a same-line header+body to the leaf statement.
+func isControlFlowHeader(n *StmtNode) bool {
+	switch n.Stmt.Kind() {
+	case "if_statement", "while_statement", "do_statement", "for_statement",
+		"switch_statement", "preproc_ifdef", "preproc_ifndef", "preproc_if":
+		return true
+	}
+	return false
 }
 
 // Reaches reports whether there is a control-flow path from node from to node
