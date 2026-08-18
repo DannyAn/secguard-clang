@@ -72,6 +72,15 @@ func runIndexCmd(ctx context.Context, args []string) int {
 	dfBuilder := graph.NewDataFlowBuilder(store, p, logger)
 	dfBuilder.Build(ctx)
 
+	aliasBuilder := graph.NewAliasBuilder(store, p, logger)
+	aliasBuilder.Build(ctx)
+
+	ownershipBuilder := graph.NewOwnershipBuilder(store, p, logger)
+	ownershipBuilder.Build(ctx)
+
+	interprocBuilder := graph.NewInterprocBuilder(store, p, logger)
+	interprocBuilder.Build(ctx)
+
 	store.ClearSecurityEvents(ctx)
 
 	evidence.RunAllDetectors(ctx, store, p, logger)

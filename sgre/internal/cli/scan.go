@@ -125,6 +125,21 @@ func runScanCmd(ctx context.Context, args []string) int {
 	dfBuilder.Build(ctx)
 	logger.Info("phase timing", "phase", "data_flow", "elapsed_ms", time.Since(dfStart).Milliseconds())
 
+	aliasBuilder := graph.NewAliasBuilder(store, p, logger)
+	aliasStart := time.Now()
+	aliasBuilder.Build(ctx)
+	logger.Info("phase timing", "phase", "alias", "elapsed_ms", time.Since(aliasStart).Milliseconds())
+
+	ownershipBuilder := graph.NewOwnershipBuilder(store, p, logger)
+	ownershipStart := time.Now()
+	ownershipBuilder.Build(ctx)
+	logger.Info("phase timing", "phase", "ownership", "elapsed_ms", time.Since(ownershipStart).Milliseconds())
+
+	interprocBuilder := graph.NewInterprocBuilder(store, p, logger)
+	interprocStart := time.Now()
+	interprocBuilder.Build(ctx)
+	logger.Info("phase timing", "phase", "interproc", "elapsed_ms", time.Since(interprocStart).Milliseconds())
+
 	if err := store.ClearSecurityEvents(ctx); err != nil {
 		WriteErrorJSON(fmt.Sprintf("failed to clear security events: %v", err))
 		return 1
