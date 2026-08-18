@@ -2,6 +2,34 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.2.0] - 2026-08-19
+
+语义图完成度与收敛引擎的全面升级：把"声明未用"的语义图边真正落库并接入收敛管线，把数据流引擎从 null/free 扩展为可复用的污点/所有权/锁集引擎。这是对标业界同类产品（CodeQL / Infer / Semgrep 的 C 语义分析）的第一版。
+
+### 语义图层（补齐 + 修复）
+
+- **5 种边从"声明未用"到真正落库**：`ALIAS`（`q=p`/`q=p->f`/`q=p[i]`）、`OWNERSHIP_TRANSFER`（return-to-caller / store-to-global）、`RELEASE`（free/close 站点）；新增 `PARAM_BINDING`（实参→形参）、`RETURN`（callee 返回→caller 接收变量）。构建器：`internal/graph/{alias,ownership,interproc}.go`。
+- **修复 `GetOrCreateGraphNode` 去重 bug**：原查询只按 `(entity_type, entity_id)` 去重、忽略 `properties`，导致同函数内所有 `variable_ref` 塌缩成同一节点、`DATA_FLOW` 边源/目标指向同一节点。修复为按 `(entity_type, entity_id, properties)` 去重。
+- **删除 `BRANCH` 边**（声明但从未使用，CFG 分支结构无需落库），迁移 `migrateGraphEdgesTable` 自动重建旧表。
+
+### 数据流引擎扩展
+
+- **污点追踪**（`filter_taint_source.go`）：injection / path-traversal / format-string 从"仅 call-reach"升级为路径敏感 source→sink 分析（gen=污点源、kill=确定无污点、copy=赋值）。
+- **过程间污点**：return-taint（`computeRetTainted` 沿 RETURN/CALL 边做不动点）+ param-taint（`computeParamTainted` 沿 PARAM_BINDING 边正向传播），消费语义图边。
+- **别名传播**（`null_flow.go` 的 `loadAliases`/`expandGenToAliases`）：修复 `q=p; free(p); *q` 漏检（`findAliases` 扩展到普通赋值语句）。
+- **resource-leak 所有权+路径分析**：对齐 memory-leak，return-to-caller / store-to-global 不算泄漏，错误路径漏关正确识别。
+
+### 检测器升级
+
+- **race-condition 锁集**：从"任意锁范围"升级为 CFG 级 must-hold 锁集 + 跨函数交集，识别条件加锁、不同 mutex 保护、跨线程函数竞态。
+- **deadlock 传递闭包环**：从 2 环反向对升级为 Tarjan SCC 强连通分量检测（A→B→C→A）。
+- **integer-overflow 路径敏感**：`int_overflow_guard` 过滤丢弃被小常数边界保护的尺寸计算。
+- **退役旧 BuildCFG**：uninit 迁移到语句级 `StmtCFG`，删除 `internal/graph/cfg.go`；修复 `NodeAt` 行碰撞（控制流头节点 vs 叶子语句）。
+
+### 修复
+
+- `StmtCFG.NodeAt` 对"头节点 + 单语句体"同行返回头节点而非叶子语句，导致 `hasLeakingPath` 把 if 头加入 avoid、堵死所有路径（潜伏 bug，memory-leak 也受影响）。
+
 ## [0.1.5] - 2026-08-17
 
 狗粮测试（生产冒烟测试）后的全面自检与修复。重点解决管道死锁导致 report.md 不落盘、Agent 上下文被原始候选污染、findings 不持久化、DB schema 不可发现等致命问题。
