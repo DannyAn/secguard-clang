@@ -222,15 +222,19 @@ func init() {
 		SeedEventType:    "INJECTION",
 		EvidenceType:     "INJECTION",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "default",
+		FilterChain:      "injection",
 		ConvergeKey: func(c Candidate) string {
 			return fmt.Sprintf("injection:%d:%s:%s", c.FileID, c.FunctionName, c.Category)
 		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
-			return []EvidenceFragment{
+			frags := []EvidenceFragment{
 				{Type: "unsafe_call", Detail: fmt.Sprintf("unsafe function call in %s at line %d", c.FunctionName, c.Line)},
 				{Type: "call_path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
 			}
+			if c.HasTaintSource {
+				frags = append(frags, EvidenceFragment{Type: "taint_source", Detail: fmt.Sprintf("user-controlled value reaches the sink at line %d", c.Line)})
+			}
+			return frags
 		},
 	})
 
@@ -304,12 +308,16 @@ func init() {
 		SeedEventType:    "FORMAT_STRING",
 		EvidenceType:     "FORMAT_STRING_VULN",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "default",
+		FilterChain:      "format-string",
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
-			return []EvidenceFragment{
+			frags := []EvidenceFragment{
 				{Type: "format_string", Detail: fmt.Sprintf("printf-family called with non-literal format in %s at line %d", c.FunctionName, c.Line)},
 				{Type: "call_path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
 			}
+			if c.HasTaintSource {
+				frags = append(frags, EvidenceFragment{Type: "taint_source", Detail: fmt.Sprintf("user-controlled value reaches the format argument at line %d", c.Line)})
+			}
+			return frags
 		},
 	})
 
@@ -319,7 +327,7 @@ func init() {
 		SeedEventType:    "INTEGER_OVERFLOW",
 		EvidenceType:     "INTEGER_OVERFLOW",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "default",
+		FilterChain:      "integer-overflow",
 		// size_calc_overflow (malloc(a * b)) is a concrete CWE-190 pattern and
 		// stays "suspected"; the wraparound-in-a-bounds-check pattern (the
 		// arithmetic lives in the guard itself) is a theoretical wraparound —
@@ -466,12 +474,16 @@ func init() {
 		SeedEventType:    "PATH_TRAVERSAL",
 		EvidenceType:     "PATH_TRAVERSAL",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "default",
+		FilterChain:      "path-traversal",
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
-			return []EvidenceFragment{
+			frags := []EvidenceFragment{
 				{Type: "path_traversal", Detail: fmt.Sprintf("non-literal path passed to %s in function %s at line %d", c.APIName, c.FunctionName, c.Line)},
 				{Type: "call_path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
 			}
+			if c.HasTaintSource {
+				frags = append(frags, EvidenceFragment{Type: "taint_source", Detail: fmt.Sprintf("user-controlled value reaches the path argument at line %d", c.Line)})
+			}
+			return frags
 		},
 	})
 

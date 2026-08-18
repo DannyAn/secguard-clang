@@ -77,7 +77,14 @@ func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Ca
 			continue
 		}
 
-		genByLine := make(map[int][]string)
+		analyzer := newFlowAnalyzer(f.store, f.parser)
+		// Direct free sites come from the graph's RELEASE edges (release_fn ==
+		// "free"); indirect frees have no RELEASE edge, so those are seeded from
+		// the detector's event properties.
+		genByLine := analyzer.loadFreeSites(ctx, []int64{fid})[fid]
+		if genByLine == nil {
+			genByLine = make(map[int][]string)
+		}
 		for _, c := range cs {
 			event, err := f.store.GetEventByID(ctx, c.DerefEventID)
 			if err != nil || event == nil {
@@ -86,11 +93,14 @@ func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Ca
 			var props struct {
 				FirstFree int    `json:"first_free"`
 				Variable  string `json:"variable"`
+				Indirect  bool   `json:"indirect"`
 			}
 			if json.Unmarshal([]byte(event.Properties), &props) != nil || props.FirstFree == 0 || props.Variable == "" {
 				continue
 			}
-			genByLine[props.FirstFree] = append(genByLine[props.FirstFree], props.Variable)
+			if props.Indirect || !freeAlreadySeeded(genByLine, props.FirstFree, props.Variable) {
+				genByLine[props.FirstFree] = append(genByLine[props.FirstFree], props.Variable)
+			}
 		}
 
 		killByLine := make(map[int][]string)
@@ -103,7 +113,9 @@ func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Ca
 			}
 		})
 
-		analyzer := newFlowAnalyzer(f.store, f.parser)
+		// free(p) dangles every alias of p, so the first-free source also reaches
+		// a later free(q) where q aliases p (q = p; free(p); free(q)).
+		expandGenToAliases(genByLine, analyzer.loadAliases(ctx, []int64{fid})[fid])
 		flows[fid] = analyzer.analyzeFlow(ctx, fn, body, root, genByLine, killByLine, false, false)
 	}
 	return flows

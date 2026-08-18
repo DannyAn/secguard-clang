@@ -45,12 +45,14 @@ func (p *Planner) getFilters(chain string) []Filter {
 			NewCallReachFilter(p.store, p.callReachCache),
 			NewSafeFunctionFilter(p.store),
 			NewReleaseFilter(p.store, "MEMORY_RELEASE"),
+			NewOwnershipTransferFilter(p.store),
 		}
 	case "resource-leak":
 		return []Filter{
 			NewCallReachFilter(p.store, p.callReachCache),
 			NewSafeFunctionFilter(p.store),
 			NewReleaseFilter(p.store, "RESOURCE_RELEASE"),
+			NewOwnershipTransferFilter(p.store),
 		}
 	case "lifetime":
 		return []Filter{
@@ -69,6 +71,18 @@ func (p *Planner) getFilters(chain string) []Filter {
 			NewCallReachFilter(p.store, p.callReachCache),
 			NewSafeFunctionFilter(p.store),
 			NewDoubleFreeFilter(p.store, p.parser, p.logger),
+		}
+	case "injection", "path-traversal", "format-string":
+		return []Filter{
+			NewCallReachFilter(p.store, p.callReachCache),
+			NewSafeFunctionFilter(p.store),
+			NewTaintSourceFilter(p.store, p.parser, p.logger),
+		}
+	case "integer-overflow":
+		return []Filter{
+			NewCallReachFilter(p.store, p.callReachCache),
+			NewSafeFunctionFilter(p.store),
+			NewIntOverflowGuardFilter(p.store, p.parser, p.logger),
 		}
 	default:
 		// Bounds-check suppression already happens in the buffer-overflow

@@ -76,7 +76,14 @@ func (f *LifetimeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Cand
 			continue
 		}
 
-		genByLine := make(map[int][]string)
+		analyzer := newFlowAnalyzer(f.store, f.parser)
+		// Direct free sites come from the graph's RELEASE edges (release_fn ==
+		// "free"); indirect frees (a callee frees a parameter) have no RELEASE
+		// edge, so those are seeded from the detector's event properties.
+		genByLine := analyzer.loadFreeSites(ctx, []int64{fid})[fid]
+		if genByLine == nil {
+			genByLine = make(map[int][]string)
+		}
 		for _, c := range cs {
 			event, err := f.store.GetEventByID(ctx, c.DerefEventID)
 			if err != nil || event == nil {
@@ -85,11 +92,17 @@ func (f *LifetimeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Cand
 			var props struct {
 				FreeLine int    `json:"free_line"`
 				Variable string `json:"variable"`
+				Indirect bool   `json:"indirect"`
 			}
 			if json.Unmarshal([]byte(event.Properties), &props) != nil || props.FreeLine == 0 || props.Variable == "" {
 				continue
 			}
-			genByLine[props.FreeLine] = append(genByLine[props.FreeLine], props.Variable)
+			// Seed from the event only when it is an indirect free (a callee
+			// frees a parameter — no RELEASE edge) or when the graph layer was
+			// not built (no RELEASE edge for this direct free site).
+			if props.Indirect || !freeAlreadySeeded(genByLine, props.FreeLine, props.Variable) {
+				genByLine[props.FreeLine] = append(genByLine[props.FreeLine], props.Variable)
+			}
 		}
 
 		// kill: a whole-variable reassignment (p = <non-alias>) clears the freed
@@ -104,7 +117,9 @@ func (f *LifetimeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Cand
 			}
 		})
 
-		analyzer := newFlowAnalyzer(f.store, f.parser)
+		// free(p) dangles every alias of p, so propagate the freed source through
+		// the ALIAS edges the graph layer persists (q = p; free(p); *q).
+		expandGenToAliases(genByLine, analyzer.loadAliases(ctx, []int64{fid})[fid])
 		flows[fid] = analyzer.analyzeFlow(ctx, fn, body, root, genByLine, killByLine, false, false)
 	}
 	return flows

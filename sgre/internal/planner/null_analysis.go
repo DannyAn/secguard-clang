@@ -14,9 +14,9 @@ import (
 // every dereference in a function as soon as that function had *any* null
 // source.
 //
-// It deliberately does not consult graph.BuildCFG / CanReach: those are pure
-// line-number heuristics that degenerate to "unreachable" for flat functions,
-// and the null-source decision needs only line ordering.
+// It is a pure event-index model (no CFG): the flow-sensitive CFG/DATA_FLOW
+// analysis lives in null_flow.go, and this model only feeds it the NULL_VALUE
+// source facts keyed by (function, variable).
 
 // nullSource is a single variable-level origin of a possibly-null value.
 type nullSource struct {

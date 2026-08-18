@@ -75,6 +75,7 @@ type Candidate struct {
 	HasDefiniteNull   bool    `json:"has_definite_null"`
 	IsReachable       bool    `json:"is_reachable"`
 	HasDataFlow       bool    `json:"has_data_flow"`
+	HasTaintSource    bool    `json:"has_taint_source"`
 	IsGuarded         bool    `json:"is_guarded"`
 	GuardStrength     string  `json:"guard_strength"`
 	SuspicionLevel    string  `json:"suspicion_level"`

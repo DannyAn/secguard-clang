@@ -488,6 +488,155 @@ func (a *flowAnalyzer) loadDFGCopies(ctx context.Context, funcIDs []int64) map[i
 	return result
 }
 
+// loadAliases resolves stored ALIAS edges into a per-function map from base
+// variable to the list of variables that alias it. The freed-state flow filters
+// use this to propagate a freed source from a variable to its aliases (freeing
+// p dangles every q that aliases p). Best-effort: on any error it returns an
+// empty map and the analysis continues on the AST-level copy step alone.
+func (a *flowAnalyzer) loadAliases(ctx context.Context, funcIDs []int64) map[int64]map[string][]string {
+	result := make(map[int64]map[string][]string)
+	edges, err := a.store.ListGraphEdgesByType(ctx, "ALIAS")
+	if err != nil {
+		return result
+	}
+
+	want := make(map[int64]bool, len(funcIDs))
+	for _, fid := range funcIDs {
+		want[fid] = true
+	}
+
+	nameByNode := make(map[int64]string)
+	funcByNode := make(map[int64]int64)
+	nodes, err := a.store.ListGraphNodesByEntityType(ctx, "variable_ref")
+	if err != nil {
+		return result
+	}
+	for _, n := range nodes {
+		if !want[n.EntityID] {
+			continue
+		}
+		var props struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal([]byte(n.Properties), &props) != nil || props.Name == "" {
+			continue
+		}
+		nameByNode[n.ID] = props.Name
+		funcByNode[n.ID] = n.EntityID
+	}
+
+	for _, e := range edges {
+		alias := nameByNode[e.SrcID]
+		base := nameByNode[e.DstID]
+		fid := funcByNode[e.SrcID]
+		if alias == "" || base == "" || alias == base {
+			continue
+		}
+		if result[fid] == nil {
+			result[fid] = make(map[string][]string)
+		}
+		result[fid][base] = append(result[fid][base], alias)
+	}
+	return result
+}
+
+// expandGenToAliases adds, for every variable that generates a source, its alias
+// variables at the same line. Used only by the freed-state analyses (use-after-
+// free / double-free): free(p) invalidates the OBJECT p points to, so every
+// variable aliasing p is also dangling — regardless of when the alias was
+// created. It is deliberately NOT applied to null-deref, where nullness is a
+// property of the pointer's current VALUE (q = p; p = NULL leaves q non-null).
+func expandGenToAliases(genByLine map[int][]string, aliasesOf map[string][]string) {
+	if len(aliasesOf) == 0 {
+		return
+	}
+	for line, vars := range genByLine {
+		var extra []string
+		for _, v := range vars {
+			extra = append(extra, aliasesOf[v]...)
+		}
+		if len(extra) > 0 {
+			genByLine[line] = append(genByLine[line], extra...)
+		}
+	}
+}
+
+// loadFreeSites resolves stored RELEASE edges with release_fn == "free" into a
+// per-function, per-line map of directly-freed variables. It is the graph-native
+// source of DIRECT memory free sites for the freed-state flow filters (UAF /
+// double-free), so the semantic graph's RELEASE edges are finally consumed. The
+// release_fn filter is what makes the consumption precise: memory free (free)
+// is routed to the memory flow, while resource releases (fclose/close) are left
+// to the resource-leak pipeline.
+//
+// Indirect free sites (a callee frees a parameter) have no RELEASE edge, so the
+// filters keep seeding those from the detector's event properties.
+func (a *flowAnalyzer) loadFreeSites(ctx context.Context, funcIDs []int64) map[int64]map[int][]string {
+	result := make(map[int64]map[int][]string)
+	edges, err := a.store.ListGraphEdgesByType(ctx, "RELEASE")
+	if err != nil {
+		return result
+	}
+
+	want := make(map[int64]bool, len(funcIDs))
+	for _, fid := range funcIDs {
+		want[fid] = true
+	}
+	nameByNode := make(map[int64]string)
+	lineByNode := make(map[int64]int)
+	funcByNode := make(map[int64]int64)
+	nodes, err := a.store.ListGraphNodesByEntityType(ctx, "variable_ref")
+	if err != nil {
+		return result
+	}
+	for _, n := range nodes {
+		if !want[n.EntityID] {
+			continue
+		}
+		var props struct {
+			Name string `json:"name"`
+			Line int    `json:"line"`
+		}
+		if json.Unmarshal([]byte(n.Properties), &props) != nil || props.Name == "" {
+			continue
+		}
+		nameByNode[n.ID] = props.Name
+		lineByNode[n.ID] = props.Line
+		funcByNode[n.ID] = n.EntityID
+	}
+
+	for _, e := range edges {
+		var props struct {
+			ReleaseFn string `json:"release_fn"`
+		}
+		if json.Unmarshal([]byte(e.Properties), &props) != nil || props.ReleaseFn != "free" {
+			continue
+		}
+		name := nameByNode[e.SrcID]
+		fid := funcByNode[e.SrcID]
+		if name == "" || fid == 0 {
+			continue
+		}
+		if result[fid] == nil {
+			result[fid] = make(map[int][]string)
+		}
+		result[fid][lineByNode[e.SrcID]] = append(result[fid][lineByNode[e.SrcID]], name)
+	}
+	return result
+}
+
+// freeAlreadySeeded reports whether genByLine already records variable as freed
+// at line — used to avoid double-seeding a direct free site that both the
+// RELEASE edges and the detector's event properties capture.
+func freeAlreadySeeded(genByLine map[int][]string, line int, variable string) bool {
+	for _, v := range genByLine[line] {
+		if v == variable {
+			return true
+		}
+	}
+	return false
+}
+
 // fileParseCache lazily parses each file once and caches its root plus a map
 // from function-definition start line to the function's compound_statement
 // body. It replaces the per-function readFunctionBody, which re-walked the
