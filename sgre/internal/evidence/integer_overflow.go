@@ -40,7 +40,18 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		binaryExprs := root.FindAll("binary_expression")
 		calls := root.FindAll("call_expression")
+		// Parameter names per function, used to recognize "caller-influenced"
+		// operands: arithmetic on a function parameter (vs. a bounded local) is
+		// the signal that a variable-bounded size expression may overflow.
+		paramsByLine := make(map[int][]string)
+		for _, fnNode := range root.FindAll("function_definition") {
+			paramsByLine[fnNode.StartLine()] = findParamsInDefinition(fnNode)
+		}
 		for _, f := range funcs {
+			params := make(map[string]bool)
+			for _, p := range paramsByLine[f.StartLine] {
+				params[p] = true
+			}
 			for _, expr := range binaryExprs {
 				if !funcLineRange(f, expr.StartLine()) {
 					continue
@@ -71,7 +82,7 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 				}
 			}
 
-			d.detectSizeCalcOverflow(ctx, calls, f, file, &result)
+			d.detectSizeCalcOverflow(ctx, calls, f, file, params, &result)
 		}
 	})
 	return result, err
@@ -173,73 +184,98 @@ func extractOperands(expr parser.Node) []string {
 	return operands
 }
 
+// sizeCalcCandidate is one overflow-prone size expression and its category.
+type sizeCalcCandidate struct {
+	expr     parser.Node
+	category string
+}
+
 // detectSizeCalcOverflow flags an arithmetic expression passed directly as a
-// size-function argument whose product/sum can wrap before the allocation,
-// e.g. malloc(count * obj_size) — the canonical CWE-190 "size calculation
-// overflow". The main Detect loop only covers the "wraparound inside a bounds
-// check" pattern (the arithmetic lives in an if-condition), so this is a
-// separate path: a multiplication of two variables, with no sizeof and no
-// constant operand, feeding straight into malloc/calloc/memcpy/etc.
-func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, calls []parser.Node, f *db.Function, file *db.File, result *DetectResult) {
+// size-function argument whose product/sum/difference can wrap before the
+// allocation. It is the "value-analysis lite" half of the integer-overflow
+// detector: beyond the canonical `malloc(count * obj_size)` (CWE-190), it now
+// recognizes calloc(n, m) and the variable-bounded add/sub/mul-const patterns
+// that a full range domain (CodeQL RangeAnalysis, Infer Inferbo) would catch.
+//
+// Because a *variable* operand cannot be proven large, the variable-bounded
+// patterns are gated on the operand being a function parameter (caller/
+// attacker-influenced) and are emitted as suspected/possible candidates that
+// the AI agent reasons over. This is the AI-fallback tier: static analysis
+// recognizes the risky shape, the model proves or refutes it with call-site
+// and API-contract reasoning.
+func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, calls []parser.Node, f *db.Function, file *db.File, params map[string]bool, result *DetectResult) {
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
-		if !sizeFunctions[extractCallName(call)] {
+		callName := extractCallName(call)
+		if !sizeFunctions[callName] {
 			continue
 		}
-		for _, argNode := range call.NamedChildren() {
-			if argNode.Kind() != "argument_list" {
-				continue
-			}
-			for _, arg := range argNode.NamedChildren() {
-				exprs := d.sizeCalcExprs(arg)
-				for _, expr := range exprs {
-					locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: expr.StartLine(), Column: expr.StartColumn()})
-					props, _ := json.Marshal(map[string]string{
-						"expression": expr.Text(),
-						"category":   "size_calc_overflow",
-					})
-					_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-						EventType:  "INTEGER_OVERFLOW",
-						EntityID:   f.ID,
-						LocationID: locID,
-						Properties: string(props),
-					})
-					if err == nil {
-						result.EventsCreated++
-					}
-				}
+		args := callNamedArguments(call)
+
+		// calloc(n, m): the multiplication is implicit across two arguments, so
+		// the per-argument sizeCalcExprs scan (which sees only a bare n or m)
+		// misses it. Two variable arguments is the classic CWE-190 overflow.
+		if callName == "calloc" && len(args) >= 2 && isVariableOperand(args[0]) && isVariableOperand(args[1]) {
+			d.emitSizeCalc(ctx, file, f, call, "size_calc_overflow", result)
+			continue
+		}
+
+		for _, arg := range args {
+			for _, c := range d.sizeCalcExprs(arg, params) {
+				d.emitSizeCalc(ctx, file, f, c.expr, c.category, result)
 			}
 		}
 	}
 }
 
+func (d *IntegerOverflowDetector) emitSizeCalc(ctx context.Context, file *db.File, f *db.Function, expr parser.Node, category string, result *DetectResult) {
+	locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: expr.StartLine(), Column: expr.StartColumn()})
+	props, _ := json.Marshal(map[string]string{
+		"expression": expr.Text(),
+		"category":   category,
+	})
+	_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
+		EventType:  "INTEGER_OVERFLOW",
+		EntityID:   f.ID,
+		LocationID: locID,
+		Properties: string(props),
+	})
+	if err == nil {
+		result.EventsCreated++
+	}
+}
+
 // sizeCalcExprs returns the argument's binary expressions that qualify as a
-// size-calculation overflow. Two patterns are recognized:
-//   - var * var  (e.g. n * m) — classic two-variable product
-//   - var * sizeof(T)  (e.g. n * sizeof(int)) — the most common CVE pattern
-//     (CVE-2021-43267 et al.): a user-controlled count multiplied by a type
-//     size can overflow on 32-bit, leading to a small allocation followed by
-//     an out-of-bounds write.
+// size-calculation overflow. Recognized patterns and their categories:
 //
-// It unwraps a parenthesized argument.
-func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node) []parser.Node {
+//   - var * var         → size_calc_overflow        (n * m)
+//   - var * sizeof(T)   → size_calc_overflow        (n * sizeof(int)) — CVE-2021-43267 et al.
+//   - param * const     → size_mul_const_overflow   (n * 2, n caller-influenced)
+//   - param + const/var → size_add_overflow         (n + 1, n + m)
+//   - param - const     → size_sub_overflow         (n - 1 wraps under 0)
+//
+// The operator is read from the anonymous token child (*, +, -), never from the
+// whole text, so `->` member access inside an operand cannot fool the test. A
+// parenthesized argument is unwrapped.
+func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, params map[string]bool) []sizeCalcCandidate {
 	nodes := arg.NamedChildren()
 	if arg.Kind() == "parenthesized_expression" && len(nodes) > 0 {
-		var out []parser.Node
+		var out []sizeCalcCandidate
 		for _, c := range nodes {
-			out = append(out, d.sizeCalcExprs(c)...)
+			out = append(out, d.sizeCalcExprs(c, params)...)
 		}
 		return out
 	}
 	if arg.Kind() != "binary_expression" {
 		return nil
 	}
-	if !strings.Contains(arg.Text(), " * ") {
+	op := arithOperator(arg)
+	if op == "" {
 		return nil
 	}
-	var varCount, sizeofCount, numberCount int
+	var varCount, sizeofCount, numberCount, paramCount int
 	for _, child := range arg.NamedChildren() {
 		switch child.Kind() {
 		case "identifier", "field_expression":
@@ -247,20 +283,65 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node) []parser.Node {
 				return nil
 			}
 			varCount++
+			if params[child.Text()] {
+				paramCount++
+			}
 		case "number_literal":
 			numberCount++
 		case "sizeof_expression":
 			sizeofCount++
 		}
 	}
-	if numberCount > 0 {
-		return nil
-	}
-	if varCount >= 2 {
-		return []parser.Node{arg}
-	}
-	if varCount == 1 && sizeofCount == 1 {
-		return []parser.Node{arg}
+
+	switch op {
+	case "*":
+		if numberCount > 0 {
+			// var * const — only meaningful when the variable is caller-influenced.
+			if varCount == 1 && paramCount == 1 {
+				return []sizeCalcCandidate{{arg, "size_mul_const_overflow"}}
+			}
+			return nil
+		}
+		if varCount >= 2 {
+			return []sizeCalcCandidate{{arg, "size_calc_overflow"}}
+		}
+		if varCount == 1 && sizeofCount == 1 {
+			return []sizeCalcCandidate{{arg, "size_calc_overflow"}}
+		}
+	case "+":
+		// a + b / a + const — only when at least one operand is caller-influenced.
+		if varCount >= 1 && paramCount >= 1 {
+			return []sizeCalcCandidate{{arg, "size_add_overflow"}}
+		}
+	case "-":
+		if varCount >= 1 && paramCount >= 1 {
+			return []sizeCalcCandidate{{arg, "size_sub_overflow"}}
+		}
 	}
 	return nil
+}
+
+// arithOperator returns the arithmetic operator token of a binary_expression
+// (*, +, -), or "" when it is not one of the overflow-prone operators. The
+// operator is an ANONYMOUS tree-sitter node, so it is read from Children().
+func arithOperator(expr parser.Node) string {
+	if expr.Kind() != "binary_expression" {
+		return ""
+	}
+	for _, child := range expr.Children() {
+		switch child.Kind() {
+		case "*", "+", "-":
+			return child.Kind()
+		}
+	}
+	return ""
+}
+
+// isVariableOperand reports whether node is a bare variable operand (an
+// identifier or field access that is not a sizeof expression).
+func isVariableOperand(node parser.Node) bool {
+	if node.Kind() != "identifier" && node.Kind() != "field_expression" {
+		return false
+	}
+	return !strings.Contains(node.Text(), "sizeof")
 }

@@ -26,7 +26,7 @@
 | 过程间分析 | ✅ 1-CFA+ | ✅ 按需 | ✅ 深度 | ❌ | ⚠️ 0-CFA |
 | 污点追踪 | ✅ 路径敏感 | ✅ | ✅ | ⚠️ 语法级 | ✅ source→sink 不动点 |
 | 别名分析 | ✅ | ✅ | ✅ | ❌ | ✅ 单层 |
-| 值分析 / 区间域 | ✅ | ✅ Inferbo | ✅ | ❌ | 🚧 路线图 |
+| 值分析 / 区间域 | ✅ | ✅ Inferbo | ✅ | ❌ | ⚠️ 变量界定 + AI fallback |
 | suppression 闭环 | ✅ | ✅ | ✅ | ✅ | ✅ DB 回读 + 候选过滤 |
 | baseline diff | ✅ | ✅ | ✅ | ✅ | ✅ `--baseline <scan-id>` |
 | CI gate（非零退出） | ✅ | ✅ | ✅ | ✅ | ✅ `--fail-on` |

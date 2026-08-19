@@ -8,7 +8,7 @@
 |------|--------|-------|----------|---------|----------|
 | 路径敏感数据流 | ✅ 深度 | ✅ bi-abduction | ✅ 深度 | ❌ 纯 syntactic | ✅ CFG 基 reaching-definitions |
 | 过程间分析 | ✅ 1-CFA+ | ✅ 按需 | ✅ 深度 | ❌ | ⚠️ 0-CFA（无上下文敏感） |
-| 值分析/区间域 | ✅ RangeAnalysis | ✅ Inferbo | ✅ | ❌ | ❌ 只有常量传播 |
+| 值分析/区间域 | ✅ RangeAnalysis | ✅ Inferbo | ✅ | ❌ | ⚠️ 变量界定 + AI fallback（无完整区间域） |
 | 别名分析 | ✅ | ✅ | ✅ | ❌ | ✅ 单层（q=p/p->f/p[i]） |
 | 污点追踪 | ✅ 路径敏感 | ✅ | ✅ | ✅ syntactic | ✅ source→sink fixpoint |
 | suppression 闭环 | ✅ // lgtm | ✅ | ✅ dismiss 持久化 | ✅ --suppress | ✅ DB 回读 + 候选过滤 |
@@ -101,7 +101,7 @@ Semgrep 的纯 syntactic 模式匹配做不到的。
 | P0 | 补齐 malloc(n*sizeof(T)) 溢出 + strncpy 大小比对 | 覆盖两个高频 CVE 模式 | ✅ 已完成 |
 | P1 | 并行检测器 + 分析超时 | errgroup + context.WithTimeout | ✅ 已完成 |
 | P1 | SARIF codeFlows + 结构化证据链 | source→sink 导航 | ✅ 已完成 |
-| P2 | 值分析/区间域 | RangeAnalysis lite | 待排 |
+| P2 | 值分析/区间域 | RangeAnalysis lite | 🚧 进行中（变量界定 + AI fallback，见 §7） |
 | P2 | 1-CFA 过程间分析 | 按调用点区分摘要 | 待排 |
 
 ## 6. v0.2.1 反向自检修复
@@ -117,3 +117,37 @@ Semgrep 的纯 syntactic 模式匹配做不到的。
    bounded-copy 大小比对为权威处理路径，命中即跳过通用路径；`TestBoundedCopyOverflow` 断言单次上报。
 
 上述修复均通过 `go test -race ./...` 全量竞态检测（0 数据竞争）。
+
+## 7. v0.2.1+ 值分析攻坚（对标 CodeQL RangeAnalysis / Infer Inferbo）
+
+针对弱项 1（无值分析/区间域）的第一阶段：不追求完整数值抽象解释域，而是实施
+**"变量界定 + AI fallback"** 三层置信度方案——静态分析识别溢出风险形态，无法静态证明
+的模糊情形（变量是否真的能到极值）交给 AI Agent 推理论证。
+
+### 新增识别的 CWE-190 模式
+
+| 模式 | 类别 | 静态判定 | 例 |
+|------|------|----------|-----|
+| `var * var` | `size_calc_overflow` | suspected | `malloc(n * m)` |
+| `var * sizeof(T)` | `size_calc_overflow` | suspected | `malloc(n * sizeof(int))`（CVE-2021-43267） |
+| `calloc(n, m)` 双变量 | `size_calc_overflow` | suspected | `calloc(count, size)` |
+| `param * const` | `size_mul_const_overflow` | suspected | `malloc(n * 4)` |
+| `param + const` / `param + var` | `size_add_overflow` | possible | `malloc(n + 1)` |
+| `param - const` | `size_sub_overflow` | possible | `malloc(n - 1)` |
+
+### 核心设计：把"证明不了"交给大模型
+
+变量界定模式（`param * const` / `param + const` / `param - const`）以"操作数是函数
+形参（caller/攻击者可控）"为门控，emit 为 suspected/possible 候选，携带表达式与形参
+来源证据。AI Agent 的 skill（`integer-overflow/SKILL.md`）给出推理规则：形参来自
+argv/getenv/recv 且无 clamp → confirmed；形参被有界守卫/strlen 界定 → false-positive。
+
+这是 SecGuard 相对 CodeQL/Coverity 的差异化打法：**不硬造一个可能出错的区间域，而是
+把区间推理外包给具备代码语义理解与 API 契约知识的大模型**。代价是 AI 推理成本；收益
+是召回率（覆盖 CodeQL/Coverity 靠区间域才抓到的变量界定溢出）且无静态误判。
+
+### 待续
+
+- 完整区间域（RangeAnalysis lite）：`if (n < 100)` 守卫后的常量传播，用于把
+  `param + const` 从 possible 提升为 confirmed/直接丢弃。
+- 1-CFA 过程间上下文敏感：按调用点区分形参界定（同一函数不同调用方传入不同上界）。

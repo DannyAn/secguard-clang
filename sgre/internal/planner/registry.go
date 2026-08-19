@@ -328,14 +328,20 @@ func init() {
 		EvidenceType:     "INTEGER_OVERFLOW",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "integer-overflow",
-		// size_calc_overflow (malloc(a * b)) is a concrete CWE-190 pattern and
-		// stays "suspected"; the wraparound-in-a-bounds-check pattern (the
-		// arithmetic lives in the guard itself) is a theoretical wraparound —
-		// correct code most of the time — so it is tiered down to "possible" so
-		// the AI agent does not spend its depth budget on it.
+		// Value-analysis-lite tiers. size_calc_overflow (malloc(a * b)) and
+		// size_mul_const_overflow (malloc(n * 2), n caller-influenced) are
+		// concrete CWE-190 patterns and stay "suspected". size_add_overflow /
+		// size_sub_overflow (malloc(n + 1) / malloc(n - 1), n caller-influenced)
+		// require the variable to reach an extreme value, so they are tiered
+		// down to "possible" — the AI agent proves or refutes reachability with
+		// call-site/contract reasoning. The wraparound-in-a-bounds-check pattern
+		// (integer_overflow) is a theoretical wraparound and is also "possible".
 		CategoryConfidence: map[string]string{
-			"size_calc_overflow": "suspected",
-			"integer_overflow":   "possible",
+			"size_calc_overflow":      "suspected",
+			"size_mul_const_overflow": "suspected",
+			"size_add_overflow":       "possible",
+			"size_sub_overflow":       "possible",
+			"integer_overflow":        "possible",
 		},
 		ConvergeKey: func(c Candidate) string {
 			return fmt.Sprintf("integer-overflow:%d:%s:%d", c.FileID, c.FunctionName, c.Line)
