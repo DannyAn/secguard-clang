@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -264,6 +265,11 @@ func runScanCmd(ctx context.Context, args []string) int {
 		totalSuppressed += suppressedCount
 		totalBaselineExisting += baselineExisting
 
+		// Scope to the scan target: the incremental index keeps files from
+		// earlier scans of OTHER directories, but a scan of <path> must only
+		// report findings at or under <path> — not leak stale-indexed siblings.
+		keptCandidates = scopeToTarget(keptCandidates, absPath)
+
 		for _, c := range keptCandidates {
 			if c.Target.File != "" {
 				filesWithCandidates[c.Target.File] = true
@@ -489,6 +495,28 @@ func newScanLogger(scanDir string) (*log.Logger, io.Closer) {
 type nopCloser struct{}
 
 func (nopCloser) Close() error { return nil }
+
+// scopeToTarget keeps only candidates whose file is at or under targetDir, so a
+// scan of a subdirectory does not leak findings from files the incremental
+// index still holds from earlier scans of other directories.
+func scopeToTarget(items []planner.EvidenceItem, targetDir string) []planner.EvidenceItem {
+	kept := make([]planner.EvidenceItem, 0, len(items))
+	for _, it := range items {
+		if it.Target.File == "" || isUnder(targetDir, it.Target.File) {
+			kept = append(kept, it)
+		}
+	}
+	return kept
+}
+
+// isUnder reports whether path is targetDir itself or a descendant of it.
+func isUnder(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
 
 func runStatusCmd(ctx context.Context, args []string) int {
 	dbPath, dbExplicit, _ := parseDBFlag(args)

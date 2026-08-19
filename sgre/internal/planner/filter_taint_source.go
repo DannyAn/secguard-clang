@@ -64,9 +64,21 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 	// context-sensitive half: a function that returns a parameter verbatim is
 	// tainted IFF that parameter is tainted — a call-site property the 0-CFA
 	// retTainted summary cannot express.
-	returnsParam := f.computeReturnsParam(ctx)
-	retTainted := f.computeRetTainted(ctx, returnsParam)
-	paramTainted := f.computeParamTainted(ctx, retTainted, returnsParam)
+	returnsParam, err := f.computeReturnsParam(ctx)
+	if err != nil {
+		// Fail-closed: the summaries drive candidate DROPPING. If the graph
+		// reads fail (e.g. under parallel-planner DB contention), keep every
+		// candidate rather than silently dropping findings on empty summaries.
+		return candidates, nil, nil
+	}
+	retTainted, err := f.computeRetTainted(ctx, returnsParam)
+	if err != nil {
+		return candidates, nil, nil
+	}
+	paramTainted, err := f.computeParamTainted(ctx, retTainted, returnsParam)
+	if err != nil {
+		return candidates, nil, nil
+	}
 
 	flows, paramsByFunc := f.buildFlows(ctx, byFunc, retTainted, returnsParam, paramTainted)
 
@@ -196,11 +208,11 @@ func taintedParamsFor(fn *db.Function, root parser.Node, taintedIdx map[int]bool
 // returnsParam carries the context-sensitive half: `x = g(v)` where g returns
 // its parameter verbatim is tainted iff v is tainted, so the fixpoint also
 // injects those as dataflow copies and taint-source gens.
-func (f *TaintSourceFilter) computeRetTainted(ctx context.Context, returnsParam map[string]map[int]bool) map[string]bool {
+func (f *TaintSourceFilter) computeRetTainted(ctx context.Context, returnsParam map[string]map[int]bool) (map[string]bool, error) {
 	retTainted := make(map[string]bool)
 	funcs, err := f.store.ListFunctions(ctx)
 	if err != nil {
-		return retTainted
+		return nil, fmt.Errorf("taint ret summary: list functions: %w", err)
 	}
 
 	type funcInfo struct {
@@ -253,7 +265,7 @@ func (f *TaintSourceFilter) computeRetTainted(ctx context.Context, returnsParam 
 			break
 		}
 	}
-	return retTainted
+	return retTainted, nil
 }
 
 // computeReturnsParam returns, per function NAME, the set of parameter indices
@@ -262,11 +274,11 @@ func (f *TaintSourceFilter) computeRetTainted(ctx context.Context, returnsParam 
 // which is a call-site (context-sensitive) property the flat retTainted summary
 // cannot express. This is the concrete 1-CFA-style step: it lets `x = id(v)`
 // propagate v's taint to x instead of being treated as an opaque call.
-func (f *TaintSourceFilter) computeReturnsParam(ctx context.Context) map[string]map[int]bool {
+func (f *TaintSourceFilter) computeReturnsParam(ctx context.Context) (map[string]map[int]bool, error) {
 	result := make(map[string]map[int]bool)
 	funcs, err := f.store.ListFunctions(ctx)
 	if err != nil {
-		return result
+		return nil, fmt.Errorf("taint returnsParam summary: list functions: %w", err)
 	}
 
 	type funcInfo struct {
@@ -346,7 +358,7 @@ func (f *TaintSourceFilter) computeReturnsParam(ctx context.Context) map[string]
 			break
 		}
 	}
-	return result
+	return result, nil
 }
 
 // passthroughCopiesFor returns the copy pairs introduced by taint-passthrough
@@ -397,11 +409,14 @@ func callArgs(call parser.Node) []parser.Node {
 // iteration rebuilds every caller's flow with its already-proven tainted
 // parameters seeded at entry, so a transitive param→param chain (main → A → B)
 // propagates taint across any number of hops instead of stopping after one.
-func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted map[string]bool, returnsParam map[string]map[int]bool) map[int64]map[int]bool {
+func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted map[string]bool, returnsParam map[string]map[int]bool) (map[int64]map[int]bool, error) {
 	result := make(map[int64]map[int]bool)
 	edges, err := f.store.ListGraphEdgesByType(ctx, "PARAM_BINDING")
-	if err != nil || len(edges) == 0 {
-		return result
+	if err != nil {
+		return nil, fmt.Errorf("taint param summary: list PARAM_BINDING edges: %w", err)
+	}
+	if len(edges) == 0 {
+		return result, nil
 	}
 
 	// Resolve variable_ref nodes (edge source = caller argument) and parameter
@@ -496,7 +511,7 @@ func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted 
 			break
 		}
 	}
-	return result
+	return result, nil
 }
 
 // returnsTaint reports whether the function body returns a tainted value on some

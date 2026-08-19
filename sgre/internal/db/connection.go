@@ -19,7 +19,11 @@ func Open(ctx context.Context, dbPath string) (*sql.DB, error) {
 
 	_, statErr := os.Stat(absPath)
 
-	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_busy_timeout=5000", absPath)
+	// `_busy_timeout` is NOT a driver parameter — modernc.org/sqlite only applies
+	// `_pragma` values. `busy_timeout(5000)` must ride the `_pragma` channel, or
+	// SQLITE_BUSY returns immediately under parallel writers and the detectors'
+	// InsertEvent errors are swallowed, silently dropping findings.
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)", absPath)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("db: open: %w", err)

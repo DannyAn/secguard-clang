@@ -205,12 +205,14 @@ python3 scripts/validate-benchmark.py \
 
 | 文件 | 覆盖 | 状态 |
 |------|------|------|
-| `p8_value_analysis.c` | 值分析/区间域：`n*sizeof(T)`、`n*m`、`calloc(n,m)`、`n+1`、守卫常量传播 | ✅ 已纳入（P8-01..05） |
+| `p8_value_analysis.c` | 值分析/区间域：`n*sizeof(T)`、`n*m`、`calloc(n,m)`、`n+1`、`n*4`、守卫常量传播 | ✅ 已纳入（P8-01..06） |
 | `p9_secure_func.c` | Annex K `_s` 契约：memcpy_s/strcpy_s 说谎 size、约束违约、scanf_s 逐转换宽度 | ✅ 已纳入（P9-01..05） |
-| `p10_interproc_taint.c` | 1-CFA 形参敏感：passthrough、多级 passthrough、链式形参污点 | 🚧 已落盘，待修全管线差异后纳入 |
-| `p7_graph_effect.c` | 语义图消费：污点 source→sink、free→use CFG、别名、所有权转移 | 🚧 已落盘，待修全管线差异后纳入 |
+| `p10_interproc_taint.c` | 1-CFA 形参敏感：passthrough、多级 passthrough、链式形参污点 | ✅ 已纳入（P10-01..04） |
+| `p7_graph_effect.c` | 语义图消费：污点 source→sink、free→use CFG、别名、所有权转移 | 🚧 已落盘，use-after-free 用例需用 `*p` 而非 `p[0]`（检测器暂不支持下标解引用），待修后纳入 |
 
-> **已知问题**：`p7`/`p10` 的用例在聚焦 planner 单测（`go test`）中通过，但在
-> `secguard scan` 全管线（并行 detector + 并行 planner）下部分候选未浮出
-> （如 `n * 4`、1-CFA 形参敏感污点）。这暴露了全管线与聚焦单测的差异，需先定位
-> 修复再纳入严格基线。
+> **v0.3.1 修复**：全管线漏报（`busy_timeout` 参数未生效 → 并行 detector 写事件
+> 静默丢失）与 scope-leak（scan 子目录候选泄漏到目标之外）已修复。新增 15 例
+> （P8/P9/P10）全绿。
+>
+> **遗留（存量漂移，非本轮引入）**：`P2-04`/`P3-01`/`PH1-03`/`P6-06`/`P6-08`
+> 五例因代码演进与 expected-results 未同步而 FP/FN，待单独对齐。

@@ -6,7 +6,7 @@
 
 **通过 4 级收敛管线解决"候选爆炸"问题——将 ~600 个原始候选收敛为 ~10 个高质量证据包，交由 AI Agent 分类判定。**
 
-`v0.3.0` · `Go 1.25` · `Tree-sitter` · `SQLite` · `OpenCode / Claude Code`
+`v0.3.1` · `Go 1.25` · `Tree-sitter` · `SQLite` · `OpenCode / Claude Code / DeepSeek Harness`
 
 </div>
 
@@ -180,7 +180,7 @@ DeepSeek Harness 用 `release/install-dsh.sh` 把 preset 装到 `~/.dsh/.agent-p
 
 ```bash
 # 下载发行包
-curl -L https://github.com/DannyAn/secguard-clang/releases/latest/download/secguard-0.3.0.zip -o secguard.zip
+curl -L https://github.com/DannyAn/secguard-clang/releases/latest/download/secguard-0.3.1.zip -o secguard.zip
 unzip secguard.zip
 
 # 安装（自动检测 OS × 架构，装到 OpenCode + Claude Code）

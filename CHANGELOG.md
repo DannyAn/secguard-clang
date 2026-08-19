@@ -2,6 +2,33 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.3.1] - 2026-08-19
+
+### 关键缺陷修复（e2e 自检发现）
+
+- **全管线漏报（critical）**：`connection.go` 的 DSN 用 `_busy_timeout=5000` 设置 busy_timeout，
+  但 modernc.org/sqlite 只识别 `_pragma` 参数，`_busy_timeout` 被静默忽略 → busy_timeout 实为 0 →
+  并行 detector（4 连接写文件库）触发 SQLITE_BUSY 时立即失败，且 `InsertEvent` 错误被吞 → **大量
+  检测事件静默丢失**（1-CFA 污点、`n*4` 溢出等候选在 `secguard scan` 全管线不浮出，聚焦单测却通过）。
+  改为 `_pragma=busy_timeout(5000)` 修复。
+- **scope-leak（critical）**：`secguard scan <子目录>` 时，累积索引里其它目录的历史文件仍被检测，
+  候选泄漏到目标之外。新增 `scopeToTarget` 按 target 路径收窄候选。
+- **taint 过滤器 fail-closed**：`computeReturnsParam`/`computeRetTainted`/`computeParamTainted`
+  不再吞 DB 错误返回空摘要，改为传播错误并在摘要失败时保留全部候选（宁可不收敛，不可静默漏报）。
+
+### DeepSeek Harness 适配
+
+- 新增 DSH（DeepSeek Harness / Cordis）Agent preset：`extension/deepseek-harness/`
+  （`preset.yml` + `agent.cordis.yml`，persona 即"角色"），`release/install-dsh.sh` 安装脚本。
+- SecGuard 的 20 个 skill 零改动兼容 DSH 的 SKILL.md 格式；README 新增三平台说明。
+
+### 样例基线增强
+
+- `examples/c-vuln-benchmark/` 新增 `p7_graph_effect.c`（语义图消费）、`p8_value_analysis.c`
+  （值分析）、`p9_secure_func.c`（`_s` 契约）、`p10_interproc_taint.c`（1-CFA）四组硬骨头用例。
+- 基线纳入 P8-01..06、P9-01..05、P10-01..04 共 15 例（全绿）。
+- 门禁脚本 `scripts/validate-benchmark.py` 从读 stdout 的 `evidence_packages`（已移除）改为读 SARIF。
+
 ## [0.3.0] - 2026-08-19
 
 对标 CodeQL / Infer / Coverity 的两大差距攻坚：**值分析/区间域（RangeAnalysis lite）** 与

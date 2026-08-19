@@ -3,14 +3,14 @@
   "_benchmark_doc": "benchmark.md",
   "_validator": "scripts/validate-benchmark.py",
   "summary": {
-    "total_test_cases": 63,
+    "total_test_cases": 68,
     "phase0_test_cases": 18,
     "phase1_test_cases": 12,
     "phase2_test_cases": 4,
     "phase3_test_cases": 4,
     "phase4_test_cases": 4,
-    "expected_final_certified": 33,
-    "expected_no_finding": 30,
+    "expected_final_certified": 37,
+    "expected_no_finding": 31,
     "phase1_confirmed": 9,
     "phase1_safe_excluded": 3,
     "phase2_confirmed": 4,
@@ -539,7 +539,7 @@
       "id": "P8-02",
       "category": "value_analysis_two_var",
       "file": "src/p8_value_analysis.c",
-      "line": 20,
+      "line": 21,
       "code": "malloc(n * m)",
       "detector": "boundary.integer_overflow",
       "expect": "finding"
@@ -548,7 +548,7 @@
       "id": "P8-03",
       "category": "value_analysis_calloc",
       "file": "src/p8_value_analysis.c",
-      "line": 26,
+      "line": 28,
       "code": "calloc(n, m)",
       "detector": "boundary.integer_overflow",
       "expect": "finding"
@@ -557,16 +557,25 @@
       "id": "P8-04",
       "category": "value_analysis_add_const",
       "file": "src/p8_value_analysis.c",
-      "line": 32,
+      "line": 35,
       "code": "malloc(n + 1)",
       "detector": "boundary.integer_overflow",
       "expect": "finding"
     },
     {
       "id": "P8-05",
+      "category": "value_analysis_mul_const",
+      "file": "src/p8_value_analysis.c",
+      "line": 42,
+      "code": "malloc(n * 4)",
+      "detector": "boundary.integer_overflow",
+      "expect": "finding"
+    },
+    {
+      "id": "P8-06",
       "category": "value_analysis_guard",
       "file": "src/p8_value_analysis.c",
-      "line": 45,
+      "line": 50,
       "code": "if (n < 100) malloc(n + 1)",
       "detector": "boundary.integer_overflow",
       "expect": "no_finding"
@@ -615,6 +624,42 @@
       "code": "scanf_s(\"%s\", buf, (rsize_t)sizeof(buf))",
       "detector": "memory.buffer_overflow",
       "expect": "no_finding"
+    },
+    {
+      "id": "P10-01",
+      "category": "passthrough_taint",
+      "file": "src/p10_interproc_taint.c",
+      "line": 24,
+      "code": "id(getenv(\"CMD\")) -> fopen",
+      "detector": "input.path_traversal",
+      "expect": "finding"
+    },
+    {
+      "id": "P10-02",
+      "category": "passthrough_literal",
+      "file": "src/p10_interproc_taint.c",
+      "line": 31,
+      "code": "id(\"/tmp/x\") -> fopen",
+      "detector": "input.path_traversal",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P10-03",
+      "category": "multilevel_passthrough",
+      "file": "src/p10_interproc_taint.c",
+      "line": 39,
+      "code": "wrap2(getenv(\"CMD\")) -> fopen",
+      "detector": "input.path_traversal",
+      "expect": "finding"
+    },
+    {
+      "id": "P10-04",
+      "category": "transitive_param",
+      "file": "src/p10_interproc_taint.c",
+      "line": 47,
+      "code": "main -> A -> B -> C -> system(cmd)",
+      "detector": "input.injection",
+      "expect": "finding"
     }
   ]
 }

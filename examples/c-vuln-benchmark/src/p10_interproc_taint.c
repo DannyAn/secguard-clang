@@ -29,6 +29,7 @@ int tp_passthrough_taint(void) {
 int fp_passthrough_literal(void) {
     char *p = id("/tmp/x");
     FILE *f = fopen(p, "r");
+    fclose(f);
     return f != 0;
 }
 
