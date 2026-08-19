@@ -2,12 +2,12 @@
 
 > 验证多层过滤收敛管道的精度和召回率。
 > Ground truth 定义在 [expected-results.json](expected-results.json) 中（每个用例带机器可读的 `expect` 字段）。
-> **当前状态: VALID。** 行号锚点与 detector ID 已对齐当前源码；门禁脚本 `scripts/validate-benchmark.py` 可直接计算 precision/recall（当前 35 用例口径 100% precision / 100% recall）。
+> 门禁脚本 `scripts/validate-benchmark.py` 读 SARIF（v0.3.0 起），按 (文件, 行) 交叉比对并计算 precision/recall。
 >
 > ```bash
-> secguard scan examples/c-vuln-benchmark/src > /tmp/scan.json
+> secguard scan --db /tmp/sgbench.db examples/c-vuln-benchmark/src
 > python3 scripts/validate-benchmark.py \
->   --scan /tmp/scan.json \
+>   --sarif .codeagent/zhuque-secguard/scans/latest/sarif.sarif \
 >   --expected examples/c-vuln-benchmark/expected-results.json
 > ```
 >
@@ -192,26 +192,25 @@ Scenario B — 三轮验证后 (目标):
 ## 运行方式
 
 ```bash
-# 1. 索引
-secguardian-index --path examples/cpp-vuln-demo-no-answers/src \
-  --output .codeagent/fp-test/index.json
+# 1. 扫描（用独立 DB 避免历史索引污染；stdout 只打印摘要）
+secguard scan --db /tmp/sgbench.db examples/c-vuln-benchmark/src
 
-# 2. 扫描 (AI Agent 执行 Detector)
-/secguard examples/cpp-vuln-demo-no-answers/src
-
-# 3. 验证管道 (AI Agent 执行 Step 3.5)
-#    → 产出 dismissed.json + verification-audit.json
-
-# 4. 对比 ground truth
-diff <(python3 -c "
-import json
-with open('examples/cpp-vuln-demo-no-answers/expected-results.json') as f:
-    expected = json.load(f)
-# 提取期望的 dismissed/certified 数量
-") <(python3 -c "
-import json
-with open('.codeagent/.../dismissed.json') as f:
-    actual = json.load(f)
-# 对比实际结果
-")
+# 2. 校验（validator 读 SARIF，按 (文件, 行) 交叉比对 ground truth）
+python3 scripts/validate-benchmark.py \
+    --sarif .codeagent/zhuque-secguard/scans/latest/sarif.sarif \
+    --expected examples/c-vuln-benchmark/expected-results.json
 ```
+
+## v0.3.0 新增基线（硬骨头场景）
+
+| 文件 | 覆盖 | 状态 |
+|------|------|------|
+| `p8_value_analysis.c` | 值分析/区间域：`n*sizeof(T)`、`n*m`、`calloc(n,m)`、`n+1`、守卫常量传播 | ✅ 已纳入（P8-01..05） |
+| `p9_secure_func.c` | Annex K `_s` 契约：memcpy_s/strcpy_s 说谎 size、约束违约、scanf_s 逐转换宽度 | ✅ 已纳入（P9-01..05） |
+| `p10_interproc_taint.c` | 1-CFA 形参敏感：passthrough、多级 passthrough、链式形参污点 | 🚧 已落盘，待修全管线差异后纳入 |
+| `p7_graph_effect.c` | 语义图消费：污点 source→sink、free→use CFG、别名、所有权转移 | 🚧 已落盘，待修全管线差异后纳入 |
+
+> **已知问题**：`p7`/`p10` 的用例在聚焦 planner 单测（`go test`）中通过，但在
+> `secguard scan` 全管线（并行 detector + 并行 planner）下部分候选未浮出
+> （如 `n * 4`、1-CFA 形参敏感污点）。这暴露了全管线与聚焦单测的差异，需先定位
+> 修复再纳入严格基线。

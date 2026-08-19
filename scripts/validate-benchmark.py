@@ -9,16 +9,18 @@ cases. Each case carries a machine-readable ``expect`` field:
   * ``"no_finding"``   — a safe function / safe wrapper / counter-evidence case;
                          the convergence pipeline SHOULD suppress it.
 
-The validator reads the JSON that ``secguard scan`` writes to stdout (the
-``evidence_packages`` array, each candidate carrying ``target.file`` and
-``target.line``) and cross-references it against the ground truth by
-(basename, line). It prints a per-case report and a precision/recall summary,
-then exits non-zero when precision or recall falls below the thresholds.
+The validator reads the SARIF 2.1 report that ``secguard scan`` writes to the
+scan output directory (``<scan_dir>/sarif.sarif``). Each result carries a
+``locations[0].physicalLocation`` with ``artifactLocation.uri`` and
+``region.startLine``; the validator cross-references those (basename, line)
+pairs against the ground truth, prints a per-case report and a precision/recall
+summary, then exits non-zero when precision or recall falls below the
+thresholds.
 
 Usage:
-  secguard scan <src> > scan.json        # capture scan stdout
+  secguard scan examples/c-vuln-benchmark/src          # prints scan_dir
   python3 scripts/validate-benchmark.py \
-      --scan scan.json \
+      --sarif <scan_dir>/sarif.sarif \
       --expected examples/c-vuln-benchmark/expected-results.json
 """
 
@@ -32,14 +34,17 @@ def basename(path):
     return os.path.basename(path) if path else ""
 
 
-def load_scan(path):
+def load_sarif(path):
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
     findings = set()
-    for pkg in data.get("evidence_packages", []):
-        for cand in (pkg.get("candidates") or []):
-            target = cand.get("target", {})
-            findings.add((basename(target.get("file", "")), target.get("line", 0)))
+    for run in data.get("runs", []):
+        for result in run.get("results", []):
+            for loc in result.get("locations", []):
+                phys = loc.get("physicalLocation", {})
+                uri = phys.get("artifactLocation", {}).get("uri", "")
+                line = phys.get("region", {}).get("startLine", 0)
+                findings.add((basename(uri), line))
     return findings
 
 
@@ -64,13 +69,13 @@ def classify(case):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--scan", required=True, help="path to `secguard scan` stdout JSON")
+    ap.add_argument("--sarif", required=True, help="path to the SARIF report (<scan_dir>/sarif.sarif)")
     ap.add_argument("--expected", required=True, help="path to expected-results.json")
     ap.add_argument("--min-precision", type=float, default=0.7)
     ap.add_argument("--min-recall", type=float, default=0.7)
     args = ap.parse_args()
 
-    findings = load_scan(args.scan)
+    findings = load_sarif(args.sarif)
     expected = load_expected(args.expected)
     cases = expected.get("test_cases", [])
 

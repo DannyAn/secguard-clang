@@ -3,14 +3,14 @@
   "_benchmark_doc": "benchmark.md",
   "_validator": "scripts/validate-benchmark.py",
   "summary": {
-    "total_test_cases": 53,
+    "total_test_cases": 63,
     "phase0_test_cases": 18,
     "phase1_test_cases": 12,
     "phase2_test_cases": 4,
     "phase3_test_cases": 4,
     "phase4_test_cases": 4,
-    "expected_final_certified": 26,
-    "expected_no_finding": 27,
+    "expected_final_certified": 33,
+    "expected_no_finding": 30,
     "phase1_confirmed": 9,
     "phase1_safe_excluded": 3,
     "phase2_confirmed": 4,
@@ -524,6 +524,96 @@
       "code": "1.0f / 0.0f float division (IEEE-defined, not CWE-369)",
       "cwe": "CWE-369",
       "detector": "divide_by_zero",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P8-01",
+      "category": "value_analysis_sizeof",
+      "file": "src/p8_value_analysis.c",
+      "line": 14,
+      "code": "malloc(n * sizeof(int))",
+      "detector": "boundary.integer_overflow",
+      "expect": "finding"
+    },
+    {
+      "id": "P8-02",
+      "category": "value_analysis_two_var",
+      "file": "src/p8_value_analysis.c",
+      "line": 20,
+      "code": "malloc(n * m)",
+      "detector": "boundary.integer_overflow",
+      "expect": "finding"
+    },
+    {
+      "id": "P8-03",
+      "category": "value_analysis_calloc",
+      "file": "src/p8_value_analysis.c",
+      "line": 26,
+      "code": "calloc(n, m)",
+      "detector": "boundary.integer_overflow",
+      "expect": "finding"
+    },
+    {
+      "id": "P8-04",
+      "category": "value_analysis_add_const",
+      "file": "src/p8_value_analysis.c",
+      "line": 32,
+      "code": "malloc(n + 1)",
+      "detector": "boundary.integer_overflow",
+      "expect": "finding"
+    },
+    {
+      "id": "P8-05",
+      "category": "value_analysis_guard",
+      "file": "src/p8_value_analysis.c",
+      "line": 45,
+      "code": "if (n < 100) malloc(n + 1)",
+      "detector": "boundary.integer_overflow",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P9-01",
+      "category": "secure_lying_size",
+      "file": "src/p9_secure_func.c",
+      "line": 16,
+      "code": "memcpy_s(dst, 100, src, 50)",
+      "detector": "memory.buffer_overflow",
+      "expect": "finding"
+    },
+    {
+      "id": "P9-02",
+      "category": "secure_correct",
+      "file": "src/p9_secure_func.c",
+      "line": 22,
+      "code": "memcpy_s(dst, sizeof(dst), src, 8)",
+      "detector": "memory.buffer_overflow",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P9-03",
+      "category": "secure_constraint",
+      "file": "src/p9_secure_func.c",
+      "line": 28,
+      "code": "strcpy_s(dst, 4, \"hello\")",
+      "detector": "memory.buffer_overflow",
+      "expect": "finding"
+    },
+    {
+      "id": "P9-04",
+      "category": "scanf_lying_size",
+      "file": "src/p9_secure_func.c",
+      "line": 34,
+      "code": "scanf_s(\"%s\", buf, (rsize_t)100)",
+      "detector": "memory.buffer_overflow",
+      "expect": "finding"
+    },
+    {
+      "id": "P9-05",
+      "category": "scanf_correct",
+      "file": "src/p9_secure_func.c",
+      "line": 40,
+      "code": "scanf_s(\"%s\", buf, (rsize_t)sizeof(buf))",
+      "detector": "memory.buffer_overflow",
       "expect": "no_finding"
     }
   ]
