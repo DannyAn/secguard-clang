@@ -10,7 +10,7 @@
 
 - **并行检测管线**：graph builder（5 个）、detector（21 个独立 + Interprocedural 后置）、planner（20 个）全部并行化，连接池从 1 放宽到 4 + busy_timeout=5000ms。大代码库（redis 11K 函数）扫描时间显著下降。
 - **`--timeout <秒>` 超时控制**：`context.WithTimeout` 包 scan 顶层，超时后所有阶段（index/graph/detector/planner/report）协同取消，不再无限挂起。
-- **`GetOrCreateGraphNode` 原子化**：`graph_nodes` 加 `UNIQUE(entity_type, entity_id, properties)` 约束 + `INSERT OR IGNORE`，消除并行 builder 的 SELECT-then-INSERT 竞态。迁移 `migrateGraphNodesUnique` 自动重建旧表。
+- **`GetOrCreateGraphNode` 原子化**：`graph_nodes` 加 `UNIQUE(entity_type, entity_id, properties)` 约束 + `INSERT OR IGNORE`，消除并行 builder 的 SELECT-then-INSERT 竞态。
 - **SARIF codeFlows 2 步路径**：`Candidate` 加 `SourceLine` 字段，`NullableSourceFilter` 从 `flowResult.nodeIn`（reaching-definitions 源节点）提取源行号，SARIF result 加 `codeFlows` 结构（source→sink 2 步 threadFlow），GitHub Code Scanning 可直接展示"null 引入→解引用"路径。
 
 ## [0.2.0] - 2026-08-19
@@ -31,7 +31,7 @@
 
 - **5 种边从"声明未用"到真正落库**：`ALIAS`（`q=p`/`q=p->f`/`q=p[i]`）、`OWNERSHIP_TRANSFER`（return-to-caller / store-to-global）、`RELEASE`（free/close 站点）；新增 `PARAM_BINDING`（实参→形参）、`RETURN`（callee 返回→caller 接收变量）。构建器：`internal/graph/{alias,ownership,interproc}.go`。
 - **修复 `GetOrCreateGraphNode` 去重 bug**：原查询只按 `(entity_type, entity_id)` 去重、忽略 `properties`，导致同函数内所有 `variable_ref` 塌缩成同一节点、`DATA_FLOW` 边源/目标指向同一节点。修复为按 `(entity_type, entity_id, properties)` 去重。
-- **删除 `BRANCH` 边**（声明但从未使用，CFG 分支结构无需落库），迁移 `migrateGraphEdgesTable` 自动重建旧表。
+- **删除 `BRANCH` 边**（声明但从未使用，CFG 分支结构无需落库）。
 
 ### 数据流引擎扩展
 
@@ -57,7 +57,7 @@ v0.2.0 发布前最后一轮检视发现并修复的问题：
 
 - **SARIF/markdown 报告版本号硬编码 `0.1.3`**：新增 `report.ToolVersion` 变量，由 `cli/root.go` 在启动时注入 `cli.Version`，确保报告始终携带实际发布版本。
 - **10 处 graph builder `Build(ctx)` 返回值被丢弃**：`scan.go` 和 `index.go` 中 5 个 graph builder 的 `(*BuildResult, error)` 返回值被完全忽略，Build 失败时 scan 继续跑并产出"成功"报告但 graph 层空，导致静默漏报。全部改为检查 error 并 `return 1`。
-- **migration sentinel 错位**：`migrateSecurityEventsTable` 用 `DIVIDE_BY_ZERO` 作"schema 已最新"的 sentinel，但 `SIGNED_COMPARE` 是最后加入的 event type。旧 DB 升级时 migration 误判已最新，`SIGNED_COMPARE` 事件插入被 CHECK 拒绝，signed-compare 检测器静默失效。sentinel 改为 `SIGNED_COMPARE`。
+- **删除 migration 层**：DB 每次全新创建（`InitSchema` 幂等），不存在旧表迁移场景。移除 `migration.go` 全部代码（`migrateSchema`/`migrateFindingsTable`/`migrateSecurityEventsTable`/`migrateGraphEdgesTable`/`migrateGraphNodesUnique`）及对应测试。
 - **race_condition lockset map aliasing**：`acc.lockset = ls` 直接赋值共享 `heldByLine[line]` 底层 map，后续 `delete(acc.lockset, m)` 污染 `heldByLine[line]`，同一行多 global 访问时 lockset 计算错误。改为深拷贝。
 - **5 处 `InsertEvent` error 丢弃但计数器递增**：`resource_leak`/`memory_leak`/`interprocedural`/`crypto_misuse`/`null_source` 中 DB 写入失败时事件未落盘但 `EventsCreated++`，统一为 `if _, err := ...; err == nil { EventsCreated++ }`。
 - **`db_test.go`/`definite_null_test.go` 缺 `//go:build !nosqlite` tag**：导致 CLAUDE.md 声称的 `go test -tags nosqlite ...` 命令实际失败。

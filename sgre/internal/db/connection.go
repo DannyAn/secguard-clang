@@ -17,10 +17,7 @@ func Open(ctx context.Context, dbPath string) (*sql.DB, error) {
 		return nil, fmt.Errorf("db: open: resolve path: %w", err)
 	}
 
-	needsInit := false
-	if _, err := os.Stat(absPath); os.IsNotExist(err) {
-		needsInit = true
-	}
+	_, statErr := os.Stat(absPath)
 
 	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_busy_timeout=5000", absPath)
 	db, err := sql.Open("sqlite", dsn)
@@ -35,19 +32,15 @@ func Open(ctx context.Context, dbPath string) (*sql.DB, error) {
 		return nil, fmt.Errorf("db: open: ping: %w", err)
 	}
 
-	if needsInit {
-		if err := InitSchema(ctx, db); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("db: open: init schema: %w", err)
-		}
+	if err := InitSchema(ctx, db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("db: open: init schema: %w", err)
+	}
+
+	if os.IsNotExist(statErr) {
 		if err := os.Chmod(absPath, 0600); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("db: open: chmod: %w", err)
-		}
-	} else {
-		if err := migrateSchema(ctx, db); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("db: open: migrate schema: %w", err)
 		}
 	}
 

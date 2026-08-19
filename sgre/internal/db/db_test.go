@@ -223,61 +223,6 @@ func TestStore_ReachableFromEntries(t *testing.T) {
 	}
 }
 
-func TestMigrateGraphEdgesTable_AddsInterprocEdgeTypes(t *testing.T) {
-	ctx := context.Background()
-	db, err := OpenInMemory(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	// Simulate an old DB: replace graph_edges with the pre-PARAM_BINDING/RETURN schema.
-	if _, err := db.ExecContext(ctx, `DROP TABLE graph_edges`); err != nil {
-		t.Fatal(err)
-	}
-	old := `CREATE TABLE graph_edges (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		src_id INTEGER NOT NULL,
-		dst_id INTEGER NOT NULL,
-		edge_type TEXT NOT NULL CHECK (edge_type IN ('CALL','DATA_FLOW','OWNERSHIP_TRANSFER','RELEASE','BRANCH','ALIAS')),
-		properties TEXT,
-		FOREIGN KEY(src_id) REFERENCES graph_nodes(id) ON DELETE CASCADE,
-		FOREIGN KEY(dst_id) REFERENCES graph_nodes(id) ON DELETE CASCADE
-	)`
-	if _, err := db.ExecContext(ctx, old); err != nil {
-		t.Fatal(err)
-	}
-
-	src, err := db.ExecContext(ctx, `INSERT INTO graph_nodes (entity_type, entity_id, properties) VALUES ('function', 1, '')`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dst, err := db.ExecContext(ctx, `INSERT INTO graph_nodes (entity_type, entity_id, properties) VALUES ('function', 2, '')`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	srcID, _ := src.LastInsertId()
-	dstID, _ := dst.LastInsertId()
-	if _, err := db.ExecContext(ctx, `INSERT INTO graph_edges (src_id, dst_id, edge_type) VALUES (?, ?, 'CALL')`, srcID, dstID); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := migrateGraphEdgesTable(ctx, db); err != nil {
-		t.Fatalf("migrateGraphEdgesTable failed: %v", err)
-	}
-
-	var n int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM graph_edges WHERE edge_type='CALL'`).Scan(&n); err != nil || n != 1 {
-		t.Errorf("legacy CALL edge not preserved: n=%d err=%v", n, err)
-	}
-
-	if _, err := db.ExecContext(ctx, `INSERT INTO graph_edges (src_id, dst_id, edge_type) VALUES (?, ?, 'PARAM_BINDING')`, srcID, dstID); err != nil {
-		t.Errorf("PARAM_BINDING should be accepted after migration: %v", err)
-	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO graph_edges (src_id, dst_id, edge_type) VALUES (?, ?, 'RETURN')`, srcID, dstID); err != nil {
-		t.Errorf("RETURN should be accepted after migration: %v", err)
-	}
-}
 
 func TestStore_WithTx_RollbackOnError(t *testing.T) {
 	ctx := context.Background()
