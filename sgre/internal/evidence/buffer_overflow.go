@@ -98,6 +98,13 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 			d.checkSecureFunction(ctx, f, file, bc, call, callName, spec, params, result)
 			continue
 		}
+		// scanf_s/sscanf_s/fscanf_s use per-conversion buffer-size arguments, not
+		// a single capacity: every %s/%c/%[ conversion is followed by a size that
+		// must match the real buffer. Check each conversion before exclusion.
+		if fmtIdx, ok := apikb.ScanfSecureFormatArg(callName); ok {
+			d.checkScanfSecure(ctx, f, file, bc, call, callName, fmtIdx, params, result)
+			continue
+		}
 		// strncpy/strncat/memcpy/memmove all take an explicit size, so refine the
 		// size-vs-capacity before the generic path. checkBoundedCopyOverflow
 		// returns true when it handled the call (emitted bounded_copy_overflow /
@@ -326,23 +333,133 @@ func (d *BufferOverflowDetector) emitSecure(ctx context.Context, f *db.Function,
 	}
 }
 
-func (d *BufferOverflowDetector) emitSecureOverflow(ctx context.Context, f *db.Function, file *db.File, call parser.Node, callName, category, sizeArg, dstCapacity string, result *DetectResult) {
-	locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
-	props, _ := json.Marshal(map[string]string{
-		"function":      callName,
-		"category":      category,
-		"expression":    call.Text(),
-		"size_argument": sizeArg,
-		"dst_capacity":  dstCapacity,
-	})
-	if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-		EventType:  "BUFFER_ACCESS",
-		EntityID:   f.ID,
-		LocationID: locID,
-		Properties: string(props),
-	}); err == nil {
-		result.EventsCreated++
+// checkScanfSecure evaluates an `_s` input function's per-conversion contract:
+// every %s/%c/%[ conversion that reads into a buffer is followed by a
+// buffer-size argument that must not exceed the real buffer. It parses a
+// constant format string, walks the (buffer, size) vararg pairs, and flags a
+// lying size (constant > real capacity) or a caller-influenced variable size.
+func (d *BufferOverflowDetector) checkScanfSecure(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, call parser.Node, callName string, fmtIdx int, params map[string]bool, result *DetectResult) {
+	args := callNamedArguments(call)
+	if len(args) <= fmtIdx {
+		return
 	}
+	format, ok := stringLiteralContent(args[fmtIdx].Text())
+	if !ok {
+		return
+	}
+	kinds := scanfConversionKinds(format)
+	if len(kinds) == 0 {
+		return
+	}
+
+	argIdx := fmtIdx + 1
+	for _, isBuffer := range kinds {
+		if !isBuffer {
+			argIdx++
+			continue
+		}
+		if argIdx+1 >= len(args) {
+			return // missing buffer or size argument — malformed call
+		}
+		bufArg := args[argIdx]
+		sizeArg := args[argIdx+1]
+		argIdx += 2
+		d.checkScanfBuffer(ctx, f, file, bc, call, callName, bufArg, sizeArg, params, result)
+	}
+}
+
+// checkScanfBuffer compares one %s/%c/%[ conversion's buffer-size argument
+// against the real capacity of its buffer.
+func (d *BufferOverflowDetector) checkScanfBuffer(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, call parser.Node, callName string, bufArg, sizeArg parser.Node, params map[string]bool, result *DetectResult) {
+	bufName := extractArgName(bufArg)
+	if bufName == "" {
+		return
+	}
+	capacity := findArraySize(bc, f, bufName)
+	if capacity <= 0 {
+		capacity = constantAllocationSize(bc, f, bufName)
+	}
+	if capacity <= 0 {
+		return
+	}
+	if k := parseConstantSize(sizeArg); k > 0 {
+		if k > capacity {
+			d.emitSecure(ctx, f, file, call, callName, "secure_scanf_overflow",
+				fmt.Sprintf("%d", k), fmt.Sprintf("%d", capacity), result)
+		}
+		return
+	}
+	if sizeArg.Kind() == "identifier" && params[sizeArg.Text()] {
+		d.emitSecure(ctx, f, file, call, callName, "secure_scanf_var_size",
+			sizeArg.Text(), fmt.Sprintf("%d", capacity), result)
+	}
+}
+
+// stringLiteralContent returns the inner text of a plain double-quoted string
+// literal, or false when the node is not a (single, escape-free) string literal.
+func stringLiteralContent(exprText string) (string, bool) {
+	t := strings.TrimSpace(exprText)
+	if len(t) < 2 || t[0] != '"' || t[len(t)-1] != '"' {
+		return "", false
+	}
+	return t[1 : len(t)-1], true
+}
+
+// scanfConversionKinds parses a scanf format string and returns, per conversion
+// in order, whether it is a buffer-consuming conversion (%s / %c / %[...]) that
+// requires a following buffer-size argument in the `_s` variants. `%%` is a
+// literal and `%*` suppresses assignment (consumes no argument), so neither
+// contributes an entry.
+func scanfConversionKinds(format string) []bool {
+	var kinds []bool
+	i := 0
+	for i < len(format) {
+		if format[i] != '%' {
+			i++
+			continue
+		}
+		if i+1 >= len(format) {
+			break
+		}
+		if format[i+1] == '%' { // literal %%
+			i += 2
+			continue
+		}
+		j := i + 1
+		suppressed := false
+		if format[j] == '*' {
+			suppressed = true
+			j++
+		}
+		for j < len(format) && isScanfLengthByte(format[j]) {
+			j++
+		}
+		if j >= len(format) {
+			break
+		}
+		conv := format[j]
+		if !suppressed {
+			switch conv {
+			case 's', 'c', '[':
+				kinds = append(kinds, true)
+			default:
+				kinds = append(kinds, false)
+			}
+		}
+		if conv == '[' {
+			for j < len(format) && format[j] != ']' {
+				j++
+			}
+		}
+		i = j + 1
+	}
+	return kinds
+}
+
+// isScanfLengthByte reports whether b is a scanf conversion flag byte: a width
+// digit or a length modifier (h, l, L, j, z, t).
+func isScanfLengthByte(b byte) bool {
+	return (b >= '0' && b <= '9') || b == 'h' || b == 'l' || b == 'L' || b == 'j' || b == 'z' || b == 't'
 }
 
 func parseConstantSize(node parser.Node) int {
@@ -350,6 +467,15 @@ func parseConstantSize(node parser.Node) int {
 		v, err := strconv.Atoi(node.Text())
 		if err == nil {
 			return v
+		}
+	}
+	// Unwrap a cast ((rsize_t)100) or parentheses, which are the idiomatic way
+	// `_s` size arguments are written.
+	if node.Kind() == "cast_expression" || node.Kind() == "parenthesized_expression" {
+		for _, c := range node.NamedChildren() {
+			if v := parseConstantSize(c); v > 0 {
+				return v
+			}
 		}
 	}
 	return 0

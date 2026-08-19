@@ -29,7 +29,8 @@ func (f *SafeFunctionFilter) Apply(ctx context.Context, candidates []Candidate) 
 		// overflow is silently dropped before the AI agent ever sees it.
 		if c.Category == "bounded_copy_overflow" || c.Category == "bounded_copy_var_size" ||
 			c.Category == "secure_copy_overflow" || c.Category == "secure_copy_var_size" ||
-			c.Category == "secure_constraint_violation" {
+			c.Category == "secure_constraint_violation" ||
+			c.Category == "secure_scanf_overflow" || c.Category == "secure_scanf_var_size" {
 			kept = append(kept, c)
 			continue
 		}

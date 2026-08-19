@@ -212,9 +212,20 @@ Facts + Contract/Memory skill 架构。
 `memcpy(dst, src, 8)` 恰好装下不再误报，而未知容量的 memcpy 仍保守标记——精度提升
 且无召回回退。
 
-### 待续
+### scanf_s / sscanf_s / fscanf_s 逐转换宽度校验
 
-- `scanf_s`/`sscanf_s`/`fscanf_s` 逐转换宽度校验（`%s`/`%c` 后跟宽度参数 vs 缓冲区容量）。
+`_s` 输入函数的契约不同于拷贝类：没有单一容量参数，而是**每个 `%s`/`%c`/`%[`
+转换后跟一个缓冲区大小参数**。sgre 解析常量格式串、对齐 `(buffer, size)` 变参对、
+逐个比对大小参数 vs 真实容量：
+
+| 模式 | 类别 | 静态判定 | 例 |
+|------|------|----------|-----|
+| 宽度参数（常量）> 真实容量 | `secure_scanf_overflow` | confirmed | `char buf[10]; scanf_s("%s", buf, (rsize_t)100)` |
+| 宽度参数是形参（caller 可控） | `secure_scanf_var_size` | possible | `sscanf_s(s, "%s", buf, sz)` |
+| 宽度参数 = `sizeof(buf)`（数组） | — | 抑制 | `scanf_s("%s", buf, (rsize_t)sizeof(buf))` |
+
+支持 `%d` 等非缓冲区转换与 `%s` 交错（`"%d %s"`）正确对齐，`%%`/`%*`（赋值抑制）
+不计入参数。这是相对"把 `_s` 当无条件安全"的普通扫描器的又一处差异化。
 
 ## 8. v0.2.1+ 1-CFA 过程间上下文敏感（对标 CodeQL 1-CFA）
 

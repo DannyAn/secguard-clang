@@ -184,7 +184,7 @@ func init() {
 		EvidenceType:     "BUFFER_OVERFLOW",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "default",
-		Categories:       []string{"buffer_overflow", "array_oob_write", "heap_oob_write", "format_overflow", "bounded_copy_overflow", "bounded_copy_var_size", "secure_copy_overflow", "secure_copy_var_size", "secure_constraint_violation"},
+		Categories:       []string{"buffer_overflow", "array_oob_write", "heap_oob_write", "format_overflow", "bounded_copy_overflow", "bounded_copy_var_size", "secure_copy_overflow", "secure_copy_var_size", "secure_constraint_violation", "secure_scanf_overflow", "secure_scanf_var_size"},
 		// Provable out-of-bounds writes (a constant index past a known array or
 		// allocation size, a constant copy size exceeding a known capacity, or
 		// an Annex K `_s` function given a lying destination-capacity argument)
@@ -201,6 +201,8 @@ func init() {
 			"secure_copy_overflow":        "confirmed",
 			"secure_copy_var_size":        "possible",
 			"secure_constraint_violation": "suspected",
+			"secure_scanf_overflow":       "confirmed",
+			"secure_scanf_var_size":       "possible",
 		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{

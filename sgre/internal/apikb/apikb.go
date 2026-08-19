@@ -229,6 +229,26 @@ func SecureFunctionSpec(name string) (SecureFuncSpec, bool) {
 	return s, ok
 }
 
+// ScanfSecureFunctions are the `_s` input functions (scanf_s / sscanf_s /
+// fscanf_s). Their "secure" contract differs from the copy `_s` functions:
+// instead of a single destination-capacity argument, EVERY %s / %c / %[
+// conversion that reads into a buffer is FOLLOWED by a buffer-size argument in
+// the varargs (e.g. `scanf_s("%s", buf, (rsize_t)sizeof(buf))`). The map value
+// is the argument index of the format string; the (buffer, size) pairs follow
+// it, one per buffer-consuming conversion.
+var ScanfSecureFunctions = map[string]int{
+	"scanf_s":  0,
+	"sscanf_s": 1,
+	"fscanf_s": 1,
+}
+
+// ScanfSecureFormatArg reports whether name is an `_s` input function, and if
+// so the argument index of its format string.
+func ScanfSecureFormatArg(name string) (int, bool) {
+	i, ok := ScanfSecureFunctions[name]
+	return i, ok
+}
+
 // UnsafeFunctionCategory returns the vuln category implied by an unsafe API,
 // or "" if the API is not in the unsafe set.
 func UnsafeFunctionCategory(name string) string { return UnsafeFunctions[name] }

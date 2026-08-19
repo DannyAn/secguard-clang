@@ -319,3 +319,56 @@ func TestBoundedMemcpy(t *testing.T) {
 		t.Errorf("expected strncat_append (append, n fits) to stay generic buffer_overflow, got %v", cats["strncat_append"])
 	}
 }
+
+// TestScanfSecure locks in the per-conversion contract of scanf_s/sscanf_s/
+// fscanf_s: every %s/%c/%[ conversion is followed by a buffer-size argument
+// that must not exceed the real buffer. A lying constant size → overflow, a
+// caller-influenced variable size → possible, and sizeof(buf) on an array →
+// correct. A %d interleaved with %s must still align the (buffer, size) pair.
+func TestScanfSecure(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, fixturePath("tc70_scanf_secure.c")); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	NewBufferOverflowDetector(store, p, logger).Detect(ctx)
+
+	events, err := store.ListEventsByType(ctx, "BUFFER_ACCESS")
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+
+	cats := map[string]map[string]bool{}
+	for _, e := range events {
+		fn, err := store.GetFunctionByID(ctx, e.EntityID)
+		if err != nil || fn == nil {
+			continue
+		}
+		var props struct {
+			Category string `json:"category"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if cats[fn.Name] == nil {
+			cats[fn.Name] = map[string]bool{}
+		}
+		cats[fn.Name][props.Category] = true
+	}
+
+	for _, fn := range []string{"scanf_lying_size", "scanf_mixed"} {
+		if !cats[fn]["secure_scanf_overflow"] {
+			t.Errorf("expected %s (lying size > capacity) to be flagged secure_scanf_overflow, got %v", fn, cats[fn])
+		}
+	}
+	if !cats["scanf_var_size"]["secure_scanf_var_size"] {
+		t.Errorf("expected scanf_var_size (caller-controlled size) to be flagged secure_scanf_var_size, got %v", cats["scanf_var_size"])
+	}
+	if len(cats["scanf_correct"]) != 0 {
+		t.Errorf("expected scanf_correct (sizeof(buf)) NOT to be flagged, got %v", cats["scanf_correct"])
+	}
+}

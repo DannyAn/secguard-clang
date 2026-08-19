@@ -26,6 +26,8 @@ Detector categories that route to this type:
 - `secure_copy_overflow` — **confirmed**: an Annex K `_s` function (`memcpy_s`/`strcpy_s`/`sprintf_s`/`strncpy_s`/`memset_s`/`asctime_s`/...) given a constant destination-capacity argument larger than the real buffer (`memcpy_s(dst, 100, src, 50)` with `char dst[8]`) — the lying size defeats the "secure" prefix
 - `secure_copy_var_size` — **possible**: a `_s` function whose destination-capacity argument is a caller-influenced variable (may exceed the real buffer)
 - `secure_constraint_violation` — **suspected**: the required size (copy count, or `strlen` of a literal source) exceeds the DECLARED capacity (`memcpy_s(dst, 16, src, 64)` / `strcpy_s(dst, 4, "hello")`). The runtime constraint handler fires — truncation or abort — no actual overflow but a real correctness bug; severity depends on the implementation's handler.
+- `secure_scanf_overflow` — **confirmed**: a `scanf_s`/`sscanf_s`/`fscanf_s` `%s`/`%c`/`%[` conversion whose buffer-size argument (constant) exceeds the real buffer (`scanf_s("%s", buf, (rsize_t)100)` with `char buf[10]`)
+- `secure_scanf_var_size` — **possible**: a `scanf_s` conversion whose buffer-size argument is a caller-influenced variable
 
 Read-flavored events (`array_oob_read`, `heap_oob_read`) belong to the
 `out-of-bounds` type (CWE-125), not this one.
@@ -69,6 +71,9 @@ Read-flavored events (`array_oob_read`, `heap_oob_read`) belong to the
 | `secure_copy_var_size` where the capacity argument is attacker-controlled with no clamp | **confirmed** |
 | `secure_copy_var_size` where the capacity argument is validated by every caller to `<= sizeof(dst)` | **false-positive** |
 | `secure_constraint_violation` (required > declared capacity) | **confirmed** as a contract violation; report it as a correctness bug, noting the `_s` handler will truncate or abort rather than overflow |
+| `secure_scanf_overflow` (constant buffer-size arg > capacity) | **confirmed** — the detector proved it |
+| `secure_scanf_var_size` where the buffer-size arg is attacker-controlled with no clamp | **confirmed** |
+| `secure_scanf_var_size` where the buffer-size arg is `sizeof(buf)` or a bounded length | **false-positive** |
 
 **Reasoning for `bounded_copy_var_size`**: the pipeline cannot prove the variable
 length exceeds the fixed destination, so it delegates reachability to you. Trace
