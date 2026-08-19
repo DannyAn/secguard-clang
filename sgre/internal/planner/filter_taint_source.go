@@ -245,6 +245,13 @@ func (f *TaintSourceFilter) computeReturnsParam(ctx context.Context) map[string]
 	if err != nil {
 		return result
 	}
+
+	type funcInfo struct {
+		name   string
+		body   parser.Node
+		params map[string]int
+	}
+	infos := make([]funcInfo, 0, len(funcs))
 	cache := newFileParseCache(f.parser)
 	for _, fn := range funcs {
 		file, err := f.store.GetFileByID(ctx, fn.FileID)
@@ -255,19 +262,65 @@ func (f *TaintSourceFilter) computeReturnsParam(ctx context.Context) map[string]
 		if body.Kind() != "compound_statement" {
 			continue
 		}
-		params := paramsOf(fn, root)
-		for _, ret := range body.FindAll("return_statement") {
+		infos = append(infos, funcInfo{name: fn.Name, body: body, params: paramsOf(fn, root)})
+	}
+
+	mark := func(name string, idx int) bool {
+		if result[name] == nil {
+			result[name] = make(map[int]bool)
+		}
+		if result[name][idx] {
+			return false
+		}
+		result[name][idx] = true
+		return true
+	}
+
+	// Base case: `return <param>` verbatim.
+	for _, info := range infos {
+		for _, ret := range info.body.FindAll("return_statement") {
 			for _, child := range ret.NamedChildren() {
 				if child.Kind() != "identifier" {
 					continue
 				}
-				if idx, ok := params[child.Text()]; ok {
-					if result[fn.Name] == nil {
-						result[fn.Name] = make(map[int]bool)
-					}
-					result[fn.Name][idx] = true
+				if idx, ok := info.params[child.Text()]; ok {
+					mark(info.name, idx)
 				}
 			}
+		}
+	}
+
+	// Transitive fixpoint: `return g(args)` where g returns its param j verbatim
+	// and args[j] is one of f's parameters — so f returns taint iff that
+	// parameter is tainted (wrap2(s) { return id(s); }). Sets only grow, so the
+	// fixpoint terminates; it handles the multi-level passthrough the flat
+	// retTainted summary cannot.
+	for {
+		changed := false
+		for _, info := range infos {
+			for _, ret := range info.body.FindAll("return_statement") {
+				for _, child := range ret.NamedChildren() {
+					if child.Kind() != "call_expression" {
+						continue
+					}
+					callee := callName(child)
+					if callee == "" {
+						continue
+					}
+					args := callArgs(child)
+					for j := range result[callee] {
+						if j >= len(args) || args[j].Kind() != "identifier" {
+							continue
+						}
+						if idx, ok := info.params[args[j].Text()]; ok && mark(info.name, idx) {
+							changed = true
+						}
+					}
+				}
+			}
+		}
+		if !changed {
+			break
 		}
 	}
 	return result

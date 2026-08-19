@@ -242,7 +242,7 @@ Facts + Contract/Memory skill 架构。
 | 结构 | 含义 |
 |------|------|
 | `retTainted`（0-CFA） | 函数无条件返回污点（直接返回 getenv/argv 等） |
-| `returnsParam`（新增） | 函数逐字 `return <param>` → 返回污点当且仅当该形参被污染 |
+| `returnsParam`（新增） | 函数返回污点当且仅当某形参被污染（含多级传递） |
 
 调用点传播（`x = g(args)`）：
 
@@ -251,13 +251,18 @@ Facts + Contract/Memory skill 架构。
 - `returnsParam[g][i]` 且 `args[i]` 是裸标识符 `v` → 注入数据流 copy `x = v`，
   复用共享 reaching-sources 引擎让 `x` 继承 `v` 的污点。
 
-于是 `id(getenv("CMD"))`（gen）与 `x = getenv(...); id(x)`（copy）都能正确
-传播污点到 sink，而 `id("literal")` 不产生污点——这正是 CodeQL 1-CFA 靠上下文
-克隆才拿到的精度，sgre 用**形参敏感摘要 + 共享数据流引擎**以更低成本逼近。
+`returnsParam` 是**跨函数 fixpoint**：基例 `return <param>` 逐字返回；归纳步
+`return g(args)` 中若 `g` 返回其第 j 形参、且 `args[j]` 是 f 的形参，则 f 也
+返回污点当且仅当该形参被污染——于是 `wrap2(s) { return id(s); }` 的多级
+passthrough 也能正确传播。
+
+于是 `id(getenv("CMD"))`（gen）、`x = getenv(...); id(x)`（copy）、
+`wrap2(getenv(...))`（多级）都能传播污点到 sink，而 `id("literal")` /
+`wrap2("literal")` 不产生污点——这正是 CodeQL 1-CFA 靠上下文克隆才拿到的精度，
+sgre 用**形参敏感摘要 + 共享数据流引擎**以更低成本逼近。
 
 ### 待续（完整 1-CFA）
 
-- 形参敏感沿多级传递：`wrap2(s) { return id(s); }` 的 passthrough 尚未跨函数
-  归纳（当前 `returnsParam` 只识别逐字 `return <param>`，不识别 `return id(s)`）。
 - 按调用点克隆摘要（真 1-CFA）：同一函数不同调用方传入不同上界/污点，分别
-  求值——这是正面硬刚 CodeQL 的最后一段。
+  求值（当前形参敏感摘要已覆盖返回污点维度，但未按调用点区分形参**界定**）——
+  这是正面硬刚 CodeQL 的最后一段。
