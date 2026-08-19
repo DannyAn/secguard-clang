@@ -32,6 +32,10 @@ func runScanCmd(ctx context.Context, args []string) int {
 	remaining = removeFlag(remaining, "output-dir")
 	excludeDirs, hasExclude := parseExcludeFlag(remaining)
 	remaining = removeFlag(remaining, "exclude")
+	failOn := parseStringFlag(remaining, "fail-on")
+	remaining = removeFlag(remaining, "fail-on")
+	baselineScanID := parseStringFlag(remaining, "baseline")
+	remaining = removeFlag(remaining, "baseline")
 	if len(remaining) == 0 {
 		remaining = []string{"."}
 	}
@@ -94,6 +98,16 @@ func runScanCmd(ctx context.Context, args []string) int {
 			_ = logCloser.Close()
 		}
 	}()
+
+	sup := loadSuppressions(ctx, store)
+	var baseline *baselineIndex
+	if baselineScanID != "" {
+		baseline = loadBaseline(ctx, store, baselineScanID)
+		logger.Info("baseline diff enabled", "baseline_scan_id", baselineScanID, "baseline_findings", baseline.count)
+	}
+	if sup.suppressedCount() > 0 {
+		logger.Info("suppression index loaded", "dismissed_findings", sup.suppressedCount())
+	}
 
 	// Emit an explicit lifecycle entry so the scan log is never empty even when
 	// no detector emits a Warn/Info line (e.g. after the CFG-degenerate warnings
@@ -166,6 +180,8 @@ func runScanCmd(ctx context.Context, args []string) int {
 
 	evidencePackages := []map[string]interface{}{}
 	totalCandidates := 0
+	totalSuppressed := 0
+	totalBaselineExisting := 0
 	filesWithCandidates := map[string]bool{}
 	var dismissedByVuln []report.VulnTypeDismissed
 	totalDropped := 0
@@ -202,17 +218,25 @@ func runScanCmd(ctx context.Context, args []string) int {
 			totalDropped += len(result.Summary.Dropped)
 		}
 
-		for _, c := range result.Candidates {
+		cwe := report.VulnToCWE(vulnType)
+		keptCandidates, suppressedCount, baselineExisting := filterSuppressedCandidates(result.Candidates, cwe, sup, baseline)
+		totalSuppressed += suppressedCount
+		totalBaselineExisting += baselineExisting
+
+		for _, c := range keptCandidates {
 			if c.Target.File != "" {
 				filesWithCandidates[c.Target.File] = true
 			}
 		}
-		totalCandidates += len(result.Candidates)
+		totalCandidates += len(keptCandidates)
 		evidencePackages = append(evidencePackages, map[string]interface{}{
-			"vulnerability_type": vulnType,
-			"cwe":                report.VulnToCWE(vulnType),
-			"summary":            result.Summary,
-			"candidates":         result.Candidates,
+			"vulnerability_type":   vulnType,
+			"cwe":                  cwe,
+			"summary":              result.Summary,
+			"candidates":           keptCandidates,
+			"suppressed_count":     suppressedCount,
+			"baseline_existing":    baselineExisting,
+			"original_candidate_count": len(result.Candidates),
 		})
 	}
 
@@ -281,6 +305,8 @@ func runScanCmd(ctx context.Context, args []string) int {
 		"scan_id":               scanID,
 		"candidates_by_type":    candidatesByType,
 		"total_candidates":      totalCandidates,
+		"suppressed_count":      totalSuppressed,
+		"baseline_existing_count": totalBaselineExisting,
 		"files_with_candidates": filesList,
 		"index_summary": map[string]interface{}{
 			"files_indexed":      indexResult.FilesIndexed,
@@ -371,6 +397,31 @@ func runScanCmd(ctx context.Context, args []string) int {
 		ByVulnType:   dismissedByVuln,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to write dismissed ledger: %v\n", err)
+	}
+
+	if failOn != "" {
+		confirmedCount := 0
+		for _, f := range findings {
+			if f.Status == "confirmed" {
+				confirmedCount++
+			}
+		}
+		if failOn == "confirmed" && confirmedCount > 0 {
+			fmt.Fprintf(os.Stderr, "\nCI gate: %d confirmed finding(s) — exiting with code 2\n", confirmedCount)
+			return 2
+		}
+		if failOn == "suspected" {
+			suspectedCount := 0
+			for _, f := range findings {
+				if f.Status == "suspected" {
+					suspectedCount++
+				}
+			}
+			if suspectedCount > 0 {
+				fmt.Fprintf(os.Stderr, "\nCI gate: %d suspected finding(s) — exiting with code 3\n", suspectedCount)
+				return 3
+			}
+		}
 	}
 
 	return 0

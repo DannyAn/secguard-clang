@@ -216,12 +216,16 @@ func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, ca
 }
 
 // sizeCalcExprs returns the argument's binary expressions that qualify as a
-// size-calculation overflow: a multiplication of two variable-like operands
-// (no sizeof, no numeric literal). It unwraps a parenthesized argument.
+// size-calculation overflow. Two patterns are recognized:
+//   - var * var  (e.g. n * m) — classic two-variable product
+//   - var * sizeof(T)  (e.g. n * sizeof(int)) — the most common CVE pattern
+//     (CVE-2021-43267 et al.): a user-controlled count multiplied by a type
+//     size can overflow on 32-bit, leading to a small allocation followed by
+//     an out-of-bounds write.
+// It unwraps a parenthesized argument.
 func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node) []parser.Node {
 	nodes := arg.NamedChildren()
 	if arg.Kind() == "parenthesized_expression" && len(nodes) > 0 {
-		// Recurse into the single wrapped expression.
 		var out []parser.Node
 		for _, c := range nodes {
 			out = append(out, d.sizeCalcExprs(c)...)
@@ -234,7 +238,7 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node) []parser.Node {
 	if !strings.Contains(arg.Text(), " * ") {
 		return nil
 	}
-	var varCount int
+	var varCount, sizeofCount, numberCount int
 	for _, child := range arg.NamedChildren() {
 		switch child.Kind() {
 		case "identifier", "field_expression":
@@ -243,13 +247,19 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node) []parser.Node {
 			}
 			varCount++
 		case "number_literal":
-			return nil
+			numberCount++
 		case "sizeof_expression":
-			return nil
+			sizeofCount++
 		}
 	}
-	if varCount < 2 {
+	if numberCount > 0 {
 		return nil
 	}
-	return []parser.Node{arg}
+	if varCount >= 2 {
+		return []parser.Node{arg}
+	}
+	if varCount == 1 && sizeofCount == 1 {
+		return []parser.Node{arg}
+	}
+	return nil
 }

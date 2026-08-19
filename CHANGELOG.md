@@ -6,6 +6,16 @@
 
 语义图完成度与收敛引擎的全面升级：把"声明未用"的语义图边真正落库并接入收敛管线，把数据流引擎从 null/free 扩展为可复用的污点/所有权/锁集引擎。这是对标业界同类产品（CodeQL / Infer / Semgrep 的 C 语义分析）的第一版。
 
+### 竞品对标改进（精度 + 可集成性 + 召回率）
+
+基于与 CodeQL/Infer/Coverity/Semgrep 的竞品分析（`docs/pk/competitive-analysis.md`），实施三项最高 ROI 改进：
+
+- **suppression 持久化回路**：扫描启动时从 DB 加载 `status='dismissed'` 的 findings，按 `(file, line, rule_id)` 跳过已审阅误报，AI 不再重复审同一批 FP。新增 `--baseline <scan-id>` 只报与上次扫描相比新增的 finding。`internal/cli/suppression.go`。
+- **CI gate**：`secguard scan --fail-on confirmed` 有 confirmed finding 时退出码 2，`--fail-on suspected` 退出码 3。从"AI 助手"升级为"可阻断 CI 的 gate"。
+- **SARIF fingerprints + suppressions**：SARIF result 加 `fingerprints`（稳定指纹，GitHub 跨扫描追踪）和 `suppressions` 字段结构。
+- **`malloc(n * sizeof(T))` 溢出检测**：`integer_overflow.go` 的 `sizeCalcExprs` 放开 `var * sizeof(T)` 模式——这是 CWE-190 最经典的 CVE 模式（CVE-2021-43267 等），此前被显式排除。
+- **`strncpy(dst, src, n)` 大小比对**：新增 `BoundedCopyFunctions` 集合（strncpy/strncat/memcpy/memmove），当 n 是常量且 > dst 容量时报 `bounded_copy_overflow`。此前 strncpy 被列入 SafeFunctions 完全跳过。
+
 ### 语义图层（补齐 + 修复）
 
 - **5 种边从"声明未用"到真正落库**：`ALIAS`（`q=p`/`q=p->f`/`q=p[i]`）、`OWNERSHIP_TRANSFER`（return-to-caller / store-to-global）、`RELEASE`（free/close 站点）；新增 `PARAM_BINDING`（实参→形参）、`RETURN`（callee 返回→caller 接收变量）。构建器：`internal/graph/{alias,ownership,interproc}.go`。

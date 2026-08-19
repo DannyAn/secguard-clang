@@ -36,11 +36,18 @@ type sarifRule struct {
 }
 
 type sarifResult struct {
-	RuleID              string            `json:"ruleId"`
-	Level               string            `json:"level"`
-	Message             sarifMessage      `json:"message"`
-	Locations           []sarifLocation   `json:"locations"`
-	PartialFingerprints map[string]string `json:"partialFingerprints,omitempty"`
+	RuleID              string             `json:"ruleId"`
+	Level               string             `json:"level"`
+	Message             sarifMessage       `json:"message"`
+	Locations           []sarifLocation    `json:"locations"`
+	PartialFingerprints map[string]string  `json:"partialFingerprints,omitempty"`
+	Fingerprints        map[string]string  `json:"fingerprints,omitempty"`
+	Suppressions        []sarifSuppression `json:"suppressions,omitempty"`
+}
+
+type sarifSuppression struct {
+	Kind          string `json:"kind"`
+	Justification string `json:"justification,omitempty"`
 }
 
 type sarifMessage struct {
@@ -124,6 +131,9 @@ func (o *ScanOutput) writeSarif(packages []*planner.PlanResult) error {
 				}},
 				PartialFingerprints: map[string]string{
 					"primaryLocationLineHash": fmt.Sprintf("%s:%d", c.Target.Function, c.Target.Line),
+				},
+				Fingerprints: map[string]string{
+					"ruleId:location": fmt.Sprintf("%s:%s:%d", cwe, c.Target.Function, c.Target.Line),
 				},
 			})
 		}

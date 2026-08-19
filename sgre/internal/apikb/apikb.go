@@ -167,6 +167,20 @@ func IsSafeFunction(name string) bool { return SafeFunctions[name] }
 // IsSafeWrapper reports whether name is a project safe framework entry point.
 func IsSafeWrapper(name string) bool { return SafeWrappers[name] }
 
+// BoundedCopyFunctions are APIs that take an explicit size argument but can
+// still overflow if that size exceeds the destination's capacity. Unlike
+// SafeFunctions (which are unconditionally safe), these need a runtime size
+// check: strncpy(dst, src, n) overflows when n > sizeof(dst).
+var BoundedCopyFunctions = map[string]bool{
+	"strncpy": true,
+	"strncat": true,
+	"memcpy":  true,
+	"memmove": true,
+}
+
+// IsBoundedCopy reports whether name is a bounded-copy API needing size check.
+func IsBoundedCopy(name string) bool { return BoundedCopyFunctions[name] }
+
 // UnsafeFunctionCategory returns the vuln category implied by an unsafe API,
 // or "" if the API is not in the unsafe set.
 func UnsafeFunctionCategory(name string) string { return UnsafeFunctions[name] }

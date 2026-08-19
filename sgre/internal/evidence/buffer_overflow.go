@@ -3,6 +3,8 @@ package evidence
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
@@ -75,7 +77,12 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 			continue
 		}
 		if apikb.IsSafeFunction(callName) || apikb.IsSafeWrapper(callName) {
-			continue
+			if !apikb.IsBoundedCopy(callName) {
+				continue
+			}
+			if d.checkBoundedCopyOverflow(ctx, f, file, bc, call, callName, result) {
+				continue
+			}
 		}
 		if apikb.InjectionAPIs[callName] {
 			continue
@@ -110,6 +117,72 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 			result.EventsCreated++
 		}
 	}
+}
+
+// checkBoundedCopyOverflow checks strncpy(dst, src, n)/memcpy(dst, src, n)
+// where n is a compile-time constant. If n exceeds the destination's capacity
+// (array size or malloc size), it emits a BUFFER_ACCESS event and returns
+// false (not suppressed). If n fits or cannot be determined, returns true
+// (suppressed — no overflow proven).
+func (d *BufferOverflowDetector) checkBoundedCopyOverflow(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, call parser.Node, callName string, result *DetectResult) bool {
+	args := callNamedArguments(call)
+	if len(args) < 3 {
+		return true
+	}
+	dstArg := args[0]
+	sizeArg := args[2]
+	n := parseConstantSize(sizeArg)
+	if n <= 0 {
+		return true
+	}
+	dstName := extractArgName(dstArg)
+	if dstName == "" {
+		return true
+	}
+	capacity := findArraySize(bc, f, dstName)
+	if capacity <= 0 {
+		capacity = constantAllocationSize(bc, f, dstName)
+	}
+	if capacity <= 0 {
+		return true
+	}
+	if n <= capacity {
+		return true
+	}
+	locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
+	props, _ := json.Marshal(map[string]string{
+		"function":     callName,
+		"category":     "bounded_copy_overflow",
+		"expression":   call.Text(),
+		"copy_size":    fmt.Sprintf("%d", n),
+		"dst_capacity": fmt.Sprintf("%d", capacity),
+	})
+	if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
+		EventType:  "BUFFER_ACCESS",
+		EntityID:   f.ID,
+		LocationID: locID,
+		Properties: string(props),
+	}); err == nil {
+		result.EventsCreated++
+	}
+	return false
+}
+
+func parseConstantSize(node parser.Node) int {
+	if node.Kind() == "number_literal" {
+		v, err := strconv.Atoi(node.Text())
+		if err == nil {
+			return v
+		}
+	}
+	return 0
+}
+
+func extractArgName(node parser.Node) string {
+	if node.Kind() == "identifier" {
+		return node.Text()
+	}
+	return ""
 }
 
 // suppressConstantStringCopy reports whether a strcpy call copies a compile-time
