@@ -40,9 +40,11 @@ func (s *store) GetOrCreateGraphNode(ctx context.Context, entityType string, ent
 	// properties) constraint to deduplicate concurrent inserts. Then SELECT
 	// returns the surviving row's id. This eliminates the SELECT-then-INSERT
 	// race that produced duplicate nodes when graph builders ran in parallel.
-	_, _ = s.exec.ExecContext(ctx,
+	if _, err := s.exec.ExecContext(ctx,
 		`INSERT OR IGNORE INTO graph_nodes (entity_type, entity_id, properties) VALUES (?, ?, ?)`,
-		entityType, entityID, properties)
+		entityType, entityID, properties); err != nil {
+		return 0, fmt.Errorf("db: get or create graph node: insert: %w", err)
+	}
 	var id int64
 	err := s.exec.QueryRowContext(ctx,
 		`SELECT id FROM graph_nodes WHERE entity_type = ? AND entity_id = ? AND properties = ? LIMIT 1`, entityType, entityID, properties).Scan(&id)

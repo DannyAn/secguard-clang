@@ -17,6 +17,14 @@
 
 - **删除 migration 层**：DB 每次全新创建（`InitSchema` 幂等），不存在旧表迁移场景。移除 `migration.go` 全部代码及对应测试。
 
+### 发布前反向自检修复
+
+并行化改造后的一轮反向自检，发现并修复两个并行引入的回归（均通过 `go test -race ./...` 全量竞态检测）：
+
+- **`parser.ParseCached` 数据竞争（崩溃级）**：并行 graph builder / detector / planner 共享同一 `Parser`，但 `ParseCached` 直接读写 `cache`/`parsers` 两个 map 无锁，多 goroutine 并发解析同一文件时触发 "concurrent map writes" panic。加 `sync.Mutex` 串行化 map 访问与 tree-sitter Language 引用计数；新增 `TestParseCached_Concurrent`（-race）回归门禁。
+- **strncpy 有界拷贝溢出双重上报**：`checkBoundedCopyOverflow` 命中溢出后返回 false，回落通用 buffer-overflow 路径，同一调用被上报两次（`bounded_copy_overflow` + `buffer_overflow`）。改为 bounded-copy 大小比对作为权威处理路径，命中即跳过通用路径；`TestBoundedCopyOverflow` 断言单次上报。
+- **`GetOrCreateGraphNode` 吞掉 INSERT 错误**：`INSERT OR IGNORE` 的 `ExecContext` 错误曾被 `_, _ =` 丢弃，DB 写入失败会被静默吞掉；改为检查错误（`INSERT OR IGNORE` 下 UNIQUE 冲突不产生错误，任何返回错误都是真实故障）。
+
 ## [0.2.0] - 2026-08-19
 
 语义图完成度与收敛引擎的全面升级：把"声明未用"的语义图边真正落库并接入收敛管线，把数据流引擎从 null/free 扩展为可复用的污点/所有权/锁集引擎。这是对标业界同类产品（CodeQL / Infer / Semgrep 的 C 语义分析）的第一版。

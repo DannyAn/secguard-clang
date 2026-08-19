@@ -73,12 +73,14 @@ func TestBoundedCopyOverflow(t *testing.T) {
 	}
 
 	flagged := map[string]bool{}
+	counts := map[string]int{}
 	for _, e := range events {
 		fn, err := store.GetFunctionByID(ctx, e.EntityID)
 		if err != nil || fn == nil {
 			continue
 		}
 		flagged[fn.Name] = true
+		counts[fn.Name]++
 	}
 
 	if !flagged["bounded_copy_overflow"] {
@@ -89,5 +91,11 @@ func TestBoundedCopyOverflow(t *testing.T) {
 	}
 	if flagged["bounded_copy_var_size"] {
 		t.Errorf("expected bounded_copy_var_size (variable n, cannot prove) NOT to be flagged, got %v", flagged)
+	}
+	// The bounded-copy overflow call must be reported exactly once: the
+	// size-vs-capacity check is authoritative and must not fall through to the
+	// generic buffer-overflow path (which previously double-reported it).
+	if n := counts["bounded_copy_overflow"]; n != 1 {
+		t.Errorf("expected bounded_copy_overflow to emit exactly 1 event, got %d", n)
 	}
 }

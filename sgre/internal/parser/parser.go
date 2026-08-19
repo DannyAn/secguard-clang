@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"sync"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	tree_sitter_c "github.com/tree-sitter/tree-sitter-c/bindings/go"
@@ -28,8 +29,14 @@ func IsCTypeKeyword(name string) bool {
 }
 
 type Parser struct {
-	lang    *sitter.Language
-	parser  *sitter.Parser
+	lang   *sitter.Language
+	parser *sitter.Parser
+	// mu guards cache and parsers: the parallel graph builders, detectors and
+	// planners all share one Parser and call ParseCached concurrently, so map
+	// reads/writes and the tree-sitter Language refcount (SetLanguage) must be
+	// serialized. The returned *Tree is immutable after parse and safe to read
+	// concurrently once the lock is released.
+	mu      sync.Mutex
 	cache   map[string]*Tree
 	parsers map[string]*sitter.Parser
 }
@@ -73,6 +80,8 @@ func (p *Parser) Parse(source []byte, filename string) (*Tree, error) {
 // exactly once; the parser is kept alive alongside the tree and released in
 // CloseAll. The returned tree is owned by this Parser (Close is a no-op).
 func (p *Parser) ParseCached(source []byte, filename string) (*Tree, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if t, ok := p.cache[filename]; ok {
 		return t, nil
 	}
@@ -89,6 +98,8 @@ func (p *Parser) ParseCached(source []byte, filename string) (*Tree, error) {
 // after the scan, instead of relying on per-detector Close (which is a no-op for
 // cached trees).
 func (p *Parser) CloseAll() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	for _, t := range p.cache {
 		if t != nil && t.tree != nil {
 			t.tree.Close()

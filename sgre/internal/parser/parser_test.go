@@ -1,8 +1,47 @@
 package parser
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 )
+
+// TestParseCached_Concurrent exercises the exact production pattern that the
+// parallelized graph builders / detectors / planners depend on: many goroutines
+// parsing the same small set of files through a single shared Parser. Before
+// ParseCached was made thread-safe this was a "concurrent map writes" crash /
+// data race, so this test is the regression guard (run with -race in CI).
+func TestParseCached_Concurrent(t *testing.T) {
+	p := NewParser()
+	defer p.CloseAll()
+	source := []byte(`int a(void) { return 1; }
+int b(void) { return 2; }
+int c(void) { return 3; }`)
+
+	const goroutines = 32
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			// Every goroutine parses the same file, plus a distinct one, so
+			// both the cache-hit and cache-miss paths race under the old code.
+			tree, err := p.ParseCached(source, "shared.c")
+			if err != nil {
+				t.Errorf("goroutine %d: ParseCached shared.c: %v", n, err)
+				return
+			}
+			if root := tree.RootNode(); root.Kind() != "translation_unit" {
+				t.Errorf("goroutine %d: unexpected root kind %q", n, root.Kind())
+			}
+			own := []byte(fmt.Sprintf("int f%d(void) { return %d; }", n, n))
+			if _, err := p.ParseCached(own, fmt.Sprintf("own_%d.c", n)); err != nil {
+				t.Errorf("goroutine %d: ParseCached own: %v", n, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+}
 
 func TestNewParser(t *testing.T) {
 	p := NewParser()

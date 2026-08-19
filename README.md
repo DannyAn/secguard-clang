@@ -6,9 +6,51 @@
 
 **通过 4 级收敛管线解决"候选爆炸"问题——将 ~600 个原始候选收敛为 ~10 个高质量证据包，交由 AI Agent 分类判定。**
 
-`v0.2.0` · `Go 1.25` · `Tree-sitter` · `SQLite` · `OpenCode / Claude Code`
+`v0.2.1` · `Go 1.25` · `Tree-sitter` · `SQLite` · `OpenCode / Claude Code`
 
 </div>
+
+---
+
+## 🏆 为什么 SecGuard 是世界级的？（一眼看懂竞争力）
+
+**核心差异化：SecGuard 是唯一为 AI Agent 而生的 C 语言安全分析平台。**
+
+传统静态分析器（CodeQL / Infer / Coverity / Semgrep）诞生于"人看报告"的时代，输出成千上万条原始候选；直接交给 LLM 会触发**候选爆炸**——上下文爆炸、真实漏洞被误报淹没。SecGuard 用 **4 级收敛管线**把 ~600 个原始候选压缩成 ~10 个高质量证据包，AI Agent 只看到收敛后的证据。这是业界独一无二的定位，也正是"AI 增强安全分析"成立的前提。
+
+### 与业界顶尖工具逐项对标
+
+| 能力维度 | CodeQL | Infer | Coverity | Semgrep | **SecGuard** |
+|---|---|---|---|---|---|
+| 路径敏感数据流 | ✅ 深度 | ✅ bi-abduction | ✅ 深度 | ❌ 纯语法 | ✅ CFG reaching-definitions |
+| 过程间分析 | ✅ 1-CFA+ | ✅ 按需 | ✅ 深度 | ❌ | ⚠️ 0-CFA |
+| 污点追踪 | ✅ 路径敏感 | ✅ | ✅ | ⚠️ 语法级 | ✅ source→sink 不动点 |
+| 别名分析 | ✅ | ✅ | ✅ | ❌ | ✅ 单层 |
+| 值分析 / 区间域 | ✅ | ✅ Inferbo | ✅ | ❌ | 🚧 路线图 |
+| suppression 闭环 | ✅ | ✅ | ✅ | ✅ | ✅ DB 回读 + 候选过滤 |
+| baseline diff | ✅ | ✅ | ✅ | ✅ | ✅ `--baseline <scan-id>` |
+| CI gate（非零退出） | ✅ | ✅ | ✅ | ✅ | ✅ `--fail-on` |
+| SARIF codeFlows | ✅ 完整 | ⚠️ | ✅ | ✅ | ✅ 2 步 source→sink |
+| 并行分析 + 超时 | ✅ | ✅ | ✅ | ✅ | ✅ errgroup + `--timeout` |
+| 增量索引 | ✅ | ✅ | ✅ | ✅ | ✅ SHA256 checksum |
+| 修复建议 | ⚠️ | ⚠️ | ✅ | ✅ | ✅ 12+ 类型 BAD/GOOD 模板 |
+| **AI Agent 原生消费** | ❌ | ❌ | ❌ | ❌ | ✅ 收敛证据包 |
+
+### 硬指标（一眼可查证）
+
+| 指标 | 数值 |
+|---|---|
+| 漏洞类型 / 检测器 | **20 种 / 22 个**，CWE 全映射 |
+| 收敛效率 | ~600 原始候选 → **~10 证据包**（~4.5ms） |
+| 基准回归门禁 | 53 用例，**精度 100% / 召回 100%**（TP=26 / FP=0 / TN=27 / FN=0） |
+| 回归测试规模 | 69 个安全夹具 · 233 个测试函数 |
+| 交付形态 | Linux / Windows / macOS 静态二进制 + OpenCode / Claude Code 双平台 |
+
+### 一句话结论
+
+- **已超越 Semgrep**（C 语义分析维度）：路径敏感数据流、过程间污点、别名分析，都是 Semgrep 纯语法匹配做不到的。
+- **接近 Infer 的 intra-procedural 深度**：CFG 基数据流与 Infer 的分离逻辑同层。
+- **与 CodeQL / Coverity 的差距**（值分析、过程间上下文敏感性）已列入路线图，详见 [docs/pk/competitive-analysis.md](docs/pk/competitive-analysis.md)。
 
 ---
 
@@ -131,7 +173,7 @@ extension/
 
 ```bash
 # 下载发行包
-curl -L https://github.com/DannyAn/secguard-clang/releases/latest/download/secguard-0.2.0.zip -o secguard.zip
+curl -L https://github.com/DannyAn/secguard-clang/releases/latest/download/secguard-0.2.1.zip -o secguard.zip
 unzip secguard.zip
 
 # 安装（自动检测 OS × 架构，装到 OpenCode + Claude Code）
@@ -326,6 +368,7 @@ go test -run TestSecurity ./internal/evidence/
 
 - [CLAUDE.md](CLAUDE.md) — 架构权威说明（Claude Code 工作指南）
 - [CHANGELOG.md](CHANGELOG.md) — 变更记录
+- [docs/pk/competitive-analysis.md](docs/pk/competitive-analysis.md) — 竞品分析（vs CodeQL / Infer / Coverity / Semgrep）
 - [docs/output-protocol.md](docs/output-protocol.md) — 输出契约
 - [docs/parallelization-design.md](docs/parallelization-design.md) — 并行化设计
 - [examples/c-vuln-benchmark/](examples/c-vuln-benchmark/) — 漏洞基准测试集

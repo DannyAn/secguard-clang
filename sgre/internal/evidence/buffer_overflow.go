@@ -80,9 +80,13 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 			if !apikb.IsBoundedCopy(callName) {
 				continue
 			}
-			if d.checkBoundedCopyOverflow(ctx, f, file, bc, call, callName, result) {
-				continue
-			}
+			// A bounded-copy API that is nominally "safe" (strncpy) still needs
+			// its constant size compared against the destination capacity. The
+			// check is authoritative: it either emits bounded_copy_overflow or
+			// suppresses the call. We must NOT fall through to the generic
+			// buffer-overflow path, or the same call is reported twice.
+			d.checkBoundedCopyOverflow(ctx, f, file, bc, call, callName, result)
+			continue
 		}
 		if apikb.InjectionAPIs[callName] {
 			continue
@@ -119,11 +123,12 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 	}
 }
 
-// checkBoundedCopyOverflow checks strncpy(dst, src, n)/memcpy(dst, src, n)
-// where n is a compile-time constant. If n exceeds the destination's capacity
-// (array size or malloc size), it emits a BUFFER_ACCESS event and returns
-// false (not suppressed). If n fits or cannot be determined, returns true
-// (suppressed — no overflow proven).
+// checkBoundedCopyOverflow checks strncpy(dst, src, n) where n is a
+// compile-time constant. If n exceeds the destination's capacity (array size or
+// malloc size), it emits a BUFFER_ACCESS event with category
+// bounded_copy_overflow and returns false. If n fits or cannot be determined,
+// it returns true (suppressed — no overflow proven). The caller treats the
+// result as authoritative and always skips the generic buffer-overflow path.
 func (d *BufferOverflowDetector) checkBoundedCopyOverflow(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, call parser.Node, callName string, result *DetectResult) bool {
 	args := callNamedArguments(call)
 	if len(args) < 3 {

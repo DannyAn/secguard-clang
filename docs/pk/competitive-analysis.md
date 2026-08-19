@@ -1,6 +1,6 @@
 # SecGuard vs 业界顶尖 C 安全分析工具 — 竞品分析
 
-> 评估日期：2026-08-19 · 评估版本：v0.2.0 · 对标工具：CodeQL (GitHub)、Infer (Meta)、Coverity (Synopsys)、Semgrep
+> 评估日期：2026-08-19 · 评估版本：v0.2.1 · 对标工具：CodeQL (GitHub)、Infer (Meta)、Coverity (Synopsys)、Semgrep
 
 ## 1. 能力对比矩阵
 
@@ -20,7 +20,7 @@
 | 增量索引 | ✅ | ✅ | ✅ | ✅ | ✅ SHA256 checksum 跳过 |
 | 修复建议 | ⚠️ query 帮助 | ⚠️ | ✅ | ✅ 规则 | ✅ 12+ 类型 BAD/GOOD 模板 |
 | 检测器覆盖 | 60+ 语言 | C/ObjC/Java | 20+ 语言 | 50+ 语言 | 22 detector / 20 CWE（C 专用） |
-| 回归测试 | ✅ 大规模 | ✅ | ✅ | ✅ | ✅ 63 用例 |
+| 回归测试 | ✅ 大规模 | ✅ | ✅ | ✅ | ✅ 69 夹具 / 233 测试函数 |
 | fuzzing | ✅ | ✅ | ✅ | ✅ | ❌ |
 
 ## 2. sgre 定位
@@ -103,3 +103,17 @@ Semgrep 的纯 syntactic 模式匹配做不到的。
 | P1 | SARIF codeFlows + 结构化证据链 | source→sink 导航 | ✅ 已完成 |
 | P2 | 值分析/区间域 | RangeAnalysis lite | 待排 |
 | P2 | 1-CFA 过程间分析 | 按调用点区分摘要 | 待排 |
+
+## 6. v0.2.1 反向自检修复
+
+在 v0.2.1 的发布前反向自检中，发现并修复了两个并行化引入的回归（详见 CHANGELOG）：
+
+1. **`parser.ParseCached` 数据竞争（崩溃级）**：并行 graph builder / detector / planner 共享同一
+   `Parser`，但 `ParseCached` 直接读写 `cache`/`parsers` 两个 map 无锁——多 goroutine 并发解析同一文件
+   时触发 "concurrent map writes" panic 与数据竞争。已加 `sync.Mutex` 串行化 map 访问与 tree-sitter
+   Language 引用计数操作；新增 `TestParseCached_Concurrent`（-race）回归门禁。
+2. **strncpy 有界拷贝溢出双重上报**：`checkBoundedCopyOverflow` 命中溢出后返回 false 导致回落通用
+   buffer-overflow 路径，同一调用被上报两次（`bounded_copy_overflow` + `buffer_overflow`）。已改为
+   bounded-copy 大小比对为权威处理路径，命中即跳过通用路径；`TestBoundedCopyOverflow` 断言单次上报。
+
+上述修复均通过 `go test -race ./...` 全量竞态检测（0 数据竞争）。
