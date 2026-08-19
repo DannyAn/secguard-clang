@@ -37,7 +37,7 @@ type sarifRule struct {
 
 type sarifResult struct {
 	RuleID              string             `json:"ruleId"`
-	Level              string             `json:"level"`
+	Level               string             `json:"level"`
 	Message             sarifMessage       `json:"message"`
 	Locations           []sarifLocation    `json:"locations"`
 	CodeFlows           []sarifCodeFlow    `json:"codeFlows,omitempty"`

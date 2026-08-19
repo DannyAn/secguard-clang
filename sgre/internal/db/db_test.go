@@ -223,7 +223,6 @@ func TestStore_ReachableFromEntries(t *testing.T) {
 	}
 }
 
-
 func TestStore_WithTx_RollbackOnError(t *testing.T) {
 	ctx := context.Background()
 	s := NewTestStore(t)
