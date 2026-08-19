@@ -6,7 +6,7 @@
 
 **通过 4 级收敛管线解决"候选爆炸"问题——将 ~600 个原始候选收敛为 ~10 个高质量证据包，交由 AI Agent 分类判定。**
 
-`v0.1.3` · `Go 1.25` · `Tree-sitter` · `SQLite` · `OpenCode / Claude Code`
+`v0.2.0` · `Go 1.25` · `Tree-sitter` · `SQLite` · `OpenCode / Claude Code`
 
 </div>
 
@@ -62,7 +62,7 @@ SecGuard 不是一个传统的静态分析工具。它是一个 **AI Agent 的�
 └───────┬───────┘
         ▼
 ┌───────────────┐
-│  21 Detectors  │  null-deref, buffer-overflow, injection, ...
+│  22 Detectors  │  null-deref, buffer-overflow, injection, ...
 │  (自注册)      │  → Layer 3: 安全证据 (security_events)
 └───────┬───────┘
         ▼
@@ -101,7 +101,7 @@ SecGuard 不是一个传统的静态分析工具。它是一个 **AI Agent 的�
 | 层 | 内容 | 稳定性 | 表 |
 |----|------|--------|-----|
 | **Layer 1** | 程序事实 | 最稳定 | `files`, `functions`, `variables`, `expressions`, `types`, `locations` |
-| **Layer 2** | 语义图 | 稳定 | `graph_nodes`, `graph_edges` (CALL, DATA_FLOW, OWNERSHIP_TRANSFER, RELEASE, BRANCH, ALIAS) |
+| **Layer 2** | 语义图 | 稳定 | `graph_nodes`, `graph_edges` (CALL, DATA_FLOW, OWNERSHIP_TRANSFER, RELEASE, ALIAS, PARAM_BINDING, RETURN) |
 | **Layer 3** | 安全证据 | 中等 | `security_events` (NULL_VALUE, DEREFERENCE, BUFFER_ACCESS, ...) |
 | **Layer 4** | 发现 | 最易变 | `findings` (AI Agent 写入) |
 
@@ -117,7 +117,7 @@ extension/
 │       ├── buffer-overflow/SKILL.md
 │       └── ...
 ├── opencode/                  ← OpenCode 薄包装
-│   ├── tools/*.ts             ← 6 个 TypeScript 工具
+│   ├── tools/*.ts             ← 7 个 TypeScript 工具
 │   └── extension.json
 └── claude-code/               ← Claude Code 薄包装
     └── ...
@@ -131,7 +131,7 @@ extension/
 
 ```bash
 # 下载发行包
-curl -L https://github.com/DannyAn/secguard-clang/releases/latest/download/secguard-0.1.3.zip -o secguard.zip
+curl -L https://github.com/DannyAn/secguard-clang/releases/latest/download/secguard-0.2.0.zip -o secguard.zip
 unzip secguard.zip
 
 # 安装（自动检测 OS × 架构，装到 OpenCode + Claude Code）
@@ -227,6 +227,7 @@ secguard db "SELECT * FROM findings WHERE status='confirmed'"
 | `secguard index <path>` | 仅索引（不跑检测器和收敛） |
 | `secguard status` | 索引状态（文件数、函数数、陈旧度） |
 | `secguard types` | 列出所有漏洞类型 + CWE（JSON） |
+| `secguard schema [table]` | 查询表 schema（列名/类型，写 SQL 前用） |
 | `secguard report` | 输出全部 findings（JSON） |
 | `secguard db <sql>` | 在 sgre.db 上执行 SQL 查询（只读） |
 
@@ -237,7 +238,7 @@ secguard db "SELECT * FROM findings WHERE status='confirmed'"
 扫描结果写入 `.codeagent/zhuque-secguard/scans/<scan-id>/`：
 
 ```
-scans/2026-08-17_062452_e32e/
+scans/2026-08-17_062452_e32eb1/
 ├── sarif.sarif                    ← SARIF 2.1（IDE/CI 集成）
 ├── report.md                      ← Markdown 摘要（候选列表）
 ├── audit-report.md                ← AI 审计报告（分类统计）
@@ -257,7 +258,7 @@ scans/2026-08-17_062452_e32e/
 | **数据库** | SQLite (modernc.org/sqlite) | 纯 Go，无 CGo 依赖 |
 | **解析器** | Tree-sitter + tree-sitter-c | 增量解析 C 语法 |
 | **交叉编译** | zig (musl/mingw) | Linux/Windows 静态二进制 |
-| **AI 扩展** | TypeScript/Bun | 6 个 OpenCode 工具 |
+| **AI 扩展** | TypeScript/Bun | 7 个 OpenCode 工具 |
 | **AI 平台** | OpenCode + Claude Code | 共享核心 + 薄包装 |
 
 ## 项目结构
@@ -272,8 +273,8 @@ secguard-clang/
 │       ├── indexer/               # Tree-sitter 索引器
 │       ├── parser/                # 解析器包装
 │       ├── graph/                 # 语义图构建（调用图/数据流/CFG）
-│       ├── evidence/              # 21 个安全检测器
-│       ├── planner/               # 4 级收敛管线 + 10 个过滤器
+│       ├── evidence/              # 22 个安全检测器
+│       ├── planner/               # 4 级收敛管线 + 13 个过滤器
 │       ├── agent/                 # AI Agent 集成
 │       ├── report/                # SARIF + Markdown 报告
 │       └── log/                   # 结构化日志
@@ -283,7 +284,7 @@ secguard-clang/
 │   └── claude-code/               # Claude Code 包装
 ├── release/                       # 构建/安装工具
 ├── examples/                      # 示例和基准测试
-│   └── c-vuln-benchmark/          # 19 文件 / 72 候选 / 20 类型
+│   └── c-vuln-benchmark/          # 19 文件 / 53 测试用例 / 20 类型
 ├── docs/                          # 设计文档
 ├── build.sh                       # 构建入口
 └── .github/workflows/             # CI 发布工作流
