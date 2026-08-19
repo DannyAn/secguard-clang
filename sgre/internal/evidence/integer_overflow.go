@@ -222,6 +222,7 @@ func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, ca
 //     (CVE-2021-43267 et al.): a user-controlled count multiplied by a type
 //     size can overflow on 32-bit, leading to a small allocation followed by
 //     an out-of-bounds write.
+//
 // It unwraps a parenthesized argument.
 func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node) []parser.Node {
 	nodes := arg.NamedChildren()

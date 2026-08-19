@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -26,7 +27,37 @@ func AllDetectors(store db.Store, p *parser.Parser, logger *log.Logger) []Detect
 }
 
 func RunAllDetectors(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) {
-	for _, det := range AllDetectors(store, p, logger) {
+	all := AllDetectors(store, p, logger)
+
+	var deferred []Detector
+	var independent []Detector
+	for _, det := range all {
+		if det.Name() == "interprocedural" {
+			deferred = append(deferred, det)
+			continue
+		}
+		independent = append(independent, det)
+	}
+
+	const maxConcurrent = 4
+	sem := make(chan struct{}, maxConcurrent)
+	var wg sync.WaitGroup
+	for _, det := range independent {
+		wg.Add(1)
+		go func(d Detector) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			start := time.Now()
+			d.Detect(ctx)
+			if logger != nil {
+				logger.Info("detector timing", "detector", d.Name(), "elapsed_ms", time.Since(start).Milliseconds())
+			}
+		}(det)
+	}
+	wg.Wait()
+
+	for _, det := range deferred {
 		start := time.Now()
 		det.Detect(ctx)
 		if logger != nil {

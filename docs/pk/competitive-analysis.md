@@ -11,12 +11,12 @@
 | 值分析/区间域 | ✅ RangeAnalysis | ✅ Inferbo | ✅ | ❌ | ❌ 只有常量传播 |
 | 别名分析 | ✅ | ✅ | ✅ | ❌ | ✅ 单层（q=p/p->f/p[i]） |
 | 污点追踪 | ✅ 路径敏感 | ✅ | ✅ | ✅ syntactic | ✅ source→sink fixpoint |
-| suppression 闭环 | ✅ // lgtm | ✅ | ✅ dismiss 持久化 | ✅ --suppress | ❌ dismissed.json 只写不读 |
-| baseline diff | ✅ | ✅ | ✅ | ✅ --diff | ❌ 每次全量 |
-| CI gate | ✅ 非零退出 | ✅ | ✅ | ✅ --error | ❌ 恒返回 0 |
-| SARIF codeFlows | ✅ 完整 | ⚠️ | ✅ | ✅ | ❌ 只有文本证据 |
-| 并行分析 | ✅ | ✅ | ✅ | ✅ | ❌ 全串行 |
-| 超时控制 | ✅ --time-limit | ✅ | ✅ | ✅ --timeout | ❌ 病态文件可挂死 |
+| suppression 闭环 | ✅ // lgtm | ✅ | ✅ dismiss 持久化 | ✅ --suppress | ✅ DB 回读 + 候选过滤 |
+| baseline diff | ✅ | ✅ | ✅ | ✅ --diff | ✅ --baseline <scan-id> |
+| CI gate | ✅ 非零退出 | ✅ | ✅ | ✅ --error | ✅ --fail-on confirmed/suspected |
+| SARIF codeFlows | ✅ 完整 | ⚠️ | ✅ | ✅ | ✅ 2 步 source→sink |
+| 并行分析 | ✅ | ✅ | ✅ | ✅ | ✅ builder/detector/planner 并行 |
+| 超时控制 | ✅ --time-limit | ✅ | ✅ | ✅ --timeout | ✅ --timeout |
 | 增量索引 | ✅ | ✅ | ✅ | ✅ | ✅ SHA256 checksum 跳过 |
 | 修复建议 | ⚠️ query 帮助 | ⚠️ | ✅ | ✅ 规则 | ✅ 12+ 类型 BAD/GOOD 模板 |
 | 检测器覆盖 | 60+ 语言 | C/ObjC/Java | 20+ 语言 | 50+ 语言 | 22 detector / 20 CWE（C 专用） |
@@ -96,10 +96,10 @@ Semgrep 的纯 syntactic 模式匹配做不到的。
 
 | 优先级 | 改进 | 目标 | 状态 |
 |--------|------|------|------|
-| P0 | suppression 持久化回路 + baseline diff | dismissed.json 回读，候选过滤 | 规划中 |
-| P0 | CI gate (--fail-on) + SARIF suppression/fingerprints | 非零退出码，GitHub UI 闭环 | 规划中 |
-| P0 | 补齐 malloc(n*sizeof(T)) 溢出 + strncpy 大小比对 | 覆盖两个高频 CVE 模式 | 规划中 |
-| P1 | 并行检测器 + 分析超时 | errgroup + context.WithTimeout | 待排 |
-| P1 | SARIF codeFlows + 结构化证据链 | source→sink 导航 | 待排 |
+| P0 | suppression 持久化回路 + baseline diff | dismissed.json 回读，候选过滤 | ✅ 已完成 |
+| P0 | CI gate (--fail-on) + SARIF suppression/fingerprints | 非零退出码，GitHub UI 闭环 | ✅ 已完成 |
+| P0 | 补齐 malloc(n*sizeof(T)) 溢出 + strncpy 大小比对 | 覆盖两个高频 CVE 模式 | ✅ 已完成 |
+| P1 | 并行检测器 + 分析超时 | errgroup + context.WithTimeout | ✅ 已完成 |
+| P1 | SARIF codeFlows + 结构化证据链 | source→sink 导航 | ✅ 已完成 |
 | P2 | 值分析/区间域 | RangeAnalysis lite | 待排 |
 | P2 | 1-CFA 过程间分析 | 按调用点区分摘要 | 待排 |

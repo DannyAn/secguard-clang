@@ -37,12 +37,25 @@ type sarifRule struct {
 
 type sarifResult struct {
 	RuleID              string             `json:"ruleId"`
-	Level               string             `json:"level"`
+	Level              string             `json:"level"`
 	Message             sarifMessage       `json:"message"`
 	Locations           []sarifLocation    `json:"locations"`
+	CodeFlows           []sarifCodeFlow    `json:"codeFlows,omitempty"`
 	PartialFingerprints map[string]string  `json:"partialFingerprints,omitempty"`
 	Fingerprints        map[string]string  `json:"fingerprints,omitempty"`
 	Suppressions        []sarifSuppression `json:"suppressions,omitempty"`
+}
+
+type sarifCodeFlow struct {
+	ThreadFlows []sarifThreadFlow `json:"threadFlows"`
+}
+
+type sarifThreadFlow struct {
+	Locations []sarifThreadFlowLocation `json:"locations"`
+}
+
+type sarifThreadFlowLocation struct {
+	Location sarifLocation `json:"location"`
 }
 
 type sarifSuppression struct {
@@ -117,7 +130,7 @@ func (o *ScanOutput) writeSarif(packages []*planner.PlanResult) error {
 				evidenceParts = append(evidenceParts, e.Detail)
 			}
 
-			results = append(results, sarifResult{
+			result := sarifResult{
 				RuleID: cwe,
 				Level:  level,
 				Message: sarifMessage{
@@ -135,7 +148,34 @@ func (o *ScanOutput) writeSarif(packages []*planner.PlanResult) error {
 				Fingerprints: map[string]string{
 					"ruleId:location": fmt.Sprintf("%s:%s:%d", cwe, c.Target.Function, c.Target.Line),
 				},
-			})
+			}
+
+			if c.SourceLine > 0 && c.SourceLine != c.Target.Line {
+				result.CodeFlows = []sarifCodeFlow{{
+					ThreadFlows: []sarifThreadFlow{{
+						Locations: []sarifThreadFlowLocation{
+							{
+								Location: sarifLocation{
+									PhysicalLocation: sarifPhysicalLocation{
+										ArtifactLocation: sarifArtifactLocation{URI: uri},
+										Region:           sarifRegion{StartLine: c.SourceLine},
+									},
+								},
+							},
+							{
+								Location: sarifLocation{
+									PhysicalLocation: sarifPhysicalLocation{
+										ArtifactLocation: sarifArtifactLocation{URI: uri},
+										Region:           sarifRegion{StartLine: c.Target.Line},
+									},
+								},
+							},
+						},
+					}},
+				}}
+			}
+
+			results = append(results, result)
 		}
 	}
 

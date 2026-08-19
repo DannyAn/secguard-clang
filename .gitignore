@@ -5,6 +5,9 @@
 .codeartsdoer/
 .remember/
 /bin/
+.github/
+.tmpgit/
+
 # release/ 是发布/安装脚本（入库）；install.sh 由 install.sh.tmpl 打包时生成，不入库。
 # 发布产物统一输出到顶层 /dist/（下面 /dist/ 已锚定忽略）。
 release/install.sh
@@ -25,3 +28,4 @@ sgre/.tmpdir/
 sgre/.zig-cache/
 *.db
 *.sarif
+sgre/.tmpcache/

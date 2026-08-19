@@ -16,7 +16,51 @@ func migrateSchema(ctx context.Context, db *sql.DB) error {
 	if err := migrateGraphEdgesTable(ctx, db); err != nil {
 		return fmt.Errorf("migrate graph edges: %w", err)
 	}
+	if err := migrateGraphNodesUnique(ctx, db); err != nil {
+		return fmt.Errorf("migrate graph nodes unique: %w", err)
+	}
 	return nil
+}
+
+// migrateGraphNodesUnique adds the UNIQUE(entity_type, entity_id, properties)
+// constraint to graph_nodes for atomic deduplication (INSERT OR IGNORE). Old
+// DBs created before the constraint need a rebuild; new DBs already have it.
+func migrateGraphNodesUnique(ctx context.Context, db *sql.DB) error {
+	var tableExists bool
+	err := db.QueryRowContext(ctx,
+		"SELECT count(*) > 0 FROM sqlite_master WHERE type='table' AND name='graph_nodes'",
+	).Scan(&tableExists)
+	if err != nil {
+		return err
+	}
+	if !tableExists {
+		return nil
+	}
+
+	var createSQL string
+	if err := db.QueryRowContext(ctx,
+		"SELECT sql FROM sqlite_master WHERE type='table' AND name='graph_nodes'",
+	).Scan(&createSQL); err != nil {
+		return err
+	}
+	if contains(createSQL, "UNIQUE") {
+		return nil
+	}
+	_, err = db.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS graph_nodes_new (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL,
+    entity_id   INTEGER NOT NULL,
+    properties  TEXT,
+    UNIQUE(entity_type, entity_id, properties)
+);
+INSERT OR IGNORE INTO graph_nodes_new (id, entity_type, entity_id, properties)
+    SELECT id, entity_type, entity_id, properties FROM graph_nodes;
+DROP TABLE graph_nodes;
+ALTER TABLE graph_nodes_new RENAME TO graph_nodes;
+CREATE INDEX IF NOT EXISTS idx_graph_nodes_entity ON graph_nodes(entity_type, entity_id);
+`)
+	return err
 }
 
 // migrateGraphEdgesTable recreates graph_edges when its edge_type CHECK

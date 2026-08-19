@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -36,10 +37,18 @@ func runScanCmd(ctx context.Context, args []string) int {
 	remaining = removeFlag(remaining, "fail-on")
 	baselineScanID := parseStringFlag(remaining, "baseline")
 	remaining = removeFlag(remaining, "baseline")
+	timeoutSec := parseIntFlag(remaining, "timeout")
+	remaining = removeFlag(remaining, "timeout")
 	if len(remaining) == 0 {
 		remaining = []string{"."}
 	}
 	targetPath := remaining[0]
+
+	if timeoutSec > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+		defer cancel()
+	}
 
 	absPath, err := filepath.Abs(targetPath)
 	if err != nil {
@@ -129,45 +138,51 @@ func runScanCmd(ctx context.Context, args []string) int {
 	}
 	logger.Info("phase timing", "phase", "index", "elapsed_ms", time.Since(idxStart).Milliseconds())
 
-	cgBuilder := graph.NewCallGraphBuilder(store, p, logger)
-	cgStart := time.Now()
-	if _, err := cgBuilder.Build(ctx); err != nil {
-		WriteErrorJSON(fmt.Sprintf("call graph build failed: %v", err))
+	graphStart := time.Now()
+	type builderTask struct {
+		name string
+		fn   func(context.Context) error
+	}
+	builders := []builderTask{
+		{"call_graph", func(ctx context.Context) error {
+			_, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+			return err
+		}},
+		{"data_flow", func(ctx context.Context) error {
+			_, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+			return err
+		}},
+		{"alias", func(ctx context.Context) error {
+			_, err := graph.NewAliasBuilder(store, p, logger).Build(ctx)
+			return err
+		}},
+		{"ownership", func(ctx context.Context) error {
+			_, err := graph.NewOwnershipBuilder(store, p, logger).Build(ctx)
+			return err
+		}},
+		{"interproc", func(ctx context.Context) error {
+			_, err := graph.NewInterprocBuilder(store, p, logger).Build(ctx)
+			return err
+		}},
+	}
+	var bwg sync.WaitGroup
+	bErrCh := make(chan error, len(builders))
+	for _, b := range builders {
+		bwg.Add(1)
+		go func(b builderTask) {
+			defer bwg.Done()
+			if err := b.fn(ctx); err != nil {
+				bErrCh <- fmt.Errorf("%s: %w", b.name, err)
+			}
+		}(b)
+	}
+	bwg.Wait()
+	close(bErrCh)
+	for err := range bErrCh {
+		WriteErrorJSON(fmt.Sprintf("graph build failed: %v", err))
 		return 1
 	}
-	logger.Info("phase timing", "phase", "call_graph", "elapsed_ms", time.Since(cgStart).Milliseconds())
-
-	dfBuilder := graph.NewDataFlowBuilder(store, p, logger)
-	dfStart := time.Now()
-	if _, err := dfBuilder.Build(ctx); err != nil {
-		WriteErrorJSON(fmt.Sprintf("data flow build failed: %v", err))
-		return 1
-	}
-	logger.Info("phase timing", "phase", "data_flow", "elapsed_ms", time.Since(dfStart).Milliseconds())
-
-	aliasBuilder := graph.NewAliasBuilder(store, p, logger)
-	aliasStart := time.Now()
-	if _, err := aliasBuilder.Build(ctx); err != nil {
-		WriteErrorJSON(fmt.Sprintf("alias build failed: %v", err))
-		return 1
-	}
-	logger.Info("phase timing", "phase", "alias", "elapsed_ms", time.Since(aliasStart).Milliseconds())
-
-	ownershipBuilder := graph.NewOwnershipBuilder(store, p, logger)
-	ownershipStart := time.Now()
-	if _, err := ownershipBuilder.Build(ctx); err != nil {
-		WriteErrorJSON(fmt.Sprintf("ownership build failed: %v", err))
-		return 1
-	}
-	logger.Info("phase timing", "phase", "ownership", "elapsed_ms", time.Since(ownershipStart).Milliseconds())
-
-	interprocBuilder := graph.NewInterprocBuilder(store, p, logger)
-	interprocStart := time.Now()
-	if _, err := interprocBuilder.Build(ctx); err != nil {
-		WriteErrorJSON(fmt.Sprintf("interproc build failed: %v", err))
-		return 1
-	}
-	logger.Info("phase timing", "phase", "interproc", "elapsed_ms", time.Since(interprocStart).Milliseconds())
+	logger.Info("phase timing", "phase", "graph_builders_parallel", "elapsed_ms", time.Since(graphStart).Milliseconds())
 
 	if err := store.ClearSecurityEvents(ctx); err != nil {
 		WriteErrorJSON(fmt.Sprintf("failed to clear security events: %v", err))
@@ -185,19 +200,45 @@ func runScanCmd(ctx context.Context, args []string) int {
 	filesWithCandidates := map[string]bool{}
 	var dismissedByVuln []report.VulnTypeDismissed
 	totalDropped := 0
-	for _, vulnType := range planner.AllVulnTypes() {
-		pl := planner.NewPlanner(store, p, logger)
-		planStart := time.Now()
-		result, err := pl.Plan(ctx, vulnType)
-		logger.Info("phase timing", "phase", "plan_"+vulnType, "elapsed_ms", time.Since(planStart).Milliseconds())
-		if err != nil {
+
+	vulnTypes := planner.AllVulnTypes()
+	type planOutcome struct {
+		result *planner.PlanResult
+		err    error
+	}
+	outcomes := make([]planOutcome, len(vulnTypes))
+
+	const planConcurrency = 4
+	planSem := make(chan struct{}, planConcurrency)
+	var pwg sync.WaitGroup
+	for i, vulnType := range vulnTypes {
+		pwg.Add(1)
+		go func(idx int, vt string) {
+			defer pwg.Done()
+			planSem <- struct{}{}
+			defer func() { <-planSem }()
+			pl := planner.NewPlanner(store, p, logger)
+			planStart := time.Now()
+			result, err := pl.Plan(ctx, vt)
+			if logger != nil {
+				logger.Info("phase timing", "phase", "plan_"+vt, "elapsed_ms", time.Since(planStart).Milliseconds())
+			}
+			outcomes[idx] = planOutcome{result: result, err: err}
+		}(i, vulnType)
+	}
+	pwg.Wait()
+
+	for i, vulnType := range vulnTypes {
+		oc := outcomes[i]
+		if oc.err != nil {
 			evidencePackages = append(evidencePackages, map[string]interface{}{
 				"vulnerability_type": vulnType,
-				"error":              err.Error(),
+				"error":              oc.err.Error(),
 				"candidates":         []interface{}{},
 			})
 			continue
 		}
+		result := oc.result
 
 		filterChainJSON, _ := json.Marshal(result.Summary.Filters)
 		store.InsertScanStat(ctx, &db.ScanStat{
@@ -230,12 +271,12 @@ func runScanCmd(ctx context.Context, args []string) int {
 		}
 		totalCandidates += len(keptCandidates)
 		evidencePackages = append(evidencePackages, map[string]interface{}{
-			"vulnerability_type":   vulnType,
-			"cwe":                  cwe,
-			"summary":              result.Summary,
-			"candidates":           keptCandidates,
-			"suppressed_count":     suppressedCount,
-			"baseline_existing":    baselineExisting,
+			"vulnerability_type":       vulnType,
+			"cwe":                      cwe,
+			"summary":                  result.Summary,
+			"candidates":               keptCandidates,
+			"suppressed_count":         suppressedCount,
+			"baseline_existing":        baselineExisting,
 			"original_candidate_count": len(result.Candidates),
 		})
 	}
@@ -302,12 +343,12 @@ func runScanCmd(ctx context.Context, args []string) int {
 	}
 
 	output := map[string]interface{}{
-		"scan_id":               scanID,
-		"candidates_by_type":    candidatesByType,
-		"total_candidates":      totalCandidates,
-		"suppressed_count":      totalSuppressed,
+		"scan_id":                 scanID,
+		"candidates_by_type":      candidatesByType,
+		"total_candidates":        totalCandidates,
+		"suppressed_count":        totalSuppressed,
 		"baseline_existing_count": totalBaselineExisting,
-		"files_with_candidates": filesList,
+		"files_with_candidates":   filesList,
 		"index_summary": map[string]interface{}{
 			"files_indexed":      indexResult.FilesIndexed,
 			"functions_indexed":  indexResult.FunctionsIndexed,

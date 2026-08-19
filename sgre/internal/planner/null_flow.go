@@ -101,6 +101,37 @@ func (m *flowResult) reachingDefinite(variable string, line int) bool {
 	return m.definite.reaching(variable, line)
 }
 
+// sourceLine returns the line of the first reaching source for variable at
+// line, or 0 if none. It picks the minimum source line so the codeFlow step
+// is deterministic across runs.
+func (m *flowResult) sourceLine(variable string, line int) int {
+	if m == nil || m.cfg == nil {
+		return 0
+	}
+	n := m.cfg.NodeAt(line)
+	if n == nil {
+		return 0
+	}
+	srcs := m.nodeIn[n.ID][variable]
+	if len(srcs) == 0 {
+		if m.genAt[n.ID][variable] {
+			return n.StartLine
+		}
+		return 0
+	}
+	best := 0
+	for sid := range srcs {
+		if sid < 0 || sid >= len(m.cfg.Nodes) {
+			continue
+		}
+		sl := m.cfg.Nodes[sid].StartLine
+		if sl > 0 && (best == 0 || sl < best) {
+			best = sl
+		}
+	}
+	return best
+}
+
 // reachingAtExit reports whether variable has a reaching source at the function
 // exit, i.e. there is a path on which the source is not killed before the
 // function returns. This is the leak condition: allocated but not released on

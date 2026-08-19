@@ -22,13 +22,13 @@ func Open(ctx context.Context, dbPath string) (*sql.DB, error) {
 		needsInit = true
 	}
 
-	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)", absPath)
+	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_busy_timeout=5000", absPath)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("db: open: %w", err)
 	}
 
-	db.SetMaxOpenConns(1)
+	db.SetMaxOpenConns(4)
 
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()

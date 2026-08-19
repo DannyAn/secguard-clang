@@ -21,12 +21,12 @@ var SafeFunctions = map[string]bool{
 	// The exec* family replaces the process image without invoking a shell, so
 	// none of them is a command-injection sink (no shell metacharacter
 	// interpretation). Only shell-invoking calls (system, popen) are.
-	"execve":  true,
-	"execv":   true,
-	"execvp":  true,
-	"execl":   true,
-	"execlp":  true,
-	"execle":  true,
+	"execve": true,
+	"execv":  true,
+	"execvp": true,
+	"execl":  true,
+	"execlp": true,
+	"execle": true,
 
 	"sqlite3_prepare_v2": true,
 	"sqlite3_bind_text":  true,
@@ -124,23 +124,23 @@ var UnsafeFunctions = map[string]string{
 // CriticalAPIs, HighAPIs, MediumAPIs are the severity tiers used by the
 // planner's ranker to order candidates.
 var CriticalAPIs = map[string]bool{
-	"system":          true,
-	"popen":           true,
-	"CreateProcessA":  true,
-	"CreateProcessW":  true,
+	"system":           true,
+	"popen":            true,
+	"CreateProcessA":   true,
+	"CreateProcessW":   true,
 	"CreateProcessAsA": true,
 	"CreateProcessAsW": true,
-	"ShellExecuteA":   true,
-	"ShellExecuteW":   true,
-	"ShellExecuteEx":  true,
-	"ShellExecuteExA": true,
-	"ShellExecuteExW": true,
-	"execl":           true,
-	"execlp":          true,
-	"execle":          true,
-	"execv":           true,
-	"execvp":          true,
-	"execve":          true,
+	"ShellExecuteA":    true,
+	"ShellExecuteW":    true,
+	"ShellExecuteEx":   true,
+	"ShellExecuteExA":  true,
+	"ShellExecuteExW":  true,
+	"execl":            true,
+	"execlp":           true,
+	"execle":           true,
+	"execv":            true,
+	"execvp":           true,
+	"execve":           true,
 }
 
 var HighAPIs = map[string]bool{
@@ -152,8 +152,8 @@ var HighAPIs = map[string]bool{
 }
 
 var MediumAPIs = map[string]bool{
-	"strncpy": true,
-	"strncat": true,
+	"strncpy":  true,
+	"strncat":  true,
 	"snprintf": true,
 	"fread":    true,
 	"scanf":    true,

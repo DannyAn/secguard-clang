@@ -2,6 +2,17 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [Unreleased]
+
+### P1 竞品弱项改进（并行化 + 结构化证据链）
+
+基于 `docs/pk/competitive-analysis.md` 的 P1 弱项分析，实施两项改进：
+
+- **并行检测管线**：graph builder（5 个）、detector（21 个独立 + Interprocedural 后置）、planner（20 个）全部并行化，连接池从 1 放宽到 4 + busy_timeout=5000ms。大代码库（redis 11K 函数）扫描时间显著下降。
+- **`--timeout <秒>` 超时控制**：`context.WithTimeout` 包 scan 顶层，超时后所有阶段（index/graph/detector/planner/report）协同取消，不再无限挂起。
+- **`GetOrCreateGraphNode` 原子化**：`graph_nodes` 加 `UNIQUE(entity_type, entity_id, properties)` 约束 + `INSERT OR IGNORE`，消除并行 builder 的 SELECT-then-INSERT 竞态。迁移 `migrateGraphNodesUnique` 自动重建旧表。
+- **SARIF codeFlows 2 步路径**：`Candidate` 加 `SourceLine` 字段，`NullableSourceFilter` 从 `flowResult.nodeIn`（reaching-definitions 源节点）提取源行号，SARIF result 加 `codeFlows` 结构（source→sink 2 步 threadFlow），GitHub Code Scanning 可直接展示"null 引入→解引用"路径。
+
 ## [0.2.0] - 2026-08-19
 
 语义图完成度与收敛引擎的全面升级：把"声明未用"的语义图边真正落库并接入收敛管线，把数据流引擎从 null/free 扩展为可复用的污点/所有权/锁集引擎。这是对标业界同类产品（CodeQL / Infer / Semgrep 的 C 语义分析）的第一版。

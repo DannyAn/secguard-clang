@@ -82,4 +82,5 @@ type Candidate struct {
 	NonNullable       bool    `json:"non_nullable"`
 	IsTypeExpr        bool    `json:"is_type_expr"`
 	QualityScore      float64 `json:"quality_score"`
+	SourceLine        int     `json:"source_line,omitempty"`
 }

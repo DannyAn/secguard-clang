@@ -81,7 +81,8 @@ CREATE TABLE IF NOT EXISTS graph_nodes (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     entity_type TEXT NOT NULL,
     entity_id   INTEGER NOT NULL,
-    properties  TEXT
+    properties  TEXT,
+    UNIQUE(entity_type, entity_id, properties)
 );
 
 CREATE TABLE IF NOT EXISTS graph_edges (

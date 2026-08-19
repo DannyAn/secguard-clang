@@ -10,6 +10,7 @@ type EvidenceItem struct {
 	SuspicionLevel    string             `json:"suspicion_level,omitempty"`
 	HasDefiniteNull   bool               `json:"has_definite_null,omitempty"`
 	Target            TargetInfo         `json:"target"`
+	SourceLine        int                `json:"source_line,omitempty"`
 	Evidence          []EvidenceFragment `json:"evidence"`
 }
 
@@ -66,7 +67,8 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 			Line:     c.Line,
 			Variable: c.VariableName,
 		},
-		Evidence: spec.BuildEvidence(c),
+		SourceLine: c.SourceLine,
+		Evidence:   spec.BuildEvidence(c),
 	}
 	if c.SuspicionLevel != "" {
 		item.SuspicionLevel = c.SuspicionLevel

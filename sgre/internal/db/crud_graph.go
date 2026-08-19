@@ -36,22 +36,20 @@ func (s *store) GetGraphNodeByID(ctx context.Context, id int64) (*GraphNode, err
 }
 
 func (s *store) GetOrCreateGraphNode(ctx context.Context, entityType string, entityID int64, properties string) (int64, error) {
+	// Atomic upsert: INSERT OR IGNORE relies on the UNIQUE(entity_type, entity_id,
+	// properties) constraint to deduplicate concurrent inserts. Then SELECT
+	// returns the surviving row's id. This eliminates the SELECT-then-INSERT
+	// race that produced duplicate nodes when graph builders ran in parallel.
+	_, _ = s.exec.ExecContext(ctx,
+		`INSERT OR IGNORE INTO graph_nodes (entity_type, entity_id, properties) VALUES (?, ?, ?)`,
+		entityType, entityID, properties)
 	var id int64
-	// The node identity is (entity_type, entity_id, properties): two variable_ref
-	// nodes with different names/lines must be distinct nodes, otherwise every
-	// DATA_FLOW / ALIAS edge in a function collapses onto a single self-loop.
-	// The previous query keyed only on (entity_type, entity_id), so all variable
-	// refs in one function shared one node and the persisted dataflow edges were
-	// semantically broken (their src/dst resolved to the same variable).
 	err := s.exec.QueryRowContext(ctx,
 		`SELECT id FROM graph_nodes WHERE entity_type = ? AND entity_id = ? AND properties = ? LIMIT 1`, entityType, entityID, properties).Scan(&id)
-	if err == nil {
-		return id, nil
+	if err != nil {
+		return 0, fmt.Errorf("db: get or create graph node: %w", err)
 	}
-	if err != sql.ErrNoRows {
-		return 0, fmt.Errorf("db: get or create graph node: query: %w", err)
-	}
-	return s.InsertGraphNode(ctx, &GraphNode{EntityType: entityType, EntityID: entityID, Properties: properties})
+	return id, nil
 }
 
 func (s *store) ListGraphNodesByEntity(ctx context.Context, entityType string, entityID int64) ([]*GraphNode, error) {
