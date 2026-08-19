@@ -393,11 +393,10 @@ func callArgs(call parser.Node) []parser.Node {
 // computeParamTainted returns, per function, the set of parameter indices that
 // receive tainted data from some caller — the forward half of the inter-
 // procedural taint, consuming the PARAM_BINDING edges (caller argument →
-// callee parameter). For each such edge whose caller-side argument has a taint
-// source reaching the call site, the callee's parameter is marked tainted. The
-// caller flows are built with the return-taint summary so `x = g()` where g
-// returns taint also propagates. This is a single forward pass (not a full
-// fixpoint): transitive param→param chains are rare and stay conservative.
+// callee parameter). It is a monotone fixpoint over the call graph: each
+// iteration rebuilds every caller's flow with its already-proven tainted
+// parameters seeded at entry, so a transitive param→param chain (main → A → B)
+// propagates taint across any number of hops instead of stopping after one.
 func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted map[string]bool, returnsParam map[string]map[int]bool) map[int64]map[int]bool {
 	result := make(map[int64]map[int]bool)
 	edges, err := f.store.ListGraphEdgesByType(ctx, "PARAM_BINDING")
@@ -439,49 +438,62 @@ func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted 
 		}
 	}
 
-	// Build the caller flow once per caller that appears in a PARAM_BINDING edge.
+	// Callers that appear in a PARAM_BINDING edge, resolved once.
 	callerIDs := make(map[int64]bool)
 	for _, e := range edges {
 		if fid := argFunc[e.SrcID]; fid != 0 {
 			callerIDs[fid] = true
 		}
 	}
-	callerFlows := make(map[int64]*flowResult)
-	cache := newFileParseCache(f.parser)
-	for fid := range callerIDs {
-		fn, err := f.store.GetFunctionByID(ctx, fid)
-		if err != nil || fn == nil {
-			continue
-		}
-		file, err := f.store.GetFileByID(ctx, fn.FileID)
-		if err != nil || file == nil {
-			continue
-		}
-		body, root := cache.get(file, fn)
-		if body.Kind() != "compound_statement" {
-			continue
-		}
-		genByLine, killByLine := taintEffectsWithCallees(body, retTainted, returnsParam)
-		analyzer := newFlowAnalyzer(f.store, f.parser)
-		analyzer.dfgCopies = map[int64]map[int][]copyPair{fid: passthroughCopiesFor(body, returnsParam)}
-		callerFlows[fid] = analyzer.analyzeFlow(ctx, fn, body, root, genByLine, killByLine, false, false)
-	}
 
-	for _, e := range edges {
-		callerID := argFunc[e.SrcID]
-		calleeID := paramFunc[e.DstID]
-		idx := paramIndex[e.DstID]
-		name := argName[e.SrcID]
-		line := argLine[e.SrcID]
-		flow := callerFlows[callerID]
-		if flow == nil || name == "" {
-			continue
-		}
-		if flow.reaching(name, line) {
-			if result[calleeID] == nil {
-				result[calleeID] = make(map[int]bool)
+	for {
+		changed := false
+		callerFlows := make(map[int64]*flowResult)
+		cache := newFileParseCache(f.parser)
+		for fid := range callerIDs {
+			fn, err := f.store.GetFunctionByID(ctx, fid)
+			if err != nil || fn == nil {
+				continue
 			}
-			result[calleeID][idx] = true
+			file, err := f.store.GetFileByID(ctx, fn.FileID)
+			if err != nil || file == nil {
+				continue
+			}
+			body, root := cache.get(file, fn)
+			if body.Kind() != "compound_statement" {
+				continue
+			}
+			genByLine, killByLine := taintEffectsWithCallees(body, retTainted, returnsParam)
+			analyzer := newFlowAnalyzer(f.store, f.parser)
+			analyzer.dfgCopies = map[int64]map[int][]copyPair{fid: passthroughCopiesFor(body, returnsParam)}
+			// Seed this caller's already-proven tainted parameters so its own
+			// parameter arguments (which may be its params) carry taint forward.
+			analyzer.entrySeeds = taintedParamsFor(fn, root, result[fid])
+			callerFlows[fid] = analyzer.analyzeFlow(ctx, fn, body, root, genByLine, killByLine, false, false)
+		}
+
+		for _, e := range edges {
+			callerID := argFunc[e.SrcID]
+			calleeID := paramFunc[e.DstID]
+			idx := paramIndex[e.DstID]
+			name := argName[e.SrcID]
+			line := argLine[e.SrcID]
+			flow := callerFlows[callerID]
+			if flow == nil || name == "" {
+				continue
+			}
+			if flow.reaching(name, line) {
+				if result[calleeID] == nil {
+					result[calleeID] = make(map[int]bool)
+				}
+				if !result[calleeID][idx] {
+					result[calleeID][idx] = true
+					changed = true
+				}
+			}
+		}
+		if !changed {
+			break
 		}
 	}
 	return result

@@ -277,9 +277,28 @@ void caller(void) { sink(getenv("CMD")); }           // 形参 s 被污染 → c
 这是"按调用点上下文"的正向半面：callee 带着 caller 的污点上下文求值，`cmd = s`
 （copy）与 `cmd = build_cmd(s)`（passthrough）都正确传播，不再漏报。
 
-### 待续（完整 1-CFA）
+### 跨函数链式形参污点（fixpoint）
 
-- 按调用点克隆摘要（真 1-CFA）：同一函数不同调用方传入不同上界/污点，分别
-  求值（当前已覆盖"返回污点"与"形参污点回流"两个维度，但仍是合并所有调用点的
-  may-taint 摘要，未按调用点区分形参**界定**/上界）——这是正面硬刚 CodeQL 的
-  最后一段。
+`computeParamTainted` 从单趟前向传播升级为**调用图不动点**：每轮用已证实的
+被污染形参重新种子 caller 的函数体流，使 `main → A → B → C` 的形参→形参链跨
+任意跳数传播污点，而非只走一跳：
+
+```c
+void C(char *s) { char *cmd = s; system(cmd); }   // 最终 sink
+void B(char *s) { C(s); }
+void A(char *s) { B(s); }
+void main(void) { A(getenv("CMD")); }             // 污点经 A→B→C 到达 C 的局部 sink
+```
+
+### 结论：形参敏感摘要已构成 taint 的上下文敏感过程间分析
+
+三个机制（`retTainted` + `returnsParam` fixpoint、`entrySeeds` 形参回流、
+`computeParamTainted` 链式 fixpoint）共同构成对 taint 而言的**上下文敏感过程间
+分析**——按形参（输入上下文）区分摘要，而非按调用点克隆。对 taint 而言形参敏感
+是比 1-CFA（调用点敏感）更贴切的上下文抽象，因为污点沿形参流动、而非沿调用点。
+
+### 待续（数值界定的调用点克隆）
+
+- 按调用点克隆**数值上界**：同一函数不同调用方传入不同形参**上界**（如 `malloc(n)`
+  中 n 的界）分别求值——这属于 ① 值分析的纵深（完整区间域 + 调用点敏感数值摘要），
+  是相对 CodeQL RangeAnalysis 的进一步逼近，不再是 taint 维度的缺口。

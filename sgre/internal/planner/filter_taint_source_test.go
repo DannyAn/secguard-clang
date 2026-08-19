@@ -489,3 +489,67 @@ void caller(void) {
 		}
 	}
 }
+
+// TestTaintSourceFilter_TransitiveParamTaint locks in the fixpoint: a
+// param→param chain across multiple call hops (main → A → B → C) must propagate
+// taint to the final sink, which the previous single forward pass missed.
+func TestTaintSourceFilter_TransitiveParamTaint(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transitive.c")
+	src := `#include <stdlib.h>
+
+void C(char *s) {
+    char *cmd = s;
+    system(cmd);
+}
+
+void B(char *s) {
+    C(s);
+}
+
+void A(char *s) {
+    B(s);
+}
+
+void main(void) {
+    char *input = getenv("CMD");
+    A(input);
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	graph.NewInterprocBuilder(store, p, logger).Build(ctx)
+	evidence.NewInjectionDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "injection")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	byFunc := map[string]EvidenceItem{}
+	for _, c := range result.Candidates {
+		byFunc[c.Target.Function] = c
+	}
+
+	c, ok := byFunc["C"]
+	if !ok {
+		t.Fatalf("expected C (transitive param taint main→A→B→C) to be kept, got %v", candidateNames(result))
+	}
+	if !hasTaintEvidence(c) {
+		t.Errorf("expected C to carry a taint_source evidence fragment, got %+v", c.Evidence)
+	}
+}

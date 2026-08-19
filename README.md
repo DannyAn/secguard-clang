@@ -23,7 +23,7 @@
 | 能力维度 | CodeQL | Infer | Coverity | Semgrep | **SecGuard** |
 |---|---|---|---|---|---|
 | 路径敏感数据流 | ✅ 深度 | ✅ bi-abduction | ✅ 深度 | ❌ 纯语法 | ✅ CFG reaching-definitions |
-| 过程间分析 | ✅ 1-CFA+ | ✅ 按需 | ✅ 深度 | ❌ | ⚠️ 0-CFA + 形参敏感返回摘要 |
+| 过程间分析 | ✅ 1-CFA+ | ✅ 按需 | ✅ 深度 | ❌ | ⚠️ 形参敏感摘要（返回污点 + 形参回流 + 链式 fixpoint） |
 | 污点追踪 | ✅ 路径敏感 | ✅ | ✅ | ⚠️ 语法级 | ✅ source→sink 不动点 |
 | 别名分析 | ✅ | ✅ | ✅ | ❌ | ✅ 单层 |
 | 值分析 / 区间域 | ✅ | ✅ Inferbo | ✅ | ❌ | ⚠️ RangeAnalysis lite（变量界定 + 守卫界 + AI fallback） |
