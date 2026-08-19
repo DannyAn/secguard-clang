@@ -2,6 +2,43 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.3.0] - 2026-08-19
+
+对标 CodeQL / Infer / Coverity 的两大差距攻坚：**值分析/区间域（RangeAnalysis lite）** 与
+**1-CFA 过程间上下文敏感**。核心打法是"静态分析识别风险形态 + 大模型推理兜底"——静态分析
+证明不了的模糊边界（变量 `n` 会不会真的溢出），emit 为 suspected/possible 候选带证据交 AI Agent
+推理论证，充分发挥大模型对 API 契约与调用点语义的理解能力。
+
+### 值分析 / 区间域（RangeAnalysis lite）
+
+- **变量界定溢出检测**：`malloc`/`calloc` 的 `n*m`、`n*sizeof(T)`、`n*K`、`n±K` 等 CWE-190 模式，
+  以"操作数是否函数形参（caller 可控）"为门控——局部有界变量不误报。
+- **守卫常量传播**：`if (n < CONST)` 前置守卫界收敛加法/乘常量溢出候选（区间域轻量版）。
+- **strncpy/memcpy/memmove 变量长度越界**：`bounded_copy_overflow`（confirmed）/
+  `bounded_copy_var_size`（possible）；memcpy 从 SafeFunctions 分支解耦，strncat 保留 append 保守语义。
+- **修复两个静默漏报**：`bounded_copy_overflow` 未入 buffer-overflow 的 seed 允许列表、且被
+  SafeFunctionFilter 因 `strncpy` 属 SafeFunctions 误删——此前 strncpy 溢出从未到达 AI Agent。
+
+### Annex K `_s` 安全函数契约分析
+
+业界普遍把 `_s` 函数当"无条件安全"，SecGuard 按契约逐个校验：
+
+- **13 个拷贝类**（memcpy_s/memmove_s/memset_s/strcpy_s/strncpy_s/strcat_s/strncat_s/sprintf_s/
+  snprintf_s/vsprintf_s/vsnprintf_s/asctime_s/ctime_s）：三方比对 `declared capacity` vs `真实容量`
+  vs `required size`，抓"说谎的 size"（`char buf[10]; memcpy_s(buf, 100, src, 50)`）与约束违约。
+- **scanf_s/sscanf_s/fscanf_s 逐转换宽度校验**：解析格式串对齐 `(buffer, size)` 变参对，
+  `secure_scanf_overflow`（confirmed）/`secure_scanf_var_size`（possible）。
+
+### 1-CFA 过程间上下文敏感（形参敏感摘要）
+
+- **`returnsParam` 跨函数 fixpoint**：多级 passthrough（`wrap2(s){return id(s);}`）正确传播返回污点。
+- **`entrySeeds` 形参污点回流**：由污染形参派生的局部 sink（`char *cmd = s; system(cmd)`）不再漏报。
+- **`computeParamTainted` 链式 fixpoint**：`main → A → B → C` 跨任意跳数传播形参污点。
+
+### 测试
+
+- 新增 `tc64`–`tc70` 夹具与 10+ 回归测试（含 `-race` 并发门禁）；`go test -race ./...` 0 数据竞争。
+
 ## [0.2.1] - 2026-08-19
 
 ### P1 竞品弱项改进（并行化 + 结构化证据链）
