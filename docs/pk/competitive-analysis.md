@@ -7,7 +7,7 @@
 | 维度 | CodeQL | Infer | Coverity | Semgrep | **sgre** |
 |------|--------|-------|----------|---------|----------|
 | 路径敏感数据流 | ✅ 深度 | ✅ bi-abduction | ✅ 深度 | ❌ 纯 syntactic | ✅ CFG 基 reaching-definitions |
-| 过程间分析 | ✅ 1-CFA+ | ✅ 按需 | ✅ 深度 | ❌ | ⚠️ 0-CFA（无上下文敏感） |
+| 过程间分析 | ✅ 1-CFA+ | ✅ 按需 | ✅ 深度 | ❌ | ⚠️ 0-CFA + 形参敏感返回摘要 |
 | 值分析/区间域 | ✅ RangeAnalysis | ✅ Inferbo | ✅ | ❌ | ⚠️ 变量界定 + AI fallback（无完整区间域） |
 | 别名分析 | ✅ | ✅ | ✅ | ❌ | ✅ 单层（q=p/p->f/p[i]） |
 | 污点追踪 | ✅ 路径敏感 | ✅ | ✅ | ✅ syntactic | ✅ source→sink fixpoint |
@@ -102,7 +102,7 @@ Semgrep 的纯 syntactic 模式匹配做不到的。
 | P1 | 并行检测器 + 分析超时 | errgroup + context.WithTimeout | ✅ 已完成 |
 | P1 | SARIF codeFlows + 结构化证据链 | source→sink 导航 | ✅ 已完成 |
 | P2 | 值分析/区间域 | RangeAnalysis lite | 🚧 进行中（变量界定 + AI fallback，见 §7） |
-| P2 | 1-CFA 过程间分析 | 按调用点区分摘要 | 待排 |
+| P2 | 1-CFA 过程间分析 | 按调用点区分摘要 | 🚧 进行中（形参敏感返回摘要，见 §8） |
 
 ## 6. v0.2.1 反向自检修复
 
@@ -169,4 +169,38 @@ argv/getenv/recv 且无 clamp → confirmed；形参被有界守卫/strlen 界�
 - `memcpy`/`memmove` 的变量长度越界：当前它们走通用 `buffer_overflow` 路径（保守标记），
   尚未按 `n` 与固定数组容量做精确比对（需将 BoundedCopyFunctions 从 SafeFunctions 分支
   中解耦）。
-- 1-CFA 过程间上下文敏感：按调用点区分形参界定（同一函数不同调用方传入不同上界）。
+
+## 8. v0.2.1+ 1-CFA 过程间上下文敏感（对标 CodeQL 1-CFA）
+
+针对弱项 5（0-CFA 过程间分析）的第一阶段：**形参敏感的返回污点摘要**。
+
+### 问题
+
+0-CFA 的 `retTainted` 只有"函数是否返回污点"一个布尔值，无法表达
+`char *id(char *s) { return s; }` 这类 passthrough 函数——它返回污点**当且仅当**
+形参被污染，这是调用点（上下文）属性。
+
+### 方案：把"是否被污染"从函数级下推到形参级
+
+| 结构 | 含义 |
+|------|------|
+| `retTainted`（0-CFA） | 函数无条件返回污点（直接返回 getenv/argv 等） |
+| `returnsParam`（新增） | 函数逐字 `return <param>` → 返回污点当且仅当该形参被污染 |
+
+调用点传播（`x = g(args)`）：
+
+- `retTainted[g]` → `x` 直接 gen 为污点（无条件，既有行为）。
+- `returnsParam[g][i]` 且 `args[i]` 是污点源（getenv/argv）→ `x` gen 为污点。
+- `returnsParam[g][i]` 且 `args[i]` 是裸标识符 `v` → 注入数据流 copy `x = v`，
+  复用共享 reaching-sources 引擎让 `x` 继承 `v` 的污点。
+
+于是 `id(getenv("CMD"))`（gen）与 `x = getenv(...); id(x)`（copy）都能正确
+传播污点到 sink，而 `id("literal")` 不产生污点——这正是 CodeQL 1-CFA 靠上下文
+克隆才拿到的精度，sgre 用**形参敏感摘要 + 共享数据流引擎**以更低成本逼近。
+
+### 待续（完整 1-CFA）
+
+- 形参敏感沿多级传递：`wrap2(s) { return id(s); }` 的 passthrough 尚未跨函数
+  归纳（当前 `returnsParam` 只识别逐字 `return <param>`，不识别 `return id(s)`）。
+- 按调用点克隆摘要（真 1-CFA）：同一函数不同调用方传入不同上界/污点，分别
+  求值——这是正面硬刚 CodeQL 的最后一段。

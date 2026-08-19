@@ -259,3 +259,81 @@ void run_cmd(void) {
 		t.Errorf("expected a tainted injection candidate for cmd, got %v", candidateNames(result))
 	}
 }
+
+// TestTaintSourceFilter_ParamPassthrough locks in the context-sensitive return
+// summary: a function that returns its parameter verbatim (char *id(char *s) {
+// return s; }) is tainted iff that parameter is tainted. `id(getenv(...))`
+// taints the result (gen), `id(x)` with a tainted x taints the result (copy),
+// and `id("literal")` does not taint — the literal case stays suppressed.
+func TestTaintSourceFilter_ParamPassthrough(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "passthrough.c")
+	src := `#include <stdlib.h>
+#include <stdio.h>
+
+char *id(char *s) {
+    return s;
+}
+
+int sink_direct(void) {
+    char *p = id(getenv("CMD"));
+    FILE *f = fopen(p, "r");
+    return f != 0;
+}
+
+int sink_copy(void) {
+    char *x = getenv("CMD");
+    char *p = id(x);
+    FILE *f = fopen(p, "r");
+    return f != 0;
+}
+
+int sink_clean(void) {
+    char *p = id("/tmp/x");
+    FILE *f = fopen(p, "r");
+    return f != 0;
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewPathTraversalDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "path-traversal")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	byFunc := map[string]EvidenceItem{}
+	for _, c := range result.Candidates {
+		byFunc[c.Target.Function] = c
+	}
+
+	for _, fn := range []string{"sink_direct", "sink_copy"} {
+		c, ok := byFunc[fn]
+		if !ok {
+			t.Errorf("expected %s (taint via param-passthrough) to be kept, got %v", fn, candidateNames(result))
+			continue
+		}
+		if !hasTaintEvidence(c) {
+			t.Errorf("expected %s to carry a taint_source evidence fragment, got %+v", fn, c.Evidence)
+		}
+	}
+
+	if _, ok := byFunc["sink_clean"]; ok {
+		t.Errorf("expected sink_clean (id of a literal) to be suppressed, got %v", candidateNames(result))
+	}
+}

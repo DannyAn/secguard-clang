@@ -60,11 +60,15 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 
 	// Inter-procedural summaries: which functions can return a tainted value
 	// (RETURN / CALL edges) and which (function, parameter) pairs receive tainted
-	// data from a caller (PARAM_BINDING edges).
-	retTainted := f.computeRetTainted(ctx)
-	paramTainted := f.computeParamTainted(ctx, retTainted)
+	// data from a caller (PARAM_BINDING edges). returnsParam is the
+	// context-sensitive half: a function that returns a parameter verbatim is
+	// tainted IFF that parameter is tainted — a call-site property the 0-CFA
+	// retTainted summary cannot express.
+	returnsParam := f.computeReturnsParam(ctx)
+	retTainted := f.computeRetTainted(ctx, returnsParam)
+	paramTainted := f.computeParamTainted(ctx, retTainted, returnsParam)
 
-	flows, paramsByFunc := f.buildFlows(ctx, byFunc, retTainted)
+	flows, paramsByFunc := f.buildFlows(ctx, byFunc, retTainted, returnsParam)
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -130,7 +134,7 @@ func (f *TaintSourceFilter) sinkVariable(ctx context.Context, c Candidate) strin
 	}
 }
 
-func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, retTainted map[string]bool) (map[int64]*flowResult, map[int64]map[string]int) {
+func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, retTainted map[string]bool, returnsParam map[string]map[int]bool) (map[int64]*flowResult, map[int64]map[string]int) {
 	flows := make(map[int64]*flowResult, len(byFunc))
 	paramsByFunc := make(map[int64]map[string]int, len(byFunc))
 	cache := newFileParseCache(f.parser)
@@ -148,8 +152,9 @@ func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]C
 			continue
 		}
 
-		genByLine, killByLine := taintEffectsWithCallees(body, retTainted)
+		genByLine, killByLine := taintEffectsWithCallees(body, retTainted, returnsParam)
 		analyzer := newFlowAnalyzer(f.store, f.parser)
+		analyzer.dfgCopies = map[int64]map[int][]copyPair{fid: passthroughCopiesFor(body, returnsParam)}
 		flows[fid] = analyzer.analyzeFlow(ctx, fn, body, root, genByLine, killByLine, false, false)
 		paramsByFunc[fid] = paramsOf(fn, root)
 	}
@@ -164,7 +169,11 @@ func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]C
 // fixpoint re-runs the intra-procedural flow with the current callee summary
 // until no new function is marked (the RETURN / CALL edges carry the fact
 // across function boundaries).
-func (f *TaintSourceFilter) computeRetTainted(ctx context.Context) map[string]bool {
+//
+// returnsParam carries the context-sensitive half: `x = g(v)` where g returns
+// its parameter verbatim is tainted iff v is tainted, so the fixpoint also
+// injects those as dataflow copies and taint-source gens.
+func (f *TaintSourceFilter) computeRetTainted(ctx context.Context, returnsParam map[string]map[int]bool) map[string]bool {
 	retTainted := make(map[string]bool)
 	funcs, err := f.store.ListFunctions(ctx)
 	if err != nil {
@@ -208,8 +217,9 @@ func (f *TaintSourceFilter) computeRetTainted(ctx context.Context) map[string]bo
 				continue // monotone: already proven to return taint
 			}
 			b := base[info.fn.ID]
-			gen := addCalleeTaintGen(info.body, b.gen, retTainted)
+			gen := addCalleeTaintGen(info.body, b.gen, retTainted, returnsParam)
 			analyzer := newFlowAnalyzer(f.store, f.parser)
+			analyzer.dfgCopies = map[int64]map[int][]copyPair{info.fn.ID: passthroughCopiesFor(info.body, returnsParam)}
 			flow := analyzer.analyzeFlow(ctx, info.fn, info.body, info.root, gen, b.kill, false, false)
 			if returnsTaint(info.body, flow) {
 				retTainted[info.fn.Name] = true
@@ -223,6 +233,87 @@ func (f *TaintSourceFilter) computeRetTainted(ctx context.Context) map[string]bo
 	return retTainted
 }
 
+// computeReturnsParam returns, per function NAME, the set of parameter indices
+// the function returns verbatim (`return <param>`). Such a function is a
+// taint-passthrough: its return value is tainted iff that parameter is tainted,
+// which is a call-site (context-sensitive) property the flat retTainted summary
+// cannot express. This is the concrete 1-CFA-style step: it lets `x = id(v)`
+// propagate v's taint to x instead of being treated as an opaque call.
+func (f *TaintSourceFilter) computeReturnsParam(ctx context.Context) map[string]map[int]bool {
+	result := make(map[string]map[int]bool)
+	funcs, err := f.store.ListFunctions(ctx)
+	if err != nil {
+		return result
+	}
+	cache := newFileParseCache(f.parser)
+	for _, fn := range funcs {
+		file, err := f.store.GetFileByID(ctx, fn.FileID)
+		if err != nil || file == nil {
+			continue
+		}
+		body, root := cache.get(file, fn)
+		if body.Kind() != "compound_statement" {
+			continue
+		}
+		params := paramsOf(fn, root)
+		for _, ret := range body.FindAll("return_statement") {
+			for _, child := range ret.NamedChildren() {
+				if child.Kind() != "identifier" {
+					continue
+				}
+				if idx, ok := params[child.Text()]; ok {
+					if result[fn.Name] == nil {
+						result[fn.Name] = make(map[int]bool)
+					}
+					result[fn.Name][idx] = true
+				}
+			}
+		}
+	}
+	return result
+}
+
+// passthroughCopiesFor returns the copy pairs introduced by taint-passthrough
+// calls: `x = g(a0, a1, ...)` where g returns parameter i verbatim and a_i is a
+// bare identifier v becomes `x = v` (x inherits v's taint). The copy pairs are
+// fed into the flow engine's dfgCopies channel, so the shared reaching-sources
+// engine treats the passthrough call exactly like a plain assignment.
+func passthroughCopiesFor(body parser.Node, returnsParam map[string]map[int]bool) map[int][]copyPair {
+	if len(returnsParam) == 0 {
+		return nil
+	}
+	out := make(map[int][]copyPair)
+	forEachAssignment(body, func(lhs, rhs parser.Node) {
+		name := assignTargetName(lhs)
+		if name == "" || rhs.Kind() != "call_expression" {
+			return
+		}
+		callee := callName(rhs)
+		if callee == "" {
+			return
+		}
+		for i, arg := range callArgs(rhs) {
+			if !returnsParam[callee][i] {
+				continue
+			}
+			if arg.Kind() == "identifier" {
+				out[rhs.StartLine()] = append(out[rhs.StartLine()], copyPair{lhs: name, rhs: arg.Text()})
+			}
+		}
+	})
+	return out
+}
+
+// callArgs returns the positional argument nodes of a call_expression.
+func callArgs(call parser.Node) []parser.Node {
+	for _, child := range call.NamedChildren() {
+		if child.Kind() == "argument_list" {
+			return child.NamedChildren()
+		}
+	}
+	return nil
+}
+
 // computeParamTainted returns, per function, the set of parameter indices that
 // receive tainted data from some caller — the forward half of the inter-
 // procedural taint, consuming the PARAM_BINDING edges (caller argument →
@@ -231,7 +322,7 @@ func (f *TaintSourceFilter) computeRetTainted(ctx context.Context) map[string]bo
 // caller flows are built with the return-taint summary so `x = g()` where g
 // returns taint also propagates. This is a single forward pass (not a full
 // fixpoint): transitive param→param chains are rare and stay conservative.
-func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted map[string]bool) map[int64]map[int]bool {
+func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted map[string]bool, returnsParam map[string]map[int]bool) map[int64]map[int]bool {
 	result := make(map[int64]map[int]bool)
 	edges, err := f.store.ListGraphEdgesByType(ctx, "PARAM_BINDING")
 	if err != nil || len(edges) == 0 {
@@ -294,8 +385,9 @@ func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted 
 		if body.Kind() != "compound_statement" {
 			continue
 		}
-		genByLine, killByLine := taintEffectsWithCallees(body, retTainted)
+		genByLine, killByLine := taintEffectsWithCallees(body, retTainted, returnsParam)
 		analyzer := newFlowAnalyzer(f.store, f.parser)
+		analyzer.dfgCopies = map[int64]map[int][]copyPair{fid: passthroughCopiesFor(body, returnsParam)}
 		callerFlows[fid] = analyzer.analyzeFlow(ctx, fn, body, root, genByLine, killByLine, false, false)
 	}
 
@@ -340,18 +432,22 @@ func returnsTaint(body parser.Node, flow *flowResult) bool {
 }
 
 // taintEffectsWithCallees is taintEffects plus a gen for every `x = g(...)`
-// whose callee is known to return taint (the RETURN-edge summary).
-func taintEffectsWithCallees(body parser.Node, retTainted map[string]bool) (map[int][]string, map[int][]string) {
+// whose callee is known to return taint (the RETURN-edge summary) or whose
+// callee returns a taint-source argument verbatim (the param-sensitive summary).
+func taintEffectsWithCallees(body parser.Node, retTainted map[string]bool, returnsParam map[string]map[int]bool) (map[int][]string, map[int][]string) {
 	gen, kill := taintEffects(body)
-	gen = addCalleeTaintGen(body, gen, retTainted)
+	gen = addCalleeTaintGen(body, gen, retTainted, returnsParam)
 	return gen, kill
 }
 
 // addCalleeTaintGen adds, to gen, every `x = g(...)` assignment whose callee g is
-// in retTainted. It returns a new map (the input is not mutated), so the caller's
-// base gen stays reusable across fixpoint iterations.
-func addCalleeTaintGen(body parser.Node, gen map[int][]string, retTainted map[string]bool) map[int][]string {
-	if len(retTainted) == 0 {
+// in retTainted (returns taint unconditionally), or whose callee returns a
+// parameter verbatim and that argument is a taint source (returns taint iff the
+// arg is tainted — the context-sensitive case). It returns a new map (the input
+// is not mutated), so the caller's base gen stays reusable across fixpoint
+// iterations.
+func addCalleeTaintGen(body parser.Node, gen map[int][]string, retTainted map[string]bool, returnsParam map[string]map[int]bool) map[int][]string {
+	if len(retTainted) == 0 && len(returnsParam) == 0 {
 		return gen
 	}
 	out := make(map[int][]string, len(gen))
@@ -363,8 +459,18 @@ func addCalleeTaintGen(body parser.Node, gen map[int][]string, retTainted map[st
 		if name == "" {
 			return
 		}
-		if callee := rhsCallName(rhs); callee != "" && retTainted[callee] {
+		callee := rhsCallName(rhs)
+		if callee == "" {
+			return
+		}
+		if retTainted[callee] {
 			out[rhs.StartLine()] = append(out[rhs.StartLine()], name)
+			return
+		}
+		for i, arg := range callArgs(rhs) {
+			if returnsParam[callee][i] && isTaintSourceExpr(arg) {
+				out[rhs.StartLine()] = append(out[rhs.StartLine()], name)
+			}
 		}
 	})
 	return out
