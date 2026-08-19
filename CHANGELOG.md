@@ -2,7 +2,7 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [Unreleased]
+## [0.2.1] - 2026-08-19
 
 ### P1 竞品弱项改进（并行化 + 结构化证据链）
 
@@ -12,6 +12,10 @@
 - **`--timeout <秒>` 超时控制**：`context.WithTimeout` 包 scan 顶层，超时后所有阶段（index/graph/detector/planner/report）协同取消，不再无限挂起。
 - **`GetOrCreateGraphNode` 原子化**：`graph_nodes` 加 `UNIQUE(entity_type, entity_id, properties)` 约束 + `INSERT OR IGNORE`，消除并行 builder 的 SELECT-then-INSERT 竞态。
 - **SARIF codeFlows 2 步路径**：`Candidate` 加 `SourceLine` 字段，`NullableSourceFilter` 从 `flowResult.nodeIn`（reaching-definitions 源节点）提取源行号，SARIF result 加 `codeFlows` 结构（source→sink 2 步 threadFlow），GitHub Code Scanning 可直接展示"null 引入→解引用"路径。
+
+### 架构清理
+
+- **删除 migration 层**：DB 每次全新创建（`InitSchema` 幂等），不存在旧表迁移场景。移除 `migration.go` 全部代码及对应测试。
 
 ## [0.2.0] - 2026-08-19
 
