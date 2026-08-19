@@ -8,7 +8,7 @@
 |------|--------|-------|----------|---------|----------|
 | 路径敏感数据流 | ✅ 深度 | ✅ bi-abduction | ✅ 深度 | ❌ 纯 syntactic | ✅ CFG 基 reaching-definitions |
 | 过程间分析 | ✅ 1-CFA+ | ✅ 按需 | ✅ 深度 | ❌ | ⚠️ 0-CFA + 形参敏感返回摘要 |
-| 值分析/区间域 | ✅ RangeAnalysis | ✅ Inferbo | ✅ | ❌ | ⚠️ 变量界定 + AI fallback（无完整区间域） |
+| 值分析/区间域 | ✅ RangeAnalysis | ✅ Inferbo | ✅ | ❌ | ⚠️ RangeAnalysis lite（变量界定 + 守卫界 + AI fallback） |
 | 别名分析 | ✅ | ✅ | ✅ | ❌ | ✅ 单层（q=p/p->f/p[i]） |
 | 污点追踪 | ✅ 路径敏感 | ✅ | ✅ | ✅ syntactic | ✅ source→sink fixpoint |
 | suppression 闭环 | ✅ // lgtm | ✅ | ✅ dismiss 持久化 | ✅ --suppress | ✅ DB 回读 + 候选过滤 |
@@ -101,7 +101,7 @@ Semgrep 的纯 syntactic 模式匹配做不到的。
 | P0 | 补齐 malloc(n*sizeof(T)) 溢出 + strncpy 大小比对 | 覆盖两个高频 CVE 模式 | ✅ 已完成 |
 | P1 | 并行检测器 + 分析超时 | errgroup + context.WithTimeout | ✅ 已完成 |
 | P1 | SARIF codeFlows + 结构化证据链 | source→sink 导航 | ✅ 已完成 |
-| P2 | 值分析/区间域 | RangeAnalysis lite | 🚧 进行中（变量界定 + AI fallback，见 §7） |
+| P2 | 值分析/区间域 | RangeAnalysis lite | ✅ 变量界定 + 守卫界 + AI fallback（见 §7） |
 | P2 | 1-CFA 过程间分析 | 按调用点区分摘要 | 🚧 进行中（形参敏感返回摘要，见 §8） |
 
 ## 6. v0.2.1 反向自检修复
@@ -187,13 +187,19 @@ capacity → constraint violation`（handler 截断或 abort，实现相关）�
 这是相对"把 `_s` 当无条件安全排除"的普通扫描器的差异化能力，也契合 Repository
 Facts + Contract/Memory skill 架构。
 
+### 守卫常量传播（RangeAnalysis lite 收尾）
+
+`IntOverflowGuardFilter` 从只处理 `size_calc_overflow` 扩展为同时收敛
+`size_add_overflow` / `size_mul_const_overflow`：当所有变量操作数被前置
+`if (op < CONST)` 守卫界定到小常量（< 32768），加法/乘常量运算不可能溢出，候选直接
+丢弃——这就是区间域的"轻量"版本，用守卫界替代完整抽象解释。
+
 ### 待续
 
-- 完整区间域（RangeAnalysis lite）：`if (n < 100)` 守卫后的常量传播，用于把
-  `param + const` 从 possible 提升为 confirmed/直接丢弃。
 - `memcpy`/`memmove` 的变量长度越界：当前它们走通用 `buffer_overflow` 路径（保守标记），
   尚未按 `n` 与固定数组容量做精确比对（需将 BoundedCopyFunctions 从 SafeFunctions 分支
   中解耦）。
+- `scanf_s`/`sscanf_s`/`fscanf_s` 逐转换宽度校验（`%s`/`%c` 后跟宽度参数 vs 缓冲区容量）。
 
 ## 8. v0.2.1+ 1-CFA 过程间上下文敏感（对标 CodeQL 1-CFA）
 

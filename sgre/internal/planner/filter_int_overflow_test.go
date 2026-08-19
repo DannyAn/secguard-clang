@@ -77,3 +77,70 @@ void unguarded(void) {
 		t.Errorf("unguarded (unbounded n*size) should be kept, got %v", candidateNames(result))
 	}
 }
+
+// TestIntOverflowGuardFilter_AddConst locks in the range-domain extension: the
+// new size_add_overflow / size_mul_const_overflow patterns are also dropped when
+// the variable operand is guarded to a small constant (`if (n < 100)`), since
+// n + const and n * const then cannot overflow.
+func TestIntOverflowGuardFilter_AddConst(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "iof_add.c")
+	src := `#include <stdlib.h>
+
+void guarded_add(size_t n) {
+    if (n < 100) {
+        char *buf = malloc(n + 1);
+        (void)buf;
+    }
+}
+
+void guarded_mul(size_t n) {
+    if (n < 100) {
+        char *buf = malloc(n * 4);
+        (void)buf;
+    }
+}
+
+void unguarded_add(size_t n) {
+    char *buf = malloc(n + 1);
+    (void)buf;
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewIntegerOverflowDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "integer-overflow")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	kept := map[string]bool{}
+	for _, c := range result.Candidates {
+		kept[c.Target.Function] = true
+	}
+
+	if kept["guarded_add"] {
+		t.Errorf("guarded_add (n<100, malloc(n+1)) should be suppressed, got %v", candidateNames(result))
+	}
+	if kept["guarded_mul"] {
+		t.Errorf("guarded_mul (n<100, malloc(n*4)) should be suppressed, got %v", candidateNames(result))
+	}
+	if !kept["unguarded_add"] {
+		t.Errorf("unguarded_add (unbounded malloc(n+1)) should be kept, got %v", candidateNames(result))
+	}
+}
