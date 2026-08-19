@@ -84,7 +84,7 @@ func (d *NullSourceDetector) detectReturnNull(ctx context.Context, f *db.Functio
 		})
 		if err == nil {
 			result.EventsCreated++
-			d.store.UpdateReturnNullable(ctx, f.ID, true)
+			_ = d.store.UpdateReturnNullable(ctx, f.ID, true)
 		}
 	}
 }

@@ -31,6 +31,8 @@ var SupportedFindingCWEs = map[string]bool{
 	"CWE-798": true, // hardcoded-secret
 	"CWE-667": true, // deadlock
 	"CWE-327": true, // crypto-misuse
+	"CWE-326": true, // crypto-misuse (legacy: weak algorithm)
+	"CWE-338": true, // crypto-misuse (legacy: weak PRNG)
 	"CWE-369": true, // divide-by-zero
 	"CWE-252": true, // unchecked-return
 	"CWE-22":  true, // path-traversal

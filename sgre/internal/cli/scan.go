@@ -22,9 +22,9 @@ import (
 )
 
 // scanIDPattern validates the basename of an explicit --output-dir to prevent
-// path traversal and arbitrary scan_id injection. The format matches what
-// report.generateScanID produces: YYYY-MM-DD_HHMMSS_xxxx (4-char suffix).
-var scanIDPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}_\d{6}_[0-9A-Za-z]{4}$`)
+// path traversal and ensure the dir name matches the scan_id format that
+// report.generateScanID produces: YYYY-MM-DD_HHMMSS_xxxxxx (6-char suffix).
+var scanIDPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}_\d{6}_[0-9A-Za-z]{6}$`)
 
 func runScanCmd(ctx context.Context, args []string) int {
 	dbPath, dbExplicit, remaining := parseDBFlag(args)
@@ -66,7 +66,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 	if outputDir != "" {
 		scanID = filepath.Base(outputDir)
 		if !scanIDPattern.MatchString(scanID) {
-			WriteErrorJSON(fmt.Sprintf("invalid --output-dir: basename %q does not match scan_id format YYYY-MM-DD_HHMMSS_xxxx. Omit --output-dir to let secguard generate it, or pass a directory whose basename matches the format.", scanID))
+			WriteErrorJSON(fmt.Sprintf("invalid --output-dir: basename %q does not match scan_id format YYYY-MM-DD_HHMMSS_xxxxxx. Omit --output-dir to let secguard generate it, or pass a directory whose basename matches the format.", scanID))
 			return 1
 		}
 		scanDir = outputDir
@@ -117,27 +117,42 @@ func runScanCmd(ctx context.Context, args []string) int {
 
 	cgBuilder := graph.NewCallGraphBuilder(store, p, logger)
 	cgStart := time.Now()
-	cgBuilder.Build(ctx)
+	if _, err := cgBuilder.Build(ctx); err != nil {
+		WriteErrorJSON(fmt.Sprintf("call graph build failed: %v", err))
+		return 1
+	}
 	logger.Info("phase timing", "phase", "call_graph", "elapsed_ms", time.Since(cgStart).Milliseconds())
 
 	dfBuilder := graph.NewDataFlowBuilder(store, p, logger)
 	dfStart := time.Now()
-	dfBuilder.Build(ctx)
+	if _, err := dfBuilder.Build(ctx); err != nil {
+		WriteErrorJSON(fmt.Sprintf("data flow build failed: %v", err))
+		return 1
+	}
 	logger.Info("phase timing", "phase", "data_flow", "elapsed_ms", time.Since(dfStart).Milliseconds())
 
 	aliasBuilder := graph.NewAliasBuilder(store, p, logger)
 	aliasStart := time.Now()
-	aliasBuilder.Build(ctx)
+	if _, err := aliasBuilder.Build(ctx); err != nil {
+		WriteErrorJSON(fmt.Sprintf("alias build failed: %v", err))
+		return 1
+	}
 	logger.Info("phase timing", "phase", "alias", "elapsed_ms", time.Since(aliasStart).Milliseconds())
 
 	ownershipBuilder := graph.NewOwnershipBuilder(store, p, logger)
 	ownershipStart := time.Now()
-	ownershipBuilder.Build(ctx)
+	if _, err := ownershipBuilder.Build(ctx); err != nil {
+		WriteErrorJSON(fmt.Sprintf("ownership build failed: %v", err))
+		return 1
+	}
 	logger.Info("phase timing", "phase", "ownership", "elapsed_ms", time.Since(ownershipStart).Milliseconds())
 
 	interprocBuilder := graph.NewInterprocBuilder(store, p, logger)
 	interprocStart := time.Now()
-	interprocBuilder.Build(ctx)
+	if _, err := interprocBuilder.Build(ctx); err != nil {
+		WriteErrorJSON(fmt.Sprintf("interproc build failed: %v", err))
+		return 1
+	}
 	logger.Info("phase timing", "phase", "interproc", "elapsed_ms", time.Since(interprocStart).Milliseconds())
 
 	if err := store.ClearSecurityEvents(ctx); err != nil {

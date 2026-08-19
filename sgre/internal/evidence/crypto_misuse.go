@@ -131,13 +131,14 @@ func (d *CryptoMisuseDetector) detectUndersizedKey(ctx context.Context, decls []
 								break
 							}
 						}
-						d.store.InsertEvent(ctx, &db.SecurityEvent{
+						if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
 							EventType:  "CRYPTO_MISUSE",
 							EntityID:   owner.ID,
 							LocationID: locID,
 							Properties: string(props),
-						})
-						result.EventsCreated++
+						}); err == nil {
+							result.EventsCreated++
+						}
 					}
 				}
 			}

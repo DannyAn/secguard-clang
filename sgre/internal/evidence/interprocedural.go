@@ -149,13 +149,14 @@ func (d *InterproceduralDetector) Detect(ctx context.Context) (DetectResult, err
 						"origin":     "interprocedural",
 						"callee":     callee.Name,
 					})
-					d.store.InsertEvent(ctx, &db.SecurityEvent{
+					if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
 						EventType:  "DEREFERENCE",
 						EntityID:   caller.ID,
 						LocationID: locID,
 						Properties: string(props),
-					})
-					result.EventsCreated++
+					}); err == nil {
+						result.EventsCreated++
+					}
 				}
 			}
 		}

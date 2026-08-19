@@ -23,6 +23,9 @@ func Execute(ctx context.Context, args []string) int {
 	// two never drift. This is the single injection point — every VulnTypeSpec
 	// carries its CWE, and AllCWEs() is the authoritative set.
 	db.SetSupportedCWEs(planner.AllCWEs())
+	// Stamp the release version into the report layer so SARIF and markdown
+	// reports carry the actual build version, not a hardcoded constant.
+	report.ToolVersion = Version
 
 	if len(args) == 0 {
 		printUsage()

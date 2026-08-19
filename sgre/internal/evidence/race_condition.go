@@ -394,7 +394,13 @@ func (d *RaceConditionDetector) functionGlobalAccesses(f *db.Function, info *fil
 			ls = map[string]bool{}
 		}
 		if acc.lockset == nil {
-			acc.lockset = ls
+			// Deep-copy ls: acc.lockset is mutated by the intersection
+			// delete() below, and ls may alias heldByLine[line] which is
+			// shared across globals accessed on the same line.
+			acc.lockset = make(map[string]bool, len(ls))
+			for m := range ls {
+				acc.lockset[m] = true
+			}
 		} else {
 			for m := range acc.lockset {
 				if !ls[m] {

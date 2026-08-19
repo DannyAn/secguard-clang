@@ -41,7 +41,7 @@ SecGuard scan results are written to a structured directory under `.codeagent/zh
 
 ## Scan ID Format
 
-The scan ID is a timestamp plus a 4-character cryptographically random hexadecimal suffix: `YYYY-MM-DD_HHMMSS_<4-hex>` (e.g., `2026-08-09_202844_a3f2`). The timestamp prefix preserves human-readability (when the scan ran) and lexicographic sortability (scans sort chronologically by directory name). The 4-char hex suffix provides 65,536 possible values per second, making same-second collisions negligible. Generated using `crypto/rand` (Go) or `crypto.randomBytes` (TypeScript/Node).
+The scan ID is a timestamp plus a 6-character cryptographically random hexadecimal suffix: `YYYY-MM-DD_HHMMSS_<6-hex>` (e.g., `2026-08-09_202844_a3f2b1`). The timestamp prefix preserves human-readability (when the scan ran) and lexicographic sortability (scans sort chronologically by directory name). The 6-char hex suffix provides 16,777,216 possible values per second, making same-second collisions negligible. Generated using `crypto/rand` (Go) or `crypto.randomBytes` (TypeScript/Node).
 
 ## Scan Artifact Retention
 

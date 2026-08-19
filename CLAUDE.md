@@ -57,7 +57,7 @@ See `examples/nullflow-demo/` for a runnable null-deref sample. `memory-leak`/`r
 ### The 4-Layer Data Model (SQLite `sgre.db`)
 
 - **Layer 1 — Program Facts** (most stable): `files`, `functions`, `variables`, `expressions`, `types`, `locations`
-- **Layer 2 — Semantic Graph**: `graph_nodes`, `graph_edges` (`edge_type` enum: `CALL`, `DATA_FLOW`, `OWNERSHIP_TRANSFER`, `RELEASE`, `BRANCH`, `ALIAS`)
+- **Layer 2 — Semantic Graph**: `graph_nodes`, `graph_edges` (`edge_type` enum: `CALL`, `DATA_FLOW`, `OWNERSHIP_TRANSFER`, `RELEASE`, `ALIAS`, `PARAM_BINDING`, `RETURN`)
 - **Layer 3 — Security Evidence**: `security_events` (`event_type` enum: `NULL_VALUE`, `DEREFERENCE`, `NULL_GUARD`, `BUFFER_ACCESS`, ...)
 - **Layer 4 — Findings** (most variable): `findings` (written by the AI agent)
 - Support tables: `scan_stats` (pipeline metrics per scan/vuln type), `function_summary` (return-nullability input for the agent)
@@ -99,7 +99,7 @@ SecGuard targets two AI-agent platforms with a **shared-core + thin-wrapper** de
 
 ## Output Protocol
 
-Scan output is written to `.codeagent/zhuque-secguard/scans/<scan-id>/` (`scan-id` = `YYYY-MM-DD_HHMMSS_<4-hex>`): `sarif.sarif` (SARIF 2.1), `report.md`, and per-finding `<vuln-type>/NNN_<file>_<line>.md`. The DB lives at `.codeagent/zhuque-secguard/.sgre/sgre.db`. See `docs/output-protocol.md` for the full contract.
+Scan output is written to `.codeagent/zhuque-secguard/scans/<scan-id>/` (`scan-id` = `YYYY-MM-DD_HHMMSS_<6-hex>`): `sarif.sarif` (SARIF 2.1), `report.md`, and per-finding `<vuln-type>/NNN_<file>_<line>.md`. The DB lives at `.codeagent/zhuque-secguard/.sgre/sgre.db`. See `docs/output-protocol.md` for the full contract.
 
 ## Test Fixtures
 
@@ -129,3 +129,82 @@ at CLI startup (`cli/root.go`), and the TS tool wrappers never hardcode CWE list
 (`buffer_overflow`, `array_oob_write`, `heap_oob_write`, `format_overflow`)
 route to `buffer-overflow`. The split lives in the `Categories` field of each
 `VulnTypeSpec`.
+
+## Review / Inspection Scope (READ THIS BEFORE EXPLORING)
+
+**Do not inspect dot-prefixed directories unless there is a concrete reason.**
+
+Directories like `.claude/`, `.opencode/`, `.codeagent/`, `.git/`, `.tools/`,
+`.arts/`, `.remember/` are either generated, runtime, or tool-private.
+Inspecting them during a code review:
+
+1. **Wastes tokens** — `.git/` alone can be hundreds of MB of objects; `.claude/`
+   and `.opencode/` are expanded copies of `extension/shared/` that duplicate
+   content already reviewable at the source.
+2. **Produces false findings** — a "drift" between `extension/shared/` and
+   `.claude/` is not a release blocker; `.claude/` is regenerated on install.
+   Reporting it as a BLOCKER misleads the user.
+3. **Misses real issues** — token budget spent on generated copies is budget
+   not spent on the actual source in `sgre/` and `extension/shared/`.
+
+**The review surface for a release is:**
+
+- `sgre/` — all Go source, tests, testdata
+- `extension/shared/` — skills, agent-body.md, command-instructions.md (the
+  single source of truth for agent behavior)
+- `extension/opencode/`, `extension/claude-code/` — thin wrappers (only the
+  wrapper-specific parts; the `{{include shared/...}}` directives are expanded
+  at build time)
+- `release/` — build/install scripts
+- Root docs (`README.md`, `CLAUDE.md`, `CHANGELOG.md`, `VERSION`)
+
+If a finding is *only* reproducible in a dot-prefixed generated directory and
+not in the source it was generated from, it is an **install-time issue**, not
+a release blocker — note it and move on.
+
+## Release Process
+
+Releases are automated via GitHub Actions (`.github/workflows/release.yml`),
+triggered by pushing a `v*` tag. The workflow builds 4 platform binaries
+(linux-amd64 musl-static, windows-amd64, darwin-arm64, darwin-amd64),
+assembles a single `dist/secguard-<version>.zip` + `SHA256SUMS`, and publishes
+a GitHub Release with `CHANGELOG.md` as the body.
+
+**Steps to release version `X.Y.Z`:**
+
+1. **Update version files** (if not already):
+   - `VERSION` → `X.Y.Z`
+   - `sgre/internal/cli/root.go` `var Version` → `"X.Y.Z"` (fallback)
+   - `sgre/internal/report/protocol.go` `var ToolVersion` → `"X.Y.Z"` (fallback)
+   - `CHANGELOG.md` → add `## [X.Y.Z] - <date>` section
+
+2. **Verify build & tests pass**:
+   ```bash
+   cd sgre
+   go build -buildvcs=false ./...
+   go test -buildvcs=false ./...
+   go test -buildvcs=false -tags nosqlite ./internal/log/ ./internal/planner/ ./internal/db/
+   ```
+
+3. **Commit & push to main**:
+   ```bash
+   git add -A
+   git commit -m "chore(release): prepare vX.Y.Z"
+   git push origin main
+   ```
+
+4. **Create & push the tag** (triggers the release workflow):
+   ```bash
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+5. **Monitor the workflow**: the GitHub Actions run builds all platforms and
+   auto-creates the Release. Check at
+   `https://github.com/DannyAn/secguard-clang/actions`. If any platform build
+   fails, fix and re-tag (`git tag -d vX.Y.Z && git tag vX.Y.Z && git push origin vX.Y.Z --force`).
+
+**Note**: `release/build-packages.sh` builds locally (for testing); the CI
+workflow is the canonical release path. Local builds use `build.sh` for
+development. The `--assemble-only` flag in CI assembles the zip from
+pre-built artifacts uploaded by the build matrix.

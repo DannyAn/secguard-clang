@@ -67,25 +67,47 @@ func runIndexCmd(ctx context.Context, args []string) int {
 	}
 
 	cgBuilder := graph.NewCallGraphBuilder(store, p, logger)
-	cgBuilder.Build(ctx)
+	if _, err := cgBuilder.Build(ctx); err != nil {
+		WriteErrorJSON(fmt.Sprintf("call graph build failed: %v", err))
+		return 1
+	}
 
 	dfBuilder := graph.NewDataFlowBuilder(store, p, logger)
-	dfBuilder.Build(ctx)
+	if _, err := dfBuilder.Build(ctx); err != nil {
+		WriteErrorJSON(fmt.Sprintf("data flow build failed: %v", err))
+		return 1
+	}
 
 	aliasBuilder := graph.NewAliasBuilder(store, p, logger)
-	aliasBuilder.Build(ctx)
+	if _, err := aliasBuilder.Build(ctx); err != nil {
+		WriteErrorJSON(fmt.Sprintf("alias build failed: %v", err))
+		return 1
+	}
 
 	ownershipBuilder := graph.NewOwnershipBuilder(store, p, logger)
-	ownershipBuilder.Build(ctx)
+	if _, err := ownershipBuilder.Build(ctx); err != nil {
+		WriteErrorJSON(fmt.Sprintf("ownership build failed: %v", err))
+		return 1
+	}
 
 	interprocBuilder := graph.NewInterprocBuilder(store, p, logger)
-	interprocBuilder.Build(ctx)
+	if _, err := interprocBuilder.Build(ctx); err != nil {
+		WriteErrorJSON(fmt.Sprintf("interproc build failed: %v", err))
+		return 1
+	}
 
-	store.ClearSecurityEvents(ctx)
+	if err := store.ClearSecurityEvents(ctx); err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to clear security events: %v", err))
+		return 1
+	}
 
 	evidence.RunAllDetectors(ctx, store, p, logger)
 
-	funcs, _ := store.ListFunctions(ctx)
+	funcs, err := store.ListFunctions(ctx)
+	if err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to list functions: %v", err))
+		return 1
+	}
 	WriteJSON(map[string]interface{}{
 		"status":             "ok",
 		"files_indexed":      result.FilesIndexed,

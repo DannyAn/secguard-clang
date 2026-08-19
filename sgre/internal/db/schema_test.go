@@ -63,6 +63,10 @@ func TestSchemaDDL_EventTypeCheckConstraint(t *testing.T) {
 		"VARIABLE_DECLARE", "VALUE_USE", "VALUE_INIT",
 		"BUFFER_ACCESS", "INTEGER_OP", "INJECTION",
 		"USE_AFTER_FREE", "DOUBLE_FREE", "FORMAT_STRING",
+		"INTEGER_OVERFLOW", "RACE_CONDITION", "HARDCODED_SECRET",
+		"DEADLOCK", "CRYPTO_MISUSE",
+		"DIVIDE_BY_ZERO", "UNCHECKED_RETURN", "PATH_TRAVERSAL",
+		"SIZEOF_MISUSE", "SIGNED_COMPARE",
 	}
 	for _, et := range eventTypes {
 		if !strings.Contains(SchemaDDL, et) {

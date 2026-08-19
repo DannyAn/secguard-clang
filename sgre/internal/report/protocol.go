@@ -26,6 +26,11 @@ const (
 	DismissedFile = "dismissed.json"
 )
 
+// ToolVersion is the version stamped into SARIF and markdown reports.
+// It is a var so cli/root.go can inject the release version at startup
+// (keeping report free of a cli import, which would be a cycle).
+var ToolVersion = "0.2.0"
+
 type ScanOutput struct {
 	RootDir    string
 	ScanDir    string
@@ -36,7 +41,7 @@ type ScanOutput struct {
 
 func generateScanID() string {
 	ts := time.Now().Format("2006-01-02_150405")
-	b := make([]byte, 2)
+	b := make([]byte, 3)
 	if _, err := rand.Read(b); err != nil {
 		return ts
 	}

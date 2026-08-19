@@ -108,8 +108,12 @@ func migrateSecurityEventsTable(ctx context.Context, db *sql.DB) error {
 	).Scan(&createSQL); err != nil {
 		return err
 	}
-	// The newest event type acts as the sentinel for a current constraint.
-	if contains(createSQL, "'DIVIDE_BY_ZERO'") {
+	// SIGNED_COMPARE is the newest event type — its presence means the
+	// security_events CHECK constraint is already current. Earlier sentinels
+	// (e.g. DIVIDE_BY_ZERO) would falsely report "current" on DBs created
+	// after DIVIDE_BY_ZERO but before SIGNED_COMPARE was added, silently
+	// rejecting SIGNED_COMPARE event inserts.
+	if contains(createSQL, "'SIGNED_COMPARE'") {
 		return nil
 	}
 

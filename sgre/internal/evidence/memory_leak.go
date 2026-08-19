@@ -106,13 +106,14 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 						"variable": varName,
 						"origin":   "malloc",
 					})
-					d.store.InsertEvent(ctx, &db.SecurityEvent{
+					if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
 						EventType:  "MEMORY_ALLOC",
 						EntityID:   f.ID,
 						LocationID: locID,
 						Properties: string(props),
-					})
-					result.EventsCreated++
+					}); err == nil {
+						result.EventsCreated++
+					}
 				}
 
 				if shouldReportRelease {
@@ -121,12 +122,14 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 						"variable": varName,
 						"origin":   "malloc",
 					})
-					d.store.InsertEvent(ctx, &db.SecurityEvent{
+					if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
 						EventType:  "MEMORY_ALLOC",
 						EntityID:   f.ID,
 						LocationID: locID,
 						Properties: string(props),
-					})
+					}); err == nil {
+						result.EventsCreated++
+					}
 					releaseLine := allocLine
 					if len(freeLines) > 0 {
 						releaseLine = freeLines[0]
@@ -136,13 +139,14 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 						"variable": varName,
 						"origin":   "free",
 					})
-					d.store.InsertEvent(ctx, &db.SecurityEvent{
+					if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
 						EventType:  "MEMORY_RELEASE",
 						EntityID:   f.ID,
 						LocationID: releaseLocID,
 						Properties: string(releaseProps),
-					})
-					result.EventsCreated += 2
+					}); err == nil {
+						result.EventsCreated++
+					}
 				}
 			}
 		}

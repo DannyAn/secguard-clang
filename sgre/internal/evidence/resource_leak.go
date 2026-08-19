@@ -79,13 +79,14 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 					"variable": varName,
 					"origin":   "resource_acquire",
 				})
-				d.store.InsertEvent(ctx, &db.SecurityEvent{
+				if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
 					EventType:  "RESOURCE_ACQUIRE",
 					EntityID:   f.ID,
 					LocationID: locID,
 					Properties: string(props),
-				})
-				result.EventsCreated++
+				}); err == nil {
+					result.EventsCreated++
+				}
 
 				if shouldReportRelease {
 					releaseLine := acquireLine
@@ -97,13 +98,14 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 						"variable": varName,
 						"origin":   "resource_release",
 					})
-					d.store.InsertEvent(ctx, &db.SecurityEvent{
+					if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
 						EventType:  "RESOURCE_RELEASE",
 						EntityID:   f.ID,
 						LocationID: releaseLocID,
 						Properties: string(releaseProps),
-					})
-					result.EventsCreated++
+					}); err == nil {
+						result.EventsCreated++
+					}
 				}
 			}
 		}
