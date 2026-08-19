@@ -66,6 +66,11 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 					// Escaped at the acquisition site (stored to a non-local) is
 					// transferred ownership; otherwise it is a leak.
 					shouldReportRelease = containsLine(escapeLines, acquireLine)
+				} else if isGuardedRelease(ifs, varName, releaseLines) {
+					// Released only inside a positive guard (`if (f) { fclose(f); }` or
+					// `if (fd >= 0) { close(fd); }`): the acquire-failure path carries no
+					// resource, so this is not a leak.
+					shouldReportRelease = true
 				} else if cfgValid {
 					// Path-sensitive: released on all paths iff no path from the
 					// acquire reaches the exit avoiding every release/escape/guard.
@@ -326,4 +331,53 @@ func extractVarName(node parser.Node) string {
 		}
 	}
 	return ""
+}
+
+// isGuardedRelease reports whether every release of varName sits inside a
+// positive guard on that same variable (`if (f) { fclose(f); }` or
+// `if (fd >= 0) { close(fd); }`). In that shape the acquire-failure path
+// (var NULL / negative) carries no resource, so a CFG path that skips the
+// release on failure is not a leak.
+func isGuardedRelease(ifs []parser.Node, varName string, releaseLines []int) bool {
+	if varName == "" || len(releaseLines) == 0 {
+		return false
+	}
+	for _, ifStmt := range ifs {
+		cond := ifStmt.ChildByFieldName("condition")
+		if cond == nil || !positiveGuardOn(cond, varName) {
+			continue
+		}
+		cons := ifStmt.ChildByFieldName("consequence")
+		if cons == nil {
+			continue
+		}
+		all := true
+		for _, rl := range releaseLines {
+			if rl < cons.StartLine() || rl > cons.EndLine() {
+				all = false
+				break
+			}
+		}
+		if all {
+			return true
+		}
+	}
+	return false
+}
+
+// positiveGuardOn reports whether cond is a positive guard on varName:
+// `if (var)`, `if (var >= 0)`, `if (var > 0)`, or `if (var != NULL)`.
+func positiveGuardOn(cond *parser.Node, varName string) bool {
+	// `if (f)`'s condition node is a parenthesized_expression, so its text is
+	// "(f)" / "(dir_fd >= 0)" — strip one level of parens before matching.
+	ct := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(cond.Text()), "("), ")"))
+	if ct == varName {
+		return true
+	}
+	for _, op := range []string{" >=", " >", " !="} {
+		if strings.Contains(ct, varName+op) {
+			return true
+		}
+	}
+	return false
 }

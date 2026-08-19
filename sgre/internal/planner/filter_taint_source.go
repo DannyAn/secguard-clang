@@ -166,7 +166,7 @@ func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]C
 
 		genByLine, killByLine := taintEffectsWithCallees(body, retTainted, returnsParam)
 		analyzer := newFlowAnalyzer(f.store, f.parser)
-		analyzer.dfgCopies = map[int64]map[int][]copyPair{fid: passthroughCopiesFor(body, returnsParam)}
+		analyzer.dfgCopies = map[int64]map[int][]copyPair{fid: taintCopiesFor(body, returnsParam)}
 		// Seed the caller-influenced parameters as entry taint, so a sink on a
 		// LOCAL derived from a tainted parameter is not missed (the inter-
 		// procedural context flows into the callee body).
@@ -177,16 +177,19 @@ func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]C
 	return flows, paramsByFunc
 }
 
-// taintedParamsFor returns the parameter NAMES of fn that are tainted by some
-// caller (index set from paramTainted), or nil when none.
+// taintedParamsFor returns the parameter NAMES of fn that are tainted, or nil
+// when none. A parameter is tainted when some caller passes taint into it, OR
+// when the function is externally callable (non-static): an external caller can
+// supply attacker-controlled input, so its parameters are conservatively tainted
+// even when the local index has no caller.
 func taintedParamsFor(fn *db.Function, root parser.Node, taintedIdx map[int]bool) map[string]bool {
-	if len(taintedIdx) == 0 {
+	params := paramsOf(fn, root)
+	if len(params) == 0 {
 		return nil
 	}
-	params := paramsOf(fn, root)
 	out := make(map[string]bool)
 	for name, idx := range params {
-		if taintedIdx[idx] {
+		if taintedIdx[idx] || !fn.IsStatic {
 			out[name] = true
 		}
 	}
@@ -254,7 +257,7 @@ func (f *TaintSourceFilter) computeRetTainted(ctx context.Context, returnsParam 
 			b := base[info.fn.ID]
 			gen := addCalleeTaintGen(info.body, b.gen, retTainted, returnsParam)
 			analyzer := newFlowAnalyzer(f.store, f.parser)
-			analyzer.dfgCopies = map[int64]map[int][]copyPair{info.fn.ID: passthroughCopiesFor(info.body, returnsParam)}
+			analyzer.dfgCopies = map[int64]map[int][]copyPair{info.fn.ID: taintCopiesFor(info.body, returnsParam)}
 			flow := analyzer.analyzeFlow(ctx, info.fn, info.body, info.root, gen, b.kill, false, false)
 			if returnsTaint(info.body, flow) {
 				retTainted[info.fn.Name] = true
@@ -366,6 +369,49 @@ func (f *TaintSourceFilter) computeReturnsParam(ctx context.Context) (map[string
 // bare identifier v becomes `x = v` (x inherits v's taint). The copy pairs are
 // fed into the flow engine's dfgCopies channel, so the shared reaching-sources
 // engine treats the passthrough call exactly like a plain assignment.
+func taintCopiesFor(body parser.Node, returnsParam map[string]map[int]bool) map[int][]copyPair {
+	out := passthroughCopiesFor(body, returnsParam)
+	for line, pairs := range formatCopies(body) {
+		if out == nil {
+			out = make(map[int][]copyPair)
+		}
+		out[line] = append(out[line], pairs...)
+	}
+	return out
+}
+
+// formatCopies returns the copy pairs introduced by formatting calls:
+// `sprintf(dst, fmt, arg)` / `snprintf(dst, size, fmt, arg)` make dst inherit the
+// taint of each bare-identifier variadic argument (`snprintf(cmd, "admin_tool %s",
+// user_cmd)` taints cmd iff user_cmd is tainted).
+func formatCopies(body parser.Node) map[int][]copyPair {
+	out := make(map[int][]copyPair)
+	for _, call := range body.FindAll("call_expression") {
+		name := callName(call)
+		if name != "sprintf" && name != "snprintf" && name != "vsprintf" && name != "vsnprintf" {
+			continue
+		}
+		args := callArgs(call)
+		fmtIdx := 1
+		if name == "snprintf" || name == "vsnprintf" {
+			fmtIdx = 2
+		}
+		if len(args) <= fmtIdx+1 {
+			continue
+		}
+		dstName := bareIdentVar(args[0].Text())
+		if dstName == "" {
+			continue
+		}
+		for _, arg := range args[fmtIdx+1:] {
+			if arg.Kind() == "identifier" {
+				out[call.StartLine()] = append(out[call.StartLine()], copyPair{lhs: dstName, rhs: arg.Text()})
+			}
+		}
+	}
+	return out
+}
+
 func passthroughCopiesFor(body parser.Node, returnsParam map[string]map[int]bool) map[int][]copyPair {
 	if len(returnsParam) == 0 {
 		return nil
@@ -480,7 +526,7 @@ func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted 
 			}
 			genByLine, killByLine := taintEffectsWithCallees(body, retTainted, returnsParam)
 			analyzer := newFlowAnalyzer(f.store, f.parser)
-			analyzer.dfgCopies = map[int64]map[int][]copyPair{fid: passthroughCopiesFor(body, returnsParam)}
+			analyzer.dfgCopies = map[int64]map[int][]copyPair{fid: taintCopiesFor(body, returnsParam)}
 			// Seed this caller's already-proven tainted parameters so its own
 			// parameter arguments (which may be its params) carry taint forward.
 			analyzer.entrySeeds = taintedParamsFor(fn, root, result[fid])

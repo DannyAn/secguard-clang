@@ -2,6 +2,25 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.3.2] - 2026-08-19
+
+### 样例基线对齐至 100%（74 用例 · 100% precision / 100% recall）
+
+修复五例存量漂移 + p7 语义图用例，并顺带修复四处检测器缺陷：
+
+- **memcpy 变量长度越界未应用边界检查（回归）**：`checkBoundedCopyOverflow` 对
+  caller 可控的变量 size 直接报 `bounded_copy_var_size`，未先查 `hasPrecedingBoundsCheck`，
+  导致 `if (n >= sizeof(dst)) return; memcpy(dst, src, n)` 被误报。已补前置边界检查。
+- **`_s` 资源泄漏误报**：`if (f) { fclose(f); }` / `if (fd >= 0) { close(fd); }` 正守卫
+  包裹释放，失败路径（f==NULL / fd<0）本无资源，却被路径分析判为泄漏。新增
+  `isGuardedRelease`/`positiveGuardOn` 识别该模式。
+- **注入漏报**：`snprintf(cmd, ..., user_input); system(cmd)` 未把格式化实参的污点
+  传播到 dst。新增 `formatCopies`（sprintf/snprintf 变参实参 → dst 的 copy），并让
+  非 static 函数形参（外部可控）按"可能被污染"播种为 entry taint。
+- **p7 语义图用例**：use-after-free 用 `*p`/`*q`（检测器识别解引用，不识别 `p[0]`）。
+
+基准门禁 `scripts/validate-benchmark.py` 实测：TP=41 / FP=0 / TN=33 / FN=0。
+
 ## [0.3.1] - 2026-08-19
 
 ### 关键缺陷修复（e2e 自检发现）

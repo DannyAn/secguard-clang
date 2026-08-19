@@ -68,8 +68,8 @@ void tp_sizeof_pointer(int n) {
     free(p);
 }
 
-void tn_sizeof_deref(int n) {
-    int *p = malloc(n * sizeof(*p)); /* no_finding: sizeof *p */
+void tn_sizeof_deref(void) {
+    int *p = malloc(10 * sizeof(*p)); /* no_finding: sizeof *p is the element size, not sizeof-misuse */
     if (!p) {
         return;
     }

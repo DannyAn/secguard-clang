@@ -3,14 +3,14 @@
   "_benchmark_doc": "benchmark.md",
   "_validator": "scripts/validate-benchmark.py",
   "summary": {
-    "total_test_cases": 68,
+    "total_test_cases": 74,
     "phase0_test_cases": 18,
     "phase1_test_cases": 12,
     "phase2_test_cases": 4,
     "phase3_test_cases": 4,
     "phase4_test_cases": 4,
-    "expected_final_certified": 37,
-    "expected_no_finding": 31,
+    "expected_final_certified": 41,
+    "expected_no_finding": 33,
     "phase1_confirmed": 9,
     "phase1_safe_excluded": 3,
     "phase2_confirmed": 4,
@@ -660,6 +660,60 @@
       "code": "main -> A -> B -> C -> system(cmd)",
       "detector": "input.injection",
       "expect": "finding"
+    },
+    {
+      "id": "P7-01",
+      "category": "graph_taint_source_sink",
+      "file": "src/p7_graph_effect.c",
+      "line": 19,
+      "code": "getenv -> fopen(path)",
+      "detector": "input.path_traversal",
+      "expect": "finding"
+    },
+    {
+      "id": "P7-02",
+      "category": "graph_taint_literal",
+      "file": "src/p7_graph_effect.c",
+      "line": 27,
+      "code": "fopen(literal buf)",
+      "detector": "input.path_traversal",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P7-03",
+      "category": "graph_uaf_same_path",
+      "file": "src/p7_graph_effect.c",
+      "line": 39,
+      "code": "free(p); *p",
+      "detector": "memory.use_after_free",
+      "expect": "finding"
+    },
+    {
+      "id": "P7-04",
+      "category": "graph_uaf_alias",
+      "file": "src/p7_graph_effect.c",
+      "line": 63,
+      "code": "q=p; free(p); *q",
+      "detector": "memory.use_after_free",
+      "expect": "finding"
+    },
+    {
+      "id": "P7-05",
+      "category": "graph_leak_no_free",
+      "file": "src/p7_graph_effect.c",
+      "line": 72,
+      "code": "malloc(64) 未释放",
+      "detector": "memory.memory_leak",
+      "expect": "finding"
+    },
+    {
+      "id": "P7-06",
+      "category": "graph_ownership_escape",
+      "file": "src/p7_graph_effect.c",
+      "line": 79,
+      "code": "malloc -> g_escape",
+      "detector": "memory.memory_leak",
+      "expect": "no_finding"
     }
   ]
 }

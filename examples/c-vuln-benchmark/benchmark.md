@@ -208,11 +208,14 @@ python3 scripts/validate-benchmark.py \
 | `p8_value_analysis.c` | 值分析/区间域：`n*sizeof(T)`、`n*m`、`calloc(n,m)`、`n+1`、`n*4`、守卫常量传播 | ✅ 已纳入（P8-01..06） |
 | `p9_secure_func.c` | Annex K `_s` 契约：memcpy_s/strcpy_s 说谎 size、约束违约、scanf_s 逐转换宽度 | ✅ 已纳入（P9-01..05） |
 | `p10_interproc_taint.c` | 1-CFA 形参敏感：passthrough、多级 passthrough、链式形参污点 | ✅ 已纳入（P10-01..04） |
-| `p7_graph_effect.c` | 语义图消费：污点 source→sink、free→use CFG、别名、所有权转移 | 🚧 已落盘，use-after-free 用例需用 `*p` 而非 `p[0]`（检测器暂不支持下标解引用），待修后纳入 |
+| `p7_graph_effect.c` | 语义图消费：污点 source→sink、free→use CFG、别名、所有权转移 | ✅ 已纳入（P7-01..06） |
 
-> **v0.3.1 修复**：全管线漏报（`busy_timeout` 参数未生效 → 并行 detector 写事件
-> 静默丢失）与 scope-leak（scan 子目录候选泄漏到目标之外）已修复。新增 15 例
-> （P8/P9/P10）全绿。
+> **当前状态：VALID（74 用例 · 100% precision / 100% recall）**。
 >
-> **遗留（存量漂移，非本轮引入）**：`P2-04`/`P3-01`/`PH1-03`/`P6-06`/`P6-08`
-> 五例因代码演进与 expected-results 未同步而 FP/FN，待单独对齐。
+> **v0.3.2 对齐**：五例存量漂移（`P2-04`/`P3-01`/`PH1-03`/`P6-06`/`P6-08`）与
+> `p7` 语义图用例全部对齐，修复 4 处检测器缺陷：
+> - memcpy 变量长度越界未应用前置边界检查（回归）；
+> - `_s` 资源泄漏误报：`if (f) { fclose(f); }` / `if (fd >= 0) { close(fd); }`
+>   正守卫包裹释放未被识别为"失败路径无资源"；
+> - 注入漏报：`snprintf(cmd, ..., user_input)` 未把格式化实参污点传播到 dst，
+>   且非 static 函数形参（外部可控）未按"可能被污染"播种。

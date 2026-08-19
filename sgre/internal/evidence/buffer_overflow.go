@@ -210,6 +210,11 @@ func (d *BufferOverflowDetector) checkBoundedCopyOverflow(ctx context.Context, f
 		if callName == "strncat" {
 			return false // append: keep the conservative generic path
 		}
+		// A preceding bounds check (if (n >= sizeof(dst)) return;) already
+		// guards the copy, so the caller-influenced size cannot overflow.
+		if hasPrecedingBoundsCheck(bc.ifs, f, call.StartLine()) {
+			return true
+		}
 		d.emitBoundedCopy(ctx, f, file, call, callName, "bounded_copy_var_size",
 			sizeArg.Text(), fmt.Sprintf("%d", capacity), result)
 		return true
