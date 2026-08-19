@@ -51,6 +51,38 @@
 | Regression tests | 74 security fixtures · 244 test functions, `go test -race` with 0 data races |
 | Delivery form | Static binaries for Linux / Windows / macOS + OpenCode / Claude Code / DeepSeek Harness |
 
+### Proven at scale: Redis (real-world, ~210k LOC)
+
+To show the convergence story holds on industry-scale C — not just the benchmark — we ran the
+full pipeline against **Redis** (`src/`, 231 files · 6,001 functions · 68,512 graph nodes ·
+100,508 graph edges). Third-party `deps/` are excluded by the default `--exclude`.
+
+| Stage | Count |
+|---|---|
+| Raw security events (22 detectors) | 96,230 |
+| Candidates seeded into the planner | 63,766 |
+| **Converged evidence packages (SARIF results)** | **4,837** — a **~13× reduction** |
+| End-to-end wall-clock time | **~6.4 min** (index 1.9s · graph 20s · detect 28s · convergence ~5.5 min) |
+
+Per-type convergence (seeded candidates → evidence packages):
+
+| Type | Seeded → Converged | Reduction |
+|---|---|---|
+| use-after-free | 9,779 → 44 | 99.5% |
+| null-deref | 48,861 → 1,027 | 97.9% |
+| double-free | 241 → 24 | 90.0% |
+| format-string | 32 → 13 | 59.4% |
+| memory-leak | 16 → 3 | 81.3% |
+| buffer-overflow | 286 → 280 | 2.1% |
+| integer-overflow | 134 → 116 | 13.4% |
+| … all 20 types | 63,766 → 4,837 | ~13× |
+
+Reproduce with:
+
+```bash
+secguard scan --db /tmp/redis.db <path-to-redis>
+```
+
 ### Plain-language conclusion
 
 - **Stronger than Semgrep**: Semgrep only does textual pattern matching; SecGuard genuinely analyzes execution paths, dataflow, and cross-function propagation.
