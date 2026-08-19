@@ -184,13 +184,18 @@ func init() {
 		EvidenceType:     "BUFFER_OVERFLOW",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "default",
-		Categories:       []string{"buffer_overflow", "array_oob_write", "heap_oob_write", "format_overflow"},
+		Categories:       []string{"buffer_overflow", "array_oob_write", "heap_oob_write", "format_overflow", "bounded_copy_overflow", "bounded_copy_var_size"},
 		// Provable out-of-bounds writes (a constant index past a known array or
-		// allocation size) are confirmed by the detector itself; an unguarded
-		// unsafe call or sprintf remains a heuristic suspicion.
+		// allocation size, or a constant copy size exceeding a known capacity)
+		// are confirmed by the detector itself; an unguarded unsafe call or
+		// sprintf remains a heuristic suspicion. A variable copy size that is
+		// caller-influenced is tiered to "possible" — the AI agent reasons over
+		// whether the length can actually exceed the destination capacity.
 		CategoryConfidence: map[string]string{
-			"array_oob_write": "confirmed",
-			"heap_oob_write":  "confirmed",
+			"array_oob_write":       "confirmed",
+			"heap_oob_write":        "confirmed",
+			"bounded_copy_overflow": "confirmed",
+			"bounded_copy_var_size": "possible",
 		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{

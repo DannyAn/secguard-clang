@@ -42,8 +42,20 @@ func (d *BufferOverflowDetector) Detect(ctx context.Context) (DetectResult, erro
 			fields:  root.FindAll("field_declaration"),
 		}
 
+		// Parameter names per function: a variable copy size that is a function
+		// parameter (caller-influenced) is the signal for the variable-length
+		// bounded-copy overflow tier (handed to the AI agent to reason about).
+		paramsByLine := make(map[int][]string)
+		for _, fnNode := range root.FindAll("function_definition") {
+			paramsByLine[fnNode.StartLine()] = findParamsInDefinition(fnNode)
+		}
+
 		for _, f := range funcs {
-			d.detectUnsafeCalls(ctx, f, file, bc, &result)
+			params := make(map[string]bool)
+			for _, p := range paramsByLine[f.StartLine] {
+				params[p] = true
+			}
+			d.detectUnsafeCalls(ctx, f, file, bc, params, &result)
 			d.detectArrayOOB(ctx, f, file, bc, &result)
 			d.detectFormatOverflow(ctx, f, file, bc, &result)
 		}
@@ -67,7 +79,7 @@ type bufCtx struct {
 	fields  []parser.Node
 }
 
-func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, result *DetectResult) {
+func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, params map[string]bool, result *DetectResult) {
 	for _, call := range bc.calls {
 		if !funcLineRange(f, call.StartLine()) {
 			continue
@@ -81,11 +93,12 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 				continue
 			}
 			// A bounded-copy API that is nominally "safe" (strncpy) still needs
-			// its constant size compared against the destination capacity. The
-			// check is authoritative: it either emits bounded_copy_overflow or
+			// its size compared against the destination capacity. The check is
+			// authoritative: it either emits bounded_copy_overflow (constant
+			// proven) / bounded_copy_var_size (caller-influenced variable) or
 			// suppresses the call. We must NOT fall through to the generic
 			// buffer-overflow path, or the same call is reported twice.
-			d.checkBoundedCopyOverflow(ctx, f, file, bc, call, callName, result)
+			d.checkBoundedCopyOverflow(ctx, f, file, bc, call, callName, params, result)
 			continue
 		}
 		if apikb.InjectionAPIs[callName] {
@@ -123,23 +136,26 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 	}
 }
 
-// checkBoundedCopyOverflow checks strncpy(dst, src, n) where n is a
-// compile-time constant. If n exceeds the destination's capacity (array size or
-// malloc size), it emits a BUFFER_ACCESS event with category
-// bounded_copy_overflow and returns false. If n fits or cannot be determined,
-// it returns true (suppressed — no overflow proven). The caller treats the
-// result as authoritative and always skips the generic buffer-overflow path.
-func (d *BufferOverflowDetector) checkBoundedCopyOverflow(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, call parser.Node, callName string, result *DetectResult) bool {
+// checkBoundedCopyOverflow checks strncpy(dst, src, n) against the destination
+// capacity. It has two tiers:
+//
+//   - Constant n: if n > capacity (array size or malloc size) the overflow is
+//     provable and emitted as bounded_copy_overflow (confirmed).
+//   - Variable n: if n is a function parameter (caller/attacker-influenced) and
+//     dst is a fixed-capacity buffer, the overflow cannot be proven statically
+//     but is emitted as bounded_copy_var_size (possible) — the AI agent reasons
+//     over whether the length can actually exceed the capacity.
+//
+// A variable n that is a bounded local, or a dst with unknown capacity, is
+// suppressed (no overflow proven). The caller treats the result as authoritative
+// and always skips the generic buffer-overflow path.
+func (d *BufferOverflowDetector) checkBoundedCopyOverflow(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, call parser.Node, callName string, params map[string]bool, result *DetectResult) bool {
 	args := callNamedArguments(call)
 	if len(args) < 3 {
 		return true
 	}
 	dstArg := args[0]
 	sizeArg := args[2]
-	n := parseConstantSize(sizeArg)
-	if n <= 0 {
-		return true
-	}
 	dstName := extractArgName(dstArg)
 	if dstName == "" {
 		return true
@@ -151,16 +167,35 @@ func (d *BufferOverflowDetector) checkBoundedCopyOverflow(ctx context.Context, f
 	if capacity <= 0 {
 		return true
 	}
-	if n <= capacity {
-		return true
+
+	if n := parseConstantSize(sizeArg); n > 0 {
+		if n <= capacity {
+			return true
+		}
+		d.emitBoundedCopy(ctx, f, file, call, callName, "bounded_copy_overflow",
+			fmt.Sprintf("%d", n), fmt.Sprintf("%d", capacity), result)
+		return false
 	}
+
+	// Variable copy size: only meaningful when it is a caller-influenced
+	// parameter. A local variable's bound is not attacker-controlled, so it is
+	// suppressed (no overflow proven).
+	if sizeArg.Kind() == "identifier" && params[sizeArg.Text()] {
+		d.emitBoundedCopy(ctx, f, file, call, callName, "bounded_copy_var_size",
+			sizeArg.Text(), fmt.Sprintf("%d", capacity), result)
+		return false
+	}
+	return true
+}
+
+func (d *BufferOverflowDetector) emitBoundedCopy(ctx context.Context, f *db.Function, file *db.File, call parser.Node, callName, category, copySize, dstCapacity string, result *DetectResult) {
 	locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
 	props, _ := json.Marshal(map[string]string{
 		"function":     callName,
-		"category":     "bounded_copy_overflow",
+		"category":     category,
 		"expression":   call.Text(),
-		"copy_size":    fmt.Sprintf("%d", n),
-		"dst_capacity": fmt.Sprintf("%d", capacity),
+		"copy_size":    copySize,
+		"dst_capacity": dstCapacity,
 	})
 	if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
 		EventType:  "BUFFER_ACCESS",
@@ -170,7 +205,6 @@ func (d *BufferOverflowDetector) checkBoundedCopyOverflow(ctx context.Context, f
 	}); err == nil {
 		result.EventsCreated++
 	}
-	return false
 }
 
 func parseConstantSize(node parser.Node) int {

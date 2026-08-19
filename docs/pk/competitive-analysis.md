@@ -146,8 +146,27 @@ argv/getenv/recv 且无 clamp → confirmed；形参被有界守卫/strlen 界�
 把区间推理外包给具备代码语义理解与 API 契约知识的大模型**。代价是 AI 推理成本；收益
 是召回率（覆盖 CodeQL/Coverity 靠区间域才抓到的变量界定溢出）且无静态误判。
 
+### CWE-787 变量长度越界（strncpy）
+
+同一"变量界定 + AI fallback"打法扩展到有界拷贝：
+
+| 模式 | 类别 | 静态判定 | 例 |
+|------|------|----------|-----|
+| `strncpy(dst, src, n)` 常量 `n > sizeof(dst)` | `bounded_copy_overflow` | confirmed | `strncpy(dst, src, 256)` 且 `dst[128]` |
+| `strncpy(dst, src, n)` 变量 `n` 是形参 | `bounded_copy_var_size` | possible | `strncpy(dst, src, n)` 且 `dst[16]` |
+
+**同时修复两个静默漏报 bug**（此前 `bounded_copy_overflow` 从未到达 AI Agent）：
+
+1. `bounded_copy_overflow` 类别未加入 buffer-overflow 的 seed 允许列表（`Categories`），
+   事件在 planner 播种阶段被丢弃。
+2. `SafeFunctionFilter` 因 `strncpy` 属 SafeFunctions 而把该候选排除——bounded-copy 类别
+   是检测器对"安全函数实际溢出"的显式裁决，安全函数排除不得覆盖它。
+
 ### 待续
 
 - 完整区间域（RangeAnalysis lite）：`if (n < 100)` 守卫后的常量传播，用于把
   `param + const` 从 possible 提升为 confirmed/直接丢弃。
+- `memcpy`/`memmove` 的变量长度越界：当前它们走通用 `buffer_overflow` 路径（保守标记），
+  尚未按 `n` 与固定数组容量做精确比对（需将 BoundedCopyFunctions 从 SafeFunctions 分支
+  中解耦）。
 - 1-CFA 过程间上下文敏感：按调用点区分形参界定（同一函数不同调用方传入不同上界）。

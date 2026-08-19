@@ -21,6 +21,8 @@ Detector categories that route to this type:
 - `array_oob_write` — constant index or loop bound past a fixed-size array, as a write
 - `heap_oob_write` — loop bound provably exceeds a `malloc`/`calloc` size (e.g. `malloc(user_len)` + `i < user_len + 10`)
 - `format_overflow` — `sprintf`/`wsprintf` into a known-capacity buffer with a non-constant source
+- `bounded_copy_overflow` — **confirmed**: `strncpy(dst, src, n)` with a constant `n > sizeof(dst)` (provable overflow)
+- `bounded_copy_var_size` — **possible**: `strncpy(dst, src, n)` where `dst` is a fixed array and `n` is a caller-influenced parameter (the length may exceed the capacity; reason over the call sites)
 
 Read-flavored events (`array_oob_read`, `heap_oob_read`) belong to the
 `out-of-bounds` type (CWE-125), not this one.
@@ -56,6 +58,17 @@ Read-flavored events (`array_oob_read`, `heap_oob_read`) belong to the
 | `sprintf(dst, ..., var)` into known-capacity `dst`, no size arg | **confirmed** |
 | `sprintf` whose destination feeds `system`/`sqlite3_exec`/`CreateProcessA` | **false-positive** for buffer-overflow (injection is the root cause; SQL/command injection covers it) |
 | Array access with variable index, no provable bound | **suspected** |
+| `bounded_copy_overflow` (constant `n > sizeof(dst)`) | **confirmed** — the detector proved it |
+| `bounded_copy_var_size` where `n` is a caller-influenced length (argv/getenv/recv length field, network packet length) with no clamp | **confirmed** |
+| `bounded_copy_var_size` where `n` is validated by every caller to `<= sizeof(dst)` (clamp, guard, or a bounded `strlen` source) | **false-positive** |
+| `bounded_copy_var_size` where `n` is a local counter / loop bound | **false-positive** (should not reach here — the detector only emits the parameter case) |
+
+**Reasoning for `bounded_copy_var_size`**: the pipeline cannot prove the variable
+length exceeds the fixed destination, so it delegates reachability to you. Trace
+`n` to its source — if it is attacker-controlled (argv, getenv, recv length, packet
+header) with no clamp, the overflow is realistic and should be **confirmed**; if it
+is a bounded length (strlen of a fixed buffer, a validated/capped length), it is
+**false-positive**.
 
 ### Fix Suggestions
 - Replace with safe function: `memcpy_s(dst, sizeof(dst), src, n)`
