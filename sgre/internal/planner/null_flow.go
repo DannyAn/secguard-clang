@@ -52,6 +52,10 @@ type flowAnalyzer struct {
 	// arrayNames caches, per file, the set of identifiers declared as arrays
 	// (array-to-pointer decay yields a non-null pointer).
 	arrayNames map[int64]map[string]bool
+	// entrySeeds are variables tainted at function entry (caller-influenced
+	// parameters). They are seeded into IN[entry] so a parameter's taint flows
+	// into locals derived from it — the inter-procedural context of the callee.
+	entrySeeds map[string]bool
 }
 
 func newFlowAnalyzer(store db.Store, p *parser.Parser) *flowAnalyzer {
@@ -190,7 +194,7 @@ func (a *flowAnalyzer) analyzeFlow(ctx context.Context, fn *db.Function, body pa
 		effects[n.ID] = a.collectNodeEffects(n, genByLine, killByLine, dfgByLine, arrays, nonNullKills, definiteKills)
 	}
 
-	nodeIn := runDataflow(cfg, effects)
+	nodeIn := runDataflow(cfg, effects, a.entrySeeds)
 	return &flowResult{cfg: cfg, nodeIn: nodeIn, genAt: genAt(cfg, effects)}
 }
 
@@ -236,10 +240,20 @@ func (a *flowAnalyzer) collectNodeEffects(n *graph.StmtNode, genByLine, killByLi
 // copy, kill, then gen. The lattice is monotone (source sets only grow at
 // joins; a kill replaces a variable's set with the empty set, which is a fixed
 // set-difference under union), so iteration order does not affect the fixpoint.
-func runDataflow(cfg *graph.StmtCFG, effects map[int]*nodeEffects) map[int]map[string]map[int]bool {
+func runDataflow(cfg *graph.StmtCFG, effects map[int]*nodeEffects, entrySeeds map[string]bool) map[int]map[string]map[int]bool {
 	nodeIn := make(map[int]map[string]map[int]bool, len(cfg.Nodes))
 	for i := range cfg.Nodes {
 		nodeIn[i] = map[string]map[int]bool{}
+	}
+
+	// Seed the entry's IN with caller-influenced variables (function parameters
+	// proven tainted by some caller). This makes the callee's intra-procedural
+	// flow carry the inter-procedural context, so a sink on a LOCAL derived from
+	// a tainted parameter is no longer a false negative.
+	if len(entrySeeds) > 0 {
+		for v := range entrySeeds {
+			nodeIn[cfg.Entry][v] = map[int]bool{cfg.Entry: true}
+		}
 	}
 
 	// Seed the worklist with every node, not just the entry: a node with a gen

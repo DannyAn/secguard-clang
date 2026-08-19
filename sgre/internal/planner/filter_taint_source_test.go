@@ -418,3 +418,74 @@ int sink_clean(void) {
 		t.Errorf("expected sink_clean (wrap2 of a literal) to be suppressed, got %v", candidateNames(result))
 	}
 }
+
+// TestTaintSourceFilter_ParamTaintIntoLocal locks in the entry-seeding fix: a
+// sink on a LOCAL variable derived from a tainted parameter must be kept. The
+// caller-influenced parameter is seeded into the callee's entry, so `cmd = s`
+// (copy) and `cmd = build_cmd(s)` (passthrough) both propagate the taint to a
+// local sink — previously a false negative.
+func TestTaintSourceFilter_ParamTaintIntoLocal(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "paramlocal.c")
+	src := `#include <stdlib.h>
+
+char *build_cmd(char *s) {
+    return s;
+}
+
+void sink_local_direct(char *s) {
+    char *cmd = s;
+    system(cmd);
+}
+
+void sink_local_passthrough(char *s) {
+    char *cmd = build_cmd(s);
+    system(cmd);
+}
+
+void caller(void) {
+    char *input = getenv("CMD");
+    sink_local_direct(input);
+    sink_local_passthrough(input);
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	graph.NewInterprocBuilder(store, p, logger).Build(ctx)
+	evidence.NewInjectionDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "injection")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	byFunc := map[string]EvidenceItem{}
+	for _, c := range result.Candidates {
+		byFunc[c.Target.Function] = c
+	}
+
+	for _, fn := range []string{"sink_local_direct", "sink_local_passthrough"} {
+		c, ok := byFunc[fn]
+		if !ok {
+			t.Errorf("expected %s (local sink from tainted param) to be kept, got %v", fn, candidateNames(result))
+			continue
+		}
+		if !hasTaintEvidence(c) {
+			t.Errorf("expected %s to carry a taint_source evidence fragment, got %+v", fn, c.Evidence)
+		}
+	}
+}

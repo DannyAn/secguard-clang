@@ -172,7 +172,7 @@ func buildDefiniteInitFlow(fn *db.Function, body parser.Node, root parser.Node) 
 		effects[n.ID] = e
 	}
 
-	nodeIn := runDataflow(cfg, effects)
+	nodeIn := runDataflow(cfg, effects, nil)
 	return &flowResult{cfg: cfg, nodeIn: nodeIn, genAt: genAt(cfg, effects)}
 }
 
@@ -292,8 +292,8 @@ func assignBaseName(lhs parser.Node) string {
 // candidate/function, which was the dominant remaining cost of the uninit
 // filter (hasCoveringAssign issued ~9 whole-tree FindAll walks per candidate).
 type hoistedUninitFile struct {
-	assigns                          []parser.Node
-	ifs, whiles, fors, dos, switches []parser.Node
+	assigns                                   []parser.Node
+	ifs, whiles, fors, dos, switches          []parser.Node
 	preprocIfs, preprocIfdefs, preprocIfndefs []parser.Node
 }
 

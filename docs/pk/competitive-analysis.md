@@ -261,8 +261,25 @@ passthrough 也能正确传播。
 `wrap2("literal")` 不产生污点——这正是 CodeQL 1-CFA 靠上下文克隆才拿到的精度，
 sgre 用**形参敏感摘要 + 共享数据流引擎**以更低成本逼近。
 
+### 形参污点回流函数体（entry seeding）
+
+此前 `paramTainted`（形参被某调用方污染）只用于 sink 直接是形参的情形；sink 是
+**由污染形参派生的局部变量**时（`char *cmd = s; system(cmd)`）形参污点没有回流
+进函数体，导致漏报。现把被污染的形参作为**函数入口的污点种子**注入共享数据流
+引擎（`flowAnalyzer.entrySeeds` → `IN[entry]`），使形参污点流经 copy / passthrough
+传播到局部 sink：
+
+```c
+void sink(char *s) { char *cmd = s; system(cmd); }   // cmd 由污染形参派生
+void caller(void) { sink(getenv("CMD")); }           // 形参 s 被污染 → cmd 被污染
+```
+
+这是"按调用点上下文"的正向半面：callee 带着 caller 的污点上下文求值，`cmd = s`
+（copy）与 `cmd = build_cmd(s)`（passthrough）都正确传播，不再漏报。
+
 ### 待续（完整 1-CFA）
 
 - 按调用点克隆摘要（真 1-CFA）：同一函数不同调用方传入不同上界/污点，分别
-  求值（当前形参敏感摘要已覆盖返回污点维度，但未按调用点区分形参**界定**）——
-  这是正面硬刚 CodeQL 的最后一段。
+  求值（当前已覆盖"返回污点"与"形参污点回流"两个维度，但仍是合并所有调用点的
+  may-taint 摘要，未按调用点区分形参**界定**/上界）——这是正面硬刚 CodeQL 的
+  最后一段。

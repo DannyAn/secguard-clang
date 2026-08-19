@@ -68,7 +68,7 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 	retTainted := f.computeRetTainted(ctx, returnsParam)
 	paramTainted := f.computeParamTainted(ctx, retTainted, returnsParam)
 
-	flows, paramsByFunc := f.buildFlows(ctx, byFunc, retTainted, returnsParam)
+	flows, paramsByFunc := f.buildFlows(ctx, byFunc, retTainted, returnsParam, paramTainted)
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -134,7 +134,7 @@ func (f *TaintSourceFilter) sinkVariable(ctx context.Context, c Candidate) strin
 	}
 }
 
-func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, retTainted map[string]bool, returnsParam map[string]map[int]bool) (map[int64]*flowResult, map[int64]map[string]int) {
+func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, retTainted map[string]bool, returnsParam map[string]map[int]bool, paramTainted map[int64]map[int]bool) (map[int64]*flowResult, map[int64]map[string]int) {
 	flows := make(map[int64]*flowResult, len(byFunc))
 	paramsByFunc := make(map[int64]map[string]int, len(byFunc))
 	cache := newFileParseCache(f.parser)
@@ -155,10 +155,33 @@ func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]C
 		genByLine, killByLine := taintEffectsWithCallees(body, retTainted, returnsParam)
 		analyzer := newFlowAnalyzer(f.store, f.parser)
 		analyzer.dfgCopies = map[int64]map[int][]copyPair{fid: passthroughCopiesFor(body, returnsParam)}
+		// Seed the caller-influenced parameters as entry taint, so a sink on a
+		// LOCAL derived from a tainted parameter is not missed (the inter-
+		// procedural context flows into the callee body).
+		analyzer.entrySeeds = taintedParamsFor(fn, root, paramTainted[fid])
 		flows[fid] = analyzer.analyzeFlow(ctx, fn, body, root, genByLine, killByLine, false, false)
 		paramsByFunc[fid] = paramsOf(fn, root)
 	}
 	return flows, paramsByFunc
+}
+
+// taintedParamsFor returns the parameter NAMES of fn that are tainted by some
+// caller (index set from paramTainted), or nil when none.
+func taintedParamsFor(fn *db.Function, root parser.Node, taintedIdx map[int]bool) map[string]bool {
+	if len(taintedIdx) == 0 {
+		return nil
+	}
+	params := paramsOf(fn, root)
+	out := make(map[string]bool)
+	for name, idx := range params {
+		if taintedIdx[idx] {
+			out[name] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // computeRetTainted returns the set of function NAMES that can return a tainted
