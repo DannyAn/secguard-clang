@@ -181,6 +181,54 @@ var BoundedCopyFunctions = map[string]bool{
 // IsBoundedCopy reports whether name is a bounded-copy API needing size check.
 func IsBoundedCopy(name string) bool { return BoundedCopyFunctions[name] }
 
+// SecureFuncSpec models an Annex K / Windows `_s` function's contract:
+//
+//	strcpy_s(destination, destination_capacity, source[, source_length])
+//	    ├── destination            (arg 0)
+//	    ├── destination_capacity   (arg CapArgIdx, always 1 for the standard layout)
+//	    ├── source                 (arg 2)
+//	    ├── source_length / count  (arg CountArgIdx, -1 when absent)
+//	    ├── runtime_constraint_check
+//	    └── constraint_violation_behavior
+//
+// The function is only safe when the declared capacity is truthful (equals the
+// real buffer) AND the required size (count / source length) fits in it. The
+// detector derives the two failure modes from this spec:
+//
+//   - capacity-lie:   destination_capacity (arg) > real buffer → overflow
+//   - constraint-hit: required size (count/source) > destination_capacity (arg)
+//
+// gmtime_s / localtime_s take (result, time) with no capacity argument (they are
+// thread-safe struct-return variants, not size-checked copies), and scanf_s /
+// sscanf_s / fscanf_s use per-conversion width arguments instead of a single
+// capacity, so neither family is represented here — they are handled separately.
+type SecureFuncSpec struct {
+	CapArgIdx   int // index of destination_capacity (always 1)
+	CountArgIdx int // index of source_length/count, or -1 when absent
+}
+
+var SecureFunctions = map[string]SecureFuncSpec{
+	"memcpy_s":    {CapArgIdx: 1, CountArgIdx: 3},
+	"memmove_s":   {CapArgIdx: 1, CountArgIdx: 3},
+	"memset_s":    {CapArgIdx: 1, CountArgIdx: 3},
+	"strcpy_s":    {CapArgIdx: 1, CountArgIdx: -1},
+	"strncpy_s":   {CapArgIdx: 1, CountArgIdx: 3},
+	"strcat_s":    {CapArgIdx: 1, CountArgIdx: -1},
+	"strncat_s":   {CapArgIdx: 1, CountArgIdx: 3},
+	"sprintf_s":   {CapArgIdx: 1, CountArgIdx: -1},
+	"snprintf_s":  {CapArgIdx: 1, CountArgIdx: 2},
+	"vsprintf_s":  {CapArgIdx: 1, CountArgIdx: -1},
+	"vsnprintf_s": {CapArgIdx: 1, CountArgIdx: 2},
+	"asctime_s":   {CapArgIdx: 1, CountArgIdx: -1},
+	"ctime_s":     {CapArgIdx: 1, CountArgIdx: -1},
+}
+
+// SecureFunctionSpec reports the contract spec of an Annex K `_s` function.
+func SecureFunctionSpec(name string) (SecureFuncSpec, bool) {
+	s, ok := SecureFunctions[name]
+	return s, ok
+}
+
 // UnsafeFunctionCategory returns the vuln category implied by an unsafe API,
 // or "" if the API is not in the unsafe set.
 func UnsafeFunctionCategory(name string) string { return UnsafeFunctions[name] }

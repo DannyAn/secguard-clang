@@ -184,3 +184,81 @@ func TestBoundedCopyPlannerSeeding(t *testing.T) {
 		t.Errorf("expected bounded_copy_overflow to be confirmed (constant size proven), got %q", seen["bounded_copy_overflow"])
 	}
 }
+
+// TestSecureFunctionMisuse locks in the Annex K `_s` misuse detection: a `_s`
+// function given a destination-capacity argument larger than the real buffer is
+// a CWE-787 overflow (the "secure" prefix is defeated by the lying size). A
+// caller-influenced variable capacity is tiered to possible; sizeof(dst) on an
+// array (the correct size) is not flagged.
+func TestSecureFunctionMisuse(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, fixturePath("tc68_secure_func_misuse.c")); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	NewBufferOverflowDetector(store, p, logger).Detect(ctx)
+
+	events, err := store.ListEventsByType(ctx, "BUFFER_ACCESS")
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+
+	cats := map[string]map[string]bool{}
+	for _, e := range events {
+		fn, err := store.GetFunctionByID(ctx, e.EntityID)
+		if err != nil || fn == nil {
+			continue
+		}
+		var props struct {
+			Category string `json:"category"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if cats[fn.Name] == nil {
+			cats[fn.Name] = map[string]bool{}
+		}
+		cats[fn.Name][props.Category] = true
+	}
+
+	for _, fn := range []string{"secure_lying_memcpy", "secure_lying_strcpy", "secure_lying_sprintf"} {
+		if !cats[fn]["secure_copy_overflow"] {
+			t.Errorf("expected %s (lying size > capacity) to be flagged secure_copy_overflow, got %v", fn, cats[fn])
+		}
+	}
+	if !cats["secure_var_size"]["secure_copy_var_size"] {
+		t.Errorf("expected secure_var_size (caller-controlled size) to be flagged secure_copy_var_size, got %v", cats["secure_var_size"])
+	}
+	if len(cats["secure_correct"]) != 0 {
+		t.Errorf("expected secure_correct (sizeof(dst)) NOT to be flagged, got %v", cats["secure_correct"])
+	}
+	for _, fn := range []string{"secure_constraint_memcpy", "secure_constraint_strcpy"} {
+		if !cats[fn]["secure_constraint_violation"] {
+			t.Errorf("expected %s (required > declared capacity) to be flagged secure_constraint_violation, got %v", fn, cats[fn])
+		}
+	}
+
+	// End-to-end: the secure_copy_overflow category must survive planner seeding
+	// and the safe-function exclusion (memcpy_s is in SafeFunctions).
+	pl := planner.NewPlanner(store, nil, logger)
+	res, err := pl.Plan(ctx, "buffer-overflow")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	surfaced := map[string]string{}
+	for _, c := range res.Candidates {
+		surfaced[c.Target.Function] = c.SuspicionLevel
+	}
+	if lvl, ok := surfaced["secure_lying_memcpy"]; !ok {
+		t.Errorf("expected secure_lying_memcpy to surface as a buffer-overflow candidate, got %v", surfaced)
+	} else if lvl != "confirmed" {
+		t.Errorf("expected secure_lying_memcpy to be confirmed, got %q", lvl)
+	}
+	if lvl, ok := surfaced["secure_var_size"]; !ok || lvl != "possible" {
+		t.Errorf("expected secure_var_size to surface as possible, got %q (present=%v)", lvl, ok)
+	}
+}

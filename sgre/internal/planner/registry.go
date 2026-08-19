@@ -184,18 +184,23 @@ func init() {
 		EvidenceType:     "BUFFER_OVERFLOW",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "default",
-		Categories:       []string{"buffer_overflow", "array_oob_write", "heap_oob_write", "format_overflow", "bounded_copy_overflow", "bounded_copy_var_size"},
+		Categories:       []string{"buffer_overflow", "array_oob_write", "heap_oob_write", "format_overflow", "bounded_copy_overflow", "bounded_copy_var_size", "secure_copy_overflow", "secure_copy_var_size", "secure_constraint_violation"},
 		// Provable out-of-bounds writes (a constant index past a known array or
-		// allocation size, or a constant copy size exceeding a known capacity)
+		// allocation size, a constant copy size exceeding a known capacity, or
+		// an Annex K `_s` function given a lying destination-capacity argument)
 		// are confirmed by the detector itself; an unguarded unsafe call or
-		// sprintf remains a heuristic suspicion. A variable copy size that is
-		// caller-influenced is tiered to "possible" — the AI agent reasons over
-		// whether the length can actually exceed the destination capacity.
+		// sprintf remains a heuristic suspicion. A variable copy size / capacity
+		// that is caller-influenced is tiered to "possible", and a proven
+		// `_s` constraint violation (required > declared capacity, no actual
+		// overflow) is "suspected" — the AI agent weighs the handler's behavior.
 		CategoryConfidence: map[string]string{
-			"array_oob_write":       "confirmed",
-			"heap_oob_write":        "confirmed",
-			"bounded_copy_overflow": "confirmed",
-			"bounded_copy_var_size": "possible",
+			"array_oob_write":             "confirmed",
+			"heap_oob_write":              "confirmed",
+			"bounded_copy_overflow":       "confirmed",
+			"bounded_copy_var_size":       "possible",
+			"secure_copy_overflow":        "confirmed",
+			"secure_copy_var_size":        "possible",
+			"secure_constraint_violation": "suspected",
 		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{

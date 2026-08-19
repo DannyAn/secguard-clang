@@ -88,6 +88,16 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 		if callName == "" {
 			continue
 		}
+		// Annex K `_s` functions are conditionally safe: they trust the explicit
+		// destination-capacity argument, so a lying size (larger than the real
+		// buffer) overflows just like the unsafe counterpart, and a required
+		// size exceeding the declared capacity is a constraint violation. Check
+		// the contract before any safe-function exclusion; the check is
+		// authoritative and skips the generic path either way.
+		if spec, ok := apikb.SecureFunctionSpec(callName); ok {
+			d.checkSecureFunction(ctx, f, file, bc, call, callName, spec, params, result)
+			continue
+		}
 		if apikb.IsSafeFunction(callName) || apikb.IsSafeWrapper(callName) {
 			if !apikb.IsBoundedCopy(callName) {
 				continue
@@ -196,6 +206,122 @@ func (d *BufferOverflowDetector) emitBoundedCopy(ctx context.Context, f *db.Func
 		"expression":   call.Text(),
 		"copy_size":    copySize,
 		"dst_capacity": dstCapacity,
+	})
+	if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
+		EventType:  "BUFFER_ACCESS",
+		EntityID:   f.ID,
+		LocationID: locID,
+		Properties: string(props),
+	}); err == nil {
+		result.EventsCreated++
+	}
+}
+
+// checkSecureFunction evaluates an Annex K `_s` function against its contract:
+// the declared destination_capacity (arg 1) must be truthful about the real
+// buffer, and the required size (source length / copy count) must fit in the
+// declared capacity. Two failure modes are detected:
+//
+//   - capacity-lie:   declared capacity (constant) > real array/malloc capacity
+//     → the function trusts a lying size and writes past the buffer (CWE-787).
+//   - constraint-hit: required size (constant count, or a literal source) >
+//     declared capacity → the runtime constraint handler fires (truncation or
+//     abort, an implementation-defined correctness bug).
+//
+// A caller-influenced variable capacity is handed to the AI agent (possible).
+func (d *BufferOverflowDetector) checkSecureFunction(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, call parser.Node, callName string, spec apikb.SecureFuncSpec, params map[string]bool, result *DetectResult) {
+	args := callNamedArguments(call)
+	if len(args) <= spec.CapArgIdx {
+		return
+	}
+	dstName := extractArgName(args[0])
+	if dstName == "" {
+		return
+	}
+	capacity := findArraySize(bc, f, dstName)
+	if capacity <= 0 {
+		capacity = constantAllocationSize(bc, f, dstName)
+	}
+	if capacity <= 0 {
+		return
+	}
+
+	capArg := args[spec.CapArgIdx]
+	declaredCap := parseConstantSize(capArg)
+
+	// capacity-lie: the declared capacity exceeds the real buffer.
+	if declaredCap > 0 && declaredCap > capacity {
+		d.emitSecure(ctx, f, file, call, callName, "secure_copy_overflow",
+			fmt.Sprintf("%d", declaredCap), fmt.Sprintf("%d", capacity), result)
+		return
+	}
+
+	// constraint-hit: the required size exceeds the DECLARED capacity (the
+	// function will truncate or trigger its constraint handler).
+	if declaredCap > 0 {
+		if required := secureRequiredSize(call, callName, spec, args); required > 0 && required > declaredCap {
+			d.emitSecure(ctx, f, file, call, callName, "secure_constraint_violation",
+				fmt.Sprintf("%d", required), fmt.Sprintf("%d", declaredCap), result)
+		}
+		return
+	}
+
+	// Variable capacity argument: only meaningful when caller-influenced.
+	if capArg.Kind() == "identifier" && params[capArg.Text()] {
+		d.emitSecure(ctx, f, file, call, callName, "secure_copy_var_size",
+			capArg.Text(), fmt.Sprintf("%d", capacity), result)
+	}
+}
+
+// secureRequiredSize returns the number of bytes an `_s` function needs to
+// write, when statically computable: the copy-count argument for the n-variants
+// (memcpy_s/memset_s/strncpy_s/...), or the length+1 of a literal source for
+// strcpy_s/strcat_s. It returns 0 when the required size is not a constant.
+func secureRequiredSize(call parser.Node, callName string, spec apikb.SecureFuncSpec, args []parser.Node) int {
+	if spec.CountArgIdx >= 0 && spec.CountArgIdx < len(args) {
+		if n := parseConstantSize(args[spec.CountArgIdx]); n > 0 {
+			return n
+		}
+	}
+	if len(args) < 3 {
+		return 0
+	}
+	switch callName {
+	case "strcpy_s", "strcat_s":
+		if l, ok := constantStringLength(args[2].Text()); ok {
+			return l + 1
+		}
+	}
+	return 0
+}
+
+func (d *BufferOverflowDetector) emitSecure(ctx context.Context, f *db.Function, file *db.File, call parser.Node, callName, category, sizeArg, dstCapacity string, result *DetectResult) {
+	locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
+	props, _ := json.Marshal(map[string]string{
+		"function":      callName,
+		"category":      category,
+		"expression":    call.Text(),
+		"size_argument": sizeArg,
+		"dst_capacity":  dstCapacity,
+	})
+	if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
+		EventType:  "BUFFER_ACCESS",
+		EntityID:   f.ID,
+		LocationID: locID,
+		Properties: string(props),
+	}); err == nil {
+		result.EventsCreated++
+	}
+}
+
+func (d *BufferOverflowDetector) emitSecureOverflow(ctx context.Context, f *db.Function, file *db.File, call parser.Node, callName, category, sizeArg, dstCapacity string, result *DetectResult) {
+	locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
+	props, _ := json.Marshal(map[string]string{
+		"function":      callName,
+		"category":      category,
+		"expression":    call.Text(),
+		"size_argument": sizeArg,
+		"dst_capacity":  dstCapacity,
 	})
 	if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
 		EventType:  "BUFFER_ACCESS",

@@ -22,12 +22,14 @@ func (f *SafeFunctionFilter) Apply(ctx context.Context, candidates []Candidate) 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
 	for _, c := range candidates {
-		// The bounded-copy categories are the detector's explicit verdict that a
-		// nominally-safe API (strncpy) actually overflows: the size-vs-capacity
-		// check already proved/heuristically flagged it. The safe-function
-		// exclusion must not override that, or the bounded-copy overflow is
-		// silently dropped before the AI agent ever sees it.
-		if c.Category == "bounded_copy_overflow" || c.Category == "bounded_copy_var_size" {
+		// The bounded-copy and secure-copy categories are the detector's explicit
+		// verdict that a nominally-safe API (strncpy / memcpy_s) actually
+		// overflows: the size-vs-capacity check already proved/heuristically
+		// flagged it. The safe-function exclusion must not override that, or the
+		// overflow is silently dropped before the AI agent ever sees it.
+		if c.Category == "bounded_copy_overflow" || c.Category == "bounded_copy_var_size" ||
+			c.Category == "secure_copy_overflow" || c.Category == "secure_copy_var_size" ||
+			c.Category == "secure_constraint_violation" {
 			kept = append(kept, c)
 			continue
 		}

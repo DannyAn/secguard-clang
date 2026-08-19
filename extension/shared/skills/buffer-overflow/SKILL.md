@@ -23,6 +23,9 @@ Detector categories that route to this type:
 - `format_overflow` — `sprintf`/`wsprintf` into a known-capacity buffer with a non-constant source
 - `bounded_copy_overflow` — **confirmed**: `strncpy(dst, src, n)` with a constant `n > sizeof(dst)` (provable overflow)
 - `bounded_copy_var_size` — **possible**: `strncpy(dst, src, n)` where `dst` is a fixed array and `n` is a caller-influenced parameter (the length may exceed the capacity; reason over the call sites)
+- `secure_copy_overflow` — **confirmed**: an Annex K `_s` function (`memcpy_s`/`strcpy_s`/`sprintf_s`/`strncpy_s`/`memset_s`/`asctime_s`/...) given a constant destination-capacity argument larger than the real buffer (`memcpy_s(dst, 100, src, 50)` with `char dst[8]`) — the lying size defeats the "secure" prefix
+- `secure_copy_var_size` — **possible**: a `_s` function whose destination-capacity argument is a caller-influenced variable (may exceed the real buffer)
+- `secure_constraint_violation` — **suspected**: the required size (copy count, or `strlen` of a literal source) exceeds the DECLARED capacity (`memcpy_s(dst, 16, src, 64)` / `strcpy_s(dst, 4, "hello")`). The runtime constraint handler fires — truncation or abort — no actual overflow but a real correctness bug; severity depends on the implementation's handler.
 
 Read-flavored events (`array_oob_read`, `heap_oob_read`) belong to the
 `out-of-bounds` type (CWE-125), not this one.
@@ -62,6 +65,10 @@ Read-flavored events (`array_oob_read`, `heap_oob_read`) belong to the
 | `bounded_copy_var_size` where `n` is a caller-influenced length (argv/getenv/recv length field, network packet length) with no clamp | **confirmed** |
 | `bounded_copy_var_size` where `n` is validated by every caller to `<= sizeof(dst)` (clamp, guard, or a bounded `strlen` source) | **false-positive** |
 | `bounded_copy_var_size` where `n` is a local counter / loop bound | **false-positive** (should not reach here — the detector only emits the parameter case) |
+| `secure_copy_overflow` (constant size > capacity) | **confirmed** — the detector proved it |
+| `secure_copy_var_size` where the capacity argument is attacker-controlled with no clamp | **confirmed** |
+| `secure_copy_var_size` where the capacity argument is validated by every caller to `<= sizeof(dst)` | **false-positive** |
+| `secure_constraint_violation` (required > declared capacity) | **confirmed** as a contract violation; report it as a correctness bug, noting the `_s` handler will truncate or abort rather than overflow |
 
 **Reasoning for `bounded_copy_var_size`**: the pipeline cannot prove the variable
 length exceeds the fixed destination, so it delegates reachability to you. Trace
@@ -69,6 +76,12 @@ length exceeds the fixed destination, so it delegates reachability to you. Trace
 header) with no clamp, the overflow is realistic and should be **confirmed**; if it
 is a bounded length (strlen of a fixed buffer, a validated/capped length), it is
 **false-positive**.
+
+**Reasoning for `secure_copy_var_size`**: the same delegation applies to the `_s`
+destination-capacity argument. The `_s` functions are only safe when the size
+argument is truthful; a caller-controlled size that can exceed the real buffer is a
+real overflow. Trace the size to its source and apply the same attacker-controlled
+vs. bounded distinction.
 
 ### Fix Suggestions
 - Replace with safe function: `memcpy_s(dst, sizeof(dst), src, n)`

@@ -162,6 +162,31 @@ argv/getenv/recv 且无 clamp → confirmed；形参被有界守卫/strlen 界�
 2. `SafeFunctionFilter` 因 `strncpy` 属 SafeFunctions 而把该候选排除——bounded-copy 类别
    是检测器对"安全函数实际溢出"的显式裁决，安全函数排除不得覆盖它。
 
+### Annex K `_s` 安全函数契约分析
+
+各大公司已约定俗成使用 `_s` 安全函数，但它们**不是无条件安全**。`_s` 函数的
+安全契约是三方的：`destination_capacity`（显式参数）必须**如实**反映真实缓冲区，
+且 `source_length`/`count`（所需大小）必须装进该容量。sgre 按契约建模
+（`SecureFuncSpec`：capacity 参数 + count 参数索引），覆盖完整清单：
+
+`memcpy_s` / `memmove_s` / `memset_s` / `strcpy_s` / `strncpy_s` / `strcat_s` /
+`strncat_s` / `sprintf_s` / `snprintf_s` / `vsprintf_s` / `vsnprintf_s` /
+`asctime_s` / `ctime_s`。（`gmtime_s`/`localtime_s` 是线程安全 struct 返回变体、无容量
+参数；`scanf_s`/`sscanf_s`/`fscanf_s` 用逐转换宽度参数，均另行处理。）
+
+| 契约违约 | 类别 | 静态判定 | 例 |
+|------|------|----------|-----|
+| 容量参数（常量）> 真实缓冲区 | `secure_copy_overflow` | confirmed | `char dst[8]; memcpy_s(dst, 100, src, 50)` |
+| 所需大小 > 声明容量（常量） | `secure_constraint_violation` | suspected | `memcpy_s(dst, 16, src, 64)` / `strcpy_s(dst, 4, "hello")` |
+| 容量参数是形参（caller 可控） | `secure_copy_var_size` | possible | `memcpy_s(dst, sz, src, 8)` |
+| 容量参数 = `sizeof(dst)`（数组） | — | 抑制 | `memcpy_s(dst, sizeof(dst), src, 8)` |
+
+判定逻辑对齐契约语义：`actual capacity >= required → SAFE`；`required > declared
+capacity → constraint violation`（handler 截断或 abort，实现相关）；`declared capacity
+> actual → overflow`。`sizeof(ptr)` 指针宽度误用仍由 `sizeof-misuse`（CWE-467）覆盖。
+这是相对"把 `_s` 当无条件安全排除"的普通扫描器的差异化能力，也契合 Repository
+Facts + Contract/Memory skill 架构。
+
 ### 待续
 
 - 完整区间域（RangeAnalysis lite）：`if (n < 100)` 守卫后的常量传播，用于把
