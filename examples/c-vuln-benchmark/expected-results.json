@@ -3,14 +3,14 @@
   "_benchmark_doc": "benchmark.md",
   "_validator": "scripts/validate-benchmark.py",
   "summary": {
-    "total_test_cases": 74,
+    "total_test_cases": 77,
     "phase0_test_cases": 18,
     "phase1_test_cases": 12,
     "phase2_test_cases": 4,
     "phase3_test_cases": 4,
     "phase4_test_cases": 4,
-    "expected_final_certified": 41,
-    "expected_no_finding": 33,
+    "expected_final_certified": 43,
+    "expected_no_finding": 34,
     "phase1_confirmed": 9,
     "phase1_safe_excluded": 3,
     "phase2_confirmed": 4,
@@ -624,6 +624,33 @@
       "code": "scanf_s(\"%s\", buf, (rsize_t)sizeof(buf))",
       "detector": "memory.buffer_overflow",
       "expect": "no_finding"
+    },
+    {
+      "id": "P9-06",
+      "category": "secure_lying_destsz",
+      "file": "src/p9_secure_func.c",
+      "line": 48,
+      "code": "memcpy_s(dst, 100, src, 50) full Annex K signature",
+      "detector": "memory.buffer_overflow",
+      "expect": "finding"
+    },
+    {
+      "id": "P9-07",
+      "category": "secure_correct",
+      "file": "src/p9_secure_func.c",
+      "line": 54,
+      "code": "memcpy_s(dst, sizeof(dst), src, 8) full signature",
+      "detector": "memory.buffer_overflow",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P9-08",
+      "category": "secure_count_overflow",
+      "file": "src/p9_secure_func.c",
+      "line": 60,
+      "code": "memcpy_s(dst, sizeof(dst), src, 100) count > destsz",
+      "detector": "memory.buffer_overflow",
+      "expect": "finding"
     },
     {
       "id": "P10-01",

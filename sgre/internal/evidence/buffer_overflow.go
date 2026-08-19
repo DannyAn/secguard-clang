@@ -271,7 +271,7 @@ func (d *BufferOverflowDetector) checkSecureFunction(ctx context.Context, f *db.
 	}
 
 	capArg := args[spec.CapArgIdx]
-	declaredCap := parseConstantSize(capArg)
+	declaredCap := d.evaluateSizeArg(capArg, bc, f)
 
 	// capacity-lie: the declared capacity exceeds the real buffer.
 	if declaredCap > 0 && declaredCap > capacity {
@@ -283,7 +283,7 @@ func (d *BufferOverflowDetector) checkSecureFunction(ctx context.Context, f *db.
 	// constraint-hit: the required size exceeds the DECLARED capacity (the
 	// function will truncate or trigger its constraint handler).
 	if declaredCap > 0 {
-		if required := secureRequiredSize(call, callName, spec, args); required > 0 && required > declaredCap {
+		if required := d.secureRequiredSize(call, callName, spec, args, bc, f); required > 0 && required > declaredCap {
 			d.emitSecure(ctx, f, file, call, callName, "secure_constraint_violation",
 				fmt.Sprintf("%d", required), fmt.Sprintf("%d", declaredCap), result)
 		}
@@ -301,9 +301,9 @@ func (d *BufferOverflowDetector) checkSecureFunction(ctx context.Context, f *db.
 // write, when statically computable: the copy-count argument for the n-variants
 // (memcpy_s/memset_s/strncpy_s/...), or the length+1 of a literal source for
 // strcpy_s/strcat_s. It returns 0 when the required size is not a constant.
-func secureRequiredSize(call parser.Node, callName string, spec apikb.SecureFuncSpec, args []parser.Node) int {
+func (d *BufferOverflowDetector) secureRequiredSize(call parser.Node, callName string, spec apikb.SecureFuncSpec, args []parser.Node, bc *bufCtx, f *db.Function) int {
 	if spec.CountArgIdx >= 0 && spec.CountArgIdx < len(args) {
-		if n := parseConstantSize(args[spec.CountArgIdx]); n > 0 {
+		if n := d.evaluateSizeArg(args[spec.CountArgIdx], bc, f); n > 0 {
 			return n
 		}
 	}
@@ -314,6 +314,37 @@ func secureRequiredSize(call parser.Node, callName string, spec apikb.SecureFunc
 	case "strcpy_s", "strcat_s":
 		if l, ok := constantStringLength(args[2].Text()); ok {
 			return l + 1
+		}
+	}
+	return 0
+}
+
+// evaluateSizeArg returns the constant byte count of a size argument: a numeric
+// literal, `(rsize_t)N`, or `sizeof(array)` / `sizeof(*p)`-style expressions
+// that resolve to a known array/allocation size. Returns 0 when not constant.
+func (d *BufferOverflowDetector) evaluateSizeArg(node parser.Node, bc *bufCtx, f *db.Function) int {
+	if n := parseConstantSize(node); n > 0 {
+		return n
+	}
+	cur := node
+	for cur.Kind() == "cast_expression" || cur.Kind() == "parenthesized_expression" {
+		children := cur.NamedChildren()
+		if len(children) == 0 {
+			return 0
+		}
+		cur = children[0]
+	}
+	if cur.Kind() == "sizeof_expression" {
+		// `sizeof(dst)` nests the identifier inside a parenthesized_expression,
+		// so walk every identifier descendant and pick the first known array/
+		// allocation size.
+		for _, id := range cur.FindAll("identifier") {
+			if s := findArraySize(bc, f, id.Text()); s > 0 {
+				return s
+			}
+			if s := constantAllocationSize(bc, f, id.Text()); s > 0 {
+				return s
+			}
 		}
 	}
 	return 0

@@ -39,3 +39,23 @@ void fp_scanf_correct(void) {
     char buf[10];
     scanf_s("%s", buf, (rsize_t)sizeof(buf));
 }
+
+/* ── memcpy_s 完整签名（errno_t + restrict）──────────────────────── */
+
+/* 真阳性：destsz 100 > 真实容量 8（说谎的 destsz，应报告 finding） */
+errno_t tp_memcpy_s_lying_destsz(char *restrict src) {
+    char dst[8];
+    return memcpy_s(dst, 100, src, 50);
+}
+
+/* 误报：destsz=sizeof(dst)、count=8，如实且不越界（应抑制） */
+errno_t fp_memcpy_s_correct(char *restrict src) {
+    char dst[8];
+    return memcpy_s(dst, sizeof(dst), src, 8);
+}
+
+/* 真阳性：destsz=sizeof(dst)=8 但 count=100 > destsz，约束违约（应报告 finding） */
+errno_t tp_memcpy_s_count_overflow(char *restrict src) {
+    char dst[8];
+    return memcpy_s(dst, sizeof(dst), src, 100);
+}
