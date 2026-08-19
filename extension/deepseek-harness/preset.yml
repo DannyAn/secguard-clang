@@ -1,0 +1,2 @@
+name: SecGuard 安全审计
+description: 基于 SecGuard-Clang 的 C 语言安全审计 Agent。扫描 C 代码库，按 20 类漏洞（null-deref / buffer-overflow / use-after-free / double-free / format-string / integer-overflow / ...）逐批分类判定，输出 findings 与修复建议。

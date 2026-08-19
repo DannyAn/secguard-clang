@@ -47,7 +47,7 @@
 | 收敛效率 | ~600 原始告警 → **~10 证据包**（~4.5ms） |
 | 基准回归门禁 | 53 用例，**精度 100% / 召回 100%**（TP=26 / FP=0 / TN=27 / FN=0） |
 | 回归测试 | 69 个安全夹具 · 233 个测试函数，`go test -race` 0 数据竞争 |
-| 交付形态 | Linux / Windows / macOS 静态二进制 + OpenCode / Claude Code 双平台 |
+| 交付形态 | Linux / Windows / macOS 静态二进制 + OpenCode / Claude Code / DeepSeek Harness 三平台 |
 
 ### 白话结论
 
@@ -150,7 +150,7 @@ SecGuard 不是一个传统的静态分析工具。它是一个 **AI Agent 的�
 | **Layer 3** | 安全证据 | 中等 | `security_events` (NULL_VALUE, DEREFERENCE, BUFFER_ACCESS, ...) |
 | **Layer 4** | 发现 | 最易变 | `findings` (AI Agent 写入) |
 
-### 双平台扩展架构
+### 多平台扩展架构
 
 ```
 extension/
@@ -164,11 +164,15 @@ extension/
 ├── opencode/                  ← OpenCode 薄包装
 │   ├── tools/*.ts             ← 7 个 TypeScript 工具
 │   └── extension.json
-└── claude-code/               ← Claude Code 薄包装
-    └── ...
+├── claude-code/               ← Claude Code 薄包装
+│   └── ...
+└── deepseek-harness/          ← DeepSeek Harness 薄包装（Agent preset）
+    ├── preset.yml             ← preset 元数据
+    └── agent.cordis.yml       ← Cordis 组合（persona + 工具 + skill 根）
 ```
 
-构建时 `release/build-packages.sh` 将 `shared/` 展开到两个平台包装中，安装到 `.opencode/` 和 `.claude/`。
+OpenCode / Claude Code 构建时 `release/build-packages.sh` 将 `shared/` 展开安装到 `.opencode/` 和 `.claude/`。
+DeepSeek Harness 用 `release/install-dsh.sh` 把 preset 装到 `~/.dsh/.agent-presets/secguard/`（skills 从 `shared/` 拷贝）。
 
 ## 快速开始
 
@@ -212,9 +216,27 @@ cd secguard-clang
 ./build.sh --package
 ```
 
+### 方式三：DeepSeek Harness（DSH）
+
+SecGuard 提供了 DSH 的 Agent preset（Cordis 组合），装上后在 DSH 里选
+「SecGuard 安全审计」preset 即可让 Agent 具备 C 安全审计能力：
+
+```bash
+# 1) 确保 secguard 二进制在 PATH 上（见方式一/二）
+# 2) 安装 DSH preset（把组合 + 20 个 skill 装到 ~/.dsh/.agent-presets/secguard/）
+./release/install-dsh.sh
+
+# 3) 在 DSH 里选择「SecGuard 安全审计」preset，然后对话：
+#    > 扫描 src/ 目录的安全漏洞
+#    > 看看有没有 buffer-overflow, null-deref 问题
+```
+
+DSH 的"角色"即 persona（`agent.cordis.yml` 里的 `dsh-persona`）；外部用户选这个
+preset 即得到一个专注 C 安全审计的 Agent，无需接触 OpenCode/Claude Code。
+
 ### 在 AI Agent 中使用
 
-安装后，在 OpenCode 或 Claude Code 中直接对话：
+安装后，在 OpenCode、Claude Code 或 DeepSeek Harness 中直接对话：
 
 ```
 > 扫描 src/ 目录的安全漏洞
@@ -327,6 +349,7 @@ secguard-clang/
 │   ├── shared/                    # 共享核心（skills + agent prompt）
 │   ├── opencode/                  # OpenCode 包装
 │   └── claude-code/               # Claude Code 包装
+│   └── deepseek-harness/          # DeepSeek Harness 包装（Agent preset）
 ├── release/                       # 构建/安装工具
 ├── examples/                      # 示例和基准测试
 │   └── c-vuln-benchmark/          # 19 文件 / 53 测试用例 / 20 类型
