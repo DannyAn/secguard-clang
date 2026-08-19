@@ -262,3 +262,60 @@ func TestSecureFunctionMisuse(t *testing.T) {
 		t.Errorf("expected secure_var_size to surface as possible, got %q (present=%v)", lvl, ok)
 	}
 }
+
+// TestBoundedMemcpy locks in the decoupling of BoundedCopyFunctions from the
+// safe-function branch: memcpy/memmove now get the same size-vs-capacity
+// refinement as strncpy — constant overflow → bounded_copy_overflow, constant
+// fit → suppressed, caller-influenced variable → bounded_copy_var_size — while
+// unknown capacity and append (strncat) stay on the conservative generic path.
+func TestBoundedMemcpy(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, fixturePath("tc69_bounded_memcpy.c")); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	NewBufferOverflowDetector(store, p, logger).Detect(ctx)
+
+	events, err := store.ListEventsByType(ctx, "BUFFER_ACCESS")
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+
+	cats := map[string]map[string]bool{}
+	for _, e := range events {
+		fn, err := store.GetFunctionByID(ctx, e.EntityID)
+		if err != nil || fn == nil {
+			continue
+		}
+		var props struct {
+			Category string `json:"category"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if cats[fn.Name] == nil {
+			cats[fn.Name] = map[string]bool{}
+		}
+		cats[fn.Name][props.Category] = true
+	}
+
+	if !cats["memcpy_const_overflow"]["bounded_copy_overflow"] {
+		t.Errorf("expected memcpy_const_overflow (16 > 8) to be flagged bounded_copy_overflow, got %v", cats["memcpy_const_overflow"])
+	}
+	if len(cats["memcpy_const_fit"]) != 0 {
+		t.Errorf("expected memcpy_const_fit (exact fit) NOT to be flagged, got %v", cats["memcpy_const_fit"])
+	}
+	if !cats["memcpy_var_param"]["bounded_copy_var_size"] {
+		t.Errorf("expected memcpy_var_param (caller-controlled n) to be flagged bounded_copy_var_size, got %v", cats["memcpy_var_param"])
+	}
+	if !cats["memcpy_unknown_dst"]["buffer_overflow"] {
+		t.Errorf("expected memcpy_unknown_dst (unknown capacity) to stay generic buffer_overflow, got %v", cats["memcpy_unknown_dst"])
+	}
+	if !cats["strncat_append"]["buffer_overflow"] {
+		t.Errorf("expected strncat_append (append, n fits) to stay generic buffer_overflow, got %v", cats["strncat_append"])
+	}
+}

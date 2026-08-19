@@ -98,17 +98,18 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 			d.checkSecureFunction(ctx, f, file, bc, call, callName, spec, params, result)
 			continue
 		}
-		if apikb.IsSafeFunction(callName) || apikb.IsSafeWrapper(callName) {
-			if !apikb.IsBoundedCopy(callName) {
+		// strncpy/strncat/memcpy/memmove all take an explicit size, so refine the
+		// size-vs-capacity before the generic path. checkBoundedCopyOverflow
+		// returns true when it handled the call (emitted bounded_copy_overflow /
+		// bounded_copy_var_size, or proved it fits); false means "fall through
+		// to the conservative generic path" (unknown capacity, append semantics,
+		// or a bounded local size).
+		if apikb.IsBoundedCopy(callName) {
+			if d.checkBoundedCopyOverflow(ctx, f, file, bc, call, callName, params, result) {
 				continue
 			}
-			// A bounded-copy API that is nominally "safe" (strncpy) still needs
-			// its size compared against the destination capacity. The check is
-			// authoritative: it either emits bounded_copy_overflow (constant
-			// proven) / bounded_copy_var_size (caller-influenced variable) or
-			// suppresses the call. We must NOT fall through to the generic
-			// buffer-overflow path, or the same call is reported twice.
-			d.checkBoundedCopyOverflow(ctx, f, file, bc, call, callName, params, result)
+		}
+		if apikb.IsSafeFunction(callName) || apikb.IsSafeWrapper(callName) {
 			continue
 		}
 		if apikb.InjectionAPIs[callName] {
@@ -146,56 +147,67 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 	}
 }
 
-// checkBoundedCopyOverflow checks strncpy(dst, src, n) against the destination
-// capacity. It has two tiers:
+// checkBoundedCopyOverflow refines a bounded copy (strncpy/strncat/memcpy/
+// memmove) against the destination capacity. It returns true when the call was
+// handled (an overflow was emitted, or the copy provably fits), and false when
+// the caller should fall through to the conservative generic buffer-overflow
+// path (unknown capacity, append semantics, or a bounded local size on an
+// otherwise-unsafe API).
 //
-//   - Constant n: if n > capacity (array size or malloc size) the overflow is
-//     provable and emitted as bounded_copy_overflow (confirmed).
-//   - Variable n: if n is a function parameter (caller/attacker-influenced) and
-//     dst is a fixed-capacity buffer, the overflow cannot be proven statically
-//     but is emitted as bounded_copy_var_size (possible) — the AI agent reasons
-//     over whether the length can actually exceed the capacity.
-//
-// A variable n that is a bounded local, or a dst with unknown capacity, is
-// suppressed (no overflow proven). The caller treats the result as authoritative
-// and always skips the generic buffer-overflow path.
+//   - Constant n > capacity: provable overflow → bounded_copy_overflow (confirmed).
+//   - Constant n <= capacity: a copy API (strncpy/memcpy/memmove) provably fits
+//     → suppressed; an append API (strncat) is NOT provably safe (existing
+//     content may already fill the buffer) → fall through.
+//   - Variable n that is a caller-influenced parameter → bounded_copy_var_size
+//     (possible), handed to the AI agent.
+//   - Unknown capacity, or a bounded local n: strncpy (nominally safe) is
+//     suppressed; memcpy/memmove/strncat stay conservative and fall through.
 func (d *BufferOverflowDetector) checkBoundedCopyOverflow(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, call parser.Node, callName string, params map[string]bool, result *DetectResult) bool {
+	// A nominally-safe bounded copy (strncpy) is suppressed by default; an
+	// unsafe one (memcpy/memmove/strncat) stays conservative by falling through.
+	safeDefault := apikb.IsSafeFunction(callName)
+
 	args := callNamedArguments(call)
 	if len(args) < 3 {
-		return true
+		return safeDefault
 	}
 	dstArg := args[0]
 	sizeArg := args[2]
 	dstName := extractArgName(dstArg)
 	if dstName == "" {
-		return true
+		return safeDefault
 	}
 	capacity := findArraySize(bc, f, dstName)
 	if capacity <= 0 {
 		capacity = constantAllocationSize(bc, f, dstName)
 	}
 	if capacity <= 0 {
-		return true
+		return safeDefault
 	}
 
 	if n := parseConstantSize(sizeArg); n > 0 {
-		if n <= capacity {
+		if n > capacity {
+			d.emitBoundedCopy(ctx, f, file, call, callName, "bounded_copy_overflow",
+				fmt.Sprintf("%d", n), fmt.Sprintf("%d", capacity), result)
 			return true
 		}
-		d.emitBoundedCopy(ctx, f, file, call, callName, "bounded_copy_overflow",
-			fmt.Sprintf("%d", n), fmt.Sprintf("%d", capacity), result)
-		return false
+		// n fits, but append semantics make "fits" insufficient for strncat.
+		if callName == "strncat" {
+			return false
+		}
+		return true
 	}
 
-	// Variable copy size: only meaningful when it is a caller-influenced
-	// parameter. A local variable's bound is not attacker-controlled, so it is
-	// suppressed (no overflow proven).
+	// Variable copy size: only meaningful when caller-influenced.
 	if sizeArg.Kind() == "identifier" && params[sizeArg.Text()] {
+		if callName == "strncat" {
+			return false // append: keep the conservative generic path
+		}
 		d.emitBoundedCopy(ctx, f, file, call, callName, "bounded_copy_var_size",
 			sizeArg.Text(), fmt.Sprintf("%d", capacity), result)
-		return false
+		return true
 	}
-	return true
+	return safeDefault
 }
 
 func (d *BufferOverflowDetector) emitBoundedCopy(ctx context.Context, f *db.Function, file *db.File, call parser.Node, callName, category, copySize, dstCapacity string, result *DetectResult) {

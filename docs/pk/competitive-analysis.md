@@ -194,11 +194,26 @@ Facts + Contract/Memory skill 架构。
 `if (op < CONST)` 守卫界定到小常量（< 32768），加法/乘常量运算不可能溢出，候选直接
 丢弃——这就是区间域的"轻量"版本，用守卫界替代完整抽象解释。
 
+### memcpy/memmove 变量长度越界（BoundedCopyFunctions 解耦）
+
+`checkBoundedCopyOverflow` 从 SafeFunctions 分支中解耦，`strncpy`/`strncat`/`memcpy`/
+`memmove` 统一做大小-容量比对，但保留各自的保守默认：
+
+| 情形 | 判定 |
+|------|------|
+| 常量 `n > capacity`（任意有界拷贝） | `bounded_copy_overflow`（confirmed） |
+| 常量 `n <= capacity` 的 copy 类（strncpy/memcpy/memmove） | 抑制（可证恰好装下） |
+| 常量 `n <= capacity` 的 append 类（strncat） | 回落通用路径（已有内容未知，不可证安全） |
+| 变量 `n` 是形参 + 已知容量 | `bounded_copy_var_size`（possible，AI 推理） |
+| 未知容量 / 局部 `n`（strncpy） | 抑制（名义安全） |
+| 未知容量 / 局部 `n`（memcpy/memmove/strncat） | 回落通用路径（保守标记） |
+
+这样 `char dst[8]; memcpy(dst, src, 16)` 从笼统的 suspected 升级为 confirmed，
+`memcpy(dst, src, 8)` 恰好装下不再误报，而未知容量的 memcpy 仍保守标记——精度提升
+且无召回回退。
+
 ### 待续
 
-- `memcpy`/`memmove` 的变量长度越界：当前它们走通用 `buffer_overflow` 路径（保守标记），
-  尚未按 `n` 与固定数组容量做精确比对（需将 BoundedCopyFunctions 从 SafeFunctions 分支
-  中解耦）。
 - `scanf_s`/`sscanf_s`/`fscanf_s` 逐转换宽度校验（`%s`/`%c` 后跟宽度参数 vs 缓冲区容量）。
 
 ## 8. v0.2.1+ 1-CFA 过程间上下文敏感（对标 CodeQL 1-CFA）
