@@ -32,7 +32,7 @@ TMPDIR=$PWD/.tmpcache`.
 |-------|------|---------|-------|
 | Go source | `sgre/` | yes | yes |
 | Extension source (skills, agent body, command instructions) | `extension/shared/` | yes | yes |
-| Platform wrappers | `extension/opencode/`, `extension/claude-code/` | yes | yes (thin wrappers only) |
+| Platform wrappers | `extension/opencode/`, `extension/claude-code/`, `extension/deepseek-harness/` | yes | yes (thin wrappers only) |
 | Installed copies (Claude Code) | `.claude/` | **no** (`.gitignore`) | **never** — generated from `extension/shared/` + wrappers |
 | Installed copies (OpenCode) | `.opencode/` | **no** (`.gitignore`) | **never** — generated |
 | Scan output / DB | `.codeagent/` | **no** (`.gitignore`) | **never** — runtime artifact |
@@ -65,11 +65,11 @@ Inspecting them during a code review:
 - `sgre/` — all Go source, tests, testdata
 - `extension/shared/` — skills, agent-body.md, command-instructions.md (the
   single source of truth for agent behavior)
-- `extension/opencode/`, `extension/claude-code/` — thin wrappers (only the
+- `extension/opencode/`, `extension/claude-code/`, `extension/deepseek-harness/` — thin wrappers (only the
   wrapper-specific parts; the `{{include shared/...}}` directives are expanded
   at build time)
 - `release/` — build/install scripts
-- Root docs (`README.md`, `CLAUDE.md`, `CHANGELOG.md`, `VERSION`)
+- Root docs (`README.md`, `README-CN.md`, `QUICKSTART.md`, `CLAUDE.md`, `CHANGELOG.md`, `VERSION`)
 
 If a finding is *only* reproducible in a dot-prefixed generated directory and
 not in the source it was generated from, it is an **install-time issue**, not

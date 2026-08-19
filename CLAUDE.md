@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Go Module Location
 
-The Go module lives in **`sgre/`** (module `github.com/DannyAn/secguard-clang`), not the repo root. The repo root holds the extension/deploy scaffolding and docs. **Run all `go` commands from `sgre/`.** The repo root is not a git repository.
+The Go module lives in **`sgre/`** (module `github.com/DannyAn/secguard-clang`), not the repo root. The repo root holds the extension/deploy scaffolding and docs. **Run all `go` commands from `sgre/`.**
 
 ## Build & Test
 
@@ -82,6 +82,8 @@ secguard status          Index status (files, functions, staleness)
 secguard query <skill>   Run a skill query
 secguard plan <vuln>     Run convergence for one vulnerability type
 secguard report          Output all findings as JSON
+secguard types           List all vulnerability types + CWE (JSON)
+secguard schema [table]  Show a table's schema (columns/types)
 secguard db <sql>        Execute a SQL query, return JSON
 ```
 
@@ -89,10 +91,11 @@ secguard db <sql>        Execute a SQL query, return JSON
 
 ## Multi-Platform Agent Extension (`extension/`)
 
-SecGuard targets two AI-agent platforms with a **shared-core + thin-wrapper** design:
+SecGuard targets three AI-agent platforms with a **shared-core + thin-wrapper** design:
 
 - `extension/shared/` is the single source of truth: agent skills (`SKILL.md` files), `agent-body.md` (the security-auditor prompt), `command-instructions.md`.
 - `extension/opencode/` and `extension/claude-code/` are thin platform wrappers using `{{include shared/...}}` directives, expanded at build time by `release/build-packages.sh`.
+- `extension/deepseek-harness/` is a DSH agent preset (`preset.yml` + `agent.cordis.yml`, persona = `dsh-persona`), installed by `release/install-dsh.sh` into `~/.dsh/.agent-presets/secguard/`.
 - The **installed copies** live at `.opencode/` and `.claude/` in the repo root. The `security-auditor` subagent (`.claude/agents/security-auditor.md`) is the consumer: it runs `secguard scan/plan`, loads per-type skills for classification, and persists findings.
 - `.claude/settings.json` pre-approves `Bash(secguard *)` and emits a staleness hint on any `Edit|Write` (re-run `/secguard` after editing source).
 - **Edit `extension/shared/`, never the installed copies** — the installed files are generated.
@@ -103,7 +106,7 @@ Scan output is written to `.codeagent/zhuque-secguard/scans/<scan-id>/` (`scan-i
 
 ## Test Fixtures
 
-- `sgre/testdata/tc01-tc17*.c` — 17 security test fixtures (each targets a detector).
+- `sgre/testdata/tc01-tc70*.c` — 74 security test fixtures (each targets a detector or edge case).
 - `sgre/testdata/phase1`–`phase7` — staged fixtures for the pipeline phases.
 - `sgre/testdata/perf/gen_codebase.go` — generates large synthetic codebases for perf testing: `go run testdata/perf/gen_codebase.go testdata/perf/large_codebase 100 50`.
 
@@ -152,11 +155,11 @@ Inspecting them during a code review:
 - `sgre/` — all Go source, tests, testdata
 - `extension/shared/` — skills, agent-body.md, command-instructions.md (the
   single source of truth for agent behavior)
-- `extension/opencode/`, `extension/claude-code/` — thin wrappers (only the
+- `extension/opencode/`, `extension/claude-code/`, `extension/deepseek-harness/` — thin wrappers (only the
   wrapper-specific parts; the `{{include shared/...}}` directives are expanded
   at build time)
 - `release/` — build/install scripts
-- Root docs (`README.md`, `CLAUDE.md`, `CHANGELOG.md`, `VERSION`)
+- Root docs (`README.md`, `README-CN.md`, `QUICKSTART.md`, `CLAUDE.md`, `CHANGELOG.md`, `VERSION`)
 
 If a finding is *only* reproducible in a dot-prefixed generated directory and
 not in the source it was generated from, it is an **install-time issue**, not
