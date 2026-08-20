@@ -5,6 +5,13 @@
 >
 > 总原则：**每一处静默吞错都是"平时不爆、DB 抖动就漏报"的隐性假阴性**；**每一处把 0-CFA 名字解析拿去做"丢弃决策"都是精度陷阱**。修的时候必须配针对性测试夹具，否则会引入新的假阳性/漏报。
 
+## 进度（2026-08-20 开始执行）
+
+- ✅ **I~N（MINOR 清单）全部完成** —— `231ffd9`：status/scan/plan 的读错误透出、`computeParamTainted` 错误 fail-closed、planner short-circuit 补齐统计。
+- ✅ **E（injection ConvergeKey）完成** —— `f416e8d`：key 改为 `(file,func,category,variable)`，SQL 事件带 `variable`（buffer），独立 sink 不再合并。
+- 🚧 **A+B（检测器吞错）进行中** —— `7dac0db`：新增 `emitEvent` 共享 helper + 迁移了 `path_traversal.go` 作为模板；其余 ~21 个检测器按同一模式机械迁移（见下）。
+- ⬜ **C / D / F / G / H** 未开始。
+
 ---
 
 ## 优先级总览
