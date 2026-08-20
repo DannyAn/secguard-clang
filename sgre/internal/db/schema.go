@@ -127,18 +127,24 @@ CREATE TABLE IF NOT EXISTS security_events (
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS findings (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    rule_id       TEXT NOT NULL,
-    severity      TEXT CHECK (severity IN ('critical', 'high', 'medium', 'low', 'info')),
-    confidence    REAL CHECK (confidence >= 0.0 AND confidence <= 1.0),
-    evidence      TEXT,
-    status        TEXT DEFAULT 'open' CHECK (status IN ('open', 'confirmed', 'suspected', 'dismissed')),
-    file_path     TEXT,
-    line_number   INTEGER,
-    function_name TEXT,
-    properties    TEXT,
-    scan_id       TEXT,
-    created_at    INTEGER
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_id         TEXT NOT NULL,
+    severity        TEXT CHECK (severity IN ('critical', 'high', 'medium', 'low', 'info')),
+    confidence      REAL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    evidence        TEXT,
+    status          TEXT DEFAULT 'open' CHECK (status IN ('open', 'confirmed', 'suspected', 'dismissed')),
+    file_path       TEXT,
+    line_number     INTEGER,
+    function_name   TEXT,
+    properties      TEXT,
+    summary         TEXT,
+    reasoning       TEXT,
+    fix_strategy    TEXT,
+    exception_check TEXT,
+    review_status   TEXT CHECK (review_status IS NULL OR review_status = '' OR review_status IN ('confirmed', 'dismissed', 'suspected-kept')),
+    review_reasoning TEXT,
+    scan_id         TEXT,
+    created_at      INTEGER
 );
 
 -- ============================================================

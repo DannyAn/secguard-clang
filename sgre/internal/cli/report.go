@@ -10,6 +10,7 @@ import (
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/planner"
+	"github.com/DannyAn/secguard-clang/internal/report"
 )
 
 func parseStringFlag(args []string, flag string) string {
@@ -122,16 +123,20 @@ func runReportCmd(ctx context.Context, args []string) int {
 		}
 
 		finding := &db.Finding{
-			RuleID:       parseStringFlag(remaining, "rule-id"),
-			Severity:     parseStringFlag(remaining, "severity"),
-			Confidence:   confidence,
-			Evidence:     parseStringFlag(remaining, "evidence"),
-			Status:       parseStringFlag(remaining, "status"),
-			FilePath:     parseStringFlag(remaining, "file"),
-			LineNumber:   parseIntFlag(remaining, "line"),
-			FunctionName: parseStringFlag(remaining, "function"),
-			Properties:   parseStringFlag(remaining, "properties"),
-			ScanID:       parseStringFlag(remaining, "scan-id"),
+			RuleID:         parseStringFlag(remaining, "rule-id"),
+			Severity:       parseStringFlag(remaining, "severity"),
+			Confidence:     confidence,
+			Evidence:       parseStringFlag(remaining, "evidence"),
+			Status:         parseStringFlag(remaining, "status"),
+			FilePath:       parseStringFlag(remaining, "file"),
+			LineNumber:     parseIntFlag(remaining, "line"),
+			FunctionName:   parseStringFlag(remaining, "function"),
+			Properties:     parseStringFlag(remaining, "properties"),
+			Summary:        parseStringFlag(remaining, "summary"),
+			Reasoning:      parseStringFlag(remaining, "reasoning"),
+			FixStrategy:    parseStringFlag(remaining, "fix-strategy"),
+			ExceptionCheck: parseStringFlag(remaining, "exception-check"),
+			ScanID:         parseStringFlag(remaining, "scan-id"),
 		}
 
 		if finding.Severity == "" {
@@ -169,9 +174,63 @@ func runReportCmd(ctx context.Context, args []string) int {
 			return 1
 		}
 
+		perFindingPath := rewritePerFindingAfterWrite(remaining, finding)
+
 		WriteJSON(map[string]interface{}{
-			"id":     id,
-			"status": "ok",
+			"id":               id,
+			"status":           "ok",
+			"per_finding_path": perFindingPath,
+		})
+		return 0
+	}
+
+	if hasFlag(remaining, "review") {
+		findingID := int64(parseIntFlag(remaining, "id"))
+		if findingID == 0 {
+			WriteErrorJSON("--review requires --id=<finding_id>")
+			return 1
+		}
+		reviewStatus := parseStringFlag(remaining, "review-status")
+		reviewReasoning := parseStringFlag(remaining, "review-reasoning")
+		if reviewStatus == "" {
+			WriteErrorJSON("--review requires --review-status (confirmed|dismissed|suspected-kept)")
+			return 1
+		}
+
+		f, err := store.GetFindingByID(ctx, findingID)
+		if err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to load finding: %v", err))
+			return 1
+		}
+
+		if err := store.UpdateFindingReview(ctx, findingID, reviewStatus, reviewReasoning); err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to update review: %v", err))
+			return 1
+		}
+
+		finalStatus := reviewStatus
+		if reviewStatus == "suspected-kept" {
+			finalStatus = "suspected"
+		}
+		perFindingPath := ""
+		scanDir := resolveScanDir(remaining, f.ScanID)
+		if scanDir != "" && f.FilePath != "" && f.LineNumber > 0 {
+			vulnType := planner.TypeForCWE(f.RuleID)
+			if vulnType != "" {
+				perFindingPath, _ = report.RewritePerFinding(scanDir, vulnType, f.FilePath, f.LineNumber, report.PerFindingUpdate{
+					Status:       finalStatus,
+					Severity:     f.Severity,
+					Confidence:   f.Confidence,
+					FunctionName: f.FunctionName,
+				})
+			}
+		}
+
+		WriteJSON(map[string]interface{}{
+			"id":               findingID,
+			"review_status":    reviewStatus,
+			"status":           "ok",
+			"per_finding_path": perFindingPath,
 		})
 		return 0
 	}
@@ -381,4 +440,41 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry) error {
 	}
 
 	return os.WriteFile(auditPath, []byte(b.String()), 0644)
+}
+
+func resolveScanDir(args []string, scanID string) string {
+	outputDir := parseStringFlag(args, "output-dir")
+	if outputDir != "" {
+		return outputDir
+	}
+	if scanID == "" {
+		return ""
+	}
+	cwd, err := os.Getwd()
+	if err != nil || cwd == "" {
+		return ""
+	}
+	return filepath.Join(cwd, report.CodeagentDir, report.ProductDir, report.ScansDir, scanID)
+}
+
+func rewritePerFindingAfterWrite(args []string, finding *db.Finding) string {
+	scanDir := resolveScanDir(args, finding.ScanID)
+	if scanDir == "" || finding.FilePath == "" || finding.LineNumber <= 0 {
+		return ""
+	}
+	vulnType := planner.TypeForCWE(finding.RuleID)
+	if vulnType == "" {
+		return ""
+	}
+	newPath, _ := report.RewritePerFinding(scanDir, vulnType, finding.FilePath, finding.LineNumber, report.PerFindingUpdate{
+		Summary:        finding.Summary,
+		Reasoning:      finding.Reasoning,
+		FixStrategy:    finding.FixStrategy,
+		ExceptionCheck: finding.ExceptionCheck,
+		Status:         finding.Status,
+		Severity:       finding.Severity,
+		Confidence:     finding.Confidence,
+		FunctionName:   finding.FunctionName,
+	})
+	return newPath
 }

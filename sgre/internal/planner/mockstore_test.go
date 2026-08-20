@@ -269,6 +269,12 @@ func (s *mockStore) ListFindings(ctx context.Context) ([]*db.Finding, error) { r
 func (s *mockStore) ListFindingsByStatus(ctx context.Context, status string) ([]*db.Finding, error) {
 	return nil, nil
 }
+func (s *mockStore) GetFindingByID(ctx context.Context, id int64) (*db.Finding, error) {
+	return nil, nil
+}
+func (s *mockStore) UpdateFindingReview(ctx context.Context, id int64, reviewStatus, reviewReasoning string) error {
+	return nil
+}
 
 func (s *mockStore) UpsertSummary(ctx context.Context, sum *db.FunctionSummary) error {
 	s.summaries[sum.FunctionID] = sum

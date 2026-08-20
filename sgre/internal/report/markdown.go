@@ -140,6 +140,162 @@ func title(s string) string {
 	return strings.Join(words, " ")
 }
 
+// PerFindingUpdate carries the AI agent's classification output for a single
+// finding, to be merged into the candidate-stage per-finding markdown.
+type PerFindingUpdate struct {
+	Summary        string
+	Reasoning      string
+	FixStrategy    string
+	ExceptionCheck string
+	Status         string
+	Severity       string
+	Confidence     float64
+	FunctionName   string
+}
+
+// statusSuffix maps a finding status to the single-char filename suffix that
+// lets a developer spot confirmed/suspected/dismissed at a glance via `ls`.
+func statusSuffix(status string) string {
+	switch strings.ToLower(status) {
+	case "confirmed":
+		return "_c"
+	case "suspected":
+		return "_s"
+	case "dismissed":
+		return "_x"
+	default:
+		return ""
+	}
+}
+
+// RewritePerFinding locates the candidate-stage per-finding markdown for
+// (vulnType, filePath, line[, function]), merges the AI's Summary/Reasoning/
+// Exception Check/Fix Strategy into it, updates the Classification status, and
+// renames the file with a status suffix (_c/_s/_x). Returns the new path (or the
+// unchanged path if no rename), and an empty path + nil if no candidate file was
+// found (not an error — the finding is still persisted to the DB).
+func RewritePerFinding(scanDir, vulnType, filePath string, line int, update PerFindingUpdate) (string, error) {
+	dir := filepath.Join(scanDir, vulnType)
+	safeName := sanitizeFilename(shortFile(filePath))
+	baseSuffix := fmt.Sprintf("_%s_%d", safeName, line)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", nil
+	}
+
+	var oldPath string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".md") {
+			continue
+		}
+		stem := strings.TrimSuffix(name, ".md")
+		stem = strings.TrimSuffix(stem, "_c")
+		stem = strings.TrimSuffix(stem, "_s")
+		stem = strings.TrimSuffix(stem, "_x")
+		if !strings.HasSuffix(stem, baseSuffix) {
+			continue
+		}
+		candidate := filepath.Join(dir, name)
+		if update.FunctionName == "" {
+			oldPath = candidate
+			break
+		}
+		data, readErr := os.ReadFile(candidate)
+		if readErr != nil {
+			continue
+		}
+		if strings.Contains(string(data), " in "+update.FunctionName+"\n") {
+			oldPath = candidate
+			break
+		}
+		if oldPath == "" {
+			oldPath = candidate
+		}
+	}
+	if oldPath == "" {
+		return "", nil
+	}
+
+	data, err := os.ReadFile(oldPath)
+	if err != nil {
+		return "", fmt.Errorf("read per-finding: %w", err)
+	}
+	content := string(data)
+
+	if update.Status != "" {
+		oldStatus := "- **Status:** _pending_ (awaiting agent classification)"
+		newStatus := fmt.Sprintf("- **Status:** %s", update.Status)
+		if update.Severity != "" {
+			newStatus += fmt.Sprintf(" (severity: %s", update.Severity)
+			if update.Confidence > 0 {
+				newStatus += fmt.Sprintf(", confidence: %.0f%%", update.Confidence*100)
+			}
+			newStatus += ")"
+		}
+		content = strings.Replace(content, oldStatus, newStatus, 1)
+	}
+
+	var insertB strings.Builder
+	if update.Summary != "" {
+		insertB.WriteString("## Summary\n\n")
+		insertB.WriteString(update.Summary)
+		insertB.WriteString("\n\n")
+	}
+	if update.Reasoning != "" {
+		insertB.WriteString("## Reasoning\n\n")
+		insertB.WriteString(update.Reasoning)
+		insertB.WriteString("\n\n")
+	}
+	if update.ExceptionCheck != "" {
+		insertB.WriteString("## Exception Check\n\n")
+		insertB.WriteString(update.ExceptionCheck)
+		insertB.WriteString("\n\n")
+	}
+
+	fixIdx := strings.Index(content, "## Fix Suggestion")
+	if fixIdx < 0 {
+		fixIdx = strings.Index(content, "## Fix Strategy")
+	}
+	if update.FixStrategy != "" && fixIdx >= 0 {
+		content = content[:fixIdx] + "## Fix Strategy\n\n" + update.FixStrategy + "\n"
+		if insertB.Len() > 0 {
+			content = content[:fixIdx] + insertB.String() + content[fixIdx:]
+		}
+	} else if insertB.Len() > 0 {
+		insertion := insertB.String()
+		var at int
+		if fixIdx >= 0 {
+			at = fixIdx
+		} else {
+			at = len(content)
+		}
+		content = content[:at] + insertion + content[at:]
+	}
+
+	newPath := oldPath
+	if s := statusSuffix(update.Status); s != "" {
+		base := filepath.Base(oldPath)
+		stem := strings.TrimSuffix(base, ".md")
+		stem = strings.TrimSuffix(stem, "_c")
+		stem = strings.TrimSuffix(stem, "_s")
+		stem = strings.TrimSuffix(stem, "_x")
+		newPath = filepath.Join(dir, stem+s+".md")
+	}
+
+	if err := os.WriteFile(newPath, []byte(content), 0644); err != nil {
+		return "", fmt.Errorf("write per-finding: %w", err)
+	}
+	if newPath != oldPath {
+		_ = os.Remove(oldPath)
+	}
+	return newPath, nil
+}
+
 func generateFixSuggestion(vulnType, cwe string, c planner.EvidenceItem) string {
 	varName := c.Target.Variable
 	if varName == "" {

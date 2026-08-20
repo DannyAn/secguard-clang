@@ -41,8 +41,8 @@ func TestScanRetention_PriorScanDirsPreserved(t *testing.T) {
 	cPath := writeTestCFile(t, root)
 
 	scansRoot := filepath.Join(root, ".codeagent", "secguard-clang", "scans")
-	scanDir1 := filepath.Join(scansRoot, "2026-08-11_140000_aaaaaa")
-	scanDir2 := filepath.Join(scansRoot, "2026-08-11_140001_bbbbbb")
+	scanDir1 := filepath.Join(scansRoot, "sc_2026-08-11_140000_aaaaaa")
+	scanDir2 := filepath.Join(scansRoot, "sc_2026-08-11_140001_bbbbbb")
 	os.MkdirAll(scanDir1, 0755)
 	os.MkdirAll(scanDir2, 0755)
 
@@ -96,8 +96,8 @@ func TestScanRetention_LatestSymlinkUpdated(t *testing.T) {
 	cPath := writeTestCFile(t, root)
 
 	scansRoot := filepath.Join(root, ".codeagent", "secguard-clang", "scans")
-	scanDir1 := filepath.Join(scansRoot, "2026-08-11_140000_cccccc")
-	scanDir2 := filepath.Join(scansRoot, "2026-08-11_140001_dddddd")
+	scanDir1 := filepath.Join(scansRoot, "sc_2026-08-11_140000_cccccc")
+	scanDir2 := filepath.Join(scansRoot, "sc_2026-08-11_140001_dddddd")
 	os.MkdirAll(scanDir1, 0755)
 	os.MkdirAll(scanDir2, 0755)
 
@@ -132,7 +132,7 @@ func TestScanRetention_ScanLogPersisted(t *testing.T) {
 	cPath := writeTestCFile(t, root)
 
 	scansRoot := filepath.Join(root, ".codeagent", "secguard-clang", "scans")
-	scanDir := filepath.Join(scansRoot, "2026-08-11_140000_eeeeee")
+	scanDir := filepath.Join(scansRoot, "sc_2026-08-11_140000_eeeeee")
 	os.MkdirAll(scanDir, 0755)
 
 	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
@@ -221,7 +221,7 @@ func TestScanCmd_JSONEnvelopeHasTargetPathAndScanDir(t *testing.T) {
 	cPath := writeTestCFile(t, root)
 
 	scansRoot := filepath.Join(root, ".codeagent", "secguard-clang", "scans")
-	scanDir := filepath.Join(scansRoot, "2026-08-11_150000_xxxxxx")
+	scanDir := filepath.Join(scansRoot, "sc_2026-08-11_150000_xxxxxx")
 	os.MkdirAll(scanDir, 0755)
 	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
 	os.MkdirAll(filepath.Dir(dbPath), 0755)
@@ -261,7 +261,7 @@ func TestScanCmd_StderrHasSummaryTable(t *testing.T) {
 	cPath := writeTestCFile(t, root)
 
 	scansRoot := filepath.Join(root, ".codeagent", "secguard-clang", "scans")
-	scanDir := filepath.Join(scansRoot, "2026-08-11_150001_yyyyyy")
+	scanDir := filepath.Join(scansRoot, "sc_2026-08-11_150001_yyyyyy")
 	os.MkdirAll(scanDir, 0755)
 	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
 	os.MkdirAll(filepath.Dir(dbPath), 0755)
@@ -287,7 +287,7 @@ func TestScanCmd_StdoutIsValidJSON(t *testing.T) {
 	cPath := writeTestCFile(t, root)
 
 	scansRoot := filepath.Join(root, ".codeagent", "secguard-clang", "scans")
-	scanDir := filepath.Join(scansRoot, "2026-08-11_150002_zzzzzz")
+	scanDir := filepath.Join(scansRoot, "sc_2026-08-11_150002_zzzzzz")
 	os.MkdirAll(scanDir, 0755)
 	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
 	os.MkdirAll(filepath.Dir(dbPath), 0755)
@@ -311,7 +311,7 @@ func TestScanCmd_JSONEnvelopeHasSummaryField(t *testing.T) {
 	cPath := writeTestCFile(t, root)
 
 	scansRoot := filepath.Join(root, ".codeagent", "secguard-clang", "scans")
-	scanDir := filepath.Join(scansRoot, "2026-08-11_150003_ffffff")
+	scanDir := filepath.Join(scansRoot, "sc_2026-08-11_150003_ffffff")
 	os.MkdirAll(scanDir, 0755)
 	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
 	os.MkdirAll(filepath.Dir(dbPath), 0755)

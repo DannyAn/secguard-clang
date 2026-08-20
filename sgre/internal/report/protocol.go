@@ -43,9 +43,9 @@ func generateScanID() string {
 	ts := time.Now().Format("2006-01-02_150405")
 	b := make([]byte, 3)
 	if _, err := rand.Read(b); err != nil {
-		return ts
+		return "sc_" + ts
 	}
-	return ts + "_" + hex.EncodeToString(b)
+	return "sc_" + ts + "_" + hex.EncodeToString(b)
 }
 
 func NewScanOutput(projectRoot string) *ScanOutput {

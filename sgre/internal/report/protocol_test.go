@@ -11,7 +11,7 @@ import (
 )
 
 func TestGenerateScanID_Format(t *testing.T) {
-	re := regexp.MustCompile(`^\d{4}-\d{2}-\d{2}_\d{6}_[0-9a-f]{6}$`)
+	re := regexp.MustCompile(`^sc_\d{4}-\d{2}-\d{2}_\d{6}_[0-9a-f]{6}$`)
 	for i := 0; i < 100; i++ {
 		id := generateScanID()
 		if !re.MatchString(id) {

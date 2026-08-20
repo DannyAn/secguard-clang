@@ -25,8 +25,10 @@ import (
 
 // scanIDPattern validates the basename of an explicit --output-dir to prevent
 // path traversal and ensure the dir name matches the scan_id format that
-// report.generateScanID produces: YYYY-MM-DD_HHMMSS_xxxxxx (6-char suffix).
-var scanIDPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}_\d{6}_[0-9A-Za-z]{6}$`)
+// report.generateScanID produces: sc_YYYY-MM-DD_HHMMSS_xxxxxx (6-char suffix).
+// The sc_ prefix ensures the `latest` symlink sorts before all scan dirs
+// (lexicographically 'l' < 's'), so latest is always first in directory listings.
+var scanIDPattern = regexp.MustCompile(`^sc_\d{4}-\d{2}-\d{2}_\d{6}_[0-9A-Za-z]{6}$`)
 
 func runScanCmd(ctx context.Context, args []string) int {
 	dbPath, dbExplicit, remaining := parseDBFlag(args)
@@ -80,7 +82,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 	if outputDir != "" {
 		scanID = filepath.Base(outputDir)
 		if !scanIDPattern.MatchString(scanID) {
-			WriteErrorJSON(fmt.Sprintf("invalid --output-dir: basename %q does not match scan_id format YYYY-MM-DD_HHMMSS_xxxxxx. Omit --output-dir to let secguard generate it, or pass a directory whose basename matches the format.", scanID))
+			WriteErrorJSON(fmt.Sprintf("invalid --output-dir: basename %q does not match scan_id format sc_YYYY-MM-DD_HHMMSS_xxxxxx. Omit --output-dir to let secguard generate it, or pass a directory whose basename matches the format.", scanID))
 			return 1
 		}
 		scanDir = outputDir

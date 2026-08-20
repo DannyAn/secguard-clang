@@ -41,7 +41,7 @@ func TestScanCmd_AcceptsWellFormedOutputDir(t *testing.T) {
 	root := t.TempDir()
 	cPath := writeTestCFile(t, root)
 	scansRoot := filepath.Join(root, ".codeagent", "secguard-clang", "scans")
-	goodDir := filepath.Join(scansRoot, "2026-08-11_140000_aaaaaa")
+	goodDir := filepath.Join(scansRoot, "sc_2026-08-11_140000_aaaaaa")
 	os.MkdirAll(goodDir, 0755)
 	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
 	os.MkdirAll(filepath.Dir(dbPath), 0755)
@@ -106,7 +106,7 @@ func TestReportCmd_RejectsUnknownScanID(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := db.NewStore(d)
-	_, err = s.InsertScanStat(ctx, &db.ScanStat{ScanID: "2026-01-01_000000_aaaaaa", VulnType: "null-deref", SeedCount: 1, FinalCount: 1})
+	_, err = s.InsertScanStat(ctx, &db.ScanStat{ScanID: "sc_2026-01-01_000000_aaaaaa", VulnType: "null-deref", SeedCount: 1, FinalCount: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestReportCmd_RejectsUnknownScanID(t *testing.T) {
 			"--status", "confirmed",
 			"--file", "x.c", "--line", "1",
 			"--function", "f", "--evidence", "e",
-			"--scan-id", "2026-01-01_000000_bbbb",
+			"--scan-id", "sc_2026-01-01_000000_bbbb",
 		})
 	})
 	if exitCode != 1 {
@@ -141,7 +141,7 @@ func TestReportCmd_AcceptsKnownScanID(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := db.NewStore(d)
-	const scanID = "2026-01-01_000000_aaaaaa"
+	const scanID = "sc_2026-01-01_000000_aaaaaa"
 	_, err = s.InsertScanStat(ctx, &db.ScanStat{ScanID: scanID, VulnType: "null-deref", SeedCount: 1, FinalCount: 1})
 	if err != nil {
 		t.Fatal(err)

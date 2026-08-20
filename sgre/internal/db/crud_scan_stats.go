@@ -65,24 +65,10 @@ func (s *store) CountFindingsByScanAndStatus(ctx context.Context, scanID, status
 
 func (s *store) ListFindingsByScanID(ctx context.Context, scanID string) ([]*Finding, error) {
 	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, rule_id, severity, confidence, evidence, status, file_path, line_number, function_name, properties, scan_id, created_at FROM findings WHERE scan_id = ? ORDER BY id`, scanID)
+		`SELECT id, rule_id, severity, confidence, evidence, status, file_path, line_number, function_name, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, created_at FROM findings WHERE scan_id = ? ORDER BY id`, scanID)
 	if err != nil {
 		return nil, fmt.Errorf("db: list findings by scan_id: %w", err)
 	}
 	defer rows.Close()
-	return scanFindingsByScanID(rows)
-}
-
-func scanFindingsByScanID(rows *sql.Rows) ([]*Finding, error) {
-	var findings []*Finding
-	for rows.Next() {
-		f := &Finding{}
-		var scanID sql.NullString
-		if err := rows.Scan(&f.ID, &f.RuleID, &f.Severity, &f.Confidence, &f.Evidence, &f.Status, &f.FilePath, &f.LineNumber, &f.FunctionName, &f.Properties, &scanID, &f.CreatedAt); err != nil {
-			return nil, fmt.Errorf("db: scan finding: %w", err)
-		}
-		f.ScanID = scanID.String
-		findings = append(findings, f)
-	}
-	return findings, rows.Err()
+	return scanFindings(rows)
 }

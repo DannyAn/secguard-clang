@@ -77,18 +77,24 @@ type SecurityEvent struct {
 }
 
 type Finding struct {
-	ID           int64   `json:"id"`
-	RuleID       string  `json:"rule_id"`
-	Severity     string  `json:"severity"`
-	Confidence   float64 `json:"confidence"`
-	Evidence     string  `json:"evidence"`
-	Status       string  `json:"status"`
-	FilePath     string  `json:"file_path"`
-	LineNumber   int     `json:"line_number"`
-	FunctionName string  `json:"function_name"`
-	Properties   string  `json:"properties,omitempty"`
-	ScanID       string  `json:"scan_id,omitempty"`
-	CreatedAt    int64   `json:"created_at"`
+	ID              int64   `json:"id"`
+	RuleID          string  `json:"rule_id"`
+	Severity        string  `json:"severity"`
+	Confidence      float64 `json:"confidence"`
+	Evidence        string  `json:"evidence"`
+	Status          string  `json:"status"`
+	FilePath        string  `json:"file_path"`
+	LineNumber      int     `json:"line_number"`
+	FunctionName    string  `json:"function_name"`
+	Properties      string  `json:"properties,omitempty"`
+	Summary         string  `json:"summary,omitempty"`
+	Reasoning       string  `json:"reasoning,omitempty"`
+	FixStrategy     string  `json:"fix_strategy,omitempty"`
+	ExceptionCheck  string  `json:"exception_check,omitempty"`
+	ReviewStatus    string  `json:"review_status,omitempty"`
+	ReviewReasoning string  `json:"review_reasoning,omitempty"`
+	ScanID          string  `json:"scan_id,omitempty"`
+	CreatedAt       int64   `json:"created_at"`
 }
 
 type ScanStat struct {

@@ -83,6 +83,8 @@ type FindingStore interface {
 	InsertFinding(ctx context.Context, f *Finding) (int64, error)
 	ListFindings(ctx context.Context) ([]*Finding, error)
 	ListFindingsByStatus(ctx context.Context, status string) ([]*Finding, error)
+	GetFindingByID(ctx context.Context, id int64) (*Finding, error)
+	UpdateFindingReview(ctx context.Context, id int64, reviewStatus, reviewReasoning string) error
 }
 
 type ScanStatStore interface {
