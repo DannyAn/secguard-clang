@@ -2,6 +2,39 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.3.3] - 2026-08-20
+
+### 轻函数隔离 + 守卫感知误报抑制（Redis 4,837 → 2,931，-39.4%）
+
+新增轻量数值范围分析模块，并修复六类误报根因，Redis 全管线收敛结果从 4,837 降至 2,931（~22× 压缩）。
+
+#### 新增
+
+- **`evidence/range_analysis.go`**：轻量区间传播核心模块（RangeFacts / AnalyzeBounds /
+  NonZeroAt / UpperBoundAt / IfsInFunc），识别 `if(x<N)`、`if(x!=0)`、`if(x==0) return`
+  等 guard，为下游 detector 提供守卫界查询。
+
+#### 修复
+
+- **null-deref 跨函数隔离（critical）**：`AnalyzeBounds` 接收 per-file 所有 ifs 会跨函数
+  混事实（`open_handle` 的 `if(!h) return` 建立 h 非零，`read_handle` 的 `h->fd` 行号更大
+  被误抑制）。改用 `IfsInFunc` 按函数隔离，null-deref 972→872（-100）。
+- **uninit formB 精确匹配**：if 条件引用赋值变量的判断从子串匹配改为 identifier 精确匹配，
+  避免 `rc` 匹配 `rc2` 子串误判。uninit 2347→951（-1396）。
+- **free_summary nullGuardedWrite**：去掉 `!p`/`p==NULL`/`p==0` 误判分支（这些条件为真时
+  p 是 NULL，写在 if 体内不安全）。
+- **buffer_overflow bounds 守卫界**：`detectUnsafeCalls` 算 bounds 传给
+  `checkBoundedCopyOverflow`，变量 size 有守卫界 ≤ capacity 则安全。
+- **divide_by_zero 反向 early-return guard**：接入 `AnalyzeBounds` 补齐
+  `if(d==0) return; a/d;` 模式（-3）。
+- **int_overflow filter category 扩展**：switch case 加 `"integer_overflow"` category，
+  让一般整数溢出也走守卫界抑制。
+
+#### 文档
+
+- README / README-CN：Redis 收敛数据刷新（4,837→2,931，~13×→~22×），"逼近 CodeQL" 描述
+  更新（已实现轻量区间分析）。
+
 ## [0.3.2] - 2026-08-19
 
 ### 样例基线对齐至 100%（74 用例 · 100% precision / 100% recall）
