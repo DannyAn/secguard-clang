@@ -80,7 +80,7 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 		return candidates, nil, nil
 	}
 
-	flows, paramsByFunc := f.buildFlows(ctx, byFunc, retTainted, returnsParam, paramTainted)
+	flows, paramsByFunc, staticByFunc := f.buildFlows(ctx, byFunc, retTainted, returnsParam, paramTainted)
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -91,16 +91,25 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 			kept = append(kept, c)
 			continue
 		}
-		// A parameter can be tainted by the caller. It is kept; if a PARAM_BINDING
-		// edge proves a tainted argument flows into it, the sink is confirmed.
+		// A parameter can be tainted by the caller. Three outcomes:
+		//   - a PARAM_BINDING edge proves a tainted arg flows in → confirmed.
+		//   - the function is static (all callers known) and none pass taint →
+		//     the path is provably constant/safe → drop.
+		//   - the function is non-static (public API) → an external caller may
+		//     supply attacker input → keep as suspected.
 		if idx, isParam := paramsByFunc[c.FunctionID][sink]; isParam {
 			if paramTainted[c.FunctionID][idx] {
 				c.HasTaintSource = true
 				if c.SuspicionLevel == "suspected" {
 					c.SuspicionLevel = "confirmed"
 				}
+				kept = append(kept, c)
+			} else if !staticByFunc[c.FunctionID] {
+				kept = append(kept, c)
+			} else {
+				dropped = dismiss(dropped, c, f.Name(),
+					fmt.Sprintf("path/format arg %s is a parameter of a static function with no tainted caller", sink))
 			}
-			kept = append(kept, c)
 			continue
 		}
 		flow := flows[c.FunctionID]
@@ -146,9 +155,10 @@ func (f *TaintSourceFilter) sinkVariable(ctx context.Context, c Candidate) strin
 	}
 }
 
-func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, retTainted map[string]bool, returnsParam map[string]map[int]bool, paramTainted map[int64]map[int]bool) (map[int64]*flowResult, map[int64]map[string]int) {
+func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, retTainted map[string]bool, returnsParam map[string]map[int]bool, paramTainted map[int64]map[int]bool) (map[int64]*flowResult, map[int64]map[string]int, map[int64]bool) {
 	flows := make(map[int64]*flowResult, len(byFunc))
 	paramsByFunc := make(map[int64]map[string]int, len(byFunc))
+	staticByFunc := make(map[int64]bool, len(byFunc))
 	cache := newFileParseCache(f.parser)
 	for fid := range byFunc {
 		fn, err := f.store.GetFunctionByID(ctx, fid)
@@ -173,8 +183,9 @@ func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]C
 		analyzer.entrySeeds = taintedParamsFor(fn, root, paramTainted[fid])
 		flows[fid] = analyzer.analyzeFlow(ctx, fn, body, root, genByLine, killByLine, false, false)
 		paramsByFunc[fid] = paramsOf(fn, root)
+		staticByFunc[fid] = fn.IsStatic
 	}
-	return flows, paramsByFunc
+	return flows, paramsByFunc, staticByFunc
 }
 
 // taintedParamsFor returns the parameter NAMES of fn that are tainted, or nil
@@ -457,6 +468,21 @@ func callArgs(call parser.Node) []parser.Node {
 // propagates taint across any number of hops instead of stopping after one.
 func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted map[string]bool, returnsParam map[string]map[int]bool) (map[int64]map[int]bool, error) {
 	result := make(map[int64]map[int]bool)
+
+	// Direct taint-source arguments (f(getenv("HOME"))) produce no PARAM_BINDING
+	// variable_ref, so they are captured independently and merged first.
+	direct, err := f.computeDirectTaintParams(ctx)
+	if err == nil {
+		for calleeID, idxs := range direct {
+			if result[calleeID] == nil {
+				result[calleeID] = make(map[int]bool)
+			}
+			for idx := range idxs {
+				result[calleeID][idx] = true
+			}
+		}
+	}
+
 	edges, err := f.store.ListGraphEdgesByType(ctx, "PARAM_BINDING")
 	if err != nil {
 		return nil, fmt.Errorf("taint param summary: list PARAM_BINDING edges: %w", err)
@@ -555,6 +581,55 @@ func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted 
 		}
 		if !changed {
 			break
+		}
+	}
+	return result, nil
+}
+
+// computeDirectTaintParams returns, per callee function ID, the set of parameter
+// indices that are passed a taint-source expression directly at some call site
+// (e.g. `f(getenv("HOME"))`). These arguments are call_expression / argv nodes,
+// not bare identifiers, so they are invisible to the PARAM_BINDING fixpoint.
+func (f *TaintSourceFilter) computeDirectTaintParams(ctx context.Context) (map[int64]map[int]bool, error) {
+	result := make(map[int64]map[int]bool)
+	funcs, err := f.store.ListFunctions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("direct taint params: list functions: %w", err)
+	}
+	funcByName := make(map[string][]int64, len(funcs))
+	for _, fn := range funcs {
+		funcByName[fn.Name] = append(funcByName[fn.Name], fn.ID)
+	}
+	cache := newFileParseCache(f.parser)
+	for _, fn := range funcs {
+		file, err := f.store.GetFileByID(ctx, fn.FileID)
+		if err != nil || file == nil {
+			continue
+		}
+		body, _ := cache.get(file, fn)
+		if body.Kind() != "compound_statement" {
+			continue
+		}
+		for _, call := range body.FindAll("call_expression") {
+			calleeIDs := funcByName[callName(call)]
+			if len(calleeIDs) == 0 {
+				continue
+			}
+			args := callArgs(call)
+			for i, arg := range args {
+				if arg.Kind() == "identifier" {
+					continue // variable args are handled by the PARAM_BINDING fixpoint
+				}
+				if !isTaintSourceExpr(arg) {
+					continue
+				}
+				for _, calleeID := range calleeIDs {
+					if result[calleeID] == nil {
+						result[calleeID] = make(map[int]bool)
+					}
+					result[calleeID][i] = true
+				}
+			}
 		}
 	}
 	return result, nil

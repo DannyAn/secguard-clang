@@ -98,6 +98,76 @@ func TestTaintSourceFilter_PathTraversal(t *testing.T) {
 	}
 }
 
+func TestTaintSourceFilter_StaticParamDropped(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sp.c")
+	src := `#include <stdlib.h>
+#include <stdio.h>
+
+static int read_cfg(const char *path) {
+    FILE *f = fopen(path, "r");
+    return f != 0;
+}
+
+static int read_user(const char *path) {
+    FILE *f = fopen(path, "r");
+    return f != 0;
+}
+
+int public_api(const char *path) {
+    FILE *f = fopen(path, "r");
+    return f != 0;
+}
+
+int main(void) {
+    int a = read_cfg("/etc/config");      /* constant caller -> static -> dropped */
+    int b = read_user(getenv("HOME"));    /* tainted caller -> confirmed */
+    int c = public_api("x");              /* non-static -> kept (external caller) */
+    return a + b + c;
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewPathTraversalDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "path-traversal")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	byFunc := map[string]EvidenceItem{}
+	for _, c := range result.Candidates {
+		byFunc[c.Target.Function] = c
+	}
+
+	if _, ok := byFunc["read_cfg"]; ok {
+		t.Errorf("static read_cfg called with a constant should be dropped, got %v", candidateNames(result))
+	}
+	ru, ok := byFunc["read_user"]
+	if !ok {
+		t.Errorf("static read_user called with getenv should be confirmed (kept), got %v", candidateNames(result))
+	} else if !hasTaintEvidence(ru) {
+		t.Errorf("read_user should carry taint_source evidence, got %+v", ru.Evidence)
+	}
+	if _, ok := byFunc["public_api"]; !ok {
+		t.Errorf("non-static public_api should be kept (external caller may taint), got %v", candidateNames(result))
+	}
+}
+
 func TestTaintSourceFilter_Interprocedural(t *testing.T) {
 	ctx := context.Background()
 	store := db.NewTestStore(t)
