@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -63,19 +62,11 @@ func (d *PathTraversalDetector) Detect(ctx context.Context) (DetectResult, error
 					continue
 				}
 
-				locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
-				props, _ := json.Marshal(map[string]string{
+				if emitEvent(ctx, d.store, d.logger, "PATH_TRAVERSAL", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
 					"function": name,
 					"path":     pathArg,
 					"category": "path_traversal",
-				})
-				_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-					EventType:  "PATH_TRAVERSAL",
-					EntityID:   f.ID,
-					LocationID: locID,
-					Properties: string(props),
-				})
-				if err == nil {
+				}) {
 					result.EventsCreated++
 				}
 			}
