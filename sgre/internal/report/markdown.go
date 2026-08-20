@@ -568,7 +568,7 @@ func generateFixSuggestion(vulnType, cwe string, c planner.EvidenceItem) string 
 
 	case "path-traversal":
 		return fmt.Sprintf(
-			"Validate and constrain the path before passing it to `%s` in `%s`:\n\n"+
+			"Validate and constrain the path before the filesystem call in `%s`:\n\n"+
 				"```c\n"+
 				"// 1. Reject absolute paths and any '..' component\n"+
 				"if (path[0] == '/' || strstr(path, \"..\") != NULL) {\n"+
@@ -587,7 +587,7 @@ func generateFixSuggestion(vulnType, cwe string, c planner.EvidenceItem) string 
 				"Never pass an unvalidated caller-controlled path directly to a filesystem\n"+
 				"call. The canonical check is: reject `..`/absolute paths, resolve with\n"+
 				"realpath, and confirm the result still lives inside the allowed base dir.\n",
-			funcName, funcName)
+			funcName)
 
 	default:
 		return "Review the evidence above and apply the appropriate mitigation for this\n" +

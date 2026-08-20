@@ -103,3 +103,51 @@ Add a NULL check.
 		t.Errorf("Fix Strategy content missing:\n%s", content)
 	}
 }
+
+func TestRewritePerFinding_ReviewPreservesContent(t *testing.T) {
+	dir := t.TempDir()
+	vulnDir := filepath.Join(dir, "unchecked-return")
+	if err := os.MkdirAll(vulnDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	candidate := "# Unchecked Return in f\n\n**CWE:** CWE-252\n\n## Location\n\n- **File:** `src/a.c:13`\n\n## Evidence\n\n- **sink:** malloc unchecked\n\n## Classification\n\n- **Suspicion Level:** suspected\n- **Status:** _pending_ (awaiting AI classification)\n\n## Fix Suggestion\n\nAdd a NULL check.\n"
+	path := filepath.Join(vulnDir, "001_src_a_c_13.md")
+	if err := os.WriteFile(path, []byte(candidate), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	write := PerFindingUpdate{
+		Summary: "malloc 未判空", Reasoning: "分配后立即解引用", FixStrategy: "if (p == NULL) return -1;",
+		Status: "suspected", FunctionName: "f",
+	}
+	if _, err := RewritePerFinding(dir, "unchecked-return", "src/a.c", 13, write); err != nil {
+		t.Fatal(err)
+	}
+	// The A5 review re-passes the persisted structured content (the CLI now
+	// sends Summary/Reasoning/FixStrategy alongside the new verdict), so the
+	// second pass must not wipe them.
+	review := PerFindingUpdate{
+		Status: "confirmed", Severity: "high", Confidence: 0.9, FunctionName: "f",
+		Summary: "malloc 未判空", Reasoning: "分配后立即解引用", FixStrategy: "if (p == NULL) return -1;",
+	}
+	if _, err := RewritePerFinding(dir, "unchecked-return", "src/a.c", 13, review); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(vulnDir, "001_src_a_c_13_confirmed.md"))
+	if err != nil {
+		t.Fatalf("read rewritten file: %v", err)
+	}
+	content := string(data)
+	for _, section := range []string{"## Summary", "## Reasoning", "## Fix Strategy"} {
+		if n := strings.Count(content, section); n != 1 {
+			t.Errorf("%q appears %d times after write+review, want exactly 1\n%s", section, n, content)
+		}
+	}
+	if !strings.Contains(content, "malloc 未判空") {
+		t.Errorf("review should preserve the Summary content:\n%s", content)
+	}
+	if !strings.Contains(content, "if (p == NULL) return -1;") {
+		t.Errorf("review should preserve the Fix Strategy content:\n%s", content)
+	}
+}

@@ -101,7 +101,10 @@ func runIndexCmd(ctx context.Context, args []string) int {
 		return 1
 	}
 
-	evidence.RunAllDetectors(ctx, store, p, logger)
+	if err := evidence.RunAllDetectors(ctx, store, p, logger); err != nil {
+		WriteErrorJSON(fmt.Sprintf("detectors failed: %v", err))
+		return 1
+	}
 
 	funcs, err := store.ListFunctions(ctx)
 	if err != nil {

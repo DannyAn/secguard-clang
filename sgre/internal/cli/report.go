@@ -226,11 +226,18 @@ func runReportCmd(ctx context.Context, args []string) int {
 		if scanDir != "" && f.FilePath != "" && f.LineNumber > 0 {
 			vulnType := planner.TypeForCWE(f.RuleID)
 			if vulnType != "" {
+				// Re-append the structured content the first pass persisted, so
+				// the A5 review updates the verdict without wiping Summary/
+				// Reasoning/Fix Strategy from the per-finding file.
 				perFindingPath, _ = report.RewritePerFinding(scanDir, vulnType, f.FilePath, f.LineNumber, report.PerFindingUpdate{
-					Status:       finalStatus,
-					Severity:     f.Severity,
-					Confidence:   f.Confidence,
-					FunctionName: f.FunctionName,
+					Status:         finalStatus,
+					Severity:       f.Severity,
+					Confidence:     f.Confidence,
+					FunctionName:   f.FunctionName,
+					Summary:        f.Summary,
+					Reasoning:      f.Reasoning,
+					FixStrategy:    f.FixStrategy,
+					ExceptionCheck: f.ExceptionCheck,
 				})
 			}
 		}

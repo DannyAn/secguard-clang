@@ -10,7 +10,7 @@ cases. Each case carries a machine-readable ``expect`` field:
                          the convergence pipeline SHOULD suppress it.
 
 The validator reads the SARIF 2.1 report that ``secguard scan`` writes to the
-scan output directory (``<scan_dir>/sarif.sarif``). Each result carries a
+scan output directory (``<scan_dir>/result.sarif``). Each result carries a
 ``locations[0].physicalLocation`` with ``artifactLocation.uri`` and
 ``region.startLine``; the validator cross-references those (basename, line)
 pairs against the ground truth, prints a per-case report and a precision/recall
@@ -20,7 +20,7 @@ thresholds.
 Usage:
   secguard scan examples/c-vuln-benchmark/src          # prints scan_dir
   python3 scripts/validate-benchmark.py \
-      --sarif <scan_dir>/sarif.sarif \
+      --sarif <scan_dir>/result.sarif \
       --expected examples/c-vuln-benchmark/expected-results.json
 """
 
@@ -69,7 +69,7 @@ def classify(case):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sarif", required=True, help="path to the SARIF report (<scan_dir>/sarif.sarif)")
+    ap.add_argument("--sarif", required=True, help="path to the SARIF report (<scan_dir>/result.sarif)")
     ap.add_argument("--expected", required=True, help="path to expected-results.json")
     ap.add_argument("--min-precision", type=float, default=0.7)
     ap.add_argument("--min-recall", type=float, default=0.7)

@@ -2,6 +2,8 @@ package evidence
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -26,7 +28,11 @@ func AllDetectors(store db.Store, p *parser.Parser, logger *log.Logger) []Detect
 	return detectors
 }
 
-func RunAllDetectors(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) {
+// RunAllDetectors runs every registered detector (the interprocedural one last,
+// so it can consume the edges the others emit) and returns a joined error if any
+// detector fails. A detector error is otherwise a silent total loss of that
+// evidence stream, so it is logged and surfaced to the caller.
+func RunAllDetectors(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) error {
 	all := AllDetectors(store, p, logger)
 
 	var deferred []Detector
@@ -42,6 +48,19 @@ func RunAllDetectors(ctx context.Context, store db.Store, p *parser.Parser, logg
 	const maxConcurrent = 4
 	sem := make(chan struct{}, maxConcurrent)
 	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []error
+	run := func(d Detector) {
+		if _, err := d.Detect(ctx); err != nil {
+			if logger != nil {
+				logger.Warn("detector failed", "detector", d.Name(), "error", err)
+			}
+			mu.Lock()
+			errs = append(errs, fmt.Errorf("detector %s: %w", d.Name(), err))
+			mu.Unlock()
+		}
+	}
+
 	for _, det := range independent {
 		wg.Add(1)
 		go func(d Detector) {
@@ -49,7 +68,7 @@ func RunAllDetectors(ctx context.Context, store db.Store, p *parser.Parser, logg
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			start := time.Now()
-			d.Detect(ctx)
+			run(d)
 			if logger != nil {
 				logger.Info("detector timing", "detector", d.Name(), "elapsed_ms", time.Since(start).Milliseconds())
 			}
@@ -59,11 +78,13 @@ func RunAllDetectors(ctx context.Context, store db.Store, p *parser.Parser, logg
 
 	for _, det := range deferred {
 		start := time.Now()
-		det.Detect(ctx)
+		run(det)
 		if logger != nil {
 			logger.Info("detector timing", "detector", det.Name(), "elapsed_ms", time.Since(start).Milliseconds())
 		}
 	}
+
+	return errors.Join(errs...)
 }
 
 func init() {

@@ -193,7 +193,10 @@ func runScanCmd(ctx context.Context, args []string) int {
 	}
 
 	detStart := time.Now()
-	evidence.RunAllDetectors(ctx, store, p, logger)
+	if err := evidence.RunAllDetectors(ctx, store, p, logger); err != nil {
+		WriteErrorJSON(fmt.Sprintf("detectors failed: %v", err))
+		return 1
+	}
 	logger.Info("phase timing", "phase", "detectors_total", "elapsed_ms", time.Since(detStart).Milliseconds())
 
 	evidencePackages := []map[string]interface{}{}
@@ -450,26 +453,22 @@ func runScanCmd(ctx context.Context, args []string) int {
 
 	if failOn != "" {
 		confirmedCount := 0
+		suspectedCount := 0
 		for _, f := range findings {
-			if f.Status == "confirmed" {
+			switch f.EffectiveStatus() {
+			case "confirmed":
 				confirmedCount++
+			case "suspected":
+				suspectedCount++
 			}
 		}
 		if failOn == "confirmed" && confirmedCount > 0 {
 			fmt.Fprintf(os.Stderr, "\nCI gate: %d confirmed finding(s) — exiting with code 2\n", confirmedCount)
 			return 2
 		}
-		if failOn == "suspected" {
-			suspectedCount := 0
-			for _, f := range findings {
-				if f.Status == "suspected" {
-					suspectedCount++
-				}
-			}
-			if suspectedCount > 0 {
-				fmt.Fprintf(os.Stderr, "\nCI gate: %d suspected finding(s) — exiting with code 3\n", suspectedCount)
-				return 3
-			}
+		if failOn == "suspected" && suspectedCount > 0 {
+			fmt.Fprintf(os.Stderr, "\nCI gate: %d suspected finding(s) — exiting with code 3\n", suspectedCount)
+			return 3
 		}
 	}
 
