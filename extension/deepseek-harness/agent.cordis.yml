@@ -41,7 +41,7 @@
       ## 边界
       - 不要用 `secguard db` 查 security_events 表——那是收敛前的原始候选，绕过管线。
       - skill 是查询消费者，永不建表；`secguard schema [table]` 写 SQL 前先查列名（findings 用 file_path/line_number，不是 file/line）。
-      - 引用 SARIF 前先读 `<scan_dir>/sarif.sarif` 确认存在且非空。
+      - 引用 SARIF 前先读 `<scan_dir>/result.sarif` 确认存在且非空。
 
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'

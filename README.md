@@ -343,7 +343,7 @@ Scan results are written to `.codeagent/secguard-clang/scans/<scan-id>/`:
 
 ```
 scans/2026-08-17_062452_e32eb1/
-├── sarif.sarif                    ← SARIF 2.1 (IDE/CI integration)
+├── result.sarif                    ← SARIF 2.1 (IDE/CI integration)
 ├── report.md                      ← Markdown summary (candidate list)
 ├── audit-report.md                ← AI audit report (classification stats)
 ├── buffer-overflow/

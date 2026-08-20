@@ -53,7 +53,7 @@ function printScanSummary(
 
   out += "### Output Files\n\n"
   out += `- Report: ${path.join(scanDir, "report.md")}\n`
-  out += `- SARIF: ${path.join(scanDir, "sarif.sarif")}\n`
+  out += `- SARIF: ${path.join(scanDir, "result.sarif")}\n`
   out += `- Latest: ${path.join(workspace, ".codeagent", "secguard-clang", "scans", "latest")}\n`
 
   w.write(out)
@@ -119,7 +119,7 @@ export default tool({
           scan_id: scanId,
           output_dir: scanDir,
           report_md: reportMdPath,
-          sarif: path.join(scanDir, "sarif.sarif"),
+          sarif: path.join(scanDir, "result.sarif"),
           db_path: dbPath,
           total_candidates: totalCandidates,
           files_indexed: filesIndexed,
@@ -155,7 +155,7 @@ export default tool({
             scan_id: scanId,
             output_dir: scanDir,
             report_md: path.join(scanDir, "report.md"),
-            sarif: path.join(scanDir, "sarif.sarif"),
+            sarif: path.join(scanDir, "result.sarif"),
             db_path: dbPath,
             target_path: targetPath,
             warning: "Scan completed but JSON was too large to parse inline. Read report.md for the full candidate list.",

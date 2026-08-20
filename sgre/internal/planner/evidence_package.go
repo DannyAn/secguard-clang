@@ -23,6 +23,10 @@ type TargetInfo struct {
 
 type EvidenceFragment struct {
 	Type   string `json:"type"`
+	// Role classifies the fragment in the source→sink→path→condition chain so
+	// the report can render a structured evidence narrative rather than a flat
+	// list. Empty for generic fragments (rendered by Type).
+	Role   string `json:"role,omitempty"`
 	Detail string `json:"detail,omitempty"`
 }
 

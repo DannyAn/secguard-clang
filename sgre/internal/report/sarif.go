@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/planner"
 )
 
@@ -43,7 +44,16 @@ type sarifResult struct {
 	CodeFlows           []sarifCodeFlow    `json:"codeFlows,omitempty"`
 	PartialFingerprints map[string]string  `json:"partialFingerprints,omitempty"`
 	Fingerprints        map[string]string  `json:"fingerprints,omitempty"`
+	Fixes               []sarifFix         `json:"fixes,omitempty"`
+	Properties          map[string]string  `json:"properties,omitempty"`
 	Suppressions        []sarifSuppression `json:"suppressions,omitempty"`
+}
+
+// sarifFix carries the AI's concrete fix strategy into the machine-readable
+// report. description.text holds the fix (often a code snippet), so an
+// IDE/CI consumer can surface "how to fix" alongside "what is wrong".
+type sarifFix struct {
+	Description sarifMessage `json:"description"`
 }
 
 type sarifCodeFlow struct {
@@ -199,4 +209,114 @@ func (o *ScanOutput) writeSarif(packages []*planner.PlanResult) error {
 		return err
 	}
 	return os.WriteFile(o.SarifPath, data, 0644)
+}
+
+// WriteSarifFromFindings regenerates the machine-readable report from the AI's
+// persisted findings, so result.sarif carries the post-A5 verdict, the
+// structured reasoning, and the concrete fix — not just the candidate-stage
+// evidence. Dismissed (false-positive) findings are excluded; the actionable
+// SARIF contains only confirmed + suspected.
+func WriteSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding) error {
+	rules := []sarifRule{}
+	results := []sarifResult{}
+	rulesSeen := map[string]bool{}
+
+	for _, f := range findings {
+		status := f.EffectiveStatus()
+		if status != "confirmed" && status != "suspected" {
+			continue
+		}
+
+		cwe := strings.ToUpper(strings.TrimSpace(f.RuleID))
+		if cwe == "" {
+			cwe = "CWE-Other"
+		}
+		vulnType := planner.TypeForCWE(cwe)
+		if vulnType == "" {
+			vulnType = f.RuleID
+		}
+		if !rulesSeen[cwe] {
+			rulesSeen[cwe] = true
+			rules = append(rules, sarifRule{ID: cwe, Name: vulnType})
+		}
+
+		level := "warning"
+		if status == "confirmed" {
+			level = "error"
+		}
+
+		uri := f.FilePath
+		if rootDir != "" && strings.HasPrefix(uri, rootDir) {
+			uri = strings.TrimPrefix(uri, rootDir)
+			uri = strings.TrimPrefix(uri, "/")
+		}
+
+		msg := f.Summary
+		if msg == "" {
+			msg = f.Reasoning
+		}
+		if msg == "" {
+			msg = f.Evidence
+		}
+		if msg == "" {
+			msg = f.FunctionName
+		}
+
+		result := sarifResult{
+			RuleID: cwe,
+			Level:  level,
+			Message: sarifMessage{
+				Text: fmt.Sprintf("%s in %s: %s", vulnType, f.FunctionName, msg),
+			},
+			Locations: []sarifLocation{{
+				PhysicalLocation: sarifPhysicalLocation{
+					ArtifactLocation: sarifArtifactLocation{URI: uri},
+					Region:           sarifRegion{StartLine: f.LineNumber},
+				},
+			}},
+			PartialFingerprints: map[string]string{
+				"primaryLocationLineHash": fmt.Sprintf("%s:%d", f.FunctionName, f.LineNumber),
+			},
+			Fingerprints: map[string]string{
+				"ruleId:location": fmt.Sprintf("%s:%s:%d", cwe, f.FunctionName, f.LineNumber),
+			},
+		}
+
+		if f.Reasoning != "" || f.ExceptionCheck != "" {
+			props := map[string]string{}
+			if f.Reasoning != "" {
+				props["reasoning"] = f.Reasoning
+			}
+			if f.ExceptionCheck != "" {
+				props["exception_check"] = f.ExceptionCheck
+			}
+			result.Properties = props
+		}
+		if f.FixStrategy != "" {
+			result.Fixes = []sarifFix{{Description: sarifMessage{Text: f.FixStrategy}}}
+		}
+
+		results = append(results, result)
+	}
+
+	report := sarifReport{
+		Schema:  "https://json.schemastore.org/sarif-2.1.0.json",
+		Version: "2.1.0",
+		Runs: []sarifRun{{
+			Tool: sarifTool{
+				Driver: sarifDriver{
+					Name:    "secguard-clang",
+					Version: ToolVersion,
+					Rules:   rules,
+				},
+			},
+			Results: results,
+		}},
+	}
+
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(sarifPath, data, 0644)
 }

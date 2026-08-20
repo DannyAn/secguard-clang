@@ -340,7 +340,7 @@ secguard db "SELECT * FROM findings WHERE status='confirmed'"
 
 ```
 scans/2026-08-17_062452_e32eb1/
-├── sarif.sarif                    ← SARIF 2.1（IDE/CI 集成）
+├── result.sarif                    ← SARIF 2.1（IDE/CI 集成）
 ├── report.md                      ← Markdown 摘要（候选列表）
 ├── audit-report.md                ← AI 审计报告（分类统计）
 ├── buffer-overflow/

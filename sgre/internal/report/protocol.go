@@ -18,7 +18,7 @@ const (
 	ScansDir      = "scans"
 	SgreDir       = ".sgre"
 	DbName        = "sgre.db"
-	SarifFile     = "sarif.sarif"
+	SarifFile     = "result.sarif"
 	ReportFile    = "report.md"
 	LatestName    = "latest"
 	LatestTxtName = "latest.txt"

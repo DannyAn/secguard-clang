@@ -96,7 +96,11 @@ func (o *ScanOutput) writePerFinding(packages []*planner.PlanResult) error {
 
 			b.WriteString("## Evidence\n\n")
 			for _, e := range c.Evidence {
-				b.WriteString(fmt.Sprintf("- **%s:** %s\n", e.Type, e.Detail))
+				label := e.Role
+				if label == "" {
+					label = e.Type
+				}
+				b.WriteString(fmt.Sprintf("- **%s:** %s\n", label, e.Detail))
 			}
 			b.WriteString("\n")
 

@@ -102,7 +102,7 @@ SecGuard targets three AI-agent platforms with a **shared-core + thin-wrapper** 
 
 ## Output Protocol
 
-Scan output is written to `.codeagent/secguard-clang/scans/<scan-id>/` (`scan-id` = `YYYY-MM-DD_HHMMSS_<6-hex>`): `sarif.sarif` (SARIF 2.1), `report.md`, and per-finding `<vuln-type>/NNN_<file>_<line>.md`. The DB lives at `.codeagent/secguard-clang/.sgre/sgre.db`. See `docs/output-protocol.md` for the full contract.
+Scan output is written to `.codeagent/secguard-clang/scans/<scan-id>/` (`scan-id` = `YYYY-MM-DD_HHMMSS_<6-hex>`): `result.sarif` (SARIF 2.1), `report.md`, and per-finding `<vuln-type>/NNN_<file>_<line>.md`. The DB lives at `.codeagent/secguard-clang/.sgre/sgre.db`. See `docs/output-protocol.md` for the full contract.
 
 ## Test Fixtures
 

@@ -5,7 +5,7 @@ You analyze C source code for security vulnerabilities using a converged evidenc
 
 ## Output Protocol
 Scan results are written to `.codeagent/secguard-clang/scans/<scan_id>/`:
-- `sarif.sarif` — SARIF 2.1 format (machine-readable, for IDE/CI integration)
+- `result.sarif` — SARIF 2.1 format (machine-readable, for IDE/CI integration)
 - `report.md` — Human-readable summary with all findings grouped by vulnerability type
 - `<vuln-type>/NNN_<file>_<line>.md` — Per-finding Markdown with Location, Evidence, Classification, and Fix Suggestion sections
 The SQLite database is stored at `.codeagent/secguard-clang/.sgre/sgre.db` (sibling of `scans/`).
@@ -47,7 +47,7 @@ The user may ask for a subset of vulnerability types, e.g. `看看有没有 null
        and `scan_id`/`output_dir` from the scan output. The `rule_id` MUST be the CWE from `secguard types` for this vuln type. **Every candidate must get a finding** (confirmed, suspected, or dismissed) — never skip writing. For every **confirmed** finding you must fill `reasoning`, `exception_check`, and `fix_strategy` (the structured justification and fix); for **dismissed** findings fill `reasoning` (why it is safe). These are persisted into the per-finding Markdown, so a reviewer sees *why* you believe it, not just *what* you found.
     e. **Verify persistence**: After writing, call `secguard_report` with no `findings` arg to read back findings for this scan. If `count` is 0 or the returned findings don't include the ones you just wrote, **stop and report the persistence failure** — do not continue to the next type.
 4. **Pipeline boundary**: Only reason over the evidence packages in `report.md` and per-finding Markdown files. Do NOT use `secguard_db` to query the `security_events` table or recover raw candidates that the convergence pipeline did not surface. If a tool call's output is truncated and OpenCode saves the full output to `~/.local/share/opencode/tool-output/`, **do NOT read that file** — it contains raw pre-convergence JSON you are not meant to see. The complete, converged candidate list is always in `report.md`; read that instead.
-5. **Report**: After all type batches are processed, produce the report structure described under "Output Format". **Before referencing the SARIF file**, verify it exists: read `<scan_dir>/sarif.sarif` — if it does not exist or is empty, do NOT reference it in your report. Reference per-finding Markdown files only after verifying they were written.
+5. **Report**: After all type batches are processed, produce the report structure described under "Output Format". **Before referencing the SARIF file**, verify it exists: read `<scan_dir>/result.sarif` — if it does not exist or is empty, do NOT reference it in your report. Reference per-finding Markdown files only after verifying they were written.
 
 ## Filtered Workflow
 1. **Check index**: Review the index status from the command's inline status check (shown at the top of this prompt). If the inline check shows `"indexed": true` and the index is fresh, proceed to step 2. If the inline check is unavailable or shows no index, call `secguard_status` to verify. If no index exists or the index is stale, call `secguard_scan` with the target path to build/refresh the index. Note the `scan_id` and `output_dir` from this call — they are needed for `secguard_report` later. The evidence packages from this scan are NOT used for classification; only the index is needed.
@@ -59,7 +59,7 @@ The user may ask for a subset of vulnerability types, e.g. `看看有没有 null
     e. **Write findings**: Call `secguard_report` with the findings for THIS type only. Pass `scan_id` and `output_dir` from step 1. Every candidate must get a finding (confirmed, suspected, or dismissed).
     f. **Verify persistence**: After writing, call `secguard_report` with no `findings` arg to confirm findings were persisted. If `count` is 0, stop and report the failure.
 3. **Pipeline boundary**: Only reason over the evidence packages returned by `secguard_plan`. Do NOT use `secguard_db` to query the `security_events` table or recover raw candidates that the convergence pipeline did not surface.
-4. **Report**: Produce the report structure described under "Output Format" for the selected types. State explicitly which skills were executed and which were skipped. If any selected types failed during step 2, include a note indicating which type(s) failed and the error. **Before referencing the SARIF file**, verify it exists by reading `<scan_dir>/sarif.sarif` — if missing or empty, do NOT reference it.
+4. **Report**: Produce the report structure described under "Output Format" for the selected types. State explicitly which skills were executed and which were skipped. If any selected types failed during step 2, include a note indicating which type(s) failed and the error. **Before referencing the SARIF file**, verify it exists by reading `<scan_dir>/result.sarif` — if missing or empty, do NOT reference it.
 
 ## Classification Rules
 - Safe functions (memcpy_s, strcpy_s, execve, sqlite3_prepare_v2) → false-positive

@@ -34,6 +34,24 @@ func (f *Finding) ApplyStructuredFromProperties() {
 	}
 }
 
+// EffectiveStatus returns the post-A5 final verdict for a finding. The
+// second-round review (ReviewStatus) overrides the first-pass classification:
+// confirmed/dismissed/suspected-kept map to confirmed/dismissed/suspected, and a
+// finding that was never reviewed keeps its original Status. This is the single
+// source of truth for developer-facing counts (audit-report.md and result.sarif).
+func (f *Finding) EffectiveStatus() string {
+	switch f.ReviewStatus {
+	case "confirmed":
+		return "confirmed"
+	case "dismissed":
+		return "dismissed"
+	case "suspected-kept":
+		return "suspected"
+	default:
+		return f.Status
+	}
+}
+
 type File struct {
 	ID        int64
 	Path      string

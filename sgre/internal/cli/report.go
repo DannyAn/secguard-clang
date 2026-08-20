@@ -274,7 +274,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 			if countsByVuln[vt] == nil {
 				countsByVuln[vt] = &vulnCounts{}
 			}
-			switch effectiveStatus(f) {
+			switch f.EffectiveStatus() {
 			case "confirmed":
 				countsByVuln[vt].confirmed++
 			case "suspected":
@@ -308,9 +308,18 @@ func runReportCmd(ctx context.Context, args []string) int {
 				WriteErrorJSON(fmt.Sprintf("failed to write audit report: %v", err))
 				return 1
 			}
+			// Regenerate result.sarif from the AI's persisted findings so the
+			// machine-readable report carries the post-A5 verdict + reasoning +
+			// fix, not just the candidate-stage evidence.
+			sarifPath := filepath.Join(outputDir, report.SarifFile)
+			if err := report.WriteSarifFromFindings(sarifPath, "", scanFindings); err != nil {
+				WriteErrorJSON(fmt.Sprintf("failed to write result.sarif: %v", err))
+				return 1
+			}
 			WriteJSON(map[string]interface{}{
 				"scan_id":    scanID,
 				"audit_path": auditPath,
+				"sarif_path": sarifPath,
 				"vuln_count": len(audits),
 				"status":     "ok",
 			})
@@ -356,23 +365,6 @@ type vulnAuditEntry struct {
 	Confirmed  int    `json:"confirmed"`
 	Suspected  int    `json:"suspected"`
 	Dismissed  int    `json:"dismissed"`
-}
-
-// effectiveStatus returns the post-A5 verdict for a finding. The second-round
-// review (review_status) overrides the original classification when present:
-// confirmed/dismissed/suspected-kept map to confirmed/dismissed/suspected, and a
-// finding that was never reviewed keeps its original status.
-func effectiveStatus(f *db.Finding) string {
-	switch f.ReviewStatus {
-	case "confirmed":
-		return "confirmed"
-	case "dismissed":
-		return "dismissed"
-	case "suspected-kept":
-		return "suspected"
-	default:
-		return f.Status
-	}
 }
 
 func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry) error {

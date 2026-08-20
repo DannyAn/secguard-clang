@@ -210,7 +210,7 @@ func TestEffectiveStatus(t *testing.T) {
 	}
 	for _, c := range cases {
 		f := &db.Finding{Status: c.status, ReviewStatus: c.review}
-		if got := effectiveStatus(f); got != c.want {
+		if got := f.EffectiveStatus(); got != c.want {
 			t.Errorf("effectiveStatus(status=%q, review=%q) = %q, want %q", c.status, c.review, got, c.want)
 		}
 	}
@@ -274,7 +274,7 @@ func TestReportCmd_ReviewFlow(t *testing.T) {
 	if f.ReviewStatus != "confirmed" {
 		t.Errorf("review_status = %q, want confirmed", f.ReviewStatus)
 	}
-	if effectiveStatus(f) != "confirmed" {
-		t.Errorf("effectiveStatus after review = %q, want confirmed", effectiveStatus(f))
+	if f.EffectiveStatus() != "confirmed" {
+		t.Errorf("effectiveStatus after review = %q, want confirmed", f.EffectiveStatus())
 	}
 }

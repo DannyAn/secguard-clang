@@ -116,3 +116,38 @@ func TestCryptoMisuse_CategoryConfidence(t *testing.T) {
 		}
 	}
 }
+
+func TestNullDeref_EvidenceRoles(t *testing.T) {
+	spec, err := GetVulnTypeSpec("null-deref")
+	if err != nil {
+		t.Fatal(err)
+	}
+	frags := spec.BuildEvidence(Candidate{
+		FunctionName:      "f",
+		VariableName:      "p",
+		Line:              42,
+		HasNullableSource: true,
+		IsReachable:       true,
+		HasDataFlow:       true,
+	})
+	roles := map[string]bool{}
+	for _, e := range frags {
+		roles[e.Role] = true
+	}
+	if !roles["source"] || !roles["path"] {
+		t.Errorf("null-deref evidence should carry source + path roles, got %v", roles)
+	}
+
+	def := spec.BuildEvidence(Candidate{
+		FunctionName:    "f",
+		VariableName:    "p",
+		Line:            42,
+		HasDefiniteNull: true,
+	})
+	for _, e := range def {
+		if e.Role == "condition" {
+			return
+		}
+	}
+	t.Errorf("null-deref definite-null evidence should carry a condition role, got %+v", def)
+}

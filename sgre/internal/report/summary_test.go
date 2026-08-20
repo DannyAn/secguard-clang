@@ -17,7 +17,7 @@ func TestBuildScanSummary_Header(t *testing.T) {
 		FunctionsInIndex: 103,
 		TypeBreakdown:    []TypeBreakdownEntry{{Type: "null-deref", CWE: "CWE-476", Count: 5}},
 		ReportPath:       "/abs/report.md",
-		SarifPath:        "/abs/sarif.sarif",
+		SarifPath:        "/abs/result.sarif",
 		LatestPath:       "/abs/latest",
 	}
 	out := BuildScanSummary(data)
@@ -86,7 +86,7 @@ func TestBuildScanSummary_OutputFiles(t *testing.T) {
 	data := SummaryData{
 		ScanID:     "test",
 		ReportPath: "/path/to/report.md",
-		SarifPath:  "/path/to/sarif.sarif",
+		SarifPath:  "/path/to/result.sarif",
 		LatestPath: "/path/to/latest",
 	}
 	out := BuildScanSummary(data)
@@ -94,7 +94,7 @@ func TestBuildScanSummary_OutputFiles(t *testing.T) {
 	checks := []string{
 		"### Output Files",
 		"- Report: /path/to/report.md",
-		"- SARIF: /path/to/sarif.sarif",
+		"- SARIF: /path/to/result.sarif",
 		"- Latest: /path/to/latest",
 	}
 	for _, check := range checks {
