@@ -14,7 +14,7 @@ import (
 
 const (
 	CodeagentDir  = ".codeagent"
-	ProductDir    = "zhuque-secguard"
+	ProductDir    = "secguard-clang"
 	ScansDir      = "scans"
 	SgreDir       = ".sgre"
 	DbName        = "sgre.db"

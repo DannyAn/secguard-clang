@@ -19,7 +19,7 @@ export default tool({
     let workDir = context.directory || context.worktree || "."
     if (workDir === "/") workDir = "."
     const secguardBin = findSecguard(context)
-    const dbPath = path.join(workDir, ".codeagent", "zhuque-secguard", ".sgre", "sgre.db")
+    const dbPath = path.join(workDir, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
 
     try {
       const result = await Bun.$`${secguardBin} status --db ${dbPath}`

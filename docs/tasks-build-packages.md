@@ -70,7 +70,7 @@
      - `sg_merge_permissions(settings_path)`：用 python3 将 7 项 `Bash(secguard *)` 权限幂等合并进 `permissions.allow`，保留 `deny` 列表与其它权限项（design §8.2 提供完整 python3 实现）
      - `sg_remove_permissions(settings_path)`：从 `permissions.allow` 移除 7 项 secguard 权限，保留其它项；文件不存在时静默返回 0（幂等）
      - `sg_check_permissions_merged(settings_path)`：检测 7 项是否全在 `allow` 中，全在返回 0，缺失返回非 0
-     - `sg_uninstall_platform(platform, prefix, bin_dir, manifest_path, yes)`：核心卸载逻辑——读取 manifest → 按 platform 过滤待删除文件 → 交互确认（若非 yes 且为 tty）→ 逐个 `rm -f` → 若 platform 含 claude-code 则调用 `sg_remove_permissions` → 自底向上清理空目录（rmdir 空的 zhuque-secguard/ 及其父目录仅当空）→ 若所有文件已删则 rm manifest
+     - `sg_uninstall_platform(platform, prefix, bin_dir, manifest_path, yes)`：核心卸载逻辑——读取 manifest → 按 platform 过滤待删除文件 → 交互确认（若非 yes 且为 tty）→ 逐个 `rm -f` → 若 platform 含 claude-code 则调用 `sg_remove_permissions` → 自底向上清理空目录（rmdir 空的 secguard-clang/ 及其父目录仅当空）→ 若所有文件已删则 rm manifest
      - `sg_verify_platform(platform, prefix, bin_dir, pkg_version)`：核心验证逻辑——逐项检测（二进制存在/可执行/版本匹配；extension.json 或 plugin.json 存在；commands/secguard.md、agents/security-auditor.md、14 个 skills/*/SKILL.md 存在；平台发现路径正确；ClaudeCode 权限已合并），每项标注 ✓/✗，全通过返回 0 否则返回 1
      - `sg_confirm_action(prompt)`：交互确认，非 tty 自动返回 0，tty 时读取用户输入 y/yes 返回 0 否则非 0
   4. 写入可注入区结束标记：`# @@SG_INJECT_END@@`
@@ -127,8 +127,8 @@
   7. 路径解析：
      - `OC_PREFIX="${PREFIX:-$HOME/.config/opencode}"`
      - `CC_PREFIX="${PREFIX:-$HOME/.claude}"`
-     - `OC_TARGET_DIR="$OC_PREFIX/extensions/zhuque-secguard"`（与 deploy.sh 一致，REQ-INST-07）
-     - `CC_TARGET_DIR="$CC_PREFIX/skills/zhuque-secguard"`（REQ-INST-08）
+     - `OC_TARGET_DIR="$OC_PREFIX/extensions/secguard-clang"`（与 deploy.sh 一致，REQ-INST-07）
+     - `CC_TARGET_DIR="$CC_PREFIX/skills/secguard-clang"`（REQ-INST-08）
      - `BIN_DIR` 默认 `/usr/local/bin`，无写权限时回退 `$HOME/.local/bin`（REQ-INST-03）
   8. 分发逻辑：
      - 若 `--verify`：调用 `sg_verify_platform "$TARGET" "$OC_PREFIX" "$BIN_DIR" "$PKG_VERSION"`，exit 其返回码
@@ -162,7 +162,7 @@
   5. 参数解析：`--target`（默认 all）、`--prefix`、`--bin-dir`、`--yes`/`-y`、`--help`/`-h`；无 `--uninstall`/`--verify`（此脚本专司卸载）
   6. 路径解析（同 T4，用于定位 manifest）
   7. 主逻辑：定位 manifest（`$OC_PREFIX/.secguard-install-manifest` 或 `$CC_PREFIX/.secguard-install-manifest`），对每个目标平台调用 `sg_uninstall_platform "$platform" "$prefix" "$BIN_DIR" "$manifest_path" "$YES"`（REQ-UNINST-08 等价于 install.sh --uninstall）
-  8. manifest 均不存在时：警告并回退启发式清理——按约定路径删除 `extensions/zhuque-secguard/`、`skills/zhuque-secguard/`、`<bin-dir>/secguard`（基础版，T14 增强）
+  8. manifest 均不存在时：警告并回退启发式清理——按约定路径删除 `extensions/secguard-clang/`、`skills/secguard-clang/`、`<bin-dir>/secguard`（基础版，T14 增强）
   9. `--help` 输出用法
 - **验证方式**：
   - `bash -n release/uninstall.sh` 语法通过
@@ -183,7 +183,7 @@
      - shebang + `set -euo pipefail` + 占位标记 `# @@SG_LIB_INJECT@@`
      - 无 `--target` 参数（仅安装 OpenCode，REQ-INST-OC-01）
      - 接受 `--prefix`、`--bin-dir`、`--no-binary`、`--uninstall`、`--verify`、`--yes`/`-y`、`--help`
-     - 安装路径：`OC_TARGET_DIR="${PREFIX:-$HOME/.config/opencode}/extensions/zhuque-secguard"`（与 deploy.sh 一致）
+     - 安装路径：`OC_TARGET_DIR="${PREFIX:-$HOME/.config/opencode}/extensions/secguard-clang"`（与 deploy.sh 一致）
      - 包根即当前目录（PKG_DIR=$(dirname $0)），直接复制包内 extension.json、opencode.json、commands/、agents/、tools/、plugins/、skills/ 到 OC_TARGET_DIR
      - 二进制安装：OpenCode 专用包不含二进制（design §6.4），默认 `--no-binary` 行为；若用户指定安装二进制则从 PATH 检测或提示
      - `--uninstall`/`--verify` 分发到 `sg_uninstall_platform "opencode" ...` / `sg_verify_platform "opencode" ...`
@@ -207,7 +207,7 @@
      - shebang + `set -euo pipefail` + 占位标记 `# @@SG_LIB_INJECT@@`
      - 无 `--target` 参数（仅安装 ClaudeCode，REQ-INST-CC-01）
      - 接受 `--prefix`、`--bin-dir`、`--no-binary`、`--uninstall`、`--verify`、`--yes`/`-y`、`--help`
-     - 安装路径：`CC_TARGET_DIR="${PREFIX:-$HOME/.claude}/skills/zhuque-secguard"`（与 deploy.sh 一致）
+     - 安装路径：`CC_TARGET_DIR="${PREFIX:-$HOME/.claude}/skills/secguard-clang"`（与 deploy.sh 一致）
      - 复制 .claude-plugin/plugin.json、commands/、agents/、hooks/、skills/、bin/ 到 CC_TARGET_DIR
      - 调用 `sg_merge_permissions "$CC_PREFIX/settings.json"` 合并 7 项权限（REQ-CC-03）
      - 二进制安装：ClaudeCode 包含 bin/secguard-<os>-<arch>，用 `sg_select_binary` 选择匹配平台二进制复制为 `<bin-dir>/secguard`
@@ -353,7 +353,7 @@
 - **依赖**：T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11
 - **版本**：第一版本必须
 - **实现步骤**：
-  1. **清理环境**：`rm -rf dist/ bin/secguard`；清理 `~/.config/opencode/extensions/zhuque-secguard/`、`~/.claude/skills/zhuque-secguard/`、`~/.local/bin/secguard`（若存在）
+  1. **清理环境**：`rm -rf dist/ bin/secguard`；清理 `~/.config/opencode/extensions/secguard-clang/`、`~/.claude/skills/secguard-clang/`、`~/.local/bin/secguard`（若存在）
   2. **执行打包**：`./build.sh --package`（默认全平台、全包类型）
   3. **验证 AC-01**：`dist/` 存在 3 个 zip + 3 个 sha256 文件
   4. **验证 AC-07**：解压统一包，`shared/skills/` 下有 14 个 skill 目录
@@ -363,11 +363,11 @@
   8. **验证 AC-11**：`./build.sh`（无 `--package`）仍生成 `bin/secguard`，行为不变
   9. **验证 AC-12**：在 macOS arm64 上解压统一包，`./install.sh --target all` 自动选择 `secguard-darwin-arm64` 二进制
   10. **验证 AC-02**：`./install.sh --target all` 在干净环境成功安装，`secguard --version` 可执行
-  11. **验证 AC-13**：检查安装路径 `~/.config/opencode/extensions/zhuque-secguard/` 与 `~/.claude/skills/zhuque-secguard/` 存在且含关键文件
+  11. **验证 AC-13**：检查安装路径 `~/.config/opencode/extensions/secguard-clang/` 与 `~/.claude/skills/secguard-clang/` 存在且含关键文件
   12. **验证 AC-14**：`cat ~/.claude/settings.json` 含 7 项 secguard 权限；重复执行 `./install.sh --target claude-code` 后权限项数仍为 7（幂等）
   13. **验证 AC-04**：重复执行 `./install.sh --target all` 不产生错误，文件不变
   14. **验证 AC-21**：`./install.sh --verify` 输出全 ✓ 且退出码 0；手动删除一个 skill 后 `./install.sh --verify` 该项 ✗ 且退出码非 0
-  15. **验证 AC-03**：`./uninstall.sh --target all --yes` 删除所有已安装文件，`secguard` 命令不再可用，`~/.config/opencode/extensions/zhuque-secguard/` 与 `~/.claude/skills/zhuque-secguard/` 不存在或为空
+  15. **验证 AC-03**：`./uninstall.sh --target all --yes` 删除所有已安装文件，`secguard` 命令不再可用，`~/.config/opencode/extensions/secguard-clang/` 与 `~/.claude/skills/secguard-clang/` 不存在或为空
   16. **验证 AC-18**：重新安装后 `./uninstall.sh --target all --yes` 与 `./install.sh --uninstall --target all --yes` 效果一致
   17. **验证 AC-05**：解压 OpenCode 专用包，目录结构可被 OpenCode 直接作为 extension 加载（extension.json 在根目录）
   18. **验证 AC-06**：解压 ClaudeCode 专用包，`.claude-plugin/plugin.json` 在根目录，可被 ClaudeCode 发现
@@ -404,7 +404,7 @@
 - **版本**：后续优化
 - **实现步骤**：
   1. 增强 `sg_uninstall_platform` 的 manifest 缺失降级路径：
-     - 当前基础版（T2 实现）按约定路径删除 `extensions/zhuque-secguard/`、`skills/zhuque-secguard/`、`<bin-dir>/secguard`
+     - 当前基础版（T2 实现）按约定路径删除 `extensions/secguard-clang/`、`skills/secguard-clang/`、`<bin-dir>/secguard`
      - 增强版：先检测约定路径下是否存在 `VERSION`/`manifest.json` 推断已安装版本，提示用户确认；扫描 `~/.claude/settings.json` 是否有 secguard 权限项并清理
   2. 增加日志输出：启发式清理时打印每一步删除的路径，便于审计
   3. 增加 `--dry-run` 选项（可选）：仅展示将删除的文件不实际删除

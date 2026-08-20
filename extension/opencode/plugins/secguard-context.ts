@@ -29,7 +29,7 @@ export const SecGuardContextPlugin: Plugin = async ({
     event: async ({ event }) => {
       if (event.type === "file.edited") {
         const dir = resolveWorkDir({ worktree, directory })
-        const dbPath = path.join(dir, ".codeagent", "zhuque-secguard", ".sgre", "sgre.db")
+        const dbPath = path.join(dir, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
         if (fs.existsSync(dbPath)) {
           try {
             await client.app.log(

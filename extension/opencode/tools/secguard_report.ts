@@ -60,7 +60,7 @@ export default tool({
     let workDir = context.directory || context.worktree || "."
     if (workDir === "/") workDir = "."
     const secguardBin = findSecguard(context)
-    const sgreDir = path.join(workDir, ".codeagent", "zhuque-secguard", ".sgre")
+    const sgreDir = path.join(workDir, ".codeagent", "secguard-clang", ".sgre")
     if (!fs.existsSync(sgreDir)) fs.mkdirSync(sgreDir, { recursive: true })
     const dbPath = path.join(sgreDir, "sgre.db")
 

@@ -50,8 +50,8 @@
 │          └── 等价 install.sh --uninstall                            │
 │                                                                     │
 │  安装结果：                                                          │
-│    ~/.config/opencode/extensions/zhuque-secguard/  （OpenCode）      │
-│    ~/.claude/skills/zhuque-secguard/               （ClaudeCode）    │
+│    ~/.config/opencode/extensions/secguard-clang/  （OpenCode）      │
+│    ~/.claude/skills/secguard-clang/               （ClaudeCode）    │
 │    ~/.claude/settings.json（权限合并）                                │
 │    <bin-dir>/secguard                               （二进制）       │
 │    <安装根>/.secguard-install-manifest             （安装清单）      │
@@ -79,7 +79,7 @@
 | DRY | 消除当前 4 处 `expand_includes` 重复实现 | `lib.sh` 唯一来源；`deploy.sh` 改为 `source` |
 | 幂等 | 重复安装不报错、不重复添加权限 | 安装覆盖文件；权限合并用集合去重 |
 | 可重复构建 | 相同输入产生字节相同的 zip | `go build -trimpath`；`zip -X` 不存额外时间戳；固定 manifest build_date 取源码 mtime 或固定值 |
-| 路径一致 | 发行包安装路径与 `deploy.sh` 开发部署路径完全一致 | OpenCode → `<prefix>/extensions/zhuque-secguard/`；ClaudeCode → `<prefix>/skills/zhuque-secguard/` |
+| 路径一致 | 发行包安装路径与 `deploy.sh` 开发部署路径完全一致 | OpenCode → `<prefix>/extensions/secguard-clang/`；ClaudeCode → `<prefix>/skills/secguard-clang/` |
 | 单一主入口 | `install.sh` 既是安装入口也是卸载/验证入口 | `--uninstall`/`--verify` 子模式；另提供 `uninstall.sh` 独立入口等价于 `install.sh --uninstall` |
 | 类型/命名安全 | 注入函数加 `sg_` 前缀避免与脚本局部变量冲突；snake_case 变量、kebab-case 目录 | 全部 `sg_*` 命名 |
 
@@ -110,8 +110,8 @@
 |----------|----------|
 | `build.sh` | 新增 `--package`/`--dist`/`--version`/`--os`/`--arch`/`--target` 参数；无 `--package` 时行为完全不变（向后兼容，AC-11） |
 | `release/build-packages.sh` | 重构为打包核心：`source lib.sh`；版本解析；跨平台构建；模板展开；三包组装；内联注入；校验和；manifest |
-| `release/install-opencode.sh` | 重构为 `.tmpl`：对齐路径 `extensions/zhuque-secguard/`；新增 `--prefix`/`--bin-dir`/`--uninstall`/`--verify`/`--yes`；自包含 |
-| `release/install-claude-code.sh` | 重构为 `.tmpl`：对齐路径 `skills/zhuque-secguard/`；权限合并；新增相同参数；自包含 |
+| `release/install-opencode.sh` | 重构为 `.tmpl`：对齐路径 `extensions/secguard-clang/`；新增 `--prefix`/`--bin-dir`/`--uninstall`/`--verify`/`--yes`；自包含 |
+| `release/install-claude-code.sh` | 重构为 `.tmpl`：对齐路径 `skills/secguard-clang/`；权限合并；新增相同参数；自包含 |
 | `deploy.sh` | 移除内联 `expand_includes`，改为 `source "$SCRIPT_DIR/release/lib.sh"`；其余开发部署行为不变 |
 | `extension/install.sh` | 已删除（其 `expand_includes` 重复实现移除，统一由 `lib.sh` 提供；若仍有本地安装需求，改为调用 `release/install.sh.tmpl` 注入后副本） |
 
@@ -199,8 +199,8 @@ install.sh 主流程：
   6. 解析安装路径：
        opencode_prefix = ${prefix:-$HOME/.config/opencode}
        claude_prefix   = ${prefix:-$HOME/.claude}
-       oc_target_dir   = $opencode_prefix/extensions/zhuque-secguard
-       cc_target_dir   = $claude_prefix/skills/zhuque-secguard
+       oc_target_dir   = $opencode_prefix/extensions/secguard-clang
+       cc_target_dir   = $claude_prefix/skills/secguard-clang
        bin_dir         = ${bin_dir:-/usr/local/bin}，无写权限则回退 $HOME/.local/bin
   7. 若已存在 .secguard-install-manifest 且版本不同：
        调用 sg_uninstall_platform 旧版本（按 manifest 卸载，REQ-INST-11）
@@ -240,7 +240,7 @@ uninstall.sh 主流程（与 install.sh --uninstall 共享 sg_uninstall_platform
        manifest_path = ${prefix:-$HOME/.config/opencode}/.secguard-install-manifest
        若不存在，尝试 $HOME/.claude/.secguard-install-manifest
        若均不存在：警告"未找到安装清单"，回退启发式清理（按约定路径删除
-       zhuque-secguard 目录与 bin/secguard，REQ-UNINST-03 降级，风险-4）
+       secguard-clang 目录与 bin/secguard，REQ-UNINST-03 降级，风险-4）
   4. manifest = sg_read_install_manifest "$manifest_path"
   5. 待删除文件列表 = manifest.files 中匹配 --target 的子集
   6. 若交互终端且未 --yes：
@@ -249,7 +249,7 @@ uninstall.sh 主流程（与 install.sh --uninstall 共享 sg_uninstall_platform
        rm -f "$file"；记录已删
   8. 若 --target 含 claude-code：
        sg_remove_permissions $HOME/.claude/settings.json（移除 7 项 secguard 权限，幂等）
-  9. 清理空目录：自底向上 rmdir 空的 zhuque-secguard/、其父 skills/ 或 extensions/（仅当空）
+  9. 清理空目录：自底向上 rmdir 空的 secguard-clang/、其父 skills/ 或 extensions/（仅当空）
  10. 若 manifest 中所有文件已删：rm manifest_path
  11. 打印卸载摘要
 ```
@@ -609,9 +609,9 @@ export PATH="/opt/homebrew/bin:$PATH"  # macOS Homebrew 工具链
   "target": "all",
   "bin_path": "/usr/local/bin/secguard",
   "files": [
-    "/Users/me/.config/opencode/extensions/zhuque-secguard/extension.json",
-    "/Users/me/.config/opencode/extensions/zhuque-secguard/commands/secguard.md",
-    "/Users/me/.claude/skills/zhuque-secguard/.claude-plugin/plugin.json",
+    "/Users/me/.config/opencode/extensions/secguard-clang/extension.json",
+    "/Users/me/.config/opencode/extensions/secguard-clang/commands/secguard.md",
+    "/Users/me/.claude/skills/secguard-clang/.claude-plugin/plugin.json",
     "/usr/local/bin/secguard"
   ]
 }
@@ -619,7 +619,7 @@ export PATH="/opt/homebrew/bin:$PATH"  # macOS Homebrew 工具链
 
 - `files`：**绝对路径**列表，卸载时逐个 `rm -f`。
 - 跨版本卸载（REQ-UNINST-03 / AC-19）：`uninstall.sh` 读取此 manifest，即使当前包版本不同，仍按 manifest.files 删除历史安装文件。
-- manifest 缺失/损坏降级（风险-4）：`sg_uninstall_platform` 检测 manifest 不可读时，按约定路径启发式清理（删除 `<prefix>/extensions/zhuque-secguard/`、`<prefix>/skills/zhuque-secguard/`、`<bin-dir>/secguard`），并提示用户。
+- manifest 缺失/损坏降级（风险-4）：`sg_uninstall_platform` 检测 manifest 不可读时，按约定路径启发式清理（删除 `<prefix>/extensions/secguard-clang/`、`<prefix>/skills/secguard-clang/`、`<bin-dir>/secguard`），并提示用户。
 
 ### 7.3 读写时机
 
@@ -986,7 +986,7 @@ bin/
 | AC-10 | 包内无 .gocache/.gotmp/*.db/.DS_Store | §11.4 排除规则 |
 | AC-11 | `./build.sh` 无 `--package` 行为不变 | §13.1 向后兼容 |
 | AC-12 | macOS arm64 自动选择 darwin-arm64 | `sg_detect_os`/`sg_detect_arch`/`sg_select_binary` §4.2 |
-| AC-13 | 安装路径与 deploy.sh 一致 | §1.3 路径一致；`extensions/zhuque-secguard/`、`skills/zhuque-secguard/` |
+| AC-13 | 安装路径与 deploy.sh 一致 | §1.3 路径一致；`extensions/secguard-clang/`、`skills/secguard-clang/` |
 | AC-14 | ClaudeCode 安装后 settings.json 含 7 项权限，重复不重复添加 | §8.2 `sg_merge_permissions` 集合去重 |
 | AC-15 | lib.sh 存在且 build-packages.sh/deploy.sh source 引用 | §2.1.1 lib.sh；§13.2 deploy.sh 改造 |
 | AC-16 | zip 内 install.sh 不含 source lib.sh，可独立运行 | §5.4 自包含保证；静态检查 |
@@ -1086,8 +1086,8 @@ fi
 # ── 路径解析 ──
 OC_PREFIX="${PREFIX:-$HOME/.config/opencode}"
 CC_PREFIX="${PREFIX:-$HOME/.claude}"
-OC_TARGET_DIR="$OC_PREFIX/extensions/zhuque-secguard"
-CC_TARGET_DIR="$CC_PREFIX/skills/zhuque-secguard"
+OC_TARGET_DIR="$OC_PREFIX/extensions/secguard-clang"
+CC_TARGET_DIR="$CC_PREFIX/skills/secguard-clang"
 if [ -z "$BIN_DIR" ]; then
     if [ -w /usr/local/bin ]; then BIN_DIR="/usr/local/bin"
     else BIN_DIR="$HOME/.local/bin"; fi
@@ -1118,7 +1118,7 @@ sg_write_install_manifest ...
 
 2. **双 manifest**：包内 `manifest.json`（描述包内容，可重复构建）+ 安装后 `.secguard-install-manifest`（记录绝对路径，供跨版本卸载）。manifest 缺失时启发式清理降级。
 
-3. **路径对齐 deploy.sh**：发行包安装路径与开发部署路径完全一致（`extensions/zhuque-secguard/`、`skills/zhuque-secguard/`），修复现有 `release/install.sh` 装装到根目录的 bug。
+3. **路径对齐 deploy.sh**：发行包安装路径与开发部署路径完全一致（`extensions/secguard-clang/`、`skills/secguard-clang/`），修复现有 `release/install.sh` 装装到根目录的 bug。
 
 4. **CGO 跨平台回退**：逐目标构建，失败警告跳过，全失败回退本机，不中断整体打包（NFR-REL-02）。
 

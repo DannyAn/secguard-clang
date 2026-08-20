@@ -150,7 +150,7 @@ secguard scan ./examples/c-vuln-benchmark/src
 
 # 校验基准（77 用例 · 精度/召回 100%）
 python3 scripts/validate-benchmark.py \
-    --sarif .codeagent/zhuque-secguard/scans/latest/sarif.sarif \
+    --sarif .codeagent/secguard-clang/scans/latest/sarif.sarif \
     --expected examples/c-vuln-benchmark/expected-results.json
 
 # 在 OpenCode / Claude Code 中：
@@ -226,7 +226,7 @@ secguard scan ./my-project --db /tmp/sgre.db
 ### 7.5 OpenCode 中 `/secguard` 命令不出现
 
 ```bash
-ls ~/.config/opencode/extensions/zhuque-secguard/
+ls ~/.config/opencode/extensions/secguard-clang/
 ls ~/.config/opencode/commands/secguard.md
 # 不存在则重新部署：./deploy.sh opencode
 ```

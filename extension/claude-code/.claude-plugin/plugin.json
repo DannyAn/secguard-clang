@@ -1,5 +1,5 @@
 {
-  "name": "zhuque-secguard",
+  "name": "secguard-clang",
   "displayName": "Zhuque SecGuard",
   "description": "AI-augmented C program security analysis platform with 4-level convergence pipeline",
   "version": "0.1.3",

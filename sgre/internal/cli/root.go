@@ -78,7 +78,7 @@ Usage:
   secguard schema [table]  Show DB schema for agent-queryable tables
 
 Flags:
-  --db <path>         Path to sgre.db (default: .codeagent/zhuque-secguard/.sgre/sgre.db)
+  --db <path>         Path to sgre.db (default: .codeagent/secguard-clang/.sgre/sgre.db)
   --exclude <dirs>    Comma-separated directory basenames to skip (default: deps,third_party,vendor,external,node_modules,tests,test,fuzzing,contrib,examples)
   --help              Show usage
   --version           Show version`)
@@ -106,7 +106,7 @@ func parseDBFlag(args []string) (dbPath string, explicit bool, remaining []strin
 
 // resolveDBPath returns the DB path a command should open: the explicit --db
 // value when given, otherwise the canonical location under projectRoot
-// (.codeagent/zhuque-secguard/.sgre/sgre.db) so intermediate results never land
+// (.codeagent/secguard-clang/.sgre/sgre.db) so intermediate results never land
 // as a stray sgre.db in the source tree.
 func resolveDBPath(explicit bool, dbPath, projectRoot string) string {
 	if explicit {
@@ -117,7 +117,7 @@ func resolveDBPath(explicit bool, dbPath, projectRoot string) string {
 
 func openStore(ctx context.Context, dbPath string) (db.Store, error) {
 	// Ensure the parent directory exists so a default canonical path
-	// (.codeagent/zhuque-secguard/.sgre/sgre.db) opens cleanly on first use
+	// (.codeagent/secguard-clang/.sgre/sgre.db) opens cleanly on first use
 	// rather than failing on a missing directory.
 	if abs, err := filepath.Abs(dbPath); err == nil {
 		if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {

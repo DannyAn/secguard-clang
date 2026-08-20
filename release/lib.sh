@@ -319,7 +319,7 @@ for f in m.get('files', []):
         print(f)
     elif platform == 'opencode' and ('opencode' in f or 'extensions' in f):
         print(f)
-    elif platform == 'claude-code' and ('claude' in f or '.claude' in f or 'skills/zhuque-secguard' in f):
+    elif platform == 'claude-code' and ('claude' in f or '.claude' in f or 'skills/secguard-clang' in f):
         print(f)
 # 二进制
 bin_path = m.get('bin_path', '')
@@ -344,10 +344,10 @@ print(m.get('bin_path', '') or '')
         # manifest 缺失，启发式清理（基础版）
         echo "  WARNING: manifest not found at $manifest_path — heuristic cleanup" >&2
         if [ "$platform" = "all" ] || [ "$platform" = "opencode" ]; then
-            to_delete+=("$oc_prefix/extensions/zhuque-secguard")
+            to_delete+=("$oc_prefix/extensions/secguard-clang")
         fi
         if [ "$platform" = "all" ] || [ "$platform" = "claude-code" ]; then
-            to_delete+=("$cc_prefix/skills/zhuque-secguard")
+            to_delete+=("$cc_prefix/skills/secguard-clang")
         fi
         if [ "$platform" = "all" ]; then
             to_delete+=("$bin_dir/secguard")
@@ -391,13 +391,13 @@ print(m.get('bin_path', '') or '')
     # 清理目录残留：manifest 逐文件删除会留下空目录树，且平台过滤会漏掉
     # 全局 command（不在 extensions/ 下），这里对专属目录/文件做兜底清理。
     if [ "$platform" = "all" ] || [ "$platform" = "opencode" ]; then
-        rm -rf "$oc_prefix/extensions/zhuque-secguard" 2>/dev/null || true
+        rm -rf "$oc_prefix/extensions/secguard-clang" 2>/dev/null || true
         rm -f "$oc_prefix/commands/secguard.md" 2>/dev/null || true
         rmdir "$oc_prefix/extensions" 2>/dev/null || true
         rmdir "$oc_prefix/commands" 2>/dev/null || true
     fi
     if [ "$platform" = "all" ] || [ "$platform" = "claude-code" ]; then
-        rm -rf "$cc_prefix/skills/zhuque-secguard" 2>/dev/null || true
+        rm -rf "$cc_prefix/skills/secguard-clang" 2>/dev/null || true
         rm -f "$cc_prefix/commands/secguard.md" 2>/dev/null || true
         rmdir "$cc_prefix/skills" 2>/dev/null || true
         rmdir "$cc_prefix/commands" 2>/dev/null || true
@@ -456,7 +456,7 @@ sg_verify_platform() {
 
     # OpenCode 检查
     if [ "$platform" = "all" ] || [ "$platform" = "opencode" ]; then
-        local oc_dir="$oc_prefix/extensions/zhuque-secguard"
+        local oc_dir="$oc_prefix/extensions/secguard-clang"
         echo ""
         echo "OpenCode extension ($oc_dir):"
         [ -f "$oc_dir/extension.json" ] && sg_check ok "extension.json" || sg_check fail "extension.json"
@@ -474,7 +474,7 @@ sg_verify_platform() {
 
     # ClaudeCode 检查
     if [ "$platform" = "all" ] || [ "$platform" = "claude-code" ]; then
-        local cc_dir="$cc_prefix/skills/zhuque-secguard"
+        local cc_dir="$cc_prefix/skills/secguard-clang"
         echo ""
         echo "ClaudeCode plugin ($cc_dir):"
         [ -f "$cc_dir/.claude-plugin/plugin.json" ] && sg_check ok ".claude-plugin/plugin.json" || sg_check fail ".claude-plugin/plugin.json"
@@ -503,7 +503,7 @@ sg_verify_platform() {
 
 # 清理旧版"平铺式"安装遗留（迁移到 extensions/ 之前的设计）。
 # 早期版本把 tools/skills/agents 直接装到 $OC_PREFIX 下，现在统一收敛到
-# $OC_PREFIX/extensions/zhuque-secguard/。安装与卸载都会调用，避免两处定义漂移
+# $OC_PREFIX/extensions/secguard-clang/。安装与卸载都会调用，避免两处定义漂移
 # （尤其避免 de-drift 整改后旧副本仍残留硬编码类型清单）。仅移除 secguard 自身文件，
 # 其它工具的平铺内容（如 $OC_PREFIX/skills/arkcli-*）不受影响。
 # 用法：sg_cleanup_legacy_flat <oc_prefix> <pkg_dir>

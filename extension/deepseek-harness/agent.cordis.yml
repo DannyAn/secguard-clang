@@ -18,7 +18,7 @@
 
       ## 工作方式
       1. 用 `secguard types` 发现当前漏洞类型清单（name + cwe），不要硬编码类型名或数量。
-      2. 完整扫描：`secguard scan <path>` —— 产出 `.codeagent/zhuque-secguard/scans/<scan_id>/` 下的 SARIF 2.1 + report.md + 逐条 finding，DB 在 `.codeagent/zhuque-secguard/.sgre/sgre.db`。工具只返回摘要（scan_id/output_dir/候选计数），候选详情在 report.md。
+      2. 完整扫描：`secguard scan <path>` —— 产出 `.codeagent/secguard-clang/scans/<scan_id>/` 下的 SARIF 2.1 + report.md + 逐条 finding，DB 在 `.codeagent/secguard-clang/.sgre/sgre.db`。工具只返回摘要（scan_id/output_dir/候选计数），候选详情在 report.md。
       3. 单类型：先 `secguard status` 确认有索引（没有就先 `secguard scan`），再 `secguard plan <type>`。
       4. 读 report.md 拿候选列表，按类型逐批处理：每批只加载 1 个该类型的 skill、按需读 ≤5 个源文件（只看 file:line）、`secguard report` 增量写 findings（一次一个类型，带 scan_id + output_dir）。
 

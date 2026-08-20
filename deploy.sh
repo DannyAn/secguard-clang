@@ -1,11 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-# deploy.sh — Quick build + deploy zhuque-secguard extension to user-level config dirs
+# deploy.sh — Quick build + deploy secguard-clang extension to user-level config dirs
 # Usage: ./deploy.sh [opencode|claude-code|all] [--no-binary]
 # Default (no args): builds binary + installs both platforms as extensions
 
-PRODUCT="zhuque-secguard"
+PRODUCT="secguard-clang"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SGRE_DIR="$SCRIPT_DIR/sgre"
 EXT_DIR="$SCRIPT_DIR/extension"

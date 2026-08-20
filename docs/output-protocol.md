@@ -2,14 +2,14 @@
 
 ## Overview
 
-SecGuard scan results are written to a structured directory under `.codeagent/zhuque-secguard/`. Each scan produces a uniquely-identified directory containing SARIF 2.1 output, a human-readable Markdown report, and per-finding Markdown files organized by vulnerability type. The SQLite database is stored at `.codeagent/zhuque-secguard/.sgre/sgre.db` (sibling of `scans/`).
+SecGuard scan results are written to a structured directory under `.codeagent/secguard-clang/`. Each scan produces a uniquely-identified directory containing SARIF 2.1 output, a human-readable Markdown report, and per-finding Markdown files organized by vulnerability type. The SQLite database is stored at `.codeagent/secguard-clang/.sgre/sgre.db` (sibling of `scans/`).
 
 ## Directory Structure
 
 ```
 <project-root>/
 ├── .codeagent/
-│   └── zhuque-secguard/
+│   └── secguard-clang/
 │       ├── .sgre/
 │       │   └── sgre.db                 # SQLite database (program graph + findings)
 │       └── scans/
@@ -127,7 +127,7 @@ The file is created at scan start (truncated if it exists) and closed/flushed be
 
 ## Database Location
 
-The SQLite database (`sgre.db`) is stored at `.codeagent/zhuque-secguard/.sgre/sgre.db` (sibling of `scans/`). This directory is created automatically by the `secguard_scan` and `secguard_index` tools if it does not exist. The database contains:
+The SQLite database (`sgre.db`) is stored at `.codeagent/secguard-clang/.sgre/sgre.db` (sibling of `scans/`). This directory is created automatically by the `secguard_scan` and `secguard_index` tools if it does not exist. The database contains:
 - Program graph tables: `files`, `functions`, `call_graph_edges`, `data_flow_edges`, `global_vars`, `type_aliases`
 - Security event tables: `security_events`, `function_summaries`
 - Findings table: `findings` (written by `secguard_report` tool)
@@ -136,12 +136,12 @@ The SQLite database (`sgre.db`) is stored at `.codeagent/zhuque-secguard/.sgre/s
 
 | Tool | DB Path | Output Dir |
 |------|---------|------------|
-| `secguard_scan` | `.codeagent/zhuque-secguard/.sgre/sgre.db` (auto-created) | `.codeagent/zhuque-secguard/scans/<scan-id>/` (auto-created) |
-| `secguard_index` | `.codeagent/zhuque-secguard/.sgre/sgre.db` (auto-created) | N/A |
-| `secguard_plan` | `.codeagent/zhuque-secguard/.sgre/sgre.db` | N/A |
-| `secguard_status` | `.codeagent/zhuque-secguard/.sgre/sgre.db` | N/A |
-| `secguard_report` | `.codeagent/zhuque-secguard/.sgre/sgre.db` (auto-created) | N/A |
-| `secguard_db` | `.codeagent/zhuque-secguard/.sgre/sgre.db` (read-only) | N/A |
+| `secguard_scan` | `.codeagent/secguard-clang/.sgre/sgre.db` (auto-created) | `.codeagent/secguard-clang/scans/<scan-id>/` (auto-created) |
+| `secguard_index` | `.codeagent/secguard-clang/.sgre/sgre.db` (auto-created) | N/A |
+| `secguard_plan` | `.codeagent/secguard-clang/.sgre/sgre.db` | N/A |
+| `secguard_status` | `.codeagent/secguard-clang/.sgre/sgre.db` | N/A |
+| `secguard_report` | `.codeagent/secguard-clang/.sgre/sgre.db` (auto-created) | N/A |
+| `secguard_db` | `.codeagent/secguard-clang/.sgre/sgre.db` (read-only) | N/A |
 
 ## Agent Workflow
 

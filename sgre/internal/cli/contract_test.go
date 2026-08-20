@@ -14,7 +14,7 @@ func TestScanCmd_RejectsBadOutputDirBasename(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	cPath := writeTestCFile(t, root)
-	dbPath := filepath.Join(root, ".codeagent", "zhuque-secguard", ".sgre", "sgre.db")
+	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
 	os.MkdirAll(filepath.Dir(dbPath), 0755)
 
 	cases := []struct{ name, dirname string }{
@@ -40,10 +40,10 @@ func TestScanCmd_AcceptsWellFormedOutputDir(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	cPath := writeTestCFile(t, root)
-	scansRoot := filepath.Join(root, ".codeagent", "zhuque-secguard", "scans")
+	scansRoot := filepath.Join(root, ".codeagent", "secguard-clang", "scans")
 	goodDir := filepath.Join(scansRoot, "2026-08-11_140000_aaaaaa")
 	os.MkdirAll(goodDir, 0755)
-	dbPath := filepath.Join(root, ".codeagent", "zhuque-secguard", ".sgre", "sgre.db")
+	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
 	os.MkdirAll(filepath.Dir(dbPath), 0755)
 
 	stdout, _, exitCode := captureOutput(func() int {

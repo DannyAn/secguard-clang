@@ -7,7 +7,7 @@
 > ```bash
 > secguard scan --db /tmp/sgbench.db examples/c-vuln-benchmark/src
 > python3 scripts/validate-benchmark.py \
->   --sarif .codeagent/zhuque-secguard/scans/latest/sarif.sarif \
+>   --sarif .codeagent/secguard-clang/scans/latest/sarif.sarif \
 >   --expected examples/c-vuln-benchmark/expected-results.json
 > ```
 >
@@ -197,7 +197,7 @@ secguard scan --db /tmp/sgbench.db examples/c-vuln-benchmark/src
 
 # 2. 校验（validator 读 SARIF，按 (文件, 行) 交叉比对 ground truth）
 python3 scripts/validate-benchmark.py \
-    --sarif .codeagent/zhuque-secguard/scans/latest/sarif.sarif \
+    --sarif .codeagent/secguard-clang/scans/latest/sarif.sarif \
     --expected examples/c-vuln-benchmark/expected-results.json
 ```
 

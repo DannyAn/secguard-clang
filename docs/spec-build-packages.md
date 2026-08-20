@@ -25,7 +25,7 @@ SecGuard-Clang 是 AI 增强的 C 语言安全分析器。当前根目录 `build
 - 专用扩展包（opencode/claude-code）内未包含独立 `install.sh`，依赖统一包的安装脚本
 - 安装脚本无卸载能力、无幂等性保证、无安装清单记录
 - README/安装提示仅列出 4 个 skills，实际有 14 个
-- 统一包安装到 `~/.config/opencode/` 与 `~/.claude/`，与 `deploy.sh` 的 `extensions/zhuque-secguard/`、`skills/zhuque-secguard/` 路径不一致
+- 统一包安装到 `~/.config/opencode/` 与 `~/.claude/`，与 `deploy.sh` 的 `extensions/secguard-clang/`、`skills/secguard-clang/` 路径不一致
 - `deploy.sh`、`extension/install.sh`、`release/build-packages.sh`、`release/install.sh` 四个脚本各自重复实现了同一个 `expand_includes()` 函数（约 15 行），改一处须改四处，违反 DRY
 - 缺少独立的卸载入口脚本，用户须以 `install.sh --uninstall` 形式卸载，不直观
 - 缺少安装后的健康检查/验证能力，无法快速诊断"装了但没装对"的问题
@@ -131,8 +131,8 @@ SecGuard-Clang 是 AI 增强的 C 语言安全分析器。当前根目录 `build
 - **REQ-INST-04**：**THE install.sh SHALL** 接受参数 `--no-binary` 跳过二进制安装。
 - **REQ-INST-05**：**THE install.sh SHALL** 接受参数 `--uninstall` 执行卸载（依据安装清单文件删除已安装文件）。
 - **REQ-INST-06**：**WHEN** 安装 **THE install.sh SHALL** 选择与当前 `uname -s`/`uname -m` 匹配的二进制；若无匹配 **THE install.sh SHALL** 报错并列出包内可用目标。
-- **REQ-INST-07**：**WHEN** 安装 OpenCode **THE install.sh SHALL** 将 extension 安装到 `<prefix>/extensions/zhuque-secguard/`（与 `deploy.sh` 路径一致）。
-- **REQ-INST-08**：**WHEN** 安装 ClaudeCode **THE install.sh SHALL** 将 plugin 安装到 `<prefix>/skills/zhuque-secguard/`（与 `deploy.sh` 路径一致）。
+- **REQ-INST-07**：**WHEN** 安装 OpenCode **THE install.sh SHALL** 将 extension 安装到 `<prefix>/extensions/secguard-clang/`（与 `deploy.sh` 路径一致）。
+- **REQ-INST-08**：**WHEN** 安装 ClaudeCode **THE install.sh SHALL** 将 plugin 安装到 `<prefix>/skills/secguard-clang/`（与 `deploy.sh` 路径一致）。
 - **REQ-INST-09**：**WHEN** 安装完成 **THE install.sh SHALL** 在安装根写入 `.secguard-install-manifest`（记录版本、时间、已安装文件列表），供卸载使用。
 - **REQ-INST-10**：**WHEN** 重复安装同一版本 **THE install.sh SHALL** 覆盖已有文件且不报错（幂等）。
 - **REQ-INST-11**：**WHEN** 安装不同版本 **THE install.sh SHALL** 先卸载旧版本文件（依据 manifest）再安装新版本。
@@ -189,7 +189,7 @@ SecGuard-Clang 是 AI 增强的 C 语言安全分析器。当前根目录 `build
 - **REQ-VERIFY-01**：**THE install.sh SHALL** 以 `--verify` 子模式提供安装验证能力（不新增独立 `verify.sh`）；**WHEN** 指定 `--verify` **THE install.sh SHALL** 仅执行验证检测，不执行任何安装或卸载动作。
 - **REQ-VERIFY-02**：**WHEN** 验证 **THE install.sh SHALL** 检测 secguard 二进制：(a) 文件存在；(b) 可执行（`-x`）；(c) 执行 `secguard --version` 输出的版本与包版本（`VERSION` 文件或 manifest）匹配。
 - **REQ-VERIFY-03**：**WHEN** 验证 **THE install.sh SHALL** 检测 extension/plugin 关键文件齐全，至少包括：`extension.json` 或 `plugin.json`（视平台）、`commands/secguard.md`、`agents/security-auditor.md`、14 个 `skills/*/SKILL.md`。
-- **REQ-VERIFY-04**：**WHEN** 验证 **THE install.sh SHALL** 检测平台发现路径正确性：OpenCode 安装路径为 `<prefix>/extensions/zhuque-secguard/`；ClaudeCode 安装路径为 `<prefix>/skills/zhuque-secguard/`；路径不存在或关键文件缺失则该项判失败。
+- **REQ-VERIFY-04**：**WHEN** 验证 **THE install.sh SHALL** 检测平台发现路径正确性：OpenCode 安装路径为 `<prefix>/extensions/secguard-clang/`；ClaudeCode 安装路径为 `<prefix>/skills/secguard-clang/`；路径不存在或关键文件缺失则该项判失败。
 - **REQ-VERIFY-05**：**WHEN** 验证 ClaudeCode **THE install.sh SHALL** 检测 `~/.claude/settings.json` 已合并 secguard 权限项（7 项 `Bash(secguard *)` 等存在）。
 - **REQ-VERIFY-06**：**WHEN** 验证完成 **THE install.sh SHALL** 输出通过/失败项清单（每项标注 ✓/✗ 与说明），**THE install.sh SHALL** 以退出码反映整体结果：`0` 表示全部通过，非 `0` 表示存在问题（任一项失败）。
 
@@ -363,7 +363,7 @@ bin/secguard-<os>-<arch>
 | AC-10 | 包内无 `.gocache`、`.gotmp`、`*.db`、`.DS_Store` |
 | AC-11 | `./build.sh`（无 `--package`）行为与改造前完全一致（向后兼容） |
 | AC-12 | 在 macOS arm64 上安装统一包，自动选择 `secguard-darwin-arm64` 二进制 |
-| AC-13 | 安装路径与 `deploy.sh` 一致（`extensions/zhuque-secguard/`、`skills/zhuque-secguard/`） |
+| AC-13 | 安装路径与 `deploy.sh` 一致（`extensions/secguard-clang/`、`skills/secguard-clang/`） |
 | AC-14 | ClaudeCode 安装后 `~/.claude/settings.json` 含 7 项 secguard 权限，重复安装不重复添加 |
 | AC-15 | `release/lib.sh` 存在且定义 `expand_includes`；`build-packages.sh` 与 `deploy.sh` 均通过 `source` 引用，无重复实现 |
 | AC-16 | 任一 zip 包内 `install.sh` 不含 `source .../lib.sh` 语句，解压到任意临时目录可独立运行 |

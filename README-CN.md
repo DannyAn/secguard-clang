@@ -336,7 +336,7 @@ secguard db "SELECT * FROM findings WHERE status='confirmed'"
 
 ## 输出
 
-扫描结果写入 `.codeagent/zhuque-secguard/scans/<scan-id>/`：
+扫描结果写入 `.codeagent/secguard-clang/scans/<scan-id>/`：
 
 ```
 scans/2026-08-17_062452_e32eb1/

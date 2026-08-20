@@ -51,7 +51,7 @@ Before proceeding, validate the type filter:
 Target path: <parsed path>
 
 Instructions:
-1. Run a full security scan on the target path using `secguard_scan`. The tool returns a summary (scan_id, output_dir, total_candidates, candidates_by_type) — NOT the full candidate list. Results are written to `.codeagent/zhuque-secguard/scans/<scan_id>/` (SARIF 2.1 + report.md + per-finding Markdown). The database is stored at `.codeagent/zhuque-secguard/.sgre/sgre.db`.
+1. Run a full security scan on the target path using `secguard_scan`. The tool returns a summary (scan_id, output_dir, total_candidates, candidates_by_type) — NOT the full candidate list. Results are written to `.codeagent/secguard-clang/scans/<scan_id>/` (SARIF 2.1 + report.md + per-finding Markdown). The database is stored at `.codeagent/secguard-clang/.sgre/sgre.db`.
 2. Read `report.md` from the output directory — it lists every candidate in a compact table grouped by vulnerability type. This is your primary classification input.
 3. **Process types one at a time** (per-type batch loop) to avoid context exhaustion:
    a. For each vulnerability type with candidates > 0, load ONLY the skill for that type.

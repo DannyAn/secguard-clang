@@ -54,14 +54,14 @@ function printScanSummary(
   out += "### Output Files\n\n"
   out += `- Report: ${path.join(scanDir, "report.md")}\n`
   out += `- SARIF: ${path.join(scanDir, "sarif.sarif")}\n`
-  out += `- Latest: ${path.join(workspace, ".codeagent", "zhuque-secguard", "scans", "latest")}\n`
+  out += `- Latest: ${path.join(workspace, ".codeagent", "secguard-clang", "scans", "latest")}\n`
 
   w.write(out)
 }
 
 export default tool({
   description:
-    "Run full SecGuard security scan: index codebase, run all registered detectors, apply the convergence pipeline for every registered vulnerability type. Writes SARIF 2.1 + report.md + per-finding Markdown to .codeagent/zhuque-secguard/scans/<scan_id>/, stores DB at .codeagent/zhuque-secguard/.sgre/sgre.db. Returns JSON with evidence_packages, total_candidates, files_with_candidates, output_dir. The Go binary generates scan_id, creates the scan directory, and updates the latest symlink — this wrapper only invokes the binary and parses its JSON output.",
+    "Run full SecGuard security scan: index codebase, run all registered detectors, apply the convergence pipeline for every registered vulnerability type. Writes SARIF 2.1 + report.md + per-finding Markdown to .codeagent/secguard-clang/scans/<scan_id>/, stores DB at .codeagent/secguard-clang/.sgre/sgre.db. Returns JSON with evidence_packages, total_candidates, files_with_candidates, output_dir. The Go binary generates scan_id, creates the scan directory, and updates the latest symlink — this wrapper only invokes the binary and parses its JSON output.",
   args: {
     path: tool.schema
       .string()
@@ -74,7 +74,7 @@ export default tool({
     const secguardBin = findSecguard(context)
     const targetPath = args.path || workDir
 
-    const sgreDir = path.join(workDir, ".codeagent", "zhuque-secguard", ".sgre")
+    const sgreDir = path.join(workDir, ".codeagent", "secguard-clang", ".sgre")
     if (!fs.existsSync(sgreDir)) fs.mkdirSync(sgreDir, { recursive: true })
     const dbPath = path.join(sgreDir, "sgre.db")
 

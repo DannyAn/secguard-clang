@@ -339,7 +339,7 @@ Global options: `--db <path>` (override DB path), `--exclude <dirs>` (exclude di
 
 ## Output
 
-Scan results are written to `.codeagent/zhuque-secguard/scans/<scan-id>/`:
+Scan results are written to `.codeagent/secguard-clang/scans/<scan-id>/`:
 
 ```
 scans/2026-08-17_062452_e32eb1/
