@@ -33,13 +33,8 @@ export default tool({
           file: tool.schema.string().describe("Source file path"),
           line: tool.schema.number().describe("Source line number"),
           function: tool.schema.string().describe("Function name"),
-          variable: tool.schema.string().optional().describe("Variable name"),
-          evidence: tool.schema
-            .string()
-            .describe("Human-readable evidence summary (source/sink/path/condition)"),
           summary: tool.schema
             .string()
-            .optional()
             .describe("One-paragraph summary of the vulnerability and its impact"),
           reasoning: tool.schema
             .string()
@@ -53,10 +48,6 @@ export default tool({
             .string()
             .optional()
             .describe("Concrete fix strategy, ideally with a code snippet"),
-          suggestion: tool.schema
-            .string()
-            .optional()
-            .describe("Short one-line suggested fix"),
         })
       )
       .optional()
@@ -108,8 +99,6 @@ export default tool({
         // single line and survives Bun's argument escaping regardless of how
         // multi-line the reasoning/fix code is.
         const props = JSON.stringify({
-          variable: finding.variable || "",
-          suggestion: finding.suggestion || "",
           summary: finding.summary || "",
           reasoning: finding.reasoning || "",
           fix_strategy: finding.fix_strategy || "",
@@ -117,8 +106,8 @@ export default tool({
         })
         try {
           const report = scanId
-            ? Bun.$`${secguardBin} report --db ${dbPath} --write --rule-id ${finding.rule_id} --severity ${finding.severity.toLowerCase()} --confidence ${String(finding.confidence)} --status ${finding.status} --file ${finding.file} --line ${String(finding.line)} --function ${finding.function} --evidence ${finding.evidence} --properties ${props} --scan-id ${scanId}`
-            : Bun.$`${secguardBin} report --db ${dbPath} --write --rule-id ${finding.rule_id} --severity ${finding.severity.toLowerCase()} --confidence ${String(finding.confidence)} --status ${finding.status} --file ${finding.file} --line ${String(finding.line)} --function ${finding.function} --evidence ${finding.evidence} --properties ${props}`
+            ? Bun.$`${secguardBin} report --db ${dbPath} --write --rule-id ${finding.rule_id} --severity ${finding.severity.toLowerCase()} --confidence ${String(finding.confidence)} --status ${finding.status} --file ${finding.file} --line ${String(finding.line)} --function ${finding.function} --properties ${props} --scan-id ${scanId}`
+            : Bun.$`${secguardBin} report --db ${dbPath} --write --rule-id ${finding.rule_id} --severity ${finding.severity.toLowerCase()} --confidence ${String(finding.confidence)} --status ${finding.status} --file ${finding.file} --line ${String(finding.line)} --function ${finding.function} --properties ${props}`
           const out = (await report.cwd(workDir).quiet().text()).trim()
           // The CLI returns {"id": N, "status":"ok", ...}. Capture the id so the
           // agent can later issue a second-round --review for this exact finding.

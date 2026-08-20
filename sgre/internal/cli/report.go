@@ -144,6 +144,9 @@ func runReportCmd(ctx context.Context, args []string) int {
 		// passing regardless of the shell. Fall back to those keys when the
 		// dedicated flags are absent, so multi-line reasoning/fix code is not lost.
 		finding.ApplyStructuredFromProperties()
+		// The properties JSON was only the transport; the structured fields now
+		// live in their dedicated columns. Drop the raw copy so the DB stays lean.
+		finding.Properties = ""
 
 		if finding.Severity == "" {
 			finding.Severity = "info"

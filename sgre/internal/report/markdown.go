@@ -172,6 +172,43 @@ func statusSuffix(status string) string {
 	}
 }
 
+// removeLineByPrefix deletes a single line whose text starts with prefix,
+// returning the content unchanged if no such line exists.
+func removeLineByPrefix(content, prefix string) string {
+	idx := strings.Index(content, prefix)
+	if idx < 0 {
+		return content
+	}
+	// Back up to the start of the line the prefix sits on.
+	lineStart := strings.LastIndex(content[:idx], "\n") + 1
+	lineEnd := strings.Index(content[idx:], "\n")
+	if lineEnd < 0 {
+		return content[:lineStart]
+	}
+	return content[:lineStart] + content[idx+lineEnd+1:]
+}
+
+// truncateAtFirstSection cuts content at the earliest structured section the
+// rewrite appends (Summary/Reasoning/Exception Check/Fix Strategy) or the
+// candidate stage's generic "Fix Suggestion". Everything from that section to
+// the end is dropped, so the caller can re-append the current sections cleanly.
+func truncateAtFirstSection(content string) string {
+	markers := []string{
+		"## Summary", "## Reasoning", "## Exception Check", "## Fix Strategy", "## Fix Suggestion",
+	}
+	earliest := -1
+	for _, m := range markers {
+		if idx := strings.Index(content, m); idx >= 0 && (earliest == -1 || idx < earliest) {
+			earliest = idx
+		}
+	}
+	if earliest < 0 {
+		return content
+	}
+	// Back up to the start of the line the marker sits on.
+	return content[:strings.LastIndex(content[:earliest], "\n")+1]
+}
+
 // RewritePerFinding locates the candidate-stage per-finding markdown for
 // (vulnType, filePath, line[, function]), merges the AI's Summary/Reasoning/
 // Exception Check/Fix Strategy into it, updates the Classification status, and
@@ -243,44 +280,41 @@ func RewritePerFinding(scanDir, vulnType, filePath string, line int, update PerF
 			newStatus += ")"
 		}
 		content = strings.Replace(content, oldStatus, newStatus, 1)
+		// Drop the pipeline prior (suspicion_level) from the final file — it is
+		// an internal convergence metric; the developer only needs the AI verdict.
+		content = removeLineByPrefix(content, "- **Suspicion Level:** ")
 	}
 
-	var insertB strings.Builder
+	// Strip any structured sections a prior pass inserted (and the candidate
+	// stage's generic "Fix Suggestion"), so re-writing the same finding is
+	// idempotent instead of duplicating Summary/Reasoning/Fix blocks.
+	content = truncateAtFirstSection(content)
+
+	// Append the structured sections in the reference report's order.
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(content, "\n"))
+	b.WriteString("\n")
 	if update.Summary != "" {
-		insertB.WriteString("## Summary\n\n")
-		insertB.WriteString(update.Summary)
-		insertB.WriteString("\n\n")
+		b.WriteString("\n## Summary\n\n")
+		b.WriteString(update.Summary)
+		b.WriteString("\n")
 	}
 	if update.Reasoning != "" {
-		insertB.WriteString("## Reasoning\n\n")
-		insertB.WriteString(update.Reasoning)
-		insertB.WriteString("\n\n")
+		b.WriteString("\n## Reasoning\n\n")
+		b.WriteString(update.Reasoning)
+		b.WriteString("\n")
 	}
 	if update.ExceptionCheck != "" {
-		insertB.WriteString("## Exception Check\n\n")
-		insertB.WriteString(update.ExceptionCheck)
-		insertB.WriteString("\n\n")
+		b.WriteString("\n## Exception Check\n\n")
+		b.WriteString(update.ExceptionCheck)
+		b.WriteString("\n")
 	}
-
-	fixIdx := strings.Index(content, "## Fix Suggestion")
-	if fixIdx < 0 {
-		fixIdx = strings.Index(content, "## Fix Strategy")
+	if update.FixStrategy != "" {
+		b.WriteString("\n## Fix Strategy\n\n")
+		b.WriteString(update.FixStrategy)
+		b.WriteString("\n")
 	}
-	if update.FixStrategy != "" && fixIdx >= 0 {
-		content = content[:fixIdx] + "## Fix Strategy\n\n" + update.FixStrategy + "\n"
-		if insertB.Len() > 0 {
-			content = content[:fixIdx] + insertB.String() + content[fixIdx:]
-		}
-	} else if insertB.Len() > 0 {
-		insertion := insertB.String()
-		var at int
-		if fixIdx >= 0 {
-			at = fixIdx
-		} else {
-			at = len(content)
-		}
-		content = content[:at] + insertion + content[at:]
-	}
+	content = b.String()
 
 	newPath := oldPath
 	if s := statusSuffix(update.Status); s != "" {
