@@ -54,6 +54,19 @@ func TestTypeForCWE_CaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestTypeForCWE_LegacyCWEs(t *testing.T) {
+	cases := map[string]string{
+		"CWE-89":  "injection",
+		"cwe-326": "crypto-misuse",
+		"CWE-338": "crypto-misuse",
+	}
+	for cwe, want := range cases {
+		if got := TypeForCWE(cwe); got != want {
+			t.Errorf("TypeForCWE(%q) = %q, want %q (legacy CWE must reverse-map)", cwe, got, want)
+		}
+	}
+}
+
 func TestAllCWEs_IncludesLegacyCWE89(t *testing.T) {
 	cwes := AllCWEs()
 	if !cwes["CWE-89"] {

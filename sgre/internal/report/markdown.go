@@ -188,6 +188,21 @@ func removeLineByPrefix(content, prefix string) string {
 	return content[:lineStart] + content[idx+lineEnd+1:]
 }
 
+// replaceStatusLine swaps the "- **Status:** ..." line for the given newStatus
+// line, returning content unchanged if no such line exists. It matches by
+// prefix so it works regardless of whether the line currently reads "_pending_"
+// or a prior verdict.
+func replaceStatusLine(content, newStatus string) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "- **Status:**") {
+			lines[i] = newStatus
+			return strings.Join(lines, "\n")
+		}
+	}
+	return content
+}
+
 // truncateAtFirstSection cuts content at the earliest structured section the
 // rewrite appends (Summary/Reasoning/Exception Check/Fix Strategy) or the
 // candidate stage's generic "Fix Suggestion". Everything from that section to
@@ -270,7 +285,9 @@ func RewritePerFinding(scanDir, vulnType, filePath string, line int, update PerF
 	content := string(data)
 
 	if update.Status != "" {
-		oldStatus := "- **Status:** _pending_ (awaiting AI classification)"
+		// Replace the Status line by prefix (not the literal "_pending_" text),
+		// so it works on BOTH the first pass (pending → verdict) and a second
+		// pass (review updating a prior verdict).
 		newStatus := fmt.Sprintf("- **Status:** %s", update.Status)
 		if update.Severity != "" {
 			newStatus += fmt.Sprintf(" (severity: %s", update.Severity)
@@ -279,7 +296,7 @@ func RewritePerFinding(scanDir, vulnType, filePath string, line int, update PerF
 			}
 			newStatus += ")"
 		}
-		content = strings.Replace(content, oldStatus, newStatus, 1)
+		content = replaceStatusLine(content, newStatus)
 		// Drop the pipeline prior (suspicion_level) from the final file — it is
 		// an internal convergence metric; the developer only needs the AI verdict.
 		content = removeLineByPrefix(content, "- **Suspicion Level:** ")

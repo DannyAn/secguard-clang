@@ -100,14 +100,22 @@ func CWEForType(vulnType string) string {
 	return ""
 }
 
-// TypeForCWE returns the vulnerability type whose canonical CWE matches the
-// given CWE identifier (uppercased, trimmed). Returns "" if no type matches.
-// This is used by the audit report to bucket findings by vuln-type.
+// TypeForCWE returns the vulnerability type whose canonical or legacy CWE
+// matches the given CWE identifier (uppercased, trimmed). Returns "" if no type
+// matches. This is used by the audit report to bucket findings by vuln-type, so
+// it must reverse-map LegacyCWEs too — otherwise a legacy-CWE finding passes
+// --write validation but is silently dropped from audit counts and never gets a
+// per-finding markdown rewrite.
 func TypeForCWE(cwe string) string {
 	cweNorm := strings.ToUpper(strings.TrimSpace(cwe))
 	for name, spec := range vulnTypeRegistry {
 		if strings.ToUpper(spec.CWE) == cweNorm {
 			return name
+		}
+		for _, legacy := range spec.LegacyCWEs {
+			if strings.ToUpper(legacy) == cweNorm {
+				return name
+			}
 		}
 	}
 	return ""

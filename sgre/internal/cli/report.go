@@ -156,7 +156,11 @@ func runReportCmd(ctx context.Context, args []string) int {
 		finding.Status = strings.ToLower(finding.Status)
 
 		cweNorm := strings.ToUpper(strings.TrimSpace(finding.RuleID))
-		if cweNorm != "" && !db.SupportedFindingCWEs[cweNorm] {
+		if cweNorm == "" {
+			WriteErrorJSON("--write requires a non-empty --rule-id (CWE)")
+			return 1
+		}
+		if !db.SupportedFindingCWEs[cweNorm] {
 			WriteErrorJSON(fmt.Sprintf("unsupported rule_id %q: SecGuard pipeline does not detect this vulnerability type. Supported CWEs: %s. Agent-observed findings for unsupported types should be reported as observations, not persisted.", finding.RuleID, db.SupportedCWEsList()))
 			return 1
 		}
