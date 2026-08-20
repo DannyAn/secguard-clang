@@ -138,6 +138,12 @@ func runReportCmd(ctx context.Context, args []string) int {
 			ExceptionCheck: parseStringFlag(remaining, "exception-check"),
 			ScanID:         parseStringFlag(remaining, "scan-id"),
 		}
+		// The agent tool carries structured output (summary/reasoning/
+		// fix_strategy/exception_check) inside the --properties JSON, since a
+		// JSON string is single-line (newlines escaped) and survives argument
+		// passing regardless of the shell. Fall back to those keys when the
+		// dedicated flags are absent, so multi-line reasoning/fix code is not lost.
+		finding.ApplyStructuredFromProperties()
 
 		if finding.Severity == "" {
 			finding.Severity = "info"

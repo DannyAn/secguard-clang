@@ -36,11 +36,27 @@ export default tool({
           variable: tool.schema.string().optional().describe("Variable name"),
           evidence: tool.schema
             .string()
-            .describe("Human-readable evidence summary"),
+            .describe("Human-readable evidence summary (source/sink/path/condition)"),
+          summary: tool.schema
+            .string()
+            .optional()
+            .describe("One-paragraph summary of the vulnerability and its impact"),
+          reasoning: tool.schema
+            .string()
+            .optional()
+            .describe("The full reasoning chain: why this is a real vulnerability (or not)"),
+          exception_check: tool.schema
+            .string()
+            .optional()
+            .describe("Exception check: RAII / ownership-transfer / safe-wrapper / guard rules that were ruled out"),
+          fix_strategy: tool.schema
+            .string()
+            .optional()
+            .describe("Concrete fix strategy, ideally with a code snippet"),
           suggestion: tool.schema
             .string()
             .optional()
-            .describe("Suggested fix"),
+            .describe("Short one-line suggested fix"),
         })
       )
       .optional()
@@ -86,9 +102,18 @@ export default tool({
       const scanId = args.scan_id || ""
       const written: { file: string; line: number; id: number }[] = []
       for (const finding of args.findings) {
+        // Structured AI output (summary/reasoning/fix_strategy/exception_check)
+        // rides inside the properties JSON rather than as separate CLI flags:
+        // JSON.stringify escapes newlines to \n, so the payload is always a
+        // single line and survives Bun's argument escaping regardless of how
+        // multi-line the reasoning/fix code is.
         const props = JSON.stringify({
           variable: finding.variable || "",
           suggestion: finding.suggestion || "",
+          summary: finding.summary || "",
+          reasoning: finding.reasoning || "",
+          fix_strategy: finding.fix_strategy || "",
+          exception_check: finding.exception_check || "",
         })
         try {
           const report = scanId

@@ -115,11 +115,12 @@ findings.review_status = confirmed | dismissed | suspected-kept       [A5 review
    ↓ report.go
 effectiveStatus() → confirmed | suspected | dismissed                 [final]
    ↓ markdown.go statusSuffix
-per-finding file renamed `_c` / `_s` / `_x`
+per-finding file renamed `_confirmed` / `_suspected` / `_dismissed`
 ```
 
 The per-finding filename suffix (`internal/report/markdown.go` `statusSuffix`)
-maps the **final** status: `confirmed→_c`, `suspected→_s`, `dismissed→_x`.
+maps the **final** status: `confirmed→_confirmed`, `suspected→_suspected`,
+`dismissed→_dismissed`.
 
 ---
 
@@ -201,7 +202,7 @@ it instead of ad-hoc regex).
    pattern (guarded, bounded, transferred ownership). See the null-deref 7-filter
    chain as the reference design.
 3. **AI misclassification** → the finding's `evidence` / `review_reasoning` is
-   the audit trail; read the per-finding `<vuln-type>/NNN_*_x.md` file.
+   the audit trail; read the per-finding `<vuln-type>/NNN_*_dismissed.md` file.
 
 ### 3.4 "Status seems wrong in the report"
 

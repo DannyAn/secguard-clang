@@ -1,5 +1,39 @@
 package db
 
+import "encoding/json"
+
+// applyStructuredFromProperties fills Summary/Reasoning/FixStrategy/ExceptionCheck
+// from the free-form properties JSON when the dedicated fields are empty. This
+// lets the agent carry multi-line reasoning and fix code inside a single-line
+// JSON payload (newlines are escaped by JSON encoding), so it survives argument
+// passing regardless of the invoking shell.
+func (f *Finding) ApplyStructuredFromProperties() {
+	if f.Properties == "" {
+		return
+	}
+	var p struct {
+		Summary        string `json:"summary"`
+		Reasoning      string `json:"reasoning"`
+		FixStrategy    string `json:"fix_strategy"`
+		ExceptionCheck string `json:"exception_check"`
+	}
+	if err := json.Unmarshal([]byte(f.Properties), &p); err != nil {
+		return
+	}
+	if f.Summary == "" {
+		f.Summary = p.Summary
+	}
+	if f.Reasoning == "" {
+		f.Reasoning = p.Reasoning
+	}
+	if f.FixStrategy == "" {
+		f.FixStrategy = p.FixStrategy
+	}
+	if f.ExceptionCheck == "" {
+		f.ExceptionCheck = p.ExceptionCheck
+	}
+}
+
 type File struct {
 	ID        int64
 	Path      string

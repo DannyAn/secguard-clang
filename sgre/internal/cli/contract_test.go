@@ -169,6 +169,35 @@ func TestReportCmd_AcceptsKnownScanID(t *testing.T) {
 	}
 }
 
+func TestFinding_ApplyStructuredFromProperties(t *testing.T) {
+	f := &db.Finding{
+		Properties: `{"variable":"buf","suggestion":"short","summary":"heap overflow","reasoning":"source is user_size, no clamp, reaches strcpy","fix_strategy":"if (user_size < 12) return -1;","exception_check":"no RAII, no safe wrapper"}`,
+	}
+	f.ApplyStructuredFromProperties()
+	if f.Summary != "heap overflow" {
+		t.Errorf("Summary = %q, want %q", f.Summary, "heap overflow")
+	}
+	if f.Reasoning != "source is user_size, no clamp, reaches strcpy" {
+		t.Errorf("Reasoning not extracted from properties")
+	}
+	if f.FixStrategy != "if (user_size < 12) return -1;" {
+		t.Errorf("FixStrategy not extracted from properties")
+	}
+	if f.ExceptionCheck != "no RAII, no safe wrapper" {
+		t.Errorf("ExceptionCheck not extracted from properties")
+	}
+
+	// Dedicated fields take precedence over the properties JSON.
+	g := &db.Finding{
+		Summary:    "explicit summary",
+		Properties: `{"summary":"from props"}`,
+	}
+	g.ApplyStructuredFromProperties()
+	if g.Summary != "explicit summary" {
+		t.Errorf("dedicated Summary should win, got %q", g.Summary)
+	}
+}
+
 func TestEffectiveStatus(t *testing.T) {
 	cases := []struct{ status, review, want string }{
 		{"suspected", "confirmed", "confirmed"},

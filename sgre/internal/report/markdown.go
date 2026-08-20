@@ -153,16 +153,16 @@ type PerFindingUpdate struct {
 	FunctionName   string
 }
 
-// statusSuffix maps a finding status to the single-char filename suffix that
+// statusSuffix maps a finding status to a self-describing filename suffix that
 // lets a developer spot confirmed/suspected/dismissed at a glance via `ls`.
 func statusSuffix(status string) string {
 	switch strings.ToLower(status) {
 	case "confirmed":
-		return "_c"
+		return "_confirmed"
 	case "suspected":
-		return "_s"
+		return "_suspected"
 	case "dismissed":
-		return "_x"
+		return "_dismissed"
 	default:
 		return ""
 	}
@@ -171,9 +171,10 @@ func statusSuffix(status string) string {
 // RewritePerFinding locates the candidate-stage per-finding markdown for
 // (vulnType, filePath, line[, function]), merges the AI's Summary/Reasoning/
 // Exception Check/Fix Strategy into it, updates the Classification status, and
-// renames the file with a status suffix (_c/_s/_x). Returns the new path (or the
-// unchanged path if no rename), and an empty path + nil if no candidate file was
-// found (not an error — the finding is still persisted to the DB).
+// renames the file with a status suffix (_confirmed/_suspected/_dismissed).
+// Returns the new path (or the unchanged path if no rename), and an empty path +
+// nil if no candidate file was found (not an error — the finding is still
+// persisted to the DB).
 func RewritePerFinding(scanDir, vulnType, filePath string, line int, update PerFindingUpdate) (string, error) {
 	dir := filepath.Join(scanDir, vulnType)
 	safeName := sanitizeFilename(shortFile(filePath))
@@ -194,9 +195,9 @@ func RewritePerFinding(scanDir, vulnType, filePath string, line int, update PerF
 			continue
 		}
 		stem := strings.TrimSuffix(name, ".md")
-		stem = strings.TrimSuffix(stem, "_c")
-		stem = strings.TrimSuffix(stem, "_s")
-		stem = strings.TrimSuffix(stem, "_x")
+		stem = strings.TrimSuffix(stem, "_confirmed")
+		stem = strings.TrimSuffix(stem, "_suspected")
+		stem = strings.TrimSuffix(stem, "_dismissed")
 		if !strings.HasSuffix(stem, baseSuffix) {
 			continue
 		}
@@ -281,9 +282,9 @@ func RewritePerFinding(scanDir, vulnType, filePath string, line int, update PerF
 	if s := statusSuffix(update.Status); s != "" {
 		base := filepath.Base(oldPath)
 		stem := strings.TrimSuffix(base, ".md")
-		stem = strings.TrimSuffix(stem, "_c")
-		stem = strings.TrimSuffix(stem, "_s")
-		stem = strings.TrimSuffix(stem, "_x")
+		stem = strings.TrimSuffix(stem, "_confirmed")
+		stem = strings.TrimSuffix(stem, "_suspected")
+		stem = strings.TrimSuffix(stem, "_dismissed")
 		newPath = filepath.Join(dir, stem+s+".md")
 	}
 
