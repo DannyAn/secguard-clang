@@ -43,6 +43,12 @@ var unsignedTypeMarkers = []string{
 }
 
 func isUnsignedDecl(text string) bool {
+	// ssize_t is the signed counterpart of size_t; the substring match on
+	// "size_t" must not classify it as unsigned (ssize_t nwritten < 0 is a
+	// legitimate signed check, not dead logic).
+	if strings.Contains(text, "ssize_t") {
+		return false
+	}
 	for _, m := range unsignedTypeMarkers {
 		if strings.Contains(text, m) {
 			return true

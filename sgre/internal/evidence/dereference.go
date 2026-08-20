@@ -28,6 +28,7 @@ func (d *DereferenceDetector) Detect(ctx context.Context) (DetectResult, error) 
 		// Precompute the non-nullable-array set ONCE per file; the previous
 		// code ran root.FindAll per dereference node (O(nodes) traversals).
 		nonNullable := collectNonNullableArrays(root)
+		allIfs := root.FindAll("if_statement")
 
 		memberNodes := root.FindAll("field_expression")
 		// `*p` parses as a pointer_expression, not a unary_expression — the
@@ -37,15 +38,16 @@ func (d *DereferenceDetector) Detect(ctx context.Context) (DetectResult, error) 
 		subscriptNodes := root.FindAll("subscript_expression")
 
 		for _, f := range funcs {
-			d.detectMemberAccess(ctx, f, file, memberNodes, nonNullable, &result)
-			d.detectExplicitDeref(ctx, f, file, derefNodes, nonNullable, &result)
-			d.detectArraySubscript(ctx, f, file, subscriptNodes, nonNullable, &result)
+			bounds := AnalyzeBounds(IfsInFunc(allIfs, f.StartLine, f.EndLine))
+			d.detectMemberAccess(ctx, f, file, memberNodes, nonNullable, bounds, &result)
+			d.detectExplicitDeref(ctx, f, file, derefNodes, nonNullable, bounds, &result)
+			d.detectArraySubscript(ctx, f, file, subscriptNodes, nonNullable, bounds, &result)
 		}
 	})
 	return result, err
 }
 
-func (d *DereferenceDetector) detectMemberAccess(ctx context.Context, f *db.Function, file *db.File, nodes []parser.Node, nonNullable map[string]bool, result *DetectResult) {
+func (d *DereferenceDetector) detectMemberAccess(ctx context.Context, f *db.Function, file *db.File, nodes []parser.Node, nonNullable map[string]bool, bounds *RangeFacts, result *DetectResult) {
 	for _, node := range nodes {
 		if !funcLineRange(f, node.StartLine()) {
 			continue
@@ -55,11 +57,14 @@ func (d *DereferenceDetector) detectMemberAccess(ctx context.Context, f *db.Func
 			continue
 		}
 		varName := extractPointerFromField(node)
+		if bounds != nil && bounds.NonZeroAt(varName, node.StartLine()) {
+			continue
+		}
 		d.insertDerefEvent(ctx, f, file, node, varName, text, nonNullable, result)
 	}
 }
 
-func (d *DereferenceDetector) detectExplicitDeref(ctx context.Context, f *db.Function, file *db.File, nodes []parser.Node, nonNullable map[string]bool, result *DetectResult) {
+func (d *DereferenceDetector) detectExplicitDeref(ctx context.Context, f *db.Function, file *db.File, nodes []parser.Node, nonNullable map[string]bool, bounds *RangeFacts, result *DetectResult) {
 	for _, node := range nodes {
 		if !funcLineRange(f, node.StartLine()) {
 			continue
@@ -69,11 +74,14 @@ func (d *DereferenceDetector) detectExplicitDeref(ctx context.Context, f *db.Fun
 			continue
 		}
 		varName := text[1:]
+		if bounds != nil && bounds.NonZeroAt(varName, node.StartLine()) {
+			continue
+		}
 		d.insertDerefEvent(ctx, f, file, node, varName, text, nonNullable, result)
 	}
 }
 
-func (d *DereferenceDetector) detectArraySubscript(ctx context.Context, f *db.Function, file *db.File, nodes []parser.Node, nonNullable map[string]bool, result *DetectResult) {
+func (d *DereferenceDetector) detectArraySubscript(ctx context.Context, f *db.Function, file *db.File, nodes []parser.Node, nonNullable map[string]bool, bounds *RangeFacts, result *DetectResult) {
 	for _, node := range nodes {
 		if !funcLineRange(f, node.StartLine()) {
 			continue
@@ -83,6 +91,9 @@ func (d *DereferenceDetector) detectArraySubscript(ctx context.Context, f *db.Fu
 			continue
 		}
 		varName := children[0].Text()
+		if bounds != nil && bounds.NonZeroAt(varName, node.StartLine()) {
+			continue
+		}
 		d.insertDerefEvent(ctx, f, file, node, varName, node.Text(), nonNullable, result)
 	}
 }

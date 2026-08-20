@@ -3,6 +3,7 @@ package evidence
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -51,6 +52,13 @@ func (d *SizeofMisuseDetector) Detect(ctx context.Context) (DetectResult, error)
 					continue
 				}
 				if !d.inSizeContext(se) {
+					continue
+				}
+				// `memcpy(&dst_p, &src_p, sizeof(p))` copies the POINTER VALUE
+				// itself (sizeof(p) is the pointer width), which is intentional
+				// — not a scaling misuse. Only a buffer copy (src/dst are the
+				// pointed-to buffers, not `&p`) is the sizeof(pointer) defect.
+				if isPointerValueCopy(se, operand) {
 					continue
 				}
 
@@ -124,6 +132,33 @@ func (d *SizeofMisuseDetector) inSizeContext(se parser.Node) bool {
 		case "expression_statement", "compound_statement", "return_statement", "declaration":
 			return false
 		}
+	}
+	return false
+}
+
+// isPointerValueCopy reports whether a `sizeof(p)` size argument is used by a
+// memcpy/memmove whose source or destination is `&p` — i.e. the call copies the
+// pointer VALUE itself, so `sizeof(p)` (the pointer width) is the correct size.
+func isPointerValueCopy(se parser.Node, operand string) bool {
+	for p := se.Parent(); p != nil; p = p.Parent() {
+		if p.Kind() != "call_expression" {
+			continue
+		}
+		name := extractCallName(*p)
+		if name != "memcpy" && name != "memmove" && name != "memccpy" {
+			return false
+		}
+		args := callNamedArguments(*p)
+		if len(args) < 2 {
+			return false
+		}
+		dst := strings.TrimSpace(args[0].Text())
+		src := strings.TrimSpace(args[1].Text())
+		if dst == "&"+operand || src == "&"+operand ||
+			strings.HasPrefix(dst, "&"+operand) || strings.HasPrefix(src, "&"+operand) {
+			return true
+		}
+		return false
 	}
 	return false
 }

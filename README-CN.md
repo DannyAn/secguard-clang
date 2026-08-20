@@ -61,21 +61,21 @@
 |---|---|
 | 原始安全事件（22 个检测器） | 96,230 |
 | 进入收敛管线的候选 | 63,766 |
-| **收敛后的证据包（SARIF 结果）** | **4,837** — **约 13 倍压缩** |
-| 端到端墙钟时间 | **约 6.4 分钟**（索引 1.9s · 构图 20s · 检测 28s · 收敛约 5.5 分钟） |
+| **收敛后的证据包（SARIF 结果）** | **2,931** — **约 22 倍压缩** |
+| 端到端墙钟时间 | **约 6.5 分钟**（索引 1.8s · 构图 20s · 检测 33s · 收敛约 5.6 分钟） |
 
 分类型收敛效果（候选 → 证据包）：
 
 | 类型 | 候选 → 证据包 | 压缩率 |
 |---|---|---|
-| use-after-free | 9,779 → 44 | 99.5% |
-| null-deref | 48,861 → 1,027 | 97.9% |
-| double-free | 241 → 24 | 90.0% |
+| use-after-free | 9,779 → 43 | 99.6% |
+| null-deref | 48,861 → 872 | 98.2% |
+| double-free | 241 → 17 | 92.9% |
 | format-string | 32 → 13 | 59.4% |
-| memory-leak | 16 → 3 | 81.3% |
-| buffer-overflow | 286 → 280 | 2.1% |
-| integer-overflow | 134 → 116 | 13.4% |
-| … 全部 20 类型 | 63,766 → 4,837 | 约 13× |
+| memory-leak | 16 → 0 | 100% |
+| buffer-overflow | 286 → 218 | 23.8% |
+| integer-overflow | 134 → 104 | 22.4% |
+| … 全部 20 类型 | 63,766 → 2,931 | 约 22× |
 
 复现命令：
 
@@ -87,7 +87,7 @@ secguard scan --db /tmp/redis.db <path-to-redis>
 
 - **比 Semgrep 强**：Semgrep 只做文本模式匹配，SecGuard 真正分析代码的执行路径、数据流和跨函数传播。
 - **追平 Infer**：单函数内的精确分析能力同层。
-- **逼近 CodeQL / Coverity**：唯一差距在"数值范围分析"，已用"AI 推理兜底"补上大部分，详见 [docs/pk/competitive-analysis.md](docs/pk/competitive-analysis.md)。
+- **逼近 CodeQL / Coverity**：已实现轻量数值范围分析（守卫感知的界传播），抑制 null-deref 和除零误报；剩余差距在完整抽象解释区间域，已用"AI 推理兜底"补上大部分，详见 [docs/pk/competitive-analysis.md](docs/pk/competitive-analysis.md)。
 
 ---
 

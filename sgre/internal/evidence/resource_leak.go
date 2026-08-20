@@ -52,6 +52,11 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 				isReturned := isReturnedToCaller(varName, returns, f)
 				filteredReturns := filterNullGuardReturns(ifs, returnLines, varName)
 				nullGuardReturns := subtractLines(returnLines, filteredReturns)
+				// A lock/resource acquire whose failure is checked with an error
+				// exit (`if (pthread_mutex_lock(&m) != 0) return;`) holds no
+				// resource on that path, so those returns are not leaks.
+				acquireFailureReturns := findAcquireFailureReturns(ifs, returnLines, acquireLine)
+				allNonHeldReturns := append(append([]int{}, nullGuardReturns...), acquireFailureReturns...)
 				escapeLines := findEscapeLines(assigns, f, varName, localVars)
 
 				// shouldReportRelease=true emits a RESOURCE_RELEASE event, which
@@ -74,7 +79,7 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 				} else if cfgValid {
 					// Path-sensitive: released on all paths iff no path from the
 					// acquire reaches the exit avoiding every release/escape/guard.
-					shouldReportRelease = !hasLeakingPath(cfg, acquireLine, releaseLines, nullGuardReturns, escapeLines)
+					shouldReportRelease = !hasLeakingPath(cfg, acquireLine, releaseLines, allNonHeldReturns, escapeLines)
 				} else {
 					shouldReportRelease = true
 				}
@@ -376,6 +381,53 @@ func positiveGuardOn(cond *parser.Node, varName string) bool {
 	}
 	for _, op := range []string{" >=", " >", " !="} {
 		if strings.Contains(ct, varName+op) {
+			return true
+		}
+	}
+	return false
+}
+
+// findAcquireFailureReturns returns the return statements guarded by an
+// error-check on the acquire call at acquireLine — `if (pthread_mutex_lock(&m)
+// != 0) return;` or `rc = lock(&m); if (rc != 0) return;`. On that branch the
+// acquire FAILED, so no resource is held and the return is not a leak.
+func findAcquireFailureReturns(ifs []parser.Node, returnLines []int, acquireLine int) []int {
+	guarded := make(map[int]bool)
+	for _, ifStmt := range ifs {
+		if ifStmt.StartLine() < acquireLine || ifStmt.StartLine() > acquireLine+1 {
+			continue
+		}
+		cond := ifStmt.ChildByFieldName("condition")
+		if cond == nil {
+			continue
+		}
+		ct := cond.Text()
+		if !isErrorCheck(ct) {
+			continue
+		}
+		consequence := ifStmt.ChildByFieldName("consequence")
+		if consequence == nil {
+			continue
+		}
+		for _, ret := range consequence.FindAll("return_statement") {
+			guarded[ret.StartLine()] = true
+		}
+	}
+	var result []int
+	for _, line := range returnLines {
+		if guarded[line] {
+			result = append(result, line)
+		}
+	}
+	return result
+}
+
+// isErrorCheck reports whether an acquire-guard condition tests the acquire
+// result for failure (`!= 0`, `== -1`, `< 0`, `== NULL`), as opposed to a
+// success test (`== 0`).
+func isErrorCheck(condText string) bool {
+	for _, pat := range []string{"!= 0", "!=0", "== -1", "==-1", "< 0", "<0", "== NULL"} {
+		if strings.Contains(condText, pat) {
 			return true
 		}
 	}

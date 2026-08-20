@@ -59,6 +59,13 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, decls, assigns, calls, returns, inits, ifs, whiles, fors, funcDefs []parser.Node, summaries summaryMap, result *DetectResult) {
 	uninitVars := make(map[string]int)
 	assignSites := make(map[string][]int)
+	// outputParamInitLines maps a variable to the line after which it is
+	// definitely written via an output parameter (`&x` passed to a writer). A
+	// use before that line (e.g. inside a failure branch, TC16) stays reported;
+	// a use after it is initialized. This is kept separate from assignSites
+	// because hasUnassignedPath only matches assignment/declaration statements,
+	// so an output-param call line would otherwise never count as an assign.
+	outputParamInitLines := make(map[string]int)
 
 	for _, decl := range decls {
 		if !funcLineRange(f, decl.StartLine()) {
@@ -109,27 +116,57 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 			continue
 		}
 		callName := extractCallName(call)
-		// `&whole_var` passed to an output-param writer (a known initializer, or
-		// a local function whose parameter at this position is written on every
-		// path) initializes the variable.
-		if isOutputParamInitializer(callName) || summaries[callName] != nil {
-			summary := summaries[callName]
-			for _, child := range call.NamedChildren() {
-				if child.Kind() != "argument_list" {
+		// va_start/va_copy initialize the va_list (an array type that decays to
+		// a pointer, so it is passed as an identifier, not `&ap`).
+		if callName == "va_start" || callName == "va_copy" {
+			if args := getCallArgs(call); len(args) > 0 {
+				if name := extractVarName(args[0]); name != "" {
+					outputParamInitLines[name] = call.StartLine()
+				}
+			}
+		}
+		// `&whole_var` passed to an output-param writer initializes the variable
+		// after the call. Known initializers and local functions that write the
+		// parameter on every path initialize unconditionally; a local function
+		// that writes only on its success path requires the caller to guard the
+		// error return (TC16); unknown/external functions are assumed to write
+		// (they have no body to prove otherwise).
+		summary, hasSummary := summaries[callName]
+		for _, child := range call.NamedChildren() {
+			if child.Kind() != "argument_list" {
+				continue
+			}
+			for argIdx, arg := range child.NamedChildren() {
+				if arg.Kind() != "pointer_expression" || !strings.HasPrefix(strings.TrimSpace(arg.Text()), "&") {
 					continue
 				}
-				for argIdx, arg := range child.NamedChildren() {
-					if arg.Kind() != "pointer_expression" || !strings.HasPrefix(strings.TrimSpace(arg.Text()), "&") {
-						continue
+				inner := arg.NamedChildren()
+				if len(inner) == 0 || inner[0].Kind() != "identifier" {
+					continue // only whole-variable &x, not &x.field
+				}
+				name := inner[0].Text()
+				initLine := call.StartLine()
+				if hasSummary && !isOutputParamInitializer(callName) {
+					if summary.ParamWrites[argIdx] {
+						initLine = call.StartLine() // writes on every path
+					} else if summary.ParamConditionalWrites[argIdx] {
+						// Writes only on success. Initialize only past the
+						// caller's error guard, if any; otherwise keep it as a
+						// potential uninit (conservative, TC16).
+						g := outputParamGuardLine(ifs, f, call, callName)
+						if g == 0 {
+							continue
+						}
+						initLine = g
+					} else {
+						// No direct write found: a wrapper that forwards the
+						// pointer to another writer (lpGet -> lpGetWithBuf), or a
+						// never-writer. Assume the wrapper writes it.
+						initLine = call.StartLine()
 					}
-					inner := arg.NamedChildren()
-					if len(inner) == 0 || inner[0].Kind() != "identifier" {
-						continue // only whole-variable &x, not &x.field
-					}
-					name := inner[0].Text()
-					if isOutputParamInitializer(callName) || summary.ParamWrites[argIdx] {
-						assignSites[name] = append(assignSites[name], call.StartLine())
-					}
+				}
+				if initLine > outputParamInitLines[name] {
+					outputParamInitLines[name] = initLine
 				}
 			}
 		}
@@ -176,6 +213,12 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 			return
 		}
 		if _, uninit := uninitVars[name]; !uninit {
+			return
+		}
+		// Output-param initialization: a use after the (possibly guard-delayed)
+		// write-through point is initialized. A use before it — e.g. inside the
+		// failure branch of a conditional writer (TC16) — stays reported.
+		if initLine, ok := outputParamInitLines[name]; ok && useLine > initLine {
 			return
 		}
 		sites := assignSites[name]
@@ -398,6 +441,29 @@ func assignsVar(stmt parser.Node, varName string) bool {
 			c := child.NamedChildren()
 			if len(c) >= 1 && extractVarName(c[0]) == varName {
 				return true
+			}
+		}
+		return false
+	case "if_statement", "while_statement", "do_statement", "for_statement", "switch_statement":
+		// `if ((x = f()) == -1)` / `while ((x = next()) != NULL)` assigns x every
+		// time the condition is evaluated, so the control-flow header counts as an
+		// assign site for x on all paths reaching it.
+		if cond := stmt.ChildByFieldName("condition"); cond != nil {
+			for _, a := range cond.FindAll("assignment_expression") {
+				for _, name := range chainedWriteTargets(a) {
+					if name == varName {
+						return true
+					}
+				}
+			}
+		}
+		if init := stmt.ChildByFieldName("initializer"); init != nil {
+			for _, a := range init.FindAll("assignment_expression") {
+				for _, name := range chainedWriteTargets(a) {
+					if name == varName {
+						return true
+					}
+				}
 			}
 		}
 		return false
@@ -794,6 +860,76 @@ var outputParamInitializers = map[string]bool{
 
 func isOutputParamInitializer(name string) bool {
 	return outputParamInitializers[name]
+}
+
+// outputParamGuardLine reports the line after which a conditional output
+// parameter is definitely written, given the caller guards the call's error
+// return with an exit (`if (fn(&x) != OK) return;` / `rc = fn(&x); if (rc) return;`).
+// It returns 0 when no such guard is found, so the caller keeps the variable as
+// a potential uninit (conservative, TC16).
+func outputParamGuardLine(ifs []parser.Node, f *db.Function, call parser.Node, callName string) int {
+	callLine := call.StartLine()
+	for _, ifNode := range ifs {
+		if !funcLineRange(f, ifNode.StartLine()) {
+			continue
+		}
+		// The guard sits at or immediately after the call.
+		if ifNode.StartLine() < callLine || ifNode.StartLine() > callLine+2 {
+			continue
+		}
+		cons := ifNode.ChildByFieldName("consequence")
+		cond := ifNode.ChildByFieldName("condition")
+		// Form A: the call is the guard's condition (`if (fn(...) != 0)`), or
+		// Form B: `rc = fn(...); if (rc != 0)` — the call result is captured in
+		// an assignment whose left-hand variable is then tested by the guard's
+		// condition. The condition must reference that exact variable (matched as
+		// an identifier, not a substring, so `rc` does not match `rc2`); an
+		// unrelated guard (`if (other) return`) does not establish the output.
+		formA := cond != nil && strings.Contains(cond.Text(), callName)
+		formB := false
+		if parent := call.Parent(); parent != nil && cond != nil &&
+			(parent.Kind() == "assignment_expression" || parent.Kind() == "init_declarator") {
+			if lhs := parent.NamedChildren(); len(lhs) > 0 {
+				if v := strings.TrimSpace(lhs[0].Text()); v != "" {
+					for _, id := range cond.FindAll("identifier") {
+						if id.Text() == v {
+							formB = true
+							break
+						}
+					}
+				}
+			}
+		}
+		if !formA && !formB {
+			continue
+		}
+		// Error-exit guard (`if (FAIL) return;`): the output is written on the
+		// fall-through, so init starts after the if.
+		if cons != nil && isExitStmt(*cons) {
+			return ifNode.EndLine()
+		}
+		// Success-block guard (`if (OK) { use }`): the output is written inside
+		// the block, so init starts at the if's opening line.
+		return ifNode.StartLine() - 1
+	}
+	return 0
+}
+
+// isExitStmt reports whether a statement (or a compound block) terminates its
+// path via return/break/continue/goto — the shape of an error guard whose
+// fall-through is the success continuation.
+func isExitStmt(node parser.Node) bool {
+	switch node.Kind() {
+	case "return_statement", "break_statement", "continue_statement", "goto_statement":
+		return true
+	case "compound_statement":
+		for _, c := range node.NamedChildren() {
+			if isExitStmt(c) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // addressedArgs returns the set of variable names whose address is taken

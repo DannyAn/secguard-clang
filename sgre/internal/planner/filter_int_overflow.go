@@ -45,12 +45,13 @@ func (f *IntOverflowGuardFilter) Apply(ctx context.Context, candidates []Candida
 	var dropped []Dismissed
 	for _, c := range candidates {
 		// The variable-operand size patterns (product, add-const, mul-const)
-		// share the same guard check: every variable operand bounded by a
-		// preceding `if (op < CONST)` to a small constant makes the arithmetic
-		// provably non-overflowing (guardMaxBound² < 2^31, and a small bound
-		// keeps a + const and a * const well below SIZE_MAX).
+		// and general integer arithmetic share the same guard check: every
+		// variable operand bounded by a preceding `if (op < CONST)` to a small
+		// constant makes the arithmetic provably non-overflowing
+		// (guardMaxBound² < 2^31, and a small bound keeps a + const and
+		// a * const well below SIZE_MAX).
 		switch c.Category {
-		case "size_calc_overflow", "size_add_overflow", "size_mul_const_overflow":
+		case "size_calc_overflow", "size_add_overflow", "size_mul_const_overflow", "integer_overflow":
 		default:
 			kept = append(kept, c)
 			continue

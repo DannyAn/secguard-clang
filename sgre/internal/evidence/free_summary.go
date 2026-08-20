@@ -20,6 +20,11 @@ type FuncSummary struct {
 	// written only on some paths (e.g. a failure path skips the write) is NOT
 	// marked, so TC16's interprocedural uninit stays reported.
 	ParamWrites map[int]bool
+	// ParamConditionalWrites marks parameters that are written through on at
+	// least one path but NOT every path (a failure path skips the write). A
+	// caller that guards the call's error return can still treat the output as
+	// initialized on the success continuation.
+	ParamConditionalWrites map[int]bool
 }
 
 type summaryMap map[string]*FuncSummary
@@ -36,10 +41,12 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser) s
 		for _, f := range funcs {
 			params := extractFunctionParamsFrom(funcDefs, f.StartLine)
 
+			paramWrites, paramCondWrites := computeParamWriteStates(funcDefs, f, params)
 			s := &FuncSummary{
-				ParamDirectFrees: make(map[int]bool),
-				ParamFieldFrees:  make(map[int][]string),
-				ParamWrites:      computeParamWrites(funcDefs, f, params),
+				ParamDirectFrees:       make(map[int]bool),
+				ParamFieldFrees:        make(map[int][]string),
+				ParamWrites:            paramWrites,
+				ParamConditionalWrites: paramCondWrites,
 			}
 
 			s.ParamDirectFrees, s.ParamFieldFrees = computeParamFrees(funcDefs, f, params)
@@ -63,7 +70,7 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser) s
 
 			s.ReturnStores = findReturnStoresFrom(returns, assigns, f)
 
-			if len(s.ParamDirectFrees) > 0 || len(s.ParamFieldFrees) > 0 || len(s.GlobalFrees) > 0 || len(s.ReturnStores) > 0 || len(s.ParamWrites) > 0 {
+			if len(s.ParamDirectFrees) > 0 || len(s.ParamFieldFrees) > 0 || len(s.GlobalFrees) > 0 || len(s.ReturnStores) > 0 || len(s.ParamWrites) > 0 || len(s.ParamConditionalWrites) > 0 {
 				summaries[f.Name] = s
 			}
 		}
@@ -72,15 +79,23 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser) s
 	return summaries
 }
 
-// computeParamWrites reports, per parameter index, whether the function writes
-// through that pointer parameter on EVERY path to exit. It builds the function
-// CFG and checks whether the exit is reachable from the entry without passing a
-// write-through statement; if it is reachable, some path skips the write.
-func computeParamWrites(funcDefs []parser.Node, f *db.Function, params []string) map[int]bool {
-	result := make(map[int]bool)
+// computeParamWriteStates reports, per parameter index, two facts:
+//
+//   - every: the function writes through the pointer parameter on EVERY path to
+//     exit (`*p = ...` on all paths). A caller's `&x` is always initialized.
+//   - some:  the function writes through it on at least one path. When some is
+//     true but every is false, the write is conditional (a failure path skips
+//     it), and a caller must guard the error return before using the output.
+//
+// It builds the function CFG and checks whether the exit is reachable from the
+// entry without passing a write-through statement; if it is reachable, some
+// path skips the write.
+func computeParamWriteStates(funcDefs []parser.Node, f *db.Function, params []string) (map[int]bool, map[int]bool) {
+	every := make(map[int]bool)
+	some := make(map[int]bool)
 	body := extractFunctionBodyFrom(funcDefs, f.StartLine)
 	if body.Kind() != "compound_statement" {
-		return result
+		return every, some
 	}
 	cfg := graph.BuildStmtCFG(body, f.EndLine)
 
@@ -89,24 +104,66 @@ func computeParamWrites(funcDefs []parser.Node, f *db.Function, params []string)
 			continue
 		}
 		writeNodes := make(map[int]bool)
+		var writeStmts []parser.Node
 		for _, n := range cfg.Nodes {
 			if n.Kind != "stmt" {
 				continue
 			}
 			if directWritesParam(n.Stmt, p) {
 				writeNodes[n.ID] = true
+				writeStmts = append(writeStmts, n.Stmt)
 			}
 		}
 		if len(writeNodes) == 0 {
 			continue // never writes the param
 		}
+		some[idx] = true
 		// "writes on all paths" iff there is NO path from entry to exit that
-		// avoids every write node.
-		if !cfg.ReachesAvoiding(cfg.Entry, writeNodes, cfg.Exit) {
-			result[idx] = true
+		// avoids every write node. A write guarded only by a NULL-check on the
+		// pointer itself (`if (p) *p = ...`) still counts as every-path: a
+		// caller passing `&x` guarantees p is non-NULL, so the write happens.
+		if !cfg.ReachesAvoiding(cfg.Entry, writeNodes, cfg.Exit) || allNullGuardedWrites(writeStmts, p) {
+			every[idx] = true
 		}
 	}
-	return result
+	return every, some
+}
+
+// allNullGuardedWrites reports whether every write-through statement for param
+// p is enclosed in an `if` whose condition establishes p is NON-NULL on the
+// branch that reaches the write (`if (p) *p = ...`). A caller passing `&x`
+// guarantees p is non-NULL, so the write always executes. Only NON-NULL guards
+// count: `if (!p) {*p=...}` / `if (p == NULL) {*p=...}` write through p when p
+// IS NULL (a dereference crash), so they are NOT safe and must not match here.
+func allNullGuardedWrites(writeStmts []parser.Node, p string) bool {
+	if len(writeStmts) == 0 {
+		return false
+	}
+	for _, stmt := range writeStmts {
+		if !nullGuardedWrite(stmt, p) {
+			return false
+		}
+	}
+	return true
+}
+
+func nullGuardedWrite(stmt parser.Node, p string) bool {
+	for n := &stmt; n != nil; n = n.Parent() {
+		if n.Kind() != "if_statement" {
+			continue
+		}
+		cond := n.ChildByFieldName("condition")
+		if cond == nil {
+			continue
+		}
+		t := strings.TrimSpace(cond.Text())
+		if t == p || t == "("+p+")" ||
+			t == p+" != NULL" || t == p+" != 0" ||
+			t == "NULL != "+p || t == "0 != "+p {
+			return true
+		}
+	}
+	return false
 }
 
 // computeParamFrees reports, per parameter, the whole-param and per-field frees

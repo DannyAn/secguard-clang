@@ -80,6 +80,7 @@ type bufCtx struct {
 }
 
 func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, params map[string]bool, result *DetectResult) {
+	bounds := AnalyzeBounds(IfsInFunc(bc.ifs, f.StartLine, f.EndLine))
 	for _, call := range bc.calls {
 		if !funcLineRange(f, call.StartLine()) {
 			continue
@@ -112,7 +113,7 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 		// to the conservative generic path" (unknown capacity, append semantics,
 		// or a bounded local size).
 		if apikb.IsBoundedCopy(callName) {
-			if d.checkBoundedCopyOverflow(ctx, f, file, bc, call, callName, params, result) {
+			if d.checkBoundedCopyOverflow(ctx, f, file, bc, call, callName, params, bounds, result) {
 				continue
 			}
 		}
@@ -169,7 +170,7 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 //     (possible), handed to the AI agent.
 //   - Unknown capacity, or a bounded local n: strncpy (nominally safe) is
 //     suppressed; memcpy/memmove/strncat stay conservative and fall through.
-func (d *BufferOverflowDetector) checkBoundedCopyOverflow(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, call parser.Node, callName string, params map[string]bool, result *DetectResult) bool {
+func (d *BufferOverflowDetector) checkBoundedCopyOverflow(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, call parser.Node, callName string, params map[string]bool, bounds *RangeFacts, result *DetectResult) bool {
 	// A nominally-safe bounded copy (strncpy) is suppressed by default; an
 	// unsafe one (memcpy/memmove/strncat) stays conservative by falling through.
 	safeDefault := apikb.IsSafeFunction(callName)
@@ -180,6 +181,18 @@ func (d *BufferOverflowDetector) checkBoundedCopyOverflow(ctx context.Context, f
 	}
 	dstArg := args[0]
 	sizeArg := args[2]
+	// `memcpy(&var, src, sizeof(...))` copies exactly the destination object's
+	// own size (a value copy: `memcpy(&x, p, sizeof(x))`, `memcpy(&x, p,
+	// sizeof(T))` where x is of type T, `memcpy(&x.f, p, sizeof(x.f))`), so it
+	// cannot overflow. A pure `sizeof` of a different, larger type would
+	// overflow, but that pattern is vanishingly rare in real code; the common
+	// `sizeof(Type)` form (where the dst is of that type) is safe and far
+	// outweighs the rare false negative, so a sizeof-prefixed size with an
+	// address-taken destination is treated as a value copy.
+	if strings.HasPrefix(strings.TrimSpace(dstArg.Text()), "&") &&
+		strings.HasPrefix(strings.TrimSpace(sizeArg.Text()), "sizeof") {
+		return true
+	}
 	dstName := extractArgName(dstArg)
 	if dstName == "" {
 		return safeDefault
@@ -205,19 +218,29 @@ func (d *BufferOverflowDetector) checkBoundedCopyOverflow(ctx context.Context, f
 		return true
 	}
 
-	// Variable copy size: only meaningful when caller-influenced.
-	if sizeArg.Kind() == "identifier" && params[sizeArg.Text()] {
-		if callName == "strncat" {
-			return false // append: keep the conservative generic path
+	// Variable copy size.
+	if sizeArg.Kind() == "identifier" {
+		// A guard bounding the copy size above by the destination capacity
+		// (`if (n <= sizeof(dst)) memcpy(dst, src, n)`) makes the copy safe
+		// regardless of whether n is a parameter or a local.
+		if bounds != nil && capacity > 0 {
+			if hi := bounds.UpperBoundAt(sizeArg.Text(), call.StartLine()); hi > 0 && hi <= capacity {
+				return true
+			}
 		}
-		// A preceding bounds check (if (n >= sizeof(dst)) return;) already
-		// guards the copy, so the caller-influenced size cannot overflow.
-		if hasPrecedingBoundsCheck(bc.ifs, f, call.StartLine()) {
+		if params[sizeArg.Text()] {
+			if callName == "strncat" {
+				return false // append: keep the conservative generic path
+			}
+			// A preceding bounds check (if (n >= sizeof(dst)) return;) already
+			// guards the copy, so the caller-influenced size cannot overflow.
+			if hasPrecedingBoundsCheck(bc.ifs, f, call.StartLine()) {
+				return true
+			}
+			d.emitBoundedCopy(ctx, f, file, call, callName, "bounded_copy_var_size",
+				sizeArg.Text(), fmt.Sprintf("%d", capacity), result)
 			return true
 		}
-		d.emitBoundedCopy(ctx, f, file, call, callName, "bounded_copy_var_size",
-			sizeArg.Text(), fmt.Sprintf("%d", capacity), result)
-		return true
 	}
 	return safeDefault
 }

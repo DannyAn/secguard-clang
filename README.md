@@ -61,21 +61,21 @@ full pipeline against **Redis** (`src/`, 231 files · 6,001 functions · 68,512 
 |---|---|
 | Raw security events (22 detectors) | 96,230 |
 | Candidates seeded into the planner | 63,766 |
-| **Converged evidence packages (SARIF results)** | **4,837** — a **~13× reduction** |
-| End-to-end wall-clock time | **~6.4 min** (index 1.9s · graph 20s · detect 28s · convergence ~5.5 min) |
+| **Converged evidence packages (SARIF results)** | **2,931** — a **~22× reduction** |
+| End-to-end wall-clock time | **~6.5 min** (index 1.8s · graph 20s · detect 33s · convergence ~5.6 min) |
 
 Per-type convergence (seeded candidates → evidence packages):
 
 | Type | Seeded → Converged | Reduction |
 |---|---|---|
-| use-after-free | 9,779 → 44 | 99.5% |
-| null-deref | 48,861 → 1,027 | 97.9% |
-| double-free | 241 → 24 | 90.0% |
+| use-after-free | 9,779 → 43 | 99.6% |
+| null-deref | 48,861 → 872 | 98.2% |
+| double-free | 241 → 17 | 92.9% |
 | format-string | 32 → 13 | 59.4% |
-| memory-leak | 16 → 3 | 81.3% |
-| buffer-overflow | 286 → 280 | 2.1% |
-| integer-overflow | 134 → 116 | 13.4% |
-| … all 20 types | 63,766 → 4,837 | ~13× |
+| memory-leak | 16 → 0 | 100% |
+| buffer-overflow | 286 → 218 | 23.8% |
+| integer-overflow | 134 → 104 | 22.4% |
+| … all 20 types | 63,766 → 2,931 | ~22× |
 
 Reproduce with:
 
@@ -87,7 +87,7 @@ secguard scan --db /tmp/redis.db <path-to-redis>
 
 - **Stronger than Semgrep**: Semgrep only does textual pattern matching; SecGuard genuinely analyzes execution paths, dataflow, and cross-function propagation.
 - **On par with Infer**: single-function precision analysis is at the same tier.
-- **Approaching CodeQL / Coverity**: the only remaining gap is numeric range analysis, largely compensated by "AI-reasoning fallback" — see [docs/pk/competitive-analysis.md](docs/pk/competitive-analysis.md).
+- **Approaching CodeQL / Coverity**: a lightweight numeric range analysis (guard-aware bounds propagation) now suppresses null-deref and divide-by-zero false positives; the remaining gap is full abstract-interpretation interval domains, largely compensated by "AI-reasoning fallback" — see [docs/pk/competitive-analysis.md](docs/pk/competitive-analysis.md).
 
 ---
 

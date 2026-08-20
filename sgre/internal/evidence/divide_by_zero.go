@@ -37,7 +37,9 @@ func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error)
 
 	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		binaryExprs := root.FindAll("binary_expression")
+		allIfs := root.FindAll("if_statement")
 		for _, f := range funcs {
+			bounds := AnalyzeBounds(IfsInFunc(allIfs, f.StartLine, f.EndLine))
 			for _, expr := range binaryExprs {
 				if !funcLineRange(f, expr.StartLine()) {
 					continue
@@ -53,6 +55,20 @@ func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error)
 				// (yields +/-Inf/NaN), not a crash or a memory-safety defect, so it is
 				// out of scope for CWE-369. Only integer / and % can trap.
 				if isFloatDivisionText(expr.Text()) {
+					continue
+				}
+				// A guard that implies the divisor is non-zero (a ternary
+				// `d ? a/d : x`, or an enclosing `if (d)` / `if (d != 0)`) makes
+				// the division safe on every path that reaches it.
+				if divisionGuarded(expr, divisor) {
+					continue
+				}
+				// RangeFacts covers the early-return guard `if (d == 0) return;
+				// a/d;` (d non-zero on the fall-through) and the positive
+				// `if (d > 0) { ... a/d ... }`, which divisionGuarded's
+				// ancestor walk also handles but only for the immediate
+				// enclosing if — AnalyzeBounds adds the fall-through case.
+				if bounds.NonZeroAt(divisor, expr.StartLine()) {
 					continue
 				}
 
@@ -112,6 +128,47 @@ func possiblyZeroDivisor(divisor string) bool {
 		return stripped == "0" || stripped == "0.0"
 	}
 	return true
+}
+
+// divisionGuarded reports whether an enclosing guard implies the divisor is
+// non-zero: a ternary `d ? a/d : x`, or an `if (d)` / `if (d != 0)` / `while
+// (d)` whose body contains the division. On every path that reaches the
+// division, the guard has already established d != 0.
+func divisionGuarded(expr parser.Node, divisor string) bool {
+	d := strings.TrimSpace(divisor)
+	for n := &expr; n != nil; n = n.Parent() {
+		switch n.Kind() {
+		case "conditional_expression":
+			named := n.NamedChildren()
+			if len(named) == 0 {
+				continue
+			}
+			if guardImpliesNonZero(named[0].Text(), d) {
+				return true
+			}
+		case "if_statement", "while_statement", "do_statement":
+			cond := n.ChildByFieldName("condition")
+			if cond != nil && guardImpliesNonZero(cond.Text(), d) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// guardImpliesNonZero reports whether a guard condition text establishes that
+// divisor d is non-zero (truthiness, != 0, or > 0).
+func guardImpliesNonZero(condText string, d string) bool {
+	ct := strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(strings.TrimSpace(condText), ")"), "("))
+	if ct == d {
+		return true
+	}
+	for _, pat := range []string{d + " != 0", d + " > 0", "0 != " + d, "0 < " + d} {
+		if strings.Contains(ct, pat) {
+			return true
+		}
+	}
+	return false
 }
 
 // isFloatDivisionText reports whether a division expression involves a
