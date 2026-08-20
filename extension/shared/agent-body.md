@@ -92,6 +92,36 @@ budget your effort, not to pre-judge the answer:
 Your persisted classification (`confirmed`/`suspected`/`false-positive`) is what
 matters; `suspicion_level` only tells you how hard to look.
 
+## Second-Round Confirmation (A5)
+
+After every type batch is written, run a **second round over the `suspected`
+tier only** — this is the A5 final-confirmation layer. The convergence pipeline
+already proved what it could (`confirmed`) and dropped what it could
+deterministically refute; `suspected` is the residue that still needs a focused
+human-equivalent judgment, so give it one extra pass before you hand the report
+to a developer.
+
+For each finding you wrote with `status="suspected"`:
+
+1. Capture its database `id` from the `secguard_report` write response (the
+   `written` array maps each `file:line` to its `id`).
+2. Re-read the source at the reported `file:line` and ask one question only: **is
+   this a reachable, real vulnerability, or a false positive?**
+3. Record the verdict via `secguard_report` with a `reviews` entry:
+   - `review_status: "confirmed"` — it is real; promote it.
+   - `review_status: "dismissed"` — it is a false positive; drop it.
+   - `review_status: "suspected-kept"` — genuinely uncertain (external input with
+     no provable bound, a partial blacklist, a short read that may be acceptable);
+     keep it as suspected.
+   - `review_reasoning` — always a one-line justification.
+4. The final report counts the **post-A5** verdicts: `confirmed` = confirmed +
+   (suspected promoted to confirmed), `suspected` = suspected-kept only.
+
+A `suspected` finding that survives A5 must be a genuine "needs human judgment"
+case. If it is deterministic — a weak algorithm, a constant SQL string, a guarded
+division, a checked allocation — you missed the evidence; correct it to
+confirmed or dismissed rather than carrying it forward as suspected.
+
 ## Output Format
 
 你交付的是**诊断结论**，不是"处理进度"。用户只关心一件事：**扫描完之后，到底有没有问题、有哪些问题**。
@@ -163,7 +193,7 @@ matters; `suspicion_level` only tells you how hard to look.
 - `secguard_scan` — **Full scan tool**: Runs the complete pipeline (index + all detectors + convergence for every registered type). Returns a **summary only** (scan_id, output_dir, report_md path, total_candidates, candidates_by_type counts). Candidate details are in `report.md` — read it to get the full list. Writes SARIF + Markdown to `.codeagent/secguard-clang/scans/<scan_id>/`, DB to `.codeagent/secguard-clang/.sgre/sgre.db`. If the summary contains `report_error`, report.md was not written — surface the error to the user and stop.
 - `secguard_plan` — **Filtered scan tool**: Runs convergence for ONE vulnerability type only. Returns a compact candidate list (function, file:line, variable, suspicion_level) as JSON. Use this in filtered mode, once per selected type. Requires an existing index — call `secguard_scan` or `secguard_index` first if no index exists.
 - `secguard_types` (invoked as `secguard types`) — **Type list tool**: Returns the current list of vulnerability types (`name` + `cwe`). Always call this first to discover/validate the type list; do not hardcode types or counts.
-- `secguard_report` — Write findings (with `findings` arg) or read all findings (no arg). Only findings with pipeline-supported CWE rule_ids are accepted. Findings for other CWE types are rejected — report those as observations in your summary text instead. Pass `scan_id` and `output_dir` to auto-generate `audit-report.md` with per-skill pipeline statistics. **Write one vulnerability type at a time** (incremental), not all types in one call.
+- `secguard_report` — Write findings (with `findings` arg; returns each finding's `id` in the `written` array), record A5 second-round verdicts (with `reviews` arg: `id` + `review_status` + `review_reasoning`), or read all findings (no arg). Only findings with pipeline-supported CWE rule_ids are accepted. Findings for other CWE types are rejected — report those as observations in your summary text instead. Pass `scan_id` and `output_dir` to auto-generate `audit-report.md` with per-skill pipeline statistics. **Write one vulnerability type at a time** (incremental), not all types in one call. Then issue a `reviews` batch for every `suspected` finding (see Second-Round Confirmation).
 - `secguard_db` — Read-only SQL queries (SELECT only). Use for inspecting the **findings** table (your own output) and **files**/**functions** tables (for location cross-reference). **Do NOT query the `security_events` table** — it contains raw pre-convergence candidates that bypass the pipeline. **Before writing any SQL**, call `secguard_schema` to discover the exact column names — never guess column names (e.g. there is no `vulnerability_type` column; `findings` uses `rule_id`, `scan_stats` uses `vuln_type`). Query `findings` by `file_path` and `line_number`, NOT `file` and `line`.
 - `secguard_schema` (invoked as `secguard schema [table]`) — **Schema discovery tool**: Returns the column names and types for agent-queryable tables (`findings`, `scan_stats`, `files`, `functions`, `security_events`). Always call this before `secguard_db` if you are unsure of column names. Pass a table name to get one table's schema, or no arg for all tables plus example queries.
 - `secguard_status` — Check index status (files, functions, staleness). Use before filtered mode to determine if indexing is needed.

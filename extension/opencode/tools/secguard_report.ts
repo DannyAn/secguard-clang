@@ -13,7 +13,7 @@ function findSecguard(context: { worktree?: string, directory?: string }): strin
 
 export default tool({
   description:
-    "Write security findings to the SecGuard database (sgre.db) or retrieve existing findings. When findings argument is provided, writes them to the database and generates an audit report. When no findings argument, returns all existing findings as JSON.",
+    "Write security findings to the SecGuard database (sgre.db), retrieve existing findings, or record a second-round (A5) review verdict for a suspected finding. When findings is provided, writes them and returns each finding's database id (needed later for review). When reviews is provided, records --review verdicts (confirmed|dismissed|suspected-kept). When neither is provided, returns all existing findings as JSON.",
   args: {
     findings: tool.schema
       .array(
@@ -45,7 +45,23 @@ export default tool({
       )
       .optional()
       .describe(
-        "Findings to write. If omitted, returns all existing findings from the database."
+        "Findings to write. If omitted and reviews is omitted, returns all existing findings from the database."
+      ),
+    reviews: tool.schema
+      .array(
+        tool.schema.object({
+          id: tool.schema.number().describe("Finding id returned by a previous write"),
+          review_status: tool.schema
+            .string()
+            .describe("Second-round verdict: confirmed, dismissed, or suspected-kept"),
+          review_reasoning: tool.schema
+            .string()
+            .describe("One-line justification for the second-round call"),
+        })
+      )
+      .optional()
+      .describe(
+        "A5 second-round review verdicts for suspected findings (each targets a finding id from a prior write)."
       ),
     scan_id: tool.schema
       .string()
@@ -68,6 +84,7 @@ export default tool({
       const errors: string[] = []
       let skipped = 0
       const scanId = args.scan_id || ""
+      const written: { file: string; line: number; id: number }[] = []
       for (const finding of args.findings) {
         const props = JSON.stringify({
           variable: finding.variable || "",
@@ -77,7 +94,17 @@ export default tool({
           const report = scanId
             ? Bun.$`${secguardBin} report --db ${dbPath} --write --rule-id ${finding.rule_id} --severity ${finding.severity.toLowerCase()} --confidence ${String(finding.confidence)} --status ${finding.status} --file ${finding.file} --line ${String(finding.line)} --function ${finding.function} --evidence ${finding.evidence} --properties ${props} --scan-id ${scanId}`
             : Bun.$`${secguardBin} report --db ${dbPath} --write --rule-id ${finding.rule_id} --severity ${finding.severity.toLowerCase()} --confidence ${String(finding.confidence)} --status ${finding.status} --file ${finding.file} --line ${String(finding.line)} --function ${finding.function} --evidence ${finding.evidence} --properties ${props}`
-          await report.cwd(workDir).quiet().text()
+          const out = (await report.cwd(workDir).quiet().text()).trim()
+          // The CLI returns {"id": N, "status":"ok", ...}. Capture the id so the
+          // agent can later issue a second-round --review for this exact finding.
+          try {
+            const parsed = JSON.parse(out)
+            if (typeof parsed.id === "number") {
+              written.push({ file: finding.file, line: finding.line, id: parsed.id })
+            }
+          } catch {
+            // Non-JSON stdout — best effort, treat as success but no id captured.
+          }
         } catch (e: any) {
           const msg = e?.stderr?.toString()?.trim() || e?.message || String(e)
           errors.push(`${finding.file}:${finding.line} — ${msg}`)
@@ -100,7 +127,31 @@ export default tool({
       }
 
       return JSON.stringify(
-        { status: errors.length === 0 ? "ok" : "partial", findings_written: args.findings.length - errors.length, skipped, audit_path: auditPath, errors },
+        { status: errors.length === 0 ? "ok" : "partial", findings_written: args.findings.length - errors.length, skipped, written, audit_path: auditPath, errors },
+        null,
+        2
+      )
+    }
+
+    if (args.reviews && args.reviews.length > 0) {
+      const errors: string[] = []
+      const reviewed: { id: number; review_status: string }[] = []
+      for (const review of args.reviews) {
+        try {
+          const out = (await Bun.$`${secguardBin} report --db ${dbPath} --review --id ${String(review.id)} --review-status ${review.review_status} --review-reasoning ${review.review_reasoning || ""}`
+            .cwd(workDir)
+            .quiet()
+            .text()
+          ).trim()
+          JSON.parse(out) // throws if the CLI returned a non-JSON error, caught below
+          reviewed.push({ id: review.id, review_status: review.review_status })
+        } catch (e: any) {
+          const msg = e?.stderr?.toString()?.trim() || e?.message || String(e)
+          errors.push(`finding ${review.id} — ${msg}`)
+        }
+      }
+      return JSON.stringify(
+        { status: errors.length === 0 ? "ok" : "partial", reviewed, errors },
         null,
         2
       )

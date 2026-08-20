@@ -116,6 +116,20 @@ func AnalyzeBounds(ifs []parser.Node) *RangeFacts {
 			r.nonZeroInside[m[1]] = append(r.nonZeroInside[m[1]], [2]int{start, end})
 			continue
 		}
+		// Reassignment guard: `if (x == 0) x = <nonzero>;` / `if (!x) x = 1;`
+		// leaves x non-zero on the fall-through as well (the then-branch assigns
+		// a non-zero literal, every other path already had x != 0). Equivalent to
+		// the early-return guard for non-zero-ness.
+		if cons != nil {
+			if m := reEqZero.FindStringSubmatch(ct); m != nil && consequenceAssignsNonZero(*cons, m[1]) {
+				r.nonZeroAfter[m[1]] = append(r.nonZeroAfter[m[1]], end)
+				continue
+			}
+			if m := reNot.FindStringSubmatch(ct); m != nil && consequenceAssignsNonZero(*cons, m[1]) {
+				r.nonZeroAfter[m[1]] = append(r.nonZeroAfter[m[1]], end)
+				continue
+			}
+		}
 		// Fall-through non-zero: the guard exits when the condition is true,
 		// so the continuation establishes the negation.
 		if exits {
@@ -134,6 +148,23 @@ func AnalyzeBounds(ifs []parser.Node) *RangeFacts {
 		}
 	}
 	return r
+}
+
+// consequenceAssignsNonZero reports whether an if-consequence body assigns the
+// given variable a non-zero value (a non-zero literal or sizeof), e.g. the
+// `x = 1` in `if (x == 0) x = 1;`. Such an assignment makes x non-zero on every
+// path that falls through the guard.
+func consequenceAssignsNonZero(node parser.Node, varName string) bool {
+	for _, assign := range node.FindAll("assignment_expression") {
+		named := assign.NamedChildren()
+		if len(named) < 2 || strings.TrimSpace(named[0].Text()) != varName {
+			continue
+		}
+		if !possiblyZeroDivisor(named[1].Text()) {
+			return true
+		}
+	}
+	return false
 }
 
 // NonZeroAt reports whether var is established non-zero at the given line,

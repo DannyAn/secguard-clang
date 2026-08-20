@@ -268,7 +268,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 			if countsByVuln[vt] == nil {
 				countsByVuln[vt] = &vulnCounts{}
 			}
-			switch f.Status {
+			switch effectiveStatus(f) {
 			case "confirmed":
 				countsByVuln[vt].confirmed++
 			case "suspected":
@@ -350,6 +350,23 @@ type vulnAuditEntry struct {
 	Confirmed  int    `json:"confirmed"`
 	Suspected  int    `json:"suspected"`
 	Dismissed  int    `json:"dismissed"`
+}
+
+// effectiveStatus returns the post-A5 verdict for a finding. The second-round
+// review (review_status) overrides the original classification when present:
+// confirmed/dismissed/suspected-kept map to confirmed/dismissed/suspected, and a
+// finding that was never reviewed keeps its original status.
+func effectiveStatus(f *db.Finding) string {
+	switch f.ReviewStatus {
+	case "confirmed":
+		return "confirmed"
+	case "dismissed":
+		return "dismissed"
+	case "suspected-kept":
+		return "suspected"
+	default:
+		return f.Status
+	}
 }
 
 func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry) error {

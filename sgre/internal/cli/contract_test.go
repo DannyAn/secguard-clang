@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -164,5 +166,86 @@ func TestReportCmd_AcceptsKnownScanID(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(stdout), []byte("ok")) {
 		t.Errorf("expected status ok, got: %s", stdout)
+	}
+}
+
+func TestEffectiveStatus(t *testing.T) {
+	cases := []struct{ status, review, want string }{
+		{"suspected", "confirmed", "confirmed"},
+		{"suspected", "dismissed", "dismissed"},
+		{"suspected", "suspected-kept", "suspected"},
+		{"suspected", "", "suspected"},
+		{"confirmed", "", "confirmed"},
+		{"dismissed", "", "dismissed"},
+		{"open", "confirmed", "confirmed"},
+	}
+	for _, c := range cases {
+		f := &db.Finding{Status: c.status, ReviewStatus: c.review}
+		if got := effectiveStatus(f); got != c.want {
+			t.Errorf("effectiveStatus(status=%q, review=%q) = %q, want %q", c.status, c.review, got, c.want)
+		}
+	}
+}
+
+func TestReportCmd_ReviewFlow(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "test.db")
+	const scanID = "sc_2026-01-01_000000_aaaaaa"
+
+	d, err := db.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := db.NewStore(d)
+	if _, err = s.InsertScanStat(ctx, &db.ScanStat{ScanID: scanID, VulnType: "unchecked-return", SeedCount: 1, FinalCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	stdout, _, exitCode := captureOutput(func() int {
+		return runReportCmd(ctx, []string{
+			"--db", dbPath, "--write",
+			"--rule-id", "CWE-252", "--severity", "high", "--status", "suspected",
+			"--file", "x.c", "--line", "1", "--function", "f", "--evidence", "e",
+			"--scan-id", scanID,
+		})
+	})
+	if exitCode != 0 {
+		t.Fatalf("write failed: %s", stdout)
+	}
+	var wrote struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &wrote); err != nil || wrote.ID == 0 {
+		t.Fatalf("expected finding id in write response, got %s", stdout)
+	}
+
+	stdout, _, exitCode = captureOutput(func() int {
+		return runReportCmd(ctx, []string{
+			"--db", dbPath, "--review",
+			"--id", strconv.FormatInt(wrote.ID, 10),
+			"--review-status", "confirmed", "--review-reasoning", "real null-deref",
+		})
+	})
+	if exitCode != 0 {
+		t.Fatalf("review failed: %s", stdout)
+	}
+
+	d2, err := db.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2 := db.NewStore(d2)
+	defer s2.Close()
+	f, err := s2.GetFindingByID(ctx, wrote.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.ReviewStatus != "confirmed" {
+		t.Errorf("review_status = %q, want confirmed", f.ReviewStatus)
+	}
+	if effectiveStatus(f) != "confirmed" {
+		t.Errorf("effectiveStatus after review = %q, want confirmed", effectiveStatus(f))
 	}
 }

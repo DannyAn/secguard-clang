@@ -48,6 +48,22 @@ func TestNewDetector_DivideByZero(t *testing.T) {
 	}
 }
 
+func TestNewDetector_DivideByZero_ReassignmentGuard(t *testing.T) {
+	store := runOneDetector(t, "tc71_divide_by_zero_guard.c",
+		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewDivideByZeroDetector(s, p, l) })
+	if got := eventCount(t, store, "DIVIDE_BY_ZERO"); got != 1 {
+		t.Errorf("expected 1 DIVIDE_BY_ZERO event (clamp/negate/compound guards suppressed), got %d", got)
+	}
+}
+
+func TestNewDetector_SQLInjectionLiteralSafe(t *testing.T) {
+	store := runOneDetector(t, "tc72_sql_literal_safe.c",
+		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewInjectionDetector(s, p, l) })
+	if got := eventCount(t, store, "INJECTION"); got != 3 {
+		t.Errorf("expected 3 INJECTION events (literal/placeholder/constant-copy suppressed), got %d", got)
+	}
+}
+
 func TestNewDetector_UncheckedReturn(t *testing.T) {
 	store := runOneDetector(t, "tc60_unchecked_return.c",
 		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewUncheckedReturnDetector(s, p, l) })

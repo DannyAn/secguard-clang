@@ -99,3 +99,20 @@ func TestAllCWEs_CountIs20CanonicalPlus3Legacy(t *testing.T) {
 		t.Errorf("AllCWEs() has %d entries, want 23 (20 canonical + 3 legacy: CWE-89, CWE-326, CWE-338)", len(cwes))
 	}
 }
+
+func TestCryptoMisuse_CategoryConfidence(t *testing.T) {
+	spec, err := GetVulnTypeSpec("crypto-misuse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]string{
+		"weak_algorithm": "confirmed",
+		"undersized_key": "confirmed",
+		"weak_random":    "suspected",
+	}
+	for category, want := range cases {
+		if got := spec.CategoryConfidence[category]; got != want {
+			t.Errorf("crypto-misuse category %q confidence = %q, want %q", category, got, want)
+		}
+	}
+}

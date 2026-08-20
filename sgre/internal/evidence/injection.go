@@ -102,6 +102,13 @@ func (d *InjectionDetector) detectSQLInjection(ctx context.Context, f *db.Functi
 		if callName != "sqlite3_exec" {
 			continue
 		}
+		// sqlite3_exec(db, sql, cb, arg, errmsg): a literal SQL argument is
+		// constant (or uses ? placeholders), so no value can be interpolated
+		// into it — it is never injection. Only a variable or concatenated SQL
+		// argument can carry attacker-controlled text and is a candidate.
+		if args := extractCallArgs(call); len(args) >= 2 && isStringLiteral(args[1]) {
+			continue
+		}
 
 		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
 		props, _ := json.Marshal(map[string]string{
@@ -128,26 +135,56 @@ func (d *InjectionDetector) detectSQLInjection(ctx context.Context, f *db.Functi
 		if callName != "sprintf" && callName != "snprintf" {
 			continue
 		}
-		text := call.Text()
-		if strings.Contains(text, "SELECT") || strings.Contains(text, "INSERT") ||
-			strings.Contains(text, "UPDATE") || strings.Contains(text, "DELETE") {
-			locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine()})
-			props, _ := json.Marshal(map[string]string{
-				"function":   callName,
-				"category":   "sql_injection",
-				"expression": text,
-			})
-			_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-				EventType:  "INJECTION",
-				EntityID:   f.ID,
-				LocationID: locID,
-				Properties: string(props),
-			})
-			if err == nil {
-				result.EventsCreated++
-			}
+		args := extractCallArgs(call)
+		if len(args) < 2 {
+			continue
+		}
+		// sprintf(buf, fmt, ...): only a format string that BOTH builds SQL and
+		// interpolates a value (has a % specifier) is injectable. sprintf(buf,
+		// "SELECT ...") with no % is a constant string copy, not injection.
+		fmtStr := args[1]
+		if !hasSQLKeyword(fmtStr) || !hasFormatSpecifier(fmtStr) {
+			continue
+		}
+		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine()})
+		props, _ := json.Marshal(map[string]string{
+			"function":   callName,
+			"category":   "sql_injection",
+			"expression": call.Text(),
+		})
+		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
+			EventType:  "INJECTION",
+			EntityID:   f.ID,
+			LocationID: locID,
+			Properties: string(props),
+		})
+		if err == nil {
+			result.EventsCreated++
 		}
 	}
+}
+
+// isStringLiteral reports whether an argument is a plain C string literal (a
+// leading double quote). Such an argument is a compile-time constant and cannot
+// be attacker-influenced.
+func isStringLiteral(arg string) bool {
+	t := strings.TrimSpace(arg)
+	return len(t) >= 2 && t[0] == '"'
+}
+
+// hasSQLKeyword reports whether a format string contains a SQL statement verb
+// (case-insensitive), the signal that sprintf is building a SQL query.
+func hasSQLKeyword(s string) bool {
+	up := strings.ToUpper(s)
+	return strings.Contains(up, "SELECT") || strings.Contains(up, "INSERT") ||
+		strings.Contains(up, "UPDATE") || strings.Contains(up, "DELETE")
+}
+
+// hasFormatSpecifier reports whether a format string interpolates a value. A
+// literal '%' (no following conversion) is not valid printf, so its presence is
+// a reliable proxy for "this sprintf substitutes runtime values".
+func hasFormatSpecifier(s string) bool {
+	return strings.Contains(s, "%")
 }
 
 func (d *InjectionDetector) detectTaintFlowInjection(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node, result *DetectResult) {
