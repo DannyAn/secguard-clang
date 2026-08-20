@@ -2,6 +2,31 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.3.4] - 2026-08-21
+
+### 报告输出协议增强 + 隐藏 bug 修复
+
+报告层新增 A5 二次审查与结构化证据链，scan-id 加 `sc_` 前缀；完成一轮隐藏 bug 审计，evidence 层写入错误不再被静默吞掉，消除静默 false-negative。
+
+#### 新增
+
+- **A5 二次审查层**：report 新增第二轮审查，输出自描述状态后缀与结构化 reasoning/fix，状态机接线 A5。
+- **SARIF 证据链**：`result.sarif` 丰富化，附结构化 evidence chain；per-finding markdown 幂等重写并裁剪冗余字段。
+- **scan-id 前缀**：scan-id 从 `YYYY-MM-DD_HHMMSS_<6-hex>` 改为 `sc_YYYY-MM-DD_HHMMSS_xxxxxx`，保证 `latest` 符号链接排序在前。
+
+#### 修复
+
+- **evidence 写入错误不再静默吞掉（critical）**：22 个 detector 统一迁移到 `emitEvent` helper，`InsertLocation` 失败（locID=0 触发外键违规静默丢事件）与 `InsertEvent` 失败现均上报，杜绝静默 false-negative。
+- **injection ConvergeKey**：去重键改用 sink 变量而非 function+category，修复跨 sink 误合并。
+- **path-traversal 误报**：收敛 file-operation 洪泛并给出具体修复建议。
+- **taint**：丢弃无 tainted caller 的静态参数 sink。
+- **convergence**：从源头消除 deterministic suspected，并接线 A5。
+- **隐藏 bug 一批**：EffectiveStatus 传播、detector 错误处理、review 状态行更新、legacy-CWE 反查、空 rule_id 保护；`--status` 改用 EffectiveStatus + confidence 截断 + review-status 校验。
+
+#### 文档
+
+- DEVELOPER 补状态机与分层归属说明；`docs/output-protocol.md` 同步 scan-id 与证据链变化。
+
 ## [0.3.3] - 2026-08-20
 
 ### 轻函数隔离 + 守卫感知误报抑制（Redis 4,837 → 2,931，-39.4%）
