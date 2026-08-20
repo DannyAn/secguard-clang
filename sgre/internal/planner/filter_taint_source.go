@@ -472,14 +472,15 @@ func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted 
 	// Direct taint-source arguments (f(getenv("HOME"))) produce no PARAM_BINDING
 	// variable_ref, so they are captured independently and merged first.
 	direct, err := f.computeDirectTaintParams(ctx)
-	if err == nil {
-		for calleeID, idxs := range direct {
-			if result[calleeID] == nil {
-				result[calleeID] = make(map[int]bool)
-			}
-			for idx := range idxs {
-				result[calleeID][idx] = true
-			}
+	if err != nil {
+		return nil, fmt.Errorf("taint param summary: direct taint params: %w", err)
+	}
+	for calleeID, idxs := range direct {
+		if result[calleeID] == nil {
+			result[calleeID] = make(map[int]bool)
+		}
+		for idx := range idxs {
+			result[calleeID][idx] = true
 		}
 	}
 

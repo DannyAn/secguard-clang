@@ -30,7 +30,11 @@ func runPlanCmd(ctx context.Context, args []string) int {
 	}
 	defer store.Close()
 
-	funcs, _ := store.ListFunctions(ctx)
+	funcs, err := store.ListFunctions(ctx)
+	if err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to list functions: %v", err))
+		return 1
+	}
 	if len(funcs) == 0 {
 		WriteErrorJSON("no indexed repository found; run `secguard index <path>` first")
 		return 1

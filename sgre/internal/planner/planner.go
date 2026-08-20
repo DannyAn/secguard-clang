@@ -117,15 +117,20 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 	candidates := seed
 	shortCircuited := false
 	var dismissed []Dismissed
-	for _, filter := range filters {
+	for i, filter := range filters {
 		inputCount := len(candidates)
 		if inputCount == 0 {
+			// A filter emptied the list; record the remaining filters as
+			// skipped so summary.Filters always has one entry per filter (the
+			// shape stays consistent for consumers).
 			shortCircuited = true
-			summary.Filters = append(summary.Filters, FilterStats{
-				Name:        filter.Name(),
-				InputCount:  0,
-				OutputCount: 0,
-			})
+			for _, skipped := range filters[i:] {
+				summary.Filters = append(summary.Filters, FilterStats{
+					Name:        skipped.Name(),
+					InputCount:  0,
+					OutputCount: 0,
+				})
+			}
 			break
 		}
 

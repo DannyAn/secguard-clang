@@ -247,13 +247,15 @@ func runScanCmd(ctx context.Context, args []string) int {
 		result := oc.result
 
 		filterChainJSON, _ := json.Marshal(result.Summary.Filters)
-		store.InsertScanStat(ctx, &db.ScanStat{
+		if _, err := store.InsertScanStat(ctx, &db.ScanStat{
 			ScanID:      scanID,
 			VulnType:    vulnType,
 			SeedCount:   result.Summary.SeedCount,
 			FinalCount:  len(result.Candidates),
 			FilterChain: string(filterChainJSON),
-		})
+		}); err != nil {
+			logger.Warn("insert scan stat failed", "vuln_type", vulnType, "error", err)
+		}
 
 		if len(result.Summary.Dropped) > 0 {
 			dismissedByVuln = append(dismissedByVuln, report.VulnTypeDismissed{
@@ -292,7 +294,10 @@ func runScanCmd(ctx context.Context, args []string) int {
 		})
 	}
 
-	findings, _ := store.ListFindingsByScanID(ctx, scanID)
+	findings, err := store.ListFindingsByScanID(ctx, scanID)
+	if err != nil {
+		logger.Warn("list findings by scan failed", "error", err)
+	}
 	findingsList := make([]map[string]interface{}, 0, len(findings))
 	for _, f := range findings {
 		findingsList = append(findingsList, map[string]interface{}{
@@ -326,7 +331,10 @@ func runScanCmd(ctx context.Context, args []string) int {
 	}
 
 	scansDir := filepath.Dir(scanDir)
-	funcs, _ := store.ListFunctions(ctx)
+	funcs, err := store.ListFunctions(ctx)
+	if err != nil {
+		logger.Warn("list functions failed", "error", err)
+	}
 	functionsInIndex := len(funcs)
 	summaryData := report.SummaryData{
 		ScanID:           scanID,
@@ -539,20 +547,40 @@ func runStatusCmd(ctx context.Context, args []string) int {
 	}
 	defer store.Close()
 
-	files, _ := store.ListFiles(ctx)
-	funcs, _ := store.ListFunctions(ctx)
+	files, err := store.ListFiles(ctx)
+	if err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to list files: %v", err))
+		return 1
+	}
+	funcs, err := store.ListFunctions(ctx)
+	if err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to list functions: %v", err))
+		return 1
+	}
 
 	allEvents := 0
 	for _, et := range planner.AllSeedEventTypes() {
-		events, _ := store.ListEventsByType(ctx, et)
+		events, err := store.ListEventsByType(ctx, et)
+		if err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to list events: %v", err))
+			return 1
+		}
 		allEvents += len(events)
 	}
 	for _, et := range []string{"NULL_VALUE", "NULL_GUARD", "MEMORY_RELEASE", "RESOURCE_RELEASE", "VALUE_INIT"} {
-		events, _ := store.ListEventsByType(ctx, et)
+		events, err := store.ListEventsByType(ctx, et)
+		if err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to list events: %v", err))
+			return 1
+		}
 		allEvents += len(events)
 	}
 
-	findings, _ := store.ListFindings(ctx)
+	findings, err := store.ListFindings(ctx)
+	if err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to list findings: %v", err))
+		return 1
+	}
 
 	output := map[string]interface{}{
 		"indexed":           true,
