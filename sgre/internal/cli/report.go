@@ -121,6 +121,14 @@ func runReportCmd(ctx context.Context, args []string) int {
 		if confidence > 1.0 {
 			confidence = confidence / 100.0
 		}
+		// Clamp to the DB's [0,1] CHECK range so an out-of-range confidence
+		// (e.g. 150) cannot fail InsertFinding with an opaque constraint error.
+		if confidence > 1.0 {
+			confidence = 1.0
+		}
+		if confidence < 0 {
+			confidence = 0
+		}
 
 		finding := &db.Finding{
 			RuleID:         parseStringFlag(remaining, "rule-id"),
@@ -205,8 +213,10 @@ func runReportCmd(ctx context.Context, args []string) int {
 		}
 		reviewStatus := parseStringFlag(remaining, "review-status")
 		reviewReasoning := parseStringFlag(remaining, "review-reasoning")
-		if reviewStatus == "" {
-			WriteErrorJSON("--review requires --review-status (confirmed|dismissed|suspected-kept)")
+		switch reviewStatus {
+		case "confirmed", "dismissed", "suspected-kept":
+		default:
+			WriteErrorJSON(fmt.Sprintf("invalid --review-status %q (expected confirmed|dismissed|suspected-kept)", reviewStatus))
 			return 1
 		}
 
@@ -348,15 +358,22 @@ func runReportCmd(ctx context.Context, args []string) int {
 
 	statusFilter := parseStringFlag(remaining, "status")
 
-	var findings []*db.Finding
-	if statusFilter != "" {
-		findings, err = store.ListFindingsByStatus(ctx, statusFilter)
-	} else {
-		findings, err = store.ListFindings(ctx)
-	}
+	findings, err := store.ListFindings(ctx)
 	if err != nil {
 		WriteErrorJSON(fmt.Sprintf("failed to list findings: %v", err))
 		return 1
+	}
+	// Filter by the post-A5 effective verdict, not the raw first-pass status, so
+	// a reviewed finding is listed under its final verdict (consistent with the
+	// audit report, SARIF, and suppression index).
+	if statusFilter != "" {
+		filtered := make([]*db.Finding, 0, len(findings))
+		for _, f := range findings {
+			if f.EffectiveStatus() == statusFilter {
+				filtered = append(filtered, f)
+			}
+		}
+		findings = filtered
 	}
 
 	if len(findings) == 0 {
