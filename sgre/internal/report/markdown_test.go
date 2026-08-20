@@ -52,7 +52,7 @@ func TestRewritePerFinding_Idempotent(t *testing.T) {
 ## Classification
 
 - **Suspicion Level:** suspected
-- **Status:** _pending_ (awaiting agent classification)
+- **Status:** _pending_ (awaiting AI classification)
 
 ## Fix Suggestion
 

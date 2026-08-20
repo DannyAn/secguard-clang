@@ -510,7 +510,7 @@ func init() {
 		FilterChain:      "path-traversal",
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{
-				{Type: "path_traversal", Role: "sink", Detail: fmt.Sprintf("non-literal path passed to %s in function %s at line %d", c.APIName, c.FunctionName, c.Line)},
+				{Type: "path_traversal", Role: "sink", Detail: fmt.Sprintf("filesystem call %s receives a path that is not a fixed string literal — an attacker-controlled value could use ../ to escape the intended directory and read/overwrite/delete an arbitrary file", c.APIName)},
 				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
 			}
 			if c.HasTaintSource {

@@ -33,10 +33,15 @@ func (d *PathTraversalDetector) Capabilities() []string {
 	return []string{"file-path", "directory-path"}
 }
 
+// pathSinks are the filesystem calls where an attacker-controlled path can read,
+// overwrite, or delete an arbitrary file (classic CWE-22). Query-only sinks
+// (stat/lstat/access), permission changes (chmod/chown), and directory creation
+// (mkdir/rmdir) are excluded — they are not content-traversal and are covered by
+// other detectors (race-condition for access+fopen TOCTOU), so flagging them
+// here only floods the developer with low-signal file operations.
 var pathSinks = map[string]bool{
-	"fopen": true, "open": true, "openat": true, "unlink": true, "remove": true,
-	"rename": true, "access": true, "stat": true, "lstat": true, "opendir": true,
-	"chmod": true, "chown": true, "mkdir": true, "rmdir": true,
+	"fopen": true, "open": true, "openat": true, "opendir": true,
+	"unlink": true, "remove": true, "rename": true,
 }
 
 func (d *PathTraversalDetector) Detect(ctx context.Context) (DetectResult, error) {

@@ -80,6 +80,21 @@ func TestNewDetector_PathTraversal(t *testing.T) {
 	}
 }
 
+func TestPathTraversal_SinkList(t *testing.T) {
+	// Content-traversal sinks stay; query/permission/dir sinks are dropped so
+	// the detector no longer floods the developer with every file operation.
+	for _, keep := range []string{"fopen", "open", "openat", "opendir", "unlink", "remove", "rename"} {
+		if !pathSinks[keep] {
+			t.Errorf("%s should be a path-traversal sink", keep)
+		}
+	}
+	for _, drop := range []string{"stat", "lstat", "access", "chmod", "chown", "mkdir", "rmdir"} {
+		if pathSinks[drop] {
+			t.Errorf("%s should NOT be a path-traversal sink (query/permission/dir op)", drop)
+		}
+	}
+}
+
 func TestNewDetector_SizeofMisuse(t *testing.T) {
 	store := runOneDetector(t, "tc62_sizeof_misuse.c",
 		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewSizeofMisuseDetector(s, p, l) })

@@ -106,7 +106,7 @@ func (o *ScanOutput) writePerFinding(packages []*planner.PlanResult) error {
 
 			b.WriteString("## Classification\n\n")
 			b.WriteString(fmt.Sprintf("- **Suspicion Level:** %s\n", c.SuspicionLevel))
-			b.WriteString("- **Status:** _pending_ (awaiting agent classification)\n")
+			b.WriteString("- **Status:** _pending_ (awaiting AI classification)\n")
 			b.WriteString("\n")
 
 			b.WriteString("## Fix Suggestion\n\n")
@@ -270,7 +270,7 @@ func RewritePerFinding(scanDir, vulnType, filePath string, line int, update PerF
 	content := string(data)
 
 	if update.Status != "" {
-		oldStatus := "- **Status:** _pending_ (awaiting agent classification)"
+		oldStatus := "- **Status:** _pending_ (awaiting AI classification)"
 		newStatus := fmt.Sprintf("- **Status:** %s", update.Status)
 		if update.Severity != "" {
 			newStatus += fmt.Sprintf(" (severity: %s", update.Severity)
@@ -565,6 +565,29 @@ func generateFixSuggestion(vulnType, cwe string, c planner.EvidenceItem) string 
 				"rand() → cryptographic PRNG (getrandom, CryptGenRandom); RC4 → AES.\n"+
 				"Use keys of at least 128 bits (256 recommended for long-term security).\n",
 			funcName)
+
+	case "path-traversal":
+		return fmt.Sprintf(
+			"Validate and constrain the path before passing it to `%s` in `%s`:\n\n"+
+				"```c\n"+
+				"// 1. Reject absolute paths and any '..' component\n"+
+				"if (path[0] == '/' || strstr(path, \"..\") != NULL) {\n"+
+				"    return -1;  // or reject the request\n"+
+				"}\n"+
+				"// 2. Build the path under a fixed base directory\n"+
+				"char safe[PATH_MAX];\n"+
+				"snprintf(safe, sizeof(safe), \"%%s/%%s\", BASE_DIR, path);\n"+
+				"// 3. Canonicalize and verify the real path stays inside BASE_DIR\n"+
+				"char resolved[PATH_MAX];\n"+
+				"if (realpath(safe, resolved) == NULL) return -1;\n"+
+				"if (strncmp(resolved, BASE_DIR, strlen(BASE_DIR)) != 0) return -1;\n"+
+				"// 4. Only now touch the filesystem\n"+
+				"FILE *f = fopen(resolved, \"r\");\n"+
+				"```\n\n"+
+				"Never pass an unvalidated caller-controlled path directly to a filesystem\n"+
+				"call. The canonical check is: reject `..`/absolute paths, resolve with\n"+
+				"realpath, and confirm the result still lives inside the allowed base dir.\n",
+			funcName, funcName)
 
 	default:
 		return "Review the evidence above and apply the appropriate mitigation for this\n" +
