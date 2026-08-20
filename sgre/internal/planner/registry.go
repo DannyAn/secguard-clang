@@ -249,7 +249,10 @@ func init() {
 		DefaultSuspicion: "suspected",
 		FilterChain:      "injection",
 		ConvergeKey: func(c Candidate) string {
-			return fmt.Sprintf("injection:%d:%s:%s", c.FileID, c.FunctionName, c.Category)
+			// Key on the sink/source variable (or the expression text as fallback)
+			// so sprintf(source) + sqlite3_exec(sink) sharing one buffer merge, but
+			// two independent sinks in the same function stay distinct findings.
+			return fmt.Sprintf("injection:%d:%s:%s:%s", c.FileID, c.FunctionName, c.Category, c.VariableName)
 		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{

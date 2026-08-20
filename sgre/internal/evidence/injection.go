@@ -106,14 +106,22 @@ func (d *InjectionDetector) detectSQLInjection(ctx context.Context, f *db.Functi
 		// constant (or uses ? placeholders), so no value can be interpolated
 		// into it — it is never injection. Only a variable or concatenated SQL
 		// argument can carry attacker-controlled text and is a candidate.
-		if args := extractCallArgs(call); len(args) >= 2 && isStringLiteral(args[1]) {
+		args := extractCallArgs(call)
+		if len(args) >= 2 && isStringLiteral(args[1]) {
 			continue
+		}
+		// The SQL buffer (args[1], when a bare identifier) is the linkage that
+		// lets the planner merge this sink with its sprintf source.
+		sqlVar := ""
+		if len(args) >= 2 {
+			sqlVar = bareIdentString(args[1])
 		}
 
 		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
 		props, _ := json.Marshal(map[string]string{
 			"function":   callName,
 			"category":   "sql_injection",
+			"variable":   sqlVar,
 			"expression": call.Text(),
 		})
 		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
@@ -146,10 +154,17 @@ func (d *InjectionDetector) detectSQLInjection(ctx context.Context, f *db.Functi
 		if !hasSQLKeyword(fmtStr) || !hasFormatSpecifier(fmtStr) {
 			continue
 		}
+		// The destination buffer (args[0], when a bare identifier) links this
+		// source with its sqlite3_exec sink.
+		bufVar := ""
+		if len(args) >= 1 {
+			bufVar = bareIdentString(args[0])
+		}
 		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine()})
 		props, _ := json.Marshal(map[string]string{
 			"function":   callName,
 			"category":   "sql_injection",
+			"variable":   bufVar,
 			"expression": call.Text(),
 		})
 		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
@@ -162,6 +177,23 @@ func (d *InjectionDetector) detectSQLInjection(ctx context.Context, f *db.Functi
 			result.EventsCreated++
 		}
 	}
+}
+
+// bareIdentString returns arg when it is a bare C identifier (the buffer/var the
+// planner keys convergence on), else "". This lets the planner merge a sprintf
+// source with its sqlite3_exec sink while keeping independent sinks distinct.
+func bareIdentString(arg string) string {
+	t := strings.TrimSpace(arg)
+	if t == "" {
+		return ""
+	}
+	for i, c := range t {
+		if c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (i > 0 && c >= '0' && c <= '9') {
+			continue
+		}
+		return ""
+	}
+	return t
 }
 
 // isStringLiteral reports whether an argument is a plain C string literal (a

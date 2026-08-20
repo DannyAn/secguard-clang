@@ -130,6 +130,25 @@ func TestCryptoMisuse_CategoryConfidence(t *testing.T) {
 	}
 }
 
+func TestInjection_ConvergeKey_DistinctSinks(t *testing.T) {
+	spec, err := GetVulnTypeSpec("injection")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two independent sqlite3_exec sinks in one function must not merge.
+	a := Candidate{FileID: 1, FunctionName: "f", Category: "sql_injection", VariableName: "q1", Line: 10}
+	b := Candidate{FileID: 1, FunctionName: "f", Category: "sql_injection", VariableName: "q2", Line: 20}
+	if spec.ConvergeKey(a) == spec.ConvergeKey(b) {
+		t.Errorf("distinct buffers q1/q2 must produce distinct converge keys")
+	}
+	// A sprintf source and its sqlite3_exec sink sharing one buffer must merge.
+	src := Candidate{FileID: 1, FunctionName: "f", Category: "sql_injection", VariableName: "query", Line: 48}
+	sink := Candidate{FileID: 1, FunctionName: "f", Category: "sql_injection", VariableName: "query", Line: 49}
+	if spec.ConvergeKey(src) != spec.ConvergeKey(sink) {
+		t.Errorf("sprintf source and sqlite3_exec sink sharing buffer must merge")
+	}
+}
+
 func TestNullDeref_EvidenceRoles(t *testing.T) {
 	spec, err := GetVulnTypeSpec("null-deref")
 	if err != nil {
