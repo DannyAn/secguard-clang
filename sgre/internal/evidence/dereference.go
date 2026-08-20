@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -99,7 +98,6 @@ func (d *DereferenceDetector) detectArraySubscript(ctx context.Context, f *db.Fu
 }
 
 func (d *DereferenceDetector) insertDerefEvent(ctx context.Context, f *db.Function, file *db.File, node parser.Node, varName, expr string, nonNullable map[string]bool, result *DetectResult) {
-	locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: node.StartLine(), Column: node.StartColumn()})
 	propsMap := map[string]string{"variable": varName, "expression": expr}
 	if isInsideTypeExpr(node) {
 		propsMap["is_type_expr"] = "true"
@@ -107,14 +105,7 @@ func (d *DereferenceDetector) insertDerefEvent(ctx context.Context, f *db.Functi
 	if nonNullable[varName] {
 		propsMap["non_nullable"] = "true"
 	}
-	props, _ := json.Marshal(propsMap)
-	_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-		EventType:  "DEREFERENCE",
-		EntityID:   f.ID,
-		LocationID: locID,
-		Properties: string(props),
-	})
-	if err == nil {
+	if emitEvent(ctx, d.store, d.logger, "DEREFERENCE", f.ID, &db.Location{FileID: file.ID, Line: node.StartLine(), Column: node.StartColumn()}, propsMap) {
 		result.EventsCreated++
 	}
 }

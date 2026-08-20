@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -806,18 +805,10 @@ func fieldWritePaths(lhs parser.Node) []string {
 }
 
 func (d *UninitVariableDetector) insertValueUseEvent(ctx context.Context, f *db.Function, file *db.File, line int, varName, origin string, result *DetectResult) {
-	locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: line})
-	props, _ := json.Marshal(map[string]string{
+	if emitEvent(ctx, d.store, d.logger, "VALUE_USE", f.ID, &db.Location{FileID: file.ID, Line: line}, map[string]string{
 		"variable": varName,
 		"origin":   origin,
-	})
-	_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-		EventType:  "VALUE_USE",
-		EntityID:   f.ID,
-		LocationID: locID,
-		Properties: string(props),
-	})
-	if err == nil {
+	}) {
 		result.EventsCreated++
 	}
 }

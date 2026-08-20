@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -137,19 +136,11 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 		}
 		category := "buffer_overflow"
 
-		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
-		props, _ := json.Marshal(map[string]string{
+		if emitEvent(ctx, d.store, d.logger, "BUFFER_ACCESS", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
 			"function":   callName,
 			"category":   category,
 			"expression": call.Text(),
-		})
-		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-			EventType:  "BUFFER_ACCESS",
-			EntityID:   f.ID,
-			LocationID: locID,
-			Properties: string(props),
-		})
-		if err == nil {
+		}) {
 			result.EventsCreated++
 		}
 	}
@@ -246,20 +237,13 @@ func (d *BufferOverflowDetector) checkBoundedCopyOverflow(ctx context.Context, f
 }
 
 func (d *BufferOverflowDetector) emitBoundedCopy(ctx context.Context, f *db.Function, file *db.File, call parser.Node, callName, category, copySize, dstCapacity string, result *DetectResult) {
-	locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
-	props, _ := json.Marshal(map[string]string{
+	if emitEvent(ctx, d.store, d.logger, "BUFFER_ACCESS", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
 		"function":     callName,
 		"category":     category,
 		"expression":   call.Text(),
 		"copy_size":    copySize,
 		"dst_capacity": dstCapacity,
-	})
-	if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-		EventType:  "BUFFER_ACCESS",
-		EntityID:   f.ID,
-		LocationID: locID,
-		Properties: string(props),
-	}); err == nil {
+	}) {
 		result.EventsCreated++
 	}
 }
@@ -374,20 +358,13 @@ func (d *BufferOverflowDetector) evaluateSizeArg(node parser.Node, bc *bufCtx, f
 }
 
 func (d *BufferOverflowDetector) emitSecure(ctx context.Context, f *db.Function, file *db.File, call parser.Node, callName, category, sizeArg, dstCapacity string, result *DetectResult) {
-	locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
-	props, _ := json.Marshal(map[string]string{
+	if emitEvent(ctx, d.store, d.logger, "BUFFER_ACCESS", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
 		"function":      callName,
 		"category":      category,
 		"expression":    call.Text(),
 		"size_argument": sizeArg,
 		"dst_capacity":  dstCapacity,
-	})
-	if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-		EventType:  "BUFFER_ACCESS",
-		EntityID:   f.ID,
-		LocationID: locID,
-		Properties: string(props),
-	}); err == nil {
+	}) {
 		result.EventsCreated++
 	}
 }
@@ -799,20 +776,12 @@ func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Funct
 			continue
 		}
 
-		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: sub.StartLine()})
-		props, _ := json.Marshal(map[string]string{
+		if emitEvent(ctx, d.store, d.logger, "BUFFER_ACCESS", f.ID, &db.Location{FileID: file.ID, Line: sub.StartLine()}, map[string]string{
 			"array":      arrName,
 			"index":      indexExpr,
 			"category":   category,
 			"expression": text,
-		})
-		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-			EventType:  "BUFFER_ACCESS",
-			EntityID:   f.ID,
-			LocationID: locID,
-			Properties: string(props),
-		})
-		if err == nil {
+		}) {
 			result.EventsCreated++
 		}
 	}
@@ -960,19 +929,11 @@ func (d *BufferOverflowDetector) detectFormatOverflow(ctx context.Context, f *db
 			continue
 		}
 
-		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
-		props, _ := json.Marshal(map[string]string{
+		if emitEvent(ctx, d.store, d.logger, "BUFFER_ACCESS", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
 			"function":   callName,
 			"category":   "format_overflow",
 			"expression": call.Text(),
-		})
-		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-			EventType:  "BUFFER_ACCESS",
-			EntityID:   f.ID,
-			LocationID: locID,
-			Properties: string(props),
-		})
-		if err == nil {
+		}) {
 			result.EventsCreated++
 		}
 	}

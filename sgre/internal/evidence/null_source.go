@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -74,15 +73,7 @@ func (d *NullSourceDetector) detectReturnNull(ctx context.Context, f *db.Functio
 		if !isNullLiteral(expr) && expr != "0" {
 			continue
 		}
-		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: ret.StartLine(), Column: ret.StartColumn()})
-		props, _ := json.Marshal(map[string]string{"variable": "<return>", "origin": "return"})
-		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-			EventType:  "NULL_VALUE",
-			EntityID:   f.ID,
-			LocationID: locID,
-			Properties: string(props),
-		})
-		if err == nil {
+		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: ret.StartLine(), Column: ret.StartColumn()}, map[string]string{"variable": "<return>", "origin": "return"}) {
 			result.EventsCreated++
 			_ = d.store.UpdateReturnNullable(ctx, f.ID, true)
 		}
@@ -103,15 +94,7 @@ func (d *NullSourceDetector) detectMallocResult(ctx context.Context, f *db.Funct
 				lhs := children[0]
 				varName := assignedVariable(lhs)
 				if varName != "" {
-					locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: node.StartLine()})
-					props, _ := json.Marshal(map[string]string{"variable": varName, "origin": a})
-					_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-						EventType:  "NULL_VALUE",
-						EntityID:   f.ID,
-						LocationID: locID,
-						Properties: string(props),
-					})
-					if err == nil {
+					if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: node.StartLine()}, map[string]string{"variable": varName, "origin": a}) {
 						result.EventsCreated++
 					}
 				}
@@ -152,15 +135,7 @@ func (d *NullSourceDetector) detectExplicitNull(ctx context.Context, f *db.Funct
 		if !isNullLiteral(children[1].Text()) {
 			return
 		}
-		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: node.StartLine()})
-		props, _ := json.Marshal(map[string]string{"variable": varName, "origin": "explicit_null", "definite": "true"})
-		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-			EventType:  "NULL_VALUE",
-			EntityID:   f.ID,
-			LocationID: locID,
-			Properties: string(props),
-		})
-		if err == nil {
+		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: node.StartLine()}, map[string]string{"variable": varName, "origin": "explicit_null", "definite": "true"}) {
 			result.EventsCreated++
 		}
 	}
@@ -231,15 +206,7 @@ func (d *NullSourceDetector) detectExternalCall(ctx context.Context, f *db.Funct
 		if knownFuncs[callName] && !nullableFuncs[callName] {
 			return
 		}
-		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: node.StartLine()})
-		props, _ := json.Marshal(map[string]string{"variable": varName, "origin": "external_call", "function": callName})
-		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-			EventType:  "NULL_VALUE",
-			EntityID:   f.ID,
-			LocationID: locID,
-			Properties: string(props),
-		})
-		if err == nil {
+		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: node.StartLine()}, map[string]string{"variable": varName, "origin": "external_call", "function": callName}) {
 			result.EventsCreated++
 		}
 	}

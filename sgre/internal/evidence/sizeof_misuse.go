@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -62,19 +61,11 @@ func (d *SizeofMisuseDetector) Detect(ctx context.Context) (DetectResult, error)
 					continue
 				}
 
-				locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: se.StartLine(), Column: se.StartColumn()})
-				props, _ := json.Marshal(map[string]string{
+				if emitEvent(ctx, d.store, d.logger, "SIZEOF_MISUSE", f.ID, &db.Location{FileID: file.ID, Line: se.StartLine(), Column: se.StartColumn()}, map[string]string{
 					"expression": se.Text(),
 					"variable":   operand,
 					"category":   "sizeof_pointer",
-				})
-				_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-					EventType:  "SIZEOF_MISUSE",
-					EntityID:   f.ID,
-					LocationID: locID,
-					Properties: string(props),
-				})
-				if err == nil {
+				}) {
 					result.EventsCreated++
 				}
 			}

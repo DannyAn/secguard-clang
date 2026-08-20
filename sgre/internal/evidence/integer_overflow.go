@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -66,18 +65,10 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 					continue
 				}
 
-				locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: expr.StartLine(), Column: expr.StartColumn()})
-				props, _ := json.Marshal(map[string]string{
+				if emitEvent(ctx, d.store, d.logger, "INTEGER_OVERFLOW", f.ID, &db.Location{FileID: file.ID, Line: expr.StartLine(), Column: expr.StartColumn()}, map[string]string{
 					"expression": expr.Text(),
 					"category":   "integer_overflow",
-				})
-				_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-					EventType:  "INTEGER_OVERFLOW",
-					EntityID:   f.ID,
-					LocationID: locID,
-					Properties: string(props),
-				})
-				if err == nil {
+				}) {
 					result.EventsCreated++
 				}
 			}
@@ -231,18 +222,10 @@ func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, ca
 }
 
 func (d *IntegerOverflowDetector) emitSizeCalc(ctx context.Context, file *db.File, f *db.Function, expr parser.Node, category string, result *DetectResult) {
-	locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: expr.StartLine(), Column: expr.StartColumn()})
-	props, _ := json.Marshal(map[string]string{
+	if emitEvent(ctx, d.store, d.logger, "INTEGER_OVERFLOW", f.ID, &db.Location{FileID: file.ID, Line: expr.StartLine(), Column: expr.StartColumn()}, map[string]string{
 		"expression": expr.Text(),
 		"category":   category,
-	})
-	_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-		EventType:  "INTEGER_OVERFLOW",
-		EntityID:   f.ID,
-		LocationID: locID,
-		Properties: string(props),
-	})
-	if err == nil {
+	}) {
 		result.EventsCreated++
 	}
 }

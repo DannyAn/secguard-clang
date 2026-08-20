@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
@@ -84,17 +83,10 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 					shouldReportRelease = true
 				}
 
-				locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: acquireLine})
-				props, _ := json.Marshal(map[string]string{
+				if emitEvent(ctx, d.store, d.logger, "RESOURCE_ACQUIRE", f.ID, &db.Location{FileID: file.ID, Line: acquireLine}, map[string]string{
 					"variable": varName,
 					"origin":   "resource_acquire",
-				})
-				if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-					EventType:  "RESOURCE_ACQUIRE",
-					EntityID:   f.ID,
-					LocationID: locID,
-					Properties: string(props),
-				}); err == nil {
+				}) {
 					result.EventsCreated++
 				}
 
@@ -103,17 +95,10 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 					if len(releaseLines) > 0 {
 						releaseLine = releaseLines[0]
 					}
-					releaseLocID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: releaseLine})
-					releaseProps, _ := json.Marshal(map[string]string{
+					if emitEvent(ctx, d.store, d.logger, "RESOURCE_RELEASE", f.ID, &db.Location{FileID: file.ID, Line: releaseLine}, map[string]string{
 						"variable": varName,
 						"origin":   "resource_release",
-					})
-					if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-						EventType:  "RESOURCE_RELEASE",
-						EntityID:   f.ID,
-						LocationID: releaseLocID,
-						Properties: string(releaseProps),
-					}); err == nil {
+					}) {
 						result.EventsCreated++
 					}
 				}

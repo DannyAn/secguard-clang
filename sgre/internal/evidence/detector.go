@@ -78,7 +78,7 @@ func funcLineRange(f *db.Function, line int) bool {
 // swallowing both InsertLocation (whose failure yielded locID=0 and a foreign-key
 // violation that silently dropped the event) and InsertEvent errors, so a DB
 // write failure is surfaced instead of silently losing a finding.
-func emitEvent(ctx context.Context, store db.Store, logger *log.Logger, eventType string, entityID int64, loc *db.Location, props map[string]string) bool {
+func emitEvent(ctx context.Context, store db.Store, logger *log.Logger, eventType string, entityID int64, loc *db.Location, props any) bool {
 	locID, err := store.InsertLocation(ctx, loc)
 	if err != nil {
 		if logger != nil {

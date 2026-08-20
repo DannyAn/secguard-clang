@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"encoding/json"
 	"strconv"
 	"strings"
 
@@ -72,19 +71,11 @@ func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error)
 					continue
 				}
 
-				locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: expr.StartLine(), Column: expr.StartColumn()})
-				props, _ := json.Marshal(map[string]string{
+				if emitEvent(ctx, d.store, d.logger, "DIVIDE_BY_ZERO", f.ID, &db.Location{FileID: file.ID, Line: expr.StartLine(), Column: expr.StartColumn()}, map[string]string{
 					"expression": expr.Text(),
 					"divisor":    divisor,
 					"category":   "divide_by_zero",
-				})
-				_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-					EventType:  "DIVIDE_BY_ZERO",
-					EntityID:   f.ID,
-					LocationID: locID,
-					Properties: string(props),
-				})
-				if err == nil {
+				}) {
 					result.EventsCreated++
 				}
 			}

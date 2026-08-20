@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -70,20 +69,12 @@ func (d *NullGuardDetector) detectGuards(ctx context.Context, f *db.Function, fi
 			scopeEnd = body.EndLine()
 		}
 
-		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: ifNode.StartLine()})
-		props, _ := json.Marshal(map[string]interface{}{
+		if emitEvent(ctx, d.store, d.logger, "NULL_GUARD", f.ID, &db.Location{FileID: file.ID, Line: ifNode.StartLine()}, map[string]interface{}{
 			"variable":    varName,
 			"condition":   condPattern,
 			"scope_start": ifNode.StartLine(),
 			"scope_end":   scopeEnd,
-		})
-		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-			EventType:  "NULL_GUARD",
-			EntityID:   f.ID,
-			LocationID: locID,
-			Properties: string(props),
-		})
-		if err == nil {
+		}) {
 			result.EventsCreated++
 		}
 	}
@@ -130,20 +121,12 @@ func (d *NullGuardDetector) detectEarlyReturnGuards(ctx context.Context, f *db.F
 			continue
 		}
 
-		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: ifNode.StartLine()})
-		props, _ := json.Marshal(map[string]interface{}{
+		if emitEvent(ctx, d.store, d.logger, "NULL_GUARD", f.ID, &db.Location{FileID: file.ID, Line: ifNode.StartLine()}, map[string]interface{}{
 			"variable":    varName,
 			"condition":   "EARLY_RETURN",
 			"scope_start": ifNode.StartLine() + 1,
 			"scope_end":   f.EndLine,
-		})
-		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-			EventType:  "NULL_GUARD",
-			EntityID:   f.ID,
-			LocationID: locID,
-			Properties: string(props),
-		})
-		if err == nil {
+		}) {
 			result.EventsCreated++
 		}
 	}

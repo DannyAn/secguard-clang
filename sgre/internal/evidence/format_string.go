@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -51,20 +50,12 @@ func (d *FormatStringDetector) Detect(ctx context.Context) (DetectResult, error)
 					continue
 				}
 
-				locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
-				props, _ := json.Marshal(map[string]string{
+				if emitEvent(ctx, d.store, d.logger, "FORMAT_STRING", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
 					"function":   callName,
 					"format_arg": formatArg,
 					"expression": call.Text(),
 					"category":   "format_string",
-				})
-				_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-					EventType:  "FORMAT_STRING",
-					EntityID:   f.ID,
-					LocationID: locID,
-					Properties: string(props),
-				})
-				if err == nil {
+				}) {
 					result.EventsCreated++
 				}
 			}

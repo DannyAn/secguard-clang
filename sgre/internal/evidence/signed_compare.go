@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -75,18 +74,10 @@ func (d *SignedCompareDetector) Detect(ctx context.Context) (DetectResult, error
 					continue
 				}
 
-				locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: b.StartLine(), Column: b.StartColumn()})
-				props, _ := json.Marshal(map[string]string{
+				if emitEvent(ctx, d.store, d.logger, "SIGNED_COMPARE", f.ID, &db.Location{FileID: file.ID, Line: b.StartLine(), Column: b.StartColumn()}, map[string]string{
 					"expression": b.Text(),
 					"category":   "signed_compare",
-				})
-				_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-					EventType:  "SIGNED_COMPARE",
-					EntityID:   f.ID,
-					LocationID: locID,
-					Properties: string(props),
-				})
-				if err == nil {
+				}) {
 					result.EventsCreated++
 				}
 			}

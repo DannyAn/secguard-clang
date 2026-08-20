@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"encoding/json"
 	"sort"
 	"strings"
 
@@ -112,21 +111,13 @@ func (d *DeadlockDetector) Detect(ctx context.Context) (DetectResult, error) {
 		if !ok {
 			continue
 		}
-		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: anchor.file.ID, Line: anchor.line})
-		props, _ := json.Marshal(map[string]string{
+		if emitEvent(ctx, d.store, d.logger, "DEADLOCK", anchor.fnID, &db.Location{FileID: anchor.file.ID, Line: anchor.line}, map[string]string{
 			"mutex_a":  scc[0],
 			"mutex_b":  scc[1],
 			"function": anchor.fn,
 			"category": "deadlock",
 			"cycle":    strings.Join(scc, "->"),
-		})
-		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-			EventType:  "DEADLOCK",
-			EntityID:   anchor.fnID,
-			LocationID: locID,
-			Properties: string(props),
-		})
-		if err == nil {
+		}) {
 			result.EventsCreated++
 		}
 	}

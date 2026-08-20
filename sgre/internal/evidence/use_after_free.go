@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -59,7 +58,6 @@ func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error)
 					if fs.field != "" && use.field != fs.field {
 						continue
 					}
-					locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: use.line})
 					props := map[string]interface{}{
 						"variable":  fs.varName,
 						"free_line": fs.line,
@@ -73,14 +71,7 @@ func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error)
 					if fs.field != "" {
 						props["freed_field"] = fs.field
 					}
-					propsJSON, _ := json.Marshal(props)
-					_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-						EventType:  "USE_AFTER_FREE",
-						EntityID:   f.ID,
-						LocationID: locID,
-						Properties: string(propsJSON),
-					})
-					if err == nil {
+					if emitEvent(ctx, d.store, d.logger, "USE_AFTER_FREE", f.ID, &db.Location{FileID: file.ID, Line: use.line}, props) {
 						result.EventsCreated++
 					}
 				}

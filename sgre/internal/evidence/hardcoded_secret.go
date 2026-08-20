@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"encoding/json"
 	"regexp"
 	"strings"
 
@@ -79,19 +78,11 @@ func (d *HardcodedSecretDetector) Detect(ctx context.Context) (DetectResult, err
 				continue
 			}
 
-			locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: init.StartLine(), Column: init.StartColumn()})
-			props, _ := json.Marshal(map[string]string{
+			if emitEvent(ctx, d.store, d.logger, "HARDCODED_SECRET", f.ID, &db.Location{FileID: file.ID, Line: init.StartLine(), Column: init.StartColumn()}, map[string]string{
 				"variable": varName,
 				"value":    value,
 				"category": "hardcoded_secret",
-			})
-			_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-				EventType:  "HARDCODED_SECRET",
-				EntityID:   f.ID,
-				LocationID: locID,
-				Properties: string(props),
-			})
-			if err == nil {
+			}) {
 				result.EventsCreated++
 			}
 		}
@@ -133,20 +124,12 @@ func (d *HardcodedSecretDetector) detectRegSetValueEx(ctx context.Context, calls
 			}
 		}
 
-		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
-		props, _ := json.Marshal(map[string]string{
+		if emitEvent(ctx, d.store, d.logger, "HARDCODED_SECRET", funcID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
 			"api":      callName,
 			"name":     valueName,
 			"value":    valueData,
 			"category": "hardcoded_secret",
-		})
-		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-			EventType:  "HARDCODED_SECRET",
-			EntityID:   funcID,
-			LocationID: locID,
-			Properties: string(props),
-		})
-		if err == nil {
+		}) {
 			result.EventsCreated++
 		}
 	}

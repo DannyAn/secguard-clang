@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -71,23 +70,15 @@ func (d *InjectionDetector) detectCommandInjection(ctx context.Context, f *db.Fu
 			taint = "flow"
 		}
 
-		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
 		// variable: the sink argument when it is a bare identifier, so the
 		// planner's taint filter can track it (system(buf) -> variable "buf").
-		props, _ := json.Marshal(map[string]string{
+		if emitEvent(ctx, d.store, d.logger, "INJECTION", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
 			"function":   callName,
 			"category":   "command_injection",
 			"taint":      taint,
 			"expression": call.Text(),
 			"variable":   bareCommandArg(call),
-		})
-		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-			EventType:  "INJECTION",
-			EntityID:   f.ID,
-			LocationID: locID,
-			Properties: string(props),
-		})
-		if err == nil {
+		}) {
 			result.EventsCreated++
 		}
 	}
@@ -117,20 +108,12 @@ func (d *InjectionDetector) detectSQLInjection(ctx context.Context, f *db.Functi
 			sqlVar = bareIdentString(args[1])
 		}
 
-		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
-		props, _ := json.Marshal(map[string]string{
+		if emitEvent(ctx, d.store, d.logger, "INJECTION", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
 			"function":   callName,
 			"category":   "sql_injection",
 			"variable":   sqlVar,
 			"expression": call.Text(),
-		})
-		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-			EventType:  "INJECTION",
-			EntityID:   f.ID,
-			LocationID: locID,
-			Properties: string(props),
-		})
-		if err == nil {
+		}) {
 			result.EventsCreated++
 		}
 	}
@@ -160,20 +143,12 @@ func (d *InjectionDetector) detectSQLInjection(ctx context.Context, f *db.Functi
 		if len(args) >= 1 {
 			bufVar = bareIdentString(args[0])
 		}
-		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine()})
-		props, _ := json.Marshal(map[string]string{
+		if emitEvent(ctx, d.store, d.logger, "INJECTION", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine()}, map[string]string{
 			"function":   callName,
 			"category":   "sql_injection",
 			"variable":   bufVar,
 			"expression": call.Text(),
-		})
-		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-			EventType:  "INJECTION",
-			EntityID:   f.ID,
-			LocationID: locID,
-			Properties: string(props),
-		})
-		if err == nil {
+		}) {
 			result.EventsCreated++
 		}
 	}
@@ -260,21 +235,13 @@ func (d *InjectionDetector) detectTaintFlowInjection(ctx context.Context, f *db.
 		}
 		cmdArg := strings.TrimSpace(args[cmdArgIdx])
 		if _, isTainted := formattedBuffers[cmdArg]; isTainted {
-			locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
-			props, _ := json.Marshal(map[string]string{
+			if emitEvent(ctx, d.store, d.logger, "INJECTION", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
 				"function":   callName,
 				"category":   "command_injection",
 				"taint":      "flow",
 				"source":     "wsprintf",
 				"expression": call.Text(),
-			})
-			_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-				EventType:  "INJECTION",
-				EntityID:   f.ID,
-				LocationID: locID,
-				Properties: string(props),
-			})
-			if err == nil {
+			}) {
 				result.EventsCreated++
 			}
 		}

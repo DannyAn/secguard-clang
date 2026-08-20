@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -98,20 +97,12 @@ func (d *RaceConditionDetector) Detect(ctx context.Context) (DetectResult, error
 					}
 					useArg := extractFirstArg(useCall)
 					if useArg == checkArg {
-						locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: checkCall.StartLine(), Column: checkCall.StartColumn()})
-						props, _ := json.Marshal(map[string]string{
+						if emitEvent(ctx, d.store, d.logger, "RACE_CONDITION", f.ID, &db.Location{FileID: file.ID, Line: checkCall.StartLine(), Column: checkCall.StartColumn()}, map[string]string{
 							"check_function": extractCallName(*checkCall),
 							"use_function":   useName,
 							"path_arg":       checkArg,
 							"category":       "toctou",
-						})
-						_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-							EventType:  "RACE_CONDITION",
-							EntityID:   f.ID,
-							LocationID: locID,
-							Properties: string(props),
-						})
-						if err == nil {
+						}) {
 							result.EventsCreated++
 						}
 						break
@@ -309,21 +300,13 @@ func (d *RaceConditionDetector) detectCrossFunctionDataRace(ctx context.Context,
 			continue
 		}
 
-		locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: g.writeLine})
-		props, _ := json.Marshal(map[string]interface{}{
+		if emitEvent(ctx, d.store, d.logger, "RACE_CONDITION", g.writeFuncID, &db.Location{FileID: file.ID, Line: g.writeLine}, map[string]string{
 			"variable":         globalName,
 			"category":         "shared_data_race",
 			"thread_functions": strings.Join(threadFuncs, ","),
 			"thread_instances": fmt.Sprintf("%d", instances),
 			"write_line":       fmt.Sprintf("%d", g.writeLine),
-		})
-		_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-			EventType:  "RACE_CONDITION",
-			EntityID:   g.writeFuncID,
-			LocationID: locID,
-			Properties: string(props),
-		})
-		if err == nil {
+		}) {
 			result.EventsCreated++
 		}
 	}
@@ -572,20 +555,12 @@ func (d *RaceConditionDetector) detectLockUnlockPattern(ctx context.Context, cal
 		}
 		text := assign.Text()
 		if strings.Contains(text, "g_") || strings.Contains(text, "global") || strings.Contains(text, "shared") {
-			locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: assign.StartLine(), Column: assign.StartColumn()})
-			props, _ := json.Marshal(map[string]string{
+			if emitEvent(ctx, d.store, d.logger, "RACE_CONDITION", f.ID, &db.Location{FileID: file.ID, Line: assign.StartLine(), Column: assign.StartColumn()}, map[string]string{
 				"mutex":       mutexName,
 				"lock_line":   fmt.Sprintf("%d", lockLine),
 				"unlock_line": fmt.Sprintf("%d", unlockLine),
 				"category":    "toctou_shared_state",
-			})
-			_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-				EventType:  "RACE_CONDITION",
-				EntityID:   f.ID,
-				LocationID: locID,
-				Properties: string(props),
-			})
-			if err == nil {
+			}) {
 				result.EventsCreated++
 			}
 			break

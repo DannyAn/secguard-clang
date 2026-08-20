@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -88,20 +87,12 @@ func (d *CryptoMisuseDetector) Detect(ctx context.Context) (DetectResult, error)
 }
 
 func (d *CryptoMisuseDetector) emitCryptoEvent(ctx context.Context, file *db.File, f *db.Function, call parser.Node, callName, reason, category string, result *DetectResult) {
-	locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()})
-	props, _ := json.Marshal(map[string]string{
+	if emitEvent(ctx, d.store, d.logger, "CRYPTO_MISUSE", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
 		"function":   callName,
 		"reason":     reason,
 		"category":   category,
 		"expression": call.Text(),
-	})
-	_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-		EventType:  "CRYPTO_MISUSE",
-		EntityID:   f.ID,
-		LocationID: locID,
-		Properties: string(props),
-	})
-	if err == nil {
+	}) {
 		result.EventsCreated++
 	}
 }
@@ -118,12 +109,6 @@ func (d *CryptoMisuseDetector) detectUndersizedKey(ctx context.Context, decls []
 					size := 0
 					fmt.Sscanf(child.Text(), "%d", &size)
 					if size > 0 && size < 16 {
-						locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: decl.StartLine(), Column: decl.StartColumn()})
-						props, _ := json.Marshal(map[string]string{
-							"key_size": child.Text(),
-							"reason":   "key size < 16 bytes (minimum 128-bit)",
-							"category": "undersized_key",
-						})
 						owner := funcs[0]
 						for _, fn := range funcs {
 							if funcLineRange(fn, decl.StartLine()) {
@@ -131,12 +116,11 @@ func (d *CryptoMisuseDetector) detectUndersizedKey(ctx context.Context, decls []
 								break
 							}
 						}
-						if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-							EventType:  "CRYPTO_MISUSE",
-							EntityID:   owner.ID,
-							LocationID: locID,
-							Properties: string(props),
-						}); err == nil {
+						if emitEvent(ctx, d.store, d.logger, "CRYPTO_MISUSE", owner.ID, &db.Location{FileID: file.ID, Line: decl.StartLine(), Column: decl.StartColumn()}, map[string]string{
+							"key_size": child.Text(),
+							"reason":   "key size < 16 bytes (minimum 128-bit)",
+							"category": "undersized_key",
+						}) {
 							result.EventsCreated++
 						}
 					}

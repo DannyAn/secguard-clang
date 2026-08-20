@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -101,50 +100,29 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 				}
 
 				if shouldReportLeak && !isRAII {
-					locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: allocLine})
-					props, _ := json.Marshal(map[string]string{
+					if emitEvent(ctx, d.store, d.logger, "MEMORY_ALLOC", f.ID, &db.Location{FileID: file.ID, Line: allocLine}, map[string]string{
 						"variable": varName,
 						"origin":   "malloc",
-					})
-					if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-						EventType:  "MEMORY_ALLOC",
-						EntityID:   f.ID,
-						LocationID: locID,
-						Properties: string(props),
-					}); err == nil {
+					}) {
 						result.EventsCreated++
 					}
 				}
 
 				if shouldReportRelease {
-					locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: allocLine})
-					props, _ := json.Marshal(map[string]string{
+					if emitEvent(ctx, d.store, d.logger, "MEMORY_ALLOC", f.ID, &db.Location{FileID: file.ID, Line: allocLine}, map[string]string{
 						"variable": varName,
 						"origin":   "malloc",
-					})
-					if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-						EventType:  "MEMORY_ALLOC",
-						EntityID:   f.ID,
-						LocationID: locID,
-						Properties: string(props),
-					}); err == nil {
+					}) {
 						result.EventsCreated++
 					}
 					releaseLine := allocLine
 					if len(freeLines) > 0 {
 						releaseLine = freeLines[0]
 					}
-					releaseLocID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: releaseLine})
-					releaseProps, _ := json.Marshal(map[string]string{
+					if emitEvent(ctx, d.store, d.logger, "MEMORY_RELEASE", f.ID, &db.Location{FileID: file.ID, Line: releaseLine}, map[string]string{
 						"variable": varName,
 						"origin":   "free",
-					})
-					if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-						EventType:  "MEMORY_RELEASE",
-						EntityID:   f.ID,
-						LocationID: releaseLocID,
-						Properties: string(releaseProps),
-					}); err == nil {
+					}) {
 						result.EventsCreated++
 					}
 				}

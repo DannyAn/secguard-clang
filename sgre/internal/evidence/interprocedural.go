@@ -142,19 +142,12 @@ func (d *InterproceduralDetector) Detect(ctx context.Context) (DetectResult, err
 						continue
 					}
 
-					locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: caller.FileID, Line: call.StartLine()})
-					props, _ := json.Marshal(map[string]string{
+					if emitEvent(ctx, d.store, d.logger, "DEREFERENCE", caller.ID, &db.Location{FileID: caller.FileID, Line: call.StartLine()}, map[string]string{
 						"variable":   argVarName,
 						"expression": argVarName + "->" + paramName,
 						"origin":     "interprocedural",
 						"callee":     callee.Name,
-					})
-					if _, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-						EventType:  "DEREFERENCE",
-						EntityID:   caller.ID,
-						LocationID: locID,
-						Properties: string(props),
-					}); err == nil {
+					}) {
 						result.EventsCreated++
 					}
 				}

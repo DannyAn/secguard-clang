@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -107,15 +106,7 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 					props["first_free"] = e.firstFrees[0]
 					props["first_free_lines"] = joinInts(e.firstFrees)
 				}
-				propsJSON, _ := json.Marshal(props)
-				locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: e.line})
-				_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-					EventType:  "DOUBLE_FREE",
-					EntityID:   f.ID,
-					LocationID: locID,
-					Properties: string(propsJSON),
-				})
-				if err == nil {
+				if emitEvent(ctx, d.store, d.logger, "DOUBLE_FREE", f.ID, &db.Location{FileID: file.ID, Line: e.line}, props) {
 					result.EventsCreated++
 				}
 			}
@@ -125,7 +116,6 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 					continue
 				}
 				for i := 1; i < len(events); i++ {
-					locID, _ := d.store.InsertLocation(ctx, &db.Location{FileID: file.ID, Line: events[i].line})
 					props := map[string]interface{}{
 						"variable":    varName,
 						"first_free":  events[0].line,
@@ -141,14 +131,7 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 					if events[i].callee != "" {
 						props["second_callee"] = events[i].callee
 					}
-					propsJSON, _ := json.Marshal(props)
-					_, err := d.store.InsertEvent(ctx, &db.SecurityEvent{
-						EventType:  "DOUBLE_FREE",
-						EntityID:   f.ID,
-						LocationID: locID,
-						Properties: string(propsJSON),
-					})
-					if err == nil {
+					if emitEvent(ctx, d.store, d.logger, "DOUBLE_FREE", f.ID, &db.Location{FileID: file.ID, Line: events[i].line}, props) {
 						result.EventsCreated++
 					}
 				}
