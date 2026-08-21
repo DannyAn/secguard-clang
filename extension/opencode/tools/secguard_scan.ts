@@ -22,7 +22,7 @@ function printScanSummary(
   const totalCandidates = goJson?.total_candidates ?? 0
   const filesIndexed = goJson?.index_summary?.files_indexed ?? "N/A"
   const functionsIndexed = goJson?.index_summary?.functions_indexed ?? "N/A"
-  const packages = goJson?.evidence_packages ?? []
+  const candidatesByType: Record<string, number> = goJson?.candidates_by_type ?? {}
 
   let out = "## SecGuard Scan Summary\n\n"
   out += "| Field | Value |\n"
@@ -36,17 +36,14 @@ function printScanSummary(
   out += `| Functions Indexed | ${functionsIndexed} |\n\n`
 
   out += "### Candidates by Type\n\n"
-  const nonEmpty = packages.filter((p: any) => p?.candidates?.length > 0)
-  if (nonEmpty.length === 0) {
+  const entries = Object.entries(candidatesByType).filter(([, count]) => (count as number) > 0)
+  if (entries.length === 0) {
     out += "No issues found.\n\n"
   } else {
-    out += "| Skill | CWE | Count |\n"
-    out += "|-------|-----|-------|\n"
-    for (const p of nonEmpty) {
-      const vt = p?.vulnerability_type ?? "unknown"
-      const cwe = p?.cwe ?? "CWE-Other"
-      const count = p?.candidates?.length ?? 0
-      out += `| ${vt} | ${cwe} | ${count} |\n`
+    out += "| Skill | Count |\n"
+    out += "|-------|-------|\n"
+    for (const [vt, count] of entries) {
+      out += `| ${vt} | ${count} |\n`
     }
     out += "\n"
   }
@@ -62,7 +59,7 @@ function printScanSummary(
 
 export default tool({
   description:
-    "Run full SecGuard security scan: index codebase, run all registered detectors, apply the convergence pipeline for every registered vulnerability type. Writes report.md + candidates.sarif (unclassified leads at SARIF level note) + candidates/<vuln-type>/ Markdown to .codeagent/secguard-clang/scans/<scan_id>/; findings/<vuln-type>/ and result.sarif are produced later from the AI verdicts via secguard_report, stores DB at .codeagent/secguard-clang/.sgre/sgre.db. Returns JSON with evidence_packages, total_candidates, files_with_candidates, output_dir. The Go binary generates scan_id, creates the scan directory, and updates the latest symlink — this wrapper only invokes the binary and parses its JSON output.",
+    "Run full SecGuard security scan: index codebase, run all registered detectors, apply the convergence pipeline for every registered vulnerability type. Writes report.md + candidates.sarif (unclassified leads at SARIF level note) + candidates/<vuln-type>/ Markdown to .codeagent/secguard-clang/scans/<scan_id>/; findings/<vuln-type>/ and result.sarif are produced later from the AI verdicts via secguard_report, stores DB at .codeagent/secguard-clang/.sgre/sgre.db. Returns JSON with scan_id, output_dir, total_candidates, candidates_by_type, files_with_candidates. The Go binary generates scan_id, creates the scan directory, and updates the latest symlink — this wrapper only invokes the binary and parses its JSON output.",
   args: {
     path: tool.schema
       .string()
@@ -96,22 +93,15 @@ export default tool({
         const totalCandidates = goJson?.total_candidates ?? 0
         const filesIndexed = goJson?.index_summary?.files_indexed ?? 0
         const functionsIndexed = goJson?.index_summary?.functions_indexed ?? 0
-        const packages = goJson?.evidence_packages ?? []
         const candidatesByType = goJson?.candidates_by_type ?? {}
         printScanSummary(process.stderr, goJson, targetPath, workDir)
 
         const reportError = goJson?.report_error ?? ""
 
         const typeCounts: Record<string, number> = {}
-        // 优先用 Go 提供的 candidates_by_type 摘要；回退到 evidence_packages（向后兼容）
-        if (candidatesByType && typeof candidatesByType === "object" && Object.keys(candidatesByType).length > 0) {
+        if (candidatesByType && typeof candidatesByType === "object") {
           for (const [vt, count] of Object.entries(candidatesByType)) {
             typeCounts[vt] = count as number
-          }
-        } else {
-          for (const p of packages) {
-            const vt = p?.vulnerability_type ?? "unknown"
-            typeCounts[vt] = p?.candidates?.length ?? 0
           }
         }
 

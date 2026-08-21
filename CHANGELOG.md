@@ -2,6 +2,33 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.3.8] - 2026-08-21
+
+### 修复样例项目基准验证暴露的回归 + 补齐缺失工具
+
+在 `examples/c-vuln-benchmark`（77 用例 ground truth）上用 0.3.7 实跑一轮：
+precision 100.0% / recall 97.7% / false-pos 0.0%（唯一 miss 是多行 `sprintf` 的
+行号差一）。但会话日志自检发现三处真实缺陷，均已修复：
+
+#### 修复
+
+- **A5 复核后 `result.sarif` 停在复核前状态**：`secguard_report` 的 `reviews`
+  批次会改变 EffectiveStatus（dismissed/suspected-kept/confirmed），但工具封装
+  在 reviews 路径不再跑 audit，导致 `result.sarif` 落后一版（把已 dismiss 的
+  条目仍显示为 `warning`）。现在 reviews 批次后统一跑一次 audit，重新生成
+  `result.sarif` + `audit-report.md` 并重对账 `findings/`，保证三处口径一致。
+- **`secguard_scan` 摘要重建读取已废弃字段**：Go 侧早已不再返回
+  `evidence_packages`，TS 包装仍读它来拼"Candidates by Type"，导致该表为空。
+  改为读 `candidates_by_type`。
+- **缺失 `secguard_types` 工具**：指令要求"先调 `secguard types` 发现类型清单"，
+  但 OpenCode 扩展里根本没有这个工具（agent 被迫退回用 skills 目录猜类型）。
+  新增 `secguard_types.ts` 包装，并在 `opencode.json` 授权表补上权限。
+
+#### 性能
+
+- `secguard_report` 封装抽取统一的 `runAudit`，避免写路径与 review 路径各复制
+  一份 audit 逻辑；audit 仍在写批次与 review 批次后各跑一次，成本可接受。
+
 ## [0.3.7] - 2026-08-21
 
 ### 修复生产环境缺失 findings/ 与 result.sarif：强制判定落盘 + 纠正 Agent 误读

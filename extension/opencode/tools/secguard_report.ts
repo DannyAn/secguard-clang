@@ -88,6 +88,22 @@ export default tool({
     const dbPath = path.join(sgreDir, "sgre.db")
     const outputDir = args.output_dir || ""
 
+    // Regenerates audit-report.md + result.sarif and re-syncs findings/ from
+    // the DB. Called after a write batch AND after a review batch: a review
+    // (A5) changes EffectiveStatus, so skipping the audit after reviews leaves
+    // result.sarif one revision behind the database.
+    const runAudit = async (scanId: string, outDir: string) => {
+      try {
+        const auditResult = await Bun.$`${secguardBin} report --db ${dbPath} --audit --scan-id ${scanId} --output-dir ${outDir}`
+          .cwd(workDir)
+          .quiet()
+          .text()
+        return JSON.parse(auditResult.trim())
+      } catch {
+        return null // Best-effort — audit generation failure is non-fatal
+      }
+    }
+
     if (args.findings && args.findings.length > 0) {
       const errors: string[] = []
       const perFindingWarnings: string[] = []
@@ -140,20 +156,14 @@ export default tool({
       let auditPath: string | undefined
       let findingsSynced: unknown
       if (outputDir && scanId) {
-        try {
-          const auditResult = await Bun.$`${secguardBin} report --db ${dbPath} --audit --scan-id ${scanId} --output-dir ${outputDir}`
-            .cwd(workDir)
-            .quiet()
-            .text()
-          const auditJson = JSON.parse(auditResult.trim())
+        const auditJson = await runAudit(scanId, outputDir)
+        if (auditJson) {
           auditPath = auditJson.audit_path
           // The audit pass re-syncs findings/ with the database: it reports how
           // many verdict files were written and how many dismissed/unclassified
           // leftovers were swept out of the review surface.
           findingsSynced = auditJson.findings_synced
           if (auditJson.warning) perFindingWarnings.push(auditJson.warning)
-        } catch {
-          // Best-effort — audit report generation failure is non-fatal
         }
       }
 
@@ -198,8 +208,30 @@ export default tool({
           errors.push(`finding ${review.id} — ${msg}`)
         }
       }
+      // A5 reviews change EffectiveStatus, so regenerate result.sarif +
+      // audit-report.md + findings/ once after the batch — otherwise the SARIF
+      // still shows the pre-review verdicts (e.g. dismissed entries lingering
+      // as `warning`).
+      let auditPath: string | undefined
+      let findingsSynced: unknown
+      if (outputDir && args.scan_id) {
+        const auditJson = await runAudit(args.scan_id, outputDir)
+        if (auditJson) {
+          auditPath = auditJson.audit_path
+          findingsSynced = auditJson.findings_synced
+          if (auditJson.warning) reviewWarnings.push(auditJson.warning)
+        }
+      }
+
       return JSON.stringify(
-        { status: errors.length === 0 ? "ok" : "partial", reviewed, errors, per_finding_warnings: reviewWarnings },
+        {
+          status: errors.length === 0 ? "ok" : "partial",
+          reviewed,
+          errors,
+          audit_path: auditPath,
+          findings_synced: findingsSynced,
+          per_finding_warnings: reviewWarnings,
+        },
         null,
         2
       )

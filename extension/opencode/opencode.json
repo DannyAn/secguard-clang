@@ -19,7 +19,8 @@
         "secguard_report": "allow",
         "secguard_status": "allow",
         "secguard_db": "allow",
-        "secguard_schema": "allow"
+        "secguard_schema": "allow",
+        "secguard_types": "allow"
       }
     }
   },
@@ -31,7 +32,8 @@
     "secguard_report": "allow",
     "secguard_status": "allow",
     "secguard_db": "allow",
-    "secguard_schema": "allow"
+    "secguard_schema": "allow",
+    "secguard_types": "allow"
   },
   "plugin": ["secguard-context"]
 }
