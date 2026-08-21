@@ -2,6 +2,21 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.3.5] - 2026-08-21
+
+### 对外文档：5 级收敛管线 + per-finding 目录结构调整
+
+对外叙事从"4 级收敛管线"升级为"5 级收敛管线"，明确 A5 二次审查层（复合补全层）定位；per-finding markdown 统一收纳到 `findings/` 子目录。
+
+#### 文档
+
+- **5 级收敛管线**：README / README-CN 的 hero、Pipeline 图、数据模型表刷新为 5 层叙事——A1–A4 确定性收敛（产不出推理链与修复策略）+ AI 首轮分类对所有发现补全 `summary`/`reasoning`/`exception_check`/`fix_strategy` + A5 复合补全层对疑似逐条二次确认。
+- **A5 复合补全层定位**：明确 A5 只接语义图证不了的 suspected 残余，经过 A5 仍留下的 suspected 是真正"需人工判断"的情形，最终报告通过 `EffectiveStatus()` 统计 A5 之后的裁决。
+
+#### 变更
+
+- **per-finding 目录**：逐条证据 markdown 从 `<vuln-type>/` 收纳到 `findings/<vuln-type>/`，新增 `FindingsDir` 常量，同步更新 `markdown.go`、`RewritePerFinding`、测试与全部文档。
+
 ## [0.3.4] - 2026-08-21
 
 ### 报告输出协议增强 + 隐藏 bug 修复
