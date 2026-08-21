@@ -86,7 +86,7 @@ func TestBuildScanSummary_OutputFiles(t *testing.T) {
 	data := SummaryData{
 		ScanID:     "test",
 		ReportPath: "/path/to/report.md",
-		SarifPath:  "/path/to/result.sarif",
+		SarifPath:  "/path/to/candidates.sarif",
 		LatestPath: "/path/to/latest",
 	}
 	out := BuildScanSummary(data)
@@ -94,7 +94,9 @@ func TestBuildScanSummary_OutputFiles(t *testing.T) {
 	checks := []string{
 		"### Output Files",
 		"- Report: /path/to/report.md",
-		"- SARIF: /path/to/result.sarif",
+		// The scan writes the candidate-stage SARIF; result.sarif belongs to
+		// the verdict stage, so the label must not imply a classified report.
+		"- SARIF (candidate stage, unclassified): /path/to/candidates.sarif",
 		"- Latest: /path/to/latest",
 	}
 	for _, check := range checks {

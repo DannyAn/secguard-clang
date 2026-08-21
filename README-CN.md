@@ -350,17 +350,49 @@ secguard db "SELECT * FROM findings WHERE status='confirmed'"
 
 ```
 scans/2026-08-17_062452_e32eb1/
-├── result.sarif                    ← SARIF 2.1（IDE/CI 集成）
+├── candidates.sarif                ← SARIF 2.1，候选阶段（全部 level=note）
+├── result.sarif                    ← SARIF 2.1，判定阶段（AI 分类后生成）
 ├── report.md                      ← Markdown 摘要（候选列表）
 ├── audit-report.md                ← AI 审计报告（分类统计）
-└── findings/                      ← 逐条证据，按漏洞类型分组
+├── candidates/                    ← 管线候选证据，按漏洞类型分组
+│   ├── buffer-overflow/
+│   │   ├── 001_allocator_99.md    ← 未判定的线索，不等于缺陷
+│   │   └── 002_parser_20.md
+│   └── null-deref/
+│       └── 001_network_45.md
+└── findings/                      ← AI 判定结论，员工只看这里
     ├── buffer-overflow/
-    │   ├── 001_allocator_99.md
-    │   └── 002_parser_20.md
-    ├── null-deref/
-    │   └── 001_network_45.md
-    └── ...
+    │   └── 001_allocator_99_confirmed.md
+    └── null-deref/
+        └── 001_network_45_suspected.md
 ```
+
+`findings/` 只放"需要人处理"的结论：文件名必带 `_confirmed` / `_suspected`
+后缀；被 AI 判为误报的条目**不会**在这里生成文件（判定与理由记入数据库，并标注
+到对应的 `candidates/` 文件上）。`secguard report --audit` 会按数据库重建
+`findings/`，保证目录与已落库的判定始终一致。
+
+每个判定文件都是**自包含**的——位置、证据链、缺陷处的源码片段（默认上下各 15
+行，带行号，问题行用 `>` 标出）、AI 的推理与误报排除、可直接粘贴的修复代码：
+
+```
+## Code Context
+
+`/repo/src/tc01.c:15-31` — line 30 is the reported location.
+
+  28 | int tc01_null_return(int id) {
+  29 |     Node *node = get_node(id);
+> 30 |     return node->value;
+  31 | }
+```
+
+审阅者不必再跳回源码。窗口大小用 `--context-lines <n>` 调整，`--context-lines 0`
+则完全不把源码写入报告产物；同一设置也决定 SARIF 的 `region.snippet` /
+`contextRegion.snippet`。
+
+两个 SARIF 文件遵循与两棵 Markdown 树相同的规则：扫描阶段写 `candidates.sarif`
+（未判定候选，全部 level=note），`result.sarif` 只由已落库的判定生成。**CI 请对准
+`result.sarif`**——它里面不可能出现未判定候选。
 
 ## 技术栈
 

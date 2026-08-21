@@ -3,6 +3,7 @@ package report
 import (
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 )
 
@@ -55,7 +56,11 @@ func BuildScanSummary(data SummaryData) string {
 
 	b.WriteString("### Output Files\n\n")
 	fmt.Fprintf(&b, "- Report: %s\n", data.ReportPath)
-	fmt.Fprintf(&b, "- SARIF: %s\n", data.SarifPath)
+	fmt.Fprintf(&b, "- SARIF (candidate stage, unclassified): %s\n", data.SarifPath)
+	if data.ScanDir != "" {
+		fmt.Fprintf(&b, "- Candidate evidence: %s (unclassified pipeline leads)\n", filepath.Join(data.ScanDir, CandidatesDir))
+		fmt.Fprintf(&b, "- Findings to review: %s (AI verdicts, confirmed/suspected only)\n", filepath.Join(data.ScanDir, FindingsDir))
+	}
 	fmt.Fprintf(&b, "- Latest: %s\n", data.LatestPath)
 
 	return b.String()

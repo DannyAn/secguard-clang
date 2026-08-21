@@ -102,7 +102,27 @@ SecGuard targets three AI-agent platforms with a **shared-core + thin-wrapper** 
 
 ## Output Protocol
 
-Scan output is written to `.codeagent/secguard-clang/scans/<scan-id>/` (`scan-id` = `YYYY-MM-DD_HHMMSS_<6-hex>`): `result.sarif` (SARIF 2.1), `report.md`, and per-finding `findings/<vuln-type>/NNN_<file>_<line>.md`. The DB lives at `.codeagent/secguard-clang/.sgre/sgre.db`. See `docs/output-protocol.md` for the full contract.
+Scan output is written to `.codeagent/secguard-clang/scans/<scan-id>/` (`scan-id` = `sc_YYYY-MM-DD_HHMMSS_<6-hex>`): `report.md`, **two SARIF stages** (`candidates.sarif` from the scan, all results at level `note`; `result.sarif` from `report --audit`, verdicts only — it does not exist before classification), plus **two layered Markdown trees**. The DB lives at `.codeagent/secguard-clang/.sgre/sgre.db`. See `docs/output-protocol.md` for the full contract.
+
+The two trees mirror the DB's layer split and each has exactly ONE writer — this is a design invariant, not a layout preference:
+
+| Tree | Layer | Writer | Content |
+|------|-------|--------|---------|
+| `candidates/<vuln-type>/NNN_<file>_<line>.md` | Layer 3 (evidence) | the scan pipeline | every converged candidate; an unclassified lead, never a defect |
+| `findings/<vuln-type>/NNN_<file>_<line>_<confirmed\|suspected>.md` | Layer 4 (findings) | `report --write` / `--review` / `--audit`, from the DB | only actionable AI verdicts, each with its verdict suffix and an embedded source region |
+
+The same rule governs SARIF: one artifact per stage, one writer each. Never make
+one file mean two things — that conflation is what produced the 0.3.5 findings/
+regressions.
+
+`findings/` is a **projection of the `findings` table**, not an accumulation of
+in-place edits: `report.SyncPerFinding` renders one verdict, `report.ReconcileFindings`
+(run by `report --audit --output-dir`) re-derives the whole tree and sweeps
+anything the DB does not claim. A dismissed verdict therefore produces no file
+there; its reason is annotated onto the candidate file. Pre-0.3.6 the pipeline
+wrote candidate files *into* `findings/` and the AI stage mutated them in place,
+which is why unclassified and dismissed entries could linger and the verdict
+suffix could silently go missing.
 
 ## Test Fixtures
 

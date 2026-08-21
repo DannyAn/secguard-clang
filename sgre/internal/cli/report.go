@@ -176,7 +176,22 @@ func runReportCmd(ctx context.Context, args []string) int {
 		// Validate scan_id exists so findings can never be silently attached to
 		// a nonexistent scan (e.g. a stale or typo'd id from the agent). An
 		// empty scan_id is allowed for backward compatibility with callers that
-		// don't track scans.
+		// don't track scans, but we first try to inherit the current scan from
+		// the `latest` pointer: without a scan the per-finding markdown has no
+		// directory to live in, and losing it silently is exactly the failure
+		// that left dismissed candidates sitting in findings/.
+		scanIDSource := "explicit"
+		if finding.ScanID == "" {
+			scanIDSource = "none"
+			if cwd, err := os.Getwd(); err == nil && cwd != "" {
+				if latest := report.LatestScanID(cwd); latest != "" {
+					if stats, serr := store.ListScanStats(ctx, latest); serr == nil && len(stats) > 0 {
+						finding.ScanID = latest
+						scanIDSource = "latest"
+					}
+				}
+			}
+		}
 		if finding.ScanID != "" {
 			stats, err := store.ListScanStats(ctx, finding.ScanID)
 			if err != nil {
@@ -195,13 +210,21 @@ func runReportCmd(ctx context.Context, args []string) int {
 			return 1
 		}
 
-		perFindingPath := rewritePerFindingAfterWrite(remaining, finding)
+		oc := syncPerFindingAfterWrite(remaining, finding)
 
-		WriteJSON(map[string]interface{}{
-			"id":               id,
-			"status":           "ok",
-			"per_finding_path": perFindingPath,
-		})
+		out := map[string]interface{}{
+			"id":                 id,
+			"status":             "ok",
+			"scan_id":            finding.ScanID,
+			"scan_id_source":     scanIDSource,
+			"per_finding_path":   oc.Path,
+			"per_finding_action": oc.Action,
+		}
+		if oc.Warning != "" {
+			out["per_finding_warning"] = oc.Warning
+			fmt.Fprintf(os.Stderr, "warning: %s\n", oc.Warning)
+		}
+		WriteJSON(out)
 		return 0
 	}
 
@@ -235,33 +258,27 @@ func runReportCmd(ctx context.Context, args []string) int {
 		if reviewStatus == "suspected-kept" {
 			finalStatus = "suspected"
 		}
-		perFindingPath := ""
-		scanDir := resolveScanDir(remaining, f.ScanID)
-		if scanDir != "" && f.FilePath != "" && f.LineNumber > 0 {
-			vulnType := planner.TypeForCWE(f.RuleID)
-			if vulnType != "" {
-				// Re-append the structured content the first pass persisted, so
-				// the A5 review updates the verdict without wiping Summary/
-				// Reasoning/Fix Strategy from the per-finding file.
-				perFindingPath, _ = report.RewritePerFinding(scanDir, vulnType, f.FilePath, f.LineNumber, report.PerFindingUpdate{
-					Status:         finalStatus,
-					Severity:       f.Severity,
-					Confidence:     f.Confidence,
-					FunctionName:   f.FunctionName,
-					Summary:        f.Summary,
-					Reasoning:      f.Reasoning,
-					FixStrategy:    f.FixStrategy,
-					ExceptionCheck: f.ExceptionCheck,
-				})
-			}
-		}
+		// Re-send the structured content the first pass persisted, so the A5
+		// review updates the verdict without wiping Summary/Reasoning/Fix
+		// Strategy — and so a dismissal removes the file from findings/ rather
+		// than leaving a confirmed-looking file behind.
+		reviewed := *f
+		reviewed.Status = finalStatus
+		reviewed.ReviewStatus = ""
+		oc := syncPerFindingAfterWrite(remaining, &reviewed)
 
-		WriteJSON(map[string]interface{}{
-			"id":               findingID,
-			"review_status":    reviewStatus,
-			"status":           "ok",
-			"per_finding_path": perFindingPath,
-		})
+		out := map[string]interface{}{
+			"id":                 findingID,
+			"review_status":      reviewStatus,
+			"status":             "ok",
+			"per_finding_path":   oc.Path,
+			"per_finding_action": oc.Action,
+		}
+		if oc.Warning != "" {
+			out["per_finding_warning"] = oc.Warning
+			fmt.Fprintf(os.Stderr, "warning: %s\n", oc.Warning)
+		}
+		WriteJSON(out)
 		return 0
 	}
 
@@ -340,13 +357,40 @@ func runReportCmd(ctx context.Context, args []string) int {
 				WriteErrorJSON(fmt.Sprintf("failed to write result.sarif: %v", err))
 				return 1
 			}
-			WriteJSON(map[string]interface{}{
-				"scan_id":    scanID,
-				"audit_path": auditPath,
-				"sarif_path": sarifPath,
-				"vuln_count": len(audits),
-				"status":     "ok",
-			})
+			// Rebuild findings/ from the DB so the review surface holds exactly
+			// the actionable verdicts: dismissed entries and never-classified
+			// leftovers are swept out instead of being handed to a reviewer.
+			rec, err := report.ReconcileFindings(outputDir, scanFindings)
+			if err != nil {
+				WriteErrorJSON(fmt.Sprintf("failed to reconcile findings dir: %v", err))
+				return 1
+			}
+			out := map[string]interface{}{
+				"scan_id":         scanID,
+				"audit_path":      auditPath,
+				"sarif_path":      sarifPath,
+				"vuln_count":      len(audits),
+				"findings_synced": rec,
+				"status":          "ok",
+			}
+			// Every converged candidate is supposed to receive a persisted
+			// verdict. A nonzero remainder means verdicts exist only in the
+			// agent's prose — the exact gap that made a console "已排除误报"
+			// note disagree with the database and with findings/. Report it in
+			// the same response the agent reads, not just inside the audit
+			// markdown a human might never open.
+			if unclassified := unclassifiedCandidates(audits); unclassified > 0 {
+				out["unclassified_candidates"] = unclassified
+				out["warning"] = fmt.Sprintf("%d converged candidate(s) have no persisted verdict — an exclusion stated only in prose is not recorded. Write a finding (confirmed|suspected|dismissed) for every candidate.", unclassified)
+			}
+			// A finding with no scan_id has no scan directory, so its verdict
+			// file cannot be placed or reconciled. Surface it instead of
+			// letting the review surface be quietly incomplete.
+			if orphans := countFindingsWithoutScanID(ctx, store); orphans > 0 {
+				out["findings_without_scan_id"] = orphans
+				out["warning"] = fmt.Sprintf("%d finding(s) carry no scan_id and are missing from %s/ — re-write them with --scan-id", orphans, report.FindingsDir)
+			}
+			WriteJSON(out)
 		} else {
 			WriteJSON(map[string]interface{}{
 				"scan_id": scanID,
@@ -503,24 +547,82 @@ func resolveScanDir(args []string, scanID string) string {
 	return filepath.Join(cwd, report.CodeagentDir, report.ProductDir, report.ScansDir, scanID)
 }
 
-func rewritePerFindingAfterWrite(args []string, finding *db.Finding) string {
+// perFindingOutcome carries what the per-finding markdown writer did, plus a
+// human-readable warning when it did nothing. The warning is the point: before
+// 0.3.6 a failed rewrite was silent, so a whole classification pass could land
+// in the DB while findings/ still showed unclassified candidates.
+type perFindingOutcome struct {
+	Path    string
+	Action  string
+	Warning string
+}
+
+func syncPerFindingAfterWrite(args []string, finding *db.Finding) perFindingOutcome {
+	if finding.FilePath == "" || finding.LineNumber <= 0 {
+		return perFindingOutcome{Action: "skipped", Warning: "per-finding markdown not written: finding carries no file/line"}
+	}
 	scanDir := resolveScanDir(args, finding.ScanID)
-	if scanDir == "" || finding.FilePath == "" || finding.LineNumber <= 0 {
-		return ""
+	if scanDir == "" {
+		return perFindingOutcome{Action: "skipped", Warning: fmt.Sprintf(
+			"per-finding markdown not written: no scan directory resolved — pass --scan-id (or --output-dir) so the verdict file lands under %s/<vuln-type>/", report.FindingsDir)}
+	}
+	if _, err := os.Stat(scanDir); err != nil {
+		return perFindingOutcome{Action: "skipped", Warning: fmt.Sprintf(
+			"per-finding markdown not written: scan dir %s is not readable (%v) — pass --output-dir pointing at the scan directory", scanDir, err)}
 	}
 	vulnType := planner.TypeForCWE(finding.RuleID)
 	if vulnType == "" {
-		return ""
+		return perFindingOutcome{Action: "skipped", Warning: fmt.Sprintf(
+			"per-finding markdown not written: rule_id %q maps to no pipeline vulnerability type", finding.RuleID)}
 	}
-	newPath, _ := report.RewritePerFinding(scanDir, vulnType, finding.FilePath, finding.LineNumber, report.PerFindingUpdate{
+	res, err := report.SyncPerFinding(scanDir, vulnType, finding.FilePath, finding.LineNumber, report.PerFindingUpdate{
 		Summary:        finding.Summary,
 		Reasoning:      finding.Reasoning,
 		FixStrategy:    finding.FixStrategy,
 		ExceptionCheck: finding.ExceptionCheck,
-		Status:         finding.Status,
+		Status:         finding.EffectiveStatus(),
 		Severity:       finding.Severity,
 		Confidence:     finding.Confidence,
 		FunctionName:   finding.FunctionName,
+		Evidence:       finding.Evidence,
 	})
-	return newPath
+	if err != nil {
+		return perFindingOutcome{Action: "error", Warning: fmt.Sprintf("per-finding markdown failed: %v", err)}
+	}
+	oc := perFindingOutcome{Path: res.Path, Action: res.Action}
+	if res.Verdict == "" {
+		oc.Warning = fmt.Sprintf("status %q carries no verdict, so %s/ was left untouched (expected confirmed|suspected|dismissed)",
+			finding.Status, report.FindingsDir)
+	}
+	return oc
+}
+
+// countFindingsWithoutScanID reports how many findings cannot be placed in any
+// scan's findings/ directory because they carry no scan_id.
+func countFindingsWithoutScanID(ctx context.Context, store db.Store) int {
+	all, err := store.ListFindings(ctx)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, f := range all {
+		if f.ScanID == "" {
+			n++
+		}
+	}
+	return n
+}
+
+// unclassifiedCandidates counts converged candidates that received no persisted
+// verdict at all. It is the machine-checkable form of "every candidate must get
+// a finding": a bulk exclusion the agent only narrated shows up here.
+func unclassifiedCandidates(audits []vulnAuditEntry) int {
+	total := 0
+	for _, a := range audits {
+		remainder := a.FinalCount - (a.Confirmed + a.Suspected + a.Dismissed)
+		if remainder > 0 {
+			total += remainder
+		}
+	}
+	return total
 }

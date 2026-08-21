@@ -56,20 +56,27 @@ func (o *ScanOutput) writeReport(packages []*planner.PlanResult, indexSummary In
 	}
 
 	b.WriteString("## Output Files\n\n")
-	b.WriteString(fmt.Sprintf("- SARIF: `%s`\n", o.SarifPath))
-	b.WriteString(fmt.Sprintf("- Per-finding details: `findings/<vuln-type>/<NNN>_<file>_<line>.md`\n"))
+	b.WriteString(fmt.Sprintf("- SARIF (candidate stage, level `note` — unclassified leads): `%s`\n", CandidatesSarifFile))
+	b.WriteString(fmt.Sprintf("- SARIF (verdict stage, written by `report --audit`): `%s`\n", SarifFile))
+	b.WriteString(fmt.Sprintf("- Candidate evidence (pipeline output, NOT verdicts): `%s/<vuln-type>/<NNN>_<file>_<line>.md`\n", CandidatesDir))
+	b.WriteString(fmt.Sprintf("- Findings to review (AI verdicts): `%s/<vuln-type>/<NNN>_<file>_<line>_<confirmed|suspected>.md`\n", FindingsDir))
+	b.WriteString(fmt.Sprintf("  — written after AI classification. Dismissed (false-positive) entries never appear here; their verdict is recorded in the database and on the candidate file.\n"))
 	b.WriteString(fmt.Sprintf("- Database: `.sgre/sgre.db`\n"))
 
 	return os.WriteFile(o.ReportPath, []byte(b.String()), 0644)
 }
 
-func (o *ScanOutput) writePerFinding(packages []*planner.PlanResult) error {
+// writeCandidates writes one markdown file per converged candidate under
+// candidates/<vuln-type>/. These are evidence packages, not defects: the AI
+// agent classifies them, and only the actionable verdicts get a file under
+// findings/<vuln-type>/ (see SyncPerFinding).
+func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 	for _, pkg := range packages {
 		if len(pkg.Candidates) == 0 {
 			continue
 		}
 
-		dir := filepath.Join(o.ScanDir, FindingsDir, pkg.VulnerabilityType)
+		dir := filepath.Join(o.ScanDir, CandidatesDir, pkg.VulnerabilityType)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return err
 		}
@@ -85,6 +92,8 @@ func (o *ScanOutput) writePerFinding(packages []*planner.PlanResult) error {
 			var b strings.Builder
 			b.WriteString(fmt.Sprintf("# %s in %s\n\n", title(pkg.VulnerabilityType), c.Target.Function))
 			b.WriteString(fmt.Sprintf("**CWE:** %s\n\n", cwe))
+			b.WriteString(fmt.Sprintf("> Pipeline **candidate evidence** — not a defect and not a verdict.\n"+
+				"> Classified findings live in `%s/%s/`.\n\n", FindingsDir, pkg.VulnerabilityType))
 
 			b.WriteString("## Location\n\n")
 			b.WriteString(fmt.Sprintf("- **File:** `%s:%d`\n", c.Target.File, c.Target.Line))
@@ -104,9 +113,9 @@ func (o *ScanOutput) writePerFinding(packages []*planner.PlanResult) error {
 			}
 			b.WriteString("\n")
 
-			b.WriteString("## Classification\n\n")
-			b.WriteString(fmt.Sprintf("- **Suspicion Level:** %s\n", c.SuspicionLevel))
-			b.WriteString("- **Status:** _pending_ (awaiting AI classification)\n")
+			b.WriteString("## Pipeline Assessment\n\n")
+			b.WriteString(fmt.Sprintf("- **Suspicion Level (pipeline prior, not a verdict):** %s\n", c.SuspicionLevel))
+			b.WriteString(fmt.Sprintf("- **AI Verdict:** _unclassified_\n"))
 			b.WriteString("\n")
 
 			b.WriteString("## Fix Suggestion\n\n")
@@ -144,213 +153,6 @@ func title(s string) string {
 	return strings.Join(words, " ")
 }
 
-// PerFindingUpdate carries the AI agent's classification output for a single
-// finding, to be merged into the candidate-stage per-finding markdown.
-type PerFindingUpdate struct {
-	Summary        string
-	Reasoning      string
-	FixStrategy    string
-	ExceptionCheck string
-	Status         string
-	Severity       string
-	Confidence     float64
-	FunctionName   string
-}
-
-// statusSuffix maps a finding status to a self-describing filename suffix that
-// lets a developer spot confirmed/suspected/dismissed at a glance via `ls`.
-func statusSuffix(status string) string {
-	switch strings.ToLower(status) {
-	case "confirmed":
-		return "_confirmed"
-	case "suspected":
-		return "_suspected"
-	case "dismissed":
-		return "_dismissed"
-	default:
-		return ""
-	}
-}
-
-// removeLineByPrefix deletes a single line whose text starts with prefix,
-// returning the content unchanged if no such line exists.
-func removeLineByPrefix(content, prefix string) string {
-	idx := strings.Index(content, prefix)
-	if idx < 0 {
-		return content
-	}
-	// Back up to the start of the line the prefix sits on.
-	lineStart := strings.LastIndex(content[:idx], "\n") + 1
-	lineEnd := strings.Index(content[idx:], "\n")
-	if lineEnd < 0 {
-		return content[:lineStart]
-	}
-	return content[:lineStart] + content[idx+lineEnd+1:]
-}
-
-// replaceStatusLine swaps the "- **Status:** ..." line for the given newStatus
-// line, returning content unchanged if no such line exists. It matches by
-// prefix so it works regardless of whether the line currently reads "_pending_"
-// or a prior verdict.
-func replaceStatusLine(content, newStatus string) string {
-	lines := strings.Split(content, "\n")
-	for i, line := range lines {
-		if strings.HasPrefix(line, "- **Status:**") {
-			lines[i] = newStatus
-			return strings.Join(lines, "\n")
-		}
-	}
-	return content
-}
-
-// truncateAtFirstSection cuts content at the earliest structured section the
-// rewrite appends (Summary/Reasoning/Exception Check/Fix Strategy) or the
-// candidate stage's generic "Fix Suggestion". Everything from that section to
-// the end is dropped, so the caller can re-append the current sections cleanly.
-func truncateAtFirstSection(content string) string {
-	markers := []string{
-		"## Summary", "## Reasoning", "## Exception Check", "## Fix Strategy", "## Fix Suggestion",
-	}
-	earliest := -1
-	for _, m := range markers {
-		if idx := strings.Index(content, m); idx >= 0 && (earliest == -1 || idx < earliest) {
-			earliest = idx
-		}
-	}
-	if earliest < 0 {
-		return content
-	}
-	// Back up to the start of the line the marker sits on.
-	return content[:strings.LastIndex(content[:earliest], "\n")+1]
-}
-
-// RewritePerFinding locates the candidate-stage per-finding markdown for
-// (vulnType, filePath, line[, function]), merges the AI's Summary/Reasoning/
-// Exception Check/Fix Strategy into it, updates the Classification status, and
-// renames the file with a status suffix (_confirmed/_suspected/_dismissed).
-// Returns the new path (or the unchanged path if no rename), and an empty path +
-// nil if no candidate file was found (not an error — the finding is still
-// persisted to the DB).
-func RewritePerFinding(scanDir, vulnType, filePath string, line int, update PerFindingUpdate) (string, error) {
-	dir := filepath.Join(scanDir, FindingsDir, vulnType)
-	safeName := sanitizeFilename(shortFile(filePath))
-	baseSuffix := fmt.Sprintf("_%s_%d", safeName, line)
-
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return "", nil
-	}
-
-	var oldPath string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if !strings.HasSuffix(name, ".md") {
-			continue
-		}
-		stem := strings.TrimSuffix(name, ".md")
-		stem = strings.TrimSuffix(stem, "_confirmed")
-		stem = strings.TrimSuffix(stem, "_suspected")
-		stem = strings.TrimSuffix(stem, "_dismissed")
-		if !strings.HasSuffix(stem, baseSuffix) {
-			continue
-		}
-		candidate := filepath.Join(dir, name)
-		if update.FunctionName == "" {
-			oldPath = candidate
-			break
-		}
-		data, readErr := os.ReadFile(candidate)
-		if readErr != nil {
-			continue
-		}
-		if strings.Contains(string(data), " in "+update.FunctionName+"\n") {
-			oldPath = candidate
-			break
-		}
-		if oldPath == "" {
-			oldPath = candidate
-		}
-	}
-	if oldPath == "" {
-		return "", nil
-	}
-
-	data, err := os.ReadFile(oldPath)
-	if err != nil {
-		return "", fmt.Errorf("read per-finding: %w", err)
-	}
-	content := string(data)
-
-	if update.Status != "" {
-		// Replace the Status line by prefix (not the literal "_pending_" text),
-		// so it works on BOTH the first pass (pending → verdict) and a second
-		// pass (review updating a prior verdict).
-		newStatus := fmt.Sprintf("- **Status:** %s", update.Status)
-		if update.Severity != "" {
-			newStatus += fmt.Sprintf(" (severity: %s", update.Severity)
-			if update.Confidence > 0 {
-				newStatus += fmt.Sprintf(", confidence: %.0f%%", update.Confidence*100)
-			}
-			newStatus += ")"
-		}
-		content = replaceStatusLine(content, newStatus)
-		// Drop the pipeline prior (suspicion_level) from the final file — it is
-		// an internal convergence metric; the developer only needs the AI verdict.
-		content = removeLineByPrefix(content, "- **Suspicion Level:** ")
-	}
-
-	// Strip any structured sections a prior pass inserted (and the candidate
-	// stage's generic "Fix Suggestion"), so re-writing the same finding is
-	// idempotent instead of duplicating Summary/Reasoning/Fix blocks.
-	content = truncateAtFirstSection(content)
-
-	// Append the structured sections in the reference report's order.
-	var b strings.Builder
-	b.WriteString(strings.TrimRight(content, "\n"))
-	b.WriteString("\n")
-	if update.Summary != "" {
-		b.WriteString("\n## Summary\n\n")
-		b.WriteString(update.Summary)
-		b.WriteString("\n")
-	}
-	if update.Reasoning != "" {
-		b.WriteString("\n## Reasoning\n\n")
-		b.WriteString(update.Reasoning)
-		b.WriteString("\n")
-	}
-	if update.ExceptionCheck != "" {
-		b.WriteString("\n## Exception Check\n\n")
-		b.WriteString(update.ExceptionCheck)
-		b.WriteString("\n")
-	}
-	if update.FixStrategy != "" {
-		b.WriteString("\n## Fix Strategy\n\n")
-		b.WriteString(update.FixStrategy)
-		b.WriteString("\n")
-	}
-	content = b.String()
-
-	newPath := oldPath
-	if s := statusSuffix(update.Status); s != "" {
-		base := filepath.Base(oldPath)
-		stem := strings.TrimSuffix(base, ".md")
-		stem = strings.TrimSuffix(stem, "_confirmed")
-		stem = strings.TrimSuffix(stem, "_suspected")
-		stem = strings.TrimSuffix(stem, "_dismissed")
-		newPath = filepath.Join(dir, stem+s+".md")
-	}
-
-	if err := os.WriteFile(newPath, []byte(content), 0644); err != nil {
-		return "", fmt.Errorf("write per-finding: %w", err)
-	}
-	if newPath != oldPath {
-		_ = os.Remove(oldPath)
-	}
-	return newPath, nil
-}
 
 func generateFixSuggestion(vulnType, cwe string, c planner.EvidenceItem) string {
 	varName := c.Target.Variable

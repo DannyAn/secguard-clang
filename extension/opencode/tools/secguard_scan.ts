@@ -53,7 +53,8 @@ function printScanSummary(
 
   out += "### Output Files\n\n"
   out += `- Report: ${path.join(scanDir, "report.md")}\n`
-  out += `- SARIF: ${path.join(scanDir, "result.sarif")}\n`
+  out += `- SARIF (candidate stage, unclassified): ${path.join(scanDir, "candidates.sarif")}\n`
+  out += `- SARIF (verdict stage, after classification): ${path.join(scanDir, "result.sarif")}\n`
   out += `- Latest: ${path.join(workspace, ".codeagent", "secguard-clang", "scans", "latest")}\n`
 
   w.write(out)
@@ -61,7 +62,7 @@ function printScanSummary(
 
 export default tool({
   description:
-    "Run full SecGuard security scan: index codebase, run all registered detectors, apply the convergence pipeline for every registered vulnerability type. Writes SARIF 2.1 + report.md + per-finding Markdown to .codeagent/secguard-clang/scans/<scan_id>/, stores DB at .codeagent/secguard-clang/.sgre/sgre.db. Returns JSON with evidence_packages, total_candidates, files_with_candidates, output_dir. The Go binary generates scan_id, creates the scan directory, and updates the latest symlink — this wrapper only invokes the binary and parses its JSON output.",
+    "Run full SecGuard security scan: index codebase, run all registered detectors, apply the convergence pipeline for every registered vulnerability type. Writes report.md + candidates.sarif (unclassified leads at SARIF level note) + candidates/<vuln-type>/ Markdown to .codeagent/secguard-clang/scans/<scan_id>/; findings/<vuln-type>/ and result.sarif are produced later from the AI verdicts via secguard_report, stores DB at .codeagent/secguard-clang/.sgre/sgre.db. Returns JSON with evidence_packages, total_candidates, files_with_candidates, output_dir. The Go binary generates scan_id, creates the scan directory, and updates the latest symlink — this wrapper only invokes the binary and parses its JSON output.",
   args: {
     path: tool.schema
       .string()
@@ -119,6 +120,10 @@ export default tool({
           scan_id: scanId,
           output_dir: scanDir,
           report_md: reportMdPath,
+          // The scan produces the candidate-stage SARIF; result.sarif is the
+          // verdict-stage file, written by `secguard report --audit` once
+          // findings are persisted, so it does not exist yet.
+          candidates_sarif: path.join(scanDir, "candidates.sarif"),
           sarif: path.join(scanDir, "result.sarif"),
           db_path: dbPath,
           total_candidates: totalCandidates,
@@ -155,6 +160,7 @@ export default tool({
             scan_id: scanId,
             output_dir: scanDir,
             report_md: path.join(scanDir, "report.md"),
+            candidates_sarif: path.join(scanDir, "candidates.sarif"),
             sarif: path.join(scanDir, "result.sarif"),
             db_path: dbPath,
             target_path: targetPath,

@@ -346,7 +346,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 		FunctionsInIndex: functionsInIndex,
 		TypeBreakdown:    typeBreakdown,
 		ReportPath:       filepath.Join(scanDir, report.ReportFile),
-		SarifPath:        filepath.Join(scanDir, report.SarifFile),
+		SarifPath:        filepath.Join(scanDir, report.CandidatesSarifFile),
 		LatestPath:       filepath.Join(scansDir, report.LatestName),
 	}
 	summaryStr := report.BuildScanSummary(summaryData)
@@ -377,6 +377,8 @@ func runScanCmd(ctx context.Context, args []string) int {
 		"existing_findings": findingsList,
 		"target_path":       absPath,
 		"scan_dir":          scanDir,
+		"candidates_sarif":  filepath.Join(scanDir, report.CandidatesSarifFile),
+		"result_sarif_note": fmt.Sprintf("%s is written by `report --audit` after classification; the scan writes %s (unclassified leads at level \"note\")", report.SarifFile, report.CandidatesSarifFile),
 		"_summary":          summaryStr,
 	}
 
@@ -391,11 +393,12 @@ func runScanCmd(ctx context.Context, args []string) int {
 	}
 
 	scanOutput := &report.ScanOutput{
-		RootDir:    projectRoot,
-		ScanDir:    scanDir,
-		SarifPath:  filepath.Join(scanDir, report.SarifFile),
-		ReportPath: filepath.Join(scanDir, report.ReportFile),
-		ScanID:     scanID,
+		RootDir:             projectRoot,
+		ScanDir:             scanDir,
+		SarifPath:           filepath.Join(scanDir, report.SarifFile),
+		CandidatesSarifPath: filepath.Join(scanDir, report.CandidatesSarifFile),
+		ReportPath:          filepath.Join(scanDir, report.ReportFile),
+		ScanID:              scanID,
 	}
 	if err := scanOutput.Write(planResults, report.IndexSummary{
 		FilesIndexed:     indexResult.FilesIndexed,
@@ -420,7 +423,10 @@ func runScanCmd(ctx context.Context, args []string) int {
 		// 强制落盘验证：Write() 返回 nil 不代表文件实际存在（磁盘满、NFS 延迟、
 		// 权限问题在写入过程中发生等）。逐个检查输出契约文件存在且非空，
 		// 任一缺失则视为致命错误——不再静默返回 0 让 agent 误读"成功"。
-		for _, f := range []string{scanOutput.ReportPath, scanOutput.SarifPath} {
+		// Verify what the SCAN is contracted to produce. result.sarif is not in
+		// that list: it is the verdict-stage artifact and does not exist until
+		// the AI classification is persisted via `report --audit`.
+		for _, f := range []string{scanOutput.ReportPath, scanOutput.CandidatesSarifPath} {
 			info, statErr := os.Stat(f)
 			if statErr != nil {
 				output["report_error"] = fmt.Sprintf("output file not persisted: %s: %v", f, statErr)

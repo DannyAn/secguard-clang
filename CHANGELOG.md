@@ -2,6 +2,37 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.3.6] - 2026-08-21
+
+### 修复 findings/ 目录语义：候选与判定分层，误报不再进入复核面
+
+0.3.5 把逐条 markdown 收纳进 `findings/` 时，让**扫描管线**和**AI 判定**写同一个目录：
+扫描阶段先按候选写文件，AI 判定阶段再原地重命名/改写。一个目录两个写者、两种语义，
+由此派生出三个现场问题：判定后缀丢失、误报仍然写进 `findings/`、候选文件里同时出现
+"Suspicion Level: confirmed" 和 "Status: _pending_"。本版本按根因分层重构，不是逐个打补丁。
+
+#### 变更（破坏性：输出目录结构）
+
+- **候选与判定分成两棵树**：扫描阶段的候选证据写入 `candidates/<vuln-type>/NNN_<file>_<line>.md`（Layer 3，唯一写者是管线）；`findings/<vuln-type>/NNN_<file>_<line>_<confirmed|suspected>.md` 只由 AI 判定生成（Layer 4，唯一写者是 DB 投影）。目录语义与 4 层数据模型对齐。
+- **findings/ 只收要人处理的结论**：判为 dismissed（误报）的条目**不再生成文件**，判定与理由记入 DB 并标注到对应 `candidates/` 文件的 `## AI Verdict` 小节——排除可审计，但不干扰员工确认。
+- **判定后缀不再可能丢失**：`findings/` 里的文件只在有判定时创建，文件名必带 `_confirmed` / `_suspected`。
+- **候选文件不再伪装判定**：移除 `- **Status:** _pending_`，suspicion level 明确标注为 `(pipeline prior, not a verdict)`，并给出 `AI Verdict: _unclassified_`。
+
+#### 新增
+
+- **判定文件自包含源码片段**：`## Code Context` 段落嵌入缺陷处上下各 15 行源码（带行号，问题行 `>` 标记），审阅者无需跳回源码即可判断。新增全局 `--context-lines <n>` 调整窗口，`--context-lines 0` 完全关闭源码嵌入（源码不得外流的仓库）。
+- **SARIF 携带源码片段**：verdict 阶段的 `result.sarif` 为每条结果补 `region.snippet` 与 `contextRegion.snippet`，IDE/CI 可直接渲染代码。
+- **SARIF 按阶段拆成两个文件（破坏性）**：扫描阶段写 `candidates.sarif`（未判定候选，**全部 level=note**，管线先验放进 `properties.suspicion_level`）；`result.sarif` 只由 `report --audit` 从判定生成，**分类前不存在**。CI/IDE 对准 `result.sarif` 即不可能把收敛前候选当缺陷——这是"一个文件两种语义"这个根因在 SARIF 侧的最后一处出口。两个文件均带 `runs[0].properties.stage`。
+- **`report --audit` 对账重建**：新增 `report.ReconcileFindings`，按 `findings` 表重建整棵 `findings/` 树并清扫 DB 不认的残留文件——AI 批量排除却没落盘、批次中断、写入漏参数等情况都能自愈。
+- **写入不再静默失败**：`report --write` / `--review` 返回 `per_finding_action` 与 `per_finding_warning`（并打到 stderr）；缺 `--scan-id` 时自动继承 `scans/latest` 并回报 `scan_id_source`；`--audit` 报告仍无 scan_id 的 finding 数量。
+
+#### 修复
+
+- **`report --write` 漏传 scan_id 即静默丢判定**：这是 0.3.5 后缀"丢失"的直接原因（OpenCode 工具从不传 `--output-dir`，agent 漏传 `scan_id` 时整条落盘链路无声跳过）。现在 latest 回退 + 显式告警，工具封装也补齐 `--output-dir`。
+- **重复扫描留下幽灵文件**：`scan` 写输出前清空 `candidates/` 与 `findings/`（两者完全派生于本次扫描），避免旧序号候选与失效判定残留；已落库的判定由 `report --audit` 重新生成。
+- **同一位置多次判定的投影顺序**：`ReconcileFindings` 按位置取最新 finding（最大 id），磁盘状态不再依赖行序。
+- **A5 复核降级未清理文件**：`--review` 判为 dismissed 时删除此前的判定文件，`suspected → confirmed` 正确改名，不再出现同一问题两个后缀并存。
+
 ## [0.3.5] - 2026-08-21
 
 ### 对外文档：5 级收敛管线 + per-finding 目录结构调整

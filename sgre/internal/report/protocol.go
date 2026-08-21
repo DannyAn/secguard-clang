@@ -18,26 +18,46 @@ const (
 	ScansDir      = "scans"
 	SgreDir       = ".sgre"
 	DbName        = "sgre.db"
-	SarifFile     = "result.sarif"
+	// SarifFile is the VERDICT-stage machine-readable report: it exists only
+	// after the AI classification is persisted (`report --audit` regenerates
+	// it from the findings table). A consumer that reads it is guaranteed to
+	// see classified findings, never unclassified candidates.
+	SarifFile = "result.sarif"
+	// CandidatesSarifFile is the CANDIDATE-stage machine-readable report the
+	// scan writes. It carries converged-but-unclassified leads at SARIF level
+	// "note"; keeping it under its own name is what stops a CI gate from
+	// treating the candidate explosion as defects.
+	CandidatesSarifFile = "candidates.sarif"
 	ReportFile    = "report.md"
 	LatestName    = "latest"
 	LatestTxtName = "latest.txt"
 	ScanLogFile   = "scan.log"
 	DismissedFile = "dismissed.json"
-	FindingsDir   = "findings"
+	// FindingsDir holds the AI's classified verdicts — the human review
+	// surface. Only actionable verdicts (confirmed/suspected) ever get a file
+	// here; see CandidatesDir for the pre-classification evidence.
+	FindingsDir = "findings"
+	// CandidatesDir holds the convergence pipeline's evidence packages, one
+	// file per converged candidate, written before any AI classification. A
+	// candidate is NOT a defect, so these must never be mixed into FindingsDir.
+	CandidatesDir = "candidates"
 )
 
 // ToolVersion is the version stamped into SARIF and markdown reports.
 // It is a var so cli/root.go can inject the release version at startup
 // (keeping report free of a cli import, which would be a cycle).
-var ToolVersion = "0.3.5"
+var ToolVersion = "0.3.6"
 
 type ScanOutput struct {
-	RootDir    string
-	ScanDir    string
-	SarifPath  string
-	ReportPath string
-	ScanID     string
+	RootDir string
+	ScanDir string
+	// SarifPath is where the verdict-stage report will live (written later by
+	// `report --audit`); the scan itself never writes it.
+	SarifPath string
+	// CandidatesSarifPath is the candidate-stage report the scan writes.
+	CandidatesSarifPath string
+	ReportPath          string
+	ScanID              string
 }
 
 func generateScanID() string {
@@ -53,11 +73,12 @@ func NewScanOutput(projectRoot string) *ScanOutput {
 	scanID := generateScanID()
 	scanDir := filepath.Join(projectRoot, CodeagentDir, ProductDir, ScansDir, scanID)
 	return &ScanOutput{
-		RootDir:    projectRoot,
-		ScanDir:    scanDir,
-		SarifPath:  filepath.Join(scanDir, SarifFile),
-		ReportPath: filepath.Join(scanDir, ReportFile),
-		ScanID:     scanID,
+		RootDir:             projectRoot,
+		ScanDir:             scanDir,
+		SarifPath:           filepath.Join(scanDir, SarifFile),
+		CandidatesSarifPath: filepath.Join(scanDir, CandidatesSarifFile),
+		ReportPath:          filepath.Join(scanDir, ReportFile),
+		ScanID:              scanID,
 	}
 }
 
@@ -79,16 +100,28 @@ func (o *ScanOutput) Write(packages []*planner.PlanResult, indexSummary IndexSum
 		return fmt.Errorf("create scan dir: %w", err)
 	}
 
-	if err := o.writeSarif(packages); err != nil {
-		return fmt.Errorf("write sarif: %w", err)
+	// candidates/ and findings/ are derived entirely from one scan run, so a
+	// re-scan into the same directory must start from a clean slate: stale
+	// candidate files (whose NNN sequence has shifted) and verdict files for
+	// candidates that no longer exist would otherwise survive as ghosts.
+	// Persisted verdicts are never lost — `report --audit` re-derives findings/
+	// from the database.
+	for _, dir := range []string{CandidatesDir, FindingsDir} {
+		if err := os.RemoveAll(filepath.Join(o.ScanDir, dir)); err != nil {
+			return fmt.Errorf("reset %s dir: %w", dir, err)
+		}
+	}
+
+	if err := o.writeCandidatesSarif(packages); err != nil {
+		return fmt.Errorf("write candidates sarif: %w", err)
 	}
 
 	if err := o.writeReport(packages, indexSummary); err != nil {
 		return fmt.Errorf("write report: %w", err)
 	}
 
-	if err := o.writePerFinding(packages); err != nil {
-		return fmt.Errorf("write per-finding: %w", err)
+	if err := o.writeCandidates(packages); err != nil {
+		return fmt.Errorf("write candidate evidence: %w", err)
 	}
 
 	return nil

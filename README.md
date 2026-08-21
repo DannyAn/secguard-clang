@@ -178,7 +178,7 @@ TOCTOU windows) via AI business-context reasoning.
 └───────┬───────┘
         ▼
 ┌───────────────┐
-│  Report        │  SARIF 2.1 + Markdown + per-finding Markdown (_confirmed/_suspected/_dismissed)
+│  Report        │  SARIF 2.1 + Markdown + candidate evidence + verdict files (_confirmed/_suspected)
 └───────────────┘
 ```
 
@@ -359,17 +359,53 @@ Scan results are written to `.codeagent/secguard-clang/scans/<scan-id>/`:
 
 ```
 scans/2026-08-17_062452_e32eb1/
-├── result.sarif                    ← SARIF 2.1 (IDE/CI integration)
+├── candidates.sarif                ← SARIF 2.1, candidate stage (all results level `note`)
+├── result.sarif                    ← SARIF 2.1, verdict stage (written after AI classification)
 ├── report.md                      ← Markdown summary (candidate list)
 ├── audit-report.md                ← AI audit report (classification stats)
-└── findings/                      ← per-finding evidence, grouped by vuln type
+├── candidates/                    ← pipeline evidence, grouped by vuln type
+│   ├── buffer-overflow/
+│   │   ├── 001_allocator_99.md    ← unclassified lead, not a defect
+│   │   └── 002_parser_20.md
+│   └── null-deref/
+│       └── 001_network_45.md
+└── findings/                      ← AI verdicts — the review surface
     ├── buffer-overflow/
-    │   ├── 001_allocator_99.md
-    │   └── 002_parser_20.md
-    ├── null-deref/
-    │   └── 001_network_45.md
-    └── ...
+    │   └── 001_allocator_99_confirmed.md
+    └── null-deref/
+        └── 001_network_45_suspected.md
 ```
+
+`findings/` holds **only** what a developer must act on: every file carries a
+`_confirmed` / `_suspected` suffix, and entries the AI dismissed as false
+positives get no file at all (the verdict and its reason are kept in the
+database and annotated onto the matching `candidates/` file). `secguard report
+--audit` re-derives `findings/` from the database, so it always matches the
+persisted verdicts.
+
+Each verdict file is **self-contained** — location, evidence chain, the source
+region around the defect (±15 lines, gutter-numbered with the reported line
+marked), the AI's reasoning and exception check, and a paste-ready fix:
+
+```
+## Code Context
+
+`/repo/src/tc01.c:15-31` — line 30 is the reported location.
+
+  28 | int tc01_null_return(int id) {
+  29 |     Node *node = get_node(id);
+> 30 |     return node->value;
+  31 | }
+```
+
+Tune it with `--context-lines <n>`, or set `--context-lines 0` to keep source out
+of report artifacts. The same window feeds the SARIF `region.snippet` /
+`contextRegion.snippet` fields.
+
+The two SARIF files follow the same rule as the two Markdown trees: the scan
+writes `candidates.sarif` (unclassified leads, every result at level `note`), and
+`result.sarif` is produced only from persisted verdicts. **Point CI at
+`result.sarif`** — it cannot contain an unclassified candidate.
 
 ## Tech stack
 

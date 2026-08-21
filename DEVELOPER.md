@@ -114,13 +114,21 @@ findings.status = confirmed | suspected | dismissed                   [A4 classi
 findings.review_status = confirmed | dismissed | suspected-kept       [A5 review]
    ↓ report.go
 effectiveStatus() → confirmed | suspected | dismissed                 [final]
-   ↓ markdown.go statusSuffix
-per-finding file renamed `_confirmed` / `_suspected` / `_dismissed`
+   ↓ report/findings.go SyncPerFinding
+findings/<vuln-type>/NNN_<file>_<line>_<confirmed|suspected>.md written,
+or (dismissed) no file at all + the verdict annotated on the candidate file
 ```
 
-The per-finding filename suffix (`internal/report/markdown.go` `statusSuffix`)
-maps the **final** status: `confirmed→_confirmed`, `suspected→_suspected`,
-`dismissed→_dismissed`.
+`internal/report/findings.go` owns the review surface. `SyncPerFinding` enforces
+the invariant that `findings/` holds only actionable verdicts:
+`confirmed→_confirmed`, `suspected→_suspected`, `dismissed→` **no file** (the
+previous file, if any, is deleted and the reason is written onto
+`candidates/<vuln-type>/NNN_*.md`). `ReconcileFindings` re-derives the whole
+directory from the `findings` table and is run by `report --audit --output-dir`,
+so a classification pass that never reached the writer cannot leave unclassified
+or dismissed files behind. `report --write` reports what it did via
+`per_finding_action` and, when it did nothing, `per_finding_warning` — the
+per-finding writer must never fail silently.
 
 ---
 
@@ -202,7 +210,9 @@ it instead of ad-hoc regex).
    pattern (guarded, bounded, transferred ownership). See the null-deref 7-filter
    chain as the reference design.
 3. **AI misclassification** → the finding's `evidence` / `review_reasoning` is
-   the audit trail; read the per-finding `findings/<vuln-type>/NNN_*_dismissed.md` file.
+   the audit trail: query the `findings` table, or read the `## AI Verdict`
+   section on `candidates/<vuln-type>/NNN_*.md` (dismissed verdicts are recorded
+   there, never as a file under `findings/`).
 
 ### 3.4 "Status seems wrong in the report"
 

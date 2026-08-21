@@ -13,7 +13,7 @@ function findSecguard(context: { worktree?: string, directory?: string }): strin
 
 export default tool({
   description:
-    "Write security findings to the SecGuard database (sgre.db), retrieve existing findings, or record a second-round (A5) review verdict for a suspected finding. When findings is provided, writes them and returns each finding's database id (needed later for review). When reviews is provided, records --review verdicts (confirmed|dismissed|suspected-kept). When neither is provided, returns all existing findings as JSON.",
+    "Write security findings to the SecGuard database (sgre.db), retrieve existing findings, or record a second-round (A5) review verdict for a suspected finding. When findings is provided, writes them and returns each finding's database id (needed later for review). When reviews is provided, records --review verdicts (confirmed|dismissed|suspected-kept). When neither is provided, returns all existing findings as JSON. Pass scan_id AND output_dir whenever you write or review: they place each verdict file under findings/<vuln-type>/NNN_<file>_<line>_<confirmed|suspected>.md and re-sync that directory with the database. Dismissed findings intentionally get no file there. Any per_finding_warning in the response means the verdict did not reach findings/ — fix the call and write again.",
   args: {
     findings: tool.schema
       .array(
@@ -86,9 +86,11 @@ export default tool({
     const sgreDir = path.join(workDir, ".codeagent", "secguard-clang", ".sgre")
     if (!fs.existsSync(sgreDir)) fs.mkdirSync(sgreDir, { recursive: true })
     const dbPath = path.join(sgreDir, "sgre.db")
+    const outputDir = args.output_dir || ""
 
     if (args.findings && args.findings.length > 0) {
       const errors: string[] = []
+      const perFindingWarnings: string[] = []
       let skipped = 0
       const scanId = args.scan_id || ""
       const written: { file: string; line: number; id: number }[] = []
@@ -105,16 +107,25 @@ export default tool({
           exception_check: finding.exception_check || "",
         })
         try {
-          const report = scanId
-            ? Bun.$`${secguardBin} report --db ${dbPath} --write --rule-id ${finding.rule_id} --severity ${finding.severity.toLowerCase()} --confidence ${String(finding.confidence)} --status ${finding.status} --file ${finding.file} --line ${String(finding.line)} --function ${finding.function} --properties ${props} --scan-id ${scanId}`
-            : Bun.$`${secguardBin} report --db ${dbPath} --write --rule-id ${finding.rule_id} --severity ${finding.severity.toLowerCase()} --confidence ${String(finding.confidence)} --status ${finding.status} --file ${finding.file} --line ${String(finding.line)} --function ${finding.function} --properties ${props}`
-          const out = (await report.cwd(workDir).quiet().text()).trim()
+          // --output-dir is what lets the CLI place the verdict file under
+          // findings/<vuln-type>/; without it the per-finding markdown is
+          // skipped and the review surface silently drifts from the DB.
+          // Both optional flags use the --flag=value form so an empty value is
+          // parsed as "absent" — one command shape, no conditional branches.
+          const out = (await Bun.$`${secguardBin} report --db ${dbPath} --write --rule-id ${finding.rule_id} --severity ${finding.severity.toLowerCase()} --confidence ${String(finding.confidence)} --status ${finding.status} --file ${finding.file} --line ${String(finding.line)} --function ${finding.function} --properties ${props} --scan-id=${scanId} --output-dir=${outputDir}`
+            .cwd(workDir)
+            .quiet()
+            .text()
+          ).trim()
           // The CLI returns {"id": N, "status":"ok", ...}. Capture the id so the
           // agent can later issue a second-round --review for this exact finding.
           try {
             const parsed = JSON.parse(out)
             if (typeof parsed.id === "number") {
               written.push({ file: finding.file, line: finding.line, id: parsed.id })
+            }
+            if (parsed.per_finding_warning) {
+              perFindingWarnings.push(`${finding.file}:${finding.line} — ${parsed.per_finding_warning}`)
             }
           } catch {
             // Non-JSON stdout — best effort, treat as success but no id captured.
@@ -127,21 +138,38 @@ export default tool({
       }
 
       let auditPath: string | undefined
-      if (args.output_dir && scanId) {
+      let findingsSynced: unknown
+      if (outputDir && scanId) {
         try {
-          const auditResult = await Bun.$`${secguardBin} report --db ${dbPath} --audit --scan-id ${scanId} --output-dir ${args.output_dir}`
+          const auditResult = await Bun.$`${secguardBin} report --db ${dbPath} --audit --scan-id ${scanId} --output-dir ${outputDir}`
             .cwd(workDir)
             .quiet()
             .text()
           const auditJson = JSON.parse(auditResult.trim())
           auditPath = auditJson.audit_path
+          // The audit pass re-syncs findings/ with the database: it reports how
+          // many verdict files were written and how many dismissed/unclassified
+          // leftovers were swept out of the review surface.
+          findingsSynced = auditJson.findings_synced
+          if (auditJson.warning) perFindingWarnings.push(auditJson.warning)
         } catch {
           // Best-effort — audit report generation failure is non-fatal
         }
       }
 
       return JSON.stringify(
-        { status: errors.length === 0 ? "ok" : "partial", findings_written: args.findings.length - errors.length, skipped, written, audit_path: auditPath, errors },
+        {
+          status: errors.length === 0 ? "ok" : "partial",
+          findings_written: args.findings.length - errors.length,
+          skipped,
+          written,
+          audit_path: auditPath,
+          findings_synced: findingsSynced,
+          errors,
+          // Non-empty means those verdicts never reached findings/<vuln-type>/:
+          // re-issue the write with scan_id + output_dir.
+          per_finding_warnings: perFindingWarnings,
+        },
         null,
         2
       )
@@ -149,15 +177,21 @@ export default tool({
 
     if (args.reviews && args.reviews.length > 0) {
       const errors: string[] = []
+      const reviewWarnings: string[] = []
       const reviewed: { id: number; review_status: string }[] = []
       for (const review of args.reviews) {
         try {
-          const out = (await Bun.$`${secguardBin} report --db ${dbPath} --review --id ${String(review.id)} --review-status ${review.review_status} --review-reasoning ${review.review_reasoning || ""}`
+          // The A5 verdict also rewrites (or removes) the verdict file, so the
+          // review needs the scan directory just like the write does.
+          const out = (await Bun.$`${secguardBin} report --db ${dbPath} --review --id ${String(review.id)} --review-status ${review.review_status} --review-reasoning ${review.review_reasoning || ""} --output-dir=${outputDir}`
             .cwd(workDir)
             .quiet()
             .text()
           ).trim()
-          JSON.parse(out) // throws if the CLI returned a non-JSON error, caught below
+          const parsed = JSON.parse(out) // throws if the CLI returned a non-JSON error, caught below
+          if (parsed.per_finding_warning) {
+            reviewWarnings.push(`finding ${review.id} — ${parsed.per_finding_warning}`)
+          }
           reviewed.push({ id: review.id, review_status: review.review_status })
         } catch (e: any) {
           const msg = e?.stderr?.toString()?.trim() || e?.message || String(e)
@@ -165,7 +199,7 @@ export default tool({
         }
       }
       return JSON.stringify(
-        { status: errors.length === 0 ? "ok" : "partial", reviewed, errors },
+        { status: errors.length === 0 ? "ok" : "partial", reviewed, errors, per_finding_warnings: reviewWarnings },
         null,
         2
       )

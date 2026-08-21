@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -16,7 +17,7 @@ import (
 // Version is the release version. It is a var (not const) so `go build
 // -ldflags "-X github.com/DannyAn/secguard-clang/internal/cli.Version=<v>"`
 // can inject the release version at build time; the fallback matches VERSION.
-var Version = "0.3.5"
+var Version = "0.3.6"
 
 func Execute(ctx context.Context, args []string) int {
 	// Sync the db layer's supported-CWE set from the planner registry so the
@@ -26,6 +27,21 @@ func Execute(ctx context.Context, args []string) int {
 	// Stamp the release version into the report layer so SARIF and markdown
 	// reports carry the actual build version, not a hardcoded constant.
 	report.ToolVersion = Version
+	// A finding report that sends the reader back into an editor to judge the
+	// code is incomplete, so verdict files and SARIF results embed the source
+	// region. --context-lines N sets the window per side; 0 disables embedding
+	// (for repositories whose source must not be copied into artifacts).
+	if raw := parseStringFlag(args, "context-lines"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			WriteErrorJSON(fmt.Sprintf("invalid --context-lines %q (expected a non-negative integer; 0 disables source context)", raw))
+			return 1
+		}
+		report.ContextLines = n
+	}
+	// It is a global flag, so strip it before per-command parsing — otherwise a
+	// subcommand would read "--context-lines" as its positional argument.
+	args = removeFlag(args, "context-lines")
 
 	if len(args) == 0 {
 		printUsage()
@@ -80,6 +96,7 @@ Usage:
 Flags:
   --db <path>         Path to sgre.db (default: .codeagent/secguard-clang/.sgre/sgre.db)
   --exclude <dirs>    Comma-separated directory basenames to skip (default: deps,third_party,vendor,external,node_modules,tests,test,fuzzing,contrib,examples)
+  --context-lines <n> Source lines embedded on each side of a finding in findings/ and SARIF (default 15, 0 disables)
   --help              Show usage
   --version           Show version`)
 }
