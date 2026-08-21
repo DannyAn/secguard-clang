@@ -6,7 +6,7 @@
 
 ### AI-Augmented Security Analysis Platform for C
 
-**Solves the "candidate explosion" problem with a 4-level convergence pipeline — shrinking ~600 raw candidates into ~10 high-quality evidence packages that an AI agent classifies.**
+**Solves the "candidate explosion" problem with a 5-level convergence pipeline — shrinking ~600 raw candidates into ~10 high-quality evidence packages (A1–A4), then a second-round review layer (A5) that promotes real vulnerabilities and dismisses false positives.**
 
 `v0.3.2` · `Go 1.25` · `Tree-sitter` · `SQLite` · `OpenCode / Claude Code / DeepSeek Harness`
 
@@ -16,7 +16,7 @@
 
 ## 🏆 Why is SecGuard world-class?
 
-**In one sentence: SecGuard is the only C security analysis platform built natively for AI agents.** Traditional scanners (CodeQL / Infer / Coverity / Semgrep) are built for *humans reading reports* — they routinely emit thousands of raw alerts that drown an LLM. SecGuard compresses ~600 raw candidates into ~10 high-confidence evidence packages via 4-level convergence, so the AI only judges what is genuinely suspicious.
+**In one sentence: SecGuard is the only C security analysis platform built natively for AI agents.** Traditional scanners (CodeQL / Infer / Coverity / Semgrep) are built for *humans reading reports* — they routinely emit thousands of raw alerts that drown an LLM. SecGuard compresses ~600 raw candidates into ~10 high-confidence evidence packages via 4-level deterministic convergence (A1–A4), then a 5th layer (A5) re-reviews every suspected finding so only genuine "needs human judgment" cases survive.
 
 ### Capabilities others lack (blue ocean)
 
@@ -95,7 +95,7 @@ secguard scan --db /tmp/redis.db <path-to-redis>
 
 SecGuard is not a traditional static analysis tool. It is a **security-analysis extension for AI agents** — deployed into OpenCode, Claude Code, or DeepSeek Harness so an AI agent gains deep C code-auditing capability.
 
-The core idea: traditional static analyzers produce a flood of raw candidates (high false-positive rate); handing them to an AI causes **context explosion**. SecGuard performs 4-level convergence on a semantic graph + dataflow foundation, and hands only high-quality evidence packages to the AI agent for classification.
+The core idea: traditional static analyzers produce a flood of raw candidates (high false-positive rate); handing them to an AI causes **context explosion**. SecGuard performs 4-level deterministic convergence (A1–A4) on a semantic graph + dataflow foundation, hands only high-quality evidence packages to the AI agent for first-pass classification, then runs a 5th layer (A5) second-round review over every suspected finding to promote real bugs and dismiss false positives.
 
 ```
                     ┌──────────────────────────────────────────────────┐
@@ -126,54 +126,70 @@ The core idea: traditional static analyzers produce a flood of raw candidates (h
 
 ### Pipeline
 
+SecGuard runs a **5-level convergence pipeline**: A1–A4 are deterministic (they
+prove what they can and refute what they can on the semantic graph); **A5 is the
+composite complement** — a second-round review that resolves the residue the graph
+*cannot* prove (external-input divisors, partial validation, short-read semantics,
+TOCTOU windows) via AI business-context reasoning.
+
 ```
  C source code
     │
     ▼
 ┌───────────────┐
-│  Tree-sitter   │  incremental indexing (skips unchanged files by checksum)
-│  Indexer       │  → Layer 1: program facts
+│  A1 Indexer    │  tree-sitter incremental indexing (skips unchanged files by checksum)
+│  (Tree-sitter) │  → Layer 1: program facts
 └───────┬───────┘
         ▼
 ┌───────────────┐
-│  Semantic      │  call graph + dataflow + reachability + statement-level CFG
+│  A2 Semantic   │  call graph + dataflow + reachability + statement-level CFG
 │  Graph Builder │  → Layer 2: semantic graph
 └───────┬───────┘
         ▼
 ┌───────────────┐
-│  22 Detectors  │  null-deref, buffer-overflow, injection, ...
-│  (self-register)│  → Layer 3: security evidence (security_events)
+│  A3 Detectors  │  22 self-registering detectors: null-deref, buffer-overflow, injection, ...
+│  (evidence)    │  → Layer 3: security evidence (security_events)
 └───────┬───────┘
         ▼
 ┌───────────────┐
-│  Planner       │  4-level convergence pipeline
+│  A4 Planner    │  4-level convergence (deterministic, inside the planner)
 │  (convergence) │
 └───────┬───────┘
-        │
         │  ~600 raw candidates
-        │     │
         │     ▼  Filter 1: nullable-source analysis (reaching-sources dataflow)
         │   ~200
-        │     │
         │     ▼  Filter 2: call reachability (call graph)
         │    ~80
-        │     │
         │     ▼  Filter 3: dataflow validation (CFG + guard)
         │    ~30
-        │     │
         │     ▼  Filter 4: dedup + risk ranking
         │    ~10  high-quality evidence packages
-        │
         ▼
 ┌───────────────┐
-│  AI Agent      │  per-type batch classification: confirmed / suspected / false-positive
-│  (classifier)  │  → Layer 4: findings
+│  AI Agent      │  first pass: per-type batch classification + structured justification
+│  (classifier)  │  → Layer 4: findings (status + summary/reasoning/exception_check/fix_strategy)
 └───────┬───────┘
         ▼
 ┌───────────────┐
-│  Report        │  SARIF 2.1 + Markdown + per-finding Markdown
+│  A5 Second-    │  for every suspected finding, re-read source at file:line and judge
+│  Round Review  │  → review_status = confirmed (promote) / dismissed (drop) / suspected-kept
+│  (composite    │  persists review_reasoning; only genuine "needs human judgment" survives
+│   complement)  │
+└───────┬───────┘
+        ▼
+┌───────────────┐
+│  Report        │  SARIF 2.1 + Markdown + per-finding Markdown (_confirmed/_suspected/_dismissed)
 └───────────────┘
 ```
+
+A1–A4 settle what the semantic graph can prove (confirmed) or refute (drop) —
+they cannot synthesize reasoning or fix strategies. The AI first pass fills that
+gap: for every finding it writes `summary` / `reasoning` / `exception_check` /
+`fix_strategy` (the "why I believe it + how to fix" a deterministic engine cannot
+produce). A5 then composes on top, re-reviewing each suspected finding so a
+surviving `suspected` is a genuine "needs human judgment" case — not a
+deterministic conclusion the graph already knew. The final report counts the
+post-A5 verdicts via `EffectiveStatus()`.
 
 ### 4-layer data model
 
@@ -182,7 +198,7 @@ The core idea: traditional static analyzers produce a flood of raw candidates (h
 | **Layer 1** | program facts | most stable | `files`, `functions`, `variables`, `expressions`, `types`, `locations` |
 | **Layer 2** | semantic graph | stable | `graph_nodes`, `graph_edges` (CALL, DATA_FLOW, OWNERSHIP_TRANSFER, RELEASE, ALIAS, PARAM_BINDING, RETURN) |
 | **Layer 3** | security evidence | medium | `security_events` (NULL_VALUE, DEREFERENCE, BUFFER_ACCESS, ...) |
-| **Layer 4** | findings | most volatile | `findings` (written by the AI agent) |
+| **Layer 4** | findings | most volatile | `findings` (AI first pass writes `status`; A5 second round writes `review_status` / `review_reasoning`) |
 
 ### Multi-platform extension architecture
 
@@ -379,7 +395,7 @@ secguard-clang/
 │       ├── parser/                # parser wrapper
 │       ├── graph/                 # semantic graph builder (call graph/dataflow/CFG)
 │       ├── evidence/              # 22 security detectors
-│       ├── planner/               # 4-level convergence pipeline + filters
+│       ├── planner/               # A4: 4-level convergence pipeline + filters
 │       ├── agent/                 # AI agent integration
 │       ├── report/                # SARIF + Markdown reporting
 │       └── log/                   # structured logging

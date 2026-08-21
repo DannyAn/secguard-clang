@@ -6,7 +6,7 @@
 
 ### AI 增强的 C 语言程序安全分析平台
 
-**通过 4 级收敛管线解决"候选爆炸"问题——将 ~600 个原始候选收敛为 ~10 个高质量证据包，交由 AI Agent 分类判定。**
+**通过 5 级收敛管线解决"候选爆炸"问题——将 ~600 个原始候选收敛为 ~10 个高质量证据包（A1–A4），再经第 5 层二次审查（A5）提升真漏洞、剔除误报。**
 
 `v0.3.2` · `Go 1.25` · `Tree-sitter` · `SQLite` · `OpenCode / Claude Code / DeepSeek Harness`
 
@@ -16,7 +16,7 @@
 
 ## 🏆 为什么 SecGuard 是世界级的？
 
-**一句话：SecGuard 是唯一为 AI Agent 而生的 C 语言安全分析平台。** 传统扫描器（CodeQL / Infer / Coverity / Semgrep）为"人看报告"而生，动辄输出上千条原始告警，直接丢给 LLM 会把它淹没。SecGuard 用 4 级收敛把 ~600 条压成 ~10 条高置信证据，让 AI 只判断真正可疑的。
+**一句话：SecGuard 是唯一为 AI Agent 而生的 C 语言安全分析平台。** 传统扫描器（CodeQL / Infer / Coverity / Semgrep）为"人看报告"而生，动辄输出上千条原始告警，直接丢给 LLM 会把它淹没。SecGuard 用 4 级确定性收敛（A1–A4）把 ~600 条压成 ~10 条高置信证据，再经第 5 层（A5）对每条疑似逐条二次确认，只留下真正"需人工判断"的残余。
 
 ### 别人没有、我们独有的（蓝海）
 
@@ -95,7 +95,7 @@ secguard scan --db /tmp/redis.db <path-to-redis>
 
 SecGuard 不是一个传统的静态分析工具。它是一个 **AI Agent 的安全分析扩展**——部署到 OpenCode 或 Claude Code 中，让 AI Agent 具备深度 C 代码安全审计能力。
 
-核心思路：传统静态分析器会产生大量原始候选（false positive 率），直接交给 AI 会**上下文爆炸**。SecGuard 在底层用语义图 + 数据流分析做 4 级收敛，只把高质量证据包交给 AI Agent 分类。
+核心思路：传统静态分析器会产生大量原始候选（false positive 率），直接交给 AI 会**上下文爆炸**。SecGuard 在底层用语义图 + 数据流分析做 4 级确定性收敛（A1–A4），只把高质量证据包交给 AI Agent 做首轮分类，再经第 5 层（A5）对每条疑似发现二次审查，提升真漏洞、剔除误报。
 
 ```
                     ┌──────────────────────────────────────────────────┐
@@ -126,54 +126,64 @@ SecGuard 不是一个传统的静态分析工具。它是一个 **AI Agent 的�
 
 ### 管线流程
 
+SecGuard 运行**5 级收敛管线**：A1–A4 是确定性的（在语义图上能证的证、能证伪的证伪）；
+**A5 是复合补全层**——对每条疑似发现二次审查，解决语义图*证不了*的残余
+（外部输入除数、部分校验、短读语义、TOCTOU 窗口），靠 AI 的业务上下文推理拍板。
+
 ```
  C 源代码
     │
     ▼
 ┌───────────────┐
-│  Tree-sitter   │  增量索引（按 checksum 跳过未变更文件）
-│  Indexer       │  → Layer 1: 程序事实
+│  A1 Indexer    │  tree-sitter 增量索引（按 checksum 跳过未变更文件）
+│  (Tree-sitter) │  → Layer 1: 程序事实
 └───────┬───────┘
         ▼
 ┌───────────────┐
-│  Semantic      │  调用图 + 数据流 + 可达性 + 语句级 CFG
+│  A2 Semantic   │  调用图 + 数据流 + 可达性 + 语句级 CFG
 │  Graph Builder │  → Layer 2: 语义图
 └───────┬───────┘
         ▼
 ┌───────────────┐
-│  22 Detectors  │  null-deref, buffer-overflow, injection, ...
-│  (自注册)      │  → Layer 3: 安全证据 (security_events)
+│  A3 Detectors  │  22 个自注册检测器: null-deref, buffer-overflow, injection, ...
+│  (evidence)    │  → Layer 3: 安全证据 (security_events)
 └───────┬───────┘
         ▼
 ┌───────────────┐
-│  Planner       │  4 级收敛管线
+│  A4 Planner    │  4 级收敛（确定性，在 planner 内部）
 │  (收敛引擎)    │
 └───────┬───────┘
-        │
         │  ~600 原始候选
-        │     │
         │     ▼  Filter 1: 可空源分析 (reaching-sources 数据流)
         │   ~200
-        │     │
         │     ▼  Filter 2: 调用可达性 (call graph)
         │    ~80
-        │     │
         │     ▼  Filter 3: 数据流验证 (CFG + guard)
         │    ~30
-        │     │
         │     ▼  Filter 4: 去重 + 风险排序
         │    ~10  高质量证据包
-        │
         ▼
 ┌───────────────┐
-│  AI Agent      │  按漏洞类型逐批分类: confirmed / suspected / false-positive
-│  (分类判定)    │  → Layer 4: findings
+│  AI Agent      │  首轮: 按漏洞类型逐批分类 + 结构化判定依据补全
+│  (分类判定)    │  → Layer 4: findings (status + summary/reasoning/exception_check/fix_strategy)
 └───────┬───────┘
         ▼
 ┌───────────────┐
-│  Report        │  SARIF 2.1 + Markdown + per-finding Markdown
+│  A5 Second-    │  对每条疑似发现，重新读取 file:line 处源码逐一判定
+│  Round Review  │  → review_status = confirmed (提升) / dismissed (剔除) / suspected-kept
+│  (复合补全层)  │  持久化 review_reasoning；只留下真正"需人工判断"的残余
+└───────┬───────┘
+        ▼
+┌───────────────┐
+│  Report        │  SARIF 2.1 + Markdown + per-finding Markdown (_confirmed/_suspected/_dismissed)
 └───────────────┘
 ```
+
+A1–A4 解决语义图能证明的（confirmed）和能证伪的（drop）——它们产不出推理链和修复策略。
+首轮分类补上这块：对每条发现写 `summary` / `reasoning` / `exception_check` / `fix_strategy`
+（确定性引擎合成不了的"为什么信它 + 怎么修"）。A5 再复合一层，对每条疑似二次确认，
+所以经过 A5 仍留下的 `suspected` 是真正"需人工判断"的情形——而非图本已知道的确定性结论。
+最终报告通过 `EffectiveStatus()` 统计 A5 之后的裁决。
 
 ### 4 层数据模型
 
@@ -182,7 +192,7 @@ SecGuard 不是一个传统的静态分析工具。它是一个 **AI Agent 的�
 | **Layer 1** | 程序事实 | 最稳定 | `files`, `functions`, `variables`, `expressions`, `types`, `locations` |
 | **Layer 2** | 语义图 | 稳定 | `graph_nodes`, `graph_edges` (CALL, DATA_FLOW, OWNERSHIP_TRANSFER, RELEASE, ALIAS, PARAM_BINDING, RETURN) |
 | **Layer 3** | 安全证据 | 中等 | `security_events` (NULL_VALUE, DEREFERENCE, BUFFER_ACCESS, ...) |
-| **Layer 4** | 发现 | 最易变 | `findings` (AI Agent 写入) |
+| **Layer 4** | 发现 | 最易变 | `findings` (首轮写 `status`；A5 二次审查写 `review_status` / `review_reasoning`) |
 
 ### 多平台扩展架构
 
@@ -376,7 +386,7 @@ secguard-clang/
 │       ├── parser/                # 解析器包装
 │       ├── graph/                 # 语义图构建（调用图/数据流/CFG）
 │       ├── evidence/              # 22 个安全检测器
-│       ├── planner/               # 4 级收敛管线 + 13 个过滤器
+│       ├── planner/               # A4: 4 级收敛管线 + 13 个过滤器
 │       ├── agent/                 # AI Agent 集成
 │       ├── report/                # SARIF + Markdown 报告
 │       └── log/                   # 结构化日志
