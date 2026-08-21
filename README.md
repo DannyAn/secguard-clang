@@ -346,12 +346,13 @@ scans/2026-08-17_062452_e32eb1/
 ├── result.sarif                    ← SARIF 2.1 (IDE/CI integration)
 ├── report.md                      ← Markdown summary (candidate list)
 ├── audit-report.md                ← AI audit report (classification stats)
-├── buffer-overflow/
-│   ├── 001_allocator_99.md       ← per-finding evidence
-│   └── 002_parser_20.md
-├── null-deref/
-│   └── 001_network_45.md
-└── ...
+└── findings/                      ← per-finding evidence, grouped by vuln type
+    ├── buffer-overflow/
+    │   ├── 001_allocator_99.md
+    │   └── 002_parser_20.md
+    ├── null-deref/
+    │   └── 001_network_45.md
+    └── ...
 ```
 
 ## Tech stack

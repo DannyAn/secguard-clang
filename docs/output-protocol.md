@@ -2,7 +2,7 @@
 
 ## Overview
 
-SecGuard scan results are written to a structured directory under `.codeagent/secguard-clang/`. Each scan produces a uniquely-identified directory containing SARIF 2.1 output, a human-readable Markdown report, and per-finding Markdown files organized by vulnerability type. The SQLite database is stored at `.codeagent/secguard-clang/.sgre/sgre.db` (sibling of `scans/`).
+SecGuard scan results are written to a structured directory under `.codeagent/secguard-clang/`. Each scan produces a uniquely-identified directory containing SARIF 2.1 output, a human-readable Markdown report, and per-finding Markdown files organized by vulnerability type under a `findings/` directory. The SQLite database is stored at `.codeagent/secguard-clang/.sgre/sgre.db` (sibling of `scans/`).
 
 ## Directory Structure
 
@@ -19,24 +19,26 @@ SecGuard scan results are written to a structured directory under `.codeagent/se
 │           │   ├── result.sarif         # SARIF 2.1 (machine-readable)
 │           │   ├── report.md           # Human-readable summary
 │           │   ├── scan.log            # NDJSON runtime log for this scan
-│           │   ├── buffer-overflow/
-│           │   │   ├── 001_allocator_c_31.md
-│           │   │   ├── 002_parser_c_87.md
-│           │   │   └── ...
-│           │   ├── null-deref/
-│           │   │   └── 001_main_c_42.md
-│           │   ├── use-after-free/
-│           │   ├── double-free/
-│           │   ├── memory-leak/
-│           │   ├── injection/
-│           │   ├── resource-leak/
-│           │   ├── uninit/
-│           │   └── format-string/
+│           │   └── findings/           # per-finding Markdown, grouped by vuln type
+│           │       ├── buffer-overflow/
+│           │       │   ├── 001_allocator_c_31.md
+│           │       │   ├── 002_parser_c_87.md
+│           │       │   └── ...
+│           │       ├── null-deref/
+│           │       │   └── 001_main_c_42.md
+│           │       ├── use-after-free/
+│           │       ├── double-free/
+│           │       ├── memory-leak/
+│           │       ├── injection/
+│           │       ├── resource-leak/
+│           │       ├── uninit/
+│           │       └── format-string/
 │           └── 2026-08-11_143022_a1b2/             # most recent scan
 │               ├── result.sarif
 │               ├── report.md
 │               ├── scan.log
-│               └── ...
+│               └── findings/
+│                   └── ...
 ```
 
 ## Scan ID Format
@@ -105,14 +107,14 @@ Human-readable summary with:
 - Header with scan timestamp and target path
 - Summary table: vulnerability type, count, severity breakdown
 - Findings table: # | Type | Severity | Confidence | Location | Variable | Status
-- Path to SARIF file and per-finding directories
+- Path to SARIF file and the per-finding `findings/` directory
 
 The summary header reports both `Functions indexed` (functions parsed during
 this run; unchanged files are skipped, so a re-scan reports 0) and
 `Functions in index` (total functions available in the program graph for the
 current repository).
 
-### Per-finding Markdown (`<vuln-type>/NNN_<file>_<line>.md`)
+### Per-finding Markdown (`findings/<vuln-type>/NNN_<file>_<line>.md`)
 
 Each finding gets its own Markdown file with sections:
 - **Location**: file:line, function name
@@ -120,7 +122,7 @@ Each finding gets its own Markdown file with sections:
 - **Classification**: status (confirmed/suspected/dismissed), severity
 - **Fix Suggestion**: recommended code fix (if available)
 
-Filename format: `NNN_<filename>_<line>.md` where NNN is a zero-padded sequence number within the vulnerability type directory.
+Filename format: `NNN_<filename>_<line>.md` where NNN is a zero-padded sequence number within the vulnerability type directory under `findings/`.
 
 ### scan.log
 
@@ -155,7 +157,7 @@ The SQLite database (`sgre.db`) is stored at `.codeagent/secguard-clang/.sgre/sg
 
 1. Call `secguard_scan` → returns `output_dir`, `sarif`, `report_md`, `db_path`, `scan_id`
 2. Read `report.md` for human-readable summary (or read `scans/latest/report.md` directly — the `latest` symlink always points to the most recent completed scan, so CI/CD pipelines can use a fixed path without parsing the scan_id)
-3. Read per-finding Markdown files in `<vuln-type>/` subdirectories for detailed evidence
+3. Read per-finding Markdown files in `findings/<vuln-type>/` subdirectories for detailed evidence
 4. Load matching skills for classification guidance
 5. Classify each finding as confirmed/suspected/false-positive
 6. Call `secguard_report` with `findings` array to persist classification

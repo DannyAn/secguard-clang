@@ -31,7 +31,7 @@ func TestRemoveLineByPrefix(t *testing.T) {
 
 func TestRewritePerFinding_Idempotent(t *testing.T) {
 	dir := t.TempDir()
-	vulnDir := filepath.Join(dir, "unchecked-return")
+	vulnDir := filepath.Join(dir, FindingsDir, "unchecked-return")
 	if err := os.MkdirAll(vulnDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ Add a NULL check.
 
 func TestRewritePerFinding_ReviewPreservesContent(t *testing.T) {
 	dir := t.TempDir()
-	vulnDir := filepath.Join(dir, "unchecked-return")
+	vulnDir := filepath.Join(dir, FindingsDir, "unchecked-return")
 	if err := os.MkdirAll(vulnDir, 0755); err != nil {
 		t.Fatal(err)
 	}

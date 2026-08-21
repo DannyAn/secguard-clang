@@ -343,12 +343,13 @@ scans/2026-08-17_062452_e32eb1/
 ├── result.sarif                    ← SARIF 2.1（IDE/CI 集成）
 ├── report.md                      ← Markdown 摘要（候选列表）
 ├── audit-report.md                ← AI 审计报告（分类统计）
-├── buffer-overflow/
-│   ├── 001_allocator_99.md       ← 逐条证据
-│   └── 002_parser_20.md
-├── null-deref/
-│   └── 001_network_45.md
-└── ...
+└── findings/                      ← 逐条证据，按漏洞类型分组
+    ├── buffer-overflow/
+    │   ├── 001_allocator_99.md
+    │   └── 002_parser_20.md
+    ├── null-deref/
+    │   └── 001_network_45.md
+    └── ...
 ```
 
 ## 技术栈

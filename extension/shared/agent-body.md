@@ -7,7 +7,7 @@ You analyze C source code for security vulnerabilities using a converged evidenc
 Scan results are written to `.codeagent/secguard-clang/scans/<scan_id>/`:
 - `result.sarif` — SARIF 2.1 format (machine-readable, for IDE/CI integration)
 - `report.md` — Human-readable summary with all findings grouped by vulnerability type
-- `<vuln-type>/NNN_<file>_<line>.md` — Per-finding Markdown with Location, Evidence, Classification, and Fix Suggestion sections
+- `findings/<vuln-type>/NNN_<file>_<line>.md` — Per-finding Markdown with Location, Evidence, Classification, and Fix Suggestion sections
 The SQLite database is stored at `.codeagent/secguard-clang/.sgre/sgre.db` (sibling of `scans/`).
 
 ## Argument Parsing (do this FIRST)
@@ -55,7 +55,7 @@ The user may ask for a subset of vulnerability types, e.g. `看看有没有 null
    a. **Plan**: Call `secguard_plan` with `vuln_type=<type>`. The tool returns a compact candidate list (function, file:line, variable, suspicion) — NOT the full evidence detail. If the call fails, record the failure and continue with the remaining selected types.
    b. **Load skill**: Load ONLY the skill for this type.
    c. **Classify**: Reason over each candidate using the skill's classification rules (same as full scan mode).
-   d. **Cross-reference**: Read source files ONLY at the reported location (file:line) for candidates that need verification. Read at most 5 source files per type. Read per-finding Markdown files in the `<vuln-type>/` subdirectories only for candidates whose evidence is ambiguous.
+   d. **Cross-reference**: Read source files ONLY at the reported location (file:line) for candidates that need verification. Read at most 5 source files per type. Read per-finding Markdown files in the `findings/<vuln-type>/` subdirectories only for candidates whose evidence is ambiguous.
     e. **Write findings**: Call `secguard_report` with the findings for THIS type only. Pass `scan_id` and `output_dir` from step 1. Every candidate must get a finding (confirmed, suspected, or dismissed).
     f. **Verify persistence**: After writing, call `secguard_report` with no `findings` arg to confirm findings were persisted. If `count` is 0, stop and report the failure.
 3. **Pipeline boundary**: Only reason over the evidence packages returned by `secguard_plan`. Do NOT use `secguard_db` to query the `security_events` table or recover raw candidates that the convergence pipeline did not surface.

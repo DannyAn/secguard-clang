@@ -202,7 +202,7 @@ it instead of ad-hoc regex).
    pattern (guarded, bounded, transferred ownership). See the null-deref 7-filter
    chain as the reference design.
 3. **AI misclassification** → the finding's `evidence` / `review_reasoning` is
-   the audit trail; read the per-finding `<vuln-type>/NNN_*_dismissed.md` file.
+   the audit trail; read the per-finding `findings/<vuln-type>/NNN_*_dismissed.md` file.
 
 ### 3.4 "Status seems wrong in the report"
 

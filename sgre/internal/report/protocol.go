@@ -24,6 +24,7 @@ const (
 	LatestTxtName = "latest.txt"
 	ScanLogFile   = "scan.log"
 	DismissedFile = "dismissed.json"
+	FindingsDir   = "findings"
 )
 
 // ToolVersion is the version stamped into SARIF and markdown reports.

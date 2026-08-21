@@ -57,7 +57,7 @@ func (o *ScanOutput) writeReport(packages []*planner.PlanResult, indexSummary In
 
 	b.WriteString("## Output Files\n\n")
 	b.WriteString(fmt.Sprintf("- SARIF: `%s`\n", o.SarifPath))
-	b.WriteString(fmt.Sprintf("- Per-finding details: `<vuln-type>/<NNN>_<file>_<line>.md`\n"))
+	b.WriteString(fmt.Sprintf("- Per-finding details: `findings/<vuln-type>/<NNN>_<file>_<line>.md`\n"))
 	b.WriteString(fmt.Sprintf("- Database: `.sgre/sgre.db`\n"))
 
 	return os.WriteFile(o.ReportPath, []byte(b.String()), 0644)
@@ -69,7 +69,7 @@ func (o *ScanOutput) writePerFinding(packages []*planner.PlanResult) error {
 			continue
 		}
 
-		dir := filepath.Join(o.ScanDir, pkg.VulnerabilityType)
+		dir := filepath.Join(o.ScanDir, FindingsDir, pkg.VulnerabilityType)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return err
 		}
@@ -232,7 +232,7 @@ func truncateAtFirstSection(content string) string {
 // nil if no candidate file was found (not an error — the finding is still
 // persisted to the DB).
 func RewritePerFinding(scanDir, vulnType, filePath string, line int, update PerFindingUpdate) (string, error) {
-	dir := filepath.Join(scanDir, vulnType)
+	dir := filepath.Join(scanDir, FindingsDir, vulnType)
 	safeName := sanitizeFilename(shortFile(filePath))
 	baseSuffix := fmt.Sprintf("_%s_%d", safeName, line)
 
