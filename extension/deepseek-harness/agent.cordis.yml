@@ -20,12 +20,14 @@
       1. 用 `secguard types` 发现当前漏洞类型清单（name + cwe），不要硬编码类型名或数量。
       2. 完整扫描：`secguard scan <path>` —— 产出 `.codeagent/secguard-clang/scans/<scan_id>/` 下的 SARIF 2.1 + report.md + `candidates/<type>/`（管线候选证据，尚未判定），DB 在 `.codeagent/secguard-clang/.sgre/sgre.db`。工具只返回摘要（scan_id/output_dir/候选计数），候选详情在 report.md。
       3. 单类型：先 `secguard status` 确认有索引（没有就先 `secguard scan`），再 `secguard plan <type>`。
-      4. 读 report.md 拿候选列表，按类型逐批处理：每批只加载 1 个该类型的 skill、按需读 ≤5 个源文件（只看 file:line）、`secguard report` 增量写 findings（一次一个类型，**必须带 `--scan-id` 和 `--output-dir`**，否则判定文件无处落盘）。
+      4. 读 report.md 拿候选列表，按类型逐批处理：每批只加载 1 个该类型的 skill（**技能名必须是 `secguard types` 里的精确 kebab-case 名，不带 `crs-` 之类前缀，带前缀的是别的产品的技能，禁止加载**）、按需读 ≤5 个源文件（只看 file:line）、`secguard report` 增量写 findings（一次一个类型，**必须带 `--scan-id` 和 `--output-dir`**，否则判定文件无处落盘）。**判定必须「边分析边落库」：分析完一个类型立即写 findings，禁止"全部类型分析完最后一起写"——那是导致 findings/ 和 result.sarif 为空的根因。**
       5. 判定落盘规则：`findings/<type>/NNN_<file>_<line>_<confirmed|suspected>.md` 只收「要人看的问题」，文件名必带判定后缀，内容自包含（位置 + 证据 + 缺陷处源码片段 + 推理 + 修复）；判为误报（dismissed）的**不会**在 findings/ 生成文件，只记入 DB 并标注到对应 candidates/ 文件。误报也必须逐条落库（带 reasoning），不能只在对话里说"已排除"。
       6. 写入响应里若出现 `per_finding_warning`，说明判定没落到 findings/ —— 补齐参数重写一次，不要当成成功。
+      7. **收尾必须验证产物**：`result.sarif` 与 `findings/` 在每次带 `--scan-id` + `--output-dir` 的 `secguard report --write` 后就会生成。所有类型写完后读 `<output_dir>/result.sarif` 确认存在且非空、并 `ls <output_dir>/findings/`——没有就说明判定没落盘，先修再交付报告。
 
       ## 分类规则
-      - 安全函数（memcpy_s/strcpy_s/sprintf_s/execve/sqlite3_prepare_v2 等 `_s`）默认 false-positive，但容量参数说谎/违约除外。
+      - 安全函数（memcpy_s/strcpy_s/sprintf_s/execve/sqlite3_prepare_v2 等 `_s`）默认 false-positive，但容量参数说谎/违约、返回值必须检查却未检查的除外——「函数安全」不等于「这次调用安全」。
+      - **弱加密一律 confirmed，不许"borderline/可能是有意为之"**：DES/3DES/MD5/SHA-1/RC4/rand() 按 CWE-327 定义就是弱，修复建议指向 AES-256/SHA-256/CSPRNG。
       - 安全包装（SafeCopy/SafeQuery/ResourceHandle/LockGuard）→ false-positive。
       - RAII（create+destroy 成对）→ leak 的 false-positive。
       - 危险调用前有边界检查 → buffer-overflow 的 false-positive。

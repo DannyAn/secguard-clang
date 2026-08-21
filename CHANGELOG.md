@@ -2,6 +2,33 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.3.7] - 2026-08-21
+
+### 修复生产环境缺失 findings/ 与 result.sarif：强制判定落盘 + 纠正 Agent 误读
+
+0.3.6 把 `findings/` 与 `result.sarif` 改为"判定阶段产物"（扫描阶段只产候选）。生产
+验证发现 Agent 会"先分析完所有类型、最后再写 findings"，结果**从未调用
+`secguard_report`**，于是判定只存在于对话里，`findings/` 与 `result.sarif` 一个都没有。
+同时暴露出一批流程/约束缺陷：命令名写错（`secguard_scan` 当 bash 命令）、加载了别的
+产品的带前缀技能（`crs-*`）、safe-function 分类规则读反、弱加密被降级为"borderline"、
+路径反复试错。本轮只改流程与约束，不动扫描/判定核心逻辑。
+
+#### 变更（extension/shared + deepseek-harness，纯提示词/约束层）
+
+- **强制"边分析边落库"**：全扫描与过滤扫描工作流都明确"分析完一个类型立即
+  `secguard_report` 写该类型 findings，再进入下一个类型"，并显式禁止"全部分析完最后
+  一起写"——这被标为导致 `findings/`/`result.sarif` 为空的根因。
+- **收尾强制验证产物**：所有类型写完后必须读 `<scan_dir>/result.sarif`（非空）并
+  列出 `<scan_dir>/findings/`；缺失即视为"判定未落盘"，先修 `per_finding_warning`
+  再交付报告。
+- **命令名与技能命名空间约束**：明确 OpenCode 工具名带下划线（`secguard_scan`），
+  bash 里才是 `secguard scan`；技能只能加载 `secguard types` 里的精确 kebab-case 名，
+  `crs-*` 之类前缀属于其它产品，禁止加载，找不到即停。
+- **分类规则澄清**：safe function 是默认 false-positive 但要校验本次调用的安全合同
+  （size 是否说谎、返回值是否该查）；弱加密（DES/3DES/MD5/SHA-1/RC4/rand）一律
+  confirmed，不许以"legacy/可能有意为之"降级。
+- **路径处理**：用 candidate 文件 Location 块里的绝对路径直接读源码，禁止试错。
+
 ## [0.3.6] - 2026-08-21
 
 ### 修复 findings/ 目录语义：候选与判定分层，误报不再进入复核面
