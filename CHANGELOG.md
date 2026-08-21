@@ -2,11 +2,11 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.3.8] - 2026-08-21
+## [0.3.6] - 2026-08-21
 
 ### 修复样例项目基准验证暴露的回归 + 补齐缺失工具
 
-在 `examples/c-vuln-benchmark`（77 用例 ground truth）上用 0.3.7 实跑一轮：
+在 `examples/c-vuln-benchmark`（77 用例 ground truth）上实跑一轮：
 precision 100.0% / recall 97.7% / false-pos 0.0%（唯一 miss 是多行 `sprintf` 的
 行号差一）。但会话日志自检发现三处真实缺陷，均已修复：
 
@@ -29,11 +29,9 @@ precision 100.0% / recall 97.7% / false-pos 0.0%（唯一 miss 是多行 `sprint
 - `secguard_report` 封装抽取统一的 `runAudit`，避免写路径与 review 路径各复制
   一份 audit 逻辑；audit 仍在写批次与 review 批次后各跑一次，成本可接受。
 
-## [0.3.7] - 2026-08-21
-
 ### 修复生产环境缺失 findings/ 与 result.sarif：强制判定落盘 + 纠正 Agent 误读
 
-0.3.6 把 `findings/` 与 `result.sarif` 改为"判定阶段产物"（扫描阶段只产候选）。生产
+本版把 `findings/` 与 `result.sarif` 改为"判定阶段产物"（扫描阶段只产候选）。生产
 验证发现 Agent 会"先分析完所有类型、最后再写 findings"，结果**从未调用
 `secguard_report`**，于是判定只存在于对话里，`findings/` 与 `result.sarif` 一个都没有。
 同时暴露出一批流程/约束缺陷：命令名写错（`secguard_scan` 当 bash 命令）、加载了别的
@@ -56,7 +54,6 @@ precision 100.0% / recall 97.7% / false-pos 0.0%（唯一 miss 是多行 `sprint
   confirmed，不许以"legacy/可能有意为之"降级。
 - **路径处理**：用 candidate 文件 Location 块里的绝对路径直接读源码，禁止试错。
 
-## [0.3.6] - 2026-08-21
 
 ### 修复 findings/ 目录语义：候选与判定分层，误报不再进入复核面
 
