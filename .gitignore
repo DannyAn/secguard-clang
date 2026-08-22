@@ -29,3 +29,7 @@ sgre/.zig-cache/
 *.db
 *.sarif
 sgre/.tmpcache/
+
+# AI session transcripts / runtime artifacts (not source)
+examples/c-vuln-benchmark/session-*
+examples/c-vuln-benchmark/*-round*.txt
