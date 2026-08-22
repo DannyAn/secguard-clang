@@ -84,6 +84,24 @@ func (p *Planner) getFilters(chain string) []Filter {
 			NewSafeFunctionFilter(p.store),
 			NewIntOverflowGuardFilter(p.store, p.parser, p.logger),
 		}
+	case "divide-by-zero":
+		return []Filter{
+			NewCallReachFilter(p.store, p.callReachCache),
+			NewSafeFunctionFilter(p.store),
+			NewRangeFilter(p.store, p.parser, p.logger),
+		}
+	case "deadlock":
+		return []Filter{
+			NewCallReachFilter(p.store, p.callReachCache),
+			NewSafeFunctionFilter(p.store),
+			NewLockOrderFilter(p.store, p.parser, p.logger),
+		}
+	case "race-condition":
+		return []Filter{
+			NewCallReachFilter(p.store, p.callReachCache),
+			NewSafeFunctionFilter(p.store),
+			NewSharedAccessFilter(p.store, p.parser, p.logger),
+		}
 	default:
 		// Bounds-check suppression already happens in the buffer-overflow
 		// detector (hasPrecedingBoundsCheck / constant-index analysis); there is

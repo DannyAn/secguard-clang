@@ -749,8 +749,16 @@ func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Funct
 					}
 				}
 			}
-		} else if arrSize > 0 && isLoopBoundOverflow(bc, f, sub, arrSize) {
-			isOOB = true
+		} else if arrSize > 0 {
+			// A variable index assigned a single constant value before the
+			// subscript (`int n = 12; buf[n] = 0`) provably holds that constant,
+			// so it is OOB exactly when the constant is.
+			if v, ok := constantIndexBefore(bc, f, indexExpr, sub.StartLine()); ok && v >= arrSize {
+				isOOB = true
+			}
+			if !isOOB && isLoopBoundOverflow(bc, f, sub, arrSize) {
+				isOOB = true
+			}
 		} else if arrSize == 0 {
 			// Heap pointer indexed inside a loop: flag only when the loop upper
 			// bound provably exceeds the allocation size, e.g.
@@ -785,6 +793,65 @@ func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Funct
 			result.EventsCreated++
 		}
 	}
+}
+
+// constantIndexBefore returns (value, true) when indexVar is assigned a single
+// constant value before useLine and is never reassigned before useLine, so the
+// constant definitely holds on every path reaching the subscript. A non-literal
+// assignment or a second assignment makes the value ambiguous (ok=false).
+func constantIndexBefore(bc *bufCtx, f *db.Function, indexVar string, useLine int) (int, bool) {
+	if !isBareIdent(indexVar) {
+		return 0, false
+	}
+	value := -1
+	assigned := false
+
+	check := func(node parser.Node) bool {
+		if node.StartLine() >= useLine || !funcLineRange(f, node.StartLine()) {
+			return false
+		}
+		children := node.NamedChildren()
+		if len(children) < 2 {
+			return false
+		}
+		if assignedVariable(children[0]) != indexVar {
+			return false
+		}
+		if children[1].Kind() != "number_literal" {
+			return false
+		}
+		v := parseConstantIndex(children[1].Text())
+		if v < 0 {
+			return false
+		}
+		if assigned {
+			return false // a second assignment makes the value ambiguous
+		}
+		value, assigned = v, true
+		return true
+	}
+
+	for _, init := range bc.inits {
+		check(init)
+	}
+	for _, assign := range bc.assigns {
+		check(assign)
+	}
+	return value, assigned
+}
+
+// isBareIdent reports whether s is a C identifier (no operator, index, or member).
+func isBareIdent(s string) bool {
+	for i, c := range s {
+		if c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			continue
+		}
+		if i > 0 && c >= '0' && c <= '9' {
+			continue
+		}
+		return false
+	}
+	return len(s) > 0
 }
 
 func findArraySize(bc *bufCtx, f *db.Function, arrName string) int {

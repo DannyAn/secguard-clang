@@ -96,6 +96,18 @@ func runIndexCmd(ctx context.Context, args []string) int {
 		return 1
 	}
 
+	lockOrderBuilder := graph.NewLockOrderBuilder(store, p, logger)
+	if _, err := lockOrderBuilder.Build(ctx); err != nil {
+		WriteErrorJSON(fmt.Sprintf("lock-order build failed: %v", err))
+		return 1
+	}
+
+	sharedAccessBuilder := graph.NewSharedAccessBuilder(store, p, logger)
+	if _, err := sharedAccessBuilder.Build(ctx); err != nil {
+		WriteErrorJSON(fmt.Sprintf("shared-access build failed: %v", err))
+		return 1
+	}
+
 	if err := store.ClearSecurityEvents(ctx); err != nil {
 		WriteErrorJSON(fmt.Sprintf("failed to clear security events: %v", err))
 		return 1

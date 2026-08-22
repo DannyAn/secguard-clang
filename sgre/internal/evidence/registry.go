@@ -51,6 +51,16 @@ func RunAllDetectors(ctx context.Context, store db.Store, p *parser.Parser, logg
 	var mu sync.Mutex
 	var errs []error
 	run := func(d Detector) {
+		defer func() {
+			if r := recover(); r != nil {
+				if logger != nil {
+					logger.Warn("detector panicked", "detector", d.Name(), "panic", r)
+				}
+				mu.Lock()
+				errs = append(errs, fmt.Errorf("detector %s panicked: %v", d.Name(), r))
+				mu.Unlock()
+			}
+		}()
 		if _, err := d.Detect(ctx); err != nil {
 			if logger != nil {
 				logger.Warn("detector failed", "detector", d.Name(), "error", err)

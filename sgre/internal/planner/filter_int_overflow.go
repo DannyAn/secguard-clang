@@ -41,15 +41,21 @@ func (f *IntOverflowGuardFilter) Apply(ctx context.Context, candidates []Candida
 		return candidates, nil, nil
 	}
 
+	byFunc := make(map[int64][]Candidate)
+	for _, c := range candidates {
+		byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
+	}
+	rangeFlows := f.buildRangeFlows(ctx, byFunc)
+
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
 	for _, c := range candidates {
 		// The variable-operand size patterns (product, add-const, mul-const)
-		// and general integer arithmetic share the same guard check: every
-		// variable operand bounded by a preceding `if (op < CONST)` to a small
-		// constant makes the arithmetic provably non-overflowing
-		// (guardMaxBound² < 2^31, and a small bound keeps a + const and
-		// a * const well below SIZE_MAX).
+		// and general integer arithmetic share the same bound check: every
+		// variable operand bounded by a preceding `if (op < CONST)` guard OR a
+		// cross-assignment constant interval to a small bound makes the
+		// arithmetic provably non-overflowing (guardMaxBound² < 2^31, and a
+		// small bound keeps a + const and a * const well below SIZE_MAX).
 		switch c.Category {
 		case "size_calc_overflow", "size_add_overflow", "size_mul_const_overflow", "integer_overflow":
 		default:
@@ -63,22 +69,53 @@ func (f *IntOverflowGuardFilter) Apply(ctx context.Context, candidates []Candida
 		}
 
 		bounds := f.operandBounds(ctx, c)
+		flow := rangeFlows[c.FunctionID]
 		allBounded := true
 		for _, op := range operands {
-			b, ok := bounds[op]
-			if !ok || b <= 0 || b >= guardMaxBound {
-				allBounded = false
-				break
+			if b, ok := bounds[op]; ok && b > 0 && b < guardMaxBound {
+				continue
 			}
+			// No guard: fall back to the interval engine. op ∈ [lo, hi] with
+			// 0 <= lo and hi < guardMaxBound proves op is a small non-negative
+			// constant on every path (`size_t n = 10; malloc(n * n)`).
+			if flow != nil {
+				if r := flow.at(op, c.Line); r.lo >= 0 && r.hi < guardMaxBound {
+					continue
+				}
+			}
+			allBounded = false
+			break
 		}
 		if allBounded {
 			dropped = dismiss(dropped, c, f.Name(),
-				fmt.Sprintf("size operands are bounded by guards to < %d, so the arithmetic cannot overflow", guardMaxBound))
+				fmt.Sprintf("size operands are bounded to < %d, so the arithmetic cannot overflow", guardMaxBound))
 			continue
 		}
 		kept = append(kept, c)
 	}
 	return kept, dropped, nil
+}
+
+// buildRangeFlows runs the interval analysis once per candidate function.
+func (f *IntOverflowGuardFilter) buildRangeFlows(ctx context.Context, byFunc map[int64][]Candidate) map[int64]*rangeFlow {
+	flows := make(map[int64]*rangeFlow, len(byFunc))
+	cache := newFileParseCache(f.parser)
+	for fid := range byFunc {
+		fn, err := f.store.GetFunctionByID(ctx, fid)
+		if err != nil || fn == nil {
+			continue
+		}
+		file, err := f.store.GetFileByID(ctx, fn.FileID)
+		if err != nil || file == nil {
+			continue
+		}
+		body, _ := cache.get(file, fn)
+		if body.Kind() != "compound_statement" {
+			continue
+		}
+		flows[fid] = analyzeRanges(fn, body)
+	}
+	return flows
 }
 
 // operandBounds returns, per variable operand, the smallest constant bound found

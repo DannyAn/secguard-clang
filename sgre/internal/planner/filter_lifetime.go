@@ -51,9 +51,12 @@ func (f *LifetimeFilter) Apply(ctx context.Context, candidates []Candidate) ([]C
 				fmt.Sprintf("variable %s is reassigned or the free does not reach the use at line %d", c.VariableName, useLine))
 			continue
 		}
-		// The freed state provably reaches the use without a reassignment: the
-		// graph confirms this is a real use-after-free.
-		c.SuspicionLevel = "confirmed"
+		// The freed state reaches the use. It is a CERTAIN use-after-free only
+		// when the free reaches on every path (must); a free confined to one of
+		// several branches (may-only) stays a suspicion for the AI to confirm.
+		if flow.mustReaching(c.VariableName, useLine) {
+			c.SuspicionLevel = "confirmed"
+		}
 		kept = append(kept, c)
 	}
 	return kept, dropped, nil
@@ -120,7 +123,7 @@ func (f *LifetimeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Cand
 		// free(p) dangles every alias of p, so propagate the freed source through
 		// the ALIAS edges the graph layer persists (q = p; free(p); *q).
 		expandGenToAliases(genByLine, analyzer.loadAliases(ctx, []int64{fid})[fid])
-		flows[fid] = analyzer.analyzeFlow(ctx, fn, body, root, genByLine, killByLine, false, false)
+		flows[fid] = analyzer.analyzeFlowMust(ctx, fn, body, root, genByLine, killByLine, false, false)
 	}
 	return flows
 }

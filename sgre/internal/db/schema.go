@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS graph_edges (
     dst_id      INTEGER NOT NULL,
     edge_type   TEXT NOT NULL CHECK (edge_type IN (
         'CALL', 'DATA_FLOW', 'OWNERSHIP_TRANSFER', 'RELEASE', 'ALIAS',
-        'PARAM_BINDING', 'RETURN'
+        'PARAM_BINDING', 'RETURN', 'LOCK_ORDER', 'GLOBAL_ACCESS'
     )),
     properties  TEXT,
     FOREIGN KEY(src_id) REFERENCES graph_nodes(id) ON DELETE CASCADE,

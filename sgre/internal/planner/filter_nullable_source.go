@@ -105,6 +105,16 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 	analyzer := newFlowAnalyzer(f.store, f.parser)
 	analyzer.dfgCopies = analyzer.loadDFGCopies(ctx, funcIDs)
 
+	// Inter-procedural return-nullability: which functions can return NULL.
+	// This wires the RETURN edges + function_summary into the flow engine, so
+	// `p = f()` becomes a possible-null source when f can return NULL (previously
+	// the call was treated as a variable copy and silently cleared p's null
+	// state, dropping the candidate). Fail-open on error: keep candidates.
+	retNullable, err := f.computeRetNullable(ctx, models)
+	if err != nil {
+		retNullable = map[string]bool{}
+	}
+
 	cache := newFileParseCache(f.parser)
 	results := make(map[int64]*flowResult, len(byFunc))
 	for fid := range byFunc {
@@ -120,9 +130,94 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 		if body.Kind() != "compound_statement" {
 			continue
 		}
-		results[fid] = analyzer.analyzeFunction(ctx, fn, body, root, nullSourcesFor(models, fid))
+		sources := nullSourcesFor(models, fid)
+		sources = append(sources, callResultNullSources(body, retNullable)...)
+		results[fid] = analyzer.analyzeFunction(ctx, fn, body, root, sources)
 	}
 	return results
+}
+
+// computeRetNullable returns the set of function NAMES that can return a
+// possibly-null pointer, as a monotone fixpoint over the call graph. It seeds
+// from function_summary.return_nullable (literal `return NULL`), then adds any
+// function whose body returns an allocator, a pointer parameter, a variable with
+// a reaching may-null source, or a call to another nullable-returning function.
+// This is the null-deref analogue of the taint filter's computeRetTainted and is
+// what makes the persisted RETURN edges useful to the convergence stage.
+func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models map[int64]*nullModel) (map[string]bool, error) {
+	retNullable := make(map[string]bool)
+	funcs, err := f.store.ListFunctions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("ret nullable summary: list functions: %w", err)
+	}
+
+	type funcInfo struct {
+		fn     *db.Function
+		body   parser.Node
+		root   parser.Node
+		params map[string]int
+		srcs   []nullSource
+	}
+	infos := make([]funcInfo, 0, len(funcs))
+	cache := newFileParseCache(f.parser)
+	for _, fn := range funcs {
+		file, err := f.store.GetFileByID(ctx, fn.FileID)
+		if err != nil || file == nil {
+			continue
+		}
+		body, root := cache.get(file, fn)
+		if body.Kind() != "compound_statement" {
+			continue
+		}
+		var srcs []nullSource
+		if models != nil && models[fn.ID] != nil {
+			srcs = models[fn.ID].sources
+		}
+		infos = append(infos, funcInfo{fn: fn, body: body, root: root, params: paramsOf(fn, root), srcs: srcs})
+
+		// Seed from the detector's function_summary (literal `return NULL`/`0`).
+		if sum, err := f.store.GetSummaryByFunction(ctx, fn.ID); err == nil && sum != nil && sum.ReturnNullable {
+			retNullable[fn.Name] = true
+		}
+	}
+
+	allIDs := make([]int64, 0, len(infos))
+	for i := range infos {
+		allIDs = append(allIDs, infos[i].fn.ID)
+	}
+	analyzer := newFlowAnalyzer(f.store, f.parser)
+	analyzer.dfgCopies = analyzer.loadDFGCopies(ctx, allIDs)
+
+	for {
+		changed := false
+		for i := range infos {
+			info := &infos[i]
+			if retNullable[info.fn.Name] {
+				continue
+			}
+			srcs := append([]nullSource(nil), info.srcs...)
+			srcs = append(srcs, callResultNullSources(info.body, retNullable)...)
+			flow := analyzer.analyzeFlow(ctx, info.fn, info.body, info.root, nullGenByLine(srcs), nil, true, false)
+			if returnsNullable(info.body, flow, info.params, retNullable) {
+				retNullable[info.fn.Name] = true
+				changed = true
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	return retNullable, nil
+}
+
+// nullGenByLine folds a slice of null sources into the per-line gen map the
+// may-null flow engine consumes.
+func nullGenByLine(srcs []nullSource) map[int][]string {
+	gen := make(map[int][]string)
+	for _, s := range srcs {
+		gen[s.line] = append(gen[s.line], s.variable)
+	}
+	return gen
 }
 
 func nullSourcesFor(m map[int64]*nullModel, fid int64) []nullSource {

@@ -97,6 +97,14 @@ func runScanCmd(ctx context.Context, args []string) int {
 		return 1
 	}
 
+	// The agent writes its intermediate --write-json payloads under the project's
+	// .sgre/.tmp (a runtime artifact, never os.TempDir), and we clear it at scan
+	// start so stale payloads from a previous session do not accumulate. It is
+	// re-created so the agent always finds a writable target.
+	agentTmpDir := filepath.Join(filepath.Dir(dbPath), ".tmp")
+	_ = os.RemoveAll(agentTmpDir)
+	_ = os.MkdirAll(agentTmpDir, 0755)
+
 	store, err := openStore(ctx, dbPath)
 	if err != nil {
 		WriteErrorJSON(fmt.Sprintf("failed to open database: %v", err))
@@ -167,6 +175,14 @@ func runScanCmd(ctx context.Context, args []string) int {
 			_, err := graph.NewInterprocBuilder(store, p, logger).Build(ctx)
 			return err
 		}},
+		{"lock_order", func(ctx context.Context) error {
+			_, err := graph.NewLockOrderBuilder(store, p, logger).Build(ctx)
+			return err
+		}},
+		{"shared_access", func(ctx context.Context) error {
+			_, err := graph.NewSharedAccessBuilder(store, p, logger).Build(ctx)
+			return err
+		}},
 	}
 	var bwg sync.WaitGroup
 	bErrCh := make(chan error, len(builders))
@@ -174,6 +190,11 @@ func runScanCmd(ctx context.Context, args []string) int {
 		bwg.Add(1)
 		go func(b builderTask) {
 			defer bwg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					bErrCh <- fmt.Errorf("%s panicked: %v", b.name, r)
+				}
+			}()
 			if err := b.fn(ctx); err != nil {
 				bErrCh <- fmt.Errorf("%s: %w", b.name, err)
 			}
@@ -221,6 +242,11 @@ func runScanCmd(ctx context.Context, args []string) int {
 		pwg.Add(1)
 		go func(idx int, vt string) {
 			defer pwg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					outcomes[idx] = planOutcome{err: fmt.Errorf("plan %s panicked: %v", vt, r)}
+				}
+			}()
 			planSem <- struct{}{}
 			defer func() { <-planSem }()
 			pl := planner.NewPlanner(store, p, logger)

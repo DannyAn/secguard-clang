@@ -265,6 +265,15 @@ func (s *mockStore) InsertFinding(ctx context.Context, f *db.Finding) (int64, er
 	s.findings = append(s.findings, f)
 	return f.ID, nil
 }
+func (s *mockStore) UpsertFinding(ctx context.Context, f *db.Finding) (int64, error) {
+	for _, existing := range s.findings {
+		if existing.ScanID == f.ScanID && existing.RuleID == f.RuleID && existing.FilePath == f.FilePath && existing.LineNumber == f.LineNumber && existing.FunctionName == f.FunctionName {
+			*existing = *f
+			return existing.ID, nil
+		}
+	}
+	return s.InsertFinding(ctx, f)
+}
 func (s *mockStore) ListFindings(ctx context.Context) ([]*db.Finding, error) { return s.findings, nil }
 func (s *mockStore) ListFindingsByStatus(ctx context.Context, status string) ([]*db.Finding, error) {
 	return nil, nil

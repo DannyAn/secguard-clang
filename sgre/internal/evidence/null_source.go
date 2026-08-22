@@ -33,10 +33,13 @@ func (d *NullSourceDetector) Detect(ctx context.Context) (DetectResult, error) {
 		returns := root.FindAll("return_statement")
 		assigns := root.FindAll("assignment_expression")
 		inits := root.FindAll("init_declarator")
+		calls := root.FindAll("call_expression")
+		macros := macroFreeSummaries(root)
 		for _, f := range funcs {
 			d.detectReturnNull(ctx, f, file, returns, &result)
 			d.detectMallocResult(ctx, f, file, assigns, inits, &result)
 			d.detectExplicitNull(ctx, f, file, assigns, inits, &result)
+			d.detectMacroNull(ctx, f, file, calls, macros, &result)
 		}
 	})
 	if err != nil {
@@ -75,7 +78,9 @@ func (d *NullSourceDetector) detectReturnNull(ctx context.Context, f *db.Functio
 		}
 		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: ret.StartLine(), Column: ret.StartColumn()}, map[string]string{"variable": "<return>", "origin": "return"}) {
 			result.EventsCreated++
-			_ = d.store.UpdateReturnNullable(ctx, f.ID, true)
+			if err := d.store.UpdateReturnNullable(ctx, f.ID, true); err != nil && d.logger != nil {
+				d.logger.Warn("update return nullable failed", "function_id", f.ID, "error", err)
+			}
 		}
 	}
 }
@@ -151,6 +156,33 @@ func (d *NullSourceDetector) detectExplicitNull(ctx context.Context, f *db.Funct
 			continue
 		}
 		checkNode(init)
+	}
+}
+
+// detectMacroNull records a DEFINITE null source for a call to a function-like
+// macro that frees and then nulls its first argument (`SAFE_FREE(p)`). The
+// free/p=NULL inside the macro is invisible to tree-sitter, so this is how the
+// null-source model learns that p is null after the call.
+func (d *NullSourceDetector) detectMacroNull(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node, macros map[string]macroFreeSummary, result *DetectResult) {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
+			continue
+		}
+		s, ok := macros[extractCallName(call)]
+		if !ok || !s.freesArg || !s.nullsArg {
+			continue
+		}
+		args := getCallArgs(call)
+		if len(args) == 0 {
+			continue
+		}
+		varName := assignedVariable(args[0])
+		if varName == "" {
+			continue
+		}
+		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine()}, map[string]string{"variable": varName, "origin": "explicit_null", "definite": "true"}) {
+			result.EventsCreated++
+		}
 	}
 }
 

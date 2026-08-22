@@ -25,6 +25,7 @@ func (d *DoubleFreeDetector) Name() string { return "double_free" }
 
 type dfFreeEvent struct {
 	varName  string
+	field    string
 	line     int
 	indirect bool
 	callee   string
@@ -48,14 +49,23 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 		inits := root.FindAll("init_declarator")
 		assigns := root.FindAll("assignment_expression")
 		calls := root.FindAll("call_expression")
+		macros := macroFreeSummaries(root)
 
 		for _, f := range funcs {
 			globalStores := d.findGlobalStoredVars(f, inits, assigns, summaries)
-			freeEvents := d.findAllFreeEvents(f, calls, summaries, globalStores)
+			freeEvents := d.findAllFreeEvents(f, calls, summaries, globalStores, macros)
 
 			byVar := make(map[string][]dfFreeEvent)
 			for _, fe := range freeEvents {
-				byVar[fe.varName] = append(byVar[fe.varName], fe)
+				key := fe.varName
+				if fe.field != "" {
+					if strings.HasPrefix(fe.field, fe.varName+"[") {
+						key = fe.field // subscript: "a[0]" already includes the base
+					} else {
+						key = fe.varName + "->" + fe.field
+					}
+				}
+				byVar[key] = append(byVar[key], fe)
 			}
 
 			// Global-slot double frees (e.g. cleanup_entries() frees g_entries[]
@@ -197,7 +207,7 @@ func (d *DoubleFreeDetector) findGlobalStoredVars(f *db.Function, inits, assigns
 	return stores
 }
 
-func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.Node, summaries summaryMap, globalStores map[string][]string) []dfFreeEvent {
+func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.Node, summaries summaryMap, globalStores map[string][]string, macros map[string]macroFreeSummary) []dfFreeEvent {
 	var events []dfFreeEvent
 
 	for _, call := range calls {
@@ -207,11 +217,33 @@ func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.No
 		callName := extractCallName(call)
 		callLine := call.StartLine()
 
+		// A freeing function-like macro wraps a free the parser cannot see; a
+		// macro that also nulls the argument (SAFE_FREE) is excluded because the
+		// freed state is immediately overwritten.
+		if s, ok := macros[callName]; ok && s.freesArg && !s.nullsArg {
+			args := getCallArgs(call)
+			if len(args) > 0 && args[0].Kind() == "identifier" {
+				events = append(events, dfFreeEvent{varName: args[0].Text(), line: callLine})
+			}
+			continue
+		}
+
 		if callName == "free" {
 			args := getCallArgs(call)
 			for _, arg := range args {
-				if arg.Kind() == "identifier" {
+				switch arg.Kind() {
+				case "identifier":
 					events = append(events, dfFreeEvent{varName: arg.Text(), line: callLine})
+				case "field_expression":
+					// free(p->msg) frees only p->msg; a second free of p->mode is a
+					// different object and must not be treated as a double-free.
+					if base, field := extractFieldAccess(arg); base != "" && field != "" {
+						events = append(events, dfFreeEvent{varName: base, field: field, line: callLine})
+					}
+				case "subscript_expression":
+					if base, field := subscriptAccess(arg); base != "" && field != "" {
+						events = append(events, dfFreeEvent{varName: base, field: field, line: callLine})
+					}
 				}
 			}
 			continue

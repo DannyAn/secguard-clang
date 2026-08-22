@@ -393,8 +393,21 @@ func (b *cfgBuilder) buildFor(stmt parser.Node, from int) int {
 
 	join := b.newNode("join", 0, 0, parser.Node{})
 
+	// The update runs after each body iteration, BEFORE re-testing the condition
+	// — including on `continue`. It is built before the body so the body's
+	// continue_statement can target it (the previous code targeted the header,
+	// skipping the update and weakening Reaches for UAF pruning).
+	upd := -1
+	if update != nil {
+		upd = b.newNode("stmt", update.StartLine(), update.EndLine(), *update)
+	}
+
 	b.breakTo = append(b.breakTo, join)
-	b.contTo = append(b.contTo, header)
+	contTarget := header
+	if upd >= 0 {
+		contTarget = upd
+	}
+	b.contTo = append(b.contTo, contTarget)
 
 	bodyLast := -1
 	if body != nil {
@@ -404,12 +417,15 @@ func (b *cfgBuilder) buildFor(stmt parser.Node, from int) int {
 	b.breakTo = b.breakTo[:len(b.breakTo)-1]
 	b.contTo = b.contTo[:len(b.contTo)-1]
 
-	// Update runs after each body iteration, before re-testing the condition.
+	// The update->header edge must exist whenever there is an update, so a
+	// `continue` (which targets the update) re-tests the condition. The body
+	// fall-through reaches the update (or the header directly when no update).
+	if upd >= 0 {
+		b.edge(upd, header)
+	}
 	if bodyLast >= 0 {
-		if update != nil {
-			upd := b.newNode("stmt", update.StartLine(), update.EndLine(), *update)
+		if upd >= 0 {
 			b.edge(bodyLast, upd)
-			b.edge(upd, header)
 		} else {
 			b.edge(bodyLast, header)
 		}

@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -204,7 +206,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 			}
 		}
 
-		id, err := store.InsertFinding(ctx, finding)
+		id, err := store.UpsertFinding(ctx, finding)
 		if err != nil {
 			WriteErrorJSON(fmt.Sprintf("failed to write finding: %v", err))
 			return 1
@@ -223,6 +225,115 @@ func runReportCmd(ctx context.Context, args []string) int {
 		if oc.Warning != "" {
 			out["per_finding_warning"] = oc.Warning
 			fmt.Fprintf(os.Stderr, "warning: %s\n", oc.Warning)
+		}
+		WriteJSON(out)
+		return 0
+	}
+
+	// --write-json <file> writes a whole batch of findings in ONE subprocess
+	// call, idempotently (re-running updates, never duplicates). It is the CLI
+	// path a Claude Code agent (no MCP secguard_report tool) uses instead of
+	// generating a per-finding bash loop, which is slow and error-prone. The file
+	// is a JSON array of objects with keys rule_id/severity/confidence/status/
+	// file/line/function/summary/reasoning/exception_check/fix_strategy. `-` or a
+	// missing value reads from stdin.
+	if hasFlag(remaining, "write-json") {
+		scanID := parseStringFlag(remaining, "scan-id")
+
+		src := parseStringFlag(remaining, "write-json")
+		var data []byte
+		var err error
+		if src == "" || src == "-" {
+			data, err = io.ReadAll(os.Stdin)
+		} else {
+			data, err = os.ReadFile(src)
+		}
+		if err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to read --write-json input: %v", err))
+			return 1
+		}
+
+		type findingInput struct {
+			RuleID         string  `json:"rule_id"`
+			Severity       string  `json:"severity"`
+			Confidence     float64 `json:"confidence"`
+			Status         string  `json:"status"`
+			File           string  `json:"file"`
+			Line           int     `json:"line"`
+			Function       string  `json:"function"`
+			Summary        string  `json:"summary"`
+			Reasoning      string  `json:"reasoning"`
+			ExceptionCheck string  `json:"exception_check"`
+			FixStrategy    string  `json:"fix_strategy"`
+		}
+		var inputs []findingInput
+		if err := json.Unmarshal(data, &inputs); err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to parse --write-json array: %v", err))
+			return 1
+		}
+
+		written := make([]map[string]interface{}, 0, len(inputs))
+		var errs []string
+		for i := range inputs {
+			in := &inputs[i]
+			confidence := in.Confidence
+			if confidence > 1.0 {
+				confidence /= 100.0
+			}
+			if confidence > 1.0 {
+				confidence = 1.0
+			}
+			if confidence < 0 {
+				confidence = 0
+			}
+			severity := strings.ToLower(in.Severity)
+			if severity == "" {
+				severity = "info"
+			}
+
+			cweNorm := strings.ToUpper(strings.TrimSpace(in.RuleID))
+			if cweNorm == "" {
+				errs = append(errs, fmt.Sprintf("%s:%d — empty rule_id", in.File, in.Line))
+				continue
+			}
+			if !db.SupportedFindingCWEs[cweNorm] {
+				errs = append(errs, fmt.Sprintf("%s:%d — unsupported rule_id %q", in.File, in.Line, in.RuleID))
+				continue
+			}
+
+			f := &db.Finding{
+				RuleID:         in.RuleID,
+				Severity:       severity,
+				Confidence:     confidence,
+				Status:         strings.ToLower(in.Status),
+				FilePath:       in.File,
+				LineNumber:     in.Line,
+				FunctionName:   in.Function,
+				Summary:        in.Summary,
+				Reasoning:      in.Reasoning,
+				FixStrategy:    in.FixStrategy,
+				ExceptionCheck: in.ExceptionCheck,
+				ScanID:         scanID,
+			}
+			id, uerr := store.UpsertFinding(ctx, f)
+			if uerr != nil {
+				errs = append(errs, fmt.Sprintf("%s:%d — %v", in.File, in.Line, uerr))
+				continue
+			}
+			written = append(written, map[string]interface{}{
+				"file": in.File, "line": in.Line, "id": id,
+			})
+		}
+
+		out := map[string]interface{}{
+			"status":           "ok",
+			"findings_written": len(written),
+			"written":          written,
+			"scan_id":          scanID,
+		}
+		if len(errs) > 0 {
+			out["status"] = "partial"
+			out["errors"] = errs
 		}
 		WriteJSON(out)
 		return 0

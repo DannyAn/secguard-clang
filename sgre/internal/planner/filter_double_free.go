@@ -52,9 +52,12 @@ func (f *DoubleFreeFilter) Apply(ctx context.Context, candidates []Candidate) ([
 				fmt.Sprintf("variable %s is reassigned before the second free at line %d", c.VariableName, c.Line))
 			continue
 		}
-		// The first-free state provably reaches the second free with no
-		// reassignment in between: the graph confirms a true double-free.
-		c.SuspicionLevel = "confirmed"
+		// The first-free state reaches the second free. It is a CERTAIN double-
+		// free only when the first free reaches on every path (must); otherwise
+		// it stays a suspicion for the AI to confirm.
+		if flow.mustReaching(c.VariableName, c.Line) {
+			c.SuspicionLevel = "confirmed"
+		}
 		kept = append(kept, c)
 	}
 	return kept, dropped, nil
@@ -116,7 +119,7 @@ func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Ca
 		// free(p) dangles every alias of p, so the first-free source also reaches
 		// a later free(q) where q aliases p (q = p; free(p); free(q)).
 		expandGenToAliases(genByLine, analyzer.loadAliases(ctx, []int64{fid})[fid])
-		flows[fid] = analyzer.analyzeFlow(ctx, fn, body, root, genByLine, killByLine, false, false)
+		flows[fid] = analyzer.analyzeFlowMust(ctx, fn, body, root, genByLine, killByLine, false, false)
 	}
 	return flows
 }

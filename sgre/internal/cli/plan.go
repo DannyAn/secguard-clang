@@ -41,9 +41,11 @@ func runPlanCmd(ctx context.Context, args []string) int {
 	}
 
 	logger := defaultLogger()
-	p := planner.NewPlanner(store, parser.NewParser(), logger)
+	p := parser.NewParser()
+	defer p.CloseAll()
+	pl := planner.NewPlanner(store, p, logger)
 
-	result, err := p.Plan(ctx, vulnType)
+	result, err := pl.Plan(ctx, vulnType)
 	if err != nil {
 		WriteErrorJSON(err.Error())
 		return 1

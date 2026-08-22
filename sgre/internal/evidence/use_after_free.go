@@ -40,10 +40,11 @@ func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error)
 		assigns := root.FindAll("assignment_expression")
 		ptrs := root.FindAll("pointer_expression")
 		fields := root.FindAll("field_expression")
+		macros := macroFreeSummaries(root)
 
 		for _, f := range funcs {
 			aliases := findAliases(f, inits, assigns)
-			freeSites := d.findAllFreeSites(f, calls, summaries, aliases)
+			freeSites := d.findAllFreeSites(f, calls, summaries, aliases, macros)
 			useSites := d.findUseSites(f, ptrs, fields, calls)
 
 			for _, fs := range freeSites {
@@ -81,7 +82,7 @@ func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error)
 	return result, err
 }
 
-func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.Node, summaries summaryMap, aliases map[string]aliasInfo) []freeSite {
+func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.Node, summaries summaryMap, aliases map[string]aliasInfo, macros map[string]macroFreeSummary) []freeSite {
 	var sites []freeSite
 
 	for _, call := range calls {
@@ -91,20 +92,46 @@ func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.N
 		callName := extractCallName(call)
 		callLine := call.StartLine()
 
+		// A freeing function-like macro (`#define my_free(p) free(p)`) wraps a
+		// free the parser cannot see; treat the call as a free of its first
+		// argument. A macro that ALSO nulls the argument (SAFE_FREE) is excluded:
+		// there the freed state is immediately overwritten, so a later use is a
+		// null-deref, not a use-after-free.
+		if s, ok := macros[callName]; ok && s.freesArg && !s.nullsArg {
+			args := getCallArgs(call)
+			if len(args) > 0 && args[0].Kind() == "identifier" {
+				sites = append(sites, freeSite{varName: args[0].Text(), line: callLine})
+			}
+			continue
+		}
+
 		if callName == "free" {
 			args := getCallArgs(call)
 			for _, arg := range args {
-				if arg.Kind() != "identifier" {
-					continue
-				}
-				name := arg.Text()
-				sites = append(sites, freeSite{varName: name, line: callLine})
-				// free(p) also invalidates every pointer into p's block:
-				// a direct alias (q = p) and a field alias (q = p->f) both
-				// dangle. Without this, `q = p; free(p); use(q)` was missed.
-				for aliasVar, ai := range aliases {
-					if ai.baseVar == name {
-						sites = append(sites, freeSite{varName: aliasVar, line: callLine})
+				switch arg.Kind() {
+				case "identifier":
+					name := arg.Text()
+					sites = append(sites, freeSite{varName: name, line: callLine})
+					// free(p) also invalidates every pointer into p's block:
+					// a direct alias (q = p) and a field alias (q = p->f) both
+					// dangle. Without this, `q = p; free(p); use(q)` was missed.
+					for aliasVar, ai := range aliases {
+						if ai.baseVar == name {
+							sites = append(sites, freeSite{varName: aliasVar, line: callLine})
+						}
+					}
+				case "field_expression":
+					// free(p->msg) dangles only p->msg (and aliases of it), not the
+					// whole struct p. The field is matched against the use's field,
+					// so reading p->mode after free(p->msg) is not a use-after-free.
+					if base, field := extractFieldAccess(arg); base != "" && field != "" {
+						sites = append(sites, freeSite{varName: base, field: field, line: callLine})
+					}
+				case "subscript_expression":
+					// free(a[0]) dangles only a[0]; the constant index keeps a[0]
+					// distinct from a[1].
+					if base, field := subscriptAccess(arg); base != "" && field != "" {
+						sites = append(sites, freeSite{varName: base, field: field, line: callLine})
 					}
 				}
 			}
@@ -158,6 +185,22 @@ func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.N
 	return sites
 }
 
+// isFieldWrite reports whether a field_expression node is a write target (the
+// LHS of an assignment or the declarator of an initializer), so `s->msg = NULL`
+// addresses the field without reading it and must not count as a use.
+func isFieldWrite(node parser.Node) bool {
+	p := node.Parent()
+	if p == nil {
+		return false
+	}
+	switch p.Kind() {
+	case "assignment_expression", "init_declarator":
+		children := p.NamedChildren()
+		return len(children) >= 1 && children[0].Text() == node.Text()
+	}
+	return false
+}
+
 // useSite is one use of a base variable: a whole-variable use (`*p`, `p` as a
 // call argument) has field == "", a field read (`p->mode`) names that field.
 type useSite struct {
@@ -183,6 +226,8 @@ func (d *UseAfterFreeDetector) findUseSites(f *db.Function, ptrs, fields, calls 
 			return node.Text(), ""
 		case "field_expression":
 			return extractFieldAccess(node)
+		case "subscript_expression":
+			return subscriptAccess(node)
 		case "parenthesized_expression":
 			for _, c := range node.NamedChildren() {
 				if b, fld := useTarget(c); b != "" {
@@ -209,6 +254,11 @@ func (d *UseAfterFreeDetector) findUseSites(f *db.Function, ptrs, fields, calls 
 
 	for _, field := range fields {
 		if !funcLineRange(f, field.StartLine()) {
+			continue
+		}
+		// A field WRITE (`s->msg = NULL`, `s->msg = malloc(...)`) addresses the
+		// field without reading it, so it is not a use-after-free candidate.
+		if isFieldWrite(field) {
 			continue
 		}
 		base, fld := extractFieldAccess(field)

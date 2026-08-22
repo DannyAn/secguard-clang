@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -112,5 +114,54 @@ func TestBufferOverflow_StrCpyFieldArray(t *testing.T) {
 	}
 	if !flagged[`strcpy(log->id, "way_too_long_string_for_this_field")`] {
 		t.Errorf("expected overflowing strcpy into char id[8] to be flagged, got %v", flagged)
+	}
+}
+
+// TestArrayOOB_ConstantValuedVariable pins the cross-assignment OOB detection: a
+// variable assigned a single constant before a subscript (`int n = 12; buf[n]`)
+// is OOB exactly when the constant is, even though the index is not a literal.
+func TestArrayOOB_ConstantValuedVariable(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "const_oob.c")
+	src := `int f(void) {
+    int n = 12;
+    int buf[10];
+    buf[n] = 0;
+    return 0;
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	NewBufferOverflowDetector(store, p, logger).Detect(ctx)
+
+	events, err := store.ListEventsByType(ctx, "BUFFER_ACCESS")
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	found := false
+	for _, e := range events {
+		var props struct {
+			Array    string `json:"array"`
+			Category string `json:"category"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Array == "buf" && props.Category == "array_oob_write" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected array_oob_write for buf[n] with n=12 >= 10, got no such event")
 	}
 }

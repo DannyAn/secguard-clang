@@ -56,10 +56,11 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 		inits := root.FindAll("init_declarator")
 		decls := root.FindAll("declaration")
 		ifs := root.FindAll("if_statement")
+		macros := macroFreeSummaries(root)
 
 		for _, f := range fileFuncs {
 			allocs := d.findAllocations(ctx, f, file, assigns, inits)
-			frees := d.findFrees(ctx, f, file, calls)
+			frees := d.findFrees(ctx, f, file, calls, macros)
 			returnLines := findReturnLinesFrom(returns, f)
 
 			isRAII := raiiCreateFuncs[f.ID]
@@ -181,13 +182,21 @@ func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function
 	return allocs
 }
 
-func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node) map[string][]int {
+func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node, macros map[string]macroFreeSummary) map[string][]int {
 	frees := make(map[string][]int)
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		callName := extractCallName(call)
+		// A freeing function-like macro (free-only or free+null) releases its
+		// first argument; the free inside the macro is invisible to tree-sitter.
+		if s, ok := macros[callName]; ok && s.freesArg {
+			if args := getCallArgs(call); len(args) > 0 && args[0].Kind() == "identifier" {
+				frees[args[0].Text()] = append(frees[args[0].Text()], call.StartLine())
+			}
+			continue
+		}
 		if callName != "free" {
 			continue
 		}

@@ -49,9 +49,6 @@ type flowAnalyzer struct {
 	// dfgEdges caches all DATA_FLOW edges, resolved to (function, lhs, rhs, line)
 	// copies, keyed by function ID then line.
 	dfgCopies map[int64]map[int][]copyPair
-	// arrayNames caches, per file, the set of identifiers declared as arrays
-	// (array-to-pointer decay yields a non-null pointer).
-	arrayNames map[int64]map[string]bool
 	// entrySeeds are variables tainted at function entry (caller-influenced
 	// parameters). They are seeded into IN[entry] so a parameter's taint flows
 	// into locals derived from it — the inter-procedural context of the callee.
@@ -74,10 +71,21 @@ type flowResult struct {
 	// genAt records which variables gain a source at each node, so a source on
 	// the same statement as the queried point still counts.
 	genAt map[int]map[string]bool
-	// definite is a second, separate dataflow seeded only with EXPLICIT null
-	// assignments (`p = NULL`). A source reaching here means the pointer is
-	// CERTAINLY null — a must-null result, distinct from the may-null `reaching`.
-	definite *flowResult
+	// must is a boolean must-analysis (the fact holds on EVERY path) over the
+	// same effects as nodeIn. It is computed on demand for the freed-state and
+	// uninit filters, where a "confirmed" upgrade requires the fact to reach the
+	// use on all paths, not merely on one.
+	must map[int]map[string]bool
+	// mustGenAt records which variables gain the fact at each node (the must
+	// analogue of genAt).
+	mustGenAt map[int]map[string]bool
+	// definite is a boolean must-analysis seeded ONLY with explicit null
+	// assignments (`p = NULL`), with any non-copy reassignment killing it. A
+	// reaching fact means the pointer is CERTAINLY null — a must-null result,
+	// distinct from the may-null `reaching`.
+	definite map[int]map[string]bool
+	// definiteGenAt records the explicit-null gen at each node.
+	definiteGenAt map[int]map[string]bool
 }
 
 // reaching reports whether variable has a reaching source at line.
@@ -96,13 +104,39 @@ func (m *flowResult) reaching(variable string, line int) bool {
 }
 
 // reachingDefinite reports whether an EXPLICIT null assignment (`p = NULL`)
-// reaches the dereference with no intervening kill — i.e. the pointer is
-// certainly null. This is the must-null tier the AI does not need to re-derive.
+// reaches the dereference on EVERY path with no intervening kill — i.e. the
+// pointer is certainly null. This is the must-null tier the AI does not need to
+// re-derive.
 func (m *flowResult) reachingDefinite(variable string, line int) bool {
 	if m == nil || m.definite == nil {
 		return false
 	}
-	return m.definite.reaching(variable, line)
+	n := m.cfg.NodeAt(line)
+	if n == nil {
+		return false
+	}
+	if m.definite[n.ID][variable] {
+		return true
+	}
+	return m.definiteGenAt[n.ID][variable]
+}
+
+// mustReaching reports whether the fact holds on EVERY path to line (the boolean
+// must tier). It is the freed-state / uninit analogue of reachingDefinite: used
+// to promote a may-reachable candidate to "confirmed" only when the fact is not
+// merely possible but provable on all paths.
+func (m *flowResult) mustReaching(variable string, line int) bool {
+	if m == nil || m.must == nil {
+		return false
+	}
+	n := m.cfg.NodeAt(line)
+	if n == nil {
+		return false
+	}
+	if m.must[n.ID][variable] {
+		return true
+	}
+	return m.mustGenAt[n.ID][variable]
 }
 
 // sourceLine returns the line of the first reaching source for variable at
@@ -152,6 +186,10 @@ type nodeEffects struct {
 	gen  map[string]bool
 	kill map[string]bool
 	copy map[string]string
+	// killBase records whole-variable reassignments (`p = ...`). Because the key
+	// "p->f" is the field f of whatever object p CURRENTLY points to, reassigning
+	// p to a different object invalidates every p->f / p[i] fact.
+	killBase map[string]bool
 }
 
 // analyzeFunction builds and runs the null-source flow analysis for one
@@ -167,7 +205,7 @@ func (a *flowAnalyzer) analyzeFunction(ctx context.Context, fn *db.Function, bod
 	}
 	res := a.analyzeFlow(ctx, fn, body, fileRoot, genByLine, nil, true, false)
 	if res != nil && len(definiteGenByLine) > 0 {
-		res.definite = a.analyzeFlow(ctx, fn, body, fileRoot, definiteGenByLine, nil, false, true)
+		res.definite, res.definiteGenAt = a.analyzeDefiniteNull(fn, body)
 	}
 	return res
 }
@@ -183,55 +221,135 @@ func (a *flowAnalyzer) analyzeFlow(ctx context.Context, fn *db.Function, body pa
 	}
 
 	cfg := graph.BuildStmtCFG(body, fn.EndLine)
-	arrays := a.arraysForFile(fn.FileID, fileRoot)
-	dfgByLine := a.dfgCopies[fn.ID]
+	effects := a.buildEffects(cfg, genByLine, killByLine, a.dfgCopies[fn.ID], nonNullKills, definiteKills)
+	nodeIn := runDataflow(cfg, effects, a.entrySeeds)
+	return &flowResult{cfg: cfg, nodeIn: nodeIn, genAt: genAt(cfg, effects)}
+}
 
+// analyzeFlowMust runs the may reaching-sources dataflow and, over the SAME
+// effects, the boolean must dataflow. It is used by the freed-state / uninit
+// filters, which need both: may to keep candidates, must to promote a kept
+// candidate to "confirmed" only when the fact reaches the use on every path.
+func (a *flowAnalyzer) analyzeFlowMust(ctx context.Context, fn *db.Function, body parser.Node, fileRoot parser.Node, genByLine, killByLine map[int][]string, nonNullKills, definiteKills bool) *flowResult {
+	if body.Kind() != "compound_statement" {
+		return nil
+	}
+
+	cfg := graph.BuildStmtCFG(body, fn.EndLine)
+	effects := a.buildEffects(cfg, genByLine, killByLine, a.dfgCopies[fn.ID], nonNullKills, definiteKills)
+	res := &flowResult{cfg: cfg, nodeIn: runDataflow(cfg, effects, a.entrySeeds), genAt: genAt(cfg, effects)}
+	res.must, res.mustGenAt = runMustDataflow(cfg, effects)
+	return res
+}
+
+// analyzeDefiniteNull runs the boolean must-null dataflow for the null definite
+// tier. Its effects are derived NODE-PRECISELY from each statement's own
+// assignments (not from a line-keyed source map): gen = `p = NULL`, kill = any
+// other non-copy reassignment, copy = `p = q`. A line-keyed map would collide
+// when a one-line `if (c) p = NULL; else p = &x;` puts both the header and its
+// branches on one line, falsely assigning the NULL gen to the `p = &x` branch.
+func (a *flowAnalyzer) analyzeDefiniteNull(fn *db.Function, body parser.Node) (map[int]map[string]bool, map[int]map[string]bool) {
+	cfg := graph.BuildStmtCFG(body, fn.EndLine)
 	effects := make(map[int]*nodeEffects, len(cfg.Nodes))
 	for _, n := range cfg.Nodes {
 		if n.Kind != "stmt" {
 			continue
 		}
-		effects[n.ID] = a.collectNodeEffects(n, genByLine, killByLine, dfgByLine, arrays, nonNullKills, definiteKills)
+		e := &nodeEffects{gen: map[string]bool{}, kill: map[string]bool{}, copy: map[string]string{}}
+		for _, p := range directAssignments(n.Stmt) {
+			name := assignTargetName(p.lhs)
+			if name == "" {
+				continue
+			}
+			if p.lhs.Kind() == "identifier" {
+				if e.killBase == nil {
+					e.killBase = map[string]bool{}
+				}
+				e.killBase[name] = true
+			}
+			if isNullLiteralExpr(p.rhs.Text()) {
+				e.gen[name] = true
+			} else if rv := copySourceKey(p.rhs); rv != "" {
+				e.copy[name] = rv
+			} else {
+				e.kill[name] = true
+			}
+		}
+		effects[n.ID] = e
 	}
+	return runMustDataflow(cfg, effects)
+}
 
-	nodeIn := runDataflow(cfg, effects, a.entrySeeds)
-	return &flowResult{cfg: cfg, nodeIn: nodeIn, genAt: genAt(cfg, effects)}
+// buildEffects computes the per-statement-node transfer effects for a CFG.
+func (a *flowAnalyzer) buildEffects(cfg *graph.StmtCFG, genByLine, killByLine map[int][]string, dfgByLine map[int][]copyPair, nonNullKills, definiteKills bool) map[int]*nodeEffects {
+	effects := make(map[int]*nodeEffects, len(cfg.Nodes))
+	for _, n := range cfg.Nodes {
+		if n.Kind != "stmt" {
+			continue
+		}
+		effects[n.ID] = a.collectNodeEffects(n, genByLine, killByLine, dfgByLine, nonNullKills, definiteKills)
+	}
+	return effects
 }
 
 // collectNodeEffects extracts the transfer effects for a single statement node.
-func (a *flowAnalyzer) collectNodeEffects(n *graph.StmtNode, genByLine, killByLine map[int][]string, dfgByLine map[int][]copyPair, arrays map[string]bool, nonNullKills, definiteKills bool) *nodeEffects {
+func (a *flowAnalyzer) collectNodeEffects(n *graph.StmtNode, genByLine, killByLine map[int][]string, dfgByLine map[int][]copyPair, nonNullKills, definiteKills bool) *nodeEffects {
 	e := &nodeEffects{gen: map[string]bool{}, kill: map[string]bool{}, copy: map[string]string{}}
 
-	// gen/kill: event sources recorded at this statement's line.
-	for _, v := range genByLine[n.StartLine] {
-		e.gen[v] = true
+	// gen/kill/DFG from the stored graph at this line — but only for LEAF
+	// statements. A control-flow header (if/while/for/switch) shares its line
+	// with a one-line body, so applying the line-keyed effects to the header
+	// would leak the body's source/kill onto every branch.
+	if !isControlFlowHeaderStmt(n.Stmt.Kind()) {
+		for _, v := range genByLine[n.StartLine] {
+			e.gen[v] = true
+		}
+		for _, v := range killByLine[n.StartLine] {
+			e.kill[v] = true
+		}
+		for _, cp := range dfgByLine[n.StartLine] {
+			e.copy[cp.lhs] = cp.rhs
+		}
 	}
-	for _, v := range killByLine[n.StartLine] {
-		e.kill[v] = true
-	}
-	// DFG copies from the stored graph at this line.
-	for _, cp := range dfgByLine[n.StartLine] {
-		e.copy[cp.lhs] = cp.rhs
-	}
-	// AST-level copies, and (optionally) definite non-null kills.
-	forEachAssignment(n.Stmt, func(lhs, rhs parser.Node) {
-		name := assignTargetName(lhs)
+
+	// AST-level copies/kills from the node's OWN statement (never recursing into
+	// a branch/loop body, whose assignments belong to their own CFG nodes).
+	for _, p := range directAssignments(n.Stmt) {
+		name := assignTargetName(p.lhs)
 		if name == "" {
-			return
+			continue
 		}
-		if rv := rhsVarName(rhs); rv != "" {
+		if p.lhs.Kind() == "identifier" {
+			if e.killBase == nil {
+				e.killBase = map[string]bool{}
+			}
+			e.killBase[name] = true
+		}
+		if rv := copySourceKey(p.rhs); rv != "" {
 			e.copy[name] = rv
-		} else if nonNullKills && definitelyNonNull(rhs, arrays) {
-			e.kill[name] = true
-		} else if definiteKills {
-			// Must-null flow: ANY reassignment other than a variable copy
-			// (p = malloc(), p = f(), p = 5, ...) replaces the old value, so the
-			// old DEFINITE-null source no longer holds — kill it.
+		} else if nonNullKills || definiteKills {
+			// Any reassignment other than a variable copy replaces the old value,
+			// so it kills the old source. For the may-null tier a new possibly-
+			// null source arrives as a gen event (malloc / external call /
+			// nullable return); for the must-null tier a non-copy reassignment
+			// always clears the CERTAIN-null fact.
 			e.kill[name] = true
 		}
-	})
+	}
 
 	return e
+}
+
+// isControlFlowHeaderStmt reports whether a statement kind is a control-flow
+// header (if/loop/switch/preprocessor conditional), as opposed to a leaf
+// statement whose own line owns its effects.
+func isControlFlowHeaderStmt(kind string) bool {
+	switch kind {
+	case "if_statement", "while_statement", "do_statement", "for_statement",
+		"switch_statement", "preproc_ifdef", "preproc_ifndef", "preproc_if":
+		return true
+	}
+	return false
 }
 
 // runDataflow runs the forward null-source reaching analysis. IN[entry] is
@@ -298,6 +416,13 @@ func transfer(in map[string]map[int]bool, e *nodeEffects, nodeID int) map[string
 	for v := range e.kill {
 		out[v] = map[int]bool{}
 	}
+	for base := range e.killBase {
+		for k := range out {
+			if isFieldOf(k, base) {
+				out[k] = map[int]bool{}
+			}
+		}
+	}
 	for v := range e.gen {
 		if out[v] == nil {
 			out[v] = map[int]bool{}
@@ -305,6 +430,12 @@ func transfer(in map[string]map[int]bool, e *nodeEffects, nodeID int) map[string
 		out[v][nodeID] = true
 	}
 	return out
+}
+
+// isFieldOf reports whether key k names a field or element of base (p->f,
+// p.f, or p[i]), which a whole-variable reassignment of base invalidates.
+func isFieldOf(k, base string) bool {
+	return strings.HasPrefix(k, base+"->") || strings.HasPrefix(k, base+".") || strings.HasPrefix(k, base+"[")
 }
 
 // mergeInto unions src into dst in place (per-variable source-set union) and
@@ -323,6 +454,123 @@ func mergeInto(dst, src map[string]map[int]bool) bool {
 				dst[v][s] = true
 				changed = true
 			}
+		}
+	}
+	return changed
+}
+
+// runMustDataflow runs a forward BOOLEAN must analysis over the same CFG/effects
+// shape as runDataflow. Unlike the may tier (union join, bottom = empty), the
+// must tier joins with INTERSECTION and initializes non-entry nodes to TOP (the
+// universe of variables that can ever hold the fact), so a fact survives only
+// when every incoming path carries it. A kill on one branch therefore clears the
+// fact at the join, which is exactly the semantics "certainly null" / "certainly
+// freed" / "certainly uninitialized" require.
+func runMustDataflow(cfg *graph.StmtCFG, effects map[int]*nodeEffects) (map[int]map[string]bool, map[int]map[string]bool) {
+	// universe: every variable that appears in any effect (gen/kill/copy target
+	// or source). TOP for a variable is "true on every path so far".
+	universe := make(map[string]bool)
+	for _, e := range effects {
+		if e == nil {
+			continue
+		}
+		for v := range e.gen {
+			universe[v] = true
+		}
+		for v := range e.kill {
+			universe[v] = true
+		}
+		for lhs, rhs := range e.copy {
+			universe[lhs] = true
+			universe[rhs] = true
+		}
+	}
+
+	nodeIn := make(map[int]map[string]bool, len(cfg.Nodes))
+	for i := range cfg.Nodes {
+		m := make(map[string]bool, len(universe))
+		if i != cfg.Entry {
+			for v := range universe {
+				m[v] = true
+			}
+		}
+		nodeIn[i] = m
+	}
+
+	// Only the entry is seeded; every other node starts at TOP and is lowered by
+	// the intersection join as the entry's (empty) value propagates. Seeding all
+	// nodes would keep TOP alive and falsely claim the fact holds everywhere.
+	worklist := []int{cfg.Entry}
+	inQueue := make([]bool, len(cfg.Nodes))
+	inQueue[cfg.Entry] = true
+
+	for len(worklist) > 0 {
+		id := worklist[len(worklist)-1]
+		worklist = worklist[:len(worklist)-1]
+		inQueue[id] = false
+
+		out := mustTransfer(nodeIn[id], effects[id])
+		for _, succ := range cfg.Nodes[id].Succs {
+			if mustMergeInto(nodeIn[succ], out) && !inQueue[succ] {
+				inQueue[succ] = true
+				worklist = append(worklist, succ)
+			}
+		}
+	}
+
+	genAt := make(map[int]map[string]bool)
+	for id, e := range effects {
+		if e != nil && len(e.gen) > 0 {
+			m := make(map[string]bool, len(e.gen))
+			for v := range e.gen {
+				m[v] = true
+			}
+			genAt[id] = m
+		}
+	}
+	return nodeIn, genAt
+}
+
+// mustTransfer computes OUT for a boolean must node: copy propagates the source's
+// fact, kill clears it, gen sets it. Order is copy, then kill, then gen.
+func mustTransfer(in map[string]bool, e *nodeEffects) map[string]bool {
+	out := make(map[string]bool, len(in))
+	for v, b := range in {
+		out[v] = b
+	}
+	if e == nil {
+		return out
+	}
+	for lhs, rhs := range e.copy {
+		out[lhs] = in[rhs]
+	}
+	for v := range e.kill {
+		out[v] = false
+	}
+	for base := range e.killBase {
+		for k := range out {
+			if isFieldOf(k, base) {
+				out[k] = false
+			}
+		}
+	}
+	for v := range e.gen {
+		out[v] = true
+	}
+	return out
+}
+
+// mustMergeInto intersects src into dst in place (boolean AND) and reports
+// whether dst changed. A variable absent from src means false on that path.
+func mustMergeInto(dst, src map[string]bool) bool {
+	changed := false
+	for v, b := range dst {
+		if !b {
+			continue // already false; AND with anything stays false
+		}
+		if !src[v] {
+			dst[v] = false
+			changed = true
 		}
 	}
 	return changed
@@ -406,7 +654,7 @@ func rhsVarName(rhs parser.Node) string {
 	switch rhs.Kind() {
 	case "identifier":
 		return rhs.Text()
-	case "parenthesized_expression":
+	case "parenthesized_expression", "cast_expression":
 		for _, c := range rhs.NamedChildren() {
 			if name := rhsVarName(c); name != "" {
 				return name
@@ -416,48 +664,23 @@ func rhsVarName(rhs parser.Node) string {
 	return ""
 }
 
-// definitelyNonNull reports whether expr is a provably non-null pointer value:
-// an address-of (`&x`), a string literal, a compound literal, or an array name
-// decaying to a pointer. A cast/parenthesis is unwrapped to its operand.
-func definitelyNonNull(expr parser.Node, arrays map[string]bool) bool {
-	switch expr.Kind() {
-	case "string_literal":
-		return true
-	case "pointer_expression":
-		return strings.HasPrefix(expr.Text(), "&")
-	case "compound_literal_expression":
-		return true
-	case "cast_expression", "parenthesized_expression":
-		for _, c := range expr.NamedChildren() {
-			if definitelyNonNull(c, arrays) {
-				return true
-			}
-		}
-		return false
-	case "identifier":
-		return arrays[expr.Text()]
-	}
-	return false
-}
-
-// arraysForFile lazily computes the set of array-declared identifiers in a file.
-func (a *flowAnalyzer) arraysForFile(fileID int64, root parser.Node) map[string]bool {
-	if a.arrayNames == nil {
-		a.arrayNames = make(map[int64]map[string]bool)
-	}
-	if m, ok := a.arrayNames[fileID]; ok {
-		return m
-	}
-	m := make(map[string]bool)
-	if root.Kind() != "" {
-		for _, ad := range root.FindAll("array_declarator") {
-			if name := declaratorName(ad); name != "" {
-				m[name] = true
+// copySourceKey returns the field-qualified location a value copies FROM, so
+// `q = p->f` propagates the nullness of location p->f (not the whole p), and
+// `q = a[i]` propagates location a[i]. It matches the detector's text-based
+// keys (`p->f`, `p[i]`) so a NULL_VALUE source and a later copy/deref resolve to
+// the same location. Bare `p` is the whole-variable location.
+func copySourceKey(rhs parser.Node) string {
+	switch rhs.Kind() {
+	case "identifier", "field_expression", "subscript_expression":
+		return rhs.Text()
+	case "parenthesized_expression", "cast_expression":
+		for _, c := range rhs.NamedChildren() {
+			if k := copySourceKey(c); k != "" {
+				return k
 			}
 		}
 	}
-	a.arrayNames[fileID] = m
-	return m
+	return ""
 }
 
 // loadDFGCopies resolves all stored DATA_FLOW edges into per-function, per-line
@@ -678,6 +901,88 @@ func freeAlreadySeeded(genByLine map[int][]string, line int, variable string) bo
 		if v == variable {
 			return true
 		}
+	}
+	return false
+}
+
+// callResultNullSources returns the possible-null sources introduced by `p = f()`
+// where f is a known possibly-null-returning function. These are synthesized in
+// the planner (not emitted as NULL_VALUE events) because the detector only
+// recognizes a literal `return NULL`; a function that returns a possibly-null
+// variable, an allocator, or another nullable callee is only discoverable via
+// the RETURN edges + intra-procedural flow, which the planner owns.
+func callResultNullSources(body parser.Node, retNullable map[string]bool) []nullSource {
+	if len(retNullable) == 0 {
+		return nil
+	}
+	var out []nullSource
+	forEachAssignment(body, func(lhs, rhs parser.Node) {
+		name := assignTargetName(lhs)
+		if name == "" {
+			return
+		}
+		callee := rhsCallName(rhs)
+		if callee == "" || !retNullable[callee] {
+			return
+		}
+		out = append(out, nullSource{variable: name, line: rhs.StartLine(), origin: "external_call", definite: false})
+	})
+	return out
+}
+
+// returnsNullable reports whether body can return a possibly-null pointer: a
+// NULL literal, an allocator call, a pointer parameter, a variable with a
+// reaching may-null source, or a call to another possibly-null-returning
+// function.
+func returnsNullable(body parser.Node, flow *flowResult, params map[string]int, retNullable map[string]bool) bool {
+	for _, ret := range body.FindAll("return_statement") {
+		children := ret.NamedChildren()
+		if len(children) == 0 {
+			continue
+		}
+		if exprReturnsNullable(children[0], flow, params, retNullable, ret.StartLine()) {
+			return true
+		}
+	}
+	return false
+}
+
+func exprReturnsNullable(expr parser.Node, flow *flowResult, params map[string]int, retNullable map[string]bool, line int) bool {
+	if isNullLiteralExpr(expr.Text()) {
+		return true
+	}
+	switch expr.Kind() {
+	case "call_expression":
+		name := callName(expr)
+		return isAllocatorCall(name) || retNullable[name]
+	case "identifier":
+		if _, isParam := params[expr.Text()]; isParam {
+			return true
+		}
+		return flow != nil && flow.reaching(expr.Text(), line)
+	case "cast_expression", "parenthesized_expression":
+		for _, c := range expr.NamedChildren() {
+			if exprReturnsNullable(c, flow, params, retNullable, line) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isNullLiteralExpr(text string) bool {
+	t := strings.TrimSpace(text)
+	switch t {
+	case "NULL", "nullptr", "(void*)0", "(void *)0", "((void*)0)", "((void *)0)":
+		return true
+	}
+	return false
+}
+
+func isAllocatorCall(name string) bool {
+	switch name {
+	case "malloc", "calloc", "realloc":
+		return true
 	}
 	return false
 }

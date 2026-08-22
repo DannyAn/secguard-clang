@@ -381,6 +381,26 @@ func extractFieldAccess(node parser.Node) (string, string) {
 	return "", ""
 }
 
+// subscriptAccess returns (base, field) for a subscript `a[0]` / `a[i]`. A
+// constant index keeps `a[0]` distinct from `a[1]`; a variable index is merged to
+// `a[]` (the same array slot), which is conservative: free(a[i]) then use(a[j])
+// with i != j may be a false positive that the AI agent refines (full object
+// identity / points-to is the follow-up that would separate them).
+func subscriptAccess(node parser.Node) (string, string) {
+	if node.Kind() != "subscript_expression" {
+		return "", ""
+	}
+	children := node.NamedChildren()
+	if len(children) < 2 || children[0].Kind() != "identifier" {
+		return "", ""
+	}
+	base := children[0].Text()
+	if isConstantIndex(children[1].Text()) {
+		return base, base + "[" + children[1].Text() + "]"
+	}
+	return base, base + "[]"
+}
+
 func extractGlobalFromArrayAccess(node parser.Node) string {
 	if node.Kind() == "subscript_expression" {
 		children := node.NamedChildren()

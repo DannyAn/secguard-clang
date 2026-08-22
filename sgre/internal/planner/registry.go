@@ -388,7 +388,7 @@ func init() {
 		SeedEventType:    "RACE_CONDITION",
 		EvidenceType:     "RACE_CONDITION",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "default",
+		FilterChain:      "race-condition",
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			if c.Category == "shared_data_race" {
 				return []EvidenceFragment{
@@ -423,7 +423,7 @@ func init() {
 		SeedEventType:    "DEADLOCK",
 		EvidenceType:     "DEADLOCK",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "default",
+		FilterChain:      "deadlock",
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
 				{Type: "deadlock", Role: "sink", Detail: fmt.Sprintf("lock-order inversion (potential deadlock) in %s at line %d", c.FunctionName, c.Line)},
@@ -488,7 +488,7 @@ func init() {
 		SeedEventType:    "DIVIDE_BY_ZERO",
 		EvidenceType:     "DIVIDE_BY_ZERO",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "default",
+		FilterChain:      "divide-by-zero",
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
 				{Type: "divide_by_zero", Role: "sink", Detail: fmt.Sprintf("possible division by zero in function %s at line %d", c.FunctionName, c.Line)},

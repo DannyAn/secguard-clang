@@ -165,6 +165,47 @@ func TestStore_InsertFinding_EnforcesConfidenceRange(t *testing.T) {
 	}
 }
 
+func TestStore_UpsertFinding_Idempotent(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	f := &Finding{
+		RuleID:       "CWE-476",
+		Severity:     "high",
+		Confidence:   0.9,
+		Status:       "confirmed",
+		FilePath:     "src/a.c",
+		LineNumber:   42,
+		FunctionName: "f",
+		Summary:      "v1",
+		ScanID:       "sc_test",
+	}
+	id1, err := s.UpsertFinding(ctx, f)
+	if err != nil {
+		t.Fatalf("first upsert failed: %v", err)
+	}
+
+	f.Summary = "v2"
+	id2, err := s.UpsertFinding(ctx, f)
+	if err != nil {
+		t.Fatalf("second upsert failed: %v", err)
+	}
+	if id1 != id2 {
+		t.Errorf("re-writing the same finding must return the same id, got %d then %d", id1, id2)
+	}
+
+	all, err := s.ListFindings(ctx)
+	if err != nil {
+		t.Fatalf("list findings: %v", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("expected exactly 1 finding after idempotent re-write, got %d", len(all))
+	}
+	if all[0].Summary != "v2" {
+		t.Errorf("expected the re-write to update the row (summary=v2), got %q", all[0].Summary)
+	}
+}
+
 func TestStore_ReachableFromEntry(t *testing.T) {
 	ctx := context.Background()
 	s := NewTestStore(t)

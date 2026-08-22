@@ -83,6 +83,57 @@ func (s *store) InsertFinding(ctx context.Context, f *Finding) (int64, error) {
 	return id, nil
 }
 
+// UpsertFinding writes a finding idempotently: if a finding with the same
+// (scan_id, rule_id, file_path, line_number, function_name) already exists, it
+// is updated in place and its id returned; otherwise a new row is inserted. This
+// makes re-running a write batch safe (the previous insert-only behavior created
+// duplicate findings when an agent re-ran its write script), while preserving the
+// second-round (A5) review fields, which only `--review` mutates.
+func (s *store) UpsertFinding(ctx context.Context, f *Finding) (int64, error) {
+	cweNorm := strings.ToUpper(strings.TrimSpace(f.RuleID))
+	if cweNorm != "" && !SupportedFindingCWEs[cweNorm] {
+		return 0, fmt.Errorf("db: upsert finding: unsupported rule_id %q (not a pipeline-detected vulnerability type)", f.RuleID)
+	}
+	if f.Status == "" {
+		f.Status = "open"
+	}
+	if f.CreatedAt == 0 {
+		f.CreatedAt = now()
+	}
+
+	var existingID int64
+	err := s.exec.QueryRowContext(ctx,
+		`SELECT id FROM findings WHERE scan_id = ? AND rule_id = ? AND file_path = ? AND line_number = ? AND function_name = ? ORDER BY id LIMIT 1`,
+		f.ScanID, f.RuleID, f.FilePath, f.LineNumber, f.FunctionName).Scan(&existingID)
+	if err == nil {
+		// Re-write of the same location: update the mutable verdict fields and
+		// keep the id (so a re-run returns the same id, never a duplicate). The
+		// review_status / review_reasoning are left untouched — those only change
+		// via UpdateFindingReview, and a re-write must not wipe an A5 verdict.
+		if _, uerr := s.exec.ExecContext(ctx,
+			`UPDATE findings SET severity = ?, confidence = ?, evidence = ?, status = ?, summary = ?, reasoning = ?, fix_strategy = ?, exception_check = ?, properties = ?, scan_id = ? WHERE id = ?`,
+			f.Severity, f.Confidence, f.Evidence, f.Status, f.Summary, f.Reasoning, f.FixStrategy, f.ExceptionCheck, f.Properties, f.ScanID, existingID); uerr != nil {
+			return 0, fmt.Errorf("db: upsert finding: update: %w", uerr)
+		}
+		return existingID, nil
+	}
+	if err != sql.ErrNoRows {
+		return 0, fmt.Errorf("db: upsert finding: lookup: %w", err)
+	}
+
+	res, err := s.exec.ExecContext(ctx,
+		`INSERT INTO findings (rule_id, severity, confidence, evidence, status, file_path, line_number, function_name, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		f.RuleID, f.Severity, f.Confidence, f.Evidence, f.Status, f.FilePath, f.LineNumber, f.FunctionName, f.Properties, f.Summary, f.Reasoning, f.FixStrategy, f.ExceptionCheck, f.ReviewStatus, f.ReviewReasoning, f.ScanID, f.CreatedAt)
+	if err != nil {
+		return 0, fmt.Errorf("db: upsert finding: insert: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("db: upsert finding: last insert id: %w", err)
+	}
+	return id, nil
+}
+
 func (s *store) ListFindings(ctx context.Context) ([]*Finding, error) {
 	rows, err := s.exec.QueryContext(ctx,
 		`SELECT id, rule_id, severity, confidence, evidence, status, file_path, line_number, function_name, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, created_at FROM findings ORDER BY id`)

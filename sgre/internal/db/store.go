@@ -81,6 +81,7 @@ type SecurityEventStore interface {
 
 type FindingStore interface {
 	InsertFinding(ctx context.Context, f *Finding) (int64, error)
+	UpsertFinding(ctx context.Context, f *Finding) (int64, error)
 	ListFindings(ctx context.Context) ([]*Finding, error)
 	ListFindingsByStatus(ctx context.Context, status string) ([]*Finding, error)
 	GetFindingByID(ctx context.Context, id int64) (*Finding, error)

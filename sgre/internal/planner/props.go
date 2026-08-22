@@ -40,6 +40,10 @@ type eventProps struct {
 	Mutex       string `json:"mutex"`
 	LockLine    int    `json:"lock_line"`
 	UnlockLine  int    `json:"unlock_line"`
+	Divisor     string `json:"divisor"` // divide-by-zero divisor expression
+	// ThreadFunctions is the comma-separated list of pthread thread function
+	// names a shared_data_race event reports (race-condition detector).
+	ThreadFunctions string `json:"thread_functions"`
 }
 
 func parseEventProps(raw string) eventProps {

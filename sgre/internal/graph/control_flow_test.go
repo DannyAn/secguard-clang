@@ -298,6 +298,42 @@ func TestBuildStmtCFG_BreakPrecedenceLoopInSwitch(t *testing.T) {
 	}
 }
 
+func TestBuildStmtCFG_ForContinueTargetsUpdate(t *testing.T) {
+	body := parseBody(t, `int f(int n) {
+    int i = 0;
+    for (i = 0; i < n; i++) {
+        if (i == 3) continue;
+        i = i * 2;
+    }
+    return i;
+}`)
+	cfg := BuildStmtCFG(body, 8)
+
+	var contNode, updNode *StmtNode
+	for _, n := range cfg.Nodes {
+		if n.Kind != "stmt" {
+			continue
+		}
+		switch n.Stmt.Kind() {
+		case "continue_statement":
+			contNode = n
+		case "update_expression":
+			updNode = n
+		}
+	}
+	if contNode == nil {
+		t.Fatal("continue statement not found")
+	}
+	if updNode == nil {
+		t.Fatal("for-loop update expression not found")
+	}
+	// A continue must reach the update expression before re-testing the
+	// condition; the previous CFG targeted the header directly and skipped i++.
+	if !cfg.Reaches(contNode.ID, updNode.ID) {
+		t.Error("continue must reach the for-loop update expression before re-testing the condition")
+	}
+}
+
 func TestStmtCFG_NodeAtInnermost(t *testing.T) {
 	body := parseBody(t, `int f(int c) {
     int x = 1;

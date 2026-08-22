@@ -74,9 +74,12 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 			continue
 		}
 		if reaching {
-			// The uninitialized declaration provably reaches the use: the graph
-			// confirms a genuine uninitialized-variable read.
-			c.SuspicionLevel = "confirmed"
+			// The uninitialized declaration reaches the use. It is a CERTAIN
+			// uninitialized read only when it reaches on every path (must);
+			// otherwise it stays a suspicion for the AI to confirm.
+			if flow.mustReaching(c.VariableName, c.Line) {
+				c.SuspicionLevel = "confirmed"
+			}
 			kept = append(kept, c)
 		} else {
 			dropped = dismiss(dropped, c, f.Name(),
@@ -173,7 +176,9 @@ func buildDefiniteInitFlow(fn *db.Function, body parser.Node, root parser.Node) 
 	}
 
 	nodeIn := runDataflow(cfg, effects, nil)
-	return &flowResult{cfg: cfg, nodeIn: nodeIn, genAt: genAt(cfg, effects)}
+	res := &flowResult{cfg: cfg, nodeIn: nodeIn, genAt: genAt(cfg, effects)}
+	res.must, res.mustGenAt = runMustDataflow(cfg, effects)
+	return res
 }
 
 // assignPair is one (lhs, rhs) of an assignment/initializer that is a DIRECT

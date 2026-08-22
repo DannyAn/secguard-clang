@@ -36,6 +36,7 @@ func (d *NullGuardDetector) Detect(ctx context.Context) (DetectResult, error) {
 		for _, f := range funcs {
 			d.detectGuards(ctx, f, file, condNodes, &result)
 			d.detectEarlyReturnGuards(ctx, f, file, ifs, &result)
+			d.detectReassignmentGuards(ctx, f, file, ifs, &result)
 		}
 	})
 	return result, err
@@ -130,6 +131,104 @@ func (d *NullGuardDetector) detectEarlyReturnGuards(ctx context.Context, f *db.F
 			result.EventsCreated++
 		}
 	}
+}
+
+// detectReassignmentGuards handles the null analogue of `if (x == 0) x = 1;`:
+// `if (p == NULL) p = "";` (or `if (!p) p = &x;`) reassigns p to a provably
+// non-null value on the null branch, so the FALL-THROUGH after the if is non-null
+// on every path. The previous flow model accidentally covered this via a header
+// node inheriting its body's assignment; that recursion was removed, so this
+// detector emits the fall-through scope explicitly (like detectEarlyReturnGuards).
+func (d *NullGuardDetector) detectReassignmentGuards(ctx context.Context, f *db.Function, file *db.File, ifs []parser.Node, result *DetectResult) {
+	for _, ifNode := range ifs {
+		if !funcLineRange(f, ifNode.StartLine()) {
+			continue
+		}
+		// An else branch means the non-null path is not the fall-through.
+		if ifNode.ChildByFieldName("alternative") != nil {
+			continue
+		}
+		cond := ifNode.ChildByFieldName("condition")
+		if cond == nil {
+			continue
+		}
+		varName := nullCheckedVariable(*cond)
+		if varName == "" {
+			continue
+		}
+		cons := ifNode.ChildByFieldName("consequence")
+		if cons == nil || !assignsNonNull(*cons, varName) {
+			continue
+		}
+		if emitEvent(ctx, d.store, d.logger, "NULL_GUARD", f.ID, &db.Location{FileID: file.ID, Line: ifNode.StartLine()}, map[string]interface{}{
+			"variable":    varName,
+			"condition":   "REASSIGN_GUARD",
+			"scope_start": ifNode.EndLine() + 1,
+			"scope_end":   f.EndLine,
+		}) {
+			result.EventsCreated++
+		}
+	}
+}
+
+// nullCheckedVariable returns the variable a null-check guard tests when the
+// condition is `p == NULL`, `NULL == p`, `p == 0`, `0 == p`, or `!p`.
+func nullCheckedVariable(cond parser.Node) string {
+	t := strings.TrimSpace(cond.Text())
+	for strings.HasPrefix(t, "(") && strings.HasSuffix(t, ")") {
+		t = strings.TrimSpace(t[1 : len(t)-1])
+	}
+	if strings.HasPrefix(t, "!") {
+		v := strings.Trim(strings.TrimSpace(t[1:]), "()")
+		if v != "" && v != "NULL" && v != "0" {
+			return v
+		}
+		return ""
+	}
+	if strings.Contains(t, "==") {
+		parts := strings.SplitN(t, "==", 2)
+		for _, p := range parts {
+			p = strings.Trim(strings.TrimSpace(p), "()")
+			if p != "" && p != "NULL" && p != "0" && p != "((void*)0)" && p != "((void *)0)" {
+				return p
+			}
+		}
+	}
+	return ""
+}
+
+// assignsNonNull reports whether an if-consequence reassigns varName a provably
+// non-null pointer (a string literal or an address-of).
+func assignsNonNull(cons parser.Node, varName string) bool {
+	for _, assign := range cons.FindAll("assignment_expression") {
+		named := assign.NamedChildren()
+		if len(named) < 2 {
+			continue
+		}
+		if strings.TrimSpace(named[0].Text()) != varName {
+			continue
+		}
+		if isNonNullExpr(named[1]) {
+			return true
+		}
+	}
+	return false
+}
+
+func isNonNullExpr(expr parser.Node) bool {
+	switch expr.Kind() {
+	case "string_literal", "compound_literal_expression":
+		return true
+	case "pointer_expression":
+		return strings.HasPrefix(expr.Text(), "&")
+	case "parenthesized_expression", "cast_expression":
+		for _, c := range expr.NamedChildren() {
+			if isNonNullExpr(c) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func extractGuardedVariable(cond parser.Node) string {

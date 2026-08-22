@@ -85,15 +85,15 @@ func (b *DataFlowBuilder) detectPointerAssignments(ctx context.Context, f *db.Fu
 		if lhs.Kind() != "identifier" {
 			continue
 		}
-		rhsName := ""
-		if rhs.Kind() == "identifier" {
-			rhsName = rhs.Text()
-		} else if rhs.Kind() == "call_expression" {
-			rhsName = extractCallName(rhs)
-		}
-		if rhsName == "" {
+		// Only a variable-to-variable copy (`p = q`) is a DATA_FLOW edge. A call
+		// result (`p = f()`) is NOT a variable copy: emitting an edge whose RHS
+		// is the function name made the flow engine treat `p = f()` as `p = f`
+		// (a copy from a non-existent variable), silently clearing p's null state.
+		// Return-value flow is handled by the RETURN edges + null-flow engine.
+		if rhs.Kind() != "identifier" {
 			continue
 		}
+		rhsName := rhs.Text()
 
 		lhsNodeID, err := b.store.GetOrCreateGraphNode(ctx, "variable_ref", f.ID, fmt.Sprintf(`{"name":"%s","line":%d}`, lhs.Text(), assign.StartLine()))
 		if err != nil {

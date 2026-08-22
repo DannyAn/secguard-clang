@@ -100,7 +100,9 @@ func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *Inde
 		return nil
 	}
 	if existing != nil {
-		idx.store.UpdateFileChecksum(ctx, existing.ID, checksum, loc)
+		if err := idx.store.UpdateFileChecksum(ctx, existing.ID, checksum, loc); err != nil && idx.logger != nil {
+			idx.logger.Warn("update file checksum failed", "file", filePath, "error", err)
+		}
 		fileID = existing.ID
 		// The file changed: drop the previously-indexed functions for it so the
 		// re-index below does not leave stale duplicate rows (the DB has no
