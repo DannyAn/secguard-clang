@@ -12,7 +12,7 @@ metadata:
 
 ### Evidence Pattern
 A null-deref candidate has:
-- **nullable_source**: Variable has a NULL_VALUE origin (malloc return, function return NULL, external call)
+- **nullable_source**: Variable has a NULL_VALUE origin (malloc return, function return NULL, external call, or a free+null macro `SAFE_FREE(p)` that sets `p = NULL`)
 - **call_path**: The function is reachable from an entry point
 - **data_flow**: The NULL value propagates to the dereference location
 - **guard**: A NULL_GUARD event may or may not exist

@@ -33,3 +33,4 @@ A divide-by-zero candidate has:
 - `x / 100` — constant divisor (safe)
 - `x % sizeof(int)` — compile-time constant (safe)
 - A divisor that is checked `if (n == 0) return;` immediately before (needs flow verification)
+- A divisor reassigned to a provably non-zero constant before the division (`d = 0; d = 1; x / d`) — the convergence range flow proves it non-zero and suppresses it

@@ -1,6 +1,7 @@
 import { tool } from "@opencode-ai/plugin"
 import path from "path"
 import fs from "fs"
+import { randomUUID } from "crypto"
 
 function findSecguard(context: { worktree?: string, directory?: string }): string {
   for (const dir of [context.directory, context.worktree, "."]) {
@@ -105,52 +106,64 @@ export default tool({
     }
 
     if (args.findings && args.findings.length > 0) {
+      const scanId = args.scan_id || ""
+
+      // Batch mode: write the WHOLE type's findings in ONE `--write-json`
+      // subprocess instead of a per-finding `--write` loop (which spawns one
+      // subprocess + SQLite transaction per finding — the slow path the docs
+      // warn against). The payload goes to the project's .sgre/.tmp (a runtime
+      // artifact the scan step clears), never os.TempDir; a randomUUID name
+      // keeps concurrent batch workers from clobbering each other's file.
+      const tmpDir = path.join(sgreDir, ".tmp")
+      if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true })
+      const tmpFile = path.join(tmpDir, `write-${randomUUID()}.json`)
+      const inputs = args.findings.map((finding) => ({
+        rule_id: finding.rule_id,
+        severity: finding.severity,
+        confidence: finding.confidence,
+        status: finding.status,
+        file: finding.file,
+        line: finding.line,
+        function: finding.function,
+        summary: finding.summary || "",
+        reasoning: finding.reasoning || "",
+        exception_check: finding.exception_check || "",
+        fix_strategy: finding.fix_strategy || "",
+      }))
+      fs.writeFileSync(tmpFile, JSON.stringify(inputs))
+
+      const written: { file: string; line: number; id: number }[] = []
       const errors: string[] = []
       const perFindingWarnings: string[] = []
       let skipped = 0
-      const scanId = args.scan_id || ""
-      const written: { file: string; line: number; id: number }[] = []
-      for (const finding of args.findings) {
-        // Structured AI output (summary/reasoning/fix_strategy/exception_check)
-        // rides inside the properties JSON rather than as separate CLI flags:
-        // JSON.stringify escapes newlines to \n, so the payload is always a
-        // single line and survives Bun's argument escaping regardless of how
-        // multi-line the reasoning/fix code is.
-        const props = JSON.stringify({
-          summary: finding.summary || "",
-          reasoning: finding.reasoning || "",
-          fix_strategy: finding.fix_strategy || "",
-          exception_check: finding.exception_check || "",
-        })
+      try {
+        const out = (await Bun.$`${secguardBin} report --db ${dbPath} --write-json ${tmpFile} --scan-id=${scanId}`
+          .cwd(workDir)
+          .quiet()
+          .text()
+        ).trim()
         try {
-          // --output-dir is what lets the CLI place the verdict file under
-          // findings/<vuln-type>/; without it the per-finding markdown is
-          // skipped and the review surface silently drifts from the DB.
-          // Both optional flags use the --flag=value form so an empty value is
-          // parsed as "absent" — one command shape, no conditional branches.
-          const out = (await Bun.$`${secguardBin} report --db ${dbPath} --write --rule-id ${finding.rule_id} --severity ${finding.severity.toLowerCase()} --confidence ${String(finding.confidence)} --status ${finding.status} --file ${finding.file} --line ${String(finding.line)} --function ${finding.function} --properties ${props} --scan-id=${scanId} --output-dir=${outputDir}`
-            .cwd(workDir)
-            .quiet()
-            .text()
-          ).trim()
-          // The CLI returns {"id": N, "status":"ok", ...}. Capture the id so the
-          // agent can later issue a second-round --review for this exact finding.
-          try {
-            const parsed = JSON.parse(out)
-            if (typeof parsed.id === "number") {
-              written.push({ file: finding.file, line: finding.line, id: parsed.id })
+          const parsed = JSON.parse(out)
+          for (const w of parsed.written ?? []) {
+            if (typeof w.id === "number") {
+              written.push({ file: w.file, line: w.line, id: w.id })
             }
-            if (parsed.per_finding_warning) {
-              perFindingWarnings.push(`${finding.file}:${finding.line} — ${parsed.per_finding_warning}`)
-            }
-          } catch {
-            // Non-JSON stdout — best effort, treat as success but no id captured.
           }
-        } catch (e: any) {
-          const msg = e?.stderr?.toString()?.trim() || e?.message || String(e)
-          errors.push(`${finding.file}:${finding.line} — ${msg}`)
-          skipped++
+          // Per-item failures (unsupported rule_id, empty rule_id, DB error)
+          // come back as strings in `errors`; each is one un-written finding.
+          for (const e of parsed.errors ?? []) {
+            errors.push(String(e))
+            skipped++
+          }
+        } catch {
+          errors.push("unparseable --write-json response")
         }
+      } catch (e: any) {
+        const msg = e?.stderr?.toString()?.trim() || e?.message || String(e)
+        errors.push(`batch write failed: ${msg}`)
+        skipped = args.findings.length
+      } finally {
+        try { fs.unlinkSync(tmpFile) } catch {}
       }
 
       let auditPath: string | undefined
@@ -170,7 +183,7 @@ export default tool({
       return JSON.stringify(
         {
           status: errors.length === 0 ? "ok" : "partial",
-          findings_written: args.findings.length - errors.length,
+          findings_written: written.length,
           skipped,
           written,
           audit_path: auditPath,

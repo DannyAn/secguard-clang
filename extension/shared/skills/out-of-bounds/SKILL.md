@@ -32,7 +32,7 @@ for (int i = 0; i <= 10; i++) {   /* i == 10 is out of bounds */
 
 | Condition | Classification |
 |-----------|---------------|
-| Constant index >= array size, or loop bound provably overruns size | **confirmed** |
+| Constant index (or a constant-valued variable `int n = 12; arr[n]`) >= array size, or loop bound provably overruns size | **confirmed** |
 | Variable index with no provable bound | **suspected** (needs dataflow proof) |
 | Access guarded by a bounds check covering the read | **false-positive** |
 | `sizeof(arr)` usage (not an element access) | **false-positive** |

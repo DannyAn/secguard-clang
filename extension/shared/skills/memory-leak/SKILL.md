@@ -22,6 +22,7 @@ A memory-leak candidate has:
 |---------|-----------|----------|
 | RAII (ResourceHandle) | create+destroy pair in same scope | Destructor frees on scope exit |
 | Cleanup function | `cleanup_entries()` frees all | Centralized cleanup |
+| Freeing macro | `#define SAFE_FREE(p) ...` / `#define my_free(p) free(p)` | The macro wraps `free`, which is now recognized — not a leak |
 | Reference counting | `ref_count--` before free | Freed when ref count hits 0 |
 | `free` on all paths | Both success and error paths free | No leak path |
 

@@ -5,8 +5,10 @@ mode: all
 temperature: 0.1
 steps: 200
 permission:
-  edit: deny
-  bash: deny
+  edit: allow
+  bash:
+    "*": deny
+    "secguard*": allow
   read: allow
   grep: allow
   glob: allow

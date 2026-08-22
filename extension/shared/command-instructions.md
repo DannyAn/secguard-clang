@@ -2,13 +2,58 @@ Scan the codebase for security vulnerabilities using the SecGuard analysis pipel
 
 ## Tool Names & Skill Namespace (READ THIS FIRST — these two get confused constantly)
 
-**Tool names.** You run SecGuard through the OpenCode tools, whose names carry an
-underscore: `secguard_scan`, `secguard_plan`, `secguard_report`, `secguard_types`,
-`secguard_status`, `secguard_index`, `secguard_schema`, `secguard_db`. These are
-TOOLS, not shell commands. Do not type them as bash commands — `secguard_scan ./src`
-in a shell fails with "command not found". (The CLI binary is only used by those
-tools internally; you never need to run it yourself. If you ever must, it is
-`secguard scan` with a space — but prefer the tools.)
+**Which platform am I on?** Two invocation styles exist, and they do NOT mix:
+
+- **OpenCode** — you have MCP tools with underscore names: `secguard_scan`,
+  `secguard_plan`, `secguard_report`, `secguard_types`, `secguard_status`,
+  `secguard_index`, `secguard_schema`, `secguard_db`. Use those TOOLS, never
+  shell commands.
+- **Claude Code (and any shell-only host)** — there are NO `secguard_*` tools.
+  Run the `secguard` binary via Bash with a space: `secguard scan`, `secguard
+  plan`, `secguard report`, `secguard types`, `secguard status`. This doc uses
+  the OpenCode tool names below; translate them to `secguard <verb>` on Claude
+  Code.
+
+**Writing findings (the part that differs most by platform).** NEVER generate a
+per-finding Bash loop script — it is slow and error-prone. There is a batch mode
+that writes a whole type's findings in ONE command, idempotently (re-running
+updates, never duplicates):
+
+```bash
+secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>
+```
+
+`<tmpdir>` is `<project>/.codeagent/secguard-clang/.sgre/.tmp/` — the project's
+own runtime temp dir, NOT `/tmp`. The scan step creates it and clears it at the
+start of each run, so you can write one JSON file per type there and never worry
+about cleanup (stale files from a previous run are removed by the next scan).
+This path is the same on Windows and macOS/Linux.
+
+`<type>.json` is a JSON ARRAY of finding objects with exactly these keys
+(`severity` and `status` are lowercased by the CLI; `confidence` is 0–100):
+
+```json
+[
+  {"rule_id":"CWE-476","severity":"high","confidence":90,"status":"confirmed",
+   "file":"src/a.c","line":42,"function":"f","summary":"...",
+   "reasoning":"...","exception_check":"...","fix_strategy":"..."}
+]
+```
+
+Escaping: every `"` INSIDE a string value must be escaped as `\"`, and any
+backslash as `\\`. Do NOT hand-write JSON with unescaped inner quotes — the CLI
+will reject it. Prefer writing the JSON file with the Write tool (it does not
+escape for you — escape the quotes yourself), then call `--write-json <path>`.
+
+Write one `--write-json` per type (all of that type's findings in one array),
+then run `secguard report --audit --scan-id <scan_id> --output-dir <scan_dir>`
+ONCE at the very end to regenerate `result.sarif` + `findings/`. On OpenCode the
+`secguard_report` tool already does this loop + audit for you (and JSON-encodes
+for you).
+
+**Never** re-run a write to "verify" it — the write is idempotent, and `secguard
+db` is read-only, so a stray duplicate would force you to edit SQLite by hand.
+Verify with `secguard report --audit` (read back findings), not by re-writing.
 
 **Skill names.** Only load skills whose name is EXACTLY a `name` from
 `secguard types` (kebab-case, no prefix, no namespace): `buffer-overflow`,
@@ -82,43 +127,73 @@ Target path: <parsed path>
 
 **The single most important rule of this whole workflow: findings do not exist
 until you call `secguard_report`, and `findings/` + `result.sarif` do not exist
-until the write carries `scan_id` + `output_dir`. You MUST write each type's
-findings before moving to the next type. "Analyze all types first, write at the
-end" is WRONG and loses work.** Track processed types in your todo list so no
-type is skipped or double-processed.
+until the write carries `scan_id` + `output_dir`. Every type's findings must be
+written the moment it is classified — by the subagent (parallel) or by you (the
+fallback loop) — never accumulate all writes to the end. "Analyze all types
+first, write at the end" is WRONG and loses work.** Track processed types in
+your todo list so no type is skipped or double-processed.
+
+**Context budget (the other thing that makes this fast).** Do NOT read all
+source files up front — read at most 5 files per type, only at the reported
+file:line, and only for candidates that actually need verification. The same
+≤5-files budget covers the A5 second round (A5 normally re-judges from context +
+persisted reasoning; it opens source only for a suspected finding whose file was
+not already read). Do NOT load a skill for a type that has 0 candidates.
+`report.md` is your primary candidate input (one compact read); the scan summary
+already gives you the per-type counts.
 
 1. **Scan**: call the `secguard_scan` tool with the target path. It returns a
    summary (`scan_id`, `output_dir`, `candidates_by_type`, `total_candidates`).
    Record `scan_id` and `output_dir` — you will need both in every write. If the
-   summary has `report_error`, stop and surface it.
-2. **Read `report.md`** from `output_dir`: the compact per-type candidate tables.
-3. **Per-type batch loop** (for each type with candidates > 0, in report.md order):
-   a. Load ONLY that type's skill (exact kebab-case name, SecGuard namespace).
-   b. Classify every candidate: confirmed / suspected / false-positive.
-   c. Cross-reference source: ≤5 files, only at file:line, using absolute paths.
-   d. **WRITE now**: call `secguard_report` with `findings` for THIS type only,
-      passing BOTH `scan_id` and `output_dir`. Every candidate gets a finding —
-      confirmed, suspected, or dismissed. Never dismiss a batch "in prose only":
-      each dismissal must be a `secguard_report` entry with `reasoning`. For
-      confirmed, always fill `reasoning` + `exception_check` + `fix_strategy`.
-      If the response has `per_finding_warning` or the `written` array is short,
-      fix the call and re-write. **Do not proceed to the next type until the
-      write succeeds.**
-   e. A5 (second round): for each `suspected` you just wrote, record a verdict via
-      `secguard_report` `reviews` (`confirmed`/`dismissed`/`suspected-kept` +
-      `review_reasoning`), using the `id`s from the write response.
-4. **Finalize and verify the artifacts** (after all types): `result.sarif` and
-   `findings/` are regenerated automatically by every `secguard_report` write
-   that carries `scan_id` + `output_dir`. So after the loop, read
-   `<output_dir>/result.sarif` (must be non-empty) and list
-   `<output_dir>/findings/`. If `result.sarif` is missing/empty, or `findings/`
-   has no `_confirmed`/`_suspected` files even though you wrote findings — a
-   write did not land; find the `per_finding_warning`, fix it, and re-write.
-   **A final report without a verified `result.sarif` and `findings/` is
-   incomplete.**
-5. **Report**: emit the Markdown report (报告头 / 摘要 / 总览表 / 问题表 /
-   观察项表 / 修复建议 / 逐条详情) per the Output Format. Reference
-   `result.sarif` and `findings/` only after step 4 verified them.
+   summary has `report_error`, stop and surface it. `secguard_scan` already ran
+   the convergence for EVERY type and wrote `report.md` + `candidates/` — do NOT
+   re-run `secguard_plan` or `secguard_index` afterward.
+2. **Scale gate — pick ONE path and stay on it.** Parallelism is NOT free: every
+   subagent re-pays a fresh prompt + skill reloads + report.md re-read, so it is
+   a NET LOSS on small codebases. Decide by `total_candidates` from the scan
+   summary:
+   - **`total_candidates ≤ 200` → SEQUENTIAL (step 3).** Classify everything
+     yourself in one context. This is faster and cheaper — one context amortizes
+     the skill loads and the single report.md read. Do NOT spawn subagents.
+   - **`total_candidates > 200` (or `report.md` > ~40 KB) → PARALLEL (step 4).**
+     Only now does a single context risk exhaustion; dispatch subagents.
+3. **Sequential loop** (the normal path for small scans): for each type with
+   candidates > 0, in report.md order — load that type's skill, classify every
+   candidate (confirmed/suspected/dismissed), write findings in ONE batch: write `<tmpdir>/<type>.json` with the Write tool,
+   then `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
+   Then A5-review suspected findings, move on. Never skip a type. Obey
+   the context budget (≤5 files/type, no full-tree source reads, no skill for a
+   0-candidate type).
+4. **Parallel dispatch** (ONLY when step 2 says so): spawn one subagent PER BATCH
+   of types that have candidates > 0, ALL IN THE SAME TURN so they run
+   concurrently:
+   - Claude Code: the `Task` tool with `subagent_type: "security-auditor"`.
+   - OpenCode: the `task` tool with the `security-auditor` agent (same name).
+   Each subagent prompt must be self-contained (the subagent cannot see this
+   conversation):
+   ```
+   Process type(s) <t1, t2, ...> ONLY. scan_id=<scan_id>, scan_dir=<output_dir>.
+   The scan already ran: your types' candidates are in <scan_dir>/report.md and
+   <scan_dir>/candidates/<type>/ — do NOT re-run secguard_scan or secguard_plan.
+   For each type: load the <type> skill, classify every candidate
+   (confirmed/suspected/dismissed), write findings in ONE batch: write `<tmpdir>/<type>.json` with the Write tool, then
+   `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
+   Then record A5 reviews for each suspected finding via `secguard report --review --id=<id> ...`. Read source only at reported
+   file:line, ≤5 files per type. Report back, per type: confirmed / suspected /
+   dismissed counts + the written finding ids.
+   ```
+   For many types, batch them (give each subagent 3–5 types) instead of one per
+   type. Do NOT read `report.md` or all source files yourself — each subagent
+   reads only its own types' candidates.
+5. **Collect + finalize**: after ALL subagents (or your sequential loop) are
+   done, run `secguard report --audit --scan-id <scan_id> --output-dir <output_dir>`
+   ONCE to regenerate `result.sarif` + `findings/`. Verify `<output_dir>/result.sarif`
+   is non-empty and `findings/` has files; if not, a write did not land — find the
+   `per_finding_warning` and fix it.
+6. **Report**: emit the Markdown report (报告头 / 摘要 / 总览表 / 问题表 /
+   观察项表 / 修复建议 / 逐条详情) per the Output Format, aggregating the
+   subagents' returned counts. Reference `result.sarif` and `findings/` only after
+   step 5 verified them.
 
 ## Filtered Workflow
 

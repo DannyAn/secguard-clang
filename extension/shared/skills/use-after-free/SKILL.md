@@ -16,9 +16,10 @@ A use-after-free candidate has:
 - **call_path**: The function is reachable from an entry point
 
 ### Detection Logic
-1. Find all `free(ptr)` calls in a function — record variable name and line
-2. Find all subsequent uses of `ptr` (pointer dereference `*ptr`, field access `ptr->field`, or passing to function)
-3. If use line > free line, emit USE_AFTER_FREE event
+1. Find all frees in a function — `free(ptr)` (whole variable), `free(p->field)` (field free: dangles only that field), `free(arr[0])` / `free(arr[i])` (subscript free: a constant index keeps slots distinct, a variable index is merged to `arr[]`), and a freeing function-like macro (`#define my_free(p) free(p)`). Record variable (+field) and line.
+2. Find all subsequent uses of `ptr` (pointer dereference `*ptr`, field access `ptr->field`, or passing to function).
+3. If use line > free line and the fields match, emit USE_AFTER_FREE.
+4. A macro that ALSO nulls its argument (`#define SAFE_FREE(p) do { free(p); p = NULL; } while(0)`) is NOT a UAF source — after it the pointer is NULL, so a later use is a null-deref (see null-deref), not a use-after-free.
 
 ### Classification Rules
 

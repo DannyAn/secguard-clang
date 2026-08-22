@@ -56,6 +56,7 @@ The `category` field encodes the confidence tier the pipeline already computed:
 | `count * elem_size` with user-controlled `count`, no check | **confirmed** |
 | Constant expression (no variables) | **false-positive** |
 | `a + b` where `a`, `b` are bounded constants | **false-positive** |
+| A size variable assigned a single small constant (`size_t n = 10; malloc(n * n)`) — the convergence range flow proves it bounded and suppresses it | **false-positive** |
 | Arithmetic on `int` (signed) feeding malloc | **suspected** (sign issues) |
 | `size_add_overflow` / `size_sub_overflow` where the parameter is validated by every caller (e.g. clamped, or provably `< SIZE_MAX - offset`) | **false-positive** |
 | `size_add_overflow` / `size_sub_overflow` where the parameter is raw user input (argv/getenv/recv length) with no clamp | **confirmed** |

@@ -18,7 +18,7 @@ A buffer-overflow candidate has:
 
 Detector categories that route to this type:
 - `buffer_overflow` — unsafe copy API call (memcpy/strcpy/strcat/gets/...)
-- `array_oob_write` — constant index or loop bound past a fixed-size array, as a write
+- `array_oob_write` — constant index, a constant-valued variable index (`int n = 12; buf[n]`), or a loop bound past a fixed-size array, as a write
 - `heap_oob_write` — loop bound provably exceeds a `malloc`/`calloc` size (e.g. `malloc(user_len)` + `i < user_len + 10`)
 - `format_overflow` — `sprintf`/`wsprintf` into a known-capacity buffer with a non-constant source
 - `bounded_copy_overflow` — **confirmed**: `strncpy(dst, src, n)` with a constant `n > sizeof(dst)` (provable overflow)

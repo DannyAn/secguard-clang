@@ -7,20 +7,15 @@
       "temperature": 0.1,
       "steps": 200,
       "permission": {
-        "edit": "deny",
-        "bash": "deny",
+        "edit": "allow",
+        "bash": {
+          "*": "deny",
+          "secguard*": "allow"
+        },
         "read": "allow",
         "grep": "allow",
         "glob": "allow",
-        "skill": "allow",
-        "secguard_scan": "allow",
-        "secguard_index": "allow",
-        "secguard_plan": "allow",
-        "secguard_report": "allow",
-        "secguard_status": "allow",
-        "secguard_db": "allow",
-        "secguard_schema": "allow",
-        "secguard_types": "allow"
+        "skill": "allow"
       }
     }
   },
