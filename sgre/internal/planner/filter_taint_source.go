@@ -48,6 +48,27 @@ var taintBufferFuncs = map[string]bool{
 	"read": true, "recv": true, "recvfrom": true, "recvmsg": true,
 }
 
+// taintCopyFuncs maps a memory/string copy function to the index of its SOURCE
+// argument (the bytes that flow into the destination). The Annex-K `_s` forms
+// insert a `destsz` argument at index 1, so their source sits at index 2. Both
+// plain and `_s` forms are taint channels: `_s` bounds-checks the copy (safe
+// from overflow) but does NOT sanitize the copied bytes, so attacker-controlled
+// content still reaches the destination buffer.
+var taintCopyFuncs = map[string]int{
+	"strcpy": 1, "strncpy": 1, "strcat": 1, "strncat": 1,
+	"memcpy": 1, "memmove": 1,
+	"strcpy_s": 2, "strncpy_s": 2, "strcat_s": 2, "strncat_s": 2,
+	"memcpy_s": 2, "memmove_s": 2,
+}
+
+// libraryReturnsParam are library functions that return a copy of an argument
+// (a taint-preserving passthrough) with no body in the codebase for the AST
+// walk to observe. They seed the returnsParam summary so `x = strdup(s)` taints
+// x iff s is tainted.
+var libraryReturnsParam = map[string][]int{
+	"strdup": {0}, "_strdup": {0}, "strndup": {0}, "_strndup": {0},
+}
+
 func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, []Dismissed, error) {
 	if f.parser == nil {
 		return candidates, nil, nil
@@ -143,15 +164,15 @@ func (f *TaintSourceFilter) sinkVariable(ctx context.Context, c Candidate) strin
 		}
 		p := parseEventProps(event.Properties)
 		if p.Path != "" {
-			return bareIdentVar(p.Path)
+			return taintLocKey(p.Path)
 		}
 		if p.FormatArg != "" {
-			return bareIdentVar(p.FormatArg)
+			return taintLocKey(p.FormatArg)
 		}
 		return ""
 	default:
 		// command_injection stores the bare sink arg in props.variable.
-		return bareIdentVar(c.VariableName)
+		return taintLocKey(c.VariableName)
 	}
 }
 
@@ -372,6 +393,18 @@ func (f *TaintSourceFilter) computeReturnsParam(ctx context.Context) (map[string
 			break
 		}
 	}
+
+	// Library functions that copy an argument (strdup/strndup) have no body, so
+	// the AST walk above cannot mark them; seed them as arg-0 passthroughs.
+	for name, idxs := range libraryReturnsParam {
+		for _, i := range idxs {
+			if result[name] == nil {
+				result[name] = make(map[int]bool)
+			}
+			result[name][i] = true
+		}
+	}
+
 	return result, nil
 }
 
@@ -382,11 +415,13 @@ func (f *TaintSourceFilter) computeReturnsParam(ctx context.Context) (map[string
 // engine treats the passthrough call exactly like a plain assignment.
 func taintCopiesFor(body parser.Node, returnsParam map[string]map[int]bool) map[int][]copyPair {
 	out := passthroughCopiesFor(body, returnsParam)
-	for line, pairs := range formatCopies(body) {
-		if out == nil {
-			out = make(map[int][]copyPair)
+	for _, pairs := range []map[int][]copyPair{formatCopies(body), copyFuncCopies(body)} {
+		for line, cs := range pairs {
+			if out == nil {
+				out = make(map[int][]copyPair)
+			}
+			out[line] = append(out[line], cs...)
 		}
-		out[line] = append(out[line], pairs...)
 	}
 	return out
 }
@@ -419,6 +454,57 @@ func formatCopies(body parser.Node) map[int][]copyPair {
 				out[call.StartLine()] = append(out[call.StartLine()], copyPair{lhs: dstName, rhs: arg.Text()})
 			}
 		}
+	}
+	return out
+}
+
+// copyFuncCopies returns the copy pairs introduced by string/memory copy calls:
+// `strcpy(dst, src)` / `strcat(dst, src)` / `memcpy(dst, src, n)` and their `_s`
+// forms make dst inherit src's taint. `strcpy_s(cmd, sizeof cmd, user)` taints
+// cmd iff user is tainted — the bounds check prevents overflow but the copied
+// bytes are still attacker-controlled. The destination and source are resolved
+// with copySourceKey so a field/subscript location (`s->buf`, `a[i]`) is tracked
+// with the same key the gen/kill/sink steps use.
+func copyFuncCopies(body parser.Node) map[int][]copyPair {
+	out := make(map[int][]copyPair)
+	for _, call := range body.FindAll("call_expression") {
+		srcIdx, ok := taintCopyFuncs[callName(call)]
+		if !ok {
+			continue
+		}
+		args := callArgs(call)
+		if len(args) <= srcIdx {
+			continue
+		}
+		dst := copySourceKey(args[0])
+		src := copySourceKey(args[srcIdx])
+		if dst == "" || src == "" {
+			continue
+		}
+		out[call.StartLine()] = append(out[call.StartLine()], copyPair{lhs: dst, rhs: src})
+	}
+	return out
+}
+
+// copyFuncGen returns the taint gens introduced by copy calls whose SOURCE is a
+// direct taint source: `strcpy(cmd, getenv("CMD"))` taints cmd immediately. The
+// variable-source case is handled by copyFuncCopies (a copy, not a gen).
+func copyFuncGen(body parser.Node) map[int][]string {
+	out := make(map[int][]string)
+	for _, call := range body.FindAll("call_expression") {
+		srcIdx, ok := taintCopyFuncs[callName(call)]
+		if !ok {
+			continue
+		}
+		args := callArgs(call)
+		if len(args) <= srcIdx {
+			continue
+		}
+		dst := copySourceKey(args[0])
+		if dst == "" || !isTaintSourceExpr(args[srcIdx]) {
+			continue
+		}
+		out[call.StartLine()] = append(out[call.StartLine()], dst)
 	}
 	return out
 }
@@ -728,6 +814,11 @@ func taintEffects(body parser.Node) (genByLine, killByLine map[int][]string) {
 		}
 	}
 
+	// Copy calls whose source is a direct taint source (strcpy(cmd, getenv(...))).
+	for line, vars := range copyFuncGen(body) {
+		gen[line] = append(gen[line], vars...)
+	}
+
 	return gen, kill
 }
 
@@ -837,6 +928,101 @@ func bareIdentVar(s string) string {
 		return ""
 	}
 	return s
+}
+
+func isIdentStart(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+func isIdentCont(b byte) bool {
+	return isIdentStart(b) || (b >= '0' && b <= '9')
+}
+
+// taintLocKey returns the location key a sink argument names if the flow engine
+// tracks it — a bare identifier or a field/subscript chain (p->f, s.field,
+// a[i]) — else "". It mirrors copySourceKey's naming so a sink on `s->path`
+// resolves to the same location a `s->path = getenv(...)` gen produced. Complex
+// expressions (calls, arithmetic, deref/address-of) return "" and the candidate
+// is kept conservatively.
+func taintLocKey(s string) string {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return ""
+	}
+	// Strip an outer cast or parenthesisation: "(char *)x" -> "x", "(x)" -> "x".
+	for len(t) >= 2 && t[0] == '(' && t[len(t)-1] == ')' {
+		t = strings.TrimSpace(t[1 : len(t)-1])
+	}
+	if strings.HasPrefix(t, "(") {
+		if idx := strings.Index(t, ")"); idx > 0 {
+			t = strings.TrimSpace(t[idx+1:])
+		}
+	}
+
+	i := 0
+	if !isIdentStart(t[0]) {
+		return ""
+	}
+	for i < len(t) && isIdentCont(t[i]) {
+		i++
+	}
+	for i < len(t) {
+		for i < len(t) && (t[i] == ' ' || t[i] == '\t') {
+			i++
+		}
+		if i >= len(t) {
+			break
+		}
+		switch {
+		case t[i] == '-' && i+1 < len(t) && t[i+1] == '>': // p->f
+			i += 2
+			for i < len(t) && (t[i] == ' ' || t[i] == '\t') {
+				i++
+			}
+			if i >= len(t) || !isIdentStart(t[i]) {
+				return ""
+			}
+			for i < len(t) && isIdentCont(t[i]) {
+				i++
+			}
+		case t[i] == '.': // s.field
+			i++
+			for i < len(t) && (t[i] == ' ' || t[i] == '\t') {
+				i++
+			}
+			if i >= len(t) || !isIdentStart(t[i]) {
+				return ""
+			}
+			for i < len(t) && isIdentCont(t[i]) {
+				i++
+			}
+		case t[i] == '[': // a[i] — skip a balanced bracket pair
+			depth := 0
+			closed := false
+			for i < len(t) {
+				switch t[i] {
+				case '[':
+					depth++
+				case ']':
+					depth--
+					if depth == 0 {
+						i++
+						closed = true
+					}
+				}
+				if closed {
+					break
+				}
+				i++
+			}
+			if !closed {
+				return "" // unbalanced
+			}
+		default:
+			return ""
+		}
+	}
+	return t
 }
 
 // callName extracts the called function name from a call_expression.

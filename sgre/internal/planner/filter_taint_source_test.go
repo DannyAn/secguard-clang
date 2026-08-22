@@ -623,3 +623,174 @@ void main(void) {
 		t.Errorf("expected C to carry a taint_source evidence fragment, got %+v", c.Evidence)
 	}
 }
+
+// TestTaintSourceFilter_CopyFunctions locks in taint propagation through string/
+// memory copy calls: the plain forms (strcpy/strcat/memcpy) and the bounds-
+// checked Annex-K `_s` forms (strcpy_s), plus strdup's return-value passthrough.
+// A copy whose source is a taint source (or a tainted variable) taints the
+// destination; a copy from a literal does not. The `_s` forms are a TAINT channel
+// even though they are overflow-safe: bounds-checking is not sanitization.
+func TestTaintSourceFilter_CopyFunctions(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "copy.c")
+	src := `#include <stdlib.h>
+#include <string.h>
+
+int unsafe_strcpy(void) {
+    char cmd[64];
+    strcpy(cmd, getenv("CMD"));
+    system(cmd);
+    return 0;
+}
+
+int safe_strcpy_s(void) {
+    char cmd[64];
+    strcpy_s(cmd, sizeof(cmd), getenv("CMD"));
+    system(cmd);
+    return 0;
+}
+
+int append_strcat(void) {
+    char cmd[64] = "";
+    strcat(cmd, getenv("CMD"));
+    system(cmd);
+    return 0;
+}
+
+int copy_memcpy(void) {
+    char cmd[64];
+    char *src = getenv("CMD");
+    memcpy(cmd, src, 8);
+    system(cmd);
+    return 0;
+}
+
+int dup_strdup(void) {
+    char *cmd = strdup(getenv("CMD"));
+    system(cmd);
+    return 0;
+}
+
+int clean_strcpy(void) {
+    char cmd[64];
+    strcpy(cmd, "/bin/ls");
+    system(cmd);
+    return 0;
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewInjectionDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "injection")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	byFunc := map[string]EvidenceItem{}
+	for _, c := range result.Candidates {
+		byFunc[c.Target.Function] = c
+	}
+
+	for _, fn := range []string{"unsafe_strcpy", "safe_strcpy_s", "append_strcat", "copy_memcpy", "dup_strdup"} {
+		c, ok := byFunc[fn]
+		if !ok {
+			t.Errorf("expected %s (copy-function taint) to be kept, got %v", fn, candidateNames(result))
+			continue
+		}
+		if !hasTaintEvidence(c) {
+			t.Errorf("expected %s to carry a taint_source evidence fragment, got %+v", fn, c.Evidence)
+		}
+	}
+	if _, ok := byFunc["clean_strcpy"]; ok {
+		t.Errorf("expected clean_strcpy (strcpy of a literal) to be suppressed, got %v", candidateNames(result))
+	}
+}
+
+// TestTaintSourceFilter_FieldSubscriptSink locks in field/subscript sink
+// recognition: a sink on `s->path` or `paths[0]` resolves to the same location a
+// field/subscript assignment tainted, so the candidate is kept (and confirmed)
+// instead of being kept only because the sink variable was unresolvable.
+func TestTaintSourceFilter_FieldSubscriptSink(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "field.c")
+	src := `#include <stdlib.h>
+#include <stdio.h>
+
+struct cfg { char *path; };
+
+int field_sink(struct cfg *s) {
+    s->path = getenv("HOME");
+    FILE *f = fopen(s->path, "r");
+    return f != 0;
+}
+
+int subscript_sink(void) {
+    char *paths[2];
+    paths[0] = getenv("HOME");
+    FILE *f = fopen(paths[0], "r");
+    return f != 0;
+}
+
+int clean_field_sink(struct cfg *s) {
+    s->path = "/tmp/x";
+    FILE *f = fopen(s->path, "r");
+    return f != 0;
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewPathTraversalDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "path-traversal")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	byFunc := map[string]EvidenceItem{}
+	for _, c := range result.Candidates {
+		byFunc[c.Target.Function] = c
+	}
+
+	for _, fn := range []string{"field_sink", "subscript_sink"} {
+		c, ok := byFunc[fn]
+		if !ok {
+			t.Errorf("expected %s (field/subscript sink tainted) to be kept, got %v", fn, candidateNames(result))
+			continue
+		}
+		if !hasTaintEvidence(c) {
+			t.Errorf("expected %s to carry a taint_source evidence fragment, got %+v", fn, c.Evidence)
+		}
+	}
+	if _, ok := byFunc["clean_field_sink"]; ok {
+		t.Errorf("expected clean_field_sink (field assigned a literal) to be suppressed, got %v", candidateNames(result))
+	}
+}
