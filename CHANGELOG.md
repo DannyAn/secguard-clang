@@ -2,6 +2,54 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.4.0] - 2026-08-22
+
+### 语义图能力补齐 + 区间/锁序/共享访问分析 + 分类并行化
+
+#### 语义图与收敛（补齐 7 个图缺口 + 2 个正确性缺陷）
+
+- **RETURN 传播**：新增 `RETURN` 边，跨函数传播返回空指针/释放态。
+- **字段敏感 copy/kill**：`q = p->f` 复制字段级 source；整变量重赋值失效其 `p->*` 事实。
+- **区间传播（range propagation）**：新增 `range_flow.go` 前向整数区间分析，含
+  **widening**（修复循环不收敛导致的死循环），供除零与整数溢出过滤消费。
+- **锁序（lock-order）**：新增 `LOCK_ORDER` 边 + `LockOrderFilter`，检测互斥锁环。
+- **共享访问（shared-access）**：新增 `GLOBAL_ACCESS` 边 + `SharedAccessFilter`，
+  检测线程函数对同一全局变量的竞争写。
+- **对象身份**：别名/所有权转移在 free/use 上的身份区分。
+- **宏层（macro）**：识别释放宏、安全释放宏（置 NULL）、宏空指针源。
+- **正确性修复**：must-lattice 交汇；`p = f()` copy-kill；for-continue 边指向更新；
+  confirmed 降级判定修正。
+
+#### 新过滤器/检测
+
+- `divide-by-zero`（RangeFilter）、`integer-overflow`（IntOverflowGuardFilter）、
+  `deadlock`（LockOrderFilter）、`race-condition`（SharedAccessFilter）。
+
+#### DB / CLI
+
+- `edge_type` 枚举扩展（`RETURN`、`LOCK_ORDER`、`GLOBAL_ACCESS`）。
+- `UpsertFinding` 幂等写入（scan_id+rule_id+file+line+function 去重）。
+- `secguard report --write-json <file|->` 批量写（一次命令写一整类）。
+- 扫描开始时清理 `.sgre/.tmp`（临时 JSON 落项目目录，不进 `/tmp`）。
+
+#### Agent 分类并行化 + 平台落库修复
+
+- **规模闸门**：`total_candidates ≤ 200` 串行分类（单上下文更快更省），`> 200` 才
+  派并行子代理。
+- **瘦身 worker prompt**：子代理只带分类规则 + 置信度分层 + A5 + 写纪律，不再背负
+  完整报告格式与 Full-Scan 流程。
+- **A5 复用上下文**：复核默认用首轮已读源码 + 已落库 reasoning，仅首轮未读时才开
+  文件（计入同一 ≤5 文件预算）。
+- **OpenCode 子代理落库修复**：`security-auditor` 改为 `edit: allow` +
+  `bash(secguard*)`（plugin 工具不授予子代理），`secguard_report` 工具内部改走
+  `--write-json` 单子进程。
+- **Claude Code 子代理工具补齐**：`tools` 增加 `Write` + `Skill`。
+
+#### 文档
+
+- README/README-CN/CLAUDE 同步边类型与 range/macro/lock-order/shared-access 说明；
+  新增 `docs/classification-parallelism.md`。
+
 ## [0.3.6] - 2026-08-21
 
 ### 修复样例项目基准验证暴露的回归 + 补齐缺失工具
