@@ -87,7 +87,7 @@ secguard scan --db /tmp/redis.db <path-to-redis>
 
 - **Stronger than Semgrep**: Semgrep only does textual pattern matching; SecGuard genuinely analyzes execution paths, dataflow, and cross-function propagation.
 - **On par with Infer**: single-function precision analysis is at the same tier.
-- **Approaching CodeQL / Coverity**: a lightweight numeric range analysis (guard-aware bounds propagation) now suppresses null-deref and divide-by-zero false positives; the remaining gap is full abstract-interpretation interval domains, largely compensated by "AI-reasoning fallback" — see [docs/pk/competitive-analysis.md](docs/pk/competitive-analysis.md).
+- **Approaching CodeQL / Coverity**: a lightweight integer-interval analysis (cross-assignment + guard-aware bounds propagation) now suppresses divide-by-zero and integer-overflow false positives and catches constant-valued-variable index out-of-bounds; the remaining gap is full abstract-interpretation interval domains, largely compensated by "AI-reasoning fallback" — see [docs/pk/competitive-analysis.md](docs/pk/competitive-analysis.md).
 
 ---
 
@@ -196,7 +196,7 @@ post-A5 verdicts via `EffectiveStatus()`.
 | Layer | Content | Stability | Tables |
 |----|------|--------|-----|
 | **Layer 1** | program facts | most stable | `files`, `functions`, `variables`, `expressions`, `types`, `locations` |
-| **Layer 2** | semantic graph | stable | `graph_nodes`, `graph_edges` (CALL, DATA_FLOW, OWNERSHIP_TRANSFER, RELEASE, ALIAS, PARAM_BINDING, RETURN) |
+| **Layer 2** | semantic graph | stable | `graph_nodes`, `graph_edges` (CALL, DATA_FLOW, OWNERSHIP_TRANSFER, RELEASE, ALIAS, PARAM_BINDING, RETURN, LOCK_ORDER, GLOBAL_ACCESS) |
 | **Layer 3** | security evidence | medium | `security_events` (NULL_VALUE, DEREFERENCE, BUFFER_ACCESS, ...) |
 | **Layer 4** | findings | most volatile | `findings` (AI first pass writes `status`; A5 second round writes `review_status` / `review_reasoning`) |
 

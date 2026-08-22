@@ -49,15 +49,20 @@ The pipeline is a chain of packages, each writing to the next layer of the DB:
 
 **Graph-based convergence** (the `graph` layer is consumed, not just built): `internal/graph/control_flow.go` builds a statement-level CFG (`BuildStmtCFG`, with `Reaches`/`ReachesAvoiding`/`NodeAt`), and `internal/planner/null_flow.go` exposes a reusable *reaching-sources* dataflow engine (`flowAnalyzer.analyzeFlow`, `flowResult.reaching`/`reachingAtExit`) — a monotone set-of-source-IDs lattice with gen/kill/copy. This engine is the shared best practice that came out of the null-deref spike and is consumed by:
 
-- **null-deref** — `NullableSourceFilter` (`filter_nullable_source.go`) seeds gen from `NULL_VALUE` events, kill from definite non-null reassignments (`v = &x` / `v = ""` / `v = arr`), copy from stored `DATA_FLOW` edges + AST assignments; it drops a dereference only when no null source can reach it. Falls back to the old line-order heuristic when the parser/file is unavailable (mock tests).
-- **use-after-free** — `LifetimeFilter` (`filter_lifetime.go`) uses `BuildStmtCFG.Reaches(freeNode, useNode)` to drop only free→use pairs on mutually-exclusive branches, replacing the old coarse `graph.BuildCFG`/`CanReach`.
+- **null-deref** — `NullableSourceFilter` (`filter_nullable_source.go`) seeds gen from `NULL_VALUE` events, kills on any non-copy reassignment (`v = &x` / `v = ""` / `v = arr` / `v = malloc()` / `v = f()`), copies from stored `DATA_FLOW` edges + AST assignments (field-sensitive: `q = p->f` copies location `p->f`; a whole-var reassign invalidates its `p->*` facts); it drops a dereference only when no null source can reach it. `computeRetNullable` consumes the RETURN edges + `function_summary` to propagate return-nullability across calls (`p = f(); p->x`). A separate must-lattice (`runMustDataflow`, intersection join) powers the `has_definite_null` tier so `p = NULL` is "certain" only when it holds on every path. Falls back to the old line-order heuristic when the parser/file is unavailable (mock tests).
+- **use-after-free** — `LifetimeFilter` (`filter_lifetime.go`) runs the same reaching-sources engine (gen = `free(p)` / field free / freeing macro, kill = reassignment); it promotes to `confirmed` only when the freed state reaches the use on every path (must), otherwise keeps it `suspected`.
+- **double-free / uninit** — `DoubleFreeFilter` / `DefiniteInitFilter` use the same may+must tiers: `confirmed` only when the fact holds on all paths.
+- **range propagation** — `range_flow.go` is a forward integer-interval analysis over the statement CFG (cross-assignment `d = 0; d = 1;`), consumed by `RangeFilter` (divide-by-zero) and `IntOverflowGuardFilter` (integer-overflow); the buffer-overflow detector adds constant-valued-variable index OOB.
+- **lock-order** — `graph/lock_order.go` persists `LOCK_ORDER` edges (mutex A→B); `LockOrderFilter` confirms deadlock candidates by finding the cycle in the persisted graph.
+- **shared-access** — `graph/shared_access.go` persists `GLOBAL_ACCESS` edges (function → global_var, read/write); `SharedAccessFilter` confirms `shared_data_race` candidates whose thread functions write the same global in the graph.
+- **macro layer** — `evidence/macro_summary.go` recognizes function-like freeing macros (`#define my_free(p) free(p)` → a free site; `#define SAFE_FREE(p) ...p=NULL` → a definite null source + a release for memory-leak).
 
 See `examples/nullflow-demo/` for a runnable null-deref sample. `memory-leak`/`resource-leak` still do path analysis in the detector (`memory_leak.go`'s `hasLeakingPath`, old `graph.BuildCFG`); migrating them to the new CFG needs ownership-transfer-aware analysis (return-to-caller / store-to-global), not plain reachability, so it is left as a follow-up.
 
 ### The 4-Layer Data Model (SQLite `sgre.db`)
 
 - **Layer 1 — Program Facts** (most stable): `files`, `functions`, `variables`, `expressions`, `types`, `locations`
-- **Layer 2 — Semantic Graph**: `graph_nodes`, `graph_edges` (`edge_type` enum: `CALL`, `DATA_FLOW`, `OWNERSHIP_TRANSFER`, `RELEASE`, `ALIAS`, `PARAM_BINDING`, `RETURN`)
+- **Layer 2 — Semantic Graph**: `graph_nodes`, `graph_edges` (`edge_type` enum: `CALL`, `DATA_FLOW`, `OWNERSHIP_TRANSFER`, `RELEASE`, `ALIAS`, `PARAM_BINDING`, `RETURN`, `LOCK_ORDER`, `GLOBAL_ACCESS`)
 - **Layer 3 — Security Evidence**: `security_events` (`event_type` enum: `NULL_VALUE`, `DEREFERENCE`, `NULL_GUARD`, `BUFFER_ACCESS`, ...)
 - **Layer 4 — Findings** (most variable): `findings` (written by the AI agent)
 - Support tables: `scan_stats` (pipeline metrics per scan/vuln type), `function_summary` (return-nullability input for the agent)

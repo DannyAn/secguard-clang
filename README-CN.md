@@ -87,7 +87,7 @@ secguard scan --db /tmp/redis.db <path-to-redis>
 
 - **比 Semgrep 强**：Semgrep 只做文本模式匹配，SecGuard 真正分析代码的执行路径、数据流和跨函数传播。
 - **追平 Infer**：单函数内的精确分析能力同层。
-- **逼近 CodeQL / Coverity**：已实现轻量数值范围分析（守卫感知的界传播），抑制 null-deref 和除零误报；剩余差距在完整抽象解释区间域，已用"AI 推理兜底"补上大部分，详见 [docs/pk/competitive-analysis.md](docs/pk/competitive-analysis.md)。
+- **逼近 CodeQL / Coverity**：已实现轻量整数区间分析（跨赋值 + 守卫感知的界传播），抑制除零和整数溢出误报，并检出常量透传变量的数组越界；剩余差距在完整抽象解释区间域，已用"AI 推理兜底"补上大部分，详见 [docs/pk/competitive-analysis.md](docs/pk/competitive-analysis.md)。
 
 ---
 
@@ -190,7 +190,7 @@ A1–A4 解决语义图能证明的（confirmed）和能证伪的（drop）—�
 | 层 | 内容 | 稳定性 | 表 |
 |----|------|--------|-----|
 | **Layer 1** | 程序事实 | 最稳定 | `files`, `functions`, `variables`, `expressions`, `types`, `locations` |
-| **Layer 2** | 语义图 | 稳定 | `graph_nodes`, `graph_edges` (CALL, DATA_FLOW, OWNERSHIP_TRANSFER, RELEASE, ALIAS, PARAM_BINDING, RETURN) |
+| **Layer 2** | 语义图 | 稳定 | `graph_nodes`, `graph_edges` (CALL, DATA_FLOW, OWNERSHIP_TRANSFER, RELEASE, ALIAS, PARAM_BINDING, RETURN, LOCK_ORDER, GLOBAL_ACCESS) |
 | **Layer 3** | 安全证据 | 中等 | `security_events` (NULL_VALUE, DEREFERENCE, BUFFER_ACCESS, ...) |
 | **Layer 4** | 发现 | 最易变 | `findings` (首轮写 `status`；A5 二次审查写 `review_status` / `review_reasoning`) |
 
