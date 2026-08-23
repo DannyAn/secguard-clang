@@ -2,6 +2,30 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.4.3] - 2026-08-23
+
+### result.xlsx Excel 导出（供研发团队集中确认）
+
+findings 落库后，研发团队需要在表格里定位、分析、确认每一条漏洞。本轮为
+`secguard report --audit` 新增 `result.xlsx`：单 sheet（`Findings`）、13 列，每行一条
+可行动 finding（confirmed + suspected，dismissed 排除），让研发不打开源码树也能在
+一张表里完成确认。
+
+- **`report --audit` 自动生成 `result.xlsx`**：从 `findings` 表重生成，与 `result.sarif`
+  同生命周期（分类前不存在，`--audit` 响应新增 `xlsx_path`）。单向导出——不回读，
+  表格里的修改不回写数据库。
+- **13 列自包含**：序号 / 漏洞类型 / CWE / 严重级别 / 结论 / 置信度 / 文件 / 行号 /
+  函数 / 问题摘要 / 详细分析 / 修复建议 / 代码上下文。漏洞类型由
+  `TypeForCWE(rule_id)` 反查，摘要走 `summary → reasoning → evidence → function_name`
+  回退链，修复建议与 `[exception check]` 一并带入。
+- **代码上下文列**：内嵌 ±`--context-lines`（默认 15）源码窗口，命中行标 `>`、等宽
+  字体渲染；`--context-lines 0` 时该列留空（源码不得外流的仓库）。
+- **表格能力**：冻结表头 + `A1:M{n+1}` 自动筛选 + 按列宽优化，按
+  漏洞类型 → 文件 → 行号排序，输出稳定、可集中管理。
+- 新增 `report.WriteXlsxFromFindings`（`sgre/internal/report/xlsx.go`）与 4 个测试，
+  `ResultXlsxFile = "result.xlsx"` 常量，接线 `cli/report.go` audit 块与 `--audit`
+  帮助文本；新增依赖 `github.com/xuri/excelize/v2`（纯 Go、无 cgo）。
+
 ## [0.4.2] - 2026-08-23
 
 ### sgre 引擎 semantic graph 收敛能力提升

@@ -504,6 +504,14 @@ func runReportCmd(ctx context.Context, args []string) int {
 				WriteErrorJSON(fmt.Sprintf("failed to write report.md: %v", err))
 				return 1
 			}
+			// Regenerate result.xlsx from the same persisted findings: a one-way
+			// export for the development team to locate, analyze, and confirm
+			// every actionable finding inside a spreadsheet (dismissed excluded).
+			xlsxPath := filepath.Join(outputDir, report.ResultXlsxFile)
+			if err := report.WriteXlsxFromFindings(xlsxPath, "", scanFindings); err != nil {
+				WriteErrorJSON(fmt.Sprintf("failed to write result.xlsx: %v", err))
+				return 1
+			}
 			// Rebuild findings/ from the DB so the review surface holds exactly
 			// the actionable verdicts: dismissed entries and never-classified
 			// leftovers are swept out instead of being handed to a reviewer.
@@ -517,6 +525,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 				"audit_path":      auditPath,
 				"sarif_path":      sarifPath,
 				"report_path":     reportPath,
+				"xlsx_path":       xlsxPath,
 				"vuln_count":      len(audits),
 				"findings_synced": rec,
 				"status":          "ok",

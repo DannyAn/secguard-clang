@@ -135,7 +135,7 @@ Usage:
 Flags:
   --write-json <file>      Persist findings from a JSON array file
   --scan-id <id>           Scan ID to attach findings to
-  --audit                  Regenerate report.md + result.sarif + findings/ from DB
+  --audit                  Regenerate report.md + result.sarif + result.xlsx + findings/ from DB
   --output-dir <dir>       Output directory for audit artifacts
   --review                 Review a single finding by id
   --id <n>                 Finding id to review
