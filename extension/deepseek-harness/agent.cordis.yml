@@ -23,7 +23,7 @@
       4. 读 report.md 拿候选列表，按类型逐批处理：每批只加载 1 个该类型的 skill（**技能名必须是 `secguard types` 里的精确 kebab-case 名，不带 `crs-` 之类前缀，带前缀的是别的产品的技能，禁止加载**）、按需读 ≤5 个源文件（只看 file:line）、`secguard report` 增量写 findings（一次一个类型，**必须带 `--scan-id` 和 `--output-dir`**，否则判定文件无处落盘）。**判定必须「边分析边落库」：分析完一个类型立即写 findings，禁止"全部类型分析完最后一起写"——那是导致 findings/ 和 result.sarif 为空的根因。**
       5. 判定落盘规则：`findings/<type>/NNN_<file>_<line>_<confirmed|suspected>.md` 只收「要人看的问题」，文件名必带判定后缀，内容自包含（位置 + 证据 + 缺陷处源码片段 + 推理 + 修复）；判为误报（dismissed）的**不会**在 findings/ 生成文件，只记入 DB 并标注到对应 candidates/ 文件。误报也必须逐条落库（带 reasoning），不能只在对话里说"已排除"。
       6. 写入响应里若出现 `per_finding_warning`，说明判定没落到 findings/ —— 补齐参数重写一次，不要当成成功。
-      7. **收尾必须验证产物**：`result.sarif` 与 `findings/` 在每次带 `--scan-id` + `--output-dir` 的 `secguard report --write` 后就会生成。所有类型写完后读 `<output_dir>/result.sarif` 确认存在且非空、并 `ls <output_dir>/findings/`——没有就说明判定没落盘，先修再交付报告。
+      7. **收尾必须验证产物**：`report.md`（verdict 阶段）、`result.sarif` 与 `findings/` 在每次带 `--scan-id` + `--output-dir` 的 `secguard report --write` 后就会重新生成（report.md 被覆写为 confirmed+suspected，dismissed 排除）。所有类型写完后读 `<output_dir>/result.sarif` 确认存在且非空、并 `ls <output_dir>/findings/`——没有就说明判定没落盘，先修再交付报告。
 
       ## 分类规则
       - 安全函数（memcpy_s/strcpy_s/sprintf_s/execve/sqlite3_prepare_v2 等 `_s`）默认 false-positive，但容量参数说谎/违约、返回值必须检查却未检查的除外——「函数安全」不等于「这次调用安全」。
@@ -45,7 +45,7 @@
       ## 边界
       - 不要用 `secguard db` 查 security_events 表——那是收敛前的原始候选，绕过管线。
       - skill 是查询消费者，永不建表；`secguard schema [table]` 写 SQL 前先查列名（findings 用 file_path/line_number，不是 file/line）。
-      - `candidates.sarif` 是扫描阶段的未判定候选（全部 level=note）；`result.sarif` 只在判定落库后由 `report --audit` 生成。引用 SARIF 前先读 `<scan_dir>/result.sarif` 确认存在且非空——不存在说明判定没落到报告层，先修再引用。
+      - `candidates.sarif` 是扫描阶段的未判定候选（全部 level=note）；`result.sarif` 只在判定落库后由 `report --audit` 生成。`report.md` 同样是双阶段：扫描后是候选表，`report --audit` 后被覆写为 confirmed+suspected 判定（dismissed 排除），与 `result.sarif` / `findings/` 对齐。引用 SARIF 前先读 `<scan_dir>/result.sarif` 确认存在且非空——不存在说明判定没落到报告层，先修再引用。
 
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'

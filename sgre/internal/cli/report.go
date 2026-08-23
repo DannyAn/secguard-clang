@@ -468,6 +468,14 @@ func runReportCmd(ctx context.Context, args []string) int {
 				WriteErrorJSON(fmt.Sprintf("failed to write result.sarif: %v", err))
 				return 1
 			}
+			// Regenerate report.md from the AI's persisted findings so the
+			// human-readable report shows confirmed + suspected verdicts, not
+			// the candidate-stage leads that writeReport emitted at scan time.
+			reportPath := filepath.Join(outputDir, report.ReportFile)
+			if err := report.WriteReportFromFindings(reportPath, "", scanFindings); err != nil {
+				WriteErrorJSON(fmt.Sprintf("failed to write report.md: %v", err))
+				return 1
+			}
 			// Rebuild findings/ from the DB so the review surface holds exactly
 			// the actionable verdicts: dismissed entries and never-classified
 			// leftovers are swept out instead of being handed to a reviewer.
@@ -480,6 +488,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 				"scan_id":         scanID,
 				"audit_path":      auditPath,
 				"sarif_path":      sarifPath,
+				"report_path":     reportPath,
 				"vuln_count":      len(audits),
 				"findings_synced": rec,
 				"status":          "ok",

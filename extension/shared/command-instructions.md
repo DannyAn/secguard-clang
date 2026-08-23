@@ -47,7 +47,8 @@ escape for you — escape the quotes yourself), then call `--write-json <path>`.
 
 Write one `--write-json` per type (all of that type's findings in one array),
 then run `secguard report --audit --scan-id <scan_id> --output-dir <scan_dir>`
-ONCE at the very end to regenerate `result.sarif` + `findings/`. On OpenCode the
+ONCE at the very end to regenerate `report.md` (now reflecting confirmed+suspected
+verdicts, not candidates) + `result.sarif` + `findings/`. On OpenCode the
 `secguard_report` tool already does this loop + audit for you (and JSON-encodes
 for you).
 
@@ -187,13 +188,14 @@ already gives you the per-type counts.
    reads only its own types' candidates.
 5. **Collect + finalize**: after ALL subagents (or your sequential loop) are
    done, run `secguard report --audit --scan-id <scan_id> --output-dir <output_dir>`
-   ONCE to regenerate `result.sarif` + `findings/`. Verify `<output_dir>/result.sarif`
-   is non-empty and `findings/` has files; if not, a write did not land — find the
-   `per_finding_warning` and fix it.
+   ONCE to regenerate `report.md` (verdict-stage, confirmed+suspected) + `result.sarif`
+   + `findings/`. Verify `<output_dir>/result.sarif` is non-empty and `findings/`
+   has files; if not, a write did not land — find the `per_finding_warning` and
+   fix it.
 6. **Report**: emit the Markdown report (报告头 / 摘要 / 总览表 / 问题表 /
    观察项表 / 修复建议 / 逐条详情) per the Output Format, aggregating the
-   subagents' returned counts. Reference `result.sarif` and `findings/` only after
-   step 5 verified them.
+   subagents' returned counts. Reference `report.md`, `result.sarif`, and
+   `findings/` only after step 5 verified them.
 
 ## Filtered Workflow
 

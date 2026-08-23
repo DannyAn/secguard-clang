@@ -78,7 +78,7 @@ export default tool({
     output_dir: tool.schema
       .string()
       .optional()
-      .describe("Output directory for audit report. If provided, audit-report.md is generated after writing findings."),
+      .describe("Output directory for audit report. If provided, report.md (regenerated from persisted findings showing confirmed+suspected), audit-report.md, and result.sarif are generated after writing findings."),
   },
   async execute(args, context) {
     let workDir = context.directory || context.worktree || "."
@@ -89,10 +89,11 @@ export default tool({
     const dbPath = path.join(sgreDir, "sgre.db")
     const outputDir = args.output_dir || ""
 
-    // Regenerates audit-report.md + result.sarif and re-syncs findings/ from
-    // the DB. Called after a write batch AND after a review batch: a review
-    // (A5) changes EffectiveStatus, so skipping the audit after reviews leaves
-    // result.sarif one revision behind the database.
+    // Regenerates report.md (verdict-stage, confirmed+suspected) + audit-report.md
+    // + result.sarif and re-syncs findings/ from the DB. Called after a write
+    // batch AND after a review batch: a review (A5) changes EffectiveStatus, so
+    // skipping the audit after reviews leaves result.sarif one revision behind
+    // the database.
     const runAudit = async (scanId: string, outDir: string) => {
       try {
         const auditResult = await Bun.$`${secguardBin} report --db ${dbPath} --audit --scan-id ${scanId} --output-dir ${outDir}`
@@ -221,8 +222,8 @@ export default tool({
           errors.push(`finding ${review.id} — ${msg}`)
         }
       }
-      // A5 reviews change EffectiveStatus, so regenerate result.sarif +
-      // audit-report.md + findings/ once after the batch — otherwise the SARIF
+      // A5 reviews change EffectiveStatus, so regenerate report.md + result.sarif
+      // + audit-report.md + findings/ once after the batch — otherwise the SARIF
       // still shows the pre-review verdicts (e.g. dismissed entries lingering
       // as `warning`).
       let auditPath: string | undefined

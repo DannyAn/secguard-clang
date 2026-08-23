@@ -4,10 +4,131 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/planner"
 )
+
+// WriteReportFromFindings regenerates report.md from the AI's persisted findings,
+// so the human-readable report carries the post-classification verdicts — not the
+// candidate-stage leads that writeReport emits at scan time. Dismissed
+// (false-positive) findings are excluded; the report contains only confirmed +
+// suspected, matching result.sarif and the findings/ directory.
+//
+// This is called from `report --audit` after the AI classification is persisted,
+// overwriting the candidate-stage report.md so a reader never sees stale
+// unclassified leads mixed with the final verdicts.
+func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding) error {
+	type findingGroup struct {
+		vulnType string
+		cwe      string
+		items    []*db.Finding
+	}
+
+	groups := []findingGroup{}
+	groupIdx := map[string]int{}
+
+	confirmed, suspected, dismissed := 0, 0, 0
+	for _, f := range findings {
+		status := f.EffectiveStatus()
+		switch status {
+		case "confirmed":
+			confirmed++
+		case "suspected":
+			suspected++
+		case "dismissed":
+			dismissed++
+			continue
+		default:
+			continue
+		}
+		cwe := strings.ToUpper(strings.TrimSpace(f.RuleID))
+		if cwe == "" {
+			cwe = "CWE-Other"
+		}
+		vulnType := planner.TypeForCWE(cwe)
+		if vulnType == "" {
+			vulnType = f.RuleID
+		}
+		if idx, ok := groupIdx[vulnType]; ok {
+			groups[idx].items = append(groups[idx].items, f)
+		} else {
+			groupIdx[vulnType] = len(groups)
+			groups = append(groups, findingGroup{vulnType: vulnType, cwe: cwe, items: []*db.Finding{f}})
+		}
+	}
+
+	sort.Slice(groups, func(i, j int) bool {
+		return groups[i].vulnType < groups[j].vulnType
+	})
+
+	var b strings.Builder
+
+	b.WriteString("# SecGuard Security Scan Report\n\n")
+	b.WriteString(fmt.Sprintf("**Tool:** secguard-clang v%s\n\n", ToolVersion))
+	b.WriteString("> This report reflects **AI-classified findings** (confirmed + suspected).\n")
+	b.WriteString("> Dismissed false-positives are excluded. Pipeline candidates are in `candidates/`.\n\n")
+
+	b.WriteString("## Summary\n\n")
+	b.WriteString("| Metric | Value |\n")
+	b.WriteString("|--------|-------|\n")
+	b.WriteString(fmt.Sprintf("| Confirmed findings | %d |\n", confirmed))
+	b.WriteString(fmt.Sprintf("| Suspected findings | %d |\n", suspected))
+	b.WriteString(fmt.Sprintf("| Dismissed (false positives) | %d |\n", dismissed))
+	b.WriteString(fmt.Sprintf("| Actionable findings (confirmed + suspected) | %d |\n", confirmed+suspected))
+	b.WriteString(fmt.Sprintf("| Vulnerability types | %d |\n\n", len(groups)))
+
+	b.WriteString("## Findings by Skill\n\n")
+	b.WriteString("| Skill | CWE | Confirmed | Suspected | Total |\n")
+	b.WriteString("|-------|-----|-----------|-----------|-------|\n")
+	for _, g := range groups {
+		c, s := 0, 0
+		for _, f := range g.items {
+			if f.EffectiveStatus() == "confirmed" {
+				c++
+			} else {
+				s++
+			}
+		}
+		b.WriteString(fmt.Sprintf("| %s | %s | %d | %d | %d |\n", g.vulnType, g.cwe, c, s, len(g.items)))
+	}
+	b.WriteString("\n")
+
+	for _, g := range groups {
+		b.WriteString(fmt.Sprintf("## %s (%s)\n\n", g.vulnType, g.cwe))
+		b.WriteString("| # | Status | Severity | Function | File:Line | Summary |\n")
+		b.WriteString("|---|--------|----------|----------|-----------|---------|\n")
+		for i, f := range g.items {
+			fileShort := shortFile(f.FilePath)
+			if rootDir != "" && strings.HasPrefix(fileShort, rootDir) {
+				fileShort = strings.TrimPrefix(fileShort, rootDir)
+				fileShort = strings.TrimPrefix(fileShort, "/")
+			}
+			summary := f.Summary
+			if summary == "" {
+				summary = f.Reasoning
+			}
+			if summary == "" {
+				summary = f.Evidence
+			}
+			summary = strings.ReplaceAll(summary, "\n", " ")
+			b.WriteString(fmt.Sprintf("| %d | %s | %s | %s | %s:%d | %s |\n",
+				i+1, f.EffectiveStatus(), f.Severity, f.FunctionName, fileShort, f.LineNumber, summary))
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString("## Output Files\n\n")
+	b.WriteString(fmt.Sprintf("- SARIF (verdict stage): `%s`\n", SarifFile))
+	b.WriteString(fmt.Sprintf("- Findings to review (AI verdicts): `%s/<vuln-type>/<NNN>_<file>_<line>_<confirmed|suspected>.md`\n", FindingsDir))
+	b.WriteString(fmt.Sprintf("- Candidate evidence (pipeline output, pre-classification): `%s/<vuln-type>/`\n", CandidatesDir))
+	b.WriteString("- Audit report (pipeline statistics): `audit-report.md`\n")
+	b.WriteString("- Database: `.sgre/sgre.db`\n")
+
+	return os.WriteFile(reportPath, []byte(b.String()), 0644)
+}
 
 func (o *ScanOutput) writeReport(packages []*planner.PlanResult, indexSummary IndexSummary) error {
 	var b strings.Builder
@@ -152,7 +273,6 @@ func title(s string) string {
 	}
 	return strings.Join(words, " ")
 }
-
 
 func generateFixSuggestion(vulnType, cwe string, c planner.EvidenceItem) string {
 	varName := c.Target.Variable
