@@ -197,7 +197,7 @@ func init() {
 		EvidenceType:     "BUFFER_OVERFLOW",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "default",
-		Categories:       []string{"buffer_overflow", "array_oob_write", "heap_oob_write", "format_overflow", "bounded_copy_overflow", "bounded_copy_var_size", "secure_copy_overflow", "secure_copy_var_size", "secure_constraint_violation", "secure_scanf_overflow", "secure_scanf_var_size"},
+		Categories:       []string{"buffer_overflow", "array_oob_write", "heap_oob_write", "format_overflow", "format_overflow_var", "bounded_copy_overflow", "bounded_copy_var_size", "secure_copy_overflow", "secure_copy_var_size", "secure_constraint_violation", "secure_scanf_overflow", "secure_scanf_var_size"},
 		// Provable out-of-bounds writes (a constant index past a known array or
 		// allocation size, a constant copy size exceeding a known capacity, or
 		// an Annex K `_s` function given a lying destination-capacity argument)
@@ -216,6 +216,8 @@ func init() {
 			"secure_constraint_violation": "suspected",
 			"secure_scanf_overflow":       "confirmed",
 			"secure_scanf_var_size":       "possible",
+			"format_overflow":             "confirmed",
+			"format_overflow_var":         "suspected",
 		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
@@ -503,7 +505,7 @@ func init() {
 		SeedEventType:    "UNCHECKED_RETURN",
 		EvidenceType:     "UNCHECKED_RETURN",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "default",
+		FilterChain:      "unchecked-return",
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
 				{Type: "unchecked_return", Role: "sink", Detail: fmt.Sprintf("return value of %s is not checked in function %s at line %d", c.APIName, c.FunctionName, c.Line)},
@@ -538,6 +540,15 @@ func init() {
 		EvidenceType:     "SIZEOF_MISUSE",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "default",
+		Categories:       []string{"sizeof_pointer", "sizeof_pointer_ambig"},
+		// `sizeof(p)` on a single-level pointer `T *p` is provably the pointer
+		// width where the object size is intended (CWE-467) — confirmed. A
+		// pointer-to-pointer `T **p` is legitimately sized by `sizeof(p)` when
+		// allocating an array of pointers, so it stays suspected.
+		CategoryConfidence: map[string]string{
+			"sizeof_pointer":       "confirmed",
+			"sizeof_pointer_ambig": "suspected",
+		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
 				{Type: "sizeof_misuse", Role: "sink", Detail: fmt.Sprintf("sizeof applied to pointer variable %s in function %s at line %d", c.VariableName, c.FunctionName, c.Line)},
@@ -553,6 +564,15 @@ func init() {
 		EvidenceType:     "SIGNED_COMPARE",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "default",
+		Categories:       []string{"signed_compare"},
+		// The detector only emits when the compared variable's declared type is
+		// provably unsigned (an `unsigned`/`size_t`/`uint*_t` spelling), and an
+		// unsigned value is never `< 0` — the dead comparison is a confirmed
+		// CWE-681 defect. The suspected default is a backstop, never reached in
+		// practice.
+		CategoryConfidence: map[string]string{
+			"signed_compare": "confirmed",
+		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
 				{Type: "signed_compare", Role: "sink", Detail: fmt.Sprintf("unsigned value compared with zero/negative at line %d in function %s", c.Line, c.FunctionName)},

@@ -72,3 +72,71 @@ func (s *store) ListFindingsByScanID(ctx context.Context, scanID string) ([]*Fin
 	defer rows.Close()
 	return scanFindings(rows)
 }
+
+// ListPerTypeStatus returns the per-vulnerability-type progress for a scan, the
+// authoritative resume state. CandidateCount comes from scan_stats.final_count;
+// WrittenCount is the live COUNT over findings for that type's CWE. cweForType
+// maps a vuln_type name to its CWE rule_id (planner.CWEForType at the cli layer)
+// — it is injected rather than imported so the db package never depends on
+// planner. Types present in planner.AllVulnTypes() but absent from scan_stats
+// (the scan never reached them) are NOT included here; the cli layer appends
+// them as terminal_state="unknown" so the orchestrator sees the full picture.
+func (s *store) ListPerTypeStatus(ctx context.Context, scanID string, cweForType func(string) string) ([]*PerTypeStatus, error) {
+	stats, err := s.ListScanStats(ctx, scanID)
+	if err != nil {
+		return nil, fmt.Errorf("db: list per-type status: %w", err)
+	}
+
+	cweCounts := make(map[string]int)
+	rows, err := s.exec.QueryContext(ctx,
+		`SELECT rule_id, COUNT(*) FROM findings WHERE scan_id = ? GROUP BY rule_id`, scanID)
+	if err != nil {
+		return nil, fmt.Errorf("db: list per-type status: count findings: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cwe string
+		var cnt int
+		if err := rows.Scan(&cwe, &cnt); err != nil {
+			return nil, fmt.Errorf("db: list per-type status: scan: %w", err)
+		}
+		cweCounts[cwe] = cnt
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: list per-type status: rows: %w", err)
+	}
+
+	result := make([]*PerTypeStatus, 0, len(stats))
+	for _, st := range stats {
+		cwe := ""
+		if cweForType != nil {
+			cwe = cweForType(st.VulnType)
+		}
+		written := cweCounts[cwe]
+		result = append(result, &PerTypeStatus{
+			VulnType:       st.VulnType,
+			CWE:            cwe,
+			CandidateCount: st.FinalCount,
+			WrittenCount:   written,
+			TerminalState:  inferTerminalState(st.FinalCount, written),
+		})
+	}
+	return result, nil
+}
+
+// inferTerminalState classifies a type's progress from candidate vs written
+// counts. The orchestrator uses this to decide what to resume: "done" types are
+// skipped, "in-progress"/"pending" are re-dispatched, and a "pending" that is
+// still 0 after a retry is promoted to failed by the orchestrator.
+func inferTerminalState(candidate, written int) string {
+	if candidate == 0 {
+		return "done"
+	}
+	if written >= candidate {
+		return "done"
+	}
+	if written == 0 {
+		return "pending"
+	}
+	return "in-progress"
+}

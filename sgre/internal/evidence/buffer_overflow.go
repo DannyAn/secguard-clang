@@ -992,21 +992,42 @@ func (d *BufferOverflowDetector) detectFormatOverflow(ctx context.Context, f *db
 		if destFeedsInjectionSink(bc, f, dst, call.StartLine()) {
 			continue
 		}
-		if !formatCanOverflow(args, capacity) {
-			continue
-		}
-
-		if emitEvent(ctx, d.store, d.logger, "BUFFER_ACCESS", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
-			"function":   callName,
-			"category":   "format_overflow",
-			"expression": call.Text(),
-		}) {
-			result.EventsCreated++
+		if overflow := classifyFormatOverflow(args, capacity); overflow != formatNoOverflow {
+			category := "format_overflow"
+			if overflow == formatOverflowPossible {
+				// A non-constant format argument can overflow, but is not
+				// provable: `sprintf(buf, "%d", n)` cannot exceed a 64-byte
+				// buffer even though `n` is unknown. Keep it suspected so the
+				// AI reads the actual argument width before confirming.
+				category = "format_overflow_var"
+			}
+			if emitEvent(ctx, d.store, d.logger, "BUFFER_ACCESS", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
+				"function":   callName,
+				"category":   category,
+				"expression": call.Text(),
+			}) {
+				result.EventsCreated++
+			}
 		}
 	}
 }
 
-func formatCanOverflow(args []string, capacity int) bool {
+// formatOverflowKind classifies a formatted write against a fixed capacity:
+// formatNoOverflow — provably fits; formatOverflowDefinite — the literal
+// (constant) output length provably equals or exceeds capacity; and
+// formatOverflowPossible — a non-constant argument makes overflow possible but
+// not certain. The definite tier is what may safely be marked "confirmed"; the
+// possible tier stays "suspected" because `sprintf(buf, "%d", n)` never
+// overflows a 64-byte buffer for any int n.
+type formatOverflowKind int
+
+const (
+	formatNoOverflow formatOverflowKind = iota
+	formatOverflowDefinite
+	formatOverflowPossible
+)
+
+func classifyFormatOverflow(args []string, capacity int) formatOverflowKind {
 	nonConst := false
 	staticLen := 0
 	for i := 2; i < len(args); i++ {
@@ -1017,10 +1038,13 @@ func formatCanOverflow(args []string, capacity int) bool {
 		}
 		staticLen += l
 	}
-	if nonConst {
-		return true
+	if staticLen >= capacity {
+		return formatOverflowDefinite
 	}
-	return staticLen >= capacity
+	if nonConst {
+		return formatOverflowPossible
+	}
+	return formatNoOverflow
 }
 
 func destFeedsInjectionSink(bc *bufCtx, f *db.Function, dst string, afterLine int) bool {

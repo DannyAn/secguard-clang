@@ -17,7 +17,7 @@ import (
 // Version is the release version. It is a var (not const) so `go build
 // -ldflags "-X github.com/DannyAn/secguard-clang/internal/cli.Version=<v>"`
 // can inject the release version at build time; the fallback matches VERSION.
-var Version = "0.4.1"
+var Version = "0.4.2"
 
 func Execute(ctx context.Context, args []string) int {
 	// Sync the db layer's supported-CWE set from the planner registry so the
@@ -45,6 +45,13 @@ func Execute(ctx context.Context, args []string) int {
 
 	if len(args) == 0 {
 		printUsage()
+		return 0
+	}
+
+	// Per-subcommand --help/-h interception. Must run before the switch so
+	// `secguard report --help` prints report usage instead of falling through
+	// into runReportCmd (which treats --help as a no-op flag and executes).
+	if dispatchHelp(args) {
 		return 0
 	}
 

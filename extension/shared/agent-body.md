@@ -37,7 +37,7 @@ For each type you were assigned, in report.md order:
 3. **Write findings in ONE batch** (see Write discipline), passing `scan_id` +
    `scan_dir`/`output_dir`.
 4. **A5-review** each suspected finding (see Second-Round Confirmation).
-5. Report back per type: confirmed / suspected / dismissed counts + written ids.
+5. Emit the Structured Report Protocol block (see "Structured Report Protocol" below).
 
 **Hard rule: a verdict only counts if you persist it.** "Analyze all types first
 and write at the end", or "dismiss a batch in prose", leaves `findings/` and
@@ -91,8 +91,13 @@ evidence. It is a **prior**, distinct from your final classification — use it 
 budget your effort, not to pre-judge the answer:
 
 - **confirmed** — a flow filter or the detector *proved* the pattern on the
-  semantic graph. Spend minimal effort: verify the reported file:line, then
-  confirm or dismiss — do NOT re-derive the dataflow.
+  semantic graph. Do NOT re-derive the dataflow or re-prove the defect by
+  reading the source file. You MAY verify the reported file:line by viewing
+  the cited line and its immediate context (±3 lines) to confirm the
+  statement matches the evidence (e.g. the line is indeed a malloc call).
+  Then confirm (file:line matches) or dismiss (file:line mismatch). This
+  constraint does NOT apply to suspected or possible candidates — those
+  require full source reading and reasoning.
 - **suspected** — a heuristic recognized the pattern but the graph could not
   prove it. This is where your depth budget belongs: read the source and reason.
 - **possible** — the pattern is only theoretical (e.g. unsigned wraparound inside
@@ -165,3 +170,38 @@ A `suspected` finding that survives A5 must be a genuine "needs human judgment"
 case. If it is deterministic — a weak algorithm, a constant SQL string, a guarded
 division, a checked allocation — you missed the evidence; correct it to
 confirmed or dismissed rather than carrying it forward as suspected.
+
+## Structured Report Protocol (format_version: 1)
+
+When you finish (or are interrupted mid-way), your FINAL message SHALL be a
+single fenced JSON block with exactly this shape. The orchestrator parses it by
+`format_version`; an unknown version or a missing block triggers a DB
+second-pass check (the orchestrator queries `findings` for your assigned CWEs).
+
+```json
+{
+  "format_version": 1,
+  "subagent_id": "<your id>",
+  "scan_id": "<scan_id>",
+  "processed_types": [
+    {"type": "null-deref", "cwe": "CWE-476", "written": 1149, "confirmed": 3, "suspected": 0, "dismissed": 1146}
+  ],
+  "failed_types": [
+    {"type": "buffer-overflow", "reason": "api-quota-exhausted"}
+  ]
+}
+```
+
+**Rules:**
+- `processed_types` and `failed_types` SHALL NOT both be empty. If you wrote
+  nothing and failed nothing, you did not run — emit `failed_types` with
+  `reason: "empty-output"` for every assigned type.
+- `reason` enum: `api-quota-exhausted` | `maxturns-exceeded` | `write-busy` |
+  `empty-output` | `unknown`.
+- `written` = total findings persisted (confirmed + suspected + dismissed) for
+  that type; `confirmed`/`suspected`/`dismissed` are the verdict breakdown.
+- If you were interrupted (hit maxTurns), emit what you completed in
+  `processed_types` and the remainder in `failed_types` with
+  `reason: "maxturns-exceeded"`.
+- Keep the block as your LAST message — nothing after it. The orchestrator does
+  not read your transcript; this block is your only channel home.

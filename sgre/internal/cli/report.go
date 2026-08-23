@@ -29,6 +29,24 @@ func parseStringFlag(args []string, flag string) string {
 	return ""
 }
 
+// classifyWriteErr categorizes a finding-write error for the failed_details
+// report: "write-busy" for SQLITE_BUSY/retry-exhaustion (the multi-subagent
+// concurrent write storm), "write-error" for everything else. The class lands
+// in the --write-json JSON output so the orchestrator can mark a type as
+// missing due to contention vs a real data error.
+func classifyWriteErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	if strings.Contains(s, "busy retry exhausted") ||
+		strings.Contains(s, "database is locked") ||
+		strings.Contains(s, "SQLITE_BUSY") {
+		return "write-busy"
+	}
+	return "write-error"
+}
+
 func parseFloatFlag(args []string, flag string) float64 {
 	s := parseStringFlag(args, flag)
 	if s == "" {
@@ -274,6 +292,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 
 		written := make([]map[string]interface{}, 0, len(inputs))
 		var errs []string
+		var failedDetails []map[string]interface{}
 		for i := range inputs {
 			in := &inputs[i]
 			confidence := in.Confidence
@@ -317,7 +336,12 @@ func runReportCmd(ctx context.Context, args []string) int {
 			}
 			id, uerr := store.UpsertFinding(ctx, f)
 			if uerr != nil {
+				errClass := classifyWriteErr(uerr)
 				errs = append(errs, fmt.Sprintf("%s:%d — %v", in.File, in.Line, uerr))
+				failedDetails = append(failedDetails, map[string]interface{}{
+					"file": in.File, "line": in.Line, "error_class": errClass, "message": uerr.Error(),
+				})
+				fmt.Fprintf(os.Stderr, "FATAL: finding write failed: %s:%d — [%s] %v\n", in.File, in.Line, errClass, uerr)
 				continue
 			}
 			written = append(written, map[string]interface{}{
@@ -330,6 +354,10 @@ func runReportCmd(ctx context.Context, args []string) int {
 			"findings_written": len(written),
 			"written":          written,
 			"scan_id":          scanID,
+			"failed_count":     len(failedDetails),
+		}
+		if len(failedDetails) > 0 {
+			out["failed_details"] = failedDetails
 		}
 		if len(errs) > 0 {
 			out["status"] = "partial"

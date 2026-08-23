@@ -579,6 +579,44 @@ func runStatusCmd(ctx context.Context, args []string) int {
 	}
 	defer store.Close()
 
+	if hasFlag(args, "per-type") {
+		scanID := parseStringFlag(args, "scan-id")
+		if scanID == "" {
+			latest, lerr := store.GetLatestScanID(ctx)
+			if lerr != nil {
+				WriteErrorJSON(fmt.Sprintf("failed to get latest scan_id: %v", lerr))
+				return 1
+			}
+			scanID = latest
+		}
+		if scanID == "" {
+			WriteErrorJSON("no scan found; run 'secguard scan <path>' first or pass --scan-id")
+			return 1
+		}
+		statuses, perr := store.ListPerTypeStatus(ctx, scanID, planner.CWEForType)
+		if perr != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to list per-type status: %v", perr))
+			return 1
+		}
+		seen := make(map[string]bool, len(statuses))
+		for _, st := range statuses {
+			seen[st.VulnType] = true
+		}
+		for _, vt := range planner.AllVulnTypes() {
+			if !seen[vt] {
+				statuses = append(statuses, &db.PerTypeStatus{
+					VulnType:       vt,
+					CWE:            planner.CWEForType(vt),
+					CandidateCount: 0,
+					WrittenCount:   0,
+					TerminalState:  "unknown",
+				})
+			}
+		}
+		WriteJSON(statuses)
+		return 0
+	}
+
 	files, err := store.ListFiles(ctx)
 	if err != nil {
 		WriteErrorJSON(fmt.Sprintf("failed to list files: %v", err))

@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"path/filepath"
 	"testing"
@@ -98,15 +99,76 @@ func TestPathTraversal_SinkList(t *testing.T) {
 func TestNewDetector_SizeofMisuse(t *testing.T) {
 	store := runOneDetector(t, "tc62_sizeof_misuse.c",
 		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewSizeofMisuseDetector(s, p, l) })
-	if got := eventCount(t, store, "SIZEOF_MISUSE"); got != 2 {
-		t.Errorf("expected 2 SIZEOF_MISUSE events, got %d", got)
+	if got := eventCount(t, store, "SIZEOF_MISUSE"); got != 4 {
+		t.Errorf("expected 4 SIZEOF_MISUSE events (char **p, char *q, char *buf, cstr_t *s), got %d", got)
+	}
+	// The single-pointer `sizeof(q)` and `sizeof(buf)` are the provable CWE-467
+	// defect; the pointer-to-pointer `sizeof(p)` and the pointer-typedef
+	// `cstr_t *s` are only suspected.
+	assertEventCategory(t, store, "SIZEOF_MISUSE", "sizeof_pointer", "tc62_sizeof_misuse")
+	events, err := store.ListEventsByType(context.Background(), "SIZEOF_MISUSE")
+	if err != nil {
+		t.Fatalf("list SIZEOF_MISUSE events: %v", err)
+	}
+	confirmed := 0
+	for _, e := range events {
+		var props struct {
+			Category string `json:"category"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Category == "sizeof_pointer" {
+			confirmed++
+		}
+	}
+	if confirmed != 2 {
+		t.Errorf("expected 2 confirmed sizeof_pointer events (char *q, char *buf), got %d", confirmed)
 	}
 }
 
 func TestNewDetector_SignedCompare(t *testing.T) {
 	store := runOneDetector(t, "tc63_signed_compare.c",
 		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewSignedCompareDetector(s, p, l) })
-	if got := eventCount(t, store, "SIGNED_COMPARE"); got != 3 {
-		t.Errorf("expected 3 SIGNED_COMPARE events, got %d", got)
+	if got := eventCount(t, store, "SIGNED_COMPARE"); got != 5 {
+		t.Errorf("expected 5 SIGNED_COMPARE events (size_t param, uint32_t param, size_t local, unsigned int init, my_uint typedef), got %d", got)
+	}
+}
+
+func TestNewDetector_SignedCompare_CrossFileTypedef(t *testing.T) {
+	// my_uint is declared in types.h, not main.c — the detector must resolve it
+	// across files to flag the always-false comparison.
+	store := runOneDetector(t, "tc73_cross_file_typedef",
+		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewSignedCompareDetector(s, p, l) })
+	if got := eventCount(t, store, "SIGNED_COMPARE"); got != 1 {
+		t.Errorf("expected 1 SIGNED_COMPARE event (header my_uint param), got %d", got)
+	}
+}
+
+func TestNewDetector_SizeofMisuse_CrossFileTypedef(t *testing.T) {
+	// cstr_t resolves to `char *` via types.h, so `cstr_t *s` is char** and
+	// sizeof(s) is only suspected; my_uint *p is a plain pointer, hence confirmed.
+	store := runOneDetector(t, "tc73_cross_file_typedef",
+		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewSizeofMisuseDetector(s, p, l) })
+	if got := eventCount(t, store, "SIZEOF_MISUSE"); got != 2 {
+		t.Errorf("expected 2 SIZEOF_MISUSE events (cstr_t *s ambig, my_uint *p confirmed), got %d", got)
+	}
+	events, err := store.ListEventsByType(context.Background(), "SIZEOF_MISUSE")
+	if err != nil {
+		t.Fatalf("list SIZEOF_MISUSE events: %v", err)
+	}
+	confirmed, ambig := 0, 0
+	for _, e := range events {
+		var props struct {
+			Category string `json:"category"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		switch props.Category {
+		case "sizeof_pointer":
+			confirmed++
+		case "sizeof_pointer_ambig":
+			ambig++
+		}
+	}
+	if confirmed != 1 || ambig != 1 {
+		t.Errorf("expected 1 confirmed + 1 ambig sizeof events, got %d confirmed + %d ambig", confirmed, ambig)
 	}
 }

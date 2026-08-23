@@ -320,5 +320,8 @@ func (s *mockStore) CountFindingsByScanAndStatus(ctx context.Context, scanID, st
 func (s *mockStore) ListFindingsByScanID(ctx context.Context, scanID string) ([]*db.Finding, error) {
 	return nil, nil
 }
+func (s *mockStore) ListPerTypeStatus(ctx context.Context, scanID string, cweForType func(string) string) ([]*db.PerTypeStatus, error) {
+	return nil, nil
+}
 
 var _ = fmt.Sprintf

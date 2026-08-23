@@ -2,6 +2,118 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.4.2] - 2026-08-23
+
+### sgre 引擎 semantic graph 收敛能力提升
+
+基于 c-vuln-benchmark 样例项目扫描分析：98 个候选中 57 个为 suspected（58%），
+全部需 AI 读源推理，导致 9 分钟扫描耗时。本次通过增强 filter 链确定性收敛能力，
+预计减少 ~14 个 suspected 候选进入 AI 分类阶段。
+
+#### 代码层
+
+- **unchecked-return ReturnCheckFilter (REQ-1)**：新增 `filter_return_check.go`，
+  使用 parser AST 分析调用点上下文。裸调用（`malloc(size);`）与赋值/声明后无
+  后续空值/错误码检查的调用升级为 confirmed。过滤器**只升级、不 dismiss**——
+  “返回值已在后续 if 中检查”这类候选由检测器在事件层直接抑制，避免过滤器
+  误把“后续 if 只是解引用使用”（`p = malloc(); if (p->len > 0)`）当成检查而
+  漏报真缺陷。同时收紧检测器 `checkedVars`：`if (p->len > 0)` 测试的是 `p->len`
+  而非 `p`，不再把 `p` 记为已检查；`if (!e->buffer)` 只把 `e->buffer` 记为已
+  检查、外层 `e` 保持未检查（修复 `field_expression` 在 `unary_expression` 中
+  的误判）。unchecked-return 从 default 链移至专用链
+  （call_reach → safe_function → return_check）。
+- **sizeof-misuse 指针层级 + typedef 解析 (REQ-2)**：新增 `evidence/typedefs.go`
+  的 typedef 解析表——tree-sitter 给的是语法树不是语义类型解析，但
+  `typedef` 声明（`type_definition` 节点）本身就在树里，检测器据此**传递地**
+  解析“是否是指针类型”。解析表是**跨文件**的：`buildGlobalTypedefs` 遍历
+  `store.ListFiles` 把每个被索引文件（含 `.h` 头文件，多数 typedef 都定义在
+  头文件里）的 typedef 汇总到一张表，检测器在每个文件内 clone 后叠加本文件的
+  typedef（本文件 typedef 遮蔽头文件），故 `types.h` 里 `typedef char *cstr_t`
+  在 `main.c` 中也能被解析。单级指针 `T *p`（且 T 解析后不是指针）的
+  `sizeof(p)` 恒为指针宽度、是确证 CWE-467（category `sizeof_pointer`，
+  confirmed）；指向指针的 `T **p` 或 `T *p` 且 T 是指针 typedef（`typedef char
+  *cstr_t; cstr_t *s`）分配指针数组时 `sizeof(p)` 是正确尺寸、仅 suspected
+  （category `sizeof_pointer_ambig`）。
+- **signed-compare typedef 解析 (REQ-3)**：`unsignedVars` 改为按 declarator 取
+  声明名（`unsigned int x = n;` 取 `x` 而非初始化表达式里的 `n`，多声明符
+  `unsigned a, b;` 取 `a` 与 `b`），并把类型判断从“整条声明文本子串”改为
+  “类型说明符 + typedef 解析”（`typedef unsigned int my_uint; my_uint m;
+  if (m < 0)` 可识别），typedef 解析同样走 `buildGlobalTypedefs` 跨文件表，
+  头文件里的 `my_uint` 也能识别。检测器仅在声明类型可证明为 unsigned 时才
+  emit，故 category `signed_compare` 设为 confirmed，DefaultSuspicion 保留
+  suspected 兜底。
+- **buffer-overflow format_overflow 分层 (REQ-4)**：把原来的单一
+  `format_overflow` 拆为两档——`format_overflow`（常量输出长度已证明
+  ≥ capacity，confirmed）与 `format_overflow_var`（含非常量参数、只可能溢出，
+  suspected）。原 `formatCanOverflow` 对“任何非常量参数”都返回 true，会把
+  `sprintf(buf, "%d", n)` 误判为确定性溢出；分层后 AI 只对确证分支走轻量验证。
+
+#### 测试
+
+- 新增 `filter_return_check_test.go`：覆盖裸调用、赋值已检查、赋值未检查、
+  声明已检查、外层未检查/内层 struct member 已检查，以及“后续 if 只是解引用
+  使用而非空值检查”的回归用例（`if (e->size > 0)` 应保留为 confirmed 而非
+  误判 checked）。
+- 新增 registry 配置测试：验证 sizeof-misuse（`sizeof_pointer` confirmed /
+  `sizeof_pointer_ambig` suspected）、signed-compare（`signed_compare` confirmed）
+  的 CategoryConfidence、unchecked-return FilterChain、buffer-overflow
+  format_overflow / format_overflow_var 两档 CategoryConfidence。
+- 新增跨文件 typedef 测试夹具 `testdata/tc73_cross_file_typedef/`（`types.h`
+  定义 `my_uint`/`cstr_t`，`main.c` 使用）与
+  `TestNewDetector_SignedCompare_CrossFileTypedef` /
+  `TestNewDetector_SizeofMisuse_CrossFileTypedef`：验证头文件 typedef 能跨文件
+  解析（`my_uint` 触发 signed-compare、`cstr_t *s` 判 suspected 而非
+  over-confident confirmed）。
+- 新增 `TestPlan_UncheckedReturn_UsesReturnCheckFilter` 集成测试。
+
+#### 指令层
+
+- **Confirmed 零读源契约强化 (REQ-1)**：`extension/shared/agent-body.md`
+  Pipeline Confidence Tiers 的 confirmed 条目从模糊 "Spend minimal effort"
+  精确化为分层硬约束——禁止重推导性读源（`Do NOT re-derive the dataflow or
+  re-prove the defect by reading the source file`）、允许验证性查看（`You MAY
+  verify the reported file:line by viewing the cited line and its immediate
+  context (±3 lines)`）、明确判定条件（confirm/dismiss）、声明不影响
+  suspected/possible 候选。配合 sgre-graph-convergence 将 ~9 个 unchecked-return
+  及 sizeof-misuse/signed-compare 升级为 confirmed，确保这些候选处理耗时趋近于
+  轻量验证开销。
+- **Confirmed 处理流程模板 (REQ-2)**：`extension/shared/command-instructions.md`
+  新增 confirmed 专用处理流程——Sequential loop 和 Parallel dispatch 按
+  suspicion_level 分流（confirmed 走轻量验证路径、suspected/possible 走完整
+  推理路径）、批量 confirm 优化、F6 异常读源审计（三分判定：验证性查看 /
+  异常读源违规 / 边界待人工复审）。
+
+### 扫描可靠性增强（基于真实扫描会话日志分析）
+
+#### 代码层
+
+- **CLI 子命令 `--help`/`-h` 拦截 (F6)**：`secguard report --help` 等此前
+  fallthrough 执行子命令默认逻辑。新增 `usage.go` 为全部 9 个子命令提供独立
+  帮助文本，`root.go` 在 dispatch 前拦截 `--help`/`-h`，顶层 `--help` 行为不变。
+- **SQLite 并发写端争缓解 (F7)**：`busy_timeout` 从 5000ms 调大至 10000ms；
+  `UpsertFinding`/`InsertFinding` 接入 `withBusyRetryID` 指数退避重试（50→100→200ms，
+  最多 3 次重试），复用此前未调用的 `isLockedErr()`；`--write-json` 输出新增
+  `failed_count`/`failed_details`（含错误分类 `write-busy`/`write-error`）并写
+  stderr 审计日志，杜绝静默丢失。
+- **断点续扫 per-type 状态查询 (F8)**：新增 `secguard status --per-type
+  [--scan-id <id>]`，返回每类型 `candidate_count`/`written_count`/`terminal_state`
+  （done/in-progress/pending/unknown），以 DB 实际写入为权威。零 schema 变更
+  （复用 `scan_stats` + `findings` 聚合）。
+
+#### 指令层
+
+- **批次容量硬上限 (F2)**：`command-instructions.md` 新增 Batch Capacity Configuration
+  配置块（`MAX_TYPES_PER_BATCH=4`、`MAXTURNS=30`、`TURNS_PER_TYPE_ESTIMATE=6`），
+  派发前强制校验 `批次类型数×6 < 27`，单类型候选 >500 独占子代理。
+- **调度时序合规 (F3)**：要求全部子代理在同一 turn 内连续派发（间隔 ≤10s），
+  Monitor 等待期间禁止并行 Bash。
+- **长扫描超时策略 (F4)**：>100 文件或预估 >120s 时直接用 Monitor/timeout≥600s，
+  禁止 `sleep N; tail`。
+- **子代理结构化上报协议 v1 (F5)**：`agent-body.md` 定义 JSON 上报块
+  （`format_version`/`processed_types`/`failed_types`），空结果走 DB 二次校验。
+- **子代理失败检测与降级 (F1)**：终态三态判定（success/failed/empty）、重试上限 2、
+  API 402 标记 missing-type 不重试、Finalize 前置终态确认、报告新增缺失类型章节。
+
 ## [0.4.1] - 2026-08-23
 
 ### Bug 修复

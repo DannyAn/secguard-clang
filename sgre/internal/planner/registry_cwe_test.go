@@ -183,3 +183,58 @@ func TestNullDeref_EvidenceRoles(t *testing.T) {
 	}
 	t.Errorf("null-deref definite-null evidence should carry a condition role, got %+v", def)
 }
+
+func TestRegistry_SizeofMisuseCategoryConfidence(t *testing.T) {
+	spec, err := GetVulnTypeSpec("sizeof-misuse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.DefaultSuspicion != "suspected" {
+		t.Errorf("sizeof-misuse DefaultSuspicion = %q, want suspected (backstop for unknown categories)", spec.DefaultSuspicion)
+	}
+	cases := map[string]string{
+		"sizeof_pointer":       "confirmed", // single `*`: sizeof(p) is provably the pointer width, CWE-467
+		"sizeof_pointer_ambig": "suspected", // `**`: sizeof(p) may legitimately size an array of pointers
+	}
+	for category, want := range cases {
+		if got := spec.CategoryConfidence[category]; got != want {
+			t.Errorf("sizeof-misuse category %q confidence = %q, want %q", category, got, want)
+		}
+	}
+}
+
+func TestRegistry_SignedCompareCategoryConfidence(t *testing.T) {
+	spec, err := GetVulnTypeSpec("signed-compare")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.DefaultSuspicion != "suspected" {
+		t.Errorf("signed-compare DefaultSuspicion = %q, want suspected (backstop)", spec.DefaultSuspicion)
+	}
+	if got := spec.CategoryConfidence["signed_compare"]; got != "confirmed" {
+		t.Errorf("signed-compare CategoryConfidence[signed_compare] = %q, want confirmed (declared unsigned type is provable)", got)
+	}
+}
+
+func TestRegistry_UncheckedReturnChain(t *testing.T) {
+	spec, err := GetVulnTypeSpec("unchecked-return")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.FilterChain != "unchecked-return" {
+		t.Errorf("unchecked-return FilterChain = %q, want unchecked-return (uses ReturnCheckFilter for deterministic convergence)", spec.FilterChain)
+	}
+}
+
+func TestRegistry_BufferOverflowFormatOverflowConfidence(t *testing.T) {
+	spec, err := GetVulnTypeSpec("buffer-overflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := spec.CategoryConfidence["format_overflow"]; got != "confirmed" {
+		t.Errorf("buffer-overflow CategoryConfidence[format_overflow] = %q, want confirmed (constant output length provably >= capacity)", got)
+	}
+	if got := spec.CategoryConfidence["format_overflow_var"]; got != "suspected" {
+		t.Errorf("buffer-overflow CategoryConfidence[format_overflow_var] = %q, want suspected (non-constant argument only possible, not provable)", got)
+	}
+}

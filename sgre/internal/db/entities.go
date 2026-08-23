@@ -159,6 +159,21 @@ type ScanStat struct {
 	CreatedAt   int64  `json:"created_at"`
 }
 
+// PerTypeStatus is the per-vulnerability-type progress record for the
+// `secguard status --per-type` resume-scan view. CandidateCount comes from
+// scan_stats.final_count (the convergence pipeline's candidate output);
+// WrittenCount is the live COUNT over findings for that (scan_id, rule_id);
+// TerminalState is derived: done / in-progress / pending / unknown. It is the
+// authoritative resume state — the orchestrator queries it to decide which
+// types still need classification after an interrupted scan.
+type PerTypeStatus struct {
+	VulnType       string `json:"vuln_type"`
+	CWE            string `json:"cwe"`
+	CandidateCount int    `json:"candidate_count"`
+	WrittenCount   int    `json:"written_count"`
+	TerminalState  string `json:"terminal_state"`
+}
+
 type FunctionSummary struct {
 	FunctionID        int64
 	ReturnNullable    bool

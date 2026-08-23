@@ -36,18 +36,26 @@ func (d *SizeofMisuseDetector) Capabilities() []string {
 func (d *SizeofMisuseDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
+	// Cross-file typedef table: headers carry most typedefs, so build one shared
+	// table from every indexed file, then overlay the current file's own typedefs
+	// per function below (a translation unit's local typedef shadows a header's).
+	global := buildGlobalTypedefs(ctx, d.store, d.parser)
+
 	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		sizeExprs := root.FindAll("sizeof_expression")
 		ptrDecls := root.FindAll("pointer_declarator")
+		typedefs := global.clone()
+		typedefs.addRoot(root)
 
 		for _, f := range funcs {
-			ptrVars := d.pointerVars(ptrDecls, f)
+			decls := d.pointerDecls(ptrDecls, f)
 			for _, se := range sizeExprs {
 				if !funcLineRange(f, se.StartLine()) {
 					continue
 				}
 				operand := sizeofOperandName(se)
-				if operand == "" || !ptrVars[operand] {
+				decl, ok := decls[operand]
+				if operand == "" || !ok {
 					continue
 				}
 				if !d.inSizeContext(se) {
@@ -61,10 +69,21 @@ func (d *SizeofMisuseDetector) Detect(ctx context.Context) (DetectResult, error)
 					continue
 				}
 
+				// `sizeof(p)` on a single-level pointer `T *p` where T is not a
+				// pointer makes sizeof(p) the pointer width while the call intends
+				// sizeof(*p) — the classic CWE-467 defect (proved, confirmed). A
+				// pointer-to-pointer (`T **p`) — or a `T *p` whose T is a pointer
+				// typedef (possibly from a header) — is legitimately sized by
+				// sizeof(p) when allocating an array of pointers, so it can only
+				// be suspected.
+				category := "sizeof_pointer_ambig"
+				if decl.level == 1 && !typedefs.resolvesToPointer(decl.base) {
+					category = "sizeof_pointer"
+				}
 				if emitEvent(ctx, d.store, d.logger, "SIZEOF_MISUSE", f.ID, &db.Location{FileID: file.ID, Line: se.StartLine(), Column: se.StartColumn()}, map[string]string{
 					"expression": se.Text(),
 					"variable":   operand,
-					"category":   "sizeof_pointer",
+					"category":   category,
 				}) {
 					result.EventsCreated++
 				}
@@ -74,19 +93,60 @@ func (d *SizeofMisuseDetector) Detect(ctx context.Context) (DetectResult, error)
 	return result, err
 }
 
-// pointerVars returns the set of names declared with a pointer declarator
-// (`T *p`) inside f's line range.
-func (d *SizeofMisuseDetector) pointerVars(ptrDecls []parser.Node, f *db.Function) map[string]bool {
-	set := make(map[string]bool)
+type pointerDecl struct {
+	level int    // number of `*` levels (`T *p` → 1, `T **p` → 2)
+	base  string // base type spelling before the pointers (`char`, `Foo`, `struct node`)
+}
+
+// pointerDecls returns, for each variable declared with a pointer declarator
+// inside f's line range, its pointer level and base type. The level plus the
+// base type distinguishes the confirmed single-pointer sizeof defect from the
+// legitimate pointer-array `sizeof(p)` case.
+func (d *SizeofMisuseDetector) pointerDecls(ptrDecls []parser.Node, f *db.Function) map[string]pointerDecl {
+	decls := make(map[string]pointerDecl)
 	for _, pd := range ptrDecls {
 		if !funcLineRange(f, pd.StartLine()) {
 			continue
 		}
-		if name := extractVarName(pd); name != "" {
-			set[name] = true
+		name := extractVarName(pd)
+		if name == "" {
+			continue
+		}
+		// Count the consecutive pointer_declarator nodes from this declarator up
+		// to the enclosing declaration/parameter. `char *p` has one; `char **p`
+		// nests a pointer_declarator inside another, giving two.
+		level := 1
+		cur := pd
+		for p := cur.Parent(); p != nil; p = p.Parent() {
+			if p.Kind() != "pointer_declarator" {
+				break
+			}
+			level++
+			cur = *p
+		}
+		decls[name] = pointerDecl{level: level, base: baseTypeOfPointer(cur)}
+	}
+	return decls
+}
+
+// baseTypeOfPointer returns the type specifier spelling that precedes a pointer
+// declarator (the `char` in `char *p`, or the typedef name in `Foo *p`), walking
+// from the outermost pointer_declarator up to its enclosing declaration.
+func baseTypeOfPointer(pd parser.Node) string {
+	for p := pd.Parent(); p != nil; p = p.Parent() {
+		switch p.Kind() {
+		case "declaration", "parameter_declaration":
+			for _, child := range p.NamedChildren() {
+				switch child.Kind() {
+				case "primitive_type", "type_identifier", "sized_type_specifier",
+					"struct_specifier", "union_specifier", "enum_specifier":
+					return strings.TrimSpace(child.Text())
+				}
+			}
+			return ""
 		}
 	}
-	return set
+	return ""
 }
 
 // sizeofOperandName returns the operand of a `sizeof` expression when it is a

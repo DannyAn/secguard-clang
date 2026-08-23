@@ -286,3 +286,24 @@ func TestPlan_CategorySplit_BufferAccess(t *testing.T) {
 			writeResult.Summary.SeedCount, writeResult.CandidateCount())
 	}
 }
+
+func TestPlan_UncheckedReturn_UsesReturnCheckFilter(t *testing.T) {
+	store := newMockStore()
+	pl := NewPlanner(store, nil, nil)
+	filters := pl.getFilters("unchecked-return")
+
+	found := false
+	for _, f := range filters {
+		if f.Name() == "return_check" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		names := make([]string, len(filters))
+		for i, f := range filters {
+			names[i] = f.Name()
+		}
+		t.Errorf("getFilters(unchecked-return) should include return_check filter, got %v", names)
+	}
+}

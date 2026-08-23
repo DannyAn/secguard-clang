@@ -122,6 +122,24 @@ reading source, take the absolute path from the candidate file's Location block
 (or the `files_with_candidates` list in the scan summary) and use it directly.
 Do not reconstruct paths by trial and error.
 
+## Batch Capacity Configuration
+
+> Hard limits governing parallel subagent dispatch. These are NOT advisory —
+> the orchestrator must validate every batch against them BEFORE dispatching.
+
+| Parameter | Value | Meaning |
+|---|---|---|
+| `MAX_TYPES_PER_BATCH` | 4 | Hard ceiling on types assigned to one subagent |
+| `MAXTURNS` | 30 | security-auditor.md maxTurns (must match) |
+| `MAXTURNS_SAFETY_RATIO` | 0.9 | Use only 90% of maxTurns as the budget |
+| `TURNS_PER_TYPE_ESTIMATE` | 6 | Avg turns per type (skill load + classify + write + A5) |
+| `LARGE_CANDIDATE_THRESHOLD` | 500 | Types with > this many candidates get a dedicated subagent |
+
+**Pre-dispatch validation (EARS):**
+- If a batch has > `MAX_TYPES_PER_BATCH` (4) types, the orchestrator SHALL split it before dispatching.
+- Where a single type has > `LARGE_CANDIDATE_THRESHOLD` (500) candidates, the orchestrator SHALL assign that type its own dedicated subagent.
+- If `batch_type_count × TURNS_PER_TYPE_ESTIMATE` ≥ `MAXTURNS × MAXTURNS_SAFETY_RATIO` (i.e. ≥ 27), the orchestrator SHALL reject the batch as over-budget and split it.
+
 ## Full Scan Workflow
 
 Target path: <parsed path>
@@ -143,6 +161,8 @@ not already read). Do NOT load a skill for a type that has 0 candidates.
 `report.md` is your primary candidate input (one compact read); the scan summary
 already gives you the per-type counts.
 
+**长扫描超时策略 (F4):** Before calling `secguard_scan`, estimate scan duration. If the project has > 100 C files OR the scan is expected to exceed 120s (the default Bash timeout), the orchestrator SHALL either (a) invoke the scan with an explicit timeout ≥ 600s, or (b) use the host's background-task + Monitor mechanism from the start. When a scan is moved to the background, the orchestrator SHALL switch to Monitor within 1 turn — it SHALL NOT use `sleep N; tail` (blocked by Bash safety policy) and SHALL NOT leave a backgrounded scan unmonitored. While the Monitor is pending, the orchestrator SHALL NOT issue parallel Bash commands (the host may buffer their results until the Monitor completes, wasting the parallel window); any preparation (type list, agent-definition read) MUST complete before the Monitor starts.
+
 1. **Scan**: call the `secguard_scan` tool with the target path. It returns a
    summary (`scan_id`, `output_dir`, `candidates_by_type`, `total_candidates`).
    Record `scan_id` and `output_dir` — you will need both in every write. If the
@@ -159,13 +179,22 @@ already gives you the per-type counts.
    - **`total_candidates > 200` (or `report.md` > ~40 KB) → PARALLEL (step 4).**
      Only now does a single context risk exhaustion; dispatch subagents.
 3. **Sequential loop** (the normal path for small scans): for each type with
-   candidates > 0, in report.md order — load that type's skill, classify every
-   candidate (confirmed/suspected/dismissed), write findings in ONE batch: write `<tmpdir>/<type>.json` with the Write tool,
+   candidates > 0, in report.md order — load that type's skill, then classify
+   candidates by suspicion_level:
+   - **confirmed** → lightweight verify: read candidate evidence, verify file:line
+     by viewing the cited line ±3 lines (do NOT re-derive the dataflow or read
+     the whole function), then confirm (match) or dismiss (mismatch). Batch all
+     confirmed verdicts into one write call.
+   - **suspected/possible** → full reasoning: read candidate evidence, read source
+     at reported file:line, reason and classify (confirmed/suspected/dismissed).
+   Write findings in ONE batch: write `<tmpdir>/<type>.json` with the Write tool,
    then `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
    Then A5-review suspected findings, move on. Never skip a type. Obey
    the context budget (≤5 files/type, no full-tree source reads, no skill for a
    0-candidate type).
-4. **Parallel dispatch** (ONLY when step 2 says so): spawn one subagent PER BATCH
+**调度时序合规规则 (F3):** All subagent dispatches SHALL occur in a single assistant turn — N `Task`/`task` calls issued consecutively with the first-to-last timestamp span ≤ 10s. The orchestrator SHALL NOT split dispatches across turns. After dispatch, while subagents run, the orchestrator SHALL NOT poll their transcripts or issue `sleep`; it SHALL wait for task-notification events.
+
+4. **Parallel dispatch** (ONLY when step 2 says so): validate every batch against the Batch Capacity Configuration above, then spawn one subagent PER BATCH
    of types that have candidates > 0, ALL IN THE SAME TURN so they run
    concurrently:
    - Claude Code: the `Task` tool with `subagent_type: "security-auditor"`.
@@ -176,18 +205,43 @@ already gives you the per-type counts.
    Process type(s) <t1, t2, ...> ONLY. scan_id=<scan_id>, scan_dir=<output_dir>.
    The scan already ran: your types' candidates are in <scan_dir>/report.md and
    <scan_dir>/candidates/<type>/ — do NOT re-run secguard_scan or secguard_plan.
-   For each type: load the <type> skill, classify every candidate
-   (confirmed/suspected/dismissed), write findings in ONE batch: write `<tmpdir>/<type>.json` with the Write tool, then
-   `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
+    For each type: load the <type> skill, then classify by suspicion_level:
+    - confirmed → verify file:line (view cited line ±3 lines, do NOT re-derive
+      dataflow), confirm/dismiss, batch write.
+    - suspected/possible → read source at file:line, reason, classify.
+    Write findings in ONE batch: write `<tmpdir>/<type>.json` with the Write tool, then
+    `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
    Then record A5 reviews for each suspected finding via `secguard report --review --id=<id> ...`. Read source only at reported
    file:line, ≤5 files per type. Report back, per type: confirmed / suspected /
    dismissed counts + the written finding ids.
    ```
-   For many types, batch them (give each subagent 3–5 types) instead of one per
-   type. Do NOT read `report.md` or all source files yourself — each subagent
-   reads only its own types' candidates.
-5. **Collect + finalize**: after ALL subagents (or your sequential loop) are
-   done, run `secguard report --audit --scan-id <scan_id> --output-dir <output_dir>`
+   For many types, batch them — but NEVER exceed `MAX_TYPES_PER_BATCH` (4) types
+   per subagent, and validate `batch_type_count × 6 < 27` before dispatching. A
+   batch that fails validation SHALL be split. Do NOT read `report.md` or all
+   source files yourself — each subagent reads only its own types' candidates.
+5. **Collect + finalize**:
+
+   **上报解析与 DB 二次校验 (F5):** For each subagent result, parse by `format_version`:
+   - Parseable v1 → record `processed_types` as success, `failed_types` as failed.
+   - Unparseable / empty / unknown version → the subagent did not report. Query the DB for its assigned CWEs: `secguard db "SELECT rule_id, COUNT(*) FROM findings WHERE scan_id='<scan_id>' AND rule_id IN (<cwe_list>) GROUP BY rule_id"`. If a type has written > 0, mark it success (data landed despite no report); if 0, mark it failed with `reason: "empty-output"`.
+   - A `failed_types` entry with `reason: "api-quota-exhausted"` → mark the type for retry/降级 (see F1 below).
+
+   **重试与降级决策 (F1):** For each subagent marked failed or empty (and DB second-pass did not confirm writes):
+   - If retry count < 2, re-dispatch the subagent for the failed types only.
+   - If retry count ≥ 2, OR the failure is `api-quota-exhausted` (retrying will hit the same quota wall), do NOT retry — mark the types as `missing-type` and continue. Downgrading to a single-threaded sequential loop is acceptable when ≤ 3 types remain.
+   - The orchestrator SHALL NOT finalize while any subagent terminal state is `unknown`.
+
+    **Finalize 前置终态确认 (F1):** Before running audit, confirm every subagent terminal state ∈ {success, failed}. If any is `unknown`, run `secguard status --per-type --scan-id <scan_id>` and use the DB as the authority: types with `terminal_state: "done"` are success; `"in-progress"`/`"pending"` are failed (mark missing-type); `"unknown"` types were never dispatched — mark missing-type with `reason: "unknown"`.
+
+    **Confirmed 异常读源审计 (F6):** Before audit, scan `scan.log` for source-read
+    entries associated with confirmed candidates. Classify each read:
+    - read range ≤ file:line ±3 lines → "验证性查看" (allowed, no violation).
+    - read range far exceeds verification (e.g. whole function/file) → "confirmed
+      候选异常读源违规" with type/file/line/read_range.
+    - borderline (±3 to ~±10 lines) → "待人工复审".
+    If `scan.log` is unavailable, log warning and skip (do not block finalize).
+
+    After ALL subagents (or your sequential loop) are done, run `secguard report --audit --scan-id <scan_id> --output-dir <output_dir>`
    ONCE to regenerate `report.md` (verdict-stage, confirmed+suspected) + `result.sarif`
    + `findings/`. Verify `<output_dir>/result.sarif` is non-empty and `findings/`
    has files; if not, a write did not land — find the `per_finding_warning` and
@@ -232,6 +286,11 @@ Report the diagnostic conclusion in Chinese, Markdown tables only:
 5. 观察项表 (only if some types were not persisted): `| Skill | 说明 |`
 6. 修复建议: per-confirmed paste-ready fix (a `c` code block each)
 7. 逐条详情: Reasoning / Exception Check / Fix Strategy per confirmed+suspected
+8. 缺失类型章节 (only when types were not successfully processed — F1): a table
+   `| 类型 | 候选数 | 失败原因 |` listing every missing-type, with 失败原因 from
+   the enum (api-quota-exhausted / maxturns-exceeded / write-busy / empty-output /
+   unknown). This section is MANDATORY when any type was not classified — the
+   user must know the scan is incomplete.
 
 Never include pipeline internals (seed/final/deduped counts, cap, recall,
 benchmark, TP/FP, rule_id, whitelist, scan_id, timestamps) in the reply.

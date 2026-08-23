@@ -27,7 +27,10 @@ func TestBufferOverflow_HeapOOBWrite(t *testing.T) {
 
 func TestBufferOverflow_FormatOverflow(t *testing.T) {
 	store := runIndexAndDetect(t, "tc36_format_overflow.c")
-	assertEventCategory(t, store, "BUFFER_ACCESS", "format_overflow", "tc36_format_overflow")
+	// tc36's format string is `"Task[%s]"` with a non-constant `%s` argument:
+	// overflow is possible but not provable, so it must land in the
+	// format_overflow_var (suspected) tier, not the confirmed format_overflow.
+	assertEventCategory(t, store, "BUFFER_ACCESS", "format_overflow_var", "tc36_format_overflow")
 }
 
 func TestBufferOverflow_FormatOverflowSuppressedByInjectionSink(t *testing.T) {

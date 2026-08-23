@@ -13,11 +13,11 @@ import (
 )
 
 const (
-	CodeagentDir  = ".codeagent"
-	ProductDir    = "secguard-clang"
-	ScansDir      = "scans"
-	SgreDir       = ".sgre"
-	DbName        = "sgre.db"
+	CodeagentDir = ".codeagent"
+	ProductDir   = "secguard-clang"
+	ScansDir     = "scans"
+	SgreDir      = ".sgre"
+	DbName       = "sgre.db"
 	// SarifFile is the VERDICT-stage machine-readable report: it exists only
 	// after the AI classification is persisted (`report --audit` regenerates
 	// it from the findings table). A consumer that reads it is guaranteed to
@@ -28,11 +28,11 @@ const (
 	// "note"; keeping it under its own name is what stops a CI gate from
 	// treating the candidate explosion as defects.
 	CandidatesSarifFile = "candidates.sarif"
-	ReportFile    = "report.md"
-	LatestName    = "latest"
-	LatestTxtName = "latest.txt"
-	ScanLogFile   = "scan.log"
-	DismissedFile = "dismissed.json"
+	ReportFile          = "report.md"
+	LatestName          = "latest"
+	LatestTxtName       = "latest.txt"
+	ScanLogFile         = "scan.log"
+	DismissedFile       = "dismissed.json"
 	// FindingsDir holds the AI's classified verdicts — the human review
 	// surface. Only actionable verdicts (confirmed/suspected) ever get a file
 	// here; see CandidatesDir for the pre-classification evidence.
@@ -46,7 +46,7 @@ const (
 // ToolVersion is the version stamped into SARIF and markdown reports.
 // It is a var so cli/root.go can inject the release version at startup
 // (keeping report free of a cli import, which would be a cycle).
-var ToolVersion = "0.4.1"
+var ToolVersion = "0.4.2"
 
 type ScanOutput struct {
 	RootDir string

@@ -102,6 +102,12 @@ func (p *Planner) getFilters(chain string) []Filter {
 			NewSafeFunctionFilter(p.store),
 			NewSharedAccessFilter(p.store, p.parser, p.logger),
 		}
+	case "unchecked-return":
+		return []Filter{
+			NewCallReachFilter(p.store, p.callReachCache),
+			NewSafeFunctionFilter(p.store),
+			NewReturnCheckFilter(p.store, p.parser, p.logger),
+		}
 	default:
 		// Bounds-check suppression already happens in the buffer-overflow
 		// detector (hasPrecedingBoundsCheck / constant-index analysis); there is

@@ -20,7 +20,8 @@ Detector categories that route to this type:
 - `buffer_overflow` — unsafe copy API call (memcpy/strcpy/strcat/gets/...)
 - `array_oob_write` — constant index, a constant-valued variable index (`int n = 12; buf[n]`), or a loop bound past a fixed-size array, as a write
 - `heap_oob_write` — loop bound provably exceeds a `malloc`/`calloc` size (e.g. `malloc(user_len)` + `i < user_len + 10`)
-- `format_overflow` — `sprintf`/`wsprintf` into a known-capacity buffer with a non-constant source
+- `format_overflow` — **confirmed**: `sprintf`/`wsprintf` into a known-capacity buffer whose constant (literal) output length is provably >= capacity
+- `format_overflow_var` — **suspected**: `sprintf`/`wsprintf` into a known-capacity buffer with a non-constant source (overflow possible but not provable — `sprintf(buf, "%d", n)` never overflows a 64-byte buffer for any `int n`)
 - `bounded_copy_overflow` — **confirmed**: `strncpy(dst, src, n)` with a constant `n > sizeof(dst)` (provable overflow)
 - `bounded_copy_var_size` — **possible**: `strncpy(dst, src, n)` where `dst` is a fixed array and `n` is a caller-influenced parameter (the length may exceed the capacity; reason over the call sites)
 - `secure_copy_overflow` — **confirmed**: an Annex K `_s` function (`memcpy_s`/`strcpy_s`/`sprintf_s`/`strncpy_s`/`memset_s`/`asctime_s`/...) given a constant destination-capacity argument larger than the real buffer (`memcpy_s(dst, 100, src, 50)` with `char dst[8]`) — the lying size defeats the "secure" prefix
@@ -61,6 +62,9 @@ Read-flavored events (`array_oob_read`, `heap_oob_read`) belong to the
 | Array write with constant index >= array size | **confirmed** |
 | Loop bound provably exceeds array/heap allocation size (write) | **confirmed** |
 | `sprintf(dst, ..., var)` into known-capacity `dst`, no size arg | **confirmed** |
+| `format_overflow` (constant literal output length >= capacity) | **confirmed** — the detector proved it |
+| `format_overflow_var` where the non-constant source is attacker-controlled with no clamp | **confirmed** |
+| `format_overflow_var` where the non-constant source is bounded (a small `int`/enum, or `%d` of a fixed-width value) | **false-positive** — cannot exceed the capacity |
 | `sprintf` whose destination feeds `system`/`sqlite3_exec`/`CreateProcessA` | **false-positive** for buffer-overflow (injection is the root cause; SQL/command injection covers it) |
 | Array access with variable index, no provable bound | **suspected** |
 | `bounded_copy_overflow` (constant `n > sizeof(dst)`) | **confirmed** — the detector proved it |

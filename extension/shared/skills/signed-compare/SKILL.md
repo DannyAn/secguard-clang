@@ -16,10 +16,10 @@ A signed-compare candidate has:
 - **call_path**: The function is reachable from an entry point
 
 ### Detection Logic
-1. Collect variable names declared with an `unsigned` type (no initializer)
+1. Collect variable names declared with an `unsigned` type (`unsigned`, `size_t`, `uint*_t`, `uintptr_t`, ...) — including typedefs that resolve to unsigned (`typedef unsigned int my_uint; my_uint m`), resolved cross-file so a header typedef counts
 2. Find relational `binary_expression` nodes
 3. Flag when an unsigned variable is compared against `0`/negative in a way that is always false/true
-4. Emit `SIGNED_COMPARE` otherwise
+4. Emit `SIGNED_COMPARE` otherwise (only when the declared type is provably unsigned, so the category is confirmed)
 
 ### Classification Rules
 

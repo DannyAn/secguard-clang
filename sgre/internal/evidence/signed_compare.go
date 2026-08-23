@@ -59,13 +59,20 @@ func isUnsignedDecl(text string) bool {
 func (d *SignedCompareDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
+	// Cross-file typedef table: `my_uint`/`size_t` are typically declared in a
+	// header, so resolve against every indexed file, then overlay the current
+	// file's own typedefs per function.
+	global := buildGlobalTypedefs(ctx, d.store, d.parser)
+
 	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		decls := root.FindAll("declaration")
 		params := root.FindAll("parameter_declaration")
 		binaries := root.FindAll("binary_expression")
+		typedefs := global.clone()
+		typedefs.addRoot(root)
 
 		for _, f := range funcs {
-			unsignedVars := d.unsignedVars(append(decls, params...), f)
+			unsignedVars := d.unsignedVars(append(decls, params...), f, typedefs)
 			for _, b := range binaries {
 				if !funcLineRange(f, b.StartLine()) {
 					continue
@@ -87,34 +94,49 @@ func (d *SignedCompareDetector) Detect(ctx context.Context) (DetectResult, error
 }
 
 // unsignedVars returns the names declared with an `unsigned` type in f's line
-// range, for declarations without an initializer (so the identifier scan does
-// not pick up names from the initializer expression).
-func (d *SignedCompareDetector) unsignedVars(decls []parser.Node, f *db.Function) map[string]bool {
+// range. Unlike a whole-declaration identifier scan (which would also pick up
+// names from an initializer expression), the declared name is taken from each
+// declarator, so `unsigned int x = n;` yields only `x` and multi-declarators
+// (`unsigned int y, z;`) yield both `y` and `z`. A typedef whose base resolves
+// to unsigned (`typedef unsigned int my_uint; my_uint x;`) is detected via the
+// typedefs table, not just a keyword substring match.
+func (d *SignedCompareDetector) unsignedVars(decls []parser.Node, f *db.Function, typedefs *typedefs) map[string]bool {
 	set := make(map[string]bool)
 	for _, decl := range decls {
 		if !funcLineRange(f, decl.StartLine()) {
 			continue
 		}
-		if !isUnsignedDecl(decl.Text()) {
+		if !d.unsignedType(decl, typedefs) {
 			continue
 		}
-		hasInit := false
+		// Pick up the declarators (init_declarator, pointer_declarator, or a
+		// bare identifier for `size_t i;`). extractVarName on the whole `decl`
+		// would find the FIRST identifier only, so iterate each declarator so
+		// multi-declarators are all registered.
 		for _, child := range decl.NamedChildren() {
-			if child.Kind() == "init_declarator" {
-				hasInit = true
+			switch child.Kind() {
+			case "init_declarator", "pointer_declarator", "identifier":
+				if name := extractVarName(child); name != "" && !parser.IsCTypeKeyword(name) {
+					set[name] = true
+				}
 			}
-		}
-		if hasInit {
-			continue
-		}
-		for _, id := range decl.FindAll("identifier") {
-			if parser.IsCTypeKeyword(id.Text()) {
-				continue
-			}
-			set[id.Text()] = true
 		}
 	}
 	return set
+}
+
+// unsignedType reports whether a declaration's type specifier is unsigned,
+// resolving typedef names through the typedefs table. It keys off the type
+// specifier (`unsigned int`, `size_t`, `my_uint`), not the whole declaration
+// text, so the initializer/declarator parts can never contribute a false match.
+func (d *SignedCompareDetector) unsignedType(decl parser.Node, typedefs *typedefs) bool {
+	for _, child := range decl.NamedChildren() {
+		switch child.Kind() {
+		case "primitive_type", "sized_type_specifier", "type_identifier":
+			return isUnsignedDecl(child.Text()) || typedefs.resolvesToUnsigned(child.Text())
+		}
+	}
+	return false
 }
 
 // unsignedVsNegative reports whether b is `<`/`<=` with an unsigned variable on

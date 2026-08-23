@@ -94,6 +94,7 @@ type ScanStatStore interface {
 	GetLatestScanID(ctx context.Context) (string, error)
 	CountFindingsByScanAndStatus(ctx context.Context, scanID, status string) (int, error)
 	ListFindingsByScanID(ctx context.Context, scanID string) ([]*Finding, error)
+	ListPerTypeStatus(ctx context.Context, scanID string, cweForType func(string) string) ([]*PerTypeStatus, error)
 }
 
 type FunctionSummaryStore interface {

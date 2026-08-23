@@ -46,15 +46,13 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 
 	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		calls := root.FindAll("call_expression")
-		binaries := root.FindAll("binary_expression")
-		unarys := root.FindAll("unary_expression")
 		ifs := root.FindAll("if_statement")
 		whiles := root.FindAll("while_statement")
 		fors := root.FindAll("for_statement")
 		dos := root.FindAll("do_statement")
 
 		for _, f := range funcs {
-			checked := d.checkedVars(binaries, unarys, ifs, whiles, fors, dos, f)
+			checked := d.checkedVars(ifs, whiles, fors, dos, f)
 			for _, call := range calls {
 				if !funcLineRange(f, call.StartLine()) {
 					continue
@@ -83,42 +81,32 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 }
 
 // checkedVars returns the set of variable names that are validated somewhere in
-// f: compared (`p == NULL`, `ret < 0`), negated (`!p`), or used as a bare
-// truthiness condition (`if (p)`). A target call's result assigned to one of
-// these names counts as checked.
-func (d *UncheckedReturnDetector) checkedVars(binaries, unarys, ifs, whiles, fors, dos []parser.Node, f *db.Function) map[string]bool {
+// f: compared against a sentinel (`p == NULL`, `ret < 0`), negated (`!p`), or
+// used as a bare truthiness condition (`if (p)`). A condition that merely
+// dereferences the variable (`if (p->len > 0)`) is NOT a null/error check, so
+// it must not mark `p` checked — that would suppress a genuine CWE-252 defect
+// (the allocation's failure is never handled before `p` is used). This mirrors
+// the planner's ReturnCheckFilter (conditionTestsVar) so the detector and the
+// convergence filter agree on what "checked" means.
+func (d *UncheckedReturnDetector) checkedVars(ifs, whiles, fors, dos []parser.Node, f *db.Function) map[string]bool {
 	set := make(map[string]bool)
-	for _, b := range binaries {
-		if !funcLineRange(f, b.StartLine()) {
-			continue
-		}
-		if !hasCompareOp(b) {
-			continue
-		}
-		for _, child := range b.NamedChildren() {
-			switch child.Kind() {
-			case "identifier", "field_expression", "subscript_expression":
-				set[child.Text()] = true
-			}
-		}
-	}
-	for _, u := range unarys {
-		if !funcLineRange(f, u.StartLine()) {
-			continue
-		}
-		if !strings.HasPrefix(strings.TrimSpace(u.Text()), "!") {
-			continue
-		}
-		for _, id := range u.FindAll("identifier") {
-			set[id.Text()] = true
-		}
-	}
 	for _, cond := range [][]parser.Node{ifs, whiles, fors, dos} {
 		for _, node := range cond {
 			if !funcLineRange(f, node.StartLine()) {
 				continue
 			}
-			if v := bareConditionVar(node.ChildByFieldName("condition")); v != "" {
+			c := node.ChildByFieldName("condition")
+			if c == nil {
+				continue
+			}
+			// For a comparison (`p == NULL` / `ret < 0`), register each operand
+			// that IS itself tested; a field/subscript operand is tested as a
+			// whole (`e->buffer == NULL` tests e->buffer, not e).
+			for _, id := range testedOperands(*c) {
+				set[id] = true
+			}
+			// A bare truthiness condition (`if (p)`) tests p directly.
+			if v := bareConditionVar(c); v != "" {
 				set[v] = true
 			}
 		}
@@ -126,8 +114,29 @@ func (d *UncheckedReturnDetector) checkedVars(binaries, unarys, ifs, whiles, for
 	return set
 }
 
+// testedOperands returns the variable/member/element expressions that a
+// condition's comparison operator directly tests for null/error. `if (p->len > 0)`
+// compares p->len, not p, so it yields nothing — the field's value is a length,
+// not a sentinel. `if (e->buffer == NULL)` yields e->buffer.
+func testedOperands(cond parser.Node) []string {
+	var out []string
+	for _, b := range cond.FindAll("binary_expression") {
+		if !hasCompareOp(b) {
+			continue
+		}
+		for _, child := range b.NamedChildren() {
+			switch child.Kind() {
+			case "identifier", "field_expression", "subscript_expression":
+				out = append(out, child.Text())
+			}
+		}
+	}
+	return out
+}
+
 // bareConditionVar returns the variable name when a condition is a bare
-// identifier (`if (p)`), unwrapping parentheses, or "" for any other shape.
+// identifier (`if (p)`) or its negation (`if (!p)` / `if (!e->buffer)`),
+// unwrapping parentheses, or "" for any other shape.
 func bareConditionVar(cond *parser.Node) string {
 	if cond == nil {
 		return ""
@@ -142,6 +151,16 @@ func bareConditionVar(cond *parser.Node) string {
 	}
 	if n.Kind() == "identifier" {
 		return n.Text()
+	}
+	// `if (!p)` / `if (!e->buffer)` — the negation of the variable itself is a
+	// null/error check; negating a derived value (`if (!(p->len > 0))`) is not.
+	if n.Kind() == "unary_expression" && strings.HasPrefix(strings.TrimSpace(n.Text()), "!") {
+		for _, child := range n.NamedChildren() {
+			switch child.Kind() {
+			case "identifier", "field_expression", "subscript_expression":
+				return child.Text()
+			}
+		}
 	}
 	return ""
 }
