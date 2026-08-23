@@ -231,47 +231,8 @@ else:
 " 2>&1 || echo "  WARNING: Could not merge permissions (python3 failed)"
 }
 
-# ── Sync to project-local .opencode/ ─────────────────────────
-sync_project_local() {
-    local local_dir="$SCRIPT_DIR/.opencode"
-    echo "[local] Syncing to $local_dir"
-
-    mkdir -p "$local_dir"/{agents,commands,tools,plugins,skills,bin}
-
-    cp "$EXT_DIR/opencode/opencode.json" "$local_dir/"
-
-    for f in "$EXT_DIR/opencode/agents"/*.md; do
-        [ -f "$f" ] && expand_includes "$f" "$local_dir/agents/$(basename "$f")" "$SHARED_DIR"
-    done
-    for f in "$EXT_DIR/opencode/commands"/*.md; do
-        [ -f "$f" ] && expand_includes "$f" "$local_dir/commands/$(basename "$f")" "$SHARED_DIR"
-    done
-
-    cp "$EXT_DIR/opencode/tools/"*.ts "$local_dir/tools/" 2>&1 || true
-    cp "$EXT_DIR/opencode/plugins/"*.ts "$local_dir/plugins/" 2>&1 || true
-
-    install_skills "$local_dir/skills"
-
-    if [ "$BINARY_OK" = true ]; then
-        cp "$BIN_DIR/secguard" "$local_dir/bin/secguard"
-        chmod +x "$local_dir/bin/secguard"
-        echo "[local] Binary → $local_dir/bin/secguard"
-    elif [ -f "$BIN_DIR/secguard" ]; then
-        cp "$BIN_DIR/secguard" "$local_dir/bin/secguard"
-        chmod +x "$local_dir/bin/secguard"
-        echo "[local] Binary → $local_dir/bin/secguard"
-    else
-        echo "[local] WARNING: Binary not found — tools will fall back to PATH"
-    fi
-
-    echo "[local] Done"
-    echo ""
-}
-
 # ── Execute ───────────────────────────────────────────────────
 build_binary
-
-sync_project_local
 
 case "$PLATFORM" in
     opencode)
@@ -415,24 +376,7 @@ case "$PLATFORM" in
 esac
 
 echo ""
-echo "  Project-local (.opencode):"
-check_file "$SCRIPT_DIR/.opencode/opencode.json"
-check_file "$SCRIPT_DIR/.opencode/agents/security-auditor.md"
-check_file "$SCRIPT_DIR/.opencode/plugins/secguard-context.ts"
-check_file "$SCRIPT_DIR/.opencode/tools/secguard_scan.ts"
-check_file "$SCRIPT_DIR/.opencode/tools/secguard_db.ts"
-check_file "$SCRIPT_DIR/.opencode/bin/secguard"
-check_dir  "$SCRIPT_DIR/.opencode/skills/null-deref"
-check_dir  "$SCRIPT_DIR/.opencode/skills/buffer-overflow"
-check_dir  "$SCRIPT_DIR/.opencode/skills/memory-leak"
-check_dir  "$SCRIPT_DIR/.opencode/skills/injection"
-check_dir  "$SCRIPT_DIR/.opencode/skills/resource-leak"
-check_dir  "$SCRIPT_DIR/.opencode/skills/uninit"
-check_dir  "$SCRIPT_DIR/.opencode/skills/use-after-free"
-check_dir  "$SCRIPT_DIR/.opencode/skills/double-free"
-check_dir  "$SCRIPT_DIR/.opencode/skills/format-string"
 
-echo ""
 if [ "$all_ok" = true ]; then
     echo "All files deployed successfully."
 else
