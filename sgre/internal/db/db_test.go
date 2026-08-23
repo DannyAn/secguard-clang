@@ -339,3 +339,53 @@ func TestStore_FunctionSummary_Upsert(t *testing.T) {
 		t.Error("expected ReturnNullable=false after update")
 	}
 }
+
+func TestStore_UpsertFinding_PreservesReview(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	f := &Finding{
+		RuleID:       "CWE-476",
+		Severity:     "high",
+		Confidence:   0.9,
+		Status:       "suspected",
+		FilePath:     "src/a.c",
+		LineNumber:   42,
+		FunctionName: "f",
+		Summary:      "v1",
+		ScanID:       "sc_r",
+	}
+	id, err := s.UpsertFinding(ctx, f)
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := s.UpdateFindingReview(ctx, id, "dismissed", "false positive"); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+
+	// A re-write of the same location must update the mutable verdict fields but
+	// NOT wipe the A5 review verdict (which only --review mutates).
+	f.Summary = "v2"
+	if _, err := s.UpsertFinding(ctx, f); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+
+	got, err := s.GetFindingByID(ctx, id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ReviewStatus != "dismissed" {
+		t.Errorf("re-write wiped review_status: got %q, want dismissed", got.ReviewStatus)
+	}
+	if got.Summary != "v2" {
+		t.Errorf("re-write should update summary: got %q, want v2", got.Summary)
+	}
+
+	all, err := s.ListFindings(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("expected 1 row after re-write, got %d", len(all))
+	}
+}

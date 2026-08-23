@@ -101,35 +101,32 @@ func (s *store) UpsertFinding(ctx context.Context, f *Finding) (int64, error) {
 		f.CreatedAt = now()
 	}
 
-	var existingID int64
+	// Single-statement upsert keyed on the uq_finding_loc unique index. It is
+	// atomic: concurrent writers of the same (scan_id, rule_id, file, line,
+	// function) converge on one row instead of racing the previous
+	// SELECT-then-INSERT (which had a TOCTOU window that could duplicate).
+	// review_status / review_reasoning are deliberately NOT in DO UPDATE SET —
+	// those only change via UpdateFindingReview, and a re-write must not wipe an
+	// A5 verdict. RETURNING id reports the actual row id for both insert and
+	// update (LastInsertId is ambiguous on the update path).
+	var id int64
 	err := s.exec.QueryRowContext(ctx,
-		`SELECT id FROM findings WHERE scan_id = ? AND rule_id = ? AND file_path = ? AND line_number = ? AND function_name = ? ORDER BY id LIMIT 1`,
-		f.ScanID, f.RuleID, f.FilePath, f.LineNumber, f.FunctionName).Scan(&existingID)
-	if err == nil {
-		// Re-write of the same location: update the mutable verdict fields and
-		// keep the id (so a re-run returns the same id, never a duplicate). The
-		// review_status / review_reasoning are left untouched — those only change
-		// via UpdateFindingReview, and a re-write must not wipe an A5 verdict.
-		if _, uerr := s.exec.ExecContext(ctx,
-			`UPDATE findings SET severity = ?, confidence = ?, evidence = ?, status = ?, summary = ?, reasoning = ?, fix_strategy = ?, exception_check = ?, properties = ?, scan_id = ? WHERE id = ?`,
-			f.Severity, f.Confidence, f.Evidence, f.Status, f.Summary, f.Reasoning, f.FixStrategy, f.ExceptionCheck, f.Properties, f.ScanID, existingID); uerr != nil {
-			return 0, fmt.Errorf("db: upsert finding: update: %w", uerr)
-		}
-		return existingID, nil
-	}
-	if err != sql.ErrNoRows {
-		return 0, fmt.Errorf("db: upsert finding: lookup: %w", err)
-	}
-
-	res, err := s.exec.ExecContext(ctx,
-		`INSERT INTO findings (rule_id, severity, confidence, evidence, status, file_path, line_number, function_name, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		f.RuleID, f.Severity, f.Confidence, f.Evidence, f.Status, f.FilePath, f.LineNumber, f.FunctionName, f.Properties, f.Summary, f.Reasoning, f.FixStrategy, f.ExceptionCheck, f.ReviewStatus, f.ReviewReasoning, f.ScanID, f.CreatedAt)
+		`INSERT INTO findings (rule_id, severity, confidence, evidence, status, file_path, line_number, function_name, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(scan_id, rule_id, file_path, line_number, function_name) DO UPDATE SET
+		   severity = excluded.severity,
+		   confidence = excluded.confidence,
+		   evidence = excluded.evidence,
+		   status = excluded.status,
+		   summary = excluded.summary,
+		   reasoning = excluded.reasoning,
+		   fix_strategy = excluded.fix_strategy,
+		   exception_check = excluded.exception_check,
+		   properties = excluded.properties
+		 RETURNING id`,
+		f.RuleID, f.Severity, f.Confidence, f.Evidence, f.Status, f.FilePath, f.LineNumber, f.FunctionName, f.Properties, f.Summary, f.Reasoning, f.FixStrategy, f.ExceptionCheck, f.ReviewStatus, f.ReviewReasoning, f.ScanID, f.CreatedAt).Scan(&id)
 	if err != nil {
-		return 0, fmt.Errorf("db: upsert finding: insert: %w", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("db: upsert finding: last insert id: %w", err)
+		return 0, fmt.Errorf("db: upsert finding: %w", err)
 	}
 	return id, nil
 }

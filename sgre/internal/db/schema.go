@@ -210,6 +210,9 @@ CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status);
 CREATE INDEX IF NOT EXISTS idx_findings_severity ON findings(severity);
 CREATE INDEX IF NOT EXISTS idx_findings_file ON findings(file_path);
 CREATE INDEX IF NOT EXISTS idx_findings_scan_id ON findings(scan_id);
+-- Idempotency key for UpsertFinding: one row per (scan, CWE, location). This is
+-- what makes concurrent --write-json upserts atomic (the ON CONFLICT target).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_finding_loc ON findings(scan_id, rule_id, file_path, line_number, function_name);
 
 CREATE INDEX IF NOT EXISTS idx_scan_stats_scan_id ON scan_stats(scan_id);
 CREATE INDEX IF NOT EXISTS idx_scan_stats_vuln_type ON scan_stats(vuln_type);
