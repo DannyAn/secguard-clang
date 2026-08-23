@@ -136,11 +136,6 @@ install_opencode() {
 
     install_skills "$OPENCODE_EXT_DIR/skills"
 
-    echo "[opencode] Global command: $OPENCODE_BASE/commands/"
-    mkdir -p "$OPENCODE_BASE/commands"
-    for f in "$EXT_DIR/opencode/commands"/*.md; do
-        [ -f "$f" ] && expand_includes "$f" "$OPENCODE_BASE/commands/$(basename "$f")" "$SHARED_DIR"
-    done
 
     echo "[opencode] Done"
     echo ""
@@ -170,11 +165,6 @@ install_claude_code() {
         echo "[claude-code] Binary → $CLAUDE_PLUGIN_DIR/bin/secguard"
     fi
 
-    echo "[claude-code] Global command: $CLAUDE_BASE/commands/"
-    mkdir -p "$CLAUDE_BASE/commands"
-    for f in "$EXT_DIR/claude-code/.claude/commands"/*.md; do
-        [ -f "$f" ] && expand_includes "$f" "$CLAUDE_BASE/commands/$(basename "$f")" "$SHARED_DIR"
-    done
 
     echo "[claude-code] Merging permissions into $CLAUDE_BASE/settings.json"
     merge_claude_permissions
@@ -266,8 +256,6 @@ case "$PLATFORM" in
         echo "║      tools/secguard_*.ts"
         echo "║      plugins/secguard-context.ts"
         echo "║      skills/*/SKILL.md"
-        echo "║  OpenCode global command:"
-        echo "║    $OPENCODE_BASE/commands/secguard.md"
         ;;
 esac
 
@@ -281,8 +269,6 @@ case "$PLATFORM" in
         echo "║      hooks/hooks.json"
         echo "║      bin/secguard"
         echo "║      skills/*/SKILL.md"
-        echo "║  Claude Code global command:"
-        echo "║    $CLAUDE_BASE/commands/secguard.md"
         echo "║  Claude Code permissions:"
         echo "║    $CLAUDE_BASE/settings.json (merged)"
         ;;
@@ -340,9 +326,7 @@ case "$PLATFORM" in
         check_dir  "$OPENCODE_EXT_DIR/skills/use-after-free"
         check_dir  "$OPENCODE_EXT_DIR/skills/double-free"
         check_dir  "$OPENCODE_EXT_DIR/skills/format-string"
-        echo ""
-        echo "  OpenCode global command:"
-        check_file "$OPENCODE_BASE/commands/secguard.md"
+
         ;;
 esac
 
@@ -367,9 +351,7 @@ case "$PLATFORM" in
             check_file "$CLAUDE_PLUGIN_DIR/bin/secguard"
         fi
         echo ""
-        echo "  Claude Code global command:"
-        check_file "$CLAUDE_BASE/commands/secguard.md"
-        echo ""
+
         echo "  Claude Code settings:"
         check_file "$CLAUDE_BASE/settings.json"
         ;;
