@@ -2,6 +2,22 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.4.1] - 2026-08-23
+
+### Bug 修复
+
+- **report.md 展示 candidates 而非 findings**：`report.md` 此前仅在扫描阶段从
+  `planner.PlanResult.Candidates` 生成（展示 pipeline 疑似级别），`report --audit`
+  不会覆写它。AI 分类完成后，用户看到的仍是未分类的候选，与 `findings/` 目录和
+  `result.sarif` 矛盾。新增 `WriteReportFromFindings`，在 `report --audit` 时从数据库
+  findings 表重新生成 `report.md`，只含 confirmed + suspected（dismissed 排除），
+  与 `result.sarif` / `findings/` 对齐。同步更新 extension 指令
+  （`command-instructions.md`、`secguard_report.ts`、`agent.cordis.yml`）文档化
+  report.md 的双阶段语义。
+- **deploy.sh 安装 opencode 到项目级目录**：`sync_project_local` 将 opencode 配置
+  写入 `$SCRIPT_DIR/.opencode`（项目级），污染被扫描仓库。移除该函数及其调用，
+  仅保留用户级安装（`~/.config/opencode/`）。
+
 ## [0.4.0] - 2026-08-22
 
 ### 语义图能力补齐 + 区间/锁序/共享访问分析 + 分类并行化
