@@ -236,13 +236,15 @@ func columnIndex(col string) int {
 	return int(col[0]-'A') + 1
 }
 
-// displayPath trims the project root from a file path so the spreadsheet shows
-// a repo-relative path. When the root cannot be derived the absolute path is
-// kept (degraded but correct, matching SARIF's behavior).
+// displayPath trims the project root from a file path so the spreadsheet (and
+// the markdown/SARIF tables) show a repo-relative path. When the root cannot be
+// derived — or the path is not under it — the input is returned unchanged
+// (absolute stays absolute, a stray relative stays relative), so a consumer can
+// always re-locate the file rather than chase a truncated tail.
 func displayPath(p, root string) string {
-	if root != "" && strings.HasPrefix(p, root) {
+	if root != "" && (p == root || strings.HasPrefix(p, root+string(filepath.Separator))) {
 		p = strings.TrimPrefix(p, root)
-		p = strings.TrimPrefix(p, "/")
+		p = strings.TrimPrefix(p, string(filepath.Separator))
 	}
 	return p
 }

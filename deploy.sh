@@ -16,29 +16,33 @@ source "$SCRIPT_DIR/release/lib.sh"
 
 OPENCODE_BASE="${OPENCODE_DIR:-$HOME/.config/opencode}"
 CLAUDE_BASE="${CLAUDE_DIR:-$HOME/.claude}"
+CAC_BASE="${CAC_DIR:-$HOME/.cac}"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 
 OPENCODE_EXT_DIR="$OPENCODE_BASE/extensions/$PRODUCT"
-CLAUDE_PLUGIN_DIR="$CLAUDE_BASE/skills/$PRODUCT"
+CLAUDE_PLUGIN_DIR="$CLAUDE_BASE/plugins/$PRODUCT"
+CAC_PLUGIN_DIR="$CAC_BASE/plugins/$PRODUCT"
 
 PLATFORM="all"
 INSTALL_BINARY=true
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        opencode|claude-code|all)
+        opencode|opencode-nga|claude-code|claude-cac|all)
             PLATFORM="$1"; shift ;;
         --no-binary)
             INSTALL_BINARY=false; shift ;;
         --help|-h)
-            echo "Usage: $0 [opencode|claude-code|all] [--no-binary]"
+            echo "Usage: $0 [opencode|opencode-nga|claude-code|claude-cac|all] [--no-binary]"
             echo ""
             echo "Product: $PRODUCT"
             echo ""
             echo "Platforms:"
-            echo "  opencode     Install extension to ~/.config/opencode/extensions/$PRODUCT/"
-            echo "  claude-code  Install plugin to ~/.claude/skills/$PRODUCT/ (skills-dir plugin)"
-            echo "  all          Install both (default)"
+            echo "  opencode      Install extension to ~/.config/opencode/extensions/$PRODUCT/"
+            echo "  opencode-nga  Install OpenCode fork extension (code-extension.json) to the same dir"
+            echo "  claude-code   Install official plugin to ~/.claude/plugins/$PRODUCT/"
+            echo "  claude-cac    Install Claude Code fork plugin to ~/.cac/plugins/$PRODUCT/"
+            echo "  all           Install all four (default)"
             echo ""
             echo "Options:"
             echo "  --no-binary  Skip binary build/install"
@@ -46,6 +50,7 @@ while [[ $# -gt 0 ]]; do
             echo "Env overrides:"
             echo "  OPENCODE_DIR  Default: ~/.config/opencode"
             echo "  CLAUDE_DIR    Default: ~/.claude"
+            echo "  CAC_DIR       Default: ~/.cac"
             echo "  BIN_DIR       Default: ~/.local/bin"
             exit 0 ;;
         *)
@@ -141,6 +146,40 @@ install_opencode() {
     echo ""
 }
 
+# ── Install OpenCode-NGA extension ───────────────────────────
+install_opencode_nga() {
+    echo "[opencode-nga] Extension dir: $OPENCODE_EXT_DIR"
+    mkdir -p "$OPENCODE_EXT_DIR"/{commands,agents,tools,plugins,skills}
+
+    cp "$EXT_DIR/opencode-nga/code-extension.json" "$OPENCODE_EXT_DIR/"
+    # 用 python3 做字面替换，避免 sed 把路径里的 `&`/`|` 当特殊字符。
+    python3 -c "
+src = '''$EXT_DIR/opencode-nga/code-extension-install.json'''
+dst = '''$OPENCODE_EXT_DIR/code-extension-install.json'''
+target = '''$OPENCODE_EXT_DIR'''
+with open(src) as f:
+    content = f.read()
+with open(dst, 'w') as f:
+    f.write(content.replace('{{OC_TARGET_DIR}}', target))
+"
+    cp "$EXT_DIR/opencode/opencode.json" "$OPENCODE_EXT_DIR/"
+
+    for f in "$EXT_DIR/opencode/commands"/*.md; do
+        [ -f "$f" ] && expand_includes "$f" "$OPENCODE_EXT_DIR/commands/$(basename "$f")" "$SHARED_DIR"
+    done
+    for f in "$EXT_DIR/opencode/agents"/*.md; do
+        [ -f "$f" ] && expand_includes "$f" "$OPENCODE_EXT_DIR/agents/$(basename "$f")" "$SHARED_DIR"
+    done
+
+    cp "$EXT_DIR/opencode/tools/"*.ts "$OPENCODE_EXT_DIR/tools/" 2>&1 || true
+    cp "$EXT_DIR/opencode/plugins/"*.ts "$OPENCODE_EXT_DIR/plugins/" 2>&1 || true
+
+    install_skills "$OPENCODE_EXT_DIR/skills"
+
+    echo "[opencode-nga] Done"
+    echo ""
+}
+
 # ── Install Claude Code plugin ────────────────────────────────
 install_claude_code() {
     echo "[claude-code] Plugin dir: $CLAUDE_PLUGIN_DIR"
@@ -167,18 +206,49 @@ install_claude_code() {
 
 
     echo "[claude-code] Merging permissions into $CLAUDE_BASE/settings.json"
-    merge_claude_permissions
+    merge_claude_permissions "$CLAUDE_BASE/settings.json"
 
     echo "[claude-code] Done"
     echo ""
 }
 
-# ── Merge Claude Code permissions ─────────────────────────────
+# ── Install Claude CAC plugin (Claude Code 开源分支) ─────────
+install_claude_cac() {
+    echo "[claude-cac] Plugin dir: $CAC_PLUGIN_DIR"
+    mkdir -p "$CAC_PLUGIN_DIR"/{.cac-plugin,commands,agents,hooks,skills,bin}
+
+    cp "$EXT_DIR/claude-cac/.cac-plugin/plugin.json" "$CAC_PLUGIN_DIR/.cac-plugin/"
+    cp "$EXT_DIR/claude-cac/hooks/hooks.json" "$CAC_PLUGIN_DIR/hooks/"
+
+    for f in "$EXT_DIR/claude-cac/.cac/commands"/*.md; do
+        [ -f "$f" ] && expand_includes "$f" "$CAC_PLUGIN_DIR/commands/$(basename "$f")" "$SHARED_DIR"
+    done
+    for f in "$EXT_DIR/claude-cac/.cac/agents"/*.md; do
+        [ -f "$f" ] && expand_includes "$f" "$CAC_PLUGIN_DIR/agents/$(basename "$f")" "$SHARED_DIR"
+    done
+
+    install_skills "$CAC_PLUGIN_DIR/skills"
+
+    if [ "$BINARY_OK" = true ]; then
+        cp "$BIN_DIR/secguard" "$CAC_PLUGIN_DIR/bin/"
+        chmod +x "$CAC_PLUGIN_DIR/bin/secguard"
+        echo "[claude-cac] Binary → $CAC_PLUGIN_DIR/bin/secguard"
+    fi
+
+    echo "[claude-cac] Merging permissions into $CAC_BASE/settings.json"
+    merge_claude_permissions "$CAC_BASE/settings.json"
+
+    echo "[claude-cac] Done"
+    echo ""
+}
+
+# ── Merge Claude Code / Claude CAC permissions ────────────────
 merge_claude_permissions() {
+    local settings_path="${1:-$CLAUDE_BASE/settings.json}"
     python3 -c "
 import json, os, sys
 
-settings_path = '$CLAUDE_BASE/settings.json'
+settings_path = '''$settings_path'''
 required_perms = [
     'Bash(secguard scan *)',
     'Bash(secguard index *)',
@@ -186,7 +256,9 @@ required_perms = [
     'Bash(secguard report *)',
     'Bash(secguard status *)',
     'Bash(secguard query *)',
+    'Bash(secguard types *)',
     'Bash(secguard db *)',
+    'Bash(secguard schema *)',
 ]
 
 try:
@@ -228,12 +300,20 @@ case "$PLATFORM" in
     opencode)
         install_opencode || true
         ;;
+    opencode-nga)
+        install_opencode_nga || true
+        ;;
     claude-code)
         install_claude_code || true
         ;;
+    claude-cac)
+        install_claude_cac || true
+        ;;
     all)
         install_opencode || true
+        install_opencode_nga || true
         install_claude_code || true
+        install_claude_cac || true
         ;;
 esac
 
@@ -260,8 +340,17 @@ case "$PLATFORM" in
 esac
 
 case "$PLATFORM" in
+    opencode-nga|all)
+        echo "║  OpenCode-NGA extension:"
+        echo "║    $OPENCODE_EXT_DIR/"
+        echo "║      code-extension.json, code-extension-install.json"
+        echo "║      opencode.json, commands/, agents/, tools/, plugins/, skills/"
+        ;;
+esac
+
+case "$PLATFORM" in
     claude-code|all)
-        echo "║  Claude Code plugin (skills-dir, auto-loaded):"
+        echo "║  Claude Code plugin (official plugins-dir):"
         echo "║    $CLAUDE_PLUGIN_DIR/"
         echo "║      .claude-plugin/plugin.json"
         echo "║      commands/secguard.md"
@@ -271,6 +360,21 @@ case "$PLATFORM" in
         echo "║      skills/*/SKILL.md"
         echo "║  Claude Code permissions:"
         echo "║    $CLAUDE_BASE/settings.json (merged)"
+        ;;
+esac
+
+case "$PLATFORM" in
+    claude-cac|all)
+        echo "║  Claude CAC plugin (Claude Code 开源分支):"
+        echo "║    $CAC_PLUGIN_DIR/"
+        echo "║      .cac-plugin/plugin.json"
+        echo "║      commands/secguard.md"
+        echo "║      agents/security-auditor.md"
+        echo "║      hooks/hooks.json"
+        echo "║      bin/secguard"
+        echo "║      skills/*/SKILL.md"
+        echo "║  Claude CAC permissions:"
+        echo "║    $CAC_BASE/settings.json (merged)"
         ;;
 esac
 
@@ -331,6 +435,23 @@ case "$PLATFORM" in
 esac
 
 case "$PLATFORM" in
+    opencode-nga|all)
+        echo ""
+        echo "  OpenCode-NGA extension ($OPENCODE_EXT_DIR):"
+        check_file "$OPENCODE_EXT_DIR/code-extension.json"
+        check_file "$OPENCODE_EXT_DIR/code-extension-install.json"
+        check_file "$OPENCODE_EXT_DIR/opencode.json"
+        check_file "$OPENCODE_EXT_DIR/commands/secguard.md"
+        check_file "$OPENCODE_EXT_DIR/agents/security-auditor.md"
+        check_file "$OPENCODE_EXT_DIR/plugins/secguard-context.ts"
+        check_file "$OPENCODE_EXT_DIR/tools/secguard_scan.ts"
+        check_file "$OPENCODE_EXT_DIR/tools/secguard_db.ts"
+        check_dir  "$OPENCODE_EXT_DIR/skills/null-deref"
+        check_dir  "$OPENCODE_EXT_DIR/skills/buffer-overflow"
+        ;;
+esac
+
+case "$PLATFORM" in
     claude-code|all)
         echo ""
         echo "  Claude Code plugin ($CLAUDE_PLUGIN_DIR):"
@@ -354,6 +475,25 @@ case "$PLATFORM" in
 
         echo "  Claude Code settings:"
         check_file "$CLAUDE_BASE/settings.json"
+        ;;
+esac
+
+case "$PLATFORM" in
+    claude-cac|all)
+        echo ""
+        echo "  Claude CAC plugin ($CAC_PLUGIN_DIR):"
+        check_file "$CAC_PLUGIN_DIR/.cac-plugin/plugin.json"
+        check_file "$CAC_PLUGIN_DIR/commands/secguard.md"
+        check_file "$CAC_PLUGIN_DIR/agents/security-auditor.md"
+        check_file "$CAC_PLUGIN_DIR/hooks/hooks.json"
+        check_dir  "$CAC_PLUGIN_DIR/skills/null-deref"
+        check_dir  "$CAC_PLUGIN_DIR/skills/buffer-overflow"
+        if [ "$BINARY_OK" = true ]; then
+            check_file "$CAC_PLUGIN_DIR/bin/secguard"
+        fi
+        echo ""
+        echo "  Claude CAC settings:"
+        check_file "$CAC_BASE/settings.json"
         ;;
 esac
 

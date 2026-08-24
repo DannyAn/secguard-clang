@@ -14,7 +14,7 @@
 # ──────────────────────────────────────────────────────────────
 # @@SG_INJECT_START@@
 
-# SecGuard 权限项（7 项），供 merge/remove/check 共用
+# SecGuard 权限项（9 项），供 merge/remove/check 共用
 sg_required_permissions() {
     cat <<'SG_PERMS'
 Bash(secguard scan *)
@@ -23,7 +23,9 @@ Bash(secguard plan *)
 Bash(secguard report *)
 Bash(secguard status *)
 Bash(secguard query *)
+Bash(secguard types *)
 Bash(secguard db *)
+Bash(secguard schema *)
 SG_PERMS
 }
 
@@ -172,7 +174,9 @@ required = [
     'Bash(secguard report *)',
     'Bash(secguard status *)',
     'Bash(secguard query *)',
+    'Bash(secguard types *)',
     'Bash(secguard db *)',
+    'Bash(secguard schema *)',
 ]
 try:
     with open(path, 'r') as f:
@@ -218,7 +222,9 @@ required = [
     'Bash(secguard report *)',
     'Bash(secguard status *)',
     'Bash(secguard query *)',
+    'Bash(secguard types *)',
     'Bash(secguard db *)',
+    'Bash(secguard schema *)',
 ]
 try:
     with open(path, 'r') as f:
@@ -256,7 +262,9 @@ required = [
     'Bash(secguard report *)',
     'Bash(secguard status *)',
     'Bash(secguard query *)',
+    'Bash(secguard types *)',
     'Bash(secguard db *)',
+    'Bash(secguard schema *)',
 ]
 try:
     with open(path, 'r') as f:
@@ -289,124 +297,88 @@ sg_confirm_action() {
 
 # 核心卸载逻辑
 # 用法：sg_uninstall_platform <platform> <prefix> <bin_dir> <manifest_path> <yes>
-# platform: opencode | claude-code | all
+# platform: opencode | opencode-nga | claude-code | claude-cac | all
 sg_uninstall_platform() {
     local platform="$1"
     local prefix="$2"
     local bin_dir="$3"
     local manifest_path="$4"
     local yes="${5:-false}"
-    local oc_prefix cc_prefix
+    local oc_prefix cc_prefix cac_prefix
     oc_prefix="${OC_PREFIX:-$HOME/.config/opencode}"
     cc_prefix="${CC_PREFIX:-$HOME/.claude}"
+    cac_prefix="${CAC_PREFIX:-$HOME/.cac}"
+
+    # 各平台专属目录（SecGuard 独享，可整目录删除）
+    local oc_dir="$oc_prefix/extensions/secguard-clang"
+    local cc_dir="$cc_prefix/plugins/secguard-clang"
+    local cc_legacy_dir="$cc_prefix/skills/secguard-clang"   # 旧版错误安装到 skills/ 的残留
+    local cac_dir="$cac_prefix/plugins/secguard-clang"
 
     local to_delete=()
-    local manifest_json
+    case "$platform" in
+        opencode)     to_delete+=("$oc_dir") ;;
+        opencode-nga) to_delete+=("$oc_dir") ;;
+        claude-code)  to_delete+=("$cc_dir" "$cc_legacy_dir") ;;
+        claude-cac)   to_delete+=("$cac_dir") ;;
+        all)          to_delete+=("$oc_dir" "$cc_dir" "$cc_legacy_dir" "$cac_dir") ;;
+        *) echo "Unknown platform: $platform" >&2; return 1 ;;
+    esac
 
-    if [ -f "$manifest_path" ]; then
-        manifest_json=$(sg_read_install_manifest "$manifest_path" 2>/dev/null) || manifest_json=""
+    # 二进制：仅 all 卸载时删除（避免单平台卸载误删仍被其它平台使用的二进制）
+    if [ "$platform" = "all" ]; then
+        [ -f "$bin_dir/secguard" ] && to_delete+=("$bin_dir/secguard")
+        [ -f "$bin_dir/secguard.exe" ] && to_delete+=("$bin_dir/secguard.exe")
     fi
 
-    if [ -n "$manifest_json" ]; then
-        # 从 manifest 提取文件列表并按平台过滤
-        local files
-        files=$(python3 -c "
-import json, sys
-m = json.loads('''$manifest_json''')
-platform = '''$platform'''
-for f in m.get('files', []):
-    if platform == 'all':
-        print(f)
-    elif platform == 'opencode' and ('opencode' in f or 'extensions' in f):
-        print(f)
-    elif platform == 'claude-code' and ('claude' in f or '.claude' in f or 'skills/secguard-clang' in f):
-        print(f)
-# 二进制
-bin_path = m.get('bin_path', '')
-if bin_path and (platform == 'all' or (platform == 'opencode' and 'opencode' not in bin_path and 'claude' not in bin_path) or platform == 'claude-code'):
-    if platform == 'all' or bin_path not in [f for f in m.get('files', [])]:
-        pass  # bin handled separately
-")
-        while IFS= read -r f; do
-            [ -n "$f" ] && to_delete+=("$f")
-        done <<< "$files"
-        # 二进制
-        local bin_in_manifest
-        bin_in_manifest=$(python3 -c "
-import json
-m = json.loads('''$manifest_json''')
-print(m.get('bin_path', '') or '')
-")
-        if [ -n "$bin_in_manifest" ] && [ "$platform" = "all" ]; then
-            to_delete+=("$bin_in_manifest")
-        fi
-    else
-        # manifest 缺失，启发式清理（基础版）
-        echo "  WARNING: manifest not found at $manifest_path — heuristic cleanup" >&2
-        if [ "$platform" = "all" ] || [ "$platform" = "opencode" ]; then
-            to_delete+=("$oc_prefix/extensions/secguard-clang")
-        fi
-        if [ "$platform" = "all" ] || [ "$platform" = "claude-code" ]; then
-            to_delete+=("$cc_prefix/skills/secguard-clang")
-        fi
-        if [ "$platform" = "all" ]; then
-            to_delete+=("$bin_dir/secguard")
-        fi
-    fi
+    # 过滤不存在的项，避免 rm 报错
+    local existing=()
+    local item
+    for item in "${to_delete[@]}"; do
+        [ -e "$item" ] && existing+=("$item")
+    done
 
-    if [ ${#to_delete[@]} -eq 0 ]; then
+    if [ ${#existing[@]} -eq 0 ]; then
         echo "  Nothing to uninstall for platform: $platform"
-        return 0
-    fi
-
-    # 展示清单并确认
-    echo "  The following will be removed:"
-    for item in "${to_delete[@]}"; do
-        echo "    - $item"
-    done
-
-    if [ "$yes" != "true" ]; then
-        sg_confirm_action "Proceed with uninstall?" || {
-            echo "  Uninstall cancelled."
-            return 1
-        }
-    fi
-
-    # 执行删除
-    for item in "${to_delete[@]}"; do
-        if [ -d "$item" ]; then
-            rm -rf "$item"
-            echo "  Removed dir: $item"
-        elif [ -f "$item" ]; then
-            rm -f "$item"
-            echo "  Removed file: $item"
+    else
+        echo "  The following will be removed:"
+        for item in "${existing[@]}"; do echo "    - $item"; done
+        if [ "$yes" != "true" ]; then
+            sg_confirm_action "Proceed with uninstall?" || {
+                echo "  Uninstall cancelled."
+                return 1
+            }
         fi
-    done
+        for item in "${existing[@]}"; do
+            rm -rf "$item"
+            echo "  Removed: $item"
+        done
+    fi
 
-    # ClaudeCode 权限移除
+    # 权限移除（claude-code 与 claude-cac 各自独立 settings.json）
     if [ "$platform" = "all" ] || [ "$platform" = "claude-code" ]; then
         sg_remove_permissions "$cc_prefix/settings.json" 2>/dev/null || true
     fi
+    if [ "$platform" = "all" ] || [ "$platform" = "claude-cac" ]; then
+        sg_remove_permissions "$cac_prefix/settings.json" 2>/dev/null || true
+    fi
 
-    # 清理目录残留：manifest 逐文件删除会留下空目录树，且平台过滤会漏掉
-    # 全局 command（不在 extensions/ 下），这里对专属目录/文件做兜底清理。
-    if [ "$platform" = "all" ] || [ "$platform" = "opencode" ]; then
-        rm -rf "$oc_prefix/extensions/secguard-clang" 2>/dev/null || true
-        rm -f "$oc_prefix/commands/secguard.md" 2>/dev/null || true
+    # 清理空目录残留
+    if [ "$platform" = "all" ] || [ "$platform" = "opencode" ] || [ "$platform" = "opencode-nga" ]; then
+        rm -rf "$oc_dir" 2>/dev/null || true
         rmdir "$oc_prefix/extensions" 2>/dev/null || true
-        rmdir "$oc_prefix/commands" 2>/dev/null || true
     fi
     if [ "$platform" = "all" ] || [ "$platform" = "claude-code" ]; then
-        rm -rf "$cc_prefix/skills/secguard-clang" 2>/dev/null || true
-        rm -f "$cc_prefix/commands/secguard.md" 2>/dev/null || true
+        rm -rf "$cc_dir" "$cc_legacy_dir" 2>/dev/null || true
+        rmdir "$cc_prefix/plugins" 2>/dev/null || true
         rmdir "$cc_prefix/skills" 2>/dev/null || true
-        rmdir "$cc_prefix/commands" 2>/dev/null || true
+    fi
+    if [ "$platform" = "all" ] || [ "$platform" = "claude-cac" ]; then
+        rm -rf "$cac_dir" 2>/dev/null || true
+        rmdir "$cac_prefix/plugins" 2>/dev/null || true
     fi
 
-    # 若 manifest 中所有文件已删，删除 manifest
-    if [ -f "$manifest_path" ]; then
-        rm -f "$manifest_path" 2>/dev/null || true
-    fi
+    [ -f "$manifest_path" ] && rm -f "$manifest_path" 2>/dev/null || true
 
     echo "  Uninstall complete for platform: $platform"
     return 0
@@ -420,9 +392,10 @@ sg_verify_platform() {
     local prefix="$2"
     local bin_dir="$3"
     local pkg_version="$4"
-    local oc_prefix cc_prefix
+    local oc_prefix cc_prefix cac_prefix
     oc_prefix="${OC_PREFIX:-$HOME/.config/opencode}"
     cc_prefix="${CC_PREFIX:-$HOME/.claude}"
+    cac_prefix="${CAC_PREFIX:-$HOME/.cac}"
     local pass=0
     local fail=0
 
@@ -436,6 +409,18 @@ sg_verify_platform() {
         fi
     }
 
+    # 通用：验证 skills 目录下的 SKILL.md 数量
+    sg_check_skills() {
+        local skills_dir="$1"
+        local skill_count
+        skill_count=$(find "$skills_dir" -name SKILL.md 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$skill_count" -ge 14 ]; then
+            sg_check ok "Skills count: $skill_count (>=14)"
+        else
+            sg_check fail "Skills count: $skill_count (expected >=14)"
+        fi
+    }
+
     echo "Verifying installation (platform: $platform, version: $pkg_version)"
     echo "─────────────────────────────────────────────────────────"
 
@@ -444,7 +429,6 @@ sg_verify_platform() {
     [ -f "$bin_dir/secguard.exe" ] && bin="$bin_dir/secguard.exe"
     if [ -f "$bin" ] && [ -x "$bin" ]; then
         sg_check ok "Binary exists and executable: $bin"
-        # 版本匹配（secguard --version 输出含版本号）
         if "$bin" --version 2>/dev/null | grep -q "$pkg_version"; then
             sg_check ok "Binary version matches: $pkg_version"
         else
@@ -463,32 +447,50 @@ sg_verify_platform() {
         [ -f "$oc_dir/opencode.json" ] && sg_check ok "opencode.json" || sg_check fail "opencode.json"
         [ -f "$oc_dir/commands/secguard.md" ] && sg_check ok "commands/secguard.md" || sg_check fail "commands/secguard.md"
         [ -f "$oc_dir/agents/security-auditor.md" ] && sg_check ok "agents/security-auditor.md" || sg_check fail "agents/security-auditor.md"
-        local skill_count
-        skill_count=$(find "$oc_dir/skills" -name SKILL.md 2>/dev/null | wc -l | tr -d ' ')
-        if [ "$skill_count" -ge 14 ]; then
-            sg_check ok "Skills count: $skill_count (>=14)"
-        else
-            sg_check fail "Skills count: $skill_count (expected >=14)"
-        fi
+        sg_check_skills "$oc_dir/skills"
     fi
 
-    # ClaudeCode 检查
+    # OpenCode-NGA 检查
+    if [ "$platform" = "all" ] || [ "$platform" = "opencode-nga" ]; then
+        local nga_dir="$oc_prefix/extensions/secguard-clang"
+        echo ""
+        echo "OpenCode-NGA extension ($nga_dir):"
+        [ -f "$nga_dir/code-extension.json" ] && sg_check ok "code-extension.json" || sg_check fail "code-extension.json"
+        [ -f "$nga_dir/code-extension-install.json" ] && sg_check ok "code-extension-install.json" || sg_check fail "code-extension-install.json"
+        [ -f "$nga_dir/opencode.json" ] && sg_check ok "opencode.json" || sg_check fail "opencode.json"
+        [ -f "$nga_dir/commands/secguard.md" ] && sg_check ok "commands/secguard.md" || sg_check fail "commands/secguard.md"
+        [ -f "$nga_dir/agents/security-auditor.md" ] && sg_check ok "agents/security-auditor.md" || sg_check fail "agents/security-auditor.md"
+        sg_check_skills "$nga_dir/skills"
+    fi
+
+    # ClaudeCode 检查（官方插件方式：~/.claude/plugins/，非 skills/）
     if [ "$platform" = "all" ] || [ "$platform" = "claude-code" ]; then
-        local cc_dir="$cc_prefix/skills/secguard-clang"
+        local cc_dir="$cc_prefix/plugins/secguard-clang"
         echo ""
         echo "ClaudeCode plugin ($cc_dir):"
         [ -f "$cc_dir/.claude-plugin/plugin.json" ] && sg_check ok ".claude-plugin/plugin.json" || sg_check fail ".claude-plugin/plugin.json"
         [ -f "$cc_dir/commands/secguard.md" ] && sg_check ok "commands/secguard.md" || sg_check fail "commands/secguard.md"
         [ -f "$cc_dir/agents/security-auditor.md" ] && sg_check ok "agents/security-auditor.md" || sg_check fail "agents/security-auditor.md"
         [ -f "$cc_dir/hooks/hooks.json" ] && sg_check ok "hooks/hooks.json" || sg_check fail "hooks/hooks.json"
-        local skill_count
-        skill_count=$(find "$cc_dir/skills" -name SKILL.md 2>/dev/null | wc -l | tr -d ' ')
-        if [ "$skill_count" -ge 14 ]; then
-            sg_check ok "Skills count: $skill_count (>=14)"
-        else
-            sg_check fail "Skills count: $skill_count (expected >=14)"
-        fi
+        sg_check_skills "$cc_dir/skills"
         if sg_check_permissions_merged "$cc_prefix/settings.json" 2>/dev/null; then
+            sg_check ok "Permissions merged in settings.json"
+        else
+            sg_check fail "Permissions not fully merged in settings.json"
+        fi
+    fi
+
+    # Claude-CAC 检查（Claude Code 开源分支：~/.cac/plugins/）
+    if [ "$platform" = "all" ] || [ "$platform" = "claude-cac" ]; then
+        local cac_dir="$cac_prefix/plugins/secguard-clang"
+        echo ""
+        echo "ClaudeCAC plugin ($cac_dir):"
+        [ -f "$cac_dir/.cac-plugin/plugin.json" ] && sg_check ok ".cac-plugin/plugin.json" || sg_check fail ".cac-plugin/plugin.json"
+        [ -f "$cac_dir/commands/secguard.md" ] && sg_check ok "commands/secguard.md" || sg_check fail "commands/secguard.md"
+        [ -f "$cac_dir/agents/security-auditor.md" ] && sg_check ok "agents/security-auditor.md" || sg_check fail "agents/security-auditor.md"
+        [ -f "$cac_dir/hooks/hooks.json" ] && sg_check ok "hooks/hooks.json" || sg_check fail "hooks/hooks.json"
+        sg_check_skills "$cac_dir/skills"
+        if sg_check_permissions_merged "$cac_prefix/settings.json" 2>/dev/null; then
             sg_check ok "Permissions merged in settings.json"
         else
             sg_check fail "Permissions not fully merged in settings.json"
@@ -524,6 +526,9 @@ sg_cleanup_legacy_flat() {
     # 旧平铺 agent / plugin
     rm -f "$oc_prefix/agents/security-auditor.md"
     rm -f "$oc_prefix/plugins/secguard-context.ts"
+    # 误装进 OpenCode 扩展目录的 Claude Code 插件配置（张冠李戴，历史遗留）
+    rm -rf "$oc_prefix/extensions/secguard-clang/.claude-plugin" \
+           "$oc_prefix/extensions/secguard-clang/.claude-plugins"
 }
 
 # @@SG_INJECT_END@@

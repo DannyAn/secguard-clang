@@ -149,11 +149,10 @@ func (o *ScanOutput) writeCandidatesSarif(packages []*planner.PlanResult) error 
 			// Informational by construction — no candidate has been judged yet.
 			level := "note"
 
+			// Keep the ABSOLUTE path so a viewer can double-click straight to
+			// the file. A relative uri (relative to an undeclared base) is what
+			// made "Unable to find <file>" the default behaviour.
 			uri := c.Target.File
-			if o.RootDir != "" && strings.HasPrefix(uri, o.RootDir) {
-				uri = strings.TrimPrefix(uri, o.RootDir)
-				uri = strings.TrimPrefix(uri, "/")
-			}
 
 			evidenceParts := []string{}
 			for _, e := range c.Evidence {
@@ -276,6 +275,11 @@ func WriteSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding) e
 		vulnType := planner.TypeForCWE(cwe)
 		if vulnType == "" {
 			vulnType = f.RuleID
+		} else if canonical := planner.CWEForType(vulnType); canonical != "" {
+			// Normalize a legacy CWE (e.g. CWE-89 for injection) to the canonical
+			// one (CWE-78) so one vulnerability type never yields two rules with
+			// the same name.
+			cwe = canonical
 		}
 		if !rulesSeen[cwe] {
 			rulesSeen[cwe] = true
@@ -287,10 +291,14 @@ func WriteSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding) e
 			level = "error"
 		}
 
+		// Keep the ABSOLUTE path so a viewer can double-click to the file.
+		// A finding the agent wrote with a relative/truncated path is resolved
+		// back to the indexed absolute path when possible.
 		uri := f.FilePath
-		if rootDir != "" && strings.HasPrefix(uri, rootDir) {
-			uri = strings.TrimPrefix(uri, rootDir)
-			uri = strings.TrimPrefix(uri, "/")
+		if !filepath.IsAbs(uri) {
+			if resolved := resolveSourcePath(uri, sourceRoot); resolved != "" {
+				uri = resolved
+			}
 		}
 
 		msg := f.Summary

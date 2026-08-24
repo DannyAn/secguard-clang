@@ -30,29 +30,33 @@ SecGuard v${PKG_VERSION} Installer
       - 检测当前操作系统与 CPU 架构（macOS/Linux/Windows × amd64/arm64），
         从包内选择对应的 secguard 二进制安装到 ~/.local/bin
         （若 /usr/local/bin 可写则优先装到 /usr/local/bin）；
-      - 同时安装 OpenCode 与 Claude Code 两个平台的 agent 扩展。
+      - 安装各 AI-agent 平台的扩展。
 
 常用示例：
-    ./install.sh                        # 全部安装（扩展 + 二进制，自动判 OS/架构）
-    ./install.sh --target opencode      # 只装 OpenCode 扩展 + 二进制
-    ./install.sh --target claude-code   # 只装 Claude Code 扩展 + 二进制
-    ./install.sh --no-binary            # 只装扩展，跳过二进制
-    ./install.sh --verify               # 安装后自检
-    ./install.sh --uninstall --yes      # 卸载全部
+    ./install.sh                           # 全部安装（4 平台扩展 + 二进制）
+    ./install.sh --target opencode         # 只装 OpenCode 扩展 + 二进制
+    ./install.sh --target opencode-nga     # 只装 OpenCode 开源分支扩展 + 二进制
+    ./install.sh --target claude-code      # 只装 Claude Code 官方插件 + 二进制
+    ./install.sh --target claude-cac       # 只装 Claude Code 开源分支（~/.cac/）+ 二进制
+    ./install.sh --no-binary               # 只装扩展，跳过二进制
+    ./install.sh --verify                  # 安装后自检
+    ./install.sh --uninstall --yes         # 卸载全部
 
 Options:
-  --target <opencode|claude-code|all>  安装目标平台（默认 all）
-  --prefix <path>                      覆盖安装根目录
-  --bin-dir <path>                     二进制安装目录（默认 /usr/local/bin，不可写时回退 ~/.local/bin）
-  --no-binary                          跳过二进制安装
-  --uninstall                          卸载模式
-  --verify                             校验安装
-  --yes, -y                            跳过交互确认
-  --help, -h                           显示本帮助
+  --target <opencode|opencode-nga|claude-code|claude-cac|all>
+                                          安装目标平台（默认 all）
+  --prefix <path>                         覆盖安装根目录
+  --bin-dir <path>                        二进制安装目录（默认 /usr/local/bin，不可写时回退 ~/.local/bin）
+  --no-binary                             跳过二进制安装
+  --uninstall                             卸载模式
+  --verify                                校验安装
+  --yes, -y                               跳过交互确认
+  --help, -h                              显示本帮助
 
 环境变量覆盖：
   OPENCODE_DIR  OpenCode 根目录（默认 ~/.config/opencode）
   CLAUDE_DIR    Claude Code 根目录（默认 ~/.claude）
+  CAC_DIR       Claude Code 开源分支根目录（默认 ~/.cac）
   BIN_DIR       二进制安装目录（默认 /usr/local/bin）
 EOF
 }
@@ -84,15 +88,19 @@ fi
 # 路径解析
 OC_PREFIX="${PREFIX:-${OPENCODE_DIR:-$HOME/.config/opencode}}"
 CC_PREFIX="${PREFIX:-${CLAUDE_DIR:-$HOME/.claude}}"
+CAC_PREFIX="${PREFIX:-${CAC_DIR:-$HOME/.cac}}"
 if [ -n "$BIN_DIR" ]; then
     : # use explicit
 else
     BIN_DIR="${BIN_DIR_ENV:-/usr/local/bin}"
 fi
 OC_TARGET_DIR="$OC_PREFIX/extensions/secguard-clang"
-CC_TARGET_DIR="$CC_PREFIX/skills/secguard-clang"
+CC_TARGET_DIR="$CC_PREFIX/plugins/secguard-clang"
+CAC_TARGET_DIR="$CAC_PREFIX/plugins/secguard-clang"
 OC_MANIFEST="$OC_PREFIX/.secguard-install-manifest"
+OC_NGA_MANIFEST="$OC_PREFIX/.secguard-install-manifest-nga"
 CC_MANIFEST="$CC_PREFIX/.secguard-install-manifest"
+CAC_MANIFEST="$CAC_PREFIX/.secguard-install-manifest"
 
 # 已安装文件记录
 SG_FILES_LOG=""
@@ -119,6 +127,18 @@ sg_cp_record() {
     sg_record_file "$(cd "$(dirname "$dst")" && pwd)/$(basename "$dst")"
 }
 
+# 复制 shared skills 到目标 skills 目录
+sg_install_skills() {
+    local target_skills_dir="$1"
+    local skill_dir skill_name
+    for skill_dir in "$PKG_DIR"/shared/skills/*/; do
+        [ -d "$skill_dir" ] || continue
+        skill_name=$(basename "$skill_dir")
+        mkdir -p "$target_skills_dir/$skill_name"
+        sg_cp_record "$skill_dir/SKILL.md" "$target_skills_dir/$skill_name/SKILL.md"
+    done
+}
+
 # 安装 OpenCode extension
 install_opencode() {
     echo "[opencode] Installing to $OC_TARGET_DIR"
@@ -135,15 +155,7 @@ install_opencode() {
     for f in "$src"/tools/*.ts;    do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/tools/$(basename "$f")"; done
     for f in "$src"/plugins/*.ts;  do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/plugins/$(basename "$f")"; done
 
-
-    # skills（来自 shared/skills）
-    local skill_dir skill_name
-    for skill_dir in "$PKG_DIR"/shared/skills/*/; do
-        [ -d "$skill_dir" ] || continue
-        skill_name=$(basename "$skill_dir")
-        mkdir -p "$OC_TARGET_DIR/skills/$skill_name"
-        sg_cp_record "$skill_dir/SKILL.md" "$OC_TARGET_DIR/skills/$skill_name/SKILL.md"
-    done
+    sg_install_skills "$OC_TARGET_DIR/skills"
 
     # 写 manifest
     local files_csv
@@ -152,7 +164,46 @@ install_opencode() {
     echo "[opencode] Done"
 }
 
-# 安装 ClaudeCode plugin
+# 安装 OpenCode-NGA（OpenCode 开源分支：manifest 用 code-extension.json）
+install_opencode_nga() {
+    echo "[opencode-nga] Installing to $OC_TARGET_DIR"
+    local src="$PKG_DIR/opencode-nga"
+    sg_cleanup_legacy_flat "$OC_PREFIX" "$PKG_DIR"
+    mkdir -p "$OC_TARGET_DIR"/{commands,agents,tools,plugins,skills}
+
+    [ -f "$src/code-extension.json" ] && sg_cp_record "$src/code-extension.json" "$OC_TARGET_DIR/code-extension.json"
+    # code-extension-install.json 的 source 替换为实际安装目录（绝对路径）。
+    # 用 python3 做字面替换（sed 会把路径里的 `&`/`|` 当作特殊字符）。
+    if [ -f "$src/code-extension-install.json" ]; then
+        python3 -c "
+src = '''$src/code-extension-install.json'''
+dst = '''$OC_TARGET_DIR/code-extension-install.json'''
+target = '''$OC_TARGET_DIR'''
+with open(src) as f:
+    content = f.read()
+with open(dst, 'w') as f:
+    f.write(content.replace('{{OC_TARGET_DIR}}', target))
+"
+        sg_record_file "$(cd "$(dirname "$OC_TARGET_DIR/code-extension-install.json")" && pwd)/$(basename "$OC_TARGET_DIR/code-extension-install.json")"
+    fi
+    [ -f "$src/opencode.json" ]  && sg_cp_record "$src/opencode.json"  "$OC_TARGET_DIR/opencode.json"
+
+    local f
+    for f in "$src"/commands/*.md; do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/commands/$(basename "$f")"; done
+    for f in "$src"/agents/*.md;   do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/agents/$(basename "$f")"; done
+    for f in "$src"/tools/*.ts;    do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/tools/$(basename "$f")"; done
+    for f in "$src"/plugins/*.ts;  do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/plugins/$(basename "$f")"; done
+
+    sg_install_skills "$OC_TARGET_DIR/skills"
+
+    # 写 manifest
+    local files_csv
+    files_csv=$(sg_files_csv)
+    sg_write_install_manifest "$OC_NGA_MANIFEST" "$PKG_VERSION" "opencode-nga" "" "$files_csv"
+    echo "[opencode-nga] Done"
+}
+
+# 安装 ClaudeCode 官方插件（~/.claude/plugins/，而非 skills/）
 install_claude_code() {
     echo "[claude-code] Installing to $CC_TARGET_DIR"
     local src="$PKG_DIR/claude-code"
@@ -165,15 +216,7 @@ install_claude_code() {
     for f in "$src"/.claude/commands/*.md; do [ -f "$f" ] && sg_cp_record "$f" "$CC_TARGET_DIR/commands/$(basename "$f")"; done
     for f in "$src"/.claude/agents/*.md;   do [ -f "$f" ] && sg_cp_record "$f" "$CC_TARGET_DIR/agents/$(basename "$f")"; done
 
-
-    # skills
-    local skill_dir skill_name
-    for skill_dir in "$PKG_DIR"/shared/skills/*/; do
-        [ -d "$skill_dir" ] || continue
-        skill_name=$(basename "$skill_dir")
-        mkdir -p "$CC_TARGET_DIR/skills/$skill_name"
-        sg_cp_record "$skill_dir/SKILL.md" "$CC_TARGET_DIR/skills/$skill_name/SKILL.md"
-    done
+    sg_install_skills "$CC_TARGET_DIR/skills"
 
     # 合并权限
     echo "[claude-code] Merging permissions into $CC_PREFIX/settings.json"
@@ -184,6 +227,32 @@ install_claude_code() {
     files_csv=$(sg_files_csv)
     sg_write_install_manifest "$CC_MANIFEST" "$PKG_VERSION" "claude-code" "" "$files_csv"
     echo "[claude-code] Done"
+}
+
+# 安装 ClaudeCAC（Claude Code 开源分支，~/.cac/plugins/）
+install_claude_cac() {
+    echo "[claude-cac] Installing to $CAC_TARGET_DIR"
+    local src="$PKG_DIR/claude-cac"
+    mkdir -p "$CAC_TARGET_DIR"/{.cac-plugin,commands,agents,hooks,skills}
+
+    [ -f "$src/.cac-plugin/plugin.json" ] && sg_cp_record "$src/.cac-plugin/plugin.json" "$CAC_TARGET_DIR/.cac-plugin/plugin.json"
+    [ -f "$src/hooks/hooks.json" ] && sg_cp_record "$src/hooks/hooks.json" "$CAC_TARGET_DIR/hooks/hooks.json"
+
+    local f
+    for f in "$src"/.cac/commands/*.md; do [ -f "$f" ] && sg_cp_record "$f" "$CAC_TARGET_DIR/commands/$(basename "$f")"; done
+    for f in "$src"/.cac/agents/*.md;   do [ -f "$f" ] && sg_cp_record "$f" "$CAC_TARGET_DIR/agents/$(basename "$f")"; done
+
+    sg_install_skills "$CAC_TARGET_DIR/skills"
+
+    # 合并权限
+    echo "[claude-cac] Merging permissions into $CAC_PREFIX/settings.json"
+    sg_merge_permissions "$CAC_PREFIX/settings.json"
+
+    # 写 manifest
+    local files_csv
+    files_csv=$(sg_files_csv)
+    sg_write_install_manifest "$CAC_MANIFEST" "$PKG_VERSION" "claude-cac" "" "$files_csv"
+    echo "[claude-cac] Done"
 }
 
 # 安装二进制
@@ -254,12 +323,20 @@ if [ "$DO_UNINSTALL" = true ]; then
         opencode)
             sg_uninstall_platform "opencode" "$OC_PREFIX" "$BIN_DIR" "$OC_MANIFEST" "$yes_flag"
             ;;
+        opencode-nga)
+            sg_uninstall_platform "opencode-nga" "$OC_PREFIX" "$BIN_DIR" "$OC_NGA_MANIFEST" "$yes_flag"
+            ;;
         claude-code)
             sg_uninstall_platform "claude-code" "$CC_PREFIX" "$BIN_DIR" "$CC_MANIFEST" "$yes_flag"
             ;;
+        claude-cac)
+            sg_uninstall_platform "claude-cac" "$CAC_PREFIX" "$BIN_DIR" "$CAC_MANIFEST" "$yes_flag"
+            ;;
         all)
             sg_uninstall_platform "opencode" "$OC_PREFIX" "$BIN_DIR" "$OC_MANIFEST" "$yes_flag"
+            sg_uninstall_platform "opencode-nga" "$OC_PREFIX" "$BIN_DIR" "$OC_NGA_MANIFEST" "$yes_flag"
             sg_uninstall_platform "claude-code" "$CC_PREFIX" "$BIN_DIR" "$CC_MANIFEST" "$yes_flag"
+            sg_uninstall_platform "claude-cac" "$CAC_PREFIX" "$BIN_DIR" "$CAC_MANIFEST" "$yes_flag"
             ;;
         *) echo "Unknown target: $TARGET" >&2; exit 2 ;;
     esac
@@ -278,10 +355,16 @@ sg_init_files_log
 
 # 卸载旧版本
 case "$TARGET" in
-    opencode|all)    check_and_uninstall_old "$OC_MANIFEST" "opencode" ;;
+    opencode|opencode-nga|all)
+        check_and_uninstall_old "$OC_MANIFEST" "opencode"
+        check_and_uninstall_old "$OC_NGA_MANIFEST" "opencode-nga"
+        ;;
 esac
 case "$TARGET" in
-    claude-code|all) check_and_uninstall_old "$CC_MANIFEST" "claude-code" ;;
+    claude-code|claude-cac|all)
+        check_and_uninstall_old "$CC_MANIFEST" "claude-code"
+        check_and_uninstall_old "$CAC_MANIFEST" "claude-cac"
+        ;;
 esac
 
 # 执行安装
@@ -290,14 +373,26 @@ case "$TARGET" in
         install_opencode
         install_binary
         ;;
+    opencode-nga)
+        install_opencode_nga
+        install_binary
+        ;;
     claude-code)
         install_claude_code
+        install_binary
+        ;;
+    claude-cac)
+        install_claude_cac
         install_binary
         ;;
     all)
         install_opencode
         echo ""
+        install_opencode_nga
+        echo ""
         install_claude_code
+        echo ""
+        install_claude_cac
         echo ""
         install_binary
         ;;
@@ -316,8 +411,18 @@ case "$TARGET" in
         ;;
 esac
 case "$TARGET" in
+    opencode-nga|all)
+        echo "║  OpenCode-NGA: $OC_TARGET_DIR (code-extension.json)"
+        ;;
+esac
+case "$TARGET" in
     claude-code|all)
         echo "║  ClaudeCode: $CC_TARGET_DIR"
+        ;;
+esac
+case "$TARGET" in
+    claude-cac|all)
+        echo "║  ClaudeCAC: $CAC_TARGET_DIR"
         ;;
 esac
 echo "║  Command:   /secguard [path]"

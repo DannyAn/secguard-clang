@@ -2,6 +2,47 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.4.4] - 2026-08-24
+
+### 生产环境安装与部署修正
+
+修复多平台 agent 扩展的安装位置错误，并按官方约定新增两个开源分支部署方案。
+
+- **Claude Code 改走官方插件目录**：不再把整套扩展塞进 `~/.claude/skills/`（那是全局
+  单技能目录），改安装到 `~/.claude/plugins/secguard-clang/`（`.claude-plugin/plugin.json`
+  清单 + commands/agents/skills/hooks）。
+- **OpenCode 清理误装配置**：安装/卸载时移除 OpenCode 扩展目录里误残留的
+  `.claude-plugin`/`.claude-plugins`（张冠李戴）。
+- **新增 `claude-cac` 平台**（Claude Code 开源分支）：部署到 `~/.cac/plugins/secguard-clang/`，
+  清单改为 `.cac-plugin/plugin.json`，其余与 claude-code 一致。
+- **新增 `opencode-nga` 平台**（OpenCode 开源分支）：部署到 `~/.config/opencode/extensions/secguard-clang/`，
+  `extension.json`→`code-extension.json`，新增 `code-extension-install.json`（其 `source`
+  由占位符在安装时替换为实际路径），其余与 opencode 一致。
+- 权限清单补齐 `types`/`schema` 两项，`--target` 支持 4 平台（opencode / opencode-nga /
+  claude-code / claude-cac / all），build-packages.sh / install.sh / uninstall.sh / deploy.sh
+  全部同步。
+
+### 修复 result.sarif / result.xlsx 文件定位与代码上下文缺失
+
+- **修复 result.sarif 同一类型重复出现**：agent 用「绝对路径」与「截断相对路径」各写一次
+  同一缺陷时，因唯一索引含 `file_path` 落成两行，导致同一 rule 输出两份。写入时
+  `resolveFindingFilePath` 归一化路径、审计时 `dedupeAndNormalizeFindings` 收敛重复行。
+- **修复 report.md 截断路径**：`shortFile`（只留最后两段）改为 `displayPath`（仓库相对/
+  绝对完整路径），agent 不再抄走不可定位的截断路径。
+- **修复双击找不到文件 / 缺代码上下文**：`candidates.sarif` 与 `result.sarif` 的
+  `artifactLocation.uri` 改为绝对路径；`report.md`/`result.sarif`/`result.xlsx` 均能解析
+  源码并嵌入代码上下文。
+- `result.sarif` 规则去重把 legacy CWE 归一化到 canonical（如 CWE-89→CWE-78），避免
+  injection/crypto-misuse 因混用 CWE 拆出两条同名 rule。
+
+### 调度与提示词修正
+
+- **Scale Gate 强制约束**：`total_candidates > 200` 时禁止 SEQUENTIAL，并行不可用时须明确
+  告知用户而非擅自降级；缺失类型失败原因澄清 `maxturns-exceeded`（特指子代理）与
+  `unknown`（从未分发）语义。
+- **候选文件读取性能**：明确 `report.md` 为候选索引（含 File:Line + Suspicion），禁止为取
+  file:line 逐个 READ `candidates/<type>/NNN_*.md`。
+
 ## [0.4.3] - 2026-08-23
 
 ### result.xlsx Excel 导出（供研发团队集中确认）

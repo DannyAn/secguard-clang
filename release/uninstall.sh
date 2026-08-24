@@ -21,7 +21,7 @@ SecGuard v${PKG_VERSION} Uninstaller
 Usage: uninstall.sh [options]
 
 Options:
-  --target <opencode|claude-code|all>  Target platform (default: all)
+  --target <opencode|opencode-nga|claude-code|claude-cac|all>  Target platform (default: all)
   --prefix <path>                      Override install root
   --bin-dir <path>                     Binary install dir (default: /usr/local/bin)
   --yes, -y                            Skip confirmation prompts
@@ -30,6 +30,7 @@ Options:
 Environment overrides:
   OPENCODE_DIR   Default: ~/.config/opencode
   CLAUDE_DIR     Default: ~/.claude
+  CAC_DIR        Default: ~/.cac
   BIN_DIR        Default: /usr/local/bin
 EOF
 }
@@ -50,9 +51,12 @@ done
 
 OC_PREFIX="${PREFIX:-${OPENCODE_DIR:-$HOME/.config/opencode}}"
 CC_PREFIX="${PREFIX:-${CLAUDE_DIR:-$HOME/.claude}}"
+CAC_PREFIX="${PREFIX:-${CAC_DIR:-$HOME/.cac}}"
 [ -z "$BIN_DIR" ] && BIN_DIR="${BIN_DIR_ENV:-/usr/local/bin}"
 OC_MANIFEST="$OC_PREFIX/.secguard-install-manifest"
+OC_NGA_MANIFEST="$OC_PREFIX/.secguard-install-manifest-nga"
 CC_MANIFEST="$CC_PREFIX/.secguard-install-manifest"
+CAC_MANIFEST="$CAC_PREFIX/.secguard-install-manifest"
 
 yes_flag="false"
 [ "$YES" = true ] && yes_flag="true"
@@ -65,14 +69,24 @@ case "$TARGET" in
         sg_cleanup_legacy_flat "$OC_PREFIX" "$PKG_DIR"
         sg_uninstall_platform "opencode" "$OC_PREFIX" "$BIN_DIR" "$OC_MANIFEST" "$yes_flag"
         ;;
+    opencode-nga)
+        sg_cleanup_legacy_flat "$OC_PREFIX" "$PKG_DIR"
+        sg_uninstall_platform "opencode-nga" "$OC_PREFIX" "$BIN_DIR" "$OC_NGA_MANIFEST" "$yes_flag"
+        ;;
     claude-code)
         sg_uninstall_platform "claude-code" "$CC_PREFIX" "$BIN_DIR" "$CC_MANIFEST" "$yes_flag"
+        ;;
+    claude-cac)
+        sg_uninstall_platform "claude-cac" "$CAC_PREFIX" "$BIN_DIR" "$CAC_MANIFEST" "$yes_flag"
         ;;
     all)
         sg_cleanup_legacy_flat "$OC_PREFIX" "$PKG_DIR"
         sg_uninstall_platform "opencode" "$OC_PREFIX" "$BIN_DIR" "$OC_MANIFEST" "$yes_flag"
+        sg_uninstall_platform "opencode-nga" "$OC_PREFIX" "$BIN_DIR" "$OC_NGA_MANIFEST" "$yes_flag"
         echo ""
         sg_uninstall_platform "claude-code" "$CC_PREFIX" "$BIN_DIR" "$CC_MANIFEST" "$yes_flag"
+        echo ""
+        sg_uninstall_platform "claude-cac" "$CAC_PREFIX" "$BIN_DIR" "$CAC_MANIFEST" "$yes_flag"
         ;;
     *) echo "Unknown target: $TARGET" >&2; exit 2 ;;
 esac

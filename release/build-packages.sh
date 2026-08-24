@@ -215,7 +215,20 @@ build_master() {
     cp "$EXTENSION_DIR/opencode/tools/"*.ts "$root/opencode/tools/" 2>/dev/null || true
     cp "$EXTENSION_DIR/opencode/plugins/"*.ts "$root/opencode/plugins/" 2>/dev/null || true
 
-    # claude-code（展开模板）
+    # opencode-nga（OpenCode 开源分支：manifest 改名 code-extension.json，
+    # 其余文件与 opencode 完全一致；code-extension-install.json 的 source 在
+    # install 时按实际安装目录替换）
+    mkdir -p "$root/opencode-nga"/{commands,agents,tools,plugins}
+    cp "$EXTENSION_DIR/opencode-nga/code-extension.json" "$root/opencode-nga/"
+    set_json_version "$root/opencode-nga/code-extension.json" "$version"
+    cp "$EXTENSION_DIR/opencode-nga/code-extension-install.json" "$root/opencode-nga/"
+    cp "$EXTENSION_DIR/opencode/opencode.json" "$root/opencode-nga/"
+    expand_includes "$EXTENSION_DIR/opencode/commands/secguard.md" "$root/opencode-nga/commands/secguard.md" "$EXTENSION_DIR/shared"
+    expand_includes "$EXTENSION_DIR/opencode/agents/security-auditor.md" "$root/opencode-nga/agents/security-auditor.md" "$EXTENSION_DIR/shared"
+    cp "$EXTENSION_DIR/opencode/tools/"*.ts "$root/opencode-nga/tools/" 2>/dev/null || true
+    cp "$EXTENSION_DIR/opencode/plugins/"*.ts "$root/opencode-nga/plugins/" 2>/dev/null || true
+
+    # claude-code（官方插件方式，安装到 ~/.claude/plugins/，非 skills/）
     mkdir -p "$root/claude-code/.claude-plugin" "$root/claude-code/.claude/commands" "$root/claude-code/.claude/agents" "$root/claude-code/hooks"
     cp "$EXTENSION_DIR/claude-code/.claude-plugin/plugin.json" "$root/claude-code/.claude-plugin/"
     set_json_version "$root/claude-code/.claude-plugin/plugin.json" "$version"
@@ -223,6 +236,15 @@ build_master() {
     cp "$EXTENSION_DIR/claude-code/.claude/settings.json" "$root/claude-code/.claude/" 2>/dev/null || true
     expand_includes "$EXTENSION_DIR/claude-code/.claude/commands/secguard.md" "$root/claude-code/.claude/commands/secguard.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/claude-code/.claude/agents/security-auditor.md" "$root/claude-code/.claude/agents/security-auditor.md" "$EXTENSION_DIR/shared"
+
+    # claude-cac（Claude Code 开源分支：~/.cac/，manifest 改名 .cac-plugin/plugin.json）
+    mkdir -p "$root/claude-cac/.cac-plugin" "$root/claude-cac/.cac/commands" "$root/claude-cac/.cac/agents" "$root/claude-cac/hooks"
+    cp "$EXTENSION_DIR/claude-cac/.cac-plugin/plugin.json" "$root/claude-cac/.cac-plugin/"
+    set_json_version "$root/claude-cac/.cac-plugin/plugin.json" "$version"
+    cp "$EXTENSION_DIR/claude-cac/hooks/hooks.json" "$root/claude-cac/hooks/"
+    cp "$EXTENSION_DIR/claude-cac/.cac/settings.json" "$root/claude-cac/.cac/" 2>/dev/null || true
+    expand_includes "$EXTENSION_DIR/claude-cac/.cac/commands/secguard.md" "$root/claude-cac/.cac/commands/secguard.md" "$EXTENSION_DIR/shared"
+    expand_includes "$EXTENSION_DIR/claude-cac/.cac/agents/security-auditor.md" "$root/claude-cac/.cac/agents/security-auditor.md" "$EXTENSION_DIR/shared"
 
     # install.sh / uninstall.sh（注入）
     inject_into "$SCRIPT_DIR/install.sh.tmpl" "$INJECT_FILE" > "$root/install.sh"

@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"note\": \"Source file edited — SecGuard index may be stale. Re-run /secguard to refresh.\"}' >&2"
+          }
+        ]
+      }
+    ]
+  }
+}

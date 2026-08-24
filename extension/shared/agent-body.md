@@ -13,6 +13,13 @@ The orchestrator hands you: a set of types, a `scan_id`, and a scan directory
 - `<scan_dir>/candidates/<type>/NNN_*.md` — per-candidate evidence (Location,
   Evidence, Pipeline Assessment, Fix Suggestion).
 
+**`report.md` is your INDEX.** Its per-type table already lists every candidate's
+`Function | File:Line | Variable | Suspicion`. Do NOT read the whole
+`candidates/<type>/NNN_*.md` directory to get file:line — that is one READ per
+candidate and, for a high-volume type like `null-deref`, wastes hundreds of calls.
+Open a candidate file ONLY for a `suspected`/`possible` candidate (full evidence),
+or a `confirmed` that needs a detail `report.md` does not carry.
+
 **Do NOT run `secguard scan`, `secguard plan`, or `secguard index`** — the scan
 already converged every type. If you were handed a bare path with no `scan_id`,
 stop and tell the user to run the `/secguard` command instead (you are a worker,
@@ -92,11 +99,12 @@ budget your effort, not to pre-judge the answer:
 
 - **confirmed** — a flow filter or the detector *proved* the pattern on the
   semantic graph. Do NOT re-derive the dataflow or re-prove the defect by
-  reading the source file. You MAY verify the reported file:line by viewing
-  the cited line and its immediate context (±3 lines) to confirm the
-  statement matches the evidence (e.g. the line is indeed a malloc call).
-  Then confirm (file:line matches) or dismiss (file:line mismatch). This
-  constraint does NOT apply to suspected or possible candidates — those
+  reading the source file. Take the file:line from the `report.md` table (do
+  NOT open the `candidates/<type>/NNN_*.md` file for it), and you MAY verify the
+  reported file:line by viewing the cited line and its immediate context (±3
+  lines) to confirm the statement matches the evidence (e.g. the line is indeed a
+  malloc call). Then confirm (file:line matches) or dismiss (file:line mismatch).
+  This constraint does NOT apply to suspected or possible candidates — those
   require full source reading and reasoning.
 - **suspected** — a heuristic recognized the pattern but the graph could not
   prove it. This is where your depth budget belongs: read the source and reason.

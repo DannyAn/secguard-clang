@@ -21,6 +21,14 @@ import (
 // overwriting the candidate-stage report.md so a reader never sees stale
 // unclassified leads mixed with the final verdicts.
 func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding) error {
+	// Derive the project root from the report's scan directory when not given,
+	// so file paths render repo-relative the same way result.sarif/result.xlsx
+	// resolve them (and a reader can re-locate the source).
+	sourceRoot := rootDir
+	if sourceRoot == "" {
+		sourceRoot = projectRootFromScanDir(filepath.Dir(reportPath))
+	}
+
 	type findingGroup struct {
 		vulnType string
 		cwe      string
@@ -101,11 +109,10 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding)
 		b.WriteString("| # | Status | Severity | Function | File:Line | Summary |\n")
 		b.WriteString("|---|--------|----------|----------|-----------|---------|\n")
 		for i, f := range g.items {
-			fileShort := shortFile(f.FilePath)
-			if rootDir != "" && strings.HasPrefix(fileShort, rootDir) {
-				fileShort = strings.TrimPrefix(fileShort, rootDir)
-				fileShort = strings.TrimPrefix(fileShort, "/")
-			}
+			// Show a repo-relative path when the root is known, else the raw
+			// path — never the lossy shortFile tail, which drops intermediate
+			// directories and breaks re-locating the file.
+			fileShort := displayPath(f.FilePath, sourceRoot)
 			summary := f.Summary
 			if summary == "" {
 				summary = f.Reasoning
@@ -169,7 +176,10 @@ func (o *ScanOutput) writeReport(packages []*planner.PlanResult, indexSummary In
 		b.WriteString(fmt.Sprintf("| # | Function | File:Line | Variable | Suspicion |\n"))
 		b.WriteString(fmt.Sprintf("|---|----------|-----------|----------|----------|\n"))
 		for i, c := range pkg.Candidates {
-			fileShort := shortFile(c.Target.File)
+			// Repo-relative (or absolute) path, never the lossy last-2 tail:
+			// the agent copies this into findings, and a truncated tail cannot
+			// be re-located by result.sarif / result.xlsx.
+			fileShort := displayPath(c.Target.File, o.RootDir)
 			b.WriteString(fmt.Sprintf("| %d | %s | %s:%d | %s | %s |\n",
 				i+1, c.Target.Function, fileShort, c.Target.Line, c.Target.Variable, c.SuspicionLevel))
 		}

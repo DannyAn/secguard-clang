@@ -161,6 +161,16 @@ not already read). Do NOT load a skill for a type that has 0 candidates.
 `report.md` is your primary candidate input (one compact read); the scan summary
 already gives you the per-type counts.
 
+**Candidate-file budget (the biggest time sink — READ THIS).** `report.md` is the
+INDEX: its per-type table already carries every candidate's `# | Function |
+File:Line | Variable | Suspicion`. Never READ the whole `candidates/<type>/NNN_*.md`
+directory to obtain file:line — that is a one-file-per-candidate fan-out and, for a
+type like `null-deref` with hundreds of confirmed candidates, will burn hundreds of
+slow READ calls. Open a `candidates/<type>/NNN_*.md` file ONLY when a
+`suspected`/`possible` candidate needs its full evidence block, or a `confirmed`
+candidate needs a detail `report.md` does not carry. Classify from the `report.md`
+table + source at file:line; do not read a candidate file for every candidate.
+
 **长扫描超时策略 (F4):** Before calling `secguard_scan`, estimate scan duration. If the project has > 100 C files OR the scan is expected to exceed 120s (the default Bash timeout), the orchestrator SHALL either (a) invoke the scan with an explicit timeout ≥ 600s, or (b) use the host's background-task + Monitor mechanism from the start. When a scan is moved to the background, the orchestrator SHALL switch to Monitor within 1 turn — it SHALL NOT use `sleep N; tail` (blocked by Bash safety policy) and SHALL NOT leave a backgrounded scan unmonitored. While the Monitor is pending, the orchestrator SHALL NOT issue parallel Bash commands (the host may buffer their results until the Monitor completes, wasting the parallel window); any preparation (type list, agent-definition read) MUST complete before the Monitor starts.
 
 1. **Scan**: call the `secguard_scan` tool with the target path. It returns a
@@ -178,13 +188,23 @@ already gives you the per-type counts.
      the skill loads and the single report.md read. Do NOT spawn subagents.
    - **`total_candidates > 200` (or `report.md` > ~40 KB) → PARALLEL (step 4).**
      Only now does a single context risk exhaustion; dispatch subagents.
+
+   > **⚠️ 强制约束：当 `total_candidates > 200` 时，禁止选择 SEQUENTIAL 路径。**
+   > 违规将导致 orchestrator 上下文在处理完前几个类型后耗尽，其余类型变成
+   > "missing-type"，且被错误标注为 "maxturns-exceeded"（子代理从未启动，不存在
+   > maxTurns 消耗；正确原因是 "unknown"）。
+   >
+   > **降级处理：** 当 parallel dispatch 因故不可用（如子代理不可用）且
+   > `total_candidates > 200` 时，orchestrator 应明确告知用户"扫描规模超出单代理
+   > 能力，需要并行处理支持"，而不可擅自降级为 SEQUENTIAL。
 3. **Sequential loop** (the normal path for small scans): for each type with
    candidates > 0, in report.md order — load that type's skill, then classify
    candidates by suspicion_level:
-   - **confirmed** → lightweight verify: read candidate evidence, verify file:line
-     by viewing the cited line ±3 lines (do NOT re-derive the dataflow or read
-     the whole function), then confirm (match) or dismiss (mismatch). Batch all
-     confirmed verdicts into one write call.
+   - **confirmed** → lightweight verify: take file:line from the `report.md` table
+     (do NOT read the `candidates/<type>/NNN_*.md` file just to get file:line), then
+     verify by viewing the cited source line ±3 lines (do NOT re-derive the dataflow
+     or read the whole function), then confirm (match) or dismiss (mismatch). Batch
+     all confirmed verdicts into one write call.
    - **suspected/possible** → full reasoning: read candidate evidence, read source
      at reported file:line, reason and classify (confirmed/suspected/dismissed).
    Write findings in ONE batch: write `<tmpdir>/<type>.json` with the Write tool,
@@ -206,9 +226,11 @@ already gives you the per-type counts.
    The scan already ran: your types' candidates are in <scan_dir>/report.md and
    <scan_dir>/candidates/<type>/ — do NOT re-run secguard_scan or secguard_plan.
     For each type: load the <type> skill, then classify by suspicion_level:
-    - confirmed → verify file:line (view cited line ±3 lines, do NOT re-derive
-      dataflow), confirm/dismiss, batch write.
-    - suspected/possible → read source at file:line, reason, classify.
+    - confirmed → take file:line from <scan_dir>/report.md (do NOT read the
+      candidates/<type>/NNN_*.md files), verify by viewing the cited source line
+      ±3 lines (do NOT re-derive dataflow), confirm/dismiss, batch write.
+    - suspected/possible → open only that candidate's evidence file, read source
+      at file:line, reason, classify.
     Write findings in ONE batch: write `<tmpdir>/<type>.json` with the Write tool, then
     `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
    Then record A5 reviews for each suspected finding via `secguard report --review --id=<id> ...`. Read source only at reported
@@ -288,9 +310,21 @@ Report the diagnostic conclusion in Chinese, Markdown tables only:
 7. 逐条详情: Reasoning / Exception Check / Fix Strategy per confirmed+suspected
 8. 缺失类型章节 (only when types were not successfully processed — F1): a table
    `| 类型 | 候选数 | 失败原因 |` listing every missing-type, with 失败原因 from
-   the enum (api-quota-exhausted / maxturns-exceeded / write-busy / empty-output /
-   unknown). This section is MANDATORY when any type was not classified — the
-   user must know the scan is incomplete.
+   the enum below. This section is MANDATORY when any type was not classified —
+   the user must know the scan is incomplete.
+
+   失败原因枚举（含义）:
+   - `api-quota-exhausted` – **子代理**触发了 API 配额限制。
+   - `maxturns-exceeded` – **子代理**达到了 maxTurns 上限（由 security-auditor.md
+     的 steps/maxTurns 参数定义）。
+   - `write-busy` – 写报告时 IO 忙。
+   - `empty-output` – 子代理执行完成但未产出任何 finding。
+   - `unknown` – 类型从未被分发（orchestrator 未启动对应子代理，或 orchestrator
+     自身上下文耗尽未完成顺序处理）。
+
+   **注意**：当 orchestrator 自身在顺序处理中耗尽上下文导致类型未处理时，失败原因
+   应为 `unknown`（而非 `maxturns-exceeded`），因为 `maxturns-exceeded` 特指子代理
+   的 turns 耗尽。
 
 Never include pipeline internals (seed/final/deduped counts, cap, recall,
 benchmark, TP/FP, rule_id, whitelist, scan_id, timestamps) in the reply.

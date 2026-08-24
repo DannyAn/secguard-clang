@@ -124,6 +124,64 @@ func splitComma(s string) []string {
 	return out
 }
 
+// resolveFindingFilePath maps an agent-supplied `file` (absolute, repo-relative,
+// or a truncated tail the agent copied out of report.md's shortFile column) back
+// to the canonical absolute path stored in the files table. The suffix fallback
+// is best-effort: when nothing resolves the input is returned unchanged, so a
+// finding whose source cannot be located degrades to "no code context" in the
+// SARIF/xlsx instead of being silently rewritten to a wrong path.
+//
+// files is the pre-fetched indexed file list; pass it to amortize ListFiles
+// across a whole --write-json batch. When nil, it is fetched lazily (fine for a
+// single --write call).
+func resolveFindingFilePath(ctx context.Context, store db.Store, file string, files []*db.File) string {
+	if file == "" || filepath.IsAbs(file) {
+		return file
+	}
+	if files == nil {
+		files, _ = store.ListFiles(ctx)
+	}
+	needle := string(filepath.Separator) + filepath.Clean(file)
+	var best string
+	for _, f := range files {
+		if f.Path == file || strings.HasSuffix(f.Path, needle) {
+			if best == "" || len(f.Path) < len(best) {
+				best = f.Path
+			}
+		}
+	}
+	if best != "" {
+		return best
+	}
+	return file
+}
+
+// dedupeAndNormalizeFindings normalizes every finding's file path to the indexed
+// absolute path, then collapses rows that differ only by path spelling (absolute
+// vs the truncated/relative tail the agent copied out of report.md). That
+// double-write artifact made result.sarif list one vulnerability type twice
+// (once per path spelling), because the idempotency key includes file_path.
+// Keeping the first row per canonical (scan_id, rule_id, abs path, line,
+// function) restores one finding per location.
+func dedupeAndNormalizeFindings(ctx context.Context, store db.Store, findings []*db.Finding) []*db.Finding {
+	if len(findings) == 0 {
+		return findings
+	}
+	files, _ := store.ListFiles(ctx)
+	seen := make(map[string]bool, len(findings))
+	out := make([]*db.Finding, 0, len(findings))
+	for _, f := range findings {
+		f.FilePath = resolveFindingFilePath(ctx, store, f.FilePath, files)
+		key := f.ScanID + "\x00" + f.RuleID + "\x00" + f.FilePath + "\x00" + strconv.Itoa(f.LineNumber) + "\x00" + f.FunctionName
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, f)
+	}
+	return out
+}
+
 func runReportCmd(ctx context.Context, args []string) int {
 	dbPath, dbExplicit, remaining := parseDBFlag(args)
 
@@ -224,6 +282,11 @@ func runReportCmd(ctx context.Context, args []string) int {
 			}
 		}
 
+		// Normalize a relative/truncated agent-supplied file path to the indexed
+		// absolute path, so the verdict markdown, result.sarif and result.xlsx can
+		// all re-locate the source instead of emitting "Unable to find <file>".
+		finding.FilePath = resolveFindingFilePath(ctx, store, finding.FilePath, nil)
+
 		id, err := store.UpsertFinding(ctx, finding)
 		if err != nil {
 			WriteErrorJSON(fmt.Sprintf("failed to write finding: %v", err))
@@ -293,6 +356,9 @@ func runReportCmd(ctx context.Context, args []string) int {
 		written := make([]map[string]interface{}, 0, len(inputs))
 		var errs []string
 		var failedDetails []map[string]interface{}
+		// Fetch the indexed file list once so path resolution for a large batch
+		// (e.g. 255 null-deref findings) does not re-scan the files table per row.
+		allFiles, _ := store.ListFiles(ctx)
 		for i := range inputs {
 			in := &inputs[i]
 			confidence := in.Confidence
@@ -334,6 +400,10 @@ func runReportCmd(ctx context.Context, args []string) int {
 				ExceptionCheck: in.ExceptionCheck,
 				ScanID:         scanID,
 			}
+			// Resolve a relative/truncated agent-supplied path to the indexed
+			// absolute path so downstream reports can embed code context and a
+			// double-clickable location.
+			f.FilePath = resolveFindingFilePath(ctx, store, f.FilePath, allFiles)
 			id, uerr := store.UpsertFinding(ctx, f)
 			if uerr != nil {
 				errClass := classifyWriteErr(uerr)
@@ -442,6 +512,10 @@ func runReportCmd(ctx context.Context, args []string) int {
 		}
 
 		scanFindings, _ := store.ListFindingsByScanID(ctx, scanID)
+		// Collapse duplicate rows that differ only by file-path spelling (the
+		// absolute vs truncated double-write), and normalize paths to absolute so
+		// every downstream report resolves source + embeds code context.
+		scanFindings = dedupeAndNormalizeFindings(ctx, store, scanFindings)
 		type vulnCounts struct {
 			confirmed, suspected, dismissed int
 		}
