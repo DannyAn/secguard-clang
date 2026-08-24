@@ -36,6 +36,11 @@ int fp_safe_path(void) {
     return f != 0;
 }
 
+int cast_literal_path(void) {
+    FILE *f = fopen((const char *)"/tmp/cast.txt", "r");
+    return f != 0;
+}
+
 int param_path(char *path) {
     FILE *f = fopen(path, "r");
     return f != 0;
@@ -91,6 +96,10 @@ func TestTaintSourceFilter_PathTraversal(t *testing.T) {
 
 	if _, ok := byFunc["fp_safe_path"]; ok {
 		t.Errorf("expected safe literal path fp_safe_path to be suppressed, got %v", candidateNames(result))
+	}
+
+	if _, ok := byFunc["cast_literal_path"]; ok {
+		t.Errorf("expected cast-wrapped literal path cast_literal_path to be suppressed, got %v", candidateNames(result))
 	}
 
 	if _, ok := byFunc["param_path"]; !ok {

@@ -96,7 +96,40 @@ func pathArgument(call parser.Node, name string) string {
 	return ""
 }
 
+// isStringLiteralText reports whether the sink argument text is a string literal,
+// possibly wrapped in casts/parentheses: `(const char *)"/etc/x"` and
+// `("/etc/x")` are constants, never attacker-controlled, so they must not be
+// flagged. It strips leading balanced `(...)` groups (cast or plain parens) and
+// then checks the C string-literal prefixes.
 func isStringLiteralText(text string) bool {
 	t := strings.TrimSpace(text)
+	for {
+		if t == "" {
+			return false
+		}
+		if t[0] != '(' {
+			break
+		}
+		depth := 0
+		end := -1
+		for i := 0; i < len(t); i++ {
+			switch t[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 {
+					end = i
+				}
+			}
+			if end >= 0 {
+				break
+			}
+		}
+		if end < 0 {
+			return false // unbalanced
+		}
+		t = strings.TrimSpace(t[end+1:])
+	}
 	return strings.HasPrefix(t, "\"") || strings.HasPrefix(t, "L\"") || strings.HasPrefix(t, "u\"")
 }
