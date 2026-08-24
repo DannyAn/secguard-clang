@@ -161,15 +161,17 @@ not already read). Do NOT load a skill for a type that has 0 candidates.
 `report.md` is your primary candidate input (one compact read); the scan summary
 already gives you the per-type counts.
 
-**Candidate-file budget (the biggest time sink — READ THIS).** `report.md` is the
-INDEX: its per-type table already carries every candidate's `# | Function |
-File:Line | Variable | Suspicion`. Never READ the whole `candidates/<type>/NNN_*.md`
-directory to obtain file:line — that is a one-file-per-candidate fan-out and, for a
-type like `null-deref` with hundreds of confirmed candidates, will burn hundreds of
-slow READ calls. Open a `candidates/<type>/NNN_*.md` file ONLY when a
-`suspected`/`possible` candidate needs its full evidence block, or a `confirmed`
-candidate needs a detail `report.md` does not carry. Classify from the `report.md`
-table + source at file:line; do not read a candidate file for every candidate.
+**Candidate-file budget (the biggest time sink — READ THIS).** At this stage
+(before `report --audit`), `report.md` is the candidate INDEX: its per-type table
+already carries every candidate's `# | Function | File:Line | Variable | Suspicion`.
+Never READ the whole `candidates/<type>/NNN_*.md` directory to obtain file:line —
+that is a one-file-per-candidate fan-out and, for a type like `null-deref` with
+hundreds of confirmed candidates, will burn hundreds of slow READ calls. Open a
+`candidates/<type>/NNN_*.md` file ONLY when a `suspected`/`possible` candidate
+needs its full evidence block, or a `confirmed` candidate needs a detail `report.md`
+does not carry. Classify from the `report.md` table + source at file:line; do not
+read a candidate file for every candidate. (`report --audit` later overwrites
+`report.md` with the final findings report — the same data source as `result.sarif`.)
 
 **长扫描超时策略 (F4):** Before calling `secguard_scan`, estimate scan duration. If the project has > 100 C files OR the scan is expected to exceed 120s (the default Bash timeout), the orchestrator SHALL either (a) invoke the scan with an explicit timeout ≥ 600s, or (b) use the host's background-task + Monitor mechanism from the start. When a scan is moved to the background, the orchestrator SHALL switch to Monitor within 1 turn — it SHALL NOT use `sleep N; tail` (blocked by Bash safety policy) and SHALL NOT leave a backgrounded scan unmonitored. While the Monitor is pending, the orchestrator SHALL NOT issue parallel Bash commands (the host may buffer their results until the Monitor completes, wasting the parallel window); any preparation (type list, agent-definition read) MUST complete before the Monitor starts.
 

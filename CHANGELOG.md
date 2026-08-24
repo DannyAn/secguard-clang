@@ -40,8 +40,10 @@
 - **Scale Gate 强制约束**：`total_candidates > 200` 时禁止 SEQUENTIAL，并行不可用时须明确
   告知用户而非擅自降级；缺失类型失败原因澄清 `maxturns-exceeded`（特指子代理）与
   `unknown`（从未分发）语义。
-- **候选文件读取性能**：明确 `report.md` 为候选索引（含 File:Line + Suspicion），禁止为取
-  file:line 逐个 READ `candidates/<type>/NNN_*.md`。
+- **候选文件读取性能**：明确「扫描阶段」的 `report.md` 是候选索引（其逐类型表已含
+  `File:Line` + `Suspicion`），禁止为取 file:line 逐个 READ `candidates/<type>/NNN_*.md`。
+  说明：`report.md` 是双阶段文件——扫描后暂为候选索引，`report --audit` 时会从 findings
+  表覆写为最终综合报告，与 `result.sarif` 同源（仅展示形式不同）。
 
 ## [0.4.3] - 2026-08-23
 
