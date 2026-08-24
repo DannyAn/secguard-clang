@@ -68,6 +68,15 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				c.HasNullableSource = true
 				c.HasDefiniteNull = fm.reachingDefinite(c.VariableName, c.Line)
 				c.SourceLine = fm.sourceLine(c.VariableName, c.Line)
+				// Layering: reflect the must/may tier in the suspicion label so
+				// the AI budgets effort by certainty. A DEFINITE null source
+				// (p = NULL) reaching on every path is a certain null-deref →
+				// confirmed; a possible-null source (malloc/function return) is
+				// only maybe-null → suspected, so the AI reasons about it instead
+				// of rubber-stamping a "confirmed" prior.
+				if !c.HasDefiniteNull {
+					c.SuspicionLevel = "suspected"
+				}
 				kept = append(kept, c)
 			} else {
 				dropped = dismiss(dropped, c, f.Name(),
@@ -77,9 +86,11 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 		}
 
 		// Fallback: line-order heuristic (no parser, unreadable file, or
-		// degenerate CFG).
+		// degenerate CFG). It cannot prove definite null, so a kept candidate is
+		// labelled suspected (conservative) rather than confirmed.
 		if models[c.FunctionID].hasSource(c.VariableName, c.Line) {
 			c.HasNullableSource = true
+			c.SuspicionLevel = "suspected"
 			kept = append(kept, c)
 		} else {
 			dropped = dismiss(dropped, c, f.Name(),

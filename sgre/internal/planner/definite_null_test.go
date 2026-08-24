@@ -63,11 +63,21 @@ int possible_null_deref(void) {
 	byFunc := map[string]bool{}
 	for _, c := range result.Candidates {
 		byFunc[c.Target.Function] = true
-		if c.Target.Function == "certain_null_deref" && !c.HasDefiniteNull {
-			t.Errorf("certain_null_deref must carry has_definite_null=true")
+		if c.Target.Function == "certain_null_deref" {
+			if !c.HasDefiniteNull {
+				t.Errorf("certain_null_deref must carry has_definite_null=true")
+			}
+			if c.SuspicionLevel != "confirmed" {
+				t.Errorf("certain_null_deref (definite null) must be confirmed, got %q", c.SuspicionLevel)
+			}
 		}
-		if c.Target.Function == "possible_null_deref" && c.HasDefiniteNull {
-			t.Errorf("possible_null_deref must NOT carry has_definite_null (it is only possibly-null)")
+		if c.Target.Function == "possible_null_deref" {
+			if c.HasDefiniteNull {
+				t.Errorf("possible_null_deref must NOT carry has_definite_null (it is only possibly-null)")
+			}
+			if c.SuspicionLevel != "suspected" {
+				t.Errorf("possible_null_deref (possible null) must be suspected, got %q", c.SuspicionLevel)
+			}
 		}
 	}
 	if !byFunc["certain_null_deref"] {
