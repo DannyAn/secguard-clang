@@ -45,6 +45,17 @@
   说明：`report.md` 是双阶段文件——扫描后暂为候选索引，`report --audit` 时会从 findings
   表覆写为最终综合报告，与 `result.sarif` 同源（仅展示形式不同）。
 
+### 漏洞分层筛选精度增强
+
+- **path-traversal 跳过带 cast 的字符串常量**：`fopen((const char *)"/etc/x", ...)` 此前因
+  参数文本以 `(` 开头（而非 `"`）被误判为非字面量，报 CWE-22。`isStringLiteralText` 现在
+  先剥离前导成对括号再判断字面量，这类常量路径不再进入 AI。
+- **null-deref 把「确定为空」反映到 suspicion**：此前所有 null-deref 候选一律标
+  `confirmed`，AI 只能橡皮图章式全盘确认。现在 must 分析已算出的 `has_definite_null`
+  （`p = NULL` 在每条路径都成立）反映到标签上——确定为空 → `confirmed`（AI 轻量核对），
+  可能为空（malloc 返回 / 函数返回）→ `suspected`（AI 深度推理、可 dismiss）。让 AI 的
+  工作量对齐管道的确定性，而不是无差别确认。
+
 ## [0.4.3] - 2026-08-23
 
 ### result.xlsx Excel 导出（供研发团队集中确认）
