@@ -24,15 +24,20 @@ type RangeFacts struct {
 	// hiInside maps a variable to ranges+bounds where it has an upper bound,
 	// established by `if (x < N)` / `if (x <= N)`.
 	hiInside map[string][]hiRange
-	// reassignLines maps a variable to the lines where it is whole-variable
-	// reassigned. A reassignment kills any non-zero fact a guard established
-	// (`if (p == NULL) return; p = NULL; *p` — p is non-zero only until the
-	// p = NULL line).
-	reassignLines map[string][]int
+	// reassigns maps a variable to its whole-variable reassignment sites (line
+	// + RHS text). A reassignment invalidates a guard-derived fact: NonZeroAt
+	// kills on a possibly-zero RHS, UpperBoundAt on any reassignment.
+	reassigns map[string][]reassignSite
 }
 
 type hiRange struct {
 	start, end, hi int
+}
+
+// reassignSite is one whole-variable reassignment site.
+type reassignSite struct {
+	line int
+	rhs  string
 }
 
 var (
@@ -87,18 +92,14 @@ func AnalyzeBounds(ifs, assigns []parser.Node) *RangeFacts {
 		nonZeroAfter:  make(map[string][]int),
 		nonZeroInside: make(map[string][][2]int),
 		hiInside:      make(map[string][]hiRange),
-		reassignLines: make(map[string][]int),
+		reassigns:     make(map[string][]reassignSite),
 	}
 	for _, assign := range assigns {
 		children := assign.NamedChildren()
 		if len(children) < 2 || children[0].Kind() != "identifier" {
 			continue
 		}
-		// Only a reassignment whose RHS can be zero kills the non-zero fact;
-		// `v = 5` re-establishes non-zero, while `v = NULL` / `v = f()` does not.
-		if possiblyZeroDivisor(children[1].Text()) {
-			r.reassignLines[children[0].Text()] = append(r.reassignLines[children[0].Text()], assign.StartLine())
-		}
+		r.reassigns[children[0].Text()] = append(r.reassigns[children[0].Text()], reassignSite{line: assign.StartLine(), rhs: children[1].Text()})
 	}
 	for _, ifStmt := range ifs {
 		cond := ifStmt.ChildByFieldName("condition")
@@ -203,12 +204,24 @@ func consequenceAssignsNonZero(node parser.Node, varName string) bool {
 // reassignment between the guard and the line kills the fact.
 func (r *RangeFacts) NonZeroAt(v string, line int) bool {
 	for _, rng := range r.nonZeroInside[v] {
-		if line >= rng[0] && line <= rng[1] && !r.reassignedIn(v, rng[0], line) {
+		if line >= rng[0] && line <= rng[1] && !r.reassignedToPossiblyZeroIn(v, rng[0], line) {
 			return true
 		}
 	}
 	for _, after := range r.nonZeroAfter[v] {
-		if line > after && !r.reassignedIn(v, after+1, line) {
+		if line > after && !r.reassignedToPossiblyZeroIn(v, after+1, line) {
+			return true
+		}
+	}
+	return false
+}
+
+// reassignedToPossiblyZeroIn reports whether v is whole-variable reassigned to a
+// possibly-zero RHS at any line in [start, end]. A possibly-zero RHS kills a
+// non-zero fact; `v = 5` re-establishes non-zero and does not.
+func (r *RangeFacts) reassignedToPossiblyZeroIn(v string, start, end int) bool {
+	for _, s := range r.reassigns[v] {
+		if s.line >= start && s.line <= end && possiblyZeroDivisor(s.rhs) {
 			return true
 		}
 	}
@@ -216,10 +229,10 @@ func (r *RangeFacts) NonZeroAt(v string, line int) bool {
 }
 
 // reassignedIn reports whether v is whole-variable reassigned at any line in
-// [start, end].
+// [start, end], regardless of the RHS.
 func (r *RangeFacts) reassignedIn(v string, start, end int) bool {
-	for _, l := range r.reassignLines[v] {
-		if l >= start && l <= end {
+	for _, s := range r.reassigns[v] {
+		if s.line >= start && s.line <= end {
 			return true
 		}
 	}
@@ -232,6 +245,11 @@ func (r *RangeFacts) UpperBoundAt(v string, line int) int {
 	best := 0
 	for _, hr := range r.hiInside[v] {
 		if line >= hr.start && line <= hr.end {
+			// A reassignment inside the guard body invalidates the bound
+			// (`if (n < cap) { n = 1000; memcpy(..., n); }` — n is no longer < cap).
+			if r.reassignedIn(v, hr.start, line) {
+				continue
+			}
 			if best == 0 || hr.hi < best {
 				best = hr.hi
 			}
