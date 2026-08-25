@@ -26,10 +26,12 @@ import (
 //     benchmark false positives).
 //   - leak_reassign (`p = malloc(); p = malloc(); free(p)`): the first block
 //     leaks, but detecting it needs flow-sensitive reassignment tracking.
-//   - leak_cond_path (`if (flag) return -1; free(p)` in a flat function): the
-//     memory-leak detector's coarse CFG degenerates to a conservative "released"
-//     fallback for flat functions; a proper fix needs the statement CFG plus
-//     ownership-transfer (return/global-store) recognition.
+//
+// leak_cond_path (`if (flag) return -1; free(p)`) IS asserted below: since the
+// statement-level CFG + ownership-transfer analysis shipped (v0.2.0 retired the
+// old coarse BuildCFG), the early-return path is now recognized as a leak, and
+// the ownership-transferred cases (leak_global_escaped / leak_returned) are
+// asserted NOT to be reported.
 const bofLeakFixture = `#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -73,6 +75,10 @@ int g_sink;
 int leak_global_escaped(void) {
     g_sink = (int)(size_t)malloc(64);
     return 0;
+}
+int *leak_returned(void) {
+    int *p = (int *)malloc(64);
+    return p;
 }
 `
 
@@ -118,6 +124,9 @@ func TestRecall_BufferOverflowMemoryLeak(t *testing.T) {
 		}
 		if vt == "memory-leak" && caught["leak_global_escaped"] {
 			t.Errorf("memory-leak: leak_global_escaped (malloc stored to a global) should NOT be reported as a leak, got %v", candidateNames(res))
+		}
+		if vt == "memory-leak" && caught["leak_returned"] {
+			t.Errorf("memory-leak: leak_returned (malloc returned to caller) should NOT be reported as a leak, got %v", candidateNames(res))
 		}
 	}
 }

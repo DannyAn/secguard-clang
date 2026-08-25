@@ -690,7 +690,6 @@ v0.2.0 发布前最后一轮检视发现并修复的问题：
 
 - 依赖 **CGO**（tree-sitter 运行时与 C 语法解析器为 C 实现），因此无法用 `CGO_ENABLED=0` 纯静态构建；Linux 产物为 zig/musl 静态链接。
 - 仅支持 **C**（`.c` / `.h`）；C++/Objective-C 暂未覆盖。
-- `memory-leak` / `resource-leak` 仍使用检测器内的路径分析（旧 `BuildCFG`），尚未迁移到新的语句级 CFG（需所有权转移感知）。
 - 去重后的候选仍需 AI Agent 分类确认，流水线自身不产出最终 verdict。
 
 ### 本次发布前的版本一致性修复

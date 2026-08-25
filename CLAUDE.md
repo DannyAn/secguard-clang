@@ -57,7 +57,7 @@ The pipeline is a chain of packages, each writing to the next layer of the DB:
 - **shared-access** — `graph/shared_access.go` persists `GLOBAL_ACCESS` edges (function → global_var, read/write); `SharedAccessFilter` confirms `shared_data_race` candidates whose thread functions write the same global in the graph.
 - **macro layer** — `evidence/macro_summary.go` recognizes function-like freeing macros (`#define my_free(p) free(p)` → a free site; `#define SAFE_FREE(p) ...p=NULL` → a definite null source + a release for memory-leak).
 
-See `examples/nullflow-demo/` for a runnable null-deref sample. `memory-leak`/`resource-leak` still do path analysis in the detector (`memory_leak.go`'s `hasLeakingPath`, old `graph.BuildCFG`); migrating them to the new CFG needs ownership-transfer-aware analysis (return-to-caller / store-to-global), not plain reachability, so it is left as a follow-up.
+See `examples/nullflow-demo/` for a runnable null-deref sample. `memory-leak`/`resource-leak` run their leak path analysis in the detector (`memory_leak.go`'s `hasLeakingPath`) over the **statement-level CFG** (`BuildStmtCFG`); the old `graph.BuildCFG` was retired in v0.2.0. Ownership-transfer awareness (return-to-caller / store-to-global) is supplied by the detector's escape/return analysis and backed by the graph layer's `OWNERSHIP_TRANSFER`/`RELEASE` edges, consumed by `OwnershipTransferFilter`/`ReleaseFilter`.
 
 ### The 4-Layer Data Model (SQLite `sgre.db`)
 
