@@ -418,10 +418,7 @@ manifest = {
     'displayName': 'Zhuque SecGuard',
     'description': 'AI-augmented C program security analysis platform with 4-level convergence pipeline',
     'version': version,
-    'author': {
-        'name': 'Zhuque Security',
-        'url': 'https://github.com/DannyAn/secguard-clang',
-    },
+    'author': 'Zhuque Security',
     'license': 'Proprietary',
     'keywords': [
         'security',

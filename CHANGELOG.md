@@ -23,6 +23,12 @@
   子代理分发工具（`Agent`，旧版为 `Task`）与编排所需工具（`Write`/`Edit`/`TodoWrite`/
   `Skill`），并统一指令中的工具名。此前编排器无法派发 `security-auditor` 子代理，被迫
   单上下文顺序处理大扫描，导致上下文耗尽并报 `unknown`（上下文限制）。
+- **修复 claude-cac 子代理模型不可用**：`security-auditor` 移除硬编码的 `model: sonnet`，
+  子代理改为继承当前模型（等效 general-purpose）。此前 fork 环境无 `sonnet` 模型别名，
+  并发派发的 4 个子代理全部报「子代理类型需要不可用模型」而失败。
+- **修复 codeagent-extension.json 的 author 字段类型**：OpenCode-NGA / CodeAgent 格式要求
+  `author` 为字符串，此前写成对象 `{name,url}` 导致 opencode-nga 扩展无法注册，改为
+  `"author": "Zhuque Security"`（`sg_write_codeagent_extension` 同步修正）。
 
 ## [0.4.4] - 2026-08-24
 
