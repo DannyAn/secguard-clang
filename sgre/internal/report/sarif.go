@@ -3,6 +3,7 @@ package report
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,6 +110,28 @@ type sarifArtifactContent struct {
 	Text string `json:"text"`
 }
 
+// sarifURI renders a filesystem path as the URI-reference a SARIF consumer can
+// resolve. A bare absolute path is not a valid URI (it carries no scheme), so a
+// viewer that resolves `artifactLocation.uri` as a relative reference reports
+// "Unable to find <file>" instead of opening it. Absolute paths are therefore
+// rendered as file:// URIs; relative paths are slash-normalised and left
+// relative so the report can still travel with its source tree.
+func sarifURI(path string) string {
+	if path == "" {
+		return ""
+	}
+	if !filepath.IsAbs(path) {
+		return filepath.ToSlash(path)
+	}
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
+	// A Windows drive-letter path (C:/...) must be rooted so the URI is
+	// file:///C:/... rather than file://C:/... (which would parse "C:" as host).
+	if len(u.Path) >= 2 && u.Path[1] == ':' {
+		u.Path = "/" + u.Path
+	}
+	return u.String()
+}
+
 // VulnToCWE returns the canonical CWE identifier for a vulnerability type,
 // or "CWE-Other" if the type is not registered. The mapping is derived from
 // planner.VulnTypeSpec.CWE — the single source of truth in planner/registry.go.
@@ -150,9 +173,10 @@ func (o *ScanOutput) writeCandidatesSarif(packages []*planner.PlanResult) error 
 			level := "note"
 
 			// Keep the ABSOLUTE path so a viewer can double-click straight to
-			// the file. A relative uri (relative to an undeclared base) is what
-			// made "Unable to find <file>" the default behaviour.
-			uri := c.Target.File
+			// the file, rendered as a file:// URI — a bare absolute path is not
+			// a valid URI, so a viewer resolves it as relative and reports
+			// "Unable to find <file>".
+			uri := sarifURI(c.Target.File)
 
 			evidenceParts := []string{}
 			for _, e := range c.Evidence {
@@ -291,7 +315,9 @@ func WriteSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding) e
 			level = "error"
 		}
 
-		// Keep the ABSOLUTE path so a viewer can double-click to the file.
+		// Keep the ABSOLUTE path so a viewer can double-click to the file,
+		// rendered as a file:// URI — a bare absolute path is not a valid URI,
+		// so a viewer resolves it as relative and reports "Unable to find <file>".
 		// A finding the agent wrote with a relative/truncated path is resolved
 		// back to the indexed absolute path when possible.
 		uri := f.FilePath
@@ -300,6 +326,7 @@ func WriteSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding) e
 				uri = resolved
 			}
 		}
+		uri = sarifURI(uri)
 
 		msg := f.Summary
 		if msg == "" {

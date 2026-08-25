@@ -162,3 +162,100 @@ func TestSarifStages_SeparateFilesAndSeverity(t *testing.T) {
 		t.Errorf("confirmed verdict level = %q, want error", verdictReport.Runs[0].Results[0].Level)
 	}
 }
+
+// sarifURI must turn absolute filesystem paths into file:// URIs: a bare
+// absolute POSIX path is not a valid URI, so SARIF viewers that resolve `uri`
+// as a relative reference report "Unable to find <file>".
+func TestSarifURI(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", ""},
+		{"src/a.c", "src/a.c"},
+		{"/repo/src/a.c", "file:///repo/src/a.c"},
+		{"/repo/src/a b.c", "file:///repo/src/a%20b.c"},
+	}
+	for _, c := range cases {
+		if got := sarifURI(c.in); got != c.want {
+			t.Errorf("sarifURI(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// Both SARIF stages must emit a resolvable artifactLocation.uri, not a bare
+// absolute path.
+func TestSarifStages_EmitFileURI(t *testing.T) {
+	dir := t.TempDir()
+	o := &ScanOutput{
+		ScanDir:             dir,
+		ScanID:              "sc_test",
+		SarifPath:           filepath.Join(dir, SarifFile),
+		CandidatesSarifPath: filepath.Join(dir, CandidatesSarifFile),
+		ReportPath:          filepath.Join(dir, ReportFile),
+	}
+	pkgs := []*planner.PlanResult{{
+		VulnerabilityType: "null-deref",
+		Candidates: []planner.EvidenceItem{{
+			Target: planner.TargetInfo{File: "/repo/src/a.c", Function: "f", Line: 13, Variable: "p"},
+		}},
+	}}
+	if err := o.Write(pkgs, IndexSummary{}); err != nil {
+		t.Fatal(err)
+	}
+
+	cdata, err := os.ReadFile(o.CandidatesSarifPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var candidateReport struct {
+		Runs []struct {
+			Results []struct {
+				Locations []struct {
+					PhysicalLocation struct {
+						ArtifactLocation struct {
+							URI string `json:"uri"`
+						} `json:"artifactLocation"`
+					} `json:"physicalLocation"`
+				} `json:"locations"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(cdata, &candidateReport); err != nil {
+		t.Fatal(err)
+	}
+	if got := candidateReport.Runs[0].Results[0].Locations[0].PhysicalLocation.ArtifactLocation.URI; got != "file:///repo/src/a.c" {
+		t.Errorf("candidates.sarif uri = %q, want file:///repo/src/a.c", got)
+	}
+
+	findings := []*db.Finding{{
+		RuleID: "CWE-476", FilePath: "/repo/src/a.c", LineNumber: 13, FunctionName: "f",
+		Status: "confirmed", Severity: "high", Confidence: 0.9, Summary: "real",
+	}}
+	if err := WriteSarifFromFindings(o.SarifPath, "", findings); err != nil {
+		t.Fatal(err)
+	}
+	vdata, err := os.ReadFile(o.SarifPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var verdictReport struct {
+		Runs []struct {
+			Results []struct {
+				Locations []struct {
+					PhysicalLocation struct {
+						ArtifactLocation struct {
+							URI string `json:"uri"`
+						} `json:"artifactLocation"`
+					} `json:"physicalLocation"`
+				} `json:"locations"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(vdata, &verdictReport); err != nil {
+		t.Fatal(err)
+	}
+	if got := verdictReport.Runs[0].Results[0].Locations[0].PhysicalLocation.ArtifactLocation.URI; got != "file:///repo/src/a.c" {
+		t.Errorf("result.sarif uri = %q, want file:///repo/src/a.c", got)
+	}
+}
