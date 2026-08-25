@@ -79,7 +79,7 @@ type bufCtx struct {
 }
 
 func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, params map[string]bool, result *DetectResult) {
-	bounds := AnalyzeBounds(IfsInFunc(bc.ifs, f.StartLine, f.EndLine))
+	bounds := AnalyzeBounds(IfsInFunc(bc.ifs, f.StartLine, f.EndLine), assignsInFunc(bc.assigns, f.StartLine, f.EndLine))
 	for _, call := range bc.calls {
 		if !funcLineRange(f, call.StartLine()) {
 			continue

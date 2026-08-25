@@ -35,10 +35,9 @@ int a_null_branch_kill(int c) {
     return *p;
 }
 
-// Case B: early-return guard then explicit NULL. KNOWN FALSE NEGATIVE: the
-// EARLY_RETURN guard scope (null_guard.go detectEarlyReturnGuards) extends to
-// f.EndLine and is not cut off by the later p = NULL reassignment, so the
-// definite null deref is wrongly suppressed. Not asserted; see the test below.
+// Case B: early-return guard then explicit NULL. The EARLY_RETURN guard scope
+// is cut off at the later p = NULL reassignment (guardScopeEnd), so the
+// definite null deref is kept. Expect KEPT.
 int b_guard_then_null(int *p) {
     if (p == NULL) {
         return 0;
@@ -92,11 +91,8 @@ func TestReview_BranchSensitiveKeptCandidates(t *testing.T) {
 	evidence.RunAllDetectors(ctx, store, p, logger)
 
 	pl := NewPlanner(store, p, logger)
-	// b_guard_then_null is a known false negative (early-return guard scope is
-	// not cut off by a later reassignment to NULL), so it is deliberately absent
-	// from the asserted set — the other three must stay kept as recall gates.
 	want := map[string][]string{
-		"null-deref":     {"a_null_branch_kill"},
+		"null-deref":     {"a_null_branch_kill", "b_guard_then_null"},
 		"use-after-free": {"c_uaf_branch_copy"},
 		"double-free":    {"d_doublefree_branch"},
 	}

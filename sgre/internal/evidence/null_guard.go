@@ -28,6 +28,7 @@ func (d *NullGuardDetector) Detect(ctx context.Context) (DetectResult, error) {
 		ifs := root.FindAll("if_statement")
 		whiles := root.FindAll("while_statement")
 		fors := root.FindAll("for_statement")
+		assigns := root.FindAll("assignment_expression")
 		// Iterator-style guards live in loop conditions:
 		//   while ((e = dictNext(di)) != NULL) { e->val; }
 		// The loop body is only entered when the iterator returned non-null, so
@@ -35,8 +36,8 @@ func (d *NullGuardDetector) Detect(ctx context.Context) (DetectResult, error) {
 		condNodes := append(append(append([]parser.Node{}, ifs...), whiles...), fors...)
 		for _, f := range funcs {
 			d.detectGuards(ctx, f, file, condNodes, &result)
-			d.detectEarlyReturnGuards(ctx, f, file, ifs, &result)
-			d.detectReassignmentGuards(ctx, f, file, ifs, &result)
+			d.detectEarlyReturnGuards(ctx, f, file, ifs, assigns, &result)
+			d.detectReassignmentGuards(ctx, f, file, ifs, assigns, &result)
 		}
 	})
 	return result, err
@@ -81,7 +82,7 @@ func (d *NullGuardDetector) detectGuards(ctx context.Context, f *db.Function, fi
 	}
 }
 
-func (d *NullGuardDetector) detectEarlyReturnGuards(ctx context.Context, f *db.Function, file *db.File, ifs []parser.Node, result *DetectResult) {
+func (d *NullGuardDetector) detectEarlyReturnGuards(ctx context.Context, f *db.Function, file *db.File, ifs, assigns []parser.Node, result *DetectResult) {
 	for _, ifNode := range ifs {
 		if !funcLineRange(f, ifNode.StartLine()) {
 			continue
@@ -126,7 +127,7 @@ func (d *NullGuardDetector) detectEarlyReturnGuards(ctx context.Context, f *db.F
 			"variable":    varName,
 			"condition":   "EARLY_RETURN",
 			"scope_start": ifNode.StartLine() + 1,
-			"scope_end":   f.EndLine,
+			"scope_end":   guardScopeEnd(assigns, f, varName, ifNode.EndLine()),
 		}) {
 			result.EventsCreated++
 		}
@@ -139,7 +140,7 @@ func (d *NullGuardDetector) detectEarlyReturnGuards(ctx context.Context, f *db.F
 // on every path. The previous flow model accidentally covered this via a header
 // node inheriting its body's assignment; that recursion was removed, so this
 // detector emits the fall-through scope explicitly (like detectEarlyReturnGuards).
-func (d *NullGuardDetector) detectReassignmentGuards(ctx context.Context, f *db.Function, file *db.File, ifs []parser.Node, result *DetectResult) {
+func (d *NullGuardDetector) detectReassignmentGuards(ctx context.Context, f *db.Function, file *db.File, ifs, assigns []parser.Node, result *DetectResult) {
 	for _, ifNode := range ifs {
 		if !funcLineRange(f, ifNode.StartLine()) {
 			continue
@@ -164,11 +165,33 @@ func (d *NullGuardDetector) detectReassignmentGuards(ctx context.Context, f *db.
 			"variable":    varName,
 			"condition":   "REASSIGN_GUARD",
 			"scope_start": ifNode.EndLine() + 1,
-			"scope_end":   f.EndLine,
+			"scope_end":   guardScopeEnd(assigns, f, varName, ifNode.EndLine()),
 		}) {
 			result.EventsCreated++
 		}
 	}
+}
+
+// guardScopeEnd truncates an early-return / reassignment guard's non-null scope
+// at the first whole-variable reassignment of varName after afterLine (the
+// guard's closing line). A reassignment invalidates the guard's non-null fact:
+// `p = NULL` makes a later deref definitely null, and `p = malloc()` makes it
+// possibly null — so the guard must not suppress a deref after it. It returns
+// f.EndLine when no reassignment follows, preserving the full-scope behavior.
+func guardScopeEnd(assigns []parser.Node, f *db.Function, varName string, afterLine int) int {
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
+			continue
+		}
+		if assign.StartLine() <= afterLine {
+			continue
+		}
+		children := assign.NamedChildren()
+		if len(children) >= 1 && children[0].Kind() == "identifier" && children[0].Text() == varName {
+			return assign.StartLine() - 1
+		}
+	}
+	return f.EndLine
 }
 
 // nullCheckedVariable returns the variable a null-check guard tests when the

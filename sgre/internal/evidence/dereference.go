@@ -28,6 +28,7 @@ func (d *DereferenceDetector) Detect(ctx context.Context) (DetectResult, error) 
 		// code ran root.FindAll per dereference node (O(nodes) traversals).
 		nonNullable := collectNonNullableArrays(root)
 		allIfs := root.FindAll("if_statement")
+		allAssigns := root.FindAll("assignment_expression")
 
 		memberNodes := root.FindAll("field_expression")
 		// `*p` parses as a pointer_expression, not a unary_expression — the
@@ -37,7 +38,7 @@ func (d *DereferenceDetector) Detect(ctx context.Context) (DetectResult, error) 
 		subscriptNodes := root.FindAll("subscript_expression")
 
 		for _, f := range funcs {
-			bounds := AnalyzeBounds(IfsInFunc(allIfs, f.StartLine, f.EndLine))
+			bounds := AnalyzeBounds(IfsInFunc(allIfs, f.StartLine, f.EndLine), assignsInFunc(allAssigns, f.StartLine, f.EndLine))
 			d.detectMemberAccess(ctx, f, file, memberNodes, nonNullable, bounds, &result)
 			d.detectExplicitDeref(ctx, f, file, derefNodes, nonNullable, bounds, &result)
 			d.detectArraySubscript(ctx, f, file, subscriptNodes, nonNullable, bounds, &result)

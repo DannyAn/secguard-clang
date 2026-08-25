@@ -37,8 +37,9 @@ func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error)
 	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		binaryExprs := root.FindAll("binary_expression")
 		allIfs := root.FindAll("if_statement")
+		allAssigns := root.FindAll("assignment_expression")
 		for _, f := range funcs {
-			bounds := AnalyzeBounds(IfsInFunc(allIfs, f.StartLine, f.EndLine))
+			bounds := AnalyzeBounds(IfsInFunc(allIfs, f.StartLine, f.EndLine), assignsInFunc(allAssigns, f.StartLine, f.EndLine))
 			for _, expr := range binaryExprs {
 				if !funcLineRange(f, expr.StartLine()) {
 					continue

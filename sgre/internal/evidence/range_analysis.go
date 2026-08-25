@@ -24,6 +24,11 @@ type RangeFacts struct {
 	// hiInside maps a variable to ranges+bounds where it has an upper bound,
 	// established by `if (x < N)` / `if (x <= N)`.
 	hiInside map[string][]hiRange
+	// reassignLines maps a variable to the lines where it is whole-variable
+	// reassigned. A reassignment kills any non-zero fact a guard established
+	// (`if (p == NULL) return; p = NULL; *p` — p is non-zero only until the
+	// p = NULL line).
+	reassignLines map[string][]int
 }
 
 type hiRange struct {
@@ -57,6 +62,19 @@ func IfsInFunc(ifs []parser.Node, start, end int) []parser.Node {
 	return out
 }
 
+// assignsInFunc returns the assignment_expression nodes whose start line falls
+// within [start, end], so AnalyzeBounds only sees reassignments from the same
+// function (mirrors IfsInFunc, which scopes the guards).
+func assignsInFunc(assigns []parser.Node, start, end int) []parser.Node {
+	var out []parser.Node
+	for _, assign := range assigns {
+		if assign.StartLine() >= start && assign.StartLine() <= end {
+			out = append(out, assign)
+		}
+	}
+	return out
+}
+
 // AnalyzeBounds scans if-statement conditions and records the variable bounds
 // they establish. It recognizes:
 //   - `if (x < N)` / `if (x <= N)`: x bounded above inside the body.
@@ -64,11 +82,23 @@ func IfsInFunc(ifs []parser.Node, start, end int) []parser.Node {
 //   - `if (x != 0)` / `if (x)` / `if (x != NULL)`: x non-zero inside the body.
 //   - `if (x == 0) return` / `if (!x) return` / `if (x == NULL) return`:
 //     x non-zero after the if (fall-through).
-func AnalyzeBounds(ifs []parser.Node) *RangeFacts {
+func AnalyzeBounds(ifs, assigns []parser.Node) *RangeFacts {
 	r := &RangeFacts{
 		nonZeroAfter:  make(map[string][]int),
 		nonZeroInside: make(map[string][][2]int),
 		hiInside:      make(map[string][]hiRange),
+		reassignLines: make(map[string][]int),
+	}
+	for _, assign := range assigns {
+		children := assign.NamedChildren()
+		if len(children) < 2 || children[0].Kind() != "identifier" {
+			continue
+		}
+		// Only a reassignment whose RHS can be zero kills the non-zero fact;
+		// `v = 5` re-establishes non-zero, while `v = NULL` / `v = f()` does not.
+		if possiblyZeroDivisor(children[1].Text()) {
+			r.reassignLines[children[0].Text()] = append(r.reassignLines[children[0].Text()], assign.StartLine())
+		}
 	}
 	for _, ifStmt := range ifs {
 		cond := ifStmt.ChildByFieldName("condition")
@@ -169,15 +199,27 @@ func consequenceAssignsNonZero(node parser.Node, varName string) bool {
 
 // NonZeroAt reports whether var is established non-zero at the given line,
 // either by a positive guard whose body contains the line, or by an
-// early-return guard whose fall-through precedes the line.
+// early-return guard whose fall-through precedes the line. A whole-variable
+// reassignment between the guard and the line kills the fact.
 func (r *RangeFacts) NonZeroAt(v string, line int) bool {
 	for _, rng := range r.nonZeroInside[v] {
-		if line >= rng[0] && line <= rng[1] {
+		if line >= rng[0] && line <= rng[1] && !r.reassignedIn(v, rng[0], line) {
 			return true
 		}
 	}
 	for _, after := range r.nonZeroAfter[v] {
-		if line > after {
+		if line > after && !r.reassignedIn(v, after+1, line) {
+			return true
+		}
+	}
+	return false
+}
+
+// reassignedIn reports whether v is whole-variable reassigned at any line in
+// [start, end].
+func (r *RangeFacts) reassignedIn(v string, start, end int) bool {
+	for _, l := range r.reassignLines[v] {
+		if l >= start && l <= end {
 			return true
 		}
 	}
