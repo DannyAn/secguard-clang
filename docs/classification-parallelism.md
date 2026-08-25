@@ -30,7 +30,7 @@
 
 扫描段已并行，缺的是分类段。两平台机制不同：
 
-- **Claude Code**：内置 `Task` 工具派生子 agent，多个 `Task` 并发跑（官方：[Run agents in parallel](https://code.claude.com/docs/en/agents)）。每个子 agent 有独立上下文，跑完返回结果。
+- **Claude Code**：内置 `Agent` 工具（旧版本为 `Task`）派生子 agent，多个 `Agent` 并发跑（官方：[Run agents in parallel](https://code.claude.com/docs/en/agents)）。每个子 agent 有独立上下文，跑完返回结果。
 - **OpenCode**：`task` 工具派发 `security-auditor` 子 agent（`extension/opencode/agents/security-auditor.md`，已在 `opencode.json` 注册同名 agent 并授权 `secguard_*` 工具）。子 agent 的 `permission` 已显式 allow `secguard_*`，可直接分类 + 落库。
 
 设计（平台无关的编排骨架）：

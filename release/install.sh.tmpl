@@ -164,27 +164,29 @@ install_opencode() {
     echo "[opencode] Done"
 }
 
-# 安装 OpenCode-NGA（OpenCode 开源分支：manifest 用 code-extension.json）
+# 安装 OpenCode-NGA（OpenCode 开源分支：manifest 用 codeagent-extension.json）
 install_opencode_nga() {
     echo "[opencode-nga] Installing to $OC_TARGET_DIR"
     local src="$PKG_DIR/opencode-nga"
     sg_cleanup_legacy_flat "$OC_PREFIX" "$PKG_DIR"
+    # 清理 <=0.4.4 的旧清单名（code-extension*.json），避免扩展目录里出现两套清单。
+    rm -f "$OC_TARGET_DIR/code-extension.json" "$OC_TARGET_DIR/code-extension-install.json"
     mkdir -p "$OC_TARGET_DIR"/{commands,agents,tools,plugins,skills}
 
-    [ -f "$src/code-extension.json" ] && sg_cp_record "$src/code-extension.json" "$OC_TARGET_DIR/code-extension.json"
-    # code-extension-install.json 的 source 替换为实际安装目录（绝对路径）。
+    [ -f "$src/codeagent-extension.json" ] && sg_cp_record "$src/codeagent-extension.json" "$OC_TARGET_DIR/codeagent-extension.json"
+    # .codeagent-extension-install.json 的 source 替换为实际安装目录（绝对路径）。
     # 用 python3 做字面替换（sed 会把路径里的 `&`/`|` 当作特殊字符）。
-    if [ -f "$src/code-extension-install.json" ]; then
+    if [ -f "$src/.codeagent-extension-install.json" ]; then
         python3 -c "
-src = '''$src/code-extension-install.json'''
-dst = '''$OC_TARGET_DIR/code-extension-install.json'''
+src = '''$src/.codeagent-extension-install.json'''
+dst = '''$OC_TARGET_DIR/.codeagent-extension-install.json'''
 target = '''$OC_TARGET_DIR'''
 with open(src) as f:
     content = f.read()
 with open(dst, 'w') as f:
     f.write(content.replace('{{OC_TARGET_DIR}}', target))
 "
-        sg_record_file "$(cd "$(dirname "$OC_TARGET_DIR/code-extension-install.json")" && pwd)/$(basename "$OC_TARGET_DIR/code-extension-install.json")"
+        sg_record_file "$(cd "$(dirname "$OC_TARGET_DIR/.codeagent-extension-install.json")" && pwd)/$(basename "$OC_TARGET_DIR/.codeagent-extension-install.json")"
     fi
     [ -f "$src/opencode.json" ]  && sg_cp_record "$src/opencode.json"  "$OC_TARGET_DIR/opencode.json"
 
@@ -222,6 +224,18 @@ install_claude_code() {
     echo "[claude-code] Merging permissions into $CC_PREFIX/settings.json"
     sg_merge_permissions "$CC_PREFIX/settings.json"
 
+    # CodeAgent 插件注册（installed_plugins.json + enabledPlugins + codeagent-extension.json）
+    local cc_cache_dir="$CC_PREFIX/plugins/cache/local-secguard/secguard-clang/$PKG_VERSION"
+    mkdir -p "$cc_cache_dir"
+    # 用 `/.` 而非 `/*`：`*` 不匹配点文件，会漏掉 .claude-plugin/（插件清单）。
+    cp -r "$CC_TARGET_DIR"/. "$cc_cache_dir/" 2>/dev/null || true
+    sg_write_codeagent_extension "$cc_cache_dir" "$PKG_VERSION"
+    sg_write_codeagent_extension "$CC_TARGET_DIR" "$PKG_VERSION"
+    sg_record_file "$cc_cache_dir/codeagent-extension.json"
+    sg_record_file "$CC_TARGET_DIR/codeagent-extension.json"
+    sg_register_plugin "$CC_PREFIX/plugins/installed_plugins.json" "secguard-clang" "local-secguard" "$cc_cache_dir" "$PKG_VERSION"
+    sg_enable_plugin "$CC_PREFIX/settings.json" "secguard-clang" "local-secguard"
+
     # 写 manifest
     local files_csv
     files_csv=$(sg_files_csv)
@@ -247,6 +261,18 @@ install_claude_cac() {
     # 合并权限
     echo "[claude-cac] Merging permissions into $CAC_PREFIX/settings.json"
     sg_merge_permissions "$CAC_PREFIX/settings.json"
+
+    # CodeAgent 插件注册（installed_plugins.json + enabledPlugins + codeagent-extension.json）
+    local cac_cache_dir="$CAC_PREFIX/plugins/cache/local-secguard/secguard-clang/$PKG_VERSION"
+    mkdir -p "$cac_cache_dir"
+    # 用 `/.` 而非 `/*`：`*` 不匹配点文件，会漏掉 .cac-plugin/（插件清单）。
+    cp -r "$CAC_TARGET_DIR"/. "$cac_cache_dir/" 2>/dev/null || true
+    sg_write_codeagent_extension "$cac_cache_dir" "$PKG_VERSION"
+    sg_write_codeagent_extension "$CAC_TARGET_DIR" "$PKG_VERSION"
+    sg_record_file "$cac_cache_dir/codeagent-extension.json"
+    sg_record_file "$CAC_TARGET_DIR/codeagent-extension.json"
+    sg_register_plugin "$CAC_PREFIX/plugins/installed_plugins.json" "secguard-clang" "local-secguard" "$cac_cache_dir" "$PKG_VERSION"
+    sg_enable_plugin "$CAC_PREFIX/settings.json" "secguard-clang" "local-secguard"
 
     # 写 manifest
     local files_csv
@@ -412,7 +438,7 @@ case "$TARGET" in
 esac
 case "$TARGET" in
     opencode-nga|all)
-        echo "║  OpenCode-NGA: $OC_TARGET_DIR (code-extension.json)"
+        echo "║  OpenCode-NGA: $OC_TARGET_DIR (codeagent-extension.json)"
         ;;
 esac
 case "$TARGET" in

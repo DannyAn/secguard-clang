@@ -214,12 +214,13 @@ read a candidate file for every candidate. (`report --audit` later overwrites
    Then A5-review suspected findings, move on. Never skip a type. Obey
    the context budget (≤5 files/type, no full-tree source reads, no skill for a
    0-candidate type).
-**调度时序合规规则 (F3):** All subagent dispatches SHALL occur in a single assistant turn — N `Task`/`task` calls issued consecutively with the first-to-last timestamp span ≤ 10s. The orchestrator SHALL NOT split dispatches across turns. After dispatch, while subagents run, the orchestrator SHALL NOT poll their transcripts or issue `sleep`; it SHALL wait for task-notification events.
+**调度时序合规规则 (F3):** All subagent dispatches SHALL occur in a single assistant turn — N `Agent`/`task` calls issued consecutively with the first-to-last timestamp span ≤ 10s. (Claude Code's subagent-dispatch tool is `Agent`; older Claude Code versions name it `Task`.) The orchestrator SHALL NOT split dispatches across turns. After dispatch, while subagents run, the orchestrator SHALL NOT poll their transcripts or issue `sleep`; it SHALL wait for task-notification events.
 
 4. **Parallel dispatch** (ONLY when step 2 says so): validate every batch against the Batch Capacity Configuration above, then spawn one subagent PER BATCH
    of types that have candidates > 0, ALL IN THE SAME TURN so they run
    concurrently:
-   - Claude Code: the `Task` tool with `subagent_type: "security-auditor"`.
+   - Claude Code: the `Agent` tool (the subagent-dispatch tool; older versions
+     name it `Task`) with `subagent_type: "security-auditor"`.
    - OpenCode: the `task` tool with the `security-auditor` agent (same name).
    Each subagent prompt must be self-contained (the subagent cannot see this
    conversation):

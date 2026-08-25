@@ -39,7 +39,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Platforms:"
             echo "  opencode      Install extension to ~/.config/opencode/extensions/$PRODUCT/"
-            echo "  opencode-nga  Install OpenCode fork extension (code-extension.json) to the same dir"
+            echo "  opencode-nga  Install OpenCode fork extension (codeagent-extension.json) to the same dir"
             echo "  claude-code   Install official plugin to ~/.claude/plugins/$PRODUCT/"
             echo "  claude-cac    Install Claude Code fork plugin to ~/.cac/plugins/$PRODUCT/"
             echo "  all           Install all four (default)"
@@ -149,13 +149,15 @@ install_opencode() {
 # ── Install OpenCode-NGA extension ───────────────────────────
 install_opencode_nga() {
     echo "[opencode-nga] Extension dir: $OPENCODE_EXT_DIR"
+    # 清理 <=0.4.4 的旧清单名（code-extension*.json），避免扩展目录里出现两套清单。
+    rm -f "$OPENCODE_EXT_DIR/code-extension.json" "$OPENCODE_EXT_DIR/code-extension-install.json"
     mkdir -p "$OPENCODE_EXT_DIR"/{commands,agents,tools,plugins,skills}
 
-    cp "$EXT_DIR/opencode-nga/code-extension.json" "$OPENCODE_EXT_DIR/"
+    cp "$EXT_DIR/opencode-nga/codeagent-extension.json" "$OPENCODE_EXT_DIR/"
     # 用 python3 做字面替换，避免 sed 把路径里的 `&`/`|` 当特殊字符。
     python3 -c "
-src = '''$EXT_DIR/opencode-nga/code-extension-install.json'''
-dst = '''$OPENCODE_EXT_DIR/code-extension-install.json'''
+src = '''$EXT_DIR/opencode-nga/.codeagent-extension-install.json'''
+dst = '''$OPENCODE_EXT_DIR/.codeagent-extension-install.json'''
 target = '''$OPENCODE_EXT_DIR'''
 with open(src) as f:
     content = f.read()
@@ -343,7 +345,7 @@ case "$PLATFORM" in
     opencode-nga|all)
         echo "║  OpenCode-NGA extension:"
         echo "║    $OPENCODE_EXT_DIR/"
-        echo "║      code-extension.json, code-extension-install.json"
+        echo "║      codeagent-extension.json, .codeagent-extension-install.json"
         echo "║      opencode.json, commands/, agents/, tools/, plugins/, skills/"
         ;;
 esac
@@ -438,8 +440,8 @@ case "$PLATFORM" in
     opencode-nga|all)
         echo ""
         echo "  OpenCode-NGA extension ($OPENCODE_EXT_DIR):"
-        check_file "$OPENCODE_EXT_DIR/code-extension.json"
-        check_file "$OPENCODE_EXT_DIR/code-extension-install.json"
+        check_file "$OPENCODE_EXT_DIR/codeagent-extension.json"
+        check_file "$OPENCODE_EXT_DIR/.codeagent-extension-install.json"
         check_file "$OPENCODE_EXT_DIR/opencode.json"
         check_file "$OPENCODE_EXT_DIR/commands/secguard.md"
         check_file "$OPENCODE_EXT_DIR/agents/security-auditor.md"

@@ -213,7 +213,7 @@ sg_remove_permissions() {
     local settings_path="$1"
     [ -f "$settings_path" ] || return 0
     python3 -c "
-import json
+import json, sys
 path = '''$settings_path'''
 required = [
     'Bash(secguard scan *)',
@@ -230,9 +230,9 @@ try:
     with open(path, 'r') as f:
         settings = json.load(f)
 except (FileNotFoundError, json.JSONDecodeError):
-    return
+    sys.exit(0)
 if 'permissions' not in settings or 'allow' not in settings['permissions']:
-    return
+    sys.exit(0)
 before = len(settings['permissions']['allow'])
 settings['permissions']['allow'] = [
     p for p in settings['permissions']['allow'] if p not in required
@@ -275,6 +275,165 @@ allow = set(settings.get('permissions', {}).get('allow', []))
 missing = [p for p in required if p not in allow]
 if missing:
     sys.exit(1)
+"
+}
+
+# 向 installed_plugins.json 注册插件（幂等，已存在时保留 installedAt 更新 lastUpdated）
+# 用法：sg_register_plugin <installed_plugins_path> <plugin_name> <source> <install_path> <version>
+sg_register_plugin() {
+    local installed_plugins_path="$1"
+    local plugin_name="$2"
+    local source="$3"
+    local install_path="$4"
+    local version="$5"
+    python3 -c "
+import json, os, datetime
+path = '''$installed_plugins_path'''
+plugin_name = '''$plugin_name'''
+source = '''$source'''
+install_path = '''$install_path'''
+version = '''$version'''
+key = f'{plugin_name}@{source}'
+try:
+    with open(path, 'r') as f:
+        data = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+now = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+existing = data.get(key, {})
+entry = {
+    'name': plugin_name,
+    'source': source,
+    'version': version,
+    'installPath': install_path,
+    'installedAt': existing.get('installedAt', now),
+    'lastUpdated': now,
+}
+data[key] = entry
+d = os.path.dirname(path)
+if d:
+    os.makedirs(d, exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(data, f, indent=2)
+    f.write('\n')
+"
+}
+
+# 从 installed_plugins.json 注销插件（幂等，不存在时静默返回）
+# 用法：sg_unregister_plugin <installed_plugins_path> <plugin_name> <source>
+sg_unregister_plugin() {
+    local installed_plugins_path="$1"
+    local plugin_name="$2"
+    local source="$3"
+    [ -f "$installed_plugins_path" ] || return 0
+    python3 -c "
+import json, sys
+path = '''$installed_plugins_path'''
+plugin_name = '''$plugin_name'''
+source = '''$source'''
+key = f'{plugin_name}@{source}'
+try:
+    with open(path, 'r') as f:
+        data = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    sys.exit(0)
+if isinstance(data, dict) and key in data:
+    del data[key]
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=2)
+        f.write('\n')
+"
+}
+
+# 在 settings.json 的 enabledPlugins 中启用插件（幂等）
+# 用法：sg_enable_plugin <settings_path> <plugin_name> <source>
+sg_enable_plugin() {
+    local settings_path="$1"
+    local plugin_name="$2"
+    local source="$3"
+    python3 -c "
+import json, os
+path = '''$settings_path'''
+plugin_name = '''$plugin_name'''
+source = '''$source'''
+key = f'{plugin_name}@{source}'
+try:
+    with open(path, 'r') as f:
+        settings = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    settings = {}
+if not isinstance(settings, dict):
+    settings = {}
+if 'enabledPlugins' not in settings:
+    settings['enabledPlugins'] = {}
+settings['enabledPlugins'][key] = True
+d = os.path.dirname(path)
+if d:
+    os.makedirs(d, exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(settings, f, indent=2)
+    f.write('\n')
+"
+}
+
+# 从 settings.json 的 enabledPlugins 中移除插件（幂等，不存在时静默返回）
+# 用法：sg_disable_plugin <settings_path> <plugin_name> <source>
+sg_disable_plugin() {
+    local settings_path="$1"
+    local plugin_name="$2"
+    local source="$3"
+    [ -f "$settings_path" ] || return 0
+    python3 -c "
+import json, sys
+path = '''$settings_path'''
+plugin_name = '''$plugin_name'''
+source = '''$source'''
+key = f'{plugin_name}@{source}'
+try:
+    with open(path, 'r') as f:
+        settings = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    sys.exit(0)
+if isinstance(settings, dict) and 'enabledPlugins' in settings and key in settings['enabledPlugins']:
+    del settings['enabledPlugins'][key]
+    with open(path, 'w') as f:
+        json.dump(settings, f, indent=2)
+        f.write('\n')
+"
+}
+
+# 写入 codeagent-extension.json 运行时清单（幂等）
+# 用法：sg_write_codeagent_extension <target_dir> <version>
+sg_write_codeagent_extension() {
+    local target_dir="$1"
+    local version="$2"
+    python3 -c "
+import json, os
+target_dir = '''$target_dir'''
+version = '''$version'''
+manifest = {
+    'name': 'secguard-clang',
+    'displayName': 'Zhuque SecGuard',
+    'description': 'AI-augmented C program security analysis platform with 4-level convergence pipeline',
+    'version': version,
+    'author': {
+        'name': 'Zhuque Security',
+        'url': 'https://github.com/DannyAn/secguard-clang',
+    },
+    'license': 'Proprietary',
+    'keywords': [
+        'security',
+        'static-analysis',
+        'c-language',
+        'vulnerability-detection',
+    ],
+}
+os.makedirs(target_dir, exist_ok=True)
+with open(os.path.join(target_dir, 'codeagent-extension.json'), 'w') as f:
+    json.dump(manifest, f, indent=2)
+    f.write('\n')
 "
 }
 
@@ -361,6 +520,18 @@ sg_uninstall_platform() {
     fi
     if [ "$platform" = "all" ] || [ "$platform" = "claude-cac" ]; then
         sg_remove_permissions "$cac_prefix/settings.json" 2>/dev/null || true
+    fi
+
+    # 插件注销（installed_plugins.json + enabledPlugins + cache 目录）
+    if [ "$platform" = "all" ] || [ "$platform" = "claude-code" ]; then
+        sg_disable_plugin "$cc_prefix/settings.json" "secguard-clang" "local-secguard" 2>/dev/null || true
+        sg_unregister_plugin "$cc_prefix/plugins/installed_plugins.json" "secguard-clang" "local-secguard" 2>/dev/null || true
+        rm -rf "$cc_prefix/plugins/cache/local-secguard/secguard-clang" 2>/dev/null || true
+    fi
+    if [ "$platform" = "all" ] || [ "$platform" = "claude-cac" ]; then
+        sg_disable_plugin "$cac_prefix/settings.json" "secguard-clang" "local-secguard" 2>/dev/null || true
+        sg_unregister_plugin "$cac_prefix/plugins/installed_plugins.json" "secguard-clang" "local-secguard" 2>/dev/null || true
+        rm -rf "$cac_prefix/plugins/cache/local-secguard/secguard-clang" 2>/dev/null || true
     fi
 
     # 清理空目录残留
@@ -455,8 +626,8 @@ sg_verify_platform() {
         local nga_dir="$oc_prefix/extensions/secguard-clang"
         echo ""
         echo "OpenCode-NGA extension ($nga_dir):"
-        [ -f "$nga_dir/code-extension.json" ] && sg_check ok "code-extension.json" || sg_check fail "code-extension.json"
-        [ -f "$nga_dir/code-extension-install.json" ] && sg_check ok "code-extension-install.json" || sg_check fail "code-extension-install.json"
+        [ -f "$nga_dir/codeagent-extension.json" ] && sg_check ok "codeagent-extension.json" || sg_check fail "codeagent-extension.json"
+        [ -f "$nga_dir/.codeagent-extension-install.json" ] && sg_check ok ".codeagent-extension-install.json" || sg_check fail ".codeagent-extension-install.json"
         [ -f "$nga_dir/opencode.json" ] && sg_check ok "opencode.json" || sg_check fail "opencode.json"
         [ -f "$nga_dir/commands/secguard.md" ] && sg_check ok "commands/secguard.md" || sg_check fail "commands/secguard.md"
         [ -f "$nga_dir/agents/security-auditor.md" ] && sg_check ok "agents/security-auditor.md" || sg_check fail "agents/security-auditor.md"
@@ -478,6 +649,33 @@ sg_verify_platform() {
         else
             sg_check fail "Permissions not fully merged in settings.json"
         fi
+        local cc_cache_dir="$cc_prefix/plugins/cache/local-secguard/secguard-clang/$pkg_version"
+        [ -f "$cc_cache_dir/codeagent-extension.json" ] && sg_check ok "cache codeagent-extension.json" || sg_check fail "cache codeagent-extension.json"
+        [ -f "$cc_dir/codeagent-extension.json" ] && sg_check ok "codeagent-extension.json" || sg_check fail "codeagent-extension.json"
+        python3 -c "
+import json, sys
+key = 'secguard-clang@local-secguard'
+try:
+    with open('''$cc_prefix/plugins/installed_plugins.json''') as f:
+        data = json.load(f)
+    if key in data and 'installPath' in data[key]:
+        sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+" 2>/dev/null && sg_check ok "installed_plugins.json registered" || sg_check fail "installed_plugins.json registered"
+        python3 -c "
+import json, sys
+key = 'secguard-clang@local-secguard'
+try:
+    with open('''$cc_prefix/settings.json''') as f:
+        s = json.load(f)
+    if s.get('enabledPlugins', {}).get(key) is True:
+        sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+" 2>/dev/null && sg_check ok "enabledPlugins enabled" || sg_check fail "enabledPlugins enabled"
     fi
 
     # Claude-CAC 检查（Claude Code 开源分支：~/.cac/plugins/）
@@ -495,6 +693,33 @@ sg_verify_platform() {
         else
             sg_check fail "Permissions not fully merged in settings.json"
         fi
+        local cac_cache_dir="$cac_prefix/plugins/cache/local-secguard/secguard-clang/$pkg_version"
+        [ -f "$cac_cache_dir/codeagent-extension.json" ] && sg_check ok "cache codeagent-extension.json" || sg_check fail "cache codeagent-extension.json"
+        [ -f "$cac_dir/codeagent-extension.json" ] && sg_check ok "codeagent-extension.json" || sg_check fail "codeagent-extension.json"
+        python3 -c "
+import json, sys
+key = 'secguard-clang@local-secguard'
+try:
+    with open('''$cac_prefix/plugins/installed_plugins.json''') as f:
+        data = json.load(f)
+    if key in data and 'installPath' in data[key]:
+        sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+" 2>/dev/null && sg_check ok "installed_plugins.json registered" || sg_check fail "installed_plugins.json registered"
+        python3 -c "
+import json, sys
+key = 'secguard-clang@local-secguard'
+try:
+    with open('''$cac_prefix/settings.json''') as f:
+        s = json.load(f)
+    if s.get('enabledPlugins', {}).get(key) is True:
+        sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+" 2>/dev/null && sg_check ok "enabledPlugins enabled" || sg_check fail "enabledPlugins enabled"
     fi
 
     echo ""

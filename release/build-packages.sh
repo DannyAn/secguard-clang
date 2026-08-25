@@ -215,13 +215,13 @@ build_master() {
     cp "$EXTENSION_DIR/opencode/tools/"*.ts "$root/opencode/tools/" 2>/dev/null || true
     cp "$EXTENSION_DIR/opencode/plugins/"*.ts "$root/opencode/plugins/" 2>/dev/null || true
 
-    # opencode-nga（OpenCode 开源分支：manifest 改名 code-extension.json，
-    # 其余文件与 opencode 完全一致；code-extension-install.json 的 source 在
+    # opencode-nga（OpenCode 开源分支：manifest 改名 codeagent-extension.json，
+    # 其余文件与 opencode 完全一致；.codeagent-extension-install.json 的 source 在
     # install 时按实际安装目录替换）
     mkdir -p "$root/opencode-nga"/{commands,agents,tools,plugins}
-    cp "$EXTENSION_DIR/opencode-nga/code-extension.json" "$root/opencode-nga/"
-    set_json_version "$root/opencode-nga/code-extension.json" "$version"
-    cp "$EXTENSION_DIR/opencode-nga/code-extension-install.json" "$root/opencode-nga/"
+    cp "$EXTENSION_DIR/opencode-nga/codeagent-extension.json" "$root/opencode-nga/"
+    set_json_version "$root/opencode-nga/codeagent-extension.json" "$version"
+    cp "$EXTENSION_DIR/opencode-nga/.codeagent-extension-install.json" "$root/opencode-nga/"
     cp "$EXTENSION_DIR/opencode/opencode.json" "$root/opencode-nga/"
     expand_includes "$EXTENSION_DIR/opencode/commands/secguard.md" "$root/opencode-nga/commands/secguard.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/agents/security-auditor.md" "$root/opencode-nga/agents/security-auditor.md" "$EXTENSION_DIR/shared"

@@ -2,6 +2,28 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.4.5] - 2026-08-25
+
+### 安装器与插件注册修正
+
+- **CodeAgent 插件注册**（claude-code / claude-cac）：安装时向
+  `installed_plugins.json` 注册插件、在 `settings.json` 的 `enabledPlugins` 中启用，并在
+  插件目录与 `plugins/cache/local-secguard/` 各写一份 `codeagent-extension.json` 运行时清单；
+  卸载时同步注销并清理 cache。缓存复制改用 `/.`（`*` 不匹配点文件，会漏掉
+  `.claude-plugin/`/`.cac-plugin/` 清单）。
+- **修复卸载不清理权限**：`sg_remove_permissions` 的 Python 代码里模块级 `return` 是
+  SyntaxError，权限移除从未生效（被 `|| true` 掩盖），改为 `sys.exit(0)`。
+- **opencode-nga 清单改名**：`code-extension.json` -> `codeagent-extension.json`、
+  `code-extension-install.json` -> `.codeagent-extension-install.json`（安装占位符替换逻辑
+  不变）；安装/部署时清理 <=0.4.4 遗留的旧清单名，避免同目录两套清单。
+- **修复 SARIF 双击找不到文件**：`candidates.sarif` / `result.sarif` 的
+  `artifactLocation.uri` 由裸绝对路径改为 `file://` URI（裸绝对路径不是合法 URI，SARIF
+  查看器按相对引用解析后报 "Unable to find <file>"）；相对路径仅做斜杠归一化保持相对。
+- **修复 claude-code / claude-cac 不并行分类**：`/secguard` 命令的 `allowed-tools` 补齐
+  子代理分发工具（`Agent`，旧版为 `Task`）与编排所需工具（`Write`/`Edit`/`TodoWrite`/
+  `Skill`），并统一指令中的工具名。此前编排器无法派发 `security-auditor` 子代理，被迫
+  单上下文顺序处理大扫描，导致上下文耗尽并报 `unknown`（上下文限制）。
+
 ## [0.4.4] - 2026-08-24
 
 ### 生产环境安装与部署修正
@@ -16,7 +38,7 @@
 - **新增 `claude-cac` 平台**（Claude Code 开源分支）：部署到 `~/.cac/plugins/secguard-clang/`，
   清单改为 `.cac-plugin/plugin.json`，其余与 claude-code 一致。
 - **新增 `opencode-nga` 平台**（OpenCode 开源分支）：部署到 `~/.config/opencode/extensions/secguard-clang/`，
-  `extension.json`→`code-extension.json`，新增 `code-extension-install.json`（其 `source`
+  `extension.json`->`code-extension.json`，新增 `code-extension-install.json`（其 `source`
   由占位符在安装时替换为实际路径），其余与 opencode 一致。
 - 权限清单补齐 `types`/`schema` 两项，`--target` 支持 4 平台（opencode / opencode-nga /
   claude-code / claude-cac / all），build-packages.sh / install.sh / uninstall.sh / deploy.sh
