@@ -24,6 +24,13 @@ import (
 // These were previously computed in-memory by the evidence package's
 // buildFuncSummaries (ReturnStores / GlobalFrees) and never persisted, so the
 // graph layer's OWNERSHIP_TRANSFER / RELEASE edge types were declared but empty.
+//
+// Contract: these edges are a NARROW safety net, not the primary escape
+// analysis. The evidence detectors' findEscapeLines treats any store to a
+// non-local (global/static/field/subscript base) as ownership escape, while the
+// graph layer only recognizes the `g_`-prefixed globals (isGlobalName). The
+// detector is the wide, authoritative decision; OwnershipTransferFilter drops a
+// leak candidate only when the graph caught a transfer the detector missed.
 type OwnershipBuilder struct {
 	store  db.Store
 	parser *parser.Parser

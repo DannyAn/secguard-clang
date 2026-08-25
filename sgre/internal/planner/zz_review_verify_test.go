@@ -16,7 +16,11 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
-// TEMP verification fixture - delete after review.
+// reviewFixture pins four flow-sensitive false-negative cases that were found in
+// a review pass: a kill confined to one branch must not suppress the null source
+// on the other branch, an early return must not hide a later explicit NULL, and
+// a branch-copy / branch-realloc must not clear the freed state on the other
+// branch.
 const reviewFixture = `#include <stdlib.h>
 
 int g_int;
@@ -31,8 +35,10 @@ int a_null_branch_kill(int c) {
     return *p;
 }
 
-// Case B: early-return guard then explicit NULL. Line-range guard scope
-// ignores the reassignment. Expect KEPT (definite null deref).
+// Case B: early-return guard then explicit NULL. KNOWN FALSE NEGATIVE: the
+// EARLY_RETURN guard scope (null_guard.go detectEarlyReturnGuards) extends to
+// f.EndLine and is not cut off by the later p = NULL reassignment, so the
+// definite null deref is wrongly suppressed. Not asserted; see the test below.
 int b_guard_then_null(int *p) {
     if (p == NULL) {
         return 0;
@@ -62,7 +68,7 @@ void d_doublefree_branch(int c) {
 }
 `
 
-func TestReview_FalseNegatives(t *testing.T) {
+func TestReview_BranchSensitiveKeptCandidates(t *testing.T) {
 	ctx := context.Background()
 	store := db.NewTestStore(t)
 	logger := log.Default()
@@ -86,6 +92,14 @@ func TestReview_FalseNegatives(t *testing.T) {
 	evidence.RunAllDetectors(ctx, store, p, logger)
 
 	pl := NewPlanner(store, p, logger)
+	// b_guard_then_null is a known false negative (early-return guard scope is
+	// not cut off by a later reassignment to NULL), so it is deliberately absent
+	// from the asserted set — the other three must stay kept as recall gates.
+	want := map[string][]string{
+		"null-deref":     {"a_null_branch_kill"},
+		"use-after-free": {"c_uaf_branch_copy"},
+		"double-free":    {"d_doublefree_branch"},
+	}
 	for _, vt := range []string{"null-deref", "use-after-free", "double-free"} {
 		result, err := pl.Plan(ctx, vt)
 		if err != nil {
@@ -95,10 +109,10 @@ func TestReview_FalseNegatives(t *testing.T) {
 		for _, c := range result.Candidates {
 			kept[c.Target.Function] = true
 		}
-		t.Logf("%s kept: %v", vt, candidateNames(result))
-		for _, d := range result.Summary.Dropped {
-			t.Logf("%s dropped: %s: %s", vt, d.FunctionName, d.Reason)
+		for _, fn := range want[vt] {
+			if !kept[fn] {
+				t.Errorf("%s: expected %q to be kept (recall), got %v", vt, fn, candidateNames(result))
+			}
 		}
-		_ = kept
 	}
 }

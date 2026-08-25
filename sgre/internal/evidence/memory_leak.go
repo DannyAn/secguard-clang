@@ -3,7 +3,6 @@ package evidence
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -37,11 +36,45 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 		funcMap[f.Name] = f
 	}
 
+	// Scan for free() sites once per file so the RAII create/destroy pairing
+	// below no longer re-reads + re-parses each destroy function's file from
+	// disk per candidate (the old functionHasFrees path).
+	freeFuncs := make(map[int64]bool)
+	hasDestroyCandidates := false
+	for _, f := range funcs {
+		if destroyName := getDestroyCounterpart(f.Name); destroyName != "" {
+			if _, exists := funcMap[destroyName]; exists {
+				hasDestroyCandidates = true
+			}
+		}
+	}
+	if hasDestroyCandidates {
+		if err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
+			calls := root.FindAll("call_expression")
+			for _, f := range fileFuncs {
+				if freeFuncs[f.ID] {
+					continue
+				}
+				for _, call := range calls {
+					if !funcLineRange(f, call.StartLine()) {
+						continue
+					}
+					if extractCallName(call) == "free" {
+						freeFuncs[f.ID] = true
+						break
+					}
+				}
+			}
+		}); err != nil {
+			return result, fmt.Errorf("memory_leak: scan frees: %w", err)
+		}
+	}
+
 	raiiCreateFuncs := make(map[int64]bool)
 	for _, f := range funcs {
 		if destroyName := getDestroyCounterpart(f.Name); destroyName != "" {
 			if destroyFunc, exists := funcMap[destroyName]; exists {
-				if d.functionHasFrees(ctx, destroyFunc) {
+				if freeFuncs[destroyFunc.ID] {
 					raiiCreateFuncs[f.ID] = true
 				}
 			}
@@ -50,6 +83,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 
 	err = forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
 		funcDefs := root.FindAll("function_definition")
+		bodies := functionBodyMap(funcDefs)
 		calls := root.FindAll("call_expression")
 		returns := root.FindAll("return_statement")
 		assigns := root.FindAll("assignment_expression")
@@ -65,7 +99,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 
 			isRAII := raiiCreateFuncs[f.ID]
 
-			body := extractFunctionBodyFrom(funcDefs, f.StartLine)
+			body := bodies[f.StartLine]
 			cfg := graph.BuildStmtCFG(body, f.EndLine)
 			cfgValid := body.Kind() == "compound_statement"
 			localVars := findLocalVarsFrom(decls, f)
@@ -453,32 +487,4 @@ func getDestroyCounterpart(funcName string) string {
 		}
 	}
 	return ""
-}
-
-func (d *MemoryLeakDetector) functionHasFrees(ctx context.Context, f *db.Function) bool {
-	file, _ := d.store.GetFileByID(ctx, f.FileID)
-	if file == nil {
-		return false
-	}
-	source, err := os.ReadFile(file.Path)
-	if err != nil {
-		return false
-	}
-	tree, err := d.parser.ParseCached(source, file.Path)
-	if err != nil {
-		return false
-	}
-	defer tree.Close()
-
-	root := tree.RootNode()
-	calls := root.FindAll("call_expression")
-	for _, call := range calls {
-		if call.StartLine() < f.StartLine || call.StartLine() > f.EndLine {
-			continue
-		}
-		if extractCallName(call) == "free" {
-			return true
-		}
-	}
-	return false
 }

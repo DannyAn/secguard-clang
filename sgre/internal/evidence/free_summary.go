@@ -34,6 +34,7 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser) s
 
 	forEachFile(ctx, store, p, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		funcDefs := root.FindAll("function_definition")
+		bodies := functionBodyMap(funcDefs)
 		calls := root.FindAll("call_expression")
 		returns := root.FindAll("return_statement")
 		assigns := root.FindAll("assignment_expression")
@@ -41,7 +42,7 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser) s
 		for _, f := range funcs {
 			params := extractFunctionParamsFrom(funcDefs, f.StartLine)
 
-			paramWrites, paramCondWrites := computeParamWriteStates(funcDefs, f, params)
+			paramWrites, paramCondWrites := computeParamWriteStates(bodies, f, params)
 			s := &FuncSummary{
 				ParamDirectFrees:       make(map[int]bool),
 				ParamFieldFrees:        make(map[int][]string),
@@ -49,7 +50,7 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser) s
 				ParamConditionalWrites: paramCondWrites,
 			}
 
-			s.ParamDirectFrees, s.ParamFieldFrees = computeParamFrees(funcDefs, f, params)
+			s.ParamDirectFrees, s.ParamFieldFrees = computeParamFrees(bodies, f, params)
 
 			for _, call := range calls {
 				if !funcLineRange(f, call.StartLine()) {
@@ -90,10 +91,10 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser) s
 // It builds the function CFG and checks whether the exit is reachable from the
 // entry without passing a write-through statement; if it is reachable, some
 // path skips the write.
-func computeParamWriteStates(funcDefs []parser.Node, f *db.Function, params []string) (map[int]bool, map[int]bool) {
+func computeParamWriteStates(bodies map[int]parser.Node, f *db.Function, params []string) (map[int]bool, map[int]bool) {
 	every := make(map[int]bool)
 	some := make(map[int]bool)
-	body := extractFunctionBodyFrom(funcDefs, f.StartLine)
+	body := bodies[f.StartLine]
 	if body.Kind() != "compound_statement" {
 		return every, some
 	}
@@ -172,10 +173,10 @@ func nullGuardedWrite(stmt parser.Node, p string) bool {
 // resumes only on paths where the free did NOT happen, so propagating it would
 // be a false positive (cf. gz_look freeing state->out on a malloc-failure path).
 // A NULL-guard `if (p != NULL) free(p)` falls through, so it is unconditional.
-func computeParamFrees(funcDefs []parser.Node, f *db.Function, params []string) (map[int]bool, map[int][]string) {
+func computeParamFrees(bodies map[int]parser.Node, f *db.Function, params []string) (map[int]bool, map[int][]string) {
 	direct := make(map[int]bool)
 	field := make(map[int][]string)
-	body := extractFunctionBodyFrom(funcDefs, f.StartLine)
+	body := bodies[f.StartLine]
 	if body.Kind() != "compound_statement" {
 		return direct, field
 	}
@@ -317,18 +318,18 @@ func chainedWriteTargets(assign parser.Node) []string {
 	return names
 }
 
-// extractFunctionBody returns the compound_statement body of the
-// function_definition whose start line matches startLine.
-func extractFunctionBodyFrom(funcDefs []parser.Node, startLine int) parser.Node {
+// functionBodyMap builds a start-line → compound_statement body map from a
+// file's function_definition nodes, so per-function body lookup is O(1) instead
+// of re-scanning all definitions per function (the old extractFunctionBodyFrom
+// was O(F²) per file).
+func functionBodyMap(funcDefs []parser.Node) map[int]parser.Node {
+	m := make(map[int]parser.Node, len(funcDefs))
 	for _, fn := range funcDefs {
-		if fn.StartLine() != startLine {
-			continue
-		}
 		if body := fn.FindFirst("compound_statement"); body != nil {
-			return *body
+			m[fn.StartLine()] = *body
 		}
 	}
-	return parser.Node{}
+	return m
 }
 
 func findReturnStoresFrom(returns, assigns []parser.Node, f *db.Function) []string {

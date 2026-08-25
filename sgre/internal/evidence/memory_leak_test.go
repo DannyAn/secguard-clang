@@ -70,6 +70,15 @@ func TestMemoryLeak_MallocInCondition(t *testing.T) {
 	}
 }
 
+// TestMemoryLeak_RAIICreateDestroy locks in the create/destroy RAII pairing: a
+// create function whose destroy counterpart frees must not report its (stored-
+// to-global-on-a-later-line) allocation as a leak. It guards the free-scan
+// pre-pass in Detect (formerly per-candidate functionHasFrees os.ReadFile).
+func TestMemoryLeak_RAIICreateDestroy(t *testing.T) {
+	store := runIndexAndDetect(t, "tc74_raii_create_destroy.c")
+	assertNoEvent(t, store, "MEMORY_ALLOC", "tc74_raii_create_destroy")
+}
+
 // TestMemoryLeak_ZcallocNotAlloc locks in the fix that only a real
 // malloc/calloc/realloc call is an allocation: assigning an allocator function
 // pointer (strm->zalloc = zcalloc, whose name contains "calloc") must not be

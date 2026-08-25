@@ -35,6 +35,7 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 		decls := root.FindAll("declaration")
 		ifs := root.FindAll("if_statement")
 		funcDefs := root.FindAll("function_definition")
+		bodies := functionBodyMap(funcDefs)
 
 		for _, f := range funcs {
 			acquires := d.findAcquires(ctx, f, file, assigns, inits, calls, binaries, &result)
@@ -42,7 +43,7 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 
 			returnLines := findReturnLinesFrom(returns, f)
 			localVars := findLocalVarsFrom(decls, f)
-			body := extractFunctionBodyFrom(funcDefs, f.StartLine)
+			body := bodies[f.StartLine]
 			cfg := graph.BuildStmtCFG(body, f.EndLine)
 			cfgValid := body.Kind() == "compound_statement"
 

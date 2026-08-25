@@ -237,12 +237,13 @@ func (d *RaceConditionDetector) detectCrossFunctionDataRace(ctx context.Context,
 		writeFuncID  int64
 	}
 	agg := make(map[string]*globalAgg)
+	bodies := functionBodyMap(funcDefs)
 
 	for _, f := range funcs {
 		if threadCounts[f.Name] <= 0 {
 			continue
 		}
-		body := extractFunctionBodyFrom(funcDefs, f.StartLine)
+		body := bodies[f.StartLine]
 		heldByLine := d.mustHoldByLine(body, f.EndLine, calls, f)
 		accesses := d.functionGlobalAccesses(f, info, assigns, updates, ids, heldByLine)
 		for name, acc := range accesses {

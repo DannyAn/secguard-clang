@@ -170,17 +170,6 @@ func (m *flowResult) sourceLine(variable string, line int) int {
 	return best
 }
 
-// reachingAtExit reports whether variable has a reaching source at the function
-// exit, i.e. there is a path on which the source is not killed before the
-// function returns. This is the leak condition: allocated but not released on
-// at least one path.
-func (m *flowResult) reachingAtExit(variable string) bool {
-	if m == nil || m.cfg == nil {
-		return false
-	}
-	return len(m.nodeIn[m.cfg.Exit][variable]) > 0
-}
-
 // nodeEffects are the gen/kill/copy transfer effects of a single CFG node.
 type nodeEffects struct {
 	gen  map[string]bool

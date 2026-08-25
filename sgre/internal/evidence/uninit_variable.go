@@ -45,9 +45,10 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 		whiles := root.FindAll("while_statement")
 		fors := root.FindAll("for_statement")
 		funcDefs := root.FindAll("function_definition")
+		bodies := functionBodyMap(funcDefs)
 
 		for _, f := range funcs {
-			d.detectStackUninit(ctx, f, file, decls, assigns, calls, returns, inits, ifs, whiles, fors, funcDefs, summaries, &result)
+			d.detectStackUninit(ctx, f, file, decls, assigns, calls, returns, inits, ifs, whiles, fors, bodies, summaries, &result)
 			d.detectHeapUninit(ctx, f, file, inits, assigns, unarys, ptrs, fields, &result)
 			d.detectStructPartialUninit(ctx, f, file, decls, assigns, calls, fields, summaries, &result)
 		}
@@ -55,7 +56,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 	return result, err
 }
 
-func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, decls, assigns, calls, returns, inits, ifs, whiles, fors, funcDefs []parser.Node, summaries summaryMap, result *DetectResult) {
+func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, decls, assigns, calls, returns, inits, ifs, whiles, fors []parser.Node, bodies map[int]parser.Node, summaries summaryMap, result *DetectResult) {
 	uninitVars := make(map[string]int)
 	assignSites := make(map[string][]int)
 	// outputParamInitLines maps a variable to the line after which it is
@@ -198,7 +199,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		}
 	}
 
-	body := extractFunctionBodyFrom(funcDefs, f.StartLine)
+	body := bodies[f.StartLine]
 	cfg := graph.BuildStmtCFG(body, f.EndLine)
 	cfgValid := body.Kind() == "compound_statement"
 	if !cfgValid && d.logger != nil {
