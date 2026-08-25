@@ -2,6 +2,30 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.4.6] - 2026-08-25
+
+### 修复两类"守卫事实被重赋值污染"的假阴性
+
+`range_analysis.go` 由 `if` 条件推导的"非空 / 上界"事实此前不因后续整变量重赋值而失效，导致两类漏报：
+
+- **null-deref**：`if (p == NULL) return; p = NULL; return *p;` —— 守卫建立"p 之后非空"，但 `p = NULL` 没失效该事实，dereference 检测器直接跳过发射事件、GuardFilter 又按旧 scope 二次误删，definite null-deref 漏报。修复：`NonZeroAt` 在"RHS 可能为零"的重赋值处 kill；`null_guard` 的 EARLY_RETURN / REASSIGN_GUARD scope 在首次重赋值处截断（`guardScopeEnd`）。
+- **buffer-overflow**：`if (n <= cap) { n = 1000; memcpy(dst, src, n); }` —— 守卫推导 `n ≤ cap`，但 `n = 1000` 重赋值后上界失效，`UpperBoundAt` 仍返回旧上界，溢出被错误抑制。修复：`UpperBoundAt` 在守卫体内任何重赋值处失效。
+
+`RangeFacts` 的重赋值跟踪重构为"行号 + RHS 文本"：`NonZeroAt` 只对"可能为零"的重赋值 kill（`v = 5` 重新确立非零，避免除零回归），`UpperBoundAt` 对任何重赋值 kill。
+
+### 性能与可维护性
+
+- **memory-leak RAII 配对不再每候选重读盘**：原 `functionHasFrees` 对每个 `_create/_destroy` 候选都 `os.ReadFile` + 全文件 `FindAll`，改为每文件一次 free 预扫描（`freeFuncs` 按函数 ID 存）。
+- **`extractFunctionBodyFrom` O(F²) → `functionBodyMap` O(1)**：memory/resource/race/uninit + free_summary 六处调用统一换成每文件建一次 body map。
+- **删除死代码** `flowResult.reachingAtExit`（含误导性的 "leak condition" 注释）。
+- **`ownership.go` 补契约注释**：检测器=宽口径主判定，图级 OWNERSHIP_TRANSFER=窄口径安全网。
+
+### 测试
+
+- 新增 `tc74_raii_create_destroy` 回归（RAII 路径原本零覆盖）。
+- `zz_review_verify_test.go` 的 TEMP 草稿转成真 recall 断言（4 个流敏感 FN 用例全 KEPT）。
+- 新增 `range_analysis_test.go`，直接断言 `UpperBoundAt` 有/无重赋值两个行为。
+
 ## [0.4.5] - 2026-08-25
 
 ### 安装器与插件注册修正
