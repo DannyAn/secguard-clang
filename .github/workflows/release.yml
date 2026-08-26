@@ -24,12 +24,24 @@ jobs:
             cc: musl-gcc
             apt: musl-tools
             static: '1'
+          # Static musl-linked Linux arm64 (aarch64) — cross-compiled via zig.
+          - name: linux-arm64
+            os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            cc: zig
+            zig_target: aarch64-linux-musl
+            cflags: ''
+            apt: ''
+            static: '1'
           # Windows x86_64 — cross-compiled from Linux via zig (mingw-w64).
           - name: windows-amd64
             os: ubuntu-latest
             goos: windows
             goarch: amd64
             cc: zig
+            zig_target: x86_64-windows-gnu
+            cflags: -Wno-dll-attribute-on-redeclaration
             apt: ''
             static: ''
           # Native macOS arm64 (Apple Silicon).
@@ -63,7 +75,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.apt }}
 
-      - name: Install zig (for windows cross-compile)
+      - name: Install zig (for windows/linux-arm64 cross-compile)
         if: matrix.cc == 'zig'
         run: |
           curl -fsSL https://ziglang.org/download/0.14.1/zig-x86_64-linux-0.14.1.tar.xz -o /tmp/zig.tar.xz
@@ -88,10 +100,10 @@ jobs:
             zig)
               [ "${{ matrix.goos }}" = "windows" ] && artifact="${artifact}.exe"
               mkdir -p .zig-cache/global .zig-cache/local .gotmp
-              CC="zig cc -target x86_64-windows-gnu" \
-              CXX="zig c++ -target x86_64-windows-gnu" \
-              CGO_CFLAGS="-Wno-dll-attribute-on-redeclaration" \
-              CGO_CXXFLAGS="-Wno-dll-attribute-on-redeclaration" \
+              CC="zig cc -target ${{ matrix.zig_target }}" \
+              CXX="zig c++ -target ${{ matrix.zig_target }}" \
+              CGO_CFLAGS="${{ matrix.cflags }}" \
+              CGO_CXXFLAGS="${{ matrix.cflags }}" \
               GONOSUMDB='*' GOFLAGS=-mod=mod \
               ZIG_GLOBAL_CACHE_DIR="$(pwd)/.zig-cache/global" \
               ZIG_LOCAL_CACHE_DIR="$(pwd)/.zig-cache/local" \

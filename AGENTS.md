@@ -104,8 +104,8 @@ a release blocker — note it and move on.
 ## Release Process
 
 Releases are automated via GitHub Actions (`.github/workflows/release.yml`),
-triggered by pushing a `v*` tag. The workflow builds 4 platform binaries
-(linux-amd64 musl-static, windows-amd64, darwin-arm64, darwin-amd64),
+triggered by pushing a `v*` tag. The workflow builds 5 platform binaries
+(linux-amd64 musl-static, linux-arm64 musl-static, windows-amd64, darwin-arm64, darwin-amd64),
 assembles a single `dist/secguard-<version>.zip` + `SHA256SUMS`, and publishes
 a GitHub Release with `CHANGELOG.md` as the body.
 

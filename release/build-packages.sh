@@ -8,6 +8,7 @@ set -euo pipefail
 # 目标矩阵（见 lib.sh build_target）：
 #   - darwin/amd64 + darwin/arm64   macOS（Intel + Apple Silicon）
 #   - linux/amd64                   x86_64 Linux（zig musl 静态链接）
+#   - linux/arm64                   aarch64 Linux（zig musl 静态链接）
 #   - windows/amd64                 x86_64 Windows（zig mingw 交叉编译）
 # 任何目标构建失败都会中止（不再静默回退本机，避免发布缺平台的包）。
 
@@ -87,7 +88,7 @@ if [ "$DO_TEST" = true ]; then
 fi
 
 # ── 目标矩阵 ──
-all_targets=("darwin amd64" "darwin arm64" "linux amd64" "windows amd64")
+all_targets=("darwin amd64" "darwin arm64" "linux amd64" "linux arm64" "windows amd64")
 targets=()
 for t in "${all_targets[@]}"; do
     read -r os arch <<< "$t"

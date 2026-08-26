@@ -2,6 +2,21 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.4.7] - 2026-08-26
+
+### 新增 arm64 (aarch64) Linux 发布支持
+
+补齐 `linux/arm64` 目标的构建与发布能力，使 SecGuard 引擎可在 ARM Linux
+（AWS Graviton、Apple Silicon 上的 Linux、树莓派 64 位等）上原生运行：
+
+- **CI 构建矩阵新增 `linux-arm64`**：在 `ubuntu-latest` 上用 zig 交叉编译
+  `aarch64-linux-musl`，产出与 `linux-amd64` 一致的 musl 静态链接二进制
+  （可运行于任意 glibc/musl 发行版）。
+- **`build-packages.sh` 目标矩阵新增 `linux arm64`**，本地打包与 CI
+  `--assemble-only` 均会产出 `secguard-linux-arm64`。
+- **安装侧无需改动**：`sg_detect_arch` 早已把 `aarch64` 映射为 `arm64`，
+  `sg_select_binary` 会在 ARM Linux 上自动选择 `secguard-linux-arm64`。
+
 ## [0.4.6] - 2026-08-25
 
 ### 修复两类"守卫事实被重赋值污染"的假阴性
