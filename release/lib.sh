@@ -303,7 +303,7 @@ if not isinstance(data, dict):
     data = {}
 if 'plugins' not in data:
     data['plugins'] = {}
-data.setdefault('version', 2)
+data['version'] = 2
 now = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
 existing_list = data['plugins'].get(key, [])
 existing = existing_list[0] if existing_list else {}
