@@ -15,6 +15,7 @@
         "read": "allow",
         "grep": "allow",
         "glob": "allow",
+        "external_directory": "allow",
         "skill": "allow"
       }
     }

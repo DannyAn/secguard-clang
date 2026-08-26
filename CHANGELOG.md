@@ -26,6 +26,12 @@
 - `zz_review_verify_test.go` 的 TEMP 草稿转成真 recall 断言（4 个流敏感 FN 用例全 KEPT）。
 - 新增 `range_analysis_test.go`，直接断言 `UpperBoundAt` 有/无重赋值两个行为。
 
+### 生产验证修复
+
+- **OpenCode skills 权限**：`security-auditor` 子代理补 `external_directory` 权限，分类时加载 skills 不再弹目录访问确认框。
+- **claude-cac 插件注册格式**：`sg_register_plugin` 之前把条目写到 `installed_plugins.json` 顶层、且写成裸对象、缺 `scope` 字段，CodeAgent CLI 无法识别插件（`/secguard-clang:secguard` 不出现）。改为 `plugins[key] = [{scope, installPath, version, installedAt, lastUpdated}]`；`sg_unregister_plugin` 同步改为操作 `plugins`。
+- **发布说明只发当前版本**：release body 由整份 `CHANGELOG.md` 改为提取当前版本小节（新增 `release/release-notes.sh`）。
+
 ## [0.4.5] - 2026-08-25
 
 ### 安装器与插件注册修正

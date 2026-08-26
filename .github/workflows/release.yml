@@ -135,12 +135,15 @@ jobs:
           ls -la dist
           bash release/build-packages.sh --assemble-only --version "${GITHUB_REF_NAME#v}"
 
+      - name: Extract release notes
+        run: bash release/release-notes.sh "${GITHUB_REF_NAME#v}" CHANGELOG.md release-notes.md
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
-          body_path: CHANGELOG.md
+          body_path: release-notes.md
           files: |
             dist/secguard-*.zip
             dist/SHA256SUMS

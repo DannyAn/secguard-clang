@@ -12,6 +12,7 @@ permission:
   read: allow
   grep: allow
   glob: allow
+  external_directory: allow
   skill: allow
 ---
 {{include shared/agent-body.md}}

@@ -5,7 +5,6 @@
 .codeartsdoer/
 .remember/
 /bin/
-.github/
 .tmpgit/
 
 # release/ 是发布/安装脚本（入库）；install.sh 由 install.sh.tmpl 打包时生成，不入库。

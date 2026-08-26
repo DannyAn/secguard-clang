@@ -301,17 +301,20 @@ except (FileNotFoundError, json.JSONDecodeError):
     data = {}
 if not isinstance(data, dict):
     data = {}
+if 'plugins' not in data:
+    data['plugins'] = {}
+data.setdefault('version', 2)
 now = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
-existing = data.get(key, {})
+existing_list = data['plugins'].get(key, [])
+existing = existing_list[0] if existing_list else {}
 entry = {
-    'name': plugin_name,
-    'source': source,
-    'version': version,
+    'scope': 'user',
     'installPath': install_path,
+    'version': version,
     'installedAt': existing.get('installedAt', now),
     'lastUpdated': now,
 }
-data[key] = entry
+data['plugins'][key] = [entry]
 d = os.path.dirname(path)
 if d:
     os.makedirs(d, exist_ok=True)
@@ -339,8 +342,8 @@ try:
         data = json.load(f)
 except (FileNotFoundError, json.JSONDecodeError):
     sys.exit(0)
-if isinstance(data, dict) and key in data:
-    del data[key]
+if isinstance(data, dict) and 'plugins' in data and key in data['plugins']:
+    del data['plugins'][key]
     with open(path, 'w') as f:
         json.dump(data, f, indent=2)
         f.write('\n')
