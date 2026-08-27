@@ -106,9 +106,11 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
-		children := assign.NamedChildren()
-		if len(children) >= 1 && children[0].Kind() == "identifier" {
-			assignSites[children[0].Text()] = append(assignSites[children[0].Text()], assign.StartLine())
+		// assignmentLHSName recovers the real write target even when a macro
+		// call site glues a call_expression as the first named child and buries
+		// the LHS in an ERROR node (`LIST_FOR_EACH(x, h)\n q = 1`).
+		if name := assignmentLHSName(assign); name != "" {
+			assignSites[name] = append(assignSites[name], assign.StartLine())
 		}
 	}
 
@@ -285,15 +287,19 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 			continue
 		}
 		children := assign.NamedChildren()
-		if len(children) < 2 {
+		// assignmentRHSStart accounts for the macro call-site mangling that
+		// shifts the RHS from children[1] to children[2] (`total += q` →
+		// assignment_expression[call_expression, ERROR(total), identifier(q)]).
+		rhsStart := assignmentRHSStart(assign)
+		if len(children) <= rhsStart {
 			continue
 		}
 		// A chained assignment `a = b = c = v` puts b and c in the RHS as WRITE
 		// targets, not reads; only v (the value) is read. Skip nested LHS so
 		// `code = first = index = 0` does not report first/index as read.
-		writes := nestedAssignTargets(children[1])
-		addressed := addressedArgs(children[1])
-		for _, id := range children[1].FindAll("identifier") {
+		writes := nestedAssignTargets(children[rhsStart])
+		addressed := addressedArgs(children[rhsStart])
+		for _, id := range children[rhsStart].FindAll("identifier") {
 			name := id.Text()
 			if addressed[name] || writes[name] || isValueFieldBase(id) {
 				continue
@@ -383,6 +389,38 @@ func forInitWrites(forNode parser.Node) map[string]bool {
 		}
 	}
 	return writes
+}
+
+// assignmentLHSName returns the write-target identifier of an assignment_expression,
+// recovering the real LHS from an ERROR child when a macro call site glues a
+// call_expression as the first named child. For a clean `a = b` it is "a"; for
+// `LIST_FOR_EACH(x, h)\n q = 1` (parsed as
+// assignment_expression[call_expression, ERROR(q), number_literal]) it recovers
+// "q" from the ERROR child.
+func assignmentLHSName(assign parser.Node) string {
+	children := assign.NamedChildren()
+	if len(children) == 0 {
+		return ""
+	}
+	if children[0].Kind() == "identifier" {
+		return children[0].Text()
+	}
+	if len(children) >= 2 && children[0].Kind() == "call_expression" && children[1].Kind() == "ERROR" {
+		return firstIdentifier(children[1])
+	}
+	return ""
+}
+
+// assignmentRHSStart returns the index into an assignment_expression's
+// NamedChildren() where the RHS (the value) begins: 1 for a clean `a = b`, 2 for
+// the macro call-site mangling `total += q` →
+// assignment_expression[call_expression, ERROR(total), identifier(q)].
+func assignmentRHSStart(assign parser.Node) int {
+	children := assign.NamedChildren()
+	if len(children) >= 3 && children[0].Kind() == "call_expression" && children[1].Kind() == "ERROR" {
+		return 2
+	}
+	return 1
 }
 
 // hasUnassignedPath reports whether there is a control-flow path from the

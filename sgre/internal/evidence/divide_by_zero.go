@@ -74,8 +74,13 @@ func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error)
 
 				if emitEvent(ctx, d.store, d.logger, "DIVIDE_BY_ZERO", f.ID, &db.Location{FileID: file.ID, Line: expr.StartLine(), Column: expr.StartColumn()}, map[string]string{
 					"expression": expr.Text(),
-					"divisor":    divisor,
-					"category":   "divide_by_zero",
+					// The divisor is the root-cause variable the planner converges
+					// on; without it the seed falls back to the full `expression`
+					// text, so the dedup key and the report "Variable" column show
+					// "x / y" instead of "y".
+					"variable": divisor,
+					"divisor":  divisor,
+					"category": "divide_by_zero",
 				}) {
 					result.EventsCreated++
 				}

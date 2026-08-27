@@ -88,6 +88,67 @@ int fp_shift_nonzero(void) {
 	}
 }
 
+// TestDivideByZero_ConvergesOnDivisor pins the root-cause dedup: two divisions
+// of the SAME divisor in one function (`a / d` and `b / d`) collapse into one
+// candidate anchored at the earliest site, with Target.Variable = the divisor
+// "d" (not the full expression text). Before the detector emitted `variable`
+// and the type used ConvergeByVariable, each site was its own candidate and the
+// "Variable" column carried the whole "a / d" text.
+func TestDivideByZero_ConvergesOnDivisor(t *testing.T) {
+	src := `#include <stdlib.h>
+
+int calc(int d, int a, int b) {
+    int x = a / d;
+    int y = b / d;
+    return x + y;
+}
+
+int distinct(int a, int b) {
+    int x = a / b;
+    return x;
+}
+`
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dbz_conv.c")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "divide-by-zero")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	byFunc := map[string]int{}
+	varByFunc := map[string]string{}
+	for _, c := range result.Candidates {
+		byFunc[c.Target.Function]++
+		varByFunc[c.Target.Function] = c.Target.Variable
+	}
+	if byFunc["calc"] != 1 {
+		t.Errorf("calc (a/d + b/d, same divisor d) should converge to 1 candidate, got %d (%s)", byFunc["calc"], candidateNames(result))
+	}
+	if varByFunc["calc"] != "d" {
+		t.Errorf("calc candidate Variable = %q, want divisor %q", varByFunc["calc"], "d")
+	}
+	if byFunc["distinct"] != 1 {
+		t.Errorf("distinct (a/b) should keep 1 candidate, got %d (%s)", byFunc["distinct"], candidateNames(result))
+	}
+}
+
 // TestRangeFilter_IntOverflowConst pins the cross-assignment interval propagation
 // for integer-overflow: `size_t n = 10; malloc(n * n)` is provably small and must
 // be suppressed, while `malloc(n * n)` on a parameter stays.

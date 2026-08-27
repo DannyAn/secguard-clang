@@ -717,12 +717,13 @@ func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Funct
 		if strings.Contains(text, "sizeof") {
 			continue
 		}
-		children := sub.NamedChildren()
-		if len(children) < 2 {
+		// subscriptBaseIndex recovers the real base + index even when a macro
+		// call site glues a call_expression as children[0] and buries the array
+		// name in an ERROR child (e.g. `arr[10] = 1` inside a macro loop).
+		arrName, indexExpr, ok := subscriptBaseIndex(sub)
+		if !ok {
 			continue
 		}
-		arrName := children[0].Text()
-		indexExpr := children[1].Text()
 
 		arrSize := findArraySize(bc, f, arrName)
 		kind := subscriptAccessKind(bc, f, sub)

@@ -369,18 +369,32 @@ func findReturnStoresFrom(returns, assigns []parser.Node, f *db.Function) []stri
 
 func extractFieldAccess(node parser.Node) (string, string) {
 	children := node.NamedChildren()
-	if len(children) >= 2 {
-		baseVar := ""
-		fieldName := ""
-		if children[0].Kind() == "identifier" {
-			baseVar = children[0].Text()
-		}
-		if children[1].Kind() == "field_identifier" {
-			fieldName = children[1].Text()
-		}
-		return baseVar, fieldName
+	if len(children) < 2 {
+		return "", ""
 	}
-	return "", ""
+	baseVar := ""
+	if children[0].Kind() == "identifier" {
+		baseVar = children[0].Text()
+	} else {
+		// Macro call-site recovery: the base identifier is buried in an ERROR
+		// child (`LIST_FOR_EACH(x, h)\n q->value` parses as
+		// field_expression[call_expression, ERROR(q), field_identifier]).
+		for _, child := range children {
+			if child.Kind() == "ERROR" {
+				if name := firstIdentifier(child); name != "" {
+					baseVar = name
+					break
+				}
+			}
+		}
+	}
+	fieldName := ""
+	for _, child := range children {
+		if child.Kind() == "field_identifier" {
+			fieldName = child.Text()
+		}
+	}
+	return baseVar, fieldName
 }
 
 // subscriptAccess returns (base, field) for a subscript `a[0]` / `a[i]`. A
@@ -393,14 +407,56 @@ func subscriptAccess(node parser.Node) (string, string) {
 		return "", ""
 	}
 	children := node.NamedChildren()
-	if len(children) < 2 || children[0].Kind() != "identifier" {
+	if len(children) < 2 {
 		return "", ""
 	}
-	base := children[0].Text()
-	if isConstantIndex(children[1].Text()) {
-		return base, base + "[" + children[1].Text() + "]"
+	base := ""
+	if children[0].Kind() == "identifier" {
+		base = children[0].Text()
+	} else if children[0].Kind() == "call_expression" {
+		// Macro call-site recovery: `LIST_FOR_EACH(x, h)\n q[0]` parses as
+		// subscript_expression[call_expression, ERROR(q), number_literal].
+		for _, child := range children {
+			if child.Kind() == "ERROR" {
+				base = firstIdentifier(child)
+				break
+			}
+		}
+	}
+	if base == "" {
+		return "", ""
+	}
+	index := children[len(children)-1].Text()
+	if isConstantIndex(index) {
+		return base, base + "[" + index + "]"
 	}
 	return base, base + "[]"
+}
+
+// subscriptBaseIndex returns (base, index) for a subscript expression, recovering
+// the base identifier from an ERROR child when a macro call site glues a
+// call_expression as children[0] (`LIST_FOR_EACH(x, h)\n arr[10]` parses as
+// subscript_expression[call_expression, ERROR(arr), number_literal]).
+func subscriptBaseIndex(sub parser.Node) (string, string, bool) {
+	children := sub.NamedChildren()
+	if len(children) < 2 {
+		return "", "", false
+	}
+	base := ""
+	if children[0].Kind() == "identifier" {
+		base = children[0].Text()
+	} else if children[0].Kind() == "call_expression" {
+		for _, child := range children {
+			if child.Kind() == "ERROR" {
+				base = firstIdentifier(child)
+				break
+			}
+		}
+	}
+	if base == "" {
+		return "", "", false
+	}
+	return base, children[len(children)-1].Text(), true
 }
 
 func extractGlobalFromArrayAccess(node parser.Node) string {

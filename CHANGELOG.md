@@ -2,6 +2,41 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.4.9] - 2026-08-27
+
+### 宏调用点错误恢复：消除跨检测器的漏报与误报
+
+宏拆循环（`#define LIST_FOR_EACH(...) for (...) {` + 配对的 `END` 宏）在调用点没有
+分号，tree-sitter 会把宏调用与紧随其后的循环体语句粘成一个带 ERROR 节点的畸形 AST，
+把解引用 / 下标 / 赋值节点吞掉。此前这会导致多种检测器在同一类代码上漏报或误报，
+本版本统一恢复这些被吞的节点：
+
+- **null-deref**：`->` 字段访问（读/写）、`[]` 下标、`*` 显式解引用（读/写）在宏
+  调用点被吞时，从 ERROR 节点 / `binary_expression` 恢复操作数；带括号的合法乘法
+  `f() * (x = 1)` 不会被误判为解引用。
+- **uninit**：宏循环体内被吞的赋值左值（`q = 1` 的 kill）与读取（`total += q`）恢复，
+  消除 `confirmed` 误报（`a_kill`）与读取漏报（`b_read`）。
+- **use-after-free**：`extractFieldAccess` / `subscriptAccess` 从 ERROR 节点恢复基变量，
+  宏循环体内 `q->msg[0]` 类 use 不再漏报。
+- **buffer-overflow**：`subscriptBaseIndex` 恢复数组名与常量下标，宏循环体内
+  `arr[10] = 1`（定长数组越界写）不再漏报。
+
+### 稳定性与可观测性
+
+- **parser 空节点保护**：`Node.Kind()` 对零值 node 返回空串而非解引用 nil C 指针，
+  堵住 flow filter 在文件重读失败 / `function_definition` 无 body 时的整进程段错误。
+- **divide-by-zero 根因收敛**：detector 补发 `variable`（divisor），planner 侧
+  `ConvergeByVariable` 按 divisor 合并同根因除法；report 的 Variable 列从整条表达式
+  变为 divisor。
+- **scan 输出 `plan_errors`**：收敛步骤失败的漏洞类型在 scan 结果中显式暴露具体错误，
+  与 `status --per-type` 的 `terminal_state: "unknown"` 区分开，不再把「planner 崩溃」
+  误读为「从未分发」。
+
+### 测试
+
+- 新增宏回归矩阵：`zz_null_deref_macro_test.go`（10 用例）、`zz_uninit_macro_test.go`
+  （2 用例）、`zz_uaf_bof_macro_test.go`（2 用例），覆盖上述所有恢复路径与防误报守卫。
+
 ## [0.4.8] - 2026-08-27
 
 ### 采用 Apache-2.0 开源许可

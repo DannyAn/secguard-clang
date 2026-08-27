@@ -49,6 +49,37 @@ func TestNewDetector_DivideByZero(t *testing.T) {
 	}
 }
 
+// TestNewDetector_DivideByZero_VariableProperty pins the root-cause field: the
+// DIVIDE_BY_ZERO event must carry `variable` = divisor (not the whole division
+// expression), otherwise the planner seed falls back to `expression` text and
+// the dedup key + report "Variable" column show "x / y" instead of "y".
+func TestNewDetector_DivideByZero_VariableProperty(t *testing.T) {
+	store := runOneDetector(t, "tc59_divide_by_zero.c",
+		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewDivideByZeroDetector(s, p, l) })
+	events, err := store.ListEventsByType(context.Background(), "DIVIDE_BY_ZERO")
+	if err != nil {
+		t.Fatalf("list DIVIDE_BY_ZERO events: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected DIVIDE_BY_ZERO events, got none")
+	}
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+			Divisor  string `json:"divisor"`
+		}
+		if err := json.Unmarshal([]byte(e.Properties), &props); err != nil {
+			t.Fatalf("unmarshal properties: %v", err)
+		}
+		if props.Variable == "" {
+			t.Errorf("DIVIDE_BY_ZERO event missing `variable` property: %s", e.Properties)
+		}
+		if props.Variable != props.Divisor {
+			t.Errorf("variable %q != divisor %q", props.Variable, props.Divisor)
+		}
+	}
+}
+
 func TestNewDetector_DivideByZero_ReassignmentGuard(t *testing.T) {
 	store := runOneDetector(t, "tc71_divide_by_zero_guard.c",
 		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewDivideByZeroDetector(s, p, l) })

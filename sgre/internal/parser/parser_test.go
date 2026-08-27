@@ -138,3 +138,19 @@ func TestNode_ChildByFieldName(t *testing.T) {
 		t.Fatal("no function_definition found")
 	}
 }
+
+// TestNode_ZeroValue_Kind guards the flow-filter safety net: fileParseCache can
+// return a zero-value Node when a file re-read fails or a function_definition
+// has no compound_statement body. Calling Kind() on that zero Node used to
+// dereference a nil C TSNode and segfault the process (unrecoverable by Go's
+// recover). It must now return "" so `if body.Kind() != "compound_statement"`
+// skips the function instead of crashing.
+func TestNode_ZeroValue_Kind(t *testing.T) {
+	var n Node
+	if got := n.Kind(); got != "" {
+		t.Errorf("zero-value Node.Kind() = %q, want empty string", got)
+	}
+	if !n.isNull() {
+		t.Error("zero-value Node should report isNull() == true")
+	}
+}

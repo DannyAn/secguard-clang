@@ -36,11 +36,21 @@ func (d *DereferenceDetector) Detect(ctx context.Context) (DetectResult, error) 
 		// silently skipped every `*p` / `*p++` deref.
 		derefNodes := root.FindAll("pointer_expression")
 		subscriptNodes := root.FindAll("subscript_expression")
+		// Macro call sites (a `for`/`do` header hidden behind a `#define`) make
+		// tree-sitter recover with ERROR nodes that can swallow the `->` of a
+		// member access, so a dereference that is NOT a clean field_expression
+		// is recovered from these ERROR nodes as well.
+		errorNodes := root.FindAll("ERROR")
+		// `*q = v` at a macro call site mangles into a binary_expression whose
+		// `*` is misread as multiplication (see detectExplicitDerefInBinary).
+		binaryNodes := root.FindAll("binary_expression")
 
 		for _, f := range funcs {
 			bounds := AnalyzeBounds(IfsInFunc(allIfs, f.StartLine, f.EndLine), assignsInFunc(allAssigns, f.StartLine, f.EndLine))
 			d.detectMemberAccess(ctx, f, file, memberNodes, nonNullable, bounds, &result)
+			d.detectMemberAccessInErrors(ctx, f, file, errorNodes, nonNullable, bounds, &result)
 			d.detectExplicitDeref(ctx, f, file, derefNodes, nonNullable, bounds, &result)
+			d.detectExplicitDerefInBinary(ctx, f, file, binaryNodes, nonNullable, bounds, &result)
 			d.detectArraySubscript(ctx, f, file, subscriptNodes, nonNullable, bounds, &result)
 		}
 	})
@@ -57,6 +67,32 @@ func (d *DereferenceDetector) detectMemberAccess(ctx context.Context, f *db.Func
 			continue
 		}
 		varName := extractPointerFromField(node)
+		if bounds != nil && bounds.NonZeroAt(varName, node.StartLine()) {
+			continue
+		}
+		d.insertDerefEvent(ctx, f, file, node, varName, text, nonNullable, result)
+	}
+}
+
+// detectMemberAccessInErrors recovers `->` dereferences that a macro call site
+// broke into ERROR nodes, where no field_expression exists. The bare-macro
+// `do { } while(0)` form is the canonical case: `DO_BLOCK_BEGIN\n q->value = 1`
+// parses as a declaration whose ERROR child carries the `q->` text, and the
+// field name lands in a sibling init_declarator — so a plain FindAll over
+// field_expression misses the dereference entirely.
+func (d *DereferenceDetector) detectMemberAccessInErrors(ctx context.Context, f *db.Function, file *db.File, nodes []parser.Node, nonNullable map[string]bool, bounds *RangeFacts, result *DetectResult) {
+	for _, node := range nodes {
+		if !funcLineRange(f, node.StartLine()) {
+			continue
+		}
+		text := node.Text()
+		if !isArrowAccess(text) {
+			continue
+		}
+		varName := pointerFromArrowError(node)
+		if varName == "" {
+			continue
+		}
 		if bounds != nil && bounds.NonZeroAt(varName, node.StartLine()) {
 			continue
 		}
@@ -81,16 +117,63 @@ func (d *DereferenceDetector) detectExplicitDeref(ctx context.Context, f *db.Fun
 	}
 }
 
+// detectExplicitDerefInBinary recovers an explicit `*p = v` write dereference
+// that a macro call site broke: `LIST_FOR_EACH(x, h)\n *q = 1` parses as
+// binary_expression[*, call_expression, assignment_expression] — the `*` is
+// misread as multiplication and the dereference disappears. Genuine C cannot
+// produce this shape without parentheses (a bare assignment as the RHS of `*`
+// would be `f() * x = 1`, an invalid assignment target; `f() * (x = 1)` would
+// parenthesize the RHS into a parenthesized_expression), so this exact shape is
+// safe to reinterpret as a dereference of the assignment's LHS identifier.
+func (d *DereferenceDetector) detectExplicitDerefInBinary(ctx context.Context, f *db.Function, file *db.File, nodes []parser.Node, nonNullable map[string]bool, bounds *RangeFacts, result *DetectResult) {
+	for _, node := range nodes {
+		if !funcLineRange(f, node.StartLine()) {
+			continue
+		}
+		if binaryOperator(node) != "*" {
+			continue
+		}
+		children := node.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		if children[0].Kind() != "call_expression" || children[1].Kind() != "assignment_expression" {
+			continue
+		}
+		lhs := children[1].NamedChildren()
+		if len(lhs) == 0 || lhs[0].Kind() != "identifier" {
+			continue
+		}
+		varName := lhs[0].Text()
+		if bounds != nil && bounds.NonZeroAt(varName, node.StartLine()) {
+			continue
+		}
+		d.insertDerefEvent(ctx, f, file, node, varName, node.Text(), nonNullable, result)
+	}
+}
+
+// binaryOperator returns the operator token of a binary_expression node ("*",
+// "/", "%", "+", ...), or "" when there is none. The operator is an anonymous
+// child, so it is read from Children() rather than NamedChildren().
+func binaryOperator(n parser.Node) string {
+	for _, c := range n.Children() {
+		switch c.Kind() {
+		case "*", "/", "%", "+", "-", "==", "!=", "<", ">", "<=", ">=", "&&", "||", "&", "|", "^", "<<", ">>":
+			return c.Kind()
+		}
+	}
+	return ""
+}
+
 func (d *DereferenceDetector) detectArraySubscript(ctx context.Context, f *db.Function, file *db.File, nodes []parser.Node, nonNullable map[string]bool, bounds *RangeFacts, result *DetectResult) {
 	for _, node := range nodes {
 		if !funcLineRange(f, node.StartLine()) {
 			continue
 		}
-		children := node.NamedChildren()
-		if len(children) == 0 {
+		varName := extractBaseOperand(node)
+		if varName == "" {
 			continue
 		}
-		varName := children[0].Text()
 		if bounds != nil && bounds.NonZeroAt(varName, node.StartLine()) {
 			continue
 		}
@@ -179,9 +262,58 @@ func isArrowAccess(text string) bool {
 }
 
 func extractPointerFromField(node parser.Node) string {
+	return extractBaseOperand(node)
+}
+
+// extractBaseOperand returns the base operand of a field_expression or
+// subscript_expression — the identifier that is dereferenced. For a clean
+// `p->f` / `arr[i]` it is the first named child; at a macro call site
+// tree-sitter glues the macro invocation (a call_expression) onto the access and
+// buries the real base in an ERROR node (e.g. `LIST_FOR_EACH(x, h)\n q->value`
+// parses as field_expression[call_expression, ERROR(identifier q),
+// field_identifier]), so the base is recovered from that ERROR child. Chained
+// access (`p->a->b`, `arr[i].f`) falls back to the first child's own text.
+func extractBaseOperand(node parser.Node) string {
 	children := node.NamedChildren()
-	if len(children) > 0 {
+	if len(children) == 0 {
+		return ""
+	}
+	if children[0].Kind() == "identifier" {
 		return children[0].Text()
+	}
+	for _, child := range children {
+		if child.Kind() == "ERROR" {
+			if name := firstIdentifier(child); name != "" {
+				return name
+			}
+		}
+	}
+	return children[0].Text()
+}
+
+// firstIdentifier returns the first identifier descendant of node (depth-first),
+// or "" when none exists. It is used to recover a pointer name from an ERROR
+// node that swallowed a member access at a macro call site.
+func firstIdentifier(node parser.Node) string {
+	for _, child := range node.NamedChildren() {
+		if child.Kind() == "identifier" {
+			return child.Text()
+		}
+	}
+	for _, child := range node.NamedChildren() {
+		if name := firstIdentifier(child); name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+// pointerFromArrowError recovers the pointer identifier from an ERROR node whose
+// text contains a `->` (e.g. ERROR("q->") → "q"). The identifier is the operand
+// immediately before the arrow.
+func pointerFromArrowError(errNode parser.Node) string {
+	if name := firstIdentifier(errNode); name != "" {
+		return name
 	}
 	return ""
 }

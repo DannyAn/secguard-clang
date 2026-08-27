@@ -138,7 +138,21 @@ type Node struct {
 	src  []byte
 }
 
+// isNull reports whether the wrapped tree-sitter node is the zero value (no
+// underlying C TSNode). Calling Kind()/HasError()/Children() on a null node
+// dereferences a nil C pointer and segfaults the whole process (unrecoverable
+// by Go's recover), so the flow filters — which read function bodies through
+// fileParseCache and can miss a body when a file re-read fails or a
+// function_definition has no compound_statement — must be able to ask "is this
+// a real node?" safely.
+func (n Node) isNull() bool {
+	return n.node.Id() == 0
+}
+
 func (n Node) Kind() string {
+	if n.isNull() {
+		return ""
+	}
 	return n.node.Kind()
 }
 

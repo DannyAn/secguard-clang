@@ -237,6 +237,12 @@ func runScanCmd(ctx context.Context, args []string) int {
 	filesWithCandidates := map[string]bool{}
 	var dismissedByVuln []report.VulnTypeDismissed
 	totalDropped := 0
+	// planErrors records any vulnerability type whose convergence step failed
+	// (Planner.Plan returned an error or the plan goroutine panicked). Such a
+	// type gets no scan_stats row and thus reads terminal_state "unknown" from
+	// `status --per-type`; surfacing the concrete error here is what makes a
+	// planner crash distinguishable from "the orchestrator never dispatched it".
+	planErrors := map[string]string{}
 
 	vulnTypes := planner.AllVulnTypes()
 	type planOutcome struct {
@@ -273,6 +279,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 	for i, vulnType := range vulnTypes {
 		oc := outcomes[i]
 		if oc.err != nil {
+			planErrors[vulnType] = oc.err.Error()
 			evidencePackages = append(evidencePackages, map[string]interface{}{
 				"vulnerability_type": vulnType,
 				"error":              oc.err.Error(),
@@ -400,6 +407,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 	output := map[string]interface{}{
 		"scan_id":                 scanID,
 		"candidates_by_type":      candidatesByType,
+		"plan_errors":             planErrors,
 		"total_candidates":        totalCandidates,
 		"suppressed_count":        totalSuppressed,
 		"baseline_existing_count": totalBaselineExisting,

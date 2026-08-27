@@ -491,6 +491,12 @@ func init() {
 		EvidenceType:     "DIVIDE_BY_ZERO",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "divide-by-zero",
+		// The detector now tags each event with `variable` = divisor, so one
+		// possibly-zero divisor divided at many sites converges to one finding,
+		// matching the null-deref / use-after-free root-cause semantics. Before
+		// this the seed fell back to the full `expression` text ("x / y") and
+		// every division site was its own candidate.
+		ConvergeByVariable: true,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
 				{Type: "divide_by_zero", Role: "sink", Detail: fmt.Sprintf("possible division by zero in function %s at line %d", c.FunctionName, c.Line)},
