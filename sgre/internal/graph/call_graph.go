@@ -33,12 +33,16 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 		return nil, fmt.Errorf("call graph: list functions: %w", err)
 	}
 
-	funcMap := make(map[string]int64)
+	// C allows distinct static functions with the same name across files; a
+	// name->single-ID map silently shadows all but the last one and would drop
+	// every CALL edge into the shadowed functions (and, via call_reach, every
+	// candidate in them). Track one ID per definition, mirroring interproc.go.
+	funcMap := make(map[string][]int64)
 	for _, f := range funcs {
-		funcMap[f.Name] = f.ID
+		funcMap[f.Name] = append(funcMap[f.Name], f.ID)
 	}
 
-	err = forEachFile(ctx, b.store, b.parser, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
+	err = forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
 		callNodes := root.FindAll("call_expression")
 
 		for _, f := range fileFuncs {
@@ -59,33 +63,46 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 					continue
 				}
 
-				var calleeNodeID int64
-				if calleeID, ok := funcMap[callName]; ok {
-					calleeNodeID, err = b.store.GetOrCreateGraphNode(ctx, "function", calleeID, "")
-				} else {
-					props, _ := json.Marshal(map[string]bool{"external": true})
-					calleeNodeID, err = b.store.GetOrCreateGraphNode(ctx, "external_function", 0, string(props))
+				calleeIDs := funcMap[callName]
+				if len(calleeIDs) == 0 {
+					props, _ := json.Marshal(map[string]string{"name": callName, "external": "true"})
+					calleeNodeID, err := b.store.GetOrCreateGraphNode(ctx, "external_function", 0, string(props))
+					if err != nil {
+						continue
+					}
+					b.insertCallEdge(ctx, callerNodeID, calleeNodeID, callNode.StartLine(), result)
 					result.ExternalFuncs++
-				}
-				if err != nil {
 					continue
 				}
-
-				props, _ := json.Marshal(map[string]int{"call_line": f.StartLine})
-				_, err = b.store.InsertGraphEdge(ctx, &db.GraphEdge{
-					SrcID:      callerNodeID,
-					DstID:      calleeNodeID,
-					EdgeType:   "CALL",
-					Properties: string(props),
-				})
-				if err != nil {
-					continue
+				// Emit one CALL edge per same-name callee (each is a distinct
+				// function node) so no definition is silently shadowed.
+				for _, calleeID := range calleeIDs {
+					calleeNodeID, err := b.store.GetOrCreateGraphNode(ctx, "function", calleeID, "")
+					if err != nil {
+						continue
+					}
+					b.insertCallEdge(ctx, callerNodeID, calleeNodeID, callNode.StartLine(), result)
 				}
-				result.EdgesCreated++
 			}
 		}
 	})
 	return result, err
+}
+
+// insertCallEdge persists one CALL edge with call_line set to the call site
+// line (previously it stamped the callee function's start line, a latent bug).
+func (b *CallGraphBuilder) insertCallEdge(ctx context.Context, callerNodeID, calleeNodeID int64, callLine int, result *BuildResult) {
+	props, _ := json.Marshal(map[string]int{"call_line": callLine})
+	_, err := b.store.InsertGraphEdge(ctx, &db.GraphEdge{
+		SrcID:      callerNodeID,
+		DstID:      calleeNodeID,
+		EdgeType:   "CALL",
+		Properties: string(props),
+	})
+	if err != nil {
+		return
+	}
+	result.EdgesCreated++
 }
 
 func extractCallName(node parser.Node) string {

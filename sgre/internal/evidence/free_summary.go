@@ -6,6 +6,7 @@ import (
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/graph"
+	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
@@ -29,10 +30,10 @@ type FuncSummary struct {
 
 type summaryMap map[string]*FuncSummary
 
-func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser) summaryMap {
+func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) summaryMap {
 	summaries := make(summaryMap)
 
-	forEachFile(ctx, store, p, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	forEachFile(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		funcDefs := root.FindAll("function_definition")
 		bodies := functionBodyMap(funcDefs)
 		calls := root.FindAll("call_expression")

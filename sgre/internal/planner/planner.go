@@ -228,24 +228,36 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 		return nil, fmt.Errorf("seed candidates: %w", err)
 	}
 
+	// Batch-load the functions and locations the seed events reference, so a type
+	// with thousands of events does not issue one point query per event (an N+1
+	// storm × 20 vuln types). Lookups that miss just leave the zero value.
+	funcIDs := make([]int64, 0, len(events))
+	locIDs := make([]int64, 0, len(events))
+	for _, e := range events {
+		if e.EntityID > 0 {
+			funcIDs = append(funcIDs, e.EntityID)
+		}
+		if e.LocationID > 0 {
+			locIDs = append(locIDs, e.LocationID)
+		}
+	}
+	funcsByID, _ := p.store.ListFunctionsByIDs(ctx, funcIDs)
+	locsByID, _ := p.store.ListLocationsByIDs(ctx, locIDs)
+
 	var candidates []Candidate
 	for _, e := range events {
 		props := parseEventProps(e.Properties)
 
-		fn, _ := p.store.GetFunctionByID(ctx, e.EntityID)
 		funcName := ""
 		fileID := int64(0)
-		if fn != nil {
+		if fn := funcsByID[e.EntityID]; fn != nil {
 			funcName = fn.Name
 			fileID = fn.FileID
 		}
 
 		line := 0
-		if e.LocationID > 0 {
-			loc, _ := p.store.GetLocationByID(ctx, e.LocationID)
-			if loc != nil {
-				line = loc.Line
-			}
+		if loc := locsByID[e.LocationID]; loc != nil {
+			line = loc.Line
 		}
 
 		// The variable is the primary identity for dedup and variable-level

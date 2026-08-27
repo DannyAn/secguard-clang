@@ -783,6 +783,17 @@ func (a *flowAnalyzer) loadAliases(ctx context.Context, funcIDs []int64) map[int
 	}
 
 	for _, e := range edges {
+		// A field/element alias (q = p->f, q = p[i]) copies a FIELD value, not the
+		// base pointer itself, so freeing p does NOT dangle q. Only whole-variable
+		// aliases (field == "") must propagate the freed state. Treating field
+		// aliases as whole-variable aliases produced use-after-free false
+		// positives (e.g. q = p->f; free(p); use(q) when p->f is a plain int).
+		var props struct {
+			Field string `json:"field"`
+		}
+		if json.Unmarshal([]byte(e.Properties), &props) == nil && props.Field != "" {
+			continue
+		}
 		alias := nameByNode[e.SrcID]
 		base := nameByNode[e.DstID]
 		fid := funcByNode[e.SrcID]

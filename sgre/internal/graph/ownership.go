@@ -51,7 +51,7 @@ var releaseFunctions = map[string]bool{
 func (b *OwnershipBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	result := &BuildResult{}
 
-	err := forEachFile(ctx, b.store, b.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		returns := root.FindAll("return_statement")
 		assigns := root.FindAll("assignment_expression")
 		calls := root.FindAll("call_expression")
@@ -147,7 +147,9 @@ func (b *OwnershipBuilder) persistRelease(ctx context.Context, f *db.Function, v
 	if err != nil {
 		return false
 	}
-	props, _ := json.Marshal(map[string]bool{"external": true})
+	// Name the external_function node so free/fclose/close/etc. resolve to
+	// distinct nodes instead of collapsing onto one anonymous external node.
+	props, _ := json.Marshal(map[string]string{"name": callName, "external": "true"})
 	dstNode, err := b.store.GetOrCreateGraphNode(ctx, "external_function", 0, string(props))
 	if err != nil {
 		return false

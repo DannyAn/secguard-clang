@@ -64,7 +64,7 @@ func (d *SignedCompareDetector) Detect(ctx context.Context) (DetectResult, error
 	// file's own typedefs per function.
 	global := buildGlobalTypedefs(ctx, d.store, d.parser)
 
-	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		decls := root.FindAll("declaration")
 		params := root.FindAll("parameter_declaration")
 		binaries := root.FindAll("binary_expression")

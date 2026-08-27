@@ -23,7 +23,7 @@ func (d *DereferenceDetector) Name() string { return "dereference" }
 func (d *DereferenceDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		// Precompute the non-nullable-array set ONCE per file; the previous
 		// code ran root.FindAll per dereference node (O(nodes) traversals).
 		nonNullable := collectNonNullableArrays(root)

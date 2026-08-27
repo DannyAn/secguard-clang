@@ -41,7 +41,7 @@ func (d *SizeofMisuseDetector) Detect(ctx context.Context) (DetectResult, error)
 	// per function below (a translation unit's local typedef shadows a header's).
 	global := buildGlobalTypedefs(ctx, d.store, d.parser)
 
-	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		sizeExprs := root.FindAll("sizeof_expression")
 		ptrDecls := root.FindAll("pointer_declarator")
 		typedefs := global.clone()

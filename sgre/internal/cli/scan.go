@@ -149,6 +149,16 @@ func runScanCmd(ctx context.Context, args []string) int {
 	}
 	logger.Info("phase timing", "phase", "index", "elapsed_ms", time.Since(idxStart).Milliseconds())
 
+	// The semantic graph is rebuilt from scratch every scan (there is no
+	// incremental graph update), so clear the previous scan's nodes/edges first.
+	// Without this, graph_edges (which has no UNIQUE constraint) accumulates a
+	// full duplicate copy per scan and stale nodes for re-indexed/deleted
+	// functions linger forever, degrading every ListGraphEdgesByType consumer.
+	if err := store.ClearGraph(ctx); err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to clear graph: %v", err))
+		return 1
+	}
+
 	graphStart := time.Now()
 	type builderTask struct {
 		name string

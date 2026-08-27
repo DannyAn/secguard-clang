@@ -139,3 +139,20 @@ func searchString(s, sub string) bool {
 func now() int64 {
 	return time.Now().Unix()
 }
+
+// chunkIDs splits ids into chunks of at most maxChunk elements so a SQL
+// `IN (...)` clause never exceeds SQLite's bind-variable limit. It is used by the
+// batched List*ByIDs methods to replace per-ID point queries with a few chunked
+// queries.
+func chunkIDs(ids []int64, maxChunk int) [][]int64 {
+	var chunks [][]int64
+	for len(ids) > 0 {
+		n := len(ids)
+		if n > maxChunk {
+			n = maxChunk
+		}
+		chunks = append(chunks, ids[:n])
+		ids = ids[n:]
+	}
+	return chunks
+}

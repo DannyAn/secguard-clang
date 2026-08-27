@@ -117,10 +117,11 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 	analyzer.dfgCopies = analyzer.loadDFGCopies(ctx, funcIDs)
 
 	// Inter-procedural return-nullability: which functions can return NULL.
-	// This wires the RETURN edges + function_summary into the flow engine, so
-	// `p = f()` becomes a possible-null source when f can return NULL (previously
-	// the call was treated as a variable copy and silently cleared p's null
-	// state, dropping the candidate). Fail-open on error: keep candidates.
+	// computeRetNullable re-derives this from the AST + function_summary (the
+	// persisted RETURN edges are not consumed here yet), so `p = f()` becomes a
+	// possible-null source when f can return NULL (previously the call was
+	// treated as a variable copy and silently cleared p's null state, dropping
+	// the candidate). Fail-open on error: keep candidates.
 	retNullable, err := f.computeRetNullable(ctx, models)
 	if err != nil {
 		retNullable = map[string]bool{}
@@ -153,8 +154,9 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 // from function_summary.return_nullable (literal `return NULL`), then adds any
 // function whose body returns an allocator, a pointer parameter, a variable with
 // a reaching may-null source, or a call to another nullable-returning function.
-// This is the null-deref analogue of the taint filter's computeRetTainted and is
-// what makes the persisted RETURN edges useful to the convergence stage.
+// This is the null-deref analogue of the taint filter's computeRetTainted. It is
+// currently re-derived from the AST + function_summary (the persisted RETURN
+// edges are not consumed yet; they remain available for future wiring).
 func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models map[int64]*nullModel) (map[string]bool, error) {
 	retNullable := make(map[string]bool)
 	funcs, err := f.store.ListFunctions(ctx)
@@ -169,6 +171,14 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 		params map[string]int
 		srcs   []nullSource
 	}
+	// Batch-load function summaries so the per-function seed below does not issue
+	// one GetSummaryByFunction point query per function.
+	allFnIDs := make([]int64, 0, len(funcs))
+	for _, fn := range funcs {
+		allFnIDs = append(allFnIDs, fn.ID)
+	}
+	summariesByID, _ := f.store.ListSummariesByFunctionIDs(ctx, allFnIDs)
+
 	infos := make([]funcInfo, 0, len(funcs))
 	cache := newFileParseCache(f.parser)
 	for _, fn := range funcs {
@@ -187,7 +197,7 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 		infos = append(infos, funcInfo{fn: fn, body: body, root: root, params: paramsOf(fn, root), srcs: srcs})
 
 		// Seed from the detector's function_summary (literal `return NULL`/`0`).
-		if sum, err := f.store.GetSummaryByFunction(ctx, fn.ID); err == nil && sum != nil && sum.ReturnNullable {
+		if sum := summariesByID[fn.ID]; sum != nil && sum.ReturnNullable {
 			retNullable[fn.Name] = true
 		}
 	}

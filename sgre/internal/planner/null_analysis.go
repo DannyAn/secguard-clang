@@ -43,6 +43,16 @@ func buildNullModel(ctx context.Context, store db.Store) (map[int64]*nullModel, 
 	if err != nil {
 		return nil, err
 	}
+	// Batch-load the locations the NULL_VALUE events reference (one chunked query
+	// instead of one point query per event).
+	locIDs := make([]int64, 0, len(events))
+	for _, e := range events {
+		if e.LocationID > 0 {
+			locIDs = append(locIDs, e.LocationID)
+		}
+	}
+	locsByID, _ := store.ListLocationsByIDs(ctx, locIDs)
+
 	for _, e := range events {
 		props := parseEventProps(e.Properties)
 		if props.Variable == "" {
@@ -54,10 +64,8 @@ func buildNullModel(ctx context.Context, store db.Store) (map[int64]*nullModel, 
 			models[e.EntityID] = m
 		}
 		line := 0
-		if e.LocationID > 0 {
-			if loc, lerr := store.GetLocationByID(ctx, e.LocationID); lerr == nil && loc != nil {
-				line = loc.Line
-			}
+		if loc := locsByID[e.LocationID]; loc != nil {
+			line = loc.Line
 		}
 		m.sources = append(m.sources, nullSource{
 			variable: props.Variable,

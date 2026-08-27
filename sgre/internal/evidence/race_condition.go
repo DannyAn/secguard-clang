@@ -47,7 +47,7 @@ func (d *RaceConditionDetector) Detect(ctx context.Context) (DetectResult, error
 	// it cannot run inside the per-function loop below.
 	fileInfos := make(map[int64]*fileInfo)
 	threadCounts := make(map[string]int)
-	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		calls := root.FindAll("call_expression")
 		fileInfos[file.ID] = &fileInfo{
 			globals: d.collectGlobalVars(root, file.ID, funcs),
@@ -61,7 +61,7 @@ func (d *RaceConditionDetector) Detect(ctx context.Context) (DetectResult, error
 		return result, err
 	}
 
-	err = forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		ifs := root.FindAll("if_statement")
 		calls := root.FindAll("call_expression")
 		assigns := root.FindAll("assignment_expression")

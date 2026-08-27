@@ -19,6 +19,9 @@ type FunctionStore interface {
 	GetFunctionByName(ctx context.Context, name string) (*Function, error)
 	ListFunctionsByFile(ctx context.Context, fileID int64) ([]*Function, error)
 	ListFunctions(ctx context.Context) ([]*Function, error)
+	// ListFunctionsByIDs returns the functions with the given IDs keyed by ID,
+	// in a single batched query (chunked) instead of one query per ID.
+	ListFunctionsByIDs(ctx context.Context, ids []int64) (map[int64]*Function, error)
 	DeleteFunctionsByFile(ctx context.Context, fileID int64) error
 }
 
@@ -44,6 +47,9 @@ type LocationStore interface {
 	InsertLocation(ctx context.Context, loc *Location) (int64, error)
 	GetLocationByID(ctx context.Context, id int64) (*Location, error)
 	ListLocationsByFile(ctx context.Context, fileID int64) ([]*Location, error)
+	// ListLocationsByIDs returns the locations with the given IDs keyed by ID,
+	// in a single batched query (chunked) instead of one query per ID.
+	ListLocationsByIDs(ctx context.Context, ids []int64) (map[int64]*Location, error)
 }
 
 type GraphNodeStore interface {
@@ -55,6 +61,13 @@ type GraphNodeStore interface {
 	// type in one query. It exists so callers building an entity->node map
 	// (e.g. the call-reach filter) avoid one query per entity.
 	ListGraphNodesByEntityType(ctx context.Context, entityType string) ([]*GraphNode, error)
+	// ClearGraph removes every graph node and edge so a scan rebuilds the
+	// semantic graph from scratch. The graph has no incremental update path and
+	// graph_edges has no UNIQUE constraint, so without this each scan would
+	// re-insert the full edge set on top of the previous scan's rows (plus leave
+	// stale nodes for functions that were deleted), bloating the DB linearly in
+	// scan count and slowing every ListGraphEdgesByType consumer.
+	ClearGraph(ctx context.Context) error
 }
 
 type GraphEdgeStore interface {
@@ -100,6 +113,10 @@ type ScanStatStore interface {
 type FunctionSummaryStore interface {
 	UpsertSummary(ctx context.Context, s *FunctionSummary) error
 	GetSummaryByFunction(ctx context.Context, functionID int64) (*FunctionSummary, error)
+	// ListSummariesByFunctionIDs returns the summaries for the given function IDs
+	// keyed by function ID, in a single batched query (chunked) instead of one
+	// query per function.
+	ListSummariesByFunctionIDs(ctx context.Context, functionIDs []int64) (map[int64]*FunctionSummary, error)
 	UpdateReturnNullable(ctx context.Context, functionID int64, nullable bool) error
 }
 

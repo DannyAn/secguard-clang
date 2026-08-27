@@ -25,9 +25,9 @@ func (d *UninitVariableDetector) Name() string { return "uninit_variable" }
 func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	summaries := buildFuncSummaries(ctx, d.store, d.parser)
+	summaries := buildFuncSummaries(ctx, d.store, d.parser, d.logger)
 
-	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		// The three sub-detectors plus BuildCFG used to issue ~21 whole-tree
 		// FindAll walks per function when handed the file root (and one
 		// full-file walk per function just to locate the function subtree);

@@ -492,4 +492,4 @@ go test -run TestSecurity ./internal/evidence/
 
 ## License
 
-Proprietary © Zhuque Security
+Licensed under the [Apache License 2.0](LICENSE). © An Gang

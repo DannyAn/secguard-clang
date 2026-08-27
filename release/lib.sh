@@ -418,11 +418,11 @@ target_dir = '''$target_dir'''
 version = '''$version'''
 manifest = {
     'name': 'secguard-clang',
-    'displayName': 'Zhuque SecGuard',
+    'displayName': 'SecGuard',
     'description': 'AI-augmented C program security analysis platform with 4-level convergence pipeline',
     'version': version,
-    'author': 'Zhuque Security',
-    'license': 'Proprietary',
+    'author': 'An Gang',
+    'license': 'Apache-2.0',
     'keywords': [
         'security',
         'static-analysis',

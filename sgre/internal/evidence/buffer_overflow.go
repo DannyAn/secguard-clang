@@ -27,7 +27,7 @@ func (d *BufferOverflowDetector) Name() string { return "buffer_overflow" }
 func (d *BufferOverflowDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		bc := &bufCtx{
 			root:    root,
 			calls:   root.FindAll("call_expression"),

@@ -41,7 +41,7 @@ type aliasRecord struct {
 func (b *AliasBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	result := &BuildResult{}
 
-	err := forEachFile(ctx, b.store, b.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		assigns := root.FindAll("assignment_expression")
 		inits := root.FindAll("init_declarator")
 

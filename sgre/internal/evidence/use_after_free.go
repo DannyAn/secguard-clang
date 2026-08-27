@@ -32,9 +32,9 @@ type freeSite struct {
 func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	summaries := buildFuncSummaries(ctx, d.store, d.parser)
+	summaries := buildFuncSummaries(ctx, d.store, d.parser, d.logger)
 
-	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		calls := root.FindAll("call_expression")
 		inits := root.FindAll("init_declarator")
 		assigns := root.FindAll("assignment_expression")

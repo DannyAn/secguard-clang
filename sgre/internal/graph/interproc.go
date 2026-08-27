@@ -46,10 +46,15 @@ func (b *InterprocBuilder) Build(ctx context.Context) (*BuildResult, error) {
 		funcByName[f.Name] = append(funcByName[f.Name], f.ID)
 	}
 
-	// paramsByFunc maps function ID -> positional parameter names.
+	// paramsByFunc maps function ID -> positional parameter names. It is built in
+	// a dedicated first pass over ALL files, because a call site may reference a
+	// callee whose definition lives in a file that forEachFile has not reached
+	// yet. The previous single-pass version accumulated paramsByFunc while it was
+	// being consumed, so any such forward cross-file reference saw an empty
+	// paramsByFunc[calleeID] and silently dropped the PARAM_BINDING edge.
 	paramsByFunc := make(map[int64][]string)
 
-	err = forEachFile(ctx, b.store, b.parser, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
+	err = forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
 		paramsByLine := make(map[int][]string)
 		for _, def := range root.FindAll("function_definition") {
 			paramsByLine[def.StartLine()] = extractParams(def)
@@ -59,7 +64,14 @@ func (b *InterprocBuilder) Build(ctx context.Context) (*BuildResult, error) {
 				paramsByFunc[f.ID] = p
 			}
 		}
+	})
+	if err != nil {
+		return nil, err
+	}
 
+	// Second pass: emit PARAM_BINDING / RETURN edges, now that paramsByFunc is
+	// complete for every function regardless of file order.
+	err = forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
 		calls := root.FindAll("call_expression")
 		assigns := root.FindAll("assignment_expression")
 		inits := root.FindAll("init_declarator")

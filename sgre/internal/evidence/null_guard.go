@@ -24,7 +24,7 @@ func (d *NullGuardDetector) Name() string { return "null_guard" }
 func (d *NullGuardDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		ifs := root.FindAll("if_statement")
 		whiles := root.FindAll("while_statement")
 		fors := root.FindAll("for_statement")

@@ -34,7 +34,7 @@ func (d *DivideByZeroDetector) Capabilities() []string { return []string{"divisi
 func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		binaryExprs := root.FindAll("binary_expression")
 		allIfs := root.FindAll("if_statement")
 		allAssigns := root.FindAll("assignment_expression")

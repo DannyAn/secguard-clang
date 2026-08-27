@@ -37,7 +37,7 @@ var highEntropyHints = []string{
 func (d *HardcodedSecretDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		// The previous loop processed each file once, at the first function's
 		// iteration, and attributed every file-scoped event to that function.
 		if len(funcs) == 0 {

@@ -66,6 +66,13 @@ func runIndexCmd(ctx context.Context, args []string) int {
 		return 1
 	}
 
+	// Same as scan: the graph builders rebuild the full graph every run, so clear
+	// the previous graph (and its dead variables rows) before rebuilding.
+	if err := store.ClearGraph(ctx); err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to clear graph: %v", err))
+		return 1
+	}
+
 	cgBuilder := graph.NewCallGraphBuilder(store, p, logger)
 	if _, err := cgBuilder.Build(ctx); err != nil {
 		WriteErrorJSON(fmt.Sprintf("call graph build failed: %v", err))

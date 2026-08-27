@@ -2,6 +2,59 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.4.8] - 2026-08-27
+
+### 采用 Apache-2.0 开源许可
+
+将项目许可由「专有」切换为 **Apache License 2.0**（OSI 认可的正式开源协议）：
+
+- 新增仓库根 `LICENSE`（Apache-2.0 官方原文，版权归属 `An Gang`）。
+- 插件清单（claude-code / claude-cac / opencode / opencode-nga）与 `release/lib.sh`
+  的 `license` 字段统一为 SPDX 标识 `Apache-2.0`。
+- 版权/作者统一：`author` 由 `Zhuque Security` 改为 `An Gang`，`displayName` 由
+  `Zhuque SecGuard` 改为 `SecGuard`；README（中/英）License 小节同步更新。
+
+### 语义图数据质量与稳定性
+
+- **graph_edges / graph_nodes 跨扫描累积修复**：图每次扫描全量重建却从不清理，N 次
+  扫描后边表 N 倍膨胀、变更文件重索引后旧 node/edge 永久残留。新增 `db.Store.ClearGraph`，
+  scan/index 在重建图前先清空（顺带清理死表 `variables`）。
+- **variables 表死写路径移除**：`DataFlowBuilder` 不再写只写不读的 `variables` 表
+  （含 `isHeapAllocation` 子串匹配把 `char *my_malloc_log` 误判为 heap 的缺陷）。
+- **call_graph 同名 static 函数不再坍缩**：`funcMap[f.Name]=f.ID` 后者覆盖前者，导致被
+  遮蔽函数无 CALL 入边、call_reach 误判不可达而丢候选；改为 name→[]ID，每个同名各发边。
+- **PARAM_BINDING 跨文件前向引用修复**：单遍遍历在文件序靠前的调用点查不到靠后文件的
+  callee 参数，约半数跨文件参数绑定静默丢失；改为两阶段（先全量收集 params 再发边）。
+- **外部函数身份 + call_line 修正**：malloc/strcpy/free 等外部函数此前坍缩为同一节点，
+  现按函数名区分；CALL 边的 `call_line` 由被调函数起始行改为调用点行。
+- **ALIAS field 属性修复**：字段/元素别名（`q = p->f`）此前按全变量别名参与 freed 传播，
+  造成 UAF 假阳性；现 `field != ""` 的别名不再参与全变量 freed 传播。
+- **静默退化补日志**：graph / evidence 的 `forEachFile` 文件读取/解析失败此前静默跳过
+  （安全工具隐性假阴性），现补 `Warn` 日志。
+- **RETURN 边注释诚实化**：修正 `computeRetNullable` 关于「消费 RETURN 边」的误导性注释
+  （当前仍从 AST + function_summary 重推，RETURN 边留待后续接线）。
+
+### 性能
+
+- **N+1 批量化**：新增 `ListFunctionsByIDs` / `ListLocationsByIDs` /
+  `ListSummariesByFunctionIDs`（500 分片），替换 seed / null-model / ret-nullable 三处
+  逐条点查，事件/候选上千时不再逐条打点查询。
+
+### unchecked-return 精度
+
+- **透传分配器不误报 wrapper**：`xxx_malloc(n) { return malloc(n); }` 的 wrapper 本身
+  不再被报「malloc 未判空」（判空责任已移交调用方）。
+- **变量透传形式**：`xxx_malloc(n) { void *p = malloc(n); return p; }` 同样视为透传
+  分配器（wrapper 不误报、调用方不判空告警）；`p = malloc; p[0]='x'; return p` 这类
+  「return 前已解引用」仍正常告警。
+- **跨函数传播**：调用透传分配器（`p = xxx_malloc(n)`）后不判空，现在会正确告警；
+  `passthroughAllocFuncs` 用单调不动点识别 wrapper 及 wrapper 套 wrapper。
+
+### 测试
+
+- 新增 graph 回归：同名 static 函数 CALL 边、跨文件 PARAM_BINDING。
+- 新增 unchecked-return 回归：透传 wrapper 不误报、调用方不判空告警、调用方判空不告警。
+
 ## [0.4.7] - 2026-08-26
 
 ### 新增 arm64 (aarch64) Linux 发布支持

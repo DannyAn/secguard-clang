@@ -86,6 +86,19 @@ func (s *mockStore) ListFunctionsByFile(ctx context.Context, fileID int64) ([]*d
 	return result, nil
 }
 func (s *mockStore) ListFunctions(ctx context.Context) ([]*db.Function, error) { return s.funcs, nil }
+func (s *mockStore) ListFunctionsByIDs(ctx context.Context, ids []int64) (map[int64]*db.Function, error) {
+	want := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	out := make(map[int64]*db.Function)
+	for _, f := range s.funcs {
+		if want[f.ID] {
+			out[f.ID] = f
+		}
+	}
+	return out, nil
+}
 
 func (s *mockStore) DeleteFunctionsByFile(ctx context.Context, fileID int64) error {
 	kept := s.funcs[:0]
@@ -141,6 +154,19 @@ func (s *mockStore) GetLocationByID(ctx context.Context, id int64) (*db.Location
 func (s *mockStore) ListLocationsByFile(ctx context.Context, fid int64) ([]*db.Location, error) {
 	return nil, nil
 }
+func (s *mockStore) ListLocationsByIDs(ctx context.Context, ids []int64) (map[int64]*db.Location, error) {
+	want := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	out := make(map[int64]*db.Location)
+	for _, l := range s.locs {
+		if want[l.ID] {
+			out[l.ID] = l
+		}
+	}
+	return out, nil
+}
 
 func (s *mockStore) InsertGraphNode(ctx context.Context, n *db.GraphNode) (int64, error) {
 	n.ID = s.nextID
@@ -176,6 +202,11 @@ func (s *mockStore) ListGraphNodesByEntityType(ctx context.Context, et string) (
 		}
 	}
 	return result, nil
+}
+func (s *mockStore) ClearGraph(ctx context.Context) error {
+	s.edges = nil
+	s.nodes = nil
+	return nil
 }
 
 func (s *mockStore) InsertGraphEdge(ctx context.Context, e *db.GraphEdge) (int64, error) {
@@ -291,6 +322,19 @@ func (s *mockStore) UpsertSummary(ctx context.Context, sum *db.FunctionSummary) 
 }
 func (s *mockStore) GetSummaryByFunction(ctx context.Context, fid int64) (*db.FunctionSummary, error) {
 	return s.summaries[fid], nil
+}
+func (s *mockStore) ListSummariesByFunctionIDs(ctx context.Context, fids []int64) (map[int64]*db.FunctionSummary, error) {
+	want := make(map[int64]bool, len(fids))
+	for _, id := range fids {
+		want[id] = true
+	}
+	out := make(map[int64]*db.FunctionSummary)
+	for id, sum := range s.summaries {
+		if want[id] {
+			out[id] = sum
+		}
+	}
+	return out, nil
 }
 func (s *mockStore) UpdateReturnNullable(ctx context.Context, fid int64, nullable bool) error {
 	if sum, ok := s.summaries[fid]; ok {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 func (s *store) UpsertSummary(ctx context.Context, sum *FunctionSummary) error {
@@ -34,6 +35,35 @@ func (s *store) GetSummaryByFunction(ctx context.Context, functionID int64) (*Fu
 		return nil, fmt.Errorf("db: get summary by function: %w", err)
 	}
 	return sum, nil
+}
+
+func (s *store) ListSummariesByFunctionIDs(ctx context.Context, functionIDs []int64) (map[int64]*FunctionSummary, error) {
+	result := make(map[int64]*FunctionSummary, len(functionIDs))
+	for _, chunk := range chunkIDs(functionIDs, 500) {
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]interface{}, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+		rows, err := s.exec.QueryContext(ctx,
+			`SELECT function_id, return_nullable, parameter_nullable, side_effect, summary_json FROM function_summary WHERE function_id IN (`+placeholders+`)`, args...)
+		if err != nil {
+			return nil, fmt.Errorf("db: list summaries by function ids: %w", err)
+		}
+		for rows.Next() {
+			sum := &FunctionSummary{}
+			if scanErr := rows.Scan(&sum.FunctionID, &sum.ReturnNullable, &sum.ParameterNullable, &sum.SideEffect, &sum.SummaryJSON); scanErr != nil {
+				rows.Close()
+				return nil, fmt.Errorf("db: scan summary: %w", scanErr)
+			}
+			result[sum.FunctionID] = sum
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("db: list summaries by function ids: %w", err)
+		}
+	}
+	return result, nil
 }
 
 func (s *store) UpdateReturnNullable(ctx context.Context, functionID int64, nullable bool) error {

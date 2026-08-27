@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -230,6 +231,127 @@ void f(void) {
 	returns, _ := store.ListGraphEdgesByType(ctx, "RETURN")
 	if len(returns) != 1 {
 		t.Errorf("expected 1 RETURN edge (helper -> b), got %d", len(returns))
+	}
+}
+
+// indexFiles writes each src to its own temp .c file, indexes them all into one
+// store (in the given order, which becomes the ListFunctions iteration order),
+// and returns the store + parser. Used to test cross-file graph behavior.
+func indexFiles(t *testing.T, srcs ...string) (db.Store, *parser.Parser) {
+	t.Helper()
+	store := db.NewTestStore(t)
+	p := parser.NewParser()
+	t.Cleanup(func() { p.CloseAll() })
+
+	dir := t.TempDir()
+	ctx := context.Background()
+	for i, src := range srcs {
+		path := filepath.Join(dir, fmt.Sprintf("f%d.c", i))
+		if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+			t.Fatal(err)
+		}
+		fileID, err := store.InsertFile(ctx, &db.File{Path: path, Language: "c"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tree, err := p.Parse([]byte(src), path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, def := range tree.RootNode().FindAll("function_definition") {
+			name := testFunctionName(def)
+			if name == "" {
+				continue
+			}
+			if _, err := store.InsertFunction(ctx, &db.Function{
+				FileID:    fileID,
+				Name:      name,
+				StartLine: def.StartLine(),
+				EndLine:   def.EndLine(),
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		tree.Close()
+	}
+	return store, p
+}
+
+// TestInterprocBuilderCrossFileForwardRef guards the two-phase PARAM_BINDING fix:
+// a call site in an earlier file referencing a callee in a later file must still
+// emit its PARAM_BINDING edge (the previous single-pass version missed it).
+func TestInterprocBuilderCrossFileForwardRef(t *testing.T) {
+	store, p := indexFiles(t,
+		// f0.c (processed first): caller lives here.
+		`void f(void) { int a = 1; int b = helper(a); }`,
+		// f1.c (processed second): callee lives here.
+		`int helper(int x) { return x + 1; }`,
+	)
+	ctx := context.Background()
+	b := NewInterprocBuilder(store, p, nil)
+	if _, err := b.Build(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	bindings, err := store.ListGraphEdgesByType(ctx, "PARAM_BINDING")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bindings) != 1 {
+		t.Fatalf("expected 1 PARAM_BINDING edge across files (a -> helper.x), got %d", len(bindings))
+	}
+}
+
+// TestCallGraphSameNameDoesNotCollapse guards the same-name fix: two static
+// functions with the same name in different files must both keep a CALL edge
+// from their caller (a name->single-ID map would silently shadow one and, via
+// call_reach, drop every candidate in the shadowed function).
+func TestCallGraphSameNameDoesNotCollapse(t *testing.T) {
+	store, p := indexFiles(t,
+		`static void helper(void) {} void f(void) { helper(); }`,
+		`static void helper(void) {} void g(void) { helper(); }`,
+	)
+	ctx := context.Background()
+	b := NewCallGraphBuilder(store, p, nil)
+	if _, err := b.Build(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Resolve each function graph-node id to the Function it represents, then
+	// assert both same-name static helpers are the destination of a CALL edge.
+	fnNodeIDs := make(map[int64]int64)
+	nodes, err := store.ListGraphNodesByEntityType(ctx, "function")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range nodes {
+		if n.Properties == "" {
+			fnNodeIDs[n.ID] = n.EntityID
+		}
+	}
+
+	calls, err := store.ListGraphEdgesByType(ctx, "CALL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	funcs, err := store.ListFunctions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperCalled := 0
+	for _, fn := range funcs {
+		if fn.Name != "helper" {
+			continue
+		}
+		for _, e := range calls {
+			if fnNodeIDs[e.DstID] == fn.ID {
+				helperCalled++
+				break
+			}
+		}
+	}
+	if helperCalled != 2 {
+		t.Fatalf("expected both same-name static helpers to keep a CALL edge, got %d/2", helperCalled)
 	}
 }
 

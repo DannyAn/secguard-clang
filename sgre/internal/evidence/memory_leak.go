@@ -49,7 +49,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 		}
 	}
 	if hasDestroyCandidates {
-		if err := forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
+		if err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
 			calls := root.FindAll("call_expression")
 			for _, f := range fileFuncs {
 				if freeFuncs[f.ID] {
@@ -81,7 +81,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 		}
 	}
 
-	err = forEachFile(ctx, d.store, d.parser, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
+	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
 		funcDefs := root.FindAll("function_definition")
 		bodies := functionBodyMap(funcDefs)
 		calls := root.FindAll("call_expression")

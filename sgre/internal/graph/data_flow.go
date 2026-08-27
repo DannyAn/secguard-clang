@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -24,51 +23,16 @@ func NewDataFlowBuilder(store db.Store, p *parser.Parser, logger *log.Logger) *D
 func (b *DataFlowBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	result := &BuildResult{}
 
-	err := forEachFile(ctx, b.store, b.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
-		decls := root.FindAll("declaration")
+	err := forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		assigns := root.FindAll("assignment_expression")
 		returns := root.FindAll("return_statement")
 
 		for _, f := range funcs {
-			b.detectPointerDeclarations(ctx, f, decls, result)
 			b.detectPointerAssignments(ctx, f, assigns, result)
 			b.detectPointerReturns(ctx, f, returns, result)
 		}
 	})
 	return result, err
-}
-
-func (b *DataFlowBuilder) detectPointerDeclarations(ctx context.Context, f *db.Function, decls []parser.Node, result *BuildResult) {
-	for _, decl := range decls {
-		if !funcLineRange(f, decl.StartLine()) {
-			continue
-		}
-		pointerDeclarators := decl.FindAll("pointer_declarator")
-		for _, pd := range pointerDeclarators {
-			name := extractDeclaratorName(pd)
-			if name == "" {
-				continue
-			}
-			ty := extractTypeFromDeclaration(decl)
-			isHeap := isHeapAllocation(decl)
-			storageClass := "auto"
-			if isHeap {
-				storageClass = "heap"
-			}
-			_, err := b.store.InsertVariable(ctx, &db.Variable{
-				FunctionID:      f.ID,
-				Name:            name,
-				Type:            ty,
-				StorageClass:    storageClass,
-				DeclarationLine: decl.StartLine(),
-				IsPointer:       true,
-				IsNullable:      isHeap,
-			})
-			if err == nil {
-				result.EdgesCreated++
-			}
-		}
-	}
 }
 
 func (b *DataFlowBuilder) detectPointerAssignments(ctx context.Context, f *db.Function, assigns []parser.Node, result *BuildResult) {
@@ -146,36 +110,4 @@ func (b *DataFlowBuilder) detectPointerReturns(ctx context.Context, f *db.Functi
 	}
 }
 
-func extractDeclaratorName(node parser.Node) string {
-	for _, child := range node.NamedChildren() {
-		if child.Kind() == "identifier" {
-			return child.Text()
-		}
-		name := extractDeclaratorName(child)
-		if name != "" {
-			return name
-		}
-	}
-	return ""
-}
 
-func extractTypeFromDeclaration(node parser.Node) string {
-	for _, child := range node.NamedChildren() {
-		switch child.Kind() {
-		case "primitive_type", "type_identifier", "sized_type_specifier":
-			return child.Text() + "*"
-		}
-	}
-	return ""
-}
-
-func isHeapAllocation(node parser.Node) bool {
-	text := node.Text()
-	allocators := []string{"malloc", "calloc", "realloc"}
-	for _, a := range allocators {
-		if strings.Contains(text, a) {
-			return true
-		}
-	}
-	return false
-}

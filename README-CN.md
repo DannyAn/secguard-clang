@@ -478,4 +478,4 @@ go test -run TestSecurity ./internal/evidence/
 
 ## License
 
-Proprietary © Zhuque Security
+依据 [Apache License 2.0](LICENSE) 授权。© An Gang

@@ -27,7 +27,7 @@ func NewSharedAccessBuilder(store db.Store, p *parser.Parser, logger *log.Logger
 func (b *SharedAccessBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	result := &BuildResult{}
 
-	err := forEachFile(ctx, b.store, b.parser, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		globals := collectGlobalNames(root, funcs)
 		assigns := root.FindAll("assignment_expression")
 		updates := root.FindAll("update_expression")

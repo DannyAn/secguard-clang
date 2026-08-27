@@ -67,6 +67,47 @@ int tp_field_use_not_nullcheck(void) {
     }
     return 0;
 }
+
+void *fp_passthrough_allocator(size_t n) {
+    return malloc(n);
+}
+
+int tp_caller_unchecked(void) {
+    char *p = (char *)fp_passthrough_allocator(16);
+    p[0] = 'x';
+    return 0;
+}
+
+int fp_caller_checked(void) {
+    char *p = (char *)fp_passthrough_allocator(16);
+    if (!p) return -1;
+    p[0] = 'x';
+    return 0;
+}
+
+void *fp_passthrough_allocator_var(size_t n) {
+    void *p = malloc(n);
+    return p;
+}
+
+int tp_caller_var_unchecked(void) {
+    char *p = (char *)fp_passthrough_allocator_var(16);
+    p[0] = 'x';
+    return 0;
+}
+
+int fp_caller_var_checked(void) {
+    char *p = (char *)fp_passthrough_allocator_var(16);
+    if (!p) return -1;
+    p[0] = 'x';
+    return 0;
+}
+
+void *tp_use_then_return(void) {
+    char *p = (char *)malloc(16);
+    p[0] = 'x';
+    return p;
+}
 `
 
 func TestReturnCheckFilter_Convergence(t *testing.T) {
@@ -121,5 +162,26 @@ func TestReturnCheckFilter_Convergence(t *testing.T) {
 	}
 	if s := suspicions["tp_field_use_not_nullcheck"]; s != "confirmed" {
 		t.Errorf("tp_field_use_not_nullcheck: expected confirmed (condition dereferences e->size, does not check e), got %s", s)
+	}
+	if _, ok := suspicions["fp_passthrough_allocator"]; ok {
+		t.Errorf("fp_passthrough_allocator: expected dismissed (return malloc passthrough, caller checks), got candidate")
+	}
+	if s := suspicions["tp_caller_unchecked"]; s != "confirmed" {
+		t.Errorf("tp_caller_unchecked: expected confirmed (calls passthrough allocator, never checks result), got %s", s)
+	}
+	if _, ok := suspicions["fp_caller_checked"]; ok {
+		t.Errorf("fp_caller_checked: expected dismissed (calls passthrough allocator but checks result), got candidate")
+	}
+	if _, ok := suspicions["fp_passthrough_allocator_var"]; ok {
+		t.Errorf("fp_passthrough_allocator_var: expected dismissed (p = malloc; return p passthrough), got candidate")
+	}
+	if s := suspicions["tp_caller_var_unchecked"]; s != "confirmed" {
+		t.Errorf("tp_caller_var_unchecked: expected confirmed (calls var passthrough allocator, never checks), got %s", s)
+	}
+	if _, ok := suspicions["fp_caller_var_checked"]; ok {
+		t.Errorf("fp_caller_var_checked: expected dismissed (calls var passthrough allocator but checks), got candidate")
+	}
+	if s := suspicions["tp_use_then_return"]; s != "confirmed" {
+		t.Errorf("tp_use_then_return: expected confirmed (uses p before return, not a passthrough), got %s", s)
 	}
 }
