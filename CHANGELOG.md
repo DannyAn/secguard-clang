@@ -50,10 +50,30 @@
 - **跨函数传播**：调用透传分配器（`p = xxx_malloc(n)`）后不判空，现在会正确告警；
   `passthroughAllocFuncs` 用单调不动点识别 wrapper 及 wrapper 套 wrapper。
 
+### 空指针解引用误报修复
+
+- **跨函数 null guard 被静默丢弃（主因）**：`interprocedural.go` 的 `loadEventVarIndex`
+  用 `map[string]string` 反序列化事件属性，但 `NULL_GUARD` 事件带整数 `scope_start`/
+  `scope_end`，反序列化失败导致所有判空守卫被丢弃、`guardVars` 恒为空——被调函数内
+  「判空后再解引用参数」的跨函数场景全部被误报。改为只反序列化 `variable` 字段的结构体。
+- **守卫变量名带前导括号**：`guardVarName` 在 `==` 切开 `(p == NULL)` 时留下孤立的左括号，
+  NULL_CHECK/TRUTH_CHECK 守卫记录成 `"(p"` 而非 `"p"`，导致 `GuardFilter` 的 scope 匹配
+  失效。补剥孤立括号。
+
+### 部署与指令
+
+- **security-auditor A5 指令补全**：`agent-body.md` / `command-instructions.md` 补上
+  `written` 数组格式（`{file,line,id}`）、完整 `secguard report --review --id
+  --review-status --review-reasoning --db` 命令、`secguard db`/`secguard schema` 回退
+  查询，并禁止 python3/sqlite3 直连 DB（消除 shell-only 子代理在 A5 环节反复自纠错的
+  三类错误）。
+
 ### 测试
 
 - 新增 graph 回归：同名 static 函数 CALL 边、跨文件 PARAM_BINDING。
 - 新增 unchecked-return 回归：透传 wrapper 不误报、调用方不判空告警、调用方判空不告警。
+- 新增 `tc75_guarded_passthrough_param` 回归：判空后解引用参数不产 finding，控制用例
+  `TC04`（未判空）仍产 finding。
 
 ## [0.4.7] - 2026-08-26
 
