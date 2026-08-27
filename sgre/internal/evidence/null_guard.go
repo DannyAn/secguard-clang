@@ -288,6 +288,11 @@ func guardVarName(operand string) string {
 	for strings.HasPrefix(t, "(") && strings.HasSuffix(t, ")") {
 		t = strings.TrimSpace(t[1 : len(t)-1])
 	}
+	// A lone leading/trailing parenthesis remains when the "=="/"!=" split cut a
+	// parenthesized condition like `(p == NULL)` into `"(p "` + `" NULL)"`. Strip
+	// it: a guard variable is a C identifier and never carries parentheses, so
+	// this cannot over-trim a real name.
+	t = strings.Trim(t, "()")
 	if i := strings.Index(t, "="); i > 0 {
 		t = strings.TrimSpace(t[:i])
 	}

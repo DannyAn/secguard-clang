@@ -277,3 +277,14 @@ func TestSecurity_TC17_UninitStructPartial(t *testing.T) {
 	store := runIndexAndDetect(t, "tc17_uninit_struct_partial.c")
 	assertHasEvent(t, store, "VALUE_USE", "TC17")
 }
+
+// TestSecurity_TC75_GuardedPassthroughParam guards the interprocedural null-deref
+// fix: a possibly-null value passed into a callee that NULL-guards its parameter
+// before dereferencing it must not produce a null-deref finding at the call site.
+// (Before the fix, guardVars silently dropped every NULL_GUARD event — its integer
+// scope_start/scope_end failed to unmarshal into map[string]string — so the guarded
+// parameter looked unguarded and the caller was flagged.)
+func TestSecurity_TC75_GuardedPassthroughParam(t *testing.T) {
+	result, _ := runFullPipeline(t, "tc75_guarded_passthrough_param.c")
+	assertNoFinding(t, result, "TC75")
+}

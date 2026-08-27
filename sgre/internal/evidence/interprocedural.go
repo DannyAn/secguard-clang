@@ -167,11 +167,19 @@ func (d *InterproceduralDetector) loadEventVarIndex(ctx context.Context, eventTy
 	}
 	index := make(map[int64]map[string]bool)
 	for _, e := range events {
-		var props map[string]string
+		// Unmarshal only the `variable` field into a struct. The previous
+		// map[string]string target failed to unmarshal NULL_GUARD events, whose
+		// properties carry integer scope_start/scope_end (e.g. {"variable":"p",
+		// "scope_start":10,"scope_end":20}), so every guard was silently dropped
+		// and guarded parameters were treated as unguarded (interprocedural
+		// null-deref false positives).
+		var props struct {
+			Variable string `json:"variable"`
+		}
 		if err := json.Unmarshal([]byte(e.Properties), &props); err != nil {
 			continue
 		}
-		varName := props["variable"]
+		varName := props.Variable
 		if varName == "" {
 			continue
 		}
