@@ -60,6 +60,14 @@
   NULL_CHECK/TRUTH_CHECK 守卫记录成 `"(p"` 而非 `"p"`，导致 `GuardFilter` 的 scope 匹配
   失效。补剥孤立括号。
 
+### 未初始化误报修复
+
+- **纯写宏识别为输出**：`#define GET(x) do { (x) = get(); } while(0)` 这类给实参赋值的
+  函数式宏，此前被 stack-uninit 当成「按值读」而误报未初始化。新增 `macroWriteSummaries`
+  识别「取地址 `&x`」或「`x = <与 x 无关的 RHS>`」的纯写宏，跳过其裸标识符实参。
+  刻意不匹配读改写（`x += v` / `x++` / `x = x+1`）与按值函数读（`f(x)`）——这些仍读
+  未初始化值，是真缺陷，照常报告。
+
 ### 部署与指令
 
 - **security-auditor A5 指令补全**：`agent-body.md` / `command-instructions.md` 补上
@@ -74,6 +82,7 @@
 - 新增 unchecked-return 回归：透传 wrapper 不误报、调用方不判空告警、调用方判空不告警。
 - 新增 `tc75_guarded_passthrough_param` 回归：判空后解引用参数不产 finding，控制用例
   `TC04`（未判空）仍产 finding。
+- 新增 `tc76_macro_output_param` 回归：纯写宏实参不产 finding，按值函数读仍产 finding。
 
 ## [0.4.7] - 2026-08-26
 
