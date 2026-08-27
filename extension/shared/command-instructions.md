@@ -236,9 +236,17 @@ read a candidate file for every candidate. (`report --audit` later overwrites
       at file:line, reason, classify.
     Write findings in ONE batch: write `<tmpdir>/<type>.json` with the Write tool, then
     `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
-   Then record A5 reviews for each suspected finding via `secguard report --review --id=<id> ...`. Read source only at reported
-   file:line, ≤5 files per type. Report back, per type: confirmed / suspected /
-   dismissed counts + the written finding ids.
+   Then A5-review each suspected finding: take its `id` from the write response
+   `written` array (`{file, line, id}`), or look it up when missing via
+   `secguard db "SELECT id, file_path, line_number FROM findings WHERE
+   scan_id='<scan_id>' AND status='suspected' ORDER BY id" --db <db_path>`.
+   NEVER use python3/sqlite3 (Bash is limited to `secguard *`; the column is
+   `file_path`, not `file`). Record each verdict with the FULL form:
+   `secguard report --review --id <id> --review-status
+   <confirmed|dismissed|suspected-kept> --review-reasoning "<one-line>" --db
+   <db_path>`. Read source only at reported file:line, ≤5 files per type.
+   Report back, per type: confirmed / suspected / dismissed counts + the
+   written finding ids.
    ```
    For many types, batch them — but NEVER exceed `MAX_TYPES_PER_BATCH` (4) types
    per subagent, and validate `batch_type_count × 6 < 27` before dispatching. A

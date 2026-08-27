@@ -157,22 +157,45 @@ it could (`confirmed`) and dropped what it could deterministically refute;
 
 For each finding you wrote with `status="suspected"`:
 
-1. Capture its database `id` from the write response (the `written` array maps
-   each `file:line` to its `id`).
+1. Capture its database `id` from the write response. The response's `written`
+   array is a list of `{"file", "line", "id"}` objects — preserve the
+   `file:line → id` mapping for every row you wrote as `suspected` (note it down,
+   e.g. into `<tmpdir>/<type>.suspected.txt`) so A5 never has to re-derive ids.
 2. Ask one question only: **is this a reachable, real vulnerability, or a false
    positive?** Re-judge from the source already in context plus the `reasoning` /
    `exception_check` you persisted. Re-read the source at `file:line` ONLY when
    this finding's source was NOT read during the first pass — do not re-read
    source you already have, and keep the whole type within the same ≤5-files
    budget (first pass + A5 combined, not a fresh 5).
-3. Record the verdict via `secguard_report` `reviews` (or
-   `secguard report --review`):
-   - `review_status: "confirmed"` — it is real; promote it.
-   - `review_status: "dismissed"` — it is a false positive; drop it.
-   - `review_status: "suspected-kept"` — genuinely uncertain (external input with
-     no provable bound, a partial blacklist, a short read that may be acceptable);
-     keep it as suspected.
-   - `review_reasoning` — always a one-line justification.
+3. Record the verdict via the CLI (your Bash is restricted to `secguard *`;
+   on platforms that also expose the `secguard_report` MCP tool its `reviews`
+   action is equivalent). The FULL CLI form is:
+
+   ```bash
+   secguard report --review --id <id> --review-status <confirmed|dismissed|suspected-kept> \
+     --review-reasoning "<one-line>" --db <db_path>
+   ```
+
+   `--review-status` is REQUIRED and must be exactly one of the three literal
+   values:
+   - `confirmed` — it is real; promote it.
+   - `dismissed` — it is a false positive; drop it.
+   - `suspected-kept` — genuinely uncertain (external input with no provable
+     bound, a partial blacklist, a short read that may be acceptable); keep it
+     as suspected.
+   Do NOT invent a different flag (e.g. `--verdict`); the CLI rejects a missing
+   or empty `--review-status`. `--review-reasoning` is always a one-line
+   justification.
+
+   **If you do NOT have a finding's `id`** (forgot to record it, or the write
+   happened in a prior turn), re-query it through the CLI — NEVER reach for
+   `python3` / `sqlite3` (your Bash tool is permissioned to `secguard *`, and
+   the `findings` columns are `file_path` / `line_number`, NOT `file` / `line`):
+
+   ```bash
+   secguard schema findings   # confirm column names if unsure
+   secguard db "SELECT id, file_path, line_number, status FROM findings WHERE scan_id = '<scan_id>' AND status = 'suspected' ORDER BY id" --db <db_path>
+   ```
 
 A `suspected` finding that survives A5 must be a genuine "needs human judgment"
 case. If it is deterministic — a weak algorithm, a constant SQL string, a guarded
