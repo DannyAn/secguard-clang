@@ -46,9 +46,10 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 		fors := root.FindAll("for_statement")
 		funcDefs := root.FindAll("function_definition")
 		bodies := functionBodyMap(funcDefs)
+		macroWrites := macroWriteSummaries(root)
 
 		for _, f := range funcs {
-			d.detectStackUninit(ctx, f, file, decls, assigns, calls, returns, inits, ifs, whiles, fors, bodies, summaries, &result)
+			d.detectStackUninit(ctx, f, file, decls, assigns, calls, returns, inits, ifs, whiles, fors, bodies, summaries, macroWrites, &result)
 			d.detectHeapUninit(ctx, f, file, inits, assigns, unarys, ptrs, fields, &result)
 			d.detectStructPartialUninit(ctx, f, file, decls, assigns, calls, fields, summaries, &result)
 		}
@@ -56,7 +57,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 	return result, err
 }
 
-func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, decls, assigns, calls, returns, inits, ifs, whiles, fors []parser.Node, bodies map[int]parser.Node, summaries summaryMap, result *DetectResult) {
+func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, decls, assigns, calls, returns, inits, ifs, whiles, fors []parser.Node, bodies map[int]parser.Node, summaries summaryMap, macroWrites map[string]macroWriteSummary, result *DetectResult) {
 	uninitVars := make(map[string]int)
 	assignSites := make(map[string][]int)
 	// outputParamInitLines maps a variable to the line after which it is
@@ -250,11 +251,11 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 	// skipName (e.g. the callee of a call) is also excluded. A struct VALUE's
 	// base (`s` in `s.f`) is a field access handled by struct-partial-uninit,
 	// not a scalar read, so it is skipped too.
-	scanUses := func(node parser.Node, line int, skipName string) {
+	scanUses := func(node parser.Node, line int, skipName string, extraSkip map[string]bool) {
 		addressed := addressedArgs(node)
 		for _, id := range node.FindAll("identifier") {
 			name := id.Text()
-			if name == skipName || addressed[name] || isValueFieldBase(id) {
+			if name == skipName || addressed[name] || extraSkip[name] || isValueFieldBase(id) {
 				continue
 			}
 			checkUse(line, name)
@@ -265,14 +266,14 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		if !funcLineRange(f, ret.StartLine()) {
 			continue
 		}
-		scanUses(ret, ret.StartLine(), "")
+		scanUses(ret, ret.StartLine(), "", nil)
 	}
 
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
-		scanUses(call, call.StartLine(), extractCallName(call))
+		scanUses(call, call.StartLine(), extractCallName(call), outputMacroArgs(call, macroWrites))
 	}
 
 	// A read in an assignment/initializer RHS also uses the variable
@@ -308,7 +309,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		if len(children) < 2 {
 			continue
 		}
-		scanUses(children[1], init.StartLine(), "")
+		scanUses(children[1], init.StartLine(), "", nil)
 	}
 
 	// Scan only the *condition* of a branch/loop, not the whole subtree. The
@@ -321,7 +322,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 			continue
 		}
 		if cond := ifNode.ChildByFieldName("condition"); cond != nil {
-			scanUses(*cond, cond.StartLine(), "")
+			scanUses(*cond, cond.StartLine(), "", nil)
 		}
 	}
 
@@ -330,7 +331,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 			continue
 		}
 		if cond := whileNode.ChildByFieldName("condition"); cond != nil {
-			scanUses(*cond, cond.StartLine(), "")
+			scanUses(*cond, cond.StartLine(), "", nil)
 		}
 	}
 
@@ -922,6 +923,28 @@ func isExitStmt(node parser.Node) bool {
 		}
 	}
 	return false
+}
+
+// outputMacroArgs returns the set of bare-identifier arguments passed to a macro
+// that writes them (`#define GET(x) do { (x) = ...; } while(0)`). Such an argument
+// is an output the macro initializes, not a read of an uninitialized value, so the
+// stack-uninit scan must skip it.
+func outputMacroArgs(call parser.Node, macroWrites map[string]macroWriteSummary) map[string]bool {
+	out := make(map[string]bool)
+	if !macroWrites[extractCallName(call)].writesArg {
+		return out
+	}
+	for _, child := range call.NamedChildren() {
+		if child.Kind() != "argument_list" {
+			continue
+		}
+		for _, arg := range child.NamedChildren() {
+			if arg.Kind() == "identifier" {
+				out[arg.Text()] = true
+			}
+		}
+	}
+	return out
 }
 
 // addressedArgs returns the set of variable names whose address is taken

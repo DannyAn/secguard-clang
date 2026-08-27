@@ -288,3 +288,31 @@ func TestSecurity_TC75_GuardedPassthroughParam(t *testing.T) {
 	result, _ := runFullPipeline(t, "tc75_guarded_passthrough_param.c")
 	assertNoFinding(t, result, "TC75")
 }
+
+// TestSecurity_TC76_MacroOutputParam guards the macro-output-parameter fix: a
+// function-like macro that ASSIGNS its argument (`#define GET(x) (x) = ...`)
+// initializes that argument, so it must not be reported as use-before-init. A
+// genuine by-value read (`f(bpool)` where f reads bpool) must still be reported.
+func TestSecurity_TC76_MacroOutputParam(t *testing.T) {
+	store := runIndexAndDetect(t, "tc76_macro_output_param.c")
+	ctx := context.Background()
+	events, err := store.ListEventsByType(ctx, "VALUE_USE")
+	if err != nil {
+		t.Fatalf("TC76: list VALUE_USE: %v", err)
+	}
+	flagged := make(map[string]bool)
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		if json.Unmarshal([]byte(e.Properties), &props) == nil {
+			flagged[props.Variable] = true
+		}
+	}
+	if flagged["mpool"] {
+		t.Errorf("TC76: macro-output argument mpool must NOT be reported as uninit (macro assigns it)")
+	}
+	if !flagged["bpool"] {
+		t.Errorf("TC76: by-value read bpool must STILL be reported as uninit")
+	}
+}
