@@ -266,20 +266,22 @@ read a candidate file for every candidate. (`report --audit` later overwrites
    source files yourself — each subagent reads only its own types' candidates.
 5. **Collect + finalize**:
 
-   **上报解析与 DB 二次校验 (F5):** For each subagent result, parse by `format_version`:
-   - Parseable v1 → record `processed_types` as success, `failed_types` as failed.
-   - Unparseable / empty / unknown version → the subagent did not report. Run
-     `secguard status --per-type --scan-id <scan_id>` and use its per-type
-     `candidate_count` + `written_count` as the authority — NOT the raw `findings`
-     count, which cannot tell "no candidates" from "candidates but never written":
-       - `candidate_count == 0` → the type had nothing to classify → `done` (success), NEVER failed.
-       - `candidate_count > 0 && written_count > 0` → success (data landed despite no report).
-       - `candidate_count > 0 && written_count == 0` → failed with `reason: "empty-output"`.
-   - A `failed_types` entry with `reason: "api-quota-exhausted"` → mark the type for retry/降级 (see F1 below).
+   **上报解析与 DB 二次校验 (F5):** For each subagent result, parse by `format_version`
+   to know which types it was ASSIGNED, but do NOT trust its self-reported `reason`
+   — the LLM misreports (e.g. a Bash-permission misjudgment reported as
+   `api-quota-exhausted`). The DB is the SOLE authority. For EVERY assigned type,
+   run `secguard status --per-type --scan-id <scan_id>` and decide by per-type
+   `candidate_count` + `written_count` (NOT the raw `findings` count, which cannot
+   tell "no candidates" from "candidates but never written"):
+   - `candidate_count == 0` → the type had nothing to classify → `done` (success), NEVER failed.
+   - `candidate_count > 0 && written_count > 0` → success (data landed, whatever the report said).
+   - `candidate_count > 0 && written_count == 0` → FAILED with `reason: "empty-output"` (data did NOT land), regardless of the subagent's reported reason.
 
-   **重试与降级决策 (F1):** For each subagent marked failed or empty (and DB second-pass did not confirm writes):
-   - If retry count < 2, re-dispatch the subagent for the failed types only.
-   - If retry count ≥ 2, OR the failure is `api-quota-exhausted` (retrying will hit the same quota wall), do NOT retry — mark the types as `missing-type` and continue. Downgrading to a single-threaded sequential loop is acceptable when ≤ 3 types remain.
+   **重试与降级决策 (F1):** For each FAILED type (`candidate_count > 0 && written_count == 0`):
+   - If retry count < 2, re-dispatch a subagent for the failed types only.
+   - After 2 failed retries, mark `missing-type` and continue.
+   - Do NOT skip retry on `api-quota-exhausted` — the subagent's reason is unreliable and a single retry is cheap; a genuine quota wall simply fails again on the retry (0 written), which then lands in the `missing-type` path.
+   - The orchestrator SHALL NOT run `report --audit` while ANY type still has `candidate_count > 0 && written_count == 0` — auditing now silently drops those unclassified candidates from `report.md`/`result.sarif` and fakes a complete scan. Resolve every such type (retry → success, or → missing-type) BEFORE audit.
    - The orchestrator SHALL NOT finalize while any subagent terminal state is `unknown`.
 
     **Finalize 前置终态确认 (F1):** Before running audit, confirm every subagent terminal state ∈ {success, failed}. If any is `unknown`, run `secguard status --per-type --scan-id <scan_id>` and use the DB as the authority: types with `terminal_state: "done"` are success; `"in-progress"`/`"pending"` are failed (mark missing-type); `"unknown"` types were never dispatched — mark missing-type with `reason: "unknown"`.

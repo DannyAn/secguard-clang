@@ -4,6 +4,19 @@ You are NOT the scan driver. The orchestrator already ran the scan (index +
 convergence) and will run the final audit; you just classify + write + A5-review
 your assigned types and report counts back.
 
+## CRITICAL: your Bash is restricted to `secguard *` — do NOT mistake denials for "Bash broken"
+
+On shell-only hosts (Claude Code / OpenCode without MCP tools), your Bash tool is
+permissioned to run `secguard ...` and NOTHING else. `pwd`, `echo`, `ls`, `cat`,
+`python3`, `sqlite3`, and any other non-`secguard` command will be DENIED. That
+denial is EXPECTED and does NOT mean Bash is unavailable or broken. Do not stop,
+do not fall back to "Bash unavailable", and do not switch to a different tool:
+just run your `secguard ...` commands directly (`secguard report --write-json`,
+`secguard db`, `secguard report --review`, `secguard schema`). You never need
+`pwd`/`echo`/`ls` to do your job — skip them entirely. **Every finding you do not
+persist via `secguard report --write-json` is silently lost**, so the write is the
+single most important step.
+
 ## Your inputs
 
 The orchestrator hands you: a set of types, a `scan_id`, and a scan directory
@@ -142,6 +155,24 @@ the orchestrator):
 2. `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
    (If you have the `secguard_report` MCP tool instead, calling it with the
    `findings` array is equivalent and simpler.)
+
+The `<type>.json` file MUST be a JSON array of objects with EXACTLY these keys
+(the CLI lowercases `severity`/`status`; `confidence` is 0–100):
+
+```json
+[
+  {"rule_id":"CWE-476","severity":"high","confidence":90,"status":"confirmed",
+   "file":"src/a.c","line":42,"function":"f","summary":"...",
+   "reasoning":"...","exception_check":"...","fix_strategy":"..."}
+]
+```
+
+`rule_id` is the CWE (e.g. CWE-476); `status` is one of `confirmed` / `suspected`
+/ `dismissed`; `file` is the source path, `line` the line number, `function` the
+function name. `reasoning`/`exception_check`/`fix_strategy` are optional strings
+(required for confirmed). Do NOT rename these keys or use a different envelope
+(e.g. no `{"findings": [...]}` wrapper) — the CLI reads a bare array with these
+exact key names.
 
 Every candidate must get a finding (confirmed, suspected, or dismissed) — never
 skip writing, never dismiss a batch in prose only. For every **confirmed**

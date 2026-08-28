@@ -10,7 +10,8 @@
         "edit": "allow",
         "bash": {
           "*": "deny",
-          "secguard*": "allow"
+          "secguard*": "allow",
+          "echo*": "allow"
         },
         "read": "allow",
         "grep": "allow",

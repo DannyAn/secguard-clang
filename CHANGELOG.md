@@ -47,6 +47,12 @@
 - 修复 F5 上报二次校验：改用 `status --per-type` 的 `candidate_count`/`written_count`
   作为权威，`candidate_count == 0` 的类型判为 `done`（成功）而非 `empty-output`，
   消除对「本就 0 候选」类型的无谓重试。
+- 修复 OpenCode-nga 子代理 Bash 权限误判：`security-auditor` 头部新增强警告（Bash
+  仅限 `secguard *`，`pwd`/`echo`/`ls` 被拒是预期、不代表 Bash 不可用），并在
+  `agent-body.md` 补全 `--write-json` 的精确 JSON schema（此前 schema 只写在
+  orchestrator 指令里，子代理看不到会写错字段）。
+- 修复 F1 重试决策不再盲信子代理自报的 `api-quota-exhausted`（LLM 会误报），并禁止
+  在仍有 `candidate_count > 0 && written_count == 0` 的类型时运行 `report --audit`。
 
 ## [0.4.8] - 2026-08-27
 
