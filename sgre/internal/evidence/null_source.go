@@ -335,8 +335,16 @@ func assignedVariable(lhs parser.Node) string {
 		return lhs.Text()
 	case "field_expression", "subscript_expression":
 		return lhs.Text()
+	case "pointer_expression":
+		// `*p = value` writes THROUGH p (to the object p points at); it does NOT
+		// assign p itself. `void **out; *out = f()` is an output-parameter write,
+		// not "out = f()". The previous fallthrough attributed `*out = f()` to
+		// "out", marking the output parameter as a nullable source so the very
+		// next `if (*out == NULL)` read as a null-deref (the dominant false
+		// positive). Match assignTargetName's semantics: return "".
+		return ""
 	}
-	// *p = ... and other shapes: attribute to the first identifier inside.
+	// Other shapes: attribute to the first identifier inside.
 	for _, child := range lhs.NamedChildren() {
 		if child.Kind() == "identifier" {
 			return child.Text()

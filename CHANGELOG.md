@@ -53,8 +53,14 @@
   orchestrator 指令里，子代理看不到会写错字段）。
 - 修复 F1 重试决策不再盲信子代理自报的 `api-quota-exhausted`（LLM 会误报），并禁止
   在仍有 `candidate_count > 0 && written_count == 0` 的类型时运行 `report --audit`。
-
-## [0.4.8] - 2026-08-27
+- 修复 null-deref 出参写误报：`assignedVariable` 此前把 `*out = f()` 错误归因为
+  `out = f()`，使出参 `void **out`/`handle_t *out` 被标记为 nullable 源，紧接着的
+  `if (*out == NULL)` 被误判为 null-deref。现与 `assignTargetName` 语义一致，对
+  `pointer_expression` 返回空；真 `p = NULL; *p = 1` 仍正确报 confirmed。
+- 修复 OpenCode-nga 大类型上下文溢出：`LARGE_CANDIDATE_THRESHOLD` 500→100，新增
+  `SPLIT_CANDIDATE_THRESHOLD=100`（>100 候选的类型拆成多个子代理、各处理 ≤100 候选
+  范围），并强制子代理对 >50 候选的类型**分批写**（每批 ≤50 条、写完立即
+  `--write-json`），避免一次性写巨型 JSON 数组把尾部候选静默丢弃。
 
 ### 采用 Apache-2.0 开源许可
 

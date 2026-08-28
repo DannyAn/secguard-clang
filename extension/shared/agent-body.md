@@ -180,6 +180,20 @@ finding fill `reasoning`, `exception_check`, and `fix_strategy`; for
 **dismissed** fill `reasoning` (why it is safe). These are persisted into the
 per-finding Markdown, so a reviewer sees *why* you believe it, not just *what*.
 
+**Large types: split into ≤50-finding batches, persist EACH batch immediately.**
+Do NOT build one giant JSON array for a type with many candidates — the array plus
+your classification notes overflow the context window and the tail candidates get
+silently dropped (the "200 landed, 4 missing" failure). For any type with more
+than ~50 candidates, write and persist in chunks:
+
+1. classify + write `<tmpdir>/<type>-part1.json` (≤50 findings) → `--write-json` it
+2. classify + write `<tmpdir>/<type>-part2.json` (next ≤50) → `--write-json` it
+3. …repeat until every candidate is written.
+
+The write is idempotent (re-running updates, never duplicates), so partial
+progress survives even if a later chunk overflows the context — you lose only the
+current chunk, never the whole type.
+
 **Keep each field SHORT — your verdicts are JSON that must fit in context, not an
 essay.** `summary` ≤ one line. `reasoning` ≤ 2 short sentences (source → sink →
 the one missing guard; do NOT restate the whole function). `exception_check` ≤

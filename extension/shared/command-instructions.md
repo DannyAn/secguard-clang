@@ -141,11 +141,13 @@ Do not reconstruct paths by trial and error.
 | `MAXTURNS` | 30 | security-auditor.md maxTurns (must match) |
 | `MAXTURNS_SAFETY_RATIO` | 0.9 | Use only 90% of maxTurns as the budget |
 | `TURNS_PER_TYPE_ESTIMATE` | 6 | Avg turns per type (skill load + classify + write + A5) |
-| `LARGE_CANDIDATE_THRESHOLD` | 500 | Types with > this many candidates get a dedicated subagent |
+| `LARGE_CANDIDATE_THRESHOLD` | 100 | Types with > this many candidates get a dedicated subagent |
+| `SPLIT_CANDIDATE_THRESHOLD` | 100 | A type with > this many candidates is SPLIT across multiple subagents, each handling ≤ this many candidates |
 
 **Pre-dispatch validation (EARS):**
 - If a batch has > `MAX_TYPES_PER_BATCH` (4) types, the orchestrator SHALL split it before dispatching.
-- Where a single type has > `LARGE_CANDIDATE_THRESHOLD` (500) candidates, the orchestrator SHALL assign that type its own dedicated subagent.
+- Where a single type has > `LARGE_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL assign that type its own dedicated subagent.
+- Where a single type has > `SPLIT_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL split it into MULTIPLE subagents, each handling a ≤100-candidate RANGE of that type (pass the candidate # range, e.g. "candidates #1–100 of null-deref"), so no single subagent's context window is exceeded.
 - If `batch_type_count × TURNS_PER_TYPE_ESTIMATE` ≥ `MAXTURNS × MAXTURNS_SAFETY_RATIO` (i.e. ≥ 27), the orchestrator SHALL reject the batch as over-budget and split it.
 
 ## Full Scan Workflow
@@ -234,6 +236,9 @@ read a candidate file for every candidate. (`report --audit` later overwrites
    conversation):
    ```
    Process type(s) <t1, t2, ...> ONLY. scan_id=<scan_id>, scan_dir=<output_dir>.
+   (If a type is split by candidate RANGE, e.g. "null-deref #1-100", classify ONLY
+   those candidates — the # column in <scan_dir>/report.md — and leave the rest to
+   sibling subagents.)
    The scan already ran: your types' candidates are in <scan_dir>/report.md and
    <scan_dir>/candidates/<type>/ — do NOT re-run secguard_scan or secguard_plan.
     For each type: load the <type> skill, then classify by suspicion_level:
@@ -245,9 +250,12 @@ read a candidate file for every candidate. (`report --audit` later overwrites
     Derive the DB and the write dir from <scan_dir> (ABSOLUTE, never relative):
     - DB:  <scan_dir>/../../.sgre/sgre.db
     - tmp: <scan_dir>/../../.sgre/.tmp/
-    Write findings in ONE batch: write `<scan_dir>/../../.sgre/.tmp/<type>.json` with the
-    Write tool, then
-    `secguard report --write-json <scan_dir>/../../.sgre/.tmp/<type>.json --scan-id <scan_id> --db <scan_dir>/../../.sgre/sgre.db`.
+    Write findings in ≤50-finding chunks (a type with 204 candidates is 5 chunks,
+    NOT one giant array — one giant array overflows your context and silently
+    drops the tail). For each chunk: write `<scan_dir>/../../.sgre/.tmp/<type>-partN.json`
+    with the Write tool, then immediately
+    `secguard report --write-json <scan_dir>/../../.sgre/.tmp/<type>-partN.json --scan-id <scan_id> --db <scan_dir>/../../.sgre/sgre.db`
+    before starting the next chunk. The write is idempotent, so partial progress is safe.
    Then A5-review each suspected finding: take its `id` from the write response
    `written` array (`{file, line, id}`), or look it up when missing via
    `secguard db "SELECT id, file_path, line_number FROM findings WHERE
