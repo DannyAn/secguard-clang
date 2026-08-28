@@ -37,6 +37,17 @@
 - 新增宏回归矩阵：`zz_null_deref_macro_test.go`（10 用例）、`zz_uninit_macro_test.go`
   （2 用例）、`zz_uaf_bof_macro_test.go`（2 用例），覆盖上述所有恢复路径与防误报守卫。
 
+### 编排修复（Claude-CAC / Claude-Code Bash 平台）
+
+- 修复 `security-auditor` 子代理的 `<tmpdir>`/`<db_path>` 占位符歧义：原先
+  `agent-body.md` 与子代理 prompt 只写 `<tmpdir>` 却不定义，纯 Bash 平台（无 MCP
+  工具）下子代理只能猜路径，JSON 被写到错误位置，导致「缺少某类型 JSON 文件」并
+  误触发第二轮扫描。现统一从 `scan_dir` 派生绝对路径：`<db_path>` =
+  `<scan_dir>/../../.sgre/sgre.db`、`<tmpdir>` = `<scan_dir>/../../.sgre/.tmp/`。
+- 修复 F5 上报二次校验：改用 `status --per-type` 的 `candidate_count`/`written_count`
+  作为权威，`candidate_count == 0` 的类型判为 `done`（成功）而非 `empty-output`，
+  消除对「本就 0 候选」类型的无谓重试。
+
 ## [0.4.8] - 2026-08-27
 
 ### 采用 Apache-2.0 开源许可

@@ -29,6 +29,14 @@ start of each run, so you can write one JSON file per type there and never worry
 about cleanup (stale files from a previous run are removed by the next scan).
 This path is the same on Windows and macOS/Linux.
 
+`<db_path>` is `<project>/.codeagent/secguard-clang/.sgre/sgre.db` — the SAME
+database the scan wrote. It is the sibling of `<tmpdir>` (`.tmp` and `sgre.db`
+live in the same `.sgre/` directory). When you hand a task to a subagent, pass
+these as ABSOLUTE paths derived from `<scan_dir>`: `<db_path>` =
+`<scan_dir>/../../.sgre/sgre.db`, `<tmpdir>` = `<scan_dir>/../../.sgre/.tmp/` —
+never relative paths, because the subagent's working directory is not guaranteed
+to be the project root.
+
 `<type>.json` is a JSON ARRAY of finding objects with exactly these keys
 (`severity` and `status` are lowercased by the CLI; `confidence` is 0–100):
 
@@ -234,17 +242,21 @@ read a candidate file for every candidate. (`report --audit` later overwrites
       ±3 lines (do NOT re-derive dataflow), confirm/dismiss, batch write.
     - suspected/possible → open only that candidate's evidence file, read source
       at file:line, reason, classify.
-    Write findings in ONE batch: write `<tmpdir>/<type>.json` with the Write tool, then
-    `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
+    Derive the DB and the write dir from <scan_dir> (ABSOLUTE, never relative):
+    - DB:  <scan_dir>/../../.sgre/sgre.db
+    - tmp: <scan_dir>/../../.sgre/.tmp/
+    Write findings in ONE batch: write `<scan_dir>/../../.sgre/.tmp/<type>.json` with the
+    Write tool, then
+    `secguard report --write-json <scan_dir>/../../.sgre/.tmp/<type>.json --scan-id <scan_id> --db <scan_dir>/../../.sgre/sgre.db`.
    Then A5-review each suspected finding: take its `id` from the write response
    `written` array (`{file, line, id}`), or look it up when missing via
    `secguard db "SELECT id, file_path, line_number FROM findings WHERE
-   scan_id='<scan_id>' AND status='suspected' ORDER BY id" --db <db_path>`.
+   scan_id='<scan_id>' AND status='suspected' ORDER BY id" --db <scan_dir>/../../.sgre/sgre.db`.
    NEVER use python3/sqlite3 (Bash is limited to `secguard *`; the column is
    `file_path`, not `file`). Record each verdict with the FULL form:
    `secguard report --review --id <id> --review-status
    <confirmed|dismissed|suspected-kept> --review-reasoning "<one-line>" --db
-   <db_path>`. Read source only at reported file:line, ≤5 files per type.
+   <scan_dir>/../../.sgre/sgre.db`. Read source only at reported file:line, ≤5 files per type.
    Report back, per type: confirmed / suspected / dismissed counts + the
    written finding ids.
    ```
@@ -256,7 +268,13 @@ read a candidate file for every candidate. (`report --audit` later overwrites
 
    **上报解析与 DB 二次校验 (F5):** For each subagent result, parse by `format_version`:
    - Parseable v1 → record `processed_types` as success, `failed_types` as failed.
-   - Unparseable / empty / unknown version → the subagent did not report. Query the DB for its assigned CWEs: `secguard db "SELECT rule_id, COUNT(*) FROM findings WHERE scan_id='<scan_id>' AND rule_id IN (<cwe_list>) GROUP BY rule_id"`. If a type has written > 0, mark it success (data landed despite no report); if 0, mark it failed with `reason: "empty-output"`.
+   - Unparseable / empty / unknown version → the subagent did not report. Run
+     `secguard status --per-type --scan-id <scan_id>` and use its per-type
+     `candidate_count` + `written_count` as the authority — NOT the raw `findings`
+     count, which cannot tell "no candidates" from "candidates but never written":
+       - `candidate_count == 0` → the type had nothing to classify → `done` (success), NEVER failed.
+       - `candidate_count > 0 && written_count > 0` → success (data landed despite no report).
+       - `candidate_count > 0 && written_count == 0` → failed with `reason: "empty-output"`.
    - A `failed_types` entry with `reason: "api-quota-exhausted"` → mark the type for retry/降级 (see F1 below).
 
    **重试与降级决策 (F1):** For each subagent marked failed or empty (and DB second-pass did not confirm writes):

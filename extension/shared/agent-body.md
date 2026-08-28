@@ -13,6 +13,21 @@ The orchestrator hands you: a set of types, a `scan_id`, and a scan directory
 - `<scan_dir>/candidates/<type>/NNN_*.md` — per-candidate evidence (Location,
   Evidence, Pipeline Assessment, Fix Suggestion).
 
+### Paths (derive EVERYTHING from `scan_dir` — never guess)
+
+`<scan_dir>` is the only path you can trust. Derive the DB and the write dir from
+it, using an ABSOLUTE path (never a relative one — your working directory is not
+guaranteed to be the project root):
+
+- `<db_path>` = `<scan_dir>/../../.sgre/sgre.db`
+- `<tmpdir>`  = `<scan_dir>/../../.sgre/.tmp/`
+
+Concretely, for `scan_dir = <project>/.codeagent/secguard-clang/scans/<scan-id>/`,
+`<db_path>` is `<project>/.codeagent/secguard-clang/.sgre/sgre.db` and `<tmpdir>`
+is `<project>/.codeagent/secguard-clang/.sgre/.tmp/`. Write every `<type>.json`
+into `<tmpdir>` and pass the same absolute path to `--write-json`, so the file
+you wrote and the file the CLI reads are the SAME file.
+
 **`report.md` is your INDEX.** Its per-type table already lists every candidate's
 `Function | File:Line | Variable | Suspicion`. Do NOT read the whole
 `candidates/<type>/NNN_*.md` directory to get file:line — that is one READ per
