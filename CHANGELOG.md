@@ -2,6 +2,66 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.5.0] - 2026-08-28
+
+### 性能：消除 null-deref 大类型的"逐个回填"与重复转存
+
+- **A5 批量复核 `--review-json`**：新增 `secguard report --review-json <file>`，把整批
+  `{id, review_status, review_reasoning}` 在**一个子进程 + 一个 SQLite 事务**里落盘，
+  取代原先逐条 `--review --id` 的子进程循环（该循环是 null-deref 大类型执行到 55 分钟
+  的直接原因）。OpenCode 的 `secguard_report` MCP 工具 `reviews` 动作改为内部走
+  `--review-json` 批量；`agent-body.md`/`command-instructions.md` 同步改为批量写。
+- **`--write-json` 事务化**：整批 findings 在单个事务内 upsert（一次 WAL fsync），
+  取代逐行 autocommit（每次一行一次 fsync）。
+- **源文件读取缓存**：`--audit` 同一进程内对同一源文件只读一次（findings/ 逐条 markdown、
+  result.sarif、result.xlsx 三处共用缓存），消除高体积类型下对共享源文件的重复读盘。
+- **避免逐块重复 finalize**：`secguard_report` 新增 `finalize` 参数（默认 true），大类型
+  拆批写入时中间块传 `finalize: false`，只在最后（或 orchestrator 的单次 `--audit`）渲染
+  一次 `report.md`/`result.sarif`/`result.xlsx`/`findings/`。
+- **源上下文内嵌，消灭逐候选 source READ（AI 阶段最大耗时点）**：候选阶段 `report.md`
+  每行新增 `Source` 列（该 file:line 的原始语句），`candidates/<type>/NNN_*.md` 新增
+  `## Code Context`（±窗口源码）。AI 分类时直接读内嵌源码，**不再对每个候选发一次 source
+  READ 工具调用**——这一步把 AI 阶段从 O(候选数) 次工具往返降为 O(1) 次读取 + 纯生成，
+  是 800 文件仓从 30-50 分钟压到 15-20 分钟的关键杠杆。`agent-body.md`/
+  `command-instructions.md` 同步改为"从内嵌源码分类，禁止逐候选 source READ"。
+- **流水线确定性层直接落库（auto-confirm，独立状态一等公民）**：`suspicion_level ==
+  "confirmed"` 的候选（definite-null、常量越界、弱算法、sizeof 指针、signed-compare、
+  硬编码密钥、OOB 读等"已被检测器/流程证明"的一层）在 scan 阶段直接写进 findings 表，
+  status 用**新增的 `auto-confirmed` 状态**（findings.status CHECK 已扩展），`FinalStatus`/
+  `EffectiveStatus`/`normalizeVerdict` 都把它映射为 `confirmed` 供导出，因此它作为机器结论
+  一等公民进入 result.sarif/result.xlsx/findings/，但**与 AI 结论可区分**。`scan_stats.final_count`
+  现只统计待 AI 复核的 suspected/possible，`status --per-type` 的 `written_count` 排除
+  `auto-confirmed`（只数 AI 写的），所以 resume 逻辑不会被机器行掩盖；audit-report 新增
+  "Auto-confirmed" 列 + "Auto-confirmed by pipeline" 汇总行。scan 输出新增
+  `auto_confirmed_count`。reasoning 前缀 `Pipeline-proved (auto-confirmed)` 保留供人可读。
+- **候选索引按类型拆分（per-type `_index.md`）**：`report.md` 退化为"摘要 + 每类型计数 +
+  输出文件"，每类型的候选表（含 `Source` 列）移到 `candidates/<type>/_index.md`。子代理只
+  读自己类型/区间的 `_index.md`，不再每个子代理都读整份 report.md，省上下文 + 省 token。
+
+### 数据口径：最终导出只保留 confirmed + suspected-kept
+
+- 新增 `Finding.FinalStatus()`：`suspected-kept`（A5 复核后仍疑似的）映射为 `suspected` 导出，
+  而**未经过 A5 复核的裸 `suspected` 是不完整结论，一律从 `result.sarif`/`result.xlsx`/
+  `report.md`/`findings/` 中剔除**（`EffectiveStatus()` 保持不变，供 CI 门禁/`--status`
+  过滤等仍按原始语义使用）。`--audit` 响应新增 `unreviewed_suspected` 计数 + 告警，
+  提示 orchestrator 重跑 A5 而不是静默丢弃。
+
+### 编排：子代理完成后 orchestrator 停止卡住
+
+- `command-instructions.md` 新增 F7（OpenCode `task` 工具是同步返回、Claude Code 是异步
+  `task_notification` 事件，二者不可混用）与 F8（orchestrator 回合只有输出最终报告后才允许
+  结束；拿到所有子代理结果后必须同一回合内 Collect+finalize 并输出报告，禁止停在
+  "任务跑完但没 finalize、计时仍走"的中间态）。
+
+### 部署修复：Claude Code 插件注册
+
+- `deploy.sh claude-code` 之前只把文件拷进 `~/.claude/plugins/secguard-clang/`，未做插件
+  注册（官方 Claude Code 靠 `plugins/installed_plugins.json` + `settings.json` 的
+  `enabledPlugins` 发现插件），导致 TUI `/` 里找不到命令。现补齐与 `install.sh` 一致的注册：
+  复制到 cache 目录 `plugins/cache/local-secguard/secguard-clang/<version>/`、写
+  `codeagent-extension.json`、`sg_register_plugin` + `sg_enable_plugin`，并用仓库 `VERSION`
+  覆写 plugin.json 里的陈旧版本号。命令为 `/secguard-clang:secguard`（冒号命名空间）。
+
 ## [0.4.9] - 2026-08-27
 
 ### 宏调用点错误恢复：消除跨检测器的漏报与误报

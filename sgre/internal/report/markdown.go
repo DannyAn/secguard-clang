@@ -40,7 +40,7 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding)
 
 	confirmed, suspected, dismissed := 0, 0, 0
 	for _, f := range findings {
-		status := f.EffectiveStatus()
+		status := f.FinalStatus()
 		switch status {
 		case "confirmed":
 			confirmed++
@@ -94,7 +94,7 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding)
 	for _, g := range groups {
 		c, s := 0, 0
 		for _, f := range g.items {
-			if f.EffectiveStatus() == "confirmed" {
+			if f.FinalStatus() == "confirmed" {
 				c++
 			} else {
 				s++
@@ -122,7 +122,7 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding)
 			}
 			summary = strings.ReplaceAll(summary, "\n", " ")
 			b.WriteString(fmt.Sprintf("| %d | %s | %s | %s | %s:%d | %s |\n",
-				i+1, f.EffectiveStatus(), f.Severity, f.FunctionName, fileShort, f.LineNumber, summary))
+				i+1, f.FinalStatus(), f.Severity, f.FunctionName, fileShort, f.LineNumber, summary))
 		}
 		b.WriteString("\n")
 	}
@@ -167,24 +167,11 @@ func (o *ScanOutput) writeReport(packages []*planner.PlanResult, indexSummary In
 	}
 	b.WriteString("\n")
 
-	for _, pkg := range packages {
-		if len(pkg.Candidates) == 0 {
-			continue
-		}
-		cwe := VulnToCWE(pkg.VulnerabilityType)
-		b.WriteString(fmt.Sprintf("## %s (%s)\n\n", pkg.VulnerabilityType, cwe))
-		b.WriteString(fmt.Sprintf("| # | Function | File:Line | Variable | Suspicion |\n"))
-		b.WriteString(fmt.Sprintf("|---|----------|-----------|----------|----------|\n"))
-		for i, c := range pkg.Candidates {
-			// Repo-relative (or absolute) path, never the lossy last-2 tail:
-			// the agent copies this into findings, and a truncated tail cannot
-			// be re-located by result.sarif / result.xlsx.
-			fileShort := displayPath(c.Target.File, o.RootDir)
-			b.WriteString(fmt.Sprintf("| %d | %s | %s:%d | %s | %s |\n",
-				i+1, c.Target.Function, fileShort, c.Target.Line, c.Target.Variable, c.SuspicionLevel))
-		}
-		b.WriteString("\n")
-	}
+	// The per-candidate tables live in per-type index files under candidates/, so
+	// a subagent assigned one type (or a candidate range of one type) reads only
+	// its own slice instead of every type's table in one monolithic report.
+	b.WriteString("## Per-Type Candidate Indexes\n\n")
+	b.WriteString(fmt.Sprintf("Each type's candidate table (with the `Source` column the AI classifies from) is in `%s/<vuln-type>/%s`.\n\n", CandidatesDir, TypeIndexFile))
 
 	b.WriteString("## Output Files\n\n")
 	b.WriteString(fmt.Sprintf("- SARIF (candidate stage, level `note` — unclassified leads): `%s`\n", CandidatesSarifFile))
@@ -212,6 +199,10 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 			return err
 		}
 
+		if err := o.writeTypeIndex(dir, pkg); err != nil {
+			return err
+		}
+
 		for i, c := range pkg.Candidates {
 			cwe := VulnToCWE(pkg.VulnerabilityType)
 
@@ -234,6 +225,16 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 			}
 			b.WriteString("\n")
 
+			// Embed the surrounding source so the classifier does not need a
+			// separate source READ for a suspected/possible candidate. The same
+			// window also appears in report.md's Source column for confirmed.
+			if ctx := readCodeContext(c.Target.File, c.Target.Line, ContextLines, o.RootDir); ctx != nil {
+				b.WriteString("## Code Context\n\n")
+				fmt.Fprintf(&b, "`%s:%d-%d` — line %d is the reported location.\n\n", ctx.Path, ctx.StartLine, ctx.EndLine, ctx.Line)
+				b.WriteString(ctx.render())
+				b.WriteString("\n")
+			}
+
 			b.WriteString("## Evidence\n\n")
 			for _, e := range c.Evidence {
 				label := e.Role
@@ -250,7 +251,7 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 			b.WriteString("\n")
 
 			b.WriteString("## Fix Suggestion\n\n")
-			b.WriteString(generateFixSuggestion(pkg.VulnerabilityType, cwe, c))
+			b.WriteString(FixSuggestion(pkg.VulnerabilityType, cwe, c))
 
 			if err := os.WriteFile(path, []byte(b.String()), 0644); err != nil {
 				return err
@@ -258,6 +259,30 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 		}
 	}
 	return nil
+}
+
+// writeTypeIndex writes candidates/<vuln-type>/_index.md — the single table a
+// subagent reads to classify ONE type (the # column matches the NNN candidate
+// filenames, and the Source column carries the exact statement so the classifier
+// never issues a per-candidate source READ). Splitting the index per type means
+// a subagent assigned `null-deref` reads only its own slice, not every type's
+// table in one monolithic report.md.
+func (o *ScanOutput) writeTypeIndex(dir string, pkg *planner.PlanResult) error {
+	cwe := VulnToCWE(pkg.VulnerabilityType)
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("# %s (%s) — Candidates\n\n", pkg.VulnerabilityType, cwe))
+	b.WriteString("> Classify each candidate as confirmed / suspected / dismissed. The `Source`\n" +
+		"> column is the exact statement at file:line; the full ±window is in each\n" +
+		"> candidate file's `## Code Context`.\n\n")
+	b.WriteString("| # | Function | File:Line | Variable | Suspicion | Source |\n")
+	b.WriteString("|---|----------|-----------|----------|-----------|--------|\n")
+	for i, c := range pkg.Candidates {
+		fileShort := displayPath(c.Target.File, o.RootDir)
+		b.WriteString(fmt.Sprintf("| %d | %s | %s:%d | %s | %s | %s |\n",
+			i+1, c.Target.Function, fileShort, c.Target.Line, c.Target.Variable, c.SuspicionLevel,
+			markdownCell(sourceLineText(c.Target.File, c.Target.Line, o.RootDir))))
+	}
+	return os.WriteFile(filepath.Join(dir, TypeIndexFile), []byte(b.String()), 0644)
 }
 
 func shortFile(path string) string {
@@ -274,6 +299,20 @@ func sanitizeFilename(s string) string {
 	return s
 }
 
+// markdownCell escapes a source line so it can sit inside a markdown table cell:
+// pipes are escaped, newlines collapsed, and the length capped so a pathological
+// line (minified/generated code) cannot blow up report.md.
+func markdownCell(s string) string {
+	s = strings.ReplaceAll(s, "|", `\|`)
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "`", "'")
+	if len(s) > 120 {
+		s = s[:120] + "…"
+	}
+	return s
+}
+
 func title(s string) string {
 	words := strings.Split(s, "-")
 	for i, w := range words {
@@ -284,7 +323,10 @@ func title(s string) string {
 	return strings.Join(words, " ")
 }
 
-func generateFixSuggestion(vulnType, cwe string, c planner.EvidenceItem) string {
+// FixSuggestion returns a paste-ready remediation for a candidate, used both by
+// the candidate evidence files and by the scan's auto-confirm pass (which turns
+// a pipeline-proved candidate into a `confirmed` finding without AI review).
+func FixSuggestion(vulnType, cwe string, c planner.EvidenceItem) string {
 	varName := c.Target.Variable
 	if varName == "" {
 		varName = "the variable"

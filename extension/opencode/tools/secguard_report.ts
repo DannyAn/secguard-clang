@@ -79,6 +79,10 @@ export default tool({
       .string()
       .optional()
       .describe("Output directory for audit report. If provided, report.md (regenerated from persisted findings showing confirmed+suspected), audit-report.md, and result.sarif are generated after writing findings."),
+    finalize: tool.schema
+      .boolean()
+      .optional()
+      .describe("Whether to regenerate report.md/result.sarif/result.xlsx/findings/ after this call. Defaults to true. For a large type split into many write chunks, pass false on every chunk except the last (or leave finalization to the orchestrator's single `report --audit`) to avoid re-rendering the whole report once per chunk."),
   },
   async execute(args, context) {
     let workDir = context.directory || context.worktree || "."
@@ -169,7 +173,11 @@ export default tool({
 
       let auditPath: string | undefined
       let findingsSynced: unknown
-      if (outputDir && scanId) {
+      // `finalize` defaults to true (backward-compatible); a large type split
+      // into many write chunks passes false on intermediate chunks so the whole
+      // report is not re-rendered once per chunk — that per-chunk re-render was
+      // the "output-then-look-it-up-again" work the speed pass removes.
+      if (args.finalize !== false && outputDir && scanId) {
         const auditJson = await runAudit(scanId, outputDir)
         if (auditJson) {
           auditPath = auditJson.audit_path
@@ -203,32 +211,56 @@ export default tool({
       const errors: string[] = []
       const reviewWarnings: string[] = []
       const reviewed: { id: number; review_status: string }[] = []
-      for (const review of args.reviews) {
+
+      // Batch mode: record the WHOLE A5 review pass in ONE `--review-json`
+      // subprocess + one SQLite transaction, instead of the per-finding
+      // `--review` loop (which spawns a subprocess + opens SQLite per row — the
+      // slow path that stretched a high-volume type like null-deref to tens of
+      // minutes). The payload goes to the same .sgre/.tmp runtime dir as the
+      // write batch; a randomUUID name keeps concurrent workers from clobbering.
+      const tmpDir = path.join(sgreDir, ".tmp")
+      if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true })
+      const tmpFile = path.join(tmpDir, `review-${randomUUID()}.json`)
+      const reviewInputs = args.reviews.map((r) => ({
+        id: r.id,
+        review_status: r.review_status,
+        review_reasoning: r.review_reasoning || "",
+      }))
+      fs.writeFileSync(tmpFile, JSON.stringify(reviewInputs))
+
+      try {
+        const out = (await Bun.$`${secguardBin} report --db ${dbPath} --review-json ${tmpFile}`
+          .cwd(workDir)
+          .quiet()
+          .text()
+        ).trim()
         try {
-          // The A5 verdict also rewrites (or removes) the verdict file, so the
-          // review needs the scan directory just like the write does.
-          const out = (await Bun.$`${secguardBin} report --db ${dbPath} --review --id ${String(review.id)} --review-status ${review.review_status} --review-reasoning ${review.review_reasoning || ""} --output-dir=${outputDir}`
-            .cwd(workDir)
-            .quiet()
-            .text()
-          ).trim()
-          const parsed = JSON.parse(out) // throws if the CLI returned a non-JSON error, caught below
-          if (parsed.per_finding_warning) {
-            reviewWarnings.push(`finding ${review.id} — ${parsed.per_finding_warning}`)
+          const parsed = JSON.parse(out)
+          for (const r of parsed.reviewed ?? []) {
+            if (typeof r.id === "number") {
+              reviewed.push({ id: r.id, review_status: r.review_status })
+            }
           }
-          reviewed.push({ id: review.id, review_status: review.review_status })
-        } catch (e: any) {
-          const msg = e?.stderr?.toString()?.trim() || e?.message || String(e)
-          errors.push(`finding ${review.id} — ${msg}`)
+          for (const e of parsed.errors ?? []) {
+            errors.push(String(e))
+          }
+        } catch {
+          errors.push("unparseable --review-json response")
         }
+      } catch (e: any) {
+        const msg = e?.stderr?.toString()?.trim() || e?.message || String(e)
+        errors.push(`batch review failed: ${msg}`)
+      } finally {
+        try { fs.unlinkSync(tmpFile) } catch {}
       }
+
       // A5 reviews change EffectiveStatus, so regenerate report.md + result.sarif
       // + audit-report.md + findings/ once after the batch — otherwise the SARIF
       // still shows the pre-review verdicts (e.g. dismissed entries lingering
       // as `warning`).
       let auditPath: string | undefined
       let findingsSynced: unknown
-      if (outputDir && args.scan_id) {
+      if (args.finalize !== false && outputDir && args.scan_id) {
         const auditJson = await runAudit(args.scan_id, outputDir)
         if (auditJson) {
           auditPath = auditJson.audit_path

@@ -46,12 +46,17 @@ const (
 	// file per converged candidate, written before any AI classification. A
 	// candidate is NOT a defect, so these must never be mixed into FindingsDir.
 	CandidatesDir = "candidates"
+	// TypeIndexFile is the per-type candidate index written under
+	// candidates/<vuln-type>/_. It is the subagent's classification input for a
+	// single type (the Source column is embedded there), replacing the old
+	// monolithic report.md table that every subagent re-read in full.
+	TypeIndexFile = "_index.md"
 )
 
 // ToolVersion is the version stamped into SARIF and markdown reports.
 // It is a var so cli/root.go can inject the release version at startup
 // (keeping report free of a cli import, which would be a cycle).
-var ToolVersion = "0.4.9"
+var ToolVersion = "0.5.0"
 
 type ScanOutput struct {
 	RootDir string

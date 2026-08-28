@@ -7,9 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/planner"
 )
 
 func TestScanCmd_RejectsBadOutputDirBasename(t *testing.T) {
@@ -205,6 +207,7 @@ func TestEffectiveStatus(t *testing.T) {
 		{"suspected", "suspected-kept", "suspected"},
 		{"suspected", "", "suspected"},
 		{"confirmed", "", "confirmed"},
+		{"auto-confirmed", "", "confirmed"},
 		{"dismissed", "", "dismissed"},
 		{"open", "confirmed", "confirmed"},
 	}
@@ -212,6 +215,28 @@ func TestEffectiveStatus(t *testing.T) {
 		f := &db.Finding{Status: c.status, ReviewStatus: c.review}
 		if got := f.EffectiveStatus(); got != c.want {
 			t.Errorf("effectiveStatus(status=%q, review=%q) = %q, want %q", c.status, c.review, got, c.want)
+		}
+	}
+}
+
+// FinalStatus is the export gate: a plain suspected finding (never A5-reviewed)
+// must NOT reach result.sarif/result.xlsx/report.md/findings/ — only
+// suspected-kept (the A5 "still suspicious" decision) survives, as "suspected".
+func TestFinalStatus(t *testing.T) {
+	cases := []struct{ status, review, want string }{
+		{"confirmed", "", "confirmed"},
+		{"auto-confirmed", "", "confirmed"},
+		{"suspected", "confirmed", "confirmed"},
+		{"suspected", "dismissed", "dismissed"},
+		{"suspected", "suspected-kept", "suspected"},
+		{"suspected", "", ""},
+		{"dismissed", "", "dismissed"},
+		{"open", "", ""},
+	}
+	for _, c := range cases {
+		f := &db.Finding{Status: c.status, ReviewStatus: c.review}
+		if got := f.FinalStatus(); got != c.want {
+			t.Errorf("finalStatus(status=%q, review=%q) = %q, want %q", c.status, c.review, got, c.want)
 		}
 	}
 }
@@ -276,5 +301,150 @@ func TestReportCmd_ReviewFlow(t *testing.T) {
 	}
 	if f.EffectiveStatus() != "confirmed" {
 		t.Errorf("effectiveStatus after review = %q, want confirmed", f.EffectiveStatus())
+	}
+}
+
+// --review-json must record a whole A5 batch in one call and one transaction,
+// the fast path that replaces the per-id `--review` loop.
+func TestReportCmd_ReviewJsonFlow(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "test.db")
+	const scanID = "sc_2026-01-01_000000_aaaaaa"
+
+	d, err := db.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := db.NewStore(d)
+	if _, err = s.InsertScanStat(ctx, &db.ScanStat{ScanID: scanID, VulnType: "unchecked-return", SeedCount: 2, FinalCount: 2}); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]int64, 0, 2)
+	for i, line := range []int{1, 2} {
+		id, ierr := s.UpsertFinding(ctx, &db.Finding{
+			RuleID: "CWE-252", Severity: "high", Confidence: 0.5,
+			Status: "suspected", FilePath: "x.c", LineNumber: line,
+			FunctionName: "f", ScanID: scanID,
+		})
+		if ierr != nil {
+			t.Fatal(ierr)
+		}
+		ids = append(ids, id)
+		_ = i
+	}
+	s.Close()
+
+	reviewsFile := filepath.Join(root, "reviews.json")
+	payload, _ := json.Marshal([]map[string]interface{}{
+		{"id": ids[0], "review_status": "confirmed", "review_reasoning": "real"},
+		{"id": ids[1], "review_status": "suspected-kept", "review_reasoning": "unbounded"},
+	})
+	if err := os.WriteFile(reviewsFile, payload, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, exitCode := captureOutput(func() int {
+		return runReportCmd(ctx, []string{
+			"--db", dbPath, "--review-json", reviewsFile,
+		})
+	})
+	if exitCode != 0 {
+		t.Fatalf("review-json failed: %s", stdout)
+	}
+	var res struct {
+		Reviewed []struct {
+			ID           int64  `json:"id"`
+			ReviewStatus string `json:"review_status"`
+		} `json:"reviewed"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &res); err != nil {
+		t.Fatalf("unmarshal review-json response: %v", err)
+	}
+	if len(res.Reviewed) != 2 {
+		t.Fatalf("reviewed count = %d, want 2", len(res.Reviewed))
+	}
+
+	d2, err := db.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2 := db.NewStore(d2)
+	defer s2.Close()
+	want := map[int64]string{ids[0]: "confirmed", ids[1]: "suspected-kept"}
+	for id, w := range want {
+		f, err := s2.GetFindingByID(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.ReviewStatus != w {
+			t.Errorf("finding %d review_status = %q, want %q", id, f.ReviewStatus, w)
+		}
+	}
+}
+
+func TestSplitBySuspicion(t *testing.T) {
+	candidates := []planner.EvidenceItem{
+		{SuspicionLevel: "confirmed", Target: planner.TargetInfo{File: "a.c", Line: 1}},
+		{SuspicionLevel: "suspected", Target: planner.TargetInfo{File: "b.c", Line: 2}},
+		{SuspicionLevel: "possible", Target: planner.TargetInfo{File: "c.c", Line: 3}},
+		{SuspicionLevel: "confirmed", Target: planner.TargetInfo{File: "d.c", Line: 4}},
+	}
+	confirmed, needsReview := splitBySuspicion(candidates)
+	if len(confirmed) != 2 || len(needsReview) != 2 {
+		t.Fatalf("split = %d confirmed / %d review, want 2/2", len(confirmed), len(needsReview))
+	}
+	for _, c := range confirmed {
+		if c.SuspicionLevel != "confirmed" {
+			t.Errorf("confirmed bucket leaked %q", c.SuspicionLevel)
+		}
+	}
+}
+
+func TestAutoConfirmFindings_WritesMachineVerdict(t *testing.T) {
+	ctx := context.Background()
+	d, err := db.OpenInMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := db.NewStore(d)
+	defer s.Close()
+	const scanID = "sc_2026-01-01_000000_aaaaaa"
+	if _, err := s.InsertScanStat(ctx, &db.ScanStat{ScanID: scanID, VulnType: "null-deref", SeedCount: 1, FinalCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	confirmed := []planner.EvidenceItem{{
+		SuspicionLevel: "confirmed",
+		Target:         planner.TargetInfo{File: "src/a.c", Line: 42, Function: "f", Variable: "p"},
+		Evidence:       []planner.EvidenceFragment{{Role: "condition", Detail: "p assigned NULL and dereferenced"}},
+	}}
+	n, err := autoConfirmFindings(ctx, s, scanID, "null-deref", confirmed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("autoConfirmFindings wrote %d, want 1", n)
+	}
+
+	findings, err := s.ListFindingsByScanID(ctx, scanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings = %d, want 1", len(findings))
+	}
+	f := findings[0]
+	if f.Status != db.StatusAutoConfirmed {
+		t.Errorf("status = %q, want %q", f.Status, db.StatusAutoConfirmed)
+	}
+	if f.FinalStatus() != "confirmed" {
+		t.Errorf("FinalStatus = %q, want confirmed", f.FinalStatus())
+	}
+	if f.RuleID != "CWE-476" {
+		t.Errorf("rule_id = %q, want CWE-476", f.RuleID)
+	}
+	if !strings.Contains(f.Reasoning, "auto-confirmed") {
+		t.Errorf("reasoning should mark the machine verdict: %q", f.Reasoning)
 	}
 }

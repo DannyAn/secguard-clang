@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // ContextLines is how many source lines are rendered on each side of a
@@ -73,6 +74,41 @@ func isRegularFile(path string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
+// sourceLineCache memoizes the read+split of a source file across one report
+// run. A single `--audit` renders the same source file up to three times (once
+// per findings/ markdown in ReconcileFindings, once in result.sarif, once in
+// result.xlsx); without the cache each of those re-reads and re-splits the whole
+// file, which for a high-volume type like null-deref (hundreds of findings over
+// a shared set of files) multiplies the source I/O for no new information.
+type sourceLineCache struct {
+	mu    sync.Mutex
+	lines map[string][]string // resolved abs path -> all lines (nil = unreadable)
+}
+
+var globalSourceLineCache = &sourceLineCache{lines: map[string][]string{}}
+
+// fileLines returns the whole file's lines, cached by resolved absolute path. A
+// nil result means the file could not be read (and that miss is cached too, so a
+// missing source file is only probed once).
+func (c *sourceLineCache) fileLines(path string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if l, ok := c.lines[path]; ok {
+		return l
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		c.lines[path] = nil
+		return nil
+	}
+	all := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+	if n := len(all); n > 0 && all[n-1] == "" {
+		all = all[:n-1]
+	}
+	c.lines[path] = all
+	return all
+}
+
 // readCodeContext reads the ±ctx line window around line. It returns nil when
 // source embedding is disabled, the file cannot be located/read, or the line is
 // outside the file — a missing snippet degrades the report, it never fails it.
@@ -87,14 +123,9 @@ func readCodeContext(filePath string, line, ctx int, roots ...string) *codeConte
 	if path == "" {
 		return nil
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
+	all := globalSourceLineCache.fileLines(path)
+	if all == nil {
 		return nil
-	}
-	all := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
-	// Drop the trailing empty element a final newline produces.
-	if n := len(all); n > 0 && all[n-1] == "" {
-		all = all[:n-1]
 	}
 	if line > len(all) {
 		return nil
@@ -144,6 +175,28 @@ func (c *codeContext) text() string {
 		return ""
 	}
 	return strings.Join(c.Lines, "\n")
+}
+
+// sourceLineText returns the trimmed text of a single source line, so the
+// candidate-stage report can embed the exact dereference/access statement next
+// to each candidate. Embedding it there lets the AI classifier verify the
+// file:line directly from the report (one read) instead of issuing one source
+// READ tool call per candidate — the dominant wall-clock cost of a large scan.
+// It uses the same process-wide file cache as readCodeContext, so a scan with
+// thousands of candidates still reads each source file once.
+func sourceLineText(filePath string, line int, roots ...string) string {
+	if line <= 0 {
+		return ""
+	}
+	path := resolveSourcePath(filePath, roots...)
+	if path == "" {
+		return ""
+	}
+	lines := globalSourceLineCache.fileLines(path)
+	if lines == nil || line > len(lines) {
+		return ""
+	}
+	return strings.TrimSpace(lines[line-1])
 }
 
 // lineText returns just the finding line, for the SARIF region snippet.

@@ -92,7 +92,7 @@ func verdictFindings() []*db.Finding {
 		},
 		{
 			RuleID: "CWE-787", Severity: "medium", Confidence: 0.6,
-			Status: "suspected", ReviewStatus: "",
+			Status: "suspected", ReviewStatus: "suspected-kept",
 			FilePath: "src/maybe.c", LineNumber: 17, FunctionName: "risky_copy",
 			Summary: "可能溢出", Reasoning: "长度依赖外部输入",
 		},
@@ -162,6 +162,45 @@ func TestWriteReportFromFindings_ShowsActionable(t *testing.T) {
 	}
 	if !strings.Contains(content, "| Dismissed (false positives) | 1 |") {
 		t.Errorf("summary should count 1 dismissed:\n%s", content)
+	}
+}
+
+// A suspected finding that never went through the A5 second round is an
+// incomplete verdict and must be excluded from the final report, exactly like
+// result.sarif/result.xlsx/findings/.
+func TestWriteReportFromFindings_ExcludesUnreviewedSuspected(t *testing.T) {
+	dir := t.TempDir()
+	reportPath := filepath.Join(dir, ReportFile)
+
+	findings := []*db.Finding{
+		{
+			RuleID: "CWE-787", Severity: "medium", Confidence: 0.6,
+			Status: "suspected", ReviewStatus: "",
+			FilePath: "src/maybe.c", LineNumber: 17, FunctionName: "risky_copy",
+			Summary: "可能溢出", Reasoning: "长度依赖外部输入",
+		},
+		{
+			RuleID: "CWE-787", Severity: "medium", Confidence: 0.6,
+			Status: "suspected", ReviewStatus: "suspected-kept",
+			FilePath: "src/kept.c", LineNumber: 20, FunctionName: "kept_risky",
+			Summary: "A5 保留的疑似", Reasoning: "外部输入无界",
+		},
+	}
+
+	if err := WriteReportFromFindings(reportPath, "", findings); err != nil {
+		t.Fatalf("WriteReportFromFindings: %v", err)
+	}
+
+	content := string(mustReadFile(t, reportPath))
+
+	if strings.Contains(content, "risky_copy") {
+		t.Errorf("unreviewed suspected finding must not appear in report.md:\n%s", content)
+	}
+	if !strings.Contains(content, "kept_risky") {
+		t.Errorf("suspected-kept finding should appear in report.md:\n%s", content)
+	}
+	if !strings.Contains(content, "| Suspected findings | 1 |") {
+		t.Errorf("summary should count 1 suspected (suspected-kept only):\n%s", content)
 	}
 }
 

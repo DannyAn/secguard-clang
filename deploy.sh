@@ -10,6 +10,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SGRE_DIR="$SCRIPT_DIR/sgre"
 EXT_DIR="$SCRIPT_DIR/extension"
 SHARED_DIR="$EXT_DIR/shared"
+# 版本号：dev 部署用仓库根 VERSION 文件（与发布一致），缺失时回退 0.0.0
+VERSION="$(head -1 "$SCRIPT_DIR/VERSION" 2>/dev/null | tr -d '[:space:]')"
+[ -n "$VERSION" ] || VERSION="0.0.0"
 
 # 加载共享函数库（expand_includes 等由 lib.sh 提供）
 source "$SCRIPT_DIR/release/lib.sh"
@@ -121,6 +124,21 @@ install_skills() {
     done
 }
 
+# ── 覆写 plugin.json 的 version 字段（与发布时 set_json_version 一致）──
+stamp_json_version() {
+    local file="$1"
+    local ver="$2"
+    python3 -c "
+import json
+with open('''$file''', 'r') as f:
+    d = json.load(f)
+d['version'] = '''$ver'''
+with open('''$file''', 'w') as f:
+    json.dump(d, f, indent=2)
+    f.write('\n')
+"
+}
+
 # ── Install OpenCode extension ────────────────────────────────
 install_opencode() {
     echo "[opencode] Extension dir: $OPENCODE_EXT_DIR"
@@ -182,12 +200,37 @@ with open(dst, 'w') as f:
     echo ""
 }
 
+# ── Register a Claude Code / Claude CAC plugin (marketplace-style) ──
+# 官方 Claude Code 不会自动扫描 ~/.claude/plugins/<name>/，它靠
+# plugins/installed_plugins.json（installPath 指向 cache 目录）+ settings.json 的
+# enabledPlugins 来发现插件。仅把文件拷进 ~/.claude/plugins/ 是不会生效的（这正是
+# deploy.sh claude-code 之前"装了但 / 里找不到命令"的根因）。此函数补齐注册步骤，
+# 与 release/install.sh.tmpl 的 install_claude_code/install_claude_cac 保持一致。
+register_claude_plugin() {
+    local prefix="$1"       # ~/.claude 或 ~/.cac
+    local plugin_dir="$2"   # ~/.claude/plugins/secguard-clang
+    local version="$3"
+
+    local cache_dir="$prefix/plugins/cache/local-secguard/$PRODUCT/$version"
+    mkdir -p "$cache_dir"
+    # 用 `/.` 而非 `/*`：`*` 不匹配点文件，会漏掉 .claude-plugin/（插件清单）。
+    cp -r "$plugin_dir"/. "$cache_dir/" 2>/dev/null || true
+
+    sg_write_codeagent_extension "$cache_dir" "$version"
+    sg_write_codeagent_extension "$plugin_dir" "$version"
+
+    sg_register_plugin "$prefix/plugins/installed_plugins.json" "$PRODUCT" "local-secguard" "$cache_dir" "$version"
+    sg_enable_plugin "$prefix/settings.json" "$PRODUCT" "local-secguard"
+    echo "[plugin] Registered $PRODUCT@local-secguard → $cache_dir"
+}
+
 # ── Install Claude Code plugin ────────────────────────────────
 install_claude_code() {
     echo "[claude-code] Plugin dir: $CLAUDE_PLUGIN_DIR"
     mkdir -p "$CLAUDE_PLUGIN_DIR"/{.claude-plugin,commands,agents,hooks,skills,bin}
 
     cp "$EXT_DIR/claude-code/.claude-plugin/plugin.json" "$CLAUDE_PLUGIN_DIR/.claude-plugin/"
+    stamp_json_version "$CLAUDE_PLUGIN_DIR/.claude-plugin/plugin.json" "$VERSION"
 
     cp "$EXT_DIR/claude-code/hooks/hooks.json" "$CLAUDE_PLUGIN_DIR/hooks/"
 
@@ -206,6 +249,7 @@ install_claude_code() {
         echo "[claude-code] Binary → $CLAUDE_PLUGIN_DIR/bin/secguard"
     fi
 
+    register_claude_plugin "$CLAUDE_BASE" "$CLAUDE_PLUGIN_DIR" "$VERSION"
 
     echo "[claude-code] Merging permissions into $CLAUDE_BASE/settings.json"
     merge_claude_permissions "$CLAUDE_BASE/settings.json"
@@ -220,6 +264,8 @@ install_claude_cac() {
     mkdir -p "$CAC_PLUGIN_DIR"/{.cac-plugin,commands,agents,hooks,skills,bin}
 
     cp "$EXT_DIR/claude-cac/.cac-plugin/plugin.json" "$CAC_PLUGIN_DIR/.cac-plugin/"
+    stamp_json_version "$CAC_PLUGIN_DIR/.cac-plugin/plugin.json" "$VERSION"
+
     cp "$EXT_DIR/claude-cac/hooks/hooks.json" "$CAC_PLUGIN_DIR/hooks/"
 
     for f in "$EXT_DIR/claude-cac/.cac/commands"/*.md; do
@@ -236,6 +282,8 @@ install_claude_cac() {
         chmod +x "$CAC_PLUGIN_DIR/bin/secguard"
         echo "[claude-cac] Binary → $CAC_PLUGIN_DIR/bin/secguard"
     fi
+
+    register_claude_plugin "$CAC_BASE" "$CAC_PLUGIN_DIR" "$VERSION"
 
     echo "[claude-cac] Merging permissions into $CAC_BASE/settings.json"
     merge_claude_permissions "$CAC_BASE/settings.json"
@@ -360,6 +408,10 @@ case "$PLATFORM" in
         echo "║      hooks/hooks.json"
         echo "║      bin/secguard"
         echo "║      skills/*/SKILL.md"
+        echo "║  Claude Code plugin registration:"
+        echo "║    cache:     $CLAUDE_BASE/plugins/cache/local-secguard/$PRODUCT/$VERSION/"
+        echo "║    registry:  $CLAUDE_BASE/plugins/installed_plugins.json"
+        echo "║    enabled:   $CLAUDE_BASE/settings.json (enabledPlugins)"
         echo "║  Claude Code permissions:"
         echo "║    $CLAUDE_BASE/settings.json (merged)"
         ;;
@@ -375,13 +427,18 @@ case "$PLATFORM" in
         echo "║      hooks/hooks.json"
         echo "║      bin/secguard"
         echo "║      skills/*/SKILL.md"
+        echo "║  Claude CAC plugin registration:"
+        echo "║    cache:     $CAC_BASE/plugins/cache/local-secguard/$PRODUCT/$VERSION/"
+        echo "║    registry:  $CAC_BASE/plugins/installed_plugins.json"
+        echo "║    enabled:   $CAC_BASE/settings.json (enabledPlugins)"
         echo "║  Claude CAC permissions:"
         echo "║    $CAC_BASE/settings.json (merged)"
         ;;
 esac
 
 echo "╠══════════════════════════════════════════════════════════╣"
-echo "║  Command:  /secguard [path]  or  /$PRODUCT:secguard [path]"
+echo "║  Command:  /$PRODUCT:secguard [path]"
+echo "║            (namespaced — plugin commands use a colon, not a slash)"
 echo "║  Skills:   null-deref, buffer-overflow, memory-leak, injection, resource-leak, uninit, use-after-free, double-free, format-string"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""

@@ -132,7 +132,7 @@ CREATE TABLE IF NOT EXISTS findings (
     severity        TEXT CHECK (severity IN ('critical', 'high', 'medium', 'low', 'info')),
     confidence      REAL CHECK (confidence >= 0.0 AND confidence <= 1.0),
     evidence        TEXT,
-    status          TEXT DEFAULT 'open' CHECK (status IN ('open', 'confirmed', 'suspected', 'dismissed')),
+    status          TEXT DEFAULT 'open' CHECK (status IN ('open', 'confirmed', 'suspected', 'dismissed', 'auto-confirmed')),
     file_path       TEXT,
     line_number     INTEGER,
     function_name   TEXT,

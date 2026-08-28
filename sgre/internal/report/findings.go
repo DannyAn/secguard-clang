@@ -76,7 +76,7 @@ var seqRe = regexp.MustCompile(`^(\d{3,})_`)
 // verdict at all (e.g. the DB default "open").
 func normalizeVerdict(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case VerdictConfirmed:
+	case VerdictConfirmed, "auto-confirmed":
 		return VerdictConfirmed
 	case VerdictSuspected, "suspected-kept":
 		return VerdictSuspected
@@ -491,7 +491,7 @@ func ReconcileFindings(scanDir string, findings []*db.Finding) (ReconcileResult,
 			Reasoning:      f.Reasoning,
 			FixStrategy:    f.FixStrategy,
 			ExceptionCheck: f.ExceptionCheck,
-			Status:         f.EffectiveStatus(),
+			Status:         f.FinalStatus(),
 			Severity:       f.Severity,
 			Confidence:     f.Confidence,
 			FunctionName:   f.FunctionName,

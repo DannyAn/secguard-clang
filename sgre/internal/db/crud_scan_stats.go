@@ -88,8 +88,14 @@ func (s *store) ListPerTypeStatus(ctx context.Context, scanID string, cweForType
 	}
 
 	cweCounts := make(map[string]int)
+	// written_count counts AI-written verdicts only (confirmed/suspected/
+	// dismissed). Auto-confirmed rows (status='auto-confirmed') are machine
+	// verdicts and are excluded, so the resume check compares final_count (the
+	// candidates the AI must classify, i.e. suspected/possible) against the
+	// number the AI actually wrote — an AI pass that never ran stays 0 even when
+	// the pipeline auto-confirmed a chunk of the type.
 	rows, err := s.exec.QueryContext(ctx,
-		`SELECT rule_id, COUNT(*) FROM findings WHERE scan_id = ? GROUP BY rule_id`, scanID)
+		`SELECT rule_id, COUNT(*) FROM findings WHERE scan_id = ? AND status != 'auto-confirmed' GROUP BY rule_id`, scanID)
 	if err != nil {
 		return nil, fmt.Errorf("db: list per-type status: count findings: %w", err)
 	}

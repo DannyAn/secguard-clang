@@ -234,6 +234,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 	totalCandidates := 0
 	totalSuppressed := 0
 	totalBaselineExisting := 0
+	totalAutoConfirmed := 0
 	filesWithCandidates := map[string]bool{}
 	var dismissedByVuln []report.VulnTypeDismissed
 	totalDropped := 0
@@ -290,15 +291,6 @@ func runScanCmd(ctx context.Context, args []string) int {
 		result := oc.result
 
 		filterChainJSON, _ := json.Marshal(result.Summary.Filters)
-		if _, err := store.InsertScanStat(ctx, &db.ScanStat{
-			ScanID:      scanID,
-			VulnType:    vulnType,
-			SeedCount:   result.Summary.SeedCount,
-			FinalCount:  len(result.Candidates),
-			FilterChain: string(filterChainJSON),
-		}); err != nil {
-			logger.Warn("insert scan stat failed", "vuln_type", vulnType, "error", err)
-		}
 
 		if len(result.Summary.Dropped) > 0 {
 			dismissedByVuln = append(dismissedByVuln, report.VulnTypeDismissed{
@@ -320,20 +312,45 @@ func runScanCmd(ctx context.Context, args []string) int {
 		// report findings at or under <path> — not leak stale-indexed siblings.
 		keptCandidates = scopeToTarget(keptCandidates, absPath)
 
-		for _, c := range keptCandidates {
+		// Auto-confirm the pipeline-PROVED tier: a `confirmed` suspicion means a
+		// flow filter or the detector proved the defect on the semantic graph, so
+		// it is written straight to findings (machine verdict) and the AI never
+		// re-reviews it. This removes the deterministic bulk (definite null,
+		// constant OOB, weak crypto, sizeof-pointer, signed-compare, hardcoded
+		// secret, OOB read) from the AI's workload, leaving only suspected/
+		// possible for actual judgment.
+		autoConfirmed, needsReview := splitBySuspicion(keptCandidates)
+		autoWritten, autoErr := autoConfirmFindings(ctx, store, scanID, vulnType, autoConfirmed)
+		if autoErr != nil {
+			logger.Warn("auto-confirm findings failed", "vuln_type", vulnType, "error", autoErr)
+		}
+		totalAutoConfirmed += autoWritten
+
+		if _, err := store.InsertScanStat(ctx, &db.ScanStat{
+			ScanID:      scanID,
+			VulnType:    vulnType,
+			SeedCount:   result.Summary.SeedCount,
+			FinalCount:  len(needsReview),
+			FilterChain: string(filterChainJSON),
+		}); err != nil {
+			logger.Warn("insert scan stat failed", "vuln_type", vulnType, "error", err)
+		}
+
+		for _, c := range needsReview {
 			if c.Target.File != "" {
 				filesWithCandidates[c.Target.File] = true
 			}
 		}
-		totalCandidates += len(keptCandidates)
+		totalCandidates += len(needsReview)
 		evidencePackages = append(evidencePackages, map[string]interface{}{
 			"vulnerability_type":       vulnType,
 			"cwe":                      cwe,
 			"summary":                  result.Summary,
-			"candidates":               keptCandidates,
+			"candidates":               needsReview,
 			"suppressed_count":         suppressedCount,
 			"baseline_existing":        baselineExisting,
 			"original_candidate_count": len(result.Candidates),
+			"auto_confirmed_count":     autoWritten,
 		})
 	}
 
@@ -384,6 +401,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 		TargetPath:       absPath,
 		ScanDir:          scanDir,
 		TotalCandidates:  totalCandidates,
+		AutoConfirmed:    totalAutoConfirmed,
 		FilesIndexed:     indexResult.FilesIndexed,
 		FunctionsIndexed: indexResult.FunctionsIndexed,
 		FunctionsInIndex: functionsInIndex,
@@ -409,6 +427,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 		"candidates_by_type":      candidatesByType,
 		"plan_errors":             planErrors,
 		"total_candidates":        totalCandidates,
+		"auto_confirmed_count":    totalAutoConfirmed,
 		"suppressed_count":        totalSuppressed,
 		"baseline_existing_count": totalBaselineExisting,
 		"files_with_candidates":   filesList,
@@ -531,6 +550,64 @@ func runScanCmd(ctx context.Context, args []string) int {
 	}
 
 	return 0
+}
+
+// splitBySuspicion partitions converged candidates into the pipeline-PROVED tier
+// (suspicion "confirmed") and the tier that still needs AI judgment (suspected /
+// possible). Only the latter is handed to the AI; the former is auto-confirmed.
+func splitBySuspicion(candidates []planner.EvidenceItem) (confirmed, needsReview []planner.EvidenceItem) {
+	for _, c := range candidates {
+		if c.SuspicionLevel == "confirmed" {
+			confirmed = append(confirmed, c)
+		} else {
+			needsReview = append(needsReview, c)
+		}
+	}
+	return confirmed, needsReview
+}
+
+// autoConfirmFindings writes pipeline-proved candidates straight to the findings
+// table as `confirmed` (machine verdict), so the AI never re-reviews them. Each
+// finding carries the pipeline's own evidence as summary/reasoning and a
+// paste-ready fix, so a reviewer sees why the machine confirmed it. It returns
+// the number written; a write error aborts the batch (silent false-negatives are
+// not acceptable here).
+func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType string, candidates []planner.EvidenceItem) (int, error) {
+	cwe := report.VulnToCWE(vulnType)
+	written := 0
+	for _, c := range candidates {
+		if c.Target.File == "" || c.Target.Line <= 0 {
+			continue
+		}
+		var details []string
+		for _, e := range c.Evidence {
+			if d := strings.TrimSpace(e.Detail); d != "" {
+				details = append(details, d)
+			}
+		}
+		summary := strings.Join(details, "; ")
+		if summary == "" {
+			summary = fmt.Sprintf("%s in %s at line %d", vulnType, c.Target.Function, c.Target.Line)
+		}
+		f := &db.Finding{
+			RuleID:       cwe,
+			Severity:     "high",
+			Confidence:   1.0,
+			Status:       db.StatusAutoConfirmed,
+			FilePath:     c.Target.File,
+			LineNumber:   c.Target.Line,
+			FunctionName: c.Target.Function,
+			Summary:      summary,
+			Reasoning:    "Pipeline-proved (auto-confirmed, no AI re-review): " + summary,
+			FixStrategy:  report.FixSuggestion(vulnType, cwe, c),
+			ScanID:       scanID,
+		}
+		if _, err := store.UpsertFinding(ctx, f); err != nil {
+			return written, fmt.Errorf("upsert auto-confirmed %s:%d: %w", c.Target.File, c.Target.Line, err)
+		}
+		written++
+	}
+	return written, nil
 }
 
 func newScanLogger(scanDir string) (*log.Logger, io.Closer) {

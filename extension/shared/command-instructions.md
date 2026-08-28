@@ -172,15 +172,17 @@ not already read). Do NOT load a skill for a type that has 0 candidates.
 already gives you the per-type counts.
 
 **Candidate-file budget (the biggest time sink — READ THIS).** At this stage
-(before `report --audit`), `report.md` is the candidate INDEX: its per-type table
-already carries every candidate's `# | Function | File:Line | Variable | Suspicion`.
-Never READ the whole `candidates/<type>/NNN_*.md` directory to obtain file:line —
-that is a one-file-per-candidate fan-out and, for a type like `null-deref` with
-hundreds of confirmed candidates, will burn hundreds of slow READ calls. Open a
-`candidates/<type>/NNN_*.md` file ONLY when a `suspected`/`possible` candidate
-needs its full evidence block, or a `confirmed` candidate needs a detail `report.md`
-does not carry. Classify from the `report.md` table + source at file:line; do not
-read a candidate file for every candidate. (`report --audit` later overwrites
+(before `report --audit`), the candidate index is **per type**: each
+`candidates/<type>/_index.md` carries that type's
+`# | Function | File:Line | Variable | Suspicion | Source` — the `Source` column is
+the exact statement at file:line. **The source context is already embedded for you**:
+`_index.md` (one-line Source per candidate) and each `candidates/<type>/NNN_*.md`
+`## Code Context` (±window). **Do NOT issue a per-candidate source READ** — that is
+the single biggest wall-clock cost (one tool round-trip × thousands of candidates =
+tens of minutes). A subagent reads ONLY its own type's `_index.md`; classify
+confirmed candidates straight from its `Source` column, and open a
+`candidates/<type>/NNN_*.md` file ONLY for a `suspected`/`possible` candidate that
+needs its full evidence + Code Context. (`report --audit` later overwrites
 `report.md` with the final findings report — the same data source as `result.sarif`.)
 
 **长扫描超时策略 (F4):** Before calling `secguard_scan`, estimate scan duration. If the project has > 100 C files OR the scan is expected to exceed 120s (the default Bash timeout), the orchestrator SHALL either (a) invoke the scan with an explicit timeout ≥ 600s, or (b) use the host's background-task + Monitor mechanism from the start. When a scan is moved to the background, the orchestrator SHALL switch to Monitor within 1 turn — it SHALL NOT use `sleep N; tail` (blocked by Bash safety policy) and SHALL NOT leave a backgrounded scan unmonitored. While the Monitor is pending, the orchestrator SHALL NOT issue parallel Bash commands (the host may buffer their results until the Monitor completes, wasting the parallel window); any preparation (type list, agent-definition read) MUST complete before the Monitor starts.
@@ -192,14 +194,15 @@ read a candidate file for every candidate. (`report --audit` later overwrites
    the convergence for EVERY type and wrote `report.md` + `candidates/` — do NOT
    re-run `secguard_plan` or `secguard_index` afterward.
 2. **Scale gate — pick ONE path and stay on it.** Parallelism is NOT free: every
-   subagent re-pays a fresh prompt + skill reloads + report.md re-read, so it is
-   a NET LOSS on small codebases. Decide by `total_candidates` from the scan
-   summary:
+   subagent re-pays a fresh prompt + skill reloads, so it is a NET LOSS on small
+   codebases. Decide by `total_candidates` from the scan summary (this count now
+   EXCLUDES auto-confirmed pipeline findings — those are already written, so only
+   suspected/possible candidates remain for the AI):
    - **`total_candidates ≤ 200` → SEQUENTIAL (step 3).** Classify everything
      yourself in one context. This is faster and cheaper — one context amortizes
-     the skill loads and the single report.md read. Do NOT spawn subagents.
-   - **`total_candidates > 200` (or `report.md` > ~40 KB) → PARALLEL (step 4).**
-     Only now does a single context risk exhaustion; dispatch subagents.
+     the skill loads. Do NOT spawn subagents.
+   - **`total_candidates > 200` → PARALLEL (step 4).** A single context risks
+     exhaustion; dispatch subagents.
 
    > **⚠️ 强制约束：当 `total_candidates > 200` 时，禁止选择 SEQUENTIAL 路径。**
    > 违规将导致 orchestrator 上下文在处理完前几个类型后耗尽，其余类型变成
@@ -210,21 +213,27 @@ read a candidate file for every candidate. (`report --audit` later overwrites
    > `total_candidates > 200` 时，orchestrator 应明确告知用户"扫描规模超出单代理
    > 能力，需要并行处理支持"，而不可擅自降级为 SEQUENTIAL。
 3. **Sequential loop** (the normal path for small scans): for each type with
-   candidates > 0, in report.md order — load that type's skill, then classify
-   candidates by suspicion_level:
-   - **confirmed** → lightweight verify: take file:line from the `report.md` table
-     (do NOT read the `candidates/<type>/NNN_*.md` file just to get file:line), then
-     verify by viewing the cited source line ±3 lines (do NOT re-derive the dataflow
-     or read the whole function), then confirm (match) or dismiss (mismatch). Batch
-     all confirmed verdicts into one write call.
-   - **suspected/possible** → full reasoning: read candidate evidence, read source
-     at reported file:line, reason and classify (confirmed/suspected/dismissed).
+   candidates > 0 — load that type's skill, then read
+   `candidates/<type>/_index.md` and classify by suspicion_level:
+   - **confirmed** → read the `_index.md` `Source` column for the statement; confirm
+     (matches the evidence) or dismiss (guarded/different) from the table itself.
+     Do NOT read source or the candidate file. Batch all confirmed verdicts into
+     one write call.
+   - **suspected/possible** → open only that candidate's `candidates/<type>/NNN_*.md`
+     (its `## Code Context` already embeds the source) and reason/classify
+     (confirmed/suspected/dismissed).
    Write findings in ONE batch: write `<tmpdir>/<type>.json` with the Write tool,
    then `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
    Then A5-review suspected findings, move on. Never skip a type. Obey
-   the context budget (≤5 files/type, no full-tree source reads, no skill for a
-   0-candidate type).
-**调度时序合规规则 (F3):** All subagent dispatches SHALL occur in a single assistant turn — N `Agent`/`task` calls issued consecutively with the first-to-last timestamp span ≤ 10s. (Claude Code's subagent-dispatch tool is `Agent`; older Claude Code versions name it `Task`.) The orchestrator SHALL NOT split dispatches across turns. After dispatch, while subagents run, the orchestrator SHALL NOT poll their transcripts or issue `sleep`; it SHALL wait for task-notification events.
+   the context budget (no per-candidate source reads; no skill for a 0-candidate type).
+**调度时序合规规则 (F3):** All subagent dispatches SHALL occur in a single assistant turn — N `Agent`/`task` calls issued consecutively with the first-to-last timestamp span ≤ 10s. (Claude Code's subagent-dispatch tool is `Agent`; older Claude Code versions name it `Task`.) The orchestrator SHALL NOT split dispatches across turns. After dispatch, while subagents run, the orchestrator SHALL NOT poll their transcripts or issue `sleep`.
+
+**子代理返回模型 (F7) — 这是"任务卡住不结束"的根因，必读：** 两个平台的返回模型不同，绝不可混用：
+
+- **OpenCode（含 opencode-nga）的 `task` 工具是同步的**：一次 `task` 调用的返回值就是该子代理的最终消息（即 `Structured Report Protocol` 的 JSON 块）。**没有**独立的 "task-notification" 事件可等。因此 orchestrator 在同一个回合里连续发出 N 个 `task` 调用后，这些调用会逐一带回结果；拿到结果后 orchestrator 必须**立刻**进入第 5 步 Collect+finalize，**绝不能**在发出 task 后结束回合去"等通知"——那样这个回合就永远停在原地，任务计时一直走。
+- **Claude Code 的 `Agent`/`Task` 工具是异步的**：子代理在后台运行，通过 `task_notification` 事件回报终态。orchestrator 等待这些事件，直到每个子代理都到达 terminal state，再进入第 5 步。
+
+**完成契约 (F8) — orchestrator 回合何时结束：** orchestrator 的回合**只有**在发出第 6 步的最终 Markdown 报告之后才允许结束。发出子代理 task 之后、拿到结果之前，orchestrator 可以等待工具返回（平台会自动叫醒你）；拿到所有结果后**必须**在**同一回合**内完成 Collect+finalize（第 5 步）并输出最终报告（第 6 步），然后停止。**禁止**出现"子任务都跑完了、分析也结束了、但没有 finalize、没有最终报告、任务还挂着"的中间态——那等于把已落盘的结果丢弃在后台。
 
 4. **Parallel dispatch** (ONLY when step 2 says so): validate every batch against the Batch Capacity Configuration above, then spawn one subagent PER BATCH
    of types that have candidates > 0, ALL IN THE SAME TURN so they run
@@ -237,16 +246,20 @@ read a candidate file for every candidate. (`report --audit` later overwrites
    ```
    Process type(s) <t1, t2, ...> ONLY. scan_id=<scan_id>, scan_dir=<output_dir>.
    (If a type is split by candidate RANGE, e.g. "null-deref #1-100", classify ONLY
-   those candidates — the # column in <scan_dir>/report.md — and leave the rest to
-   sibling subagents.)
-   The scan already ran: your types' candidates are in <scan_dir>/report.md and
-   <scan_dir>/candidates/<type>/ — do NOT re-run secguard_scan or secguard_plan.
+   those candidates — the # column in <scan_dir>/candidates/<type>/_index.md — and
+   leave the rest to sibling subagents.)
+   The scan already ran: your type's candidates are in
+   <scan_dir>/candidates/<type>/_index.md and <scan_dir>/candidates/<type>/NNN_*.md
+   — do NOT re-run secguard_scan or secguard_plan. The source is already embedded:
+   `_index.md` has a `Source` column per candidate and each candidate file has a
+   `## Code Context` block — do NOT issue per-candidate source READs (that is the
+   tens-of-minutes cost). Read ONLY your type's `_index.md`, never the whole report.md.
     For each type: load the <type> skill, then classify by suspicion_level:
-    - confirmed → take file:line from <scan_dir>/report.md (do NOT read the
-      candidates/<type>/NNN_*.md files), verify by viewing the cited source line
-      ±3 lines (do NOT re-derive dataflow), confirm/dismiss, batch write.
-    - suspected/possible → open only that candidate's evidence file, read source
-      at file:line, reason, classify.
+    - confirmed → read the `Source` column in <scan_dir>/candidates/<type>/_index.md
+      (do NOT read the candidates/<type>/NNN_*.md files and do NOT open source),
+      confirm/dismiss from that statement, batch write.
+    - suspected/possible → open only that candidate's evidence file (its `## Code
+      Context` already embeds the source), reason, classify.
     Derive the DB and the write dir from <scan_dir> (ABSOLUTE, never relative):
     - DB:  <scan_dir>/../../.sgre/sgre.db
     - tmp: <scan_dir>/../../.sgre/.tmp/
@@ -261,10 +274,12 @@ read a candidate file for every candidate. (`report --audit` later overwrites
    `secguard db "SELECT id, file_path, line_number FROM findings WHERE
    scan_id='<scan_id>' AND status='suspected' ORDER BY id" --db <scan_dir>/../../.sgre/sgre.db`.
    NEVER use python3/sqlite3 (Bash is limited to `secguard *`; the column is
-   `file_path`, not `file`). Record each verdict with the FULL form:
-   `secguard report --review --id <id> --review-status
-   <confirmed|dismissed|suspected-kept> --review-reasoning "<one-line>" --db
-   <scan_dir>/../../.sgre/sgre.db`. Read source only at reported file:line, ≤5 files per type.
+   `file_path`, not `file`). Record ALL of the type's A5 verdicts in ONE batch —
+   NEVER one `--review` per id (the per-id loop spawns a subprocess per row and
+   is the null-deref 55-minute slowdown). Write `<scan_dir>/../../.sgre/.tmp/<type>.reviews.json`
+   as a bare JSON array of `{"id","review_status","review_reasoning"}` then run ONE
+   `secguard report --review-json <scan_dir>/../../.sgre/.tmp/<type>.reviews.json --db <scan_dir>/../../.sgre/sgre.db`.
+   `review_status` ∈ confirmed|dismissed|suspected-kept. Read source only at reported file:line, ≤5 files per type.
    Report back, per type: confirmed / suspected / dismissed counts + the
    written finding ids.
    ```
@@ -307,6 +322,15 @@ read a candidate file for every candidate. (`report --audit` later overwrites
    + `findings/`. Verify `<output_dir>/result.sarif` is non-empty and `findings/`
    has files; if not, a write did not land — find the `per_finding_warning` and
    fix it.
+
+    **未复核疑似项闸门 (F9):** The audit response may carry `unreviewed_suspected`
+    (and a `warning`). A nonzero `unreviewed_suspected` means some `suspected`
+    findings never went through the A5 second round, so the final export dropped
+    them (only `confirmed` + `suspected-kept` are exported). Treat it like a
+    failed type: re-dispatch A5 for those ids (look them up with
+    `secguard db "SELECT id, file_path, line_number FROM findings WHERE scan_id='<scan_id>' AND status='suspected' AND (review_status IS NULL OR review_status='') ORDER BY id" --db <db_path>`),
+    then re-run `--audit`. Do NOT ship a final report that silently lost
+    suspected residue.
 6. **Report**: emit the Markdown report (报告头 / 摘要 / 总览表 / 问题表 /
    观察项表 / 修复建议 / 逐条详情) per the Output Format, aggregating the
    subagents' returned counts. Reference `report.md`, `result.sarif`, and

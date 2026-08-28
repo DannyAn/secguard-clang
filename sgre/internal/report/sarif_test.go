@@ -34,6 +34,12 @@ func TestWriteSarifFromFindings(t *testing.T) {
 			FilePath: "src/c.c", LineNumber: 7, FunctionName: "h",
 			Summary: "误报", Reasoning: "已有 NULL 守卫",
 		},
+		{
+			RuleID: "CWE-476", Severity: "medium", Confidence: 0.5,
+			Status: "suspected", ReviewStatus: "",
+			FilePath: "src/d.c", LineNumber: 9, FunctionName: "k",
+			Summary: "未 A5 复核的疑似项", Reasoning: "never reviewed",
+		},
 	}
 
 	if err := WriteSarifFromFindings(sarifPath, "", findings); err != nil {
@@ -50,8 +56,9 @@ func TestWriteSarifFromFindings(t *testing.T) {
 	}
 
 	results := rep.Runs[0].Results
+	// confirmed + suspected-kept only; dismissed and unreviewed-suspected excluded.
 	if len(results) != 2 {
-		t.Fatalf("expected 2 results (dismissed excluded), got %d", len(results))
+		t.Fatalf("expected 2 results (confirmed + suspected-kept; dismissed and unreviewed-suspected excluded), got %d", len(results))
 	}
 
 	// First result is confirmed with fix + properties.

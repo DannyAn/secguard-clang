@@ -359,6 +359,14 @@ func runReportCmd(ctx context.Context, args []string) int {
 		// Fetch the indexed file list once so path resolution for a large batch
 		// (e.g. 255 null-deref findings) does not re-scan the files table per row.
 		allFiles, _ := store.ListFiles(ctx)
+
+		// First pass (read-only): validate every row and resolve its path to the
+		// indexed absolute path, so the write pass below is pure upserts.
+		type pendingWrite struct {
+			in *findingInput
+			f  *db.Finding
+		}
+		pending := make([]*pendingWrite, 0, len(inputs))
 		for i := range inputs {
 			in := &inputs[i]
 			confidence := in.Confidence
@@ -400,23 +408,39 @@ func runReportCmd(ctx context.Context, args []string) int {
 				ExceptionCheck: in.ExceptionCheck,
 				ScanID:         scanID,
 			}
-			// Resolve a relative/truncated agent-supplied path to the indexed
-			// absolute path so downstream reports can embed code context and a
-			// double-clickable location.
 			f.FilePath = resolveFindingFilePath(ctx, store, f.FilePath, allFiles)
-			id, uerr := store.UpsertFinding(ctx, f)
-			if uerr != nil {
-				errClass := classifyWriteErr(uerr)
-				errs = append(errs, fmt.Sprintf("%s:%d — %v", in.File, in.Line, uerr))
-				failedDetails = append(failedDetails, map[string]interface{}{
-					"file": in.File, "line": in.Line, "error_class": errClass, "message": uerr.Error(),
+			pending = append(pending, &pendingWrite{in: in, f: f})
+		}
+
+		// Second pass: write every finding in ONE transaction, so a large batch
+		// commits once (one commit record + one write-lock acquisition) instead of
+		// per-row autocommit (one implicit BEGIN/COMMIT + lock round-trip per row)
+		// — the per-row autocommit was the write-side half of the null-deref
+		// slowness.
+		if txErr := store.WithTx(ctx, func(tx db.Store) error {
+			for _, p := range pending {
+				id, uerr := tx.UpsertFinding(ctx, p.f)
+				if uerr != nil {
+					errClass := classifyWriteErr(uerr)
+					errs = append(errs, fmt.Sprintf("%s:%d — %v", p.in.File, p.in.Line, uerr))
+					failedDetails = append(failedDetails, map[string]interface{}{
+						"file": p.in.File, "line": p.in.Line, "error_class": errClass, "message": uerr.Error(),
+					})
+					fmt.Fprintf(os.Stderr, "FATAL: finding write failed: %s:%d — [%s] %v\n", p.in.File, p.in.Line, errClass, uerr)
+					continue
+				}
+				written = append(written, map[string]interface{}{
+					"file": p.in.File, "line": p.in.Line, "id": id,
 				})
-				fmt.Fprintf(os.Stderr, "FATAL: finding write failed: %s:%d — [%s] %v\n", in.File, in.Line, errClass, uerr)
-				continue
 			}
-			written = append(written, map[string]interface{}{
-				"file": in.File, "line": in.Line, "id": id,
+			return nil
+		}); txErr != nil {
+			errClass := classifyWriteErr(txErr)
+			errs = append(errs, fmt.Sprintf("batch commit — %v", txErr))
+			failedDetails = append(failedDetails, map[string]interface{}{
+				"error_class": errClass, "message": txErr.Error(),
 			})
+			fmt.Fprintf(os.Stderr, "FATAL: finding batch commit failed: [%s] %v\n", errClass, txErr)
 		}
 
 		out := map[string]interface{}{
@@ -491,6 +515,79 @@ func runReportCmd(ctx context.Context, args []string) int {
 		return 0
 	}
 
+	// --review-json <file> records the A5 second-round verdicts for a WHOLE batch
+	// of suspected findings in ONE subprocess + ONE transaction, instead of the
+	// per-finding `--review` loop that spawns a subprocess and opens SQLite per
+	// row (the slow path that stretched a high-volume type like null-deref to
+	// tens of minutes). Input is a JSON array of {id, review_status,
+	// review_reasoning}. `-` or a missing value reads from stdin.
+	if hasFlag(remaining, "review-json") {
+		src := parseStringFlag(remaining, "review-json")
+		var data []byte
+		var err error
+		if src == "" || src == "-" {
+			data, err = io.ReadAll(os.Stdin)
+		} else {
+			data, err = os.ReadFile(src)
+		}
+		if err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to read --review-json input: %v", err))
+			return 1
+		}
+
+		type reviewInput struct {
+			ID              int64  `json:"id"`
+			ReviewStatus    string `json:"review_status"`
+			ReviewReasoning string `json:"review_reasoning"`
+		}
+		var inputs []reviewInput
+		if err := json.Unmarshal(data, &inputs); err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to parse --review-json array: %v", err))
+			return 1
+		}
+
+		reviewed := make([]map[string]interface{}, 0, len(inputs))
+		var errs []string
+		err = store.WithTx(ctx, func(tx db.Store) error {
+			for _, in := range inputs {
+				switch in.ReviewStatus {
+				case "confirmed", "dismissed", "suspected-kept":
+				default:
+					errs = append(errs, fmt.Sprintf("finding %d — invalid review_status %q", in.ID, in.ReviewStatus))
+					continue
+				}
+				if in.ID == 0 {
+					errs = append(errs, "missing id in review entry")
+					continue
+				}
+				if uerr := tx.UpdateFindingReview(ctx, in.ID, in.ReviewStatus, in.ReviewReasoning); uerr != nil {
+					errs = append(errs, fmt.Sprintf("finding %d — %v", in.ID, uerr))
+					continue
+				}
+				reviewed = append(reviewed, map[string]interface{}{
+					"id": in.ID, "review_status": in.ReviewStatus,
+				})
+			}
+			return nil
+		})
+		if err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to commit review batch: %v", err))
+			return 1
+		}
+
+		out := map[string]interface{}{
+			"status":       "ok",
+			"reviewed":     reviewed,
+			"review_count": len(reviewed),
+		}
+		if len(errs) > 0 {
+			out["status"] = "partial"
+			out["errors"] = errs
+		}
+		WriteJSON(out)
+		return 0
+	}
+
 	if hasFlag(remaining, "audit") {
 		scanID := parseStringFlag(remaining, "scan-id")
 		if scanID == "" {
@@ -517,9 +614,10 @@ func runReportCmd(ctx context.Context, args []string) int {
 		// every downstream report resolves source + embeds code context.
 		scanFindings = dedupeAndNormalizeFindings(ctx, store, scanFindings)
 		type vulnCounts struct {
-			confirmed, suspected, dismissed int
+			confirmed, suspected, dismissed, autoConfirmed int
 		}
 		countsByVuln := make(map[string]*vulnCounts)
+		unreviewedSuspected := 0
 		for _, f := range scanFindings {
 			vt := planner.TypeForCWE(f.RuleID)
 			if vt == "" {
@@ -528,7 +626,22 @@ func runReportCmd(ctx context.Context, args []string) int {
 			if countsByVuln[vt] == nil {
 				countsByVuln[vt] = &vulnCounts{}
 			}
-			switch f.EffectiveStatus() {
+			// Machine verdicts are counted apart from AI verdicts so the
+			// audit-report can show both, and so the "candidates without AI
+			// classification" remainder (final_count = needs-review candidates)
+			// is not masked by the auto-confirmed rows.
+			if f.Status == db.StatusAutoConfirmed {
+				countsByVuln[vt].autoConfirmed++
+				continue
+			}
+			// A `suspected` finding whose A5 second-round never ran is an
+			// incomplete verdict: it is excluded from every final export, and the
+			// orchestrator must be told so it can re-dispatch the A5 pass instead
+			// of shipping a scan that silently dropped its suspected residue.
+			if f.Status == "suspected" && f.ReviewStatus == "" {
+				unreviewedSuspected++
+			}
+			switch f.FinalStatus() {
 			case "confirmed":
 				countsByVuln[vt].confirmed++
 			case "suspected":
@@ -545,13 +658,14 @@ func runReportCmd(ctx context.Context, args []string) int {
 				vc = &vulnCounts{}
 			}
 			audits = append(audits, vulnAuditEntry{
-				VulnType:   st.VulnType,
-				SeedCount:  st.SeedCount,
-				FinalCount: st.FinalCount,
-				Filters:    st.FilterChain,
-				Confirmed:  vc.confirmed,
-				Suspected:  vc.suspected,
-				Dismissed:  vc.dismissed,
+				VulnType:      st.VulnType,
+				SeedCount:     st.SeedCount,
+				FinalCount:    st.FinalCount,
+				Filters:       st.FilterChain,
+				Confirmed:     vc.confirmed,
+				Suspected:     vc.suspected,
+				Dismissed:     vc.dismissed,
+				AutoConfirmed: vc.autoConfirmed,
 			})
 		}
 
@@ -614,6 +728,14 @@ func runReportCmd(ctx context.Context, args []string) int {
 				out["unclassified_candidates"] = unclassified
 				out["warning"] = fmt.Sprintf("%d converged candidate(s) have no persisted verdict — an exclusion stated only in prose is not recorded. Write a finding (confirmed|suspected|dismissed) for every candidate.", unclassified)
 			}
+			// A `suspected` verdict that never went through the A5 second round is
+			// incomplete, so it is excluded from result.sarif / result.xlsx /
+			// report.md / findings/ rather than shipped as a final suspicion. Tell
+			// the orchestrator explicitly so it can re-run A5 before finalizing.
+			if unreviewedSuspected > 0 {
+				out["unreviewed_suspected"] = unreviewedSuspected
+				out["warning"] = fmt.Sprintf("%d suspected finding(s) were never A5-reviewed and are excluded from result.sarif/result.xlsx — run the A5 second round (confirmed|dismissed|suspected-kept) before finalizing.", unreviewedSuspected)
+			}
 			// A finding with no scan_id has no scan directory, so its verdict
 			// file cannot be placed or reconciled. Surface it instead of
 			// letting the review surface be quietly incomplete.
@@ -664,13 +786,14 @@ func runReportCmd(ctx context.Context, args []string) int {
 }
 
 type vulnAuditEntry struct {
-	VulnType   string `json:"vuln_type"`
-	SeedCount  int    `json:"seed_count"`
-	FinalCount int    `json:"final_count"`
-	Filters    string `json:"filter_chain"`
-	Confirmed  int    `json:"confirmed"`
-	Suspected  int    `json:"suspected"`
-	Dismissed  int    `json:"dismissed"`
+	VulnType      string `json:"vuln_type"`
+	SeedCount     int    `json:"seed_count"`
+	FinalCount    int    `json:"final_count"`
+	Filters       string `json:"filter_chain"`
+	Confirmed     int    `json:"confirmed"`
+	Suspected     int    `json:"suspected"`
+	Dismissed     int    `json:"dismissed"`
+	AutoConfirmed int    `json:"auto_confirmed"`
 }
 
 func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry) error {
@@ -682,10 +805,10 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry) error {
 	b.WriteString("# SecGuard Audit Report\n\n")
 	b.WriteString(fmt.Sprintf("**Scan ID:** `%s`\n\n", scanID))
 	b.WriteString("## Per-Skill Pipeline Statistics\n\n")
-	b.WriteString("| Vulnerability Type | Seed | Final | AI Confirmed | AI Suspected | AI Dismissed | Filter Efficiency | AI Accuracy |\n")
-	b.WriteString("|---|---|---|---|---|---|---|---|\n")
+	b.WriteString("| Vulnerability Type | Seed | Final | Auto-confirmed | AI Confirmed | AI Suspected | AI Dismissed | Filter Efficiency | AI Accuracy |\n")
+	b.WriteString("|---|---|---|---|---|---|---|---|---|\n")
 
-	totalSeed, totalFinal, totalConfirmed, totalSuspected, totalDismissed := 0, 0, 0, 0, 0
+	totalSeed, totalFinal, totalAutoConfirmed, totalConfirmed, totalSuspected, totalDismissed := 0, 0, 0, 0, 0, 0
 	for _, a := range audits {
 		filterEff := "n/a"
 		if a.SeedCount > 0 {
@@ -696,16 +819,17 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry) error {
 		if classified > 0 {
 			aiAcc = fmt.Sprintf("%.0f%%", float64(a.Confirmed)/float64(classified)*100)
 		}
-		b.WriteString(fmt.Sprintf("| %s | %d | %d | %d | %d | %d | %s | %s |\n",
-			a.VulnType, a.SeedCount, a.FinalCount, a.Confirmed, a.Suspected, a.Dismissed, filterEff, aiAcc))
+		b.WriteString(fmt.Sprintf("| %s | %d | %d | %d | %d | %d | %d | %s | %s |\n",
+			a.VulnType, a.SeedCount, a.FinalCount, a.AutoConfirmed, a.Confirmed, a.Suspected, a.Dismissed, filterEff, aiAcc))
 		totalSeed += a.SeedCount
 		totalFinal += a.FinalCount
+		totalAutoConfirmed += a.AutoConfirmed
 		totalConfirmed += a.Confirmed
 		totalSuspected += a.Suspected
 		totalDismissed += a.Dismissed
 	}
 
-	b.WriteString(fmt.Sprintf("| **TOTAL** | **%d** | **%d** | **%d** | **%d** | **%d** |", totalSeed, totalFinal, totalConfirmed, totalSuspected, totalDismissed))
+	b.WriteString(fmt.Sprintf("| **TOTAL** | **%d** | **%d** | **%d** | **%d** | **%d** | **%d** |", totalSeed, totalFinal, totalAutoConfirmed, totalConfirmed, totalSuspected, totalDismissed))
 	if totalSeed > 0 {
 		b.WriteString(fmt.Sprintf(" **%.0f%%** |", float64(totalSeed-totalFinal)/float64(totalSeed)*100))
 	} else {
@@ -731,7 +855,8 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry) error {
 	b.WriteString("| Metric | Value |\n")
 	b.WriteString("|--------|-------|\n")
 	fmt.Fprintf(&b, "| Raw evidence seeds | %d |\n", totalSeed)
-	fmt.Fprintf(&b, "| Converged candidates (after pipeline filters) | %d |\n", totalFinal)
+	fmt.Fprintf(&b, "| Auto-confirmed by pipeline (no AI review) | %d |\n", totalAutoConfirmed)
+	fmt.Fprintf(&b, "| Candidates needing AI review (suspected/possible) | %d |\n", totalFinal)
 	fmt.Fprintf(&b, "| Candidates classified by AI | %d |\n", classifiedByAI)
 	fmt.Fprintf(&b, "| Candidates without AI classification | %d |\n", unclassified)
 	fmt.Fprintf(&b, "| AI confirmed (actionable, with fix suggestion) | %d |\n", totalConfirmed)
@@ -757,7 +882,7 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry) error {
 		if a.Filters != "" {
 			b.WriteString(fmt.Sprintf("- **Filter chain:** `%s`\n", a.Filters))
 		}
-		b.WriteString(fmt.Sprintf("- **AI classification:** confirmed=%d, suspected=%d, dismissed=%d\n\n", a.Confirmed, a.Suspected, a.Dismissed))
+		b.WriteString(fmt.Sprintf("- **AI classification:** auto-confirmed=%d, confirmed=%d, suspected=%d, dismissed=%d\n\n", a.AutoConfirmed, a.Confirmed, a.Suspected, a.Dismissed))
 	}
 
 	return os.WriteFile(auditPath, []byte(b.String()), 0644)

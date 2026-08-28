@@ -34,6 +34,15 @@ func (f *Finding) ApplyStructuredFromProperties() {
 	}
 }
 
+// StatusAutoConfirmed is the status of a finding the convergence pipeline wrote
+// directly (suspicion_level "confirmed", proved by a flow filter or detector)
+// with no AI review. It is a first-class verdict: EffectiveStatus/FinalStatus
+// map it to "confirmed" so it reaches every export, but it is excluded from the
+// per-type `written_count` (which counts AI-written verdicts only), so the
+// orchestrator's resume check still detects "suspected/possible candidates the
+// AI never classified" rather than being masked by the machine rows.
+const StatusAutoConfirmed = "auto-confirmed"
+
 // EffectiveStatus returns the post-A5 final verdict for a finding. The
 // second-round review (ReviewStatus) overrides the first-pass classification:
 // confirmed/dismissed/suspected-kept map to confirmed/dismissed/suspected, and a
@@ -47,9 +56,40 @@ func (f *Finding) EffectiveStatus() string {
 		return "dismissed"
 	case "suspected-kept":
 		return "suspected"
-	default:
-		return f.Status
 	}
+	if f.Status == StatusAutoConfirmed {
+		return "confirmed"
+	}
+	return f.Status
+}
+
+// FinalStatus returns the verdict that is allowed to reach the final export
+// (result.sarif / result.xlsx / report.md / findings/). It differs from
+// EffectiveStatus in one way that matters for the review surface: a `suspected`
+// finding that was NEVER second-round (A5) reviewed is NOT exportable — it is an
+// incomplete verdict, not a decision. Only a `suspected` that A5 explicitly
+// kept (`review_status == "suspected-kept"`) is exported, and it is exported as
+// `suspected`. A first-pass `confirmed` (which A5 does not re-review) remains
+// exportable as `confirmed`.
+//
+// The returned value is "", "confirmed", "suspected", or "dismissed". "" means
+// "not part of the final result" and must be filtered out by every exporter.
+func (f *Finding) FinalStatus() string {
+	switch f.ReviewStatus {
+	case "confirmed":
+		return "confirmed"
+	case "dismissed":
+		return "dismissed"
+	case "suspected-kept":
+		return "suspected"
+	}
+	switch f.Status {
+	case "confirmed", StatusAutoConfirmed:
+		return "confirmed"
+	case "dismissed":
+		return "dismissed"
+	}
+	return ""
 }
 
 type File struct {

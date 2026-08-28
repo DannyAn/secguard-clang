@@ -22,9 +22,13 @@ single most important step.
 The orchestrator hands you: a set of types, a `scan_id`, and a scan directory
 (`scan_dir`). Your types' candidates are already converged and written to:
 
-- `<scan_dir>/report.md` — a compact table grouped by type (your primary input).
+- `<scan_dir>/candidates/<type>/_index.md` — the per-type candidate table (your
+  primary input; the `Source` column is the exact statement, so classify from it
+  without source reads).
 - `<scan_dir>/candidates/<type>/NNN_*.md` — per-candidate evidence (Location,
-  Evidence, Pipeline Assessment, Fix Suggestion).
+  Evidence, Code Context, Pipeline Assessment, Fix Suggestion).
+- `<scan_dir>/report.md` — the scan summary + per-type counts (for the
+  orchestrator; you read it only to orient, not to classify).
 
 ### Paths (derive EVERYTHING from `scan_dir` — never guess)
 
@@ -41,12 +45,14 @@ is `<project>/.codeagent/secguard-clang/.sgre/.tmp/`. Write every `<type>.json`
 into `<tmpdir>` and pass the same absolute path to `--write-json`, so the file
 you wrote and the file the CLI reads are the SAME file.
 
-**`report.md` is your INDEX.** Its per-type table already lists every candidate's
-`Function | File:Line | Variable | Suspicion`. Do NOT read the whole
-`candidates/<type>/NNN_*.md` directory to get file:line — that is one READ per
-candidate and, for a high-volume type like `null-deref`, wastes hundreds of calls.
-Open a candidate file ONLY for a `suspected`/`possible` candidate (full evidence),
-or a `confirmed` that needs a detail `report.md` does not carry.
+**`candidates/<type>/_index.md` is your INDEX.** Its table already lists every
+candidate's `# | Function | File:Line | Variable | Suspicion | Source`. Read ONLY
+your type's `_index.md` (never another type's, never the whole `report.md`). Do
+NOT read the whole `candidates/<type>/NNN_*.md` directory to get file:line — that
+is one READ per candidate and, for a high-volume type like `null-deref`, wastes
+hundreds of calls. Open a candidate file ONLY for a `suspected`/`possible`
+candidate (full evidence + Code Context); a `confirmed` candidate is classified
+straight from the `_index.md` `Source` column.
 
 **Do NOT run `secguard scan`, `secguard plan`, or `secguard index`** — the scan
 already converged every type. If you were handed a bare path with no `scan_id`,
@@ -63,7 +69,7 @@ not the driver).
 
 ## Your job (per type, one at a time)
 
-For each type you were assigned, in report.md order:
+For each type you were assigned, in `_index.md` order:
 
 1. **Load ONLY that type's skill** (exact kebab-case name; never a `crs-*`
    prefixed skill, never a skill for a type you weren't assigned).
@@ -81,12 +87,15 @@ it, before you look at the next type.
 
 ## Context budget
 
-Read at most **5 source files per type**, only at the reported file:line, and
-only for candidates that actually need verification. The same ≤5-files budget
-covers the A5 second round (A5 normally re-judges from context + persisted
-reasoning; it opens source only for a suspected finding whose file was not
-already read). Do NOT read all source files, and do NOT read source for types
-you weren't assigned.
+**You do NOT read source files at all — the source is already embedded for you.**
+The scan pre-embeds the exact statement in `report.md`'s `Source` column and the
+±context window in each `candidates/<type>/NNN_*.md` `## Code Context` block.
+Classify from those. Issuing a per-candidate source READ is the single biggest
+wall-clock cost of a large scan (one tool round-trip per candidate × thousands of
+candidates = tens of minutes); do not do it. You may open a raw source file ONLY
+in the rare case a `suspected`/`possible` candidate needs more context than its
+Code Context block already carries, and even then keep it to ≤5 files per type.
+Do NOT read source for types you weren't assigned.
 
 ## Output Protocol (the `findings/` invariant)
 
@@ -126,16 +135,16 @@ evidence. It is a **prior**, distinct from your final classification — use it 
 budget your effort, not to pre-judge the answer:
 
 - **confirmed** — a flow filter or the detector *proved* the pattern on the
-  semantic graph. Do NOT re-derive the dataflow or re-prove the defect by
-  reading the source file. Take the file:line from the `report.md` table (do
-  NOT open the `candidates/<type>/NNN_*.md` file for it), and you MAY verify the
-  reported file:line by viewing the cited line and its immediate context (±3
-  lines) to confirm the statement matches the evidence (e.g. the line is indeed a
-  malloc call). Then confirm (file:line matches) or dismiss (file:line mismatch).
-  This constraint does NOT apply to suspected or possible candidates — those
-  require full source reading and reasoning.
+  semantic graph. Do NOT re-derive the dataflow or re-prove the defect. Read the
+  `report.md` table row only: its `Source` column already shows the exact
+  statement at file:line, so you confirm or dismiss from the table itself
+  (statement matches the evidence → confirmed; it is guarded/different → dismiss).
+  Do NOT open the source file and do NOT open the `candidates/<type>/NNN_*.md`
+  file for a confirmed candidate.
 - **suspected** — a heuristic recognized the pattern but the graph could not
-  prove it. This is where your depth budget belongs: read the source and reason.
+  prove it. Read the `candidates/<type>/NNN_*.md` file's `## Code Context`
+  (source already embedded) and reason from it — do NOT open the raw source file
+  unless that embedded window is genuinely too small.
 - **possible** — the pattern is only theoretical (e.g. unsigned wraparound inside
   a bounds check, which would require an operand to reach SIZE_MAX). Triage these
   last and promote one only when you can show a reachable, realistic overflow.
@@ -194,6 +203,14 @@ The write is idempotent (re-running updates, never duplicates), so partial
 progress survives even if a later chunk overflows the context — you lose only the
 current chunk, never the whole type.
 
+**Do not finalize per chunk.** On the MCP host pass `finalize: false` on every
+write chunk except the LAST one (and on the last one, or after A5, let the
+orchestrator's single `report --audit` do the render). On the shell-only host
+`--write-json` never renders — only the orchestrator's final `report --audit`
+does. Rendering `report.md` + `result.sarif` + `result.xlsx` + `findings/` after
+EVERY 50-finding chunk re-reads and re-writes the whole report each time, which
+is exactly the redundant backfill that stretches a large type's wall-clock time.
+
 **Keep each field SHORT — your verdicts are JSON that must fit in context, not an
 essay.** `summary` ≤ one line. `reasoning` ≤ 2 short sentences (source → sink →
 the one missing guard; do NOT restate the whole function). `exception_check` ≤
@@ -227,16 +244,31 @@ For each finding you wrote with `status="suspected"`:
    this finding's source was NOT read during the first pass — do not re-read
    source you already have, and keep the whole type within the same ≤5-files
    budget (first pass + A5 combined, not a fresh 5).
-3. Record the verdict via the CLI (your Bash is restricted to `secguard *`;
-   on platforms that also expose the `secguard_report` MCP tool its `reviews`
-   action is equivalent). The FULL CLI form is:
+3. Record ALL of a type's A5 verdicts in ONE batch call — NEVER one
+   `--review` per finding. The per-finding loop spawns one subprocess + one
+   SQLite open per row and is what made a high-volume type like `null-deref`
+   take tens of minutes. Two equivalent paths:
 
-   ```bash
-   secguard report --review --id <id> --review-status <confirmed|dismissed|suspected-kept> \
-     --review-reasoning "<one-line>" --db <db_path>
-   ```
+   - **MCP host (OpenCode):** call the `secguard_report` tool ONCE with the
+     full `reviews` array. The tool batches it into one `--review-json` call.
+   - **Shell-only host (Claude Code):** write a JSON array to
+     `<tmpdir>/<type>.reviews.json` with the Write tool, then run ONE call:
 
-   `--review-status` is REQUIRED and must be exactly one of the three literal
+     ```bash
+     secguard report --review-json <tmpdir>/<type>.reviews.json --db <db_path>
+     ```
+
+     The file is a bare JSON array of `{"id", "review_status", "review_reasoning"}`:
+
+     ```json
+     [
+       {"id": 3, "review_status": "confirmed", "review_reasoning": "real deref"},
+       {"id": 7, "review_status": "dismissed", "review_reasoning": "guarded"},
+       {"id": 9, "review_status": "suspected-kept", "review_reasoning": "external input, unbounded"}
+     ]
+     ```
+
+   `review_status` is REQUIRED and must be exactly one of the three literal
    values:
    - `confirmed` — it is real; promote it.
    - `dismissed` — it is a false positive; drop it.
@@ -244,8 +276,9 @@ For each finding you wrote with `status="suspected"`:
      bound, a partial blacklist, a short read that may be acceptable); keep it
      as suspected.
    Do NOT invent a different flag (e.g. `--verdict`); the CLI rejects a missing
-   or empty `--review-status`. `--review-reasoning` is always a one-line
-   justification.
+   or empty `review_status`. `review_reasoning` is always a one-line
+   justification. (The single-id `--review --id <id> --review-status ...` form
+   still exists but is ONLY for fixing one stray id; never loop it.)
 
    **If you do NOT have a finding's `id`** (forgot to record it, or the write
    happened in a prior turn), re-query it through the CLI — NEVER reach for
@@ -261,6 +294,13 @@ A `suspected` finding that survives A5 must be a genuine "needs human judgment"
 case. If it is deterministic — a weak algorithm, a constant SQL string, a guarded
 division, a checked allocation — you missed the evidence; correct it to
 confirmed or dismissed rather than carrying it forward as suspected.
+
+**Hard rule — an unreviewed `suspected` is dropped, not shipped.** The final
+export (`result.sarif`, `result.xlsx`, `report.md`, `findings/`) keeps only
+`confirmed` + `suspected-kept`. A `suspected` finding whose A5 review never ran
+(`review_status` empty) is an INCOMPLETE verdict and is silently excluded from
+the final result. So you MUST A5-review every `suspected` you wrote — leaving one
+as plain `suspected` is the same as losing it.
 
 ## Structured Report Protocol (format_version: 1)
 

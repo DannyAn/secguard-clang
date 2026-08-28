@@ -287,7 +287,7 @@ func WriteSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding) e
 	}
 
 	for _, f := range findings {
-		status := f.EffectiveStatus()
+		status := f.FinalStatus()
 		if status != "confirmed" && status != "suspected" {
 			continue
 		}

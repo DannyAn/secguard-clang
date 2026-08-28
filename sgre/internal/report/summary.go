@@ -12,6 +12,7 @@ type SummaryData struct {
 	TargetPath       string
 	ScanDir          string
 	TotalCandidates  int
+	AutoConfirmed    int
 	FilesIndexed     int
 	FunctionsIndexed int
 	FunctionsInIndex int
@@ -38,6 +39,9 @@ func BuildScanSummary(data SummaryData) string {
 	fmt.Fprintf(&b, "| Target | %s |\n", data.TargetPath)
 	fmt.Fprintf(&b, "| Scan Dir | %s |\n", data.ScanDir)
 	fmt.Fprintf(&b, "| Total Candidates | %d |\n", data.TotalCandidates)
+	if data.AutoConfirmed > 0 {
+		fmt.Fprintf(&b, "| Auto-confirmed (pipeline-proved, no AI review) | %d |\n", data.AutoConfirmed)
+	}
 	fmt.Fprintf(&b, "| Files Indexed | %d |\n", data.FilesIndexed)
 	fmt.Fprintf(&b, "| Functions Indexed | %d |\n", data.FunctionsIndexed)
 	fmt.Fprintf(&b, "| Functions In Index | %d |\n\n", data.FunctionsInIndex)

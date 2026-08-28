@@ -283,18 +283,21 @@ func TestReconcileFindings_SweepsUnclassifiedAndDismissed(t *testing.T) {
 }
 
 // The A5 review verdict (review_status) wins over the first-pass status, so a
-// reviewed-away finding disappears from the review surface.
-func TestReconcileFindings_UsesEffectiveStatus(t *testing.T) {
+// reviewed-away finding disappears from the review surface. ReconcileFindings
+// keys on the FINAL verdict: suspected-kept survives as suspected, while a
+// never-reviewed suspected (ReviewStatus empty) is an incomplete verdict and is
+// swept out.
+func TestReconcileFindings_UsesFinalStatus(t *testing.T) {
 	dir := t.TempDir()
 	writeCandidate(t, dir, "null-deref", "001_src_a_c_13.md")
 
 	f := &db.Finding{RuleID: "CWE-476", FilePath: "src/a.c", LineNumber: 13, FunctionName: "f",
-		Status: "suspected", Severity: "medium", Confidence: 0.5}
+		Status: "suspected", ReviewStatus: "suspected-kept", Severity: "medium", Confidence: 0.5}
 	if _, err := ReconcileFindings(dir, []*db.Finding{f}); err != nil {
 		t.Fatal(err)
 	}
 	if names := lsFindings(t, dir, "null-deref"); len(names) != 1 || names[0] != "001_src_a_c_13_suspected.md" {
-		t.Fatalf("first pass: %v", names)
+		t.Fatalf("suspected-kept should survive as suspected: %v", names)
 	}
 
 	f.ReviewStatus = "dismissed"
@@ -307,6 +310,26 @@ func TestReconcileFindings_UsesEffectiveStatus(t *testing.T) {
 	}
 	if names := lsFindings(t, dir, "null-deref"); len(names) != 0 {
 		t.Fatalf("after A5 dismissal: %v", names)
+	}
+}
+
+// A never-reviewed suspected finding is an incomplete verdict and must produce
+// no findings/ file (it is excluded from the final review surface).
+func TestReconcileFindings_ExcludesUnreviewedSuspected(t *testing.T) {
+	dir := t.TempDir()
+	writeCandidate(t, dir, "null-deref", "001_src_a_c_13.md")
+
+	f := &db.Finding{RuleID: "CWE-476", FilePath: "src/a.c", LineNumber: 13, FunctionName: "f",
+		Status: "suspected", ReviewStatus: "", Severity: "medium", Confidence: 0.5}
+	res, err := ReconcileFindings(dir, []*db.Finding{f})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Written != 0 {
+		t.Errorf("written = %d, want 0 (unreviewed suspected excluded)", res.Written)
+	}
+	if names := lsFindings(t, dir, "null-deref"); len(names) != 0 {
+		t.Fatalf("unreviewed suspected must be excluded: %v", names)
 	}
 }
 

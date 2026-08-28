@@ -11,7 +11,7 @@ func TestWriteAuditReport_IncludesAIValueSummary(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "audit-report.md")
 	audits := []vulnAuditEntry{
-		{VulnType: "buffer-overflow", SeedCount: 12, FinalCount: 11, Confirmed: 8, Suspected: 1, Dismissed: 2},
+		{VulnType: "buffer-overflow", SeedCount: 12, FinalCount: 11, AutoConfirmed: 3, Confirmed: 8, Suspected: 1, Dismissed: 2},
 		{VulnType: "out-of-bounds", SeedCount: 1, FinalCount: 1, Confirmed: 0, Suspected: 0, Dismissed: 0},
 	}
 
@@ -27,7 +27,8 @@ func TestWriteAuditReport_IncludesAIValueSummary(t *testing.T) {
 	checks := []string{
 		"## AI Value Summary",
 		"| Raw evidence seeds | 13 |",
-		"| Converged candidates (after pipeline filters) | 12 |",
+		"| Auto-confirmed by pipeline (no AI review) | 3 |",
+		"| Candidates needing AI review (suspected/possible) | 12 |",
 		"| Candidates classified by AI | 11 |",
 		"| Candidates without AI classification | 1 |",
 		"| AI confirmed (actionable, with fix suggestion) | 8 |",

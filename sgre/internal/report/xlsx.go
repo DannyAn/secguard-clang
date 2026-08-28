@@ -52,7 +52,7 @@ func WriteXlsxFromFindings(xlsxPath, rootDir string, findings []*db.Finding) err
 	}
 	rows := make([]row, 0, len(findings))
 	for _, f := range findings {
-		status := f.EffectiveStatus()
+		status := f.FinalStatus()
 		if status != "confirmed" && status != "suspected" {
 			continue
 		}
@@ -168,7 +168,7 @@ func WriteXlsxFromFindings(xlsxPath, rootDir string, findings []*db.Finding) err
 			"B": r.vulnType,
 			"C": r.cwe,
 			"D": severity,
-			"E": finding.EffectiveStatus(),
+			"E": finding.FinalStatus(),
 			"G": displayPath(finding.FilePath, sourceRoot),
 			"I": finding.FunctionName,
 			"J": summary,
