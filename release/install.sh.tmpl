@@ -326,6 +326,8 @@ install_config_template() {
     mkdir -p "$HOME/.codeagent"
     cat > "$cfg_file" <<'TOML'
 # SecGuard 配置文件（可选）。卸载/重装 secguard 不会删除此文件。
+# 大多数用户无需修改此文件；运行 `secguard config --help` 查看完整说明，
+# `secguard config` 查看当前生效配置，`secguard config --example` 查看示例。
 #
 # 可信访问宏白名单：这些宏展开为「字段 + 指针偏移」的地址计算，
 # 返回指针默认可信、调用方直接解引用不判空，因此不报空指针解引用。

@@ -93,8 +93,10 @@ func Execute(ctx context.Context, args []string) int {
 		return runDbCmd(ctx, args[1:])
 	case "schema":
 		return runSchemaCmd(args[1:])
+	case "config":
+		return runConfigCmd(args[1:])
 	default:
-		WriteErrorJSON(fmt.Sprintf("unknown command %q; available: index, scan, diff, pr, mr, status, query, types, plan, report, db, schema", args[0]))
+		WriteErrorJSON(fmt.Sprintf("unknown command %q; available: index, scan, diff, pr, mr, status, query, types, plan, report, db, schema, config", args[0]))
 		return 1
 	}
 }
@@ -115,6 +117,7 @@ Usage:
   secguard report          Output all findings as JSON
   secguard db <sql>        Execute SQL query on sgre.db, return JSON
   secguard schema [table]  Show DB schema for agent-queryable tables
+  secguard config          Show the effective secguard.toml configuration
 
 Flags:
   --db <path>         Path to sgre.db (default: .codeagent/secguard-clang/.sgre/sgre.db)

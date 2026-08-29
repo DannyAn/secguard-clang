@@ -16,6 +16,9 @@ SecGuard 支持一个**可选**的 TOML 配置文件 `secguard.toml`，用于覆
 
 安装时会自动在 `~/.codeagent/secguard.toml` 生成一个带注释的模板（若文件不存在）。
 
+> 运行时查看：`secguard config` 显示当前生效的配置文件与值，`secguard config --help`
+> 查看完整配置说明，`secguard config --example` 打印可直接复制的示例模板。
+
 ## 读取顺序
 
 1. `--config <path>` 显式参数（最高优先级）

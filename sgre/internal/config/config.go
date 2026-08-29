@@ -66,6 +66,14 @@ func (c *Config) TrustedMacroNames() []string {
 	return c.TrustedMacros.Names
 }
 
+// ResolvedPath returns the config file path Load() would read, in the same
+// priority order (--config > SECGUARD_CONFIG > project > user), or "" when no
+// config file is active. It is the runtime answer to "where do I put settings",
+// surfaced by `secguard config` so a user never has to guess the location.
+func ResolvedPath() string {
+	return resolvePath(explicitPath)
+}
+
 func resolvePath(explicit string) string {
 	if explicit != "" {
 		return explicit

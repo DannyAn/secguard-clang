@@ -186,6 +186,53 @@ Examples:
   secguard schema findings`)
 }
 
+func printConfigUsage() {
+	fmt.Fprintln(os.Stdout, `secguard config - Show the effective secguard.toml configuration
+
+Usage:
+  secguard config [flags]
+
+Flags:
+  --example       Print a full copy-paste secguard.toml example
+  --help, -h      Show this usage
+
+What it is:
+  secguard.toml is an OPTIONAL configuration file. Most users need nothing in
+  it. It exists today for exactly one option: the trusted-macro allowlist.
+
+  Config file locations, in priority order (first existing wins):
+    1. --config <path>                     explicit flag
+    2. SECGUARD_CONFIG env var
+    3. <cwd>/.codeagent/secguard.toml      per-repository (commit it)
+    4. ~/.codeagent/secguard.toml          personal default (generated on install)
+
+  With no file present, secguard uses built-in defaults (an empty config).
+
+  [trusted_macros] — trusted accessor macros
+    names = ["..."]
+    A macro whose expansion computes a pointer from a memory address
+    (field + offset arithmetic) rather than a possibly-null allocation/lookup
+    result. Callers dereference it without a null check by contract, so
+    secguard must not report a null-deref there. Add a name here only when the
+    macro's DEFINITION is outside the scan tree (e.g. an SDK header), where the
+    automatic macro-pattern recognition cannot see it.
+
+Examples:
+  secguard config
+  secguard config --example`)
+}
+
+func printConfigExample() {
+	fmt.Fprintln(os.Stdout, `# SecGuard configuration (optional). Uninstall/reinstall does not delete this.
+# Put this at ~/.codeagent/secguard.toml (personal) or
+# <repo>/.codeagent/secguard.toml (per-repository, commit it).
+
+[trusted_macros]
+names = [
+    # "YOUR_ACCESSOR_MACRO",
+]`)
+}
+
 // subcommandUsage maps a subcommand name to its usage printer. Execute uses this
 // to dispatch `secguard <cmd> --help` without falling through into the command.
 var subcommandUsage = map[string]func(){
@@ -198,6 +245,7 @@ var subcommandUsage = map[string]func(){
 	"report": printReportUsage,
 	"db":     printDbUsage,
 	"schema": printSchemaUsage,
+	"config": printConfigUsage,
 }
 
 // dispatchHelp returns true if args[0] is a known subcommand and args[1:] contain
