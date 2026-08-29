@@ -2,6 +2,31 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.5.2] - 2026-08-29
+
+### 新功能：配置文件（secguard.toml）
+
+- 新增**可选** TOML 配置 `secguard.toml`，首个配置项 `[trusted_macros] names`（可信访问宏白名单）：
+  展开为「字段 + 指针偏移」的第三方/内部 SDK 访问宏，返回指针默认可信、调用方直接解引用不判空，
+  因此不报空指针解引用。仅用于宏定义落在扫描范围外（如 SDK 头文件被排除）的场景；宏定义可见时
+  仍自动识别，无需配置。
+- 配置读取顺序：`--config <path>` > `SECGUARD_CONFIG` 环境变量 > 项目级 `<cwd>/.codeagent/secguard.toml`
+  > 用户级 `~/.codeagent/secguard.toml`（项目级整文件覆盖用户级）。
+- 安装时在 `~/.codeagent/secguard.toml` 生成带注释模板（不覆盖已有）。
+- 二进制部署收敛：只放 PATH 一份（默认 `/usr/local/bin`，不可写回退 `~/.local/bin`），去掉扩展内 bin 副本。
+
+### 新功能：`secguard config` 运行时自解释
+
+- 新增 `secguard config`：显示当前生效配置文件路径与各配置项值（JSON）。
+- `secguard config --help` 输出完整配置说明（位置、读取顺序、配置项语义、示例）；
+  `secguard config --example` 打印可直接复制的模板。用户不再需要翻文档才知道配置里写什么。
+
+### 误报消减
+
+- **null-deref**：cast 包裹的 output-param（`(void **)&p`）识别为写目标，正确重置 p 的 null 状态。
+- **null-deref**：库函数解引用参数（`memset_s`/`memcpy`/`strlen` 等）后，其指针参数视为非空——调用能
+  继续到下一句即证明参数非空。消除「初始化后隔几句仍报空指针解引用」误报，kill 沿语义图 CFG 传播。
+
 ## [0.5.1] - 2026-08-29
 
 ### 新功能：增量 PR/MR 检视
