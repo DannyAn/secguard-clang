@@ -274,3 +274,62 @@ func SeverityValue(apiName string) float64 {
 func IsHighImpact(apiName string) bool {
 	return CriticalAPIs[apiName] || HighAPIs[apiName]
 }
+
+// DerefArgFunctions lists library functions that unconditionally dereference
+// (read or write through) one or more pointer arguments, together with the
+// 0-based indices of those arguments. Passing a by-value pointer `p` at such an
+// argument position dereferences `*p` inside the callee, so if control reaches
+// the statement AFTER the call, `p` was non-null (otherwise the call would have
+// faulted). The null-deref filter uses this as an implicit non-null kill:
+//
+//	head = get_head();        // may be null
+//	memset_s(head, 0, 0, n);  // writes *head → head is provably non-null after
+//	head->len = n;            // not a null-deref
+//
+// The list is deliberately restricted to string/memory routines whose
+// dereference is unconditional. `strtok` is omitted because its first argument
+// may legitimately be NULL (continuation), and `free`/`strerror`/`perror`
+// accept NULL / non-pointer arguments.
+var DerefArgFunctions = map[string][]int{
+	"memset":      {0},
+	"memset_s":    {0},
+	"memcpy":      {0, 1},
+	"memcpy_s":    {0, 2},
+	"memmove":     {0, 1},
+	"memmove_s":   {0, 2},
+	"memcmp":      {0, 1},
+	"strlen":      {0},
+	"strnlen":     {0},
+	"strcpy":      {0, 1},
+	"strcpy_s":    {0, 2},
+	"strncpy":     {0, 1},
+	"strncpy_s":   {0, 2},
+	"strcat":      {0, 1},
+	"strcat_s":    {0, 2},
+	"strncat":     {0, 1},
+	"strncat_s":   {0, 2},
+	"strlcpy":     {0, 1},
+	"strlcat":     {0, 1},
+	"strcmp":      {0, 1},
+	"strncmp":     {0, 1},
+	"strcasecmp":  {0, 1},
+	"strncasecmp": {0, 1},
+	"strchr":      {0},
+	"strrchr":     {0},
+	"strstr":      {0, 1},
+	"sprintf":     {0, 1},
+	"snprintf":    {0, 2},
+	"sprintf_s":   {0, 2},
+	"snprintf_s":  {0, 2},
+	"vsprintf":    {0, 1},
+	"vsnprintf":   {0, 2},
+	"vsprintf_s":  {0, 2},
+	"vsnprintf_s": {0, 2},
+}
+
+// DerefArgs returns the dereferenced argument indices of a library function, or
+// (nil, false) when the function is not a known unconditional dereferencer.
+func DerefArgs(name string) ([]int, bool) {
+	idxs, ok := DerefArgFunctions[name]
+	return idxs, ok
+}

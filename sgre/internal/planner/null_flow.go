@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/parser"
@@ -263,7 +264,7 @@ func (a *flowAnalyzer) analyzeDefiniteNull(cfg *graph.StmtCFG) (map[int]map[stri
 				e.kill[name] = true
 			}
 		}
-		addOutputParamKills(n.Stmt, e)
+		addOutputParamKills(n.Stmt, e, true)
 		effects[n.ID] = e
 	}
 	return runMustDataflow(cfg, effects)
@@ -329,17 +330,27 @@ func (a *flowAnalyzer) collectNodeEffects(n *graph.StmtNode, genByLine, killByLi
 	// `&x` passed to a call is an output parameter: the callee may write x
 	// through the pointer, so x's null state is reset at the call site. Without
 	// this, `p = NULL; init(&p); p->f` (an initialized output-param) is
-	// misread as a definite null-deref.
-	addOutputParamKills(n.Stmt, e)
+	// misread as a definite null-deref. The deref-arg kill (the second half of
+	// addOutputParamKills) is null-deref specific, so it is gated on
+	// nonNullKills: the taint source filter reuses this engine with
+	// nonNullKills=false and must not lose copy taint through memcpy/strcpy.
+	addOutputParamKills(n.Stmt, e, nonNullKills)
 
 	return e
 }
 
-// addOutputParamKills records a kill for every variable whose address is taken
-// (`&x`) and passed as a call argument. Taking x's address and handing it to a
-// function means the callee can write x through the pointer, so a previously
-// tracked null source no longer provably holds at/after the call.
-func addOutputParamKills(stmt parser.Node, e *nodeEffects) {
+// addOutputParamKills records a kill for two shapes of call argument that prove
+// a pointer's null source no longer holds at/after the call:
+//
+//   - `&x` passed as an argument (an output parameter): the callee may write x
+//     through the pointer, resetting x's null state. This half is always on.
+//   - a by-value pointer `p` passed to a library function that unconditionally
+//     dereferences that argument position (`memset_s(head, ...)` writes `*head`):
+//     reaching the next statement proves `p` was non-null, since the call would
+//     otherwise have faulted. This half is gated on derefArgs because it is a
+//     null-deref notion: the taint source filter shares this engine and its
+//     memcpy/strcpy copy taint must survive (a copy is not a taint kill).
+func addOutputParamKills(stmt parser.Node, e *nodeEffects, derefArgs bool) {
 	for _, call := range stmt.FindAll("call_expression") {
 		children := call.NamedChildren()
 		if len(children) < 2 {
@@ -349,12 +360,29 @@ func addOutputParamKills(stmt parser.Node, e *nodeEffects) {
 		if argList.Kind() != "argument_list" {
 			continue
 		}
-		for _, arg := range argList.NamedChildren() {
+		derefIdxs, derefs := apikb.DerefArgs(callName(call))
+		for i, arg := range argList.NamedChildren() {
 			if name := addrTakenVar(arg); name != "" {
 				e.kill[name] = true
+				continue
+			}
+			if derefArgs && derefs && intIn(derefIdxs, i) {
+				if name := rhsVarName(arg); name != "" {
+					e.kill[name] = true
+				}
 			}
 		}
 	}
+}
+
+// intIn reports whether v is an element of xs.
+func intIn(xs []int, v int) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 // addrTakenVar returns the variable whose address is taken by an argument,
