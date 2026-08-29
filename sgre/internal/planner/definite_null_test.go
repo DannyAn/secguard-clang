@@ -228,3 +228,79 @@ int real_null(void) {
 		}
 	}
 }
+
+// TestDefiniteNull_OutputParamWithGuard pins the production shape: an output
+// parameter (&out) followed by a compound guard `(ret != 0) || (out == NULL)`
+// must not report `out->data` as a null-deref. This is the same root cause as
+// OutputParamKillsNull — the &out call resets out's null state — but with the
+// guard present so a future narrowing of the output-param rule cannot regress it.
+func TestDefiniteNull_OutputParamWithGuard(t *testing.T) {
+	src := `#include <stdlib.h>
+#include <stdint.h>
+
+struct ipc_data { int get_type; int cmd; int action; };
+struct message { uint64_t *data; };
+
+static int ipc_call(struct ipc_data *ipc, int size, struct message **out) {
+    *out = malloc(sizeof(struct message));
+    if (*out == NULL) return -1;
+    (*out)->data = malloc(8);
+    return 0;
+}
+
+static void free_message(struct message *m) { free(m); }
+
+int test_function(int msg_id, uint64_t *data_drop) {
+    struct ipc_data ipc = { 0 };
+    struct message *out = NULL;
+    ipc.get_type = msg_id;
+    ipc.cmd = 1;
+    ipc.action = 2;
+    int ret = ipc_call(&ipc, sizeof(ipc), &out);
+    if ((ret != 0) || (out == NULL)) {
+        if (out != NULL) free_message(out);
+        return -1;
+    }
+    if (out->data != NULL) {
+    }
+    if (out != NULL) free_message(out);
+    return 0;
+}
+`
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ipc.c")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewNullSourceDetector(store, p, logger).Detect(ctx)
+	evidence.NewDereferenceDetector(store, p, logger).Detect(ctx)
+	evidence.NewNullGuardDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "null-deref")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	for _, c := range result.Candidates {
+		if c.Target.Function == "test_function" && c.Target.Variable == "out" {
+			if c.HasDefiniteNull {
+				t.Errorf("test_function's out (written via &out + guarded) must NOT carry has_definite_null")
+			}
+			if c.SuspicionLevel == "confirmed" {
+				t.Errorf("test_function's out must not be confirmed, got %q", c.SuspicionLevel)
+			}
+		}
+	}
+}
