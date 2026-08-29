@@ -6,21 +6,19 @@ SecGuard 支持一个**可选**的 TOML 配置文件 `secguard.toml`，用于覆
 
 ## 位置
 
-按平台放在 AI Agent 自己的配置目录：
+配置文件是**用户级共享一份**（不是每个 AI Agent 平台各一份），按顺序探测
+第一个存在的：
 
-| 平台 | 配置文件路径 |
-|------|-------------|
-| OpenCode / OpenCode-NGA | `~/.config/opencode/secguard.toml` |
-| Claude Code | `~/.claude/secguard.toml` |
-| Claude CAC | `~/.cac/secguard.toml` |
+1. `~/.config/secguard.toml`（首选，XDG 标准配置目录）
+2. `~/.codeagent/secguard.toml`（次选，兼容旧约定）
 
-安装时会自动生成一个带注释的模板（若文件不存在）。
+安装时会自动在 `~/.config/secguard.toml` 生成一个带注释的模板（若文件不存在）。
 
 ## 读取顺序
 
 1. `--config <path>` 显式参数（最高优先级）
 2. `SECGUARD_CONFIG` 环境变量
-3. 上述平台默认路径（按表顺序探测，第一个存在的生效）
+3. 上述默认路径（按顺序探测，第一个存在的生效）
 
 三个来源都未命中时，使用内置默认行为（无配置文件）。
 

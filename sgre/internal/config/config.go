@@ -25,12 +25,13 @@ type TrustedMacros struct {
 	Names []string `toml:"names"`
 }
 
-// defaultPaths are the per-platform default config locations, tried in order.
-// The first existing file wins.
+// defaultPaths are the default config locations, tried in order. There is ONE
+// shared config per user (not per AI-agent platform): a single file so the
+// trusted-macro allowlist is configured once and shared by every client. The
+// first existing file wins.
 var defaultPaths = []string{
-	filepath.Join(homeDir(), ".config", "opencode", "secguard.toml"),
-	filepath.Join(homeDir(), ".claude", "secguard.toml"),
-	filepath.Join(homeDir(), ".cac", "secguard.toml"),
+	filepath.Join(homeDir(), ".config", "secguard.toml"),
+	filepath.Join(homeDir(), ".codeagent", "secguard.toml"),
 }
 
 // explicitPath is set by the CLI layer from the --config flag. It takes
