@@ -10,15 +10,10 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
-	"github.com/DannyAn/secguard-clang/internal/evidence"
-	"github.com/DannyAn/secguard-clang/internal/graph"
-	"github.com/DannyAn/secguard-clang/internal/indexer"
 	"github.com/DannyAn/secguard-clang/internal/log"
-	"github.com/DannyAn/secguard-clang/internal/parser"
 	"github.com/DannyAn/secguard-clang/internal/planner"
 	"github.com/DannyAn/secguard-clang/internal/report"
 )
@@ -34,7 +29,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 	dbPath, dbExplicit, remaining := parseDBFlag(args)
 	outputDir := parseStringFlag(remaining, "output-dir")
 	remaining = removeFlag(remaining, "output-dir")
-	excludeDirs, hasExclude := parseExcludeFlag(remaining)
+	excludeDirs, _ := parseExcludeFlag(remaining)
 	remaining = removeFlag(remaining, "exclude")
 	failOn := parseStringFlag(remaining, "fail-on")
 	remaining = removeFlag(remaining, "fail-on")
@@ -134,101 +129,12 @@ func runScanCmd(ctx context.Context, args []string) int {
 	// were demoted to Debug). This also gives the log a stable first record.
 	logger.Info("scan started", "scan_id", scanID, "target", absPath)
 
-	p := parser.NewParser()
-	defer p.CloseAll()
-
-	idx := indexer.NewIndexer(store, logger)
-	if hasExclude {
-		idx.SetExcludeDirs(excludeDirs)
-	}
-	idxStart := time.Now()
-	indexResult, err := idx.Index(ctx, absPath)
+	outcome, err := runPipeline(ctx, store, logger, absPath, excludeDirs)
 	if err != nil {
-		WriteErrorJSON(fmt.Sprintf("index failed: %v", err))
+		WriteErrorJSON(err.Error())
 		return 1
 	}
-	logger.Info("phase timing", "phase", "index", "elapsed_ms", time.Since(idxStart).Milliseconds())
-
-	// The semantic graph is rebuilt from scratch every scan (there is no
-	// incremental graph update), so clear the previous scan's nodes/edges first.
-	// Without this, graph_edges (which has no UNIQUE constraint) accumulates a
-	// full duplicate copy per scan and stale nodes for re-indexed/deleted
-	// functions linger forever, degrading every ListGraphEdgesByType consumer.
-	if err := store.ClearGraph(ctx); err != nil {
-		WriteErrorJSON(fmt.Sprintf("failed to clear graph: %v", err))
-		return 1
-	}
-
-	graphStart := time.Now()
-	type builderTask struct {
-		name string
-		fn   func(context.Context) error
-	}
-	builders := []builderTask{
-		{"call_graph", func(ctx context.Context) error {
-			_, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-			return err
-		}},
-		{"data_flow", func(ctx context.Context) error {
-			_, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-			return err
-		}},
-		{"alias", func(ctx context.Context) error {
-			_, err := graph.NewAliasBuilder(store, p, logger).Build(ctx)
-			return err
-		}},
-		{"ownership", func(ctx context.Context) error {
-			_, err := graph.NewOwnershipBuilder(store, p, logger).Build(ctx)
-			return err
-		}},
-		{"interproc", func(ctx context.Context) error {
-			_, err := graph.NewInterprocBuilder(store, p, logger).Build(ctx)
-			return err
-		}},
-		{"lock_order", func(ctx context.Context) error {
-			_, err := graph.NewLockOrderBuilder(store, p, logger).Build(ctx)
-			return err
-		}},
-		{"shared_access", func(ctx context.Context) error {
-			_, err := graph.NewSharedAccessBuilder(store, p, logger).Build(ctx)
-			return err
-		}},
-	}
-	var bwg sync.WaitGroup
-	bErrCh := make(chan error, len(builders))
-	for _, b := range builders {
-		bwg.Add(1)
-		go func(b builderTask) {
-			defer bwg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					bErrCh <- fmt.Errorf("%s panicked: %v", b.name, r)
-				}
-			}()
-			if err := b.fn(ctx); err != nil {
-				bErrCh <- fmt.Errorf("%s: %w", b.name, err)
-			}
-		}(b)
-	}
-	bwg.Wait()
-	close(bErrCh)
-	for err := range bErrCh {
-		WriteErrorJSON(fmt.Sprintf("graph build failed: %v", err))
-		return 1
-	}
-	logger.Info("phase timing", "phase", "graph_builders_parallel", "elapsed_ms", time.Since(graphStart).Milliseconds())
-
-	if err := store.ClearSecurityEvents(ctx); err != nil {
-		WriteErrorJSON(fmt.Sprintf("failed to clear security events: %v", err))
-		return 1
-	}
-
-	detStart := time.Now()
-	if err := evidence.RunAllDetectors(ctx, store, p, logger); err != nil {
-		WriteErrorJSON(fmt.Sprintf("detectors failed: %v", err))
-		return 1
-	}
-	logger.Info("phase timing", "phase", "detectors_total", "elapsed_ms", time.Since(detStart).Milliseconds())
+	indexResult := outcome.Index
 
 	evidencePackages := []map[string]interface{}{}
 	totalCandidates := 0
@@ -243,52 +149,20 @@ func runScanCmd(ctx context.Context, args []string) int {
 	// type gets no scan_stats row and thus reads terminal_state "unknown" from
 	// `status --per-type`; surfacing the concrete error here is what makes a
 	// planner crash distinguishable from "the orchestrator never dispatched it".
-	planErrors := map[string]string{}
+	planErrors := outcome.PlanErrors
 
 	vulnTypes := planner.AllVulnTypes()
-	type planOutcome struct {
-		result *planner.PlanResult
-		err    error
-	}
-	outcomes := make([]planOutcome, len(vulnTypes))
-
-	const planConcurrency = 4
-	planSem := make(chan struct{}, planConcurrency)
-	var pwg sync.WaitGroup
-	for i, vulnType := range vulnTypes {
-		pwg.Add(1)
-		go func(idx int, vt string) {
-			defer pwg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					outcomes[idx] = planOutcome{err: fmt.Errorf("plan %s panicked: %v", vt, r)}
-				}
-			}()
-			planSem <- struct{}{}
-			defer func() { <-planSem }()
-			pl := planner.NewPlanner(store, p, logger)
-			planStart := time.Now()
-			result, err := pl.Plan(ctx, vt)
-			if logger != nil {
-				logger.Info("phase timing", "phase", "plan_"+vt, "elapsed_ms", time.Since(planStart).Milliseconds())
-			}
-			outcomes[idx] = planOutcome{result: result, err: err}
-		}(i, vulnType)
-	}
-	pwg.Wait()
 
 	for i, vulnType := range vulnTypes {
-		oc := outcomes[i]
-		if oc.err != nil {
-			planErrors[vulnType] = oc.err.Error()
+		if errMsg, failed := planErrors[vulnType]; failed {
 			evidencePackages = append(evidencePackages, map[string]interface{}{
 				"vulnerability_type": vulnType,
-				"error":              oc.err.Error(),
+				"error":              errMsg,
 				"candidates":         []interface{}{},
 			})
 			continue
 		}
-		result := oc.result
+		result := outcome.Plans[i]
 
 		filterChainJSON, _ := json.Marshal(result.Summary.Filters)
 
@@ -601,6 +475,7 @@ func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType s
 			Reasoning:    "Pipeline-proved (auto-confirmed, no AI re-review): " + summary,
 			FixStrategy:  report.FixSuggestion(vulnType, cwe, c),
 			ScanID:       scanID,
+			Fingerprint:  computeFingerprint(cwe, c.Target.File, c.Target.Function, c.Target.Line),
 		}
 		if _, err := store.UpsertFinding(ctx, f); err != nil {
 			return written, fmt.Errorf("upsert auto-confirmed %s:%d: %w", c.Target.File, c.Target.Line, err)

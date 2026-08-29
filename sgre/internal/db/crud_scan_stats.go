@@ -65,7 +65,7 @@ func (s *store) CountFindingsByScanAndStatus(ctx context.Context, scanID, status
 
 func (s *store) ListFindingsByScanID(ctx context.Context, scanID string) ([]*Finding, error) {
 	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, rule_id, severity, confidence, evidence, status, file_path, line_number, function_name, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, created_at FROM findings WHERE scan_id = ? ORDER BY id`, scanID)
+		`SELECT id, rule_id, severity, confidence, evidence, status, file_path, line_number, function_name, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at FROM findings WHERE scan_id = ? ORDER BY id`, scanID)
 	if err != nil {
 		return nil, fmt.Errorf("db: list findings by scan_id: %w", err)
 	}

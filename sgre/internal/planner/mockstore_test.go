@@ -315,6 +315,24 @@ func (s *mockStore) GetFindingByID(ctx context.Context, id int64) (*db.Finding, 
 func (s *mockStore) UpdateFindingReview(ctx context.Context, id int64, reviewStatus, reviewReasoning string) error {
 	return nil
 }
+func (s *mockStore) ListFingerprintsExcludingScanID(ctx context.Context, excludeScanID string) (map[string]bool, error) {
+	set := make(map[string]bool)
+	for _, f := range s.findings {
+		if f.ScanID != excludeScanID && f.Fingerprint != "" {
+			set[f.Fingerprint] = true
+		}
+	}
+	return set, nil
+}
+func (s *mockStore) UpsertReviewSession(ctx context.Context, r *db.ReviewSession) error {
+	return nil
+}
+func (s *mockStore) GetReviewSessionByID(ctx context.Context, reviewID string) (*db.ReviewSession, error) {
+	return nil, nil
+}
+func (s *mockStore) UpdateReviewSessionStatus(ctx context.Context, reviewID, status string) error {
+	return nil
+}
 
 func (s *mockStore) UpsertSummary(ctx context.Context, sum *db.FunctionSummary) error {
 	s.summaries[sum.FunctionID] = sum

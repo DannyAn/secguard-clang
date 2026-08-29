@@ -212,6 +212,9 @@ build_master() {
     set_json_version "$root/opencode/extension.json" "$version"
     cp "$EXTENSION_DIR/opencode/opencode.json" "$root/opencode/"
     expand_includes "$EXTENSION_DIR/opencode/commands/secguard.md" "$root/opencode/commands/secguard.md" "$EXTENSION_DIR/shared"
+    expand_includes "$EXTENSION_DIR/opencode/commands/diff.md" "$root/opencode/commands/diff.md" "$EXTENSION_DIR/shared"
+    expand_includes "$EXTENSION_DIR/opencode/commands/pr.md" "$root/opencode/commands/pr.md" "$EXTENSION_DIR/shared"
+    expand_includes "$EXTENSION_DIR/opencode/commands/mr.md" "$root/opencode/commands/mr.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/agents/security-auditor.md" "$root/opencode/agents/security-auditor.md" "$EXTENSION_DIR/shared"
     cp "$EXTENSION_DIR/opencode/tools/"*.ts "$root/opencode/tools/" 2>/dev/null || true
     cp "$EXTENSION_DIR/opencode/plugins/"*.ts "$root/opencode/plugins/" 2>/dev/null || true
@@ -225,6 +228,9 @@ build_master() {
     cp "$EXTENSION_DIR/opencode-nga/.codeagent-extension-install.json" "$root/opencode-nga/"
     cp "$EXTENSION_DIR/opencode/opencode.json" "$root/opencode-nga/"
     expand_includes "$EXTENSION_DIR/opencode/commands/secguard.md" "$root/opencode-nga/commands/secguard.md" "$EXTENSION_DIR/shared"
+    expand_includes "$EXTENSION_DIR/opencode/commands/diff.md" "$root/opencode-nga/commands/diff.md" "$EXTENSION_DIR/shared"
+    expand_includes "$EXTENSION_DIR/opencode/commands/pr.md" "$root/opencode-nga/commands/pr.md" "$EXTENSION_DIR/shared"
+    expand_includes "$EXTENSION_DIR/opencode/commands/mr.md" "$root/opencode-nga/commands/mr.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/agents/security-auditor.md" "$root/opencode-nga/agents/security-auditor.md" "$EXTENSION_DIR/shared"
     cp "$EXTENSION_DIR/opencode/tools/"*.ts "$root/opencode-nga/tools/" 2>/dev/null || true
     cp "$EXTENSION_DIR/opencode/plugins/"*.ts "$root/opencode-nga/plugins/" 2>/dev/null || true
@@ -236,6 +242,9 @@ build_master() {
     cp "$EXTENSION_DIR/claude-code/hooks/hooks.json" "$root/claude-code/hooks/"
     cp "$EXTENSION_DIR/claude-code/.claude/settings.json" "$root/claude-code/.claude/" 2>/dev/null || true
     expand_includes "$EXTENSION_DIR/claude-code/.claude/commands/secguard.md" "$root/claude-code/.claude/commands/secguard.md" "$EXTENSION_DIR/shared"
+    expand_includes "$EXTENSION_DIR/claude-code/.claude/commands/diff.md" "$root/claude-code/.claude/commands/diff.md" "$EXTENSION_DIR/shared"
+    expand_includes "$EXTENSION_DIR/claude-code/.claude/commands/pr.md" "$root/claude-code/.claude/commands/pr.md" "$EXTENSION_DIR/shared"
+    expand_includes "$EXTENSION_DIR/claude-code/.claude/commands/mr.md" "$root/claude-code/.claude/commands/mr.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/claude-code/.claude/agents/security-auditor.md" "$root/claude-code/.claude/agents/security-auditor.md" "$EXTENSION_DIR/shared"
 
     # claude-cac（Claude Code 开源分支：~/.cac/，manifest 改名 .cac-plugin/plugin.json）
@@ -245,6 +254,9 @@ build_master() {
     cp "$EXTENSION_DIR/claude-cac/hooks/hooks.json" "$root/claude-cac/hooks/"
     cp "$EXTENSION_DIR/claude-cac/.cac/settings.json" "$root/claude-cac/.cac/" 2>/dev/null || true
     expand_includes "$EXTENSION_DIR/claude-cac/.cac/commands/secguard.md" "$root/claude-cac/.cac/commands/secguard.md" "$EXTENSION_DIR/shared"
+    expand_includes "$EXTENSION_DIR/claude-cac/.cac/commands/diff.md" "$root/claude-cac/.cac/commands/diff.md" "$EXTENSION_DIR/shared"
+    expand_includes "$EXTENSION_DIR/claude-cac/.cac/commands/pr.md" "$root/claude-cac/.cac/commands/pr.md" "$EXTENSION_DIR/shared"
+    expand_includes "$EXTENSION_DIR/claude-cac/.cac/commands/mr.md" "$root/claude-cac/.cac/commands/mr.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/claude-cac/.cac/agents/security-auditor.md" "$root/claude-cac/.cac/agents/security-auditor.md" "$EXTENSION_DIR/shared"
 
     # install.sh / uninstall.sh（注入）

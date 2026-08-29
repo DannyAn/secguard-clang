@@ -1,0 +1,161 @@
+package cli
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/evidence"
+	"github.com/DannyAn/secguard-clang/internal/graph"
+	"github.com/DannyAn/secguard-clang/internal/indexer"
+	"github.com/DannyAn/secguard-clang/internal/log"
+	"github.com/DannyAn/secguard-clang/internal/parser"
+	"github.com/DannyAn/secguard-clang/internal/planner"
+)
+
+// pipelineOutcome is the raw converged-candidate output of the analysis
+// pipeline, before any full-scan or incremental-review post-processing (suppression,
+// target/line scoping, auto-confirm, scan_stats, report rendering). Both the full
+// scan and the incremental review consume this shared, behavior-identical stage.
+type pipelineOutcome struct {
+	Index      *indexer.IndexResult
+	Plans      []*planner.PlanResult
+	PlanErrors map[string]string
+}
+
+// runPipeline runs the shared engine: index → graph build → detectors → plan.
+// It is the ONLY place the semantic-graph/evidence/convergence stages run, so a
+// full scan and an incremental review can never drift in how they analyze code.
+// excludeDirs is nil to keep the default exclusions, or an explicit (possibly
+// empty) list to override them.
+func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPath string, excludeDirs []string) (*pipelineOutcome, error) {
+	p := parser.NewParser()
+	defer p.CloseAll()
+
+	idx := indexer.NewIndexer(store, logger)
+	if excludeDirs != nil {
+		idx.SetExcludeDirs(excludeDirs)
+	}
+
+	idxStart := time.Now()
+	indexResult, err := idx.Index(ctx, absPath)
+	if err != nil {
+		return nil, fmt.Errorf("index failed: %w", err)
+	}
+	logger.Info("phase timing", "phase", "index", "elapsed_ms", time.Since(idxStart).Milliseconds())
+
+	// The semantic graph is rebuilt from scratch every run (there is no
+	// incremental graph update), so clear the previous run's nodes/edges first.
+	if err := store.ClearGraph(ctx); err != nil {
+		return nil, fmt.Errorf("clear graph: %w", err)
+	}
+
+	graphStart := time.Now()
+	type builderTask struct {
+		name string
+		fn   func(context.Context) error
+	}
+	builders := []builderTask{
+		{"call_graph", func(ctx context.Context) error {
+			_, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+			return err
+		}},
+		{"data_flow", func(ctx context.Context) error {
+			_, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+			return err
+		}},
+		{"alias", func(ctx context.Context) error {
+			_, err := graph.NewAliasBuilder(store, p, logger).Build(ctx)
+			return err
+		}},
+		{"ownership", func(ctx context.Context) error {
+			_, err := graph.NewOwnershipBuilder(store, p, logger).Build(ctx)
+			return err
+		}},
+		{"interproc", func(ctx context.Context) error {
+			_, err := graph.NewInterprocBuilder(store, p, logger).Build(ctx)
+			return err
+		}},
+		{"lock_order", func(ctx context.Context) error {
+			_, err := graph.NewLockOrderBuilder(store, p, logger).Build(ctx)
+			return err
+		}},
+		{"shared_access", func(ctx context.Context) error {
+			_, err := graph.NewSharedAccessBuilder(store, p, logger).Build(ctx)
+			return err
+		}},
+	}
+	var bwg sync.WaitGroup
+	bErrCh := make(chan error, len(builders))
+	for _, b := range builders {
+		bwg.Add(1)
+		go func(b builderTask) {
+			defer bwg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					bErrCh <- fmt.Errorf("%s panicked: %v", b.name, r)
+				}
+			}()
+			if err := b.fn(ctx); err != nil {
+				bErrCh <- fmt.Errorf("%s: %w", b.name, err)
+			}
+		}(b)
+	}
+	bwg.Wait()
+	close(bErrCh)
+	for err := range bErrCh {
+		return nil, fmt.Errorf("graph build failed: %w", err)
+	}
+	logger.Info("phase timing", "phase", "graph_builders_parallel", "elapsed_ms", time.Since(graphStart).Milliseconds())
+
+	if err := store.ClearSecurityEvents(ctx); err != nil {
+		return nil, fmt.Errorf("clear security events: %w", err)
+	}
+
+	detStart := time.Now()
+	if err := evidence.RunAllDetectors(ctx, store, p, logger); err != nil {
+		return nil, fmt.Errorf("detectors failed: %w", err)
+	}
+	logger.Info("phase timing", "phase", "detectors_total", "elapsed_ms", time.Since(detStart).Milliseconds())
+
+	vulnTypes := planner.AllVulnTypes()
+	plans := make([]*planner.PlanResult, len(vulnTypes))
+	planErrors := map[string]string{}
+
+	const planConcurrency = 4
+	planSem := make(chan struct{}, planConcurrency)
+	var pwg sync.WaitGroup
+	for i, vulnType := range vulnTypes {
+		pwg.Add(1)
+		go func(idx int, vt string) {
+			defer pwg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					planErrors[vt] = fmt.Sprintf("plan %s panicked: %v", vt, r)
+				}
+			}()
+			planSem <- struct{}{}
+			defer func() { <-planSem }()
+			pl := planner.NewPlanner(store, p, logger)
+			planStart := time.Now()
+			result, err := pl.Plan(ctx, vt)
+			if logger != nil {
+				logger.Info("phase timing", "phase", "plan_"+vt, "elapsed_ms", time.Since(planStart).Milliseconds())
+			}
+			if err != nil {
+				planErrors[vt] = err.Error()
+				return
+			}
+			plans[idx] = result
+		}(i, vulnType)
+	}
+	pwg.Wait()
+
+	return &pipelineOutcome{
+		Index:      indexResult,
+		Plans:      plans,
+		PlanErrors: planErrors,
+	}, nil
+}

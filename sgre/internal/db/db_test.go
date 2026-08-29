@@ -18,6 +18,7 @@ func TestOpenInMemory_SchemaInitialized(t *testing.T) {
 	tables := []string{
 		"files", "functions", "variables", "expressions", "types", "locations",
 		"graph_nodes", "graph_edges", "security_events", "findings", "function_summary",
+		"review_sessions",
 	}
 	for _, table := range tables {
 		var name string
@@ -34,6 +35,7 @@ func TestNewTestStore_AllTablesPresent(t *testing.T) {
 	tables := []string{
 		"files", "functions", "variables", "expressions", "types", "locations",
 		"graph_nodes", "graph_edges", "security_events", "findings", "function_summary",
+		"review_sessions",
 	}
 	for _, table := range tables {
 		AssertTableExists(t, s, table)

@@ -16,8 +16,11 @@ const (
 	CodeagentDir = ".codeagent"
 	ProductDir   = "secguard-clang"
 	ScansDir     = "scans"
-	SgreDir      = ".sgre"
-	DbName       = "sgre.db"
+	// ReviewsDir is the isolated namespace for incremental PR/MR review output,
+	// sibling of ScansDir so a review never touches full-scan artifacts.
+	ReviewsDir = "reviews"
+	SgreDir    = ".sgre"
+	DbName     = "sgre.db"
 	// SarifFile is the VERDICT-stage machine-readable report: it exists only
 	// after the AI classification is persisted (`report --audit` regenerates
 	// it from the findings table). A consumer that reads it is guaranteed to

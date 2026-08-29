@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS findings (
     review_status   TEXT CHECK (review_status IS NULL OR review_status = '' OR review_status IN ('confirmed', 'dismissed', 'suspected-kept')),
     review_reasoning TEXT,
     scan_id         TEXT,
+    fingerprint     TEXT,
     created_at      INTEGER
 );
 
@@ -159,6 +160,29 @@ CREATE TABLE IF NOT EXISTS scan_stats (
     final_count   INTEGER NOT NULL,
     filter_chain  TEXT,
     created_at    INTEGER
+);
+
+-- ============================================================
+-- Review Sessions (incremental PR/MR review anchor)
+-- ============================================================
+
+-- A review session is the stable, content-addressed anchor for an incremental
+-- review. review_id is derived deterministically from (kind, base_sha, head_sha)
+-- so re-running the same diff is idempotent; a new head commit produces a new
+-- review while the base stays fixed, so only lines newly changed since base are
+-- reported as new findings.
+CREATE TABLE IF NOT EXISTS review_sessions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    review_id     TEXT NOT NULL UNIQUE,
+    kind          TEXT NOT NULL CHECK (kind IN ('diff', 'pr', 'mr')),
+    base_ref      TEXT NOT NULL,
+    head_ref      TEXT NOT NULL,
+    base_sha      TEXT NOT NULL,
+    head_sha      TEXT NOT NULL,
+    changed_files TEXT,
+    status        TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'done', 'failed')),
+    created_at    INTEGER,
+    updated_at    INTEGER
 );
 
 -- ============================================================
@@ -210,6 +234,7 @@ CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status);
 CREATE INDEX IF NOT EXISTS idx_findings_severity ON findings(severity);
 CREATE INDEX IF NOT EXISTS idx_findings_file ON findings(file_path);
 CREATE INDEX IF NOT EXISTS idx_findings_scan_id ON findings(scan_id);
+CREATE INDEX IF NOT EXISTS idx_findings_fingerprint ON findings(fingerprint);
 -- Idempotency key for UpsertFinding: one row per (scan, CWE, location). This is
 -- what makes concurrent --write-json upserts atomic (the ON CONFLICT target).
 CREATE UNIQUE INDEX IF NOT EXISTS uq_finding_loc ON findings(scan_id, rule_id, file_path, line_number, function_name);
@@ -221,6 +246,48 @@ CREATE INDEX IF NOT EXISTS idx_scan_stats_vuln_type ON scan_stats(vuln_type);
 func InitSchema(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, SchemaDDL); err != nil {
 		return fmt.Errorf("db: init schema: exec ddl: %w", err)
+	}
+	// Migrate pre-existing databases that predate the incremental-review schema:
+	// findings.fingerprint is additive, so an old sgre.db (whose findings table
+	// was created without the column) needs the column back-filled as NULL before
+	// any fingerprint-aware query can run. IF NOT EXISTS-style guards are not
+	// available for ADD COLUMN in SQLite, so check pragma table_info first.
+	if err := ensureColumn(ctx, db, "findings", "fingerprint", "TEXT"); err != nil {
+		return fmt.Errorf("db: init schema: ensure findings.fingerprint: %w", err)
+	}
+	return nil
+}
+
+// ensureColumn adds a column to a table when it is missing. It is the idempotent
+// migration primitive for additive columns that CREATE TABLE IF NOT EXISTS
+// cannot back-fill on an already-existing table.
+func ensureColumn(ctx context.Context, db *sql.DB, table, column, decl string) error {
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return fmt.Errorf("db: ensure column: pragma table_info(%s): %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			ctype     string
+			notnull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			return fmt.Errorf("db: ensure column: scan pragma row: %w", err)
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("db: ensure column: pragma rows: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+column+` `+decl); err != nil {
+		return fmt.Errorf("db: ensure column: alter table %s add %s: %w", table, column, err)
 	}
 	return nil
 }

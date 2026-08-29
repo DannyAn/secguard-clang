@@ -25,6 +25,12 @@
       6. 写入响应里若出现 `per_finding_warning`，说明判定没落到 findings/ —— 补齐参数重写一次，不要当成成功。
       7. **收尾必须验证产物**：所有类型写完后跑**一次** `secguard report --audit --scan-id <scan_id> --output-dir <scan_dir>`，重新生成 verdict 阶段 `report.md`（confirmed+suspected，dismissed 排除）+ `result.sarif` + `findings/`。然后读 `<output_dir>/result.sarif` 确认存在且非空、并 `ls <output_dir>/findings/`——没有就说明判定没落盘，先修再交付报告。
 
+      ## 增量检视（PR/MR diff，复用上述分类/落库/收尾流程）
+      - 入口：`secguard diff [<base>]`（base 缺省 `HEAD~1`）/ `secguard pr [--base <branch>]` / `secguard mr`（pr 别名）。
+      - 它自己会：git 算变更文件 + 变更行 → 跑完整管线 → 只保留「变更行上的新问题」（sink 行或 flow 源头行落在变更行、且内容指纹未在基线「全仓 findings + 既往 review」出现）。写 `.codeagent/secguard-clang/reviews/<review_id>/`，**绝不碰** `scans/`。
+      - 拿到 `review_id` + `review_dir` 后，流程与全仓完全一致：`review_id` 即 `--scan-id`、`review_dir` 即 `--output-dir`，`<db_path>`/`<tmpdir>` 仍从 `<review_dir>/../../.sgre/` 派生。候选是裁剪后的子集、数量通常小，逐个类型分类落库 → `report --audit` 收尾。
+      - 重复跑同一 base/head 幂等；新 commit 生成新 review 但 base 不变，已报问题靠指纹去重。非 git 仓库会报错退出，不要降级成全仓。
+
       ## 分类规则
       - 安全函数（memcpy_s/strcpy_s/sprintf_s/execve/sqlite3_prepare_v2 等 `_s`）默认 false-positive，但容量参数说谎/违约、返回值必须检查却未检查的除外——「函数安全」不等于「这次调用安全」。
       - **弱加密一律 confirmed，不许"borderline/可能是有意为之"**：DES/3DES/MD5/SHA-1/RC4/rand() 按 CWE-327 定义就是弱，修复建议指向 AES-256/SHA-256/CSPRNG。

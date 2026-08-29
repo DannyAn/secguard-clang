@@ -66,6 +66,12 @@ func Execute(ctx context.Context, args []string) int {
 		return runIndexCmd(ctx, args[1:])
 	case "scan":
 		return runScanCmd(ctx, args[1:])
+	case "diff":
+		return runDiffCmd(ctx, args[1:])
+	case "pr":
+		return runPrCmd(ctx, args[1:])
+	case "mr":
+		return runMrCmd(ctx, args[1:])
 	case "status":
 		return runStatusCmd(ctx, args[1:])
 	case "query":
@@ -81,7 +87,7 @@ func Execute(ctx context.Context, args []string) int {
 	case "schema":
 		return runSchemaCmd(args[1:])
 	default:
-		WriteErrorJSON(fmt.Sprintf("unknown command %q; available: index, scan, status, query, types, plan, report, db, schema", args[0]))
+		WriteErrorJSON(fmt.Sprintf("unknown command %q; available: index, scan, diff, pr, mr, status, query, types, plan, report, db, schema", args[0]))
 		return 1
 	}
 }
@@ -92,6 +98,9 @@ func printUsage() {
 Usage:
   secguard index <path>    Index a C codebase
   secguard scan <path>     Full pipeline: index + plan all vuln types + report
+  secguard diff [<base>]   Review only changes base..HEAD (base defaults to HEAD~1)
+  secguard pr [--base <b>] Review a PR/MR diff (base defaults to merge-base with main/master)
+  secguard mr [--base <b>] Alias of pr (GitLab)
   secguard status          Show index status (files, functions, staleness)
   secguard query <skill>   Run a skill query
   secguard types           List all vulnerability types + CWE (JSON)

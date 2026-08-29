@@ -186,7 +186,26 @@ type Finding struct {
 	ReviewStatus    string  `json:"review_status,omitempty"`
 	ReviewReasoning string  `json:"review_reasoning,omitempty"`
 	ScanID          string  `json:"scan_id,omitempty"`
-	CreatedAt       int64   `json:"created_at"`
+	// Fingerprint is a content-addressed, scan-independent identity for a
+	// finding (rule_id + file + function + sink-statement text). It lets the
+	// incremental-review pipeline dedup a finding across scans and against a
+	// full-scan baseline even when the line number drifts.
+	Fingerprint string  `json:"fingerprint,omitempty"`
+	CreatedAt   int64   `json:"created_at"`
+}
+
+type ReviewSession struct {
+	ID           int64  `json:"id"`
+	ReviewID     string `json:"review_id"`
+	Kind         string `json:"kind"`
+	BaseRef      string `json:"base_ref"`
+	HeadRef      string `json:"head_ref"`
+	BaseSHA      string `json:"base_sha"`
+	HeadSHA      string `json:"head_sha"`
+	ChangedFiles string `json:"changed_files,omitempty"`
+	Status       string `json:"status"`
+	CreatedAt    int64  `json:"created_at"`
+	UpdatedAt    int64  `json:"updated_at"`
 }
 
 type ScanStat struct {

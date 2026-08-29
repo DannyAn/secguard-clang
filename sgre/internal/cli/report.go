@@ -233,6 +233,8 @@ func runReportCmd(ctx context.Context, args []string) int {
 		// The properties JSON was only the transport; the structured fields now
 		// live in their dedicated columns. Drop the raw copy so the DB stays lean.
 		finding.Properties = ""
+		// Content-addressed identity for cross-scan dedup (incremental review).
+		finding.Fingerprint = computeFingerprint(finding.RuleID, finding.FilePath, finding.FunctionName, finding.LineNumber)
 
 		if finding.Severity == "" {
 			finding.Severity = "info"
@@ -437,6 +439,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 				ScanID:         scanID,
 			}
 			f.FilePath = resolveFindingFilePath(ctx, store, f.FilePath, allFiles)
+			f.Fingerprint = computeFingerprint(f.RuleID, f.FilePath, f.FunctionName, f.LineNumber)
 			pending = append(pending, &pendingWrite{in: in, f: f})
 		}
 

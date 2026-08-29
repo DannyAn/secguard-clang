@@ -99,6 +99,17 @@ type FindingStore interface {
 	ListFindingsByStatus(ctx context.Context, status string) ([]*Finding, error)
 	GetFindingByID(ctx context.Context, id int64) (*Finding, error)
 	UpdateFindingReview(ctx context.Context, id int64, reviewStatus, reviewReasoning string) error
+	// ListFingerprintsExcludingScanID returns the set of distinct non-empty
+	// finding fingerprints across every scan except excludeScanID. It is the
+	// incremental-review baseline: a candidate whose fingerprint is already
+	// present (from a full scan or a prior review) is not new and is filtered.
+	ListFingerprintsExcludingScanID(ctx context.Context, excludeScanID string) (map[string]bool, error)
+}
+
+type ReviewSessionStore interface {
+	UpsertReviewSession(ctx context.Context, r *ReviewSession) error
+	GetReviewSessionByID(ctx context.Context, reviewID string) (*ReviewSession, error)
+	UpdateReviewSessionStatus(ctx context.Context, reviewID, status string) error
 }
 
 type ScanStatStore interface {
@@ -133,6 +144,7 @@ type Store interface {
 	FindingStore
 	ScanStatStore
 	FunctionSummaryStore
+	ReviewSessionStore
 	Close() error
 	WithTx(ctx context.Context, fn func(Store) error) error
 	DB() *sql.DB
