@@ -3,6 +3,7 @@ module github.com/DannyAn/secguard-clang
 go 1.25.0
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/tree-sitter/go-tree-sitter v0.25.0
 	github.com/tree-sitter/tree-sitter-c v0.24.2
 	github.com/xuri/excelize/v2 v2.11.0

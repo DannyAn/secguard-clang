@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
@@ -24,6 +25,15 @@ func (d *NullSourceDetector) Name() string { return "null_source" }
 
 func (d *NullSourceDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
+
+	// Configured trusted macros (from secguard.toml) merge with the macros
+	// auto-identified from the scanned source. The config lets a deployment
+	// trust third-party accessor macros whose definitions are not visible to
+	// the scanner (e.g. SDK headers outside the indexed tree).
+	configuredTrusted := make(map[string]bool)
+	for _, name := range config.Load("").TrustedMacroNames() {
+		configuredTrusted[name] = true
+	}
 
 	// Pass 1: return-null and malloc sources. detectReturnNull populates the
 	// function_summary return-nullability that detectExternalCall consults, so it
@@ -54,6 +64,9 @@ func (d *NullSourceDetector) Detect(ctx context.Context) (DetectResult, error) {
 		assigns := root.FindAll("assignment_expression")
 		inits := root.FindAll("init_declarator")
 		trusted := trustedMacros(root)
+		for name := range configuredTrusted {
+			trusted[name] = true
+		}
 		for _, f := range funcs {
 			d.detectExternalCall(ctx, f, file, assigns, inits, &result, knownFuncs, retTypes, nullableFuncs, trusted)
 		}
