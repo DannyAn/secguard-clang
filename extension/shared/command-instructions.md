@@ -70,8 +70,11 @@ Verify with `secguard report --audit` (read back findings), not by re-writing.
 skills with prefixed names such as `crs-buffer-overflow`, `crs-crypto-misuse`.
 **Never load a prefixed skill** — those belong to another product and do not know
 SecGuard's evidence schema. If the only skill you can find is prefixed, STOP and
-report it rather than loading the wrong skill. The SecGuard skills live under the
-`secguard-clang` extension/namespace only.
+report it rather than loading the wrong skill. `secguard-clang` is the
+**extension/plugin namespace, NOT a skill name** — never call
+`Skill("secguard-clang")` or any namespaced skill; the SecGuard skills are the
+bare kebab-case type names (e.g. `buffer-overflow`, `null-deref`) under that
+namespace.
 
 ## Argument Parsing
 

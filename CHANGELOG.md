@@ -65,6 +65,10 @@
   `task_notification` 事件，二者不可混用）与 F8（orchestrator 回合只有输出最终报告后才允许
   结束；拿到所有子代理结果后必须同一回合内 Collect+finalize 并输出报告，禁止停在
   "任务跑完但没 finalize、计时仍走"的中间态）。
+- **消除 skill 命名空间歧义**：`command-instructions.md` 明确 `secguard-clang` 是扩展/插件
+  命名空间、**不是 skill 名**，禁止 `Skill("secguard-clang")` 或任何带命名空间的 skill 调用，
+  只加载 `secguard types` 里的裸 kebab-case 类型名——避免 orchestrator 开场误调
+  `Skill("secguard-clang")` 报 "not found"。
 
 ### 部署修复：Claude Code 插件注册
 
