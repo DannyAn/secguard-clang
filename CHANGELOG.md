@@ -2,19 +2,6 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.5.1] - 2026-08-29
-
-### 修复：候选索引缺 Evidence 列导致子代理找不到候选文件
-
-- v0.5.0 把候选表从 `report.md` 拆到 `candidates/<type>/_index.md` 时，索引里只有
-  `# | Function | File:Line | Variable | Suspicion | Source`，没有给出候选证据文件的**确切
-  文件名**（`NNN_<file>_<line>.md`）。子代理要打开 suspected/possible 候选的 `## Code
-  Context` 时只能靠猜，猜错（漏了行号）就报大量 `File not found`，端到端分类断裂。
-- 现 `_index.md` 新增 `Evidence` 列，精确给出每个候选的文件名（与磁盘实际文件一致，由
-  `candidateFilename()` 统一生成，`writeCandidates`/`writeTypeIndex` 共用同一来源）；
-  `agent-body.md`/`command-instructions.md` 同步改为"用 `Evidence` 列原样打开，禁止猜名"。
-  新增 `TestWriteTypeIndex_IncludesEvidenceFilename` 锁住该契约。
-
 ## [0.5.0] - 2026-08-28
 
 ### 性能：消除 null-deref 大类型的"逐个回填"与重复转存
@@ -31,9 +18,9 @@
 - **避免逐块重复 finalize**：`secguard_report` 新增 `finalize` 参数（默认 true），大类型
   拆批写入时中间块传 `finalize: false`，只在最后（或 orchestrator 的单次 `--audit`）渲染
   一次 `report.md`/`result.sarif`/`result.xlsx`/`findings/`。
-- **源上下文内嵌，消灭逐候选 source READ（AI 阶段最大耗时点）**：候选阶段 `report.md`
-  每行新增 `Source` 列（该 file:line 的原始语句），`candidates/<type>/NNN_*.md` 新增
-  `## Code Context`（±窗口源码）。AI 分类时直接读内嵌源码，**不再对每个候选发一次 source
+- **源上下文内嵌，消灭逐候选 source READ（AI 阶段最大耗时点）**：候选阶段
+  `candidates/<type>/_index.md` 每行新增 `Source` 列（该 file:line 的原始语句），
+  `candidates/<type>/NNN_*.md` 新增 `## Code Context`（±窗口源码）。AI 分类时直接读内嵌源码，**不再对每个候选发一次 source
   READ 工具调用**——这一步把 AI 阶段从 O(候选数) 次工具往返降为 O(1) 次读取 + 纯生成，
   是 800 文件仓从 30-50 分钟压到 15-20 分钟的关键杠杆。`agent-body.md`/
   `command-instructions.md` 同步改为"从内嵌源码分类，禁止逐候选 source READ"。
@@ -50,6 +37,14 @@
 - **候选索引按类型拆分（per-type `_index.md`）**：`report.md` 退化为"摘要 + 每类型计数 +
   输出文件"，每类型的候选表（含 `Source` 列）移到 `candidates/<type>/_index.md`。子代理只
   读自己类型/区间的 `_index.md`，不再每个子代理都读整份 report.md，省上下文 + 省 token。
+- **`_index.md` 增加 `Evidence` 列（修复端到端 File not found）**：候选表从 `report.md`
+  拆出后，索引里一度只有 `# | Function | File:Line | Variable | Suspicion | Source`，
+  没有给出候选证据文件的确切文件名（`NNN_<file>_<line>.md`）。子代理打开 suspected/possible
+  候选的 `## Code Context` 只能靠猜，漏掉行号/目录前缀/扩展名净化就报 `File not found`。
+  现 `Evidence` 列由共享的 `candidateFilename()` 与磁盘实际文件同一来源生成；`agent-body.md`/
+  `command-instructions.md` 改为"用 `Evidence` 列原样打开，禁止猜名"；并同步修正 deepseek-harness
+  预设、OpenCode `secguard_scan`/`secguard_plan` 工具描述里残留的"候选详情在 report.md"旧语义。
+  新增 `TestWriteTypeIndex_IncludesEvidenceFilename` 锁住该契约。
 
 ### 数据口径：最终导出只保留 confirmed + suspected-kept
 

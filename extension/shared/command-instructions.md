@@ -124,8 +124,9 @@ hardcode names or counts.
 
 ## Source-Path Handling (avoids wasting turns)
 
-`report.md` shows paths relative to the scan target; the `## Location` block of
-each `candidates/<vuln-type>/NNN_*.md` file carries the **absolute** path. Before
+`candidates/<type>/_index.md` shows paths relative to the scan target (its
+`File:Line` column); the `## Location` block of each
+`candidates/<vuln-type>/NNN_*.md` file carries the **absolute** path. Before
 reading source, take the absolute path from the candidate file's Location block
 (or the `files_with_candidates` list in the scan summary) and use it directly.
 Do not reconstruct paths by trial and error.
@@ -168,8 +169,8 @@ file:line, and only for candidates that actually need verification. The same
 ≤5-files budget covers the A5 second round (A5 normally re-judges from context +
 persisted reasoning; it opens source only for a suspected finding whose file was
 not already read). Do NOT load a skill for a type that has 0 candidates.
-`report.md` is your primary candidate input (one compact read); the scan summary
-already gives you the per-type counts.
+`candidates/<type>/_index.md` is your primary candidate input (one compact read
+per type); the scan summary already gives you the per-type counts.
 
 **Candidate-file budget (the biggest time sink — READ THIS).** At this stage
 (before `report --audit`), the candidate index is **per type**: each

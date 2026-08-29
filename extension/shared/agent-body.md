@@ -90,8 +90,9 @@ it, before you look at the next type.
 ## Context budget
 
 **You do NOT read source files at all — the source is already embedded for you.**
-The scan pre-embeds the exact statement in `report.md`'s `Source` column and the
-±context window in each `candidates/<type>/NNN_*.md` `## Code Context` block.
+The scan pre-embeds the exact statement in `candidates/<type>/_index.md`'s `Source`
+column and the ±context window in each `candidates/<type>/NNN_*.md` `## Code
+Context` block.
 Classify from those. Issuing a per-candidate source READ is the single biggest
 wall-clock cost of a large scan (one tool round-trip per candidate × thousands of
 candidates = tens of minutes); do not do it. You may open a raw source file ONLY
@@ -120,8 +121,9 @@ the directory.
 - **Only report findings for pipeline-supported vulnerability types** — i.e. the types returned by `secguard types`. Do NOT persist findings for CWE types outside the pipeline's coverage; note them as observations in your report instead.
 
 ### Source paths
-`report.md` shows paths relative to the scan target; the `## Location` block of
-each `candidates/<vuln-type>/NNN_*.md` carries the **absolute** path. Use that
+`candidates/<type>/_index.md` shows paths relative to the scan target (its
+`File:Line` column); the `## Location` block of each
+`candidates/<vuln-type>/NNN_*.md` carries the **absolute** path. Use that
 absolute path directly — do not reconstruct paths by trial and error.
 
 ### Skill namespace

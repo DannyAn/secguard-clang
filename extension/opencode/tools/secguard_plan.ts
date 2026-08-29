@@ -89,7 +89,7 @@ export default tool({
         const candidatesFile = goJson?.candidates_file ?? ""
 
         // 从 candidates_file 读取完整 candidates（plan 命令现在把完整数据写文件，
-        // stdout 只有摘要）。如果文件读取失败，返回摘要让 agent 回退到 report.md。
+        // stdout 只有摘要）。如果文件读取失败，返回摘要让 agent 回退到 candidates/<type>/_index.md。
         let compactCandidates: any[] = []
         if (candidatesFile && fs.existsSync(candidatesFile)) {
           const fileContent = fs.readFileSync(candidatesFile, "utf-8")
@@ -113,8 +113,8 @@ export default tool({
         }, null, 2)
       } catch {
         // 不返回原始 result（候选多时可能触发 OpenCode 截断）。返回精简错误，
-        // agent 可从 report.md 获取该类型的候选列表。
-        return JSON.stringify({ error: "Plan output unparseable; read report.md for this type's candidates.", vuln_type: args.vuln_type, db_path: dbPath }, null, 2)
+        // agent 可从 candidates/<type>/_index.md 获取该类型的候选列表。
+        return JSON.stringify({ error: "Plan output unparseable; read candidates/<vuln_type>/_index.md for this type's candidates.", vuln_type: args.vuln_type, db_path: dbPath }, null, 2)
       }
     } catch (e: any) {
       const err = e?.stderr?.toString()?.trim() || e?.message || String(e)

@@ -59,7 +59,7 @@ function printScanSummary(
 
 export default tool({
   description:
-    "Run full SecGuard security scan: index codebase, run all registered detectors, apply the convergence pipeline for every registered vulnerability type. Writes report.md + candidates.sarif (unclassified leads at SARIF level note) + candidates/<vuln-type>/ Markdown to .codeagent/secguard-clang/scans/<scan_id>/; findings/<vuln-type>/ and result.sarif are produced later from the AI verdicts via secguard_report, stores DB at .codeagent/secguard-clang/.sgre/sgre.db. Returns JSON with scan_id, output_dir, total_candidates, candidates_by_type, files_with_candidates. The Go binary generates scan_id, creates the scan directory, and updates the latest symlink — this wrapper only invokes the binary and parses its JSON output.",
+    "Run full SecGuard security scan: index codebase, run all registered detectors, apply the convergence pipeline for every registered vulnerability type. Writes report.md (summary + per-type counts) + candidates.sarif (unclassified leads at SARIF level note) + per-type candidate indexes (candidates/<vuln-type>/_index.md, the Source/Evidence table the AI classifies from) + candidate evidence Markdown to .codeagent/secguard-clang/scans/<scan_id>/; findings/<vuln-type>/ and result.sarif are produced later from the AI verdicts via secguard_report, stores DB at .codeagent/secguard-clang/.sgre/sgre.db. Returns JSON with scan_id, output_dir, total_candidates, candidates_by_type, files_with_candidates. The Go binary generates scan_id, creates the scan directory, and updates the latest symlink — this wrapper only invokes the binary and parses its JSON output.",
   args: {
     path: tool.schema
       .string()
@@ -141,7 +141,7 @@ export default tool({
         // JSON.parse 失败时，绝不返回原始 result（可能含完整 evidence_packages，
         // 达 100KB+ 会触发 OpenCode 截断并存到 ~/.local/share/opencode/tool-output/，
         // 诱导 agent 去读那个截断文件并触发权限弹窗）。改用正则提取 scan_id/scan_dir，
-        // 返回精简信息——agent 通过 report.md 获取完整候选列表（见 agent-body.md）。
+        // 返回精简信息——agent 通过 candidates/<type>/_index.md 获取完整候选列表（见 agent-body.md）。
         const m = (re: RegExp) => result.match(re)?.[1] ?? ""
         const scanId = m(/"scan_id"\s*:\s*"([^"]+)"/)
         const scanDir = m(/"scan_dir"\s*:\s*"([^"]+)"/)
@@ -154,10 +154,10 @@ export default tool({
             sarif: path.join(scanDir, "result.sarif"),
             db_path: dbPath,
             target_path: targetPath,
-            warning: "Scan completed but JSON was too large to parse inline. Read report.md for the full candidate list.",
+            warning: "Scan completed but JSON was too large to parse inline. Read candidates/<type>/_index.md for the full candidate list.",
           }, null, 2)
         }
-        return JSON.stringify({ error: "Scan output unparseable; check report.md in the scan directory.", db_path: dbPath, target_path: targetPath }, null, 2)
+        return JSON.stringify({ error: "Scan output unparseable; check candidates/<type>/_index.md in the scan directory.", db_path: dbPath, target_path: targetPath }, null, 2)
       }
     } catch (e: any) {
       const err = e?.stderr?.toString()?.trim() || e?.message || String(e)
