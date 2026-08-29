@@ -314,6 +314,30 @@ install_binary() {
     fi
 }
 
+# 生成配置文件模板（若不存在）。配置文件放在 AI Agent 自己的配置目录，
+# 独立于二进制和 extension，卸载/重装不会删除，用户的可信宏白名单等
+# 环境相关配置得以持久保存。
+install_config_template() {
+    local cfg_dir="$1"
+    local cfg_file="$cfg_dir/secguard.toml"
+    if [ -f "$cfg_file" ]; then
+        return 0
+    fi
+    mkdir -p "$cfg_dir"
+    cat > "$cfg_file" <<'TOML'
+# SecGuard 配置文件（可选）。卸载/重装 secguard 不会删除此文件。
+#
+# 可信访问宏白名单：这些宏展开为「字段 + 指针偏移」的地址计算，
+# 返回指针默认可信、调用方直接解引用不判空，因此不报空指针解引用。
+# 用于第三方/内部 SDK 的访问宏（宏定义在扫描范围外时自动识别失效）。
+[trusted_macros]
+names = [
+    # "YOUR_ACCESSOR_MACRO",
+]
+TOML
+    echo "[config] Generated $cfg_file"
+}
+
 # 检查并卸载旧版本
 check_and_uninstall_old() {
     local manifest="$1"
@@ -398,18 +422,22 @@ case "$TARGET" in
     opencode)
         install_opencode
         install_binary
+        install_config_template "$OC_PREFIX"
         ;;
     opencode-nga)
         install_opencode_nga
         install_binary
+        install_config_template "$OC_PREFIX"
         ;;
     claude-code)
         install_claude_code
         install_binary
+        install_config_template "$CC_PREFIX"
         ;;
     claude-cac)
         install_claude_cac
         install_binary
+        install_config_template "$CAC_PREFIX"
         ;;
     all)
         install_opencode
@@ -421,6 +449,9 @@ case "$TARGET" in
         install_claude_cac
         echo ""
         install_binary
+        install_config_template "$OC_PREFIX"
+        install_config_template "$CC_PREFIX"
+        install_config_template "$CAC_PREFIX"
         ;;
     *) echo "Unknown target: $TARGET" >&2; sg_cleanup_files_log; exit 2 ;;
 esac
