@@ -31,7 +31,7 @@ func (d *NullSourceDetector) Detect(ctx context.Context) (DetectResult, error) {
 	// trust third-party accessor macros whose definitions are not visible to
 	// the scanner (e.g. SDK headers outside the indexed tree).
 	configuredTrusted := make(map[string]bool)
-	for _, name := range config.Load("").TrustedMacroNames() {
+	for _, name := range config.Load().TrustedMacroNames() {
 		configuredTrusted[name] = true
 	}
 

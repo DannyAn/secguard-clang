@@ -16,7 +16,8 @@ names = ["MACRO_A", "MACRO_B"]
 		t.Fatal(err)
 	}
 
-	cfg := Load(path)
+	SetExplicitPath(path)
+	cfg := Load()
 	names := cfg.TrustedMacroNames()
 	if len(names) != 2 || names[0] != "MACRO_A" || names[1] != "MACRO_B" {
 		t.Errorf("expected [MACRO_A MACRO_B], got %v", names)
@@ -33,15 +34,17 @@ names = ["ENV_MACRO"]
 		t.Fatal(err)
 	}
 	t.Setenv("SECGUARD_CONFIG", path)
+	SetExplicitPath("") // clear any explicit path set by a prior test
 
-	cfg := Load("")
+	cfg := Load()
 	if got := cfg.TrustedMacroNames(); len(got) != 1 || got[0] != "ENV_MACRO" {
 		t.Errorf("expected [ENV_MACRO], got %v", got)
 	}
 }
 
 func TestLoad_MissingFileIsEmpty(t *testing.T) {
-	cfg := Load(filepath.Join(t.TempDir(), "does-not-exist.toml"))
+	SetExplicitPath(filepath.Join(t.TempDir(), "does-not-exist.toml"))
+	cfg := Load()
 	if cfg == nil {
 		t.Fatal("Load must return a non-nil Config for a missing file")
 	}

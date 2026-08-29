@@ -314,6 +314,29 @@ install_binary() {
     fi
 }
 
+# 把当前平台的二进制也复制一份到扩展根目录 bin/，供 OpenCode 的 MCP 工具
+# 通过 import.meta.url 定位（扩展内二进制作为首选，PATH 兜底）。二进制只放
+# 扩展根一份，不按 skill 重复。
+install_extension_binary() {
+    local ext_dir="$1"
+    local cur_os cur_arch
+    cur_os=$(sg_detect_os)
+    cur_arch=$(sg_detect_arch)
+    local bin
+    if ! bin=$(sg_select_binary "$PKG_DIR" "$cur_os" "$cur_arch"); then
+        return 1
+    fi
+    mkdir -p "$ext_dir/bin"
+    if [ "$cur_os" = "windows" ]; then
+        cp "$bin" "$ext_dir/bin/secguard.exe"
+        sg_record_file "$ext_dir/bin/secguard.exe"
+    else
+        cp "$bin" "$ext_dir/bin/secguard"
+        chmod +x "$ext_dir/bin/secguard"
+        sg_record_file "$ext_dir/bin/secguard"
+    fi
+}
+
 # 生成配置文件模板（若不存在）。配置文件放在 AI Agent 自己的配置目录，
 # 独立于二进制和 extension，卸载/重装不会删除，用户的可信宏白名单等
 # 环境相关配置得以持久保存。
@@ -422,11 +445,13 @@ case "$TARGET" in
     opencode)
         install_opencode
         install_binary
+        install_extension_binary "$OC_TARGET_DIR"
         install_config_template "$OC_PREFIX"
         ;;
     opencode-nga)
         install_opencode_nga
         install_binary
+        install_extension_binary "$OC_TARGET_DIR"
         install_config_template "$OC_PREFIX"
         ;;
     claude-code)
@@ -449,6 +474,7 @@ case "$TARGET" in
         install_claude_cac
         echo ""
         install_binary
+        install_extension_binary "$OC_TARGET_DIR"
         install_config_template "$OC_PREFIX"
         install_config_template "$CC_PREFIX"
         install_config_template "$CAC_PREFIX"

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/planner"
@@ -42,6 +43,12 @@ func Execute(ctx context.Context, args []string) int {
 	// It is a global flag, so strip it before per-command parsing — otherwise a
 	// subcommand would read "--context-lines" as its positional argument.
 	args = removeFlag(args, "context-lines")
+
+	// --config <path> overrides the secguard.toml location (default: platform
+	// config dir, or SECGUARD_CONFIG env var). It is a global flag, so strip it
+	// before per-command parsing.
+	config.SetExplicitPath(parseStringFlag(args, "config"))
+	args = removeFlag(args, "config")
 
 	if len(args) == 0 {
 		printUsage()

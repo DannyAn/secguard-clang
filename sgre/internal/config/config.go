@@ -33,10 +33,19 @@ var defaultPaths = []string{
 	filepath.Join(homeDir(), ".cac", "secguard.toml"),
 }
 
-// Load resolves the config file from explicitPath (a --config flag), else the
-// SECGUARD_CONFIG env var, else the default per-platform paths. A missing file
-// is not an error: the caller falls back to built-in behavior.
-func Load(explicitPath string) *Config {
+// explicitPath is set by the CLI layer from the --config flag. It takes
+// precedence over the env var and the default paths.
+var explicitPath string
+
+// SetExplicitPath records the --config flag value (called once at CLI startup).
+func SetExplicitPath(path string) {
+	explicitPath = path
+}
+
+// Load resolves the config file from the --config flag (via SetExplicitPath),
+// else the SECGUARD_CONFIG env var, else the default per-platform paths. A
+// missing file is not an error: the caller falls back to built-in behavior.
+func Load() *Config {
 	cfg := &Config{}
 	path := resolvePath(explicitPath)
 	if path == "" {
