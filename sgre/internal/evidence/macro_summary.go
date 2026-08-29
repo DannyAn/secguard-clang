@@ -134,3 +134,65 @@ func macroAssignsParam(body, param string) bool {
 	}
 	return false
 }
+
+// trustedMacros reports the set of function-like macros whose expansion computes
+// a pointer from a memory address (field access + pointer arithmetic) rather than
+// returning a possibly-null result (allocator / lookup). Third-party accessor
+// macros such as DPDK's `rte_pktmbuf_mtod(m, t)` →
+// `((t)((m)->buf_addr + (m)->data_off))` — possibly wrapped in another macro,
+// e.g. `#define WRAPPER_MTOD(m, t) rte_pktmbuf_mtod(m, t)` — are trusted:
+// callers dereference the result without a null check by contract, so a call to
+// one must not seed a null source.
+func trustedMacros(root parser.Node) map[string]bool {
+	defs := make(map[string]string)
+	for _, def := range root.FindAll("preproc_function_def") {
+		name, body := "", ""
+		for _, child := range def.NamedChildren() {
+			switch child.Kind() {
+			case "identifier":
+				if name == "" {
+					name = child.Text()
+				}
+			case "preproc_arg":
+				body = child.Text()
+			}
+		}
+		if name != "" && body != "" {
+			defs[name] = body
+		}
+	}
+
+	trusted := make(map[string]bool)
+	visiting := make(map[string]bool)
+	var isTrusted func(name string) bool
+	isTrusted = func(name string) bool {
+		if trusted[name] {
+			return true
+		}
+		body, ok := defs[name]
+		if !ok || visiting[name] {
+			return false
+		}
+		visiting[name] = true
+		defer delete(visiting, name)
+
+		// Field access + pointer arithmetic: computes an address inside an
+		// object (e.g. buf_addr + data_off), not a possibly-null allocation.
+		if strings.Contains(body, "->") && strings.Contains(body, "+") {
+			trusted[name] = true
+			return true
+		}
+		// Nested macro wrapper: trusted if it expands to a trusted macro.
+		for other := range defs {
+			if other != name && strings.Contains(body, other) && isTrusted(other) {
+				trusted[name] = true
+				return true
+			}
+		}
+		return false
+	}
+	for name := range defs {
+		isTrusted(name)
+	}
+	return trusted
+}

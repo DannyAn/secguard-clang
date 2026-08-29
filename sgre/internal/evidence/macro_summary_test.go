@@ -218,3 +218,51 @@ int f(void) {
 		t.Errorf("expected SAFE_FREE(p) to release p (no leak), got no MEMORY_RELEASE for p")
 	}
 }
+
+// TestMacroTrusted_NoNullSource pins that a trusted accessor macro — field +
+// pointer arithmetic, possibly wrapped in another macro — does NOT seed a null
+// source, so `ip = WRAPPER_MTOD(mbuf, T*)` can be dereferenced without a null
+// check and must not surface as a null-deref.
+func TestMacroTrusted_NoNullSource(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "macro_trusted.c")
+	src := `struct rte_mbuf { char *buf_addr; unsigned data_off; };
+typedef struct { int field; } SomeHdr;
+
+#define rte_pktmbuf_mtod(m, t) ((t)((m)->buf_addr + (m)->data_off))
+#define WRAPPER_MTOD(m, t) rte_pktmbuf_mtod(m, t)
+
+void trusted(struct rte_mbuf *mbuf) {
+    SomeHdr *ip_hdr = WRAPPER_MTOD(mbuf, SomeHdr *);
+    int len = ip_hdr->field;
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	NewNullSourceDetector(store, p, logger).Detect(ctx)
+
+	events, err := store.ListEventsByType(ctx, "NULL_VALUE")
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+			Function string `json:"function"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Variable == "ip_hdr" && props.Function == "WRAPPER_MTOD" {
+			t.Errorf("trusted macro WRAPPER_MTOD must not seed a null source for ip_hdr")
+		}
+	}
+}

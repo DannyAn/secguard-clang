@@ -53,8 +53,9 @@ func (d *NullSourceDetector) Detect(ctx context.Context) (DetectResult, error) {
 	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		assigns := root.FindAll("assignment_expression")
 		inits := root.FindAll("init_declarator")
+		trusted := trustedMacros(root)
 		for _, f := range funcs {
-			d.detectExternalCall(ctx, f, file, assigns, inits, &result, knownFuncs, retTypes, nullableFuncs)
+			d.detectExternalCall(ctx, f, file, assigns, inits, &result, knownFuncs, retTypes, nullableFuncs, trusted)
 		}
 	})
 	return result, err
@@ -198,7 +199,7 @@ func isNullLiteral(text string) bool {
 	return false
 }
 
-func (d *NullSourceDetector) detectExternalCall(ctx context.Context, f *db.Function, file *db.File, assigns, inits []parser.Node, result *DetectResult, knownFuncs map[string]bool, retTypes map[string]string, nullableFuncs map[string]bool) {
+func (d *NullSourceDetector) detectExternalCall(ctx context.Context, f *db.Function, file *db.File, assigns, inits []parser.Node, result *DetectResult, knownFuncs map[string]bool, retTypes map[string]string, nullableFuncs map[string]bool, trusted map[string]bool) {
 	checkNode := func(node parser.Node) {
 		children := node.NamedChildren()
 		if len(children) < 2 {
@@ -224,6 +225,13 @@ func (d *NullSourceDetector) detectExternalCall(ctx context.Context, f *db.Funct
 		}
 		callName := extractCallName(callExpr)
 		if callName == "" || isAllocator(callName) {
+			return
+		}
+		// A trusted accessor macro (field + offset arithmetic, possibly wrapped
+		// in another macro) computes an address inside an object, not a
+		// possibly-null result. Callers dereference it without a null check by
+		// contract, so it must not seed a null source.
+		if trusted[callName] {
 			return
 		}
 		// A function returning a non-pointer primitive (int/size_t/...)
