@@ -3,7 +3,7 @@ description: SecGuard security auditor — analyzes code for vulnerabilities usi
 mode: all
 
 temperature: 0.1
-steps: 200
+steps: 30
 permission:
   edit: allow
   bash:

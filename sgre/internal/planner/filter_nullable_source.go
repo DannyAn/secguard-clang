@@ -116,26 +116,69 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 	analyzer := newFlowAnalyzer(f.store, f.parser)
 	analyzer.dfgCopies = analyzer.loadDFGCopies(ctx, funcIDs)
 
-	// Inter-procedural return-nullability: which functions can return NULL.
-	// computeRetNullable re-derives this from the AST + function_summary (the
-	// persisted RETURN edges are not consumed here yet), so `p = f()` becomes a
-	// possible-null source when f can return NULL (previously the call was
-	// treated as a variable copy and silently cleared p's null state, dropping
-	// the candidate). Fail-open on error: keep candidates.
-	retNullable, err := f.computeRetNullable(ctx, models)
-	if err != nil {
-		retNullable = map[string]bool{}
+	// Batch-load the candidate functions and their files ONCE, so the pre-scan
+	// and the analyze loop below do not each issue N+1 point queries.
+	fnByID, _ := f.store.ListFunctionsByIDs(ctx, funcIDs)
+	fileByID := map[int64]*db.File{}
+	if files, ferr := f.store.ListFiles(ctx); ferr == nil {
+		for _, fl := range files {
+			fileByID[fl.ID] = fl
+		}
 	}
 
 	cache := newFileParseCache(f.parser)
-	results := make(map[int64]*flowResult, len(byFunc))
+
+	// Pre-scan: parse each candidate function's body and collect the callees
+	// assigned to a variable (`p = f()`). retNullable is ONLY consumed by
+	// callResultNullSources for exactly those assignments, so when no candidate
+	// function has any such assignment, computing the whole-program
+	// return-nullability is wasted work and is skipped entirely — it was the
+	// dominant cost of nullable_source over a large codebase (an eager fixpoint
+	// over every function regardless of whether the result is used).
+	assignedCallees := map[string]bool{}
 	for fid := range byFunc {
-		fn, err := f.store.GetFunctionByID(ctx, fid)
-		if err != nil || fn == nil {
+		fn := fnByID[fid]
+		if fn == nil {
 			continue
 		}
-		file, err := f.store.GetFileByID(ctx, fn.FileID)
-		if err != nil || file == nil {
+		file := fileByID[fn.FileID]
+		if file == nil {
+			continue
+		}
+		body, _ := cache.get(file, fn)
+		if body.Kind() != "compound_statement" {
+			continue
+		}
+		forEachAssignment(body, func(lhs, rhs parser.Node) {
+			if assignTargetName(lhs) == "" {
+				return
+			}
+			if name := rhsCallName(rhs); name != "" {
+				assignedCallees[name] = true
+			}
+		})
+	}
+
+	// Inter-procedural return-nullability: which functions can return NULL.
+	// Only computed when a candidate function actually assigns a call result to
+	// a variable (`p = f()`). Fail-open on error: keep candidates.
+	retNullable := map[string]bool{}
+	if len(assignedCallees) > 0 {
+		var err error
+		retNullable, err = f.computeRetNullable(ctx, models, assignedCallees)
+		if err != nil {
+			retNullable = map[string]bool{}
+		}
+	}
+
+	results := make(map[int64]*flowResult, len(byFunc))
+	for fid := range byFunc {
+		fn := fnByID[fid]
+		if fn == nil {
+			continue
+		}
+		file := fileByID[fn.FileID]
+		if file == nil {
 			continue
 		}
 		body, root := cache.get(file, fn)
@@ -150,18 +193,75 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 }
 
 // computeRetNullable returns the set of function NAMES that can return a
-// possibly-null pointer, as a monotone fixpoint over the call graph. It seeds
-// from function_summary.return_nullable (literal `return NULL`), then adds any
-// function whose body returns an allocator, a pointer parameter, a variable with
-// a reaching may-null source, or a call to another nullable-returning function.
-// This is the null-deref analogue of the taint filter's computeRetTainted. It is
-// currently re-derived from the AST + function_summary (the persisted RETURN
-// edges are not consumed yet; they remain available for future wiring).
-func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models map[int64]*nullModel) (map[string]bool, error) {
+// possibly-null pointer. It is scoped to the caller-influenced closure of
+// seedNames (the callees a candidate function assigns to a variable via
+// `p = f()`): those are the ONLY names callResultNullSources can ever consult,
+// so analysing the whole program is wasted work. Within that closure it is a
+// monotone fixpoint seeded from function_summary.return_nullable (literal
+// `return NULL`), then extended to functions returning an allocator, a pointer
+// parameter, a variable with a reaching may-null source, or a call to another
+// nullable-returning function.
+func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models map[int64]*nullModel, seedNames map[string]bool) (map[string]bool, error) {
 	retNullable := make(map[string]bool)
 	funcs, err := f.store.ListFunctions(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("ret nullable summary: list functions: %w", err)
+	}
+
+	// name -> functions (same-name overloads are merged conservatively: if any
+	// one returns nullable, the name is treated as nullable).
+	funcsByName := make(map[string][]*db.Function, len(funcs))
+	for _, fn := range funcs {
+		funcsByName[fn.Name] = append(funcsByName[fn.Name], fn)
+	}
+
+	// Batch-load summaries and files once, avoiding per-function point queries.
+	allFnIDs := make([]int64, 0, len(funcs))
+	for _, fn := range funcs {
+		allFnIDs = append(allFnIDs, fn.ID)
+	}
+	summariesByID, _ := f.store.ListSummariesByFunctionIDs(ctx, allFnIDs)
+	fileByID := make(map[int64]*db.File)
+	if files, ferr := f.store.ListFiles(ctx); ferr == nil {
+		for _, fl := range files {
+			fileByID[fl.ID] = fl
+		}
+	}
+
+	cache := newFileParseCache(f.parser)
+
+	// Transitive closure: from seedNames, follow `p = f()` assignments to find
+	// every function the return-nullability query can reach.
+	needNames := make(map[string]bool, len(seedNames))
+	queue := make([]string, 0, len(seedNames))
+	for n := range seedNames {
+		if !needNames[n] {
+			needNames[n] = true
+			queue = append(queue, n)
+		}
+	}
+	for len(queue) > 0 {
+		name := queue[0]
+		queue = queue[1:]
+		for _, fn := range funcsByName[name] {
+			file := fileByID[fn.FileID]
+			if file == nil {
+				continue
+			}
+			body, _ := cache.get(file, fn)
+			if body.Kind() != "compound_statement" {
+				continue
+			}
+			forEachAssignment(body, func(lhs, rhs parser.Node) {
+				if assignTargetName(lhs) == "" {
+					return
+				}
+				if callee := rhsCallName(rhs); callee != "" && !needNames[callee] {
+					needNames[callee] = true
+					queue = append(queue, callee)
+				}
+			})
+		}
 	}
 
 	type funcInfo struct {
@@ -171,34 +271,40 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 		params map[string]int
 		srcs   []nullSource
 	}
-	// Batch-load function summaries so the per-function seed below does not issue
-	// one GetSummaryByFunction point query per function.
-	allFnIDs := make([]int64, 0, len(funcs))
-	for _, fn := range funcs {
-		allFnIDs = append(allFnIDs, fn.ID)
-	}
-	summariesByID, _ := f.store.ListSummariesByFunctionIDs(ctx, allFnIDs)
+	infos := make([]funcInfo, 0, len(needNames))
+	seen := make(map[int64]bool)
+	for name := range needNames {
+		for _, fn := range funcsByName[name] {
+			if seen[fn.ID] {
+				continue
+			}
+			seen[fn.ID] = true
+			file := fileByID[fn.FileID]
+			if file == nil {
+				continue
+			}
+			body, root := cache.get(file, fn)
+			if body.Kind() != "compound_statement" {
+				continue
+			}
 
-	infos := make([]funcInfo, 0, len(funcs))
-	cache := newFileParseCache(f.parser)
-	for _, fn := range funcs {
-		file, err := f.store.GetFileByID(ctx, fn.FileID)
-		if err != nil || file == nil {
-			continue
-		}
-		body, root := cache.get(file, fn)
-		if body.Kind() != "compound_statement" {
-			continue
-		}
-		var srcs []nullSource
-		if models != nil && models[fn.ID] != nil {
-			srcs = models[fn.ID].sources
-		}
-		infos = append(infos, funcInfo{fn: fn, body: body, root: root, params: paramsOf(fn, root), srcs: srcs})
+			// Seed from the detector's function_summary (literal `return NULL`/`0`).
+			if sum := summariesByID[fn.ID]; sum != nil && sum.ReturnNullable {
+				retNullable[fn.Name] = true
+				continue
+			}
 
-		// Seed from the detector's function_summary (literal `return NULL`/`0`).
-		if sum := summariesByID[fn.ID]; sum != nil && sum.ReturnNullable {
-			retNullable[fn.Name] = true
+			// Pre-filter: a function whose return statements can only yield a
+			// non-pointer literal can never return a NULL pointer, so skip it.
+			if !mayReturnPointer(body) {
+				continue
+			}
+
+			var srcs []nullSource
+			if models != nil && models[fn.ID] != nil {
+				srcs = models[fn.ID].sources
+			}
+			infos = append(infos, funcInfo{fn: fn, body: body, root: root, params: paramsOf(fn, root), srcs: srcs})
 		}
 	}
 

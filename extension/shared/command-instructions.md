@@ -334,11 +334,14 @@ final findings report — the same data source as `result.sarif`.)
     **未复核疑似项闸门 (F9):** The audit response may carry `unreviewed_suspected`
     (and a `warning`). A nonzero `unreviewed_suspected` means some `suspected`
     findings never went through the A5 second round, so the final export dropped
-    them (only `confirmed` + `suspected-kept` are exported). Treat it like a
-    failed type: re-dispatch A5 for those ids (look them up with
+    them (only `confirmed` + `suspected-kept` are exported). This is a HARD gate,
+    NOT advisory: you SHALL treat a nonzero `unreviewed_suspected` exactly like a
+    failed type and SHALL NOT proceed to step 6 until it is resolved. Re-dispatch
+    A5 for those ids (look them up with
     `secguard db "SELECT id, file_path, line_number FROM findings WHERE scan_id='<scan_id>' AND status='suspected' AND (review_status IS NULL OR review_status='') ORDER BY id" --db <db_path>`),
-    then re-run `--audit`. Do NOT ship a final report that silently lost
-    suspected residue.
+    then re-run `--audit` and confirm `unreviewed_suspected` is 0 (or absent)
+    before reporting. Do NOT ship a final report that silently lost suspected
+    residue — a report missing its suspected residue is an incomplete scan.
 6. **Report**: emit the Markdown report (报告头 / 摘要 / 总览表 / 问题表 /
    观察项表 / 修复建议 / 逐条详情) per the Output Format, aggregating the
    subagents' returned counts. Reference `report.md`, `result.sarif`, and
@@ -388,6 +391,9 @@ Report the diagnostic conclusion in Chinese, Markdown tables only:
    - `api-quota-exhausted` – **子代理**触发了 API 配额限制。
    - `maxturns-exceeded` – **子代理**达到了 maxTurns 上限（由 security-auditor.md
      的 steps/maxTurns 参数定义）。
+   - `context-overflow` – **子代理**处理大类型时上下文/token 先于步数耗尽，
+     已处理部分候选但尾部候选被静默截断（区别于 `maxturns-exceeded`：token 耗尽
+     ≠ 步数耗尽）。
    - `write-busy` – 写报告时 IO 忙。
    - `empty-output` – 子代理执行完成但未产出任何 finding。
    - `unknown` – 类型从未被分发（orchestrator 未启动对应子代理，或 orchestrator

@@ -194,10 +194,12 @@ finding fill `reasoning`, `exception_check`, and `fix_strategy`; for
 per-finding Markdown, so a reviewer sees *why* you believe it, not just *what*.
 
 **Large types: split into ≤50-finding batches, persist EACH batch immediately.**
-Do NOT build one giant JSON array for a type with many candidates — the array plus
-your classification notes overflow the context window and the tail candidates get
-silently dropped (the "200 landed, 4 missing" failure). For any type with more
-than ~50 candidates, write and persist in chunks:
+This is a HARD rule, not a suggestion. You SHALL NOT build one giant JSON array
+for a type with many candidates — the array plus your classification notes
+overflow the context window and the tail candidates get silently dropped (the
+"200 landed, 4 missing" failure). For any type with more than ~50 candidates,
+you SHALL write and persist in chunks, and you SHALL NOT start classifying the
+next chunk until the current chunk's `--write-json` has returned:
 
 1. classify + write `<tmpdir>/<type>-part1.json` (≤50 findings) → `--write-json` it
 2. classify + write `<tmpdir>/<type>-part2.json` (next ≤50) → `--write-json` it
@@ -331,8 +333,8 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
 - `processed_types` and `failed_types` SHALL NOT both be empty. If you wrote
   nothing and failed nothing, you did not run — emit `failed_types` with
   `reason: "empty-output"` for every assigned type.
-- `reason` enum: `api-quota-exhausted` | `maxturns-exceeded` | `write-busy` |
-  `empty-output` | `unknown`.
+- `reason` enum: `api-quota-exhausted` | `maxturns-exceeded` | `context-overflow` |
+  `write-busy` | `empty-output` | `unknown`.
 - `written` = total findings persisted (confirmed + suspected + dismissed) for
   that type; `confirmed`/`suspected`/`dismissed` are the verdict breakdown.
 - If you were interrupted (hit maxTurns), emit what you completed in

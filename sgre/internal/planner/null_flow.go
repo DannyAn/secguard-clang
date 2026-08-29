@@ -194,7 +194,7 @@ func (a *flowAnalyzer) analyzeFunction(ctx context.Context, fn *db.Function, bod
 	}
 	res := a.analyzeFlow(ctx, fn, body, fileRoot, genByLine, nil, true, false)
 	if res != nil && len(definiteGenByLine) > 0 {
-		res.definite, res.definiteGenAt = a.analyzeDefiniteNull(fn, body)
+		res.definite, res.definiteGenAt = a.analyzeDefiniteNull(res.cfg)
 	}
 	return res
 }
@@ -237,8 +237,7 @@ func (a *flowAnalyzer) analyzeFlowMust(ctx context.Context, fn *db.Function, bod
 // other non-copy reassignment, copy = `p = q`. A line-keyed map would collide
 // when a one-line `if (c) p = NULL; else p = &x;` puts both the header and its
 // branches on one line, falsely assigning the NULL gen to the `p = &x` branch.
-func (a *flowAnalyzer) analyzeDefiniteNull(fn *db.Function, body parser.Node) (map[int]map[string]bool, map[int]map[string]bool) {
-	cfg := graph.BuildStmtCFG(body, fn.EndLine)
+func (a *flowAnalyzer) analyzeDefiniteNull(cfg *graph.StmtCFG) (map[int]map[string]bool, map[int]map[string]bool) {
 	effects := make(map[int]*nodeEffects, len(cfg.Nodes))
 	for _, n := range cfg.Nodes {
 		if n.Kind != "stmt" {
@@ -975,6 +974,35 @@ func isNullLiteralExpr(text string) bool {
 	switch t {
 	case "NULL", "nullptr", "(void*)0", "(void *)0", "((void*)0)", "((void *)0)":
 		return true
+	}
+	return false
+}
+
+// mayReturnPointer reports whether a function body could return a pointer value.
+// It is a cheap pre-filter for computeRetNullable: a return statement whose
+// expression is a non-pointer literal (int/char/bool/sizeof) cannot yield a NULL
+// pointer, so the function can be skipped without running the flow analysis.
+// Everything else — identifiers (a pointer parameter), calls (an allocator or a
+// nullable callee), casts/parens (which may wrap a pointer), field/subscript
+// (a pointer member), unary/pointer/conditional/binary — is conservatively
+// treated as "may return a pointer" so the filter never drops a real nullable
+// returner.
+func mayReturnPointer(body parser.Node) bool {
+	for _, ret := range body.FindAll("return_statement") {
+		children := ret.NamedChildren()
+		if len(children) == 0 {
+			continue
+		}
+		expr := children[0]
+		if isNullLiteralExpr(expr.Text()) {
+			return true
+		}
+		switch expr.Kind() {
+		case "number_literal", "char_literal", "true", "false", "sizeof_expression":
+			continue
+		default:
+			return true
+		}
 	}
 	return false
 }
