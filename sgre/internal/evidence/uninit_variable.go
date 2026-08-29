@@ -275,7 +275,23 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
-		scanUses(call, call.StartLine(), extractCallName(call), outputMacroArgs(call, macroWrites))
+		callName := extractCallName(call)
+		extra := outputMacroArgs(call, macroWrites)
+		// va_start/va_copy's first argument is the va_list they INITIALIZE, not a
+		// read of its current value. Without skipping it, the va_start line
+		// reports the (just-declared, still-uninitialized) va_list as a
+		// use-before-init false positive — the write target is misread as a use.
+		if callName == "va_start" || callName == "va_copy" {
+			if args := getCallArgs(call); len(args) > 0 {
+				if name := extractVarName(args[0]); name != "" {
+					if extra == nil {
+						extra = map[string]bool{}
+					}
+					extra[name] = true
+				}
+			}
+		}
+		scanUses(call, call.StartLine(), callName, extra)
 	}
 
 	// A read in an assignment/initializer RHS also uses the variable

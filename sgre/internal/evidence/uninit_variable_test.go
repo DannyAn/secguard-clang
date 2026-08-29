@@ -219,3 +219,43 @@ func TestUninit_ForInitInitializesLoopVar(t *testing.T) {
 		t.Errorf("genuine_while_uninit's `j` should still be reported, got %v", flagged)
 	}
 }
+
+func TestUninit_VaListVaStartNotUninit(t *testing.T) {
+	// va_start/va_copy's first argument is the va_list they initialize (a write
+	// target), not a read of its current value. The va_start line must not
+	// report the just-declared va_list as stack_uninit, while a genuine
+	// use-before-va_start still must.
+	store := runIndexAndDetect(t, "tc71_va_list.c")
+	events, _ := store.ListEventsByType(context.Background(), "VALUE_USE")
+
+	// function -> variable -> true, for stack_uninit events only.
+	stackUninit := map[string]map[string]bool{}
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+			Origin   string `json:"origin"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Origin != "stack_uninit" {
+			continue
+		}
+		fn, _ := store.GetFunctionByID(context.Background(), e.EntityID)
+		if fn == nil {
+			continue
+		}
+		if stackUninit[fn.Name] == nil {
+			stackUninit[fn.Name] = map[string]bool{}
+		}
+		stackUninit[fn.Name][props.Variable] = true
+	}
+
+	if stackUninit["va_ok"]["args"] {
+		t.Errorf("va_ok's args must not be reported as stack_uninit (va_start initializes it), got %v", stackUninit)
+	}
+	if stackUninit["va_copy_ok"]["copy"] {
+		t.Errorf("va_copy_ok's copy must not be reported as stack_uninit (va_copy initializes it), got %v", stackUninit)
+	}
+	if !stackUninit["va_use_before_start"]["args"] {
+		t.Errorf("va_use_before_start's args (used before va_start) should be reported as stack_uninit, got %v", stackUninit)
+	}
+}
