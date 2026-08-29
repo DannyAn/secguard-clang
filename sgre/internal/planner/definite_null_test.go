@@ -304,3 +304,73 @@ int test_function(int msg_id, uint64_t *data_drop) {
 		}
 	}
 }
+
+// TestDefiniteNull_OutputParamCastKillsNull pins the cast-wrapped output
+// parameter: `(void **)&head` must reset head's null state just like a bare
+// `&head`, so `head = NULL; alloc(..., (void **)&head); head->f` is not a
+// definite null-deref.
+func TestDefiniteNull_OutputParamCastKillsNull(t *testing.T) {
+	src := `#include <stdlib.h>
+#include <stdint.h>
+
+typedef struct { uint32_t ulMsgLen; } MSGHEAD_S;
+
+static uint32_t alloc(uint32_t size, void **pp) {
+    *pp = malloc(size);
+    if (*pp == NULL) return 1;
+    return 0;
+}
+
+void f_cast(void) {
+    MSGHEAD_S *head = NULL;
+    if (alloc(sizeof(MSGHEAD_S), (void **)&head) != 0) return;
+    head->ulMsgLen = 1;
+}
+
+void f_real(void) {
+    MSGHEAD_S *head = NULL;
+    head->ulMsgLen = 1;
+}
+`
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cast.c")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewNullSourceDetector(store, p, logger).Detect(ctx)
+	evidence.NewDereferenceDetector(store, p, logger).Detect(ctx)
+	evidence.NewNullGuardDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "null-deref")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	for _, c := range result.Candidates {
+		if c.Target.Function == "f_cast" && c.Target.Variable == "head" {
+			if c.HasDefiniteNull {
+				t.Errorf("f_cast's head (written via (void**)&head) must NOT carry has_definite_null")
+			}
+			if c.SuspicionLevel == "confirmed" {
+				t.Errorf("f_cast's head must not be confirmed, got %q", c.SuspicionLevel)
+			}
+		}
+		if c.Target.Function == "f_real" {
+			if !c.HasDefiniteNull {
+				t.Errorf("f_real's head (plain NULL then deref) must carry has_definite_null")
+			}
+		}
+	}
+}

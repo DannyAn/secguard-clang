@@ -350,16 +350,35 @@ func addOutputParamKills(stmt parser.Node, e *nodeEffects) {
 			continue
 		}
 		for _, arg := range argList.NamedChildren() {
-			if arg.Kind() != "pointer_expression" || !strings.HasPrefix(strings.TrimSpace(arg.Text()), "&") {
-				continue
+			if name := addrTakenVar(arg); name != "" {
+				e.kill[name] = true
 			}
-			inner := arg.NamedChildren()
-			if len(inner) == 0 || inner[0].Kind() != "identifier" {
-				continue
-			}
-			e.kill[inner[0].Text()] = true
 		}
 	}
+}
+
+// addrTakenVar returns the variable whose address is taken by an argument,
+// unwrapping cast expressions: `&x` and `(void **)&x` both yield "x". It returns
+// "" for anything else (a by-value arg, a dereference, a field of x, ...).
+func addrTakenVar(arg parser.Node) string {
+	switch arg.Kind() {
+	case "pointer_expression":
+		if !strings.HasPrefix(strings.TrimSpace(arg.Text()), "&") {
+			return ""
+		}
+		inner := arg.NamedChildren()
+		if len(inner) == 0 || inner[0].Kind() != "identifier" {
+			return ""
+		}
+		return inner[0].Text()
+	case "cast_expression", "parenthesized_expression":
+		for _, child := range arg.NamedChildren() {
+			if name := addrTakenVar(child); name != "" {
+				return name
+			}
+		}
+	}
+	return ""
 }
 
 // isControlFlowHeaderStmt reports whether a statement kind is a control-flow
