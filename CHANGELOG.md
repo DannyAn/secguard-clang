@@ -2,6 +2,47 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.5.1] - 2026-08-29
+
+### 新功能：增量 PR/MR 检视
+
+- 新增 `secguard diff [<base>]` / `secguard pr [--base <branch>]` / `secguard mr` 三个命令，
+  只对提交区间（默认 `HEAD~1` 或 `merge-base`）的**变更行**做检视，避免把全仓存量问题
+  反复报给工程师。
+- 核心机制：git diff 解析变更文件 + 变更行；候选按「sink 行或 flow 源头行落在变更行」裁剪；
+  **内容指纹去重**（`findings.fingerprint` = rule + file + function + 语句文本）跨扫描识别
+  「已报过的问题」，重复 push / 重复执行幂等、不重复上报。
+- 数据模型新增 `review_sessions` 表（稳定 review 锚点）+ `findings.fingerprint` 列（老库自动
+  ALTER TABLE 迁移）。
+- 输出隔离到 `.codeagent/secguard-clang/reviews/<review_id>/`，不触碰全仓 `scans/`、不影响
+  `scans/latest`。
+- extension 三平台（opencode / claude-code / claude-cac）新增 `/secguard diff|pr|mr` 命令，
+  复用 security-auditor 子代理与 20 个 skills 零改动。
+
+### 性能
+
+- **nullable_source 收敛提速约 19 倍**：`computeRetNullable` 从「全仓库函数 fixpoint」改为
+  「候选函数调用闭包内 fixpoint」，并前置 `mayReturnPointer` 预筛返回非指针的函数、批量加载
+  files/functions 消灭 N+1 查询、`analyzeDefiniteNull` 复用 CFG。实测 `plan_null-deref`
+  33.3s → 1.7s（结果集不变）。
+
+### 误报消减
+
+- **uninit**：`va_start`/`va_copy` 首个参数是写目标而非读取，不再误报 `va_list` 未初始化（#10）。
+- **double-free**：互斥路径上的两个 `free`（守卫分支 return + 尾部 free）不再误报（#11）。
+- **buffer-overflow**：循环体里的 `<` 比较不再被当作循环上界（#12）。
+- **null-deref**：for 循环 update 子句的 copy（`pre = cur`）正确 kill definite null（#13）；
+  output-param 写（`init(&p)`）正确重置 p 的 null 状态（#14/#15）。
+- **可信访问宏**：展开为「字段 + 指针偏移」的第三方访问宏（如 DPDK `rte_pktmbuf_mtod`，
+  含嵌套包装宏）不再作为 null 源，调用方按契约直接解引用、不判空。
+- **告警可读性**：uninit 告警带上变量名（`uninitialized variable 'v' used in ...`），快速定位（#16）。
+
+### 扩展
+
+- 对齐跨平台子代理步数上限（OpenCode `steps: 200` → `30`，与 Claude Code `maxTurns: 30` 一致）。
+- 失败枚举新增 `context-overflow`，区分「上下文耗尽」与「步数耗尽」。
+- F9 未复核疑似项闸门、大类型分 chunk 写回升级为硬性要求。
+
 ## [0.5.0] - 2026-08-28
 
 ### 性能：消除 null-deref 大类型的"逐个回填"与重复转存
