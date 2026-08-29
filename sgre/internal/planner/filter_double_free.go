@@ -81,13 +81,15 @@ func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Ca
 		}
 
 		analyzer := newFlowAnalyzer(f.store, f.parser)
-		// Direct free sites come from the graph's RELEASE edges (release_fn ==
-		// "free"); indirect frees have no RELEASE edge, so those are seeded from
-		// the detector's event properties.
-		genByLine := analyzer.loadFreeSites(ctx, []int64{fid})[fid]
-		if genByLine == nil {
-			genByLine = make(map[int][]string)
-		}
+		// Seed the freed-state ONLY at each candidate's first-free site. The UAF
+		// lifetime filter seeds every free site (loadFreeSites), but a double-free
+		// analysis must NOT seed the second free too: seeding both makes the
+		// second free "reach itself" via genAt and the filter never suppresses —
+		// two mutually-exclusive frees (a guarded `free(p); return;` then a tail
+		// `free(p)`) become a false confirmed double-free. Indirect frees have no
+		// RELEASE edge, so their first_free also arrives via the detector's
+		// event property here, exactly like a direct free.
+		genByLine := make(map[int][]string)
 		for _, c := range cs {
 			event, err := f.store.GetEventByID(ctx, c.DerefEventID)
 			if err != nil || event == nil {
@@ -96,12 +98,11 @@ func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Ca
 			var props struct {
 				FirstFree int    `json:"first_free"`
 				Variable  string `json:"variable"`
-				Indirect  bool   `json:"indirect"`
 			}
 			if json.Unmarshal([]byte(event.Properties), &props) != nil || props.FirstFree == 0 || props.Variable == "" {
 				continue
 			}
-			if props.Indirect || !freeAlreadySeeded(genByLine, props.FirstFree, props.Variable) {
+			if !freeAlreadySeeded(genByLine, props.FirstFree, props.Variable) {
 				genByLine[props.FirstFree] = append(genByLine[props.FirstFree], props.Variable)
 			}
 		}
