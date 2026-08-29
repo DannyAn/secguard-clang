@@ -84,3 +84,81 @@ int possible_null_deref(void) {
 		t.Errorf("certain_null_deref should be a finding, got %v", byFunc)
 	}
 }
+
+// TestDefiniteNull_ForUpdateCopyKillsDefiniteNull pins the must-null tier on a
+// for-loop update clause: `pre = NULL; for (...; pre = cur, ...) { ... }` must
+// NOT treat pre as a definite null at a later dereference, because the update
+// copy (`pre = cur`) overwrites the null. Before the fix the must analysis did
+// not read comma_expression assignments, so `pre = NULL` stayed "definite null"
+// on every path and the linked-list insert was auto-confirmed as CWE-476.
+func TestDefiniteNull_ForUpdateCopyKillsDefiniteNull(t *testing.T) {
+	src := `#include <stdlib.h>
+
+struct node { int index; struct node *next; };
+struct node *head;
+int target_index;
+int enable;
+
+void linked_list_insert(void) {
+    struct node *cur = head;
+    struct node *pre = NULL;
+    for (; cur != NULL; pre = cur, cur = cur->next) {
+        if (cur->index == target_index) break;
+    }
+    if (enable) {
+        if (cur != NULL) return;
+        struct node *new_node = malloc(sizeof(struct node));
+        if (new_node == NULL) return;
+        new_node->index = target_index;
+        new_node->next = NULL;
+        if (head == NULL) {
+            head = new_node;
+        } else {
+            pre->next = new_node;
+        }
+    }
+}
+`
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ll.c")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewNullSourceDetector(store, p, logger).Detect(ctx)
+	evidence.NewDereferenceDetector(store, p, logger).Detect(ctx)
+	evidence.NewNullGuardDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "null-deref")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	sawPre := false
+	for _, c := range result.Candidates {
+		if c.Target.Variable != "pre" {
+			continue
+		}
+		sawPre = true
+		if c.HasDefiniteNull {
+			t.Errorf("pre (assigned non-null in for update) must NOT carry has_definite_null")
+		}
+		if c.SuspicionLevel != "suspected" {
+			t.Errorf("pre must be suspected (possible null), got %q", c.SuspicionLevel)
+		}
+	}
+	if !sawPre {
+		t.Errorf("expected a pre dereference candidate, got none")
+	}
+}

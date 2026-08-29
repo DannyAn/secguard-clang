@@ -206,6 +206,14 @@ func directAssignments(stmt parser.Node) []assignPair {
 			}
 			pairs = appendChainedAssign(pairs, child)
 		}
+	case "comma_expression":
+		// for-loop update clause (`pre = cur, cur = cur->next`): each
+		// comma-separated assignment is its own transfer effect.
+		for _, child := range stmt.NamedChildren() {
+			if child.Kind() == "assignment_expression" {
+				pairs = appendChainedAssign(pairs, child)
+			}
+		}
 	case "declaration":
 		for _, child := range stmt.NamedChildren() {
 			if child.Kind() != "init_declarator" {
