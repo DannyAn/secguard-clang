@@ -2,6 +2,19 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.5.1] - 2026-08-29
+
+### 修复：候选索引缺 Evidence 列导致子代理找不到候选文件
+
+- v0.5.0 把候选表从 `report.md` 拆到 `candidates/<type>/_index.md` 时，索引里只有
+  `# | Function | File:Line | Variable | Suspicion | Source`，没有给出候选证据文件的**确切
+  文件名**（`NNN_<file>_<line>.md`）。子代理要打开 suspected/possible 候选的 `## Code
+  Context` 时只能靠猜，猜错（漏了行号）就报大量 `File not found`，端到端分类断裂。
+- 现 `_index.md` 新增 `Evidence` 列，精确给出每个候选的文件名（与磁盘实际文件一致，由
+  `candidateFilename()` 统一生成，`writeCandidates`/`writeTypeIndex` 共用同一来源）；
+  `agent-body.md`/`command-instructions.md` 同步改为"用 `Evidence` 列原样打开，禁止猜名"。
+  新增 `TestWriteTypeIndex_IncludesEvidenceFilename` 锁住该契约。
+
 ## [0.5.0] - 2026-08-28
 
 ### 性能：消除 null-deref 大类型的"逐个回填"与重复转存

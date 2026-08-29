@@ -262,6 +262,30 @@ func TestWriteReportFromFindings_RespectsReviewStatus(t *testing.T) {
 	}
 }
 
+// The per-type _index.md must name the EXACT candidate evidence filename in its
+// Evidence column, so a subagent can open a suspected/possible candidate's
+// Code Context without guessing the <NNN>_<short-file>_<line>.md name.
+func TestWriteTypeIndex_IncludesEvidenceFilename(t *testing.T) {
+	dir := t.TempDir()
+	o := &ScanOutput{ScanDir: dir, ScanID: "sc_test", RootDir: "/repo"}
+	if err := o.writeCandidates(candidatePackages()); err != nil {
+		t.Fatal(err)
+	}
+
+	idxPath := filepath.Join(dir, CandidatesDir, "null-deref", TypeIndexFile)
+	content := string(mustReadFile(t, idxPath))
+
+	for _, want := range []string{"| Evidence |", "001_src_a_c_13.md"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("_index.md missing %q:\n%s", want, content)
+		}
+	}
+	// The candidate file named by Evidence must actually exist on disk.
+	if _, err := os.Stat(filepath.Join(dir, CandidatesDir, "null-deref", "001_src_a_c_13.md")); err != nil {
+		t.Errorf("evidence file named by _index.md does not exist: %v", err)
+	}
+}
+
 func mustReadFile(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)

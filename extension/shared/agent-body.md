@@ -45,14 +45,16 @@ is `<project>/.codeagent/secguard-clang/.sgre/.tmp/`. Write every `<type>.json`
 into `<tmpdir>` and pass the same absolute path to `--write-json`, so the file
 you wrote and the file the CLI reads are the SAME file.
 
-**`candidates/<type>/_index.md` is your INDEX.** Its table already lists every
-candidate's `# | Function | File:Line | Variable | Suspicion | Source`. Read ONLY
-your type's `_index.md` (never another type's, never the whole `report.md`). Do
-NOT read the whole `candidates/<type>/NNN_*.md` directory to get file:line — that
-is one READ per candidate and, for a high-volume type like `null-deref`, wastes
-hundreds of calls. Open a candidate file ONLY for a `suspected`/`possible`
-candidate (full evidence + Code Context); a `confirmed` candidate is classified
-straight from the `_index.md` `Source` column.
+**`candidates/<type>/_index.md` is your INDEX.** Its table lists every candidate's
+`# | Function | File:Line | Variable | Suspicion | Source | Evidence`. The
+`Evidence` column is the EXACT candidate filename (`NNN_<file>_<line>.md`) — use it
+verbatim, never guess or reconstruct it. Read ONLY your type's `_index.md` (never
+another type's, never the whole `report.md`). Do NOT read the whole
+`candidates/<type>/NNN_*.md` directory to get file:line — that is one READ per
+candidate and, for a high-volume type like `null-deref`, wastes hundreds of calls.
+Open the `Evidence` candidate file ONLY for a `suspected`/`possible` candidate
+(full `## Code Context`); a `confirmed` candidate is classified straight from the
+`_index.md` `Source` column.
 
 **Do NOT run `secguard scan`, `secguard plan`, or `secguard index`** — the scan
 already converged every type. If you were handed a bare path with no `scan_id`,
@@ -136,15 +138,15 @@ budget your effort, not to pre-judge the answer:
 
 - **confirmed** — a flow filter or the detector *proved* the pattern on the
   semantic graph. Do NOT re-derive the dataflow or re-prove the defect. Read the
-  `report.md` table row only: its `Source` column already shows the exact
-  statement at file:line, so you confirm or dismiss from the table itself
-  (statement matches the evidence → confirmed; it is guarded/different → dismiss).
-  Do NOT open the source file and do NOT open the `candidates/<type>/NNN_*.md`
-  file for a confirmed candidate.
+  `_index.md` row only: its `Source` column already shows the exact statement at
+  file:line, so you confirm or dismiss from the table itself (statement matches the
+  evidence → confirmed; it is guarded/different → dismiss). Do NOT open the source
+  file and do NOT open the `Evidence` candidate file for a confirmed candidate.
 - **suspected** — a heuristic recognized the pattern but the graph could not
-  prove it. Read the `candidates/<type>/NNN_*.md` file's `## Code Context`
-  (source already embedded) and reason from it — do NOT open the raw source file
-  unless that embedded window is genuinely too small.
+  prove it. Open the candidate's `Evidence` file (the filename is in `_index.md`'s
+  `Evidence` column — use it verbatim) and read its `## Code Context` (source
+  already embedded); reason from it. Do NOT open the raw source file unless that
+  embedded window is genuinely too small.
 - **possible** — the pattern is only theoretical (e.g. unsigned wraparound inside
   a bounds check, which would require an operand to reach SIZE_MAX). Triage these
   last and promote one only when you can show a reachable, realistic overflow.

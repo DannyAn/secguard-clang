@@ -206,9 +206,7 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 		for i, c := range pkg.Candidates {
 			cwe := VulnToCWE(pkg.VulnerabilityType)
 
-			fileShort := shortFile(c.Target.File)
-			safeName := sanitizeFilename(fileShort)
-			filename := fmt.Sprintf("%03d_%s_%d.md", i+1, safeName, c.Target.Line)
+			filename := candidateFilename(i+1, c.Target.File, c.Target.Line)
 			path := filepath.Join(dir, filename)
 
 			var b strings.Builder
@@ -272,17 +270,26 @@ func (o *ScanOutput) writeTypeIndex(dir string, pkg *planner.PlanResult) error {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("# %s (%s) — Candidates\n\n", pkg.VulnerabilityType, cwe))
 	b.WriteString("> Classify each candidate as confirmed / suspected / dismissed. The `Source`\n" +
-		"> column is the exact statement at file:line; the full ±window is in each\n" +
-		"> candidate file's `## Code Context`.\n\n")
-	b.WriteString("| # | Function | File:Line | Variable | Suspicion | Source |\n")
-	b.WriteString("|---|----------|-----------|----------|-----------|--------|\n")
+		"> column is the exact statement at file:line; the full ±window is in the\n" +
+		"> candidate's `## Code Context` (open the `Evidence` file to read it).\n\n")
+	b.WriteString("| # | Function | File:Line | Variable | Suspicion | Source | Evidence |\n")
+	b.WriteString("|---|----------|-----------|----------|-----------|--------|----------|\n")
 	for i, c := range pkg.Candidates {
 		fileShort := displayPath(c.Target.File, o.RootDir)
-		b.WriteString(fmt.Sprintf("| %d | %s | %s:%d | %s | %s | %s |\n",
+		b.WriteString(fmt.Sprintf("| %d | %s | %s:%d | %s | %s | %s | `%s` |\n",
 			i+1, c.Target.Function, fileShort, c.Target.Line, c.Target.Variable, c.SuspicionLevel,
-			markdownCell(sourceLineText(c.Target.File, c.Target.Line, o.RootDir))))
+			markdownCell(sourceLineText(c.Target.File, c.Target.Line, o.RootDir)),
+			candidateFilename(i+1, c.Target.File, c.Target.Line)))
 	}
 	return os.WriteFile(filepath.Join(dir, TypeIndexFile), []byte(b.String()), 0644)
+}
+
+// candidateFilename returns the on-disk candidate evidence filename for one
+// candidate: <NNN>_<short-file>_<line>.md. It is shared by writeCandidates and
+// writeTypeIndex so the index's Evidence column always names the exact file a
+// subagent must open for the full Code Context.
+func candidateFilename(seq int, filePath string, line int) string {
+	return fmt.Sprintf("%03d_%s_%d.md", seq, sanitizeFilename(shortFile(filePath)), line)
 }
 
 func shortFile(path string) string {
