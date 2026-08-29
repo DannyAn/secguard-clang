@@ -162,3 +162,69 @@ void linked_list_insert(void) {
 		t.Errorf("expected a pre dereference candidate, got none")
 	}
 }
+
+// TestDefiniteNull_OutputParamKillsNull pins the output-parameter rule: `&p`
+// passed to a call may write p through the pointer, so `p = NULL; init(&p); *p`
+// must NOT be a definite null-deref, while a plain `p = NULL; *p` still is.
+func TestDefiniteNull_OutputParamKillsNull(t *testing.T) {
+	src := `#include <stdlib.h>
+
+static int get(int **dst) {
+    *dst = malloc(4);
+    if (*dst == NULL) return -1;
+    return 0;
+}
+
+void output_param_init(void) {
+    int *p = NULL;
+    if (get(&p) != 0) return;
+    *p = 1;
+}
+
+int real_null(void) {
+    int *p = NULL;
+    return *p;
+}
+`
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "op.c")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewNullSourceDetector(store, p, logger).Detect(ctx)
+	evidence.NewDereferenceDetector(store, p, logger).Detect(ctx)
+	evidence.NewNullGuardDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "null-deref")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	for _, c := range result.Candidates {
+		if c.Target.Function == "output_param_init" && c.Target.Variable == "p" {
+			if c.HasDefiniteNull {
+				t.Errorf("output_param_init's p (written via &p) must NOT carry has_definite_null")
+			}
+		}
+		if c.Target.Function == "real_null" {
+			if !c.HasDefiniteNull {
+				t.Errorf("real_null's p (plain p=NULL then *p) must carry has_definite_null")
+			}
+			if c.SuspicionLevel != "confirmed" {
+				t.Errorf("real_null must be confirmed, got %q", c.SuspicionLevel)
+			}
+		}
+	}
+}

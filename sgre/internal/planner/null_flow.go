@@ -263,6 +263,7 @@ func (a *flowAnalyzer) analyzeDefiniteNull(cfg *graph.StmtCFG) (map[int]map[stri
 				e.kill[name] = true
 			}
 		}
+		addOutputParamKills(n.Stmt, e)
 		effects[n.ID] = e
 	}
 	return runMustDataflow(cfg, effects)
@@ -325,7 +326,40 @@ func (a *flowAnalyzer) collectNodeEffects(n *graph.StmtNode, genByLine, killByLi
 		}
 	}
 
+	// `&x` passed to a call is an output parameter: the callee may write x
+	// through the pointer, so x's null state is reset at the call site. Without
+	// this, `p = NULL; init(&p); p->f` (an initialized output-param) is
+	// misread as a definite null-deref.
+	addOutputParamKills(n.Stmt, e)
+
 	return e
+}
+
+// addOutputParamKills records a kill for every variable whose address is taken
+// (`&x`) and passed as a call argument. Taking x's address and handing it to a
+// function means the callee can write x through the pointer, so a previously
+// tracked null source no longer provably holds at/after the call.
+func addOutputParamKills(stmt parser.Node, e *nodeEffects) {
+	for _, call := range stmt.FindAll("call_expression") {
+		children := call.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		argList := children[1]
+		if argList.Kind() != "argument_list" {
+			continue
+		}
+		for _, arg := range argList.NamedChildren() {
+			if arg.Kind() != "pointer_expression" || !strings.HasPrefix(strings.TrimSpace(arg.Text()), "&") {
+				continue
+			}
+			inner := arg.NamedChildren()
+			if len(inner) == 0 || inner[0].Kind() != "identifier" {
+				continue
+			}
+			e.kill[inner[0].Text()] = true
+		}
+	}
 }
 
 // isControlFlowHeaderStmt reports whether a statement kind is a control-flow
