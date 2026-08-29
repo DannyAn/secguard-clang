@@ -20,6 +20,28 @@ func TestArrayOOB_LoopBoundOverflow(t *testing.T) {
 	assertHasEvent(t, store, "BUFFER_ACCESS", "LoopBoundOverflow")
 }
 
+func TestArrayOOB_LoopBodyCompareNotOverflow(t *testing.T) {
+	// The loop CONDITION constrains the index; a `<` comparison inside the
+	// body (i < 100) must not be read as the loop bound and turn a safe
+	// subscript (i < 4) into a false array-OOB.
+	store := runIndexAndDetect(t, "tc72_loop_body_compare.c")
+	events, _ := store.ListEventsByType(context.Background(), "BUFFER_ACCESS")
+
+	flagged := map[string]bool{} // function -> reported
+	for _, e := range events {
+		fn, _ := store.GetFunctionByID(context.Background(), e.EntityID)
+		if fn != nil {
+			flagged[fn.Name] = true
+		}
+	}
+	if flagged["fp_body_compare"] {
+		t.Errorf("fp_body_compare (body i<100) must not be reported as OOB, got %v", flagged)
+	}
+	if !flagged["tp_loop_oob"] {
+		t.Errorf("tp_loop_oob (i<=4) should still be reported as OOB, got %v", flagged)
+	}
+}
+
 func TestBufferOverflow_HeapOOBWrite(t *testing.T) {
 	store := runIndexAndDetect(t, "tc35_heap_oob_write.c")
 	assertEventCategory(t, store, "BUFFER_ACCESS", "heap_oob_write", "tc35_heap_oob_write")

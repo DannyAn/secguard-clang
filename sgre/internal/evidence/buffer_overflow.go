@@ -884,22 +884,28 @@ func isLoopBoundOverflow(bc *bufCtx, f *db.Function, sub parser.Node, arrSize in
 		if sub.StartLine() < forNode.StartLine() || sub.StartLine() > forNode.EndLine() {
 			continue
 		}
-		for _, child := range forNode.NamedChildren() {
-			condText := child.Text()
-			if strings.Contains(condText, "<=") {
-				nums := extractNumbers(condText)
-				for _, n := range nums {
-					if n >= arrSize {
-						return true
-					}
+		// Only the loop CONDITION constrains the index. Scanning every named
+		// child (including the body) let a comparison inside the body
+		// (`if (i < 100)`) masquerade as the loop bound and flag a safe
+		// subscript as OOB whenever that body literal exceeded the array size.
+		cond := forNode.ChildByFieldName("condition")
+		if cond == nil {
+			continue
+		}
+		condText := cond.Text()
+		if strings.Contains(condText, "<=") {
+			nums := extractNumbers(condText)
+			for _, n := range nums {
+				if n >= arrSize {
+					return true
 				}
 			}
-			if strings.Contains(condText, "<") && !strings.Contains(condText, "<=") {
-				nums := extractNumbers(condText)
-				for _, n := range nums {
-					if n > arrSize {
-						return true
-					}
+		}
+		if strings.Contains(condText, "<") && !strings.Contains(condText, "<=") {
+			nums := extractNumbers(condText)
+			for _, n := range nums {
+				if n > arrSize {
+					return true
 				}
 			}
 		}
