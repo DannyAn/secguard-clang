@@ -321,6 +321,34 @@ func runReportCmd(ctx context.Context, args []string) int {
 	if hasFlag(remaining, "write-json") {
 		scanID := parseStringFlag(remaining, "scan-id")
 
+		// Resolve and validate scan_id with the SAME rules as the single `--write`
+		// path, so a batch can never be silently attached to a typo'd/nonexistent
+		// scan (and an empty scan_id still inherits the current scan from `latest`
+		// for backward compatibility). Without this, a wrong scan_id writes every
+		// finding into a dead scan that the orchestrator's `--audit --scan-id`
+		// never reads back — the same silent false-negative this check prevents in
+		// the single-write path.
+		if scanID == "" {
+			if cwd, err := os.Getwd(); err == nil && cwd != "" {
+				if latest := report.LatestScanID(cwd); latest != "" {
+					if stats, serr := store.ListScanStats(ctx, latest); serr == nil && len(stats) > 0 {
+						scanID = latest
+					}
+				}
+			}
+		}
+		if scanID != "" {
+			stats, err := store.ListScanStats(ctx, scanID)
+			if err != nil {
+				WriteErrorJSON(fmt.Sprintf("failed to validate scan_id: %v", err))
+				return 1
+			}
+			if len(stats) == 0 {
+				WriteErrorJSON(fmt.Sprintf("unknown scan_id %q: no scan_stats found for this id. Run 'secguard scan' first, or pass the scan_id from the scan output.", scanID))
+				return 1
+			}
+		}
+
 		src := parseStringFlag(remaining, "write-json")
 		var data []byte
 		var err error

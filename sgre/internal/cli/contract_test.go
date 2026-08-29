@@ -171,6 +171,83 @@ func TestReportCmd_AcceptsKnownScanID(t *testing.T) {
 	}
 }
 
+// --write-json must enforce the SAME scan_id validation as the single --write,
+// so a batch can never be silently attached to a typo'd/nonexistent scan.
+func TestReportCmd_WriteJsonRejectsUnknownScanID(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "test.db")
+
+	d, err := db.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := db.NewStore(d)
+	if _, err = s.InsertScanStat(ctx, &db.ScanStat{ScanID: "sc_2026-01-01_000000_aaaaaa", VulnType: "null-deref", SeedCount: 1, FinalCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	writeFile := filepath.Join(root, "findings.json")
+	payload, _ := json.Marshal([]map[string]interface{}{
+		{"rule_id": "CWE-476", "severity": "high", "confidence": 90, "status": "confirmed", "file": "x.c", "line": 1, "function": "f"},
+	})
+	if err := os.WriteFile(writeFile, payload, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, exitCode := captureOutput(func() int {
+		return runReportCmd(ctx, []string{
+			"--db", dbPath, "--write-json", writeFile,
+			"--scan-id", "sc_2026-01-01_000000_bbbb",
+		})
+	})
+	if exitCode != 1 {
+		t.Fatalf("expected exit 1 for unknown scan_id, got %d; stdout=%s", exitCode, stdout)
+	}
+	if !bytes.Contains([]byte(stdout), []byte("unknown scan_id")) {
+		t.Errorf("stdout should say unknown scan_id, got: %s", stdout)
+	}
+}
+
+func TestReportCmd_WriteJsonAcceptsKnownScanID(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "test.db")
+
+	d, err := db.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := db.NewStore(d)
+	const scanID = "sc_2026-01-01_000000_aaaaaa"
+	if _, err = s.InsertScanStat(ctx, &db.ScanStat{ScanID: scanID, VulnType: "null-deref", SeedCount: 1, FinalCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	writeFile := filepath.Join(root, "findings.json")
+	payload, _ := json.Marshal([]map[string]interface{}{
+		{"rule_id": "CWE-476", "severity": "high", "confidence": 90, "status": "confirmed", "file": "x.c", "line": 1, "function": "f"},
+	})
+	if err := os.WriteFile(writeFile, payload, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, exitCode := captureOutput(func() int {
+		return runReportCmd(ctx, []string{
+			"--db", dbPath, "--write-json", writeFile,
+			"--scan-id", scanID,
+		})
+	})
+	if exitCode != 0 {
+		t.Fatalf("expected exit 0 for known scan_id, got %d; stdout=%s", exitCode, stdout)
+	}
+	if !bytes.Contains([]byte(stdout), []byte("findings_written")) {
+		t.Errorf("expected findings_written in response, got: %s", stdout)
+	}
+}
+
 func TestFinding_ApplyStructuredFromProperties(t *testing.T) {
 	f := &db.Finding{
 		Properties: `{"variable":"buf","suggestion":"short","summary":"heap overflow","reasoning":"source is user_size, no clamp, reaches strcpy","fix_strategy":"if (user_size < 12) return -1;","exception_check":"no RAII, no safe wrapper"}`,

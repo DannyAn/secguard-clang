@@ -53,6 +53,11 @@
   `report.md`/`findings/` 中剔除**（`EffectiveStatus()` 保持不变，供 CI 门禁/`--status`
   过滤等仍按原始语义使用）。`--audit` 响应新增 `unreviewed_suspected` 计数 + 告警，
   提示 orchestrator 重跑 A5 而不是静默丢弃。
+- **`--write-json` 补齐 `--scan-id` 校验**：与单条 `--write` 对齐——空 `--scan-id` 先从
+  `latest` 继承，非空则校验 `scan_stats` 存在，未知 id 直接报错退出。此前批量写可被
+  静默落到一个错写/不存在的 scan 上，导致 orchestrator 的 `--audit --scan-id` 永远读不回
+  这批 findings（静默漏判）。新增 `TestReportCmd_WriteJsonRejectsUnknownScanID`/
+  `TestReportCmd_WriteJsonAcceptsKnownScanID` 锁住该契约。
 
 ### 编排：子代理完成后 orchestrator 停止卡住
 
