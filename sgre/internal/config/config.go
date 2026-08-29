@@ -25,15 +25,6 @@ type TrustedMacros struct {
 	Names []string `toml:"names"`
 }
 
-// defaultPaths are the default config locations, tried in order. There is ONE
-// shared config per user (not per AI-agent platform): a single file so the
-// trusted-macro allowlist is configured once and shared by every client. The
-// first existing file wins.
-var defaultPaths = []string{
-	filepath.Join(homeDir(), ".config", "secguard.toml"),
-	filepath.Join(homeDir(), ".codeagent", "secguard.toml"),
-}
-
 // explicitPath is set by the CLI layer from the --config flag. It takes
 // precedence over the env var and the default paths.
 var explicitPath string
@@ -43,9 +34,16 @@ func SetExplicitPath(path string) {
 	explicitPath = path
 }
 
-// Load resolves the config file from the --config flag (via SetExplicitPath),
-// else the SECGUARD_CONFIG env var, else the default per-platform paths. A
-// missing file is not an error: the caller falls back to built-in behavior.
+// Load resolves the config file, in priority order:
+//
+//  1. --config flag (via SetExplicitPath)
+//  2. SECGUARD_CONFIG env var
+//  3. project-level  <cwd>/.codeagent/secguard.toml   (per-repo exceptions)
+//  4. user-level     ~/.codeagent/secguard.toml       (personal default)
+//
+// A missing file is not an error: the caller falls back to built-in behavior.
+// Both default locations share the .codeagent naming, consistent with the
+// runtime data dir (.codeagent/secguard-clang/).
 func Load() *Config {
 	cfg := &Config{}
 	path := resolvePath(explicitPath)
@@ -75,12 +73,23 @@ func resolvePath(explicit string) string {
 	if env := os.Getenv("SECGUARD_CONFIG"); env != "" {
 		return env
 	}
-	for _, p := range defaultPaths {
-		if _, err := os.Stat(p); err == nil {
+	// Project-level (per-repo exceptions) wins over user-level.
+	if cwd, err := os.Getwd(); err == nil && cwd != "" {
+		if p := filepath.Join(cwd, ".codeagent", "secguard.toml"); fileExists(p) {
+			return p
+		}
+	}
+	if h := homeDir(); h != "" {
+		if p := filepath.Join(h, ".codeagent", "secguard.toml"); fileExists(p) {
 			return p
 		}
 	}
 	return ""
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }
 
 func homeDir() string {

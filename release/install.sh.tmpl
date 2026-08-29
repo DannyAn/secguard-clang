@@ -314,16 +314,16 @@ install_binary() {
     fi
 }
 
-# 生成配置文件模板（若不存在）。配置文件是用户级共享一份
-# （~/.config/secguard.toml，XDG 标准；兼容旧 ~/.codeagent/secguard.toml），
-# 独立于二进制和 extension，卸载/重装不会删除。
+# 生成用户级配置文件模板（若不存在）。配置文件统一在 .codeagent 命名空间下
+# （~/.codeagent/secguard.toml），与项目级 .codeagent/secguard.toml、运行时
+# 数据目录 .codeagent/secguard-clang/ 保持一致；独立于二进制和 extension，
+# 卸载/重装不会删除。
 install_config_template() {
-    local cfg_file="$HOME/.config/secguard.toml"
-    # 已有配置（含旧位置）则不动，不覆盖用户配置。
-    if [ -f "$cfg_file" ] || [ -f "$HOME/.codeagent/secguard.toml" ]; then
+    local cfg_file="$HOME/.codeagent/secguard.toml"
+    if [ -f "$cfg_file" ]; then
         return 0
     fi
-    mkdir -p "$HOME/.config"
+    mkdir -p "$HOME/.codeagent"
     cat > "$cfg_file" <<'TOML'
 # SecGuard 配置文件（可选）。卸载/重装 secguard 不会删除此文件。
 #

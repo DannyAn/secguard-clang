@@ -6,21 +6,27 @@ SecGuard 支持一个**可选**的 TOML 配置文件 `secguard.toml`，用于覆
 
 ## 位置
 
-配置文件是**用户级共享一份**（不是每个 AI Agent 平台各一份），按顺序探测
-第一个存在的：
+配置文件统一在 `.codeagent` 命名空间下（与运行时数据目录
+`.codeagent/secguard-clang/` 保持一致），按优先级探测第一个存在的：
 
-1. `~/.config/secguard.toml`（首选，XDG 标准配置目录）
-2. `~/.codeagent/secguard.toml`（次选，兼容旧约定）
+| 层级 | 路径 | 用途 |
+|------|------|------|
+| 项目级 | `<cwd>/.codeagent/secguard.toml` | 团队/仓库的例外配置（随 git 走） |
+| 用户级 | `~/.codeagent/secguard.toml` | 个人默认配置（全局生效） |
 
-安装时会自动在 `~/.config/secguard.toml` 生成一个带注释的模板（若文件不存在）。
+安装时会自动在 `~/.codeagent/secguard.toml` 生成一个带注释的模板（若文件不存在）。
 
 ## 读取顺序
 
 1. `--config <path>` 显式参数（最高优先级）
 2. `SECGUARD_CONFIG` 环境变量
-3. 上述默认路径（按顺序探测，第一个存在的生效）
+3. 项目级 `<cwd>/.codeagent/secguard.toml`
+4. 用户级 `~/.codeagent/secguard.toml`
 
-三个来源都未命中时，使用内置默认行为（无配置文件）。
+均未命中时，使用内置默认行为（无配置文件）。
+
+> 说明：项目级优先于用户级，且是**整文件覆盖**语义——项目级存在时完全使用
+> 它，不合并用户级。
 
 ## 配置项
 
