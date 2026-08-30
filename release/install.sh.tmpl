@@ -298,11 +298,12 @@ install_binary() {
     if ! bin=$(sg_select_binary "$PKG_DIR" "$cur_os" "$cur_arch"); then
         return 1
     fi
-    # 确定可写 bin_dir
-    local target_bin_dir="$BIN_DIR"
-    if [ ! -w "$BIN_DIR" ] && [ "$EUID" -ne 0 ] 2>/dev/null; then
-        target_bin_dir="$HOME/.local/bin"
-        mkdir -p "$target_bin_dir"
+    # 确定可写 bin_dir：优先 PATH 上的目录（见 sg_resolve_bin_dir 注释）。
+    # 这是"全新环境找不到 secguard 命令"的根因修复——旧逻辑只回退 ~/.local/bin，
+    # 而新环境里 ~/.local/bin 常不在 PATH 上。
+    local target_bin_dir
+    target_bin_dir=$(sg_resolve_bin_dir "$BIN_DIR")
+    if [ "$target_bin_dir" != "$BIN_DIR" ]; then
         echo "[binary] $BIN_DIR not writable, using $target_bin_dir"
     fi
     mkdir -p "$target_bin_dir"
@@ -316,6 +317,7 @@ install_binary() {
         sg_record_file "$target_bin_dir/secguard"
         echo "[binary] Installed to $target_bin_dir/secguard"
     fi
+    sg_warn_if_not_on_path "$target_bin_dir"
 }
 
 # 生成用户级配置文件模板（若不存在）。配置文件统一在 .codeagent 命名空间下

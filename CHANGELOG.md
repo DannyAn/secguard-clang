@@ -2,7 +2,7 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.5.2] - 2026-08-29
+## [0.5.2] - 2026-08-30
 
 ### 新功能：配置文件（secguard.toml）
 
@@ -41,6 +41,21 @@
   `GetLatestScanID` 增加 `id` 稳定 tiebreaker。
 - 补充/增强回归测试：`UpdateReturnNullable` 字段保留、`callReachCache` 仅计算一次、全类型 filter
   chain 合法性、空 body for 循环 update 可达性、`isLockedErr`/`countLines`/scanID tiebreaker。
+
+### 部署与安装修复（发布后补丁）
+
+- **OpenCode 新版插件机制**：新版 OpenCode 移除 `extensions/` 目录扫描，改为 `plugin` 数组 + 目录插件。
+  secguard-clang 扩展改为自包含插件（`package.json` + `index.ts`），命令/代理/技能/工具由插件
+  config hook 在 `plugin.init()` 阶段注册，命令入口 `/secguard-clang/secguard`。`deploy.sh` /
+  `install.sh` 改为插件安装 + 幂等注册全局 `opencode.json`，并清理旧版遗留（agent.security-auditor /
+  permission.secguard_* / secguard-context）。
+- **全新环境找不到 `secguard` 命令**：二进制安装原先在默认目录不可写时只回退 `~/.local/bin`，而全新
+  环境里 `~/.local/bin` 常不在 `PATH` 上，导致二进制装好却命令找不到。现在安装时优先选择已在
+  `PATH` 上的可写目录（`/usr/local/bin` → 已在 PATH 的 `~/.local/bin` → PATH 上第一个可写目录 →
+  兜底 `~/.local/bin`）；若最终目录不在 `PATH` 上，安装脚本会打印醒目告警并给出精确的
+  `export PATH=...` 修复命令。
+- **`--verify` 误报**：修复 `installed_plugins.json` 注册检查读取了错误的 JSON 层级（误报"未注册"）；
+  `--verify` 现在按实际回退位置解析二进制，避免回退场景误报 binary missing。
 
 ## [0.5.1] - 2026-08-29
 

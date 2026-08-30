@@ -112,6 +112,77 @@ sg_select_binary() {
     return 1
 }
 
+# 判断目录是否在 PATH 上（0=在，1=不在）
+sg_on_path() {
+    local dir="$1"
+    [ -n "$dir" ] || return 1
+    case ":$PATH:" in
+        *":$dir:"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# 返回 PATH 中第一个可写目录（跳过空项与当前目录 "."）；无则返回非 0
+sg_first_writable_path_dir() {
+    local dir IFS_OLD="$IFS"
+    IFS=':'
+    for dir in $PATH; do
+        [ -n "$dir" ] || continue
+        [ "$dir" = "." ] && continue
+        if [ -d "$dir" ] && [ -w "$dir" ]; then
+            echo "$dir"
+            IFS="$IFS_OLD"
+            return 0
+        fi
+    done
+    IFS="$IFS_OLD"
+    return 1
+}
+
+# 解析实际安装的 bin 目录（应用 /usr/local/bin → 用户可写目录回退）。
+# 这是"全新环境找不到 secguard 命令"的根因修复：之前只回退 ~/.local/bin，
+# 而新环境里 ~/.local/bin 常不在 PATH 上，导致二进制装好了却命令找不到。
+# 用法：sg_resolve_bin_dir <bin_dir>；stdout 输出最终目录
+sg_resolve_bin_dir() {
+    local bin_dir="$1"
+    local uid
+    uid=$(id -u 2>/dev/null || echo 1)
+    if [ -w "$bin_dir" ] || [ "$uid" -eq 0 ]; then
+        echo "$bin_dir"
+        return 0
+    fi
+    # 默认目录不可写且非 root：回退到用户可写目录。
+    # 1) ~/.local/bin 已在 PATH 上 → 用它（标准位置，新 shell 可解析）
+    # 2) PATH 中第一个可写目录 → 用它（当前与未来 shell 均可解析）
+    # 3) 兜底 ~/.local/bin（调用方需给出 PATH 警告）
+    if sg_on_path "$HOME/.local/bin"; then
+        echo "$HOME/.local/bin"
+        return 0
+    fi
+    local dir
+    if dir=$(sg_first_writable_path_dir); then
+        echo "$dir"
+        return 0
+    fi
+    echo "$HOME/.local/bin"
+}
+
+# 若目录不在 PATH 上，打印醒目的可操作告警
+# 用法：sg_warn_if_not_on_path <dir>
+sg_warn_if_not_on_path() {
+    local dir="$1"
+    sg_on_path "$dir" && return 0
+    echo ""
+    echo "[binary] ⚠  WARNING: '$dir' is NOT on your PATH"
+    echo "[binary]     'secguard' will not be found in new shells (and by the AI agent)."
+    echo "[binary]     Fix it now with one of:"
+    echo "[binary]       echo 'export PATH=\"$dir:\$PATH\"' >> ~/.bashrc    # bash"
+    echo "[binary]       echo 'export PATH=\"$dir:\$PATH\"' >> ~/.zshrc     # zsh"
+    echo "[binary]     or, for this shell only:"
+    echo "[binary]       export PATH=\"$dir:\$PATH\""
+    echo ""
+}
+
 # 写安装清单 manifest
 # 用法：sg_write_install_manifest <manifest_path> <version> <target> <bin_path> <files_csv>
 sg_write_install_manifest() {
@@ -598,9 +669,12 @@ sg_verify_platform() {
     echo "Verifying installation (platform: $platform, version: $pkg_version)"
     echo "─────────────────────────────────────────────────────────"
 
-    # 二进制检查（Windows 用 .exe 后缀）
-    local bin="$bin_dir/secguard"
-    [ -f "$bin_dir/secguard.exe" ] && bin="$bin_dir/secguard.exe"
+    # 二进制检查（Windows 用 .exe 后缀）。bin_dir 可能回退到用户目录，
+    # 用 sg_resolve_bin_dir 解析实际安装位置，避免回退场景误报 missing。
+    local resolved_bin_dir
+    resolved_bin_dir=$(sg_resolve_bin_dir "$bin_dir")
+    local bin="$resolved_bin_dir/secguard"
+    [ -f "$resolved_bin_dir/secguard.exe" ] && bin="$resolved_bin_dir/secguard.exe"
     if [ -f "$bin" ] && [ -x "$bin" ]; then
         sg_check ok "Binary exists and executable: $bin"
         if "$bin" --version 2>/dev/null | grep -q "$pkg_version"; then
@@ -676,7 +750,8 @@ key = 'secguard-clang@local-secguard'
 try:
     with open('''$cc_prefix/plugins/installed_plugins.json''') as f:
         data = json.load(f)
-    if key in data and 'installPath' in data[key]:
+    plugins = data.get('plugins', {})
+    if key in plugins and isinstance(plugins[key], list) and plugins[key] and 'installPath' in plugins[key][0]:
         sys.exit(0)
 except Exception:
     pass
@@ -720,7 +795,8 @@ key = 'secguard-clang@local-secguard'
 try:
     with open('''$cac_prefix/plugins/installed_plugins.json''') as f:
         data = json.load(f)
-    if key in data and 'installPath' in data[key]:
+    plugins = data.get('plugins', {})
+    if key in plugins and isinstance(plugins[key], list) and plugins[key] and 'installPath' in plugins[key][0]:
         sys.exit(0)
 except Exception:
     pass
