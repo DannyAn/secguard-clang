@@ -9,6 +9,7 @@ permission:
   bash:
     "*": deny
     "secguard*": allow
+    "echo*": allow
   read: allow
   grep: allow
   glob: allow

@@ -25,22 +25,77 @@ const SECGUARD_TOOLS = [
   "secguard_types",
 ]
 
-function parseFrontmatter(md: string): { data: Record<string, string>; body: string } {
+type YamlValue = string | YamlMap
+interface YamlMap {
+  [key: string]: YamlValue
+}
+
+function unquote(value: string): string {
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    return value.slice(1, -1)
+  }
+  return value
+}
+
+// Minimal YAML-subset parser for the frontmatter we author (flat `key: value`
+// scalars plus one level of nested maps for `permission` / `permission.bash`).
+// OpenCode's native YAML frontmatter uses the same shape, so the file stays
+// valid even if the host also parses it.
+function parseYaml(text: string): YamlMap {
+  const lines: { indent: number; key: string; value: string }[] = []
+  for (const raw of text.split(/\r?\n/)) {
+    const trimmed = raw.trim()
+    if (trimmed === "" || trimmed.startsWith("#")) continue
+    const idx = trimmed.indexOf(":")
+    if (idx <= 0) continue
+    lines.push({
+      indent: raw.length - trimmed.length,
+      key: unquote(trimmed.slice(0, idx).trim()),
+      value: trimmed.slice(idx + 1).trim(),
+    })
+  }
+
+  const root: YamlMap = {}
+  const stack: { indent: number; map: YamlMap }[] = [{ indent: -1, map: root }]
+  for (const line of lines) {
+    while (stack.length > 1 && stack[stack.length - 1].indent >= line.indent) {
+      stack.pop()
+    }
+    const current = stack[stack.length - 1]
+    if (line.value === "") {
+      const child: YamlMap = {}
+      current.map[line.key] = child
+      stack.push({ indent: line.indent, map: child })
+    } else {
+      current.map[line.key] = unquote(line.value)
+    }
+  }
+  return root
+}
+
+function parseFrontmatter(md: string): { data: YamlMap; body: string } {
   const match = md.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/)
   if (!match) return { data: {}, body: md.trim() }
-  const data: Record<string, string> = {}
-  for (const line of match[1].split(/\r?\n/)) {
-    if (/^\s/.test(line)) continue
-    const idx = line.indexOf(":")
-    if (idx <= 0) continue
-    const key = line.slice(0, idx).trim()
-    let value = line.slice(idx + 1).trim()
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1)
-    }
-    data[key] = value
+  return { data: parseYaml(match[1]), body: md.slice(match[0].length).trim() }
+}
+
+function asString(value: YamlValue | undefined): string | undefined {
+  return typeof value === "string" ? value : undefined
+}
+
+function asMap(value: YamlValue | undefined): YamlMap | undefined {
+  return value !== undefined && typeof value === "object" ? value : undefined
+}
+
+function asNumber(value: YamlValue | undefined, field: string): number {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`secguard-clang: agent frontmatter field "${field}" is missing or empty`)
   }
-  return { data, body: md.slice(match[0].length).trim() }
+  const n = Number(value)
+  if (!Number.isFinite(n)) {
+    throw new Error(`secguard-clang: agent frontmatter field "${field}" must be a number, got "${value}"`)
+  }
+  return n
 }
 
 function loadCommands() {
@@ -50,35 +105,38 @@ function loadCommands() {
     if (!file.endsWith(".md")) continue
     const name = file.slice(0, -3)
     const { data, body } = parseFrontmatter(fs.readFileSync(path.join(dir, file), "utf8"))
+    const description = asString(data["description"])
     commands[`secguard-clang/${name}`] = {
       template: body,
-      ...(data.description ? { description: data.description } : {}),
+      ...(description ? { description } : {}),
     }
   }
   return commands
 }
 
+// agents/security-auditor.md frontmatter is the single source of truth for the
+// agent's runtime config (mode / temperature / steps / permission). No value is
+// hardcoded here — a missing/invalid numeric field fails loudly at plugin init.
 function loadAgent() {
   const file = path.join(pluginDir, "agents", "security-auditor.md")
   const { data, body } = parseFrontmatter(fs.readFileSync(file, "utf8"))
+  const mode = asString(data["mode"])
+  const permission = asMap(data["permission"])
+  if (!mode) throw new Error('secguard-clang: agent frontmatter field "mode" is missing')
+  if (!permission) throw new Error('secguard-clang: agent frontmatter field "permission" is missing')
   return {
-    mode: "all",
-    description: data.description,
-    temperature: 0.1,
-    steps: 200,
-    permission: {
-      edit: "allow",
-      bash: { "*": "deny", "secguard*": "allow", "echo*": "allow" },
-      read: "allow",
-      grep: "allow",
-      glob: "allow",
-      external_directory: "allow",
-      skill: "allow",
-    },
+    mode,
+    description: asString(data["description"]) ?? "",
+    temperature: asNumber(data["temperature"], "temperature"),
+    steps: asNumber(data["steps"], "steps"),
+    permission,
     prompt: body,
   }
 }
 
+// KEEP IN SYNC with opencode-nga/plugins/secguard-context.ts — the two OpenCode
+// hosts share this context-enhancement logic (resolveWorkDir + tool.execute.before
+// + file.edited event). Change it in both places.
 function resolveWorkDir(context: { worktree?: string; directory?: string }): string {
   let dir = context.directory || context.worktree || "."
   if (dir === "/") dir = "."

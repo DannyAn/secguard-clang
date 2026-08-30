@@ -46,6 +46,32 @@ extension/
 | **Config** | **Separate** | OpenCode: opencode.json; Claude Code: settings.json. |
 | **Plugin/Hooks** | **Separate** | OpenCode: TS plugins; Claude Code: JSON hooks. |
 
+### Turn Budget — Single Source of Truth
+
+The orchestrator's batch model (see `shared/command-instructions.md` → Batch
+Capacity Configuration) sizes subagent batches from `MAXTURNS` (30). Every
+platform's agent definition MUST declare the same cap in its native field:
+
+| Platform | Field | File |
+|----------|-------|------|
+| Claude Code | `maxTurns` | `claude-code/.claude/agents/security-auditor.md` |
+| Claude CAC | `maxTurns` | `claude-cac/.cac/agents/security-auditor.md` |
+| OpenCode | `steps` | `opencode/agents/security-auditor.md` (frontmatter) |
+| OpenCode-NGA | `steps` | `opencode-nga/opencode.json` |
+
+The OpenCode plugin (`opencode/index.ts`) reads `mode` / `temperature` / `steps` /
+`permission` from the agent frontmatter — it never hardcodes them, so the
+frontmatter is that platform's single declaration (no dead values).
+`release/check-extension-consistency.py` asserts all five declarations match `MAXTURNS`
+and that `index.ts` has no hardcoded `steps`; it also asserts the 8 `secguard_*`
+tool names agree across `index.ts` `SECGUARD_TOOLS`, `opencode/tools/*.ts`, and the
+`opencode-nga` permission list. `build-packages.sh` runs it before packaging, so
+any drift fails the release build.
+
+Changing the turn budget means editing `MAXTURNS` in `shared/command-instructions.md`
+and the four platform declarations together — the guard is the backstop, not a
+substitute for doing so deliberately.
+
 ### Template Expansion
 
 Platform-specific files use `{{include shared/...}}` directives. The `install.sh` script expands these at install time:

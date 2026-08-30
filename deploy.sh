@@ -146,6 +146,7 @@ install_opencode() {
     mkdir -p "$OPENCODE_PLUGIN_DIR"/{commands,agents,tools,skills}
 
     cp "$EXT_DIR/opencode/package.json" "$OPENCODE_PLUGIN_DIR/"
+    stamp_json_version "$OPENCODE_PLUGIN_DIR/package.json" "$VERSION"
     cp "$EXT_DIR/opencode/index.ts" "$OPENCODE_PLUGIN_DIR/"
 
     for f in "$EXT_DIR/opencode/commands"/*.md; do
@@ -178,6 +179,7 @@ install_opencode_nga() {
     mkdir -p "$OPENCODE_EXT_DIR"/{commands,agents,tools,plugins,skills}
 
     cp "$EXT_DIR/opencode-nga/codeagent-extension.json" "$OPENCODE_EXT_DIR/"
+    stamp_json_version "$OPENCODE_EXT_DIR/codeagent-extension.json" "$VERSION"
     # 用 python3 做字面替换，避免 sed 把路径里的 `&`/`|` 当特殊字符。
     python3 -c "
 src = '''$EXT_DIR/opencode-nga/.codeagent-extension-install.json'''

@@ -148,6 +148,11 @@ Do not reconstruct paths by trial and error.
 | `LARGE_CANDIDATE_THRESHOLD` | 100 | Types with > this many candidates get a dedicated subagent |
 | `SPLIT_CANDIDATE_THRESHOLD` | 100 | A type with > this many candidates is SPLIT across multiple subagents, each handling ≤ this many candidates |
 
+`MAXTURNS` is a single source of truth: it must equal the turn cap every platform's
+`security-auditor` agent declares (`maxTurns` on Claude Code / Claude CAC, `steps`
+on OpenCode / OpenCode-NGA). `release/check-extension-consistency.py` enforces this and runs
+as part of `release/build-packages.sh`.
+
 **Pre-dispatch validation (EARS):**
 - If a batch has > `MAX_TYPES_PER_BATCH` (4) types, the orchestrator SHALL split it before dispatching.
 - Where a single type has > `LARGE_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL assign that type its own dedicated subagent.

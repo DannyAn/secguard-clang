@@ -79,6 +79,9 @@ else
 fi
 echo ""
 
+# ── 扩展一致性校验：turn budget 必须是单一事实源 ──
+"$SCRIPT_DIR/check-extension-consistency.py"
+
 # ── 测试 ──
 if [ "$DO_TEST" = true ]; then
     echo "[test] Running go test ./..."
@@ -239,7 +242,6 @@ build_master() {
     cp "$EXTENSION_DIR/claude-code/.claude-plugin/plugin.json" "$root/claude-code/.claude-plugin/"
     set_json_version "$root/claude-code/.claude-plugin/plugin.json" "$version"
     cp "$EXTENSION_DIR/claude-code/hooks/hooks.json" "$root/claude-code/hooks/"
-    cp "$EXTENSION_DIR/claude-code/.claude/settings.json" "$root/claude-code/.claude/" 2>/dev/null || true
     expand_includes "$EXTENSION_DIR/claude-code/.claude/commands/secguard.md" "$root/claude-code/.claude/commands/secguard.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/claude-code/.claude/commands/diff.md" "$root/claude-code/.claude/commands/diff.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/claude-code/.claude/commands/pr.md" "$root/claude-code/.claude/commands/pr.md" "$EXTENSION_DIR/shared"
@@ -251,7 +253,6 @@ build_master() {
     cp "$EXTENSION_DIR/claude-cac/.cac-plugin/plugin.json" "$root/claude-cac/.cac-plugin/"
     set_json_version "$root/claude-cac/.cac-plugin/plugin.json" "$version"
     cp "$EXTENSION_DIR/claude-cac/hooks/hooks.json" "$root/claude-cac/hooks/"
-    cp "$EXTENSION_DIR/claude-cac/.cac/settings.json" "$root/claude-cac/.cac/" 2>/dev/null || true
     expand_includes "$EXTENSION_DIR/claude-cac/.cac/commands/secguard.md" "$root/claude-cac/.cac/commands/secguard.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/claude-cac/.cac/commands/diff.md" "$root/claude-cac/.cac/commands/diff.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/claude-cac/.cac/commands/pr.md" "$root/claude-cac/.cac/commands/pr.md" "$EXTENSION_DIR/shared"

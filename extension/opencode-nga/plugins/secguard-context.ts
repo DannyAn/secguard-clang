@@ -2,6 +2,9 @@ import { type Plugin } from "@opencode-ai/plugin"
 import path from "path"
 import fs from "fs"
 
+// KEEP IN SYNC with opencode/index.ts — the two OpenCode hosts share this
+// context-enhancement logic (resolveWorkDir + tool.execute.before + file.edited
+// event). Change it in both places.
 function resolveWorkDir(context: { worktree?: string, directory?: string }): string {
   let dir = context.directory || context.worktree || "."
   if (dir === "/") dir = "."

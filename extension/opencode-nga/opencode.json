@@ -5,7 +5,7 @@
       "mode": "all",
 
       "temperature": 0.1,
-      "steps": 200,
+      "steps": 30,
       "permission": {
         "edit": "allow",
         "bash": {
