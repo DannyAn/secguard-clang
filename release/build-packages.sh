@@ -206,18 +206,17 @@ build_master() {
     cp "$EXTENSION_DIR/shared/command-instructions.md" "$root/shared/" 2>/dev/null || true
     cp -r "$EXTENSION_DIR/shared/skills"/* "$root/shared/skills/"
 
-    # opencode（展开模板）
-    mkdir -p "$root/opencode"/{commands,agents,tools,plugins}
-    cp "$EXTENSION_DIR/opencode/extension.json" "$root/opencode/"
-    set_json_version "$root/opencode/extension.json" "$version"
-    cp "$EXTENSION_DIR/opencode/opencode.json" "$root/opencode/"
+    # opencode（插件机制：package.json + index.ts，展开模板）
+    mkdir -p "$root/opencode"/{commands,agents,tools}
+    cp "$EXTENSION_DIR/opencode/package.json" "$root/opencode/"
+    set_json_version "$root/opencode/package.json" "$version"
+    cp "$EXTENSION_DIR/opencode/index.ts" "$root/opencode/"
     expand_includes "$EXTENSION_DIR/opencode/commands/secguard.md" "$root/opencode/commands/secguard.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/commands/diff.md" "$root/opencode/commands/diff.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/commands/pr.md" "$root/opencode/commands/pr.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/commands/mr.md" "$root/opencode/commands/mr.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/agents/security-auditor.md" "$root/opencode/agents/security-auditor.md" "$EXTENSION_DIR/shared"
     cp "$EXTENSION_DIR/opencode/tools/"*.ts "$root/opencode/tools/" 2>/dev/null || true
-    cp "$EXTENSION_DIR/opencode/plugins/"*.ts "$root/opencode/plugins/" 2>/dev/null || true
 
     # opencode-nga（OpenCode 开源分支：manifest 改名 codeagent-extension.json，
     # 其余文件与 opencode 完全一致；.codeagent-extension-install.json 的 source 在
@@ -226,14 +225,14 @@ build_master() {
     cp "$EXTENSION_DIR/opencode-nga/codeagent-extension.json" "$root/opencode-nga/"
     set_json_version "$root/opencode-nga/codeagent-extension.json" "$version"
     cp "$EXTENSION_DIR/opencode-nga/.codeagent-extension-install.json" "$root/opencode-nga/"
-    cp "$EXTENSION_DIR/opencode/opencode.json" "$root/opencode-nga/"
+    cp "$EXTENSION_DIR/opencode-nga/opencode.json" "$root/opencode-nga/"
     expand_includes "$EXTENSION_DIR/opencode/commands/secguard.md" "$root/opencode-nga/commands/secguard.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/commands/diff.md" "$root/opencode-nga/commands/diff.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/commands/pr.md" "$root/opencode-nga/commands/pr.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/commands/mr.md" "$root/opencode-nga/commands/mr.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/agents/security-auditor.md" "$root/opencode-nga/agents/security-auditor.md" "$EXTENSION_DIR/shared"
     cp "$EXTENSION_DIR/opencode/tools/"*.ts "$root/opencode-nga/tools/" 2>/dev/null || true
-    cp "$EXTENSION_DIR/opencode/plugins/"*.ts "$root/opencode-nga/plugins/" 2>/dev/null || true
+    cp "$EXTENSION_DIR/opencode-nga/plugins/"*.ts "$root/opencode-nga/plugins/" 2>/dev/null || true
 
     # claude-code（官方插件方式，安装到 ~/.claude/plugins/，非 skills/）
     mkdir -p "$root/claude-code/.claude-plugin" "$root/claude-code/.claude/commands" "$root/claude-code/.claude/agents" "$root/claude-code/hooks"

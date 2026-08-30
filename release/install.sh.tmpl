@@ -94,7 +94,8 @@ if [ -n "$BIN_DIR" ]; then
 else
     BIN_DIR="${BIN_DIR_ENV:-/usr/local/bin}"
 fi
-OC_TARGET_DIR="$OC_PREFIX/extensions/secguard-clang"
+OC_TARGET_DIR="$OC_PREFIX/plugins/secguard-clang"
+OC_NGA_TARGET_DIR="$OC_PREFIX/extensions/secguard-clang"
 CC_TARGET_DIR="$CC_PREFIX/plugins/secguard-clang"
 CAC_TARGET_DIR="$CAC_PREFIX/plugins/secguard-clang"
 OC_MANIFEST="$OC_PREFIX/.secguard-install-manifest"
@@ -139,23 +140,26 @@ sg_install_skills() {
     done
 }
 
-# 安装 OpenCode extension
+# 安装 OpenCode 插件（新版插件机制：package.json + index.ts）
 install_opencode() {
     echo "[opencode] Installing to $OC_TARGET_DIR"
     local src="$PKG_DIR/opencode"
     sg_cleanup_legacy_flat "$OC_PREFIX" "$PKG_DIR"
-    mkdir -p "$OC_TARGET_DIR"/{commands,agents,tools,plugins,skills}
+    mkdir -p "$OC_TARGET_DIR"/{commands,agents,tools,skills}
 
-    [ -f "$src/extension.json" ] && sg_cp_record "$src/extension.json" "$OC_TARGET_DIR/extension.json"
-    [ -f "$src/opencode.json" ]  && sg_cp_record "$src/opencode.json"  "$OC_TARGET_DIR/opencode.json"
+    [ -f "$src/package.json" ] && sg_cp_record "$src/package.json" "$OC_TARGET_DIR/package.json"
+    [ -f "$src/index.ts" ]     && sg_cp_record "$src/index.ts"     "$OC_TARGET_DIR/index.ts"
 
     local f
     for f in "$src"/commands/*.md; do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/commands/$(basename "$f")"; done
     for f in "$src"/agents/*.md;   do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/agents/$(basename "$f")"; done
     for f in "$src"/tools/*.ts;    do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/tools/$(basename "$f")"; done
-    for f in "$src"/plugins/*.ts;  do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/plugins/$(basename "$f")"; done
 
     sg_install_skills "$OC_TARGET_DIR/skills"
+
+    # 注册插件到全局 opencode.json 并清理旧版 extension 清单（extensions/ 目录现归 opencode-nga 独占）
+    sg_register_opencode_plugin "$OC_PREFIX" "secguard-clang"
+    rm -f "$OC_NGA_TARGET_DIR/extension.json"
 
     # 写 manifest
     local files_csv
@@ -166,37 +170,37 @@ install_opencode() {
 
 # 安装 OpenCode-NGA（OpenCode 开源分支：manifest 用 codeagent-extension.json）
 install_opencode_nga() {
-    echo "[opencode-nga] Installing to $OC_TARGET_DIR"
+    echo "[opencode-nga] Installing to $OC_NGA_TARGET_DIR"
     local src="$PKG_DIR/opencode-nga"
     sg_cleanup_legacy_flat "$OC_PREFIX" "$PKG_DIR"
     # 清理 <=0.4.4 的旧清单名（code-extension*.json），避免扩展目录里出现两套清单。
-    rm -f "$OC_TARGET_DIR/code-extension.json" "$OC_TARGET_DIR/code-extension-install.json"
-    mkdir -p "$OC_TARGET_DIR"/{commands,agents,tools,plugins,skills}
+    rm -f "$OC_NGA_TARGET_DIR/code-extension.json" "$OC_NGA_TARGET_DIR/code-extension-install.json"
+    mkdir -p "$OC_NGA_TARGET_DIR"/{commands,agents,tools,plugins,skills}
 
-    [ -f "$src/codeagent-extension.json" ] && sg_cp_record "$src/codeagent-extension.json" "$OC_TARGET_DIR/codeagent-extension.json"
+    [ -f "$src/codeagent-extension.json" ] && sg_cp_record "$src/codeagent-extension.json" "$OC_NGA_TARGET_DIR/codeagent-extension.json"
     # .codeagent-extension-install.json 的 source 替换为实际安装目录（绝对路径）。
     # 用 python3 做字面替换（sed 会把路径里的 `&`/`|` 当作特殊字符）。
     if [ -f "$src/.codeagent-extension-install.json" ]; then
         python3 -c "
 src = '''$src/.codeagent-extension-install.json'''
-dst = '''$OC_TARGET_DIR/.codeagent-extension-install.json'''
-target = '''$OC_TARGET_DIR'''
+dst = '''$OC_NGA_TARGET_DIR/.codeagent-extension-install.json'''
+target = '''$OC_NGA_TARGET_DIR'''
 with open(src) as f:
     content = f.read()
 with open(dst, 'w') as f:
     f.write(content.replace('{{OC_TARGET_DIR}}', target))
 "
-        sg_record_file "$(cd "$(dirname "$OC_TARGET_DIR/.codeagent-extension-install.json")" && pwd)/$(basename "$OC_TARGET_DIR/.codeagent-extension-install.json")"
+        sg_record_file "$(cd "$(dirname "$OC_NGA_TARGET_DIR/.codeagent-extension-install.json")" && pwd)/$(basename "$OC_NGA_TARGET_DIR/.codeagent-extension-install.json")"
     fi
-    [ -f "$src/opencode.json" ]  && sg_cp_record "$src/opencode.json"  "$OC_TARGET_DIR/opencode.json"
+    [ -f "$src/opencode.json" ]  && sg_cp_record "$src/opencode.json"  "$OC_NGA_TARGET_DIR/opencode.json"
 
     local f
-    for f in "$src"/commands/*.md; do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/commands/$(basename "$f")"; done
-    for f in "$src"/agents/*.md;   do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/agents/$(basename "$f")"; done
-    for f in "$src"/tools/*.ts;    do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/tools/$(basename "$f")"; done
-    for f in "$src"/plugins/*.ts;  do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/plugins/$(basename "$f")"; done
+    for f in "$src"/commands/*.md; do [ -f "$f" ] && sg_cp_record "$f" "$OC_NGA_TARGET_DIR/commands/$(basename "$f")"; done
+    for f in "$src"/agents/*.md;   do [ -f "$f" ] && sg_cp_record "$f" "$OC_NGA_TARGET_DIR/agents/$(basename "$f")"; done
+    for f in "$src"/tools/*.ts;    do [ -f "$f" ] && sg_cp_record "$f" "$OC_NGA_TARGET_DIR/tools/$(basename "$f")"; done
+    for f in "$src"/plugins/*.ts;  do [ -f "$f" ] && sg_cp_record "$f" "$OC_NGA_TARGET_DIR/plugins/$(basename "$f")"; done
 
-    sg_install_skills "$OC_TARGET_DIR/skills"
+    sg_install_skills "$OC_NGA_TARGET_DIR/skills"
 
     # 写 manifest
     local files_csv

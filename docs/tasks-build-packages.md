@@ -241,7 +241,7 @@
      - 部分失败不中断（NFR-REL-02），manifest.targets 只记录成功目标
   9. `skills=$(ls $EXTENSION_DIR/shared/skills/*/SKILL.md | xargs -n1 dirname | xargs -n1 basename | sort)`（自动发现 14 个，NFR-MAINT-02）
   10. 对需要展开的文件调用 `expand_includes`（构建侧，source 自 lib.sh）：`opencode/commands/secguard.md`、`opencode/agents/security-auditor.md`、`claude-code/.claude/commands/secguard.md`、`claude-code/.claude/agents/security-auditor.md`
-  11. 覆写 `extension/opencode/extension.json` 与 `extension/claude-code/.claude-plugin/plugin.json` 的 version 字段为 `$version`（DATA-03/04，用 python3）
+  11. 覆写 `extension/opencode/package.json` 与 `extension/claude-code/.claude-plugin/plugin.json` 的 version 字段为 `$version`（DATA-03/04，用 python3）
   12. `inject_block=$(extract_inject_block "$LIB_SH")` 提取可注入区
   13. **组装统一包**（若 target 含 master/all）：
       - 创建临时目录 `$DIST_DIR/.tmp-master/secguard-$version/`

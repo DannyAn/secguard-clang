@@ -469,18 +469,19 @@ sg_uninstall_platform() {
     cac_prefix="${CAC_PREFIX:-$HOME/.cac}"
 
     # 各平台专属目录（SecGuard 独享，可整目录删除）
-    local oc_dir="$oc_prefix/extensions/secguard-clang"
+    local oc_dir="$oc_prefix/plugins/secguard-clang"
+    local oc_legacy_dir="$oc_prefix/extensions/secguard-clang"   # 旧版 extension 目录残留
     local cc_dir="$cc_prefix/plugins/secguard-clang"
     local cc_legacy_dir="$cc_prefix/skills/secguard-clang"   # 旧版错误安装到 skills/ 的残留
     local cac_dir="$cac_prefix/plugins/secguard-clang"
 
     local to_delete=()
     case "$platform" in
-        opencode)     to_delete+=("$oc_dir") ;;
-        opencode-nga) to_delete+=("$oc_dir") ;;
+        opencode)     to_delete+=("$oc_dir" "$oc_legacy_dir") ;;
+        opencode-nga) to_delete+=("$oc_dir" "$oc_legacy_dir") ;;
         claude-code)  to_delete+=("$cc_dir" "$cc_legacy_dir") ;;
         claude-cac)   to_delete+=("$cac_dir") ;;
-        all)          to_delete+=("$oc_dir" "$cc_dir" "$cc_legacy_dir" "$cac_dir") ;;
+        all)          to_delete+=("$oc_dir" "$oc_legacy_dir" "$cc_dir" "$cc_legacy_dir" "$cac_dir") ;;
         *) echo "Unknown platform: $platform" >&2; return 1 ;;
     esac
 
@@ -536,8 +537,10 @@ sg_uninstall_platform() {
 
     # 清理空目录残留
     if [ "$platform" = "all" ] || [ "$platform" = "opencode" ] || [ "$platform" = "opencode-nga" ]; then
-        rm -rf "$oc_dir" 2>/dev/null || true
+        rm -rf "$oc_dir" "$oc_legacy_dir" 2>/dev/null || true
         rmdir "$oc_prefix/extensions" 2>/dev/null || true
+        # 注销 OpenCode 插件（全局 opencode.json 的 plugin 数组）
+        sg_unregister_opencode_plugin "$oc_prefix" "secguard-clang" 2>/dev/null || true
     fi
     if [ "$platform" = "all" ] || [ "$platform" = "claude-code" ]; then
         rm -rf "$cc_dir" "$cc_legacy_dir" 2>/dev/null || true
@@ -611,14 +614,29 @@ sg_verify_platform() {
 
     # OpenCode 检查
     if [ "$platform" = "all" ] || [ "$platform" = "opencode" ]; then
-        local oc_dir="$oc_prefix/extensions/secguard-clang"
+        local oc_dir="$oc_prefix/plugins/secguard-clang"
         echo ""
-        echo "OpenCode extension ($oc_dir):"
-        [ -f "$oc_dir/extension.json" ] && sg_check ok "extension.json" || sg_check fail "extension.json"
-        [ -f "$oc_dir/opencode.json" ] && sg_check ok "opencode.json" || sg_check fail "opencode.json"
+        echo "OpenCode plugin ($oc_dir):"
+        [ -f "$oc_dir/package.json" ] && sg_check ok "package.json" || sg_check fail "package.json"
+        [ -f "$oc_dir/index.ts" ] && sg_check ok "index.ts" || sg_check fail "index.ts"
         [ -f "$oc_dir/commands/secguard.md" ] && sg_check ok "commands/secguard.md" || sg_check fail "commands/secguard.md"
         [ -f "$oc_dir/agents/security-auditor.md" ] && sg_check ok "agents/security-auditor.md" || sg_check fail "agents/security-auditor.md"
         sg_check_skills "$oc_dir/skills"
+        if python3 -c "
+import json, os
+base = '''$oc_prefix'''
+plugin_ref = './plugins/secguard-clang'
+path = next((os.path.join(base, p) for p in ('opencode.json', 'opencode.jsonc') if os.path.exists(os.path.join(base, p))), None)
+if not path: raise SystemExit(1)
+with open(path) as f: cfg = json.load(f)
+plugins = cfg.get('plugin', [])
+specs = [p[0] if isinstance(p, list) else p for p in plugins]
+raise SystemExit(0 if plugin_ref in specs else 1)
+" 2>/dev/null; then
+            sg_check ok "plugin registered in opencode.json"
+        else
+            sg_check fail "plugin not registered in opencode.json"
+        fi
     fi
 
     # OpenCode-NGA 检查
@@ -726,6 +744,88 @@ sys.exit(1)
     echo "─────────────────────────────────────────────────────────"
     echo "Result: $pass passed, $fail failed"
     [ "$fail" -eq 0 ]
+}
+
+# 注册 OpenCode 插件（新版插件机制）：在全局 opencode.json 的 plugin 数组里
+# 引用本地插件目录 ./plugins/<product>，并清理旧版遗留的 agent.security-auditor /
+# permission.secguard_* / plugin:"secguard-context"。幂等。
+# 用法：sg_register_opencode_plugin <opencode_base> <product>
+sg_register_opencode_plugin() {
+    local base="$1"
+    local product="$2"
+    python3 -c "
+import json, os
+
+base = '''$base'''
+product = '''$product'''
+plugin_ref = './plugins/' + product
+
+path = next((os.path.join(base, p) for p in ('opencode.json', 'opencode.jsonc') if os.path.exists(os.path.join(base, p))), os.path.join(base, 'opencode.json'))
+
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    cfg = {}
+
+plugins = cfg.get('plugin', [])
+old = {'secguard-context', product, product + '@latest'}
+kept = []
+for item in plugins:
+    spec = item[0] if isinstance(item, list) else item
+    if spec in old or spec == plugin_ref:
+        continue
+    kept.append(item)
+kept.append(plugin_ref)
+cfg['plugin'] = kept
+
+if isinstance(cfg.get('agent'), dict):
+    cfg['agent'].pop('security-auditor', None)
+    if not cfg['agent']:
+        del cfg['agent']
+
+if isinstance(cfg.get('permission'), dict):
+    for k in list(cfg['permission'].keys()):
+        if k.startswith('secguard_'):
+            del cfg['permission'][k]
+
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+    f.write('\n')
+print('  Registered OpenCode plugin in ' + path)
+"
+}
+
+# 注销 OpenCode 插件：从全局 opencode.json 的 plugin 数组移除 ./plugins/<product>。
+# 用法：sg_unregister_opencode_plugin <opencode_base> <product>
+sg_unregister_opencode_plugin() {
+    local base="$1"
+    local product="$2"
+    python3 -c "
+import json, os
+
+base = '''$base'''
+product = '''$product'''
+plugin_ref = './plugins/' + product
+
+path = next((os.path.join(base, p) for p in ('opencode.json', 'opencode.jsonc') if os.path.exists(os.path.join(base, p))), os.path.join(base, 'opencode.json'))
+
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    cfg = {}
+
+if isinstance(cfg.get('plugin'), list):
+    cfg['plugin'] = [item for item in cfg['plugin'] if (item[0] if isinstance(item, list) else item) != plugin_ref]
+    if not cfg['plugin']:
+        del cfg['plugin']
+
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+    f.write('\n')
+print('  Unregistered OpenCode plugin from ' + path)
+"
 }
 
 # 清理旧版"平铺式"安装遗留（迁移到 extensions/ 之前的设计）。

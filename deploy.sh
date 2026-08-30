@@ -23,6 +23,7 @@ CAC_BASE="${CAC_DIR:-$HOME/.cac}"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 
 OPENCODE_EXT_DIR="$OPENCODE_BASE/extensions/$PRODUCT"
+OPENCODE_PLUGIN_DIR="$OPENCODE_BASE/plugins/$PRODUCT"
 CLAUDE_PLUGIN_DIR="$CLAUDE_BASE/plugins/$PRODUCT"
 CAC_PLUGIN_DIR="$CAC_BASE/plugins/$PRODUCT"
 
@@ -139,26 +140,31 @@ with open('''$file''', 'w') as f:
 "
 }
 
-# ── Install OpenCode extension ────────────────────────────────
+# ── Install OpenCode plugin ───────────────────────────────────
 install_opencode() {
-    echo "[opencode] Extension dir: $OPENCODE_EXT_DIR"
-    mkdir -p "$OPENCODE_EXT_DIR"/{commands,agents,tools,plugins,skills}
+    echo "[opencode] Plugin dir: $OPENCODE_PLUGIN_DIR"
+    mkdir -p "$OPENCODE_PLUGIN_DIR"/{commands,agents,tools,skills}
 
-    cp "$EXT_DIR/opencode/extension.json" "$OPENCODE_EXT_DIR/"
-    cp "$EXT_DIR/opencode/opencode.json" "$OPENCODE_EXT_DIR/"
+    cp "$EXT_DIR/opencode/package.json" "$OPENCODE_PLUGIN_DIR/"
+    cp "$EXT_DIR/opencode/index.ts" "$OPENCODE_PLUGIN_DIR/"
 
     for f in "$EXT_DIR/opencode/commands"/*.md; do
-        [ -f "$f" ] && expand_includes "$f" "$OPENCODE_EXT_DIR/commands/$(basename "$f")" "$SHARED_DIR"
+        [ -f "$f" ] && expand_includes "$f" "$OPENCODE_PLUGIN_DIR/commands/$(basename "$f")" "$SHARED_DIR"
     done
     for f in "$EXT_DIR/opencode/agents"/*.md; do
-        [ -f "$f" ] && expand_includes "$f" "$OPENCODE_EXT_DIR/agents/$(basename "$f")" "$SHARED_DIR"
+        [ -f "$f" ] && expand_includes "$f" "$OPENCODE_PLUGIN_DIR/agents/$(basename "$f")" "$SHARED_DIR"
     done
 
-    cp "$EXT_DIR/opencode/tools/"*.ts "$OPENCODE_EXT_DIR/tools/" 2>&1 || true
-    cp "$EXT_DIR/opencode/plugins/"*.ts "$OPENCODE_EXT_DIR/plugins/" 2>&1 || true
+    cp "$EXT_DIR/opencode/tools/"*.ts "$OPENCODE_PLUGIN_DIR/tools/" 2>&1 || true
 
-    install_skills "$OPENCODE_EXT_DIR/skills"
+    install_skills "$OPENCODE_PLUGIN_DIR/skills"
 
+    sg_register_opencode_plugin "$OPENCODE_BASE" "$PRODUCT"
+
+    # 清理旧版 opencode extension 的遗留清单（extension.json，已由 package.json 取代）。
+    # 注意：extensions/ 目录现归 opencode-nga 独占，只删旧清单文件、不整目录删除。
+    rm -f "$OPENCODE_EXT_DIR/extension.json"
+    rm -f "$OPENCODE_BASE/.secguard-install-manifest" "$OPENCODE_BASE/.secguard-install-manifest-nga"
 
     echo "[opencode] Done"
     echo ""
@@ -182,7 +188,7 @@ with open(src) as f:
 with open(dst, 'w') as f:
     f.write(content.replace('{{OC_TARGET_DIR}}', target))
 "
-    cp "$EXT_DIR/opencode/opencode.json" "$OPENCODE_EXT_DIR/"
+    cp "$EXT_DIR/opencode-nga/opencode.json" "$OPENCODE_EXT_DIR/"
 
     for f in "$EXT_DIR/opencode/commands"/*.md; do
         [ -f "$f" ] && expand_includes "$f" "$OPENCODE_EXT_DIR/commands/$(basename "$f")" "$SHARED_DIR"
@@ -192,7 +198,7 @@ with open(dst, 'w') as f:
     done
 
     cp "$EXT_DIR/opencode/tools/"*.ts "$OPENCODE_EXT_DIR/tools/" 2>&1 || true
-    cp "$EXT_DIR/opencode/plugins/"*.ts "$OPENCODE_EXT_DIR/plugins/" 2>&1 || true
+    cp "$EXT_DIR/opencode-nga/plugins/"*.ts "$OPENCODE_EXT_DIR/plugins/" 2>&1 || true
 
     install_skills "$OPENCODE_EXT_DIR/skills"
 
@@ -378,14 +384,15 @@ fi
 
 case "$PLATFORM" in
     opencode|all)
-        echo "║  OpenCode extension:"
-        echo "║    $OPENCODE_EXT_DIR/"
-        echo "║      extension.json, opencode.json"
-        echo "║      commands/secguard.md"
+        echo "║  OpenCode plugin:"
+        echo "║    $OPENCODE_PLUGIN_DIR/"
+        echo "║      package.json, index.ts"
+        echo "║      commands/secguard.md (→ /secguard-clang/secguard)"
         echo "║      agents/security-auditor.md"
         echo "║      tools/secguard_*.ts"
-        echo "║      plugins/secguard-context.ts"
         echo "║      skills/*/SKILL.md"
+        echo "║  OpenCode config:"
+        echo "║    $OPENCODE_BASE/opencode.json (plugin: ./plugins/$PRODUCT)"
         ;;
 esac
 
@@ -437,8 +444,8 @@ case "$PLATFORM" in
 esac
 
 echo "╠══════════════════════════════════════════════════════════╣"
-echo "║  Command:  /$PRODUCT:secguard [path]"
-echo "║            (namespaced — plugin commands use a colon, not a slash)"
+echo "║  OpenCode:   /$PRODUCT/secguard [path]"
+echo "║  Claude Code:/$PRODUCT:secguard [path]"
 echo "║  Skills:   null-deref, buffer-overflow, memory-leak, injection, resource-leak, uninit, use-after-free, double-free, format-string"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
@@ -472,24 +479,23 @@ fi
 case "$PLATFORM" in
     opencode|all)
         echo ""
-        echo "  OpenCode extension ($OPENCODE_EXT_DIR):"
-        check_file "$OPENCODE_EXT_DIR/extension.json"
-        check_file "$OPENCODE_EXT_DIR/opencode.json"
-        check_file "$OPENCODE_EXT_DIR/commands/secguard.md"
-        check_file "$OPENCODE_EXT_DIR/agents/security-auditor.md"
-        check_file "$OPENCODE_EXT_DIR/plugins/secguard-context.ts"
-        check_file "$OPENCODE_EXT_DIR/tools/secguard_scan.ts"
-        check_file "$OPENCODE_EXT_DIR/tools/secguard_db.ts"
-        check_dir  "$OPENCODE_EXT_DIR/skills/null-deref"
-        check_dir  "$OPENCODE_EXT_DIR/skills/buffer-overflow"
-        check_dir  "$OPENCODE_EXT_DIR/skills/memory-leak"
-        check_dir  "$OPENCODE_EXT_DIR/skills/injection"
-        check_dir  "$OPENCODE_EXT_DIR/skills/resource-leak"
-        check_dir  "$OPENCODE_EXT_DIR/skills/uninit"
-        check_dir  "$OPENCODE_EXT_DIR/skills/use-after-free"
-        check_dir  "$OPENCODE_EXT_DIR/skills/double-free"
-        check_dir  "$OPENCODE_EXT_DIR/skills/format-string"
-
+        echo "  OpenCode plugin ($OPENCODE_PLUGIN_DIR):"
+        check_file "$OPENCODE_PLUGIN_DIR/package.json"
+        check_file "$OPENCODE_PLUGIN_DIR/index.ts"
+        check_file "$OPENCODE_PLUGIN_DIR/commands/secguard.md"
+        check_file "$OPENCODE_PLUGIN_DIR/commands/diff.md"
+        check_file "$OPENCODE_PLUGIN_DIR/agents/security-auditor.md"
+        check_file "$OPENCODE_PLUGIN_DIR/tools/secguard_scan.ts"
+        check_file "$OPENCODE_PLUGIN_DIR/tools/secguard_db.ts"
+        check_dir  "$OPENCODE_PLUGIN_DIR/skills/null-deref"
+        check_dir  "$OPENCODE_PLUGIN_DIR/skills/buffer-overflow"
+        check_dir  "$OPENCODE_PLUGIN_DIR/skills/memory-leak"
+        check_dir  "$OPENCODE_PLUGIN_DIR/skills/injection"
+        check_dir  "$OPENCODE_PLUGIN_DIR/skills/resource-leak"
+        check_dir  "$OPENCODE_PLUGIN_DIR/skills/uninit"
+        check_dir  "$OPENCODE_PLUGIN_DIR/skills/use-after-free"
+        check_dir  "$OPENCODE_PLUGIN_DIR/skills/double-free"
+        check_dir  "$OPENCODE_PLUGIN_DIR/skills/format-string"
         ;;
 esac
 
