@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
@@ -90,22 +91,23 @@ func (d *InjectionDetector) detectSQLInjection(ctx context.Context, f *db.Functi
 			continue
 		}
 		callName := extractCallName(call)
-		if callName != "sqlite3_exec" {
+		sqlIdx, ok := apikb.SQLExecSinkIdx(callName)
+		if !ok {
 			continue
 		}
-		// sqlite3_exec(db, sql, cb, arg, errmsg): a literal SQL argument is
-		// constant (or uses ? placeholders), so no value can be interpolated
-		// into it — it is never injection. Only a variable or concatenated SQL
-		// argument can carry attacker-controlled text and is a candidate.
+		// A literal SQL argument is constant (or uses ? placeholders), so no
+		// value can be interpolated into it — it is never injection. Only a
+		// variable or concatenated SQL argument can carry attacker-controlled
+		// text and is a candidate.
 		args := extractCallArgs(call)
-		if len(args) >= 2 && isStringLiteral(args[1]) {
+		if len(args) > sqlIdx && isStringLiteral(args[sqlIdx]) {
 			continue
 		}
-		// The SQL buffer (args[1], when a bare identifier) is the linkage that
-		// lets the planner merge this sink with its sprintf source.
+		// The SQL buffer (args[sqlIdx], when a bare identifier) is the linkage
+		// that lets the planner merge this sink with its sprintf source.
 		sqlVar := ""
-		if len(args) >= 2 {
-			sqlVar = bareIdentString(args[1])
+		if len(args) > sqlIdx {
+			sqlVar = bareIdentString(args[sqlIdx])
 		}
 
 		if emitEvent(ctx, d.store, d.logger, "INJECTION", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
@@ -123,26 +125,26 @@ func (d *InjectionDetector) detectSQLInjection(ctx context.Context, f *db.Functi
 			continue
 		}
 		callName := extractCallName(call)
-		if callName != "sprintf" && callName != "snprintf" {
+		fmtIdx, ok := apikb.SQLFormatFuncFmtIdx(callName)
+		if !ok {
 			continue
 		}
 		args := extractCallArgs(call)
-		if len(args) < 2 {
+		if len(args) <= fmtIdx {
 			continue
 		}
-		// sprintf(buf, fmt, ...): only a format string that BOTH builds SQL and
-		// interpolates a value (has a % specifier) is injectable. sprintf(buf,
-		// "SELECT ...") with no % is a constant string copy, not injection.
-		fmtStr := args[1]
+		// Only a format string that BOTH builds SQL and interpolates a value
+		// (has a % specifier) is injectable. sprintf(buf, "SELECT ...") with
+		// no % is a constant string copy, not injection. The _s variants
+		// (snprintf_s etc.) are bounds-checked but still interpolate runtime
+		// values, so they are taint channels for SQL injection too.
+		fmtStr := args[fmtIdx]
 		if !hasSQLKeyword(fmtStr) || !hasFormatSpecifier(fmtStr) {
 			continue
 		}
 		// The destination buffer (args[0], when a bare identifier) links this
 		// source with its sqlite3_exec sink.
-		bufVar := ""
-		if len(args) >= 1 {
-			bufVar = bareIdentString(args[0])
-		}
+		bufVar := bareIdentString(args[0])
 		if emitEvent(ctx, d.store, d.logger, "INJECTION", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine()}, map[string]string{
 			"function":   callName,
 			"category":   "sql_injection",

@@ -26,6 +26,13 @@
 - **null-deref**：cast 包裹的 output-param（`(void **)&p`）识别为写目标，正确重置 p 的 null 状态。
 - **null-deref**：库函数解引用参数（`memset_s`/`memcpy`/`strlen` 等）后，其指针参数视为非空——调用能
   继续到下一句即证明参数非空。消除「初始化后隔几句仍报空指针解引用」误报，kill 沿语义图 CFG 传播。
+- **injection（SQL 注入）**：扩展 SQL 执行 sink（`sqlite3_exec`/`sqlite3_prepare`/`mysql_query`/
+  `mysql_real_query`/`PQexec`/`PQexecParams`）与格式化函数（`sprintf_s`/`snprintf_s`/`vsprintf_s` 等
+  `_s` 变体）的识别，修复 `snprintf_s` 拼接后经 `mysql_query` 执行的静默漏报。针对「非 static 函数、
+  参数为 `const char *` 且已知调用方均无污点」的场景降低 SQL 注入误报（call-site const 分析 +
+  const char* 启发式）。该启发式**仅作用于 `sql_injection`**，不波及 path-traversal /
+  command-injection / format-string——那里 `const char *path` / `const char *cmd` /
+  `const char *fmt` 恰是典型可被外部污染的参数声明，仍按「public API 参数保守保留」处理。
 
 ### 稳定性与健壮性（发布后检视修复）
 

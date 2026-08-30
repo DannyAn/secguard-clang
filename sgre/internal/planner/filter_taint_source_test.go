@@ -133,11 +133,17 @@ int public_api(const char *path) {
     return f != 0;
 }
 
+int public_api_nonconst(char *path) {
+    FILE *f = fopen(path, "r");
+    return f != 0;
+}
+
 int main(void) {
     int a = read_cfg("/etc/config");      /* constant caller -> static -> dropped */
     int b = read_user(getenv("HOME"));    /* tainted caller -> confirmed */
-    int c = public_api("x");              /* non-static -> kept (external caller) */
-    return a + b + c;
+    int c = public_api("x");              /* non-static -> kept (external caller may taint) */
+    int d = public_api_nonconst("y");     /* non-static -> kept (external caller may taint) */
+    return a + b + c + d;
 }
 `
 	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
@@ -173,7 +179,10 @@ int main(void) {
 		t.Errorf("read_user should carry taint_source evidence, got %+v", ru.Evidence)
 	}
 	if _, ok := byFunc["public_api"]; !ok {
-		t.Errorf("non-static public_api should be kept (external caller may taint), got %v", candidateNames(result))
+		t.Errorf("public_api (const char* param, non-static) should be kept (external caller may taint), got %v", candidateNames(result))
+	}
+	if _, ok := byFunc["public_api_nonconst"]; !ok {
+		t.Errorf("public_api_nonconst (non-const param, non-static) should be kept (external caller may taint), got %v", candidateNames(result))
 	}
 }
 
@@ -336,6 +345,79 @@ void run_cmd(void) {
 	}
 	if !found {
 		t.Errorf("expected a tainted injection candidate for cmd, got %v", candidateNames(result))
+	}
+}
+
+// TestTaintSourceFilter_NonSQLPublicParamKept locks in the scoping of the
+// SQL-injection call-site const / const char* dismissals: those heuristics must
+// NOT drop a non-static function's parameter sink for command-injection or
+// format-string, where `const char *cmd` / `const char *fmt` is the canonical
+// *vulnerable* declaration (an external caller may supply attacker input).
+func TestTaintSourceFilter_NonSQLPublicParamKept(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nonsql.c")
+	src := `#include <stdlib.h>
+#include <stdio.h>
+
+void run_cmd(const char *cmd) {
+    system(cmd);
+}
+
+void log_msg(const char *fmt) {
+    printf(fmt);
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+
+	pl := NewPlanner(store, p, logger)
+
+	// command injection: const char *cmd param of a non-static function must be
+	// kept (an external caller may pass attacker-controlled input).
+	evidence.NewInjectionDetector(store, p, logger).Detect(ctx)
+	result, err := pl.Plan(ctx, "injection")
+	if err != nil {
+		t.Fatalf("plan injection: %v", err)
+	}
+	found := false
+	for _, c := range result.Candidates {
+		if c.Target.Function == "run_cmd" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("run_cmd (const char* cmd param, non-static) should be kept, got %v", candidateNames(result))
+	}
+
+	// format string: const char *fmt param of a non-static function must be kept.
+	evidence.NewFormatStringDetector(store, p, logger).Detect(ctx)
+	result, err = pl.Plan(ctx, "format-string")
+	if err != nil {
+		t.Fatalf("plan format-string: %v", err)
+	}
+	found = false
+	for _, c := range result.Candidates {
+		if c.Target.Function == "log_msg" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("log_msg (const char* fmt param, non-static) should be kept, got %v", candidateNames(result))
 	}
 }
 
@@ -801,5 +883,186 @@ int clean_field_sink(struct cfg *s) {
 	}
 	if _, ok := byFunc["clean_field_sink"]; ok {
 		t.Errorf("expected clean_field_sink (field assigned a literal) to be suppressed, got %v", candidateNames(result))
+	}
+}
+
+// TestTaintSourceFilter_SQLInjectionConstChar locks in the call-site const
+// analysis (方案 A) and const char* heuristic (方案 B) for SQL injection: a
+// non-static function whose const char* SQL parameter is never reached by
+// tainted data at any known call site is dropped, while a tainted caller
+// confirms it and a non-const parameter with no caller is conservatively kept.
+func TestTaintSourceFilter_SQLInjectionConstChar(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sql.c")
+	src := `#include <sqlite3.h>
+#include <stdlib.h>
+
+void safe_query(sqlite3 *db, const char *q) {
+    sqlite3_exec(db, q, NULL, NULL, NULL);
+}
+
+void safe_query_literal(sqlite3 *db, const char *q) {
+    sqlite3_exec(db, q, NULL, NULL, NULL);
+}
+
+void tainted_query(sqlite3 *db, const char *q) {
+    sqlite3_exec(db, q, NULL, NULL, NULL);
+}
+
+void nonconst_query(sqlite3 *db, char *q) {
+    sqlite3_exec(db, q, NULL, NULL, NULL);
+}
+
+void use_safe(sqlite3 *db) {
+    const char *sql = "SELECT * FROM users";
+    safe_query(db, sql);
+}
+
+void use_safe_literal(sqlite3 *db) {
+    safe_query_literal(db, "SELECT * FROM users");
+}
+
+void use_tainted(sqlite3 *db) {
+    const char *sql = getenv("QUERY");
+    tainted_query(db, sql);
+}
+
+void use_nonconst(sqlite3 *db) {
+    nonconst_query(db, "x");
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	graph.NewInterprocBuilder(store, p, logger).Build(ctx)
+	evidence.NewInjectionDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "injection")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	byFunc := map[string]EvidenceItem{}
+	for _, c := range result.Candidates {
+		byFunc[c.Target.Function] = c
+	}
+
+	if _, ok := byFunc["safe_query"]; ok {
+		t.Errorf("safe_query (const char* param, identifier caller with no taint) should be dropped by call-site const analysis, got %v", candidateNames(result))
+	}
+	if _, ok := byFunc["safe_query_literal"]; ok {
+		t.Errorf("safe_query_literal (const char* param, literal caller) should be dropped by const char* heuristic, got %v", candidateNames(result))
+	}
+	tq, ok := byFunc["tainted_query"]
+	if !ok {
+		t.Errorf("tainted_query (tainted caller) should be confirmed (kept), got %v", candidateNames(result))
+	} else if !hasTaintEvidence(tq) {
+		t.Errorf("tainted_query should carry taint_source evidence, got %+v", tq.Evidence)
+	}
+	if _, ok := byFunc["nonconst_query"]; !ok {
+		t.Errorf("nonconst_query (non-const param, no caller) should be kept, got %v", candidateNames(result))
+	}
+}
+
+// TestTaintSourceFilter_SQLSafeFuncsAndSinks locks in the Annex K safe-format
+// variants (snprintf_s / sprintf_s) as SQL taint channels and the expanded SQL
+// sink set (mysql_query etc.). Previously the detector and formatCopies only
+// recognized sprintf/snprintf, so a query built with snprintf_s and executed
+// via mysql_query was a silent false negative.
+func TestTaintSourceFilter_SQLSafeFuncsAndSinks(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sqlsafe.c")
+	src := `#include <sqlite3.h>
+#include <stdlib.h>
+
+void snprintf_s_tainted(sqlite3 *db) {
+    char buf[256];
+    const char *name = getenv("USER");
+    snprintf_s(buf, sizeof(buf), "SELECT * FROM users WHERE name = '%s'", name);
+    sqlite3_exec(db, buf, NULL, NULL, NULL);
+}
+
+void sprintf_s_tainted(sqlite3 *db) {
+    char buf[256];
+    const char *name = getenv("USER");
+    sprintf_s(buf, sizeof(buf), "SELECT * FROM users WHERE name = '%s'", name);
+    sqlite3_exec(db, buf, NULL, NULL, NULL);
+}
+
+void snprintf_s_safe(sqlite3 *db) {
+    char buf[256];
+    snprintf_s(buf, sizeof(buf), "SELECT * FROM users WHERE id = %d", 42);
+    sqlite3_exec(db, buf, NULL, NULL, NULL);
+}
+
+void mysql_tainted(void *conn) {
+    char buf[256];
+    const char *name = getenv("USER");
+    sprintf(buf, "SELECT * FROM t WHERE name = '%s'", name);
+    mysql_query(conn, buf);
+}
+
+void mysql_safe(void *conn) {
+    char buf[256];
+    sprintf(buf, "SELECT * FROM users WHERE id = %d", 42);
+    mysql_query(conn, buf);
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	graph.NewInterprocBuilder(store, p, logger).Build(ctx)
+	evidence.NewInjectionDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "injection")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	byFunc := map[string]EvidenceItem{}
+	for _, c := range result.Candidates {
+		byFunc[c.Target.Function] = c
+	}
+
+	for _, fn := range []string{"snprintf_s_tainted", "sprintf_s_tainted", "mysql_tainted"} {
+		c, ok := byFunc[fn]
+		if !ok {
+			t.Errorf("expected %s (taint via safe-func / expanded sink) to be kept, got %v", fn, candidateNames(result))
+			continue
+		}
+		if !hasTaintEvidence(c) {
+			t.Errorf("expected %s to carry taint_source evidence, got %+v", fn, c.Evidence)
+		}
+	}
+	for _, fn := range []string{"snprintf_s_safe", "mysql_safe"} {
+		if _, ok := byFunc[fn]; ok {
+			t.Errorf("expected %s (literal arg, no taint) to be suppressed, got %v", fn, candidateNames(result))
+		}
 	}
 }

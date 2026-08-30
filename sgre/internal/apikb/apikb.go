@@ -333,3 +333,53 @@ func DerefArgs(name string) ([]int, bool) {
 	idxs, ok := DerefArgFunctions[name]
 	return idxs, ok
 }
+
+// SQLFormatFuncs maps a string-formatting function to the index of its
+// format-string argument. The Annex K _s variants insert a destination-
+// capacity argument, shifting the format string one position later. These
+// functions are taint channels: they interpolate runtime values into the
+// destination buffer, so the destination inherits the taint of each variadic
+// argument. The bounds check in the _s forms prevents overflow but does NOT
+// sanitize the formatted bytes — attacker-controlled content still reaches the
+// destination.
+var SQLFormatFuncs = map[string]int{
+	"sprintf":     1,
+	"snprintf":    2,
+	"sprintf_s":   2,
+	"snprintf_s":  2,
+	"vsprintf":    1,
+	"vsnprintf":   2,
+	"vsprintf_s":  2,
+	"vsnprintf_s": 2,
+}
+
+// SQLFormatFuncFmtIdx reports the format-string argument index of a formatting
+// function, or (0, false) when name is not a recognized format function.
+func SQLFormatFuncFmtIdx(name string) (int, bool) {
+	idx, ok := SQLFormatFuncs[name]
+	return idx, ok
+}
+
+// SQLExecSinks maps a SQL execution API to the index of its SQL-string argument.
+// The detector only flags a NON-LITERAL SQL argument, so the safe parameterized
+// usage (a literal SQL string + sqlite3_bind_* / PQexecParams values) is skipped
+// regardless of which API is listed here. sqlite3_prepare_v2 is excluded because
+// it is listed in SafeFunctions; its legacy alias sqlite3_prepare is kept so a
+// dynamically-built (interpolated) SQL string still reaches a sink. mysql_query /
+// PQexec / PQexecParams execute the supplied SQL string and are injection sinks
+// when that string is not a literal.
+var SQLExecSinks = map[string]int{
+	"sqlite3_exec":     1,
+	"sqlite3_prepare":  1,
+	"mysql_query":      1,
+	"mysql_real_query": 1,
+	"PQexec":           1,
+	"PQexecParams":     1,
+}
+
+// SQLExecSinkIdx reports the SQL-string argument index of a SQL execution API,
+// or (0, false) when name is not a recognized SQL sink.
+func SQLExecSinkIdx(name string) (int, bool) {
+	idx, ok := SQLExecSinks[name]
+	return idx, ok
+}
