@@ -639,7 +639,13 @@ func runReportCmd(ctx context.Context, args []string) int {
 			return 1
 		}
 
-		scanFindings, _ := store.ListFindingsByScanID(ctx, scanID)
+		scanFindings, err := store.ListFindingsByScanID(ctx, scanID)
+		if err != nil {
+			// The audit report and result.sarif/result.xlsx are derived from these
+			// findings; a read failure must not silently produce an empty report.
+			WriteErrorJSON(fmt.Sprintf("failed to list findings for scan: %v", err))
+			return 1
+		}
 		// Collapse duplicate rows that differ only by file-path spelling (the
 		// absolute vs truncated double-write), and normalize paths to absolute so
 		// every downstream report resolves source + embeds code context.

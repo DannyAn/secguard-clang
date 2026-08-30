@@ -45,7 +45,8 @@ func (f *IntOverflowGuardFilter) Apply(ctx context.Context, candidates []Candida
 	for _, c := range candidates {
 		byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
 	}
-	rangeFlows := f.buildRangeFlows(ctx, byFunc)
+	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	rangeFlows := f.buildRangeFlows(ctx, byFunc, fnByID, fileByID)
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -68,7 +69,7 @@ func (f *IntOverflowGuardFilter) Apply(ctx context.Context, candidates []Candida
 			continue
 		}
 
-		bounds := f.operandBounds(ctx, c)
+		bounds := f.operandBounds(ctx, c, fnByID, fileByID)
 		flow := rangeFlows[c.FunctionID]
 		allBounded := true
 		for _, op := range operands {
@@ -97,16 +98,16 @@ func (f *IntOverflowGuardFilter) Apply(ctx context.Context, candidates []Candida
 }
 
 // buildRangeFlows runs the interval analysis once per candidate function.
-func (f *IntOverflowGuardFilter) buildRangeFlows(ctx context.Context, byFunc map[int64][]Candidate) map[int64]*rangeFlow {
+func (f *IntOverflowGuardFilter) buildRangeFlows(ctx context.Context, byFunc map[int64][]Candidate, fnByID map[int64]*db.Function, fileByID map[int64]*db.File) map[int64]*rangeFlow {
 	flows := make(map[int64]*rangeFlow, len(byFunc))
 	cache := newFileParseCache(f.parser)
 	for fid := range byFunc {
-		fn, err := f.store.GetFunctionByID(ctx, fid)
-		if err != nil || fn == nil {
+		fn := fnByID[fid]
+		if fn == nil {
 			continue
 		}
-		file, err := f.store.GetFileByID(ctx, fn.FileID)
-		if err != nil || file == nil {
+		file := fileByID[fn.FileID]
+		if file == nil {
 			continue
 		}
 		body, _ := cache.get(file, fn)
@@ -121,14 +122,14 @@ func (f *IntOverflowGuardFilter) buildRangeFlows(ctx context.Context, byFunc map
 // operandBounds returns, per variable operand, the smallest constant bound found
 // in a preceding guard (`if (op < CONST)` / `if (op <= CONST)`). A missing guard
 // means unbounded (not in the map).
-func (f *IntOverflowGuardFilter) operandBounds(ctx context.Context, c Candidate) map[string]int64 {
+func (f *IntOverflowGuardFilter) operandBounds(ctx context.Context, c Candidate, fnByID map[int64]*db.Function, fileByID map[int64]*db.File) map[string]int64 {
 	bounds := make(map[string]int64)
-	fn, err := f.store.GetFunctionByID(ctx, c.FunctionID)
-	if err != nil || fn == nil {
+	fn := fnByID[c.FunctionID]
+	if fn == nil {
 		return bounds
 	}
-	file, err := f.store.GetFileByID(ctx, fn.FileID)
-	if err != nil || file == nil {
+	file := fileByID[fn.FileID]
+	if file == nil {
 		return bounds
 	}
 	body, _ := newFileParseCache(f.parser).get(file, fn)

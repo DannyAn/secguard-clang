@@ -123,6 +123,19 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	vulnTypes := planner.AllVulnTypes()
 	plans := make([]*planner.PlanResult, len(vulnTypes))
 	planErrors := map[string]string{}
+	// planErrors is written from up to planConcurrency goroutines. Go maps have
+	// undefined behavior on concurrent writes even to different keys, so a
+	// simultaneous failure/panic in two vuln types would crash the process with
+	// "concurrent map writes" (unrecoverable by recover). A mutex makes those
+	// writes safe.
+	var planErrMu sync.Mutex
+
+	// One Planner is shared across every vuln type. The Planner's only shared
+	// mutable state is its callReachCache, which is exactly what the sync.Once
+	// cache exists for: compute call-graph reachability once per scan instead of
+	// once per type. Plan() keeps all per-type state local, so concurrent Plan
+	// calls are safe (the shared parser is internally synchronized).
+	pl := planner.NewPlanner(store, p, logger)
 
 	const planConcurrency = 4
 	planSem := make(chan struct{}, planConcurrency)
@@ -133,19 +146,22 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 			defer pwg.Done()
 			defer func() {
 				if r := recover(); r != nil {
+					planErrMu.Lock()
 					planErrors[vt] = fmt.Sprintf("plan %s panicked: %v", vt, r)
+					planErrMu.Unlock()
 				}
 			}()
 			planSem <- struct{}{}
 			defer func() { <-planSem }()
-			pl := planner.NewPlanner(store, p, logger)
 			planStart := time.Now()
 			result, err := pl.Plan(ctx, vt)
 			if logger != nil {
 				logger.Info("phase timing", "phase", "plan_"+vt, "elapsed_ms", time.Since(planStart).Milliseconds())
 			}
 			if err != nil {
+				planErrMu.Lock()
 				planErrors[vt] = err.Error()
+				planErrMu.Unlock()
 				return
 			}
 			plans[idx] = result

@@ -313,9 +313,11 @@ func TestStore_FunctionSummary_Upsert(t *testing.T) {
 	funcID, _ := s.InsertFunction(ctx, &Function{FileID: fileID, Name: "f"})
 
 	err := s.UpsertSummary(ctx, &FunctionSummary{
-		FunctionID:     funcID,
-		ReturnNullable: true,
-		SummaryJSON:    `{"return": {"nullable": true}}`,
+		FunctionID:        funcID,
+		ReturnNullable:    true,
+		ParameterNullable: `{"p":true}`,
+		SideEffect:        "write",
+		SummaryJSON:       `{"return": {"nullable": true}}`,
 	})
 	if err != nil {
 		t.Fatalf("UpsertSummary failed: %v", err)
@@ -336,9 +338,49 @@ func TestStore_FunctionSummary_Upsert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateReturnNullable failed: %v", err)
 	}
-	sum, _ = s.GetSummaryByFunction(ctx, funcID)
+	sum, err = s.GetSummaryByFunction(ctx, funcID)
+	if err != nil {
+		t.Fatalf("GetSummaryByFunction after update failed: %v", err)
+	}
 	if sum.ReturnNullable {
 		t.Error("expected ReturnNullable=false after update")
+	}
+	// UpdateReturnNullable must flip ONLY return_nullable: overwriting the other
+	// columns with zero values (the swallowed-read bug) would silently wipe the
+	// parameter-nullability / side-effect / summary facts the null analysis
+	// depends on.
+	if sum.ParameterNullable != `{"p":true}` {
+		t.Errorf("UpdateReturnNullable must preserve ParameterNullable, got %q", sum.ParameterNullable)
+	}
+	if sum.SideEffect != "write" {
+		t.Errorf("UpdateReturnNullable must preserve SideEffect, got %q", sum.SideEffect)
+	}
+	if sum.SummaryJSON != `{"return": {"nullable": true}}` {
+		t.Errorf("UpdateReturnNullable must preserve SummaryJSON, got %q", sum.SummaryJSON)
+	}
+}
+
+func TestStore_GetLatestScanID_Tiebreaker(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	// Two scans in the same wall-clock second share created_at (second
+	// granularity). The id DESC tiebreaker must deterministically pick the
+	// later-inserted row; the old created_at-only ORDER BY was unstable here.
+	ts := now()
+	if _, err := s.InsertScanStat(ctx, &ScanStat{ScanID: "sc_first", VulnType: "null-deref", CreatedAt: ts}); err != nil {
+		t.Fatalf("insert first scan stat: %v", err)
+	}
+	if _, err := s.InsertScanStat(ctx, &ScanStat{ScanID: "sc_second", VulnType: "null-deref", CreatedAt: ts}); err != nil {
+		t.Fatalf("insert second scan stat: %v", err)
+	}
+
+	latest, err := s.GetLatestScanID(ctx)
+	if err != nil {
+		t.Fatalf("GetLatestScanID: %v", err)
+	}
+	if latest != "sc_second" {
+		t.Errorf("expected the later-inserted scan at the same timestamp, got %q", latest)
 	}
 }
 

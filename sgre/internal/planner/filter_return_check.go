@@ -39,15 +39,16 @@ func (f *ReturnCheckFilter) Apply(ctx context.Context, candidates []Candidate) (
 
 	kept := make([]Candidate, 0, len(candidates))
 
+	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
 	for funcID, funcCandidates := range byFunc {
-		fn, err := f.store.GetFunctionByID(ctx, funcID)
-		if err != nil || fn == nil {
+		fn := fnByID[funcID]
+		if fn == nil {
 			kept = append(kept, funcCandidates...)
 			continue
 		}
 
-		file, err := f.store.GetFileByID(ctx, fn.FileID)
-		if err != nil || file == nil {
+		file := fileByID[fn.FileID]
+		if file == nil {
 			kept = append(kept, funcCandidates...)
 			continue
 		}

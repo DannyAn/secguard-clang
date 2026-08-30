@@ -1,13 +1,13 @@
 package indexer
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -217,5 +217,5 @@ func computeChecksum(data []byte) string {
 }
 
 func countLines(data []byte) int {
-	return strings.Count(string(data), "\n") + 1
+	return bytes.Count(data, []byte{'\n'}) + 1
 }

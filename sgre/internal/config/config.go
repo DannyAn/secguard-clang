@@ -5,6 +5,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -54,7 +55,14 @@ func Load() *Config {
 	if err != nil {
 		return cfg
 	}
-	_ = toml.Unmarshal(data, cfg)
+	// A malformed or mistyped config must not be silently ignored: the user would
+	// get a "seems to load" config whose trusted-macro allowlist silently
+	// disappears. Load() has no error channel (the file is optional and a missing
+	// file is not an error), so surface parse failures on stderr and keep the
+	// zero config rather than a half-populated one.
+	if err := toml.Unmarshal(data, cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "secguard: ignoring invalid config %s: %v\n", path, err)
+	}
 	return cfg
 }
 

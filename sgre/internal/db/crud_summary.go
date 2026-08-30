@@ -67,7 +67,14 @@ func (s *store) ListSummariesByFunctionIDs(ctx context.Context, functionIDs []in
 }
 
 func (s *store) UpdateReturnNullable(ctx context.Context, functionID int64, nullable bool) error {
-	existing, _ := s.GetSummaryByFunction(ctx, functionID)
+	existing, err := s.GetSummaryByFunction(ctx, functionID)
+	if err != nil {
+		// Never overwrite an existing row with zero-valued fields just because a
+		// read failed: GetSummaryByFunction returns (nil, err) on real errors, so
+		// a swallowed error here would wipe parameter_nullable/side_effect/
+		// summary_json. ErrNoRows is returned as (nil, nil), so that path is fine.
+		return err
+	}
 	sum := &FunctionSummary{FunctionID: functionID, ReturnNullable: nullable}
 	if existing != nil {
 		sum.ParameterNullable = existing.ParameterNullable

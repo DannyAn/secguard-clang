@@ -285,6 +285,19 @@ func (s *mockStore) ListEventsByEntity(ctx context.Context, eid int64) ([]*db.Se
 func (s *mockStore) ListEventsByTypeAndEntity(ctx context.Context, et string, eid int64) ([]*db.SecurityEvent, error) {
 	return nil, nil
 }
+func (s *mockStore) ListEventsByIDs(ctx context.Context, ids []int64) (map[int64]*db.SecurityEvent, error) {
+	want := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	out := make(map[int64]*db.SecurityEvent)
+	for _, e := range s.events {
+		if want[e.ID] {
+			out[e.ID] = e
+		}
+	}
+	return out, nil
+}
 func (s *mockStore) ClearSecurityEvents(ctx context.Context) error {
 	s.events = nil
 	return nil

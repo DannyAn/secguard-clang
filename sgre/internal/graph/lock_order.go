@@ -2,7 +2,6 @@ package graph
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -41,10 +40,7 @@ func (b *LockOrderBuilder) Build(ctx context.Context) (*BuildResult, error) {
 		calls := root.FindAll("call_expression")
 		for _, f := range funcs {
 			held := []string{}
-			for _, call := range calls {
-				if !funcLineRange(f, call.StartLine()) {
-					continue
-				}
+			for _, call := range nodesInRange(calls, f.StartLine, f.EndLine) {
 				callName := extractCallName(call)
 				mutexName := firstArgText(call)
 				if mutexName == "" {
@@ -76,20 +72,26 @@ func (b *LockOrderBuilder) Build(ctx context.Context) (*BuildResult, error) {
 func (b *LockOrderBuilder) persistEdge(ctx context.Context, f *db.Function, from, to string, line int) bool {
 	fromNode, err := b.store.GetOrCreateGraphNode(ctx, "mutex", 0, fmt.Sprintf(`{"name":"%s"}`, from))
 	if err != nil {
+		warnEdge(b.logger, "LOCK_ORDER", f.Name, err)
 		return false
 	}
 	toNode, err := b.store.GetOrCreateGraphNode(ctx, "mutex", 0, fmt.Sprintf(`{"name":"%s"}`, to))
 	if err != nil {
+		warnEdge(b.logger, "LOCK_ORDER", f.Name, err)
 		return false
 	}
-	props, _ := json.Marshal(map[string]interface{}{"function": f.Name, "line": line})
+	props := marshalProps(b.logger, "LOCK_ORDER", map[string]interface{}{"function": f.Name, "line": line})
 	_, err = b.store.InsertGraphEdge(ctx, &db.GraphEdge{
 		SrcID:      fromNode,
 		DstID:      toNode,
 		EdgeType:   "LOCK_ORDER",
-		Properties: string(props),
+		Properties: props,
 	})
-	return err == nil
+	if err != nil {
+		warnEdge(b.logger, "LOCK_ORDER", f.Name, err)
+		return false
+	}
+	return true
 }
 
 // firstArgText returns the first call argument's text with a leading & stripped,

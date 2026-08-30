@@ -2,7 +2,6 @@ package graph
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -46,18 +45,12 @@ func (b *AliasBuilder) Build(ctx context.Context) (*BuildResult, error) {
 		inits := root.FindAll("init_declarator")
 
 		for _, f := range funcs {
-			for _, a := range assigns {
-				if !funcLineRange(f, a.StartLine()) {
-					continue
-				}
+			for _, a := range nodesInRange(assigns, f.StartLine, f.EndLine) {
 				if rec, ok := aliasFromAssign(a); ok && b.persistAlias(ctx, f, rec, a.StartLine()) {
 					result.EdgesCreated++
 				}
 			}
-			for _, init := range inits {
-				if !funcLineRange(f, init.StartLine()) {
-					continue
-				}
+			for _, init := range nodesInRange(inits, f.StartLine, f.EndLine) {
 				if rec, ok := aliasFromAssign(init); ok && b.persistAlias(ctx, f, rec, init.StartLine()) {
 					result.EdgesCreated++
 				}
@@ -70,20 +63,26 @@ func (b *AliasBuilder) Build(ctx context.Context) (*BuildResult, error) {
 func (b *AliasBuilder) persistAlias(ctx context.Context, f *db.Function, rec aliasRecord, line int) bool {
 	aliasNode, err := b.store.GetOrCreateGraphNode(ctx, "variable_ref", f.ID, fmt.Sprintf(`{"name":"%s","line":%d}`, rec.alias, line))
 	if err != nil {
+		warnEdge(b.logger, "ALIAS", f.Name, err)
 		return false
 	}
 	baseNode, err := b.store.GetOrCreateGraphNode(ctx, "variable_ref", f.ID, fmt.Sprintf(`{"name":"%s","line":%d}`, rec.base, line))
 	if err != nil {
+		warnEdge(b.logger, "ALIAS", f.Name, err)
 		return false
 	}
-	props, _ := json.Marshal(map[string]string{"field": rec.field, "variable": rec.alias})
+	props := marshalProps(b.logger, "ALIAS", map[string]string{"field": rec.field, "variable": rec.alias})
 	_, err = b.store.InsertGraphEdge(ctx, &db.GraphEdge{
 		SrcID:      aliasNode,
 		DstID:      baseNode,
 		EdgeType:   "ALIAS",
-		Properties: string(props),
+		Properties: props,
 	})
-	return err == nil
+	if err != nil {
+		warnEdge(b.logger, "ALIAS", f.Name, err)
+		return false
+	}
+	return true
 }
 
 // aliasFromAssign extracts (aliasVar, baseVar, field) from an assignment_expression

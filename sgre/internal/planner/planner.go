@@ -28,8 +28,22 @@ func NewPlanner(store db.Store, p *parser.Parser, logger *log.Logger) *Planner {
 	}
 }
 
-func (p *Planner) getFilters(chain string) []Filter {
+func (p *Planner) getFilters(chain string) ([]Filter, error) {
+	// Bounds-check suppression already happens in the buffer-overflow detector
+	// (hasPrecedingBoundsCheck / constant-index analysis); there is no
+	// bounds-check *event* for a filter to read, and the previous
+	// BoundsCheckFilter wrongly keyed on NULL_GUARD events at function
+	// granularity. So the default chain (buffer-overflow, out-of-bounds,
+	// crypto-misuse, hardcoded-secret, signed-compare, sizeof-misuse) is
+	// call-reach + safe-function only.
+	defaultChain := []Filter{
+		NewCallReachFilter(p.store, p.callReachCache),
+		NewSafeFunctionFilter(p.store),
+	}
+
 	switch chain {
+	case "default":
+		return defaultChain, nil
 	case "null-deref":
 		return []Filter{
 			NewTypeExprFilter(),
@@ -39,86 +53,77 @@ func (p *Planner) getFilters(chain string) []Filter {
 			NewCallReachFilter(p.store, p.callReachCache),
 			NewGuardFilter(p.store),
 			NewSafeFunctionFilter(p.store),
-		}
+		}, nil
 	case "memory-leak":
 		return []Filter{
 			NewCallReachFilter(p.store, p.callReachCache),
 			NewSafeFunctionFilter(p.store),
 			NewReleaseFilter(p.store, "MEMORY_RELEASE"),
 			NewOwnershipTransferFilter(p.store),
-		}
+		}, nil
 	case "resource-leak":
 		return []Filter{
 			NewCallReachFilter(p.store, p.callReachCache),
 			NewSafeFunctionFilter(p.store),
 			NewReleaseFilter(p.store, "RESOURCE_RELEASE"),
 			NewOwnershipTransferFilter(p.store),
-		}
+		}, nil
 	case "lifetime":
 		return []Filter{
 			NewCallReachFilter(p.store, p.callReachCache),
 			NewSafeFunctionFilter(p.store),
 			NewLifetimeFilter(p.store, p.parser, p.logger),
-		}
+		}, nil
 	case "uninit":
 		return []Filter{
 			NewCallReachFilter(p.store, p.callReachCache),
 			NewDefiniteInitFilter(p.store, p.parser, p.logger),
 			NewSafeFunctionFilter(p.store),
-		}
+		}, nil
 	case "double-free":
 		return []Filter{
 			NewCallReachFilter(p.store, p.callReachCache),
 			NewSafeFunctionFilter(p.store),
 			NewDoubleFreeFilter(p.store, p.parser, p.logger),
-		}
+		}, nil
 	case "injection", "path-traversal", "format-string":
 		return []Filter{
 			NewCallReachFilter(p.store, p.callReachCache),
 			NewSafeFunctionFilter(p.store),
 			NewTaintSourceFilter(p.store, p.parser, p.logger),
-		}
+		}, nil
 	case "integer-overflow":
 		return []Filter{
 			NewCallReachFilter(p.store, p.callReachCache),
 			NewSafeFunctionFilter(p.store),
 			NewIntOverflowGuardFilter(p.store, p.parser, p.logger),
-		}
+		}, nil
 	case "divide-by-zero":
 		return []Filter{
 			NewCallReachFilter(p.store, p.callReachCache),
 			NewSafeFunctionFilter(p.store),
 			NewRangeFilter(p.store, p.parser, p.logger),
-		}
+		}, nil
 	case "deadlock":
 		return []Filter{
 			NewCallReachFilter(p.store, p.callReachCache),
 			NewSafeFunctionFilter(p.store),
 			NewLockOrderFilter(p.store, p.parser, p.logger),
-		}
+		}, nil
 	case "race-condition":
 		return []Filter{
 			NewCallReachFilter(p.store, p.callReachCache),
 			NewSafeFunctionFilter(p.store),
 			NewSharedAccessFilter(p.store, p.parser, p.logger),
-		}
+		}, nil
 	case "unchecked-return":
 		return []Filter{
 			NewCallReachFilter(p.store, p.callReachCache),
 			NewSafeFunctionFilter(p.store),
 			NewReturnCheckFilter(p.store, p.parser, p.logger),
-		}
-	default:
-		// Bounds-check suppression already happens in the buffer-overflow
-		// detector (hasPrecedingBoundsCheck / constant-index analysis); there is
-		// no bounds-check *event* for a filter to read, and the previous
-		// BoundsCheckFilter wrongly keyed on NULL_GUARD events at function
-		// granularity. So the default chain is call-reach + safe-function only.
-		return []Filter{
-			NewCallReachFilter(p.store, p.callReachCache),
-			NewSafeFunctionFilter(p.store),
-		}
+		}, nil
 	}
+	return nil, fmt.Errorf("unknown filter chain %q", chain)
 }
 
 func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error) {
@@ -136,7 +141,10 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 		SeedCount: len(seed),
 	}
 
-	filters := p.getFilters(spec.FilterChain)
+	filters, err := p.getFilters(spec.FilterChain)
+	if err != nil {
+		return nil, err
+	}
 
 	candidates := seed
 	shortCircuited := false
@@ -241,8 +249,18 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			locIDs = append(locIDs, e.LocationID)
 		}
 	}
-	funcsByID, _ := p.store.ListFunctionsByIDs(ctx, funcIDs)
-	locsByID, _ := p.store.ListLocationsByIDs(ctx, locIDs)
+	// A batch load failure must not be swallowed: with nil maps every seed
+	// candidate loses its FunctionName/FileID/Line, so the finding would be
+	// written with a zero location — a security tool reporting a defect without
+	// a location is worse than reporting nothing. Fail the type instead.
+	funcsByID, err := p.store.ListFunctionsByIDs(ctx, funcIDs)
+	if err != nil {
+		return nil, fmt.Errorf("seed candidates: list functions: %w", err)
+	}
+	locsByID, err := p.store.ListLocationsByIDs(ctx, locIDs)
+	if err != nil {
+		return nil, fmt.Errorf("seed candidates: list locations: %w", err)
+	}
 
 	var candidates []Candidate
 	for _, e := range events {

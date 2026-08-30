@@ -43,7 +43,7 @@ func (s *store) ListScanStats(ctx context.Context, scanID string) ([]*ScanStat, 
 
 func (s *store) GetLatestScanID(ctx context.Context) (string, error) {
 	var scanID string
-	err := s.exec.QueryRowContext(ctx, `SELECT scan_id FROM scan_stats ORDER BY created_at DESC LIMIT 1`).Scan(&scanID)
+	err := s.exec.QueryRowContext(ctx, `SELECT scan_id FROM scan_stats ORDER BY created_at DESC, id DESC LIMIT 1`).Scan(&scanID)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}

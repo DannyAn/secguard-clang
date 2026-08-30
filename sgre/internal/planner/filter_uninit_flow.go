@@ -47,7 +47,8 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 		byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
 	}
 
-	flows, files := f.buildFlows(ctx, byFunc)
+	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	flows, files := f.buildFlows(ctx, byFunc, fnByID, fileByID)
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -68,7 +69,7 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 		// inconsistent path (e.g. crc32.c's `#if N > 1 crc1 = 0` ... `#if N > 1
 		// word1 = crc1 ^ ...`).
 		reaching := flow.reaching(c.VariableName, c.Line)
-		if reaching && f.hasCoveringAssign(ctx, files[c.FileID], c) {
+		if reaching && f.hasCoveringAssign(ctx, fnByID, files[c.FileID], c) {
 			dropped = dismiss(dropped, c, f.Name(),
 				fmt.Sprintf("variable %s is assigned under the same preprocessor condition before the use at line %d", c.VariableName, c.Line))
 			continue
@@ -103,17 +104,17 @@ func (f *DefiniteInitFilter) isStackUninit(ctx context.Context, c Candidate) boo
 	return props.Origin == "stack_uninit"
 }
 
-func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate) (map[int64]*flowResult, map[int64]*hoistedUninitFile) {
+func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, fnByID map[int64]*db.Function, fileByID map[int64]*db.File) (map[int64]*flowResult, map[int64]*hoistedUninitFile) {
 	flows := make(map[int64]*flowResult, len(byFunc))
 	files := make(map[int64]*hoistedUninitFile)
 	cache := newFileParseCache(f.parser)
 	for fid := range byFunc {
-		fn, err := f.store.GetFunctionByID(ctx, fid)
-		if err != nil || fn == nil {
+		fn := fnByID[fid]
+		if fn == nil {
 			continue
 		}
-		file, err := f.store.GetFileByID(ctx, fn.FileID)
-		if err != nil || file == nil {
+		file := fileByID[fn.FileID]
+		if file == nil {
 			continue
 		}
 		body, root := cache.get(file, fn)
@@ -331,12 +332,12 @@ func hoistUninitFile(root parser.Node) *hoistedUninitFile {
 // reaches the use, so the use cannot read an uninitialized value on any
 // consistent compilation (the "not compiled" branch that the CFG models as a
 // runtime alternative is inconsistent with the use's own condition).
-func (f *DefiniteInitFilter) hasCoveringAssign(ctx context.Context, hf *hoistedUninitFile, c Candidate) bool {
+func (f *DefiniteInitFilter) hasCoveringAssign(ctx context.Context, fnByID map[int64]*db.Function, hf *hoistedUninitFile, c Candidate) bool {
 	if hf == nil {
 		return false
 	}
-	fn, err := f.store.GetFunctionByID(ctx, c.FunctionID)
-	if err != nil || fn == nil {
+	fn := fnByID[c.FunctionID]
+	if fn == nil {
 		return false
 	}
 	usePreproc := preprocConditionKeys(hf, fn, c.Line)

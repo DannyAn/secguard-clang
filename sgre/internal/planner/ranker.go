@@ -47,11 +47,29 @@ func RankCandidates(ctx context.Context, candidates []Candidate, store db.Store)
 		return candidates
 	}
 
+	// The APIName fallback reads an event's properties when the seed step did not
+	// already extract an api name. Batch-load those events once instead of
+	// issuing one GetEventByID per candidate (an N+1 storm when a type's events
+	// lack the function/api property in bulk).
+	eventsByID := map[int64]*db.SecurityEvent{}
+	if store != nil {
+		needIDs := make([]int64, 0)
+		for _, c := range candidates {
+			if c.APIName == "" && c.DerefEventID > 0 {
+				needIDs = append(needIDs, c.DerefEventID)
+			}
+		}
+		if len(needIDs) > 0 {
+			if m, err := store.ListEventsByIDs(ctx, needIDs); err == nil {
+				eventsByID = m
+			}
+		}
+	}
+
 	for i := range candidates {
 		apiName := candidates[i].APIName
-		if apiName == "" && store != nil && candidates[i].DerefEventID > 0 {
-			event, err := store.GetEventByID(ctx, candidates[i].DerefEventID)
-			if err == nil && event != nil {
+		if apiName == "" && candidates[i].DerefEventID > 0 {
+			if event := eventsByID[candidates[i].DerefEventID]; event != nil {
 				var props struct {
 					Function   string `json:"function"`
 					Variable   string `json:"variable"`

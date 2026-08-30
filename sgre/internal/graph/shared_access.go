@@ -2,7 +2,6 @@ package graph
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -37,10 +36,7 @@ func (b *SharedAccessBuilder) Build(ctx context.Context) (*BuildResult, error) {
 			writes := make(map[string]bool)
 			reads := make(map[string]bool)
 
-			for _, a := range assigns {
-				if !funcLineRange(f, a.StartLine()) {
-					continue
-				}
+			for _, a := range nodesInRange(assigns, f.StartLine, f.EndLine) {
 				children := a.NamedChildren()
 				if len(children) < 1 {
 					continue
@@ -51,20 +47,14 @@ func (b *SharedAccessBuilder) Build(ctx context.Context) (*BuildResult, error) {
 					}
 				}
 			}
-			for _, u := range updates {
-				if !funcLineRange(f, u.StartLine()) {
-					continue
-				}
+			for _, u := range nodesInRange(updates, f.StartLine, f.EndLine) {
 				for _, id := range u.FindAll("identifier") {
 					if globals[id.Text()] {
 						writes[id.Text()] = true
 					}
 				}
 			}
-			for _, id := range ids {
-				if !funcLineRange(f, id.StartLine()) {
-					continue
-				}
+			for _, id := range nodesInRange(ids, f.StartLine, f.EndLine) {
 				if !globals[id.Text()] {
 					continue
 				}
@@ -97,20 +87,26 @@ func (b *SharedAccessBuilder) Build(ctx context.Context) (*BuildResult, error) {
 func (b *SharedAccessBuilder) persistAccess(ctx context.Context, f *db.Function, global, access string) bool {
 	fnNode, err := b.store.GetOrCreateGraphNode(ctx, "function", f.ID, fmt.Sprintf(`{"name":"%s"}`, f.Name))
 	if err != nil {
+		warnEdge(b.logger, "GLOBAL_ACCESS", f.Name, err)
 		return false
 	}
 	gNode, err := b.store.GetOrCreateGraphNode(ctx, "global_var", 0, fmt.Sprintf(`{"name":"%s"}`, global))
 	if err != nil {
+		warnEdge(b.logger, "GLOBAL_ACCESS", f.Name, err)
 		return false
 	}
-	props, _ := json.Marshal(map[string]string{"function": f.Name, "variable": global, "access": access})
+	props := marshalProps(b.logger, "GLOBAL_ACCESS", map[string]string{"function": f.Name, "variable": global, "access": access})
 	_, err = b.store.InsertGraphEdge(ctx, &db.GraphEdge{
 		SrcID:      fnNode,
 		DstID:      gNode,
 		EdgeType:   "GLOBAL_ACCESS",
-		Properties: string(props),
+		Properties: props,
 	})
-	return err == nil
+	if err != nil {
+		warnEdge(b.logger, "GLOBAL_ACCESS", f.Name, err)
+		return false
+	}
+	return true
 }
 
 // collectGlobalNames returns the set of file-scope variable names: identifiers

@@ -51,7 +51,10 @@ func buildNullModel(ctx context.Context, store db.Store) (map[int64]*nullModel, 
 			locIDs = append(locIDs, e.LocationID)
 		}
 	}
-	locsByID, _ := store.ListLocationsByIDs(ctx, locIDs)
+	locsByID, err := store.ListLocationsByIDs(ctx, locIDs)
+	if err != nil {
+		return nil, err
+	}
 
 	for _, e := range events {
 		props := parseEventProps(e.Properties)

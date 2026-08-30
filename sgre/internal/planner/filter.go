@@ -2,6 +2,8 @@ package planner
 
 import (
 	"context"
+
+	"github.com/DannyAn/secguard-clang/internal/db"
 )
 
 // Dismissed records a candidate removed by a filter, with the reason it was
@@ -59,6 +61,41 @@ func dismiss(dropped []Dismissed, c Candidate, filterName, reason string) []Dism
 		Filter:       filterName,
 		Reason:       reason,
 	})
+}
+
+// candidateFuncIDs returns the distinct function IDs of a byFunc bucket map.
+func candidateFuncIDs(byFunc map[int64][]Candidate) []int64 {
+	ids := make([]int64, 0, len(byFunc))
+	for fid := range byFunc {
+		ids = append(ids, fid)
+	}
+	return ids
+}
+
+// loadFuncFiles batch-loads the functions and files for the given function IDs,
+// returning fnByID and fileByID maps. The flow filters iterate candidates by
+// function and previously issued one GetFunctionByID + GetFileByID point query
+// per function (an N+1 storm); this collapses the same work to one batched
+// function query plus one file listing.
+func loadFuncFiles(ctx context.Context, store db.Store, funcIDs []int64) (map[int64]*db.Function, map[int64]*db.File) {
+	fnByID, err := store.ListFunctionsByIDs(ctx, funcIDs)
+	if err != nil {
+		fnByID = map[int64]*db.Function{}
+	}
+	return fnByID, listFilesByID(ctx, store)
+}
+
+// listFilesByID returns every indexed file keyed by ID in one query, or an empty
+// map when the listing fails. It exists so a whole-program loop (`for _, fn :=
+// range ListFunctions`) does not issue one GetFileByID per function.
+func listFilesByID(ctx context.Context, store db.Store) map[int64]*db.File {
+	fileByID := map[int64]*db.File{}
+	if files, err := store.ListFiles(ctx); err == nil {
+		for _, fl := range files {
+			fileByID[fl.ID] = fl
+		}
+	}
+	return fileByID
 }
 
 type Candidate struct {

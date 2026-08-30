@@ -2,7 +2,6 @@ package graph
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -57,10 +56,7 @@ func (b *OwnershipBuilder) Build(ctx context.Context) (*BuildResult, error) {
 		calls := root.FindAll("call_expression")
 
 		for _, f := range funcs {
-			for _, ret := range returns {
-				if !funcLineRange(f, ret.StartLine()) {
-					continue
-				}
+			for _, ret := range nodesInRange(returns, f.StartLine, f.EndLine) {
 				for _, child := range ret.NamedChildren() {
 					if child.Kind() != "identifier" {
 						continue
@@ -71,10 +67,7 @@ func (b *OwnershipBuilder) Build(ctx context.Context) (*BuildResult, error) {
 				}
 			}
 
-			for _, assign := range assigns {
-				if !funcLineRange(f, assign.StartLine()) {
-					continue
-				}
+			for _, assign := range nodesInRange(assigns, f.StartLine, f.EndLine) {
 				children := assign.NamedChildren()
 				if len(children) < 2 {
 					continue
@@ -90,10 +83,7 @@ func (b *OwnershipBuilder) Build(ctx context.Context) (*BuildResult, error) {
 				}
 			}
 
-			for _, call := range calls {
-				if !funcLineRange(f, call.StartLine()) {
-					continue
-				}
+			for _, call := range nodesInRange(calls, f.StartLine, f.EndLine) {
 				callName := extractCallName(call)
 				if !releaseFunctions[callName] {
 					continue
@@ -117,6 +107,7 @@ func (b *OwnershipBuilder) Build(ctx context.Context) (*BuildResult, error) {
 func (b *OwnershipBuilder) persistTransfer(ctx context.Context, f *db.Function, variable, kind, globalName string, line int) bool {
 	srcNode, err := b.store.GetOrCreateGraphNode(ctx, "variable_ref", f.ID, fmt.Sprintf(`{"name":"%s","line":%d}`, variable, line))
 	if err != nil {
+		warnEdge(b.logger, "OWNERSHIP_TRANSFER", f.Name, err)
 		return false
 	}
 
@@ -127,17 +118,22 @@ func (b *OwnershipBuilder) persistTransfer(ctx context.Context, f *db.Function, 
 		dstNode, err = b.store.GetOrCreateGraphNode(ctx, "global_var", 0, fmt.Sprintf(`{"name":"%s"}`, globalName))
 	}
 	if err != nil {
+		warnEdge(b.logger, "OWNERSHIP_TRANSFER", f.Name, err)
 		return false
 	}
 
-	props, _ := json.Marshal(map[string]string{"kind": kind, "variable": variable, "global": globalName})
+	props := marshalProps(b.logger, "OWNERSHIP_TRANSFER", map[string]string{"kind": kind, "variable": variable, "global": globalName})
 	_, err = b.store.InsertGraphEdge(ctx, &db.GraphEdge{
 		SrcID:      srcNode,
 		DstID:      dstNode,
 		EdgeType:   "OWNERSHIP_TRANSFER",
-		Properties: string(props),
+		Properties: props,
 	})
-	return err == nil
+	if err != nil {
+		warnEdge(b.logger, "OWNERSHIP_TRANSFER", f.Name, err)
+		return false
+	}
+	return true
 }
 
 // persistRelease emits a RELEASE edge from the variable_ref of the released
@@ -145,24 +141,30 @@ func (b *OwnershipBuilder) persistTransfer(ctx context.Context, f *db.Function, 
 func (b *OwnershipBuilder) persistRelease(ctx context.Context, f *db.Function, variable, callName string, line int) bool {
 	srcNode, err := b.store.GetOrCreateGraphNode(ctx, "variable_ref", f.ID, fmt.Sprintf(`{"name":"%s","line":%d}`, variable, line))
 	if err != nil {
+		warnEdge(b.logger, "RELEASE", f.Name, err)
 		return false
 	}
 	// Name the external_function node so free/fclose/close/etc. resolve to
 	// distinct nodes instead of collapsing onto one anonymous external node.
-	props, _ := json.Marshal(map[string]string{"name": callName, "external": "true"})
-	dstNode, err := b.store.GetOrCreateGraphNode(ctx, "external_function", 0, string(props))
+	props := marshalProps(b.logger, "RELEASE", map[string]string{"name": callName, "external": "true"})
+	dstNode, err := b.store.GetOrCreateGraphNode(ctx, "external_function", 0, props)
 	if err != nil {
+		warnEdge(b.logger, "RELEASE", f.Name, err)
 		return false
 	}
 
-	edgeProps, _ := json.Marshal(map[string]string{"variable": variable, "release_fn": callName})
+	edgeProps := marshalProps(b.logger, "RELEASE", map[string]string{"variable": variable, "release_fn": callName})
 	_, err = b.store.InsertGraphEdge(ctx, &db.GraphEdge{
 		SrcID:      srcNode,
 		DstID:      dstNode,
 		EdgeType:   "RELEASE",
-		Properties: string(edgeProps),
+		Properties: edgeProps,
 	})
-	return err == nil
+	if err != nil {
+		warnEdge(b.logger, "RELEASE", f.Name, err)
+		return false
+	}
+	return true
 }
 
 // globalStoreTarget returns the global name when lhs is a store into a global

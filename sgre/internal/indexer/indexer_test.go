@@ -14,6 +14,24 @@ func testLogger() *log.Logger {
 	return log.New(nil, log.LevelError)
 }
 
+func TestCountLines(t *testing.T) {
+	cases := []struct {
+		in   []byte
+		want int
+	}{
+		{[]byte(""), 1},
+		{[]byte("a"), 1},
+		{[]byte("a\n"), 2},
+		{[]byte("a\nb\nc"), 3},
+		{[]byte("a\nb\nc\n"), 4},
+	}
+	for _, c := range cases {
+		if got := countLines(c.in); got != c.want {
+			t.Errorf("countLines(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
 func TestIndexer_ExtractsAllFunctions(t *testing.T) {
 	s := db.NewTestStore(t)
 	idx := NewIndexer(s, testLogger())

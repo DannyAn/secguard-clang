@@ -89,6 +89,9 @@ type SecurityEventStore interface {
 	ListEventsByType(ctx context.Context, eventType string) ([]*SecurityEvent, error)
 	ListEventsByEntity(ctx context.Context, entityID int64) ([]*SecurityEvent, error)
 	ListEventsByTypeAndEntity(ctx context.Context, eventType string, entityID int64) ([]*SecurityEvent, error)
+	// ListEventsByIDs returns the events with the given IDs keyed by ID, in a
+	// single batched query (chunked) instead of one query per ID.
+	ListEventsByIDs(ctx context.Context, ids []int64) (map[int64]*SecurityEvent, error)
 	ClearSecurityEvents(ctx context.Context) error
 }
 

@@ -93,6 +93,25 @@ func TestWithBusyRetryID_ContextCancel(t *testing.T) {
 	}
 }
 
+func TestIsLockedErr(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"locked", errors.New("database is locked"), true},
+		{"busy", errors.New("SQLITE_BUSY: database is locked"), true},
+		{"unrelated", errors.New("constraint failed"), false},
+		{"wrapped locked", fmt.Errorf("insert: %w", errors.New("database is locked")), true},
+	}
+	for _, c := range cases {
+		if got := isLockedErr(c.err); got != c.want {
+			t.Errorf("%s: isLockedErr(%v) = %v, want %v", c.name, c.err, got, c.want)
+		}
+	}
+}
+
 func TestWithBusyRetryID_BackoffDoubles(t *testing.T) {
 	ctx := context.Background()
 	start := time.Now()

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -88,7 +89,7 @@ func isLockedErr(err error) bool {
 		return false
 	}
 	s := err.Error()
-	return contains(s, "database is locked") || contains(s, "SQLITE_BUSY")
+	return strings.Contains(s, "database is locked") || strings.Contains(s, "SQLITE_BUSY")
 }
 
 // withBusyRetryID runs fn and retries on SQLITE_BUSY with exponential backoff
@@ -121,19 +122,6 @@ func withBusyRetryID(ctx context.Context, maxRetries int, fn func() (int64, erro
 		}
 	}
 	return 0, fmt.Errorf("db: busy retry exhausted after %d attempts: %w", maxRetries+1, lastErr)
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && searchString(s, sub)
-}
-
-func searchString(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }
 
 func now() int64 {

@@ -290,7 +290,10 @@ func TestPlan_CategorySplit_BufferAccess(t *testing.T) {
 func TestPlan_UncheckedReturn_UsesReturnCheckFilter(t *testing.T) {
 	store := newMockStore()
 	pl := NewPlanner(store, nil, nil)
-	filters := pl.getFilters("unchecked-return")
+	filters, err := pl.getFilters("unchecked-return")
+	if err != nil {
+		t.Fatalf("getFilters(unchecked-return) failed: %v", err)
+	}
 
 	found := false
 	for _, f := range filters {
@@ -305,5 +308,53 @@ func TestPlan_UncheckedReturn_UsesReturnCheckFilter(t *testing.T) {
 			names[i] = f.Name()
 		}
 		t.Errorf("getFilters(unchecked-return) should include return_check filter, got %v", names)
+	}
+}
+
+// TestAllVulnTypesHaveKnownFilterChain guards against a typo'd or newly-added
+// FilterChain silently falling back to the default call-reach chain: getFilters
+// now returns an error for any chain it does not recognise, so this test fails
+// the moment a registered type references an unknown chain.
+func TestAllVulnTypesHaveKnownFilterChain(t *testing.T) {
+	pl := NewPlanner(nil, nil, nil)
+	for _, vt := range AllVulnTypes() {
+		spec, err := GetVulnTypeSpec(vt)
+		if err != nil {
+			t.Fatalf("GetVulnTypeSpec(%s): %v", vt, err)
+		}
+		if _, err := pl.getFilters(spec.FilterChain); err != nil {
+			t.Errorf("vuln type %s has unhandled filter chain %q: %v", vt, spec.FilterChain, err)
+		}
+	}
+}
+
+// countingStore wraps a db.Store and counts ListGraphEdgesByType calls, which is
+// the most expensive query inside computeCallReach.
+type countingStore struct {
+	db.Store
+	edgesCalls int
+}
+
+func (c *countingStore) ListGraphEdgesByType(ctx context.Context, et string) ([]*db.GraphEdge, error) {
+	c.edgesCalls++
+	return c.Store.ListGraphEdgesByType(ctx, et)
+}
+
+// TestCallReachCache_ComputedOnce verifies the call-reach cache is computed once
+// and reused (sync.Once), which is what lets the pipeline share one Planner
+// across all vuln types without recomputing reachability per type.
+func TestCallReachCache_ComputedOnce(t *testing.T) {
+	ctx := context.Background()
+	cs := &countingStore{Store: newMockStore()}
+	cache := &callReachCache{}
+
+	if _, err := cache.get(ctx, cs); err != nil {
+		t.Fatalf("first get: %v", err)
+	}
+	if _, err := cache.get(ctx, cs); err != nil {
+		t.Fatalf("second get: %v", err)
+	}
+	if cs.edgesCalls != 1 {
+		t.Errorf("computeCallReach should run once, but ListGraphEdgesByType was called %d times", cs.edgesCalls)
 	}
 }

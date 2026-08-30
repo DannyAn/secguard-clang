@@ -9,6 +9,12 @@ import (
 // UpsertReviewSession writes a review session idempotently keyed on review_id.
 // Re-running the same diff (same base/head) converges on one row, so the review
 // is resumable and its findings idempotent.
+//
+// status is intentionally NOT in the DO UPDATE SET: a re-run of an already
+// completed review must not reset a `done` session back to `running` (that would
+// make a finished review look in-progress again). The first insert still seeds
+// `running`; a caller that genuinely wants to re-open a session updates status
+// explicitly via UpdateReviewSessionStatus.
 func (s *store) UpsertReviewSession(ctx context.Context, r *ReviewSession) error {
 	if r.Status == "" {
 		r.Status = "running"

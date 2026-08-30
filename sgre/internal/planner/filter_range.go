@@ -73,13 +73,14 @@ func (f *RangeFilter) divisor(ctx context.Context, c Candidate) string {
 func (f *RangeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate) map[int64]*rangeFlow {
 	flows := make(map[int64]*rangeFlow, len(byFunc))
 	cache := newFileParseCache(f.parser)
+	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
 	for fid := range byFunc {
-		fn, err := f.store.GetFunctionByID(ctx, fid)
-		if err != nil || fn == nil {
+		fn := fnByID[fid]
+		if fn == nil {
 			continue
 		}
-		file, err := f.store.GetFileByID(ctx, fn.FileID)
-		if err != nil || file == nil {
+		file := fileByID[fn.FileID]
+		if file == nil {
 			continue
 		}
 		body, _ := cache.get(file, fn)

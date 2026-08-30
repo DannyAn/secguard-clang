@@ -74,10 +74,15 @@ type ScanOutput struct {
 }
 
 func generateScanID() string {
-	ts := time.Now().Format("2006-01-02_150405")
+	now := time.Now()
+	ts := now.Format("2006-01-02_150405")
 	b := make([]byte, 3)
 	if _, err := rand.Read(b); err != nil {
-		return "sc_" + ts
+		// rand.Read failing is effectively impossible, but the scanID must still
+		// match the sc_..._xxxxxx format (scanIDPattern validates the 6-char
+		// suffix), so derive a deterministic suffix from the nanosecond clock
+		// instead of emitting a malformed id.
+		return fmt.Sprintf("sc_%s_%06x", ts, now.UnixNano()&0xffffff)
 	}
 	return "sc_" + ts + "_" + hex.EncodeToString(b)
 }

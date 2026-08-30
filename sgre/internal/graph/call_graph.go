@@ -2,7 +2,6 @@ package graph
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -54,10 +53,7 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 				continue
 			}
 
-			for _, callNode := range callNodes {
-				if !funcLineRange(f, callNode.StartLine()) {
-					continue
-				}
+			for _, callNode := range nodesInRange(callNodes, f.StartLine, f.EndLine) {
 				callName := extractCallName(callNode)
 				if callName == "" {
 					continue
@@ -65,12 +61,13 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 
 				calleeIDs := funcMap[callName]
 				if len(calleeIDs) == 0 {
-					props, _ := json.Marshal(map[string]string{"name": callName, "external": "true"})
-					calleeNodeID, err := b.store.GetOrCreateGraphNode(ctx, "external_function", 0, string(props))
+					props := marshalProps(b.logger, "CALL", map[string]string{"name": callName, "external": "true"})
+					calleeNodeID, err := b.store.GetOrCreateGraphNode(ctx, "external_function", 0, props)
 					if err != nil {
+						warnEdge(b.logger, "CALL", f.Name, err)
 						continue
 					}
-					b.insertCallEdge(ctx, callerNodeID, calleeNodeID, callNode.StartLine(), result)
+					b.insertCallEdge(ctx, f, callerNodeID, calleeNodeID, callNode.StartLine(), result)
 					result.ExternalFuncs++
 					continue
 				}
@@ -79,9 +76,10 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 				for _, calleeID := range calleeIDs {
 					calleeNodeID, err := b.store.GetOrCreateGraphNode(ctx, "function", calleeID, "")
 					if err != nil {
+						warnEdge(b.logger, "CALL", f.Name, err)
 						continue
 					}
-					b.insertCallEdge(ctx, callerNodeID, calleeNodeID, callNode.StartLine(), result)
+					b.insertCallEdge(ctx, f, callerNodeID, calleeNodeID, callNode.StartLine(), result)
 				}
 			}
 		}
@@ -91,15 +89,16 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 
 // insertCallEdge persists one CALL edge with call_line set to the call site
 // line (previously it stamped the callee function's start line, a latent bug).
-func (b *CallGraphBuilder) insertCallEdge(ctx context.Context, callerNodeID, calleeNodeID int64, callLine int, result *BuildResult) {
-	props, _ := json.Marshal(map[string]int{"call_line": callLine})
+func (b *CallGraphBuilder) insertCallEdge(ctx context.Context, f *db.Function, callerNodeID, calleeNodeID int64, callLine int, result *BuildResult) {
+	props := marshalProps(b.logger, "CALL", map[string]int{"call_line": callLine})
 	_, err := b.store.InsertGraphEdge(ctx, &db.GraphEdge{
 		SrcID:      callerNodeID,
 		DstID:      calleeNodeID,
 		EdgeType:   "CALL",
-		Properties: string(props),
+		Properties: props,
 	})
 	if err != nil {
+		warnEdge(b.logger, "CALL", f.Name, err)
 		return
 	}
 	result.EdgesCreated++

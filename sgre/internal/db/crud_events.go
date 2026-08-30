@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 func (s *store) InsertEvent(ctx context.Context, e *SecurityEvent) (int64, error) {
@@ -58,6 +59,35 @@ func (s *store) ListEventsByTypeAndEntity(ctx context.Context, eventType string,
 	}
 	defer rows.Close()
 	return scanEvents(rows)
+}
+
+func (s *store) ListEventsByIDs(ctx context.Context, ids []int64) (map[int64]*SecurityEvent, error) {
+	result := make(map[int64]*SecurityEvent, len(ids))
+	for _, chunk := range chunkIDs(ids, 500) {
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]interface{}, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+		rows, err := s.exec.QueryContext(ctx,
+			`SELECT id, event_type, entity_id, location_id, properties FROM security_events WHERE id IN (`+placeholders+`)`, args...)
+		if err != nil {
+			return nil, fmt.Errorf("db: list events by ids: %w", err)
+		}
+		for rows.Next() {
+			e := &SecurityEvent{}
+			if scanErr := rows.Scan(&e.ID, &e.EventType, &e.EntityID, &e.LocationID, &e.Properties); scanErr != nil {
+				rows.Close()
+				return nil, fmt.Errorf("db: scan event: %w", scanErr)
+			}
+			result[e.ID] = e
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("db: list events by ids: %w", err)
+		}
+	}
+	return result, nil
 }
 
 func (s *store) ClearSecurityEvents(ctx context.Context) error {

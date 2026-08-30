@@ -2,7 +2,6 @@ package graph
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -77,10 +76,7 @@ func (b *InterprocBuilder) Build(ctx context.Context) (*BuildResult, error) {
 		inits := root.FindAll("init_declarator")
 
 		for _, f := range fileFuncs {
-			for _, call := range calls {
-				if !funcLineRange(f, call.StartLine()) {
-					continue
-				}
+			for _, call := range nodesInRange(calls, f.StartLine, f.EndLine) {
 				calleeName := extractCallName(call)
 				calleeIDs := funcByName[calleeName]
 				if len(calleeIDs) == 0 {
@@ -105,10 +101,7 @@ func (b *InterprocBuilder) Build(ctx context.Context) (*BuildResult, error) {
 
 			// RETURN edges: x = f(...) as either a plain assignment (assignment_expression)
 			// or a declaration initializer (init_declarator: int x = f(...)).
-			for _, assign := range assigns {
-				if !funcLineRange(f, assign.StartLine()) {
-					continue
-				}
+			for _, assign := range nodesInRange(assigns, f.StartLine, f.EndLine) {
 				children := assign.NamedChildren()
 				if len(children) < 2 {
 					continue
@@ -117,10 +110,7 @@ func (b *InterprocBuilder) Build(ctx context.Context) (*BuildResult, error) {
 					result.EdgesCreated++
 				}
 			}
-			for _, init := range inits {
-				if !funcLineRange(f, init.StartLine()) {
-					continue
-				}
+			for _, init := range nodesInRange(inits, f.StartLine, f.EndLine) {
 				children := init.NamedChildren()
 				if len(children) < 2 {
 					continue
@@ -137,40 +127,52 @@ func (b *InterprocBuilder) Build(ctx context.Context) (*BuildResult, error) {
 func (b *InterprocBuilder) persistParamBinding(ctx context.Context, caller *db.Function, calleeID int64, calleeName, paramName string, index int, argName string, line int) bool {
 	actualNode, err := b.store.GetOrCreateGraphNode(ctx, "variable_ref", caller.ID, fmt.Sprintf(`{"name":"%s","line":%d}`, argName, line))
 	if err != nil {
+		warnEdge(b.logger, "PARAM_BINDING", caller.Name, err)
 		return false
 	}
-	formalProps, _ := json.Marshal(map[string]interface{}{"name": paramName, "index": index})
-	formalNode, err := b.store.GetOrCreateGraphNode(ctx, "parameter", calleeID, string(formalProps))
+	formalProps := marshalProps(b.logger, "PARAM_BINDING", map[string]interface{}{"name": paramName, "index": index})
+	formalNode, err := b.store.GetOrCreateGraphNode(ctx, "parameter", calleeID, formalProps)
 	if err != nil {
+		warnEdge(b.logger, "PARAM_BINDING", caller.Name, err)
 		return false
 	}
-	props, _ := json.Marshal(map[string]interface{}{"callee": calleeName, "index": index, "param": paramName})
+	props := marshalProps(b.logger, "PARAM_BINDING", map[string]interface{}{"callee": calleeName, "index": index, "param": paramName})
 	_, err = b.store.InsertGraphEdge(ctx, &db.GraphEdge{
 		SrcID:      actualNode,
 		DstID:      formalNode,
 		EdgeType:   "PARAM_BINDING",
-		Properties: string(props),
+		Properties: props,
 	})
-	return err == nil
+	if err != nil {
+		warnEdge(b.logger, "PARAM_BINDING", caller.Name, err)
+		return false
+	}
+	return true
 }
 
 func (b *InterprocBuilder) persistReturn(ctx context.Context, caller *db.Function, calleeID int64, calleeName, lhsName string, line int) bool {
 	retNode, err := b.store.GetOrCreateGraphNode(ctx, "return_slot", calleeID, "")
 	if err != nil {
+		warnEdge(b.logger, "RETURN", caller.Name, err)
 		return false
 	}
 	dstNode, err := b.store.GetOrCreateGraphNode(ctx, "variable_ref", caller.ID, fmt.Sprintf(`{"name":"%s","line":%d}`, lhsName, line))
 	if err != nil {
+		warnEdge(b.logger, "RETURN", caller.Name, err)
 		return false
 	}
-	props, _ := json.Marshal(map[string]string{"callee": calleeName, "variable": lhsName})
+	props := marshalProps(b.logger, "RETURN", map[string]string{"callee": calleeName, "variable": lhsName})
 	_, err = b.store.InsertGraphEdge(ctx, &db.GraphEdge{
 		SrcID:      retNode,
 		DstID:      dstNode,
 		EdgeType:   "RETURN",
-		Properties: string(props),
+		Properties: props,
 	})
-	return err == nil
+	if err != nil {
+		warnEdge(b.logger, "RETURN", caller.Name, err)
+		return false
+	}
+	return true
 }
 
 // bindReturn emits RETURN edges for a single (lhs, rhs) assignment/initializer

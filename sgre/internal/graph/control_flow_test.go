@@ -334,6 +334,31 @@ func TestBuildStmtCFG_ForContinueTargetsUpdate(t *testing.T) {
 	}
 }
 
+func TestBuildStmtCFG_EmptyForBodyUpdateReachable(t *testing.T) {
+	body := parseBody(t, `int f(int n) {
+    int i = 0;
+    for (i = 0; i < n; i++) ;
+    return i;
+}`)
+	cfg := BuildStmtCFG(body, 5)
+
+	var updNode *StmtNode
+	for _, n := range cfg.Nodes {
+		if n.Kind == "stmt" && n.Stmt.Kind() == "update_expression" {
+			updNode = n
+		}
+	}
+	if updNode == nil {
+		t.Fatal("for-loop update expression not found")
+	}
+	// The empty `;` body parses as a real statement node, so the update is
+	// reachable (header -> empty body -> update -> header) and a `continue`
+	// correctly re-tests the condition after running the update.
+	if !cfg.Reaches(cfg.Entry, updNode.ID) {
+		t.Error("for-loop update must be reachable through the empty statement body")
+	}
+}
+
 func TestStmtCFG_NodeAtInnermost(t *testing.T) {
 	body := parseBody(t, `int f(int c) {
     int x = 1;

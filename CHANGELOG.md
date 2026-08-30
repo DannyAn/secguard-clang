@@ -27,6 +27,21 @@
 - **null-deref**：库函数解引用参数（`memset_s`/`memcpy`/`strlen` 等）后，其指针参数视为非空——调用能
   继续到下一句即证明参数非空。消除「初始化后隔几句仍报空指针解引用」误报，kill 沿语义图 CFG 传播。
 
+### 稳定性与健壮性（发布后检视修复）
+
+- 修复 `planErrors` map 被多 goroutine 并发写导致的 `concurrent map writes` 崩溃风险（加锁保护）。
+- 修复每个漏洞类型各自 `NewPlanner` 导致 call-reach 缓存（`sync.Once`）从未跨类型共享、每类型重复
+  计算全量调用图可达性的性能回归——改为整个 pipeline 复用同一个 Planner。
+- 修复多处 DB/IO 边界错误被 `_` 吞掉导致的静默降级/数据丢失：候选批量加载位置/函数失败时改为
+  fail-fast；`UpdateReturnNullable` 读失败不再用零值覆盖已有摘要；graph builders 写边/节点失败
+  补 warn 日志；config 解析失败输出 stderr 告警。
+- 修复多个 filter（array-oob-precedence / ranker / 7 个 flow filter）的按条 N+1 点查，统一批量加载。
+- 修复 `getFilters` 对未知 filter chain 静默回退 default——改为显式 `default` 分支并对未知 chain 报错。
+- graph builders 的 `O(函数数 × 节点数)` 扫描改为按行号二分定位；`countLines` 消除整文件二次拷贝；
+  `GetLatestScanID` 增加 `id` 稳定 tiebreaker。
+- 补充/增强回归测试：`UpdateReturnNullable` 字段保留、`callReachCache` 仅计算一次、全类型 filter
+  chain 合法性、空 body for 循环 update 可达性、`isLockedErr`/`countLines`/scanID tiebreaker。
+
 ## [0.5.1] - 2026-08-29
 
 ### 新功能：增量 PR/MR 检视

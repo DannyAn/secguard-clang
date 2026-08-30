@@ -104,6 +104,9 @@ func emitEvent(ctx context.Context, store db.Store, logger *log.Logger, eventTyp
 	}
 	data, err := json.Marshal(props)
 	if err != nil {
+		if logger != nil {
+			logger.Warn("marshal event properties failed", "event_type", eventType, "error", err)
+		}
 		return false
 	}
 	if _, err := store.InsertEvent(ctx, &db.SecurityEvent{

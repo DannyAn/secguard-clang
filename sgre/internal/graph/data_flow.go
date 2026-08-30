@@ -2,7 +2,6 @@ package graph
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -28,8 +27,8 @@ func (b *DataFlowBuilder) Build(ctx context.Context) (*BuildResult, error) {
 		returns := root.FindAll("return_statement")
 
 		for _, f := range funcs {
-			b.detectPointerAssignments(ctx, f, assigns, result)
-			b.detectPointerReturns(ctx, f, returns, result)
+			b.detectPointerAssignments(ctx, f, nodesInRange(assigns, f.StartLine, f.EndLine), result)
+			b.detectPointerReturns(ctx, f, nodesInRange(returns, f.StartLine, f.EndLine), result)
 		}
 	})
 	return result, err
@@ -37,9 +36,6 @@ func (b *DataFlowBuilder) Build(ctx context.Context) (*BuildResult, error) {
 
 func (b *DataFlowBuilder) detectPointerAssignments(ctx context.Context, f *db.Function, assigns []parser.Node, result *BuildResult) {
 	for _, assign := range assigns {
-		if !funcLineRange(f, assign.StartLine()) {
-			continue
-		}
 		children := assign.NamedChildren()
 		if len(children) < 2 {
 			continue
@@ -61,50 +57,55 @@ func (b *DataFlowBuilder) detectPointerAssignments(ctx context.Context, f *db.Fu
 
 		lhsNodeID, err := b.store.GetOrCreateGraphNode(ctx, "variable_ref", f.ID, fmt.Sprintf(`{"name":"%s","line":%d}`, lhs.Text(), assign.StartLine()))
 		if err != nil {
+			warnEdge(b.logger, "DATA_FLOW", f.Name, err)
 			continue
 		}
 		rhsNodeID, err := b.store.GetOrCreateGraphNode(ctx, "variable_ref", f.ID, fmt.Sprintf(`{"name":"%s","line":%d}`, rhsName, assign.StartLine()))
 		if err != nil {
+			warnEdge(b.logger, "DATA_FLOW", f.Name, err)
 			continue
 		}
-		props, _ := json.Marshal(map[string]string{"variable": lhs.Text()})
+		props := marshalProps(b.logger, "DATA_FLOW", map[string]string{"variable": lhs.Text()})
 		_, err = b.store.InsertGraphEdge(ctx, &db.GraphEdge{
 			SrcID:      rhsNodeID,
 			DstID:      lhsNodeID,
 			EdgeType:   "DATA_FLOW",
-			Properties: string(props),
+			Properties: props,
 		})
-		if err == nil {
-			result.EdgesCreated++
+		if err != nil {
+			warnEdge(b.logger, "DATA_FLOW", f.Name, err)
+			continue
 		}
+		result.EdgesCreated++
 	}
 }
 
 func (b *DataFlowBuilder) detectPointerReturns(ctx context.Context, f *db.Function, returns []parser.Node, result *BuildResult) {
 	for _, ret := range returns {
-		if !funcLineRange(f, ret.StartLine()) {
-			continue
-		}
 		for _, child := range ret.NamedChildren() {
 			if child.Kind() == "identifier" {
 				retNodeID, err := b.store.GetOrCreateGraphNode(ctx, "return_slot", f.ID, "")
 				if err != nil {
+					warnEdge(b.logger, "DATA_FLOW", f.Name, err)
 					continue
 				}
 				varNodeID, err := b.store.GetOrCreateGraphNode(ctx, "variable_ref", f.ID, fmt.Sprintf(`{"name":"%s","line":%d}`, child.Text(), ret.StartLine()))
 				if err != nil {
+					warnEdge(b.logger, "DATA_FLOW", f.Name, err)
 					continue
 				}
-				props, _ := json.Marshal(map[string]string{"variable": child.Text()})
+				props := marshalProps(b.logger, "DATA_FLOW", map[string]string{"variable": child.Text()})
 				_, err = b.store.InsertGraphEdge(ctx, &db.GraphEdge{
 					SrcID:      varNodeID,
 					DstID:      retNodeID,
 					EdgeType:   "DATA_FLOW",
-					Properties: string(props),
+					Properties: props,
 				})
-				if err == nil {
-					result.EdgesCreated++
+				if err != nil {
+					warnEdge(b.logger, "DATA_FLOW", f.Name, err)
+					continue
 				}
+				result.EdgesCreated++
 			}
 		}
 	}
