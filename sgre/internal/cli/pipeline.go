@@ -31,6 +31,14 @@ type pipelineOutcome struct {
 // excludeDirs is nil to keep the default exclusions, or an explicit (possibly
 // empty) list to override them.
 func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPath string, excludeDirs []string) (*pipelineOutcome, error) {
+	// Validate the static vuln-type registry (spec + filter chain) BEFORE the
+	// expensive index/graph/detector phases. A registry typo that would otherwise
+	// surface only as a per-type Plan failure after a long scan now fails the run
+	// immediately, at zero cost.
+	if err := planner.ValidateRegistry(); err != nil {
+		return nil, fmt.Errorf("planner registry: %w", err)
+	}
+
 	p := parser.NewParser()
 	defer p.CloseAll()
 

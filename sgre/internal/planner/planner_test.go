@@ -316,15 +316,8 @@ func TestPlan_UncheckedReturn_UsesReturnCheckFilter(t *testing.T) {
 // now returns an error for any chain it does not recognise, so this test fails
 // the moment a registered type references an unknown chain.
 func TestAllVulnTypesHaveKnownFilterChain(t *testing.T) {
-	pl := NewPlanner(nil, nil, nil)
-	for _, vt := range AllVulnTypes() {
-		spec, err := GetVulnTypeSpec(vt)
-		if err != nil {
-			t.Fatalf("GetVulnTypeSpec(%s): %v", vt, err)
-		}
-		if _, err := pl.getFilters(spec.FilterChain); err != nil {
-			t.Errorf("vuln type %s has unhandled filter chain %q: %v", vt, spec.FilterChain, err)
-		}
+	if err := ValidateRegistry(); err != nil {
+		t.Errorf("registry validation failed: %v", err)
 	}
 }
 

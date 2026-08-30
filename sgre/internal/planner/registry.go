@@ -77,6 +77,26 @@ func AllVulnTypes() []string {
 	return names
 }
 
+// ValidateRegistry checks every registered vulnerability type's spec and filter
+// chain, returning an error for any type whose FilterChain has no handler in
+// getFilters. It is called once at pipeline startup so a registry typo fails
+// immediately (before the expensive index/graph/detector phases) rather than
+// mid-scan as a per-type Plan failure. TestAllVulnTypesHaveKnownFilterChain
+// enforces the same invariant at test time; this is the runtime guard.
+func ValidateRegistry() error {
+	p := NewPlanner(nil, nil, nil)
+	for _, name := range AllVulnTypes() {
+		spec, err := GetVulnTypeSpec(name)
+		if err != nil {
+			return err
+		}
+		if _, err := p.getFilters(spec.FilterChain); err != nil {
+			return fmt.Errorf("planner: vuln type %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func AllSeedEventTypes() []string {
 	seen := make(map[string]bool)
 	for _, spec := range vulnTypeRegistry {
