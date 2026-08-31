@@ -7,9 +7,9 @@ steps: 30
 permission:
   edit: allow
   bash:
-    "*": deny
     "secguard*": allow
     "echo*": allow
+    "*": deny
   read: allow
   grep: allow
   glob: allow

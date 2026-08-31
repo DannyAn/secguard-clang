@@ -13,8 +13,11 @@ suspected 偏重型子代理上下文溢出的根因。本版把管线已算出�
 
 - `_index.md` 新增 `Hint` 列（Go 预计算）：`src@N`（空指针来源行）、`certain-null`
   /`maybe-null`（空指针确定性分层）、`tainted`（污点来源）、`weak-guard`（弱守卫）。
-- 分类指引（command-instructions + DSH preset）改为「先按 Source+Hint 判定，Hint
-  不足才开 Evidence」；没看全的候选默认 `suspected-kept`，杜绝漏报。
+- 分类指引全平台同步改为「先按 Source+Hint 判定，Hint 不足才开 Evidence」：
+  agent-body（opencode/claude-code/claude-cac 单一事实源）+ command-instructions +
+  pr-review + DSH preset；没看全的候选默认 `suspected-kept`，杜绝漏报。
+- 补齐 opencode agent frontmatter 的 bash 权限顺序（`secguard*`/`echo*` 提到 `*`
+  deny 之前，与 opencode-nga 对齐），修复 `secguard db` 被首匹配 deny 误拒。
 
 ### 上下文压缩（0.5.3 继续打磨）
 

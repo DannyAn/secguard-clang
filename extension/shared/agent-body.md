@@ -23,8 +23,9 @@ The orchestrator hands you: a set of types, a `scan_id`, and a scan directory
 (`scan_dir`). Your types' candidates are already converged and written to:
 
 - `<scan_dir>/candidates/<type>/_index.md` — the per-type candidate table (your
-  primary input; the `Source` column is the exact statement, so classify from it
-  without source reads).
+  primary input; the `Source` column is the exact statement and the `Hint` column
+  is the pipeline's precomputed verdict facts, so classify from them without
+  source reads).
 - `<scan_dir>/candidates/<type>/NNN_*.md` — per-candidate evidence (Location,
   Evidence, Code Context, Pipeline Assessment, Fix Suggestion).
 - `<scan_dir>/report.md` — the scan summary + per-type counts (for the
@@ -46,15 +47,14 @@ into `<tmpdir>` and pass the same absolute path to `--write-json`, so the file
 you wrote and the file the CLI reads are the SAME file.
 
 **`candidates/<type>/_index.md` is your INDEX.** Its table lists every candidate's
-`# | Function | File:Line | Variable | Suspicion | Source | Evidence`. The
+`# | Function | File:Line | Variable | Suspicion | Hint | Source | Evidence`. The
 `Evidence` column is the EXACT candidate filename (`NNN_<file>_<line>.md`) — use it
 verbatim, never guess or reconstruct it. Read ONLY your type's `_index.md` (never
 another type's, never the whole `report.md`). Do NOT read the whole
 `candidates/<type>/NNN_*.md` directory to get file:line — that is one READ per
 candidate and, for a high-volume type like `null-deref`, wastes hundreds of calls.
-Open the `Evidence` candidate file ONLY for a `suspected`/`possible` candidate
-(full `## Code Context`); a `confirmed` candidate is classified straight from the
-`_index.md` `Source` column.
+Classify from the `Source` + `Hint` columns FIRST; open the `Evidence` candidate
+file (full `## Code Context`) ONLY when the hint is insufficient to decide.
 
 **Do NOT run `secguard scan`, `secguard plan`, or `secguard index`** — the scan
 already converged every type. If you were handed a bare path with no `scan_id`,
@@ -91,8 +91,8 @@ it, before you look at the next type.
 
 **You do NOT read source files at all — the source is already embedded for you.**
 The scan pre-embeds the exact statement in `candidates/<type>/_index.md`'s `Source`
-column and the ±context window in each `candidates/<type>/NNN_*.md` `## Code
-Context` block.
+column, the pipeline's precomputed verdict facts in its `Hint` column, and the
+±context window in each `candidates/<type>/NNN_*.md` `## Code Context` block.
 Classify from those. Issuing a per-candidate source READ is the single biggest
 wall-clock cost of a large scan (one tool round-trip per candidate × thousands of
 candidates = tens of minutes); do not do it. You may open a raw source file ONLY
@@ -141,14 +141,19 @@ budget your effort, not to pre-judge the answer:
 - **confirmed** — a flow filter or the detector *proved* the pattern on the
   semantic graph. Do NOT re-derive the dataflow or re-prove the defect. Read the
   `_index.md` row only: its `Source` column already shows the exact statement at
-  file:line, so you confirm or dismiss from the table itself (statement matches the
-  evidence → confirmed; it is guarded/different → dismiss). Do NOT open the source
-  file and do NOT open the `Evidence` candidate file for a confirmed candidate.
+  file:line and its `Hint` column carries the flow facts (`src@N` = null-source
+  line, `certain-null`/`maybe-null` = null certainty, `tainted` = injection
+  source, `weak-guard` = partial guard), so you confirm or dismiss from the table
+  itself (statement matches the evidence → confirmed; it is guarded/different →
+  dismiss). Do NOT open the source file and do NOT open the `Evidence` candidate
+  file for a confirmed candidate.
 - **suspected** — a heuristic recognized the pattern but the graph could not
-  prove it. Open the candidate's `Evidence` file (the filename is in `_index.md`'s
-  `Evidence` column — use it verbatim) and read its `## Code Context` (source
-  already embedded); reason from it. Do NOT open the raw source file unless that
-  embedded window is genuinely too small.
+  prove it. First classify from the `_index.md` row's `Source` + `Hint` columns:
+  `certain-null` + `src@N` usually settles the verdict. Open the candidate's
+  `Evidence` file (the filename is in `_index.md`'s `Evidence` column — use it
+  verbatim) and read its `## Code Context` (source already embedded) ONLY when
+  the hint is insufficient. Do NOT open the raw source file unless that embedded
+  window is genuinely too small.
 - **possible** — the pattern is only theoretical (e.g. unsigned wraparound inside
   a bounds check, which would require an operand to reach SIZE_MAX). Triage these
   last and promote one only when you can show a reachable, realistic overflow.

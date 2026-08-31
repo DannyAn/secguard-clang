@@ -182,17 +182,18 @@ per type); the scan summary already gives you the per-type counts.
 **Candidate-file budget (the biggest time sink — READ THIS).** At this stage
 (before `report --audit`), the candidate index is **per type**: each
 `candidates/<type>/_index.md` carries that type's
-`# | Function | File:Line | Variable | Suspicion | Source | Evidence` — `Source` is
-the exact statement at file:line, and `Evidence` is the EXACT candidate filename
+`# | Function | File:Line | Variable | Suspicion | Hint | Source | Evidence` —
+`Source` is the exact statement at file:line, `Hint` is the pipeline's precomputed
+verdict facts, and `Evidence` is the EXACT candidate filename
 (`NNN_<file>_<line>.md`; use it verbatim, never guess). **The source context is
-already embedded for you**: `_index.md` (one-line Source) and each candidate file's
-`## Code Context` (±window). **Do NOT issue a per-candidate source READ** — that is
-the single biggest wall-clock cost (one tool round-trip × thousands of candidates =
-tens of minutes). A subagent reads ONLY its own type's `_index.md`; classify
-confirmed candidates straight from its `Source` column, and open the `Evidence`
-candidate file ONLY for a `suspected`/`possible` candidate that needs its full
-evidence + Code Context. (`report --audit` later overwrites `report.md` with the
-final findings report — the same data source as `result.sarif`.)
+already embedded for you**: `_index.md` (one-line Source + Hint) and each candidate
+file's `## Code Context` (±window). **Do NOT issue a per-candidate source READ** —
+that is the single biggest wall-clock cost (one tool round-trip × thousands of
+candidates = tens of minutes). A subagent reads ONLY its own type's `_index.md`;
+classify from `Source` + `Hint` first, and open the `Evidence` candidate file ONLY
+for a `suspected`/`possible` candidate whose Hint is insufficient. (`report --audit`
+later overwrites `report.md` with the final findings report — the same data source
+as `result.sarif`.)
 
 **长扫描超时策略 (F4):** Before calling `secguard_scan`, estimate scan duration. If the project has > 100 C files OR the scan is expected to exceed 120s (the default Bash timeout), the orchestrator SHALL either (a) invoke the scan with an explicit timeout ≥ 600s, or (b) use the host's background-task + Monitor mechanism from the start. When a scan is moved to the background, the orchestrator SHALL switch to Monitor within 1 turn — it SHALL NOT use `sleep N; tail` (blocked by Bash safety policy) and SHALL NOT leave a backgrounded scan unmonitored. While the Monitor is pending, the orchestrator SHALL NOT issue parallel Bash commands (the host may buffer their results until the Monitor completes, wasting the parallel window); any preparation (type list, agent-definition read) MUST complete before the Monitor starts.
 
@@ -228,10 +229,7 @@ final findings report — the same data source as `result.sarif`.)
      (matches the evidence) or dismiss (guarded/different) from the table itself.
      Do NOT read source or the candidate file. Batch all confirmed verdicts into
      one write call.
-   - **suspected/possible** → open only that candidate's `Evidence` file (the
-     filename is in the `_index.md` `Evidence` column — use it verbatim; its
-     `## Code Context` already embeds the source) and reason/classify
-     (confirmed/suspected/dismissed).
+   - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null`/`tainted`/`weak-guard`); open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source) only when the hint is insufficient, then reason/classify (confirmed/suspected/dismissed).
    Write findings in ONE batch: write `<tmpdir>/<type>.json` with the Write tool,
    then `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
    Then A5-review suspected findings, move on. Never skip a type. Obey
@@ -261,10 +259,12 @@ final findings report — the same data source as `result.sarif`.)
    The scan already ran: your type's candidates are in
    <scan_dir>/candidates/<type>/_index.md and <scan_dir>/candidates/<type>/NNN_*.md
    — do NOT re-run secguard_scan or secguard_plan. The source is already embedded:
-   `_index.md` has a `Source` column per candidate plus an `Evidence` column naming
-   the exact candidate file, and each candidate file has a `## Code Context` block —
-   do NOT issue per-candidate source READs (that is the tens-of-minutes cost). Read
-   ONLY your type's `_index.md`, never the whole report.md.
+   `_index.md` has a `Source` column per candidate (the exact statement), a `Hint`
+   column (the pipeline's precomputed verdict facts: `src@N`/`certain-null`/
+   `maybe-null`/`tainted`/`weak-guard`), plus an `Evidence` column naming the exact
+   candidate file, and each candidate file has a `## Code Context` block — do NOT
+   issue per-candidate source READs (that is the tens-of-minutes cost). Read ONLY
+   your type's `_index.md`, never the whole report.md.
     For each type: load the <type> skill, then classify by suspicion_level:
     - confirmed → read the `Source` column in <scan_dir>/candidates/<type>/_index.md
       (do NOT read the candidate files and do NOT open source), confirm/dismiss from
