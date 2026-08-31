@@ -2,6 +2,27 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.5.4] - 2026-08-31
+
+### 里程碑：判定提示（Hint）——把分类所需的流事实前移到 Go 后端
+
+此前 AI 对每个 suspected 候选都要打开证据文件、读内嵌 `## Code Context`，这是
+suspected 偏重型子代理上下文溢出的根因。本版把管线已算出的流事实压成一行 `Hint`
+写进 `candidates/<type>/_index.md`，AI 先按 `Source`+`Hint` 判定，仅 Hint 不足时才
+开文件——候选数与「开文件次数」解耦，是候选可批量放大的结构性前提。
+
+- `_index.md` 新增 `Hint` 列（Go 预计算）：`src@N`（空指针来源行）、`certain-null`
+  /`maybe-null`（空指针确定性分层）、`tainted`（污点来源）、`weak-guard`（弱守卫）。
+- 分类指引（command-instructions + DSH preset）改为「先按 Source+Hint 判定，Hint
+  不足才开 Evidence」；没看全的候选默认 `suspected-kept`，杜绝漏报。
+
+### 上下文压缩（0.5.3 继续打磨）
+
+- 扫描 stdout 只回计数、不回整表（`files_with_candidates_count` /
+  `existing_findings_count`），避免主上下文在 800 文件场景规划阶段被大 JSON 撑爆。
+- 候选证据 `## Code Context` 窗口 15→8 行（仅候选阶段，findings/SARIF 仍 15）。
+- null-deref `## Evidence` 补充空指针来源行号，Evidence 自足。
+
 ## [0.5.3] - 2026-08-31
 
 ### 误报消减（uninit）

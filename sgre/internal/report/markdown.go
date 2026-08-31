@@ -269,15 +269,19 @@ func (o *ScanOutput) writeTypeIndex(dir string, pkg *planner.PlanResult) error {
 	cwe := VulnToCWE(pkg.VulnerabilityType)
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("# %s (%s) — Candidates\n\n", pkg.VulnerabilityType, cwe))
-	b.WriteString("> Classify each candidate as confirmed / suspected / dismissed. The `Source`\n" +
-		"> column is the exact statement at file:line; the full ±window is in the\n" +
-		"> candidate's `## Code Context` (open the `Evidence` file to read it).\n\n")
-	b.WriteString("| # | Function | File:Line | Variable | Suspicion | Source | Evidence |\n")
-	b.WriteString("|---|----------|-----------|----------|-----------|--------|----------|\n")
+	b.WriteString("> Classify each candidate as confirmed / suspected / dismissed. Classify from\n" +
+		"> the `Source` + `Hint` columns first — `Hint` is the pipeline's precomputed\n" +
+		"> verdict facts (`src@N` = null-source line, `certain-null`/`maybe-null` = null\n" +
+		"> certainty, `tainted` = injection source, `weak-guard` = partial guard). Open\n" +
+		"> the `Evidence` file (and its `## Code Context`) only when the hint is\n" +
+		"> insufficient to decide.\n\n")
+	b.WriteString("| # | Function | File:Line | Variable | Suspicion | Hint | Source | Evidence |\n")
+	b.WriteString("|---|----------|-----------|----------|-----------|------|--------|----------|\n")
 	for i, c := range pkg.Candidates {
 		fileShort := displayPath(c.Target.File, o.RootDir)
-		b.WriteString(fmt.Sprintf("| %d | %s | %s:%d | %s | %s | %s | `%s` |\n",
+		b.WriteString(fmt.Sprintf("| %d | %s | %s:%d | %s | %s | %s | %s | `%s` |\n",
 			i+1, c.Target.Function, fileShort, c.Target.Line, c.Target.Variable, c.SuspicionLevel,
+			c.Hint,
 			markdownCell(sourceLineText(c.Target.File, c.Target.Line, o.RootDir)),
 			candidateFilename(i+1, c.Target.File, c.Target.Line)))
 	}

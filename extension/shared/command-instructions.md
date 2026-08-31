@@ -269,9 +269,15 @@ final findings report — the same data source as `result.sarif`.)
     - confirmed → read the `Source` column in <scan_dir>/candidates/<type>/_index.md
       (do NOT read the candidate files and do NOT open source), confirm/dismiss from
       that statement, batch write.
-    - suspected/possible → open only that candidate's `Evidence` file (the filename
-      is in the `_index.md` `Evidence` column — use it verbatim; its `## Code Context`
-      already embeds the source), reason, classify.
+    - suspected/possible → classify from the `Source` + `Hint` columns FIRST. `Hint`
+      is the pipeline's precomputed facts (`src@N` = null-source line, `certain-null`
+      = definitely null, `maybe-null` = possibly null, `tainted` = injection source,
+      `weak-guard` = partial guard). Open that candidate's `Evidence` file (filename
+      in the `Evidence` column, verbatim; its `## Code Context` embeds the source)
+      ONLY when the hint is insufficient to decide — a `certain-null` + `src@N` hint
+      usually settles the verdict with no file open. Never dismiss a candidate you
+      did not fully read; when the hint is inconclusive and you cannot afford the
+      file, mark `suspected-kept`.
     If a candidate's `## Code Context` is unusually large (a super-large function,
     e.g. >200 lines), do NOT paste it into your context — that is exactly what
     exhausts your window and silently truncates the tail. Classify from the `Source`
