@@ -194,9 +194,12 @@ func runScanCmd(ctx context.Context, args []string) int {
 		// secret, OOB read) from the AI's workload, leaving only suspected/
 		// possible for actual judgment.
 		autoConfirmed, needsReview := splitBySuspicion(keptCandidates)
-		autoWritten, autoErr := autoConfirmFindings(ctx, store, scanID, vulnType, autoConfirmed)
+		autoWritten, autoUnwritten, autoErr := autoConfirmFindings(ctx, store, scanID, vulnType, autoConfirmed)
 		if autoErr != nil {
 			logger.Warn("auto-confirm findings failed", "vuln_type", vulnType, "error", autoErr)
+			// 写失败降级：未写成功的 confirmed 候选回流 needsReview 交由 AI 复核，
+			// 绝不静默丢失（否则这批既不在 findings、也不在候选里）。
+			needsReview = append(needsReview, autoUnwritten...)
 		}
 		totalAutoConfirmed += autoWritten
 
@@ -230,6 +233,12 @@ func runScanCmd(ctx context.Context, args []string) int {
 
 	findings, err := store.ListFindingsByScanID(ctx, scanID)
 	if err != nil {
+		// CI gate（--fail-on）依赖 findings 计数：读失败若静默放行，confirmed/
+		// suspected 会被当 0 → exit 0 放行，正是安全工具最不可接受的假阴性方向。
+		if failOn != "" {
+			fmt.Fprintf(os.Stderr, "error: failed to list findings for CI gate: %v\n", err)
+			return 1
+		}
 		logger.Warn("list findings by scan failed", "error", err)
 	}
 	findingsList := make([]map[string]interface{}, 0, len(findings))
@@ -447,12 +456,12 @@ func splitBySuspicion(candidates []planner.EvidenceItem) (confirmed, needsReview
 // table as `confirmed` (machine verdict), so the AI never re-reviews them. Each
 // finding carries the pipeline's own evidence as summary/reasoning and a
 // paste-ready fix, so a reviewer sees why the machine confirmed it. It returns
-// the number written; a write error aborts the batch (silent false-negatives are
-// not acceptable here).
-func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType string, candidates []planner.EvidenceItem) (int, error) {
+// the number written and the unwritten remainder (from the failing candidate
+// onward); a write error aborts the batch (silent false-negatives are not
+// acceptable here), so the caller can fall the remainder back to AI review.
+func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType string, candidates []planner.EvidenceItem) (written int, unwritten []planner.EvidenceItem, err error) {
 	cwe := report.VulnToCWE(vulnType)
-	written := 0
-	for _, c := range candidates {
+	for i, c := range candidates {
 		if c.Target.File == "" || c.Target.Line <= 0 {
 			continue
 		}
@@ -481,11 +490,11 @@ func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType s
 			Fingerprint:  computeFingerprint(cwe, c.Target.File, c.Target.Function, c.Target.Line),
 		}
 		if _, err := store.UpsertFinding(ctx, f); err != nil {
-			return written, fmt.Errorf("upsert auto-confirmed %s:%d: %w", c.Target.File, c.Target.Line, err)
+			return written, candidates[i:], fmt.Errorf("upsert auto-confirmed %s:%d: %w", c.Target.File, c.Target.Line, err)
 		}
 		written++
 	}
-	return written, nil
+	return written, nil, nil
 }
 
 func newScanLogger(scanDir string) (*log.Logger, io.Closer) {

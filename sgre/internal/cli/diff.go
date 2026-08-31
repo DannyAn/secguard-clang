@@ -185,9 +185,10 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 		totalBaselineExisting += baselineExisting
 
 		autoConfirmed, needsReview := splitBySuspicion(kept)
-		autoWritten, autoErr := autoConfirmFindings(ctx, store, reviewID, vulnType, autoConfirmed)
+		autoWritten, autoUnwritten, autoErr := autoConfirmFindings(ctx, store, reviewID, vulnType, autoConfirmed)
 		if autoErr != nil {
 			logger.Warn("auto-confirm findings failed", "vuln_type", vulnType, "error", autoErr)
+			needsReview = append(needsReview, autoUnwritten...)
 		}
 		totalAutoConfirmed += autoWritten
 

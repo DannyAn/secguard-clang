@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/DannyAn/secguard-clang/internal/log"
 )
 
 // DefaultExcludeDirs are the directory basenames skipped by default when no
@@ -18,8 +20,10 @@ var DefaultExcludeDirs = []string{
 
 // WalkCFiles walks rootPath and returns every .c/.h file, skipping any
 // directory whose basename is in exclude (case-insensitive). A skipped
-// directory is pruned entirely via filepath.SkipDir.
-func WalkCFiles(rootPath string, exclude []string) ([]string, error) {
+// directory is pruned entirely via filepath.SkipDir. An unreadable SUB-path
+// (permission denied, macOS TCC, NFS blip) is logged and skipped — it never
+// aborts the whole scan; only a failure on rootPath itself is fatal.
+func WalkCFiles(rootPath string, exclude []string, logger *log.Logger) ([]string, error) {
 	excludeSet := make(map[string]bool, len(exclude))
 	for _, d := range exclude {
 		if d = strings.TrimSpace(d); d != "" {
@@ -30,7 +34,16 @@ func WalkCFiles(rootPath string, exclude []string) ([]string, error) {
 	var files []string
 	err := filepath.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return err
+			if path == rootPath {
+				return err
+			}
+			if logger != nil {
+				logger.Warn("walk: skipping unreadable path", "path", path, "error", err)
+			}
+			if info != nil && info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if info.IsDir() {
 			if excludeSet[strings.ToLower(info.Name())] {

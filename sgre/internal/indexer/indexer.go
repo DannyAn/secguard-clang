@@ -58,7 +58,7 @@ func (idx *Indexer) Index(ctx context.Context, targetPath string) (*IndexResult,
 		return nil, fmt.Errorf("indexer: target path: %w", err)
 	}
 
-	files, err := WalkCFiles(absPath, idx.excludeDirs)
+	files, err := WalkCFiles(absPath, idx.excludeDirs, idx.logger)
 	if err != nil {
 		return nil, fmt.Errorf("indexer: walk files: %w", err)
 	}

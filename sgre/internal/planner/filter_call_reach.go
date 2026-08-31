@@ -22,18 +22,27 @@ type callReachResult struct {
 // callReachCache memoizes callReachResult across the Planner's Plan() calls.
 // All 15 vulnerability types run the call-reach filter over the same graph,
 // so recomputing it per type was the dominant scan wall-time cost (a recursive
-// CTE over ~79k CALL edges repeated 15x). sync.Once makes the cache safe even
-// if Plan is ever driven concurrently.
+// CTE over ~79k CALL edges repeated 15x). Only a SUCCESS is cached: a transient
+// failure (e.g. SQLITE_BUSY) must not be frozen in place — the next Plan()
+// retries the computation instead of inheriting a stale error that would fail
+// every remaining type.
 type callReachCache struct {
-	once sync.Once
+	mu   sync.Mutex
+	done bool
 	res  *callReachResult
 	err  error
 }
 
 func (c *callReachCache) get(ctx context.Context, store db.Store) (*callReachResult, error) {
-	c.once.Do(func() {
-		c.res, c.err = computeCallReach(ctx, store)
-	})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.done {
+		return c.res, c.err
+	}
+	c.res, c.err = computeCallReach(ctx, store)
+	if c.err == nil {
+		c.done = true
+	}
 	return c.res, c.err
 }
 

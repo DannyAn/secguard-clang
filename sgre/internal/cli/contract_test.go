@@ -496,12 +496,15 @@ func TestAutoConfirmFindings_WritesMachineVerdict(t *testing.T) {
 		Target:         planner.TargetInfo{File: "src/a.c", Line: 42, Function: "f", Variable: "p"},
 		Evidence:       []planner.EvidenceFragment{{Role: "condition", Detail: "p assigned NULL and dereferenced"}},
 	}}
-	n, err := autoConfirmFindings(ctx, s, scanID, "null-deref", confirmed)
+	n, unwritten, err := autoConfirmFindings(ctx, s, scanID, "null-deref", confirmed)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
 		t.Fatalf("autoConfirmFindings wrote %d, want 1", n)
+	}
+	if len(unwritten) != 0 {
+		t.Fatalf("autoConfirmFindings unwritten = %d, want 0", len(unwritten))
 	}
 
 	findings, err := s.ListFindingsByScanID(ctx, scanID)
