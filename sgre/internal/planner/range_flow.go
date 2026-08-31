@@ -114,17 +114,26 @@ func (f *rangeFlow) at(variable string, line int) interval {
 	return topInterval()
 }
 
-// analyzeRanges builds and runs the interval analysis for one function body.
+// analyzeRanges builds and runs the interval analysis for one function body
+// without cross-function call-result resolution (the function-local behavior).
 func analyzeRanges(fn *db.Function, body parser.Node) *rangeFlow {
+	return analyzeRangesWithCalls(fn, body, nil)
+}
+
+// analyzeRangesWithCalls is analyzeRanges with an optional callResult resolver,
+// which assigns `d = foo()` the return-value interval of foo when that interval
+// is provably non-zero. A nil resolver keeps the function-local behavior (a call
+// RHS is a kill).
+func analyzeRangesWithCalls(fn *db.Function, body parser.Node, callResult func(string) (interval, bool)) *rangeFlow {
 	if body.Kind() != "compound_statement" {
 		return nil
 	}
 	cfg := graph.BuildStmtCFG(body, fn.EndLine)
-	return &rangeFlow{cfg: cfg, nodeIn: runRangeDataflow(cfg, buildRangeEffects(cfg))}
+	return &rangeFlow{cfg: cfg, nodeIn: runRangeDataflow(cfg, buildRangeEffects(cfg, callResult))}
 }
 
 // buildRangeEffects extracts the per-node assignment/update transfer effects.
-func buildRangeEffects(cfg *graph.StmtCFG) map[int]*rangeEffects {
+func buildRangeEffects(cfg *graph.StmtCFG, callResult func(string) (interval, bool)) map[int]*rangeEffects {
 	effects := make(map[int]*rangeEffects, len(cfg.Nodes))
 	for _, n := range cfg.Nodes {
 		if n.Kind != "stmt" {
@@ -147,6 +156,16 @@ func buildRangeEffects(cfg *graph.StmtCFG) map[int]*rangeEffects {
 				e.shift[name] = shiftEffect{base: base, delta: delta}
 			} else if k := copySourceKey(p.rhs); k != "" {
 				e.copy[name] = k
+			} else if callResult != nil {
+				if callee := rhsCallName(p.rhs); callee != "" {
+					if r, ok := callResult(callee); ok {
+						e.assign[name] = r
+					} else {
+						e.kill[name] = true
+					}
+				} else {
+					e.kill[name] = true
+				}
 			} else {
 				e.kill[name] = true
 			}

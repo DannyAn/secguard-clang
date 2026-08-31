@@ -2,7 +2,7 @@ package evidence
 
 import (
 	"context"
-	"strconv"
+
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -38,6 +38,7 @@ func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error)
 		binaryExprs := root.FindAll("binary_expression")
 		allIfs := root.FindAll("if_statement")
 		allAssigns := root.FindAll("assignment_expression")
+		constants := parser.CollectConstantSymbols(root)
 		for _, f := range funcs {
 			bounds := AnalyzeBounds(IfsInFunc(allIfs, f.StartLine, f.EndLine), assignsInFunc(allAssigns, f.StartLine, f.EndLine))
 			for _, expr := range binaryExprs {
@@ -49,6 +50,14 @@ func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error)
 					continue
 				}
 				if !possiblyZeroDivisor(divisor) {
+					continue
+				}
+				// A divisor spelled as a macro/enum/const symbol whose value is a
+				// provably non-zero compile-time constant (`x / BKT_NUM` with
+				// `#define BKT_NUM 4096`) is safe at the source, exactly like the
+				// literal `x / 4096` — drop it here instead of leaking it to the
+				// AI agent as a "possibly-zero variable".
+				if constants.NonZero(divisor) {
 					continue
 				}
 				// Floating-point division by zero is well-defined by IEEE 754
@@ -111,20 +120,17 @@ func divOrModDivisor(expr parser.Node) (string, bool) {
 }
 
 // possiblyZeroDivisor reports whether a divisor expression can be zero. A
-// numeric literal other than 0, or a sizeof (compile-time constant), is safe.
+// non-zero integer literal (decimal/hex/octal, with C suffixes), a sizeof
+// (compile-time constant), or a named compile-time constant is safe; a zero
+// literal remains possible. Reuses nonZeroConstantValue, which parses base-0
+// integer literals so `x / 0x20` is recognized as safe where the previous
+// strconv.ParseFloat path would have misread it as a possibly-zero variable.
 func possiblyZeroDivisor(divisor string) bool {
 	t := strings.TrimSpace(divisor)
 	if strings.Contains(t, "sizeof") {
 		return false
 	}
-	// A numeric literal (integer or float) is safe unless it is zero. Strip C
-	// integer-literal suffixes first (10u, 10U, 10ul, 10ULL, ...) so that
-	// "2147483647u" is recognized as a non-zero constant rather than a variable.
-	stripped := strings.TrimRight(t, "uUlL")
-	if _, err := strconv.ParseFloat(stripped, 64); err == nil {
-		return stripped == "0" || stripped == "0.0"
-	}
-	return true
+	return !parser.NonZeroConstantValue(t)
 }
 
 // divisionGuarded reports whether an enclosing guard implies the divisor is

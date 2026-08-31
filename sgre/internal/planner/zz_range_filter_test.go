@@ -269,3 +269,73 @@ int tp_loop_and_overflow(int n, int m) {
 		t.Fatal("integer-overflow plan did not terminate on a loop-counter function (widening regression via filter path)")
 	}
 }
+
+// TestRangeFilter_DivideByZero_ReturnSummary pins the interprocedural return-
+// summary convergence (plan step 2): a divisor that is a call result or a local
+// seeded from one is suppressed when the callee provably never returns zero,
+// while a callee that returns a parameter or zero is kept.
+func TestRangeFilter_DivideByZero_ReturnSummary(t *testing.T) {
+	src := `#include <stdlib.h>
+
+int get_worker_num(void) { return 8; }
+int get_unknown(int a) { return a; }
+int get_zeroops(void) { return 0; }
+
+int fp_direct_call(int x) { return x / get_worker_num(); }
+
+int fp_indirect_call(int x) {
+    int d = get_worker_num();
+    return x / d;
+}
+
+int tp_unknown_return(int x, int a) { return x / get_unknown(a); }
+
+int tp_zero_return(int x) { return x / get_zeroops(); }
+
+int fp_apikb(int x) { return x / getpid(); }
+`
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dbz_ret.c")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "divide-by-zero")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	kept := map[string]bool{}
+	for _, c := range result.Candidates {
+		kept[c.Target.Function] = true
+	}
+
+	if kept["fp_direct_call"] {
+		t.Errorf("fp_direct_call (x / get_worker_num(), returns 8) should be suppressed, got %v", candidateNames(result))
+	}
+	if kept["fp_indirect_call"] {
+		t.Errorf("fp_indirect_call (d = get_worker_num(); x / d) should be suppressed, got %v", candidateNames(result))
+	}
+	if kept["fp_apikb"] {
+		t.Errorf("fp_apikb (x / getpid(), apikb contract) should be suppressed, got %v", candidateNames(result))
+	}
+	if !kept["tp_unknown_return"] {
+		t.Errorf("tp_unknown_return (x / get_unknown(a), returns param) should be kept, got %v", candidateNames(result))
+	}
+	if !kept["tp_zero_return"] {
+		t.Errorf("tp_zero_return (x / get_zeroops(), returns 0) should be kept, got %v", candidateNames(result))
+	}
+}

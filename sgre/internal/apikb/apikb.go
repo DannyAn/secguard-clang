@@ -334,6 +334,26 @@ func DerefArgs(name string) ([]int, bool) {
 	return idxs, ok
 }
 
+// NonZeroReturnFunctions are library functions whose integer return value is
+// provably non-zero on every success path, so a division whose divisor is a
+// direct call to one (`x / getpid()`) is safe without further analysis. The set
+// is deliberately restricted to POSIX identity primitives (pid/uid/gid values are
+// positive); a function that can return zero in a meaningful path (strlen, atoi,
+// read, ...) is NOT listed, because treating it as non-zero would suppress a real
+// divide-by-zero.
+var NonZeroReturnFunctions = map[string]bool{
+	"getpid":  true, // pid_t > 0
+	"getppid": true, // parent pid > 0
+	"getuid":  true, // real uid
+	"geteuid": true, // effective uid
+	"getgid":  true, // real gid
+	"getegid": true, // effective gid
+}
+
+// NonZeroReturn reports whether a library function's return value is provably
+// non-zero by contract.
+func NonZeroReturn(name string) bool { return NonZeroReturnFunctions[name] }
+
 // SQLFormatFuncs maps a string-formatting function to the index of its
 // format-string argument. The Annex K _s variants insert a destination-
 // capacity argument, shifting the format string one position later. These

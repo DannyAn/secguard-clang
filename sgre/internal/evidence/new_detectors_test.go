@@ -88,6 +88,18 @@ func TestNewDetector_DivideByZero_ReassignmentGuard(t *testing.T) {
 	}
 }
 
+// TestNewDetector_DivideByZero_ConstantSymbols pins the deterministic
+// constant-symbol suppression: a divisor spelled as a non-zero macro / enumerator
+// / top-level const is dropped at the detector (like a literal), while a complex
+// macro body (`(1u << 3)`), a zero macro, and a plain variable still emit.
+func TestNewDetector_DivideByZero_ConstantSymbols(t *testing.T) {
+	store := runOneDetector(t, "tc80_divide_by_zero_const.c",
+		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewDivideByZeroDetector(s, p, l) })
+	if got := eventCount(t, store, "DIVIDE_BY_ZERO"); got != 3 {
+		t.Errorf("expected 3 DIVIDE_BY_ZERO events (macro/enum/const constants suppressed; shift-expr/zero/var kept), got %d", got)
+	}
+}
+
 func TestNewDetector_SQLInjectionLiteralSafe(t *testing.T) {
 	store := runOneDetector(t, "tc72_sql_literal_safe.c",
 		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewInjectionDetector(s, p, l) })
