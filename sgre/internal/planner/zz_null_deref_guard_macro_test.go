@@ -97,3 +97,40 @@ int scan_vsys_not(int idx) {
 		t.Errorf("scan_vsys_not should NOT be flagged (ctrl null-guarded by CHECK_RET_NOT), got var=%s", c.Target.Variable)
 	}
 }
+
+// TestNullDeref_MixedConditionGuard: a multi-condition early-return guard
+// (`if (a == NULL || b == NULL) return;`) establishes BOTH a and b as non-null.
+// Only the first operand used to be recognized, so a later deref of the second
+// operand (b) was misreported.
+func TestNullDeref_MixedConditionGuard(t *testing.T) {
+	src := `#include <stdlib.h>
+
+typedef struct sect { int *ip; } sect_t;
+typedef struct pool { int user_car_num; } pool_t;
+
+sect_t *find_sect(int id) { return NULL; }
+pool_t *get_pool_key(void *g) { return NULL; }
+void release(void *g) {}
+
+#define ERR -1
+
+int set_used(int id) {
+    void *group = malloc(1);
+    pool_t *carnat_pool = get_pool_key(group);
+    sect_t *sect = find_sect(id);
+    if (sect == NULL || carnat_pool == NULL) {
+        release(group);
+        return ERR;
+    }
+    int user_num = 0;
+    while (user_num < carnat_pool->user_car_num) {
+        user_num++;
+    }
+    return 0;
+}
+`
+	result := planNullDerefGuardMacro(t, src)
+	if c := candidateForFunc(t, result, "set_used"); c != nil {
+		t.Errorf("set_used should NOT be flagged (carnat_pool is null-guarded in the mixed condition), got var=%s", c.Target.Variable)
+	}
+}

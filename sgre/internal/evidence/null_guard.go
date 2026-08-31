@@ -95,47 +95,52 @@ func (d *NullGuardDetector) detectEarlyReturnGuards(ctx context.Context, f *db.F
 		if condition == nil {
 			continue
 		}
-		condText := condition.Text()
-		condText = strings.TrimSpace(condText)
-		for strings.HasPrefix(condText, "(") && strings.HasSuffix(condText, ")") {
-			condText = strings.TrimSpace(condText[1 : len(condText)-1])
+		consequence := ifNode.ChildByFieldName("consequence")
+		if consequence == nil || !strings.Contains(consequence.Text(), "return") {
+			continue
 		}
-
-		var varName string
-		if strings.HasPrefix(condText, "!") {
-			varName = strings.TrimSpace(condText[1:])
-		} else if strings.Contains(condText, "==") && (strings.Contains(condText, "NULL") || strings.Contains(condText, " 0")) {
-			parts := strings.SplitN(condText, "==", 2)
-			for _, p := range parts {
-				p = strings.TrimSpace(p)
-				p = strings.Trim(p, "()")
-				if p != "NULL" && p != "0" && p != "((void *)0)" {
-					varName = p
-					break
-				}
+		for _, varName := range earlyReturnGuardedVars(*condition) {
+			if varName == "" {
+				continue
+			}
+			if emitEvent(ctx, d.store, d.logger, "NULL_GUARD", f.ID, &db.Location{FileID: file.ID, Line: ifNode.StartLine()}, map[string]interface{}{
+				"variable":    varName,
+				"condition":   "EARLY_RETURN",
+				"scope_start": ifNode.StartLine() + 1,
+				"scope_end":   guardScopeEnd(assigns, f, varName, ifNode.EndLine()),
+			}) {
+				result.EventsCreated++
 			}
 		}
-		if varName == "" {
-			continue
-		}
-
-		consequence := ifNode.ChildByFieldName("consequence")
-		if consequence == nil {
-			continue
-		}
-		if !strings.Contains(consequence.Text(), "return") {
-			continue
-		}
-
-		if emitEvent(ctx, d.store, d.logger, "NULL_GUARD", f.ID, &db.Location{FileID: file.ID, Line: ifNode.StartLine()}, map[string]interface{}{
-			"variable":    varName,
-			"condition":   "EARLY_RETURN",
-			"scope_start": ifNode.StartLine() + 1,
-			"scope_end":   guardScopeEnd(assigns, f, varName, ifNode.EndLine()),
-		}) {
-			result.EventsCreated++
-		}
 	}
+}
+
+// earlyReturnGuardedVars returns the variables an early-return guard condition
+// establishes as non-null. A top-level OR of null checks
+// (`a == NULL || b == NULL`) returns on either null branch, so every operand's
+// variable is non-null after the guard; a single null check (`p == NULL`, `!p`)
+// guards its one variable.
+func earlyReturnGuardedVars(cond parser.Node) []string {
+	switch cond.Kind() {
+	case "parenthesized_expression", "cast_expression":
+		for _, c := range cond.NamedChildren() {
+			if vars := earlyReturnGuardedVars(c); len(vars) > 0 {
+				return vars
+			}
+		}
+		return nil
+	}
+	if cond.Kind() == "binary_expression" && binaryOperator(cond) == "||" {
+		var vars []string
+		for _, child := range cond.NamedChildren() {
+			vars = append(vars, earlyReturnGuardedVars(child)...)
+		}
+		return vars
+	}
+	if v := nullCheckedVariable(cond); v != "" {
+		return []string{v}
+	}
+	return nil
 }
 
 // detectReassignmentGuards handles the null analogue of `if (x == 0) x = 1;`:
