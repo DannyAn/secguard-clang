@@ -276,9 +276,11 @@ final findings report — the same data source as `result.sarif`.)
     If a candidate's `## Code Context` is unusually large (a super-large function,
     e.g. >200 lines), do NOT paste it into your context — that is exactly what
     exhausts your window and silently truncates the tail. Classify from the `Source`
-    column alone and mark it `dismissed` (reason "context too large") or
-    `suspected-kept`, then move on. One oversized candidate must not sink the rest
-    of the range.
+    column alone: mark `dismissed` ONLY when that one-line statement already proves
+    it safe (a guard, a `_s` safe call, ...); otherwise mark `suspected-kept` so the
+    candidate stays reported — never dismiss a candidate you could not fully read
+    (that is a false negative). One oversized candidate must not sink the rest of
+    the range.
     Derive the DB and the write dir from <scan_dir> (ABSOLUTE, never relative):
     - DB:  <scan_dir>/../../.sgre/sgre.db
     - tmp: <scan_dir>/../../.sgre/.tmp/
