@@ -89,6 +89,14 @@ func TestDbCmd_AllowsFindingsTable(t *testing.T) {
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "test.db")
 
+	// `secguard db` 是只读查询，不建 schema：先模拟 scan 已落库（写连接建表），
+	// 再验证只读查询能读到 findings 表。
+	if d, err := db.Open(ctx, dbPath); err != nil {
+		t.Fatalf("open (init schema): %v", err)
+	} else if err := d.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
 	stdout, _, exitCode := captureOutput(func() int {
 		return runDbCmd(ctx, []string{"--db", dbPath, "SELECT COUNT(*) FROM findings"})
 	})
@@ -97,6 +105,33 @@ func TestDbCmd_AllowsFindingsTable(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(stdout), []byte("count")) {
 		t.Errorf("expected JSON with count field, got: %s", stdout)
+	}
+}
+
+func TestDbCmd_WriteRejected(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "test.db")
+
+	if d, err := db.Open(ctx, dbPath); err != nil {
+		t.Fatalf("open (init schema): %v", err)
+	} else if err := d.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	// 数据修改 CTE 以 WITH 开头，能绕过 SELECT/WITH 前缀检查；真正的只读边界
+	// 必须由 SQLite 引擎（PRAGMA query_only=1）兜住。
+	cases := []struct{ name, query string }{
+		{"delete", "DELETE FROM findings"},
+		{"data_modifying_cte", "WITH d AS (DELETE FROM findings RETURNING id) SELECT count(*) FROM d"},
+	}
+	for _, c := range cases {
+		stdout, _, exitCode := captureOutput(func() int {
+			return runDbCmd(ctx, []string{"--db", dbPath, c.query})
+		})
+		if exitCode == 0 {
+			t.Errorf("%s: expected write to be rejected, got exit 0; stdout=%s", c.name, stdout)
+		}
 	}
 }
 

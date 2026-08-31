@@ -229,12 +229,16 @@ one line. `fix_strategy` is paste-ready code, not prose. A confirmed finding
 whose detector already proved it (constant OOB, weak crypto, unchecked malloc
 deref) needs ONE sentence of reasoning, not three.
 
-Check the write response: `per_finding_action` is `written`
-(confirmed/suspected), `removed`/`none` (dismissed — expected, dismissed findings
-get no file), or `skipped`/`error` together with a `per_finding_warning`. A
-warning means the review surface is out of sync: fix the call (usually a missing
-`scan_id`/`output_dir`) and write again. Never re-run a write to "verify" — the
-write is idempotent; re-running never duplicates but wastes a turn.
+Check the write response — the batch `--write-json` path returns `status`
+(`ok`/`partial`), `findings_written` (count), `written` (array of
+`{file, line, id}` — the ids you need for A5), `failed_count`, and, on failure,
+`failed_details` + `errors`. A `failed_count > 0` / `status: "partial"` means some
+findings did NOT land: read `failed_details`/`errors`, fix the call (usually a
+missing `scan_id`/`output_dir`), and write that chunk again. (The single-finding
+`--write` mode and the MCP `secguard_report` tool use `per_finding_action` /
+`per_finding_warning` instead; you use the batch path, so go by `failed_count` +
+`errors`.) Never re-run a write to "verify" — the write is idempotent; re-running
+never duplicates but wastes a turn.
 
 ## Second-Round Confirmation (A5)
 

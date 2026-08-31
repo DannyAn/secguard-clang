@@ -56,6 +56,32 @@ func Open(ctx context.Context, dbPath string) (*sql.DB, error) {
 	return db, nil
 }
 
+// OpenReadOnly opens the database read-only for `secguard db`. The read-only
+// contract is enforced by SQLite itself via `PRAGMA query_only=1`, so ANY write
+// — including a data-modifying CTE like `WITH d AS (DELETE ...) SELECT ...` that
+// a naive SELECT/WITH prefix check would pass — is rejected by the engine. It
+// deliberately skips InitSchema (schema creation is a write and must not run
+// here).
+func OpenReadOnly(ctx context.Context, dbPath string) (*sql.DB, error) {
+	absPath, err := filepath.Abs(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("db: open read-only: resolve path: %w", err)
+	}
+
+	dsn := fmt.Sprintf("file:%s?_pragma=query_only(1)&_pragma=busy_timeout(10000)", absPath)
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("db: open read-only: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+
+	if err := db.PingContext(ctx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("db: open read-only: ping: %w", err)
+	}
+	return db, nil
+}
+
 func OpenInMemory(ctx context.Context) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {

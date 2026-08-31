@@ -1,7 +1,6 @@
 ---
 description: Run SecGuard security analysis on the codebase
 ---
-Current index status:
-!`secguard status --db .codeagent/secguard-clang/.sgre/sgre.db 2>&1 || echo '{"indexed": false, "message": "No index found — will create fresh index"}'`
+Before anything else, call the `secguard_status` tool to check whether an index exists (absent/stale → the `secguard_scan` tool builds it).
 
 {{include shared/command-instructions.md}}

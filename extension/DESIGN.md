@@ -183,16 +183,23 @@ The installer copies shared skills into both `.opencode/skills/` and `.claude/sk
 
 ## Permission Model
 
+> 以 `extension/opencode/agents/security-auditor.md` 与
+> `extension/claude-code/.claude/agents/security-auditor.md` 的 frontmatter 为准；
+> 本节只是概述，配置如有出入以 frontmatter 为准。
+
 ### OpenCode
-```json
-{
-  "permission": {
-    "edit": "deny", "bash": "deny",
-    "secguard_scan": "allow", "secguard_index": "allow",
-    "secguard_plan": "allow", "secguard_report": "allow",
-    "secguard_status": "allow", "read": "allow", "skill": "allow"
-  }
-}
+```yaml
+permission:
+  edit: allow            # worker 需要用 Write 写 <tmpdir>/<type>.json
+  bash:
+    "secguard*": allow   # 只放行 secguard CLI
+    "echo*": allow       # stale-hint hook 用 echo 提示
+    "*": deny            # 其余 bash 全拒
+  read: allow
+  grep: allow
+  glob: allow
+  external_directory: allow
+  skill: allow
 ```
 
 ### Claude Code
@@ -200,16 +207,16 @@ The installer copies shared skills into both `.opencode/skills/` and `.claude/sk
 {
   "permissions": {
     "allow": [
-      "Bash(secguard scan *)", "Bash(secguard index *)",
-      "Bash(secguard plan *)", "Bash(secguard report *)",
-      "Bash(secguard status *)", "Bash(secguard query *)"
+      "Bash(secguard *)", "Read", "Write", "Glob", "Grep", "Skill"
     ]
   }
 }
 ```
 
 Both models ensure the security-auditor agent can only:
-- Call secguard CLI commands (safe, read-only on codebase)
+- Call secguard CLI commands (the CLI enforces read-only `secguard db`, and
+  writes go through `secguard report --write-json` only)
 - Read source files (for cross-referencing)
 - Load skills (for vulnerability knowledge)
-- NOT edit code or run arbitrary commands
+- Write its own `<tmpdir>/<type>.json` verdict files (not source code)
+- NOT edit source code or run arbitrary commands

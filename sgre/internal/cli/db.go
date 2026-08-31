@@ -41,7 +41,9 @@ func runDbCmd(ctx context.Context, args []string) int {
 		return 1
 	}
 
-	d, err := db.Open(ctx, dbPath)
+	// 前缀检查只是友好提示；真正的只读边界由 SQLite 引擎强制（PRAGMA query_only=1），
+	// 数据修改 CTE（WITH ... DELETE）也会被拒，前缀检查无法被绕过。
+	d, err := db.OpenReadOnly(ctx, dbPath)
 	if err != nil {
 		WriteErrorJSON(fmt.Sprintf("failed to open database: %v", err))
 		return 1
