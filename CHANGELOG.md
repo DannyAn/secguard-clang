@@ -2,6 +2,42 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.5.3] - 2026-08-31
+
+### 误报消减（uninit）
+
+- **uninit**：while/if/for 条件内赋值（`while ((c = *str++))`、`if ((x = f()) == -1)`）不再被误判为
+  「读取未初始化值」——条件里对左值的写入先于条件求值。
+- **uninit**：函数式宏写实参（`#define OUT(x) (x) = ...`、哈希/取模类多参输出宏）计入初始化点，
+  宏调用后对该实参的使用不再报未初始化。
+- **uninit**：switch 含 `default:` 时修正 CFG 幻影 `entry→join` 边——此前每个 case（含 default）都
+  赋值仍被判「可能未初始化」。
+- 抽取 `internal/macros` 共享宏写参数分析（`WriteSummaries`/`WrittenArgs` + guard 分析），detector 与
+  planner 复用，消除跨包 import cycle 与逻辑重复。
+- planner `DefiniteInitFilter` 直接识别条件头赋值与宏输出参数作为 kill（防御性增强，闭掉 planner 侧缺口）。
+
+### 误报消减（null-deref）
+
+- **null-deref**：宏定义 for 循环迭代器判空（`#define FOR(p) for ((p)=...; (p)!=NULL; ...)` 及
+  `RW_POOL_FOR_*` 真值判空形态）——宏在 init 写迭代器 + 条件判空，循环体内迭代器必非空，不再误报。
+- **null-deref**：guard 宏早返回（`#define CHECK_RET(c, r) if ((c)) return r;`）判空后，调用点之后
+  变量必非空，不再误报；区分 `if (cond) return` / `if (!ptr) return` 两种取反形态。
+- **null-deref**：if 多条件判空（`if (a == NULL || b == NULL) return;`）同时确立 a、b 非空，不再只
+  识别第一个操作数导致第二个被误报。
+- **divide-by-zero**：编译期常量符号 + 跨函数返回区间摘要，确定性筛选增强。
+
+### 工作流与部署
+
+- 候选分批阈值 100→80：缓解 200K 上下文下 suspected 偏重型批次的尾部 A5 截断。
+- 候选丢失时不再二次下发 task：失败/部分截断/未复核统一改为「丢弃 + 观察项表/缺失类型章节显式汇报
+  条数」，流程不中断；F5 新增 partial 判定（`0 < written_count < candidate_count`）；子代理遇超大函数
+  （`## Code Context` >200 行）只按 Source 列判定，不整段塞入上下文。
+- opencode-nga bash 权限顺序修正：`secguard*`/`echo*` allow 提到 `*` deny 之前，修复 `secguard db`
+  等命令被首匹配 deny 误拒。
+- 控制台最终报告移除「修复建议」章节（源码代码块展示），告警与修复已写入 `findings/`。
+- claude-cac 不再冗余安装 `plugins/secguard-clang` 平铺目录：pluginLoader 走
+  `known_marketplaces.json`→marketplace，`installed_plugins.json` 走 cache，平铺目录既不发现也不登记。
+
 ## [0.5.2] - 2026-08-30
 
 ### 新功能：配置文件（secguard.toml）
