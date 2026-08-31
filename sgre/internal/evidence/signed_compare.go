@@ -9,12 +9,16 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
-// SignedCompareDetector flags an `unsigned` variable compared with `0` via `<`
-// (or with a negative literal via `<=`/`<`), which is always false because an
-// unsigned value is never negative (CWE-681 / CWE-195). The comparison is
-// provably dead logic — a classic sign-conversion defect (e.g. a loop guard
-// `for (size_t i = n; i >= 0; i--)` never terminates, or a bounds check that
-// silently passes).
+// SignedCompareDetector flags an `unsigned` variable compared with `0` or a
+// negative literal in a way whose result is a tautology — always true or always
+// false because an unsigned value is never negative (CWE-681 / CWE-195):
+//
+//	u < 0, u <= -1, u >= 0, u > -1   (and their mirrored forms)
+//
+// `u > 0` (u != 0) and `u <= 0` (u == 0) are legitimate checks and are NOT
+// flagged. The tautological comparison is provably dead logic — a classic
+// sign-conversion defect (e.g. a loop guard `for (size_t i = n; i >= 0; i--)`
+// never terminates, or a bounds check that silently passes).
 type SignedCompareDetector struct {
 	store  db.Store
 	parser *parser.Parser
@@ -139,9 +143,16 @@ func (d *SignedCompareDetector) unsignedType(decl parser.Node, typedefs *typedef
 	return false
 }
 
-// unsignedVsNegative reports whether b is `<`/`<=` with an unsigned variable on
-// the left and `0` or a negative literal on the right (always false), or a
-// mirrored form `0 > x`.
+// unsignedVsNegative reports whether b is an ordering comparison between an
+// unsigned variable and a zero/negative constant whose result is a tautology
+// (always true or always false) because an unsigned value is never negative:
+//
+//	u < 0, u <= -1   → always false (dead)
+//	u >= 0, u > -1   → always true  (dead)
+//	u > 0            → u != 0 (legitimate)
+//	u <= 0           → u == 0 (legitimate)
+//
+// Mirrored forms (constant on the left) are handled symmetrically.
 func (d *SignedCompareDetector) unsignedVsNegative(b parser.Node, unsignedVars map[string]bool) bool {
 	op := ""
 	for _, child := range b.Children() {
@@ -159,21 +170,61 @@ func (d *SignedCompareDetector) unsignedVsNegative(b parser.Node, unsignedVars m
 	}
 	left, right := named[0], named[len(named)-1]
 
-	// x < 0, x <= -1: always false for unsigned x.
-	if unsignedVars[left.Text()] && isZeroOrNegative(right.Text()) {
-		return true
+	// u op const
+	if unsignedVars[left.Text()] {
+		if ok, negative := classifyConst(right.Text()); ok {
+			return deadUnsignedCompare(op, true, negative)
+		}
 	}
-	// 0 > x, -1 >= x: same defect mirrored.
-	if unsignedVars[right.Text()] && isZeroOrNegative(left.Text()) {
-		return true
+	// const op u
+	if unsignedVars[right.Text()] {
+		if ok, negative := classifyConst(left.Text()); ok {
+			return deadUnsignedCompare(op, false, negative)
+		}
 	}
 	return false
 }
 
-func isZeroOrNegative(text string) bool {
+// classifyConst reports whether text is a zero or negative integer literal.
+// Zero and negative are distinguished because they behave differently: a
+// negative constant makes every ordering comparison a tautology, whereas zero
+// only makes `<`/`>=` tautological (`> 0` and `<= 0` are legitimate checks).
+func classifyConst(text string) (isConst, negative bool) {
 	t := strings.TrimSpace(text)
-	if t == "0" || t == "0U" || t == "0u" || t == "0UL" || t == "0ULL" {
+	switch t {
+	case "0", "0U", "0u", "0UL", "0ULL":
+		return true, false
+	}
+	// Negative integer literal: `-` immediately followed by a digit (e.g. -1,
+	// -42, -1U). A leading `-` on an arbitrary expression (`-n`, `-foo()`) is
+	// not a constant and must not be treated as negative.
+	if len(t) >= 2 && t[0] == '-' && t[1] >= '0' && t[1] <= '9' {
+		return true, true
+	}
+	return false, false
+}
+
+// deadUnsignedCompare reports whether `op` between an unsigned operand and a
+// zero/negative constant is a tautology. uLeft is true when the unsigned
+// operand is the left-hand side; negative is true when the constant is
+// negative rather than zero.
+func deadUnsignedCompare(op string, uLeft, negative bool) bool {
+	if negative {
+		// An unsigned value is never equal to a negative literal, so every
+		// ordering comparison against -N is always true or always false.
 		return true
 	}
-	return strings.HasPrefix(t, "-")
+	// Against zero only the comparisons whose result can never vary are dead:
+	//   u < 0  → always false
+	//   u >= 0 → always true
+	//   u <= 0 → u == 0 (legitimate)
+	//   u > 0  → u != 0 (legitimate)
+	if uLeft {
+		return op == "<" || op == ">="
+	}
+	//  0 < u  → u > 0  (legitimate)
+	//  0 <= u → u >= 0 (always true)
+	//  0 > u  → u < 0  (always false)
+	//  0 >= u → u <= 0 (legitimate)
+	return op == ">" || op == "<="
 }

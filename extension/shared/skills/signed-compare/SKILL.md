@@ -12,8 +12,12 @@ metadata:
 
 ### Evidence Pattern
 A signed-compare candidate has:
-- **signed_compare**: A `<`/`<=`/`>`/`>=` comparison where one operand is an `unsigned` variable and the other is `0` or a negative literal (e.g. `x < 0`, `x <= -1`, `0 > x`)
+- **signed_compare**: An ordering comparison between an `unsigned` variable and `0`/a negative literal whose result is a **tautology** because an unsigned value is never negative:
+  - `u < 0`, `u <= -1`, `0 > u` → always false
+  - `u >= 0`, `u > -1`, `0 <= u` → always true
 - **call_path**: The function is reachable from an entry point
+
+Note `u > 0` (`u != 0`) and `u <= 0` (`u == 0`) are **legitimate** checks and are not emitted.
 
 ### Detection Logic
 1. Collect variable names declared with an `unsigned` type (`unsigned`, `size_t`, `uint*_t`, `uintptr_t`, ...) — including typedefs that resolve to unsigned (`typedef unsigned int my_uint; my_uint m`), resolved cross-file so a header typedef counts
@@ -28,6 +32,8 @@ A signed-compare candidate has:
 | `size_t i = n; while (i >= 0) i--;` — never terminates | **confirmed** |
 | `unsigned len; if (len < 0) ...` — dead guard, bounds check silently passes | **confirmed** |
 | `if (x < 0)` where `x` is genuinely `int` | **false-positive** (not unsigned) |
+| `unsigned ref_cnt; if (ref_cnt > 0)` — a non-zero check, not dead logic | **false-positive** |
+| `unsigned x; if (x <= 0)` — a zero check, not dead logic | **false-positive** |
 | A deliberate defensive `if (n > SOME_MAX)` with correct signedness | **false-positive** |
 
 ### Common False Positives

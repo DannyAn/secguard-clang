@@ -64,6 +64,19 @@
 - **`--verify` 误报**：修复 `installed_plugins.json` 注册检查读取了错误的 JSON 层级（误报"未注册"）；
   `--verify` 现在按实际回退位置解析二进制，避免回退场景误报 binary missing。
 
+### 生产验证修复（0.5.2 补丁）
+
+- **claude-cac 插件 commands/agents/hooks 加载失败**：`install.sh --target claude-cac` 只写
+  `installed_plugins.json` + `enabledPlugins`，未注册 marketplace，导致 CodeAgent 的 pluginLoader 报
+  `plugin-not-found`（skills 走 SkillsCollector 直扫 installPath 所以能加载）。补 `marketplaces/local-secguard`
+  目录 + `known_marketplaces.json` 注册及卸载反向清理，`--verify` 同步校验。
+- **signed-compare 误报**：`unsigned x > 0`（`x != 0`）和 `x <= 0`（`x == 0`）是合法判断，此前被当成
+  "恒真/恒假死逻辑"误报；现仅对真正的重言式（`< 0`、`<= -1`、`>= 0`、`> -1` 及镜像形式）报告，
+  负数字面量识别收紧为 `-` 后紧跟数字。
+- **uninit 误报（多参数输出宏）**：`RW_POOL_FOR(group_id, pool_id)` 这类第二个形参才是被赋值的循环
+  宏，此前只识别第一个形参且读改写判定越过 `;`/`)`/`}` 边界，导致 `pool_id` 被误报 use-before-init；
+  改为按形参位置识别输出实参，并把 RHS 截断到语句边界再判定读改写。
+
 ## [0.5.1] - 2026-08-29
 
 ### 新功能：增量 PR/MR 检视

@@ -55,23 +55,27 @@ func macroFreeSummaries(root parser.Node) map[string]macroFreeSummary {
 	return out
 }
 
-// macroWriteSummary describes a function-like macro that writes (initializes) its
-// parameter: `#define GET(x) do { (x) = value; } while (0)`. tree-sitter exposes
-// such macros as preproc_function_def nodes; a call to one passes its argument by
-// NAME but the macro assigns to it, so the argument is an output, not a read of an
-// uninitialized value.
+// macroWriteSummary describes a function-like macro that writes (initializes) one
+// or more of its parameters: `#define GET(x) do { (x) = value; } while (0)`.
+// tree-sitter exposes such macros as preproc_function_def nodes; a call to one
+// passes its argument by NAME but the macro assigns to it, so the argument is an
+// output, not a read of an uninitialized value. writesParam[i] is true when the
+// i-th parameter is written.
 type macroWriteSummary struct {
-	writesArg bool
+	writesParam map[int]bool
 }
 
-// macroWriteSummaries returns, per macro name, whether its body writes (assigns
-// to, or takes the address of) its first parameter. It is the macro layer the
-// uninit detector consults so `#define GET(x) (x) = ...` output macros are not
-// mistaken for a by-value read of an uninitialized variable.
+// macroWriteSummaries returns, per macro name, which parameter positions its body
+// writes (assigns to, or takes the address of). It is the macro layer the uninit
+// detector consults so `#define GET(x) (x) = ...` output macros are not mistaken
+// for a by-value read of an uninitialized variable — including multi-parameter
+// macros such as `RW_POOL_FOR(group_id, pool_id)`, whose SECOND parameter is the
+// loop variable the macro initializes.
 func macroWriteSummaries(root parser.Node) map[string]macroWriteSummary {
 	out := make(map[string]macroWriteSummary)
 	for _, def := range root.FindAll("preproc_function_def") {
-		name, param, body := "", "", ""
+		name, body := "", ""
+		var params []string
 		for _, child := range def.NamedChildren() {
 			switch child.Kind() {
 			case "identifier":
@@ -80,19 +84,25 @@ func macroWriteSummaries(root parser.Node) map[string]macroWriteSummary {
 				}
 			case "preproc_params":
 				for _, p := range child.NamedChildren() {
-					if p.Kind() == "identifier" && param == "" {
-						param = p.Text()
+					if p.Kind() == "identifier" {
+						params = append(params, p.Text())
 					}
 				}
 			case "preproc_arg":
 				body = child.Text()
 			}
 		}
-		if name == "" || param == "" || body == "" {
+		if name == "" || body == "" {
 			continue
 		}
-		if macroAssignsParam(body, param) {
-			out[name] = macroWriteSummary{writesArg: true}
+		summary := macroWriteSummary{writesParam: make(map[int]bool)}
+		for i, param := range params {
+			if macroAssignsParam(body, param) {
+				summary.writesParam[i] = true
+			}
+		}
+		if len(summary.writesParam) > 0 {
+			out[name] = summary
 		}
 	}
 	return out
@@ -126,9 +136,19 @@ func macroAssignsParam(body, param string) bool {
 		if strings.HasPrefix(after, "=") {
 			continue // `==`
 		}
+		// Delimit the RHS at the end of the assignment's expression. `;` ends a
+		// statement (a for-init, a do-while body), `)` closes a parenthesized or
+		// argument-list boundary, and `}` closes a compound statement. Without
+		// this, a LATER use of the parameter in a subsequent expression — e.g.
+		// the condition/update that follow a for-init write in
+		// `for ((p) = f(); p != END; (p) = next((p)))` — would be mistaken for a
+		// read-modify-write and hide a legitimate initializing write.
+		if i := strings.IndexAny(after, ");}"); i >= 0 {
+			after = after[:i]
+		}
 		inner := strings.Trim(p, "()")
 		if strings.Contains(after, p) || strings.Contains(after, inner) {
-			continue // read-modify-write
+			continue // read-modify-write in the same expression
 		}
 		return true
 	}

@@ -220,6 +220,25 @@ func TestUninit_ForInitInitializesLoopVar(t *testing.T) {
 	}
 }
 
+func TestUninit_RwPoolMacroNotUninit(t *testing.T) {
+	// RW_POOL_FOR(group_id, pool_id) is a multi-parameter macro whose SECOND
+	// parameter is the loop variable it initializes in the for-init clause
+	// (`for ((pool_id) = rw_pool_first_group(...); ...)`). Passing a
+	// just-declared pool_id to it must NOT be reported as use-before-init even
+	// though the call-site argument looks like a by-value read.
+	store := runIndexAndDetect(t, "tc78_rw_pool_macro.c")
+	events, _ := store.ListEventsByType(context.Background(), "VALUE_USE")
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Variable == "pool_id" {
+			t.Errorf("pool_id must not be reported as uninit (RW_POOL_FOR initializes it)")
+		}
+	}
+}
+
 func TestUninit_VaListVaStartNotUninit(t *testing.T) {
 	// va_start/va_copy's first argument is the va_list they initialize (a write
 	// target), not a read of its current value. The va_start line must not

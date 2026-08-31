@@ -980,19 +980,27 @@ func isExitStmt(node parser.Node) bool {
 }
 
 // outputMacroArgs returns the set of bare-identifier arguments passed to a macro
-// that writes them (`#define GET(x) do { (x) = ...; } while(0)`). Such an argument
-// is an output the macro initializes, not a read of an uninitialized value, so the
-// stack-uninit scan must skip it.
+// at a parameter position the macro writes (`#define GET(x) do { (x) = ...; } while(0)`).
+// Such an argument is an output the macro initializes, not a read of an
+// uninitialized value, so the stack-uninit scan must skip it. Only the argument
+// positions whose corresponding parameter is written are skipped; the other
+// arguments are still read (e.g. `RW_POOL_FOR(group_id, pool_id)` writes pool_id
+// but only reads group_id).
 func outputMacroArgs(call parser.Node, macroWrites map[string]macroWriteSummary) map[string]bool {
 	out := make(map[string]bool)
-	if !macroWrites[extractCallName(call)].writesArg {
+	summary, ok := macroWrites[extractCallName(call)]
+	if !ok || len(summary.writesParam) == 0 {
 		return out
 	}
 	for _, child := range call.NamedChildren() {
 		if child.Kind() != "argument_list" {
 			continue
 		}
-		for _, arg := range child.NamedChildren() {
+		args := child.NamedChildren()
+		for i, arg := range args {
+			if !summary.writesParam[i] {
+				continue
+			}
 			if arg.Kind() == "identifier" {
 				out[arg.Text()] = true
 			}

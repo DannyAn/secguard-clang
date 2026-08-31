@@ -293,6 +293,9 @@ install_claude_cac() {
 
     register_claude_plugin "$CAC_BASE" "$CAC_PLUGIN_DIR" "$VERSION"
 
+    # CodeAgent marketplace 注册（pluginLoader 加载 commands/agents/hooks 必需）
+    sg_register_marketplace "$CAC_BASE" "$PRODUCT" "$CAC_PLUGIN_DIR" "$VERSION"
+
     echo "[claude-cac] Merging permissions into $CAC_BASE/settings.json"
     merge_claude_permissions "$CAC_BASE/settings.json"
 

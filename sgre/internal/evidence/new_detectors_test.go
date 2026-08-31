@@ -174,6 +174,18 @@ func TestNewDetector_SignedCompare_CrossFileTypedef(t *testing.T) {
 	}
 }
 
+func TestNewDetector_SignedCompare_UintTypes(t *testing.T) {
+	// uint8_t/uint16_t/uint32_t (and size_t/unsigned int) all resolve to
+	// unsigned, so the tautological comparisons (a<0, b>=0, c<=-1, 0>c, 0<=b)
+	// are flagged — but `> 0` (non-zero) and `<= 0` (zero) checks are
+	// legitimate and must NOT be flagged.
+	store := runOneDetector(t, "tc77_signed_compare_uint.c",
+		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewSignedCompareDetector(s, p, l) })
+	if got := eventCount(t, store, "SIGNED_COMPARE"); got != 5 {
+		t.Errorf("expected 5 SIGNED_COMPARE events (a<0, b>=0, c<=-1, 0>c, 0<=b), got %d", got)
+	}
+}
+
 func TestNewDetector_SizeofMisuse_CrossFileTypedef(t *testing.T) {
 	// cstr_t resolves to `char *` via types.h, so `cstr_t *s` is char** and
 	// sizeof(s) is only suspected; my_uint *p is a plain pointer, hence confirmed.

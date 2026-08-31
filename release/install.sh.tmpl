@@ -278,6 +278,11 @@ install_claude_cac() {
     sg_register_plugin "$CAC_PREFIX/plugins/installed_plugins.json" "secguard-clang" "local-secguard" "$cac_cache_dir" "$PKG_VERSION"
     sg_enable_plugin "$CAC_PREFIX/settings.json" "secguard-clang" "local-secguard"
 
+    # CodeAgent marketplace 注册（pluginLoader 加载 commands/agents/hooks 必需）
+    sg_register_marketplace "$CAC_PREFIX" "secguard-clang" "$CAC_TARGET_DIR" "$PKG_VERSION"
+    sg_record_file "$CAC_PREFIX/plugins/marketplaces/local-secguard/.cac-plugin/marketplace.json"
+    sg_record_file "$CAC_PREFIX/plugins/marketplaces/local-secguard/secguard-clang/codeagent-extension.json"
+
     # 写 manifest
     local files_csv
     files_csv=$(sg_files_csv)

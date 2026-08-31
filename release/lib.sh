@@ -508,6 +508,112 @@ with open(os.path.join(target_dir, 'codeagent-extension.json'), 'w') as f:
 "
 }
 
+# 注册 CodeAgent marketplace（pluginLoader 加载 commands/agents/hooks 必需）。
+# 官方 Claude Code 仅靠 installed_plugins.json + enabledPlugins 发现插件；CodeAgent
+# （claude-cac）另有一条 pluginLoader 发现路径：known_marketplaces.json → marketplace
+# 目录 → marketplace.json。只注册 installed_plugins.json 时 pluginLoader 会报
+# plugin-not-found（skills 走 SkillsCollector 直接扫 installPath，不受影响）。
+# 用法：sg_register_marketplace <prefix> <plugin_name> <plugin_dir> <version>
+sg_register_marketplace() {
+    local prefix="$1"
+    local plugin_name="$2"
+    local plugin_dir="$3"
+    local version="$4"
+    local mkt_dir="$prefix/plugins/marketplaces/local-secguard"
+    local mkt_plugin_dir="$mkt_dir/$plugin_name"
+
+    mkdir -p "$mkt_dir/.cac-plugin" "$mkt_plugin_dir"
+
+    # 1. marketplace.json（市场级元数据；plugins[].source 相对 marketplace 根目录解析）
+    python3 -c "
+import json, os
+mkt_dir = '''$mkt_dir'''
+plugin_name = '''$plugin_name'''
+version = '''$version'''
+marketplace = {
+    'name': 'local-secguard',
+    'description': 'Local marketplace for SecGuard plugin',
+    'owner': {'name': 'An Gang', 'email': ''},
+    'plugins': [
+        {
+            'name': plugin_name,
+            'source': './' + plugin_name,
+            'version': version,
+            'description': 'AI-augmented C program security analysis platform with 4-level convergence pipeline',
+            'strict': False,
+        }
+    ],
+    'version': version,
+}
+os.makedirs(os.path.join(mkt_dir, '.cac-plugin'), exist_ok=True)
+with open(os.path.join(mkt_dir, '.cac-plugin', 'marketplace.json'), 'w') as f:
+    json.dump(marketplace, f, indent=2)
+    f.write('\n')
+"
+
+    # 2. 复制插件文件到 marketplace 目录（pluginLoader 从 source 解析此目录）。
+    # 用 `/.` 而非 `/*`：`*` 不匹配点文件，会漏掉 .cac-plugin/（插件清单）。
+    cp -r "$plugin_dir"/. "$mkt_plugin_dir/" 2>/dev/null || true
+    sg_write_codeagent_extension "$mkt_plugin_dir" "$version"
+
+    # 3. 在 known_marketplaces.json 中注册
+    python3 -c "
+import json, os, datetime
+path = os.path.join('''$prefix''', 'plugins', 'known_marketplaces.json')
+mkt_dir = '''$mkt_dir'''
+data = {}
+if os.path.isfile(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except json.JSONDecodeError:
+        data = {}
+if not isinstance(data, dict):
+    data = {}
+data['local-secguard'] = {
+    'source': {'source': 'directory', 'path': mkt_dir},
+    'installLocation': mkt_dir,
+    'lastUpdated': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'autoUpdate': False,
+}
+d = os.path.dirname(path)
+if d:
+    os.makedirs(d, exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(data, f, indent=2)
+    f.write('\n')
+"
+
+    echo "[marketplace] Registered local-secguard → $mkt_dir"
+}
+
+# 注销 CodeAgent marketplace（撤销 sg_register_marketplace 的注册）。
+# 用法：sg_unregister_marketplace <prefix>
+sg_unregister_marketplace() {
+    local prefix="$1"
+    local mkt_dir="$prefix/plugins/marketplaces/local-secguard"
+
+    rm -rf "$mkt_dir" 2>/dev/null || true
+    rmdir "$prefix/plugins/marketplaces" 2>/dev/null || true
+
+    python3 -c "
+import json, os, sys
+path = os.path.join('''$prefix''', 'plugins', 'known_marketplaces.json')
+if not os.path.isfile(path):
+    sys.exit(0)
+try:
+    with open(path) as f:
+        data = json.load(f)
+except json.JSONDecodeError:
+    sys.exit(0)
+if isinstance(data, dict) and 'local-secguard' in data:
+    del data['local-secguard']
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=2)
+        f.write('\n')
+"
+}
+
 # 交互确认
 # 用法：sg_confirm_action <prompt>
 # 非 tty 自动返回 0；tty 时 y/yes 返回 0
@@ -604,6 +710,7 @@ sg_uninstall_platform() {
         sg_disable_plugin "$cac_prefix/settings.json" "secguard-clang" "local-secguard" 2>/dev/null || true
         sg_unregister_plugin "$cac_prefix/plugins/installed_plugins.json" "secguard-clang" "local-secguard" 2>/dev/null || true
         rm -rf "$cac_prefix/plugins/cache/local-secguard/secguard-clang" 2>/dev/null || true
+        sg_unregister_marketplace "$cac_prefix" 2>/dev/null || true
     fi
 
     # 清理空目录残留
@@ -814,6 +921,20 @@ except Exception:
     pass
 sys.exit(1)
 " 2>/dev/null && sg_check ok "enabledPlugins enabled" || sg_check fail "enabledPlugins enabled"
+        local cac_mkt_dir="$cac_prefix/plugins/marketplaces/local-secguard"
+        [ -f "$cac_mkt_dir/.cac-plugin/marketplace.json" ] && sg_check ok "marketplace.json" || sg_check fail "marketplace.json"
+        [ -f "$cac_mkt_dir/secguard-clang/commands/secguard.md" ] && sg_check ok "marketplace plugin files" || sg_check fail "marketplace plugin files"
+        python3 -c "
+import json, sys
+try:
+    with open('''$cac_prefix/plugins/known_marketplaces.json''') as f:
+        data = json.load(f)
+    if isinstance(data, dict) and 'local-secguard' in data:
+        sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+" 2>/dev/null && sg_check ok "known_marketplaces.json registered" || sg_check fail "known_marketplaces.json registered"
     fi
 
     echo ""
