@@ -183,3 +183,129 @@ func rhsReadsParam(rhs, param string) bool {
 	}
 	return len(identTokenIndexes(rhs, param)) > 0 || strings.Contains(rhs, "("+param+")")
 }
+
+// GuardSummary describes a function-like macro that returns early when one of its
+// parameters indicates a null pointer (a guard macro):
+// `#define CHECK_RET(cond, ret) if ((cond)) { return ret; }`.
+//
+//   - guardsParam[i] is true when the macro's `if (param) return` guards the i-th
+//     parameter: the caller passes a null-check EXPRESSION (`var == NULL`, `!var`).
+//   - guardsParamNegated[i] is true when `if (!param) return` guards it: the
+//     caller passes the VARIABLE itself (`var`).
+type GuardSummary struct {
+	guardsParam        map[int]bool
+	guardsParamNegated map[int]bool
+}
+
+// GuardSummaries returns, per macro name, which parameter positions its body
+// guards with an early return (`if (<cond>) return ...`).
+func GuardSummaries(root parser.Node) map[string]GuardSummary {
+	out := make(map[string]GuardSummary)
+	for _, def := range root.FindAll("preproc_function_def") {
+		name, body := "", ""
+		var params []string
+		for _, child := range def.NamedChildren() {
+			switch child.Kind() {
+			case "identifier":
+				if name == "" {
+					name = child.Text()
+				}
+			case "preproc_params":
+				for _, p := range child.NamedChildren() {
+					if p.Kind() == "identifier" {
+						params = append(params, p.Text())
+					}
+				}
+			case "preproc_arg":
+				body = child.Text()
+			}
+		}
+		if name == "" || body == "" {
+			continue
+		}
+		plain, negated := guardParamsInBody(body, params)
+		if len(plain) == 0 && len(negated) == 0 {
+			continue
+		}
+		out[name] = GuardSummary{guardsParam: plain, guardsParamNegated: negated}
+	}
+	return out
+}
+
+// GuardedArgs returns the argument indices a macro call guards, keyed by index
+// with the value reporting whether the guard negates the parameter (true for
+// `if (!param) return`, false for `if (param) return`).
+func GuardedArgs(call parser.Node, summaries map[string]GuardSummary) map[int]bool {
+	summary, ok := summaries[callName(call)]
+	if !ok {
+		return nil
+	}
+	out := make(map[int]bool)
+	for i := range summary.guardsParam {
+		out[i] = false
+	}
+	for i := range summary.guardsParamNegated {
+		out[i] = true
+	}
+	return out
+}
+
+// guardParamsInBody reports, for a macro body, which parameters are referenced by
+// the `if` condition of an early-return guard (`if (<cond>) return`), split into
+// negated (`!p` / `!(p)`) and non-negated (`p`) spellings.
+func guardParamsInBody(body string, params []string) (plain, negated map[int]bool) {
+	plain, negated = make(map[int]bool), make(map[int]bool)
+	compact := compactBody(body)
+	ifIdx := strings.Index(compact, "if(")
+	if ifIdx < 0 {
+		return plain, negated
+	}
+	close := matchingParen(compact, ifIdx+2)
+	if close < 0 || !strings.Contains(compact[close+1:], "return") {
+		return plain, negated
+	}
+	cond := compact[ifIdx+3 : close]
+	for i, p := range params {
+		for _, pos := range identTokenIndexes(cond, p) {
+			if pos >= 2 && cond[pos-2] == '!' && cond[pos-1] == '(' {
+				negated[i] = true
+				continue
+			}
+			if pos >= 1 && cond[pos-1] == '!' {
+				negated[i] = true
+				continue
+			}
+			plain[i] = true
+		}
+	}
+	return plain, negated
+}
+
+// compactBody collapses whitespace in a macro body (preproc_arg) text so the
+// structural checks (`if (cond) return`) are insensitive to the macro's layout.
+func compactBody(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\t', '\n', '\r':
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// matchingParen returns the index of the ")" that matches the "(" at open, or -1.
+func matchingParen(s string, open int) int {
+	depth := 0
+	for i := open; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}

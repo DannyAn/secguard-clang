@@ -6,6 +6,7 @@ import (
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
+	"github.com/DannyAn/secguard-clang/internal/macros"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
@@ -29,6 +30,8 @@ func (d *NullGuardDetector) Detect(ctx context.Context) (DetectResult, error) {
 		whiles := root.FindAll("while_statement")
 		fors := root.FindAll("for_statement")
 		assigns := root.FindAll("assignment_expression")
+		calls := root.FindAll("call_expression")
+		macroGuards := macros.GuardSummaries(root)
 		// Iterator-style guards live in loop conditions:
 		//   while ((e = dictNext(di)) != NULL) { e->val; }
 		// The loop body is only entered when the iterator returned non-null, so
@@ -38,6 +41,7 @@ func (d *NullGuardDetector) Detect(ctx context.Context) (DetectResult, error) {
 			d.detectGuards(ctx, f, file, condNodes, &result)
 			d.detectEarlyReturnGuards(ctx, f, file, ifs, assigns, &result)
 			d.detectReassignmentGuards(ctx, f, file, ifs, assigns, &result)
+			d.detectMacroGuards(ctx, f, file, calls, assigns, macroGuards, &result)
 		}
 	})
 	return result, err
@@ -170,6 +174,70 @@ func (d *NullGuardDetector) detectReassignmentGuards(ctx context.Context, f *db.
 			result.EventsCreated++
 		}
 	}
+}
+
+// detectMacroGuards handles the guard-macro analogue of detectEarlyReturnGuards:
+// a function-like macro whose body is `if (<cond>) return` (`#define CHECK_RET(c,
+// r) if ((c)) { return r; }`) null-checks its argument and returns on the null
+// branch, so a variable passed to it is non-null after the call. The macro body
+// is not in the AST (tree-sitter parses the call site), so this consults the
+// macro summary and re-derives the guarded variable from the call argument.
+func (d *NullGuardDetector) detectMacroGuards(ctx context.Context, f *db.Function, file *db.File, calls, assigns []parser.Node, macroGuards map[string]macros.GuardSummary, result *DetectResult) {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
+			continue
+		}
+		// A guard macro is an early-return statement; only a call used as a whole
+		// statement establishes a fall-through non-null scope.
+		if p := call.Parent(); p == nil || p.Kind() != "expression_statement" {
+			continue
+		}
+		guarded := macros.GuardedArgs(call, macroGuards)
+		if len(guarded) == 0 {
+			continue
+		}
+		args := getCallArgs(call)
+		for idx, negated := range guarded {
+			if idx >= len(args) {
+				continue
+			}
+			var varName string
+			if negated {
+				varName = bareVarName(args[idx])
+			} else {
+				varName = nullCheckedVariable(args[idx])
+			}
+			if varName == "" {
+				continue
+			}
+			if emitEvent(ctx, d.store, d.logger, "NULL_GUARD", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine()}, map[string]interface{}{
+				"variable":    varName,
+				"condition":   "MACRO_EARLY_RETURN",
+				"scope_start": call.StartLine() + 1,
+				"scope_end":   guardScopeEnd(assigns, f, varName, call.StartLine()),
+			}) {
+				result.EventsCreated++
+			}
+		}
+	}
+}
+
+// bareVarName returns the variable name when arg is a bare identifier (possibly
+// parenthesized), else "". It is the guard-macro companion to nullCheckedVariable
+// for the `if (!param) return` form, where the caller passes the variable itself
+// rather than a `var == NULL` expression.
+func bareVarName(arg parser.Node) string {
+	switch arg.Kind() {
+	case "identifier":
+		return arg.Text()
+	case "parenthesized_expression", "cast_expression":
+		for _, c := range arg.NamedChildren() {
+			if n := bareVarName(c); n != "" {
+				return n
+			}
+		}
+	}
+	return ""
 }
 
 // guardScopeEnd truncates an early-return / reassignment guard's non-null scope
