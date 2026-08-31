@@ -9,6 +9,7 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/graph"
+	"github.com/DannyAn/secguard-clang/internal/macros"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
@@ -211,7 +212,7 @@ func (a *flowAnalyzer) analyzeFlow(ctx context.Context, fn *db.Function, body pa
 	}
 
 	cfg := graph.BuildStmtCFG(body, fn.EndLine)
-	effects := a.buildEffects(cfg, genByLine, killByLine, a.dfgCopies[fn.ID], nonNullKills, definiteKills)
+	effects := a.buildEffects(cfg, genByLine, killByLine, a.dfgCopies[fn.ID], nonNullKills, definiteKills, macroWritesFor(fileRoot, nonNullKills))
 	nodeIn := runDataflow(cfg, effects, a.entrySeeds)
 	return &flowResult{cfg: cfg, nodeIn: nodeIn, genAt: genAt(cfg, effects)}
 }
@@ -226,7 +227,7 @@ func (a *flowAnalyzer) analyzeFlowMust(ctx context.Context, fn *db.Function, bod
 	}
 
 	cfg := graph.BuildStmtCFG(body, fn.EndLine)
-	effects := a.buildEffects(cfg, genByLine, killByLine, a.dfgCopies[fn.ID], nonNullKills, definiteKills)
+	effects := a.buildEffects(cfg, genByLine, killByLine, a.dfgCopies[fn.ID], nonNullKills, definiteKills, macroWritesFor(fileRoot, nonNullKills))
 	res := &flowResult{cfg: cfg, nodeIn: runDataflow(cfg, effects, a.entrySeeds), genAt: genAt(cfg, effects)}
 	res.must, res.mustGenAt = runMustDataflow(cfg, effects)
 	return res
@@ -264,26 +265,26 @@ func (a *flowAnalyzer) analyzeDefiniteNull(cfg *graph.StmtCFG) (map[int]map[stri
 				e.kill[name] = true
 			}
 		}
-		addOutputParamKills(n.Stmt, e, true)
+		addOutputParamKills(n.Stmt, e, true, nil)
 		effects[n.ID] = e
 	}
 	return runMustDataflow(cfg, effects)
 }
 
 // buildEffects computes the per-statement-node transfer effects for a CFG.
-func (a *flowAnalyzer) buildEffects(cfg *graph.StmtCFG, genByLine, killByLine map[int][]string, dfgByLine map[int][]copyPair, nonNullKills, definiteKills bool) map[int]*nodeEffects {
+func (a *flowAnalyzer) buildEffects(cfg *graph.StmtCFG, genByLine, killByLine map[int][]string, dfgByLine map[int][]copyPair, nonNullKills, definiteKills bool, macroWrites map[string]macros.WriteSummary) map[int]*nodeEffects {
 	effects := make(map[int]*nodeEffects, len(cfg.Nodes))
 	for _, n := range cfg.Nodes {
 		if n.Kind != "stmt" {
 			continue
 		}
-		effects[n.ID] = a.collectNodeEffects(n, genByLine, killByLine, dfgByLine, nonNullKills, definiteKills)
+		effects[n.ID] = a.collectNodeEffects(n, genByLine, killByLine, dfgByLine, nonNullKills, definiteKills, macroWrites)
 	}
 	return effects
 }
 
 // collectNodeEffects extracts the transfer effects for a single statement node.
-func (a *flowAnalyzer) collectNodeEffects(n *graph.StmtNode, genByLine, killByLine map[int][]string, dfgByLine map[int][]copyPair, nonNullKills, definiteKills bool) *nodeEffects {
+func (a *flowAnalyzer) collectNodeEffects(n *graph.StmtNode, genByLine, killByLine map[int][]string, dfgByLine map[int][]copyPair, nonNullKills, definiteKills bool, macroWrites map[string]macros.WriteSummary) *nodeEffects {
 	e := &nodeEffects{gen: map[string]bool{}, kill: map[string]bool{}, copy: map[string]string{}}
 
 	// gen/kill/DFG from the stored graph at this line — but only for LEAF
@@ -334,7 +335,7 @@ func (a *flowAnalyzer) collectNodeEffects(n *graph.StmtNode, genByLine, killByLi
 	// addOutputParamKills) is null-deref specific, so it is gated on
 	// nonNullKills: the taint source filter reuses this engine with
 	// nonNullKills=false and must not lose copy taint through memcpy/strcpy.
-	addOutputParamKills(n.Stmt, e, nonNullKills)
+	addOutputParamKills(n.Stmt, e, nonNullKills, macroWrites)
 
 	return e
 }
@@ -350,7 +351,7 @@ func (a *flowAnalyzer) collectNodeEffects(n *graph.StmtNode, genByLine, killByLi
 //     otherwise have faulted. This half is gated on derefArgs because it is a
 //     null-deref notion: the taint source filter shares this engine and its
 //     memcpy/strcpy copy taint must survive (a copy is not a taint kill).
-func addOutputParamKills(stmt parser.Node, e *nodeEffects, derefArgs bool) {
+func addOutputParamKills(stmt parser.Node, e *nodeEffects, derefArgs bool, macroWrites map[string]macros.WriteSummary) {
 	for _, call := range stmt.FindAll("call_expression") {
 		children := call.NamedChildren()
 		if len(children) < 2 {
@@ -372,7 +373,29 @@ func addOutputParamKills(stmt parser.Node, e *nodeEffects, derefArgs bool) {
 				}
 			}
 		}
+		// A function-like macro that writes one of its arguments reassigns it
+		// (`#define FOR_EACH(p) for ((p) = ...; (p); ...)` — a loop iterator
+		// written in the init and null-checked in the condition). The previous
+		// null source no longer reaches the dereference, so the written argument
+		// is killed. Null-deref specific (gated on derefArgs) to match the
+		// library-deref-arg kill above.
+		if derefArgs {
+			for name := range macros.WrittenArgs(call, macroWrites) {
+				e.kill[name] = true
+			}
+		}
 	}
+}
+
+// macroWritesFor returns the per-macro write summaries for a file root, or nil
+// when the analysis tier does not need macro-write kills (non-null kills are
+// null-deref specific; taint and freed-state flows pass nonNullKills=false and
+// must not pay the whole-tree walk).
+func macroWritesFor(root parser.Node, nonNullKills bool) map[string]macros.WriteSummary {
+	if !nonNullKills {
+		return nil
+	}
+	return macros.WriteSummaries(root)
 }
 
 // intIn reports whether v is an element of xs.
