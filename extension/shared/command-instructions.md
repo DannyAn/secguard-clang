@@ -144,8 +144,8 @@ and use it directly. Do not reconstruct paths by trial and error.
 | `MAXTURNS` | 30 | security-auditor.md maxTurns (must match) |
 | `MAXTURNS_SAFETY_RATIO` | 0.9 | Use only 90% of maxTurns as the budget |
 | `TURNS_PER_TYPE_ESTIMATE` | 6 | Avg turns per type (skill load + classify + write + A5) |
-| `LARGE_CANDIDATE_THRESHOLD` | 80 | Types with > this many candidates get a dedicated subagent |
-| `SPLIT_CANDIDATE_THRESHOLD` | 80 | A type with > this many candidates is SPLIT across multiple subagents, each handling ≤ this many candidates |
+| `LARGE_CANDIDATE_THRESHOLD` | 100 | Types with > this many candidates get a dedicated subagent |
+| `SPLIT_CANDIDATE_THRESHOLD` | 100 | A type with > this many candidates is SPLIT across multiple subagents, each handling ≤ this many candidates |
 
 `MAXTURNS` is a single source of truth: it must equal the turn cap every platform's
 `security-auditor` agent declares (`maxTurns` on Claude Code / Claude CAC, `steps`
@@ -154,8 +154,8 @@ as part of `release/build-packages.sh`.
 
 **Pre-dispatch validation (EARS):**
 - If a batch has > `MAX_TYPES_PER_BATCH` (4) types, the orchestrator SHALL split it before dispatching.
-- Where a single type has > `LARGE_CANDIDATE_THRESHOLD` (80) candidates, the orchestrator SHALL assign that type its own dedicated subagent.
-- Where a single type has > `SPLIT_CANDIDATE_THRESHOLD` (80) candidates, the orchestrator SHALL split it into MULTIPLE subagents, each handling a ≤80-candidate RANGE of that type (pass the candidate # range, e.g. "candidates #1–80 of null-deref"), so no single subagent's context window is exceeded. The 80-candidate cap is a CONTEXT ceiling (not a turn ceiling): a suspected-heavy range opens an `Evidence` file (embedded `## Code Context`) per suspected candidate plus an A5 lookup/review, and a 100-candidate range was observed to exhaust a 200K context before the tail's A5 round — the tail suspects were then dropped at audit.
+- Where a single type has > `LARGE_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL assign that type its own dedicated subagent.
+- Where a single type has > `SPLIT_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL split it into MULTIPLE subagents, each handling a ≤100-candidate RANGE of that type (pass the candidate # range, e.g. "candidates #1–100 of null-deref"), so no single subagent's context window is exceeded. The 100-candidate cap is a CONTEXT ceiling (not a turn ceiling): before the Hint column + Code Context compression, a suspected-heavy range opened an `Evidence` file per suspected candidate and a 100-candidate range could exhaust a 200K context before the tail's A5 round; with `Source`+`Hint` classification and a ±8 Code Context window the same budget now carries ~2× more, so 100 is the test point — if a super-large function still overflows, the tail is surfaced via the partial-count path, never silently buried.
 - If `batch_type_count × TURNS_PER_TYPE_ESTIMATE` ≥ `MAXTURNS × MAXTURNS_SAFETY_RATIO` (i.e. ≥ 27), the orchestrator SHALL reject the batch as over-budget and split it.
 
 ## Full Scan Workflow
@@ -253,7 +253,7 @@ as `result.sarif`.)
    conversation):
    ```
    Process type(s) <t1, t2, ...> ONLY. scan_id=<scan_id>, scan_dir=<output_dir>.
-   (If a type is split by candidate RANGE, e.g. "null-deref #1-80", classify ONLY
+   (If a type is split by candidate RANGE, e.g. "null-deref #1-100", classify ONLY
    those candidates — the # column in <scan_dir>/candidates/<type>/_index.md — and
    leave the rest to sibling subagents.)
    The scan already ran: your type's candidates are in
@@ -289,7 +289,7 @@ as `result.sarif`.)
     Derive the DB and the write dir from <scan_dir> (ABSOLUTE, never relative):
     - DB:  <scan_dir>/../../.sgre/sgre.db
     - tmp: <scan_dir>/../../.sgre/.tmp/
-    Write findings in ≤50-finding chunks (an 80-candidate range is 2 chunks,
+    Write findings in ≤50-finding chunks (a 100-candidate range is 2 chunks,
     NOT one giant array — one giant array overflows your context and silently
     drops the tail). For each chunk: write `<scan_dir>/../../.sgre/.tmp/<type>-partN.json`
     with the Write tool, then immediately

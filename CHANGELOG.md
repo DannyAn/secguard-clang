@@ -24,6 +24,8 @@ suspected 偏重型子代理上下文溢出的根因。本版把管线已算出�
 - 扫描 stdout 只回计数、不回整表（`files_with_candidates_count` /
   `existing_findings_count`），避免主上下文在 800 文件场景规划阶段被大 JSON 撑爆。
 - 候选证据 `## Code Context` 窗口 15→8 行（仅候选阶段，findings/SARIF 仍 15）。
+- 候选分批阈值 80→100：Hint + Code Context 压缩后同上下文可承载 ~2×，恢复 100/批、
+  减少 task 数量（超大函数溢出时尾部走 partial-count 显式汇报，不静默丢）。
 - null-deref `## Evidence` 补充空指针来源行号，Evidence 自足。
 
 ## [0.5.3] - 2026-08-31
