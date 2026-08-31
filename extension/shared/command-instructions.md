@@ -273,6 +273,12 @@ final findings report — the same data source as `result.sarif`.)
     - suspected/possible → open only that candidate's `Evidence` file (the filename
       is in the `_index.md` `Evidence` column — use it verbatim; its `## Code Context`
       already embeds the source), reason, classify.
+    If a candidate's `## Code Context` is unusually large (a super-large function,
+    e.g. >200 lines), do NOT paste it into your context — that is exactly what
+    exhausts your window and silently truncates the tail. Classify from the `Source`
+    column alone and mark it `dismissed` (reason "context too large") or
+    `suspected-kept`, then move on. One oversized candidate must not sink the rest
+    of the range.
     Derive the DB and the write dir from <scan_dir> (ABSOLUTE, never relative):
     - DB:  <scan_dir>/../../.sgre/sgre.db
     - tmp: <scan_dir>/../../.sgre/.tmp/
@@ -310,14 +316,13 @@ final findings report — the same data source as `result.sarif`.)
    `candidate_count` + `written_count` (NOT the raw `findings` count, which cannot
    tell "no candidates" from "candidates but never written"):
    - `candidate_count == 0` → the type had nothing to classify → `done` (success), NEVER failed.
-   - `candidate_count > 0 && written_count > 0` → success (data landed, whatever the report said).
+   - `candidate_count > 0 && written_count >= candidate_count` → full success (every candidate classified).
+   - `candidate_count > 0 && 0 < written_count < candidate_count` → PARTIAL (context-overflow): `candidate_count - written_count` candidates were never written. Surface the gap in the 观察项表 (`| <type> | context-overflow 未落库 N 条 |`), do NOT re-dispatch, then continue.
    - `candidate_count > 0 && written_count == 0` → FAILED with `reason: "empty-output"` (data did NOT land), regardless of the subagent's reported reason.
 
-   **重试与降级决策 (F1):** For each FAILED type (`candidate_count > 0 && written_count == 0`):
-   - If retry count < 2, re-dispatch a subagent for the failed types only.
-   - After 2 failed retries, mark `missing-type` and continue.
-   - Do NOT skip retry on `api-quota-exhausted` — the subagent's reason is unreliable and a single retry is cheap; a genuine quota wall simply fails again on the retry (0 written), which then lands in the `missing-type` path.
-   - The orchestrator SHALL NOT run `report --audit` while ANY type still has `candidate_count > 0 && written_count == 0` — auditing now silently drops those unclassified candidates from `report.md`/`result.sarif` and fakes a complete scan. Resolve every such type (retry → success, or → missing-type) BEFORE audit.
+   **失败降级决策 (F1):** For each FAILED type (`candidate_count > 0 && written_count == 0`):
+   - Mark `missing-type` with the DB-derived `reason` and CONTINUE. **Do NOT re-dispatch a re-run task** — a re-run re-pays a fresh prompt + skill reload, and a `context-overflow` re-run overflows again on the same super-large function, so re-running wastes turns without recovering the tail. The unclassified candidates are surfaced in the 缺失类型章节 (候选数 = `candidate_count`) instead of being re-scanned.
+   - The orchestrator SHALL NOT run `report --audit` while ANY type still has `candidate_count > 0 && written_count == 0` — auditing now silently drops those unclassified candidates from `report.md`/`result.sarif` and fakes a complete scan. Mark every such type `missing-type` (do NOT re-dispatch) BEFORE audit.
    - The orchestrator SHALL NOT finalize while any subagent terminal state is `unknown`.
 
     **Finalize 前置终态确认 (F1):** Before running audit, confirm every subagent terminal state ∈ {success, failed}. If any is `unknown`, run `secguard status --per-type --scan-id <scan_id>` and use the DB as the authority: types with `terminal_state: "done"` are success; `"in-progress"`/`"pending"` are failed (mark missing-type); `"unknown"` types were never dispatched — mark missing-type with `reason: "unknown"`.
@@ -339,14 +344,14 @@ final findings report — the same data source as `result.sarif`.)
     **未复核疑似项闸门 (F9):** The audit response may carry `unreviewed_suspected`
     (and a `warning`). A nonzero `unreviewed_suspected` means some `suspected`
     findings never went through the A5 second round, so the final export dropped
-    them (only `confirmed` + `suspected-kept` are exported). This is a HARD gate,
-    NOT advisory: you SHALL treat a nonzero `unreviewed_suspected` exactly like a
-    failed type and SHALL NOT proceed to step 6 until it is resolved. Re-dispatch
-    A5 for those ids (look them up with
-    `secguard db "SELECT id, file_path, line_number FROM findings WHERE scan_id='<scan_id>' AND status='suspected' AND (review_status IS NULL OR review_status='') ORDER BY id" --db <db_path>`),
-    then re-run `--audit` and confirm `unreviewed_suspected` is 0 (or absent)
-    before reporting. Do NOT ship a final report that silently lost suspected
-    residue — a report missing its suspected residue is an incomplete scan.
+    them (only `confirmed` + `suspected-kept` are exported). Treat this as a
+    `context-overflow` loss, NOT a re-dispatch trigger: **do NOT re-dispatch A5
+    for those ids** — the re-run re-pays a fresh prompt and overflows again on
+    the same super-large function. Record `unreviewed_suspected` and surface it in
+    the 观察项表 (`| 类型 | context-overflow 未复核疑似 N 条 |`) so the loss is
+    explicit, then proceed to step 6. The dropped ids are already excluded from
+    `result.sarif`/`findings/`; a report that silently omits them is an incomplete
+    scan, but re-running A5 is not the fix — reporting the count is.
 6. **Report**: emit the Markdown report (报告头 / 摘要 / 总览表 / 问题表 /
    观察项表 / 逐条详情) per the Output Format, aggregating the
    subagents' returned counts. Reference `report.md`, `result.sarif`, and
@@ -384,7 +389,8 @@ Report the diagnostic conclusion in Chinese, Markdown tables only:
 2. 摘要: `本次审计确认 X 个问题、疑似 Y 个问题。` (X/Y = confirmed/suspected verdicts, NOT candidate counts)
 3. 总览表: `| Skill | 类别 | 确认 | 疑似 | 已排除误报 |`
 4. 问题表: `| Skill | 文件:行号 | 函数 | 严重度 | 结论 | 说明 |` (confirmed + suspected)
-5. 观察项表 (only if some types were not persisted): `| Skill | 说明 |`
+5. 观察项表 (if some types were not persisted, or some suspected were dropped
+   unreviewed — F9): `| Skill | 说明 |` (e.g. `| null-deref | context-overflow 未复核疑似 15 条，已剔除 |`)
 6. 逐条详情: Reasoning / Exception Check / Fix Strategy per confirmed+suspected
 7. 缺失类型章节 (only when types were not successfully processed — F1): a table
    `| 类型 | 候选数 | 失败原因 |` listing every missing-type, with 失败原因 from
