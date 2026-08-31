@@ -108,6 +108,33 @@ func macroWriteSummaries(root parser.Node) map[string]macroWriteSummary {
 	return out
 }
 
+// isIdentChar reports whether c can appear within a C identifier.
+func isIdentChar(c byte) bool {
+	return c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+// identTokenIndexes returns the byte offsets in s where name occurs as a
+// standalone C identifier (neither preceded nor followed by an identifier
+// character), so a single-character parameter (`c`) is not matched inside a
+// longer identifier (`combine`).
+func identTokenIndexes(s, name string) []int {
+	var idxs []int
+	for i := 0; i+len(name) <= len(s); i++ {
+		if s[i:i+len(name)] != name {
+			continue
+		}
+		if i > 0 && isIdentChar(s[i-1]) {
+			continue
+		}
+		if j := i + len(name); j < len(s) && isIdentChar(s[j]) {
+			continue
+		}
+		idxs = append(idxs, i)
+		i += len(name) - 1
+	}
+	return idxs
+}
+
 // macroAssignsParam reports whether a function-like macro body PURELY writes its
 // parameter — an address-of (`&x` / `&(x)`, passed to a writer) or an assignment
 // whose RHS does not read the parameter back (`x = get()`, `(x) = v`). A
@@ -121,38 +148,48 @@ func macroAssignsParam(body, param string) bool {
 		}
 		return r
 	}, body)
-	for _, p := range []string{param, "(" + param + ")"} {
-		// Address-of never reads the value.
-		if strings.Contains(compact, "&"+p) {
+
+	// Bare spelling: match only as a standalone identifier.
+	for _, i := range identTokenIndexes(compact, param) {
+		// `&p` (address-of) is a write target; exclude `&&p` (logical AND).
+		if i > 0 && compact[i-1] == '&' && (i < 2 || compact[i-2] != '&') {
 			return true
 		}
-		// `p = <rhs>` / `p=<rhs>` where <rhs> is independent of p (not a
-		// read-modify-write) and the `=` is not a `==` comparison.
-		idx := strings.Index(compact, p+"=")
-		if idx < 0 {
+		// `p = <rhs>` is an assignment LHS; exclude `==`.
+		j := i + len(param)
+		if j >= len(compact) || compact[j] != '=' || (j+1 < len(compact) && compact[j+1] == '=') {
 			continue
 		}
-		after := compact[idx+len(p)+1:]
-		if strings.HasPrefix(after, "=") {
-			continue // `==`
+		if !rhsReadsParam(compact[j+1:], param) {
+			return true
 		}
-		// Delimit the RHS at the end of the assignment's expression. `;` ends a
-		// statement (a for-init, a do-while body), `)` closes a parenthesized or
-		// argument-list boundary, and `}` closes a compound statement. Without
-		// this, a LATER use of the parameter in a subsequent expression — e.g.
-		// the condition/update that follow a for-init write in
-		// `for ((p) = f(); p != END; (p) = next((p)))` — would be mistaken for a
-		// read-modify-write and hide a legitimate initializing write.
-		if i := strings.IndexAny(after, ");}"); i >= 0 {
-			after = after[:i]
-		}
-		inner := strings.Trim(p, "()")
-		if strings.Contains(after, p) || strings.Contains(after, inner) {
-			continue // read-modify-write in the same expression
-		}
+	}
+
+	// Parenthesized spelling `(p)` — the parens delimit the token, so a plain
+	// substring match is safe even for single-character names.
+	p := "(" + param + ")"
+	if strings.Contains(compact, "&"+p) {
 		return true
 	}
+	if i := strings.Index(compact, p+"="); i >= 0 {
+		after := compact[i+len(p)+1:]
+		if !strings.HasPrefix(after, "=") && !rhsReadsParam(after, param) {
+			return true
+		}
+	}
 	return false
+}
+
+// rhsReadsParam reports whether an assignment RHS reads param back, delimiting the
+// RHS at the end of the assignment's expression (`;`, `)`, or `}`). A LATER use
+// of the parameter in a subsequent expression — e.g. the condition/update that
+// follow a for-init write in `for ((p) = f(); p != END; (p) = next((p)))` — must
+// not make an initializing write look like a read-modify-write.
+func rhsReadsParam(rhs, param string) bool {
+	if i := strings.IndexAny(rhs, ");}"); i >= 0 {
+		rhs = rhs[:i]
+	}
+	return len(identTokenIndexes(rhs, param)) > 0 || strings.Contains(rhs, "("+param+")")
 }
 
 // trustedMacros reports the set of function-like macros whose expansion computes

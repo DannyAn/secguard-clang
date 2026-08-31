@@ -239,6 +239,40 @@ func TestUninit_RwPoolMacroNotUninit(t *testing.T) {
 	}
 }
 
+func TestUninit_ThreeParamMacro(t *testing.T) {
+	// A 3-parameter macro can write ANY parameter position — SET_THIRD writes its
+	// 3rd parameter, SET_FIRST writes its 1st. The written argument must not be
+	// reported as uninit, while the read arguments still must. The single-char
+	// parameter names (`a`/`b`/`c`) also pin that the write detection uses
+	// identifier boundaries — `c` must not be mistaken for a substring of the
+	// callee `combine`.
+	store := runIndexAndDetect(t, "tc79_three_param_macro.c")
+	events, _ := store.ListEventsByType(context.Background(), "VALUE_USE")
+	flagged := make(map[string]bool)
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+			Origin   string `json:"origin"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Origin == "stack_uninit" {
+			flagged[props.Variable] = true
+		}
+	}
+	// writes_third: a1,b1 read → reported; c1 written → not reported.
+	// writes_first: b2,c2 read → reported; a2 written → not reported.
+	for _, v := range []string{"a1", "b1", "b2", "c2"} {
+		if !flagged[v] {
+			t.Errorf("%s (read argument) should be reported as uninit", v)
+		}
+	}
+	for _, v := range []string{"c1", "a2"} {
+		if flagged[v] {
+			t.Errorf("%s (written argument) must not be reported as uninit", v)
+		}
+	}
+}
+
 func TestUninit_VaListVaStartNotUninit(t *testing.T) {
 	// va_start/va_copy's first argument is the va_list they initialize (a write
 	// target), not a read of its current value. The va_start line must not
