@@ -348,7 +348,7 @@ final findings report — the same data source as `result.sarif`.)
     before reporting. Do NOT ship a final report that silently lost suspected
     residue — a report missing its suspected residue is an incomplete scan.
 6. **Report**: emit the Markdown report (报告头 / 摘要 / 总览表 / 问题表 /
-   观察项表 / 修复建议 / 逐条详情) per the Output Format, aggregating the
+   观察项表 / 逐条详情) per the Output Format, aggregating the
    subagents' returned counts. Reference `report.md`, `result.sarif`, and
    `findings/` only after step 5 verified them.
 
@@ -385,9 +385,8 @@ Report the diagnostic conclusion in Chinese, Markdown tables only:
 3. 总览表: `| Skill | 类别 | 确认 | 疑似 | 已排除误报 |`
 4. 问题表: `| Skill | 文件:行号 | 函数 | 严重度 | 结论 | 说明 |` (confirmed + suspected)
 5. 观察项表 (only if some types were not persisted): `| Skill | 说明 |`
-6. 修复建议: per-confirmed paste-ready fix (a `c` code block each)
-7. 逐条详情: Reasoning / Exception Check / Fix Strategy per confirmed+suspected
-8. 缺失类型章节 (only when types were not successfully processed — F1): a table
+6. 逐条详情: Reasoning / Exception Check / Fix Strategy per confirmed+suspected
+7. 缺失类型章节 (only when types were not successfully processed — F1): a table
    `| 类型 | 候选数 | 失败原因 |` listing every missing-type, with 失败原因 from
    the enum below. This section is MANDATORY when any type was not classified —
    the user must know the scan is incomplete.
