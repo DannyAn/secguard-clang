@@ -10,6 +10,7 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
+	"github.com/DannyAn/secguard-clang/internal/macros"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
@@ -107,6 +108,7 @@ func (f *DefiniteInitFilter) isStackUninit(ctx context.Context, c Candidate) boo
 func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, fnByID map[int64]*db.Function, fileByID map[int64]*db.File) (map[int64]*flowResult, map[int64]*hoistedUninitFile) {
 	flows := make(map[int64]*flowResult, len(byFunc))
 	files := make(map[int64]*hoistedUninitFile)
+	macroWritesByFile := make(map[int64]map[string]macros.WriteSummary)
 	cache := newFileParseCache(f.parser)
 	for fid := range byFunc {
 		fn := fnByID[fid]
@@ -121,7 +123,12 @@ func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]
 		if body.Kind() != "compound_statement" {
 			continue
 		}
-		flows[fid] = buildDefiniteInitFlow(fn, body, root)
+		macroWrites := macroWritesByFile[file.ID]
+		if macroWrites == nil {
+			macroWrites = macros.WriteSummaries(root)
+			macroWritesByFile[file.ID] = macroWrites
+		}
+		flows[fid] = buildDefiniteInitFlow(fn, body, macroWrites)
 		if _, ok := files[file.ID]; !ok {
 			files[file.ID] = hoistUninitFile(root)
 		}
@@ -131,8 +138,9 @@ func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]
 
 // buildDefiniteInitFlow runs the reaching-sources dataflow for uninitialized
 // stack variables: gen = a local declaration without initializer, kill = any
-// subsequent write to the variable (full or field/subscript), copy = `v = w`.
-func buildDefiniteInitFlow(fn *db.Function, body parser.Node, root parser.Node) *flowResult {
+// subsequent write to the variable (full or field/subscript, plus a
+// function-like macro output argument), copy = `v = w`.
+func buildDefiniteInitFlow(fn *db.Function, body parser.Node, macroWrites map[string]macros.WriteSummary) *flowResult {
 	cfg := graph.BuildStmtCFG(body, fn.EndLine)
 
 	// Effects are computed per CFG node from that node's OWN statement — never
@@ -171,6 +179,16 @@ func buildDefiniteInitFlow(fn *db.Function, body parser.Node, root parser.Node) 
 			// granularity belongs to struct_partial_uninit).
 			if base := assignBaseName(p.lhs); base != "" {
 				e.kill[base] = true
+			}
+		}
+
+		// A function-like macro that writes one of its arguments (`#define
+		// OUT(x) (x) = ...` → `OUT(v)`) initializes it at this node, so it is a
+		// kill for the uninit source — the planner-side mirror of the detector's
+		// output-parameter recording.
+		for _, call := range n.Stmt.FindAll("call_expression") {
+			for name := range macros.WrittenArgs(call, macroWrites) {
+				e.kill[name] = true
 			}
 		}
 		effects[n.ID] = e
@@ -223,6 +241,18 @@ func directAssignments(stmt parser.Node) []assignPair {
 			c := child.NamedChildren()
 			if len(c) >= 2 {
 				pairs = append(pairs, assignPair{lhs: c[0], rhs: c[1]})
+			}
+		}
+	case "if_statement", "while_statement", "do_statement", "for_statement":
+		// A control-flow header that assigns in its condition
+		// (`while ((c = *str++))`, `if ((x = f()) == -1)`) writes the LHS every
+		// time the header is evaluated — before any body statement — so the
+		// header node is a direct assign site for the LHS. A for-loop's
+		// initializer/update are their own CFG nodes, so only the condition is
+		// extracted here (the header's Stmt wraps the whole statement).
+		if cond := stmt.ChildByFieldName("condition"); cond != nil {
+			for _, a := range cond.FindAll("assignment_expression") {
+				pairs = appendChainedAssign(pairs, a)
 			}
 		}
 	}

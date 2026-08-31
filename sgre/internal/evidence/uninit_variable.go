@@ -7,6 +7,7 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
+	"github.com/DannyAn/secguard-clang/internal/macros"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
@@ -46,7 +47,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 		fors := root.FindAll("for_statement")
 		funcDefs := root.FindAll("function_definition")
 		bodies := functionBodyMap(funcDefs)
-		macroWrites := macroWriteSummaries(root)
+		macroWrites := macros.WriteSummaries(root)
 
 		for _, f := range funcs {
 			d.detectStackUninit(ctx, f, file, decls, assigns, calls, returns, inits, ifs, whiles, fors, bodies, summaries, macroWrites, &result)
@@ -57,7 +58,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 	return result, err
 }
 
-func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, decls, assigns, calls, returns, inits, ifs, whiles, fors []parser.Node, bodies map[int]parser.Node, summaries summaryMap, macroWrites map[string]macroWriteSummary, result *DetectResult) {
+func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, decls, assigns, calls, returns, inits, ifs, whiles, fors []parser.Node, bodies map[int]parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, result *DetectResult) {
 	uninitVars := make(map[string]int)
 	assignSites := make(map[string][]int)
 	// outputParamInitLines maps a variable to the line after which it is
@@ -119,6 +120,17 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 			continue
 		}
 		callName := extractCallName(call)
+		// A function-like macro that writes one of its parameters initializes the
+		// argument passed at that position (`#define OUT(x) (x) = ...` → `OUT(v)`).
+		// Record the written argument as an output-param init line so a LATER use
+		// of that argument is not reported.
+		if written := macros.WrittenArgs(call, macroWrites); len(written) > 0 {
+			for name := range written {
+				if call.StartLine() > outputParamInitLines[name] {
+					outputParamInitLines[name] = call.StartLine()
+				}
+			}
+		}
 		// va_start/va_copy initialize the va_list (an array type that decays to
 		// a pointer, so it is passed as an identifier, not `&ap`).
 		if callName == "va_start" || callName == "va_copy" {
@@ -255,9 +267,14 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 	// not a scalar read, so it is skipped too.
 	scanUses := func(node parser.Node, line int, skipName string, extraSkip map[string]bool) {
 		addressed := addressedArgs(node)
+		// An assignment embedded in a condition (`while ((c = *str++))`) WRITES its
+		// LHS before the condition is evaluated, so the LHS identifier is not a
+		// read of an uninitialized value. Skip every assignment write target
+		// (chained assignments included), matching the assignment-RHS scan.
+		writes := nestedAssignTargets(node)
 		for _, id := range node.FindAll("identifier") {
 			name := id.Text()
-			if name == skipName || addressed[name] || extraSkip[name] || isValueFieldBase(id) {
+			if name == skipName || addressed[name] || writes[name] || extraSkip[name] || isValueFieldBase(id) {
 				continue
 			}
 			checkUse(line, name)
@@ -276,7 +293,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 			continue
 		}
 		callName := extractCallName(call)
-		extra := outputMacroArgs(call, macroWrites)
+		extra := macros.WrittenArgs(call, macroWrites)
 		// va_start/va_copy's first argument is the va_list they INITIALIZE, not a
 		// read of its current value. Without skipping it, the va_start line
 		// reports the (just-declared, still-uninitialized) va_list as a
@@ -372,8 +389,11 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		// `i` was reported as use-before-init at the for-loop's opening line.
 		initWrites := forInitWrites(forNode)
 		addressed := addressedArgs(*cond)
+		// An assignment inside the condition (`for (; (x = next()); )`) writes its
+		// LHS, so the LHS identifier is not a read of an uninitialized value.
+		condWrites := nestedAssignTargets(*cond)
 		for _, id := range cond.FindAll("identifier") {
-			if initWrites[id.Text()] || addressed[id.Text()] {
+			if initWrites[id.Text()] || addressed[id.Text()] || condWrites[id.Text()] {
 				continue
 			}
 			checkUse(cond.StartLine(), id.Text())
@@ -977,36 +997,6 @@ func isExitStmt(node parser.Node) bool {
 		}
 	}
 	return false
-}
-
-// outputMacroArgs returns the set of bare-identifier arguments passed to a macro
-// at a parameter position the macro writes (`#define GET(x) do { (x) = ...; } while(0)`).
-// Such an argument is an output the macro initializes, not a read of an
-// uninitialized value, so the stack-uninit scan must skip it. Only the argument
-// positions whose corresponding parameter is written are skipped; the other
-// arguments are still read (e.g. `RW_POOL_FOR(group_id, pool_id)` writes pool_id
-// but only reads group_id).
-func outputMacroArgs(call parser.Node, macroWrites map[string]macroWriteSummary) map[string]bool {
-	out := make(map[string]bool)
-	summary, ok := macroWrites[extractCallName(call)]
-	if !ok || len(summary.writesParam) == 0 {
-		return out
-	}
-	for _, child := range call.NamedChildren() {
-		if child.Kind() != "argument_list" {
-			continue
-		}
-		args := child.NamedChildren()
-		for i, arg := range args {
-			if !summary.writesParam[i] {
-				continue
-			}
-			if arg.Kind() == "identifier" {
-				out[arg.Text()] = true
-			}
-		}
-	}
-	return out
 }
 
 // addressedArgs returns the set of variable names whose address is taken

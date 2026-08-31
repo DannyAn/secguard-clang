@@ -462,9 +462,15 @@ func (b *cfgBuilder) buildSwitch(stmt parser.Node, from int) int {
 		first, last int // -1 when empty or terminated
 	}
 	var cases []caseInfo
+	hasDefault := false
 	for _, child := range body.NamedChildren() {
 		if child.Kind() != "case_statement" {
 			continue
+		}
+		// `default:` is a case_statement with no value expression (its first
+		// named child is the first statement, not a number_literal/expression).
+		if isDefaultCase(child) {
+			hasDefault = true
 		}
 		pre := len(b.cfg.Nodes)
 		last := b.buildBlock(child, from) // jump: from -> the case's first statement
@@ -483,12 +489,25 @@ func (b *cfgBuilder) buildSwitch(stmt parser.Node, from int) int {
 		}
 	}
 	// The last non-terminating case falls through to the switch exit, and the
-	// entry itself reaches the exit when no case matches.
+	// entry itself reaches the exit when no case matches. A switch with a
+	// `default:` has no "no case matches" path — the default case IS the fallback
+	// — so the phantom entry→join edge is added only when no default exists.
+	// Without this, a variable assigned in every case (including default) looked
+	// possibly-uninitialized because the entry→join edge skipped all the writes.
 	if n := len(cases); n > 0 && cases[n-1].last >= 0 {
 		b.edge(cases[n-1].last, join)
 	}
-	b.edge(from, join)
+	if !hasDefault {
+		b.edge(from, join)
+	}
 	return join
+}
+
+// isDefaultCase reports whether a case_statement is the `default:` label. A
+// default case has no value expression, so its "value" field is empty; a real
+// `case N:` carries a value expression in that field.
+func isDefaultCase(caseStmt parser.Node) bool {
+	return caseStmt.ChildByFieldName("value") == nil
 }
 
 // buildStmtList builds a straight-line sequence of statements from `from` and
