@@ -97,7 +97,6 @@ fi
 OC_TARGET_DIR="$OC_PREFIX/plugins/secguard-clang"
 OC_NGA_TARGET_DIR="$OC_PREFIX/extensions/secguard-clang"
 CC_TARGET_DIR="$CC_PREFIX/plugins/secguard-clang"
-CAC_TARGET_DIR="$CAC_PREFIX/plugins/secguard-clang"
 OC_MANIFEST="$OC_PREFIX/.secguard-install-manifest"
 OC_NGA_MANIFEST="$OC_PREFIX/.secguard-install-manifest-nga"
 CC_MANIFEST="$CC_PREFIX/.secguard-install-manifest"
@@ -248,38 +247,36 @@ install_claude_code() {
 }
 
 # 安装 ClaudeCAC（Claude Code 开源分支，~/.cac/plugins/）
+# 注：CodeAgent pluginLoader 走 marketplace（known_marketplaces.json → marketplace
+# 目录），installed_plugins.json 走 cache 目录；不再额外落一份 plugins/secguard-clang
+# 平铺目录（该目录既不被 pluginLoader 发现、也不在 known_marketplaces.json 中登记）。
 install_claude_cac() {
-    echo "[claude-cac] Installing to $CAC_TARGET_DIR"
     local src="$PKG_DIR/claude-cac"
-    mkdir -p "$CAC_TARGET_DIR"/{.cac-plugin,commands,agents,hooks,skills}
+    local cac_cache_dir="$CAC_PREFIX/plugins/cache/local-secguard/secguard-clang/$PKG_VERSION"
+    echo "[claude-cac] Installing to $cac_cache_dir"
+    mkdir -p "$cac_cache_dir"/{.cac-plugin,commands,agents,hooks,skills}
 
-    [ -f "$src/.cac-plugin/plugin.json" ] && sg_cp_record "$src/.cac-plugin/plugin.json" "$CAC_TARGET_DIR/.cac-plugin/plugin.json"
-    [ -f "$src/hooks/hooks.json" ] && sg_cp_record "$src/hooks/hooks.json" "$CAC_TARGET_DIR/hooks/hooks.json"
+    [ -f "$src/.cac-plugin/plugin.json" ] && sg_cp_record "$src/.cac-plugin/plugin.json" "$cac_cache_dir/.cac-plugin/plugin.json"
+    [ -f "$src/hooks/hooks.json" ] && sg_cp_record "$src/hooks/hooks.json" "$cac_cache_dir/hooks/hooks.json"
 
     local f
-    for f in "$src"/.cac/commands/*.md; do [ -f "$f" ] && sg_cp_record "$f" "$CAC_TARGET_DIR/commands/$(basename "$f")"; done
-    for f in "$src"/.cac/agents/*.md;   do [ -f "$f" ] && sg_cp_record "$f" "$CAC_TARGET_DIR/agents/$(basename "$f")"; done
+    for f in "$src"/.cac/commands/*.md; do [ -f "$f" ] && sg_cp_record "$f" "$cac_cache_dir/commands/$(basename "$f")"; done
+    for f in "$src"/.cac/agents/*.md;   do [ -f "$f" ] && sg_cp_record "$f" "$cac_cache_dir/agents/$(basename "$f")"; done
 
-    sg_install_skills "$CAC_TARGET_DIR/skills"
+    sg_install_skills "$cac_cache_dir/skills"
 
     # 合并权限
     echo "[claude-cac] Merging permissions into $CAC_PREFIX/settings.json"
     sg_merge_permissions "$CAC_PREFIX/settings.json"
 
     # CodeAgent 插件注册（installed_plugins.json + enabledPlugins + codeagent-extension.json）
-    local cac_cache_dir="$CAC_PREFIX/plugins/cache/local-secguard/secguard-clang/$PKG_VERSION"
-    mkdir -p "$cac_cache_dir"
-    # 用 `/.` 而非 `/*`：`*` 不匹配点文件，会漏掉 .cac-plugin/（插件清单）。
-    cp -r "$CAC_TARGET_DIR"/. "$cac_cache_dir/" 2>/dev/null || true
     sg_write_codeagent_extension "$cac_cache_dir" "$PKG_VERSION"
-    sg_write_codeagent_extension "$CAC_TARGET_DIR" "$PKG_VERSION"
     sg_record_file "$cac_cache_dir/codeagent-extension.json"
-    sg_record_file "$CAC_TARGET_DIR/codeagent-extension.json"
     sg_register_plugin "$CAC_PREFIX/plugins/installed_plugins.json" "secguard-clang" "local-secguard" "$cac_cache_dir" "$PKG_VERSION"
     sg_enable_plugin "$CAC_PREFIX/settings.json" "secguard-clang" "local-secguard"
 
     # CodeAgent marketplace 注册（pluginLoader 加载 commands/agents/hooks 必需）
-    sg_register_marketplace "$CAC_PREFIX" "secguard-clang" "$CAC_TARGET_DIR" "$PKG_VERSION"
+    sg_register_marketplace "$CAC_PREFIX" "secguard-clang" "$cac_cache_dir" "$PKG_VERSION"
     sg_record_file "$CAC_PREFIX/plugins/marketplaces/local-secguard/.cac-plugin/marketplace.json"
     sg_record_file "$CAC_PREFIX/plugins/marketplaces/local-secguard/secguard-clang/codeagent-extension.json"
 
@@ -490,7 +487,7 @@ case "$TARGET" in
 esac
 case "$TARGET" in
     claude-cac|all)
-        echo "║  ClaudeCAC: $CAC_TARGET_DIR"
+        echo "║  ClaudeCAC: $CAC_PREFIX/plugins/marketplaces/local-secguard/secguard-clang"
         ;;
 esac
 echo "║  Command:   /secguard [path]"

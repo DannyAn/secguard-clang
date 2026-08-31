@@ -650,7 +650,7 @@ sg_uninstall_platform() {
     local oc_legacy_dir="$oc_prefix/extensions/secguard-clang"   # 旧版 extension 目录残留
     local cc_dir="$cc_prefix/plugins/secguard-clang"
     local cc_legacy_dir="$cc_prefix/skills/secguard-clang"   # 旧版错误安装到 skills/ 的残留
-    local cac_dir="$cac_prefix/plugins/secguard-clang"
+    local cac_dir="$cac_prefix/plugins/secguard-clang"       # 旧版平铺目录残留（新版不再落此目录）
 
     local to_delete=()
     case "$platform" in
@@ -880,22 +880,20 @@ sys.exit(1)
 
     # Claude-CAC 检查（Claude Code 开源分支：~/.cac/plugins/）
     if [ "$platform" = "all" ] || [ "$platform" = "claude-cac" ]; then
-        local cac_dir="$cac_prefix/plugins/secguard-clang"
+        local cac_cache_dir="$cac_prefix/plugins/cache/local-secguard/secguard-clang/$pkg_version"
         echo ""
-        echo "ClaudeCAC plugin ($cac_dir):"
-        [ -f "$cac_dir/.cac-plugin/plugin.json" ] && sg_check ok ".cac-plugin/plugin.json" || sg_check fail ".cac-plugin/plugin.json"
-        [ -f "$cac_dir/commands/secguard.md" ] && sg_check ok "commands/secguard.md" || sg_check fail "commands/secguard.md"
-        [ -f "$cac_dir/agents/security-auditor.md" ] && sg_check ok "agents/security-auditor.md" || sg_check fail "agents/security-auditor.md"
-        [ -f "$cac_dir/hooks/hooks.json" ] && sg_check ok "hooks/hooks.json" || sg_check fail "hooks/hooks.json"
-        sg_check_skills "$cac_dir/skills"
+        echo "ClaudeCAC plugin ($cac_cache_dir):"
+        [ -f "$cac_cache_dir/.cac-plugin/plugin.json" ] && sg_check ok ".cac-plugin/plugin.json" || sg_check fail ".cac-plugin/plugin.json"
+        [ -f "$cac_cache_dir/commands/secguard.md" ] && sg_check ok "commands/secguard.md" || sg_check fail "commands/secguard.md"
+        [ -f "$cac_cache_dir/agents/security-auditor.md" ] && sg_check ok "agents/security-auditor.md" || sg_check fail "agents/security-auditor.md"
+        [ -f "$cac_cache_dir/hooks/hooks.json" ] && sg_check ok "hooks/hooks.json" || sg_check fail "hooks/hooks.json"
+        sg_check_skills "$cac_cache_dir/skills"
         if sg_check_permissions_merged "$cac_prefix/settings.json" 2>/dev/null; then
             sg_check ok "Permissions merged in settings.json"
         else
             sg_check fail "Permissions not fully merged in settings.json"
         fi
-        local cac_cache_dir="$cac_prefix/plugins/cache/local-secguard/secguard-clang/$pkg_version"
         [ -f "$cac_cache_dir/codeagent-extension.json" ] && sg_check ok "cache codeagent-extension.json" || sg_check fail "cache codeagent-extension.json"
-        [ -f "$cac_dir/codeagent-extension.json" ] && sg_check ok "codeagent-extension.json" || sg_check fail "codeagent-extension.json"
         python3 -c "
 import json, sys
 key = 'secguard-clang@local-secguard'
