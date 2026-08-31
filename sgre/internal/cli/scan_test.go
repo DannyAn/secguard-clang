@@ -248,7 +248,7 @@ func TestScanCmd_JSONEnvelopeHasTargetPathAndScanDir(t *testing.T) {
 		t.Error("JSON envelope missing scan_dir field")
 	}
 
-	for _, key := range []string{"scan_id", "candidates_by_type", "total_candidates", "files_with_candidates", "index_summary", "existing_findings"} {
+	for _, key := range []string{"scan_id", "candidates_by_type", "total_candidates", "files_with_candidates_count", "index_summary", "existing_findings_count"} {
 		if _, ok := result[key]; !ok {
 			t.Errorf("JSON envelope missing existing key: %s", key)
 		}

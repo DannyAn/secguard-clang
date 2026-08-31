@@ -19,6 +19,15 @@ import (
 // report artifacts).
 var ContextLines = 15
 
+// candidateContextLines is the source window embedded in each candidate evidence
+// file (the AI classifier's input). It is deliberately smaller than ContextLines:
+// the classifier reads the exact statement from the `_index.md` Source column and
+// the flow summary from `## Evidence`, so the Code Context only needs to show the
+// LOCAL guard/reassignment around the statement. A smaller window is the single
+// biggest lever against subagent context overflow on suspected-heavy types
+// (each suspected candidate opens its evidence file).
+var candidateContextLines = 8
+
 // maxContextLines caps the window so one finding cannot turn into a file dump.
 const maxContextLines = 200
 

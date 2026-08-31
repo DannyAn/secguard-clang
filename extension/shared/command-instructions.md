@@ -131,8 +131,7 @@ hardcode names or counts.
 `File:Line` column); the `## Location` block of each
 `candidates/<vuln-type>/NNN_*.md` file carries the **absolute** path. Before
 reading source, take the absolute path from the candidate file's Location block
-(or the `files_with_candidates` list in the scan summary) and use it directly.
-Do not reconstruct paths by trial and error.
+and use it directly. Do not reconstruct paths by trial and error.
 
 ## Batch Capacity Configuration
 

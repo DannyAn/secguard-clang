@@ -285,7 +285,7 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 		"auto_confirmed_count":   totalAutoConfirmed,
 		"suppressed_count":       totalSuppressed,
 		"baseline_existing_count": totalBaselineExisting,
-		"files_with_candidates":  filesList,
+		"files_with_candidates_count": len(filesList),
 		"index_summary": map[string]interface{}{
 			"files_indexed":      indexResult.FilesIndexed,
 			"functions_indexed":  indexResult.FunctionsIndexed,

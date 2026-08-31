@@ -304,14 +304,17 @@ func runScanCmd(ctx context.Context, args []string) int {
 		"auto_confirmed_count":    totalAutoConfirmed,
 		"suppressed_count":        totalSuppressed,
 		"baseline_existing_count": totalBaselineExisting,
-		"files_with_candidates":   filesList,
+		// 只放计数，不放整表——files_with_candidates（数百文件路径）与
+		// existing_findings（整表 findings）会把主上下文一次撑爆；绝对路径从
+		// 候选文件的 ## Location 块取即可。
+		"files_with_candidates_count": len(filesList),
+		"existing_findings_count":     len(findingsList),
 		"index_summary": map[string]interface{}{
 			"files_indexed":      indexResult.FilesIndexed,
 			"functions_indexed":  indexResult.FunctionsIndexed,
 			"functions_in_index": functionsInIndex,
 			"files_skipped":      indexResult.FilesSkipped,
 		},
-		"existing_findings": findingsList,
 		"target_path":       absPath,
 		"scan_dir":          scanDir,
 		"candidates_sarif":  filepath.Join(scanDir, report.CandidatesSarifFile),

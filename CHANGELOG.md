@@ -26,12 +26,23 @@
   识别第一个操作数导致第二个被误报。
 - **divide-by-zero**：编译期常量符号 + 跨函数返回区间摘要，确定性筛选增强。
 
+### 上下文压缩（主上下文 + 子代理）
+
+- 扫描 stdout 只回计数、不回整表：`files_with_candidates`（数百文件路径）与 `existing_findings`（整表
+  findings）改为 `files_with_candidates_count` / `existing_findings_count`，避免主上下文在 800 文件
+  场景规划任务阶段就被大 JSON 撑爆；绝对路径从候选文件的 `## Location` 块取。
+- 候选证据文件 `## Code Context` 窗口 15→8 行（仅候选阶段，findings/SARIF 仍 15）：分类器已从
+  `_index.md` Source 列拿到精确语句、从 `## Evidence` 拿到数据流摘要，Code Context 只需展示局部
+  守卫/重赋值。这是 suspected 偏重型子代理上下文溢出的最大压缩杠杆。
+- null-deref 的 `## Evidence` 补充空指针来源行号（`assigned NULL at line N` / `possibly-null at line N`），
+  使 Evidence 自足，减少为核对来源而整段读取 Code Context 的需求。
+
 ### 工作流与部署
 
 - 候选分批阈值 100→80：缓解 200K 上下文下 suspected 偏重型批次的尾部 A5 截断。
 - 候选丢失时不再二次下发 task：失败/部分截断/未复核统一改为「丢弃 + 观察项表/缺失类型章节显式汇报
   条数」，流程不中断；F5 新增 partial 判定（`0 < written_count < candidate_count`）；子代理遇超大函数
-  （`## Code Context` >200 行）只按 Source 列判定，不整段塞入上下文。
+  （`## Code Context` >200 行）只按 Source 列判定，默认 `suspected-kept` 不 dismissed（避免漏报）。
 - opencode-nga bash 权限顺序修正：`secguard*`/`echo*` allow 提到 `*` deny 之前，修复 `secguard db`
   等命令被首匹配 deny 误拒。
 - 控制台最终报告移除「修复建议」章节（源码代码块展示），告警与修复已写入 `findings/`。

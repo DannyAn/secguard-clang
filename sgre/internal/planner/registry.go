@@ -176,13 +176,13 @@ func init() {
 				fragments = append(fragments, EvidenceFragment{
 					Type:   "definite_null",
 					Role:   "condition",
-					Detail: fmt.Sprintf("variable %s is assigned NULL and dereferenced at line %d with no intervening reassignment (certain null-deref)", c.VariableName, c.Line),
+					Detail: fmt.Sprintf("variable %s is assigned NULL at line %d and dereferenced at line %d with no intervening reassignment (certain null-deref)", c.VariableName, c.SourceLine, c.Line),
 				})
 			} else if c.HasNullableSource {
 				fragments = append(fragments, EvidenceFragment{
 					Type:   "nullable_source",
 					Role:   "source",
-					Detail: fmt.Sprintf("variable %s is assigned a possibly-null value before the dereference at line %d", c.VariableName, c.Line),
+					Detail: fmt.Sprintf("variable %s is assigned a possibly-null value at line %d before the dereference at line %d", c.VariableName, c.SourceLine, c.Line),
 				})
 			}
 			if c.IsReachable {

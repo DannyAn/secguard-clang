@@ -226,7 +226,7 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 			// Embed the surrounding source so the classifier does not need a
 			// separate source READ for a suspected/possible candidate. The same
 			// window also appears in report.md's Source column for confirmed.
-			if ctx := readCodeContext(c.Target.File, c.Target.Line, ContextLines, o.RootDir); ctx != nil {
+			if ctx := readCodeContext(c.Target.File, c.Target.Line, candidateContextLines, o.RootDir); ctx != nil {
 				b.WriteString("## Code Context\n\n")
 				fmt.Fprintf(&b, "`%s:%d-%d` — line %d is the reported location.\n\n", ctx.Path, ctx.StartLine, ctx.EndLine, ctx.Line)
 				b.WriteString(ctx.render())
