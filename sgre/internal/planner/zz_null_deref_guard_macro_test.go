@@ -134,3 +134,32 @@ int set_used(int id) {
 		t.Errorf("set_used should NOT be flagged (carnat_pool is null-guarded in the mixed condition), got var=%s", c.Target.Variable)
 	}
 }
+
+// TestNullDeref_GuardMacroIteratorDeref pins the guard-macro fix against the
+// iterator-initializer deref shape (`TAILQ_FIRST(&(ctrl->field))`): the deref is
+// nested inside an address-of passed to another macro, but it is still a read of
+// ctrl and must be suppressed by the preceding `CHECK_RET((ctrl == NULL), ret)`
+// guard.
+func TestNullDeref_GuardMacroIteratorDeref(t *testing.T) {
+	src := guardMacroPreamble + `
+typedef struct pnode { struct pnode *link; } pnode_t;
+
+#define TAILQ_FIRST(head) ((pnode_t *)0)
+#define TAILQ_NEXT(node, link) ((pnode_t *)0)
+
+int scan_vsys_head(int idx) {
+    vsys_t *ctrl = lookup_vsys(idx);
+    CHECK_RET((ctrl == NULL), OK);
+    pnode_t *group_node;
+    for (group_node = TAILQ_FIRST(&(ctrl->head)); group_node != NULL;
+         group_node = TAILQ_NEXT(group_node, link)) {
+        ;
+    }
+    return 0;
+}
+`
+	result := planNullDerefGuardMacro(t, src)
+	if c := candidateForFunc(t, result, "scan_vsys_head"); c != nil {
+		t.Errorf("scan_vsys_head should NOT be flagged (ctrl is null-guarded by CHECK_RET before the iterator deref), got var=%s", c.Target.Variable)
+	}
+}
