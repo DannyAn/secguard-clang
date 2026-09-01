@@ -41,6 +41,16 @@ func (s *store) ListEventsByType(ctx context.Context, eventType string) ([]*Secu
 	return scanEvents(rows)
 }
 
+func (s *store) CountEventsByType(ctx context.Context, eventType string) (int, error) {
+	var count int
+	err := s.exec.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM security_events WHERE event_type = ?`, eventType).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("db: count events by type: %w", err)
+	}
+	return count, nil
+}
+
 func (s *store) ListEventsByEntity(ctx context.Context, entityID int64) ([]*SecurityEvent, error) {
 	rows, err := s.exec.QueryContext(ctx,
 		`SELECT id, event_type, entity_id, location_id, properties FROM security_events WHERE entity_id = ? ORDER BY id`, entityID)

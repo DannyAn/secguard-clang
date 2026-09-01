@@ -87,6 +87,10 @@ type SecurityEventStore interface {
 	InsertEvent(ctx context.Context, e *SecurityEvent) (int64, error)
 	GetEventByID(ctx context.Context, id int64) (*SecurityEvent, error)
 	ListEventsByType(ctx context.Context, eventType string) ([]*SecurityEvent, error)
+	// CountEventsByType returns the number of events of eventType without
+	// loading the rows (SELECT COUNT(*)). The status command needs only the
+	// count; loading every event just to len() it is wasteful on large trees.
+	CountEventsByType(ctx context.Context, eventType string) (int, error)
 	ListEventsByEntity(ctx context.Context, entityID int64) ([]*SecurityEvent, error)
 	ListEventsByTypeAndEntity(ctx context.Context, eventType string, entityID int64) ([]*SecurityEvent, error)
 	// ListEventsByIDs returns the events with the given IDs keyed by ID, in a

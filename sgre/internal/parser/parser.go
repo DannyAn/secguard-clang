@@ -157,42 +157,72 @@ func (n Node) Kind() string {
 }
 
 func (n Node) Text() string {
+	if n.isNull() {
+		return ""
+	}
 	return string(n.src[n.node.StartByte():n.node.EndByte()])
 }
 
 func (n Node) StartByte() int {
+	if n.isNull() {
+		return 0
+	}
 	return int(n.node.StartByte())
 }
 
 func (n Node) EndByte() int {
+	if n.isNull() {
+		return 0
+	}
 	return int(n.node.EndByte())
 }
 
 func (n Node) StartLine() int {
+	if n.isNull() {
+		return 0
+	}
 	return int(n.node.StartPosition().Row) + 1
 }
 
 func (n Node) StartColumn() int {
+	if n.isNull() {
+		return 0
+	}
 	return int(n.node.StartPosition().Column) + 1
 }
 
 func (n Node) EndLine() int {
+	if n.isNull() {
+		return 0
+	}
 	return int(n.node.EndPosition().Row) + 1
 }
 
 func (n Node) EndColumn() int {
+	if n.isNull() {
+		return 0
+	}
 	return int(n.node.EndPosition().Column) + 1
 }
 
 func (n Node) HasError() bool {
+	if n.isNull() {
+		return false
+	}
 	return n.node.HasError()
 }
 
 func (n Node) ChildCount() int {
+	if n.isNull() {
+		return 0
+	}
 	return int(n.node.ChildCount())
 }
 
 func (n Node) Children() []Node {
+	if n.isNull() {
+		return nil
+	}
 	count := n.node.ChildCount()
 	children := make([]Node, 0, count)
 	for i := 0; i < int(count); i++ {
@@ -206,6 +236,9 @@ func (n Node) Children() []Node {
 }
 
 func (n Node) NamedChildren() []Node {
+	if n.isNull() {
+		return nil
+	}
 	count := n.node.NamedChildCount()
 	children := make([]Node, 0, count)
 	for i := 0; i < int(count); i++ {
@@ -219,6 +252,9 @@ func (n Node) NamedChildren() []Node {
 }
 
 func (n Node) ChildByFieldName(name string) *Node {
+	if n.isNull() {
+		return nil
+	}
 	child := n.node.ChildByFieldName(name)
 	if child == nil {
 		return nil
@@ -230,6 +266,9 @@ func (n Node) ChildByFieldName(name string) *Node {
 // from a node up to an enclosing construct (e.g. a sizeof_expression) without
 // re-searching the whole tree.
 func (n Node) Parent() *Node {
+	if n.isNull() {
+		return nil
+	}
 	parent := n.node.Parent()
 	if parent == nil {
 		return nil
@@ -258,6 +297,9 @@ func (n Node) FindFirst(kind string) *Node {
 }
 
 func (n Node) TypeName() string {
+	if n.isNull() {
+		return ""
+	}
 	return n.node.Kind()
 }
 

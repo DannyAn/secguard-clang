@@ -37,6 +37,15 @@
   列名 + 「优先结构化工具、别裸查」），对账收敛为 `status --per-type` +
   `report --audit` 两次结构化调用。
 
+### 代码检视修正（GLM5.2 检视）
+
+- **planner**：Plan 结果构建的 `GetFileByID` N+1 点查询改为批量 `ListFiles` 一次
+  加载 FileID→path 映射——高候选类型从数百次 SQL 往返降为 1 次。
+- **parser**：`Node.Text()`/`StartLine()` 等访问器补齐 `isNull` 防御，null node
+  不再触发 C segfault（此前仅 `Kind()` 有守卫，脆弱契约）。
+- **db/status**：新增 `CountEventsByType`（`SELECT COUNT(*)`），`secguard status`
+  不再为取计数把整批 security_events 反序列化进内存。
+
 ## [0.5.4] - 2026-08-31
 
 ### 里程碑：判定提示（Hint）——把分类所需的流事实前移到 Go 后端

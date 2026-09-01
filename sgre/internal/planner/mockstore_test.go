@@ -279,6 +279,15 @@ func (s *mockStore) ListEventsByType(ctx context.Context, et string) ([]*db.Secu
 	}
 	return result, nil
 }
+func (s *mockStore) CountEventsByType(ctx context.Context, et string) (int, error) {
+	n := 0
+	for _, e := range s.events {
+		if e.EventType == et {
+			n++
+		}
+	}
+	return n, nil
+}
 func (s *mockStore) ListEventsByEntity(ctx context.Context, eid int64) ([]*db.SecurityEvent, error) {
 	return nil, nil
 }

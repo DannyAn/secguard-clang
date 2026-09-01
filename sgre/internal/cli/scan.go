@@ -613,20 +613,20 @@ func runStatusCmd(ctx context.Context, args []string) int {
 
 	allEvents := 0
 	for _, et := range planner.AllSeedEventTypes() {
-		events, err := store.ListEventsByType(ctx, et)
+		n, err := store.CountEventsByType(ctx, et)
 		if err != nil {
-			WriteErrorJSON(fmt.Sprintf("failed to list events: %v", err))
+			WriteErrorJSON(fmt.Sprintf("failed to count events: %v", err))
 			return 1
 		}
-		allEvents += len(events)
+		allEvents += n
 	}
 	for _, et := range []string{"NULL_VALUE", "NULL_GUARD", "MEMORY_RELEASE", "RESOURCE_RELEASE", "VALUE_INIT"} {
-		events, err := store.ListEventsByType(ctx, et)
+		n, err := store.CountEventsByType(ctx, et)
 		if err != nil {
-			WriteErrorJSON(fmt.Sprintf("failed to list events: %v", err))
+			WriteErrorJSON(fmt.Sprintf("failed to count events: %v", err))
 			return 1
 		}
-		allEvents += len(events)
+		allEvents += n
 	}
 
 	findings, err := store.ListFindings(ctx)

@@ -217,14 +217,19 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 	// batches if its step budget requires.
 	candidates = RankCandidates(ctx, candidates, p.store)
 
-	for _, c := range candidates {
-		fileName := ""
-		if c.FileID > 0 {
-			if file, err := p.store.GetFileByID(ctx, c.FileID); err == nil && file != nil {
-				fileName = file.Path
-			}
+	// Batch-load the files the candidates reference ONCE, instead of issuing a
+	// GetFileByID point query per candidate (an N+1 storm on high-volume types
+	// like null-deref). seedCandidatesByType already batches its function/
+	// location lookups; this closes the same gap on the file-path lookup.
+	filePathByID := map[int64]string{}
+	if files, ferr := p.store.ListFiles(ctx); ferr == nil {
+		for _, f := range files {
+			filePathByID[f.ID] = f.Path
 		}
-		result.Candidates = append(result.Candidates, newEvidenceItem(c, spec, fileName))
+	}
+
+	for _, c := range candidates {
+		result.Candidates = append(result.Candidates, newEvidenceItem(c, spec, filePathByID[c.FileID]))
 	}
 
 	return result, nil
