@@ -319,6 +319,14 @@ as `result.sarif`.)
    source files yourself — each subagent reads only its own types' candidates.
 5. **Collect + finalize**:
 
+   **DB schema 速查 (列名别猜 — 猜一个不存在的列如 `f.type` 会白费 1~2 轮 `secguard schema` 往返):**
+   Prefer structured tools over raw SQL — every count you need already has one:
+   - per-type candidate/written → `secguard status --per-type --scan-id <id>` (`candidate_count`/`written_count`/`terminal_state`, no SQL).
+   - per-type verdict split → `secguard report --audit --scan-id <id> --output-dir <dir>` returns an `audits` array (`vuln_type`/`confirmed`/`suspected`/`dismissed`/`auto_confirmed`). Sum that array for the report — do NOT raw-query `findings` to recompute it.
+   If you MUST raw-query, run `secguard schema <table>` first, or use these exact names — never guess:
+   - `findings`: `id, rule_id (CWE, e.g. CWE-476 — there is NO type/vuln_type column), severity, status (confirmed|suspected|dismissed|auto-confirmed), file_path (NOT file), line_number (NOT line), function_name, scan_id, review_status`
+   - `scan_stats`: `scan_id, vuln_type (kebab-case type name), seed_count, final_count`
+
    **上报解析与 DB 二次校验 (F5):** For each subagent result, parse by `format_version`
    to know which types it was ASSIGNED, but do NOT trust its self-reported `reason`
    — the LLM misreports (e.g. a Bash-permission misjudgment reported as

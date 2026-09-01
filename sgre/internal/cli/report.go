@@ -791,6 +791,12 @@ func runReportCmd(ctx context.Context, args []string) int {
 				"vuln_count":      len(audits),
 				"findings_synced": rec,
 				"status":          "ok",
+				// The orchestrator needs the per-type verdict breakdown to build
+				// its report and reconcile subagent counts. Without it here, it
+				// falls back to a raw `secguard db` query over findings and
+				// guesses a nonexistent column (type instead of rule_id), which
+				// costs a schema-discovery round-trip.
+				"audits": audits,
 			}
 			// Every converged candidate is supposed to receive a persisted
 			// verdict. A nonzero remainder means verdicts exist only in the
