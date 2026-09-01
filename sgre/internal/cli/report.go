@@ -438,10 +438,14 @@ func runReportCmd(ctx context.Context, args []string) int {
 			}
 
 			// 校验 status 只能是 AI 判定三态；非法值（如 pipeline 中间态 open）
-			// 立即拒绝整批，而非 partial 跳过导致静默丢失。
+			// 立即拒绝整批，而非 partial 跳过导致静默丢失。技能文件里把误报写成
+			// `false-positive`，这是 `dismissed` 的同义判定——归一化后落库，避免
+			// 子代理照抄技能原文导致整批被拒。
 			status := strings.ToLower(strings.TrimSpace(in.Status))
 			switch status {
-			case "confirmed", "suspected", "dismissed":
+			case "confirmed", "suspected":
+			case "dismissed", "false-positive", "false_positive", "false positive":
+				status = "dismissed"
 			default:
 				WriteErrorJSON(fmt.Sprintf("invalid status %q at %s:%d — expected confirmed|suspected|dismissed", in.Status, in.File, in.Line))
 				return 1

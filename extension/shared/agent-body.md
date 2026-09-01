@@ -158,8 +158,11 @@ budget your effort, not to pre-judge the answer:
   a bounds check, which would require an operand to reach SIZE_MAX). Triage these
   last and promote one only when you can show a reachable, realistic overflow.
 
-Your persisted classification (`confirmed`/`suspected`/`false-positive`) is what
-matters; `suspicion_level` only tells you how hard to look.
+Your persisted classification (`confirmed`/`suspected`/`dismissed`) is what
+matters; `suspicion_level` only tells you how hard to look. A skill's
+`false-positive` verdict IS `status: "dismissed"` — never write the literal
+string `false-positive` into the `status` field (it is not a valid status and
+rejects the whole batch).
 
 ## Write discipline
 
@@ -188,7 +191,8 @@ The `<type>.json` file MUST be a JSON array of objects with EXACTLY these keys
 ```
 
 `rule_id` is the CWE (e.g. CWE-476); `status` is one of `confirmed` / `suspected`
-/ `dismissed`; `file` is the source path, `line` the line number, `function` the
+/ `dismissed` — and ONLY those three (a skill's `false-positive` maps to
+`dismissed`). `file` is the source path, `line` the line number, `function` the
 function name. `reasoning`/`exception_check`/`fix_strategy` are optional strings
 (required for confirmed). Do NOT rename these keys or use a different envelope
 (e.g. no `{"findings": [...]}` wrapper) — the CLI reads a bare array with these

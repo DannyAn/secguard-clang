@@ -321,6 +321,11 @@ func TestReportCmd_WriteJsonFieldValidation(t *testing.T) {
 	} else if !bytes.Contains([]byte(stdout), []byte("invalid status")) {
 		t.Errorf("expected 'invalid status' error, got: %s", stdout)
 	}
+
+	// status=false-positive 应归一化为 dismissed（技能文件用 false-positive 表示误报）。
+	if code, stdout := run(`[{"rule_id":"CWE-476","severity":"high","confidence":55,"status":"false-positive","file":"x.c","line":1,"function":"f"}]`); code != 0 {
+		t.Errorf("status=false-positive should be accepted (normalized to dismissed), got exit %d; stdout=%s", code, stdout)
+	}
 }
 
 func TestFinding_ApplyStructuredFromProperties(t *testing.T) {
