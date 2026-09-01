@@ -18,14 +18,9 @@
         "glob": "allow",
         "external_directory": "allow",
         "skill": "allow",
-        "secguard_scan": "allow",
-        "secguard_index": "allow",
-        "secguard_plan": "allow",
         "secguard_report": "allow",
-        "secguard_status": "allow",
         "secguard_db": "allow",
-        "secguard_schema": "allow",
-        "secguard_types": "allow"
+        "secguard_schema": "allow"
       }
     }
   },

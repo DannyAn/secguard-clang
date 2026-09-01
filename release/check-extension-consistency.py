@@ -141,19 +141,30 @@ def _secguard_tool_names():
 def check_agent_permissions():
     secguard_tools = _secguard_tool_names()
 
-    # The fork must REGISTER the tools via its index.ts entry point (discovered
-    # through package.json's `main`) — the extensions/ loader does not
-    # auto-discover tools/*.ts. Same mechanism as opencode/index.ts server.tool.
+    # The fork loads plugins/secguard-context.ts (referenced by opencode.json
+    # `plugin: ["secguard-context"]`); its v1 `Hooks.tool` is where the 8
+    # secguard_* tools MUST be registered. The fork does NOT auto-discover
+    # tools/*.ts and does NOT load the v2 {id,server} index.ts default export
+    # (that's upstream OpenCode only). Keep index.ts registered too as the
+    # upstream-compatible entry point.
+    nga_plugin = read("opencode-nga/plugins/secguard-context.ts")
+    tool_block = re.search(r"tool:\s*\{([^}]*)\}", nga_plugin, re.S)
+    if not tool_block:
+        fail("opencode-nga/plugins/secguard-context.ts: missing `tool: { ... }` registration")
+    registered = set(re.findall(r"(secguard_\w+)", tool_block.group(1)))
+    if registered != secguard_tools:
+        fail(f"opencode-nga/plugins/secguard-context.ts tool hook: registered {sorted(registered)}, expected {sorted(secguard_tools)}")
+
     nga_pkg = json.loads(read("opencode-nga/package.json"))
     if nga_pkg.get("main") != "index.ts":
         fail(f"opencode-nga/package.json: main must be index.ts, got {nga_pkg.get('main')}")
     nga_index = read("opencode-nga/index.ts")
-    tool_block = re.search(r"tool:\s*\{([^}]*)\}", nga_index, re.S)
-    if not tool_block:
+    idx_block = re.search(r"tool:\s*\{([^}]*)\}", nga_index, re.S)
+    if not idx_block:
         fail("opencode-nga/index.ts: missing `tool: { ... }` registration")
-    registered = set(re.findall(r"(secguard_\w+)", tool_block.group(1)))
-    if registered != secguard_tools:
-        fail(f"opencode-nga/index.ts tool hook: registered {sorted(registered)}, expected {sorted(secguard_tools)}")
+    idx_registered = set(re.findall(r"(secguard_\w+)", idx_block.group(1)))
+    if idx_registered != secguard_tools:
+        fail(f"opencode-nga/index.ts tool hook: registered {sorted(idx_registered)}, expected {sorted(secguard_tools)}")
 
     # OpenCode / OpenCode-NGA subagent: no Bash, so it must be granted the
     # persistence MCP tools (secguard_report + db/schema).
