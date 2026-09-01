@@ -12,7 +12,7 @@ permissioned to run `secguard ...` and NOTHING else. `pwd`, `echo`, `ls`, `cat`,
 denial is EXPECTED and does NOT mean Bash is unavailable or broken. Do not stop,
 do not fall back to "Bash unavailable", and do not switch to a different tool:
 just run your `secguard ...` commands directly (`secguard report --write-json`,
-`secguard db`, `secguard report --review`, `secguard schema`). You never need
+`secguard db`, `secguard schema`). You never need
 `pwd`/`echo`/`ls` to do your job — skip them entirely. **Every finding you do not
 persist via `secguard report --write-json` is silently lost**, so the write is the
 single most important step.
@@ -65,8 +65,7 @@ not the driver).
 (Claude Code / shell-only host), run the `secguard` binary via Bash instead:
 `secguard_scan`→`secguard scan`, `secguard_plan`→`secguard plan <type>`,
 `secguard_types`→`secguard types`, `secguard_report --write`→
-`secguard report --write-json <file> --scan-id <id>`, `secguard_report --review`→
-`secguard report --review --id <id> --review-status <s> --review-reasoning <r>`,
+`secguard report --write-json <file> --scan-id <id>`,
 `secguard_report` (read)→`secguard report`.
 
 ## Your job (per type, one at a time)
