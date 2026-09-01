@@ -20,6 +20,17 @@ Two drift classes are checked:
        old fork's extension loader registering tools/*.ts, so the permission list
        and the tool files must never drift apart)
 
+3. Agent-level permissions — the *subagent's own* permission map/tools list is
+   what actually gates the security-auditor worker's ability to persist findings
+   (the OpenCode-NGA smoke failed precisely because the subagent map lacked
+   `secguard_report`, while the top-level permission looked fine):
+     - opencode/agents/security-auditor.md `permission:` block must allow all 8
+       `secguard_*` tools
+     - opencode-nga/opencode.json `agent.security-auditor.permission` must allow
+       all 8 `secguard_*` tools
+     - claude-code + claude-cac `tools:` must include `Bash(secguard *)` + `Write`
+       (the shell-only persistence surface); missing either = silent data loss
+
 Exits non-zero on any drift so the release build fails instead of shipping an
 inconsistent extension.
 """
@@ -109,9 +120,50 @@ def check_tools():
     print(f"  tools: {len(index_tools)} secguard_* tools consistent (index.ts == tools/*.ts == opencode-nga)")
 
 
+SHELL_TOOLS_REQUIRED = {"Bash(secguard *)", "Read", "Write", "Glob", "Grep", "Skill"}
+
+
+def check_agent_permissions():
+    idx = read("opencode/index.ts")
+    m = re.search(r"const SECGUARD_TOOLS = \[(.*?)\]", idx, re.S)
+    if not m:
+        fail("SECGUARD_TOOLS array not found in opencode/index.ts")
+    secguard_tools = set(re.findall(r'"([^"]+)"', m.group(1)))
+
+    oc_agent = read("opencode/agents/security-auditor.md")
+    oc_agent_tools = {mm.group(1) for mm in re.finditer(r"^\s*(secguard_\w+):\s*allow", oc_agent, re.M)}
+    if oc_agent_tools != secguard_tools:
+        fail(f"opencode agents/security-auditor.md: agent permission missing/denied {sorted(secguard_tools - oc_agent_tools)}")
+
+    try:
+        nga = json.loads(read("opencode-nga/opencode.json"))
+        nga_agent_perm = nga.get("agent", {}).get("security-auditor", {}).get("permission", {})
+    except json.JSONDecodeError as e:
+        fail(f"opencode-nga/opencode.json: {e}")
+    nga_agent_tools = {k for k, v in nga_agent_perm.items() if k.startswith("secguard_") and v == "allow"}
+    if nga_agent_tools != secguard_tools:
+        fail(f"opencode-nga agent.security-auditor.permission: missing/denied {sorted(secguard_tools - nga_agent_tools)}")
+
+    for name, rel in [
+        ("claude-code", "claude-code/.claude/agents/security-auditor.md"),
+        ("claude-cac", "claude-cac/.cac/agents/security-auditor.md"),
+    ]:
+        text = read(rel)
+        tm = re.search(r"^tools:\s*(.+)$", text, re.M)
+        if not tm:
+            fail(f"{name} agents/security-auditor.md: missing tools: field")
+        tools = {t.strip() for t in tm.group(1).split(",") if t.strip()}
+        missing = SHELL_TOOLS_REQUIRED - tools
+        if missing:
+            fail(f"{name} agents/security-auditor.md: tools missing {sorted(missing)}")
+
+    print("  agent permissions: 8 secguard_* tools (opencode + opencode-nga) + shell-only tools (claude-code + claude-cac)")
+
+
 def main():
     check_turn_budget()
     check_tools()
+    check_agent_permissions()
     print("Extension consistency check passed.")
 
 
