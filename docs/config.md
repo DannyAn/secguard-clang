@@ -53,6 +53,31 @@ names = [
 > 展开为「字段 + 指针偏移」的可信访问宏，无需手动配置；`names` 只是对
 > 定义不可见场景的补充。
 
+### `[iterator_macros.macros]` — 项目迭代器宏声明
+
+```toml
+[iterator_macros.macros]
+SAMPLE_Scan = [1]
+POOL_FOR = [1]
+LIST_FOR_EACH_SAFE = [0, 1]
+```
+
+声明**定义在扫描范围之外**的项目自定义迭代器宏。每个键是宏名，值是该宏
+**迭代器参数**的 0-based 下标列表——即在 `for` 初始化子句中被写入、且被循环
+条件判空的参数位置。声明后，SecGuard 会在调用点 kill 迭器实参的 null 源，
+从而抑制循环体内解引用的空指针误报。
+
+适用场景：第三方/内部 SDK 的链表/池遍历宏（如 `SAMPLE_Scan(list, iter, type)`
+写入 `iter`），其宏定义落在扫描范围之外，导致 SecGuard 无法通过宏定义自动
+识别迭代器写入模式。把宏名和迭代器参数下标列在这里即可。
+
+> 说明：
+> - 标准 Linux 内核遍历宏（`list_for_each_entry`、`list_for_each_entry_safe`
+>   等）已内建于知识库（`apikb.IteratorMacros`），**无需**在此重复声明。
+> - 宏定义在扫描范围内时（如项目自己的 `.h` 头文件），SecGuard 会跨文件
+>   自动收集宏写入摘要并 kill 迭代器 null 源，同样**无需**手动配置。
+> - 此配置仅用于定义在扫描树之外的 SDK 头文件中的项目自定义迭代器宏。
+
 ## 完整示例
 
 ```toml
@@ -62,6 +87,13 @@ names = [
 names = [
     "YOUR_ACCESSOR_MACRO",
 ]
+
+# 项目自定义迭代器宏（定义在扫描范围外的 SDK 头文件中）。
+# 值为迭代器参数的 0-based 下标。
+# 标准 list_for_each_entry 等已内建，无需在此声明。
+[iterator_macros.macros]
+# SAMPLE_Scan = [1]
+# POOL_FOR = [1]
 ```
 
 ## 与扩展的关系
