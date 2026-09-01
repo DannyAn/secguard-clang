@@ -25,6 +25,12 @@ func (d *NullGuardDetector) Name() string { return "null_guard" }
 func (d *NullGuardDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
+	// Null-check predicate helpers (is_empty/has_null/...) are collected across
+	// the whole scan tree before guard detection: a helper defined in a .h
+	// header is indexed as a Function in another file, so the per-file callback
+	// below could not see its body. The summary is consulted by detectHelperGuards.
+	helpers := d.collectNullCheckHelpers(ctx)
+
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		ifs := root.FindAll("if_statement")
 		whiles := root.FindAll("while_statement")
@@ -42,9 +48,96 @@ func (d *NullGuardDetector) Detect(ctx context.Context) (DetectResult, error) {
 			d.detectEarlyReturnGuards(ctx, f, file, ifs, assigns, &result)
 			d.detectReassignmentGuards(ctx, f, file, ifs, assigns, &result)
 			d.detectMacroGuards(ctx, f, file, calls, assigns, macroGuards, &result)
+			d.detectHelperGuards(ctx, f, file, ifs, assigns, helpers, &result)
 		}
 	})
 	return result, err
+}
+
+// detectHelperGuards handles the indirect null-check via a predicate helper:
+// `if (is_empty(p)) { goto/return/break/continue; }` where is_empty is a
+// function that returns true when its parameter is NULL. The fall-through path
+// therefore has p != NULL, so a later dereference of p is guarded. The helper
+// body may live in another file (a .h header), so the cross-file helper
+// summary is consulted instead of re-parsing the definition here.
+func (d *NullGuardDetector) detectHelperGuards(ctx context.Context, f *db.Function, file *db.File, ifs, assigns []parser.Node, helpers map[string][]int, result *DetectResult) {
+	for _, ifNode := range ifs {
+		if !funcLineRange(f, ifNode.StartLine()) {
+			continue
+		}
+		cons := ifNode.ChildByFieldName("consequence")
+		if cons == nil || !isExitBlock(*cons) {
+			continue
+		}
+		cond := ifNode.ChildByFieldName("condition")
+		if cond == nil {
+			continue
+		}
+		call := findHelperCallInCond(*cond, helpers)
+		if call == nil {
+			continue
+		}
+		idxs := helpers[extractCallName(*call)]
+		args := getCallArgs(*call)
+
+		for _, idx := range idxs {
+			if idx >= len(args) {
+				continue
+			}
+			varName := bareVarName(args[idx])
+			if varName == "" {
+				continue
+			}
+			if emitEvent(ctx, d.store, d.logger, "NULL_GUARD", f.ID, &db.Location{FileID: file.ID, Line: ifNode.StartLine()}, map[string]interface{}{
+				"variable":    varName,
+				"condition":   "HELPER_GUARD",
+				"scope_start": ifNode.EndLine() + 1,
+				"scope_end":   guardScopeEnd(assigns, f, varName, ifNode.EndLine()),
+			}) {
+				result.EventsCreated++
+			}
+		}
+	}
+}
+
+// isExitBlock reports whether an if-consequence exits the current scope on the
+// taken branch (return / goto / break / continue). Only such an exit makes the
+// fall-through path the non-null branch of a helper guard.
+func isExitBlock(cons parser.Node) bool {
+	switch cons.Kind() {
+	case "return_statement", "goto_statement", "break_statement", "continue_statement":
+		return true
+	}
+	for _, kind := range []string{"return_statement", "goto_statement", "break_statement", "continue_statement"} {
+		if len(cons.FindAll(kind)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// findHelperCallInCond returns the predicate-helper call at the top of a guard
+// condition (`if (is_empty(p))` / `if ((is_empty(p)))`), or nil. A negated
+// helper (`!is_empty(p)`) is deliberately NOT matched: its fall-through is the
+// NULL branch, so it does not establish non-null. Compound conditions
+// (`is_empty(p) && x`) are also excluded — only a bare helper call gives a
+// clean "helper true ⟹ param NULL" implication on the taken branch.
+func findHelperCallInCond(cond parser.Node, helpers map[string][]int) *parser.Node {
+	node := cond
+	for node.Kind() == "parenthesized_expression" {
+		children := node.NamedChildren()
+		if len(children) == 0 {
+			return nil
+		}
+		node = children[0]
+	}
+	if node.Kind() == "call_expression" {
+		if _, ok := helpers[extractCallName(node)]; ok {
+			n := node
+			return &n
+		}
+	}
+	return nil
 }
 
 func (d *NullGuardDetector) detectGuards(ctx context.Context, f *db.Function, file *db.File, ifs []parser.Node, result *DetectResult) {

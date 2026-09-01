@@ -383,6 +383,22 @@ func addOutputParamKills(stmt parser.Node, e *nodeEffects, derefArgs bool, macro
 			for name := range macros.WrittenArgs(call, macroWrites) {
 				e.kill[name] = true
 			}
+			// A built-in list-traversal macro (list_for_each_entry & friends,
+			// defined in an SDK header outside the scan tree) writes its iterator
+			// parameter(s) in the for-init and null-guards them in the condition.
+			// The per-file macro analysis above cannot see the definition, so the
+			// iterator arguments are killed from the inlined knowledge base.
+			if iterIdxs, ok := apikb.IteratorArgs(callName(call)); ok {
+				args := argList.NamedChildren()
+				for _, i := range iterIdxs {
+					if i >= len(args) {
+						continue
+					}
+					if name := rhsVarName(args[i]); name != "" {
+						e.kill[name] = true
+					}
+				}
+			}
 		}
 	}
 }

@@ -334,6 +334,38 @@ func DerefArgs(name string) ([]int, bool) {
 	return idxs, ok
 }
 
+// IteratorMacros are the Linux-kernel list-traversal macros (list_for_each_entry
+// & friends, defined in <linux/list.h>) whose iterator parameter(s) are written
+// in the for-init clause and null-guarded by the loop condition, so the iterator
+// is provably non-null on every path that reaches the loop body. Their definitions
+// live in an SDK/system header OUTSIDE the scan tree, so the per-file macro
+// analysis (macros.WriteSummaries) never sees them; the knowledge is inlined here
+// instead. The value is the set of 0-based parameter indices holding the iterator
+// (the *_safe forms carry an extra "next" cursor that is written the same way).
+var IteratorMacros = map[string][]int{
+	"list_for_each":                     {0},
+	"list_for_each_prev":                {0},
+	"list_for_each_safe":                {0, 1},
+	"list_for_each_prev_safe":           {0, 1},
+	"list_for_each_entry":               {0},
+	"list_for_each_entry_reverse":       {0},
+	"list_for_each_entry_continue":      {0},
+	"list_for_each_entry_from":          {0},
+	"list_for_each_entry_safe":          {0, 1},
+	"list_for_each_entry_safe_continue": {0, 1},
+	"list_for_each_entry_safe_from":     {0, 1},
+	"list_for_each_entry_safe_reverse":  {0, 1},
+	"hlist_for_each_entry":              {0},
+	"hlist_for_each_entry_safe":         {0, 1},
+}
+
+// IteratorArgs returns the iterator parameter indices of a known list-traversal
+// macro, or (nil, false) when name is not one.
+func IteratorArgs(name string) ([]int, bool) {
+	idxs, ok := IteratorMacros[name]
+	return idxs, ok
+}
+
 // NonZeroReturnFunctions are library functions whose integer return value is
 // provably non-zero on every success path, so a division whose divisor is a
 // direct call to one (`x / getpid()`) is safe without further analysis. The set
