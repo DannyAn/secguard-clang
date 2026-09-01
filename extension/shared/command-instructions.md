@@ -198,11 +198,14 @@ as `result.sarif`.)
 **长扫描超时策略 (F4):** Before calling `secguard_scan`, estimate scan duration. If the project has > 100 C files OR the scan is expected to exceed 120s (the default Bash timeout), the orchestrator SHALL either (a) invoke the scan with an explicit timeout ≥ 600s, or (b) use the host's background-task + Monitor mechanism from the start. When a scan is moved to the background, the orchestrator SHALL switch to Monitor within 1 turn — it SHALL NOT use `sleep N; tail` (blocked by Bash safety policy) and SHALL NOT leave a backgrounded scan unmonitored. While the Monitor is pending, the orchestrator SHALL NOT issue parallel Bash commands (the host may buffer their results until the Monitor completes, wasting the parallel window); any preparation (type list, agent-definition read) MUST complete before the Monitor starts.
 
 1. **Scan**: call the `secguard_scan` tool with the target path. It returns a
-   summary (`scan_id`, `output_dir`, `candidates_by_type`, `total_candidates`).
-   Record `scan_id` and `output_dir` — you will need both in every write. If the
-   summary has `report_error`, stop and surface it. `secguard_scan` already ran
-   the convergence for EVERY type and wrote `report.md` + `candidates/` — do NOT
-   re-run `secguard_plan` or `secguard_index` afterward.
+   summary (`scan_id`, `output_dir`, `candidates_by_type`, `total_candidates`,
+   and `index_summary` with `files_indexed` / `functions_indexed`). Record
+   `scan_id`, `output_dir`, and the codebase scale (`files_indexed` files /
+   `functions_indexed` functions) — surface the scale in your next message and in
+   the final 报告头. If the summary has `report_error`, stop and surface it.
+   `secguard_scan` already ran the convergence for EVERY type and wrote
+   `report.md` + `candidates/` — do NOT re-run `secguard_plan` or
+   `secguard_index` afterward.
 2. **Scale gate — pick ONE path and stay on it.** Parallelism is NOT free: every
    subagent re-pays a fresh prompt + skill reloads, so it is a NET LOSS on small
    codebases. Decide by `total_candidates` from the scan summary (this count now
@@ -392,7 +395,7 @@ Selected types: <parsed type filter>
 
 Report the diagnostic conclusion in Chinese, Markdown tables only:
 
-1. 报告头: `代码仓：<repo abs path>；扫描目录：<scanned dir abs path>`
+1. 报告头: `代码仓：<repo abs path>；扫描目录：<scanned dir abs path>；规模：<N> 文件 / <M> 函数`
 2. 摘要: `本次审计确认 X 个问题、疑似 Y 个问题。` (X/Y = confirmed/suspected verdicts, NOT candidate counts)
 3. 总览表: `| Skill | 类别 | 确认 | 疑似 | 已排除误报 |`
 4. 问题表: `| Skill | 文件:行号 | 函数 | 严重度 | 结论 | 说明 |` (confirmed + suspected)

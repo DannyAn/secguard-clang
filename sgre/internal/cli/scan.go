@@ -511,7 +511,8 @@ func newScanLogger(scanDir string) (*log.Logger, io.Closer) {
 		fmt.Fprintf(os.Stderr, "warning: cannot create scan log file: %v\n", err)
 		return log.Default(), nopCloser{}
 	}
-	logger, closer := log.NewMultiWriter(os.Stderr, f, log.LevelInfo)
+	// 全量 INFO 只进 scan.log（避免刷屏污染 agent 上下文）；WARN/ERROR 仍回显 stderr。
+	logger, closer := log.NewSplit(os.Stderr, f, log.LevelWarn, log.LevelInfo)
 	return logger, closer
 }
 
