@@ -27,6 +27,12 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 	result := DetectResult{}
 
 	summaries := buildFuncSummaries(ctx, d.store, d.parser, d.logger)
+	// Macro write-summaries are collected across the whole scan tree: a macro
+	// defined in a .h header (POOL_FOR, LIST_FOR_EACH, ...) and called in a .c
+	// source is invisible to the per-file WriteSummaries of the source file, so
+	// a macro-initialized iterator would be misreported as uninitialized. The
+	// parser cache makes the second pass cheap.
+	macroWrites := d.collectMacroWrites(ctx)
 
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		// The three sub-detectors plus BuildCFG used to issue ~21 whole-tree
@@ -47,7 +53,6 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 		fors := root.FindAll("for_statement")
 		funcDefs := root.FindAll("function_definition")
 		bodies := functionBodyMap(funcDefs)
-		macroWrites := macros.WriteSummaries(root)
 
 		for _, f := range funcs {
 			d.detectStackUninit(ctx, f, file, decls, assigns, calls, returns, inits, ifs, whiles, fors, bodies, summaries, macroWrites, &result)
@@ -56,6 +61,17 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 		}
 	})
 	return result, err
+}
+
+// collectMacroWrites merges the per-file macro write-summaries across the whole
+// scan tree so a macro defined in one file (a .h header) is visible at call
+// sites in every other file.
+func (d *UninitVariableDetector) collectMacroWrites(ctx context.Context) map[string]macros.WriteSummary {
+	var perFile []map[string]macros.WriteSummary
+	_ = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		perFile = append(perFile, macros.WriteSummaries(root))
+	})
+	return macros.MergeWriteSummaries(perFile...)
 }
 
 func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, decls, assigns, calls, returns, inits, ifs, whiles, fors []parser.Node, bodies map[int]parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, result *DetectResult) {

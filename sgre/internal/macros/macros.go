@@ -90,6 +90,34 @@ func WrittenArgs(call parser.Node, summaries map[string]WriteSummary) map[string
 	return out
 }
 
+// MergeWriteSummaries combines per-file write-summary maps into one. A macro
+// defined in one file (typically a .h header) and called in another (.c source)
+// is invisible to the per-file WriteSummaries of the source file; merging across
+// the whole scan tree makes the macro's written-argument signature available at
+// every call site. When the same macro name is defined in multiple files, the
+// written parameter positions are unioned (a macro is an output at a position if
+// ANY of its definitions writes that position).
+func MergeWriteSummaries(maps ...map[string]WriteSummary) map[string]WriteSummary {
+	out := make(map[string]WriteSummary)
+	for _, m := range maps {
+		for name, s := range m {
+			if existing, ok := out[name]; ok {
+				for i := range s.writesParam {
+					existing.writesParam[i] = true
+				}
+				out[name] = existing
+				continue
+			}
+			cp := WriteSummary{writesParam: make(map[int]bool, len(s.writesParam))}
+			for i := range s.writesParam {
+				cp.writesParam[i] = true
+			}
+			out[name] = cp
+		}
+	}
+	return out
+}
+
 // callName returns the callee identifier of a call_expression node.
 func callName(node parser.Node) string {
 	for _, child := range node.NamedChildren() {
