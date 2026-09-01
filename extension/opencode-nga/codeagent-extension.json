@@ -2,7 +2,7 @@
   "name": "secguard-clang",
   "displayName": "SecGuard",
   "description": "AI-augmented C program security analysis platform with 4-level convergence pipeline",
-  "version": "0.5.2",
+  "version": "0.5.5",
   "author": "An Gang",
   "license": "Apache-2.0",
   "keywords": [

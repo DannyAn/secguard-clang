@@ -2,6 +2,41 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.5.5] - 2026-09-01
+
+### 主题：消除误报 + 扫描会话性能
+
+本版主线两条：把 null-deref / uninit 的最后几类系统性误报（跨文件宏、遍历宏、
+判空谓词函数）消掉；再把 orchestrator 对账阶段多出来的 schema 发现 / 裸 SQL
+往返消掉，让一次完整扫描会话更快收敛。
+
+### 误报消减（null-deref / uninit）
+
+- **null-deref**：list 遍历宏（`list_for_each_entry` 及 `_safe` 变体，定义在
+  `<linux/list.h>` 等扫描树外头文件）——迭代器在 for-init 写入、循环条件判空，
+  循环体内必非空，不再误报；apikb 内建 `IteratorMacros` 知识表，命中宏时 kill
+  迭代器实参的 null 源。
+- **null-deref**：判空谓词函数（`is_empty(p)` 一类，返回 true ⟹ 参数为 NULL）——
+  `if (is_empty(p)) goto/return;` 的 fall-through 分支 p 必非空，不再误报；跨文件
+  收集谓词函数（.h inline 与子函数统一处理），结构化排除 field 比较
+  （`param->f == NULL`）与取反（`!helper`）。
+- **null-deref**：跨文件共享宏写入摘要——定义在 .h 头文件的宏（`SAMPLE_Scan` 等）
+  现在在每处 .c 调用点可见，宏写入的迭代器 / 输出参数不再被判为可能为空。
+- **uninit**：宏定义在 .h 头文件时跨文件共享宏写入摘要——`POOL_FOR` 类池宏写入的
+  变量不再误报「读取未初始化值」。
+- 新增 `secguard.toml [iterator_macros]` 项目迭代器宏声明（`docs/config.md` 记录
+  用法），扫描树外的项目私有遍历宏也走同一套判空逻辑。
+
+### 扫描会话性能（消除对账 / schema 冗余往返）
+
+- `report --audit --output-dir` 现在返回 `audits`（每类型 confirmed / suspected /
+  dismissed / auto-confirmed 分解），orchestrator 直接从结构化结果取 verdict 计数，
+  不再为出报告 / 对账去裸 SQL 查 findings——消除「猜错列名（`f.type`）→ exit 1 →
+  `secguard schema` → 重查」的冗余往返。
+- orchestrator Collect+finalize 内嵌 DB schema 速查（`findings` / `scan_stats` 精确
+  列名 + 「优先结构化工具、别裸查」），对账收敛为 `status --per-type` +
+  `report --audit` 两次结构化调用。
+
 ## [0.5.4] - 2026-08-31
 
 ### 里程碑：判定提示（Hint）——把分类所需的流事实前移到 Go 后端
