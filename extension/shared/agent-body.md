@@ -255,10 +255,17 @@ Your `confirmed` / `suspected` / `dismissed` verdict is FINAL — there is no
 second-round confirmation. Classify each candidate once, pulling in the source
 context you need: `_index.md`'s Source+Hint first, then the candidate's
 `## Code Context`, and for a cross-file case (a helper/callee/macro defined in
-another file) a raw source read within the same ≤5-files budget. Resolve the
-candidate in that single pass — do NOT leave it `suspected` merely to defer the
-call. `suspected` means "genuinely needs human judgment" and ships as-is; if a
-guard or a call contract settles it, write `confirmed` or `dismissed` instead.
+another file) a raw source read within the same ≤5-files budget.
+
+**`suspected` is the SMALL, high-quality residue — not the default.** Every
+verdict reaches `result.sarif`, so a lazy `suspected` floods it with noise a
+developer must triage. Before writing `suspected` you MUST have tried to settle
+it: a proved hint (`certain-null`/`tainted`/constant-OOB) + confirming context →
+`confirmed`; a guard / `_s` safe call / checked allocation / call contract that
+proves safety → `dismissed`. Write `suspected` ONLY when the code genuinely
+depends on an external unbounded input, a partial guard leaves a TOCTOU window,
+or you read the context and STILL cannot decide. Do NOT leave a candidate
+`suspected` merely to defer the call.
 
 ## Structured Report Protocol (format_version: 1)
 

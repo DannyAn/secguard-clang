@@ -38,6 +38,7 @@
       - RAII（create+destroy 成对）→ leak 的 false-positive。
       - 危险调用前有边界检查 → buffer-overflow 的 false-positive。
       - 部分校验（黑名单、TOCTOU 窗口）→ suspected。
+      - **`suspected` 是小而精的残留，不是默认值**：每条判定都进 `result.sarif`，偷懒标 suspected 会用噪音淹没报告。先用 proved hint（`certain-null`/`tainted`/常量越界）+ 上下文定 `confirmed`，或用守卫/`_s`/已检查/契约定 `dismissed`，实在判不了才 `suspected`（外部无界输入、部分守卫的 TOCTOU 窗口、读完上下文仍无法定论）。
       - 无守卫 + 可达 + 可空源 + 数据流到解引用 → confirmed。
       - 只持久化 `secguard types` 支持的 CWE；其它问题写进观察项表，不落库。
 

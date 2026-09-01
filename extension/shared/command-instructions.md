@@ -122,6 +122,12 @@ hardcode names or counts.
 - Bounds check before an unsafe call → false-positive for buffer-overflow.
 - Partial validation (blacklist only, TOCTOU window) → suspected.
 - No guard + reachable + nullable source + data flow to deref → confirmed.
+- **`suspected` is the SMALL residue, not the default.** Every verdict reaches
+  `result.sarif`, so a lazy `suspected` floods it with noise. Resolve it to
+  `confirmed` (proved hint + confirming context) or `dismissed` (guard / `_s` /
+  checked / contract) before falling back to `suspected`; `suspected` is ONLY for
+  external unbounded input, a partial guard's TOCTOU window, or a genuinely
+  undecidable case after reading the context.
 - Persist ONLY pipeline-supported types (from `secguard types`); anything else
   goes in the observations table, never through `secguard_report`.
 
