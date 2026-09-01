@@ -55,6 +55,16 @@ type flowAnalyzer struct {
 	// parameters). They are seeded into IN[entry] so a parameter's taint flows
 	// into locals derived from it — the inter-procedural context of the callee.
 	entrySeeds map[string]bool
+	// macroWrites is the whole-tree merged macro write-summary cache. When set,
+	// it replaces the per-file WriteSummaries in macroWritesFor so a macro
+	// defined in a .h header (SAMPLE_Scan, POOL_FOR, ...) is visible at call
+	// sites in every .c source. nil falls back to per-file analysis.
+	macroWrites map[string]macros.WriteSummary
+	// iterMacros is the merged iterator-macro lookup (built-in apikb table +
+	// config-declared project macros) whose iterator parameter(s) are written
+	// in the for-init and null-guarded by the loop condition. nil falls back to
+	// apikb.IteratorArgs alone.
+	iterMacros map[string][]int
 }
 
 func newFlowAnalyzer(store db.Store, p *parser.Parser) *flowAnalyzer {
@@ -212,7 +222,7 @@ func (a *flowAnalyzer) analyzeFlow(ctx context.Context, fn *db.Function, body pa
 	}
 
 	cfg := graph.BuildStmtCFG(body, fn.EndLine)
-	effects := a.buildEffects(cfg, genByLine, killByLine, a.dfgCopies[fn.ID], nonNullKills, definiteKills, macroWritesFor(fileRoot, nonNullKills))
+	effects := a.buildEffects(cfg, genByLine, killByLine, a.dfgCopies[fn.ID], nonNullKills, definiteKills, a.macroWritesFor(fileRoot, nonNullKills))
 	nodeIn := runDataflow(cfg, effects, a.entrySeeds)
 	return &flowResult{cfg: cfg, nodeIn: nodeIn, genAt: genAt(cfg, effects)}
 }
@@ -227,7 +237,7 @@ func (a *flowAnalyzer) analyzeFlowMust(ctx context.Context, fn *db.Function, bod
 	}
 
 	cfg := graph.BuildStmtCFG(body, fn.EndLine)
-	effects := a.buildEffects(cfg, genByLine, killByLine, a.dfgCopies[fn.ID], nonNullKills, definiteKills, macroWritesFor(fileRoot, nonNullKills))
+	effects := a.buildEffects(cfg, genByLine, killByLine, a.dfgCopies[fn.ID], nonNullKills, definiteKills, a.macroWritesFor(fileRoot, nonNullKills))
 	res := &flowResult{cfg: cfg, nodeIn: runDataflow(cfg, effects, a.entrySeeds), genAt: genAt(cfg, effects)}
 	res.must, res.mustGenAt = runMustDataflow(cfg, effects)
 	return res
@@ -265,7 +275,7 @@ func (a *flowAnalyzer) analyzeDefiniteNull(cfg *graph.StmtCFG) (map[int]map[stri
 				e.kill[name] = true
 			}
 		}
-		addOutputParamKills(n.Stmt, e, true, nil)
+		addOutputParamKills(n.Stmt, e, true, nil, a.iterMacros)
 		effects[n.ID] = e
 	}
 	return runMustDataflow(cfg, effects)
@@ -335,7 +345,7 @@ func (a *flowAnalyzer) collectNodeEffects(n *graph.StmtNode, genByLine, killByLi
 	// addOutputParamKills) is null-deref specific, so it is gated on
 	// nonNullKills: the taint source filter reuses this engine with
 	// nonNullKills=false and must not lose copy taint through memcpy/strcpy.
-	addOutputParamKills(n.Stmt, e, nonNullKills, macroWrites)
+	addOutputParamKills(n.Stmt, e, nonNullKills, macroWrites, a.iterMacros)
 
 	return e
 }
@@ -351,7 +361,7 @@ func (a *flowAnalyzer) collectNodeEffects(n *graph.StmtNode, genByLine, killByLi
 //     otherwise have faulted. This half is gated on derefArgs because it is a
 //     null-deref notion: the taint source filter shares this engine and its
 //     memcpy/strcpy copy taint must survive (a copy is not a taint kill).
-func addOutputParamKills(stmt parser.Node, e *nodeEffects, derefArgs bool, macroWrites map[string]macros.WriteSummary) {
+func addOutputParamKills(stmt parser.Node, e *nodeEffects, derefArgs bool, macroWrites map[string]macros.WriteSummary, iterMacros map[string][]int) {
 	for _, call := range stmt.FindAll("call_expression") {
 		children := call.NamedChildren()
 		if len(children) < 2 {
@@ -383,12 +393,15 @@ func addOutputParamKills(stmt parser.Node, e *nodeEffects, derefArgs bool, macro
 			for name := range macros.WrittenArgs(call, macroWrites) {
 				e.kill[name] = true
 			}
-			// A built-in list-traversal macro (list_for_each_entry & friends,
-			// defined in an SDK header outside the scan tree) writes its iterator
-			// parameter(s) in the for-init and null-guards them in the condition.
-			// The per-file macro analysis above cannot see the definition, so the
-			// iterator arguments are killed from the inlined knowledge base.
-			if iterIdxs, ok := apikb.IteratorArgs(callName(call)); ok {
+			// A list-traversal macro (list_for_each_entry & friends from the
+			// built-in apikb table, or a project-specific iterator macro
+			// declared in secguard.toml [iterator_macros]) writes its iterator
+			// parameter(s) in the for-init and null-guards them in the
+			// condition. When the macro definition is outside the scan tree
+			// (SDK header) the per-file macro analysis cannot see it, so the
+			// iterator arguments are killed from the inlined knowledge base
+			// merged with the config-declared set.
+			if iterIdxs, ok := iterMacros[callName(call)]; ok {
 				args := argList.NamedChildren()
 				for _, i := range iterIdxs {
 					if i >= len(args) {
@@ -406,10 +419,15 @@ func addOutputParamKills(stmt parser.Node, e *nodeEffects, derefArgs bool, macro
 // macroWritesFor returns the per-macro write summaries for a file root, or nil
 // when the analysis tier does not need macro-write kills (non-null kills are
 // null-deref specific; taint and freed-state flows pass nonNullKills=false and
-// must not pay the whole-tree walk).
-func macroWritesFor(root parser.Node, nonNullKills bool) map[string]macros.WriteSummary {
+// must not pay the whole-tree walk). When the analyzer carries a whole-tree
+// merged cache (a.macroWrites), it is used instead of the per-file root so a
+// macro defined in a .h header is visible at call sites in every .c source.
+func (a *flowAnalyzer) macroWritesFor(root parser.Node, nonNullKills bool) map[string]macros.WriteSummary {
 	if !nonNullKills {
 		return nil
+	}
+	if a.macroWrites != nil {
+		return a.macroWrites
 	}
 	return macros.WriteSummaries(root)
 }
@@ -1161,6 +1179,19 @@ func (fc *fileParseCache) get(file *db.File, fn *db.Function) (parser.Node, pars
 		bodies = m
 	}
 	return bodies[fn.StartLine], fc.roots[file.ID]
+}
+
+// rootForFile returns the parsed file root, parsing at most once. It is the
+// file-level analogue of get, for callers that need the whole tree (e.g. to
+// collect macro definitions) without a specific function.
+func (fc *fileParseCache) rootForFile(file *db.File) parser.Node {
+	if root, ok := fc.roots[file.ID]; ok {
+		return root
+	}
+	root, m := functionBodiesForFile(fc.parser, file)
+	fc.roots[file.ID] = root
+	fc.bodies[file.ID] = m
+	return root
 }
 
 // functionBodiesForFile parses file and returns its root plus a map from each

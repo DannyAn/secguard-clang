@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/DannyAn/secguard-clang/internal/apikb"
+	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
+	"github.com/DannyAn/secguard-clang/internal/macros"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
@@ -127,6 +130,8 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 	}
 
 	cache := newFileParseCache(f.parser)
+	analyzer.macroWrites = collectMacroWrites(cache, fileByID)
+	analyzer.iterMacros = mergedIterMacros()
 
 	// Pre-scan: parse each candidate function's body and collect the callees
 	// assigned to a variable (`p = f()`). retNullable is ONLY consumed by
@@ -314,6 +319,8 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 	}
 	analyzer := newFlowAnalyzer(f.store, f.parser)
 	analyzer.dfgCopies = analyzer.loadDFGCopies(ctx, allIDs)
+	analyzer.macroWrites = collectMacroWrites(cache, fileByID)
+	analyzer.iterMacros = mergedIterMacros()
 
 	for {
 		changed := false
@@ -352,4 +359,38 @@ func nullSourcesFor(m map[int64]*nullModel, fid int64) []nullSource {
 		return nil
 	}
 	return m[fid].sources
+}
+
+// collectMacroWrites merges per-file macro write-summaries across the whole scan
+// tree so a macro defined in a .h header (SAMPLE_Scan, POOL_FOR, ...) is visible
+// at call sites in every .c source. The per-file WriteSummaries of the source
+// file cannot see the header's definition, so a macro-initialized iterator
+// would be misreported as null-deref. The parse cache makes this cheap.
+func collectMacroWrites(cache *fileParseCache, fileByID map[int64]*db.File) map[string]macros.WriteSummary {
+	var perFile []map[string]macros.WriteSummary
+	for _, file := range fileByID {
+		root := cache.rootForFile(file)
+		if root.Kind() == "" {
+			continue
+		}
+		perFile = append(perFile, macros.WriteSummaries(root))
+	}
+	return macros.MergeWriteSummaries(perFile...)
+}
+
+// mergedIterMacros combines the built-in iterator-macro knowledge base
+// (apikb.IteratorMacros, covering standard list_for_each_entry & friends) with
+// project-specific iterator macros declared in secguard.toml [iterator_macros].
+// The merged map is what addOutputParamKills consults to kill the iterator
+// argument's null source at a call site whose macro definition is outside the
+// scan tree.
+func mergedIterMacros() map[string][]int {
+	out := make(map[string][]int, len(apikb.IteratorMacros))
+	for k, v := range apikb.IteratorMacros {
+		out[k] = v
+	}
+	for k, v := range config.Load().IteratorMacroArgs() {
+		out[k] = v
+	}
+	return out
 }

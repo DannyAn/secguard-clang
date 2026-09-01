@@ -44,10 +44,10 @@ func (d *NullGuardDetector) collectNullCheckHelpers(ctx context.Context) map[str
 			for i := range seen {
 				checked = append(checked, i)
 			}
-		if len(checked) > 0 {
-			out[f.Name] = checked
+			if len(checked) > 0 {
+				out[f.Name] = checked
+			}
 		}
-	}
 	})
 	return out
 }

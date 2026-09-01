@@ -29,10 +29,11 @@ func runConfigCmd(args []string) int {
 		}
 	}
 	out := map[string]interface{}{
-		"path":           path,
-		"loaded":         loaded,
-		"trusted_macros": cfg.TrustedMacroNames(),
-		"note":           "run 'secguard config --help' for the full reference, 'secguard config --example' for a copy-paste template",
+		"path":            path,
+		"loaded":          loaded,
+		"trusted_macros":  cfg.TrustedMacroNames(),
+		"iterator_macros": cfg.IteratorMacroArgs(),
+		"note":            "run 'secguard config --help' for the full reference, 'secguard config --example' for a copy-paste template",
 	}
 	_ = WriteJSON(out)
 	return 0

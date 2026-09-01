@@ -18,7 +18,7 @@ func TestConfigCmd_HelpSelfDescribes(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("config --help: exit %d", code)
 	}
-	for _, marker := range []string{"trusted_macros", "trusted-macro", ".codeagent/secguard.toml", "secguard config --example"} {
+	for _, marker := range []string{"trusted_macros", "iterator_macros", "trusted-macro", ".codeagent/secguard.toml", "secguard config --example"} {
 		if !strings.Contains(stdout, marker) {
 			t.Errorf("config --help: missing marker %q, got:\n%s", marker, stdout)
 		}
@@ -38,6 +38,9 @@ func TestConfigCmd_ExampleIsCopyPaste(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "names") {
 		t.Errorf("config --example: missing names, got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "[iterator_macros.macros]") {
+		t.Errorf("config --example: missing [iterator_macros.macros], got:\n%s", stdout)
 	}
 }
 

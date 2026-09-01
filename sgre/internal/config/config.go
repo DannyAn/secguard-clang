@@ -15,7 +15,8 @@ import (
 // Config is the secguard.toml structure. Fields are additive and optional; a
 // missing file yields the zero Config with no error.
 type Config struct {
-	TrustedMacros TrustedMacros `toml:"trusted_macros"`
+	TrustedMacros  TrustedMacros  `toml:"trusted_macros"`
+	IteratorMacros IteratorMacros `toml:"iterator_macros"`
 }
 
 type TrustedMacros struct {
@@ -24,6 +25,21 @@ type TrustedMacros struct {
 	// allocation/lookup result. Callers dereference the result without a null
 	// check by contract, so these names never seed a null source.
 	Names []string `toml:"names"`
+}
+
+// IteratorMacros declares project-specific iterator macros whose definitions
+// live outside the scan tree (e.g. an SDK header). Each entry maps a macro name
+// to the 0-based indices of its iterator parameter(s) — the parameter(s)
+// written in the for-init clause and null-guarded by the loop condition, so the
+// iterator is provably non-null on every path reaching the loop body.
+//
+// Example: SAMPLE_Scan(list, iter, type) writes `iter` (index 1):
+//
+//	[iterator_macros.macros]
+//	SAMPLE_Scan = [1]
+type IteratorMacros struct {
+	// Macros maps macro name to the 0-based indices of its iterator parameter(s).
+	Macros map[string][]int `toml:"macros"`
 }
 
 // explicitPath is set by the CLI layer from the --config flag. It takes
@@ -72,6 +88,16 @@ func (c *Config) TrustedMacroNames() []string {
 		return nil
 	}
 	return c.TrustedMacros.Names
+}
+
+// IteratorMacroArgs returns the configured iterator-macro map (macro name →
+// 0-based iterator parameter indices). It merges with the built-in
+// apikb.IteratorMacros table at planner startup.
+func (c *Config) IteratorMacroArgs() map[string][]int {
+	if c == nil {
+		return nil
+	}
+	return c.IteratorMacros.Macros
 }
 
 // ResolvedPath returns the config file path Load() would read, in the same

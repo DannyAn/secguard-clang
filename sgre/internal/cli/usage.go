@@ -198,7 +198,8 @@ Flags:
 
 What it is:
   secguard.toml is an OPTIONAL configuration file. Most users need nothing in
-  it. It exists today for exactly one option: the trusted-macro allowlist.
+  it. It exists today for two options: the trusted-macro allowlist and the
+  iterator-macro declaration.
 
   Config file locations, in priority order (first existing wins):
     1. --config <path>                     explicit flag
@@ -217,6 +218,18 @@ What it is:
     macro's DEFINITION is outside the scan tree (e.g. an SDK header), where the
     automatic macro-pattern recognition cannot see it.
 
+  [iterator_macros.macros] — project iterator macros
+    MACRO_NAME = [index, ...]
+    A function-like macro that writes its iterator parameter(s) in the for-init
+    clause and null-guards them in the loop condition (so the iterator is
+    provably non-null inside the loop body), whose DEFINITION is outside the
+    scan tree. Each value is the 0-based index of an iterator parameter.
+    Example: SAMPLE_Scan(list, iter, type) writes 'iter' (index 1):
+      [iterator_macros.macros]
+      SAMPLE_Scan = [1]
+    Standard Linux list-traversal macros (list_for_each_entry & friends) are
+    built-in and do NOT need to be declared here.
+
 Examples:
   secguard config
   secguard config --example`)
@@ -230,7 +243,15 @@ func printConfigExample() {
 [trusted_macros]
 names = [
     # "YOUR_ACCESSOR_MACRO",
-]`)
+]
+
+# Project-specific iterator macros whose definitions are outside the scan tree
+# (e.g. in an SDK header). Each value is the 0-based index of an iterator
+# parameter written by the macro's for-init and null-guarded by the loop.
+# Standard list_for_each_entry & friends are built-in; do NOT repeat them here.
+[iterator_macros.macros]
+# SAMPLE_Scan = [1]
+# POOL_FOR = [1]`)
 }
 
 // subcommandUsage maps a subcommand name to its usage printer. Execute uses this
