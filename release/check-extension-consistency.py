@@ -20,16 +20,16 @@ Two drift classes are checked:
        old fork's extension loader registering tools/*.ts, so the permission list
        and the tool files must never drift apart)
 
-3. Subagent persistence surface — the security-auditor worker is a Bash-driver:
-   it persists via `secguard report --write-json` (Bash), NOT via the `secguard_*`
-   MCP tools. Those tools are orchestrator-only (granted at the top-level
-   `permission` / index.ts config hook). Granting `secguard_*` to the subagent's
-   own permission map breaks the OpenCode-NGA fork's config load — the v0.5.4
-   regression. Guarded:
-     - opencode/agents/security-auditor.md `permission.bash["secguard*"]` = allow
-       and NO `secguard_*` key at the agent permission level
-     - opencode-nga/opencode.json `agent.security-auditor.permission.bash["secguard*"]`
-       = allow and NO `secguard_*` key there
+3. Subagent persistence — the security-auditor worker has NO Bash on OpenCode-NGA,
+   so it persists via the `secguard_report` MCP tool (granted `secguard_report` +
+   `secguard_db` + `secguard_schema`). And the fork's plugin
+   (opencode-nga/plugins/secguard-context.ts) must register the 8 `secguard_*`
+   tools via its `tool` hook (the SDK's `Hooks.tool`); without that the fork's
+   extensions/ loader never exposes the tools — the v0.5.4 "no secguard_* tools"
+   smoke failure. Guarded:
+     - opencode-nga/plugins/secguard-context.ts `tool: { ... }` registers all 8 tools
+     - opencode/agents/security-auditor.md + opencode-nga agent permission allow
+       `secguard_report`/`secguard_db`/`secguard_schema`
      - claude-code + claude-cac `tools:` must include `Bash(secguard *)` + `Write`
        (the shell-only persistence surface); missing either = silent data loss
 
@@ -124,32 +124,47 @@ def check_tools():
 
 SHELL_TOOLS_REQUIRED = {"Bash(secguard *)", "Read", "Write", "Glob", "Grep", "Skill"}
 
+# The subagent persists via MCP on OpenCode hosts (no Bash there); these are the
+# tools the agent-body.md write/review/id-lookup flow actually calls.
+SUBAGENT_PERSIST_TOOLS = {"secguard_report", "secguard_db", "secguard_schema"}
+
+
+def _secguard_tool_names():
+    idx = read("opencode/index.ts")
+    m = re.search(r"const SECGUARD_TOOLS = \[(.*?)\]", idx, re.S)
+    if not m:
+        fail("SECGUARD_TOOLS array not found in opencode/index.ts")
+    return set(re.findall(r'"([^"]+)"', m.group(1)))
+
 
 def check_agent_permissions():
-    # The secguard_* MCP tools are orchestrator-only (top-level permission /
-    # index.ts config hook). The subagent persists via Bash. Granting secguard_*
-    # to the subagent's own map breaks the OpenCode-NGA fork's config load.
+    secguard_tools = _secguard_tool_names()
 
+    # The fork's plugin must REGISTER the tools via its `tool` hook — the
+    # extensions/ loader does not auto-discover tools/*.ts.
+    nga_plugin = read("opencode-nga/plugins/secguard-context.ts")
+    tool_block = re.search(r"tool:\s*\{([^}]*)\}", nga_plugin, re.S)
+    if not tool_block:
+        fail("opencode-nga/plugins/secguard-context.ts: missing `tool: { ... }` registration")
+    registered = set(re.findall(r"(secguard_\w+)", tool_block.group(1)))
+    if registered != secguard_tools:
+        fail(f"opencode-nga/plugins/secguard-context.ts tool hook: registered {sorted(registered)}, expected {sorted(secguard_tools)}")
+
+    # OpenCode / OpenCode-NGA subagent: no Bash, so it must be granted the
+    # persistence MCP tools (secguard_report + db/schema).
     oc_agent = read("opencode/agents/security-auditor.md")
-    oc_has_bash = re.search(r'^\s*"secguard\*":\s*allow', oc_agent, re.M) is not None
-    oc_granted = sorted(set(re.findall(r'^\s*(secguard_\w+):\s*allow', oc_agent, re.M)))
-    if not oc_has_bash:
-        fail('opencode agents/security-auditor.md: permission.bash["secguard*"] must be allow (subagent persists via Bash)')
-    if oc_granted:
-        fail(f"opencode agents/security-auditor.md: must NOT grant {oc_granted} to the subagent — secguard_* tools are orchestrator-only")
+    oc_granted = {m.group(1) for m in re.finditer(r"^\s*(secguard_\w+):\s*allow", oc_agent, re.M)}
+    if SUBAGENT_PERSIST_TOOLS - oc_granted:
+        fail(f"opencode agents/security-auditor.md: subagent missing {sorted(SUBAGENT_PERSIST_TOOLS - oc_granted)}")
 
     try:
         nga = json.loads(read("opencode-nga/opencode.json"))
         nga_perm = nga.get("agent", {}).get("security-auditor", {}).get("permission", {})
     except json.JSONDecodeError as e:
         fail(f"opencode-nga/opencode.json: {e}")
-    nga_bash = nga_perm.get("bash", {})
-    nga_has_bash = isinstance(nga_bash, dict) and nga_bash.get("secguard*") == "allow"
-    nga_granted = sorted(k for k in nga_perm if k.startswith("secguard_") and nga_perm[k] == "allow")
-    if not nga_has_bash:
-        fail('opencode-nga agent.security-auditor.permission.bash["secguard*"] must be allow (subagent persists via Bash)')
-    if nga_granted:
-        fail(f"opencode-nga agent.security-auditor.permission: must NOT grant {nga_granted} to the subagent — secguard_* tools are orchestrator-only")
+    nga_granted = {k for k, v in nga_perm.items() if k.startswith("secguard_") and v == "allow"}
+    if SUBAGENT_PERSIST_TOOLS - nga_granted:
+        fail(f"opencode-nga agent.security-auditor.permission: subagent missing {sorted(SUBAGENT_PERSIST_TOOLS - nga_granted)}")
 
     for name, rel in [
         ("claude-code", "claude-code/.claude/agents/security-auditor.md"),
@@ -164,7 +179,7 @@ def check_agent_permissions():
         if missing:
             fail(f"{name} agents/security-auditor.md: tools missing {sorted(missing)}")
 
-    print("  subagent persistence: Bash(secguard *) (opencode + opencode-nga), Bash(secguard *) + Write (claude-code + claude-cac)")
+    print("  subagent persistence: secguard_report MCP (opencode + opencode-nga), Bash(secguard *) + Write (claude-code + claude-cac)")
 
 
 def main():

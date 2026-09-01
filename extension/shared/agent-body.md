@@ -164,9 +164,11 @@ matters; `suspicion_level` only tells you how hard to look.
 ## Write discipline
 
 Write ONE batch per type (all of that type's findings in one call), passing
-`scan_id` — without it the verdict cannot be attached to the scan. Persist with
-the `secguard` binary via Bash (works on BOTH platforms; you are a worker, not
-the orchestrator):
+`scan_id` — without it the verdict cannot be attached to the scan. **Persist via
+the `secguard_report` MCP tool if it is in your toolset (preferred — it runs in
+the host environment with the binary on PATH, and on OpenCode-NGA your Bash tool
+is not available at all).** Only on a shell-only host without the MCP tool, fall
+back to Bash:
 
 1. Write the JSON array to `<tmpdir>/<type>.json` with the Write/Edit tool
    (escape every inner `"` as `\"` and every `\` as `\\`).

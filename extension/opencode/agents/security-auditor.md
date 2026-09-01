@@ -15,5 +15,8 @@ permission:
   glob: allow
   external_directory: allow
   skill: allow
+  secguard_report: allow
+  secguard_db: allow
+  secguard_schema: allow
 ---
 {{include shared/agent-body.md}}
