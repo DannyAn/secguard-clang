@@ -584,6 +584,41 @@ with open(path, 'w') as f:
     f.write('\n')
 "
 
+    # 4. 同步写 settings.json 的 extraKnownMarketplaces（优先级高于 known_marketplaces.json；
+    #    后者会被前者覆盖）。否则用户 settings.json 里已有的 extraKnownMarketplaces
+    #    （如别的产品留下的同名条目）会把我们的注册顶掉，pluginLoader 找不到
+    #    commands/agents/hooks → 子代理 dispatch 失败。
+    python3 -c "
+import json, os, datetime
+settings_path = os.path.join('''$prefix''', 'settings.json')
+mkt_dir = '''$mkt_dir'''
+data = {}
+if os.path.isfile(settings_path):
+    try:
+        with open(settings_path) as f:
+            data = json.load(f)
+    except json.JSONDecodeError:
+        data = {}
+if not isinstance(data, dict):
+    data = {}
+ekm = data.get('extraKnownMarketplaces')
+if not isinstance(ekm, dict):
+    ekm = {}
+ekm['local-secguard'] = {
+    'source': {'source': 'directory', 'path': mkt_dir},
+    'installLocation': mkt_dir,
+    'lastUpdated': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'autoUpdate': False,
+}
+data['extraKnownMarketplaces'] = ekm
+d = os.path.dirname(settings_path)
+if d:
+    os.makedirs(d, exist_ok=True)
+with open(settings_path, 'w') as f:
+    json.dump(data, f, indent=2)
+    f.write('\n')
+"
+
     echo "[marketplace] Registered local-secguard → $mkt_dir"
 }
 
@@ -599,18 +634,32 @@ sg_unregister_marketplace() {
     python3 -c "
 import json, os, sys
 path = os.path.join('''$prefix''', 'plugins', 'known_marketplaces.json')
-if not os.path.isfile(path):
-    sys.exit(0)
-try:
-    with open(path) as f:
-        data = json.load(f)
-except json.JSONDecodeError:
-    sys.exit(0)
-if isinstance(data, dict) and 'local-secguard' in data:
-    del data['local-secguard']
-    with open(path, 'w') as f:
-        json.dump(data, f, indent=2)
-        f.write('\n')
+if os.path.isfile(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except json.JSONDecodeError:
+        data = None
+    if isinstance(data, dict) and 'local-secguard' in data:
+        del data['local-secguard']
+        with open(path, 'w') as f:
+            json.dump(data, f, indent=2)
+            f.write('\n')
+# 同步清理 settings.json 的 extraKnownMarketplaces
+spath = os.path.join('''$prefix''', 'settings.json')
+if os.path.isfile(spath):
+    try:
+        with open(spath) as f:
+            sdata = json.load(f)
+    except json.JSONDecodeError:
+        sdata = None
+    if isinstance(sdata, dict) and isinstance(sdata.get('extraKnownMarketplaces'), dict):
+        sdata['extraKnownMarketplaces'].pop('local-secguard', None)
+        if not sdata['extraKnownMarketplaces']:
+            del sdata['extraKnownMarketplaces']
+        with open(spath, 'w') as f:
+            json.dump(sdata, f, indent=2)
+            f.write('\n')
 "
 }
 
@@ -933,6 +982,17 @@ except Exception:
     pass
 sys.exit(1)
 " 2>/dev/null && sg_check ok "known_marketplaces.json registered" || sg_check fail "known_marketplaces.json registered"
+        python3 -c "
+import json, sys
+try:
+    with open('''$cac_prefix/settings.json''') as f:
+        s = json.load(f)
+    if isinstance(s.get('extraKnownMarketplaces'), dict) and 'local-secguard' in s['extraKnownMarketplaces']:
+        sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+" 2>/dev/null && sg_check ok "extraKnownMarketplaces registered" || sg_check fail "extraKnownMarketplaces registered"
     fi
 
     echo ""
