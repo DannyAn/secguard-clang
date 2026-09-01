@@ -691,7 +691,6 @@ func runReportCmd(ctx context.Context, args []string) int {
 			confirmed, suspected, dismissed, autoConfirmed int
 		}
 		countsByVuln := make(map[string]*vulnCounts)
-		unreviewedSuspected := 0
 		for _, f := range scanFindings {
 			vt := planner.TypeForCWE(f.RuleID)
 			if vt == "" {
@@ -707,13 +706,6 @@ func runReportCmd(ctx context.Context, args []string) int {
 			if f.Status == db.StatusAutoConfirmed {
 				countsByVuln[vt].autoConfirmed++
 				continue
-			}
-			// A `suspected` finding whose A5 second-round never ran is an
-			// incomplete verdict: it is excluded from every final export, and the
-			// orchestrator must be told so it can re-dispatch the A5 pass instead
-			// of shipping a scan that silently dropped its suspected residue.
-			if f.Status == "suspected" && f.ReviewStatus == "" {
-				unreviewedSuspected++
 			}
 			switch f.FinalStatus() {
 			case "confirmed":
@@ -807,14 +799,6 @@ func runReportCmd(ctx context.Context, args []string) int {
 			if unclassified := unclassifiedCandidates(audits); unclassified > 0 {
 				out["unclassified_candidates"] = unclassified
 				out["warning"] = fmt.Sprintf("%d converged candidate(s) have no persisted verdict — an exclusion stated only in prose is not recorded. Write a finding (confirmed|suspected|dismissed) for every candidate.", unclassified)
-			}
-			// A `suspected` verdict that never went through the A5 second round is
-			// incomplete, so it is excluded from result.sarif / result.xlsx /
-			// report.md / findings/ rather than shipped as a final suspicion. Tell
-			// the orchestrator explicitly so it can re-run A5 before finalizing.
-			if unreviewedSuspected > 0 {
-				out["unreviewed_suspected"] = unreviewedSuspected
-				out["warning"] = fmt.Sprintf("%d suspected finding(s) were never A5-reviewed and are excluded from result.sarif/result.xlsx — run the A5 second round (confirmed|dismissed|suspected-kept) before finalizing.", unreviewedSuspected)
 			}
 			// A finding with no scan_id has no scan directory, so its verdict
 			// file cannot be placed or reconciled. Surface it instead of

@@ -56,9 +56,10 @@ func TestWriteSarifFromFindings(t *testing.T) {
 	}
 
 	results := rep.Runs[0].Results
-	// confirmed + suspected-kept only; dismissed and unreviewed-suspected excluded.
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results (confirmed + suspected-kept; dismissed and unreviewed-suspected excluded), got %d", len(results))
+	// confirmed + suspected (both suspected-kept and plain suspected now export,
+	// since A5 is folded into A4); dismissed excluded.
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results (confirmed + suspected-kept + plain suspected; dismissed excluded), got %d", len(results))
 	}
 
 	// First result is confirmed with fix + properties.

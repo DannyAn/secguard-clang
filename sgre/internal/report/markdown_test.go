@@ -165,10 +165,10 @@ func TestWriteReportFromFindings_ShowsActionable(t *testing.T) {
 	}
 }
 
-// A suspected finding that never went through the A5 second round is an
-// incomplete verdict and must be excluded from the final report, exactly like
-// result.sarif/result.xlsx/findings/.
-func TestWriteReportFromFindings_ExcludesUnreviewedSuspected(t *testing.T) {
+// A plain suspected finding (no review_status) is a final first-pass verdict —
+// A5 has been folded into A4 — so it appears in the final report exactly like a
+// suspected-kept finding.
+func TestWriteReportFromFindings_IncludesPlainSuspected(t *testing.T) {
 	dir := t.TempDir()
 	reportPath := filepath.Join(dir, ReportFile)
 
@@ -193,14 +193,14 @@ func TestWriteReportFromFindings_ExcludesUnreviewedSuspected(t *testing.T) {
 
 	content := string(mustReadFile(t, reportPath))
 
-	if strings.Contains(content, "risky_copy") {
-		t.Errorf("unreviewed suspected finding must not appear in report.md:\n%s", content)
+	if !strings.Contains(content, "risky_copy") {
+		t.Errorf("plain suspected finding should appear in report.md:\n%s", content)
 	}
 	if !strings.Contains(content, "kept_risky") {
 		t.Errorf("suspected-kept finding should appear in report.md:\n%s", content)
 	}
-	if !strings.Contains(content, "| Suspected findings | 1 |") {
-		t.Errorf("summary should count 1 suspected (suspected-kept only):\n%s", content)
+	if !strings.Contains(content, "| Suspected findings | 2 |") {
+		t.Errorf("summary should count 2 suspected (plain + suspected-kept):\n%s", content)
 	}
 }
 

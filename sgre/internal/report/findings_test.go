@@ -313,9 +313,10 @@ func TestReconcileFindings_UsesFinalStatus(t *testing.T) {
 	}
 }
 
-// A never-reviewed suspected finding is an incomplete verdict and must produce
-// no findings/ file (it is excluded from the final review surface).
-func TestReconcileFindings_ExcludesUnreviewedSuspected(t *testing.T) {
+// A plain suspected finding (no review_status) is a final first-pass verdict —
+// A5 has been folded into A4 — so it produces a findings/ file like any other
+// actionable verdict.
+func TestReconcileFindings_IncludesPlainSuspected(t *testing.T) {
 	dir := t.TempDir()
 	writeCandidate(t, dir, "null-deref", "001_src_a_c_13.md")
 
@@ -325,11 +326,11 @@ func TestReconcileFindings_ExcludesUnreviewedSuspected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Written != 0 {
-		t.Errorf("written = %d, want 0 (unreviewed suspected excluded)", res.Written)
+	if res.Written != 1 {
+		t.Errorf("written = %d, want 1 (plain suspected is final)", res.Written)
 	}
-	if names := lsFindings(t, dir, "null-deref"); len(names) != 0 {
-		t.Fatalf("unreviewed suspected must be excluded: %v", names)
+	if names := lsFindings(t, dir, "null-deref"); len(names) != 1 || names[0] != "001_src_a_c_13_suspected.md" {
+		t.Fatalf("plain suspected must survive as suspected: %v", names)
 	}
 }
 

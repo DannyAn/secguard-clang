@@ -37,6 +37,17 @@
   列名 + 「优先结构化工具、别裸查」），对账收敛为 `status --per-type` +
   `report --audit` 两次结构化调用。
 
+### A5 折叠进 A4（单趟终判，去掉第二趟 AI 复核）
+
+- A5（suspected 二次复核）与 A4 融合：A4 单趟用 Source+Hint + `## Code Context`
+  + ≤5 文件跨文件读，直接出 confirmed / suspected / dismissed 终判；`suspected`
+  即为最终判定、直接导出，不再要求 `review_status` 盖章。
+- `FinalStatus()` 不再丢弃「未 A5 复核的 suspected」——首趟 suspected 与
+  confirmed/dismissed 一样是终判；`review_status` 降级为可选的孤例后修覆盖。
+- 删除 F9 闸门（`unreviewed_suspected`）与 orchestrator/subagent/DSH/增量检视
+  里的 A5 第二趟流程；`--review`/`--review-json` 保留为可选覆盖。
+- 预期：AI 阶段省 ~10–30% 耗时，协议少一层（F9、suspected 生命周期、context-overflow 风险点）。
+
 ### 代码检视修正（GLM5.2 检视）
 
 - **planner**：Plan 结果构建的 `GetFileByID` N+1 点查询改为批量 `ListFiles` 一次

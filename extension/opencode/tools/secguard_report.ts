@@ -14,7 +14,7 @@ function findSecguard(context: { worktree?: string, directory?: string }): strin
 
 export default tool({
   description:
-    "Write security findings to the SecGuard database (sgre.db), retrieve existing findings, or record a second-round (A5) review verdict for a suspected finding. When findings is provided, writes them and returns each finding's database id (needed later for review). When reviews is provided, records --review verdicts (confirmed|dismissed|suspected-kept). When neither is provided, returns all existing findings as JSON. Pass scan_id AND output_dir whenever you write or review: they place each verdict file under findings/<vuln-type>/NNN_<file>_<line>_<confirmed|suspected>.md and re-sync that directory with the database. Dismissed findings intentionally get no file there. Any per_finding_warning in the response means the verdict did not reach findings/ — fix the call and write again.",
+    "Write security findings to the SecGuard database (sgre.db), retrieve existing findings, or record an optional post-hoc override verdict for a finding. When findings is provided, writes them and returns each finding's database id. When reviews is provided, records --review verdicts (confirmed|dismissed|suspected-kept). When neither is provided, returns all existing findings as JSON. Pass scan_id AND output_dir whenever you write or review: they place each verdict file under findings/<vuln-type>/NNN_<file>_<line>_<confirmed|suspected>.md and re-sync that directory with the database. Dismissed findings intentionally get no file there. Any per_finding_warning in the response means the verdict did not reach findings/ — fix the call and write again.",
   args: {
     findings: tool.schema
       .array(
@@ -61,15 +61,15 @@ export default tool({
           id: tool.schema.number().describe("Finding id returned by a previous write"),
           review_status: tool.schema
             .string()
-            .describe("Second-round verdict: confirmed, dismissed, or suspected-kept"),
+            .describe("Optional post-hoc override: confirmed, dismissed, or suspected-kept"),
           review_reasoning: tool.schema
             .string()
-            .describe("One-line justification for the second-round call"),
+            .describe("One-line justification for the override"),
         })
       )
       .optional()
       .describe(
-        "A5 second-round review verdicts for suspected findings (each targets a finding id from a prior write)."
+        "Optional post-hoc override verdicts (each targets a finding id from a prior write)."
       ),
     scan_id: tool.schema
       .string()

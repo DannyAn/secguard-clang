@@ -64,16 +64,15 @@ func (f *Finding) EffectiveStatus() string {
 }
 
 // FinalStatus returns the verdict that is allowed to reach the final export
-// (result.sarif / result.xlsx / report.md / findings/). It differs from
-// EffectiveStatus in one way that matters for the review surface: a `suspected`
-// finding that was NEVER second-round (A5) reviewed is NOT exportable — it is an
-// incomplete verdict, not a decision. Only a `suspected` that A5 explicitly
-// kept (`review_status == "suspected-kept"`) is exported, and it is exported as
-// `suspected`. A first-pass `confirmed` (which A5 does not re-review) remains
-// exportable as `confirmed`.
+// (result.sarif / result.xlsx / report.md / findings/). The A5 second round has
+// been folded into the single-pass classification, so a first-pass verdict is
+// final: a plain `suspected` is exportable as `suspected`, exactly like
+// `confirmed`/`dismissed`. `review_status` remains an OPTIONAL post-hoc override
+// (confirmed/dismissed/suspected-kept) for fixing an individual finding.
 //
 // The returned value is "", "confirmed", "suspected", or "dismissed". "" means
-// "not part of the final result" and must be filtered out by every exporter.
+// "not part of the final result" (e.g. the DB default "open") and must be
+// filtered out by every exporter.
 func (f *Finding) FinalStatus() string {
 	switch f.ReviewStatus {
 	case "confirmed":
@@ -86,6 +85,8 @@ func (f *Finding) FinalStatus() string {
 	switch f.Status {
 	case "confirmed", StatusAutoConfirmed:
 		return "confirmed"
+	case "suspected":
+		return "suspected"
 	case "dismissed":
 		return "dismissed"
 	}

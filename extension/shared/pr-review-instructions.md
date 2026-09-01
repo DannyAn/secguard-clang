@@ -13,13 +13,12 @@ Review only the incremental changes of a PR/MR (or an arbitrary git diff) with t
 1. 调 `secguard pr`（或 `diff`/`mr`），拿到 `review_id` + `review_dir` + `candidates_by_type` + `total_candidates`。输出结构与全仓 `scan` 同构：**`review_id` 就是后续写入要用的 `scan_id`**，`review_dir` 就是 `--output-dir`。
 2. 对每个 `candidates_by_type` > 0 的类型：读 `<review_dir>/candidates/<type>/_index.md`（`Source` 列即 file:line 原始语句，`Hint` 列即管线预计算判定事实，`Evidence` 列即候选证据文件精确名），按全仓同样的分类规则判定 confirmed / suspected / dismissed。
    - confirmed → 从 `_index.md` 的 `Source` 列直接判定。
-   - suspected/possible → 先按 `Source`+`Hint` 判定（`Hint`：`src@N`=空指针来源行、`certain-null`/`maybe-null`=空指针确定性、`tainted`=污点来源、`weak-guard`=弱守卫）；Hint 不足时才按 `Evidence` 列原样打开 `NNN_<file>_<line>.md`，读内嵌 `## Code Context`。没看全的候选标 `suspected-kept`，绝不 dismissed。
+   - suspected/possible → 先按 `Source`+`Hint` 判定（`Hint`：`src@N`=空指针来源行、`certain-null`/`maybe-null`=空指针确定性、`tainted`=污点来源、`weak-guard`=弱守卫）；Hint 不足时才按 `Evidence` 列原样打开 `NNN_<file>_<line>.md`，读内嵌 `## Code Context`。没看全的候选标 `suspected`，绝不 dismissed。
    - 源码已内嵌，**禁止逐候选发 source READ**。
 3. 落库（幂等，重复跑 upsert 不重复）：
    `secguard report --write-json <tmpdir>/<type>.json --scan-id <review_id> --db <db_path>`
    `<db_path>` = `<review_dir>/../../.sgre/sgre.db`，`<tmpdir>` = `<review_dir>/../../.sgre/.tmp/`（与全仓同一套路径派生）。
-4. suspected 用 `--review-json` 整批 A5 复核（confirmed|dismissed|suspected-kept）。
-5. 所有类型写完跑一次：
+4. 所有类型写完跑一次：
    `secguard report --audit --scan-id <review_id> --output-dir <review_dir>`
    再读 `<review_dir>/result.sarif` 确认非空、`ls <review_dir>/findings/` 确认判定落盘。
 

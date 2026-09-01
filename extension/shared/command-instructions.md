@@ -143,7 +143,7 @@ and use it directly. Do not reconstruct paths by trial and error.
 | `MAX_TYPES_PER_BATCH` | 4 | Hard ceiling on types assigned to one subagent |
 | `MAXTURNS` | 30 | security-auditor.md maxTurns (must match) |
 | `MAXTURNS_SAFETY_RATIO` | 0.9 | Use only 90% of maxTurns as the budget |
-| `TURNS_PER_TYPE_ESTIMATE` | 6 | Avg turns per type (skill load + classify + write + A5) |
+| `TURNS_PER_TYPE_ESTIMATE` | 6 | Avg turns per type (skill load + classify + write) |
 | `LARGE_CANDIDATE_THRESHOLD` | 100 | Types with > this many candidates get a dedicated subagent |
 | `SPLIT_CANDIDATE_THRESHOLD` | 100 | A type with > this many candidates is SPLIT across multiple subagents, each handling ≤ this many candidates |
 
@@ -155,7 +155,7 @@ as part of `release/build-packages.sh`.
 **Pre-dispatch validation (EARS):**
 - If a batch has > `MAX_TYPES_PER_BATCH` (4) types, the orchestrator SHALL split it before dispatching.
 - Where a single type has > `LARGE_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL assign that type its own dedicated subagent.
-- Where a single type has > `SPLIT_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL split it into MULTIPLE subagents, each handling a ≤100-candidate RANGE of that type (pass the candidate # range, e.g. "candidates #1–100 of null-deref"), so no single subagent's context window is exceeded. The 100-candidate cap is a CONTEXT ceiling (not a turn ceiling): before the Hint column + Code Context compression, a suspected-heavy range opened an `Evidence` file per suspected candidate and a 100-candidate range could exhaust a 200K context before the tail's A5 round; with `Source`+`Hint` classification and a ±8 Code Context window the same budget now carries ~2× more, so 100 is the test point — if a super-large function still overflows, the tail is surfaced via the partial-count path, never silently buried.
+- Where a single type has > `SPLIT_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL split it into MULTIPLE subagents, each handling a ≤100-candidate RANGE of that type (pass the candidate # range, e.g. "candidates #1–100 of null-deref"), so no single subagent's context window is exceeded. The 100-candidate cap is a CONTEXT ceiling (not a turn ceiling): before the Hint column + Code Context compression, a suspected-heavy range opened an `Evidence` file per suspected candidate and a 100-candidate range could exhaust a 200K context before the tail; with `Source`+`Hint` classification and a ±8 Code Context window the same budget now carries ~2× more, so 100 is the test point — if a super-large function still overflows, the tail is surfaced via the partial-count path, never silently buried.
 - If `batch_type_count × TURNS_PER_TYPE_ESTIMATE` ≥ `MAXTURNS × MAXTURNS_SAFETY_RATIO` (i.e. ≥ 27), the orchestrator SHALL reject the batch as over-budget and split it.
 
 ## Full Scan Workflow
@@ -173,9 +173,9 @@ your todo list so no type is skipped or double-processed.
 **Context budget (the other thing that makes this fast).** Do NOT read all
 source files up front — read at most 5 files per type, only at the reported
 file:line, and only for candidates that actually need verification. The same
-≤5-files budget covers the A5 second round (A5 normally re-judges from context +
-persisted reasoning; it opens source only for a suspected finding whose file was
-not already read). Do NOT load a skill for a type that has 0 candidates.
+≤5-files budget is the WHOLE type's source-read budget (there is no second round
+— your single-pass verdict is final). Do NOT load a skill for a type that has 0
+candidates.
 `candidates/<type>/_index.md` is your primary candidate input (one compact read
 per type); the scan summary already gives you the per-type counts.
 
@@ -235,8 +235,8 @@ as `result.sarif`.)
    - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null`/`tainted`/`weak-guard`); open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source) only when the hint is insufficient, then reason/classify (confirmed/suspected/dismissed).
    Write findings in ONE batch: write `<tmpdir>/<type>.json` with the Write tool,
    then `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
-   Then A5-review suspected findings, move on. Never skip a type. Obey
-   the context budget (no per-candidate source reads; no skill for a 0-candidate type).
+   Never skip a type. Obey the context budget (no per-candidate source reads;
+   no skill for a 0-candidate type).
 **调度时序合规规则 (F3):** All subagent dispatches SHALL occur in a single assistant turn — N `Agent`/`task` calls issued consecutively with the first-to-last timestamp span ≤ 10s. (Claude Code's subagent-dispatch tool is `Agent`; older Claude Code versions name it `Task`.) The orchestrator SHALL NOT split dispatches across turns. After dispatch, while subagents run, the orchestrator SHALL NOT poll their transcripts or issue `sleep`.
 
 **子代理返回模型 (F7) — 这是"任务卡住不结束/结果丢失/重复下发"的根因，必读：** 三个平台的返回模型不同，绝不可混用：
@@ -281,12 +281,12 @@ as `result.sarif`.)
       ONLY when the hint is insufficient to decide — a `certain-null` + `src@N` hint
       usually settles the verdict with no file open. Never dismiss a candidate you
       did not fully read; when the hint is inconclusive and you cannot afford the
-      file, mark `suspected-kept`.
+      file, mark `suspected`.
     If a candidate's `## Code Context` is unusually large (a super-large function,
     e.g. >200 lines), do NOT paste it into your context — that is exactly what
     exhausts your window and silently truncates the tail. Classify from the `Source`
     column alone: mark `dismissed` ONLY when that one-line statement already proves
-    it safe (a guard, a `_s` safe call, ...); otherwise mark `suspected-kept` so the
+    it safe (a guard, a `_s` safe call, ...); otherwise mark `suspected` so the
     candidate stays reported — never dismiss a candidate you could not fully read
     (that is a false negative). One oversized candidate must not sink the rest of
     the range.
@@ -299,17 +299,6 @@ as `result.sarif`.)
     with the Write tool, then immediately
     `secguard report --write-json <scan_dir>/../../.sgre/.tmp/<type>-partN.json --scan-id <scan_id> --db <scan_dir>/../../.sgre/sgre.db`
     before starting the next chunk. The write is idempotent, so partial progress is safe.
-   Then A5-review each suspected finding: take its `id` from the write response
-   `written` array (`{file, line, id}`), or look it up when missing via
-   `secguard db "SELECT id, file_path, line_number FROM findings WHERE
-   scan_id='<scan_id>' AND status='suspected' ORDER BY id" --db <scan_dir>/../../.sgre/sgre.db`.
-   NEVER use python3/sqlite3 (Bash is limited to `secguard *`; the column is
-   `file_path`, not `file`). Record ALL of the type's A5 verdicts in ONE batch —
-   NEVER one `--review` per id (the per-id loop spawns a subprocess per row and
-   is the null-deref 55-minute slowdown). Write `<scan_dir>/../../.sgre/.tmp/<type>.reviews.json`
-   as a bare JSON array of `{"id","review_status","review_reasoning"}` then run ONE
-   `secguard report --review-json <scan_dir>/../../.sgre/.tmp/<type>.reviews.json --db <scan_dir>/../../.sgre/sgre.db`.
-   `review_status` ∈ confirmed|dismissed|suspected-kept. Read source only at reported file:line, ≤5 files per type.
    Report back, per type: confirmed / suspected / dismissed counts + the
    written finding ids.
    ```
@@ -360,17 +349,6 @@ as `result.sarif`.)
    has files; if not, a write did not land — find the `per_finding_warning` and
    fix it.
 
-    **未复核疑似项闸门 (F9):** The audit response may carry `unreviewed_suspected`
-    (and a `warning`). A nonzero `unreviewed_suspected` means some `suspected`
-    findings never went through the A5 second round, so the final export dropped
-    them (only `confirmed` + `suspected-kept` are exported). Treat this as a
-    `context-overflow` loss, NOT a re-dispatch trigger: **do NOT re-dispatch A5
-    for those ids** — the re-run re-pays a fresh prompt and overflows again on
-    the same super-large function. Record `unreviewed_suspected` and surface it in
-    the 观察项表 (`| 类型 | context-overflow 未复核疑似 N 条 |`) so the loss is
-    explicit, then proceed to step 6. The dropped ids are already excluded from
-    `result.sarif`/`findings/`; a report that silently omits them is an incomplete
-    scan, but re-running A5 is not the fix — reporting the count is.
 6. **Report**: emit the Markdown report (报告头 / 摘要 / 总览表 / 问题表 /
    观察项表 / 逐条详情) per the Output Format, aggregating the
    subagents' returned counts. Reference `report.md`, `result.sarif`, and
@@ -393,7 +371,6 @@ Selected types: <parsed type filter>
       `scan_id` + `output_dir`. Every candidate gets a verdict; confirmed findings
       carry `reasoning` + `exception_check` + `fix_strategy`. Handle
       `per_finding_warning` before moving on.
-   f. A5: `secguard_report` `reviews` for every `suspected`.
 3. **Finalize and verify**: after the loop, read `<output_dir>/result.sarif`
    (non-empty) and list `<output_dir>/findings/` to confirm your verdicts
    landed; if not, fix the failing write before reporting.
@@ -408,8 +385,7 @@ Report the diagnostic conclusion in Chinese, Markdown tables only:
 2. 摘要: `本次审计确认 X 个问题、疑似 Y 个问题。` (X/Y = confirmed/suspected verdicts, NOT candidate counts)
 3. 总览表: `| Skill | 类别 | 确认 | 疑似 | 已排除误报 |`
 4. 问题表: `| Skill | 文件:行号 | 函数 | 严重度 | 结论 | 说明 |` (confirmed + suspected)
-5. 观察项表 (if some types were not persisted, or some suspected were dropped
-   unreviewed — F9): `| Skill | 说明 |` (e.g. `| null-deref | context-overflow 未复核疑似 15 条，已剔除 |`)
+5. 观察项表 (if some types were not persisted): `| Skill | 说明 |`
 6. 逐条详情: Reasoning / Exception Check / Fix Strategy per confirmed+suspected
 7. 缺失类型章节 (only when types were not successfully processed — F1): a table
    `| 类型 | 候选数 | 失败原因 |` listing every missing-type, with 失败原因 from

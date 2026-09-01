@@ -376,9 +376,10 @@ func TestEffectiveStatus(t *testing.T) {
 	}
 }
 
-// FinalStatus is the export gate: a plain suspected finding (never A5-reviewed)
-// must NOT reach result.sarif/result.xlsx/report.md/findings/ — only
-// suspected-kept (the A5 "still suspicious" decision) survives, as "suspected".
+// FinalStatus is the export gate: every first-pass verdict (confirmed/suspected/
+// dismissed) is final — A5 has been folded into the single-pass classification,
+// so a plain suspected finding is exportable as "suspected" (review_status is an
+// optional post-hoc override, no longer a required second-round stamp).
 func TestFinalStatus(t *testing.T) {
 	cases := []struct{ status, review, want string }{
 		{"confirmed", "", "confirmed"},
@@ -386,7 +387,7 @@ func TestFinalStatus(t *testing.T) {
 		{"suspected", "confirmed", "confirmed"},
 		{"suspected", "dismissed", "dismissed"},
 		{"suspected", "suspected-kept", "suspected"},
-		{"suspected", "", ""},
+		{"suspected", "", "suspected"},
 		{"dismissed", "", "dismissed"},
 		{"open", "", ""},
 	}
