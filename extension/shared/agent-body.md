@@ -164,15 +164,14 @@ matters; `suspicion_level` only tells you how hard to look.
 ## Write discipline
 
 Write ONE batch per type (all of that type's findings in one call), passing
-`scan_id` — without it the verdict cannot be attached to the scan. Persist with
-the `secguard` binary via Bash (works on BOTH platforms; you are a worker, not
-the orchestrator):
+`scan_id` — without it the verdict cannot be attached to the scan. **Persist via
+the `secguard_report` MCP tool if it is in your toolset (preferred — it runs in
+the host environment with the binary on PATH).** Only on a shell-only host without
+the MCP tool, fall back to Bash:
 
 1. Write the JSON array to `<tmpdir>/<type>.json` with the Write/Edit tool
    (escape every inner `"` as `\"` and every `\` as `\\`).
 2. `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
-   (If you have the `secguard_report` MCP tool instead, calling it with the
-   `findings` array is equivalent and simpler.)
 
 The `<type>.json` file MUST be a JSON array of objects with EXACTLY these keys
 (the CLI lowercases `severity`/`status`; `confidence` is 0–100):

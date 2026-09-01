@@ -283,6 +283,46 @@ func TestReportCmd_WriteJsonAcceptsKnownScanID(t *testing.T) {
 	}
 }
 
+func TestReportCmd_WriteJsonFieldValidation(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "test.db")
+
+	d, err := db.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := db.NewStore(d)
+	const scanID = "sc_2026-01-01_000000_aaaaaa"
+	if _, err = s.InsertScanStat(ctx, &db.ScanStat{ScanID: scanID, VulnType: "null-deref", SeedCount: 1, FinalCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	run := func(payload string) (int, string) {
+		writeFile := filepath.Join(root, "findings.json")
+		if err := os.WriteFile(writeFile, []byte(payload), 0644); err != nil {
+			t.Fatal(err)
+		}
+		stdout, _, code := captureOutput(func() int {
+			return runReportCmd(ctx, []string{"--db", dbPath, "--write-json", writeFile, "--scan-id", scanID})
+		})
+		return code, stdout
+	}
+
+	// confidence 为数字字符串应被接受（worker 常见笔误）。
+	if code, stdout := run(`[{"rule_id":"CWE-476","severity":"high","confidence":"55","status":"confirmed","file":"x.c","line":1,"function":"f"}]`); code != 0 {
+		t.Errorf("string confidence should be accepted, got exit %d; stdout=%s", code, stdout)
+	}
+
+	// status 非法值（pipeline 中间态 open）应整批拒绝，而非 partial 跳过。
+	if code, stdout := run(`[{"rule_id":"CWE-476","severity":"high","confidence":55,"status":"open","file":"x.c","line":1,"function":"f"}]`); code == 0 {
+		t.Errorf("status=open should be rejected, got exit 0; stdout=%s", stdout)
+	} else if !bytes.Contains([]byte(stdout), []byte("invalid status")) {
+		t.Errorf("expected 'invalid status' error, got: %s", stdout)
+	}
+}
+
 func TestFinding_ApplyStructuredFromProperties(t *testing.T) {
 	f := &db.Finding{
 		Properties: `{"variable":"buf","suggestion":"short","summary":"heap overflow","reasoning":"source is user_size, no clamp, reaches strcpy","fix_strategy":"if (user_size < 12) return -1;","exception_check":"no RAII, no safe wrapper"}`,

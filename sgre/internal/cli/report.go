@@ -15,6 +15,29 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/report"
 )
 
+// flexibleFloat accepts a JSON number OR a numeric string for a float field, so a
+// worker that emits `"confidence":"55"` (string) instead of `55` is still parsed
+// instead of failing the whole batch on an unmarshal type mismatch.
+type flexibleFloat float64
+
+func (f *flexibleFloat) UnmarshalJSON(data []byte) error {
+	var num float64
+	if err := json.Unmarshal(data, &num); err == nil {
+		*f = flexibleFloat(num)
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return fmt.Errorf("confidence must be a number or numeric string: %s", string(data))
+	}
+	num, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return fmt.Errorf("confidence must be numeric: %q", s)
+	}
+	*f = flexibleFloat(num)
+	return nil
+}
+
 func parseStringFlag(args []string, flag string) string {
 	prefix := "--" + flag + "="
 	flagName := "--" + flag
@@ -365,17 +388,17 @@ func runReportCmd(ctx context.Context, args []string) int {
 		}
 
 		type findingInput struct {
-			RuleID         string  `json:"rule_id"`
-			Severity       string  `json:"severity"`
-			Confidence     float64 `json:"confidence"`
-			Status         string  `json:"status"`
-			File           string  `json:"file"`
-			Line           int     `json:"line"`
-			Function       string  `json:"function"`
-			Summary        string  `json:"summary"`
-			Reasoning      string  `json:"reasoning"`
-			ExceptionCheck string  `json:"exception_check"`
-			FixStrategy    string  `json:"fix_strategy"`
+			RuleID         string        `json:"rule_id"`
+			Severity       string        `json:"severity"`
+			Confidence     flexibleFloat `json:"confidence"`
+			Status         string        `json:"status"`
+			File           string        `json:"file"`
+			Line           int           `json:"line"`
+			Function       string        `json:"function"`
+			Summary        string        `json:"summary"`
+			Reasoning      string        `json:"reasoning"`
+			ExceptionCheck string        `json:"exception_check"`
+			FixStrategy    string        `json:"fix_strategy"`
 		}
 		var inputs []findingInput
 		if err := json.Unmarshal(data, &inputs); err != nil {
@@ -399,7 +422,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 		pending := make([]*pendingWrite, 0, len(inputs))
 		for i := range inputs {
 			in := &inputs[i]
-			confidence := in.Confidence
+			confidence := float64(in.Confidence)
 			if confidence > 1.0 {
 				confidence /= 100.0
 			}
@@ -412,6 +435,16 @@ func runReportCmd(ctx context.Context, args []string) int {
 			severity := strings.ToLower(in.Severity)
 			if severity == "" {
 				severity = "info"
+			}
+
+			// 校验 status 只能是 AI 判定三态；非法值（如 pipeline 中间态 open）
+			// 立即拒绝整批，而非 partial 跳过导致静默丢失。
+			status := strings.ToLower(strings.TrimSpace(in.Status))
+			switch status {
+			case "confirmed", "suspected", "dismissed":
+			default:
+				WriteErrorJSON(fmt.Sprintf("invalid status %q at %s:%d — expected confirmed|suspected|dismissed", in.Status, in.File, in.Line))
+				return 1
 			}
 
 			cweNorm := strings.ToUpper(strings.TrimSpace(in.RuleID))
@@ -428,7 +461,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 				RuleID:         in.RuleID,
 				Severity:       severity,
 				Confidence:     confidence,
-				Status:         strings.ToLower(in.Status),
+				Status:         status,
 				FilePath:       in.File,
 				LineNumber:     in.Line,
 				FunctionName:   in.Function,
