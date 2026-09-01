@@ -1,0 +1,8 @@
+{
+  "name": "secguard-clang",
+  "version": "0.5.4",
+  "description": "SecGuard — AI-augmented C security analyzer plugin for OpenCode",
+  "license": "Apache-2.0",
+  "main": "index.ts",
+  "type": "module"
+}

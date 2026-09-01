@@ -192,6 +192,8 @@ with open(dst, 'w') as f:
         sg_record_file "$(cd "$(dirname "$OC_NGA_TARGET_DIR/.codeagent-extension-install.json")" && pwd)/$(basename "$OC_NGA_TARGET_DIR/.codeagent-extension-install.json")"
     fi
     [ -f "$src/opencode.json" ]  && sg_cp_record "$src/opencode.json"  "$OC_NGA_TARGET_DIR/opencode.json"
+    [ -f "$src/index.ts" ]       && sg_cp_record "$src/index.ts"       "$OC_NGA_TARGET_DIR/index.ts"
+    [ -f "$src/package.json" ]   && sg_cp_record "$src/package.json"   "$OC_NGA_TARGET_DIR/package.json"
 
     local f
     for f in "$src"/commands/*.md; do [ -f "$f" ] && sg_cp_record "$f" "$OC_NGA_TARGET_DIR/commands/$(basename "$f")"; done

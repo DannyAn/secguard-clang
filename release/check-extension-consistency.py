@@ -22,12 +22,13 @@ Two drift classes are checked:
 
 3. Subagent persistence — the security-auditor worker has NO Bash on OpenCode-NGA,
    so it persists via the `secguard_report` MCP tool (granted `secguard_report` +
-   `secguard_db` + `secguard_schema`). And the fork's plugin
-   (opencode-nga/plugins/secguard-context.ts) must register the 8 `secguard_*`
-   tools via its `tool` hook (the SDK's `Hooks.tool`); without that the fork's
-   extensions/ loader never exposes the tools — the v0.5.4 "no secguard_* tools"
-   smoke failure. Guarded:
-     - opencode-nga/plugins/secguard-context.ts `tool: { ... }` registers all 8 tools
+   `secguard_db` + `secguard_schema`). And the fork must register the 8 `secguard_*`
+   tools via its `index.ts` entry point (`package.json` `main: index.ts` → `server.tool`)
+   — the fork's extensions/ loader does NOT auto-discover tools/*.ts; without
+   index.ts + package.json the tools are never exposed (the v0.5.4 "no secguard_*
+   tools" smoke failure). Guarded:
+     - opencode-nga/package.json `main` = index.ts, and opencode-nga/index.ts
+       `tool: { ... }` registers all 8 tools
      - opencode/agents/security-auditor.md + opencode-nga agent permission allow
        `secguard_report`/`secguard_db`/`secguard_schema`
      - claude-code + claude-cac `tools:` must include `Bash(secguard *)` + `Write`
@@ -140,15 +141,19 @@ def _secguard_tool_names():
 def check_agent_permissions():
     secguard_tools = _secguard_tool_names()
 
-    # The fork's plugin must REGISTER the tools via its `tool` hook — the
-    # extensions/ loader does not auto-discover tools/*.ts.
-    nga_plugin = read("opencode-nga/plugins/secguard-context.ts")
-    tool_block = re.search(r"tool:\s*\{([^}]*)\}", nga_plugin, re.S)
+    # The fork must REGISTER the tools via its index.ts entry point (discovered
+    # through package.json's `main`) — the extensions/ loader does not
+    # auto-discover tools/*.ts. Same mechanism as opencode/index.ts server.tool.
+    nga_pkg = json.loads(read("opencode-nga/package.json"))
+    if nga_pkg.get("main") != "index.ts":
+        fail(f"opencode-nga/package.json: main must be index.ts, got {nga_pkg.get('main')}")
+    nga_index = read("opencode-nga/index.ts")
+    tool_block = re.search(r"tool:\s*\{([^}]*)\}", nga_index, re.S)
     if not tool_block:
-        fail("opencode-nga/plugins/secguard-context.ts: missing `tool: { ... }` registration")
+        fail("opencode-nga/index.ts: missing `tool: { ... }` registration")
     registered = set(re.findall(r"(secguard_\w+)", tool_block.group(1)))
     if registered != secguard_tools:
-        fail(f"opencode-nga/plugins/secguard-context.ts tool hook: registered {sorted(registered)}, expected {sorted(secguard_tools)}")
+        fail(f"opencode-nga/index.ts tool hook: registered {sorted(registered)}, expected {sorted(secguard_tools)}")
 
     # OpenCode / OpenCode-NGA subagent: no Bash, so it must be granted the
     # persistence MCP tools (secguard_report + db/schema).
