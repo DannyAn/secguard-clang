@@ -344,6 +344,13 @@ func bareVarName(arg parser.Node) string {
 // `p = NULL` makes a later deref definitely null, and `p = malloc()` makes it
 // possibly null — so the guard must not suppress a deref after it. It returns
 // f.EndLine when no reassignment follows, preserving the full-scope behavior.
+//
+// A reassignment that executes only on an exiting path (`if (x) { p = NULL;
+// return; }`) does NOT truncate the scope: the fall-through continuation never
+// runs it, so p stays non-null there. Without this, the guarded-global idiom
+// (`g = malloc(); if (g == NULL) return; ...; if (err) { g = NULL; return; }`)
+// was misreported because the error branch's dead `g = NULL` cut the guard scope
+// short.
 func guardScopeEnd(assigns []parser.Node, f *db.Function, varName string, afterLine int) int {
 	for _, assign := range assigns {
 		if !funcLineRange(f, assign.StartLine()) {
@@ -354,10 +361,46 @@ func guardScopeEnd(assigns []parser.Node, f *db.Function, varName string, afterL
 		}
 		children := assign.NamedChildren()
 		if len(children) >= 1 && children[0].Kind() == "identifier" && children[0].Text() == varName {
+			if assignmentExitsScope(assign) {
+				continue
+			}
 			return assign.StartLine() - 1
 		}
 	}
 	return f.EndLine
+}
+
+// assignmentExitsScope reports whether an assignment executes only on a path that
+// exits the function/loop scope (a return / goto / break / continue in the same
+// branch), so it cannot reach the fall-through continuation an early-return guard
+// protects. It walks up to the innermost enclosing branch: an assignment in an
+// exiting if-branch is dead on the fall-through, while one in a non-exiting
+// branch, a loop body, or the function's straight-line body is reachable and must
+// truncate the guard scope.
+func assignmentExitsScope(assign parser.Node) bool {
+	child := assign
+	for n := assign.Parent(); n != nil; n = n.Parent() {
+		switch n.Kind() {
+		case "if_statement":
+			if cons := n.ChildByFieldName("consequence"); cons != nil && sameNode(*cons, child) {
+				return isExitBlock(*cons)
+			}
+			if alt := n.ChildByFieldName("alternative"); alt != nil && sameNode(*alt, child) {
+				return isExitBlock(*alt)
+			}
+			return false
+		case "while_statement", "for_statement", "do_statement", "switch_statement":
+			return false
+		}
+		child = *n
+	}
+	return false
+}
+
+// sameNode reports whether a and b denote the same tree node, by the byte range
+// that uniquely identifies a node within one parse.
+func sameNode(a, b parser.Node) bool {
+	return a.StartByte() == b.StartByte() && a.EndByte() == b.EndByte()
 }
 
 // nullCheckedVariable returns the variable a null-check guard tests when the
