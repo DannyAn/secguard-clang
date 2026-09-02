@@ -2,6 +2,33 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.5.6] - 2026-09-02
+
+### 主题：uninit 误报收敛 + plan 阶段性能
+
+本版两条主线：把 uninit 检测器最后几类系统性误报（函数出参、同名遮蔽、
+循环内惰性初始化）消掉；再把 plan 阶段最大的时间瓶颈（injection/path-traversal
+各自重算同一套 taint 摘要）与 dismissed.json 的 8MB 只写明细消掉。
+
+### 误报消减（uninit）
+
+- **uninit**：作用域感知变量追踪——同名局部变量在不同块中声明时，事实按
+  `name@声明行` 键控，一个块里的出参初始化不再抑制另一个块的使用，也不掩盖真正
+  的未初始化使用；修复「函数出参被误报为未初始化」的遮蔽类误报。
+- **uninit**：循环内惰性初始化识别——`while (...) { if (g == NULL) { v = ...; g = ...; }
+  ... use(v) ... }` 这种首轮必执行的守卫内赋值，跨轮次携带后不再被判为未初始化
+  （如 `record_num` 场景）；仅在守卫于循环入口确实满足时抑制，保留真未初始化告警。
+
+### 性能（plan 阶段）
+
+- **planner**：`injection` / `path-traversal` / `format-string` 共享跨过程 taint 摘要
+  （returnsParam / retTainted / paramTainted 三个 fixpoint），仿 callReachCache 引入
+  `taintSummaryCache`，每个扫描会话只算一次。此前三类型各自重算约 39s，是 plan 阶段
+  ~68% 耗时的主因。
+- **report**：`dismissed.json` 不再逐候选落明细（null-deref 单项 2.8 万条、~8MB 只写
+  数据），只保留 `dropped_count` + `dropped_by_reason` 摘要；完整明细仍可由
+  `secguard plan` 按需输出。
+
 ## [0.5.5] - 2026-09-01
 
 ### 主题：消除误报 + 扫描会话性能
