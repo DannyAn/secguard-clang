@@ -312,3 +312,109 @@ func TestUninit_VaListVaStartNotUninit(t *testing.T) {
 		t.Errorf("va_use_before_start's args (used before va_start) should be reported as stack_uninit, got %v", stackUninit)
 	}
 }
+
+func TestUninit_ScopeShadowedOutParam(t *testing.T) {
+	// Two same-named locals in different blocks, both filled via an output
+	// parameter, must each resolve to their own declaration: the later block's
+	// init line must not suppress the earlier block's use (scope-insensitive
+	// name keys caused that false positive).
+	store := runIndexAndDetect(t, "tc80_scope_shadow_outparam.c")
+	events, _ := store.ListEventsByType(context.Background(), "VALUE_USE")
+
+	stackUninit := map[string]map[string][]int{} // function -> variable -> use lines
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+			Origin   string `json:"origin"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Origin != "stack_uninit" {
+			continue
+		}
+		fn, _ := store.GetFunctionByID(context.Background(), e.EntityID)
+		if fn == nil {
+			continue
+		}
+		loc, _ := store.GetLocationByID(context.Background(), e.LocationID)
+		if loc == nil {
+			continue
+		}
+		if stackUninit[fn.Name] == nil {
+			stackUninit[fn.Name] = map[string][]int{}
+		}
+		stackUninit[fn.Name][props.Variable] = append(stackUninit[fn.Name][props.Variable], loc.Line)
+	}
+
+	// scope_shadow_init: neither `v` may be reported.
+	if uses := stackUninit["scope_shadow_init"]["v"]; len(uses) > 0 {
+		t.Errorf("scope_shadow_init's `v` must not be reported as stack_uninit, got use lines %v", uses)
+	}
+
+	// scope_shadow_genuine: the outer `v` is initialized via fill(); only the
+	// inner shadowed `v` (line 34) is genuinely uninitialized and must remain.
+	uses := stackUninit["scope_shadow_genuine"]["v"]
+	if len(uses) != 1 {
+		t.Fatalf("scope_shadow_genuine should report exactly one uninit use of the inner `v`, got %v", uses)
+	}
+	if uses[0] != 34 {
+		t.Errorf("scope_shadow_genuine inner `v` use should be at line 34, got %v", uses)
+	}
+}
+
+func TestUninit_OutParamIfElseShadowed(t *testing.T) {
+	// Two same-named `version` locals in sibling blocks, each filled via
+	// &version into get_value_by_str (which writes *flag on BOTH the if and
+	// else branches) and then read. Scope-aware keys must not let one block's
+	// init line suppress the other's use, and the interprocedural summary must
+	// mark the output param as written on every path. This pins the reported
+	// false positive (function output param misreported as uninitialized).
+	store := runIndexAndDetect(t, "tc81_outparam_ifelse.c")
+	events, _ := store.ListEventsByType(context.Background(), "VALUE_USE")
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Variable == "version" {
+			t.Errorf("version must not be reported as uninit when filled via &version output-param on both branches")
+		}
+	}
+}
+
+func TestUninit_LoopCarriedLazyInit(t *testing.T) {
+	// record_num is assigned on the first loop iteration (the guard `data ==
+	// NULL` is guaranteed true because data starts NULL) and reused on later
+	// iterations. A naive CFG reachability sees the guard's false edge via the
+	// loop back-edge and reports record_num as possibly uninitialized. The
+	// loop-carried lazy-init recognition must suppress it, while a guard that
+	// is NOT satisfied at loop entry keeps a genuine uninit reported.
+	store := runIndexAndDetect(t, "tc82_loop_carried_init.c")
+	events, _ := store.ListEventsByType(context.Background(), "VALUE_USE")
+
+	stackUninit := map[string]map[string]int{} // function -> variable -> count
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+			Origin   string `json:"origin"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Origin != "stack_uninit" {
+			continue
+		}
+		fn, _ := store.GetFunctionByID(context.Background(), e.EntityID)
+		if fn == nil {
+			continue
+		}
+		if stackUninit[fn.Name] == nil {
+			stackUninit[fn.Name] = map[string]int{}
+		}
+		stackUninit[fn.Name][props.Variable]++
+	}
+
+	if n := stackUninit["get_all_record"]["record_num"]; n > 0 {
+		t.Errorf("record_num must not be reported as stack_uninit (loop-carried lazy init), got %d", n)
+	}
+	if n := stackUninit["genuine_loop_uninit"]["v"]; n == 0 {
+		t.Errorf("genuine_loop_uninit's v must still be reported as stack_uninit (guard not satisfied at loop entry), got 0")
+	}
+}

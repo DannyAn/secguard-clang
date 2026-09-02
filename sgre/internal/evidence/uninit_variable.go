@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -74,9 +75,61 @@ func (d *UninitVariableDetector) collectMacroWrites(ctx context.Context) map[str
 	return macros.MergeWriteSummaries(perFile...)
 }
 
+// varDecl describes one declaration of a local variable for scope-aware uninit
+// tracking. C allows the same name in two nested blocks (`int v;` in two
+// different `if` bodies); tracking every fact by bare name would let one
+// occurrence's output-parameter init line suppress (or, worse, hide) the other's
+// genuinely-uninitialized use. varKey scopes each fact to its declaration line.
+type varDecl struct {
+	name     string
+	declLine int
+	scopeEnd int
+}
+
+// varKey returns a scope-aware key for a variable occurrence: name plus the line
+// of the declaration that introduced it. Two `int v` in different blocks get
+// different keys, so their init/assign facts no longer collide.
+func varKey(name string, declLine int) string {
+	return fmt.Sprintf("%s@%d", name, declLine)
+}
+
+// enclosingScopeEnd returns the end line of the innermost scope that contains
+// node: the enclosing compound_statement, or — for a single-statement
+// if/loop/switch body without braces — the enclosing control-flow statement.
+// It bounds a declaration's shadowing range for varKey resolution.
+func enclosingScopeEnd(node parser.Node) int {
+	for n := node.Parent(); n != nil; n = n.Parent() {
+		switch n.Kind() {
+		case "compound_statement":
+			return n.EndLine()
+		case "if_statement", "while_statement", "do_statement", "for_statement", "switch_statement":
+			return n.EndLine()
+		}
+	}
+	return node.EndLine()
+}
+
+// resolveVarKey maps a bare identifier use at useLine to the varKey of the
+// declaration that is in scope there: the latest declaration (innermost shadow)
+// whose declLine is before the use and whose scopeEnd covers it. It returns ""
+// when no such declaration exists (e.g. a global or a macro-typed identifier).
+func resolveVarKey(declsByName map[string][]varDecl, name string, useLine int) string {
+	var best int = -1
+	for _, d := range declsByName[name] {
+		if d.declLine < useLine && d.scopeEnd >= useLine && d.declLine > best {
+			best = d.declLine
+		}
+	}
+	if best < 0 {
+		return ""
+	}
+	return varKey(name, best)
+}
+
 func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, decls, assigns, calls, returns, inits, ifs, whiles, fors []parser.Node, bodies map[int]parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, result *DetectResult) {
-	uninitVars := make(map[string]int)
+	uninitVars := make(map[string]bool)
 	assignSites := make(map[string][]int)
+	declsByName := make(map[string][]varDecl)
 	// outputParamInitLines maps a variable to the line after which it is
 	// definitely written via an output parameter (`&x` passed to a writer). A
 	// use before that line (e.g. inside a failure branch, TC16) stays reported;
@@ -104,7 +157,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 				dc := child.NamedChildren()
 				if len(dc) >= 1 {
 					if name := extractVarName(dc[0]); name != "" {
-						assignSites[name] = append(assignSites[name], decl.StartLine())
+						assignSites[varKey(name, decl.StartLine())] = append(assignSites[varKey(name, decl.StartLine())], decl.StartLine())
 					}
 				}
 			}
@@ -112,9 +165,11 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		if hasInit || isStatic {
 			continue
 		}
+		scopeEnd := enclosingScopeEnd(decl)
 		for _, child := range decl.NamedChildren() {
 			if child.Kind() == "identifier" && !parser.IsCTypeKeyword(child.Text()) {
-				uninitVars[child.Text()] = decl.StartLine()
+				uninitVars[varKey(child.Text(), decl.StartLine())] = true
+				declsByName[child.Text()] = append(declsByName[child.Text()], varDecl{name: child.Text(), declLine: decl.StartLine(), scopeEnd: scopeEnd})
 			}
 		}
 	}
@@ -127,7 +182,9 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		// call site glues a call_expression as the first named child and buries
 		// the LHS in an ERROR node (`LIST_FOR_EACH(x, h)\n q = 1`).
 		if name := assignmentLHSName(assign); name != "" {
-			assignSites[name] = append(assignSites[name], assign.StartLine())
+			if key := resolveVarKey(declsByName, name, assign.StartLine()); key != "" {
+				assignSites[key] = append(assignSites[key], assign.StartLine())
+			}
 		}
 	}
 
@@ -142,8 +199,10 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		// of that argument is not reported.
 		if written := macros.WrittenArgs(call, macroWrites); len(written) > 0 {
 			for name := range written {
-				if call.StartLine() > outputParamInitLines[name] {
-					outputParamInitLines[name] = call.StartLine()
+				if key := resolveVarKey(declsByName, name, call.StartLine()); key != "" {
+					if call.StartLine() > outputParamInitLines[key] {
+						outputParamInitLines[key] = call.StartLine()
+					}
 				}
 			}
 		}
@@ -152,7 +211,9 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		if callName == "va_start" || callName == "va_copy" {
 			if args := getCallArgs(call); len(args) > 0 {
 				if name := extractVarName(args[0]); name != "" {
-					outputParamInitLines[name] = call.StartLine()
+					if key := resolveVarKey(declsByName, name, call.StartLine()); key != "" {
+						outputParamInitLines[key] = call.StartLine()
+					}
 				}
 			}
 		}
@@ -176,6 +237,10 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 					continue // only whole-variable &x, not &x.field
 				}
 				name := inner[0].Text()
+				key := resolveVarKey(declsByName, name, call.StartLine())
+				if key == "" {
+					continue
+				}
 				initLine := call.StartLine()
 				if hasSummary && !isOutputParamInitializer(callName) {
 					if summary.ParamWrites[argIdx] {
@@ -196,8 +261,8 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 						initLine = call.StartLine()
 					}
 				}
-				if initLine > outputParamInitLines[name] {
-					outputParamInitLines[name] = initLine
+				if initLine > outputParamInitLines[key] {
+					outputParamInitLines[key] = initLine
 				}
 			}
 		}
@@ -223,7 +288,9 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 				target := inner[0]
 				if target.Kind() == "field_expression" || target.Kind() == "subscript_expression" {
 					if base := extractVarName(target); base != "" {
-						assignSites[base] = append(assignSites[base], call.StartLine())
+						if key := resolveVarKey(declsByName, base, call.StartLine()); key != "" {
+							assignSites[key] = append(assignSites[key], call.StartLine())
+						}
 					}
 				}
 			}
@@ -239,20 +306,61 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		)
 	}
 
+	// Loop-carried lazy init: `while (...) { if (g == NULL) { v = ...; g = ...; }
+	// ... use(v) ... }`. The guard is true on the first pass (g is null/zero
+	// before the loop), so v is written before every in-loop use. Record it so a
+	// use after the guard block, still inside the loop, is treated as
+	// initialized.
+	loopInit := make(map[string]loopCarriedInit)
+	for _, loop := range append(append([]parser.Node{}, whiles...), fors...) {
+		if !funcLineRange(f, loop.StartLine()) {
+			continue
+		}
+		body := loop.ChildByFieldName("body")
+		if body == nil {
+			continue
+		}
+		guardIf := firstIfInLoopBody(*body)
+		if guardIf == nil || guardIf.ChildByFieldName("alternative") != nil {
+			continue
+		}
+		g := nullZeroGuardVar(guardIf.ChildByFieldName("condition"))
+		if g == "" || !nullZeroInitializedBefore(g, loop.StartLine(), decls, assigns) {
+			continue
+		}
+		cons := guardIf.ChildByFieldName("consequence")
+		if cons == nil {
+			continue
+		}
+		for name := range straightLinePrefixAssignedVars(*cons) {
+			key := resolveVarKey(declsByName, name, cons.StartLine())
+			if key == "" || !uninitVars[key] {
+				continue
+			}
+			loopInit[key] = loopCarriedInit{blockEnd: cons.EndLine(), loopEnd: loop.EndLine()}
+		}
+	}
+
 	checkUse := func(useLine int, name string) {
 		if parser.IsCTypeKeyword(name) {
 			return
 		}
-		if _, uninit := uninitVars[name]; !uninit {
+		key := resolveVarKey(declsByName, name, useLine)
+		if key == "" || !uninitVars[key] {
 			return
 		}
 		// Output-param initialization: a use after the (possibly guard-delayed)
 		// write-through point is initialized. A use before it — e.g. inside the
 		// failure branch of a conditional writer (TC16) — stays reported.
-		if initLine, ok := outputParamInitLines[name]; ok && useLine > initLine {
+		if initLine, ok := outputParamInitLines[key]; ok && useLine > initLine {
 			return
 		}
-		sites := assignSites[name]
+		// Loop-carried lazy init: a use after the guard block, within the same
+		// loop, reads a value written on the first iteration.
+		if li, ok := loopInit[key]; ok && useLine > li.blockEnd && useLine <= li.loopEnd {
+			return
+		}
+		sites := assignSites[key]
 		if len(sites) == 0 {
 			d.insertValueUseEvent(ctx, f, file, useLine, name, "stack_uninit", result)
 			return
@@ -569,6 +677,157 @@ func assignsVar(stmt parser.Node, varName string) bool {
 		}
 	}
 	return false
+}
+
+// loopCarriedInit records a variable that is initialized on the first loop
+// iteration and retains that value on every later iteration: the classic
+// `while (...) { if (g == NULL) { v = ...; g = ...; } ... use(v) ... }`
+// lazy-init idiom. The guard `g == NULL` is guaranteed TRUE on the first pass
+// (g is null/zero-initialized immediately before the loop), so v is written
+// before any use inside the loop. A naive CFG reachability sees the guard's
+// false edge — only reachable via the back edge, i.e. after v was already
+// written — and wrongly reports v as possibly uninitialized.
+type loopCarriedInit struct {
+	blockEnd int // end line of the guard if-block (v is written before this)
+	loopEnd  int // end line of the enclosing loop (scopes the suppression)
+}
+
+// firstIfInLoopBody returns the first statement of a loop body when it is an
+// `if` guard (the lazy-init guard shape), or nil. A leading declaration or other
+// statement disqualifies the pattern conservatively.
+func firstIfInLoopBody(body parser.Node) *parser.Node {
+	if body.Kind() == "if_statement" {
+		return &body
+	}
+	if body.Kind() != "compound_statement" {
+		return nil
+	}
+	for _, child := range body.NamedChildren() {
+		if child.Kind() == "if_statement" {
+			return &child
+		}
+		return nil
+	}
+	return nil
+}
+
+// nullZeroGuardVar returns the variable name g when cond is a positive
+// "g is null/zero/false" test (`g == NULL`, `NULL == g`, `!g`, `g == 0`), the
+// guard shape that is TRUE on the first pass when g is null/zero before the
+// loop. It returns "" for any other condition (a bare `if (g)` truthiness guard
+// is deliberately NOT matched: it does not prove g is the pre-loop sentinel).
+func nullZeroGuardVar(cond *parser.Node) string {
+	if cond == nil {
+		return ""
+	}
+	t := strings.TrimSpace(cond.Text())
+	t = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(t), "("), ")"))
+	var g string
+	switch {
+	case strings.HasSuffix(t, "== NULL"):
+		g = strings.TrimSpace(strings.TrimSuffix(t, "== NULL"))
+	case strings.HasPrefix(t, "NULL =="):
+		g = strings.TrimSpace(strings.TrimPrefix(t, "NULL =="))
+	case strings.HasSuffix(t, "== 0"):
+		g = strings.TrimSpace(strings.TrimSuffix(t, "== 0"))
+	case strings.HasPrefix(t, "0 =="):
+		g = strings.TrimSpace(strings.TrimPrefix(t, "0 =="))
+	case strings.HasPrefix(t, "!") && !strings.HasPrefix(t, "!="):
+		g = strings.TrimSpace(strings.TrimPrefix(t, "!"))
+	default:
+		return ""
+	}
+	if g == "" || strings.ContainsAny(g, " ()[]+-*/%&|^!<>=?.,;:\"'\t\n") {
+		return ""
+	}
+	return g
+}
+
+// isNullZeroExpr reports whether node is a literal null/zero sentinel.
+func isNullZeroExpr(node parser.Node) bool {
+	t := strings.TrimSpace(strings.Trim(node.Text(), "() \t"))
+	return t == "NULL" || t == "0" || t == "0x0" || t == "false" || t == "FALSE"
+}
+
+// nullZeroInitializedBefore reports whether g's last write before loopStart is
+// a null/zero sentinel, so the lazy-init guard `g == NULL` / `!g` is TRUE when
+// the loop is first entered.
+func nullZeroInitializedBefore(g string, loopStart int, decls, assigns []parser.Node) bool {
+	lastNull := -1
+	lastWrite := -1
+	for _, decl := range decls {
+		if decl.StartLine() >= loopStart {
+			continue
+		}
+		for _, child := range decl.NamedChildren() {
+			if child.Kind() != "init_declarator" {
+				continue
+			}
+			c := child.NamedChildren()
+			if len(c) < 2 || extractVarName(c[0]) != g {
+				continue
+			}
+			if isNullZeroExpr(c[1]) {
+				if decl.StartLine() > lastNull {
+					lastNull = decl.StartLine()
+				}
+			} else if decl.StartLine() > lastWrite {
+				lastWrite = decl.StartLine()
+			}
+		}
+	}
+	for _, assign := range assigns {
+		if assign.StartLine() >= loopStart {
+			continue
+		}
+		children := assign.NamedChildren()
+		if len(children) < 2 || children[0].Kind() != "identifier" || children[0].Text() != g {
+			continue
+		}
+		if isNullZeroExpr(children[1]) {
+			if assign.StartLine() > lastNull {
+				lastNull = assign.StartLine()
+			}
+		} else if assign.StartLine() > lastWrite {
+			lastWrite = assign.StartLine()
+		}
+	}
+	return lastNull >= 0 && lastNull > lastWrite
+}
+
+// straightLinePrefixAssignedVars returns the variable names assigned by the
+// straight-line prefix of block: every statement up to (but not including) the
+// first nested conditional. Those writes are unconditional whenever the block
+// is entered, which is the safe subset for loop-carried initialization.
+func straightLinePrefixAssignedVars(block parser.Node) map[string]bool {
+	vars := make(map[string]bool)
+	collect := func(node parser.Node) {
+		for _, assign := range node.FindAll("assignment_expression") {
+			if name := assignmentLHSName(assign); name != "" {
+				vars[name] = true
+			}
+		}
+		for _, decl := range node.FindAll("init_declarator") {
+			c := decl.NamedChildren()
+			if len(c) >= 1 {
+				if name := extractVarName(c[0]); name != "" {
+					vars[name] = true
+				}
+			}
+		}
+	}
+	if block.Kind() != "compound_statement" {
+		collect(block)
+		return vars
+	}
+	for _, child := range block.NamedChildren() {
+		switch child.Kind() {
+		case "if_statement", "while_statement", "do_statement", "for_statement", "switch_statement":
+			return vars
+		}
+		collect(child)
+	}
+	return vars
 }
 
 func isInIfRange(ifs []parser.Node, f *db.Function, line int) bool {
