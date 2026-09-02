@@ -2,6 +2,48 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.5.7] - 2026-09-02
+
+### 主题：误报收敛（unchecked-return / null-deref / uninit）+ agent 写入效率
+
+本版集中消除三类漏洞的最后一批系统性误报：`unchecked-return` 的赋值内联守卫、
+`null-deref` 的三类 guard（退出分支重赋值 / continue·break·goto / 判空谓词函数）、
+`uninit` 的三类（sizeof / 无函数宏头文件 / 出参远守卫）；并顺带消除 agent 批量写文件
+「先报错再思考」的往返。
+
+### 误报消减（unchecked-return）
+
+- **unchecked-return**：识别赋值内联守卫 `if ((fp = fopen(...)) == NULL) return;`——
+  条件内的赋值不再被漏判为「返回值未检查」，消除 fopen/opendir 的 CWE-252 误报。
+
+### 误报消减（null-deref）
+
+- **null-deref**：退出分支上的重赋值不截断 null-guard 作用域——`if (g == NULL) return;`
+  之后错误分支里的 `g = NULL; return;` 是死路径上的重赋值，不再使早期守卫提前失效。
+- **null-deref**：识别 continue/break/goto 早期退出守卫——`if (p == NULL) { ...; continue; }`
+  这类循环内跳出当前迭代的判空守卫不再漏报，其后的解引用不再误报；break/continue 守卫的
+  非空作用域限制在所在循环/switch 体内，不扩散到循环之后。
+- **null-deref**：判空谓词函数的形参视为已被判空——`is_empty(data)` 内部
+  `data == NULL || data->content == NULL || ...` 先判空再解引用，跨过程检测器据此不再把
+  调用方 `if (is_empty_string(p)) goto out;` 的调用点误报为对 p 的解引用。
+
+### 误报消减（uninit）
+
+- **uninit**：`sizeof(val)` 不是对变量的读——`uint32_t len = sizeof(val);` 不再把 val
+  误报为未初始化；`sizeof(uint32_t)` 与 `sizeof(*((T*)&val))` 纯类型表达式一并覆盖。
+- **uninit**：宏写入摘要遍历所有已索引文件——只含宏定义/extern 声明、没有函数定义的
+  头文件（如 POOL_FOR）不再被跳过，其写形参签名到达 .c 调用点，POOL_FOR 初始化的
+  pool_id 不再误报未初始化。
+- **uninit**：出参守卫取消 +2 行距窗口——`rc = fn(&x); ...(≥3行)...; if (rc != 0) return;`
+  的守卫现在能被找到，成功路径上的 x 不再误报；同时 planner 在 mustReaching 前检查是否
+  存在出参写（&x），存在则降为 suspected 交 AI 复审，不再机器确认（auto-confirm）。
+
+### Agent / 扩展
+
+- **extension**：消除批量写文件「先报错再思考」的往返——落库指引明确 Write 工具对已存在
+  文件要求先 Read 再覆盖，`.tmp` JSON 用全新文件名写、报错直接换新名，不再白费一轮
+  「查目录/改方案」。
+
 ## [0.5.6] - 2026-09-02
 
 ### 主题：uninit 误报收敛 + plan 阶段性能
