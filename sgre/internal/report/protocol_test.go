@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"testing"
-
-	"github.com/DannyAn/secguard-clang/internal/planner"
 )
 
 func TestGenerateScanID_Format(t *testing.T) {
@@ -41,9 +39,6 @@ func TestWriteDismissed_RoundTrip(t *testing.T) {
 				VulnerabilityType: "null-deref",
 				DroppedCount:      3,
 				DroppedByReason:   map[string]int{"nullable_source": 2, "guard": 1},
-				Dropped: []planner.Dismissed{
-					{FunctionName: "parse", VariableName: "hdr", Line: 10, Filter: "nullable_source", Reason: "no nullable source for variable hdr before line 10"},
-				},
 			},
 		},
 	}
@@ -65,7 +60,7 @@ func TestWriteDismissed_RoundTrip(t *testing.T) {
 	if got.TotalDropped != 3 || len(got.ByVulnType) != 1 {
 		t.Fatalf("unexpected dismissed summary: %+v", got)
 	}
-	if got.ByVulnType[0].Dropped[0].Reason == "" {
-		t.Fatalf("drop reason should be persisted, got empty")
+	if got.ByVulnType[0].DroppedCount != 3 || got.ByVulnType[0].DroppedByReason["nullable_source"] != 2 {
+		t.Fatalf("drop summary should be persisted, got %+v", got.ByVulnType[0])
 	}
 }

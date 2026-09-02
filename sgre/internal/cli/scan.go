@@ -171,7 +171,6 @@ func runScanCmd(ctx context.Context, args []string) int {
 				VulnerabilityType: vulnType,
 				DroppedCount:      len(result.Summary.Dropped),
 				DroppedByReason:   result.Summary.DroppedByReason,
-				Dropped:           result.Summary.Dropped,
 			})
 			totalDropped += len(result.Summary.Dropped)
 		}

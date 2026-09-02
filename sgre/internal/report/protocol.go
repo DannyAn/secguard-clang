@@ -152,11 +152,13 @@ type IndexSummary struct {
 	FilesSkipped     int `json:"files_skipped"`
 }
 
-// DismissedSummary is the persisted ledger of every candidate a filter dropped,
-// keyed by vulnerability type. It turns the convergence pipeline's hard
-// truncation into an auditable trail: each drop carries a filter name and a
-// human-readable reason, so "~600 raw candidates → ~10 findings" can be
-// explained rather than asserted.
+// DismissedSummary is the persisted dismissed ledger, keyed by vulnerability
+// type. It records the convergence pipeline's drops as a COUNT plus a per-filter
+// reason breakdown — the actionable audit trail for "~600 raw candidates → ~10
+// findings". The full per-candidate drop list is intentionally NOT persisted: it
+// was ~8MB of write-only detail (null-deref alone dropped ~28k candidates) that
+// neither the AI classifier nor any tool reads back; `secguard plan <type>`
+// still emits the full trail on demand.
 type DismissedSummary struct {
 	ScanID       string              `json:"scan_id"`
 	TotalDropped int                 `json:"total_dropped"`
@@ -164,10 +166,9 @@ type DismissedSummary struct {
 }
 
 type VulnTypeDismissed struct {
-	VulnerabilityType string              `json:"vulnerability_type"`
-	DroppedCount      int                 `json:"dropped_count"`
-	DroppedByReason   map[string]int      `json:"dropped_by_reason,omitempty"`
-	Dropped           []planner.Dismissed `json:"dropped"`
+	VulnerabilityType string         `json:"vulnerability_type"`
+	DroppedCount      int            `json:"dropped_count"`
+	DroppedByReason   map[string]int `json:"dropped_by_reason,omitempty"`
 }
 
 // WriteDismissed writes the dismissed ledger to DismissedFile inside scanDir.
