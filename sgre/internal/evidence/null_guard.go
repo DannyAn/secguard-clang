@@ -29,7 +29,7 @@ func (d *NullGuardDetector) Detect(ctx context.Context) (DetectResult, error) {
 	// the whole scan tree before guard detection: a helper defined in a .h
 	// header is indexed as a Function in another file, so the per-file callback
 	// below could not see its body. The summary is consulted by detectHelperGuards.
-	helpers := d.collectNullCheckHelpers(ctx)
+	helpers := d.collectNullCheckHelpers(ctx, &result)
 
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		ifs := root.FindAll("if_statement")

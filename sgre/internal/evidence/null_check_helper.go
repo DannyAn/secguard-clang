@@ -16,7 +16,7 @@ import (
 // (a private sub-function) or in a .h header (a static inline) — both are
 // indexed as Functions, so a single cross-file pass covers both sources.
 // Returns map[function name] -> 0-based parameter indices the function null-checks.
-func (d *NullGuardDetector) collectNullCheckHelpers(ctx context.Context) map[string][]int {
+func (d *NullGuardDetector) collectNullCheckHelpers(ctx context.Context, result *DetectResult) map[string][]int {
 	out := make(map[string][]int)
 	_ = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		funcDefs := root.FindAll("function_definition")
@@ -44,8 +44,29 @@ func (d *NullGuardDetector) collectNullCheckHelpers(ctx context.Context) map[str
 			for i := range seen {
 				checked = append(checked, i)
 			}
-			if len(checked) > 0 {
-				out[f.Name] = checked
+			if len(checked) == 0 {
+				continue
+			}
+			out[f.Name] = checked
+			// The helper null-checks these parameters before any deref inside
+			// its body (the `p == NULL || p->f ...` short-circuit), so record a
+			// NULL_GUARD for each inside the helper itself. The interprocedural
+			// null-deref detector reads the callee's NULL_GUARD events to decide
+			// whether a dereferenced parameter is guarded: without this, a
+			// caller's `if (is_empty(p)) goto out;` call site is misreported as a
+			// null-deref of p even though the helper null-checks p first.
+			for _, i := range checked {
+				if i >= len(params) || params[i] == "" {
+					continue
+				}
+				if emitEvent(ctx, d.store, d.logger, "NULL_GUARD", f.ID, &db.Location{FileID: file.ID, Line: f.StartLine}, map[string]interface{}{
+					"variable":    params[i],
+					"condition":   "HELPER_PARAM",
+					"scope_start": f.StartLine,
+					"scope_end":   f.EndLine,
+				}) {
+					result.EventsCreated++
+				}
 			}
 		}
 	})
