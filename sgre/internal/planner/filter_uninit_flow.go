@@ -81,6 +81,16 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 			// otherwise it stays a suspicion for the AI to confirm.
 			if flow.mustReaching(c.VariableName, c.Line) {
 				c.SuspicionLevel = "confirmed"
+				// An output-param write (`&x` passed to a callee) is invisible to
+				// the flow engine's gen/kill model (it only tracks direct
+				// assignments, field writes, and macro outputs), so "uninit on
+				// every path" is unproven when such a write precedes the use —
+				// the callee may have written x on the success path. Downgrade to
+				// suspected so the AI weighs the interprocedural write instead of
+				// rubber-stamping a machine-confirmed false positive.
+				if f.hasOutputParamWrite(fnByID, files[c.FileID], c) {
+					c.SuspicionLevel = "suspected"
+				}
 			}
 			kept = append(kept, c)
 		} else {
@@ -337,6 +347,7 @@ func assignBaseName(lhs parser.Node) string {
 // filter (hasCoveringAssign issued ~9 whole-tree FindAll walks per candidate).
 type hoistedUninitFile struct {
 	assigns                                   []parser.Node
+	calls                                     []parser.Node
 	ifs, whiles, fors, dos, switches          []parser.Node
 	preprocIfs, preprocIfdefs, preprocIfndefs []parser.Node
 }
@@ -344,6 +355,7 @@ type hoistedUninitFile struct {
 func hoistUninitFile(root parser.Node) *hoistedUninitFile {
 	return &hoistedUninitFile{
 		assigns:        root.FindAll("assignment_expression"),
+		calls:          root.FindAll("call_expression"),
 		ifs:            root.FindAll("if_statement"),
 		whiles:         root.FindAll("while_statement"),
 		fors:           root.FindAll("for_statement"),
@@ -353,6 +365,43 @@ func hoistUninitFile(root parser.Node) *hoistedUninitFile {
 		preprocIfdefs:  root.FindAll("preproc_ifdef"),
 		preprocIfndefs: root.FindAll("preproc_ifndef"),
 	}
+}
+
+// hasOutputParamWrite reports whether c.VariableName is passed by address
+// (`&x`) to a call before the use, within the candidate's function. Such a write
+// is invisible to buildDefiniteInitFlow's gen/kill model, so it is used only to
+// downgrade an otherwise-must-reachable uninit from `confirmed` to `suspected`.
+func (f *DefiniteInitFilter) hasOutputParamWrite(fnByID map[int64]*db.Function, hf *hoistedUninitFile, c Candidate) bool {
+	if hf == nil {
+		return false
+	}
+	fn := fnByID[c.FunctionID]
+	if fn == nil {
+		return false
+	}
+	for _, call := range hf.calls {
+		if call.StartLine() < fn.StartLine || call.StartLine() > fn.EndLine || call.StartLine() >= c.Line {
+			continue
+		}
+		for _, child := range call.NamedChildren() {
+			if child.Kind() != "argument_list" {
+				continue
+			}
+			for _, arg := range child.NamedChildren() {
+				if arg.Kind() != "pointer_expression" || !strings.HasPrefix(strings.TrimSpace(arg.Text()), "&") {
+					continue
+				}
+				inner := arg.NamedChildren()
+				if len(inner) == 0 || inner[0].Kind() != "identifier" {
+					continue
+				}
+				if inner[0].Text() == c.VariableName {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // hasCoveringAssign reports whether c.VariableName has an assignment before

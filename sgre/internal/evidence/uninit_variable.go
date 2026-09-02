@@ -1215,28 +1215,34 @@ func outputParamGuardLine(ifs []parser.Node, f *db.Function, call parser.Node, c
 		if !funcLineRange(f, ifNode.StartLine()) {
 			continue
 		}
-		// The guard sits at or immediately after the call.
-		if ifNode.StartLine() < callLine || ifNode.StartLine() > callLine+2 {
+		// The guard is the error check on this call and may sit any number of
+		// statements AFTER the call (`rc = fn(&x); ...; if (rc != 0) return;`).
+		// There is deliberately NO fixed line window: a guard 3+ lines below the
+		// call was previously missed and the output was misreported as uninit.
+		if ifNode.StartLine() < callLine {
 			continue
 		}
 		cons := ifNode.ChildByFieldName("consequence")
 		cond := ifNode.ChildByFieldName("condition")
-		// Form A: the call is the guard's condition (`if (fn(...) != 0)`), or
-		// Form B: `rc = fn(...); if (rc != 0)` — the call result is captured in
-		// an assignment whose left-hand variable is then tested by the guard's
-		// condition. The condition must reference that exact variable (matched as
-		// an identifier, not a substring, so `rc` does not match `rc2`); an
-		// unrelated guard (`if (other) return`) does not establish the output.
-		formA := cond != nil && strings.Contains(cond.Text(), callName)
+		// Form A: the call IS the guard's condition (`if (fn(...) != 0)`) — the
+		// call and the if share a line. Form B: `rc = fn(...); if (rc != 0)` —
+		// the call result is captured in an assignment whose left-hand variable
+		// is then tested by a LATER guard's condition. The condition must
+		// reference that exact variable (matched as an identifier, not a
+		// substring, so `rc` does not match `rc2`); an unrelated guard
+		// (`if (other) return`) does not establish the output.
+		formA := cond != nil && ifNode.StartLine() == callLine && strings.Contains(cond.Text(), callName)
 		formB := false
-		if parent := call.Parent(); parent != nil && cond != nil &&
-			(parent.Kind() == "assignment_expression" || parent.Kind() == "init_declarator") {
-			if lhs := parent.NamedChildren(); len(lhs) > 0 {
-				if v := strings.TrimSpace(lhs[0].Text()); v != "" {
-					for _, id := range cond.FindAll("identifier") {
-						if id.Text() == v {
-							formB = true
-							break
+		if ifNode.StartLine() > callLine {
+			if parent := call.Parent(); parent != nil && cond != nil &&
+				(parent.Kind() == "assignment_expression" || parent.Kind() == "init_declarator") {
+				if lhs := parent.NamedChildren(); len(lhs) > 0 {
+					if v := strings.TrimSpace(lhs[0].Text()); v != "" {
+						for _, id := range cond.FindAll("identifier") {
+							if id.Text() == v {
+								formB = true
+								break
+							}
 						}
 					}
 				}
