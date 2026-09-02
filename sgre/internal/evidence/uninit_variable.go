@@ -398,7 +398,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		writes := nestedAssignTargets(node)
 		for _, id := range node.FindAll("identifier") {
 			name := id.Text()
-			if name == skipName || addressed[name] || writes[name] || extraSkip[name] || isValueFieldBase(id) {
+			if name == skipName || addressed[name] || writes[name] || extraSkip[name] || isValueFieldBase(id) || isInsideTypeExpr(id) {
 				continue
 			}
 			checkUse(line, name)
@@ -458,7 +458,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		addressed := addressedArgs(children[rhsStart])
 		for _, id := range children[rhsStart].FindAll("identifier") {
 			name := id.Text()
-			if addressed[name] || writes[name] || isValueFieldBase(id) {
+			if addressed[name] || writes[name] || isValueFieldBase(id) || isInsideTypeExpr(id) {
 				continue
 			}
 			checkUse(assign.StartLine(), name)
@@ -517,7 +517,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		// LHS, so the LHS identifier is not a read of an uninitialized value.
 		condWrites := nestedAssignTargets(*cond)
 		for _, id := range cond.FindAll("identifier") {
-			if initWrites[id.Text()] || addressed[id.Text()] || condWrites[id.Text()] {
+			if initWrites[id.Text()] || addressed[id.Text()] || condWrites[id.Text()] || isInsideTypeExpr(id) {
 				continue
 			}
 			checkUse(cond.StartLine(), id.Text())
