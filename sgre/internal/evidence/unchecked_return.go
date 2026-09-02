@@ -153,13 +153,37 @@ func testedOperands(cond parser.Node) []string {
 			continue
 		}
 		for _, child := range b.NamedChildren() {
-			switch child.Kind() {
-			case "identifier", "field_expression", "subscript_expression":
-				out = append(out, child.Text())
+			if v := testedOperandVar(child); v != "" {
+				out = append(out, v)
 			}
 		}
 	}
 	return out
+}
+
+// testedOperandVar returns the storage location a comparison operand tests, or
+// "" when the operand is not a direct null/error test target. `if (p == NULL)`
+// yields "p"; `if (p->len == 0)` yields "p->len" (the field, not p); and the
+// assignment-in-condition idiom `if ((p = fopen(...)) == NULL)` yields "p" — the
+// comparison tests the freshly assigned value, so the assigned location is the
+// test target.
+func testedOperandVar(operand parser.Node) string {
+	switch operand.Kind() {
+	case "identifier", "field_expression", "subscript_expression":
+		return operand.Text()
+	case "parenthesized_expression":
+		for _, child := range operand.NamedChildren() {
+			if v := testedOperandVar(child); v != "" {
+				return v
+			}
+		}
+	case "assignment_expression":
+		children := operand.NamedChildren()
+		if len(children) > 0 {
+			return assignedVariable(children[0])
+		}
+	}
+	return ""
 }
 
 // bareConditionVar returns the variable name when a condition is a bare

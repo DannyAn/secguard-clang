@@ -116,6 +116,18 @@ func TestNewDetector_UncheckedReturn(t *testing.T) {
 	}
 }
 
+// TestNewDetector_UncheckedReturn_InlineGuard pins the assignment-in-condition
+// idiom: `if ((fp = fopen(...)) == NULL) return;` (and the opendir analogue) is a
+// null/error check, so the return value must NOT be flagged as unchecked. Only
+// the control case, whose result is never tested before use, still emits.
+func TestNewDetector_UncheckedReturn_InlineGuard(t *testing.T) {
+	store := runOneDetector(t, "tc83_unchecked_return_inline_guard.c",
+		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewUncheckedReturnDetector(s, p, l) })
+	if got := eventCount(t, store, "UNCHECKED_RETURN"); got != 1 {
+		t.Errorf("expected 1 UNCHECKED_RETURN event (only control_unchecked), got %d", got)
+	}
+}
+
 func TestNewDetector_PathTraversal(t *testing.T) {
 	store := runOneDetector(t, "tc61_path_traversal.c",
 		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewPathTraversalDetector(s, p, l) })
