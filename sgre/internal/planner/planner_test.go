@@ -351,3 +351,39 @@ func TestCallReachCache_ComputedOnce(t *testing.T) {
 		t.Errorf("computeCallReach should run once, but ListGraphEdgesByType was called %d times", cs.edgesCalls)
 	}
 }
+
+// countingFuncStore wraps a db.Store and counts ListFunctions calls — the most
+// repeated (and expensive) query inside the interprocedural taint summaries.
+type countingFuncStore struct {
+	db.Store
+	funcsCalls int
+}
+
+func (c *countingFuncStore) ListFunctions(ctx context.Context) ([]*db.Function, error) {
+	c.funcsCalls++
+	return c.Store.ListFunctions(ctx)
+}
+
+// TestTaintSummaryCache_ComputedOnce verifies the taint summary cache computes
+// the interprocedural taint summaries once and reuses them — what lets
+// injection / path-traversal / format-string share one ~39s fixpoint pass
+// instead of each recomputing it.
+func TestTaintSummaryCache_ComputedOnce(t *testing.T) {
+	ctx := context.Background()
+	cs := &countingFuncStore{Store: newMockStore()}
+	cache := newTaintSummaryCache(cs, nil)
+
+	if _, err := cache.get(ctx); err != nil {
+		t.Fatalf("first get: %v", err)
+	}
+	firstCalls := cs.funcsCalls
+	if firstCalls == 0 {
+		t.Fatalf("expected at least one ListFunctions call during compute, got 0")
+	}
+	if _, err := cache.get(ctx); err != nil {
+		t.Fatalf("second get: %v", err)
+	}
+	if cs.funcsCalls != firstCalls {
+		t.Errorf("taint summary should compute once, but ListFunctions went %d -> %d", firstCalls, cs.funcsCalls)
+	}
+}

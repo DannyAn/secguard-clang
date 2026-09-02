@@ -5,12 +5,81 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
+
+// taintSummary is the interprocedural taint summary shared across injection /
+// path-traversal / format-string. Its three parts — returnsParam, retTainted,
+// paramTainted (plus the hasCaller side-map) — depend only on the graph layer
+// (functions + RETURN/CALL/PARAM_BINDING edges), never on the candidate set, so
+// every input type was recomputing the same ~39s fixpoints (the dominant
+// plan-stage cost) before this cache existed.
+type taintSummary struct {
+	returnsParam map[string]map[int]bool
+	retTainted   map[string]bool
+	paramTainted map[int64]map[int]bool
+	hasCaller    map[int64]map[int]bool
+}
+
+// taintSummaryCache memoizes taintSummary across the Planner's Plan() calls.
+// Only a SUCCESS is cached (mirroring callReachCache): a transient failure is
+// retried by the next Plan() instead of being frozen in place.
+type taintSummaryCache struct {
+	store  db.Store
+	parser *parser.Parser
+
+	mu   sync.Mutex
+	done bool
+	res  *taintSummary
+	err  error
+}
+
+func newTaintSummaryCache(store db.Store, p *parser.Parser) *taintSummaryCache {
+	return &taintSummaryCache{store: store, parser: p}
+}
+
+func (c *taintSummaryCache) get(ctx context.Context) (*taintSummary, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.done {
+		return c.res, c.err
+	}
+	c.res, c.err = c.compute(ctx)
+	if c.err == nil {
+		c.done = true
+	}
+	return c.res, c.err
+}
+
+// compute runs the three interprocedural fixpoints once. It reuses the filter's
+// existing methods through a throwaway receiver — those methods only touch
+// store + parser, never the candidate set or the logger.
+func (c *taintSummaryCache) compute(ctx context.Context) (*taintSummary, error) {
+	f := &TaintSourceFilter{store: c.store, parser: c.parser}
+	returnsParam, err := f.computeReturnsParam(ctx)
+	if err != nil {
+		return nil, err
+	}
+	retTainted, err := f.computeRetTainted(ctx, returnsParam)
+	if err != nil {
+		return nil, err
+	}
+	paramTainted, hasCaller, err := f.computeParamTainted(ctx, retTainted, returnsParam)
+	if err != nil {
+		return nil, err
+	}
+	return &taintSummary{
+		returnsParam: returnsParam,
+		retTainted:   retTainted,
+		paramTainted: paramTainted,
+		hasCaller:    hasCaller,
+	}, nil
+}
 
 // TaintSourceFilter converges the injection / path-traversal / format-string
 // candidate streams with the same reaching-sources flow engine as null-deref,
@@ -28,10 +97,38 @@ type TaintSourceFilter struct {
 	store  db.Store
 	parser *parser.Parser
 	logger *log.Logger
+	cache  *taintSummaryCache
 }
 
-func NewTaintSourceFilter(store db.Store, p *parser.Parser, logger *log.Logger) *TaintSourceFilter {
-	return &TaintSourceFilter{store: store, parser: p, logger: logger}
+func NewTaintSourceFilter(store db.Store, p *parser.Parser, logger *log.Logger, cache *taintSummaryCache) *TaintSourceFilter {
+	return &TaintSourceFilter{store: store, parser: p, logger: logger, cache: cache}
+}
+
+// taintSummaries returns the shared interprocedural taint summaries, either from
+// the Planner's cache or computed inline when the filter was constructed without
+// one (direct unit-test construction).
+func (f *TaintSourceFilter) taintSummaries(ctx context.Context) (*taintSummary, error) {
+	if f.cache != nil {
+		return f.cache.get(ctx)
+	}
+	returnsParam, err := f.computeReturnsParam(ctx)
+	if err != nil {
+		return nil, err
+	}
+	retTainted, err := f.computeRetTainted(ctx, returnsParam)
+	if err != nil {
+		return nil, err
+	}
+	paramTainted, hasCaller, err := f.computeParamTainted(ctx, retTainted, returnsParam)
+	if err != nil {
+		return nil, err
+	}
+	return &taintSummary{
+		returnsParam: returnsParam,
+		retTainted:   retTainted,
+		paramTainted: paramTainted,
+		hasCaller:    hasCaller,
+	}, nil
 }
 
 func (f *TaintSourceFilter) Name() string { return "taint_source" }
@@ -85,22 +182,19 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 	// data from a caller (PARAM_BINDING edges). returnsParam is the
 	// context-sensitive half: a function that returns a parameter verbatim is
 	// tainted IFF that parameter is tainted — a call-site property the 0-CFA
-	// retTainted summary cannot express.
-	returnsParam, err := f.computeReturnsParam(ctx)
+	// retTainted summary cannot express. These are candidate-set-independent, so
+	// they come from the Planner's shared cache (computed once per scan).
+	summaries, err := f.taintSummaries(ctx)
 	if err != nil {
 		// Fail-closed: the summaries drive candidate DROPPING. If the graph
 		// reads fail (e.g. under parallel-planner DB contention), keep every
 		// candidate rather than silently dropping findings on empty summaries.
 		return candidates, nil, nil
 	}
-	retTainted, err := f.computeRetTainted(ctx, returnsParam)
-	if err != nil {
-		return candidates, nil, nil
-	}
-	paramTainted, paramHasCaller, err := f.computeParamTainted(ctx, retTainted, returnsParam)
-	if err != nil {
-		return candidates, nil, nil
-	}
+	returnsParam := summaries.returnsParam
+	retTainted := summaries.retTainted
+	paramTainted := summaries.paramTainted
+	paramHasCaller := summaries.hasCaller
 
 	flows, paramsByFunc, staticByFunc, paramConstChar := f.buildFlows(ctx, byFunc, retTainted, returnsParam, paramTainted)
 

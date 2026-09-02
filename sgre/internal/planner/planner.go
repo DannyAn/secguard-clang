@@ -17,6 +17,10 @@ type Planner struct {
 	// calls, since every vulnerability type runs the call-reach filter over
 	// the same graph.
 	callReachCache *callReachCache
+	// taintCache shares the interprocedural taint summaries across injection /
+	// path-traversal / format-string, which otherwise each recompute the same
+	// ~39s fixpoints (the dominant plan-stage cost).
+	taintCache *taintSummaryCache
 }
 
 func NewPlanner(store db.Store, p *parser.Parser, logger *log.Logger) *Planner {
@@ -25,6 +29,7 @@ func NewPlanner(store db.Store, p *parser.Parser, logger *log.Logger) *Planner {
 		parser:         p,
 		logger:         logger,
 		callReachCache: &callReachCache{},
+		taintCache:     newTaintSummaryCache(store, p),
 	}
 }
 
@@ -90,7 +95,7 @@ func (p *Planner) getFilters(chain string) ([]Filter, error) {
 		return []Filter{
 			NewCallReachFilter(p.store, p.callReachCache),
 			NewSafeFunctionFilter(p.store),
-			NewTaintSourceFilter(p.store, p.parser, p.logger),
+			NewTaintSourceFilter(p.store, p.parser, p.logger, p.taintCache),
 		}, nil
 	case "integer-overflow":
 		return []Filter{
