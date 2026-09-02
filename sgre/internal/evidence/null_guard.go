@@ -189,23 +189,74 @@ func (d *NullGuardDetector) detectEarlyReturnGuards(ctx context.Context, f *db.F
 			continue
 		}
 		consequence := ifNode.ChildByFieldName("consequence")
-		if consequence == nil || !strings.Contains(consequence.Text(), "return") {
+		if consequence == nil || !isExitBlock(*consequence) {
 			continue
 		}
 		for _, varName := range earlyReturnGuardedVars(*condition) {
 			if varName == "" {
 				continue
 			}
+			scopeEnd := guardExitBound(*consequence, ifNode, f)
+			if end := guardScopeEnd(assigns, f, varName, ifNode.EndLine()); end < scopeEnd {
+				scopeEnd = end
+			}
 			if emitEvent(ctx, d.store, d.logger, "NULL_GUARD", f.ID, &db.Location{FileID: file.ID, Line: ifNode.StartLine()}, map[string]interface{}{
 				"variable":    varName,
 				"condition":   "EARLY_RETURN",
 				"scope_start": ifNode.StartLine() + 1,
-				"scope_end":   guardScopeEnd(assigns, f, varName, ifNode.EndLine()),
+				"scope_end":   scopeEnd,
 			}) {
 				result.EventsCreated++
 			}
 		}
 	}
+}
+
+// guardExitBound returns the outermost line through which an early-exit guard's
+// non-null fact can hold on the fall-through. A return/goto exits the function,
+// so the bound is the function end. A break/continue exits the enclosing
+// construct's iteration/body, so the bound is that construct's body end — the
+// fall-through never reaches past it, and treating it as function-wide would
+// suppress genuine null-derefs after the loop/switch.
+func guardExitBound(cons, ifNode parser.Node, f *db.Function) int {
+	if len(cons.FindAll("continue_statement")) > 0 {
+		if end := enclosingConstructBodyEnd(ifNode, false); end > 0 {
+			return end
+		}
+	}
+	if len(cons.FindAll("break_statement")) > 0 {
+		if end := enclosingConstructBodyEnd(ifNode, true); end > 0 {
+			return end
+		}
+	}
+	return f.EndLine
+}
+
+// enclosingConstructBodyEnd returns the end line of the nearest enclosing loop
+// body (for/while/do), or — when includeSwitch is true — also a switch body
+// (break exits a switch exactly like it exits a loop). It returns 0 when the
+// node is not inside such a construct.
+func enclosingConstructBodyEnd(node parser.Node, includeSwitch bool) int {
+	for n := node.Parent(); n != nil; n = n.Parent() {
+		switch n.Kind() {
+		case "for_statement", "while_statement", "do_statement":
+			if body := n.ChildByFieldName("body"); body != nil {
+				return body.EndLine()
+			}
+			return n.EndLine()
+		case "switch_statement":
+			if !includeSwitch {
+				continue
+			}
+			if body := n.ChildByFieldName("body"); body != nil {
+				return body.EndLine()
+			}
+			return n.EndLine()
+		case "function_definition":
+			return 0
+		}
+	}
+	return 0
 }
 
 // earlyReturnGuardedVars returns the variables an early-return guard condition
