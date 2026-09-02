@@ -181,6 +181,16 @@ back to Bash:
    (If you have the `secguard_report` MCP tool instead, calling it with the
    `findings` array is equivalent and simpler.)
 
+   **Fresh-file writes.** The Write/Edit tool refuses to overwrite an existing
+   file you have not Read, so "must read before overwriting" means the file
+   ALREADY exists (a stale `.tmp` file from a prior run, or your own re-write of
+   a failed chunk) — it does NOT mean the file is missing or that you must create
+   a directory. These `.tmp` JSON files are disposable, so NEVER reuse a path:
+   write each batch to a NEW filename (`<type>.json`, then `<type>-2.json`,
+   `<type>-3.json`, …) and pass that exact path to `--write-json`. If a Write
+   still returns "must read before overwriting", do NOT stop to inspect the
+   directory — just pick the next fresh filename and write again.
+
 The `<type>.json` file MUST be a JSON array of objects with EXACTLY these keys
 (the CLI lowercases `severity`/`status`; `confidence` is 0–100):
 

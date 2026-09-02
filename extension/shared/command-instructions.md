@@ -53,6 +53,14 @@ backslash as `\\`. Do NOT hand-write JSON with unescaped inner quotes — the CL
 will reject it. Prefer writing the JSON file with the Write tool (it does not
 escape for you — escape the quotes yourself), then call `--write-json <path>`.
 
+**Fresh-file writes.** The Write tool refuses to overwrite an existing file you
+have not Read, so "must read before overwriting" means the file ALREADY exists (a
+stale `.tmp` file or your own re-write of a failed chunk) — not that it is
+missing. The `.tmp` JSON files are disposable, so never reuse a path: write each
+batch to a NEW filename (`<type>.json`, `<type>-2.json`, …) and pass that exact
+path to `--write-json`. If a Write still returns "must read before overwriting",
+do NOT stop to inspect the directory — just pick the next fresh filename.
+
 Write one `--write-json` per type (all of that type's findings in one array),
 then run `secguard report --audit --scan-id <scan_id> --output-dir <scan_dir>`
 ONCE at the very end to regenerate `report.md` (now reflecting confirmed+suspected
@@ -301,8 +309,10 @@ as `result.sarif`.)
     - tmp: <scan_dir>/../../.sgre/.tmp/
     Write findings in ≤50-finding chunks (a 100-candidate range is 2 chunks,
     NOT one giant array — one giant array overflows your context and silently
-    drops the tail). For each chunk: write `<scan_dir>/../../.sgre/.tmp/<type>-partN.json`
-    with the Write tool, then immediately
+    drops the tail). For each chunk: write a FRESH `<scan_dir>/../../.sgre/.tmp/<type>-partN.json`
+    with the Write tool (N increasing; if a Write returns "must read before
+    overwriting", do NOT stop to inspect the directory — just use the next fresh
+    filename), then immediately
     `secguard report --write-json <scan_dir>/../../.sgre/.tmp/<type>-partN.json --scan-id <scan_id> --db <scan_dir>/../../.sgre/sgre.db`
     before starting the next chunk. The write is idempotent, so partial progress is safe.
    Report back, per type: confirmed / suspected / dismissed counts + the
