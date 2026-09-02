@@ -116,3 +116,50 @@ func TestUninit_PoolForMacroCrossFile(t *testing.T) {
 		t.Errorf("real_uninit_bug must be flagged (pool_id is never initialized), got: %s", candidateNames(result))
 	}
 }
+
+// TestUninit_PoolForMacroOnlyHeader: the POOL_FOR macro lives in a .h header that
+// contains NO function definitions (only the macro + extern declarations).
+// collectMacroWrites previously walked files via forEachFile, which groups by
+// indexed FUNCTIONS — so a function-less macro header was skipped and the macro's
+// write-summary (pool_id written by the for-init) never reached the .c call site,
+// misreporting pool_id as uninitialized. Macro collection must walk every indexed
+// file, not just files with functions.
+func TestUninit_PoolForMacroOnlyHeader(t *testing.T) {
+	header := `#ifndef POOL_LOOP_H
+#define POOL_LOOP_H
+#include <stdint.h>
+
+extern uint16_t pool_next_group(uint16_t pool_id);
+extern uint16_t pool_first_group(uint16_t id);
+
+#define POOL_ID_INVALID 0xFFFF
+
+#define POOL_FOR(id, pool_id)                                            \
+    for ((pool_id) = pool_first_group(id); POOL_ID_INVALID != (pool_id); \
+         (pool_id) = pool_next_group((pool_id)))
+#endif
+`
+	src := `#include "pool_loop.h"
+
+void *pool_fill_data(uint16_t id) {
+    void *data = (void *)1;
+    uint16_t pool_id;
+    POOL_FOR(id, pool_id) {
+        if (pool_id == 0) { break; }
+    }
+    return data;
+}
+
+int real_uninit_bug(void) {
+    uint16_t pool_id;
+    return (int)pool_id;
+}
+`
+	result := planUninitMacroFiles(t, map[string]string{"pool_loop.h": header, "pool_usage.c": src})
+	if c := candidateForFunc(t, result, "pool_fill_data"); c != nil {
+		t.Errorf("pool_fill_data should NOT be flagged (pool_id is written by POOL_FOR in a function-less header), got var=%s level=%s line=%d", c.Target.Variable, c.SuspicionLevel, c.Target.Line)
+	}
+	if c := candidateForFunc(t, result, "real_uninit_bug"); c == nil {
+		t.Errorf("real_uninit_bug must be flagged (pool_id is never initialized), got: %s", candidateNames(result))
+	}
+}

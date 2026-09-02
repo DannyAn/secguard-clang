@@ -83,6 +83,36 @@ func forEachFile(ctx context.Context, store db.Store, p *parser.Parser, logger *
 	return nil
 }
 
+// forEachIndexedFile invokes fn once per indexed file with the file and its
+// parsed root. Unlike forEachFile — which visits only files that contain at
+// least one indexed function — this visits EVERY indexed file, so a header that
+// holds only macros / extern declarations is still scanned (e.g. for macro
+// write-summaries a call site in another file depends on).
+func forEachIndexedFile(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, fn func(file *db.File, root parser.Node)) error {
+	files, err := store.ListFiles(ctx)
+	if err != nil {
+		return err
+	}
+	for _, file := range files {
+		source, err := os.ReadFile(file.Path)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("evidence: read file failed, skipping", "file", file.Path, "error", err)
+			}
+			continue
+		}
+		tree, err := p.ParseCached(source, file.Path)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("evidence: parse file failed, skipping", "file", file.Path, "error", err)
+			}
+			continue
+		}
+		fn(file, tree.RootNode())
+	}
+	return nil
+}
+
 // funcLineRange reports whether a node's start line falls inside the function's
 // [StartLine, EndLine] range.
 func funcLineRange(f *db.Function, line int) bool {

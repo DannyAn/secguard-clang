@@ -69,7 +69,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 // sites in every other file.
 func (d *UninitVariableDetector) collectMacroWrites(ctx context.Context) map[string]macros.WriteSummary {
 	var perFile []map[string]macros.WriteSummary
-	_ = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	_ = forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node) {
 		perFile = append(perFile, macros.WriteSummaries(root))
 	})
 	return macros.MergeWriteSummaries(perFile...)
