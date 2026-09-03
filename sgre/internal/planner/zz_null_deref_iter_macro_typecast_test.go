@@ -3,11 +3,18 @@
 package planner
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/DannyAn/secguard-clang/internal/config"
+	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/evidence"
+	"github.com/DannyAn/secguard-clang/internal/graph"
+	"github.com/DannyAn/secguard-clang/internal/indexer"
+	"github.com/DannyAn/secguard-clang/internal/log"
+	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
 // The single_linkedlist.h / SINGLE_LINKEDLIST_Scan pattern: a function-like
@@ -187,5 +194,62 @@ int dslite_add_node(SLL_S *sll, UINT32 acl_group_id)
 	result := planNullDerefMacro(t, src)
 	if c := candidateForFunc(t, result, "dslite_add_node"); c == nil {
 		t.Errorf("dslite_add_node should be flagged when the macro is unconfigured (deref is modelled), got: %s", candidateNames(result))
+	}
+}
+
+// TestNullDeref_IterMacroTypeCastDepsExcluded is the "no-compile" reliability
+// guarantee: the header lives in a third-party `deps/` directory that the
+// developer never compiles and the scanner excludes, so the macro DEFINITION is
+// never seen. The user declares it in secguard.toml; the config-declared kill
+// must suppress the false positive with no macro definition present — secguard
+// never requires the code to compile.
+func TestNullDeref_IterMacroTypeCastDepsExcluded(t *testing.T) {
+	dir := t.TempDir()
+
+	// deps/ is excluded from the scan, so single_linkedlist.h is never indexed
+	// (exactly like a third-party SDK the developer never built).
+	if err := os.MkdirAll(filepath.Join(dir, "deps"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "deps", "single_linkedlist.h"), []byte(sllIterHeader), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.c"), []byte(sllIterUsageSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tomlPath := filepath.Join(dir, "secguard.toml")
+	if err := os.WriteFile(tomlPath, []byte("[iterator_macros.macros]\nSINGLE_LINKEDLIST_Scan = [1]\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	config.SetExplicitPath(tomlPath)
+	t.Cleanup(func() { config.SetExplicitPath("") })
+
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	idx := indexer.NewIndexer(store, logger)
+	idx.SetExcludeDirs([]string{"deps"})
+	if _, err := idx.Index(ctx, dir); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewNullSourceDetector(store, p, logger).Detect(ctx)
+	evidence.NewDereferenceDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "null-deref")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	if c := candidateForFunc(t, result, "dslite_add_node"); c != nil {
+		t.Errorf("dslite_add_node should NOT be flagged (deps header excluded, config declares SINGLE_LINKEDLIST_Scan), got var=%s level=%s line=%d", c.Target.Variable, c.SuspicionLevel, c.Target.Line)
+	}
+	if c := candidateForFunc(t, result, "real_bug"); c == nil {
+		t.Errorf("real_bug must still be flagged (control)")
 	}
 }
