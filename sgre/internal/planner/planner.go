@@ -332,6 +332,8 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			NonNullable:    props.NonNullable == "true",
 			IsTypeExpr:     props.IsTypeExpr == "true",
 			SuspicionLevel: suspicion,
+			DeclLine:       props.DeclLine,
+			Origin:         props.Origin,
 		})
 	}
 

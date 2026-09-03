@@ -3,6 +3,7 @@ package evidence
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -349,6 +350,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		if key == "" || !uninitVars[key] {
 			return
 		}
+		declLine := declLineFromKey(key)
 		// Output-param initialization: a use after the (possibly guard-delayed)
 		// write-through point is initialized. A use before it — e.g. inside the
 		// failure branch of a conditional writer (TC16) — stays reported.
@@ -362,11 +364,11 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		}
 		sites := assignSites[key]
 		if len(sites) == 0 {
-			d.insertValueUseEvent(ctx, f, file, useLine, name, "stack_uninit", result)
+			d.insertValueUseEvent(ctx, f, file, useLine, declLine, name, "stack_uninit", result)
 			return
 		}
 		if cfgValid && hasUnassignedPath(cfg, name, useLine, sites) {
-			d.insertValueUseEvent(ctx, f, file, useLine, name, "stack_uninit", result)
+			d.insertValueUseEvent(ctx, f, file, useLine, declLine, name, "stack_uninit", result)
 			return
 		}
 		if !cfgValid {
@@ -378,7 +380,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 				}
 			}
 			if allInIf {
-				d.insertValueUseEvent(ctx, f, file, useLine, name, "stack_uninit", result)
+				d.insertValueUseEvent(ctx, f, file, useLine, declLine, name, "stack_uninit", result)
 			}
 		}
 	}
@@ -949,7 +951,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		}
 		varName := strings.TrimSpace(text[1:])
 		if isHeapVar(mallocVars, varName) && !writtenThroughPtr[varName] {
-			d.insertValueUseEvent(ctx, f, file, unary.StartLine(), varName, "heap_uninit", result)
+			d.insertValueUseEvent(ctx, f, file, unary.StartLine(), mallocVars[varName], varName, "heap_uninit", result)
 		}
 	}
 
@@ -966,7 +968,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		}
 		varName := children[0].Text()
 		if isHeapVar(mallocVars, varName) && !writtenThroughPtr[varName] {
-			d.insertValueUseEvent(ctx, f, file, ptr.StartLine(), varName, "heap_uninit", result)
+			d.insertValueUseEvent(ctx, f, file, ptr.StartLine(), mallocVars[varName], varName, "heap_uninit", result)
 		}
 	}
 
@@ -983,7 +985,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		}
 		varName := children[0].Text()
 		if isHeapVar(mallocVars, varName) && !writtenThroughPtr[varName] {
-			d.insertValueUseEvent(ctx, f, file, field.StartLine(), varName, "heap_uninit", result)
+			d.insertValueUseEvent(ctx, f, file, field.StartLine(), mallocVars[varName], varName, "heap_uninit", result)
 		}
 	}
 }
@@ -1105,7 +1107,7 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 			continue
 		}
 		if !initializedFields[fieldPath(field)] {
-			d.insertValueUseEvent(ctx, f, file, field.StartLine(), varName, "struct_partial_uninit", result)
+			d.insertValueUseEvent(ctx, f, file, field.StartLine(), structVars[varName], varName, "struct_partial_uninit", result)
 		}
 	}
 }
@@ -1155,13 +1157,29 @@ func fieldWritePaths(lhs parser.Node) []string {
 	}
 }
 
-func (d *UninitVariableDetector) insertValueUseEvent(ctx context.Context, f *db.Function, file *db.File, line int, varName, origin string, result *DetectResult) {
-	if emitEvent(ctx, d.store, d.logger, "VALUE_USE", f.ID, &db.Location{FileID: file.ID, Line: line}, map[string]string{
+func (d *UninitVariableDetector) insertValueUseEvent(ctx context.Context, f *db.Function, file *db.File, line, declLine int, varName, origin string, result *DetectResult) {
+	props := map[string]any{
 		"variable": varName,
 		"origin":   origin,
-	}) {
+	}
+	if declLine > 0 {
+		props["decl_line"] = declLine
+	}
+	if emitEvent(ctx, d.store, d.logger, "VALUE_USE", f.ID, &db.Location{FileID: file.ID, Line: line}, props) {
 		result.EventsCreated++
 	}
+}
+
+// declLineFromKey recovers the declaration line embedded in a scope-aware varKey
+// ("name@declLine"), so the classifier's evidence can carry the declaration
+// anchor for uninit candidates whose Code Context window cannot reach it.
+func declLineFromKey(key string) int {
+	if i := strings.LastIndex(key, "@"); i >= 0 && i+1 < len(key) {
+		if n, err := strconv.Atoi(key[i+1:]); err == nil {
+			return n
+		}
+	}
+	return 0
 }
 
 var outputParamInitializers = map[string]bool{
@@ -1193,6 +1211,7 @@ var outputParamInitializers = map[string]bool{
 	"strtoul":               true,
 	"wcstombs":              true,
 	"memset":                true,
+	"memset_s":              true,
 	"bzero":                 true,
 	"CreateProcessA":        true,
 	"CreateProcessW":        true,

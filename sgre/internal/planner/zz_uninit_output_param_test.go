@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -124,4 +125,56 @@ int unguarded(int fail) {
 	if c.SuspicionLevel == "confirmed" {
 		t.Errorf("unguarded must NOT be auto-confirmed (output-param write makes must-uninit unproven), got confirmed")
 	}
+}
+
+// TestUninit_EvidenceCarriesDeclLine pins the declaration anchor in the uninit
+// candidate evidence. A suspected uninit use can sit far below its declaration
+// (outside the ±8 candidate Code Context window), so the classifier needs the
+// declaration line in the Evidence to locate the (potential) initialization
+// without guessing or widening the shared context window.
+func TestUninit_EvidenceCarriesDeclLine(t *testing.T) {
+	src := outParamPreamble + `
+int unguarded(int fail) {
+    int x;
+    fill(&x, fail);
+    return x; /* x is uninit on the error path */
+}
+`
+	result := planUninitOutputParam(t, src)
+	c := candidateForFunc(t, result, "unguarded")
+	if c == nil {
+		t.Fatalf("unguarded must be flagged, got: %s", candidateNames(result))
+	}
+	for _, e := range c.Evidence {
+		if e.Type == "declaration" && strings.Contains(e.Detail, "declared at line") {
+			return
+		}
+	}
+	t.Errorf("uninit evidence should carry a 'declared at line N' declaration anchor, got %+v", c.Evidence)
+}
+
+// TestUninit_EvidenceHeapUninitCarriesAllocLine pins the heap_uninit evidence
+// anchor. A pointer declared on one line and malloc'd on another reports the
+// malloc line as decl_line; calling that line "declared at" would mislabel the
+// allocation site as the declaration, so the evidence says "allocated at line N".
+func TestUninit_EvidenceHeapUninitCarriesAllocLine(t *testing.T) {
+	src := `#include <stdlib.h>
+
+int heap_uninit(void) {
+    int *p;
+    p = (int *)malloc(sizeof(int));
+    return *p; /* heap-uninit: allocated, never written through */
+}
+`
+	result := planUninitOutputParam(t, src)
+	c := candidateForFunc(t, result, "heap_uninit")
+	if c == nil {
+		t.Fatalf("heap_uninit must be flagged, got: %s", candidateNames(result))
+	}
+	for _, e := range c.Evidence {
+		if e.Type == "allocation" && strings.Contains(e.Detail, "allocated at line") {
+			return
+		}
+	}
+	t.Errorf("heap_uninit evidence should carry an 'allocated at line N' allocation anchor, got %+v", c.Evidence)
 }

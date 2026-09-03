@@ -120,4 +120,6 @@ type Candidate struct {
 	IsTypeExpr        bool    `json:"is_type_expr"`
 	QualityScore      float64 `json:"quality_score"`
 	SourceLine        int     `json:"source_line,omitempty"`
+	DeclLine          int     `json:"decl_line,omitempty"`
+	Origin            string  `json:"origin,omitempty"`
 }

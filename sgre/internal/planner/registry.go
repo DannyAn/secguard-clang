@@ -311,10 +311,18 @@ func init() {
 		DefaultSuspicion: "suspected",
 		FilterChain:      "uninit",
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
-			return []EvidenceFragment{
+			frags := []EvidenceFragment{
 				{Type: "uninit_use", Role: "sink", Detail: fmt.Sprintf("uninitialized variable '%s' used in function %s at line %d", c.VariableName, c.FunctionName, c.Line)},
-				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
 			}
+			if c.DeclLine > 0 {
+				if c.Origin == "heap_uninit" {
+					frags = append(frags, EvidenceFragment{Type: "allocation", Role: "source", Detail: fmt.Sprintf("variable '%s' allocated at line %d", c.VariableName, c.DeclLine)})
+				} else {
+					frags = append(frags, EvidenceFragment{Type: "declaration", Role: "source", Detail: fmt.Sprintf("variable '%s' declared at line %d", c.VariableName, c.DeclLine)})
+				}
+			}
+			frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
+			return frags
 		},
 	})
 

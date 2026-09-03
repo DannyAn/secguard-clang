@@ -20,6 +20,7 @@ type eventProps struct {
 	FreeLine    int    `json:"free_line"`
 	UseLine     int    `json:"use_line"`
 	Origin      string `json:"origin"`
+	DeclLine    int    `json:"decl_line"`
 	Definite    string `json:"definite"` // "true" for an explicit null assignment
 	Callee      string `json:"callee"`
 	API         string `json:"api"` // hardcoded_secret RegSetValueEx branch

@@ -75,6 +75,35 @@ func TestUninit_FieldOutputParamNotUninit(t *testing.T) {
 	}
 }
 
+func TestUninit_MemsetSOutputParamNotUninit(t *testing.T) {
+	// memset_s(&key_info, ...) zeroes the whole struct before the field read, so
+	// key_info is fully initialized and must not be reported. memset_s is the
+	// Annex-K bounds-checked memset, previously missing from outputParamInitializers
+	// while its unsafe sibling memset was present — the struct stayed flagged as
+	// struct_partial_uninit and the AI then false-positive-confirmed it (the
+	// candidate Code Context window did not cover the earlier memset_s line).
+	store := runIndexAndDetect(t, "tc84_memset_s_init.c")
+	events, _ := store.ListEventsByType(context.Background(), "VALUE_USE")
+	flagged := make(map[string]map[string]bool) // variable -> origins
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+			Origin   string `json:"origin"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if flagged[props.Variable] == nil {
+			flagged[props.Variable] = map[string]bool{}
+		}
+		flagged[props.Variable][props.Origin] = true
+	}
+	if len(flagged["key_info"]) > 0 {
+		t.Errorf("key_info must not be flagged after memset_s initialization, got %v", flagged["key_info"])
+	}
+	if !flagged["uninit_key"]["struct_partial_uninit"] {
+		t.Errorf("uninit_key (never initialized) must still be flagged as struct_partial_uninit, got %v", flagged)
+	}
+}
+
 func TestUninit_AlwaysWriteParamNotUninit(t *testing.T) {
 	// fill_point writes *p on every path, so &p initializes p. Guards the
 	// ParamWrites interprocedural summary.
