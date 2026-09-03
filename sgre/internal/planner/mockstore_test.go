@@ -408,4 +408,12 @@ func (s *mockStore) ListPerTypeStatus(ctx context.Context, scanID string, cweFor
 	return nil, nil
 }
 
+func (s *mockStore) UpsertScanRun(ctx context.Context, r *db.ScanRun) error { return nil }
+func (s *mockStore) GetScanRun(ctx context.Context, scanID string) (*db.ScanRun, error) {
+	return nil, nil
+}
+func (s *mockStore) ListScanRuns(ctx context.Context, limit int) ([]*db.ScanRun, error) {
+	return nil, nil
+}
+
 var _ = fmt.Sprintf

@@ -163,6 +163,34 @@ CREATE TABLE IF NOT EXISTS scan_stats (
 );
 
 -- ============================================================
+-- Scan Runs (scan-level performance/convergence metrics)
+-- ============================================================
+
+-- One row per "secguard scan" run. Unlike scan_stats (one row per vulnerability
+-- type), this is the scan-level summary the team reads to track pipeline
+-- performance over time: wall-clock and per-phase durations, the raw->converged
+-- candidate reduction, and the report size. Plain counts and milliseconds — the
+-- "convergence rate" is derived at read time from seed_count/final_count, never
+-- stored as a pre-cooked percentage.
+CREATE TABLE IF NOT EXISTS scan_runs (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id           TEXT NOT NULL UNIQUE,
+    duration_ms       INTEGER,
+    index_ms          INTEGER,
+    graph_ms          INTEGER,
+    detectors_ms      INTEGER,
+    plan_ms           INTEGER,
+    report_ms         INTEGER,
+    files_indexed     INTEGER,
+    functions_indexed INTEGER,
+    seed_count        INTEGER,
+    final_count       INTEGER,
+    report_bytes      INTEGER,
+    evidence_bytes    INTEGER,
+    created_at        INTEGER
+);
+
+-- ============================================================
 -- Review Sessions (incremental PR/MR review anchor)
 -- ============================================================
 
@@ -241,6 +269,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_finding_loc ON findings(scan_id, rule_id, f
 
 CREATE INDEX IF NOT EXISTS idx_scan_stats_scan_id ON scan_stats(scan_id);
 CREATE INDEX IF NOT EXISTS idx_scan_stats_vuln_type ON scan_stats(vuln_type);
+CREATE INDEX IF NOT EXISTS idx_scan_runs_created_at ON scan_runs(created_at);
 `
 
 func InitSchema(ctx context.Context, db *sql.DB) error {

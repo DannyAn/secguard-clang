@@ -128,6 +128,15 @@ type ScanStatStore interface {
 	ListPerTypeStatus(ctx context.Context, scanID string, cweForType func(string) string) ([]*PerTypeStatus, error)
 }
 
+type ScanRunStore interface {
+	// UpsertScanRun inserts or replaces the scan-level metrics row for a scan_id.
+	// Re-running a scan into the same --output-dir overwrites the prior row.
+	UpsertScanRun(ctx context.Context, r *ScanRun) error
+	GetScanRun(ctx context.Context, scanID string) (*ScanRun, error)
+	// ListScanRuns returns the most recent runs first, capped at limit (0 = all).
+	ListScanRuns(ctx context.Context, limit int) ([]*ScanRun, error)
+}
+
 type FunctionSummaryStore interface {
 	UpsertSummary(ctx context.Context, s *FunctionSummary) error
 	GetSummaryByFunction(ctx context.Context, functionID int64) (*FunctionSummary, error)
@@ -150,6 +159,7 @@ type Store interface {
 	SecurityEventStore
 	FindingStore
 	ScanStatStore
+	ScanRunStore
 	FunctionSummaryStore
 	ReviewSessionStore
 	Close() error

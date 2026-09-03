@@ -23,6 +23,20 @@ type pipelineOutcome struct {
 	Index      *indexer.IndexResult
 	Plans      []*planner.PlanResult
 	PlanErrors map[string]string
+	// Timings are the per-phase wall-clock durations (milliseconds) captured
+	// across the shared engine. They feed the scan-level scan_runs metrics so
+	// performance is queryable over time instead of only in the scan log.
+	Timings pipelineTimings
+}
+
+// pipelineTimings are the raw phase durations runPipeline measured. They are
+// plain milliseconds — no derived ratios — so the scan_runs table stores honest
+// facts the team can re-derive at read time.
+type pipelineTimings struct {
+	IndexMs     int64
+	GraphMs     int64
+	DetectorsMs int64
+	PlanMs      int64
 }
 
 // runPipeline runs the shared engine: index → graph build → detectors → plan.
@@ -42,6 +56,8 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	p := parser.NewParser()
 	defer p.CloseAll()
 
+	var timings pipelineTimings
+
 	idx := indexer.NewIndexer(store, logger)
 	if excludeDirs != nil {
 		idx.SetExcludeDirs(excludeDirs)
@@ -52,7 +68,8 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	if err != nil {
 		return nil, fmt.Errorf("index failed: %w", err)
 	}
-	logger.Info("phase timing", "phase", "index", "elapsed_ms", time.Since(idxStart).Milliseconds())
+	timings.IndexMs = time.Since(idxStart).Milliseconds()
+	logger.Info("phase timing", "phase", "index", "elapsed_ms", timings.IndexMs)
 
 	// The semantic graph is rebuilt from scratch every run (there is no
 	// incremental graph update), so clear the previous run's nodes/edges first.
@@ -116,7 +133,8 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	for err := range bErrCh {
 		return nil, fmt.Errorf("graph build failed: %w", err)
 	}
-	logger.Info("phase timing", "phase", "graph_builders_parallel", "elapsed_ms", time.Since(graphStart).Milliseconds())
+	timings.GraphMs = time.Since(graphStart).Milliseconds()
+	logger.Info("phase timing", "phase", "graph_builders_parallel", "elapsed_ms", timings.GraphMs)
 
 	if err := store.ClearSecurityEvents(ctx); err != nil {
 		return nil, fmt.Errorf("clear security events: %w", err)
@@ -126,7 +144,8 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	if err := evidence.RunAllDetectors(ctx, store, p, logger); err != nil {
 		return nil, fmt.Errorf("detectors failed: %w", err)
 	}
-	logger.Info("phase timing", "phase", "detectors_total", "elapsed_ms", time.Since(detStart).Milliseconds())
+	timings.DetectorsMs = time.Since(detStart).Milliseconds()
+	logger.Info("phase timing", "phase", "detectors_total", "elapsed_ms", timings.DetectorsMs)
 
 	vulnTypes := planner.AllVulnTypes()
 	plans := make([]*planner.PlanResult, len(vulnTypes))
@@ -148,6 +167,7 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	const planConcurrency = 4
 	planSem := make(chan struct{}, planConcurrency)
 	var pwg sync.WaitGroup
+	planStart := time.Now()
 	for i, vulnType := range vulnTypes {
 		pwg.Add(1)
 		go func(idx int, vt string) {
@@ -176,10 +196,12 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 		}(i, vulnType)
 	}
 	pwg.Wait()
+	timings.PlanMs = time.Since(planStart).Milliseconds()
 
 	return &pipelineOutcome{
 		Index:      indexResult,
 		Plans:      plans,
 		PlanErrors: planErrors,
+		Timings:    timings,
 	}, nil
 }

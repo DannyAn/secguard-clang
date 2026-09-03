@@ -81,6 +81,8 @@ func Execute(ctx context.Context, args []string) int {
 		return runMrCmd(ctx, args[1:])
 	case "status":
 		return runStatusCmd(ctx, args[1:])
+	case "metrics":
+		return runMetricsCmd(ctx, args[1:])
 	case "query":
 		return runQueryCmd(ctx, args[1:])
 	case "types":
@@ -96,7 +98,7 @@ func Execute(ctx context.Context, args []string) int {
 	case "config":
 		return runConfigCmd(args[1:])
 	default:
-		WriteErrorJSON(fmt.Sprintf("unknown command %q; available: index, scan, diff, pr, mr, status, query, types, plan, report, db, schema, config", args[0]))
+		WriteErrorJSON(fmt.Sprintf("unknown command %q; available: index, scan, diff, pr, mr, status, metrics, query, types, plan, report, db, schema, config", args[0]))
 		return 1
 	}
 }
@@ -111,6 +113,7 @@ Usage:
   secguard pr [--base <b>] Review a PR/MR diff (base defaults to merge-base with main/master)
   secguard mr [--base <b>] Alias of pr (GitLab)
   secguard status          Show index status (files, functions, staleness)
+  secguard metrics         Show scan performance/convergence metrics (latest scan)
   secguard query <skill>   Run a skill query
   secguard types           List all vulnerability types + CWE (JSON)
   secguard plan <vuln>     Run convergence pipeline for a vulnerability type

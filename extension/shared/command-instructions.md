@@ -6,13 +6,13 @@ Scan the codebase for security vulnerabilities using the SecGuard analysis pipel
 
 - **OpenCode** — you have MCP tools with underscore names: `secguard_scan`,
   `secguard_plan`, `secguard_report`, `secguard_types`, `secguard_status`,
-  `secguard_index`, `secguard_schema`, `secguard_db`. Use those TOOLS, never
-  shell commands.
+  `secguard_index`, `secguard_schema`, `secguard_db`, `secguard_metrics`. Use
+  those TOOLS, never shell commands.
 - **Claude Code (and any shell-only host)** — there are NO `secguard_*` tools.
   Run the `secguard` binary via Bash with a space: `secguard scan`, `secguard
-  plan`, `secguard report`, `secguard types`, `secguard status`. This doc uses
-  the OpenCode tool names below; translate them to `secguard <verb>` on Claude
-  Code.
+  plan`, `secguard report`, `secguard types`, `secguard status`, `secguard
+  metrics`. This doc uses the OpenCode tool names below; translate them to
+  `secguard <verb>` on Claude Code.
 
 **Writing findings (the part that differs most by platform).** NEVER generate a
 per-finding Bash loop script — it is slow and error-prone. There is a batch mode

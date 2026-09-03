@@ -65,7 +65,7 @@ See `examples/nullflow-demo/` for a runnable null-deref sample. `memory-leak`/`r
 - **Layer 2 — Semantic Graph**: `graph_nodes`, `graph_edges` (`edge_type` enum: `CALL`, `DATA_FLOW`, `OWNERSHIP_TRANSFER`, `RELEASE`, `ALIAS`, `PARAM_BINDING`, `RETURN`, `LOCK_ORDER`, `GLOBAL_ACCESS`)
 - **Layer 3 — Security Evidence**: `security_events` (`event_type` enum: `NULL_VALUE`, `DEREFERENCE`, `NULL_GUARD`, `BUFFER_ACCESS`, ...)
 - **Layer 4 — Findings** (most variable): `findings` (written by the AI agent)
-- Support tables: `scan_stats` (pipeline metrics per scan/vuln type), `function_summary` (return-nullability input for the agent)
+- Support tables: `scan_stats` (pipeline metrics per scan/vuln type), `scan_runs` (scan-level performance/convergence summary), `function_summary` (return-nullability input for the agent)
 
 Schema is in `internal/db/schema.go` (`SchemaDDL`). CRUD is split per entity in `internal/db/crud_*.go` behind a `db.Store` interface (`store.go`), with a real SQLite impl (`store_impl.go`) and a mock (`testhelpers.go`).
 
@@ -84,6 +84,7 @@ Schema is in `internal/db/schema.go` (`SchemaDDL`). CRUD is split per entity in 
 secguard index <path>    Index a C codebase
 secguard scan <path>     Full pipeline: index + plan all registered vuln types + report
 secguard status          Index status (files, functions, staleness)
+secguard metrics         Show scan performance/convergence metrics (latest scan)
 secguard query <skill>   Run a skill query
 secguard plan <vuln>     Run convergence for one vulnerability type
 secguard report          Output all findings as JSON

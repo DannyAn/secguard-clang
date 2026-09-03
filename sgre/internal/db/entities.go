@@ -191,8 +191,8 @@ type Finding struct {
 	// finding (rule_id + file + function + sink-statement text). It lets the
 	// incremental-review pipeline dedup a finding across scans and against a
 	// full-scan baseline even when the line number drifts.
-	Fingerprint string  `json:"fingerprint,omitempty"`
-	CreatedAt   int64   `json:"created_at"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	CreatedAt   int64  `json:"created_at"`
 }
 
 type ReviewSession struct {
@@ -217,6 +217,30 @@ type ScanStat struct {
 	FinalCount  int    `json:"final_count"`
 	FilterChain string `json:"filter_chain"`
 	CreatedAt   int64  `json:"created_at"`
+}
+
+// ScanRun is the scan-level performance/convergence summary written once per
+// `secguard scan` run. Durations are milliseconds; report_bytes is the combined
+// byte size of report.md + candidates.sarif; evidence_bytes is the candidates/
+// tree the AI classifier reads. seed_count/final_count aggregate the per-type
+// scan_stats so the raw->converged reduction is queryable across scans without
+// joining every type row.
+type ScanRun struct {
+	ID               int64  `json:"id"`
+	ScanID           string `json:"scan_id"`
+	DurationMs       int64  `json:"duration_ms"`
+	IndexMs          int64  `json:"index_ms"`
+	GraphMs          int64  `json:"graph_ms"`
+	DetectorsMs      int64  `json:"detectors_ms"`
+	PlanMs           int64  `json:"plan_ms"`
+	ReportMs         int64  `json:"report_ms"`
+	FilesIndexed     int    `json:"files_indexed"`
+	FunctionsIndexed int    `json:"functions_indexed"`
+	SeedCount        int    `json:"seed_count"`
+	FinalCount       int    `json:"final_count"`
+	ReportBytes      int64  `json:"report_bytes"`
+	EvidenceBytes    int64  `json:"evidence_bytes"`
+	CreatedAt        int64  `json:"created_at"`
 }
 
 // PerTypeStatus is the per-vulnerability-type progress record for the

@@ -56,6 +56,23 @@ var agentSchemaTables = map[string][]columnDef{
 		{Name: "filter_chain", Type: "TEXT"},
 		{Name: "created_at", Type: "INTEGER"},
 	},
+	"scan_runs": {
+		{Name: "id", Type: "INTEGER", PrimaryKey: true},
+		{Name: "scan_id", Type: "TEXT", NotNull: true},
+		{Name: "duration_ms", Type: "INTEGER"},
+		{Name: "index_ms", Type: "INTEGER"},
+		{Name: "graph_ms", Type: "INTEGER"},
+		{Name: "detectors_ms", Type: "INTEGER"},
+		{Name: "plan_ms", Type: "INTEGER"},
+		{Name: "report_ms", Type: "INTEGER"},
+		{Name: "files_indexed", Type: "INTEGER"},
+		{Name: "functions_indexed", Type: "INTEGER"},
+		{Name: "seed_count", Type: "INTEGER"},
+		{Name: "final_count", Type: "INTEGER"},
+		{Name: "report_bytes", Type: "INTEGER"},
+		{Name: "evidence_bytes", Type: "INTEGER"},
+		{Name: "created_at", Type: "INTEGER"},
+	},
 	"files": {
 		{Name: "id", Type: "INTEGER", PrimaryKey: true},
 		{Name: "path", Type: "TEXT", NotNull: true},
@@ -86,6 +103,7 @@ var agentSchemaTables = map[string][]columnDef{
 var agentSchemaNotes = map[string]string{
 	"findings":        "AI agent output. Query by file_path and line_number (NOT file/line). rule_id is CWE (e.g. CWE-476). status: open/confirmed/suspected/dismissed.",
 	"scan_stats":      "Pipeline metrics per scan per vuln type. vuln_type is the kebab-case type name (NOT a column called vulnerability_type).",
+	"scan_runs":       "Scan-level performance/convergence summary (one row per scan). *_ms are millisecond phase durations; seed_count/final_count are raw candidates before/after convergence; report_bytes/evidence_bytes are the report + candidate-evidence sizes the AI consumes.",
 	"files":           "Layer 1 program facts. Query by path.",
 	"functions":       "Layer 1 program facts. Join to files via file_id.",
 	"security_events": "Layer 3 raw evidence. DO NOT query this table — it contains pre-convergence candidates that bypass the pipeline.",
@@ -127,6 +145,7 @@ func runSchemaCmd(args []string) int {
 		"examples": []string{
 			"secguard db \"SELECT rule_id, severity, status, file_path, line_number FROM findings WHERE status = 'confirmed' ORDER BY severity\"",
 			"secguard db \"SELECT scan_id, vuln_type, seed_count, final_count FROM scan_stats ORDER BY scan_id\"",
+			"secguard db \"SELECT scan_id, duration_ms, seed_count, final_count FROM scan_runs ORDER BY created_at DESC LIMIT 10\"",
 			"secguard db \"SELECT path, loc FROM files ORDER BY loc DESC LIMIT 10\"",
 		},
 	})

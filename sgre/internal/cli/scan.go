@@ -26,6 +26,10 @@ import (
 var scanIDPattern = regexp.MustCompile(`^sc_\d{4}-\d{2}-\d{2}_\d{6}_[0-9A-Za-z]{6}$`)
 
 func runScanCmd(ctx context.Context, args []string) int {
+	// scanStart anchors the wall-clock duration recorded in scan_runs. It is
+	// captured before argument parsing so the reported duration covers the whole
+	// command, not just the pipeline phases.
+	scanStart := time.Now()
 	dbPath, dbExplicit, remaining := parseDBFlag(args)
 	outputDir := parseStringFlag(remaining, "output-dir")
 	remaining = removeFlag(remaining, "output-dir")
@@ -138,6 +142,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 
 	evidencePackages := []map[string]interface{}{}
 	totalCandidates := 0
+	totalSeedCount := 0
 	totalSuppressed := 0
 	totalBaselineExisting := 0
 	totalAutoConfirmed := 0
@@ -163,6 +168,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 			continue
 		}
 		result := outcome.Plans[i]
+		totalSeedCount += result.Summary.SeedCount
 
 		filterChainJSON, _ := json.Marshal(result.Summary.Filters)
 
@@ -348,6 +354,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 		ReportPath:          filepath.Join(scanDir, report.ReportFile),
 		ScanID:              scanID,
 	}
+	reportStart := time.Now()
 	if err := scanOutput.Write(planResults, report.IndexSummary{
 		FilesIndexed:     indexResult.FilesIndexed,
 		FunctionsIndexed: indexResult.FunctionsIndexed,
@@ -374,6 +381,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 		// Verify what the SCAN is contracted to produce. result.sarif is not in
 		// that list: it is the verdict-stage artifact and does not exist until
 		// the AI classification is persisted via `report --audit`.
+		var reportBytes int64
 		for _, f := range []string{scanOutput.ReportPath, scanOutput.CandidatesSarifPath} {
 			info, statErr := os.Stat(f)
 			if statErr != nil {
@@ -390,11 +398,39 @@ func runScanCmd(ctx context.Context, args []string) int {
 				fmt.Fprintln(os.Stdout, string(jsonBytes))
 				return 1
 			}
+			reportBytes += info.Size()
 		}
 		scansDir := filepath.Dir(scanOutput.ScanDir)
 		if serr := report.UpdateLatest(scansDir, scanOutput.ScanID); serr != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to update latest symlink: %v\n", serr)
 		}
+
+		// evidenceBytes is the candidates/ tree the AI classifier reads (per-type
+		// _index.md + per-candidate evidence files). It is summed AFTER Write so
+		// it reflects what actually landed on disk, not an in-memory estimate.
+		// Walking a few hundred small files is microseconds — never on the
+		// index/graph/detect/plan hot path, so it cannot move the scan E2E time.
+		evidenceBytes := dirTreeBytes(filepath.Join(scanDir, report.CandidatesDir))
+
+		run := &db.ScanRun{
+			ScanID:           scanID,
+			DurationMs:       time.Since(scanStart).Milliseconds(),
+			IndexMs:          outcome.Timings.IndexMs,
+			GraphMs:          outcome.Timings.GraphMs,
+			DetectorsMs:      outcome.Timings.DetectorsMs,
+			PlanMs:           outcome.Timings.PlanMs,
+			ReportMs:         time.Since(reportStart).Milliseconds(),
+			FilesIndexed:     indexResult.FilesIndexed,
+			FunctionsIndexed: indexResult.FunctionsIndexed,
+			SeedCount:        totalSeedCount,
+			FinalCount:       totalCandidates,
+			ReportBytes:      reportBytes,
+			EvidenceBytes:    evidenceBytes,
+		}
+		if err := store.UpsertScanRun(ctx, run); err != nil {
+			logger.Warn("insert scan run metrics failed", "error", err)
+		}
+		output["scan_metrics"] = renderScanMetrics(run)
 	}
 
 	// 先写完 report.md/SARIF 再输出 JSON，确保调用方拿到 JSON 时 report.md 一定存在
@@ -518,6 +554,23 @@ func newScanLogger(scanDir string) (*log.Logger, io.Closer) {
 type nopCloser struct{}
 
 func (nopCloser) Close() error { return nil }
+
+// dirTreeBytes sums the size of every regular file under dir. It is used once
+// per scan to record the candidate-evidence volume the AI will read; a missing
+// dir returns 0 (the metric degrades, it never fails the scan).
+func dirTreeBytes(dir string) int64 {
+	var total int64
+	_ = filepath.Walk(dir, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // unreadable entries are skipped, not fatal
+		}
+		if info != nil && !info.IsDir() {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
+}
 
 // scopeToTarget keeps only candidates whose file is at or under targetDir, so a
 // scan of a subdirectory does not leak findings from files the incremental

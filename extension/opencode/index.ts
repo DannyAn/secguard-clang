@@ -11,6 +11,7 @@ import secguard_status from "./tools/secguard_status"
 import secguard_db from "./tools/secguard_db"
 import secguard_schema from "./tools/secguard_schema"
 import secguard_types from "./tools/secguard_types"
+import secguard_metrics from "./tools/secguard_metrics"
 
 const pluginDir = path.dirname(fileURLToPath(import.meta.url))
 
@@ -23,6 +24,7 @@ const SECGUARD_TOOLS = [
   "secguard_db",
   "secguard_schema",
   "secguard_types",
+  "secguard_metrics",
 ]
 
 type YamlValue = string | YamlMap
@@ -156,6 +158,7 @@ export default {
         secguard_db,
         secguard_schema,
         secguard_types,
+        secguard_metrics,
       },
       config: async (cfg: any) => {
         cfg.command = cfg.command ?? {}
