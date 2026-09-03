@@ -218,6 +218,7 @@ build_master() {
     expand_includes "$EXTENSION_DIR/opencode/commands/diff.md" "$root/opencode/commands/diff.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/commands/pr.md" "$root/opencode/commands/pr.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/commands/mr.md" "$root/opencode/commands/mr.md" "$EXTENSION_DIR/shared"
+    expand_includes "$EXTENSION_DIR/opencode/commands/metrics.md" "$root/opencode/commands/metrics.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/agents/security-auditor.md" "$root/opencode/agents/security-auditor.md" "$EXTENSION_DIR/shared"
     cp "$EXTENSION_DIR/opencode/tools/"*.ts "$root/opencode/tools/" 2>/dev/null || true
 
@@ -236,6 +237,7 @@ build_master() {
     expand_includes "$EXTENSION_DIR/opencode/commands/diff.md" "$root/opencode-nga/commands/diff.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/commands/pr.md" "$root/opencode-nga/commands/pr.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/commands/mr.md" "$root/opencode-nga/commands/mr.md" "$EXTENSION_DIR/shared"
+    expand_includes "$EXTENSION_DIR/opencode/commands/metrics.md" "$root/opencode-nga/commands/metrics.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/agents/security-auditor.md" "$root/opencode-nga/agents/security-auditor.md" "$EXTENSION_DIR/shared"
     cp "$EXTENSION_DIR/opencode/tools/"*.ts "$root/opencode-nga/tools/" 2>/dev/null || true
     cp "$EXTENSION_DIR/opencode-nga/plugins/"*.ts "$root/opencode-nga/plugins/" 2>/dev/null || true
@@ -249,6 +251,7 @@ build_master() {
     expand_includes "$EXTENSION_DIR/claude-code/.claude/commands/diff.md" "$root/claude-code/.claude/commands/diff.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/claude-code/.claude/commands/pr.md" "$root/claude-code/.claude/commands/pr.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/claude-code/.claude/commands/mr.md" "$root/claude-code/.claude/commands/mr.md" "$EXTENSION_DIR/shared"
+    expand_includes "$EXTENSION_DIR/claude-code/.claude/commands/metrics.md" "$root/claude-code/.claude/commands/metrics.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/claude-code/.claude/agents/security-auditor.md" "$root/claude-code/.claude/agents/security-auditor.md" "$EXTENSION_DIR/shared"
 
     # claude-cac（Claude Code 开源分支：~/.cac/，manifest 改名 .cac-plugin/plugin.json）
@@ -260,6 +263,7 @@ build_master() {
     expand_includes "$EXTENSION_DIR/claude-cac/.cac/commands/diff.md" "$root/claude-cac/.cac/commands/diff.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/claude-cac/.cac/commands/pr.md" "$root/claude-cac/.cac/commands/pr.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/claude-cac/.cac/commands/mr.md" "$root/claude-cac/.cac/commands/mr.md" "$EXTENSION_DIR/shared"
+    expand_includes "$EXTENSION_DIR/claude-cac/.cac/commands/metrics.md" "$root/claude-cac/.cac/commands/metrics.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/claude-cac/.cac/agents/security-auditor.md" "$root/claude-cac/.cac/agents/security-auditor.md" "$EXTENSION_DIR/shared"
 
     # install.sh / uninstall.sh（注入）
