@@ -414,6 +414,64 @@ func addOutputParamKills(stmt parser.Node, e *nodeEffects, derefArgs bool, macro
 			}
 		}
 	}
+
+	// A function-like macro whose argument is a TYPE cast parses as an ERROR
+	// node (a type is not an expression), so FindAll("call_expression") above
+	// misses it. Recover the name + positional arguments from the ERROR form so
+	// the macro-write and iterator kills still fire for `MACRO(list, iter,
+	// type *)` — the iterator is written in the for-init and null-guarded by the
+	// loop condition, so its null source must be killed at the call site.
+	if derefArgs {
+		for _, errNode := range stmt.FindAll("ERROR") {
+			name, args := macroCallFromError(errNode)
+			if name == "" {
+				continue
+			}
+			for _, v := range macros.WrittenArgsInError(name, args, macroWrites) {
+				e.kill[v] = true
+			}
+			if iterIdxs, ok := iterMacros[name]; ok {
+				for _, i := range iterIdxs {
+					if i >= len(args) {
+						continue
+					}
+					if v := rhsVarName(args[i]); v != "" {
+						e.kill[v] = true
+					}
+				}
+			}
+		}
+	}
+}
+
+// macroCallFromError recovers a function-like macro call that tree-sitter parsed
+// as an ERROR node rather than a call_expression. This happens when a macro
+// argument is a TYPE cast (`SINGLE_LINKEDLIST_Scan(list, iter, type *)`): a type
+// is not a valid expression, so the whole call plus its loop body becomes an
+// ERROR node whose named children are [macro-name, arg0, arg1, ...] with an
+// optional trailing compound_statement (the body). It returns the macro name and
+// the positional arguments (body excluded), or ("", nil) when the node is not
+// that shape.
+func macroCallFromError(stmt parser.Node) (string, []parser.Node) {
+	if stmt.Kind() != "ERROR" {
+		return "", nil
+	}
+	children := stmt.NamedChildren()
+	if len(children) == 0 || children[0].Kind() != "identifier" {
+		return "", nil
+	}
+	name := children[0].Text()
+	var args []parser.Node
+	for _, c := range children[1:] {
+		if c.Kind() == "compound_statement" {
+			break
+		}
+		args = append(args, c)
+	}
+	if len(args) == 0 {
+		return "", nil
+	}
+	return name, args
 }
 
 // macroWritesFor returns the per-macro write summaries for a file root, or nil

@@ -90,6 +90,26 @@ func WrittenArgs(call parser.Node, summaries map[string]WriteSummary) map[string
 	return out
 }
 
+// WrittenArgsInError recovers the written bare-identifier arguments of a macro
+// call that tree-sitter parsed as an ERROR node (a TYPE-cast argument is not a
+// valid expression, so the call has no argument_list for WrittenArgs to read).
+// name is the macro name and args are its positional arguments — the ERROR
+// node's named children between the macro-name identifier and the trailing loop
+// body.
+func WrittenArgsInError(name string, args []parser.Node, summaries map[string]WriteSummary) []string {
+	summary, ok := summaries[name]
+	if !ok {
+		return nil
+	}
+	var out []string
+	for i, arg := range args {
+		if summary.writesParam[i] && arg.Kind() == "identifier" {
+			out = append(out, arg.Text())
+		}
+	}
+	return out
+}
+
 // MergeWriteSummaries combines per-file write-summary maps into one. A macro
 // defined in one file (typically a .h header) and called in another (.c source)
 // is invisible to the per-file WriteSummaries of the source file; merging across

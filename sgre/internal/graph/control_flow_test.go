@@ -375,3 +375,41 @@ func TestStmtCFG_NodeAtInnermost(t *testing.T) {
 		t.Errorf("NodeAt(4) should be the return statement, got %+v", n)
 	}
 }
+
+// TestBuildStmtCFG_IterMacroErrorNode: a function-like macro call whose argument
+// is a TYPE cast (`SINGLE_LINKEDLIST_Scan(list, iter, type *) { body }`) parses
+// as an ERROR node. It must be modelled as a loop — the macro-call header and the
+// trailing body are separate nodes, and the body's dereference resolves to the
+// body statement (not the header), so the iterator write (kill) in the header
+// precedes the body.
+func TestBuildStmtCFG_IterMacroErrorNode(t *testing.T) {
+	body := parseBody(t, `int f(SLL_S *sll) {
+    dslite_car_policy_t *car_policy = NULL;
+    SINGLE_LINKEDLIST_Scan(sll, car_policy, dslite_car_policy_t *) {
+        if (car_policy->dslite_car.ulHandle) { return 1; }
+    }
+    return 0;
+}`)
+	cfg := BuildStmtCFG(body, 8)
+
+	// The ERROR node (the macro call) must be a CFG stmt node.
+	var header *StmtNode
+	for _, n := range cfg.Nodes {
+		if n.Kind == "stmt" && n.Stmt.Kind() == "ERROR" {
+			header = n
+		}
+	}
+	if header == nil {
+		t.Fatal("ERROR macro-call node must be a CFG stmt node")
+	}
+	// The dereference line (the if inside the loop body) must resolve to a
+	// DIFFERENT node than the header — the loop body, not the macro call.
+	if n := cfg.NodeAt(4); n == nil || n.ID == header.ID {
+		t.Errorf("NodeAt(deref line) must be the loop body, not the macro-call header, got %+v", n)
+	}
+	// The header must exit to a join (the loop condition being false), and the
+	// body must loop back to the header.
+	if len(header.Succs) != 2 {
+		t.Errorf("macro-call header should have 2 successors (body + join), got %v", header.Succs)
+	}
+}

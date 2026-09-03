@@ -253,6 +253,20 @@ func (b *cfgBuilder) build(stmt parser.Node, from int) int {
 		// A case label is a no-op; its statements follow. Normally handled by
 		// buildSwitch, but a case nested in a compound_statement still works.
 		return b.buildBlock(stmt, from)
+	case "ERROR":
+		// A function-like macro call whose argument is a TYPE cast
+		// (`SINGLE_LINKEDLIST_Scan(list, iter, type *) { body }`) parses as an
+		// ERROR node. It is really a for loop: the iterator is written in the
+		// for-init and null-guarded in the condition, then the body runs. Model
+		// it as a loop (header = the macro call, body = the trailing compound
+		// statement) so the flow filters see the iterator write as a kill BEFORE
+		// the body's dereference.
+		if iterMacroBody(stmt) != nil {
+			return b.buildIterMacro(stmt, from)
+		}
+		n := b.newNode("stmt", stmt.StartLine(), stmt.EndLine(), stmt)
+		b.edge(from, n)
+		return n
 	default:
 		// expression_statement, declaration, and anything unrecognised: a
 		// straight-line leaf statement.
@@ -260,6 +274,56 @@ func (b *cfgBuilder) build(stmt parser.Node, from int) int {
 		b.edge(from, n)
 		return n
 	}
+}
+
+// iterMacroBody returns the trailing compound_statement of an ERROR node that
+// looks like a function-like macro call (`MACRO_NAME(arg0, ...) { body }`), or
+// nil when the node is not that shape. tree-sitter recovers such a call as an
+// ERROR node whose first named child is the macro-name identifier and whose
+// trailing compound_statement is the loop body.
+func iterMacroBody(stmt parser.Node) *parser.Node {
+	if stmt.Kind() != "ERROR" {
+		return nil
+	}
+	children := stmt.NamedChildren()
+	if len(children) < 2 || children[0].Kind() != "identifier" {
+		return nil
+	}
+	for i := 1; i < len(children); i++ {
+		if children[i].Kind() == "compound_statement" {
+			return &children[i]
+		}
+	}
+	return nil
+}
+
+// buildIterMacro builds the CFG for an ERROR-node macro call as a loop: the
+// header (the macro invocation) falls through to the body, the body loops back
+// to the header, and the header also exits to the join (the loop condition is
+// false). This mirrors buildWhileDo without a real condition node.
+func (b *cfgBuilder) buildIterMacro(stmt parser.Node, from int) int {
+	header := b.newNode("stmt", stmt.StartLine(), stmt.EndLine(), stmt)
+	b.edge(from, header)
+
+	join := b.newNode("join", 0, 0, parser.Node{})
+	body := iterMacroBody(stmt)
+
+	b.breakTo = append(b.breakTo, join)
+	b.contTo = append(b.contTo, header)
+
+	bodyLast := -1
+	if body != nil {
+		bodyLast = b.build(*body, header)
+	}
+
+	b.breakTo = b.breakTo[:len(b.breakTo)-1]
+	b.contTo = b.contTo[:len(b.contTo)-1]
+
+	if bodyLast >= 0 {
+		b.edge(bodyLast, header) // back edge
+	}
+	b.edge(header, join) // condition false → exit loop
+	return join
 }
 
 func (b *cfgBuilder) buildIf(stmt parser.Node, from int) int {
@@ -619,7 +683,15 @@ func isStmtNode(n parser.Node) bool {
 		"while_statement", "do_statement", "switch_statement", "return_statement",
 		"break_statement", "continue_statement", "goto_statement",
 		"compound_statement", "labeled_statement", "case_statement",
-		"preproc_ifdef", "preproc_ifndef", "preproc_if":
+		"preproc_ifdef", "preproc_ifndef", "preproc_if",
+		// A function-like macro call whose argument is a TYPE cast
+		// (`SINGLE_LINKEDLIST_Scan(list, iter, type *)`) is not a valid
+		// expression, so tree-sitter recovers the whole call + its loop body as
+		// an ERROR node. It is still a statement in the source (the macro
+		// expands to a for loop), so model it as a leaf statement — otherwise
+		// the dereference inside the loop body is invisible to every flow
+		// filter and the iterator-macro kill never fires.
+		"ERROR":
 		return true
 	}
 	return false
