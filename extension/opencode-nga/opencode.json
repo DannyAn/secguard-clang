@@ -33,7 +33,8 @@
     "secguard_status": "allow",
     "secguard_db": "allow",
     "secguard_schema": "allow",
-    "secguard_types": "allow"
+    "secguard_types": "allow",
+    "secguard_metrics": "allow"
   },
   "plugin": ["secguard-context"]
 }

@@ -2,7 +2,7 @@ import { type Plugin } from "@opencode-ai/plugin"
 import path from "path"
 import fs from "fs"
 
-// The 8 secguard_* tools live in tools/*.ts and MUST be registered here via the
+// The secguard_* tools live in tools/*.ts and MUST be registered here via the
 // plugin's `tool` hook — the fork's extensions/ loader loads THIS file (referenced
 // by opencode.json `plugin: ["secguard-context"]`) and does NOT auto-discover
 // tools/*.ts. Do NOT relocate this registration to index.ts: the fork does not
@@ -15,6 +15,7 @@ import secguard_status from "../tools/secguard_status"
 import secguard_db from "../tools/secguard_db"
 import secguard_schema from "../tools/secguard_schema"
 import secguard_types from "../tools/secguard_types"
+import secguard_metrics from "../tools/secguard_metrics"
 
 // KEEP IN SYNC with opencode/index.ts — the two OpenCode hosts share this
 // context-enhancement logic (resolveWorkDir + tool.execute.before + file.edited
@@ -40,6 +41,7 @@ export const SecGuardContextPlugin: Plugin = async ({
       secguard_db,
       secguard_schema,
       secguard_types,
+      secguard_metrics,
     },
 
     "tool.execute.before": async (input, output) => {
