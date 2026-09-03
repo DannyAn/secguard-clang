@@ -59,7 +59,7 @@ const (
 // ToolVersion is the version stamped into SARIF and markdown reports.
 // It is a var so cli/root.go can inject the release version at startup
 // (keeping report free of a cli import, which would be a cycle).
-var ToolVersion = "0.5.7"
+var ToolVersion = "0.5.8"
 
 type ScanOutput struct {
 	RootDir string

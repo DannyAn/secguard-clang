@@ -2,6 +2,40 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.5.8] - 2026-09-03
+
+### 主题：顽疾治理 —— 攻克三类长期痛点（type-cast 迭代宏 / memset_s 误报 / 扫描度量）
+
+本版集中治理三类反复出现的顽疾：带**类型强转实参**的遍历宏（`SINGLE_LINKEDLIST_Scan(list, iter, type *)`
+这类 SDK 惯用法）因 tree-sitter 解析成 ERROR 节点而被整段丢弃、`memset_s` 清零仍被误报为
+struct 部分未初始化、以及扫描性能/收敛/体积长期无度量无法做持续优化。
+
+### 误报消减（null-deref）
+
+- **null-deref**：带类型强转实参的函数式遍历宏（`SINGLE_LINKEDLIST_Scan(list, iter, type *)`）
+  因「类型不是合法表达式」被 tree-sitter 解析成 ERROR 节点，原先既不被 CFG 建模、迭代宏 kill 也
+  只扫 `call_expression`，导致 `[iterator_macros]` 配置**完全不生效**——宏前的 `NULL` 赋值被误报为
+  `certain null-deref` 并自动确认。本轮：CFG 把该 ERROR 节点建模成循环（宏调用头 + 循环体），
+  planner 从 ERROR 节点还原「宏名 + 位置实参」并执行迭代实参/树内写实参 kill。
+- 关键保障：**不编译也能扫**——宏定义即使位于第三方 `deps/` 且从未被编译/索引，只要在
+  `secguard.toml` 里 `[iterator_macros.macros]` 声明了该宏，配置态 kill 即可生效，无需宏定义在场。
+  未声明时循环体内解引用会被如实报出（保守，不静默放过）。
+
+### 误报消减（uninit）
+
+- **uninit**：`memset_s`（Annex-K 边界安全 memset）加入 `outputParamInitializers` 白名单——用
+  `memset_s(&s, ...)` 清零的整个 struct 不再被误报为 `struct_partial_uninit`。
+- **uninit**：候选 Evidence 携带声明/分配行锚点（`declared at line N` / `allocated at line N`），
+  分类器在 ±8 Code Context 窗口够不到远处声明时也能定位初始化点，不再盲猜；`heap_uninit` 的
+  锚点正确标注为「分配行」而非「声明行」。
+
+### 扫描度量（新增）
+
+- 新增 `scan_runs` 表 + `secguard metrics` 命令：记录每次扫描的分阶段耗时、原始候选→收敛后候选、
+  报告/候选证据体积，并派生估算 AI 输入 token 数（bytes÷4，展示时现算、不落库）。
+- `secguard scan` stdout 新增 `scan_metrics` 字段；OpenCode agent 新增 `secguard_metrics` 工具，
+  Claude Code/DSH 复用 `Bash(secguard *)` 通配，无需额外包装。
+
 ## [0.5.7] - 2026-09-02
 
 ### 主题：误报收敛（unchecked-return / null-deref / uninit）+ agent 写入效率
