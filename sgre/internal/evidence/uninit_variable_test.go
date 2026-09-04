@@ -104,6 +104,90 @@ func TestUninit_MemsetSOutputParamNotUninit(t *testing.T) {
 	}
 }
 
+func TestUninit_StrncpySDestNotUninit(t *testing.T) {
+	// strncpy_s writes its first argument (the destination), so a field
+	// (`msg.pool_name`) or whole array (`name`) passed there is initialized, not
+	// read-before-init. Guards the dest-writer (arg-0 write) recognition — the
+	// array-decay case the `&field` output-param path never saw — while a field
+	// that is never written stays reported.
+	store := runIndexAndDetect(t, "tc85_strncpy_s_init.c")
+	events, _ := store.ListEventsByType(context.Background(), "VALUE_USE")
+	flagged := make(map[string]map[string]bool) // variable -> origins
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+			Origin   string `json:"origin"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if flagged[props.Variable] == nil {
+			flagged[props.Variable] = map[string]bool{}
+		}
+		flagged[props.Variable][props.Origin] = true
+	}
+	if len(flagged["msg"]) > 0 {
+		t.Errorf("msg must not be flagged after strncpy_s writes msg.pool_name, got %v", flagged["msg"])
+	}
+	if len(flagged["name"]) > 0 {
+		t.Errorf("name must not be flagged after strncpy_s writes it, got %v", flagged["name"])
+	}
+	if !flagged["bad_msg"]["struct_partial_uninit"] {
+		t.Errorf("bad_msg.pool_name (never written) must still be flagged as struct_partial_uninit, got %v", flagged)
+	}
+}
+
+func TestUninit_MacroStructInit(t *testing.T) {
+	// SET_FIELD(x, 0) (field-setter macro) and ZERO(x) (whole-struct zeroing
+	// macro) both initialize x; a field never written stays reported. Guards the
+	// macro-write path in detectStructPartialUninit.
+	store := runIndexAndDetect(t, "tc87_macro_struct_init.c")
+	events, _ := store.ListEventsByType(context.Background(), "VALUE_USE")
+	flagged := make(map[string]map[string]bool)
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+			Origin   string `json:"origin"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if flagged[props.Variable] == nil {
+			flagged[props.Variable] = map[string]bool{}
+		}
+		flagged[props.Variable][props.Origin] = true
+	}
+	if len(flagged["x"]) > 0 {
+		t.Errorf("x must not be flagged after macro field-set/whole-zero, got %v", flagged["x"])
+	}
+	if !flagged["bad"]["struct_partial_uninit"] {
+		t.Errorf("bad.other (never written) must still be flagged as struct_partial_uninit, got %v", flagged)
+	}
+}
+
+func TestUninit_ConditionalWriteGuard(t *testing.T) {
+	// sample_alarm_dequeue writes *out only on success; the `while (dequeue(&msg)
+	// == sample_OK)` guard means msg.param is written in the body. An UNGUARDED
+	// conditional write stays reported. Guards the ParamConditionalWrites +
+	// caller-return-check model in the struct path.
+	store := runIndexAndDetect(t, "tc88_dequeue_guard.c")
+	events, _ := store.ListEventsByType(context.Background(), "VALUE_USE")
+	flagged := make(map[string]map[string]bool)
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+			Origin   string `json:"origin"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if flagged[props.Variable] == nil {
+			flagged[props.Variable] = map[string]bool{}
+		}
+		flagged[props.Variable][props.Origin] = true
+	}
+	if len(flagged["msg"]) > 0 {
+		t.Errorf("msg must not be flagged when the conditional write is guarded by the return check, got %v", flagged["msg"])
+	}
+	if !flagged["bad_msg"]["struct_partial_uninit"] {
+		t.Errorf("bad_msg.param (unguarded conditional write) must still be flagged as struct_partial_uninit, got %v", flagged)
+	}
+}
+
 func TestUninit_AlwaysWriteParamNotUninit(t *testing.T) {
 	// fill_point writes *p on every path, so &p initializes p. Guards the
 	// ParamWrites interprocedural summary.

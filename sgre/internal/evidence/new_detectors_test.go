@@ -100,6 +100,17 @@ func TestNewDetector_DivideByZero_ConstantSymbols(t *testing.T) {
 	}
 }
 
+func TestNewDetector_DivideByZero_TernaryBranch(t *testing.T) {
+	// A ternary guards only the branch the division sits in: `(d == 0) ? x : a/d`
+	// (false branch) and `d ? a/d : x` (true branch) are both safe — the division
+	// only runs when d != 0 — while an unguarded `a/d` stays reported.
+	store := runOneDetector(t, "tc86_divide_by_zero_ternary.c",
+		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewDivideByZeroDetector(s, p, l) })
+	if got := eventCount(t, store, "DIVIDE_BY_ZERO"); got != 1 {
+		t.Errorf("expected 1 DIVIDE_BY_ZERO event (ternary true/false-branch guards suppressed; unguarded kept), got %d", got)
+	}
+}
+
 func TestNewDetector_SQLInjectionLiteralSafe(t *testing.T) {
 	store := runOneDetector(t, "tc72_sql_literal_safe.c",
 		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewInjectionDetector(s, p, l) })

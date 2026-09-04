@@ -18,7 +18,8 @@ import (
 // output, not a read of an uninitialized value. writesParam[i] is true when the
 // i-th parameter is written.
 type WriteSummary struct {
-	writesParam map[int]bool
+	writesParam map[int]bool   // param position i is assigned as a whole / address-taken
+	writesField map[int]string // param position i has member <suffix> assigned (".field" / "->field")
 }
 
 // WriteSummaries returns, per macro name, which parameter positions its body
@@ -49,13 +50,15 @@ func WriteSummaries(root parser.Node) map[string]WriteSummary {
 		if name == "" || body == "" {
 			continue
 		}
-		summary := WriteSummary{writesParam: make(map[int]bool)}
+		summary := WriteSummary{writesParam: make(map[int]bool), writesField: make(map[int]string)}
 		for i, param := range params {
 			if assignsParam(body, param) {
 				summary.writesParam[i] = true
+			} else if field := assignsFieldOfParam(body, param); field != "" {
+				summary.writesField[i] = field
 			}
 		}
-		if len(summary.writesParam) > 0 {
+		if len(summary.writesParam) > 0 || len(summary.writesField) > 0 {
 			out[name] = summary
 		}
 	}
@@ -84,6 +87,34 @@ func WrittenArgs(call parser.Node, summaries map[string]WriteSummary) map[string
 			}
 			if arg.Kind() == "identifier" {
 				out[arg.Text()] = true
+			}
+		}
+	}
+	return out
+}
+
+// WrittenFieldArgs returns, per written-argument bare identifier, the
+// member-access suffix the macro assigns (`SET_FIELD(x, 0)` → {"x": ".field"}).
+// It complements WrittenArgs (whole-parameter writes) for field-setter macros
+// that initialize a MEMBER of the argument rather than the argument itself.
+func WrittenFieldArgs(call parser.Node, summaries map[string]WriteSummary) map[string]string {
+	out := make(map[string]string)
+	summary, ok := summaries[callName(call)]
+	if !ok || len(summary.writesField) == 0 {
+		return out
+	}
+	for _, child := range call.NamedChildren() {
+		if child.Kind() != "argument_list" {
+			continue
+		}
+		args := child.NamedChildren()
+		for i, arg := range args {
+			suffix, ok := summary.writesField[i]
+			if !ok {
+				continue
+			}
+			if arg.Kind() == "identifier" {
+				out[arg.Text()] = suffix
 			}
 		}
 	}
@@ -122,15 +153,32 @@ func MergeWriteSummaries(maps ...map[string]WriteSummary) map[string]WriteSummar
 	for _, m := range maps {
 		for name, s := range m {
 			if existing, ok := out[name]; ok {
+				if existing.writesParam == nil {
+					existing.writesParam = make(map[int]bool)
+				}
+				if existing.writesField == nil {
+					existing.writesField = make(map[int]string)
+				}
 				for i := range s.writesParam {
 					existing.writesParam[i] = true
+				}
+				for i, suffix := range s.writesField {
+					if _, ok := existing.writesField[i]; !ok {
+						existing.writesField[i] = suffix
+					}
 				}
 				out[name] = existing
 				continue
 			}
-			cp := WriteSummary{writesParam: make(map[int]bool, len(s.writesParam))}
+			cp := WriteSummary{
+				writesParam: make(map[int]bool, len(s.writesParam)),
+				writesField: make(map[int]string, len(s.writesField)),
+			}
 			for i := range s.writesParam {
 				cp.writesParam[i] = true
+			}
+			for i, suffix := range s.writesField {
+				cp.writesField[i] = suffix
 			}
 			out[name] = cp
 		}
@@ -218,6 +266,52 @@ func assignsParam(body, param string) bool {
 		}
 	}
 	return false
+}
+
+// assignsFieldOfParam returns the member-access suffix (".field" / "->field") if
+// the macro body assigns to a FIELD of param (`(p).field = v`, `p->field = v`),
+// else "". A field write is distinct from a whole write (assignsParam):
+// `#define SET_FIELD(s, v) ((s).field = (v))` initializes s.field, not s.
+func assignsFieldOfParam(body, param string) string {
+	compact := compactBody(body)
+	// Parenthesized `(p).` / `(p)->` — self-delimiting, safe substring.
+	for _, op := range []string{".", "->"} {
+		needle := "(" + param + ")" + op
+		if i := strings.Index(compact, needle); i >= 0 {
+			if suffix, ok := fieldAssignLHS(compact, i+len(needle), op); ok {
+				return suffix
+			}
+		}
+	}
+	// Bare `p.` / `p->` — boundary-aware via identTokenIndexes.
+	for _, i := range identTokenIndexes(compact, param) {
+		for _, op := range []string{".", "->"} {
+			j := i + len(param)
+			if j+len(op) <= len(compact) && compact[j:j+len(op)] == op {
+				if suffix, ok := fieldAssignLHS(compact, j+len(op), op); ok {
+					return suffix
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// fieldAssignLHS returns the member-access suffix (op + field) if s[pos:] is a
+// field identifier followed by a plain assignment `=` (not `==`, not a
+// read-modify-write like `+=`), else ok=false.
+func fieldAssignLHS(s string, pos int, op string) (string, bool) {
+	end := pos
+	for end < len(s) && isIdentChar(s[end]) {
+		end++
+	}
+	if end == pos {
+		return "", false
+	}
+	if end >= len(s) || s[end] != '=' || (end+1 < len(s) && s[end+1] == '=') {
+		return "", false
+	}
+	return op + s[pos:end], true
 }
 
 // rhsReadsParam reports whether an assignment RHS reads param back, delimiting the

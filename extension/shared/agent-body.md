@@ -216,16 +216,16 @@ finding fill `reasoning`, `exception_check`, and `fix_strategy`; for
 **dismissed** fill `reasoning` (why it is safe). These are persisted into the
 per-finding Markdown, so a reviewer sees *why* you believe it, not just *what*.
 
-**Large types: split into ≤50-finding batches, persist EACH batch immediately.**
+**Large types: split into ≤200-finding batches, persist EACH batch immediately.**
 This is a HARD rule, not a suggestion. You SHALL NOT build one giant JSON array
 for a type with many candidates — the array plus your classification notes
 overflow the context window and the tail candidates get silently dropped (the
-"200 landed, 4 missing" failure). For any type with more than ~50 candidates,
+"200 landed, 4 missing" failure). For any type with more than ~200 candidates,
 you SHALL write and persist in chunks, and you SHALL NOT start classifying the
 next chunk until the current chunk's `--write-json` has returned:
 
-1. classify + write `<tmpdir>/<type>-part1.json` (≤50 findings) → `--write-json` it
-2. classify + write `<tmpdir>/<type>-part2.json` (next ≤50) → `--write-json` it
+1. classify + write `<tmpdir>/<type>-part1.json` (≤200 findings) → `--write-json` it
+2. classify + write `<tmpdir>/<type>-part2.json` (next ≤200) → `--write-json` it
 3. …repeat until every candidate is written.
 
 The write is idempotent (re-running updates, never duplicates), so partial
@@ -237,7 +237,7 @@ write chunk except the LAST one (on the last one let the orchestrator's single
 `report --audit` do the render). On the shell-only host
 `--write-json` never renders — only the orchestrator's final `report --audit`
 does. Rendering `report.md` + `result.sarif` + `result.xlsx` + `findings/` after
-EVERY 50-finding chunk re-reads and re-writes the whole report each time, which
+EVERY 200-finding chunk re-reads and re-writes the whole report each time, which
 is exactly the redundant backfill that stretches a large type's wall-clock time.
 
 **Keep each field SHORT — your verdicts are JSON that must fit in context, not an

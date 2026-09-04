@@ -2,6 +2,33 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.5.9] - 2026-09-04
+
+### 主题：uninit / divide-by-zero 误报收敛 + 分类吞吐优化
+
+### 误报消减（uninit）
+
+- **结构体输出参数 `&s` 三层模型**：`&s` 传给已知初始化器 / 本地 `ParamWrites` /
+  `ParamConditionalWrites` + 返回值守卫 一律判为已写；未知 `void*` 填充仍保守。
+  消除 `while (dequeue(&msg) == OK)` 这类「子函数填充结构体」的
+  `struct_partial_uninit` 误报（新增 `callInBranchCondition` 识别返回值守卫）。
+- **函数式宏写入补全**：识别字段 setter 宏 `SET_FIELD(x,0)`（`(s).field = v` /
+  `(s)->field = v`）与整结构清零宏，宏写入进入结构体路径（此前只进标量路径）。
+- **`strncpy_s`/`strcpy_s`/`memcpy_s` 等 arg-0 目标写函数**加入 dest-writer 白名单，
+  消除 `strncpy_s(msg.pool_name, ...)` 的目标被误判为读未初始化。
+
+### 误报消减（divide-by-zero）
+
+- **三元分支感知守卫**：`(d == 0) ? x : a/d`（除式在假分支）与 `d ? a/d : x`
+  （真分支）均不再误报；除式在条件里仍保守。
+
+### 分类吞吐（extension）
+
+- chunk 50→200、maxTurns 30→60 + `TURNS_PER_TYPE_ESTIMATE` 6→12（四平台同步），
+  减少大类型写回往返、消除 maxturns-exceeded 触发的补救写。
+- `secguard_status` MCP 工具新增 `per_type` + `scan_id`，F5/F9 的 DB 二次校验在
+  无 Bash 的 OpenCode / OpenCode-NGA 上可执行。
+
 ## [0.5.8] - 2026-09-03
 
 ### 主题：顽疾治理 —— 攻克三类长期痛点（type-cast 迭代宏 / memset_s 误报 / 扫描度量）

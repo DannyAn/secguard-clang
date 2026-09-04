@@ -59,7 +59,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 		for _, f := range funcs {
 			d.detectStackUninit(ctx, f, file, decls, assigns, calls, returns, inits, ifs, whiles, fors, bodies, summaries, macroWrites, &result)
 			d.detectHeapUninit(ctx, f, file, inits, assigns, unarys, ptrs, fields, &result)
-			d.detectStructPartialUninit(ctx, f, file, decls, assigns, calls, fields, summaries, &result)
+			d.detectStructPartialUninit(ctx, f, file, decls, assigns, calls, fields, summaries, macroWrites, &result)
 		}
 	})
 	return result, err
@@ -215,6 +215,18 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 					if key := resolveVarKey(declsByName, name, call.StartLine()); key != "" {
 						outputParamInitLines[key] = call.StartLine()
 					}
+				}
+			}
+		}
+		// A copy/init call's first argument is the DESTINATION buffer (written,
+		// not read): `strncpy_s(buf, ...)`, `memcpy(dst, ...)`, `sprintf(buf,
+		// ...)`. A whole array decays to a pointer, so it is passed as an
+		// identifier, not `&buf`; mark it initialized so a LATER read is not
+		// reported. (A field destination is handled by detectStructPartialUninit.)
+		if isDestWriter(callName) {
+			if args := getCallArgs(call); len(args) > 0 && args[0].Kind() == "identifier" {
+				if key := resolveVarKey(declsByName, args[0].Text(), call.StartLine()); key != "" {
+					outputParamInitLines[key] = call.StartLine()
 				}
 			}
 		}
@@ -433,6 +445,26 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 					extra[name] = true
 				}
 			}
+		}
+		// A copy/init call's destination is written, not read: skip it so the
+		// call line does not report the just-declared buffer as use-before-init.
+		if isDestWriter(callName) {
+			if args := getCallArgs(call); len(args) > 0 && args[0].Kind() == "identifier" {
+				if extra == nil {
+					extra = map[string]bool{}
+				}
+				extra[args[0].Text()] = true
+			}
+		}
+		// A field-setter macro's argument is the base of a MEMBER write
+		// (`SET_FIELD(x, 0)` → (x).field = 0), not a whole-value read; the member
+		// itself is handled by the struct-partial path. Skip the base so the call
+		// line does not report x as a scalar use-before-init.
+		for name := range macros.WrittenFieldArgs(call, macroWrites) {
+			if extra == nil {
+				extra = map[string]bool{}
+			}
+			extra[name] = true
 		}
 		scanUses(call, call.StartLine(), callName, extra)
 	}
@@ -990,7 +1022,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 	}
 }
 
-func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, f *db.Function, file *db.File, decls, assigns, calls, fields []parser.Node, summaries summaryMap, result *DetectResult) {
+func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, f *db.Function, file *db.File, decls, assigns, calls, fields []parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, result *DetectResult) {
 	structVars := make(map[string]int)
 	initializedFields := make(map[string]bool)
 	// A struct passed by address to a KNOWN initializer (memset(&s, 0, ...),
@@ -1081,6 +1113,44 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 					initializedFields[fieldPath(target)] = true
 				}
 			}
+		}
+	}
+
+	// A field/subscript passed as the raw destination of a copy/init call
+	// (`strncpy_s(msg.pool_name, ...)`) is written by the callee. The array
+	// decays to a pointer with no `&`, so the `&s.f` output-param loop above
+	// misses it; mark the field path initialized so a struct filled through
+	// strncpy_s/memcpy/sprintf is not reported as partial-init.
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
+			continue
+		}
+		if !isDestWriter(extractCallName(call)) {
+			continue
+		}
+		args := getCallArgs(call)
+		if len(args) == 0 {
+			continue
+		}
+		if args[0].Kind() == "field_expression" || args[0].Kind() == "subscript_expression" {
+			initializedFields[fieldPath(args[0])] = true
+		}
+	}
+
+	// A function-like macro that writes a whole argument (`ZERO(x)` → memset(&x))
+	// or a member of it (`SET_FIELD(x, 0)` → (x).field = 0) initializes the
+	// corresponding struct / field. Macro writes were only applied to the scalar
+	// path before; mirror them here so a struct filled through an initializer or
+	// field-setter macro is not reported partial-init.
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
+			continue
+		}
+		for name := range macros.WrittenArgs(call, macroWrites) {
+			initializedVars[name] = true
+		}
+		for name, suffix := range macros.WrittenFieldArgs(call, macroWrites) {
+			initializedFields[name+suffix] = true
 		}
 	}
 
@@ -1223,6 +1293,38 @@ func isOutputParamInitializer(name string) bool {
 	return outputParamInitializers[name]
 }
 
+// destWriters lists string/memory copy and init functions whose FIRST argument
+// is the destination buffer — written by the callee, never read. A destination
+// array/field decays to a raw pointer (`strncpy_s(msg.name, ...)`, `memcpy(dst,
+// ...)`), so it is passed WITHOUT `&` and the `&x` output-param path never sees
+// it. Marking arg 0 as a write (not a read) stops a struct/array filled through
+// these calls from being reported as uninitialized.
+var destWriters = map[string]bool{
+	"memset":      true,
+	"memset_s":    true,
+	"bzero":       true,
+	"strcpy":      true,
+	"strcpy_s":    true,
+	"strncpy":     true,
+	"strncpy_s":   true,
+	"memcpy":      true,
+	"memcpy_s":    true,
+	"memmove":     true,
+	"memmove_s":   true,
+	"sprintf":     true,
+	"sprintf_s":   true,
+	"snprintf":    true,
+	"snprintf_s":  true,
+	"vsprintf":    true,
+	"vsprintf_s":  true,
+	"vsnprintf":   true,
+	"vsnprintf_s": true,
+}
+
+func isDestWriter(name string) bool {
+	return destWriters[name]
+}
+
 // outputParamGuardLine reports the line after which a conditional output
 // parameter is definitely written, given the caller guards the call's error
 // return with an exit (`if (fn(&x) != OK) return;` / `rc = fn(&x); if (rc) return;`).
@@ -1358,38 +1460,69 @@ func isValueFieldBase(id parser.Node) bool {
 // arbitrary `&x` to an unknown/conditional function is conservatively kept
 // (cf. TestSecurity_TC16_UninitInterprocedural).
 func outputParamInitializedVars(calls []parser.Node, f *db.Function, summaries summaryMap) map[string]bool {
+	// `&s` to a writer initializes the whole struct on three tiers, mirroring
+	// the scalar path's model:
+	//   - known initializer (memset, stat, ...) → writes unconditionally;
+	//   - local function whose ParamWrites marks the position → every path;
+	//   - local function whose ParamConditionalWrites marks the position → the
+	//     caller tests the return (`while (dequeue(&s) == OK)` / `if (get(&s))`),
+	//     so the guarded path is where the callee wrote its output.
+	// An UNKNOWN/external `&s` is conservatively kept — a generic void* filler
+	// may write only some fields (cf. tc84 FlowGetKey).
 	initialized := make(map[string]bool)
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		callName := extractCallName(call)
-
 		knownInit := isOutputParamInitializer(callName)
 		summary, hasSummary := summaries[callName]
 		if !knownInit && !hasSummary {
 			continue
 		}
-
 		for _, child := range call.NamedChildren() {
 			if child.Kind() != "argument_list" {
 				continue
 			}
 			for argIdx, arg := range child.NamedChildren() {
-				argText := arg.Text()
-				if !strings.HasPrefix(argText, "&") {
+				if arg.Kind() != "pointer_expression" || !strings.HasPrefix(strings.TrimSpace(arg.Text()), "&") {
 					continue
 				}
-				name := strings.TrimPrefix(argText, "&")
-				if knownInit {
+				inner := arg.NamedChildren()
+				if len(inner) == 0 || inner[0].Kind() != "identifier" {
+					continue
+				}
+				name := inner[0].Text()
+				switch {
+				case knownInit:
 					initialized[name] = true
-					continue
-				}
-				if summary.ParamWrites[argIdx] {
+				case summary.ParamWrites[argIdx]:
+					initialized[name] = true
+				case summary.ParamConditionalWrites[argIdx] && callInBranchCondition(call):
 					initialized[name] = true
 				}
 			}
 		}
 	}
 	return initialized
+}
+
+// callInBranchCondition reports whether call sits inside the condition of an
+// enclosing if/while/do/for — i.e. the caller tests the call's return value.
+// It is the caller-side guard for a conditional output-param writer: the
+// consequent body / fall-through runs on the checked path, which is where the
+// callee wrote its output (`while (dequeue(&s) == OK) { use(s) }`).
+func callInBranchCondition(call parser.Node) bool {
+	for n := call.Parent(); n != nil; n = n.Parent() {
+		switch n.Kind() {
+		case "if_statement", "while_statement", "do_statement", "for_statement":
+			cond := n.ChildByFieldName("condition")
+			return cond != nil && nodeWithin(cond, &call)
+		case "parenthesized_expression", "binary_expression", "unary_expression", "conditional_expression", "call_expression", "argument_list":
+			// transparent wrappers around the call; keep climbing
+		default:
+			return false
+		}
+	}
+	return false
 }

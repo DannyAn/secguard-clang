@@ -134,19 +134,29 @@ func possiblyZeroDivisor(divisor string) bool {
 }
 
 // divisionGuarded reports whether an enclosing guard implies the divisor is
-// non-zero: a ternary `d ? a/d : x`, or an `if (d)` / `if (d != 0)` / `while
-// (d)` whose body contains the division. On every path that reaches the
-// division, the guard has already established d != 0.
+// non-zero: a ternary `d ? a/d : x` (division in the true branch) or
+// `(d == 0) ? x : a/d` (division in the false branch), or an `if (d)` /
+// `if (d != 0)` / `while (d)` whose body contains the division. On every path
+// that reaches the division, the guard has already established d != 0.
 func divisionGuarded(expr parser.Node, divisor string) bool {
 	d := strings.TrimSpace(divisor)
-	for n := &expr; n != nil; n = n.Parent() {
+	for n, prev := &expr, (*parser.Node)(nil); n != nil; n, prev = n.Parent(), n {
 		switch n.Kind() {
 		case "conditional_expression":
-			named := n.NamedChildren()
-			if len(named) == 0 {
+			cond := n.ChildByFieldName("condition")
+			if cond == nil {
 				continue
 			}
-			if guardImpliesNonZero(named[0].Text(), d) {
+			// The guard only protects the branch the division sits in:
+			// - alternative (false) branch: the condition implies d == 0
+			//   (`(d == 0) ? x : a/d`), so the false branch is d != 0.
+			// - consequence (true) branch: the condition implies d != 0
+			//   (`d ? a/d : x`).
+			if alt := n.ChildByFieldName("alternative"); prev != nil && alt != nil && nodeWithin(alt, prev) {
+				if guardImpliesZero(cond.Text(), d) {
+					return true
+				}
+			} else if guardImpliesNonZero(cond.Text(), d) {
 				return true
 			}
 		case "if_statement", "while_statement", "do_statement":
@@ -157,6 +167,11 @@ func divisionGuarded(expr parser.Node, divisor string) bool {
 		}
 	}
 	return false
+}
+
+// nodeWithin reports whether inner sits within outer's byte range.
+func nodeWithin(outer, inner *parser.Node) bool {
+	return inner.StartByte() >= outer.StartByte() && inner.EndByte() <= outer.EndByte()
 }
 
 // guardImpliesNonZero reports whether a guard condition text establishes that
@@ -172,6 +187,20 @@ func guardImpliesNonZero(condText string, d string) bool {
 		}
 	}
 	return false
+}
+
+// guardImpliesZero reports whether a guard condition text establishes that
+// divisor d is zero (== 0, <= 0, or falsy). It is the inverse of
+// guardImpliesNonZero: a ternary whose division sits in the FALSE branch is
+// safe when the condition implies d == 0 (so the false branch is d != 0).
+func guardImpliesZero(condText string, d string) bool {
+	ct := strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(strings.TrimSpace(condText), ")"), "("))
+	for _, pat := range []string{d + " == 0", "0 == " + d, d + " <= 0", "0 >= " + d} {
+		if strings.Contains(ct, pat) {
+			return true
+		}
+	}
+	return ct == "!"+d
 }
 
 // isFloatDivisionText reports whether a division expression involves a

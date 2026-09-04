@@ -49,7 +49,7 @@ extension/
 ### Turn Budget — Single Source of Truth
 
 The orchestrator's batch model (see `shared/command-instructions.md` → Batch
-Capacity Configuration) sizes subagent batches from `MAXTURNS` (30). Every
+Capacity Configuration) sizes subagent batches from `MAXTURNS` (60). Every
 platform's agent definition MUST declare the same cap in its native field:
 
 | Platform | Field | File |

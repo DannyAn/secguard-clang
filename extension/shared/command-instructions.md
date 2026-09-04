@@ -155,9 +155,9 @@ and use it directly. Do not reconstruct paths by trial and error.
 | Parameter | Value | Meaning |
 |---|---|---|
 | `MAX_TYPES_PER_BATCH` | 4 | Hard ceiling on types assigned to one subagent |
-| `MAXTURNS` | 30 | security-auditor.md maxTurns (must match) |
+| `MAXTURNS` | 60 | security-auditor.md maxTurns (must match) |
 | `MAXTURNS_SAFETY_RATIO` | 0.9 | Use only 90% of maxTurns as the budget |
-| `TURNS_PER_TYPE_ESTIMATE` | 6 | Avg turns per type (skill load + classify + write) |
+| `TURNS_PER_TYPE_ESTIMATE` | 12 | Avg turns per type (skill load + classify + write) |
 | `LARGE_CANDIDATE_THRESHOLD` | 100 | Types with > this many candidates get a dedicated subagent |
 | `SPLIT_CANDIDATE_THRESHOLD` | 100 | A type with > this many candidates is SPLIT across multiple subagents, each handling ≤ this many candidates |
 
@@ -170,7 +170,7 @@ as part of `release/build-packages.sh`.
 - If a batch has > `MAX_TYPES_PER_BATCH` (4) types, the orchestrator SHALL split it before dispatching.
 - Where a single type has > `LARGE_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL assign that type its own dedicated subagent.
 - Where a single type has > `SPLIT_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL split it into MULTIPLE subagents, each handling a ≤100-candidate RANGE of that type (pass the candidate # range, e.g. "candidates #1–100 of null-deref"), so no single subagent's context window is exceeded. The 100-candidate cap is a CONTEXT ceiling (not a turn ceiling): before the Hint column + Code Context compression, a suspected-heavy range opened an `Evidence` file per suspected candidate and a 100-candidate range could exhaust a 200K context before the tail; with `Source`+`Hint` classification and a ±8 Code Context window the same budget now carries ~2× more, so 100 is the test point — if a super-large function still overflows, the tail is surfaced via the partial-count path, never silently buried.
-- If `batch_type_count × TURNS_PER_TYPE_ESTIMATE` ≥ `MAXTURNS × MAXTURNS_SAFETY_RATIO` (i.e. ≥ 27), the orchestrator SHALL reject the batch as over-budget and split it.
+- If `batch_type_count × TURNS_PER_TYPE_ESTIMATE` ≥ `MAXTURNS × MAXTURNS_SAFETY_RATIO` (i.e. ≥ 54), the orchestrator SHALL reject the batch as over-budget and split it.
 
 ## Full Scan Workflow
 
@@ -309,9 +309,10 @@ as `result.sarif`.)
     Derive the DB and the write dir from <scan_dir> (ABSOLUTE, never relative):
     - DB:  <scan_dir>/../../.sgre/sgre.db
     - tmp: <scan_dir>/../../.sgre/.tmp/
-    Write findings in ≤50-finding chunks (a 100-candidate range is 2 chunks,
-    NOT one giant array — one giant array overflows your context and silently
-    drops the tail). For each chunk: write a FRESH `<scan_dir>/../../.sgre/.tmp/<type>-partN.json`
+    Write findings in ≤200-finding chunks (a ≤100-candidate range is exactly ONE
+    chunk — never split a range into multiple files; a ≤200 array of compact
+    Source+Hint verdicts stays well under context, so the tail is never dropped).
+    For each chunk: write a FRESH `<scan_dir>/../../.sgre/.tmp/<type>-partN.json`
     with the Write tool (N increasing; if a Write returns "must read before
     overwriting", do NOT stop to inspect the directory — just use the next fresh
     filename), then immediately
@@ -321,7 +322,7 @@ as `result.sarif`.)
    written finding ids.
    ```
    For many types, batch them — but NEVER exceed `MAX_TYPES_PER_BATCH` (4) types
-   per subagent, and validate `batch_type_count × 6 < 27` before dispatching. A
+   per subagent, and validate `batch_type_count × 12 < 54` before dispatching. A
    batch that fails validation SHALL be split. Do NOT read `report.md` or all
    source files yourself — each subagent reads only its own types' candidates.
 5. **Collect + finalize**:
