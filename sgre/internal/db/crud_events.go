@@ -8,17 +8,23 @@ import (
 )
 
 func (s *store) InsertEvent(ctx context.Context, e *SecurityEvent) (int64, error) {
-	res, err := s.exec.ExecContext(ctx,
-		`INSERT INTO security_events (event_type, entity_id, location_id, properties) VALUES (?, ?, ?, ?)`,
-		e.EventType, e.EntityID, e.LocationID, e.Properties)
-	if err != nil {
-		return 0, fmt.Errorf("db: insert event: %w", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("db: insert event: last insert id: %w", err)
-	}
-	return id, nil
+	// Detectors run 4-up in parallel over one WAL database; a single InsertEvent
+	// that exhausts busy_timeout must not be silently dropped (that is a lost
+	// security event). The application-layer retry keeps event writes on the
+	// same footing as InsertFinding/UpsertFinding.
+	return withBusyRetryID(ctx, 3, func() (int64, error) {
+		res, err := s.exec.ExecContext(ctx,
+			`INSERT INTO security_events (event_type, entity_id, location_id, properties) VALUES (?, ?, ?, ?)`,
+			e.EventType, e.EntityID, e.LocationID, e.Properties)
+		if err != nil {
+			return 0, fmt.Errorf("db: insert event: %w", err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return 0, fmt.Errorf("db: insert event: last insert id: %w", err)
+		}
+		return id, nil
+	})
 }
 
 func (s *store) GetEventByID(ctx context.Context, id int64) (*SecurityEvent, error) {

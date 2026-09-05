@@ -185,9 +185,13 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 		totalBaselineExisting += baselineExisting
 
 		autoConfirmed, needsReview := splitBySuspicion(kept)
-		autoWritten, autoUnwritten, autoErr := autoConfirmFindings(ctx, store, reviewID, vulnType, autoConfirmed)
+		autoWritten, autoUnwritten, autoErr := autoConfirmFindings(ctx, store, reviewID, vulnType, autoConfirmed, logger)
 		if autoErr != nil {
 			logger.Warn("auto-confirm findings failed", "vuln_type", vulnType, "error", autoErr)
+		}
+		// 降级回流：写失败的、以及无坐标（无法落库）的 confirmed 候选回流
+		// needsReview 交由 AI 复核，绝不静默丢失。
+		if len(autoUnwritten) > 0 {
 			needsReview = append(needsReview, autoUnwritten...)
 		}
 		totalAutoConfirmed += autoWritten

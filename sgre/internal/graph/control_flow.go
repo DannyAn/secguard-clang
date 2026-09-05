@@ -387,7 +387,14 @@ func (b *cfgBuilder) buildWhileDo(stmt parser.Node, from int) int {
 	if bodyLast >= 0 {
 		b.edge(bodyLast, header) // back edge
 	}
-	b.edge(header, join) // condition false → exit loop
+	// `while (1)` is an infinite loop with no natural exit, semantically equal to
+	// `for (;;)`. Adding a header→join edge there would fabricate a path that
+	// skips the body and lets a kill inside the body be bypassed (false negative
+	// in the may analysis) — the exact phantom-edge bug buildFor guards against
+	// for a nil condition. `break` still reaches join via the breakTo stack.
+	if !isConstantTrue(stmt.ChildByFieldName("condition")) {
+		b.edge(header, join) // condition false → exit loop
+	}
 	return join
 }
 
@@ -414,7 +421,12 @@ func (b *cfgBuilder) buildDo(stmt parser.Node, from int) int {
 			// The next node created by build(s, ...) is the entry of s.
 			pre := len(b.cfg.Nodes)
 			next := b.build(s, last)
-			if first {
+			// Only record the loop's entry node when build actually created one.
+			// A labeled_statement or empty case_statement builds no node (it
+			// delegates or returns `from`), so the pre snapshot would otherwise
+			// point at whatever the NEXT statement creates and mis-wire the back
+			// edge from the condition.
+			if first && len(b.cfg.Nodes) > pre {
 				firstID = pre
 				first = false
 			}
@@ -503,6 +515,36 @@ func (b *cfgBuilder) buildFor(stmt parser.Node, from int) int {
 		b.edge(header, join)
 	}
 	return join
+}
+
+// isConstantTrue reports whether a while/for condition is a compile-time-truthy
+// constant (e.g. `while (1)` / `while (2)`). tree-sitter wraps a while
+// condition in a parenthesized_expression, so peel those first, then accept a
+// non-zero number_literal. Anything else (identifiers, comparisons, compound
+// conditions, hex/suffixed literals) returns false, keeping the natural exit
+// edge so the CFG stays an over-approximation.
+func isConstantTrue(cond *parser.Node) bool {
+	if cond == nil {
+		return false
+	}
+	n := *cond
+	for n.Kind() == "parenthesized_expression" {
+		children := n.NamedChildren()
+		if len(children) == 0 {
+			return false
+		}
+		n = children[0]
+	}
+	if n.Kind() != "number_literal" {
+		return false
+	}
+	t := n.Text()
+	for _, c := range t {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return t != "" && t != "0"
 }
 
 // buildSwitch builds a switch as: the switch entry reaches every case directly

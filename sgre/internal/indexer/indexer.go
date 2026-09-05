@@ -90,8 +90,10 @@ func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *Inde
 	checksum := computeChecksum(source)
 	loc := countLines(source)
 
-	existing, _ := idx.store.GetFileByPath(ctx, filePath)
-	var fileID int64
+	existing, err := idx.store.GetFileByPath(ctx, filePath)
+	if err != nil {
+		return fmt.Errorf("get file: %w", err)
+	}
 	if existing != nil && existing.Checksum == checksum {
 		if idx.logger != nil {
 			idx.logger.Debug("file unchanged, skipping", "file", filePath)
@@ -99,30 +101,9 @@ func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *Inde
 		result.FilesIndexed++
 		return nil
 	}
-	if existing != nil {
-		if err := idx.store.UpdateFileChecksum(ctx, existing.ID, checksum, loc); err != nil && idx.logger != nil {
-			idx.logger.Warn("update file checksum failed", "file", filePath, "error", err)
-		}
-		fileID = existing.ID
-		// The file changed: drop the previously-indexed functions for it so the
-		// re-index below does not leave stale duplicate rows (the DB has no
-		// upsert-on-name for functions, only INSERT).
-		if err := idx.store.DeleteFunctionsByFile(ctx, fileID); err != nil {
-			return fmt.Errorf("delete stale functions: %w", err)
-		}
-	} else {
-		fileID, err = idx.store.InsertFile(ctx, &db.File{
-			Path:     filePath,
-			Language: "c",
-			Checksum: checksum,
-			LOC:      loc,
-		})
-		if err != nil {
-			return fmt.Errorf("insert file: %w", err)
-		}
-	}
-	result.FilesIndexed++
 
+	// Parse outside the transaction so the write lock is held only for the file/
+	// function writes below, never across the (potentially long) parse.
 	tree, err := idx.parser.Parse(source, filePath)
 	if err != nil {
 		return fmt.Errorf("parse: %w", err)
@@ -144,21 +125,56 @@ func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *Inde
 	root := tree.RootNode()
 	funcNodes := root.FindAll("function_definition")
 
-	for _, fnNode := range funcNodes {
-		funcRecord := extractFunction(fnNode, fileID)
-		if funcRecord.Name == "" {
-			continue
-		}
-		_, err := idx.store.InsertFunction(ctx, funcRecord)
-		if err != nil {
-			if idx.logger != nil {
-				idx.logger.Warn("failed to insert function", "name", funcRecord.Name, "error", err)
+	// Rebuild the file's rows atomically. The checksum update (or insert) plus
+	// the stale-function delete plus the function inserts must commit together:
+	// otherwise a crash between the checksum write and the function inserts
+	// leaves "checksum already new, functions incomplete", which the
+	// unchanged-file skip above would then treat as up-to-date forever — a
+	// permanent false negative with no self-heal.
+	var inserted int
+	err = idx.store.WithTx(ctx, func(tx db.Store) error {
+		var fileID int64
+		if existing != nil {
+			if err := tx.UpdateFileChecksum(ctx, existing.ID, checksum, loc); err != nil {
+				return fmt.Errorf("update file checksum: %w", err)
 			}
-			continue
+			// The file changed: drop the previously-indexed functions for it so
+			// the re-index does not leave stale duplicate rows (the DB has no
+			// upsert-on-name for functions, only INSERT).
+			if err := tx.DeleteFunctionsByFile(ctx, existing.ID); err != nil {
+				return fmt.Errorf("delete stale functions: %w", err)
+			}
+			fileID = existing.ID
+		} else {
+			id, err := tx.InsertFile(ctx, &db.File{
+				Path:     filePath,
+				Language: "c",
+				Checksum: checksum,
+				LOC:      loc,
+			})
+			if err != nil {
+				return fmt.Errorf("insert file: %w", err)
+			}
+			fileID = id
 		}
-		result.FunctionsIndexed++
+		for _, fnNode := range funcNodes {
+			funcRecord := extractFunction(fnNode, fileID)
+			if funcRecord.Name == "" {
+				continue
+			}
+			if _, err := tx.InsertFunction(ctx, funcRecord); err != nil {
+				return fmt.Errorf("insert function %s: %w", funcRecord.Name, err)
+			}
+			inserted++
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
+	result.FilesIndexed++
+	result.FunctionsIndexed += inserted
 	return nil
 }
 

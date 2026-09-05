@@ -158,10 +158,11 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	var planErrMu sync.Mutex
 
 	// One Planner is shared across every vuln type. The Planner's only shared
-	// mutable state is its callReachCache, which is exactly what the sync.Once
-	// cache exists for: compute call-graph reachability once per scan instead of
-	// once per type. Plan() keeps all per-type state local, so concurrent Plan
-	// calls are safe (the shared parser is internally synchronized).
+	// mutable state is its callReachCache (a sync.Mutex + done flag that caches
+	// only a SUCCESS so a transient failure is retried), which exists to compute
+	// call-graph reachability once per scan instead of once per type. Plan()
+	// keeps all per-type state local, so concurrent Plan calls are safe (the
+	// shared parser is internally synchronized).
 	pl := planner.NewPlanner(store, p, logger)
 
 	const planConcurrency = 4

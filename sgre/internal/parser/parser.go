@@ -61,8 +61,8 @@ func NewParser() *Parser {
 
 // Parse parses source with the parser's shared instance. This is only safe for
 // sequential callers that finish using (and Close) the returned tree before the
-// next Parse on this parser — the indexer and the planner lifetime filter follow
-// that pattern.
+// next Parse on this parser — the indexer follows that pattern (the planner
+// filters use ParseCached, which is internally synchronized).
 func (p *Parser) Parse(source []byte, filename string) (*Tree, error) {
 	tree := p.parser.Parse(source, nil)
 	return &Tree{tree: tree, src: source}, nil
@@ -314,6 +314,13 @@ func (n Node) String() string {
 // dominant cost of the whole scan. An explicit stack with NamedChildCount/
 // NamedChild keeps the traversal allocation-light (one amortized slice).
 func walkNode(n Node, visit func(Node)) {
+	// A null node (the zero sitter.Node, e.g. a fileParseCache miss in the flow
+	// filters) dereferences a nil C pointer on NamedChildCount and segfaults the
+	// process unrecoverably (see isNull). Every other wrapper guards isNull;
+	// walkNode is the raw traversal entry, so it must too.
+	if n.isNull() {
+		return
+	}
 	stack := make([]Node, 0, 64)
 	stack = append(stack, n)
 	for len(stack) > 0 {

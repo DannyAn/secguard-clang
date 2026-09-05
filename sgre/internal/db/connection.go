@@ -27,7 +27,7 @@ func Open(ctx context.Context, dbPath string) (*sql.DB, error) {
 	// was raised from 5000ms to 10000ms so the multi-subagent concurrent write
 	// storm (up to 8 parallel `secguard report --write-json` processes sharing
 	// one WAL database) has a wider window before the application-layer retry in
-	// UpsertFinding/InsertFinding engages.
+	// InsertEvent/InsertFinding/UpsertFinding engages.
 	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)", absPath)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {

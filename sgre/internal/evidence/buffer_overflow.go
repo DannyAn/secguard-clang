@@ -806,6 +806,7 @@ func constantIndexBefore(bc *bufCtx, f *db.Function, indexVar string, useLine in
 	}
 	value := -1
 	assigned := false
+	ambiguous := false
 
 	check := func(node parser.Node) bool {
 		if node.StartLine() >= useLine || !funcLineRange(f, node.StartLine()) {
@@ -818,15 +819,22 @@ func constantIndexBefore(bc *bufCtx, f *db.Function, indexVar string, useLine in
 		if assignedVariable(children[0]) != indexVar {
 			return false
 		}
+		// Any assignment to indexVar before useLine is evidence about its value:
+		// a non-literal RHS, an unparsable constant, or a second assignment all
+		// make the value ambiguous, so the "constant definitely holds" proof must
+		// fail closed instead of silently keeping the earlier constant.
+		if assigned {
+			ambiguous = true
+			return true
+		}
 		if children[1].Kind() != "number_literal" {
-			return false
+			ambiguous = true
+			return true
 		}
 		v := parseConstantIndex(children[1].Text())
 		if v < 0 {
-			return false
-		}
-		if assigned {
-			return false // a second assignment makes the value ambiguous
+			ambiguous = true
+			return true
 		}
 		value, assigned = v, true
 		return true
@@ -838,7 +846,7 @@ func constantIndexBefore(bc *bufCtx, f *db.Function, indexVar string, useLine in
 	for _, assign := range bc.assigns {
 		check(assign)
 	}
-	return value, assigned
+	return value, assigned && !ambiguous
 }
 
 // isBareIdent reports whether s is a C identifier (no operator, index, or member).
@@ -893,6 +901,14 @@ func isLoopBoundOverflow(bc *bufCtx, f *db.Function, sub parser.Node, arrSize in
 			continue
 		}
 		condText := cond.Text()
+		// A compound condition (`i < N && flag > 5`) carries literals that do
+		// not bound the loop index; extracting every number would let an
+		// unrelated `flag > 5` masquerade as the loop bound and flag a safe
+		// subscript. Only a single relational comparison is a trustworthy loop
+		// bound; compound conditions are left to the other filters.
+		if strings.Contains(condText, "&&") || strings.Contains(condText, "||") {
+			continue
+		}
 		if strings.Contains(condText, "<=") {
 			nums := extractNumbers(condText)
 			for _, n := range nums {

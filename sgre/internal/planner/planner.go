@@ -226,11 +226,17 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 	// GetFileByID point query per candidate (an N+1 storm on high-volume types
 	// like null-deref). seedCandidatesByType already batches its function/
 	// location lookups; this closes the same gap on the file-path lookup.
-	filePathByID := map[int64]string{}
-	if files, ferr := p.store.ListFiles(ctx); ferr == nil {
-		for _, f := range files {
-			filePathByID[f.ID] = f.Path
-		}
+	// A ListFiles failure must not be swallowed either: with an empty map every
+	// candidate loses its Target.File, so downstream auto-confirm and per-finding
+	// markdown silently drop the location — the same "defect without a location"
+	// failure the batch-load below forbids. Fail the type instead.
+	files, ferr := p.store.ListFiles(ctx)
+	if ferr != nil {
+		return nil, fmt.Errorf("planner: list files: %w", ferr)
+	}
+	filePathByID := make(map[int64]string, len(files))
+	for _, f := range files {
+		filePathByID[f.ID] = f.Path
 	}
 
 	for _, c := range candidates {
@@ -340,16 +346,35 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 	return candidates, nil
 }
 
+// suspicionRank orders suspicion tiers so a dedup merge can never let a
+// lower-confidence candidate overwrite a higher-confidence one.
+func suspicionRank(s string) int {
+	switch s {
+	case "confirmed":
+		return 3
+	case "suspected":
+		return 2
+	case "possible":
+		return 1
+	default:
+		return 0
+	}
+}
+
 func deduplicateCandidates(candidates []Candidate, spec *VulnTypeSpec) []Candidate {
 	seen := make(map[string]int)
 	result := make([]Candidate, 0, len(candidates))
 	for _, c := range candidates {
 		key := spec.dedupKey(c)
 		if idx, ok := seen[key]; ok {
-			// Keep the earliest line for the same root cause so merged findings
-			// anchor at the source (e.g. sprintf) rather than the sink
-			// (sqlite3_exec) when both events collapse into one.
-			if c.Line < result[idx].Line {
+			// Prefer the higher-confidence tier (confirmed > suspected >
+			// possible) so a detector-proved candidate is never downgraded to a
+			// needsReview twin; when the tier ties, keep the earliest line so
+			// merged findings anchor at the source (e.g. sprintf) rather than
+			// the sink (sqlite3_exec).
+			if suspicionRank(c.SuspicionLevel) > suspicionRank(result[idx].SuspicionLevel) {
+				result[idx] = c
+			} else if suspicionRank(c.SuspicionLevel) == suspicionRank(result[idx].SuspicionLevel) && c.Line < result[idx].Line {
 				result[idx] = c
 			}
 			continue

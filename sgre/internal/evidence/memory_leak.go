@@ -31,9 +31,14 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 		return result, fmt.Errorf("memory_leak: list functions: %w", err)
 	}
 
-	funcMap := make(map[string]*db.Function, len(funcs))
+	// C allows distinct static functions with the same name across files; a
+	// name->single-function map would shadow all but the last definition and
+	// mispair a create function with the wrong destroy, exactly like the call
+	// graph builder's old name->single-ID map. Track one entry per definition
+	// and pair by same file below.
+	funcMap := make(map[string][]*db.Function, len(funcs))
 	for _, f := range funcs {
-		funcMap[f.Name] = f
+		funcMap[f.Name] = append(funcMap[f.Name], f)
 	}
 
 	// Scan for free() sites once per file so the RAII create/destroy pairing
@@ -43,7 +48,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 	hasDestroyCandidates := false
 	for _, f := range funcs {
 		if destroyName := getDestroyCounterpart(f.Name); destroyName != "" {
-			if _, exists := funcMap[destroyName]; exists {
+			if len(funcMap[destroyName]) > 0 {
 				hasDestroyCandidates = true
 			}
 		}
@@ -72,12 +77,32 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 
 	raiiCreateFuncs := make(map[int64]bool)
 	for _, f := range funcs {
-		if destroyName := getDestroyCounterpart(f.Name); destroyName != "" {
-			if destroyFunc, exists := funcMap[destroyName]; exists {
-				if freeFuncs[destroyFunc.ID] {
-					raiiCreateFuncs[f.ID] = true
-				}
+		destroyName := getDestroyCounterpart(f.Name)
+		if destroyName == "" {
+			continue
+		}
+		destroyFuncs := funcMap[destroyName]
+		if len(destroyFuncs) == 0 {
+			continue
+		}
+		// A create function pairs with the destroy function in the SAME file
+		// (static functions with equal names in different files are distinct
+		// definitions). Only fall back to a lone cross-file destroy when there
+		// is exactly one candidate (external-linkage create/destroy split
+		// across files); with several same-name destroys and none in this file,
+		// the pairing is ambiguous and stays unexempted (no false negative).
+		var destroyFunc *db.Function
+		for _, df := range destroyFuncs {
+			if df.FileID == f.FileID {
+				destroyFunc = df
+				break
 			}
+		}
+		if destroyFunc == nil && len(destroyFuncs) == 1 {
+			destroyFunc = destroyFuncs[0]
+		}
+		if destroyFunc != nil && freeFuncs[destroyFunc.ID] {
+			raiiCreateFuncs[f.ID] = true
 		}
 	}
 

@@ -29,6 +29,23 @@
 - `secguard_status` MCP 工具新增 `per_type` + `scan_id`，F5/F9 的 DB 二次校验在
   无 Bash 的 OpenCode / OpenCode-NGA 上可执行。
 
+### 检视修正（GLM 5.3 flash 代码检视，稳健性）
+
+- **原子索引**：单文件重建（checksum 更新 + 删旧函数 + 插新函数）包进事务，消除
+  崩溃窗口造成的「checksum 已新、函数不全」永久假阴性。
+- **fail-closed**：规划器 `ListFiles`、`report --write-json` 的路径解析读失败不再
+  静默吞错；`interprocedural.treeFor` / `uninit.collectMacroWrites` 失败补 `Warn`。
+- **CFG 一致性**：`while(1)` 与 `for(;;)` 不再伪造退出边（消除 may 分析漏报）；
+  do-while 首语句不建节点时回边不错连。
+- **buffer-overflow 常量索引**：二次赋值/非字面量赋值使常量证明失败闭合（消除重赋值
+  误报）；复合循环条件不再提取无关数字（消除误报）。
+- **memory-leak RAII 配对**：同名 static create/destroy 按 `file_id` 配对，不再被
+  单值 map 遮蔽。
+- **报告写路径**：`--write` 单条与 `--write-json` 共用 status 白名单；无坐标
+  auto-confirm 候选回流 AI 复核而非静默丢弃。
+- 其他：`InsertEvent` 增加 busy 重试、`walkNode` 加 null 防护、删除死代码
+  `agent.WriteFinding`、`status` 辅助事件类型移入 planner 导出。
+
 ## [0.5.8] - 2026-09-03
 
 ### 主题：顽疾治理 —— 攻克三类长期痛点（type-cast 迭代宏 / memset_s 误报 / 扫描度量）

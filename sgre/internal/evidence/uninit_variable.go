@@ -70,9 +70,17 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 // sites in every other file.
 func (d *UninitVariableDetector) collectMacroWrites(ctx context.Context) map[string]macros.WriteSummary {
 	var perFile []map[string]macros.WriteSummary
-	_ = forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node) {
+	if err := forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node) {
 		perFile = append(perFile, macros.WriteSummaries(root))
-	})
+	}); err != nil {
+		// A top-level traversal failure leaves the whole whitelist empty, which
+		// would misreport every macro-initialized iterator as uninitialized.
+		// Degrade (empty whitelist) but record it so the false-positive flood is
+		// attributable in the scan log.
+		if d.logger != nil {
+			d.logger.Warn("collect_macro_writes: top-level traversal failed; macro-based initialization whitelist is incomplete", "error", err)
+		}
+	}
 	return macros.MergeWriteSummaries(perFile...)
 }
 

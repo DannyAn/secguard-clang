@@ -15,6 +15,23 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/report"
 )
 
+// normalizeAIVerdict maps a raw agent-supplied status to one of the three AI
+// verdicts (confirmed/suspected/dismissed). `false-positive` is the skill file's
+// spelling of `dismissed` and is normalized so a subagent quoting the skill does
+// not fail validation. Any other value — including the pipeline intermediate
+// state `open` — is rejected, so a finding with no verdict is never persisted.
+func normalizeAIVerdict(raw string) (string, error) {
+	status := strings.ToLower(strings.TrimSpace(raw))
+	switch status {
+	case "confirmed", "suspected":
+		return status, nil
+	case "dismissed", "false-positive", "false_positive", "false positive":
+		return "dismissed", nil
+	default:
+		return "", fmt.Errorf("invalid status %q — expected confirmed|suspected|dismissed", raw)
+	}
+}
+
 // flexibleFloat accepts a JSON number OR a numeric string for a float field, so a
 // worker that emits `"confidence":"55"` (string) instead of `55` is still parsed
 // instead of failing the whole batch on an unmarshal type mismatch.
@@ -264,7 +281,15 @@ func runReportCmd(ctx context.Context, args []string) int {
 		} else {
 			finding.Severity = strings.ToLower(finding.Severity)
 		}
-		finding.Status = strings.ToLower(finding.Status)
+		// The single --write path enforces the SAME verdict whitelist as the
+		// batch --write-json path, so an AI can never persist the pipeline
+		// intermediate state `open` (or an empty status) as a finding.
+		if status, serr := normalizeAIVerdict(finding.Status); serr != nil {
+			WriteErrorJSON(serr.Error())
+			return 1
+		} else {
+			finding.Status = status
+		}
 
 		cweNorm := strings.ToUpper(strings.TrimSpace(finding.RuleID))
 		if cweNorm == "" {
@@ -411,7 +436,15 @@ func runReportCmd(ctx context.Context, args []string) int {
 		var failedDetails []map[string]interface{}
 		// Fetch the indexed file list once so path resolution for a large batch
 		// (e.g. 255 null-deref findings) does not re-scan the files table per row.
-		allFiles, _ := store.ListFiles(ctx)
+		// A failure here would silently degrade path resolution to the raw
+		// (relative/truncated) agent-supplied path, which then bypasses the
+		// uq_finding_loc idempotency key's absolute-path normalization. Fail the
+		// batch instead (writes are idempotent, so a re-run is safe).
+		allFiles, listErr := store.ListFiles(ctx)
+		if listErr != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to list files for path resolution: %v", listErr))
+			return 1
+		}
 
 		// First pass (read-only): validate every row and resolve its path to the
 		// indexed absolute path, so the write pass below is pure upserts.
@@ -441,12 +474,8 @@ func runReportCmd(ctx context.Context, args []string) int {
 			// 立即拒绝整批，而非 partial 跳过导致静默丢失。技能文件里把误报写成
 			// `false-positive`，这是 `dismissed` 的同义判定——归一化后落库，避免
 			// 子代理照抄技能原文导致整批被拒。
-			status := strings.ToLower(strings.TrimSpace(in.Status))
-			switch status {
-			case "confirmed", "suspected":
-			case "dismissed", "false-positive", "false_positive", "false positive":
-				status = "dismissed"
-			default:
+			status, serr := normalizeAIVerdict(in.Status)
+			if serr != nil {
 				WriteErrorJSON(fmt.Sprintf("invalid status %q at %s:%d — expected confirmed|suspected|dismissed", in.Status, in.File, in.Line))
 				return 1
 			}

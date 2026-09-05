@@ -176,6 +176,37 @@ func TestBuildStmtCFG_LoopBackEdge(t *testing.T) {
 	}
 }
 
+// TestBuildStmtCFG_WhileTrueNoNaturalExit pins the C5 fix: `while (1)` is an
+// infinite loop, semantically equal to `for (;;)`, so it must NOT fabricate a
+// header→join exit edge. With that phantom edge, a kill inside the body could be
+// "bypassed" by the false exit path (a may-analysis false negative) and the
+// statement after the loop would look reachable. Assert the statement after the
+// loop (the return) is unreachable from the entry.
+func TestBuildStmtCFG_WhileTrueNoNaturalExit(t *testing.T) {
+	body := parseBody(t, `int f(void) {
+    int i = 0;
+    while (1) { i = i + 1; }
+    return i;
+}`)
+	cfg := BuildStmtCFG(body, 5)
+
+	reachable := map[int]bool{}
+	var dfs func(id int)
+	dfs = func(id int) {
+		if reachable[id] {
+			return
+		}
+		reachable[id] = true
+		for _, s := range cfg.Nodes[id].Succs {
+			dfs(s)
+		}
+	}
+	dfs(cfg.Entry)
+	if reachable[cfg.Exit] {
+		t.Error("while(1) must have no natural exit; exit should be unreachable from entry")
+	}
+}
+
 func TestStmtCFG_ReachesAvoiding(t *testing.T) {
 	body := parseBody(t, `int f(int c) {
     int *p = malloc(8);

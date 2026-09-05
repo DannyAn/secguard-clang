@@ -110,6 +110,18 @@ func AllSeedEventTypes() []string {
 	return result
 }
 
+// AuxEvidenceEventTypes lists the evidence event types that detectors emit as
+// supporting facts but that are NOT a seed event type for any vulnerability
+// type (NULL_VALUE/NULL_GUARD feed the null-deref and use-after-free filters;
+// MEMORY_RELEASE/RESOURCE_RELEASE feed the leak filters; VALUE_INIT feeds the
+// uninit filter). The status command sums these alongside AllSeedEventTypes so
+// its total event count is complete without double-counting any seed type. It
+// lives next to AllSeedEventTypes so the two stay in lockstep instead of a
+// parallel hardcoded list drifting in the CLI layer.
+func AuxEvidenceEventTypes() []string {
+	return []string{"NULL_VALUE", "NULL_GUARD", "MEMORY_RELEASE", "RESOURCE_RELEASE", "VALUE_INIT"}
+}
+
 // CWEForType returns the canonical CWE identifier for a vulnerability type,
 // or "" if the type is not registered. Callers that need a fallback (e.g.
 // SARIF) should return "CWE-Other" themselves — this function stays pure.

@@ -199,11 +199,14 @@ func runScanCmd(ctx context.Context, args []string) int {
 		// secret, OOB read) from the AI's workload, leaving only suspected/
 		// possible for actual judgment.
 		autoConfirmed, needsReview := splitBySuspicion(keptCandidates)
-		autoWritten, autoUnwritten, autoErr := autoConfirmFindings(ctx, store, scanID, vulnType, autoConfirmed)
+		autoWritten, autoUnwritten, autoErr := autoConfirmFindings(ctx, store, scanID, vulnType, autoConfirmed, logger)
 		if autoErr != nil {
 			logger.Warn("auto-confirm findings failed", "vuln_type", vulnType, "error", autoErr)
-			// 写失败降级：未写成功的 confirmed 候选回流 needsReview 交由 AI 复核，
-			// 绝不静默丢失（否则这批既不在 findings、也不在候选里）。
+		}
+		// 降级回流：写失败的、以及无坐标（无法落库）的 confirmed 候选回流
+		// needsReview 交由 AI 复核，绝不静默丢失（否则这批既不在 findings、也不在
+		// 候选里）。
+		if len(autoUnwritten) > 0 {
 			needsReview = append(needsReview, autoUnwritten...)
 		}
 		totalAutoConfirmed += autoWritten
@@ -494,10 +497,18 @@ func splitBySuspicion(candidates []planner.EvidenceItem) (confirmed, needsReview
 // the number written and the unwritten remainder (from the failing candidate
 // onward); a write error aborts the batch (silent false-negatives are not
 // acceptable here), so the caller can fall the remainder back to AI review.
-func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType string, candidates []planner.EvidenceItem) (written int, unwritten []planner.EvidenceItem, err error) {
+func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType string, candidates []planner.EvidenceItem, logger *log.Logger) (written int, unwritten []planner.EvidenceItem, err error) {
 	cwe := report.VulnToCWE(vulnType)
 	for i, c := range candidates {
 		if c.Target.File == "" || c.Target.Line <= 0 {
+			// A candidate with no location cannot be written to findings (the
+			// upsert is keyed on file/line/function). Silently dropping it would
+			// evaporate a pipeline-proved defect, so re-flow it to AI review and
+			// leave a trace instead.
+			if logger != nil {
+				logger.Warn("auto-confirm skipped: candidate has no location", "vuln_type", vulnType, "function", c.Target.Function)
+			}
+			unwritten = append(unwritten, c)
 			continue
 		}
 		var details []string
@@ -525,11 +536,11 @@ func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType s
 			Fingerprint:  computeFingerprint(cwe, c.Target.File, c.Target.Function, c.Target.Line),
 		}
 		if _, err := store.UpsertFinding(ctx, f); err != nil {
-			return written, candidates[i:], fmt.Errorf("upsert auto-confirmed %s:%d: %w", c.Target.File, c.Target.Line, err)
+			return written, append(unwritten, candidates[i:]...), fmt.Errorf("upsert auto-confirmed %s:%d: %w", c.Target.File, c.Target.Line, err)
 		}
 		written++
 	}
-	return written, nil, nil
+	return written, unwritten, nil
 }
 
 func newScanLogger(scanDir string) (*log.Logger, io.Closer) {
@@ -589,7 +600,11 @@ func scopeToTarget(items []planner.EvidenceItem, targetDir string) []planner.Evi
 func isUnder(dir, path string) bool {
 	rel, err := filepath.Rel(dir, path)
 	if err != nil {
-		return false
+		// filepath.Rel fails when the two paths live on different volumes or mix
+		// separators. Fall back to a lexical prefix check rather than dropping
+		// the candidate, so an unusual path form never turns into a batch
+		// false-negative.
+		return path == dir || strings.HasPrefix(path, dir+string(filepath.Separator))
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
@@ -672,7 +687,7 @@ func runStatusCmd(ctx context.Context, args []string) int {
 		}
 		allEvents += n
 	}
-	for _, et := range []string{"NULL_VALUE", "NULL_GUARD", "MEMORY_RELEASE", "RESOURCE_RELEASE", "VALUE_INIT"} {
+	for _, et := range planner.AuxEvidenceEventTypes() {
 		n, err := store.CountEventsByType(ctx, et)
 		if err != nil {
 			WriteErrorJSON(fmt.Sprintf("failed to count events: %v", err))

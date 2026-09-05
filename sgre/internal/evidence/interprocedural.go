@@ -196,16 +196,28 @@ func (d *InterproceduralDetector) treeFor(ctx context.Context, cache map[int64]*
 	if t, ok := cache[fileID]; ok {
 		return t
 	}
-	file, _ := d.store.GetFileByID(ctx, fileID)
+	file, err := d.store.GetFileByID(ctx, fileID)
+	if err != nil {
+		if d.logger != nil {
+			d.logger.Warn("interprocedural: get file by id failed", "file_id", fileID, "error", err)
+		}
+		return nil
+	}
 	if file == nil {
 		return nil
 	}
 	source, err := os.ReadFile(file.Path)
 	if err != nil {
+		if d.logger != nil {
+			d.logger.Warn("interprocedural: read file failed", "file", file.Path, "error", err)
+		}
 		return nil
 	}
 	tree, err := d.parser.ParseCached(source, file.Path)
 	if err != nil {
+		if d.logger != nil {
+			d.logger.Warn("interprocedural: parse file failed", "file", file.Path, "error", err)
+		}
 		return nil
 	}
 	cache[fileID] = tree

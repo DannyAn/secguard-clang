@@ -577,7 +577,7 @@ func TestAutoConfirmFindings_WritesMachineVerdict(t *testing.T) {
 		Target:         planner.TargetInfo{File: "src/a.c", Line: 42, Function: "f", Variable: "p"},
 		Evidence:       []planner.EvidenceFragment{{Role: "condition", Detail: "p assigned NULL and dereferenced"}},
 	}}
-	n, unwritten, err := autoConfirmFindings(ctx, s, scanID, "null-deref", confirmed)
+	n, unwritten, err := autoConfirmFindings(ctx, s, scanID, "null-deref", confirmed, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

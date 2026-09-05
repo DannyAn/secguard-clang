@@ -190,3 +190,58 @@ func TestArrayOOB_ConstantValuedVariable(t *testing.T) {
 		t.Errorf("expected array_oob_write for buf[n] with n=12 >= 10, got no such event")
 	}
 }
+
+// TestArrayOOB_ReassignedIndexNotConstant pins the C1 fix: a variable assigned a
+// constant and then REASSIGNED (to another literal, or to a non-literal call)
+// before the subscript is no longer a single constant. The old code froze the
+// FIRST constant, so `n = 12; n = 3; buf[10]; buf[n]` was reported as OOB
+// (12 >= 10) even though n is actually 3 — a false positive. Both the second
+// literal and the non-literal reassignment must now fail the constant proof.
+func TestArrayOOB_ReassignedIndexNotConstant(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "reassigned_oob.c")
+	src := `int f_literal(void) {
+    int n = 12;
+    int buf[10];
+    n = 3;
+    buf[n] = 0;
+    return 0;
+}
+int f_nonliteral(void) {
+    int m = 12;
+    int buf2[10];
+    m = get_index();
+    buf2[m] = 0;
+    return 0;
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	NewBufferOverflowDetector(store, p, logger).Detect(ctx)
+
+	events, err := store.ListEventsByType(ctx, "BUFFER_ACCESS")
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	for _, e := range events {
+		var props struct {
+			Array string `json:"array"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Array == "buf" || props.Array == "buf2" {
+			t.Errorf("reassigned index %q must not be treated as its earlier constant; got OOB event", props.Array)
+		}
+	}
+}
