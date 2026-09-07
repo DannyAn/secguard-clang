@@ -78,11 +78,25 @@ func (r *PlanResult) CandidateCount() int {
 // divisor from the Source column instead of opening an evidence file per
 // candidate — the per-candidate open that previously exhausted a subagent's
 // turn budget before it could write.
+//
+// Every type also gets its API and category when present ("api@<name>",
+// "cat@<name>"), and uninit gets a "certain-uninit"/"maybe-uninit" tier, so no
+// type's Hint column is a bare "—": a subagent should never have to open every
+// evidence file just to learn what a candidate is.
 func buildHint(c Candidate, spec *VulnTypeSpec) string {
 	var parts []string
-	if spec != nil && spec.Name == "divide-by-zero" {
-		if shape := divisorShape(c.VariableName); shape != "" {
-			parts = append(parts, "divisor@"+shape)
+	if spec != nil {
+		switch spec.Name {
+		case "divide-by-zero":
+			if shape := divisorShape(c.VariableName); shape != "" {
+				parts = append(parts, "divisor@"+shape)
+			}
+		case "uninit":
+			if c.SuspicionLevel == "confirmed" {
+				parts = append(parts, "certain-uninit")
+			} else if c.SuspicionLevel == "suspected" {
+				parts = append(parts, "maybe-uninit")
+			}
 		}
 	}
 	if c.SourceLine > 0 {
@@ -99,6 +113,12 @@ func buildHint(c Candidate, spec *VulnTypeSpec) string {
 	}
 	if c.GuardStrength == "weak" {
 		parts = append(parts, "weak-guard")
+	}
+	if c.APIName != "" {
+		parts = append(parts, "api@"+c.APIName)
+	}
+	if c.Category != "" {
+		parts = append(parts, "cat@"+c.Category)
 	}
 	if len(parts) == 0 {
 		return "—"

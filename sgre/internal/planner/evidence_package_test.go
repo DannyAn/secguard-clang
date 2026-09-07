@@ -4,6 +4,7 @@ import "testing"
 
 func TestBuildHint(t *testing.T) {
 	dbz := &VulnTypeSpec{Name: "divide-by-zero"}
+	uninit := &VulnTypeSpec{Name: "uninit"}
 	cases := []struct {
 		name string
 		c    Candidate
@@ -21,6 +22,9 @@ func TestBuildHint(t *testing.T) {
 		{"divide-by-zero compound divisor", Candidate{VariableName: "(a - b)"}, dbz, "divisor@compound"},
 		{"divide-by-zero field divisor", Candidate{VariableName: "graph->gran_time"}, dbz, "divisor@field"},
 		{"divide-by-zero global divisor", Candidate{VariableName: "g_count"}, dbz, "divisor@global"},
+		{"api and category", Candidate{APIName: "memcpy", Category: "buffer_overflow"}, nil, "api@memcpy cat@buffer_overflow"},
+		{"uninit certain", Candidate{SuspicionLevel: "confirmed"}, uninit, "certain-uninit"},
+		{"uninit maybe", Candidate{SuspicionLevel: "suspected"}, uninit, "maybe-uninit"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

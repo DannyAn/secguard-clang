@@ -16,7 +16,7 @@
   （`x / n`，可能外部输入）与复合字段表达式（`x / (p->a - p->b)`）仍保留 `suspected` 交
   AI。显著压缩生产验证中 79 条全 `warning` 的 divide-by-zero 候选流向 AI 的数量、加快扫描。
 
-### 修复：divide-by-zero 子代理写入前耗尽轮次（候选 Hint 补除数形状）
+### 修复：divide-by-zero 子代理写入前耗尽轮次（候选 Hint 全面补齐）
 
 - 生产验证发现 divide-by-zero 的 `Hint` 列恒为 `—`（该类型没有 null/taint/guard 流程
   flag），子代理对 100 个 `suspected` 候选逐个打开 `Evidence` 文件，在写入前耗尽
@@ -24,6 +24,13 @@
   （`bare`=裸标识符、`call`=调用、`compound`=复合表达式；`field`/`global` 已 auto-confirm
   不再出现），`divisor@bare` 的候选可从 `Source` 列直接判 `suspected`、无需打开 Evidence
   文件；`agent-body.md`/`command-instructions.md` 同步该规则，消除逐候选 Evidence 打开。
+- **同类遗漏一并排查**：除 null-deref/injection/divide-by-zero 外，其余类型的 `Hint` 列
+  此前也是 `—`。现 `buildHint` 对**所有**类型补齐通用上下文——`api@<name>`（涉及 API，如
+  memory-leak 的 `malloc`、buffer-overflow 的 `memcpy`）与 `cat@<name>`（检测器类别），并
+  对 uninit 输出 `certain-uninit`/`maybe-uninit` 确定性分层，避免「分类型逐个踩坑」。
+- 排查另发现 `GuardStrength`（`weak-guard` Hint + 排序置信度降权）为**预留未接线**的死
+  代码——无任何 detector/filter 设置它，故 `weak-guard` 从不生效。本版保留字段与读取
+  分支（未来接「部分防护」判定时启用），暂不新增判定逻辑。
 
 ### 漏报修复（resource-leak）
 

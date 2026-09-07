@@ -145,7 +145,9 @@ budget your effort, not to pre-judge the answer:
   `_index.md` row only: its `Source` column already shows the exact statement at
   file:line and its `Hint` column carries the flow facts (`src@N` = null-source
   line, `certain-null`/`maybe-null` = null certainty, `tainted` = injection
-  source, `weak-guard` = partial guard), so you confirm or dismiss from the table
+  source, `weak-guard` = partial guard, `certain-uninit`/`maybe-uninit` = uninit
+  tier, `api@<name>` = the API in play, `cat@<name>` = the detector category), so
+  you confirm or dismiss from the table
   itself (statement matches the evidence → confirmed; it is guarded/different →
   dismiss). Do NOT open the source file and do NOT open the `Evidence` candidate
   file for a confirmed candidate.
