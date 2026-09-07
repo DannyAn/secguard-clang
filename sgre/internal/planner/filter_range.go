@@ -11,12 +11,14 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
-// RangeFilter drops divide-by-zero candidates whose divisor is provably non-zero
-// via cross-assignment interval propagation (`d = 0; d = 1; x / d`) and
-// cross-function return summaries (`x / get_count()` where get_count never
-// returns zero). It is the consumer of the range_flow.go engine, moving
-// divide-by-zero from a pure-syntax detector to a graph-assisted convergence
-// stage.
+// RangeFilter is the divide-by-zero convergence stage. It drops candidates whose
+// divisor is provably non-zero (via cross-assignment interval propagation
+// `d = 0; d = 1; x / d`, and cross-function return summaries `x / get_count()`
+// where get_count never returns zero), and it upgrades to "confirmed" the two
+// shapes it can resolve deterministically: a config-field/global divisor
+// (`x / graph->gran_time`, a defensive-check gap) and a provably-zero divisor
+// (`d = 0; x / d`, a certain divide-by-zero). Confirmed candidates are handed to
+// the auto-confirm pass instead of the AI agent.
 type RangeFilter struct {
 	store  db.Store
 	parser *parser.Parser
@@ -30,6 +32,21 @@ func NewRangeFilter(store db.Store, p *parser.Parser, logger *log.Logger) *Range
 func (f *RangeFilter) Name() string { return "range" }
 
 func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, []Dismissed, error) {
+	// A config-field divisor (a struct/object field or module global) is a
+	// "missing defensive check" the pipeline can confirm deterministically: the
+	// value's zero-invariant belongs to object/global initialization, not the
+	// arithmetic use site, so no local guard can (or should) re-prove it. The
+	// detector has already suppressed the locally-provable-safe shapes (literal,
+	// sizeof, const, guard, early-return), so what remains is a genuine defect
+	// worth surfacing to the engineer — it should be auto-confirmed, not handed
+	// to the AI agent (which cannot judge a cross-file init invariant anyway).
+	// The check is purely syntactic, so it runs even without a parser.
+	for i := range candidates {
+		if isConfigFieldDivisor(candidates[i].VariableName) {
+			candidates[i].SuspicionLevel = "confirmed"
+		}
+	}
+
 	if f.parser == nil {
 		return candidates, nil, nil
 	}
@@ -63,10 +80,16 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 			kept = append(kept, c)
 			continue
 		}
-		if flow.at(divisor, c.Line).isNonZero() {
+		r := flow.at(divisor, c.Line)
+		if r.isNonZero() {
 			dropped = dismiss(dropped, c, f.Name(),
 				fmt.Sprintf("divisor %s is provably non-zero at line %d", divisor, c.Line))
 			continue
+		}
+		if r.isDefinitelyZero() {
+			// `d = 0; x / d` — the interval analysis proves the divisor is
+			// exactly zero at the division, a certain divide-by-zero.
+			c.SuspicionLevel = "confirmed"
 		}
 		kept = append(kept, c)
 	}
@@ -126,4 +149,25 @@ func (f *RangeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candida
 		flows[fid] = analyzeRangesWithCalls(fn, body, resolver.callResult)
 	}
 	return flows
+}
+
+// reFieldChain matches a pure struct/object field-access chain (`graph->gran_time`,
+// `s.field`, `a.b.c`, `p->next->val`). It deliberately does NOT match compound
+// expressions (`(p->a - p->b)`), array subscripts (`arr[i]`), dereferences
+// (`*p`), or calls (`foo()`), which stay suspected for the AI agent.
+var reFieldChain = regexp.MustCompile(`^[A-Za-z_]\w*\s*(?:(?:->|\.)\s*[A-Za-z_]\w*)+$`)
+
+// isConfigFieldDivisor reports whether a divide-by-zero divisor is an external
+// state value whose zero-invariant is established outside the use-site function:
+// a struct/object field chain (`graph->gran_time`, `hdr->elements`,
+// `hash->bkt_size`) or a module-global variable (`g_df_thread_count`). Because
+// the value is initialized elsewhere and no local guard re-proves it, the
+// unguarded division is a genuine defensive-check gap the pipeline confirms
+// deterministically rather than deferring to the AI agent.
+func isConfigFieldDivisor(divisor string) bool {
+	s := strings.TrimSpace(divisor)
+	if reFieldChain.MatchString(s) {
+		return true
+	}
+	return strings.HasPrefix(s, "g_") && bareIdentVar(s) != ""
 }

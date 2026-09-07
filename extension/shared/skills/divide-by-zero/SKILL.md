@@ -29,6 +29,15 @@ A divide-by-zero candidate has:
 | `x / n` with `n` from external input | **suspected** |
 | `x / 2`, `x / sizeof(T)` | **false-positive** (constant, safe) |
 
+> **Pipeline pre-confirms, so these never reach this classification step:**
+> - `x / obj->field` or `x % obj.field` (a struct/object field chain) — a
+>   config/capacity value whose zero-invariant is established at object
+>   initialization, not at the use site. The range filter upgrades these to
+>   `confirmed` (auto-confirm) — a defensive-check gap to fix, not an AI question.
+> - `x / g_name` (a module-global divisor) — same reasoning, also auto-confirmed.
+> - `x / d` where the interval analysis proves `d == 0` (`d = 0; x / d`) — a
+>   certain divide-by-zero, auto-confirmed.
+
 ### Common False Positives
 - `x / 100` — constant divisor (safe)
 - `x % sizeof(int)` — compile-time constant (safe)

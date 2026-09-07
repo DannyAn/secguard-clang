@@ -339,3 +339,97 @@ int fp_apikb(int x) { return x / getpid(); }
 		t.Errorf("tp_zero_return (x / get_zeroops(), returns 0) should be kept, got %v", candidateNames(result))
 	}
 }
+
+// TestDivideByZero_ConfigFieldConfirm pins the deterministic confirm: a divisor
+// that is a struct/object field chain (`graph->gran_time`, `hdr->elements`) or a
+// module-global (`g_df_thread_count`) is a defensive-check gap whose zero
+// invariant lives at initialization, so the pipeline upgrades it to "confirmed"
+// (auto-confirm, no AI review) instead of handing it to the agent. A bare
+// parameter and a compound field expression stay "suspected" (AI-worthy), and a
+// provably-zero divisor (`d = 0; x / d`) is also confirmed.
+func TestDivideByZero_ConfigFieldConfirm(t *testing.T) {
+	src := `#include <stdlib.h>
+
+typedef unsigned int uint32_t;
+
+typedef struct { uint32_t gran_time; uint32_t point_num; } graph_t;
+typedef struct { uint32_t head; uint32_t elements; } ring_t;
+
+static uint32_t g_df_thread_count = 4;
+
+uint32_t index_of(graph_t *graph, uint32_t t) {
+    return t / graph->gran_time; /* field divisor: confirmed */
+}
+
+uint32_t ring_advance(ring_t *hdr) {
+    hdr->head = (hdr->head + 1) % hdr->elements; /* field divisor: confirmed */
+    return hdr->head;
+}
+
+uint32_t thread_next(uint32_t idx) {
+    return (idx + 1) % g_df_thread_count; /* global divisor: confirmed */
+}
+
+int bare_param(int n) {
+    return 10 / n; /* bare parameter: suspected (AI) */
+}
+
+int compound_field(graph_t *g) {
+    return 10 / (g->gran_time - g->point_num); /* compound field expr: suspected (AI) */
+}
+
+int definite_zero(void) {
+    int d = 0;
+    return 10 / d; /* provably-zero divisor: confirmed */
+}
+`
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dbz_field.c")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "divide-by-zero")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	kept := map[string]bool{}
+	level := map[string]string{}
+	for _, c := range result.Candidates {
+		kept[c.Target.Function] = true
+		level[c.Target.Function] = c.SuspicionLevel
+	}
+
+	for _, fn := range []string{"index_of", "ring_advance", "thread_next", "definite_zero"} {
+		if !kept[fn] {
+			t.Errorf("%s should be kept (confirmed, not dropped), got %v", fn, candidateNames(result))
+			continue
+		}
+		if level[fn] != "confirmed" {
+			t.Errorf("%s suspicion = %q, want confirmed (auto-confirm, no AI review)", fn, level[fn])
+		}
+	}
+	for _, fn := range []string{"bare_param", "compound_field"} {
+		if !kept[fn] {
+			t.Errorf("%s should be kept (suspected, not dropped), got %v", fn, candidateNames(result))
+			continue
+		}
+		if level[fn] != "suspected" {
+			t.Errorf("%s suspicion = %q, want suspected (AI review)", fn, level[fn])
+		}
+	}
+}

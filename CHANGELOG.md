@@ -2,6 +2,20 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [Unreleased]
+
+### 吞吐优化（divide-by-zero 确定性确认，减少 AI 研判）
+
+- **配置字段/全局除数提前 auto-confirm**：`x / graph->gran_time`、`x % hdr->elements`、
+  `x % g_df_thread_count` 这类「结构体/对象字段链（`->field`/`.field`）或模块全局（`g_`）
+  除数」的零不变量在对象构造/全局初始化处确立，使用点无法也无需局部守卫——这是「缺少
+  防御性检查」的**真问题**，但 AI 无法跨文件判断初始化语义，逐条研判浪费且无价值。
+  `RangeFilter` 现把这类除数确定性升级为 `confirmed`（走 `autoConfirmFindings` 机器落库，
+  独立 `auto-confirmed` 状态、进入 result.sarif/findings 供工程师加固），不再交 AI 研判；
+  同时区间分析证明「除数必然为 0」（`d = 0; x / d`）也升级为 `confirmed`。裸标识符参数
+  （`x / n`，可能外部输入）与复合字段表达式（`x / (p->a - p->b)`）仍保留 `suspected` 交
+  AI。显著压缩生产验证中 79 条全 `warning` 的 divide-by-zero 候选流向 AI 的数量、加快扫描。
+
 ## [0.5.9] - 2026-09-04
 
 ### 主题：uninit / divide-by-zero 误报收敛 + 分类吞吐优化

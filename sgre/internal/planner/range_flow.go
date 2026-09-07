@@ -48,6 +48,13 @@ func (r interval) isNonZero() bool {
 	return r.lo > 0 || r.hi < 0
 }
 
+// isDefinitelyZero reports whether the interval is exactly [0,0], i.e. the
+// divisor is provably zero on every path reaching this point (a certain
+// divide-by-zero, not merely a possible one).
+func (r interval) isDefinitelyZero() bool {
+	return r.lo == 0 && r.hi == 0
+}
+
 // shift adds delta to both bounds, saturating at rMin/rMax so a loop counter
 // (`i++`) cannot wrap past the extremes and oscillate.
 func (r interval) shift(delta int64) interval {
