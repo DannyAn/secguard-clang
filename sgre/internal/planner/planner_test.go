@@ -347,8 +347,8 @@ func TestCallReachCache_ComputedOnce(t *testing.T) {
 	if _, err := cache.get(ctx, cs); err != nil {
 		t.Fatalf("second get: %v", err)
 	}
-	if cs.edgesCalls != 1 {
-		t.Errorf("computeCallReach should run once, but ListGraphEdgesByType was called %d times", cs.edgesCalls)
+	if cs.edgesCalls != 2 {
+		t.Errorf("computeCallReach should run once (CALL + ADDR_TAKEN), but ListGraphEdgesByType was called %d times", cs.edgesCalls)
 	}
 }
 

@@ -36,6 +36,18 @@
 - 新增 tc89（rwlock init 后 malloc 失败分支未 destroy）、tc90（socket 后 fcntl 失败分支
   未 close）、tc91（epoll fd 后 db-connect 失败分支未 close）fixture 锁住三类漏报。
 
+### 漏报修复（间接调用可达性 —— static 函数经函数指针表/回调被调用）
+
+- 工程师反馈：`https_dfx_client_registry_init` / `ids_client_start_connect` /
+  `drop_mon_db_init` 这类 **static** init/connect 函数，其资源泄漏未被识别。根因是这些
+  函数经函数指针表（`g_init_fns[] = { f }`）、`pthread_create(…, thread_fn, …)` 回调等
+  **间接调用**，直接调用图没有 CALL 边，`call_reach` 把它们判为「不可达」而 drop——这是
+  影响**所有漏洞类型**的系统性漏报。现 call-graph 层识别「函数地址被引用」（`&f`、
+  初始化列表、实参、赋值，排除声明/定义与直接调用），为这类函数写一条自环 `ADDR_TAKEN`
+  边，`call_reach` 把该边源节点当作入口——地址被引用的 static 函数不再被误判不可达；
+  从未被引用的死代码 static 仍照常 drop。新增
+  `TestCallReach_AddrTakenStaticIsReachable` 锁住该行为。
+
 ## [0.5.9] - 2026-09-04
 
 ### 主题：uninit / divide-by-zero 误报收敛 + 分类吞吐优化

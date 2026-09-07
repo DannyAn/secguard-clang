@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -41,8 +42,19 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 		funcMap[f.Name] = append(funcMap[f.Name], f.ID)
 	}
 
+	// Functions whose address is referenced outside a direct call (function
+	// pointer tables, pthread_create thread fn, callback registration) are
+	// invoked indirectly, so the direct CALL graph has no edge into them. Mark
+	// them with a self ADDR_TAKEN edge; call_reach treats those as entry points
+	// so a static function wired up through a pointer table is not dropped as
+	// "unreachable" (a systematic false negative across every vuln type).
+	addrRefs := make(map[string]bool)
+
 	err = forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
 		callNodes := root.FindAll("call_expression")
+		for name := range collectAddrRefNames(root, funcMap) {
+			addrRefs[name] = true
+		}
 
 		for _, f := range fileFuncs {
 			callerNodeID, err := b.store.GetOrCreateGraphNode(ctx, "function", f.ID, "")
@@ -84,7 +96,79 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 			}
 		}
 	})
-	return result, err
+	if err != nil {
+		return nil, err
+	}
+
+	for name := range addrRefs {
+		for _, fid := range funcMap[name] {
+			nodeID, err := b.store.GetOrCreateGraphNode(ctx, "function", fid, "")
+			if err != nil {
+				warnEdge(b.logger, "ADDR_TAKEN", name, err)
+				continue
+			}
+			if err := b.insertSelfEdge(ctx, nodeID); err != nil {
+				warnEdge(b.logger, "ADDR_TAKEN", name, err)
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// insertSelfEdge persists a self-loop ADDR_TAKEN edge marking the function as
+// address-referenced (indirectly invocable). call_reach consumes the edge's
+// source node as an entry point.
+func (b *CallGraphBuilder) insertSelfEdge(ctx context.Context, nodeID int64) error {
+	props := marshalProps(b.logger, "ADDR_TAKEN", map[string]string{"indirect": "true"})
+	_, err := b.store.InsertGraphEdge(ctx, &db.GraphEdge{
+		SrcID:      nodeID,
+		DstID:      nodeID,
+		EdgeType:   "ADDR_TAKEN",
+		Properties: props,
+	})
+	return err
+}
+
+// collectAddrRefNames returns the names of functions whose address is referenced
+// outside a direct call: taken via `&f`, listed in an initializer (`g_fns[] =
+// {f1, f2}`), passed as a call argument (`pthread_create(..., f, ...)`), or
+// assigned. It deliberately skips an identifier sitting in a declarator/
+// declaration (the function's own definition/prototype) and one that is the
+// direct callee of a call expression, so a plain `f()` call is never read as an
+// address reference.
+func collectAddrRefNames(root parser.Node, funcMap map[string][]int64) map[string]bool {
+	refs := make(map[string]bool)
+	for _, id := range root.FindAll("identifier") {
+		name := id.Text()
+		if _, ok := funcMap[name]; !ok {
+			continue
+		}
+		parent := id.Parent()
+		if parent == nil {
+			continue
+		}
+		if strings.Contains(parent.Kind(), "declarator") || parent.Kind() == "declaration" {
+			continue
+		}
+		if parent.Kind() == "call_expression" && isDirectCallee(*parent, id) {
+			continue
+		}
+		refs[name] = true
+	}
+	return refs
+}
+
+// isDirectCallee reports whether id is the function-position child of a call
+// expression (a plain `f(...)` call), as opposed to an argument that happens to
+// name a function.
+func isDirectCallee(call parser.Node, id parser.Node) bool {
+	children := call.NamedChildren()
+	if len(children) == 0 {
+		return false
+	}
+	fn := children[0]
+	return fn.Kind() == "identifier" && fn.StartByte() == id.StartByte() && fn.EndByte() == id.EndByte()
 }
 
 // insertCallEdge persists one CALL edge with call_line set to the call site

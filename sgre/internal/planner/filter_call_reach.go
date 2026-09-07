@@ -79,6 +79,25 @@ func computeCallReach(ctx context.Context, store db.Store) (*callReachResult, er
 		}
 	}
 
+	// Address-referenced functions (function-pointer tables, pthread_create
+	// thread fn, callback registration) are invoked indirectly, so the direct
+	// CALL graph has no edge into them. The graph layer marks each with a
+	// self-loop ADDR_TAKEN edge; treat its source as an entry point so a static
+	// function wired up through a pointer table is not dropped as "unreachable"
+	// (a systematic false negative across every vuln type).
+	if addrEdges, err := store.ListGraphEdgesByType(ctx, "ADDR_TAKEN"); err == nil {
+		seen := make(map[int64]bool, len(entryNodeIDs))
+		for _, n := range entryNodeIDs {
+			seen[n] = true
+		}
+		for _, e := range addrEdges {
+			if !seen[e.SrcID] {
+				seen[e.SrcID] = true
+				entryNodeIDs = append(entryNodeIDs, e.SrcID)
+			}
+		}
+	}
+
 	// Build the CALL adjacency list in memory and BFS from the entries.
 	edges, err := store.ListGraphEdgesByType(ctx, "CALL")
 	if err != nil {
