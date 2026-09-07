@@ -2,7 +2,7 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [Unreleased]
+## [0.6.0] - 2026-09-07
 
 ### 吞吐优化（divide-by-zero 确定性确认，减少 AI 研判）
 
