@@ -72,9 +72,19 @@ func (r *PlanResult) CandidateCount() int {
 // the exact statement is already in the Source column. "src@N" names the null
 // source line (null-deref); "certain-null"/"maybe-null" is the null certainty
 // tier; "tainted" marks an injection/taint source; "weak-guard" flags a partial
-// guard that still needs human review.
-func buildHint(c Candidate) string {
+// guard that still needs human review. For divide-by-zero (which has none of
+// those flow flags) it emits the divisor's syntactic shape ("divisor@bare" /
+// "divisor@call" / "divisor@compound"), so the classifier can settle a bare
+// divisor from the Source column instead of opening an evidence file per
+// candidate — the per-candidate open that previously exhausted a subagent's
+// turn budget before it could write.
+func buildHint(c Candidate, spec *VulnTypeSpec) string {
 	var parts []string
+	if spec != nil && spec.Name == "divide-by-zero" {
+		if shape := divisorShape(c.VariableName); shape != "" {
+			parts = append(parts, "divisor@"+shape)
+		}
+	}
 	if c.SourceLine > 0 {
 		parts = append(parts, fmt.Sprintf("src@%d", c.SourceLine))
 	}
@@ -108,7 +118,7 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 			Variable: c.VariableName,
 		},
 		SourceLine: c.SourceLine,
-		Hint:       buildHint(c),
+		Hint:       buildHint(c, spec),
 		Evidence:   spec.BuildEvidence(c),
 	}
 	if c.SuspicionLevel != "" {

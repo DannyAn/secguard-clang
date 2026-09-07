@@ -151,11 +151,15 @@ budget your effort, not to pre-judge the answer:
   file for a confirmed candidate.
 - **suspected** — a heuristic recognized the pattern but the graph could not
   prove it. First classify from the `_index.md` row's `Source` + `Hint` columns:
-  `certain-null` + `src@N` usually settles the verdict. Open the candidate's
-  `Evidence` file (the filename is in `_index.md`'s `Evidence` column — use it
-  verbatim) and read its `## Code Context` (source already embedded) ONLY when
-  the hint is insufficient. Do NOT open the raw source file unless that embedded
-  window is genuinely too small.
+  `certain-null` + `src@N` usually settles the verdict. For divide-by-zero, the
+  `Hint` is `divisor@<shape>` (`bare` = plain identifier, `call` = call result,
+  `compound` = complex expression): a `divisor@bare` row is settled from the
+  `Source` column alone (unguarded plain divisor → `suspected`), with no
+  evidence-file open. Open the candidate's `Evidence` file (the filename is in
+  `_index.md`'s `Evidence` column — use it verbatim) and read its `## Code Context`
+  (source already embedded) ONLY when the hint is insufficient — for
+  divide-by-zero that is the `divisor@call` / `divisor@compound` shapes. Do NOT
+  open the raw source file unless that embedded window is genuinely too small.
 - **possible** — the pattern is only theoretical (e.g. unsigned wraparound inside
   a bounds check, which would require an operand to reach SIZE_MAX). Triage these
   last and promote one only when you can show a reachable, realistic overflow.

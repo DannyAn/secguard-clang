@@ -171,3 +171,26 @@ func isConfigFieldDivisor(divisor string) bool {
 	}
 	return strings.HasPrefix(s, "g_") && bareIdentVar(s) != ""
 }
+
+// divisorShape classifies a divide-by-zero divisor's syntactic shape so the
+// candidate index's Hint column can tell the AI agent what it is looking at
+// without opening the evidence file. `bare` (a plain identifier) is the one the
+// classifier can settle from the Source column alone; `field`/`global` are
+// auto-confirmed by the pipeline; `call`/`compound` need the Code Context.
+func divisorShape(divisor string) string {
+	s := strings.TrimSpace(divisor)
+	switch {
+	case s == "":
+		return ""
+	case reFieldChain.MatchString(s):
+		return "field"
+	case strings.HasPrefix(s, "g_") && bareIdentVar(s) != "":
+		return "global"
+	case bareIdentVar(s) != "":
+		return "bare"
+	case reCallDivisor.MatchString(s):
+		return "call"
+	default:
+		return "compound"
+	}
+}

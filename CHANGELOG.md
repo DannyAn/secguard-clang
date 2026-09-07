@@ -16,6 +16,26 @@
   （`x / n`，可能外部输入）与复合字段表达式（`x / (p->a - p->b)`）仍保留 `suspected` 交
   AI。显著压缩生产验证中 79 条全 `warning` 的 divide-by-zero 候选流向 AI 的数量、加快扫描。
 
+### 修复：divide-by-zero 子代理写入前耗尽轮次（候选 Hint 补除数形状）
+
+- 生产验证发现 divide-by-zero 的 `Hint` 列恒为 `—`（该类型没有 null/taint/guard 流程
+  flag），子代理对 100 个 `suspected` 候选逐个打开 `Evidence` 文件，在写入前耗尽
+  `maxTurns`，101 条候选未落库。现 `buildHint` 对 divide-by-zero 输出 `divisor@<shape>`
+  （`bare`=裸标识符、`call`=调用、`compound`=复合表达式；`field`/`global` 已 auto-confirm
+  不再出现），`divisor@bare` 的候选可从 `Source` 列直接判 `suspected`、无需打开 Evidence
+  文件；`agent-body.md`/`command-instructions.md` 同步该规则，消除逐候选 Evidence 打开。
+
+### 漏报修复（resource-leak）
+
+- **epoll/eventfd/signalfd/timerfd/inotify fd 工厂识别**：`epoll_create`、`MESH_EpollCreate`
+  等之前既不匹配 `open/socket/accept` 子串也不匹配 `create` 前缀而被漏报，现纳入
+  `isResourceAcquirer`。
+- **`connect` 不再当资源获取者**：`connect(fd,…)` 返回错误码而非句柄，
+  `db_create_sub_connect(...)` 这类「连接建立」包装被误报为幻影 `ret` 资源，现移除
+  `connect` 关键字。
+- 新增 tc89（rwlock init 后 malloc 失败分支未 destroy）、tc90（socket 后 fcntl 失败分支
+  未 close）、tc91（epoll fd 后 db-connect 失败分支未 close）fixture 锁住三类漏报。
+
 ## [0.5.9] - 2026-09-04
 
 ### 主题：uninit / divide-by-zero 误报收敛 + 分类吞吐优化

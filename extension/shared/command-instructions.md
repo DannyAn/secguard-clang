@@ -246,7 +246,7 @@ as `result.sarif`.)
      (matches the evidence) or dismiss (guarded/different) from the table itself.
      Do NOT read source or the candidate file. Batch all confirmed verdicts into
      one write call.
-   - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null`/`tainted`/`weak-guard`); open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source) only when the hint is insufficient, then reason/classify (confirmed/suspected/dismissed).
+   - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null`/`tainted`/`weak-guard`/`divisor@<shape>`); for divide-by-zero a `divisor@bare` row is settled from `Source` alone (no evidence open). Open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source) only when the hint is insufficient, then reason/classify (confirmed/suspected/dismissed).
    Write findings in ONE batch: write `<tmpdir>/<type>.json` with the Write tool,
    then `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
    Never skip a type. Obey the context budget (no per-candidate source reads;
@@ -281,7 +281,7 @@ as `result.sarif`.)
    — do NOT re-run secguard_scan or secguard_plan. The source is already embedded:
    `_index.md` has a `Source` column per candidate (the exact statement), a `Hint`
    column (the pipeline's precomputed verdict facts: `src@N`/`certain-null`/
-   `maybe-null`/`tainted`/`weak-guard`), plus an `Evidence` column naming the exact
+   `maybe-null`/`tainted`/`weak-guard`/`divisor@<shape>`), plus an `Evidence` column naming the exact
    candidate file, and each candidate file has a `## Code Context` block — do NOT
    issue per-candidate source READs (that is the tens-of-minutes cost). Read ONLY
    your type's `_index.md`, never the whole report.md.
@@ -292,10 +292,16 @@ as `result.sarif`.)
     - suspected/possible → classify from the `Source` + `Hint` columns FIRST. `Hint`
       is the pipeline's precomputed facts (`src@N` = null-source line, `certain-null`
       = definitely null, `maybe-null` = possibly null, `tainted` = injection source,
-      `weak-guard` = partial guard). Open that candidate's `Evidence` file (filename
-      in the `Evidence` column, verbatim; its `## Code Context` embeds the source)
-      ONLY when the hint is insufficient to decide — a `certain-null` + `src@N` hint
-      usually settles the verdict with no file open. Never dismiss a candidate you
+      `weak-guard` = partial guard). For divide-by-zero, `Hint` is `divisor@<shape>`
+      (`bare` = a plain identifier, `call` = a call result, `compound` = a complex
+      expression; `field`/`global` are already auto-confirmed and never reach you):
+      a `divisor@bare` row is settled from the `Source` column alone (an unguarded
+      plain divisor → `suspected`) with NO evidence-file open. Open that candidate's
+      `Evidence` file (filename in the `Evidence` column, verbatim; its
+      `## Code Context` embeds the source) ONLY when the hint is insufficient to
+      decide — a `certain-null` + `src@N` hint usually settles the verdict with no
+      file open, and a `divisor@call`/`divisor@compound` hint is the only
+      divide-by-zero shape that needs the open. Never dismiss a candidate you
       did not fully read; when the hint is inconclusive and you cannot afford the
       file, mark `suspected`.
     If a candidate's `## Code Context` is unusually large (a super-large function,
