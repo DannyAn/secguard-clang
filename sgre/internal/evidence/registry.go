@@ -45,7 +45,7 @@ func RunAllDetectors(ctx context.Context, store db.Store, p *parser.Parser, logg
 		independent = append(independent, det)
 	}
 
-	const maxConcurrent = 4
+	const maxConcurrent = 8
 	sem := make(chan struct{}, maxConcurrent)
 	var wg sync.WaitGroup
 	var mu sync.Mutex

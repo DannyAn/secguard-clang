@@ -48,6 +48,13 @@
   从未被引用的死代码 static 仍照常 drop。新增
   `TestCallReach_AddrTakenStaticIsReachable` 锁住该行为。
 
+### 性能（并发度）
+
+- detector 与 planner 阶段并发度 4 → 8（`registry.go` `maxConcurrent`、
+  `pipeline.go` `planConcurrency`），在 8 核以上机器上缩短 graph/detectors/plan 阶段
+  墙钟时间。这是确定性安全改动（不改变收敛结果），真正的扫描大头仍需结合
+  `secguard metrics` 的 per-phase 数据定位。
+
 ## [0.5.9] - 2026-09-04
 
 ### 主题：uninit / divide-by-zero 误报收敛 + 分类吞吐优化

@@ -165,7 +165,7 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	// shared parser is internally synchronized).
 	pl := planner.NewPlanner(store, p, logger)
 
-	const planConcurrency = 4
+	const planConcurrency = 8
 	planSem := make(chan struct{}, planConcurrency)
 	var pwg sync.WaitGroup
 	planStart := time.Now()
