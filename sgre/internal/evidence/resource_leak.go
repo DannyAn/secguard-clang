@@ -125,7 +125,14 @@ func isResourceAcquirer(name string) bool {
 	// allocate_new_datablock / block_get (which contain "lock" inside
 	// "block"/"datablock") and misreport every datablock field write as a
 	// resource leak.
-	acquirers := []string{"fopen", "open", "socket", "connect", "accept", "acquire"}
+	//
+	// "connect" is also deliberately NOT in this list: connect(fd, ...) returns
+	// an error code, not a resource handle, and a `db_create_sub_connect(...)`
+	// wrapper compared against != 0 is a connection ESTABLISHER, not a resource
+	// factory — treating it as an acquirer produced a phantom `ret` resource.
+	// "epoll"/"eventfd"/"signalfd"/"timerfd"/"inotify" cover the fd-factory
+	// syscall wrappers (epoll_create, MESH_EpollCreate, eventfd, ...).
+	acquirers := []string{"fopen", "open", "socket", "accept", "acquire", "epoll", "eventfd", "signalfd", "timerfd", "inotify"}
 	for _, a := range acquirers {
 		if strings.Contains(lower, a) {
 			return true
