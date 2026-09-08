@@ -531,3 +531,13 @@ func TestUninit_LoopCarriedLazyInit(t *testing.T) {
 		t.Errorf("genuine_loop_uninit's v must still be reported as stack_uninit (guard not satisfied at loop entry), got 0")
 	}
 }
+
+// TestUninit_ForInitClauseNotReported pins the for-loop init fix: a variable
+// declared without an initializer but assigned in the for-init
+// (`for (child = node->children; ...)`) is initialized before the condition and
+// before the update clause reads it, so neither `child` in the condition nor
+// `child` in `child = child->next` is a use-before-init.
+func TestUninit_ForInitClauseNotReported(t *testing.T) {
+	store := runIndexAndDetect(t, "tc90_uninit_for_init.c")
+	assertNoEvent(t, store, "VALUE_USE", "tc90_uninit_for_init")
+}

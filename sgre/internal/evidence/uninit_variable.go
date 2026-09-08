@@ -485,6 +485,15 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
+		// A for-loop's update clause (`for (init; cond; child = child->next)`)
+		// reads the variable it writes, but that variable is already initialized
+		// by the for-init (or the previous iteration). Scanning its RHS here would
+		// report `child` as use-before-init at the loop's opening line, because
+		// the for-init assignment shares that line and hasUnassignedPath skips
+		// any assign on the use line itself.
+		if isForUpdateClause(assign) {
+			continue
+		}
 		children := assign.NamedChildren()
 		// assignmentRHSStart accounts for the macro call-site mangling that
 		// shifts the RHS from children[1] to children[2] (`total += q` →
@@ -565,6 +574,19 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 			checkUse(cond.StartLine(), id.Text())
 		}
 	}
+}
+
+// isForUpdateClause reports whether assign is the update clause of a for-loop
+// (`for (init; cond; update)`). The update clause reads the variable it writes
+// (`child = child->next`), and that variable is initialized by the for-init or
+// the previous iteration, so its RHS must not be scanned as a use-before-init.
+func isForUpdateClause(assign parser.Node) bool {
+	p := assign.Parent()
+	if p == nil || p.Kind() != "for_statement" {
+		return false
+	}
+	update := p.ChildByFieldName("update")
+	return update != nil && update.StartByte() == assign.StartByte() && update.EndByte() == assign.EndByte()
 }
 
 // forInitWrites returns the set of variable names assigned in a for-loop's
