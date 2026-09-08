@@ -201,7 +201,7 @@ files_csv = '''$files_csv'''
 files = [f for f in files_csv.split(',') if f]
 manifest = {
     'version': version,
-    'install_date': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'install_date': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'target': target,
     'bin_path': bin_path,
     'files': files,
@@ -375,7 +375,7 @@ if not isinstance(data, dict):
 if 'plugins' not in data:
     data['plugins'] = {}
 data['version'] = 2
-now = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 existing_list = data['plugins'].get(key, [])
 existing = existing_list[0] if existing_list else {}
 entry = {
@@ -573,7 +573,7 @@ if not isinstance(data, dict):
 data['local-secguard'] = {
     'source': {'source': 'directory', 'path': mkt_dir},
     'installLocation': mkt_dir,
-    'lastUpdated': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'lastUpdated': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'autoUpdate': False,
 }
 d = os.path.dirname(path)
@@ -607,7 +607,7 @@ if not isinstance(ekm, dict):
 ekm['local-secguard'] = {
     'source': {'source': 'directory', 'path': mkt_dir},
     'installLocation': mkt_dir,
-    'lastUpdated': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'lastUpdated': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'autoUpdate': False,
 }
 data['extraKnownMarketplaces'] = ekm
@@ -1245,7 +1245,7 @@ for dirpath, dirnames, filenames in os.walk(pkg_root):
         files[rel] = h
 manifest = {
     'version': version,
-    'build_date': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'build_date': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'go_version': go_version,
     'targets': targets,
     'skills': skills,
