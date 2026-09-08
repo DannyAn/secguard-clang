@@ -209,12 +209,13 @@ python3 scripts/validate-benchmark.py \
 | `p9_secure_func.c` | Annex K `_s` 契约：memcpy_s/strcpy_s 说谎 size、约束违约、scanf_s 逐转换宽度、完整签名（errno_t + restrict）count > destsz | ✅ 已纳入（P9-01..08） |
 | `p10_interproc_taint.c` | 1-CFA 形参敏感：passthrough、多级 passthrough、链式形参污点 | ✅ 已纳入（P10-01..04） |
 | `p7_graph_effect.c` | 语义图消费：污点 source→sink、free→use CFG、别名、所有权转移 | ✅ 已纳入（P7-01..06） |
-| `rl_resource_leak.c` | resource-leak (CWE-404)：文件/Socket/FD 工厂/锁泄漏、流敏感条件释放、所有权转移 TN、已知缺口回归目标 | ⚠️ 已纳入，RL-10..12 为 known-gap（见 Phase 6 节） |
+| `rl_resource_leak.c` | resource-leak (CWE-404)：文件/Socket/FD 工厂/锁泄漏、流敏感条件释放、所有权转移 TN、缺陷修复回归目标 | ✅ 已纳入（RL-01..14，见 Phase 6 节） |
 
 > **当前状态：VALID（77 用例 · 100% precision / 100% recall）**。
 >
-> **2026-09-08 更新**：新增 Phase 6 resource-leak 12 用例（77 → 89）。RL-10..12
-> 三个 known-gap 修复前 validator recall 下降属预期，见下方 Phase 6 节。
+> **2026-09-08 更新**：新增 Phase 6 resource-leak 14 用例（77 → 91）。RL-10..14
+> 为三个设计缺陷的回归用例（error-return fd 误判、fd 工厂白名单、out-param
+> acquirer），0.6.0 后已修复，见下方 Phase 6 节。
 >
 > **v0.3.2 对齐**：五例存量漂移（`P2-04`/`P3-01`/`PH1-03`/`P6-06`/`P6-08`）与
 > `p7` 语义图用例全部对齐，修复 4 处检测器缺陷：
@@ -228,24 +229,26 @@ python3 scripts/validate-benchmark.py \
 
 ## Phase 6 — resource-leak (CWE-404)（2026-09-08 新增）
 
-`src/rl_resource_leak.c`，12 用例，Ground truth 见 `expected-results.json` RL-01..RL-12。
+`src/rl_resource_leak.c`，14 用例，Ground truth 见 `expected-results.json` RL-01..RL-14。
 来源：v0.6.0 resource-leak 漏报怀疑调查（0.4.3/0.6.0 双版本对照 + 管道层静态检视）。
 
-| 组 | 用例 | 形态 | expect | 当前 0.6.0 行为 |
-|----|------|------|--------|----------------|
+| 组 | 用例 | 形态 | expect | 当前行为 |
+|----|------|------|--------|---------|
 | 回归防线 | RL-01..06 | fopen/open/socket+connect/epoll_create1/lock 泄漏、条件释放（流敏感） | finding | ✅ 检出（TP） |
 | 防 FP 回潮 | RL-07..09 | fopen+fclose、return f 所有权转移、open 检查+close | no_finding | ✅ 静默（TN） |
-| known-gap | RL-10..12 | 见下 | finding | ❌ 漏报（validator 报 FN 属预期） |
+| 缺陷修复 | RL-10..14 | error-return fd / dup / sqlite3_open / mkstemp / fopen_s | finding | ✅ 检出（0.6.0 后修复） |
 
-### known-gap 用例（缺陷回归目标，修复后 recall 应上升）
+### 缺陷修复用例（回归目标，已修复）
 
-| # | 形态 | 根因 |
+| # | 形态 | 修复 |
 |---|------|------|
-| RL-10 | `if (fd < 0) return fd;` 正常路径忘 close | 双层冗余误判：detector 层 `isReturnedToCaller`（evidence/memory_leak.go）把错误码 return 当所有权转移；graph 层 `OwnershipBuilder` 对同一 `return fd` 建 `OWNERSHIP_TRANSFER` 边，planner `OwnershipTransferFilter` 二次吞候选 |
-| RL-11 | `dup(STDOUT_FILENO)` 无 close | `isResourceAcquirer` 白名单缺 `dup/dup2/pipe/socketpair/mkstemp` 等 fd 工厂 |
-| RL-12 | `sqlite3_open(path, &db)` 无 sqlite3_close | out-param 型 acquirer：资源写入 `&arg` 而非返回值，`findAcquires` 只扫赋值 RHS（`fopen_s`/`RegCreateKeyEx` 同类） |
+| RL-10 | `if (fd < 0) return fd;` 正常路径忘 close | detector `hasNonFailureReturn` + graph `isErrorReturn` 排除错误返回 |
+| RL-11 | `dup(STDOUT_FILENO)` 无 close | `isResourceAcquirer` 补 dup/dup2/dup3（短名精确匹配） |
+| RL-12 | `sqlite3_open(path, &db)` 无 sqlite3_close | `outParamAcquirers` 白名单扫描 `&arg` |
+| RL-13 | `mkstemp(tmpl)` 无 close | `isResourceAcquirer` 补 mkstemp/mkostemp（长名子串匹配） |
+| RL-14 | `fopen_s(&f, ...)` 无 fclose | `outParamAcquirers` 白名单另一成员 |
 
-**验证**：known-gap 未修复期间跑 validator，`FN` 计数包含 RL-10..12 属预期结果；
-修复任一缺口后对应用例翻为 `TP`、recall 上升即回归通过。RL-01..06 用于守住
-现有检出能力（例如 4afad45 的 epoll/eventfd fd 工厂修复），RL-07..09 用于防止
-修复缺口时把 FP 再引进来（如 `connect` 误判 acquirer 的回潮）。
+**验证**：RL-01..06 守住现有检出（如 4afad45 的 epoll/eventfd fd 工厂修复），
+RL-07..09 防止修复缺口时把 FP 再引进来（如 `connect` 误判 acquirer 的回潮），
+RL-10..14 锁定三个设计缺陷的修复（error-return fd 误判、fd 工厂白名单、out-param
+acquirer），任一回归会翻回 FN、recall 下降。

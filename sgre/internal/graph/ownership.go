@@ -247,6 +247,14 @@ func isErrorReturn(ret parser.Node) bool {
 			cond := p.ChildByFieldName("condition")
 			return cond != nil && errorCheckedVarIs(*cond, name)
 		case "compound_statement":
+			// A braced if body (`if (fd < 0) { return fd; }`) puts the return under
+			// a compound_statement whose parent is the if; keep walking to reach the
+			// if. Stop only at the FUNCTION body compound_statement, whose parent is
+			// a function_definition (not an error exit).
+			gp := p.Parent()
+			if gp != nil && gp.Kind() == "if_statement" {
+				continue
+			}
 			return false
 		}
 	}

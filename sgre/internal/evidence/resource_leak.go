@@ -158,10 +158,12 @@ func isResourceAcquirer(name string) bool {
 			return true
 		}
 	}
-	// dup/dup2/dup3/pipe/pipe2 are short fd-factory names a bare substring would
-	// over-match (duplicate, pipeline); match exactly or as a `_dup`/`_pipe`
-	// suffix (a wrapper like os_dup / x_pipe).
-	for _, w := range []string{"dup", "dup2", "dup3", "pipe", "pipe2"} {
+	// dup/dup2/dup3 are short fd-factory names a bare substring would over-match
+	// (duplicate); match exactly or as a `_dup` suffix (a wrapper like os_dup).
+	// (pipe/pipe2/socketpair are OUT-PARAM array factories — `pipe(fds[2])` — and
+	// deliberately NOT here: the return-value path would misread their int error
+	// code as a resource handle.)
+	for _, w := range []string{"dup", "dup2", "dup3"} {
 		if lower == w || strings.HasSuffix(lower, "_"+w) {
 			return true
 		}

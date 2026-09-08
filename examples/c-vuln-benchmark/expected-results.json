@@ -845,7 +845,7 @@
       "cwe": "CWE-404",
       "detector": "resource.resource_leak",
       "expect": "finding",
-      "_note": "known-gap: 当前 0.6.0 漏报，validator 报 FN 属预期，作为缺陷修复回归目标"
+      "_note": "fixed: 0.6.0 后检出（resource-leak 三缺陷修复，见 CHANGELOG）"
     },
     {
       "id": "RL-11",
@@ -856,7 +856,7 @@
       "cwe": "CWE-404",
       "detector": "resource.resource_leak",
       "expect": "finding",
-      "_note": "known-gap: 当前 0.6.0 漏报，validator 报 FN 属预期，作为缺陷修复回归目标"
+      "_note": "fixed: 0.6.0 后检出（resource-leak 三缺陷修复，见 CHANGELOG）"
     },
     {
       "id": "RL-12",
@@ -867,7 +867,27 @@
       "cwe": "CWE-404",
       "detector": "resource.resource_leak",
       "expect": "finding",
-      "_note": "known-gap: 当前 0.6.0 漏报，validator 报 FN 属预期，作为缺陷修复回归目标"
+      "_note": "fixed: 0.6.0 后检出（resource-leak 三缺陷修复，见 CHANGELOG）"
+    },
+    {
+      "id": "RL-13",
+      "category": "phase6_resource_leak",
+      "file": "src/rl_resource_leak.c",
+      "line": 153,
+      "code": "mkstemp 无 close（长名子串匹配的 fd 工厂，返回值型）",
+      "cwe": "CWE-404",
+      "detector": "resource.resource_leak",
+      "expect": "finding"
+    },
+    {
+      "id": "RL-14",
+      "category": "phase6_resource_leak",
+      "file": "src/rl_resource_leak.c",
+      "line": 163,
+      "code": "fopen_s out-param 无 fclose（out-param 型 acquirer 白名单另一成员）",
+      "cwe": "CWE-404",
+      "detector": "resource.resource_leak",
+      "expect": "finding"
     }
   ]
 }

@@ -147,6 +147,27 @@ int rl12_outparam_open_leak(void) {
     return 0;
 }
 
+/* ── 缺陷修复补充：白名单边界成员（返回值型 / out-param 型）──────── */
+
+/* RL-13: mkstemp 泄漏（长名子串匹配的 fd 工厂，返回值型） */
+int rl13_mkstemp_leak(void) {
+    char tmpl[] = "/tmp/rl13-XXXXXX";
+    int fd = mkstemp(tmpl);
+    if (fd < 0) {
+        return -1;
+    }
+    return 0;
+}
+
+/* RL-14: fopen_s out-param 泄漏（out-param 型 acquirer 白名单另一成员） */
+int rl14_fopen_s_leak(void) {
+    FILE *f = NULL;
+    if (fopen_s(&f, "/tmp/rl14.log", "w") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 void do_work_rl(void) {
     (void)0;
 }
