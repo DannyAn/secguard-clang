@@ -2,6 +2,19 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [Unreleased]
+
+### 汇总顺畅性（消除 orchestrator 对账困惑）
+
+- `secguard scan` 输出的 `candidates_by_type` 改用 `distinctFindingLocations`（按
+  `file:line:function` 位置去重），与 `scan_stats.final_count` / `status --per-type`
+  的 `candidate_count` 同口径；此前 scan 输出是「变量级」、DB 是「位置级」，orchestrator
+  在汇总阶段看到 resource-leak 69 vs 63、uninit 306 vs 288 对不上，又去拼 SQL 对账。
+- `command-instructions.md` 明确 `findings/<type>/NNN_*_confirmed.md` 是「auto-confirmed
+  （pipeline 机器确认）+ 子代理 confirmed」两类之和，前者不在 `candidates/_index.md`
+  里、子代理看不到，所以 findings/ 的 confirmed 数大于子代理报告数是正常的——最终计数
+  一律以 `report --audit` 的 `audits` 数组为准，不要 `ls findings/` 反推、不要为这个对账。
+
 ## [0.6.0] - 2026-09-07
 
 ### 修复：汇总阶段 `unclassified_candidates` 误报 + 相对路径 DB 查询 ERROR

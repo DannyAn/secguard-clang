@@ -307,11 +307,15 @@ func runScanCmd(ctx context.Context, args []string) int {
 	// candidates_by_type: 摘要（每类型候选数），替代完整 evidence_packages。
 	// 完整 evidence_packages 写到 report.md/SARIF，不放入 stdout——避免 398KB+ 输出
 	// 触发 OpenCode 截断、污染 agent 上下文、诱导读取 tool-output 截断文件。
+	// 用 distinctFindingLocations（位置去重）而不是 len(cands)（变量级）：与
+	// scan_stats.final_count / status --per-type 的 candidate_count 同口径，否则
+	// 汇总阶段 orchestrator 看到 scan 的变量级数和 DB 的位置级数对不上，又去拼
+	// SQL 对账。
 	candidatesByType := make(map[string]int, len(evidencePackages))
 	for _, ep := range evidencePackages {
 		vt, _ := ep["vulnerability_type"].(string)
 		cands, _ := ep["candidates"].([]planner.EvidenceItem)
-		candidatesByType[vt] = len(cands)
+		candidatesByType[vt] = distinctFindingLocations(cands)
 	}
 
 	output := map[string]interface{}{
