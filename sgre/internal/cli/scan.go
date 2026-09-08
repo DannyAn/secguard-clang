@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -215,7 +216,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 			ScanID:      scanID,
 			VulnType:    vulnType,
 			SeedCount:   result.Summary.SeedCount,
-			FinalCount:  len(needsReview),
+			FinalCount:  distinctFindingLocations(needsReview),
 			FilterChain: string(filterChainJSON),
 		}); err != nil {
 			logger.Warn("insert scan stat failed", "vuln_type", vulnType, "error", err)
@@ -474,6 +475,23 @@ func runScanCmd(ctx context.Context, args []string) int {
 	}
 
 	return 0
+}
+
+// distinctFindingLocations counts the distinct (file, line, function) locations
+// among candidates. `report --write-json` UPSERTs findings keyed on
+// (scan_id, rule_id, file, line, function), so several candidates at the SAME
+// location (e.g. two resource variables or two uninitialized fields on one line)
+// collapse into ONE finding. final_count must use this location count — not the
+// variable-level candidate count — otherwise `status --per-type` and
+// `report --audit` see a phantom "written < candidate" gap and the orchestrator
+// re-dispatches or raw-queries the schema in a loop.
+func distinctFindingLocations(items []planner.EvidenceItem) int {
+	seen := make(map[string]struct{}, len(items))
+	for _, c := range items {
+		key := c.Target.File + "\x00" + strconv.Itoa(c.Target.Line) + "\x00" + c.Target.Function
+		seen[key] = struct{}{}
+	}
+	return len(seen)
 }
 
 // splitBySuspicion partitions converged candidates into the pipeline-PROVED tier
