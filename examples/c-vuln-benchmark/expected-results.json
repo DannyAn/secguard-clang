@@ -1,16 +1,20 @@
 {
-  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327) + 4 个测试用例 (Phase 2: heap OOB write / format overflow / data race / OOB read) + 4 个测试用例 (Phase 3: null-deref sizeof + 流敏感 FP 抑制) + 3 个测试用例 (Phase 4: uninit 流敏感收敛，来自 zlib 生产环境缺陷)。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。",
+  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327) + 4 个测试用例 (Phase 2: heap OOB write / format overflow / data race / OOB read) + 4 个测试用例 (Phase 3: null-deref sizeof + 流敏感 FP 抑制) + 3 个测试用例 (Phase 4: uninit 流敏感收敛，来自 zlib 生产环境缺陷) + 12 个测试用例 (Phase 6: resource-leak CWE-404，其中 RL-10~RL-12 为已确认检测缺口 known-gap，当前阶段 validator 报 FN 属预期，作为缺陷修复的回归目标)。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。",
   "_benchmark_doc": "benchmark.md",
   "_validator": "scripts/validate-benchmark.py",
   "summary": {
-    "total_test_cases": 77,
+    "total_test_cases": 89,
     "phase0_test_cases": 18,
     "phase1_test_cases": 12,
     "phase2_test_cases": 4,
     "phase3_test_cases": 4,
     "phase4_test_cases": 4,
-    "expected_final_certified": 43,
-    "expected_no_finding": 34,
+    "phase6_resource_leak_test_cases": 12,
+    "phase6_resource_leak_finding": 9,
+    "phase6_resource_leak_no_finding": 3,
+    "phase6_resource_leak_known_gaps": 3,
+    "expected_final_certified": 52,
+    "expected_no_finding": 37,
     "phase1_confirmed": 9,
     "phase1_safe_excluded": 3,
     "phase2_confirmed": 4,
@@ -741,6 +745,129 @@
       "code": "malloc -> g_escape",
       "detector": "memory.memory_leak",
       "expect": "no_finding"
+    },
+    {
+      "id": "RL-01",
+      "category": "phase6_resource_leak",
+      "file": "src/rl_resource_leak.c",
+      "line": 25,
+      "code": "fopen 错误路径 return，正常路径无 fclose",
+      "cwe": "CWE-404",
+      "detector": "resource.resource_leak",
+      "expect": "finding"
+    },
+    {
+      "id": "RL-02",
+      "category": "phase6_resource_leak",
+      "file": "src/rl_resource_leak.c",
+      "line": 35,
+      "code": "open 错误路径 return -1，正常路径无 close",
+      "cwe": "CWE-404",
+      "detector": "resource.resource_leak",
+      "expect": "finding"
+    },
+    {
+      "id": "RL-03",
+      "category": "phase6_resource_leak",
+      "file": "src/rl_resource_leak.c",
+      "line": 46,
+      "code": "socket + connect 失败路径未 close（connect 是错误码不是资源）",
+      "cwe": "CWE-404",
+      "detector": "resource.resource_leak",
+      "expect": "finding"
+    },
+    {
+      "id": "RL-04",
+      "category": "phase6_resource_leak",
+      "file": "src/rl_resource_leak.c",
+      "line": 58,
+      "code": "epoll_create1 无 close（fd 工厂回归防线）",
+      "cwe": "CWE-404",
+      "detector": "resource.resource_leak",
+      "expect": "finding"
+    },
+    {
+      "id": "RL-05",
+      "category": "phase6_resource_leak",
+      "file": "src/rl_resource_leak.c",
+      "line": 69,
+      "code": "pthread_mutex_lock 后无 unlock（锁泄漏）",
+      "cwe": "CWE-404",
+      "detector": "resource.resource_leak",
+      "expect": "finding"
+    },
+    {
+      "id": "RL-06",
+      "category": "phase6_resource_leak",
+      "file": "src/rl_resource_leak.c",
+      "line": 75,
+      "code": "fclose 只在 if(flag) 分支内，其余路径泄漏（流敏感）",
+      "cwe": "CWE-404",
+      "detector": "resource.resource_leak",
+      "expect": "finding"
+    },
+    {
+      "id": "RL-07",
+      "category": "phase6_resource_leak_safe",
+      "file": "src/rl_resource_leak.c",
+      "line": 88,
+      "code": "fopen 后 fclose",
+      "cwe": "CWE-404",
+      "detector": "resource.resource_leak",
+      "expect": "no_finding"
+    },
+    {
+      "id": "RL-08",
+      "category": "phase6_resource_leak_safe",
+      "file": "src/rl_resource_leak.c",
+      "line": 96,
+      "code": "资源 return 给 caller（所有权转移）",
+      "cwe": "CWE-404",
+      "detector": "resource.resource_leak",
+      "expect": "no_finding"
+    },
+    {
+      "id": "RL-09",
+      "category": "phase6_resource_leak_safe",
+      "file": "src/rl_resource_leak.c",
+      "line": 105,
+      "code": "open 检查 + 正常 close",
+      "cwe": "CWE-404",
+      "detector": "resource.resource_leak",
+      "expect": "no_finding"
+    },
+    {
+      "id": "RL-10",
+      "category": "phase6_resource_leak_known_gap",
+      "file": "src/rl_resource_leak.c",
+      "line": 120,
+      "code": "错误路径 return fd 误判为所有权转移，掩盖正常路径泄漏（isReturnedToCaller + OWNERSHIP_TRANSFER 双层误判）",
+      "cwe": "CWE-404",
+      "detector": "resource.resource_leak",
+      "expect": "finding",
+      "_note": "known-gap: 当前 0.6.0 漏报，validator 报 FN 属预期，作为缺陷修复回归目标"
+    },
+    {
+      "id": "RL-11",
+      "category": "phase6_resource_leak_known_gap",
+      "file": "src/rl_resource_leak.c",
+      "line": 131,
+      "code": "dup 无 close（fd 工厂不在 isResourceAcquirer 白名单，dup/pipe/socketpair/mkstemp 同类）",
+      "cwe": "CWE-404",
+      "detector": "resource.resource_leak",
+      "expect": "finding",
+      "_note": "known-gap: 当前 0.6.0 漏报，validator 报 FN 属预期，作为缺陷修复回归目标"
+    },
+    {
+      "id": "RL-12",
+      "category": "phase6_resource_leak_known_gap",
+      "file": "src/rl_resource_leak.c",
+      "line": 143,
+      "code": "sqlite3_open out-param 型 acquirer，资源写入 &db（fopen_s/RegCreateKeyEx 同类形态）",
+      "cwe": "CWE-404",
+      "detector": "resource.resource_leak",
+      "expect": "finding",
+      "_note": "known-gap: 当前 0.6.0 漏报，validator 报 FN 属预期，作为缺陷修复回归目标"
     }
   ]
 }
