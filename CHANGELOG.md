@@ -2,7 +2,7 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [Unreleased]
+## [0.6.0] - 2026-09-07
 
 ### 修复：汇总阶段 `unclassified_candidates` 误报 + 相对路径 DB 查询 ERROR
 
@@ -17,8 +17,6 @@
 - `command-instructions.md` 明确：汇总阶段所有 `--db` 一律用绝对路径
   `<scan_dir>/../../.sgre/sgre.db`（相对路径 `.sgre/sgre.db` 在 cwd 非项目根时
   `Exit code 1`），且 `unclassified_candidates` 多为同位置合并、非漏写，不必拼 SQL。
-
-## [0.6.0] - 2026-09-07
 
 ### 吞吐优化（divide-by-zero 确定性确认，减少 AI 研判）
 
