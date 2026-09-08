@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+### 漏报修复（resource-leak 三个设计缺陷）
+
+- **缺陷 1（错误路径 `return fd` 不再误判所有权转移）**：`int fd = open(...); if (fd < 0)
+  return fd; ... return 0;`（忘 close）此前双层漏报——detector 的 `isReturnedToCaller`
+  把失败路径的 `return fd` 当转移发 `RESOURCE_RELEASE`，graph 层的 `OwnershipBuilder`
+  又对同一个 `return fd` 建 `OWNERSHIP_TRANSFER` 边。现 detector 用
+  `hasNonFailureReturn`（只认「非失败路径」的 return），graph 层用 `isErrorReturn`
+  （`if (fd < 0) return fd` 这类错误返回不建转移边）。
+- **缺陷 2（fd 工厂白名单补 dup/pipe/mkstemp）**：`dup`/`dup2`/`dup3`/`pipe`/`pipe2`
+  用精确/`_dup`/`_pipe` 后缀匹配（避免 duplicate/pipeline 误匹配），`mkstemp`/`mkostemp`
+  等加入子串白名单。
+- **缺陷 3（out-param 型 acquirer）**：`sqlite3_open(path, &db)`、`fopen_s(&f, ...)`、
+  `RegCreateKeyEx(..., &hKey)` 这类把句柄写进出参的工厂，此前完全不识别；现
+  `findAcquires` 对精确白名单 `outParamAcquirers` 扫描其 `&arg`。
+- 新增 tc92（error-return fd / dup / sqlite3_open）fixture + 三个回归测试。
+
 ### 汇总顺畅性（消除 orchestrator 对账困惑）
 
 - `secguard scan` 输出的 `candidates_by_type` 改用 `distinctFindingLocations`（按

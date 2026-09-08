@@ -49,7 +49,6 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 
 			for varName, acquireLine := range acquires {
 				releaseLines, hasRelease := releases[varName]
-				isReturned := isReturnedToCaller(varName, returns, f)
 				filteredReturns := filterNullGuardReturns(ifs, returnLines, varName)
 				nullGuardReturns := subtractLines(returnLines, filteredReturns)
 				// A lock/resource acquire whose failure is checked with an error
@@ -58,6 +57,10 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 				acquireFailureReturns := findAcquireFailureReturns(ifs, returnLines, acquireLine)
 				allNonHeldReturns := append(append([]int{}, nullGuardReturns...), acquireFailureReturns...)
 				escapeLines := findEscapeLines(assigns, f, varName, localVars)
+				// A `return fd` inside `if (fd < 0) return fd;` is an error exit, not
+				// an ownership transfer: fd holds no resource on that path. Only a
+				// return OUTSIDE every acquire-failure branch transfers the resource.
+				isReturned := hasNonFailureReturn(varName, returns, f, acquireFailureReturns)
 
 				// shouldReportRelease=true emits a RESOURCE_RELEASE event, which
 				// the planner's ReleaseFilter uses to drop the leak candidate. A
@@ -109,6 +112,22 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 	return result, err
 }
 
+// outParamAcquirers are resource factories that return their handle through an
+// OUT-PARAMETER (`sqlite3_open(path, &db)`, `fopen_s(&f, ...)`), not the return
+// value. findAcquires scans their address-of arguments for the acquired variable.
+// Deliberately an exact-name whitelist: the generic `&arg` scan must not treat
+// every out-param (CreateProcessA's &pi, OpenProcessToken's &hToken) as a
+// resource acquisition.
+var outParamAcquirers = map[string]bool{
+	"sqlite3_open":    true,
+	"sqlite3_open_v2": true,
+	"fopen_s":         true,
+	"RegCreateKeyExA": true,
+	"RegCreateKeyExW": true,
+	"RegOpenKeyExA":   true,
+	"RegOpenKeyExW":   true,
+}
+
 func isResourceAcquirer(name string) bool {
 	// Safe wrappers (LockGuard_*, ResourceHandle_*) are RAII framework entry
 	// points whose lifecycle is managed by the framework, not a leak.
@@ -130,11 +149,20 @@ func isResourceAcquirer(name string) bool {
 	// an error code, not a resource handle, and a `db_create_sub_connect(...)`
 	// wrapper compared against != 0 is a connection ESTABLISHER, not a resource
 	// factory — treating it as an acquirer produced a phantom `ret` resource.
-	// "epoll"/"eventfd"/"signalfd"/"timerfd"/"inotify" cover the fd-factory
-	// syscall wrappers (epoll_create, MESH_EpollCreate, eventfd, ...).
-	acquirers := []string{"fopen", "open", "socket", "accept", "acquire", "epoll", "eventfd", "signalfd", "timerfd", "inotify"}
+	// "epoll"/"eventfd"/"signalfd"/"timerfd"/"inotify"/"mkstemp" cover the
+	// fd-factory syscall wrappers (epoll_create, MESH_EpollCreate, eventfd,
+	// mkstemp, ...).
+	acquirers := []string{"fopen", "open", "socket", "accept", "acquire", "epoll", "eventfd", "signalfd", "timerfd", "inotify", "mkstemp", "mkostemp", "mkstemps", "mkostemps"}
 	for _, a := range acquirers {
 		if strings.Contains(lower, a) {
+			return true
+		}
+	}
+	// dup/dup2/dup3/pipe/pipe2 are short fd-factory names a bare substring would
+	// over-match (duplicate, pipeline); match exactly or as a `_dup`/`_pipe`
+	// suffix (a wrapper like os_dup / x_pipe).
+	for _, w := range []string{"dup", "dup2", "dup3", "pipe", "pipe2"} {
+		if lower == w || strings.HasSuffix(lower, "_"+w) {
 			return true
 		}
 	}
@@ -238,6 +266,23 @@ func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function,
 							acquires[varName] = call.StartLine()
 						}
 					}
+				}
+			}
+		}
+		// Out-param acquirers write the acquired handle through an address-of
+		// argument (`sqlite3_open(path, &db)`, `fopen_s(&f, ...)`), not the return
+		// value. Scan their `&arg` for the acquired variable.
+		if outParamAcquirers[callName] {
+			for _, child := range call.NamedChildren() {
+				if child.Kind() != "argument_list" {
+					continue
+				}
+				for _, arg := range child.NamedChildren() {
+					target, ok := addressOfTarget(arg)
+					if !ok || target.Kind() != "identifier" {
+						continue
+					}
+					acquires[target.Text()] = call.StartLine()
 				}
 			}
 		}
@@ -421,6 +466,44 @@ func findAcquireFailureReturns(ifs []parser.Node, returnLines []int, acquireLine
 func isErrorCheck(condText string) bool {
 	for _, pat := range []string{"!= 0", "!=0", "== -1", "==-1", "< 0", "<0", "== NULL"} {
 		if strings.Contains(condText, pat) {
+			return true
+		}
+	}
+	return false
+}
+
+// returnReturnsVar reports whether a return statement returns varName (bare or
+// parenthesized).
+func returnReturnsVar(ret parser.Node, varName string) bool {
+	for _, child := range ret.NamedChildren() {
+		if child.Kind() == "identifier" && child.Text() == varName {
+			return true
+		}
+		if child.Kind() == "parenthesized_expression" {
+			for _, inner := range child.NamedChildren() {
+				if inner.Kind() == "identifier" && inner.Text() == varName {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// hasNonFailureReturn reports whether varName is returned on a path that is NOT
+// an acquire-failure exit. A `return fd` inside `if (fd < 0) return fd;` is an
+// error exit — fd holds no resource there — so it must not count as an ownership
+// transfer; only a return outside every failure branch transfers the resource.
+func hasNonFailureReturn(varName string, returns []parser.Node, f *db.Function, failureReturns []int) bool {
+	fail := make(map[int]bool, len(failureReturns))
+	for _, l := range failureReturns {
+		fail[l] = true
+	}
+	for _, ret := range returns {
+		if !funcLineRange(f, ret.StartLine()) || fail[ret.StartLine()] {
+			continue
+		}
+		if returnReturnsVar(ret, varName) {
 			return true
 		}
 	}

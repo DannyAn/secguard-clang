@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -57,6 +58,9 @@ func (b *OwnershipBuilder) Build(ctx context.Context) (*BuildResult, error) {
 
 		for _, f := range funcs {
 			for _, ret := range nodesInRange(returns, f.StartLine, f.EndLine) {
+				if isErrorReturn(ret) {
+					continue // error exit (`if (fd < 0) return fd`) is not a transfer
+				}
 				for _, child := range ret.NamedChildren() {
 					if child.Kind() != "identifier" {
 						continue
@@ -218,4 +222,49 @@ func firstArgIdentifier(call parser.Node) string {
 		}
 	}
 	return ""
+}
+
+// isErrorReturn reports whether ret is an error exit that returns the checked
+// variable itself (`if (fd < 0) return fd;` / `if (p == NULL) return p;`). On
+// that path the variable holds no resource (fd is -1, p is NULL), so it is an
+// error-code exit, not an ownership transfer to the caller. Without this, the
+// OWNERSHIP_TRANSFER edge would swallow a real leak whose acquire-failure return
+// was misread as a transfer.
+func isErrorReturn(ret parser.Node) bool {
+	var name string
+	for _, child := range ret.NamedChildren() {
+		if child.Kind() == "identifier" {
+			name = child.Text()
+			break
+		}
+	}
+	if name == "" {
+		return false
+	}
+	for p := ret.Parent(); p != nil; p = p.Parent() {
+		switch p.Kind() {
+		case "if_statement":
+			cond := p.ChildByFieldName("condition")
+			return cond != nil && errorCheckedVarIs(*cond, name)
+		case "compound_statement":
+			return false
+		}
+	}
+	return false
+}
+
+// errorCheckedVarIs reports whether a condition tests name for failure
+// (`fd < 0`, `fd == NULL`, `fd == -1`, `fd <= 0`).
+func errorCheckedVarIs(cond parser.Node, name string) bool {
+	ct := strings.TrimSpace(cond.Text())
+	ct = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(ct, "("), ")"))
+	for _, pat := range []string{
+		name + " < 0", name + "<0", name + " <= 0", name + "<=0",
+		name + " == NULL", name + " == -1", name + "==-1",
+	} {
+		if strings.Contains(ct, pat) {
+			return true
+		}
+	}
+	return false
 }

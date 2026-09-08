@@ -98,3 +98,35 @@ func TestResourceLeak_EpollCreateConnectFail(t *testing.T) {
 	}
 	assertNoEvent(t, store, "RESOURCE_RELEASE", "tc91_resleak_epoll.c")
 }
+
+// TestResourceLeak_ErrorReturnFdIsLeak pins defect 1: `if (fd < 0) return fd;`
+// is an error exit, not an ownership transfer, so the later unclosed fd must
+// still be a leak.
+func TestResourceLeak_ErrorReturnFdIsLeak(t *testing.T) {
+	store := runIndexAndDetect(t, "tc92_resleak_defects.c")
+	vars := resourceAcquireVars(t, store)
+	if !vars["fd"] {
+		t.Errorf("fd (open + error-return fd) should be flagged as an acquired resource, got %v", vars)
+	}
+	assertNoEvent(t, store, "RESOURCE_RELEASE", "tc92_resleak_defects.c")
+}
+
+// TestResourceLeak_DupIsLeak pins defect 2: dup() is an fd factory that must be
+// recognized as an acquirer.
+func TestResourceLeak_DupIsLeak(t *testing.T) {
+	store := runIndexAndDetect(t, "tc92_resleak_defects.c")
+	vars := resourceAcquireVars(t, store)
+	if !vars["fd2"] {
+		t.Errorf("fd2 (dup) should be flagged as an acquired resource, got %v", vars)
+	}
+}
+
+// TestResourceLeak_OutParamAcquirerIsLeak pins defect 3: sqlite3_open(path, &db)
+// writes the handle through an out-parameter and must be recognized.
+func TestResourceLeak_OutParamAcquirerIsLeak(t *testing.T) {
+	store := runIndexAndDetect(t, "tc92_resleak_defects.c")
+	vars := resourceAcquireVars(t, store)
+	if !vars["db"] {
+		t.Errorf("db (sqlite3_open out-param) should be flagged as an acquired resource, got %v", vars)
+	}
+}
