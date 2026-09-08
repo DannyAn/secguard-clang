@@ -215,6 +215,20 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 				}
 			}
 		}
+		// A setter macro (`SET(x, v)` → `(x) = (v)`) whose body lives in an
+		// excluded third-party header writes its first bare-identifier argument;
+		// WriteSummaries cannot see the body, so the name is the only signal.
+		// Record it as an init line so a LATER read of the just-declared variable
+		// is not reported either.
+		if setterMacroName(callName) {
+			if args := getCallArgs(call); len(args) > 0 && args[0].Kind() == "identifier" {
+				if key := resolveVarKey(declsByName, args[0].Text(), call.StartLine()); key != "" {
+					if call.StartLine() > outputParamInitLines[key] {
+						outputParamInitLines[key] = call.StartLine()
+					}
+				}
+			}
+		}
 		// va_start/va_copy initialize the va_list (an array type that decays to
 		// a pointer, so it is passed as an identifier, not `&ap`).
 		if callName == "va_start" || callName == "va_copy" {
@@ -250,14 +264,11 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 				continue
 			}
 			for argIdx, arg := range child.NamedChildren() {
-				if arg.Kind() != "pointer_expression" || !strings.HasPrefix(strings.TrimSpace(arg.Text()), "&") {
-					continue
-				}
-				inner := arg.NamedChildren()
-				if len(inner) == 0 || inner[0].Kind() != "identifier" {
+				target, ok := addressOfTarget(arg)
+				if !ok || target.Kind() != "identifier" {
 					continue // only whole-variable &x, not &x.field
 				}
-				name := inner[0].Text()
+				name := target.Text()
 				key := resolveVarKey(declsByName, name, call.StartLine())
 				if key == "" {
 					continue
@@ -287,7 +298,8 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 				}
 			}
 		}
-		// A field passed by address to any function (`getShort(&s.f)`) is an
+
+// A field passed by address to any function (`getShort(&s.f)`) is an
 		// output-param: the callee writes s.f, so the base struct s is being
 		// initialized field-by-field. Without this, structs filled through
 		// getter/read calls were reported as wholly uninitialized. A whole
@@ -299,14 +311,10 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 				continue
 			}
 			for _, arg := range child.NamedChildren() {
-				if arg.Kind() != "pointer_expression" || !strings.HasPrefix(strings.TrimSpace(arg.Text()), "&") {
+				target, ok := addressOfTarget(arg)
+				if !ok {
 					continue
 				}
-				inner := arg.NamedChildren()
-				if len(inner) == 0 {
-					continue
-				}
-				target := inner[0]
 				if target.Kind() == "field_expression" || target.Kind() == "subscript_expression" {
 					if base := extractVarName(target); base != "" {
 						if key := resolveVarKey(declsByName, base, call.StartLine()); key != "" {
@@ -440,6 +448,15 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		}
 		callName := extractCallName(call)
 		extra := macros.WrittenArgs(call, macroWrites)
+		// A setter macro (`SET(x, v)` → `(x) = (v)`) whose body lives in an
+		// A setter macro's first bare-identifier argument is an output, not a read
+		// (the init line is recorded in the output-param pass above), so skip it
+		// in the call scan.
+		if len(extra) == 0 && setterMacroName(callName) {
+			if args := getCallArgs(call); len(args) > 0 && args[0].Kind() == "identifier" {
+				extra = map[string]bool{args[0].Text(): true}
+			}
+		}
 		// va_start/va_copy's first argument is the va_list they INITIALIZE, not a
 		// read of its current value. Without skipping it, the va_start line
 		// reports the (just-declared, still-uninitialized) va_list as a
@@ -574,6 +591,54 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 			checkUse(cond.StartLine(), id.Text())
 		}
 	}
+}
+
+// addressOfTarget returns the operand of a `&` address-of expression, unwrapping
+// the cast / parenthesis wrappers a third-party out-param call commonly spells
+// (`(void *)&dst`, `(T *)&(dst)`). It returns ok=false when arg is not an
+// address-of of some value. The cast used to hide the pointer_expression from
+// the output-param recognition, so `(VOS_UINT32 *)&time_ut` and
+// `(void *)&(dst_ipv6)` were misreported as uninitialized.
+func addressOfTarget(arg parser.Node) (parser.Node, bool) {
+	node := arg
+	for node.Kind() == "cast_expression" {
+		inner := node.NamedChildren()
+		if len(inner) == 0 {
+			return parser.Node{}, false
+		}
+		node = inner[len(inner)-1]
+	}
+	if node.Kind() != "pointer_expression" || !strings.HasPrefix(strings.TrimSpace(node.Text()), "&") {
+		return parser.Node{}, false
+	}
+	operand := node.NamedChildren()
+	if len(operand) == 0 {
+		return parser.Node{}, false
+	}
+	op := operand[0]
+	for op.Kind() == "parenthesized_expression" {
+		inner := op.NamedChildren()
+		if len(inner) == 0 {
+			return parser.Node{}, false
+		}
+		op = inner[0]
+	}
+	return op, true
+}
+
+// setterMacroName reports whether a call name carries a setter/init semantic
+// (`_SET`, `_INIT`, `_ASSIGN`, ...). Third-party SDKs spell output macros this
+// way; when the macro body lives in an excluded header it is invisible to
+// WriteSummaries, so the name is the only signal left that the FIRST argument is
+// written, not read (`ODA_GPORT_TRUNK_SET(gport, trunkid)` → `(gport) = ...`).
+func setterMacroName(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, kw := range []string{"_SET", "SET_", "_INIT", "INIT_", "_ASSIGN", "ASSIGN_"} {
+		if strings.Contains(upper, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // isForUpdateClause reports whether assign is the update clause of a for-loop
@@ -1131,14 +1196,10 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 				continue
 			}
 			for _, arg := range child.NamedChildren() {
-				if arg.Kind() != "pointer_expression" || !strings.HasPrefix(strings.TrimSpace(arg.Text()), "&") {
+				target, ok := addressOfTarget(arg)
+				if !ok {
 					continue
 				}
-				inner := arg.NamedChildren()
-				if len(inner) == 0 {
-					continue
-				}
-				target := inner[0]
 				if target.Kind() == "field_expression" || target.Kind() == "subscript_expression" {
 					initializedFields[fieldPath(target)] = true
 				}
@@ -1442,7 +1503,13 @@ func addressedArgs(node parser.Node) map[string]bool {
 		if !strings.HasPrefix(strings.TrimSpace(ptr.Text()), "&") {
 			continue
 		}
-		if name := extractVarName(ptr); name != "" {
+		// Unwrap parentheses/casts around the operand (`&(x)`, `(void*)&x`) so the
+		// identifier is still recognized as an address-of target, not a read.
+		target, ok := addressOfTarget(ptr)
+		if !ok {
+			continue
+		}
+		if name := extractVarName(target); name != "" {
 			addressed[name] = true
 		}
 	}
@@ -1515,14 +1582,11 @@ func outputParamInitializedVars(calls []parser.Node, f *db.Function, summaries s
 				continue
 			}
 			for argIdx, arg := range child.NamedChildren() {
-				if arg.Kind() != "pointer_expression" || !strings.HasPrefix(strings.TrimSpace(arg.Text()), "&") {
+				target, ok := addressOfTarget(arg)
+				if !ok || target.Kind() != "identifier" {
 					continue
 				}
-				inner := arg.NamedChildren()
-				if len(inner) == 0 || inner[0].Kind() != "identifier" {
-					continue
-				}
-				name := inner[0].Text()
+				name := target.Text()
 				switch {
 				case knownInit:
 					initialized[name] = true

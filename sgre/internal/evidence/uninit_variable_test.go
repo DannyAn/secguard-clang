@@ -541,3 +541,12 @@ func TestUninit_ForInitClauseNotReported(t *testing.T) {
 	store := runIndexAndDetect(t, "tc90_uninit_for_init.c")
 	assertNoEvent(t, store, "VALUE_USE", "tc90_uninit_for_init")
 }
+
+// TestUninit_ThirdPartyOutParamNotReported pins the third-party out-param fix:
+// `(T *)&x` (cast-wrapped address-of), `(void *)&(x)` (cast + parens), and a
+// setter macro whose body is invisible (`SET(x, v)` in an excluded header) all
+// WRITE the just-declared variable, so none of them is a use-before-init.
+func TestUninit_ThirdPartyOutParamNotReported(t *testing.T) {
+	store := runIndexAndDetect(t, "tc91_uninit_third_party.c")
+	assertNoEvent(t, store, "VALUE_USE", "tc91_uninit_third_party")
+}
