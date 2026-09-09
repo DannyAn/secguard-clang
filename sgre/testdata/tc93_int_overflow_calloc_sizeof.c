@@ -100,3 +100,19 @@ void wrapper_alloc_constant(void) {
     if (p == NULL) return;
     free(p);
 }
+
+void vos_malloc(int n, int m) {
+    char *p = VOS_MALLOC(n * m); /* size_calc_overflow via uppercase macro */
+    if (p == NULL) return;
+    free(p);
+}
+
+void vos_malloc_f(int n, int m) {
+    char *p = VOS_MALLOC_F(n * m, __FILE__, __LINE__); /* size_calc_overflow via _F variant */
+    if (p == NULL) return;
+    free(p);
+}
+
+void vos_free(char *p) {
+    VOS_FREE(p); /* deallocator: no size arg, NOT flagged */
+}

@@ -33,32 +33,20 @@ var sizeFunctions = map[string]bool{
 	"strncpy": true, "strncat": true, "snprintf": true,
 }
 
-// wrapperAllocSuffixes / wrapperAllocPrefixes recognize common allocator wrapper
-// names (xmalloc, zmalloc, safe_malloc, my_alloc, checked_malloc, ...) so a size
-// product passed to a project's own allocation wrapper is still classified. The
-// check is conservative: only the exact known set plus names ending in a known
-// alloc suffix or starting with a known wrapper prefix count.
-var wrapperAllocSuffixes = []string{"alloc", "malloc", "calloc", "realloc"}
-var wrapperAllocPrefixes = []string{"xmalloc", "zmalloc", "safe_malloc", "checked_malloc"}
-
 // isSizeFunction reports whether a call name is a size-bearing allocation/copy
-// function, either a known libc name or a recognized allocator wrapper.
+// function. Beyond the exact libc set, any name whose lowercased form contains
+// "alloc" is treated as an allocator — every allocator-family name (malloc,
+// calloc, realloc, alloca, palloc, kmalloc, vmalloc) contains that substring, so
+// this one rule covers third-party wrappers like VOS_MALLOC, VOS_MALLOC_F,
+// VOS_CALLOC_F, ngx_alloc, apr_palloc, devm_kmalloc, etc. A free/dealloc wrapper
+// takes a pointer, not a size, so it carries no overflow-prone arithmetic arg
+// and is safely excluded by the arithmetic check even if a name like "dealloc"
+// matched.
 func isSizeFunction(name string) bool {
 	if sizeFunctions[name] {
 		return true
 	}
-	lower := strings.ToLower(name)
-	for _, suffix := range wrapperAllocSuffixes {
-		if strings.HasSuffix(lower, suffix) {
-			return true
-		}
-	}
-	for _, prefix := range wrapperAllocPrefixes {
-		if strings.HasPrefix(lower, prefix) {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(strings.ToLower(name), "alloc")
 }
 
 func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, error) {

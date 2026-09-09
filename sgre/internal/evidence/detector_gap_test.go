@@ -85,12 +85,13 @@ func TestIntegerOverflow_CallocVariants(t *testing.T) {
 		"calloc_var_sizeof", "calloc_sizeof_var", "calloc_param_const",
 		"calloc_const_param", "calloc_var_var", "malloc_var_sizeof",
 		"malloc_nested_product", "malloc_assigned_product", "wrapper_alloc",
+		"vos_malloc", "vos_malloc_f",
 	} {
 		if !flagged[fn] {
 			t.Errorf("%s: expected INTEGER_OVERFLOW, got none", fn)
 		}
 	}
-	for _, fn := range []string{"calloc_const_const", "calloc_const_sizeof", "calloc_var_sizeof_char", "calloc_var_const_one", "malloc_constant", "malloc_assigned_constant", "wrapper_alloc_constant"} {
+	for _, fn := range []string{"calloc_const_const", "calloc_const_sizeof", "calloc_var_sizeof_char", "calloc_var_const_one", "malloc_constant", "malloc_assigned_constant", "wrapper_alloc_constant", "vos_free"} {
 		if flagged[fn] {
 			t.Errorf("%s: expected NO INTEGER_OVERFLOW (safe product), got flagged", fn)
 		}
