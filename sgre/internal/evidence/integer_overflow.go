@@ -33,6 +33,34 @@ var sizeFunctions = map[string]bool{
 	"strncpy": true, "strncat": true, "snprintf": true,
 }
 
+// wrapperAllocSuffixes / wrapperAllocPrefixes recognize common allocator wrapper
+// names (xmalloc, zmalloc, safe_malloc, my_alloc, checked_malloc, ...) so a size
+// product passed to a project's own allocation wrapper is still classified. The
+// check is conservative: only the exact known set plus names ending in a known
+// alloc suffix or starting with a known wrapper prefix count.
+var wrapperAllocSuffixes = []string{"alloc", "malloc", "calloc", "realloc"}
+var wrapperAllocPrefixes = []string{"xmalloc", "zmalloc", "safe_malloc", "checked_malloc"}
+
+// isSizeFunction reports whether a call name is a size-bearing allocation/copy
+// function, either a known libc name or a recognized allocator wrapper.
+func isSizeFunction(name string) bool {
+	if sizeFunctions[name] {
+		return true
+	}
+	lower := strings.ToLower(name)
+	for _, suffix := range wrapperAllocSuffixes {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	for _, prefix := range wrapperAllocPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
@@ -73,10 +101,75 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 				}
 			}
 
-			d.detectSizeCalcOverflow(ctx, calls, f, file, params, &result)
+			d.detectSizeCalcOverflow(ctx, calls, f, file, params, d.collectAssignments(root, f), &result)
 		}
 	})
 	return result, err
+}
+
+// collectAssignments builds a one-level variable -> arithmetic-expression map for
+// a function, from `int t = n*m;` (init_declarator) and `t = n*m;`
+// (assignment_expression). It lets `int t = n*m; malloc(t)` be classified — the
+// most common way a size product is split into a named local before allocation.
+// Only an unambiguous single assignment is recorded; a second assignment leaves
+// the name absent so the value is not guessed.
+func (d *IntegerOverflowDetector) collectAssignments(root parser.Node, f *db.Function) map[string]parser.Node {
+	assigned := make(map[string]parser.Node)
+	for _, init := range root.FindAll("init_declarator") {
+		if !funcLineRange(f, init.StartLine()) {
+			continue
+		}
+		name, expr := declaratorAssignment(init)
+		if name != "" && expr != nil {
+			assigned[name] = *expr
+		}
+	}
+	for _, assign := range root.FindAll("assignment_expression") {
+		if !funcLineRange(f, assign.StartLine()) {
+			continue
+		}
+		children := assign.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		if children[0].Kind() == "identifier" && children[1].Kind() == "binary_expression" {
+			assigned[children[0].Text()] = children[1]
+		}
+	}
+	return assigned
+}
+
+// declaratorAssignment returns the declared variable name and its initializer
+// expression for an init_declarator whose value is a single binary_expression.
+func declaratorAssignment(init parser.Node) (string, *parser.Node) {
+	var name string
+	var value *parser.Node
+	for _, child := range init.NamedChildren() {
+		if child.Kind() == "identifier" && name == "" {
+			name = child.Text()
+		}
+		if child.Kind() == "binary_expression" && value == nil {
+			v := child
+			value = &v
+		}
+	}
+	return name, value
+}
+
+// bareIdentText returns the identifier text of a bare (possibly parenthesized)
+// identifier operand, or "" when it is not one.
+func bareIdentText(arg parser.Node) string {
+	for arg.Kind() == "parenthesized_expression" {
+		ch := arg.NamedChildren()
+		if len(ch) == 0 {
+			return ""
+		}
+		arg = ch[0]
+	}
+	if arg.Kind() != "identifier" {
+		return ""
+	}
+	return arg.Text()
 }
 
 func isArithmeticOp(expr parser.Node) bool {
@@ -143,7 +236,7 @@ func (d *IntegerOverflowDetector) feedsIntoSizeCall(calls []parser.Node, expr pa
 			continue
 		}
 		callName := extractCallName(call)
-		if !sizeFunctions[callName] {
+		if !isSizeFunction(callName) {
 			continue
 		}
 		if call.StartLine() <= expr.StartLine() {
@@ -194,13 +287,13 @@ type sizeCalcCandidate struct {
 // the AI agent reasons over. This is the AI-fallback tier: static analysis
 // recognizes the risky shape, the model proves or refutes it with call-site
 // and API-contract reasoning.
-func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, calls []parser.Node, f *db.Function, file *db.File, params map[string]bool, result *DetectResult) {
+func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, calls []parser.Node, f *db.Function, file *db.File, params map[string]bool, assigned map[string]parser.Node, result *DetectResult) {
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		callName := extractCallName(call)
-		if !sizeFunctions[callName] {
+		if !isSizeFunction(callName) {
 			continue
 		}
 		args := callNamedArguments(call)
@@ -224,7 +317,16 @@ func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, ca
 		}
 
 		for _, arg := range args {
-			for _, c := range d.sizeCalcExprs(arg, params) {
+			// Single-level assignment: `int t = n*m; malloc(t)` resolves t to
+			// its assigned arithmetic before classification, so a size product
+			// stored in a named local is not missed.
+			eff := arg
+			if name := bareIdentText(arg); name != "" {
+				if expr, ok := assigned[name]; ok {
+					eff = expr
+				}
+			}
+			for _, c := range d.sizeCalcExprs(eff, params) {
 				d.emitSizeCalc(ctx, file, f, c.expr, c.category, result)
 			}
 		}
@@ -306,31 +408,54 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, params map[stri
 	if op == "" {
 		return nil
 	}
-	var varCount, sizeofCount, numberCount, paramCount int
+
+	// Recursively flatten chains of the SAME operator so `malloc(a*b*c)` and
+	// `malloc(a+b+c)` are classified, not just the top-level two operands. A
+	// nested sub-expression of a DIFFERENT operator (`b+c` inside `a*(b+c)`)
+	// counts as one opaque operand: it can still overflow but is not a
+	// caller-influenced bare identifier.
+	var varCount, paramCount, numberCount, sizeofCount int
 	sizeofOne := false
 	constValue := 0
-	for _, child := range arg.NamedChildren() {
-		switch child.Kind() {
+	var collect func(n parser.Node)
+	collect = func(n parser.Node) {
+		for n.Kind() == "parenthesized_expression" {
+			ch := n.NamedChildren()
+			if len(ch) == 0 {
+				return
+			}
+			n = ch[0]
+		}
+		switch n.Kind() {
+		case "binary_expression":
+			if arithOperator(n) == op {
+				for _, c := range n.NamedChildren() {
+					collect(c)
+				}
+			} else {
+				varCount++
+			}
 		case "identifier", "field_expression":
-			if strings.Contains(child.Text(), "sizeof") {
-				return nil
+			if strings.Contains(n.Text(), "sizeof") {
+				return
 			}
 			varCount++
-			if params[child.Text()] {
+			if params[n.Text()] {
 				paramCount++
 			}
 		case "number_literal":
 			numberCount++
-			if v := parseConstantIndex(child.Text()); v > constValue {
+			if v := parseConstantIndex(n.Text()); v > constValue {
 				constValue = v
 			}
 		case "sizeof_expression":
 			sizeofCount++
-			if sizeofIsOne(child) {
+			if sizeofIsOne(n) {
 				sizeofOne = true
 			}
 		}
 	}
+	collect(arg)
 
 	switch op {
 	case "*":

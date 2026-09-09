@@ -2,7 +2,21 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [Unreleased]
+## [0.6.1] - 2026-09-09
+
+### 稳定性（扫描阶段）
+
+- **修复两个数据库问题**：`plan`/`report`/`status`/`metrics`/`db`/`query` 现在从 cwd 向上查找项目 DB（`.codeagent/secguard-clang/.sgre/sgre.db`），不再在 `scans/<id>/` 下铸出第二个空 DB；编排指令移除 "cd 进 scan 目录" 的恢复建议。
+- **检测器降级 + 上报**：单个检测器 panic/报错不再让整轮扫描失败；失败以 `detector_errors` 上报（与 plan 阶段 `plan_errors` 对称），扫描摘要新增 `seeds_by_type` 区分"0 种子"与"种子被过滤到 0"。
+- **耗时口径澄清**：`duration_scope` 改为 `automated-analysis`（索引+建图+检测+收敛+auto-confirm），不含 AI 研判；报告措辞区分自动分析 / AI 研判 / 端到端。
+
+### 漏报修复（6 类零候选盲区）
+
+- **integer-overflow**：新增 `calloc(n, sizeof(T))`、`calloc(n, CONST)`、嵌套乘积 `malloc(a*b*c)`、单层赋值 `int t=n*m; malloc(t)`、包装分配器（`xmalloc` 等）；并排除 `sizeof(char)==1` 与 `*1`（不会溢出）。
+- **hardcoded-secret**：扫描纯数据 `.c` 文件（零函数）；Shannon 熵识别高熵密钥；URL 凭据（`scheme://user:pass@host`）；结构体指定初始化器 `.password = "..."`；文件级全局正确归属（entityID=0，call-reach 恒可达）；名字正则补词边界与常见字段。
+- **sizeof-misuse**：typedef 指针参数/局部变量、文件级指针。
+- **out-of-bounds**：文件级/`#define` 宏尺寸数组的常量越界读。
+- **race-condition**：`pthread_create(..., &worker, ...)` 取地址线程函数；rwlock/spinlock/C11 mtx 锁识别（精度）；跨文件 `extern` 全局变量（含头文件）。
 
 ### 漏报修复（resource-leak 三个设计缺陷）
 

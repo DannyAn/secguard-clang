@@ -38,6 +38,19 @@ void malloc_var_sizeof(int n) {
     free(p);
 }
 
+void malloc_nested_product(int n, int m, int k) {
+    char *p = malloc(n * m * k); /* size_calc_overflow (nested product) */
+    if (p == NULL) return;
+    free(p);
+}
+
+void malloc_assigned_product(int n, int m) {
+    int total = n * m;
+    char *p = malloc(total); /* size_calc_overflow (single-level assignment) */
+    if (p == NULL) return;
+    free(p);
+}
+
 /* --- negative: constants / sizeof(char)==1 / const<=1 cannot overflow --- */
 void calloc_const_const(void) {
     char *p = calloc(10, 20); /* safe: constant * constant */
@@ -65,6 +78,25 @@ void calloc_var_const_one(int n) {
 
 void malloc_constant(void) {
     char *p = malloc(256); /* safe: constant */
+    if (p == NULL) return;
+    free(p);
+}
+
+void malloc_assigned_constant(void) {
+    int total = 256;      /* not arithmetic */
+    char *p = malloc(total); /* safe: no overflow */
+    if (p == NULL) return;
+    free(p);
+}
+
+void wrapper_alloc(int n, int m) {
+    char *p = xmalloc(n * m); /* size_calc_overflow via wrapper name */
+    if (p == NULL) return;
+    free(p);
+}
+
+void wrapper_alloc_constant(void) {
+    char *p = xmalloc(256); /* safe: constant via wrapper */
     if (p == NULL) return;
     free(p);
 }

@@ -39,6 +39,24 @@ var useFunctions = map[string]bool{
 	"fopen": true, "open": true, "creat": true, "freopen": true, "openat": true,
 }
 
+// lockCalls / unlockCalls are the recognized lock/unlock primitive pairs. The
+// original detector only saw pthread_mutex_lock/unlock, which silently missed
+// every rwlock, spinlock, and C11 mtx-protected shared access.
+var lockCalls = map[string]bool{
+	"pthread_mutex_lock":     true,
+	"pthread_rwlock_rdlock":  true,
+	"pthread_rwlock_wrlock":  true,
+	"pthread_spin_lock":      true,
+	"mtx_lock":               true,
+}
+
+var unlockCalls = map[string]bool{
+	"pthread_mutex_unlock":   true,
+	"pthread_rwlock_unlock":  true,
+	"pthread_spin_unlock":    true,
+	"mtx_unlock":             true,
+}
+
 func (d *RaceConditionDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
@@ -47,10 +65,18 @@ func (d *RaceConditionDetector) Detect(ctx context.Context) (DetectResult, error
 	// it cannot run inside the per-function loop below.
 	fileInfos := make(map[int64]*fileInfo)
 	threadCounts := make(map[string]int)
+	// externGlobals aggregates every non-static file-scope variable across the
+	// whole project (headers carry most `extern` declarations), so a thread fn
+	// accessing a global declared `extern` in a header is still seen.
+	externGlobals := d.collectExternGlobals(ctx)
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		calls := root.FindAll("call_expression")
+		globals := d.collectGlobalVars(root, file.ID, funcs)
+		for g := range externGlobals {
+			globals[g] = true
+		}
 		fileInfos[file.ID] = &fileInfo{
-			globals: d.collectGlobalVars(root, file.ID, funcs),
+			globals: globals,
 			mutexes: d.collectMutexVars(root),
 		}
 		for _, f := range funcs {
@@ -140,7 +166,8 @@ type globalAccess struct {
 }
 
 // collectGlobalVars gathers top-level (file-scope) variable names by
-// excluding declarations that fall inside any function body.
+// excluding declarations that fall inside any function body. Static file-scope
+// variables ARE included — a thread fn in the same file accesses them.
 func (d *RaceConditionDetector) collectGlobalVars(root parser.Node, fileID int64, funcs []*db.Function) map[string]bool {
 	globals := make(map[string]bool)
 	var localRanges [][2]int
@@ -183,11 +210,59 @@ func (d *RaceConditionDetector) collectGlobalVars(root parser.Node, fileID int64
 	return globals
 }
 
+// collectExternGlobals aggregates every non-static file-scope variable name
+// across the whole project, including headers (which hold most `extern`
+// declarations). A shared_data_race detector that only sees one .c file cannot
+// otherwise notice a global declared `extern` in a header. Static file-scope
+// variables are excluded — their linkage is file-private.
+func (d *RaceConditionDetector) collectExternGlobals(ctx context.Context) map[string]bool {
+	globals := make(map[string]bool)
+	funcs, err := d.store.ListFunctions(ctx)
+	if err != nil {
+		return globals
+	}
+	byFile := make(map[int64][]*db.Function, 128)
+	for _, f := range funcs {
+		byFile[f.FileID] = append(byFile[f.FileID], f)
+	}
+	forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node) {
+		fileGlobals := d.collectGlobalVars(root, file.ID, byFile[file.ID])
+		// Re-filter to non-static: collectGlobalVars includes static, but a
+		// static variable must not leak into other files.
+		for _, decl := range root.FindAll("declaration") {
+			if !isStaticDecl(decl) {
+				continue
+			}
+			for _, id := range decl.FindAll("init_declarator") {
+				for _, child := range id.NamedChildren() {
+					if v := extractVarFromDeclarator(child); v != "" {
+						delete(fileGlobals, v)
+					}
+				}
+			}
+		}
+		for g := range fileGlobals {
+			globals[g] = true
+		}
+	})
+	return globals
+}
+
+// isStaticDecl reports whether a declaration carries the `static` storage class.
+func isStaticDecl(decl parser.Node) bool {
+	for _, child := range decl.NamedChildren() {
+		if child.Kind() == "storage_class_specifier" && strings.TrimSpace(child.Text()) == "static" {
+			return true
+		}
+	}
+	return false
+}
+
 func (d *RaceConditionDetector) collectMutexVars(root parser.Node) map[string]bool {
 	mutexes := make(map[string]bool)
 	for _, call := range root.FindAll("call_expression") {
 		name := extractCallName(call)
-		if !strings.HasPrefix(name, "pthread_mutex_") {
+		if !lockCalls[name] && !unlockCalls[name] {
 			continue
 		}
 		args := extractCallArgs(call)
@@ -196,7 +271,10 @@ func (d *RaceConditionDetector) collectMutexVars(root parser.Node) map[string]bo
 		}
 	}
 	for _, decl := range root.FindAll("declaration") {
-		if strings.Contains(decl.Text(), "pthread_mutex_t") {
+		if strings.Contains(decl.Text(), "pthread_mutex_t") ||
+			strings.Contains(decl.Text(), "pthread_rwlock_t") ||
+			strings.Contains(decl.Text(), "pthread_spinlock_t") ||
+			strings.Contains(decl.Text(), "mtx_t") {
 			for _, id := range decl.FindAll("identifier") {
 				mutexes[id.Text()] = true
 			}
@@ -441,7 +519,7 @@ func (d *RaceConditionDetector) mustHoldByLine(body parser.Node, funcEnd int, ca
 			continue
 		}
 		name := extractCallName(call)
-		if name != "pthread_mutex_lock" && name != "pthread_mutex_unlock" {
+		if !lockCalls[name] && !unlockCalls[name] {
 			continue
 		}
 		args := extractCallArgs(call)
@@ -451,10 +529,10 @@ func (d *RaceConditionDetector) mustHoldByLine(body parser.Node, funcEnd int, ca
 		mutex := strings.TrimPrefix(strings.TrimSpace(args[0]), "&")
 		mutexSet[mutex] = true
 		if node := cfg.NodeAt(call.StartLine()); node != nil {
-			switch name {
-			case "pthread_mutex_lock":
+			switch {
+			case lockCalls[name]:
 				lockAt[node.ID] = mutex
-			case "pthread_mutex_unlock":
+			case unlockCalls[name]:
 				unlockAt[node.ID] = mutex
 			}
 		}
@@ -543,11 +621,11 @@ func (d *RaceConditionDetector) detectLockUnlockPattern(ctx context.Context, cal
 			continue
 		}
 		callName := extractCallName(call)
-		if callName == "pthread_mutex_lock" {
+		if lockCalls[callName] {
 			mutexArg := extractFirstArg(call)
 			lockLines[call.StartLine()] = mutexArg
 		}
-		if callName == "pthread_mutex_unlock" {
+		if unlockCalls[callName] {
 			mutexArg := extractFirstArg(call)
 			unlockLines[call.StartLine()] = mutexArg
 		}

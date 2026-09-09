@@ -30,9 +30,10 @@ func (d *HardcodedSecretDetector) Capabilities() []string {
 }
 
 // secretVarPattern matches variable names that are conventionally secret-bearing.
-// Word boundaries keep a short token like `key`/`pin` from matching inside
-// `monkey`/`mapping`.
-var secretVarPattern = regexp.MustCompile(`(?i)\b(password|passwd|pwd|secret|api_key|apikey|access_key|private_key|token|credential|auth_key|client_secret|consumer_secret|bearer|session_key|salt|hash|pin|nonce)\b`)
+// Long names match as substrings (so `db_password` is still caught), while short
+// ambiguous tokens (`key`/`pin`/`salt`/`hash`) require word boundaries so they
+// don't fire on `monkey`/`mapping`.
+var secretVarPattern = regexp.MustCompile(`(?i)(password|passwd|pwd|secret|api_key|apikey|access_key|private_key|token|credential|auth_key|client_secret|consumer_secret|session_key|bearer|nonce|\bkey\b|\bpin\b|\bsalt\b|\bhash\b)`)
 
 // highEntropyHints are well-known secret prefixes whose presence makes a value
 // a hardcoded secret regardless of the variable name.
@@ -65,7 +66,7 @@ func (d *HardcodedSecretDetector) Detect(ctx context.Context) (DetectResult, err
 				continue
 			}
 
-			if !isSecretVar(varName) && !hasHighEntropyHint(value) && !looksHighEntropy(value) {
+			if !isSecretVar(varName) && !hasHighEntropyHint(value) && !looksHighEntropy(value) && !looksLikeURLCredential(value) {
 				continue
 			}
 
@@ -80,6 +81,7 @@ func (d *HardcodedSecretDetector) Detect(ctx context.Context) (DetectResult, err
 
 		calls := root.FindAll("call_expression")
 		d.detectRegSetValueEx(ctx, calls, file, &result)
+		d.detectInitializerPairs(ctx, root, file, funcs, &result)
 	})
 	return result, err
 }
@@ -142,6 +144,23 @@ func shannonEntropy(s string) float64 {
 	return h
 }
 
+// looksLikeURLCredential reports whether a literal is a URL/DSN with embedded
+// credentials (`scheme://user:password@host`). Such a string is low-entropy
+// (so the entropy trigger misses it) but is still a hardcoded credential
+// (CWE-798) — e.g. "mysql://root:hunter2@db".
+func looksLikeURLCredential(value string) bool {
+	i := strings.Index(value, "://")
+	if i < 0 {
+		return false
+	}
+	rest := value[i+3:]
+	at := strings.Index(rest, "@")
+	if at <= 0 {
+		return false
+	}
+	return strings.Contains(rest[:at], ":")
+}
+
 // enclosingFuncID returns the ID of the function whose line range contains node,
 // or 0 when node is file-scope (a global initializer). A zero ID marks the event
 // as function-less, which the call-reach filter keeps (file-scope code is always
@@ -153,6 +172,40 @@ func enclosingFuncID(node parser.Node, funcs []*db.Function) int64 {
 		}
 	}
 	return 0
+}
+
+// detectInitializerPairs flags struct designated initializers
+// (`.password = "admin123"`) whose field name or value is secret-bearing. A
+// designated initializer is an `initializer_pair` node holding a
+// `field_designator` (the field name) and a `string_literal` (the value).
+func (d *HardcodedSecretDetector) detectInitializerPairs(ctx context.Context, root parser.Node, file *db.File, funcs []*db.Function, result *DetectResult) {
+	for _, pair := range root.FindAll("initializer_pair") {
+		var fieldName, value string
+		for _, child := range pair.NamedChildren() {
+			switch child.Kind() {
+			case "field_designator":
+				for _, id := range child.FindAll("field_identifier") {
+					fieldName = id.Text()
+					break
+				}
+			case "string_literal":
+				value = extractStringLiteral(child.Text())
+			}
+		}
+		if fieldName == "" || value == "" {
+			continue
+		}
+		if !isSecretVar(fieldName) && !hasHighEntropyHint(value) && !looksHighEntropy(value) && !looksLikeURLCredential(value) {
+			continue
+		}
+		if emitEvent(ctx, d.store, d.logger, "HARDCODED_SECRET", enclosingFuncID(pair, funcs), &db.Location{FileID: file.ID, Line: pair.StartLine(), Column: pair.StartColumn()}, map[string]string{
+			"variable": fieldName,
+			"value":    value,
+			"category": "hardcoded_secret",
+		}) {
+			result.EventsCreated++
+		}
+	}
 }
 
 func (d *HardcodedSecretDetector) detectRegSetValueEx(ctx context.Context, calls []parser.Node, file *db.File, result *DetectResult) {

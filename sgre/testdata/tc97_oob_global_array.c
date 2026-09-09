@@ -1,4 +1,7 @@
+#define MAX 10
+
 int arr[10];
+int marr[MAX];
 
 int local_flagged(void) {
     int b[10];
@@ -6,5 +9,9 @@ int local_flagged(void) {
 }
 
 int global_missed(void) {
-    return arr[10]; /* gap: file-scope array constant OOB read not flagged */
+    return arr[10]; /* file-scope array constant OOB read: flagged */
+}
+
+int macro_missed(void) {
+    return marr[10]; /* macro-sized array constant OOB read: flagged */
 }

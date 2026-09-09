@@ -84,12 +84,13 @@ func TestIntegerOverflow_CallocVariants(t *testing.T) {
 	for _, fn := range []string{
 		"calloc_var_sizeof", "calloc_sizeof_var", "calloc_param_const",
 		"calloc_const_param", "calloc_var_var", "malloc_var_sizeof",
+		"malloc_nested_product", "malloc_assigned_product", "wrapper_alloc",
 	} {
 		if !flagged[fn] {
 			t.Errorf("%s: expected INTEGER_OVERFLOW, got none", fn)
 		}
 	}
-	for _, fn := range []string{"calloc_const_const", "calloc_const_sizeof", "calloc_var_sizeof_char", "calloc_var_const_one", "malloc_constant"} {
+	for _, fn := range []string{"calloc_const_const", "calloc_const_sizeof", "calloc_var_sizeof_char", "calloc_var_const_one", "malloc_constant", "malloc_assigned_constant", "wrapper_alloc_constant"} {
 		if flagged[fn] {
 			t.Errorf("%s: expected NO INTEGER_OVERFLOW (safe product), got flagged", fn)
 		}
@@ -137,8 +138,14 @@ func TestHardcodedSecret_EntropyAndStructured(t *testing.T) {
 	if !flagged["password"] {
 		t.Error("name-matched password should be flagged")
 	}
-	if flagged["conn"] {
-		t.Error("structured URL 'mysql://root:hunter2@db' should NOT be flagged (low entropy)")
+	if !flagged["conn"] {
+		t.Error("URL with embedded credentials should be flagged")
+	}
+	if !flagged["db_password"] {
+		t.Error("designated initializer .db_password should be flagged")
+	}
+	if flagged["url"] {
+		t.Error("URL without credentials must NOT be flagged")
 	}
 	if flagged["note"] {
 		t.Error("whitespace sentence should NOT be flagged")
@@ -189,6 +196,9 @@ func TestOutOfBounds_GlobalArray(t *testing.T) {
 	if !readOOBFuncs["global_missed"] {
 		t.Error("file-scope array constant OOB read should now be flagged")
 	}
+	if !readOOBFuncs["macro_missed"] {
+		t.Error("macro-sized array constant OOB read should now be flagged")
+	}
 	if !readOOBFuncs["local_flagged"] {
 		t.Error("same-function constant OOB read should be flagged")
 	}
@@ -216,5 +226,58 @@ func TestRaceCondition_AddrTakenThread(t *testing.T) {
 	}
 	if !found {
 		t.Error("&worker thread fns writing a shared global should now produce a shared_data_race")
+	}
+}
+
+// TestRaceCondition_RwlockProtected locks in the rwlock/spinlock/C11 recognition:
+// two thread fns writing a shared global under the SAME rwlock must NOT be a
+// race (the lock was previously invisible, producing a false positive).
+func TestRaceCondition_RwlockProtected(t *testing.T) {
+	store, p := setupDetector(t, "tc99_race_rwlock.c")
+	logger := log.New(io.Discard, log.LevelWarn)
+	NewRaceConditionDetector(store, p, logger).Detect(context.Background())
+
+	ctx := context.Background()
+	events, err := store.ListEventsByType(ctx, "RACE_CONDITION")
+	if err != nil {
+		t.Fatalf("list RACE_CONDITION: %v", err)
+	}
+	for _, e := range events {
+		var props map[string]string
+		if json.Unmarshal([]byte(e.Properties), &props) == nil && props["category"] == "shared_data_race" {
+			t.Error("rwlock-protected shared writes must NOT be a shared_data_race")
+		}
+	}
+}
+
+// TestRaceCondition_ExternGlobal locks in the cross-file extern fix: a global
+// declared `extern` in a header and written by two thread fns is a race.
+func TestRaceCondition_ExternGlobal(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, fixturePath("race_extern")); err != nil {
+		t.Fatalf("index race_extern: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	NewRaceConditionDetector(store, p, logger).Detect(ctx)
+
+	events, err := store.ListEventsByType(ctx, "RACE_CONDITION")
+	if err != nil {
+		t.Fatalf("list RACE_CONDITION: %v", err)
+	}
+	found := false
+	for _, e := range events {
+		var props map[string]string
+		if json.Unmarshal([]byte(e.Properties), &props) == nil &&
+			props["category"] == "shared_data_race" && props["variable"] == "shared_counter" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("extern-declared shared_counter written by two thread fns should be a shared_data_race")
 	}
 }

@@ -39,6 +39,7 @@ func (d *BufferOverflowDetector) Detect(ctx context.Context) (DetectResult, erro
 			fors:    root.FindAll("for_statement"),
 			inits:   root.FindAll("init_declarator"),
 			fields:  root.FindAll("field_declaration"),
+			macros:  buildMacroValues(root),
 		}
 
 		// Parameter names per function: a variable copy size that is a function
@@ -76,6 +77,38 @@ type bufCtx struct {
 	fors    []parser.Node
 	inits   []parser.Node
 	fields  []parser.Node
+	macros  map[string]int
+}
+
+// buildMacroValues resolves object-like `#define NAME 10` macros to their
+// numeric value, so an array sized by a macro (`int arr[MAX]`) is not silently
+// treated as unknown-size. Function-like macros are ignored.
+func buildMacroValues(root parser.Node) map[string]int {
+	macros := make(map[string]int)
+	for _, def := range root.FindAll("preproc_def") {
+		var name string
+		value := -1
+		for _, child := range def.NamedChildren() {
+			switch child.Kind() {
+			case "identifier":
+				if name == "" {
+					name = child.Text()
+				}
+			case "number_literal":
+				if v := parseConstantIndex(child.Text()); v >= 0 {
+					value = v
+				}
+			case "preproc_arg":
+				if v := parseConstantIndex(strings.TrimSpace(child.Text())); v >= 0 {
+					value = v
+				}
+			}
+		}
+		if name != "" && value >= 0 {
+			macros[name] = value
+		}
+	}
+	return macros
 }
 
 func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, params map[string]bool, result *DetectResult) {
@@ -875,9 +908,14 @@ func findArraySize(bc *bufCtx, f *db.Function, arrName string) int {
 		for _, ad := range decl.FindAll("array_declarator") {
 			if extractDeclaratorName(ad) == arrName {
 				for _, child := range ad.NamedChildren() {
-					if child.Kind() == "number_literal" || child.Kind() == "identifier" {
-						size := parseConstantIndex(child.Text())
-						if size > 0 {
+					switch child.Kind() {
+					case "number_literal":
+						if size := parseConstantIndex(child.Text()); size > 0 {
+							return size
+						}
+					case "identifier":
+						// `int arr[MAX]` — resolve the object-like macro.
+						if size, ok := bc.macros[child.Text()]; ok && size > 0 {
 							return size
 						}
 					}
