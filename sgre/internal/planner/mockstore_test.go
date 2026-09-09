@@ -415,5 +415,8 @@ func (s *mockStore) GetScanRun(ctx context.Context, scanID string) (*db.ScanRun,
 func (s *mockStore) ListScanRuns(ctx context.Context, limit int) ([]*db.ScanRun, error) {
 	return nil, nil
 }
+func (s *mockStore) SetScanRunAIDuration(ctx context.Context, scanID string, ms int64) error {
+	return nil
+}
 
 var _ = fmt.Sprintf

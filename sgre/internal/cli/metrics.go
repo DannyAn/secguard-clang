@@ -21,6 +21,7 @@ import (
 func renderScanMetrics(r *db.ScanRun) map[string]interface{} {
 	return map[string]interface{}{
 		"duration_ms":       r.DurationMs,
+		"ai_duration_ms":    r.AIDurationMs,
 		"duration_scope":    "automated-analysis (index+graph+detectors+convergence+auto-confirm), excludes AI Agent classification",
 		"index_ms":          r.IndexMs,
 		"graph_ms":          r.GraphMs,
@@ -112,10 +113,12 @@ func metricsView(r *db.ScanRun) map[string]interface{} {
 		}
 	}
 	return map[string]interface{}{
-		"scan_id":        r.ScanID,
-		"duration_ms":    r.DurationMs,
-		"duration_sec":   round1(float64(r.DurationMs) / 1000),
-		"duration_scope": "automated-analysis (index+graph+detectors+convergence+auto-confirm), excludes AI Agent classification",
+		"scan_id":          r.ScanID,
+		"duration_ms":      r.DurationMs,
+		"duration_sec":     round1(float64(r.DurationMs) / 1000),
+		"ai_duration_ms":   r.AIDurationMs,
+		"ai_duration_sec":  round1(float64(r.AIDurationMs) / 1000),
+		"duration_scope":   "automated-analysis (index+graph+detectors+convergence+auto-confirm), excludes AI Agent classification",
 		"phases_ms": map[string]int64{
 			"index":     r.IndexMs,
 			"graph":     r.GraphMs,

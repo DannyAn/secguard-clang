@@ -339,3 +339,33 @@ func TestDivideByZero_DefiniteZeroAutoConfirm(t *testing.T) {
 		t.Errorf("var_div: expected suspected, got %q", suspicion["var_div"])
 	}
 }
+
+// TestDivideByZero_ParamZeroPropagation locks in the parameter zero-propagation
+// over the semantic graph: a divisor that is a function parameter is auto-confirmed
+// when a caller passes literal 0, auto-dismissed when every caller passes a
+// non-zero constant, and left suspected when a caller passes an unknown value.
+func TestDivideByZero_ParamZeroPropagation(t *testing.T) {
+	store, p := setupDetector(t, "tc101_divide_by_zero_param.c")
+	logger := log.New(io.Discard, log.LevelWarn)
+	NewDivideByZeroDetector(store, p, logger).Detect(context.Background())
+
+	ctx := context.Background()
+	pl := planner.NewPlanner(store, p, logger)
+	res, err := pl.Plan(ctx, "divide-by-zero")
+	if err != nil {
+		t.Fatalf("plan divide-by-zero: %v", err)
+	}
+	suspicion := map[string]string{}
+	for _, c := range res.Candidates {
+		suspicion[c.Target.Function] = c.SuspicionLevel
+	}
+	if suspicion["div_param"] != "confirmed" {
+		t.Errorf("div_param (caller passes 0): expected confirmed, got %q", suspicion["div_param"])
+	}
+	if _, present := suspicion["div_param2"]; present {
+		t.Errorf("div_param2 (caller passes non-zero): expected dismissed, got %q", suspicion["div_param2"])
+	}
+	if suspicion["div_param3"] != "suspected" {
+		t.Errorf("div_param3 (caller passes variable): expected suspected, got %q", suspicion["div_param3"])
+	}
+}

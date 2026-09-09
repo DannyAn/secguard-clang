@@ -101,7 +101,55 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 		}
 		kept = append(kept, c)
 	}
-	return kept, dropped, nil
+
+	// Parameter zero-propagation over the call graph: a divisor that is a function
+	// PARAMETER is unknown to the function-local interval, so trace it to its
+	// direct callers. Some caller passing a literal zero makes it a certain
+	// divide-by-zero (confirm); every direct caller passing a non-zero constant
+	// makes it safe (dismiss); otherwise it stays suspected.
+	sites := newCallSiteResolver(ctx, f.store, f.parser)
+	cache := newFileParseCache(f.parser)
+	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	finalKept := make([]Candidate, 0, len(kept))
+	for _, c := range kept {
+		if c.SuspicionLevel == "confirmed" {
+			finalKept = append(finalKept, c)
+			continue
+		}
+		fn := fnByID[c.FunctionID]
+		if fn == nil {
+			finalKept = append(finalKept, c)
+			continue
+		}
+		file := fileByID[fn.FileID]
+		if file == nil {
+			finalKept = append(finalKept, c)
+			continue
+		}
+		root := cache.rootForFile(file)
+		divisor := f.divisor(ctx, c)
+		if divisor == "" {
+			finalKept = append(finalKept, c)
+			continue
+		}
+		idx, ok := paramsOf(fn, root)[divisor]
+		if !ok {
+			finalKept = append(finalKept, c)
+			continue
+		}
+		zero, allNonZero := sites.paramVerdict(fn.Name, idx)
+		switch {
+		case zero:
+			c.SuspicionLevel = "confirmed"
+			finalKept = append(finalKept, c)
+		case allNonZero:
+			dropped = dismiss(dropped, c, f.Name(),
+				fmt.Sprintf("divisor %s is a parameter every direct caller passes non-zero at line %d", divisor, c.Line))
+		default:
+			finalKept = append(finalKept, c)
+		}
+	}
+	return finalKept, dropped, nil
 }
 
 // divisor returns the bare-identifier divisor of a divide-by-zero candidate, or

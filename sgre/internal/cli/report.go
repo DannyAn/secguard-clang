@@ -703,6 +703,20 @@ func runReportCmd(ctx context.Context, args []string) int {
 			return 1
 		}
 
+		// The orchestrator records the AI-classification wall-clock at finalize so
+		// pipeline-vs-AI timing is persisted (and queryable via `secguard metrics`).
+		if raw := parseStringFlag(remaining, "ai-duration-ms"); raw != "" {
+			ms, perr := strconv.ParseInt(raw, 10, 64)
+			if perr != nil || ms < 0 {
+				WriteErrorJSON(fmt.Sprintf("invalid --ai-duration-ms %q (expected a non-negative integer of milliseconds)", raw))
+				return 1
+			}
+			if serr := store.SetScanRunAIDuration(ctx, scanID, ms); serr != nil {
+				WriteErrorJSON(fmt.Sprintf("failed to record ai_duration_ms: %v", serr))
+				return 1
+			}
+		}
+
 		stats, err := store.ListScanStats(ctx, scanID)
 		if err != nil {
 			WriteErrorJSON(fmt.Sprintf("failed to list scan stats: %v", err))

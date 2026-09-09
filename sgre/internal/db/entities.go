@@ -229,6 +229,7 @@ type ScanRun struct {
 	ID               int64  `json:"id"`
 	ScanID           string `json:"scan_id"`
 	DurationMs       int64  `json:"duration_ms"`
+	AIDurationMs     int64  `json:"ai_duration_ms"`
 	IndexMs          int64  `json:"index_ms"`
 	GraphMs          int64  `json:"graph_ms"`
 	DetectorsMs      int64  `json:"detectors_ms"`

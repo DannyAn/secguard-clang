@@ -135,6 +135,9 @@ type ScanRunStore interface {
 	GetScanRun(ctx context.Context, scanID string) (*ScanRun, error)
 	// ListScanRuns returns the most recent runs first, capped at limit (0 = all).
 	ListScanRuns(ctx context.Context, limit int) ([]*ScanRun, error)
+	// SetScanRunAIDuration records the AI-classification wall-clock written by
+	// `report --audit --ai-duration-ms` at the end of the AI stage.
+	SetScanRunAIDuration(ctx context.Context, scanID string, ms int64) error
 }
 
 type FunctionSummaryStore interface {

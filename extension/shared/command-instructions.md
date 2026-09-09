@@ -383,11 +383,14 @@ as `result.sarif`.)
     - borderline (±3 to ~±10 lines) → "待人工复审".
     If `scan.log` is unavailable, log warning and skip (do not block finalize).
 
-    After ALL subagents (or your sequential loop) are done, run `secguard report --audit --scan-id <scan_id> --output-dir <output_dir>`
+    After ALL subagents (or your sequential loop) are done, run `secguard report --audit --scan-id <scan_id> --output-dir <output_dir> --ai-duration-ms <ms>`
    ONCE to regenerate `report.md` (verdict-stage, confirmed+suspected) + `result.sarif`
-   + `findings/`. Verify `<output_dir>/result.sarif` is non-empty and `findings/`
-   has files; if not, a write did not land — find the `per_finding_warning` and
-   fix it.
+   + `findings/`. `<ms>` is the MEASURED AI-classification wall-clock (from
+   `secguard_scan` returning / entering the Scale gate, to this finalize step) in
+   milliseconds — it is persisted to `scan_runs.ai_duration_ms` so production runs
+   can report pipeline-vs-AI timing. Verify `<output_dir>/result.sarif` is
+   non-empty and `findings/` has files; if not, a write did not land — find the
+   `per_finding_warning` and fix it.
 
 6. **Report**: emit the Markdown report (报告头 / 摘要 / 总览表 / 问题表 /
    观察项表 / 逐条详情) per the Output Format, aggregating the

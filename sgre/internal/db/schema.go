@@ -176,6 +176,7 @@ CREATE TABLE IF NOT EXISTS scan_runs (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     scan_id           TEXT NOT NULL UNIQUE,
     duration_ms       INTEGER,
+    ai_duration_ms    INTEGER,
     index_ms          INTEGER,
     graph_ms          INTEGER,
     detectors_ms      INTEGER,
@@ -283,6 +284,11 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 	// available for ADD COLUMN in SQLite, so check pragma table_info first.
 	if err := ensureColumn(ctx, db, "findings", "fingerprint", "TEXT"); err != nil {
 		return fmt.Errorf("db: init schema: ensure findings.fingerprint: %w", err)
+	}
+	// scan_runs.ai_duration_ms is additive (the AI-classification wall-clock the
+	// orchestrator reports at audit time, after the pipeline phase).
+	if err := ensureColumn(ctx, db, "scan_runs", "ai_duration_ms", "INTEGER"); err != nil {
+		return fmt.Errorf("db: init schema: ensure scan_runs.ai_duration_ms: %w", err)
 	}
 	return nil
 }
