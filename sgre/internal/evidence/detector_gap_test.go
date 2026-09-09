@@ -13,6 +13,7 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/indexer"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
+	"github.com/DannyAn/secguard-clang/internal/planner"
 )
 
 // setupDetector indexes one fixture and builds call graph + data flow, returning
@@ -280,5 +281,61 @@ func TestRaceCondition_ExternGlobal(t *testing.T) {
 	}
 	if !found {
 		t.Error("extern-declared shared_counter written by two thread fns should be a shared_data_race")
+	}
+}
+
+// TestDivideByZero_DefiniteZeroAutoConfirm locks in the definite-zero auto-confirm:
+// a literal `x/0`, a zero-valued symbol `x/ZERO`, and a `d=0` assignment are all
+// confirmed by the pipeline, while an unknown divisor `x/d` stays suspected for
+// the AI agent.
+func TestDivideByZero_DefiniteZeroAutoConfirm(t *testing.T) {
+	store, p := setupDetector(t, "tc100_divide_by_zero_definite.c")
+	logger := log.New(io.Discard, log.LevelWarn)
+	NewDivideByZeroDetector(store, p, logger).Detect(context.Background())
+
+	// Detector-level: only the syntactic definite-zero cases carry the marker.
+	ctx := context.Background()
+	events, err := store.ListEventsByType(ctx, "DIVIDE_BY_ZERO")
+	if err != nil {
+		t.Fatalf("list DIVIDE_BY_ZERO: %v", err)
+	}
+	marked := map[string]bool{}
+	for _, e := range events {
+		var props map[string]string
+		if json.Unmarshal([]byte(e.Properties), &props) == nil && props["definitely_zero"] == "true" {
+			fn, _ := store.GetFunctionByID(ctx, e.EntityID)
+			if fn != nil {
+				marked[fn.Name] = true
+			}
+		}
+	}
+	if !marked["lit"] {
+		t.Error("x/0 literal should be marked definitely_zero")
+	}
+	if !marked["sym"] {
+		t.Error("x/ZERO symbol should be marked definitely_zero")
+	}
+	if marked["var_div"] {
+		t.Error("unknown divisor x/d must NOT be marked definitely_zero")
+	}
+
+	// Planner-level: all three definite-zero shapes confirm, the unknown stays
+	// suspected.
+	pl := planner.NewPlanner(store, p, logger)
+	res, err := pl.Plan(ctx, "divide-by-zero")
+	if err != nil {
+		t.Fatalf("plan divide-by-zero: %v", err)
+	}
+	suspicion := map[string]string{}
+	for _, c := range res.Candidates {
+		suspicion[c.Target.Function] = c.SuspicionLevel
+	}
+	for _, fn := range []string{"lit", "sym", "assigned"} {
+		if suspicion[fn] != "confirmed" {
+			t.Errorf("%s: expected confirmed, got %q", fn, suspicion[fn])
+		}
+	}
+	if suspicion["var_div"] != "suspected" {
+		t.Errorf("var_div: expected suspected, got %q", suspicion["var_div"])
 	}
 }

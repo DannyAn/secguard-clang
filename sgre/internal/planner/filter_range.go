@@ -62,6 +62,14 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
 	for _, c := range candidates {
+		// A divisor the detector proved is exactly zero (literal `x/0` or a
+		// zero-valued constant symbol) is a certain divide-by-zero: auto-confirm
+		// it before the interval analysis so it never reaches the AI agent.
+		if f.isDefinitelyZeroEvent(ctx, c) {
+			c.SuspicionLevel = "confirmed"
+			kept = append(kept, c)
+			continue
+		}
 		flow := flows[c.FunctionID]
 		if flow == nil {
 			kept = append(kept, c)
@@ -104,6 +112,17 @@ func (f *RangeFilter) divisor(ctx context.Context, c Candidate) string {
 		return ""
 	}
 	return bareIdentVar(parseEventProps(event.Properties).Divisor)
+}
+
+// isDefinitelyZeroEvent reports whether the candidate's event carries an explicit
+// "definitely_zero" marker from the detector — a literal `x/0` or a zero-valued
+// constant symbol, a certain divide-by-zero.
+func (f *RangeFilter) isDefinitelyZeroEvent(ctx context.Context, c Candidate) bool {
+	event, err := f.store.GetEventByID(ctx, c.DerefEventID)
+	if err != nil || event == nil {
+		return false
+	}
+	return parseEventProps(event.Properties).DefinitelyZero == "true"
 }
 
 // callDivisorName returns the callee name when the candidate's divisor is a

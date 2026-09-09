@@ -42,6 +42,10 @@ type eventProps struct {
 	LockLine    int    `json:"lock_line"`
 	UnlockLine  int    `json:"unlock_line"`
 	Divisor     string `json:"divisor"` // divide-by-zero divisor expression
+	// DefinitelyZero is "true" when the divide-by-zero detector proved the
+	// divisor is exactly zero (a literal `x/0` or a zero-valued constant symbol),
+	// so the RangeFilter auto-confirms it instead of deferring to the AI agent.
+	DefinitelyZero string `json:"definitely_zero"`
 	// ThreadFunctions is the comma-separated list of pthread thread function
 	// names a shared_data_race event reports (race-condition detector).
 	ThreadFunctions string `json:"thread_functions"`

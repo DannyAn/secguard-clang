@@ -8,7 +8,11 @@
 
 - **修复两个数据库问题**：`plan`/`report`/`status`/`metrics`/`db`/`query` 现在从 cwd 向上查找项目 DB（`.codeagent/secguard-clang/.sgre/sgre.db`），不再在 `scans/<id>/` 下铸出第二个空 DB；编排指令移除 "cd 进 scan 目录" 的恢复建议。
 - **检测器降级 + 上报**：单个检测器 panic/报错不再让整轮扫描失败；失败以 `detector_errors` 上报（与 plan 阶段 `plan_errors` 对称），扫描摘要新增 `seeds_by_type` 区分"0 种子"与"种子被过滤到 0"。
-- **耗时口径澄清**：`duration_scope` 改为 `automated-analysis`（索引+建图+检测+收敛+auto-confirm），不含 AI 研判；报告措辞区分自动分析 / AI 研判 / 端到端。
+- **耗时口径澄清**：`duration_scope` 改为 `automated-analysis`（索引+建图+检测+收敛+auto-confirm），不含 AI 研判；报告措辞区分自动分析 / AI 研判 / 端到端，并要求编排器**实测** AI 研判耗时（用于生产反馈分析）。
+
+### 漏报修复（divide-by-zero 确定性自动确认）
+
+- **确定性除零提前 auto-confirm**：字面量 `x / 0`、零值常量符号 `x / ZERO`（`#define ZERO 0` / `const int ZERO = 0` / `enum { ZERO = 0 }`）此前被标成 suspected 交给 AI，现由检测器标 `definitely_zero`、RangeFilter 直接升级为 confirmed（与已有的 `d = 0; x / d` 区间确认、config-field/global 确认并列）；只有真正"可能为零"的 divisor 才留给 AI 研判。
 
 ### 漏报修复（6 类零候选盲区）
 

@@ -5,26 +5,31 @@ import (
 	"strings"
 )
 
-// ConstantEnv is the per-file set of compile-time integer constants whose value
-// is provably non-zero: object-like macros, enumerators with an explicit value,
-// and top-level const variables. Consumers (the divide-by-zero detector and the
-// planner's cross-function return-summary) use it so a name spelled as a macro
-// (`#define BKT_NUM 4096`) in a divisor or return value is treated like the
-// literal `4096` instead of a "possibly-zero variable". Only symbols with a
-// determinable non-zero value are recorded; anything undeterminable is left
-// absent so it keeps flowing exactly as before — a real divide-by-zero must never
-// be suppressed by an over-eager table.
+// ConstantEnv is the per-file set of compile-time integer constants: object-like
+// macros, enumerators with an explicit value, and top-level const variables.
+// Consumers (the divide-by-zero detector) use it so a name spelled as a macro
+// (`#define BKT_NUM 4096`) in a divisor is treated like the literal `4096`
+// instead of a "possibly-zero variable". Only symbols with a determinable value
+// are recorded; anything undeterminable is left absent so a real divide-by-zero
+// must never be suppressed by an over-eager table.
 type ConstantEnv struct {
 	nonZero map[string]bool
+	zero    map[string]bool
 }
 
 func NewConstantEnv() *ConstantEnv {
-	return &ConstantEnv{nonZero: make(map[string]bool)}
+	return &ConstantEnv{nonZero: make(map[string]bool), zero: make(map[string]bool)}
 }
 
 // NonZero reports whether name is a compile-time constant known to be non-zero.
 func (e *ConstantEnv) NonZero(name string) bool {
 	return e.nonZero[strings.TrimSpace(name)]
+}
+
+// IsZero reports whether name is a compile-time constant known to be exactly
+// zero (`#define ZERO 0`), so `x / ZERO` is a certain divide-by-zero.
+func (e *ConstantEnv) IsZero(name string) bool {
+	return e.zero[strings.TrimSpace(name)]
 }
 
 // CollectConstantSymbols scans a translation unit for compile-time integer
@@ -57,6 +62,8 @@ func CollectConstantSymbols(root Node) *ConstantEnv {
 		}
 		if NonZeroConstantValue(value) {
 			env.nonZero[name] = true
+		} else if IsZeroConstantValue(value) {
+			env.zero[name] = true
 		}
 	}
 
@@ -78,6 +85,8 @@ func CollectConstantSymbols(root Node) *ConstantEnv {
 		}
 		if NonZeroConstantValue(value) {
 			env.nonZero[name] = true
+		} else if IsZeroConstantValue(value) {
+			env.zero[name] = true
 		}
 	}
 
@@ -103,6 +112,8 @@ func CollectConstantSymbols(root Node) *ConstantEnv {
 			}
 			if NonZeroConstantValue(value) {
 				env.nonZero[name] = true
+			} else if IsZeroConstantValue(value) {
+				env.zero[name] = true
 			}
 		}
 	}
@@ -125,12 +136,32 @@ func declIsConst(decl Node) bool {
 // non-integer literals are not resolved and return false, so the caller keeps the
 // conservative "possibly zero" verdict rather than risk a false negative.
 func NonZeroConstantValue(text string) bool {
-	t := strings.TrimSpace(text)
-	if t == "" {
+	if strings.HasPrefix(strings.TrimSpace(text), "sizeof") {
+		return true
+	}
+	v, ok := parseConstantInt(text)
+	return ok && v != 0
+}
+
+// IsZeroConstantValue reports whether a constant-expression text is provably a
+// zero integer literal (`0`, `0x0`, `00`, with C suffixes and an optional sign).
+// It is the exact complement needed to auto-confirm `x / 0` as a certain
+// divide-by-zero rather than a "possibly-zero" suspected lead.
+func IsZeroConstantValue(text string) bool {
+	if strings.HasPrefix(strings.TrimSpace(text), "sizeof") {
 		return false
 	}
-	if strings.HasPrefix(t, "sizeof") {
-		return true
+	v, ok := parseConstantInt(text)
+	return ok && v == 0
+}
+
+// parseConstantInt parses a C integer literal (with optional sign and u/U/l/L
+// suffixes, possibly parenthesized) into its value. It returns ok=false for
+// anything it cannot resolve (a non-numeric name, a complex expression).
+func parseConstantInt(text string) (int64, bool) {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return 0, false
 	}
 	t = stripParens(t)
 	t = strings.TrimSpace(t)
@@ -144,16 +175,16 @@ func NonZeroConstantValue(text string) bool {
 	}
 	t = strings.TrimRight(t, "uUlL")
 	if t == "" {
-		return false
+		return 0, false
 	}
 	v, err := strconv.ParseInt(t, 0, 64)
 	if err != nil {
-		return false
+		return 0, false
 	}
 	if neg {
 		v = -v
 	}
-	return v != 0
+	return v, true
 }
 
 // stripParens removes one or more outer layers of surrounding parentheses from a

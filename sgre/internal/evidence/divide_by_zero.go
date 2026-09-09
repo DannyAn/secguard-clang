@@ -81,7 +81,7 @@ func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error)
 					continue
 				}
 
-				if emitEvent(ctx, d.store, d.logger, "DIVIDE_BY_ZERO", f.ID, &db.Location{FileID: file.ID, Line: expr.StartLine(), Column: expr.StartColumn()}, map[string]string{
+				props := map[string]string{
 					"expression": expr.Text(),
 					// The divisor is the root-cause variable the planner converges
 					// on; without it the seed falls back to the full `expression`
@@ -90,7 +90,11 @@ func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error)
 					"variable": divisor,
 					"divisor":  divisor,
 					"category": "divide_by_zero",
-				}) {
+				}
+				if isDefiniteZeroDivisor(divisor, constants) {
+					props["definitely_zero"] = "true"
+				}
+				if emitEvent(ctx, d.store, d.logger, "DIVIDE_BY_ZERO", f.ID, &db.Location{FileID: file.ID, Line: expr.StartLine(), Column: expr.StartColumn()}, props) {
 					result.EventsCreated++
 				}
 			}
@@ -131,6 +135,26 @@ func possiblyZeroDivisor(divisor string) bool {
 		return false
 	}
 	return !parser.NonZeroConstantValue(t)
+}
+
+// isDefiniteZeroDivisor reports whether a divisor is PROVABLY zero: a literal
+// `x / 0` (or `0x0`, `00`, `0U`, ...) or a compile-time constant symbol whose
+// value is zero (`#define ZERO 0`, `const int ZERO = 0`, `enum { ZERO = 0 }`).
+// Such a divisor is a certain divide-by-zero, so the detector marks the event
+// "definitely_zero" and the RangeFilter auto-confirms it instead of handing it
+// to the AI agent.
+func isDefiniteZeroDivisor(divisor string, constants *parser.ConstantEnv) bool {
+	d := strings.TrimSpace(divisor)
+	if d == "" {
+		return false
+	}
+	if parser.IsZeroConstantValue(d) {
+		return true
+	}
+	if constants != nil && constants.IsZero(d) {
+		return true
+	}
+	return false
 }
 
 // divisionGuarded reports whether an enclosing guard implies the divisor is

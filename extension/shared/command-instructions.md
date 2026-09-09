@@ -421,10 +421,10 @@ Selected types: <parsed type filter>
 
 Report the diagnostic conclusion in Chinese, Markdown tables only:
 
-1. 报告头: `代码仓：<repo abs path>；扫描目录：<scanned dir abs path>；规模：<N> 文件 / <M> 函数`。若需给出时间，**区分三个口径**：
+1. 报告头: `代码仓：<repo abs path>；扫描目录：<scanned dir abs path>；规模：<N> 文件 / <M> 函数`。**必须给出三个时间口径（用于生产反馈与分析，勿估算，抓真实墙钟）**：
    - `自动分析耗时 ≈ <scan_metrics.duration_ms/1000> 秒`（`secguard scan` 二进制自身墙钟：索引 + 建图 + 检测 + 多层过滤收敛 + 机器 auto-confirm + 出候选报告，**不含 AI Agent 研判**）。
-   - `AI 研判耗时`（所有子代理分类 + `report --audit` 落库/出报告，由你据实际墙钟估算）。
-   - `端到端耗时`（前两者之和 + 编排调度开销）。
+   - `AI 研判耗时 = <秒>`（**实测**：从 `secguard_scan` 返回、进入第 2 步 Scale gate 起，到第 6 步出最终报告为止的墙钟；用你的工具计时，不要估算）。
+   - `端到端耗时 = <秒>`（自动分析 + AI 研判 + 编排调度开销）。
    **不要用"流水线"描述时间**："流水线/收敛"是**候选数量**概念（raw seeds → 层层过滤 → final），不是时间口径；把二进制耗时说成"流水线耗时"既漏了 AI 研判这一环、又和"扫描耗时"语义打架，才会出现"10 分钟 vs 3~4 小时"的误会。
 2. 摘要: `本次审计确认 X 个问题、疑似 Y 个问题。` (X/Y = confirmed/suspected verdicts, NOT candidate counts)
 3. 总览表: `| Skill | 类别 | 确认 | 疑似 | 已排除误报 |`
