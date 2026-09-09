@@ -158,6 +158,15 @@ func (f *CallReachFilter) Apply(ctx context.Context, candidates []Candidate) ([]
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
 	for _, c := range candidates {
+		// FunctionID == 0 means the event is not attached to any function — a
+		// file-scope declaration (a global secret initializer) that runs at
+		// load time regardless of the call graph. Dropping it as "unreachable"
+		// would be a false negative; keep it and mark it reachable.
+		if c.FunctionID == 0 {
+			c.IsReachable = true
+			kept = append(kept, c)
+			continue
+		}
 		nodeID, ok := res.funcNodeMap[c.FunctionID]
 		if ok && res.reachable[nodeID] {
 			c.IsReachable = true

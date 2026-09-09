@@ -49,6 +49,14 @@ func (d *SizeofMisuseDetector) Detect(ctx context.Context) (DetectResult, error)
 
 		for _, f := range funcs {
 			decls := d.pointerDecls(ptrDecls, f)
+			// Parameters/locals declared via a pointer typedef (`cstr_t s`)
+			// carry no `*` and therefore no pointer_declarator node, so merge
+			// them in — otherwise `sizeof(s)` on such a pointer is missed.
+			for name, pd := range d.typedefPointerDecls(root, f, typedefs) {
+				if _, exists := decls[name]; !exists {
+					decls[name] = pd
+				}
+			}
 			for _, se := range sizeExprs {
 				if !funcLineRange(f, se.StartLine()) {
 					continue
@@ -105,7 +113,10 @@ type pointerDecl struct {
 func (d *SizeofMisuseDetector) pointerDecls(ptrDecls []parser.Node, f *db.Function) map[string]pointerDecl {
 	decls := make(map[string]pointerDecl)
 	for _, pd := range ptrDecls {
-		if !funcLineRange(f, pd.StartLine()) {
+		// Accept the declarator when it is inside f, OR at file scope (a global
+		// pointer like `char *g`). A declarator inside a DIFFERENT function must
+		// not leak its declaration into f's sizeof.
+		if !funcLineRange(f, pd.StartLine()) && !isFileScopeDecl(pd) {
 			continue
 		}
 		name := extractVarName(pd)
@@ -127,6 +138,51 @@ func (d *SizeofMisuseDetector) pointerDecls(ptrDecls []parser.Node, f *db.Functi
 		decls[name] = pointerDecl{level: level, base: baseTypeOfPointer(cur)}
 	}
 	return decls
+}
+
+// typedefPointerDecls returns parameters and locals declared through a POINTER
+// TYPEDEF (`typedef char *cstr_t; void f(cstr_t s)`). Such a declarator has no
+// explicit `*` and therefore no pointer_declarator node, so pointerDecls cannot
+// see it; here its type spelling is resolved against the typedef table and, when
+// it is (transitively) a pointer, recorded at level 1 with the typedef name as
+// the base — resolvesToPointer(base) then tiers it "sizeof_pointer_ambig".
+func (d *SizeofMisuseDetector) typedefPointerDecls(root parser.Node, f *db.Function, typedefs *typedefs) map[string]pointerDecl {
+	decls := make(map[string]pointerDecl)
+	for _, kind := range []string{"parameter_declaration", "declaration"} {
+		for _, decl := range root.FindAll(kind) {
+			if !funcLineRange(f, decl.StartLine()) {
+				continue
+			}
+			d.addTypedefPointer(decl, decls, typedefs)
+		}
+	}
+	return decls
+}
+
+func (d *SizeofMisuseDetector) addTypedefPointer(decl parser.Node, decls map[string]pointerDecl, typedefs *typedefs) {
+	var typeSpelling, name string
+	for _, child := range decl.NamedChildren() {
+		switch child.Kind() {
+		case "type_identifier", "primitive_type", "sized_type_specifier", "struct_specifier", "union_specifier", "enum_specifier":
+			if typeSpelling == "" {
+				typeSpelling = strings.TrimSpace(child.Text())
+			}
+		case "identifier":
+			if name == "" {
+				name = child.Text()
+			}
+		}
+	}
+	// A direct `identifier` child only exists for non-pointer declarators
+	// (`cstr_t s`); an explicit `*` nests the name inside a pointer_declarator,
+	// which pointerDecls already handled. Only record the variable when its type
+	// is (transitively) a pointer typedef.
+	if name == "" || typeSpelling == "" || !typedefs.resolvesToPointer(typeSpelling) {
+		return
+	}
+	if _, exists := decls[name]; !exists {
+		decls[name] = pointerDecl{level: 1, base: typeSpelling}
+	}
 }
 
 // baseTypeOfPointer returns the type specifier spelling that precedes a pointer

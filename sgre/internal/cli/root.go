@@ -161,6 +161,44 @@ func resolveDBPath(explicit bool, dbPath, projectRoot string) string {
 	return report.GetDbPath(projectRoot)
 }
 
+// resolveExistingDBPath returns the path of an already-indexed database for a
+// command that CONSUMES an existing scan (plan/report/status/metrics/db/query).
+// An explicit --db is honored verbatim. Otherwise it searches the canonical
+// location relative to cwd and then each parent directory for the first existing
+// .codeagent/secguard-clang/.sgre/sgre.db (falling back to a legacy ./sgre.db at
+// each level). This guarantees a command run from inside a scan/review output
+// directory — a documented recovery step — opens the PROJECT's database instead
+// of silently minting a second, empty sgre.db under the scan dir (the "two
+// databases" bug: an extra 10-minute index build on top of the real one).
+//
+// The second return value reports whether an existing DB was found. Consumer
+// commands must treat found==false as "no sgre.db found; run secguard scan first"
+// and never call openStore (which would create an empty DB).
+func resolveExistingDBPath(explicit bool, dbPath string) (string, bool) {
+	if explicit {
+		return dbPath, true
+	}
+	cwd, err := os.Getwd()
+	if err != nil || cwd == "" {
+		return dbPath, false
+	}
+	for dir := cwd; ; dir = filepath.Dir(dir) {
+		canonical := report.GetDbPath(dir)
+		if _, err := os.Stat(canonical); err == nil {
+			return canonical, true
+		}
+		legacy := filepath.Join(dir, "sgre.db")
+		if _, err := os.Stat(legacy); err == nil {
+			return legacy, true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+	}
+	return report.GetDbPath(cwd), false
+}
+
 func openStore(ctx context.Context, dbPath string) (db.Store, error) {
 	// Ensure the parent directory exists so a default canonical path
 	// (.codeagent/secguard-clang/.sgre/sgre.db) opens cleanly on first use

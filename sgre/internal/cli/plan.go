@@ -21,7 +21,12 @@ func runPlanCmd(ctx context.Context, args []string) int {
 	}
 	vulnType := remaining[0]
 
-	dbPath = resolveDBPath(dbExplicit, dbPath, ".")
+	var found bool
+	dbPath, found = resolveExistingDBPath(dbExplicit, dbPath)
+	if !found {
+		WriteErrorJSON("no sgre.db found; run 'secguard scan <path>' first")
+		return 1
+	}
 
 	store, err := openStore(ctx, dbPath)
 	if err != nil {

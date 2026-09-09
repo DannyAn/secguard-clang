@@ -113,6 +113,43 @@ func forEachIndexedFile(ctx context.Context, store db.Store, p *parser.Parser, l
 	return nil
 }
 
+// forEachFileIncludingEmpty is forEachFile that ALSO visits files containing no
+// indexed function (data-only .c files), passing an empty funcs slice. A
+// detector that scans file-scope declarations (hardcoded secrets) needs this so
+// a global secret in a functionless file is not silently skipped.
+func forEachFileIncludingEmpty(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, fn func(file *db.File, root parser.Node, funcs []*db.Function)) error {
+	funcs, err := store.ListFunctions(ctx)
+	if err != nil {
+		return err
+	}
+	byFile := make(map[int64][]*db.Function, 128)
+	for _, f := range funcs {
+		byFile[f.FileID] = append(byFile[f.FileID], f)
+	}
+	files, err := store.ListFiles(ctx)
+	if err != nil {
+		return err
+	}
+	for _, file := range files {
+		source, err := os.ReadFile(file.Path)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("evidence: read file failed, skipping", "file", file.Path, "error", err)
+			}
+			continue
+		}
+		tree, err := p.ParseCached(source, file.Path)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("evidence: parse file failed, skipping", "file", file.Path, "error", err)
+			}
+			continue
+		}
+		fn(file, tree.RootNode(), byFile[file.ID])
+	}
+	return nil
+}
+
 // funcLineRange reports whether a node's start line falls inside the function's
 // [StartLine, EndLine] range.
 func funcLineRange(f *db.Function, line int) bool {

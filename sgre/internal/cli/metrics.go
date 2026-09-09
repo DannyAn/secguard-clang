@@ -11,10 +11,17 @@ import (
 // renderScanMetrics returns the plain-key scan metrics map written into the
 // `secguard scan` stdout envelope. Durations are milliseconds; candidate counts
 // are raw, so the reduction % stays a read-time derivation rather than a stored
-// number the team cannot re-derive.
+// number the team cannot re-derive. duration_ms is the AUTOMATED-ANALYSIS wall
+// clock only (index+graph+detectors+convergence+auto-confirm) — it never
+// includes the AI Agent classification stage, which the orchestrator runs
+// afterwards. duration_scope states that so "scan took 10 minutes" is never
+// mistaken for the end-to-end 3-4 hours. Note the label says "analysis", not
+// "pipeline": the pipeline also spans the AI Agent, so borrowing that word for a
+// binary-only time figure would conflate a structure with a duration.
 func renderScanMetrics(r *db.ScanRun) map[string]interface{} {
 	return map[string]interface{}{
 		"duration_ms":       r.DurationMs,
+		"duration_scope":    "automated-analysis (index+graph+detectors+convergence+auto-confirm), excludes AI Agent classification",
 		"index_ms":          r.IndexMs,
 		"graph_ms":          r.GraphMs,
 		"detectors_ms":      r.DetectorsMs,
@@ -35,7 +42,11 @@ func renderScanMetrics(r *db.ScanRun) map[string]interface{} {
 // stdout, matching every other secguard command.
 func runMetricsCmd(ctx context.Context, args []string) int {
 	dbPath, dbExplicit, remaining := parseDBFlag(args)
-	dbPath = resolveDBPath(dbExplicit, dbPath, ".")
+	dbPath, found := resolveExistingDBPath(dbExplicit, dbPath)
+	if !found {
+		WriteErrorJSON("no sgre.db found; run 'secguard scan <path>' first")
+		return 1
+	}
 
 	scanID := parseStringFlag(remaining, "scan-id")
 	remaining = removeFlag(remaining, "scan-id")
@@ -101,9 +112,10 @@ func metricsView(r *db.ScanRun) map[string]interface{} {
 		}
 	}
 	return map[string]interface{}{
-		"scan_id":      r.ScanID,
-		"duration_ms":  r.DurationMs,
-		"duration_sec": round1(float64(r.DurationMs) / 1000),
+		"scan_id":        r.ScanID,
+		"duration_ms":    r.DurationMs,
+		"duration_sec":   round1(float64(r.DurationMs) / 1000),
+		"duration_scope": "automated-analysis (index+graph+detectors+convergence+auto-confirm), excludes AI Agent classification",
 		"phases_ms": map[string]int64{
 			"index":     r.IndexMs,
 			"graph":     r.GraphMs,

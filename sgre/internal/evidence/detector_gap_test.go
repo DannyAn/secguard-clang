@@ -1,0 +1,220 @@
+//go:build !nosqlite
+
+package evidence
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"testing"
+
+	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
+	"github.com/DannyAn/secguard-clang/internal/indexer"
+	"github.com/DannyAn/secguard-clang/internal/log"
+	"github.com/DannyAn/secguard-clang/internal/parser"
+)
+
+// setupDetector indexes one fixture and builds call graph + data flow, returning
+// the store and parser a single detector needs. A gap test then asserts BOTH the
+// "missed" pattern (no event) AND a positive control (event), so a broken
+// detector cannot make the gap assertion pass vacuously.
+func setupDetector(t *testing.T, fixture string) (db.Store, *parser.Parser) {
+	t.Helper()
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, fixturePath(fixture)); err != nil {
+		t.Fatalf("index %s: %v", fixture, err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	return store, p
+}
+
+func eventFuncs(t *testing.T, store db.Store, eventType string) map[string]bool {
+	t.Helper()
+	ctx := context.Background()
+	events, err := store.ListEventsByType(ctx, eventType)
+	if err != nil {
+		t.Fatalf("list %s: %v", eventType, err)
+	}
+	out := map[string]bool{}
+	for _, e := range events {
+		fn, err := store.GetFunctionByID(ctx, e.EntityID)
+		if err != nil || fn == nil {
+			continue
+		}
+		out[fn.Name] = true
+	}
+	return out
+}
+
+func eventVars(t *testing.T, store db.Store, eventType string) map[string]bool {
+	t.Helper()
+	ctx := context.Background()
+	events, err := store.ListEventsByType(ctx, eventType)
+	if err != nil {
+		t.Fatalf("list %s: %v", eventType, err)
+	}
+	out := map[string]bool{}
+	for _, e := range events {
+		var props map[string]string
+		if json.Unmarshal([]byte(e.Properties), &props) == nil {
+			if v := props["variable"]; v != "" {
+				out[v] = true
+			}
+		}
+	}
+	return out
+}
+
+// TestIntegerOverflow_CallocVariants locks in the fixed calloc(n, sizeof(T)) and
+// calloc(n, CONST) blind spots: the implicit product is now flagged with the same
+// categories as the explicit malloc(n * sizeof(T)) / malloc(n * 2) forms, while
+// constant * constant / constant * sizeof stay unflagged.
+func TestIntegerOverflow_CallocVariants(t *testing.T) {
+	store, p := setupDetector(t, "tc93_int_overflow_calloc_sizeof.c")
+	logger := log.New(io.Discard, log.LevelWarn)
+	NewIntegerOverflowDetector(store, p, logger).Detect(context.Background())
+
+	flagged := eventFuncs(t, store, "INTEGER_OVERFLOW")
+	for _, fn := range []string{
+		"calloc_var_sizeof", "calloc_sizeof_var", "calloc_param_const",
+		"calloc_const_param", "calloc_var_var", "malloc_var_sizeof",
+	} {
+		if !flagged[fn] {
+			t.Errorf("%s: expected INTEGER_OVERFLOW, got none", fn)
+		}
+	}
+	for _, fn := range []string{"calloc_const_const", "calloc_const_sizeof", "calloc_var_sizeof_char", "calloc_var_const_one", "malloc_constant"} {
+		if flagged[fn] {
+			t.Errorf("%s: expected NO INTEGER_OVERFLOW (safe product), got flagged", fn)
+		}
+	}
+}
+
+// TestSizeofMisuse_TypedefPointer locks in the typedef-pointer fix: `sizeof(s)`
+// on a pointer typedef'd parameter is now flagged, while `sizeof(*s)` and a
+// non-pointer typedef remain unflagged.
+func TestSizeofMisuse_TypedefPointer(t *testing.T) {
+	store, p := setupDetector(t, "tc94_sizeof_typedef_pointer.c")
+	logger := log.New(io.Discard, log.LevelWarn)
+	NewSizeofMisuseDetector(store, p, logger).Detect(context.Background())
+
+	flagged := eventFuncs(t, store, "SIZEOF_MISUSE")
+	if !flagged["typedef_pointer"] {
+		t.Error("typedef'd pointer param sizeof(s) should be flagged")
+	}
+	if !flagged["explicit_pointer"] {
+		t.Error("explicit char*q sizeof(q) should be flagged")
+	}
+	if !flagged["file_scope_pointer"] {
+		t.Error("file-scope char* sizeof(g_buf) should be flagged")
+	}
+	if flagged["typedef_deref"] {
+		t.Error("sizeof(*s) on a typedef'd pointer is sizeof(char) and must NOT be flagged")
+	}
+	if flagged["non_pointer_typedef"] {
+		t.Error("sizeof(n) on a non-pointer typedef must NOT be flagged")
+	}
+}
+
+// TestHardcodedSecret_EntropyAndStructured locks in the value-entropy fix: a
+// high-entropy literal with a non-secret name is flagged, a name-matched
+// password is flagged, while a structured URL and a whitespace sentence are not.
+func TestHardcodedSecret_EntropyAndStructured(t *testing.T) {
+	store, p := setupDetector(t, "tc95_hardcoded_secret_value_only.c")
+	logger := log.New(io.Discard, log.LevelWarn)
+	NewHardcodedSecretDetector(store, p, logger).Detect(context.Background())
+
+	flagged := eventVars(t, store, "HARDCODED_SECRET")
+	if !flagged["high_entropy"] {
+		t.Error("high-entropy literal with non-secret name should be flagged (entropy analysis)")
+	}
+	if !flagged["password"] {
+		t.Error("name-matched password should be flagged")
+	}
+	if flagged["conn"] {
+		t.Error("structured URL 'mysql://root:hunter2@db' should NOT be flagged (low entropy)")
+	}
+	if flagged["note"] {
+		t.Error("whitespace sentence should NOT be flagged")
+	}
+}
+
+// TestHardcodedSecret_ZeroFunctionFile locks in the data-only-file fix: a
+// file-scope secret in a .c file with no function is now scanned and flagged.
+func TestHardcodedSecret_ZeroFunctionFile(t *testing.T) {
+	store, p := setupDetector(t, "tc96_hardcoded_secret_zero_func.c")
+	logger := log.New(io.Discard, log.LevelWarn)
+	NewHardcodedSecretDetector(store, p, logger).Detect(context.Background())
+
+	flagged := eventVars(t, store, "HARDCODED_SECRET")
+	if !flagged["password"] {
+		t.Error("file-scope secret in a data-only file should now be flagged")
+	}
+}
+
+// TestOutOfBounds_GlobalArray locks in the file-scope array-size fix: a
+// constant OOB read of a global `int arr[10]` is now resolved (findArraySize
+// accepts file-scope declarations), alongside the same-function local case.
+func TestOutOfBounds_GlobalArray(t *testing.T) {
+	store, p := setupDetector(t, "tc97_oob_global_array.c")
+	logger := log.New(io.Discard, log.LevelWarn)
+	NewBufferOverflowDetector(store, p, logger).Detect(context.Background())
+
+	// out-of-bounds seeds BUFFER_ACCESS with category array_oob_read.
+	ctx := context.Background()
+	events, err := store.ListEventsByType(ctx, "BUFFER_ACCESS")
+	if err != nil {
+		t.Fatalf("list BUFFER_ACCESS: %v", err)
+	}
+	readOOBFuncs := map[string]bool{}
+	for _, e := range events {
+		var props map[string]string
+		if json.Unmarshal([]byte(e.Properties), &props) != nil {
+			continue
+		}
+		if props["category"] != "array_oob_read" {
+			continue
+		}
+		fn, err := store.GetFunctionByID(ctx, e.EntityID)
+		if err == nil && fn != nil {
+			readOOBFuncs[fn.Name] = true
+		}
+	}
+	if !readOOBFuncs["global_missed"] {
+		t.Error("file-scope array constant OOB read should now be flagged")
+	}
+	if !readOOBFuncs["local_flagged"] {
+		t.Error("same-function constant OOB read should be flagged")
+	}
+}
+
+// TestRaceCondition_AddrTakenThread locks in the address-taken thread-fn fix:
+// `pthread_create(..., &worker, ...)` is now recognized, so two such threads
+// writing a shared global produce a shared_data_race event.
+func TestRaceCondition_AddrTakenThread(t *testing.T) {
+	store, p := setupDetector(t, "tc98_race_addr_taken_thread.c")
+	logger := log.New(io.Discard, log.LevelWarn)
+	NewRaceConditionDetector(store, p, logger).Detect(context.Background())
+
+	ctx := context.Background()
+	events, err := store.ListEventsByType(ctx, "RACE_CONDITION")
+	if err != nil {
+		t.Fatalf("list RACE_CONDITION: %v", err)
+	}
+	found := false
+	for _, e := range events {
+		var props map[string]string
+		if json.Unmarshal([]byte(e.Properties), &props) == nil && props["category"] == "shared_data_race" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("&worker thread fns writing a shared global should now produce a shared_data_race")
+	}
+}

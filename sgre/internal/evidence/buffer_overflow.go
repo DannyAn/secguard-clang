@@ -865,7 +865,11 @@ func isBareIdent(s string) bool {
 
 func findArraySize(bc *bufCtx, f *db.Function, arrName string) int {
 	for _, decl := range bc.decls {
-		if !funcLineRange(f, decl.StartLine()) {
+		// Accept the declaration when it is inside f, OR at file scope (a
+		// global/static array like `int arr[10]` declared above every function).
+		// A declaration inside a DIFFERENT function must not leak its size into
+		// f's subscript.
+		if !funcLineRange(f, decl.StartLine()) && !isFileScopeDecl(decl) {
 			continue
 		}
 		for _, ad := range decl.FindAll("array_declarator") {
@@ -882,6 +886,23 @@ func findArraySize(bc *bufCtx, f *db.Function, arrName string) int {
 		}
 	}
 	return 0
+}
+
+// isFileScopeDecl reports whether a declaration node lives at file scope — i.e.
+// its ancestor chain reaches the translation unit WITHOUT passing through a
+// function body (function_definition / compound_statement). A file-scope array
+// initializer is a real constant-bound array, so findArraySize must resolve it
+// even though no function's line range contains it.
+func isFileScopeDecl(decl parser.Node) bool {
+	for p := decl.Parent(); p != nil; p = p.Parent() {
+		switch p.Kind() {
+		case "function_definition", "compound_statement":
+			return false
+		case "translation_unit":
+			return true
+		}
+	}
+	return false
 }
 
 func isLoopBoundOverflow(bc *bufCtx, f *db.Function, sub parser.Node, arrSize int) bool {

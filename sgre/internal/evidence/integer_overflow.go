@@ -208,9 +208,19 @@ func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, ca
 		// calloc(n, m): the multiplication is implicit across two arguments, so
 		// the per-argument sizeCalcExprs scan (which sees only a bare n or m)
 		// misses it. Two variable arguments is the classic CWE-190 overflow.
-		if callName == "calloc" && len(args) >= 2 && isVariableOperand(args[0]) && isVariableOperand(args[1]) {
-			d.emitSizeCalc(ctx, file, f, call, "size_calc_overflow", result)
-			continue
+		if callName == "calloc" && len(args) >= 2 {
+			if isVariableOperand(args[0]) && isVariableOperand(args[1]) {
+				d.emitSizeCalc(ctx, file, f, call, "size_calc_overflow", result)
+				continue
+			}
+			// calloc(n, sizeof(T)) and calloc(n, CONST) are the SAME implicit
+			// product the malloc(n * sizeof(T)) / malloc(n * 2) cases cover, but
+			// split across two arguments — the most common allocation idiom in
+			// real code and previously a systematic blind spot (CWE-190).
+			if c := d.callocOverflowCategory(args[0], args[1], params); c != "" {
+				d.emitSizeCalc(ctx, file, f, call, c, result)
+				continue
+			}
 		}
 
 		for _, arg := range args {
@@ -219,6 +229,44 @@ func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, ca
 			}
 		}
 	}
+}
+
+// callocOverflowCategory classifies the implicit `arg0 * arg1` product of a
+// calloc call with the SAME rules sizeCalcExprs applies to `malloc(a * b)`:
+//
+//   - var * sizeof(T) → size_calc_overflow   (calloc(n, sizeof(int)))
+//   - param * CONST   → size_mul_const_overflow (calloc(n, 2), n caller-influenced)
+//
+// A constant * constant, a sizeof(char) (==1) operand, or a CONST <= 1 product
+// cannot overflow and returns "". Both argument orders are accepted.
+func (d *IntegerOverflowDetector) callocOverflowCategory(a0, a1 parser.Node, params map[string]bool) string {
+	classify := func(arg parser.Node) (isVar, isParam, isSizeof, isNum, sizeofOne bool, constValue int) {
+		for arg.Kind() == "parenthesized_expression" {
+			ch := arg.NamedChildren()
+			if len(ch) == 0 {
+				return
+			}
+			arg = ch[0]
+		}
+		switch {
+		case isVariableOperand(arg):
+			return true, params[arg.Text()], false, false, false, 0
+		case arg.Kind() == "sizeof_expression":
+			return false, false, true, false, sizeofIsOne(arg), 0
+		case arg.Kind() == "number_literal":
+			return false, false, false, true, false, parseConstantIndex(arg.Text())
+		}
+		return
+	}
+	v0, p0, s0, n0, o0, c0 := classify(a0)
+	v1, p1, s1, n1, o1, c1 := classify(a1)
+	if (v0 && s1 && !o1) || (s0 && !o0 && v1) {
+		return "size_calc_overflow"
+	}
+	if (p0 && n1 && c1 > 1) || (n0 && c0 > 1 && p1) {
+		return "size_mul_const_overflow"
+	}
+	return ""
 }
 
 func (d *IntegerOverflowDetector) emitSizeCalc(ctx context.Context, file *db.File, f *db.Function, expr parser.Node, category string, result *DetectResult) {
@@ -259,6 +307,8 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, params map[stri
 		return nil
 	}
 	var varCount, sizeofCount, numberCount, paramCount int
+	sizeofOne := false
+	constValue := 0
 	for _, child := range arg.NamedChildren() {
 		switch child.Kind() {
 		case "identifier", "field_expression":
@@ -271,16 +321,23 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, params map[stri
 			}
 		case "number_literal":
 			numberCount++
+			if v := parseConstantIndex(child.Text()); v > constValue {
+				constValue = v
+			}
 		case "sizeof_expression":
 			sizeofCount++
+			if sizeofIsOne(child) {
+				sizeofOne = true
+			}
 		}
 	}
 
 	switch op {
 	case "*":
 		if numberCount > 0 {
-			// var * const — only meaningful when the variable is caller-influenced.
-			if varCount == 1 && paramCount == 1 {
+			// var * const — only meaningful when the variable is caller-influenced
+			// AND the constant is > 1 (n * 1 cannot overflow).
+			if varCount == 1 && paramCount == 1 && constValue > 1 {
 				return []sizeCalcCandidate{{arg, "size_mul_const_overflow"}}
 			}
 			return nil
@@ -289,6 +346,10 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, params map[stri
 			return []sizeCalcCandidate{{arg, "size_calc_overflow"}}
 		}
 		if varCount == 1 && sizeofCount == 1 {
+			// n * sizeof(char) == n * 1 cannot overflow.
+			if sizeofOne {
+				return nil
+			}
 			return []sizeCalcCandidate{{arg, "size_calc_overflow"}}
 		}
 	case "+":
@@ -327,4 +388,32 @@ func isVariableOperand(node parser.Node) bool {
 		return false
 	}
 	return !strings.Contains(node.Text(), "sizeof")
+}
+
+// oneByteTypes are C types whose sizeof is 1 on every relevant platform, so a
+// `n * sizeof(T)` product cannot overflow when T is one of them (n * 1 == n).
+var oneByteTypes = map[string]bool{
+	"char": true, "signed char": true, "unsigned char": true,
+	"_Bool": true, "bool": true,
+	"int8_t": true, "uint8_t": true,
+	"int_least8_t": true, "uint_least8_t": true,
+	"int_fast8_t": true, "uint_fast8_t": true,
+}
+
+// sizeofIsOne reports whether a sizeof_expression evaluates to 1 (its operand is
+// a one-byte type), so a `var * sizeof(T)` product cannot overflow.
+func sizeofIsOne(node parser.Node) bool {
+	ch := node.NamedChildren()
+	if len(ch) == 0 {
+		return false
+	}
+	op := ch[0]
+	for op.Kind() == "parenthesized_expression" {
+		inner := op.NamedChildren()
+		if len(inner) == 0 {
+			return false
+		}
+		op = inner[0]
+	}
+	return oneByteTypes[strings.TrimSpace(op.Text())]
 }

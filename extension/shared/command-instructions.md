@@ -212,11 +212,21 @@ as `result.sarif`.)
 **长扫描超时策略 (F4):** Before calling `secguard_scan`, estimate scan duration. If the project has > 100 C files OR the scan is expected to exceed 120s (the default Bash timeout), the orchestrator SHALL either (a) invoke the scan with an explicit timeout ≥ 600s, or (b) use the host's background-task + Monitor mechanism from the start. When a scan is moved to the background, the orchestrator SHALL switch to Monitor within 1 turn — it SHALL NOT use `sleep N; tail` (blocked by Bash safety policy) and SHALL NOT leave a backgrounded scan unmonitored. While the Monitor is pending, the orchestrator SHALL NOT issue parallel Bash commands (the host may buffer their results until the Monitor completes, wasting the parallel window); any preparation (type list, agent-definition read) MUST complete before the Monitor starts.
 
 1. **Scan**: call the `secguard_scan` tool with the target path. It returns a
-   summary (`scan_id`, `output_dir`, `candidates_by_type`, `total_candidates`,
-   and `index_summary` with `files_indexed` / `functions_indexed`). Record
-   `scan_id`, `output_dir`, and the codebase scale (`files_indexed` files /
-   `functions_indexed` functions) — surface the scale in your next message and in
-   the final 报告头. If the summary has `report_error`, stop and surface it.
+   summary (`scan_id`, `output_dir`, `candidates_by_type`, `seeds_by_type`,
+   `plan_errors`, `detector_errors`, `total_candidates`, and `index_summary` with
+   `files_indexed` / `functions_indexed`). Record `scan_id`, `output_dir`, and
+   the codebase scale (`files_indexed` files / `functions_indexed` functions) —
+   surface the scale in your next message and in the final 报告头. If the summary
+   has `report_error`, stop and surface it.
+   **`detector_errors`（非空必须上报）:** `secguard_scan` 不再因单个检测器失败而整体
+   失败——每个检测器独立跑，失败的会以 `detector_errors`（`检测器名 → 错误`）返回。若
+   `detector_errors` 非空，**必须**在最终报告的观察项表里逐条列出（检测器名 + 错误），
+   并说明该检测器供给的漏洞类型**候选计数不完整**（含显示 0 的），不得当作"确实无候选"。
+   **`candidates_by_type` vs `seeds_by_type`（判定"零候选"根因的权威依据）:** 某类型
+   `candidates_by_type == 0` 有两种完全不同的含义——`seeds_by_type == 0` 是**检测器一个
+   种子事件都没发出**（该代码库真的没有这类模式，或检测器过窄）；`seeds_by_type > 0` 但
+   收敛后为 0 是**过滤链把种子全部淘汰**（可能是过严）。在最终报告的观察项表里，对每个
+   0 候选类型按此二分标注，不要含糊地写成"无候选"。
    `secguard_scan` already ran the convergence for EVERY type and wrote
    `report.md` + `candidates/` — do NOT re-run `secguard_plan` or
    `secguard_index` afterward.
@@ -340,7 +350,7 @@ as `result.sarif`.)
    - per-type candidate/written → `secguard status --per-type --scan-id <id>` (`candidate_count`/`written_count`/`terminal_state`, no SQL).
    - per-type verdict split → `secguard report --audit --scan-id <id> --output-dir <dir>` returns an `audits` array (`vuln_type`/`confirmed`/`suspected`/`dismissed`/`auto_confirmed`). Sum that array for the report — do NOT raw-query `findings` to recompute it.
     **findings/ 里的 confirmed 文件 ≠ 子代理报告的 confirmed（auto-confirmed 已落库）:** `findings/<type>/NNN_*_confirmed.md` 是两类之和——(a) `auto-confirmed`：pipeline 在 scan 阶段直接机器确认的确定性发现（divide-by-zero 的 `divisor@field`/`global`、null-deref 的 certain-null、uninit 的 certain-uninit 等），它们**不在** `candidates/_index.md` 里、子代理从来看不到；(b) 子代理写的 `confirmed`。所以 findings/ 的 confirmed 文件数可以明显大于子代理报告的数，多出的就是 auto-confirmed，**不是漏报也不是子代理说错**。最终计数一律以 `report --audit` 的 `audits` 数组（含 `auto_confirmed` 字段）为准，不要 `ls findings/` 反推、不要为这个对账。
-   **DB 路径（绝对路径，否则 Exit code 1）:** every `secguard db` / `secguard schema` / `secguard report` call that takes `--db` MUST pass the ABSOLUTE path `<scan_dir>/../../.sgre/sgre.db`. A relative `.sgre/sgre.db` fails with `Error: Exit code 1` whenever your cwd is not the project root — do NOT retry it as-is; `cd` into the scan dir (or pass the absolute path) once, then re-run.
+   **DB 路径（绝对路径，否则 Exit code 1）:** every `secguard db` / `secguard schema` / `secguard report` call that takes `--db` MUST pass the ABSOLUTE path `<scan_dir>/../../.sgre/sgre.db`. A relative `.sgre/sgre.db` fails with `Error: Exit code 1` whenever your cwd is not the project root — do NOT retry it as-is; re-run with the ABSOLUTE path. **Do NOT `cd` into the scan dir to "fix" it:** commands run WITHOUT `--db` (`secguard plan`/`status`/`metrics`/`query` and `report --audit`) resolve the DB relative to cwd, so cd'ing into the scan dir would mint a second, empty `sgre.db` under the scan dir (doubling build time and splitting findings across two databases). Keep cwd at the project root for the whole run.
    **`unclassified_candidates` 不是漏写（同位置合并）:** `report --audit` reports `unclassified_candidates = final_count − (confirmed+suspected+dismissed)`. Because `--write-json` UPSERTs keyed on `(scan_id, rule_id, file, line, function)`, several candidates at the SAME file:line:function (e.g. two resource variables on one line) collapse into ONE finding, so `findings` count < `candidate_count` is NORMAL — it is not a context-overflow and not a missing write. Do NOT inspect the schema or raw-query `findings` to "persist" those; trust `secguard status --per-type --scan-id <id>` (`written_count`) instead.
    If you MUST raw-query, run `secguard schema <table>` first, or use these exact names — never guess:
    - `findings`: `id, rule_id (CWE, e.g. CWE-476 — there is NO type/vuln_type column), severity, status (confirmed|suspected|dismissed|auto-confirmed), file_path (NOT file), line_number (NOT line), function_name, scan_id, review_status`
@@ -411,7 +421,11 @@ Selected types: <parsed type filter>
 
 Report the diagnostic conclusion in Chinese, Markdown tables only:
 
-1. 报告头: `代码仓：<repo abs path>；扫描目录：<scanned dir abs path>；规模：<N> 文件 / <M> 函数`
+1. 报告头: `代码仓：<repo abs path>；扫描目录：<scanned dir abs path>；规模：<N> 文件 / <M> 函数`。若需给出时间，**区分三个口径**：
+   - `自动分析耗时 ≈ <scan_metrics.duration_ms/1000> 秒`（`secguard scan` 二进制自身墙钟：索引 + 建图 + 检测 + 多层过滤收敛 + 机器 auto-confirm + 出候选报告，**不含 AI Agent 研判**）。
+   - `AI 研判耗时`（所有子代理分类 + `report --audit` 落库/出报告，由你据实际墙钟估算）。
+   - `端到端耗时`（前两者之和 + 编排调度开销）。
+   **不要用"流水线"描述时间**："流水线/收敛"是**候选数量**概念（raw seeds → 层层过滤 → final），不是时间口径；把二进制耗时说成"流水线耗时"既漏了 AI 研判这一环、又和"扫描耗时"语义打架，才会出现"10 分钟 vs 3~4 小时"的误会。
 2. 摘要: `本次审计确认 X 个问题、疑似 Y 个问题。` (X/Y = confirmed/suspected verdicts, NOT candidate counts)
 3. 总览表: `| Skill | 类别 | 确认 | 疑似 | 已排除误报 |`
 4. 问题表: `| Skill | 文件:行号 | 函数 | 严重度 | 结论 | 说明 |` (confirmed + suspected)

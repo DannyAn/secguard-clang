@@ -23,6 +23,11 @@ type pipelineOutcome struct {
 	Index      *indexer.IndexResult
 	Plans      []*planner.PlanResult
 	PlanErrors map[string]string
+	// DetectorErrors records any detector that failed (panicked or returned an
+	// error) without aborting the run. It is surfaced alongside PlanErrors so a
+	// detector bug reads as "this detector failed, its types are incomplete" —
+	// never as a silent "0 candidates".
+	DetectorErrors []evidence.DetectorError
 	// Timings are the per-phase wall-clock durations (milliseconds) captured
 	// across the shared engine. They feed the scan-level scan_runs metrics so
 	// performance is queryable over time instead of only in the scan log.
@@ -141,9 +146,7 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 
 	detStart := time.Now()
-	if err := evidence.RunAllDetectors(ctx, store, p, logger); err != nil {
-		return nil, fmt.Errorf("detectors failed: %w", err)
-	}
+	detectorErrors := evidence.RunAllDetectors(ctx, store, p, logger)
 	timings.DetectorsMs = time.Since(detStart).Milliseconds()
 	logger.Info("phase timing", "phase", "detectors_total", "elapsed_ms", timings.DetectorsMs)
 
@@ -200,9 +203,10 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	timings.PlanMs = time.Since(planStart).Milliseconds()
 
 	return &pipelineOutcome{
-		Index:      indexResult,
-		Plans:      plans,
-		PlanErrors: planErrors,
-		Timings:    timings,
+		Index:          indexResult,
+		Plans:          plans,
+		PlanErrors:     planErrors,
+		DetectorErrors: detectorErrors,
+		Timings:        timings,
 	}, nil
 }

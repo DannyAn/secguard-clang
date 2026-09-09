@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -13,6 +12,13 @@ import (
 )
 
 type DetectorFactory func(store db.Store, p *parser.Parser, logger *log.Logger) Detector
+
+// DetectorError records one detector's failure (panic or returned error) so the
+// caller can surface it per-detector instead of only as a combined fatal error.
+type DetectorError struct {
+	Detector string
+	Err      error
+}
 
 var detectorFactories []DetectorFactory
 
@@ -29,10 +35,14 @@ func AllDetectors(store db.Store, p *parser.Parser, logger *log.Logger) []Detect
 }
 
 // RunAllDetectors runs every registered detector (the interprocedural one last,
-// so it can consume the edges the others emit) and returns a joined error if any
-// detector fails. A detector error is otherwise a silent total loss of that
-// evidence stream, so it is logged and surfaced to the caller.
-func RunAllDetectors(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) error {
+// so it can consume the edges the others emit). A detector failure is NOT fatal:
+// detectors are independent, so one panicking/erroring detector must not discard
+// the other 21 evidence streams and the whole index+graph investment (a "3-hour
+// run lost to one detector bug" failure). Every failure is logged and returned
+// so the caller can surface it — a failed detector is never silently dropped,
+// which is what would otherwise make its vuln types read as a genuine "0
+// candidates".
+func RunAllDetectors(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) []DetectorError {
 	all := AllDetectors(store, p, logger)
 
 	var deferred []Detector
@@ -49,7 +59,7 @@ func RunAllDetectors(ctx context.Context, store db.Store, p *parser.Parser, logg
 	sem := make(chan struct{}, maxConcurrent)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var errs []error
+	var errs []DetectorError
 	run := func(d Detector) {
 		defer func() {
 			if r := recover(); r != nil {
@@ -57,7 +67,7 @@ func RunAllDetectors(ctx context.Context, store db.Store, p *parser.Parser, logg
 					logger.Warn("detector panicked", "detector", d.Name(), "panic", r)
 				}
 				mu.Lock()
-				errs = append(errs, fmt.Errorf("detector %s panicked: %v", d.Name(), r))
+				errs = append(errs, DetectorError{Detector: d.Name(), Err: fmt.Errorf("panicked: %v", r)})
 				mu.Unlock()
 			}
 		}()
@@ -66,7 +76,7 @@ func RunAllDetectors(ctx context.Context, store db.Store, p *parser.Parser, logg
 				logger.Warn("detector failed", "detector", d.Name(), "error", err)
 			}
 			mu.Lock()
-			errs = append(errs, fmt.Errorf("detector %s: %w", d.Name(), err))
+			errs = append(errs, DetectorError{Detector: d.Name(), Err: err})
 			mu.Unlock()
 		}
 	}
@@ -94,7 +104,7 @@ func RunAllDetectors(ctx context.Context, store db.Store, p *parser.Parser, logg
 		}
 	}
 
-	return errors.Join(errs...)
+	return errs
 }
 
 func init() {

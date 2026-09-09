@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"math"
 	"regexp"
 	"strings"
 
@@ -28,8 +29,13 @@ func (d *HardcodedSecretDetector) Capabilities() []string {
 	return []string{"hardcoded-password", "hardcoded-api-key", "hardcoded-token", "hardcoded-private-key"}
 }
 
-var secretVarPattern = regexp.MustCompile(`(?i)(password|passwd|pwd|secret|api_key|apikey|access_key|private_key|token|credential|auth_key)`)
+// secretVarPattern matches variable names that are conventionally secret-bearing.
+// Word boundaries keep a short token like `key`/`pin` from matching inside
+// `monkey`/`mapping`.
+var secretVarPattern = regexp.MustCompile(`(?i)\b(password|passwd|pwd|secret|api_key|apikey|access_key|private_key|token|credential|auth_key|client_secret|consumer_secret|bearer|session_key|salt|hash|pin|nonce)\b`)
 
+// highEntropyHints are well-known secret prefixes whose presence makes a value
+// a hardcoded secret regardless of the variable name.
 var highEntropyHints = []string{
 	"sk-", "eyJ", "-----BEGIN", "AKIA", "ghp_", "gho_", "xoxb-", "xoxp-",
 }
@@ -37,14 +43,12 @@ var highEntropyHints = []string{
 func (d *HardcodedSecretDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
-		// The previous loop processed each file once, at the first function's
-		// iteration, and attributed every file-scoped event to that function.
-		if len(funcs) == 0 {
-			return
-		}
-		f := funcs[0]
-
+	err := forEachFileIncludingEmpty(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		// Scan every init_declarator (file-scope globals AND function locals).
+		// A file-scope initializer runs at load time regardless of the call
+		// graph, so it is attributed to enclosingFuncID == 0 (see call_reach,
+		// which keeps function-less candidates); a function-local one is
+		// attributed to its enclosing function.
 		inits := root.FindAll("init_declarator")
 		for _, init := range inits {
 			varName := ""
@@ -61,24 +65,11 @@ func (d *HardcodedSecretDetector) Detect(ctx context.Context) (DetectResult, err
 				continue
 			}
 
-			isSecretVar := secretVarPattern.MatchString(varName)
-			isHighEntropy := false
-			for _, hint := range highEntropyHints {
-				if strings.HasPrefix(value, hint) {
-					isHighEntropy = true
-					break
-				}
-			}
-			isLongLiteral := len(value) >= 16 && !isNumericLiteral(value)
-
-			if !isSecretVar && !isHighEntropy && !isLongLiteral {
-				continue
-			}
-			if isLongLiteral && !isSecretVar && !isHighEntropy {
+			if !isSecretVar(varName) && !hasHighEntropyHint(value) && !looksHighEntropy(value) {
 				continue
 			}
 
-			if emitEvent(ctx, d.store, d.logger, "HARDCODED_SECRET", f.ID, &db.Location{FileID: file.ID, Line: init.StartLine(), Column: init.StartColumn()}, map[string]string{
+			if emitEvent(ctx, d.store, d.logger, "HARDCODED_SECRET", enclosingFuncID(init, funcs), &db.Location{FileID: file.ID, Line: init.StartLine(), Column: init.StartColumn()}, map[string]string{
 				"variable": varName,
 				"value":    value,
 				"category": "hardcoded_secret",
@@ -91,6 +82,77 @@ func (d *HardcodedSecretDetector) Detect(ctx context.Context) (DetectResult, err
 		d.detectRegSetValueEx(ctx, calls, file, &result)
 	})
 	return result, err
+}
+
+// isSecretVar reports whether the variable name is conventionally secret-bearing.
+func isSecretVar(name string) bool {
+	return secretVarPattern.MatchString(name)
+}
+
+// hasHighEntropyHint reports whether the value starts with a well-known secret
+// prefix (API key / JWT / PEM / AWS / GitHub / Slack token forms).
+func hasHighEntropyHint(value string) bool {
+	for _, hint := range highEntropyHints {
+		if strings.HasPrefix(value, hint) {
+			return true
+		}
+	}
+	return false
+}
+
+// secretEntropyThreshold is the Shannon-entropy bar (bits/char) above which a
+// long literal is treated as a random secret. It mirrors gitleaks' generic
+// entropy rule (4.5): a structured string — a URL, a sentence — sits below it,
+// while a base64-ish key/token sits above.
+const secretEntropyThreshold = 4.5
+
+// looksHighEntropy reports whether a literal "looks like" a random secret by
+// Shannon entropy: long (>=16 chars), non-numeric, whitespace-free, not a URL
+// scheme, with per-char entropy >= 4.5 bits. This catches hardcoded keys/tokens
+// whose variable name is NOT in the regex and that carry no recognized prefix —
+// the previously-dead `isLongLiteral` branch now actually fires on random
+// content while a URL / sentence stays below the bar.
+func looksHighEntropy(value string) bool {
+	if len(value) < 16 || isNumericLiteral(value) {
+		return false
+	}
+	if strings.ContainsAny(value, " \t\r\n") {
+		return false
+	}
+	if strings.Contains(value, "://") {
+		return false
+	}
+	return shannonEntropy(value) >= secretEntropyThreshold
+}
+
+// shannonEntropy returns the per-character Shannon entropy (bits) of s.
+func shannonEntropy(s string) float64 {
+	if len(s) == 0 {
+		return 0
+	}
+	freq := make(map[rune]int, len(s))
+	for _, r := range s {
+		freq[r]++
+	}
+	var h float64
+	for _, c := range freq {
+		p := float64(c) / float64(len(s))
+		h -= p * math.Log2(p)
+	}
+	return h
+}
+
+// enclosingFuncID returns the ID of the function whose line range contains node,
+// or 0 when node is file-scope (a global initializer). A zero ID marks the event
+// as function-less, which the call-reach filter keeps (file-scope code is always
+// present).
+func enclosingFuncID(node parser.Node, funcs []*db.Function) int64 {
+	for _, f := range funcs {
+		if funcLineRange(f, node.StartLine()) {
+			return f.ID
+		}
+	}
+	return 0
 }
 
 func (d *HardcodedSecretDetector) detectRegSetValueEx(ctx context.Context, calls []parser.Node, file *db.File, result *DetectResult) {

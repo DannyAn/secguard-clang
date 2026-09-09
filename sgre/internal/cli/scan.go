@@ -156,6 +156,12 @@ func runScanCmd(ctx context.Context, args []string) int {
 	// `status --per-type`; surfacing the concrete error here is what makes a
 	// planner crash distinguishable from "the orchestrator never dispatched it".
 	planErrors := outcome.PlanErrors
+	// seedsByType records each type's RAW seed-event count (before the filter
+	// chain), so a reader can tell "detector fired on nothing (seed==0)" apart
+	// from "detector fired but the filters converged to zero (seed>0)". Both
+	// read as "0 candidates" in candidates_by_type, and the distinction is what
+	// answers "is zero candidates a detector bug or a filter over-aggressive".
+	seedsByType := map[string]int{}
 
 	vulnTypes := planner.AllVulnTypes()
 
@@ -170,6 +176,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 		}
 		result := outcome.Plans[i]
 		totalSeedCount += result.Summary.SeedCount
+		seedsByType[vulnType] = result.Summary.SeedCount
 
 		filterChainJSON, _ := json.Marshal(result.Summary.Filters)
 
@@ -318,10 +325,21 @@ func runScanCmd(ctx context.Context, args []string) int {
 		candidatesByType[vt] = distinctFindingLocations(cands)
 	}
 
+	// detectorErrors surfaces any detector that failed without aborting the run.
+	// It is the detector-stage twin of plan_errors: a failed detector means the
+	// vuln types it feeds may read as 0 candidates WITHOUT being a genuine
+	// absence, so it must reach the orchestrator's report, not just scan.log.
+	detectorErrors := map[string]string{}
+	for _, de := range outcome.DetectorErrors {
+		detectorErrors[de.Detector] = de.Err.Error()
+	}
+
 	output := map[string]interface{}{
 		"scan_id":                 scanID,
 		"candidates_by_type":      candidatesByType,
+		"seeds_by_type":           seedsByType,
 		"plan_errors":             planErrors,
+		"detector_errors":         detectorErrors,
 		"total_candidates":        totalCandidates,
 		"auto_confirmed_count":    totalAutoConfirmed,
 		"suppressed_count":        totalSuppressed,
@@ -633,9 +651,10 @@ func isUnder(dir, path string) bool {
 
 func runStatusCmd(ctx context.Context, args []string) int {
 	dbPath, dbExplicit, _ := parseDBFlag(args)
-	dbPath = resolveDBPath(dbExplicit, dbPath, ".")
+	var found bool
+	dbPath, found = resolveExistingDBPath(dbExplicit, dbPath)
 
-	if _, err := os.Stat(dbPath); err != nil {
+	if !found {
 		WriteJSON(map[string]interface{}{
 			"indexed": false,
 			"message": "No sgre.db found. Run 'secguard scan <path>' to create an index.",

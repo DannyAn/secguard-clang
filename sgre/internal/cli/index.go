@@ -120,9 +120,10 @@ func runIndexCmd(ctx context.Context, args []string) int {
 		return 1
 	}
 
-	if err := evidence.RunAllDetectors(ctx, store, p, logger); err != nil {
-		WriteErrorJSON(fmt.Sprintf("detectors failed: %v", err))
-		return 1
+	detectorErrors := evidence.RunAllDetectors(ctx, store, p, logger)
+	detErrMap := map[string]string{}
+	for _, de := range detectorErrors {
+		detErrMap[de.Detector] = de.Err.Error()
 	}
 
 	funcs, err := store.ListFunctions(ctx)
@@ -136,6 +137,7 @@ func runIndexCmd(ctx context.Context, args []string) int {
 		"functions_indexed":  result.FunctionsIndexed,
 		"functions_in_index": len(funcs),
 		"files_skipped":      result.FilesSkipped,
+		"detector_errors":    detErrMap,
 	})
 	return 0
 }

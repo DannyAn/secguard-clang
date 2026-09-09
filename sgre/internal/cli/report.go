@@ -225,7 +225,11 @@ func dedupeAndNormalizeFindings(ctx context.Context, store db.Store, findings []
 func runReportCmd(ctx context.Context, args []string) int {
 	dbPath, dbExplicit, remaining := parseDBFlag(args)
 
-	dbPath = resolveDBPath(dbExplicit, dbPath, ".")
+	dbPath, found := resolveExistingDBPath(dbExplicit, dbPath)
+	if !found {
+		WriteErrorJSON("no sgre.db found; run 'secguard scan <path>' first")
+		return 1
+	}
 
 	store, err := openStore(ctx, dbPath)
 	if err != nil {

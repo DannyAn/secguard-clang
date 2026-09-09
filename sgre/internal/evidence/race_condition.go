@@ -215,9 +215,30 @@ func (d *RaceConditionDetector) collectThreadTargets(calls []parser.Node, f *db.
 		}
 		args := extractCallArgs(call)
 		if len(args) >= 3 {
-			counts[strings.TrimSpace(args[2])]++
+			if name := threadFnName(args[2]); name != "" {
+				counts[name]++
+			}
 		}
 	}
+}
+
+// threadFnName normalizes a pthread_create thread-function argument to a bare
+// function name: it strips a leading `&` and any cast prefix, so `&worker`,
+// `(void *(*)(void *))worker`, and `worker` all resolve to "worker". Without
+// this, `pthread_create(..., &worker, ...)` — the common address-taken form —
+// never matched the indexed function name and shared-data races were missed.
+func threadFnName(arg string) string {
+	s := strings.TrimSpace(arg)
+	s = strings.TrimPrefix(s, "&")
+	s = strings.TrimSpace(s)
+	for strings.HasPrefix(s, "(") {
+		end := strings.Index(s, ")")
+		if end < 0 {
+			break
+		}
+		s = strings.TrimSpace(s[end+1:])
+	}
+	return s
 }
 
 // detectCrossFunctionDataRace flags classic data races across ALL thread

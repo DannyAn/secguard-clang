@@ -28,7 +28,11 @@ func runDbCmd(ctx context.Context, args []string) int {
 	}
 	query := strings.Join(remaining, " ")
 
-	dbPath = resolveDBPath(dbExplicit, dbPath, ".")
+	dbPath, found := resolveExistingDBPath(dbExplicit, dbPath)
+	if !found {
+		WriteErrorJSON("no sgre.db found; run 'secguard scan <path>' first")
+		return 1
+	}
 
 	queryUpper := strings.ToUpper(strings.TrimSpace(query))
 	if !strings.HasPrefix(queryUpper, "SELECT") && !strings.HasPrefix(queryUpper, "WITH") {

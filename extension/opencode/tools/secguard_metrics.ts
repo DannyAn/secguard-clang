@@ -13,7 +13,7 @@ function findSecguard(context: { worktree?: string, directory?: string }): strin
 
 export default tool({
   description:
-    "Read SecGuard scan-level performance and convergence metrics from the local database: per-phase durations (index/graph/detectors/plan/report), raw->converged candidate reduction, report + evidence size, and an estimated AI-input token count (bytes ÷ 4). With all=true, lists the most recent runs newest-first. Read-only — it never writes or re-scans. Use it to answer 'how long did the scan take' or 'how much context/cost did this scan consume'.",
+    "Read SecGuard scan-level performance and convergence metrics from the local database: per-phase durations (index/graph/detectors/convergence/report), raw->converged candidate reduction, report + evidence size, and an estimated AI-input token count (bytes ÷ 4). duration_ms/duration_sec is the AUTOMATED-ANALYSIS wall clock only (index+graph+detectors+convergence+auto-confirm) and EXCLUDES the AI Agent classification stage, so never present it as end-to-end scan time. With all=true, lists the most recent runs newest-first. Read-only — it never writes or re-scans. Use it to answer 'how long did the automated analysis take' or 'how much context/cost did this scan consume'.",
   args: {
     all: tool.schema
       .boolean()
