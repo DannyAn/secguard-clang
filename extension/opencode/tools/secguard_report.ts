@@ -67,6 +67,10 @@ export default tool({
       .boolean()
       .optional()
       .describe("Whether to regenerate report.md/result.sarif/result.xlsx/findings/ after this call. Defaults to true. For a large type split into many write chunks, pass false on every chunk except the last (or leave finalization to the orchestrator's single `report --audit`) to avoid re-rendering the whole report once per chunk."),
+    ai_duration_ms: tool.schema
+      .number()
+      .optional()
+      .describe("The MEASURED AI-classification wall-clock in milliseconds, recorded only by the orchestrator's single final `report --audit` (from scan return to finalize). Persisted to scan_runs.ai_duration_ms for production timing analysis. Omit on per-chunk writes."),
   },
   async execute(args, context) {
     let workDir = context.directory || context.worktree || "."
@@ -80,12 +84,18 @@ export default tool({
     // Regenerates report.md (verdict-stage, confirmed+suspected) + audit-report.md
     // + result.sarif and re-syncs findings/ from the DB. Called after a write
     // batch so the report reflects the persisted verdicts.
-    const runAudit = async (scanId: string, outDir: string) => {
+    const runAudit = async (scanId: string, outDir: string, aiDurationMs?: number) => {
       try {
-        const auditResult = await Bun.$`${secguardBin} report --db ${dbPath} --audit --scan-id ${scanId} --output-dir ${outDir}`
-          .cwd(workDir)
-          .quiet()
-          .text()
+        const hasAI = aiDurationMs != null && aiDurationMs >= 0
+        const auditResult = hasAI
+          ? await Bun.$`${secguardBin} report --db ${dbPath} --audit --scan-id ${scanId} --output-dir ${outDir} --ai-duration-ms ${aiDurationMs}`
+            .cwd(workDir)
+            .quiet()
+            .text()
+          : await Bun.$`${secguardBin} report --db ${dbPath} --audit --scan-id ${scanId} --output-dir ${outDir}`
+            .cwd(workDir)
+            .quiet()
+            .text()
         return JSON.parse(auditResult.trim())
       } catch {
         return null // Best-effort — audit generation failure is non-fatal
@@ -160,7 +170,7 @@ export default tool({
       // report is not re-rendered once per chunk — that per-chunk re-render was
       // the "output-then-look-it-up-again" work the speed pass removes.
       if (args.finalize !== false && outputDir && scanId) {
-        const auditJson = await runAudit(scanId, outputDir)
+        const auditJson = await runAudit(scanId, outputDir, args.ai_duration_ms)
         if (auditJson) {
           auditPath = auditJson.audit_path
           // The audit pass re-syncs findings/ with the database: it reports how

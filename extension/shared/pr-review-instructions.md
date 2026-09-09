@@ -19,8 +19,8 @@ Review only the incremental changes of a PR/MR (or an arbitrary git diff) with t
    `secguard report --write-json <tmpdir>/<type>.json --scan-id <review_id> --db <db_path>`
    `<db_path>` = `<review_dir>/../../.sgre/sgre.db`，`<tmpdir>` = `<review_dir>/../../.sgre/.tmp/`（与全仓同一套路径派生）。
 4. 所有类型写完跑一次：
-   `secguard report --audit --scan-id <review_id> --output-dir <review_dir>`
-   再读 `<review_dir>/result.sarif` 确认非空、`ls <review_dir>/findings/` 确认判定落盘。
+   `secguard report --audit --scan-id <review_id> --output-dir <review_dir> --ai-duration-ms <ms>`
+   再读 `<review_dir>/result.sarif` 确认非空、`ls <review_dir>/findings/` 确认判定落盘。`<ms>` 是本轮 AI 研判实测墙钟（从拿到 review 结果进入分类，到本次收尾 audit 的毫秒数）。
 
 ## 与全仓 scan 的关键区别（agent 只需记住这些）
 

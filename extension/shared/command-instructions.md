@@ -61,12 +61,14 @@ batch to a NEW filename (`<type>.json`, `<type>-2.json`, …) and pass that exac
 path to `--write-json`. If a Write still returns "must read before overwriting",
 do NOT stop to inspect the directory — just pick the next fresh filename.
 
-Write one `--write-json` per type (all of that type's findings in one array),
-then run `secguard report --audit --scan-id <scan_id> --output-dir <scan_dir>`
-ONCE at the very end to regenerate `report.md` (now reflecting confirmed+suspected
-verdicts, not candidates) + `result.sarif` + `findings/`. On OpenCode the
-`secguard_report` tool already does this loop + audit for you (and JSON-encodes
-for you).
+Write one `--write-json` per type (all of that type's findings in one array).
+The FINAL audit (`report.md` verdict-stage + `result.sarif` + `findings/`) is the
+**orchestrator's** single `secguard report --audit --scan-id <scan_id> --output-dir <scan_dir> --ai-duration-ms <ms>`
+at the very end (see step 5) — never per chunk, never by a subagent. On OpenCode
+the subagents write via the `secguard_report` tool with `finalize: false` (and the
+orchestrator's final audit is still that same shell `report --audit --ai-duration-ms`
+command; the `secguard_report` tool also accepts `ai_duration_ms` if you finalize
+through it).
 
 **Never** re-run a write to "verify" it — the write is idempotent, and `secguard
 db` is read-only, so a stray duplicate would force you to edit SQLite by hand.
