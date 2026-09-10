@@ -16,10 +16,13 @@ type SummaryData struct {
 	FilesIndexed     int
 	FunctionsIndexed int
 	FunctionsInIndex int
-	TypeBreakdown    []TypeBreakdownEntry
-	ReportPath       string
-	SarifPath        string
-	LatestPath       string
+	// LinesOfCode completes the scan-scale trio (files / functions / lines)
+	// reported alongside report.md's `## Scan Overview`.
+	LinesOfCode   int
+	TypeBreakdown []TypeBreakdownEntry
+	ReportPath    string
+	SarifPath     string
+	LatestPath    string
 }
 
 type TypeBreakdownEntry struct {
@@ -44,7 +47,11 @@ func BuildScanSummary(data SummaryData) string {
 	}
 	fmt.Fprintf(&b, "| Files Indexed | %d |\n", data.FilesIndexed)
 	fmt.Fprintf(&b, "| Functions Indexed | %d |\n", data.FunctionsIndexed)
-	fmt.Fprintf(&b, "| Functions In Index | %d |\n\n", data.FunctionsInIndex)
+	fmt.Fprintf(&b, "| Functions In Index | %d |\n", data.FunctionsInIndex)
+	if data.LinesOfCode > 0 {
+		fmt.Fprintf(&b, "| Lines Of Code | %d |\n", data.LinesOfCode)
+	}
+	b.WriteString("\n")
 
 	b.WriteString("### Candidates by Skill\n\n")
 	if len(data.TypeBreakdown) == 0 || data.TotalCandidates == 0 {

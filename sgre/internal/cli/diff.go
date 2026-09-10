@@ -155,6 +155,7 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 
 	evidencePackages := []map[string]interface{}{}
 	totalCandidates := 0
+	totalSeedCount := 0
 	totalSuppressed := 0
 	totalBaselineExisting := 0
 	totalAutoConfirmed := 0
@@ -195,6 +196,7 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 			needsReview = append(needsReview, autoUnwritten...)
 		}
 		totalAutoConfirmed += autoWritten
+		totalSeedCount += result.Summary.SeedCount
 
 		if _, err := store.InsertScanStat(ctx, &db.ScanStat{
 			ScanID:      reviewID,
@@ -266,6 +268,14 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 		FunctionsIndexed: indexResult.FunctionsIndexed,
 		FunctionsInIndex: functionsInIndex,
 		FilesSkipped:     indexResult.FilesSkipped,
+		LinesOfCode:      indexResult.LinesOfCode,
+		TargetPath:       absPath,
+		SeedCount:        totalSeedCount,
+		AutoConfirmed:    totalAutoConfirmed,
+		// A review writes no scan_runs row, so the phase timings are the only
+		// duration figure available for its report header.
+		DurationMs:   outcome.Timings.IndexMs + outcome.Timings.GraphMs + outcome.Timings.DetectorsMs + outcome.Timings.PlanMs,
+		TypesScanned: len(evidencePackages),
 	}); err != nil {
 		_ = store.UpdateReviewSessionStatus(ctx, reviewID, "failed")
 		WriteErrorJSON(fmt.Sprintf("failed to write review output: %v", err))
@@ -279,17 +289,17 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 	_ = store.UpdateReviewSessionStatus(ctx, reviewID, "done")
 
 	output := map[string]interface{}{
-		"review_id":              reviewID,
-		"kind":                   kind,
-		"base":                   base,
-		"head":                   head,
-		"changed_files":          len(d.Files),
-		"candidates_by_type":     candidatesByType,
-		"plan_errors":            planErrors,
-		"total_candidates":       totalCandidates,
-		"auto_confirmed_count":   totalAutoConfirmed,
-		"suppressed_count":       totalSuppressed,
-		"baseline_existing_count": totalBaselineExisting,
+		"review_id":                   reviewID,
+		"kind":                        kind,
+		"base":                        base,
+		"head":                        head,
+		"changed_files":               len(d.Files),
+		"candidates_by_type":          candidatesByType,
+		"plan_errors":                 planErrors,
+		"total_candidates":            totalCandidates,
+		"auto_confirmed_count":        totalAutoConfirmed,
+		"suppressed_count":            totalSuppressed,
+		"baseline_existing_count":     totalBaselineExisting,
 		"files_with_candidates_count": len(filesList),
 		"index_summary": map[string]interface{}{
 			"files_indexed":      indexResult.FilesIndexed,
@@ -297,9 +307,9 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 			"functions_in_index": functionsInIndex,
 			"files_skipped":      indexResult.FilesSkipped,
 		},
-		"target_path":      absPath,
-		"review_dir":       reviewDir,
-		"candidates_sarif": filepath.Join(reviewDir, report.CandidatesSarifFile),
+		"target_path":       absPath,
+		"review_dir":        reviewDir,
+		"candidates_sarif":  filepath.Join(reviewDir, report.CandidatesSarifFile),
 		"result_sarif_note": fmt.Sprintf("%s is written by `report --audit` after classification; the review writes %s (unclassified leads at level \"note\")", report.SarifFile, report.CandidatesSarifFile),
 	}
 

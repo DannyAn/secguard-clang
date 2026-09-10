@@ -15,6 +15,7 @@ func TestBuildScanSummary_Header(t *testing.T) {
 		FilesIndexed:     42,
 		FunctionsIndexed: 128,
 		FunctionsInIndex: 103,
+		LinesOfCode:      9001,
 		TypeBreakdown:    []TypeBreakdownEntry{{Type: "null-deref", CWE: "CWE-476", Count: 5}},
 		ReportPath:       "/abs/report.md",
 		SarifPath:        "/abs/result.sarif",
@@ -31,6 +32,7 @@ func TestBuildScanSummary_Header(t *testing.T) {
 		"| Files Indexed | 42 |",
 		"| Functions Indexed | 128 |",
 		"| Functions In Index | 103 |",
+		"| Lines Of Code | 9001 |",
 	}
 	for _, check := range checks {
 		if !strings.Contains(out, check) {

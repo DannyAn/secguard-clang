@@ -118,7 +118,7 @@ func TestWriteReportFromFindings_ExcludesDismissed(t *testing.T) {
 	dir := t.TempDir()
 	reportPath := filepath.Join(dir, ReportFile)
 
-	if err := WriteReportFromFindings(reportPath, "", verdictFindings()); err != nil {
+	if err := WriteReportFromFindings(reportPath, "", verdictFindings(), ScanOverview{}); err != nil {
 		t.Fatalf("WriteReportFromFindings: %v", err)
 	}
 
@@ -140,7 +140,7 @@ func TestWriteReportFromFindings_ShowsActionable(t *testing.T) {
 	dir := t.TempDir()
 	reportPath := filepath.Join(dir, ReportFile)
 
-	if err := WriteReportFromFindings(reportPath, "", verdictFindings()); err != nil {
+	if err := WriteReportFromFindings(reportPath, "", verdictFindings(), ScanOverview{}); err != nil {
 		t.Fatalf("WriteReportFromFindings: %v", err)
 	}
 
@@ -187,7 +187,7 @@ func TestWriteReportFromFindings_IncludesPlainSuspected(t *testing.T) {
 		},
 	}
 
-	if err := WriteReportFromFindings(reportPath, "", findings); err != nil {
+	if err := WriteReportFromFindings(reportPath, "", findings, ScanOverview{}); err != nil {
 		t.Fatalf("WriteReportFromFindings: %v", err)
 	}
 
@@ -208,7 +208,7 @@ func TestWriteReportFromFindings_GroupsByVulnType(t *testing.T) {
 	dir := t.TempDir()
 	reportPath := filepath.Join(dir, ReportFile)
 
-	if err := WriteReportFromFindings(reportPath, "", verdictFindings()); err != nil {
+	if err := WriteReportFromFindings(reportPath, "", verdictFindings(), ScanOverview{}); err != nil {
 		t.Fatalf("WriteReportFromFindings: %v", err)
 	}
 
@@ -226,7 +226,7 @@ func TestWriteReportFromFindings_EmptyFindings(t *testing.T) {
 	dir := t.TempDir()
 	reportPath := filepath.Join(dir, ReportFile)
 
-	if err := WriteReportFromFindings(reportPath, "", nil); err != nil {
+	if err := WriteReportFromFindings(reportPath, "", nil, ScanOverview{}); err != nil {
 		t.Fatalf("WriteReportFromFindings with nil findings: %v", err)
 	}
 
@@ -249,7 +249,7 @@ func TestWriteReportFromFindings_RespectsReviewStatus(t *testing.T) {
 		},
 	}
 
-	if err := WriteReportFromFindings(reportPath, "", findings); err != nil {
+	if err := WriteReportFromFindings(reportPath, "", findings, ScanOverview{}); err != nil {
 		t.Fatalf("WriteReportFromFindings: %v", err)
 	}
 

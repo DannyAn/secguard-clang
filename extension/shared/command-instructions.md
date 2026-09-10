@@ -394,6 +394,21 @@ as `result.sarif`.)
    non-empty and `findings/` has files; if not, a write did not land — find the
    `per_finding_warning` and fix it.
 
+   **`summary` — 全轮汇总的唯一权威（控制台/最终报告不要自己相加 `audits`）:** the
+   audit response carries `summary`, the scan-wide aggregate that the per-type
+   `audits` array lacks (the console used to show per-type confirmed/suspected
+   counts with no total). Read the aggregate from it verbatim:
+   `scale` / `files_indexed` / `functions_indexed` / `lines_of_code`（规模）,
+   `raw_seeds` / `converged_candidates`（收敛前→后；**这两个只用于内部核对，
+   不得写进给用户的最终回复**——见 Output Format 末尾的"不要暴露流水线内部量"）,
+   `auto_confirmed` / `ai_confirmed` / `confirmed_total`（`confirmed_total` 已含
+   auto-confirmed，**不是**二者再相加）, `suspected_total` / `dismissed_total` /
+   `actionable_total`（= `confirmed_total` + `suspected_total`）,
+   `unclassified_candidates`, `types_scanned` / `types_with_findings`,
+   `automated_analysis_ms` / `ai_classification_ms`, and `headline`.
+   `summary` 与 `report.md`/`audit-report.md` 是同一份数据的三处渲染，**一律以
+   `summary` 为准**；自行推算出的数字一旦与 `report.md` 不一致，就是错的。
+
 6. **Report**: emit the Markdown report (报告头 / 摘要 / 总览表 / 问题表 /
    观察项表 / 逐条详情) per the Output Format, aggregating the
    subagents' returned counts. Reference `report.md`, `result.sarif`, and
@@ -420,19 +435,28 @@ Selected types: <parsed type filter>
    (non-empty) and list `<output_dir>/findings/` to confirm your verdicts
    landed; if not, fix the failing write before reporting.
 4. Report for the selected types only (报告头 / 摘要 / 总览表 / 问题表), note
-   skipped/failed types, reference `result.sarif` only after verifying it.
+   skipped/failed types, reference `result.sarif` only after verifying it. The
+   摘要 paragraph is MANDATORY here too: use the same
+   `本轮扫描发现 <A> 个问题：确认 <X> 个，疑似 <Y> 个。` sentence, restricted to the
+   selected types (state explicitly that the scope is a type subset, so the
+   numbers are not read as a full-scan verdict).
 
 ## Output Format (final reply to the user)
 
 Report the diagnostic conclusion in Chinese, Markdown tables only:
 
-1. 报告头: `代码仓：<repo abs path>；扫描目录：<scanned dir abs path>；规模：<N> 文件 / <M> 函数`。**必须给出三个时间口径（用于生产反馈与分析，勿估算，抓真实墙钟）**：
+1. 报告头: `代码仓：<repo abs path>；扫描目录：<scanned dir abs path>；规模：<N> 文件 / <M> 函数 / <L> 行`。**规模三个数一律取自 `secguard_scan` 的 `index_summary`（`files_indexed`/`functions_indexed`）与 `report --audit` 的 `summary`（`lines_of_code`）；任一项缺失就写"未统计"，不要留空、不要估算**。**必须给出三个时间口径（用于生产反馈与分析，勿估算，抓真实墙钟）**：
    - `自动分析耗时 ≈ <scan_metrics.duration_ms/1000> 秒`（`secguard scan` 二进制自身墙钟：索引 + 建图 + 检测 + 多层过滤收敛 + 机器 auto-confirm + 出候选报告，**不含 AI Agent 研判**）。
    - `AI 研判耗时 = <秒>`（**实测**：从 `secguard_scan` 返回、进入第 2 步 Scale gate 起，到第 6 步出最终报告为止的墙钟；用你的工具计时，不要估算）。
    - `端到端耗时 = <秒>`（自动分析 + AI 研判 + 编排调度开销）。
    **不要用"流水线"描述时间**："流水线/收敛"是**候选数量**概念（raw seeds → 层层过滤 → final），不是时间口径；把二进制耗时说成"流水线耗时"既漏了 AI 研判这一环、又和"扫描耗时"语义打架，才会出现"10 分钟 vs 3~4 小时"的误会。
-2. 摘要: `本次审计确认 X 个问题、疑似 Y 个问题。` (X/Y = confirmed/suspected verdicts, NOT candidate counts)
-3. 总览表: `| Skill | 类别 | 确认 | 疑似 | 已排除误报 |`
+2. 摘要（**必须，独立成段，位于总览表之前**）: 先给一句全轮汇总，再给确认数的构成，例如
+   `本轮扫描发现 <A> 个问题：确认 <X> 个，疑似 <Y> 个。其中 <X1> 个由流水线自动确认（无需 AI 研判）、<X2> 个由 AI 研判确认；已排除误报 <D> 个。`
+   - `<A>` = `summary.actionable_total`；`<X>` = `summary.confirmed_total`（**已含 auto-confirmed**）；`<Y>` = `summary.suspected_total`；`<X1>` = `summary.auto_confirmed`；`<X2>` = `summary.ai_confirmed`；`<D>` = `summary.dismissed_total`。
+   - **禁止**用 `audits` 数组自行相加、禁止用 `ls findings/` 反推：`findings/` 的 confirmed 文件数 = auto-confirmed + AI confirmed，多加出来的那部分不是漏报。
+   - 若 `<A> == 0`：写 `本轮扫描未发现确认或疑似问题（<D> 项候选已全部排除为误报）。`——**不要**省略本段。
+   - 若 `summary.unclassified_candidates > 0`，在摘要后补一句 `另有 <U> 项候选未落库判定，见观察项表。`
+3. 总览表: `| Skill | 类别 | 确认 | 疑似 | 已排除误报 |`，末行加 `| **合计** | | **<X>** | **<Y>** | **<D>** |`（数字须与第 2 段摘要完全一致）
 4. 问题表: `| Skill | 文件:行号 | 函数 | 严重度 | 结论 | 说明 |` (confirmed + suspected)
 5. 观察项表 (if some types were not persisted): `| Skill | 说明 |`
 6. 逐条详情: Reasoning / Exception Check / Fix Strategy per confirmed+suspected

@@ -86,6 +86,7 @@ func (s *mockStore) ListFunctionsByFile(ctx context.Context, fileID int64) ([]*d
 	return result, nil
 }
 func (s *mockStore) ListFunctions(ctx context.Context) ([]*db.Function, error) { return s.funcs, nil }
+func (s *mockStore) CountFunctions(ctx context.Context) (int, error)          { return len(s.funcs), nil }
 func (s *mockStore) ListFunctionsByIDs(ctx context.Context, ids []int64) (map[int64]*db.Function, error) {
 	want := make(map[int64]bool, len(ids))
 	for _, id := range ids {

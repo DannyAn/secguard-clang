@@ -4,6 +4,24 @@
 
 ## [0.6.1] - 2026-09-09
 
+### 报告增强（本轮扫描规模 + 全轮汇总）
+
+此前 verdict 阶段 `report.md`（`report --audit` 覆写后的那份）只有 confirmed/suspected/dismissed 计数：覆写时丢掉了 `scan` 阶段写进去的扫描规模（文件/函数数），也不带 Scan ID；`audit-report.md` 同样没有规模口径；控制台/TUI 只能看到 `audits` 数组的每类型 confirmed/suspected，**没有全轮汇总**。
+
+- **新增共享渲染器 `report.ScanOverview`**（`sgre/internal/report/overview.go`）：扫描规模 + 汇总只在这一处定义，`report.md`、`audit-report.md`、CLI 的 `summary` 三处共用，数字不可能互相打架。未知值（老 scan 无 `scan_runs` 行）渲染为 `n/a`/省略，**不打印成 0**（0 会被读成"这个库没有文件"）。
+- **verdict 阶段 `report.md`**：新增 `## Scan Overview`（Scan ID / Target / 扫描时间 / 自动分析耗时 / AI 研判耗时 / 规模 N 文件·M 函数·L 行 / 漏洞类型数）与 `## Result Summary`（一句话结论 + 漏斗 + 严重度分布）：
+  - 一句话结论形如 `This scan reported 7 actionable issues: 5 confirmed, 2 suspected. Of the confirmed ones, 3 auto-confirmed by the pipeline (no AI review) and 2 classified by the AI.`
+  - 漏斗：Files scanned / Functions scanned / Functions in index / Lines of code / Raw evidence seeds / Converged candidates / Confirmed findings（拆成 auto-confirmed + AI confirmed）/ Suspected / Dismissed / Actionable / 未落库候选（>0 才出现）。
+  - `### Findings by Severity`：确认/疑似按 critical→high→medium→low→info 分布 + 合计。
+  - `## Findings by Skill` 增加 `TOTAL` 行。
+  - 关键指标由 `findings` **重算**（而不是信调用方传入的数），报告里"确认 5 个"永远不会和下表的清单矛盾。
+- **candidate 阶段 `report.md`**：同样的 `## Scan Overview` + `## Result Summary`（收敛候选 / auto-confirm / 待 AI 研判 / 有候选的类型数）。`IndexSummary` 新增 `lines_of_code` / `target_path` / `seed_count` / `auto_confirmed` / `started_at` / `duration_ms` / `types_scanned`；`indexer.IndexResult` 新增 `LinesOfCode`（索引时顺带累加，不额外查库）；`db.FunctionStore` 新增 `CountFunctions`（报告头只要规模数字，不必加载上千行函数）。
+- **`audit-report.md`**：开头与 `report.md` 同构的 `## Scan Overview` + 一句话结论（不再重复 `## AI Value Summary` 的漏斗，避免同一份数字出现两次）。Scan ID 现在也出现在这里（此前只有一行裸 ID）。
+- **`report --audit` JSON 新增 `summary`**（TUI/控制台的全轮汇总来源）：`headline`、`scale`、`files_indexed`、`functions_indexed`、`lines_of_code`、`raw_seeds`、`converged_candidates`、`auto_confirmed`、`ai_confirmed`、`confirmed_total`、`suspected_total`、`dismissed_total`、`actionable_total`、`unclassified_candidates`、`types_scanned`、`types_with_findings`、`automated_analysis_ms`、`ai_classification_ms`、`severity_breakdown`。`confirmed_total` 已含 auto-confirmed，`actionable_total = confirmed_total + suspected_total`。
+- **编排/Agent 指令**：最终报告的摘要段改为**强制、独立成段**的 `本轮扫描发现 <A> 个问题：确认 <X> 个，疑似 <Y> 个。其中 <X1> 个由流水线自动确认（无需 AI 研判）、<X2> 个由 AI 研判确认；已排除误报 <D> 个。`，数字**只**允许取自 `summary`（禁止自行相加 `audits`、禁止用 `ls findings/` 反推）；总览表增加 `合计` 行；报告头规模补 `行` 数。同步更新 `extension/deepseek-harness/agent.cordis.yml`（DSH preset 的输出格式是手写副本，不是 `{{include}}`）与 `extension/shared/agent-body.md`（子代理只报自己负责类型的数，全轮汇总归编排器）。
+- **控制台**：`secguard scan` 的 stderr 摘要补 `Lines Of Code`；OpenCode 的 `secguard_scan` 工具摘要（TUI 里的那份）开头补一行规模汇总 `此轮扫描规模：N files / M functions / L lines；收敛候选 K 个（其中 A 个已由流水线自动确认…）`，并新增 `Auto-confirmed` / `Lines of Code` 行与 `lines_of_code`/`auto_confirmed_count` 返回字段。
+- `docs/output-protocol.md` 同步 `report.md` / `audit-report.md` 的新契约，并新增 `report --audit` JSON `summary` 的字段表。
+
 ### 稳定性（扫描阶段）
 
 - **修复两个数据库问题**：`plan`/`report`/`status`/`metrics`/`db`/`query` 现在从 cwd 向上查找项目 DB（`.codeagent/secguard-clang/.sgre/sgre.db`），不再在 `scans/<id>/` 下铸出第二个空 DB；编排指令移除 "cd 进 scan 目录" 的恢复建议。

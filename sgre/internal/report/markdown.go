@@ -17,10 +17,18 @@ import (
 // (false-positive) findings are excluded; the report contains only confirmed +
 // suspected, matching result.sarif and the findings/ directory.
 //
+// `overview` carries the scan-scale and pipeline-funnel figures (files /
+// functions / lines scanned, raw seeds, converged candidates, auto-confirmed,
+// durations). Its aggregate rows are recomputed here from `findings` when they
+// disagree — a report that says "5 confirmed" must never be able to contradict
+// the very list of findings printed below it. Pass the zero value when the scan
+// metrics are unknown (older scans, unit tests): unknown values are omitted
+// rather than rendered as a misleading 0.
+//
 // This is called from `report --audit` after the AI classification is persisted,
 // overwriting the candidate-stage report.md so a reader never sees stale
 // unclassified leads mixed with the final verdicts.
-func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding) error {
+func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding, overview ScanOverview) error {
 	// Derive the project root from the report's scan directory when not given,
 	// so file paths render repo-relative the same way result.sarif/result.xlsx
 	// resolve them (and a reader can re-locate the source).
@@ -39,11 +47,15 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding)
 	groupIdx := map[string]int{}
 
 	confirmed, suspected, dismissed := 0, 0, 0
+	autoConfirmed := 0
 	for _, f := range findings {
 		status := f.FinalStatus()
 		switch status {
 		case "confirmed":
 			confirmed++
+			if f.Status == db.StatusAutoConfirmed {
+				autoConfirmed++
+			}
 		case "suspected":
 			suspected++
 		case "dismissed":
@@ -72,21 +84,24 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding)
 		return groups[i].vulnType < groups[j].vulnType
 	})
 
+	// Every verdict figure is re-derived from `findings` — the list this report
+	// prints below — so the aggregate rows can never disagree with it. Only the
+	// scan-scale and pipeline-funnel figures come from the caller.
+	overview.TypesWithFindings = len(groups)
+	overview.SeverityCounts = CountSeverities(findings)
+	overview.AutoConfirmed = autoConfirmed
+	overview.AIConfirmed = confirmed - autoConfirmed
+	overview.AISuspected = suspected
+	overview.AIDismissed = dismissed
+
 	var b strings.Builder
 
 	b.WriteString("# SecGuard Security Scan Report\n\n")
-	b.WriteString(fmt.Sprintf("**Tool:** secguard-clang v%s\n\n", ToolVersion))
 	b.WriteString("> This report reflects **AI-classified findings** (confirmed + suspected).\n")
 	b.WriteString("> Dismissed false-positives are excluded. Pipeline candidates are in `candidates/`.\n\n")
 
-	b.WriteString("## Summary\n\n")
-	b.WriteString("| Metric | Value |\n")
-	b.WriteString("|--------|-------|\n")
-	b.WriteString(fmt.Sprintf("| Confirmed findings | %d |\n", confirmed))
-	b.WriteString(fmt.Sprintf("| Suspected findings | %d |\n", suspected))
-	b.WriteString(fmt.Sprintf("| Dismissed (false positives) | %d |\n", dismissed))
-	b.WriteString(fmt.Sprintf("| Actionable findings (confirmed + suspected) | %d |\n", confirmed+suspected))
-	b.WriteString(fmt.Sprintf("| Vulnerability types | %d |\n\n", len(groups)))
+	b.WriteString(overview.MetadataMarkdown())
+	b.WriteString(overview.VerdictMarkdown())
 
 	b.WriteString("## Findings by Skill\n\n")
 	b.WriteString("| Skill | CWE | Confirmed | Suspected | Total |\n")
@@ -102,7 +117,7 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding)
 		}
 		b.WriteString(fmt.Sprintf("| %s | %s | %d | %d | %d |\n", g.vulnType, g.cwe, c, s, len(g.items)))
 	}
-	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("| **TOTAL** | | **%d** | **%d** | **%d** |\n\n", confirmed, suspected, confirmed+suspected))
 
 	for _, g := range groups {
 		b.WriteString(fmt.Sprintf("## %s (%s)\n\n", g.vulnType, g.cwe))
@@ -141,22 +156,40 @@ func (o *ScanOutput) writeReport(packages []*planner.PlanResult, indexSummary In
 	var b strings.Builder
 
 	b.WriteString("# SecGuard Security Scan Report\n\n")
-	b.WriteString(fmt.Sprintf("**Scan ID:** %s\n", o.ScanID))
-	b.WriteString(fmt.Sprintf("**Tool:** secguard-clang v%s\n\n", ToolVersion))
-
-	b.WriteString("## Summary\n\n")
-	b.WriteString("| Metric | Value |\n")
-	b.WriteString("|--------|-------|\n")
-	b.WriteString(fmt.Sprintf("| Files indexed | %d |\n", indexSummary.FilesIndexed))
-	b.WriteString(fmt.Sprintf("| Functions indexed | %d |\n", indexSummary.FunctionsIndexed))
-	b.WriteString(fmt.Sprintf("| Functions in index | %d |\n", indexSummary.FunctionsInIndex))
+	b.WriteString("> This is the **candidate-stage** report (pipeline output, unclassified leads).\n")
+	b.WriteString("> `report --audit` rewrites it once the AI has classified every candidate.\n\n")
 
 	totalCandidates := 0
+	typesWithCandidates := 0
 	for _, pkg := range packages {
 		totalCandidates += len(pkg.Candidates)
+		if len(pkg.Candidates) > 0 {
+			typesWithCandidates++
+		}
 	}
-	b.WriteString(fmt.Sprintf("| Total candidates | %d |\n", totalCandidates))
-	b.WriteString(fmt.Sprintf("| Vulnerability types | %d |\n\n", len(packages)))
+
+	overview := ScanOverview{
+		ScanID:            o.ScanID,
+		Tool:              "secguard-clang v" + ToolVersion,
+		TargetPath:        indexSummary.TargetPath,
+		StartedAt:         indexSummary.StartedAt,
+		DurationMs:        indexSummary.DurationMs,
+		FilesIndexed:      indexSummary.FilesIndexed,
+		FunctionsIndexed:  indexSummary.FunctionsIndexed,
+		FunctionsInIndex:  indexSummary.FunctionsInIndex,
+		FilesInIndex:      indexSummary.FilesIndexed,
+		LinesOfCode:       indexSummary.LinesOfCode,
+		RawSeeds:          indexSummary.SeedCount,
+		Candidates:        totalCandidates,
+		AutoConfirmed:     indexSummary.AutoConfirmed,
+		TypesScanned:      indexSummary.TypesScanned,
+		TypesWithFindings: typesWithCandidates,
+		// The scan's own walk figures are authoritative here (it just measured
+		// them), so the "scanned" pair is the one to render.
+		HasScanMetrics: true,
+	}
+	b.WriteString(overview.MetadataMarkdown())
+	b.WriteString(overview.CandidateMarkdown())
 
 	b.WriteString("## Candidates by Skill\n\n")
 	b.WriteString("| Skill | CWE | Count |\n")
@@ -165,7 +198,7 @@ func (o *ScanOutput) writeReport(packages []*planner.PlanResult, indexSummary In
 		cwe := VulnToCWE(pkg.VulnerabilityType)
 		b.WriteString(fmt.Sprintf("| %s | %s | %d |\n", pkg.VulnerabilityType, cwe, len(pkg.Candidates)))
 	}
-	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("| **TOTAL** | | **%d** |\n\n", totalCandidates))
 
 	// The per-candidate tables live in per-type index files under candidates/, so
 	// a subagent assigned one type (or a candidate range of one type) reads only

@@ -19,6 +19,9 @@ type FunctionStore interface {
 	GetFunctionByName(ctx context.Context, name string) (*Function, error)
 	ListFunctionsByFile(ctx context.Context, fileID int64) ([]*Function, error)
 	ListFunctions(ctx context.Context) ([]*Function, error)
+	// CountFunctions returns the indexed function count without loading the
+	// rows: report headers need only the scale figure.
+	CountFunctions(ctx context.Context) (int, error)
 	// ListFunctionsByIDs returns the functions with the given IDs keyed by ID,
 	// in a single batched query (chunked) instead of one query per ID.
 	ListFunctionsByIDs(ctx context.Context, ids []int64) (map[int64]*Function, error)

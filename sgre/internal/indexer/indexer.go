@@ -22,10 +22,14 @@ type Indexer struct {
 }
 
 type IndexResult struct {
-	FilesIndexed     int   `json:"files_indexed"`
-	FunctionsIndexed int   `json:"functions_indexed"`
-	FilesSkipped     int   `json:"files_skipped"`
-	DurationMs       int64 `json:"duration_ms"`
+	FilesIndexed     int `json:"files_indexed"`
+	FunctionsIndexed int `json:"functions_indexed"`
+	FilesSkipped     int `json:"files_skipped"`
+	// LinesOfCode is the summed line count of every file this run walked
+	// (skipped-but-unchanged files included), so a report header can state the
+	// scanned scale without a second pass over the files table.
+	LinesOfCode int   `json:"lines_of_code"`
+	DurationMs  int64 `json:"duration_ms"`
 }
 
 func NewIndexer(store db.Store, logger *log.Logger) *Indexer {
@@ -89,6 +93,7 @@ func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *Inde
 
 	checksum := computeChecksum(source)
 	loc := countLines(source)
+	result.LinesOfCode += loc
 
 	existing, err := idx.store.GetFileByPath(ctx, filePath)
 	if err != nil {

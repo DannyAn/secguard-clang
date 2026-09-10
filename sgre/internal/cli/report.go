@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/planner"
@@ -783,9 +784,18 @@ func runReportCmd(ctx context.Context, args []string) int {
 		}
 
 		outputDir := parseStringFlag(remaining, "output-dir")
+
+		// The scan-scale + aggregate block every reader-facing artifact opens
+		// with. It is built once here and shared by report.md, audit-report.md
+		// and the `summary` field of this command's JSON envelope, so the three
+		// can never disagree about how big the scan was or how many issues it
+		// found. Verdict figures are re-derived from the findings table, never
+		// from a second source.
+		overview := buildScanOverview(ctx, store, scanID, stats, scanFindings, audits)
+
 		if outputDir != "" {
 			auditPath := filepath.Join(outputDir, "audit-report.md")
-			if err := writeAuditReport(auditPath, scanID, audits); err != nil {
+			if err := writeAuditReport(auditPath, scanID, audits, overview); err != nil {
 				WriteErrorJSON(fmt.Sprintf("failed to write audit report: %v", err))
 				return 1
 			}
@@ -801,7 +811,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 			// human-readable report shows confirmed + suspected verdicts, not
 			// the candidate-stage leads that writeReport emitted at scan time.
 			reportPath := filepath.Join(outputDir, report.ReportFile)
-			if err := report.WriteReportFromFindings(reportPath, "", scanFindings); err != nil {
+			if err := report.WriteReportFromFindings(reportPath, "", scanFindings, overview); err != nil {
 				WriteErrorJSON(fmt.Sprintf("failed to write report.md: %v", err))
 				return 1
 			}
@@ -836,6 +846,14 @@ func runReportCmd(ctx context.Context, args []string) int {
 				// guesses a nonexistent column (type instead of rule_id), which
 				// costs a schema-discovery round-trip.
 				"audits": audits,
+				// The aggregate the per-type breakdown lacks: scan scale (files /
+				// functions / lines) plus the confirmed/suspected/dismissed
+				// totals and the one-line headline. It is the same object
+				// report.md renders, so echoing `summary` into the console can
+				// never contradict the report — and the orchestrator never has to
+				// add up `audits` itself (the console used to show per-type
+				// counts with no total at all).
+				"summary": overview.SummaryFields(),
 			}
 			// Every converged candidate is supposed to receive a persisted
 			// verdict. A nonzero remainder means verdicts exist only in the
@@ -859,6 +877,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 			WriteJSON(map[string]interface{}{
 				"scan_id": scanID,
 				"audits":  audits,
+				"summary": overview.SummaryFields(),
 			})
 		}
 		return 0
@@ -896,6 +915,85 @@ func runReportCmd(ctx context.Context, args []string) int {
 	return 0
 }
 
+// buildScanOverview assembles the scan-scale + aggregate block shared by
+// report.md, audit-report.md and the `summary` envelope field.
+//
+// Verdict figures come from `audits` (itself derived from the findings table) so
+// every reader-facing artifact counts the same rows; scan-scale figures come from
+// the `scan_runs` row the scan wrote, with the indexed `files` table as the
+// fallback for scans that predate that table or for review runs that never write
+// one. A missing metrics row degrades to "n/a" — it is never reported as a scan
+// of 0 files, which would read as an empty codebase.
+func buildScanOverview(ctx context.Context, store db.Store, scanID string, stats []*db.ScanStat, findings []*db.Finding, audits []vulnAuditEntry) report.ScanOverview {
+	ov := report.ScanOverview{
+		ScanID:         scanID,
+		Tool:           "secguard-clang v" + report.ToolVersion,
+		SeverityCounts: report.CountSeverities(findings),
+		TypesScanned:   len(stats),
+	}
+	for _, a := range audits {
+		ov.RawSeeds += a.SeedCount
+		ov.Candidates += a.FinalCount
+		ov.AutoConfirmed += a.AutoConfirmed
+		ov.AIConfirmed += a.Confirmed
+		ov.AISuspected += a.Suspected
+		ov.AIDismissed += a.Dismissed
+		if a.AutoConfirmed+a.Confirmed+a.Suspected > 0 {
+			ov.TypesWithFindings++
+		}
+	}
+	ov.Unclassified = unclassifiedCandidates(audits)
+
+	if run, err := store.GetScanRun(ctx, scanID); err == nil && run != nil {
+		ov.HasScanMetrics = true
+		ov.FilesIndexed = run.FilesIndexed
+		ov.FunctionsIndexed = run.FunctionsIndexed
+		ov.DurationMs = run.DurationMs
+		ov.AIDurationMs = run.AIDurationMs
+		if run.CreatedAt > 0 {
+			ov.StartedAt = time.Unix(run.CreatedAt, 0)
+		}
+	}
+
+	if files, err := store.ListFiles(ctx); err == nil {
+		// FilesInIndex is the whole-graph figure the renderer falls back to when
+		// this scan wrote no metrics row; FilesIndexed stays whatever the scan
+		// measured (0 = not measured) so the two are never conflated.
+		ov.FilesInIndex = len(files)
+		for _, f := range files {
+			ov.LinesOfCode += f.LOC
+		}
+		ov.TargetPath = indexPathRoot(files)
+	}
+	if funcs, err := store.CountFunctions(ctx); err == nil {
+		ov.FunctionsInIndex = funcs
+	}
+	return ov
+}
+
+// indexPathRoot returns the directory the indexed files live under: the longest
+// common directory prefix of every indexed path. scan_runs stores no target
+// path, and the project root the DB lives in may be a PARENT of what was
+// scanned (`secguard scan src/`), so the indexed paths are the only honest
+// source for "what was scanned".
+func indexPathRoot(files []*db.File) string {
+	if len(files) == 0 {
+		return ""
+	}
+	root := filepath.Dir(files[0].Path)
+	for _, f := range files[1:] {
+		dir := filepath.Dir(f.Path)
+		for !strings.HasPrefix(dir+string(filepath.Separator), root+string(filepath.Separator)) {
+			parent := filepath.Dir(root)
+			if parent == root {
+				return root
+			}
+			root = parent
+		}
+	}
+	return root
+}
+
 type vulnAuditEntry struct {
 	VulnType      string `json:"vuln_type"`
 	SeedCount     int    `json:"seed_count"`
@@ -907,14 +1005,23 @@ type vulnAuditEntry struct {
 	AutoConfirmed int    `json:"auto_confirmed"`
 }
 
-func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry) error {
+func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overview report.ScanOverview) error {
 	if err := os.MkdirAll(filepath.Dir(auditPath), 0755); err != nil {
 		return err
+	}
+	// The overview carries the id it was built for; an explicitly passed id wins
+	// so the header can never render without one.
+	if overview.ScanID == "" {
+		overview.ScanID = scanID
 	}
 
 	var b strings.Builder
 	b.WriteString("# SecGuard Audit Report\n\n")
-	b.WriteString(fmt.Sprintf("**Scan ID:** `%s`\n\n", scanID))
+	// The same scale + aggregate header report.md opens with: an audit without
+	// "how big was this scan" and "what was the bottom line" made the two
+	// artifacts answer different questions from the same scan.
+	b.WriteString(overview.MetadataMarkdown())
+	b.WriteString(overview.HeadlineMarkdown())
 	b.WriteString("## Per-Skill Pipeline Statistics\n\n")
 	b.WriteString("| Vulnerability Type | Seed | Final | Auto-confirmed | AI Confirmed | AI Suspected | AI Dismissed | Filter Efficiency | AI Accuracy |\n")
 	b.WriteString("|---|---|---|---|---|---|---|---|---|\n")

@@ -304,6 +304,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 		FilesIndexed:     indexResult.FilesIndexed,
 		FunctionsIndexed: indexResult.FunctionsIndexed,
 		FunctionsInIndex: functionsInIndex,
+		LinesOfCode:      indexResult.LinesOfCode,
 		TypeBreakdown:    typeBreakdown,
 		ReportPath:       filepath.Join(scanDir, report.ReportFile),
 		SarifPath:        filepath.Join(scanDir, report.CandidatesSarifFile),
@@ -354,6 +355,10 @@ func runScanCmd(ctx context.Context, args []string) int {
 			"functions_indexed":  indexResult.FunctionsIndexed,
 			"functions_in_index": functionsInIndex,
 			"files_skipped":      indexResult.FilesSkipped,
+			// Scale figures for the report header / console summary. The same
+			// numbers reach report.md via ScanOverview, so "how big was this
+			// scan" is answered identically wherever it is read.
+			"lines_of_code": indexResult.LinesOfCode,
 		},
 		"target_path":       absPath,
 		"scan_dir":          scanDir,
@@ -386,6 +391,13 @@ func runScanCmd(ctx context.Context, args []string) int {
 		FunctionsIndexed: indexResult.FunctionsIndexed,
 		FunctionsInIndex: functionsInIndex,
 		FilesSkipped:     indexResult.FilesSkipped,
+		LinesOfCode:      indexResult.LinesOfCode,
+		TargetPath:       absPath,
+		SeedCount:        totalSeedCount,
+		AutoConfirmed:    totalAutoConfirmed,
+		StartedAt:        scanStart,
+		DurationMs:       time.Since(scanStart).Milliseconds(),
+		TypesScanned:     len(evidencePackages),
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to write output: %v\n", err)
 		output["report_error"] = fmt.Sprintf("failed to write report: %v", err)

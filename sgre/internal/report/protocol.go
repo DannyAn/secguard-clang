@@ -145,11 +145,31 @@ func (o *ScanOutput) Write(packages []*planner.PlanResult, indexSummary IndexSum
 	return nil
 }
 
+// IndexSummary is the scan-scale half of a report header: what this run indexed
+// and what the pipeline converged, as opposed to the verdict half (which
+// WriteReportFromFindings re-derives from the findings table). It is filled by
+// `secguard scan` / `secguard diff` at report-write time.
 type IndexSummary struct {
 	FilesIndexed     int `json:"files_indexed"`
 	FunctionsIndexed int `json:"functions_indexed"`
 	FunctionsInIndex int `json:"functions_in_index"`
 	FilesSkipped     int `json:"files_skipped"`
+	// LinesOfCode is the summed LOC of every file this run touched; TargetPath
+	// is the directory actually scanned (not the project root the DB lives in,
+	// which may be a parent).
+	LinesOfCode int    `json:"lines_of_code"`
+	TargetPath  string `json:"target_path"`
+	// SeedCount / AutoConfirmed are the pipeline figures a reader needs to see
+	// the reduction (raw seeds -> converged candidates -> machine verdicts).
+	SeedCount     int `json:"seed_count"`
+	AutoConfirmed int `json:"auto_confirmed"`
+	// StartedAt / DurationMs are the automated-analysis wall clock (index +
+	// graph + detectors + convergence + auto-confirm), never the AI stage.
+	StartedAt  time.Time `json:"started_at"`
+	DurationMs int64     `json:"duration_ms"`
+	// TypesScanned is how many vulnerability types the pipeline converged
+	// (including the ones that produced zero candidates).
+	TypesScanned int `json:"types_scanned"`
 }
 
 // DismissedSummary is the persisted dismissed ledger, keyed by vulnerability

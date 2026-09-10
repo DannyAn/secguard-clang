@@ -22,9 +22,24 @@ function printScanSummary(
   const totalCandidates = goJson?.total_candidates ?? 0
   const filesIndexed = goJson?.index_summary?.files_indexed ?? "N/A"
   const functionsIndexed = goJson?.index_summary?.functions_indexed ?? "N/A"
+  const linesOfCode = goJson?.index_summary?.lines_of_code ?? 0
+  const autoConfirmed = goJson?.auto_confirmed_count ?? 0
   const candidatesByType: Record<string, number> = goJson?.candidates_by_type ?? {}
 
+  // One scale line up front, mirroring report.md's `## Scan Overview`: the
+  // console and the artifact must answer "how big was this scan" identically.
+  const scaleParts = [
+    typeof filesIndexed === "number" ? `${filesIndexed} files` : "files n/a",
+    typeof functionsIndexed === "number" ? `${functionsIndexed} functions` : "functions n/a",
+  ]
+  if (typeof linesOfCode === "number" && linesOfCode > 0) scaleParts.push(`${linesOfCode} lines`)
+
   let out = "## SecGuard Scan Summary\n\n"
+  out += `**此轮扫描规模：${scaleParts.join(" / ")}；收敛候选 ${totalCandidates} 个`
+  if (autoConfirmed > 0) {
+    out += `（其中 ${autoConfirmed} 个已由流水线自动确认，无需 AI 研判）`
+  }
+  out += "。**\n\n"
   out += "| Field | Value |\n"
   out += "|-------|-------|\n"
   out += `| Scan ID | ${scanId} |\n`
@@ -32,13 +47,15 @@ function printScanSummary(
   out += `| Workspace | ${workspace} |\n`
   out += `| Scan Dir | ${scanDir} |\n`
   out += `| Total Candidates | ${totalCandidates} |\n`
+  out += `| Auto-confirmed (pipeline-proved, no AI review) | ${autoConfirmed} |\n`
   out += `| Files Indexed | ${filesIndexed} |\n`
-  out += `| Functions Indexed | ${functionsIndexed} |\n\n`
+  out += `| Functions Indexed | ${functionsIndexed} |\n`
+  out += `| Lines of Code | ${linesOfCode} |\n\n`
 
-  out += "### Candidates by Type\n\n"
+  out += "### Candidates by Type (leads, not verdicts)\n\n"
   const entries = Object.entries(candidatesByType).filter(([, count]) => (count as number) > 0)
   if (entries.length === 0) {
-    out += "No issues found.\n\n"
+    out += "本轮无收敛候选。\n\n"
   } else {
     out += "| Skill | Count |\n"
     out += "|-------|-------|\n"
@@ -59,7 +76,7 @@ function printScanSummary(
 
 export default tool({
   description:
-    "Run full SecGuard security scan: index codebase, run all registered detectors, apply the convergence pipeline for every registered vulnerability type. Writes report.md (summary + per-type counts) + candidates.sarif (unclassified leads at SARIF level note) + per-type candidate indexes (candidates/<vuln-type>/_index.md, the Source/Hint/Evidence table the AI classifies from) + candidate evidence Markdown to .codeagent/secguard-clang/scans/<scan_id>/; findings/<vuln-type>/ and result.sarif are produced later from the AI verdicts via secguard_report, stores DB at .codeagent/secguard-clang/.sgre/sgre.db. Returns JSON with scan_id, output_dir, total_candidates, candidates_by_type, files_with_candidates_count. The Go binary generates scan_id, creates the scan directory, and updates the latest symlink — this wrapper only invokes the binary and parses its JSON output.",
+    "Run full SecGuard security scan: index codebase, run all registered detectors, apply the convergence pipeline for every registered vulnerability type. Writes report.md (summary + per-type counts) + candidates.sarif (unclassified leads at SARIF level note) + per-type candidate indexes (candidates/<vuln-type>/_index.md, the Source/Hint/Evidence table the AI classifies from) + candidate evidence Markdown to .codeagent/secguard-clang/scans/<scan_id>/; findings/<vuln-type>/ and result.sarif are produced later from the AI verdicts via secguard_report, stores DB at .codeagent/secguard-clang/.sgre/sgre.db. Returns JSON with scan_id, output_dir, total_candidates, auto_confirmed_count, candidates_by_type, files_indexed/functions_indexed/lines_of_code (scan scale), files_with_candidates_count. The Go binary generates scan_id, creates the scan directory, and updates the latest symlink — this wrapper only invokes the binary and parses its JSON output.",
   args: {
     path: tool.schema
       .string()
@@ -93,6 +110,8 @@ export default tool({
         const totalCandidates = goJson?.total_candidates ?? 0
         const filesIndexed = goJson?.index_summary?.files_indexed ?? 0
         const functionsIndexed = goJson?.index_summary?.functions_indexed ?? 0
+        const linesOfCode = goJson?.index_summary?.lines_of_code ?? 0
+        const autoConfirmed = goJson?.auto_confirmed_count ?? 0
         const candidatesByType = goJson?.candidates_by_type ?? {}
         printScanSummary(process.stderr, goJson, targetPath, workDir)
 
@@ -119,6 +138,8 @@ export default tool({
           total_candidates: totalCandidates,
           files_indexed: filesIndexed,
           functions_indexed: functionsIndexed,
+          lines_of_code: linesOfCode,
+          auto_confirmed_count: autoConfirmed,
           candidates_by_type: typeCounts,
           target_path: targetPath,
         }

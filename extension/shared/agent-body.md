@@ -311,6 +311,10 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
   `write-busy` | `empty-output` | `unknown`.
 - `written` = total findings persisted (confirmed + suspected + dismissed) for
   that type; `confirmed`/`suspected`/`dismissed` are the verdict breakdown.
+- Your counts are PER ASSIGNED TYPE only. Never state a scan-wide total
+  (`本轮扫描发现 N 个问题`) — that aggregate is the orchestrator's, taken from
+  `report --audit`'s `summary` field so it matches report.md exactly. A
+  scan-wide number invented here would contradict the report.
 - If you were interrupted (hit maxTurns), emit what you completed in
   `processed_types` and the remainder in `failed_types` with
   `reason: "maxturns-exceeded"`.

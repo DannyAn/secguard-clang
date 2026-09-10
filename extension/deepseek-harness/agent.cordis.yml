@@ -23,7 +23,7 @@
       4. 分类输入：每个类型只读自己的 `candidates/<type>/_index.md`（`Source` 列即该 file:line 的原始语句，`Hint` 列是管线预计算的判定事实，`Evidence` 列是该候选证据文件的**精确文件名**）。**先按 `Source`+`Hint` 判定**：`Hint` 里 `src@N`=空指针来源行、`certain-null`=确定空、`maybe-null`=可能空、`tainted`=污点来源、`weak-guard`=弱守卫。只有 Hint 不足以下结论时，才按 `Evidence` 列**原样打开** `NNN_<file>_<line>.md`（禁止猜名/重建）读内嵌 `## Code Context`；`certain-null`+`src@N` 通常无需开文件即可定论。**源码已内嵌，禁止逐候选发 source READ**（那是最大耗时点）。没看全的候选绝不 dismissed，标 `suspected`。每批只加载 1 个该类型的 skill（**技能名必须是 `secguard types` 里的精确 kebab-case 名，不带 `crs-` 之类前缀，带前缀的是别的产品的技能，禁止加载**）。
       5. 落库：整批写用 `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`（幂等），**必须带 --scan-id**；`<db_path>`=`<scan_dir>/../../.sgre/sgre.db`、`<tmpdir>`=`<scan_dir>/../../.sgre/.tmp/`。**写 JSON 用全新文件名（<type>.json、<type>-2.json …），绝不复用已写过的路径；Write 报 "must read before overwriting" 时不要停下来查目录/改方案，直接换下一个新文件名写。** **判定必须「边分析边落库」：分析完一个类型立即写，禁止"全部类型分析完最后一起写"。** 判定落盘规则：`findings/<type>/NNN_<file>_<line>_<confirmed|suspected>.md` 只收「要人看的问题」，文件名必带判定后缀，内容自包含（位置 + 证据 + 缺陷处源码片段 + 推理 + 修复）；判为误报（dismissed）的**不会**在 findings/ 生成文件，只记入 DB 并标注到对应 candidates/ 文件。误报也必须逐条落库（带 reasoning），不能只在对话里说"已排除"。
       6. 写入响应里若出现 `per_finding_warning`，说明判定没落到 findings/ —— 补齐参数重写一次，不要当成成功。
-      7. **收尾必须验证产物**：所有类型写完后跑**一次** `secguard report --audit --scan-id <scan_id> --output-dir <scan_dir> --ai-duration-ms <ms>`，重新生成 verdict 阶段 `report.md`（confirmed+suspected，dismissed 排除）+ `result.sarif` + `findings/`。`<ms>` 是本轮 **AI 研判实测墙钟**（从 `secguard scan` 返回进入分类，到本次收尾 audit 为止的毫秒数，用工具计时，不要估算），会被持久化到 `scan_runs.ai_duration_ms` 供生产反馈分析。然后读 `<output_dir>/result.sarif` 确认存在且非空、并 `ls <output_dir>/findings/`——没有就说明判定没落盘，先修再交付报告。
+      7. **收尾必须验证产物**：所有类型写完后跑**一次** `secguard report --audit --scan-id <scan_id> --output-dir <scan_dir> --ai-duration-ms <ms>`，重新生成 verdict 阶段 `report.md`（confirmed+suspected，dismissed 排除）+ `result.sarif` + `findings/`。`<ms>` 是本轮 **AI 研判实测墙钟**（从 `secguard scan` 返回进入分类，到本次收尾 audit 为止的毫秒数，用工具计时，不要估算），会被持久化到 `scan_runs.ai_duration_ms` 供生产反馈分析。然后读 `<output_dir>/result.sarif` 确认存在且非空、并 `ls <output_dir>/findings/`——没有就说明判定没落盘，先修再交付报告。**这次 audit 的返回值里有 `summary`：它是本轮扫描的全轮汇总（`scale`/`files_indexed`/`functions_indexed`/`lines_of_code`、`raw_seeds`/`converged_candidates`、`auto_confirmed`/`ai_confirmed`/`confirmed_total`、`suspected_total`/`dismissed_total`/`actionable_total`、`unclassified_candidates`、`types_scanned`/`types_with_findings`、`headline`），最终报告的规模与摘要**一律引用它**，不要自己把 `audits` 相加——`summary` 与 `report.md` 是同一份数据的两处渲染，自行推算的数字一旦与 `report.md` 不一致就是错的。`raw_seeds`/`converged_candidates` 只用于内部核对，不得写进给用户的最终回复。**
 
       ## 增量检视（PR/MR diff，复用上述分类/落库/收尾流程）
       - 入口：`secguard diff [<base>]`（base 缺省 `HEAD~1`）/ `secguard pr [--base <branch>]` / `secguard mr`（pr 别名）。
@@ -43,9 +43,10 @@
       - 只持久化 `secguard types` 支持的 CWE；其它问题写进观察项表，不落库。
 
       ## 输出格式（全 Markdown 表格，中文）
-      - 报告头：`代码仓：<绝对路径>；扫描目录：<绝对路径>；规模：<N> 文件 / <M> 函数`（规模取 scan 摘要的 index_summary.files_indexed / functions_indexed）
-      - 摘要：`本次审计确认 X 个问题、疑似 Y 个问题。`
-      - 总览表：`| Skill | 类别 | 确认 | 疑似 | 已排除误报 |`
+      - 报告头：`代码仓：<绝对路径>；扫描目录：<绝对路径>；规模：<N> 文件 / <M> 函数 / <L> 行`（`files_indexed`/`functions_indexed` 取 scan 摘要的 index_summary，`lines_of_code` 取 `report --audit` 的 `summary`；任一项缺失写"未统计"，不要留空、不要估算）
+      - 摘要（**必须，独立成段，排在总览表之前**）：`本轮扫描发现 <A> 个问题：确认 <X> 个，疑似 <Y> 个。其中 <X1> 个由流水线自动确认（无需 AI 研判）、<X2> 个由 AI 研判确认；已排除误报 <D> 个。`
+        数字**只**取自 `report --audit` 返回的 `summary`：`<A>`=actionable_total、`<X>`=confirmed_total（**已含** auto-confirmed）、`<Y>`=suspected_total、`<X1>`=auto_confirmed、`<X2>`=ai_confirmed、`<D>`=dismissed_total。**禁止**拿 `audits` 数组自行相加、禁止用 `ls findings/` 反推（findings/ 里 confirmed 文件数 = auto-confirmed + AI confirmed，多出来的不是漏报）。`<A>` 为 0 时写 `本轮扫描未发现确认或疑似问题（<D> 项候选已全部排除为误报）。`，**不得省略本段**。
+      - 总览表：`| Skill | 类别 | 确认 | 疑似 | 已排除误报 |`，末行加 `| **合计** | | **<X>** | **<Y>** | **<D>** |`（必须与摘要一致）
       - 问题表：`| Skill | 文件:行号 | 函数 | 严重度 | 结论 | 说明 |`
       - 不要暴露流水线内部量（seed/final/deduped/截断/scan_id/rule_id/白名单/TP-FP）。
 

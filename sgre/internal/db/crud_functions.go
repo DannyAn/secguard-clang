@@ -69,6 +69,17 @@ func (s *store) ListFunctions(ctx context.Context) ([]*Function, error) {
 	return scanFunctions(rows)
 }
 
+// CountFunctions returns the number of indexed functions without loading the
+// rows. Report headers need the "functions in index" scale figure only; loading
+// thousands of rows (signatures included) just to len() them is wasteful.
+func (s *store) CountFunctions(ctx context.Context) (int, error) {
+	var n int
+	if err := s.exec.QueryRowContext(ctx, `SELECT COUNT(*) FROM functions`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("db: count functions: %w", err)
+	}
+	return n, nil
+}
+
 func (s *store) ListFunctionsByIDs(ctx context.Context, ids []int64) (map[int64]*Function, error) {
 	result := make(map[int64]*Function, len(ids))
 	for _, chunk := range chunkIDs(ids, 500) {
