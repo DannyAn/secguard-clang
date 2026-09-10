@@ -476,3 +476,37 @@ func TestNullDeref_CastReassign(t *testing.T) {
 		t.Errorf("certain_null (no reassignment) should stay confirmed, got %q", suspicion["certain_null"])
 	}
 }
+
+// TestNullDeref_OutputParam locks in the output-parameter deref behavior: a
+// function that dereferences an output parameter (`*out = ...`, including a
+// pointer-to-pointer `**out`) is NOT a null-deref when the caller passes `&x`
+// (a non-null address); a caller that passes a literal NULL into such a
+// dereferencing function IS a genuine null-deref.
+func TestNullDeref_OutputParam(t *testing.T) {
+	store, p := setupDetector(t, "tc107_null_deref_output_param.c")
+	logger := log.New(io.Discard, log.LevelWarn)
+	NewNullSourceDetector(store, p, logger).Detect(context.Background())
+	NewDereferenceDetector(store, p, logger).Detect(context.Background())
+	NewInterproceduralDetector(store, p, logger).Detect(context.Background())
+
+	ctx := context.Background()
+	pl := planner.NewPlanner(store, p, logger)
+	res, err := pl.Plan(ctx, "null-deref")
+	if err != nil {
+		t.Fatalf("plan null-deref: %v", err)
+	}
+	suspicion := map[string]string{}
+	for _, c := range res.Candidates {
+		suspicion[c.Target.Function] = c.SuspicionLevel
+	}
+	// get_one / get_two deref their output param; callers pass &x → no null-deref,
+	// so the only candidate is the genuine `deref_param(NULL)` in caller.
+	for _, fn := range []string{"get_one", "get_two"} {
+		if _, present := suspicion[fn]; present {
+			t.Errorf("%s (output param, caller passes &x) should NOT be flagged, got %q", fn, suspicion[fn])
+		}
+	}
+	if suspicion["caller"] != "confirmed" {
+		t.Errorf("caller (passes NULL into deref_param) should stay confirmed, got %q", suspicion["caller"])
+	}
+}
