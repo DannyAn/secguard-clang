@@ -106,7 +106,7 @@ func AnalyzeBounds(ifs, assigns []parser.Node) *RangeFacts {
 		if cond == nil {
 			continue
 		}
-		ct := stripParens(strings.TrimSpace(cond.Text()))
+		ct := stripParens(unwrapBranchHints(stripParens(strings.TrimSpace(cond.Text()))))
 		start, end := ifStmt.StartLine(), ifStmt.EndLine()
 		cons := ifStmt.ChildByFieldName("consequence")
 		exits := cons != nil && isExitStmt(*cons)
@@ -270,6 +270,88 @@ func stripParens(s string) string {
 		}
 	}
 	return s
+}
+
+// unwrapBranchHints removes wrapping branch-prediction macro calls
+// (`unlikely(x)`, `likely(x)`, `MSS_UNLIKELY(x)`, `__builtin_expect(x, 0)`)
+// from a condition text so the guard inside is recognized. `unlikely(d == 0)`
+// is semantically `d == 0`; the hint does not change the truth value, so the
+// early-return non-zero fall-through must see through it.
+func unwrapBranchHints(s string) string {
+	t := strings.TrimSpace(s)
+	for {
+		i := strings.IndexByte(t, '(')
+		if i < 0 {
+			return t
+		}
+		name := strings.ToLower(strings.TrimSpace(t[:i]))
+		if !isBranchHintName(name) {
+			return t
+		}
+		var inner string
+		if name == "__builtin_expect" {
+			inner = firstCallArgText(t)
+		} else {
+			inner = callArgText(t)
+		}
+		if inner == "" {
+			return t
+		}
+		t = strings.TrimSpace(inner)
+	}
+}
+
+// isBranchHintName reports whether a call name is a branch-prediction hint:
+// `likely`/`unlikely` (any case), a `*_likely`/`*_unlikely` vendor spelling, or
+// `__builtin_expect`.
+func isBranchHintName(name string) bool {
+	switch name {
+	case "likely", "unlikely", "__builtin_expect":
+		return true
+	}
+	return strings.HasSuffix(name, "_likely") || strings.HasSuffix(name, "_unlikely")
+}
+
+// callArgText returns the text between the first '(' and its matching ')' of a
+// call-shaped string (`unlikely(x)` → `x`), or "" when not that shape.
+func callArgText(s string) string {
+	i := strings.IndexByte(s, '(')
+	if i < 0 {
+		return ""
+	}
+	depth := 0
+	for j := i; j < len(s); j++ {
+		switch s[j] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return s[i+1 : j]
+			}
+		}
+	}
+	return ""
+}
+
+// firstCallArgText returns the first comma-separated argument of a call-shaped
+// string (`__builtin_expect(x, 0)` → `x`).
+func firstCallArgText(s string) string {
+	inner := callArgText(s)
+	depth := 0
+	for i := 0; i < len(inner); i++ {
+		switch inner[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				return strings.TrimSpace(inner[:i])
+			}
+		}
+	}
+	return strings.TrimSpace(inner)
 }
 
 func balanced(s string) bool {

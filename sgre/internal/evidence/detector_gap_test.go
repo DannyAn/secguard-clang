@@ -392,3 +392,30 @@ func TestUninit_MacroLoopAndSetterMacro(t *testing.T) {
 		}
 	}
 }
+
+// TestDivideByZero_UnlikelyGuard locks in the branch-hint guard fix: an
+// early-return guard wrapped in unlikely() (`if (unlikely(d == 0)) return;`)
+// still establishes d != 0 on the fall-through, so the later `% d` is not a
+// divide-by-zero — while an unguarded `100 / d` stays suspected.
+func TestDivideByZero_UnlikelyGuard(t *testing.T) {
+	store, p := setupDetector(t, "tc104_divide_by_zero_unlikely.c")
+	logger := log.New(io.Discard, log.LevelWarn)
+	NewDivideByZeroDetector(store, p, logger).Detect(context.Background())
+
+	ctx := context.Background()
+	pl := planner.NewPlanner(store, p, logger)
+	res, err := pl.Plan(ctx, "divide-by-zero")
+	if err != nil {
+		t.Fatalf("plan divide-by-zero: %v", err)
+	}
+	suspicion := map[string]string{}
+	for _, c := range res.Candidates {
+		suspicion[c.Target.Function] = c.SuspicionLevel
+	}
+	if _, present := suspicion["f"]; present {
+		t.Errorf("f (unlikely-guarded divisor) should NOT be flagged, got %q", suspicion["f"])
+	}
+	if suspicion["g"] != "suspected" {
+		t.Errorf("g (unguarded divisor) should stay suspected, got %q", suspicion["g"])
+	}
+}
