@@ -50,6 +50,19 @@
   里、子代理看不到，所以 findings/ 的 confirmed 数大于子代理报告数是正常的——最终计数
   一律以 `report --audit` 的 `audits` 数组为准，不要 `ls findings/` 反推、不要为这个对账。
 
+### 误报修复（uninit 跨文件 dispatch 包装器输出参数）
+
+- `vsys_get_vsysid_by_vrfindex(vrf, &vsys_id)` 这类「hook/dispatch 包装器」：callee 在一条
+  路径直接写 `*vsysid = 0`，另一条路径 `if (hook != NULL) return hook(vrf, vsysid);`
+  转发给同签名函数指针。函数指针路径被 summary 当成「未写」，使 callee 被误分类为
+  **条件写入**，调用方没 guard 返回值时 `vsys_id` 被误报 use-before-init。现
+  `computeParamWriteStates` 把 `return hook(...p...)` 的转发也计为一次写（仅参与
+  every-path 可达性，不参与 NULL-guard 判定），dispatch 包装器恢复为「每条路径都写」，
+  调用方 `&vsys_id` 后正常使用不再误报；真正的未初始化标量（正向对照）仍照常上报。
+- 补 null-deref 跨文件输出参数回归锁定：`n = NULL; crossfile_get(&n); n->f` 已由
+  调用点 `&n` 语法级 kill 正确处理（与 callee 是否跨文件无关），新增
+  `outparam_cross` / `outparam_cross_null` 目录 fixture + 正/负对照回归测试。
+
 ## [0.6.0] - 2026-09-07
 
 ### 修复：汇总阶段 `unclassified_candidates` 误报 + 相对路径 DB 查询 ERROR

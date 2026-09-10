@@ -114,6 +114,12 @@ func computeParamWriteStates(bodies map[int]parser.Node, f *db.Function, params 
 			if directWritesParam(n.Stmt, p) {
 				writeNodes[n.ID] = true
 				writeStmts = append(writeStmts, n.Stmt)
+			} else if forwardsParam(n.Stmt, p) {
+				// A forwarded pointer may be written by the delegate; count it
+				// toward the every-path reachability (so a dispatch wrapper is
+				// not downgraded to a conditional writer), but not toward the
+				// NULL-guard check (a forward has no direct `*p` write to guard).
+				writeNodes[n.ID] = true
 			}
 		}
 		if len(writeNodes) == 0 {
@@ -293,6 +299,30 @@ func directWritesParam(stmt parser.Node, p string) bool {
 		}
 		for _, name := range chainedWriteTargets(child) {
 			if name == p {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// forwardsParam reports whether stmt forwards pointer param p to a nested call
+// and returns that call's result (`return hook(vrf, p);`). A dispatch wrapper
+// (`if (hook != NULL) return hook(...p...); *p = default;`) writes p through the
+// hook on the early-return path just as the fall-through writes it directly, so
+// that path must count as a write for computeParamWriteStates — otherwise the
+// direct write on only one path classifies the wrapper as a CONDITIONAL writer
+// and a caller that doesn't guard the return is misreported as use-before-init.
+// Only a bare `p` argument counts (the pointer forwarded by value); a `*p`
+// argument forwards the pointed-to value, not the pointer itself, so it does not
+// imply a write through p.
+func forwardsParam(stmt parser.Node, p string) bool {
+	if stmt.Kind() != "return_statement" {
+		return false
+	}
+	for _, call := range stmt.FindAll("call_expression") {
+		for _, arg := range getCallArgs(call) {
+			if arg.Kind() == "identifier" && arg.Text() == p {
 				return true
 			}
 		}

@@ -510,3 +510,84 @@ func TestNullDeref_OutputParam(t *testing.T) {
 		t.Errorf("caller (passes NULL into deref_param) should stay confirmed, got %q", suspicion["caller"])
 	}
 }
+
+// TestNullDeref_CrossFileOutputParam locks in the cross-file output-param rule:
+// `n = NULL; crossfile_get(&n); n->f` must not be a null-deref, because the
+// callee defined in another file writes `*out`. The kill is syntactic at the
+// caller's `&n`, so the callee's file does not matter. A genuine `n = NULL;
+// n->f` stays confirmed as the positive control.
+func TestNullDeref_CrossFileOutputParam(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, fixturePath("outparam_cross_null")); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	NewNullSourceDetector(store, p, logger).Detect(ctx)
+	NewDereferenceDetector(store, p, logger).Detect(ctx)
+	NewNullGuardDetector(store, p, logger).Detect(ctx)
+	NewInterproceduralDetector(store, p, logger).Detect(ctx)
+
+	pl := planner.NewPlanner(store, p, logger)
+	res, err := pl.Plan(ctx, "null-deref")
+	if err != nil {
+		t.Fatalf("plan null-deref: %v", err)
+	}
+	suspicion := map[string]string{}
+	for _, c := range res.Candidates {
+		suspicion[c.Target.Function] = c.SuspicionLevel
+	}
+	if _, present := suspicion["caller"]; present {
+		t.Errorf("caller (cross-file &n output param kills the NULL source) should NOT be flagged, got %q", suspicion["caller"])
+	}
+	if suspicion["real_null_deref"] != "confirmed" {
+		t.Errorf("real_null_deref (plain NULL then deref) should stay confirmed, got %q", suspicion["real_null_deref"])
+	}
+}
+
+// TestUninit_CrossFileDispatchOutputParam locks in the dispatch-wrapper output
+// param: a cross-file callee that writes `*vsysid` on the fall-through path and
+// forwards it to a hook on the early-return path (`if (hook) return hook(vrf,
+// vsysid)`) writes it on EVERY path, so the caller's `&vsys_id` + later use is
+// NOT use-before-init. A genuinely uninitialized scalar stays reported as the
+// positive control.
+func TestUninit_CrossFileDispatchOutputParam(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, fixturePath("outparam_cross")); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	NewUninitVariableDetector(store, p, logger).Detect(ctx)
+
+	events, err := store.ListEventsByType(ctx, "VALUE_USE")
+	if err != nil {
+		t.Fatalf("list VALUE_USE: %v", err)
+	}
+	reported := map[string]bool{}
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		if json.Unmarshal([]byte(e.Properties), &props) != nil || props.Variable == "" {
+			continue
+		}
+		if fn, err := store.GetFunctionByID(ctx, e.EntityID); err == nil && fn != nil {
+			reported[fn.Name+"."+props.Variable] = true
+		}
+	}
+	if reported["stmp_usertbl_aging.vsys_id"] {
+		t.Error("vsys_id (written by cross-file dispatch wrapper on every path) must NOT be reported uninit")
+	}
+	if !reported["real_uninit.v"] {
+		t.Error("real_uninit's v (never written) should stay reported uninit")
+	}
+}
