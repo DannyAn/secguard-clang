@@ -681,12 +681,19 @@ func runMustDataflow(cfg *graph.StmtCFG, effects map[int]*nodeEffects) (map[int]
 		nodeIn[i] = m
 	}
 
-	// Only the entry is seeded; every other node starts at TOP and is lowered by
-	// the intersection join as the entry's (empty) value propagates. Seeding all
-	// nodes would keep TOP alive and falsely claim the fact holds everywhere.
-	worklist := []int{cfg.Entry}
+	// Seed the worklist with EVERY node, not just the entry. A node with a gen
+	// (`p = NULL`) or kill (`p = f()`) effect introduces a fact regardless of its
+	// input, so it must be visited even when its predecessor contributes nothing;
+	// and a control-flow header (if/while) with no own effect must still forward
+	// its predecessor's fact to its branches — otherwise a kill inside the branch
+	// is never reached and a reassignment after `p = NULL` fails to clear the
+	// certain-null fact. This mirrors runRangeDataflow's seed-every-node.
+	worklist := make([]int, 0, len(cfg.Nodes))
 	inQueue := make([]bool, len(cfg.Nodes))
-	inQueue[cfg.Entry] = true
+	for i := range cfg.Nodes {
+		worklist = append(worklist, i)
+		inQueue[i] = true
+	}
 
 	for len(worklist) > 0 {
 		id := worklist[len(worklist)-1]

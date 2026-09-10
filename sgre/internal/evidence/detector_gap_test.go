@@ -446,3 +446,33 @@ func TestUncheckedReturn_DerefCheck(t *testing.T) {
 		t.Errorf("g (unchecked malloc use) should stay confirmed, got %q", suspicion["g"])
 	}
 }
+
+// TestNullDeref_CastReassign locks in the MUST-dataflow fix: a pointer assigned
+// NULL and then REASSIGNED from a cast-wrapped call (`v = (T *)f()`) is no longer
+// "certain null" — the reassignment clears the NULL fact, so the later deref is
+// at most suspected (the call result may still be null), never confirmed. A plain
+// `v = NULL; v->f` without reassignment stays confirmed.
+func TestNullDeref_CastReassign(t *testing.T) {
+	store, p := setupDetector(t, "tc106_null_deref_cast_reassign.c")
+	logger := log.New(io.Discard, log.LevelWarn)
+	NewNullSourceDetector(store, p, logger).Detect(context.Background())
+	NewDereferenceDetector(store, p, logger).Detect(context.Background())
+	NewInterproceduralDetector(store, p, logger).Detect(context.Background())
+
+	ctx := context.Background()
+	pl := planner.NewPlanner(store, p, logger)
+	res, err := pl.Plan(ctx, "null-deref")
+	if err != nil {
+		t.Fatalf("plan null-deref: %v", err)
+	}
+	suspicion := map[string]string{}
+	for _, c := range res.Candidates {
+		suspicion[c.Target.Function] = c.SuspicionLevel
+	}
+	if suspicion["fill_info"] == "confirmed" {
+		t.Error("fill_info (NULL reassigned from a call) should NOT be certain-null/confirmed")
+	}
+	if suspicion["certain_null"] != "confirmed" {
+		t.Errorf("certain_null (no reassignment) should stay confirmed, got %q", suspicion["certain_null"])
+	}
+}
