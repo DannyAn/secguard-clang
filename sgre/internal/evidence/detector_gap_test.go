@@ -369,3 +369,26 @@ func TestDivideByZero_ParamZeroPropagation(t *testing.T) {
 		t.Errorf("div_param3 (caller passes variable): expected suspected, got %q", suspicion["div_param3"])
 	}
 }
+
+// TestUninit_MacroLoopAndSetterMacro locks in two uninit false-positive fixes:
+// (1) an assignment inside a single-macro loop body (`LCORE_FOREACH_SLAVE(x){ ret
+// = ...; }`, misparsed as a nested function_definition) kills the uninit source;
+// (2) a third-party parse macro that writes a by-value struct argument
+// (`CAP_MSG_HEAD_PARSE(msg, head)`) is not a read of an uninitialized struct.
+func TestUninit_MacroLoopAndSetterMacro(t *testing.T) {
+	for _, fx := range []string{"tc102_uninit_macro_loop.c", "tc103_uninit_setter_macro.c"} {
+		store, p := setupDetector(t, fx)
+		logger := log.New(io.Discard, log.LevelWarn)
+		NewUninitVariableDetector(store, p, logger).Detect(context.Background())
+
+		ctx := context.Background()
+		pl := planner.NewPlanner(store, p, logger)
+		res, err := pl.Plan(ctx, "uninit")
+		if err != nil {
+			t.Fatalf("%s: plan uninit: %v", fx, err)
+		}
+		if len(res.Candidates) != 0 {
+			t.Errorf("%s: expected 0 uninit candidates (false positive), got %d", fx, len(res.Candidates))
+		}
+	}
+}

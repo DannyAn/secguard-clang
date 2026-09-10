@@ -229,6 +229,21 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 				}
 			}
 		}
+		// A parse/deserialize macro (`CAP_MSG_HEAD_PARSE(msg, head)`) writes its
+		// by-value struct argument(s); mark them initialized so a LATER field read
+		// of the struct is not reported.
+		if structOutputMacroName(callName) {
+			for _, arg := range getCallArgs(call) {
+				if arg.Kind() != "identifier" {
+					continue
+				}
+				if key := resolveVarKey(declsByName, arg.Text(), call.StartLine()); key != "" {
+					if call.StartLine() > outputParamInitLines[key] {
+						outputParamInitLines[key] = call.StartLine()
+					}
+				}
+			}
+		}
 		// va_start/va_copy initialize the va_list (an array type that decays to
 		// a pointer, so it is passed as an identifier, not `&ap`).
 		if callName == "va_start" || callName == "va_copy" {
@@ -457,6 +472,17 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 				extra = map[string]bool{args[0].Text(): true}
 			}
 		}
+		// A parse/deserialize macro writes its by-value struct argument, so that
+		// argument is not a read of an uninitialized value — skip it like the
+		// setter-macro first argument above.
+		if len(extra) == 0 && structOutputMacroName(callName) {
+			extra = map[string]bool{}
+			for _, arg := range getCallArgs(call) {
+				if arg.Kind() == "identifier" {
+					extra[arg.Text()] = true
+				}
+			}
+		}
 		// va_start/va_copy's first argument is the va_list they INITIALIZE, not a
 		// read of its current value. Without skipping it, the va_start line
 		// reports the (just-declared, still-uninitialized) va_list as a
@@ -634,6 +660,24 @@ func addressOfTarget(arg parser.Node) (parser.Node, bool) {
 func setterMacroName(name string) bool {
 	upper := strings.ToUpper(name)
 	for _, kw := range []string{"_SET", "SET_", "_INIT", "INIT_", "_ASSIGN", "ASSIGN_"} {
+		if strings.Contains(upper, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// structOutputMacroName reports whether a call name carries a "parse/decode/fill
+// into an output struct" semantic (`CAP_MSG_HEAD_PARSE(msg, head)`, `XXX_DECODE`,
+// `XXX_DESERIALIZE`, `XXX_UNPACK`). Third-party SDKs spell message/header parsing
+// macros this way; the macro writes its by-value struct argument, so that
+// argument is an output, not a read of an uninitialized value — the same
+// invisible-body problem setterMacroName solves for `_SET`, but for the
+// parse-into-struct shape where the output is a by-value struct, not the first
+// `&`-less scalar.
+func structOutputMacroName(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, kw := range []string{"_PARSE", "PARSE_", "_DECODE", "DECODE_", "_DESERIALIZE", "DESERIALIZE_", "_UNPACK", "UNPACK_", "_FILL", "FILL_"} {
 		if strings.Contains(upper, kw) {
 			return true
 		}
@@ -1242,6 +1286,17 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 		}
 		for name, suffix := range macros.WrittenFieldArgs(call, macroWrites) {
 			initializedFields[name+suffix] = true
+		}
+		// A parse/deserialize macro (`CAP_MSG_HEAD_PARSE(msg, head)`) whose body
+		// is in an invisible third-party header writes its by-value struct
+		// argument wholesale; mark it initialized so its field reads are not
+		// reported partial-init.
+		if structOutputMacroName(extractCallName(call)) {
+			for _, arg := range getCallArgs(call) {
+				if arg.Kind() == "identifier" {
+					initializedVars[arg.Text()] = true
+				}
+			}
 		}
 	}
 

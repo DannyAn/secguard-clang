@@ -261,8 +261,21 @@ func (b *cfgBuilder) build(stmt parser.Node, from int) int {
 		// it as a loop (header = the macro call, body = the trailing compound
 		// statement) so the flow filters see the iterator write as a kill BEFORE
 		// the body's dereference.
-		if iterMacroBody(stmt) != nil {
-			return b.buildIterMacro(stmt, from)
+		if body := iterMacroBody(stmt); body != nil {
+			return b.buildIterMacroBody(stmt, *body, from)
+		}
+		n := b.newNode("stmt", stmt.StartLine(), stmt.EndLine(), stmt)
+		b.edge(from, n)
+		return n
+	case "function_definition":
+		// A function-like macro call whose argument is NOT a type cast
+		// (`LCORE_FOREACH_SLAVE(x) { body }`) parses as a function_definition
+		// (return type = the macro name, declarator = parenthesized_declarator).
+		// It is really a for loop; model it the same way so assignments inside
+		// the body (`ret = ...`) are visible to the flow filters. A REAL nested
+		// function (which has a function_declarator) is left as an opaque leaf.
+		if body := macroFuncBody(stmt); body != nil {
+			return b.buildIterMacroBody(stmt, *body, from)
 		}
 		n := b.newNode("stmt", stmt.StartLine(), stmt.EndLine(), stmt)
 		b.edge(from, n)
@@ -297,24 +310,48 @@ func iterMacroBody(stmt parser.Node) *parser.Node {
 	return nil
 }
 
-// buildIterMacro builds the CFG for an ERROR-node macro call as a loop: the
-// header (the macro invocation) falls through to the body, the body loops back
-// to the header, and the header also exits to the join (the loop condition is
-// false). This mirrors buildWhileDo without a real condition node.
-func (b *cfgBuilder) buildIterMacro(stmt parser.Node, from int) int {
+// macroFuncBody returns the compound_statement body of a function_definition
+// that is actually a function-like macro call misparsed as a function
+// (`LCORE_FOREACH_SLAVE(x) { body }`). A REAL function definition has a
+// function_declarator; the misparse has a parenthesized_declarator (the `(x)`
+// is just parentheses, not a parameter list). Returns nil for a real function.
+func macroFuncBody(stmt parser.Node) *parser.Node {
+	if stmt.Kind() != "function_definition" {
+		return nil
+	}
+	var body parser.Node
+	haveBody := false
+	for _, child := range stmt.NamedChildren() {
+		switch child.Kind() {
+		case "function_declarator":
+			return nil // a real function definition
+		case "compound_statement":
+			if !haveBody {
+				body = child
+				haveBody = true
+			}
+		}
+	}
+	if !haveBody {
+		return nil
+	}
+	return &body
+}
+
+// buildIterMacroBody builds the CFG for a macro-call-as-loop (header + body):
+// the header (the macro invocation) falls through to the body, the body loops
+// back to the header, and the header also exits to the join (the loop condition
+// is false). This mirrors buildWhileDo without a real condition node.
+func (b *cfgBuilder) buildIterMacroBody(stmt parser.Node, body parser.Node, from int) int {
 	header := b.newNode("stmt", stmt.StartLine(), stmt.EndLine(), stmt)
 	b.edge(from, header)
 
 	join := b.newNode("join", 0, 0, parser.Node{})
-	body := iterMacroBody(stmt)
 
 	b.breakTo = append(b.breakTo, join)
 	b.contTo = append(b.contTo, header)
 
-	bodyLast := -1
-	if body != nil {
-		bodyLast = b.build(*body, header)
-	}
+	bodyLast := b.build(body, header)
 
 	b.breakTo = b.breakTo[:len(b.breakTo)-1]
 	b.contTo = b.contTo[:len(b.contTo)-1]
@@ -733,7 +770,13 @@ func isStmtNode(n parser.Node) bool {
 		// expands to a for loop), so model it as a leaf statement — otherwise
 		// the dereference inside the loop body is invisible to every flow
 		// filter and the iterator-macro kill never fires.
-		"ERROR":
+		"ERROR",
+		// A function-like macro call with a NON-cast argument
+		// (`LCORE_FOREACH_SLAVE(x) { body }`) parses as a function_definition
+		// (return type = macro name, declarator = parenthesized_declarator).
+		// Model it too, so assignments inside its body are visible to the flow
+		// filters (a "ret" assigned inside the macro loop must kill its uninit).
+		"function_definition":
 		return true
 	}
 	return false
