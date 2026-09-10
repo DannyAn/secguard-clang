@@ -183,9 +183,10 @@ func conditionTestsVar(cond parser.Node, varName string) bool {
 	case "identifier":
 		// `if (p)` — bare truthiness test on the variable itself.
 		return node.Text() == varName
-	case "field_expression", "subscript_expression":
-		// `if (e->buffer)` / `if (arr[i])` — test on a member/element, only a
-		// check when the assigned storage location is exactly that expression.
+	case "field_expression", "subscript_expression", "pointer_expression":
+		// `if (e->buffer)` / `if (arr[i])` / `if (*p)` — test on a member/element/
+		// pointed-to location, only a check when the assigned storage location is
+		// exactly that expression.
 		return node.Text() == varName
 	case "unary_expression":
 		// `if (!p)` / `if (!e->buffer)` — negation of the variable itself. The
@@ -215,7 +216,7 @@ func binaryTestsVar(b parser.Node, varName string) bool {
 		return false
 	}
 	for _, child := range b.NamedChildren() {
-		if child.Kind() != "identifier" && child.Kind() != "field_expression" && child.Kind() != "subscript_expression" {
+		if child.Kind() != "identifier" && child.Kind() != "field_expression" && child.Kind() != "subscript_expression" && child.Kind() != "pointer_expression" {
 			continue
 		}
 		if child.Text() == varName {
@@ -239,7 +240,7 @@ func hasCompareOperator(b parser.Node) bool {
 
 func varText(node parser.Node) string {
 	switch node.Kind() {
-	case "identifier", "field_expression", "subscript_expression":
+	case "identifier", "field_expression", "subscript_expression", "pointer_expression":
 		return node.Text()
 	}
 	// Mirror the detector's assignedVariable fallback: `*p = call()` attributes

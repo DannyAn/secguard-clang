@@ -419,3 +419,30 @@ func TestDivideByZero_UnlikelyGuard(t *testing.T) {
 		t.Errorf("g (unguarded divisor) should stay suspected, got %q", suspicion["g"])
 	}
 }
+
+// TestUncheckedReturn_DerefCheck locks in the pointer-deref check fix: a malloc
+// result stored through a pointer (`*retMsg = malloc(n)`) and then checked via
+// the dereference (`if (*retMsg == NULL)`) is a checked return, while a plain
+// `char *p = malloc(n); p[0] = ...` without any check stays flagged.
+func TestUncheckedReturn_DerefCheck(t *testing.T) {
+	store, p := setupDetector(t, "tc105_unchecked_return_ptr.c")
+	logger := log.New(io.Discard, log.LevelWarn)
+	NewUncheckedReturnDetector(store, p, logger).Detect(context.Background())
+
+	ctx := context.Background()
+	pl := planner.NewPlanner(store, p, logger)
+	res, err := pl.Plan(ctx, "unchecked-return")
+	if err != nil {
+		t.Fatalf("plan unchecked-return: %v", err)
+	}
+	suspicion := map[string]string{}
+	for _, c := range res.Candidates {
+		suspicion[c.Target.Function] = c.SuspicionLevel
+	}
+	if _, present := suspicion["testcase"]; present {
+		t.Errorf("testcase (*retMsg checked via deref) should NOT be flagged, got %q", suspicion["testcase"])
+	}
+	if suspicion["g"] != "confirmed" {
+		t.Errorf("g (unchecked malloc use) should stay confirmed, got %q", suspicion["g"])
+	}
+}

@@ -169,7 +169,7 @@ func testedOperands(cond parser.Node) []string {
 // test target.
 func testedOperandVar(operand parser.Node) string {
 	switch operand.Kind() {
-	case "identifier", "field_expression", "subscript_expression":
+	case "identifier", "field_expression", "subscript_expression", "pointer_expression":
 		return operand.Text()
 	case "parenthesized_expression":
 		for _, child := range operand.NamedChildren() {
@@ -272,7 +272,7 @@ func assignedVarOfCall(call parser.Node) string {
 			if len(named) < 2 {
 				return ""
 			}
-			return assignedVariable(named[0])
+			return assignedLocationText(named[0])
 		case "parenthesized_expression", "cast_expression", "binary_expression",
 			"argument_list", "call_expression", "field_expression", "subscript_expression":
 			continue
@@ -281,6 +281,19 @@ func assignedVarOfCall(call parser.Node) string {
 		}
 	}
 	return ""
+}
+
+// assignedLocationText returns the storage location an assignment writes: a
+// bare variable/field/subscript, or the POINTED-TO location `*p` for
+// `*p = malloc(n)`. Unlike assignedVariable (which treats `*p = f()` as an
+// output-parameter write and returns "" for the null-source detector's
+// semantics), this returns "*p" so the unchecked-return detector can match
+// `*p = malloc(n)` against a later `if (*p == NULL)` check.
+func assignedLocationText(lhs parser.Node) string {
+	if lhs.Kind() == "pointer_expression" {
+		return lhs.Text()
+	}
+	return assignedVariable(lhs)
 }
 
 // hasCompareOp reports whether a binary expression is an equality/relational
