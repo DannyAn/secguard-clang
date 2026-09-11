@@ -57,9 +57,14 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 		bodies := functionBodyMap(funcDefs)
 
 		for _, f := range funcs {
-			d.detectStackUninit(ctx, f, file, decls, assigns, calls, returns, inits, ifs, whiles, fors, bodies, summaries, macroWrites, &result)
+			// f's parameter names are the scope oracle's other half: parameters
+			// are bound to values but are not in `decls` (they live in the
+			// signature), so `&x` disambiguation needs them (see
+			// boundValueNames).
+			params := extractFunctionParamsFrom(funcDefs, f.StartLine)
+			d.detectStackUninit(ctx, f, file, params, decls, assigns, calls, returns, inits, ifs, whiles, fors, bodies, summaries, macroWrites, &result)
 			d.detectHeapUninit(ctx, f, file, inits, assigns, unarys, ptrs, fields, &result)
-			d.detectStructPartialUninit(ctx, f, file, decls, assigns, calls, fields, summaries, macroWrites, &result)
+			d.detectStructPartialUninit(ctx, f, file, params, decls, assigns, calls, fields, summaries, macroWrites, &result)
 		}
 	})
 	return result, err
@@ -135,7 +140,7 @@ func resolveVarKey(declsByName map[string][]varDecl, name string, useLine int) s
 	return varKey(name, best)
 }
 
-func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, decls, assigns, calls, returns, inits, ifs, whiles, fors []parser.Node, bodies map[int]parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, result *DetectResult) {
+func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, params []string, decls, assigns, calls, returns, inits, ifs, whiles, fors []parser.Node, bodies map[int]parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, result *DetectResult) {
 	uninitVars := make(map[string]bool)
 	assignSites := make(map[string][]int)
 	declsByName := make(map[string][]varDecl)
@@ -182,6 +187,15 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 			}
 		}
 	}
+
+	// isValue disambiguates the `(A) & x` argument shape for the address-taken
+	// recognition: `(shm_handle)&prfs_list` is a cast-to-pointer address-of when
+	// A names a type, but `sink((flags) & mask)` is a plain bit-and when A names
+	// a value. tree-sitter-c gives both the identical binary_expression parse,
+	// so the caller must supply the scope knowledge (see
+	// parser.Node.AddressTakenTargetScoped).
+	bound := boundValueNames(f, decls, params)
+	isValue := func(name string) bool { return bound[name] }
 
 	for _, assign := range assigns {
 		if !funcLineRange(f, assign.StartLine()) {
@@ -279,7 +293,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 				continue
 			}
 			for argIdx, arg := range child.NamedChildren() {
-				target, ok := addressOfTarget(arg)
+				target, ok := addressOfTargetScoped(arg, isValue)
 				if !ok || target.Kind() != "identifier" {
 					continue // only whole-variable &x, not &x.field
 				}
@@ -293,14 +307,28 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 					if summary.ParamWrites[argIdx] {
 						initLine = call.StartLine() // writes on every path
 					} else if summary.ParamConditionalWrites[argIdx] {
-						// Writes only on success. Initialize only past the
-						// caller's error guard, if any; otherwise keep it as a
-						// potential uninit (conservative, TC16).
-						g := outputParamGuardLine(ifs, f, call, callName)
-						if g == 0 {
-							continue
+						// Writes only on its success path. With the caller's
+						// error guard the initialization starts past the
+						// guard, so a use INSIDE the error branch (TC16)
+						// stays reported. WITHOUT a guard, trust the
+						// write-back idiom: production dogfooding shows the
+						// unguarded form (`pos += load(&n)`, `init(&cfg)`) is
+						// overwhelmingly an out-param that assigns the
+						// caller's variable, and keeping it as a potential
+						// uninit flooded the reports with false positives.
+						//
+						// This is a deliberate false-negative trade-off, pinned
+						// by TestUninit_OutputParamUnguarded: an unguarded
+						// caller that truly ignores a failing conditional
+						// writer is no longer reported. The guarded form
+						// (TestUninit_OutputParamGuardNearErrorBranch) and the
+						// struct path (TestUninit_ConditionalWriteGuard, whose
+						// partial-init semantics are field-granular) keep
+						// reporting, so the trade-off is scoped to the scalar
+						// stack_uninit origin.
+						if g := outputParamGuardLine(ifs, f, call, callName); g != 0 {
+							initLine = g
 						}
-						initLine = g
 					} else {
 						// No direct write found: a wrapper that forwards the
 						// pointer to another writer (lpGet -> lpGetWithBuf), or a
@@ -314,7 +342,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 			}
 		}
 
-// A field passed by address to any function (`getShort(&s.f)`) is an
+		// A field passed by address to any function (`getShort(&s.f)`) is an
 		// output-param: the callee writes s.f, so the base struct s is being
 		// initialized field-by-field. Without this, structs filled through
 		// getter/read calls were reported as wholly uninitialized. A whole
@@ -326,7 +354,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 				continue
 			}
 			for _, arg := range child.NamedChildren() {
-				target, ok := addressOfTarget(arg)
+				target, ok := addressOfTargetScoped(arg, isValue)
 				if !ok {
 					continue
 				}
@@ -435,7 +463,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 	// base (`s` in `s.f`) is a field access handled by struct-partial-uninit,
 	// not a scalar read, so it is skipped too.
 	scanUses := func(node parser.Node, line int, skipName string, extraSkip map[string]bool) {
-		addressed := addressedArgs(node)
+		addressed := addressedArgs(node, isValue)
 		// An assignment embedded in a condition (`while ((c = *str++))`) WRITES its
 		// LHS before the condition is evaluated, so the LHS identifier is not a
 		// read of an uninitialized value. Skip every assignment write target
@@ -549,7 +577,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		// targets, not reads; only v (the value) is read. Skip nested LHS so
 		// `code = first = index = 0` does not report first/index as read.
 		writes := nestedAssignTargets(children[rhsStart])
-		addressed := addressedArgs(children[rhsStart])
+		addressed := addressedArgs(children[rhsStart], isValue)
 		for _, id := range children[rhsStart].FindAll("identifier") {
 			name := id.Text()
 			if addressed[name] || writes[name] || isValueFieldBase(id) || isInsideTypeExpr(id) {
@@ -606,7 +634,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		// initializer and condition sit on the same source line. Without this,
 		// `i` was reported as use-before-init at the for-loop's opening line.
 		initWrites := forInitWrites(forNode)
-		addressed := addressedArgs(*cond)
+		addressed := addressedArgs(*cond, isValue)
 		// An assignment inside the condition (`for (; (x = next()); )`) writes its
 		// LHS, so the LHS identifier is not a read of an uninitialized value.
 		condWrites := nestedAssignTargets(*cond)
@@ -619,37 +647,62 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 	}
 }
 
-// addressOfTarget returns the operand of a `&` address-of expression, unwrapping
-// the cast / parenthesis wrappers a third-party out-param call commonly spells
-// (`(void *)&dst`, `(T *)&(dst)`). It returns ok=false when arg is not an
-// address-of of some value. The cast used to hide the pointer_expression from
-// the output-param recognition, so `(VOS_UINT32 *)&time_ut` and
-// `(void *)&(dst_ipv6)` were misreported as uninitialized.
+// addressOfTarget is the permissive address-of recognition, for call sites with
+// no scope oracle to hand (resource_leak's out-param acquirer scan). It accepts
+// the ambiguous `(A) & x` shape unconditionally, so a genuine bit-and argument
+// may be read as `&x`; prefer addressOfTargetScoped wherever the enclosing
+// function's bound names are available.
 func addressOfTarget(arg parser.Node) (parser.Node, bool) {
-	node := arg
-	for node.Kind() == "cast_expression" {
-		inner := node.NamedChildren()
-		if len(inner) == 0 {
-			return parser.Node{}, false
+	return arg.AddressTakenTarget()
+}
+
+// addressOfTargetScoped resolves a `&` address-of argument, unwrapping the
+// cast / parenthesis wrappers a third-party out-param call commonly spells
+// (`(void *)&dst`, `(T *)&(dst)`), with the scope oracle that resolves the
+// ambiguous `(A) & x` shape: A naming a value makes it a bit-and, A naming a
+// type makes it a cast-to-pointer address-of (`(shm_handle)&prfs_list`).
+// tree-sitter-c parses both identically, so only the caller's scope knowledge
+// can tell them apart (see parser.Node.AddressTakenTargetScoped).
+func addressOfTargetScoped(arg parser.Node, isValue func(string) bool) (parser.Node, bool) {
+	return arg.AddressTakenTargetScoped(isValue)
+}
+
+// boundValueNames returns the names bound to a VALUE in f — its parameters and
+// every local declarator — as the scope oracle for the `(A) & x`
+// disambiguation. It is deliberately a SUBSET of the real scope (an exotic
+// declarator shape can be missed), which is the safe direction: a missing name
+// only falls back to the permissive recognition, whereas a type name wrongly
+// included would turn a real `&x` into a bit-and and resurrect the
+// output-parameter false positives this oracle exists to prevent. Type names
+// are therefore never collected: tree-sitter-c parses `typedef` as
+// type_definition (not declaration) and a typedef used in a declaration as
+// type_identifier (not identifier), so only declarators reach the switch below.
+func boundValueNames(f *db.Function, decls []parser.Node, params []string) map[string]bool {
+	names := make(map[string]bool, len(params))
+	for _, p := range params {
+		if p != "" {
+			names[p] = true
 		}
-		node = inner[len(inner)-1]
 	}
-	if node.Kind() != "pointer_expression" || !strings.HasPrefix(strings.TrimSpace(node.Text()), "&") {
-		return parser.Node{}, false
-	}
-	operand := node.NamedChildren()
-	if len(operand) == 0 {
-		return parser.Node{}, false
-	}
-	op := operand[0]
-	for op.Kind() == "parenthesized_expression" {
-		inner := op.NamedChildren()
-		if len(inner) == 0 {
-			return parser.Node{}, false
+	for _, decl := range decls {
+		if !funcLineRange(f, decl.StartLine()) {
+			continue
 		}
-		op = inner[0]
+		for _, child := range decl.NamedChildren() {
+			switch child.Kind() {
+			case "identifier":
+				if !parser.IsCTypeKeyword(child.Text()) {
+					names[child.Text()] = true
+				}
+			case "init_declarator", "pointer_declarator", "array_declarator",
+				"function_declarator", "parenthesized_declarator":
+				if name := extractVarFromDeclarator(child); name != "" {
+					names[name] = true
+				}
+			}
+		}
 	}
-	return op, true
+	return names
 }
 
 // setterMacroName reports whether a call name carries a setter/init semantic
@@ -1161,15 +1214,20 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 	}
 }
 
-func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, f *db.Function, file *db.File, decls, assigns, calls, fields []parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, result *DetectResult) {
+func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, f *db.Function, file *db.File, params []string, decls, assigns, calls, fields []parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, result *DetectResult) {
 	structVars := make(map[string]int)
 	initializedFields := make(map[string]bool)
+	// isValue is the same `(A) & x` disambiguation the scalar path uses (see
+	// detectStackUninit): without it a genuine bit-and argument would be read as
+	// an address-of and mark a field as callee-initialized.
+	bound := boundValueNames(f, decls, params)
+	isValue := func(name string) bool { return bound[name] }
 	// A struct passed by address to a KNOWN initializer (memset(&s, 0, ...),
 	// or an output-param filler) — or to a local function that writes the
 	// pointer parameter on every path — has its fields written by the callee,
 	// so it is not a definite partial-init defect. An arbitrary `&s` to an
 	// unknown/conditional function is conservatively kept (cf. TC16).
-	initializedVars := outputParamInitializedVars(calls, f, summaries)
+	initializedVars := outputParamInitializedVars(calls, f, summaries, isValue)
 
 	for _, decl := range decls {
 		if !funcLineRange(f, decl.StartLine()) {
@@ -1240,7 +1298,7 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 				continue
 			}
 			for _, arg := range child.NamedChildren() {
-				target, ok := addressOfTarget(arg)
+				target, ok := addressOfTargetScoped(arg, isValue)
 				if !ok {
 					continue
 				}
@@ -1552,21 +1610,34 @@ func isExitStmt(node parser.Node) bool {
 // as a `*p` dereference); only `&`-prefixed nodes count. A `&x` argument is a
 // write target for the callee, not a read of x's current value, so it must
 // never be treated as a use-before-init.
-func addressedArgs(node parser.Node) map[string]bool {
+//
+// isValue is the scope oracle that keeps `sink((flags) & mask)` (a bit-and)
+// from being read as `&mask`; see parser.Node.AddressTakenTargetScoped.
+func addressedArgs(node parser.Node, isValue func(string) bool) map[string]bool {
 	addressed := make(map[string]bool)
+	mark := func(target parser.Node, ok bool) {
+		if !ok {
+			return
+		}
+		if name := extractVarName(target); name != "" {
+			addressed[name] = true
+		}
+	}
 	for _, ptr := range node.FindAll("pointer_expression") {
 		if !strings.HasPrefix(strings.TrimSpace(ptr.Text()), "&") {
 			continue
 		}
 		// Unwrap parentheses/casts around the operand (`&(x)`, `(void*)&x`) so the
 		// identifier is still recognized as an address-of target, not a read.
-		target, ok := addressOfTarget(ptr)
-		if !ok {
-			continue
-		}
-		if name := extractVarName(target); name != "" {
-			addressed[name] = true
-		}
+		mark(addressOfTargetScoped(ptr, isValue))
+	}
+	// `(T)&x` parses as a bit-and binary_expression with NO pointer_expression
+	// child, so the scan above never sees it and the argument was miscounted as
+	// a READ of x (a use-before-init false positive at the call line itself).
+	// The cast shape is an address-of just the same. tree-sitter-c emits the
+	// SAME shape for a genuine bit-and, so the oracle decides.
+	for _, b := range node.FindAll("binary_expression") {
+		mark(addressOfTargetScoped(b, isValue))
 	}
 	return addressed
 }
@@ -1611,7 +1682,7 @@ func isValueFieldBase(id parser.Node) bool {
 // that position is written on every path (see FuncSummary.ParamWrites). An
 // arbitrary `&x` to an unknown/conditional function is conservatively kept
 // (cf. TestSecurity_TC16_UninitInterprocedural).
-func outputParamInitializedVars(calls []parser.Node, f *db.Function, summaries summaryMap) map[string]bool {
+func outputParamInitializedVars(calls []parser.Node, f *db.Function, summaries summaryMap, isValue func(string) bool) map[string]bool {
 	// `&s` to a writer initializes the whole struct on three tiers, mirroring
 	// the scalar path's model:
 	//   - known initializer (memset, stat, ...) → writes unconditionally;
@@ -1637,7 +1708,7 @@ func outputParamInitializedVars(calls []parser.Node, f *db.Function, summaries s
 				continue
 			}
 			for argIdx, arg := range child.NamedChildren() {
-				target, ok := addressOfTarget(arg)
+				target, ok := addressOfTargetScoped(arg, isValue)
 				if !ok || target.Kind() != "identifier" {
 					continue
 				}

@@ -371,6 +371,11 @@ func hoistUninitFile(root parser.Node) *hoistedUninitFile {
 // (`&x`) to a call before the use, within the candidate's function. Such a write
 // is invisible to buildDefiniteInitFlow's gen/kill model, so it is used only to
 // downgrade an otherwise-must-reachable uninit from `confirmed` to `suspected`.
+//
+// The recognition is the PERMISSIVE one (no scope oracle here): a genuine
+// bit-and argument with a parenthesized left operand (`f((flags) & x)`) is read
+// as `&x`. A false match only weakens the confidence tier, it never drops the
+// candidate, so the permissive form is safe at this call site.
 func (f *DefiniteInitFilter) hasOutputParamWrite(fnByID map[int64]*db.Function, hf *hoistedUninitFile, c Candidate) bool {
 	if hf == nil {
 		return false
@@ -388,14 +393,11 @@ func (f *DefiniteInitFilter) hasOutputParamWrite(fnByID map[int64]*db.Function, 
 				continue
 			}
 			for _, arg := range child.NamedChildren() {
-				if arg.Kind() != "pointer_expression" || !strings.HasPrefix(strings.TrimSpace(arg.Text()), "&") {
+				target, ok := arg.AddressTakenTarget()
+				if !ok || target.Kind() != "identifier" {
 					continue
 				}
-				inner := arg.NamedChildren()
-				if len(inner) == 0 || inner[0].Kind() != "identifier" {
-					continue
-				}
-				if inner[0].Text() == c.VariableName {
+				if target.Text() == c.VariableName {
 					return true
 				}
 			}

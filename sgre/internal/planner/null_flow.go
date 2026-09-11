@@ -500,28 +500,29 @@ func intIn(xs []int, v int) bool {
 	return false
 }
 
-// addrTakenVar returns the variable whose address is taken by an argument,
-// unwrapping cast expressions: `&x` and `(void **)&x` both yield "x". It returns
-// "" for anything else (a by-value arg, a dereference, a field of x, ...).
+// addrTakenVar returns the variable whose address is taken by a call argument,
+// covering the spellings parser.Node.AddressTakenTarget recognizes: `&x`,
+// `&(x)`, `(void **)&x` and `(T)&x` parsed as a bit-and binary_expression
+// (`(shm_handle)&prfs_list` — tree-sitter-c has no typedef table, so the
+// argument has no pointer_expression child and the address-of used to be
+// invisible, keeping the caller's definite null alive past the call). It
+// returns "" for anything else (a by-value arg, a dereference, a field of x,
+// ...): only a whole-variable address proves the callee may reassign x itself.
+//
+// This uses the PERMISSIVE recognition: the flow analyzer has no scope oracle
+// (the variables table is not populated, and the parameter/local name set is
+// not plumbed into buildEffects), so a genuine bit-and argument spelled with a
+// parenthesized left operand (`f((flags) & p)`) is read as `&p` and kills p's
+// null state. That is a false-NEGATIVE-only surface — it can hide a finding,
+// never invent one — and is deliberately accepted over threading a per-function
+// scope set through the hot dataflow path. The evidence-layer uninit detector,
+// which has the declared names at hand, uses AddressTakenTargetScoped.
 func addrTakenVar(arg parser.Node) string {
-	switch arg.Kind() {
-	case "pointer_expression":
-		if !strings.HasPrefix(strings.TrimSpace(arg.Text()), "&") {
-			return ""
-		}
-		inner := arg.NamedChildren()
-		if len(inner) == 0 || inner[0].Kind() != "identifier" {
-			return ""
-		}
-		return inner[0].Text()
-	case "cast_expression", "parenthesized_expression":
-		for _, child := range arg.NamedChildren() {
-			if name := addrTakenVar(child); name != "" {
-				return name
-			}
-		}
+	target, ok := arg.AddressTakenTarget()
+	if !ok || target.Kind() != "identifier" {
+		return ""
 	}
-	return ""
+	return target.Text()
 }
 
 // isControlFlowHeaderStmt reports whether a statement kind is a control-flow
