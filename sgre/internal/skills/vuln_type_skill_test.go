@@ -4,8 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
+	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/planner"
 )
 
@@ -78,4 +80,18 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestSeedEventTypesInSchema guards the FOURTH parallel list: the
+// security_events.event_type CHECK enum in internal/db/schema.go. A detector
+// emitting an event type absent from that enum makes InsertEvent fail the
+// constraint, so the detector silently produces ZERO findings — a silent false
+// negative. Every seed event type and every aux event type must be present.
+func TestSeedEventTypesInSchema(t *testing.T) {
+	all := append(planner.AllSeedEventTypes(), planner.AuxEvidenceEventTypes()...)
+	for _, et := range all {
+		if !strings.Contains(db.SchemaDDL, "'"+et+"'") {
+			t.Errorf("event type %q is not in the security_events.event_type CHECK enum (add it to internal/db/schema.go)", et)
+		}
+	}
 }

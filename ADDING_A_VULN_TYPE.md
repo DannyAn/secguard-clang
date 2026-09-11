@@ -7,7 +7,11 @@ planner, the skill registry, or the agent skills again.
 
 The single source of truth for the **type list** is
 `sgre/internal/planner/registry.go` (`RegisterVulnType`). Everything else
-derives from or is cross-checked against it.
+derives from or is cross-checked against it. **Four parallel lists must stay in
+sync** — the registry, the CLI skill registry (`allSkillSpecs`), the skill dirs,
+and the `security_events.event_type` CHECK enum in `sgre/internal/db/schema.go`.
+The guard below cross-checks the first three; the schema enum is cross-checked by
+`TestSeedEventTypesInSchema`.
 
 ## 1. Detector — `sgre/internal/evidence/<type>.go`
 
@@ -18,7 +22,11 @@ and emit `<SEED_EVENT>` rows via `emitEvent(...)`. Each event must carry:
 - `variable` / `expression` — the root-cause identifier.
 - `origin` — where the fact came from (used by filters and evidence).
 
-Register it in `sgre/internal/evidence/registry.go` with `RegisterDetector`.
+Register it in `sgre/internal/evidence/registry.go` with `RegisterDetector`, and
+**add the event type to the `event_type` CHECK enum in
+`sgre/internal/db/schema.go`** — a missing enum entry makes `InsertEvent` fail
+the constraint and the detector silently emits ZERO findings (the worst kind of
+false negative).
 
 ## 2. Planner spec — `sgre/internal/planner/registry.go`
 
