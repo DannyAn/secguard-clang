@@ -28,8 +28,8 @@ func NewLockOrderBuilder(store db.Store, p *parser.Parser, logger *log.Logger) *
 var lockCalls = map[string]bool{
 	"pthread_mutex_lock": true, "pthread_rwlock_wrlock": true, "EnterCriticalSection": true,
 	// A timed acquisition still establishes the order A→B. The detector emits
-	// such a cycle with category `deadlock_timed`, which LockOrderFilter keeps
-	// suspected (a timeout allows recovery) instead of confirming.
+	// such a cycle with a `timed` marker, which LockOrderFilter keeps suspected
+	// (a timeout allows recovery) instead of confirming.
 	"pthread_mutex_timedlock": true,
 }
 

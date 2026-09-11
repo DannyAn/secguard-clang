@@ -127,6 +127,12 @@ func (p *Planner) getFilters(chain string) ([]Filter, error) {
 			NewSafeFunctionFilter(p.store),
 			NewReturnCheckFilter(p.store, p.parser, p.logger),
 		}, nil
+	case "hardcoded-secret":
+		return []Filter{
+			NewCallReachFilter(p.store, p.callReachCache),
+			NewSafeFunctionFilter(p.store),
+			NewHardcodedSecretProofFilter(p.store),
+		}, nil
 	}
 	return nil, fmt.Errorf("unknown filter chain %q", chain)
 }

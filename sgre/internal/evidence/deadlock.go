@@ -120,22 +120,26 @@ func (d *DeadlockDetector) Detect(ctx context.Context) (DetectResult, error) {
 		if !ok {
 			continue
 		}
-		// A cycle that needed a timed acquisition is recoverable, so it is
-		// emitted with its own category and the planner keeps it suspected.
-		category := "deadlock"
+		// A cycle that needed a timed acquisition is recoverable, so the event
+		// carries a `timed` marker and LockOrderFilter keeps it suspected.
+		timed := false
 		for _, e := range allEdges {
 			if e.timed && containsString(scc, e.from) && containsString(scc, e.to) {
-				category = "deadlock_timed"
+				timed = true
 				break
 			}
 		}
-		if emitEvent(ctx, d.store, d.logger, "DEADLOCK", anchor.fnID, &db.Location{FileID: anchor.file.ID, Line: anchor.line}, map[string]string{
+		props := map[string]string{
 			"mutex_a":  scc[0],
 			"mutex_b":  scc[1],
 			"function": anchor.fn,
-			"category": category,
+			"category": "deadlock",
 			"cycle":    strings.Join(scc, "->"),
-		}) {
+		}
+		if timed {
+			props["timed"] = "true"
+		}
+		if emitEvent(ctx, d.store, d.logger, "DEADLOCK", anchor.fnID, &db.Location{FileID: anchor.file.ID, Line: anchor.line}, props) {
 			result.EventsCreated++
 		}
 	}

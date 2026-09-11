@@ -168,12 +168,11 @@ func TestHardcodedSecret_ZeroFunctionFile(t *testing.T) {
 }
 
 // TestHardcodedSecret_ValueProvenVsNameOnly pins the split that keeps the
-// pipeline from auto-confirming a placeholder or a test credential. A literal
-// proven by its VALUE (entropy / known prefix / URL credentials) carries the
-// auto-confirmed `hardcoded_secret` category; a match on the variable/field name
-// ALONE carries `hardcoded_secret_name_only`, which the planner keeps suspected
-// so the AI applies the skill's false-positive rules. Without the split,
-// `password = "admin123"` was auto-confirmed with no review.
+// pipeline from auto-confirming a placeholder or a test credential. The category
+// is always the plain defect shape (`hardcoded_secret`); proof strength rides a
+// separate `value_proven` marker. A literal proven by its VALUE (entropy / known
+// prefix / URL credentials) carries `value_proven` and is auto-confirmed; a
+// name-only match carries no marker and stays suspected for the AI.
 func TestHardcodedSecret_ValueProvenVsNameOnly(t *testing.T) {
 	store, p := setupDetector(t, "tc95_hardcoded_secret_value_only.c")
 	logger := log.New(io.Discard, log.LevelWarn)
@@ -183,25 +182,28 @@ func TestHardcodedSecret_ValueProvenVsNameOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list HARDCODED_SECRET: %v", err)
 	}
-	cat := map[string]string{}
+	byVar := map[string]struct{ category, proven string }{}
 	for _, e := range events {
 		var props struct {
-			Variable string `json:"variable"`
-			Category string `json:"category"`
+			Variable    string `json:"variable"`
+			Category    string `json:"category"`
+			ValueProven string `json:"value_proven"`
 		}
 		if json.Unmarshal([]byte(e.Properties), &props) == nil && props.Variable != "" {
-			cat[props.Variable] = props.Category
+			byVar[props.Variable] = struct{ category, proven string }{props.Category, props.ValueProven}
 		}
 	}
 
 	for _, v := range []string{"high_entropy", "conn"} {
-		if cat[v] != "hardcoded_secret" {
-			t.Errorf("%s (proven by its value) category = %q, want hardcoded_secret", v, cat[v])
+		got := byVar[v]
+		if got.category != "hardcoded_secret" || got.proven != "true" {
+			t.Errorf("%s (proven by its value) = %+v, want category hardcoded_secret + value_proven", v, got)
 		}
 	}
 	for _, v := range []string{"password", "db_password"} {
-		if cat[v] != "hardcoded_secret_name_only" {
-			t.Errorf("%s (name-only match) category = %q, want hardcoded_secret_name_only", v, cat[v])
+		got := byVar[v]
+		if got.category != "hardcoded_secret" || got.proven != "" {
+			t.Errorf("%s (name-only match) = %+v, want category hardcoded_secret with no value_proven", v, got)
 		}
 	}
 }

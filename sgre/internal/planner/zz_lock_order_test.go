@@ -107,7 +107,7 @@ void g(void) {
 	p := parser.NewParser()
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "deadlock_timed.c")
+	path := filepath.Join(dir, "deadlock_timedlock.c")
 	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}

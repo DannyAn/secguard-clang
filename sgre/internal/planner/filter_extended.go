@@ -92,3 +92,42 @@ func (f *ReleaseFilter) Apply(ctx context.Context, candidates []Candidate) ([]Ca
 		f.Name())
 	return kept, dropped, nil
 }
+
+// HardcodedSecretProofFilter promotes a hardcoded-secret candidate whose
+// literal's VALUE is itself secret-shaped (a known token prefix, high Shannon
+// entropy, or URL-embedded credentials — the detector's `value_proven` marker)
+// to the pipeline-confirmed tier, so it is auto-confirmed. A match on the
+// variable/field name alone carries no marker and stays suspected for the AI,
+// which applies the skill's placeholder / test-credential false-positive rules.
+// Nothing is dropped, so the split is FN-safe.
+type HardcodedSecretProofFilter struct {
+	store db.Store
+}
+
+func NewHardcodedSecretProofFilter(store db.Store) *HardcodedSecretProofFilter {
+	return &HardcodedSecretProofFilter{store: store}
+}
+
+func (f *HardcodedSecretProofFilter) Name() string { return "hardcoded_secret_proof" }
+
+func (f *HardcodedSecretProofFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, []Dismissed, error) {
+	events, err := f.store.ListEventsByType(ctx, "HARDCODED_SECRET")
+	if err != nil {
+		return nil, nil, fmt.Errorf("hardcoded secret proof: %w", err)
+	}
+	proven := make(map[int64]bool, len(events))
+	for _, e := range events {
+		if parseEventProps(e.Properties).ValueProven == "true" {
+			proven[e.ID] = true
+		}
+	}
+
+	kept := make([]Candidate, 0, len(candidates))
+	for _, c := range candidates {
+		if proven[c.DerefEventID] {
+			c.SuspicionLevel = "confirmed"
+		}
+		kept = append(kept, c)
+	}
+	return kept, nil, nil
+}

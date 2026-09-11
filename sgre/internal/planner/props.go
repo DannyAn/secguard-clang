@@ -46,6 +46,15 @@ type eventProps struct {
 	// divisor is exactly zero (a literal `x/0` or a zero-valued constant symbol),
 	// so the RangeFilter auto-confirms it instead of deferring to the AI agent.
 	DefinitelyZero string `json:"definitely_zero"`
+	// ValueProven is "true" when the hardcoded-secret detector found the literal's
+	// VALUE itself secret-shaped (known token prefix / high entropy / URL
+	// credentials); the HardcodedSecretProofFilter auto-confirms those, while a
+	// name-only match stays suspected for the AI.
+	ValueProven string `json:"value_proven"`
+	// Timed is "true" when the deadlock detector's cycle needs a
+	// pthread_mutex_timedlock acquisition; LockOrderFilter keeps such a cycle
+	// suspected (the timeout allows recovery) instead of confirming it.
+	Timed string `json:"timed"`
 	// ThreadFunctions is the comma-separated list of pthread thread function
 	// names a shared_data_race event reports (race-condition detector).
 	ThreadFunctions string `json:"thread_functions"`

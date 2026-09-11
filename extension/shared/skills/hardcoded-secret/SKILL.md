@@ -14,12 +14,12 @@ metadata:
 ### Evidence Patterns
 
 #### Value-proven secret — auto-confirmed by the pipeline
-- **HARDCODED_SECRET event** with category `hardcoded_secret`
+- **HARDCODED_SECRET event** with category `hardcoded_secret` and a `value_proven` marker
 - The literal's VALUE is itself secret-shaped: a known token prefix (`sk-`, `AKIA`, `ghp_`, `xoxb-`, `-----BEGIN`, `eyJ`, ...), high Shannon entropy (>= 16 chars, >= 4.5 bits/char), or URL-embedded credentials (`mysql://root:hunter2@db`)
 - Registry persistence with a secret-shaped value: `RegSetValueExA(..., "Password", ..., "sk-...")`
 
 #### Name-only match — the AI decides
-- **HARDCODED_SECRET event** with category `hardcoded_secret_name_only`
+- **HARDCODED_SECRET event** with category `hardcoded_secret` and NO `value_proven` marker
 - Only the variable/field name is secret-bearing (`password`, `passwd`, `pwd`, `secret`, `api_key`, `apikey`, `access_key`, `private_key`, `token`, `credential`, `auth_key`, `client_secret`, `\bkey\b`, `\bpin\b`, `\bsalt\b`, `\bhash\b`) while the value is low-entropy
 - This is where placeholders and test credentials land — judge each one
 
