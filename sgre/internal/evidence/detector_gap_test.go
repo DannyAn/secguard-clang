@@ -167,6 +167,45 @@ func TestHardcodedSecret_ZeroFunctionFile(t *testing.T) {
 	}
 }
 
+// TestHardcodedSecret_ValueProvenVsNameOnly pins the split that keeps the
+// pipeline from auto-confirming a placeholder or a test credential. A literal
+// proven by its VALUE (entropy / known prefix / URL credentials) carries the
+// auto-confirmed `hardcoded_secret` category; a match on the variable/field name
+// ALONE carries `hardcoded_secret_name_only`, which the planner keeps suspected
+// so the AI applies the skill's false-positive rules. Without the split,
+// `password = "admin123"` was auto-confirmed with no review.
+func TestHardcodedSecret_ValueProvenVsNameOnly(t *testing.T) {
+	store, p := setupDetector(t, "tc95_hardcoded_secret_value_only.c")
+	logger := log.New(io.Discard, log.LevelWarn)
+	NewHardcodedSecretDetector(store, p, logger).Detect(context.Background())
+
+	events, err := store.ListEventsByType(context.Background(), "HARDCODED_SECRET")
+	if err != nil {
+		t.Fatalf("list HARDCODED_SECRET: %v", err)
+	}
+	cat := map[string]string{}
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+			Category string `json:"category"`
+		}
+		if json.Unmarshal([]byte(e.Properties), &props) == nil && props.Variable != "" {
+			cat[props.Variable] = props.Category
+		}
+	}
+
+	for _, v := range []string{"high_entropy", "conn"} {
+		if cat[v] != "hardcoded_secret" {
+			t.Errorf("%s (proven by its value) category = %q, want hardcoded_secret", v, cat[v])
+		}
+	}
+	for _, v := range []string{"password", "db_password"} {
+		if cat[v] != "hardcoded_secret_name_only" {
+			t.Errorf("%s (name-only match) category = %q, want hardcoded_secret_name_only", v, cat[v])
+		}
+	}
+}
+
 // TestOutOfBounds_GlobalArray locks in the file-scope array-size fix: a
 // constant OOB read of a global `int arr[10]` is now resolved (findArraySize
 // accepts file-scope declarations), alongside the same-function local case.

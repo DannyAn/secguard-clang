@@ -450,8 +450,20 @@ func init() {
 		CWE:              "CWE-798",
 		SeedEventType:    "HARDCODED_SECRET",
 		EvidenceType:     "HARDCODED_SECRET",
-		DefaultSuspicion: "confirmed",
+		DefaultSuspicion: "suspected",
 		FilterChain:      "default",
+		// A literal whose VALUE is secret-shaped (a known token prefix, high
+		// Shannon entropy, URL-embedded credentials) is proven, so it is
+		// auto-confirmed. A match on the variable/field name ALONE may be a
+		// placeholder (`"REPLACE_ME"`) or a test credential
+		// (`test_password = "test123"`), which the hardcoded-secret skill
+		// classifies as false-positive/suspected — so it stays suspected and the
+		// AI judges it, instead of the pipeline emitting a confirmed false
+		// positive the skill's rules can never reach.
+		CategoryConfidence: map[string]string{
+			"hardcoded_secret":           "confirmed",
+			"hardcoded_secret_name_only": "suspected",
+		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
 				{Type: "hardcoded_secret", Role: "sink", Detail: fmt.Sprintf("hardcoded secret in %s at line %d", c.FunctionName, c.Line)},

@@ -13,15 +13,15 @@ metadata:
 
 ### Evidence Patterns
 
-#### Hardcoded Credentials (CWE-798)
-- **HARDCODED_SECRET event** with category `hardcoded_password` / `hardcoded_key` / `hardcoded_token`
-- Pattern: String literal assigned to variable named `password`, `passwd`, `key`, `secret`, `token`, `api_key`
-- Credential embedded directly in source code
+#### Value-proven secret — auto-confirmed by the pipeline
+- **HARDCODED_SECRET event** with category `hardcoded_secret`
+- The literal's VALUE is itself secret-shaped: a known token prefix (`sk-`, `AKIA`, `ghp_`, `xoxb-`, `-----BEGIN`, `eyJ`, ...), high Shannon entropy (>= 16 chars, >= 4.5 bits/char), or URL-embedded credentials (`mysql://root:hunter2@db`)
+- Registry persistence with a secret-shaped value: `RegSetValueExA(..., "Password", ..., "sk-...")`
 
-#### Credential Persistence (CWE-798)
-- **HARDCODED_SECRET event** with category `credential_persistence`
-- Pattern: `RegSetValueExA(..., "Password", ...)` writing credentials to registry
-- Credentials stored in persistent storage without encryption
+#### Name-only match — the AI decides
+- **HARDCODED_SECRET event** with category `hardcoded_secret_name_only`
+- Only the variable/field name is secret-bearing (`password`, `passwd`, `pwd`, `secret`, `api_key`, `apikey`, `access_key`, `private_key`, `token`, `credential`, `auth_key`, `client_secret`, `\bkey\b`, `\bpin\b`, `\bsalt\b`, `\bhash\b`) while the value is low-entropy
+- This is where placeholders and test credentials land — judge each one
 
 ### Safe Patterns (P0 Exclusion)
 
@@ -30,18 +30,18 @@ metadata:
 | `getenv("APP_PASSWORD")` | Loaded from environment at runtime |
 | `read_config_file("/etc/app/secrets.conf")` | External config with restricted permissions |
 | `vault_get_secret("db_password")` | Secrets manager (Vault, KMS) |
-| Variable named `password` but assigned from `getenv()` | Not hardcoded |
+| Variable named `password` but assigned from `getenv()` | Not a literal — the detector never emits it |
 
 ### Classification Rules
 
 | Condition | Classification |
 |-----------|---------------|
-| String literal assigned to `password`/`key`/`secret`/`token` variable | **confirmed** |
-| `RegSetValueExA` writing credential to registry | **confirmed** |
-| Variable named `password` but value from `getenv()` / config file | **false-positive** |
-| String literal that is a placeholder (`"REPLACE_ME"`, `"YOUR_KEY_HERE"`) | **false-positive** |
-| String literal in test code (`test_password = "test123"`) | **suspected** (verify it's not used in production) |
-| Short string that isn't credential-like | **false-positive** |
+| Value has a known secret prefix, high entropy, or URL-embedded credentials | **confirmed** |
+| `RegSetValueExA` persisting a secret-shaped value to a secret-named registry key | **confirmed** |
+| Only the variable/field NAME matched the secret pattern (low-entropy value) | **suspected** — may be a real weak password, a placeholder, or a test value |
+| Placeholder value (`"REPLACE_ME"`, `"YOUR_KEY_HERE"`, `"CHANGEME"`, `"xxx"`, empty) | **false-positive** |
+| Test credential (`test_password = "test123"`, a `test/` path) | **suspected** (verify it is not used in production) |
+| Short value that is not credential-like | **false-positive** |
 
 ### Fix Suggestions
 - Load secrets from environment variables: `getenv("APP_PASSWORD")`

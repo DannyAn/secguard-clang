@@ -73,7 +73,7 @@ func (d *HardcodedSecretDetector) Detect(ctx context.Context) (DetectResult, err
 			if emitEvent(ctx, d.store, d.logger, "HARDCODED_SECRET", enclosingFuncID(init, funcs), &db.Location{FileID: file.ID, Line: init.StartLine(), Column: init.StartColumn()}, map[string]string{
 				"variable": varName,
 				"value":    value,
-				"category": "hardcoded_secret",
+				"category": secretCategory(value),
 			}) {
 				result.EventsCreated++
 			}
@@ -100,6 +100,22 @@ func hasHighEntropyHint(value string) bool {
 		}
 	}
 	return false
+}
+
+// secretCategory classifies a HARDCODED_SECRET emission by the strength of the
+// evidence. A literal whose VALUE is itself secret-shaped (a known token prefix,
+// high Shannon entropy, or URL-embedded credentials) is proven, so the pipeline
+// auto-confirms it. A match on the variable/field name ALONE is only a
+// heuristic: the value may be a placeholder (`"REPLACE_ME"`) or a test
+// credential (`test_password = "test123"`), which the hardcoded-secret skill
+// classifies as false-positive/suspected. Those emissions carry the
+// `hardcoded_secret_name_only` category, which the planner keeps at suspected so
+// the AI judges them — never auto-confirmed.
+func secretCategory(value string) string {
+	if hasHighEntropyHint(value) || looksHighEntropy(value) || looksLikeURLCredential(value) {
+		return "hardcoded_secret"
+	}
+	return "hardcoded_secret_name_only"
 }
 
 // secretEntropyThreshold is the Shannon-entropy bar (bits/char) above which a
@@ -201,7 +217,7 @@ func (d *HardcodedSecretDetector) detectInitializerPairs(ctx context.Context, ro
 		if emitEvent(ctx, d.store, d.logger, "HARDCODED_SECRET", enclosingFuncID(pair, funcs), &db.Location{FileID: file.ID, Line: pair.StartLine(), Column: pair.StartColumn()}, map[string]string{
 			"variable": fieldName,
 			"value":    value,
-			"category": "hardcoded_secret",
+			"category": secretCategory(value),
 		}) {
 			result.EventsCreated++
 		}
@@ -243,7 +259,7 @@ func (d *HardcodedSecretDetector) detectRegSetValueEx(ctx context.Context, calls
 			"api":      callName,
 			"name":     valueName,
 			"value":    valueData,
-			"category": "hardcoded_secret",
+			"category": secretCategory(valueData),
 		}) {
 			result.EventsCreated++
 		}
