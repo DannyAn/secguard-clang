@@ -33,6 +33,15 @@
 - **核对为一致、无需改动的**（列出以免看起来"没查"）：`RAND_bytes` / `getrandom` 不会被误报（弱随机集合是精确名 `rand`/`srand`）；`__builtin_*_overflow`、`fgets`、`fputs`、`EVP_aes_*`、`__attribute__((cleanup))` 等只出现在"安全模式 / 修复建议"表里，不是检测器声称；`SAFE_FREE` 由 `null_source.go` 识别。
 - **测试**：`TestLockOrderFilter_TimedCycleStaysSuspected`（timed 环必须 suspected）+ 既有 `TestLockOrderFilter_ConfirmsCycle`（正常环仍 confirmed），已用"中性化修复必然失败"验证。
 
+### 精准度修复（suspected 专项第一刀：null-deref 的 malloc 无判空）
+
+生产数据（3 个大仓库 result.sarif Top3）显示 suspected 集中在 **uninit / null-deref / divide-by-zero** 三个"must/may"分级类型。第一刀落在 null-deref：
+
+- **`q = malloc(); return *q;` 之前被降级成 suspected**。`NullableSourceFilter` 把所有"可能为空"（非"确定为空"）一律降级，于是"malloc 无判空解引用"这种教科书 CWE-476（unchecked-return / null-deref 两个 skill 都明确写 confirmed）也进了 suspected。
+- **修法（健全）**：allocator（`malloc`/`calloc`/`realloc`）**本质上必然可能返回 NULL**，无 guard 解引用与路径无关地就是缺陷 → 保持 confirmed（auto-confirm）；`p = NULL` 仍走 must 分析（只在全路径为空时 confirmed）；未知函数返回仍 suspected。新增 `nullModel.onlyAllocatorSources`。
+- **测试**：`TestDefiniteNull_MustAnalysis` 扩为三向——`p=NULL`→confirmed、`q=malloc()`→confirmed、`r=get_ptr()`→suspected，已用"中性化修复必然失败"验证。
+- 同步收紧了 4 个 skill 的 suspected 判据（injection 黑名单、unchecked-return read 忽略、divide-by-zero 外部除数、race-condition 措辞），并删掉 2 行检测器早已不发的僵尸 suspected 规则（buffer-overflow / out-of-bounds 的"变量索引"）。
+
 ### 设计一致性（20 个 skill 全部对齐同一模板 + 可执行守卫）
 
 先直接回答"现在一致了吗"：**一致了，20/20**。此前不合模板的只有 `uninit` 和 `resource-leak` 两个——正好又是那对"缺 YAML frontmatter、在 v0.5.x 根本没被加载"的孤儿 skill（没被加载 → 不被检验 → 规则写错无人发现，这就是本轮 bug 能长期存活的原因）。
