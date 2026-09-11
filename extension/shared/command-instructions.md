@@ -48,6 +48,10 @@ to be the project root.
 ]
 ```
 
+This bare array is the contract. The CLI also accepts a single finding object and
+a `{"scan_id": ..., "findings": [...]}` wrapper (so a stray envelope does not lose
+the whole type), but write the array — and never mix shapes in one file.
+
 Escaping: every `"` INSIDE a string value must be escaped as `\"`, and any
 backslash as `\\`. Do NOT hand-write JSON with unescaped inner quotes — the CLI
 will reject it. Prefer writing the JSON file with the Write tool (it does not

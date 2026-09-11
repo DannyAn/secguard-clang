@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -374,7 +375,32 @@ func runReportCmd(ctx context.Context, args []string) int {
 	// file/line/function/summary/reasoning/exception_check/fix_strategy. `-` or a
 	// missing value reads from stdin.
 	if hasFlag(remaining, "write-json") {
+		src := parseStringFlag(remaining, "write-json")
+		var data []byte
+		var err error
+		if src == "" || src == "-" {
+			data, err = io.ReadAll(os.Stdin)
+		} else {
+			data, err = os.ReadFile(src)
+		}
+		if err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to read --write-json input: %v", err))
+			return 1
+		}
+
+		inputs, embeddedScanID, perr := parseWriteJSONInput(data)
+		if perr != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to parse --write-json input: %v. %s", perr, writeJSONShapeHint))
+			return 1
+		}
+
+		// An explicit --scan-id wins; otherwise honour a scan_id embedded in an
+		// object envelope, so the tolerated wrapper is not merely accepted but
+		// attached to the right scan.
 		scanID := parseStringFlag(remaining, "scan-id")
+		if scanID == "" {
+			scanID = embeddedScanID
+		}
 
 		// Resolve and validate scan_id with the SAME rules as the single `--write`
 		// path, so a batch can never be silently attached to a typo'd/nonexistent
@@ -402,38 +428,6 @@ func runReportCmd(ctx context.Context, args []string) int {
 				WriteErrorJSON(fmt.Sprintf("unknown scan_id %q: no scan_stats found for this id. Run 'secguard scan' first, or pass the scan_id from the scan output.", scanID))
 				return 1
 			}
-		}
-
-		src := parseStringFlag(remaining, "write-json")
-		var data []byte
-		var err error
-		if src == "" || src == "-" {
-			data, err = io.ReadAll(os.Stdin)
-		} else {
-			data, err = os.ReadFile(src)
-		}
-		if err != nil {
-			WriteErrorJSON(fmt.Sprintf("failed to read --write-json input: %v", err))
-			return 1
-		}
-
-		type findingInput struct {
-			RuleID         string        `json:"rule_id"`
-			Severity       string        `json:"severity"`
-			Confidence     flexibleFloat `json:"confidence"`
-			Status         string        `json:"status"`
-			File           string        `json:"file"`
-			Line           int           `json:"line"`
-			Function       string        `json:"function"`
-			Summary        string        `json:"summary"`
-			Reasoning      string        `json:"reasoning"`
-			ExceptionCheck string        `json:"exception_check"`
-			FixStrategy    string        `json:"fix_strategy"`
-		}
-		var inputs []findingInput
-		if err := json.Unmarshal(data, &inputs); err != nil {
-			WriteErrorJSON(fmt.Sprintf("failed to parse --write-json array: %v", err))
-			return 1
 		}
 
 		written := make([]map[string]interface{}, 0, len(inputs))
@@ -1199,4 +1193,85 @@ func unclassifiedCandidates(audits []vulnAuditEntry) int {
 		}
 	}
 	return total
+}
+
+// findingInput is one row of a `--write-json` payload: the single-finding object
+// shape, and the element type of the array/envelope shapes.
+type findingInput struct {
+	RuleID         string        `json:"rule_id"`
+	Severity       string        `json:"severity"`
+	Confidence     flexibleFloat `json:"confidence"`
+	Status         string        `json:"status"`
+	File           string        `json:"file"`
+	Line           int           `json:"line"`
+	Function       string        `json:"function"`
+	Summary        string        `json:"summary"`
+	Reasoning      string        `json:"reasoning"`
+	ExceptionCheck string        `json:"exception_check"`
+	FixStrategy    string        `json:"fix_strategy"`
+}
+
+// writeJSONShapeHint is appended to every parse failure. The batch path fails
+// as a whole, so an opaque Go unmarshal error used to cost an agent a
+// source-reading detour (or the whole type's findings) just to discover the
+// accepted shape. The hint is intentionally concrete and one line long.
+const writeJSONShapeHint = `Expected a JSON array of finding objects, e.g. ` +
+	`[{"rule_id":"CWE-476","severity":"high","confidence":90,"status":"confirmed",` +
+	`"file":"src/a.c","line":42,"function":"f","summary":"...","reasoning":"...",` +
+	`"exception_check":"...","fix_strategy":"..."}]. ` +
+	`A single finding object, or an object {"scan_id":"...","findings":[...]}, is also accepted.`
+
+// parseWriteJSONInput accepts the three shapes an agent realistically writes and
+// returns the findings plus any scan_id carried by the payload:
+//
+//   - the documented bare array of finding objects;
+//   - an object envelope {"scan_id": ..., "findings": [...]};
+//   - a single finding object (a one-element batch).
+//
+// Only the bare array is documented (see extension/shared/agent-body.md). The
+// other two exist because a context-compacted agent loses the format spec and
+// guesses the envelope, and a batch-wide parse failure then discards every
+// finding of that type — observed in production. Accepting them is safe: the
+// rows go through exactly the same per-row validation below, and an embedded
+// scan_id is validated like the flag.
+func parseWriteJSONInput(data []byte) ([]findingInput, string, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil, "", fmt.Errorf("input is empty")
+	}
+	switch trimmed[0] {
+	case '[':
+		var inputs []findingInput
+		if err := json.Unmarshal(trimmed, &inputs); err != nil {
+			return nil, "", err
+		}
+		return inputs, "", nil
+	case '{':
+		// Probe for the envelope's keys before choosing a shape: `findings` may be
+		// present-but-empty (`[]` / null), which must stay an envelope rather than
+		// silently becoming an all-empty single finding.
+		var probe map[string]json.RawMessage
+		if err := json.Unmarshal(trimmed, &probe); err != nil {
+			return nil, "", err
+		}
+		raw, isEnvelope := probe["findings"]
+		if !isEnvelope {
+			var one findingInput
+			if err := json.Unmarshal(trimmed, &one); err != nil {
+				return nil, "", err
+			}
+			return []findingInput{one}, "", nil
+		}
+		var inputs []findingInput
+		if err := json.Unmarshal(raw, &inputs); err != nil {
+			return nil, "", fmt.Errorf(`the "findings" value is not an array of finding objects: %w`, err)
+		}
+		var scanID string
+		if rawID, ok := probe["scan_id"]; ok {
+			_ = json.Unmarshal(rawID, &scanID)
+		}
+		return inputs, strings.TrimSpace(scanID), nil
+	default:
+		return nil, "", fmt.Errorf("input is neither a JSON array nor an object (starts with %q)", string(trimmed[:1]))
+	}
 }

@@ -212,9 +212,11 @@ The `<type>.json` file MUST be a JSON array of objects with EXACTLY these keys
 / `dismissed` — and ONLY those three (a skill's `false-positive` maps to
 `dismissed`). `file` is the source path, `line` the line number, `function` the
 function name. `reasoning`/`exception_check`/`fix_strategy` are optional strings
-(required for confirmed). Do NOT rename these keys or use a different envelope
-(e.g. no `{"findings": [...]}` wrapper) — the CLI reads a bare array with these
-exact key names.
+(required for confirmed). Write a bare array with these exact key names. Do NOT
+rename the keys. If you do write a `{"scan_id": ..., "findings": [...]}` wrapper
+or a single finding object, the write still succeeds (the CLI accepts all three
+shapes and validates an embedded `scan_id` like `--scan-id`) — but the bare array
+is the contract; do not mix shapes in one file.
 
 Every candidate must get a finding (confirmed, suspected, or dismissed) — never
 skip writing, never dismiss a batch in prose only. For every **confirmed**

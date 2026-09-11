@@ -15,6 +15,25 @@
 - **修复 struct 部分初始化的 guard 识别缺口（真实误报）**：struct 路径原先只认"调用出现在 if/while 条件里"这一种 guard（`callInBranchCondition`），因此调用方把返回值存进变量再判错误的形态（`pos += load_s(&d); if (pos == 0) return;`）——scalar 路径早已由 `outputParamGuardLine` 识别——会被误报为 `struct_partial_uninit`。现在 struct 路径复用同一个 guard 识别；**无 guard 的形态仍然上报**（tc88 的 `bad_msg` 是真实的失败路径未初始化，必须保留），即只修误报、不放松检测。
 - **测试**：两个生产场景的**逐字复现**回归测试、位与守卫测试、struct guard 回归 + "无 guard 仍上报"对照测试、null-deref 位与回归 + "cast 取地址仍生效"方向性守卫，以及 parser 级判别器测试（含"类型名绝不能被收集为绑定名"）。新增测试均已用"中性化修复后必须失败"验证过是真回归、不是事后补测。全量 `go test ./...`、`nosqlite` 子集、115 个 fixture 语料（candidates 逐类型数量不变，零波及）均通过。
 
+### 稳定性（findings 落库：`--write-json` 契约容错 + 可执行报错）
+
+生产实测反馈：扫描收尾落库阶段整批报错
+`failed to parse --write-json array: json: cannot unmarshal object into Go value of type []cli.findingInput`，
+**该类型的所有判定（含逐条 dismissed 理由）全部丢失**，只能从头重写。
+
+根因是"规范正确但恢复能力为零"：
+
+- 判定文件契约是**裸 JSON 数组**，`agent-body.md` 原本就明确禁止 `{"findings":[...]}` 信封——但 orchestrator 在**上下文压缩**后丢失了该规范，按信封落了盘。
+- CLI 只接受数组；失败信息是 Go 的类型错误（对 agent 不可执行），且 `secguard report --help` 完全不写 payload schema——日志显示 agent 正是去查 `--help` 而查不到，只能去读 CLI 源码。
+
+修复（纵深防御，三层一起补）：
+
+- **CLI 宽容接受三种形态**：裸数组（契约）、单个 finding 对象、`{"scan_id":...,"findings":[...]}` 信封。信封里的 `scan_id` 在未传 `--scan-id` 时生效，并走与 `--scan-id` **完全相同**的校验（未知 scan_id 仍整批拒绝），因此宽容不会造成"静默挂到错 scan"。`findings` 为 `null`/`[]` 仍按信封处理（不会退化成一条全空 finding）。
+- **解析失败即可执行报错**：说明期望形态 + 一行完整示例 + 另两种可接受形态，agent 无需读源码即可自纠。
+- **`secguard report --help` 补 payload schema**（键名 + 示例 + 幂等语义），让 agent 能自助。
+- 指令同步：`agent-body.md` / `command-instructions.md` 仍以裸数组为契约，同时说明 CLI 也接受另两种形态，避免 agent 因看到容错而随意混用。
+- 测试：`parseWriteJSONInput` 形态表驱动单测（裸数组 / 信封 / 单对象 / `findings:null` / 空数组 / 空白填充 / 空输入 / 截断 / 标量 / findings 非数组），端到端"信封 scan_id 生效 + 未知即拒"，以及解析错误信息可执行性断言。
+
 ### 报告增强（本轮扫描规模 + 全轮汇总）
 
 此前 verdict 阶段 `report.md`（`report --audit` 覆写后的那份）只有 confirmed/suspected/dismissed 计数：覆写时丢掉了 `scan` 阶段写进去的扫描规模（文件/函数数），也不带 Scan ID；`audit-report.md` 同样没有规模口径；控制台/TUI 只能看到 `audits` 数组的每类型 confirmed/suspected，**没有全轮汇总**。

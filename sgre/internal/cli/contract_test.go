@@ -609,3 +609,139 @@ func TestAutoConfirmFindings_WritesMachineVerdict(t *testing.T) {
 		t.Errorf("reasoning should mark the machine verdict: %q", f.Reasoning)
 	}
 }
+
+// ---- --write-json payload shapes ----
+//
+// The documented payload is a bare JSON array (extension/shared/agent-body.md),
+// but a context-compacted agent loses that spec and writes an envelope. Because
+// a batch parse failure discards EVERY finding of the type, the CLI accepts the
+// shapes an agent realistically produces instead of failing the whole batch.
+// These tests pin the accepted shapes and the actionable error.
+
+func TestParseWriteJSONInput_Shapes(t *testing.T) {
+	one := `{"rule_id":"CWE-476","status":"confirmed","file":"x.c","line":1,"function":"f"}`
+
+	cases := []struct {
+		name        string
+		payload     string
+		wantCount   int
+		wantScanID  string
+		wantErr     bool
+		wantErrText string
+	}{
+		{name: "bare array", payload: "[" + one + "]", wantCount: 1},
+		{name: "envelope with scan_id", payload: `{"scan_id":"sc_x","findings":[` + one + `]}`, wantCount: 1, wantScanID: "sc_x"},
+		{name: "envelope without scan_id", payload: `{"findings":[` + one + `]}`, wantCount: 1},
+		{name: "envelope findings null", payload: `{"scan_id":"sc_x","findings":null}`, wantCount: 0, wantScanID: "sc_x"},
+		{name: "empty array", payload: `[]`, wantCount: 0},
+		{name: "single object", payload: one, wantCount: 1},
+		{name: "whitespace padded", payload: "\n\t [" + one + "] \n", wantCount: 1},
+		{name: "empty input", payload: "   ", wantErr: true, wantErrText: "empty"},
+		{name: "truncated object", payload: `{"oops":`, wantErr: true, wantErrText: "unexpected end"},
+		{name: "scalar", payload: `"nope"`, wantErr: true, wantErrText: "neither a JSON array nor an object"},
+		{name: "findings not an array", payload: `{"findings":{"a":1}}`, wantErr: true, wantErrText: "is not an array of finding objects"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			inputs, scanID, err := parseWriteJSONInput([]byte(c.payload))
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got inputs=%d", len(inputs))
+				}
+				if c.wantErrText != "" && !strings.Contains(err.Error(), c.wantErrText) {
+					t.Errorf("error %q should contain %q", err.Error(), c.wantErrText)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(inputs) != c.wantCount {
+				t.Errorf("got %d inputs, want %d", len(inputs), c.wantCount)
+			}
+			if scanID != c.wantScanID {
+				t.Errorf("got scan_id %q, want %q", scanID, c.wantScanID)
+			}
+		})
+	}
+}
+
+// envelopeFixtureDB creates a store containing one known scan and returns its
+// db path and scan id.
+func envelopeFixtureDB(t *testing.T, ctx context.Context) (string, string) {
+	t.Helper()
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "test.db")
+	d, err := db.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := db.NewStore(d)
+	const scanID = "sc_2026-01-01_000000_aaaaaa"
+	if _, err = s.InsertScanStat(ctx, &db.ScanStat{ScanID: scanID, VulnType: "null-deref", SeedCount: 1, FinalCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	return dbPath, scanID
+}
+
+// A tolerated envelope must still be attached to the right scan: the embedded
+// scan_id is used when --scan-id is absent, and validated like the flag.
+func TestReportCmd_WriteJsonEnvelopeScanID(t *testing.T) {
+	ctx := context.Background()
+	dbPath, scanID := envelopeFixtureDB(t, ctx)
+	root := t.TempDir()
+	writeFile := filepath.Join(root, "findings.json")
+
+	one := `{"rule_id":"CWE-476","severity":"high","confidence":90,"status":"confirmed","file":"x.c","line":1,"function":"f"}`
+	if err := os.WriteFile(writeFile, []byte(`{"scan_id":"`+scanID+`","findings":[`+one+`]}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Embedded scan_id, no --scan-id flag.
+	stdout, _, exitCode := captureOutput(func() int {
+		return runReportCmd(ctx, []string{"--db", dbPath, "--write-json", writeFile})
+	})
+	if exitCode != 0 {
+		t.Fatalf("envelope without --scan-id should use the embedded scan_id, got exit %d; stdout=%s", exitCode, stdout)
+	}
+	if !bytes.Contains([]byte(stdout), []byte(scanID)) {
+		t.Errorf("response should carry the embedded scan_id %s, got: %s", scanID, stdout)
+	}
+
+	// An unknown embedded scan_id must be rejected, not silently attached.
+	badFile := filepath.Join(root, "bad.json")
+	if err := os.WriteFile(badFile, []byte(`{"scan_id":"sc_2026-01-01_000000_deadbe","findings":[`+one+`]}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, exitCode = captureOutput(func() int {
+		return runReportCmd(ctx, []string{"--db", dbPath, "--write-json", badFile})
+	})
+	if exitCode != 1 || !bytes.Contains([]byte(stdout), []byte("unknown scan_id")) {
+		t.Errorf("unknown embedded scan_id must be rejected, got exit %d; stdout=%s", exitCode, stdout)
+	}
+}
+
+// A parse failure must tell the caller the accepted shapes, so a self-correcting
+// agent does not have to read the CLI source (or lose the type's findings).
+func TestReportCmd_WriteJsonParseErrorIsActionable(t *testing.T) {
+	ctx := context.Background()
+	dbPath, scanID := envelopeFixtureDB(t, ctx)
+	root := t.TempDir()
+	writeFile := filepath.Join(root, "findings.json")
+	if err := os.WriteFile(writeFile, []byte(`{"oops": 1`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, exitCode := captureOutput(func() int {
+		return runReportCmd(ctx, []string{"--db", dbPath, "--write-json", writeFile, "--scan-id", scanID})
+	})
+	if exitCode != 1 {
+		t.Fatalf("expected exit 1, got %d; stdout=%s", exitCode, stdout)
+	}
+	for _, want := range []string{"Expected a JSON array", "rule_id", "findings"} {
+		if !bytes.Contains([]byte(stdout), []byte(want)) {
+			t.Errorf("parse error should mention %q, got: %s", want, stdout)
+		}
+	}
+}

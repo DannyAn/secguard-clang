@@ -133,7 +133,7 @@ Usage:
   secguard report [flags]
 
 Flags:
-  --write-json <file>      Persist findings from a JSON array file
+  --write-json <file>      Persist findings from a JSON array file (see below)
   --scan-id <id>           Scan ID to attach findings to
   --audit                  Regenerate report.md + result.sarif + result.xlsx + findings/ from DB
   --output-dir <dir>       Output directory for audit artifacts
@@ -143,6 +143,14 @@ Flags:
   --review-reasoning <r>   One-line review justification
   --db <path>              Path to sgre.db
   --help, -h               Show this usage
+
+--write-json payload: a JSON ARRAY of finding objects ("-" or omitted reads stdin):
+  [{"rule_id":"CWE-476","severity":"high","confidence":90,"status":"confirmed",
+    "file":"src/a.c","line":42,"function":"f","summary":"...","reasoning":"...",
+    "exception_check":"...","fix_strategy":"..."}]
+  rule_id is the CWE; status is confirmed | suspected | dismissed. A single
+  finding object, or an object {"scan_id":"...","findings":[...]}, is also
+  accepted. The write is idempotent (UPSERT on scan_id+rule_id+file+line+function).
 
 Examples:
   secguard report
