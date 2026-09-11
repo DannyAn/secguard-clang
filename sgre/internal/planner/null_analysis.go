@@ -98,3 +98,30 @@ func (m *nullModel) hasSource(variable string, line int) bool {
 	}
 	return false
 }
+
+// onlyAllocatorSources reports whether EVERY NULL_VALUE source for variable is a
+// malloc/calloc/realloc allocator. An allocator inherently returns NULL, so a
+// dereference of its result with no guard is a textbook null-deref regardless of
+// path — the filter keeps such candidates confirmed. An explicit `p = NULL` is
+// NOT an allocator (it is handled by the must-null `definite` analysis, which
+// confirms only when the null reaches on every path), and an unknown function
+// call stays suspected.
+func (m *nullModel) onlyAllocatorSources(variable string) bool {
+	if m == nil {
+		return false
+	}
+	seen := false
+	for _, s := range m.sources {
+		if s.variable != variable {
+			continue
+		}
+		seen = true
+		switch s.origin {
+		case "malloc", "calloc", "realloc":
+			// inherently-nullable allocator
+		default:
+			return false
+		}
+	}
+	return seen
+}

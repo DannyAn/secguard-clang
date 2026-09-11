@@ -77,7 +77,13 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				// confirmed; a possible-null source (malloc/function return) is
 				// only maybe-null → suspected, so the AI reasons about it instead
 				// of rubber-stamping a "confirmed" prior.
-				if !c.HasDefiniteNull {
+				//
+				// Exception: an ALLOCATOR source (malloc/calloc/realloc)
+				// inherently returns NULL, so dereferencing it with no guard is a
+				// textbook CWE-476 regardless of path — keep it confirmed rather
+				// than downgrading. Only an unknown external call (a function
+				// that may or may not return NULL) stays suspected.
+				if !c.HasDefiniteNull && !models[c.FunctionID].onlyAllocatorSources(c.VariableName) {
 					c.SuspicionLevel = "suspected"
 				}
 				kept = append(kept, c)
