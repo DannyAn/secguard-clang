@@ -194,7 +194,7 @@ func init() {
 				fragments = append(fragments, EvidenceFragment{
 					Type:   "nullable_source",
 					Role:   "source",
-					Detail: fmt.Sprintf("variable %s is assigned a possibly-null value at line %d before the dereference at line %d", c.VariableName, c.SourceLine, c.Line),
+					Detail: nullableSourceDetail(c),
 				})
 			}
 			if c.IsReachable {
@@ -635,4 +635,18 @@ func containsString(s []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// nullableSourceDetail describes where a possibly-null value comes from without
+// asserting an order that may not hold. A LOOP-CARRIED source is textually AFTER
+// the dereference — only the loop back-edge reaches it — and the previous
+// unconditional "before the dereference" wording produced self-contradictory
+// evidence in production ("assigned a possibly-null value at line 87 before the
+// dereference at line 85"), which the classifier then had to spend reasoning on
+// to conclude the hint itself was broken.
+func nullableSourceDetail(c Candidate) string {
+	if c.SourceLine > 0 && c.SourceLine > c.Line {
+		return fmt.Sprintf("variable %s is assigned a possibly-null value at line %d, which reaches the dereference at line %d only through a loop back-edge (the assignment textually follows the use, so the guard on this path decides it)", c.VariableName, c.SourceLine, c.Line)
+	}
+	return fmt.Sprintf("variable %s is assigned a possibly-null value at line %d before the dereference at line %d", c.VariableName, c.SourceLine, c.Line)
 }

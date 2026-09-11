@@ -530,6 +530,34 @@ func extractGuardedVariable(cond parser.Node) string {
 			}
 		}
 	}
+	// Truth-check form (`if (p)`, `if (arr[i])`, `if (p->f)`): the condition's
+	// expression IS the guarded lvalue, so return its path verbatim. A compound
+	// path must be preserved because that is the name the dereference and
+	// null-source detectors record for the same source text: for
+	// `if (packet_queue[i]) { free(packet_queue[i]->data); }` the dereference
+	// variable is `packet_queue[i]`. Recording only the first identifier
+	// (`packet_queue`) made GuardFilter's exact-name match impossible, so every
+	// guarded subscript/member access leaked a false candidate — and, in the
+	// other direction, a guard on `p->f` used to match a dereference of `p`
+	// (unrelated facts) and suppress a real finding.
+	inner := cond
+	for inner.Kind() == "parenthesized_expression" {
+		kids := inner.NamedChildren()
+		if len(kids) == 0 {
+			break
+		}
+		inner = kids[0]
+	}
+	expr := strings.TrimSpace(inner.Text())
+	if strings.HasPrefix(expr, "*") {
+		// `if (*pp)` truth-checks the POINTEE. It establishes nothing about the
+		// pointer pp, so recording pp as guarded would suppress a genuine
+		// dereference of pp later in the block.
+		return ""
+	}
+	if lv := lvaluePath(expr); lv != "" {
+		return lv
+	}
 	idents := cond.FindAll("identifier")
 	for _, id := range idents {
 		name := id.Text()
@@ -538,6 +566,72 @@ func extractGuardedVariable(cond parser.Node) string {
 		}
 	}
 	return ""
+}
+
+// lvaluePath returns s when it is a plain C lvalue path — an identifier
+// optionally followed by member (`->`, `.`) and subscript steps — and "" for
+// anything else (a boolean combination, a call, a literal, a dereference). The
+// text is returned unchanged, so it compares byte-for-byte with the name the
+// dereference and null-source detectors derive from the same source text.
+func lvaluePath(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || !isCIdentStart(s[0]) {
+		return ""
+	}
+	i := 0
+	expectIdent := true
+	for i < len(s) {
+		if expectIdent {
+			if !isCIdentStart(s[i]) {
+				return ""
+			}
+			for i < len(s) && isCIdentPart(s[i]) {
+				i++
+			}
+			expectIdent = false
+			continue
+		}
+		switch {
+		case strings.HasPrefix(s[i:], "->"):
+			i += 2
+			expectIdent = true
+		case s[i] == '.':
+			i++
+			expectIdent = true
+		case s[i] == '[':
+			// The index expression is opaque here; it only has to be balanced.
+			depth := 0
+			for i < len(s) {
+				switch s[i] {
+				case '[':
+					depth++
+				case ']':
+					depth--
+				}
+				i++
+				if depth == 0 {
+					break
+				}
+			}
+			if depth != 0 {
+				return ""
+			}
+		default:
+			return ""
+		}
+	}
+	if expectIdent {
+		return "" // trailing `->` / `.`
+	}
+	return s
+}
+
+func isCIdentStart(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func isCIdentPart(c byte) bool {
+	return isCIdentStart(c) || (c >= '0' && c <= '9')
 }
 
 // guardVarName normalises one operand of a null comparison: it trims

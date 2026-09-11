@@ -15,6 +15,22 @@
 - **修复 struct 部分初始化的 guard 识别缺口（真实误报）**：struct 路径原先只认"调用出现在 if/while 条件里"这一种 guard（`callInBranchCondition`），因此调用方把返回值存进变量再判错误的形态（`pos += load_s(&d); if (pos == 0) return;`）——scalar 路径早已由 `outputParamGuardLine` 识别——会被误报为 `struct_partial_uninit`。现在 struct 路径复用同一个 guard 识别；**无 guard 的形态仍然上报**（tc88 的 `bad_msg` 是真实的失败路径未初始化，必须保留），即只修误报、不放松检测。
 - **测试**：两个生产场景的**逐字复现**回归测试、位与守卫测试、struct guard 回归 + "无 guard 仍上报"对照测试、null-deref 位与回归 + "cast 取地址仍生效"方向性守卫，以及 parser 级判别器测试（含"类型名绝不能被收集为绑定名"）。新增测试均已用"中性化修复后必须失败"验证过是真回归、不是事后补测。全量 `go test ./...`、`nosqlite` 子集、115 个 fixture 语料（candidates 逐类型数量不变，零波及）均通过。
 
+### 缺陷修复（null-deref guard 名不匹配 + 证据文案自相矛盾）
+
+基准项目全流程会话（OpenCode + `examples/c-vuln-benchmark`）暴露两个缺陷：
+
+- **`if (arr[i])` / `if (p->f)` 这类复合左值的 guard 完全不生效**。`extractGuardedVariable` 的 truth-check 分支取的是**第一个 identifier**，于是 `if (packet_queue[i])` 被记成守卫 `packet_queue`；而解引用与 null 来源两侧记的都是完整路径 `packet_queue[i]`，`GuardFilter` 又按名字**精确相等**匹配 → 永远匹配不上 → 每个被守卫的下标/成员访问都白漏一个候选（实测该基准 `network.c:85`，AI 只能人工 dismissed）。现在 truth-check 分支改为用 AST 取**被守卫表达式的完整左值路径**（`arr[i]` / `p->f` / `a[i]->f` / `a[i][j]`）；顺带纠正一个反向不健全点：`if (*pp)` 守卫的是**指针指向的值**，把它记成"`pp` 非空"会错误压制真实的空指针缺陷，现判为不产生 guard。
+- **证据文案自相矛盾**。循环回边带来的 null 来源在文本上**位于**解引用之后，而 `nullable_source` 文案无条件写成 `at line 87 before the dereference at line 85`，分类器只能花推理轮次去判断"这提示本身是不是坏了"。现在区分：来源确实在前保持原文案；来源在后则写明 *"reaches the dereference at line N only through a loop back-edge (the assignment textually follows the use)"*。
+
+实测影响：115 个 fixture 语料 candidates **逐类型零变化**；基准 24 个文件 **恰好 −1**（就是那个误报），无附带变化。
+
+### 指令理顺（分类输入范围 + 源码读取预算）
+
+会话同时显示两处指令歧义会让 agent 走偏：
+
+- **明确分类输入范围**：只能从候选证据 + 扫描目标自身的源码判定；**禁止**去读恰好躺在目标旁边的"答案"文件（`expected-results.json` / `benchmark.md` / `assignment-baseline.json` / 上一轮会话日志 / `docs/` 评审）。该会话的 agent 明确考虑过读 benchmark 的 ground truth（自问"这算不算作弊"）才没读——不能靠运气。已写入 `command-instructions.md` 与 `agent-body.md`。
+- **源码读取预算说清楚**：原"≤5 files per type"没定义**跨类型是否重复计数**、也没说**候选跨超过 5 个文件时怎么办**，agent 于是读了全部 24 个源文件（自述"instructions say ≤5 files per type"之后照样超了）。现在写明：预算是"每类型 ≤5 个**尚未读过**的新文件"，已读过的文件对后续类型免费；按 file:line 读（offset/limit）而不是整文件；类型候选跨超 5 个文件时改读候选自带的 `## Code Context`；仍判不了就标 `suspected`，不得扩大读取。
+
 ### 稳定性（findings 落库：`--write-json` 契约容错 + 可执行报错）
 
 生产实测反馈：扫描收尾落库阶段整批报错

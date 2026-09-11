@@ -36,6 +36,10 @@ func planNullDeref(t *testing.T, src string) *PlanResult {
 	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
 	evidence.NewNullSourceDetector(store, p, logger).Detect(ctx)
 	evidence.NewDereferenceDetector(store, p, logger).Detect(ctx)
+	// The guard detector must run too: GuardFilter matches NULL_GUARD events, so
+	// a harness that omits it silently makes every guard-shaped regression
+	// untestable (a guarded dereference would look like a candidate).
+	evidence.NewNullGuardDetector(store, p, logger).Detect(ctx)
 
 	pl := NewPlanner(store, p, logger)
 	result, err := pl.Plan(ctx, "null-deref")

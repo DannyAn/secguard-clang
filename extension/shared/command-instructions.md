@@ -153,6 +153,13 @@ hardcode names or counts.
 reading source, take the absolute path from the candidate file's Location block
 and use it directly. Do not reconstruct paths by trial and error.
 
+**Classify only from the candidates + the scan target's own sources.** Do not go
+looking for external labels, ground truth, or benchmark/docs files that happen to
+sit near the target (e.g. `expected-results.json`, `benchmark.md`,
+`assignment-baseline.json`, a previous session log). They are out of scope for a
+security scan and reading them makes the verdicts worthless. The scan dir
+(`candidates/`, `report.md`) and the target's sources are the only inputs.
+
 ## Batch Capacity Configuration
 
 > Hard limits governing parallel subagent dispatch. These are NOT advisory —
@@ -191,11 +198,21 @@ first, write at the end" is WRONG and loses work.** Track processed types in
 your todo list so no type is skipped or double-processed.
 
 **Context budget (the other thing that makes this fast).** Do NOT read all
-source files up front — read at most 5 files per type, only at the reported
-file:line, and only for candidates that actually need verification. The same
-≤5-files budget is the WHOLE type's source-read budget (there is no second round
-— your single-pass verdict is final). Do NOT load a skill for a type that has 0
-candidates.
+source files up front. The source-read budget is **≤5 NEW files per type**, and
+it is per type — a file you already read for an earlier type is free the second
+time, so overlapping types do not multiply the budget. Read at the reported
+file:line (offset/limit around it), not the whole file.
+
+When a type's candidates span MORE than 5 files you have not read yet, do NOT
+keep opening sources: the `Evidence` file for a candidate embeds that candidate's
+own ±8-line `## Code Context`, so open the `Evidence` files for the candidates
+that actually need verification instead. Never turn the budget into "read the
+whole repo" — on a real codebase that is what exhausts the context window and
+leaves the tail candidates unclassified. If a verdict genuinely cannot be reached
+from the `Source`/`Hint`/`Code Context`, mark the candidate `suspected` rather
+than reading more of the tree. The ≤5-file budget is the WHOLE type's source-read
+budget (there is no second round — your single-pass verdict is final). Do NOT
+load a skill for a type that has 0 candidates.
 `candidates/<type>/_index.md` is your primary candidate input (one compact read
 per type); the scan summary already gives you the per-type counts.
 

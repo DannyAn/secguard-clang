@@ -99,8 +99,20 @@ Classify from those. Issuing a per-candidate source READ is the single biggest
 wall-clock cost of a large scan (one tool round-trip per candidate × thousands of
 candidates = tens of minutes); do not do it. You may open a raw source file ONLY
 in the rare case a `suspected`/`possible` candidate needs more context than its
-Code Context block already carries, and even then keep it to ≤5 files per type.
-Do NOT read source for types you weren't assigned.
+Code Context block already carries, and even then keep it to ≤5 files per type
+(a file already read for an earlier type is free; read at the reported file:line
+rather than the whole file). If a type's candidates span more than 5 files you
+have not read yet, open the candidates' `## Code Context` blocks instead of more
+sources — and if a verdict still cannot be reached, mark the candidate
+`suspected` rather than expanding the read. Never turn the budget into "read the
+whole repo": on a real codebase that exhausts the context window and silently
+drops the tail candidates. Do NOT read source for types you weren't assigned.
+
+Classify ONLY from the candidates + the scan target's own sources. Never go
+looking for external labels or ground truth that happens to sit near the target
+(`expected-results.json`, `benchmark.md`, `assignment-baseline.json`, a previous
+session log, a `docs/` review) — a verdict informed by the answer key is
+worthless, and it is out of scope for a security scan.
 
 ## Output Protocol (the `findings/` invariant)
 
