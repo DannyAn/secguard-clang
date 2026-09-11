@@ -14,7 +14,7 @@ metadata:
 ### Evidence Patterns
 
 #### TOCTOU: Filesystem (CWE-362)
-- **RACE_CONDITION event** with category `toctou_filesystem`
+- **RACE_CONDITION event** with category `toctou`
 - Pattern: `access(path, ...)` check followed by `fopen(path, ...)` / `open(path, ...)`
 - Time-of-check to time-of-use window allows symlink attack or file swap
 
@@ -27,7 +27,7 @@ metadata:
 - **RACE_CONDITION event** with category `shared_data_race`
 - Pattern: a file-scope variable accessed by two or more `pthread_create` thread functions, with at least one write, and no `pthread_mutex_lock`/`unlock` scope around the access
 - Examples: `g_shared_counter++` in two threads, writer/reader pairs on `g_flag`/`g_data`
-- The event carries `thread_functions`, `thread_instances`, `access_lines` and `write_lines` properties
+- The event carries `thread_functions`, `thread_instances` and `write_line` properties
 
 ### Safe Patterns (P0 Exclusion)
 

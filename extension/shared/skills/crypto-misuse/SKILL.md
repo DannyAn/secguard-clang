@@ -14,18 +14,18 @@ metadata:
 ### Evidence Patterns
 
 #### Weak Algorithms (CWE-327)
-- **CRYPTO_MISUSE event** with category `weak_cipher` / `weak_hash`
+- **CRYPTO_MISUSE event** with category `weak_algorithm`
 - DES/3DES for encryption (56-bit key, brute-forceable)
 - MD5 or SHA1 for hashing (collision vulnerabilities)
 - RC4 for encryption (biased keystream)
 
 #### Weak PRNG (CWE-338)
-- **CRYPTO_MISUSE event** with category `weak_prng`
+- **CRYPTO_MISUSE event** with category `weak_random`
 - `rand()`, `random()` used for security-sensitive values (tokens, keys, nonces)
 - Not cryptographically secure; predictable output
 
 #### Undersized Keys (CWE-326)
-- **CRYPTO_MISUSE event** with category `weak_key`
+- **CRYPTO_MISUSE event** with category `undersized_key`
 - RSA key < 2048 bits, AES key < 128 bits
 - Insufficient entropy for the security level
 
