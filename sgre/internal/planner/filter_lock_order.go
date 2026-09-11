@@ -71,6 +71,13 @@ func (f *LockOrderFilter) Apply(ctx context.Context, candidates []Candidate) ([]
 			kept = append(kept, c)
 			continue
 		}
+		if p.Category == "deadlock_timed" {
+			// The cycle needed a pthread_mutex_timedlock acquisition, which
+			// returns ETIMEDOUT, so the inversion is recoverable: report it
+			// suspected and never upgrade it to confirmed.
+			kept = append(kept, c)
+			continue
+		}
 		if reachable(adj, p.MutexA, p.MutexB) && reachable(adj, p.MutexB, p.MutexA) {
 			c.SuspicionLevel = "confirmed"
 		}

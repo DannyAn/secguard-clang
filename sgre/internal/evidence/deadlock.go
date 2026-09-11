@@ -38,6 +38,10 @@ func (d *DeadlockDetector) Detect(ctx context.Context) (DetectResult, error) {
 		line int
 		fn   string
 		fnID int64
+		// timed marks an edge established by a pthread_mutex_timedlock
+		// acquisition. Such a cycle is a real lock-order inversion but can
+		// recover via ETIMEDOUT, so it is reported suspected, never confirmed.
+		timed bool
 	}
 
 	var allEdges []lockEdge
@@ -56,10 +60,15 @@ func (d *DeadlockDetector) Detect(ctx context.Context) (DetectResult, error) {
 					continue
 				}
 
-				if callName == "pthread_mutex_lock" || callName == "pthread_rwlock_wrlock" || callName == "EnterCriticalSection" {
+				// pthread_mutex_timedlock waits with a deadline, so a cycle that
+				// needs it can recover (ETIMEDOUT) instead of hanging. It is
+				// still an acquisition — the inversion is real — but the edge is
+				// flagged so the emission stays suspected.
+				isTimedLock := callName == "pthread_mutex_timedlock"
+				if callName == "pthread_mutex_lock" || callName == "pthread_rwlock_wrlock" || callName == "EnterCriticalSection" || isTimedLock {
 					for _, h := range held {
 						if h != mutexName {
-							allEdges = append(allEdges, lockEdge{from: h, to: mutexName, file: file, line: call.StartLine(), fn: f.Name, fnID: f.ID})
+							allEdges = append(allEdges, lockEdge{from: h, to: mutexName, file: file, line: call.StartLine(), fn: f.Name, fnID: f.ID, timed: isTimedLock})
 						}
 					}
 					held = append(held, mutexName)
@@ -111,11 +120,20 @@ func (d *DeadlockDetector) Detect(ctx context.Context) (DetectResult, error) {
 		if !ok {
 			continue
 		}
+		// A cycle that needed a timed acquisition is recoverable, so it is
+		// emitted with its own category and the planner keeps it suspected.
+		category := "deadlock"
+		for _, e := range allEdges {
+			if e.timed && containsString(scc, e.from) && containsString(scc, e.to) {
+				category = "deadlock_timed"
+				break
+			}
+		}
 		if emitEvent(ctx, d.store, d.logger, "DEADLOCK", anchor.fnID, &db.Location{FileID: anchor.file.ID, Line: anchor.line}, map[string]string{
 			"mutex_a":  scc[0],
 			"mutex_b":  scc[1],
 			"function": anchor.fn,
-			"category": "deadlock",
+			"category": category,
 			"cycle":    strings.Join(scc, "->"),
 		}) {
 			result.EventsCreated++

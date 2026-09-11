@@ -42,7 +42,7 @@ A deadlock candidate has:
 |-----------|---------------|
 | Lock-order inversion detected (cycle in lock graph) | **confirmed** |
 | All lock acquisitions follow consistent global order | **false-positive** |
-| `timedlock` with timeout on all nested locks | **suspected** (recovery possible but complex) |
+| A lock-order cycle that includes a `pthread_mutex_timedlock` acquisition | **suspected** (the timeout allows recovery) |
 | Single lock, no nesting | **false-positive** |
 | Lock-free implementation (atomics only) | **false-positive** |
 | Same lock acquired twice (non-recursive mutex) | **confirmed** |
