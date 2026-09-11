@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -17,10 +18,22 @@ type UninitVariableDetector struct {
 	store  db.Store
 	parser *parser.Parser
 	logger *log.Logger
+	// iterMacros is the merged iterator-macro table (built-in apikb set +
+	// secguard.toml [iterator_macros]). A call to one of these writes its
+	// iterator parameter(s) in the for-init clause, so those arguments are
+	// WRITE targets, not reads — skipping them prevents a just-declared
+	// iterator (`SLL_SCAN(list, iter, type)` writing `iter`) from being
+	// misreported as use-before-init at the call site.
+	iterMacros map[string][]int
 }
 
 func NewUninitVariableDetector(store db.Store, p *parser.Parser, logger *log.Logger) *UninitVariableDetector {
-	return &UninitVariableDetector{store: store, parser: p, logger: logger}
+	return &UninitVariableDetector{
+		store:      store,
+		parser:     p,
+		logger:     logger,
+		iterMacros: config.Load().MergedIteratorMacros(),
+	}
 }
 
 func (d *UninitVariableDetector) Name() string { return "uninit_variable" }
@@ -238,6 +251,25 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 				if key := resolveVarKey(declsByName, args[0].Text(), call.StartLine()); key != "" {
 					if call.StartLine() > outputParamInitLines[key] {
 						outputParamInitLines[key] = call.StartLine()
+					}
+				}
+			}
+		}
+		// A config/built-in iterator macro (`SLL_SCAN` in secguard.toml
+		// [iterator_macros], or list_for_each_entry) writes its iterator
+		// parameter(s) in the for-init clause. The definition lives outside the
+		// scan tree (an SDK header), so record the written argument(s) as an init
+		// line — a later read is initialized, not use-before-init.
+		if iterIdxs, ok := d.iterMacros[callName]; ok {
+			if args := getCallArgs(call); len(args) > 0 {
+				for _, i := range iterIdxs {
+					if i >= len(args) || args[i].Kind() != "identifier" {
+						continue
+					}
+					if key := resolveVarKey(declsByName, args[i].Text(), call.StartLine()); key != "" {
+						if call.StartLine() > outputParamInitLines[key] {
+							outputParamInitLines[key] = call.StartLine()
+						}
 					}
 				}
 			}
@@ -543,6 +575,21 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 				extra = map[string]bool{}
 			}
 			extra[name] = true
+		}
+		// A config/built-in iterator macro's iterator parameter(s) are WRITE
+		// targets (the for-init assigns them), not reads — skip them so the call
+		// line does not report the just-declared iterator as use-before-init.
+		if iterIdxs, ok := d.iterMacros[callName]; ok {
+			args := getCallArgs(call)
+			for _, i := range iterIdxs {
+				if i >= len(args) || args[i].Kind() != "identifier" {
+					continue
+				}
+				if extra == nil {
+					extra = map[string]bool{}
+				}
+				extra[args[i].Text()] = true
+			}
 		}
 		scanUses(call, call.StartLine(), callName, extra)
 	}

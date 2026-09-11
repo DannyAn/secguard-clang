@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/DannyAn/secguard-clang/internal/apikb"
 )
 
 // Config is the secguard.toml structure. Fields are additive and optional; a
@@ -98,6 +100,23 @@ func (c *Config) IteratorMacroArgs() map[string][]int {
 		return nil
 	}
 	return c.IteratorMacros.Macros
+}
+
+// MergedIteratorMacros combines the built-in iterator-macro knowledge base
+// (apikb.IteratorMacros, covering standard list_for_each_entry & friends) with
+// the project-specific macros declared in secguard.toml [iterator_macros]. It is
+// the single merge point consumed by both the null-deref/uninit flow filters and
+// the uninit detector, so the two layers can never disagree on which parameter a
+// macro writes.
+func (c *Config) MergedIteratorMacros() map[string][]int {
+	out := make(map[string][]int, len(apikb.IteratorMacros))
+	for k, v := range apikb.IteratorMacros {
+		out[k] = v
+	}
+	for k, v := range c.IteratorMacroArgs() {
+		out[k] = v
+	}
+	return out
 }
 
 // ResolvedPath returns the config file path Load() would read, in the same
