@@ -66,7 +66,7 @@ export default tool({
     finalize: tool.schema
       .boolean()
       .optional()
-      .describe("Whether to regenerate report.md/result.sarif/result.xlsx/findings/ after this call. Defaults to true. For a large type split into many write chunks, pass false on every chunk except the last (or leave finalization to the orchestrator's single `report --audit`) to avoid re-rendering the whole report once per chunk."),
+      .describe("Whether to regenerate report.md/result.sarif/result.xlsx/findings/ after this call. Defaults to true. Leave it FALSE on EVERY write chunk of a large type, including the last one: the render is the orchestrator's single `secguard report --audit` at the end of the run, so a `finalize: true` chunk only duplicates that work and re-renders the whole report per chunk."),
     ai_duration_ms: tool.schema
       .number()
       .optional()

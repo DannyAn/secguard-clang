@@ -191,15 +191,37 @@ Scenario B — 三轮验证后 (目标):
 
 ## 运行方式
 
+在 `examples/c-vuln-benchmark/` 目录下执行。
+
 ```bash
 # 1. 扫描（用独立 DB 避免历史索引污染；stdout 只打印摘要）
-secguard scan --db /tmp/sgbench.db examples/c-vuln-benchmark/src
+secguard scan --db /tmp/sgbench.db src
 
-# 2. 校验（validator 读 SARIF，按 (文件, 行) 交叉比对 ground truth）
-python3 scripts/validate-benchmark.py \
-    --sarif .codeagent/secguard-clang/scans/latest/sarif.sarif \
-    --expected examples/c-vuln-benchmark/expected-results.json
+# 2. 收尾：写出 verdict 阶段的 result.sarif / report.md / findings/
+secguard report --audit --scan-id <scan_id> \
+    --output-dir .codeagent/secguard-clang/scans/<scan_id>
+
+# 3. 校验（默认自动找最新的 result.sarif）
+python3 scripts/validate-benchmark.py              # 退出码 0 = 全通过
+python3 scripts/validate-benchmark.py --json       # 机器可读
+python3 scripts/validate-benchmark.py --show-pass  # 列出通过用例
+python3 scripts/validate-benchmark.py --line-tolerance 0   # 只看精确行匹配
 ```
+
+**校验口径（为什么不是单纯的「(文件, 行) 相等」）：**
+
+validator 按 **(漏洞类型, 文件, 行 ± 容差)** 比对，默认容差 ±3，并打印命中偏移。两处必须放宽，都是实测踩出来的：
+
+1. **行号口径不同**：SecGuard 报的是 **sink/调用行**，而部分用例标签写的是**函数定义行**或**格式化行** —— RL-13 标 153 / 实报 155（`mkstemp` 调用）、RL-14 标 163 / 实报 165、TP-02 标 49 / 实报 50（`sqlite3_exec` sink）。纯相等比对会把**已经检出**的算成漏报。
+2. **同一行可能有多种漏洞**：P10-02 是 `input.path_traversal` 的 `no_finding`，而 SecGuard 在该行报 unchecked-return (CWE-252) —— 正确且与该用例无关。因此**按类型比对**；命中但类型不同的只作 info 列出。
+
+`detector` → 漏洞类型的映射见 `scripts/validate-benchmark.py` 的 `DETECTOR_TO_TYPE`。注意 **`concurrency.lock` 映射到 `race-condition`**：它的两个用例分别是「加锁保护不该报」(P2-02) 与 TOCTOU (P3-02)，SecGuard 报的是 CWE-362；`deadlock` (CWE-667) 有独立的 detector 标签。未带 `detector` 的用例按「任意类型」比对。
+
+**判定来源**是 verdict 阶段的 `result.sarif`（只含 confirmed + suspected）。被 AI 判为 `dismissed` 的不会出现，因此**不**算误报 —— 这正是本基准的意图。
+
+**退出码**：`0` 全通过；`1` 有误报，或有漏报（`known_gap` 用例的漏报、以及 `--allow-fn` 例外；误报**不**受 `--allow-fn` 抑制）；`2` 找不到 SARIF。
+
+> ⚠️ **答案文件不能进扫描上下文。** 本目录里就躺着 `expected-results.json` / `benchmark.md` / `assignment-baseline.json`，扫描目标旁边还可能有上一轮会话日志。跑基准时只允许把 `src/` 作为目标（`secguard scan ... src`），**不要**读这些答案文件——agent 侧的这条约束已写进 `extension/shared/command-instructions.md` 与 `agent-body.md`，人工跑基准时同样适用。一旦读了，这一轮的 precision/recall 就没有意义了。
 
 ## v0.3.0 新增基线（硬骨头场景）
 

@@ -252,13 +252,15 @@ The write is idempotent (re-running updates, never duplicates), so partial
 progress survives even if a later chunk overflows the context — you lose only the
 current chunk, never the whole type.
 
-**Do not finalize per chunk.** On the MCP host pass `finalize: false` on every
-write chunk except the LAST one (on the last one let the orchestrator's single
-`report --audit` do the render). On the shell-only host
-`--write-json` never renders — only the orchestrator's final `report --audit`
-does. Rendering `report.md` + `result.sarif` + `result.xlsx` + `findings/` after
-EVERY 200-finding chunk re-reads and re-writes the whole report each time, which
-is exactly the redundant backfill that stretches a large type's wall-clock time.
+**Do not finalize per chunk — not even on the last one.** On the MCP host pass
+`finalize: false` on EVERY write chunk, including the final chunk: the render is
+the orchestrator's single `secguard report --audit --scan-id <id> --output-dir
+<scan_dir> --ai-duration-ms <ms>` at the end of the run, exactly as on the
+shell-only host (where `--write-json` never renders at all). Rendering `report.md`
++ `result.sarif` + `result.xlsx` + `findings/` after EVERY 200-finding chunk
+re-reads and re-writes the whole report each time, which is exactly the redundant
+backfill that stretches a large type's wall-clock time — and a `finalize: true` on
+the last chunk only duplicates the orchestrator's audit.
 
 **Keep each field SHORT — your verdicts are JSON that must fit in context, not an
 essay.** `summary` ≤ one line. `reasoning` ≤ 2 short sentences (source → sink →

@@ -1,5 +1,5 @@
 {
-  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327) + 4 个测试用例 (Phase 2: heap OOB write / format overflow / data race / OOB read) + 4 个测试用例 (Phase 3: null-deref sizeof + 流敏感 FP 抑制) + 3 个测试用例 (Phase 4: uninit 流敏感收敛，来自 zlib 生产环境缺陷) + 12 个测试用例 (Phase 6: resource-leak CWE-404，其中 RL-10~RL-12 为已确认检测缺口 known-gap，当前阶段 validator 报 FN 属预期，作为缺陷修复的回归目标)。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。",
+  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327) + 4 个测试用例 (Phase 2: heap OOB write / format overflow / data race / OOB read) + 4 个测试用例 (Phase 3: null-deref sizeof + 流敏感 FP 抑制) + 3 个测试用例 (Phase 4: uninit 流敏感收敛，来自 zlib 生产环境缺陷) + 12 个测试用例 (Phase 6: resource-leak CWE-404，其中 RL-10~RL-12 为已确认检测缺口 known-gap 标记保留作回归目标，validator 对这类用例的漏报不判失败）。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。校验按 (漏洞类型, 文件, 行±容差) 与 verdict 阶段 result.sarif 交叉比对（见 benchmark.md「运行方式」）；detector → 漏洞类型映射见 scripts/validate-benchmark.py 的 DETECTOR_TO_TYPE，用 `--selftest` 可校验该映射是否覆盖全部标签。",
   "_benchmark_doc": "benchmark.md",
   "_validator": "scripts/validate-benchmark.py",
   "summary": {

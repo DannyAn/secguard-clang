@@ -15,6 +15,22 @@
 - **修复 struct 部分初始化的 guard 识别缺口（真实误报）**：struct 路径原先只认"调用出现在 if/while 条件里"这一种 guard（`callInBranchCondition`），因此调用方把返回值存进变量再判错误的形态（`pos += load_s(&d); if (pos == 0) return;`）——scalar 路径早已由 `outputParamGuardLine` 识别——会被误报为 `struct_partial_uninit`。现在 struct 路径复用同一个 guard 识别；**无 guard 的形态仍然上报**（tc88 的 `bad_msg` 是真实的失败路径未初始化，必须保留），即只修误报、不放松检测。
 - **测试**：两个生产场景的**逐字复现**回归测试、位与守卫测试、struct guard 回归 + "无 guard 仍上报"对照测试、null-deref 位与回归 + "cast 取地址仍生效"方向性守卫，以及 parser 级判别器测试（含"类型名绝不能被收集为绑定名"）。新增测试均已用"中性化修复后必须失败"验证过是真回归、不是事后补测。全量 `go test ./...`、`nosqlite` 子集、115 个 fixture 语料（candidates 逐类型数量不变，零波及）均通过。
 
+### 基准工具链（可自动复现 + 校验口径修正）
+
+`examples/c-vuln-benchmark` 此前无法自动复现：`expected-results.json` 的 `_validator` 指向 `scripts/validate-benchmark.py`，而该文件**并不存在**；文档写的校验口径也站不住。
+
+- **补上 validator**（纯标准库、无依赖），并把口径从「按 (文件, 行) 交叉比对」修正为 **(漏洞类型, 文件, 行 ± 容差)**，默认 ±3 且打印命中偏移。两处放宽都是实测踩出来的：① SecGuard 报的是 **sink/调用行**，而部分用例标签写的是**函数定义行/格式化行**（RL-13 标 153 / 实报 155、RL-14 标 163 / 实报 165、TP-02 标 49 / 实报 50）——纯相等比对会把**已经检出**的算成漏报；② 同一行可能承载多种漏洞（P10-02 是 path-traversal 的 `no_finding`，该行 SecGuard 报 unchecked-return，正确且与该用例无关）——因此按类型比对，命中但类型不同的只作 info。
+- **`concurrency.lock` → `race-condition`**：该标签的两个用例分别是「加锁保护不该报」(P2-02) 与 TOCTOU (P3-02)，SecGuard 报的是 CWE-362；`deadlock` (CWE-667) 有独立的 detector 标签。映射与理由写在脚本 `DETECTOR_TO_TYPE` 的注释里。
+- **`--selftest`**：自校验比对逻辑（精确 / 容差内 / 超容差 / 误报 / 跨类型 / known-gap / 无标签用例），并断言 ground truth 里**每个 detector 标签都已映射**——新增标签会直接让 selftest 失败，而不是被静默算成未映射。
+- **判定来源**是 verdict 阶段 `result.sarif`（只含 confirmed+suspected）；被 AI `dismissed` 的不算误报，这正是本基准的意图。退出码 `0` 全通过 / `1` 有误报或漏报 / `2` 找不到 SARIF；`--allow-fn` 只豁免漏报，**不**豁免误报。
+- **文档同步**：`benchmark.md`「运行方式」改成可照抄的命令（原先写死的 `sarif.sarif` 文件名不存在，实际是 `result.sarif`），补上口径说明与「答案文件不能进扫描上下文」的告警；`expected-results.json` 的 `_description` 更正了过期的 known-gap 说明（RL-10~RL-12 自 0.6.0 起已检出，标记保留作回归目标）。
+
+**实跑结果（0.6.1 发布产物在基准上的真实分）**：91/91 用例 PASS；expect-finding 召回 **54/54**；`no_finding` 误报 **0/37**；命中偏移 `+0×51 / +1×1 / +2×2`（即 3 个用例是标签行号口径差，全部已检出）。
+
+### 指令理顺（`finalize` 语义自相矛盾）
+
+`agent-body.md` 原文是 "pass `finalize: false` on every write chunk **except the LAST one**（on the last one let the orchestrator's single `report --audit` do the render）"——既说最后一块要开、又说由 orchestrator 渲染，自相矛盾；OpenCode 的 `secguard_report` 工具描述同样写着 "except the last"，会话里的 agent 为此多花了一轮推理去确认。现统一为：**每一块都 `finalize: false`，包括最后一块**，渲染一律由 orchestrator 收尾的那一次 `report --audit` 完成（shell-only 宿主的 `--write-json` 本来就不渲染）。
+
 ### 缺陷修复（null-deref guard 名不匹配 + 证据文案自相矛盾）
 
 基准项目全流程会话（OpenCode + `examples/c-vuln-benchmark`）暴露两个缺陷：
