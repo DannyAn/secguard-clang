@@ -17,8 +17,9 @@ import (
 // Config is the secguard.toml structure. Fields are additive and optional; a
 // missing file yields the zero Config with no error.
 type Config struct {
-	TrustedMacros  TrustedMacros  `toml:"trusted_macros"`
-	IteratorMacros IteratorMacros `toml:"iterator_macros"`
+	TrustedMacros   TrustedMacros   `toml:"trusted_macros"`
+	IteratorMacros  IteratorMacros  `toml:"iterator_macros"`
+	BannedFunctions BannedFunctions `toml:"banned_functions"`
 }
 
 type TrustedMacros struct {
@@ -26,6 +27,17 @@ type TrustedMacros struct {
 	// memory address (field + offset arithmetic) rather than a possibly-null
 	// allocation/lookup result. Callers dereference the result without a null
 	// check by contract, so these names never seed a null source.
+	Names []string `toml:"names"`
+}
+
+// BannedFunctions extends the built-in dangerous/obsolete function list
+// (CWE-676) with project-specific bans. The built-in list is always active;
+// this section only ADDS names, so an enterprise can ban a function the default
+// list does not (e.g. a wrapper it has deprecated).
+//
+//	[banned_functions]
+//	names = ["strcpy", "my_legacy_alloc"]
+type BannedFunctions struct {
 	Names []string `toml:"names"`
 }
 
@@ -90,6 +102,16 @@ func (c *Config) TrustedMacroNames() []string {
 		return nil
 	}
 	return c.TrustedMacros.Names
+}
+
+// BannedFunctionNames returns the project-specific banned-function list to merge
+// with the built-in dangerous/obsolete set (CWE-676). The built-in list is
+// always active; these names only extend it.
+func (c *Config) BannedFunctionNames() []string {
+	if c == nil {
+		return nil
+	}
+	return c.BannedFunctions.Names
 }
 
 // IteratorMacroArgs returns the configured iterator-macro map (macro name →
