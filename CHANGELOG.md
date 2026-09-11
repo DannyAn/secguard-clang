@@ -42,6 +42,13 @@
 - **测试**：`TestDefiniteNull_MustAnalysis` 扩为三向——`p=NULL`→confirmed、`q=malloc()`→confirmed、`r=get_ptr()`→suspected，已用"中性化修复必然失败"验证。
 - 同步收紧了 4 个 skill 的 suspected 判据（injection 黑名单、unchecked-return read 忽略、divide-by-zero 外部除数、race-condition 措辞），并删掉 2 行检测器早已不发的僵尸 suspected 规则（buffer-overflow / out-of-bounds 的"变量索引"）。
 
+### 精准度修复（uninit：config 声明的 iterator 宏实参被误判为未初始化）
+
+`SLL_SCAN(list, idx, UINT32)` 这类在 SDK 头文件里定义、用户于 `secguard.toml [iterator_macros]` 声明"第 N 个参数是迭代子"的宏，其迭代子**在 for-init 里被写入**；但 tree-sitter 把按值传参的 `idx` 当成"读取"，于是检测器在调用点把刚声明的迭代子报成 `use-before-init`（confirmed）。此前该配置只接到 null-deref 的 flow，没接到 uninit。
+
+- **新增 `config.MergedIteratorMacros()`**（内置 `apikb.IteratorMacros` + 用户配置，单一合并点），检测器据此把 iterator 宏的迭代子实参当作**写目标而非读**（与 setter / va_start / dest-writer 同一机制），并记录其初始化行，后续读取不再误报；真正的未初始化读取仍照常上报。
+- **测试**：`TestUninit_IterMacroConfigDeclared` 用标量迭代子复现（不加载配置时 `idx` 报 confirmed uninit，加载后消除），已用"中性化修复必然失败"验证。
+
 ### 设计一致性（20 个 skill 全部对齐同一模板 + 可执行守卫）
 
 先直接回答"现在一致了吗"：**一致了，20/20**。此前不合模板的只有 `uninit` 和 `resource-leak` 两个——正好又是那对"缺 YAML frontmatter、在 v0.5.x 根本没被加载"的孤儿 skill（没被加载 → 不被检验 → 规则写错无人发现，这就是本轮 bug 能长期存活的原因）。
