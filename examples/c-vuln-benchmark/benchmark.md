@@ -233,7 +233,8 @@ validator 按 **(漏洞类型, 文件, 行 ± 容差)** 比对，默认容差 ±
 | `p7_graph_effect.c` | 语义图消费：污点 source→sink、free→use CFG、别名、所有权转移 | ✅ 已纳入（P7-01..06） |
 | `rl_resource_leak.c` | resource-leak (CWE-404)：文件/Socket/FD 工厂/锁泄漏、流敏感条件释放、所有权转移 TN、缺陷修复回归目标 | ✅ 已纳入（RL-01..14，见 Phase 6 节） |
 
-> **当前状态：VALID（77 用例 · 100% precision / 100% recall）**。
+> **当前状态（0.6.1 发布产物实测）：VALID — 91/91 用例 PASS · expect-finding 召回 54/54 · `no_finding` 误报 0/37**。
+> 复现方式见上方「运行方式」；命中偏移 `+0×51 / +1×1 / +2×2`，即 3 个用例是标签行号口径差（已检出）。
 >
 > **2026-09-08 更新**：新增 Phase 6 resource-leak 14 用例（77 → 91）。RL-10..14
 > 为三个设计缺陷的回归用例（error-return fd 误判、fd 工厂白名单、out-param
