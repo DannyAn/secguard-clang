@@ -11,6 +11,7 @@
 - **统一机制**：`ADDING_A_VULN_TYPE.md`（6 步清单）+ `SKILL_TEMPLATE.md`（复制模板）+ 守卫测试。`AGENTS.md`/`CLAUDE.md` 顶部均加了指引，未来任何 AI Agent 一进来就知道标准。
 - **两处守卫**：`TestVulnTypeSkillConsistency`（类型↔skill 1:1 + CLI 注册表不漂移）、`TestSeedEventTypesInSchema`（每个 seed/aux 事件类型必须在 schema 枚举里——缺了会 `InsertEvent` 静默失败、检测器产出 0 条，是最恶劣的静默漏报）。
 - **首个范例 signal-handler（CWE-479）**：信号处理函数直接调用非异步信号安全函数（`malloc`/`printf`/`pthread_mutex_lock`/`syslog` 等）。POSIX 安全清单固定 → **健全、可 auto-confirm**；检测器只在发现 `signal()` 注册时才扫 handler 体，**零额外扫描开销**。
+- **第二个范例 dangerous-function（CWE-676）**：内置危险/废弃函数清单（`gets`/`mktemp`/`tmpnam`/`gethostbyname`/`inet_addr`/`bcmp`/`bcopy`/`bzero`），并支持 `secguard.toml [banned_functions] names` **配置扩展**（企业自增禁用项）。纯函数名匹配，健全零猜。守卫在编写过程中就抓到了两处疏漏（schema 枚举缺 `DANGEROUS_FUNCTION`、skill 缺 `false-positive` 判据），机制自证有效。
 
 ### 精准度修复（resource-leak：错误路径泄漏被误判为"疑似"）
 
