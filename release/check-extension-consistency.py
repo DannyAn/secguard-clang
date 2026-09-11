@@ -34,6 +34,24 @@ Two drift classes are checked:
      - claude-code + claude-cac `tools:` must include `Bash(secguard *)` + `Write`
        (the shell-only persistence surface); missing either = silent data loss
 
+4. Skill template — every `shared/skills/<type>/SKILL.md` must conform to the
+   one shared template (18 of the 20 already do; `uninit` + `resource-leak` were
+   the lone outliers until v0.6.2). A conforming skill:
+     - carries YAML frontmatter whose `name:` matches its directory (a skill
+       without frontmatter never loads — v0.5.x `uninit` + `resource-leak` were
+       invisible, the runtime answering `Skill "<type>" not found`, so the agent
+       classified from agent-body alone and the wrong rule in an unloaded skill
+       was never exercised or noticed)
+     - has NO H1; its title is the `## <Type> Analysis (...)` heading
+     - defines `### Classification Rules` with the standard
+       `| Condition | Classification |` table, naming `confirmed` and
+       `false-positive` (`suspected` is optional: a type whose pipeline
+       categories are always confirmed, e.g. signed-compare, has no suspected
+       tier)
+   This guard is structural only: it cannot catch two skills that contradict
+   each other on the same defect shape (the v0.6.2 `resource-leak` vs
+   `memory-leak` bug) — that stays a review responsibility.
+
 Exits non-zero on any drift so the release build fails instead of shipping an
 inconsistent extension.
 """
@@ -198,10 +216,60 @@ def check_agent_permissions():
     print("  subagent persistence: secguard_report MCP (opencode + opencode-nga), Bash(secguard *) + Write (claude-code + claude-cac)")
 
 
+def check_skills():
+    """Enforce the single skill template on every SKILL.md.
+
+    A skill is recognized only by its `name:` frontmatter, which must match the
+    directory the runtime resolves. The v0.5.x `uninit` + `resource-leak` skills
+    shipped without frontmatter and were invisible to the agent; a skill that
+    never loads is also never reviewed, so a wrong rule can rot in it unseen.
+    They were also the only two that never adopted the shared template (H2 title,
+    `### Classification Rules` + table). Enforce both the load contract and the
+    template here so neither can drift back.
+    """
+    skills_dir = os.path.join(EXT, "shared", "skills")
+    names = sorted(
+        d for d in os.listdir(skills_dir)
+        if os.path.isfile(os.path.join(skills_dir, d, "SKILL.md"))
+    )
+    if not names:
+        fail("shared/skills: no SKILL.md files found")
+
+    for name in names:
+        text = read(f"shared/skills/{name}/SKILL.md")
+        where = f"shared/skills/{name}/SKILL.md"
+
+        if not text.lstrip().startswith("---"):
+            fail(f"{where}: missing YAML frontmatter — the skill will not load")
+        m = re.search(r"^name:\s*(\S+)\s*$", text, re.M)
+        if not m:
+            fail(f"{where}: frontmatter has no `name:` field")
+        if m.group(1) != name:
+            fail(f"{where}: frontmatter name = {m.group(1)}, expected {name}")
+
+        if re.search(r"^#\s+\S", text, re.M):
+            fail(f"{where}: has an H1 title; the template uses the H2 `## <Type> Analysis (...)` heading")
+        if not re.search(r"^##\s+\S", text, re.M):
+            fail(f"{where}: missing the H2 `## <Type> Analysis (...)` title")
+        if not re.search(r"^### Classification Rules\s*$", text, re.M):
+            fail(f"{where}: missing the `### Classification Rules` section")
+
+        cm = re.search(r"^### Classification Rules\s*$", text, re.M)
+        if not re.search(r"^\|\s*Condition\s*\|\s*Classification\s*\|", text[cm.end():], re.M):
+            fail(f"{where}: `### Classification Rules` must open with the standard `| Condition | Classification |` table")
+        body = text[cm.end():]
+        for verdict in ("confirmed", "false-positive"):
+            if verdict not in body:
+                fail(f"{where}: `### Classification Rules` never names `{verdict}`")
+
+    print(f"  skills: {len(names)} SKILL.md conform to the load contract + shared template")
+
+
 def main():
     check_turn_budget()
     check_tools()
     check_agent_permissions()
+    check_skills()
     print("Extension consistency check passed.")
 
 
