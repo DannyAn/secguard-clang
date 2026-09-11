@@ -4,6 +4,14 @@
 
 ## [0.6.2] - 未发布
 
+### 可扩展性（新增检测技能的统一标准 + 首个范例 CWE-479）
+
+类型列表原本散在三处（`planner/registry.go`、`skills/vuln_type_skill.go`、`extension/shared/skills/*/`），且 `security_events.event_type` 的 schema 枚举是第四处——**没有任何机器校验，正是 uninit/resource-leak 变成"孤儿 skill"的温床**。
+
+- **统一机制**：`ADDING_A_VULN_TYPE.md`（6 步清单）+ `SKILL_TEMPLATE.md`（复制模板）+ 守卫测试。`AGENTS.md`/`CLAUDE.md` 顶部均加了指引，未来任何 AI Agent 一进来就知道标准。
+- **两处守卫**：`TestVulnTypeSkillConsistency`（类型↔skill 1:1 + CLI 注册表不漂移）、`TestSeedEventTypesInSchema`（每个 seed/aux 事件类型必须在 schema 枚举里——缺了会 `InsertEvent` 静默失败、检测器产出 0 条，是最恶劣的静默漏报）。
+- **首个范例 signal-handler（CWE-479）**：信号处理函数直接调用非异步信号安全函数（`malloc`/`printf`/`pthread_mutex_lock`/`syslog` 等）。POSIX 安全清单固定 → **健全、可 auto-confirm**；检测器只在发现 `signal()` 注册时才扫 handler 体，**零额外扫描开销**。
+
 ### 精准度修复（resource-leak：错误路径泄漏被误判为"疑似"）
 
 `resource-leak` 的 skill 分类规则与 `memory-leak` **自相矛盾**：对**完全相同的缺陷形态**（成功路径释放、错误路径泄漏），`memory-leak` 判定为 *confirmed (error path leak)*，而 `resource-leak` 的规则却写着 *"suspected: Resource released on success path but leaked on error path"*。于是 `g_db_epoll_fd = MESH_EpollCreate(); … if (ret != 0) { return -1; }` 这类**已经在可达错误分支上确定泄漏**的缺陷被降级为"疑似"，还要 AI 再判一轮。
