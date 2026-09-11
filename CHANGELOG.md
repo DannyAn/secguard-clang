@@ -6,13 +6,14 @@
 
 ### 误报修复（出参回写：uninit / null-deref）
 
-两个在生产上连续多轮误报的出参回写场景，本轮定位到根因并修复；同时修掉了修法本身引入的一个新漏报。
+两个在生产上连续多轮误报的出参回写场景，本轮定位到根因并修复；同时修掉了修法本身引入的一个新漏报，并清掉了首轮修法留下的两处不一致。
 
-- **uninit：子函数经栈变量地址回写仍报"未初始化"**。`computeParamWriteStates` 正确地把 `load_unsigned` 判为"只在成功路径写 `*n`"（`ParamConditionalWrites`：`if (len < 1) return 0;` 这条早返回路径不写），而调用方 `pos += load_unsigned(in + pos, len - pos, &n_state)` 不检查返回值，旧逻辑因此保留"潜在 uninit"——分析器没错，但这正是持续误报的来源。现在**无 caller 侧 guard 时按出参回写惯例信任**（`n_state`/`n_lpdfa`/`len_u` 三个候选全部消失）；**有 guard 时仍以 guard 之后为初始化点**，`if (rc != 0) return x;` 这类"错误分支内使用"（TC16）继续上报。这是一个**有意的漏报权衡**，由 `TestUninit_OutputParamUnguarded` 钉住；struct 部分初始化路径（`outputParamInitializedVars`）是字段粒度语义、风险不同，保持原判定不动。
+- **uninit：子函数经栈变量地址回写仍报"未初始化"**。`computeParamWriteStates` 正确地把 `load_unsigned` 判为"只在成功路径写 `*n`"（`ParamConditionalWrites`：`if (len < 1) return 0;` 这条早返回路径不写），而调用方 `pos += load_unsigned(in + pos, len - pos, &n_state)` 不检查返回值，旧逻辑因此保留"潜在 uninit"——分析器没错，但这正是持续误报的来源。现在**无 caller 侧 guard 时按出参回写惯例信任**（`n_state`/`n_lpdfa`/`len_u` 三个候选全部消失）；**有 guard 时仍以 guard 之后为初始化点**，`if (rc != 0) return x;` 这类"错误分支内使用"（TC16）继续上报。这是一个**有意的漏报权衡**，由 `TestUninit_OutputParamUnguarded` 钉住。
 - **null-deref：`(shm_handle)&prfs_list` 型实参未识别为取地址**。tree-sitter-c **没有 typedef 表**：`(T)&x`（T 为裸标识符）一律解析成位与 `binary_expression`，没有 `pointer_expression` 子节点，于是这个"取地址"对旧识别不可见，调用方 `prfs_list = NULL` 定下的确定 NULL 一路存活到 `if (result == OK)` 里的解引用，产出 **auto-confirmed** 的 CWE-476 误报（auto-confirmed 不需要 AI 研判，正是最误导的一类）。取地址识别下沉为 `parser.Node.AddressTakenTarget`，覆盖 `&x` / `&(x)` / `(T *)&x` / `(T)&x` 及其 cast 包装。
-- **顺带修复（上述修法引入的新漏报）：`(A) & x` 位与被误判为取地址**。两种写法的 AST **完全相同**，语法上不可区分——**即使 typedef 就在同一个文件里也一样**（`(handle_t)&x` 与 `(flags) & mask` 同为 `binary_expression`）。仅凭"左操作数像类型"就接受，会把 `sink((flags) & mask)` 读成 `&mask`，静默吞掉 `mask` 的真实未初始化读取。新增 `parser.Node.AddressTakenTargetScoped(isValue)`：用**形参名 + 局部声明符名**构成作用域判别器区分类型名与值名；只收集 declarator、绝不收集类型名（实测 `typedef` 解析为 `type_definition`、声明里的 typedef 名解析为 `type_identifier`），因此不会把真取地址判成位与、让上面的 null-deref 误报复发。uninit 检测器全部相关点（出参初始化、`addressedArgs`、struct 路径）已接入。
-- **已知边界（有意保留）**：null-deref 侧 `null_flow.addrTakenVar` 与 `filter_uninit_flow.hasOutputParamWrite` 仍用宽松识别——planner 拿不到作用域信息（`variables` 表在生产中并未写入），把 AST 作用域穿透进热路径数据流不划算。二者分别是"只漏报不误报"与"仅降低置信度、不丢候选"，已在代码注释中如实记录。
-- **测试**：新增两个生产场景的**逐字复现**回归测试（在修复前确实失败，非事后补测）、位与守卫测试、以及 parser 级判别器测试（含"类型名绝不能被收集为绑定名"的方向性守卫）。全量 `go test ./...`、`nosqlite` 子集、115 个 fixture 语料（candidates 逐类型数量不变，零波及）均通过。
+- **顺带修复（第二处修法引入的新漏报）：`(A) & x` 位与被误判为取地址**。两种写法的 AST **完全相同**，语法上不可区分——**即使 typedef 就在同一个文件里也一样**（`(handle_t)&x` 与 `(flags) & mask` 同为 `binary_expression`）。仅凭"左操作数像类型"就接受，会把 `sink((flags) & mask)` 读成 `&mask`，静默吞掉 `mask` 的真实未初始化读取。新增 `parser.Node.AddressTakenTargetScoped(isValue)`：用**形参名 + 局部声明符名**构成作用域判别器区分类型名与值名（`parser.FunctionBoundNames`）；只收集 declarator、绝不收集类型名（实测 `typedef` 解析为 `type_definition`、声明里的 typedef 名解析为 `type_identifier`），因此不会把真取地址判成位与、让上面的 null-deref 误报复发。
+- **同一判别器接入 planner（消除首轮遗留的不一致）**：`null_flow.addrTakenVar`（null-deref 流水线）与 `filter_uninit_flow.hasOutputParamWrite` 此前仍用宽松识别，于是 `p = NULL; f((flags) & p); *p` 这种写法在 null-deref 侧会被吞掉（漏报）。现在两者共用同一个作用域判别器（planner 从函数体 AST 现算，不依赖未落库的 `variables` 表），漏报消除；`flowAnalyzer` 按函数缓存判别器，热路径不重复遍历 AST。
+- **修复 struct 部分初始化的 guard 识别缺口（真实误报）**：struct 路径原先只认"调用出现在 if/while 条件里"这一种 guard（`callInBranchCondition`），因此调用方把返回值存进变量再判错误的形态（`pos += load_s(&d); if (pos == 0) return;`）——scalar 路径早已由 `outputParamGuardLine` 识别——会被误报为 `struct_partial_uninit`。现在 struct 路径复用同一个 guard 识别；**无 guard 的形态仍然上报**（tc88 的 `bad_msg` 是真实的失败路径未初始化，必须保留），即只修误报、不放松检测。
+- **测试**：两个生产场景的**逐字复现**回归测试、位与守卫测试、struct guard 回归 + "无 guard 仍上报"对照测试、null-deref 位与回归 + "cast 取地址仍生效"方向性守卫，以及 parser 级判别器测试（含"类型名绝不能被收集为绑定名"）。新增测试均已用"中性化修复后必须失败"验证过是真回归、不是事后补测。全量 `go test ./...`、`nosqlite` 子集、115 个 fixture 语料（candidates 逐类型数量不变，零波及）均通过。
 
 ### 报告增强（本轮扫描规模 + 全轮汇总）
 

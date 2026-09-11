@@ -49,7 +49,7 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 	}
 
 	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
-	flows, files := f.buildFlows(ctx, byFunc, fnByID, fileByID)
+	flows, files, scopes := f.buildFlows(ctx, byFunc, fnByID, fileByID)
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -88,7 +88,7 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 				// the callee may have written x on the success path. Downgrade to
 				// suspected so the AI weighs the interprocedural write instead of
 				// rubber-stamping a machine-confirmed false positive.
-				if f.hasOutputParamWrite(fnByID, files[c.FileID], c) {
+				if f.hasOutputParamWrite(fnByID, files[c.FileID], c, scopes[c.FunctionID]) {
 					c.SuspicionLevel = "suspected"
 				}
 			}
@@ -115,9 +115,10 @@ func (f *DefiniteInitFilter) isStackUninit(ctx context.Context, c Candidate) boo
 	return props.Origin == "stack_uninit"
 }
 
-func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, fnByID map[int64]*db.Function, fileByID map[int64]*db.File) (map[int64]*flowResult, map[int64]*hoistedUninitFile) {
+func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, fnByID map[int64]*db.Function, fileByID map[int64]*db.File) (map[int64]*flowResult, map[int64]*hoistedUninitFile, map[int64]func(string) bool) {
 	flows := make(map[int64]*flowResult, len(byFunc))
 	files := make(map[int64]*hoistedUninitFile)
+	scopes := make(map[int64]func(string) bool, len(byFunc))
 	macroWritesByFile := make(map[int64]map[string]macros.WriteSummary)
 	cache := newFileParseCache(f.parser)
 	for fid := range byFunc {
@@ -139,11 +140,12 @@ func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]
 			macroWritesByFile[file.ID] = macroWrites
 		}
 		flows[fid] = buildDefiniteInitFlow(fn, body, macroWrites)
+		scopes[fid] = scopeOracleOf(parser.FunctionBoundNamesByBody(body))
 		if _, ok := files[file.ID]; !ok {
 			files[file.ID] = hoistUninitFile(root)
 		}
 	}
-	return flows, files
+	return flows, files, scopes
 }
 
 // buildDefiniteInitFlow runs the reaching-sources dataflow for uninitialized
@@ -372,11 +374,11 @@ func hoistUninitFile(root parser.Node) *hoistedUninitFile {
 // is invisible to buildDefiniteInitFlow's gen/kill model, so it is used only to
 // downgrade an otherwise-must-reachable uninit from `confirmed` to `suspected`.
 //
-// The recognition is the PERMISSIVE one (no scope oracle here): a genuine
-// bit-and argument with a parenthesized left operand (`f((flags) & x)`) is read
-// as `&x`. A false match only weakens the confidence tier, it never drops the
-// candidate, so the permissive form is safe at this call site.
-func (f *DefiniteInitFilter) hasOutputParamWrite(fnByID map[int64]*db.Function, hf *hoistedUninitFile, c Candidate) bool {
+// isValue is the `(A) & x` scope oracle (see
+// parser.Node.AddressTakenTargetScoped): without it a genuine bit-and argument
+// with a parenthesized left operand (`f((flags) & x)`) would be read as `&x` and
+// needlessly downgrade the candidate.
+func (f *DefiniteInitFilter) hasOutputParamWrite(fnByID map[int64]*db.Function, hf *hoistedUninitFile, c Candidate, isValue func(string) bool) bool {
 	if hf == nil {
 		return false
 	}
@@ -393,7 +395,7 @@ func (f *DefiniteInitFilter) hasOutputParamWrite(fnByID map[int64]*db.Function, 
 				continue
 			}
 			for _, arg := range child.NamedChildren() {
-				target, ok := arg.AddressTakenTarget()
+				target, ok := arg.AddressTakenTargetScoped(isValue)
 				if !ok || target.Kind() != "identifier" {
 					continue
 				}
@@ -524,4 +526,14 @@ func isSubset(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// scopeOracleOf adapts a bound-name set into the AddressTakenTargetScoped
+// oracle. A nil set (the tree was built without parents) yields a nil oracle,
+// which keeps the permissive recognition.
+func scopeOracleOf(bound map[string]bool) func(string) bool {
+	if bound == nil {
+		return nil
+	}
+	return func(name string) bool { return bound[name] }
 }

@@ -65,6 +65,32 @@ type flowAnalyzer struct {
 	// in the for-init and null-guarded by the loop condition. nil falls back to
 	// apikb.IteratorArgs alone.
 	iterMacros map[string][]int
+	// scopeNames caches, per function body (keyed by start byte), the scope
+	// oracle for the `(A) & x` disambiguation. The planner analyzes each
+	// function once per filter application, and a nil oracle falls back to the
+	// permissive recognition.
+	scopeNames map[int]func(string) bool
+}
+
+// scopeOracle returns the `(A) & x` disambiguation oracle for a function body:
+// the names bound to values in that function (see parser.FunctionBoundNames).
+// Without it a genuine bit-and argument (`f((flags) & p)`) would be read as an
+// address-of and would kill p's null state, hiding the dereference.
+func (a *flowAnalyzer) scopeOracle(body parser.Node) func(string) bool {
+	if a.scopeNames == nil {
+		a.scopeNames = make(map[int]func(string) bool)
+	}
+	key := body.StartByte()
+	if o, ok := a.scopeNames[key]; ok {
+		return o
+	}
+	bound := parser.FunctionBoundNamesByBody(body)
+	var o func(string) bool
+	if bound != nil {
+		o = func(name string) bool { return bound[name] }
+	}
+	a.scopeNames[key] = o
+	return o
 }
 
 func newFlowAnalyzer(store db.Store, p *parser.Parser) *flowAnalyzer {
@@ -206,7 +232,7 @@ func (a *flowAnalyzer) analyzeFunction(ctx context.Context, fn *db.Function, bod
 	}
 	res := a.analyzeFlow(ctx, fn, body, fileRoot, genByLine, nil, true, false)
 	if res != nil && len(definiteGenByLine) > 0 {
-		res.definite, res.definiteGenAt = a.analyzeDefiniteNull(res.cfg)
+		res.definite, res.definiteGenAt = a.analyzeDefiniteNull(res.cfg, a.scopeOracle(body))
 	}
 	return res
 }
@@ -222,7 +248,7 @@ func (a *flowAnalyzer) analyzeFlow(ctx context.Context, fn *db.Function, body pa
 	}
 
 	cfg := graph.BuildStmtCFG(body, fn.EndLine)
-	effects := a.buildEffects(cfg, genByLine, killByLine, a.dfgCopies[fn.ID], nonNullKills, definiteKills, a.macroWritesFor(fileRoot, nonNullKills))
+	effects := a.buildEffects(cfg, genByLine, killByLine, a.dfgCopies[fn.ID], nonNullKills, definiteKills, a.macroWritesFor(fileRoot, nonNullKills), a.scopeOracle(body))
 	nodeIn := runDataflow(cfg, effects, a.entrySeeds)
 	return &flowResult{cfg: cfg, nodeIn: nodeIn, genAt: genAt(cfg, effects)}
 }
@@ -237,7 +263,7 @@ func (a *flowAnalyzer) analyzeFlowMust(ctx context.Context, fn *db.Function, bod
 	}
 
 	cfg := graph.BuildStmtCFG(body, fn.EndLine)
-	effects := a.buildEffects(cfg, genByLine, killByLine, a.dfgCopies[fn.ID], nonNullKills, definiteKills, a.macroWritesFor(fileRoot, nonNullKills))
+	effects := a.buildEffects(cfg, genByLine, killByLine, a.dfgCopies[fn.ID], nonNullKills, definiteKills, a.macroWritesFor(fileRoot, nonNullKills), a.scopeOracle(body))
 	res := &flowResult{cfg: cfg, nodeIn: runDataflow(cfg, effects, a.entrySeeds), genAt: genAt(cfg, effects)}
 	res.must, res.mustGenAt = runMustDataflow(cfg, effects)
 	return res
@@ -249,7 +275,7 @@ func (a *flowAnalyzer) analyzeFlowMust(ctx context.Context, fn *db.Function, bod
 // other non-copy reassignment, copy = `p = q`. A line-keyed map would collide
 // when a one-line `if (c) p = NULL; else p = &x;` puts both the header and its
 // branches on one line, falsely assigning the NULL gen to the `p = &x` branch.
-func (a *flowAnalyzer) analyzeDefiniteNull(cfg *graph.StmtCFG) (map[int]map[string]bool, map[int]map[string]bool) {
+func (a *flowAnalyzer) analyzeDefiniteNull(cfg *graph.StmtCFG, isValue func(string) bool) (map[int]map[string]bool, map[int]map[string]bool) {
 	effects := make(map[int]*nodeEffects, len(cfg.Nodes))
 	for _, n := range cfg.Nodes {
 		if n.Kind != "stmt" {
@@ -275,26 +301,26 @@ func (a *flowAnalyzer) analyzeDefiniteNull(cfg *graph.StmtCFG) (map[int]map[stri
 				e.kill[name] = true
 			}
 		}
-		addOutputParamKills(n.Stmt, e, true, nil, a.iterMacros)
+		addOutputParamKills(n.Stmt, e, true, nil, a.iterMacros, isValue)
 		effects[n.ID] = e
 	}
 	return runMustDataflow(cfg, effects)
 }
 
 // buildEffects computes the per-statement-node transfer effects for a CFG.
-func (a *flowAnalyzer) buildEffects(cfg *graph.StmtCFG, genByLine, killByLine map[int][]string, dfgByLine map[int][]copyPair, nonNullKills, definiteKills bool, macroWrites map[string]macros.WriteSummary) map[int]*nodeEffects {
+func (a *flowAnalyzer) buildEffects(cfg *graph.StmtCFG, genByLine, killByLine map[int][]string, dfgByLine map[int][]copyPair, nonNullKills, definiteKills bool, macroWrites map[string]macros.WriteSummary, isValue func(string) bool) map[int]*nodeEffects {
 	effects := make(map[int]*nodeEffects, len(cfg.Nodes))
 	for _, n := range cfg.Nodes {
 		if n.Kind != "stmt" {
 			continue
 		}
-		effects[n.ID] = a.collectNodeEffects(n, genByLine, killByLine, dfgByLine, nonNullKills, definiteKills, macroWrites)
+		effects[n.ID] = a.collectNodeEffects(n, genByLine, killByLine, dfgByLine, nonNullKills, definiteKills, macroWrites, isValue)
 	}
 	return effects
 }
 
 // collectNodeEffects extracts the transfer effects for a single statement node.
-func (a *flowAnalyzer) collectNodeEffects(n *graph.StmtNode, genByLine, killByLine map[int][]string, dfgByLine map[int][]copyPair, nonNullKills, definiteKills bool, macroWrites map[string]macros.WriteSummary) *nodeEffects {
+func (a *flowAnalyzer) collectNodeEffects(n *graph.StmtNode, genByLine, killByLine map[int][]string, dfgByLine map[int][]copyPair, nonNullKills, definiteKills bool, macroWrites map[string]macros.WriteSummary, isValue func(string) bool) *nodeEffects {
 	e := &nodeEffects{gen: map[string]bool{}, kill: map[string]bool{}, copy: map[string]string{}}
 
 	// gen/kill/DFG from the stored graph at this line — but only for LEAF
@@ -345,7 +371,7 @@ func (a *flowAnalyzer) collectNodeEffects(n *graph.StmtNode, genByLine, killByLi
 	// addOutputParamKills) is null-deref specific, so it is gated on
 	// nonNullKills: the taint source filter reuses this engine with
 	// nonNullKills=false and must not lose copy taint through memcpy/strcpy.
-	addOutputParamKills(n.Stmt, e, nonNullKills, macroWrites, a.iterMacros)
+	addOutputParamKills(n.Stmt, e, nonNullKills, macroWrites, a.iterMacros, isValue)
 
 	return e
 }
@@ -361,7 +387,7 @@ func (a *flowAnalyzer) collectNodeEffects(n *graph.StmtNode, genByLine, killByLi
 //     otherwise have faulted. This half is gated on derefArgs because it is a
 //     null-deref notion: the taint source filter shares this engine and its
 //     memcpy/strcpy copy taint must survive (a copy is not a taint kill).
-func addOutputParamKills(stmt parser.Node, e *nodeEffects, derefArgs bool, macroWrites map[string]macros.WriteSummary, iterMacros map[string][]int) {
+func addOutputParamKills(stmt parser.Node, e *nodeEffects, derefArgs bool, macroWrites map[string]macros.WriteSummary, iterMacros map[string][]int, isValue func(string) bool) {
 	for _, call := range stmt.FindAll("call_expression") {
 		children := call.NamedChildren()
 		if len(children) < 2 {
@@ -373,7 +399,7 @@ func addOutputParamKills(stmt parser.Node, e *nodeEffects, derefArgs bool, macro
 		}
 		derefIdxs, derefs := apikb.DerefArgs(callName(call))
 		for i, arg := range argList.NamedChildren() {
-			if name := addrTakenVar(arg); name != "" {
+			if name := addrTakenVar(arg, isValue); name != "" {
 				e.kill[name] = true
 				continue
 			}
@@ -509,16 +535,12 @@ func intIn(xs []int, v int) bool {
 // returns "" for anything else (a by-value arg, a dereference, a field of x,
 // ...): only a whole-variable address proves the callee may reassign x itself.
 //
-// This uses the PERMISSIVE recognition: the flow analyzer has no scope oracle
-// (the variables table is not populated, and the parameter/local name set is
-// not plumbed into buildEffects), so a genuine bit-and argument spelled with a
-// parenthesized left operand (`f((flags) & p)`) is read as `&p` and kills p's
-// null state. That is a false-NEGATIVE-only surface — it can hide a finding,
-// never invent one — and is deliberately accepted over threading a per-function
-// scope set through the hot dataflow path. The evidence-layer uninit detector,
-// which has the declared names at hand, uses AddressTakenTargetScoped.
-func addrTakenVar(arg parser.Node) string {
-	target, ok := arg.AddressTakenTarget()
+// isValue is the scope oracle that keeps a genuine bit-and argument
+// (`f((flags) & p)`) from being read as `&p` and killing p's null state; see
+// parser.Node.AddressTakenTargetScoped. A nil oracle falls back to the
+// permissive recognition.
+func addrTakenVar(arg parser.Node, isValue func(string) bool) string {
+	target, ok := arg.AddressTakenTargetScoped(isValue)
 	if !ok || target.Kind() != "identifier" {
 		return ""
 	}

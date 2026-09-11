@@ -363,6 +363,17 @@ func functionBodyMap(funcDefs []parser.Node) map[int]parser.Node {
 	return m
 }
 
+// functionDefinitionMap indexes a file's function_definition nodes by start
+// line, for callers that need the definition itself (parameter list, scope
+// oracle) and not just the body.
+func functionDefinitionMap(funcDefs []parser.Node) map[int]parser.Node {
+	m := make(map[int]parser.Node, len(funcDefs))
+	for _, fn := range funcDefs {
+		m[fn.StartLine()] = fn
+	}
+	return m
+}
+
 func findReturnStoresFrom(returns, assigns []parser.Node, f *db.Function) []string {
 	var stores []string
 	seen := make(map[string]bool)

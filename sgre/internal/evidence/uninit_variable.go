@@ -55,16 +55,16 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 		fors := root.FindAll("for_statement")
 		funcDefs := root.FindAll("function_definition")
 		bodies := functionBodyMap(funcDefs)
+		funcDefsByLine := functionDefinitionMap(funcDefs)
 
 		for _, f := range funcs {
-			// f's parameter names are the scope oracle's other half: parameters
-			// are bound to values but are not in `decls` (they live in the
-			// signature), so `&x` disambiguation needs them (see
-			// boundValueNames).
-			params := extractFunctionParamsFrom(funcDefs, f.StartLine)
-			d.detectStackUninit(ctx, f, file, params, decls, assigns, calls, returns, inits, ifs, whiles, fors, bodies, summaries, macroWrites, &result)
+			// The scope oracle for the `(A) & x` disambiguation: the function's
+			// parameter names plus its local declarator names. A type name must
+			// never be in this set (see parser.FunctionBoundNames).
+			bound := parser.FunctionBoundNames(funcDefsByLine[f.StartLine])
+			d.detectStackUninit(ctx, f, file, bound, decls, assigns, calls, returns, inits, ifs, whiles, fors, bodies, summaries, macroWrites, &result)
 			d.detectHeapUninit(ctx, f, file, inits, assigns, unarys, ptrs, fields, &result)
-			d.detectStructPartialUninit(ctx, f, file, params, decls, assigns, calls, fields, summaries, macroWrites, &result)
+			d.detectStructPartialUninit(ctx, f, file, bound, decls, assigns, calls, ifs, fields, summaries, macroWrites, &result)
 		}
 	})
 	return result, err
@@ -140,7 +140,7 @@ func resolveVarKey(declsByName map[string][]varDecl, name string, useLine int) s
 	return varKey(name, best)
 }
 
-func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, params []string, decls, assigns, calls, returns, inits, ifs, whiles, fors []parser.Node, bodies map[int]parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, result *DetectResult) {
+func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, bound map[string]bool, decls, assigns, calls, returns, inits, ifs, whiles, fors []parser.Node, bodies map[int]parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, result *DetectResult) {
 	uninitVars := make(map[string]bool)
 	assignSites := make(map[string][]int)
 	declsByName := make(map[string][]varDecl)
@@ -194,7 +194,6 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 	// a value. tree-sitter-c gives both the identical binary_expression parse,
 	// so the caller must supply the scope knowledge (see
 	// parser.Node.AddressTakenTargetScoped).
-	bound := boundValueNames(f, decls, params)
 	isValue := func(name string) bool { return bound[name] }
 
 	for _, assign := range assigns {
@@ -665,44 +664,6 @@ func addressOfTarget(arg parser.Node) (parser.Node, bool) {
 // can tell them apart (see parser.Node.AddressTakenTargetScoped).
 func addressOfTargetScoped(arg parser.Node, isValue func(string) bool) (parser.Node, bool) {
 	return arg.AddressTakenTargetScoped(isValue)
-}
-
-// boundValueNames returns the names bound to a VALUE in f — its parameters and
-// every local declarator — as the scope oracle for the `(A) & x`
-// disambiguation. It is deliberately a SUBSET of the real scope (an exotic
-// declarator shape can be missed), which is the safe direction: a missing name
-// only falls back to the permissive recognition, whereas a type name wrongly
-// included would turn a real `&x` into a bit-and and resurrect the
-// output-parameter false positives this oracle exists to prevent. Type names
-// are therefore never collected: tree-sitter-c parses `typedef` as
-// type_definition (not declaration) and a typedef used in a declaration as
-// type_identifier (not identifier), so only declarators reach the switch below.
-func boundValueNames(f *db.Function, decls []parser.Node, params []string) map[string]bool {
-	names := make(map[string]bool, len(params))
-	for _, p := range params {
-		if p != "" {
-			names[p] = true
-		}
-	}
-	for _, decl := range decls {
-		if !funcLineRange(f, decl.StartLine()) {
-			continue
-		}
-		for _, child := range decl.NamedChildren() {
-			switch child.Kind() {
-			case "identifier":
-				if !parser.IsCTypeKeyword(child.Text()) {
-					names[child.Text()] = true
-				}
-			case "init_declarator", "pointer_declarator", "array_declarator",
-				"function_declarator", "parenthesized_declarator":
-				if name := extractVarFromDeclarator(child); name != "" {
-					names[name] = true
-				}
-			}
-		}
-	}
-	return names
 }
 
 // setterMacroName reports whether a call name carries a setter/init semantic
@@ -1214,20 +1175,19 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 	}
 }
 
-func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, f *db.Function, file *db.File, params []string, decls, assigns, calls, fields []parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, result *DetectResult) {
+func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, f *db.Function, file *db.File, bound map[string]bool, decls, assigns, calls, ifs, fields []parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, result *DetectResult) {
 	structVars := make(map[string]int)
 	initializedFields := make(map[string]bool)
 	// isValue is the same `(A) & x` disambiguation the scalar path uses (see
 	// detectStackUninit): without it a genuine bit-and argument would be read as
 	// an address-of and mark a field as callee-initialized.
-	bound := boundValueNames(f, decls, params)
 	isValue := func(name string) bool { return bound[name] }
 	// A struct passed by address to a KNOWN initializer (memset(&s, 0, ...),
 	// or an output-param filler) — or to a local function that writes the
 	// pointer parameter on every path — has its fields written by the callee,
 	// so it is not a definite partial-init defect. An arbitrary `&s` to an
 	// unknown/conditional function is conservatively kept (cf. TC16).
-	initializedVars := outputParamInitializedVars(calls, f, summaries, isValue)
+	initializedVars, initializedFrom := outputParamInitializedVars(calls, ifs, f, summaries, isValue)
 
 	for _, decl := range decls {
 		if !funcLineRange(f, decl.StartLine()) {
@@ -1378,6 +1338,12 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 		}
 		// A path that is a write target (or its base) is not a read.
 		if writePaths[fieldPath(field)] {
+			continue
+		}
+		// A write established only past a caller-side guard initializes the
+		// fields read on the success continuation; a read on or before the
+		// guard (the error branch) stays reported, matching the scalar path.
+		if from, ok := initializedFrom[varName]; ok && field.StartLine() > from {
 			continue
 		}
 		if !initializedFields[fieldPath(field)] {
@@ -1676,13 +1642,13 @@ func isValueFieldBase(id parser.Node) bool {
 	return !strings.Contains(p.Text(), "->")
 }
 
-// outputParamInitializedVars returns the set of variable names within f whose
-// address is passed (`&x`) to an output-parameter writer: either a KNOWN
-// initializer (memset, bzero, stat, ...) or a local function whose parameter at
-// that position is written on every path (see FuncSummary.ParamWrites). An
-// arbitrary `&x` to an unknown/conditional function is conservatively kept
+// outputParamInitializedVars returns (a) the struct variables within f whose
+// address is passed (`&x`) to an output-parameter writer and are initialized
+// unconditionally, and (b) the variables initialized only past a caller-side
+// guard, mapped to the line after which the write is established. An arbitrary
+// `&x` to an unknown function is conservatively kept
 // (cf. TestSecurity_TC16_UninitInterprocedural).
-func outputParamInitializedVars(calls []parser.Node, f *db.Function, summaries summaryMap, isValue func(string) bool) map[string]bool {
+func outputParamInitializedVars(calls, ifs []parser.Node, f *db.Function, summaries summaryMap, isValue func(string) bool) (map[string]bool, map[string]int) {
 	// `&s` to a writer initializes the whole struct on three tiers, mirroring
 	// the scalar path's model:
 	//   - known initializer (memset, stat, ...) → writes unconditionally;
@@ -1692,7 +1658,9 @@ func outputParamInitializedVars(calls []parser.Node, f *db.Function, summaries s
 	//     so the guarded path is where the callee wrote its output.
 	// An UNKNOWN/external `&s` is conservatively kept — a generic void* filler
 	// may write only some fields (cf. tc84 FlowGetKey).
+	//
 	initialized := make(map[string]bool)
+	initializedFrom := make(map[string]int)
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
 			continue
@@ -1703,6 +1671,7 @@ func outputParamInitializedVars(calls []parser.Node, f *db.Function, summaries s
 		if !knownInit && !hasSummary {
 			continue
 		}
+		guarded := callInBranchCondition(call)
 		for _, child := range call.NamedChildren() {
 			if child.Kind() != "argument_list" {
 				continue
@@ -1718,13 +1687,25 @@ func outputParamInitializedVars(calls []parser.Node, f *db.Function, summaries s
 					initialized[name] = true
 				case summary.ParamWrites[argIdx]:
 					initialized[name] = true
-				case summary.ParamConditionalWrites[argIdx] && callInBranchCondition(call):
+				case summary.ParamConditionalWrites[argIdx] && guarded:
 					initialized[name] = true
+				case summary.ParamConditionalWrites[argIdx]:
+					// The caller may guard the call through the variable the
+					// result was stored in (`rc = fn(&s); if (rc != 0) return;`)
+					// rather than inside a branch condition. The scalar path
+					// already recognizes that shape; without reusing it here a
+					// correctly guarded struct write-back was reported as
+					// partial-init (the failure path is already excluded).
+					if g := outputParamGuardLine(ifs, f, call, callName); g != 0 {
+						if g > initializedFrom[name] {
+							initializedFrom[name] = g
+						}
+					}
 				}
 			}
 		}
 	}
-	return initialized
+	return initialized, initializedFrom
 }
 
 // callInBranchCondition reports whether call sits inside the condition of an
