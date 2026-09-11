@@ -66,7 +66,6 @@ Read-flavored events (`array_oob_read`, `heap_oob_read`) belong to the
 | `format_overflow_var` where the non-constant source is attacker-controlled with no clamp | **confirmed** |
 | `format_overflow_var` where the non-constant source is bounded (a small `int`/enum, or `%d` of a fixed-width value) | **false-positive** — cannot exceed the capacity |
 | `sprintf` whose destination feeds `system`/`sqlite3_exec`/`CreateProcessA` | **false-positive** for buffer-overflow (injection is the root cause; SQL/command injection covers it) |
-| Array access with variable index, no provable bound | **suspected** |
 | `bounded_copy_overflow` (constant `n > sizeof(dst)`) | **confirmed** — the detector proved it |
 | `bounded_copy_var_size` where `n` is a caller-influenced length (argv/getenv/recv length field, network packet length) with no clamp | **confirmed** |
 | `bounded_copy_var_size` where `n` is validated by every caller to `<= sizeof(dst)` (clamp, guard, or a bounded `strlen` source) | **false-positive** |
