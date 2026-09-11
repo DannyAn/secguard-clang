@@ -44,7 +44,7 @@ metadata:
 |-----------|---------------|
 | `access()` + `fopen()` on same path, no atomicity | **confirmed** |
 | `access()` + `open()` with `O_NOFOLLOW` | **false-positive** |
-| Lock-unlock-mutate with shared variable (check in lock, mutate outside) | **suspected** (partial protection, needs human review) |
+| Mutate a shared/global variable after releasing a lock | **suspected** (a TOCTOU only if the same variable was READ inside the lock — verify the check-then-act pair) |
 | Lock held through check + mutate | **false-positive** |
 | `access()` + `fopen()` in same function, path is local | **suspected** (may be safe if path not attacker-controlled) |
 | Check-then-act with no shared state | **false-positive** |

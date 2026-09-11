@@ -26,7 +26,9 @@ A divide-by-zero candidate has:
 | Condition | Classification |
 |-----------|---------------|
 | `x / (a - b)` where `a == b` is reachable | **confirmed** |
-| `x / n` with `n` from external input | **suspected** |
+| `x / n` where `n` is attacker-controlled (argv / getenv / recv length) and unguarded | **confirmed** (the attacker can make n == 0) |
+| `x / n` where `n` is a bounded local, a loop counter, or a checked length | **false-positive** (n cannot be zero on any reachable path) |
+| `x / n` where `n`'s origin cannot be settled from the context | **suspected** |
 | `x / 2`, `x / sizeof(T)` | **false-positive** (constant, safe) |
 
 > **Pipeline pre-confirms, so these never reach this classification step:**

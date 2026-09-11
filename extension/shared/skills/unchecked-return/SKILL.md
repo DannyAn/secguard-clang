@@ -26,7 +26,8 @@ An unchecked-return candidate has:
 | Condition | Classification |
 |-----------|---------------|
 | `malloc(n)` result dereferenced with no NULL check | **confirmed** |
-| `read(fd, ...)` return ignored and buffer used | **suspected** |
+| `read(fd, ...)` / `recv(...)` return ignored AND the target buffer is used afterward | **confirmed** (a short read / error leaves the buffer uninitialized or partial) |
+| `read(fd, ...)` return ignored but the buffer is never used, or a short read is acceptable | **false-positive** |
 | `p = malloc(n); if (!p) return;` | **false-positive** (checked) |
 | `if (malloc(n) == NULL) ...` | **false-positive** (checked inline) |
 

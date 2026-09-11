@@ -13,12 +13,12 @@ metadata:
 ### Evidence Patterns
 
 #### Command Injection (CWE-78)
-- **BUFFER_ACCESS event** with category `command_injection`
+- **INJECTION event** with category `command_injection`
 - Unsafe function: `system()`, `popen()` with user-controlled input
 - No input sanitization or use of safe alternative (`execve`)
 
 #### SQL Injection (CWE-89)
-- **BUFFER_ACCESS event** with category `sql_injection`
+- **INJECTION event** with category `sql_injection`
 - String concatenation/sprintf to build SQL query
 - No parameterized query (`sqlite3_prepare_v2` + `sqlite3_bind_text`)
 
@@ -43,7 +43,7 @@ metadata:
 | Condition | Classification |
 |-----------|---------------|
 | `system()` with user input, no sanitization | **confirmed** |
-| `system()` with user input + blacklist sanitization | **suspected** (incomplete) |
+| `system()` with user input + blacklist sanitization | **confirmed** (a blacklist filters some characters but is always bypassable) |
 | `system()` with user input + whitelist/validation | **false-positive** |
 | `execve()` with fixed path + args | **false-positive** |
 | `sprintf` building SQL with user input | **confirmed** |
@@ -51,7 +51,7 @@ metadata:
 | `sqlite3_exec` with concatenated query | **confirmed** |
 
 ### Common Edge Cases (P3)
-- **Partial blacklist**: `is_safe_input()` filtering `;` but not `&&`, `||`, `$()` → **suspected**
+- **Partial blacklist**: `is_safe_input()` filtering `;` but not `&&`, `||`, `$()` → **confirmed** (incomplete sanitization is still injectable)
 - **TOCTOU**: Check then use with race window → **suspected**
 - **Format string**: `printf(user_input)` without format → **confirmed** (CWE-134)
 
