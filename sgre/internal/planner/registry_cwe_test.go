@@ -105,11 +105,11 @@ func TestAllCWEs_ContainsAll20CanonicalCWEs(t *testing.T) {
 	}
 }
 
-func TestAllCWEs_CountIs20CanonicalPlus3Legacy(t *testing.T) {
+func TestAllCWEs_CountIs21CanonicalPlus3Legacy(t *testing.T) {
 	cwes := AllCWEs()
-	// 20 canonical + 3 legacy (CWE-89, CWE-326, CWE-338) = 23
-	if len(cwes) != 23 {
-		t.Errorf("AllCWEs() has %d entries, want 23 (20 canonical + 3 legacy: CWE-89, CWE-326, CWE-338)", len(cwes))
+	// 21 canonical + 3 legacy (CWE-89, CWE-326, CWE-338) = 24
+	if len(cwes) != 24 {
+		t.Errorf("AllCWEs() has %d entries, want 24 (21 canonical + 3 legacy: CWE-89, CWE-326, CWE-338)", len(cwes))
 	}
 }
 

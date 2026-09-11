@@ -260,7 +260,8 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 
 	// Batch-load the functions and locations the seed events reference, so a type
 	// with thousands of events does not issue one point query per event (an N+1
-	// storm × 20 vuln types). Lookups that miss just leave the zero value.
+	// storm across every registered vuln type). Lookups that miss just leave the
+	// zero value.
 	funcIDs := make([]int64, 0, len(events))
 	locIDs := make([]int64, 0, len(events))
 	for _, e := range events {

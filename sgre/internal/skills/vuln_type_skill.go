@@ -75,6 +75,7 @@ var allSkillSpecs = []skillSpec{
 	{"path-traversal", "input", "Detects non-literal paths into filesystem sinks (CWE-22)"},
 	{"sizeof-misuse", "boundary", "Detects sizeof on pointer variables in size contexts (CWE-467/468)"},
 	{"signed-compare", "boundary", "Detects unsigned values compared with zero/negative (CWE-681/195)"},
+	{"signal-handler", "concurrency", "Detects non-async-signal-safe calls in signal handlers (CWE-479)"},
 }
 
 func DefaultRegistry(store db.Store, logger *log.Logger) *Registry {
