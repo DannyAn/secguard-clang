@@ -11,6 +11,17 @@ SecGuard-Clang is an AI-augmented C security analyzer. The Go module lives in
 **`sgre/`** (module `github.com/DannyAn/secguard-clang`), not the repo root.
 The repo root holds extension scaffolding, release tooling, and docs.
 
+## Adding a Vulnerability Type (READ BEFORE ADDING A DETECTOR/SKILL)
+
+When asked to add a new detection — a detector, a planner vuln type, or a
+`SKILL.md` — follow **`ADDING_A_VULN_TYPE.md`** (repo root). It is the one
+standard: the 6-step checklist, the skill template
+(`extension/shared/skills/SKILL_TEMPLATE.md`), and the machine guard
+(`TestVulnTypeSkillConsistency` in `sgre/internal/skills/`) that fails the build
+if the three parallel type lists (`planner/registry.go`, `skills/vuln_type_skill.go`,
+and `extension/shared/skills/*/`) drift apart. Do not invent a new layout or skip a
+step — the guard will reject it.
+
 ## Build & Test
 
 All `go` commands run from `sgre/`:
@@ -198,5 +209,7 @@ pre-built artifacts uploaded by the build matrix.
 ## See Also
 
 - `CLAUDE.md` — full architecture, pipeline stages, data model, design invariants
+- `ADDING_A_VULN_TYPE.md` — the one standard for adding a detector/vuln type/skill
+- `extension/shared/skills/SKILL_TEMPLATE.md` — the copy-from skill template
 - `docs/output-protocol.md` — scan output contract
 - `DEVELOPER.md` — developer notes (currently empty)

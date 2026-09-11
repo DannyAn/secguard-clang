@@ -21,7 +21,7 @@ import (
 //     `secguard types` never disagrees with the agent skills.
 //
 // Adding a detection therefore means touching the same three places the
-// NEW_SKILL.md checklist enumerates; forgetting one fails here.
+// ADDING_A_VULN_TYPE.md checklist enumerates; forgetting one fails here.
 func TestVulnTypeSkillConsistency(t *testing.T) {
 	types := planner.AllVulnTypes()
 	typeSet := make(map[string]bool, len(types))
@@ -47,7 +47,7 @@ func TestVulnTypeSkillConsistency(t *testing.T) {
 
 	for n := range typeSet {
 		if !skillSet[n] {
-			t.Errorf("vuln type %q has no extension/shared/skills/%s/SKILL.md (add the skill per NEW_SKILL.md)", n, n)
+			t.Errorf("vuln type %q has no extension/shared/skills/%s/SKILL.md (add the skill per ADDING_A_VULN_TYPE.md)", n, n)
 		}
 	}
 	for n := range skillSet {
