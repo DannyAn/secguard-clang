@@ -2,6 +2,51 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.6.2] - 未发布
+
+### 精准度修复（resource-leak：错误路径泄漏被误判为"疑似"）
+
+`resource-leak` 的 skill 分类规则与 `memory-leak` **自相矛盾**：对**完全相同的缺陷形态**（成功路径释放、错误路径泄漏），`memory-leak` 判定为 *confirmed (error path leak)*，而 `resource-leak` 的规则却写着 *"suspected: Resource released on success path but leaked on error path"*。于是 `g_db_epoll_fd = MESH_EpollCreate(); … if (ret != 0) { return -1; }` 这类**已经在可达错误分支上确定泄漏**的缺陷被降级为"疑似"，还要 AI 再判一轮。
+
+- **判据纠正**：错误路径泄漏是 **confirmed**，不是 suspected——函数在该可达错误返回上确实带着未关闭的句柄退出，缺陷是被证明的，不是假说。分类整理为与 `memory-leak` 对齐的规则表，并补上 path-sensitive 判据示例（"从 acquire 到函数出口是否存在一条不经过 release 的路径"）；`suspected` 收窄为"本函数内无法判定释放是否发生在别处"。
+- **修正一处过期检测信号**：`connect()` 曾被列为资源获取（acquire）信号，但检测器**刻意**不把 `connect` 当作资源工厂（它返回状态码、不产生新句柄；把 `db_create_sub_connect` 当资源曾产出幻影 `ret` 资源）。skill 与检测器现已一致。
+- **为什么不在流水线里直接 auto-confirm（设计约束，勿再"顺手修复"）**：`null-deref`/`uninit`/`double-free` 能 auto-confirm，是因为它们用 **must 分析**（"所有路径上都成立"），朝确认方向健全。泄漏的判据却是"**存在一条**可达路径泄漏"，是 **may 分析**；而 CFG 不跟踪分支条件的取值相关性，会伪造不可行路径——语料 `tc58_race_conditional_lock.c` 即活例（`if (arg) lock(&m); … if (arg) unlock(&m);` 由同一个未改写的条件守卫，语义上平衡，CFG 却认为存在绕过 unlock 的路径）。若据此 auto-confirm，就会产出**无需 AI 复核的 confirmed 误报**（最误导的一类）。因此 **resource-leak 的 tier 保持 suspected，由 AI 层按本 skill 判定**（与 `memory-leak` 一致）。同理**不加入**"同一条件守卫即判 FP"之类的抑制型规则：条件变量在两次守卫之间被改写时它就是真泄漏，抑制即漏报。
+
+### 精准度修复（hardcoded-secret：placeholder / 测试口令被 auto-confirm 成"确认"）
+
+这一条比 resource-leak 更隐蔽：**skill 的判据没写错，但它根本执行不到**。`hardcoded-secret` 的 `DefaultSuspicion` 是 `"confirmed"`，于是**所有** HARDCODED_SECRET 候选都由 `splitBySuspicion` 走 auto-confirm 直接落库、**绕过 AI**；而 skill 里明明写着"placeholder → false-positive""测试口令 → suspected"——这两条永远不会被执行。实测最小复现：`password = "REPLACE_ME"`、`test_password = "test123"`、`user_api_key = "YOUR_KEY_HERE"` 三条**全部** `suspicion=confirmed`（auto-confirm），正是最误导的一类。
+
+- **检测器按证据强度分流**（新增 `secretCategory`）：字面量**值本身**可证（已知 token 前缀 `sk-`/`AKIA`/`ghp_`/`-----BEGIN`、Shannon 熵 ≥4.5 bits/char 且 ≥16 字符、或 URL 内嵌凭据 `mysql://root:hunter2@db`）→ 类别 `hardcoded_secret`；**仅变量/字段名命中**而值低熵 → 类别 `hardcoded_secret_name_only`。
+- **registry 用 `CategoryConfidence` 承接**：`hardcoded_secret` = confirmed（保持 auto-confirm），`hardcoded_secret_name_only` = suspected（交 AI 判）；`DefaultSuspicion` 降为 `suspected` 作兜底。
+- **不丢弃任何候选**——弱证据只是从"机器确认"改为"AI 复核"，因此**零漏报风险**；placeholder / 测试口令由 AI 按 skill 规则 dismissed，confirmed 误报消除。
+- **skill 同步**：原 `Evidence Patterns` 写的类别 `hardcoded_password` / `hardcoded_key` / `hardcoded_token` / `credential_persistence` **检测器从不发出**（过期文档），已改为实际发出的两个类别；判据表据此重写——原表"字面量赋给 secret 变量 → confirmed"与"placeholder → false-positive"**自相矛盾**（前者会把 placeholder 判成 confirmed）。
+- **测试**：检测器级"值可证 vs 仅名字命中"类别断言 + planner 级"仅名字命中必须 suspected、值可证保持 confirmed"方向性对照，均已用"中性化修复必然失败"验证。
+- **同类排查已做完**：把 20 个类型过了一遍"skill 规则是否被 auto-confirm 挡在门外"（`null-deref` 有 `NullableSourceFilter` 降级，其余 confirmed 类别的 skill 行本就是 confirmed），**只有 hardcoded-secret 命中**。
+
+### 精准度修复（class C：skill 声称的类别 / API 与检测器实际不符）
+
+对 20 个 skill 的 `Detection Signals` / `Evidence Patterns` / 类别声明做了机器化全量比对（把每个 skill 提到的 API 名、类别名、事件名拿去对应检测器与 registry 里核对），发现并修正三处：
+
+- **`deadlock`：`pthread_mutex_timedlock` 完全不被识别 → 真漏报**。检测器的锁获取集合只有 `pthread_mutex_lock` / `pthread_rwlock_wrlock` / `EnterCriticalSection`，于是"环里含 timedlock"的锁序反转**整个漏掉**；而 skill 的判据表明确写着它应报 `suspected`（这一行此前根本不可达）。现在：检测器把 timedlock 计入锁序边并给该环打 `category: deadlock_timed`；`LockOrderBuilder` 同步收录该边（保持锁序图完整）；`LockOrderFilter` 见到 `deadlock_timed` **只保留 suspected、绝不升级 confirmed**（timeout 可恢复）。普通 `pthread_mutex_lock` 的环仍 confirmed。
+- **`crypto-misuse`：类别名全是僵尸**。skill 写 `weak_cipher` / `weak_hash` / `weak_prng` / `weak_key`，检测器实际发的是 `weak_algorithm` / `weak_random` / `undersized_key`——AI 在候选 `Hint` 的 `cat@...` 里永远看不到 skill 说的那四个。已改正。
+- **`race-condition`：类别名 + 事件属性都不对**。`toctou_filesystem` 实际是 `toctou`；声称事件带 `access_lines` / `write_lines`，实际只有 `thread_functions` / `thread_instances` / `write_line`。已改正。
+- **核对为一致、无需改动的**（列出以免看起来"没查"）：`RAND_bytes` / `getrandom` 不会被误报（弱随机集合是精确名 `rand`/`srand`）；`__builtin_*_overflow`、`fgets`、`fputs`、`EVP_aes_*`、`__attribute__((cleanup))` 等只出现在"安全模式 / 修复建议"表里，不是检测器声称；`SAFE_FREE` 由 `null_source.go` 识别。
+- **测试**：`TestLockOrderFilter_TimedCycleStaysSuspected`（timed 环必须 suspected）+ 既有 `TestLockOrderFilter_ConfirmsCycle`（正常环仍 confirmed），已用"中性化修复必然失败"验证。
+
+### 设计一致性（20 个 skill 全部对齐同一模板 + 可执行守卫）
+
+先直接回答"现在一致了吗"：**一致了，20/20**。此前不合模板的只有 `uninit` 和 `resource-leak` 两个——正好又是那对"缺 YAML frontmatter、在 v0.5.x 根本没被加载"的孤儿 skill（没被加载 → 不被检验 → 规则写错无人发现，这就是本轮 bug 能长期存活的原因）。
+
+| | 标准模板（其余 18 个） | `resource-leak` / `uninit`（原状） |
+|---|---|---|
+| 标题 | `## <Type> Analysis (...)`，无 H1 | H1 `#` 标题 + `##` 子节 |
+| 判据段 | `### Classification Rules` | `## Classification` |
+| 判据形态 | `\| Condition \| Classification \|` 表格 | `resource-leak` 表格；`uninit` 项目符号 |
+
+- **改齐动作**：两个 skill 的标题层级（去 H1、降为 H2/H3）、判据段名（`### Classification Rules`）、判据形态（统一同构表格）全部对齐模板；`uninit` 的判定语义一字未改，只把项目符号改成表格。`resource-leak` 同时带上本轮的判据修正。
+- **守卫升级**：`release/check-extension-consistency.py` 第 4 类检查从"能加载"提升为"必须符合模板"——frontmatter + `name:` 等于目录名 + 无 H1 + 有 H2 标题 + 有 `### Classification Rules` 且紧接标准表头 + 表中出现 `confirmed` / `false-positive`（`suspected` 可选：类别恒为 confirmed 的类型如 signed-compare 本就没有该档）。三种漂移（缺 frontmatter、改回 `## Classification`、重新引入 H1）均已实测 `exit 1`。
+- **边界（说清楚）**：守卫只能保证**结构**一致；"两个 skill 对同一缺陷形态给出相反结论"这种**语义**矛盾脚本查不出（本轮的 `resource-leak` vs `memory-leak` 正属此类），仍需靠评审。
+
 ## [0.6.1] - 2026-09-09
 
 ### 误报修复（出参回写：uninit / null-deref）
