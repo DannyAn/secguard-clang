@@ -64,6 +64,29 @@ func TestHardcodedSecret_NameOnlyStaysSuspected(t *testing.T) {
 	}
 }
 
+// TestHardcodedSecret_FileScopeCandidateHasLocation pins the file-scope
+// location fallback in seedCandidatesByType: a secret declared at file scope
+// (no enclosing function, so EntityID == 0) used to be seeded with FileID 0
+// because the file was taken only from the (missing) function, producing a
+// candidate with an empty Target.File that auto-confirm re-flowed to the AI.
+// The location carries the real file, so the candidate must now surface it.
+func TestHardcodedSecret_FileScopeCandidateHasLocation(t *testing.T) {
+	cands := planHardcodedSecret(t, "tc95_hardcoded_secret_value_only.c")
+
+	for _, v := range []string{"high_entropy", "password", "conn"} {
+		c, ok := cands[v]
+		if !ok {
+			t.Fatalf("no hardcoded-secret candidate for %s", v)
+		}
+		if c.Target.File == "" {
+			t.Errorf("%s (file-scope) has empty Target.File; want the fixture path", v)
+		}
+		if c.Target.Line <= 0 {
+			t.Errorf("%s (file-scope) has non-positive Target.Line = %d", v, c.Target.Line)
+		}
+	}
+}
+
 // TestHardcodedSecret_ValueProvenIsConfirmed is the direction guard: a literal
 // proven by its value stays auto-confirmed, so the fix does not drag every
 // hardcoded-secret candidate into an AI review turn.

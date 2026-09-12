@@ -152,6 +152,12 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 						} else {
 							shouldReportLeak = true
 						}
+					} else if isGuardedRelease(ifs, varName, freeLines) {
+						// Released only inside a positive guard (`if (p) { free(p); }`):
+						// the NULL path carries no allocation, so skipping the free on
+						// that branch is not a leak. Mirrors resource-leak's guarded-
+						// release branch (isGuardedRelease is shared across detectors).
+						shouldReportRelease = true
 					} else if cfgValid {
 						if hasLostResource(cfg, allocLine, freeLines, nullGuardReturns, escapeLines, overwriteLines) {
 							shouldReportLeak = true

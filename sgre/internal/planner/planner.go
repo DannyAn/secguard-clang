@@ -299,6 +299,15 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 		line := 0
 		if loc := locsByID[e.LocationID]; loc != nil {
 			line = loc.Line
+			// A file-scope event (e.g. a hardcoded-secret global with no
+			// enclosing function, so EntityID == 0) has no function to supply
+			// the file, but its location does. Fall back to the location's file
+			// so a function-less candidate is never emitted with an empty
+			// Target.File (which would make auto-confirm re-flow it to AI and
+			// per-finding markdown drop the location).
+			if fileID == 0 {
+				fileID = loc.FileID
+			}
 		}
 
 		// The variable is the primary identity for dedup and variable-level

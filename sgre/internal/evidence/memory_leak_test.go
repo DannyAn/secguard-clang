@@ -146,6 +146,30 @@ func TestMemoryLeak_FieldMallocEscape(t *testing.T) {
 	}
 }
 
+// TestMemoryLeak_GuardedFreeNoLeak pins the guarded-release fix: a free inside a
+// positive guard on the SAME pointer (`if (p) { free(p); }`) is a release, not a
+// leak (the NULL path owns nothing), while a free guarded by an unrelated
+// condition (`if (flag) { free(p); }`) still leaks.
+func TestMemoryLeak_GuardedFreeNoLeak(t *testing.T) {
+	store := runIndexAndDetect(t, "tc111_memory_leak_guarded_free.c")
+	allocByFunc, releaseByFunc := countEventsByFunction(t, store, "MEMORY_ALLOC", "MEMORY_RELEASE")
+
+	cases := []struct {
+		fn     string
+		allocs int
+		rel    int
+	}{
+		{"guarded_free", 1, 1},
+		{"conditional_free", 1, 0},
+	}
+	for _, c := range cases {
+		if allocByFunc[c.fn] != c.allocs || releaseByFunc[c.fn] != c.rel {
+			t.Errorf("%s: got %d alloc / %d release, want %d alloc / %d release",
+				c.fn, allocByFunc[c.fn], releaseByFunc[c.fn], c.allocs, c.rel)
+		}
+	}
+}
+
 // TestMemoryLeak_OverwrittenPointer locks in the lost-allocation fix: a second
 // write to the same variable overwrites the previous pointer, so
 // `p = malloc(); p = malloc();` is TWO allocations and the first is lost even
