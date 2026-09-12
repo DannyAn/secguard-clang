@@ -244,7 +244,26 @@ secguard --version
 ./install.sh --uninstall --yes       # 卸载
 ```
 
-### 方式二：从源码构建
+### 方式二：从 AI Agent Market 安装（插件包）
+
+每次发布还会产出 `secguard-clang-plugins-<version>.zip` —— **一个聚合包，内含 4 个逐平台
+zip**。解压后把对应 zip 上传到 AI Agent Market 的「extension」发布入口即可（无需再手工打包）：
+
+```bash
+unzip secguard-clang-plugins-0.6.1.zip
+# 以 Claude Code（CAC）为例：
+#   上传 secguard-clang-claude-cac-0.6.1.zip 到市场「extension」入口
+#   在目标机器进入 AI Agent TUI 安装后，输入 /secguard-clang:secguard 执行
+```
+
+四个逐平台 zip 分别是 `secguard-clang-opencode-<v>.zip`、
+`secguard-clang-opencode-nga-<v>.zip`、`secguard-clang-claude-code-<v>.zip`、
+`secguard-clang-claude-cac-<v>.zip` —— 每个都带 22 个 skills、`bin/secguard` 调度 shim 和
+全部 5 个 OS×架构二进制，manifest 位于 zip 根。所有平台 TUI namespace 统一为
+`secguard-clang`：OpenCode 里是 `/secguard-clang/secguard`，Claude Code 里是
+`/secguard-clang:secguard`。详见 `release/plugins-README.md`。
+
+### 方式三：从源码构建
 
 ```bash
 git clone https://github.com/DannyAn/secguard-clang.git
@@ -260,7 +279,7 @@ cd secguard-clang
 ./build.sh --package
 ```
 
-### 方式三：DeepSeek Harness（DSH）
+### 方式四：DeepSeek Harness（DSH）
 
 SecGuard 提供了 DSH 的 Agent preset（Cordis 组合），装上后在 DSH 里选
 「SecGuard 安全审计」preset 即可让 Agent 具备 C 安全审计能力：

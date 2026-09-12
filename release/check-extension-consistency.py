@@ -62,6 +62,8 @@ import re
 import sys
 
 EXT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "extension")
+RELEASE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "release")
+NAMESPACE = "secguard-clang"
 
 
 def fail(msg):
@@ -298,12 +300,52 @@ def check_dsh_preset():
     print("  dsh preset: persona uses `prefix:` + required tool configs present")
 
 
+def check_plugin_packaging():
+    """Guard the market-plugin packaging invariants.
+
+    - The plugin manifest `name` IS the TUI namespace (slash commands become
+      /<name>:<command>, skills /<name>:<skill>). It must stay `secguard-clang`
+      uniformly — never carry a per-platform suffix (secguard-clang-claude-code
+      etc.), or the command would become /secguard-clang-<platform>:secguard.
+    - The bin/secguard dispatch shim templates must exist (injected at build time).
+    - The OpenCode tools must resolve the bundled bin/ (market install) before
+      falling back to PATH (non-market install).
+    """
+    for rel in (
+        "opencode/package.json",
+        "opencode-nga/codeagent-extension.json",
+        "opencode-nga/package.json",
+        "claude-code/.claude-plugin/plugin.json",
+        "claude-cac/.cac-plugin/plugin.json",
+    ):
+        try:
+            data = json.loads(read(rel))
+        except json.JSONDecodeError as e:
+            fail(f"{rel}: {e}")
+        if data.get("name") != NAMESPACE:
+            fail(f"{rel}: name = {data.get('name')!r}, expected {NAMESPACE!r} (TUI namespace must stay uniform)")
+
+    for asset in ("shim-secguard.sh", "shim-secguard.cmd", "plugins-README.md"):
+        if not os.path.isfile(os.path.join(RELEASE, asset)):
+            fail(f"release/{asset} missing — required for the market plugin bundle")
+
+    for fn in os.listdir(os.path.join(EXT, "opencode", "tools")):
+        if not fn.endswith(".ts"):
+            continue
+        text = read(f"opencode/tools/{fn}")
+        if 'path.join(pluginDir, "bin",' not in text:
+            fail(f"opencode/tools/{fn}: findSecguard no longer resolves the bundled plugin bin/ (market install would miss the binary)")
+
+    print("  plugin packaging: uniform namespace + shim templates + bundled-bin resolution")
+
+
 def main():
     check_turn_budget()
     check_tools()
     check_agent_permissions()
     check_skills()
     check_dsh_preset()
+    check_plugin_packaging()
     print("Extension consistency check passed.")
 
 

@@ -297,21 +297,219 @@ build_master() {
     echo "  → dist/secguard-${version}.zip"
 }
 
+# ── 插件包（AI Agent Market 发布用）──
+# 每个平台一个自包含插件目录：平台文件（展开）+ skills + bin/（5 架构二进制 + shim）。
+# 布局遵循各平台 Market 的"顶层 commands/agents/skills/hooks"规范，而非 install.sh
+# 里 master zip 的 .claude/、.cac/ 包装结构——market 安装是宿主把目录复制进缓存，
+# 不带我们的 install.sh，所以必须"出厂即自包含"。
+
+copy_skills_to() {
+    local dest="$1"
+    mkdir -p "$dest"
+    local skill_dir skill_name
+    for skill_dir in "$EXTENSION_DIR"/shared/skills/*/; do
+        [ -d "$skill_dir" ] || continue
+        skill_name=$(basename "$skill_dir")
+        mkdir -p "$dest/$skill_name"
+        cp "$skill_dir/SKILL.md" "$dest/$skill_name/SKILL.md"
+    done
+}
+
+# 展开 src_dir 下所有 .md 到 dest_dir（处理 {{include}}）
+expand_md_dir() {
+    local src_dir="$1"
+    local dest_dir="$2"
+    mkdir -p "$dest_dir"
+    local f
+    for f in "$src_dir"/*.md; do
+        [ -f "$f" ] || continue
+        expand_includes "$f" "$dest_dir/$(basename "$f")" "$EXTENSION_DIR/shared"
+    done
+}
+
+# 拷贝 5 架构二进制 + 注入调度 shim 到插件目录的 bin/
+install_plugin_bin() {
+    local plugin_dir="$1"
+    mkdir -p "$plugin_dir/bin"
+    local bin
+    for bin in "${built_binaries[@]}"; do
+        cp "$bin" "$plugin_dir/bin/"
+    done
+    cp "$SCRIPT_DIR/shim-secguard.sh" "$plugin_dir/bin/secguard"
+    chmod +x "$plugin_dir/bin/secguard"
+    cp "$SCRIPT_DIR/shim-secguard.cmd" "$plugin_dir/bin/secguard.cmd"
+}
+
+build_plugin_opencode() {
+    local out="$1"
+    mkdir -p "$out"/{commands,agents,tools}
+    cp "$EXTENSION_DIR/opencode/package.json" "$out/"
+    set_json_version "$out/package.json" "$version"
+    cp "$EXTENSION_DIR/opencode/index.ts" "$out/"
+    expand_md_dir "$EXTENSION_DIR/opencode/commands" "$out/commands"
+    expand_md_dir "$EXTENSION_DIR/opencode/agents" "$out/agents"
+    cp "$EXTENSION_DIR/opencode/tools/"*.ts "$out/tools/"
+    copy_skills_to "$out/skills"
+    install_plugin_bin "$out"
+}
+
+build_plugin_opencode_nga() {
+    local out="$1"
+    mkdir -p "$out"/{commands,agents,tools,plugins}
+    cp "$EXTENSION_DIR/opencode-nga/codeagent-extension.json" "$out/"
+    set_json_version "$out/codeagent-extension.json" "$version"
+    # .codeagent-extension-install.json 是"安装来源"元数据；保留模板，安装方（install.sh/市场宿主）
+    # 把 {{OC_TARGET_DIR}} 替换为实际目录。与 master zip 的 opencode-nga 布局保持一致。
+    cp "$EXTENSION_DIR/opencode-nga/.codeagent-extension-install.json" "$out/"
+    cp "$EXTENSION_DIR/opencode-nga/opencode.json" "$out/"
+    cp "$EXTENSION_DIR/opencode-nga/index.ts" "$out/"
+    cp "$EXTENSION_DIR/opencode-nga/package.json" "$out/"
+    set_json_version "$out/package.json" "$version"
+    # commands/agents/tools 与 opencode 同源（见 build_master 的既有约定）
+    expand_md_dir "$EXTENSION_DIR/opencode/commands" "$out/commands"
+    expand_md_dir "$EXTENSION_DIR/opencode/agents" "$out/agents"
+    cp "$EXTENSION_DIR/opencode/tools/"*.ts "$out/tools/"
+    cp "$EXTENSION_DIR/opencode-nga/plugins/"*.ts "$out/plugins/"
+    copy_skills_to "$out/skills"
+    install_plugin_bin "$out"
+}
+
+build_plugin_claude_code() {
+    local out="$1"
+    mkdir -p "$out"/{.claude-plugin,commands,agents,hooks}
+    cp "$EXTENSION_DIR/claude-code/.claude-plugin/plugin.json" "$out/.claude-plugin/"
+    set_json_version "$out/.claude-plugin/plugin.json" "$version"
+    cp "$EXTENSION_DIR/claude-code/hooks/hooks.json" "$out/hooks/"
+    # market 用顶层 commands/agents（非 .claude/ 包装）
+    expand_md_dir "$EXTENSION_DIR/claude-code/.claude/commands" "$out/commands"
+    expand_md_dir "$EXTENSION_DIR/claude-code/.claude/agents" "$out/agents"
+    copy_skills_to "$out/skills"
+    install_plugin_bin "$out"
+}
+
+build_plugin_claude_cac() {
+    local out="$1"
+    mkdir -p "$out"/{.cac-plugin,commands,agents,hooks}
+    cp "$EXTENSION_DIR/claude-cac/.cac-plugin/plugin.json" "$out/.cac-plugin/"
+    set_json_version "$out/.cac-plugin/plugin.json" "$version"
+    cp "$EXTENSION_DIR/claude-cac/hooks/hooks.json" "$out/hooks/"
+    sg_write_codeagent_extension "$out" "$version"
+    expand_md_dir "$EXTENSION_DIR/claude-cac/.cac/commands" "$out/commands"
+    expand_md_dir "$EXTENSION_DIR/claude-cac/.cac/agents" "$out/agents"
+    copy_skills_to "$out/skills"
+    install_plugin_bin "$out"
+}
+
+write_bundle_manifest() {
+    local root="$1"
+    python3 -c "
+import json, hashlib, os, datetime
+root = '''$root'''
+version = '''$version'''
+plugins = []
+for fn in sorted(os.listdir(root)):
+    if not fn.endswith('.zip'):
+        continue
+    with open(os.path.join(root, fn), 'rb') as f:
+        h = hashlib.sha256(f.read()).hexdigest()
+    plugins.append({'name': fn[:-4], 'file': fn, 'sha256': h})
+manifest = {
+    'version': version,
+    'build_date': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'plugins': plugins,
+}
+with open(os.path.join(root, 'manifest.json'), 'w') as f:
+    json.dump(manifest, f, indent=2)
+    f.write('\n')
+"
+}
+
+validate_plugin_dir() {
+    local plugin_dir="$1"
+    local label="$2"
+    local missing=()
+    case "$label" in
+        opencode)      [ -f "$plugin_dir/package.json" ] || missing+=("package.json") ;;
+        opencode-nga)  [ -f "$plugin_dir/codeagent-extension.json" ] || missing+=("codeagent-extension.json") ;;
+        claude-code)   [ -f "$plugin_dir/.claude-plugin/plugin.json" ] || missing+=(".claude-plugin/plugin.json") ;;
+        claude-cac)    [ -f "$plugin_dir/.cac-plugin/plugin.json" ] || missing+=(".cac-plugin/plugin.json")
+                       [ -f "$plugin_dir/codeagent-extension.json" ] || missing+=("codeagent-extension.json") ;;
+    esac
+    [ -f "$plugin_dir/commands/secguard.md" ] || missing+=("commands/secguard.md")
+    [ -f "$plugin_dir/agents/security-auditor.md" ] || missing+=("agents/security-auditor.md")
+    [ -f "$plugin_dir/bin/secguard" ] || missing+=("bin/secguard")
+    [ -f "$plugin_dir/bin/secguard.cmd" ] || missing+=("bin/secguard.cmd")
+    local skill_count bin bn
+    skill_count=$(find "$plugin_dir/skills" -name SKILL.md 2>/dev/null | wc -l | tr -d ' ')
+    [ "$skill_count" -eq "${#skills[@]}" ] || { echo "  FAIL: $label skills=$skill_count expected=${#skills[@]}" >&2; return 1; }
+    for bin in "${built_binaries[@]}"; do
+        bn=$(basename "$bin")
+        [ -f "$plugin_dir/bin/$bn" ] || missing+=("bin/$bn")
+    done
+    if [ ${#missing[@]} -gt 0 ]; then
+        echo "  FAIL: $label missing: ${missing[*]}" >&2
+        return 1
+    fi
+    echo "  OK: $label (${#skills[@]} skills, ${#built_binaries[@]} binaries)"
+}
+
+build_plugins() {
+    echo ""
+    echo "[plugins] Building per-platform plugin zips + aggregate bundle ..."
+    local tmp="$DIST_DIR/.tmp-plugins"
+    local work="$tmp/work"
+    local zips="$tmp/zips"
+    local root="$tmp/secguard-clang-plugins-${version}"
+    rm -rf "$tmp"
+    mkdir -p "$work" "$zips" "$root"
+
+    # 逐平台 zip：zip 顶层统一用插件安装名 `secguard-clang`（Market 据此把插件装到
+    # plugins/ 或 extensions/ 下），打进临时 zips/ 目录（随后并入聚合包，不单独发布）。
+    local p label
+    for label in opencode opencode-nga claude-code claude-cac; do
+        p="$work/secguard-clang-${label}"
+        case "$label" in
+            opencode)      build_plugin_opencode "$p" ;;
+            opencode-nga)  build_plugin_opencode_nga "$p" ;;
+            claude-code)   build_plugin_claude_code "$p" ;;
+            claude-cac)    build_plugin_claude_cac "$p" ;;
+        esac
+        validate_plugin_dir "$p" "$label" || exit 1
+        echo "$version" > "$p/VERSION"
+        rm -rf "$work/secguard-clang"
+        mv "$p" "$work/secguard-clang"
+        (cd "$work" && zip -X -r "$zips/secguard-clang-${label}-${version}.zip" "secguard-clang" "${ZIP_EXCLUDE[@]}") >/dev/null 2>&1
+        echo "  → secguard-clang-${label}-${version}.zip"
+    done
+
+    # 聚合包：内含 4 个逐平台 zip（一次下载取全部平台），供用户解压后挑对应平台上传 Market。
+    cp "$zips"/*.zip "$root/"
+    echo "$version" > "$root/VERSION"
+    cp "$SCRIPT_DIR/plugins-README.md" "$root/README.md"
+    [ -f "$PROJECT_ROOT/LICENSE" ] && cp "$PROJECT_ROOT/LICENSE" "$root/" 2>/dev/null || true
+    write_bundle_manifest "$root"
+
+    (cd "$tmp" && zip -X -r "$DIST_DIR/secguard-clang-plugins-${version}.zip" "secguard-clang-plugins-${version}" "${ZIP_EXCLUDE[@]}") >/dev/null 2>&1
+    rm -rf "$tmp"
+    echo "  → dist/secguard-clang-plugins-${version}.zip"
+}
+
 # ── 执行打包 ──
 build_master
+build_plugins
 
 # ── 生成校验和（写入相对文件名，便于下游校验）──
+sg_sum() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi
+}
 echo ""
 echo "[sha256] Generating checksums..."
-ZIP_FILE="$DIST_DIR/secguard-${version}.zip"
-ZIP_BASENAME="$(basename "$ZIP_FILE")"
-if command -v sha256sum >/dev/null 2>&1; then
-    ( cd "$DIST_DIR" && sha256sum "$ZIP_BASENAME" > "$ZIP_BASENAME.sha256" && sha256sum "$ZIP_BASENAME" > SHA256SUMS )
-else
-    ( cd "$DIST_DIR" && shasum -a 256 "$ZIP_BASENAME" > "$ZIP_BASENAME.sha256" && shasum -a 256 "$ZIP_BASENAME" > SHA256SUMS )
-fi
-echo "  → secguard-${version}.zip.sha256"
-echo "  → SHA256SUMS"
+ALL_ZIPS=("secguard-${version}.zip"
+          "secguard-clang-plugins-${version}.zip")
+( cd "$DIST_DIR" && \
+  for z in "${ALL_ZIPS[@]}"; do sg_sum "$z" > "$z.sha256"; done && \
+  sg_sum "${ALL_ZIPS[@]}" > SHA256SUMS )
+echo "  → per-zip .sha256 + SHA256SUMS"
 
 # ── 清理 ──
 rm -f "$INJECT_FILE"
@@ -321,12 +519,14 @@ done
 rm -rf "$DIST_DIR"/.tmp-* 2>/dev/null || true
 
 # ── 产物列表 ──
-size=$(ls -lh "$ZIP_FILE" | awk '{print $5}')
-hash=$(cut -d' ' -f1 "$ZIP_FILE.sha256" 2>/dev/null || echo "?")
 echo ""
 echo "╔══════════════════════════════════════════════════════════╗"
 echo "║              Build Complete — v${version}                       ║"
 echo "╠══════════════════════════════════════════════════════════╣"
-printf "║  %-52s %6s\n" "$(basename "$ZIP_FILE")" "$size"
-printf "║    sha256: %s\n" "${hash:0:16}..."
+for z in "${ALL_ZIPS[@]}"; do
+    zsize=$(ls -lh "$DIST_DIR/$z" | awk '{print $5}')
+    zhash=$(cut -d' ' -f1 "$DIST_DIR/$z.sha256" 2>/dev/null || echo "?")
+    printf "║  %-52s %6s\n" "$z" "$zsize"
+    printf "║    sha256: %s\n" "${zhash:0:16}..."
+done
 echo "╚══════════════════════════════════════════════════════════╝"

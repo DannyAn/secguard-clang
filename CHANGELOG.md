@@ -4,6 +4,15 @@
 
 ## [0.6.2] - 未发布
 
+### 插件打包（AI Agent Market 发布）
+
+新增面向 AI Agent Market 的插件打包能力，与统一安装包并存（设计文档 `plugin打包设计.md`）：
+
+- **产物**：**聚合包** `secguard-clang-plugins-<v>.zip` 内含 4 个逐平台 zip（`secguard-clang-opencode-<v>.zip` / `-opencode-nga-` / `-claude-code-` / `-claude-cac-`，manifest 在 zip 根，可直接上传 Market「extension 发布入口」）。发布页只挂统一包 + 聚合包 2 个 zip。每个插件自包含 22 个 skills、`bin/secguard` 调度 shim、5 个 OS×架构二进制；定制版（claude-cac / opencode-nga）带 `codeagent-extension.json`，官方版不带。
+- **命名两层解耦**：插件 manifest `name` 保持 `secguard-clang`（TUI namespace 统一，OpenCode `/secguard-clang/secguard`、Claude Code `/secguard-clang:secguard`）；市场 entry 名用 `secguard-clang-<platform>` 互不撞名。
+- **二进制双路径**：OpenCode 的 `findSecguard` 优先选插件内嵌 `bin/` 二进制、回退 PATH；Claude Code/CAC 的 `/secguard` 命令用 `${CLAUDE_PLUGIN_ROOT}/bin` 防御式 PATH 前置（变量未设时严格等价原样，零回归）。
+- **守卫**：`check-extension-consistency.py` 新增 `check_plugin_packaging`（锁 namespace + shim 模板 + 内嵌二进制解析），`build-packages.sh` 对每个插件目录做 `validate_plugin_dir` 完整性校验。
+
 ### 可扩展性（新增检测技能的统一标准 + 首个范例 CWE-479）
 
 类型列表原本散在三处（`planner/registry.go`、`skills/vuln_type_skill.go`、`extension/shared/skills/*/`），且 `security_events.event_type` 的 schema 枚举是第四处——**没有任何机器校验，正是 uninit/resource-leak 变成"孤儿 skill"的温床**。

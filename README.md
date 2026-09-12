@@ -250,7 +250,29 @@ The install script supports:
 ./install.sh --uninstall --yes       # uninstall
 ```
 
-### Option 2: build from source
+### Option 2: install from an AI Agent Market (plugin package)
+
+Each release also ships `secguard-clang-plugins-<version>.zip` — a single bundle containing
+the 4 per-platform zips. Unzip it, then upload the matching zip to your AI Agent Market's
+"extension" publish entry (no manual re-packaging):
+
+```bash
+unzip secguard-clang-plugins-0.6.1.zip
+# e.g. publish the Claude Code (CAC) plugin:
+#   upload secguard-clang-claude-cac-0.6.1.zip to the market's "extension" entry
+#   then install it in the agent TUI on the target machine, and run /secguard-clang:secguard
+```
+
+The four per-platform zips are `secguard-clang-opencode-<v>.zip`,
+`secguard-clang-opencode-nga-<v>.zip`, `secguard-clang-claude-code-<v>.zip`, and
+`secguard-clang-claude-cac-<v>.zip` — each bundles the 22 skills, the `bin/secguard`
+dispatcher shim, and all 5 OS×arch binaries, with its manifest at the zip root.
+
+The TUI namespace is `secguard-clang` on every platform: `/secguard-clang/secguard` in
+OpenCode, `/secguard-clang:secguard` in Claude Code. See `release/plugins-README.md` for the
+full matrix.
+
+### Option 3: build from source
 
 ```bash
 git clone https://github.com/DannyAn/secguard-clang.git
@@ -268,7 +290,7 @@ cd secguard-clang
 
 For a quick dev-mode deploy (build + install the extension into user-level config dirs), use `./deploy.sh [opencode|claude-code|all] [--no-binary]`.
 
-### Option 3: DeepSeek Harness (DSH)
+### Option 4: DeepSeek Harness (DSH)
 
 SecGuard ships a DSH agent preset (a Cordis composition). After installing, select the
 "SecGuard Security Audit" preset in DSH to give an agent C security-auditing capability:

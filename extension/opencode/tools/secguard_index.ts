@@ -1,13 +1,22 @@
 import { tool } from "@opencode-ai/plugin"
 import path from "path"
 import fs from "fs"
+import { fileURLToPath } from "url"
 
 function findSecguard(context: { worktree?: string, directory?: string }): string {
+  // Market 安装：优先用插件自带 bin/ 里按 os/arch 选型的二进制（不依赖 PATH）
+  const pluginDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
+  const os = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "darwin" : "linux"
+  const arch = process.arch === "x64" ? "amd64" : process.arch
+  const bundled = path.join(pluginDir, "bin", `secguard-${os}-${arch}${os === "windows" ? ".exe" : ""}`)
+  if (fs.existsSync(bundled)) return bundled
+  // 项目级 .opencode/bin/secguard（旧约定）
   for (const dir of [context.directory, context.worktree, "."]) {
     if (!dir || dir === "/") continue
-    const bundled = path.join(dir, ".opencode/bin/secguard")
-    if (fs.existsSync(bundled)) return bundled
+    const local = path.join(dir, ".opencode/bin/secguard")
+    if (fs.existsSync(local)) return local
   }
+  // 非 Market 安装：PATH 上的 secguard
   return "secguard"
 }
 

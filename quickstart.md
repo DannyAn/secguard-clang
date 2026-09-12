@@ -44,7 +44,24 @@ secguard --version   # 输出: 0.3.2
 ./install.sh --uninstall --yes     # 卸载
 ```
 
-### 2.2 从源码构建（开发者）
+### 2.2 从 AI Agent Market 安装（插件包）
+
+每次发布还会产出 `secguard-clang-plugins-<version>.zip` —— **一个聚合包，内含 4 个逐平台
+zip**。解压后把对应 zip 上传到 AI Agent Market 的「extension」发布入口即可（无需再手工打包）：
+
+```bash
+unzip secguard-clang-plugins-0.6.1.zip
+# 以 Claude Code（CAC）为例：
+#   上传 secguard-clang-claude-cac-0.6.1.zip 到市场「extension」入口
+#   在目标机器进入 AI Agent TUI 安装后，输入 /secguard-clang:secguard 执行
+```
+
+四个逐平台 zip 分别是 `secguard-clang-opencode-<v>.zip`、
+`secguard-clang-opencode-nga-<v>.zip`、`secguard-clang-claude-code-<v>.zip`、
+`secguard-clang-claude-cac-<v>.zip`，每个都带 22 个 skills、`bin/secguard` 调度 shim 和
+全部 5 个 OS×架构二进制，manifest 位于 zip 根。详见 `release/plugins-README.md`。
+
+### 2.3 从源码构建（开发者）
 
 ```bash
 git clone https://github.com/DannyAn/secguard-clang.git
@@ -69,7 +86,7 @@ cd secguard-clang
 ./deploy.sh --no-binary        # 跳过二进制构建
 ```
 
-### 2.3 DeepSeek Harness（DSH）
+### 2.4 DeepSeek Harness（DSH）
 
 ```bash
 # 1) 确保 secguard 在 PATH 上（见 2.1/2.2）
