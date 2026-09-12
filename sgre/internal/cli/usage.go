@@ -206,8 +206,8 @@ Flags:
 
 What it is:
   secguard.toml is an OPTIONAL configuration file. Most users need nothing in
-  it. It exists today for two options: the trusted-macro allowlist and the
-  iterator-macro declaration.
+  it. It exists today for three options: the trusted-macro allowlist, the
+  iterator-macro declaration, and the banned-function extension.
 
   Config file locations, in priority order (first existing wins):
     1. --config <path>                     explicit flag
@@ -238,6 +238,14 @@ What it is:
     Standard Linux list-traversal macros (list_for_each_entry & friends) are
     built-in and do NOT need to be declared here.
 
+  [banned_functions] — banned-function extension (CWE-676)
+    names = ["..."]
+    Adds to the built-in dangerous/obsolete function list (CWE-676). The
+    built-in list (gets, mktemp, tmpnam, tmpnam_r, gethostbyname,
+    gethostbyaddr, inet_addr, bcmp, bcopy, bzero) is always active; these names
+    only EXTEND it. It is a policy check: a call is flagged regardless of
+    surrounding bounds checks, because the enterprise bans the function itself.
+
 Examples:
   secguard config
   secguard config --example`)
@@ -259,7 +267,14 @@ names = [
 # Standard list_for_each_entry & friends are built-in; do NOT repeat them here.
 [iterator_macros.macros]
 # SAMPLE_Scan = [1]
-# POOL_FOR = [1]`)
+# POOL_FOR = [1]
+
+# Enterprise-specific banned functions: ADD to the built-in dangerous/obsolete
+# list (CWE-676). The built-in list is always active; these only extend it.
+[banned_functions]
+names = [
+    # "my_legacy_alloc",
+]`)
 }
 
 // subcommandUsage maps a subcommand name to its usage printer. Execute uses this

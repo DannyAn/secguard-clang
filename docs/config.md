@@ -78,6 +78,33 @@ LIST_FOR_EACH_SAFE = [0, 1]
 >   自动收集宏写入摘要并 kill 迭代器 null 源，同样**无需**手动配置。
 > - 此配置仅用于定义在扫描树之外的 SDK 头文件中的项目自定义迭代器宏。
 
+### `[banned_functions]` — 危险/废弃函数禁用扩展（CWE-676）
+
+`dangerous-function`（CWE-676）检测器内置了一份**保守**的危险/废弃函数清单，
+`[banned_functions] names` 用于向这份清单**追加**企业自定义的禁用项。
+
+```toml
+[banned_functions]
+names = [
+    "my_legacy_alloc",
+    "legacy_strcpy_wrapper",
+]
+```
+
+内置清单（始终生效，`names` 只能追加、不能移除）：
+
+| 内置函数 | 废弃/危险原因 |
+|----------|----------------|
+| `gets` | 无边界检查，C11 已移除 |
+| `mktemp` `tmpnam` `tmpnam_r` | 不安全的临时文件 API |
+| `gethostbyname` `gethostbyaddr` | 废弃，改用 `getaddrinfo` |
+| `inet_addr` | 废弃，改用 `inet_pton` |
+| `bcmp` `bcopy` `bzero` | 废弃 BSD API，改用 `memcmp`/`memmove`/`memset` |
+
+> 说明：
+> - **策略检查**，非上下文敏感：调用即报，不看调用点是否做了边界检查——企业禁用的是函数本身，检测健全、无数据流误报。
+> - `strcpy`/`sprintf`/`system` 等无界字符串/格式化函数**故意不内置**（`buffer-overflow`/`injection` 已上下文敏感地处理，内置会重复噪音）；企业若要一刀切禁用，把它们加进 `names` 即可。
+
 ## 完整示例
 
 ```toml
@@ -94,6 +121,12 @@ names = [
 [iterator_macros.macros]
 # SAMPLE_Scan = [1]
 # POOL_FOR = [1]
+
+# 企业自定义禁用函数（追加到内置危险函数清单，CWE-676）。
+[banned_functions]
+# names = [
+#     "my_legacy_alloc",
+# ]
 ```
 
 ## 与扩展的关系
