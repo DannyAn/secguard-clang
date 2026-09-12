@@ -19,9 +19,12 @@ int tp_unchecked_malloc(void) {
     return p->value;
 }
 
-/* 误报：malloc 之后被 &g_fallback 重赋值（确定非空），不应报 */
+/* 误报：malloc 之后被 &g_fallback 重赋值（确定非空），不应报 null-deref。
+ * 先 free 再重赋值，否则 malloc 块被覆盖而泄漏（memory-leak 真阳性）。 */
 int fp_reassign_addressof(void) {
     Node *p = (Node *)malloc(sizeof(Node));
+
+    free(p);
     p = &g_fallback;
     return p->value;
 }
@@ -33,4 +36,28 @@ int fp_guard_default_literal(void) {
         p = "";
     }
     return p[0];
+}
+
+/* 误报：a = b 拷贝传播，b 已是确定非空的地址 —— 不应报 null-deref。
+ * 先 free 再拷贝，否则 a 的 malloc 块被覆盖而泄漏（memory-leak 真阳性）。
+ * （迁移自 examples/nullflow-demo/src/demo.c 的 fp_copy_nonnull） */
+int fp_copy_nonnull(void) {
+    Node *a = (Node *)malloc(sizeof(Node));
+    Node *b = &g_fallback;
+
+    free(a);
+    a = b;
+    return a->value;
+}
+
+/* 误报：解引用位于 return 之后的不可达代码 —— 不应报 null-deref。
+ * 提前 free，否则 malloc 块在 return 后泄漏（memory-leak 真阳性）。
+ * （迁移自 examples/nullflow-demo/src/demo.c 的 fp_dead_after_return） */
+int fp_dead_after_return(void) {
+    Node *p = (Node *)malloc(sizeof(Node));
+
+    free(p);
+    return 0;
+    p->value = 1;
+    return 2;
 }

@@ -145,15 +145,20 @@ secguard scan ./project → 收敛证据包 → 加载匹配 skill → 逐条分
 ## 5. 完整使用示例
 
 ```bash
-# 命令行直接扫描基准集
-secguard scan ./examples/c-vuln-benchmark/src
+# 命令行直接扫描基准集（用独立 DB，避免历史索引污染）
+secguard scan ./examples/c-vuln-benchmark/src --db /tmp/sgbench.db
 
-# 校验基准（77 用例 · 精度/召回 100%）
-python3 scripts/validate-benchmark.py \
-    --sarif .codeagent/secguard-clang/scans/latest/sarif.sarif \
-    --expected examples/c-vuln-benchmark/expected-results.json
+# 扫描只产出「未判定候选」；result.sarif 要等 AI 研判 + report --audit 之后才存在
+secguard report --audit --scan-id <scan_id> \
+    --output-dir examples/c-vuln-benchmark/.codeagent/secguard-clang/scans/<scan_id> \
+    --db /tmp/sgbench.db
 
-# 在 OpenCode / Claude Code 中：
+# 校验基准（114 用例 · 22/22 注册类型 · recall 67/67 · FP 0/47）
+python3 examples/c-vuln-benchmark/scripts/validate-benchmark.py
+python3 examples/c-vuln-benchmark/scripts/validate-benchmark.py --coverage   # 每个类型的用例覆盖
+python3 examples/c-vuln-benchmark/scripts/validate-benchmark.py --selftest   # 标签映射完整性
+
+# 在 OpenCode / Claude Code / DSH 中：
 #   /secguard ./examples/c-vuln-benchmark/src
 ```
 

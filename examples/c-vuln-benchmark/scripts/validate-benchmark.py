@@ -67,6 +67,11 @@ DETECTOR_TO_TYPE = {
     "injection.command_injection": "injection",
     "concurrency.lock": "race-condition",
     "race_condition": "race-condition",
+    "concurrency.signal_handler": "signal-handler",
+    "signal_handler": "signal-handler",
+    "dangerous_function": "dangerous-function",
+    "format_string": "format-string",
+    "double_free": "double-free",
     "null_deref": "null-deref",
     "memory.use_after_free": "use-after-free",
     "memory.memory_leak": "memory-leak",
@@ -80,6 +85,11 @@ DETECTOR_TO_TYPE = {
     "uninit": "uninit",
 }
 
+# Every registered vuln type must appear here. A missing entry is SILENT — the
+# SARIF ruleId (a CWE string) falls through `CWE_TO_TYPE.get(rule, rule)` and the
+# findings of that type become unmatchable, so both recall and precision
+# measurements for it are quietly skipped. `--selftest` asserts coverage of every
+# `cwe` label in the ground truth for exactly this reason.
 CWE_TO_TYPE = {
     "CWE-476": "null-deref",
     "CWE-787": "buffer-overflow",
@@ -101,6 +111,8 @@ CWE_TO_TYPE = {
     "CWE-467": "sizeof-misuse",
     "CWE-681": "signed-compare",
     "CWE-416": "use-after-free",
+    "CWE-479": "signal-handler",
+    "CWE-676": "dangerous-function",
 }
 
 
@@ -254,19 +266,96 @@ def selftest():
     )
     check("same-type FP detected", fp[0]["verdict"], "FP")
 
-    # Ground-truth coverage: every detector label must be mapped.
+    # Ground-truth coverage: every `detector` AND every `cwe` label must be
+    # mapped. A missing CWE entry is invisible at runtime (the ruleId falls
+    # through unmapped and those findings silently stop matching), so it is
+    # asserted here rather than discovered as a phantom recall hole.
     with open(os.path.join(BENCH, "expected-results.json"), encoding="utf-8") as f:
-        labels = {(c.get("detector") or "").strip() for c in json.load(f)["test_cases"]}
+        cases = json.load(f)["test_cases"]
+    labels = {(c.get("detector") or "").strip() for c in cases}
+    cwes = {(c.get("cwe") or "").strip().upper() for c in cases}
     unmapped = sorted(l for l in labels if l and l not in DETECTOR_TO_TYPE)
     if unmapped:
         problems.append(f"unmapped detector labels (add to DETECTOR_TO_TYPE): {unmapped}")
+    unmapped_cwe = sorted(c for c in cwes if c and c not in CWE_TO_TYPE)
+    if unmapped_cwe:
+        problems.append(f"unmapped cwe labels (add to CWE_TO_TYPE): {unmapped_cwe}")
+
+    # The two label spaces must agree: a case that carries both `cwe` and
+    # `detector` must resolve to the SAME vuln type either way, otherwise one of
+    # the two maps has drifted.
+    for c in cases:
+        by_det = case_type(c)
+        by_cwe = CWE_TO_TYPE.get((c.get("cwe") or "").strip().upper())
+        if by_det and by_cwe and by_det != by_cwe:
+            problems.append(
+                f"case {c.get('id')}: detector maps to {by_det!r} but cwe maps to {by_cwe!r}")
+
+    # Every type reachable from either map must exist in both maps' value sets.
+    det_types = set(DETECTOR_TO_TYPE.values())
+    cwe_types = set(CWE_TO_TYPE.values())
+    only_det = sorted(det_types - cwe_types)
+    if only_det:
+        problems.append(f"types in DETECTOR_TO_TYPE but not CWE_TO_TYPE: {only_det}")
 
     if problems:
         print("SELFTEST FAILED", file=sys.stderr)
         for p in problems:
             print(f"  - {p}", file=sys.stderr)
         return 1
-    print(f"selftest OK ({len(labels) - 1} detector labels mapped, comparison logic verified)")
+    print(f"selftest OK ({len(labels) - 1} detector labels + {len(cwes)} cwe labels mapped, "
+          f"{len(cwe_types)} vuln types covered, comparison logic verified)")
+    return 0
+
+
+def coverage(cases):
+    """Per-vuln-type case inventory, derived from `cases` alone (no SARIF needed).
+
+    Answers the question the gate used to leave implicit: *which registered skill
+    has no test case?* A type with zero `finding` cases is untested for recall; a
+    type with zero `no_finding` cases has an untested precision claim (this whole
+    benchmark exists to verify FP suppression). Both are reported; only a
+    completely unrepresented type is a hard failure, because a missing FP-guard
+    is a quality gap rather than a broken gate.
+    """
+    by_type = defaultdict(Counter)
+    for c in cases:
+        by_type[case_type(c) or "(any)"][c.get("expect") or ""] += 1
+    rows = []
+    for t in sorted(set(CWE_TO_TYPE.values())):
+        rows.append({
+            "type": t,
+            "finding": by_type[t]["finding"],
+            "no_finding": by_type[t]["no_finding"],
+            "total": sum(by_type[t].values()),
+        })
+    return rows
+
+
+def report_coverage(cases):
+    rows = coverage(cases)
+    unrepresented = [r for r in rows if r["finding"] == 0]
+    no_guard = [r for r in rows if r["finding"] > 0 and r["no_finding"] == 0]
+    print(f"ground truth: {len(cases)} cases over {len(rows)} registered vuln types")
+    print()
+    print(f"  {'vuln type':<20} {'finding':>8} {'no_finding':>11}   note")
+    for r in rows:
+        note = ""
+        if r["finding"] == 0:
+            note = "ZERO COVERAGE — no test case at all"
+        elif r["no_finding"] == 0:
+            note = "no FP guard — precision claim untested"
+        print(f"  {r['type']:<20} {r['finding']:>8} {r['no_finding']:>11}   {note}")
+    print()
+    if unrepresented:
+        print(f"UNREPRESENTED TYPES ({len(unrepresented)}): "
+              + ", ".join(r["type"] for r in unrepresented))
+        return 1
+    if no_guard:
+        print(f"WARNING: {len(no_guard)} type(s) have no no_finding case: "
+              + ", ".join(r["type"] for r in no_guard))
+    else:
+        print(f"every registered vuln type has both a finding and a no_finding case")
     return 0
 
 
@@ -284,10 +373,17 @@ def main():
     ap.add_argument("--show-pass", action="store_true", help="list passing cases too")
     ap.add_argument("--selftest", action="store_true",
                     help="verify the comparison logic and the detector-label map, then exit")
+    ap.add_argument("--coverage", action="store_true",
+                    help="per-vuln-type case inventory (needs no SARIF); exits non-zero when a "
+                         "registered type has no test case at all")
     args = ap.parse_args()
 
     if args.selftest:
         return selftest()
+
+    if args.coverage:
+        with open(args.expected, encoding="utf-8") as f:
+            return report_coverage(json.load(f)["test_cases"])
 
     sarif = args.sarif or discover_sarif(args.root)
     if not sarif:

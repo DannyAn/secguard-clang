@@ -1,29 +1,30 @@
 #!/usr/bin/env bash
-# One-command benchmark gate: scan the benchmark source, then validate the
-# convergence pipeline's precision/recall against expected-results.json.
+# Scan the committed benchmark source, then run the benchmark gate.
+#
+# NOTE ON THE TWO PHASES: the gate reads the verdict-stage `result.sarif`, which
+# only exists after an AI agent has classified the candidates and
+# `secguard report --audit` has run. A bare scan writes `candidates.sarif`
+# (unclassified leads) and no `result.sarif`, so on a cold tree this script
+# scans and then reports that the AI stage is still pending. Run `/secguard`
+# over `examples/c-vuln-benchmark/src` and re-invoke it to get a real verdict.
 #
 # Usage:
-#   scripts/validate-benchmark.sh            # scan the committed benchmark src
+#   scripts/validate-benchmark.sh            # scan + validate the newest run
 #
-# Exits non-zero when the scan fails or precision/recall fall below the
-# thresholds in validate-benchmark.py.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-src_dir="$repo_root/examples/c-vuln-benchmark/src"
-expected="$repo_root/examples/c-vuln-benchmark/expected-results.json"
-scan_json="$(mktemp -t sg-bench-scan.XXXXXX.json)"
+bench="$repo_root/examples/c-vuln-benchmark"
+db="$(mktemp -t sg-bench-db.XXXXXX)"
 
-cleanup() { rm -f "$scan_json"; }
+cleanup() { rm -f "$db"; }
 trap cleanup EXIT
 
-echo "[validate-benchmark] scanning $src_dir ..." >&2
+echo "[validate-benchmark] scanning $bench/src ..." >&2
 (
-  cd "$repo_root/sgre"
-  go run ./cmd/secguard scan "$src_dir" --output-dir "$(mktemp -d -t sg-bench-scan.XXXXXX)"
-) > "$scan_json"
+  cd "$bench"
+  secguard scan src --db "$db" > /dev/null
+)
 
-echo "[validate-benchmark] validating against $expected ..." >&2
-python3 "$repo_root/scripts/validate-benchmark.py" \
-  --scan "$scan_json" \
-  --expected "$expected"
+echo "[validate-benchmark] validating against $bench/expected-results.json ..." >&2
+python3 "$bench/scripts/validate-benchmark.py" --root "$bench"

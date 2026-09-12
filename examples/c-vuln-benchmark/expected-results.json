@@ -1,9 +1,9 @@
 {
-  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327) + 4 个测试用例 (Phase 2: heap OOB write / format overflow / data race / OOB read) + 4 个测试用例 (Phase 3: null-deref sizeof + 流敏感 FP 抑制) + 3 个测试用例 (Phase 4: uninit 流敏感收敛，来自 zlib 生产环境缺陷) + 12 个测试用例 (Phase 6: resource-leak CWE-404，其中 RL-10~RL-12 为已确认检测缺口 known-gap 标记保留作回归目标，validator 对这类用例的漏报不判失败）。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。校验按 (漏洞类型, 文件, 行±容差) 与 verdict 阶段 result.sarif 交叉比对（见 benchmark.md「运行方式」）；detector → 漏洞类型映射见 scripts/validate-benchmark.py 的 DETECTOR_TO_TYPE，用 `--selftest` 可校验该映射是否覆盖全部标签。",
+  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327) + 4 个测试用例 (Phase 2: heap OOB write / format overflow / data race / OOB read) + 4 个测试用例 (Phase 3: null-deref sizeof + 流敏感 FP 抑制) + 3 个测试用例 (Phase 4: uninit 流敏感收敛，来自 zlib 生产环境缺陷) + 12 个测试用例 (Phase 6: resource-leak CWE-404，其中 RL-10~RL-12 为已确认检测缺口 known-gap 标记保留作回归目标，validator 对这类用例的漏报不判失败）。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。校验按 (漏洞类型, 文件, 行±容差) 与 verdict 阶段 result.sarif 交叉比对（见 benchmark.md「运行方式」）；detector → 漏洞类型映射见 scripts/validate-benchmark.py 的 DETECTOR_TO_TYPE，用 `--selftest` 可校验该映射是否覆盖全部标签；另加 23 个测试用例 (Phase 11: 补齐 dangerous-function / double-free / format-string / signal-handler 四个零覆盖 skill，并为 deadlock / hardcoded-secret / out-of-bounds / use-after-free 补上缺失的 no_finding 反证防线 —— 22 个注册漏洞类型至此每个都有「该报」与「不该报」对照；FS-05/DF-05/SH-05 为其存量文件上已检出但未纳入 ground truth 的缺陷)；ND-05/ND-06 由已删除的 examples/nullflow-demo/src/demo.c 迁入（拷贝传播收敛、return 之后不可达解引用），该独立样例项目的其余 3 个场景与 p5_null_flow.c 重复，故随迁移一并移除；ML-01/ML-02 补上 memory-leak 两条此前未锁定、仅以候选形式存在的真泄漏（条件路径泄漏 + 从不 free），使该类型每条候选都有 ground truth 对应。",
   "_benchmark_doc": "benchmark.md",
   "_validator": "scripts/validate-benchmark.py",
   "summary": {
-    "total_test_cases": 89,
+    "total_test_cases": 118,
     "phase0_test_cases": 18,
     "phase1_test_cases": 12,
     "phase2_test_cases": 4,
@@ -13,8 +13,8 @@
     "phase6_resource_leak_finding": 9,
     "phase6_resource_leak_no_finding": 3,
     "phase6_resource_leak_known_gaps": 3,
-    "expected_final_certified": 52,
-    "expected_no_finding": 37,
+    "expected_final_certified": 69,
+    "expected_no_finding": 49,
     "phase1_confirmed": 9,
     "phase1_safe_excluded": 3,
     "phase2_confirmed": 4,
@@ -27,7 +27,18 @@
       "CWE-798",
       "CWE-667",
       "CWE-327"
-    ]
+    ],
+    "phase11_test_cases": 23,
+    "phase11_dangerous_function": 4,
+    "phase11_format_string": 5,
+    "phase11_double_free": 5,
+    "phase11_signal_handler": 5,
+    "phase11_fp_guards": 4,
+    "covered_vuln_types": 22,
+    "phase3_null_flow": 5,
+    "memory_leak_cases": 4,
+    "memory_leak_finding": 3,
+    "memory_leak_no_finding": 1
   },
   "test_cases": [
     {
@@ -364,7 +375,7 @@
       "id": "ND-03",
       "category": "phase3_null_flow",
       "file": "src/p5_null_flow.c",
-      "line": 26,
+      "line": 29,
       "code": "return p->value after p = &g_fallback (reassignment kill)",
       "cwe": "CWE-476",
       "detector": "null_deref",
@@ -374,7 +385,7 @@
       "id": "ND-04",
       "category": "phase3_null_flow",
       "file": "src/p5_null_flow.c",
-      "line": 35,
+      "line": 38,
       "code": "return p[0] after if(p==NULL) p=\"\" (guard-default literal)",
       "cwe": "CWE-476",
       "detector": "null_deref",
@@ -887,6 +898,278 @@
       "code": "fopen_s out-param 无 fclose（out-param 型 acquirer 白名单另一成员）",
       "cwe": "CWE-404",
       "detector": "resource.resource_leak",
+      "expect": "finding"
+    },
+    {
+      "id": "DGF-01",
+      "category": "phase11_dangerous_function",
+      "file": "src/p11_dangerous_function.c",
+      "line": 24,
+      "code": "gets(buf) —— C11 已移除的无边界读，内置禁用名单命中",
+      "cwe": "CWE-676",
+      "detector": "dangerous_function",
+      "expect": "finding"
+    },
+    {
+      "id": "DGF-02",
+      "category": "phase11_dangerous_function",
+      "file": "src/p11_dangerous_function.c",
+      "line": 32,
+      "code": "mktemp(tmpl) —— 可预测的临时文件名，内置禁用名单命中",
+      "cwe": "CWE-676",
+      "detector": "dangerous_function",
+      "expect": "finding"
+    },
+    {
+      "id": "DGF-03",
+      "category": "phase11_dangerous_function",
+      "file": "src/p11_dangerous_function.c",
+      "line": 40,
+      "code": "gethostbyname(host) —— 已过时且不可重入，内置禁用名单命中",
+      "cwe": "CWE-676",
+      "detector": "dangerous_function",
+      "expect": "finding"
+    },
+    {
+      "id": "DGF-04",
+      "category": "phase11_dangerous_function_safe",
+      "file": "src/p11_dangerous_function.c",
+      "line": 65,
+      "code": "安全替代集群：fgets + getaddrinfo + mkstemp + memmove，均不在禁用名单",
+      "cwe": "CWE-676",
+      "detector": "dangerous_function",
+      "expect": "no_finding"
+    },
+    {
+      "id": "FS-01",
+      "category": "phase11_format_string",
+      "file": "src/p11_format_string.c",
+      "line": 23,
+      "code": "printf(user_msg) —— 形参直通格式串",
+      "cwe": "CWE-134",
+      "detector": "format_string",
+      "expect": "finding"
+    },
+    {
+      "id": "FS-02",
+      "category": "phase11_format_string",
+      "file": "src/p11_format_string.c",
+      "line": 32,
+      "code": "fprintf(log, fmt) —— 格式串来自形参",
+      "cwe": "CWE-134",
+      "detector": "format_string",
+      "expect": "finding"
+    },
+    {
+      "id": "FS-03",
+      "category": "phase11_format_string",
+      "file": "src/p11_format_string.c",
+      "line": 41,
+      "code": "syslog(LOG_ERR, msg) —— 格式实参位于索引 1",
+      "cwe": "CWE-134",
+      "detector": "format_string",
+      "expect": "finding"
+    },
+    {
+      "id": "FS-04",
+      "category": "phase11_format_string_safe",
+      "file": "src/p11_format_string.c",
+      "line": 50,
+      "code": "printf(\"%s\", user_msg) —— 格式串是字面量，值走参数化输出",
+      "cwe": "CWE-134",
+      "detector": "format_string",
+      "expect": "no_finding"
+    },
+    {
+      "id": "FS-05",
+      "category": "phase11_format_string",
+      "file": "src/parser.c",
+      "line": 45,
+      "code": "printf(user_msg) —— 存量已检出缺陷，纳入回归防线",
+      "cwe": "CWE-134",
+      "detector": "format_string",
+      "expect": "finding"
+    },
+    {
+      "id": "DF-01",
+      "category": "phase11_double_free",
+      "file": "src/p11_double_free.c",
+      "line": 31,
+      "code": "同一指针连续两次 free",
+      "cwe": "CWE-415",
+      "detector": "double_free",
+      "expect": "finding"
+    },
+    {
+      "id": "DF-02",
+      "category": "phase11_double_free",
+      "file": "src/p11_double_free.c",
+      "line": 50,
+      "code": "结构体字段 rec->data 连续两次 free",
+      "cwe": "CWE-415",
+      "detector": "double_free",
+      "expect": "finding"
+    },
+    {
+      "id": "DF-03",
+      "category": "phase11_double_free_safe",
+      "file": "src/p11_double_free.c",
+      "line": 69,
+      "code": "两次 free 之间重新赋值，第二次释放的是新块",
+      "cwe": "CWE-415",
+      "detector": "double_free",
+      "expect": "no_finding"
+    },
+    {
+      "id": "DF-04",
+      "category": "phase11_double_free_safe",
+      "file": "src/p11_double_free.c",
+      "line": 82,
+      "code": "free 后置 NULL，再 free(NULL) 是合法空操作",
+      "cwe": "CWE-415",
+      "detector": "double_free",
+      "expect": "no_finding"
+    },
+    {
+      "id": "DF-05",
+      "category": "phase11_double_free",
+      "file": "src/allocator.c",
+      "line": 123,
+      "code": "cleanup_entries 释放 release_entry 已释放的槽位（全局槽位二次释放）",
+      "cwe": "CWE-415",
+      "detector": "double_free",
+      "expect": "finding"
+    },
+    {
+      "id": "SH-01",
+      "category": "phase11_signal_handler",
+      "file": "src/p11_signal_handler.c",
+      "line": 22,
+      "code": "处理器内 printf —— 非 async-signal-safe",
+      "cwe": "CWE-479",
+      "detector": "concurrency.signal_handler",
+      "expect": "finding"
+    },
+    {
+      "id": "SH-02",
+      "category": "phase11_signal_handler",
+      "file": "src/p11_signal_handler.c",
+      "line": 27,
+      "code": "处理器内 malloc/free —— 非 async-signal-safe",
+      "cwe": "CWE-479",
+      "detector": "concurrency.signal_handler",
+      "expect": "finding"
+    },
+    {
+      "id": "SH-03",
+      "category": "phase11_signal_handler_safe",
+      "file": "src/p11_signal_handler.c",
+      "line": 39,
+      "code": "处理器只写 volatile sig_atomic_t，无函数调用",
+      "cwe": "CWE-479",
+      "detector": "concurrency.signal_handler",
+      "expect": "no_finding"
+    },
+    {
+      "id": "SH-04",
+      "category": "phase11_signal_handler_safe",
+      "file": "src/p11_signal_handler.c",
+      "line": 45,
+      "code": "处理器只用 async-signal-safe 的 write/_exit",
+      "cwe": "CWE-479",
+      "detector": "concurrency.signal_handler",
+      "expect": "no_finding"
+    },
+    {
+      "id": "SH-05",
+      "category": "phase11_signal_handler",
+      "file": "src/concurrency.c",
+      "line": 98,
+      "code": "unsafe_handler 内 printf —— 存量已检出缺陷，纳入回归防线",
+      "cwe": "CWE-479",
+      "detector": "concurrency.signal_handler",
+      "expect": "finding"
+    },
+    {
+      "id": "DL-01",
+      "category": "phase11_fp_guard",
+      "file": "src/p11_fp_guards.c",
+      "line": 31,
+      "code": "两线程始终按同一顺序获取两把锁，锁序图无环（反证：lock order graph 无 SCC）",
+      "cwe": "CWE-667",
+      "detector": "deadlock",
+      "expect": "no_finding"
+    },
+    {
+      "id": "HS-01",
+      "category": "phase11_fp_guard",
+      "file": "src/p11_fp_guards.c",
+      "line": 50,
+      "code": "凭据来自 getenv，非字面量（反证：初始化值不是字符串字面量）",
+      "cwe": "CWE-798",
+      "detector": "hardcoded_secret",
+      "expect": "no_finding"
+    },
+    {
+      "id": "OOB-02",
+      "category": "phase11_fp_guard",
+      "file": "src/p11_fp_guards.c",
+      "line": 64,
+      "code": "索引严格小于数组长度（反证：常量区间分析证明在界内）",
+      "cwe": "CWE-125",
+      "detector": "out_of_bounds",
+      "expect": "no_finding"
+    },
+    {
+      "id": "UAF-01",
+      "category": "phase11_fp_guard",
+      "file": "src/p11_fp_guards.c",
+      "line": 85,
+      "code": "free 后重新分配，再使用新块（反证：释放态在重新赋值处被 kill）",
+      "cwe": "CWE-416",
+      "detector": "memory.use_after_free",
+      "expect": "no_finding"
+    },
+    {
+      "id": "ND-05",
+      "category": "phase3_null_flow",
+      "file": "src/p5_null_flow.c",
+      "line": 50,
+      "code": "a = b 后 a 确定非空（拷贝传播）—— 不应报",
+      "cwe": "CWE-476",
+      "detector": "null_deref",
+      "expect": "no_finding",
+      "_migrated_from": "examples/nullflow-demo/src/demo.c fp_copy_nonnull"
+    },
+    {
+      "id": "ND-06",
+      "category": "phase3_null_flow",
+      "file": "src/p5_null_flow.c",
+      "line": 61,
+      "code": "解引用位于 return 之后的不可达代码 —— 不应报",
+      "cwe": "CWE-476",
+      "detector": "null_deref",
+      "expect": "no_finding",
+      "_migrated_from": "examples/nullflow-demo/src/demo.c fp_dead_after_return"
+    },
+    {
+      "id": "ML-01",
+      "category": "memory_leak_conditional",
+      "file": "src/memory_extra.c",
+      "line": 44,
+      "code": "malloc(1024) 后 flag 分支提前 return，未 free（条件路径泄漏）",
+      "cwe": "CWE-401",
+      "detector": "memory.memory_leak",
+      "expect": "finding"
+    },
+    {
+      "id": "ML-02",
+      "category": "memory_leak_no_free",
+      "file": "src/p5_null_flow.c",
+      "line": 18,
+      "code": "malloc 后从不 free（tp_unchecked_malloc 的 null-deref 真阳性的泄漏副作用）",
+      "cwe": "CWE-401",
+      "detector": "memory.memory_leak",
       "expect": "finding"
     }
   ]
