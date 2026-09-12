@@ -145,3 +145,30 @@ func TestMemoryLeak_FieldMallocEscape(t *testing.T) {
 		t.Errorf("local (field malloc into a local struct, never freed) should leak (alloc without release); leakVars=%v releaseVars=%v", leakVars, releaseVars)
 	}
 }
+
+// TestMemoryLeak_OverwrittenPointer locks in the lost-allocation fix: a second
+// write to the same variable overwrites the previous pointer, so
+// `p = malloc(); p = malloc();` is TWO allocations and the first is lost even
+// when the second is later freed (`... free(p)` must still report one leak).
+func TestMemoryLeak_OverwrittenPointer(t *testing.T) {
+	store := runIndexAndDetect(t, "tc110_memory_leak_overwrite.c")
+	allocByFunc, releaseByFunc := countEventsByFunction(t, store, "MEMORY_ALLOC", "MEMORY_RELEASE")
+
+	cases := []struct {
+		fn     string
+		allocs int
+		rel    int
+	}{
+		{"overwrite_no_free", 2, 0},
+		{"overwrite_then_free", 2, 1},
+		{"overwrite_with_null", 1, 0},
+		{"single_no_free", 1, 0},
+		{"decl_then_assign", 1, 0},
+	}
+	for _, c := range cases {
+		if allocByFunc[c.fn] != c.allocs || releaseByFunc[c.fn] != c.rel {
+			t.Errorf("%s: got %d alloc / %d release, want %d alloc / %d release",
+				c.fn, allocByFunc[c.fn], releaseByFunc[c.fn], c.allocs, c.rel)
+		}
+	}
+}

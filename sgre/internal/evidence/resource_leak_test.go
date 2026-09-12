@@ -130,3 +130,26 @@ func TestResourceLeak_OutParamAcquirerIsLeak(t *testing.T) {
 		t.Errorf("db (sqlite3_open out-param) should be flagged as an acquired resource, got %v", vars)
 	}
 }
+
+// TestResourceLeak_OverwrittenHandle locks in the lost-resource fix: `fd = open();
+// fd = open();` is TWO acquisitions, and the first is lost even when the second
+// is later closed (`... close(fd)` must still report one leak).
+func TestResourceLeak_OverwrittenHandle(t *testing.T) {
+	store := runIndexAndDetect(t, "tc111_resource_leak_overwrite.c")
+	acquireByFunc, releaseByFunc := countEventsByFunction(t, store, "RESOURCE_ACQUIRE", "RESOURCE_RELEASE")
+
+	cases := []struct {
+		fn      string
+		acquire int
+		release int
+	}{
+		{"overwrite_no_close", 2, 0},
+		{"overwrite_then_close", 2, 1},
+	}
+	for _, c := range cases {
+		if acquireByFunc[c.fn] != c.acquire || releaseByFunc[c.fn] != c.release {
+			t.Errorf("%s: got %d acquire / %d release, want %d acquire / %d release",
+				c.fn, acquireByFunc[c.fn], releaseByFunc[c.fn], c.acquire, c.release)
+		}
+	}
+}

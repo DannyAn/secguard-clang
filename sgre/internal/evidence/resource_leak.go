@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"sort"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
@@ -47,63 +48,68 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 			cfg := graph.BuildStmtCFG(body, f.EndLine)
 			cfgValid := body.Kind() == "compound_statement"
 
-			for varName, acquireLine := range acquires {
+			for varName, acquireLines := range acquires {
 				releaseLines, hasRelease := releases[varName]
 				filteredReturns := filterNullGuardReturns(ifs, returnLines, varName)
 				nullGuardReturns := subtractLines(returnLines, filteredReturns)
-				// A lock/resource acquire whose failure is checked with an error
-				// exit (`if (pthread_mutex_lock(&m) != 0) return;`) holds no
-				// resource on that path, so those returns are not leaks.
-				acquireFailureReturns := findAcquireFailureReturns(ifs, returnLines, acquireLine)
-				allNonHeldReturns := append(append([]int{}, nullGuardReturns...), acquireFailureReturns...)
 				escapeLines := findEscapeLines(assigns, f, varName, localVars)
-				// A `return fd` inside `if (fd < 0) return fd;` is an error exit, not
-				// an ownership transfer: fd holds no resource on that path. Only a
-				// return OUTSIDE every acquire-failure branch transfers the resource.
-				isReturned := hasNonFailureReturn(varName, returns, f, acquireFailureReturns)
+				overwriteLines := writeLinesFor(assigns, inits, f, varName)
 
-				// shouldReportRelease=true emits a RESOURCE_RELEASE event, which
-				// the planner's ReleaseFilter uses to drop the leak candidate. A
-				// leak is therefore "ACQUIRE without RELEASE".
-				shouldReportRelease := false
+				for _, acquireLine := range acquireLines {
+					// A lock/resource acquire whose failure is checked with an error
+					// exit (`if (pthread_mutex_lock(&m) != 0) return;`) holds no
+					// resource on that path, so those returns are not leaks.
+					acquireFailureReturns := findAcquireFailureReturns(ifs, returnLines, acquireLine)
+					allNonHeldReturns := append(append([]int{}, nullGuardReturns...), acquireFailureReturns...)
+					// A `return fd` inside `if (fd < 0) return fd;` is an error exit, not
+					// an ownership transfer: fd holds no resource on that path. Only a
+					// return OUTSIDE every acquire-failure branch transfers the resource.
+					isReturned := hasNonFailureReturn(varName, returns, f, acquireFailureReturns)
 
-				if isReturned {
-					// Ownership transferred to the caller.
-					shouldReportRelease = true
-				} else if !hasRelease {
-					// Escaped at the acquisition site (stored to a non-local) is
-					// transferred ownership; otherwise it is a leak.
-					shouldReportRelease = containsLine(escapeLines, acquireLine)
-				} else if isGuardedRelease(ifs, varName, releaseLines) {
-					// Released only inside a positive guard (`if (f) { fclose(f); }` or
-					// `if (fd >= 0) { close(fd); }`): the acquire-failure path carries no
-					// resource, so this is not a leak.
-					shouldReportRelease = true
-				} else if cfgValid {
-					// Path-sensitive: released on all paths iff no path from the
-					// acquire reaches the exit avoiding every release/escape/guard.
-					shouldReportRelease = !hasLeakingPath(cfg, acquireLine, releaseLines, allNonHeldReturns, escapeLines)
-				} else {
-					shouldReportRelease = true
-				}
+					// shouldReportRelease=true emits a RESOURCE_RELEASE event, which
+					// the planner's ReleaseFilter uses to drop the leak candidate. A
+					// leak is therefore "ACQUIRE without RELEASE".
+					shouldReportRelease := false
 
-				if emitEvent(ctx, d.store, d.logger, "RESOURCE_ACQUIRE", f.ID, &db.Location{FileID: file.ID, Line: acquireLine}, map[string]string{
-					"variable": varName,
-					"origin":   "resource_acquire",
-				}) {
-					result.EventsCreated++
-				}
-
-				if shouldReportRelease {
-					releaseLine := acquireLine
-					if len(releaseLines) > 0 {
-						releaseLine = releaseLines[0]
+					if isReturned {
+						// Ownership transferred to the caller.
+						shouldReportRelease = true
+					} else if !hasRelease {
+						// Escaped at the acquisition site (stored to a non-local) is
+						// transferred ownership; otherwise it is a leak.
+						shouldReportRelease = containsLine(escapeLines, acquireLine)
+					} else if isGuardedRelease(ifs, varName, releaseLines) {
+						// Released only inside a positive guard (`if (f) { fclose(f); }` or
+						// `if (fd >= 0) { close(fd); }`): the acquire-failure path carries no
+						// resource, so this is not a leak.
+						shouldReportRelease = true
+					} else if cfgValid {
+						// Path-sensitive: released on all paths iff no path from the
+						// acquire reaches the exit (or a later overwrite that drops the
+						// handle) avoiding every release/escape/guard.
+						shouldReportRelease = !hasLostResource(cfg, acquireLine, releaseLines, allNonHeldReturns, escapeLines, overwriteLines)
+					} else {
+						shouldReportRelease = true
 					}
-					if emitEvent(ctx, d.store, d.logger, "RESOURCE_RELEASE", f.ID, &db.Location{FileID: file.ID, Line: releaseLine}, map[string]string{
+
+					if emitEvent(ctx, d.store, d.logger, "RESOURCE_ACQUIRE", f.ID, &db.Location{FileID: file.ID, Line: acquireLine}, map[string]string{
 						"variable": varName,
-						"origin":   "resource_release",
+						"origin":   "resource_acquire",
 					}) {
 						result.EventsCreated++
+					}
+
+					if shouldReportRelease {
+						releaseLine := acquireLine
+						if len(releaseLines) > 0 {
+							releaseLine = releaseLines[0]
+						}
+						if emitEvent(ctx, d.store, d.logger, "RESOURCE_RELEASE", f.ID, &db.Location{FileID: file.ID, Line: releaseLine}, map[string]string{
+							"variable": varName,
+							"origin":   "resource_release",
+						}) {
+							result.EventsCreated++
+						}
 					}
 				}
 			}
@@ -208,8 +214,8 @@ func isResourceReleaser(name string) bool {
 	return false
 }
 
-func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function, file *db.File, assigns, inits, calls, binaries []parser.Node, result *DetectResult) map[string]int {
-	acquires := make(map[string]int)
+func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function, file *db.File, assigns, inits, calls, binaries []parser.Node, result *DetectResult) map[string][]int {
+	acquires := make(map[string][]int)
 
 	checkNode := func(node parser.Node) {
 		children := node.NamedChildren()
@@ -236,7 +242,7 @@ func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function,
 		}
 		callName := extractCallName(callExpr)
 		if isResourceAcquirer(callName) {
-			acquires[varName] = node.StartLine()
+			acquires[varName] = append(acquires[varName], node.StartLine())
 		}
 	}
 
@@ -265,7 +271,7 @@ func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function,
 						argText := arg.Text()
 						if strings.HasPrefix(argText, "&") {
 							varName := strings.TrimPrefix(argText, "&")
-							acquires[varName] = call.StartLine()
+							acquires[varName] = append(acquires[varName], call.StartLine())
 						}
 					}
 				}
@@ -284,7 +290,7 @@ func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function,
 					if !ok || target.Kind() != "identifier" {
 						continue
 					}
-					acquires[target.Text()] = call.StartLine()
+					acquires[target.Text()] = append(acquires[target.Text()], call.StartLine())
 				}
 			}
 		}
@@ -297,6 +303,10 @@ func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function,
 		if isErrorCodeVar(binaries, f, varName) {
 			delete(acquires, varName)
 		}
+	}
+
+	for name := range acquires {
+		sort.Ints(acquires[name])
 	}
 
 	return acquires

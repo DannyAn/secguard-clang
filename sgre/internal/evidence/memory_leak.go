@@ -3,6 +3,7 @@ package evidence
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -129,61 +130,64 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 			cfgValid := body.Kind() == "compound_statement"
 			localVars := findLocalVarsFrom(decls, f)
 
-			for varName, allocLine := range allocs {
+			for varName, allocLines := range allocs {
 				freeLines, hasFree := frees[varName]
 				isReturned := isReturnedToCaller(varName, returns, f)
 				filteredReturns := filterNullGuardReturns(ifs, returnLines, varName)
 				nullGuardReturns := subtractLines(returnLines, filteredReturns)
 				escapeLines := findEscapeLines(assigns, f, varName, localVars)
+				overwriteLines := writeLinesFor(assigns, inits, f, varName)
 
-				shouldReportLeak := false
-				shouldReportRelease := false
+				for _, allocLine := range allocLines {
+					shouldReportLeak := false
+					shouldReportRelease := false
 
-				if isReturned {
-					shouldReportRelease = true
-				} else if !hasFree {
-					// A malloc with no free is still not a leak when its result
-					// escapes at the allocation site (stored to a global/array).
-					if containsLine(escapeLines, allocLine) {
+					if isReturned {
 						shouldReportRelease = true
-					} else {
-						shouldReportLeak = true
-					}
-				} else if cfgValid {
-					if hasLeakingPath(cfg, allocLine, freeLines, nullGuardReturns, escapeLines) {
-						shouldReportLeak = true
+					} else if !hasFree {
+						// A malloc with no free is still not a leak when its result
+						// escapes at the allocation site (stored to a global/array).
+						if containsLine(escapeLines, allocLine) {
+							shouldReportRelease = true
+						} else {
+							shouldReportLeak = true
+						}
+					} else if cfgValid {
+						if hasLostResource(cfg, allocLine, freeLines, nullGuardReturns, escapeLines, overwriteLines) {
+							shouldReportLeak = true
+						} else {
+							shouldReportRelease = true
+						}
 					} else {
 						shouldReportRelease = true
 					}
-				} else {
-					shouldReportRelease = true
-				}
 
-				if shouldReportLeak && !isRAII {
-					if emitEvent(ctx, d.store, d.logger, "MEMORY_ALLOC", f.ID, &db.Location{FileID: file.ID, Line: allocLine}, map[string]string{
-						"variable": varName,
-						"origin":   "malloc",
-					}) {
-						result.EventsCreated++
+					if shouldReportLeak && !isRAII {
+						if emitEvent(ctx, d.store, d.logger, "MEMORY_ALLOC", f.ID, &db.Location{FileID: file.ID, Line: allocLine}, map[string]string{
+							"variable": varName,
+							"origin":   "malloc",
+						}) {
+							result.EventsCreated++
+						}
 					}
-				}
 
-				if shouldReportRelease {
-					if emitEvent(ctx, d.store, d.logger, "MEMORY_ALLOC", f.ID, &db.Location{FileID: file.ID, Line: allocLine}, map[string]string{
-						"variable": varName,
-						"origin":   "malloc",
-					}) {
-						result.EventsCreated++
-					}
-					releaseLine := allocLine
-					if len(freeLines) > 0 {
-						releaseLine = freeLines[0]
-					}
-					if emitEvent(ctx, d.store, d.logger, "MEMORY_RELEASE", f.ID, &db.Location{FileID: file.ID, Line: releaseLine}, map[string]string{
-						"variable": varName,
-						"origin":   "free",
-					}) {
-						result.EventsCreated++
+					if shouldReportRelease {
+						if emitEvent(ctx, d.store, d.logger, "MEMORY_ALLOC", f.ID, &db.Location{FileID: file.ID, Line: allocLine}, map[string]string{
+							"variable": varName,
+							"origin":   "malloc",
+						}) {
+							result.EventsCreated++
+						}
+						releaseLine := allocLine
+						if len(freeLines) > 0 {
+							releaseLine = freeLines[0]
+						}
+						if emitEvent(ctx, d.store, d.logger, "MEMORY_RELEASE", f.ID, &db.Location{FileID: file.ID, Line: releaseLine}, map[string]string{
+							"variable": varName,
+							"origin":   "free",
+						}) {
+							result.EventsCreated++
+						}
 					}
 				}
 			}
@@ -192,8 +196,8 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 	return result, err
 }
 
-func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function, file *db.File, assigns, inits []parser.Node) map[string]int {
-	allocs := make(map[string]int)
+func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function, file *db.File, assigns, inits []parser.Node) map[string][]int {
+	allocs := make(map[string][]int)
 
 	checkNode := func(node parser.Node) {
 		children := node.NamedChildren()
@@ -220,7 +224,7 @@ func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function
 			}
 		}
 		if varName != "" {
-			allocs[varName] = node.StartLine()
+			allocs[varName] = append(allocs[varName], node.StartLine())
 		}
 	}
 
@@ -238,6 +242,9 @@ func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function
 		checkNode(init)
 	}
 
+	for name := range allocs {
+		sort.Ints(allocs[name])
+	}
 	return allocs
 }
 
@@ -333,12 +340,16 @@ func isNullCheckCondition(cond *parser.Node, varName string) bool {
 	return false
 }
 
-// hasLeakingPath reports whether there is a control-flow path from the
-// allocation to the function exit that avoids every free, every null-guard
-// early return, and every "escape" (the pointer being returned or stored to a
-// non-local). It uses the statement-level CFG so flat functions (an `if` with
-// an expression body) no longer degenerate to a path-insensitive fallback.
-func hasLeakingPath(cfg *graph.StmtCFG, allocLine int, freeLines []int, nullGuardReturns []int, escapeLines []int) bool {
+// hasLostResource reports whether the allocation at allocLine is lost: there is
+// a control-flow path from it to the function exit OR to a LATER write to the
+// same variable (an overwrite that drops the previous pointer — the classic
+// `p = malloc(); p = malloc();` double-allocation) without passing a free, a
+// null-guard early return, or an escape. It uses the statement-level CFG so flat
+// functions (an `if` with an expression body) no longer degenerate to a
+// path-insensitive fallback. The overwrite targets catch a lost allocation even
+// when a later pointer is freed (`p = malloc(); p = malloc(); free(p);` leaks
+// the first block).
+func hasLostResource(cfg *graph.StmtCFG, allocLine int, freeLines []int, nullGuardReturns []int, escapeLines []int, overwriteLines []int) bool {
 	if cfg == nil {
 		return false
 	}
@@ -362,7 +373,18 @@ func hasLeakingPath(cfg *graph.StmtCFG, allocLine int, freeLines []int, nullGuar
 			avoid[n.ID] = true
 		}
 	}
-	return cfg.ReachesAvoiding(allocNode.ID, avoid, cfg.Exit)
+	if cfg.ReachesAvoiding(allocNode.ID, avoid, cfg.Exit) {
+		return true
+	}
+	for _, w := range overwriteLines {
+		if w <= allocLine {
+			continue
+		}
+		if n := cfg.NodeAt(w); n != nil && cfg.ReachesAvoiding(allocNode.ID, avoid, n.ID) {
+			return true
+		}
+	}
+	return false
 }
 
 // findEscapeLines returns the lines where varName's allocation "escapes" the
@@ -422,13 +444,91 @@ func findLocalVarsFrom(decls []parser.Node, f *db.Function) map[string]bool {
 			continue
 		}
 		for _, child := range decl.NamedChildren() {
-			name := extractVarName(child)
+			name := declaredIdentifier(child)
 			if name != "" && !parser.IsCTypeKeyword(name) {
 				locals[name] = true
 			}
 		}
 	}
 	return locals
+}
+
+// declaredIdentifier returns the identifier a declaration child binds, descending
+// pointer/array/function/parenthesized declarator wrappers (`char *p` -> "p").
+// It returns "" for type-position nodes and for the initializer value, so a type
+// spelling or an initializer expression is never mistaken for a local. Without
+// this descent a pointer local (`char *p;` then `p = malloc()` on a later line)
+// is not recognized as local, and findEscapeLines misreads the assignment as an
+// escape-to-global — a silent false-negative leak.
+func declaredIdentifier(node parser.Node) string {
+	switch node.Kind() {
+	case "identifier":
+		return node.Text()
+	case "pointer_declarator", "array_declarator", "function_declarator",
+		"parenthesized_declarator", "init_declarator":
+		for _, child := range node.NamedChildren() {
+			if name := declaredIdentifier(child); name != "" {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+// writeLinesFor returns, in source order, the lines where varName is the full
+// left-hand side of an assignment/initializer — a write that REPLACES its value
+// (`p = malloc()`, `p = q`, `p = NULL`). `p = realloc(p, n)` is excluded: it
+// consumes the previous allocation rather than dropping it. A later write is an
+// "overwrite": reaching one without a free in between means the previous
+// allocation's pointer was lost.
+func writeLinesFor(assigns, inits []parser.Node, f *db.Function, varName string) []int {
+	var lines []int
+	check := func(node parser.Node) {
+		children := node.NamedChildren()
+		if len(children) < 2 {
+			return
+		}
+		lhs, rhs := children[0], children[1]
+		if lhs.Kind() != "identifier" || lhs.Text() != varName {
+			return
+		}
+		if isReallocOf(rhs, varName) {
+			return
+		}
+		lines = append(lines, node.StartLine())
+	}
+	for _, a := range assigns {
+		if funcLineRange(f, a.StartLine()) {
+			check(a)
+		}
+	}
+	for _, i := range inits {
+		if funcLineRange(f, i.StartLine()) {
+			check(i)
+		}
+	}
+	sort.Ints(lines)
+	return lines
+}
+
+// isReallocOf reports whether expr is `realloc(varName, ...)` (possibly cast or
+// parenthesized).
+func isReallocOf(expr parser.Node, varName string) bool {
+	for expr.Kind() == "cast_expression" || expr.Kind() == "parenthesized_expression" {
+		children := expr.NamedChildren()
+		if len(children) == 0 {
+			return false
+		}
+		expr = children[0]
+	}
+	if expr.Kind() != "call_expression" || extractCallName(expr) != "realloc" {
+		return false
+	}
+	args := getCallArgs(expr)
+	if len(args) == 0 {
+		return false
+	}
+	return args[0].Kind() == "identifier" && args[0].Text() == varName
 }
 
 // isMallocExpr reports whether expr is (or casts) a malloc/calloc/realloc call.

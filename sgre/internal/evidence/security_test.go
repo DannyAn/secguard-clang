@@ -164,6 +164,33 @@ func assertNoEvent(t *testing.T, store db.Store, eventType, fixture string) {
 	}
 }
 
+// countEventsByFunction returns per-function counts for the first two event
+// types (used to assert "N allocations, M releases" per function).
+func countEventsByFunction(t *testing.T, store db.Store, allocType, releaseType string) (map[string]int, map[string]int) {
+	t.Helper()
+	ctx := context.Background()
+	alloc := make(map[string]int)
+	rel := make(map[string]int)
+	for i, typ := range []string{allocType, releaseType} {
+		events, err := store.ListEventsByType(ctx, typ)
+		if err != nil {
+			t.Fatalf("list %s: %v", typ, err)
+		}
+		for _, e := range events {
+			fn, err := store.GetFunctionByID(ctx, e.EntityID)
+			if err != nil || fn == nil {
+				t.Fatalf("resolve function %d: %v", e.EntityID, err)
+			}
+			if i == 0 {
+				alloc[fn.Name]++
+			} else {
+				rel[fn.Name]++
+			}
+		}
+	}
+	return alloc, rel
+}
+
 func assertEventCategory(t *testing.T, store db.Store, eventType, category, fixture string) {
 	t.Helper()
 	ctx := context.Background()

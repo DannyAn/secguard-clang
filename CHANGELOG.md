@@ -72,6 +72,20 @@
 - **守卫升级**：`release/check-extension-consistency.py` 第 4 类检查从"能加载"提升为"必须符合模板"——frontmatter + `name:` 等于目录名 + 无 H1 + 有 H2 标题 + 有 `### Classification Rules` 且紧接标准表头 + 表中出现 `confirmed` / `false-positive`（`suspected` 可选：类别恒为 confirmed 的类型如 signed-compare 本就没有该档）。三种漂移（缺 frontmatter、改回 `## Classification`、重新引入 H1）均已实测 `exit 1`。
 - **边界（说清楚）**：守卫只能保证**结构**一致；"两个 skill 对同一缺陷形态给出相反结论"这种**语义**矛盾脚本查不出（本轮的 `resource-leak` vs `memory-leak` 正属此类），仍需靠评审。
 
+### 精准度修复（memory-leak / resource-leak：覆盖写丢失分配被吞掉）
+
+分配/获取点原本用 `map[string]int`（变量名 → 行号）收集，**同名变量的第二次写入会覆盖第一次**，于是最经典的丢失分配整条漏掉：
+
+- `p = malloc(); p = malloc(); return;` → 只报 1 条（应为 2 条，两块都丢）。
+- `p = malloc(); p = malloc(); free(p);` → **0 条（真漏报，应为 1 条：第一块被覆盖丢失、第二块被释放）**。
+- 资源侧同病：`fd = open(); fd = open(); close(fd);` → 0 条（第一个 fd 丢失）。
+
+- **修法**：`findAllocations`/`findAcquires` 改为 `map[string][]int`，保留**每一个**分配/获取行；泄漏判定从 `hasLeakingPath` 升级为 `hasLostResource`——除"到达函数出口而不经过释放"外，新增"**到达该变量更靠后的任一次写入（覆盖写）而不经过释放**"也算丢失（`p = malloc(); p = malloc(); free(p)` 的第一块因此在 `p = malloc()` 处被证明丢失）。memory-leak 与 resource-leak 共用同一实现。
+- **`realloc(p, n)` 排除在覆盖写之外**：它**消费**旧指针（原地扩或搬移并释放），不是丢弃，纳入覆盖写会把 `p = malloc(); p = realloc(p, n); free(p)` 误报为丢失。
+- **顺带修掉一个被本测试暴露的真漏报（指针局部变量不被识别）**：`findLocalVarsFrom` 只认 `identifier` 直接子节点，`char *p;` 的声明符是 `pointer_declarator`，于是 `p` 从不算局部变量——声明后置赋值形态 `char *p; p = malloc();` 被 `findEscapeLines` 误判成"存入非局部/全局"→ 按所有权转移处理 → **静默漏报**。新增 `declaredIdentifier` 下钻 `pointer/array/function/parenthesized` 声明符，`p` 恢复为局部，该形态重新正确报漏。此 bug 同时影响 resource-leak 的同一形态（共用 `findLocalVarsFrom`）。
+- **测试**：`tc110_memory_leak_overwrite.c` / `tc111_resource_leak_overwrite.c` + 逐函数计数断言（覆盖写两连 malloc、覆盖写后释放、`p = NULL` 覆盖、声明后置赋值、单次分配无释放五种形态），均已用"中性化修复必然失败"验证（去掉覆盖写目标后 `overwrite_then_free` 由 1 漏变 2 释放、断言失败）。
+- **已知边界（本轮不修，单独方向）**：`q = p; free(q)` 的别名释放仍按变量名匹配 `free`，会把别名释放误判成泄漏（suspected 级误报，非漏报）；解除需走 ALIAS 边，属另一方向。
+
 ## [0.6.1] - 2026-09-09
 
 ### 误报修复（出参回写：uninit / null-deref）
