@@ -253,25 +253,33 @@ as `result.sarif`.)
    `secguard_scan` already ran the convergence for EVERY type and wrote
    `report.md` + `candidates/` — do NOT re-run `secguard_plan` or
    `secguard_index` afterward.
-2. **Scale gate — pick ONE path and stay on it.** Parallelism is NOT free: every
-   subagent re-pays a fresh prompt + skill reloads, so it is a NET LOSS on small
-   codebases. Decide by `total_candidates` from the scan summary (this count now
-   EXCLUDES auto-confirmed pipeline findings — those are already written, so only
+2. **Scale gate — pick ONE path and stay on it.** Parallelism has a fixed dispatch
+   cost (every subagent re-pays a fresh prompt + skill reloads), but the SEQUENTIAL
+   path's wall-clock cost is dominated by PER-TYPE overhead — one skill load + one
+   `_index.md` read + one write + one `--write-json` per type ≈ 4 round-trips,
+   × 20+ types ≈ 90+ SERIAL round-trips in a single context. That overhead scales
+   with **type count**, not candidate count, so a "small" project with many types
+   is NOT a small scan. Gate on BOTH axes. Let `type_count` = the number of types
+   with `candidates_by_type > 0` in the scan summary (`total_candidates` EXCLUDES
+   auto-confirmed pipeline findings — those are already written, so only
    suspected/possible candidates remain for the AI):
-   - **`total_candidates ≤ 200` → SEQUENTIAL (step 3).** Classify everything
-     yourself in one context. This is faster and cheaper — one context amortizes
-     the skill loads. Do NOT spawn subagents.
-   - **`total_candidates > 200` → PARALLEL (step 4).** A single context risks
-     exhaustion; dispatch subagents.
+   - **`type_count ≤ 3 AND total_candidates ≤ 200` → SEQUENTIAL (step 3).** The
+     whole scan is at most one subagent-batch's worth of work; one context avoids
+     the dispatch overhead. Do NOT spawn subagents.
+   - **otherwise (`type_count ≥ 4` OR `total_candidates > 200`) → PARALLEL
+     (step 4).** Serializing many small types is the slow path — a 22-type ×
+     8-candidate project ran >30 min sequentially but only a few minutes in
+     parallel. Dispatch subagents.
 
-   > **⚠️ 强制约束：当 `total_candidates > 200` 时，禁止选择 SEQUENTIAL 路径。**
-   > 违规将导致 orchestrator 上下文在处理完前几个类型后耗尽，其余类型变成
-   > "missing-type"，且被错误标注为 "maxturns-exceeded"（子代理从未启动，不存在
-   > maxTurns 消耗；正确原因是 "unknown"）。
+   > **⚠️ 强制约束：当 `total_candidates > 200` 或 `type_count ≥ 4` 时，禁止选择
+   > SEQUENTIAL 路径。** 违规将导致 orchestrator 上下文在处理完前几个类型后耗尽，
+   > 其余类型变成 "missing-type"，且被错误标注为 "maxturns-exceeded"（子代理从未
+   > 启动，不存在 maxTurns 消耗；正确原因是 "unknown"）——即便上下文未耗尽，90+
+   > 次串行工具往返也会把墙钟拖到 30 分钟以上。
    >
-   > **降级处理：** 当 parallel dispatch 因故不可用（如子代理不可用）且
-   > `total_candidates > 200` 时，orchestrator 应明确告知用户"扫描规模超出单代理
-   > 能力，需要并行处理支持"，而不可擅自降级为 SEQUENTIAL。
+   > **降级处理：** 当 parallel dispatch 因故不可用（如子代理不可用）且 gate 判定
+   > PARALLEL 时，orchestrator 应明确告知用户"扫描规模超出单代理能力，需要并行处理
+   > 支持"，而不可擅自降级为 SEQUENTIAL。
 3. **Sequential loop** (the normal path for small scans): for each type with
    candidates > 0 — load that type's skill, then read
    `candidates/<type>/_index.md` and classify by suspicion_level:
@@ -291,8 +299,9 @@ as `result.sarif`.)
 - **OpenCode（含 opencode-nga）的 `task` 工具是同步的**：一次 `task` 调用的返回值就是该子代理的最终消息（即 `Structured Report Protocol` 的 JSON 块）。**没有**独立的 "task-notification" 事件可等。因此 orchestrator 在同一个回合里连续发出 N 个 `task` 调用后，这些调用会逐一带回结果；拿到结果后 orchestrator 必须**立刻**进入第 5 步 Collect+finalize，**绝不能**在发出 task 后结束回合去"等通知"——那样这个回合就永远停在原地，任务计时一直走。
 - **claude-cac（CodeAgentCLI）的 `Agent` 工具同样是同步的**：一次 `Agent` 调用的返回值就是子代理的最终消息，**没有** `task_notification` 事件。跟 OpenCode 完全一样：N 个 `Agent` 调用逐一带回结果，拿到即进第 5 步；**绝不能**结束回合去"等异步通知"（通知根本不会来，结果就在返回值里，去等会把已落盘的结果丢弃、还误判子代理没跑而重复下发）。
 - **Claude Code（官方）的 `Agent`/`Task` 工具是异步的**：子代理在后台运行，通过 `task_notification` 事件回报终态。orchestrator 等待这些事件，直到每个子代理都到达 terminal state，再进入第 5 步。
+- **DeepSeek Harness（DSH）的 `subagent` 工具是异步的（continuable）**：一次 `subagent` 调用后台启动一个持久子代理并返回子代理 id（默认 `run_in_background: true`，无需显式传），子代理跑完后 runtime 推送 settlement 通知（含结果 + 最终 assistant 消息）。orchestrator 等这些通知，用 `list_agents` 回忆、`send_message` 追问，直到每个子代理都落地，再进第 5 步；**绝不能**在发出 subagent 后结束回合去"空等"（通知会来，但和官方 Claude Code 一样，拿到全部结果后必须在同一回合内 Collect+finalize）。
 
-**完成契约 (F8) — orchestrator 回合何时结束：** orchestrator 的回合**只有**在发出第 6 步的最终 Markdown 报告之后才允许结束。发出子代理 task 之后：**同步平台（OpenCode / opencode-nga / claude-cac）直接读工具返回值**，**异步平台（官方 Claude Code）等 `task_notification` 事件**。拿到所有结果后**必须**在**同一回合**内完成 Collect+finalize（第 5 步）并输出最终报告（第 6 步），然后停止。**禁止**出现"子任务都跑完了、分析也结束了、但没有 finalize、没有最终报告、任务还挂着"的中间态——那等于把已落盘的结果丢弃在后台。
+**完成契约 (F8) — orchestrator 回合何时结束：** orchestrator 的回合**只有**在发出第 6 步的最终 Markdown 报告之后才允许结束。发出子代理 task 之后：**同步平台（OpenCode / opencode-nga / claude-cac）直接读工具返回值**，**异步平台（官方 Claude Code / DSH）等 `task_notification` / settlement 事件**。拿到所有结果后**必须**在**同一回合**内完成 Collect+finalize（第 5 步）并输出最终报告（第 6 步），然后停止。**禁止**出现"子任务都跑完了、分析也结束了、但没有 finalize、没有最终报告、任务还挂着"的中间态——那等于把已落盘的结果丢弃在后台。
 
 **子代理句柄失效 (F9) — `No task found with ID <id>` 的恢复：** 异步宿主的后台任务句柄偶发被回收，返回 `No task found with ID <id>`。这是宿主侧竞态，**不是扫描失败，也绝不等于该子代理没跑**。遇到时**禁止**反复用同一 ID 重试、禁止死等、禁止把该类型当 `failed` 丢弃。正确动作：立即 `secguard status --per-type --scan-id <scan_id>`，以 DB 的 `terminal_state` 为唯一权威（`done`=成功；`in-progress`/`pending`=未写完；`unknown`=未下发）。对非 `done` 的类型**只重下发缺失部分**（带上候选范围），`done` 的绝不下发。重下发后照常进第 5 步 Collect+finalize，第 6 步出报告。
 
@@ -302,6 +311,8 @@ as `result.sarif`.)
    - Claude Code: the `Agent` tool (the subagent-dispatch tool; older versions
      name it `Task`) with `subagent_type: "security-auditor"`.
    - OpenCode: the `task` tool with the `security-auditor` agent (same name).
+   - DeepSeek Harness (DSH): the `subagent` tool (provider `spawn`), background
+     by default — omit `run_in_background` and dispatch all batches in one turn.
    Each subagent prompt must be self-contained (the subagent cannot see this
    conversation):
    ```

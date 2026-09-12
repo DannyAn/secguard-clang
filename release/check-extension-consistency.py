@@ -265,11 +265,36 @@ def check_skills():
     print(f"  skills: {len(names)} SKILL.md conform to the load contract + shared template")
 
 
+def check_dsh_preset():
+    """Guard the DeepSeek Harness preset's persona.
+
+    dsh-persona's config schema is `prefix` (required) — a `text:` key is
+    silently dropped, which loses the ENTIRE SecGuard workflow from the agent's
+    system prompt with no error anywhere. The persona must also carry the
+    parallel scale gate + `subagent` dispatch so the DSH agent cannot silently
+    regress to serial-only scanning.
+    """
+    where = "deepseek-harness/agent.cordis.yml"
+    text = read(where)
+    m = re.search(r"- id:\s*persona\b.*?config:(.*?)(?=\n- id:|\Z)", text, re.S)
+    if not m:
+        fail(f"{where}: persona row not found")
+    cfg = m.group(1)
+    if re.search(r"^\s*text:", cfg, re.M):
+        fail(f"{where}: persona config uses `text:` — dsh-persona requires `prefix:` (silent persona loss)")
+    if not re.search(r"^\s*prefix:", cfg, re.M):
+        fail(f"{where}: persona config missing the required `prefix:` key")
+    if "type_count" not in text or "subagent" not in text:
+        fail(f"{where}: persona missing the parallel scale gate + subagent dispatch — must not drift back to serial-only")
+    print("  dsh preset: persona uses `prefix:` + carries the parallel scale gate")
+
+
 def main():
     check_turn_budget()
     check_tools()
     check_agent_permissions()
     check_skills()
+    check_dsh_preset()
     print("Extension consistency check passed.")
 
 
