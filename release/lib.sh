@@ -689,10 +689,11 @@ sg_uninstall_platform() {
     local bin_dir="$3"
     local manifest_path="$4"
     local yes="${5:-false}"
-    local oc_prefix cc_prefix cac_prefix
+    local oc_prefix cc_prefix cac_prefix dsh_prefix
     oc_prefix="${OC_PREFIX:-$HOME/.config/opencode}"
     cc_prefix="${CC_PREFIX:-$HOME/.claude}"
     cac_prefix="${CAC_PREFIX:-$HOME/.cac}"
+    dsh_prefix="${DSH_PREFIX:-$HOME/.dsh}"
 
     # 各平台专属目录（SecGuard 独享，可整目录删除）
     local oc_dir="$oc_prefix/plugins/secguard-clang"
@@ -700,6 +701,7 @@ sg_uninstall_platform() {
     local cc_dir="$cc_prefix/plugins/secguard-clang"
     local cc_legacy_dir="$cc_prefix/skills/secguard-clang"   # 旧版错误安装到 skills/ 的残留
     local cac_dir="$cac_prefix/plugins/secguard-clang"       # 旧版平铺目录残留（新版不再落此目录）
+    local dsh_dir="$dsh_prefix/.agent-presets/secguard-clang"   # DSH agent preset 整目录（无 manifest）
 
     local to_delete=()
     case "$platform" in
@@ -707,7 +709,8 @@ sg_uninstall_platform() {
         opencode-nga) to_delete+=("$oc_dir" "$oc_legacy_dir") ;;
         claude-code)  to_delete+=("$cc_dir" "$cc_legacy_dir") ;;
         claude-cac)   to_delete+=("$cac_dir") ;;
-        all)          to_delete+=("$oc_dir" "$oc_legacy_dir" "$cc_dir" "$cc_legacy_dir" "$cac_dir") ;;
+        dsh)          to_delete+=("$dsh_dir") ;;
+        all)          to_delete+=("$oc_dir" "$oc_legacy_dir" "$cc_dir" "$cc_legacy_dir" "$cac_dir" "$dsh_dir") ;;
         *) echo "Unknown platform: $platform" >&2; return 1 ;;
     esac
 
@@ -777,6 +780,9 @@ sg_uninstall_platform() {
     if [ "$platform" = "all" ] || [ "$platform" = "claude-cac" ]; then
         rm -rf "$cac_dir" 2>/dev/null || true
         rmdir "$cac_prefix/plugins" 2>/dev/null || true
+    fi
+    if [ "$platform" = "all" ] || [ "$platform" = "dsh" ]; then
+        rmdir "$dsh_prefix/.agent-presets" 2>/dev/null || true
     fi
 
     [ -f "$manifest_path" ] && rm -f "$manifest_path" 2>/dev/null || true
