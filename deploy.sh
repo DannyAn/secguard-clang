@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # deploy.sh — Quick build + deploy secguard-clang extension to user-level config dirs
-# Usage: ./deploy.sh [opencode|claude-code|all] [--no-binary]
-# Default (no args): builds binary + installs both platforms as extensions
+# Usage: ./deploy.sh [opencode|opencode-nga|claude-code|claude-cac|dsh|all] [--no-binary]
+# Default (no args): builds binary + installs all platforms as extensions
 
 PRODUCT="secguard-clang"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -20,24 +20,26 @@ source "$SCRIPT_DIR/release/lib.sh"
 OPENCODE_BASE="${OPENCODE_DIR:-$HOME/.config/opencode}"
 CLAUDE_BASE="${CLAUDE_DIR:-$HOME/.claude}"
 CAC_BASE="${CAC_DIR:-$HOME/.cac}"
+DSH_BASE="${DSH_HOME:-$HOME/.dsh}"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 
 OPENCODE_EXT_DIR="$OPENCODE_BASE/extensions/$PRODUCT"
 OPENCODE_PLUGIN_DIR="$OPENCODE_BASE/plugins/$PRODUCT"
 CLAUDE_PLUGIN_DIR="$CLAUDE_BASE/plugins/$PRODUCT"
 CAC_PLUGIN_DIR="$CAC_BASE/plugins/$PRODUCT"
+DSH_PRESET_DIR="$DSH_BASE/.agent-presets/$PRODUCT"
 
 PLATFORM="all"
 INSTALL_BINARY=true
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        opencode|opencode-nga|claude-code|claude-cac|all)
+        opencode|opencode-nga|claude-code|claude-cac|dsh|all)
             PLATFORM="$1"; shift ;;
         --no-binary)
             INSTALL_BINARY=false; shift ;;
         --help|-h)
-            echo "Usage: $0 [opencode|opencode-nga|claude-code|claude-cac|all] [--no-binary]"
+            echo "Usage: $0 [opencode|opencode-nga|claude-code|claude-cac|dsh|all] [--no-binary]"
             echo ""
             echo "Product: $PRODUCT"
             echo ""
@@ -46,7 +48,8 @@ while [[ $# -gt 0 ]]; do
             echo "  opencode-nga  Install OpenCode fork extension (codeagent-extension.json) to the same dir"
             echo "  claude-code   Install official plugin to ~/.claude/plugins/$PRODUCT/"
             echo "  claude-cac    Install Claude Code fork plugin to ~/.cac/plugins/$PRODUCT/"
-            echo "  all           Install all four (default)"
+            echo "  dsh           Install agent preset to ~/.dsh/.agent-presets/$PRODUCT/"
+            echo "  all           Install all five (default)"
             echo ""
             echo "Options:"
             echo "  --no-binary  Skip binary build/install"
@@ -55,6 +58,7 @@ while [[ $# -gt 0 ]]; do
             echo "  OPENCODE_DIR  Default: ~/.config/opencode"
             echo "  CLAUDE_DIR    Default: ~/.claude"
             echo "  CAC_DIR       Default: ~/.cac"
+            echo "  DSH_HOME      Default: ~/.dsh"
             echo "  BIN_DIR       Default: ~/.local/bin"
             exit 0 ;;
         *)
@@ -303,6 +307,24 @@ install_claude_cac() {
     echo ""
 }
 
+# ── Install DeepSeek Harness (DSH) agent preset ──────────────
+# DSH 的 preset 靠 roster 扫描 ${DSH_HOME}/.agent-presets/<id>/ 发现：目录里必须有
+# agent.cordis.yml（组合），preset.yml（展示元数据）+ skills/（技能根，组合里
+# skill-filesystem 的 baseUrl 相对本目录解析）。secguard 二进制不拷进 preset——DSH
+# 的 bash 工具直接用 PATH 上的 secguard（build_binary 已装到 $BIN_DIR）。
+install_dsh() {
+    echo "[dsh] Preset dir: $DSH_PRESET_DIR"
+    mkdir -p "$DSH_PRESET_DIR/skills"
+
+    cp "$EXT_DIR/deepseek-harness/preset.yml" "$DSH_PRESET_DIR/preset.yml"
+    cp "$EXT_DIR/deepseek-harness/agent.cordis.yml" "$DSH_PRESET_DIR/agent.cordis.yml"
+
+    install_skills "$DSH_PRESET_DIR/skills"
+
+    echo "[dsh] Done — select the 'SecGuard 安全审计' preset in DSH"
+    echo ""
+}
+
 # ── Merge Claude Code / Claude CAC permissions ────────────────
 merge_claude_permissions() {
     local settings_path="${1:-$CLAUDE_BASE/settings.json}"
@@ -370,11 +392,15 @@ case "$PLATFORM" in
     claude-cac)
         install_claude_cac || true
         ;;
+    dsh)
+        install_dsh || true
+        ;;
     all)
         install_opencode || true
         install_opencode_nga || true
         install_claude_code || true
         install_claude_cac || true
+        install_dsh || true
         ;;
 esac
 
@@ -445,6 +471,15 @@ case "$PLATFORM" in
         echo "║    enabled:   $CAC_BASE/settings.json (enabledPlugins)"
         echo "║  Claude CAC permissions:"
         echo "║    $CAC_BASE/settings.json (merged)"
+        ;;
+esac
+
+case "$PLATFORM" in
+    dsh|all)
+        echo "║  DSH agent preset:"
+        echo "║    $DSH_PRESET_DIR/"
+        echo "║      preset.yml, agent.cordis.yml, skills/*/SKILL.md"
+        echo "║    Select 'SecGuard 安全审计' in DSH; secguard runs from PATH ($BIN_DIR)"
         ;;
 esac
 
@@ -564,6 +599,18 @@ case "$PLATFORM" in
         echo ""
         echo "  Claude CAC settings:"
         check_file "$CAC_BASE/settings.json"
+        ;;
+esac
+
+case "$PLATFORM" in
+    dsh|all)
+        echo ""
+        echo "  DSH preset ($DSH_PRESET_DIR):"
+        check_file "$DSH_PRESET_DIR/agent.cordis.yml"
+        check_file "$DSH_PRESET_DIR/preset.yml"
+        check_dir  "$DSH_PRESET_DIR/skills/null-deref"
+        check_dir  "$DSH_PRESET_DIR/skills/buffer-overflow"
+        check_dir  "$DSH_PRESET_DIR/skills/memory-leak"
         ;;
 esac
 

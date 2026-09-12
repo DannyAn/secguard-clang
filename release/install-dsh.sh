@@ -3,7 +3,7 @@
 #
 # Copies the DSH thin wrapper (extension/deepseek-harness/) plus the shared
 # skills (extension/shared/skills/) into the user's DSH agent-preset root:
-#   ${DSH_HOME:-$HOME/.dsh}/.agent-presets/secguard/
+#   ${DSH_HOME:-$HOME/.dsh}/.agent-presets/secguard-clang/
 #
 # The preset becomes selectable as "SecGuard 安全审计" in DSH. Re-run any time
 # the source skills or composition change to refresh the installed copy.
@@ -11,7 +11,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
-DEST="$DSH_HOME/.agent-presets/secguard"
+DEST="$DSH_HOME/.agent-presets/secguard-clang"
 
 echo "SecGuard DSH install:"
 echo "  source : $REPO_ROOT/extension/deepseek-harness + extension/shared/skills"
