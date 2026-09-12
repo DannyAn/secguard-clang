@@ -82,6 +82,8 @@
 
 - id: tool-fs-search
   name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
 
 # ── skills：仅本 preset 的 SecGuard 技能根，隔离默认根 ───────────────────────
 - id: skill-filesystem

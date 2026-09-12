@@ -286,7 +286,16 @@ def check_dsh_preset():
         fail(f"{where}: persona config missing the required `prefix:` key")
     if "type_count" not in text or "subagent" not in text:
         fail(f"{where}: persona missing the parallel scale gate + subagent dispatch — must not drift back to serial-only")
-    print("  dsh preset: persona uses `prefix:` + carries the parallel scale gate")
+
+    # The preset re-declares tool rows the base already provides; those rows must
+    # still carry every config field their package schema marks required, or the
+    # whole preset fails to mount with "failed to apply loader entry". Guard the
+    # two required fields the preset owns (more would be whack-a-mole — DSH's
+    # schemas live outside this repo, so catch the ones that already bit).
+    fs = re.search(r"- id:\s*tool-fs-search\b.*?config:(.*?)(?=\n- id:|\Z)", text, re.S)
+    if not fs or not re.search(r"^\s*sampleOverCapGlobResults:", fs.group(1), re.M):
+        fail(f"{where}: tool-fs-search config missing `sampleOverCapGlobResults` — required by dsh-tool-fs-search (preset fails to mount)")
+    print("  dsh preset: persona uses `prefix:` + required tool configs present")
 
 
 def main():
