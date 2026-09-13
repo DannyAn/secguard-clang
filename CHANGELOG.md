@@ -2,98 +2,40 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.6.2] - 2026-09-12
+## [0.6.2] - 2026-09-13
 
-### 插件打包（AI Agent Market 发布）
+### 功能：AI Agent Market 插件打包
 
-新增面向 AI Agent Market 的插件打包能力，与统一安装包并存（设计文档 `plugin打包设计.md`）：
+新增插件打包能力，与统一安装包并存：聚合包 `secguard-clang-plugins-<v>.zip` 内含 4 个逐平台 zip（opencode / opencode-nga / claude-code / claude-cac），每个插件自包含 22 skills、`bin/secguard` shim、5 个 OS×架构二进制；`check-extension-consistency.py` 新增 `check_plugin_packaging` 完整性守卫。
 
-- **产物**：**聚合包** `secguard-clang-plugins-<v>.zip` 内含 4 个逐平台 zip（`secguard-clang-opencode-<v>.zip` / `-opencode-nga-` / `-claude-code-` / `-claude-cac-`，manifest 在 zip 根，可直接上传 Market「extension 发布入口」）。发布页只挂统一包 + 聚合包 2 个 zip。每个插件自包含 22 个 skills、`bin/secguard` 调度 shim、5 个 OS×架构二进制；定制版（claude-cac / opencode-nga）带 `codeagent-extension.json`，官方版不带。
-- **命名两层解耦**：插件 manifest `name` 保持 `secguard-clang`（TUI namespace 统一，OpenCode `/secguard-clang/secguard`、Claude Code `/secguard-clang:secguard`）；市场 entry 名用 `secguard-clang-<platform>` 互不撞名。
-- **二进制双路径**：OpenCode 的 `findSecguard` 优先选插件内嵌 `bin/` 二进制、回退 PATH；Claude Code/CAC 的 `/secguard` 命令用 `${CLAUDE_PLUGIN_ROOT}/bin` 防御式 PATH 前置（变量未设时严格等价原样，零回归）。
-- **守卫**：`check-extension-consistency.py` 新增 `check_plugin_packaging`（锁 namespace + shim 模板 + 内嵌二进制解析），`build-packages.sh` 对每个插件目录做 `validate_plugin_dir` 完整性校验。
+### 功能：新增检测类型的统一标准 + 两个范例
 
-### 可扩展性（新增检测技能的统一标准 + 首个范例 CWE-479）
+类型清单原本散在 3 处（registry / CLI / skill 目录）+ schema 枚举共 4 处，无机器校验。现由 `ADDING_A_VULN_TYPE.md`（6 步清单）+ `SKILL_TEMPLATE.md` + 守卫测试（`TestVulnTypeSkillConsistency` / `TestSeedEventTypesInSchema`）锁住一致性。按标准落地 `signal-handler`（CWE-479）与 `dangerous-function`（CWE-676，支持 `secguard.toml [banned_functions]` 扩展）。
 
-类型列表原本散在三处（`planner/registry.go`、`skills/vuln_type_skill.go`、`extension/shared/skills/*/`），且 `security_events.event_type` 的 schema 枚举是第四处——**没有任何机器校验，正是 uninit/resource-leak 变成"孤儿 skill"的温床**。
+### 精准度修复（误报 / 漏报收敛）
 
-- **统一机制**：`ADDING_A_VULN_TYPE.md`（6 步清单）+ `SKILL_TEMPLATE.md`（复制模板）+ 守卫测试。`AGENTS.md`/`CLAUDE.md` 顶部均加了指引，未来任何 AI Agent 一进来就知道标准。
-- **两处守卫**：`TestVulnTypeSkillConsistency`（类型↔skill 1:1 + CLI 注册表不漂移）、`TestSeedEventTypesInSchema`（每个 seed/aux 事件类型必须在 schema 枚举里——缺了会 `InsertEvent` 静默失败、检测器产出 0 条，是最恶劣的静默漏报）。
-- **首个范例 signal-handler（CWE-479）**：信号处理函数直接调用非异步信号安全函数（`malloc`/`printf`/`pthread_mutex_lock`/`syslog` 等）。POSIX 安全清单固定 → **健全、可 auto-confirm**；检测器只在发现 `signal()` 注册时才扫 handler 体，**零额外扫描开销**。
-- **第二个范例 dangerous-function（CWE-676）**：内置危险/废弃函数清单（`gets`/`mktemp`/`tmpnam`/`gethostbyname`/`inet_addr`/`bcmp`/`bcopy`/`bzero`），并支持 `secguard.toml [banned_functions] names` **配置扩展**（企业自增禁用项）。纯函数名匹配，健全零猜。守卫在编写过程中就抓到了两处疏漏（schema 枚举缺 `DANGEROUS_FUNCTION`、skill 缺 `false-positive` 判据），机制自证有效。
+- **resource-leak 错误路径泄漏**：与 memory-leak 判据对齐——成功路径释放、错误路径泄漏是 confirmed（非 suspected）；`connect()` 不再被当作资源获取者。
+- **hardcoded-secret**：placeholder / 测试口令此前被 `DefaultSuspicion=confirmed` auto-confirm、绕过 AI。现按证据强度分流（值可证 vs 仅名字命中），弱证据交 AI 复核，零漏报。
+- **skill 类别/API 与检测器对齐**：机器化比对修正 deadlock（`pthread_mutex_timedlock` 漏报）、crypto-misuse（僵尸类别名）、race-condition（类别名 + 事件属性）。
+- **null-deref malloc 无判空**：`q = malloc(); return *q;` 不再降级为 suspected（allocator 本质上必然可能返回 NULL），保持 confirmed。
+- **uninit iterator 宏实参**：`SLL_SCAN(list, idx, UINT32)` 的迭代子不再误判 use-before-init。
+- **memory/resource-leak 覆盖写**：收集器 `map[string]int` → `map[string][]int`，覆盖写丢失分配不再被吞（`p = malloc(); p = malloc(); return;` 现报 2 条；`realloc` 排除）。
+- **20 个 skill 对齐模板**：`check-extension-consistency.py` 从“能加载”升级为“必须符合模板”。
 
-### 精准度修复（resource-leak：错误路径泄漏被误判为"疑似"）
+### 功能：22 个 skill 补齐 Severity Matrix
 
-`resource-leak` 的 skill 分类规则与 `memory-leak` **自相矛盾**：对**完全相同的缺陷形态**（成功路径释放、错误路径泄漏），`memory-leak` 判定为 *confirmed (error path leak)*，而 `resource-leak` 的规则却写着 *"suspected: Resource released on success path but leaked on error path"*。于是 `g_db_epoll_fd = MESH_EpollCreate(); … if (ret != 0) { return -1; }` 这类**已经在可达错误分支上确定泄漏**的缺陷被降级为"疑似"，还要 AI 再判一轮。
+`metadata.severity` 是类型默认值、非上限。新增正交的 `status × severity` 判定矩阵（confirmed/suspected/dismissed 与 low/medium/high/critical 独立），suspected 最多比其 confirmed 孪生降一档。14 个缺失 + 8 个浅薄的矩阵全部补齐，`agent-body.md` 新增 Severity selection 规则。
 
-- **判据纠正**：错误路径泄漏是 **confirmed**，不是 suspected——函数在该可达错误返回上确实带着未关闭的句柄退出，缺陷是被证明的，不是假说。分类整理为与 `memory-leak` 对齐的规则表，并补上 path-sensitive 判据示例（"从 acquire 到函数出口是否存在一条不经过 release 的路径"）；`suspected` 收窄为"本函数内无法判定释放是否发生在别处"。
-- **修正一处过期检测信号**：`connect()` 曾被列为资源获取（acquire）信号，但检测器**刻意**不把 `connect` 当作资源工厂（它返回状态码、不产生新句柄；把 `db_create_sub_connect` 当资源曾产出幻影 `ret` 资源）。skill 与检测器现已一致。
-- **为什么不在流水线里直接 auto-confirm（设计约束，勿再"顺手修复"）**：`null-deref`/`uninit`/`double-free` 能 auto-confirm，是因为它们用 **must 分析**（"所有路径上都成立"），朝确认方向健全。泄漏的判据却是"**存在一条**可达路径泄漏"，是 **may 分析**；而 CFG 不跟踪分支条件的取值相关性，会伪造不可行路径——语料 `tc58_race_conditional_lock.c` 即活例（`if (arg) lock(&m); … if (arg) unlock(&m);` 由同一个未改写的条件守卫，语义上平衡，CFG 却认为存在绕过 unlock 的路径）。若据此 auto-confirm，就会产出**无需 AI 复核的 confirmed 误报**（最误导的一类）。因此 **resource-leak 的 tier 保持 suspected，由 AI 层按本 skill 判定**（与 `memory-leak` 一致）。同理**不加入**"同一条件守卫即判 FP"之类的抑制型规则：条件变量在两次守卫之间被改写时它就是真泄漏，抑制即漏报。
+### 功能：result.sarif 优化（Issue#88）
 
-### 精准度修复（hardcoded-secret：placeholder / 测试口令被 auto-confirm 成"确认"）
+- **severity 进入 SARIF**：level 由 severity×status 决定——confirmed critical/high→error、suspected 封顶 warning、low→note，不再“非 confirmed 一律 warning”。
+- **自解释 message**：`[high · confirmed] null-deref on 'p' in f at src/a.c:13 — …`，带变量名/函数/文件:行。
+- **结构化 properties**：每条稳定携带 severity/status/confidence/vuln_type/variable。
+- **`findings.variable` 落库**：新增列 + 幂等迁移，agent/MCP 契约与 auto-confirm 全链路接入，解决“变量名只在 candidate 阶段有、verdict 阶段丢”。
 
-这一条比 resource-leak 更隐蔽：**skill 的判据没写错，但它根本执行不到**。`hardcoded-secret` 的 `DefaultSuspicion` 是 `"confirmed"`，于是**所有** HARDCODED_SECRET 候选都由 `splitBySuspicion` 走 auto-confirm 直接落库、**绕过 AI**；而 skill 里明明写着"placeholder → false-positive""测试口令 → suspected"——这两条永远不会被执行。实测最小复现：`password = "REPLACE_ME"`、`test_password = "test123"`、`user_api_key = "YOUR_KEY_HERE"` 三条**全部** `suspicion=confirmed`（auto-confirm），正是最误导的一类。
+### 功能：result.xlsx 优化
 
-- **检测器按证据强度分流**（新增 `secretCategory`）：字面量**值本身**可证（已知 token 前缀 `sk-`/`AKIA`/`ghp_`/`-----BEGIN`、Shannon 熵 ≥4.5 bits/char 且 ≥16 字符、或 URL 内嵌凭据 `mysql://root:hunter2@db`）→ 类别 `hardcoded_secret`；**仅变量/字段名命中**而值低熵 → 类别 `hardcoded_secret_name_only`。
-- **registry 用 `CategoryConfidence` 承接**：`hardcoded_secret` = confirmed（保持 auto-confirm），`hardcoded_secret_name_only` = suspected（交 AI 判）；`DefaultSuspicion` 降为 `suspected` 作兜底。
-- **不丢弃任何候选**——弱证据只是从"机器确认"改为"AI 复核"，因此**零漏报风险**；placeholder / 测试口令由 AI 按 skill 规则 dismissed，confirmed 误报消除。
-- **skill 同步**：原 `Evidence Patterns` 写的类别 `hardcoded_password` / `hardcoded_key` / `hardcoded_token` / `credential_persistence` **检测器从不发出**（过期文档），已改为实际发出的两个类别；判据表据此重写——原表"字面量赋给 secret 变量 → confirmed"与"placeholder → false-positive"**自相矛盾**（前者会把 placeholder 判成 confirmed）。
-- **测试**：检测器级"值可证 vs 仅名字命中"类别断言 + planner 级"仅名字命中必须 suspected、值可证保持 confirmed"方向性对照，均已用"中性化修复必然失败"验证。
-- **同类排查已做完**：把 20 个类型过了一遍"skill 规则是否被 auto-confirm 挡在门外"（`null-deref` 有 `NullableSourceFilter` 降级，其余 confirmed 类别的 skill 行本就是 confirmed），**只有 hardcoded-secret 命中**。
-
-### 精准度修复（class C：skill 声称的类别 / API 与检测器实际不符）
-
-对 20 个 skill 的 `Detection Signals` / `Evidence Patterns` / 类别声明做了机器化全量比对（把每个 skill 提到的 API 名、类别名、事件名拿去对应检测器与 registry 里核对），发现并修正三处：
-
-- **`deadlock`：`pthread_mutex_timedlock` 完全不被识别 → 真漏报**。检测器的锁获取集合只有 `pthread_mutex_lock` / `pthread_rwlock_wrlock` / `EnterCriticalSection`，于是"环里含 timedlock"的锁序反转**整个漏掉**；而 skill 的判据表明确写着它应报 `suspected`（这一行此前根本不可达）。现在：检测器把 timedlock 计入锁序边并给该环打 `category: deadlock_timed`；`LockOrderBuilder` 同步收录该边（保持锁序图完整）；`LockOrderFilter` 见到 `deadlock_timed` **只保留 suspected、绝不升级 confirmed**（timeout 可恢复）。普通 `pthread_mutex_lock` 的环仍 confirmed。
-- **`crypto-misuse`：类别名全是僵尸**。skill 写 `weak_cipher` / `weak_hash` / `weak_prng` / `weak_key`，检测器实际发的是 `weak_algorithm` / `weak_random` / `undersized_key`——AI 在候选 `Hint` 的 `cat@...` 里永远看不到 skill 说的那四个。已改正。
-- **`race-condition`：类别名 + 事件属性都不对**。`toctou_filesystem` 实际是 `toctou`；声称事件带 `access_lines` / `write_lines`，实际只有 `thread_functions` / `thread_instances` / `write_line`。已改正。
-- **核对为一致、无需改动的**（列出以免看起来"没查"）：`RAND_bytes` / `getrandom` 不会被误报（弱随机集合是精确名 `rand`/`srand`）；`__builtin_*_overflow`、`fgets`、`fputs`、`EVP_aes_*`、`__attribute__((cleanup))` 等只出现在"安全模式 / 修复建议"表里，不是检测器声称；`SAFE_FREE` 由 `null_source.go` 识别。
-- **测试**：`TestLockOrderFilter_TimedCycleStaysSuspected`（timed 环必须 suspected）+ 既有 `TestLockOrderFilter_ConfirmsCycle`（正常环仍 confirmed），已用"中性化修复必然失败"验证。
-
-### 精准度修复（suspected 专项第一刀：null-deref 的 malloc 无判空）
-
-生产数据（3 个大仓库 result.sarif Top3）显示 suspected 集中在 **uninit / null-deref / divide-by-zero** 三个"must/may"分级类型。第一刀落在 null-deref：
-
-- **`q = malloc(); return *q;` 之前被降级成 suspected**。`NullableSourceFilter` 把所有"可能为空"（非"确定为空"）一律降级，于是"malloc 无判空解引用"这种教科书 CWE-476（unchecked-return / null-deref 两个 skill 都明确写 confirmed）也进了 suspected。
-- **修法（健全）**：allocator（`malloc`/`calloc`/`realloc`）**本质上必然可能返回 NULL**，无 guard 解引用与路径无关地就是缺陷 → 保持 confirmed（auto-confirm）；`p = NULL` 仍走 must 分析（只在全路径为空时 confirmed）；未知函数返回仍 suspected。新增 `nullModel.onlyAllocatorSources`。
-- **测试**：`TestDefiniteNull_MustAnalysis` 扩为三向——`p=NULL`→confirmed、`q=malloc()`→confirmed、`r=get_ptr()`→suspected，已用"中性化修复必然失败"验证。
-- 同步收紧了 4 个 skill 的 suspected 判据（injection 黑名单、unchecked-return read 忽略、divide-by-zero 外部除数、race-condition 措辞），并删掉 2 行检测器早已不发的僵尸 suspected 规则（buffer-overflow / out-of-bounds 的"变量索引"）。
-
-### 精准度修复（uninit：config 声明的 iterator 宏实参被误判为未初始化）
-
-`SLL_SCAN(list, idx, UINT32)` 这类在 SDK 头文件里定义、用户于 `secguard.toml [iterator_macros]` 声明"第 N 个参数是迭代子"的宏，其迭代子**在 for-init 里被写入**；但 tree-sitter 把按值传参的 `idx` 当成"读取"，于是检测器在调用点把刚声明的迭代子报成 `use-before-init`（confirmed）。此前该配置只接到 null-deref 的 flow，没接到 uninit。
-
-- **新增 `config.MergedIteratorMacros()`**（内置 `apikb.IteratorMacros` + 用户配置，单一合并点），检测器据此把 iterator 宏的迭代子实参当作**写目标而非读**（与 setter / va_start / dest-writer 同一机制），并记录其初始化行，后续读取不再误报；真正的未初始化读取仍照常上报。
-- **测试**：`TestUninit_IterMacroConfigDeclared` 用标量迭代子复现（不加载配置时 `idx` 报 confirmed uninit，加载后消除），已用"中性化修复必然失败"验证。
-
-### 设计一致性（20 个 skill 全部对齐同一模板 + 可执行守卫）
-
-先直接回答"现在一致了吗"：**一致了，20/20**。此前不合模板的只有 `uninit` 和 `resource-leak` 两个——正好又是那对"缺 YAML frontmatter、在 v0.5.x 根本没被加载"的孤儿 skill（没被加载 → 不被检验 → 规则写错无人发现，这就是本轮 bug 能长期存活的原因）。
-
-| | 标准模板（其余 18 个） | `resource-leak` / `uninit`（原状） |
-|---|---|---|
-| 标题 | `## <Type> Analysis (...)`，无 H1 | H1 `#` 标题 + `##` 子节 |
-| 判据段 | `### Classification Rules` | `## Classification` |
-| 判据形态 | `\| Condition \| Classification \|` 表格 | `resource-leak` 表格；`uninit` 项目符号 |
-
-- **改齐动作**：两个 skill 的标题层级（去 H1、降为 H2/H3）、判据段名（`### Classification Rules`）、判据形态（统一同构表格）全部对齐模板；`uninit` 的判定语义一字未改，只把项目符号改成表格。`resource-leak` 同时带上本轮的判据修正。
-- **守卫升级**：`release/check-extension-consistency.py` 第 4 类检查从"能加载"提升为"必须符合模板"——frontmatter + `name:` 等于目录名 + 无 H1 + 有 H2 标题 + 有 `### Classification Rules` 且紧接标准表头 + 表中出现 `confirmed` / `false-positive`（`suspected` 可选：类别恒为 confirmed 的类型如 signed-compare 本就没有该档）。三种漂移（缺 frontmatter、改回 `## Classification`、重新引入 H1）均已实测 `exit 1`。
-- **边界（说清楚）**：守卫只能保证**结构**一致；"两个 skill 对同一缺陷形态给出相反结论"这种**语义**矛盾脚本查不出（本轮的 `resource-leak` vs `memory-leak` 正属此类），仍需靠评审。
-
-### 精准度修复（memory-leak / resource-leak：覆盖写丢失分配被吞掉）
-
-分配/获取点原本用 `map[string]int`（变量名 → 行号）收集，**同名变量的第二次写入会覆盖第一次**，于是最经典的丢失分配整条漏掉：
-
-- `p = malloc(); p = malloc(); return;` → 只报 1 条（应为 2 条，两块都丢）。
-- `p = malloc(); p = malloc(); free(p);` → **0 条（真漏报，应为 1 条：第一块被覆盖丢失、第二块被释放）**。
-- 资源侧同病：`fd = open(); fd = open(); close(fd);` → 0 条（第一个 fd 丢失）。
-
-- **修法**：`findAllocations`/`findAcquires` 改为 `map[string][]int`，保留**每一个**分配/获取行；泄漏判定从 `hasLeakingPath` 升级为 `hasLostResource`——除"到达函数出口而不经过释放"外，新增"**到达该变量更靠后的任一次写入（覆盖写）而不经过释放**"也算丢失（`p = malloc(); p = malloc(); free(p)` 的第一块因此在 `p = malloc()` 处被证明丢失）。memory-leak 与 resource-leak 共用同一实现。
-- **`realloc(p, n)` 排除在覆盖写之外**：它**消费**旧指针（原地扩或搬移并释放），不是丢弃，纳入覆盖写会把 `p = malloc(); p = realloc(p, n); free(p)` 误报为丢失。
-- **顺带修掉一个被本测试暴露的真漏报（指针局部变量不被识别）**：`findLocalVarsFrom` 只认 `identifier` 直接子节点，`char *p;` 的声明符是 `pointer_declarator`，于是 `p` 从不算局部变量——声明后置赋值形态 `char *p; p = malloc();` 被 `findEscapeLines` 误判成"存入非局部/全局"→ 按所有权转移处理 → **静默漏报**。新增 `declaredIdentifier` 下钻 `pointer/array/function/parenthesized` 声明符，`p` 恢复为局部，该形态重新正确报漏。此 bug 同时影响 resource-leak 的同一形态（共用 `findLocalVarsFrom`）。
-- **测试**：`tc110_memory_leak_overwrite.c` / `tc111_resource_leak_overwrite.c` + 逐函数计数断言（覆盖写两连 malloc、覆盖写后释放、`p = NULL` 覆盖、声明后置赋值、单次分配无释放五种形态），均已用"中性化修复必然失败"验证（去掉覆盖写目标后 `overwrite_then_free` 由 1 漏变 2 释放、断言失败）。
-- **已知边界（本轮不修，单独方向）**：`q = p; free(q)` 的别名释放仍按变量名匹配 `free`，会把别名释放误判成泄漏（suspected 级误报，非漏报）；解除需走 ALIAS 边，属另一方向。
+新增人工确认四列——确认状态（默认「未确认」，下拉「已确认」）、确认者、确认备注、确认时间——置于 AI 判定之后；数据行高固定 25pt，避免代码上下文撑高行。
 
 ## [0.6.1] - 2026-09-09
 
