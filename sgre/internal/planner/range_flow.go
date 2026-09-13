@@ -327,10 +327,22 @@ func rangeTransfer(in map[string]interval, e *rangeEffects) map[string]interval 
 		out[v] = r
 	}
 	for v, k := range e.copy {
-		out[v] = in[k]
+		if r, ok := in[k]; ok {
+			out[v] = r
+		} else {
+			// The source has no fact yet (bottom). Copying it must yield bottom,
+			// not the Go zero-value interval{0,0} (a false "definitely zero" that
+			// confirmed a non-zero divisor as divide-by-zero) and not top (which
+			// would poison the hull join and never refine once the source arrives).
+			delete(out, v)
+		}
 	}
 	for v, s := range e.shift {
-		out[v] = in[s.base].shift(s.delta)
+		if r, ok := in[s.base]; ok {
+			out[v] = r.shift(s.delta)
+		} else {
+			delete(out, v)
+		}
 	}
 	for v := range e.kill {
 		out[v] = topInterval()

@@ -66,6 +66,15 @@ func (f *LifetimeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Cand
 	flows := make(map[int64]*flowResult, len(byFunc))
 	cache := newFileParseCache(f.parser)
 	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	// Batch-load every candidate's event once: the per-candidate GetEventByID
+	// below was an N+1 query storm.
+	eventIDs := make([]int64, 0)
+	for _, cs := range byFunc {
+		for _, c := range cs {
+			eventIDs = append(eventIDs, c.DerefEventID)
+		}
+	}
+	eventsByID, _ := f.store.ListEventsByIDs(ctx, eventIDs)
 	for fid, cs := range byFunc {
 		fn := fnByID[fid]
 		if fn == nil {
@@ -89,8 +98,8 @@ func (f *LifetimeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Cand
 			genByLine = make(map[int][]string)
 		}
 		for _, c := range cs {
-			event, err := f.store.GetEventByID(ctx, c.DerefEventID)
-			if err != nil || event == nil {
+			event := eventsByID[c.DerefEventID]
+			if event == nil {
 				continue
 			}
 			var props struct {

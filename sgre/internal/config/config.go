@@ -92,6 +92,7 @@ func Load() *Config {
 	// zero config rather than a half-populated one.
 	if err := toml.Unmarshal(data, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "secguard: ignoring invalid config %s: %v\n", path, err)
+		return &Config{}
 	}
 	return cfg
 }

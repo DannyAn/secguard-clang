@@ -46,7 +46,27 @@ func (f *IntOverflowGuardFilter) Apply(ctx context.Context, candidates []Candida
 		byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
 	}
 	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
-	rangeFlows := f.buildRangeFlows(ctx, byFunc, fnByID, fileByID)
+	// Parse each candidate function body once and reuse it for both the range
+	// analysis and the per-candidate guard bounds: operandBounds previously
+	// created a fresh fileParseCache per candidate, re-reading and re-parsing
+	// the same file once per candidate (an O(candidates × parse) cost).
+	cache := newFileParseCache(f.parser)
+	bodies := make(map[int64]parser.Node, len(byFunc))
+	for fid := range byFunc {
+		fn := fnByID[fid]
+		if fn == nil {
+			continue
+		}
+		file := fileByID[fn.FileID]
+		if file == nil {
+			continue
+		}
+		body, _ := cache.get(file, fn)
+		if body.Kind() == "compound_statement" {
+			bodies[fid] = body
+		}
+	}
+	rangeFlows := f.buildRangeFlows(byFunc, fnByID, bodies)
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -69,7 +89,7 @@ func (f *IntOverflowGuardFilter) Apply(ctx context.Context, candidates []Candida
 			continue
 		}
 
-		bounds := f.operandBounds(ctx, c, fnByID, fileByID)
+		bounds := f.operandBounds(c, bodies)
 		flow := rangeFlows[c.FunctionID]
 		allBounded := true
 		for _, op := range operands {
@@ -97,21 +117,17 @@ func (f *IntOverflowGuardFilter) Apply(ctx context.Context, candidates []Candida
 	return kept, dropped, nil
 }
 
-// buildRangeFlows runs the interval analysis once per candidate function.
-func (f *IntOverflowGuardFilter) buildRangeFlows(ctx context.Context, byFunc map[int64][]Candidate, fnByID map[int64]*db.Function, fileByID map[int64]*db.File) map[int64]*rangeFlow {
+// buildRangeFlows runs the interval analysis once per candidate function,
+// reusing the already-parsed bodies.
+func (f *IntOverflowGuardFilter) buildRangeFlows(byFunc map[int64][]Candidate, fnByID map[int64]*db.Function, bodies map[int64]parser.Node) map[int64]*rangeFlow {
 	flows := make(map[int64]*rangeFlow, len(byFunc))
-	cache := newFileParseCache(f.parser)
 	for fid := range byFunc {
 		fn := fnByID[fid]
 		if fn == nil {
 			continue
 		}
-		file := fileByID[fn.FileID]
-		if file == nil {
-			continue
-		}
-		body, _ := cache.get(file, fn)
-		if body.Kind() != "compound_statement" {
+		body, ok := bodies[fid]
+		if !ok {
 			continue
 		}
 		flows[fid] = analyzeRanges(fn, body)
@@ -122,18 +138,10 @@ func (f *IntOverflowGuardFilter) buildRangeFlows(ctx context.Context, byFunc map
 // operandBounds returns, per variable operand, the smallest constant bound found
 // in a preceding guard (`if (op < CONST)` / `if (op <= CONST)`). A missing guard
 // means unbounded (not in the map).
-func (f *IntOverflowGuardFilter) operandBounds(ctx context.Context, c Candidate, fnByID map[int64]*db.Function, fileByID map[int64]*db.File) map[string]int64 {
+func (f *IntOverflowGuardFilter) operandBounds(c Candidate, bodies map[int64]parser.Node) map[string]int64 {
 	bounds := make(map[string]int64)
-	fn := fnByID[c.FunctionID]
-	if fn == nil {
-		return bounds
-	}
-	file := fileByID[fn.FileID]
-	if file == nil {
-		return bounds
-	}
-	body, _ := newFileParseCache(f.parser).get(file, fn)
-	if body.Kind() != "compound_statement" {
+	body, ok := bodies[c.FunctionID]
+	if !ok {
 		return bounds
 	}
 

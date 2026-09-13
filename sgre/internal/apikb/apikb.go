@@ -14,7 +14,6 @@ var SafeFunctions = map[string]bool{
 	"strcpy_s":  true,
 	"sprintf_s": true,
 	"strcat_s":  true,
-	"snprintf":  true,
 	"strncpy":   true,
 	"strlcpy":   true,
 	"strlcat":   true,

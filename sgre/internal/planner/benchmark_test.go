@@ -49,6 +49,9 @@ func setupBenchmarkData(s *mockStore) {
 	insertBufferEvent(p0Func, 28, "strcpy_s", "buffer_overflow")
 	insertBufferEvent(p0Func, 32, "sprintf_s", "buffer_overflow")
 	insertBufferEvent(p0Func, 36, "strcat_s", "buffer_overflow")
+	// snprintf is NOT in SafeFunctions (it is a format-string/injection sink
+	// despite its bounds check), so this synthetic buffer event passes through
+	// safe_function_exclude rather than being dropped.
 	insertBufferEvent(p0Func, 44, "snprintf", "buffer_overflow")
 	insertBufferEvent(p0Func2, 65, "execve", "command_injection")
 	insertBufferEvent(p0Func3, 94, "sqlite3_prepare_v2", "sql_injection")
@@ -76,8 +79,8 @@ func setupBenchmarkData(s *mockStore) {
 }
 
 // TestBenchmark_ConvergencePipeline verifies the buffer-overflow chain:
-// 18 seeds → safe_function_exclude drops P0 (7 safe APIs) + P1 (3 safe
-// wrappers) → 8 remain (P2/P3/TP pass through to the AI agent for review).
+// 18 seeds → safe_function_exclude drops P0 (6 safe APIs) + P1 (3 safe
+// wrappers) → 9 remain (P2/P3/TP pass through to the AI agent for review).
 func TestBenchmark_ConvergencePipeline(t *testing.T) {
 	ctx := context.Background()
 	s := newMockStore()
@@ -93,8 +96,8 @@ func TestBenchmark_ConvergencePipeline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("safe function filter failed: %v", err)
 	}
-	if len(afterSafe) != 8 {
-		t.Errorf("after safe function filter: expected 8 (18 - 7 P0 - 3 P1), got %d", len(afterSafe))
+	if len(afterSafe) != 9 {
+		t.Errorf("after safe function filter: expected 9 (18 - 6 P0 - 3 P1), got %d", len(afterSafe))
 	}
 }
 
@@ -104,7 +107,7 @@ func TestBenchmark_SafeFunctionFilter(t *testing.T) {
 	s := newMockStore()
 	setupBenchmarkData(s)
 
-	safeFuncs := []string{"memcpy_s", "strcpy_s", "sprintf_s", "strcat_s", "snprintf", "execve", "sqlite3_prepare_v2"}
+	safeFuncs := []string{"memcpy_s", "strcpy_s", "sprintf_s", "strcat_s", "execve", "sqlite3_prepare_v2"}
 	for _, name := range safeFuncs {
 		c := Candidate{VariableName: name}
 		result, _, err := NewSafeFunctionFilter(s).Apply(ctx, []Candidate{c})

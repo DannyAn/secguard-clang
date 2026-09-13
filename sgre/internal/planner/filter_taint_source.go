@@ -842,9 +842,20 @@ func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted 
 		hasCaller[calleeID][idx] = true
 	}
 
-	for {
-		changed := false
-		callerFlows := make(map[int64]*flowResult)
+	// Precompute the loop-invariant per-caller state once, outside the fixpoint:
+	// the parsed body and its taint gen/kill/copies depend only on the (fixed)
+	// summaries, not on result[fid], yet the previous version re-read and
+	// re-walked every caller file on each fixpoint iteration.
+	type callerInfo struct {
+		fn     *db.Function
+		body   parser.Node
+		root   parser.Node
+		gen    map[int][]string
+		kill   map[int][]string
+		copies map[int][]copyPair
+	}
+	callers := make(map[int64]*callerInfo, len(callerIDs))
+	{
 		cache := newFileParseCache(f.parser)
 		for fid := range callerIDs {
 			fn := callerFnByID[fid]
@@ -860,12 +871,27 @@ func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted 
 				continue
 			}
 			genByLine, killByLine := taintEffectsWithCallees(body, retTainted, returnsParam)
+			callers[fid] = &callerInfo{
+				fn:     fn,
+				body:   body,
+				root:   root,
+				gen:    genByLine,
+				kill:   killByLine,
+				copies: taintCopiesFor(body, returnsParam),
+			}
+		}
+	}
+
+	for {
+		changed := false
+		callerFlows := make(map[int64]*flowResult)
+		for fid, info := range callers {
 			analyzer := newFlowAnalyzer(f.store, f.parser)
-			analyzer.dfgCopies = map[int64]map[int][]copyPair{fid: taintCopiesFor(body, returnsParam)}
+			analyzer.dfgCopies = map[int64]map[int][]copyPair{fid: info.copies}
 			// Seed this caller's already-proven tainted parameters so its own
 			// parameter arguments (which may be its params) carry taint forward.
-			analyzer.entrySeeds = taintedParamsFor(fn, root, result[fid])
-			callerFlows[fid] = analyzer.analyzeFlow(ctx, fn, body, root, genByLine, killByLine, false, false)
+			analyzer.entrySeeds = taintedParamsFor(info.fn, info.root, result[fid])
+			callerFlows[fid] = analyzer.analyzeFlow(ctx, info.fn, info.body, info.root, info.gen, info.kill, false, false)
 		}
 
 		for _, e := range edges {
