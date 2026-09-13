@@ -581,6 +581,7 @@ func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType s
 			FilePath:     c.Target.File,
 			LineNumber:   c.Target.Line,
 			FunctionName: c.Target.Function,
+			Variable:     c.Target.Variable,
 			Summary:      summary,
 			Reasoning:    "Pipeline-proved (auto-confirmed, no AI re-review): " + summary,
 			FixStrategy:  report.FixSuggestion(vulnType, cwe, c),

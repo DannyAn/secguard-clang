@@ -4,11 +4,35 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/planner"
 )
+
+func TestSarifLevel(t *testing.T) {
+	cases := []struct {
+		severity, status, want string
+	}{
+		{"critical", "confirmed", "error"},
+		{"high", "confirmed", "error"},
+		{"critical", "suspected", "warning"},
+		{"high", "suspected", "warning"},
+		{"medium", "confirmed", "warning"},
+		{"medium", "suspected", "warning"},
+		{"low", "confirmed", "note"},
+		{"low", "suspected", "note"},
+		{"", "confirmed", "error"}, // unknown severity → status-only fallback
+		{"", "suspected", "warning"},
+		{"HIGH", "confirmed", "error"}, // case-insensitive
+	}
+	for _, c := range cases {
+		if got := sarifLevel(c.severity, c.status); got != c.want {
+			t.Errorf("sarifLevel(%q, %q) = %q, want %q", c.severity, c.status, got, c.want)
+		}
+	}
+}
 
 func TestWriteSarifFromFindings(t *testing.T) {
 	dir := t.TempDir()
@@ -19,7 +43,8 @@ func TestWriteSarifFromFindings(t *testing.T) {
 			RuleID: "CWE-252", Severity: "high", Confidence: 0.9,
 			Status: "confirmed", ReviewStatus: "",
 			FilePath: "src/a.c", LineNumber: 13, FunctionName: "f",
-			Summary: "malloc 未判空即解引用", Reasoning: "分配后立即解引用",
+			Variable: "p",
+			Summary:  "malloc 未判空即解引用", Reasoning: "分配后立即解引用",
 			ExceptionCheck: "无 safe wrapper", FixStrategy: "if (p == NULL) return -1;",
 		},
 		{
@@ -71,6 +96,21 @@ func TestWriteSarifFromFindings(t *testing.T) {
 	}
 	if results[0].Properties["reasoning"] != "分配后立即解引用" {
 		t.Errorf("properties.reasoning not carried, got %+v", results[0].Properties)
+	}
+	if results[0].Properties["variable"] != "p" {
+		t.Errorf("properties.variable = %q, want p", results[0].Properties["variable"])
+	}
+	if results[0].Properties["severity"] != "high" {
+		t.Errorf("properties.severity = %q, want high", results[0].Properties["severity"])
+	}
+	if results[0].Properties["status"] != "confirmed" {
+		t.Errorf("properties.status = %q, want confirmed", results[0].Properties["status"])
+	}
+	if results[0].Properties["vuln_type"] != "unchecked-return" {
+		t.Errorf("properties.vuln_type = %q, want unchecked-return", results[0].Properties["vuln_type"])
+	}
+	if !strings.Contains(results[0].Message.Text, "on 'p'") || !strings.Contains(results[0].Message.Text, "[high · confirmed]") {
+		t.Errorf("message should name the variable and severity/status, got %q", results[0].Message.Text)
 	}
 
 	// Second result is suspected-kept -> warning, no fix.

@@ -136,6 +136,7 @@ CREATE TABLE IF NOT EXISTS findings (
     file_path       TEXT,
     line_number     INTEGER,
     function_name   TEXT,
+    variable        TEXT,
     properties      TEXT,
     summary         TEXT,
     reasoning       TEXT,
@@ -284,6 +285,11 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 	// available for ADD COLUMN in SQLite, so check pragma table_info first.
 	if err := ensureColumn(ctx, db, "findings", "fingerprint", "TEXT"); err != nil {
 		return fmt.Errorf("db: init schema: ensure findings.fingerprint: %w", err)
+	}
+	// findings.variable is additive: it names the sink/source variable so the
+	// SARIF/markdown exports read as "dereference of 'p'", not "something in f".
+	if err := ensureColumn(ctx, db, "findings", "variable", "TEXT"); err != nil {
+		return fmt.Errorf("db: init schema: ensure findings.variable: %w", err)
 	}
 	// scan_runs.ai_duration_ms is additive (the AI-classification wall-clock the
 	// orchestrator reports at audit time, after the pipeline phase).

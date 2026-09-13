@@ -143,6 +143,56 @@ func VulnToCWE(vulnType string) string {
 	return cwe
 }
 
+// sarifLevel maps a finding's severity (impact) and status (evidence verdict)
+// to the SARIF result level. severity drives the level; a suspected finding is
+// capped at "warning" because it is a lead, not a proven defect, so it must
+// never read as "error". This is what lets a CI gate treat "error" as
+// "fix-now confirmed critical/high" instead of "anything confirmed", and a
+// "warning" as "medium impact, or high-but-unconfirmed".
+func sarifLevel(severity, status string) string {
+	switch normalizeSeverity(strings.ToLower(strings.TrimSpace(severity))) {
+	case "critical", "high":
+		if status == "confirmed" {
+			return "error"
+		}
+		return "warning"
+	case "medium":
+		return "warning"
+	case "low":
+		return "note"
+	default:
+		// Unknown/empty severity (a hand-written finding): keep the old
+		// status-only rule so the level never silently regresses to "note".
+		if status == "confirmed" {
+			return "error"
+		}
+		return "warning"
+	}
+}
+
+// verdictMessageText builds the self-describing headline for one classified
+// finding: severity, status, type, the variable in play, the function, and the
+// file:line, with the AI summary/reasoning as the explanation. A reviewer can
+// triage from this single line without opening the source — this replaces the
+// old "<type> in <function>: <summary>" which left severity/status implicit.
+func verdictMessageText(vulnType, function, file string, line int, variable, severity, status, summary string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "[%s · %s] %s", severity, status, vulnType)
+	if variable != "" {
+		fmt.Fprintf(&b, " on '%s'", variable)
+	}
+	if function != "" {
+		fmt.Fprintf(&b, " in %s", function)
+	}
+	if file != "" {
+		fmt.Fprintf(&b, " at %s:%d", shortFile(file), line)
+	}
+	if summary != "" {
+		fmt.Fprintf(&b, " — %s", summary)
+	}
+	return b.String()
+}
+
 // writeCandidatesSarif emits the candidate-stage machine-readable report.
 //
 // Every result is SARIF level "note": these are converged-but-unclassified
@@ -183,11 +233,20 @@ func (o *ScanOutput) writeCandidatesSarif(packages []*planner.PlanResult) error 
 				evidenceParts = append(evidenceParts, e.Detail)
 			}
 
+			candMsg := pkg.VulnerabilityType
+			if c.Target.Variable != "" {
+				candMsg += fmt.Sprintf(" on '%s'", c.Target.Variable)
+			}
+			candMsg += fmt.Sprintf(" in %s", c.Target.Function)
+			if len(evidenceParts) > 0 {
+				candMsg += ": " + strings.Join(evidenceParts, "; ")
+			}
+
 			result := sarifResult{
 				RuleID: cwe,
 				Level:  level,
 				Message: sarifMessage{
-					Text: fmt.Sprintf("%s in %s: %s", pkg.VulnerabilityType, c.Target.Function, strings.Join(evidenceParts, "; ")),
+					Text: candMsg,
 				},
 				Locations: []sarifLocation{{
 					PhysicalLocation: sarifPhysicalLocation{
@@ -310,10 +369,7 @@ func WriteSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding) e
 			rules = append(rules, sarifRule{ID: cwe, Name: vulnType})
 		}
 
-		level := "warning"
-		if status == "confirmed" {
-			level = "error"
-		}
+		level := sarifLevel(f.Severity, status)
 
 		// Keep the ABSOLUTE path so a viewer can double-click to the file,
 		// rendered as a file:// URI — a bare absolute path is not a valid URI,
@@ -335,8 +391,9 @@ func WriteSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding) e
 		if msg == "" {
 			msg = f.Evidence
 		}
-		if msg == "" {
-			msg = f.FunctionName
+		sev := strings.ToLower(strings.TrimSpace(f.Severity))
+		if sev == "" {
+			sev = "info"
 		}
 
 		// Embed the source region so the SARIF result is self-contained: a
@@ -361,7 +418,7 @@ func WriteSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding) e
 			RuleID: cwe,
 			Level:  level,
 			Message: sarifMessage{
-				Text: fmt.Sprintf("%s in %s: %s", vulnType, f.FunctionName, msg),
+				Text: verdictMessageText(vulnType, f.FunctionName, f.FilePath, f.LineNumber, f.Variable, sev, status, msg),
 			},
 			Locations: []sarifLocation{{PhysicalLocation: physical}},
 			PartialFingerprints: map[string]string{
@@ -372,15 +429,23 @@ func WriteSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding) e
 			},
 		}
 
-		if f.Reasoning != "" || f.ExceptionCheck != "" {
-			props := map[string]string{}
-			if f.Reasoning != "" {
-				props["reasoning"] = f.Reasoning
-			}
-			if f.ExceptionCheck != "" {
-				props["exception_check"] = f.ExceptionCheck
-			}
-			result.Properties = props
+		// Every result carries its severity, verdict, confidence, and type as a
+		// stable property bag so a SARIF viewer/CI policy can filter on them
+		// (the level alone is a 3-value summary of the same two axes).
+		result.Properties = map[string]string{
+			"severity":   sev,
+			"status":     status,
+			"confidence": fmt.Sprintf("%.0f%%", f.Confidence*100),
+			"vuln_type":  vulnType,
+		}
+		if f.Variable != "" {
+			result.Properties["variable"] = f.Variable
+		}
+		if f.Reasoning != "" {
+			result.Properties["reasoning"] = f.Reasoning
+		}
+		if f.ExceptionCheck != "" {
+			result.Properties["exception_check"] = f.ExceptionCheck
 		}
 		if f.FixStrategy != "" {
 			result.Fixes = []sarifFix{{Description: sarifMessage{Text: f.FixStrategy}}}

@@ -263,6 +263,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 			FilePath:       parseStringFlag(remaining, "file"),
 			LineNumber:     parseIntFlag(remaining, "line"),
 			FunctionName:   parseStringFlag(remaining, "function"),
+			Variable:       parseStringFlag(remaining, "variable"),
 			Properties:     parseStringFlag(remaining, "properties"),
 			Summary:        parseStringFlag(remaining, "summary"),
 			Reasoning:      parseStringFlag(remaining, "reasoning"),
@@ -497,6 +498,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 				FilePath:       in.File,
 				LineNumber:     in.Line,
 				FunctionName:   in.Function,
+				Variable:       in.Variable,
 				Summary:        in.Summary,
 				Reasoning:      in.Reasoning,
 				FixStrategy:    in.FixStrategy,
@@ -1205,6 +1207,7 @@ type findingInput struct {
 	File           string        `json:"file"`
 	Line           int           `json:"line"`
 	Function       string        `json:"function"`
+	Variable       string        `json:"variable"`
 	Summary        string        `json:"summary"`
 	Reasoning      string        `json:"reasoning"`
 	ExceptionCheck string        `json:"exception_check"`
@@ -1217,7 +1220,7 @@ type findingInput struct {
 // accepted shape. The hint is intentionally concrete and one line long.
 const writeJSONShapeHint = `Expected a JSON array of finding objects, e.g. ` +
 	`[{"rule_id":"CWE-476","severity":"high","confidence":90,"status":"confirmed",` +
-	`"file":"src/a.c","line":42,"function":"f","summary":"...","reasoning":"...",` +
+	`"file":"src/a.c","line":42,"function":"f","variable":"p","summary":"...","reasoning":"...",` +
 	`"exception_check":"...","fix_strategy":"..."}]. ` +
 	`A single finding object, or an object {"scan_id":"...","findings":[...]}, is also accepted.`
 

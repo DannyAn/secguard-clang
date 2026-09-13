@@ -16,6 +16,7 @@ func (f *Finding) ApplyStructuredFromProperties() {
 		Reasoning      string `json:"reasoning"`
 		FixStrategy    string `json:"fix_strategy"`
 		ExceptionCheck string `json:"exception_check"`
+		Variable       string `json:"variable"`
 	}
 	if err := json.Unmarshal([]byte(f.Properties), &p); err != nil {
 		return
@@ -31,6 +32,9 @@ func (f *Finding) ApplyStructuredFromProperties() {
 	}
 	if f.ExceptionCheck == "" {
 		f.ExceptionCheck = p.ExceptionCheck
+	}
+	if f.Variable == "" {
+		f.Variable = p.Variable
 	}
 }
 
@@ -179,6 +183,11 @@ type Finding struct {
 	FilePath        string  `json:"file_path"`
 	LineNumber      int     `json:"line_number"`
 	FunctionName    string  `json:"function_name"`
+	// Variable is the sink/source variable the finding is about (e.g. the
+	// dereferenced pointer, the leaked allocation). It is populated by the AI
+	// classifier from the candidate index and by the auto-confirm path from the
+	// candidate's target; it makes machine exports self-describing.
+	Variable        string  `json:"variable,omitempty"`
 	Properties      string  `json:"properties,omitempty"`
 	Summary         string  `json:"summary,omitempty"`
 	Reasoning       string  `json:"reasoning,omitempty"`

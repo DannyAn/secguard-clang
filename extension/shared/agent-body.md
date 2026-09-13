@@ -233,7 +233,7 @@ The `<type>.json` file MUST be a JSON array of objects with EXACTLY these keys
 ```json
 [
   {"rule_id":"CWE-476","severity":"high","confidence":90,"status":"confirmed",
-   "file":"src/a.c","line":42,"function":"f","summary":"...",
+   "file":"src/a.c","line":42,"function":"f","variable":"p","summary":"...",
    "reasoning":"...","exception_check":"...","fix_strategy":"..."}
 ]
 ```
@@ -241,9 +241,13 @@ The `<type>.json` file MUST be a JSON array of objects with EXACTLY these keys
 `rule_id` is the CWE (e.g. CWE-476); `status` is one of `confirmed` / `suspected`
 / `dismissed` — and ONLY those three (a skill's `false-positive` maps to
 `dismissed`). `file` is the source path, `line` the line number, `function` the
-function name. `reasoning`/`exception_check`/`fix_strategy` are optional strings
-(required for confirmed). Write a bare array with these exact key names. Do NOT
-rename the keys. If you do write a `{"scan_id": ..., "findings": [...]}` wrapper
+function name. `variable` is the sink/source variable the finding is about (the
+dereferenced pointer, the leaked allocation, the divisor, …) — copy it from the
+candidate `_index.md` **Variable** column when present; leave it out when the type
+has no single variable (hardcoded-secret, dangerous-function, deadlock, …). It is
+what makes `result.sarif` read as "dereference of 'p'" instead of "something in f".
+`reasoning`/`exception_check`/`fix_strategy` are optional strings (required for
+confirmed). Write a bare array with these exact key names. Do NOT rename the keys. If you do write a `{"scan_id": ..., "findings": [...]}` wrapper
 or a single finding object, the write still succeeds (the CLI accepts all three
 shapes and validates an embedded `scan_id` like `--scan-id`) — but the bare array
 is the contract; do not mix shapes in one file.

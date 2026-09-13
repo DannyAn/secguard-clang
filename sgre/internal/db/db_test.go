@@ -208,6 +208,34 @@ func TestStore_UpsertFinding_Idempotent(t *testing.T) {
 	}
 }
 
+func TestStore_FindingVariableRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	f := &Finding{
+		RuleID:       "CWE-476",
+		Severity:     "high",
+		Confidence:   0.9,
+		Status:       "confirmed",
+		FilePath:     "src/a.c",
+		LineNumber:   42,
+		FunctionName: "f",
+		Variable:     "p",
+		Summary:      "deref",
+		ScanID:       "sc_test",
+	}
+	if _, err := s.UpsertFinding(ctx, f); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	all, err := s.ListFindings(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 1 || all[0].Variable != "p" {
+		t.Errorf("variable must round-trip through findings, got %+v", all)
+	}
+}
+
 func TestStore_ReachableFromEntry(t *testing.T) {
 	ctx := context.Background()
 	s := NewTestStore(t)

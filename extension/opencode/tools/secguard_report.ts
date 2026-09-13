@@ -43,6 +43,10 @@ export default tool({
           file: tool.schema.string().describe("Source file path"),
           line: tool.schema.number().describe("Source line number"),
           function: tool.schema.string().describe("Function name"),
+          variable: tool.schema
+            .string()
+            .optional()
+            .describe("Sink/source variable the finding is about (dereferenced pointer, leaked allocation, divisor, …); copy from the candidate _index.md Variable column when present"),
           summary: tool.schema
             .string()
             .describe("One-paragraph summary of the vulnerability and its impact"),
@@ -131,6 +135,7 @@ export default tool({
         file: finding.file,
         line: finding.line,
         function: finding.function,
+        variable: finding.variable || "",
         summary: finding.summary || "",
         reasoning: finding.reasoning || "",
         exception_check: finding.exception_check || "",

@@ -72,8 +72,8 @@ func (s *store) InsertFinding(ctx context.Context, f *Finding) (int64, error) {
 	}
 	return withBusyRetryID(ctx, 3, func() (int64, error) {
 		res, err := s.exec.ExecContext(ctx,
-			`INSERT INTO findings (rule_id, severity, confidence, evidence, status, file_path, line_number, function_name, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			f.RuleID, f.Severity, f.Confidence, f.Evidence, f.Status, f.FilePath, f.LineNumber, f.FunctionName, f.Properties, f.Summary, f.Reasoning, f.FixStrategy, f.ExceptionCheck, f.ReviewStatus, f.ReviewReasoning, f.ScanID, f.Fingerprint, f.CreatedAt)
+			`INSERT INTO findings (rule_id, severity, confidence, evidence, status, file_path, line_number, function_name, variable, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			f.RuleID, f.Severity, f.Confidence, f.Evidence, f.Status, f.FilePath, f.LineNumber, f.FunctionName, f.Variable, f.Properties, f.Summary, f.Reasoning, f.FixStrategy, f.ExceptionCheck, f.ReviewStatus, f.ReviewReasoning, f.ScanID, f.Fingerprint, f.CreatedAt)
 		if err != nil {
 			return 0, fmt.Errorf("db: insert finding: %w", err)
 		}
@@ -114,13 +114,14 @@ func (s *store) UpsertFinding(ctx context.Context, f *Finding) (int64, error) {
 	return withBusyRetryID(ctx, 3, func() (int64, error) {
 		var id int64
 		err := s.exec.QueryRowContext(ctx,
-			`INSERT INTO findings (rule_id, severity, confidence, evidence, status, file_path, line_number, function_name, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`INSERT INTO findings (rule_id, severity, confidence, evidence, status, file_path, line_number, function_name, variable, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(scan_id, rule_id, file_path, line_number, function_name) DO UPDATE SET
 			   severity = excluded.severity,
 			   confidence = excluded.confidence,
 			   evidence = excluded.evidence,
 			   status = excluded.status,
+			   variable = excluded.variable,
 			   summary = excluded.summary,
 			   reasoning = excluded.reasoning,
 			   fix_strategy = excluded.fix_strategy,
@@ -128,7 +129,7 @@ func (s *store) UpsertFinding(ctx context.Context, f *Finding) (int64, error) {
 			   properties = excluded.properties,
 			   fingerprint = excluded.fingerprint
 			 RETURNING id`,
-			f.RuleID, f.Severity, f.Confidence, f.Evidence, f.Status, f.FilePath, f.LineNumber, f.FunctionName, f.Properties, f.Summary, f.Reasoning, f.FixStrategy, f.ExceptionCheck, f.ReviewStatus, f.ReviewReasoning, f.ScanID, f.Fingerprint, f.CreatedAt).Scan(&id)
+			f.RuleID, f.Severity, f.Confidence, f.Evidence, f.Status, f.FilePath, f.LineNumber, f.FunctionName, f.Variable, f.Properties, f.Summary, f.Reasoning, f.FixStrategy, f.ExceptionCheck, f.ReviewStatus, f.ReviewReasoning, f.ScanID, f.Fingerprint, f.CreatedAt).Scan(&id)
 		if err != nil {
 			return 0, fmt.Errorf("db: upsert finding: %w", err)
 		}
@@ -138,7 +139,7 @@ func (s *store) UpsertFinding(ctx context.Context, f *Finding) (int64, error) {
 
 func (s *store) ListFindings(ctx context.Context) ([]*Finding, error) {
 	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, rule_id, severity, confidence, evidence, status, file_path, line_number, function_name, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at FROM findings ORDER BY id`)
+		`SELECT id, rule_id, severity, confidence, evidence, status, file_path, line_number, function_name, variable, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at FROM findings ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("db: list findings: %w", err)
 	}
@@ -148,7 +149,7 @@ func (s *store) ListFindings(ctx context.Context) ([]*Finding, error) {
 
 func (s *store) ListFindingsByStatus(ctx context.Context, status string) ([]*Finding, error) {
 	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, rule_id, severity, confidence, evidence, status, file_path, line_number, function_name, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at FROM findings WHERE status = ? ORDER BY id`, status)
+		`SELECT id, rule_id, severity, confidence, evidence, status, file_path, line_number, function_name, variable, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at FROM findings WHERE status = ? ORDER BY id`, status)
 	if err != nil {
 		return nil, fmt.Errorf("db: list findings by status: %w", err)
 	}
@@ -161,7 +162,7 @@ func scanFindings(rows *sql.Rows) ([]*Finding, error) {
 	for rows.Next() {
 		f := &Finding{}
 		var scanID, fingerprint sql.NullString
-		if err := rows.Scan(&f.ID, &f.RuleID, &f.Severity, &f.Confidence, &f.Evidence, &f.Status, &f.FilePath, &f.LineNumber, &f.FunctionName, &f.Properties, &f.Summary, &f.Reasoning, &f.FixStrategy, &f.ExceptionCheck, &f.ReviewStatus, &f.ReviewReasoning, &scanID, &fingerprint, &f.CreatedAt); err != nil {
+		if err := rows.Scan(&f.ID, &f.RuleID, &f.Severity, &f.Confidence, &f.Evidence, &f.Status, &f.FilePath, &f.LineNumber, &f.FunctionName, &f.Variable, &f.Properties, &f.Summary, &f.Reasoning, &f.FixStrategy, &f.ExceptionCheck, &f.ReviewStatus, &f.ReviewReasoning, &scanID, &fingerprint, &f.CreatedAt); err != nil {
 			return nil, fmt.Errorf("db: scan finding: %w", err)
 		}
 		f.ScanID = scanID.String
@@ -173,10 +174,10 @@ func scanFindings(rows *sql.Rows) ([]*Finding, error) {
 
 func (s *store) GetFindingByID(ctx context.Context, id int64) (*Finding, error) {
 	row := s.exec.QueryRowContext(ctx,
-		`SELECT id, rule_id, severity, confidence, evidence, status, file_path, line_number, function_name, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at FROM findings WHERE id = ?`, id)
+		`SELECT id, rule_id, severity, confidence, evidence, status, file_path, line_number, function_name, variable, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at FROM findings WHERE id = ?`, id)
 	f := &Finding{}
 	var scanID, fingerprint sql.NullString
-	if err := row.Scan(&f.ID, &f.RuleID, &f.Severity, &f.Confidence, &f.Evidence, &f.Status, &f.FilePath, &f.LineNumber, &f.FunctionName, &f.Properties, &f.Summary, &f.Reasoning, &f.FixStrategy, &f.ExceptionCheck, &f.ReviewStatus, &f.ReviewReasoning, &scanID, &fingerprint, &f.CreatedAt); err != nil {
+	if err := row.Scan(&f.ID, &f.RuleID, &f.Severity, &f.Confidence, &f.Evidence, &f.Status, &f.FilePath, &f.LineNumber, &f.FunctionName, &f.Variable, &f.Properties, &f.Summary, &f.Reasoning, &f.FixStrategy, &f.ExceptionCheck, &f.ReviewStatus, &f.ReviewReasoning, &scanID, &fingerprint, &f.CreatedAt); err != nil {
 		return nil, fmt.Errorf("db: get finding by id: %w", err)
 	}
 	f.ScanID = scanID.String
