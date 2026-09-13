@@ -87,8 +87,19 @@ func TestWriteXlsxFromFindings_ExcludesDismissed(t *testing.T) {
 	if got, _ := f.GetCellValue("Findings", "E3"); got != "confirmed" {
 		t.Errorf("E3 status = %q, want confirmed", got)
 	}
-	if got, _ := f.GetCellValue("Findings", "L3"); got != "if (p == NULL) return -1;" {
-		t.Errorf("L3 fix strategy = %q, want the confirmed finding's fix", got)
+	if got, _ := f.GetCellValue("Findings", "P3"); got != "if (p == NULL) return -1;" {
+		t.Errorf("P3 fix strategy = %q, want the confirmed finding's fix", got)
+	}
+	// The 确认状态 column seeds every row with 未确认 for the reviewer.
+	if got, _ := f.GetCellValue("Findings", "G2"); got != "未确认" {
+		t.Errorf("G2 确认状态 = %q, want 未确认", got)
+	}
+	if got, _ := f.GetCellValue("Findings", "G3"); got != "未确认" {
+		t.Errorf("G3 确认状态 = %q, want 未确认", got)
+	}
+	// Data rows must be collapsed to 25pt by default.
+	if h, err := f.GetRowHeight("Findings", 2); err != nil || h != 25 {
+		t.Errorf("row 2 height = %v (err=%v), want 25", h, err)
 	}
 
 	// The dismissed finding must not leak into the export.
@@ -136,8 +147,8 @@ func TestWriteXlsxFromFindings_MissingSourceOmitsSnippet(t *testing.T) {
 	if got, _ := f.GetCellValue("Findings", "B2"); got != "null-deref" {
 		t.Errorf("row must still be written with no source file; B2 = %q", got)
 	}
-	if got, _ := f.GetCellValue("Findings", "M2"); got != "" {
-		t.Errorf("M2 snippet = %q, want empty when source is missing", got)
+	if got, _ := f.GetCellValue("Findings", "Q2"); got != "" {
+		t.Errorf("Q2 snippet = %q, want empty when source is missing", got)
 	}
 }
 
@@ -164,11 +175,11 @@ func TestWriteXlsxFromFindings_EmbedsCodeContext(t *testing.T) {
 	}
 	defer f.Close()
 
-	snippet, _ := f.GetCellValue("Findings", "M2")
+	snippet, _ := f.GetCellValue("Findings", "Q2")
 	if !strings.Contains(snippet, "> 20 |") {
-		t.Errorf("M2 snippet missing the finding-line marker `> 20 |`:\n%s", snippet)
+		t.Errorf("Q2 snippet missing the finding-line marker `> 20 |`:\n%s", snippet)
 	}
 	if !strings.Contains(snippet, "int line_5") || !strings.Contains(snippet, "int line_35") {
-		t.Errorf("M2 snippet should carry ±%d context, got:\n%s", ContextLines, snippet)
+		t.Errorf("Q2 snippet should carry ±%d context, got:\n%s", ContextLines, snippet)
 	}
 }

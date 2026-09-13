@@ -16,15 +16,19 @@ import (
 // the writer and the test both read it so a reorder is caught in CI.
 var xlsxHeaders = []string{
 	"序号", "漏洞类型", "CWE", "严重级别", "结论", "置信度",
+	"确认状态", "确认者", "确认备注", "确认时间",
 	"文件", "行号", "函数", "问题摘要", "详细分析", "修复建议", "代码上下文",
 }
 
 // xlsxColumnWidths maps each column letter to its width (in Excel character
 // units). Long text columns get room to wrap; the source-context column is the
-// widest so a gutter-numbered C block stays readable.
+// widest so a gutter-numbered C block stays readable. The four 确认* columns are
+// the reviewer's manual confirmation fields, kept narrow and grouped right after
+// the AI verdict so a statistician fills them without scrolling to the code.
 var xlsxColumnWidths = map[string]float64{
 	"A": 6, "B": 16, "C": 12, "D": 10, "E": 10, "F": 8,
-	"G": 40, "H": 8, "I": 24, "J": 40, "K": 50, "L": 50, "M": 70,
+	"G": 10, "H": 12, "I": 30, "J": 18,
+	"K": 40, "L": 8, "M": 24, "N": 40, "O": 50, "P": 50, "Q": 70,
 }
 
 // WriteXlsxFromFindings regenerates result.xlsx from the AI's persisted
@@ -162,19 +166,23 @@ func WriteXlsxFromFindings(xlsxPath, rootDir string, findings []*db.Finding) err
 		ctx := readCodeContext(finding.FilePath, finding.LineNumber, ContextLines, sourceRoot)
 		snippet := numberedContext(ctx)
 
-		// Column A is the 1-based sequence number.
+		// Column A is the 1-based sequence number. The four 确认* columns are
+		// the reviewer's manual fields: 确认状态 seeds "未确认"; 确认者/确认备注/
+		// 确认时间 are left blank for the reviewer to fill (ticket number, reason
+		// for a non-issue, or reviewer/time of confirmation).
 		cells := map[string]interface{}{
 			"A": i + 1,
 			"B": r.vulnType,
 			"C": r.cwe,
 			"D": severity,
 			"E": finding.FinalStatus(),
-			"G": displayPath(finding.FilePath, sourceRoot),
-			"I": finding.FunctionName,
-			"J": summary,
-			"K": reasoning,
-			"L": finding.FixStrategy,
-			"M": snippet,
+			"G": "未确认",
+			"K": displayPath(finding.FilePath, sourceRoot),
+			"M": finding.FunctionName,
+			"N": summary,
+			"O": reasoning,
+			"P": finding.FixStrategy,
+			"Q": snippet,
 		}
 		if finding.Confidence > 0 {
 			cells["F"] = finding.Confidence
@@ -182,9 +190,9 @@ func WriteXlsxFromFindings(xlsxPath, rootDir string, findings []*db.Finding) err
 			cells["F"] = ""
 		}
 		if finding.LineNumber > 0 {
-			cells["H"] = finding.LineNumber
+			cells["L"] = finding.LineNumber
 		} else {
-			cells["H"] = ""
+			cells["L"] = ""
 		}
 
 		for col, val := range cells {
@@ -193,6 +201,13 @@ func WriteXlsxFromFindings(xlsxPath, rootDir string, findings []*db.Finding) err
 				return err
 			}
 		}
+		// Collapse every data row to a fixed 25pt: the embedded source-context
+		// cell makes Excel auto-size rows tall, which is hostile to a reviewer
+		// scanning many findings. An engineer drags a single row taller to read
+		// its code.
+		if err := f.SetRowHeight(sheet, rIdx, 25); err != nil {
+			return err
+		}
 	}
 
 	lastRow := len(rows) + 1
@@ -200,7 +215,19 @@ func WriteXlsxFromFindings(xlsxPath, rootDir string, findings []*db.Finding) err
 		if err := f.SetRowStyle(sheet, 2, lastRow, bodyStyle); err != nil {
 			return err
 		}
-		if err := f.SetColStyle(sheet, "M", codeStyle); err != nil {
+		if err := f.SetColStyle(sheet, "Q", codeStyle); err != nil {
+			return err
+		}
+
+		// 确认状态 is a two-value choice; constrain it with a dropdown so a
+		// reviewer cannot type an arbitrary status and break downstream counting.
+		dv := excelize.NewDataValidation(true)
+		if err := dv.SetDropList([]string{"未确认", "已确认"}); err != nil {
+			return err
+		}
+		dv.SetSqref(fmt.Sprintf("G2:G%d", lastRow))
+		dv.SetError(excelize.DataValidationErrorStyleStop, "确认状态", "请选择 未确认 或 已确认")
+		if err := f.AddDataValidation(sheet, dv); err != nil {
 			return err
 		}
 	}
@@ -222,14 +249,14 @@ func WriteXlsxFromFindings(xlsxPath, rootDir string, findings []*db.Finding) err
 		return err
 	}
 
-	if err := f.AutoFilter(sheet, fmt.Sprintf("A1:M%d", lastRow), nil); err != nil {
+	if err := f.AutoFilter(sheet, fmt.Sprintf("A1:Q%d", lastRow), nil); err != nil {
 		return err
 	}
 
 	return f.SaveAs(xlsxPath)
 }
 
-// columnIndex maps a column letter ("A".."M") to its 1-based index. It is the
+// columnIndex maps a column letter ("A".."Q") to its 1-based index. It is the
 // inverse of excelize.CoordinatesToCellName for the single-letter range used
 // here, so the writer can address cells by letter regardless of row.
 func columnIndex(col string) int {
