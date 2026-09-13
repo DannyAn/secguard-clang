@@ -2,10 +2,11 @@
 name: format-string
 description: Classify format string vulnerability evidence — printf-family called with non-literal format argument. Maps to CWE-134.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-134
   severity: HIGH
+  domain: security
 ---
 
 ## Format String Vulnerability Analysis (CWE-134)

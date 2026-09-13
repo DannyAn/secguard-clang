@@ -2,11 +2,11 @@
 name: integer-overflow
 description: Classify integer overflow evidence — ARITH_OVERFLOW events from size calculations feeding malloc/memcpy. Maps to CWE-190.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-190
   severity: HIGH
-  domain: boundary
+  domain: semantic
 ---
 
 ## Integer Overflow Analysis (CWE-190)

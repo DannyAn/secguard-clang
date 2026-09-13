@@ -2,10 +2,11 @@
 name: resource-leak
 description: Classify resource leak evidence — RESOURCE_ACQUIRE events where a file descriptor, socket, or handle is acquired but not released on all paths. Maps to CWE-404.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-404
   severity: MEDIUM
+  domain: resource
 ---
 
 ## Resource Leak Analysis (CWE-404)

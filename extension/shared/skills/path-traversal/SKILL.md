@@ -2,10 +2,11 @@
 name: path-traversal
 description: Classify path-traversal evidence — a filesystem sink receiving a non-literal path argument. Maps to CWE-22.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-22
   severity: HIGH
+  domain: security
 ---
 
 ## Path Traversal Analysis (CWE-22)

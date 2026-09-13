@@ -2,10 +2,11 @@
 name: memory-leak
 description: Classify memory leak evidence — MEMORY_ALLOC without matching MEMORY_RELEASE on all paths. Maps to CWE-401.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-401
   severity: MEDIUM
+  domain: memory
 ---
 
 ## Memory Leak Analysis (CWE-401)

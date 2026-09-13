@@ -2,11 +2,11 @@
 name: out-of-bounds
 description: Classify out-of-bounds read evidence — BUFFER_ACCESS events with array_oob_read/heap_oob_read categories. Maps to CWE-125.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-125
   severity: HIGH
-  domain: boundary
+  domain: memory
 ---
 
 ## Out-of-Bounds Analysis (CWE-125)

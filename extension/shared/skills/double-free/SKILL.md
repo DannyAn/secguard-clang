@@ -2,10 +2,11 @@
 name: double-free
 description: Classify double-free evidence — same variable freed twice. Maps to CWE-415.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-415
   severity: CRITICAL
+  domain: memory
 ---
 
 ## Double-Free Analysis (CWE-415)

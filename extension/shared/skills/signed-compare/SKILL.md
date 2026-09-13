@@ -2,10 +2,11 @@
 name: signed-compare
 description: Classify signed-compare evidence — an unsigned variable compared with zero/negative, which is always false. Maps to CWE-681/CWE-195.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-681
   severity: MEDIUM
+  domain: security
 ---
 
 ## Signed/Unsigned Comparison Analysis (CWE-681 / CWE-195)

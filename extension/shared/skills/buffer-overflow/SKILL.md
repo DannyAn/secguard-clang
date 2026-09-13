@@ -2,10 +2,11 @@
 name: buffer-overflow
 description: Classify buffer overflow evidence — BUFFER_ACCESS events from unsafe memcpy/strcpy/sprintf/strcat calls, array/heap out-of-bounds writes, and format overflow. Maps to CWE-787.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-787
   severity: HIGH
+  domain: memory
 ---
 
 ## Buffer Overflow Analysis (CWE-787)

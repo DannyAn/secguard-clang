@@ -2,10 +2,11 @@
 name: sizeof-misuse
 description: Classify sizeof-misuse evidence — sizeof applied to a pointer variable inside a size context. Maps to CWE-467/CWE-468.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-467
   severity: HIGH
+  domain: memory
 ---
 
 ## sizeof Misuse Analysis (CWE-467 / CWE-468)

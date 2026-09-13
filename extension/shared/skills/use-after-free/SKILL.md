@@ -6,6 +6,7 @@ compatibility: opencode
 metadata:
   cwe: CWE-416
   severity: CRITICAL
+  domain: memory
 ---
 
 ## Use-After-Free Analysis (CWE-416)

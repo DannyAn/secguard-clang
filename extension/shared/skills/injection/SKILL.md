@@ -2,10 +2,11 @@
 name: injection
 description: Classify injection evidence — command injection (system/popen) and SQL injection (sprintf+sqlite3_exec). Maps to CWE-78, CWE-89.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-78
   severity: CRITICAL
+  domain: security
 ---
 
 ## Injection Analysis (CWE-78, CWE-89)

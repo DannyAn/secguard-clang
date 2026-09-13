@@ -2,10 +2,11 @@
 name: divide-by-zero
 description: Classify divide-by-zero / modulo-by-zero evidence — a divisor that is not a provably non-zero constant. Maps to CWE-369.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-369
   severity: HIGH
+  domain: semantic
 ---
 
 ## Divide By Zero Analysis (CWE-369)

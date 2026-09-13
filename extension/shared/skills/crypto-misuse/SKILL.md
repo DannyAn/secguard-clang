@@ -2,11 +2,11 @@
 name: crypto-misuse
 description: Classify cryptographic misuse evidence — weak algorithms, weak PRNG, and undersized keys. Maps to CWE-327.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-327
   severity: HIGH
-  domain: crypto
+  domain: security
 ---
 
 ## Cryptographic Misuse Analysis (CWE-327)

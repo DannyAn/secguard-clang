@@ -2,10 +2,11 @@
 name: signal-handler
 description: Classify signal handler evidence — a signal(2) handler that calls a non-async-signal-safe libc function. Maps to CWE-479.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-479
   severity: HIGH
+  domain: security
 ---
 
 ## Signal Handler Analysis (CWE-479)

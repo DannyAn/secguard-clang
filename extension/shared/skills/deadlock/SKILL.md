@@ -2,7 +2,7 @@
 name: deadlock
 description: Classify deadlock evidence — lock-order inversion and nested locking patterns. Maps to CWE-667.
 license: MIT
-compatibility: opencode
+compatibility: opencoopencode,claude code,DSHde
 metadata:
   cwe: CWE-667
   severity: HIGH

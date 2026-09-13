@@ -2,10 +2,11 @@
 name: null-deref
 description: Classify null dereference evidence — NULL_VALUE source, DEREFERENCE event, NULL_GUARD counter-evidence. Maps to CWE-476.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-476
   severity: HIGH
+  domain: memory
 ---
 
 ## Null Dereference Analysis (CWE-476)

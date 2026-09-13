@@ -2,10 +2,11 @@
 name: unchecked-return
 description: Classify unchecked-return evidence — an allocation/I/O call whose return value is neither compared nor stored into a checked variable. Maps to CWE-252.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-252
   severity: HIGH
+  domain: semantic
 ---
 
 ## Unchecked Return Value Analysis (CWE-252)

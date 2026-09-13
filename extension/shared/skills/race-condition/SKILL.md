@@ -2,7 +2,7 @@
 name: race-condition
 description: Classify race condition evidence — TOCTOU (access→fopen), shared-state (lock→unlock→mutate), and classic shared-variable data races in pthread code. Maps to CWE-362.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-362
   severity: HIGH

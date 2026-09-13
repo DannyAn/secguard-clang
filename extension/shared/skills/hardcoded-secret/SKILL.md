@@ -2,7 +2,7 @@
 name: hardcoded-secret
 description: Classify hardcoded secret evidence — hardcoded passwords, API keys, tokens, and credential persistence. Maps to CWE-798.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-798
   severity: CRITICAL

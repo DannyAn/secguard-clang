@@ -2,10 +2,11 @@
 name: dangerous-function
 description: Classify dangerous-function evidence — a call to a banned/obsolete libc function. Maps to CWE-676.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-676
   severity: MEDIUM
+  domain: security
 ---
 
 ## Dangerous Function Analysis (CWE-676)
