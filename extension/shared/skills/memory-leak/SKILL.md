@@ -51,3 +51,18 @@ malloc → if (error) { free(p); return; }  ← SAFE (free on all paths)
 - Use RAII pattern: `ResourceHandle *h = ResourceHandle_create(n); ... ResourceHandle_destroy(h);`
 - Use cleanup attribute: `__attribute__((cleanup(free_fn)))`
 - Ensure ownership is clear: document who is responsible for freeing
+
+### Severity Matrix
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
+| Shape | Lifetime / frequency | Severity |
+|-------|---------------------|----------|
+| One-shot allocation, low call frequency / short lifetime | Low | MEDIUM |
+| Long-lived service, or a per-request / per-iteration leak | High | HIGH |
+| Unbounded continuous leak → resource exhaustion / service restart | Unbounded | CRITICAL |
+| Ownership unsettled (stored in global/static, may be freed elsewhere) | Unsettled | MEDIUM (suspected; LOW if one-shot) |

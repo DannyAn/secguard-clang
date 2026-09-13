@@ -46,8 +46,15 @@ A format-string candidate has:
 - Never pass user-controlled data as the format argument
 
 ### Severity Matrix
-| Pattern | Severity |
-|---------|----------|
-| printf(user_controlled) | CRITICAL (can read/write arbitrary memory) |
-| printf(variable) | HIGH (may be exploitable depending on source) |
-| syslog(priority, variable) | HIGH (can leak stack data) |
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
+| Shape | Severity |
+|-------|----------|
+| `printf`/`sprintf` with user-controlled format | CRITICAL (arbitrary read/write) |
+| Non-literal format variable, source unknown | HIGH (suspected) |
+| `syslog`/`err`/`warn` with non-literal format | HIGH (stack data leak) |

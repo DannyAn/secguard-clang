@@ -40,9 +40,16 @@ A null-deref candidate has:
 - For function returns: check API contract — does it document NULL return?
 
 ### Severity Matrix
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
 | Source | Guard | Severity |
 |--------|-------|----------|
-| malloc | none | HIGH |
-| function return | none | HIGH |
-| external call | none | MEDIUM |
-| any | partial | MEDIUM (suspected) |
+| malloc return | none, deref reachable | HIGH |
+| function return NULL | none, deref reachable | HIGH |
+| external call return | none (may never be NULL) | MEDIUM (suspected) |
+| any | partial guard (misses the deref) | MEDIUM (suspected) |

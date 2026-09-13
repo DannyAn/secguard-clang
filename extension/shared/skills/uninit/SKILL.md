@@ -44,7 +44,14 @@ An uninit candidate has:
 - Prefer `calloc` over `malloc` for a buffer that is read before a full write
 
 ### Severity Matrix
-| Initialization shape | Severity |
-|----------------------|----------|
-| Uninitialized on all paths | HIGH |
-| Conditionally initialized (some paths) | MEDIUM (suspected) |
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
+| Shape | Severity |
+|-------|----------|
+| Uninitialized value used on all paths as control (pointer / index / branch) or leaking stack/heap contents | HIGH |
+| Conditionally initialized (only some paths) | MEDIUM (suspected) |

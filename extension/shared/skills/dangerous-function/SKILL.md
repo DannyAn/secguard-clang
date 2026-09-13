@@ -48,6 +48,15 @@ not a may-analysis). `strcpy`/`sprintf`/`system` are deliberately NOT in this li
 - `bcmp`/`bcopy`/`bzero` → `memcmp`/`memmove`/`memset`
 
 ### Severity Matrix
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
 | Shape | Severity |
 |-------|----------|
-| Call to a banned/obsolete function | MEDIUM (policy violation) |
+| `gets` (unbounded read → memory safety) | HIGH |
+| `mktemp` / `tmpnam` (predictable temp file → symlink attack) | HIGH |
+| Other obsolete/banned functions (`gethostbyname`, `bcopy`, `bzero`, …) | MEDIUM (policy violation) |

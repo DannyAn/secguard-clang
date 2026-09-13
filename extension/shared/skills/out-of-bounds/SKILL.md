@@ -44,3 +44,16 @@ index past a known size, or a loop bound that provably overruns it).
 - Change the loop to `i < arr_size` or `i <= arr_size - 1`
 - Check the index against the allocation size before dereferencing
 - Use `snprintf`-style sized APIs when reading from formatted buffers
+
+### Severity Matrix
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
+| Shape | Severity |
+|-------|----------|
+| Provable OOB read of adjacent memory (info disclosure) | HIGH |
+| OOB read leaking a sensitive adjacent buffer (secrets / canary) | CRITICAL |

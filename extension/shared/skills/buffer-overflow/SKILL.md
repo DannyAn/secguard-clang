@@ -97,3 +97,18 @@ vs. bounded distinction.
 - Add bounds check: `if (n > sizeof(dst)) return -1;`
 - Use safe wrapper: `SafeCopy_copy(&buf, src, len)`
 - For arrays: `if (index >= array_size) return -1;`
+
+### Severity Matrix
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
+| Shape | Severity |
+|-------|----------|
+| Unsafe write with attacker-controlled length/size, unguarded (`buffer_overflow`, `bounded_copy_var_size`, `secure_copy_var_size`, `secure_scanf_var_size` with a tainted operand) | CRITICAL |
+| Proved constant out-of-bounds WRITE (`array_oob_write` / `heap_oob_write` / `format_overflow` / `bounded_copy_overflow` / `secure_copy_overflow` / `secure_scanf_overflow`) | HIGH |
+| Non-constant source, caller-influenced but unproven (`format_overflow_var`) | HIGH (suspected) |
+| `secure_constraint_violation` (truncate/abort by the `_s` handler, no actual overflow) | MEDIUM |

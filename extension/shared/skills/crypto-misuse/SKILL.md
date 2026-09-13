@@ -64,3 +64,19 @@ metadata:
 - RSA keys: minimum 2048 bits (3072 recommended for 2030+)
 - Use vetted crypto libraries (OpenSSL, libsodium, BoringSSL) — never roll your own
 - For hashing passwords: use bcrypt, scrypt, or Argon2 (not raw SHA-256)
+
+### Severity Matrix
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
+| Shape | Severity |
+|-------|----------|
+| Weak hash (MD5/SHA-1) for password storage / verification | CRITICAL |
+| Weak algorithm (DES/3DES/RC4/MD5/SHA-1) in a security role | HIGH |
+| Weak PRNG (`rand()`/`random()`) for tokens/keys/nonces | HIGH |
+| Undersized key (RSA < 2048, AES < 128) | MEDIUM |
+| `rand()` for non-security purposes (UI, testing) | MEDIUM (suspected) |

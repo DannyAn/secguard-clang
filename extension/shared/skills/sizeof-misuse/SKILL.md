@@ -38,3 +38,17 @@ A sizeof-misuse candidate has:
 ### Common False Positives
 - `sizeof(char*)` used intentionally (array of pointers)
 - A macro that expands `sizeof(*p)` but is text-matched as `sizeof(p)`
+
+### Severity Matrix
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
+| Shape | Severity |
+|-------|----------|
+| `sizeof_pointer` feeding malloc/memset/memcpy (pointer width where object width meant) | HIGH |
+| `memset(p, 0, sizeof(p))` — zeroes only a pointer width | HIGH |
+| `sizeof_pointer_ambig` (pointer-to-pointer / pointer typedef) | MEDIUM (suspected) |

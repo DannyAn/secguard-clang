@@ -35,3 +35,17 @@ An unchecked-return candidate has:
 ### Common False Positives
 - Assignment followed by a check in a macro or helper (`xmalloc` wrappers)
 - `read()` used where a short read is acceptable (e.g. `read(fd, &ch, 1)` loops)
+
+### Severity Matrix
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
+| Shape | Severity |
+|-------|----------|
+| `malloc`/`calloc` result dereferenced with no NULL check | HIGH |
+| `read`/`recv`/`fread` return ignored AND the buffer is used (uninit/partial) | MEDIUM |
+| Return ignored but result never used / short read acceptable | LOW |

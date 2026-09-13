@@ -59,3 +59,17 @@ if (strncmp(resolved, BASE_DIR, strlen(BASE_DIR)) != 0) return -1;
 // 4. Only now touch the filesystem
 FILE *f = fopen(resolved, "r");
 ```
+
+### Severity Matrix
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
+| Shape | Severity |
+|-------|----------|
+| Tainted path reaches a write/delete sink (`unlink`/`remove`/`rename`) | CRITICAL |
+| Tainted path reaches a read sink (`fopen`/`open`/`opendir`) | HIGH |
+| Path parameter with no provable tainted caller | MEDIUM (suspected) |

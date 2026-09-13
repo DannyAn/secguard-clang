@@ -43,8 +43,15 @@ A use-after-free candidate has:
 - Consider using use-after-free sanitizers (ASan) during testing
 
 ### Severity Matrix
-| Pattern | Severity |
-|---------|----------|
-| free + dereference | CRITICAL |
-| free + pass to function | HIGH |
-| free + use in different function | HIGH (suspected) |
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
+| Shape | Severity |
+|-------|----------|
+| free + dereference (same function, no re-alloc) | CRITICAL |
+| free + pass to function (same function) | HIGH |
+| free + use in a different function (interprocedural) | HIGH (suspected) |

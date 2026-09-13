@@ -134,6 +134,24 @@ the directory.
 - No guard, reachable, nullable source, data flow to deref → confirmed
 - **Only report findings for pipeline-supported vulnerability types** — i.e. the types returned by `secguard types`. Do NOT persist findings for CWE types outside the pipeline's coverage; note them as observations in your report instead.
 
+### Severity selection
+
+`severity` is NOT the skill's `metadata.severity` copied verbatim — that front-matter
+field is a per-type **default**, never a per-finding ceiling. Choose each finding's
+`severity` from its skill's **Severity Matrix**, independently of `status`:
+
+- `status` (confirmed / suspected / dismissed) = the evidence verdict; `severity`
+  (low / medium / high / critical) = the impact. They are orthogonal, so
+  `confirmed + medium`, `confirmed + critical`, and `suspected + high` are all
+  legal combinations.
+- Match the **shape** and its **reachability / exposure** (attacker-controlled →
+  up; bounded/local → down; for leaks, long-lived / per-request → up and
+  one-shot → down), not just the CWE number.
+- A `suspected` finding is capped at most one notch below its confirmed twin (an
+  evidence discount), never below `low`. A `dismissed` finding → `low`.
+- Use only the schema's five values (`critical` / `high` / `medium` / `low` /
+  `info`); `info` is the empty-value fallback, not a real verdict.
+
 ### Source paths
 `candidates/<type>/_index.md` shows paths relative to the scan target (its
 `File:Line` column); the `## Location` block of each

@@ -46,3 +46,18 @@ A divide-by-zero candidate has:
 - `x % sizeof(int)` — compile-time constant (safe)
 - A divisor that is checked `if (n == 0) return;` immediately before (needs flow verification)
 - A divisor reassigned to a provably non-zero constant before the division (`d = 0; d = 1; x / d`) — the convergence range flow proves it non-zero and suppresses it
+
+### Severity Matrix
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
+| Shape | Severity |
+|-------|----------|
+| Divisor attacker-controlled (argv/getenv/recv) and unguarded → reachable crash | HIGH |
+| Provable certain divide-by-zero (`d = 0; x / d`) | HIGH |
+| Auto-confirmed struct-field / global divisor (defensive-check gap) | MEDIUM |
+| Divisor origin unsettled | MEDIUM (suspected) |

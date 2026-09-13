@@ -61,3 +61,17 @@ metadata:
 - SQL: Use prepared statements with parameter binding
 - Input validation: Use whitelist, not blacklist
 - Format strings: Use `printf("%s", user_input)`, never `printf(user_input)`
+
+### Severity Matrix
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
+| Shape | Severity |
+|-------|----------|
+| Command injection: tainted input reaches `system`/`popen` | CRITICAL |
+| SQL injection: tainted input reaches a concatenated/sprintf query | CRITICAL |
+| TOCTOU / unproven taint reaching the sink | HIGH (suspected) |

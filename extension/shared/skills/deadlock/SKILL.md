@@ -2,7 +2,7 @@
 name: deadlock
 description: Classify deadlock evidence — lock-order inversion and nested locking patterns. Maps to CWE-667.
 license: MIT
-compatibility: opencoopencode,claude code,DSHde
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-667
   severity: HIGH
@@ -55,3 +55,17 @@ A deadlock candidate has:
 - Use lock-free data structures where possible (atomics, RCU)
 - Run with ThreadSanitizer (TSan) to detect lock-order issues at runtime
 - Use lock-ordering linters or static analysis to enforce the hierarchy
+
+### Severity Matrix
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
+| Shape | Severity |
+|-------|----------|
+| Lock-order inversion cycle (confirmed) | HIGH |
+| Self-deadlock (non-recursive re-lock) | HIGH |
+| Cycle that includes a `pthread_mutex_timedlock` acquisition | MEDIUM (suspected — timeout allows recovery) |

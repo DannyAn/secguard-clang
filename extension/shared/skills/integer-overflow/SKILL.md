@@ -78,3 +78,18 @@ overflow is realistic and should be **confirmed**; if it is a bounded length
 - Use compiler builtins: `__builtin_mul_overflow(count, elem_size, &total)`
 - Use checked-allocation wrappers that validate internally
 - Clamp `count` to a reasonable maximum before arithmetic
+
+### Severity Matrix
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
+| Shape | Severity |
+|-------|----------|
+| Overflow feeds an allocation/copy size with an attacker-controlled operand → undersized alloc → later heap overflow | CRITICAL |
+| Overflow feeds malloc/memcpy size, bounded operand, no check | HIGH |
+| `possible` tier (unsigned wraparound inside a bounds check, not proven reachable) | MEDIUM (possible) |
+| Signed `int` arithmetic feeding malloc (sign-conversion risk) | MEDIUM (suspected) |

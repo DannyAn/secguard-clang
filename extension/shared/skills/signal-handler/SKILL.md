@@ -47,6 +47,13 @@ it. `read`/`write`/`open`/`close`/`socket`/`send`/`recv`/`connect`/`fcntl`/`fork
 - Never allocate or take a lock in a signal handler
 
 ### Severity Matrix
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
 | Shape | Severity |
 |-------|----------|
 | Direct call to a non-async-signal-safe function in a registered handler | HIGH |

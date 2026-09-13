@@ -43,8 +43,16 @@ A double-free candidate has:
 - Use RAII patterns where available
 
 ### Severity Matrix
-| Pattern | Severity |
-|---------|----------|
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
+| Shape | Severity |
+|-------|----------|
 | Unconditional double free | CRITICAL |
 | Conditional double free (same condition) | CRITICAL |
-| Conditional double free (different branches) | LOW (likely false positive) |
+| Double free across different functions (interprocedural) | HIGH (suspected) |
+| Conditional double free (mutually exclusive branches) | LOW (likely false positive) |

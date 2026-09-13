@@ -75,8 +75,16 @@ close(fd);
 - Do not hand a raw handle to a callee whose ownership contract is unclear
 
 ### Severity Matrix
-| Acquire/release shape | Severity |
-|-----------------------|----------|
-| No release on any path | HIGH |
-| Released on the success path only | HIGH |
-| Release may happen in a callee (unsettled) | MEDIUM (suspected) |
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
+| Shape | Lifetime / frequency | Severity |
+|-------|---------------------|----------|
+| One-shot handle acquire, low call frequency / short lifetime | Low | MEDIUM |
+| Per-connection / per-request fd or socket leak in a long-lived service | High | HIGH |
+| Unbounded fd/handle leak → fd exhaustion / DoS / service restart | Unbounded | CRITICAL |
+| Release may happen in a callee (unsettled) | Unsettled | MEDIUM (suspected; LOW if one-shot) |

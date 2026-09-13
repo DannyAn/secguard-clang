@@ -40,3 +40,17 @@ Note `u > 0` (`u != 0`) and `u <= 0` (`u == 0`) are **legitimate** checks and ar
 ### Common False Positives
 - Variables mis-detected as `unsigned` (e.g. a macro type position)
 - Comparisons that are intentional dead-code sentinels
+
+### Severity Matrix
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
+| Shape | Severity |
+|-------|----------|
+| Dead guard `if (len < 0)` on an unsigned length → bounds check silently bypassed → downstream overflow | HIGH |
+| Never-terminating loop (`while (i >= 0) i--` on unsigned) | MEDIUM |
+| Tautological comparison with no downstream safety impact | LOW |

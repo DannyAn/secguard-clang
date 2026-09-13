@@ -51,3 +51,18 @@ metadata:
 - Add `.gitignore` entries for secret files
 - Rotate any credentials that were previously hardcoded
 - Use `git-secrets` or `trufflehog` to scan for leaked credentials in git history
+
+### Severity Matrix
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
+| Shape | Severity |
+|-------|----------|
+| Value-proven secret (known prefix / high entropy / URL credentials) in source | CRITICAL |
+| Registry persistence of a secret-shaped value | CRITICAL |
+| Test credential suspected to be used in production | HIGH (suspected) |
+| Name-only match, low-entropy, likely placeholder | MEDIUM (suspected) |

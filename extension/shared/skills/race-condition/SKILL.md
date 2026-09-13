@@ -59,3 +59,18 @@ metadata:
 - Use `fstat()` on the fd instead of `stat()` on the path
 - For file locking, use `flock()` or `fcntl(F_SETLK)` for atomic lock+check
 - Consider single-threaded design for simple cases
+
+### Severity Matrix
+
+`status` and `severity` are independent: `status` = evidence verdict
+(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. Suspected findings are
+capped one notch below their confirmed twin (evidence discount), never below
+`low`; dismissed → `low`.
+
+| Shape | Severity |
+|-------|----------|
+| Shared-data race (≥2 threads, ≥1 write, no lock) → memory corruption / UB | HIGH |
+| TOCTOU filesystem (`access`→`open`/`fopen`) on an attacker-influenced path | HIGH (CRITICAL if it crosses a privilege boundary) |
+| TOCTOU shared-state (check-then-act split across unlock) | MEDIUM (suspected) |
+| `access()`+`fopen()` where the path is local/trusted | MEDIUM (suspected) |
