@@ -15,10 +15,11 @@ import (
 )
 
 type Indexer struct {
-	store       db.Store
-	parser      *parser.Parser
-	logger      *log.Logger
-	excludeDirs []string
+	store        db.Store
+	parser       *parser.Parser
+	logger       *log.Logger
+	excludeDirs  []string
+	excludePaths []string
 }
 
 type IndexResult struct {
@@ -51,6 +52,13 @@ func (idx *Indexer) SetExcludeDirs(dirs []string) {
 	idx.excludeDirs = dirs
 }
 
+// SetExcludePaths sets the directory paths pruned during the walk (resolved
+// against the scan target at walk time). A nil or empty slice excludes nothing
+// by path; it never affects the basename exclusions.
+func (idx *Indexer) SetExcludePaths(paths []string) {
+	idx.excludePaths = paths
+}
+
 func (idx *Indexer) Index(ctx context.Context, targetPath string) (*IndexResult, error) {
 	result := &IndexResult{}
 
@@ -62,7 +70,7 @@ func (idx *Indexer) Index(ctx context.Context, targetPath string) (*IndexResult,
 		return nil, fmt.Errorf("indexer: target path: %w", err)
 	}
 
-	files, err := WalkCFiles(absPath, idx.excludeDirs, idx.logger)
+	files, err := WalkCFiles(absPath, idx.excludeDirs, idx.excludePaths, idx.logger)
 	if err != nil {
 		return nil, fmt.Errorf("indexer: walk files: %w", err)
 	}

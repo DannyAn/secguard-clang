@@ -48,8 +48,10 @@ type pipelineTimings struct {
 // It is the ONLY place the semantic-graph/evidence/convergence stages run, so a
 // full scan and an incremental review can never drift in how they analyze code.
 // excludeDirs is nil to keep the default exclusions, or an explicit (possibly
-// empty) list to override them.
-func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPath string, excludeDirs []string) (*pipelineOutcome, error) {
+// empty) list to override them. excludePaths are directory paths (from
+// secguard.toml [exclude] paths) pruned during the index walk, resolved against
+// absPath; nil/empty prunes nothing by path.
+func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPath string, excludeDirs []string, excludePaths []string) (*pipelineOutcome, error) {
 	// Validate the static vuln-type registry (spec + filter chain) BEFORE the
 	// expensive index/graph/detector phases. A registry typo that would otherwise
 	// surface only as a per-type Plan failure after a long scan now fails the run
@@ -67,6 +69,7 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	if excludeDirs != nil {
 		idx.SetExcludeDirs(excludeDirs)
 	}
+	idx.SetExcludePaths(excludePaths)
 
 	idxStart := time.Now()
 	indexResult, err := idx.Index(ctx, absPath)

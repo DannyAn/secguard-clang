@@ -20,6 +20,7 @@ type Config struct {
 	TrustedMacros   TrustedMacros   `toml:"trusted_macros"`
 	IteratorMacros  IteratorMacros  `toml:"iterator_macros"`
 	BannedFunctions BannedFunctions `toml:"banned_functions"`
+	Exclude         Exclude         `toml:"exclude"`
 }
 
 type TrustedMacros struct {
@@ -39,6 +40,22 @@ type TrustedMacros struct {
 //	names = ["strcpy", "my_legacy_alloc"]
 type BannedFunctions struct {
 	Names []string `toml:"names"`
+}
+
+// Exclude declares directory trees to skip during indexing. Paths are resolved
+// against the SCAN TARGET (the <path> argument, e.g. `secguard scan ./src`), so
+// a relative entry like "svc/src/bak" excludes <target>/svc/src/bak — never a
+// path relative to the current working directory or the config file location.
+//
+//	[exclude]
+//	paths = ["./svc/src/bak/", "src/generated"]
+type Exclude struct {
+	// Paths are directory paths to prune entirely during the file walk. Each
+	// entry may be relative to the scan target or absolute; a trailing slash is
+	// ignored. Unlike the --exclude flag (which matches directory BASENAMES),
+	// these match the full path, so two directories both named "bak" can be
+	// treated differently.
+	Paths []string `toml:"paths"`
 }
 
 // IteratorMacros declares project-specific iterator macros whose definitions
@@ -113,6 +130,16 @@ func (c *Config) BannedFunctionNames() []string {
 		return nil
 	}
 	return c.BannedFunctions.Names
+}
+
+// ExcludePaths returns the configured directory paths to prune during indexing.
+// The entries are returned raw (relative paths are NOT resolved here): the
+// indexer resolves them against the scan target because only it knows the root.
+func (c *Config) ExcludePaths() []string {
+	if c == nil {
+		return nil
+	}
+	return c.Exclude.Paths
 }
 
 // IteratorMacroArgs returns the configured iterator-macro map (macro name →

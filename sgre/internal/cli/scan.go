@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/planner"
@@ -134,7 +135,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 	// were demoted to Debug). This also gives the log a stable first record.
 	logger.Info("scan started", "scan_id", scanID, "target", absPath)
 
-	outcome, err := runPipeline(ctx, store, logger, absPath, excludeDirs)
+	outcome, err := runPipeline(ctx, store, logger, absPath, excludeDirs, config.Load().ExcludePaths())
 	if err != nil {
 		WriteErrorJSON(err.Error())
 		return 1

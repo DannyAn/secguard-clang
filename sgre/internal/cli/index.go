@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/evidence"
 	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/indexer"
@@ -60,6 +61,7 @@ func runIndexCmd(ctx context.Context, args []string) int {
 	if hasExclude {
 		idx.SetExcludeDirs(excludeDirs)
 	}
+	idx.SetExcludePaths(config.Load().ExcludePaths())
 	result, err := idx.Index(ctx, absPath)
 	if err != nil {
 		WriteErrorJSON(fmt.Sprintf("index failed: %v", err))

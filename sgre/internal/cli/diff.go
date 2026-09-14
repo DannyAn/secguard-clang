@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/git"
 	"github.com/DannyAn/secguard-clang/internal/planner"
@@ -145,7 +146,7 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 
 	logger.Info("review started", "review_id", reviewID, "kind", kind, "base", base, "head", head, "changed_files", len(d.Files))
 
-	outcome, err := runPipeline(ctx, store, logger, absPath, excludeDirs)
+	outcome, err := runPipeline(ctx, store, logger, absPath, excludeDirs, config.Load().ExcludePaths())
 	if err != nil {
 		_ = store.UpdateReviewSessionStatus(ctx, reviewID, "failed")
 		WriteErrorJSON(err.Error())

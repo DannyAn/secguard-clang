@@ -105,6 +105,32 @@ names = [
 > - **策略检查**，非上下文敏感：调用即报，不看调用点是否做了边界检查——企业禁用的是函数本身，检测健全、无数据流误报。
 > - `strcpy`/`sprintf`/`system` 等无界字符串/格式化函数**故意不内置**（`buffer-overflow`/`injection` 已上下文敏感地处理，内置会重复噪音）；企业若要一刀切禁用，把它们加进 `names` 即可。
 
+### `[exclude]` — 索引阶段排除目录
+
+```toml
+[exclude]
+paths = [
+    "./svc/src/bak/",
+    "src/generated",
+]
+```
+
+`paths` 列出的目录在**建立索引时**就被整棵剪枝（`filepath.SkipDir`），完全不进入
+语义图、检测器和收敛管线——不是扫描后过滤，而是根本不被索引。
+
+关键语义：**相对路径相对于「扫描目标」解析，而不是当前工作目录或配置文件位置**。
+
+| 命令 | `paths` 里的 `"./svc/src/bak/"` 实际排除 |
+|------|------------------------------------------|
+| `secguard scan ./src` | `./src/svc/src/bak/` |
+| `secguard scan .` | `./svc/src/bak/` |
+| `secguard index ./svc` | `./svc/svc/src/bak/`（如有） |
+
+- 条目既可以是相对路径（相对扫描目标），也可以是绝对路径；末尾 `/` 会被忽略。
+- 匹配的是**完整路径前缀**，与 `--exclude`（按目录**基名**匹配，如 `deps`、`vendor`）
+  不同：因此同名 `bak` 目录可以只排除特定那一个，不影响其他 `bak`。
+- 排除目录会被完全跳过，`files_indexed` / `functions_indexed` 统计里不含其内容。
+
 ## 完整示例
 
 ```toml
@@ -126,6 +152,13 @@ names = [
 [banned_functions]
 # names = [
 #     "my_legacy_alloc",
+# ]
+
+# 索引阶段排除的目录（相对路径相对于「扫描目标」解析，绝对路径原样使用）。
+[exclude]
+# paths = [
+#     "./svc/src/bak/",
+#     "src/generated",
 # ]
 ```
 

@@ -206,8 +206,9 @@ Flags:
 
 What it is:
   secguard.toml is an OPTIONAL configuration file. Most users need nothing in
-  it. It exists today for three options: the trusted-macro allowlist, the
-  iterator-macro declaration, and the banned-function extension.
+  it. It exists today for four options: the trusted-macro allowlist, the
+  iterator-macro declaration, the banned-function extension, and directory
+  exclusions.
 
   Config file locations, in priority order (first existing wins):
     1. --config <path>                     explicit flag
@@ -246,6 +247,15 @@ What it is:
     only EXTEND it. It is a policy check: a call is flagged regardless of
     surrounding bounds checks, because the enterprise bans the function itself.
 
+  [exclude] — directory trees to skip at index time
+    paths = ["..."]
+    Directories to prune entirely during the file walk, resolved against the
+    SCAN TARGET (the <path> argument). A relative entry like "./svc/src/bak/"
+    with "secguard scan ./src" excludes ./src/svc/src/bak; with
+    "secguard scan ." it excludes ./svc/src/bak. An absolute path is used
+    as-is. Unlike the --exclude flag (which matches directory BASENAMES), these
+    match the full path, so only that specific directory is skipped.
+
 Examples:
   secguard config
   secguard config --example`)
@@ -274,6 +284,17 @@ names = [
 [banned_functions]
 names = [
     # "my_legacy_alloc",
+]
+
+# Directory trees to skip at index time. Each path is resolved against the SCAN
+# TARGET (the <path> argument), not the working directory: with "secguard scan
+# ./src", "./svc/src/bak/" excludes ./src/svc/src/bak. Absolute paths are also
+# accepted. Unlike --exclude (which matches directory BASENAMES), these match
+# the full path.
+[exclude]
+paths = [
+    # "./svc/src/bak/",
+    # "src/generated",
 ]`)
 }
 

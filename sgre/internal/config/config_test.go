@@ -53,6 +53,23 @@ func TestLoad_MissingFileIsEmpty(t *testing.T) {
 	}
 }
 
+func TestLoad_ExcludePaths(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secguard.toml")
+	content := `[exclude]
+paths = ["./svc/src/bak/", "src/generated"]
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	SetExplicitPath(path)
+	cfg := Load()
+	got := cfg.ExcludePaths()
+	if len(got) != 2 || got[0] != "./svc/src/bak/" || got[1] != "src/generated" {
+		t.Errorf("expected [./svc/src/bak/ src/generated], got %v", got)
+	}
+}
+
 func TestLoad_IteratorMacros(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secguard.toml")
