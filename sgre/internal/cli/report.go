@@ -514,8 +514,13 @@ func runReportCmd(ctx context.Context, args []string) int {
 		// commits once (one commit record + one write-lock acquisition) instead of
 		// per-row autocommit (one implicit BEGIN/COMMIT + lock round-trip per row)
 		// — the per-row autocommit was the write-side half of the null-deref
-		// slowness.
-		if txErr := store.WithTx(ctx, func(tx db.Store) error {
+		// slowness. Use WithImmediateTx (BEGIN IMMEDIATE) rather than WithTx so
+		// the write lock is acquired exactly ONCE up front: under the concurrent
+		// subagent write storm a deferred transaction would re-wait busy_timeout
+		// and the app-layer retry per row (~40s × N rows), which is what turned a
+		// contended persist into a multi-minute/hang. BEGIN IMMEDIATE makes it
+		// serialize fast or fail after one busy_timeout with a clean error.
+		if txErr := store.WithImmediateTx(ctx, func(tx db.Store) error {
 			for _, p := range pending {
 				id, uerr := tx.UpsertFinding(ctx, p.f)
 				if uerr != nil {

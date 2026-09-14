@@ -86,7 +86,7 @@ func (s *mockStore) ListFunctionsByFile(ctx context.Context, fileID int64) ([]*d
 	return result, nil
 }
 func (s *mockStore) ListFunctions(ctx context.Context) ([]*db.Function, error) { return s.funcs, nil }
-func (s *mockStore) CountFunctions(ctx context.Context) (int, error)          { return len(s.funcs), nil }
+func (s *mockStore) CountFunctions(ctx context.Context) (int, error)           { return len(s.funcs), nil }
 func (s *mockStore) ListFunctionsByIDs(ctx context.Context, ids []int64) (map[int64]*db.Function, error) {
 	want := make(map[int64]bool, len(ids))
 	for _, id := range ids {
@@ -386,9 +386,10 @@ func (s *mockStore) UpdateReturnNullable(ctx context.Context, fid int64, nullabl
 	return nil
 }
 
-func (s *mockStore) Close() error                                              { return nil }
-func (s *mockStore) DB() *sql.DB                                               { return nil }
-func (s *mockStore) WithTx(ctx context.Context, fn func(db.Store) error) error { return fn(s) }
+func (s *mockStore) Close() error                                                       { return nil }
+func (s *mockStore) DB() *sql.DB                                                        { return nil }
+func (s *mockStore) WithTx(ctx context.Context, fn func(db.Store) error) error          { return fn(s) }
+func (s *mockStore) WithImmediateTx(ctx context.Context, fn func(db.Store) error) error { return fn(s) }
 
 func (s *mockStore) InsertScanStat(ctx context.Context, stat *db.ScanStat) (int64, error) {
 	return 0, nil

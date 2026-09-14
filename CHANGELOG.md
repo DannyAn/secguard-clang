@@ -10,6 +10,10 @@
 
 新增 `[exclude] paths` 配置项，在**建立索引阶段**整棵剪枝指定目录（相对路径相对于「扫描目标」`<path>` 解析，也支持绝对路径），用于屏蔽特定目录（如 `./svc/src/bak/`）。与按目录**基名**匹配的 `--exclude` 互补——`paths` 按完整路径前缀匹配，可精确排除某个同名目录而不影响其他同名目录。支持通过 `secguard config` / `secguard config --example` 查看生效配置与示例。
 
+### 可靠性修复：持久化卡死（`secguard report --write-json`）
+
+opencode-nga 并发子代理写盘时，`--write-json` 批处理在单个**延迟事务**里逐行写，每行独立等待 `busy_timeout`(10s) × 4 次重试，锁竞争下单行最坏 ~40s、整批再乘以行数，把一次本该秒级的持久化放大成分钟级甚至更久的"卡住不动"。改为 **`BEGIN IMMEDIATE`**：写锁在事务开始时一次性获取，要么快速串行、要么在单个 `busy_timeout` 后干净地报 `database is locked` 快速失败；并给 `secguard_report` MCP 工具的子进程调用加上超时兜底（写 60s / audit 120s），彻底消除"无反馈地长时间挂起"。
+
 ## [0.6.2] - 2026-09-13
 
 ### 功能：AI Agent Market 插件打包

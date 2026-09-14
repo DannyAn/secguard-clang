@@ -4,6 +4,23 @@ import fs from "fs"
 import { fileURLToPath } from "url"
 import { randomUUID } from "crypto"
 
+// withTimeout bounds a subprocess wait so a stuck secguard CLI fails fast with
+// an actionable error instead of hanging the subagent (and the orchestrator
+// behind it) forever. It races the shell promise against a timer; the CLI's own
+// write path is already bounded (~busy_timeout), so this is a backstop, not the
+// primary guard.
+async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+  })
+  try {
+    return await Promise.race([p, timeout])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 function findSecguard(context: { worktree?: string, directory?: string }): string {
   // Market 安装：优先用插件自带 bin/ 里按 os/arch 选型的二进制（不依赖 PATH）
   const pluginDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
@@ -101,14 +118,14 @@ export default tool({
       try {
         const hasAI = aiDurationMs != null && aiDurationMs >= 0
         const auditResult = hasAI
-          ? await Bun.$`${secguardBin} report --db ${dbPath} --audit --scan-id ${scanId} --output-dir ${outDir} --ai-duration-ms ${aiDurationMs}`
+          ? await withTimeout(Bun.$`${secguardBin} report --db ${dbPath} --audit --scan-id ${scanId} --output-dir ${outDir} --ai-duration-ms ${aiDurationMs}`
             .cwd(workDir)
             .quiet()
-            .text()
-          : await Bun.$`${secguardBin} report --db ${dbPath} --audit --scan-id ${scanId} --output-dir ${outDir}`
+            .text(), 120_000, "secguard report --audit")
+          : await withTimeout(Bun.$`${secguardBin} report --db ${dbPath} --audit --scan-id ${scanId} --output-dir ${outDir}`
             .cwd(workDir)
             .quiet()
-            .text()
+            .text(), 120_000, "secguard report --audit")
         return JSON.parse(auditResult.trim())
       } catch {
         return null // Best-effort — audit generation failure is non-fatal
@@ -148,10 +165,10 @@ export default tool({
       const perFindingWarnings: string[] = []
       let skipped = 0
       try {
-        const out = (await Bun.$`${secguardBin} report --db ${dbPath} --write-json ${tmpFile} --scan-id=${scanId}`
+        const out = (await withTimeout(Bun.$`${secguardBin} report --db ${dbPath} --write-json ${tmpFile} --scan-id=${scanId}`
           .cwd(workDir)
           .quiet()
-          .text()
+          .text(), 60_000, "secguard report --write-json")
         ).trim()
         try {
           const parsed = JSON.parse(out)
@@ -213,12 +230,12 @@ export default tool({
       )
     }
 
-    const result = await Bun.$`${secguardBin} report --db ${dbPath}`
+    const result = await withTimeout(Bun.$`${secguardBin} report --db ${dbPath}`
       .cwd(workDir)
       .quiet()
-      .text()
+      .text(), 30_000, "secguard report (read)")
       .catch((e: any) => {
-        const err = e?.stderr?.toString()?.trim() || ""
+        const err = e?.stderr?.toString()?.trim() || e?.message || String(e)
         return JSON.stringify({ findings: [], error: err })
       })
 

@@ -170,5 +170,10 @@ type Store interface {
 	ReviewSessionStore
 	Close() error
 	WithTx(ctx context.Context, fn func(Store) error) error
+	// WithImmediateTx runs fn in a transaction that acquires the SQLite write
+	// lock up front (BEGIN IMMEDIATE). Concurrent writers therefore serialize
+	// at BEGIN — a single busy_timeout wait — instead of each row re-waiting the
+	// busy_timeout and the app-layer retry. The batch --write-json path uses it.
+	WithImmediateTx(ctx context.Context, fn func(Store) error) error
 	DB() *sql.DB
 }
