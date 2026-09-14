@@ -144,11 +144,10 @@ func VulnToCWE(vulnType string) string {
 }
 
 // sarifLevel maps a finding's severity (impact) and status (evidence verdict)
-// to the SARIF result level. severity drives the level; a suspected finding is
-// capped at "warning" because it is a lead, not a proven defect, so it must
-// never read as "error". This is what lets a CI gate treat "error" as
-// "fix-now confirmed critical/high" instead of "anything confirmed", and a
-// "warning" as "medium impact, or high-but-unconfirmed".
+// to the SARIF result level. severity drives the level; only a confirmed
+// high/critical finding reads "error". A legacy "suspected" status is capped at
+// "warning" (a lead, not a proven defect) — but the verdict is binary now, so a
+// new finding never carries it.
 func sarifLevel(severity, status string) string {
 	switch normalizeSeverity(strings.ToLower(strings.TrimSpace(severity))) {
 	case "critical", "high":
@@ -332,9 +331,16 @@ func (o *ScanOutput) writeCandidatesSarif(packages []*planner.PlanResult) error 
 // WriteSarifFromFindings regenerates the machine-readable report from the AI's
 // persisted findings, so result.sarif carries the post-A5 verdict, the
 // structured reasoning, and the concrete fix — not just the candidate-stage
-// evidence. Dismissed (false-positive) findings are excluded; the actionable
-// SARIF contains only confirmed + suspected.
+// evidence. Only CONFIRMED findings are included: the AI verdict is BINARY
+// (confirmed vs dismissed), so an undecidable result is a dismissal, never a
+// third "suspected" state.
 func WriteSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding) error {
+	return writeSarifFromFindings(sarifPath, rootDir, findings, func(status string) bool {
+		return status == "confirmed"
+	}, "findings", "AI-classified CONFIRMED findings; dismissed findings excluded")
+}
+
+func writeSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding, keep func(string) bool, stage, note string) error {
 	rules := []sarifRule{}
 	results := []sarifResult{}
 	rulesSeen := map[string]bool{}
@@ -347,7 +353,7 @@ func WriteSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding) e
 
 	for _, f := range findings {
 		status := f.FinalStatus()
-		if status != "confirmed" && status != "suspected" {
+		if !keep(status) {
 			continue
 		}
 
@@ -466,7 +472,7 @@ func WriteSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding) e
 				},
 			},
 			Results:    results,
-			Properties: map[string]string{"stage": "findings", "note": "AI-classified verdicts (confirmed/suspected); dismissed findings excluded"},
+			Properties: map[string]string{"stage": stage, "note": note},
 		}},
 	}
 

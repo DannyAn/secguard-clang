@@ -36,7 +36,7 @@ A memory-leak candidate has:
 | malloc + free on all paths | **false-positive** |
 | malloc inside RAII wrapper (create+destroy) | **false-positive** |
 | malloc + returned to caller (ownership transfer) | **false-positive** (caller owns) |
-| malloc + stored in global/static | **suspected** (may be freed elsewhere) |
+| malloc + stored in global/static | **dismissed** (may be freed elsewhere) |
 
 ### Path-Sensitive Analysis
 The key question: Is there a path from malloc to function exit that does NOT pass through free?
@@ -55,14 +55,12 @@ malloc → if (error) { free(p); return; }  ← SAFE (free on all paths)
 ### Severity Matrix
 
 `status` and `severity` are independent: `status` = evidence verdict
-(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
-`metadata.severity` is the type default, not a ceiling. Suspected findings are
-capped one notch below their confirmed twin (evidence discount), never below
-`low`; dismissed → `low`.
+(confirmed/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. The verdict is binary (confirmed/dismissed); dismissed → `low`.
 
 | Shape | Lifetime / frequency | Severity |
 |-------|---------------------|----------|
 | One-shot allocation, low call frequency / short lifetime | Low | MEDIUM |
 | Long-lived service, or a per-request / per-iteration leak | High | HIGH |
 | Unbounded continuous leak → resource exhaustion / service restart | Unbounded | CRITICAL |
-| Ownership unsettled (stored in global/static, may be freed elsewhere) | Unsettled | MEDIUM (suspected; LOW if one-shot) |
+| Ownership unsettled (stored in global/static, may be freed elsewhere) | Unsettled | MEDIUM (dismissed; LOW if one-shot) |

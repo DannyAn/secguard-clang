@@ -164,19 +164,24 @@ func TestSyncPerFinding_DismissedNeverEntersFindings(t *testing.T) {
 	}
 }
 
-// A5 review transitions: suspected → confirmed renames, confirmed → dismissed
-// deletes. Both must leave exactly one (or zero) file per location.
+// Verdict transitions: suspected writes NO file (it is not actionable), then
+// confirmed writes one, then dismissed removes it. Each must leave exactly the
+// file (or none) the current verdict claims.
 func TestSyncPerFinding_VerdictTransitions(t *testing.T) {
 	dir := t.TempDir()
 	writeCandidate(t, dir, "null-deref", "001_src_a_c_13.md")
 
 	suspected := confirmedUpdate()
 	suspected.Status = "suspected"
-	if _, err := SyncPerFinding(dir, "null-deref", "src/a.c", 13, suspected); err != nil {
+	res, err := SyncPerFinding(dir, "null-deref", "src/a.c", 13, suspected)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if names := lsFindings(t, dir, "null-deref"); len(names) != 1 || names[0] != "001_src_a_c_13_suspected.md" {
-		t.Fatalf("after suspected: %v", names)
+	if res.Action != PerFindingNone {
+		t.Errorf("suspected action = %q, want %q (no findings/ file)", res.Action, PerFindingNone)
+	}
+	if names := lsFindings(t, dir, "null-deref"); len(names) != 0 {
+		t.Fatalf("after suspected: %v (suspected is not actionable)", names)
 	}
 
 	if _, err := SyncPerFinding(dir, "null-deref", "src/a.c", 13, confirmedUpdate()); err != nil {
@@ -188,7 +193,7 @@ func TestSyncPerFinding_VerdictTransitions(t *testing.T) {
 
 	dismissed := confirmedUpdate()
 	dismissed.Status = "dismissed"
-	res, err := SyncPerFinding(dir, "null-deref", "src/a.c", 13, dismissed)
+	res, err = SyncPerFinding(dir, "null-deref", "src/a.c", 13, dismissed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,9 +289,8 @@ func TestReconcileFindings_SweepsUnclassifiedAndDismissed(t *testing.T) {
 
 // The A5 review verdict (review_status) wins over the first-pass status, so a
 // reviewed-away finding disappears from the review surface. ReconcileFindings
-// keys on the FINAL verdict: suspected-kept survives as suspected, while a
-// never-reviewed suspected (ReviewStatus empty) is an incomplete verdict and is
-// swept out.
+// keys on the FINAL verdict, but suspected is no longer actionable: neither
+// suspected-kept nor plain suspected produces a findings/ file.
 func TestReconcileFindings_UsesFinalStatus(t *testing.T) {
 	dir := t.TempDir()
 	writeCandidate(t, dir, "null-deref", "001_src_a_c_13.md")
@@ -296,8 +300,8 @@ func TestReconcileFindings_UsesFinalStatus(t *testing.T) {
 	if _, err := ReconcileFindings(dir, []*db.Finding{f}); err != nil {
 		t.Fatal(err)
 	}
-	if names := lsFindings(t, dir, "null-deref"); len(names) != 1 || names[0] != "001_src_a_c_13_suspected.md" {
-		t.Fatalf("suspected-kept should survive as suspected: %v", names)
+	if names := lsFindings(t, dir, "null-deref"); len(names) != 0 {
+		t.Fatalf("suspected-kept must NOT produce a findings/ file: %v", names)
 	}
 
 	f.ReviewStatus = "dismissed"
@@ -305,17 +309,16 @@ func TestReconcileFindings_UsesFinalStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Removed == 0 {
-		t.Errorf("removed = %d, want > 0", res.Removed)
+	if res.Removed != 0 {
+		t.Errorf("removed = %d, want 0 (no file was ever written)", res.Removed)
 	}
 	if names := lsFindings(t, dir, "null-deref"); len(names) != 0 {
 		t.Fatalf("after A5 dismissal: %v", names)
 	}
 }
 
-// A plain suspected finding (no review_status) is a final first-pass verdict —
-// A5 has been folded into A4 — so it produces a findings/ file like any other
-// actionable verdict.
+// A plain suspected finding (no review_status) is an unsettled lead: it must NOT
+// produce a findings/ file — it lives only in the DB + suspected.sarif.
 func TestReconcileFindings_IncludesPlainSuspected(t *testing.T) {
 	dir := t.TempDir()
 	writeCandidate(t, dir, "null-deref", "001_src_a_c_13.md")
@@ -326,11 +329,11 @@ func TestReconcileFindings_IncludesPlainSuspected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Written != 1 {
-		t.Errorf("written = %d, want 1 (plain suspected is final)", res.Written)
+	if res.Written != 0 {
+		t.Errorf("written = %d, want 0 (plain suspected is not actionable)", res.Written)
 	}
-	if names := lsFindings(t, dir, "null-deref"); len(names) != 1 || names[0] != "001_src_a_c_13_suspected.md" {
-		t.Fatalf("plain suspected must survive as suspected: %v", names)
+	if names := lsFindings(t, dir, "null-deref"); len(names) != 0 {
+		t.Fatalf("plain suspected must NOT produce a findings/ file: %v", names)
 	}
 }
 

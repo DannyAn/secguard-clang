@@ -74,12 +74,13 @@ For each type you were assigned, in `_index.md` order:
 
 1. **Load ONLY that type's skill** (exact kebab-case name; never a `crs-*`
    prefixed skill, never a skill for a type you weren't assigned).
-2. **Classify EVERY candidate** as confirmed / suspected / dismissed using the
+2. **Classify EVERY candidate** as confirmed / dismissed (BINARY) using the
    skill's rules + the Classification Rules below. This is a single-pass FINAL
-   verdict — there is no second round. For a `suspected`/`possible` candidate,
-   resolve it with source context (Code Context, then a ≤5-files raw read for
-   cross-file cases) and decide confirmed / dismissed / suspected IN THIS PASS;
-   do not defer a "maybe" to a later step.
+   verdict — there is no second round and no "suspected". For a
+   `suspected`/`possible` (pipeline-prior) candidate, resolve it with source
+   context (Code Context, then a ≤5-files raw read for cross-file cases) and
+   decide confirmed / dismissed IN THIS PASS; if you cannot settle it, write
+   `dismissed`.
 3. **Write findings in ONE batch** (see Write discipline), passing `scan_id` +
    `scan_dir`/`output_dir`.
 4. Emit the Structured Report Protocol block (see "Structured Report Protocol" below).
@@ -104,7 +105,7 @@ Code Context block already carries, and even then keep it to ≤5 files per type
 rather than the whole file). If a type's candidates span more than 5 files you
 have not read yet, open the candidates' `## Code Context` blocks instead of more
 sources — and if a verdict still cannot be reached, mark the candidate
-`suspected` rather than expanding the read. Never turn the budget into "read the
+`dismissed` rather than expanding the read. Never turn the budget into "read the
 whole repo": on a real codebase that exhausts the context window and silently
 drops the tail candidates. Do NOT read source for types you weren't assigned.
 
@@ -116,13 +117,12 @@ worthless, and it is out of scope for a security scan.
 
 ## Output Protocol (the `findings/` invariant)
 
-`findings/<vuln-type>/NNN_<file>_<line>_<confirmed|suspected>.md` is the only
-thing a developer reviews. It holds *only* actionable verdicts (confirmed /
-suspected), and every filename carries its verdict suffix. A **dismissed**
-(false-positive) finding gets **no file** there — its verdict and reason are
-recorded in the DB and annotated onto the matching `candidates/` file. Never
-hand-write files into `findings/`; persist via the write tool, which maintains
-the directory.
+`findings/<vuln-type>/NNN_<file>_<line>_confirmed.md` is the only thing a
+developer reviews. It holds *only* confirmed verdicts. A **dismissed** finding
+(false-positive, guarded, or undecidable) gets **no file** there — its verdict
+and reason are recorded in the DB and annotated onto the matching `candidates/`
+file. Never hand-write files into `findings/`; persist via the write tool, which
+maintains the directory.
 
 ## Classification Rules
 - **Safe functions** (`memcpy_s`, `strcpy_s`, `execve`, `sqlite3_prepare_v2`) are normally *false-positive* — a guard that eliminates the risk. That is the default, not a blank cheque: if the call site violates the safety contract (dest size still overflows, the size argument is wrong, the return value must be checked and is not), classify **confirmed**. "The function is safe" ≠ "this call is safe".
@@ -130,7 +130,7 @@ the directory.
 - Safe wrappers (SafeCopy, SafeQuery, ResourceHandle, LockGuard) → false-positive
 - RAII patterns (create+destroy pairs) → false-positive for leak
 - Bounds checks before unsafe call → false-positive for buffer-overflow
-- Partial validation (blacklist only, TOCTOU window) → suspected
+- Partial validation (blacklist only, TOCTOU window) → dismissed (cannot prove exploitability)
 - No guard, reachable, nullable source, data flow to deref → confirmed
 - **Only report findings for pipeline-supported vulnerability types** — i.e. the types returned by `secguard types`. Do NOT persist findings for CWE types outside the pipeline's coverage; note them as observations in your report instead.
 
@@ -140,15 +140,13 @@ the directory.
 field is a per-type **default**, never a per-finding ceiling. Choose each finding's
 `severity` from its skill's **Severity Matrix**, independently of `status`:
 
-- `status` (confirmed / suspected / dismissed) = the evidence verdict; `severity`
+- `status` (confirmed / dismissed) = the evidence verdict; `severity`
   (low / medium / high / critical) = the impact. They are orthogonal, so
-  `confirmed + medium`, `confirmed + critical`, and `suspected + high` are all
-  legal combinations.
+  `confirmed + medium` and `confirmed + critical` are both legal.
 - Match the **shape** and its **reachability / exposure** (attacker-controlled →
   up; bounded/local → down; for leaks, long-lived / per-request → up and
   one-shot → down), not just the CWE number.
-- A `suspected` finding is capped at most one notch below its confirmed twin (an
-  evidence discount), never below `low`. A `dismissed` finding → `low`.
+- A `dismissed` finding → `low`.
 - Use only the schema's five values (`critical` / `high` / `medium` / `low` /
   `info`); `info` is the empty-value fallback, not a real verdict.
 
@@ -176,7 +174,9 @@ budget your effort, not to pre-judge the answer:
   file:line and its `Hint` column carries the flow facts (`src@N` = null-source
   line, `certain-null`/`maybe-null` = null certainty, `tainted` = injection
   source, `weak-guard` = partial guard, `certain-uninit`/`maybe-uninit` = uninit
-  tier, `api@<name>` = the API in play, `cat@<name>` = the detector category), so
+  tier, `api@<name>` = the API in play, `cat@<name>` = the detector category,
+  `macro-context` = a function-like macro is in play and you MUST verify its
+  semantics before confirming), so
   you confirm or dismiss from the table
   itself (statement matches the evidence → confirmed; it is guarded/different →
   dismiss). Do NOT open the source file and do NOT open the `Evidence` candidate
@@ -196,11 +196,10 @@ budget your effort, not to pre-judge the answer:
   a bounds check, which would require an operand to reach SIZE_MAX). Triage these
   last and promote one only when you can show a reachable, realistic overflow.
 
-Your persisted classification (`confirmed`/`suspected`/`dismissed`) is what
-matters; `suspicion_level` only tells you how hard to look. A skill's
-`false-positive` verdict IS `status: "dismissed"` — never write the literal
-string `false-positive` into the `status` field (it is not a valid status and
-rejects the whole batch).
+Your persisted classification (`confirmed`/`dismissed`) is what matters;
+`suspicion_level` only tells you how hard to look. A skill's `false-positive`
+verdict IS `status: "dismissed"` — never write the literal string `false-positive`
+into the `status` field (it is not a valid status and rejects the whole batch).
 
 ## Write discipline
 
@@ -238,9 +237,9 @@ The `<type>.json` file MUST be a JSON array of objects with EXACTLY these keys
 ]
 ```
 
-`rule_id` is the CWE (e.g. CWE-476); `status` is one of `confirmed` / `suspected`
-/ `dismissed` — and ONLY those three (a skill's `false-positive` maps to
-`dismissed`). `file` is the source path, `line` the line number, `function` the
+`rule_id` is the CWE (e.g. CWE-476); `status` is one of `confirmed` / `dismissed`
+— and ONLY those two (a skill's `false-positive` maps to `dismissed`). `file` is
+the source path, `line` the line number, `function` the
 function name. `variable` is the sink/source variable the finding is about (the
 dereferenced pointer, the leaked allocation, the divisor, …) — copy it from the
 candidate `_index.md` **Variable** column when present; leave it out when the type
@@ -252,10 +251,10 @@ or a single finding object, the write still succeeds (the CLI accepts all three
 shapes and validates an embedded `scan_id` like `--scan-id`) — but the bare array
 is the contract; do not mix shapes in one file.
 
-Every candidate must get a finding (confirmed, suspected, or dismissed) — never
-skip writing, never dismiss a batch in prose only. For every **confirmed**
-finding fill `reasoning`, `exception_check`, and `fix_strategy`; for
-**dismissed** fill `reasoning` (why it is safe). These are persisted into the
+Every candidate must get a finding (confirmed or dismissed) — never skip writing,
+never dismiss a batch in prose only. For every **confirmed** finding fill
+`reasoning`, `exception_check`, and `fix_strategy`; for **dismissed** fill
+`reasoning` (why it is safe OR why it is undecidable). These are persisted into the
 per-finding Markdown, so a reviewer sees *why* you believe it, not just *what*.
 
 **Large types: split into ≤200-finding batches, persist EACH batch immediately.**
@@ -302,23 +301,43 @@ missing `scan_id`/`output_dir`), and write that chunk again. (The single-finding
 `errors`.) Never re-run a write to "verify" — the write is idempotent; re-running
 never duplicates but wastes a turn.
 
-## Single-pass verdicts (no second round)
+## Single-pass verdicts (BINARY — no second round, no "suspected")
 
-Your `confirmed` / `suspected` / `dismissed` verdict is FINAL — there is no
-second-round confirmation. Classify each candidate once, pulling in the source
-context you need: `_index.md`'s Source+Hint first, then the candidate's
+Your verdict is **binary and FINAL**: `confirmed` (a real defect) or `dismissed`
+(everything else). There is **no `suspected` state** — if you cannot prove the
+defect, it is not a defect for the user. Classify each candidate once, pulling in
+the source context you need: `_index.md`'s Source+Hint first, then the candidate's
 `## Code Context`, and for a cross-file case (a helper/callee/macro defined in
 another file) a raw source read within the same ≤5-files budget.
 
-**`suspected` is the SMALL, high-quality residue — not the default.** Every
-verdict reaches `result.sarif`, so a lazy `suspected` floods it with noise a
-developer must triage. Before writing `suspected` you MUST have tried to settle
-it: a proved hint (`certain-null`/`tainted`/constant-OOB) + confirming context →
+**The two verdicts:**
+- `confirmed` → the ONLY verdict that reaches the user (`result.sarif`,
+  `result.xlsx`, `report.md`, `findings/`). It must be a real, provable defect.
+- `dismissed` → everything else: a false positive, a guarded call, OR a candidate
+  you simply could not settle. Recorded in the DB with your reasoning (never
+  shown to the user). **When in doubt, write `dismissed`.**
+
+**The precision rule: when in doubt, do not confirm.** A `confirmed` false
+positive is the worst outcome; a `dismissed` that hides a real but unprovable bug
+is acceptable. Before writing `confirmed` you MUST have settled it from evidence:
+a proved hint (`certain-null`/`tainted`/constant-OOB) + confirming context →
 `confirmed`; a guard / `_s` safe call / checked allocation / call contract that
-proves safety → `dismissed`. Write `suspected` ONLY when the code genuinely
-depends on an external unbounded input, a partial guard leaves a TOCTOU window,
-or you read the context and STILL cannot decide. Do NOT leave a candidate
-`suspected` merely to defer the call.
+proves safety, or anything genuinely undecidable → `dismissed`. Do NOT confirm a
+candidate merely because its `suspicion_level` is `confirmed` — that is a prior,
+not a verdict.
+
+**Macro-context candidates (Hint contains `macro-context`).** These are the
+highest false-positive risk: the pipeline could not see a macro's true semantics
+(a guard macro like `DBM_CHECK_RET(ctrl == NULL, FALSE)`, an iterator macro, an
+accessor macro, a free wrapper). For EVERY macro-context candidate you MUST open
+the `## Code Context` and understand what the macro does before you may write
+`confirmed`:
+- The macro is a NULL/error guard (`*CHECK*`, `*ASSERT*`, `*RET*`, early-return)
+  → the guarded variable is non-null after it → `dismissed`.
+- The macro is an iterator/accessor that yields non-null by contract → `dismissed`.
+- You cannot see the macro definition and cannot infer its contract → `dismissed`
+  (never `confirmed`).
+Never confirm a macro-context candidate from the `Source` column alone.
 
 ## Structured Report Protocol (format_version: 1)
 
@@ -333,7 +352,7 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
   "subagent_id": "<your id>",
   "scan_id": "<scan_id>",
   "processed_types": [
-    {"type": "null-deref", "cwe": "CWE-476", "written": 1149, "confirmed": 3, "suspected": 0, "dismissed": 1146}
+    {"type": "null-deref", "cwe": "CWE-476", "written": 1149, "confirmed": 3, "dismissed": 1146}
   ],
   "failed_types": [
     {"type": "buffer-overflow", "reason": "api-quota-exhausted"}
@@ -347,8 +366,8 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
   `reason: "empty-output"` for every assigned type.
 - `reason` enum: `api-quota-exhausted` | `maxturns-exceeded` | `context-overflow` |
   `write-busy` | `empty-output` | `unknown`.
-- `written` = total findings persisted (confirmed + suspected + dismissed) for
-  that type; `confirmed`/`suspected`/`dismissed` are the verdict breakdown.
+- `written` = total findings persisted (confirmed + dismissed) for that type;
+  `confirmed`/`dismissed` are the verdict breakdown.
 - Your counts are PER ASSIGNED TYPE only. Never state a scan-wide total
   (`本轮扫描发现 N 个问题`) — that aggregate is the orchestrator's, taken from
   `report --audit`'s `summary` field so it matches report.md exactly. A

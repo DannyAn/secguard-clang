@@ -111,9 +111,9 @@ func verdictFindings() []*db.Finding {
 	}
 }
 
-// WriteReportFromFindings must show only actionable verdicts (confirmed +
-// suspected) and must never include dismissed entries — mirroring result.sarif
-// and the findings/ directory.
+// WriteReportFromFindings must show only CONFIRMED findings and must never
+// include dismissed or suspected entries — mirroring result.sarif and the
+// findings/ directory (suspected live in suspected.sarif).
 func TestWriteReportFromFindings_ExcludesDismissed(t *testing.T) {
 	dir := t.TempDir()
 	reportPath := filepath.Join(dir, ReportFile)
@@ -146,28 +146,32 @@ func TestWriteReportFromFindings_ShowsActionable(t *testing.T) {
 
 	content := string(mustReadFile(t, reportPath))
 
-	for _, want := range []string{"vuln_write", "risky_copy", "dangling"} {
+	for _, want := range []string{"vuln_write", "dangling"} {
 		if !strings.Contains(content, want) {
-			t.Errorf("actionable finding %q should appear in report.md:\n%s", want, content)
+			t.Errorf("confirmed finding %q should appear in report.md:\n%s", want, content)
 		}
 	}
-	if !strings.Contains(content, "AI-classified findings") {
-		t.Errorf("report should declare it shows AI-classified findings:\n%s", content)
+	if strings.Contains(content, "risky_copy") {
+		t.Errorf("suspected finding must NOT appear in report.md (not a confirmed defect):\n%s", content)
+	}
+	if !strings.Contains(content, "AI-classified confirmed findings") {
+		t.Errorf("report should declare it shows AI-classified confirmed findings:\n%s", content)
 	}
 	if !strings.Contains(content, "| Confirmed findings | 2 |") {
 		t.Errorf("summary should count 2 confirmed:\n%s", content)
 	}
-	if !strings.Contains(content, "| Suspected findings | 1 |") {
-		t.Errorf("summary should count 1 suspected (dismissed excluded):\n%s", content)
+	if strings.Contains(content, "Suspected findings") {
+		t.Errorf("summary must not render a Suspected findings row (binary verdict):\n%s", content)
 	}
-	if !strings.Contains(content, "| Dismissed (false positives) | 1 |") {
-		t.Errorf("summary should count 1 dismissed:\n%s", content)
+	// Legacy "suspected" (suspected-kept) reads as dismissed under the binary
+	// model, so the dismissed count includes it: safe_check + risky_copy = 2.
+	if !strings.Contains(content, "| Dismissed | 2 |") {
+		t.Errorf("summary should count 2 dismissed (incl. legacy suspected):\n%s", content)
 	}
 }
 
-// A plain suspected finding (no review_status) is a final first-pass verdict —
-// A5 has been folded into A4 — so it appears in the final report exactly like a
-// suspected-kept finding.
+// A suspected finding (plain or suspected-kept) is not a confirmed defect: it
+// must NOT appear in the user-facing report.md.
 func TestWriteReportFromFindings_IncludesPlainSuspected(t *testing.T) {
 	dir := t.TempDir()
 	reportPath := filepath.Join(dir, ReportFile)
@@ -193,14 +197,11 @@ func TestWriteReportFromFindings_IncludesPlainSuspected(t *testing.T) {
 
 	content := string(mustReadFile(t, reportPath))
 
-	if !strings.Contains(content, "risky_copy") {
-		t.Errorf("plain suspected finding should appear in report.md:\n%s", content)
+	if strings.Contains(content, "risky_copy") || strings.Contains(content, "kept_risky") {
+		t.Errorf("suspected findings must NOT appear in report.md (not confirmed defects):\n%s", content)
 	}
-	if !strings.Contains(content, "kept_risky") {
-		t.Errorf("suspected-kept finding should appear in report.md:\n%s", content)
-	}
-	if !strings.Contains(content, "| Suspected findings | 2 |") {
-		t.Errorf("summary should count 2 suspected (plain + suspected-kept):\n%s", content)
+	if strings.Contains(content, "Suspected findings") {
+		t.Errorf("summary must not render a Suspected findings row (binary verdict):\n%s", content)
 	}
 }
 
@@ -257,7 +258,7 @@ func TestWriteReportFromFindings_RespectsReviewStatus(t *testing.T) {
 	if strings.Contains(content, "| Confirmed findings | 1 |") {
 		t.Errorf("A5 review_status=dismissed must override first-pass confirmed:\n%s", content)
 	}
-	if !strings.Contains(content, "| Dismissed (false positives) | 1 |") {
+	if !strings.Contains(content, "| Dismissed | 1 |") {
 		t.Errorf("dismissed count should reflect A5 override:\n%s", content)
 	}
 }

@@ -33,10 +33,10 @@ var xlsxColumnWidths = map[string]float64{
 
 // WriteXlsxFromFindings regenerates result.xlsx from the AI's persisted
 // findings. It carries the same filter contract as WriteReportFromFindings and
-// WriteSarifFromFindings — only confirmed + suspected are included, dismissed
-// false-positives are excluded — but renders every finding as one spreadsheet
-// row with a source-context snippet, so a developer can locate, analyze, and
-// confirm a finding without opening the source tree.
+// WriteSarifFromFindings — only CONFIRMED findings are included; dismissed
+// findings are excluded — but renders every finding as one spreadsheet row with
+// a source-context snippet, so a developer can locate, analyze, and confirm a
+// finding without opening the source tree.
 func WriteXlsxFromFindings(xlsxPath, rootDir string, findings []*db.Finding) error {
 	// The xlsx lives inside the scan directory, so the project root (and with it
 	// the source tree) is derivable without extra plumbing, matching SARIF.
@@ -57,7 +57,7 @@ func WriteXlsxFromFindings(xlsxPath, rootDir string, findings []*db.Finding) err
 	rows := make([]row, 0, len(findings))
 	for _, f := range findings {
 		status := f.FinalStatus()
-		if status != "confirmed" && status != "suspected" {
+		if status != "confirmed" {
 			continue
 		}
 		cwe := strings.ToUpper(strings.TrimSpace(f.RuleID))

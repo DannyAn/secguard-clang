@@ -59,8 +59,9 @@ type ScanOverview struct {
 	SeverityCounts    map[string]SeverityCount
 }
 
-// SeverityCount is the actionable (confirmed + suspected) breakdown per
-// severity. Dismissed findings are excluded — they are not defects.
+// SeverityCount is the actionable (confirmed) breakdown per severity. Dismissed
+// findings are excluded — they are not defects. Suspected is retained as a
+// legacy field (always 0 now) so old test/machine readers keep compiling.
 type SeverityCount struct {
 	Confirmed int
 	Suspected int
@@ -74,25 +75,30 @@ func (s SeverityCount) Total() int { return s.Confirmed + s.Suspected }
 // comparing `ls findings/` against a subagent's reported count.
 func (o ScanOverview) ConfirmedTotal() int { return o.AutoConfirmed + o.AIConfirmed }
 
+// SuspectedTotal is retained for legacy databases that still carry pre-binary
+// `suspected` rows. The AI verdict is binary now (confirmed | dismissed), so a
+// new scan always has 0.
 func (o ScanOverview) SuspectedTotal() int { return o.AISuspected }
 
-func (o ScanOverview) ActionableTotal() int { return o.ConfirmedTotal() + o.AISuspected }
+// ActionableTotal is the user-facing defect count: CONFIRMED findings only.
+// An undecidable finding is dismissed, never a third "suspected" state.
+func (o ScanOverview) ActionableTotal() int { return o.ConfirmedTotal() }
 
 func (o ScanOverview) DismissedTotal() int { return o.AIDismissed }
 
 // Headline is the one-sentence verdict a reader (or the console) leads with.
 func (o ScanOverview) Headline() string {
-	if o.ActionableTotal() == 0 {
+	if o.ConfirmedTotal() == 0 {
 		if o.AIDismissed > 0 {
-			return fmt.Sprintf("This scan reported no actionable issue: all %d converged %s reviewed and dismissed as false positives.",
+			return fmt.Sprintf("This scan reported no confirmed issue: all %d converged %s reviewed and dismissed.",
 				o.AIDismissed, plural(o.AIDismissed, "candidate was", "candidates were"))
 		}
-		return "This scan reported no actionable issue."
+		return "This scan reported no confirmed issue."
 	}
-	s := fmt.Sprintf("This scan reported %d actionable %s: %d confirmed, %d suspected.",
-		o.ActionableTotal(), plural(o.ActionableTotal(), "issue", "issues"), o.ConfirmedTotal(), o.AISuspected)
+	s := fmt.Sprintf("This scan reported %d confirmed %s.",
+		o.ConfirmedTotal(), plural(o.ConfirmedTotal(), "issue", "issues"))
 	if o.AutoConfirmed > 0 {
-		s += fmt.Sprintf(" Of the confirmed ones, %d auto-confirmed by the pipeline (no AI review) and %d classified by the AI.",
+		s += fmt.Sprintf(" %d auto-confirmed by the pipeline (no AI review), %d classified by the AI.",
 			o.AutoConfirmed, o.AIConfirmed)
 	}
 	return s
@@ -216,9 +222,8 @@ func (o ScanOverview) VerdictMarkdown() string {
 	fmt.Fprintf(&b, "| Confirmed findings | %d |\n", o.ConfirmedTotal())
 	fmt.Fprintf(&b, "| — proved by the pipeline (auto-confirmed, no AI review) | %d |\n", o.AutoConfirmed)
 	fmt.Fprintf(&b, "| — classified by the AI | %d |\n", o.AIConfirmed)
-	fmt.Fprintf(&b, "| Suspected findings | %d |\n", o.SuspectedTotal())
-	fmt.Fprintf(&b, "| Dismissed (false positives) | %d |\n", o.DismissedTotal())
-	fmt.Fprintf(&b, "| Actionable findings (confirmed + suspected) | %d |\n", o.ActionableTotal())
+	fmt.Fprintf(&b, "| Dismissed | %d |\n", o.DismissedTotal())
+	fmt.Fprintf(&b, "| Actionable findings (confirmed) | %d |\n", o.ActionableTotal())
 	if o.Unclassified > 0 {
 		fmt.Fprintf(&b, "| Candidates without a persisted verdict | %d |\n", o.Unclassified)
 	}
@@ -276,10 +281,8 @@ func (o ScanOverview) SummaryFields() map[string]interface{} {
 		"converged_candidates":    o.Candidates,
 		"auto_confirmed":          o.AutoConfirmed,
 		"ai_confirmed":            o.AIConfirmed,
-		"ai_suspected":            o.AISuspected,
 		"ai_dismissed":            o.AIDismissed,
 		"confirmed_total":         o.ConfirmedTotal(),
-		"suspected_total":         o.SuspectedTotal(),
 		"dismissed_total":         o.DismissedTotal(),
 		"actionable_total":        o.ActionableTotal(),
 		"unclassified_candidates": o.Unclassified,
@@ -296,30 +299,26 @@ func (o ScanOverview) SummaryFields() map[string]interface{} {
 		sev := map[string]interface{}{}
 		for _, k := range sortedSeverities(o.SeverityCounts) {
 			c := o.SeverityCounts[k]
-			sev[k] = map[string]int{"confirmed": c.Confirmed, "suspected": c.Suspected, "total": c.Total()}
+			sev[k] = map[string]int{"confirmed": c.Confirmed, "total": c.Confirmed}
 		}
 		m["severity_breakdown"] = sev
 	}
 	return m
 }
 
-// CountSeverities aggregates actionable (confirmed + suspected) findings by
-// severity. It is exported so the audit report and report.md derive the
-// breakdown from the same rule: auto-confirmed counts as confirmed, dismissed
-// never counts.
+// CountSeverities aggregates CONFIRMED findings by severity. It is exported so
+// the audit report and report.md derive the breakdown from the same rule:
+// auto-confirmed counts as confirmed, dismissed never counts. Suspected stays 0
+// in the returned map, kept only for the legacy SeverityCount shape.
 func CountSeverities(findings []*db.Finding) map[string]SeverityCount {
 	counts := map[string]SeverityCount{}
 	for _, f := range findings {
-		sev := normalizeSeverity(strings.ToLower(strings.TrimSpace(f.Severity)))
-		c := counts[sev]
-		switch f.FinalStatus() {
-		case "confirmed":
-			c.Confirmed++
-		case "suspected":
-			c.Suspected++
-		default:
+		if f.FinalStatus() != "confirmed" {
 			continue
 		}
+		sev := normalizeSeverity(strings.ToLower(strings.TrimSpace(f.Severity)))
+		c := counts[sev]
+		c.Confirmed++
 		counts[sev] = c
 	}
 	return counts
@@ -368,16 +367,15 @@ func severityMarkdown(counts map[string]SeverityCount) string {
 	}
 	var b strings.Builder
 	b.WriteString("### Findings by Severity\n\n")
-	b.WriteString("| Severity | Confirmed | Suspected | Total |\n")
-	b.WriteString("|----------|-----------|-----------|-------|\n")
-	total := SeverityCount{}
+	b.WriteString("| Severity | Confirmed |\n")
+	b.WriteString("|----------|-----------|\n")
+	total := 0
 	for _, s := range sortedSeverities(counts) {
 		c := counts[s]
-		fmt.Fprintf(&b, "| %s | %d | %d | %d |\n", s, c.Confirmed, c.Suspected, c.Total())
-		total.Confirmed += c.Confirmed
-		total.Suspected += c.Suspected
+		fmt.Fprintf(&b, "| %s | %d |\n", s, c.Confirmed)
+		total += c.Confirmed
 	}
-	fmt.Fprintf(&b, "| **TOTAL** | **%d** | **%d** | **%d** |\n\n", total.Confirmed, total.Suspected, total.Total())
+	fmt.Fprintf(&b, "| **TOTAL** | **%d** |\n\n", total)
 	return b.String()
 }
 

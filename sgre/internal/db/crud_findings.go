@@ -208,8 +208,8 @@ func (s *store) ListFingerprintsExcludingScanID(ctx context.Context, excludeScan
 }
 
 // UpdateFindingReview records the second-round confirmation result for a
-// suspected finding: review_status is confirmed/dismissed/suspected-kept,
-// review_reasoning is the AI's justification for the second-round call.
+// finding: review_status is confirmed/dismissed (binary), review_reasoning is
+// the justification for the second-round call.
 func (s *store) UpdateFindingReview(ctx context.Context, id int64, reviewStatus, reviewReasoning string) error {
 	res, err := s.exec.ExecContext(ctx,
 		`UPDATE findings SET review_status = ?, review_reasoning = ? WHERE id = ?`,

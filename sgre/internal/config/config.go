@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 
@@ -21,6 +22,7 @@ type Config struct {
 	IteratorMacros  IteratorMacros  `toml:"iterator_macros"`
 	BannedFunctions BannedFunctions `toml:"banned_functions"`
 	Exclude         Exclude         `toml:"exclude"`
+	DisabledTypes   DisabledTypes   `toml:"disabled_types"`
 }
 
 type TrustedMacros struct {
@@ -40,6 +42,20 @@ type TrustedMacros struct {
 //	names = ["strcpy", "my_legacy_alloc"]
 type BannedFunctions struct {
 	Names []string `toml:"names"`
+}
+
+// DisabledTypes declares vulnerability types to turn OFF for the whole scan. A
+// disabled type produces no candidates — the convergence plan stage never runs
+// for it, so the AI agent's skills never receive it. This is the type switch for
+// noisy/slow types (e.g. path-traversal, divide-by-zero): it removes them from
+// the scan result AND from the end-to-end wall-clock, not merely from the final
+// report.
+//
+//	[disabled_types]
+//	types = ["path-traversal", "divide-by-zero"]
+type DisabledTypes struct {
+	// Types are kebab-case vulnerability-type names (matching `secguard types`).
+	Types []string `toml:"types"`
 }
 
 // Exclude declares directory trees to skip during indexing. Paths are resolved
@@ -140,6 +156,38 @@ func (c *Config) ExcludePaths() []string {
 		return nil
 	}
 	return c.Exclude.Paths
+}
+
+// DisabledTypeNames returns the configured type-switch names (kebab-case
+// vulnerability types), trimmed of surrounding whitespace and de-duplicated in
+// declaration order.
+func (c *Config) DisabledTypeNames() []string {
+	if c == nil {
+		return nil
+	}
+	seen := make(map[string]bool, len(c.DisabledTypes.Types))
+	out := make([]string, 0, len(c.DisabledTypes.Types))
+	for _, n := range c.DisabledTypes.Types {
+		if t := strings.TrimSpace(n); t != "" && !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// DisabledTypeSet returns the disabled type names as a set, for O(1) lookups
+// when filtering the vuln-type list. A nil/empty set means "nothing disabled".
+func (c *Config) DisabledTypeSet() map[string]bool {
+	names := c.DisabledTypeNames()
+	if len(names) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(names))
+	for _, n := range names {
+		out[n] = true
+	}
+	return out
 }
 
 // IteratorMacroArgs returns the configured iterator-macro map (macro name →

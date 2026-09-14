@@ -22,7 +22,7 @@ A sizeof-misuse candidate has:
 3. Require the sizeof to be consumed by a malloc-family / memset / memcpy-family call
 4. Resolve the base type through typedefs (cross-file: `typedef char *cstr_t` in a header counts) to decide the category:
    - `sizeof_pointer` — **confirmed**: `sizeof(p)` on a single-level pointer `T *p` where `T` resolves to a non-pointer (`char *q`, `my_uint *p`). `sizeof(p)` is the pointer width while the call intends `sizeof(*p)` — the classic CWE-467 defect.
-   - `sizeof_pointer_ambig` — **suspected**: `sizeof(p)` on a pointer-to-pointer (`T **p`) or a `T *p` whose `T` resolves to a pointer typedef (`cstr_t *s`). Allocating an array of pointers legitimately uses `sizeof(p)`, so it can only be suspected.
+   - `sizeof_pointer_ambig` — **suspected** (pipeline prior → AI decides): `sizeof(p)` on a pointer-to-pointer (`T **p`) or a `T *p` whose `T` resolves to a pointer typedef (`cstr_t *s`). Allocating an array of pointers legitimately uses `sizeof(p)`, so the pipeline only tiers it `suspected` and the AI settles confirmed/dismissed.
 5. Emit `SIZEOF_MISUSE` otherwise
 
 ### Classification Rules
@@ -30,7 +30,7 @@ A sizeof-misuse candidate has:
 | Condition | Classification |
 |-----------|---------------|
 | `sizeof_pointer` (`char *q; malloc(n * sizeof(q))`) — pointer width where `sizeof(*q)` is meant | **confirmed** |
-| `sizeof_pointer_ambig` (`char **p; malloc(n * sizeof(p))`) — may allocate pointer slots, or the base is a pointer typedef | **suspected** — reason over the actual intent |
+| `sizeof_pointer_ambig` (`char **p; malloc(n * sizeof(p))`) — may allocate pointer slots, or the base is a pointer typedef | **dismissed** — reason over the actual intent |
 | `memset(p, 0, sizeof(p))` where `p` is a pointer | **confirmed** (zeroes only a pointer width) |
 | `malloc(n * sizeof(*p))` | **false-positive** (correct deref) |
 | `malloc(n * sizeof(struct foo))` | **false-positive** (type, not pointer) |
@@ -42,13 +42,11 @@ A sizeof-misuse candidate has:
 ### Severity Matrix
 
 `status` and `severity` are independent: `status` = evidence verdict
-(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
-`metadata.severity` is the type default, not a ceiling. Suspected findings are
-capped one notch below their confirmed twin (evidence discount), never below
-`low`; dismissed → `low`.
+(confirmed/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. The verdict is binary (confirmed/dismissed); dismissed → `low`.
 
 | Shape | Severity |
 |-------|----------|
 | `sizeof_pointer` feeding malloc/memset/memcpy (pointer width where object width meant) | HIGH |
 | `memset(p, 0, sizeof(p))` — zeroes only a pointer width | HIGH |
-| `sizeof_pointer_ambig` (pointer-to-pointer / pointer typedef) | MEDIUM (suspected) |
+| `sizeof_pointer_ambig` (pointer-to-pointer / pointer typedef) | MEDIUM (dismissed) |

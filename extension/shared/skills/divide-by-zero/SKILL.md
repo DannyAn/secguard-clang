@@ -29,7 +29,7 @@ A divide-by-zero candidate has:
 | `x / (a - b)` where `a == b` is reachable | **confirmed** |
 | `x / n` where `n` is attacker-controlled (argv / getenv / recv length) and unguarded | **confirmed** (the attacker can make n == 0) |
 | `x / n` where `n` is a bounded local, a loop counter, or a checked length | **false-positive** (n cannot be zero on any reachable path) |
-| `x / n` where `n`'s origin cannot be settled from the context | **suspected** |
+| `x / n` where `n`'s origin cannot be settled from the context | **dismissed** |
 | `x / 2`, `x / sizeof(T)` | **false-positive** (constant, safe) |
 
 > **Pipeline pre-confirms, so these never reach this classification step:**
@@ -50,14 +50,12 @@ A divide-by-zero candidate has:
 ### Severity Matrix
 
 `status` and `severity` are independent: `status` = evidence verdict
-(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
-`metadata.severity` is the type default, not a ceiling. Suspected findings are
-capped one notch below their confirmed twin (evidence discount), never below
-`low`; dismissed → `low`.
+(confirmed/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. The verdict is binary (confirmed/dismissed); dismissed → `low`.
 
 | Shape | Severity |
 |-------|----------|
 | Divisor attacker-controlled (argv/getenv/recv) and unguarded → reachable crash | HIGH |
 | Provable certain divide-by-zero (`d = 0; x / d`) | HIGH |
 | Auto-confirmed struct-field / global divisor (defensive-check gap) | MEDIUM |
-| Divisor origin unsettled | MEDIUM (suspected) |
+| Divisor origin unsettled | MEDIUM (dismissed) |

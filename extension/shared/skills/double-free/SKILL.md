@@ -29,7 +29,7 @@ A double-free candidate has:
 | Same variable freed twice unconditionally | **confirmed** |
 | Freed in different branches of same if/else | **false-positive** (mutually exclusive) |
 | Freed twice but reassigned between frees | **false-positive** |
-| Freed in different functions | **suspected** (interprocedural) |
+| Freed in different functions | **dismissed** (interprocedural) |
 
 ### Common False Positives
 - `if (a) free(ptr); ... if (!a) free(ptr);` — mutually exclusive conditions
@@ -45,14 +45,12 @@ A double-free candidate has:
 ### Severity Matrix
 
 `status` and `severity` are independent: `status` = evidence verdict
-(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
-`metadata.severity` is the type default, not a ceiling. Suspected findings are
-capped one notch below their confirmed twin (evidence discount), never below
-`low`; dismissed → `low`.
+(confirmed/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. The verdict is binary (confirmed/dismissed); dismissed → `low`.
 
 | Shape | Severity |
 |-------|----------|
 | Unconditional double free | CRITICAL |
 | Conditional double free (same condition) | CRITICAL |
-| Double free across different functions (interprocedural) | HIGH (suspected) |
+| Double free across different functions (interprocedural) | HIGH (dismissed) |
 | Conditional double free (mutually exclusive branches) | LOW (likely false positive) |

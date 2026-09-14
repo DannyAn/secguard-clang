@@ -28,12 +28,12 @@ A path-traversal candidate has:
 | Condition | Classification |
 |-----------|---------------|
 | `fopen(user_input, "r")` where a taint source reaches the path | **confirmed** |
-| `fopen(path, ...)` where `path` is a function parameter with no provable tainted caller | **suspected** |
+| `fopen(path, ...)` where `path` is a function parameter with no provable tainted caller | **dismissed** |
 | `fopen("/etc/config", "r")` — literal or compile-time-constant path | **false-positive** (safe) |
 
 The **confirmed** verdict only applies when the pipeline proved a taint source
 (`taint_source` evidence fragment). A parameter of unknown origin stays
-**suspected** — do not promote it without tracing a caller that passes
+**dismissed** — do not promote it without tracing a caller that passes
 attacker-controlled data.
 
 ### Common False Positives
@@ -63,13 +63,11 @@ FILE *f = fopen(resolved, "r");
 ### Severity Matrix
 
 `status` and `severity` are independent: `status` = evidence verdict
-(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
-`metadata.severity` is the type default, not a ceiling. Suspected findings are
-capped one notch below their confirmed twin (evidence discount), never below
-`low`; dismissed → `low`.
+(confirmed/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. The verdict is binary (confirmed/dismissed); dismissed → `low`.
 
 | Shape | Severity |
 |-------|----------|
 | Tainted path reaches a write/delete sink (`unlink`/`remove`/`rename`) | CRITICAL |
 | Tainted path reaches a read sink (`fopen`/`open`/`opendir`) | HIGH |
-| Path parameter with no provable tainted caller | MEDIUM (suspected) |
+| Path parameter with no provable tainted caller | MEDIUM (dismissed) |

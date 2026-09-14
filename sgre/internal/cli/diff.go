@@ -162,7 +162,7 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 	totalAutoConfirmed := 0
 	filesWithCandidates := map[string]bool{}
 	planErrors := outcome.PlanErrors
-	vulnTypes := planner.AllVulnTypes()
+	vulnTypes := planner.ActiveVulnTypes(config.Load().DisabledTypeSet())
 
 	for i, vulnType := range vulnTypes {
 		if errMsg, failed := planErrors[vulnType]; failed {

@@ -2,6 +2,41 @@ package planner
 
 import "testing"
 
+func TestActiveVulnTypes_DisabledSwitch(t *testing.T) {
+	all := AllVulnTypes()
+	if len(all) == 0 {
+		t.Fatal("registry must not be empty")
+	}
+
+	// nil/empty disabled set = all types, unchanged.
+	if got := ActiveVulnTypes(nil); len(got) != len(all) {
+		t.Fatalf("ActiveVulnTypes(nil) = %d types, want %d", len(got), len(all))
+	}
+
+	disabled := map[string]bool{"path-traversal": true, "divide-by-zero": true}
+	active := ActiveVulnTypes(disabled)
+	if len(active) != len(all)-2 {
+		t.Fatalf("ActiveVulnTypes(2 disabled) = %d types, want %d", len(active), len(all)-2)
+	}
+	activeSet := make(map[string]bool, len(active))
+	for _, n := range active {
+		activeSet[n] = true
+	}
+	if activeSet["path-traversal"] || activeSet["divide-by-zero"] {
+		t.Errorf("disabled types must be removed: %v", active)
+	}
+	// Every active type is still a registered type.
+	for _, n := range active {
+		if CWEForType(n) == "" {
+			t.Errorf("active type %q is not registered", n)
+		}
+	}
+	// Disabling an unknown name must be a no-op (it matches no registered type).
+	if got := ActiveVulnTypes(map[string]bool{"does-not-exist": true}); len(got) != len(all) {
+		t.Errorf("unknown disabled name must not change the list: %d vs %d", len(got), len(all))
+	}
+}
+
 func TestCWEForType_AllRegisteredTypesHaveCWE(t *testing.T) {
 	for _, name := range AllVulnTypes() {
 		if CWEForType(name) == "" {

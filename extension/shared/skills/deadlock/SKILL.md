@@ -42,7 +42,7 @@ A deadlock candidate has:
 |-----------|---------------|
 | Lock-order inversion detected (cycle in lock graph) | **confirmed** |
 | All lock acquisitions follow consistent global order | **false-positive** |
-| A lock-order cycle that includes a `pthread_mutex_timedlock` acquisition | **suspected** (the timeout allows recovery) |
+| A lock-order cycle that includes a `pthread_mutex_timedlock` acquisition | **dismissed** (the timeout allows recovery) |
 | Single lock, no nesting | **false-positive** |
 | Lock-free implementation (atomics only) | **false-positive** |
 | Same lock acquired twice (non-recursive mutex) | **confirmed** |
@@ -59,13 +59,11 @@ A deadlock candidate has:
 ### Severity Matrix
 
 `status` and `severity` are independent: `status` = evidence verdict
-(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
-`metadata.severity` is the type default, not a ceiling. Suspected findings are
-capped one notch below their confirmed twin (evidence discount), never below
-`low`; dismissed → `low`.
+(confirmed/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. The verdict is binary (confirmed/dismissed); dismissed → `low`.
 
 | Shape | Severity |
 |-------|----------|
 | Lock-order inversion cycle (confirmed) | HIGH |
 | Self-deadlock (non-recursive re-lock) | HIGH |
-| Cycle that includes a `pthread_mutex_timedlock` acquisition | MEDIUM (suspected — timeout allows recovery) |
+| Cycle that includes a `pthread_mutex_timedlock` acquisition | MEDIUM (dismissed — timeout allows recovery) |

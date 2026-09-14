@@ -27,7 +27,7 @@ An uninit candidate has:
 | Condition | Classification |
 |-----------|---------------|
 | Variable read before any assignment on ALL paths | **confirmed** |
-| Variable may be initialized on some paths but not all (conditional init) | **suspected** |
+| Variable may be initialized on some paths but not all (conditional init) | **dismissed** |
 | Variable initialized before use on all paths | **false-positive** |
 | Compiler enforces initialization | **false-positive** |
 
@@ -46,12 +46,10 @@ An uninit candidate has:
 ### Severity Matrix
 
 `status` and `severity` are independent: `status` = evidence verdict
-(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
-`metadata.severity` is the type default, not a ceiling. Suspected findings are
-capped one notch below their confirmed twin (evidence discount), never below
-`low`; dismissed → `low`.
+(confirmed/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. The verdict is binary (confirmed/dismissed); dismissed → `low`.
 
 | Shape | Severity |
 |-------|----------|
 | Uninitialized value used on all paths as control (pointer / index / branch) or leaking stack/heap contents | HIGH |
-| Conditionally initialized (only some paths) | MEDIUM (suspected) |
+| Conditionally initialized (only some paths) | MEDIUM (dismissed) |

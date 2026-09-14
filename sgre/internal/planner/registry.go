@@ -77,6 +77,26 @@ func AllVulnTypes() []string {
 	return names
 }
 
+// ActiveVulnTypes returns the registered vulnerability types minus the disabled
+// set, in the same sorted order as AllVulnTypes. It is the type switch applied
+// at the SOURCE: the convergence Plan stage never runs for a disabled type, so
+// it produces no candidates and the AI agent's skills never receive it. A nil or
+// empty disabled set returns all types.
+func ActiveVulnTypes(disabled map[string]bool) []string {
+	if len(disabled) == 0 {
+		return AllVulnTypes()
+	}
+	names := make([]string, 0, len(vulnTypeRegistry))
+	for name := range vulnTypeRegistry {
+		if disabled[name] {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // ValidateRegistry checks every registered vulnerability type's spec and filter
 // chain, returning an error for any type whose FilterChain has no handler in
 // getFilters. It is called once at pipeline startup so a registry typo fails

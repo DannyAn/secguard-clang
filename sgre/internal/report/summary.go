@@ -70,7 +70,7 @@ func BuildScanSummary(data SummaryData) string {
 	fmt.Fprintf(&b, "- SARIF (candidate stage, unclassified): %s\n", data.SarifPath)
 	if data.ScanDir != "" {
 		fmt.Fprintf(&b, "- Candidate evidence: %s (unclassified pipeline leads)\n", filepath.Join(data.ScanDir, CandidatesDir))
-		fmt.Fprintf(&b, "- Findings to review: %s (AI verdicts, confirmed/suspected only)\n", filepath.Join(data.ScanDir, FindingsDir))
+		fmt.Fprintf(&b, "- Findings to review: %s (AI-confirmed verdicts only)\n", filepath.Join(data.ScanDir, FindingsDir))
 	}
 	fmt.Fprintf(&b, "- Latest: %s\n", data.LatestPath)
 

@@ -38,9 +38,9 @@ metadata:
 |-----------|---------------|
 | Value has a known secret prefix, high entropy, or URL-embedded credentials | **confirmed** |
 | `RegSetValueExA` persisting a secret-shaped value to a secret-named registry key | **confirmed** |
-| Only the variable/field NAME matched the secret pattern (low-entropy value) | **suspected** — may be a real weak password, a placeholder, or a test value |
+| Only the variable/field NAME matched the secret pattern (low-entropy value) | **dismissed** — may be a real weak password, a placeholder, or a test value |
 | Placeholder value (`"REPLACE_ME"`, `"YOUR_KEY_HERE"`, `"CHANGEME"`, `"xxx"`, empty) | **false-positive** |
-| Test credential (`test_password = "test123"`, a `test/` path) | **suspected** (verify it is not used in production) |
+| Test credential (`test_password = "test123"`, a `test/` path) | **dismissed** (verify it is not used in production) |
 | Short value that is not credential-like | **false-positive** |
 
 ### Fix Suggestions
@@ -55,14 +55,12 @@ metadata:
 ### Severity Matrix
 
 `status` and `severity` are independent: `status` = evidence verdict
-(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
-`metadata.severity` is the type default, not a ceiling. Suspected findings are
-capped one notch below their confirmed twin (evidence discount), never below
-`low`; dismissed → `low`.
+(confirmed/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. The verdict is binary (confirmed/dismissed); dismissed → `low`.
 
 | Shape | Severity |
 |-------|----------|
 | Value-proven secret (known prefix / high entropy / URL credentials) in source | CRITICAL |
 | Registry persistence of a secret-shaped value | CRITICAL |
-| Test credential suspected to be used in production | HIGH (suspected) |
-| Name-only match, low-entropy, likely placeholder | MEDIUM (suspected) |
+| Test credential suspected to be used in production | HIGH (dismissed) |
+| Name-only match, low-entropy, likely placeholder | MEDIUM (dismissed) |

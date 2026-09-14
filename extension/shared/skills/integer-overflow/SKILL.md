@@ -57,7 +57,7 @@ The `category` field encodes the confidence tier the pipeline already computed:
 | Constant expression (no variables) | **false-positive** |
 | `a + b` where `a`, `b` are bounded constants | **false-positive** |
 | A size variable assigned a single small constant (`size_t n = 10; malloc(n * n)`) — the convergence range flow proves it bounded and suppresses it | **false-positive** |
-| Arithmetic on `int` (signed) feeding malloc | **suspected** (sign issues) |
+| Arithmetic on `int` (signed) feeding malloc | **dismissed** (sign issues) |
 | `size_add_overflow` / `size_sub_overflow` where the parameter is validated by every caller (e.g. clamped, or provably `< SIZE_MAX - offset`) | **false-positive** |
 | `size_add_overflow` / `size_sub_overflow` where the parameter is raw user input (argv/getenv/recv length) with no clamp | **confirmed** |
 | `size_mul_const_overflow` where the parameter is raw user input and `K >= 2` | **confirmed** |
@@ -82,14 +82,12 @@ overflow is realistic and should be **confirmed**; if it is a bounded length
 ### Severity Matrix
 
 `status` and `severity` are independent: `status` = evidence verdict
-(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
-`metadata.severity` is the type default, not a ceiling. Suspected findings are
-capped one notch below their confirmed twin (evidence discount), never below
-`low`; dismissed → `low`.
+(confirmed/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. The verdict is binary (confirmed/dismissed); dismissed → `low`.
 
 | Shape | Severity |
 |-------|----------|
 | Overflow feeds an allocation/copy size with an attacker-controlled operand → undersized alloc → later heap overflow | CRITICAL |
 | Overflow feeds malloc/memcpy size, bounded operand, no check | HIGH |
 | `possible` tier (unsigned wraparound inside a bounds check, not proven reachable) | MEDIUM (possible) |
-| Signed `int` arithmetic feeding malloc (sign-conversion risk) | MEDIUM (suspected) |
+| Signed `int` arithmetic feeding malloc (sign-conversion risk) | MEDIUM (dismissed) |

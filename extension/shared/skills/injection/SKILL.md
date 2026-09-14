@@ -53,7 +53,7 @@ metadata:
 
 ### Common Edge Cases (P3)
 - **Partial blacklist**: `is_safe_input()` filtering `;` but not `&&`, `||`, `$()` → **confirmed** (incomplete sanitization is still injectable)
-- **TOCTOU**: Check then use with race window → **suspected**
+- **TOCTOU**: Check then use with race window → **dismissed**
 - **Format string**: `printf(user_input)` without format → **confirmed** (CWE-134)
 
 ### Fix Suggestions
@@ -65,13 +65,11 @@ metadata:
 ### Severity Matrix
 
 `status` and `severity` are independent: `status` = evidence verdict
-(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
-`metadata.severity` is the type default, not a ceiling. Suspected findings are
-capped one notch below their confirmed twin (evidence discount), never below
-`low`; dismissed → `low`.
+(confirmed/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. The verdict is binary (confirmed/dismissed); dismissed → `low`.
 
 | Shape | Severity |
 |-------|----------|
 | Command injection: tainted input reaches `system`/`popen` | CRITICAL |
 | SQL injection: tainted input reaches a concatenated/sprintf query | CRITICAL |
-| TOCTOU / unproven taint reaching the sink | HIGH (suspected) |
+| TOCTOU / unproven taint reaching the sink | HIGH (dismissed) |

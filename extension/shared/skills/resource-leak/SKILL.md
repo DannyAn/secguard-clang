@@ -36,7 +36,7 @@ A resource-leak candidate has:
 | RAII pattern / destructor always called | **false-positive** |
 | Ownership returned to the caller | **false-positive** (caller owns) |
 | Process exits right after the acquire (the OS reclaims the resource) | **false-positive** |
-| Whether a release happens elsewhere cannot be settled from this function | **suspected** |
+| Whether a release happens elsewhere cannot be settled from this function | **dismissed** |
 
 An **error-path leak is confirmed, not suspected**: the function demonstrably
 returns with the handle still open and that error return is reachable, so the
@@ -77,14 +77,12 @@ close(fd);
 ### Severity Matrix
 
 `status` and `severity` are independent: `status` = evidence verdict
-(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
-`metadata.severity` is the type default, not a ceiling. Suspected findings are
-capped one notch below their confirmed twin (evidence discount), never below
-`low`; dismissed → `low`.
+(confirmed/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. The verdict is binary (confirmed/dismissed); dismissed → `low`.
 
 | Shape | Lifetime / frequency | Severity |
 |-------|---------------------|----------|
 | One-shot handle acquire, low call frequency / short lifetime | Low | MEDIUM |
 | Per-connection / per-request fd or socket leak in a long-lived service | High | HIGH |
 | Unbounded fd/handle leak → fd exhaustion / DoS / service restart | Unbounded | CRITICAL |
-| Release may happen in a callee (unsettled) | Unsettled | MEDIUM (suspected; LOW if one-shot) |
+| Release may happen in a callee (unsettled) | Unsettled | MEDIUM (dismissed; LOW if one-shot) |

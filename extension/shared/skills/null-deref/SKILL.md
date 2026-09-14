@@ -26,12 +26,23 @@ A null-deref candidate has:
 | Nullable source + reachable + data flow + guard BEFORE deref (scope covers) | **false-positive** |
 | Nullable source + reachable + data flow + guard AFTER deref (scope misses) | **confirmed** |
 | Nullable source + NOT reachable | **false-positive** (dead code) |
-| External call return + no guard + deref | **suspected** (external may never return NULL) |
+| External call return + no guard + deref | **dismissed** (external may never return NULL) |
 
 ### Common False Positives
 - `if (ptr == NULL) return;` before `ptr->field` → guard eliminates risk
 - `if (!ptr) { ... return; }` early return → guard eliminates risk for rest of function
 - `ptr = malloc(n); if (!ptr) return; ptr->field;` → malloc checked
+
+### Macro Context (Hint `macro-context`)
+When the Hint carries `macro-context`, a function-like macro is in play and the
+pipeline's null-flow proof may be wrong. Verify the macro before confirming:
+- A NULL/error guard macro (`DBM_CHECK_RET(ctrl == NULL, FALSE)`, `CHECK_RET`,
+  `ASSERT`, any `*CHECK*`/`*ASSERT*`/`*RET*` that early-returns) establishes the
+  argument is non-null on the fall-through → **false-positive (dismissed)**.
+- An iterator/accessor macro (`DBM_TAILQ_FIRST(...)`, `list_for_each_entry`,
+  `rte_pktmbuf_mtod`) yields non-null by contract → **false-positive**.
+- The macro definition is out of scan range and its contract is unclear →
+  **dismissed** (never confirmed).
 
 ### Fix Suggestions
 - Add NULL check before dereference: `if (ptr == NULL) { return -1; }`
@@ -42,14 +53,12 @@ A null-deref candidate has:
 ### Severity Matrix
 
 `status` and `severity` are independent: `status` = evidence verdict
-(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
-`metadata.severity` is the type default, not a ceiling. Suspected findings are
-capped one notch below their confirmed twin (evidence discount), never below
-`low`; dismissed → `low`.
+(confirmed/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. The verdict is binary (confirmed/dismissed); dismissed → `low`.
 
 | Source | Guard | Severity |
 |--------|-------|----------|
 | malloc return | none, deref reachable | HIGH |
 | function return NULL | none, deref reachable | HIGH |
-| external call return | none (may never be NULL) | MEDIUM (suspected) |
-| any | partial guard (misses the deref) | MEDIUM (suspected) |
+| external call return | none (may never be NULL) | MEDIUM (dismissed) |
+| any | partial guard (misses the deref) | MEDIUM (dismissed) |

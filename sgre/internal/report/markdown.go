@@ -13,9 +13,9 @@ import (
 
 // WriteReportFromFindings regenerates report.md from the AI's persisted findings,
 // so the human-readable report carries the post-classification verdicts — not the
-// candidate-stage leads that writeReport emits at scan time. Dismissed
-// (false-positive) findings are excluded; the report contains only confirmed +
-// suspected, matching result.sarif and the findings/ directory.
+// candidate-stage leads that writeReport emits at scan time. Only CONFIRMED
+// findings are listed; dismissed findings are excluded from the findings list,
+// matching result.sarif and the findings/ directory.
 //
 // `overview` carries the scan-scale and pipeline-funnel figures (files /
 // functions / lines scanned, raw seeds, converged candidates, auto-confirmed,
@@ -58,6 +58,7 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding,
 			}
 		case "suspected":
 			suspected++
+			continue
 		case "dismissed":
 			dismissed++
 			continue
@@ -97,27 +98,19 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding,
 	var b strings.Builder
 
 	b.WriteString("# SecGuard Security Scan Report\n\n")
-	b.WriteString("> This report reflects **AI-classified findings** (confirmed + suspected).\n")
-	b.WriteString("> Dismissed false-positives are excluded. Pipeline candidates are in `candidates/`.\n\n")
+	b.WriteString("> This report reflects **AI-classified confirmed findings**.\n")
+	b.WriteString("> Dismissed findings (including undecidable ones) are excluded. Pipeline candidates are in `candidates/`.\n\n")
 
 	b.WriteString(overview.MetadataMarkdown())
 	b.WriteString(overview.VerdictMarkdown())
 
 	b.WriteString("## Findings by Skill\n\n")
-	b.WriteString("| Skill | CWE | Confirmed | Suspected | Total |\n")
-	b.WriteString("|-------|-----|-----------|-----------|-------|\n")
+	b.WriteString("| Skill | CWE | Confirmed |\n")
+	b.WriteString("|-------|-----|-----------|\n")
 	for _, g := range groups {
-		c, s := 0, 0
-		for _, f := range g.items {
-			if f.FinalStatus() == "confirmed" {
-				c++
-			} else {
-				s++
-			}
-		}
-		b.WriteString(fmt.Sprintf("| %s | %s | %d | %d | %d |\n", g.vulnType, g.cwe, c, s, len(g.items)))
+		b.WriteString(fmt.Sprintf("| %s | %s | %d |\n", g.vulnType, g.cwe, len(g.items)))
 	}
-	b.WriteString(fmt.Sprintf("| **TOTAL** | | **%d** | **%d** | **%d** |\n\n", confirmed, suspected, confirmed+suspected))
+	b.WriteString(fmt.Sprintf("| **TOTAL** | | **%d** |\n\n", confirmed))
 
 	for _, g := range groups {
 		b.WriteString(fmt.Sprintf("## %s (%s)\n\n", g.vulnType, g.cwe))
@@ -143,8 +136,8 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding,
 	}
 
 	b.WriteString("## Output Files\n\n")
-	b.WriteString(fmt.Sprintf("- SARIF (verdict stage): `%s`\n", SarifFile))
-	b.WriteString(fmt.Sprintf("- Findings to review (AI verdicts): `%s/<vuln-type>/<NNN>_<file>_<line>_<confirmed|suspected>.md`\n", FindingsDir))
+	b.WriteString(fmt.Sprintf("- SARIF (verdict stage, confirmed only): `%s`\n", SarifFile))
+	b.WriteString(fmt.Sprintf("- Findings to review (AI-confirmed verdicts): `%s/<vuln-type>/<NNN>_<file>_<line>_confirmed.md`\n", FindingsDir))
 	b.WriteString(fmt.Sprintf("- Candidate evidence (pipeline output, pre-classification): `%s/<vuln-type>/`\n", CandidatesDir))
 	b.WriteString("- Audit report (pipeline statistics): `audit-report.md`\n")
 	b.WriteString("- Database: `.sgre/sgre.db`\n")
@@ -210,7 +203,7 @@ func (o *ScanOutput) writeReport(packages []*planner.PlanResult, indexSummary In
 	b.WriteString(fmt.Sprintf("- SARIF (candidate stage, level `note` — unclassified leads): `%s`\n", CandidatesSarifFile))
 	b.WriteString(fmt.Sprintf("- SARIF (verdict stage, written by `report --audit`): `%s`\n", SarifFile))
 	b.WriteString(fmt.Sprintf("- Candidate evidence (pipeline output, NOT verdicts): `%s/<vuln-type>/<NNN>_<file>_<line>.md`\n", CandidatesDir))
-	b.WriteString(fmt.Sprintf("- Findings to review (AI verdicts): `%s/<vuln-type>/<NNN>_<file>_<line>_<confirmed|suspected>.md`\n", FindingsDir))
+	b.WriteString(fmt.Sprintf("- Findings to review (AI verdicts): `%s/<vuln-type>/<NNN>_<file>_<line>_confirmed.md`\n", FindingsDir))
 	b.WriteString(fmt.Sprintf("  — written after AI classification. Dismissed (false-positive) entries never appear here; their verdict is recorded in the database and on the candidate file.\n"))
 	b.WriteString(fmt.Sprintf("- Database: `.sgre/sgre.db`\n"))
 
@@ -302,12 +295,13 @@ func (o *ScanOutput) writeTypeIndex(dir string, pkg *planner.PlanResult) error {
 	cwe := VulnToCWE(pkg.VulnerabilityType)
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("# %s (%s) — Candidates\n\n", pkg.VulnerabilityType, cwe))
-	b.WriteString("> Classify each candidate as confirmed / suspected / dismissed. Classify from\n" +
-		"> the `Source` + `Hint` columns first — `Hint` is the pipeline's precomputed\n" +
-		"> verdict facts (`src@N` = null-source line, `certain-null`/`maybe-null` = null\n" +
-		"> certainty, `tainted` = injection source, `weak-guard` = partial guard). Open\n" +
-		"> the `Evidence` file (and its `## Code Context`) only when the hint is\n" +
-		"> insufficient to decide.\n\n")
+	b.WriteString("> Classify each candidate as confirmed / dismissed (BINARY — no suspected).\n" +
+		"> Classify from the `Source` + `Hint` columns first — `Hint` is the pipeline's\n" +
+		"> precomputed verdict facts (`src@N` = null-source line, `certain-null`/\n" +
+		"> `maybe-null` = null certainty, `tainted` = injection source, `weak-guard` =\n" +
+		"> partial guard, `macro-context` = a macro is in play). Open the `Evidence`\n" +
+		"> file (and its `## Code Context`) only when the hint is insufficient to\n" +
+		"> decide.\n\n")
 	b.WriteString("| # | Function | File:Line | Variable | Suspicion | Hint | Source | Evidence |\n")
 	b.WriteString("|---|----------|-----------|----------|-----------|------|--------|----------|\n")
 	for i, c := range pkg.Candidates {

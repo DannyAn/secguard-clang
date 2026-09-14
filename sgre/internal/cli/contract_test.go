@@ -359,10 +359,11 @@ func TestFinding_ApplyStructuredFromProperties(t *testing.T) {
 
 func TestEffectiveStatus(t *testing.T) {
 	cases := []struct{ status, review, want string }{
+		// Legacy "suspected" / "suspected-kept" read as dismissed (binary model).
 		{"suspected", "confirmed", "confirmed"},
 		{"suspected", "dismissed", "dismissed"},
-		{"suspected", "suspected-kept", "suspected"},
-		{"suspected", "", "suspected"},
+		{"suspected", "suspected-kept", "dismissed"},
+		{"suspected", "", "dismissed"},
 		{"confirmed", "", "confirmed"},
 		{"auto-confirmed", "", "confirmed"},
 		{"dismissed", "", "dismissed"},
@@ -376,18 +377,17 @@ func TestEffectiveStatus(t *testing.T) {
 	}
 }
 
-// FinalStatus is the export gate: every first-pass verdict (confirmed/suspected/
-// dismissed) is final — A5 has been folded into the single-pass classification,
-// so a plain suspected finding is exportable as "suspected" (review_status is an
-// optional post-hoc override, no longer a required second-round stamp).
+// FinalStatus is the BINARY export gate: confirmed or dismissed. A legacy
+// "suspected" / "suspected-kept" spelling maps to dismissed (it was never a
+// proven defect).
 func TestFinalStatus(t *testing.T) {
 	cases := []struct{ status, review, want string }{
 		{"confirmed", "", "confirmed"},
 		{"auto-confirmed", "", "confirmed"},
 		{"suspected", "confirmed", "confirmed"},
 		{"suspected", "dismissed", "dismissed"},
-		{"suspected", "suspected-kept", "suspected"},
-		{"suspected", "", "suspected"},
+		{"suspected", "suspected-kept", "dismissed"},
+		{"suspected", "", "dismissed"},
 		{"dismissed", "", "dismissed"},
 		{"open", "", ""},
 	}
@@ -496,7 +496,7 @@ func TestReportCmd_ReviewJsonFlow(t *testing.T) {
 	reviewsFile := filepath.Join(root, "reviews.json")
 	payload, _ := json.Marshal([]map[string]interface{}{
 		{"id": ids[0], "review_status": "confirmed", "review_reasoning": "real"},
-		{"id": ids[1], "review_status": "suspected-kept", "review_reasoning": "unbounded"},
+		{"id": ids[1], "review_status": "dismissed", "review_reasoning": "unbounded"},
 	})
 	if err := os.WriteFile(reviewsFile, payload, 0644); err != nil {
 		t.Fatal(err)
@@ -529,7 +529,7 @@ func TestReportCmd_ReviewJsonFlow(t *testing.T) {
 	}
 	s2 := db.NewStore(d2)
 	defer s2.Close()
-	want := map[int64]string{ids[0]: "confirmed", ids[1]: "suspected-kept"}
+	want := map[int64]string{ids[0]: "confirmed", ids[1]: "dismissed"}
 	for id, w := range want {
 		f, err := s2.GetFindingByID(ctx, id)
 		if err != nil {

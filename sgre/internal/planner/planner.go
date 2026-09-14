@@ -21,6 +21,10 @@ type Planner struct {
 	// path-traversal / format-string, which otherwise each recompute the same
 	// ~39s fixpoints (the dominant plan-stage cost).
 	taintCache *taintSummaryCache
+	// macro shares the macro-context detector (and its file-line cache) across
+	// every Plan() call, so a file is read at most once per scan even though up
+	// to 22 vuln types run Plan concurrently.
+	macro *macroContextDetector
 }
 
 func NewPlanner(store db.Store, p *parser.Parser, logger *log.Logger) *Planner {
@@ -30,6 +34,7 @@ func NewPlanner(store db.Store, p *parser.Parser, logger *log.Logger) *Planner {
 		logger:         logger,
 		callReachCache: &callReachCache{},
 		taintCache:     newTaintSummaryCache(store, p),
+		macro:          newMacroContextDetector(),
 	}
 }
 
@@ -246,6 +251,7 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 	}
 
 	for _, c := range candidates {
+		c.MacroContext = p.macro.hasMacroContext(filePathByID[c.FileID], c.Line)
 		result.Candidates = append(result.Candidates, newEvidenceItem(c, spec, filePathByID[c.FileID]))
 	}
 

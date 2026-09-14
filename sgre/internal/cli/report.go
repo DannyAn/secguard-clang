@@ -17,20 +17,26 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/report"
 )
 
-// normalizeAIVerdict maps a raw agent-supplied status to one of the three AI
-// verdicts (confirmed/suspected/dismissed). `false-positive` is the skill file's
-// spelling of `dismissed` and is normalized so a subagent quoting the skill does
-// not fail validation. Any other value — including the pipeline intermediate
-// state `open` — is rejected, so a finding with no verdict is never persisted.
+// normalizeAIVerdict maps a raw agent-supplied status to the BINARY AI verdict:
+// confirmed (a real defect) or dismissed (everything else, including
+// "undecidable"). There is no third state: if the AI cannot prove a defect, it
+// is not a defect for the user, so a legacy `suspected` / `suspected-kept`
+// spelling is coerced to `dismissed` (the reasoning is preserved, so the
+// undecidable signal still lands in the DB as a dismissal record — the
+// algorithm-improvement input — without ever reaching the user). `false-positive`
+// is the skill file's spelling of `dismissed`. Any other value — including the
+// pipeline intermediate state `open` — is rejected.
 func normalizeAIVerdict(raw string) (string, error) {
 	status := strings.ToLower(strings.TrimSpace(raw))
 	switch status {
-	case "confirmed", "suspected":
+	case "confirmed":
 		return status, nil
 	case "dismissed", "false-positive", "false_positive", "false positive":
 		return "dismissed", nil
+	case "suspected", "suspected-kept":
+		return "dismissed", nil
 	default:
-		return "", fmt.Errorf("invalid status %q — expected confirmed|suspected|dismissed", raw)
+		return "", fmt.Errorf("invalid status %q — expected confirmed|dismissed", raw)
 	}
 }
 
@@ -470,13 +476,13 @@ func runReportCmd(ctx context.Context, args []string) int {
 				severity = "info"
 			}
 
-			// 校验 status 只能是 AI 判定三态；非法值（如 pipeline 中间态 open）
-			// 立即拒绝整批，而非 partial 跳过导致静默丢失。技能文件里把误报写成
+			// 校验 status 只能是二元裁决；非法值（如 pipeline 中间态 open）立即
+			// 拒绝整批，而非 partial 跳过导致静默丢失。技能文件里把误报写成
 			// `false-positive`，这是 `dismissed` 的同义判定——归一化后落库，避免
 			// 子代理照抄技能原文导致整批被拒。
 			status, serr := normalizeAIVerdict(in.Status)
 			if serr != nil {
-				WriteErrorJSON(fmt.Sprintf("invalid status %q at %s:%d — expected confirmed|suspected|dismissed", in.Status, in.File, in.Line))
+				WriteErrorJSON(fmt.Sprintf("invalid status %q at %s:%d — expected confirmed|dismissed", in.Status, in.File, in.Line))
 				return 1
 			}
 
@@ -573,9 +579,9 @@ func runReportCmd(ctx context.Context, args []string) int {
 		reviewStatus := parseStringFlag(remaining, "review-status")
 		reviewReasoning := parseStringFlag(remaining, "review-reasoning")
 		switch reviewStatus {
-		case "confirmed", "dismissed", "suspected-kept":
+		case "confirmed", "dismissed":
 		default:
-			WriteErrorJSON(fmt.Sprintf("invalid --review-status %q (expected confirmed|dismissed|suspected-kept)", reviewStatus))
+			WriteErrorJSON(fmt.Sprintf("invalid --review-status %q (expected confirmed|dismissed)", reviewStatus))
 			return 1
 		}
 
@@ -591,9 +597,6 @@ func runReportCmd(ctx context.Context, args []string) int {
 		}
 
 		finalStatus := reviewStatus
-		if reviewStatus == "suspected-kept" {
-			finalStatus = "suspected"
-		}
 		// Re-send the structured content the first pass persisted, so the A5
 		// review updates the verdict without wiping Summary/Reasoning/Fix
 		// Strategy — and so a dismissal removes the file from findings/ rather
@@ -619,8 +622,8 @@ func runReportCmd(ctx context.Context, args []string) int {
 	}
 
 	// --review-json <file> records the A5 second-round verdicts for a WHOLE batch
-	// of suspected findings in ONE subprocess + ONE transaction, instead of the
-	// per-finding `--review` loop that spawns a subprocess and opens SQLite per
+	// of findings in ONE subprocess + ONE transaction, instead of the per-finding
+	// `--review` loop that spawns a subprocess and opens SQLite per
 	// row (the slow path that stretched a high-volume type like null-deref to
 	// tens of minutes). Input is a JSON array of {id, review_status,
 	// review_reasoning}. `-` or a missing value reads from stdin.
@@ -654,7 +657,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 		err = store.WithTx(ctx, func(tx db.Store) error {
 			for _, in := range inputs {
 				switch in.ReviewStatus {
-				case "confirmed", "dismissed", "suspected-kept":
+				case "confirmed", "dismissed":
 				default:
 					errs = append(errs, fmt.Sprintf("finding %d — invalid review_status %q", in.ID, in.ReviewStatus))
 					continue
@@ -802,15 +805,16 @@ func runReportCmd(ctx context.Context, args []string) int {
 			}
 			// Regenerate result.sarif from the AI's persisted findings so the
 			// machine-readable report carries the post-A5 verdict + reasoning +
-			// fix, not just the candidate-stage evidence.
+			// fix, not just the candidate-stage evidence. Confirmed only — the AI
+			// verdict is binary, so there is no suspected stage to export.
 			sarifPath := filepath.Join(outputDir, report.SarifFile)
 			if err := report.WriteSarifFromFindings(sarifPath, "", scanFindings); err != nil {
 				WriteErrorJSON(fmt.Sprintf("failed to write result.sarif: %v", err))
 				return 1
 			}
 			// Regenerate report.md from the AI's persisted findings so the
-			// human-readable report shows confirmed + suspected verdicts, not
-			// the candidate-stage leads that writeReport emitted at scan time.
+			// human-readable report shows confirmed verdicts only, not the
+			// candidate-stage leads that writeReport emitted at scan time.
 			reportPath := filepath.Join(outputDir, report.ReportFile)
 			if err := report.WriteReportFromFindings(reportPath, "", scanFindings, overview); err != nil {
 				WriteErrorJSON(fmt.Sprintf("failed to write report.md: %v", err))
@@ -848,8 +852,8 @@ func runReportCmd(ctx context.Context, args []string) int {
 				// costs a schema-discovery round-trip.
 				"audits": audits,
 				// The aggregate the per-type breakdown lacks: scan scale (files /
-				// functions / lines) plus the confirmed/suspected/dismissed
-				// totals and the one-line headline. It is the same object
+				// functions / lines) plus the confirmed/dismissed totals and the
+				// one-line headline. It is the same object
 				// report.md renders, so echoing `summary` into the console can
 				// never contradict the report — and the orchestrator never has to
 				// add up `audits` itself (the console used to show per-type
@@ -864,7 +868,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 			// markdown a human might never open.
 			if unclassified := unclassifiedCandidates(audits); unclassified > 0 {
 				out["unclassified_candidates"] = unclassified
-				out["warning"] = fmt.Sprintf("%d converged candidate(s) have no persisted verdict — an exclusion stated only in prose is not recorded. Write a finding (confirmed|suspected|dismissed) for every candidate.", unclassified)
+				out["warning"] = fmt.Sprintf("%d converged candidate(s) have no persisted verdict — an exclusion stated only in prose is not recorded. Write a finding (confirmed|dismissed) for every candidate.", unclassified)
 			}
 			// A finding with no scan_id has no scan directory, so its verdict
 			// file cannot be placed or reconciled. Surface it instead of
@@ -1024,10 +1028,10 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overvie
 	b.WriteString(overview.MetadataMarkdown())
 	b.WriteString(overview.HeadlineMarkdown())
 	b.WriteString("## Per-Skill Pipeline Statistics\n\n")
-	b.WriteString("| Vulnerability Type | Seed | Final | Auto-confirmed | AI Confirmed | AI Suspected | AI Dismissed | Filter Efficiency | AI Accuracy |\n")
-	b.WriteString("|---|---|---|---|---|---|---|---|---|\n")
+	b.WriteString("| Vulnerability Type | Seed | Final | Auto-confirmed | AI Confirmed | AI Dismissed | Filter Efficiency | AI Accuracy |\n")
+	b.WriteString("|---|---|---|---|---|---|---|---|\n")
 
-	totalSeed, totalFinal, totalAutoConfirmed, totalConfirmed, totalSuspected, totalDismissed := 0, 0, 0, 0, 0, 0
+	totalSeed, totalFinal, totalAutoConfirmed, totalConfirmed, totalDismissed := 0, 0, 0, 0, 0
 	for _, a := range audits {
 		filterEff := "n/a"
 		if a.SeedCount > 0 {
@@ -1038,17 +1042,16 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overvie
 		if classified > 0 {
 			aiAcc = fmt.Sprintf("%.0f%%", float64(a.Confirmed)/float64(classified)*100)
 		}
-		b.WriteString(fmt.Sprintf("| %s | %d | %d | %d | %d | %d | %d | %s | %s |\n",
-			a.VulnType, a.SeedCount, a.FinalCount, a.AutoConfirmed, a.Confirmed, a.Suspected, a.Dismissed, filterEff, aiAcc))
+		b.WriteString(fmt.Sprintf("| %s | %d | %d | %d | %d | %d | %s | %s |\n",
+			a.VulnType, a.SeedCount, a.FinalCount, a.AutoConfirmed, a.Confirmed, a.Dismissed, filterEff, aiAcc))
 		totalSeed += a.SeedCount
 		totalFinal += a.FinalCount
 		totalAutoConfirmed += a.AutoConfirmed
 		totalConfirmed += a.Confirmed
-		totalSuspected += a.Suspected
 		totalDismissed += a.Dismissed
 	}
 
-	b.WriteString(fmt.Sprintf("| **TOTAL** | **%d** | **%d** | **%d** | **%d** | **%d** | **%d** |", totalSeed, totalFinal, totalAutoConfirmed, totalConfirmed, totalSuspected, totalDismissed))
+	b.WriteString(fmt.Sprintf("| **TOTAL** | **%d** | **%d** | **%d** | **%d** | **%d** |", totalSeed, totalFinal, totalAutoConfirmed, totalConfirmed, totalDismissed))
 	if totalSeed > 0 {
 		b.WriteString(fmt.Sprintf(" **%.0f%%** |", float64(totalSeed-totalFinal)/float64(totalSeed)*100))
 	} else {
@@ -1065,7 +1068,7 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overvie
 	// explicit and auditable. Every converged candidate should receive a
 	// classification; a nonzero "without AI classification" count is a process
 	// gap (e.g. a candidate whose skill was not loaded), not a design feature.
-	classifiedByAI := totalConfirmed + totalSuspected + totalDismissed
+	classifiedByAI := totalConfirmed + totalDismissed
 	unclassified := totalFinal - classifiedByAI
 	if unclassified < 0 {
 		unclassified = 0
@@ -1079,9 +1082,8 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overvie
 	fmt.Fprintf(&b, "| Candidates classified by AI | %d |\n", classifiedByAI)
 	fmt.Fprintf(&b, "| Candidates without AI classification | %d |\n", unclassified)
 	fmt.Fprintf(&b, "| AI confirmed (actionable, with fix suggestion) | %d |\n", totalConfirmed)
-	fmt.Fprintf(&b, "| AI suspected (needs human decision) | %d |\n", totalSuspected)
-	fmt.Fprintf(&b, "| AI dismissed (false positives, evidence recorded) | %d |\n", totalDismissed)
-	fmt.Fprintf(&b, "| Actionable findings for human review | %d |\n", totalConfirmed+totalSuspected)
+	fmt.Fprintf(&b, "| AI dismissed (incl. undecidable, evidence recorded) | %d |\n", totalDismissed)
+	fmt.Fprintf(&b, "| Actionable findings for human review (confirmed) | %d |\n", totalAutoConfirmed+totalConfirmed)
 	if totalSeed > 0 {
 		fmt.Fprintf(&b, "| Pipeline filter efficiency | %.0f%% |\n", float64(totalSeed-totalFinal)/float64(totalSeed)*100)
 	} else {
@@ -1101,7 +1103,7 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overvie
 		if a.Filters != "" {
 			b.WriteString(fmt.Sprintf("- **Filter chain:** `%s`\n", a.Filters))
 		}
-		b.WriteString(fmt.Sprintf("- **AI classification:** auto-confirmed=%d, confirmed=%d, suspected=%d, dismissed=%d\n\n", a.AutoConfirmed, a.Confirmed, a.Suspected, a.Dismissed))
+		b.WriteString(fmt.Sprintf("- **AI classification:** auto-confirmed=%d, confirmed=%d, dismissed=%d\n\n", a.AutoConfirmed, a.Confirmed, a.Dismissed))
 	}
 
 	return os.WriteFile(auditPath, []byte(b.String()), 0644)
@@ -1166,7 +1168,7 @@ func syncPerFindingAfterWrite(args []string, finding *db.Finding) perFindingOutc
 	}
 	oc := perFindingOutcome{Path: res.Path, Action: res.Action}
 	if res.Verdict == "" {
-		oc.Warning = fmt.Sprintf("status %q carries no verdict, so %s/ was left untouched (expected confirmed|suspected|dismissed)",
+		oc.Warning = fmt.Sprintf("status %q carries no verdict, so %s/ was left untouched (expected confirmed|dismissed)",
 			finding.Status, report.FindingsDir)
 	}
 	return oc

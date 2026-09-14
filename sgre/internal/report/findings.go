@@ -88,13 +88,14 @@ func normalizeVerdict(status string) string {
 }
 
 // actionable reports whether a verdict belongs in findings/ — i.e. whether a
-// developer has to look at it.
+// developer has to look at it. Only CONFIRMED is actionable: the AI verdict is
+// binary, so everything else is dismissed and never reaches the review surface.
 func actionable(verdict string) bool {
-	return verdict == VerdictConfirmed || verdict == VerdictSuspected
+	return verdict == VerdictConfirmed
 }
 
 // statusSuffix maps a verdict to a self-describing filename suffix that lets a
-// developer spot confirmed/suspected at a glance via `ls`.
+// developer spot confirmed at a glance via `ls`.
 func statusSuffix(verdict string) string {
 	if verdict == "" {
 		return ""
@@ -372,13 +373,15 @@ func dismissReason(u PerFindingUpdate) string {
 // SyncPerFinding makes findings/<vuln-type>/ match one AI verdict.
 //
 // The invariant it enforces: findings/ contains exactly the findings a
-// developer must act on, each named <NNN>_<file>_<line>_<confirmed|suspected>.md.
-//   - confirmed/suspected → the verdict file is written (created if the
-//     candidate stage never ran) and any stale file for the same location under
-//     a different verdict is deleted.
+// developer must act on, each named <NNN>_<file>_<line>_confirmed.md.
+//   - confirmed → the verdict file is written (created if the candidate stage
+//     never ran) and any stale file for the same location under a different
+//     verdict is deleted.
 //   - dismissed → no file is created and any previously written file for that
 //     location is deleted; the verdict and its reason are recorded on the
 //     candidate evidence file instead.
+//   - suspected (legacy spelling, no longer written) → no file is created and
+//     any stale file for that location is deleted; it reads as dismissed.
 //   - no verdict at all (e.g. status "open") → findings/ is left untouched.
 func SyncPerFinding(scanDir, vulnType, filePath string, line int, u PerFindingUpdate) (PerFindingResult, error) {
 	res := PerFindingResult{Action: PerFindingNone}
@@ -403,17 +406,23 @@ func SyncPerFinding(scanDir, vulnType, filePath string, line int, u PerFindingUp
 	existing := locateByBase(findingsDir, base, u.FunctionName)
 
 	if !actionable(res.Verdict) {
-		if res.Verdict != VerdictDismissed {
-			return res, nil
-		}
-		if candPath != "" {
-			if err := annotateCandidate(candPath, VerdictDismissed, dismissReason(u), ""); err != nil {
-				return res, err
+		switch res.Verdict {
+		case VerdictDismissed:
+			if candPath != "" {
+				if err := annotateCandidate(candPath, VerdictDismissed, dismissReason(u), ""); err != nil {
+					return res, err
+				}
 			}
+		case VerdictSuspected:
+			// Legacy spelling: remove any stale verdict file but do NOT annotate
+			// the candidate as a false positive — it was never a binary dismissal.
+		default:
+			// no verdict at all (e.g. "open"): leave findings/ untouched.
+			return res, nil
 		}
 		if existing != "" {
 			if err := os.Remove(existing); err != nil {
-				return res, fmt.Errorf("remove dismissed finding file %s: %w", existing, err)
+				return res, fmt.Errorf("remove %s finding file %s: %w", res.Verdict, existing, err)
 			}
 			res.Action = PerFindingRemoved
 		}
@@ -475,8 +484,8 @@ func SyncPerFinding(scanDir, vulnType, filePath string, line int, u PerFindingUp
 // interrupted batch, a bulk dismissal explained only in chat) left dismissed
 // and unclassified files sitting in the review surface.
 //
-// After it runs, findings/ holds exactly one file per confirmed/suspected
-// finding of this scan, and nothing else.
+// After it runs, findings/ holds exactly one file per confirmed finding of this
+// scan, and nothing else (dismissed verdicts live in the DB only).
 func ReconcileFindings(scanDir string, findings []*db.Finding) (ReconcileResult, error) {
 	var res ReconcileResult
 	if scanDir == "" {

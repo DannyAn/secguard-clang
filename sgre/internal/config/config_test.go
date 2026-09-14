@@ -97,3 +97,40 @@ LIST_FOR_EACH_SAFE = [0, 1]
 		t.Errorf("LIST_FOR_EACH_SAFE = %v, want [0 1]", got)
 	}
 }
+
+func TestLoad_DisabledTypes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secguard.toml")
+	content := `[disabled_types]
+types = ["path-traversal", " divide-by-zero ", "path-traversal"]
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	SetExplicitPath(path)
+	cfg := Load()
+
+	names := cfg.DisabledTypeNames()
+	// Trimmed and deduped.
+	if len(names) != 2 || names[0] != "path-traversal" || names[1] != "divide-by-zero" {
+		t.Fatalf("DisabledTypeNames = %v, want [path-traversal divide-by-zero]", names)
+	}
+
+	set := cfg.DisabledTypeSet()
+	if len(set) != 2 || !set["path-traversal"] || !set["divide-by-zero"] {
+		t.Fatalf("DisabledTypeSet = %v", set)
+	}
+}
+
+func TestDisabledTypeSet_Empty(t *testing.T) {
+	var c *Config
+	if c.DisabledTypeSet() != nil {
+		t.Errorf("nil Config must yield a nil disabled set, got %v", c.DisabledTypeSet())
+	}
+	if c.DisabledTypeNames() != nil {
+		t.Errorf("nil Config must yield nil disabled names, got %v", c.DisabledTypeNames())
+	}
+	if (&Config{}).DisabledTypeSet() != nil {
+		t.Errorf("zero Config must yield a nil disabled set")
+	}
+}

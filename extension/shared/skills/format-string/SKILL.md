@@ -30,7 +30,7 @@ A format-string candidate has:
 | Condition | Classification |
 |-----------|---------------|
 | printf(user_input) — format is external input | **confirmed** |
-| printf(log_msg) — format is a variable | **suspected** (may be safe if controlled) |
+| printf(log_msg) — format is a variable | **dismissed** (may be safe if controlled) |
 | printf("%s", user_input) — format is literal | **false-positive** (safe) |
 | snprintf(buf, sizeof(buf), fmt, ...) — bounded with sizeof | **false-positive** (safe) |
 
@@ -48,13 +48,11 @@ A format-string candidate has:
 ### Severity Matrix
 
 `status` and `severity` are independent: `status` = evidence verdict
-(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
-`metadata.severity` is the type default, not a ceiling. Suspected findings are
-capped one notch below their confirmed twin (evidence discount), never below
-`low`; dismissed → `low`.
+(confirmed/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. The verdict is binary (confirmed/dismissed); dismissed → `low`.
 
 | Shape | Severity |
 |-------|----------|
 | `printf`/`sprintf` with user-controlled format | CRITICAL (arbitrary read/write) |
-| Non-literal format variable, source unknown | HIGH (suspected) |
+| Non-literal format variable, source unknown | HIGH (dismissed) |
 | `syslog`/`err`/`warn` with non-literal format | HIGH (stack data leak) |

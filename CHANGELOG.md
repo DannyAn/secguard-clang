@@ -2,6 +2,31 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.7.0] - 2026-09-14
+
+> 0.7.0 定位：彻底消除宏误报死循环——面向用户的出口只保留 confirmed，AI 裁决改为**二元**（confirmed / dismissed），宏上下文候选一律交 AI 研判、机器不再提前 auto-confirm。
+
+### 破坏性变更：AI 裁决二元化 + 输出契约（result.sarif / result.xlsx / report.md / findings/ 只含 confirmed）
+
+- **AI 裁决取消 `suspected` 第三态**：AI 只有 `confirmed`（可证缺陷）与 `dismissed`（其余一切，含"拿不准"）两个出口。拿不准 = 直接丢弃（dismissed，带 reasoning 落 DB），**不再转存 suspected.sarif、不再让人二次确认**。
+- 面向用户的出口（`result.sarif`、`result.xlsx`、`report.md`、`findings/`）一律只写 `confirmed`；`summary.actionable_total` = `confirmed_total`，`summary` 不再有 `suspected_total`。
+- 语义：精度优先于召回。AI 证明不了的问题就不是问题；误判为 dismissed 而漏掉一个"真实但不可证"的缺陷是可接受的，误判为 confirmed 的假阳性不可接受。
+- **残留尾巴一并清除**：`--fail-on suspected` CI 门移除（只保留 `--fail-on confirmed`）；`--review`/`--review-json` 不再接受 `suspected-kept`（只 `confirmed|dismissed`）；遗留 DB 里的 `suspected`/`suspected-kept` 行在读取时统一按 `dismissed` 解释。
+
+### 功能：宏上下文检测（MacroContext）——治本宏误报
+
+- 规划器为每个候选计算 `MacroContext` 信号：报错行及其 ±8 行上下文里出现函数式宏调用（ALL_CAPS 约定 + 配置/内置已知宏名，如 `DBM_CHECK_RET`、`DBM_TAILQ_FIRST`、`list_for_each_entry`）。
+- `splitBySuspicion` auto-confirm 闸门：`suspicion=confirmed` 但 `MacroContext=true` 的候选**不再机器直接确认**，转交 AI 研判——杜绝「`DBM_CHECK_RET(ctrl==NULL,FALSE)` 判空宏定义在扫描范围外导致 null-deref 被 auto-confirm」这类误报。
+- `_index.md` 的 `Hint` 列新增 `macro-context` 标记，供 AI 识别并强制核对宏语义。
+
+### AI 研判规则更新
+
+- `agent-body.md` / `command-instructions.md` / DSH preset / MCP 工具 / 22 个 skill：裁决改为二元 `confirmed`/`dismissed`；新增「宏上下文候选必须打开 Code Context 核对宏语义后才能 confirmed，判空/迭代/访问宏 → dismissed，宏定义不可见且契约不明 → dismissed，绝不 confirmed」的精度规则。
+
+### 功能：漏洞类型开关（`[disabled_types]`）
+
+新增 `secguard.toml [disabled_types] types = [...]`，在**扫描源头**关闭整类漏洞类型。关闭的类型在收敛规划（plan）阶段就不运行，**不产出任何 candidate**——AI Agent 的 skill 拿不到、也就自动被过滤，同时省下该类型收敛/研判的端到端耗时。用于告警过多、误报甄别成本高、或拖慢扫描速度的类型（如 `path-traversal`、`divide-by-zero`）。被关闭类型不会出现在 `candidates_by_type`/`seeds_by_type`/`result.sarif`/`result.xlsx`，也不会被 `status --per-type` 误报为 `unknown`；未知类型名忽略并告警。`secguard config` / `--example` / `--help` 同步更新。
+
 ## [0.6.3] - 2026-09-14
 
 > 0.6.3 定位：可靠性与误报问题收敛。

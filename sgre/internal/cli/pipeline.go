@@ -3,9 +3,11 @@ package cli
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
+	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/evidence"
 	"github.com/DannyAn/secguard-clang/internal/graph"
@@ -28,6 +30,10 @@ type pipelineOutcome struct {
 	// detector bug reads as "this detector failed, its types are incomplete" —
 	// never as a silent "0 candidates".
 	DetectorErrors []evidence.DetectorError
+	// DisabledTypes is the type switch actually applied this run (from
+	// secguard.toml [disabled_types], validated against the registry). These
+	// types produced no candidates and must not be reported as "unknown".
+	DisabledTypes []string
 	// Timings are the per-phase wall-clock durations (milliseconds) captured
 	// across the shared engine. They feed the scan-level scan_runs metrics so
 	// performance is queryable over time instead of only in the scan log.
@@ -153,7 +159,24 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	timings.DetectorsMs = time.Since(detStart).Milliseconds()
 	logger.Info("phase timing", "phase", "detectors_total", "elapsed_ms", timings.DetectorsMs)
 
-	vulnTypes := planner.AllVulnTypes()
+	// Apply the type switch at the SOURCE: a disabled type is dropped from the
+	// plan loop, so it produces no candidates and the AI agent's skills never
+	// receive it. Unknown names are warned and dropped (a typo must not silently
+	// disable the wrong type nor crash the run).
+	disabledSet := config.Load().DisabledTypeSet()
+	for name := range disabledSet {
+		if _, err := planner.GetVulnTypeSpec(name); err != nil {
+			logger.Warn("disabled type is not a registered vulnerability type, ignoring", "type", name)
+			delete(disabledSet, name)
+		}
+	}
+	var disabledTypes []string
+	for name := range disabledSet {
+		disabledTypes = append(disabledTypes, name)
+	}
+	sort.Strings(disabledTypes)
+
+	vulnTypes := planner.ActiveVulnTypes(disabledSet)
 	plans := make([]*planner.PlanResult, len(vulnTypes))
 	planErrors := map[string]string{}
 	// planErrors is written from up to planConcurrency goroutines. Go maps have
@@ -210,6 +233,7 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 		Plans:          plans,
 		PlanErrors:     planErrors,
 		DetectorErrors: detectorErrors,
+		DisabledTypes:  disabledTypes,
 		Timings:        timings,
 	}, nil
 }

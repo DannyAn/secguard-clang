@@ -45,9 +45,7 @@ Two drift classes are checked:
      - has NO H1; its title is the `## <Type> Analysis (...)` heading
      - defines `### Classification Rules` with the standard
        `| Condition | Classification |` table, naming `confirmed` and
-       `false-positive` (`suspected` is optional: a type whose pipeline
-       categories are always confirmed, e.g. signed-compare, has no suspected
-       tier)
+       `false-positive` (the verdict is binary: `suspected` is not a verdict)
    This guard is structural only: it cannot catch two skills that contradict
    each other on the same defect shape (the v0.6.2 `resource-leak` vs
    `memory-leak` bug) — that stays a review responsibility.

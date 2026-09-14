@@ -26,7 +26,7 @@ A <type-name> candidate has:
 | Condition | Classification |
 |-----------|---------------|
 | <provably-a-defect shape> | **confirmed** |
-| <needs-out-of-scope-facts shape> | **suspected** |
+| <needs-out-of-scope-facts shape> | **dismissed** |
 | <provably-safe shape> | **false-positive** |
 
 ### Common False Positives
@@ -37,7 +37,7 @@ A <type-name> candidate has:
 
 ### Severity Matrix
 
-`status` (confirmed / suspected / dismissed) and `severity`
+`status` (confirmed / dismissed) and `severity`
 (low / medium / high / critical) are **two independent axes** — never collapse
 them into one column. `status` is the *evidence verdict* ("is it real?"),
 `severity` is the *impact* ("how bad if real?"). The front-matter
@@ -50,14 +50,13 @@ the **shape** and its **reachability / exposure**.
 | CRITICAL | Attacker-reachable code execution / memory corruption, full data or credential compromise, or a live hardcoded secret |
 | HIGH     | A certain or realistically-reachable memory-corruption / crash / DoS / auth-bypass / secret-disclosure defect |
 | MEDIUM   | A real defect with limited impact (bounded resource leak, non-sensitive info disclosure, edge-case-only trigger) |
-| LOW      | Defense-in-depth only, harmless dead code, or a weak-evidence suspected issue |
+| LOW      | Defense-in-depth only, harmless dead code, or a weak-evidence issue that is dismissed |
 
-**Suspected cap**: a `suspected` finding is rated **at most one notch below** its
-confirmed twin (an evidence discount, not a re-grade) — never below `low`.
-`dismissed` → `low`.
+**Binary verdict**: there is no `suspected` state — `confirmed` or `dismissed`
+only. `dismissed` → `low`.
 
 | Shape | Reachability / exposure | Severity |
 |-------|------------------------|----------|
 | <proved shape, attacker-reachable> | <taint source, no guard> | CRITICAL / HIGH |
 | <proved shape, bounded/local> | <no taint, edge case> | HIGH / MEDIUM |
-| <unproved shape> | <origin unsettled> | MEDIUM / LOW (suspected) |
+| <unproved shape> | <origin unsettled> | MEDIUM / LOW (dismissed) |

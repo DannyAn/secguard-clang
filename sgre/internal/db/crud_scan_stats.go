@@ -88,8 +88,8 @@ func (s *store) ListPerTypeStatus(ctx context.Context, scanID string, cweForType
 	}
 
 	cweCounts := make(map[string]int)
-	// written_count counts AI-written verdicts only (confirmed/suspected/
-	// dismissed). Auto-confirmed rows (status='auto-confirmed') are machine
+	// written_count counts AI-written verdicts only (confirmed/dismissed — the
+	// binary verdict). Auto-confirmed rows (status='auto-confirmed') are machine
 	// verdicts and are excluded, so the resume check compares final_count (the
 	// candidates the AI must classify, i.e. suspected/possible) against the
 	// number the AI actually wrote — an AI pass that never ran stays 0 even when

@@ -34,11 +34,67 @@ func TestSarifLevel(t *testing.T) {
 	}
 }
 
+// result.sarif is the user-facing export: CONFIRMED only. Suspected and
+// dismissed must never reach it.
 func TestWriteSarifFromFindings(t *testing.T) {
 	dir := t.TempDir()
 	sarifPath := filepath.Join(dir, "result.sarif")
 
-	findings := []*db.Finding{
+	findings := sarifVerdictFindings()
+
+	if err := WriteSarifFromFindings(sarifPath, "", findings); err != nil {
+		t.Fatalf("WriteSarifFromFindings: %v", err)
+	}
+
+	data, err := os.ReadFile(sarifPath)
+	if err != nil {
+		t.Fatalf("read result.sarif: %v", err)
+	}
+	var rep sarifReport
+	if err := json.Unmarshal(data, &rep); err != nil {
+		t.Fatalf("unmarshal sarif: %v", err)
+	}
+
+	results := rep.Runs[0].Results
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result (confirmed only; suspected + dismissed excluded), got %d", len(results))
+	}
+	if rep.Runs[0].Properties["stage"] != "findings" {
+		t.Errorf("result.sarif stage = %q, want findings", rep.Runs[0].Properties["stage"])
+	}
+
+	if results[0].Level != "error" {
+		t.Errorf("confirmed finding level = %q, want error", results[0].Level)
+	}
+	if len(results[0].Fixes) != 1 || results[0].Fixes[0].Description.Text != "if (p == NULL) return -1;" {
+		t.Errorf("confirmed finding should carry fix_strategy, got %+v", results[0].Fixes)
+	}
+	if results[0].Properties["reasoning"] != "分配后立即解引用" {
+		t.Errorf("properties.reasoning not carried, got %+v", results[0].Properties)
+	}
+	if results[0].Properties["variable"] != "p" {
+		t.Errorf("properties.variable = %q, want p", results[0].Properties["variable"])
+	}
+	if results[0].Properties["severity"] != "high" {
+		t.Errorf("properties.severity = %q, want high", results[0].Properties["severity"])
+	}
+	if results[0].Properties["status"] != "confirmed" {
+		t.Errorf("properties.status = %q, want confirmed", results[0].Properties["status"])
+	}
+	if results[0].Properties["vuln_type"] != "unchecked-return" {
+		t.Errorf("properties.vuln_type = %q, want unchecked-return", results[0].Properties["vuln_type"])
+	}
+	if !strings.Contains(results[0].Message.Text, "on 'p'") || !strings.Contains(results[0].Message.Text, "[high · confirmed]") {
+		t.Errorf("message should name the variable and severity/status, got %q", results[0].Message.Text)
+	}
+}
+
+// sarifVerdictFindings is the shared fixture: one confirmed, one legacy
+// suspected-kept, one suspected-then-dismissed, and one legacy plain suspected.
+// Under the binary verdict model only the confirmed row is user-facing; the rest
+// are dismissed (dropped).
+func sarifVerdictFindings() []*db.Finding {
+	return []*db.Finding{
 		{
 			RuleID: "CWE-252", Severity: "high", Confidence: 0.9,
 			Status: "confirmed", ReviewStatus: "",
@@ -65,60 +121,6 @@ func TestWriteSarifFromFindings(t *testing.T) {
 			FilePath: "src/d.c", LineNumber: 9, FunctionName: "k",
 			Summary: "未 A5 复核的疑似项", Reasoning: "never reviewed",
 		},
-	}
-
-	if err := WriteSarifFromFindings(sarifPath, "", findings); err != nil {
-		t.Fatalf("WriteSarifFromFindings: %v", err)
-	}
-
-	data, err := os.ReadFile(sarifPath)
-	if err != nil {
-		t.Fatalf("read result.sarif: %v", err)
-	}
-	var rep sarifReport
-	if err := json.Unmarshal(data, &rep); err != nil {
-		t.Fatalf("unmarshal sarif: %v", err)
-	}
-
-	results := rep.Runs[0].Results
-	// confirmed + suspected (both suspected-kept and plain suspected now export,
-	// since A5 is folded into A4); dismissed excluded.
-	if len(results) != 3 {
-		t.Fatalf("expected 3 results (confirmed + suspected-kept + plain suspected; dismissed excluded), got %d", len(results))
-	}
-
-	// First result is confirmed with fix + properties.
-	if results[0].Level != "error" {
-		t.Errorf("confirmed finding level = %q, want error", results[0].Level)
-	}
-	if len(results[0].Fixes) != 1 || results[0].Fixes[0].Description.Text != "if (p == NULL) return -1;" {
-		t.Errorf("confirmed finding should carry fix_strategy, got %+v", results[0].Fixes)
-	}
-	if results[0].Properties["reasoning"] != "分配后立即解引用" {
-		t.Errorf("properties.reasoning not carried, got %+v", results[0].Properties)
-	}
-	if results[0].Properties["variable"] != "p" {
-		t.Errorf("properties.variable = %q, want p", results[0].Properties["variable"])
-	}
-	if results[0].Properties["severity"] != "high" {
-		t.Errorf("properties.severity = %q, want high", results[0].Properties["severity"])
-	}
-	if results[0].Properties["status"] != "confirmed" {
-		t.Errorf("properties.status = %q, want confirmed", results[0].Properties["status"])
-	}
-	if results[0].Properties["vuln_type"] != "unchecked-return" {
-		t.Errorf("properties.vuln_type = %q, want unchecked-return", results[0].Properties["vuln_type"])
-	}
-	if !strings.Contains(results[0].Message.Text, "on 'p'") || !strings.Contains(results[0].Message.Text, "[high · confirmed]") {
-		t.Errorf("message should name the variable and severity/status, got %q", results[0].Message.Text)
-	}
-
-	// Second result is suspected-kept -> warning, no fix.
-	if results[1].Level != "warning" {
-		t.Errorf("suspected finding level = %q, want warning", results[1].Level)
-	}
-	if len(results[1].Fixes) != 0 {
-		t.Errorf("suspected finding without fix_strategy should have no fixes, got %+v", results[1].Fixes)
 	}
 }
 

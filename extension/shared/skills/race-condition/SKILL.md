@@ -44,9 +44,9 @@ metadata:
 |-----------|---------------|
 | `access()` + `fopen()` on same path, no atomicity | **confirmed** |
 | `access()` + `open()` with `O_NOFOLLOW` | **false-positive** |
-| Mutate a shared/global variable after releasing a lock | **suspected** (a TOCTOU only if the same variable was READ inside the lock — verify the check-then-act pair) |
+| Mutate a shared/global variable after releasing a lock | **dismissed** (a TOCTOU only if the same variable was READ inside the lock — verify the check-then-act pair) |
 | Lock held through check + mutate | **false-positive** |
-| `access()` + `fopen()` in same function, path is local | **suspected** (may be safe if path not attacker-controlled) |
+| `access()` + `fopen()` in same function, path is local | **dismissed** (may be safe if path not attacker-controlled) |
 | Check-then-act with no shared state | **false-positive** |
 | Shared variable, >= 2 pthread threads, >= 1 write, no lock | **confirmed** |
 | Shared variable, all accesses inside lock scope | **false-positive** |
@@ -63,14 +63,12 @@ metadata:
 ### Severity Matrix
 
 `status` and `severity` are independent: `status` = evidence verdict
-(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
-`metadata.severity` is the type default, not a ceiling. Suspected findings are
-capped one notch below their confirmed twin (evidence discount), never below
-`low`; dismissed → `low`.
+(confirmed/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. The verdict is binary (confirmed/dismissed); dismissed → `low`.
 
 | Shape | Severity |
 |-------|----------|
 | Shared-data race (≥2 threads, ≥1 write, no lock) → memory corruption / UB | HIGH |
 | TOCTOU filesystem (`access`→`open`/`fopen`) on an attacker-influenced path | HIGH (CRITICAL if it crosses a privilege boundary) |
-| TOCTOU shared-state (check-then-act split across unlock) | MEDIUM (suspected) |
-| `access()`+`fopen()` where the path is local/trusted | MEDIUM (suspected) |
+| TOCTOU shared-state (check-then-act split across unlock) | MEDIUM (dismissed) |
+| `access()`+`fopen()` where the path is local/trusted | MEDIUM (dismissed) |

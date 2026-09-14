@@ -7,17 +7,18 @@ import (
 )
 
 type EvidenceItem struct {
-	Type              string             `json:"type"`
-	VulnerabilityType string             `json:"vulnerability_type"`
-	SuspicionLevel    string             `json:"suspicion_level,omitempty"`
-	HasDefiniteNull   bool               `json:"has_definite_null,omitempty"`
-	Target            TargetInfo         `json:"target"`
-	SourceLine        int                `json:"source_line,omitempty"`
+	Type              string     `json:"type"`
+	VulnerabilityType string     `json:"vulnerability_type"`
+	SuspicionLevel    string     `json:"suspicion_level,omitempty"`
+	HasDefiniteNull   bool       `json:"has_definite_null,omitempty"`
+	MacroContext      bool       `json:"macro_context,omitempty"`
+	Target            TargetInfo `json:"target"`
+	SourceLine        int        `json:"source_line,omitempty"`
 	// Hint is a compact, Go-precomputed verdict hint rendered in the candidate
 	// index (_index.md) so the AI classifier can usually decide from the row
 	// alone — opening the evidence file / source only when the hint is
 	// insufficient. It carries the flow facts the pipeline already computed.
-	Hint     string            `json:"hint,omitempty"`
+	Hint     string             `json:"hint,omitempty"`
 	Evidence []EvidenceFragment `json:"evidence"`
 }
 
@@ -114,6 +115,9 @@ func buildHint(c Candidate, spec *VulnTypeSpec) string {
 	if c.GuardStrength == "weak" {
 		parts = append(parts, "weak-guard")
 	}
+	if c.MacroContext {
+		parts = append(parts, "macro-context")
+	}
 	if c.APIName != "" {
 		parts = append(parts, "api@"+c.APIName)
 	}
@@ -131,6 +135,7 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 		Type:              spec.EvidenceType,
 		VulnerabilityType: spec.Name,
 		HasDefiniteNull:   c.HasDefiniteNull,
+		MacroContext:      c.MacroContext,
 		Target: TargetInfo{
 			File:     fileName,
 			Function: c.FunctionName,

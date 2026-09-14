@@ -164,7 +164,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 	// answers "is zero candidates a detector bug or a filter over-aggressive".
 	seedsByType := map[string]int{}
 
-	vulnTypes := planner.AllVulnTypes()
+	vulnTypes := planner.ActiveVulnTypes(config.Load().DisabledTypeSet())
 
 	for i, vulnType := range vulnTypes {
 		if errMsg, failed := planErrors[vulnType]; failed {
@@ -342,6 +342,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 		"seeds_by_type":           seedsByType,
 		"plan_errors":             planErrors,
 		"detector_errors":         detectorErrors,
+		"disabled_types":          disabledTypeNames(outcome.DisabledTypes),
 		"total_candidates":        totalCandidates,
 		"auto_confirmed_count":    totalAutoConfirmed,
 		"suppressed_count":        totalSuppressed,
@@ -490,26 +491,27 @@ func runScanCmd(ctx context.Context, args []string) int {
 
 	if failOn != "" {
 		confirmedCount := 0
-		suspectedCount := 0
 		for _, f := range findings {
-			switch f.EffectiveStatus() {
-			case "confirmed":
+			if f.EffectiveStatus() == "confirmed" {
 				confirmedCount++
-			case "suspected":
-				suspectedCount++
 			}
 		}
 		if failOn == "confirmed" && confirmedCount > 0 {
 			fmt.Fprintf(os.Stderr, "\nCI gate: %d confirmed finding(s) — exiting with code 2\n", confirmedCount)
 			return 2
 		}
-		if failOn == "suspected" && suspectedCount > 0 {
-			fmt.Fprintf(os.Stderr, "\nCI gate: %d suspected finding(s) — exiting with code 3\n", suspectedCount)
-			return 3
-		}
 	}
 
 	return 0
+}
+
+// disabledTypeNames renders the applied type-switch list for the scan JSON
+// envelope: an empty slice (not nil) so the field reads `[]` rather than `null`.
+func disabledTypeNames(names []string) []string {
+	if names == nil {
+		return []string{}
+	}
+	return names
 }
 
 // distinctFindingLocations counts the distinct (file, line, function) locations
@@ -530,11 +532,15 @@ func distinctFindingLocations(items []planner.EvidenceItem) int {
 }
 
 // splitBySuspicion partitions converged candidates into the pipeline-PROVED tier
-// (suspicion "confirmed") and the tier that still needs AI judgment (suspected /
-// possible). Only the latter is handed to the AI; the former is auto-confirmed.
+// (suspicion "confirmed" AND no macro context) and the tier that still needs AI
+// judgment (suspected / possible, plus any macro-context candidate). Only the
+// former is auto-confirmed: a macro-context candidate's verdict depends on macro
+// semantics the deterministic pipeline may have mis-modeled (a guard macro whose
+// definition lives outside the scan, an iterator/accessor macro, a free wrapper),
+// so it is handed to the AI even when the flow proof reads "confirmed".
 func splitBySuspicion(candidates []planner.EvidenceItem) (confirmed, needsReview []planner.EvidenceItem) {
 	for _, c := range candidates {
-		if c.SuspicionLevel == "confirmed" {
+		if c.SuspicionLevel == "confirmed" && !c.MacroContext {
 			confirmed = append(confirmed, c)
 		} else {
 			needsReview = append(needsReview, c)
@@ -707,7 +713,10 @@ func runStatusCmd(ctx context.Context, args []string) int {
 		for _, st := range statuses {
 			seen[st.VulnType] = true
 		}
-		for _, vt := range planner.AllVulnTypes() {
+		// A disabled type (type switch) is intentionally absent from scan_stats —
+		// it must NOT be appended as "unknown" (that would read as a failed type
+		// and trigger a false resume/re-dispatch).
+		for _, vt := range planner.ActiveVulnTypes(config.Load().DisabledTypeSet()) {
 			if !seen[vt] {
 				statuses = append(statuses, &db.PerTypeStatus{
 					VulnType:       vt,

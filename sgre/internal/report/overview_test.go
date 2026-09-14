@@ -66,7 +66,7 @@ func TestWriteReportFromFindings_ScaleAndAggregate(t *testing.T) {
 		"| Confirmed findings | 3 |",
 		"| — proved by the pipeline (auto-confirmed, no AI review) | 1 |",
 		"| — classified by the AI | 2 |",
-		"| Actionable findings (confirmed + suspected) | 4 |",
+		"| Actionable findings (confirmed) | 3 |",
 		"### Findings by Severity",
 	} {
 		if !strings.Contains(content, want) {
@@ -76,9 +76,10 @@ func TestWriteReportFromFindings_ScaleAndAggregate(t *testing.T) {
 
 	// The headline and the table are rendered from the SAME derived figures: the
 	// auto-confirmed row must be counted inside "Confirmed findings", never in
-	// addition to it.
-	if !strings.Contains(content, "**This scan reported 4 actionable issues: 3 confirmed, 1 suspected. Of the confirmed ones, 1 auto-confirmed by the pipeline (no AI review) and 2 classified by the AI.**") {
-		t.Errorf("headline should state the aggregate with its auto-confirmed split:\n%s", content)
+	// addition to it. The AI verdict is binary, so the headline carries only the
+	// confirmed aggregate and its auto-confirmed split.
+	if !strings.Contains(content, "**This scan reported 3 confirmed issues. 1 auto-confirmed by the pipeline (no AI review), 2 classified by the AI.**") {
+		t.Errorf("headline should state the confirmed aggregate with its auto-confirmed split:\n%s", content)
 	}
 }
 
@@ -146,14 +147,17 @@ func TestScanOverview_SummaryFieldsAreSelfConsistent(t *testing.T) {
 
 	fields := ov.SummaryFields()
 	confirmed := fields["confirmed_total"].(int)
-	suspected := fields["suspected_total"].(int)
 	actionable := fields["actionable_total"].(int)
 
 	if confirmed != ov.AutoConfirmed+ov.AIConfirmed {
 		t.Errorf("confirmed_total = %d, want auto(%d) + ai(%d)", confirmed, ov.AutoConfirmed, ov.AIConfirmed)
 	}
-	if actionable != confirmed+suspected {
-		t.Errorf("actionable_total = %d, want confirmed(%d) + suspected(%d)", actionable, confirmed, suspected)
+	// actionable is confirmed only — the AI verdict is binary, no suspected key.
+	if actionable != confirmed {
+		t.Errorf("actionable_total = %d, want confirmed(%d)", actionable, confirmed)
+	}
+	if _, ok := fields["suspected_total"]; ok {
+		t.Error("summary must not carry a suspected_total key (binary verdict)")
 	}
 	// The machine-readable aggregate is the console's source of truth for the
 	// headline; it must be present so the orchestrator never re-derives it.
@@ -173,16 +177,16 @@ func TestScanOverview_SeverityBreakdownCountsAutoConfirmed(t *testing.T) {
 	if counts["high"].Confirmed != 2 {
 		t.Errorf("auto-confirmed must count as confirmed by severity: %+v", counts["high"])
 	}
-	if counts["medium"].Suspected != 1 {
-		t.Errorf("suspected must be counted per severity: %+v", counts["medium"])
+	if c := counts["medium"]; c.Confirmed != 0 || c.Suspected != 0 {
+		t.Errorf("suspected must not be counted per severity (it is not user-facing): %+v", c)
 	}
 	if _, ok := counts["low"]; ok {
 		t.Errorf("dismissed findings must not appear in the severity breakdown: %+v", counts)
 	}
 
 	md := severityMarkdown(counts)
-	if !strings.Contains(md, "| **TOTAL** | **2** | **1** | **3** |") {
-		t.Errorf("severity table should total every actionable finding:\n%s", md)
+	if !strings.Contains(md, "| **TOTAL** | **2** |") {
+		t.Errorf("severity table should total only confirmed findings:\n%s", md)
 	}
 }
 
@@ -219,10 +223,10 @@ func TestScanOverview_NoMetricsRowFallsBackToIndexLabels(t *testing.T) {
 
 func TestScanOverview_NoFindingsHeadlineStatesSo(t *testing.T) {
 	ov := ScanOverview{ScanID: "sc_x", FilesIndexed: 10, FunctionsIndexed: 20, Candidates: 4, AIDismissed: 4}
-	if got := ov.Headline(); !strings.Contains(got, "no actionable issue") {
+	if got := ov.Headline(); !strings.Contains(got, "no confirmed issue") {
 		t.Errorf("a scan with only dismissed verdicts must say so plainly, got %q", got)
 	}
-	if !strings.Contains(ov.VerdictMarkdown(), "| Dismissed (false positives) | 4 |") {
+	if !strings.Contains(ov.VerdictMarkdown(), "| Dismissed | 4 |") {
 		t.Errorf("dismissed count must still be reported:\n%s", ov.VerdictMarkdown())
 	}
 }

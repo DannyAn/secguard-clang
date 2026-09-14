@@ -70,32 +70,23 @@ func TestWriteXlsxFromFindings_ExcludesDismissed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 3 {
-		t.Fatalf("expected header + 2 data rows (dismissed excluded), got %d rows", len(rows))
+	// confirmed only: suspected (integer-overflow) and dismissed are excluded.
+	if len(rows) != 2 {
+		t.Fatalf("expected header + 1 confirmed data row (suspected + dismissed excluded), got %d rows", len(rows))
 	}
 
-	// Sorted by vuln type: integer-overflow (CWE-190) before null-deref (CWE-476).
-	if got, _ := f.GetCellValue("Findings", "B2"); got != "integer-overflow" {
-		t.Errorf("B2 vuln type = %q, want integer-overflow", got)
+	if got, _ := f.GetCellValue("Findings", "B2"); got != "null-deref" {
+		t.Errorf("B2 vuln type = %q, want null-deref", got)
 	}
-	if got, _ := f.GetCellValue("Findings", "E2"); got != "suspected" {
-		t.Errorf("E2 status = %q, want suspected", got)
+	if got, _ := f.GetCellValue("Findings", "E2"); got != "confirmed" {
+		t.Errorf("E2 status = %q, want confirmed", got)
 	}
-	if got, _ := f.GetCellValue("Findings", "B3"); got != "null-deref" {
-		t.Errorf("B3 vuln type = %q, want null-deref", got)
-	}
-	if got, _ := f.GetCellValue("Findings", "E3"); got != "confirmed" {
-		t.Errorf("E3 status = %q, want confirmed", got)
-	}
-	if got, _ := f.GetCellValue("Findings", "P3"); got != "if (p == NULL) return -1;" {
-		t.Errorf("P3 fix strategy = %q, want the confirmed finding's fix", got)
+	if got, _ := f.GetCellValue("Findings", "P2"); got != "if (p == NULL) return -1;" {
+		t.Errorf("P2 fix strategy = %q, want the confirmed finding's fix", got)
 	}
 	// The 确认状态 column seeds every row with 未确认 for the reviewer.
 	if got, _ := f.GetCellValue("Findings", "G2"); got != "未确认" {
 		t.Errorf("G2 确认状态 = %q, want 未确认", got)
-	}
-	if got, _ := f.GetCellValue("Findings", "G3"); got != "未确认" {
-		t.Errorf("G3 确认状态 = %q, want 未确认", got)
 	}
 	// Data rows must be collapsed to 25pt by default.
 	if h, err := f.GetRowHeight("Findings", 2); err != nil || h != 25 {

@@ -35,6 +35,7 @@ func runConfigCmd(args []string) int {
 		"iterator_macros":  cfg.IteratorMacroArgs(),
 		"banned_functions": cfg.BannedFunctionNames(),
 		"exclude_paths":    cfg.ExcludePaths(),
+		"disabled_types":   cfg.DisabledTypeNames(),
 		"note":             "run 'secguard config --help' for the full reference, 'secguard config --example' for a copy-paste template",
 	}
 	_ = WriteJSON(out)

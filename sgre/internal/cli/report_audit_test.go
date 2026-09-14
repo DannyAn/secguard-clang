@@ -14,7 +14,9 @@ func TestWriteAuditReport_IncludesAIValueSummary(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "audit-report.md")
 	audits := []vulnAuditEntry{
-		{VulnType: "buffer-overflow", SeedCount: 12, FinalCount: 11, AutoConfirmed: 3, Confirmed: 8, Suspected: 1, Dismissed: 2},
+		// Suspected is always 0 now (binary verdict); an undecidable candidate is
+		// counted as dismissed.
+		{VulnType: "buffer-overflow", SeedCount: 12, FinalCount: 11, AutoConfirmed: 3, Confirmed: 8, Suspected: 0, Dismissed: 3},
 		{VulnType: "out-of-bounds", SeedCount: 1, FinalCount: 1, Confirmed: 0, Suspected: 0, Dismissed: 0},
 	}
 	overview := report.ScanOverview{
@@ -41,16 +43,15 @@ func TestWriteAuditReport_IncludesAIValueSummary(t *testing.T) {
 		"| Candidates classified by AI | 11 |",
 		"| Candidates without AI classification | 1 |",
 		"| AI confirmed (actionable, with fix suggestion) | 8 |",
-		"| AI suspected (needs human decision) | 1 |",
-		"| AI dismissed (false positives, evidence recorded) | 2 |",
-		"| Actionable findings for human review | 9 |",
+		"| AI dismissed (incl. undecidable, evidence recorded) | 3 |",
+		"| Actionable findings for human review (confirmed) | 11 |",
 		// The audit report must open with the same scan-scale + headline block
 		// report.md shows, so the two artifacts answer "how big was this scan"
 		// and "what was the bottom line" identically.
 		"## Scan Overview",
 		"| Codebase scale | 26 files / 173 functions / 9001 lines |",
 		"| Target | `/repo/zlib` |",
-		"**This scan reported 12 actionable issues: 11 confirmed, 1 suspected. Of the confirmed ones, 3 auto-confirmed by the pipeline (no AI review) and 8 classified by the AI.**",
+		"**This scan reported 11 confirmed issues. 3 auto-confirmed by the pipeline (no AI review), 8 classified by the AI.**",
 	}
 	for _, check := range checks {
 		if !strings.Contains(out, check) {

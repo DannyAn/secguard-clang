@@ -2,16 +2,16 @@
 
 ## Overview
 
-SecGuard scan results are written to a structured directory under `.codeagent/secguard-clang/`. Each scan produces a uniquely-identified directory containing SARIF 2.1 output, a human-readable Markdown report, an Excel export for the development team (`result.xlsx`), and two Markdown trees grouped by vulnerability type. The SQLite database is stored at `.codeagent/secguard-clang/.sgre/sgre.db` (sibling of `scans/`).
+SecGuard scan results are written to a structured directory under `.codeagent/secguard-clang/`. Each scan produces a uniquely-identified directory containing SARIF 2.1 output (`result.sarif`), a human-readable Markdown report, an Excel export for the development team (`result.xlsx`), and two Markdown trees grouped by vulnerability type. The SQLite database is stored at `.codeagent/secguard-clang/.sgre/sgre.db` (sibling of `scans/`).
 
 **Two trees, two audiences** — this separation is a contract, not a convention:
 
 | Directory | Written by | Contains | Filename |
 |-----------|-----------|----------|----------|
 | `candidates/<vuln-type>/` | the scan (convergence pipeline) | every converged candidate — unclassified leads, **not** defects | `NNN_<file>_<line>.md` |
-| `findings/<vuln-type>/` | the AI's persisted verdicts | **only** actionable verdicts: confirmed + suspected | `NNN_<file>_<line>_<confirmed\|suspected>.md` |
+| `findings/<vuln-type>/` | the AI's persisted verdicts | **only** confirmed verdicts | `NNN_<file>_<line>_confirmed.md` |
 
-A **dismissed** (false-positive) verdict produces **no file** under `findings/`: it is recorded in the `findings` table and annotated onto the matching `candidates/` file (`- **AI Verdict:** dismissed` plus an `## AI Verdict` section carrying the reason). This keeps the review surface equal to the work a developer actually has to do, while the exclusion stays auditable. `secguard report --audit --output-dir <scan-dir>` re-derives `findings/` from the database, so unclassified or dismissed leftovers can never accumulate there. The same invocation also regenerates `result.xlsx` from the `findings` table, so the Excel export and `findings/` always agree.
+A **dismissed** verdict produces **no file** under `findings/`: it is recorded in the `findings` table and annotated onto the matching `candidates/` file (`- **AI Verdict:** dismissed` plus an `## AI Verdict` section carrying the reason). The AI verdict is **binary** — `confirmed` (a real, provable defect) or `dismissed` (everything else: false positive, guarded, or undecidable). There is no `suspected` third state, so the review surface is exactly the confirmed defects, while every exclusion stays auditable in the DB. `secguard report --audit --output-dir <scan-dir>` re-derives `findings/` from the database, so unclassified or dismissed leftovers can never accumulate there. The same invocation also regenerates `result.xlsx` from the `findings` table, so the Excel export and `findings/` always agree.
 
 ## Directory Structure
 
@@ -26,9 +26,9 @@ A **dismissed** (false-positive) verdict produces **no file** under `findings/`:
 │           ├── latest.txt                          # fallback on symlink-unsupported FS
 │           ├── 2026-08-09_202844_a3f2/             # historical scan (preserved)
 │           │   ├── candidates.sarif    # SARIF 2.1, candidate stage (level note)
-│           │   ├── result.sarif        # SARIF 2.1, verdict stage (after classification)
+│           │   ├── result.sarif        # SARIF 2.1, verdict stage — CONFIRMED only
 │           │   ├── report.md           # Human-readable summary
-│           │   ├── result.xlsx         # Excel export for the dev team (confirmed/suspected)
+│           │   ├── result.xlsx         # Excel export for the dev team (confirmed only)
 │           │   ├── audit-report.md     # Per-skill pipeline + AI statistics
 │           │   ├── dismissed.json      # Ledger of pipeline-dropped candidates
 │           │   ├── scan.log            # NDJSON runtime log for this scan
@@ -39,11 +39,11 @@ A **dismissed** (false-positive) verdict produces **no file** under `findings/`:
 │           │   │   │   └── ...
 │           │   │   └── null-deref/
 │           │   │       └── 001_main_c_42.md
-│           │   └── findings/           # AI verdicts only (confirmed/suspected)
+│           │   └── findings/           # AI verdicts only (confirmed)
 │           │       ├── buffer-overflow/
 │           │       │   └── 001_allocator_c_31_confirmed.md
 │           │       └── null-deref/
-│           │           └── 001_main_c_42_suspected.md
+│           │           └── 001_main_c_42_confirmed.md
 │           └── 2026-08-11_143022_a1b2/             # most recent scan
 │               ├── candidates.sarif
 │               ├── result.sarif
@@ -85,29 +85,28 @@ After each scan completes and all artifacts are written, a `latest` symlink is a
 
 ### candidates.sarif (candidate stage) vs. result.sarif (verdict stage)
 
-SARIF (Static Analysis Results Interchange Format) 2.1 is emitted in **two
-separate files**, one per stage — never one file overwritten in place:
+SARIF (Static Analysis Results Interchange Format) 2.1 is emitted in **separate
+files**, one per stage — never one file overwritten in place:
 
 | File | Written by | Results | Level |
 |------|-----------|---------|-------|
 | `candidates.sarif` | `secguard scan` | every converged candidate, unclassified | always `note` (informational) |
-| `result.sarif` | `secguard report --audit` | AI-classified findings only (dismissed excluded) | `error` = confirmed, `warning` = suspected |
+| `result.sarif` | `secguard report --audit` | AI-classified **confirmed** findings only | `error` = confirmed (high/critical) |
 
 `result.sarif` **does not exist until the AI classification is persisted**. That
 is deliberate: a CI gate or IDE pointed at `result.sarif` can then never mistake
-the pre-convergence candidate set for defects, which is the entire point of the
-convergence pipeline. Consumers that do want the raw leads read
-`candidates.sarif` and get honest `note`-level results, with the pipeline prior
-in `properties.suspicion_level` (a classifier effort budget, not a severity).
-Both files carry `runs[0].properties.stage` (`candidates` / `findings`).
+the pre-convergence candidate set for defects. Consumers that do want the raw
+leads read `candidates.sarif` and get honest `note`-level results, with the
+pipeline prior in `properties.suspicion_level` (a classifier effort budget, not a
+severity). The files carry `runs[0].properties.stage` (`candidates` / `findings`).
 
 `result.sarif` contains:
 - `$schema`: `https://json.schemastore.org/sarif-2.1.0.json`
 - `version`: `2.1.0`
 - `runs[0].tool.driver.name`: `secguard-clang`
 - `runs[0].properties.stage`: `findings` (the candidate-stage file carries `candidates`)
-- `runs[0].results[]`: One entry per confirmed/suspected finding (dismissed excluded) with:
-  - `ruleId` (CWE), `level` (`error`=confirmed / `warning`=suspected)
+- `runs[0].results[]`: One entry per CONFIRMED finding (dismissed excluded) with:
+  - `ruleId` (CWE), `level` (severity-driven: high/critical → `error`)
   - `message.text` — the finding summary (fallback to reasoning → evidence)
   - `properties.reasoning` / `properties.exception_check` — the structured "why"
   - `fixes[].description.text` — the concrete fix strategy (often a code snippet)
@@ -141,31 +140,30 @@ same `## Scan Overview` block, so a reader can always tell how big the scan was:
 
 | Section | Candidate stage (scan) | Verdict stage (report --audit) |
 |---------|------------------------|-------------------------------|
-| Title banner | "candidate-stage report … unclassified leads" | "AI-classified findings (confirmed + suspected)" |
+| Title banner | "candidate-stage report … unclassified leads" | "AI-classified confirmed findings" |
 | `## Scan Overview` | Scan ID, Tool, Target, Scan time, automated-analysis duration (+ AI duration at audit time), codebase scale (files / functions / lines), vulnerability types scanned | same |
 | `## Result Summary` | converged candidates awaiting AI classification, auto-confirmed, raw seeds | headline + counts funnel + `### Findings by Severity` |
-| `## Candidates by Skill` | one row per vulnerability type + `TOTAL` | `## Findings by Skill` (confirmed/suspected/total + `TOTAL`) |
+| `## Candidates by Skill` | one row per vulnerability type + `TOTAL` | `## Findings by Skill` (confirmed + `TOTAL`) |
 | Per-type tables | `# \| Function \| File:Line \| Variable \| Suspicion` | `# \| Status \| Severity \| Function \| File:Line \| Summary` |
 | `## Output Files` | both SARIF stages, `candidates/`, `findings/` | `result.sarif`, both markdown trees |
 
 The verdict-stage `## Result Summary` is the aggregate a reader leads with:
 
 ```
-**This scan reported 7 actionable issues: 5 confirmed, 2 suspected. Of the
-confirmed ones, 3 auto-confirmed by the pipeline (no AI review) and 2
-classified by the AI.**
+**This scan reported 5 confirmed issues. 3 auto-confirmed by the pipeline (no
+AI review), 2 classified by the AI.**
 ```
 
 followed by one metric table — `Files scanned`, `Functions scanned`,
 `Functions in index`, `Lines of code`, `Raw evidence seeds`,
 `Converged candidates`, `Confirmed findings` (with its `auto-confirmed` /
-`classified by the AI` breakdown), `Suspected findings`,
-`Dismissed (false positives)`,
-`Actionable findings (confirmed + suspected)`, `Candidates without a persisted
+`classified by the AI` breakdown), `Dismissed`,
+`Actionable findings (confirmed)`, `Candidates without a persisted
 verdict` (only when > 0), `Vulnerability types with findings` — and a
 `### Findings by Severity` breakdown. `Confirmed findings` **includes** the
 pipeline's auto-confirmed rows, which is why it is larger than what a subagent
-reports.
+reports. `Actionable` means **confirmed only** — the verdict is binary, with no
+`suspected` state.
 
 The summary header reports both `Functions scanned` (functions parsed during
 this run; unchanged files are skipped, so a re-scan reports 0) and
@@ -211,12 +209,12 @@ verdict breakdown; `summary` is the **scan-wide aggregate** rendered from the sa
 | `lines_of_code` | summed LOC of the indexed files |
 | `raw_seeds` → `converged_candidates` | the convergence reduction |
 | `auto_confirmed` / `ai_confirmed` / `confirmed_total` | `confirmed_total` = `auto_confirmed` + `ai_confirmed` |
-| `suspected_total` / `dismissed_total` | the other two verdict classes |
-| `actionable_total` | `confirmed_total` + `suspected_total` — the number a user report leads with |
+| `dismissed_total` | the dropped verdict count (false positives + undecidable) |
+| `actionable_total` | `confirmed_total` — the number a user report leads with (binary verdict) |
 | `unclassified_candidates` | converged candidates with no persisted verdict (> 0 is a process gap) |
 | `types_scanned` / `types_with_findings` | how many vulnerability types converged / produced actionable findings |
 | `automated_analysis_ms` / `ai_classification_ms` | the two duration figures for the report header |
-| `severity_breakdown` | `{severity: {confirmed, suspected, total}}` over actionable findings |
+| `severity_breakdown` | `{severity: {confirmed, total}}` over confirmed findings |
 
 Consumers (including the agent console) must read these instead of summing
 `audits`: the per-type array deliberately keeps machine verdicts
@@ -226,11 +224,11 @@ disagree with `report.md`.
 ### result.xlsx
 
 An Excel export regenerated by `secguard report --audit` for the development
-team: one sheet (`Findings`) with one row per **actionable** finding
-(confirmed + suspected; dismissed excluded), so a finding can be located,
-analyzed, and confirmed inside a spreadsheet without opening the source tree.
-It is a **one-way export** — the pipeline never reads it back, and any edits
-made in the spreadsheet are not re-imported into the database.
+team: one sheet (`Findings`) with one row per **confirmed** finding (dismissed
+excluded), so a finding can be located, analyzed, and confirmed inside a
+spreadsheet without opening the source tree. It is a **one-way export** — the
+pipeline never reads it back, and any edits made in the spreadsheet are not
+re-imported into the database.
 
 Columns (13):
 
@@ -240,7 +238,7 @@ Columns (13):
 | B | 漏洞类型 | `TypeForCWE(rule_id)`, fallback `rule_id` |
 | C | CWE | `rule_id` (uppercased; `CWE-Other` when empty) |
 | D | 严重级别 | `severity` (fallback `info`) |
-| E | 结论 | `EffectiveStatus()` — `confirmed` / `suspected` |
+| E | 结论 | `FinalStatus()` — `confirmed` only |
 | F | 置信度 | `confidence` (blank when ≤ 0) |
 | G | 文件 | `file_path`, trimmed to repo-relative |
 | H | 行号 | `line_number` (blank when ≤ 0) |
@@ -272,10 +270,10 @@ no `Status` line at all.
 
 Filename format: `NNN_<filename>_<line>.md`, NNN being a zero-padded sequence number within the vulnerability type directory.
 
-### Verdict Markdown (`findings/<vuln-type>/NNN_<file>_<line>_<verdict>.md`)
+### Verdict Markdown (`findings/<vuln-type>/NNN_<file>_<line>_confirmed.md`)
 
-Written when the AI persists a finding (`secguard report --write`, or an A5
-`--review` that changes the verdict), and re-derived by `--audit`:
+Written when the AI persists a CONFIRMED finding (`secguard report --write`, or
+an A5 `--review` that changes the verdict), and re-derived by `--audit`:
 - **Location** / **Evidence**: carried over from the candidate evidence when available, otherwise from the persisted finding
 - **Code Context**: the source region around the finding, gutter-numbered with the reported line marked `>` — so the verdict can be judged without opening an editor
 - **Classification**: `- **Status:** confirmed (severity: high, confidence: 90%)` — the AI verdict, with no pipeline prior mixed in
@@ -298,8 +296,9 @@ source embedding entirely, for repositories whose source must not be copied into
 report artifacts. The same setting drives the SARIF `region.snippet` /
 `contextRegion.snippet` fields.
 
-The verdict suffix is mandatory: `_confirmed` or `_suspected`. A file with no
-suffix (or a `_dismissed` one) is stale and is removed by the next `--audit`.
+The verdict suffix is mandatory: `_confirmed`. A file with no suffix, or a
+`_suspected` / `_dismissed` one, is stale and is removed by the next `--audit`
+(the verdict is binary: `_suspected` is a legacy spelling, never produced).
 
 ### scan.log
 
@@ -336,6 +335,6 @@ The SQLite database (`sgre.db`) is stored at `.codeagent/secguard-clang/.sgre/sg
 2. Read `report.md` for human-readable summary (or read `scans/latest/report.md` directly — the `latest` symlink always points to the most recent completed scan, so CI/CD pipelines can use a fixed path without parsing the scan_id)
 3. Read candidate evidence in `candidates/<vuln-type>/` for candidates whose evidence is ambiguous
 4. Load matching skills for classification guidance
-5. Classify each candidate as confirmed/suspected/false-positive
-6. Call `secguard_report` with the `findings` array **plus `scan_id` and `output_dir`** to persist the classification; each confirmed/suspected verdict materializes as `findings/<vuln-type>/NNN_..._<verdict>.md`, each dismissal is recorded without a file. A `per_finding_warning` in the response means the verdict never reached `findings/` — fix the call and write again.
+5. Classify each candidate as confirmed / false-positive (binary verdict)
+6. Call `secguard_report` with the `findings` array **plus `scan_id` and `output_dir`** to persist the classification; each confirmed verdict materializes as `findings/<vuln-type>/NNN_..._confirmed.md`, each dismissal is recorded without a file (its reasoning is kept in the DB). A `per_finding_warning` in the response means the verdict never reached `findings/` — fix the call and write again.
 7. Present summary table to user, referencing SARIF and Markdown output paths

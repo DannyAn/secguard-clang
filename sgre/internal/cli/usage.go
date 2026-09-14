@@ -139,7 +139,7 @@ Flags:
   --output-dir <dir>       Output directory for audit artifacts
   --review                 Review a single finding by id
   --id <n>                 Finding id to review
-  --review-status <s>      Review verdict: confirmed | dismissed | suspected-kept
+  --review-status <s>      Review verdict: confirmed | dismissed
   --review-reasoning <r>   One-line review justification
   --db <path>              Path to sgre.db
   --help, -h               Show this usage
@@ -148,7 +148,7 @@ Flags:
   [{"rule_id":"CWE-476","severity":"high","confidence":90,"status":"confirmed",
     "file":"src/a.c","line":42,"function":"f","summary":"...","reasoning":"...",
     "exception_check":"...","fix_strategy":"..."}]
-  rule_id is the CWE; status is confirmed | suspected | dismissed. A single
+  rule_id is the CWE; status is confirmed | dismissed (binary — no suspected). A single
   finding object, or an object {"scan_id":"...","findings":[...]}, is also
   accepted. The write is idempotent (UPSERT on scan_id+rule_id+file+line+function).
 
@@ -206,9 +206,9 @@ Flags:
 
 What it is:
   secguard.toml is an OPTIONAL configuration file. Most users need nothing in
-  it. It exists today for four options: the trusted-macro allowlist, the
-  iterator-macro declaration, the banned-function extension, and directory
-  exclusions.
+  it. It exists today for five options: the trusted-macro allowlist, the
+  iterator-macro declaration, the banned-function extension, directory
+  exclusions, and the vulnerability-type switch.
 
   Config file locations, in priority order (first existing wins):
     1. --config <path>                     explicit flag
@@ -256,6 +256,14 @@ What it is:
     as-is. Unlike the --exclude flag (which matches directory BASENAMES), these
     match the full path, so only that specific directory is skipped.
 
+  [disabled_types] — vulnerability-type switch (turn a type OFF entirely)
+    types = ["..."]
+    Kebab-case vulnerability-type names (from 'secguard types') to disable for
+    the WHOLE scan. A disabled type produces no candidates: the convergence
+    plan stage never runs for it, so the AI agent's skills never receive it.
+    Use this for noisy/slow types you do not want surfaced or billed for.
+    Example: types = ["path-traversal", "divide-by-zero"].
+
 Examples:
   secguard config
   secguard config --example`)
@@ -295,6 +303,16 @@ names = [
 paths = [
     # "./svc/src/bak/",
     # "src/generated",
+]
+
+# Vulnerability-type switch: turn a whole type OFF. A disabled type produces no
+# candidates (the plan stage never runs for it), so the AI agent's skills never
+# receive it. Use it for noisy/slow types you don't want surfaced or billed for.
+# Names are kebab-case, from 'secguard types'.
+[disabled_types]
+types = [
+    # "path-traversal",
+    # "divide-by-zero",
 ]`)
 }
 

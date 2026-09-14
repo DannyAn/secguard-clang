@@ -52,8 +52,8 @@ func (idx *suppressionIndex) suppressedCount() int {
 
 func loadSuppressions(ctx context.Context, store db.Store) *suppressionIndex {
 	// Fetch all findings and filter by EffectiveStatus, so A5-dismissed findings
-	// (status="suspected", review_status="dismissed") are suppressed too, not
-	// just first-pass dismissed ones.
+	// (review_status="dismissed") are suppressed too, not just first-pass
+	// dismissed ones.
 	all, err := store.ListFindings(ctx)
 	if err != nil {
 		return &suppressionIndex{byKey: map[string]bool{}, rules: map[string]int{}}

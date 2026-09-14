@@ -4,6 +4,30 @@ SecGuard 支持一个**可选**的 TOML 配置文件 `secguard.toml`，用于覆
 配置文件独立于二进制和扩展（extension），**卸载/重装 secguard 不会删除它**，
 因此适合存放环境相关的配置（例如本团队的访问宏白名单）。
 
+## 宏问题的处理策略（v0.7.0 起，重要）
+
+SecGuard 已经**不再依赖「配例外 → 重扫」的循环**来消宏误报。新的默认策略是
+**精度优先**：
+
+1. **宏上下文自动交 AI**：候选的报错行或其 ±8 行上下文里出现函数式宏调用时，
+   pipeline 会给它打上 `macro-context` 标记，**即使机器证明是 confirmed 也不会
+   auto-confirm**，一律转交 AI 研判。
+2. **拿不准就丢**：AI 裁决是**二元**的——`confirmed`（可证缺陷）才进入面向用户的
+   `result.sarif` / `result.xlsx` / `report.md` / `findings/`；其余（含"拿不准"）
+   一律 `dismissed`（丢弃，带 reasoning 落 DB）。**没有 `suspected` 第三态**。
+
+因此，遇到宏误报时，**首选不是在本文件加例外**，而是让它走 AI 研判；AI 看到
+`DBM_CHECK_RET(ctrl == NULL, FALSE)` 这类判空宏、迭代宏、访问宏后会正确判为
+`dismissed`（排除）。只有下面两类场景才需要本文件配置：
+
+- **`[trusted_macros]`**：访问宏的定义落在扫描范围之外，且你希望确定性过滤器
+  **在 AI 之前就 kill 掉空源**（减少 AI 工作量、让真正确定的项仍可 auto-confirm）。
+- **`[iterator_macros.macros]`**：迭代宏定义在扫描范围外，且你希望确定性过滤器
+  **在 AI 之前就 kill 迭代子空源**（同上，是优化而非必需）。
+
+一句话：**本文件的配置现在是「确定性前置优化」，不是「误报兜底」**。兜底由
+「宏上下文 → AI 研判 → 拿不准直接 dismissed」这条链负责。
+
 ## 位置
 
 配置文件统一在 `.codeagent` 命名空间下（与运行时数据目录
@@ -131,6 +155,32 @@ paths = [
   不同：因此同名 `bak` 目录可以只排除特定那一个，不影响其他 `bak`。
 - 排除目录会被完全跳过，`files_indexed` / `functions_indexed` 统计里不含其内容。
 
+### `[disabled_types]` — 漏洞类型开关（关闭整类问题）
+
+```toml
+[disabled_types]
+types = [
+    "path-traversal",
+    "divide-by-zero",
+]
+```
+
+`types` 里列出的漏洞类型（kebab-case，与 `secguard types` 一致）在**扫描源头就被关闭**：
+收敛规划（plan）阶段根本不为其运行，因此**不产出任何 candidate**——AI Agent 的
+skill 拿不到它，也就自动被过滤掉；同时省下该类型收敛/研判的端到端耗时。
+
+适用场景：某类问题告警过多、逐条甄别误报成本高、或拖慢端到端扫描速度（例如
+`path-traversal`、`divide-by-zero`），而团队当前只关心内存/资源类问题时，把它
+整个关掉。
+
+> 说明：
+> - 关闭是**扫描级**的：被关闭类型在 `candidates_by_type` / `seeds_by_type` /
+>   `result.sarif` / `result.xlsx` 中都不出现，也不会被 `status --per-type` 误报为
+>   `unknown`（它是有意关闭，不是漏扫）。
+> - `secguard types` 仍列出全部类型（那是「能检测什么」的权威清单）；关闭只影响
+>   本次扫描是否产出候选。
+> - 未知类型名会被忽略并打印一条 warning（拼写错误不会静默关错类型）。
+
 ## 完整示例
 
 ```toml
@@ -159,6 +209,14 @@ names = [
 # paths = [
 #     "./svc/src/bak/",
 #     "src/generated",
+# ]
+
+# 漏洞类型开关：关闭整类问题（kebab-case，见 secguard types）。
+# 关闭的类型不产出 candidate，skill 拿不到、也就自动过滤。
+[disabled_types]
+# types = [
+#     "path-traversal",
+#     "divide-by-zero",
 # ]
 ```
 

@@ -29,7 +29,7 @@ A use-after-free candidate has:
 | free + use after free in same function, no re-alloc | **confirmed** |
 | free + use, but variable reassigned between free and use | **false-positive** |
 | free in one branch, use in another mutually exclusive branch | **false-positive** |
-| free + use in different functions (interprocedural) | **suspected** (needs data flow) |
+| free + use in different functions (interprocedural) | **dismissed** (needs data flow) |
 
 ### Common False Positives
 - `free(ptr); ptr = NULL; ptr->field;` — crash, not UAF (NULL deref instead)
@@ -45,13 +45,11 @@ A use-after-free candidate has:
 ### Severity Matrix
 
 `status` and `severity` are independent: `status` = evidence verdict
-(confirmed/suspected/dismissed), `severity` = impact (low/medium/high/critical).
-`metadata.severity` is the type default, not a ceiling. Suspected findings are
-capped one notch below their confirmed twin (evidence discount), never below
-`low`; dismissed → `low`.
+(confirmed/dismissed), `severity` = impact (low/medium/high/critical).
+`metadata.severity` is the type default, not a ceiling. The verdict is binary (confirmed/dismissed); dismissed → `low`.
 
 | Shape | Severity |
 |-------|----------|
 | free + dereference (same function, no re-alloc) | CRITICAL |
 | free + pass to function (same function) | HIGH |
-| free + use in a different function (interprocedural) | HIGH (suspected) |
+| free + use in a different function (interprocedural) | HIGH (dismissed) |

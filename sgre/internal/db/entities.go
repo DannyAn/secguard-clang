@@ -47,51 +47,47 @@ func (f *Finding) ApplyStructuredFromProperties() {
 // AI never classified" rather than being masked by the machine rows.
 const StatusAutoConfirmed = "auto-confirmed"
 
-// EffectiveStatus returns the post-A5 final verdict for a finding. The
-// second-round review (ReviewStatus) overrides the first-pass classification:
-// confirmed/dismissed/suspected-kept map to confirmed/dismissed/suspected, and a
-// finding that was never reviewed keeps its original Status. This is the single
-// source of truth for developer-facing counts (audit-report.md and result.sarif).
+// EffectiveStatus returns the BINARY post-review verdict for a finding:
+// confirmed (a real defect) or dismissed (everything else, including a legacy
+// `suspected`/`suspected-kept` spelling that predates the binary model). The
+// second-round review (ReviewStatus) overrides the first-pass status. This is
+// the single source of truth for developer-facing counts.
 func (f *Finding) EffectiveStatus() string {
 	switch f.ReviewStatus {
 	case "confirmed":
 		return "confirmed"
-	case "dismissed":
+	case "dismissed", "suspected-kept": // legacy: keep-suspected == not confirmed == dismissed
 		return "dismissed"
-	case "suspected-kept":
-		return "suspected"
 	}
 	if f.Status == StatusAutoConfirmed {
 		return "confirmed"
+	}
+	if f.Status == "suspected" { // legacy: unsettled == not confirmed == dismissed
+		return "dismissed"
 	}
 	return f.Status
 }
 
 // FinalStatus returns the verdict that is allowed to reach the final export
-// (result.sarif / result.xlsx / report.md / findings/). The A5 second round has
-// been folded into the single-pass classification, so a first-pass verdict is
-// final: a plain `suspected` is exportable as `suspected`, exactly like
-// `confirmed`/`dismissed`. `review_status` remains an OPTIONAL post-hoc override
-// (confirmed/dismissed/suspected-kept) for fixing an individual finding.
+// (result.sarif / result.xlsx / report.md / findings/). The AI verdict is
+// BINARY: confirmed or dismissed. A legacy `suspected` / `suspected-kept`
+// spelling maps to dismissed (it was never a proven defect), so a pre-binary
+// database still reads cleanly without a third state.
 //
-// The returned value is "", "confirmed", "suspected", or "dismissed". "" means
-// "not part of the final result" (e.g. the DB default "open") and must be
-// filtered out by every exporter.
+// The returned value is "", "confirmed", or "dismissed". "" means "not part of
+// the final result" (e.g. the DB default "open") and must be filtered out by
+// every exporter.
 func (f *Finding) FinalStatus() string {
 	switch f.ReviewStatus {
 	case "confirmed":
 		return "confirmed"
-	case "dismissed":
+	case "dismissed", "suspected-kept":
 		return "dismissed"
-	case "suspected-kept":
-		return "suspected"
 	}
 	switch f.Status {
 	case "confirmed", StatusAutoConfirmed:
 		return "confirmed"
-	case "suspected":
-		return "suspected"
-	case "dismissed":
+	case "dismissed", "suspected":
 		return "dismissed"
 	}
 	return ""
@@ -174,28 +170,28 @@ type SecurityEvent struct {
 }
 
 type Finding struct {
-	ID              int64   `json:"id"`
-	RuleID          string  `json:"rule_id"`
-	Severity        string  `json:"severity"`
-	Confidence      float64 `json:"confidence"`
-	Evidence        string  `json:"evidence"`
-	Status          string  `json:"status"`
-	FilePath        string  `json:"file_path"`
-	LineNumber      int     `json:"line_number"`
-	FunctionName    string  `json:"function_name"`
+	ID           int64   `json:"id"`
+	RuleID       string  `json:"rule_id"`
+	Severity     string  `json:"severity"`
+	Confidence   float64 `json:"confidence"`
+	Evidence     string  `json:"evidence"`
+	Status       string  `json:"status"`
+	FilePath     string  `json:"file_path"`
+	LineNumber   int     `json:"line_number"`
+	FunctionName string  `json:"function_name"`
 	// Variable is the sink/source variable the finding is about (e.g. the
 	// dereferenced pointer, the leaked allocation). It is populated by the AI
 	// classifier from the candidate index and by the auto-confirm path from the
 	// candidate's target; it makes machine exports self-describing.
-	Variable        string  `json:"variable,omitempty"`
-	Properties      string  `json:"properties,omitempty"`
-	Summary         string  `json:"summary,omitempty"`
-	Reasoning       string  `json:"reasoning,omitempty"`
-	FixStrategy     string  `json:"fix_strategy,omitempty"`
-	ExceptionCheck  string  `json:"exception_check,omitempty"`
-	ReviewStatus    string  `json:"review_status,omitempty"`
-	ReviewReasoning string  `json:"review_reasoning,omitempty"`
-	ScanID          string  `json:"scan_id,omitempty"`
+	Variable        string `json:"variable,omitempty"`
+	Properties      string `json:"properties,omitempty"`
+	Summary         string `json:"summary,omitempty"`
+	Reasoning       string `json:"reasoning,omitempty"`
+	FixStrategy     string `json:"fix_strategy,omitempty"`
+	ExceptionCheck  string `json:"exception_check,omitempty"`
+	ReviewStatus    string `json:"review_status,omitempty"`
+	ReviewReasoning string `json:"review_reasoning,omitempty"`
+	ScanID          string `json:"scan_id,omitempty"`
 	// Fingerprint is a content-addressed, scan-independent identity for a
 	// finding (rule_id + file + function + sink-statement text). It lets the
 	// incremental-review pipeline dedup a finding across scans and against a
