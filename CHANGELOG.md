@@ -2,6 +2,14 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.6.3] - 2026-09-14
+
+> 0.6.3 定位：可靠性与误报问题收敛。
+
+### 功能：secguard.toml [exclude] 排除目录
+
+新增 `[exclude] paths` 配置项，在**建立索引阶段**整棵剪枝指定目录（相对路径相对于「扫描目标」`<path>` 解析，也支持绝对路径），用于屏蔽特定目录（如 `./svc/src/bak/`）。与按目录**基名**匹配的 `--exclude` 互补——`paths` 按完整路径前缀匹配，可精确排除某个同名目录而不影响其他同名目录。支持通过 `secguard config` / `secguard config --example` 查看生效配置与示例。
+
 ## [0.6.2] - 2026-09-13
 
 ### 功能：AI Agent Market 插件打包
