@@ -2,6 +2,30 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.7.1] - 2026-09-16
+
+> 0.7.1 定位：召回修复。v0.7.0 打磨时经外部检视发现一批**逻辑上可证明会漏报**的缺陷（Issue #95）——此前基准 118/118 全绿，但这些形状一直漏报。本轮逐条修复并锁进基准，同时把 AI 研判的"拿不准就丢"收紧为"先读源码再丢"。
+
+### 漏报修复（detector / graph / planner / db）
+
+- **memory-leak / resource-leak 的 return-to-caller 改为路径敏感**：`if (err) return p;`（错误路径把指针交给调用方）不再把正常路径从不 free 的泄漏吞掉。返回指针的行并入 `hasLostResource` 的 avoid 集，取代函数级 `isReturned` 布尔。
+- **括号错误返回识别**：`if (fd < 0) return (fd);` 的括号形态现被 `isErrorReturn` / `returnReturnsVar` 正确识别为错误出口，不再误判所有权转移。
+- **两个收敛 filter 改为 alloc-site 粒度**：`ReleaseFilter` 读 release 事件的 `alloc_line`，只杀被释放的那个 site——`p=malloc(); p=malloc(); free(p)` 的第一块泄漏不再被 (函数,变量) 粗粒度吞掉；`OwnershipTransferFilter` 只在转移行 == 候选行时才 drop。
+- **`CallReachFilter` fail-open**：函数无 graph node（构建失败/增量索引过期）时保留候选，不再误标"不可达"。
+- **resource-leak 白名单补 `mmap`/`munmap`**：映射泄漏此前因 "open"/"create" 子串不命中而漏报。
+- **finding UPSERT key 加入 `variable`**：同 (scan, rule, file, line, function) 的不同变量现在是两条 finding，不再后者覆盖前者（含索引迁移与 `distinctFindingLocations` 同步）。
+- **`SafeFunctionFilter` 不再按变量名匹配**：signal-handler/dangerous-function 的 variable 字段就是被调用函数名，与安全名单同名（如 `strncpy`）曾整条误杀。
+
+### AI 研判规则：拿不准先读源码（召回侧，二元裁决保持）
+
+- 二元 `confirmed`/`dismissed` 不变；但 **"拿不准"不再直接 dismissed**：先按 ≤5 次源码读取（预算单位从"文件数"改为"读取轮次"，由 `TURNS_PER_TYPE_ESTIMATE` 推导）研判，仍无法判定才 dismissed，且 dismissed 理由必须**引用具体证据**（guard/safe-call/contract 行，或读过的 `file:line-range`）——一句"insufficient context"就是没研判的破绽。
+- 超大函数不再弃疗：`## Code Context` 恒为 ±8 行小窗口，复杂函数恰是应仔细分析之处，读 `Hint` 指向的具体行（free/guard/return/source）而非整函数粘贴。
+- `F6` 读源审计扩成双向：除 confirmed 过度读源，还抓"dismissed 但零读源"的未研判即弃。
+
+### 基准（Phase 12，+5 用例）
+
+- `ML-03`（错误路径 return p）、`ML-04`（覆盖指针丢分配）、`RL-15`（括号错误返回）、`RL-16`（mmap 泄漏）、`SH-06`（处理器内 strncpy 变量名巧合），全部 `expect: finding`，锁定上述修复。配套确定性单测 `TestResourceLeak_ParenthesizedErrorReturnIsLeak`、`TestSafeFunctionFilter_VariableNameNotDropped`。
+
 ## [0.7.0] - 2026-09-14
 
 > 0.7.0 定位：彻底消除宏误报死循环——面向用户的出口只保留 confirmed，AI 裁决改为**二元**（confirmed / dismissed），宏上下文候选一律交 AI 研判、机器不再提前 auto-confirm。
