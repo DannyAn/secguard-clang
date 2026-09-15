@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/epoll.h>
+#include <sys/mman.h>
 #include <pthread.h>
 #include <sqlite3.h>
 
@@ -164,6 +165,29 @@ int rl14_fopen_s_leak(void) {
     FILE *f = NULL;
     if (fopen_s(&f, "/tmp/rl14.log", "w") != 0) {
         return -1;
+    }
+    return 0;
+}
+
+/* ── v0.7.1 缺陷修复回归 ──────────────────────────────────────────── */
+
+/* RL-15: 括号错误返回 `return (fd)` —— isErrorReturn 只认裸 identifier，
+ * 括号形态被误判为所有权转移，正常路径忘 close 未检出（C2a 回归）。 */
+int rl15_paren_error_return(void) {
+    int fd = open("/tmp/rl15.txt", O_RDONLY);
+    if (fd < 0) {
+        return (fd);
+    }
+    write(fd, "x", 1);
+    return 0;
+}
+
+/* RL-16: mmap 是内存映射工厂（munmap 释放）—— isResourceAcquirer 白名单缺失
+ * "mmap"（"open"/"create" 子串均不命中），泄漏未检出（C5 回归）。 */
+void *rl16_mmap_leak(size_t n) {
+    void *m = mmap(0, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (m == MAP_FAILED) {
+        return 0;
     }
     return 0;
 }

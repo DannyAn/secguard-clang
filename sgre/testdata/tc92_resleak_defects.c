@@ -8,6 +8,9 @@
  *                    whitelist.
  *   rl_sqlite_open — defect 3: sqlite3_open(path, &db) writes the handle through
  *                    an out-parameter, not the return value.
+ *   rl_paren_return — `if (fd < 0) return (fd);` (parenthesized) is also an error
+ *                    exit, not an ownership transfer (isErrorReturn / returnReturnsVar
+ *                    must unwrap one level of parentheses).
  *
  * Expected: each produces RESOURCE_ACQUIRE and NO RESOURCE_RELEASE (leak).
  */
@@ -40,5 +43,14 @@ int rl_sqlite_open(const char *path) {
     if (rc != 0) {
         return rc;
     }
+    return 0;
+}
+
+int rl_paren_return(void) {
+    int fd = open("x", 0);
+    if (fd < 0) {
+        return (fd);
+    }
+    write(fd, "a", 1);
     return 0;
 }

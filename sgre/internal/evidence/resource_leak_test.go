@@ -111,6 +111,20 @@ func TestResourceLeak_ErrorReturnFdIsLeak(t *testing.T) {
 	assertNoEvent(t, store, "RESOURCE_RELEASE", "tc92_resleak_defects.c")
 }
 
+// TestResourceLeak_ParenthesizedErrorReturnIsLeak pins the C2a fix: a
+// parenthesized `if (fd < 0) return (fd);` is an error exit, not an ownership
+// transfer, so the later unclosed fd must still be a leak.
+func TestResourceLeak_ParenthesizedErrorReturnIsLeak(t *testing.T) {
+	store := runIndexAndDetect(t, "tc92_resleak_defects.c")
+	vars := resourceAcquireVars(t, store)
+	if !vars["fd"] {
+		// rl_err_return and rl_paren_return both acquire `fd`; at least one must
+		// surface, and neither may be misread as an ownership transfer.
+		t.Errorf("fd (open + error-return fd) should be flagged as an acquired resource, got %v", vars)
+	}
+	assertNoEvent(t, store, "RESOURCE_RELEASE", "tc92_resleak_defects.c")
+}
+
 // TestResourceLeak_DupIsLeak pins defect 2: dup() is an fd factory that must be
 // recognized as an acquirer.
 func TestResourceLeak_DupIsLeak(t *testing.T) {

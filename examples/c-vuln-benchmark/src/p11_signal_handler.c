@@ -12,6 +12,7 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <signal.h>
 #include <unistd.h>
 
@@ -52,11 +53,21 @@ static void sh_safe_write_handler(int sig) {
     }
 }
 
+/* SH-06: 处理器内 strncpy —— strncpy 同时命中 SafeFunctions（apikb）与
+ * asyncSignalUnsafe；SafeFunctionFilter 曾按 VariableName 巧合把它当安全函数
+ * 误杀（P3 回归）。 */
+static void sh_strncpy_handler(int sig) {
+    char dst[16];
+    (void)sig;
+    strncpy(dst, "signal", sizeof(dst));
+}
+
 void sh_install_handlers(void) {
     signal(SIGINT, sh_unsafe_log_handler);
     signal(SIGUSR1, sh_unsafe_alloc_handler);
     signal(SIGTERM, sh_safe_flag_handler);
     signal(SIGHUP, sh_safe_write_handler);
+    signal(SIGALRM, sh_strncpy_handler);
 }
 
 int main(void) {

@@ -113,6 +113,24 @@ void bad_cast_example() {
     printf("Truncated: %d (original: %ld)\n", truncated, large_value);
 }
 
+/* ML-03: 错误路径 return p 把指针交给调用方，正常路径从不 free —— 函数级
+ * "is returned" 曾把正常路径的泄漏也吞掉（C1 回归）。 */
+char *ml03_error_return_path(int err) {
+    char *p = (char *)malloc(64);
+    if (err) return p;
+    p[0] = 'x';
+    return 0;
+}
+
+/* ML-04: 覆盖指针丢分配 —— p=malloc(); p=malloc(); free(p) 释放的是第二块，
+ * 第一块泄漏；ReleaseFilter 曾按 (函数,变量) 粗粒度把两个 alloc site 一起吞掉
+ * （C3 回归）。 */
+void ml04_overwrite_then_free(void) {
+    int *p = (int *)malloc(16);
+    p = (int *)malloc(32);
+    free(p);
+}
+
 int main() {
     printf("Additional memory vulnerability demo\n");
     heap_overflow_example(16);

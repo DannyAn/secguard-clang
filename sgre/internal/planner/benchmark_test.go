@@ -144,6 +144,26 @@ func TestBenchmark_SafeFunctionFilter(t *testing.T) {
 	}
 }
 
+// TestSafeFunctionFilter_VariableNameNotDropped pins the P3 fix: for types whose
+// VariableName carries the CALLED function name (signal-handler, dangerous-function),
+// a coincidence with the safe-API list (e.g. a handler calling strncpy) must not
+// drop the candidate. Only APIName / FunctionName are safety signals.
+func TestSafeFunctionFilter_VariableNameNotDropped(t *testing.T) {
+	ctx := context.Background()
+	s := newMockStore()
+	setupBenchmarkData(s)
+
+	c := Candidate{VariableName: "strncpy"} // strncpy IS in apikb.SafeFunctions
+	kept, dropped, err := NewSafeFunctionFilter(s).Apply(ctx, []Candidate{c})
+	if err != nil {
+		t.Fatalf("filter failed: %v", err)
+	}
+	if len(kept) != 1 || len(dropped) != 0 {
+		t.Errorf("candidate with VariableName=%q (a safe-function name coincidence) must be kept, got kept=%d dropped=%d",
+			c.VariableName, len(kept), len(dropped))
+	}
+}
+
 // TestBenchmark_PipelineByVulnType verifies the end-to-end Plan for
 // buffer-overflow: only BUFFER_ACCESS events whose properties.category is a
 // write flavor (buffer_overflow/array_oob_write/heap_oob_write/
