@@ -21,6 +21,11 @@ type eventProps struct {
 	UseLine     int    `json:"use_line"`
 	Origin      string `json:"origin"`
 	DeclLine    int    `json:"decl_line"`
+	// AllocLine is the allocation/acquire source line a MEMORY_RELEASE /
+	// RESOURCE_RELEASE event releases. It lets ReleaseFilter correlate a release
+	// to a specific candidate (candidate.Line == the source line) instead of a
+	// coarse (function, variable) key that would drop a sibling leak site too.
+	AllocLine   int    `json:"alloc_line"`
 	Definite    string `json:"definite"` // "true" for an explicit null assignment
 	Callee      string `json:"callee"`
 	API         string `json:"api"` // hardcoded_secret RegSetValueEx branch

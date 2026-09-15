@@ -39,10 +39,13 @@ func (f *SafeFunctionFilter) Apply(ctx context.Context, candidates []Candidate) 
 		if apikb.IsSafeWrapper(c.FunctionName) {
 			reason = fmt.Sprintf("function %s is a safe wrapper", c.FunctionName)
 		} else if apikb.IsSafeFunction(c.APIName) ||
-			apikb.IsSafeFunction(c.FunctionName) ||
-			apikb.IsSafeFunction(c.VariableName) {
+			apikb.IsSafeFunction(c.FunctionName) {
 			reason = fmt.Sprintf("API %s is a known-safe function", c.APIName)
 		}
+		// NOTE: c.VariableName is deliberately NOT checked against
+		// IsSafeFunction. For signal-handler / dangerous-function the variable
+		// field carries the CALLED function name (e.g. `execve`), and a name
+		// coincidence with a "safe" list entry would silently drop the candidate.
 		if reason != "" {
 			dropped = dismiss(dropped, c, f.Name(), reason)
 			continue
@@ -52,9 +55,12 @@ func (f *SafeFunctionFilter) Apply(ctx context.Context, candidates []Candidate) 
 	return kept, dropped, nil
 }
 
-// ReleaseFilter removes candidates whose resource was released in the same
-// function, keyed by (function, variable). It replaces the previous
-// copy-pasted MemoryReleaseFilter/ResourceReleaseFilter pair.
+// ReleaseFilter removes candidates whose resource was released at the SAME
+// allocation/acquire site, keyed by (function, variable, source line). The
+// detector emits a release event per released source line (its `alloc_line`
+// property), so a release on one site no longer drops a sibling site that
+// genuinely leaks (`p = malloc(); p = malloc(); free(p)` leaks the first block
+// even though the second is released).
 type ReleaseFilter struct {
 	store     db.Store
 	eventType string
@@ -76,14 +82,14 @@ func (f *ReleaseFilter) Apply(ctx context.Context, candidates []Candidate) ([]Ca
 	for _, e := range releaseEvents {
 		props := parseEventProps(e.Properties)
 		if props.Variable != "" {
-			key := fmt.Sprintf("%d:%s", e.EntityID, props.Variable)
+			key := fmt.Sprintf("%d:%s:%d", e.EntityID, props.Variable, props.AllocLine)
 			releaseKeys[key] = true
 		}
 	}
 
 	kept, dropped := partition(candidates,
 		func(c Candidate) bool {
-			key := fmt.Sprintf("%d:%s", c.FunctionID, c.VariableName)
+			key := fmt.Sprintf("%d:%s:%d", c.FunctionID, c.VariableName, c.Line)
 			return !releaseKeys[key]
 		},
 		func(c Candidate) string {

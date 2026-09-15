@@ -109,7 +109,7 @@ func TestBenchmark_SafeFunctionFilter(t *testing.T) {
 
 	safeFuncs := []string{"memcpy_s", "strcpy_s", "sprintf_s", "strcat_s", "execve", "sqlite3_prepare_v2"}
 	for _, name := range safeFuncs {
-		c := Candidate{VariableName: name}
+		c := Candidate{APIName: name}
 		result, _, err := NewSafeFunctionFilter(s).Apply(ctx, []Candidate{c})
 		if err != nil {
 			t.Fatalf("filter failed: %v", err)
@@ -133,7 +133,7 @@ func TestBenchmark_SafeFunctionFilter(t *testing.T) {
 
 	unsafeFuncs := []string{"memcpy", "strcpy", "sprintf", "system", "sqlite3_exec"}
 	for _, name := range unsafeFuncs {
-		c := Candidate{VariableName: name}
+		c := Candidate{APIName: name}
 		result, _, err := NewSafeFunctionFilter(s).Apply(ctx, []Candidate{c})
 		if err != nil {
 			t.Fatalf("filter failed: %v", err)

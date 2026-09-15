@@ -170,7 +170,16 @@ func (f *CallReachFilter) Apply(ctx context.Context, candidates []Candidate) ([]
 			continue
 		}
 		nodeID, ok := res.funcNodeMap[c.FunctionID]
-		if ok && res.reachable[nodeID] {
+		if !ok {
+			// No function graph node for this function (the graph build failed,
+			// skipped this function, or a stale incremental index predates it).
+			// Dropping the candidate as "not reachable" would be a silent false
+			// negative; fail OPEN and let the AI review it.
+			c.IsReachable = true
+			kept = append(kept, c)
+			continue
+		}
+		if res.reachable[nodeID] {
 			c.IsReachable = true
 			kept = append(kept, c)
 			continue
