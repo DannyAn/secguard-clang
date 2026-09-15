@@ -52,8 +52,9 @@ the **shape** and its **reachability / exposure**.
 | MEDIUM   | A real defect with limited impact (bounded resource leak, non-sensitive info disclosure, edge-case-only trigger) |
 | LOW      | Defense-in-depth only, harmless dead code, or a weak-evidence issue that is dismissed |
 
-**Binary verdict**: there is no `suspected` state — `confirmed` or `dismissed`
-only. `dismissed` → `low`.
+**Verdicts**: `confirmed` (proved defect) or `dismissed` (everything else —
+false positive OR a candidate you could not settle after reading its source).
+`dismissed` → `low`.
 
 | Shape | Reachability / exposure | Severity |
 |-------|------------------------|----------|

@@ -74,13 +74,14 @@ For each type you were assigned, in `_index.md` order:
 
 1. **Load ONLY that type's skill** (exact kebab-case name; never a `crs-*`
    prefixed skill, never a skill for a type you weren't assigned).
-2. **Classify EVERY candidate** as confirmed / dismissed (BINARY) using the
-   skill's rules + the Classification Rules below. This is a single-pass FINAL
-   verdict — there is no second round and no "suspected". For a
-   `suspected`/`possible` (pipeline-prior) candidate, resolve it with source
-   context (Code Context, then a ≤5-files raw read for cross-file cases) and
-   decide confirmed / dismissed IN THIS PASS; if you cannot settle it, write
-   `dismissed`.
+2. **Classify EVERY candidate** using the skill's rules + the Classification
+   Rules below: `confirmed` (a real, provable defect) or `dismissed` (everything
+   else). This is a single-pass FINAL verdict — there is no second round. For a
+   `suspected`/`possible` (pipeline-prior) candidate, resolve it in this order:
+   Code Context first, then — if still unsettled — a raw source read (within the
+   ≤5-read budget below) to settle it. "Undecidable" is a conclusion you reach
+   AFTER spending that read budget, never a reason to skip it. Only then may you
+   write `dismissed` for it (with a cited reason, see below).
 3. **Write findings in ONE batch** (see Write discipline), passing `scan_id` +
    `scan_dir`/`output_dir`.
 4. Emit the Structured Report Protocol block (see "Structured Report Protocol" below).
@@ -92,22 +93,27 @@ it, before you look at the next type.
 
 ## Context budget
 
-**You do NOT read source files at all — the source is already embedded for you.**
-The scan pre-embeds the exact statement in `candidates/<type>/_index.md`'s `Source`
-column, the pipeline's precomputed verdict facts in its `Hint` column, and the
-±context window in each `candidates/<type>/NNN_*.md` `## Code Context` block.
-Classify from those. Issuing a per-candidate source READ is the single biggest
-wall-clock cost of a large scan (one tool round-trip per candidate × thousands of
-candidates = tens of minutes); do not do it. You may open a raw source file ONLY
-in the rare case a `suspected`/`possible` candidate needs more context than its
-Code Context block already carries, and even then keep it to ≤5 files per type
-(a file already read for an earlier type is free; read at the reported file:line
-rather than the whole file). If a type's candidates span more than 5 files you
-have not read yet, open the candidates' `## Code Context` blocks instead of more
-sources — and if a verdict still cannot be reached, mark the candidate
-`dismissed` rather than expanding the read. Never turn the budget into "read the
-whole repo": on a real codebase that exhausts the context window and silently
-drops the tail candidates. Do NOT read source for types you weren't assigned.
+**Classify from the embedded evidence first; DO read source for what you cannot
+settle.** The scan pre-embeds the exact statement in
+`candidates/<type>/_index.md`'s `Source` column, the pipeline's precomputed
+verdict facts in its `Hint` column, and the ±context window in each
+`candidates/<type>/NNN_*.md` `## Code Context` block. A proved hint + context →
+write the verdict, no read needed. Issuing a per-candidate source READ is the
+single biggest wall-clock cost of a large scan (one tool round-trip per candidate
+× thousands of candidates = tens of minutes), so never read for a candidate the
+embedded evidence already settles.
+
+But a `suspected`/`possible` candidate whose Hint/Source/Code Context is
+insufficient MUST be escalated to a raw source read — at the reported file:line
+via offset/limit, within the ≤5 source-read turns per type budget (a file already
+read for an earlier type is free). **"Undecidable" is not a valid verdict from
+the embedded evidence alone:** you may write `dismissed` for a candidate ONLY
+after the read budget is spent on it (or the defining evidence genuinely does not
+exist in the scan — a macro/callee defined in an unindexed header). Skipping the
+read and writing `dismissed` is the false-negative this rule exists to prevent.
+Never turn the budget into "read the whole repo": on a real codebase that
+exhausts the context window and silently drops the tail candidates. Do NOT read
+source for types you weren't assigned.
 
 Classify ONLY from the candidates + the scan target's own sources. Never go
 looking for external labels or ground truth that happens to sit near the target
@@ -301,30 +307,41 @@ missing `scan_id`/`output_dir`), and write that chunk again. (The single-finding
 `errors`.) Never re-run a write to "verify" — the write is idempotent; re-running
 never duplicates but wastes a turn.
 
-## Single-pass verdicts (BINARY — no second round, no "suspected")
+## Single-pass verdicts (single pass — no second round)
 
-Your verdict is **binary and FINAL**: `confirmed` (a real defect) or `dismissed`
-(everything else). There is **no `suspected` state** — if you cannot prove the
-defect, it is not a defect for the user. Classify each candidate once, pulling in
-the source context you need: `_index.md`'s Source+Hint first, then the candidate's
-`## Code Context`, and for a cross-file case (a helper/callee/macro defined in
-another file) a raw source read within the same ≤5-files budget.
+Your verdict is **FINAL and single-pass**. Classify each candidate once, pulling
+in the source context you need: `_index.md`'s Source+Hint first, then the
+candidate's `## Code Context`, and for a cross-file case (a helper/callee/macro
+defined in another file) a raw source read within the same ≤5-source-read-turns
+budget.
 
 **The two verdicts:**
-- `confirmed` → the ONLY verdict that reaches the user (`result.sarif`,
-  `result.xlsx`, `report.md`, `findings/`). It must be a real, provable defect.
-- `dismissed` → everything else: a false positive, a guarded call, OR a candidate
-  you simply could not settle. Recorded in the DB with your reasoning (never
-  shown to the user). **When in doubt, write `dismissed`.**
+- `confirmed` → a real, provable defect. This is the ONLY outcome that reaches the
+  user (`result.sarif`, `result.xlsx`, `report.md`, `findings/`).
+- `dismissed` → everything else: a false positive (a guard, a `_s` safe call, a
+  checked allocation, a call contract that proves safety) OR a candidate you
+  could not settle after reading its source. Recorded in the DB with your
+  reasoning (never shown to the user).
 
-**The precision rule: when in doubt, do not confirm.** A `confirmed` false
-positive is the worst outcome; a `dismissed` that hides a real but unprovable bug
-is acceptable. Before writing `confirmed` you MUST have settled it from evidence:
-a proved hint (`certain-null`/`tainted`/constant-OOB) + confirming context →
-`confirmed`; a guard / `_s` safe call / checked allocation / call contract that
-proves safety, or anything genuinely undecidable → `dismissed`. Do NOT confirm a
-candidate merely because its `suspicion_level` is `confirmed` — that is a prior,
-not a verdict.
+**Every `dismissed` must cite its evidence — this is what makes "did you actually
+analyze" checkable.** A `dismissed` reason names the specific evidence: the guard /
+safe call / contract line that proves safety, OR the `Evidence` file /
+`file:line-range` source read you opened and WHY that specific evidence still left
+the question open — e.g. "read free at foo.c:180; it is on the success path, but
+ownership of p after the loop is ambiguous". A bare "insufficient context" with no
+cited read is the tell that you never tried: it is not a reason, it is a bail, and
+the orchestrator audits it as "未研判即弃".
+
+**The precision rule: when in doubt, do not confirm — read first, then dismiss
+with a cited reason.** A `confirmed` false positive is the worst outcome, but a
+`dismissed` written WITHOUT reading the source hides a real bug, which a security
+scanner must also avoid. Before writing `confirmed` you MUST have settled it from
+evidence: a proved hint (`certain-null`/`tainted`/constant-OOB) + confirming
+context → `confirmed`; a guard / `_s` safe call / checked allocation / call
+contract that proves safety → `dismissed`. If you cannot settle it from the
+embedded evidence, spend the source-read budget first; only after that may you
+write `dismissed` (with the cited reason). Do NOT confirm a candidate merely
+because its `suspicion_level` is `confirmed` — that is a prior, not a verdict.
 
 **Macro-context candidates (Hint contains `macro-context`).** These are the
 highest false-positive risk: the pipeline could not see a macro's true semantics

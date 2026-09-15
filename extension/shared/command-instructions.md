@@ -136,11 +136,13 @@ hardcode names or counts.
 - Bounds check before an unsafe call → false-positive for buffer-overflow.
 - Partial validation (blacklist only, TOCTOU window) → dismissed.
 - No guard + reachable + nullable source + data flow to deref → confirmed.
-- **The verdict is BINARY: `confirmed` or `dismissed` — there is no `suspected`.**
-  Only `confirmed` reaches `result.sarif` / `result.xlsx` / `report.md` /
-  `findings/`. Everything else — false positive, guarded call, or undecidable —
-  is `dismissed` (recorded in the DB with reasoning, never shown). When in doubt,
-  write `dismissed`. A `confirmed` must be a provable defect.
+- **The verdict is BINARY: `confirmed` or `dismissed`.** Only `confirmed` reaches
+  `result.sarif` / `result.xlsx` / `report.md` / `findings/`. Everything else —
+  a verified false positive (guarded call, safe wrapper, a contract that proves
+  safety) OR a candidate you could not settle — is `dismissed` (recorded in the DB
+  with reasoning, never shown). "When in doubt" triggers a source read first (≤5
+  source-read turns); only after spending that budget may you write `dismissed`,
+  with a cited reason. A `confirmed` must be a provable defect.
 - **Macro-context candidates (Hint `macro-context`) are the highest false-positive
   risk.** A function-like macro (guard / iterator / accessor / free wrapper) is in
   play, so the pipeline's flow proof may be wrong. Open the candidate's
@@ -205,21 +207,28 @@ first, write at the end" is WRONG and loses work.** Track processed types in
 your todo list so no type is skipped or double-processed.
 
 **Context budget (the other thing that makes this fast).** Do NOT read all
-source files up front. The source-read budget is **≤5 NEW files per type**, and
-it is per type — a file you already read for an earlier type is free the second
-time, so overlapping types do not multiply the budget. Read at the reported
-file:line (offset/limit around it), not the whole file.
+source files up front. The source-read budget is **≤5 source-read TURNS per
+type** — a read at the reported file:line (offset/limit around it), not a
+whole-file dump. It is derived from `TURNS_PER_TYPE_ESTIMATE` (12) minus the
+fixed skill-load + `_index.md`-read + evidence-open + write overhead, and it is
+per type — a file you already read for an earlier type is free the second time,
+so overlapping types do not multiply the budget.
 
-When a type's candidates span MORE than 5 files you have not read yet, do NOT
+When a type's candidates span MORE source files than the budget can cover, do NOT
 keep opening sources: the `Evidence` file for a candidate embeds that candidate's
 own ±8-line `## Code Context`, so open the `Evidence` files for the candidates
 that actually need verification instead. Never turn the budget into "read the
 whole repo" — on a real codebase that is what exhausts the context window and
-leaves the tail candidates unclassified. If a verdict genuinely cannot be reached
-from the `Source`/`Hint`/`Code Context`, mark the candidate `dismissed` rather
-than reading more of the tree. The ≤5-file budget is the WHOLE type's source-read
-budget (there is no second round — your single-pass verdict is final). Do NOT
-load a skill for a type that has 0 candidates.
+leaves the tail candidates unclassified.
+
+**A verdict you cannot reach is still `dismissed` — but only after you tried.**
+When the `Source`/`Hint`/`Code Context` is genuinely insufficient, spend the
+source-read budget (≤5 turns) trying to settle it; only if STILL undecided after
+that may you write `dismissed`, with a reason citing what you read. Skipping the
+read and writing `dismissed` converts "couldn't confirm" into a silent false
+negative. The budget is the WHOLE type's source-read budget (there is no second
+round — your single-pass verdict is final). Do NOT load a skill for a type that
+has 0 candidates.
 `candidates/<type>/_index.md` is your primary candidate input (one compact read
 per type); the scan summary already gives you the per-type counts.
 
@@ -294,7 +303,7 @@ as `result.sarif`.)
      (matches the evidence) or dismiss (guarded/different) from the table itself.
      Do NOT read source or the candidate file. Batch all confirmed verdicts into
      one write call.
-   - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null`/`tainted`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`macro-context`); for divide-by-zero a `divisor@bare` row is settled from `Source` alone (no evidence open). Open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source) only when the hint is insufficient, then reason/classify (confirmed/dismissed — BINARY). A `macro-context` hint means a macro is in play — open the `## Code Context` and verify the macro before `confirmed`.
+   - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null`/`tainted`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`macro-context`); for divide-by-zero a `divisor@bare` row is settled from `Source` alone (no evidence open). When the hint is insufficient, open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source) and, if STILL insufficient, a raw source read within the ≤5-read budget — then classify. Only after spending that budget may you write `dismissed` (with a cited reason); never write `dismissed` without reading when the hint was insufficient. A `macro-context` hint means a macro is in play — open the `## Code Context` and verify the macro before `confirmed`.
    Write findings in ONE batch: write `<tmpdir>/<type>.json` with the Write tool,
    then `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
    Never skip a type. Obey the context budget (no per-candidate source reads;
@@ -356,15 +365,19 @@ as `result.sarif`.)
       `## Code Context` embeds the source) ONLY when the hint is insufficient to
       decide — a `certain-null` + `src@N` hint usually settles the verdict with no
       file open, and a `divisor@call`/`divisor@compound` hint is the only
-      divide-by-zero shape that needs the open. When the hint is inconclusive and
-      you cannot afford the file, mark `dismissed` (the verdict is binary: confirmed
-      or dismissed).
-    If a candidate's `## Code Context` is unusually large (a super-large function,
-    e.g. >200 lines), do NOT paste it into your context — that is exactly what
-    exhausts your window and silently truncates the tail. Classify from the `Source`
-    column alone: mark `confirmed` ONLY when that one-line statement already proves
-    the defect; otherwise mark `dismissed`. One oversized candidate must not sink
-    the rest of the range.
+      divide-by-zero shape that needs the open. When the hint is inconclusive,
+      open the source (within the ≤5 source-read budget) to settle it; only if
+      STILL undecided after the budget, write `dismissed` with a cited reason —
+      never write `dismissed` without reading when the hint was insufficient.
+    `## Code Context` is always a ±8-line window around the reported line — it
+    never embeds a whole function, so opening it cannot exhaust your context, and
+    a large function is NOT a reason to classify from the `Source` column alone.
+    A complex function is exactly where careful analysis matters most: classify
+    from `Source` + `Hint` + the ±8 window first, and when that is insufficient,
+    spend the ≤5 source-read budget reading the SPECIFIC lines the `Hint` names
+    (the free / guard / return / source line) via offset/limit — never paste the
+    whole function, which is both unfocused and what actually overflows the
+    window. Read a big function MORE carefully, never less.
     Derive the DB and the write dir from <scan_dir> (ABSOLUTE, never relative):
     - DB:  <scan_dir>/../../.sgre/sgre.db
     - tmp: <scan_dir>/../../.sgre/.tmp/
@@ -392,7 +405,7 @@ as `result.sarif`.)
    - per-type verdict split → `secguard report --audit --scan-id <id> --output-dir <dir>` returns an `audits` array (`vuln_type`/`confirmed`/`dismissed`/`auto_confirmed`; `suspected` is a legacy field, always 0). Sum that array for the report — do NOT raw-query `findings` to recompute it.
     **findings/ 里的 confirmed 文件 ≠ 子代理报告的 confirmed（auto-confirmed 已落库）:** `findings/<type>/NNN_*_confirmed.md` 是两类之和——(a) `auto-confirmed`：pipeline 在 scan 阶段直接机器确认的确定性发现（divide-by-zero 的 `divisor@field`/`global`、null-deref 的 certain-null、uninit 的 certain-uninit 等），它们**不在** `candidates/_index.md` 里、子代理从来看不到；(b) 子代理写的 `confirmed`。所以 findings/ 的 confirmed 文件数可以明显大于子代理报告的数，多出的就是 auto-confirmed，**不是漏报也不是子代理说错**。最终计数一律以 `report --audit` 的 `audits` 数组（含 `auto_confirmed` 字段）为准，不要 `ls findings/` 反推、不要为这个对账。
    **DB 路径（绝对路径，否则 Exit code 1）:** every `secguard db` / `secguard schema` / `secguard report` call that takes `--db` MUST pass the ABSOLUTE path `<scan_dir>/../../.sgre/sgre.db`. A relative `.sgre/sgre.db` fails with `Error: Exit code 1` whenever your cwd is not the project root — do NOT retry it as-is; re-run with the ABSOLUTE path. **Do NOT `cd` into the scan dir to "fix" it:** commands run WITHOUT `--db` (`secguard plan`/`status`/`metrics`/`query` and `report --audit`) resolve the DB relative to cwd, so cd'ing into the scan dir would mint a second, empty `sgre.db` under the scan dir (doubling build time and splitting findings across two databases). Keep cwd at the project root for the whole run.
-   **`unclassified_candidates` 不是漏写（同位置合并）:** `report --audit` reports `unclassified_candidates = final_count − (confirmed+dismissed)`. Because `--write-json` UPSERTs keyed on `(scan_id, rule_id, file, line, function)`, several candidates at the SAME file:line:function (e.g. two resource variables on one line) collapse into ONE finding, so `findings` count < `candidate_count` is NORMAL — it is not a context-overflow and not a missing write. Do NOT inspect the schema or raw-query `findings` to "persist" those; trust `secguard status --per-type --scan-id <id>` (`written_count`) instead.
+   **`unclassified_candidates` 不是漏写（同变量合并）:** `report --audit` reports `unclassified_candidates = final_count − (confirmed+dismissed)`. Because `--write-json` UPSERTs keyed on `(scan_id, rule_id, file, line, function, variable)`, candidates for the SAME variable at the SAME file:line:function collapse into ONE finding (per-type dedup like null-deref's one-finding-per-variable), so `findings` count < `candidate_count` is NORMAL — it is not a context-overflow and not a missing write. Two DISTINCT variables on one line are now two findings (the key includes `variable`). Do NOT inspect the schema or raw-query `findings` to "persist" those; trust `secguard status --per-type --scan-id <id>` (`written_count`) instead.
    If you MUST raw-query, run `secguard schema <table>` first, or use these exact names — never guess:
    - `findings`: `id, rule_id (CWE, e.g. CWE-476 — there is NO type/vuln_type column), severity, status (confirmed|suspected|dismissed|auto-confirmed), file_path (NOT file), line_number (NOT line), function_name, scan_id, review_status`
    - `scan_stats`: `scan_id, vuln_type (kebab-case type name), seed_count, final_count`
@@ -416,13 +429,21 @@ as `result.sarif`.)
 
     **Finalize 前置终态确认 (F1):** Before running audit, confirm every subagent terminal state ∈ {success, failed}. If any is `unknown`, run `secguard status --per-type --scan-id <scan_id>` and use the DB as the authority: types with `terminal_state: "done"` are success; `"in-progress"`/`"pending"` are failed (mark missing-type); `"unknown"` types were never dispatched — mark missing-type with `reason: "unknown"`.
 
-    **Confirmed 异常读源审计 (F6):** Before audit, scan `scan.log` for source-read
-    entries associated with confirmed candidates. Classify each read:
-    - read range ≤ file:line ±3 lines → "验证性查看" (allowed, no violation).
-    - read range far exceeds verification (e.g. whole function/file) → "confirmed
-      候选异常读源违规" with type/file/line/read_range.
-    - borderline (±3 to ~±10 lines) → "待人工复审".
-    If `scan.log` is unavailable, log warning and skip (do not block finalize).
+    **读源审计 (F6):** Before audit, scan the subagent transcripts / `scan.log` for
+    source-read + Evidence-open entries. Check BOTH directions — the recall
+    direction is the one that bites:
+    - Confirmed over-read (precision): a confirmed candidate whose read range far
+      exceeds verification (whole function/file instead of ±3 lines) → "confirmed
+      候选异常读源违规" with type/file/line/read_range. (≤ ±3 lines = 验证性查看, allowed;
+      borderline ±3~±10 = 待人工复审.)
+    - Dismissed without reading (recall): a `dismissed` candidate whose reason is a
+      bare "insufficient context" and that shows NO Evidence-open and NO source-read
+      → "未研判即弃" (bailed without reading). Surface it distinctly in the 观察项表,
+      and re-dispatch that candidate ONCE with an explicit "open the Evidence file,
+      then the ≤5 source reads, before you may write dismissed" prompt. The reason
+      contract (agent-body) makes this checkable: a valid dismissed reason always
+      cites the file:line-range or Evidence file it read.
+    If the transcript/`scan.log` is unavailable, log warning and skip (do not block finalize).
 
     After ALL subagents (or your sequential loop) are done, run `secguard report --audit --scan-id <scan_id> --output-dir <output_dir> --ai-duration-ms <ms>`
    ONCE to regenerate `report.md` (verdict-stage, confirmed only) + `result.sarif`
@@ -465,11 +486,14 @@ Selected types: <parsed type filter>
    a. `secguard_plan` with `vuln_type=<type>`. On failure, record and continue.
    b. Load ONLY that type's skill (exact name, SecGuard namespace).
    c. Classify every candidate.
-   d. Cross-reference: ≤5 files, absolute paths from the candidate Location block.
+   d. Cross-reference: ≤5 source-read turns, absolute paths from the candidate
+      Location block.
    e. **WRITE now**: `secguard_report` with `findings` for THIS type, passing
-      `scan_id` + `output_dir`. Every candidate gets a verdict; confirmed findings
-      carry `reasoning` + `exception_check` + `fix_strategy`. Handle
-      `per_finding_warning` before moving on.
+      `scan_id` + `output_dir`. Every candidate gets a verdict (confirmed /
+      dismissed); a candidate you cannot settle from the embedded evidence is read
+      first (≤5 source-read turns), then dismissed with a cited reason — never
+      dismissed unread. Confirmed findings carry `reasoning` + `exception_check` +
+      `fix_strategy`. Handle `per_finding_warning` before moving on.
 3. **Finalize and verify**: after the loop, read `<output_dir>/result.sarif`
    (non-empty) and list `<output_dir>/findings/` to confirm your verdicts
    landed; if not, fix the failing write before reporting.
@@ -490,8 +514,8 @@ Report the diagnostic conclusion in Chinese, Markdown tables only:
    - `端到端耗时 = <秒>`（自动分析 + AI 研判 + 编排调度开销）。
    **不要用"流水线"描述时间**："流水线/收敛"是**候选数量**概念（raw seeds → 层层过滤 → final），不是时间口径；把二进制耗时说成"流水线耗时"既漏了 AI 研判这一环、又和"扫描耗时"语义打架，才会出现"10 分钟 vs 3~4 小时"的误会。
 2. 摘要（**必须，独立成段，位于总览表之前**）: 先给一句全轮汇总，再给确认数的构成，例如
-   `本轮扫描确认 <X> 个问题。其中 <X1> 个由流水线自动确认（无需 AI 研判）、<X2> 个由 AI 研判确认；已排除 <D> 个（含 AI 拿不准直接丢弃的）。`
-   - `<X>` = `summary.confirmed_total`（**已含 auto-confirmed**）；`<X1>` = `summary.auto_confirmed`；`<X2>` = `summary.ai_confirmed`；`<D>` = `summary.dismissed_total`。`summary.actionable_total` 等于 `confirmed_total`（裁决是二元的，没有 suspected）。
+   `本轮扫描确认 <X> 个问题。其中 <X1> 个由流水线自动确认（无需 AI 研判）、<X2> 个由 AI 研判确认；已排除 <D> 个（误报或无法判定）。`
+   - `<X>` = `summary.confirmed_total`（**已含 auto-confirmed**）；`<X1>` = `summary.auto_confirmed`；`<X2>` = `summary.ai_confirmed`；`<D>` = `summary.dismissed_total`。`summary.actionable_total` 等于 `confirmed_total`（只有 confirmed 计入 actionable）。
    - **禁止**用 `audits` 数组自行相加、禁止用 `ls findings/` 反推：`findings/` 的 confirmed 文件数 = auto-confirmed + AI confirmed，多加出来的那部分不是漏报。
    - 若 `<X> == 0`：写 `本轮扫描未确认任何问题（<D> 项候选已排除）。`——**不要**省略本段。
    - 若 `summary.unclassified_candidates > 0`，在摘要后补一句 `另有 <U> 项候选未落库判定，见观察项表。`

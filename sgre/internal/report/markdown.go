@@ -295,13 +295,13 @@ func (o *ScanOutput) writeTypeIndex(dir string, pkg *planner.PlanResult) error {
 	cwe := VulnToCWE(pkg.VulnerabilityType)
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("# %s (%s) — Candidates\n\n", pkg.VulnerabilityType, cwe))
-	b.WriteString("> Classify each candidate as confirmed / dismissed (BINARY — no suspected).\n" +
+	b.WriteString("> Classify each candidate as confirmed / dismissed (BINARY).\n" +
 		"> Classify from the `Source` + `Hint` columns first — `Hint` is the pipeline's\n" +
 		"> precomputed verdict facts (`src@N` = null-source line, `certain-null`/\n" +
 		"> `maybe-null` = null certainty, `tainted` = injection source, `weak-guard` =\n" +
 		"> partial guard, `macro-context` = a macro is in play). Open the `Evidence`\n" +
-		"> file (and its `## Code Context`) only when the hint is insufficient to\n" +
-		"> decide.\n\n")
+		"> file (and its `## Code Context`) when the hint is insufficient; read the\n" +
+		"> source (≤5 turns per type) before dismissing something you cannot settle.\n\n")
 	b.WriteString("| # | Function | File:Line | Variable | Suspicion | Hint | Source | Evidence |\n")
 	b.WriteString("|---|----------|-----------|----------|-----------|------|--------|----------|\n")
 	for i, c := range pkg.Candidates {
