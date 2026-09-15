@@ -72,11 +72,19 @@ func TestMemoryLeak_MallocInCondition(t *testing.T) {
 
 // TestMemoryLeak_RAIICreateDestroy locks in the create/destroy RAII pairing: a
 // create function whose destroy counterpart frees must not report its (stored-
-// to-global-on-a-later-line) allocation as a leak. It guards the free-scan
-// pre-pass in Detect (formerly per-candidate functionHasFrees os.ReadFile).
+// to-global-on-a-later-line) allocation as a leak. The path-sensitive escape
+// analysis now recognizes the later-line global store itself, so item_new emits
+// an alloc RELEASE pair (ownership transferred to the g_items array) — the
+// invariant is "no bare alloc", i.e. every alloc is paired with a release.
 func TestMemoryLeak_RAIICreateDestroy(t *testing.T) {
 	store := runIndexAndDetect(t, "tc74_raii_create_destroy.c")
-	assertNoEvent(t, store, "MEMORY_ALLOC", "tc74_raii_create_destroy")
+	allocByFunc, releaseByFunc := countEventsByFunction(t, store, "MEMORY_ALLOC", "MEMORY_RELEASE")
+	if allocByFunc["item_new"] == 0 {
+		t.Errorf("item_new should emit an alloc (escaped to a global), got none")
+	}
+	if allocByFunc["item_new"] != releaseByFunc["item_new"] {
+		t.Errorf("item_new must not leak: got %d alloc / %d release", allocByFunc["item_new"], releaseByFunc["item_new"])
+	}
 }
 
 // TestMemoryLeak_ZcallocNotAlloc locks in the fix that only a real
@@ -167,6 +175,24 @@ func TestMemoryLeak_GuardedFreeNoLeak(t *testing.T) {
 			t.Errorf("%s: got %d alloc / %d release, want %d alloc / %d release",
 				c.fn, allocByFunc[c.fn], releaseByFunc[c.fn], c.allocs, c.rel)
 		}
+	}
+}
+
+// TestMemoryLeak_ErrorReturnPath pins the C1 fix: returning the pointer on ONE
+// path (`if (err) return p;`) is an ownership transfer on that path only, not a
+// function-wide transfer, so a function whose normal path never frees p still
+// reports a leak — while a function that returns p on EVERY path does not.
+func TestMemoryLeak_ErrorReturnPath(t *testing.T) {
+	store := runIndexAndDetect(t, "tc112_memory_leak_error_return.c")
+	allocByFunc, releaseByFunc := countEventsByFunction(t, store, "MEMORY_ALLOC", "MEMORY_RELEASE")
+
+	if allocByFunc["error_return_path"] != 1 || releaseByFunc["error_return_path"] != 0 {
+		t.Errorf("error_return_path: got %d alloc / %d release, want 1 alloc / 0 release (leak on the non-returning path)",
+			allocByFunc["error_return_path"], releaseByFunc["error_return_path"])
+	}
+	if allocByFunc["transfer_all_paths"] != 1 || releaseByFunc["transfer_all_paths"] != 1 {
+		t.Errorf("transfer_all_paths: got %d alloc / %d release, want 1 alloc / 1 release (ownership transferred on every path)",
+			allocByFunc["transfer_all_paths"], releaseByFunc["transfer_all_paths"])
 	}
 }
 

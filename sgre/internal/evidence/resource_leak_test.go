@@ -131,6 +131,23 @@ func TestResourceLeak_OutParamAcquirerIsLeak(t *testing.T) {
 	}
 }
 
+// TestResourceLeak_MmapIsResource pins the C5 fix: mmap is a resource factory
+// (released by munmap) and was missing from the acquirer whitelist, so a leaked
+// mapping went unreported.
+func TestResourceLeak_MmapIsResource(t *testing.T) {
+	store := runIndexAndDetect(t, "tc113_resleak_mmap.c")
+	acquireByFunc, releaseByFunc := countEventsByFunction(t, store, "RESOURCE_ACQUIRE", "RESOURCE_RELEASE")
+
+	if acquireByFunc["mmap_leak"] != 1 || releaseByFunc["mmap_leak"] != 0 {
+		t.Errorf("mmap_leak: got %d acquire / %d release, want 1 acquire / 0 release (leaked mapping)",
+			acquireByFunc["mmap_leak"], releaseByFunc["mmap_leak"])
+	}
+	if acquireByFunc["mmap_released"] != 1 || releaseByFunc["mmap_released"] != 1 {
+		t.Errorf("mmap_released: got %d acquire / %d release, want 1 acquire / 1 release",
+			acquireByFunc["mmap_released"], releaseByFunc["mmap_released"])
+	}
+}
+
 // TestResourceLeak_OverwrittenHandle locks in the lost-resource fix: `fd = open();
 // fd = open();` is TWO acquisitions, and the first is lost even when the second
 // is later closed (`... close(fd)` must still report one leak).

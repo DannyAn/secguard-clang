@@ -63,22 +63,18 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 					allNonHeldReturns := append(append([]int{}, nullGuardReturns...), acquireFailureReturns...)
 					// A `return fd` inside `if (fd < 0) return fd;` is an error exit, not
 					// an ownership transfer: fd holds no resource on that path. Only a
-					// return OUTSIDE every acquire-failure branch transfers the resource.
-					isReturned := hasNonFailureReturn(varName, returns, f, acquireFailureReturns)
+					// return OUTSIDE every acquire-failure branch transfers the resource,
+					// and that transfer holds only on the paths that reach it — a
+					// function-level "is returned" flag would suppress a leak on a
+					// sibling non-returning path.
+					transferLines := nonFailureReturnLines(varName, returns, f, acquireFailureReturns)
 
 					// shouldReportRelease=true emits a RESOURCE_RELEASE event, which
 					// the planner's ReleaseFilter uses to drop the leak candidate. A
 					// leak is therefore "ACQUIRE without RELEASE".
 					shouldReportRelease := false
 
-					if isReturned {
-						// Ownership transferred to the caller.
-						shouldReportRelease = true
-					} else if !hasRelease {
-						// Escaped at the acquisition site (stored to a non-local) is
-						// transferred ownership; otherwise it is a leak.
-						shouldReportRelease = containsLine(escapeLines, acquireLine)
-					} else if isGuardedRelease(ifs, varName, releaseLines) {
+					if isGuardedRelease(ifs, varName, releaseLines) {
 						// Released only inside a positive guard (`if (f) { fclose(f); }` or
 						// `if (fd >= 0) { close(fd); }`): the acquire-failure path carries no
 						// resource, so this is not a leak.
@@ -86,8 +82,12 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 					} else if cfgValid {
 						// Path-sensitive: released on all paths iff no path from the
 						// acquire reaches the exit (or a later overwrite that drops the
-						// handle) avoiding every release/escape/guard.
-						shouldReportRelease = !hasLostResource(cfg, acquireLine, releaseLines, allNonHeldReturns, escapeLines, overwriteLines)
+						// handle) avoiding every release/escape/guard/transfer.
+						shouldReportRelease = !hasLostResource(cfg, acquireLine, releaseLines, allNonHeldReturns, escapeLines, transferLines, overwriteLines)
+					} else if !hasRelease {
+						// Escaped at the acquisition site (stored to a non-local) or
+						// returned anywhere is transferred ownership; otherwise a leak.
+						shouldReportRelease = containsLine(escapeLines, acquireLine) || len(transferLines) > 0
 					} else {
 						shouldReportRelease = true
 					}
@@ -104,9 +104,13 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 						if len(releaseLines) > 0 {
 							releaseLine = releaseLines[0]
 						}
-						if emitEvent(ctx, d.store, d.logger, "RESOURCE_RELEASE", f.ID, &db.Location{FileID: file.ID, Line: releaseLine}, map[string]string{
-							"variable": varName,
-							"origin":   "resource_release",
+						// alloc_line ties this release to its specific acquisition
+						// site, so ReleaseFilter drops only the released site and not
+						// a sibling acquire site that leaks.
+						if emitEvent(ctx, d.store, d.logger, "RESOURCE_RELEASE", f.ID, &db.Location{FileID: file.ID, Line: releaseLine}, map[string]any{
+							"variable":   varName,
+							"origin":     "resource_release",
+							"alloc_line": acquireLine,
 						}) {
 							result.EventsCreated++
 						}
@@ -158,7 +162,10 @@ func isResourceAcquirer(name string) bool {
 	// "epoll"/"eventfd"/"signalfd"/"timerfd"/"inotify"/"mkstemp" cover the
 	// fd-factory syscall wrappers (epoll_create, MESH_EpollCreate, eventfd,
 	// mkstemp, ...).
-	acquirers := []string{"fopen", "open", "socket", "accept", "acquire", "epoll", "eventfd", "signalfd", "timerfd", "inotify", "mkstemp", "mkostemp", "mkstemps", "mkostemps"}
+	// mmap covers the memory-mapped-region factory (mmap/mmap64) whose mapping
+	// must be released with munmap; the "open"/"create" substrings do not match
+	// it, so a `p = mmap(...)` with no munmap was previously missed.
+	acquirers := []string{"fopen", "open", "socket", "accept", "acquire", "epoll", "eventfd", "signalfd", "timerfd", "inotify", "mkstemp", "mkostemp", "mkstemps", "mkostemps", "mmap"}
 	for _, a := range acquirers {
 		if strings.Contains(lower, a) {
 			return true
@@ -205,7 +212,7 @@ func isLockAcquirer(name string) bool {
 
 func isResourceReleaser(name string) bool {
 	lower := strings.ToLower(name)
-	releasers := []string{"fclose", "close", "unlock", "release", "destroy", "disconnect", "join", "deinit"}
+	releasers := []string{"fclose", "close", "unlock", "release", "destroy", "disconnect", "join", "deinit", "munmap"}
 	for _, r := range releasers {
 		if strings.Contains(lower, r) {
 			return true
@@ -502,22 +509,25 @@ func returnReturnsVar(ret parser.Node, varName string) bool {
 	return false
 }
 
-// hasNonFailureReturn reports whether varName is returned on a path that is NOT
-// an acquire-failure exit. A `return fd` inside `if (fd < 0) return fd;` is an
-// error exit — fd holds no resource there — so it must not count as an ownership
-// transfer; only a return outside every failure branch transfers the resource.
-func hasNonFailureReturn(varName string, returns []parser.Node, f *db.Function, failureReturns []int) bool {
+// nonFailureReturnLines returns the lines of return statements that hand varName
+// to the caller on a path that is NOT an acquire-failure exit. A `return fd`
+// inside `if (fd < 0) return fd;` is an error exit — fd holds no resource there
+// — so it is excluded; only a return outside every failure branch transfers the
+// resource. These lines are transfer points fed to hasLostResource's avoid set,
+// so a transfer on one path does not suppress a leak on a sibling path.
+func nonFailureReturnLines(varName string, returns []parser.Node, f *db.Function, failureReturns []int) []int {
 	fail := make(map[int]bool, len(failureReturns))
 	for _, l := range failureReturns {
 		fail[l] = true
 	}
+	var lines []int
 	for _, ret := range returns {
 		if !funcLineRange(f, ret.StartLine()) || fail[ret.StartLine()] {
 			continue
 		}
 		if returnReturnsVar(ret, varName) {
-			return true
+			lines = append(lines, ret.StartLine())
 		}
 	}
-	return false
+	return lines
 }

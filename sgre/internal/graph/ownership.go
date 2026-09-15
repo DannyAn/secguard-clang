@@ -237,6 +237,20 @@ func isErrorReturn(ret parser.Node) bool {
 			name = child.Text()
 			break
 		}
+		// `return (fd);` wraps the identifier in one level of parentheses; a
+		// bare-identifier-only match would miss the error exit and misread it as
+		// an ownership transfer (suppressing a real leak downstream).
+		if child.Kind() == "parenthesized_expression" {
+			for _, inner := range child.NamedChildren() {
+				if inner.Kind() == "identifier" {
+					name = inner.Text()
+					break
+				}
+			}
+			if name != "" {
+				break
+			}
+		}
 	}
 	if name == "" {
 		return false

@@ -132,7 +132,13 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 
 			for varName, allocLines := range allocs {
 				freeLines, hasFree := frees[varName]
-				isReturned := isReturnedToCaller(varName, returns, f)
+				// Lines where a `return varName` hands the pointer to the caller.
+				// A return on ONE path is an ownership transfer on that path only;
+				// the path-sensitive analysis below treats it as a leak-avoiding
+				// node rather than (the old, coarse) a function-wide transfer flag,
+				// so `if (err) return p; ...` no longer suppresses a leak on the
+				// non-returning path.
+				transferLines := findReturnVarLines(varName, returns, f)
 				filteredReturns := filterNullGuardReturns(ifs, returnLines, varName)
 				nullGuardReturns := subtractLines(returnLines, filteredReturns)
 				escapeLines := findEscapeLines(assigns, f, varName, localVars)
@@ -142,27 +148,26 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 					shouldReportLeak := false
 					shouldReportRelease := false
 
-					if isReturned {
-						shouldReportRelease = true
-					} else if !hasFree {
-						// A malloc with no free is still not a leak when its result
-						// escapes at the allocation site (stored to a global/array).
-						if containsLine(escapeLines, allocLine) {
-							shouldReportRelease = true
-						} else {
-							shouldReportLeak = true
-						}
-					} else if isGuardedRelease(ifs, varName, freeLines) {
+					if isGuardedRelease(ifs, varName, freeLines) {
 						// Released only inside a positive guard (`if (p) { free(p); }`):
 						// the NULL path carries no allocation, so skipping the free on
 						// that branch is not a leak. Mirrors resource-leak's guarded-
 						// release branch (isGuardedRelease is shared across detectors).
 						shouldReportRelease = true
 					} else if cfgValid {
-						if hasLostResource(cfg, allocLine, freeLines, nullGuardReturns, escapeLines, overwriteLines) {
+						if hasLostResource(cfg, allocLine, freeLines, nullGuardReturns, escapeLines, transferLines, overwriteLines) {
 							shouldReportLeak = true
 						} else {
 							shouldReportRelease = true
+						}
+					} else if !hasFree {
+						// No CFG to prove a leak path: fall back to the coarse
+						// heuristic. A malloc whose result escapes at its site or is
+						// returned anywhere is ownership-transferred, not leaked.
+						if containsLine(escapeLines, allocLine) || len(transferLines) > 0 {
+							shouldReportRelease = true
+						} else {
+							shouldReportLeak = true
 						}
 					} else {
 						shouldReportRelease = true
@@ -188,9 +193,13 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 						if len(freeLines) > 0 {
 							releaseLine = freeLines[0]
 						}
-						if emitEvent(ctx, d.store, d.logger, "MEMORY_RELEASE", f.ID, &db.Location{FileID: file.ID, Line: releaseLine}, map[string]string{
-							"variable": varName,
-							"origin":   "free",
+						// alloc_line ties this release to its specific allocation
+						// site, so the planner's ReleaseFilter drops only the released
+						// site and not a sibling alloc site that leaks.
+						if emitEvent(ctx, d.store, d.logger, "MEMORY_RELEASE", f.ID, &db.Location{FileID: file.ID, Line: releaseLine}, map[string]any{
+							"variable":   varName,
+							"origin":     "free",
+							"alloc_line": allocLine,
 						}) {
 							result.EventsCreated++
 						}
@@ -350,12 +359,13 @@ func isNullCheckCondition(cond *parser.Node, varName string) bool {
 // a control-flow path from it to the function exit OR to a LATER write to the
 // same variable (an overwrite that drops the previous pointer — the classic
 // `p = malloc(); p = malloc();` double-allocation) without passing a free, a
-// null-guard early return, or an escape. It uses the statement-level CFG so flat
-// functions (an `if` with an expression body) no longer degenerate to a
-// path-insensitive fallback. The overwrite targets catch a lost allocation even
-// when a later pointer is freed (`p = malloc(); p = malloc(); free(p);` leaks
-// the first block).
-func hasLostResource(cfg *graph.StmtCFG, allocLine int, freeLines []int, nullGuardReturns []int, escapeLines []int, overwriteLines []int) bool {
+// null-guard early return, an escape, or a return of the pointer itself
+// (transferLines — `return p` hands ownership to the caller on that path only).
+// It uses the statement-level CFG so flat functions (an `if` with an expression
+// body) no longer degenerate to a path-insensitive fallback. The overwrite
+// targets catch a lost allocation even when a later pointer is freed
+// (`p = malloc(); p = malloc(); free(p);` leaks the first block).
+func hasLostResource(cfg *graph.StmtCFG, allocLine int, freeLines []int, nullGuardReturns []int, escapeLines []int, transferLines []int, overwriteLines []int) bool {
 	if cfg == nil {
 		return false
 	}
@@ -363,7 +373,7 @@ func hasLostResource(cfg *graph.StmtCFG, allocLine int, freeLines []int, nullGua
 	if allocNode == nil {
 		return true // cannot prove non-leak; report conservatively
 	}
-	avoid := make(map[int]bool, len(freeLines)+len(nullGuardReturns)+len(escapeLines))
+	avoid := make(map[int]bool, len(freeLines)+len(nullGuardReturns)+len(escapeLines)+len(transferLines))
 	for _, l := range freeLines {
 		if n := cfg.NodeAt(l); n != nil {
 			avoid[n.ID] = true
@@ -375,6 +385,11 @@ func hasLostResource(cfg *graph.StmtCFG, allocLine int, freeLines []int, nullGua
 		}
 	}
 	for _, l := range escapeLines {
+		if n := cfg.NodeAt(l); n != nil {
+			avoid[n.ID] = true
+		}
+	}
+	for _, l := range transferLines {
 		if n := cfg.NodeAt(l); n != nil {
 			avoid[n.ID] = true
 		}
@@ -583,25 +598,22 @@ func subtractLines(all, remove []int) []int {
 	return out
 }
 
-func isReturnedToCaller(varName string, returns []parser.Node, f *db.Function) bool {
+// findReturnVarLines returns the lines of return statements that hand varName to
+// the caller (bare `return p` or one level of parentheses `return (p)`). These
+// are transfer points, not leak points; they are fed to hasLostResource's avoid
+// set so the path-sensitive analysis distinguishes a return on ONE path from a
+// leak on ANOTHER.
+func findReturnVarLines(varName string, returns []parser.Node, f *db.Function) []int {
+	var lines []int
 	for _, ret := range returns {
 		if !funcLineRange(f, ret.StartLine()) {
 			continue
 		}
-		for _, child := range ret.NamedChildren() {
-			if child.Kind() == "identifier" && child.Text() == varName {
-				return true
-			}
-			if child.Kind() == "parenthesized_expression" {
-				for _, inner := range child.NamedChildren() {
-					if inner.Kind() == "identifier" && inner.Text() == varName {
-						return true
-					}
-				}
-			}
+		if returnReturnsVar(ret, varName) {
+			lines = append(lines, ret.StartLine())
 		}
 	}
-	return false
+	return lines
 }
 
 func getDestroyCounterpart(funcName string) string {

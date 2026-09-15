@@ -193,6 +193,28 @@ int *g(void) {
 	}
 }
 
+func TestOwnershipBuilder_ParenthesizedErrorReturn(t *testing.T) {
+	store, p := indexSource(t, `
+int f(int fd) {
+    if (fd < 0) {
+        return (fd);
+    }
+    return fd;
+}
+`)
+	ctx := context.Background()
+	b := NewOwnershipBuilder(store, p, nil)
+	if _, err := b.Build(ctx); err != nil {
+		t.Fatal(err)
+	}
+	transfers, _ := store.ListGraphEdgesByType(ctx, "OWNERSHIP_TRANSFER")
+	// The error exit `return (fd)` inside `if (fd < 0)` must NOT be a transfer
+	// (fd holds no resource there); only the fall-through `return fd` is.
+	if len(transfers) != 1 {
+		t.Errorf("expected 1 OWNERSHIP_TRANSFER (fall-through return fd only), got %d", len(transfers))
+	}
+}
+
 func TestInterprocBuilder(t *testing.T) {
 	store, p := indexSource(t, `
 int helper(int x) {
