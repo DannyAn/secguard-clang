@@ -208,6 +208,40 @@ func TestStore_UpsertFinding_Idempotent(t *testing.T) {
 	}
 }
 
+func TestStore_UpsertFinding_DistinctVariables(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	base := &Finding{
+		RuleID:       "CWE-476",
+		Severity:     "high",
+		Status:       "confirmed",
+		FilePath:     "src/a.c",
+		LineNumber:   42,
+		FunctionName: "f",
+		ScanID:       "sc_test",
+	}
+	a := *base
+	a.Variable = "x"
+	b := *base
+	b.Variable = "y"
+
+	if _, err := s.UpsertFinding(ctx, &a); err != nil {
+		t.Fatalf("upsert x: %v", err)
+	}
+	if _, err := s.UpsertFinding(ctx, &b); err != nil {
+		t.Fatalf("upsert y: %v", err)
+	}
+
+	all, err := s.ListFindings(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("expected 2 distinct findings (different variables at the same location), got %d", len(all))
+	}
+}
+
 func TestStore_FindingVariableRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	s := NewTestStore(t)

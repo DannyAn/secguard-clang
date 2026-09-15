@@ -514,18 +514,19 @@ func disabledTypeNames(names []string) []string {
 	return names
 }
 
-// distinctFindingLocations counts the distinct (file, line, function) locations
-// among candidates. `report --write-json` UPSERTs findings keyed on
-// (scan_id, rule_id, file, line, function), so several candidates at the SAME
-// location (e.g. two resource variables or two uninitialized fields on one line)
-// collapse into ONE finding. final_count must use this location count — not the
-// variable-level candidate count — otherwise `status --per-type` and
-// `report --audit` see a phantom "written < candidate" gap and the orchestrator
-// re-dispatches or raw-queries the schema in a loop.
+// distinctFindingLocations counts the distinct (file, line, function, variable)
+// locations among candidates. `report --write-json` UPSERTs findings keyed on
+// (scan_id, rule_id, file, line, function, variable), so only candidates at the
+// SAME location AND SAME variable collapse into ONE finding; two different
+// variables on one line (e.g. two resource variables) are two findings. final_count
+// must use this location count — not the variable-level candidate count —
+// otherwise `status --per-type` and `report --audit` see a phantom
+// "written < candidate" gap and the orchestrator re-dispatches or raw-queries the
+// schema in a loop.
 func distinctFindingLocations(items []planner.EvidenceItem) int {
 	seen := make(map[string]struct{}, len(items))
 	for _, c := range items {
-		key := c.Target.File + "\x00" + strconv.Itoa(c.Target.Line) + "\x00" + c.Target.Function
+		key := c.Target.File + "\x00" + strconv.Itoa(c.Target.Line) + "\x00" + c.Target.Function + "\x00" + c.Target.Variable
 		seen[key] = struct{}{}
 	}
 	return len(seen)

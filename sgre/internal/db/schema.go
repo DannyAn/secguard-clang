@@ -265,9 +265,12 @@ CREATE INDEX IF NOT EXISTS idx_findings_severity ON findings(severity);
 CREATE INDEX IF NOT EXISTS idx_findings_file ON findings(file_path);
 CREATE INDEX IF NOT EXISTS idx_findings_scan_id ON findings(scan_id);
 CREATE INDEX IF NOT EXISTS idx_findings_fingerprint ON findings(fingerprint);
--- Idempotency key for UpsertFinding: one row per (scan, CWE, location). This is
--- what makes concurrent --write-json upserts atomic (the ON CONFLICT target).
-CREATE UNIQUE INDEX IF NOT EXISTS uq_finding_loc ON findings(scan_id, rule_id, file_path, line_number, function_name);
+-- Idempotency key for UpsertFinding: one row per (scan, CWE, location, variable).
+-- The variable column is part of the key so two DISTINCT variables at the same
+-- (scan, rule, file, line, function) are two findings, not one overwriting the
+-- other. This is what makes concurrent --write-json upserts atomic (the ON
+-- CONFLICT target).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_finding_loc ON findings(scan_id, rule_id, file_path, line_number, function_name, variable);
 
 CREATE INDEX IF NOT EXISTS idx_scan_stats_scan_id ON scan_stats(scan_id);
 CREATE INDEX IF NOT EXISTS idx_scan_stats_vuln_type ON scan_stats(vuln_type);
@@ -295,6 +298,16 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 	// orchestrator reports at audit time, after the pipeline phase).
 	if err := ensureColumn(ctx, db, "scan_runs", "ai_duration_ms", "INTEGER"); err != nil {
 		return fmt.Errorf("db: init schema: ensure scan_runs.ai_duration_ms: %w", err)
+	}
+	// The finding-location uniqueness key gained the `variable` column so two
+	// distinct variables at one (scan, rule, file, line, function) are two
+	// findings. Recreate the index (the IF NOT EXISTS form in SchemaDDL will not
+	// rebuild an already-present index) so pre-existing databases pick it up.
+	if _, err := db.ExecContext(ctx, `DROP INDEX IF EXISTS uq_finding_loc`); err != nil {
+		return fmt.Errorf("db: init schema: drop old finding-loc index: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS uq_finding_loc ON findings(scan_id, rule_id, file_path, line_number, function_name, variable)`); err != nil {
+		return fmt.Errorf("db: init schema: recreate finding-loc index: %w", err)
 	}
 	return nil
 }

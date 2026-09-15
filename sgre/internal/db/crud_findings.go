@@ -86,8 +86,9 @@ func (s *store) InsertFinding(ctx context.Context, f *Finding) (int64, error) {
 }
 
 // UpsertFinding writes a finding idempotently: if a finding with the same
-// (scan_id, rule_id, file_path, line_number, function_name) already exists, it
-// is updated in place and its id returned; otherwise a new row is inserted. This
+// (scan_id, rule_id, file_path, line_number, function_name, variable) already
+// exists, it is updated in place and its id returned; otherwise a new row is
+// inserted. This
 // makes re-running a write batch safe (the previous insert-only behavior created
 // duplicate findings when an agent re-ran its write script), while preserving the
 // second-round (A5) review fields, which only `--review` mutates.
@@ -116,7 +117,7 @@ func (s *store) UpsertFinding(ctx context.Context, f *Finding) (int64, error) {
 		err := s.exec.QueryRowContext(ctx,
 			`INSERT INTO findings (rule_id, severity, confidence, evidence, status, file_path, line_number, function_name, variable, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			 ON CONFLICT(scan_id, rule_id, file_path, line_number, function_name) DO UPDATE SET
+			 ON CONFLICT(scan_id, rule_id, file_path, line_number, function_name, variable) DO UPDATE SET
 			   severity = excluded.severity,
 			   confidence = excluded.confidence,
 			   evidence = excluded.evidence,
