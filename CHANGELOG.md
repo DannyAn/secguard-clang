@@ -2,9 +2,9 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [Unreleased]
+## [0.7.3] - 2026-09-16
 
-> 未发布（暂不 tag）：对 v0.7.2 那个 null-deref 漏报做**设计层面的完整审视**，把 return-nullability 分析的同类缺口一并根治（不只是补一个 field_expression 点）。此改动留待生产验证后再定版本号。
+> 对 v0.7.2 那个 null-deref 漏报做**设计层面的完整审视**，把 return-nullability 分析的同类缺口一并根治（不只是补一个 field_expression 点），并把本轮所有"留待后续/暂缓"的项全部闭环。
 
 ### return-nullability 分析全面 fail-open（p0/p1 根治）
 
