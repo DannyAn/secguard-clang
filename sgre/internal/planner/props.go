@@ -13,14 +13,21 @@ type eventProps struct {
 	Category    string `json:"category"`
 	NonNullable string `json:"non_nullable"`
 	IsTypeExpr  string `json:"is_type_expr"`
-	Condition   string `json:"condition"`
-	ScopeStart  int    `json:"scope_start"`
-	ScopeEnd    int    `json:"scope_end"`
-	Strength    string `json:"strength"`
-	FreeLine    int    `json:"free_line"`
-	UseLine     int    `json:"use_line"`
-	Origin      string `json:"origin"`
-	DeclLine    int    `json:"decl_line"`
+	// IsCallResultDeref is "true" when the dereferenced operand is the direct
+	// result of a function call (`f()->field`, `*f()`, `f()[i]`) rather than a
+	// tracked variable. The null-deref filter cannot reach such a deref via the
+	// per-variable flow (there is no assignment `p = f()` to hang a null source
+	// on), so it consults Callee against the inter-procedural retNullable set
+	// instead of the intra-procedural reaching analysis.
+	IsCallResultDeref string `json:"is_call_result_deref"`
+	Condition         string `json:"condition"`
+	ScopeStart        int    `json:"scope_start"`
+	ScopeEnd          int    `json:"scope_end"`
+	Strength          string `json:"strength"`
+	FreeLine          int    `json:"free_line"`
+	UseLine           int    `json:"use_line"`
+	Origin            string `json:"origin"`
+	DeclLine          int    `json:"decl_line"`
 	// AllocLine is the allocation/acquire source line a MEMORY_RELEASE /
 	// RESOURCE_RELEASE event releases. It lets ReleaseFilter correlate a release
 	// to a specific candidate (candidate.Line == the source line) instead of a

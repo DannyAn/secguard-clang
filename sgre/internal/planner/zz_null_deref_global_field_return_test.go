@@ -130,3 +130,106 @@ void use_config(void) {
 		t.Errorf("use_config must NOT be flagged (get_config returns &g_config, always non-null); candidates=%v", candidateNames(result))
 	}
 }
+
+// TestNullDeref_CallResultDirectDeref pins the v0.7.3 gap: a function returning
+// a NULL-able global field, dereferenced DIRECTLY at the call site
+// (`get_shell_cfg()->detect_time`) with no intervening variable, must be
+// reported. The earlier fix only covered `p = get_shell_cfg(); p->field`.
+func TestNullDeref_CallResultDirectDeref(t *testing.T) {
+	src := `typedef struct {
+    unsigned int detect_time;
+} shell_config_t;
+
+typedef struct tag_space_s {
+    shell_config_t *shell_conf;
+} space_s;
+
+static space_s g_space = {0};
+
+shell_config_t *get_shell_cfg(void) {
+    return g_space.shell_conf;
+}
+
+void get_cfg(void) {
+    unsigned int x = get_shell_cfg()->detect_time;
+    (void)x;
+}
+`
+	result := planNullDerefSrc(t, src)
+	if !hasNullDerefCandidate(result, "get_cfg") {
+		t.Errorf("get_cfg null-deref (direct deref of get_shell_cfg()->detect_time) was missed; candidates=%v", candidateNames(result))
+	}
+}
+
+// TestNullDeref_CallResultDirectDerefStar covers the `*f()` form: a NULL-able
+// return value dereferenced explicitly via pointer_expression.
+func TestNullDeref_CallResultDirectDerefStar(t *testing.T) {
+	src := `typedef struct {
+    unsigned int detect_time;
+} shell_config_t;
+
+typedef struct tag_space_s {
+    shell_config_t *shell_conf;
+} space_s;
+
+static space_s g_space = {0};
+
+shell_config_t *get_shell_cfg(void) {
+    return g_space.shell_conf;
+}
+
+void use_star(void) {
+    shell_config_t s = *get_shell_cfg();
+    (void)s;
+}
+`
+	result := planNullDerefSrc(t, src)
+	if !hasNullDerefCandidate(result, "use_star") {
+		t.Errorf("use_star null-deref (direct deref of *get_shell_cfg()) was missed; candidates=%v", candidateNames(result))
+	}
+}
+
+// TestNullDeref_CallResultDirectDerefSubscript covers the `f()[i]` form: a
+// NULL-able return value dereferenced via subscript_expression.
+func TestNullDeref_CallResultDirectDerefSubscript(t *testing.T) {
+	src := `typedef struct {
+    int *arr;
+} cfg_t;
+
+static cfg_t g_cfg = {0};
+
+int *get_arr(void) {
+    return g_cfg.arr;
+}
+
+int use_subscript(void) {
+    return get_arr()[0];
+}
+`
+	result := planNullDerefSrc(t, src)
+	if !hasNullDerefCandidate(result, "use_subscript") {
+		t.Errorf("use_subscript null-deref (direct deref of get_arr()[0]) was missed; candidates=%v", candidateNames(result))
+	}
+}
+
+// TestNullDeref_CallResultDirectDerefAddressOfNotNullable pins the precision
+// side: `return &g_config` is an address (always non-null), so directly
+// dereferencing the call result must NOT be flagged.
+func TestNullDeref_CallResultDirectDerefAddressOfNotNullable(t *testing.T) {
+	src := `typedef struct { int x; } config_t;
+static config_t g_config;
+
+config_t *get_nonnull_cfg(void) {
+    return &g_config;
+}
+
+void use_nonnull(void) {
+    int x = get_nonnull_cfg()->x;
+    (void)x;
+}
+`
+	result := planNullDerefSrc(t, src)
+	if hasNullDerefCandidate(result, "use_nonnull") {
+		t.Errorf("use_nonnull must NOT be flagged (get_nonnull_cfg returns &g_config, always non-null); candidates=%v", candidateNames(result))
+	}
+}

@@ -122,11 +122,19 @@ type Candidate struct {
 	// exactly where the deterministic pipeline mis-models control flow, so a
 	// macro-context candidate is never auto-confirmed: it is routed to the AI
 	// agent for judgment.
-	MacroContext bool    `json:"macro_context,omitempty"`
-	NonNullable  bool    `json:"non_nullable"`
-	IsTypeExpr   bool    `json:"is_type_expr"`
-	QualityScore float64 `json:"quality_score"`
-	SourceLine   int     `json:"source_line,omitempty"`
-	DeclLine     int     `json:"decl_line,omitempty"`
-	Origin       string  `json:"origin,omitempty"`
+	MacroContext bool `json:"macro_context,omitempty"`
+	NonNullable  bool `json:"non_nullable"`
+	IsTypeExpr   bool `json:"is_type_expr"`
+	// IsCallResultDeref marks a dereference of a direct function-call result
+	// (`f()->field`, `*f()`, `f()[i]`); CalleeName is the called function. The
+	// nullable_source filter resolves these against the inter-procedural
+	// retNullable set (which callee can return NULL) rather than the
+	// intra-procedural per-variable reaching analysis, because no assignment
+	// `p = f()` exists to give the call result a tracked variable name.
+	IsCallResultDeref bool    `json:"is_call_result_deref,omitempty"`
+	CalleeName        string  `json:"callee_name,omitempty"`
+	QualityScore      float64 `json:"quality_score"`
+	SourceLine        int     `json:"source_line,omitempty"`
+	DeclLine          int     `json:"decl_line,omitempty"`
+	Origin            string  `json:"origin,omitempty"`
 }

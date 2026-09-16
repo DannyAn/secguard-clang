@@ -189,6 +189,10 @@ func (d *DereferenceDetector) insertDerefEvent(ctx context.Context, f *db.Functi
 	if nonNullable[varName] {
 		propsMap["non_nullable"] = "true"
 	}
+	if callee := callResultDerefCallee(node); callee != "" {
+		propsMap["is_call_result_deref"] = "true"
+		propsMap["callee"] = callee
+	}
 	if emitEvent(ctx, d.store, d.logger, "DEREFERENCE", f.ID, &db.Location{FileID: file.ID, Line: node.StartLine(), Column: node.StartColumn()}, propsMap) {
 		result.EventsCreated++
 	}
@@ -313,6 +317,41 @@ func extractBaseOperand(node parser.Node) string {
 		}
 	}
 	return children[0].Text()
+}
+
+// callResultDerefCallee returns the called function name when the dereferenced
+// operand is the DIRECT result of a function call — `f()->field`,
+// `*f()`, `f()[i]` — and "" otherwise. Only the base operand (children[0]) is
+// consulted so `a[f()]` (which dereferences a, not f()) is not misread. The
+// binary_expression form (detectExplicitDerefInBinary's macro-mangled `*q = v`)
+// is excluded: its children[0] is a macro call_expression, not a dereferenced
+// return value. A method-call callee (`obj->m()`) yields "" because
+// extractCallName only resolves identifier callees, matching the
+// retNullable key scheme (function-definition names).
+func callResultDerefCallee(node parser.Node) string {
+	switch node.Kind() {
+	case "field_expression", "subscript_expression", "pointer_expression":
+	default:
+		return ""
+	}
+	children := node.NamedChildren()
+	if len(children) == 0 {
+		return ""
+	}
+	// A macro call site glues the macro's call_expression onto the access and
+	// buries the real base in an ERROR node (e.g. field_expression[
+	// call_expression, ERROR(q), field_identifier]). The call_expression there
+	// is the macro invocation, not a dereferenced return value — skip it so
+	// the candidate keeps its intra-procedural variable attribution.
+	for _, c := range children {
+		if c.Kind() == "ERROR" {
+			return ""
+		}
+	}
+	if children[0].Kind() == "call_expression" {
+		return extractCallName(children[0])
+	}
+	return ""
 }
 
 // firstIdentifier returns the first identifier descendant of node (depth-first),

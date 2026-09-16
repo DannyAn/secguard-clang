@@ -55,13 +55,31 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 		byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
 	}
 
-	flowResults := f.buildFlowResults(ctx, byFunc, models)
+	flowResults, retNullable := f.buildFlowResults(ctx, byFunc, models)
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
 	for _, c := range candidates {
 		if c.NonNullable {
 			dropped = dismiss(dropped, c, f.Name(), "variable is non-nullable")
+			continue
+		}
+
+		// A direct dereference of a function-call result (`f()->field`, `*f()`,
+		// `f()[i]`) has no tracked variable, so the per-variable reaching
+		// analysis below cannot resolve it. Consult the inter-procedural
+		// retNullable set instead: the callee can return NULL → the deref is
+		// possibly-null (suspected, for the AI to reason about); otherwise it
+		// is provably non-null and dropped.
+		if c.IsCallResultDeref {
+			if retNullable[c.CalleeName] {
+				c.HasNullableSource = true
+				c.SuspicionLevel = "suspected"
+				kept = append(kept, c)
+			} else {
+				dropped = dismiss(dropped, c, f.Name(),
+					fmt.Sprintf("callee %s does not return a nullable value (inter-procedural retNullable analysis)", c.CalleeName))
+			}
 			continue
 		}
 
@@ -111,10 +129,13 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 
 // buildFlowResults runs the flow-sensitive analysis for each function that has
 // candidates, returning nil for functions it cannot analyse (so the caller
-// falls back to the line-order heuristic).
-func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[int64][]Candidate, models map[int64]*nullModel) map[int64]*flowResult {
+// falls back to the line-order heuristic). The returned retNullable set is the
+// inter-procedural "which functions can return NULL" map, consumed by Apply for
+// call-result dereferences (`f()->field`, `*f()`, `f()[i]`) that have no
+// tracked variable to feed the per-variable reaching analysis.
+func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[int64][]Candidate, models map[int64]*nullModel) (map[int64]*flowResult, map[string]bool) {
 	if f.parser == nil {
-		return nil
+		return nil, nil
 	}
 
 	funcIDs := make([]int64, 0, len(byFunc))
@@ -147,6 +168,17 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 	// dominant cost of nullable_source over a large codebase (an eager fixpoint
 	// over every function regardless of whether the result is used).
 	assignedCallees := map[string]bool{}
+	// Call-result dereferences (`f()->field`, `*f()`, `f()[i]`) carry no
+	// `p = f()` assignment, so the body scan below never sees their callee.
+	// Pull the callee names directly from the candidates so retNullable
+	// covers them.
+	for _, cs := range byFunc {
+		for _, c := range cs {
+			if c.IsCallResultDeref && c.CalleeName != "" {
+				assignedCallees[c.CalleeName] = true
+			}
+		}
+	}
 	for fid := range byFunc {
 		fn := fnByID[fid]
 		if fn == nil {
@@ -200,7 +232,7 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 		sources = append(sources, callResultNullSources(body, retNullable)...)
 		results[fid] = analyzer.analyzeFunction(ctx, fn, body, root, sources)
 	}
-	return results
+	return results, retNullable
 }
 
 // computeRetNullable returns the set of function NAMES that can return a

@@ -350,20 +350,22 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 		}
 
 		candidates = append(candidates, Candidate{
-			DerefEventID:   e.ID,
-			FunctionID:     e.EntityID,
-			FunctionName:   funcName,
-			VariableName:   varName,
-			APIName:        apiName,
-			Category:       props.Category,
-			LocationID:     e.LocationID,
-			FileID:         fileID,
-			Line:           line,
-			NonNullable:    props.NonNullable == "true",
-			IsTypeExpr:     props.IsTypeExpr == "true",
-			SuspicionLevel: suspicion,
-			DeclLine:       props.DeclLine,
-			Origin:         props.Origin,
+			DerefEventID:      e.ID,
+			FunctionID:        e.EntityID,
+			FunctionName:      funcName,
+			VariableName:      varName,
+			APIName:           apiName,
+			Category:          props.Category,
+			LocationID:        e.LocationID,
+			FileID:            fileID,
+			Line:              line,
+			NonNullable:       props.NonNullable == "true",
+			IsTypeExpr:        props.IsTypeExpr == "true",
+			IsCallResultDeref: props.IsCallResultDeref == "true",
+			CalleeName:        props.Callee,
+			SuspicionLevel:    suspicion,
+			DeclLine:          props.DeclLine,
+			Origin:            props.Origin,
 		})
 	}
 

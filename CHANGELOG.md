@@ -40,6 +40,21 @@
 - `TestNullDeref_ExternalCallReturnIsNullable`（ND-08：外部调用返回）
 - `TestNullDeref_AddressOfReturnIsNotNullable`（`&x` 取地址仍判非空，防精度回退）
 
+### 补充修复：直接解引用函数返回值（call-result direct deref）
+
+v0.7.3 prepare 后生产验证发现：`p = get_shell_cfg(); p->field` 已解决，但 `get_shell_cfg()->field`（无中间变量、直接在调用点解引用返回值）仍漏报。
+
+- **根因**：`DereferenceDetector` 对 `f()->field` / `*f()` / `f()[i]` 形态，`extractBaseOperand` 把 variable 提取为整段 call 文本（如 `"get_shell_cfg()"`）而非可追踪标识符。`NullableSourceFilter` 按 variable 名做 reaching 分析查不到任何 null source（`callResultNullSources` 只把 null source 挂在 `p = f()` 的 lhs 变量名上），候选被 dismiss，到不了 AI 研判。`retNullable`（已算出哪些函数可返回 null）就在手边却没被这类候选消费。
+- **修复**（5 文件）：detector 识别 call base 写 `is_call_result_deref`+`callee` props（排除宏调用站点的 ERROR child 误识别）；`NullableSourceFilter.Apply` 对这类候选直查 `retNullable[callee]`（true→kept suspected，false→dismiss），绕过 per-variable reaching。候选 kept 后走已有 `nullable_source` 证据片段 → AI 二元判决，与已解决形态同路径，"AI 研判后不遗留 suspected"准则不破坏。
+- **形态覆盖**：`f()->field` / `*f()` / `f()[i]` 三种直接解引用 + `&g_config` 直接解引用 precision。
+
+### 回归（补充）
+
+- `TestNullDeref_CallResultDirectDeref`（ND-09：`f()->field` 直接解引用）
+- `TestNullDeref_CallResultDirectDerefStar`（ND-10：`*f()` 直接解引用）
+- `TestNullDeref_CallResultDirectDerefSubscript`（ND-11：`f()[i]` 直接解引用）
+- `TestNullDeref_CallResultDirectDerefAddressOfNotNullable`（`&x` 返回值直接解引用仍判非空，防精度回退）
+
 ## [0.7.2] - 2026-09-16
 
 > 0.7.2 紧急修复：生产环境验证发现 null-deref 致命漏报。
