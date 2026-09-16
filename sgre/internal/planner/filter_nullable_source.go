@@ -225,6 +225,14 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 	for _, fn := range funcs {
 		funcsByName[fn.Name] = append(funcsByName[fn.Name], fn)
 	}
+	// definedNames distinguishes an in-scan callee (resolve via the fixpoint)
+	// from an external one (fail-open). Without it, `return external_func();`
+	// would be assumed non-null — the same closed-world bug that hid the
+	// global-field getter.
+	definedNames := make(map[string]bool, len(funcsByName))
+	for name := range funcsByName {
+		definedNames[name] = true
+	}
 
 	// Batch-load summaries and files once, avoiding per-function point queries.
 	allFnIDs := make([]int64, 0, len(funcs))
@@ -338,7 +346,7 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 			srcs := append([]nullSource(nil), info.srcs...)
 			srcs = append(srcs, callResultNullSources(info.body, retNullable)...)
 			flow := analyzer.analyzeFlow(ctx, info.fn, info.body, info.root, nullGenByLine(srcs), nil, true, false)
-			if returnsNullable(info.body, flow, info.params, retNullable) {
+			if returnsNullable(info.body, flow, info.params, retNullable, definedNames) {
 				retNullable[info.fn.Name] = true
 				changed = true
 			}

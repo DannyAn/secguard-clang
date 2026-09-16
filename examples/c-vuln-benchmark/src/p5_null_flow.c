@@ -80,3 +80,20 @@ int nd_global_field_return(void) {
     shell_cfg->detect_time = 0;
     return 0;
 }
+
+/* 真阳性：getter 返回外部函数（仅声明未定义）的调用结果，调用方未判空即解引用。
+ * exprReturnsNullable 必须对"return 外部调用"按开放世界 fail-open —— 与 ND-07
+ * 同为 return-nullability 分析过窄的漏报回归（v0.7.3 综合修复）。 */
+typedef struct { int x; } ext_config_t;
+
+ext_config_t *external_get_config(void); /* 声明，未定义（外部） */
+
+ext_config_t *get_ext_config(void) {
+    return external_get_config();
+}
+
+int nd_external_call_return(void) {
+    ext_config_t *c = get_ext_config();
+    c->x = 0;
+    return 0;
+}

@@ -2,6 +2,36 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.7.3] - 2026-09-16
+
+> 0.7.3：对 v0.7.2 那个 null-deref 漏报做**设计层面的完整审视**，把 return-nullability 分析的同类缺口一并根治（不只是补一个 field_expression 点）。
+
+### return-nullability 分析全面 fail-open（p0/p1 根治）
+
+`exprReturnsNullable`（`computeRetNullable` 定点分析里判断"函数返回值是否可能为空"）此前对一类"产出指针的表达式"直接判非空。本轮把它改成**保守完备**：
+
+- **判为非空（可证非空）**：数字/字符/字符串字面量、`true`/`false`、`sizeof`、`&x`（取地址，`pointer_expression` 且 `&` 前缀）。
+- **判为可能为空（fail-open）**：`NULL` 字面量、`field_expression`（`return g_space.shell_conf`，NULL 初始化）、`subscript`、`*p` 解引用、`return 外部调用`（开放世界：仅声明未定义的函数返回结果不可证非空）、条件/二元/一元表达式、指针形参、到达可空源的标识符。
+- **定点内调用仍精确**：`return f()` 里 f 是扫描内已定义函数时仍按定点解析（可证非空才非空）；f 是外部函数才 fail-open。
+
+这补齐了 v0.7.2 只覆盖 `field_expression` 的缺口——`get_config() { return external_getter(); }`（委托给外部函数的 getter）此前同样漏报。
+
+### 设计结论（对 GLM 报告 p0–p3 的完整审视）
+
+| 项 | 结论 |
+|---|---|
+| p0「未知默认非空」 | 已根治：`exprReturnsNullable` 全面 fail-open（见上） |
+| p1「computeRetNullable 深度不足」 | 已根治：field/subscript/deref/外部调用 均识别 |
+| p2「return_type 解析丢 `*`/存宏名」 | **评估后不改**：`*` 丢失是已知且已补偿的（`neverNullReturnTypes` 故意排除 `char`/typedef，对"可能是 `T*`"fail-open）；`NO_HCFI` 宏前缀只影响元数据、null-deref 链读函数体不读 `return_type`，与本漏报无因果 |
+| p3「variables 表为空」 | **评估后不改**：设计遗留（null-deref 链用流分析，不消费 variables 表），非缺陷 |
+| function_summary 覆盖率 10.5% | **属预期**：`function_summary.return_nullable` 只是"字面 `return NULL`"的**种子**，真正的分析是 planner 的 `computeRetNullable` 定点；覆盖率低是因为种子稀疏，不影响定点收敛 |
+
+### 回归
+
+- `TestNullDeref_GlobalFieldReturnIsNullable`（ND-07：全局字段返回）
+- `TestNullDeref_ExternalCallReturnIsNullable`（ND-08：外部调用返回）
+- `TestNullDeref_AddressOfReturnIsNotNullable`（`&x` 取地址仍判非空，防精度回退）
+
 ## [0.7.2] - 2026-09-16
 
 > 0.7.2 紧急修复：生产环境验证发现 null-deref 致命漏报。

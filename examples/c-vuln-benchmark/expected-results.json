@@ -3,7 +3,7 @@
   "_benchmark_doc": "benchmark.md",
   "_validator": "scripts/validate-benchmark.py",
   "summary": {
-    "total_test_cases": 124,
+    "total_test_cases": 125,
     "phase0_test_cases": 18,
     "phase1_test_cases": 12,
     "phase2_test_cases": 4,
@@ -13,7 +13,7 @@
     "phase6_resource_leak_finding": 9,
     "phase6_resource_leak_no_finding": 3,
     "phase6_resource_leak_known_gaps": 3,
-    "expected_final_certified": 75,
+    "expected_final_certified": 76,
     "expected_no_finding": 49,
     "phase1_confirmed": 9,
     "phase1_safe_excluded": 3,
@@ -43,7 +43,7 @@
     "phase12_memory_leak": 2,
     "phase12_resource_leak": 2,
     "phase12_signal_handler": 1,
-    "phase12_null_deref": 1
+    "phase12_null_deref": 2
   },
   "test_cases": [
     {
@@ -1163,6 +1163,16 @@
       "file": "src/p5_null_flow.c",
       "line": 80,
       "code": "getter 返回全局结构体字段（NULL 初始化），调用方未判空即解引用 —— exprReturnsNullable 必须把 field_expression 判为可能为空",
+      "cwe": "CWE-476",
+      "detector": "null_deref",
+      "expect": "finding"
+    },
+    {
+      "id": "ND-08",
+      "category": "phase12_v071_fixes",
+      "file": "src/p5_null_flow.c",
+      "line": 97,
+      "code": "getter 返回外部函数（声明未定义）的调用结果，调用方未判空即解引用 —— return 外部调用按开放世界 fail-open",
       "cwe": "CWE-476",
       "detector": "null_deref",
       "expect": "finding"

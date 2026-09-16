@@ -1157,29 +1157,32 @@ func callResultNullSources(body parser.Node, retNullable map[string]bool) []null
 
 // returnsNullable reports whether body can return a possibly-null pointer: a
 // NULL literal, an allocator call, a pointer parameter, a variable with a
-// reaching may-null source, or a call to another possibly-null-returning
-// function.
-func returnsNullable(body parser.Node, flow *flowResult, params map[string]int, retNullable map[string]bool) bool {
+// reaching may-null source, a field/subscript read, a deref, a call to another
+// possibly-null-returning function, or an external call (open world).
+func returnsNullable(body parser.Node, flow *flowResult, params map[string]int, retNullable map[string]bool, definedNames map[string]bool) bool {
 	for _, ret := range body.FindAll("return_statement") {
 		children := ret.NamedChildren()
 		if len(children) == 0 {
 			continue
 		}
-		if exprReturnsNullable(children[0], flow, params, retNullable, ret.StartLine()) {
+		if exprReturnsNullable(children[0], flow, params, retNullable, definedNames, ret.StartLine()) {
 			return true
 		}
 	}
 	return false
 }
 
-func exprReturnsNullable(expr parser.Node, flow *flowResult, params map[string]int, retNullable map[string]bool, line int) bool {
+func exprReturnsNullable(expr parser.Node, flow *flowResult, params map[string]int, retNullable map[string]bool, definedNames map[string]bool, line int) bool {
 	if isNullLiteralExpr(expr.Text()) {
 		return true
 	}
 	switch expr.Kind() {
-	case "number_literal", "char_literal", "true", "false", "sizeof_expression":
-		// A non-pointer literal cannot yield a NULL pointer.
+	case "number_literal", "char_literal", "string_literal", "true", "false", "sizeof_expression":
+		// Non-pointer scalars and string literals (static storage) are non-null.
 		return false
+	case "pointer_expression":
+		// `&x` is an address (always non-null); `*p` is a deref (possibly null).
+		return !strings.HasPrefix(strings.TrimSpace(expr.Text()), "&")
 	case "identifier":
 		if _, isParam := params[expr.Text()]; isParam {
 			return true
@@ -1187,19 +1190,25 @@ func exprReturnsNullable(expr parser.Node, flow *flowResult, params map[string]i
 		return flow != nil && flow.reaching(expr.Text(), line)
 	case "cast_expression", "parenthesized_expression":
 		for _, c := range expr.NamedChildren() {
-			if exprReturnsNullable(c, flow, params, retNullable, line) {
+			if exprReturnsNullable(c, flow, params, retNullable, definedNames, line) {
 				return true
 			}
 		}
 		return false
+	case "call_expression":
+		name := callName(expr)
+		if isAllocatorCall(name) {
+			return true
+		}
+		if definedNames[name] {
+			return retNullable[name] // defined in-scan: resolve via the fixpoint
+		}
+		return true // external/unknown callee: fail-open (open world)
 	}
-	// call_expression (allocator or another callee), field/subscript (a pointer
-	// member read, e.g. `return g_space.shell_conf` where the field is NULL-
-	// initialized), pointer/unary/conditional/binary — all may yield a pointer and
+	// field_expression (e.g. `return g_space.shell_conf`, NULL-initialized),
+	// subscript_expression, conditional/binary/unary — all may yield a pointer and
 	// therefore may be NULL. Conservative (fail-open): an unknown return
-	// expression is treated as possibly-null, never assumed non-null. This is the
-	// production null-deref false negative where a getter returned a global struct
-	// field that was NULL at startup.
+	// expression is treated as possibly-null, never assumed non-null.
 	return true
 }
 
