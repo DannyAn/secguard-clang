@@ -292,6 +292,7 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 	}
 
 	var candidates []Candidate
+	droppedByCategory := 0
 	for _, e := range events {
 		props := parseEventProps(e.Properties)
 
@@ -320,6 +321,7 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 		// analysis. Fall back to the expression only for display/dedup of
 		// types that carry no variable (e.g. integer-overflow, format-string).
 		if len(spec.Categories) > 0 && !containsString(spec.Categories, props.Category) {
+			droppedByCategory++
 			continue
 		}
 
@@ -363,6 +365,16 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			DeclLine:       props.DeclLine,
 			Origin:         props.Origin,
 		})
+	}
+
+	// A detector/registry category-string drift is otherwise silent: the events
+	// exist, but the Categories filter drops every one and the type reads "0
+	// candidates" as if the detector had emitted nothing. Surface that specific
+	// signature so the drift is visible in the scan log instead of a phantom
+	// zero-candidate type.
+	if p.logger != nil && len(events) > 0 && len(candidates) == 0 && droppedByCategory > 0 {
+		p.logger.Warn("category filter dropped all seed events",
+			"vuln_type", spec.Name, "events", len(events), "categories", spec.Categories)
 	}
 
 	return candidates, nil

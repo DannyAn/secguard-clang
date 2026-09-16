@@ -56,9 +56,15 @@ func setupBenchmarkData(s *mockStore) {
 	insertBufferEvent(p0Func2, 65, "execve", "command_injection")
 	insertBufferEvent(p0Func3, 94, "sqlite3_prepare_v2", "sql_injection")
 
-	insertBufferEvent(p1Func, 24, "SafeCopy_copy", "buffer_overflow")
-	insertBufferEvent(p1Func, 31, "SafeCopy_strcpy", "buffer_overflow")
-	insertBufferEvent(p1Func2, 38, "SafeQuery_exec", "command_injection")
+	// P1 safe wrappers: the containing function IS the project wrapper, and its
+	// body makes an internal unsafe call (memcpy/sprintf) the detector attributes
+	// to the wrapper function (FunctionName), not to the called API (APIName).
+	wrapperCopy, _ := s.InsertFunction(ctx, &db.Function{FileID: fileID, Name: "SafeCopy_copy", StartLine: 141, EndLine: 150})
+	wrapperStrCpy, _ := s.InsertFunction(ctx, &db.Function{FileID: fileID, Name: "SafeCopy_strcpy", StartLine: 151, EndLine: 160})
+	wrapperQuery, _ := s.InsertFunction(ctx, &db.Function{FileID: fileID, Name: "SafeQuery_exec", StartLine: 161, EndLine: 170})
+	insertBufferEvent(wrapperCopy, 24, "memcpy", "buffer_overflow")
+	insertBufferEvent(wrapperStrCpy, 31, "memcpy", "buffer_overflow")
+	insertBufferEvent(wrapperQuery, 38, "sprintf", "command_injection")
 
 	insertBufferEvent(p2Func, 28, "memcpy", "buffer_overflow")
 	insertBufferEvent(p2Func, 41, "memcpy", "buffer_overflow")
@@ -71,7 +77,7 @@ func setupBenchmarkData(s *mockStore) {
 	insertBufferEvent(tpFunc, 62, "memcpy", "buffer_overflow")
 	insertBufferEvent(tpFunc2, 53, "sprintf", "sql_injection")
 
-	for _, fid := range []int64{p0Func, p0Func2, p0Func3, p1Func, p1Func2, p2Func, p2Func2, p2Func3, p3Func, p3Func2, tpFunc, tpFunc2} {
+	for _, fid := range []int64{p0Func, p0Func2, p0Func3, p1Func, p1Func2, wrapperCopy, wrapperStrCpy, wrapperQuery, p2Func, p2Func2, p2Func3, p3Func, p3Func2, tpFunc, tpFunc2} {
 		node, _ := s.GetOrCreateGraphNode(ctx, "function", fid, "")
 		entryNode, _ := s.GetOrCreateGraphNode(ctx, "function", 0, `{"entry":true}`)
 		s.InsertGraphEdge(ctx, &db.GraphEdge{SrcID: entryNode, DstID: node, EdgeType: "CALL"})
@@ -144,23 +150,31 @@ func TestBenchmark_SafeFunctionFilter(t *testing.T) {
 	}
 }
 
-// TestSafeFunctionFilter_VariableNameNotDropped pins the P3 fix: for types whose
-// VariableName carries the CALLED function name (signal-handler, dangerous-function),
-// a coincidence with the safe-API list (e.g. a handler calling strncpy) must not
-// drop the candidate. Only APIName / FunctionName are safety signals.
-func TestSafeFunctionFilter_VariableNameNotDropped(t *testing.T) {
+// TestSafeFunctionFilter_NameCoincidenceNotDropped pins the P3 fix: neither a
+// VariableName nor a containing FunctionName that merely COINCIDES with a
+// safe-API list entry may drop the candidate. For signal-handler /
+// dangerous-function the variable field is the called function name; a containing
+// function named like a libc safe API (e.g. a user's own `strncpy`) is not that
+// libc function. Only APIName (the called API) and the curated SafeWrappers list
+// are safety signals.
+func TestSafeFunctionFilter_NameCoincidenceNotDropped(t *testing.T) {
 	ctx := context.Background()
 	s := newMockStore()
 	setupBenchmarkData(s)
 
-	c := Candidate{VariableName: "strncpy"} // strncpy IS in apikb.SafeFunctions
-	kept, dropped, err := NewSafeFunctionFilter(s).Apply(ctx, []Candidate{c})
-	if err != nil {
-		t.Fatalf("filter failed: %v", err)
-	}
-	if len(kept) != 1 || len(dropped) != 0 {
-		t.Errorf("candidate with VariableName=%q (a safe-function name coincidence) must be kept, got kept=%d dropped=%d",
-			c.VariableName, len(kept), len(dropped))
+	for _, c := range []Candidate{
+		{VariableName: "strncpy"}, // signal-handler: variable == called function
+		{FunctionName: "strncpy"}, // containing function named like libc strncpy
+		{VariableName: "execve"},  // another safe-API coincidence
+	} {
+		kept, dropped, err := NewSafeFunctionFilter(s).Apply(ctx, []Candidate{c})
+		if err != nil {
+			t.Fatalf("filter failed: %v", err)
+		}
+		if len(kept) != 1 || len(dropped) != 0 {
+			t.Errorf("candidate %+v (a safe-function name coincidence) must be kept, got kept=%d dropped=%d",
+				c, len(kept), len(dropped))
+		}
 	}
 }
 
@@ -197,15 +211,18 @@ func toCandidates(events []*db.SecurityEvent, s *mockStore, ctx context.Context)
 			Variable string `json:"variable"`
 		}
 		json.Unmarshal([]byte(e.Properties), &props)
-		name := props.Variable
-		if name == "" {
-			name = props.Function
+		// Mirror seedCandidatesByType: FunctionName = the containing function
+		// (looked up by EntityID), APIName = the called API (props.Function).
+		funcName := ""
+		if fn, err := s.GetFunctionByID(ctx, e.EntityID); err == nil && fn != nil {
+			funcName = fn.Name
 		}
 		candidates = append(candidates, Candidate{
 			DerefEventID: e.ID,
 			FunctionID:   e.EntityID,
-			FunctionName: props.Function,
-			VariableName: name,
+			FunctionName: funcName,
+			VariableName: props.Variable,
+			APIName:      props.Function,
 			LocationID:   e.LocationID,
 		})
 	}

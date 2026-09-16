@@ -14,7 +14,9 @@
 - **`CallReachFilter` fail-open**：函数无 graph node（构建失败/增量索引过期）时保留候选，不再误标"不可达"。
 - **resource-leak 白名单补 `mmap`/`munmap`**：映射泄漏此前因 "open"/"create" 子串不命中而漏报。
 - **finding UPSERT key 加入 `variable`**：同 (scan, rule, file, line, function) 的不同变量现在是两条 finding，不再后者覆盖前者（含索引迁移与 `distinctFindingLocations` 同步）。
-- **`SafeFunctionFilter` 不再按变量名匹配**：signal-handler/dangerous-function 的 variable 字段就是被调用函数名，与安全名单同名（如 `strncpy`）曾整条误杀。
+- **`SafeFunctionFilter` 不再按变量名/函数名巧合匹配**：signal-handler/dangerous-function 的 variable 字段就是被调用函数名，与安全名单同名（如 `strncpy`）曾整条误杀；且一个**与 libc 安全 API 同名的用户函数**（如自实现的 `strncpy`）也不再被当成安全函数整函数豁免——只有 `IsSafeFunction(APIName)`（被调 API）与 `IsSafeWrapper(FunctionName)`（本项目 curated 包装）两个信号。
+- **`NonNullableFilter` 的 non-nullable 数组按函数作用域收集**：一个函数里的局部数组 `char buf[16]` 不再把另一个函数里同名**指针** `buf` 误判为非空——那是 null-deref 的静默漏报（P5）。
+- **category 过滤静默丢弃加告警**：detector 发的事件 category 与 registry `spec.Categories` 漂移导致"整类型种子全丢"时，现在会在 scan log 打 warning（此前表现为"0 candidate"且无任何解释）（P2）。
 
 ### AI 研判规则：拿不准先读源码（召回侧，二元裁决保持）
 
@@ -24,7 +26,12 @@
 
 ### 基准（Phase 12，+5 用例）
 
-- `ML-03`（错误路径 return p）、`ML-04`（覆盖指针丢分配）、`RL-15`（括号错误返回）、`RL-16`（mmap 泄漏）、`SH-06`（处理器内 strncpy 变量名巧合），全部 `expect: finding`，锁定上述修复。配套确定性单测 `TestResourceLeak_ParenthesizedErrorReturnIsLeak`、`TestSafeFunctionFilter_VariableNameNotDropped`。
+- `ML-03`（错误路径 return p）、`ML-04`（覆盖指针丢分配）、`RL-15`（括号错误返回）、`RL-16`（mmap 泄漏）、`SH-06`（处理器内 strncpy 变量名巧合），全部 `expect: finding`，锁定上述修复。配套确定性单测 `TestResourceLeak_ParenthesizedErrorReturnIsLeak`、`TestSafeFunctionFilter_VariableNameNotDropped`、`TestNullDeref_NonNullableScopedToFunction`（fixture `tc115_non_nullable_scope.c`）。
+
+### 已评估、未改（记录结论，供后续追溯）
+
+- **P1（dereference.go 的 bounds 抑制）**：`NonZeroAt` 是保守的 must-analysis——只在正向守卫（`x != NULL`/`x > 0`/`x`）或早退守卫（`x == NULL → return`）下判定非零，且任一"可能为 0"的重赋值都会杀死该事实。方向是**欠近似**（只会漏判非零 → 误报，不会漏报）。唯一一处窄过近似是"重赋值守卫"`if (x==0) x=1;` 不检查 else 分支，但该形态人为构造、现实罕见，故不改。
+- **P4（injection ConvergeKey 合并）**：key 为 `FileID:FunctionName:Category:VariableName`；报告举例 `sprintf`(sql_injection) vs `system`(command_injection) 是**不同 category，本就不合并**。同 category 同变量的两个 sink（如 `system` + `popen` 同 buffer）确会合并，但那是"同一被污染变量流入命令执行"的同一根因，合并是合理收敛，不改。
 
 ## [0.7.0] - 2026-09-14
 

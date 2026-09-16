@@ -35,17 +35,20 @@ func (f *SafeFunctionFilter) Apply(ctx context.Context, candidates []Candidate) 
 			continue
 		}
 		reason := ""
-		// Project safe wrapper: match on the containing function name.
+		// Project safe wrapper: match on the containing function name (a curated
+		// list of THIS project's own framework entry points, e.g. SafeCopy_copy).
 		if apikb.IsSafeWrapper(c.FunctionName) {
 			reason = fmt.Sprintf("function %s is a safe wrapper", c.FunctionName)
-		} else if apikb.IsSafeFunction(c.APIName) ||
-			apikb.IsSafeFunction(c.FunctionName) {
+		} else if apikb.IsSafeFunction(c.APIName) {
 			reason = fmt.Sprintf("API %s is a known-safe function", c.APIName)
 		}
-		// NOTE: c.VariableName is deliberately NOT checked against
-		// IsSafeFunction. For signal-handler / dangerous-function the variable
-		// field carries the CALLED function name (e.g. `execve`), and a name
-		// coincidence with a "safe" list entry would silently drop the candidate.
+		// NOTE: c.VariableName and c.FunctionName are deliberately NOT checked
+		// against IsSafeFunction. For signal-handler / dangerous-function the
+		// variable field carries the CALLED function name; and a containing
+		// function merely NAMED like a libc safe API (e.g. a user's own `strncpy`)
+		// is not the libc function — both are name coincidences that would
+		// silently drop a candidate. Only the curated IsSafeWrapper list may
+		// exempt a whole function.
 		if reason != "" {
 			dropped = dismiss(dropped, c, f.Name(), reason)
 			continue

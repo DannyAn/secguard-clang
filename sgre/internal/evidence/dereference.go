@@ -24,9 +24,6 @@ func (d *DereferenceDetector) Detect(ctx context.Context) (DetectResult, error) 
 	result := DetectResult{}
 
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
-		// Precompute the non-nullable-array set ONCE per file; the previous
-		// code ran root.FindAll per dereference node (O(nodes) traversals).
-		nonNullable := collectNonNullableArrays(root)
 		allIfs := root.FindAll("if_statement")
 		allAssigns := root.FindAll("assignment_expression")
 
@@ -46,6 +43,9 @@ func (d *DereferenceDetector) Detect(ctx context.Context) (DetectResult, error) 
 		binaryNodes := root.FindAll("binary_expression")
 
 		for _, f := range funcs {
+			// Non-nullable arrays are scoped to f so a same-named pointer in a
+			// sibling function is not wrongly suppressed (P5).
+			nonNullable := collectNonNullableArrays(root, f)
 			bounds := AnalyzeBounds(IfsInFunc(allIfs, f.StartLine, f.EndLine), assignsInFunc(allAssigns, f.StartLine, f.EndLine))
 			d.detectMemberAccess(ctx, f, file, memberNodes, nonNullable, bounds, &result)
 			d.detectMemberAccessInErrors(ctx, f, file, errorNodes, nonNullable, bounds, &result)
@@ -194,12 +194,19 @@ func (d *DereferenceDetector) insertDerefEvent(ctx context.Context, f *db.Functi
 	}
 }
 
-// collectNonNullableArrays returns the set of array variable names in the file
-// that are NOT function parameters (so they are definitely non-null). It runs
-// the two traversals ONCE per file instead of once per dereference node.
-func collectNonNullableArrays(root parser.Node) map[string]bool {
+// collectNonNullableArrays returns the set of array variable names that are
+// DEFINITELY non-null at a dereference inside function f: file-scope arrays
+// (globals) and arrays declared inside f, minus f's own parameters. The previous
+// file-scoped-by-name version let a local array in one function mark a same-named
+// pointer in another function as non-nullable (a silent null-deref false
+// negative), and a same-named array parameter wrongly cleared another function's
+// real array (a false positive). Scoping to f fixes both directions.
+func collectNonNullableArrays(root parser.Node, f *db.Function) map[string]bool {
 	params := make(map[string]bool)
 	for _, param := range root.FindAll("parameter_declaration") {
+		if !funcLineRange(f, param.StartLine()) {
+			continue // only f's own parameters can be nullable here
+		}
 		for _, child := range param.NamedChildren() {
 			if child.Kind() == "identifier" {
 				params[child.Text()] = true
@@ -211,6 +218,11 @@ func collectNonNullableArrays(root parser.Node) map[string]bool {
 	}
 	arrays := make(map[string]bool)
 	for _, decl := range root.FindAll("declaration") {
+		// Keep f's locals and file-scope globals; skip a declaration that is
+		// local to some OTHER function (its name must not leak into f).
+		if !funcLineRange(f, decl.StartLine()) && insideFunctionBody(decl) {
+			continue
+		}
 		for _, ad := range decl.FindAll("array_declarator") {
 			if n := extractDeclaratorName(ad); n != "" {
 				arrays[n] = true
@@ -221,6 +233,18 @@ func collectNonNullableArrays(root parser.Node) map[string]bool {
 		delete(arrays, name)
 	}
 	return arrays
+}
+
+// insideFunctionBody reports whether node sits (transitively) inside a
+// function_definition, i.e. it is a function-local declaration rather than a
+// file-scope (global) declaration.
+func insideFunctionBody(node parser.Node) bool {
+	for p := node.Parent(); p != nil; p = p.Parent() {
+		if p.Kind() == "function_definition" {
+			return true
+		}
+	}
+	return false
 }
 
 // isInsideTypeExpr reports whether node sits lexically inside a sizeof or
