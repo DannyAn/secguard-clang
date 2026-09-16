@@ -162,6 +162,23 @@ func TestResourceLeak_MmapIsResource(t *testing.T) {
 	}
 }
 
+// TestResourceLeak_PipeArrayFds pins the pipe/socketpair fix: `pipe(fds)` writes
+// TWO fds into an out-param array; each element is a resource that must be
+// closed. pipe_leak reports two leaked fds; pipe_closed reports none.
+func TestResourceLeak_PipeArrayFds(t *testing.T) {
+	store := runIndexAndDetect(t, "tc117_resleak_pipe.c")
+	acquireByFunc, releaseByFunc := countEventsByFunction(t, store, "RESOURCE_ACQUIRE", "RESOURCE_RELEASE")
+
+	if acquireByFunc["pipe_leak"] != 2 || releaseByFunc["pipe_leak"] != 0 {
+		t.Errorf("pipe_leak: got %d acquire / %d release, want 2 acquire / 0 release (both fds leaked)",
+			acquireByFunc["pipe_leak"], releaseByFunc["pipe_leak"])
+	}
+	if acquireByFunc["pipe_closed"] != 2 || releaseByFunc["pipe_closed"] != 2 {
+		t.Errorf("pipe_closed: got %d acquire / %d release, want 2 acquire / 2 release",
+			acquireByFunc["pipe_closed"], releaseByFunc["pipe_closed"])
+	}
+}
+
 // TestResourceLeak_OverwrittenHandle locks in the lost-resource fix: `fd = open();
 // fd = open();` is TWO acquisitions, and the first is lost even when the second
 // is later closed (`... close(fd)` must still report one leak).

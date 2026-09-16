@@ -198,15 +198,29 @@ func extractFunction(node parser.Node, fileID int64) *db.Function {
 		EndLine:   node.EndLine(),
 	}
 
+	isPointer := false
 	for _, child := range node.NamedChildren() {
 		switch child.Kind() {
-		case "primitive_type", "type_identifier", "sized_type_specifier":
-			if fn.ReturnType == "" {
-				fn.ReturnType = child.Text()
+		case "primitive_type", "type_identifier", "sized_type_specifier",
+			"struct_specifier", "union_specifier", "enum_specifier":
+			// Take the LAST type specifier, not the first: a function attribute
+			// macro in return position (`NO_HCFI uint32_t f(...)`) parses the
+			// macro as an extra type_identifier, and storing the first one would
+			// record "NO_HCFI" instead of "uint32_t".
+			fn.ReturnType = child.Text()
+		case "ERROR":
+			// tree-sitter recovers `NO_HCFI uint32_t f(...)` by putting the REAL
+			// type (`uint32_t`) into an ERROR node after the macro (which it
+			// misparsed as a type_identifier). Recover the type from there.
+			if t := lastIdentifierInError(child); t != "" {
+				fn.ReturnType = t
 			}
 		case "function_declarator":
 			extractDeclarator(child, fn)
 		case "pointer_declarator":
+			// The declarator carries `*`: the return type is a pointer. Record it
+			// so `char *`/`T *` is never mistaken for the scalar `char`/`T`.
+			isPointer = true
 			for _, grandchild := range child.NamedChildren() {
 				if grandchild.Kind() == "function_declarator" {
 					extractDeclarator(grandchild, fn)
@@ -219,7 +233,25 @@ func extractFunction(node parser.Node, fileID int64) *db.Function {
 		}
 	}
 
+	if isPointer {
+		fn.ReturnType += "*"
+	}
+
 	return fn
+}
+
+// lastIdentifierInError returns the last identifier-like token inside an ERROR
+// node — the real return type that tree-sitter recovered after misparsing a
+// function-attribute macro (`NO_HCFI`) as a type_identifier.
+func lastIdentifierInError(err parser.Node) string {
+	var last string
+	for _, c := range err.NamedChildren() {
+		switch c.Kind() {
+		case "identifier", "type_identifier", "primitive_type", "sized_type_specifier":
+			last = c.Text()
+		}
+	}
+	return last
 }
 
 func extractDeclarator(node parser.Node, fn *db.Function) {

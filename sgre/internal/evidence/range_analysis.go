@@ -150,13 +150,15 @@ func AnalyzeBounds(ifs, assigns []parser.Node) *RangeFacts {
 		// Reassignment guard: `if (x == 0) x = <nonzero>;` / `if (!x) x = 1;`
 		// leaves x non-zero on the fall-through as well (the then-branch assigns
 		// a non-zero literal, every other path already had x != 0). Equivalent to
-		// the early-return guard for non-zero-ness.
+		// the early-return guard for non-zero-ness. An else branch that reassigns
+		// x to a possibly-zero value breaks the invariant (`if (x==0) x=1;
+		// else x=0;`), so the fact is NOT established then.
 		if cons != nil {
-			if m := reEqZero.FindStringSubmatch(ct); m != nil && consequenceAssignsNonZero(*cons, m[1]) {
+			if m := reEqZero.FindStringSubmatch(ct); m != nil && consequenceAssignsNonZero(*cons, m[1]) && !elseAssignsPossiblyZero(ifStmt, m[1]) {
 				r.nonZeroAfter[m[1]] = append(r.nonZeroAfter[m[1]], end)
 				continue
 			}
-			if m := reNot.FindStringSubmatch(ct); m != nil && consequenceAssignsNonZero(*cons, m[1]) {
+			if m := reNot.FindStringSubmatch(ct); m != nil && consequenceAssignsNonZero(*cons, m[1]) && !elseAssignsPossiblyZero(ifStmt, m[1]) {
 				r.nonZeroAfter[m[1]] = append(r.nonZeroAfter[m[1]], end)
 				continue
 			}
@@ -179,6 +181,27 @@ func AnalyzeBounds(ifs, assigns []parser.Node) *RangeFacts {
 		}
 	}
 	return r
+}
+
+// elseAssignsPossiblyZero reports whether the ELSE branch of an if assigns
+// varName a possibly-zero value. Such an else breaks the reassignment-guard
+// invariant (`if (x==0) x=1; else x=0;` leaves x possibly-zero on the fall-
+// through), so the nonZeroAfter fact must not be established.
+func elseAssignsPossiblyZero(ifStmt parser.Node, varName string) bool {
+	alt := ifStmt.ChildByFieldName("alternative")
+	if alt == nil {
+		return false
+	}
+	for _, assign := range alt.FindAll("assignment_expression") {
+		named := assign.NamedChildren()
+		if len(named) < 2 || strings.TrimSpace(named[0].Text()) != varName {
+			continue
+		}
+		if possiblyZeroDivisor(named[1].Text()) {
+			return true
+		}
+	}
+	return false
 }
 
 // consequenceAssignsNonZero reports whether an if-consequence body assigns the

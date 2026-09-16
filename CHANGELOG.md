@@ -20,11 +20,19 @@
 
 | 项 | 结论 |
 |---|---|
-| p0「未知默认非空」 | 已根治：`exprReturnsNullable` 全面 fail-open（见上） |
-| p1「computeRetNullable 深度不足」 | 已根治：field/subscript/deref/外部调用 均识别 |
-| p2「return_type 解析丢 `*`/存宏名」 | **评估后不改**：`*` 丢失是已知且已补偿的（`neverNullReturnTypes` 故意排除 `char`/typedef，对"可能是 `T*`"fail-open）；`NO_HCFI` 宏前缀只影响元数据、null-deref 链读函数体不读 `return_type`，与本漏报无因果 |
-| p3「variables 表为空」 | **评估后不改**：设计遗留（null-deref 链用流分析，不消费 variables 表），非缺陷 |
-| function_summary 覆盖率 10.5% | **属预期**：`function_summary.return_nullable` 只是"字面 `return NULL`"的**种子**，真正的分析是 planner 的 `computeRetNullable` 定点；覆盖率低是因为种子稀疏，不影响定点收敛 |
+| p0「未知默认非空」 | ✅ 已根治：`exprReturnsNullable` 全面 fail-open（见上） |
+| p1「computeRetNullable 深度不足」 | ✅ 已根治：field/subscript/deref/外部调用 均识别 |
+| p2「return_type 解析丢 `*`/存宏名」 | ✅ **已修复**：`extractFunction` 现在（a）对 `NO_HCFI uint32_t f()` 这种宏前缀，从 ERROR 节点恢复真实返回类型 `uint32_t`；（b）`pointer_declarator` 时给 return_type 追加 `*`，`char *`/`T *` 不再与标量 `char`/`T` 混淆（`TestIndexer_ReturnTypeMacroPrefixAndPointer`） |
+| p3「variables 表为空」 | ✅ **闭环（非缺陷）**：`variables` 表是 schema/CRUD 里未被任何 detector/planner 消费的**遗留死表**——null-deref 链的数据源是 `null_flow.go` 的流分析 + `function_summary` 种子，不依赖 variables 表；GLM 报告"过滤器完全依赖 function_summary"是对架构的误读。无需填充 |
+| function_summary 覆盖率 10.5% | ✅ **属预期**：`function_summary.return_nullable` 只是"字面 `return NULL`"的**种子**，真正的分析是 planner 的 `computeRetNullable` 定点；覆盖率低是因为种子稀疏，不影响定点收敛 |
+
+### 同期闭环的其余遗留项（本轮一并收口，无遗留）
+
+| 项 | 结论 |
+|---|---|
+| C5「pipe/socketpair fd 泄漏」 | ✅ **已修复**：`pipe(fds)`/`socketpair(fds)` 的 out-param 数组形态现在把 `fds[0]`、`fds[1]` 各记为独立资源，`close(fds[0])`/`close(fds[1])` 逐个匹配释放（`TestResourceLeak_PipeArrayFds`，fixture `tc117`） |
+| P1「bounds 抑制的 else 分支过近似」 | ✅ **已修复**：重赋值守卫 `if (x==0) x=1;` 现在检查 else 分支——`else x=0` 会破坏"非零"不变量，不再建立 `nonZeroAfter`（`TestAnalyzeBounds_ElseBranchReassignKillsNonZero`） |
+| P4「injection ConvergeKey 注释误导」 | ✅ **已修正**：注释改为如实说明"同 category 同变量的双 sink 是同一 tainted 变量、故意合并；不同 category/变量才分开" |
 
 ### 回归
 
@@ -51,8 +59,8 @@
 ### 备注（GLM 报告的其余根因，已评估）
 
 - 根因 #1（"过滤器对未知空值性默认非空"）是对机制的过度简化——实际是 `computeRetNullable` 的定点分析（不止 function_summary），缺口具体在 `exprReturnsNullable` 漏了 `field_expression`，已按上述修复。
-- 根因 #3（`NO_HCFI` 宏前缀导致 `functions.return_type` 存成宏名、丢失 `*`）：是索引元数据缺陷，但 **null-deref 过滤链不读 `return_type`**（读函数体），与本漏报无因果；留待后续单独处理。
-- 根因 #4（`variables` 表为空）：null-deref 过滤链用流分析而非 variables 表，属设计观察，不影响本缺陷。
+- 根因 #3（`NO_HCFI` 宏前缀导致 `functions.return_type` 存成宏名、丢失 `*`）：是索引元数据缺陷，已在 [Unreleased] 一并修复（`extractFunction` 从 ERROR 节点恢复真实类型 + 追加指针限定符）。
+- 根因 #4（`variables` 表为空）：null-deref 过滤链用流分析而非 variables 表；`variables` 表是遗留死表，已在 [Unreleased] 闭环为"非缺陷"。
 
 ## [0.7.1] - 2026-09-16
 

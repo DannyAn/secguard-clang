@@ -71,6 +71,47 @@ func TestIndexer_StaticFlag(t *testing.T) {
 	}
 }
 
+func TestIndexer_ReturnTypeMacroPrefixAndPointer(t *testing.T) {
+	s := db.NewTestStore(t)
+	idx := NewIndexer(s, testLogger())
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rt.c")
+	src := `#define NO_HCFI __attribute__((nohcfi))
+typedef unsigned int uint32_t;
+typedef struct { int x; } shell_config_t;
+
+NO_HCFI uint32_t set_detect_time(uint32_t t) { return t; }
+shell_config_t *get_shell_cfg(void) { return 0; }
+char *get_name(void) { return "x"; }
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+
+	funcs, err := s.ListFunctions(ctx)
+	if err != nil {
+		t.Fatalf("ListFunctions: %v", err)
+	}
+	byName := map[string]string{}
+	for _, f := range funcs {
+		byName[f.Name] = f.ReturnType
+	}
+	if byName["set_detect_time"] != "uint32_t" {
+		t.Errorf("set_detect_time return_type = %q, want %q (a macro prefix must not be stored as the type)", byName["set_detect_time"], "uint32_t")
+	}
+	if byName["get_shell_cfg"] != "shell_config_t*" {
+		t.Errorf("get_shell_cfg return_type = %q, want %q (pointer qualifier must be preserved)", byName["get_shell_cfg"], "shell_config_t*")
+	}
+	if byName["get_name"] != "char*" {
+		t.Errorf("get_name return_type = %q, want %q", byName["get_name"], "char*")
+	}
+}
+
 func TestIndexer_SkipsSyntaxErrors(t *testing.T) {
 	s := db.NewTestStore(t)
 	idx := NewIndexer(s, testLogger())

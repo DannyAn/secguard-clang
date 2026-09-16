@@ -6,6 +6,38 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
+// TestAnalyzeBounds_ElseBranchReassignKillsNonZero pins the P1 fix: the
+// reassignment guard `if (x == 0) x = 1;` establishes x non-zero on the
+// fall-through only when the else branch does NOT reassign x to a possibly-zero
+// value. `if (x==0) x=1; else x=0;` must NOT establish the fact.
+func TestAnalyzeBounds_ElseBranchReassignKillsNonZero(t *testing.T) {
+	p := parser.NewParser()
+	defer p.CloseAll()
+
+	src := `void f(int x) {
+    if (x == 0) x = 1; else x = 0;
+    use(x);
+}`
+	tree, err := p.Parse([]byte(src), "else.c")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	root := tree.RootNode()
+	bounds := AnalyzeBounds(root.FindAll("if_statement"), root.FindAll("assignment_expression"))
+	useLine := 0
+	for _, c := range root.FindAll("call_expression") {
+		if extractCallName(c) == "use" {
+			useLine = c.StartLine()
+		}
+	}
+	if useLine == 0 {
+		t.Fatal("use call not found")
+	}
+	if bounds.NonZeroAt("x", useLine) {
+		t.Errorf("x must NOT be established non-zero after `if (x==0) x=1; else x=0;` (else reassigns zero)")
+	}
+}
+
 // TestAnalyzeBounds_UpperBoundReassignKill locks in that a whole-variable
 // reassignment invalidates the upper bound a guard established: `if (n <= 16)`
 // bounds n at 16, but a later `n = 100` inside the body means memcpy(dst, src,

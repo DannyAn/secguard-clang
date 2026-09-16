@@ -303,9 +303,12 @@ func init() {
 		DefaultSuspicion: "suspected",
 		FilterChain:      "injection",
 		ConvergeKey: func(c Candidate) string {
-			// Key on the sink/source variable (or the expression text as fallback)
-			// so sprintf(source) + sqlite3_exec(sink) sharing one buffer merge, but
-			// two independent sinks in the same function stay distinct findings.
+			// Key on (function, category, variable) so sprintf(source) +
+			// sqlite3_exec(sink) sharing one buffer merge into one finding — the
+			// same tainted variable is one root cause. Two sinks with DIFFERENT
+			// categories (command_injection vs sql_injection) or different
+			// variables stay distinct; two sinks with the SAME category and
+			// variable deliberately collapse (same taint → same defect).
 			return fmt.Sprintf("injection:%d:%s:%s:%s", c.FileID, c.FunctionName, c.Category, c.VariableName)
 		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {

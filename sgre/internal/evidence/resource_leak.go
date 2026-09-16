@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -136,6 +137,15 @@ var outParamAcquirers = map[string]bool{
 	"RegCreateKeyExW": true,
 	"RegOpenKeyExA":   true,
 	"RegOpenKeyExW":   true,
+}
+
+// pipeFactories are fd factories that write TWO fds into an out-param ARRAY
+// (`pipe(fds)` → fds[0], fds[1]). The return value is an error code, not a
+// handle, so findAcquires records each array element as a separate resource.
+var pipeFactories = map[string]bool{
+	"pipe":       true,
+	"pipe2":      true,
+	"socketpair": true,
 }
 
 func isResourceAcquirer(name string) bool {
@@ -301,6 +311,27 @@ func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function,
 				}
 			}
 		}
+		// pipe/pipe2/socketpair write TWO fds into an out-param ARRAY
+		// (`pipe(fds)` → fds[0], fds[1]); the return value is an error code, not a
+		// handle. Record each array element as its own acquired resource so a
+		// `close(fds[0])`/`close(fds[1])` release matches one element, not the
+		// whole array.
+		if pipeFactories[callName] {
+			for _, child := range call.NamedChildren() {
+				if child.Kind() != "argument_list" {
+					continue
+				}
+				args := child.NamedChildren()
+				if len(args) == 0 || args[0].Kind() != "identifier" {
+					continue
+				}
+				base := args[0].Text()
+				for idx := 0; idx < 2; idx++ {
+					key := fmt.Sprintf("%s[%d]", base, idx)
+					acquires[key] = append(acquires[key], call.StartLine())
+				}
+			}
+		}
 	}
 
 	// An "open"-named call that actually returns an error code (e.g.
@@ -373,6 +404,11 @@ func (d *ResourceLeakDetector) findReleases(ctx context.Context, f *db.Function,
 						releases[strings.TrimPrefix(argText, "&")] = append(releases[strings.TrimPrefix(argText, "&")], call.StartLine())
 					}
 					if arg.Kind() == "identifier" {
+						releases[argText] = append(releases[argText], call.StartLine())
+					}
+					// `close(fds[0])` releases the pipe element, matching the
+					// subscript key findAcquires recorded for pipe/socketpair.
+					if arg.Kind() == "subscript_expression" {
 						releases[argText] = append(releases[argText], call.StartLine())
 					}
 				}
