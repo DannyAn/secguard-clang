@@ -54,6 +54,11 @@ v0.7.3 prepare 后生产验证发现：`p = get_shell_cfg(); p->field` 已解决
 - `TestNullDeref_CallResultDirectDerefStar`（ND-10：`*f()` 直接解引用）
 - `TestNullDeref_CallResultDirectDerefSubscript`（ND-11：`f()[i]` 直接解引用）
 - `TestNullDeref_CallResultDirectDerefAddressOfNotNullable`（`&x` 返回值直接解引用仍判非空，防精度回退）
+- `TestNullDeref_CallResultDirectDerefExternal`（**开放世界补漏**：直接解引用外部函数返回值 `external_getter()->x` 也 fail-open，见下）
+
+### 直接解引用的开放世界补漏（对上一提交的修正）
+
+上一提交对"直接解引用返回值"用 `retNullable[callee]` 判定，但 `retNullable` 只收录**扫描内已定义**的函数——外部函数（声明未定义）永远不在其中，`retNullable[callee]=false` 会把 `external_getter()->x` 这类**外部调用直接解引用**误判为"非空"而丢弃（封闭世界）。本轮把 `definedNames`（扫描内已定义函数名）一并透传：`definedNames[callee]` 为真才按 `retNullable` 精确判定；为假（外部）则 fail-open 判 suspected，交 AI 研判。
 
 ## [0.7.2] - 2026-09-16
 

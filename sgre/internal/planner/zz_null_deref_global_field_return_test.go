@@ -233,3 +233,23 @@ void use_nonnull(void) {
 		t.Errorf("use_nonnull must NOT be flagged (get_nonnull_cfg returns &g_config, always non-null); candidates=%v", candidateNames(result))
 	}
 }
+
+// TestNullDeref_CallResultDirectDerefExternal pins the open-world side of the
+// direct-deref fix: dereferencing the result of an EXTERNAL (declared but
+// undefined) function is possibly-null, so it must be reported — not dropped as
+// "callee does not return nullable".
+func TestNullDeref_CallResultDirectDerefExternal(t *testing.T) {
+	src := `typedef struct { int x; } cfg_t;
+
+cfg_t *external_get_cfg(void);
+
+void use_external(void) {
+    int x = external_get_cfg()->x;
+    (void)x;
+}
+`
+	result := planNullDerefSrc(t, src)
+	if !hasNullDerefCandidate(result, "use_external") {
+		t.Errorf("use_external null-deref (direct deref of external_get_cfg()->x, open world) was missed; candidates=%v", candidateNames(result))
+	}
+}

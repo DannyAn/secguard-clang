@@ -55,7 +55,7 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 		byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
 	}
 
-	flowResults, retNullable := f.buildFlowResults(ctx, byFunc, models)
+	flowResults, retNullable, definedNames := f.buildFlowResults(ctx, byFunc, models)
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -68,11 +68,12 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 		// A direct dereference of a function-call result (`f()->field`, `*f()`,
 		// `f()[i]`) has no tracked variable, so the per-variable reaching
 		// analysis below cannot resolve it. Consult the inter-procedural
-		// retNullable set instead: the callee can return NULL → the deref is
-		// possibly-null (suspected, for the AI to reason about); otherwise it
-		// is provably non-null and dropped.
+		// retNullable set instead: a DEFINED callee that can return NULL → kept
+		// suspected; a DEFINED callee that provably never returns NULL → dropped;
+		// an EXTERNAL callee (declared but undefined in the scan) → kept
+		// suspected (open world — its nullability is unknown, so fail-open).
 		if c.IsCallResultDeref {
-			if retNullable[c.CalleeName] {
+			if !definedNames[c.CalleeName] || retNullable[c.CalleeName] {
 				c.HasNullableSource = true
 				c.SuspicionLevel = "suspected"
 				kept = append(kept, c)
@@ -133,9 +134,9 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 // inter-procedural "which functions can return NULL" map, consumed by Apply for
 // call-result dereferences (`f()->field`, `*f()`, `f()[i]`) that have no
 // tracked variable to feed the per-variable reaching analysis.
-func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[int64][]Candidate, models map[int64]*nullModel) (map[int64]*flowResult, map[string]bool) {
+func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[int64][]Candidate, models map[int64]*nullModel) (map[int64]*flowResult, map[string]bool, map[string]bool) {
 	if f.parser == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	funcIDs := make([]int64, 0, len(byFunc))
@@ -202,15 +203,19 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 		})
 	}
 
-	// Inter-procedural return-nullability: which functions can return NULL.
-	// Only computed when a candidate function actually assigns a call result to
-	// a variable (`p = f()`). Fail-open on error: keep candidates.
+	// Inter-procedural return-nullability: which functions can return NULL, and
+	// which names are DEFINED in the scan (vs external). Only computed when a
+	// candidate function actually assigns a call result to a variable
+	// (`p = f()`) or directly dereferences one (`f()->field`). Fail-open on
+	// error: keep candidates.
 	retNullable := map[string]bool{}
+	definedNames := map[string]bool{}
 	if len(assignedCallees) > 0 {
 		var err error
-		retNullable, err = f.computeRetNullable(ctx, models, assignedCallees)
+		retNullable, definedNames, err = f.computeRetNullable(ctx, models, assignedCallees)
 		if err != nil {
 			retNullable = map[string]bool{}
+			definedNames = map[string]bool{}
 		}
 	}
 
@@ -232,7 +237,7 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 		sources = append(sources, callResultNullSources(body, retNullable)...)
 		results[fid] = analyzer.analyzeFunction(ctx, fn, body, root, sources)
 	}
-	return results, retNullable
+	return results, retNullable, definedNames
 }
 
 // computeRetNullable returns the set of function NAMES that can return a
@@ -244,11 +249,11 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 // `return NULL`), then extended to functions returning an allocator, a pointer
 // parameter, a variable with a reaching may-null source, or a call to another
 // nullable-returning function.
-func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models map[int64]*nullModel, seedNames map[string]bool) (map[string]bool, error) {
+func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models map[int64]*nullModel, seedNames map[string]bool) (map[string]bool, map[string]bool, error) {
 	retNullable := make(map[string]bool)
 	funcs, err := f.store.ListFunctions(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("ret nullable summary: list functions: %w", err)
+		return nil, nil, fmt.Errorf("ret nullable summary: list functions: %w", err)
 	}
 
 	// name -> functions (same-name overloads are merged conservatively: if any
@@ -387,7 +392,7 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 			break
 		}
 	}
-	return retNullable, nil
+	return retNullable, definedNames, nil
 }
 
 // nullGenByLine folds a slice of null sources into the per-line gen map the
