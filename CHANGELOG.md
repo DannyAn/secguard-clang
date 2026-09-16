@@ -2,6 +2,28 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.7.2] - 2026-09-16
+
+> 0.7.2 紧急修复：生产环境验证发现 null-deref 致命漏报。
+
+### 修复：返回全局结构体字段的函数被误判为"非空"（null-deref 漏报）
+
+- **根因**：`exprReturnsNullable`（`nullable_source` 过滤器的过程间 return-nullability 分析）只识别 `return NULL` / 分配器调用 / 指针形参 / 括号与转换，**不识别 `field_expression`**。形如
+  ```c
+  shell_config_t *get_shell_cfg() { return g_space.shell_conf; }  // 全局字段，{0} 初始化为 NULL
+  shell_cfg = get_shell_cfg();
+  shell_cfg->detect_time = time;                                  // 未判空即解引用
+  ```
+  的 getter 被判定为"非空"，调用方的未判空解引用被静默丢弃。
+- **修复**：`exprReturnsNullable` 改为保守（fail-open）——`field_expression`/`subscript_expression`/指针/一元/条件/二元等**可能产出指针的表达式一律视为可能为空**；只有明确非指针的字面量（数字/字符/`true`/`false`/`sizeof`）才判为非空。未知返回表达式不再假设非空。
+- **回归**：`TestNullDeref_GlobalFieldReturnIsNullable`（planner）+ 基准 `ND-07`（`p5_null_flow.c:80`，getter 返回全局字段）。
+
+### 备注（GLM 报告的其余根因，已评估）
+
+- 根因 #1（"过滤器对未知空值性默认非空"）是对机制的过度简化——实际是 `computeRetNullable` 的定点分析（不止 function_summary），缺口具体在 `exprReturnsNullable` 漏了 `field_expression`，已按上述修复。
+- 根因 #3（`NO_HCFI` 宏前缀导致 `functions.return_type` 存成宏名、丢失 `*`）：是索引元数据缺陷，但 **null-deref 过滤链不读 `return_type`**（读函数体），与本漏报无因果；留待后续单独处理。
+- 根因 #4（`variables` 表为空）：null-deref 过滤链用流分析而非 variables 表，属设计观察，不影响本缺陷。
+
 ## [0.7.1] - 2026-09-16
 
 > 0.7.1 定位：召回修复。v0.7.0 打磨时经外部检视发现一批**逻辑上可证明会漏报**的缺陷（Issue #95）——此前基准 118/118 全绿，但这些形状一直漏报。本轮逐条修复并锁进基准，同时把 AI 研判的"拿不准就丢"收紧为"先读源码再丢"。

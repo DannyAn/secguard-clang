@@ -18,9 +18,9 @@
 | 指标 | 数值 |
 |------|------|
 | 源文件 | 28 |
-| 总测试用例 | 123 |
+| 总测试用例 | 124 |
 | **覆盖漏洞类型（22 个注册 skill）** | **22 / 22** |
-| expect-finding（应报告） | 74 |
+| expect-finding（应报告） | 75 |
 | expect-no_finding（应被抑制） | 49 |
 | Phase 0（P0-P3/TP 反证骨架） | 18 |
 | Phase 1（CWE-190/362/798/667/327） | 12 |
@@ -272,7 +272,7 @@ validator 按 **(漏洞类型, 文件, 行 ± 容差)** 比对，默认容差 ±
 | `p7_graph_effect.c` | 语义图消费：污点 source→sink、free→use CFG、别名、所有权转移 | ✅ 已纳入（P7-01..06） |
 | `rl_resource_leak.c` | resource-leak (CWE-404)：文件/Socket/FD 工厂/锁泄漏、流敏感条件释放、所有权转移 TN、缺陷修复回归目标 | ✅ 已纳入（RL-01..14，见 Phase 6 节） |
 
-> **当前状态（0.6.1 实测）：VALID — 118/118 用例 PASS · expect-finding 召回 69/69 · `no_finding` 误报 0/49**。（v0.7.1 新增 Phase 12 五例后为 123 例、expect-finding 74。）
+> **当前状态（0.6.1 实测）：VALID — 118/118 用例 PASS · expect-finding 召回 69/69 · `no_finding` 误报 0/49**。（v0.7.1 新增 Phase 12 六例后为 124 例、expect-finding 75。）
 > 复现方式见上方「运行方式」；命中偏移 `+0×66 / +1×1 / +2×2`，即 3 个用例是标签行号口径差（已检出）。
 >
 > **2026-09-08 更新**：新增 Phase 6 resource-leak 14 用例（77 → 91）。RL-10..14
@@ -417,12 +417,14 @@ v0.7.0 打磨时发现一批**逻辑上可证明会漏报**的缺陷（Issue #95
 | RL-15 | rl_resource_leak.c | 177 | 括号错误返回 `return (fd)` 不被 `isErrorReturn` 识别，误判所有权转移 | `isErrorReturn` / `returnReturnsVar` 解一层括号 |
 | RL-16 | rl_resource_leak.c | 188 | `mmap` 是映射工厂但不在 acquirer 白名单（"open"/"create" 子串不命中） | `isResourceAcquirer` 补 `mmap`、`isResourceReleaser` 补 `munmap` |
 | SH-06 | p11_signal_handler.c | 62 | 处理器内 `strncpy`：`strncpy` 同时命中 SafeFunctions，SafeFunctionFilter 曾按 VariableName 巧合误杀 | SafeFunctionFilter 不再用 `IsSafeFunction(c.VariableName)` |
+| ND-07 | p5_null_flow.c | 80 | getter 返回全局结构体字段（`return g_space.shell_conf`，NULL 初始化），调用方未判空即解引用 | `exprReturnsNullable` 把 field_expression 判为可能为空（fail-open） |
 
-五条均为 `expect: finding`。ML-03/ML-04 同时锁定 planner 层的
+六条均为 `expect: finding`。ML-03/ML-04 同时锁定 planner 层的
 `OwnershipTransferFilter`（C2b）与 `ReleaseFilter`（C3）——detector 侧修好后，这两层
 粗粒度 filter 仍会二次吞掉候选，因此这两例必须在 **verdict 阶段 result.sarif** 出现才算过。
 
 **顺带补的确定性单测**（不进基准，`go test` 直接跑）：
 - `TestResourceLeak_ParenthesizedErrorReturnIsLeak`（fixture `tc92_resleak_defects.c` 增 `rl_paren_return`）—— RL-15 的 detector 级回归。
 - `TestSafeFunctionFilter_VariableNameNotDropped`（planner）—— SH-06 的 P3 回归。
+- `TestNullDeref_GlobalFieldReturnIsNullable`（planner，inline 源）—— ND-07 的 null-deref 回归。
 

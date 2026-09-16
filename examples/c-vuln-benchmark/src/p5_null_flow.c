@@ -61,3 +61,22 @@ int fp_dead_after_return(void) {
     p->value = 1;
     return 2;
 }
+
+/* 真阳性：getter 返回全局结构体字段（NULL 初始化），调用方未判空即解引用。
+ * exprReturnsNullable 必须把 `return g_space.shell_conf`（field_expression）
+ * 判为可能为空 —— 生产 null-deref 漏报回归（v0.7.1 紧急修复）。 */
+typedef struct { unsigned int detect_time; } shell_config_t;
+
+static struct {
+    shell_config_t *shell_conf;
+} g_space = {0};
+
+shell_config_t *get_shell_cfg(void) {
+    return g_space.shell_conf;
+}
+
+int nd_global_field_return(void) {
+    shell_config_t *shell_cfg = get_shell_cfg();
+    shell_cfg->detect_time = 0;
+    return 0;
+}

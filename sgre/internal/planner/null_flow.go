@@ -1177,9 +1177,9 @@ func exprReturnsNullable(expr parser.Node, flow *flowResult, params map[string]i
 		return true
 	}
 	switch expr.Kind() {
-	case "call_expression":
-		name := callName(expr)
-		return isAllocatorCall(name) || retNullable[name]
+	case "number_literal", "char_literal", "true", "false", "sizeof_expression":
+		// A non-pointer literal cannot yield a NULL pointer.
+		return false
 	case "identifier":
 		if _, isParam := params[expr.Text()]; isParam {
 			return true
@@ -1191,8 +1191,16 @@ func exprReturnsNullable(expr parser.Node, flow *flowResult, params map[string]i
 				return true
 			}
 		}
+		return false
 	}
-	return false
+	// call_expression (allocator or another callee), field/subscript (a pointer
+	// member read, e.g. `return g_space.shell_conf` where the field is NULL-
+	// initialized), pointer/unary/conditional/binary — all may yield a pointer and
+	// therefore may be NULL. Conservative (fail-open): an unknown return
+	// expression is treated as possibly-null, never assumed non-null. This is the
+	// production null-deref false negative where a getter returned a global struct
+	// field that was NULL at startup.
+	return true
 }
 
 func isNullLiteralExpr(text string) bool {
