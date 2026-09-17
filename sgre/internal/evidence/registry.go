@@ -131,5 +131,13 @@ func init() {
 	RegisterDetector(func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewSizeofMisuseDetector(s, p, l) })
 	RegisterDetector(func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewSignedCompareDetector(s, p, l) })
 	RegisterDetector(func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewSignalHandlerDetector(s, p, l) })
-	RegisterDetector(func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewDangerousFunctionDetector(s, p, l) })
+	RegisterDetector(func(s db.Store, p *parser.Parser, l *log.Logger) Detector {
+		return NewDangerousFunctionDetector(s, p, l)
+	})
+	RegisterDetector(func(s db.Store, p *parser.Parser, l *log.Logger) Detector {
+		return NewArgumentInjectionDetector(s, p, l)
+	})
+	RegisterDetector(func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewXMLInjectionDetector(s, p, l) })
+	RegisterDetector(func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewCRLFInjectionDetector(s, p, l) })
+	RegisterDetector(func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewLogInjectionDetector(s, p, l) })
 }

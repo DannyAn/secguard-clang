@@ -34,6 +34,21 @@ func (f *SafeFunctionFilter) Apply(ctx context.Context, candidates []Candidate) 
 			kept = append(kept, c)
 			continue
 		}
+		// argument_injection (CWE-88): execve/execv/etc. are listed in
+		// SafeFunctions because they are shell-safe (no metacharacter
+		// interpretation), which is correct for command_injection (CWE-78).
+		// But the SAME calls are argument-injection sinks — their argv array
+		// can carry attacker-controlled options — so the IsSafeFunction
+		// exclusion must NOT fire for argument_injection. Only a project safe
+		// wrapper (SafeExecArg etc.) may dismiss it.
+		if c.Category == "argument_injection" {
+			if apikb.IsSafeWrapper(c.FunctionName) {
+				dropped = dismiss(dropped, c, f.Name(), fmt.Sprintf("function %s is a safe wrapper for argument injection", c.FunctionName))
+				continue
+			}
+			kept = append(kept, c)
+			continue
+		}
 		reason := ""
 		// Project safe wrapper: match on the containing function name (a curated
 		// list of THIS project's own framework entry points, e.g. SafeCopy_copy).
