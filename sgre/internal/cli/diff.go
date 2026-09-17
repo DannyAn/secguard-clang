@@ -278,7 +278,9 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 		DurationMs:   outcome.Timings.IndexMs + outcome.Timings.GraphMs + outcome.Timings.DetectorsMs + outcome.Timings.PlanMs,
 		TypesScanned: len(evidencePackages),
 	}); err != nil {
-		_ = store.UpdateReviewSessionStatus(ctx, reviewID, "failed")
+		if serr := store.UpdateReviewSessionStatus(ctx, reviewID, "failed"); serr != nil {
+			logger.Warn("mark review session failed", "error", serr)
+		}
 		WriteErrorJSON(fmt.Sprintf("failed to write review output: %v", err))
 		return 1
 	}
@@ -287,7 +289,9 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 		logCloser = nil
 	}
 
-	_ = store.UpdateReviewSessionStatus(ctx, reviewID, "done")
+	if err := store.UpdateReviewSessionStatus(ctx, reviewID, "done"); err != nil {
+		logger.Warn("mark review session done", "error", err)
+	}
 
 	output := map[string]interface{}{
 		"review_id":                   reviewID,

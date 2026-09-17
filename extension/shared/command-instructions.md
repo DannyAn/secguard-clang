@@ -390,8 +390,8 @@ as `result.sarif`.)
     filename), then immediately
     `secguard report --write-json <scan_dir>/../../.sgre/.tmp/<type>-partN.json --scan-id <scan_id> --db <scan_dir>/../../.sgre/sgre.db`
     before starting the next chunk. The write is idempotent, so partial progress is safe.
-   Report back, per type: confirmed / suspected / dismissed counts + the
-   written finding ids.
+   Report back, per type: confirmed / dismissed counts (suspected is not a
+   verdict) + the written finding ids.
    ```
    For many types, batch them — but NEVER exceed `MAX_TYPES_PER_BATCH` (4) types
    per subagent, and validate `batch_type_count × 12 < 54` before dispatching. A

@@ -324,6 +324,50 @@ func TestInterprocBuilderCrossFileForwardRef(t *testing.T) {
 	}
 }
 
+// TestInterprocBuilderAnonymousParam guards the break→continue fix: an unnamed
+// parameter in the MIDDLE of a signature (void handler(int, void *data)) must not
+// terminate the positional binding loop, or the taint flow into every later
+// parameter is silently severed (a false negative for injection/path-traversal).
+func TestInterprocBuilderAnonymousParam(t *testing.T) {
+	store, p := indexSource(t, `
+void handler(int flags, void *, void *data) {
+    (void)flags; (void)data;
+}
+void f(void) {
+    int flags = 1;
+    void *input = 0;
+    handler(flags, 0, input);
+}
+`)
+	ctx := context.Background()
+	b := NewInterprocBuilder(store, p, nil)
+	if _, err := b.Build(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	bindings, err := store.ListGraphEdgesByType(ctx, "PARAM_BINDING")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bindings) != 2 {
+		t.Fatalf("expected 2 PARAM_BINDING edges (flags->flags, input->data), got %d", len(bindings))
+	}
+	indexes := map[int]bool{}
+	for _, e := range bindings {
+		var props struct {
+			Param string `json:"param"`
+			Index int    `json:"index"`
+		}
+		if err := json.Unmarshal([]byte(e.Properties), &props); err != nil {
+			t.Fatal(err)
+		}
+		indexes[props.Index] = true
+	}
+	if !indexes[0] || !indexes[2] {
+		t.Fatalf("expected PARAM_BINDING edges at indexes {0,2} (the anonymous param at 1 is skipped), got %v", indexes)
+	}
+}
+
 // TestCallGraphSameNameDoesNotCollapse guards the same-name fix: two static
 // functions with the same name in different files must both keep a CALL edge
 // from their caller (a name->single-ID map would silently shadow one and, via

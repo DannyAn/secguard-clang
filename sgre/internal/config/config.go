@@ -116,6 +116,12 @@ func Load() *Config {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
+		// A path resolved from an explicit --config / SECGUARD_CONFIG (or a
+		// probed default that existed a moment ago) must not fail silently: a
+		// zero config evaporates the banned-function / trusted-macro / disable
+		// settings with no trace. Missing-file fallback is handled by resolvePath
+		// returning "" BEFORE we get here, so a read error here is unexpected.
+		fmt.Fprintf(os.Stderr, "secguard: ignoring unreadable config %s: %v\n", path, err)
 		return cfg
 	}
 	// A malformed or mistyped config must not be silently ignored: the user would
@@ -247,8 +253,11 @@ func resolvePath(explicit string) string {
 }
 
 func fileExists(p string) bool {
-	_, err := os.Stat(p)
-	return err == nil
+	info, err := os.Stat(p)
+	// A directory named secguard.toml would pass a bare Stat and then fail the
+	// subsequent ReadFile (EISDIR); exclude it so the probe falls through to the
+	// next location instead of silently reading nothing.
+	return err == nil && !info.IsDir()
 }
 
 func homeDir() string {

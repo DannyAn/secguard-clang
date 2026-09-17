@@ -46,6 +46,9 @@ func NewOwnershipBuilder(store db.Store, p *parser.Parser, logger *log.Logger) *
 var releaseFunctions = map[string]bool{
 	"free": true, "fclose": true, "close": true, "pclose": true,
 	"closedir": true, "fcloseall": true, "freopen": true,
+	"munmap": true, "g_free": true, "av_free": true, "xmlFree": true,
+	"sqlite3_free": true, "Py_DECREF": true, "XFree": true, "kfree": true,
+	"HeapFree": true,
 }
 
 func (b *OwnershipBuilder) Build(ctx context.Context) (*BuildResult, error) {
@@ -92,7 +95,7 @@ func (b *OwnershipBuilder) Build(ctx context.Context) (*BuildResult, error) {
 				if !releaseFunctions[callName] {
 					continue
 				}
-				arg := firstArgIdentifier(call)
+				arg := releaseArgIdentifier(call, callName)
 				if arg == "" {
 					continue
 				}
@@ -212,16 +215,33 @@ func rhsIdentifier(rhs parser.Node) string {
 // firstArgIdentifier returns the first argument when it is a bare identifier,
 // else "".
 func firstArgIdentifier(call parser.Node) string {
+	return argIdentifierAt(call, 0)
+}
+
+// argIdentifierAt returns the argument at position index when it is a bare
+// identifier, else "".
+func argIdentifierAt(call parser.Node, index int) string {
 	for _, child := range call.NamedChildren() {
 		if child.Kind() != "argument_list" {
 			continue
 		}
 		args := child.NamedChildren()
-		if len(args) >= 1 && args[0].Kind() == "identifier" {
-			return args[0].Text()
+		if index < len(args) && args[index].Kind() == "identifier" {
+			return args[index].Text()
 		}
 	}
 	return ""
+}
+
+// releaseArgIdentifier returns the argument whose ownership a release call
+// destroys. Most release functions take the object as their first argument, but
+// freopen(path, mode, stream) releases the third (stream) and HeapFree(hHeap,
+// flags, lpMem) releases the third (lpMem).
+func releaseArgIdentifier(call parser.Node, callName string) string {
+	if callName == "freopen" || callName == "HeapFree" {
+		return argIdentifierAt(call, 2)
+	}
+	return argIdentifierAt(call, 0)
 }
 
 // isErrorReturn reports whether ret is an error exit that returns the checked

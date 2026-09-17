@@ -31,10 +31,13 @@ var lockCalls = map[string]bool{
 	// such a cycle with a `timed` marker, which LockOrderFilter keeps suspected
 	// (a timeout allows recovery) instead of confirming.
 	"pthread_mutex_timedlock": true,
+	"pthread_rwlock_rdlock":   true, "pthread_spin_lock": true,
+	"mtx_lock": true, "EnterSRWLock": true,
 }
 
 var unlockCalls = map[string]bool{
 	"pthread_mutex_unlock": true, "pthread_rwlock_unlock": true, "LeaveCriticalSection": true,
+	"pthread_spin_unlock": true, "mtx_unlock": true, "LeaveSRWLock": true,
 }
 
 func (b *LockOrderBuilder) Build(ctx context.Context) (*BuildResult, error) {

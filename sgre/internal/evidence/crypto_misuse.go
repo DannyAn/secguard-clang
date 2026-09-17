@@ -99,11 +99,13 @@ func (d *CryptoMisuseDetector) emitCryptoEvent(ctx context.Context, file *db.Fil
 
 func (d *CryptoMisuseDetector) detectUndersizedKey(ctx context.Context, decls []parser.Node, file *db.File, funcs []*db.Function, result *DetectResult) {
 	for _, decl := range decls {
-		text := decl.Text()
-		if !strings.Contains(text, "key") && !strings.Contains(text, "Key") {
-			continue
-		}
 		for _, arrayDecl := range decl.FindAll("array_declarator") {
+			// Match the declarator's identifier, not the whole declaration text:
+			// `int keyboard_layout[4]` or `struct turkey_s g_turkey[2]` must not be
+			// reported as undersized keys just because a substring spells "key".
+			if !isKeyName(declaratorName(arrayDecl)) {
+				continue
+			}
 			for _, child := range arrayDecl.NamedChildren() {
 				if child.Kind() == "number_literal" {
 					size := 0
@@ -128,4 +130,16 @@ func (d *CryptoMisuseDetector) detectUndersizedKey(ctx context.Context, decls []
 			}
 		}
 	}
+}
+
+// isKeyName reports whether name is a key-like identifier: "key" as a whole word
+// component ("key", "aes_key", "key_schedule", "encryption_key"). It deliberately
+// rejects names where "key" is fused into a longer word ("keyboard", "monkey",
+// "turkey"), which a bare substring match would misreport as undersized keys.
+func isKeyName(name string) bool {
+	lower := strings.ToLower(name)
+	return lower == "key" ||
+		strings.HasPrefix(lower, "key_") ||
+		strings.HasSuffix(lower, "_key") ||
+		strings.Contains(lower, "_key_")
 }

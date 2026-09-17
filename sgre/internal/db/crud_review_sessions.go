@@ -57,10 +57,20 @@ func (s *store) GetReviewSessionByID(ctx context.Context, reviewID string) (*Rev
 }
 
 func (s *store) UpdateReviewSessionStatus(ctx context.Context, reviewID, status string) error {
-	_, err := s.exec.ExecContext(ctx,
+	res, err := s.exec.ExecContext(ctx,
 		`UPDATE review_sessions SET status = ?, updated_at = ? WHERE review_id = ?`, status, now(), reviewID)
 	if err != nil {
 		return fmt.Errorf("db: update review session status: %w", err)
+	}
+	n, rerr := res.RowsAffected()
+	if rerr != nil {
+		return fmt.Errorf("db: update review session status: rows affected: %w", rerr)
+	}
+	// A 0-row update means the review_id does not exist; silently succeeding here
+	// would let a done/failed terminal state be dropped and the session linger as
+	// "running" forever, so surface it the same way UpdateFindingReview does.
+	if n == 0 {
+		return fmt.Errorf("db: update review session status: no session with review_id %s", reviewID)
 	}
 	return nil
 }

@@ -653,18 +653,30 @@ func (d *RaceConditionDetector) detectLockUnlockPattern(ctx context.Context, cal
 		if assign.StartLine() <= unlockLine || assign.StartLine() > f.EndLine {
 			continue
 		}
-		text := assign.Text()
-		if strings.Contains(text, "g_") || strings.Contains(text, "global") || strings.Contains(text, "shared") {
-			if emitEvent(ctx, d.store, d.logger, "RACE_CONDITION", f.ID, &db.Location{FileID: file.ID, Line: assign.StartLine(), Column: assign.StartColumn()}, map[string]string{
-				"mutex":       mutexName,
-				"lock_line":   fmt.Sprintf("%d", lockLine),
-				"unlock_line": fmt.Sprintf("%d", unlockLine),
-				"category":    "toctou_shared_state",
-			}) {
-				result.EventsCreated++
-			}
-			break
+		// Match the assignment's LHS variable name, not the whole statement text:
+		// `x = global_lookup()` or `shared_ptr`-typed RHS must not be read as a
+		// shared-state write just because a substring spells "global"/"shared".
+		children := assign.NamedChildren()
+		if len(children) < 1 {
+			continue
 		}
+		lhs := assignedVariable(children[0])
+		if lhs == "" {
+			continue
+		}
+		lower := strings.ToLower(lhs)
+		if !strings.Contains(lower, "g_") && !strings.Contains(lower, "global") && !strings.Contains(lower, "shared") {
+			continue
+		}
+		if emitEvent(ctx, d.store, d.logger, "RACE_CONDITION", f.ID, &db.Location{FileID: file.ID, Line: assign.StartLine(), Column: assign.StartColumn()}, map[string]string{
+			"mutex":       mutexName,
+			"lock_line":   fmt.Sprintf("%d", lockLine),
+			"unlock_line": fmt.Sprintf("%d", unlockLine),
+			"category":    "toctou_shared_state",
+		}) {
+			result.EventsCreated++
+		}
+		break
 	}
 }
 

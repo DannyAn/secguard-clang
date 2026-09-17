@@ -86,8 +86,16 @@ func (b *InterprocBuilder) Build(ctx context.Context) (*BuildResult, error) {
 				for _, calleeID := range calleeIDs {
 					params := paramsByFunc[calleeID]
 					for i, arg := range args {
-						if i >= len(params) || params[i] == "" {
+						if i >= len(params) {
 							break
+						}
+						// An unnamed parameter (void handler(int, void *data))
+						// leaves a "" entry in params; skip it and keep binding the
+						// remaining positional args. A break here would silently
+						// sever the taint flow into every parameter after the
+						// anonymous one.
+						if params[i] == "" {
+							continue
 						}
 						if arg.Kind() != "identifier" {
 							continue

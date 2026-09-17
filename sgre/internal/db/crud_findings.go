@@ -218,7 +218,10 @@ func (s *store) UpdateFindingReview(ctx context.Context, id int64, reviewStatus,
 	if err != nil {
 		return fmt.Errorf("db: update finding review: %w", err)
 	}
-	n, _ := res.RowsAffected()
+	n, rerr := res.RowsAffected()
+	if rerr != nil {
+		return fmt.Errorf("db: update finding review: rows affected: %w", rerr)
+	}
 	if n == 0 {
 		return fmt.Errorf("db: update finding review: no finding with id %d", id)
 	}

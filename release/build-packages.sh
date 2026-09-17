@@ -205,8 +205,8 @@ build_master() {
 
     # shared
     mkdir -p "$root/shared/skills"
-    cp "$EXTENSION_DIR/shared/agent-body.md" "$root/shared/" 2>/dev/null || true
-    cp "$EXTENSION_DIR/shared/command-instructions.md" "$root/shared/" 2>/dev/null || true
+    cp "$EXTENSION_DIR/shared/agent-body.md" "$root/shared/"
+    cp "$EXTENSION_DIR/shared/command-instructions.md" "$root/shared/"
     cp -r "$EXTENSION_DIR/shared/skills"/* "$root/shared/skills/"
 
     # opencode（插件机制：package.json + index.ts，展开模板）
@@ -220,7 +220,7 @@ build_master() {
     expand_includes "$EXTENSION_DIR/opencode/commands/mr.md" "$root/opencode/commands/mr.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/commands/metrics.md" "$root/opencode/commands/metrics.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/agents/security-auditor.md" "$root/opencode/agents/security-auditor.md" "$EXTENSION_DIR/shared"
-    cp "$EXTENSION_DIR/opencode/tools/"*.ts "$root/opencode/tools/" 2>/dev/null || true
+    cp "$EXTENSION_DIR/opencode/tools/"*.ts "$root/opencode/tools/"
 
     # opencode-nga（OpenCode 开源分支：manifest 改名 codeagent-extension.json，
     # 其余文件与 opencode 完全一致；.codeagent-extension-install.json 的 source 在
@@ -239,8 +239,8 @@ build_master() {
     expand_includes "$EXTENSION_DIR/opencode/commands/mr.md" "$root/opencode-nga/commands/mr.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/commands/metrics.md" "$root/opencode-nga/commands/metrics.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/agents/security-auditor.md" "$root/opencode-nga/agents/security-auditor.md" "$EXTENSION_DIR/shared"
-    cp "$EXTENSION_DIR/opencode/tools/"*.ts "$root/opencode-nga/tools/" 2>/dev/null || true
-    cp "$EXTENSION_DIR/opencode-nga/plugins/"*.ts "$root/opencode-nga/plugins/" 2>/dev/null || true
+    cp "$EXTENSION_DIR/opencode/tools/"*.ts "$root/opencode-nga/tools/"
+    cp "$EXTENSION_DIR/opencode-nga/plugins/"*.ts "$root/opencode-nga/plugins/"
 
     # claude-code（官方插件方式，安装到 ~/.claude/plugins/，非 skills/）
     mkdir -p "$root/claude-code/.claude-plugin" "$root/claude-code/.claude/commands" "$root/claude-code/.claude/agents" "$root/claude-code/hooks"

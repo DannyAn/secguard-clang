@@ -567,6 +567,11 @@ func runReportCmd(ctx context.Context, args []string) int {
 			out["errors"] = errs
 		}
 		WriteJSON(out)
+		// A partial write is a failed write: exit non-zero so a CI gate keyed on
+		// the exit code never mistakes dropped findings for success.
+		if len(failedDetails) > 0 {
+			return 1
+		}
 		return 0
 	}
 
@@ -691,6 +696,11 @@ func runReportCmd(ctx context.Context, args []string) int {
 			out["errors"] = errs
 		}
 		WriteJSON(out)
+		// A partial review is a failed review: exit non-zero so the orchestrator
+		// cannot misread a dropped verdict as "already persisted".
+		if len(errs) > 0 {
+			return 1
+		}
 		return 0
 	}
 
@@ -796,6 +806,12 @@ func runReportCmd(ctx context.Context, args []string) int {
 		// found. Verdict figures are re-derived from the findings table, never
 		// from a second source.
 		overview := buildScanOverview(ctx, store, scanID, stats, scanFindings, audits)
+		// Completeness signals are computed regardless of --output-dir so a
+		// `report --audit` run without an output dir still surfaces them: a
+		// converged candidate with no persisted verdict is a silent false
+		// negative unless the JSON the orchestrator reads says so.
+		unclassified := unclassifiedCandidates(audits)
+		orphans := countFindingsWithoutScanID(ctx, store)
 
 		if outputDir != "" {
 			auditPath := filepath.Join(outputDir, "audit-report.md")
@@ -866,24 +882,33 @@ func runReportCmd(ctx context.Context, args []string) int {
 			// note disagree with the database and with findings/. Report it in
 			// the same response the agent reads, not just inside the audit
 			// markdown a human might never open.
-			if unclassified := unclassifiedCandidates(audits); unclassified > 0 {
+			if unclassified > 0 {
 				out["unclassified_candidates"] = unclassified
 				out["warning"] = fmt.Sprintf("%d converged candidate(s) have no persisted verdict — an exclusion stated only in prose is not recorded. Write a finding (confirmed|dismissed) for every candidate.", unclassified)
 			}
 			// A finding with no scan_id has no scan directory, so its verdict
 			// file cannot be placed or reconciled. Surface it instead of
 			// letting the review surface be quietly incomplete.
-			if orphans := countFindingsWithoutScanID(ctx, store); orphans > 0 {
+			if orphans > 0 {
 				out["findings_without_scan_id"] = orphans
 				out["warning"] = fmt.Sprintf("%d finding(s) carry no scan_id and are missing from %s/ — re-write them with --scan-id", orphans, report.FindingsDir)
 			}
 			WriteJSON(out)
 		} else {
-			WriteJSON(map[string]interface{}{
+			out := map[string]interface{}{
 				"scan_id": scanID,
 				"audits":  audits,
 				"summary": overview.SummaryFields(),
-			})
+			}
+			if unclassified > 0 {
+				out["unclassified_candidates"] = unclassified
+				out["warning"] = fmt.Sprintf("%d converged candidate(s) have no persisted verdict — an exclusion stated only in prose is not recorded. Write a finding (confirmed|dismissed) for every candidate.", unclassified)
+			}
+			if orphans > 0 {
+				out["findings_without_scan_id"] = orphans
+				out["warning"] = fmt.Sprintf("%d finding(s) carry no scan_id and are missing from %s/ — re-write them with --scan-id", orphans, report.FindingsDir)
+			}
+			WriteJSON(out)
 		}
 		return 0
 	}

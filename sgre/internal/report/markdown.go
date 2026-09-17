@@ -130,7 +130,7 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding,
 			}
 			summary = strings.ReplaceAll(summary, "\n", " ")
 			b.WriteString(fmt.Sprintf("| %d | %s | %s | %s | %s:%d | %s |\n",
-				i+1, f.FinalStatus(), f.Severity, f.FunctionName, fileShort, f.LineNumber, summary))
+				i+1, f.FinalStatus(), f.Severity, markdownCell(f.FunctionName), fileShort, f.LineNumber, markdownCell(summary)))
 		}
 		b.WriteString("\n")
 	}
@@ -307,8 +307,8 @@ func (o *ScanOutput) writeTypeIndex(dir string, pkg *planner.PlanResult) error {
 	for i, c := range pkg.Candidates {
 		fileShort := displayPath(c.Target.File, o.RootDir)
 		b.WriteString(fmt.Sprintf("| %d | %s | %s:%d | %s | %s | %s | %s | `%s` |\n",
-			i+1, c.Target.Function, fileShort, c.Target.Line, c.Target.Variable, c.SuspicionLevel,
-			c.Hint,
+			i+1, markdownCell(c.Target.Function), fileShort, c.Target.Line, markdownCell(c.Target.Variable), c.SuspicionLevel,
+			markdownCell(c.Hint),
 			markdownCell(sourceLineText(c.Target.File, c.Target.Line, o.RootDir)),
 			candidateFilename(i+1, c.Target.File, c.Target.Line)))
 	}

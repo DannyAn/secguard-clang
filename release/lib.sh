@@ -37,7 +37,7 @@ sg_expand_includes() {
     local shared_dir="$3"
     cp "$input_file" "$output_file"
     python3 -c "
-import os, re
+import os, re, sys
 out = '''$output_file'''
 sdir = '''$shared_dir'''
 with open(out, 'r') as f:
@@ -53,7 +53,11 @@ def repl(m):
         with open(path, 'r') as f:
             return f.read()
     except FileNotFoundError:
-        return m.group(0)
+        # A missing shared include must fail the build, not ship the literal
+        # {{include ...}} into the packaged prompt (which would leave the agent
+        # reading a directive instead of its instructions).
+        sys.stderr.write('secguard release: missing include file: %s\n' % path)
+        sys.exit(1)
 content = re.sub(r'\{\{include\s+(shared/[^\s}]+)\}\}', repl, content)
 with open(out, 'w') as f:
     f.write(content)

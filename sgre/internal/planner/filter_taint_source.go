@@ -137,13 +137,19 @@ func (f *TaintSourceFilter) Name() string { return "taint_source" }
 var taintSourceFuncs = map[string]bool{
 	"getenv": true, "gets": true, "getchar": true, "fgetc": true,
 	"getcwd": true, "readlink": true,
+	"fgetwc": true, "getwchar": true, "getwc": true, "getw": true,
+	"tmpnam": true, "tempnam": true, "getlogin": true, "ttyname": true,
+	"getpass": true, "realpath": true, "readdir": true,
 }
 
 // taintBufferFuncs write user-controlled data into a pointer argument.
 var taintBufferFuncs = map[string]bool{
 	"scanf": true, "sscanf": true, "fscanf": true, "vscanf": true,
-	"fgets": true, "gets": true,
-	"read": true, "recv": true, "recvfrom": true, "recvmsg": true,
+	"vfscanf": true, "vsscanf": true,
+	"fgets": true, "gets": true, "fgetws": true, "getline": true, "getdelim": true,
+	"read": true, "fread": true, "pread": true, "readv": true, "preadv": true,
+	"recv": true, "recvfrom": true, "recvmsg": true,
+	"wscanf": true, "fwscanf": true, "swscanf": true, "vwscanf": true,
 }
 
 // taintCopyFuncs maps a memory/string copy function to the index of its SOURCE
@@ -1129,15 +1135,16 @@ func taintBufferArgVars(call parser.Node) []string {
 		}
 	}
 	switch name {
-	case "fgets", "gets":
+	case "fgets", "gets", "fgetws", "getline", "getdelim", "fread":
 		if len(args) >= 1 {
 			return pointerArgVars(args[0])
 		}
-	case "read", "recv", "recvfrom", "recvmsg":
+	case "read", "pread", "recv", "recvfrom", "recvmsg", "readv", "preadv":
 		if len(args) >= 2 {
 			return pointerArgVars(args[1])
 		}
-	case "scanf", "sscanf", "fscanf", "vscanf":
+	case "scanf", "sscanf", "fscanf", "vscanf", "vfscanf", "vsscanf",
+		"wscanf", "fwscanf", "swscanf", "vwscanf":
 		var vars []string
 		for _, a := range args[1:] {
 			vars = append(vars, pointerArgVars(a)...)

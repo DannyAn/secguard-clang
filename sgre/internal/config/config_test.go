@@ -122,6 +122,23 @@ types = ["path-traversal", " divide-by-zero ", "path-traversal"]
 	}
 }
 
+// TestFileExists_RejectsDirectory guards the probe-path fix: a directory named
+// secguard.toml must not pass the existence probe and then fail the subsequent
+// ReadFile (EISDIR); it should be treated as "no config here".
+func TestFileExists_RejectsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if fileExists(dir) {
+		t.Errorf("fileExists(%q) = true for a directory, want false", dir)
+	}
+	file := filepath.Join(dir, "real.toml")
+	if err := os.WriteFile(file, []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !fileExists(file) {
+		t.Errorf("fileExists(%q) = false for a regular file, want true", file)
+	}
+}
+
 func TestDisabledTypeSet_Empty(t *testing.T) {
 	var c *Config
 	if c.DisabledTypeSet() != nil {

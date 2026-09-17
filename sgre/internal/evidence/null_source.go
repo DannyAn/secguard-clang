@@ -100,24 +100,30 @@ func (d *NullSourceDetector) detectReturnNull(ctx context.Context, f *db.Functio
 }
 
 func (d *NullSourceDetector) detectMallocResult(ctx context.Context, f *db.Function, file *db.File, assigns, inits []parser.Node, result *DetectResult) {
-	allocators := []string{"malloc", "calloc", "realloc"}
-
 	checkNode := func(node parser.Node) {
-		text := node.Text()
-		for _, a := range allocators {
-			if strings.Contains(text, a) {
-				children := node.NamedChildren()
-				if len(children) < 2 {
-					return
-				}
-				lhs := children[0]
-				varName := assignedVariable(lhs)
-				if varName != "" {
-					if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: node.StartLine()}, map[string]string{"variable": varName, "origin": a}) {
-						result.EventsCreated++
-					}
-				}
-				return
+		children := node.NamedChildren()
+		if len(children) < 2 {
+			return
+		}
+		// Match the callee of a call in the RHS, not a "malloc" substring in the
+		// whole assignment text: `p = pre_malloc_log("called malloc")` must not be
+		// treated as a malloc return.
+		origin := ""
+		for _, call := range children[1].FindAll("call_expression") {
+			name := extractCallName(call)
+			if name == "malloc" || name == "calloc" || name == "realloc" {
+				origin = name
+				break
+			}
+		}
+		if origin == "" {
+			return
+		}
+		lhs := children[0]
+		varName := assignedVariable(lhs)
+		if varName != "" {
+			if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: node.StartLine()}, map[string]string{"variable": varName, "origin": origin}) {
+				result.EventsCreated++
 			}
 		}
 	}

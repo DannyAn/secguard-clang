@@ -257,7 +257,7 @@ func (o *ScanOutput) writeCandidatesSarif(packages []*planner.PlanResult) error 
 					"primaryLocationLineHash": fmt.Sprintf("%s:%d", c.Target.Function, c.Target.Line),
 				},
 				Fingerprints: map[string]string{
-					"ruleId:location": fmt.Sprintf("%s:%s:%d", cwe, c.Target.Function, c.Target.Line),
+					"ruleId:location": fmt.Sprintf("%s:%s:%d:%s", cwe, c.Target.Function, c.Target.Line, c.Target.Variable),
 				},
 				Properties: map[string]string{
 					"stage": "candidate",
@@ -431,7 +431,7 @@ func writeSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding, k
 				"primaryLocationLineHash": fmt.Sprintf("%s:%d", f.FunctionName, f.LineNumber),
 			},
 			Fingerprints: map[string]string{
-				"ruleId:location": fmt.Sprintf("%s:%s:%d", cwe, f.FunctionName, f.LineNumber),
+				"ruleId:location": fmt.Sprintf("%s:%s:%d:%s", cwe, f.FunctionName, f.LineNumber, f.Variable),
 			},
 		}
 

@@ -348,6 +348,60 @@ void run_cmd(void) {
 	}
 }
 
+// TestTaintSourceFilter_GetlineBufferSource guards the taint-source whitelist
+// expansion: getline writes into its first argument's buffer, so a sink fed by
+// that buffer must be kept (the pre-expansion whitelist dropped it as untraceable).
+func TestTaintSourceFilter_GetlineBufferSource(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "getline.c")
+	src := `#include <stdio.h>
+#include <stdlib.h>
+
+int run_from_stdin(void) {
+    char *line = 0;
+    size_t n = 0;
+    getline(&line, &n, stdin);
+    system(line);
+    return 0;
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewInjectionDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "injection")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	found := false
+	for _, c := range result.Candidates {
+		if c.Target.Variable == "line" {
+			found = true
+			if !hasTaintEvidence(c) {
+				t.Errorf("expected injection candidate for line to carry a taint_source fragment, got %+v", c.Evidence)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected a tainted injection candidate for line (getline source), got %v", candidateNames(result))
+	}
+}
+
 // TestTaintSourceFilter_NonSQLPublicParamKept locks in the scoping of the
 // SQL-injection call-site const / const char* dismissals: those heuristics must
 // NOT drop a non-static function's parameter sink for command-injection or

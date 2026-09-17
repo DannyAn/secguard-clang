@@ -72,3 +72,10 @@ func TestCryptoMisuse_WeakPRNG(t *testing.T) {
 	store := runIndexAndDetect(t, "tc29_crypto_misuse.c")
 	assertHasEvent(t, store, "CRYPTO_MISUSE", "crypto_misuse")
 }
+
+// TestNullSource_MallocSubstringNotAlloc guards the callee-match fix: a wrapper
+// named pre_malloc_log (or any text containing "malloc") must not seed a NULL_VALUE.
+func TestNullSource_MallocSubstringNotAlloc(t *testing.T) {
+	store := runIndexAndDetect(t, "tc40_malloc_substring.c")
+	assertNoEvent(t, store, "NULL_VALUE", "tc40_malloc_substring")
+}

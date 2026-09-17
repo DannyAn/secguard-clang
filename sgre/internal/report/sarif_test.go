@@ -87,6 +87,9 @@ func TestWriteSarifFromFindings(t *testing.T) {
 	if !strings.Contains(results[0].Message.Text, "on 'p'") || !strings.Contains(results[0].Message.Text, "[high · confirmed]") {
 		t.Errorf("message should name the variable and severity/status, got %q", results[0].Message.Text)
 	}
+	if got := results[0].Fingerprints["ruleId:location"]; got != "CWE-252:f:13:p" {
+		t.Errorf("fingerprint = %q, want CWE-252:f:13:p (variable must be part of the identity so same-location distinct variables stay distinct)", got)
+	}
 }
 
 // sarifVerdictFindings is the shared fixture: one confirmed, one legacy
