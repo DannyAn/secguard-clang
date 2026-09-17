@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
@@ -105,7 +106,7 @@ func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.N
 			continue
 		}
 
-		if callName == "free" {
+		if apikb.IsDeallocator(callName) {
 			args := getCallArgs(call)
 			for _, arg := range args {
 				switch arg.Kind() {
@@ -270,7 +271,7 @@ func (d *UseAfterFreeDetector) findUseSites(f *db.Function, ptrs, fields, calls 
 			continue
 		}
 		callName := extractCallName(call)
-		if callName == "free" {
+		if apikb.IsDeallocator(callName) {
 			continue
 		}
 		for _, child := range call.NamedChildren() {

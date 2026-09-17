@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
@@ -92,7 +93,7 @@ func (b *OwnershipBuilder) Build(ctx context.Context) (*BuildResult, error) {
 
 			for _, call := range nodesInRange(calls, f.StartLine, f.EndLine) {
 				callName := extractCallName(call)
-				if !releaseFunctions[callName] {
+				if !releaseFunctions[callName] && !apikb.IsDeallocator(callName) {
 					continue
 				}
 				arg := releaseArgIdentifier(call, callName)

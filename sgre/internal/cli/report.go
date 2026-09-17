@@ -576,8 +576,11 @@ func runReportCmd(ctx context.Context, args []string) int {
 		}
 		WriteJSON(out)
 		// A partial write is a failed write: exit non-zero so a CI gate keyed on
-		// the exit code never mistakes dropped findings for success.
-		if len(failedDetails) > 0 {
+		// the exit code never mistakes dropped findings for success. errs (not
+		// failedDetails) is the full set of dropped rows — it also covers the
+		// validation skips (empty/unsupported rule_id) that `continue` before the
+		// write pass, which failedDetails alone would miss.
+		if len(errs) > 0 {
 			return 1
 		}
 		return 0

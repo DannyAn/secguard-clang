@@ -3,6 +3,7 @@ package evidence
 import (
 	"context"
 
+	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
@@ -106,7 +107,7 @@ func (d *SignalHandlerDetector) Detect(ctx context.Context) (DetectResult, error
 			}
 			for _, c := range body.FindAll("call_expression") {
 				callee := extractCallName(c)
-				if !asyncSignalUnsafe[callee] {
+				if !asyncSignalUnsafe[callee] && !apikb.IsAllocatorOrDeallocator(callee) {
 					continue
 				}
 				var fnID int64

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -18,7 +19,7 @@ import (
 // Version is the release version. It is a var (not const) so `go build
 // -ldflags "-X github.com/DannyAn/secguard-clang/internal/cli.Version=<v>"`
 // can inject the release version at build time; the fallback matches VERSION.
-var Version = "0.7.3"
+var Version = "0.7.4"
 
 func Execute(ctx context.Context, args []string) int {
 	// Sync the db layer's supported-CWE set from the planner registry so the
@@ -49,6 +50,17 @@ func Execute(ctx context.Context, args []string) int {
 	// before per-command parsing.
 	config.SetExplicitPath(parseStringFlag(args, "config"))
 	args = removeFlag(args, "config")
+
+	// Register project-declared allocator/deallocator names (secguard.toml
+	// [allocators]/[deallocators]) so the memory detectors treat wrappers like
+	// nat_malloc/nat_free the same as malloc/free.
+	cfg := config.Load()
+	for _, n := range cfg.AllocatorNames() {
+		apikb.RegisterAllocator(n)
+	}
+	for _, n := range cfg.DeallocatorNames() {
+		apikb.RegisterDeallocator(n)
+	}
 
 	if len(args) == 0 {
 		printUsage()

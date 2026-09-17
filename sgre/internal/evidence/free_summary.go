@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -57,7 +58,7 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, l
 				if !funcLineRange(f, call.StartLine()) {
 					continue
 				}
-				if extractCallName(call) != "free" {
+				if !apikb.IsDeallocator(extractCallName(call)) {
 					continue
 				}
 				args := getCallArgs(call)
@@ -270,7 +271,7 @@ func directFree(stmt parser.Node) (base, field string, ok bool) {
 		return "", "", false
 	}
 	for _, child := range stmt.NamedChildren() {
-		if child.Kind() != "call_expression" || extractCallName(child) != "free" {
+		if child.Kind() != "call_expression" || !apikb.IsDeallocator(extractCallName(child)) {
 			continue
 		}
 		args := getCallArgs(child)

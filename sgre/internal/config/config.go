@@ -23,6 +23,8 @@ type Config struct {
 	BannedFunctions BannedFunctions `toml:"banned_functions"`
 	Exclude         Exclude         `toml:"exclude"`
 	DisabledTypes   DisabledTypes   `toml:"disabled_types"`
+	Allocators      Allocators      `toml:"allocators"`
+	Deallocators    Deallocators    `toml:"deallocators"`
 }
 
 type TrustedMacros struct {
@@ -41,6 +43,27 @@ type TrustedMacros struct {
 //	[banned_functions]
 //	names = ["strcpy", "my_legacy_alloc"]
 type BannedFunctions struct {
+	Names []string `toml:"names"`
+}
+
+// Allocators declares project-specific allocation functions so the memory
+// detectors treat them like malloc (their result may be NULL and must be
+// released). Typical entries are allocation wrappers (nat_malloc) or SDK macros
+// (VOS_MALLOC/VOS_MALLOC_F) whose definitions live outside the scan tree.
+//
+//	[allocators]
+//	names = ["nat_malloc", "llm_malloc", "VOS_MALLOC", "VOS_MALLOC_F"]
+type Allocators struct {
+	Names []string `toml:"names"`
+}
+
+// Deallocators declares project-specific release functions so the memory
+// detectors treat them like free. Typical entries are release wrappers
+// (nat_free) or SDK macros (VOS_FREE/VOS_FREE_F) defined outside the scan tree.
+//
+//	[deallocators]
+//	names = ["nat_free", "llm_free", "VOS_FREE", "VOS_FREE_F"]
+type Deallocators struct {
 	Names []string `toml:"names"`
 }
 
@@ -152,6 +175,22 @@ func (c *Config) BannedFunctionNames() []string {
 		return nil
 	}
 	return c.BannedFunctions.Names
+}
+
+// AllocatorNames returns the project-specific allocation-function names.
+func (c *Config) AllocatorNames() []string {
+	if c == nil {
+		return nil
+	}
+	return c.Allocators.Names
+}
+
+// DeallocatorNames returns the project-specific release-function names.
+func (c *Config) DeallocatorNames() []string {
+	if c == nil {
+		return nil
+	}
+	return c.Deallocators.Names
 }
 
 // ExcludePaths returns the configured directory paths to prune during indexing.

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/graph"
@@ -1100,7 +1101,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		}
 		if callExpr.Kind() == "call_expression" {
 			callName := extractCallName(callExpr)
-			if callName == "malloc" || callName == "realloc" {
+			if apikb.IsAllocator(callName) {
 				mallocVars[varName] = node.StartLine()
 			}
 		}
@@ -1149,7 +1150,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 			}
 		}
 		if rhs.Kind() == "call_expression" {
-			if n := extractCallName(rhs); n == "malloc" || n == "calloc" || n == "realloc" {
+			if n := extractCallName(rhs); apikb.IsAllocator(n) {
 				mallocVars[name] = assign.StartLine()
 				continue
 			}
@@ -1163,10 +1164,10 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 	// (`p->len`). Track per-member writes and whole-block initialization
 	// separately so a read is reported only when THAT member (or the whole block)
 	// has no write on any path.
-	wholeInit := make(map[string]bool)           // var -> whole block initialized
-	initializedFields := make(map[string]bool)   // full field path -> written
-	writePaths := make(map[string]bool)          // field write-target paths (skip in read loop)
-	heapFieldWritten := make(map[string]bool)    // var -> has any member write
+	wholeInit := make(map[string]bool)         // var -> whole block initialized
+	initializedFields := make(map[string]bool) // full field path -> written
+	writePaths := make(map[string]bool)        // field write-target paths (skip in read loop)
+	heapFieldWritten := make(map[string]bool)  // var -> has any member write
 
 	markField := func(base, path string) {
 		initializedFields[path] = true

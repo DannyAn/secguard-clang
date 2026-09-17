@@ -1250,13 +1250,7 @@ func mayReturnPointer(body parser.Node) bool {
 	return false
 }
 
-func isAllocatorCall(name string) bool {
-	switch name {
-	case "malloc", "calloc", "realloc":
-		return true
-	}
-	return false
-}
+func isAllocatorCall(name string) bool { return apikb.IsAllocator(name) }
 
 // fileParseCache lazily parses each file once and caches its root plus a map
 // from function-definition start line to the function's compound_statement

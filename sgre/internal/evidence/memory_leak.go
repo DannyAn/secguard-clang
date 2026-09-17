@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -65,7 +66,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 					if !funcLineRange(f, call.StartLine()) {
 						continue
 					}
-					if extractCallName(call) == "free" {
+					if apikb.IsDeallocator(extractCallName(call)) {
 						freeFuncs[f.ID] = true
 						break
 					}
@@ -278,7 +279,7 @@ func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file
 			}
 			continue
 		}
-		if callName != "free" {
+		if !apikb.IsDeallocator(callName) {
 			continue
 		}
 		for _, child := range call.NamedChildren() {
@@ -566,11 +567,7 @@ func isMallocExpr(expr parser.Node) bool {
 	if expr.Kind() != "call_expression" {
 		return false
 	}
-	switch extractCallName(expr) {
-	case "malloc", "calloc", "realloc":
-		return true
-	}
-	return false
+	return apikb.IsAllocator(extractCallName(expr))
 }
 
 // containsLine reports whether lines contains target.

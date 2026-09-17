@@ -52,6 +52,14 @@ func (d *CRLFInjectionDetector) detectCRLFInjection(ctx context.Context, f *db.F
 		if len(args) > 1 {
 			formatStr = args[1]
 		}
+		// fputs(str, stream) puts the string FIRST and the stream SECOND, unlike
+		// fprintf(stream, fmt, ...). Reading args[0] as the stream name would
+		// name-check the attacker-controlled string instead of the sink stream,
+		// so fputs could never match a protocol-header context.
+		if callName == "fputs" && len(args) >= 2 {
+			fileVarName = bareIdentString(args[1])
+			formatStr = ""
+		}
 
 		if isLogContextByHeuristic(fileVarName, callName) {
 			continue

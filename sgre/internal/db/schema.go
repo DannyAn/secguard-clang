@@ -265,16 +265,6 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, SchemaDDL); err != nil {
 		return fmt.Errorf("db: init schema: exec ddl: %w", err)
 	}
-	// CHECK constraints are baked into CREATE TABLE and cannot be ALTERed, so a
-	// database created by an older version keeps the old CHECK even though
-	// CREATE TABLE IF NOT EXISTS above is a no-op for the existing table. A stale
-	// findings.status CHECK (missing 'auto-confirmed') or security_events.event_type
-	// CHECK (missing DANGEROUS_FUNCTION/SIGNAL_HANDLER) rejects those writes and
-	// silently loses auto-confirm findings / detector evidence. Rebuild only the
-	// tables whose stored SQL is actually stale, so fresh databases are untouched.
-	if err := migrateCheckConstraints(ctx, db); err != nil {
-		return err
-	}
 	// Migrate pre-existing databases that predate the incremental-review schema:
 	// findings.fingerprint is additive, so an old sgre.db (whose findings table
 	// was created without the column) needs the column back-filled as NULL before
@@ -293,8 +283,15 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 	if err := ensureColumn(ctx, db, "scan_runs", "ai_duration_ms", "INTEGER"); err != nil {
 		return fmt.Errorf("db: init schema: ensure scan_runs.ai_duration_ms: %w", err)
 	}
-	// Secondary indexes must run after the CHECK migration (a rebuild drops the
-	// rebuilt table's indexes) and after ensureColumn (idx_findings_fingerprint
+	// scan_stats.ai_stage_status is additive (the AI-classification completion
+	// marker set by `report --complete-type`). A pre-v0.7.4 database lacks the
+	// column; CREATE TABLE IF NOT EXISTS is a no-op on the existing table, so
+	// back-fill it here or ListScanStats/MarkAIStageDone/ListPerTypeStatus fail
+	// with "no such column" on upgrade.
+	if err := ensureColumn(ctx, db, "scan_stats", "ai_stage_status", "TEXT NOT NULL DEFAULT 'pending' CHECK (ai_stage_status IN ('pending', 'done', 'failed'))"); err != nil {
+		return fmt.Errorf("db: init schema: ensure scan_stats.ai_stage_status: %w", err)
+	}
+	// Secondary indexes must run after ensureColumn (idx_findings_fingerprint
 	// references the back-filled fingerprint column).
 	if _, err := db.ExecContext(ctx, secondaryIndexesDDL); err != nil {
 		return fmt.Errorf("db: init schema: create secondary indexes: %w", err)
@@ -344,74 +341,10 @@ func ensureColumn(ctx context.Context, db *sql.DB, table, column, decl string) e
 	return nil
 }
 
-// findingsColumnOrder / securityEventsColumnOrder are the canonical column orders
-// (matching SchemaDDL). A CHECK rebuild copies rows BY NAME against this order so
-// an older table missing additive columns (findings.fingerprint / findings.variable)
-// still migrates correctly — a bare `SELECT *` would silently misalign data once
-// the old and new column counts differ.
-var findingsColumnOrder = []string{
-	"id", "rule_id", "severity", "confidence", "evidence", "status",
-	"file_path", "line_number", "function_name", "variable", "properties",
-	"summary", "reasoning", "fix_strategy", "exception_check", "review_status",
-	"review_reasoning", "scan_id", "fingerprint", "created_at",
-}
-
-var securityEventsColumnOrder = []string{
-	"id", "event_type", "entity_id", "location_id", "properties",
-}
-
-// findingsRebuildDDL / securityEventsRebuildDDL mirror the CREATE TABLE statements
-// in SchemaDDL (minus IF NOT EXISTS) so a stale CHECK can be rebuilt. They must be
-// kept in lockstep with SchemaDDL whenever the table shape changes.
-const findingsRebuildDDL = `CREATE TABLE findings (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    rule_id         TEXT NOT NULL,
-    severity        TEXT CHECK (severity IN ('critical', 'high', 'medium', 'low', 'info')),
-    confidence      REAL CHECK (confidence >= 0.0 AND confidence <= 1.0),
-    evidence        TEXT,
-    status          TEXT DEFAULT 'open' CHECK (status IN ('open', 'confirmed', 'suspected', 'dismissed', 'auto-confirmed')),
-    file_path       TEXT,
-    line_number     INTEGER,
-    function_name   TEXT,
-    variable        TEXT,
-    properties      TEXT,
-    summary         TEXT,
-    reasoning       TEXT,
-    fix_strategy    TEXT,
-    exception_check TEXT,
-    review_status   TEXT CHECK (review_status IS NULL OR review_status = '' OR review_status IN ('confirmed', 'dismissed', 'suspected-kept')),
-    review_reasoning TEXT,
-    scan_id         TEXT,
-    fingerprint     TEXT,
-    created_at      INTEGER
-)`
-
-const securityEventsRebuildDDL = `CREATE TABLE security_events (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_type  TEXT NOT NULL CHECK (event_type IN (
-        'NULL_VALUE', 'DEREFERENCE', 'NULL_GUARD',
-        'MEMORY_ALLOC', 'MEMORY_RELEASE',
-        'RESOURCE_ACQUIRE', 'RESOURCE_RELEASE',
-        'VARIABLE_DECLARE', 'VALUE_USE', 'VALUE_INIT',
-        'BUFFER_ACCESS', 'INTEGER_OP', 'INJECTION',
-        'USE_AFTER_FREE', 'DOUBLE_FREE', 'FORMAT_STRING',
-        'INTEGER_OVERFLOW', 'RACE_CONDITION', 'HARDCODED_SECRET',
-        'DEADLOCK', 'CRYPTO_MISUSE',
-        'DIVIDE_BY_ZERO', 'UNCHECKED_RETURN', 'PATH_TRAVERSAL',
-        'SIZEOF_MISUSE', 'SIGNED_COMPARE', 'SIGNAL_HANDLER', 'DANGEROUS_FUNCTION'
-    )),
-    entity_id   INTEGER,
-    location_id INTEGER,
-    properties  TEXT,
-    FOREIGN KEY(location_id) REFERENCES locations(id) ON DELETE SET NULL
-)`
-
 // secondaryIndexesDDL creates the findings + security_events secondary indexes.
-// They live OUTSIDE SchemaDDL because a CHECK rebuild (rename→create→drop) drops
-// the rebuilt table's indexes, and because idx_findings_fingerprint and the
-// uq_finding_loc unique key reference columns (fingerprint/variable) that are
-// back-filled by ensureColumn on older databases — so they must run after the
-// migration and after ensureColumn, never inside the initial DDL.
+// They live OUTSIDE SchemaDDL because idx_findings_fingerprint references the
+// fingerprint column that ensureColumn back-fills on older databases, so it must
+// run after ensureColumn, never inside the initial DDL.
 const secondaryIndexesDDL = `
 CREATE INDEX IF NOT EXISTS idx_security_events_type ON security_events(event_type);
 CREATE INDEX IF NOT EXISTS idx_security_events_entity ON security_events(entity_id);
@@ -425,107 +358,6 @@ CREATE INDEX IF NOT EXISTS idx_findings_file ON findings(file_path);
 CREATE INDEX IF NOT EXISTS idx_findings_scan_id ON findings(scan_id);
 CREATE INDEX IF NOT EXISTS idx_findings_fingerprint ON findings(fingerprint);
 `
-
-// migrateCheckConstraints rebuilds the tables whose CREATE TABLE CHECK is stale —
-// an old sgre.db whose findings.status CHECK lacks 'auto-confirmed', or whose
-// security_events.event_type CHECK lacks the later event types. CREATE TABLE IF
-// NOT EXISTS cannot back-fill a CHECK on an existing table, so the only path is a
-// rename→create→copy→drop rebuild inside one transaction.
-func migrateCheckConstraints(ctx context.Context, db *sql.DB) error {
-	if err := rebuildTableForCheck(ctx, db, "findings", findingsRebuildDDL, "auto-confirmed", findingsColumnOrder); err != nil {
-		return err
-	}
-	if err := rebuildTableForCheck(ctx, db, "security_events", securityEventsRebuildDDL, "DANGEROUS_FUNCTION", securityEventsColumnOrder); err != nil {
-		return err
-	}
-	return nil
-}
-
-// rebuildTableForCheck inspects the stored CREATE TABLE SQL; when it already
-// contains marker the table is current and nothing happens. Otherwise it rebuilds
-// the table with newDDL, copying existing rows by name so additive column drift
-// cannot misalign data. The whole rebuild is one transaction: a mid-copy failure
-// rolls the rename back and leaves the original table untouched.
-func rebuildTableForCheck(ctx context.Context, db *sql.DB, table, newDDL, marker string, columnOrder []string) error {
-	var sqlText string
-	err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&sqlText)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil
-		}
-		return fmt.Errorf("db: migrate: inspect %s: %w", table, err)
-	}
-	if strings.Contains(sqlText, marker) {
-		return nil
-	}
-
-	oldCols, err := tableColumns(ctx, db, table)
-	if err != nil {
-		return err
-	}
-	oldSet := make(map[string]bool, len(oldCols))
-	for _, c := range oldCols {
-		oldSet[c] = true
-	}
-	common := make([]string, 0, len(columnOrder))
-	for _, c := range columnOrder {
-		if oldSet[c] {
-			common = append(common, c)
-		}
-	}
-
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("db: migrate: begin %s rebuild: %w", table, err)
-	}
-	defer tx.Rollback()
-
-	oldName := table + "__mig_old"
-	if _, err := tx.ExecContext(ctx, `ALTER TABLE `+table+` RENAME TO `+oldName); err != nil {
-		return fmt.Errorf("db: migrate: rename %s: %w", table, err)
-	}
-	if _, err := tx.ExecContext(ctx, newDDL); err != nil {
-		return fmt.Errorf("db: migrate: create %s: %w", table, err)
-	}
-	if len(common) > 0 {
-		cols := strings.Join(common, ", ")
-		if _, err := tx.ExecContext(ctx, `INSERT INTO `+table+` (`+cols+`) SELECT `+cols+` FROM `+oldName); err != nil {
-			return fmt.Errorf("db: migrate: copy %s: %w", table, err)
-		}
-	}
-	if _, err := tx.ExecContext(ctx, `DROP TABLE `+oldName); err != nil {
-		return fmt.Errorf("db: migrate: drop old %s: %w", table, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("db: migrate: commit %s rebuild: %w", table, err)
-	}
-	return nil
-}
-
-// tableColumns returns the column names of a table in schema order.
-func tableColumns(ctx context.Context, db *sql.DB, table string) ([]string, error) {
-	rows, err := db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
-	if err != nil {
-		return nil, fmt.Errorf("db: migrate: pragma table_info(%s): %w", table, err)
-	}
-	defer rows.Close()
-	var cols []string
-	for rows.Next() {
-		var (
-			cid       int
-			name      string
-			ctype     string
-			notnull   int
-			dfltValue sql.NullString
-			pk        int
-		)
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
-			return nil, fmt.Errorf("db: migrate: scan table_info(%s): %w", table, err)
-		}
-		cols = append(cols, name)
-	}
-	return cols, rows.Err()
-}
 
 // ensureFindingLocIndex recreates the findings location-uniqueness index only when
 // it is missing or still the pre-variable 5-column form. This replaces the old

@@ -3,6 +3,7 @@ package planner
 import (
 	"context"
 
+	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
 )
 
@@ -116,10 +117,9 @@ func (m *nullModel) onlyAllocatorSources(variable string) bool {
 			continue
 		}
 		seen = true
-		switch s.origin {
-		case "malloc", "calloc", "realloc":
-			// inherently-nullable allocator
-		default:
+		// Precise set only: a naming-heuristic guess (e.g. a NULL_VALUE whose
+		// origin is a wrapper) must stay "suspected" for the AI, never confirm.
+		if !apikb.IsDeclaredAllocator(s.origin) {
 			return false
 		}
 	}

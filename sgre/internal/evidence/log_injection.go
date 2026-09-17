@@ -45,8 +45,11 @@ func (d *LogInjectionDetector) detectLogInjection(ctx context.Context, f *db.Fun
 		if apikb.IsLogSink(callName) {
 			variable = logTaintVariable(callName, args)
 		} else if apikb.IsLogSinkCandidate(callName) && len(args) >= 2 {
-			fileVarName := bareIdentString(args[0])
-			formatStr := args[1]
+			fileVarName := ioStreamVarName(callName, args)
+			formatStr := ""
+			if len(args) > 1 {
+				formatStr = args[1]
+			}
 			if isProtocolHeaderContext(fileVarName, formatStr) {
 				continue
 			}
@@ -122,4 +125,26 @@ func isStructuredLogAPI(name string) bool {
 		return true
 	}
 	return false
+}
+
+// ioStreamVarName returns the FILE*/stream argument of a stdio sink whose NAME
+// signals the sink context (protocol header vs log file vs data file). The
+// argument position differs per call — fprintf takes the stream first, fputs
+// second (fputs(str, stream)), fwrite fourth (fwrite(data, size, nmemb, stream))
+// — so a uniform args[0] read mislabels fputs/fwrite and silences them. Returns
+// "" for calls with no nameable stream.
+func ioStreamVarName(callName string, args []string) string {
+	idx := -1
+	switch callName {
+	case "fprintf":
+		idx = 0
+	case "fputs":
+		idx = 1
+	case "fwrite":
+		idx = 3
+	}
+	if idx < 0 || idx >= len(args) {
+		return ""
+	}
+	return bareIdentString(args[idx])
 }

@@ -2,6 +2,54 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.7.4] - 2026-09-17
+
+### 注入类多 CWE 覆盖（CWE-88/91/93/117）
+
+`injection` 一个 vuln_type 现覆盖 6 个 CWE，按事件 category 区分：
+
+- **argument_injection (CWE-88)**：`execv*`/`posix_spawn*` 的 argv 数组含非常量元素。
+- **xml_xpath_injection / xml_injection (CWE-91)**：`xmlXPathEvalExpression` 等 XPath 求值、`xmlSAXParseDoc` 等 XML 解析。
+- **crlf_injection (CWE-93)**：向协议头上下文（sock/conn/resp/header，或格式串含 `\r\n`/`Header:`/`Set-Cookie:`）写入非常量值。
+- **log_injection (CWE-117)**：`syslog`/`vsyslog` 或 log 上下文写入非常量消息。
+
+新增 4 个探测器 + apikb 的 sink/sanitizer 表；`VulnTypeSpec.CategoryCWEs` 让 `CWEForCategory`/`TypeForCWE`/`AllCWEs`/SARIF/auto-confirm 按类别解析 CWE；`injection/SKILL.md` 覆盖 6 个 CWE 与边界消歧（CWE-78 vs CWE-88、CWE-93 vs CWE-117）。
+
+### safe-function 扩展（sprintf_s/snprintf_s/vsnprintf_s）
+
+注入探测器把 `sprintf_s`/`snprintf_s` 及 `_s` 变体纳入格式化缓冲区追踪，避免 `sprintf_s(cmd, ..., user); system(cmd)` 漏报。
+
+### uninit：字段敏感堆部分初始化
+
+`detectHeapUninit` 从「一次成员写入即整体已初始化」改为按成员路径跟踪（whole-block memset 与 per-member 写入分离），`p->status=1; use(p->len)` 不再被误判为已初始化。
+
+### dismissed 不持久化（#97）+ AI 阶段完成标记
+
+`report --write-json` 不再为 dismissed 候选写 findings 行（消除写延迟），返回 `skipped_dismissed`；`scan_stats` 新增 `ai_stage_status`（pending/done/failed），由 `report --complete-type <type> --scan-id <id>` 标记；`status --per-type` 以 `ai_stage_status` 为权威信号；审计报告去掉 dismissed/准确率指标；`--write-json`/`--review` 部分写入时返回非零退出码。
+
+### GLM 检视修复（FN/FP/静默失败）
+
+- `crypto_misuse`：`isKeyName` 按词元识别 key（`keyboard`/`turkey`/`monkey` 不再误判）。
+- `null_source`：malloc 按 callee 精确匹配（`pre_malloc_log` 不再误判为分配）。
+- `race_condition`：共享状态写入按 LHS 变量名（`x = global_lookup()` 不再误判）。
+- `graph/interproc`：匿名参数 `continue` 而非 `break`，不切断后续参数数据流。
+- `graph/ownership`：`freopen`/`HeapFree` 释放第 3 参数；补充 `munmap`/`g_free`/`av_free`/`xmlFree`/`sqlite3_free`/`kfree` 等释放函数。
+- `graph/lock_order`：补充 rwlock/spinlock/SRW/mtx 锁。
+- `config`：目录名 `secguard.toml` 不再被误当配置；配置读失败显式告警。
+- `release/lib.sh`：缺失 include 直接失败，不再把 `{{include ...}}` 原文打进产物。
+
+### 零配置分配/释放包装识别
+
+分配/释放识别统一到 `apikb`，分两层：精确层（内置 `malloc/calloc/realloc/free` + 可选 `[allocators]/[deallocators]` 配置）与宽松层（名字含 `alloc`/`free` 即视为分配/释放，fail-open 标 suspected 交 AI 研判）。零配置覆盖 `nat_malloc`/`VOS_MALLOC`/`nat_free`/`VOS_FREE` 等包装——不再漏报 `nat_malloc` 泄漏、不再把 `nat_free` 误报为泄漏。
+
+### 检视修复（本轮人工复核）
+
+- 补 `scan_stats.ai_stage_status` 的 `ensureColumn` 迁移（复用旧库时 `--complete-type`/`status --per-type` 不再 `no such column`）。
+- `--write-json` 退出码改为 `len(errs)>0`（校验丢弃也非零退出）。
+- CRLF `fputs(str,stream)` 与 log `fputs`/`fwrite` 的流参数位置修正。
+- 删除重型 CHECK 约束重建迁移（`migrateCheckConstraints`/`rebuildTableForCheck`），保留轻量 `ensureColumn`。
+- `apikb` 的 `xmlXPathCompiledEval` 注释与实现对齐。
+
 ## [0.7.3] - 2026-09-16
 
 > 对 v0.7.2 那个 null-deref 漏报做**设计层面的完整审视**，把 return-nullability 分析的同类缺口一并根治（不只是补一个 field_expression 点），并把本轮所有"留待后续/暂缓"的项全部闭环。

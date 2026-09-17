@@ -151,3 +151,25 @@ func TestDisabledTypeSet_Empty(t *testing.T) {
 		t.Errorf("zero Config must yield a nil disabled set")
 	}
 }
+
+func TestLoad_AllocatorsDeallocators(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secguard.toml")
+	content := `[allocators]
+names = ["VOS_MALLOC", "VOS_MALLOC_F"]
+
+[deallocators]
+names = ["VOS_FREE", "VOS_FREE_F"]
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	SetExplicitPath(path)
+	cfg := Load()
+	if got := cfg.AllocatorNames(); len(got) != 2 || got[0] != "VOS_MALLOC" || got[1] != "VOS_MALLOC_F" {
+		t.Errorf("allocators = %v, want [VOS_MALLOC VOS_MALLOC_F]", got)
+	}
+	if got := cfg.DeallocatorNames(); len(got) != 2 || got[0] != "VOS_FREE" || got[1] != "VOS_FREE_F" {
+		t.Errorf("deallocators = %v, want [VOS_FREE VOS_FREE_F]", got)
+	}
+}

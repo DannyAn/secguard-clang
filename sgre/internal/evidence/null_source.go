@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -111,7 +112,11 @@ func (d *NullSourceDetector) detectMallocResult(ctx context.Context, f *db.Funct
 		origin := ""
 		for _, call := range children[1].FindAll("call_expression") {
 			name := extractCallName(call)
-			if name == "malloc" || name == "calloc" || name == "realloc" {
+			// Precise set only: the NULL_VALUE "inherently-nullable allocator"
+			// tier must not be seeded by a naming-heuristic guess (pre_malloc_log).
+			// Wrapper coverage for null-deref comes from the return-nullability
+			// fail-open, not from here.
+			if apikb.IsDeclaredAllocator(name) {
 				origin = name
 				break
 			}
@@ -334,11 +339,7 @@ func (d *NullSourceDetector) getNullableReturnFunctions(ctx context.Context) map
 }
 
 func isAllocator(name string) bool {
-	switch name {
-	case "malloc", "calloc", "realloc", "free":
-		return true
-	}
-	return false
+	return apikb.IsAllocatorOrDeallocator(name)
 }
 
 func extractCallName(node parser.Node) string {

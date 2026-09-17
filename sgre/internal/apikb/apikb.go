@@ -6,6 +6,8 @@
 // out of sync. Keep all of it here.
 package apikb
 
+import "strings"
+
 // SafeFunctions are APIs whose use is already memory/injection safe
 // (e.g. the *_s bounds-checked variants, parameterized SQL, mkstemp).
 // Detectors should EXCLUDE these at the syntax level.
@@ -492,9 +494,11 @@ type XMLInjectionSinkSpec struct {
 // evaluation sinks (xmlXPathEvalExpression etc.) carry category
 // xml_xpath_injection; XML parsing sinks (xmlSAXParseDoc etc.) carry
 // xml_injection. xmlXPathCompiledEval is listed so the detector can recognize
-// it and apply the precompiled-expression exemption (when the compiled object
-// is a known constant from xmlXPathCompileExpr, the query is parameterized and
-// safe).
+// it and apply the precompiled-expression exemption: the detector skips it
+// unconditionally because the compiled object's provenance (constant literal vs
+// a tainted xmlXPathCompileExpr argument) requires cross-statement dataflow
+// beyond this heuristic's scope, and a precompiled expression is treated as
+// parameterized/safe.
 var XMLInjectionSinks = map[string]XMLInjectionSinkSpec{
 	"xmlXPathEvalExpression": {TaintArgIdx: 1, Category: "xml_xpath_injection"},
 	"xmlXPathCompiledEval":   {TaintArgIdx: 0, Category: "xml_xpath_injection"},
@@ -603,3 +607,78 @@ var LogSanitizers = map[string]bool{
 
 // IsLogSanitizer reports whether name escapes newlines or validates log messages.
 func IsLogSanitizer(name string) bool { return LogSanitizers[name] }
+
+// BuiltinAllocators are the C allocation APIs whose result may be NULL
+// (inherently nullable) and whose result must be released. Projects extend this
+// set via RegisterAllocator (secguard.toml [allocators]).
+var BuiltinAllocators = map[string]bool{
+	"malloc":  true,
+	"calloc":  true,
+	"realloc": true,
+}
+
+// BuiltinDeallocators are the C release APIs. Projects extend this set via
+// RegisterDeallocator (secguard.toml [deallocators]).
+var BuiltinDeallocators = map[string]bool{
+	"free": true,
+}
+
+// extraAllocators / extraDeallocators hold project-declared allocation/release
+// names registered at CLI startup from secguard.toml. They live at package level
+// so the many detector recognition points consult one merged view without
+// threading config through every constructor. Registration happens once at
+// startup (single-threaded); detection reads are single-threaded per process.
+var (
+	extraAllocators   = map[string]bool{}
+	extraDeallocators = map[string]bool{}
+)
+
+// RegisterAllocator adds a project-specific allocation name (e.g. nat_malloc,
+// VOS_MALLOC) so it is treated like malloc across the memory detectors.
+func RegisterAllocator(name string) {
+	if name != "" {
+		extraAllocators[name] = true
+	}
+}
+
+// RegisterDeallocator adds a project-specific release name (e.g. nat_free,
+// VOS_FREE) so it is treated like free across the memory detectors.
+func RegisterDeallocator(name string) {
+	if name != "" {
+		extraDeallocators[name] = true
+	}
+}
+
+// IsDeclaredAllocator reports whether name is a built-in or project-declared
+// allocation function (the precise set). It does NOT apply the alloc/free
+// naming heuristic, so callers that need certainty — the null-deref "confirmed"
+// tier — use this instead of IsAllocator.
+func IsDeclaredAllocator(name string) bool { return BuiltinAllocators[name] || extraAllocators[name] }
+
+// IsDeclaredDeallocator reports whether name is a built-in or project-declared
+// release function (the precise set).
+func IsDeclaredDeallocator(name string) bool {
+	return BuiltinDeallocators[name] || extraDeallocators[name]
+}
+
+// IsAllocator reports whether name is a recognized allocation function: a
+// built-in / declared allocator, or (zero-config fail-open) any name whose
+// lowercased form contains "alloc" — covering third-party wrappers like
+// nat_malloc, VOS_MALLOC, VOS_MALLOC_F, xmalloc, ngx_alloc. The heuristic is
+// deliberately broad: false positives (e.g. pre_malloc_log) are surfaced as
+// candidates for the AI classifier to dismiss, never silently dropped.
+func IsAllocator(name string) bool {
+	return IsDeclaredAllocator(name) || strings.Contains(strings.ToLower(name), "alloc")
+}
+
+// IsDeallocator reports whether name is a recognized release function: a
+// built-in / declared deallocator, or (zero-config fail-open) any name whose
+// lowercased form contains "free" — covering nat_free, VOS_FREE, VOS_FREE_F,
+// freeaddrinfo, etc. False positives are left to the AI classifier.
+func IsDeallocator(name string) bool {
+	return IsDeclaredDeallocator(name) || strings.Contains(strings.ToLower(name), "free")
+}
+
+// IsAllocatorOrDeallocator reports whether name is any recognized memory
+// allocation or release function.
+func IsAllocatorOrDeallocator(name string) bool { return IsAllocator(name) || IsDeallocator(name) }

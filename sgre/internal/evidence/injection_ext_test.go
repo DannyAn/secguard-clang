@@ -55,3 +55,21 @@ func TestLogInjection_FP(t *testing.T) {
 	runLogInjectionDetector(t, store)
 	assertNoInjectionEventWithCategory(t, store, "log_injection")
 }
+
+// TestCRLFInjection_FputsTP pins the fputs(str, stream) argument order: the
+// stream is the SECOND argument, so `fputs(user_input, sock)` must read "sock"
+// as the sink stream (not "user_input") and emit a crlf_injection event.
+func TestCRLFInjection_FputsTP(t *testing.T) {
+	store := indexFixtureForInjection(t, "tc_crlf_injection_fputs_tp.c")
+	runCRLFInjectionDetector(t, store)
+	assertHasInjectionEventWithCategory(t, store, "crlf_injection")
+}
+
+// TestLogInjection_FputsFwriteTP pins the log-context argument order for
+// fputs(str, stream) and fwrite(data, size, nmemb, stream): the stream is the
+// second / fourth argument, so a log-file stream must still be recognized.
+func TestLogInjection_FputsFwriteTP(t *testing.T) {
+	store := indexFixtureForInjection(t, "tc_log_injection_fputs_tp.c")
+	runLogInjectionDetector(t, store)
+	assertHasInjectionEventWithCategory(t, store, "log_injection")
+}

@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
@@ -228,7 +229,7 @@ func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.No
 			continue
 		}
 
-		if callName == "free" {
+		if apikb.IsDeallocator(callName) {
 			args := getCallArgs(call)
 			for _, arg := range args {
 				switch arg.Kind() {

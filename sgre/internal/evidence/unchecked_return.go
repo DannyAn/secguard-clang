@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
@@ -70,7 +71,7 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 					continue
 				}
 				callee := extractCallName(call)
-				if !uncheckedReturnAPIs[callee] && !passthrough[callee] {
+				if !uncheckedReturnAPIs[callee] && !passthrough[callee] && !apikb.IsAllocator(callee) {
 					continue
 				}
 				if callResultChecked(call) {
@@ -467,7 +468,6 @@ func assignCallee(node parser.Node) (string, string) {
 	}
 	return v, calleeOfExpr(children[1])
 }
-
 
 // returnedCalleeName returns the called function name when a return statement
 // directly returns a call (`return g(...)`), unwrapping casts/parentheses; else "".

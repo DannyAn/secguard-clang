@@ -645,7 +645,7 @@ func constantAllocationSize(bc *bufCtx, f *db.Function, varName string) int {
 			return 0
 		}
 		name := extractCallName(rhs)
-		if name != "malloc" && name != "calloc" && name != "realloc" {
+		if !apikb.IsAllocator(name) {
 			return 0
 		}
 		callArgs := callNamedArguments(rhs)
@@ -1258,7 +1258,7 @@ func heapAllocationSize(bc *bufCtx, f *db.Function, varName string) (string, boo
 			return "", false
 		}
 		name := extractCallName(*call)
-		if name != "malloc" && name != "calloc" && name != "realloc" {
+		if !apikb.IsAllocator(name) {
 			return "", false
 		}
 		args := callNamedArguments(*call)
