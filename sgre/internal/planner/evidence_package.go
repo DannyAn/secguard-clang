@@ -14,6 +14,11 @@ type EvidenceItem struct {
 	MacroContext      bool       `json:"macro_context,omitempty"`
 	Target            TargetInfo `json:"target"`
 	SourceLine        int        `json:"source_line,omitempty"`
+	// Category carries the event's sub-class (e.g. command_injection,
+	// argument_injection, crlf_injection) so report consumers can resolve the
+	// per-category CWE via CWEForCategory(vulnType, category) when a single
+	// vuln_type covers multiple CWEs.
+	Category string `json:"category,omitempty"`
 	// Hint is a compact, Go-precomputed verdict hint rendered in the candidate
 	// index (_index.md) so the AI classifier can usually decide from the row
 	// alone — opening the evidence file / source only when the hint is
@@ -143,6 +148,7 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 			Variable: c.VariableName,
 		},
 		SourceLine: c.SourceLine,
+		Category:   c.Category,
 		Hint:       buildHint(c, spec),
 		Evidence:   spec.BuildEvidence(c),
 	}

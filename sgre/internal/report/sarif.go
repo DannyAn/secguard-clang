@@ -143,6 +143,20 @@ func VulnToCWE(vulnType string) string {
 	return cwe
 }
 
+// VulnToCWEForCategory returns the CWE identifier for a specific category within
+// a vulnerability type, falling back to the type's canonical CWE when the
+// category is not listed in CategoryCWEs. This is the per-category CWE resolver
+// for vuln_types that cover multiple CWEs (e.g. injection's
+// argument_injection→CWE-88, crlf_injection→CWE-93). Returns "CWE-Other" if
+// the vuln_type is not registered.
+func VulnToCWEForCategory(vulnType, category string) string {
+	cwe := planner.CWEForCategory(vulnType, category)
+	if cwe == "" {
+		return "CWE-Other"
+	}
+	return cwe
+}
+
 // sarifLevel maps a finding's severity (impact) and status (evidence verdict)
 // to the SARIF result level. severity drives the level; only a confirmed
 // high/critical finding reads "error". A legacy "suspected" status is capped at
@@ -205,19 +219,19 @@ func (o *ScanOutput) writeCandidatesSarif(packages []*planner.PlanResult) error 
 
 	rulesSeen := map[string]bool{}
 	for _, pkg := range packages {
-		cwe := planner.CWEForType(pkg.VulnerabilityType)
-		if cwe == "" {
-			cwe = "CWE-Other"
-		}
-		if !rulesSeen[cwe] {
-			rulesSeen[cwe] = true
-			rules = append(rules, sarifRule{
-				ID:   cwe,
-				Name: pkg.VulnerabilityType,
-			})
-		}
-
 		for _, c := range pkg.Candidates {
+			cwe := planner.CWEForCategory(pkg.VulnerabilityType, c.Category)
+			if cwe == "" {
+				cwe = "CWE-Other"
+			}
+			if !rulesSeen[cwe] {
+				rulesSeen[cwe] = true
+				rules = append(rules, sarifRule{
+					ID:   cwe,
+					Name: pkg.VulnerabilityType,
+				})
+			}
+
 			// Informational by construction — no candidate has been judged yet.
 			level := "note"
 

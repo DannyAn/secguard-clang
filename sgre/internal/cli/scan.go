@@ -558,8 +558,8 @@ func splitBySuspicion(candidates []planner.EvidenceItem) (confirmed, needsReview
 // onward); a write error aborts the batch (silent false-negatives are not
 // acceptable here), so the caller can fall the remainder back to AI review.
 func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType string, candidates []planner.EvidenceItem, logger *log.Logger) (written int, unwritten []planner.EvidenceItem, err error) {
-	cwe := report.VulnToCWE(vulnType)
 	for i, c := range candidates {
+		cwe := report.VulnToCWEForCategory(vulnType, c.Category)
 		if c.Target.File == "" || c.Target.Line <= 0 {
 			// A candidate with no location cannot be written to findings (the
 			// upsert is keyed on file/line/function). Silently dropping it would

@@ -47,6 +47,14 @@ type VulnTypeSpec struct {
 	// now mapped to CWE-78). They are included in AllCWEs() so old findings
 	// remain writable, but VulnToCWE returns only the canonical CWE.
 	LegacyCWEs []string
+	// CategoryCWEs maps an event category to a CWE identifier, letting one
+	// vuln_type cover multiple CWEs distinguished by category (e.g. the
+	// injection vuln_type maps command_injection→CWE-78, sql_injection→CWE-89,
+	// argument_injection→CWE-88, …). When nil or when the category is not
+	// listed, CWEForCategory falls back to spec.CWE. This is the mechanism by
+	// which a single injection vuln_type + single injection/SKILL.md covers
+	// six CWEs without splitting into separate vuln_types.
+	CategoryCWEs map[string]string
 }
 
 var vulnTypeRegistry = map[string]*VulnTypeSpec{}
@@ -152,6 +160,26 @@ func CWEForType(vulnType string) string {
 	return ""
 }
 
+// CWEForCategory returns the CWE identifier for a specific category within a
+// vulnerability type, using the CategoryCWEs map when available. When the
+// vuln_type has no CategoryCWEs, or the category is not listed, it falls back
+// to the type's canonical CWE. Returns "" if the vuln_type is not registered.
+// This is the per-category CWE source of truth for vuln_types that cover
+// multiple CWEs (e.g. injection: argument_injection→CWE-88,
+// crlf_injection→CWE-93).
+func CWEForCategory(vulnType, category string) string {
+	spec, ok := vulnTypeRegistry[vulnType]
+	if !ok {
+		return ""
+	}
+	if spec.CategoryCWEs != nil {
+		if cwe, found := spec.CategoryCWEs[category]; found {
+			return cwe
+		}
+	}
+	return spec.CWE
+}
+
 // TypeForCWE returns the vulnerability type whose canonical or legacy CWE
 // matches the given CWE identifier (uppercased, trimmed). Returns "" if no type
 // matches. This is used by the audit report to bucket findings by vuln-type, so
@@ -166,6 +194,11 @@ func TypeForCWE(cwe string) string {
 		}
 		for _, legacy := range spec.LegacyCWEs {
 			if strings.ToUpper(legacy) == cweNorm {
+				return name
+			}
+		}
+		for _, catCWE := range spec.CategoryCWEs {
+			if strings.ToUpper(catCWE) == cweNorm {
 				return name
 			}
 		}
@@ -187,6 +220,11 @@ func AllCWEs() map[string]bool {
 		for _, legacy := range spec.LegacyCWEs {
 			if legacy != "" {
 				out[strings.ToUpper(legacy)] = true
+			}
+		}
+		for _, catCWE := range spec.CategoryCWEs {
+			if catCWE != "" {
+				out[strings.ToUpper(catCWE)] = true
 			}
 		}
 	}
@@ -295,9 +333,18 @@ func init() {
 	})
 
 	RegisterVulnType(&VulnTypeSpec{
-		Name:             "injection",
-		CWE:              "CWE-78",
-		LegacyCWEs:       []string{"CWE-89"},
+		Name:       "injection",
+		CWE:        "CWE-78",
+		LegacyCWEs: []string{"CWE-89"},
+		CategoryCWEs: map[string]string{
+			"command_injection":   "CWE-78",
+			"sql_injection":       "CWE-89",
+			"argument_injection":  "CWE-88",
+			"xml_xpath_injection": "CWE-91",
+			"xml_injection":       "CWE-91",
+			"crlf_injection":      "CWE-93",
+			"log_injection":       "CWE-117",
+		},
 		SeedEventType:    "INJECTION",
 		EvidenceType:     "INJECTION",
 		DefaultSuspicion: "suspected",
