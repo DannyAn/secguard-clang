@@ -46,6 +46,17 @@ var SafeWrappers = map[string]bool{
 	"ResourceHandle_destroy": true,
 	"LockGuard_create":       true,
 	"LockGuard_release":      true,
+	"SafeExecArg":            true,
+	"validate_exec_arg":      true,
+	"sanitize_argv":          true,
+	"strip_crlf":             true,
+	"escape_crlf":            true,
+	"validate_header":        true,
+	"sanitize_header_value":  true,
+	"escape_newlines":        true,
+	"strip_newlines":         true,
+	"validate_log":           true,
+	"sanitize_log_message":   true,
 }
 
 // BufferOverflowAPIs are calls whose length is caller-controlled and
@@ -434,3 +445,161 @@ func SQLExecSinkIdx(name string) (int, bool) {
 	idx, ok := SQLExecSinks[name]
 	return idx, ok
 }
+
+// ArgumentInjectionSinks maps a process-startup API to the 0-based index of its
+// argument-array (argv) parameter — the parameter whose elements are the
+// command-line arguments to the spawned program. execv* passes argv at index 1
+// (after the path); posix_spawn* passes argv at index 4 (after pid, path,
+// file_actions, attrp). The detector flags a NON-CONSTANT element in that array
+// as CWE-88 argument injection. The path argument (index 0 for execv*, index 1
+// for posix_spawn*) is NOT checked here — a tainted path is CWE-78 command
+// injection, handled by the existing InjectionDetector.
+var ArgumentInjectionSinks = map[string]int{
+	"execv":        1,
+	"execvp":       1,
+	"execve":       1,
+	"execl":        1,
+	"execlp":       1,
+	"execle":       1,
+	"posix_spawn":  4,
+	"posix_spawnp": 4,
+}
+
+// ArgumentInjectionArgvIdx reports the argv parameter index of a process-startup
+// API, or (0, false) when name is not an argument-injection sink.
+func ArgumentInjectionArgvIdx(name string) (int, bool) {
+	idx, ok := ArgumentInjectionSinks[name]
+	return idx, ok
+}
+
+// IsArgumentInjectionSink reports whether name is a process-startup API whose
+// argument array is an argument-injection sink (CWE-88).
+func IsArgumentInjectionSink(name string) bool {
+	_, ok := ArgumentInjectionSinks[name]
+	return ok
+}
+
+// XMLInjectionSinkSpec describes an XML/XPath sink's taint parameter: which
+// argument index carries the attacker-influenced query/document, and which
+// category the resulting event should carry (xml_xpath_injection for XPath
+// evaluation, xml_injection for XML parsing).
+type XMLInjectionSinkSpec struct {
+	TaintArgIdx int
+	Category    string
+}
+
+// XMLInjectionSinks maps an XML/XPath API to its taint-parameter spec. XPath
+// evaluation sinks (xmlXPathEvalExpression etc.) carry category
+// xml_xpath_injection; XML parsing sinks (xmlSAXParseDoc etc.) carry
+// xml_injection. xmlXPathCompiledEval is listed so the detector can recognize
+// it and apply the precompiled-expression exemption (when the compiled object
+// is a known constant from xmlXPathCompileExpr, the query is parameterized and
+// safe).
+var XMLInjectionSinks = map[string]XMLInjectionSinkSpec{
+	"xmlXPathEvalExpression": {TaintArgIdx: 1, Category: "xml_xpath_injection"},
+	"xmlXPathCompiledEval":   {TaintArgIdx: 0, Category: "xml_xpath_injection"},
+	"xmlXPathEval":           {TaintArgIdx: 1, Category: "xml_xpath_injection"},
+	"xmlSAXParseDoc":         {TaintArgIdx: 1, Category: "xml_injection"},
+	"xmlParseDoc":            {TaintArgIdx: 0, Category: "xml_injection"},
+	"xmlReadDoc":             {TaintArgIdx: 1, Category: "xml_injection"},
+	"xsltApplyStylesheet":    {TaintArgIdx: 1, Category: "xml_injection"},
+}
+
+// XMLInjectionSinkSpecByName reports the taint-parameter spec of an XML/XPath
+// sink, or (zero, false) when name is not a recognized XML sink.
+func XMLInjectionSinkSpecByName(name string) (XMLInjectionSinkSpec, bool) {
+	spec, ok := XMLInjectionSinks[name]
+	return spec, ok
+}
+
+// IsXMLInjectionSink reports whether name is an XML/XPath injection sink (CWE-91).
+func IsXMLInjectionSink(name string) bool {
+	_, ok := XMLInjectionSinks[name]
+	return ok
+}
+
+// CRLFSinkCandidates lists the generic I/O functions that MAY be CRLF-injection
+// sinks (CWE-93) when they write to a protocol-header / HTTP-response context.
+// The detector applies a heuristic (the FILE* variable name contains
+// sock/conn/socket/resp/header, or the format string contains \r\n / HTTP /
+// Header: / Set-Cookie: / Content-Type:) to decide whether the call is a
+// protocol-header write. A bare fprintf to an arbitrary FILE* is NOT a CRLF
+// sink — the heuristic must confirm the protocol-header context.
+var CRLFSinkCandidates = map[string]bool{
+	"fprintf":  true,
+	"fputs":    true,
+	"snprintf": true,
+	"send":     true,
+	"write":    true,
+}
+
+// IsCRLFSinkCandidate reports whether name is a generic I/O function that may be
+// a CRLF-injection sink subject to the protocol-header heuristic.
+func IsCRLFSinkCandidate(name string) bool { return CRLFSinkCandidates[name] }
+
+// LogSinks lists functions that are UNCONDITIONALLY log sinks (CWE-117): their
+// purpose is logging by definition, so no heuristic is needed.
+var LogSinks = map[string]bool{
+	"syslog":  true,
+	"vsyslog": true,
+}
+
+// IsLogSink reports whether name is an unconditional log sink (CWE-117).
+func IsLogSink(name string) bool { return LogSinks[name] }
+
+// LogSinkCandidates lists generic I/O functions that MAY be log sinks (CWE-117)
+// when they write to a log-file context. The detector applies a heuristic (the
+// FILE* variable name contains log/logfile/audit/fp_log) to decide.
+var LogSinkCandidates = map[string]bool{
+	"fprintf": true,
+	"fputs":   true,
+	"fwrite":  true,
+}
+
+// IsLogSinkCandidate reports whether name is a generic I/O function that may be
+// a log sink subject to the log-file heuristic.
+func IsLogSinkCandidate(name string) bool { return LogSinkCandidates[name] }
+
+// ArgumentSanitizers are functions that validate/sanitize an exec argument
+// array, making the argument-injection candidate safe (dismissed).
+var ArgumentSanitizers = map[string]bool{
+	"SafeExecArg":       true,
+	"validate_exec_arg": true,
+	"sanitize_argv":     true,
+}
+
+// IsArgumentSanitizer reports whether name sanitizes an exec argument array.
+func IsArgumentSanitizer(name string) bool { return ArgumentSanitizers[name] }
+
+// XMLSanitizers are functions that parameterize/bind an XPath expression,
+// making the XML-injection candidate safe (dismissed).
+var XMLSanitizers = map[string]bool{
+	"xmlXPathRegisterVariable": true,
+}
+
+// IsXMLSanitizer reports whether name parameterizes an XPath expression.
+func IsXMLSanitizer(name string) bool { return XMLSanitizers[name] }
+
+// CRLFSanitizers are functions that strip/escape CRLF characters or validate
+// header values, making the CRLF-injection candidate safe (dismissed).
+var CRLFSanitizers = map[string]bool{
+	"strip_crlf":            true,
+	"escape_crlf":           true,
+	"validate_header":       true,
+	"sanitize_header_value": true,
+}
+
+// IsCRLFSanitizer reports whether name strips/escapes CRLF or validates headers.
+func IsCRLFSanitizer(name string) bool { return CRLFSanitizers[name] }
+
+// LogSanitizers are functions that escape/strip newlines or validate log
+// messages, making the log-injection candidate safe (dismissed).
+var LogSanitizers = map[string]bool{
+	"escape_newlines":      true,
+	"strip_newlines":       true,
+	"validate_log":         true,
+	"sanitize_log_message": true,
+}
+
+// IsLogSanitizer reports whether name escapes newlines or validates log messages.
+func IsLogSanitizer(name string) bool { return LogSanitizers[name] }
