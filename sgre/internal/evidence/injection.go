@@ -211,7 +211,7 @@ func hasFormatSpecifier(s string) bool {
 func (d *InjectionDetector) detectTaintFlowInjection(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node, result *DetectResult) {
 	formattedBuffers := make(map[string]int)
 
-	wsprintfNames := map[string]bool{"wsprintfA": true, "wsprintfW": true, "sprintf": true, "snprintf": true}
+	wsprintfNames := map[string]bool{"wsprintfA": true, "wsprintfW": true, "sprintf": true, "snprintf": true, "sprintf_s": true, "snprintf_s": true}
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
 			continue
@@ -225,7 +225,14 @@ func (d *InjectionDetector) detectTaintFlowInjection(ctx context.Context, f *db.
 			continue
 		}
 		bufName := args[0]
-		fmtStr := args[1]
+		fmtIdx := 1
+		if callName == "snprintf" || callName == "sprintf_s" || callName == "snprintf_s" {
+			fmtIdx = 2
+		}
+		if len(args) <= fmtIdx {
+			continue
+		}
+		fmtStr := args[fmtIdx]
 		if strings.Contains(fmtStr, "%s") || strings.Contains(fmtStr, "%d") ||
 			strings.Contains(fmtStr, "%i") || strings.Contains(fmtStr, "%u") ||
 			strings.Contains(fmtStr, "%x") || strings.Contains(fmtStr, "%c") {

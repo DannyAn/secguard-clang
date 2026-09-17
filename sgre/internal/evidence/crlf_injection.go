@@ -110,7 +110,8 @@ func traceSnprintfCRLF(root parser.Node, f *db.Function, sinkCallName string, si
 			continue
 		}
 		name := extractCallName(call)
-		if name != "snprintf" && name != "sprintf" {
+		if name != "snprintf" && name != "sprintf" &&
+			name != "snprintf_s" && name != "sprintf_s" {
 			continue
 		}
 		args := extractCallArgs(call)
@@ -121,7 +122,7 @@ func traceSnprintfCRLF(root parser.Node, f *db.Function, sinkCallName string, si
 			continue
 		}
 		fmtIdx := 1
-		if name == "snprintf" {
+		if name == "snprintf" || name == "snprintf_s" || name == "sprintf_s" {
 			fmtIdx = 2
 		}
 		if len(args) <= fmtIdx {
