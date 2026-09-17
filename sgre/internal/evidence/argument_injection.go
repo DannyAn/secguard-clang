@@ -27,13 +27,13 @@ func (d *ArgumentInjectionDetector) Detect(ctx context.Context) (DetectResult, e
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		calls := root.FindAll("call_expression")
 		for _, f := range funcs {
-			d.detectArgumentInjection(ctx, f, file, calls, &result)
+			d.detectArgumentInjection(ctx, f, file, calls, root, &result)
 		}
 	})
 	return result, err
 }
 
-func (d *ArgumentInjectionDetector) detectArgumentInjection(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node, result *DetectResult) {
+func (d *ArgumentInjectionDetector) detectArgumentInjection(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node, root parser.Node, result *DetectResult) {
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
 			continue
@@ -53,6 +53,13 @@ func (d *ArgumentInjectionDetector) detectArgumentInjection(ctx context.Context,
 			continue
 		}
 
+		if isExecvArrayForm(callName) {
+			variable = traceLocalArrayTaint(root, f, variable, call.StartLine())
+			if variable == "" {
+				continue
+			}
+		}
+
 		if emitEvent(ctx, d.store, d.logger, "INJECTION", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
 			"function":   callName,
 			"category":   "argument_injection",
@@ -62,6 +69,43 @@ func (d *ArgumentInjectionDetector) detectArgumentInjection(ctx context.Context,
 			result.EventsCreated++
 		}
 	}
+}
+
+// traceLocalArrayTaint checks whether a local array variable (e.g. argv) has an
+// element assigned from a bare identifier — typically a function parameter —
+// before the sink line. If `argv[1] = user_input` is found, it returns
+// "user_input" so the taint-source filter can track the parameter. If no element
+// assignment from a bare identifier is found, the variable stays as-is (the
+// taint-source filter will decide).
+func traceLocalArrayTaint(root parser.Node, f *db.Function, arrayVar string, sinkLine int) string {
+	if root.Kind() == "" {
+		return arrayVar
+	}
+	for _, assign := range root.FindAll("assignment_expression") {
+		if assign.StartLine() >= sinkLine {
+			continue
+		}
+		if !funcLineRange(f, assign.StartLine()) {
+			continue
+		}
+		lhs := assign.ChildByFieldName("left")
+		rhs := assign.ChildByFieldName("right")
+		if lhs == nil || rhs == nil {
+			continue
+		}
+		if lhs.Kind() != "subscript_expression" {
+			continue
+		}
+		arrChild := lhs.NamedChildren()
+		if len(arrChild) == 0 || arrChild[0].Text() != arrayVar {
+			continue
+		}
+		taintVar := bareIdentString(rhs.Text())
+		if taintVar != "" && taintVar != arrayVar {
+			return taintVar
+		}
+	}
+	return arrayVar
 }
 
 // argumentInjectionVariable returns the bare identifier of the first non-constant

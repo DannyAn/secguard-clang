@@ -42,6 +42,14 @@ var commandInjectionSinks = map[string]bool{
 	"execve":           true,
 }
 
+func isExecvFamilyNoShell(name string) bool {
+	switch name {
+	case "execv", "execvp", "execve", "execl", "execlp", "execle":
+		return true
+	}
+	return false
+}
+
 func (d *InjectionDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
@@ -69,6 +77,10 @@ func (d *InjectionDetector) detectCommandInjection(ctx context.Context, f *db.Fu
 		taint := "none"
 		if !isConstantCommandArg(call) {
 			taint = "flow"
+		}
+
+		if isExecvFamilyNoShell(callName) && isConstantCommandArg(call) {
+			continue
 		}
 
 		// variable: the sink argument when it is a bare identifier, so the
