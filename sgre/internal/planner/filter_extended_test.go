@@ -49,7 +49,7 @@ func TestSafeFunctionFilter_ArgumentInjectionSafeWrapper(t *testing.T) {
 	}
 }
 
-func TestSafeFunctionFilter_CommandInjectionExecveStillDropped(t *testing.T) {
+func TestSafeFunctionFilter_CommandInjectionExecveTaintedPathKept(t *testing.T) {
 	store := db.NewTestStore(t)
 	f := NewSafeFunctionFilter(store)
 	ctx := context.Background()
@@ -61,10 +61,30 @@ func TestSafeFunctionFilter_CommandInjectionExecveStillDropped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply failed: %v", err)
 	}
+	if len(kept) != 1 {
+		t.Errorf("command_injection + execve with tainted path should be kept for taint-source filter, got kept=%d", len(kept))
+	}
+	if len(dropped) != 0 {
+		t.Errorf("command_injection + execve with tainted path should not be dropped, got dropped=%d", len(dropped))
+	}
+}
+
+func TestSafeFunctionFilter_CommandInjectionExecveConstPathDropped(t *testing.T) {
+	store := db.NewTestStore(t)
+	f := NewSafeFunctionFilter(store)
+	ctx := context.Background()
+
+	candidates := []Candidate{
+		{FunctionName: "my_func", APIName: "execve", Category: "command_injection", VariableName: "", Line: 10},
+	}
+	kept, dropped, err := f.Apply(ctx, candidates)
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
 	if len(kept) != 0 {
-		t.Errorf("command_injection + execve should still be dropped by IsSafeFunction, got kept=%d", len(kept))
+		t.Errorf("command_injection + execve with constant path should be dropped, got kept=%d", len(kept))
 	}
 	if len(dropped) != 1 {
-		t.Errorf("command_injection + execve should still be dropped, got dropped=%d", len(dropped))
+		t.Errorf("command_injection + execve with constant path should be dropped, got dropped=%d", len(dropped))
 	}
 }

@@ -16,6 +16,15 @@ func NewSafeFunctionFilter(store db.Store) *SafeFunctionFilter {
 	return &SafeFunctionFilter{store: store}
 }
 
+func isExecvFamily(name string) bool {
+	switch name {
+	case "execv", "execvp", "execve", "execl", "execlp", "execle",
+		"posix_spawn", "posix_spawnp":
+		return true
+	}
+	return false
+}
+
 func (f *SafeFunctionFilter) Name() string { return "safe_function_exclude" }
 
 func (f *SafeFunctionFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, []Dismissed, error) {
@@ -46,6 +55,10 @@ func (f *SafeFunctionFilter) Apply(ctx context.Context, candidates []Candidate) 
 				dropped = dismiss(dropped, c, f.Name(), fmt.Sprintf("function %s is a safe wrapper for argument injection", c.FunctionName))
 				continue
 			}
+			kept = append(kept, c)
+			continue
+		}
+		if c.Category == "command_injection" && isExecvFamily(c.APIName) && c.VariableName != "" {
 			kept = append(kept, c)
 			continue
 		}
