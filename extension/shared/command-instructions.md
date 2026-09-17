@@ -304,10 +304,17 @@ as `result.sarif`.)
      Do NOT read source or the candidate file. Batch all confirmed verdicts into
      one write call.
    - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null`/`tainted`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`macro-context`); for divide-by-zero a `divisor@bare` row is settled from `Source` alone (no evidence open). When the hint is insufficient, open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source) and, if STILL insufficient, a raw source read within the ≤5-read budget — then classify. Only after spending that budget may you write `dismissed` (with a cited reason); never write `dismissed` without reading when the hint was insufficient. A `macro-context` hint means a macro is in play — open the `## Code Context` and verify the macro before `confirmed`.
-   Write findings in ONE batch: write `<tmpdir>/<type>.json` with the Write tool,
-   then `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
-   Never skip a type. Obey the context budget (no per-candidate source reads;
-   no skill for a 0-candidate type).
+    Write **confirmed** findings in ONE batch: write `<tmpdir>/<type>.json`
+    containing only confirmed findings with the Write tool, then
+    `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
+    Dismissed candidates are not written in any batch. After classifying all
+    candidates of a type (confirmed written + dismissed not written), call
+    `secguard report --complete-type <type> --scan-id <scan_id> --db <db_path>`
+    to mark the type's AI stage done (sets ai_stage_status='done'). This is REQUIRED
+    for the orchestrator's resume logic (`status --per-type` terminal_state) to
+    correctly report `done`.
+    Never skip a type. Obey the context budget (no per-candidate source reads;
+    no skill for a 0-candidate type).
 **调度时序合规规则 (F3):** All subagent dispatches SHALL occur in a single assistant turn — N `Agent`/`task` calls issued consecutively with the first-to-last timestamp span ≤ 10s. (Claude Code's subagent-dispatch tool is `Agent`; older Claude Code versions name it `Task`.) The orchestrator SHALL NOT split dispatches across turns. After dispatch, while subagents run, the orchestrator SHALL NOT poll their transcripts or issue `sleep`.
 
 **子代理返回模型 (F7) — 这是"任务卡住不结束/结果丢失/重复下发"的根因，必读：** 三个平台的返回模型不同，绝不可混用：
@@ -390,8 +397,10 @@ as `result.sarif`.)
     filename), then immediately
     `secguard report --write-json <scan_dir>/../../.sgre/.tmp/<type>-partN.json --scan-id <scan_id> --db <scan_dir>/../../.sgre/sgre.db`
     before starting the next chunk. The write is idempotent, so partial progress is safe.
-   Report back, per type: confirmed / dismissed counts (suspected is not a
-   verdict) + the written finding ids.
+    Report back, per type: confirmed count + the written finding ids. Dismissed
+    count is not persisted (not counted, not reported). After reporting, call
+    `secguard report --complete-type <type> --scan-id <scan_id> --db <db_path>`
+    to mark the type's AI stage done (sets ai_stage_status='done').
    ```
    For many types, batch them — but NEVER exceed `MAX_TYPES_PER_BATCH` (4) types
    per subagent, and validate `batch_type_count × 12 < 54` before dispatching. A
@@ -402,13 +411,13 @@ as `result.sarif`.)
    **DB schema 速查 (列名别猜 — 猜一个不存在的列如 `f.type` 会白费 1~2 轮 `secguard schema` 往返):**
    Prefer structured tools over raw SQL — every count you need already has one:
    - per-type candidate/written → `secguard status --per-type --scan-id <id>` (`candidate_count`/`written_count`/`terminal_state`, no SQL).
-   - per-type verdict split → `secguard report --audit --scan-id <id> --output-dir <dir>` returns an `audits` array (`vuln_type`/`confirmed`/`dismissed`/`auto_confirmed`; `suspected` is a legacy field, always 0). Sum that array for the report — do NOT raw-query `findings` to recompute it.
+    - per-type verdict split → `secguard report --audit --scan-id <id> --output-dir <dir>` returns an `audits` array (`vuln_type`/`confirmed`/`auto_confirmed`/`ai_stage_status`; `dismissed` and `suspected` are not present — dismissed candidates are not persisted). `ai_stage_status` values: `pending` (AI stage not done), `done` (AI stage complete), `failed` (AI stage failed, reserved). Sum that array for the report — do NOT raw-query `findings` to recompute it.
     **findings/ 里的 confirmed 文件 ≠ 子代理报告的 confirmed（auto-confirmed 已落库）:** `findings/<type>/NNN_*_confirmed.md` 是两类之和——(a) `auto-confirmed`：pipeline 在 scan 阶段直接机器确认的确定性发现（divide-by-zero 的 `divisor@field`/`global`、null-deref 的 certain-null、uninit 的 certain-uninit 等），它们**不在** `candidates/_index.md` 里、子代理从来看不到；(b) 子代理写的 `confirmed`。所以 findings/ 的 confirmed 文件数可以明显大于子代理报告的数，多出的就是 auto-confirmed，**不是漏报也不是子代理说错**。最终计数一律以 `report --audit` 的 `audits` 数组（含 `auto_confirmed` 字段）为准，不要 `ls findings/` 反推、不要为这个对账。
    **DB 路径（绝对路径，否则 Exit code 1）:** every `secguard db` / `secguard schema` / `secguard report` call that takes `--db` MUST pass the ABSOLUTE path `<scan_dir>/../../.sgre/sgre.db`. A relative `.sgre/sgre.db` fails with `Error: Exit code 1` whenever your cwd is not the project root — do NOT retry it as-is; re-run with the ABSOLUTE path. **Do NOT `cd` into the scan dir to "fix" it:** commands run WITHOUT `--db` (`secguard plan`/`status`/`metrics`/`query` and `report --audit`) resolve the DB relative to cwd, so cd'ing into the scan dir would mint a second, empty `sgre.db` under the scan dir (doubling build time and splitting findings across two databases). Keep cwd at the project root for the whole run.
-   **`unclassified_candidates` 不是漏写（同变量合并）:** `report --audit` reports `unclassified_candidates = final_count − (confirmed+dismissed)`. Because `--write-json` UPSERTs keyed on `(scan_id, rule_id, file, line, function, variable)`, candidates for the SAME variable at the SAME file:line:function collapse into ONE finding (per-type dedup like null-deref's one-finding-per-variable), so `findings` count < `candidate_count` is NORMAL — it is not a context-overflow and not a missing write. Two DISTINCT variables on one line are now two findings (the key includes `variable`). Do NOT inspect the schema or raw-query `findings` to "persist" those; trust `secguard status --per-type --scan-id <id>` (`written_count`) instead.
+    **dismissed 不持久化，`final_count − confirmed` 不是漏写:** dismissed candidates are intentionally NOT persisted (no finding row, no count). When `ai_stage_status='done'` for a type, the AI has processed all candidates — the `final_count − confirmed` gap is the dismissed count, which is normal, not a missing write. When `ai_stage_status='pending'` the type is in-progress (reported by `status --per-type`, not as unclassified). Because `--write-json` UPSERTs keyed on `(scan_id, rule_id, file, line, function, variable)`, candidates for the SAME variable at the SAME file:line:function collapse into ONE finding. Do NOT inspect the schema or raw-query `findings` to "persist" dismissed; trust `secguard status --per-type --scan-id <id>` (`written_count`/`terminal_state`/`ai_stage_status`) instead.
    If you MUST raw-query, run `secguard schema <table>` first, or use these exact names — never guess:
-   - `findings`: `id, rule_id (CWE, e.g. CWE-476 — there is NO type/vuln_type column), severity, status (confirmed|suspected|dismissed|auto-confirmed), file_path (NOT file), line_number (NOT line), function_name, scan_id, review_status`
-   - `scan_stats`: `scan_id, vuln_type (kebab-case type name), seed_count, final_count`
+    - `findings`: `id, rule_id (CWE, e.g. CWE-476 — there is NO type/vuln_type column), severity, status (confirmed|auto-confirmed for new scans; legacy dismissed/suspected rows tolerated but ignored), file_path (NOT file), line_number (NOT line), function_name, scan_id, review_status`
+    - `scan_stats`: `scan_id, vuln_type (kebab-case type name), seed_count, final_count, ai_stage_status (pending|done|failed)`
 
    **上报解析与 DB 二次校验 (F5):** For each subagent result, parse by `format_version`
    to know which types it was ASSIGNED, but do NOT trust its self-reported `reason`

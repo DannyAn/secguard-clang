@@ -89,10 +89,7 @@ func (o ScanOverview) DismissedTotal() int { return o.AIDismissed }
 // Headline is the one-sentence verdict a reader (or the console) leads with.
 func (o ScanOverview) Headline() string {
 	if o.ConfirmedTotal() == 0 {
-		if o.AIDismissed > 0 {
-			return fmt.Sprintf("This scan reported no confirmed issue: all %d converged %s reviewed and dismissed.",
-				o.AIDismissed, plural(o.AIDismissed, "candidate was", "candidates were"))
-		}
+
 		return "This scan reported no confirmed issue."
 	}
 	s := fmt.Sprintf("This scan reported %d confirmed %s.",
@@ -222,7 +219,7 @@ func (o ScanOverview) VerdictMarkdown() string {
 	fmt.Fprintf(&b, "| Confirmed findings | %d |\n", o.ConfirmedTotal())
 	fmt.Fprintf(&b, "| — proved by the pipeline (auto-confirmed, no AI review) | %d |\n", o.AutoConfirmed)
 	fmt.Fprintf(&b, "| — classified by the AI | %d |\n", o.AIConfirmed)
-	fmt.Fprintf(&b, "| Dismissed | %d |\n", o.DismissedTotal())
+
 	fmt.Fprintf(&b, "| Actionable findings (confirmed) | %d |\n", o.ActionableTotal())
 	if o.Unclassified > 0 {
 		fmt.Fprintf(&b, "| Candidates without a persisted verdict | %d |\n", o.Unclassified)
@@ -281,9 +278,7 @@ func (o ScanOverview) SummaryFields() map[string]interface{} {
 		"converged_candidates":    o.Candidates,
 		"auto_confirmed":          o.AutoConfirmed,
 		"ai_confirmed":            o.AIConfirmed,
-		"ai_dismissed":            o.AIDismissed,
 		"confirmed_total":         o.ConfirmedTotal(),
-		"dismissed_total":         o.DismissedTotal(),
 		"actionable_total":        o.ActionableTotal(),
 		"unclassified_candidates": o.Unclassified,
 		"types_scanned":           o.TypesScanned,

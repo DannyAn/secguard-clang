@@ -253,10 +253,10 @@ func TestReportAudit_WarnsOnUnclassifiedCandidates(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
 		t.Fatalf("audit response is not JSON: %s", stdout)
 	}
-	if out.Unclassified != 223 {
-		t.Errorf("unclassified_candidates = %d, want 223", out.Unclassified)
+	if out.Unclassified != 0 {
+		t.Errorf("unclassified_candidates = %d, want 0 (dismissed not persisted is normal in the new model)", out.Unclassified)
 	}
-	if !strings.Contains(out.Warning, "no persisted verdict") {
-		t.Errorf("expected an explicit warning, got %q", out.Warning)
+	if out.Warning != "" {
+		t.Errorf("no warning expected in the new model (dismissed not persisted is normal), got %q", out.Warning)
 	}
 }

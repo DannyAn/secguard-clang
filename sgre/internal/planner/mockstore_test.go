@@ -409,6 +409,9 @@ func (s *mockStore) ListFindingsByScanID(ctx context.Context, scanID string) ([]
 func (s *mockStore) ListPerTypeStatus(ctx context.Context, scanID string, cweForType func(string) string) ([]*db.PerTypeStatus, error) {
 	return nil, nil
 }
+func (s *mockStore) MarkAIStageDone(ctx context.Context, scanID, vulnType string) error {
+	return nil
+}
 
 func (s *mockStore) UpsertScanRun(ctx context.Context, r *db.ScanRun) error { return nil }
 func (s *mockStore) GetScanRun(ctx context.Context, scanID string) (*db.ScanRun, error) {

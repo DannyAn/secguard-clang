@@ -25,7 +25,7 @@ func (s *store) InsertScanStat(ctx context.Context, stat *ScanStat) (int64, erro
 
 func (s *store) ListScanStats(ctx context.Context, scanID string) ([]*ScanStat, error) {
 	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, scan_id, vuln_type, seed_count, final_count, filter_chain, created_at FROM scan_stats WHERE scan_id = ? ORDER BY vuln_type`, scanID)
+		`SELECT id, scan_id, vuln_type, seed_count, final_count, filter_chain, ai_stage_status, created_at FROM scan_stats WHERE scan_id = ? ORDER BY vuln_type`, scanID)
 	if err != nil {
 		return nil, fmt.Errorf("db: list scan_stats: %w", err)
 	}
@@ -33,7 +33,7 @@ func (s *store) ListScanStats(ctx context.Context, scanID string) ([]*ScanStat, 
 	var stats []*ScanStat
 	for rows.Next() {
 		st := &ScanStat{}
-		if err := rows.Scan(&st.ID, &st.ScanID, &st.VulnType, &st.SeedCount, &st.FinalCount, &st.FilterChain, &st.CreatedAt); err != nil {
+		if err := rows.Scan(&st.ID, &st.ScanID, &st.VulnType, &st.SeedCount, &st.FinalCount, &st.FilterChain, &st.AIStageStatus, &st.CreatedAt); err != nil {
 			return nil, fmt.Errorf("db: scan scan_stat: %w", err)
 		}
 		stats = append(stats, st)
@@ -88,14 +88,14 @@ func (s *store) ListPerTypeStatus(ctx context.Context, scanID string, cweForType
 	}
 
 	cweCounts := make(map[string]int)
-	// written_count counts AI-written verdicts only (confirmed/dismissed — the
-	// binary verdict). Auto-confirmed rows (status='auto-confirmed') are machine
-	// verdicts and are excluded, so the resume check compares final_count (the
-	// candidates the AI must classify, i.e. suspected/possible) against the
-	// number the AI actually wrote — an AI pass that never ran stays 0 even when
-	// the pipeline auto-confirmed a chunk of the type.
+	// written_count counts AI-written confirmed verdicts only. Dismissed
+	// candidates are not persisted (no finding row), and auto-confirmed rows
+	// are machine verdicts excluded so the resume check compares final_count
+	// (the candidates the AI must classify) against the number the AI actually
+	// wrote — an AI pass that never ran stays 0 even when the pipeline
+	// auto-confirmed a chunk of the type.
 	rows, err := s.exec.QueryContext(ctx,
-		`SELECT rule_id, COUNT(*) FROM findings WHERE scan_id = ? AND status != 'auto-confirmed' GROUP BY rule_id`, scanID)
+		`SELECT rule_id, COUNT(*) FROM findings WHERE scan_id = ? AND status = 'confirmed' GROUP BY rule_id`, scanID)
 	if err != nil {
 		return nil, fmt.Errorf("db: list per-type status: count findings: %w", err)
 	}
@@ -124,25 +124,52 @@ func (s *store) ListPerTypeStatus(ctx context.Context, scanID string, cweForType
 			CWE:            cwe,
 			CandidateCount: st.FinalCount,
 			WrittenCount:   written,
-			TerminalState:  inferTerminalState(st.FinalCount, written),
+			TerminalState:  inferTerminalStateByAIStageStatus(st.AIStageStatus, st.FinalCount, written),
+			AIStageStatus:  st.AIStageStatus,
 		})
 	}
 	return result, nil
 }
 
-// inferTerminalState classifies a type's progress from candidate vs written
-// counts. The orchestrator uses this to decide what to resume: "done" types are
-// skipped, "in-progress"/"pending" are re-dispatched, and a "pending" that is
-// still 0 after a retry is promoted to failed by the orchestrator.
-func inferTerminalState(candidate, written int) string {
-	if candidate == 0 {
+// inferTerminalStateByAIStageStatus classifies a type's progress from its
+// ai_stage_status plus candidate/confirmed counts. The orchestrator uses this
+// to decide what to resume: "done" types are skipped, "in-progress"/"pending"
+// are re-dispatched, "failed" is surfaced as a type the AI stage could not
+// settle. ai_stage_status is the authoritative signal — confirmed_count only
+// disambiguates "pending" (AI not started) from "in-progress" (AI wrote some).
+func inferTerminalStateByAIStageStatus(aiStageStatus string, finalCount, confirmedCount int) string {
+	switch aiStageStatus {
+	case "done":
 		return "done"
-	}
-	if written >= candidate {
-		return "done"
-	}
-	if written == 0 {
+	case "failed":
+		return "failed"
+	default:
+		if finalCount == 0 {
+			return "done"
+		}
+		if confirmedCount > 0 {
+			return "in-progress"
+		}
 		return "pending"
 	}
-	return "in-progress"
+}
+
+// MarkAIStageDone marks the AI classification stage done for a (scan_id,
+// vuln_type) pair by setting ai_stage_status='done'. It is the single write
+// entry point for the done state; 'failed' is reserved for future error
+// reporting. Idempotent: re-running on an already-done row is a no-op.
+func (s *store) MarkAIStageDone(ctx context.Context, scanID, vulnType string) error {
+	res, err := s.exec.ExecContext(ctx,
+		`UPDATE scan_stats SET ai_stage_status = 'done' WHERE scan_id = ? AND vuln_type = ?`, scanID, vulnType)
+	if err != nil {
+		return fmt.Errorf("db: mark ai_stage_done: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("db: mark ai_stage_done: rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("db: mark ai_stage_done: no scan_stats for (scan_id=%q, vuln_type=%q)", scanID, vulnType)
+	}
+	return nil
 }

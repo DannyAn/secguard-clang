@@ -215,13 +215,14 @@ type ReviewSession struct {
 }
 
 type ScanStat struct {
-	ID          int64  `json:"id"`
-	ScanID      string `json:"scan_id"`
-	VulnType    string `json:"vuln_type"`
-	SeedCount   int    `json:"seed_count"`
-	FinalCount  int    `json:"final_count"`
-	FilterChain string `json:"filter_chain"`
-	CreatedAt   int64  `json:"created_at"`
+	ID            int64  `json:"id"`
+	ScanID        string `json:"scan_id"`
+	VulnType      string `json:"vuln_type"`
+	SeedCount     int    `json:"seed_count"`
+	FinalCount    int    `json:"final_count"`
+	FilterChain   string `json:"filter_chain"`
+	AIStageStatus string `json:"ai_stage_status"`
+	CreatedAt     int64  `json:"created_at"`
 }
 
 // ScanRun is the scan-level performance/convergence summary written once per
@@ -262,6 +263,7 @@ type PerTypeStatus struct {
 	CandidateCount int    `json:"candidate_count"`
 	WrittenCount   int    `json:"written_count"`
 	TerminalState  string `json:"terminal_state"`
+	AIStageStatus  string `json:"ai_stage_status"`
 }
 
 type FunctionSummary struct {

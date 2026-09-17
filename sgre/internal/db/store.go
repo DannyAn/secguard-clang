@@ -129,6 +129,7 @@ type ScanStatStore interface {
 	CountFindingsByScanAndStatus(ctx context.Context, scanID, status string) (int, error)
 	ListFindingsByScanID(ctx context.Context, scanID string) ([]*Finding, error)
 	ListPerTypeStatus(ctx context.Context, scanID string, cweForType func(string) string) ([]*PerTypeStatus, error)
+	MarkAIStageDone(ctx context.Context, scanID, vulnType string) error
 }
 
 type ScanRunStore interface {

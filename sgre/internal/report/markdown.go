@@ -46,7 +46,7 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding,
 	groups := []findingGroup{}
 	groupIdx := map[string]int{}
 
-	confirmed, suspected, dismissed := 0, 0, 0
+	confirmed, suspected := 0, 0
 	autoConfirmed := 0
 	for _, f := range findings {
 		status := f.FinalStatus()
@@ -58,9 +58,6 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding,
 			}
 		case "suspected":
 			suspected++
-			continue
-		case "dismissed":
-			dismissed++
 			continue
 		default:
 			continue
@@ -93,13 +90,12 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding,
 	overview.AutoConfirmed = autoConfirmed
 	overview.AIConfirmed = confirmed - autoConfirmed
 	overview.AISuspected = suspected
-	overview.AIDismissed = dismissed
 
 	var b strings.Builder
 
 	b.WriteString("# SecGuard Security Scan Report\n\n")
 	b.WriteString("> This report reflects **AI-classified confirmed findings**.\n")
-	b.WriteString("> Dismissed findings (including undecidable ones) are excluded. Pipeline candidates are in `candidates/`.\n\n")
+	b.WriteString("> Only confirmed findings are persisted; dismissed candidates are not recorded. Pipeline candidates are in `candidates/`.\n\n")
 
 	b.WriteString(overview.MetadataMarkdown())
 	b.WriteString(overview.VerdictMarkdown())

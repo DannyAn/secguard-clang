@@ -202,10 +202,11 @@ budget your effort, not to pre-judge the answer:
   a bounds check, which would require an operand to reach SIZE_MAX). Triage these
   last and promote one only when you can show a reachable, realistic overflow.
 
-Your persisted classification (`confirmed`/`dismissed`) is what matters;
-`suspicion_level` only tells you how hard to look. A skill's `false-positive`
-verdict IS `status: "dismissed"` — never write the literal string `false-positive`
-into the `status` field (it is not a valid status and rejects the whole batch).
+Your persisted classification is `confirmed` only — dismissed candidates are NOT
+persisted (no finding, no count, no report). `suspicion_level` only tells you how
+hard to look. A skill's `false-positive` verdict means dismissed: do NOT write a
+finding for it. Never write the literal string `false-positive` into the `status`
+field (it is not a valid status and rejects the whole batch).
 
 ## Write discipline
 
@@ -243,8 +244,9 @@ The `<type>.json` file MUST be a JSON array of objects with EXACTLY these keys
 ]
 ```
 
-`rule_id` is the CWE (e.g. CWE-476); `status` is one of `confirmed` / `dismissed`
-— and ONLY those two (a skill's `false-positive` maps to `dismissed`). `file` is
+`rule_id` is the CWE (e.g. CWE-476); `status` is `confirmed` — the only value
+that reaches the DB. `dismissed` candidates are not written: do not include them
+in the array. `file` is
 the source path, `line` the line number, `function` the
 function name. `variable` is the sink/source variable the finding is about (the
 dereferenced pointer, the leaked allocation, the divisor, …) — copy it from the
@@ -257,23 +259,25 @@ or a single finding object, the write still succeeds (the CLI accepts all three
 shapes and validates an embedded `scan_id` like `--scan-id`) — but the bare array
 is the contract; do not mix shapes in one file.
 
-Every candidate must get a finding (confirmed or dismissed) — never skip writing,
-never dismiss a batch in prose only. For every **confirmed** finding fill
-`reasoning`, `exception_check`, and `fix_strategy`; for **dismissed** fill
-`reasoning` (why it is safe OR why it is undecidable). These are persisted into the
-per-finding Markdown, so a reviewer sees *why* you believe it, not just *what*.
+Every **confirmed** candidate must get a finding persisted via `--write-json` —
+never skip writing a confirmed finding. **Dismissed** candidates are NOT written,
+NOT counted, NOT reported: do not create a finding object for them. For every
+confirmed finding fill `reasoning`, `exception_check`, and `fix_strategy`. The
+dismissed reasoning stays in your transcript (the conversation record) — it is not
+persisted to the DB.
 
-**Large types: split into ≤200-finding batches, persist EACH batch immediately.**
-This is a HARD rule, not a suggestion. You SHALL NOT build one giant JSON array
-for a type with many candidates — the array plus your classification notes
-overflow the context window and the tail candidates get silently dropped (the
-"200 landed, 4 missing" failure). For any type with more than ~200 candidates,
-you SHALL write and persist in chunks, and you SHALL NOT start classifying the
-next chunk until the current chunk's `--write-json` has returned:
+**Large types: split confirmed findings into ≤200-finding batches, persist
+EACH batch immediately.** Dismissed candidates are not written in any batch (not
+counted, not batched). This is a HARD rule, not a suggestion. You SHALL NOT build
+one giant JSON array for a type with many confirmed findings — the array plus your
+classification notes overflow the context window and the tail findings get silently
+dropped (the "200 landed, 4 missing" failure). For any type with more than ~200
+confirmed findings, you SHALL write and persist in chunks, and you SHALL NOT start
+classifying the next chunk until the current chunk's `--write-json` has returned:
 
-1. classify + write `<tmpdir>/<type>-part1.json` (≤200 findings) → `--write-json` it
-2. classify + write `<tmpdir>/<type>-part2.json` (next ≤200) → `--write-json` it
-3. …repeat until every candidate is written.
+1. classify + write `<tmpdir>/<type>-part1.json` (≤200 confirmed) → `--write-json` it
+2. classify + write `<tmpdir>/<type>-part2.json` (next ≤200 confirmed) → `--write-json` it
+3. …repeat until every confirmed finding is written.
 
 The write is idempotent (re-running updates, never duplicates), so partial
 progress survives even if a later chunk overflows the context — you lose only the
@@ -289,6 +293,13 @@ re-reads and re-writes the whole report each time, which is exactly the redundan
 backfill that stretches a large type's wall-clock time — and a `finalize: true` on
 the last chunk only duplicates the orchestrator's audit.
 
+**After the final chunk of a type** (or immediately if the type has zero confirmed
+findings), call `secguard report --complete-type <type> --scan-id <scan_id>` to
+mark the type's AI stage done (sets `ai_stage_status='done'`). This is REQUIRED
+for the orchestrator's resume logic (`status --per-type` terminal_state) to
+correctly report `done` — without it the type reads as `in-progress`/`pending`
+and may be re-dispatched.
+
 **Keep each field SHORT — your verdicts are JSON that must fit in context, not an
 essay.** `summary` ≤ one line. `reasoning` ≤ 2 short sentences (source → sink →
 the one missing guard; do NOT restate the whole function). `exception_check` ≤
@@ -297,8 +308,9 @@ whose detector already proved it (constant OOB, weak crypto, unchecked malloc
 deref) needs ONE sentence of reasoning, not three.
 
 Check the write response — the batch `--write-json` path returns `status`
-(`ok`/`partial`), `findings_written` (count), `written` (array of
-`{file, line, id}`), `failed_count`, and, on failure,
+(`ok`/`partial`), `findings_written` (count), `skipped_dismissed` (count of
+dismissed rows skipped, if any were sent for backward compatibility), `written`
+(array of `{file, line, id}`), `failed_count`, and, on failure,
 `failed_details` + `errors`. A `failed_count > 0` / `status: "partial"` means some
 findings did NOT land: read `failed_details`/`errors`, fix the call (usually a
 missing `scan_id`/`output_dir`), and write that chunk again. (The single-finding

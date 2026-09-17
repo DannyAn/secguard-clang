@@ -14,16 +14,14 @@ func TestWriteAuditReport_IncludesAIValueSummary(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "audit-report.md")
 	audits := []vulnAuditEntry{
-		// Suspected is always 0 now (binary verdict); an undecidable candidate is
-		// counted as dismissed.
-		{VulnType: "buffer-overflow", SeedCount: 12, FinalCount: 11, AutoConfirmed: 3, Confirmed: 8, Suspected: 0, Dismissed: 3},
-		{VulnType: "out-of-bounds", SeedCount: 1, FinalCount: 1, Confirmed: 0, Suspected: 0, Dismissed: 0},
+		{VulnType: "buffer-overflow", SeedCount: 12, FinalCount: 11, AutoConfirmed: 3, Confirmed: 8, Suspected: 0, AIStageStatus: "done"},
+		{VulnType: "out-of-bounds", SeedCount: 1, FinalCount: 1, Confirmed: 0, Suspected: 0, AIStageStatus: "pending"},
 	}
 	overview := report.ScanOverview{
 		ScanID: "test-scan", HasScanMetrics: true, FilesIndexed: 26, FunctionsIndexed: 173,
 		FilesInIndex: 26, LinesOfCode: 9001,
 		TargetPath: "/repo/zlib", RawSeeds: 13, Candidates: 12, AutoConfirmed: 3,
-		AIConfirmed: 8, AISuspected: 1, AIDismissed: 2, TypesScanned: 20, TypesWithFindings: 1,
+		AIConfirmed: 8, AISuspected: 1, AIDismissed: 0, TypesScanned: 20, TypesWithFindings: 1,
 	}
 
 	if err := writeAuditReport(path, "test-scan", audits, overview); err != nil {
@@ -40,14 +38,8 @@ func TestWriteAuditReport_IncludesAIValueSummary(t *testing.T) {
 		"| Raw evidence seeds | 13 |",
 		"| Auto-confirmed by pipeline (no AI review) | 3 |",
 		"| Candidates needing AI review (suspected/possible) | 12 |",
-		"| Candidates classified by AI | 11 |",
-		"| Candidates without AI classification | 1 |",
 		"| AI confirmed (actionable, with fix suggestion) | 8 |",
-		"| AI dismissed (incl. undecidable, evidence recorded) | 3 |",
 		"| Actionable findings for human review (confirmed) | 11 |",
-		// The audit report must open with the same scan-scale + headline block
-		// report.md shows, so the two artifacts answer "how big was this scan"
-		// and "what was the bottom line" identically.
 		"## Scan Overview",
 		"| Codebase scale | 26 files / 173 functions / 9001 lines |",
 		"| Target | `/repo/zlib` |",

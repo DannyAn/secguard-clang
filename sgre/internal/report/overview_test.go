@@ -226,7 +226,7 @@ func TestScanOverview_NoFindingsHeadlineStatesSo(t *testing.T) {
 	if got := ov.Headline(); !strings.Contains(got, "no confirmed issue") {
 		t.Errorf("a scan with only dismissed verdicts must say so plainly, got %q", got)
 	}
-	if !strings.Contains(ov.VerdictMarkdown(), "| Dismissed | 4 |") {
-		t.Errorf("dismissed count must still be reported:\n%s", ov.VerdictMarkdown())
+	if strings.Contains(ov.VerdictMarkdown(), "| Dismissed |") {
+		t.Errorf("VerdictMarkdown must not render a Dismissed row (dismissed not persisted):\n%s", ov.VerdictMarkdown())
 	}
 }

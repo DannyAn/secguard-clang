@@ -155,13 +155,14 @@ CREATE TABLE IF NOT EXISTS findings (
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS scan_stats (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    scan_id       TEXT NOT NULL,
-    vuln_type     TEXT NOT NULL,
-    seed_count    INTEGER NOT NULL,
-    final_count   INTEGER NOT NULL,
-    filter_chain  TEXT,
-    created_at    INTEGER
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id         TEXT NOT NULL,
+    vuln_type       TEXT NOT NULL,
+    seed_count      INTEGER NOT NULL,
+    final_count     INTEGER NOT NULL,
+    filter_chain    TEXT,
+    ai_stage_status TEXT NOT NULL DEFAULT 'pending' CHECK (ai_stage_status IN ('pending', 'done', 'failed')),
+    created_at      INTEGER
 );
 
 -- ============================================================

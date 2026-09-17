@@ -141,6 +141,7 @@ Flags:
   --id <n>                 Finding id to review
   --review-status <s>      Review verdict: confirmed | dismissed
   --review-reasoning <r>   One-line review justification
+  --complete-type <type>   Mark AI stage done for a vulnerability type (sets ai_stage_status=done)
   --db <path>              Path to sgre.db
   --help, -h               Show this usage
 
@@ -148,7 +149,7 @@ Flags:
   [{"rule_id":"CWE-476","severity":"high","confidence":90,"status":"confirmed",
     "file":"src/a.c","line":42,"function":"f","summary":"...","reasoning":"...",
     "exception_check":"...","fix_strategy":"..."}]
-  rule_id is the CWE; status is confirmed | dismissed (binary — no suspected). A single
+  rule_id is the CWE; status is confirmed (dismissed candidates are not written — skipped). A single
   finding object, or an object {"scan_id":"...","findings":[...]}, is also
   accepted. The write is idempotent (UPSERT on scan_id+rule_id+file+line+function).
 

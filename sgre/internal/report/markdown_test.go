@@ -163,10 +163,8 @@ func TestWriteReportFromFindings_ShowsActionable(t *testing.T) {
 	if strings.Contains(content, "Suspected findings") {
 		t.Errorf("summary must not render a Suspected findings row (binary verdict):\n%s", content)
 	}
-	// Legacy "suspected" (suspected-kept) reads as dismissed under the binary
-	// model, so the dismissed count includes it: safe_check + risky_copy = 2.
-	if !strings.Contains(content, "| Dismissed | 2 |") {
-		t.Errorf("summary should count 2 dismissed (incl. legacy suspected):\n%s", content)
+	if strings.Contains(content, "| Dismissed |") {
+		t.Errorf("summary must not render a Dismissed row (dismissed not persisted):\n%s", content)
 	}
 }
 
@@ -258,8 +256,8 @@ func TestWriteReportFromFindings_RespectsReviewStatus(t *testing.T) {
 	if strings.Contains(content, "| Confirmed findings | 1 |") {
 		t.Errorf("A5 review_status=dismissed must override first-pass confirmed:\n%s", content)
 	}
-	if !strings.Contains(content, "| Dismissed | 1 |") {
-		t.Errorf("dismissed count should reflect A5 override:\n%s", content)
+	if strings.Contains(content, "| Dismissed |") {
+		t.Errorf("summary must not render a Dismissed row (dismissed not persisted):\n%s", content)
 	}
 }
 

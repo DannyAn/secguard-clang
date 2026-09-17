@@ -114,8 +114,10 @@ func parseIntFlag(args []string, flag string) int {
 }
 
 func hasFlag(args []string, flag string) bool {
+	prefix := "--" + flag + "="
+	flagName := "--" + flag
 	for _, a := range args {
-		if a == "--"+flag {
+		if a == flagName || strings.HasPrefix(a, prefix) {
 			return true
 		}
 	}
@@ -459,6 +461,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 			f  *db.Finding
 		}
 		pending := make([]*pendingWrite, 0, len(inputs))
+		skippedDismissed := 0
 		for i := range inputs {
 			in := &inputs[i]
 			confidence := float64(in.Confidence)
@@ -484,6 +487,10 @@ func runReportCmd(ctx context.Context, args []string) int {
 			if serr != nil {
 				WriteErrorJSON(fmt.Sprintf("invalid status %q at %s:%d — expected confirmed|dismissed", in.Status, in.File, in.Line))
 				return 1
+			}
+			if status == "dismissed" {
+				skippedDismissed++
+				continue
 			}
 
 			cweNorm := strings.ToUpper(strings.TrimSpace(in.RuleID))
@@ -553,11 +560,12 @@ func runReportCmd(ctx context.Context, args []string) int {
 		}
 
 		out := map[string]interface{}{
-			"status":           "ok",
-			"findings_written": len(written),
-			"written":          written,
-			"scan_id":          scanID,
-			"failed_count":     len(failedDetails),
+			"status":            "ok",
+			"findings_written":  len(written),
+			"skipped_dismissed": skippedDismissed,
+			"written":           written,
+			"scan_id":           scanID,
+			"failed_count":      len(failedDetails),
 		}
 		if len(failedDetails) > 0 {
 			out["failed_details"] = failedDetails
@@ -572,6 +580,61 @@ func runReportCmd(ctx context.Context, args []string) int {
 		if len(failedDetails) > 0 {
 			return 1
 		}
+		return 0
+	}
+
+	if hasFlag(remaining, "complete-type") {
+		vulnType := parseStringFlag(remaining, "complete-type")
+		scanID := parseStringFlag(remaining, "scan-id")
+		if vulnType == "" {
+			WriteErrorJSON("--complete-type requires a vulnerability type argument")
+			return 1
+		}
+		if scanID == "" {
+			WriteErrorJSON("--complete-type requires --scan-id")
+			return 1
+		}
+		stats, err := store.ListScanStats(ctx, scanID)
+		if err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to validate scan_id: %v", err))
+			return 1
+		}
+		if len(stats) == 0 {
+			WriteErrorJSON(fmt.Sprintf("unknown scan_id %q: no scan_stats found for this id", scanID))
+			return 1
+		}
+		known := false
+		for _, t := range planner.AllVulnTypes() {
+			if t == vulnType {
+				known = true
+				break
+			}
+		}
+		if !known {
+			WriteErrorJSON(fmt.Sprintf("unsupported vuln_type %q: not a registered vulnerability type", vulnType))
+			return 1
+		}
+		found := false
+		for _, st := range stats {
+			if st.VulnType == vulnType {
+				found = true
+				break
+			}
+		}
+		if !found {
+			WriteErrorJSON(fmt.Sprintf("no scan_stats for (scan_id=%q, vuln_type=%q)", scanID, vulnType))
+			return 1
+		}
+		if err := store.MarkAIStageDone(ctx, scanID, vulnType); err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to mark ai_stage_done: %v", err))
+			return 1
+		}
+		WriteJSON(map[string]interface{}{
+			"scan_id":         scanID,
+			"vuln_type":       vulnType,
+			"ai_stage_status": "done",
+			"status":          "ok",
+		})
 		return 0
 	}
 
@@ -750,7 +813,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 		// every downstream report resolves source + embeds code context.
 		scanFindings = dedupeAndNormalizeFindings(ctx, store, scanFindings)
 		type vulnCounts struct {
-			confirmed, suspected, dismissed, autoConfirmed int
+			confirmed, suspected, autoConfirmed int
 		}
 		countsByVuln := make(map[string]*vulnCounts)
 		for _, f := range scanFindings {
@@ -774,8 +837,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 				countsByVuln[vt].confirmed++
 			case "suspected":
 				countsByVuln[vt].suspected++
-			case "dismissed":
-				countsByVuln[vt].dismissed++
+
 			}
 		}
 
@@ -792,8 +854,8 @@ func runReportCmd(ctx context.Context, args []string) int {
 				Filters:       st.FilterChain,
 				Confirmed:     vc.confirmed,
 				Suspected:     vc.suspected,
-				Dismissed:     vc.dismissed,
 				AutoConfirmed: vc.autoConfirmed,
+				AIStageStatus: st.AIStageStatus,
 			})
 		}
 
@@ -810,7 +872,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 		// `report --audit` run without an output dir still surfaces them: a
 		// converged candidate with no persisted verdict is a silent false
 		// negative unless the JSON the orchestrator reads says so.
-		unclassified := unclassifiedCandidates(audits)
+
 		orphans := countFindingsWithoutScanID(ctx, store)
 
 		if outputDir != "" {
@@ -876,16 +938,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 				// counts with no total at all).
 				"summary": overview.SummaryFields(),
 			}
-			// Every converged candidate is supposed to receive a persisted
-			// verdict. A nonzero remainder means verdicts exist only in the
-			// agent's prose — the exact gap that made a console "已排除误报"
-			// note disagree with the database and with findings/. Report it in
-			// the same response the agent reads, not just inside the audit
-			// markdown a human might never open.
-			if unclassified > 0 {
-				out["unclassified_candidates"] = unclassified
-				out["warning"] = fmt.Sprintf("%d converged candidate(s) have no persisted verdict — an exclusion stated only in prose is not recorded. Write a finding (confirmed|dismissed) for every candidate.", unclassified)
-			}
+
 			// A finding with no scan_id has no scan directory, so its verdict
 			// file cannot be placed or reconciled. Surface it instead of
 			// letting the review surface be quietly incomplete.
@@ -899,10 +952,6 @@ func runReportCmd(ctx context.Context, args []string) int {
 				"scan_id": scanID,
 				"audits":  audits,
 				"summary": overview.SummaryFields(),
-			}
-			if unclassified > 0 {
-				out["unclassified_candidates"] = unclassified
-				out["warning"] = fmt.Sprintf("%d converged candidate(s) have no persisted verdict — an exclusion stated only in prose is not recorded. Write a finding (confirmed|dismissed) for every candidate.", unclassified)
 			}
 			if orphans > 0 {
 				out["findings_without_scan_id"] = orphans
@@ -967,7 +1016,7 @@ func buildScanOverview(ctx context.Context, store db.Store, scanID string, stats
 		ov.AutoConfirmed += a.AutoConfirmed
 		ov.AIConfirmed += a.Confirmed
 		ov.AISuspected += a.Suspected
-		ov.AIDismissed += a.Dismissed
+
 		if a.AutoConfirmed+a.Confirmed+a.Suspected > 0 {
 			ov.TypesWithFindings++
 		}
@@ -1031,8 +1080,8 @@ type vulnAuditEntry struct {
 	Filters       string `json:"filter_chain"`
 	Confirmed     int    `json:"confirmed"`
 	Suspected     int    `json:"suspected"`
-	Dismissed     int    `json:"dismissed"`
 	AutoConfirmed int    `json:"auto_confirmed"`
+	AIStageStatus string `json:"ai_stage_status"`
 }
 
 func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overview report.ScanOverview) error {
@@ -1053,38 +1102,26 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overvie
 	b.WriteString(overview.MetadataMarkdown())
 	b.WriteString(overview.HeadlineMarkdown())
 	b.WriteString("## Per-Skill Pipeline Statistics\n\n")
-	b.WriteString("| Vulnerability Type | Seed | Final | Auto-confirmed | AI Confirmed | AI Dismissed | Filter Efficiency | AI Accuracy |\n")
-	b.WriteString("|---|---|---|---|---|---|---|---|\n")
+	b.WriteString("| Vulnerability Type | Seed | Final | Auto-confirmed | AI Confirmed | AI Stage | Filter Efficiency |\n")
+	b.WriteString("|---|---|---|---|---|---|---|\n")
 
-	totalSeed, totalFinal, totalAutoConfirmed, totalConfirmed, totalDismissed := 0, 0, 0, 0, 0
+	totalSeed, totalFinal, totalAutoConfirmed, totalConfirmed := 0, 0, 0, 0
 	for _, a := range audits {
 		filterEff := "n/a"
 		if a.SeedCount > 0 {
 			filterEff = fmt.Sprintf("%.0f%%", float64(a.SeedCount-a.FinalCount)/float64(a.SeedCount)*100)
 		}
-		aiAcc := "n/a"
-		classified := a.Confirmed + a.Dismissed
-		if classified > 0 {
-			aiAcc = fmt.Sprintf("%.0f%%", float64(a.Confirmed)/float64(classified)*100)
-		}
-		b.WriteString(fmt.Sprintf("| %s | %d | %d | %d | %d | %d | %s | %s |\n",
-			a.VulnType, a.SeedCount, a.FinalCount, a.AutoConfirmed, a.Confirmed, a.Dismissed, filterEff, aiAcc))
+		b.WriteString(fmt.Sprintf("| %s | %d | %d | %d | %d | %s | %s |\n",
+			a.VulnType, a.SeedCount, a.FinalCount, a.AutoConfirmed, a.Confirmed, a.AIStageStatus, filterEff))
 		totalSeed += a.SeedCount
 		totalFinal += a.FinalCount
 		totalAutoConfirmed += a.AutoConfirmed
 		totalConfirmed += a.Confirmed
-		totalDismissed += a.Dismissed
 	}
 
-	b.WriteString(fmt.Sprintf("| **TOTAL** | **%d** | **%d** | **%d** | **%d** | **%d** |", totalSeed, totalFinal, totalAutoConfirmed, totalConfirmed, totalDismissed))
+	b.WriteString(fmt.Sprintf("| **TOTAL** | **%d** | **%d** | **%d** | **%d** | — |", totalSeed, totalFinal, totalAutoConfirmed, totalConfirmed))
 	if totalSeed > 0 {
-		b.WriteString(fmt.Sprintf(" **%.0f%%** |", float64(totalSeed-totalFinal)/float64(totalSeed)*100))
-	} else {
-		b.WriteString(" n/a |")
-	}
-	totalClassified := totalConfirmed + totalDismissed
-	if totalClassified > 0 {
-		b.WriteString(fmt.Sprintf(" **%.0f%%** |\n\n", float64(totalConfirmed)/float64(totalClassified)*100))
+		b.WriteString(fmt.Sprintf(" **%.0f%%** |\n\n", float64(totalSeed-totalFinal)/float64(totalSeed)*100))
 	} else {
 		b.WriteString(" n/a |\n\n")
 	}
@@ -1093,31 +1130,18 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overvie
 	// explicit and auditable. Every converged candidate should receive a
 	// classification; a nonzero "without AI classification" count is a process
 	// gap (e.g. a candidate whose skill was not loaded), not a design feature.
-	classifiedByAI := totalConfirmed + totalDismissed
-	unclassified := totalFinal - classifiedByAI
-	if unclassified < 0 {
-		unclassified = 0
-	}
 	b.WriteString("## AI Value Summary\n\n")
 	b.WriteString("| Metric | Value |\n")
 	b.WriteString("|--------|-------|\n")
 	fmt.Fprintf(&b, "| Raw evidence seeds | %d |\n", totalSeed)
 	fmt.Fprintf(&b, "| Auto-confirmed by pipeline (no AI review) | %d |\n", totalAutoConfirmed)
 	fmt.Fprintf(&b, "| Candidates needing AI review (suspected/possible) | %d |\n", totalFinal)
-	fmt.Fprintf(&b, "| Candidates classified by AI | %d |\n", classifiedByAI)
-	fmt.Fprintf(&b, "| Candidates without AI classification | %d |\n", unclassified)
 	fmt.Fprintf(&b, "| AI confirmed (actionable, with fix suggestion) | %d |\n", totalConfirmed)
-	fmt.Fprintf(&b, "| AI dismissed (incl. undecidable, evidence recorded) | %d |\n", totalDismissed)
 	fmt.Fprintf(&b, "| Actionable findings for human review (confirmed) | %d |\n", totalAutoConfirmed+totalConfirmed)
 	if totalSeed > 0 {
-		fmt.Fprintf(&b, "| Pipeline filter efficiency | %.0f%% |\n", float64(totalSeed-totalFinal)/float64(totalSeed)*100)
+		fmt.Fprintf(&b, "| Pipeline filter efficiency | %.0f%% |\n\n", float64(totalSeed-totalFinal)/float64(totalSeed)*100)
 	} else {
-		b.WriteString("| Pipeline filter efficiency | n/a |\n")
-	}
-	if totalClassified > 0 {
-		fmt.Fprintf(&b, "| AI accuracy (confirmed / confirmed+dismissed) | %.0f%% |\n\n", float64(totalConfirmed)/float64(totalClassified)*100)
-	} else {
-		b.WriteString("| AI accuracy (confirmed / confirmed+dismissed) | n/a |\n\n")
+		b.WriteString("| Pipeline filter efficiency | n/a |\n\n")
 	}
 
 	b.WriteString("## Filter Chain Details\n\n")
@@ -1128,7 +1152,7 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overvie
 		if a.Filters != "" {
 			b.WriteString(fmt.Sprintf("- **Filter chain:** `%s`\n", a.Filters))
 		}
-		b.WriteString(fmt.Sprintf("- **AI classification:** auto-confirmed=%d, confirmed=%d, dismissed=%d\n\n", a.AutoConfirmed, a.Confirmed, a.Dismissed))
+		b.WriteString(fmt.Sprintf("- **AI classification:** auto-confirmed=%d, confirmed=%d, ai_stage_status=%s\n\n", a.AutoConfirmed, a.Confirmed, a.AIStageStatus))
 	}
 
 	return os.WriteFile(auditPath, []byte(b.String()), 0644)
@@ -1215,18 +1239,13 @@ func countFindingsWithoutScanID(ctx context.Context, store db.Store) int {
 	return n
 }
 
-// unclassifiedCandidates counts converged candidates that received no persisted
-// verdict at all. It is the machine-checkable form of "every candidate must get
-// a finding": a bulk exclusion the agent only narrated shows up here.
+// unclassifiedCandidates is retained for buildScanOverview's overview.Unclassified
+// field. Under the "dismissed not persisted" model a type's AI stage is either
+// done (ai_stage_status='done', every candidate settled) or in-progress (reported
+// by `status --per-type`), so there is no "prose-only exclusion" gap to flag —
+// the function returns 0.
 func unclassifiedCandidates(audits []vulnAuditEntry) int {
-	total := 0
-	for _, a := range audits {
-		remainder := a.FinalCount - (a.Confirmed + a.Suspected + a.Dismissed)
-		if remainder > 0 {
-			total += remainder
-		}
-	}
-	return total
+	return 0
 }
 
 // findingInput is one row of a `--write-json` payload: the single-finding object
