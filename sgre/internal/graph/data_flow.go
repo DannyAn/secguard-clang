@@ -110,5 +110,3 @@ func (b *DataFlowBuilder) detectPointerReturns(ctx context.Context, f *db.Functi
 		}
 	}
 }
-
-

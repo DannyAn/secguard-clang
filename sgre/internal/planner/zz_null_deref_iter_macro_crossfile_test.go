@@ -113,8 +113,8 @@ int real_bug(sample_list_t *sll) {
 // source at the call site.
 func TestNullDeref_IterMacroCrossFile(t *testing.T) {
 	result := planNullDerefMacroFiles(t, map[string]string{
-		"iter_macro.h":  iterMacroHeader,
-		"iter_usage.c":  iterMacroUsageSrc,
+		"iter_macro.h": iterMacroHeader,
+		"iter_usage.c": iterMacroUsageSrc,
 	})
 	if c := candidateForFunc(t, result, "scan_and_process"); c != nil {
 		t.Errorf("scan_and_process should NOT be flagged (policy is written by SAMPLE_Scan for-init and null-guarded by the loop condition), got var=%s level=%s line=%d", c.Target.Variable, c.SuspicionLevel, c.Target.Line)

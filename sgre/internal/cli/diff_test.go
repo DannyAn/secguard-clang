@@ -48,9 +48,9 @@ func TestScopeToDiffLines(t *testing.T) {
 		a: {9: true, 15: true},
 	}
 	items := []planner.EvidenceItem{
-		{Target: planner.TargetInfo{File: a, Line: 15}},                    // sink on changed line
-		{Target: planner.TargetInfo{File: a, Line: 500}, SourceLine: 9},    // flow source on changed line
-		{Target: planner.TargetInfo{File: a, Line: 42}},                    // unchanged
+		{Target: planner.TargetInfo{File: a, Line: 15}},                          // sink on changed line
+		{Target: planner.TargetInfo{File: a, Line: 500}, SourceLine: 9},          // flow source on changed line
+		{Target: planner.TargetInfo{File: a, Line: 42}},                          // unchanged
 		{Target: planner.TargetInfo{File: filepath.Join(root, "b.c"), Line: 15}}, // unchanged file
 	}
 	kept := scopeToDiffLines(items, lineSets)

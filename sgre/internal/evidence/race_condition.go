@@ -43,18 +43,18 @@ var useFunctions = map[string]bool{
 // original detector only saw pthread_mutex_lock/unlock, which silently missed
 // every rwlock, spinlock, and C11 mtx-protected shared access.
 var lockCalls = map[string]bool{
-	"pthread_mutex_lock":     true,
-	"pthread_rwlock_rdlock":  true,
-	"pthread_rwlock_wrlock":  true,
-	"pthread_spin_lock":      true,
-	"mtx_lock":               true,
+	"pthread_mutex_lock":    true,
+	"pthread_rwlock_rdlock": true,
+	"pthread_rwlock_wrlock": true,
+	"pthread_spin_lock":     true,
+	"mtx_lock":              true,
 }
 
 var unlockCalls = map[string]bool{
-	"pthread_mutex_unlock":   true,
-	"pthread_rwlock_unlock":  true,
-	"pthread_spin_unlock":    true,
-	"mtx_unlock":             true,
+	"pthread_mutex_unlock":  true,
+	"pthread_rwlock_unlock": true,
+	"pthread_spin_unlock":   true,
+	"mtx_unlock":            true,
 }
 
 func (d *RaceConditionDetector) Detect(ctx context.Context) (DetectResult, error) {

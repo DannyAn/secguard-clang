@@ -246,7 +246,7 @@ uint32_t macro_out(void) {
 	}
 
 	cases := []struct {
-		fn      string
+		fn       string
 		variable string
 		useKind  string
 		useSub   string

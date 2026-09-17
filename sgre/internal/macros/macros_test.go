@@ -4,11 +4,11 @@ import "testing"
 
 func TestGuardParamsInBody(t *testing.T) {
 	cases := []struct {
-		name           string
-		body           string
-		params         []string
-		wantPlain      map[int]bool
-		wantNegated    map[int]bool
+		name        string
+		body        string
+		params      []string
+		wantPlain   map[int]bool
+		wantNegated map[int]bool
 	}{
 		{
 			name:        "non-negated condition",
