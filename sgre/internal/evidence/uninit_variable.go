@@ -76,7 +76,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 			// never be in this set (see parser.FunctionBoundNames).
 			bound := parser.FunctionBoundNames(funcDefsByLine[f.StartLine])
 			d.detectStackUninit(ctx, f, file, bound, decls, assigns, calls, returns, inits, ifs, whiles, fors, bodies, summaries, macroWrites, &result)
-			d.detectHeapUninit(ctx, f, file, inits, assigns, unarys, ptrs, fields, &result)
+			d.detectHeapUninit(ctx, f, file, inits, assigns, calls, unarys, ptrs, fields, &result)
 			d.detectStructPartialUninit(ctx, f, file, bound, decls, assigns, calls, ifs, fields, summaries, macroWrites, &result)
 		}
 	})
@@ -1075,7 +1075,7 @@ func isInIfRange(ifs []parser.Node, f *db.Function, line int) bool {
 	return false
 }
 
-func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Function, file *db.File, inits, assigns, unarys, ptrs, fields []parser.Node, result *DetectResult) {
+func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Function, file *db.File, inits, assigns, calls, unarys, ptrs, fields []parser.Node, result *DetectResult) {
 	mallocVars := make(map[string]int) // varName -> line of the malloc assignment
 
 	checkInit := func(node parser.Node) {
@@ -1157,15 +1157,92 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		delete(mallocVars, name)
 	}
 
-	writtenThroughPtr := make(map[string]bool)
+	// Field-sensitive initialization: the previous all-or-nothing
+	// writtenThroughPtr flag let a single member write (`p->status = 1`) suppress
+	// every later read of p, including a genuinely-uninitialized member
+	// (`p->len`). Track per-member writes and whole-block initialization
+	// separately so a read is reported only when THAT member (or the whole block)
+	// has no write on any path.
+	wholeInit := make(map[string]bool)           // var -> whole block initialized
+	initializedFields := make(map[string]bool)   // full field path -> written
+	writePaths := make(map[string]bool)          // field write-target paths (skip in read loop)
+	heapFieldWritten := make(map[string]bool)    // var -> has any member write
+
+	markField := func(base, path string) {
+		initializedFields[path] = true
+		heapFieldWritten[base] = true
+	}
+
 	for _, assign := range assigns {
 		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
-		text := assign.Text()
-		for varName := range mallocVars {
-			if strings.Contains(text, varName+"->") || strings.Contains(text, "*"+varName) {
-				writtenThroughPtr[varName] = true
+		children := assign.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		lhs := children[0]
+		switch lhs.Kind() {
+		case "field_expression", "subscript_expression":
+			base := lhs.NamedChildren()
+			if len(base) == 0 {
+				continue
+			}
+			name := base[0].Text()
+			if _, ok := mallocVars[name]; !ok {
+				continue
+			}
+			markField(name, fieldPath(lhs))
+			for _, p := range fieldWritePaths(lhs) {
+				writePaths[p] = true
+			}
+		case "pointer_expression":
+			// `*p = other` writes the whole pointed-to object.
+			name := extractVarName(lhs)
+			if _, ok := mallocVars[name]; ok {
+				wholeInit[name] = true
+			}
+		}
+	}
+
+	// memset(p, 0, sizeof(*p)) zeroes the whole block; memset(&p->f, ...) zeroes
+	// one member; a dest-writer (memcpy/strncpy) whose first argument is a member
+	// fills that member.
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
+			continue
+		}
+		name := extractCallName(call)
+		args := getCallArgs(call)
+		if len(args) == 0 {
+			continue
+		}
+		switch name {
+		case "memset", "memset_s", "bzero":
+			if args[0].Kind() == "identifier" {
+				v := args[0].Text()
+				if _, ok := mallocVars[v]; ok && strings.Contains(call.Text(), "sizeof(*"+v+")") {
+					wholeInit[v] = true
+				}
+			} else if args[0].Kind() == "pointer_expression" {
+				target := args[0].NamedChildren()
+				if len(target) > 0 && (target[0].Kind() == "field_expression" || target[0].Kind() == "subscript_expression") {
+					base := target[0].NamedChildren()
+					if len(base) > 0 {
+						if _, ok := mallocVars[base[0].Text()]; ok {
+							markField(base[0].Text(), fieldPath(target[0]))
+						}
+					}
+				}
+			}
+		default:
+			if isDestWriter(name) && (args[0].Kind() == "field_expression" || args[0].Kind() == "subscript_expression") {
+				base := args[0].NamedChildren()
+				if len(base) > 0 {
+					if _, ok := mallocVars[base[0].Text()]; ok {
+						markField(base[0].Text(), fieldPath(args[0]))
+					}
+				}
 			}
 		}
 	}
@@ -1182,7 +1259,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 			continue
 		}
 		varName := strings.TrimSpace(text[1:])
-		if isHeapVar(mallocVars, varName) && !writtenThroughPtr[varName] {
+		if isHeapVar(mallocVars, varName) && !wholeInit[varName] && !heapFieldWritten[varName] {
 			d.insertValueUseEvent(ctx, f, file, unary.StartLine(), mallocVars[varName], varName, "heap_uninit", result)
 		}
 	}
@@ -1199,7 +1276,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 			continue
 		}
 		varName := children[0].Text()
-		if isHeapVar(mallocVars, varName) && !writtenThroughPtr[varName] {
+		if isHeapVar(mallocVars, varName) && !wholeInit[varName] && !heapFieldWritten[varName] {
 			d.insertValueUseEvent(ctx, f, file, ptr.StartLine(), mallocVars[varName], varName, "heap_uninit", result)
 		}
 	}
@@ -1216,7 +1293,14 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 			continue
 		}
 		varName := children[0].Text()
-		if isHeapVar(mallocVars, varName) && !writtenThroughPtr[varName] {
+		if !isHeapVar(mallocVars, varName) || wholeInit[varName] {
+			continue
+		}
+		path := fieldPath(field)
+		if writePaths[path] {
+			continue
+		}
+		if !initializedFields[path] {
 			d.insertValueUseEvent(ctx, f, file, field.StartLine(), mallocVars[varName], varName, "heap_uninit", result)
 		}
 	}
