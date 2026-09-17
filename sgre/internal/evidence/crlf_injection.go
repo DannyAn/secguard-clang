@@ -1,0 +1,129 @@
+package evidence
+
+import (
+	"context"
+	"strings"
+
+	"github.com/DannyAn/secguard-clang/internal/apikb"
+	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/log"
+	"github.com/DannyAn/secguard-clang/internal/parser"
+)
+
+type CRLFInjectionDetector struct {
+	store  db.Store
+	parser *parser.Parser
+	logger *log.Logger
+}
+
+func NewCRLFInjectionDetector(store db.Store, p *parser.Parser, logger *log.Logger) *CRLFInjectionDetector {
+	return &CRLFInjectionDetector{store: store, parser: p, logger: logger}
+}
+
+func (d *CRLFInjectionDetector) Name() string { return "crlf_injection" }
+
+func (d *CRLFInjectionDetector) Detect(ctx context.Context) (DetectResult, error) {
+	result := DetectResult{}
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		calls := root.FindAll("call_expression")
+		for _, f := range funcs {
+			d.detectCRLFInjection(ctx, f, file, calls, &result)
+		}
+	})
+	return result, err
+}
+
+func (d *CRLFInjectionDetector) detectCRLFInjection(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node, result *DetectResult) {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
+			continue
+		}
+		callName := extractCallName(call)
+		if !apikb.IsCRLFSinkCandidate(callName) {
+			continue
+		}
+		args := extractCallArgs(call)
+		if len(args) < 2 {
+			continue
+		}
+
+		fileVarName := bareIdentString(args[0])
+		formatStr := ""
+		if len(args) > 1 {
+			formatStr = args[1]
+		}
+
+		if isLogContextByHeuristic(fileVarName, callName) {
+			continue
+		}
+		if !isProtocolHeaderContext(fileVarName, formatStr) {
+			continue
+		}
+
+		variable := crlfTaintVariable(callName, args)
+		if variable == "" {
+			continue
+		}
+
+		if emitEvent(ctx, d.store, d.logger, "INJECTION", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
+			"function":   callName,
+			"category":   "crlf_injection",
+			"variable":   variable,
+			"expression": call.Text(),
+		}) {
+			result.EventsCreated++
+		}
+	}
+}
+
+func crlfTaintVariable(callName string, args []string) string {
+	switch callName {
+	case "fprintf", "snprintf":
+		for i := 2; i < len(args); i++ {
+			arg := strings.TrimSpace(args[i])
+			if isStringLiteral(arg) {
+				continue
+			}
+			if v := bareIdentString(arg); v != "" {
+				return v
+			}
+			return strings.TrimSpace(arg)
+		}
+	case "fputs":
+		if len(args) >= 1 {
+			arg := strings.TrimSpace(args[0])
+			if !isStringLiteral(arg) {
+				return bareIdentString(arg)
+			}
+		}
+	case "send", "write":
+		if len(args) >= 2 {
+			arg := strings.TrimSpace(args[1])
+			if !isStringLiteral(arg) {
+				return bareIdentString(arg)
+			}
+		}
+	}
+	return ""
+}
+
+func isProtocolHeaderContext(fileVarName, formatStr string) bool {
+	lower := strings.ToLower(fileVarName)
+	if strings.Contains(lower, "sock") || strings.Contains(lower, "conn") ||
+		strings.Contains(lower, "socket") || strings.Contains(lower, "resp") ||
+		strings.Contains(lower, "header") {
+		return true
+	}
+	return strings.Contains(formatStr, "\\r\\n") || strings.Contains(formatStr, "\r\n") ||
+		strings.Contains(formatStr, "HTTP/") || strings.Contains(formatStr, "Header:") ||
+		strings.Contains(formatStr, "Set-Cookie:") || strings.Contains(formatStr, "Content-Type:")
+}
+
+func isLogContextByHeuristic(fileVarName, callName string) bool {
+	if apikb.IsLogSink(callName) {
+		return true
+	}
+	lower := strings.ToLower(fileVarName)
+	return strings.Contains(lower, "log") || strings.Contains(lower, "logfile") ||
+		strings.Contains(lower, "audit") || strings.Contains(lower, "fp_log")
+}
