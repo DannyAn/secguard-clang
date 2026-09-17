@@ -58,7 +58,7 @@ var allSkillSpecs = []skillSpec{
 	{"null-deref", "memory", "Detects null pointer dereferences using the convergence pipeline"},
 	{"buffer-overflow", "boundary", "Detects buffer overflows (stack, heap, OOB write/read)"},
 	{"memory-leak", "memory", "Detects memory leaks (path-sensitive, ownership-aware)"},
-	{"injection", "input", "Detects command/SQL injection via taint flow to dangerous sinks"},
+	{"injection", "input", "Detects command/SQL/argument/XML/CRLF/log injection via taint flow to dangerous sinks (CWE-78/89/88/91/93/117)"},
 	{"resource-leak", "resource", "Detects resource leaks (file handles, sockets, locks)"},
 	{"uninit", "initialization", "Detects use of uninitialized variables (path-aware)"},
 	{"use-after-free", "memory", "Detects use-after-free via lifetime analysis"},
