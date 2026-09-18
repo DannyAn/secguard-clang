@@ -63,6 +63,46 @@ func TestUAF_DisjointBranches_NoUseAtFreeLine(t *testing.T) {
 	}
 }
 
+// TestUAF_LinkedListDelete_NoCandidates pins the linked-list deletion fix: a
+// custom freeing wrapper (pktdrp_free_tbl_res, not a built-in deallocator) frees
+// its argument, and the deletion routine reassigns the alias (pre_item) before
+// the free. Two independent root causes had to be fixed:
+//  1. findUseSites counted the wrapper's argument as a use (evidence layer).
+//  2. expandGenToAliases propagated a stale alias past its reassignment
+//     (planner layer) — freeing item dangled pre_item even though pre_item had
+//     been reassigned to g_pktdrp_tbl two lines earlier.
+//
+// The full pipeline (graph + detector + planner) must yield ZERO use-after-free
+// candidates. This test is the regression guard for both fixes together.
+func TestUAF_LinkedListDelete_NoCandidates(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, fixturePath("tc_uaf_linked_list_delete.c")); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	graph.NewAliasBuilder(store, p, logger).Build(ctx)
+	graph.NewOwnershipBuilder(store, p, logger).Build(ctx)
+	NewUseAfterFreeDetector(store, p, logger).Detect(ctx)
+
+	pl := planner.NewPlanner(store, p, logger)
+	res, err := pl.Plan(ctx, "use-after-free")
+	if err != nil {
+		t.Fatalf("plan use-after-free: %v", err)
+	}
+	if res.CandidateCount() != 0 {
+		t.Errorf("expected 0 use-after-free candidates (linked-list delete), got %d", res.CandidateCount())
+		for _, c := range res.Candidates {
+			t.Logf("  var=%q line=%d suspicion=%s", c.Target.Variable, c.Target.Line, c.SuspicionLevel)
+		}
+	}
+}
+
 // TestUAF_DisjointBranches_NoConvergedCandidates runs the full double-free /
 // use-after-free pipelines (real parser + graph + filters) and asserts the two
 // mutually-exclusive frees converge to ZERO candidates: the flow filters must
