@@ -76,12 +76,12 @@ func (d *SignedCompareDetector) Detect(ctx context.Context) (DetectResult, error
 		typedefs.addRoot(root)
 
 		for _, f := range funcs {
-			unsignedVars := d.unsignedVars(append(decls, params...), f, typedefs)
+			declsByName := d.varDecls(append(decls, params...), f, typedefs)
 			for _, b := range binaries {
 				if !funcLineRange(f, b.StartLine()) {
 					continue
 				}
-				if !d.unsignedVsNegative(b, unsignedVars) {
+				if !d.unsignedVsNegative(b, declsByName) {
 					continue
 				}
 
@@ -97,36 +97,58 @@ func (d *SignedCompareDetector) Detect(ctx context.Context) (DetectResult, error
 	return result, err
 }
 
-// unsignedVars returns the names declared with an `unsigned` type in f's line
-// range. Unlike a whole-declaration identifier scan (which would also pick up
-// names from an initializer expression), the declared name is taken from each
-// declarator, so `unsigned int x = n;` yields only `x` and multi-declarators
-// (`unsigned int y, z;`) yield both `y` and `z`. A typedef whose base resolves
-// to unsigned (`typedef unsigned int my_uint; my_uint x;`) is detected via the
-// typedefs table, not just a keyword substring match.
-func (d *SignedCompareDetector) unsignedVars(decls []parser.Node, f *db.Function, typedefs *typedefs) map[string]bool {
-	set := make(map[string]bool)
+// varDecl records one variable declaration: its signedness and the source line
+// where it was declared. The line is what makes the signed-compare check scope-
+// sensitive: when the same name is declared in two non-overlapping scopes (e.g.
+// `for (int i = ...; i >= 0; ...)` and later `for (unsigned i = 0; ...)`), only
+// the declaration that is in scope at the comparison line determines the sign.
+type scVarDecl struct {
+	unsigned bool
+	line     int
+}
+
+// varDecls returns every variable declared in f's line range, keyed by name,
+// with each declaration's signedness and line. Unlike the old unsignedVars
+// (which only collected unsigned names and could not distinguish which of two
+// same-named declarations was in scope), this records ALL declarations so the
+// comparison check can resolve the one in scope at the comparison line.
+func (d *SignedCompareDetector) varDecls(decls []parser.Node, f *db.Function, typedefs *typedefs) map[string][]scVarDecl {
+	set := make(map[string][]scVarDecl)
 	for _, decl := range decls {
 		if !funcLineRange(f, decl.StartLine()) {
 			continue
 		}
-		if !d.unsignedType(decl, typedefs) {
-			continue
-		}
-		// Pick up the declarators (init_declarator, pointer_declarator, or a
-		// bare identifier for `size_t i;`). extractVarName on the whole `decl`
-		// would find the FIRST identifier only, so iterate each declarator so
-		// multi-declarators are all registered.
+		isUnsigned := d.unsignedType(decl, typedefs)
 		for _, child := range decl.NamedChildren() {
 			switch child.Kind() {
 			case "init_declarator", "pointer_declarator", "identifier":
 				if name := extractVarName(child); name != "" && !parser.IsCTypeKeyword(name) {
-					set[name] = true
+					set[name] = append(set[name], scVarDecl{unsigned: isUnsigned, line: decl.StartLine()})
 				}
 			}
 		}
 	}
 	return set
+}
+
+// isUnsignedAtLine reports whether the variable's most recent declaration on or
+// before line is unsigned. When two same-named variables live in disjoint scopes
+// (int i in one for-loop, unsigned i in another), only the declaration in scope
+// at the comparison line counts — this is what eliminates the cross-scope false
+// positive where int i's `i >= 0` was misread as unsigned because a later,
+// out-of-scope `unsigned i` existed.
+func isUnsignedAtLine(decls []scVarDecl, line int) bool {
+	var best *scVarDecl
+	for i := range decls {
+		d := &decls[i]
+		if d.line > line {
+			continue
+		}
+		if best == nil || d.line > best.line {
+			best = d
+		}
+	}
+	return best != nil && best.unsigned
 }
 
 // unsignedType reports whether a declaration's type specifier is unsigned,
@@ -153,7 +175,7 @@ func (d *SignedCompareDetector) unsignedType(decl parser.Node, typedefs *typedef
 //	u <= 0           → u == 0 (legitimate)
 //
 // Mirrored forms (constant on the left) are handled symmetrically.
-func (d *SignedCompareDetector) unsignedVsNegative(b parser.Node, unsignedVars map[string]bool) bool {
+func (d *SignedCompareDetector) unsignedVsNegative(b parser.Node, declsByName map[string][]scVarDecl) bool {
 	op := ""
 	for _, child := range b.Children() {
 		switch child.Kind() {
@@ -169,15 +191,16 @@ func (d *SignedCompareDetector) unsignedVsNegative(b parser.Node, unsignedVars m
 		return false
 	}
 	left, right := named[0], named[len(named)-1]
+	line := b.StartLine()
 
 	// u op const
-	if unsignedVars[left.Text()] {
+	if decls, ok := declsByName[left.Text()]; ok && isUnsignedAtLine(decls, line) {
 		if ok, negative := classifyConst(right.Text()); ok {
 			return deadUnsignedCompare(op, true, negative)
 		}
 	}
 	// const op u
-	if unsignedVars[right.Text()] {
+	if decls, ok := declsByName[right.Text()]; ok && isUnsignedAtLine(decls, line) {
 		if ok, negative := classifyConst(left.Text()); ok {
 			return deadUnsignedCompare(op, false, negative)
 		}
