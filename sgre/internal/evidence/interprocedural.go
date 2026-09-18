@@ -253,17 +253,14 @@ func extractParamsFromDeclarator(decl parser.Node) []string {
 				continue
 			}
 			for _, pc := range param.NamedChildren() {
-				if pc.Kind() == "identifier" {
-					params = append(params, pc.Text())
-					break
-				}
-				if pc.Kind() == "pointer_declarator" {
-					for _, gc := range pc.NamedChildren() {
-						if gc.Kind() == "identifier" {
-							params = append(params, gc.Text())
-							break
-						}
-					}
+				// Use the recursive declarator walk so `**result` (nested
+				// pointer_declarator), `int a[3]`, and function-pointer params
+				// all resolve to their identifier. The previous one-level pointer
+				// handling only saw `*result`, so `int **result` extracted no
+				// name and every indirect-free summary for such a function was
+				// silently empty (missed double-free / use-after-free).
+				if v := extractVarFromDeclarator(pc); v != "" {
+					params = append(params, v)
 					break
 				}
 			}

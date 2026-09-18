@@ -18,6 +18,14 @@ func TestIsDeallocator_ZeroConfigHeuristic(t *testing.T) {
 	}
 }
 
+func TestIsDeallocator_FieldFreeNotDirectDeallocator(t *testing.T) {
+	for _, name := range []string{"health_free_content", "free_content", "free_list", "set_free_content", "freeze"} {
+		if IsDeallocator(name) {
+			t.Errorf("IsDeallocator(%q) = true, want false (frees a field / unrelated, not a direct free)", name)
+		}
+	}
+}
+
 func TestIsDeclaredAllocator_PreciseOnly(t *testing.T) {
 	if !IsDeclaredAllocator("malloc") {
 		t.Error("IsDeclaredAllocator(malloc) = false, want true")

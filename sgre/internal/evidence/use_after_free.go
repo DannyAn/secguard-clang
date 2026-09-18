@@ -186,9 +186,35 @@ func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.N
 	return sites
 }
 
+// isDeallocatorArg reports whether node is an argument to a deallocator call
+// (`free(p->f)` / `free(p)`): the argument is the thing being freed, not a use
+// of it. Without this, the second `free(g.data)` in a guarded error path counts
+// `g.data` as a "use", so the detector reports "freed at X then used at the
+// second free's own line" — a self-inflicted false use-after-free.
+func isDeallocatorArg(node parser.Node) bool {
+	cur := node
+	for {
+		p := cur.Parent()
+		if p == nil {
+			return false
+		}
+		switch p.Kind() {
+		case "argument_list":
+			cur = *p
+		case "call_expression":
+			return apikb.IsDeallocator(extractCallName(*p))
+		default:
+			return false
+		}
+	}
+}
+
 // isFieldWrite reports whether a field_expression node is a write target (the
 // LHS of an assignment or the declarator of an initializer), so `s->msg = NULL`
-// addresses the field without reading it and must not count as a use.
+// addresses the field without reading it and must not count as a use. It does
+// NOT walk through a subscript: `q->msg[0] = 1` after `free(q->msg)` READS the
+// dangling q->msg to index it, so it is a genuine use-after-free — only the
+// direct `s->msg = ...` shape is a pure address-of write.
 func isFieldWrite(node parser.Node) bool {
 	p := node.Parent()
 	if p == nil {
@@ -260,6 +286,10 @@ func (d *UseAfterFreeDetector) findUseSites(f *db.Function, ptrs, fields, calls 
 		// A field WRITE (`s->msg = NULL`, `s->msg = malloc(...)`) addresses the
 		// field without reading it, so it is not a use-after-free candidate.
 		if isFieldWrite(field) {
+			continue
+		}
+		// A field passed to free() (`free(g.data)`) is the thing freed, not a use.
+		if isDeallocatorArg(field) {
 			continue
 		}
 		base, fld := extractFieldAccess(field)

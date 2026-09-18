@@ -620,7 +620,9 @@ var BuiltinAllocators = map[string]bool{
 // BuiltinDeallocators are the C release APIs. Projects extend this set via
 // RegisterDeallocator (secguard.toml [deallocators]).
 var BuiltinDeallocators = map[string]bool{
-	"free": true,
+	"free":         true,
+	"freeaddrinfo": true,
+	"freeifaddrs":  true,
 }
 
 // extraAllocators / extraDeallocators hold project-declared allocation/release
@@ -672,11 +674,18 @@ func IsAllocator(name string) bool {
 }
 
 // IsDeallocator reports whether name is a recognized release function: a
-// built-in / declared deallocator, or (zero-config fail-open) any name whose
-// lowercased form contains "free" — covering nat_free, VOS_FREE, VOS_FREE_F,
-// freeaddrinfo, etc. False positives are left to the AI classifier.
+// built-in / declared deallocator, or (zero-config fail-open) any name that
+// ENDS with "free"/"free_f" — covering nat_free, VOS_FREE, VOS_FREE_F,
+// llm_free, nlog_free. The suffix (not a bare "free" substring) is deliberate:
+// a name like health_free_content frees a FIELD of its argument, not the
+// argument itself, so treating it as free(arg) would misreport every later
+// write to that struct as a use-after-free. False positives are left to the AI.
 func IsDeallocator(name string) bool {
-	return IsDeclaredDeallocator(name) || strings.Contains(strings.ToLower(name), "free")
+	if IsDeclaredDeallocator(name) {
+		return true
+	}
+	lower := strings.ToLower(name)
+	return strings.HasSuffix(lower, "free") || strings.HasSuffix(lower, "free_f")
 }
 
 // IsAllocatorOrDeallocator reports whether name is any recognized memory
