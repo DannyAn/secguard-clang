@@ -221,6 +221,18 @@ func TestNewDetector_SignedCompare_UintTypes(t *testing.T) {
 	}
 }
 
+// TestNewDetector_SignedCompare_ScopeShadow_NoFalsePositive pins the scope-aware
+// fix: the same name `i` is declared int in one for-loop and unsigned in a later
+// non-overlapping for-loop. The int i's `i >= 0` is a legitimate signed check
+// and must NOT be flagged just because an out-of-scope `unsigned i` exists later.
+func TestNewDetector_SignedCompare_ScopeShadow_NoFalsePositive(t *testing.T) {
+	store := runOneDetector(t, "tc_signed_compare_scope_shadow.c",
+		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewSignedCompareDetector(s, p, l) })
+	if got := eventCount(t, store, "SIGNED_COMPARE"); got != 0 {
+		t.Errorf("expected 0 SIGNED_COMPARE events (int i >= 0 is in scope, not the later unsigned i), got %d", got)
+	}
+}
+
 func TestNewDetector_SizeofMisuse_CrossFileTypedef(t *testing.T) {
 	// cstr_t resolves to `char *` via types.h, so `cstr_t *s` is char** and
 	// sizeof(s) is only suspected; my_uint *p is a plain pointer, hence confirmed.
