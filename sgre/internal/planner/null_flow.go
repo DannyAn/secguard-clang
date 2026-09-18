@@ -970,13 +970,25 @@ func (a *flowAnalyzer) loadDFGCopies(ctx context.Context, funcIDs []int64) map[i
 	return result
 }
 
-// loadAliases resolves stored ALIAS edges into a per-function map from base
-// variable to the list of variables that alias it. The freed-state flow filters
-// use this to propagate a freed source from a variable to its aliases (freeing
-// p dangles every q that aliases p). Best-effort: on any error it returns an
-// empty map and the analysis continues on the AST-level copy step alone.
-func (a *flowAnalyzer) loadAliases(ctx context.Context, funcIDs []int64) map[int64]map[string][]string {
-	result := make(map[int64]map[string][]string)
+// aliasSite is one whole-variable alias assignment: the aliasing variable was
+// assigned `base` (`alias = base`) at line. The line is what makes the freed-
+// state alias propagation flow-sensitive: an alias only dangles a freed source
+// when its MOST RECENT assignment on or before the free still aliases the freed
+// variable (a later `alias = other` breaks the alias and must not propagate it).
+type aliasSite struct {
+	base string
+	line int
+}
+
+// loadAliases resolves stored ALIAS edges into a per-function map from aliasing
+// variable to the list of (base, line) it was assigned. The freed-state flow
+// filters use this to propagate a freed source from a variable to the variables
+// that STILL alias it at the free line (freeing p dangles a q that is currently
+// p; a q reassigned to something else before the free is not dangled). Best-
+// effort: on any error it returns an empty map and the analysis continues on the
+// AST-level copy step alone.
+func (a *flowAnalyzer) loadAliases(ctx context.Context, funcIDs []int64) map[int64]map[string][]aliasSite {
+	result := make(map[int64]map[string][]aliasSite)
 	edges, err := a.store.ListGraphEdgesByType(ctx, "ALIAS")
 	if err != nil {
 		return result
@@ -988,6 +1000,7 @@ func (a *flowAnalyzer) loadAliases(ctx context.Context, funcIDs []int64) map[int
 	}
 
 	nameByNode := make(map[int64]string)
+	lineByNode := make(map[int64]int)
 	funcByNode := make(map[int64]int64)
 	nodes, err := a.store.ListGraphNodesByEntityType(ctx, "variable_ref")
 	if err != nil {
@@ -999,11 +1012,13 @@ func (a *flowAnalyzer) loadAliases(ctx context.Context, funcIDs []int64) map[int
 		}
 		var props struct {
 			Name string `json:"name"`
+			Line int    `json:"line"`
 		}
 		if json.Unmarshal([]byte(n.Properties), &props) != nil || props.Name == "" {
 			continue
 		}
 		nameByNode[n.ID] = props.Name
+		lineByNode[n.ID] = props.Line
 		funcByNode[n.ID] = n.EntityID
 	}
 
@@ -1026,32 +1041,62 @@ func (a *flowAnalyzer) loadAliases(ctx context.Context, funcIDs []int64) map[int
 			continue
 		}
 		if result[fid] == nil {
-			result[fid] = make(map[string][]string)
+			result[fid] = make(map[string][]aliasSite)
 		}
-		result[fid][base] = append(result[fid][base], alias)
+		result[fid][alias] = append(result[fid][alias], aliasSite{base: base, line: lineByNode[e.SrcID]})
 	}
 	return result
 }
 
-// expandGenToAliases adds, for every variable that generates a source, its alias
-// variables at the same line. Used only by the freed-state analyses (use-after-
-// free / double-free): free(p) invalidates the OBJECT p points to, so every
-// variable aliasing p is also dangling — regardless of when the alias was
-// created. It is deliberately NOT applied to null-deref, where nullness is a
+// expandGenToAliases adds, for every variable that generates a source, the
+// variables that STILL alias it at the source line. Used only by the freed-state
+// analyses (use-after-free / double-free): free(p) invalidates the OBJECT p
+// points to, so a variable q that currently aliases p is also dangling. The
+// "currently" is the key word: an alias q = p established at line 10 is broken
+// by a later q = other at line 20, so a free(p) at line 25 must NOT dangle q.
+// The flow-sensitive check is latestAliasBase: among q's alias assignments on
+// or before the free line, the most recent one's base must equal p for q to be
+// dangled. It is deliberately NOT applied to null-deref, where nullness is a
 // property of the pointer's current VALUE (q = p; p = NULL leaves q non-null).
-func expandGenToAliases(genByLine map[int][]string, aliasesOf map[string][]string) {
+func expandGenToAliases(genByLine map[int][]string, aliasesOf map[string][]aliasSite) {
 	if len(aliasesOf) == 0 {
 		return
 	}
 	for line, vars := range genByLine {
 		var extra []string
 		for _, v := range vars {
-			extra = append(extra, aliasesOf[v]...)
+			for alias, sites := range aliasesOf {
+				if base, ok := latestAliasBase(sites, line); ok && base == v {
+					extra = append(extra, alias)
+				}
+			}
 		}
 		if len(extra) > 0 {
 			genByLine[line] = append(genByLine[line], extra...)
 		}
 	}
+}
+
+// latestAliasBase returns the base of the most recent alias assignment at or
+// before line. An alias assignment (alias = base) at line 10 is superseded by a
+// later one at line 20, so only the last one on or before the query line
+// determines what alias currently names. If no assignment is on or before line,
+// the variable did not yet alias anything and the second return is false.
+func latestAliasBase(sites []aliasSite, line int) (string, bool) {
+	var best *aliasSite
+	for i := range sites {
+		s := &sites[i]
+		if s.line > line {
+			continue
+		}
+		if best == nil || s.line > best.line {
+			best = s
+		}
+	}
+	if best == nil {
+		return "", false
+	}
+	return best.base, true
 }
 
 // loadFreeSites resolves stored RELEASE edges with release_fn == "free" into a
