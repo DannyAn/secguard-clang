@@ -46,7 +46,7 @@ func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error)
 		for _, f := range funcs {
 			aliases := findAliases(f, inits, assigns)
 			freeSites := d.findAllFreeSites(f, calls, summaries, aliases, macros)
-			useSites := d.findUseSites(f, ptrs, fields, calls)
+			useSites := d.findUseSites(f, ptrs, fields, calls, summaries)
 
 			for _, fs := range freeSites {
 				for _, use := range useSites[fs.varName] {
@@ -235,7 +235,7 @@ type useSite struct {
 	field string
 }
 
-func (d *UseAfterFreeDetector) findUseSites(f *db.Function, ptrs, fields, calls []parser.Node) map[string][]useSite {
+func (d *UseAfterFreeDetector) findUseSites(f *db.Function, ptrs, fields, calls []parser.Node, summaries summaryMap) map[string][]useSite {
 	useSites := make(map[string][]useSite)
 
 	addUse := func(varName, field string, line int) {
@@ -304,14 +304,25 @@ func (d *UseAfterFreeDetector) findUseSites(f *db.Function, ptrs, fields, calls 
 		if apikb.IsDeallocator(callName) {
 			continue
 		}
+		// A freeing wrapper (a callee the summary shows frees this argument,
+		// whole or a field) takes the argument as the thing being freed, not as
+		// a later use of it. Counting the argument would self-report `item` in
+		// `pktdrp_free_tbl_res(item)` as a use-after-free of the OTHER branch's
+		// free. This mirrors isDeallocatorArg, which only recognized built-in
+		// deallocators and so missed wrapper functions like *free_tbl_res.
+		s := summaries[callName]
 		for _, child := range call.NamedChildren() {
 			if child.Kind() != "argument_list" {
 				continue
 			}
-			for _, arg := range child.NamedChildren() {
-				if arg.Kind() == "identifier" {
-					addUse(arg.Text(), "", call.StartLine())
+			for argIdx, arg := range child.NamedChildren() {
+				if arg.Kind() != "identifier" {
+					continue
 				}
+				if s != nil && (s.ParamDirectFrees[argIdx] || len(s.ParamFieldFrees[argIdx]) > 0) {
+					continue
+				}
+				addUse(arg.Text(), "", call.StartLine())
 			}
 		}
 	}
