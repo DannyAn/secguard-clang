@@ -64,11 +64,13 @@ func ComputeDiff(repoDir, base, head string) (*Diff, error) {
 		return nil, fmt.Errorf("git: diff %s..%s: %w", base, head, err)
 	}
 	d := &Diff{Base: base, Head: head}
-	d.parseUnifiedDiff(out)
+	if err := d.parseUnifiedDiff(out); err != nil {
+		return nil, fmt.Errorf("git: parse diff: %w", err)
+	}
 	return d, nil
 }
 
-func (d *Diff) parseUnifiedDiff(text string) {
+func (d *Diff) parseUnifiedDiff(text string) error {
 	sc := bufio.NewScanner(strings.NewReader(text))
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
@@ -135,6 +137,7 @@ func (d *Diff) parseUnifiedDiff(text string) {
 		}
 	}
 	flush()
+	return sc.Err()
 }
 
 // splitDiffPaths splits `a/<path> b/<path>` into the two path components. Paths

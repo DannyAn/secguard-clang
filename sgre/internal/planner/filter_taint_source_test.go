@@ -940,11 +940,11 @@ int clean_field_sink(struct cfg *s) {
 	}
 }
 
-// TestTaintSourceFilter_SQLInjectionConstChar locks in the call-site const
-// analysis (方案 A) and const char* heuristic (方案 B) for SQL injection: a
-// non-static function whose const char* SQL parameter is never reached by
-// tainted data at any known call site is dropped, while a tainted caller
-// confirms it and a non-const parameter with no caller is conservatively kept.
+// TestTaintSourceFilter_SQLInjectionConstChar locks in that a non-static
+// function's SQL parameter is conservatively KEPT even when every KNOWN caller
+// passes a constant (an external caller may still pass attacker input): const
+// char* / literal call sites no longer drop the sink. A tainted caller confirms
+// it; a non-const parameter with no caller is likewise kept.
 func TestTaintSourceFilter_SQLInjectionConstChar(t *testing.T) {
 	ctx := context.Background()
 	store := db.NewTestStore(t)
@@ -1014,11 +1014,15 @@ void use_nonconst(sqlite3 *db) {
 		byFunc[c.Target.Function] = c
 	}
 
-	if _, ok := byFunc["safe_query"]; ok {
-		t.Errorf("safe_query (const char* param, identifier caller with no taint) should be dropped by call-site const analysis, got %v", candidateNames(result))
-	}
-	if _, ok := byFunc["safe_query_literal"]; ok {
-		t.Errorf("safe_query_literal (const char* param, literal caller) should be dropped by const char* heuristic, got %v", candidateNames(result))
+	for _, fn := range []string{"safe_query", "safe_query_literal"} {
+		c, ok := byFunc[fn]
+		if !ok {
+			t.Errorf("%s (const char* param, non-static) should be kept as suspected, got %v", fn, candidateNames(result))
+			continue
+		}
+		if hasTaintEvidence(c) {
+			t.Errorf("%s (no tainted caller) should NOT carry taint evidence, got %+v", fn, c.Evidence)
+		}
 	}
 	tq, ok := byFunc["tainted_query"]
 	if !ok {

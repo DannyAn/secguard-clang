@@ -1,6 +1,7 @@
 package evidence
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/parser"
@@ -43,7 +44,7 @@ func macroFreeSummaries(root parser.Node) map[string]macroFreeSummary {
 			continue
 		}
 		s := macroFreeSummary{}
-		if strings.Contains(body, "free("+param+")") || strings.Contains(body, "free ("+param+")") {
+		if re := regexp.MustCompile("free\\s*\\(\\s*" + regexp.QuoteMeta(param) + "\\s*\\)"); re.MatchString(body) {
 			s.freesArg = true
 		}
 		if s.freesArg && (strings.Contains(body, param+" = NULL") || strings.Contains(body, param+"=NULL") ||

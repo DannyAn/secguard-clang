@@ -58,7 +58,16 @@ func (f *SafeFunctionFilter) Apply(ctx context.Context, candidates []Candidate) 
 			kept = append(kept, c)
 			continue
 		}
-		if c.Category == "command_injection" && isExecvFamily(c.APIName) && c.VariableName != "" {
+		// path_traversal (CWE-22): openat is listed in SafeFunctions because its
+		// dirfd form is a safe relative-path open, but it is ALSO a path-traversal
+		// sink (a relative path built from attacker-controlled input can escape the
+		// intended directory). The IsSafeFunction exclusion must NOT fire for
+		// path_traversal.
+		if c.Category == "path_traversal" {
+			kept = append(kept, c)
+			continue
+		}
+		if c.Category == "command_injection" && isExecvFamily(c.APIName) {
 			kept = append(kept, c)
 			continue
 		}

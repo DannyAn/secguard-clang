@@ -375,14 +375,16 @@ func writeSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding, k
 		if cwe == "" {
 			cwe = "CWE-Other"
 		}
+		// Keep the DB's exact rule_id as the SARIF rule id. Re-normalizing
+		// through CWEForType would rewrite a per-category CWE (e.g.
+		// argument_injection → CWE-88) back to the vuln-type canonical CWE-78,
+		// losing the specific CWE in result.sarif and diverging from
+		// candidates.sarif and the DB. TypeForCWE already reverse-maps canonical,
+		// legacy, and category CWEs, so the vuln_type (and therefore the rule
+		// name) still resolves without any rewriting.
 		vulnType := planner.TypeForCWE(cwe)
 		if vulnType == "" {
 			vulnType = f.RuleID
-		} else if canonical := planner.CWEForType(vulnType); canonical != "" {
-			// Normalize a legacy CWE (e.g. CWE-89 for injection) to the canonical
-			// one (CWE-78) so one vulnerability type never yields two rules with
-			// the same name.
-			cwe = canonical
 		}
 		if !rulesSeen[cwe] {
 			rulesSeen[cwe] = true

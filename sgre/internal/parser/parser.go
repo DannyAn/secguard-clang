@@ -112,6 +112,9 @@ func (p *Parser) CloseAll() {
 	}
 	p.cache = nil
 	p.parsers = nil
+	if p.parser != nil {
+		p.parser.Close()
+	}
 }
 
 func (t *Tree) RootNode() Node {

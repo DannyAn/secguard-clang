@@ -57,8 +57,14 @@ func (d *NullSourceDetector) Detect(ctx context.Context) (DetectResult, error) {
 		return result, fmt.Errorf("null source: %w", err)
 	}
 
-	knownFuncs, retTypes := d.getKnownFunctionNames(ctx)
-	nullableFuncs := d.getNullableReturnFunctions(ctx)
+	knownFuncs, retTypes, err := d.getKnownFunctionNames(ctx)
+	if err != nil {
+		return result, err
+	}
+	nullableFuncs, err := d.getNullableReturnFunctions(ctx)
+	if err != nil {
+		return result, err
+	}
 
 	// Pass 2: external-call sources, now that nullableFuncs is complete.
 	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
@@ -289,15 +295,18 @@ func (d *NullSourceDetector) detectExternalCall(ctx context.Context, f *db.Funct
 	}
 }
 
-func (d *NullSourceDetector) getKnownFunctionNames(ctx context.Context) (map[string]bool, map[string]string) {
-	funcs, _ := d.store.ListFunctions(ctx)
+func (d *NullSourceDetector) getKnownFunctionNames(ctx context.Context) (map[string]bool, map[string]string, error) {
+	funcs, err := d.store.ListFunctions(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("null source: list functions: %w", err)
+	}
 	known := make(map[string]bool, len(funcs))
 	retTypes := make(map[string]string, len(funcs))
 	for _, f := range funcs {
 		known[f.Name] = true
 		retTypes[f.Name] = f.ReturnType
 	}
-	return known, retTypes
+	return known, retTypes, nil
 }
 
 // neverNullReturnTypes are C primitive types that can never hold a pointer.
@@ -323,19 +332,25 @@ var neverNullFunctions = map[string]bool{
 	"sprintf": true, "vsnprintf": true, "abs": true, "labs": true, "llabs": true,
 }
 
-func (d *NullSourceDetector) getNullableReturnFunctions(ctx context.Context) map[string]bool {
-	funcs, _ := d.store.ListFunctions(ctx)
+func (d *NullSourceDetector) getNullableReturnFunctions(ctx context.Context) (map[string]bool, error) {
+	funcs, err := d.store.ListFunctions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("null source: list functions: %w", err)
+	}
 	m := make(map[string]bool)
 	for _, f := range funcs {
 		sum, err := d.store.GetSummaryByFunction(ctx, f.ID)
 		if err != nil || sum == nil {
+			if d.logger != nil {
+				d.logger.Warn("get summary failed", "function_id", f.ID, "error", err)
+			}
 			continue
 		}
 		if sum.ReturnNullable {
 			m[f.Name] = true
 		}
 	}
-	return m
+	return m, nil
 }
 
 func isAllocator(name string) bool {

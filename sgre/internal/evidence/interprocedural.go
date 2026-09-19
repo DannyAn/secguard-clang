@@ -45,9 +45,13 @@ func (d *InterproceduralDetector) Detect(ctx context.Context) (DetectResult, err
 	if err != nil {
 		return result, fmt.Errorf("interprocedural: load dereference events: %w", err)
 	}
-	guardVars, err := d.loadEventVarIndex(ctx, "NULL_GUARD")
+	guardScopes, err := d.loadGuardScopes(ctx)
 	if err != nil {
 		return result, fmt.Errorf("interprocedural: load guard events: %w", err)
+	}
+	derefLines, err := d.loadDerefLines(ctx)
+	if err != nil {
+		return result, fmt.Errorf("interprocedural: load dereference lines: %w", err)
 	}
 	nullVars, err := d.loadEventVarIndex(ctx, "NULL_VALUE")
 	if err != nil {
@@ -105,10 +109,12 @@ func (d *InterproceduralDetector) Detect(ctx context.Context) (DetectResult, err
 	// in the callee body and not null-guarded there.
 	unguardedByCallee := make(map[int64]map[int]string)
 	for calleeID, derefSet := range derefVars {
-		guarded := guardVars[calleeID]
 		unguarded := make(map[int]string)
 		for idx, param := range paramsByFunc[calleeID] {
-			if derefSet[param] && !guarded[param] {
+			if !derefSet[param] {
+				continue
+			}
+			if paramUnguarded(derefLines[calleeID][param], guardScopes[calleeID][param]) {
 				unguarded[idx] = param
 			}
 		}
@@ -189,6 +195,91 @@ func (d *InterproceduralDetector) loadEventVarIndex(ctx context.Context, eventTy
 		index[e.EntityID][varName] = true
 	}
 	return index, nil
+}
+
+// loadGuardScopes returns, per function and variable, the (scope_start,
+// scope_end) line ranges the null-guard detector emitted for that variable.
+func (d *InterproceduralDetector) loadGuardScopes(ctx context.Context) (map[int64]map[string][][2]int, error) {
+	events, err := d.store.ListEventsByType(ctx, "NULL_GUARD")
+	if err != nil {
+		return nil, err
+	}
+	index := make(map[int64]map[string][][2]int)
+	for _, e := range events {
+		var props struct {
+			Variable   string `json:"variable"`
+			ScopeStart int    `json:"scope_start"`
+			ScopeEnd   int    `json:"scope_end"`
+		}
+		if err := json.Unmarshal([]byte(e.Properties), &props); err != nil {
+			continue
+		}
+		if props.Variable == "" {
+			continue
+		}
+		if index[e.EntityID] == nil {
+			index[e.EntityID] = make(map[string][][2]int)
+		}
+		index[e.EntityID][props.Variable] = append(index[e.EntityID][props.Variable], [2]int{props.ScopeStart, props.ScopeEnd})
+	}
+	return index, nil
+}
+
+// loadDerefLines returns, per function and variable, the source lines where the
+// dereference detector saw that variable dereferenced.
+func (d *InterproceduralDetector) loadDerefLines(ctx context.Context) (map[int64]map[string][]int, error) {
+	events, err := d.store.ListEventsByType(ctx, "DEREFERENCE")
+	if err != nil {
+		return nil, err
+	}
+	locIDs := make([]int64, 0, len(events))
+	for _, e := range events {
+		locIDs = append(locIDs, e.LocationID)
+	}
+	locs, err := d.store.ListLocationsByIDs(ctx, locIDs)
+	if err != nil {
+		return nil, err
+	}
+	index := make(map[int64]map[string][]int)
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		if err := json.Unmarshal([]byte(e.Properties), &props); err != nil {
+			continue
+		}
+		if props.Variable == "" {
+			continue
+		}
+		line := 0
+		if loc := locs[e.LocationID]; loc != nil {
+			line = loc.Line
+		}
+		if index[e.EntityID] == nil {
+			index[e.EntityID] = make(map[string][]int)
+		}
+		index[e.EntityID][props.Variable] = append(index[e.EntityID][props.Variable], line)
+	}
+	return index, nil
+}
+
+// paramUnguarded reports whether any dereference line of a parameter falls
+// outside every guard scope for that parameter, i.e. the parameter is
+// dereferenced without a null guard on at least one line.
+func paramUnguarded(lines []int, scopes [][2]int) bool {
+	for _, line := range lines {
+		guarded := false
+		for _, sc := range scopes {
+			if line >= sc[0] && line <= sc[1] {
+				guarded = true
+				break
+			}
+		}
+		if !guarded {
+			return true
+		}
+	}
+	return false
 }
 
 // treeFor parses the file once and caches the tree, keyed by file ID.

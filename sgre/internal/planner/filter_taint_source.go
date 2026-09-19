@@ -15,15 +15,14 @@ import (
 
 // taintSummary is the interprocedural taint summary shared across injection /
 // path-traversal / format-string. Its three parts — returnsParam, retTainted,
-// paramTainted (plus the hasCaller side-map) — depend only on the graph layer
-// (functions + RETURN/CALL/PARAM_BINDING edges), never on the candidate set, so
-// every input type was recomputing the same ~39s fixpoints (the dominant
-// plan-stage cost) before this cache existed.
+// paramTainted — depend only on the graph layer (functions + RETURN/CALL/
+// PARAM_BINDING edges), never on the candidate set, so every input type was
+// recomputing the same ~39s fixpoints (the dominant plan-stage cost) before this
+// cache existed.
 type taintSummary struct {
 	returnsParam map[string]map[int]bool
 	retTainted   map[string]bool
 	paramTainted map[int64]map[int]bool
-	hasCaller    map[int64]map[int]bool
 }
 
 // taintSummaryCache memoizes taintSummary across the Planner's Plan() calls.
@@ -69,7 +68,7 @@ func (c *taintSummaryCache) compute(ctx context.Context) (*taintSummary, error) 
 	if err != nil {
 		return nil, err
 	}
-	paramTainted, hasCaller, err := f.computeParamTainted(ctx, retTainted, returnsParam)
+	paramTainted, err := f.computeParamTainted(ctx, retTainted, returnsParam)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +76,6 @@ func (c *taintSummaryCache) compute(ctx context.Context) (*taintSummary, error) 
 		returnsParam: returnsParam,
 		retTainted:   retTainted,
 		paramTainted: paramTainted,
-		hasCaller:    hasCaller,
 	}, nil
 }
 
@@ -119,7 +117,7 @@ func (f *TaintSourceFilter) taintSummaries(ctx context.Context) (*taintSummary, 
 	if err != nil {
 		return nil, err
 	}
-	paramTainted, hasCaller, err := f.computeParamTainted(ctx, retTainted, returnsParam)
+	paramTainted, err := f.computeParamTainted(ctx, retTainted, returnsParam)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +125,6 @@ func (f *TaintSourceFilter) taintSummaries(ctx context.Context) (*taintSummary, 
 		returnsParam: returnsParam,
 		retTainted:   retTainted,
 		paramTainted: paramTainted,
-		hasCaller:    hasCaller,
 	}, nil
 }
 
@@ -183,6 +180,18 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 		byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
 	}
 
+	// Batch-load every candidate's event once: sinkVariable previously issued
+	// one GetEventByID per candidate (an N+1 query storm).
+	eventIDs := make([]int64, 0, len(candidates))
+	seen := make(map[int64]bool, len(candidates))
+	for _, c := range candidates {
+		if !seen[c.DerefEventID] {
+			seen[c.DerefEventID] = true
+			eventIDs = append(eventIDs, c.DerefEventID)
+		}
+	}
+	eventsByID, _ := f.store.ListEventsByIDs(ctx, eventIDs)
+
 	// Inter-procedural summaries: which functions can return a tainted value
 	// (RETURN / CALL edges) and which (function, parameter) pairs receive tainted
 	// data from a caller (PARAM_BINDING edges). returnsParam is the
@@ -200,14 +209,13 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 	returnsParam := summaries.returnsParam
 	retTainted := summaries.retTainted
 	paramTainted := summaries.paramTainted
-	paramHasCaller := summaries.hasCaller
 
-	flows, paramsByFunc, staticByFunc, paramConstChar := f.buildFlows(ctx, byFunc, retTainted, returnsParam, paramTainted)
+	flows, paramsByFunc, staticByFunc := f.buildFlows(ctx, byFunc, retTainted, returnsParam, paramTainted)
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
 	for _, c := range candidates {
-		sink := f.sinkVariable(ctx, c)
+		sink := f.sinkVariable(eventsByID, c)
 		// Unresolvable sink (complex expression, non-bare argument) → keep.
 		if sink == "" {
 			kept = append(kept, c)
@@ -219,13 +227,6 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 		//     the path is provably constant/safe → drop.
 		//   - the function is non-static (public API) → an external caller may
 		//     supply attacker input → keep as suspected.
-		// The two SQL-injection-only dismissals below (call-site const and
-		// const char* heuristic) are deliberately scoped to sql_injection: they
-		// trade a small false-negative risk for fewer false positives on SQL
-		// sinks. That trade is NOT sound for path-traversal / command-injection /
-		// format-string, where `const char *path` / `const char *cmd` /
-		// `const char *fmt` is the canonical *vulnerable* declaration, so those
-		// types keep the original conservative "keep the public-API parameter".
 		if idx, isParam := paramsByFunc[c.FunctionID][sink]; isParam {
 			if paramTainted[c.FunctionID][idx] {
 				c.HasTaintSource = true
@@ -236,22 +237,6 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 			} else if staticByFunc[c.FunctionID] {
 				dropped = dismiss(dropped, c, f.Name(),
 					fmt.Sprintf("path/format arg %s is a parameter of a static function with no tainted caller", sink))
-			} else if c.Category == "sql_injection" && paramHasCaller[c.FunctionID][idx] {
-				// Call-site const analysis: the function is non-static, but every
-				// known caller passes provably untainted data (paramTainted is false
-				// and a PARAM_BINDING edge exists). With no tainted caller, the
-				// parameter cannot carry attacker-controlled text at any reachable
-				// call site — drop instead of conservatively keeping as suspected.
-				dropped = dismiss(dropped, c, f.Name(),
-					fmt.Sprintf("param %s has known callers but none pass tainted data (call-site const)", sink))
-			} else if c.Category == "sql_injection" && paramConstChar[c.FunctionID][sink] {
-				// const char* heuristic: no known caller reaches this parameter and
-				// it is declared `const char *`, the C idiom for a caller-supplied
-				// constant string (a SQL template). An external caller passing
-				// attacker input through a const char* is rare (it would require
-				// `const char *p = getenv(...)`), so drop as a low-risk dismissal.
-				dropped = dismiss(dropped, c, f.Name(),
-					fmt.Sprintf("param %s is const char* with no known tainted caller", sink))
 			} else {
 				kept = append(kept, c)
 			}
@@ -279,11 +264,11 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 // sinkVariable returns the bare identifier of the sink argument, or "" when the
 // argument is a complex expression the flow engine does not track (kept
 // conservatively). It reads the sink field each detector stores.
-func (f *TaintSourceFilter) sinkVariable(ctx context.Context, c Candidate) string {
+func (f *TaintSourceFilter) sinkVariable(eventsByID map[int64]*db.SecurityEvent, c Candidate) string {
 	switch c.Category {
 	case "path_traversal", "format_string":
-		event, err := f.store.GetEventByID(ctx, c.DerefEventID)
-		if err != nil || event == nil {
+		event := eventsByID[c.DerefEventID]
+		if event == nil {
 			return ""
 		}
 		p := parseEventProps(event.Properties)
@@ -300,11 +285,10 @@ func (f *TaintSourceFilter) sinkVariable(ctx context.Context, c Candidate) strin
 	}
 }
 
-func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, retTainted map[string]bool, returnsParam map[string]map[int]bool, paramTainted map[int64]map[int]bool) (map[int64]*flowResult, map[int64]map[string]int, map[int64]bool, map[int64]map[string]bool) {
+func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, retTainted map[string]bool, returnsParam map[string]map[int]bool, paramTainted map[int64]map[int]bool) (map[int64]*flowResult, map[int64]map[string]int, map[int64]bool) {
 	flows := make(map[int64]*flowResult, len(byFunc))
 	paramsByFunc := make(map[int64]map[string]int, len(byFunc))
 	staticByFunc := make(map[int64]bool, len(byFunc))
-	paramConstChar := make(map[int64]map[string]bool, len(byFunc))
 	cache := newFileParseCache(f.parser)
 	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
 	for fid := range byFunc {
@@ -328,91 +312,8 @@ func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]C
 		flows[fid] = analyzer.analyzeFlow(ctx, fn, body, root, genByLine, killByLine, false, false)
 		paramsByFunc[fid] = paramsOf(fn, root)
 		staticByFunc[fid] = fn.IsStatic
-		paramConstChar[fid] = constCharParamsOf(fn, root)
 	}
-	return flows, paramsByFunc, staticByFunc, paramConstChar
-}
-
-// constCharParamsOf returns the names of fn's parameters declared as
-// `const char *` (a pointer to const char), the C idiom for a caller-supplied
-// constant string such as a SQL template. It is used by the call-site const
-// analysis as a fallback for parameters with no known caller: a const char*
-// parameter of a non-static function is unlikely to receive attacker-controlled
-// input from an external caller, so it is dismissed as a low-risk heuristic.
-func constCharParamsOf(fn *db.Function, root parser.Node) map[string]bool {
-	out := make(map[string]bool)
-	for _, def := range root.FindAll("function_definition") {
-		if def.StartLine() != fn.StartLine {
-			continue
-		}
-		for _, child := range def.NamedChildren() {
-			if child.Kind() == "function_declarator" {
-				for name := range constCharParamsFromDeclarator(child) {
-					out[name] = true
-				}
-			}
-			if child.Kind() == "pointer_declarator" {
-				for _, gc := range child.NamedChildren() {
-					if gc.Kind() == "function_declarator" {
-						for name := range constCharParamsFromDeclarator(gc) {
-							out[name] = true
-						}
-					}
-				}
-			}
-		}
-		break
-	}
-	return out
-}
-
-func constCharParamsFromDeclarator(decl parser.Node) map[string]bool {
-	out := make(map[string]bool)
-	for _, child := range decl.NamedChildren() {
-		if child.Kind() != "parameter_list" {
-			continue
-		}
-		for _, param := range child.NamedChildren() {
-			if param.Kind() != "parameter_declaration" {
-				continue
-			}
-			if name := paramIsConstCharPtr(param); name != "" {
-				out[name] = true
-			}
-		}
-	}
-	return out
-}
-
-// paramIsConstCharPtr reports the parameter name when a parameter_declaration
-// declares `const char *name` (a pointer to const char), else "". It walks the
-// named children for a const type qualifier, a char primitive type, and a
-// pointer declarator — the three signals that the parameter is a caller-supplied
-// constant string. `char * const` (a const pointer to mutable char) is NOT
-// matched: the const applies to the pointer, not the pointee, so the bytes can
-// still be modified and are not a constant-string idiom.
-func paramIsConstCharPtr(param parser.Node) string {
-	hasConst := false
-	hasChar := false
-	declName := ""
-	for _, child := range param.NamedChildren() {
-		switch child.Kind() {
-		case "type_qualifier":
-			if child.Text() == "const" {
-				hasConst = true
-			}
-		case "primitive_type":
-			if child.Text() == "char" {
-				hasChar = true
-			}
-		case "pointer_declarator":
-			declName = declaratorName(child)
-		}
-	}
-	if hasConst && hasChar && declName != "" {
-		return declName
-	}
-	return ""
+	return flows, paramsByFunc, staticByFunc
 }
 
 // taintedParamsFor returns the parameter NAMES of fn that are tainted, or nil
@@ -757,20 +658,14 @@ func callArgs(call parser.Node) []parser.Node {
 // iteration rebuilds every caller's flow with its already-proven tainted
 // parameters seeded at entry, so a transitive param→param chain (main → A → B)
 // propagates taint across any number of hops instead of stopping after one.
-func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted map[string]bool, returnsParam map[string]map[int]bool) (map[int64]map[int]bool, map[int64]map[int]bool, error) {
+func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted map[string]bool, returnsParam map[string]map[int]bool) (map[int64]map[int]bool, error) {
 	result := make(map[int64]map[int]bool)
-	// hasCaller records every (callee, paramIdx) that appears in a PARAM_BINDING
-	// edge — i.e. the parameter has at least one known identifier-argument call
-	// site. When paramTainted is false but hasCaller is true, every known caller
-	// passes provably untainted data, so a non-static function's parameter sink
-	// is safe to drop (call-site const analysis).
-	hasCaller := make(map[int64]map[int]bool)
 
 	// Direct taint-source arguments (f(getenv("HOME"))) produce no PARAM_BINDING
 	// variable_ref, so they are captured independently and merged first.
 	direct, err := f.computeDirectTaintParams(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("taint param summary: direct taint params: %w", err)
+		return nil, fmt.Errorf("taint param summary: direct taint params: %w", err)
 	}
 	for calleeID, idxs := range direct {
 		if result[calleeID] == nil {
@@ -783,10 +678,10 @@ func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted 
 
 	edges, err := f.store.ListGraphEdgesByType(ctx, "PARAM_BINDING")
 	if err != nil {
-		return nil, nil, fmt.Errorf("taint param summary: list PARAM_BINDING edges: %w", err)
+		return nil, fmt.Errorf("taint param summary: list PARAM_BINDING edges: %w", err)
 	}
 	if len(edges) == 0 {
-		return result, hasCaller, nil
+		return result, nil
 	}
 
 	// Resolve variable_ref nodes (edge source = caller argument) and parameter
@@ -835,18 +730,6 @@ func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted 
 		callerIDList = append(callerIDList, fid)
 	}
 	callerFnByID, callerFileByID := loadFuncFiles(ctx, f.store, callerIDList)
-
-	for _, e := range edges {
-		calleeID := paramFunc[e.DstID]
-		if calleeID == 0 {
-			continue
-		}
-		idx := paramIndex[e.DstID]
-		if hasCaller[calleeID] == nil {
-			hasCaller[calleeID] = make(map[int]bool)
-		}
-		hasCaller[calleeID][idx] = true
-	}
 
 	// Precompute the loop-invariant per-caller state once, outside the fixpoint:
 	// the parsed body and its taint gen/kill/copies depend only on the (fixed)
@@ -924,7 +807,7 @@ func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted 
 			break
 		}
 	}
-	return result, hasCaller, nil
+	return result, nil
 }
 
 // computeDirectTaintParams returns, per callee function ID, the set of parameter

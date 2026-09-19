@@ -2,6 +2,46 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.7.5] - 2026-09-19
+
+### GLM 检视闭环（`GLMFlash检视问题_20260919.md` 66 条意见复核）
+
+66 条检视意见逐条回源验证：36 条为真实缺陷并修复，30 条判定为误诊/已修复/纯建议/死代码并忽略。全部为 bugfix，无 API/协议变更。
+
+#### 确定性漏报 / 数据丢失（CRITICAL）
+
+- `planner/filter_extended`：`openat` 既是安全函数又是 path-traversal sink，此前所有 `openat` 路径穿越候选被 SafeFunctionFilter 确定性丢弃 → 为 `path_traversal` category 加豁免。
+- `evidence/null_source`：`getKnownFunctionNames`/`getNullableReturnFunctions` 静默吞掉 `ListFunctions`/`GetSummaryByFunction` 错误，造成 NULL_VALUE 误报洪泛与可空返回值漏报 → 错误传播 + 日志留痕。
+- `cli/report` + `report/findings`：审计去重 key 缺 `variable`，同位置不同变量的 finding 被静默合并 → 两处 key 补 `variable`。
+- `report/sarif`：verdict-stage 把 category CWE（CWE-88/93 等）规范化回 canonical（CWE-78），result.sarif 丢具体 CWE → 保留 DB 原始 RuleID。
+- `cli/diff`：final_count/candidates_by_type 用变量级 `len()`，与 scan 路径位置级口径不一致导致终态误判无限重跑 → 统一 `distinctFindingLocations`。
+- `cli/report`：`--write-json`/`--review-json` 批量写后不 sync，`findings/` 与 DB 不一致 → 提交后逐条 sync。
+
+#### 误报 / 漏报 / 静默失败（MAJOR）
+
+- `evidence/macro_summary`：free 宏只匹配 `free(p)`/`free (p)`，漏 `free( p )` 等空格变体 → 正则匹配。
+- `planner/filter_double_free`：同名变量跨作用域合并导致 double-free 误报 → 声明式重赋值注册 kill。
+- `evidence/interprocedural`：NULL_GUARD 不提取 guard scope，scope 外解引用漏报 → scope 感知判定。
+- `planner/filter_extended`：command_injection + execv* 且 VariableName 为空（非裸路径表达式）被安全函数误丢 → 移除 VariableName 条件。
+- `planner/filter_taint_source`：sql_injection 非 static 函数的 const char* 参数被丢弃（外部 caller 可传 taint）→ 与其它类型一致保守 keep。
+- `planner`（taint_source/range/lock_order/shared_access/uninit_flow）：逐候选 `GetEventByID` N+1 查询 → 批量 `ListEventsByIDs`。
+- `cli/report`：单条 `--write` 允许 dismissed 落库；fingerprint 在路径规范化前计算 → 对齐批量路径。
+- `db/crud_scan_stats`：`InsertScanStat` 无 busy-retry，调用方失败仅 Warn → `withBusyRetryID` + 硬失败。
+- `cli/report`：dismissed 候选不标注 candidate 文件，重复消耗 AI → 标注 dismissed。
+- `cli/scan`：`ListFindingsByScanID` 失败静默报告 0 条；scan_runs.final_count 口径不一致；三处写失败仅 Warn → 留痕/硬失败/口径统一。
+- `cli/diff`：`UpdateReviewSessionStatus` 吞错 → 错误处理。
+- `graph/control_flow`：build 递归无深度限制 → 深度护栏；switch 空 case fall-through 边缺失 → 空 case 透传。
+- `graph/helpers` + `evidence/detector`：forEachFile 不检查 ctx.Done → 取消可中止扫描。
+- `macros`：宏体字符串/注释内误匹配参数名 → 先剥离字面量与注释。
+- `git`：diff 超长行静默截断 → 检查 `sc.Err()`。
+
+#### 小修（MINOR）
+
+- `evidence/use_after_free`：同行 `free(p); p->x` 漏报（列号比较）；间接别名链漏报（别名闭包）。
+- `db/crud_scan_runs`：`SetScanRunAIDuration` 0 行静默成功 → 检查 RowsAffected。
+- `db/crud_findings`：空 rule_id 绕过 CWE 白名单 → 拒绝空值。
+- `parser`：CloseAll 泄漏共享 parser → 释放。
+
 ## [0.7.4] - 2026-09-17
 
 ### 注入类多 CWE 覆盖（CWE-88/91/93/117）

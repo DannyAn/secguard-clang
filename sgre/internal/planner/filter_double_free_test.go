@@ -83,6 +83,61 @@ func TestDoubleFreeFilter_Reassignment(t *testing.T) {
 	}
 }
 
+// dfScopeRedeclFixture covers the scope-redeclaration false positive: two inner
+// scopes each declare `char *p` and free it. The redeclaration (a declarator
+// LHS, not a bare identifier) must kill the first scope's freed state, so the
+// two frees target different blocks and are NOT a double-free.
+const dfScopeRedeclFixture = `#include <stdlib.h>
+
+int fp_scope_redecl(void) {
+    {
+        char *p = (char *)malloc(10);
+        free(p);
+    }
+    {
+        char *p = (char *)malloc(20);
+        free(p);
+    }
+    return 0;
+}
+`
+
+func TestDoubleFreeFilter_ScopeRedeclaration(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "df_scope.c")
+	if err := os.WriteFile(path, []byte(dfScopeRedeclFixture), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewDoubleFreeDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "double-free")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	kept := map[string]bool{}
+	for _, c := range result.Candidates {
+		kept[c.Target.Function] = true
+	}
+
+	if kept["fp_scope_redecl"] {
+		t.Errorf("expected fp_scope_redecl (same-named pointer redeclared in a new scope) to be suppressed, got %v", candidateNames(result))
+	}
+}
+
 // dfExclusiveFixture covers the mutually-exclusive-free shape: the first free is
 // guarded and returns, the second is the tail free — the two never execute on the
 // same path, so they must NOT be reported as a double-free.

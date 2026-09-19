@@ -10,17 +10,19 @@ func (s *store) InsertScanStat(ctx context.Context, stat *ScanStat) (int64, erro
 	if stat.CreatedAt == 0 {
 		stat.CreatedAt = now()
 	}
-	res, err := s.exec.ExecContext(ctx,
-		`INSERT INTO scan_stats (scan_id, vuln_type, seed_count, final_count, filter_chain, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		stat.ScanID, stat.VulnType, stat.SeedCount, stat.FinalCount, stat.FilterChain, stat.CreatedAt)
-	if err != nil {
-		return 0, fmt.Errorf("db: insert scan_stat: %w", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("db: insert scan_stat: last insert id: %w", err)
-	}
-	return id, nil
+	return withBusyRetryID(ctx, 3, func() (int64, error) {
+		res, err := s.exec.ExecContext(ctx,
+			`INSERT INTO scan_stats (scan_id, vuln_type, seed_count, final_count, filter_chain, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+			stat.ScanID, stat.VulnType, stat.SeedCount, stat.FinalCount, stat.FilterChain, stat.CreatedAt)
+		if err != nil {
+			return 0, fmt.Errorf("db: insert scan_stat: %w", err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return 0, fmt.Errorf("db: insert scan_stat: last insert id: %w", err)
+		}
+		return id, nil
+	})
 }
 
 func (s *store) ListScanStats(ctx context.Context, scanID string) ([]*ScanStat, error) {

@@ -418,7 +418,7 @@ func TestReportCmd_ReviewFlow(t *testing.T) {
 	stdout, _, exitCode := captureOutput(func() int {
 		return runReportCmd(ctx, []string{
 			"--db", dbPath, "--write",
-			"--rule-id", "CWE-252", "--severity", "high", "--status", "suspected",
+			"--rule-id", "CWE-252", "--severity", "high", "--status", "confirmed",
 			"--file", "x.c", "--line", "1", "--function", "f", "--evidence", "e",
 			"--scan-id", scanID,
 		})

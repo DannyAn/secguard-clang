@@ -120,6 +120,7 @@ type cfgBuilder struct {
 	exitID  int
 	breakTo []int // innermost breakable exit: loop join OR switch join (break target)
 	contTo  []int // innermost loop header (continue target)
+	depth   int
 }
 
 // BuildStmtCFG builds a statement-level CFG for one function body. body is the
@@ -195,6 +196,14 @@ func (b *cfgBuilder) buildBlock(body parser.Node, from int) int {
 // `from`, and returns the statement's fall-through node (or -1 if it does not
 // fall through to the next statement).
 func (b *cfgBuilder) build(stmt parser.Node, from int) int {
+	if b.depth >= 4096 {
+		n := b.newNode("stmt", stmt.StartLine(), stmt.EndLine(), stmt)
+		b.edge(from, n)
+		return n
+	}
+	b.depth++
+	defer func() { b.depth-- }()
+
 	switch stmt.Kind() {
 	case "compound_statement":
 		return b.buildBlock(stmt, from)
@@ -625,9 +634,15 @@ func (b *cfgBuilder) buildSwitch(stmt parser.Node, from int) int {
 	}
 
 	// Fall-through: each non-terminating case's last statement reaches the next
-	// case's first statement.
+	// case's first statement. An empty case (a label with no statements) is
+	// transparent: it contributes no node of its own, so its fall-through target
+	// is whatever the previous case fell through to.
 	for i := 1; i < len(cases); i++ {
-		if cases[i-1].last >= 0 && cases[i].first >= 0 {
+		if cases[i].first < 0 {
+			cases[i].last = cases[i-1].last
+			continue
+		}
+		if cases[i-1].last >= 0 {
 			b.edge(cases[i-1].last, cases[i].first)
 		}
 	}

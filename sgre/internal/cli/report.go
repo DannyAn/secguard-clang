@@ -222,7 +222,7 @@ func dedupeAndNormalizeFindings(ctx context.Context, store db.Store, findings []
 	out := make([]*db.Finding, 0, len(findings))
 	for _, f := range findings {
 		f.FilePath = resolveFindingFilePath(ctx, store, f.FilePath, files)
-		key := f.ScanID + "\x00" + f.RuleID + "\x00" + f.FilePath + "\x00" + strconv.Itoa(f.LineNumber) + "\x00" + f.FunctionName
+		key := f.ScanID + "\x00" + f.RuleID + "\x00" + f.FilePath + "\x00" + strconv.Itoa(f.LineNumber) + "\x00" + f.FunctionName + "\x00" + f.Variable
 		if seen[key] {
 			continue
 		}
@@ -288,9 +288,6 @@ func runReportCmd(ctx context.Context, args []string) int {
 		// The properties JSON was only the transport; the structured fields now
 		// live in their dedicated columns. Drop the raw copy so the DB stays lean.
 		finding.Properties = ""
-		// Content-addressed identity for cross-scan dedup (incremental review).
-		finding.Fingerprint = computeFingerprint(finding.RuleID, finding.FilePath, finding.FunctionName, finding.LineNumber)
-
 		if finding.Severity == "" {
 			finding.Severity = "info"
 		} else {
@@ -351,6 +348,32 @@ func runReportCmd(ctx context.Context, args []string) int {
 		// absolute path, so the verdict markdown, result.sarif and result.xlsx can
 		// all re-locate the source instead of emitting "Unable to find <file>".
 		finding.FilePath = resolveFindingFilePath(ctx, store, finding.FilePath, nil)
+
+		// Content-addressed identity for cross-scan dedup (incremental review).
+		// Computed from the resolved absolute path (matching the --write-json
+		// batch path) so the fingerprint is stable across path spellings.
+		finding.Fingerprint = computeFingerprint(finding.RuleID, finding.FilePath, finding.FunctionName, finding.LineNumber)
+
+		// A dismissed verdict is not persisted (mirroring the batch
+		// --write-json skipped_dismissed behavior): the candidate evidence file
+		// is annotated as a false positive and no findings row is written.
+		if finding.Status == "dismissed" {
+			oc := syncPerFindingAfterWrite(remaining, finding)
+			out := map[string]interface{}{
+				"status":             "ok",
+				"dismissed":          true,
+				"scan_id":            finding.ScanID,
+				"scan_id_source":     scanIDSource,
+				"per_finding_path":   oc.Path,
+				"per_finding_action": oc.Action,
+			}
+			if oc.Warning != "" {
+				out["per_finding_warning"] = oc.Warning
+				fmt.Fprintf(os.Stderr, "warning: %s\n", oc.Warning)
+			}
+			WriteJSON(out)
+			return 0
+		}
 
 		id, err := store.UpsertFinding(ctx, finding)
 		if err != nil {
@@ -461,6 +484,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 			f  *db.Finding
 		}
 		pending := make([]*pendingWrite, 0, len(inputs))
+		writtenFindings := []*db.Finding{}
 		skippedDismissed := 0
 		for i := range inputs {
 			in := &inputs[i]
@@ -490,6 +514,19 @@ func runReportCmd(ctx context.Context, args []string) int {
 			}
 			if status == "dismissed" {
 				skippedDismissed++
+				// Dismissed candidates are not persisted (no finding row), but the
+				// verdict must still be recorded on the candidate evidence file so
+				// the candidate never lingers as "unclassified".
+				if scanDir := resolveScanDir(remaining, scanID); scanDir != "" {
+					if vulnType := planner.TypeForCWE(in.RuleID); vulnType != "" {
+						if _, serr := report.SyncPerFinding(scanDir, vulnType, in.File, in.Line, report.PerFindingUpdate{
+							Status:    "dismissed",
+							Reasoning: in.Reasoning,
+						}); serr != nil {
+							fmt.Fprintf(os.Stderr, "warning: annotate dismissed candidate %s:%d: %v\n", in.File, in.Line, serr)
+						}
+					}
+				}
 				continue
 			}
 
@@ -548,6 +585,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 				written = append(written, map[string]interface{}{
 					"file": p.in.File, "line": p.in.Line, "id": id,
 				})
+				writtenFindings = append(writtenFindings, p.f)
 			}
 			return nil
 		}); txErr != nil {
@@ -557,6 +595,15 @@ func runReportCmd(ctx context.Context, args []string) int {
 				"error_class": errClass, "message": txErr.Error(),
 			})
 			fmt.Fprintf(os.Stderr, "FATAL: finding batch commit failed: [%s] %v\n", errClass, txErr)
+		}
+
+		// Mirror the single --write path: sync each persisted finding to its
+		// per-finding markdown so findings/<type>/<file>.md never stays stale
+		// relative to the DB after a batch write.
+		for _, f := range writtenFindings {
+			if oc := syncPerFindingAfterWrite(remaining, f); oc.Warning != "" {
+				fmt.Fprintf(os.Stderr, "warning: %s\n", oc.Warning)
+			}
 		}
 
 		out := map[string]interface{}{
@@ -724,6 +771,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 		}
 
 		reviewed := make([]map[string]interface{}, 0, len(inputs))
+		reviewedForSync := []reviewInput{}
 		var errs []string
 		err = store.WithTx(ctx, func(tx db.Store) error {
 			for _, in := range inputs {
@@ -744,12 +792,30 @@ func runReportCmd(ctx context.Context, args []string) int {
 				reviewed = append(reviewed, map[string]interface{}{
 					"id": in.ID, "review_status": in.ReviewStatus,
 				})
+				reviewedForSync = append(reviewedForSync, in)
 			}
 			return nil
 		})
 		if err != nil {
 			WriteErrorJSON(fmt.Sprintf("failed to commit review batch: %v", err))
 			return 1
+		}
+
+		// Mirror the single --review path: re-fetch each reviewed finding and
+		// sync its per-finding markdown so a dismissal removes the file from
+		// findings/ (and a confirmation writes it) after the batch commit.
+		for _, in := range reviewedForSync {
+			f, gerr := store.GetFindingByID(ctx, in.ID)
+			if gerr != nil {
+				fmt.Fprintf(os.Stderr, "warning: re-fetch reviewed finding %d: %v\n", in.ID, gerr)
+				continue
+			}
+			rev := *f
+			rev.Status = in.ReviewStatus
+			rev.ReviewStatus = ""
+			if oc := syncPerFindingAfterWrite(remaining, &rev); oc.Warning != "" {
+				fmt.Fprintf(os.Stderr, "warning: %s\n", oc.Warning)
+			}
 		}
 
 		out := map[string]interface{}{

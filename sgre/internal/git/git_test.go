@@ -38,7 +38,9 @@ rename from src/old.c
 rename to src/new.c
 `
 	d := &Diff{Base: "b", Head: "h"}
-	d.parseUnifiedDiff(text)
+	if err := d.parseUnifiedDiff(text); err != nil {
+		t.Fatalf("parseUnifiedDiff: %v", err)
+	}
 
 	if len(d.Files) != 4 {
 		t.Fatalf("expected 4 files, got %d", len(d.Files))

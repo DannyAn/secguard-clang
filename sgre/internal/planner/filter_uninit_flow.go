@@ -43,6 +43,18 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 		return candidates, nil, nil
 	}
 
+	// Batch-load every candidate's event once: isStackUninit previously issued
+	// one GetEventByID per candidate (an N+1 query storm).
+	eventIDs := make([]int64, 0, len(candidates))
+	seen := make(map[int64]bool, len(candidates))
+	for _, c := range candidates {
+		if !seen[c.DerefEventID] {
+			seen[c.DerefEventID] = true
+			eventIDs = append(eventIDs, c.DerefEventID)
+		}
+	}
+	eventsByID, _ := f.store.ListEventsByIDs(ctx, eventIDs)
+
 	byFunc := make(map[int64][]Candidate)
 	for _, c := range candidates {
 		byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
@@ -59,7 +71,7 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 			kept = append(kept, c)
 			continue
 		}
-		if !f.isStackUninit(ctx, c) {
+		if !f.isStackUninit(eventsByID, c) {
 			kept = append(kept, c)
 			continue
 		}
@@ -103,9 +115,9 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 
 // isStackUninit reports whether the candidate's VALUE_USE event is a
 // stack_uninit candidate (the origin the flow filter understands).
-func (f *DefiniteInitFilter) isStackUninit(ctx context.Context, c Candidate) bool {
-	event, err := f.store.GetEventByID(ctx, c.DerefEventID)
-	if err != nil || event == nil {
+func (f *DefiniteInitFilter) isStackUninit(eventsByID map[int64]*db.SecurityEvent, c Candidate) bool {
+	event := eventsByID[c.DerefEventID]
+	if event == nil {
 		return false
 	}
 	var props struct {

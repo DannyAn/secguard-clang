@@ -38,6 +38,11 @@ func forEachFile(ctx context.Context, store db.Store, p *parser.Parser, logger *
 		byFile[f.FileID] = append(byFile[f.FileID], f)
 	}
 	for _, fid := range order {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		file, err := store.GetFileByID(ctx, fid)
 		if err != nil {
 			if logger != nil {

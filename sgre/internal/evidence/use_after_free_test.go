@@ -228,3 +228,100 @@ int fp_different_slot(void) {
 		t.Errorf("expected free(arr[0]) then use(arr[1]) NOT to be flagged, got %v", fields)
 	}
 }
+
+// TestUseAfterFree_SameLine pins the same-line fix: a use on the SAME line as
+// the free but AFTER it (`free(p); *p = 'x';`) must still be flagged. The old
+// line-only comparison (`use.line <= fs.line`) skipped it.
+func TestUseAfterFree_SameLine(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "same_line_uaf.c")
+	src := `#include <stdlib.h>
+
+int tp_same_line(void) {
+    char *p = (char *)malloc(16);
+    free(p); *p = 'x';
+    return 0;
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	NewUseAfterFreeDetector(store, p, logger).Detect(ctx)
+
+	events, err := store.ListEventsByType(ctx, "USE_AFTER_FREE")
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	flagged := map[string]bool{}
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		flagged[props.Variable] = true
+	}
+
+	if !flagged["p"] {
+		t.Errorf("expected same-line use-after-free (free(p); *p = ...) to be flagged, got %v", flagged)
+	}
+}
+
+// TestUseAfterFree_AliasChain pins the whole-variable alias-chain fix: q=r; r=p;
+// free(p); *q must flag q, even though q's alias points one hop through r.
+func TestUseAfterFree_AliasChain(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "alias_chain_uaf.c")
+	src := `#include <stdlib.h>
+
+int tp_alias_chain(void) {
+    char *p = (char *)malloc(16);
+    char *r = p;
+    char *q = r;
+    free(p);
+    return *q;
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	NewUseAfterFreeDetector(store, p, logger).Detect(ctx)
+
+	events, err := store.ListEventsByType(ctx, "USE_AFTER_FREE")
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	flagged := map[string]bool{}
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		flagged[props.Variable] = true
+	}
+
+	if !flagged["q"] {
+		t.Errorf("expected alias-chain use-after-free (q=r; r=p; free(p); *q) to flag q, got %v", flagged)
+	}
+}

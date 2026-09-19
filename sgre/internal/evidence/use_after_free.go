@@ -26,6 +26,7 @@ type freeSite struct {
 	varName  string
 	field    string
 	line     int
+	column   int
 	indirect bool
 	callee   string
 }
@@ -50,7 +51,7 @@ func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error)
 
 			for _, fs := range freeSites {
 				for _, use := range useSites[fs.varName] {
-					if use.line <= fs.line {
+					if use.line < fs.line || (use.line == fs.line && use.column <= fs.column) {
 						continue
 					}
 					// A whole-variable free (free(p)) dangles every later use of p
@@ -83,6 +84,23 @@ func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error)
 	return result, err
 }
 
+// terminalBaseVar resolves baseVar through whole-variable alias chains: while
+// baseVar itself is an alias with no field selector, follow it to its base. An
+// alias with a field selector (q = p->f) is not a whole-variable alias, so the
+// walk stops there. A visited set guards against alias cycles.
+func terminalBaseVar(aliases map[string]aliasInfo, baseVar string) string {
+	visited := make(map[string]bool)
+	for baseVar != "" && !visited[baseVar] {
+		visited[baseVar] = true
+		ai, ok := aliases[baseVar]
+		if !ok || ai.field != "" {
+			return baseVar
+		}
+		baseVar = ai.baseVar
+	}
+	return baseVar
+}
+
 func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.Node, summaries summaryMap, aliases map[string]aliasInfo, macros map[string]macroFreeSummary) []freeSite {
 	var sites []freeSite
 
@@ -101,7 +119,7 @@ func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.N
 		if s, ok := macros[callName]; ok && s.freesArg && !s.nullsArg {
 			args := getCallArgs(call)
 			if len(args) > 0 && args[0].Kind() == "identifier" {
-				sites = append(sites, freeSite{varName: args[0].Text(), line: callLine})
+				sites = append(sites, freeSite{varName: args[0].Text(), column: call.StartColumn(), line: callLine})
 			}
 			continue
 		}
@@ -112,13 +130,15 @@ func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.N
 				switch arg.Kind() {
 				case "identifier":
 					name := arg.Text()
-					sites = append(sites, freeSite{varName: name, line: callLine})
+					sites = append(sites, freeSite{varName: name, column: call.StartColumn(), line: callLine})
 					// free(p) also invalidates every pointer into p's block:
 					// a direct alias (q = p) and a field alias (q = p->f) both
 					// dangle. Without this, `q = p; free(p); use(q)` was missed.
+					// Whole-variable alias chains (q = r; r = p) resolve to their
+					// terminal base before comparing.
 					for aliasVar, ai := range aliases {
-						if ai.baseVar == name {
-							sites = append(sites, freeSite{varName: aliasVar, line: callLine})
+						if terminalBaseVar(aliases, ai.baseVar) == name {
+							sites = append(sites, freeSite{varName: aliasVar, column: call.StartColumn(), line: callLine})
 						}
 					}
 				case "field_expression":
@@ -126,13 +146,13 @@ func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.N
 					// whole struct p. The field is matched against the use's field,
 					// so reading p->mode after free(p->msg) is not a use-after-free.
 					if base, field := extractFieldAccess(arg); base != "" && field != "" {
-						sites = append(sites, freeSite{varName: base, field: field, line: callLine})
+						sites = append(sites, freeSite{varName: base, field: field, column: call.StartColumn(), line: callLine})
 					}
 				case "subscript_expression":
 					// free(a[0]) dangles only a[0]; the constant index keeps a[0]
 					// distinct from a[1].
 					if base, field := subscriptAccess(arg); base != "" && field != "" {
-						sites = append(sites, freeSite{varName: base, field: field, line: callLine})
+						sites = append(sites, freeSite{varName: base, field: field, column: call.StartColumn(), line: callLine})
 					}
 				}
 			}
@@ -155,6 +175,7 @@ func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.N
 				sites = append(sites, freeSite{
 					varName:  argVar,
 					line:     callLine,
+					column:   call.StartColumn(),
 					indirect: true,
 					callee:   callName,
 				})
@@ -165,6 +186,7 @@ func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.N
 					varName:  argVar,
 					field:    field,
 					line:     callLine,
+					column:   call.StartColumn(),
 					indirect: true,
 					callee:   callName,
 				})
@@ -174,6 +196,7 @@ func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.N
 						sites = append(sites, freeSite{
 							varName:  aliasVar,
 							line:     callLine,
+							column:   call.StartColumn(),
 							indirect: true,
 							callee:   callName,
 						})
@@ -231,16 +254,17 @@ func isFieldWrite(node parser.Node) bool {
 // useSite is one use of a base variable: a whole-variable use (`*p`, `p` as a
 // call argument) has field == "", a field read (`p->mode`) names that field.
 type useSite struct {
-	line  int
-	field string
+	line   int
+	column int
+	field  string
 }
 
 func (d *UseAfterFreeDetector) findUseSites(f *db.Function, ptrs, fields, calls []parser.Node, summaries summaryMap) map[string][]useSite {
 	useSites := make(map[string][]useSite)
 
-	addUse := func(varName, field string, line int) {
+	addUse := func(varName, field string, line, column int) {
 		if varName != "" {
-			useSites[varName] = append(useSites[varName], useSite{line: line, field: field})
+			useSites[varName] = append(useSites[varName], useSite{line: line, column: column, field: field})
 		}
 	}
 
@@ -274,7 +298,7 @@ func (d *UseAfterFreeDetector) findUseSites(f *db.Function, ptrs, fields, calls 
 		}
 		for _, child := range deref.NamedChildren() {
 			if base, fld := useTarget(child); base != "" {
-				addUse(base, fld, deref.StartLine())
+				addUse(base, fld, deref.StartLine(), deref.StartColumn())
 			}
 		}
 	}
@@ -293,7 +317,7 @@ func (d *UseAfterFreeDetector) findUseSites(f *db.Function, ptrs, fields, calls 
 			continue
 		}
 		base, fld := extractFieldAccess(field)
-		addUse(base, fld, field.StartLine())
+		addUse(base, fld, field.StartLine(), field.StartColumn())
 	}
 
 	for _, call := range calls {
@@ -322,7 +346,7 @@ func (d *UseAfterFreeDetector) findUseSites(f *db.Function, ptrs, fields, calls 
 				if s != nil && (s.ParamDirectFrees[argIdx] || len(s.ParamFieldFrees[argIdx]) > 0) {
 					continue
 				}
-				addUse(arg.Text(), "", call.StartLine())
+				addUse(arg.Text(), "", call.StartLine(), call.StartColumn())
 			}
 		}
 	}

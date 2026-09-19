@@ -54,6 +54,11 @@ func forEachFile(ctx context.Context, store db.Store, p *parser.Parser, logger *
 	}
 
 	for _, fid := range order {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		file, err := store.GetFileByID(ctx, fid)
 		if err != nil {
 			if logger != nil {
@@ -94,6 +99,11 @@ func forEachIndexedFile(ctx context.Context, store db.Store, p *parser.Parser, l
 		return err
 	}
 	for _, file := range files {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		source, err := os.ReadFile(file.Path)
 		if err != nil {
 			if logger != nil {
@@ -131,6 +141,11 @@ func forEachFileIncludingEmpty(ctx context.Context, store db.Store, p *parser.Pa
 		return err
 	}
 	for _, file := range files {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		source, err := os.ReadFile(file.Path)
 		if err != nil {
 			if logger != nil {

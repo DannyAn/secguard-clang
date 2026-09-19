@@ -229,13 +229,7 @@ func identTokenIndexes(s, name string) []int {
 // read-modify-write (`x += v`, `x++`, `x = x + 1`) reads the uninitialized value
 // first and is therefore a genuine defect, NOT an output — so it is not matched.
 func assignsParam(body, param string) bool {
-	compact := strings.Map(func(r rune) rune {
-		switch r {
-		case ' ', '\t', '\n', '\r':
-			return -1
-		}
-		return r
-	}, body)
+	compact := compactBody(stripLiteralsAndComments(body))
 
 	// Bare spelling: match only as a standalone identifier.
 	for _, i := range identTokenIndexes(compact, param) {
@@ -273,7 +267,7 @@ func assignsParam(body, param string) bool {
 // else "". A field write is distinct from a whole write (assignsParam):
 // `#define SET_FIELD(s, v) ((s).field = (v))` initializes s.field, not s.
 func assignsFieldOfParam(body, param string) string {
-	compact := compactBody(body)
+	compact := compactBody(stripLiteralsAndComments(body))
 	// Parenthesized `(p).` / `(p)->` — self-delimiting, safe substring.
 	for _, op := range []string{".", "->"} {
 		needle := "(" + param + ")" + op
@@ -397,7 +391,7 @@ func GuardedArgs(call parser.Node, summaries map[string]GuardSummary) map[int]bo
 // negated (`!p` / `!(p)`) and non-negated (`p`) spellings.
 func guardParamsInBody(body string, params []string) (plain, negated map[int]bool) {
 	plain, negated = make(map[int]bool), make(map[int]bool)
-	compact := compactBody(body)
+	compact := compactBody(stripLiteralsAndComments(body))
 	ifIdx := strings.Index(compact, "if(")
 	if ifIdx < 0 {
 		return plain, negated
@@ -421,6 +415,75 @@ func guardParamsInBody(body string, params []string) (plain, negated map[int]boo
 		}
 	}
 	return plain, negated
+}
+
+// stripLiteralsAndComments returns s with string literals, char literals, and
+// comments replaced by spaces, so a parameter name appearing inside a quoted
+// string (`"x = y"`) or a comment is not mistaken for a write to the parameter.
+func stripLiteralsAndComments(s string) string {
+	out := []byte(s)
+	i := 0
+	for i < len(out) {
+		c := out[i]
+		switch c {
+		case '"', '\'':
+			quote := c
+			j := i + 1
+			for j < len(out) {
+				if out[j] == '\\' {
+					j += 2
+					continue
+				}
+				if out[j] == quote {
+					break
+				}
+				j++
+			}
+			if j >= len(out) {
+				j = len(out)
+			}
+			for k := i; k <= j && k < len(out); k++ {
+				out[k] = ' '
+			}
+			i = j + 1
+		case '/':
+			if i+1 < len(out) && out[i+1] == '/' {
+				j := i + 2
+				for j < len(out) && out[j] != '\n' {
+					j++
+				}
+				for k := i; k < j && k < len(out); k++ {
+					out[k] = ' '
+				}
+				i = j
+				continue
+			}
+			if i+1 < len(out) && out[i+1] == '*' {
+				j := i + 2
+				closed := false
+				for j+1 < len(out) {
+					if out[j] == '*' && out[j+1] == '/' {
+						closed = true
+						j += 2
+						break
+					}
+					j++
+				}
+				if !closed {
+					j = len(out)
+				}
+				for k := i; k < j && k < len(out); k++ {
+					out[k] = ' '
+				}
+				i = j
+				continue
+			}
+			i++
+		default:
+			i++
+		}
+	}
+	return string(out)
 }
 
 // compactBody collapses whitespace in a macro body (preproc_arg) text so the

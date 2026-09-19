@@ -35,6 +35,18 @@ func (f *LockOrderFilter) Apply(ctx context.Context, candidates []Candidate) ([]
 		return candidates, nil, nil
 	}
 
+	// Batch-load every candidate's event once: the per-candidate GetEventByID
+	// below was an N+1 query storm.
+	eventIDs := make([]int64, 0, len(candidates))
+	seen := make(map[int64]bool, len(candidates))
+	for _, c := range candidates {
+		if !seen[c.DerefEventID] {
+			seen[c.DerefEventID] = true
+			eventIDs = append(eventIDs, c.DerefEventID)
+		}
+	}
+	eventsByID, _ := f.store.ListEventsByIDs(ctx, eventIDs)
+
 	nameByNode := make(map[int64]string)
 	if nodes, err := f.store.ListGraphNodesByEntityType(ctx, "mutex"); err == nil {
 		for _, n := range nodes {
@@ -61,8 +73,8 @@ func (f *LockOrderFilter) Apply(ctx context.Context, candidates []Candidate) ([]
 
 	kept := make([]Candidate, 0, len(candidates))
 	for _, c := range candidates {
-		event, err := f.store.GetEventByID(ctx, c.DerefEventID)
-		if err != nil || event == nil {
+		event := eventsByID[c.DerefEventID]
+		if event == nil {
 			kept = append(kept, c)
 			continue
 		}

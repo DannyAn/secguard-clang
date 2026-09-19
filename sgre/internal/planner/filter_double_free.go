@@ -119,12 +119,14 @@ func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Ca
 
 		killByLine := make(map[int][]string)
 		forEachAssignment(body, func(lhs, rhs parser.Node) {
-			if lhs.Kind() != "identifier" {
+			name := assignTargetName(lhs)
+			if name == "" {
+				name = declaratorName(lhs)
+			}
+			if name == "" || rhsVarName(rhs) != "" {
 				return
 			}
-			if rhsVarName(rhs) == "" {
-				killByLine[lhs.StartLine()] = append(killByLine[lhs.StartLine()], lhs.Text())
-			}
+			killByLine[lhs.StartLine()] = append(killByLine[lhs.StartLine()], name)
 		})
 
 		// free(p) dangles every alias of p, so the first-free source also reaches

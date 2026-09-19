@@ -32,8 +32,16 @@ func (s *store) UpsertScanRun(ctx context.Context, r *ScanRun) error {
 // the two-phase pipeline-vs-AI timing is queryable across scans. It is a targeted
 // UPDATE (not an upsert) so it never clobbers the pipeline timings the scan wrote.
 func (s *store) SetScanRunAIDuration(ctx context.Context, scanID string, ms int64) error {
-	if _, err := s.exec.ExecContext(ctx, `UPDATE scan_runs SET ai_duration_ms = ? WHERE scan_id = ?`, ms, scanID); err != nil {
+	res, err := s.exec.ExecContext(ctx, `UPDATE scan_runs SET ai_duration_ms = ? WHERE scan_id = ?`, ms, scanID)
+	if err != nil {
 		return fmt.Errorf("db: set scan_run ai_duration_ms: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("db: set scan_run ai_duration_ms: rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("db: set scan_run ai_duration_ms: no scan_run for scan_id %q", scanID)
 	}
 	return nil
 }

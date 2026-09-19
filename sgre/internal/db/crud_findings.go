@@ -61,8 +61,8 @@ func SupportedCWEsList() string {
 
 func (s *store) InsertFinding(ctx context.Context, f *Finding) (int64, error) {
 	cweNorm := strings.ToUpper(strings.TrimSpace(f.RuleID))
-	if cweNorm != "" && !SupportedFindingCWEs[cweNorm] {
-		return 0, fmt.Errorf("db: insert finding: unsupported rule_id %q (not a pipeline-detected vulnerability type)", f.RuleID)
+	if cweNorm == "" || !SupportedFindingCWEs[cweNorm] {
+		return 0, fmt.Errorf("db: insert finding: empty or unsupported rule_id %q (not a pipeline-detected vulnerability type)", f.RuleID)
 	}
 	if f.Status == "" {
 		f.Status = "open"
@@ -94,8 +94,8 @@ func (s *store) InsertFinding(ctx context.Context, f *Finding) (int64, error) {
 // second-round (A5) review fields, which only `--review` mutates.
 func (s *store) UpsertFinding(ctx context.Context, f *Finding) (int64, error) {
 	cweNorm := strings.ToUpper(strings.TrimSpace(f.RuleID))
-	if cweNorm != "" && !SupportedFindingCWEs[cweNorm] {
-		return 0, fmt.Errorf("db: upsert finding: unsupported rule_id %q (not a pipeline-detected vulnerability type)", f.RuleID)
+	if cweNorm == "" || !SupportedFindingCWEs[cweNorm] {
+		return 0, fmt.Errorf("db: upsert finding: empty or unsupported rule_id %q (not a pipeline-detected vulnerability type)", f.RuleID)
 	}
 	if f.Status == "" {
 		f.Status = "open"

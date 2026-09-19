@@ -51,6 +51,18 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 		return candidates, nil, nil
 	}
 
+	// Batch-load every candidate's event once: divisor / isDefinitelyZeroEvent /
+	// callDivisorName previously issued one GetEventByID per candidate.
+	eventIDs := make([]int64, 0, len(candidates))
+	seen := make(map[int64]bool, len(candidates))
+	for _, c := range candidates {
+		if !seen[c.DerefEventID] {
+			seen[c.DerefEventID] = true
+			eventIDs = append(eventIDs, c.DerefEventID)
+		}
+	}
+	eventsByID, _ := f.store.ListEventsByIDs(ctx, eventIDs)
+
 	byFunc := make(map[int64][]Candidate)
 	for _, c := range candidates {
 		byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
@@ -65,7 +77,7 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 		// A divisor the detector proved is exactly zero (literal `x/0` or a
 		// zero-valued constant symbol) is a certain divide-by-zero: auto-confirm
 		// it before the interval analysis so it never reaches the AI agent.
-		if f.isDefinitelyZeroEvent(ctx, c) {
+		if f.isDefinitelyZeroEvent(eventsByID, c) {
 			c.SuspicionLevel = "confirmed"
 			kept = append(kept, c)
 			continue
@@ -75,12 +87,12 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 			kept = append(kept, c)
 			continue
 		}
-		divisor := f.divisor(ctx, c)
+		divisor := f.divisor(eventsByID, c)
 		if divisor == "" {
 			// A direct call divisor (`x / get_count()`) has no bare-identifier
 			// variable to flow-propagate, so resolve the callee's return summary
 			// directly.
-			if name := f.callDivisorName(ctx, c); name != "" && resolver.nonZeroReturn(name) {
+			if name := f.callDivisorName(eventsByID, c); name != "" && resolver.nonZeroReturn(name) {
 				dropped = dismiss(dropped, c, f.Name(),
 					fmt.Sprintf("divisor %s() provably returns non-zero at line %d", name, c.Line))
 				continue
@@ -127,7 +139,7 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 			continue
 		}
 		root := cache.rootForFile(file)
-		divisor := f.divisor(ctx, c)
+		divisor := f.divisor(eventsByID, c)
 		if divisor == "" {
 			finalKept = append(finalKept, c)
 			continue
@@ -154,9 +166,9 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 
 // divisor returns the bare-identifier divisor of a divide-by-zero candidate, or
 // "" when the divisor is a complex expression the interval engine cannot prove.
-func (f *RangeFilter) divisor(ctx context.Context, c Candidate) string {
-	event, err := f.store.GetEventByID(ctx, c.DerefEventID)
-	if err != nil || event == nil {
+func (f *RangeFilter) divisor(eventsByID map[int64]*db.SecurityEvent, c Candidate) string {
+	event := eventsByID[c.DerefEventID]
+	if event == nil {
 		return ""
 	}
 	return bareIdentVar(parseEventProps(event.Properties).Divisor)
@@ -165,9 +177,9 @@ func (f *RangeFilter) divisor(ctx context.Context, c Candidate) string {
 // isDefinitelyZeroEvent reports whether the candidate's event carries an explicit
 // "definitely_zero" marker from the detector — a literal `x/0` or a zero-valued
 // constant symbol, a certain divide-by-zero.
-func (f *RangeFilter) isDefinitelyZeroEvent(ctx context.Context, c Candidate) bool {
-	event, err := f.store.GetEventByID(ctx, c.DerefEventID)
-	if err != nil || event == nil {
+func (f *RangeFilter) isDefinitelyZeroEvent(eventsByID map[int64]*db.SecurityEvent, c Candidate) bool {
+	event := eventsByID[c.DerefEventID]
+	if event == nil {
 		return false
 	}
 	return parseEventProps(event.Properties).DefinitelyZero == "true"
@@ -175,9 +187,9 @@ func (f *RangeFilter) isDefinitelyZeroEvent(ctx context.Context, c Candidate) bo
 
 // callDivisorName returns the callee name when the candidate's divisor is a
 // direct call (`foo()`), else "".
-func (f *RangeFilter) callDivisorName(ctx context.Context, c Candidate) string {
-	event, err := f.store.GetEventByID(ctx, c.DerefEventID)
-	if err != nil || event == nil {
+func (f *RangeFilter) callDivisorName(eventsByID map[int64]*db.SecurityEvent, c Candidate) string {
+	event := eventsByID[c.DerefEventID]
+	if event == nil {
 		return ""
 	}
 	return callNameFromDivisorText(parseEventProps(event.Properties).Divisor)

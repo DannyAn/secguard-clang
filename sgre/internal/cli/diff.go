@@ -148,7 +148,9 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 
 	outcome, err := runPipeline(ctx, store, logger, absPath, excludeDirs, config.Load().ExcludePaths())
 	if err != nil {
-		_ = store.UpdateReviewSessionStatus(ctx, reviewID, "failed")
+		if serr := store.UpdateReviewSessionStatus(ctx, reviewID, "failed"); serr != nil {
+			logger.Warn("mark review session failed", "error", serr)
+		}
 		WriteErrorJSON(err.Error())
 		return 1
 	}
@@ -203,10 +205,11 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 			ScanID:      reviewID,
 			VulnType:    vulnType,
 			SeedCount:   result.Summary.SeedCount,
-			FinalCount:  len(needsReview),
+			FinalCount:  distinctFindingLocations(needsReview),
 			FilterChain: string(filterChainJSON),
 		}); err != nil {
-			logger.Warn("insert scan stat failed", "vuln_type", vulnType, "error", err)
+			WriteErrorJSON(fmt.Sprintf("failed to insert scan stat for %s: %v", vulnType, err))
+			return 1
 		}
 
 		for _, c := range needsReview {
@@ -237,7 +240,7 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 	for _, ep := range evidencePackages {
 		vt, _ := ep["vulnerability_type"].(string)
 		cands, _ := ep["candidates"].([]planner.EvidenceItem)
-		candidatesByType[vt] = len(cands)
+		candidatesByType[vt] = distinctFindingLocations(cands)
 	}
 
 	funcs, err := store.ListFunctions(ctx)

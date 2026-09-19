@@ -567,6 +567,7 @@ func latestPerLocation(findings []*db.Finding, res *ReconcileResult) []*db.Findi
 		file     string
 		line     int
 		function string
+		variable string
 	}
 	order := make([]key, 0, len(findings))
 	latest := make(map[key]*db.Finding, len(findings))
@@ -579,7 +580,7 @@ func latestPerLocation(findings []*db.Finding, res *ReconcileResult) []*db.Findi
 			res.SkippedNoCWE++
 			continue
 		}
-		k := key{vulnType, sanitizeFilename(shortFile(f.FilePath)), f.LineNumber, f.FunctionName}
+		k := key{vulnType, sanitizeFilename(shortFile(f.FilePath)), f.LineNumber, f.FunctionName, f.Variable}
 		prev, seen := latest[k]
 		if !seen {
 			order = append(order, k)

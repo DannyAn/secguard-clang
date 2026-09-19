@@ -144,6 +144,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 
 	evidencePackages := []map[string]interface{}{}
 	totalCandidates := 0
+	totalFinalCount := 0
 	totalSeedCount := 0
 	totalSuppressed := 0
 	totalBaselineExisting := 0
@@ -220,14 +221,17 @@ func runScanCmd(ctx context.Context, args []string) int {
 		}
 		totalAutoConfirmed += autoWritten
 
+		finalLocations := distinctFindingLocations(needsReview)
+		totalFinalCount += finalLocations
 		if _, err := store.InsertScanStat(ctx, &db.ScanStat{
 			ScanID:      scanID,
 			VulnType:    vulnType,
 			SeedCount:   result.Summary.SeedCount,
-			FinalCount:  distinctFindingLocations(needsReview),
+			FinalCount:  finalLocations,
 			FilterChain: string(filterChainJSON),
 		}); err != nil {
-			logger.Warn("insert scan stat failed", "vuln_type", vulnType, "error", err)
+			WriteErrorJSON(fmt.Sprintf("failed to insert scan stat for %s: %v", vulnType, err))
+			return 1
 		}
 
 		for _, c := range needsReview {
@@ -248,6 +252,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 		})
 	}
 
+	var findingsError string
 	findings, err := store.ListFindingsByScanID(ctx, scanID)
 	if err != nil {
 		// CI gate（--fail-on）依赖 findings 计数：读失败若静默放行，confirmed/
@@ -256,7 +261,10 @@ func runScanCmd(ctx context.Context, args []string) int {
 			fmt.Fprintf(os.Stderr, "error: failed to list findings for CI gate: %v\n", err)
 			return 1
 		}
-		logger.Warn("list findings by scan failed", "error", err)
+		// A 0 count must never be mistaken for "no existing findings": surface
+		// the read failure in the JSON and at Error level.
+		logger.Error("list findings by scan failed", "error", err)
+		findingsError = err.Error()
 	}
 	findingsList := make([]map[string]interface{}, 0, len(findings))
 	for _, f := range findings {
@@ -368,6 +376,9 @@ func runScanCmd(ctx context.Context, args []string) int {
 		"result_sarif_note": fmt.Sprintf("%s is written by `report --audit` after classification; the scan writes %s (unclassified leads at level \"note\")", report.SarifFile, report.CandidatesSarifFile),
 		"_summary":          summaryStr,
 	}
+	if findingsError != "" {
+		output["findings_error"] = findingsError
+	}
 
 	planResults := make([]*planner.PlanResult, 0, len(evidencePackages))
 	for _, ep := range evidencePackages {
@@ -463,12 +474,13 @@ func runScanCmd(ctx context.Context, args []string) int {
 			FilesIndexed:     indexResult.FilesIndexed,
 			FunctionsIndexed: indexResult.FunctionsIndexed,
 			SeedCount:        totalSeedCount,
-			FinalCount:       totalCandidates,
+			FinalCount:       totalFinalCount,
 			ReportBytes:      reportBytes,
 			EvidenceBytes:    evidenceBytes,
 		}
 		if err := store.UpsertScanRun(ctx, run); err != nil {
 			logger.Warn("insert scan run metrics failed", "error", err)
+			output["scan_runs_error"] = err.Error()
 		}
 		output["scan_metrics"] = renderScanMetrics(run)
 	}
@@ -476,18 +488,19 @@ func runScanCmd(ctx context.Context, args []string) int {
 	// 先写完 report.md/SARIF 再输出 JSON，确保调用方拿到 JSON 时 report.md 一定存在
 	// （或 JSON 中含 report_error 字段）。原先 JSON 在 Write 之前输出，若 Write 失败
 	// 调用方仍认为扫描成功，但 report.md 不存在，导致 agent 读取报错 File not found。
-	jsonBytes, _ := json.MarshalIndent(output, "", "  ")
-	fmt.Fprintln(os.Stdout, string(jsonBytes))
-
-	report.PrintScanSummary(os.Stderr, summaryData)
-
 	if err := report.WriteDismissed(scanDir, report.DismissedSummary{
 		ScanID:       scanID,
 		TotalDropped: totalDropped,
 		ByVulnType:   dismissedByVuln,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to write dismissed ledger: %v\n", err)
+		output["dismissed_ledger_error"] = err.Error()
 	}
+
+	jsonBytes, _ := json.MarshalIndent(output, "", "  ")
+	fmt.Fprintln(os.Stdout, string(jsonBytes))
+
+	report.PrintScanSummary(os.Stderr, summaryData)
 
 	if failOn != "" {
 		confirmedCount := 0
