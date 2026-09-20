@@ -2,6 +2,20 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.7.6] - 2026-09-20
+
+### Contract 契约检测（Phase 1）
+
+新增三个 Contract pattern，落地为证据驱动的检测能力，不新增平行基础设施：
+
+- **argument-type（CWE-686，explicit）**：直调 + 显式指针 cast，检测「指向对象类型不兼容」——`bool*→uint*`、`uint32_t*→uint64_t*`、`int↔float`。过滤 `void*`/`char*`/同类型/同尺寸整数等合法转换；变量按作用域就近解析，避免跨作用域同名变量误判。`suspected`，AI 判定 intent。
+- **data-representation（CWE-843，implicit）**：`qsort`/`bsearch` comparator 对类型擦除元素做错误对象表示解释（`*(const char **)a` vs `(const char *)a`）。跨调用边界的配对分析（call site + comparator）做指针深度比较，guard 过滤。`suspected`。
+- **nullability（复用 null-deref，implicit）**：新增 `caller_null` 跨函数 NULL 传播——参数被无 guard 解引用时，若 caller 传字面 NULL 或未证非空的变量则命中 `suspected`，全 caller 支配性判空则过滤。只出 `suspected`，绝不 auto-confirm。
+
+### 修复
+
+- **integer-overflow 误报**：删除 `size_add_overflow`/`size_sub_overflow`（`malloc(n + 1)`、`malloc(n - 1)` 等 null 终止符/off-by-one 噪声）；`size_mul_const_overflow` 仅保留字面乘数 `>= 256`（`n * 1024`/`n * 4096` 保留，`n * 2`/`n * 4` 剔除）；保留 `n * m`/`n * sizeof(T)`/`calloc(n, m)` 经典 CWE-190。
+
 ## [0.7.5] - 2026-09-19
 
 ### GLM 检视闭环（`GLMFlash检视问题_20260919.md` 66 条意见复核）
