@@ -101,3 +101,72 @@ void cmp_clear_exception(const char *vsys, const char *module)
     }
     g_exception_num = count;
 }
+/* ---------------------------------------------------------------------------
+ * UC-01 — void function whose name contains "alloc".
+ *
+ * test_case_alloc returns void, so it has no return value to check. The alloc
+ * heuristic (apikb.IsAllocator substring match) must not flag the call at
+ * line 119 as unchecked-return. The malloc at line 117 IS a real unchecked
+ * return and must still be flagged (control case).
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    int len;
+} uc_mbuf;
+
+void test_case_alloc(uc_mbuf *mbuf, int ecode)
+{
+    mbuf->len = ecode;
+}
+
+void uc_caller(void)
+{
+    uc_mbuf *mbuf = (uc_mbuf *)malloc(sizeof(uc_mbuf));
+    if (mbuf == NULL) {
+        return;
+    }
+    test_case_alloc(mbuf, 1);
+    free(mbuf);
+}
+/* ---------------------------------------------------------------------------
+ * UC-02 — scalar-returning function whose name contains "alloc".
+ *
+ * check_alloc_status returns int, so it can never return NULL. The alloc
+ * heuristic must not flag the call as unchecked-return. This generalises
+ * UC-01: any non-pointer return type (not just void) is not an allocator.
+ * ------------------------------------------------------------------------- */
+int check_alloc_status(int id)
+{
+    return id == 0;
+}
+
+void uc_scalar_caller(void)
+{
+    int ret = check_alloc_status(42);
+    (void)ret;
+}
+
+/* ---------------------------------------------------------------------------
+ * UC-03 — passthrough wrapper of a heuristic-matched allocator.
+ *
+ * my_alloc is matched by IsAllocator (name contains "alloc") but is not in
+ * uncheckedReturnAPIs. passthrough_wrapper returns my_alloc's result, so it
+ * must be recognised as a passthrough allocator — the transitive closure in
+ * passthroughAllocFuncs must include the IsAllocator term, not just
+ * uncheckedReturnAPIs. The caller's unchecked use of the result must be
+ * flagged.
+ * ------------------------------------------------------------------------- */
+void *my_alloc(size_t n)
+{
+    return malloc(n);
+}
+
+void *passthrough_wrapper(size_t n)
+{
+    return my_alloc(n);
+}
+
+void uc_passthrough_caller(void)
+{
+    void *p = passthrough_wrapper(64);
+    (void)p;
+}

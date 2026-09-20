@@ -1269,6 +1269,36 @@
       "cwe": "CWE-681",
       "detector": "signed_compare",
       "expect": "no_finding"
+    },
+    {
+      "id": "UC-01",
+      "category": "phase13_v074_fp_fixes",
+      "file": "src/p13_v074_fp_fixes.c",
+      "line": 127,
+      "code": "test_case_alloc(mbuf, 1) —— void 函数名含 alloc，IsAllocator 启发式误匹配，非指针返回类型过滤后不误报",
+      "cwe": "CWE-252",
+      "detector": "unchecked_return",
+      "expect": "no_finding"
+    },
+    {
+      "id": "UC-02",
+      "category": "phase13_v074_fp_fixes",
+      "file": "src/p13_v074_fp_fixes.c",
+      "line": 144,
+      "code": "check_alloc_status(42) —— int 返回类型函数名含 alloc，非指针返回类型过滤后不误报",
+      "cwe": "CWE-252",
+      "detector": "unchecked_return",
+      "expect": "no_finding"
+    },
+    {
+      "id": "UC-03",
+      "category": "phase13_v074_fp_fixes",
+      "file": "src/p13_v074_fp_fixes.c",
+      "line": 170,
+      "code": "passthrough_wrapper(64) —— 包装 IsAllocator 启发式匹配的 my_alloc，传递闭包含 IsAllocator 后识别为 passthrough，未检查返回值应报",
+      "cwe": "CWE-252",
+      "detector": "unchecked_return",
+      "expect": "finding"
     }
   ]
 }
