@@ -23,7 +23,7 @@ type Planner struct {
 	taintCache *taintSummaryCache
 	// macro shares the macro-context detector (and its file-line cache) across
 	// every Plan() call, so a file is read at most once per scan even though up
-	// to 22 vuln types run Plan concurrently.
+	// to 24 vuln types run Plan concurrently.
 	macro *macroContextDetector
 }
 
@@ -366,6 +366,9 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			SuspicionLevel:    suspicion,
 			DeclLine:          props.DeclLine,
 			Origin:            props.Origin,
+			ExpectedType:      props.Expected,
+			ActualType:        props.Actual,
+			CastType:          props.Cast,
 		})
 	}
 

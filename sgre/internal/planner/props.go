@@ -70,6 +70,12 @@ type eventProps struct {
 	// ThreadFunctions is the comma-separated list of pthread thread function
 	// names a shared_data_race event reports (race-condition detector).
 	ThreadFunctions string `json:"thread_functions"`
+	// Expected/Actual/Cast are the argument-type mismatch evidence: the callee's
+	// declared parameter type (e.g. "uint *"), the argument's actual pointer type
+	// before the cast (e.g. "bool *"), and the explicit cast target type.
+	Expected string `json:"expected"`
+	Actual   string `json:"actual"`
+	Cast     string `json:"cast"`
 }
 
 func parseEventProps(raw string) eventProps {

@@ -131,7 +131,7 @@ func TestAllCWEs_ContainsAll20CanonicalCWEs(t *testing.T) {
 		"CWE-476", "CWE-787", "CWE-125", "CWE-401", "CWE-78",
 		"CWE-404", "CWE-457", "CWE-416", "CWE-415", "CWE-134",
 		"CWE-190", "CWE-362", "CWE-798", "CWE-667", "CWE-327",
-		"CWE-369", "CWE-252", "CWE-22", "CWE-681", "CWE-467",
+		"CWE-369", "CWE-252", "CWE-22", "CWE-681", "CWE-467", "CWE-686", "CWE-843",
 		"CWE-88", "CWE-91", "CWE-93", "CWE-117",
 	}
 	for _, cwe := range expected {
@@ -141,11 +141,11 @@ func TestAllCWEs_ContainsAll20CanonicalCWEs(t *testing.T) {
 	}
 }
 
-func TestAllCWEs_CountIs22CanonicalPlus3LegacyPlus4CategoryCWEs(t *testing.T) {
+func TestAllCWEs_CountIs24CanonicalPlus3LegacyPlus4CategoryCWEs(t *testing.T) {
 	cwes := AllCWEs()
-	// 22 canonical + 3 legacy (CWE-89, CWE-326, CWE-338) + 4 category CWEs (CWE-88, CWE-91, CWE-93, CWE-117) = 29
-	if len(cwes) != 29 {
-		t.Errorf("AllCWEs() has %d entries, want 29 (22 canonical + 3 legacy + 4 injection category CWEs)", len(cwes))
+	// 24 canonical + 3 legacy (CWE-89, CWE-326, CWE-338) + 4 category CWEs (CWE-88, CWE-91, CWE-93, CWE-117) = 31
+	if len(cwes) != 31 {
+		t.Errorf("AllCWEs() has %d entries, want 31 (24 canonical + 3 legacy + 4 injection category CWEs)", len(cwes))
 	}
 }
 

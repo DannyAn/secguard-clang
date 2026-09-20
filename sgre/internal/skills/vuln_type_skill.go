@@ -77,6 +77,8 @@ var allSkillSpecs = []skillSpec{
 	{"signed-compare", "boundary", "Detects unsigned values compared with zero/negative (CWE-681/195)"},
 	{"signal-handler", "concurrency", "Detects non-async-signal-safe calls in signal handlers (CWE-479)"},
 	{"dangerous-function", "boundary", "Detects calls to banned/obsolete libc functions (CWE-676)"},
+	{"argument-type", "contract", "Detects incompatible pointer-cast function arguments (CWE-686)"},
+	{"data-representation", "contract", "Detects callback/generic-pointer representation mismatches (CWE-843)"},
 }
 
 func DefaultRegistry(store db.Store, logger *log.Logger) *Registry {

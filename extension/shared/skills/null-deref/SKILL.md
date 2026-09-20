@@ -11,9 +11,28 @@ metadata:
 
 ## Null Dereference Analysis (CWE-476)
 
+`contract_kind: implicit` — a parameter dereferenced without a dominating null
+check establishes an implicit non-null precondition (`ctx != NULL`). This skill
+judges NULL **reachability, not null-check presence**: a bare `T *p` parameter
+with no null check is **not** a finding by itself.
+
+A NULL source reaches a parameter dereference when either (intra-procedural) the
+function assigns NULL / a nullable allocator/return / an external call, or
+(inter-procedural, `origin: caller_null`) a caller passes a value it has not
+proven non-null for that parameter:
+
+- a caller passes literal `NULL` / `0` → the parameter is nullable on that path;
+- a caller passes an unguarded variable → NULL reachability is **unknown**;
+- a caller whose early-return check (`if (v == NULL) return;`) dominates the call
+  proves non-null, so it is filtered and does **not** surface.
+
+The contract is **path-dependent**: a guarded caller does not rescue a function
+that another caller violates. These surface as `suspected`, never auto-confirmed.
+
 ### Evidence Pattern
 A null-deref candidate has:
 - **nullable_source**: Variable has a NULL_VALUE origin (malloc return, function return NULL, external call, or a free+null macro `SAFE_FREE(p)` that sets `p = NULL`)
+- **caller_null**: A `void *`/`T *` parameter is nullable because a caller passes it a value it has not proven non-null (`caller c passes NULL`, `caller c passes x (not proven non-null)`)
 - **call_path**: The function is reachable from an entry point
 - **data_flow**: The NULL value propagates to the dereference location
 - **guard**: A NULL_GUARD event may or may not exist
@@ -27,6 +46,8 @@ A null-deref candidate has:
 | Nullable source + reachable + data flow + guard AFTER deref (scope misses) | **confirmed** |
 | Nullable source + NOT reachable | **false-positive** (dead code) |
 | External call return + no guard + deref | **dismissed** (external may never return NULL) |
+| `caller_null` (parameter) + no guard + deref | **suspected** — the caller contract is unproven; confirm only if a caller actually passes NULL/unproven value |
+| `caller_null` (parameter) + every caller proves non-null (`if (v == NULL) return;` dominates the call) | **false-positive** — the pipeline filters these before they surface |
 
 ### Common False Positives
 - `if (ptr == NULL) return;` before `ptr->field` → guard eliminates risk

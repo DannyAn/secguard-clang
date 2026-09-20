@@ -140,4 +140,9 @@ func init() {
 	RegisterDetector(func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewXMLInjectionDetector(s, p, l) })
 	RegisterDetector(func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewCRLFInjectionDetector(s, p, l) })
 	RegisterDetector(func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewLogInjectionDetector(s, p, l) })
+	RegisterDetector(func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewArgumentTypeDetector(s, p, l) })
+	RegisterDetector(func(s db.Store, p *parser.Parser, l *log.Logger) Detector {
+		return NewDataRepresentationDetector(s, p, l)
+	})
+	RegisterDetector(func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewCallerNullDetector(s, p, l) })
 }

@@ -137,4 +137,13 @@ type Candidate struct {
 	SourceLine        int     `json:"source_line,omitempty"`
 	DeclLine          int     `json:"decl_line,omitempty"`
 	Origin            string  `json:"origin,omitempty"`
+	// ExpectedType/ActualType/CastType are the argument-type mismatch evidence
+	// (parameter type, pre-cast argument type, explicit cast target type).
+	ExpectedType string `json:"expected_type,omitempty"`
+	ActualType   string `json:"actual_type,omitempty"`
+	CastType     string `json:"cast_type,omitempty"`
+	// CallerNullDetail describes the inter-procedural caller_null origin of a
+	// parameter's nullability (e.g. "caller c passes NULL"), surfaced in the
+	// evidence so the AI can judge the caller contract instead of a bare "line 0".
+	CallerNullDetail string `json:"caller_null_detail,omitempty"`
 }

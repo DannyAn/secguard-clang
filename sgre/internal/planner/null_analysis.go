@@ -28,6 +28,11 @@ type nullSource struct {
 	// possible-null source (malloc/fopen/function-return). A definite source
 	// reaching a dereference is a certain null-deref, not a maybe.
 	definite bool
+	// caller / argText carry the inter-procedural origin for a caller_null
+	// source (origin "caller_null"): the function that passed a possibly-null
+	// argument, and that argument's text (e.g. caller "c", argText "NULL").
+	caller  string
+	argText string
 }
 
 // nullModel is the L1 null model for a single function.
@@ -76,6 +81,8 @@ func buildNullModel(ctx context.Context, store db.Store) (map[int64]*nullModel, 
 			line:     line,
 			origin:   props.Origin,
 			definite: props.Definite == "true",
+			caller:   props.Function,
+			argText:  props.Expression,
 		})
 	}
 

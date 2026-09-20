@@ -249,11 +249,19 @@ func init() {
 					Detail: fmt.Sprintf("variable %s is assigned NULL at line %d and dereferenced at line %d with no intervening reassignment (certain null-deref)", c.VariableName, c.SourceLine, c.Line),
 				})
 			} else if c.HasNullableSource {
-				fragments = append(fragments, EvidenceFragment{
-					Type:   "nullable_source",
-					Role:   "source",
-					Detail: nullableSourceDetail(c),
-				})
+				if c.CallerNullDetail != "" {
+					fragments = append(fragments, EvidenceFragment{
+						Type:   "caller_null",
+						Role:   "source",
+						Detail: fmt.Sprintf("parameter %s can be NULL: %s", c.VariableName, c.CallerNullDetail),
+					})
+				} else {
+					fragments = append(fragments, EvidenceFragment{
+						Type:   "nullable_source",
+						Role:   "source",
+						Detail: nullableSourceDetail(c),
+					})
+				}
 			}
 			if c.IsReachable {
 				fragments = append(fragments, EvidenceFragment{
@@ -736,6 +744,48 @@ func init() {
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
 				{Type: "dangerous_function", Role: "sink", Detail: fmt.Sprintf("call to dangerous/obsolete %s() at line %d in function %s", c.VariableName, c.Line, c.FunctionName)},
+				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
+			}
+		},
+	})
+
+	RegisterVulnType(&VulnTypeSpec{
+		Name:             "argument-type",
+		CWE:              "CWE-686",
+		SeedEventType:    "ARGUMENT_TYPE_MISMATCH",
+		EvidenceType:     "ARGUMENT_TYPE_MISMATCH",
+		DefaultSuspicion: "suspected",
+		FilterChain:      "default",
+		// An incompatible pointer cast is evidence of a type reinterpretation,
+		// but an explicit cast is not proof of a defect (it can be an intentional
+		// ABI/opaque boundary), so the AI agent judges intent rather than the
+		// pipeline auto-confirming a cast.
+		BuildEvidence: func(c Candidate) []EvidenceFragment {
+			frags := []EvidenceFragment{
+				{Type: "argument_type_mismatch", Role: "sink", Detail: fmt.Sprintf("call to %s passes %s as %s at line %d in function %s", c.APIName, c.ActualType, c.ExpectedType, c.Line, c.FunctionName)},
+			}
+			if c.CastType != "" {
+				frags = append(frags, EvidenceFragment{Type: "explicit_cast", Role: "source", Detail: fmt.Sprintf("explicit cast %s reinterprets object %s (%s)", c.CastType, c.VariableName, c.ActualType)})
+			}
+			frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
+			return frags
+		},
+	})
+
+	RegisterVulnType(&VulnTypeSpec{
+		Name:             "data-representation",
+		CWE:              "CWE-843",
+		SeedEventType:    "DATA_REPRESENTATION_MISMATCH",
+		EvidenceType:     "DATA_REPRESENTATION_MISMATCH",
+		DefaultSuspicion: "suspected",
+		FilterChain:      "default",
+		// A pointer-depth mismatch between a qsort/bsearch base element and the
+		// comparator's void* cast is strong evidence of type confusion, but the
+		// base's declared type can be a decayed/aliased array, so the AI agent
+		// confirms the actual element representation.
+		BuildEvidence: func(c Candidate) []EvidenceFragment {
+			return []EvidenceFragment{
+				{Type: "data_representation_mismatch", Role: "sink", Detail: fmt.Sprintf("comparator %s interprets a void* element as %s but the sort base %s holds %s elements at line %d in function %s", c.APIName, c.ActualType, c.VariableName, c.ExpectedType, c.Line, c.FunctionName)},
 				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
 			}
 		},

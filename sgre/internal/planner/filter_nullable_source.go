@@ -90,6 +90,7 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				c.HasNullableSource = true
 				c.HasDefiniteNull = fm.reachingDefinite(c.VariableName, c.Line)
 				c.SourceLine = fm.sourceLine(c.VariableName, c.Line)
+				c.CallerNullDetail = callerNullDetail(models[c.FunctionID], c.VariableName)
 				// Layering: reflect the must/may tier in the suspicion label so
 				// the AI budgets effort by certainty. A DEFINITE null source
 				// (p = NULL) reaching on every path is a certain null-deref →
@@ -233,9 +234,25 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 		if body.Kind() != "compound_statement" {
 			continue
 		}
+		// Split sources: caller_null sources (origin "caller_null") are seeded at
+		// the CFG ENTRY (a parameter has no body statement to hang a line-keyed
+		// gen on), while intra-procedural sources stay line-keyed.
 		sources := nullSourcesFor(models, fid)
-		sources = append(sources, callResultNullSources(body, retNullable)...)
-		results[fid] = analyzer.analyzeFunction(ctx, fn, body, root, sources)
+		var entrySeeds map[string]bool
+		var lineSources []nullSource
+		for _, s := range sources {
+			if s.origin == "caller_null" {
+				if entrySeeds == nil {
+					entrySeeds = map[string]bool{}
+				}
+				entrySeeds[s.variable] = true
+			} else {
+				lineSources = append(lineSources, s)
+			}
+		}
+		lineSources = append(lineSources, callResultNullSources(body, retNullable)...)
+		analyzer.entrySeeds = entrySeeds
+		results[fid] = analyzer.analyzeFunction(ctx, fn, body, root, lineSources)
 	}
 	return results, retNullable, definedNames
 }
@@ -410,6 +427,25 @@ func nullSourcesFor(m map[int64]*nullModel, fid int64) []nullSource {
 		return nil
 	}
 	return m[fid].sources
+}
+
+// callerNullDetail returns a human-readable origin for a parameter whose
+// nullability comes from a caller (origin "caller_null"), or "" for a
+// non-parameter source.
+func callerNullDetail(m *nullModel, variable string) string {
+	if m == nil {
+		return ""
+	}
+	for _, s := range m.sources {
+		if s.variable != variable || s.origin != "caller_null" {
+			continue
+		}
+		if s.argText == "NULL" || s.argText == "0" {
+			return fmt.Sprintf("caller %s passes NULL", s.caller)
+		}
+		return fmt.Sprintf("caller %s passes %s (not proven non-null)", s.caller, s.argText)
+	}
+	return ""
 }
 
 // collectMacroWrites merges per-file macro write-summaries across the whole scan
