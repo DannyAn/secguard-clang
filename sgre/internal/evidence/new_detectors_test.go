@@ -139,6 +139,27 @@ func TestNewDetector_UncheckedReturn_InlineGuard(t *testing.T) {
 	}
 }
 
+// TestNewDetector_UncheckedReturn_VoidAllocFunc pins the fix for the
+// alloc-name heuristic false positives and the passthrough transitive-closure
+// gap. Three scenarios:
+//  1. void test_case_alloc(...) — void function name contains "alloc", no
+//     return value to check → must NOT emit (FP from IsAllocator substring).
+//  2. int check_alloc_status(...) — scalar-returning function name contains
+//     "alloc", cannot return NULL → must NOT emit (FP from IsAllocator
+//     substring; void-only filter would miss this).
+//  3. passthrough_wrapper wraps my_alloc (heuristic-matched allocator) →
+//     must be recognised as a passthrough, so the unchecked call at the
+//     caller must emit (transitive closure must include IsAllocator).
+//
+// The real unchecked malloc in the same file must still be flagged.
+func TestNewDetector_UncheckedReturn_VoidAllocFunc(t *testing.T) {
+	store := runOneDetector(t, "tc_unchecked_return_void_alloc.c",
+		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewUncheckedReturnDetector(s, p, l) })
+	if got := eventCount(t, store, "UNCHECKED_RETURN"); got != 2 {
+		t.Errorf("expected 2 UNCHECKED_RETURN events (passthrough_wrapper + unchecked_malloc), got %d", got)
+	}
+}
+
 func TestNewDetector_PathTraversal(t *testing.T) {
 	store := runOneDetector(t, "tc61_path_traversal.c",
 		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewPathTraversalDetector(s, p, l) })
