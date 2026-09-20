@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
@@ -55,6 +56,11 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 		return result, err
 	}
 
+	retTypes, err := d.funcReturnTypes(ctx)
+	if err != nil {
+		return result, err
+	}
+
 	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		calls := root.FindAll("call_expression")
 		returns := root.FindAll("return_statement")
@@ -73,6 +79,20 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 				callee := extractCallName(call)
 				if !uncheckedReturnAPIs[callee] && !passthrough[callee] && !apikb.IsAllocator(callee) {
 					continue
+				}
+				// A function matched only by the alloc-name heuristic (not a
+				// built-in unchecked-return API, not a proven passthrough
+				// wrapper, not a declared allocator) must return a pointer to
+				// be an unchecked-return source. A void or scalar function
+				// whose name happens to contain "alloc" (e.g.
+				// test_case_alloc, check_alloc_status, is_allocated) has no
+				// NULL-returning result to check, so flagging its call site
+				// is a false positive. External functions (not in the index)
+				// keep the fail-open behaviour.
+				if !uncheckedReturnAPIs[callee] && !passthrough[callee] && !apikb.IsDeclaredAllocator(callee) {
+					if rt, ok := retTypes[callee]; ok && !strings.HasSuffix(rt, "*") {
+						continue
+					}
 				}
 				if callResultChecked(call) {
 					continue
@@ -310,6 +330,23 @@ func hasCompareOp(expr parser.Node) bool {
 	return false
 }
 
+// funcReturnTypes returns a map from function name to its return type for every
+// indexed function. The unchecked-return detector uses this to reject alloc-name
+// heuristic matches that cannot be allocators: an allocator must return a
+// pointer, so a void or scalar function whose name contains "alloc" (e.g.
+// test_case_alloc, check_alloc_status) is a false positive source.
+func (d *UncheckedReturnDetector) funcReturnTypes(ctx context.Context) (map[string]string, error) {
+	funcs, err := d.store.ListFunctions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("unchecked return: list functions: %w", err)
+	}
+	types := make(map[string]string, len(funcs))
+	for _, f := range funcs {
+		types[f.Name] = f.ReturnType
+	}
+	return types, nil
+}
+
 // passthroughAllocFuncs returns the set of function names whose body returns an
 // unchecked allocation result without checking it — directly (`return malloc(n)`)
 // or via an unchecked variable (`void *p = malloc(n); return p;`), or transitively
@@ -387,7 +424,13 @@ func (d *UncheckedReturnDetector) passthroughAllocFuncs(ctx context.Context) (ma
 	}
 
 	// Monotone fixpoint: a function is a passthrough allocator if it returns a
-	// call to an unchecked-return API, or to another passthrough allocator.
+	// call to an unchecked-return API, to an allocator (built-in, declared, or
+	// heuristic-matched), or to another passthrough allocator. The
+	// apikb.IsAllocator term covers wrappers of heuristic-matched allocators
+	// (e.g. `void *w(size_t n) { return my_alloc(n); }` where my_alloc is
+	// matched by the "alloc" substring heuristic but is not in
+	// uncheckedReturnAPIs) — without it, w would not be recognised as a
+	// passthrough and calls to w would miss the unchecked-return check.
 	passthrough := make(map[string]bool)
 	changed := true
 	for changed {
@@ -397,7 +440,7 @@ func (d *UncheckedReturnDetector) passthroughAllocFuncs(ctx context.Context) (ma
 				continue
 			}
 			for callee := range callees {
-				if uncheckedReturnAPIs[callee] || passthrough[callee] {
+				if uncheckedReturnAPIs[callee] || passthrough[callee] || apikb.IsAllocator(callee) {
 					passthrough[name] = true
 					changed = true
 					break
