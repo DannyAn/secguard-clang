@@ -1,12 +1,7 @@
 #include <stdlib.h>
 
-void overflow_add_const(size_t n) {
-    char *p = malloc(n + 1); /* INTEGER_OVERFLOW: n + 1 wraps when n == SIZE_MAX */
-    if (p) free(p);
-}
-
 void overflow_mul_const(size_t n) {
-    char *p = malloc(n * 4); /* INTEGER_OVERFLOW: n * 4 can wrap */
+    char *p = malloc(n * 1024); /* INTEGER_OVERFLOW: n * 1024 can wrap */
     if (p) free(p);
 }
 
@@ -15,8 +10,18 @@ void overflow_calloc(size_t n, size_t m) {
     if (p) free(p);
 }
 
-void overflow_sub_const(size_t n) {
-    char *p = malloc(n - 1); /* INTEGER_OVERFLOW: n - 1 wraps under 0 */
+void safe_add_const(size_t n) {
+    char *p = malloc(n + 1); /* safe: n + 1 null-terminator idiom, not overflow */
+    if (p) free(p);
+}
+
+void safe_sub_const(size_t n) {
+    char *p = malloc(n - 1); /* safe: n - 1 off-by-one idiom, not overflow */
+    if (p) free(p);
+}
+
+void safe_mul_small_const(size_t n) {
+    char *p = malloc(n * 4); /* safe: n * 4 small multiplier, implausible overflow */
     if (p) free(p);
 }
 

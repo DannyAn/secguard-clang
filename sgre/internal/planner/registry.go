@@ -476,19 +476,15 @@ func init() {
 		EvidenceType:     "INTEGER_OVERFLOW",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "integer-overflow",
-		// Value-analysis-lite tiers. size_calc_overflow (malloc(a * b)) and
-		// size_mul_const_overflow (malloc(n * 2), n caller-influenced) are
-		// concrete CWE-190 patterns and stay "suspected". size_add_overflow /
-		// size_sub_overflow (malloc(n + 1) / malloc(n - 1), n caller-influenced)
-		// require the variable to reach an extreme value, so they are tiered
-		// down to "possible" — the AI agent proves or refutes reachability with
-		// call-site/contract reasoning. The wraparound-in-a-bounds-check pattern
-		// (integer_overflow) is a theoretical wraparound and is also "possible".
+		// Value-analysis tiers. size_calc_overflow (malloc(a * b) / malloc(n *
+		// sizeof(T))) and size_mul_const_overflow (malloc(n * CONST), CONST >= 256
+		// and n caller-influenced) are concrete CWE-190 patterns and stay
+		// "suspected". The wraparound-in-a-bounds-check pattern (integer_overflow)
+		// is a theoretical wraparound and is "possible". Addition/subtraction
+		// (n + 1 / n - 1) is not emitted — null-terminator / off-by-one noise.
 		CategoryConfidence: map[string]string{
 			"size_calc_overflow":      "suspected",
 			"size_mul_const_overflow": "suspected",
-			"size_add_overflow":       "possible",
-			"size_sub_overflow":       "possible",
 			"integer_overflow":        "possible",
 		},
 		ConvergeKey: func(c Candidate) string {

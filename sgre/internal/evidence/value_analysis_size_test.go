@@ -17,10 +17,11 @@ import (
 
 // TestIntegerOverflow_ValueAnalysis locks in the value-analysis-lite expansion:
 // beyond `var * var` and `var * sizeof(T)`, the detector now recognizes
-// calloc(n, m) and the variable-bounded add/sub/mul-const patterns gated on the
-// operand being a function parameter (caller-influenced). A bounded local
-// operand must NOT be flagged — that is the precision guard against flooding
-// the pipeline with safe `n + 1` null-terminator allocations.
+// calloc(n, m) and the variable-bounded mul-const pattern gated on the operand
+// being a function parameter (caller-influenced) AND the literal multiplier
+// being a large block size (>= minMulConstOverflow). The weak +1/-1 idioms and a
+// small multiplier (n * 4) must NOT be flagged — that is the precision guard
+// against flooding the pipeline with safe `n + 1` null-terminator allocations.
 func TestIntegerOverflow_ValueAnalysis(t *testing.T) {
 	ctx := context.Background()
 	store := db.NewTestStore(t)
@@ -57,17 +58,17 @@ func TestIntegerOverflow_ValueAnalysis(t *testing.T) {
 	}
 
 	expect := map[string]string{
-		"overflow_add_const": "size_add_overflow",
 		"overflow_mul_const": "size_mul_const_overflow",
 		"overflow_calloc":    "size_calc_overflow",
-		"overflow_sub_const": "size_sub_overflow",
 	}
 	for fn, cat := range expect {
 		if !cats[fn][cat] {
 			t.Errorf("expected %s to be flagged as %s, got %v", fn, cat, cats[fn])
 		}
 	}
-	if len(cats["safe_local_add"]) != 0 {
-		t.Errorf("expected safe_local_add (bounded local n) NOT to be flagged, got %v", cats["safe_local_add"])
+	for _, fn := range []string{"safe_add_const", "safe_sub_const", "safe_mul_small_const", "safe_local_add"} {
+		if len(cats[fn]) != 0 {
+			t.Errorf("expected %s NOT to be flagged, got %v", fn, cats[fn])
+		}
 	}
 }

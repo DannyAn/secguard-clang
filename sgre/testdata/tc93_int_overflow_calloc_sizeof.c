@@ -14,13 +14,13 @@ void calloc_sizeof_var(int n) {
 }
 
 void calloc_param_const(int n) {
-    char *p = calloc(n, 4); /* size_mul_const_overflow */
+    char *p = calloc(n, 1024); /* size_mul_const_overflow */
     if (p == NULL) return;
     free(p);
 }
 
 void calloc_const_param(int n) {
-    char *p = calloc(8, n); /* size_mul_const_overflow (arg order swapped) */
+    char *p = calloc(1024, n); /* size_mul_const_overflow (arg order swapped) */
     if (p == NULL) return;
     free(p);
 }

@@ -78,11 +78,11 @@ void unguarded(void) {
 	}
 }
 
-// TestIntOverflowGuardFilter_AddConst locks in the range-domain extension: the
-// new size_add_overflow / size_mul_const_overflow patterns are also dropped when
-// the variable operand is guarded to a small constant (`if (n < 100)`), since
-// n + const and n * const then cannot overflow.
-func TestIntOverflowGuardFilter_AddConst(t *testing.T) {
+// TestIntOverflowGuardFilter_MulConst locks in the range-domain extension: the
+// size_mul_const_overflow pattern (n * 1024) is dropped when the variable
+// operand is guarded to a small constant (`if (n < 100)`), since n * 1024 then
+// cannot overflow.
+func TestIntOverflowGuardFilter_MulConst(t *testing.T) {
 	ctx := context.Background()
 	store := db.NewTestStore(t)
 	logger := log.Default()
@@ -92,22 +92,15 @@ func TestIntOverflowGuardFilter_AddConst(t *testing.T) {
 	path := filepath.Join(dir, "iof_add.c")
 	src := `#include <stdlib.h>
 
-void guarded_add(size_t n) {
-    if (n < 100) {
-        char *buf = malloc(n + 1);
-        (void)buf;
-    }
-}
-
 void guarded_mul(size_t n) {
     if (n < 100) {
-        char *buf = malloc(n * 4);
+        char *buf = malloc(n * 1024);
         (void)buf;
     }
 }
 
-void unguarded_add(size_t n) {
-    char *buf = malloc(n + 1);
+void unguarded_mul(size_t n) {
+    char *buf = malloc(n * 1024);
     (void)buf;
 }
 `
@@ -134,13 +127,10 @@ void unguarded_add(size_t n) {
 		kept[c.Target.Function] = true
 	}
 
-	if kept["guarded_add"] {
-		t.Errorf("guarded_add (n<100, malloc(n+1)) should be suppressed, got %v", candidateNames(result))
-	}
 	if kept["guarded_mul"] {
-		t.Errorf("guarded_mul (n<100, malloc(n*4)) should be suppressed, got %v", candidateNames(result))
+		t.Errorf("guarded_mul (n<100, malloc(n*1024)) should be suppressed, got %v", candidateNames(result))
 	}
-	if !kept["unguarded_add"] {
-		t.Errorf("unguarded_add (unbounded malloc(n+1)) should be kept, got %v", candidateNames(result))
+	if !kept["unguarded_mul"] {
+		t.Errorf("unguarded_mul (unbounded malloc(n*1024)) should be kept, got %v", candidateNames(result))
 	}
 }

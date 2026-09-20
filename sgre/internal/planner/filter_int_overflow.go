@@ -78,7 +78,7 @@ func (f *IntOverflowGuardFilter) Apply(ctx context.Context, candidates []Candida
 		// arithmetic provably non-overflowing (guardMaxBound² < 2^31, and a
 		// small bound keeps a + const and a * const well below SIZE_MAX).
 		switch c.Category {
-		case "size_calc_overflow", "size_add_overflow", "size_mul_const_overflow", "integer_overflow":
+		case "size_calc_overflow", "size_mul_const_overflow", "integer_overflow":
 		default:
 			kept = append(kept, c)
 			continue

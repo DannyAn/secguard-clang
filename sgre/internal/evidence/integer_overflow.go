@@ -33,6 +33,15 @@ var sizeFunctions = map[string]bool{
 	"strncpy": true, "strncat": true, "snprintf": true,
 }
 
+// minMulConstOverflow is the smallest literal multiplier that makes a
+// `param * CONST` size product a plausible overflow. `n * 2`/`n * 4` (doubling,
+// small magic numbers) need n within one bit of SIZE_MAX/type-max to wrap, which
+// is implausible for a count; a block size of >= 256 bytes (`n * 1024`,
+// `n * 4096`, `n * sizeof(big_struct)`) can wrap for a realistic caller-supplied
+// count. This gates only the literal-constant pattern — `n * sizeof(T)` stays the
+// canonical count × element-size CWE-190 and is handled separately.
+const minMulConstOverflow = 256
+
 // isSizeFunction reports whether a call name is a size-bearing allocation/copy
 // function. Beyond the exact libc set, any name whose lowercased form contains
 // "alloc" is treated as an allocator — every allocator-family name (malloc,
@@ -325,10 +334,11 @@ func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, ca
 // calloc call with the SAME rules sizeCalcExprs applies to `malloc(a * b)`:
 //
 //   - var * sizeof(T) → size_calc_overflow   (calloc(n, sizeof(int)))
-//   - param * CONST   → size_mul_const_overflow (calloc(n, 2), n caller-influenced)
+//   - param * CONST   → size_mul_const_overflow (calloc(n, 1024), n caller-influenced)
 //
-// A constant * constant, a sizeof(char) (==1) operand, or a CONST <= 1 product
-// cannot overflow and returns "". Both argument orders are accepted.
+// A constant * constant, a sizeof(char) (==1) operand, or a CONST below
+// minMulConstOverflow cannot plausibly overflow and returns "". Both argument
+// orders are accepted.
 func (d *IntegerOverflowDetector) callocOverflowCategory(a0, a1 parser.Node, params map[string]bool) string {
 	classify := func(arg parser.Node) (isVar, isParam, isSizeof, isNum, sizeofOne bool, constValue int) {
 		for arg.Kind() == "parenthesized_expression" {
@@ -353,7 +363,7 @@ func (d *IntegerOverflowDetector) callocOverflowCategory(a0, a1 parser.Node, par
 	if (v0 && s1 && !o1) || (s0 && !o0 && v1) {
 		return "size_calc_overflow"
 	}
-	if (p0 && n1 && c1 > 1) || (n0 && c0 > 1 && p1) {
+	if (p0 && n1 && c1 >= minMulConstOverflow) || (n0 && c0 >= minMulConstOverflow && p1) {
 		return "size_mul_const_overflow"
 	}
 	return ""
@@ -373,9 +383,11 @@ func (d *IntegerOverflowDetector) emitSizeCalc(ctx context.Context, file *db.Fil
 //
 //   - var * var         → size_calc_overflow        (n * m)
 //   - var * sizeof(T)   → size_calc_overflow        (n * sizeof(int)) — CVE-2021-43267 et al.
-//   - param * const     → size_mul_const_overflow   (n * 2, n caller-influenced)
-//   - param + const/var → size_add_overflow         (n + 1, n + m)
-//   - param - const     → size_sub_overflow         (n - 1 wraps under 0)
+//   - param * const     → size_mul_const_overflow   (n * 1024, const >= minMulConstOverflow)
+//
+// Addition/subtraction (`n + 1`, `n - 1`) is intentionally NOT flagged: it is
+// the null-terminator / off-by-one idiom and only overflows for a near-SIZE_MAX
+// operand — implausible overflow noise.
 //
 // The operator is read from the anonymous token child (*, +, -), never from the
 // whole text, so `->` member access inside an operand cannot fool the test. A
@@ -449,8 +461,10 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, params map[stri
 	case "*":
 		if numberCount > 0 {
 			// var * const — only meaningful when the variable is caller-influenced
-			// AND the constant is > 1 (n * 1 cannot overflow).
-			if varCount == 1 && paramCount == 1 && constValue > 1 {
+			// AND the constant is a large block size (>= minMulConstOverflow), so
+			// the product can plausibly overflow. `n * 2`/`n * 4` (doubling, small
+			// magic numbers) are dropped as implausible overflow noise.
+			if varCount == 1 && paramCount == 1 && constValue >= minMulConstOverflow {
 				return []sizeCalcCandidate{{arg, "size_mul_const_overflow"}}
 			}
 			return nil
@@ -465,15 +479,9 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, params map[stri
 			}
 			return []sizeCalcCandidate{{arg, "size_calc_overflow"}}
 		}
-	case "+":
-		// a + b / a + const — only when at least one operand is caller-influenced.
-		if varCount >= 1 && paramCount >= 1 {
-			return []sizeCalcCandidate{{arg, "size_add_overflow"}}
-		}
-	case "-":
-		if varCount >= 1 && paramCount >= 1 {
-			return []sizeCalcCandidate{{arg, "size_sub_overflow"}}
-		}
+		// "+"/"-" (n + 1, n - 1, n + m) are dropped: n + 1 is the null-terminator
+		// idiom and n - 1 the off-by-one idiom, and a sum/difference overflows only
+		// for two near-SIZE_MAX operands — implausible overflow noise, not CWE-190.
 	}
 	return nil
 }

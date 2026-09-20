@@ -22,9 +22,7 @@ The `category` field encodes the confidence tier the pipeline already computed:
 | Category | Pattern | Static verdict |
 |----------|---------|----------------|
 | `size_calc_overflow` | `malloc(n * m)` / `malloc(n * sizeof(T))` / `calloc(n, m)` | suspected |
-| `size_mul_const_overflow` | `malloc(n * K)`, n is a function parameter | suspected |
-| `size_add_overflow` | `malloc(n + 1)` / `malloc(n + m)`, n caller-influenced | possible |
-| `size_sub_overflow` | `malloc(n - 1)`, n caller-influenced | possible |
+| `size_mul_const_overflow` | `malloc(n * K)`, n is a function parameter and `K >= 256` | suspected |
 | `integer_overflow` | wraparound inside a bounds check | possible |
 
 ### Dangerous Patterns
@@ -33,9 +31,6 @@ The `category` field encodes the confidence tier the pipeline already computed:
 |---------|------|-----|
 | `malloc(count * elem_size)` | Overflow → small alloc | `count * elem_size` wraps to small value |
 | `calloc(count, size)` | Overflow → small alloc | implicit `count * size` wraps |
-| `malloc(a + b)` | Overflow → small alloc | `a + b` wraps around |
-| `malloc(n + 1)` with caller-controlled n | Overflow → small alloc | `n == SIZE_MAX` wraps to 0 |
-| `memcpy(dst, src, a + b)` | Overflow → short copy | Copy size wraps, buffer overread |
 | `char buf[n * m]` | Overflow → small stack array | VLA with wrapped size |
 
 ### Safe Patterns (P0 Exclusion)
@@ -55,21 +50,15 @@ The `category` field encodes the confidence tier the pipeline already computed:
 | Arithmetic on sizes + flows to malloc + checked bounds | **false-positive** |
 | `count * elem_size` with user-controlled `count`, no check | **confirmed** |
 | Constant expression (no variables) | **false-positive** |
-| `a + b` where `a`, `b` are bounded constants | **false-positive** |
 | A size variable assigned a single small constant (`size_t n = 10; malloc(n * n)`) — the convergence range flow proves it bounded and suppresses it | **false-positive** |
 | Arithmetic on `int` (signed) feeding malloc | **dismissed** (sign issues) |
-| `size_add_overflow` / `size_sub_overflow` where the parameter is validated by every caller (e.g. clamped, or provably `< SIZE_MAX - offset`) | **false-positive** |
-| `size_add_overflow` / `size_sub_overflow` where the parameter is raw user input (argv/getenv/recv length) with no clamp | **confirmed** |
-| `size_mul_const_overflow` where the parameter is raw user input and `K >= 2` | **confirmed** |
+| `size_mul_const_overflow` where the parameter is raw user input and `K >= 256` | **confirmed** |
 | `size_mul_const_overflow` where the parameter is provably bounded to `< SIZE_MAX / K` by a guard | **false-positive** |
 
-**Reasoning for the `possible` tier** (`size_add_overflow` / `size_sub_overflow`): the
-pipeline cannot prove the parameter reaches an extreme value, so it delegates the
-reachability question to you. Trace the parameter to its source — if it is derived
-from user input (argv, getenv, recv, a network length field) with no clamp, the
-overflow is realistic and should be **confirmed**; if it is a bounded length
-(e.g. `strlen` of a fixed buffer, a loop counter, a validated length), it is
-**false-positive**.
+Note: `malloc(n + 1)` / `malloc(n - 1)` (null-terminator / off-by-one idioms) and
+`malloc(n * K)` with a small `K < 256` (doubling, small magic numbers) are NOT
+emitted — their overflow requires an operand within one bit of the type maximum,
+which is implausible, so the detector no longer surfaces them.
 
 ### Fix Suggestions
 - Use `size_t` for all size calculations (never `int`)
