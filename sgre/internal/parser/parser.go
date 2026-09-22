@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"bytes"
 	"fmt"
 	"sync"
 
@@ -64,8 +65,9 @@ func NewParser() *Parser {
 // next Parse on this parser — the indexer follows that pattern (the planner
 // filters use ParseCached, which is internally synchronized).
 func (p *Parser) Parse(source []byte, filename string) (*Tree, error) {
-	tree := p.parser.Parse(source, nil)
-	return &Tree{tree: tree, src: source}, nil
+	src := preprocessGccExtensions(source)
+	tree := p.parser.Parse(src, nil)
+	return &Tree{tree: tree, src: src}, nil
 }
 
 // ParseCached is Parse with a per-file cache keyed by filename. The scan runs
@@ -85,10 +87,11 @@ func (p *Parser) ParseCached(source []byte, filename string) (*Tree, error) {
 	if t, ok := p.cache[filename]; ok {
 		return t, nil
 	}
+	src := preprocessGccExtensions(source)
 	ps := sitter.NewParser()
 	ps.SetLanguage(p.lang)
-	tree := ps.Parse(source, nil)
-	t := &Tree{tree: tree, src: source, cached: true}
+	tree := ps.Parse(src, nil)
+	t := &Tree{tree: tree, src: src, cached: true}
 	p.cache[filename] = t
 	p.parsers[filename] = ps
 	return t, nil
@@ -115,6 +118,64 @@ func (p *Parser) CloseAll() {
 	if p.parser != nil {
 		p.parser.Close()
 	}
+}
+
+// preprocessGccExtensions replaces GCC `typeof(expr)` with `void *` so that
+// tree-sitter-c (which does not support the typeof keyword in v0.24.2) can parse
+// declarations and casts that use it. Without this, `typeof(x) v = ...` is
+// mis-parsed: `typeof(x)` becomes a call_expression, `v` becomes an ERROR node,
+// and the initializer is split into a separate expression_statement — breaking
+// every detector that relies on the assignment chain (unchecked-return,
+// null-source, resource-leak). The replacement is padded with spaces to preserve
+// source positions (line/column) for accurate diagnostics.
+func preprocessGccExtensions(source []byte) []byte {
+	if !bytes.Contains(source, []byte("typeof")) {
+		return source
+	}
+	result := make([]byte, len(source))
+	copy(result, source)
+	replacement := []byte("void *")
+	i := 0
+	for i < len(result) {
+		if i+6 <= len(result) && string(result[i:i+6]) == "typeof" &&
+			(i == 0 || !isIdentChar(result[i-1])) &&
+			(i+6 >= len(result) || !isIdentChar(result[i+6])) {
+			j := i + 6
+			for j < len(result) && (result[j] == ' ' || result[j] == '\t') {
+				j++
+			}
+			if j < len(result) && result[j] == '(' {
+				depth := 1
+				k := j + 1
+				for k < len(result) && depth > 0 {
+					switch result[k] {
+					case '(':
+						depth++
+					case ')':
+						depth--
+					}
+					k++
+				}
+				if depth == 0 {
+					for pos := i; pos < k; pos++ {
+						if pos-i < len(replacement) {
+							result[pos] = replacement[pos-i]
+						} else {
+							result[pos] = ' '
+						}
+					}
+					i = k
+					continue
+				}
+			}
+		}
+		i++
+	}
+	return result
+}
+
+func isIdentChar(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
 }
 
 func (t *Tree) RootNode() Node {
