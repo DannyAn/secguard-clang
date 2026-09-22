@@ -229,15 +229,46 @@ func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.No
 			continue
 		}
 
-		if apikb.IsDeallocator(callName) {
+		if apikb.IsDeclaredDeallocator(callName) {
 			args := getCallArgs(call)
 			for _, arg := range args {
 				switch arg.Kind() {
 				case "identifier":
 					events = append(events, dfFreeEvent{varName: arg.Text(), line: callLine})
 				case "field_expression":
-					// free(p->msg) frees only p->msg; a second free of p->mode is a
-					// different object and must not be treated as a double-free.
+					if base, field := extractFieldAccess(arg); base != "" && field != "" {
+						events = append(events, dfFreeEvent{varName: base, field: field, line: callLine})
+					}
+				case "subscript_expression":
+					if base, field := subscriptAccess(arg); base != "" && field != "" {
+						events = append(events, dfFreeEvent{varName: base, field: field, line: callLine})
+					}
+				}
+			}
+			continue
+		}
+
+		if apikb.IsDeallocator(callName) {
+			// Heuristic-only match (name ends with "free"/"free_f" but not a
+			// declared deallocator). The function may not free its argument —
+			// e.g. seccloud_send_list_free(ptr, max_num) takes a pointer AND
+			// an integer count; only arg0 is freed. Fail-closed: require the
+			// function summary to confirm WHICH parameters are freed, and
+			// only mark those. External functions without a summary are NOT
+			// flagged, because the "free" suffix alone is too broad to trust.
+			s, ok := summaries[callName]
+			if !ok || !summaryFreesAnyParam(s) {
+				continue
+			}
+			args := getCallArgs(call)
+			for argIdx, arg := range args {
+				if !s.ParamDirectFrees[argIdx] && len(s.ParamFieldFrees[argIdx]) == 0 {
+					continue
+				}
+				switch arg.Kind() {
+				case "identifier":
+					events = append(events, dfFreeEvent{varName: arg.Text(), line: callLine})
+				case "field_expression":
 					if base, field := extractFieldAccess(arg); base != "" && field != "" {
 						events = append(events, dfFreeEvent{varName: base, field: field, line: callLine})
 					}
