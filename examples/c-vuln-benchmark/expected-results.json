@@ -1317,6 +1317,15 @@
       "code": "free_cache_base_addr(BC_ORG_S_CACHE_ID)",
       "detector": "memory.use_after_free",
       "expect": "no_finding"
+    },
+    {
+      "id": "P14B-01",
+      "category": "p14b_dealloc_multarg_fp",
+      "file": "src/p14b_dealloc_multarg_fp.c",
+      "line": 24,
+      "code": "seccloud_send_list_free(g_seccloud_save_buf[log_type].buf[1], LOGSEND_MAX_NUM)",
+      "detector": "memory.double_free",
+      "expect": "no_finding"
     }
   ]
 }
