@@ -2,6 +2,26 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.7.7] - 2026-09-22
+
+### 误报修复
+
+三个生产环境狗粮测试发现的误报，涉及 unchecked-return、use-after-free、double-free 三类检测器。
+
+#### unchecked-return（CWE-252）
+
+- **GCC `typeof` 表达式导致 AST 破碎**：tree-sitter-c v0.24.2 不支持 `typeof` 关键字，`typeof(x) v = (typeof(x))malloc(...)` 被解析为碎片化 AST，`malloc` 调用脱离赋值上下文 → 误报 unchecked-return。修复：parser 层预处理 `typeof(expr)` → `void *`（空格填充保持行列号），恢复正确 AST。
+- **多重赋值只取最内层目标**：`a = b = malloc()` 中检测器只取 `b`，漏掉对 `a` 的判空检查 → 误报。修复：`assignedVarsOfCall` 收集赋值链所有目标，任一判空即抑制。
+- **alloc-name 启发式 fail-open**：名字含 "alloc" 但非 allocator 的外部函数（如 `storage_spec_generator_log_allocate_size_init`）被 fail-open 误报。修复：改为 fail-closed，要求返回指针类型才报。
+
+#### use-after-free（CWE-416）
+
+- **`IsDeallocator` 启发式 fail-open**：`poiner_in_bc_cache_free(cache_id)` 以 "free" 结尾被启发式命中，整数 ID 参数被标记为已释放 → 后续同名参数调用被误报 use-after-free。修复：启发式命中的函数要求函数摘要确认参数被 free 才产生 freeSite，外部函数 fail-closed。
+
+#### double-free（CWE-415）
+
+- **`IsDeallocator` 启发式遍历所有参数**：`seccloud_send_list_free(ptr, max_num)` 以 "free" 结尾被启发式命中，第二个参数 `LOGSEND_MAX_NUM`（整数常量）被标记为已释放 → 两次调用产生同名 free 事件 → 误报 double-free。修复：启发式命中的函数只标记函数摘要确认的参数，外部函数 fail-closed。
+
 ## [0.7.6] - 2026-09-20
 
 ### Contract 契约检测（Phase 1）
