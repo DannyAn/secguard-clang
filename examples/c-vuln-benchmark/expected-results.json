@@ -1299,6 +1299,24 @@
       "cwe": "CWE-252",
       "detector": "unchecked_return",
       "expect": "finding"
+    },
+    {
+      "id": "P14-01",
+      "category": "p14_dealloc_heuristic_fp",
+      "file": "src/p14_dealloc_heuristic_fp.c",
+      "line": 22,
+      "code": "free_cache_base_addr(BC_ORG_M_CACHE_ID)",
+      "detector": "memory.use_after_free",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P14-02",
+      "category": "p14_dealloc_heuristic_fp",
+      "file": "src/p14_dealloc_heuristic_fp.c",
+      "line": 23,
+      "code": "free_cache_base_addr(BC_ORG_S_CACHE_ID)",
+      "detector": "memory.use_after_free",
+      "expect": "no_finding"
     }
   ]
 }
