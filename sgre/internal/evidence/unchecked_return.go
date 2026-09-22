@@ -85,12 +85,16 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 				// wrapper, not a declared allocator) must return a pointer to
 				// be an unchecked-return source. A void or scalar function
 				// whose name happens to contain "alloc" (e.g.
-				// test_case_alloc, check_alloc_status, is_allocated) has no
+				// test_case_alloc, check_alloc_status, is_allocated,
+				// storage_spec_generator_log_allocate_size_init) has no
 				// NULL-returning result to check, so flagging its call site
-				// is a false positive. External functions (not in the index)
-				// keep the fail-open behaviour.
+				// is a false positive. An external function not in the index
+				// is fail-closed: the "alloc" substring heuristic is too
+				// broad to trust without a confirmed pointer return type, so
+				// we skip rather than surface a candidate.
 				if !uncheckedReturnAPIs[callee] && !passthrough[callee] && !apikb.IsDeclaredAllocator(callee) {
-					if rt, ok := retTypes[callee]; ok && !strings.HasSuffix(rt, "*") {
+					rt, ok := retTypes[callee]
+					if !ok || !strings.HasSuffix(rt, "*") {
 						continue
 					}
 				}
@@ -105,13 +109,20 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 				if callResultReturned(call) {
 					continue
 				}
-				if v := assignedVarOfCall(call); v != "" {
-					if checked[v] {
+				if vars := assignedVarsOfCall(call); len(vars) > 0 {
+					checkedAny := false
+					for _, v := range vars {
+						if checked[v] {
+							checkedAny = true
+							break
+						}
+					}
+					if checkedAny {
 						continue
 					}
 					// `void *p = malloc(n); return p;` is a passthrough allocator:
 					// the caller checks, so the wrapper's malloc must not be flagged.
-					if passthroughReturnVar(v, call.StartLine(), f, returns, ids, checked) {
+					if passthroughReturnVar(vars[0], call.StartLine(), f, returns, ids, checked) {
 						continue
 					}
 				}
@@ -282,26 +293,37 @@ func callResultReturned(call parser.Node) bool {
 	return false
 }
 
-// assignedVarOfCall returns the variable the call's result is assigned into
-// (via `v = call(...)` or `T v = call(...)`), or "" when the result is not
-// stored in a simple named variable.
-func assignedVarOfCall(call parser.Node) string {
+// assignedVarsOfCall returns the storage locations the call's result is assigned
+// into, collecting ALL targets in a (possibly chained) assignment. For
+// `v = call(...)` / `T v = call(...)` it returns [v]; for a chained assignment
+// `a = b = call(...)` it returns [b, a] (innermost first), so a null-check on
+// EITHER target suppresses the unchecked-return event. Returns nil when the
+// result is not stored in a named variable.
+func assignedVarsOfCall(call parser.Node) []string {
+	var vars []string
 	for p := call.Parent(); p != nil; p = p.Parent() {
 		switch p.Kind() {
-		case "assignment_expression", "init_declarator":
+		case "assignment_expression":
 			named := p.NamedChildren()
 			if len(named) < 2 {
-				return ""
+				return vars
 			}
-			return assignedLocationText(named[0])
+			vars = append(vars, assignedLocationText(named[0]))
+		case "init_declarator":
+			named := p.NamedChildren()
+			if len(named) < 2 {
+				return vars
+			}
+			vars = append(vars, assignedLocationText(named[0]))
+			return vars
 		case "parenthesized_expression", "cast_expression", "binary_expression",
 			"argument_list", "call_expression", "field_expression", "subscript_expression":
 			continue
 		default:
-			return ""
+			return vars
 		}
 	}
-	return ""
+	return vars
 }
 
 // assignedLocationText returns the storage location an assignment writes: a
