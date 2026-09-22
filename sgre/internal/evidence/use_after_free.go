@@ -125,6 +125,18 @@ func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.N
 		}
 
 		if apikb.IsDeallocator(callName) {
+			// A heuristic-only deallocator (name ends with "free"/"free_f"
+			// but not a built-in or registered one) may not free its
+			// argument — e.g. poiner_in_bc_cache_free(cache_id) takes an
+			// int ID, not a pointer. Fail-closed: require the function
+			// summary to confirm the body frees the parameter. External
+			// functions without a summary are NOT flagged, because the
+			// "free" suffix alone is too broad to trust.
+			if !apikb.IsDeclaredDeallocator(callName) {
+				if s, ok := summaries[callName]; !ok || !summaryFreesAnyParam(s) {
+					continue
+				}
+			}
 			args := getCallArgs(call)
 			for _, arg := range args {
 				switch arg.Kind() {
@@ -325,8 +337,13 @@ func (d *UseAfterFreeDetector) findUseSites(f *db.Function, ptrs, fields, calls 
 			continue
 		}
 		callName := extractCallName(call)
-		if apikb.IsDeallocator(callName) {
+		if apikb.IsDeclaredDeallocator(callName) {
 			continue
+		}
+		if apikb.IsDeallocator(callName) {
+			if s, ok := summaries[callName]; ok && summaryFreesAnyParam(s) {
+				continue
+			}
 		}
 		// A freeing wrapper (a callee the summary shows frees this argument,
 		// whole or a field) takes the argument as the thing being freed, not as
@@ -352,4 +369,22 @@ func (d *UseAfterFreeDetector) findUseSites(f *db.Function, ptrs, fields, calls 
 	}
 
 	return useSites
+}
+
+// summaryFreesAnyParam reports whether the function summary confirms the body
+// frees at least one parameter (directly or a field). Used to gate the
+// IsDeallocator heuristic: a name ending in "free" is only trusted when the
+// summary proves the parameter is freed.
+func summaryFreesAnyParam(s *FuncSummary) bool {
+	for _, v := range s.ParamDirectFrees {
+		if v {
+			return true
+		}
+	}
+	for _, fields := range s.ParamFieldFrees {
+		if len(fields) > 0 {
+			return true
+		}
+	}
+	return false
 }
