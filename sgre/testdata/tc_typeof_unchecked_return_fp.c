@@ -69,6 +69,36 @@ void case5_set_thrt_comm(thrt_org_t *thrt_log)
     thrt_log->thrt_normal_string_info->data = 0;
 }
 
+uint32_t case6___typeof(struct com_s *nodes, uint32_t size)
+{
+    __typeof(nodes->leafs) leafs = (__typeof(nodes->leafs))xlog_malloc(MID_SEC_ID, size);
+    if (leafs == NULL) {
+        return ERR;
+    }
+    leafs->x = 0;
+    return OK;
+}
+
+uint32_t case7___typeof__(struct com_s *nodes, uint32_t size)
+{
+    __typeof__(nodes->leafs) leafs = (__typeof__(nodes->leafs))xlog_malloc(MID_SEC_ID, size);
+    if (leafs == NULL) {
+        return ERR;
+    }
+    leafs->x = 0;
+    return OK;
+}
+
+uint32_t case8_typeof_unqual(struct com_s *nodes, uint32_t size)
+{
+    typeof_unqual(nodes->leafs) leafs = (typeof_unqual(nodes->leafs))xlog_malloc(MID_SEC_ID, size);
+    if (leafs == NULL) {
+        return ERR;
+    }
+    leafs->x = 0;
+    return OK;
+}
+
 void positive_control(void) {
     char *p = malloc(100);
     p[0] = 'x';

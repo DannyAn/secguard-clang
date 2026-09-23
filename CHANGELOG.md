@@ -2,6 +2,28 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.7.8] - 2026-09-23
+
+### 误报修复
+
+生产环境 `typeof` 引入的 unchecked-return 误报收尾 + GLM 第三轮检视清单（4 MAJOR / 6 MINOR / 4 未深究）逐条核验与修复。核心是：GCC/Clang 的 `typeof` 全拼写覆盖、多处静默吞错改错误传播、以及作用域遮蔽导致的两类契约检测器误判。
+
+#### unchecked-return（CWE-252）
+
+- **GCC `typeof` 拼写覆盖不全**：`preprocessGccExtensions` 此前只认裸 `typeof`，`__typeof` / `__typeof__` / `typeof_unqual` 仍使 tree-sitter-c v0.24.2 解析出 `hasError=true` 的破碎 AST → unchecked-return 误报。修复：预处理识别全部四种拼写（最长优先 + 词边界保护），并**跳过字符串/字符字面量与注释**，不再静默改写 `"use typeof(x)"` 这类文本。
+- **passthrough wrapper 绕过 fail-closed 返回类型检查**：passthrough fixpoint 用含 "alloc" substring 启发式的 `apikb.IsAllocator` 把 `void w(){ return is_allocated(p); }` 这类 void 函数标成 passthrough，裸调用绕过返回类型检查 → 误报。修复：passthrough wrapper 也走返回类型检查（`void *` 通过、void/scalar 跳过）。
+
+#### 契约检测器作用域遮蔽（CWE-686 / CWE-843）
+
+- **跨作用域同名遮蔽**：`resolveScopedVar` 只按"最近声明行"解析，嵌套块结束后仍解析到内层（已出作用域）声明，导致 argument-type / data-representation 对 `(T *)&x` / 比较器元素深度误判。修复：`scopedVarDecl` 增加作用域结束行，解析只认 `line <= end` 的声明。
+
+### 健壮性修复（错误传播，GLM 第三轮 R-01/R-04/R-07 + 未深究项）
+
+- **7 处 `ListEventsByIDs` 错误被 `_` 丢弃**：taint-source / range / uninit-flow / shared-access / lock-order / double-free / lifetime 过滤器全部改为错误传播（planner 统一 log + 保守 keep）。
+- **interprocedural `loadDerefLines`**：缺失 location 的 deref 事件静默用 `line=0`，被 `paramUnguarded` 判成未受保护 → caller_null 误报。修复：跳过无 location 的事件。
+- **`scan.go` `json.MarshalIndent` 吞错**：两处成功路径改为检查错误、失败返回非 0。
+- **3 处 store 查询吞错**：hardcoded-secret 的 per-call `ListFunctions`（顺带消除 N+1）、filter_nullable_source 的 `ListFunctionsByIDs` / `ListSummariesByFunctionIDs` 全部改为错误传播。
+
 ## [0.7.7] - 2026-09-22
 
 ### 误报修复

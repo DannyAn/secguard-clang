@@ -47,6 +47,21 @@ void caller_passthrough_wrapper(void)
     (void)p;
 }
 
+void is_allocated(int id)
+{
+    (void)id;
+}
+
+void void_passthrough(void)
+{
+    return is_allocated(1);
+}
+
+void caller_void_passthrough(void)
+{
+    void_passthrough();
+}
+
 int unchecked_malloc_still_works(void)
 {
     int *p = (int *)malloc(sizeof(int) * 10);

@@ -251,14 +251,18 @@ func (d *InterproceduralDetector) loadDerefLines(ctx context.Context) (map[int64
 		if props.Variable == "" {
 			continue
 		}
-		line := 0
-		if loc := locs[e.LocationID]; loc != nil {
-			line = loc.Line
+		loc := locs[e.LocationID]
+		if loc == nil {
+			// A dereference with no resolvable location cannot be attributed to
+			// a guard scope; treating it as line 0 makes paramUnguarded return
+			// true unconditionally (0 is never inside a positive guard range) and
+			// mislabels every guarded parameter as caller-null-unchecked.
+			continue
 		}
 		if index[e.EntityID] == nil {
 			index[e.EntityID] = make(map[string][]int)
 		}
-		index[e.EntityID][props.Variable] = append(index[e.EntityID][props.Variable], line)
+		index[e.EntityID][props.Variable] = append(index[e.EntityID][props.Variable], loc.Line)
 	}
 	return index, nil
 }

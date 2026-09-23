@@ -120,58 +120,141 @@ func (p *Parser) CloseAll() {
 	}
 }
 
-// preprocessGccExtensions replaces GCC `typeof(expr)` with `void *` so that
-// tree-sitter-c (which does not support the typeof keyword in v0.24.2) can parse
-// declarations and casts that use it. Without this, `typeof(x) v = ...` is
-// mis-parsed: `typeof(x)` becomes a call_expression, `v` becomes an ERROR node,
-// and the initializer is split into a separate expression_statement — breaking
-// every detector that relies on the assignment chain (unchecked-return,
-// null-source, resource-leak). The replacement is padded with spaces to preserve
-// source positions (line/column) for accurate diagnostics.
+// gccTypeofKeywords are the GCC/Clang spellings of the typeof type-of
+// operator, longest first so that `__typeof__` and `typeof_unqual` win over
+// their bare `typeof` prefix when both could match at a position.
+var gccTypeofKeywords = []string{
+	"typeof_unqual", // 13
+	"__typeof__",    // 10
+	"__typeof",      // 8
+	"typeof",        // 6
+}
+
+// preprocessGccExtensions replaces GCC `typeof(expr)` (and its `__typeof`,
+// `__typeof__`, `typeof_unqual` spellings) with `void *` so that tree-sitter-c
+// (which does not support the typeof keyword in v0.24.2) can parse declarations
+// and casts that use it. Without this, `typeof(x) v = ...` is mis-parsed:
+// `typeof(x)` becomes a call_expression, `v` becomes an ERROR node, and the
+// initializer is split into a separate expression_statement — breaking every
+// detector that relies on the assignment chain (unchecked-return, null-source,
+// resource-leak). The replacement is padded with spaces to preserve source
+// positions (line/column) for accurate diagnostics.
 func preprocessGccExtensions(source []byte) []byte {
+	// Every supported spelling contains "typeof", so this cheap check is the
+	// fast path for the vast majority of files that never use the extension.
 	if !bytes.Contains(source, []byte("typeof")) {
 		return source
 	}
 	result := make([]byte, len(source))
 	copy(result, source)
 	replacement := []byte("void *")
-	i := 0
-	for i < len(result) {
-		if i+6 <= len(result) && string(result[i:i+6]) == "typeof" &&
-			(i == 0 || !isIdentChar(result[i-1])) &&
-			(i+6 >= len(result) || !isIdentChar(result[i+6])) {
-			j := i + 6
-			for j < len(result) && (result[j] == ' ' || result[j] == '\t') {
-				j++
-			}
-			if j < len(result) && result[j] == '(' {
-				depth := 1
-				k := j + 1
-				for k < len(result) && depth > 0 {
-					switch result[k] {
-					case '(':
-						depth++
-					case ')':
-						depth--
-					}
-					k++
-				}
-				if depth == 0 {
-					for pos := i; pos < k; pos++ {
-						if pos-i < len(replacement) {
-							result[pos] = replacement[pos-i]
-						} else {
-							result[pos] = ' '
-						}
-					}
-					i = k
-					continue
-				}
-			}
+	for i := 0; i < len(result); {
+		// Never rewrite a `typeof(` that lives inside a string/char literal or a
+		// comment — the byte-level match would silently corrupt that text (same
+		// length, so no parse error, but detectors reading string content would
+		// see `void *` instead of the original `typeof(...)`).
+		if n := skipNonCode(result, i); n > i {
+			i = n
+			continue
 		}
-		i++
+		end, ok := replaceTypeofAt(result, i, replacement)
+		if !ok {
+			i++
+			continue
+		}
+		i = end
 	}
 	return result
+}
+
+// skipNonCode returns the index just past the string literal, char literal,
+// line comment, or block comment that starts at result[i], or i when result[i]
+// is not the start of any of those. It is escape-aware so `"a\"b"` and `'\\'`
+// do not terminate early.
+func skipNonCode(result []byte, i int) int {
+	switch result[i] {
+	case '"', '\'':
+		quote := result[i]
+		for j := i + 1; j < len(result); j++ {
+			if result[j] == '\\' {
+				j++
+				continue
+			}
+			if result[j] == quote {
+				return j + 1
+			}
+		}
+		return len(result)
+	case '/':
+		if i+1 < len(result) && result[i+1] == '/' {
+			for j := i + 2; j < len(result); j++ {
+				if result[j] == '\n' {
+					return j
+				}
+			}
+			return len(result)
+		}
+		if i+1 < len(result) && result[i+1] == '*' {
+			for j := i + 2; j+1 < len(result); j++ {
+				if result[j] == '*' && result[j+1] == '/' {
+					return j + 2
+				}
+			}
+			return len(result)
+		}
+	}
+	return i
+}
+
+// replaceTypeofAt rewrites a typeof-spelling construct starting at result[i]
+// (`typeof(x)`, `__typeof__ (x)`, ...) into `void *` padded with spaces to keep
+// the byte length (and therefore line/column) unchanged. It returns the byte
+// index just past the rewritten construct and whether a rewrite happened.
+func replaceTypeofAt(result []byte, i int, replacement []byte) (int, bool) {
+	for _, kw := range gccTypeofKeywords {
+		n := len(kw)
+		if i+n > len(result) || string(result[i:i+n]) != kw {
+			continue
+		}
+		// Word boundary on both sides: `x__typeof(y)` is a different identifier,
+		// and `__typeof__` must not be treated as its shorter `__typeof` prefix.
+		if i > 0 && isIdentChar(result[i-1]) {
+			continue
+		}
+		if i+n < len(result) && isIdentChar(result[i+n]) {
+			continue
+		}
+		j := i + n
+		for j < len(result) && (result[j] == ' ' || result[j] == '\t') {
+			j++
+		}
+		if j >= len(result) || result[j] != '(' {
+			continue
+		}
+		depth := 1
+		k := j + 1
+		for k < len(result) && depth > 0 {
+			switch result[k] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+			k++
+		}
+		if depth != 0 {
+			continue
+		}
+		for pos := i; pos < k; pos++ {
+			if pos-i < len(replacement) {
+				result[pos] = replacement[pos-i]
+			} else {
+				result[pos] = ' '
+			}
+		}
+		return k, true
+	}
+	return i, false
 }
 
 func isIdentChar(b byte) bool {

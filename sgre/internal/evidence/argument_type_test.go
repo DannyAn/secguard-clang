@@ -10,6 +10,59 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
+// TestResolveScopedVar_NestedShadowScopeEnds locks in the cross-scope shadowing
+// fix: a same-name declaration in a nested block must stop shadowing once that
+// block closes. Before the fix, resolveScopedVar only picked the nearest
+// declaration on-or-before the line, so a use after the inner block ended still
+// resolved to the (out-of-scope) inner declaration.
+func TestResolveScopedVar_NestedShadowScopeEnds(t *testing.T) {
+	globals := map[string]string{}
+	locals := []scopedVarDecl{
+		{name: "p", typ: "int *", line: 5, end: 100}, // outer, function-scoped
+		{name: "p", typ: "bool", line: 10, end: 20},  // inner block shadow
+	}
+	if got := resolveScopedVar("p", 15, globals, locals); got != "bool" {
+		t.Errorf("line 15: got %q, want bool (inner shadow in scope)", got)
+	}
+	if got := resolveScopedVar("p", 25, globals, locals); got != "int *" {
+		t.Errorf("line 25: got %q, want int * (outer after inner scope ended)", got)
+	}
+	// Before the first local declaration, fall back to the file-scope global.
+	globals["p"] = "char *"
+	if got := resolveScopedVar("p", 3, globals, locals); got != "char *" {
+		t.Errorf("line 3: got %q, want char * (global fallback)", got)
+	}
+}
+
+// TestDeclScopeEnd_NestedBlock verifies declScopeEnd returns the enclosing
+// block's closing line for a shadowing declaration, not the whole function end.
+func TestDeclScopeEnd_NestedBlock(t *testing.T) {
+	p := parser.NewParser()
+	src := []byte("void f(void) {\n  int x = 0;\n  {\n    int x = 1;\n  }\n  x = 2;\n}\n")
+	tree, err := p.Parse(src, "t.c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tree.Close()
+
+	fn := &db.Function{StartLine: 1, EndLine: 7}
+	var inner parser.Node
+	found := false
+	for _, d := range tree.RootNode().FindAll("declaration") {
+		if d.StartLine() == 4 {
+			inner = d
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("inner declaration (line 4) not found")
+	}
+	if got := declScopeEnd(inner, fn); got != 5 {
+		t.Errorf("inner decl scope end = %d, want 5 (inner block close)", got)
+	}
+}
+
 func TestArgumentTypeDetector(t *testing.T) {
 	store := runOneDetector(t, "tc119_argument_type.c",
 		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewArgumentTypeDetector(s, p, l) })

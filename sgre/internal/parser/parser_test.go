@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -62,6 +63,69 @@ func TestParseCSource(t *testing.T) {
 	root := tree.RootNode()
 	if root.Kind() != "translation_unit" {
 		t.Errorf("expected root kind 'translation_unit', got %q", root.Kind())
+	}
+}
+
+// TestParse_TypeofSpellings locks in the GCC typeof preprocessing for every
+// spelling a real GNU C project uses. tree-sitter-c v0.24.2 has no typeof rule,
+// so without preprocessing each of these fragments the AST (HasError=true) and
+// the unchecked-return / null-source detectors lose the assignment chain.
+func TestParse_TypeofSpellings(t *testing.T) {
+	spellings := []string{"typeof", "__typeof", "__typeof__", "typeof_unqual"}
+	for _, kw := range spellings {
+		source := []byte(
+			"void *x_malloc(int id, unsigned int size);\n" +
+				"int f(struct s *n){ " + kw + "(n->leafs) leafs = (" + kw + "(n->leafs))x_malloc(1, 4); " +
+				"if(leafs == NULL) return 1; return 0; }\n")
+		tree, err := NewParser().Parse(source, kw+".c")
+		if err != nil {
+			t.Fatalf("%s: Parse: %v", kw, err)
+		}
+		if tree.HasError() {
+			t.Errorf("%s: HasError() = true, want false (typeof not preprocessed)", kw)
+		}
+		tree.Close()
+	}
+}
+
+// TestPreprocess_DoesNotCorruptIdentifiers guards the word-boundary check: an
+// identifier that merely CONTAINS "typeof" (e.g. mytypeof_helper) must be left
+// untouched, not mangled into `void *`.
+func TestPreprocess_DoesNotCorruptIdentifiers(t *testing.T) {
+	source := []byte("int mytypeof_helper(int x){ return x; }\nint __typeof_helper(int x){ return x; }\n")
+	got := string(preprocessGccExtensions(source))
+	if got != string(source) {
+		t.Errorf("identifier containing typeof was corrupted:\n got %q\nwant %q", got, string(source))
+	}
+}
+
+// TestPreprocess_DoesNotCorruptStringsOrComments guards the literal/comment
+// skip: a `typeof(...)` inside a string literal or comment is prose, not a type
+// construct, and must be left byte-for-byte intact (rewriting it would silently
+// change what string-reading detectors such as hardcoded-secret see).
+func TestPreprocess_DoesNotCorruptStringsOrComments(t *testing.T) {
+	source := []byte(
+		"const char *s = \"use typeof(x) here\";\n" +
+			"// typeof(x) in a line comment\n" +
+			"/* typeof(x) in a block comment */\n" +
+			"char c = 't';\n" +
+			"int f(struct s *n){ typeof(n->leafs) p = 0; return 0; }\n")
+	got := string(preprocessGccExtensions(source))
+	for _, keep := range []string{
+		`"use typeof(x) here"`,
+		"// typeof(x) in a line comment",
+		"/* typeof(x) in a block comment */",
+	} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("literal/comment was corrupted: %q no longer contains %q", got, keep)
+		}
+	}
+	// The real typeof in code IS still rewritten (not swallowed by the skip).
+	if strings.Contains(got, "typeof(n->leafs)") {
+		t.Errorf("real typeof in code was not rewritten:\n got %q", got)
+	}
+	if !strings.Contains(got, "void *") {
+		t.Errorf("expected void * replacement, got %q", got)
 	}
 }
 

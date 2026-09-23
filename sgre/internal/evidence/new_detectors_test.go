@@ -141,7 +141,7 @@ func TestNewDetector_UncheckedReturn_InlineGuard(t *testing.T) {
 
 // TestNewDetector_UncheckedReturn_VoidAllocFunc pins the fix for the
 // alloc-name heuristic false positives and the passthrough transitive-closure
-// gap. Three scenarios:
+// gap. Four scenarios:
 //  1. void test_case_alloc(...) — void function name contains "alloc", no
 //     return value to check → must NOT emit (FP from IsAllocator substring).
 //  2. int check_alloc_status(...) — scalar-returning function name contains
@@ -150,6 +150,11 @@ func TestNewDetector_UncheckedReturn_InlineGuard(t *testing.T) {
 //  3. passthrough_wrapper wraps my_alloc (heuristic-matched allocator) →
 //     must be recognised as a passthrough, so the unchecked call at the
 //     caller must emit (transitive closure must include IsAllocator).
+//  4. void_passthrough wraps is_allocated (a VOID function matched only by the
+//     "alloc" substring) — the passthrough fixpoint admits it via IsAllocator,
+//     but its own return type is void, so the bare void_passthrough() call must
+//     NOT emit (the fail-closed pointer-return check must apply to passthrough
+//     wrappers too).
 //
 // The real unchecked malloc in the same file must still be flagged.
 func TestNewDetector_UncheckedReturn_VoidAllocFunc(t *testing.T) {

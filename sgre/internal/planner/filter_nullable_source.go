@@ -55,7 +55,10 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 		byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
 	}
 
-	flowResults, retNullable, definedNames := f.buildFlowResults(ctx, byFunc, models)
+	flowResults, retNullable, definedNames, err := f.buildFlowResults(ctx, byFunc, models)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -135,9 +138,9 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 // inter-procedural "which functions can return NULL" map, consumed by Apply for
 // call-result dereferences (`f()->field`, `*f()`, `f()[i]`) that have no
 // tracked variable to feed the per-variable reaching analysis.
-func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[int64][]Candidate, models map[int64]*nullModel) (map[int64]*flowResult, map[string]bool, map[string]bool) {
+func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[int64][]Candidate, models map[int64]*nullModel) (map[int64]*flowResult, map[string]bool, map[string]bool, error) {
 	if f.parser == nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	funcIDs := make([]int64, 0, len(byFunc))
@@ -150,7 +153,10 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 
 	// Batch-load the candidate functions and their files ONCE, so the pre-scan
 	// and the analyze loop below do not each issue N+1 point queries.
-	fnByID, _ := f.store.ListFunctionsByIDs(ctx, funcIDs)
+	fnByID, err := f.store.ListFunctionsByIDs(ctx, funcIDs)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("nullable source: list functions: %w", err)
+	}
 	fileByID := map[int64]*db.File{}
 	if files, ferr := f.store.ListFiles(ctx); ferr == nil {
 		for _, fl := range files {
@@ -254,7 +260,7 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 		analyzer.entrySeeds = entrySeeds
 		results[fid] = analyzer.analyzeFunction(ctx, fn, body, root, lineSources)
 	}
-	return results, retNullable, definedNames
+	return results, retNullable, definedNames, nil
 }
 
 // computeRetNullable returns the set of function NAMES that can return a
@@ -293,7 +299,10 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 	for _, fn := range funcs {
 		allFnIDs = append(allFnIDs, fn.ID)
 	}
-	summariesByID, _ := f.store.ListSummariesByFunctionIDs(ctx, allFnIDs)
+	summariesByID, err := f.store.ListSummariesByFunctionIDs(ctx, allFnIDs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("ret nullable summary: list summaries: %w", err)
+	}
 	fileByID := make(map[int64]*db.File)
 	if files, ferr := f.store.ListFiles(ctx); ferr == nil {
 		for _, fl := range files {

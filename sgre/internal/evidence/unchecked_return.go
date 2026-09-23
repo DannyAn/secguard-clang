@@ -80,19 +80,21 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 				if !uncheckedReturnAPIs[callee] && !passthrough[callee] && !apikb.IsAllocator(callee) {
 					continue
 				}
-				// A function matched only by the alloc-name heuristic (not a
-				// built-in unchecked-return API, not a proven passthrough
-				// wrapper, not a declared allocator) must return a pointer to
-				// be an unchecked-return source. A void or scalar function
-				// whose name happens to contain "alloc" (e.g.
-				// test_case_alloc, check_alloc_status, is_allocated,
-				// storage_spec_generator_log_allocate_size_init) has no
-				// NULL-returning result to check, so flagging its call site
-				// is a false positive. An external function not in the index
-				// is fail-closed: the "alloc" substring heuristic is too
-				// broad to trust without a confirmed pointer return type, so
-				// we skip rather than surface a candidate.
-				if !uncheckedReturnAPIs[callee] && !passthrough[callee] && !apikb.IsDeclaredAllocator(callee) {
+				// A function that is neither a built-in unchecked-return API
+				// nor a declared allocator must return a pointer to be an
+				// unchecked-return source. This applies to passthrough wrappers
+				// too: the passthrough fixpoint admits a wrapper via the broad
+				// "alloc" substring heuristic (`void w(){ return is_allocated(p); }`),
+				// and without a pointer return type a bare `w()` call has no
+				// NULL-returning result to check. A void or scalar function whose
+				// name happens to contain "alloc" (test_case_alloc,
+				// check_alloc_status, is_allocated,
+				// storage_spec_generator_log_allocate_size_init) is a false
+				// positive, so flagging its call site is skipped. An external
+				// function not in the index is likewise fail-closed: the "alloc"
+				// substring heuristic is too broad to trust without a confirmed
+				// pointer return type.
+				if !uncheckedReturnAPIs[callee] && !apikb.IsDeclaredAllocator(callee) {
 					rt, ok := retTypes[callee]
 					if !ok || !strings.HasSuffix(rt, "*") {
 						continue

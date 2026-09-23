@@ -62,18 +62,24 @@ func (d *ArgumentTypeDetector) Detect(ctx context.Context) (DetectResult, error)
 			}
 			line := decl.StartLine()
 			owner := -1
+			var ownerFn *db.Function
 			for _, fn := range funcs {
 				if funcLineRange(fn, line) {
 					owner = fn.StartLine
+					ownerFn = fn
 					break
 				}
+			}
+			end := 0
+			if ownerFn != nil {
+				end = declScopeEnd(decl, ownerFn)
 			}
 			for _, v := range decls {
 				typ := base + starSuffix(v.stars)
 				if owner == -1 {
 					globals[v.name] = typ
 				} else {
-					locals[owner] = append(locals[owner], scopedVarDecl{name: v.name, typ: typ, line: line})
+					locals[owner] = append(locals[owner], scopedVarDecl{name: v.name, typ: typ, line: line, end: end})
 				}
 			}
 		}
@@ -213,15 +219,41 @@ type scopedVarDecl struct {
 	name string
 	typ  string
 	line int
+	// end is the line the declaration's scope closes on. A shadowing declaration
+	// in a nested block must stop shadowing after that block ends; without it,
+	// resolveScopedVar keeps resolving to the (now out-of-scope) inner
+	// declaration on every later line of the enclosing block.
+	end int
 }
 
-// resolveScopedVar returns the type of name at line, preferring the nearest
-// same-scope declaration on or before line, then a file-scope global.
+// declScopeEnd returns the line the declaration's scope closes on. The parent of
+// a declaration is its enclosing scope: a compound_statement for a block, or the
+// for/while/if/switch statement whose header declares it (the name is in scope
+// for the whole statement). Anything else falls back to the function end.
+func declScopeEnd(decl parser.Node, fn *db.Function) int {
+	if p := decl.Parent(); p != nil {
+		switch p.Kind() {
+		case "compound_statement", "for_statement", "while_statement", "if_statement", "do_statement", "switch_statement":
+			return p.EndLine()
+		}
+	}
+	return fn.EndLine
+}
+
+// resolveScopedVar returns the type of name at line: the nearest same-name
+// declaration whose scope still contains line (declared on or before line, and
+// whose enclosing block has not yet closed), then a file-scope global.
 func resolveScopedVar(name string, line int, globals map[string]string, locals []scopedVarDecl) string {
 	best := ""
 	bestLine := -1
 	for _, d := range locals {
-		if d.name == name && d.line <= line && d.line > bestLine {
+		if d.name != name || d.line > line {
+			continue
+		}
+		if d.end > 0 && line > d.end {
+			continue
+		}
+		if d.line > bestLine {
 			best = d.typ
 			bestLine = d.line
 		}

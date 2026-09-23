@@ -37,7 +37,10 @@ func (f *DoubleFreeFilter) Apply(ctx context.Context, candidates []Candidate) ([
 		byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
 	}
 
-	flows := f.buildFlows(ctx, byFunc)
+	flows, err := f.buildFlows(ctx, byFunc)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -63,7 +66,7 @@ func (f *DoubleFreeFilter) Apply(ctx context.Context, candidates []Candidate) ([
 	return kept, dropped, nil
 }
 
-func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate) map[int64]*flowResult {
+func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate) (map[int64]*flowResult, error) {
 	flows := make(map[int64]*flowResult, len(byFunc))
 	cache := newFileParseCache(f.parser)
 	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
@@ -75,7 +78,10 @@ func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Ca
 			eventIDs = append(eventIDs, c.DerefEventID)
 		}
 	}
-	eventsByID, _ := f.store.ListEventsByIDs(ctx, eventIDs)
+	eventsByID, err := f.store.ListEventsByIDs(ctx, eventIDs)
+	if err != nil {
+		return nil, fmt.Errorf("double free: load events: %w", err)
+	}
 	for fid, cs := range byFunc {
 		fn := fnByID[fid]
 		if fn == nil {
@@ -134,5 +140,5 @@ func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Ca
 		expandGenToAliases(genByLine, analyzer.loadAliases(ctx, []int64{fid})[fid])
 		flows[fid] = analyzer.analyzeFlowMust(ctx, fn, body, root, genByLine, killByLine, false, false)
 	}
-	return flows
+	return flows, nil
 }

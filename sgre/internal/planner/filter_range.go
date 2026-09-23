@@ -61,7 +61,10 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 			eventIDs = append(eventIDs, c.DerefEventID)
 		}
 	}
-	eventsByID, _ := f.store.ListEventsByIDs(ctx, eventIDs)
+	eventsByID, err := f.store.ListEventsByIDs(ctx, eventIDs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("range: load events: %w", err)
+	}
 
 	byFunc := make(map[int64][]Candidate)
 	for _, c := range candidates {

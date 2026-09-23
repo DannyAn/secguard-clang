@@ -47,7 +47,10 @@ func (f *SharedAccessFilter) Apply(ctx context.Context, candidates []Candidate) 
 			eventIDs = append(eventIDs, c.DerefEventID)
 		}
 	}
-	eventsByID, _ := f.store.ListEventsByIDs(ctx, eventIDs)
+	eventsByID, err := f.store.ListEventsByIDs(ctx, eventIDs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("shared access: load events: %w", err)
+	}
 
 	nameByNode := make(map[int64]string)
 	kindByNode := make(map[int64]string)

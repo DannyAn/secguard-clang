@@ -190,7 +190,10 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 			eventIDs = append(eventIDs, c.DerefEventID)
 		}
 	}
-	eventsByID, _ := f.store.ListEventsByIDs(ctx, eventIDs)
+	eventsByID, err := f.store.ListEventsByIDs(ctx, eventIDs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("taint source: load events: %w", err)
+	}
 
 	// Inter-procedural summaries: which functions can return a tainted value
 	// (RETURN / CALL edges) and which (function, parameter) pairs receive tainted

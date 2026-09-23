@@ -45,7 +45,10 @@ func (f *LockOrderFilter) Apply(ctx context.Context, candidates []Candidate) ([]
 			eventIDs = append(eventIDs, c.DerefEventID)
 		}
 	}
-	eventsByID, _ := f.store.ListEventsByIDs(ctx, eventIDs)
+	eventsByID, err := f.store.ListEventsByIDs(ctx, eventIDs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("lock order: load events: %w", err)
+	}
 
 	nameByNode := make(map[int64]string)
 	if nodes, err := f.store.ListGraphNodesByEntityType(ctx, "mutex"); err == nil {

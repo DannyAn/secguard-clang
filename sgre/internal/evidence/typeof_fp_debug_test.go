@@ -80,7 +80,10 @@ func TestUncheckedReturn_TypeofAndMultiAssignFP_Planner(t *testing.T) {
 			fn == "case2_xlog_malloc_topn_data" ||
 			fn == "case3_kafka_dns_fill" ||
 			fn == "case5_set_thrt_comm" ||
-			fn == "case4_storage_cap_attri_init" {
+			fn == "case4_storage_cap_attri_init" ||
+			fn == "case6___typeof" ||
+			fn == "case7___typeof__" ||
+			fn == "case8_typeof_unqual" {
 			t.Errorf("FALSE POSITIVE candidate: %s should not be flagged", fn)
 		}
 	}

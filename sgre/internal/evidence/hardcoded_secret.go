@@ -80,7 +80,7 @@ func (d *HardcodedSecretDetector) Detect(ctx context.Context) (DetectResult, err
 		}
 
 		calls := root.FindAll("call_expression")
-		d.detectRegSetValueEx(ctx, calls, file, &result)
+		d.detectRegSetValueEx(ctx, calls, file, funcs, &result)
 		d.detectInitializerPairs(ctx, root, file, funcs, &result)
 	})
 	return result, err
@@ -228,7 +228,7 @@ func (d *HardcodedSecretDetector) detectInitializerPairs(ctx context.Context, ro
 	}
 }
 
-func (d *HardcodedSecretDetector) detectRegSetValueEx(ctx context.Context, calls []parser.Node, file *db.File, result *DetectResult) {
+func (d *HardcodedSecretDetector) detectRegSetValueEx(ctx context.Context, calls []parser.Node, file *db.File, funcs []*db.Function, result *DetectResult) {
 	for _, call := range calls {
 		callName := extractCallName(call)
 		if callName != "RegSetValueExA" && callName != "RegSetValueExW" && callName != "RegSetValueEx" {
@@ -250,14 +250,7 @@ func (d *HardcodedSecretDetector) detectRegSetValueEx(ctx context.Context, calls
 			continue
 		}
 
-		funcs, _ := d.store.ListFunctions(ctx)
-		var funcID int64
-		for _, f := range funcs {
-			if f.FileID == file.ID && call.StartLine() >= f.StartLine && call.StartLine() <= f.EndLine {
-				funcID = f.ID
-				break
-			}
-		}
+		funcID := enclosingFuncID(call, funcs)
 
 		if emitEvent(ctx, d.store, d.logger, "HARDCODED_SECRET", funcID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, withValueProven(map[string]string{
 			"api":      callName,

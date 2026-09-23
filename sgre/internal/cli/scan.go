@@ -497,7 +497,11 @@ func runScanCmd(ctx context.Context, args []string) int {
 		output["dismissed_ledger_error"] = err.Error()
 	}
 
-	jsonBytes, _ := json.MarshalIndent(output, "", "  ")
+	jsonBytes, err := json.MarshalIndent(output, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: failed to marshal scan output: %v\n", err)
+		return 1
+	}
 	fmt.Fprintln(os.Stdout, string(jsonBytes))
 
 	report.PrintScanSummary(os.Stderr, summaryData)
@@ -789,7 +793,11 @@ func runStatusCmd(ctx context.Context, args []string) int {
 		"findings_count":    len(findings),
 	}
 
-	jsonBytes, _ := json.MarshalIndent(output, "", "  ")
+	jsonBytes, err := json.MarshalIndent(output, "", "  ")
+	if err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to marshal output: %v", err))
+		return 1
+	}
 	fmt.Fprintln(os.Stdout, string(jsonBytes))
 	return 0
 }
