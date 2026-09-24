@@ -2,6 +2,21 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.7.9] - 2026-09-24
+
+### 误报修复
+
+生产环境扫描 805 文件 / 5438 函数 / 163533 行时发现的两类问题：null-deref 候选爆炸（1800+ 候选，最终只确认 80 条，端到端 90 分钟）与 unchecked-return 对 `(void)` cast 的 allocator-heuristic 函数误报。
+
+#### unchecked-return（CWE-252）
+
+- **`(void)` cast 对 allocator-heuristic 函数误报**：`HpeDynmemAlloc(id, &new_node)` 通过 out 参数分配内存且后续有判空，但名字含 "Alloc" 被 `apikb.IsAllocator` 启发式匹配，`(void)` cast 被忽略 → 误报。修复：新增 `isVoidCast(call)` helper，对 IsAllocator 启发式匹配的函数（非 `IsDeclaredAllocator`、非 `uncheckedReturnAPIs`、非 passthrough），`(void)` cast 跳过检测。`malloc`/`calloc`/`fopen` 等已知函数的 `(void)` cast 仍报。
+
+#### null-deref（CWE-476）
+
+- **indexer 不索引函数声明返回类型 → 外部函数 fail-open → 候选爆炸**：indexer 只索引 `function_definition` 不索引 `declaration`（prototype）→ `retTypes` 不含外部函数 → `detectExternalCall` 返回类型过滤失效 → 所有外部函数调用 fail-open 产生 NULL_VALUE event → 1800+ 候选进 AI。修复：indexer 额外索引 declaration 节点中的函数声明（`EndLine=0` 标记 prototype），`knownFuncs` 和 `definedNames` 只含定义函数（`EndLine > 0`），保留 fail-open 给返回指针的外部函数（`fopen`/`strchr`/`strdup` 等），返回非指针类型的外部函数（`printf`/`strlen`/`getpid` 等）被过滤。配套修复：`data_flow.go` 跳过 `EndLine==0` 函数、`helpers.go` `nodesInRange` 处理 `end < start`、`filter_nullable_source.go` `definedNames` 只含定义函数。
+- **`assert()` 不被识别为 null-guard → guard 漏检**：`assert(p != NULL)` 语义上是 null guard，但检测器不识别 assert 模式 → 已被 assert 保护的指针仍产生 null-deref 候选。修复：新增 `detectAssertGuards`，识别 `assert(p!=NULL)` / `assert(p)` / `assert(p!=NULL && q!=NULL)` 三种模式，产生 ASSERT_GUARD event，scope 从 assert 行之后到函数末尾。
+
 ## [0.7.8] - 2026-09-23
 
 ### 误报修复
