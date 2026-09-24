@@ -28,6 +28,12 @@ type FunctionStore interface {
 	DeleteFunctionsByFile(ctx context.Context, fileID int64) error
 }
 
+type FunctionDeclarationStore interface {
+	InsertFunctionDeclaration(ctx context.Context, d *FunctionDeclaration) (int64, error)
+	ListFunctionDeclarations(ctx context.Context) ([]*FunctionDeclaration, error)
+	DeleteFunctionDeclarationsByFile(ctx context.Context, fileID int64) error
+}
+
 type VariableStore interface {
 	InsertVariable(ctx context.Context, v *Variable) (int64, error)
 	GetVariableByID(ctx context.Context, id int64) (*Variable, error)
@@ -157,6 +163,7 @@ type FunctionSummaryStore interface {
 type Store interface {
 	FileStore
 	FunctionStore
+	FunctionDeclarationStore
 	VariableStore
 	ExpressionStore
 	TypeStore

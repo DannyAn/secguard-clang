@@ -38,6 +38,17 @@ CREATE TABLE IF NOT EXISTS functions (
     FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS function_declarations (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id      INTEGER NOT NULL,
+    name         TEXT NOT NULL,
+    signature    TEXT,
+    return_type  TEXT,
+    start_line   INTEGER,
+    UNIQUE(file_id, name, signature, return_type),
+    FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS variables (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     function_id      INTEGER,
@@ -240,6 +251,7 @@ CREATE INDEX IF NOT EXISTS idx_files_checksum ON files(checksum);
 
 CREATE INDEX IF NOT EXISTS idx_functions_file_id ON functions(file_id);
 CREATE INDEX IF NOT EXISTS idx_functions_name ON functions(name);
+CREATE INDEX IF NOT EXISTS idx_function_declarations_name ON function_declarations(name);
 
 CREATE INDEX IF NOT EXISTS idx_variables_function_id ON variables(function_id);
 CREATE INDEX IF NOT EXISTS idx_variables_is_pointer ON variables(is_pointer);

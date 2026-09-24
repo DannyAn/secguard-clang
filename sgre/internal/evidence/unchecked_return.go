@@ -396,6 +396,15 @@ func (d *UncheckedReturnDetector) funcReturnTypes(ctx context.Context) (map[stri
 	for _, f := range funcs {
 		types[f.Name] = f.ReturnType
 	}
+	declarations, err := d.store.ListFunctionDeclarations(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("unchecked return: list function declarations: %w", err)
+	}
+	for _, dcl := range declarations {
+		if _, defined := types[dcl.Name]; !defined {
+			types[dcl.Name] = dcl.ReturnType
+		}
+	}
 	return types, nil
 }
 

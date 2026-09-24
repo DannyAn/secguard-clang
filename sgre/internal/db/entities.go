@@ -113,6 +113,15 @@ type Function struct {
 	EndLine    int
 }
 
+type FunctionDeclaration struct {
+	ID         int64
+	FileID     int64
+	Name       string
+	Signature  string
+	ReturnType string
+	StartLine  int
+}
+
 type Variable struct {
 	ID              int64
 	FunctionID      int64

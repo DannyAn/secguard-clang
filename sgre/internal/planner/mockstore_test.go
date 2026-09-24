@@ -11,6 +11,7 @@ import (
 type mockStore struct {
 	files     []*db.File
 	funcs     []*db.Function
+	funcDecls []*db.FunctionDeclaration
 	events    []*db.SecurityEvent
 	edges     []*db.GraphEdge
 	nodes     []*db.GraphNode
@@ -109,6 +110,26 @@ func (s *mockStore) DeleteFunctionsByFile(ctx context.Context, fileID int64) err
 		}
 	}
 	s.funcs = kept
+	return nil
+}
+
+func (s *mockStore) InsertFunctionDeclaration(ctx context.Context, d *db.FunctionDeclaration) (int64, error) {
+	d.ID = s.nextID
+	s.nextID++
+	s.funcDecls = append(s.funcDecls, d)
+	return d.ID, nil
+}
+func (s *mockStore) ListFunctionDeclarations(ctx context.Context) ([]*db.FunctionDeclaration, error) {
+	return s.funcDecls, nil
+}
+func (s *mockStore) DeleteFunctionDeclarationsByFile(ctx context.Context, fileID int64) error {
+	kept := s.funcDecls[:0]
+	for _, d := range s.funcDecls {
+		if d.FileID != fileID {
+			kept = append(kept, d)
+		}
+	}
+	s.funcDecls = kept
 	return nil
 }
 

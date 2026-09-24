@@ -158,6 +158,9 @@ func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *Inde
 			if err := tx.DeleteFunctionsByFile(ctx, existing.ID); err != nil {
 				return fmt.Errorf("delete stale functions: %w", err)
 			}
+			if err := tx.DeleteFunctionDeclarationsByFile(ctx, existing.ID); err != nil {
+				return fmt.Errorf("delete stale function declarations: %w", err)
+			}
 			fileID = existing.ID
 		} else {
 			id, err := tx.InsertFile(ctx, &db.File{
@@ -183,25 +186,24 @@ func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *Inde
 			definedNames[funcRecord.Name] = true
 			inserted++
 		}
-		// Index function declarations (prototypes) so the null-source detector
-		// can filter external calls by return type. A declaration-only function
-		// has no body, so EndLine is set to 0 to mark it as a prototype (vs a
-		// definition where EndLine > 0). This lets detectExternalCall's
-		// retTypes check reject calls to functions returning non-pointer types
-		// (int/size_t/...), while knownFuncs (built from EndLine > 0) still
-		// excludes them so the knownFuncs && !nullableFuncs gate does not skip
-		// them (preserving fail-open for pointer-returning externs like
-		// fopen/strchr).
+		// Keep prototypes out of functions: it is the definition table every
+		// graph/detector/planner consumer treats as a body-bearing callable.
+		// Declarations live separately and are consumed only for external
+		// return-type filtering.
 		for _, declNode := range declNodes {
 			funcRecord := extractFunction(declNode, fileID)
 			if funcRecord.Name == "" || definedNames[funcRecord.Name] {
 				continue
 			}
-			funcRecord.EndLine = 0
-			if _, err := tx.InsertFunction(ctx, funcRecord); err != nil {
-				return fmt.Errorf("insert function decl %s: %w", funcRecord.Name, err)
+			if _, err := tx.InsertFunctionDeclaration(ctx, &db.FunctionDeclaration{
+				FileID:     fileID,
+				Name:       funcRecord.Name,
+				Signature:  funcRecord.Signature,
+				ReturnType: funcRecord.ReturnType,
+				StartLine:  funcRecord.StartLine,
+			}); err != nil {
+				return fmt.Errorf("insert function declaration %s: %w", funcRecord.Name, err)
 			}
-			inserted++
 		}
 		return nil
 	})

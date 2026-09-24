@@ -16,7 +16,7 @@ func TestOpenInMemory_SchemaInitialized(t *testing.T) {
 	defer db.Close()
 
 	tables := []string{
-		"files", "functions", "variables", "expressions", "types", "locations",
+		"files", "functions", "function_declarations", "variables", "expressions", "types", "locations",
 		"graph_nodes", "graph_edges", "security_events", "findings", "function_summary",
 		"review_sessions",
 	}
@@ -33,7 +33,7 @@ func TestOpenInMemory_SchemaInitialized(t *testing.T) {
 func TestNewTestStore_AllTablesPresent(t *testing.T) {
 	s := NewTestStore(t)
 	tables := []string{
-		"files", "functions", "variables", "expressions", "types", "locations",
+		"files", "functions", "function_declarations", "variables", "expressions", "types", "locations",
 		"graph_nodes", "graph_edges", "security_events", "findings", "function_summary",
 		"review_sessions",
 	}

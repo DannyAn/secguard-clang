@@ -11,7 +11,7 @@ func schemaHasTable(ddl, table string) bool {
 }
 
 func TestSchemaDDL_ContainsAllLayer1Tables(t *testing.T) {
-	tables := []string{"files", "functions", "variables", "expressions", "types", "locations"}
+	tables := []string{"files", "functions", "function_declarations", "variables", "expressions", "types", "locations"}
 	for _, table := range tables {
 		if !schemaHasTable(SchemaDDL, table) {
 			t.Errorf("SchemaDDL missing Layer 1 table: %s", table)

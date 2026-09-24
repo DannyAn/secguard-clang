@@ -112,6 +112,73 @@ char *get_name(void) { return "x"; }
 	}
 }
 
+func TestIndexer_StoresFunctionDeclarationsSeparately(t *testing.T) {
+	s := db.NewTestStore(t)
+	idx := NewIndexer(s, testLogger())
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "decls.c")
+	src := `typedef struct { int x; } item_t;
+int ext_int(int arg);
+item_t *ext_ptr(int arg);
+int (*callback)(int arg);
+
+int defined(void) { return 1; }
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+
+	funcs, err := s.ListFunctions(ctx)
+	if err != nil {
+		t.Fatalf("ListFunctions: %v", err)
+	}
+	if len(funcs) != 1 || funcs[0].Name != "defined" {
+		t.Fatalf("functions = %+v, want only the function definition", funcs)
+	}
+
+	declarations, err := s.ListFunctionDeclarations(ctx)
+	if err != nil {
+		t.Fatalf("ListFunctionDeclarations: %v", err)
+	}
+	byName := make(map[string]string)
+	for _, d := range declarations {
+		byName[d.Name] = d.ReturnType
+	}
+	if byName["ext_int"] != "int" {
+		t.Errorf("ext_int return type = %q, want int", byName["ext_int"])
+	}
+	if byName["ext_ptr"] != "item_t*" {
+		t.Errorf("ext_ptr return type = %q, want item_t*", byName["ext_ptr"])
+	}
+	if _, ok := byName["callback"]; ok {
+		t.Error("function-pointer variable callback was indexed as a function declaration")
+	}
+
+	if err := os.WriteFile(path, []byte(`typedef struct { int x; } item_t;
+item_t *ext_ptr(int arg);
+int defined(void) { return 1; }
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	declarations, err = s.ListFunctionDeclarations(ctx)
+	if err != nil {
+		t.Fatalf("ListFunctionDeclarations after re-index: %v", err)
+	}
+	for _, d := range declarations {
+		if d.Name == "ext_int" {
+			t.Error("stale ext_int declaration survived re-index")
+		}
+	}
+}
+
 func TestIndexer_SkipsSyntaxErrors(t *testing.T) {
 	s := db.NewTestStore(t)
 	idx := NewIndexer(s, testLogger())
