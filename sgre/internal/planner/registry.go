@@ -481,18 +481,25 @@ func init() {
 		// and n caller-influenced) are concrete CWE-190 patterns and stay
 		// "suspected". The wraparound-in-a-bounds-check pattern (integer_overflow)
 		// is a theoretical wraparound and is "possible". Addition/subtraction
-		// (n + 1 / n - 1) is not emitted — null-terminator / off-by-one noise.
+		// on size operands (n + 1 / n - 1) is not emitted — null-terminator /
+		// off-by-one noise. An unsigned subtraction passed to an ordinary call is
+		// kept as suspected: it has a concrete underflow path unless guarded.
 		CategoryConfidence: map[string]string{
 			"size_calc_overflow":      "suspected",
 			"size_mul_const_overflow": "suspected",
+			"unsigned_sub_underflow":  "suspected",
 			"integer_overflow":        "possible",
 		},
 		ConvergeKey: func(c Candidate) string {
 			return fmt.Sprintf("integer-overflow:%d:%s:%d", c.FileID, c.FunctionName, c.Line)
 		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
+			detail := fmt.Sprintf("arithmetic overflow in size calculation in %s at line %d", c.FunctionName, c.Line)
+			if c.Category == "unsigned_sub_underflow" {
+				detail = fmt.Sprintf("unsigned subtraction can underflow before use in %s at line %d", c.FunctionName, c.Line)
+			}
 			return []EvidenceFragment{
-				{Type: "integer_overflow", Role: "sink", Detail: fmt.Sprintf("arithmetic overflow in size calculation in %s at line %d", c.FunctionName, c.Line)},
+				{Type: "integer_overflow", Role: "sink", Detail: detail},
 				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
 			}
 		},

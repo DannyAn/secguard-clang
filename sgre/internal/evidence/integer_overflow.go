@@ -60,8 +60,12 @@ func isSizeFunction(name string) bool {
 
 func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
+	globalTypedefs := buildGlobalTypedefs(ctx, d.store, d.parser)
 
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		typedefs := globalTypedefs.clone()
+		typedefs.addRoot(root)
+		globals, scopes := buildIntegerOverflowTypeScopes(root, funcs, typedefs)
 		binaryExprs := root.FindAll("binary_expression")
 		calls := root.FindAll("call_expression")
 		// Parameter names per function, used to recognize "caller-influenced"
@@ -99,9 +103,82 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 			}
 
 			d.detectSizeCalcOverflow(ctx, calls, f, file, params, d.collectAssignments(root, f), &result)
+			d.detectUnsignedSubUnderflow(ctx, calls, f, file, scopes[f.StartLine], globals, typedefs, &result)
 		}
 	})
 	return result, err
+}
+
+type integerOverflowTypeScope struct {
+	locals []scopedVarDecl
+	params map[string]bool
+}
+
+// buildIntegerOverflowTypeScopes resolves the variable types needed by the
+// unsigned-subtraction check. It includes parameters, locals, and file-scope
+// variables, while keeping a separate parameter set because the underflow
+// heuristic only trusts subtraction operands influenced by a function caller.
+func buildIntegerOverflowTypeScopes(root parser.Node, funcs []*db.Function, typedefs *typedefs) (map[string]string, map[int]integerOverflowTypeScope) {
+	globals := make(map[string]string)
+	scopes := make(map[int]integerOverflowTypeScope, len(funcs))
+	for _, f := range funcs {
+		scopes[f.StartLine] = integerOverflowTypeScope{params: make(map[string]bool)}
+	}
+
+	for _, decl := range root.FindAll("declaration") {
+		line := decl.StartLine()
+		base, vars := varDeclParts(decl)
+		if base == "" || len(vars) == 0 {
+			continue
+		}
+		owner := functionContainingLine(funcs, line)
+		for _, v := range vars {
+			typ := base + starSuffix(v.stars)
+			if owner == nil {
+				globals[v.name] = typ
+				continue
+			}
+			scope := scopes[owner.StartLine]
+			scope.locals = append(scope.locals, scopedVarDecl{
+				name: v.name,
+				typ:  typ,
+				line: line,
+				end:  declScopeEnd(decl, owner),
+			})
+			scopes[owner.StartLine] = scope
+		}
+	}
+
+	for _, param := range root.FindAll("parameter_declaration") {
+		owner := functionContainingLine(funcs, param.StartLine())
+		if owner == nil {
+			continue
+		}
+		typ := typeSpelling(param)
+		name := extractVarFromDeclarator(param)
+		if typ == "" || name == "" || parser.IsCTypeKeyword(name) {
+			continue
+		}
+		scope := scopes[owner.StartLine]
+		scope.params[name] = true
+		scope.locals = append(scope.locals, scopedVarDecl{
+			name: name,
+			typ:  typ,
+			line: param.StartLine(),
+			end:  owner.EndLine,
+		})
+		scopes[owner.StartLine] = scope
+	}
+	return globals, scopes
+}
+
+func functionContainingLine(funcs []*db.Function, line int) *db.Function {
+	for _, f := range funcs {
+		if f.EndLine >= f.StartLine && line >= f.StartLine && line <= f.EndLine {
+			return f
+		}
+	}
+	return nil
 }
 
 // collectAssignments builds a one-level variable -> arithmetic-expression map for
@@ -300,7 +377,7 @@ func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, ca
 		// misses it. Two variable arguments is the classic CWE-190 overflow.
 		if callName == "calloc" && len(args) >= 2 {
 			if isVariableOperand(args[0]) && isVariableOperand(args[1]) {
-				d.emitSizeCalc(ctx, file, f, call, "size_calc_overflow", result)
+				d.emitIntegerOverflow(ctx, file, f, call, "size_calc_overflow", result)
 				continue
 			}
 			// calloc(n, sizeof(T)) and calloc(n, CONST) are the SAME implicit
@@ -308,7 +385,7 @@ func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, ca
 			// split across two arguments — the most common allocation idiom in
 			// real code and previously a systematic blind spot (CWE-190).
 			if c := d.callocOverflowCategory(args[0], args[1], params); c != "" {
-				d.emitSizeCalc(ctx, file, f, call, c, result)
+				d.emitIntegerOverflow(ctx, file, f, call, c, result)
 				continue
 			}
 		}
@@ -324,7 +401,7 @@ func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, ca
 				}
 			}
 			for _, c := range d.sizeCalcExprs(eff, params) {
-				d.emitSizeCalc(ctx, file, f, c.expr, c.category, result)
+				d.emitIntegerOverflow(ctx, file, f, c.expr, c.category, result)
 			}
 		}
 	}
@@ -369,13 +446,167 @@ func (d *IntegerOverflowDetector) callocOverflowCategory(a0, a1 parser.Node, par
 	return ""
 }
 
-func (d *IntegerOverflowDetector) emitSizeCalc(ctx context.Context, file *db.File, f *db.Function, expr parser.Node, category string, result *DetectResult) {
+func (d *IntegerOverflowDetector) emitIntegerOverflow(ctx context.Context, file *db.File, f *db.Function, expr parser.Node, category string, result *DetectResult) {
 	if emitEvent(ctx, d.store, d.logger, "INTEGER_OVERFLOW", f.ID, &db.Location{FileID: file.ID, Line: expr.StartLine(), Column: expr.StartColumn()}, map[string]string{
 		"expression": expr.Text(),
 		"category":   category,
 	}) {
 		result.EventsCreated++
 	}
+}
+
+// detectUnsignedSubUnderflow catches unsigned subtraction before a value is
+// passed to an ordinary function. The size-calculation paths above only inspect
+// allocator/copy arguments and intentionally skip subtraction; this check uses
+// type information to handle the common `count - consumed` shape without
+// treating every C subtraction as an integer-overflow candidate.
+func (d *IntegerOverflowDetector) detectUnsignedSubUnderflow(ctx context.Context, calls []parser.Node, f *db.Function, file *db.File, scope integerOverflowTypeScope, globals map[string]string, typedefs *typedefs, result *DetectResult) {
+	if scope.locals == nil {
+		return
+	}
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
+			continue
+		}
+		for _, arg := range callNamedArguments(call) {
+			expr := unwrapExprNode(arg)
+			if expr.Kind() != "binary_expression" || arithOperator(expr) != "-" {
+				continue
+			}
+			operands := expr.NamedChildren()
+			if len(operands) != 2 {
+				continue
+			}
+			lhs := operands[0]
+			rhs := operands[1]
+			lhsUnsigned, lhsFromParam := unsignedSubOperand(lhs, expr.StartLine(), globals, scope, typedefs)
+			rhsUnsigned, rhsFromParam := unsignedSubOperand(rhs, expr.StartLine(), globals, scope, typedefs)
+			if !lhsUnsigned || !rhsUnsigned || (!lhsFromParam && !rhsFromParam) {
+				continue
+			}
+			if exprTextKey(lhs) == exprTextKey(rhs) || unsignedSubGuarded(expr, lhs, rhs) {
+				continue
+			}
+			d.emitIntegerOverflow(ctx, file, f, expr, "unsigned_sub_underflow", result)
+		}
+	}
+}
+
+func unwrapExprNode(node parser.Node) parser.Node {
+	for node.Kind() == "parenthesized_expression" {
+		children := node.NamedChildren()
+		if len(children) == 0 {
+			return node
+		}
+		node = children[0]
+	}
+	return node
+}
+
+func unsignedSubOperand(node parser.Node, line int, globals map[string]string, scope integerOverflowTypeScope, typedefs *typedefs) (bool, bool) {
+	node = unwrapExprNode(node)
+	switch node.Kind() {
+	case "identifier":
+		name := node.Text()
+		typ := resolveScopedVar(name, line, globals, scope.locals)
+		return isUnsignedScalarType(typ, typedefs), scope.params[name]
+	case "pointer_expression":
+		if !strings.HasPrefix(strings.TrimSpace(node.Text()), "*") {
+			return false, false
+		}
+		children := node.NamedChildren()
+		if len(children) == 0 {
+			return false, false
+		}
+		target := unwrapExprNode(children[0])
+		if target.Kind() != "identifier" {
+			return false, false
+		}
+		name := target.Text()
+		typ := resolveScopedVar(name, line, globals, scope.locals)
+		if !isPointerType(typ, typedefs) {
+			return false, false
+		}
+		return isUnsignedScalarType(pointedToResolved(typ, typedefs), typedefs), scope.params[name]
+	case "subscript_expression":
+		children := node.NamedChildren()
+		if len(children) == 0 {
+			return false, false
+		}
+		base := unwrapExprNode(children[0])
+		if base.Kind() != "identifier" {
+			return false, false
+		}
+		name := base.Text()
+		typ := resolveScopedVar(name, line, globals, scope.locals)
+		if !isPointerType(typ, typedefs) {
+			return false, false
+		}
+		return isUnsignedScalarType(pointedToResolved(typ, typedefs), typedefs), scope.params[name]
+	}
+	return false, false
+}
+
+func isUnsignedScalarType(typ string, typedefs *typedefs) bool {
+	resolved := resolveType(strings.TrimSpace(typ), typedefs)
+	if resolved == "" || strings.Contains(resolved, "*") {
+		return false
+	}
+	return isUnsignedDecl(resolved) || typedefs.resolvesToUnsigned(resolved)
+}
+
+func exprTextKey(node parser.Node) string {
+	node = unwrapExprNode(node)
+	return strings.Join(strings.Fields(node.Text()), "")
+}
+
+// unsignedSubGuarded recognizes the two equivalent dominance guards that make a
+// subtraction safe: `if (rhs <= lhs) { ... lhs - rhs ... }` and its mirrored
+// `if (lhs >= rhs) { ... }`.
+func unsignedSubGuarded(expr, lhs, rhs parser.Node) bool {
+	for parent := expr.Parent(); parent != nil; parent = parent.Parent() {
+		if parent.Kind() != "if_statement" {
+			continue
+		}
+		cons := parent.ChildByFieldName("consequence")
+		cond := parent.ChildByFieldName("condition")
+		if cons == nil || cond == nil || !nodeContains(*cons, expr) {
+			continue
+		}
+		condition := unwrapExprNode(*cond)
+		if condition.Kind() != "binary_expression" {
+			continue
+		}
+		operands := condition.NamedChildren()
+		if len(operands) != 2 {
+			continue
+		}
+		left := exprTextKey(operands[0])
+		right := exprTextKey(operands[1])
+		lhsKey := exprTextKey(lhs)
+		rhsKey := exprTextKey(rhs)
+		switch relationalOperator(condition) {
+		case "<", "<=":
+			return right == lhsKey && left == rhsKey
+		case ">", ">=":
+			return left == lhsKey && right == rhsKey
+		}
+	}
+	return false
+}
+
+func nodeContains(parent, child parser.Node) bool {
+	return child.StartByte() >= parent.StartByte() && child.EndByte() <= parent.EndByte()
+}
+
+func relationalOperator(node parser.Node) string {
+	for _, child := range node.Children() {
+		switch child.Kind() {
+		case "<", "<=", ">", ">=":
+			return child.Kind()
+		}
+	}
+	return ""
 }
 
 // sizeCalcExprs returns the argument's binary expressions that qualify as a

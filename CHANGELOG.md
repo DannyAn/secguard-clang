@@ -17,6 +17,10 @@
 - **indexer 不索引函数声明返回类型 → 外部函数 fail-open → 候选爆炸**：indexer 只索引 `function_definition` 不索引 `declaration`（prototype）→ `retTypes` 不含外部函数 → `detectExternalCall` 返回类型过滤失效 → 所有外部函数调用 fail-open 产生 NULL_VALUE event → 1800+ 候选进 AI。修复：新增 `function_declarations` 表专门保存函数原型及返回类型，`functions` 表只保留真实函数定义；null-source 与 unchecked-return 采用“定义优先、声明兜底”的返回类型解析。这样既能让返回非指针类型的外部函数（`printf`/`strlen`/`getpid` 等）参与过滤，又不会把 `.h` 原型伪装成无函数体的定义污染 call graph、detector 和 planner。
 - **`assert()` 不被识别为 null-guard → guard 漏检**：`assert(p != NULL)` 语义上是 null guard，但检测器不识别 assert 模式 → 已被 assert 保护的指针仍产生 null-deref 候选。修复：新增 `detectAssertGuards`，识别 `assert(p!=NULL)` / `assert(p)` / `assert(p!=NULL && q!=NULL)` 三种模式，产生 ASSERT_GUARD event，scope 从 assert 行之后到函数末尾。
 
+#### integer-overflow（CWE-190）
+
+- **普通函数实参中的无符号减法下溢漏报**：`query(..., service_cnt - (*query_cnt), ...)` 中两个 `uint32_t` 操作数可能下溢，但原检测器只覆盖 size 计算和边界判断中的算术，且明确跳过减法 → 无任何候选。修复：新增 `unsigned_sub_underflow` 类别，解析参数/局部变量/typedef 的无符号类型，覆盖直接参数、`*ptr` 和 `ptr[i]` 三种形态；排除有符号减法、常量减法、同一变量相减和 `rhs <= lhs` 已保护场景。该类候选进入 AI 复核，不自动确认。
+
 ## [0.7.8] - 2026-09-23
 
 ### 误报修复
