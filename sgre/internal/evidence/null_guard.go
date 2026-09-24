@@ -49,6 +49,7 @@ func (d *NullGuardDetector) Detect(ctx context.Context) (DetectResult, error) {
 			d.detectReassignmentGuards(ctx, f, file, ifs, assigns, &result)
 			d.detectMacroGuards(ctx, f, file, calls, assigns, macroGuards, &result)
 			d.detectHelperGuards(ctx, f, file, ifs, assigns, helpers, &result)
+			d.detectAssertGuards(ctx, f, file, calls, assigns, &result)
 		}
 	})
 	return result, err
@@ -369,6 +370,77 @@ func (d *NullGuardDetector) detectMacroGuards(ctx context.Context, f *db.Functio
 			}
 		}
 	}
+}
+
+// detectAssertGuards handles assert(p != NULL) / assert(p) / assert(p != NULL
+// && q != NULL): the assert aborts when the condition is false, so every
+// variable the condition establishes as non-null is guarded on the fall-through
+// (the code after the assert). assert(p == NULL) / assert(!p) assert NULL, not
+// non-null, so they are NOT guards and yield nothing. assert is treated as a
+// hard guard (the programmer's explicit precondition), matching the common
+// enterprise C idiom where assert encodes a non-null contract.
+func (d *NullGuardDetector) detectAssertGuards(ctx context.Context, f *db.Function, file *db.File, calls, assigns []parser.Node, result *DetectResult) {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
+			continue
+		}
+		if extractCallName(call) != "assert" {
+			continue
+		}
+		if p := call.Parent(); p == nil || p.Kind() != "expression_statement" {
+			continue
+		}
+		args := getCallArgs(call)
+		if len(args) == 0 {
+			continue
+		}
+		for _, varName := range assertGuardedVars(args[0]) {
+			if varName == "" {
+				continue
+			}
+			if emitEvent(ctx, d.store, d.logger, "NULL_GUARD", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine()}, map[string]interface{}{
+				"variable":    varName,
+				"condition":   "ASSERT_GUARD",
+				"scope_start": call.StartLine() + 1,
+				"scope_end":   guardScopeEnd(assigns, f, varName, call.StartLine()),
+			}) {
+				result.EventsCreated++
+			}
+		}
+	}
+}
+
+// assertGuardedVars returns the variables an assert condition establishes as
+// non-null. assert(p != NULL) / assert(p) / assert(p != NULL && q != NULL)
+// → [p] / [p] / [p, q]. assert(p == NULL) / assert(!p) → nil (these assert
+// null, not non-null, so they do not guard a dereference).
+func assertGuardedVars(cond parser.Node) []string {
+	switch cond.Kind() {
+	case "parenthesized_expression", "cast_expression":
+		for _, c := range cond.NamedChildren() {
+			if vars := assertGuardedVars(c); len(vars) > 0 {
+				return vars
+			}
+		}
+		return nil
+	}
+	if cond.Kind() == "binary_expression" && binaryOperator(cond) == "&&" {
+		var vars []string
+		for _, child := range cond.NamedChildren() {
+			vars = append(vars, assertGuardedVars(child)...)
+		}
+		return vars
+	}
+	text := strings.TrimSpace(cond.Text())
+	if strings.Contains(text, "!=") && (strings.Contains(text, "NULL") || strings.Contains(text, "0")) {
+		if v := extractGuardedVariable(cond); v != "" {
+			return []string{v}
+		}
+	}
+	if v := bareVarName(cond); v != "" {
+		return []string{v}
+	}
+	return nil
 }
 
 // bareVarName returns the variable name when arg is a bare identifier (possibly
