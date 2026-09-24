@@ -103,6 +103,18 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 				if callResultChecked(call) {
 					continue
 				}
+				// A (void) cast is the programmer's explicit "intentionally
+				// ignoring this return value" annotation. For an allocator-name
+				// heuristic match (not a declared allocator, not an unchecked-
+				// return API, not a passthrough wrapper), the function may use an
+				// out-parameter or error-code pattern where the return value is
+				// not the allocation result — respect the (void) intent. Declared
+				// allocators (malloc/calloc/realloc) and unchecked-return APIs
+				// (fopen/read/...) still must be checked even when cast to void:
+				// (void)malloc(n) is a genuine CWE-252 defect.
+				if isVoidCast(call) && !uncheckedReturnAPIs[callee] && !passthrough[callee] && !apikb.IsDeclaredAllocator(callee) {
+					continue
+				}
 				// A wrapper that hands the value straight back to its caller
 				// (`void *x_malloc(size_t n) { return malloc(n); }`) is a passthrough:
 				// the caller -- which sees x_malloc's return -- is responsible for the
@@ -270,6 +282,22 @@ func callResultChecked(call parser.Node) bool {
 		case "return_statement", "expression_statement", "compound_statement",
 			"declaration", "argument_list", "assignment_expression", "init_declarator":
 			return false
+		}
+	}
+	return false
+}
+
+// isVoidCast reports whether the call is wrapped in a (void) cast — the
+// programmer's explicit "intentionally ignoring this return value" annotation.
+// `(void)foo()` → true; `(int)foo()` / `foo()` → false.
+func isVoidCast(call parser.Node) bool {
+	p := call.Parent()
+	if p.Kind() != "cast_expression" {
+		return false
+	}
+	for _, child := range p.NamedChildren() {
+		if child.Kind() == "type_descriptor" {
+			return typeSpelling(child) == "void"
 		}
 	}
 	return false
