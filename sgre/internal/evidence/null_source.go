@@ -303,8 +303,17 @@ func (d *NullSourceDetector) getKnownFunctionNames(ctx context.Context) (map[str
 	known := make(map[string]bool, len(funcs))
 	retTypes := make(map[string]string, len(funcs))
 	for _, f := range funcs {
-		known[f.Name] = true
 		retTypes[f.Name] = f.ReturnType
+		// knownFuncs tracks only DEFINED functions (EndLine > 0), not
+		// declaration-only prototypes (EndLine == 0). This preserves
+		// fail-open for pointer-returning externs (fopen/strchr/...):
+		// a prototype in a header gives us the return type (so retTypes
+		// filters non-pointer externs), but without a body we cannot prove
+		// it never returns NULL, so it must not enter the knownFuncs &&
+		// !nullableFuncs gate that would skip the NULL_VALUE event.
+		if f.EndLine > 0 {
+			known[f.Name] = true
+		}
 	}
 	return known, retTypes, nil
 }

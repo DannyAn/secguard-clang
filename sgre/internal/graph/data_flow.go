@@ -27,6 +27,9 @@ func (b *DataFlowBuilder) Build(ctx context.Context) (*BuildResult, error) {
 		returns := root.FindAll("return_statement")
 
 		for _, f := range funcs {
+			if f.EndLine == 0 {
+				continue
+			}
 			b.detectPointerAssignments(ctx, f, nodesInRange(assigns, f.StartLine, f.EndLine), result)
 			b.detectPointerReturns(ctx, f, nodesInRange(returns, f.StartLine, f.EndLine), result)
 		}

@@ -80,6 +80,9 @@ func forEachFile(ctx context.Context, store db.Store, p *parser.Parser, logger *
 // function re-scanned the whole per-file node list, with a binary search per
 // function.
 func nodesInRange(nodes []parser.Node, start, end int) []parser.Node {
+	if end < start {
+		return nil
+	}
 	lo := sort.Search(len(nodes), func(i int) bool { return nodes[i].StartLine() >= start })
 	hi := sort.Search(len(nodes), func(i int) bool { return nodes[i].StartLine() > end })
 	return nodes[lo:hi]

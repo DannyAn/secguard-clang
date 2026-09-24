@@ -288,10 +288,14 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 	// definedNames distinguishes an in-scan callee (resolve via the fixpoint)
 	// from an external one (fail-open). Without it, `return external_func();`
 	// would be assumed non-null — the same closed-world bug that hid the
-	// global-field getter.
+	// global-field getter. Only DEFINED functions (EndLine > 0) count as
+	// in-scan; a declaration-only prototype (EndLine == 0) has no body to
+	// analyse, so its nullability is unknown and it must fail-open.
 	definedNames := make(map[string]bool, len(funcsByName))
-	for name := range funcsByName {
-		definedNames[name] = true
+	for _, fn := range funcs {
+		if fn.EndLine > 0 {
+			definedNames[fn.Name] = true
+		}
 	}
 
 	// Batch-load summaries and files once, avoiding per-function point queries.

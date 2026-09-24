@@ -137,6 +137,7 @@ func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *Inde
 
 	root := tree.RootNode()
 	funcNodes := root.FindAll("function_definition")
+	declNodes := root.FindAll("declaration")
 
 	// Rebuild the file's rows atomically. The checksum update (or insert) plus
 	// the stale-function delete plus the function inserts must commit together:
@@ -170,6 +171,7 @@ func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *Inde
 			}
 			fileID = id
 		}
+		definedNames := make(map[string]bool)
 		for _, fnNode := range funcNodes {
 			funcRecord := extractFunction(fnNode, fileID)
 			if funcRecord.Name == "" {
@@ -177,6 +179,27 @@ func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *Inde
 			}
 			if _, err := tx.InsertFunction(ctx, funcRecord); err != nil {
 				return fmt.Errorf("insert function %s: %w", funcRecord.Name, err)
+			}
+			definedNames[funcRecord.Name] = true
+			inserted++
+		}
+		// Index function declarations (prototypes) so the null-source detector
+		// can filter external calls by return type. A declaration-only function
+		// has no body, so EndLine is set to 0 to mark it as a prototype (vs a
+		// definition where EndLine > 0). This lets detectExternalCall's
+		// retTypes check reject calls to functions returning non-pointer types
+		// (int/size_t/...), while knownFuncs (built from EndLine > 0) still
+		// excludes them so the knownFuncs && !nullableFuncs gate does not skip
+		// them (preserving fail-open for pointer-returning externs like
+		// fopen/strchr).
+		for _, declNode := range declNodes {
+			funcRecord := extractFunction(declNode, fileID)
+			if funcRecord.Name == "" || definedNames[funcRecord.Name] {
+				continue
+			}
+			funcRecord.EndLine = 0
+			if _, err := tx.InsertFunction(ctx, funcRecord); err != nil {
+				return fmt.Errorf("insert function decl %s: %w", funcRecord.Name, err)
 			}
 			inserted++
 		}
