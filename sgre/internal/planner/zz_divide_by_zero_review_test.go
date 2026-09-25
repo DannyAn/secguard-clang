@@ -122,3 +122,35 @@ void f(int a, int b) {
 		t.Errorf("f (a /= b) should be flagged as divide-by-zero")
 	}
 }
+
+// DBZ-16: a function-like macro (`#define WORKERS() 8`) and an implicit
+// enumerator (`enum { A, B }` → B=1) are compile-time non-zero constants and
+// must not be flagged.
+func TestDivideByZeroReview_ConstantSymbols(t *testing.T) {
+	src := `#include <stdlib.h>
+#define WORKERS() 8
+enum { A, B };
+int f(int x) {
+    return x / WORKERS() + x / B;
+}
+`
+	result := planDivideByZero(t, src)
+	if c := candidateForFunc(t, result, "f"); c != nil {
+		t.Errorf("f (x / WORKERS(), x / B are non-zero constants) should NOT be flagged, got var=%s", c.Target.Variable)
+	}
+}
+
+// DBZ-15: a constant-folded divisor (`d = 2 * 3`) is provably non-zero and must
+// be suppressed.
+func TestDivideByZeroReview_ConstFoldedDivisor(t *testing.T) {
+	src := `#include <stdlib.h>
+int f(int x) {
+    int d = 2 * 3;
+    return x / d;
+}
+`
+	result := planDivideByZero(t, src)
+	if c := candidateForFunc(t, result, "f"); c != nil {
+		t.Errorf("f (d = 2*3 is provably non-zero) should NOT be flagged, got var=%s", c.Target.Variable)
+	}
+}

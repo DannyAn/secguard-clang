@@ -45,14 +45,14 @@ int volatile_runtime(void);
 	}
 	env := CollectConstantSymbols(tree.RootNode())
 
-	nonZero := []string{"BKT_NUM", "WORKERS", "HASH_SIZE", "MIN_COUNT", "CACHE_WAYS"}
+	nonZero := []string{"BKT_NUM", "WORKERS", "HASH_SIZE", "MIN_COUNT", "CACHE_WAYS", "IMPLICIT_FIRST"}
 	for _, name := range nonZero {
 		if !env.NonZero(name) {
 			t.Errorf("expected %q to be a non-zero constant", name)
 		}
 	}
 
-	kept := []string{"FLAG", "ZERO_VAL", "FUNC", "IMPLICIT_FIRST"}
+	kept := []string{"FLAG", "ZERO_VAL", "FUNC", "FUNC()"}
 	for _, name := range kept {
 		if env.NonZero(name) {
 			t.Errorf("did not expect %q to be classified non-zero", name)

@@ -33,31 +33,28 @@ func (e *ConstantEnv) IsZero(name string) bool {
 }
 
 // CollectConstantSymbols scans a translation unit for compile-time integer
-// constants with a non-zero value: object-like macros (`#define X 20`),
-// enumerators with an explicit literal (`enum { MAX = 4096 }`), and top-level
-// `const` integer variables (`const int N = 8`). Function-like macros, macro
-// bodies that are not a simple constant, implicit enumerators, and pointer
-// declarations are deliberately skipped because their value cannot be determined
-// here.
+// constants with a determinable value: object-like AND constant-bodied
+// function-like macros (`#define X 20`, `#define WORKERS() 8`), enumerators
+// (explicit or implicit), and `const` integer variables at any scope. Only
+// symbols with a determinable value are recorded; anything undeterminable is
+// left absent so a real divide-by-zero must never be suppressed by an
+// over-eager table.
 func CollectConstantSymbols(root Node) *ConstantEnv {
 	env := NewConstantEnv()
 
 	for _, def := range root.FindAll("preproc_def") {
 		name, value := "", ""
-		functionLike := false
 		for _, child := range def.NamedChildren() {
 			switch child.Kind() {
 			case "identifier":
 				if name == "" {
 					name = child.Text()
 				}
-			case "preproc_params":
-				functionLike = true
 			case "preproc_arg":
 				value = child.Text()
 			}
 		}
-		if name == "" || functionLike || value == "" {
+		if name == "" || value == "" {
 			continue
 		}
 		if NonZeroConstantValue(value) {
@@ -66,9 +63,36 @@ func CollectConstantSymbols(root Node) *ConstantEnv {
 			env.zero[name] = true
 		}
 	}
-
-	for _, en := range root.FindAll("enumerator") {
+	// A function-like macro with a simple constant body (`#define WORKERS() 8`)
+	// is still a compile-time constant; record the call spelling so a divisor
+	// `WORKERS()` resolves. A non-constant body is skipped.
+	for _, def := range root.FindAll("preproc_function_def") {
 		name, value := "", ""
+		for _, child := range def.NamedChildren() {
+			switch child.Kind() {
+			case "identifier":
+				if name == "" {
+					name = child.Text()
+				}
+			case "preproc_arg":
+				value = child.Text()
+			}
+		}
+		if name == "" || value == "" || (!NonZeroConstantValue(value) && !IsZeroConstantValue(value)) {
+			continue
+		}
+		if NonZeroConstantValue(value) {
+			env.nonZero[name+"()"] = true
+		} else {
+			env.zero[name+"()"] = true
+		}
+	}
+
+	// Enumerators carry an implicit running value when no `=` is present:
+	// `enum { A, B, C = 5, D }` → A=0, B=1, C=5, D=6.
+	running := int64(0)
+	for _, en := range root.FindAll("enumerator") {
+		name := ""
 		for _, child := range en.NamedChildren() {
 			if child.Kind() == "identifier" && name == "" {
 				name = child.Text()
@@ -77,34 +101,48 @@ func CollectConstantSymbols(root Node) *ConstantEnv {
 		if name == "" {
 			continue
 		}
+		var v int64
 		if idx := strings.Index(en.Text(), "="); idx >= 0 {
-			value = strings.TrimSpace(en.Text()[idx+1:])
+			pv, ok := parseConstantInt(strings.TrimSpace(en.Text()[idx+1:]))
+			if !ok {
+				continue // undeterminable explicit value: stop tracking the run
+			}
+			v = pv
+		} else {
+			v = running
 		}
-		if value == "" {
-			continue
-		}
-		if NonZeroConstantValue(value) {
-			env.nonZero[name] = true
-		} else if IsZeroConstantValue(value) {
+		if v == 0 {
 			env.zero[name] = true
+		} else {
+			env.nonZero[name] = true
 		}
+		running = v + 1
 	}
 
-	for _, decl := range root.NamedChildren() {
-		if decl.Kind() != "declaration" || !declIsConst(decl) {
+	for _, decl := range root.FindAll("declaration") {
+		if !strings.Contains(decl.Text(), "const") {
 			continue
 		}
 		for _, child := range decl.NamedChildren() {
 			if child.Kind() != "init_declarator" {
 				continue
 			}
+			// Skip a pointer declarator (`const int *p` / `const int x = 8, *p`):
+			// the const qualifies the pointed-to object, not the pointer value.
+			if strings.Contains(child.Text(), "*") {
+				continue
+			}
 			name, value := "", ""
 			for _, c := range child.NamedChildren() {
 				switch c.Kind() {
 				case "identifier":
-					name = c.Text()
-				case "number_literal":
-					value = c.Text()
+					if name == "" {
+						name = c.Text()
+					}
+				case "number_literal", "parenthesized_expression":
+					if value == "" {
+						value = c.Text()
+					}
 				}
 			}
 			if name == "" || value == "" {
@@ -119,14 +157,6 @@ func CollectConstantSymbols(root Node) *ConstantEnv {
 	}
 
 	return env
-}
-
-// declIsConst reports whether a top-level declaration declares a const
-// non-pointer object (`const int N = 8`). A `const int *p` declaration qualifies
-// the pointed-to object, not the pointer itself, so it is excluded.
-func declIsConst(decl Node) bool {
-	text := decl.Text()
-	return strings.Contains(text, "const") && !strings.Contains(text, "*")
 }
 
 // NonZeroConstantValue reports whether a constant-expression text is provably a

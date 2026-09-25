@@ -2,6 +2,7 @@ package planner
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/graph"
@@ -188,22 +189,60 @@ func buildRangeEffects(cfg *graph.StmtCFG, callResult func(string) (interval, bo
 	return effects
 }
 
-// constFromExpr returns the constant interval when expr is a numeric literal
-// (possibly wrapped in a cast/parentheses).
+// constFromExpr returns the constant interval when expr is a numeric literal or a
+// pure-constant arithmetic expression (`2 * 3`), possibly wrapped in a
+// cast/parentheses.
 func constFromExpr(n parser.Node) (interval, bool) {
-	switch n.Kind() {
-	case "number_literal":
-		if v, err := strconv.ParseInt(n.Text(), 0, 64); err == nil {
-			return constInterval(v), true
-		}
-	case "parenthesized_expression", "cast_expression":
-		for _, c := range n.NamedChildren() {
-			if r, ok := constFromExpr(c); ok {
-				return r, true
-			}
-		}
+	if v, ok := foldConstExpr(n); ok {
+		return constInterval(v), true
 	}
 	return interval{}, false
+}
+
+// foldConstExpr folds a pure-literal arithmetic expression (`2 * 3`, `1 + 2 * 3`,
+// `(4) / 2`) to an int64. A variable/call operand is not foldable.
+func foldConstExpr(n parser.Node) (int64, bool) {
+	for n.Kind() == "parenthesized_expression" || n.Kind() == "cast_expression" {
+		ch := n.NamedChildren()
+		if len(ch) == 0 {
+			return 0, false
+		}
+		n = ch[0]
+	}
+	if n.Kind() == "number_literal" {
+		v, err := strconv.ParseInt(strings.TrimSpace(n.Text()), 0, 64)
+		return v, err == nil
+	}
+	if n.Kind() != "binary_expression" {
+		return 0, false
+	}
+	op := binaryOperatorToken(n)
+	if op != "*" && op != "+" && op != "-" && op != "/" {
+		return 0, false
+	}
+	children := n.NamedChildren()
+	if len(children) != 2 {
+		return 0, false
+	}
+	l, lok := foldConstExpr(children[0])
+	r, rok := foldConstExpr(children[1])
+	if !lok || !rok {
+		return 0, false
+	}
+	switch op {
+	case "*":
+		return l * r, true
+	case "+":
+		return l + r, true
+	case "-":
+		return l - r, true
+	case "/":
+		if r == 0 {
+			return 0, false
+		}
+		return l / r, true
+	}
+	return 0, false
 }
 
 // shiftFromExpr returns (base, delta) when expr is `m + c`, `c + m`, or `m - c`
