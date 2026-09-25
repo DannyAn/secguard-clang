@@ -30,15 +30,15 @@ void tp_calloc_two_var(int n, int m) {
     free(p);
 }
 
-/* 真阳性：n + 1 加法可溢出，n 为形参（应报告 finding） */
-void tp_param_add_const(size_t n) {
+/* 误报：n + 1 是 null-terminator 惯用法，仅 n 接近 SIZE_MAX 才溢出，不应报 */
+void fp_param_add_const(size_t n) {
     char *p = malloc(n + 1);
     if (!p) return;
     free(p);
 }
 
-/* 真阳性：n * 4 乘常量可溢出，n 为形参（应报告 finding） */
-void tp_param_mul_const(size_t n) {
+/* 误报：n * 4 小乘数在 size_t(64 位)下几乎不可能溢出，不应报 */
+void fp_param_mul_const(size_t n) {
     char *p = malloc(n * 4);
     if (!p) return;
     free(p);

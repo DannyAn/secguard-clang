@@ -136,8 +136,9 @@ func (f *IntOverflowGuardFilter) buildRangeFlows(byFunc map[int64][]Candidate, f
 }
 
 // operandBounds returns, per variable operand, the smallest constant bound found
-// in a preceding guard (`if (op < CONST)` / `if (op <= CONST)`). A missing guard
-// means unbounded (not in the map).
+// in a DOMINATING guard (`if (op < CONST)` / `if (op <= CONST)`) whose bounded
+// value is not reassigned before the allocation. A missing/non-dominating/
+// invalidated guard means unbounded (not in the map).
 func (f *IntOverflowGuardFilter) operandBounds(c Candidate, bodies map[int64]parser.Node) map[string]int64 {
 	bounds := make(map[string]int64)
 	body, ok := bodies[c.FunctionID]
@@ -145,65 +146,175 @@ func (f *IntOverflowGuardFilter) operandBounds(c Candidate, bodies map[int64]par
 		return bounds
 	}
 
+	type guardSite struct {
+		cond      parser.Node
+		line      int
+		bodyStart int
+		bodyEnd   int
+	}
+	var sites []guardSite
 	for _, ifNode := range body.FindAll("if_statement") {
 		if ifNode.StartLine() >= c.Line {
 			continue // only guards before the allocation
 		}
 		cond := ifNode.ChildByFieldName("condition")
-		if cond == nil {
+		cons := ifNode.ChildByFieldName("consequence")
+		if cond == nil || cons == nil {
 			continue
 		}
-		op, limit, ok := boundComparison(*cond)
-		if !ok {
+		sites = append(sites, guardSite{*cond, ifNode.StartLine(), cons.StartLine(), cons.EndLine()})
+	}
+	// A while/for condition guards its loop body the same way an if-consequence
+	// guards its body.
+	for _, loopNode := range append(body.FindAll("while_statement"), body.FindAll("for_statement")...) {
+		if loopNode.StartLine() >= c.Line {
 			continue
 		}
-		if prev, seen := bounds[op]; !seen || limit < prev {
-			bounds[op] = limit
+		cond := loopNode.ChildByFieldName("condition")
+		loopBody := loopNode.ChildByFieldName("body")
+		if cond == nil || loopBody == nil {
+			continue
+		}
+		sites = append(sites, guardSite{*cond, loopNode.StartLine(), loopBody.StartLine(), loopBody.EndLine()})
+	}
+
+	for _, site := range sites {
+		// The guard must DOMINATE the allocation: the candidate line must lie
+		// inside the guard's body (true branch). A guard in a sibling branch, or
+		// one whose body has already been exited, is not a bound.
+		if c.Line < site.bodyStart || c.Line > site.bodyEnd {
+			continue
+		}
+		for _, gb := range guardBounds(site.cond) {
+			// A whole-variable reassignment of the operand between the guard and
+			// the allocation invalidates the bound.
+			if reassignedBetween(body, gb.operand, site.line, c.Line) {
+				continue
+			}
+			if prev, seen := bounds[gb.operand]; !seen || gb.bound < prev {
+				bounds[gb.operand] = gb.bound
+			}
 		}
 	}
 	return bounds
 }
 
-// boundComparison returns (operand, bound, ok) when cond is `op < N` or
-// `op <= N` for a numeric literal N. The operator tokens (<, <=) are ANONYMOUS
-// tree-sitter nodes, so they only appear in Children(), not NamedChildren().
-func boundComparison(cond parser.Node) (string, int64, bool) {
-	// Unwrap a parenthesized condition: tree-sitter wraps `if (n < 100)`'s
-	// condition in a parenthesized_expression.
+// reassignedBetween reports whether op is whole-variable reassigned at any line
+// strictly between from and to.
+func reassignedBetween(body parser.Node, op string, from, to int) bool {
+	for _, assign := range body.FindAll("assignment_expression") {
+		line := assign.StartLine()
+		if line <= from || line >= to {
+			continue
+		}
+		children := assign.NamedChildren()
+		if len(children) >= 1 && children[0].Kind() == "identifier" && children[0].Text() == op {
+			return true
+		}
+	}
+	return false
+}
+
+// guardBound is one operand upper bound a guard condition establishes.
+type guardBound struct {
+	operand string
+	bound   int64
+}
+
+// guardBounds returns the operand upper bounds a guard condition establishes:
+// `op < N` / `op <= N` / `N > op` / `N >= op`, and a conjunction
+// (`a < N && b < M`) yields both. A field/subscript operand is kept whole so
+// `if (s->len < 100)` bounds "s->len" (not "s" and "len" separately).
+func guardBounds(cond parser.Node) []guardBound {
 	for cond.Kind() == "parenthesized_expression" {
 		children := cond.NamedChildren()
 		if len(children) == 0 {
-			return "", 0, false
+			return nil
 		}
 		cond = children[0]
 	}
 	if cond.Kind() != "binary_expression" {
-		return "", 0, false
+		return nil
 	}
-	op := ""
-	var lhs, rhs string
-	for _, child := range cond.Children() {
+	if op := binaryOperatorToken(cond); op == "&&" {
+		var out []guardBound
+		for _, child := range cond.NamedChildren() {
+			out = append(out, guardBounds(child)...)
+		}
+		return out
+	}
+	op := binaryOperatorToken(cond)
+	if op != "<" && op != "<=" && op != ">" && op != ">=" {
+		return nil
+	}
+	children := cond.NamedChildren()
+	if len(children) != 2 {
+		return nil
+	}
+	// Determine which side is the variable operand and which the constant,
+	// normalising a reversed comparison (`N > op` → `op < N`).
+	varOperand, constOperand := children[0], children[1]
+	if isConstOperand(children[0]) && !isConstOperand(children[1]) {
+		varOperand, constOperand = children[1], children[0]
+		if op == ">" {
+			op = "<"
+		} else if op == ">=" {
+			op = "<="
+		}
+	} else if isConstOperand(children[0]) || !isConstOperand(children[1]) {
+		return nil
+	}
+	name := operandPathName(varOperand)
+	if name == "" {
+		return nil
+	}
+	limit, err := parseIntLiteral(constOperand.Text())
+	if err != nil {
+		return nil
+	}
+	// `op < N` establishes op <= N-1; `op <= N` establishes op <= N. The upper
+	// bound used for the < guardMaxBound check.
+	if op == "<" {
+		limit--
+	}
+	return []guardBound{{operand: name, bound: limit}}
+}
+
+// binaryOperatorToken returns the operator token of a binary_expression.
+func binaryOperatorToken(node parser.Node) string {
+	for _, child := range node.Children() {
 		switch child.Kind() {
-		case "<", "<=":
-			op = child.Kind()
-		case "identifier":
-			if lhs == "" {
-				lhs = child.Text()
-			} else {
-				rhs = child.Text()
-			}
-		case "number_literal":
-			rhs = child.Text()
+		case "<", "<=", ">", ">=", "&&", "||", "==", "!=", "+", "-", "*", "/", "%":
+			return child.Kind()
 		}
 	}
-	if op == "" || lhs == "" || rhs == "" {
-		return "", 0, false
+	return ""
+}
+
+// isConstOperand reports whether node is a numeric literal (possibly wrapped in
+// parentheses or a cast).
+func isConstOperand(node parser.Node) bool {
+	switch node.Kind() {
+	case "number_literal":
+		return true
+	case "parenthesized_expression", "cast_expression":
+		for _, c := range node.NamedChildren() {
+			if isConstOperand(c) {
+				return true
+			}
+		}
 	}
-	limit, err := parseIntLiteral(rhs)
-	if err != nil {
-		return "", 0, false
+	return false
+}
+
+// operandPathName returns the tracked variable name of a guard operand: a bare
+// identifier, or a field/subscript path kept whole.
+func operandPathName(node parser.Node) string {
+	switch node.Kind() {
+	case "identifier", "field_expression", "subscript_expression":
+		return node.Text()
 	}
-	return lhs, limit, true
+	return ""
 }
 
 func parseIntLiteral(s string) (int64, error) {
@@ -217,17 +328,45 @@ func parseIntLiteral(s string) (int64, error) {
 	return v, err
 }
 
-// identifiersInExpr returns the bare-identifier operands of an arithmetic
-// expression text (e.g. "n * size" -> ["n","size"]).
+// identifiersInExpr returns the variable operands of an arithmetic expression
+// text: a bare identifier or a field/subscript path ("s->len", "a[i]") is one
+// operand. Numeric literals, `sizeof`, and C type keywords are dropped, and `->`/
+// `.`/`[`/`]` are kept as part of the operand so a field guard (`s->len < 100`)
+// matches the operand the detector recorded.
 func identifiersInExpr(text string) []string {
-	fields := strings.FieldsFunc(text, func(r rune) bool {
-		return !(r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'))
-	})
 	var ids []string
-	for _, f := range fields {
-		if bareIdentVar(f) != "" {
-			ids = append(ids, f)
+	var cur strings.Builder
+	flush := func() {
+		s := strings.TrimSpace(cur.String())
+		cur.Reset()
+		if s == "" || s == "sizeof" || parser.IsCTypeKeyword(s) {
+			return
+		}
+		if _, err := parseIntLiteral(s); err == nil {
+			return // a pure numeric literal is not a variable operand
+		}
+		ids = append(ids, s)
+	}
+	runes := []rune(text)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		switch r {
+		case ' ', '\t', '\n', '(', ')', '*', '+', '/', '%', ',', ';', '=':
+			flush()
+		case '-':
+			// `->` is pointer member access (kept whole); a bare `-` is the
+			// subtraction operator (a separator).
+			if i+1 < len(runes) && runes[i+1] == '>' {
+				cur.WriteRune('-')
+				cur.WriteRune('>')
+				i++
+			} else {
+				flush()
+			}
+		default:
+			cur.WriteRune(r)
 		}
 	}
+	flush()
 	return ids
 }

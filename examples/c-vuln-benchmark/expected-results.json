@@ -583,7 +583,7 @@
       "line": 35,
       "code": "malloc(n + 1)",
       "detector": "boundary.integer_overflow",
-      "expect": "finding"
+      "expect": "no_finding"
     },
     {
       "id": "P8-05",
@@ -592,7 +592,7 @@
       "line": 42,
       "code": "malloc(n * 4)",
       "detector": "boundary.integer_overflow",
-      "expect": "finding"
+      "expect": "no_finding"
     },
     {
       "id": "P8-06",

@@ -24,7 +24,9 @@ func (d *IntegerOverflowDetector) Name() string { return "integer_overflow" }
 func (d *IntegerOverflowDetector) Domain() string { return "boundary" }
 
 func (d *IntegerOverflowDetector) Capabilities() []string {
-	return []string{"unsigned-wraparound", "size-calculation-overflow", "truncation"}
+	// "truncation" (CWE-197: a wide product narrowed into a small type) is not
+	// detected — the declared list must not overstate what the detector emits.
+	return []string{"unsigned-wraparound", "size-calculation-overflow"}
 }
 
 var sizeFunctions = map[string]bool{
@@ -56,6 +58,13 @@ func isSizeFunction(name string) bool {
 		return true
 	}
 	return strings.Contains(strings.ToLower(name), "alloc")
+}
+
+// isCallocLike reports whether a call name is calloc or a calloc-family wrapper
+// (VOS_CALLOC_F, kcalloc, ngx_calloc, ...), whose first two (or last two, for a
+// flags-prefixed wrapper) size arguments carry an implicit multiplication.
+func isCallocLike(name string) bool {
+	return strings.Contains(strings.ToLower(name), "calloc")
 }
 
 func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, error) {
@@ -317,8 +326,11 @@ func (d *IntegerOverflowDetector) feedsIntoSizeCall(calls []parser.Node, expr pa
 			continue
 		}
 		callText := call.Text()
+		// A whole-identifier token match, not a substring match: a single-char
+		// operand (n/m/i/k) must not hit inside an unrelated identifier
+		// (`malloc(len)` contains "n" but does not use n).
 		for _, op := range operands {
-			if strings.Contains(callText, op) {
+			if containsIdentToken(callText, op) {
 				return true
 			}
 		}
@@ -327,6 +339,30 @@ func (d *IntegerOverflowDetector) feedsIntoSizeCall(calls []parser.Node, expr pa
 		}
 	}
 	return false
+}
+
+// containsIdentToken reports whether text contains ident as a whole C identifier
+// token (bounded by non-identifier characters), so `n` does not match inside
+// `len`.
+func containsIdentToken(text, ident string) bool {
+	if ident == "" {
+		return false
+	}
+	for i := 0; i+len(ident) <= len(text); i++ {
+		if text[i:i+len(ident)] != ident {
+			continue
+		}
+		before := i == 0 || !isIdentByte(text[i-1])
+		after := i+len(ident) == len(text) || !isIdentByte(text[i+len(ident)])
+		if before && after {
+			return true
+		}
+	}
+	return false
+}
+
+func isIdentByte(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
 func extractOperands(expr parser.Node) []string {
@@ -372,20 +408,29 @@ func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, ca
 		}
 		args := callNamedArguments(call)
 
-		// calloc(n, m): the multiplication is implicit across two arguments, so
-		// the per-argument sizeCalcExprs scan (which sees only a bare n or m)
-		// misses it. Two variable arguments is the classic CWE-190 overflow.
-		if callName == "calloc" && len(args) >= 2 {
-			if isVariableOperand(args[0]) && isVariableOperand(args[1]) {
-				d.emitIntegerOverflow(ctx, file, f, call, "size_calc_overflow", result)
+		// calloc(n, m) and its wrappers (VOS_CALLOC_F, kcalloc, ...): the
+		// multiplication is implicit across two arguments, so the per-argument
+		// sizeCalcExprs scan (which sees only a bare n or m) misses it. Two
+		// variable arguments is the classic CWE-190 overflow.
+		if isCallocLike(callName) && len(args) >= 2 {
+			// A 3-argument wrapper usually prefixes a flags/gfp argument, so
+			// the product is the LAST two arguments; a 2-argument call is the
+			// standard calloc(n, size).
+			a0, a1 := args[0], args[1]
+			if len(args) >= 3 {
+				a0, a1 = args[len(args)-2], args[len(args)-1]
+			}
+			product := a0.Text() + " * " + a1.Text()
+			if isVariableOperand(a0) && isVariableOperand(a1) {
+				d.emitIntegerOverflowText(ctx, file, f, call, product, "size_calc_overflow", result)
 				continue
 			}
 			// calloc(n, sizeof(T)) and calloc(n, CONST) are the SAME implicit
 			// product the malloc(n * sizeof(T)) / malloc(n * 2) cases cover, but
 			// split across two arguments — the most common allocation idiom in
 			// real code and previously a systematic blind spot (CWE-190).
-			if c := d.callocOverflowCategory(args[0], args[1], params); c != "" {
-				d.emitIntegerOverflow(ctx, file, f, call, c, result)
+			if c := d.callocOverflowCategory(a0, a1, params); c != "" {
+				d.emitIntegerOverflowText(ctx, file, f, call, product, c, result)
 				continue
 			}
 		}
@@ -447,8 +492,17 @@ func (d *IntegerOverflowDetector) callocOverflowCategory(a0, a1 parser.Node, par
 }
 
 func (d *IntegerOverflowDetector) emitIntegerOverflow(ctx context.Context, file *db.File, f *db.Function, expr parser.Node, category string, result *DetectResult) {
-	if emitEvent(ctx, d.store, d.logger, "INTEGER_OVERFLOW", f.ID, &db.Location{FileID: file.ID, Line: expr.StartLine(), Column: expr.StartColumn()}, map[string]string{
-		"expression": expr.Text(),
+	d.emitIntegerOverflowText(ctx, file, f, expr, expr.Text(), category, result)
+}
+
+// emitIntegerOverflowText emits an overflow event with an explicit expression
+// text. It is used for calloc, whose multiplication is implicit across two
+// arguments: recording the call node's text (`calloc(n, m)`) would make the
+// planner's operand extraction see the function name as an operand, so the guard
+// bound lookup never matches and the candidate can never be suppressed.
+func (d *IntegerOverflowDetector) emitIntegerOverflowText(ctx context.Context, file *db.File, f *db.Function, node parser.Node, exprText, category string, result *DetectResult) {
+	if emitEvent(ctx, d.store, d.logger, "INTEGER_OVERFLOW", f.ID, &db.Location{FileID: file.ID, Line: node.StartLine(), Column: node.StartColumn()}, map[string]string{
+		"expression": exprText,
 		"category":   category,
 	}) {
 		result.EventsCreated++
@@ -684,6 +738,12 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, params map[stri
 			if sizeofIsOne(n) {
 				sizeofOne = true
 			}
+		default:
+			// A call_expression (`malloc(get_len() * sizeof(T))`), subscript,
+			// pointer_expression, or any other opaque operand is a possibly-large
+			// value: count it as a variable operand so the cross-function size
+			// return is not silently ignored.
+			varCount++
 		}
 	}
 	collect(arg)
