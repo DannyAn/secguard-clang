@@ -32,21 +32,11 @@ func NewRangeFilter(store db.Store, p *parser.Parser, logger *log.Logger) *Range
 func (f *RangeFilter) Name() string { return "range" }
 
 func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, []Dismissed, error) {
-	// A config-field divisor (a struct/object field or module global) is a
-	// "missing defensive check" the pipeline can confirm deterministically: the
-	// value's zero-invariant belongs to object/global initialization, not the
-	// arithmetic use site, so no local guard can (or should) re-prove it. The
-	// detector has already suppressed the locally-provable-safe shapes (literal,
-	// sizeof, const, guard, early-return), so what remains is a genuine defect
-	// worth surfacing to the engineer — it should be auto-confirmed, not handed
-	// to the AI agent (which cannot judge a cross-file init invariant anyway).
-	// The check is purely syntactic, so it runs even without a parser.
-	for i := range candidates {
-		if isConfigFieldDivisor(candidates[i].VariableName) {
-			candidates[i].SuspicionLevel = "confirmed"
-		}
-	}
-
+	// A config-field/global divisor is NOT auto-confirmed here: its zero-invariant
+	// is only "not proven locally", not "proven possibly-zero", and a field like
+	// graph->gran_time is usually non-zero by construction. Auto-confirming would
+	// emit a confirmed false positive the AI can never correct, so it stays
+	// suspected and the AI judges it (the same rule as hardcoded-secret).
 	if f.parser == nil {
 		return candidates, nil, nil
 	}

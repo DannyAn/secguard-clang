@@ -414,16 +414,18 @@ int definite_zero(void) {
 		level[c.Target.Function] = c.SuspicionLevel
 	}
 
-	for _, fn := range []string{"index_of", "ring_advance", "thread_next", "definite_zero"} {
+	for _, fn := range []string{"definite_zero"} {
 		if !kept[fn] {
 			t.Errorf("%s should be kept (confirmed, not dropped), got %v", fn, candidateNames(result))
 			continue
 		}
 		if level[fn] != "confirmed" {
-			t.Errorf("%s suspicion = %q, want confirmed (auto-confirm, no AI review)", fn, level[fn])
+			t.Errorf("%s suspicion = %q, want confirmed (provably zero)", fn, level[fn])
 		}
 	}
-	for _, fn := range []string{"bare_param", "compound_field"} {
+	// A field/global divisor is NOT auto-confirmed: its zero-invariant is only
+	// "not proven locally", not "proven possibly-zero", so it stays suspected.
+	for _, fn := range []string{"index_of", "ring_advance", "thread_next", "bare_param", "compound_field"} {
 		if !kept[fn] {
 			t.Errorf("%s should be kept (suspected, not dropped), got %v", fn, candidateNames(result))
 			continue
