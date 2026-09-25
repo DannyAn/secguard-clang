@@ -79,6 +79,7 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 		binaryExprs := root.FindAll("binary_expression")
 		calls := root.FindAll("call_expression")
 		assigns := root.FindAll("assignment_expression")
+		inits := root.FindAll("init_declarator")
 		// Parameter names per function, used to recognize "caller-influenced"
 		// operands: arithmetic on a function parameter (vs. a bounded local) is
 		// the signal that a variable-bounded size expression may overflow.
@@ -91,7 +92,7 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 			for _, p := range paramsByLine[f.StartLine] {
 				params[p] = true
 			}
-			assigned := d.collectAssignments(root, f)
+			assigned := d.collectAssignments(inits, assigns, f)
 			influenced := computeInfluenced(params, assigned)
 			// 64-bit (wide) integer variables: a product involving one cannot
 			// overflow a 64-bit result on LP64, so they gate the size-calc flag.
@@ -214,9 +215,9 @@ func functionContainingLine(funcs []*db.Function, line int) *db.Function {
 // most common way a size product is split into a named local before allocation.
 // Only an unambiguous single assignment is recorded; a second assignment leaves
 // the name absent so the value is not guessed.
-func (d *IntegerOverflowDetector) collectAssignments(root parser.Node, f *db.Function) map[string]parser.Node {
+func (d *IntegerOverflowDetector) collectAssignments(inits, assigns []parser.Node, f *db.Function) map[string]parser.Node {
 	assigned := make(map[string]parser.Node)
-	for _, init := range root.FindAll("init_declarator") {
+	for _, init := range inits {
 		if !funcLineRange(f, init.StartLine()) {
 			continue
 		}
@@ -225,7 +226,7 @@ func (d *IntegerOverflowDetector) collectAssignments(root parser.Node, f *db.Fun
 			assigned[name] = *expr
 		}
 	}
-	for _, assign := range root.FindAll("assignment_expression") {
+	for _, assign := range assigns {
 		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
