@@ -143,6 +143,13 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 			continue
 		}
 		zero, allNonZero := sites.paramVerdict(fn.Name, idx)
+		// A non-static function has external callers outside the scan tree (or
+		// callers reached via a function pointer), so "every direct caller passes
+		// non-zero" cannot be asserted for it — keep it suspected rather than
+		// wrongly dismissing a genuine divide-by-zero (DBZ-11).
+		if allNonZero && !fn.IsStatic {
+			allNonZero = false
+		}
 		switch {
 		case zero:
 			c.SuspicionLevel = "confirmed"
