@@ -9,8 +9,8 @@
 
 #include <stdlib.h>
 
-/* 真阳性：n * sizeof(int) 乘积可溢出（应报告 finding） */
-void tp_sizeof_product(int n) {
+/* 误报：n * sizeof(int) 在 LP64 下 sizeof 提升为 size_t(64 位)，不溢出 */
+void fp_sizeof_product(int n) {
     char *p = malloc(n * sizeof(int));
     if (!p) return;
     free(p);

@@ -485,6 +485,7 @@ func init() {
 		// off-by-one noise. An unsigned subtraction passed to an ordinary call is
 		// kept as suspected: it has a concrete underflow path unless guarded.
 		CategoryConfidence: map[string]string{
+			"definite_overflow":       "confirmed",
 			"size_calc_overflow":      "suspected",
 			"size_mul_const_overflow": "suspected",
 			"unsigned_sub_underflow":  "suspected",

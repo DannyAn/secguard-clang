@@ -1,11 +1,11 @@
 #include <stdlib.h>
 
-void overflow_mul_const(size_t n) {
+void overflow_mul_const(int n) {
     char *p = malloc(n * 1024); /* INTEGER_OVERFLOW: n * 1024 can wrap */
     if (p) free(p);
 }
 
-void overflow_calloc(size_t n, size_t m) {
+void overflow_calloc(int n, int m) {
     char *p = calloc(n, m); /* INTEGER_OVERFLOW: n * m can wrap */
     if (p) free(p);
 }

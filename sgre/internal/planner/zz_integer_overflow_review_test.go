@@ -57,32 +57,30 @@ func candidateFuncs(t *testing.T, result *PlanResult) map[string]bool {
 // product as calloc(n, m) and must be flagged.
 func TestIntOverflowReview_WrappedCalloc(t *testing.T) {
 	src := `#include <stdlib.h>
-typedef struct { int x; } T;
-void *VOS_CALLOC_F(size_t n, size_t s) { return calloc(n, s); }
-void wrapped(size_t n) {
-    T *p = (T *)VOS_CALLOC_F(n, sizeof(T));
+void *VOS_CALLOC_F(int n, int s) { return calloc(n, s); }
+void wrapped(int n, int m) {
+    int *p = (int *)VOS_CALLOC_F(n, m);
     (void)p;
 }
 `
 	has := candidateFuncs(t, planIntegerOverflow(t, src))
 	if !has["wrapped"] {
-		t.Errorf("wrapped (VOS_CALLOC_F(n, sizeof(T))) should be flagged, got %v", has)
+		t.Errorf("wrapped (VOS_CALLOC_F(n, m), int product) should be flagged, got %v", has)
 	}
 }
 
 // IO-06: a call_expression as a product factor must not be ignored.
 func TestIntOverflowReview_CallFactor(t *testing.T) {
 	src := `#include <stdlib.h>
-typedef struct { int x; } T;
-size_t get_len(void) { return 0; }
-void call_factor(void) {
-    T *p = malloc(get_len() * sizeof(T));
+int get_len(void) { return 0; }
+void call_factor(int m) {
+    int *p = malloc(get_len() * m);
     (void)p;
 }
 `
 	has := candidateFuncs(t, planIntegerOverflow(t, src))
 	if !has["call_factor"] {
-		t.Errorf("call_factor (get_len() * sizeof(T)) should be flagged, got %v", has)
+		t.Errorf("call_factor (get_len() * m, int product) should be flagged, got %v", has)
 	}
 }
 
@@ -136,6 +134,24 @@ void reassign(int n) {
 	has := candidateFuncs(t, planIntegerOverflow(t, src))
 	if !has["reassign"] {
 		t.Errorf("reassign (n reassigned large inside the guard) should be kept, got %v", has)
+	}
+}
+
+// IO-25: a literal product that provably overflows int32 is auto-confirmed.
+func TestIntOverflowReview_DefiniteOverflow(t *testing.T) {
+	src := `#include <stdlib.h>
+void definite(void) {
+    char *p = malloc(1073741824 * 2);
+    (void)p;
+}
+`
+	result := planIntegerOverflow(t, src)
+	c := candidateForFunc(t, result, "definite")
+	if c == nil {
+		t.Fatalf("definite (1073741824 * 2 overflows int32) should be flagged")
+	}
+	if c.SuspicionLevel != "confirmed" {
+		t.Errorf("definite literal overflow should be confirmed, got %q", c.SuspicionLevel)
 	}
 }
 

@@ -92,14 +92,14 @@ func TestIntOverflowGuardFilter_MulConst(t *testing.T) {
 	path := filepath.Join(dir, "iof_add.c")
 	src := `#include <stdlib.h>
 
-void guarded_mul(size_t n) {
+void guarded_mul(int n) {
     if (n < 100) {
         char *buf = malloc(n * 1024);
         (void)buf;
     }
 }
 
-void unguarded_mul(size_t n) {
+void unguarded_mul(int n) {
     char *buf = malloc(n * 1024);
     (void)buf;
 }

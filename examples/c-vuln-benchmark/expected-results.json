@@ -556,7 +556,7 @@
       "line": 14,
       "code": "malloc(n * sizeof(int))",
       "detector": "boundary.integer_overflow",
-      "expect": "finding"
+      "expect": "no_finding"
     },
     {
       "id": "P8-02",

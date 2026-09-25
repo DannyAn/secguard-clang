@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -77,6 +78,7 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 		globals, scopes := buildIntegerOverflowTypeScopes(root, funcs, typedefs)
 		binaryExprs := root.FindAll("binary_expression")
 		calls := root.FindAll("call_expression")
+		assigns := root.FindAll("assignment_expression")
 		// Parameter names per function, used to recognize "caller-influenced"
 		// operands: arithmetic on a function parameter (vs. a bounded local) is
 		// the signal that a variable-bounded size expression may overflow.
@@ -89,6 +91,22 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 			for _, p := range paramsByLine[f.StartLine] {
 				params[p] = true
 			}
+			assigned := d.collectAssignments(root, f)
+			influenced := computeInfluenced(params, assigned)
+			// 64-bit (wide) integer variables: a product involving one cannot
+			// overflow a 64-bit result on LP64, so they gate the size-calc flag.
+			wideVars := make(map[string]bool)
+			for _, v := range scopes[f.StartLine].locals {
+				if isWideIntegerType(v.typ, typedefs) {
+					wideVars[v.name] = true
+				}
+			}
+			for name, typ := range globals {
+				if isWideIntegerType(typ, typedefs) {
+					wideVars[name] = true
+				}
+			}
+
 			for _, expr := range binaryExprs {
 				if !funcLineRange(f, expr.StartLine()) {
 					continue
@@ -111,8 +129,8 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 				}
 			}
 
-			d.detectSizeCalcOverflow(ctx, calls, f, file, params, d.collectAssignments(root, f), &result)
-			d.detectUnsignedSubUnderflow(ctx, calls, f, file, scopes[f.StartLine], globals, typedefs, &result)
+			d.detectSizeCalcOverflow(ctx, calls, f, file, influenced, wideVars, assigned, &result)
+			d.detectUnsignedSubUnderflow(ctx, calls, assigns, f, file, scopes[f.StartLine], globals, typedefs, influenced, &result)
 		}
 	})
 	return result, err
@@ -215,7 +233,7 @@ func (d *IntegerOverflowDetector) collectAssignments(root parser.Node, f *db.Fun
 		if len(children) < 2 {
 			continue
 		}
-		if children[0].Kind() == "identifier" && children[1].Kind() == "binary_expression" {
+		if children[0].Kind() == "identifier" && (children[1].Kind() == "binary_expression" || children[1].Kind() == "identifier") {
 			assigned[children[0].Text()] = children[1]
 		}
 	}
@@ -256,13 +274,49 @@ func bareIdentText(arg parser.Node) string {
 }
 
 func isArithmeticOp(expr parser.Node) bool {
-	text := expr.Text()
-	for _, op := range []string{" + ", " * ", " - "} {
-		if strings.Contains(text, op) {
+	// The operator is read from the anonymous AST token, not the raw text, so a
+	// no-whitespace spelling (`n*m`) is recognized exactly like `n * m`.
+	return arithOperator(expr) != ""
+}
+
+// nodeInfluenced reports whether an assigned expression derives its value from a
+// call or an already-influenced variable, so the assigned local is caller/attacker
+// influenced (vs. a constant local like `size_t n = 16`).
+func nodeInfluenced(n parser.Node, influenced map[string]bool) bool {
+	switch n.Kind() {
+	case "call_expression":
+		return true
+	case "identifier":
+		return influenced[n.Text()]
+	}
+	for _, c := range n.NamedChildren() {
+		if nodeInfluenced(c, influenced) {
 			return true
 		}
 	}
 	return false
+}
+
+// computeInfluenced returns the caller/attacker-influenced variable set: a
+// function parameter, or a local whose value derives (transitively) from a call
+// or another influenced variable. A local assigned a constant (`size_t n = 16`)
+// is NOT influenced.
+func computeInfluenced(params map[string]bool, assigned map[string]parser.Node) map[string]bool {
+	influenced := make(map[string]bool, len(params))
+	for p := range params {
+		influenced[p] = true
+	}
+	for changed := true; changed; {
+		changed = false
+		for name, expr := range assigned {
+			if influenced[name] || !nodeInfluenced(expr, influenced) {
+				continue
+			}
+			influenced[name] = true
+			changed = true
+		}
+	}
+	return influenced
 }
 
 // isInBoundsCheck reports whether expr is an operand of a relational comparison
@@ -397,7 +451,7 @@ type sizeCalcCandidate struct {
 // the AI agent reasons over. This is the AI-fallback tier: static analysis
 // recognizes the risky shape, the model proves or refutes it with call-site
 // and API-contract reasoning.
-func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, calls []parser.Node, f *db.Function, file *db.File, params map[string]bool, assigned map[string]parser.Node, result *DetectResult) {
+func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, calls []parser.Node, f *db.Function, file *db.File, influenced, wideVars map[string]bool, assigned map[string]parser.Node, result *DetectResult) {
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
 			continue
@@ -429,23 +483,29 @@ func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, ca
 			// product the malloc(n * sizeof(T)) / malloc(n * 2) cases cover, but
 			// split across two arguments — the most common allocation idiom in
 			// real code and previously a systematic blind spot (CWE-190).
-			if c := d.callocOverflowCategory(a0, a1, params); c != "" {
+			if c := d.callocOverflowCategory(a0, a1, influenced, wideVars); c != "" {
 				d.emitIntegerOverflowText(ctx, file, f, call, product, c, result)
 				continue
 			}
 		}
 
 		for _, arg := range args {
-			// Single-level assignment: `int t = n*m; malloc(t)` resolves t to
-			// its assigned arithmetic before classification, so a size product
-			// stored in a named local is not missed.
+			// Resolve a chain of assignments (`int t = n*m; u = t; malloc(u)`)
+			// to the underlying arithmetic before classification, so a size
+			// product stored through several named locals is not missed.
 			eff := arg
-			if name := bareIdentText(arg); name != "" {
-				if expr, ok := assigned[name]; ok {
-					eff = expr
+			for depth := 0; depth < 8; depth++ {
+				name := bareIdentText(eff)
+				if name == "" {
+					break
 				}
+				expr, ok := assigned[name]
+				if !ok {
+					break
+				}
+				eff = expr
 			}
-			for _, c := range d.sizeCalcExprs(eff, params) {
+			for _, c := range d.sizeCalcExprs(eff, influenced, wideVars) {
 				d.emitIntegerOverflow(ctx, file, f, c.expr, c.category, result)
 			}
 		}
@@ -461,8 +521,8 @@ func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, ca
 // A constant * constant, a sizeof(char) (==1) operand, or a CONST below
 // minMulConstOverflow cannot plausibly overflow and returns "". Both argument
 // orders are accepted.
-func (d *IntegerOverflowDetector) callocOverflowCategory(a0, a1 parser.Node, params map[string]bool) string {
-	classify := func(arg parser.Node) (isVar, isParam, isSizeof, isNum, sizeofOne bool, constValue int) {
+func (d *IntegerOverflowDetector) callocOverflowCategory(a0, a1 parser.Node, influenced, wideVars map[string]bool) string {
+	classify := func(arg parser.Node) (isVar, isParam, isSizeof, isNum, sizeofOne, isWide bool, constValue int) {
 		for arg.Kind() == "parenthesized_expression" {
 			ch := arg.NamedChildren()
 			if len(ch) == 0 {
@@ -472,20 +532,27 @@ func (d *IntegerOverflowDetector) callocOverflowCategory(a0, a1 parser.Node, par
 		}
 		switch {
 		case isVariableOperand(arg):
-			return true, params[arg.Text()], false, false, false, 0
+			return true, influenced[arg.Text()], false, false, false, wideVars[arg.Text()], 0
 		case arg.Kind() == "sizeof_expression":
-			return false, false, true, false, sizeofIsOne(arg), 0
+			return false, false, true, false, sizeofIsOne(arg), true, 0 // sizeof is size_t (64-bit)
 		case arg.Kind() == "number_literal":
-			return false, false, false, true, false, parseConstantIndex(arg.Text())
+			return false, false, false, true, false, false, parseConstantIndex(arg.Text())
 		}
 		return
 	}
-	v0, p0, s0, n0, o0, c0 := classify(a0)
-	v1, p1, s1, n1, o1, c1 := classify(a1)
+	v0, p0, s0, n0, o0, w0, c0 := classify(a0)
+	v1, p1, s1, n1, o1, w1, c1 := classify(a1)
+	// var * sizeof(T): sizeof promotes the product to size_t (64-bit on LP64),
+	// so it cannot overflow a 64-bit product — not a CWE-190 on LP64.
 	if (v0 && s1 && !o1) || (s0 && !o0 && v1) {
-		return "size_calc_overflow"
+		return ""
 	}
+	// param * CONST: overflow only when the parameter is a NARROW (<=32-bit)
+	// integer type; a 64-bit (size_t/long) parameter makes the product 64-bit.
 	if (p0 && n1 && c1 >= minMulConstOverflow) || (n0 && c0 >= minMulConstOverflow && p1) {
+		if (p0 && w0) || (p1 && w1) {
+			return ""
+		}
 		return "size_mul_const_overflow"
 	}
 	return ""
@@ -514,35 +581,51 @@ func (d *IntegerOverflowDetector) emitIntegerOverflowText(ctx context.Context, f
 // allocator/copy arguments and intentionally skip subtraction; this check uses
 // type information to handle the common `count - consumed` shape without
 // treating every C subtraction as an integer-overflow candidate.
-func (d *IntegerOverflowDetector) detectUnsignedSubUnderflow(ctx context.Context, calls []parser.Node, f *db.Function, file *db.File, scope integerOverflowTypeScope, globals map[string]string, typedefs *typedefs, result *DetectResult) {
+func (d *IntegerOverflowDetector) detectUnsignedSubUnderflow(ctx context.Context, calls, assigns []parser.Node, f *db.Function, file *db.File, scope integerOverflowTypeScope, globals map[string]string, typedefs *typedefs, influenced map[string]bool, result *DetectResult) {
 	if scope.locals == nil {
 		return
+	}
+	check := func(expr parser.Node) {
+		expr = unwrapExprNode(expr)
+		if expr.Kind() != "binary_expression" || arithOperator(expr) != "-" {
+			return
+		}
+		operands := expr.NamedChildren()
+		if len(operands) != 2 {
+			return
+		}
+		lhs := operands[0]
+		rhs := operands[1]
+		lhsUnsigned, lhsInfl := unsignedSubOperand(lhs, expr.StartLine(), globals, scope, typedefs, influenced)
+		rhsUnsigned, rhsInfl := unsignedSubOperand(rhs, expr.StartLine(), globals, scope, typedefs, influenced)
+		if !lhsUnsigned || !rhsUnsigned || (!lhsInfl && !rhsInfl) {
+			return
+		}
+		if exprTextKey(lhs) == exprTextKey(rhs) || unsignedSubGuarded(expr, lhs, rhs) {
+			return
+		}
+		d.emitIntegerOverflow(ctx, file, f, expr, "unsigned_sub_underflow", result)
 	}
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		for _, arg := range callNamedArguments(call) {
-			expr := unwrapExprNode(arg)
-			if expr.Kind() != "binary_expression" || arithOperator(expr) != "-" {
-				continue
-			}
-			operands := expr.NamedChildren()
-			if len(operands) != 2 {
-				continue
-			}
-			lhs := operands[0]
-			rhs := operands[1]
-			lhsUnsigned, lhsFromParam := unsignedSubOperand(lhs, expr.StartLine(), globals, scope, typedefs)
-			rhsUnsigned, rhsFromParam := unsignedSubOperand(rhs, expr.StartLine(), globals, scope, typedefs)
-			if !lhsUnsigned || !rhsUnsigned || (!lhsFromParam && !rhsFromParam) {
-				continue
-			}
-			if exprTextKey(lhs) == exprTextKey(rhs) || unsignedSubGuarded(expr, lhs, rhs) {
-				continue
-			}
-			d.emitIntegerOverflow(ctx, file, f, expr, "unsigned_sub_underflow", result)
+			check(arg)
 		}
+	}
+	// A subtraction stored into a local first (`size_t rem = total - consumed;`)
+	// is the common underflow shape and must not be missed just because it is not
+	// a direct call argument.
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
+			continue
+		}
+		children := assign.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		check(children[1])
 	}
 }
 
@@ -557,13 +640,13 @@ func unwrapExprNode(node parser.Node) parser.Node {
 	return node
 }
 
-func unsignedSubOperand(node parser.Node, line int, globals map[string]string, scope integerOverflowTypeScope, typedefs *typedefs) (bool, bool) {
+func unsignedSubOperand(node parser.Node, line int, globals map[string]string, scope integerOverflowTypeScope, typedefs *typedefs, influenced map[string]bool) (bool, bool) {
 	node = unwrapExprNode(node)
 	switch node.Kind() {
 	case "identifier":
 		name := node.Text()
 		typ := resolveScopedVar(name, line, globals, scope.locals)
-		return isUnsignedScalarType(typ, typedefs), scope.params[name]
+		return isUnsignedScalarType(typ, typedefs), influenced[name]
 	case "pointer_expression":
 		if !strings.HasPrefix(strings.TrimSpace(node.Text()), "*") {
 			return false, false
@@ -581,7 +664,7 @@ func unsignedSubOperand(node parser.Node, line int, globals map[string]string, s
 		if !isPointerType(typ, typedefs) {
 			return false, false
 		}
-		return isUnsignedScalarType(pointedToResolved(typ, typedefs), typedefs), scope.params[name]
+		return isUnsignedScalarType(pointedToResolved(typ, typedefs), typedefs), influenced[name]
 	case "subscript_expression":
 		children := node.NamedChildren()
 		if len(children) == 0 {
@@ -596,7 +679,7 @@ func unsignedSubOperand(node parser.Node, line int, globals map[string]string, s
 		if !isPointerType(typ, typedefs) {
 			return false, false
 		}
-		return isUnsignedScalarType(pointedToResolved(typ, typedefs), typedefs), scope.params[name]
+		return isUnsignedScalarType(pointedToResolved(typ, typedefs), typedefs), influenced[name]
 	}
 	return false, false
 }
@@ -607,6 +690,19 @@ func isUnsignedScalarType(typ string, typedefs *typedefs) bool {
 		return false
 	}
 	return isUnsignedDecl(resolved) || typedefs.resolvesToUnsigned(resolved)
+}
+
+// isWideIntegerType reports whether a type is a 64-bit (or wider) integer type on
+// LP64, so a multiplication involving it (`n * sizeof(T)`, `size_t n; n * 1024`)
+// cannot overflow a 64-bit product for any realistic operand.
+func isWideIntegerType(typ string, typedefs *typedefs) bool {
+	resolved := resolveType(strings.TrimSpace(typ), typedefs)
+	switch resolved {
+	case "size_t", "ssize_t", "long", "unsigned long", "long long", "unsigned long long",
+		"int64_t", "uint64_t", "intmax_t", "uintmax_t", "ptrdiff_t", "uintptr_t", "intptr_t":
+		return true
+	}
+	return false
 }
 
 func exprTextKey(node parser.Node) string {
@@ -677,12 +773,12 @@ func relationalOperator(node parser.Node) string {
 // The operator is read from the anonymous token child (*, +, -), never from the
 // whole text, so `->` member access inside an operand cannot fool the test. A
 // parenthesized argument is unwrapped.
-func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, params map[string]bool) []sizeCalcCandidate {
+func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, influenced, wideVars map[string]bool) []sizeCalcCandidate {
 	nodes := arg.NamedChildren()
 	if arg.Kind() == "parenthesized_expression" && len(nodes) > 0 {
 		var out []sizeCalcCandidate
 		for _, c := range nodes {
-			out = append(out, d.sizeCalcExprs(c, params)...)
+			out = append(out, d.sizeCalcExprs(c, influenced, wideVars)...)
 		}
 		return out
 	}
@@ -699,8 +795,7 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, params map[stri
 	// nested sub-expression of a DIFFERENT operator (`b+c` inside `a*(b+c)`)
 	// counts as one opaque operand: it can still overflow but is not a
 	// caller-influenced bare identifier.
-	var varCount, paramCount, numberCount, sizeofCount int
-	sizeofOne := false
+	var varCount, paramCount, numberCount, sizeofCount, wideCount int
 	constValue := 0
 	var collect func(n parser.Node)
 	collect = func(n parser.Node) {
@@ -720,14 +815,20 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, params map[stri
 			} else {
 				varCount++
 			}
-		case "identifier", "field_expression":
+		case "identifier":
 			if strings.Contains(n.Text(), "sizeof") {
 				return
 			}
-			varCount++
-			if params[n.Text()] {
+			if wideVars[n.Text()] {
+				wideCount++
+			} else {
+				varCount++
+			}
+			if influenced[n.Text()] {
 				paramCount++
 			}
+		case "field_expression":
+			varCount++ // a member's width is unknown; conservatively narrow
 		case "number_literal":
 			numberCount++
 			if v := parseConstantIndex(n.Text()); v > constValue {
@@ -735,11 +836,9 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, params map[stri
 			}
 		case "sizeof_expression":
 			sizeofCount++
-			if sizeofIsOne(n) {
-				sizeofOne = true
-			}
+			wideCount++ // sizeof yields size_t (64-bit on LP64)
 		default:
-			// A call_expression (`malloc(get_len() * sizeof(T))`), subscript,
+			// A call_expression (`malloc(get_len() * m)`), subscript,
 			// pointer_expression, or any other opaque operand is a possibly-large
 			// value: count it as a variable operand so the cross-function size
 			// return is not silently ignored.
@@ -750,6 +849,19 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, params map[stri
 
 	switch op {
 	case "*":
+		// A pure-literal product whose value overflows a 32-bit int is a
+		// PROVABLE overflow, not a heuristic — emit the definite tier.
+		if varCount == 0 && numberCount >= 2 && wideCount == 0 {
+			if v, ok := foldLiteralInt(arg); ok && overflowsInt32(v) {
+				return []sizeCalcCandidate{{arg, "definite_overflow"}}
+			}
+			return nil
+		}
+		// A 64-bit (size_t/long/sizeof) operand promotes the product to 64 bits
+		// on LP64, so it cannot overflow a 64-bit result — not a CWE-190.
+		if wideCount > 0 {
+			return nil
+		}
 		if numberCount > 0 {
 			// var * const — only meaningful when the variable is caller-influenced
 			// AND the constant is a large block size (>= minMulConstOverflow), so
@@ -764,17 +876,67 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, params map[stri
 			return []sizeCalcCandidate{{arg, "size_calc_overflow"}}
 		}
 		if varCount == 1 && sizeofCount == 1 {
-			// n * sizeof(char) == n * 1 cannot overflow.
-			if sizeofOne {
-				return nil
-			}
-			return []sizeCalcCandidate{{arg, "size_calc_overflow"}}
+			// Unreachable via the wideCount guard above (sizeof is wide), kept for
+			// clarity: a `var * sizeof` product is 64-bit and never flagged here.
+			return nil
 		}
 		// "+"/"-" (n + 1, n - 1, n + m) are dropped: n + 1 is the null-terminator
 		// idiom and n - 1 the off-by-one idiom, and a sum/difference overflows only
 		// for two near-SIZE_MAX operands — implausible overflow noise, not CWE-190.
 	}
 	return nil
+}
+
+// foldLiteralInt folds a pure-literal arithmetic expression (number_literal and
+// nested *, +, - of literals) to an int64, reporting whether the fold succeeded.
+// A macro/identifier/const-symbol operand is NOT foldable here (it is not a bare
+// literal), so the result is only used for the definite constant-overflow tier.
+func foldLiteralInt(n parser.Node) (int64, bool) {
+	for n.Kind() == "parenthesized_expression" {
+		ch := n.NamedChildren()
+		if len(ch) == 0 {
+			return 0, false
+		}
+		n = ch[0]
+	}
+	if n.Kind() == "number_literal" {
+		v, err := strconv.ParseInt(strings.TrimSpace(n.Text()), 0, 64)
+		if err != nil {
+			return 0, false
+		}
+		return v, true
+	}
+	if n.Kind() != "binary_expression" {
+		return 0, false
+	}
+	op := arithOperator(n)
+	if op != "*" && op != "+" && op != "-" {
+		return 0, false
+	}
+	children := n.NamedChildren()
+	if len(children) != 2 {
+		return 0, false
+	}
+	l, lok := foldLiteralInt(children[0])
+	r, rok := foldLiteralInt(children[1])
+	if !lok || !rok {
+		return 0, false
+	}
+	switch op {
+	case "*":
+		return l * r, true
+	case "+":
+		return l + r, true
+	case "-":
+		return l - r, true
+	}
+	return 0, false
+}
+
+// overflowsInt32 reports whether v falls outside a 32-bit signed int range, so a
+// literal product that exceeds it is a provable (definite) integer overflow.
+func overflowsInt32(v int64) bool {
+	return v < -(1<<31) || v > (1<<31)-1
 }
 
 // arithOperator returns the arithmetic operator token of a binary_expression

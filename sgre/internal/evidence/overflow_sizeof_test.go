@@ -44,11 +44,11 @@ func TestIntegerOverflow_SizeofProduct(t *testing.T) {
 		flagged[fn.Name] = true
 	}
 
-	if !flagged["overflow_sizeof_alloc"] {
-		t.Errorf("expected overflow_sizeof_alloc (n * sizeof(int)) to be flagged, got %v", flagged)
+	if flagged["safe_sizeof_alloc"] {
+		t.Errorf("expected safe_sizeof_alloc (n * sizeof(int)) NOT to be flagged on LP64 (sizeof promotes to size_t), got %v", flagged)
 	}
 	if !flagged["safe_var_var_alloc"] {
-		t.Errorf("expected safe_var_var_alloc (m * n) to be flagged, got %v", flagged)
+		t.Errorf("expected safe_var_var_alloc (int m * int n, 32-bit product) to be flagged, got %v", flagged)
 	}
 	if flagged["safe_constant_alloc"] {
 		t.Errorf("expected safe_constant_alloc (constant 256) NOT to be flagged, got %v", flagged)

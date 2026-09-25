@@ -1,8 +1,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-void overflow_sizeof_alloc(int n) {
-    char *p = malloc(n * sizeof(int)); /* INTEGER_OVERFLOW: n * sizeof(int) can overflow */
+void safe_sizeof_alloc(int n) {
+    char *p = malloc(n * sizeof(int)); /* safe on LP64: sizeof promotes to size_t (64-bit) */
     if (p == NULL) return;
     free(p);
 }
