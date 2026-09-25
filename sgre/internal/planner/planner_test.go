@@ -60,11 +60,11 @@ func TestPlan_EndToEnd_ConvergencePipeline(t *testing.T) {
 		t.Errorf("expected seed count 3 (3 dereferences), got %d", result.Summary.SeedCount)
 	}
 
-	if len(result.Summary.Filters) != 7 {
-		t.Errorf("expected 7 filter stats, got %d", len(result.Summary.Filters))
+	if len(result.Summary.Filters) != 6 {
+		t.Errorf("expected 6 filter stats, got %d", len(result.Summary.Filters))
 	}
 
-	expectedFilters := []string{"sizeof_pseudo_deref", "non_nullable_array_suppress", "array_oob_precedence", "nullable_source", "call_reach", "guard", "safe_function_exclude"}
+	expectedFilters := []string{"sizeof_pseudo_deref", "non_nullable_array_suppress", "array_oob_precedence", "nullable_source", "call_reach", "safe_function_exclude"}
 	for i, name := range expectedFilters {
 		if i >= len(result.Summary.Filters) {
 			t.Errorf("missing filter %s", name)

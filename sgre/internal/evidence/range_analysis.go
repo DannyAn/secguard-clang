@@ -14,10 +14,12 @@ import (
 // candidates whose operands are provably bounded or non-zero on the reaching
 // path.
 type RangeFacts struct {
-	// nonZeroAfter maps a variable to the line numbers after which it is
+	// nonZeroAfter maps a variable to [after, scopeEnd] line ranges where it is
 	// non-zero, established by an early-return guard (`if (x == 0) return;`
-	// → x != 0 on the fall-through, i.e. at lines > if.EndLine).
-	nonZeroAfter map[string][]int
+	// → x != 0 on the fall-through). scopeEnd is the enclosing block end, so a
+	// guard nested inside a conditional branch does not leak its fact past that
+	// branch.
+	nonZeroAfter map[string][][2]int
 	// nonZeroInside maps a variable to [start, end] line ranges where it is
 	// non-zero, established by a positive guard (`if (x != 0) { ... }`).
 	nonZeroInside map[string][][2]int
@@ -89,7 +91,7 @@ func assignsInFunc(assigns []parser.Node, start, end int) []parser.Node {
 //     x non-zero after the if (fall-through).
 func AnalyzeBounds(ifs, assigns []parser.Node) *RangeFacts {
 	r := &RangeFacts{
-		nonZeroAfter:  make(map[string][]int),
+		nonZeroAfter:  make(map[string][][2]int),
 		nonZeroInside: make(map[string][][2]int),
 		hiInside:      make(map[string][]hiRange),
 		reassigns:     make(map[string][]reassignSite),
@@ -110,41 +112,50 @@ func AnalyzeBounds(ifs, assigns []parser.Node) *RangeFacts {
 		start, end := ifStmt.StartLine(), ifStmt.EndLine()
 		cons := ifStmt.ChildByFieldName("consequence")
 		exits := cons != nil && isExitStmt(*cons)
+		// Positive-guard facts hold only inside the taken branch, never in the
+		// alternative (`if (p != NULL) {} else { p->g; }` — in the else p is NULL).
+		bodyEnd := end
+		if cons != nil {
+			bodyEnd = cons.EndLine()
+		}
+		// Fall-through facts hold only to the enclosing block end, so a guard
+		// nested in a conditional does not leak its fact past that branch.
+		scopeEnd := enclosingBlockEnd(ifStmt)
 
 		if m := reLt.FindStringSubmatch(ct); m != nil {
 			if n, err := strconv.Atoi(m[2]); err == nil {
-				r.hiInside[m[1]] = append(r.hiInside[m[1]], hiRange{start, end, n - 1})
+				r.hiInside[m[1]] = append(r.hiInside[m[1]], hiRange{start, bodyEnd, n - 1})
 			}
 			continue
 		}
 		if m := reLe.FindStringSubmatch(ct); m != nil {
 			if n, err := strconv.Atoi(m[2]); err == nil {
-				r.hiInside[m[1]] = append(r.hiInside[m[1]], hiRange{start, end, n})
+				r.hiInside[m[1]] = append(r.hiInside[m[1]], hiRange{start, bodyEnd, n})
 			}
 			continue
 		}
 		if m := reGt.FindStringSubmatch(ct); m != nil {
 			if n, err := strconv.Atoi(m[2]); err == nil && n >= 0 {
-				r.nonZeroInside[m[1]] = append(r.nonZeroInside[m[1]], [2]int{start, end})
+				r.nonZeroInside[m[1]] = append(r.nonZeroInside[m[1]], [2]int{start, bodyEnd})
 			}
 			continue
 		}
 		if m := reGe.FindStringSubmatch(ct); m != nil {
 			if n, err := strconv.Atoi(m[2]); err == nil && n >= 1 {
-				r.nonZeroInside[m[1]] = append(r.nonZeroInside[m[1]], [2]int{start, end})
+				r.nonZeroInside[m[1]] = append(r.nonZeroInside[m[1]], [2]int{start, bodyEnd})
 			}
 			continue
 		}
 		if m := reNeZero.FindStringSubmatch(ct); m != nil {
-			r.nonZeroInside[m[1]] = append(r.nonZeroInside[m[1]], [2]int{start, end})
+			r.nonZeroInside[m[1]] = append(r.nonZeroInside[m[1]], [2]int{start, bodyEnd})
 			continue
 		}
 		if m := reNeNull.FindStringSubmatch(ct); m != nil {
-			r.nonZeroInside[m[1]] = append(r.nonZeroInside[m[1]], [2]int{start, end})
+			r.nonZeroInside[m[1]] = append(r.nonZeroInside[m[1]], [2]int{start, bodyEnd})
 			continue
 		}
 		if m := reBare.FindStringSubmatch(ct); m != nil {
-			r.nonZeroInside[m[1]] = append(r.nonZeroInside[m[1]], [2]int{start, end})
+			r.nonZeroInside[m[1]] = append(r.nonZeroInside[m[1]], [2]int{start, bodyEnd})
 			continue
 		}
 		// Reassignment guard: `if (x == 0) x = <nonzero>;` / `if (!x) x = 1;`
@@ -155,11 +166,11 @@ func AnalyzeBounds(ifs, assigns []parser.Node) *RangeFacts {
 		// else x=0;`), so the fact is NOT established then.
 		if cons != nil {
 			if m := reEqZero.FindStringSubmatch(ct); m != nil && consequenceAssignsNonZero(*cons, m[1]) && !elseAssignsPossiblyZero(ifStmt, m[1]) {
-				r.nonZeroAfter[m[1]] = append(r.nonZeroAfter[m[1]], end)
+				r.nonZeroAfter[m[1]] = append(r.nonZeroAfter[m[1]], [2]int{end, scopeEnd})
 				continue
 			}
 			if m := reNot.FindStringSubmatch(ct); m != nil && consequenceAssignsNonZero(*cons, m[1]) && !elseAssignsPossiblyZero(ifStmt, m[1]) {
-				r.nonZeroAfter[m[1]] = append(r.nonZeroAfter[m[1]], end)
+				r.nonZeroAfter[m[1]] = append(r.nonZeroAfter[m[1]], [2]int{end, scopeEnd})
 				continue
 			}
 		}
@@ -167,15 +178,15 @@ func AnalyzeBounds(ifs, assigns []parser.Node) *RangeFacts {
 		// so the continuation establishes the negation.
 		if exits {
 			if m := reEqZero.FindStringSubmatch(ct); m != nil {
-				r.nonZeroAfter[m[1]] = append(r.nonZeroAfter[m[1]], end)
+				r.nonZeroAfter[m[1]] = append(r.nonZeroAfter[m[1]], [2]int{end, scopeEnd})
 				continue
 			}
 			if m := reEqNull.FindStringSubmatch(ct); m != nil {
-				r.nonZeroAfter[m[1]] = append(r.nonZeroAfter[m[1]], end)
+				r.nonZeroAfter[m[1]] = append(r.nonZeroAfter[m[1]], [2]int{end, scopeEnd})
 				continue
 			}
 			if m := reNot.FindStringSubmatch(ct); m != nil {
-				r.nonZeroAfter[m[1]] = append(r.nonZeroAfter[m[1]], end)
+				r.nonZeroAfter[m[1]] = append(r.nonZeroAfter[m[1]], [2]int{end, scopeEnd})
 				continue
 			}
 		}
@@ -231,12 +242,29 @@ func (r *RangeFacts) NonZeroAt(v string, line int) bool {
 			return true
 		}
 	}
-	for _, after := range r.nonZeroAfter[v] {
-		if line > after && !r.reassignedToPossiblyZeroIn(v, after+1, line) {
+	for _, rng := range r.nonZeroAfter[v] {
+		if line > rng[0] && line <= rng[1] && !r.reassignedToPossiblyZeroIn(v, rng[0]+1, line) {
 			return true
 		}
 	}
 	return false
+}
+
+// enclosingBlockEnd returns the end line of the innermost enclosing
+// compound_statement (block) of node, or node's own end line when it is a bare
+// (non-compound) consequence/body of an enclosing control construct. A guard at
+// the function top level resolves to the function body's end, while a guard
+// nested inside `if (c) { ... }` resolves to that branch's end.
+func enclosingBlockEnd(node parser.Node) int {
+	for n := node.Parent(); n != nil; n = n.Parent() {
+		switch n.Kind() {
+		case "compound_statement":
+			return n.EndLine()
+		case "if_statement", "while_statement", "do_statement", "for_statement", "switch_statement":
+			return node.EndLine()
+		}
+	}
+	return node.EndLine()
 }
 
 // reassignedToPossiblyZeroIn reports whether v is whole-variable reassigned to a

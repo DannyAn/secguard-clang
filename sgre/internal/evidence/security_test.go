@@ -62,7 +62,7 @@ func runFullPipeline(t *testing.T, fixture string) (*planner.PlanResult, db.Stor
 		t.Fatalf("interprocedural detect failed: %v", err)
 	}
 
-	pl := planner.NewPlanner(store, nil, logger)
+	pl := planner.NewPlanner(store, p, logger)
 	result, err := pl.Plan(ctx, "null-deref")
 	if err != nil {
 		t.Fatalf("plan failed: %v", err)

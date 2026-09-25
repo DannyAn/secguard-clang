@@ -167,6 +167,16 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 	cache := newFileParseCache(f.parser)
 	analyzer.macroWrites = collectMacroWrites(cache, fileByID)
 	analyzer.iterMacros = mergedIterMacros()
+	// The guard model needs the whole-tree predicate-helper and guard-macro
+	// summaries (a helper/macro may be defined in a .h header). A ListFunctions
+	// failure degrades to an empty helper summary (helper guards become false
+	// positives, never a hidden null-deref), matching the fail-open convention.
+	var allFuncs []*db.Function
+	if funcs, ferr := f.store.ListFunctions(ctx); ferr == nil {
+		allFuncs = funcs
+	}
+	analyzer.helperParams = collectNullCheckHelpers(cache, allFuncs, fileByID)
+	analyzer.macroGuards = collectMacroGuards(cache, fileByID)
 
 	// Pre-scan: parse each candidate function's body and collect the callees
 	// assigned to a variable (`p = f()`). retNullable is ONLY consumed by
@@ -245,6 +255,7 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 		// gen on), while intra-procedural sources stay line-keyed.
 		sources := nullSourcesFor(models, fid)
 		var entrySeeds map[string]bool
+		var definiteEntrySeeds map[string]bool
 		var lineSources []nullSource
 		for _, s := range sources {
 			if s.origin == "caller_null" {
@@ -252,12 +263,21 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 					entrySeeds = map[string]bool{}
 				}
 				entrySeeds[s.variable] = true
+				// A caller passing a literal NULL is a CERTAIN null at entry, so it
+				// seeds the must-null tier (confirmed) rather than only the may tier.
+				if s.definite {
+					if definiteEntrySeeds == nil {
+						definiteEntrySeeds = map[string]bool{}
+					}
+					definiteEntrySeeds[s.variable] = true
+				}
 			} else {
 				lineSources = append(lineSources, s)
 			}
 		}
 		lineSources = append(lineSources, callResultNullSources(body, retNullable)...)
 		analyzer.entrySeeds = entrySeeds
+		analyzer.definiteEntrySeeds = definiteEntrySeeds
 		results[fid] = analyzer.analyzeFunction(ctx, fn, body, root, lineSources)
 	}
 	return results, retNullable, definedNames, nil
@@ -399,6 +419,8 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 	analyzer.dfgCopies = analyzer.loadDFGCopies(ctx, allIDs)
 	analyzer.macroWrites = collectMacroWrites(cache, fileByID)
 	analyzer.iterMacros = mergedIterMacros()
+	analyzer.helperParams = collectNullCheckHelpers(cache, funcs, fileByID)
+	analyzer.macroGuards = collectMacroGuards(cache, fileByID)
 
 	for {
 		changed := false

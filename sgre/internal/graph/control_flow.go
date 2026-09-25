@@ -20,6 +20,14 @@ type StmtNode struct {
 	EndLine   int
 	Stmt      parser.Node // source statement for "stmt" nodes; zero otherwise
 	Succs     []int
+	// TrueSuccs / FalseSuccs split the successors of a CONDITION node (an
+	// if/while/for header, Kind == "stmt" and Stmt.Kind() a condition kind) into
+	// the branch taken when the condition is true vs false. They are what a
+	// path-sensitive consumer needs to attach a guard fact to the correct edge;
+	// Succs remains the unordered union for consumers that do not care. For
+	// non-condition nodes both are nil.
+	TrueSuccs  []int
+	FalseSuccs []int
 }
 
 // StmtCFG is a per-function statement-level CFG.
@@ -244,12 +252,16 @@ func (b *cfgBuilder) build(stmt parser.Node, from int) int {
 		}
 		return -1
 	case "goto_statement":
-		// goto is rare in modern C. We treat it as fall-through (an over-
-		// approximation for forward jumps); the labelled target is still
-		// reached by straight-line order in the common forward case.
+		// A goto jumps AWAY from the straight-line continuation, so it must not
+		// fall through to the next statement — otherwise `if (p == NULL) goto out;`
+		// would leak its NULL branch past the join and defeat the non-null fact on
+		// the fall-through. The labelled target is still reached by straight-line
+		// order in the common forward-goto (`goto out; ... out:`) case, so treating
+		// the goto as a dead-end here is exact for forward jumps and only
+		// under-approximates a backward-goto loop (rare, discouraged C).
 		n := b.newNode("stmt", stmt.StartLine(), stmt.EndLine(), stmt)
 		b.edge(from, n)
-		return n
+		return -1
 	case "labeled_statement":
 		// A label is a no-op for control flow; the labelled statement follows.
 		for _, child := range stmt.NamedChildren() {
@@ -383,15 +395,24 @@ func (b *cfgBuilder) buildIf(stmt parser.Node, from int) int {
 
 	thenLast := -1
 	if cons != nil {
+		pre := len(b.cfg.Nodes)
 		thenLast = b.build(*cons, cond)
+		if len(b.cfg.Nodes) > pre {
+			b.cfg.Nodes[cond].TrueSuccs = append(b.cfg.Nodes[cond].TrueSuccs, pre)
+		}
 	}
 
 	elseLast := -1
 	if alt != nil {
+		pre := len(b.cfg.Nodes)
 		elseLast = b.build(*alt, cond)
+		if len(b.cfg.Nodes) > pre {
+			b.cfg.Nodes[cond].FalseSuccs = append(b.cfg.Nodes[cond].FalseSuccs, pre)
+		}
 	} else {
 		// No else branch: the false path falls straight through to the join.
 		b.edge(cond, join)
+		b.cfg.Nodes[cond].FalseSuccs = append(b.cfg.Nodes[cond].FalseSuccs, join)
 	}
 
 	if thenLast >= 0 {
@@ -424,7 +445,11 @@ func (b *cfgBuilder) buildWhileDo(stmt parser.Node, from int) int {
 
 	bodyLast := -1
 	if body != nil {
+		pre := len(b.cfg.Nodes)
 		bodyLast = b.build(*body, header)
+		if len(b.cfg.Nodes) > pre {
+			b.cfg.Nodes[header].TrueSuccs = append(b.cfg.Nodes[header].TrueSuccs, pre)
+		}
 	}
 
 	b.breakTo = b.breakTo[:len(b.breakTo)-1]
@@ -440,6 +465,7 @@ func (b *cfgBuilder) buildWhileDo(stmt parser.Node, from int) int {
 	// for a nil condition. `break` still reaches join via the breakTo stack.
 	if !isConstantTrue(stmt.ChildByFieldName("condition")) {
 		b.edge(header, join) // condition false → exit loop
+		b.cfg.Nodes[header].FalseSuccs = append(b.cfg.Nodes[header].FalseSuccs, join)
 	}
 	return join
 }
@@ -533,7 +559,11 @@ func (b *cfgBuilder) buildFor(stmt parser.Node, from int) int {
 
 	bodyLast := -1
 	if body != nil {
+		pre := len(b.cfg.Nodes)
 		bodyLast = b.build(*body, header)
+		if len(b.cfg.Nodes) > pre {
+			b.cfg.Nodes[header].TrueSuccs = append(b.cfg.Nodes[header].TrueSuccs, pre)
+		}
 	}
 
 	b.breakTo = b.breakTo[:len(b.breakTo)-1]
@@ -559,6 +589,7 @@ func (b *cfgBuilder) buildFor(stmt parser.Node, from int) int {
 	// analysis). Only emit the exit edge when a condition exists.
 	if cond != nil {
 		b.edge(header, join)
+		b.cfg.Nodes[header].FalseSuccs = append(b.cfg.Nodes[header].FalseSuccs, join)
 	}
 	return join
 }

@@ -221,9 +221,9 @@ func buildDefiniteInitFlow(fn *db.Function, body parser.Node, macroWrites map[st
 		effects[n.ID] = e
 	}
 
-	nodeIn := runDataflow(cfg, effects, nil)
+	nodeIn := runDataflow(cfg, effects, nil, nil)
 	res := &flowResult{cfg: cfg, nodeIn: nodeIn, genAt: genAt(cfg, effects)}
-	res.must, res.mustGenAt = runMustDataflow(cfg, effects)
+	res.must, res.mustGenAt = runMustDataflow(cfg, effects, nil)
 	return res
 }
 

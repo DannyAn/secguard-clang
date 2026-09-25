@@ -221,7 +221,7 @@ func (d *NullSourceDetector) detectMacroNull(ctx context.Context, f *db.Function
 // constant (NULL, nullptr, or a (void*)0 cast). Bare 0 is excluded because it
 // is ambiguous with a zero integer value.
 func isNullLiteral(text string) bool {
-	t := strings.TrimSpace(text)
+	t := stripParens(strings.TrimSpace(text))
 	switch t {
 	case "NULL", "nullptr", "(void*)0", "(void *)0", "((void*)0)", "((void *)0)":
 		return true
@@ -351,13 +351,17 @@ func (d *NullSourceDetector) getNullableReturnFunctions(ctx context.Context) (ma
 	m := make(map[string]bool)
 	for _, f := range funcs {
 		sum, err := d.store.GetSummaryByFunction(ctx, f.ID)
-		if err != nil || sum == nil {
+		if err != nil {
+			// Fail-open: a summary read error must not silently drop this
+			// function from nullableFuncs — that would make detectExternalCall
+			// skip its call sites and hide a genuine null source (false negative).
+			m[f.Name] = true
 			if d.logger != nil {
-				d.logger.Warn("get summary failed", "function_id", f.ID, "error", err)
+				d.logger.Warn("get summary failed, treating as nullable", "function_id", f.ID, "error", err)
 			}
 			continue
 		}
-		if sum.ReturnNullable {
+		if sum != nil && sum.ReturnNullable {
 			m[f.Name] = true
 		}
 	}

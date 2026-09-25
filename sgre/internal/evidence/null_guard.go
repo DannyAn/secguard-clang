@@ -29,9 +29,12 @@ func (d *NullGuardDetector) Detect(ctx context.Context) (DetectResult, error) {
 	// the whole scan tree before guard detection: a helper defined in a .h
 	// header is indexed as a Function in another file, so the per-file callback
 	// below could not see its body. The summary is consulted by detectHelperGuards.
-	helpers := d.collectNullCheckHelpers(ctx, &result)
+	helpers, err := d.collectNullCheckHelpers(ctx, &result)
+	if err != nil {
+		return result, err
+	}
 
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		ifs := root.FindAll("if_statement")
 		whiles := root.FindAll("while_statement")
 		fors := root.FindAll("for_statement")
@@ -44,7 +47,7 @@ func (d *NullGuardDetector) Detect(ctx context.Context) (DetectResult, error) {
 		// a deref inside is guarded. if/while/for all expose a "condition" field.
 		condNodes := append(append(append([]parser.Node{}, ifs...), whiles...), fors...)
 		for _, f := range funcs {
-			d.detectGuards(ctx, f, file, condNodes, &result)
+			d.detectGuards(ctx, f, file, condNodes, assigns, &result)
 			d.detectEarlyReturnGuards(ctx, f, file, ifs, assigns, &result)
 			d.detectReassignmentGuards(ctx, f, file, ifs, assigns, &result)
 			d.detectMacroGuards(ctx, f, file, calls, assigns, macroGuards, &result)
@@ -141,43 +144,129 @@ func findHelperCallInCond(cond parser.Node, helpers map[string][]int) *parser.No
 	return nil
 }
 
-func (d *NullGuardDetector) detectGuards(ctx context.Context, f *db.Function, file *db.File, ifs []parser.Node, result *DetectResult) {
-	for _, ifNode := range ifs {
-		if !funcLineRange(f, ifNode.StartLine()) {
+func (d *NullGuardDetector) detectGuards(ctx context.Context, f *db.Function, file *db.File, condNodes, assigns []parser.Node, result *DetectResult) {
+	for _, condNode := range condNodes {
+		if !funcLineRange(f, condNode.StartLine()) {
 			continue
 		}
-		condition := ifNode.ChildByFieldName("condition")
+		condition := condNode.ChildByFieldName("condition")
 		if condition == nil {
 			continue
 		}
-		condText := condition.Text()
-		varName := extractGuardedVariable(*condition)
-		if varName == "" {
+		// Only a condition whose TRUE branch establishes a variable non-null is a
+		// guard. `p != NULL` / `p` / `p && q` qualify; `p == NULL` / `!p` /
+		// `p || q` establish NULL (or nothing) on the taken branch and must not
+		// suppress a dereference inside it.
+		vars := guardedNonnullVars(*condition)
+		if len(vars) == 0 {
 			continue
 		}
-		condPattern := classifyGuard(condText)
-		if condPattern == "" {
-			continue
-		}
+		condPattern := classifyGuard(strings.TrimSpace(condition.Text()))
 
 		// if uses "consequence", while/for use "body"; either delimits the
 		// guarded scope.
 		scopeEnd := f.EndLine
-		if consequence := ifNode.ChildByFieldName("consequence"); consequence != nil {
+		if consequence := condNode.ChildByFieldName("consequence"); consequence != nil {
 			scopeEnd = consequence.EndLine()
-		} else if body := ifNode.ChildByFieldName("body"); body != nil {
+		} else if body := condNode.ChildByFieldName("body"); body != nil {
 			scopeEnd = body.EndLine()
 		}
 
-		if emitEvent(ctx, d.store, d.logger, "NULL_GUARD", f.ID, &db.Location{FileID: file.ID, Line: ifNode.StartLine()}, map[string]interface{}{
-			"variable":    varName,
-			"condition":   condPattern,
-			"scope_start": ifNode.StartLine(),
-			"scope_end":   scopeEnd,
-		}) {
-			result.EventsCreated++
+		for _, varName := range vars {
+			if varName == "" {
+				continue
+			}
+			end := scopeEnd
+			// A reassignment inside the guarded scope re-opens the null
+			// possibility (`while (p != NULL) { ...; p = p->next; p->y; }`), so
+			// truncate there exactly like the early-return guards do.
+			if cut := guardScopeEnd(assigns, f, varName, condNode.StartLine()); cut < end {
+				end = cut
+			}
+			if emitEvent(ctx, d.store, d.logger, "NULL_GUARD", f.ID, &db.Location{FileID: file.ID, Line: condNode.StartLine()}, map[string]interface{}{
+				"variable":    varName,
+				"condition":   condPattern,
+				"scope_start": condNode.StartLine(),
+				"scope_end":   end,
+			}) {
+				result.EventsCreated++
+			}
 		}
 	}
+}
+
+// guardedNonnullVars returns the variables a condition establishes as non-null
+// when it evaluates TRUE. It is the direction-aware, compound-aware core of
+// detectGuards: a `&&` conjunction guards every operand, a `||` disjunction
+// guards none (at most one operand need be non-null), `p != NULL` guards p, and
+// `p == NULL` / `!p` establish NULL rather than non-null and guard nothing.
+func guardedNonnullVars(cond parser.Node) []string {
+	switch cond.Kind() {
+	case "parenthesized_expression", "cast_expression":
+		for _, c := range cond.NamedChildren() {
+			if vars := guardedNonnullVars(c); len(vars) > 0 {
+				return vars
+			}
+		}
+		return nil
+	}
+	if cond.Kind() == "binary_expression" {
+		switch binaryOperator(cond) {
+		case "&&":
+			var vars []string
+			for _, child := range cond.NamedChildren() {
+				vars = append(vars, guardedNonnullVars(child)...)
+			}
+			return vars
+		case "||":
+			return nil
+		case "!=":
+			if v := nonNullSideVar(cond); v != "" {
+				return []string{v}
+			}
+		}
+		return nil
+	}
+	if v := truthCheckedLvalue(cond); v != "" {
+		return []string{v}
+	}
+	return nil
+}
+
+// nonNullSideVar returns the non-null operand of a `!=` comparison (`p != NULL`
+// → p, `NULL != p` → p, `(e = f()) != NULL` → e), or "".
+func nonNullSideVar(cond parser.Node) string {
+	for _, c := range cond.NamedChildren() {
+		if isNullOperand(c) {
+			continue
+		}
+		if v := guardVarName(strings.TrimSpace(c.Text())); v != "" && v != "NULL" && v != "0" {
+			return v
+		}
+	}
+	return ""
+}
+
+// truthCheckedLvalue returns the lvalue path a bare truth-check tests (`if (p)`,
+// `if (arr[i])`, `if (p->f)`), or "" for a negation (`!p` — establishes NULL),
+// a dereference (`*pp` — tests the pointee, not pp), or any non-lvalue.
+func truthCheckedLvalue(cond parser.Node) string {
+	inner := cond
+	for inner.Kind() == "parenthesized_expression" || inner.Kind() == "cast_expression" {
+		kids := inner.NamedChildren()
+		if len(kids) == 0 {
+			break
+		}
+		inner = kids[0]
+	}
+	if inner.Kind() == "unary_expression" {
+		return ""
+	}
+	expr := strings.TrimSpace(inner.Text())
+	if strings.HasPrefix(expr, "*") {
+		return ""
+	}
+	return lvaluePath(expr)
 }
 
 func (d *NullGuardDetector) detectEarlyReturnGuards(ctx context.Context, f *db.Function, file *db.File, ifs, assigns []parser.Node, result *DetectResult) {
@@ -214,78 +303,25 @@ func (d *NullGuardDetector) detectEarlyReturnGuards(ctx context.Context, f *db.F
 }
 
 // guardExitBound returns the outermost line through which an early-exit guard's
-// non-null fact can hold on the fall-through. A return/goto exits the function,
-// so the bound is the function end. A break/continue exits the enclosing
-// construct's iteration/body, so the bound is that construct's body end — the
-// fall-through never reaches past it, and treating it as function-wide would
-// suppress genuine null-derefs after the loop/switch.
+// non-null fact can hold on the fall-through. The fact holds only within the
+// innermost enclosing block: a guard at the function top level spans the rest of
+// the function, but a guard nested inside a conditional/loop branch
+// (`if (c) { if (p == NULL) return; }`) must not leak its non-null fact past
+// that branch — the branch may be skipped, leaving p NULL.
 func guardExitBound(cons, ifNode parser.Node, f *db.Function) int {
-	if len(cons.FindAll("continue_statement")) > 0 {
-		if end := enclosingConstructBodyEnd(ifNode, false); end > 0 {
-			return end
-		}
-	}
-	if len(cons.FindAll("break_statement")) > 0 {
-		if end := enclosingConstructBodyEnd(ifNode, true); end > 0 {
-			return end
-		}
-	}
-	return f.EndLine
-}
-
-// enclosingConstructBodyEnd returns the end line of the nearest enclosing loop
-// body (for/while/do), or — when includeSwitch is true — also a switch body
-// (break exits a switch exactly like it exits a loop). It returns 0 when the
-// node is not inside such a construct.
-func enclosingConstructBodyEnd(node parser.Node, includeSwitch bool) int {
-	for n := node.Parent(); n != nil; n = n.Parent() {
-		switch n.Kind() {
-		case "for_statement", "while_statement", "do_statement":
-			if body := n.ChildByFieldName("body"); body != nil {
-				return body.EndLine()
-			}
-			return n.EndLine()
-		case "switch_statement":
-			if !includeSwitch {
-				continue
-			}
-			if body := n.ChildByFieldName("body"); body != nil {
-				return body.EndLine()
-			}
-			return n.EndLine()
-		case "function_definition":
-			return 0
-		}
-	}
-	return 0
+	return enclosingBlockEnd(ifNode)
 }
 
 // earlyReturnGuardedVars returns the variables an early-return guard condition
 // establishes as non-null. A top-level OR of null checks
 // (`a == NULL || b == NULL`) returns on either null branch, so every operand's
 // variable is non-null after the guard; a single null check (`p == NULL`, `!p`)
-// guards its one variable.
+// guards its one variable. This is exactly the FALSE-direction of a condition
+// (`p == NULL` false ⟹ p non-null), so it delegates to parser.NullCheckedVars —
+// which also correctly rejects a conjunction (`p == NULL && x` false ⟹
+// `p != NULL || !x`, neither operand guaranteed non-null).
 func earlyReturnGuardedVars(cond parser.Node) []string {
-	switch cond.Kind() {
-	case "parenthesized_expression", "cast_expression":
-		for _, c := range cond.NamedChildren() {
-			if vars := earlyReturnGuardedVars(c); len(vars) > 0 {
-				return vars
-			}
-		}
-		return nil
-	}
-	if cond.Kind() == "binary_expression" && binaryOperator(cond) == "||" {
-		var vars []string
-		for _, child := range cond.NamedChildren() {
-			vars = append(vars, earlyReturnGuardedVars(child)...)
-		}
-		return vars
-	}
-	if v := nullCheckedVariable(cond); v != "" {
-		return []string{v}
-	}
-	return nil
+	return parser.NullCheckedVars(cond)
 }
 
 // detectReassignmentGuards handles the null analogue of `if (x == 0) x = 1;`:
@@ -307,10 +343,14 @@ func (d *NullGuardDetector) detectReassignmentGuards(ctx context.Context, f *db.
 		if cond == nil {
 			continue
 		}
-		varName := nullCheckedVariable(*cond)
-		if varName == "" {
+		// A reassignment guard (`if (p == NULL) p = &x;`) needs exactly ONE
+		// null-checked variable; a conjunction (`p == NULL && q`) does not
+		// establish p non-null on the fall-through, so it must not guard.
+		vars := parser.NullCheckedVars(*cond)
+		if len(vars) != 1 {
 			continue
 		}
+		varName := vars[0]
 		cons := ifNode.ChildByFieldName("consequence")
 		if cons == nil || !assignsNonNull(*cons, varName) {
 			continue
@@ -355,7 +395,7 @@ func (d *NullGuardDetector) detectMacroGuards(ctx context.Context, f *db.Functio
 			if negated {
 				varName = bareVarName(args[idx])
 			} else {
-				varName = nullCheckedVariable(args[idx])
+				varName = parser.NullCheckedVariable(args[idx])
 			}
 			if varName == "" {
 				continue
@@ -524,32 +564,6 @@ func assignmentExitsScope(assign parser.Node) bool {
 // that uniquely identifies a node within one parse.
 func sameNode(a, b parser.Node) bool {
 	return a.StartByte() == b.StartByte() && a.EndByte() == b.EndByte()
-}
-
-// nullCheckedVariable returns the variable a null-check guard tests when the
-// condition is `p == NULL`, `NULL == p`, `p == 0`, `0 == p`, or `!p`.
-func nullCheckedVariable(cond parser.Node) string {
-	t := strings.TrimSpace(cond.Text())
-	for strings.HasPrefix(t, "(") && strings.HasSuffix(t, ")") {
-		t = strings.TrimSpace(t[1 : len(t)-1])
-	}
-	if strings.HasPrefix(t, "!") {
-		v := strings.Trim(strings.TrimSpace(t[1:]), "()")
-		if v != "" && v != "NULL" && v != "0" {
-			return v
-		}
-		return ""
-	}
-	if strings.Contains(t, "==") {
-		parts := strings.SplitN(t, "==", 2)
-		for _, p := range parts {
-			p = strings.Trim(strings.TrimSpace(p), "()")
-			if p != "" && p != "NULL" && p != "0" && p != "((void*)0)" && p != "((void *)0)" {
-				return p
-			}
-		}
-	}
-	return ""
 }
 
 // assignsNonNull reports whether an if-consequence reassigns varName a provably

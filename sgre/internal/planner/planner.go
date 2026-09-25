@@ -61,7 +61,6 @@ func (p *Planner) getFilters(chain string) ([]Filter, error) {
 			NewArrayOOBPrecedenceFilter(p.store),
 			NewNullableSourceFilter(p.store).WithParser(p.parser, p.logger),
 			NewCallReachFilter(p.store, p.callReachCache),
-			NewGuardFilter(p.store),
 			NewSafeFunctionFilter(p.store),
 		}, nil
 	case "memory-leak":

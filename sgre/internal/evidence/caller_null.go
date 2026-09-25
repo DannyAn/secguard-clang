@@ -68,6 +68,14 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 		ifs := root.FindAll("if_statement")
 		assigns := root.FindAll("assignment_expression")
 
+		// A call argument that names an array (global or caller-local) can never
+		// be NULL, so it must not seed a caller_null source. Precompute per caller
+		// to avoid re-walking the tree for every call site.
+		nonNullArrays := make(map[int64]map[string]bool, len(funcs))
+		for _, fn := range funcs {
+			nonNullArrays[fn.ID] = collectNonNullableArrays(root, fn)
+		}
+
 		for _, call := range root.FindAll("call_expression") {
 			callee := calleeName(call)
 			info, ok := callees[callee]
@@ -92,7 +100,7 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 				if !strings.HasSuffix(strings.TrimSpace(info.types[i]), "*") {
 					continue
 				}
-				kind, definite := d.classifyArg(arg, caller, ifs, assigns, call)
+				kind, definite := d.classifyArg(arg, caller, ifs, assigns, nonNullArrays[caller.ID], call)
 				if kind == "safe" {
 					continue
 				}
@@ -215,11 +223,18 @@ func functionParamNames(fnDef parser.Node) (string, []string, []string) {
 }
 
 // classifyArg classifies a call argument's nullability at the call site.
-func (d *CallerNullDetector) classifyArg(arg parser.Node, caller *db.Function, ifs, assigns []parser.Node, call parser.Node) (string, bool) {
+func (d *CallerNullDetector) classifyArg(arg parser.Node, caller *db.Function, ifs, assigns []parser.Node, nonNullArrays map[string]bool, call parser.Node) (string, bool) {
 	switch arg.Kind() {
+	case "null":
+		// tree-sitter-c parses `NULL` as a `null` literal node (not an
+		// identifier), so a literal NULL argument is a DEFINITE null source.
+		return "null", true
 	case "identifier":
 		if arg.Text() == "NULL" {
 			return "null", true
+		}
+		if nonNullArrays[arg.Text()] {
+			return "safe", false
 		}
 		if callerGuardsVar(caller, ifs, assigns, arg.Text(), call) {
 			return "safe", false
@@ -232,7 +247,7 @@ func (d *CallerNullDetector) classifyArg(arg parser.Node, caller *db.Function, i
 		return "safe", false
 	case "cast_expression":
 		op := castOperand(arg)
-		if op.Kind() == "identifier" && op.Text() == "NULL" {
+		if op.Kind() == "null" || (op.Kind() == "identifier" && op.Text() == "NULL") {
 			return "null", true
 		}
 		if op.Kind() == "number_literal" && strings.TrimSpace(op.Text()) == "0" {

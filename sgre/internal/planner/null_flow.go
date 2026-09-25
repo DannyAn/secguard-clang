@@ -55,6 +55,14 @@ type flowAnalyzer struct {
 	// parameters). They are seeded into IN[entry] so a parameter's taint flows
 	// into locals derived from it — the inter-procedural context of the callee.
 	entrySeeds map[string]bool
+	// definiteEntrySeeds are parameters PROVEN null by a caller (a caller passes
+	// a literal NULL). They seed the must-null tier so such a dereference is
+	// confirmed, not merely suspected.
+	definiteEntrySeeds map[string]bool
+	// helperParams is the cross-file null-check predicate-helper summary, and
+	// macroGuards the cross-file guard-macro summary; both feed the guard model.
+	helperParams map[string][]int
+	macroGuards  map[string]macros.GuardSummary
 	// macroWrites is the whole-tree merged macro write-summary cache. When set,
 	// it replaces the per-file WriteSummaries in macroWritesFor so a macro
 	// defined in a .h header (SAMPLE_Scan, POOL_FOR, ...) is visible at call
@@ -231,8 +239,8 @@ func (a *flowAnalyzer) analyzeFunction(ctx context.Context, fn *db.Function, bod
 		}
 	}
 	res := a.analyzeFlow(ctx, fn, body, fileRoot, genByLine, nil, true, false)
-	if res != nil && len(definiteGenByLine) > 0 {
-		res.definite, res.definiteGenAt = a.analyzeDefiniteNull(res.cfg, a.scopeOracle(body))
+	if res != nil && (len(definiteGenByLine) > 0 || len(a.definiteEntrySeeds) > 0) {
+		res.definite, res.definiteGenAt = a.analyzeDefiniteNull(res.cfg, a.scopeOracle(body), a.definiteEntrySeeds)
 	}
 	return res
 }
@@ -249,7 +257,13 @@ func (a *flowAnalyzer) analyzeFlow(ctx context.Context, fn *db.Function, body pa
 
 	cfg := graph.BuildStmtCFG(body, fn.EndLine)
 	effects := a.buildEffects(cfg, genByLine, killByLine, a.dfgCopies[fn.ID], nonNullKills, definiteKills, a.macroWritesFor(fileRoot, nonNullKills), a.scopeOracle(body))
-	nodeIn := runDataflow(cfg, effects, a.entrySeeds)
+	// Null guards are path-sensitive kills; they apply only to the null-deref
+	// may-analysis (nonNullKills), never to taint/freed-state/uninit flows.
+	var guard *guardModel
+	if nonNullKills {
+		guard = buildGuardModel(cfg, a.helperParams, a.macroGuards)
+	}
+	nodeIn := runDataflow(cfg, effects, a.entrySeeds, guard)
 	return &flowResult{cfg: cfg, nodeIn: nodeIn, genAt: genAt(cfg, effects)}
 }
 
@@ -264,8 +278,8 @@ func (a *flowAnalyzer) analyzeFlowMust(ctx context.Context, fn *db.Function, bod
 
 	cfg := graph.BuildStmtCFG(body, fn.EndLine)
 	effects := a.buildEffects(cfg, genByLine, killByLine, a.dfgCopies[fn.ID], nonNullKills, definiteKills, a.macroWritesFor(fileRoot, nonNullKills), a.scopeOracle(body))
-	res := &flowResult{cfg: cfg, nodeIn: runDataflow(cfg, effects, a.entrySeeds), genAt: genAt(cfg, effects)}
-	res.must, res.mustGenAt = runMustDataflow(cfg, effects)
+	res := &flowResult{cfg: cfg, nodeIn: runDataflow(cfg, effects, a.entrySeeds, nil), genAt: genAt(cfg, effects)}
+	res.must, res.mustGenAt = runMustDataflow(cfg, effects, nil)
 	return res
 }
 
@@ -275,7 +289,7 @@ func (a *flowAnalyzer) analyzeFlowMust(ctx context.Context, fn *db.Function, bod
 // other non-copy reassignment, copy = `p = q`. A line-keyed map would collide
 // when a one-line `if (c) p = NULL; else p = &x;` puts both the header and its
 // branches on one line, falsely assigning the NULL gen to the `p = &x` branch.
-func (a *flowAnalyzer) analyzeDefiniteNull(cfg *graph.StmtCFG, isValue func(string) bool) (map[int]map[string]bool, map[int]map[string]bool) {
+func (a *flowAnalyzer) analyzeDefiniteNull(cfg *graph.StmtCFG, isValue func(string) bool, entrySeeds map[string]bool) (map[int]map[string]bool, map[int]map[string]bool) {
 	effects := make(map[int]*nodeEffects, len(cfg.Nodes))
 	for _, n := range cfg.Nodes {
 		if n.Kind != "stmt" {
@@ -304,7 +318,7 @@ func (a *flowAnalyzer) analyzeDefiniteNull(cfg *graph.StmtCFG, isValue func(stri
 		addOutputParamKills(n.Stmt, e, true, nil, a.iterMacros, isValue)
 		effects[n.ID] = e
 	}
-	return runMustDataflow(cfg, effects)
+	return runMustDataflow(cfg, effects, entrySeeds)
 }
 
 // buildEffects computes the per-statement-node transfer effects for a CFG.
@@ -565,7 +579,7 @@ func isControlFlowHeaderStmt(kind string) bool {
 // copy, kill, then gen. The lattice is monotone (source sets only grow at
 // joins; a kill replaces a variable's set with the empty set, which is a fixed
 // set-difference under union), so iteration order does not affect the fixpoint.
-func runDataflow(cfg *graph.StmtCFG, effects map[int]*nodeEffects, entrySeeds map[string]bool) map[int]map[string]map[int]bool {
+func runDataflow(cfg *graph.StmtCFG, effects map[int]*nodeEffects, entrySeeds map[string]bool, guard *guardModel) map[int]map[string]map[int]bool {
 	nodeIn := make(map[int]map[string]map[int]bool, len(cfg.Nodes))
 	for i := range cfg.Nodes {
 		nodeIn[i] = map[string]map[int]bool{}
@@ -598,7 +612,21 @@ func runDataflow(cfg *graph.StmtCFG, effects map[int]*nodeEffects, entrySeeds ma
 
 		out := transfer(nodeIn[id], effects[id], id)
 		for _, succ := range cfg.Nodes[id].Succs {
-			if mergeInto(nodeIn[succ], out) && !inQueue[succ] {
+			o := out
+			if guard != nil {
+				if gk := guard.edgeKills[[2]int{id, succ}]; len(gk) > 0 {
+					// A guard kills a variable's null source only on this edge, so
+					// clone the shared OUT before mutating it.
+					o = make(map[string]map[int]bool, len(out))
+					for v, srcs := range out {
+						o[v] = srcs
+					}
+					for v := range gk {
+						o[v] = map[int]bool{}
+					}
+				}
+			}
+			if mergeInto(nodeIn[succ], o) && !inQueue[succ] {
 				inQueue[succ] = true
 				worklist = append(worklist, succ)
 			}
@@ -673,9 +701,11 @@ func mergeInto(dst, src map[string]map[int]bool) bool {
 // when every incoming path carries it. A kill on one branch therefore clears the
 // fact at the join, which is exactly the semantics "certainly null" / "certainly
 // freed" / "certainly uninitialized" require.
-func runMustDataflow(cfg *graph.StmtCFG, effects map[int]*nodeEffects) (map[int]map[string]bool, map[int]map[string]bool) {
+func runMustDataflow(cfg *graph.StmtCFG, effects map[int]*nodeEffects, entrySeeds map[string]bool) (map[int]map[string]bool, map[int]map[string]bool) {
 	// universe: every variable that appears in any effect (gen/kill/copy target
-	// or source). TOP for a variable is "true on every path so far".
+	// or source). TOP for a variable is "true on every path so far". Entry seeds
+	// are added so a parameter proven null by a caller is tracked even when the
+	// callee body has no assignment of it.
 	universe := make(map[string]bool)
 	for _, e := range effects {
 		if e == nil {
@@ -692,12 +722,19 @@ func runMustDataflow(cfg *graph.StmtCFG, effects map[int]*nodeEffects) (map[int]
 			universe[rhs] = true
 		}
 	}
+	for v := range entrySeeds {
+		universe[v] = true
+	}
 
 	nodeIn := make(map[int]map[string]bool, len(cfg.Nodes))
 	for i := range cfg.Nodes {
 		m := make(map[string]bool, len(universe))
 		if i != cfg.Entry {
 			for v := range universe {
+				m[v] = true
+			}
+		} else {
+			for v := range entrySeeds {
 				m[v] = true
 			}
 		}
@@ -1259,11 +1296,33 @@ func exprReturnsNullable(expr parser.Node, flow *flowResult, params map[string]i
 
 func isNullLiteralExpr(text string) bool {
 	t := strings.TrimSpace(text)
+	for len(t) >= 2 && t[0] == '(' && t[len(t)-1] == ')' && nullLiteralParensBalanced(t[1:len(t)-1]) {
+		t = strings.TrimSpace(t[1 : len(t)-1])
+	}
 	switch t {
 	case "NULL", "nullptr", "(void*)0", "(void *)0", "((void*)0)", "((void *)0)":
 		return true
 	}
 	return false
+}
+
+// nullLiteralParensBalanced reports whether s has balanced parentheses, so a
+// parenthesized null literal (`(NULL)`) is stripped while a non-literal
+// expression is left untouched.
+func nullLiteralParensBalanced(s string) bool {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth < 0 {
+				return false
+			}
+		}
+	}
+	return depth == 0
 }
 
 // mayReturnPointer reports whether a function body could return a pointer value.

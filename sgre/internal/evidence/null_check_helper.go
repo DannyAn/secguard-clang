@@ -16,9 +16,9 @@ import (
 // (a private sub-function) or in a .h header (a static inline) — both are
 // indexed as Functions, so a single cross-file pass covers both sources.
 // Returns map[function name] -> 0-based parameter indices the function null-checks.
-func (d *NullGuardDetector) collectNullCheckHelpers(ctx context.Context, result *DetectResult) map[string][]int {
+func (d *NullGuardDetector) collectNullCheckHelpers(ctx context.Context, result *DetectResult) (map[string][]int, error) {
 	out := make(map[string][]int)
-	_ = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		funcDefs := root.FindAll("function_definition")
 		returns := root.FindAll("return_statement")
 		for _, f := range funcs {
@@ -70,7 +70,7 @@ func (d *NullGuardDetector) collectNullCheckHelpers(ctx context.Context, result 
 			}
 		}
 	})
-	return out
+	return out, err
 }
 
 // returnNullChecksParam reports whether a return statement's expression
