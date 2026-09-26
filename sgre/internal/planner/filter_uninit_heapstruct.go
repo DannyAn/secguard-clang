@@ -248,6 +248,7 @@ func wholeObjectSize(arg parser.Node) bool {
 var destWriterNames = map[string]bool{
 	"memset": true, "memset_s": true, "bzero": true,
 	"strcpy": true, "strcpy_s": true, "strncpy": true, "strncpy_s": true,
+	"strlcpy": true, "stpncpy": true, "mempcpy": true,
 	"memcpy": true, "memcpy_s": true, "memmove": true, "memmove_s": true,
 	"sprintf": true, "sprintf_s": true, "snprintf": true, "snprintf_s": true,
 	"vsprintf": true, "vsprintf_s": true, "vsnprintf": true, "vsnprintf_s": true,
