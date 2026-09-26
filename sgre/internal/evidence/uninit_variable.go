@@ -64,6 +64,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 		unarys := root.FindAll("unary_expression")
 		ptrs := root.FindAll("pointer_expression")
 		fields := root.FindAll("field_expression")
+		subscripts := root.FindAll("subscript_expression")
 		ifs := root.FindAll("if_statement")
 		whiles := root.FindAll("while_statement")
 		fors := root.FindAll("for_statement")
@@ -77,7 +78,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 			// never be in this set (see parser.FunctionBoundNames).
 			bound := parser.FunctionBoundNames(funcDefsByLine[f.StartLine])
 			d.detectStackUninit(ctx, f, file, bound, decls, assigns, calls, returns, inits, ifs, whiles, fors, bodies, summaries, macroWrites, &result)
-			d.detectHeapUninit(ctx, f, file, inits, assigns, calls, unarys, ptrs, fields, &result)
+			d.detectHeapUninit(ctx, f, file, inits, assigns, calls, unarys, ptrs, fields, subscripts, &result)
 			d.detectStructPartialUninit(ctx, f, file, bound, decls, assigns, calls, ifs, fields, summaries, macroWrites, &result)
 		}
 	})
@@ -719,7 +720,28 @@ func addressOfTargetScoped(arg parser.Node, isValue func(string) bool) (parser.N
 // way; when the macro body lives in an excluded header it is invisible to
 // WriteSummaries, so the name is the only signal left that the FIRST argument is
 // written, not read (`ODA_GPORT_TRUNK_SET(gport, trunkid)` → `(gport) = ...`).
+// getterMacroName reports whether a call name is a getter/reader (GET_/READ_/.../
+// returns a _COUNT/_SIZE/_LEN), whose arguments are inputs, not outputs. A setter
+// heuristic must not treat these as writing their first argument (UN-12/13).
+func getterMacroName(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, p := range []string{"GET_", "READ_", "IS_", "HAS_", "QUERY_", "PEEK_"} {
+		if strings.HasPrefix(upper, p) {
+			return true
+		}
+	}
+	for _, s := range []string{"_COUNT", "_SIZE", "_LEN", "_LENGTH", "_LEVEL"} {
+		if strings.HasSuffix(upper, s) {
+			return true
+		}
+	}
+	return false
+}
+
 func setterMacroName(name string) bool {
+	if getterMacroName(name) {
+		return false
+	}
 	upper := strings.ToUpper(name)
 	for _, kw := range []string{"_SET", "SET_", "_INIT", "INIT_", "_ASSIGN", "ASSIGN_"} {
 		if strings.Contains(upper, kw) {
@@ -738,6 +760,9 @@ func setterMacroName(name string) bool {
 // parse-into-struct shape where the output is a by-value struct, not the first
 // `&`-less scalar.
 func structOutputMacroName(name string) bool {
+	if getterMacroName(name) {
+		return false
+	}
 	upper := strings.ToUpper(name)
 	for _, kw := range []string{"_PARSE", "PARSE_", "_DECODE", "DECODE_", "_DESERIALIZE", "DESERIALIZE_", "_UNPACK", "UNPACK_", "_FILL", "FILL_"} {
 		if strings.Contains(upper, kw) {
@@ -978,10 +1003,73 @@ func nullZeroGuardVar(cond *parser.Node) string {
 	return g
 }
 
-// isNullZeroExpr reports whether node is a literal null/zero sentinel.
+// sizeIsWholeObject reports whether a memset/bzero size argument is a `sizeof(...)`
+// expression, which covers the whole pointed-to object and thus fully initializes
+// the block (vs. a variable size `n` that may only touch a prefix).
+func sizeIsWholeObject(arg parser.Node) bool {
+	for arg.Kind() == "parenthesized_expression" {
+		ch := arg.NamedChildren()
+		if len(ch) == 0 {
+			return false
+		}
+		arg = ch[0]
+	}
+	return arg.Kind() == "sizeof_expression"
+}
+
+// isZeroInitAllocator reports whether an allocation function zero-initializes its
+// block (calloc and calloc-family wrappers), so a read of the returned memory is
+// never an uninitialized-read.
+func isZeroInitAllocator(name string) bool {
+	return strings.Contains(strings.ToLower(name), "calloc")
+}
+
+// isNullZeroExpr reports whether node is a literal null/zero sentinel. It
+// recognizes the signed/unsigned/hex/char/pointer spellings and parenthesized
+// casts, so a lazy-init guard initialized with `g = 0U` / `g = (void*)0` /
+// `g = '\0'` / `g = nullptr` is still recognized.
 func isNullZeroExpr(node parser.Node) bool {
 	t := strings.TrimSpace(strings.Trim(node.Text(), "() \t"))
-	return t == "NULL" || t == "0" || t == "0x0" || t == "false" || t == "FALSE"
+	// Strip a null-pointer cast `(void*)0` / `(void *)0`.
+	for strings.HasPrefix(t, "(") && strings.HasSuffix(t, ")") {
+		inner := strings.TrimSpace(t[1 : len(t)-1])
+		if !balancedParens(inner) {
+			break
+		}
+		t = inner
+	}
+	// Named sentinels must be checked BEFORE stripping an integer suffix (a
+	// trailing `L` in `NULL` is part of the name, not a literal suffix).
+	switch t {
+	case "NULL", "nullptr", "false", "FALSE":
+		return true
+	}
+	// Strip a C integer suffix (u/U/l/L) from a zero literal: `0U`, `0x0L`.
+	trimmed := strings.TrimRight(t, "uUlL")
+	switch trimmed {
+	case "0", "0x0", "00", "'\\0'":
+		return true
+	}
+	// A cast spelling `(void*)0` after the paren strip above becomes `void*0`,
+	// not a bare literal; handle the remaining cast-operator form.
+	return strings.ReplaceAll(strings.ReplaceAll(trimmed, " ", ""), "(void*)", "") == "0"
+}
+
+// balancedParens reports whether s has balanced parentheses.
+func balancedParens(s string) bool {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth < 0 {
+				return false
+			}
+		}
+	}
+	return depth == 0
 }
 
 // nullZeroInitializedBefore reports whether g's last write before loopStart is
@@ -1076,7 +1164,7 @@ func isInIfRange(ifs []parser.Node, f *db.Function, line int) bool {
 	return false
 }
 
-func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Function, file *db.File, inits, assigns, calls, unarys, ptrs, fields []parser.Node, result *DetectResult) {
+func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Function, file *db.File, inits, assigns, calls, unarys, ptrs, fields, subscripts []parser.Node, result *DetectResult) {
 	mallocVars := make(map[string]int) // varName -> line of the malloc assignment
 
 	checkInit := func(node parser.Node) {
@@ -1101,7 +1189,11 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		}
 		if callExpr.Kind() == "call_expression" {
 			callName := extractCallName(callExpr)
-			if apikb.IsAllocator(callName) {
+			// calloc (and calloc-family wrappers) ZERO-INITIALIZE the block, so a
+			// read of it is never an uninitialized-read — exclude it from the
+			// heap-uninit candidate set (UN-11). malloc/realloc leave the memory
+			// uninitialized and are tracked.
+			if apikb.IsAllocator(callName) && !isZeroInitAllocator(callName) {
 				mallocVars[varName] = node.StartLine()
 			}
 		}
@@ -1185,11 +1277,10 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		lhs := children[0]
 		switch lhs.Kind() {
 		case "field_expression", "subscript_expression":
-			base := lhs.NamedChildren()
-			if len(base) == 0 {
+			name := fieldBaseName(lhs)
+			if name == "" {
 				continue
 			}
-			name := base[0].Text()
 			if _, ok := mallocVars[name]; !ok {
 				continue
 			}
@@ -1222,26 +1313,28 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		case "memset", "memset_s", "bzero":
 			if args[0].Kind() == "identifier" {
 				v := args[0].Text()
-				if _, ok := mallocVars[v]; ok && strings.Contains(call.Text(), "sizeof(*"+v+")") {
+				// A sizeof size (`sizeof(*p)`, `sizeof(struct S)`) covers the whole
+				// object, so the block is fully initialized. The previous text
+				// match only recognized `sizeof(*p)` and missed the type-name form
+				// (UN-14).
+				if _, ok := mallocVars[v]; ok && len(args) >= 3 && sizeIsWholeObject(args[2]) {
 					wholeInit[v] = true
 				}
 			} else if args[0].Kind() == "pointer_expression" {
 				target := args[0].NamedChildren()
 				if len(target) > 0 && (target[0].Kind() == "field_expression" || target[0].Kind() == "subscript_expression") {
-					base := target[0].NamedChildren()
-					if len(base) > 0 {
-						if _, ok := mallocVars[base[0].Text()]; ok {
-							markField(base[0].Text(), fieldPath(target[0]))
+					if base := fieldBaseName(target[0]); base != "" {
+						if _, ok := mallocVars[base]; ok {
+							markField(base, fieldPath(target[0]))
 						}
 					}
 				}
 			}
 		default:
 			if isDestWriter(name) && (args[0].Kind() == "field_expression" || args[0].Kind() == "subscript_expression") {
-				base := args[0].NamedChildren()
-				if len(base) > 0 {
-					if _, ok := mallocVars[base[0].Text()]; ok {
-						markField(base[0].Text(), fieldPath(args[0]))
+				if base := fieldBaseName(args[0]); base != "" {
+					if _, ok := mallocVars[base]; ok {
+						markField(base, fieldPath(args[0]))
 					}
 				}
 			}
@@ -1293,7 +1386,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		if len(children) == 0 {
 			continue
 		}
-		varName := children[0].Text()
+		varName := fieldBaseName(field)
 		if !isHeapVar(mallocVars, varName) || wholeInit[varName] {
 			continue
 		}
@@ -1303,6 +1396,33 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		}
 		if !initializedFields[path] {
 			d.insertValueUseEvent(ctx, f, file, field.StartLine(), mallocVars[varName], varName, "heap_uninit", result)
+		}
+	}
+
+	// An element read `p[i]` of a malloc'd block is an uninitialized read — the
+	// previous scan only covered `*p`, `p` and `p->f`, so `int *p = malloc(...);
+	// v = p[0];` was a systematic miss (UN-05).
+	for _, sub := range subscripts {
+		if !funcLineRange(f, sub.StartLine()) {
+			continue
+		}
+		if isInsideTypeExpr(sub) {
+			continue
+		}
+		children := sub.NamedChildren()
+		if len(children) == 0 {
+			continue
+		}
+		varName := fieldBaseName(sub)
+		if !isHeapVar(mallocVars, varName) || wholeInit[varName] {
+			continue
+		}
+		path := fieldPath(sub)
+		if writePaths[path] {
+			continue
+		}
+		if !initializedFields[path] {
+			d.insertValueUseEvent(ctx, f, file, sub.StartLine(), mallocVars[varName], varName, "heap_uninit", result)
 		}
 	}
 }
@@ -1458,7 +1578,7 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 		if len(children) == 0 {
 			continue
 		}
-		varName := children[0].Text()
+		varName := fieldBaseName(field)
 		if _, isStruct := structVars[varName]; !isStruct {
 			continue
 		}
@@ -1488,6 +1608,24 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 func isHeapVar(m map[string]int, name string) bool {
 	_, ok := m[name]
 	return ok
+}
+
+// fieldBaseName returns the ROOT identifier of a field/subscript chain
+// (`p->inner->len` → `p`, `p[i]` → `p`), so a nested member read/write resolves to
+// the heap/struct variable it belongs to (UN-07). The full path stays intact in
+// fieldPath for field-level initialization tracking.
+func fieldBaseName(n parser.Node) string {
+	for n.Kind() == "field_expression" || n.Kind() == "subscript_expression" {
+		children := n.NamedChildren()
+		if len(children) == 0 {
+			break
+		}
+		n = children[0]
+	}
+	if n.Kind() == "identifier" {
+		return n.Text()
+	}
+	return ""
 }
 
 // fieldPath returns the canonical member path of a field or subscript access:
