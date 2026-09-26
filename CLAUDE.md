@@ -27,7 +27,7 @@ go test -run TestSecurity ./internal/evidence/   # security test fixtures (needs
 
 ## What This Is
 
-SecGuard-Clang is an AI-augmented C security analyzer. It transforms a C codebase into a queryable semantic graph in SQLite, emits raw security "candidates" from detectors, then runs a **convergence pipeline** to shrink ~600 raw candidates to ~10 high-quality evidence packages that an AI agent classifies. The whole point is solving the *candidate explosion* problem — the AI agent must only ever see converged evidence, never raw candidates.
+SecGuard-Clang is an AI-augmented C security analyzer. It transforms a C codebase into a queryable semantic graph in SQLite, emits raw security "candidates" from detectors, then runs a **convergence pipeline** to turn thousands of raw events into a small set of high-quality evidence packages that an AI agent classifies with a single binary verdict (`confirmed` or `dismissed`). The whole point is solving the *candidate explosion* problem — the AI agent must only ever see converged evidence, never raw candidates.
 
 ```
 Source Code → Tree-sitter Indexer → Semantic Graph Builder → Security Event Detectors
@@ -40,7 +40,7 @@ The pipeline is a chain of packages, each writing to the next layer of the DB:
 
 1. **`internal/indexer`** — walks `*.c` files, parses with tree-sitter, and writes Layer-1 facts. Incremental: files unchanged by checksum are skipped.
 2. **`internal/graph`** — builds the semantic graph (call graph, data flow, reachability, CFG) on top of the indexed facts.
-3. **`internal/evidence`** — 22 detectors (`null_source.go`, `dereference.go`, `buffer_overflow.go`, ...). Each detector implements the `Detector` interface and writes `security_events`. **Detectors self-register in `registry.go` via `init()`** — adding a detector means a new `RegisterDetector` line, nothing else.
+3. **`internal/evidence`** — 32 detectors (`null_source.go`, `dereference.go`, `buffer_overflow.go`, ...). Each detector implements the `Detector` interface and writes `security_events`. **Detectors self-register in `registry.go` via `init()`** — adding a detector means a new `RegisterDetector` line, nothing else.
 4. **`internal/planner`** — the convergence pipeline. `Planner.Plan()` seeds candidates by event type, runs a per-vuln-type filter chain, dedups, and ranks — it returns **all** deduped candidates (no cap/truncation; the AI agent reviews every one in batches). Filters implement the `Filter` interface (`Apply(ctx, []Candidate) ([]Candidate, error)`).
 5. **`internal/agent`** — formats converged evidence for the AI agent consumer.
 6. **`internal/report`** — writes SARIF 2.1, a markdown summary, and per-finding markdown files.
@@ -50,7 +50,7 @@ The pipeline is a chain of packages, each writing to the next layer of the DB:
 **Graph-based convergence** (the `graph` layer is consumed, not just built): `internal/graph/control_flow.go` builds a statement-level CFG (`BuildStmtCFG`, with `Reaches`/`ReachesAvoiding`/`NodeAt`), and `internal/planner/null_flow.go` exposes a reusable *reaching-sources* dataflow engine (`flowAnalyzer.analyzeFlow`, `flowResult.reaching`/`reachingAtExit`) — a monotone set-of-source-IDs lattice with gen/kill/copy. This engine is the shared best practice that came out of the null-deref spike and is consumed by:
 
 - **null-deref** — `NullableSourceFilter` (`filter_nullable_source.go`) seeds gen from `NULL_VALUE` events, kills on any non-copy reassignment (`v = &x` / `v = ""` / `v = arr` / `v = malloc()` / `v = f()`), copies from stored `DATA_FLOW` edges + AST assignments (field-sensitive: `q = p->f` copies location `p->f`; a whole-var reassign invalidates its `p->*` facts); it drops a dereference only when no null source can reach it. `computeRetNullable` consumes the RETURN edges + `function_summary` to propagate return-nullability across calls (`p = f(); p->x`). A separate must-lattice (`runMustDataflow`, intersection join) powers the `has_definite_null` tier so `p = NULL` is "certain" only when it holds on every path. Falls back to the old line-order heuristic when the parser/file is unavailable (mock tests).
-- **use-after-free** — `LifetimeFilter` (`filter_lifetime.go`) runs the same reaching-sources engine (gen = `free(p)` / field free / freeing macro, kill = reassignment); it promotes to `confirmed` only when the freed state reaches the use on every path (must), otherwise keeps it `suspected`.
+- **use-after-free** — `LifetimeFilter` (`filter_lifetime.go`) runs the same reaching-sources engine (gen = `free(p)` / field free / freeing macro, kill = reassignment); it promotes to `confirmed` only when the freed state reaches the use on every path (must), otherwise leaves it for the AI.
 - **double-free / uninit** — `DoubleFreeFilter` / `DefiniteInitFilter` use the same may+must tiers: `confirmed` only when the fact holds on all paths.
 - **range propagation** — `range_flow.go` is a forward integer-interval analysis over the statement CFG (cross-assignment `d = 0; d = 1;`), consumed by `RangeFilter` (divide-by-zero) and `IntOverflowGuardFilter` (integer-overflow); the buffer-overflow detector adds constant-valued-variable index OOB.
 - **lock-order** — `graph/lock_order.go` persists `LOCK_ORDER` edges (mutex A→B); `LockOrderFilter` confirms deadlock candidates by finding the cycle in the persisted graph.
@@ -107,10 +107,10 @@ secguard db <sql>        Execute a SQL query, return JSON
 
 ## Multi-Platform Agent Extension (`extension/`)
 
-SecGuard targets three AI-agent platforms with a **shared-core + thin-wrapper** design:
+SecGuard targets five AI-agent surfaces with a **shared-core + thin-wrapper** design:
 
 - `extension/shared/` is the single source of truth: agent skills (`SKILL.md` files), `agent-body.md` (the security-auditor prompt), `command-instructions.md`.
-- `extension/opencode/` and `extension/claude-code/` are thin platform wrappers using `{{include shared/...}}` directives, expanded at build time by `release/build-packages.sh`.
+- `extension/opencode/`, `extension/opencode-nga/`, `extension/claude-code/`, and `extension/claude-cac/` are thin platform wrappers using `{{include shared/...}}` directives, expanded at build time by `release/build-packages.sh`.
 - `extension/deepseek-harness/` is a DSH agent preset (`preset.yml` + `agent.cordis.yml`, persona = `dsh-persona`), installed by `release/install-dsh.sh` into `~/.dsh/.agent-presets/secguard/`.
 - The **installed copies** live at `.opencode/` and `.claude/` in the repo root. The `security-auditor` subagent (`.claude/agents/security-auditor.md`) is the consumer: it runs `secguard scan/plan`, loads per-type skills for classification, and persists findings.
 - `.claude/settings.json` pre-approves `Bash(secguard *)` and emits a staleness hint on any `Edit|Write` (re-run `/secguard` after editing source).
@@ -125,7 +125,7 @@ The two trees mirror the DB's layer split and each has exactly ONE writer — th
 | Tree | Layer | Writer | Content |
 |------|-------|--------|---------|
 | `candidates/<vuln-type>/NNN_<file>_<line>.md` | Layer 3 (evidence) | the scan pipeline | every converged candidate; an unclassified lead, never a defect |
-| `findings/<vuln-type>/NNN_<file>_<line>_<confirmed\|suspected>.md` | Layer 4 (findings) | `report --write` / `--review` / `--audit`, from the DB | only actionable AI verdicts, each with its verdict suffix and an embedded source region |
+| `findings/<vuln-type>/NNN_<file>_<line>_confirmed.md` | Layer 4 (findings) | `report --write` / `--audit`, from the DB | only actionable confirmed AI verdicts, each with its verdict suffix and an embedded source region |
 
 The same rule governs SARIF: one artifact per stage, one writer each. Never make
 one file mean two things — that conflation is what produced the 0.3.5 findings/
