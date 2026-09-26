@@ -24,6 +24,14 @@
 
 - 常量索引 radix（hex/octal/suffix）、宏 loop bound、loop 索引偏移（arr[i-1]/arr[i+1]）、无关 bounds-check 误抑制、format 字面溢出、read/recv/fread 惯用法、subscript 读写 AST 判定、memcpy 源 sizeof 值拷贝、字节/元素单位归一、calloc/realloc 容量、数组作用域 shadowing；confirmed 精准性修复 + 回归测试。
 
+### 文档与基准门禁
+
+- **用户文档对齐 24 个注册类型**：`QUICKSTART.md` 此前停留在 20 类、20/22 个 skill、v0.3.2/v0.6.1 版本号，并索引了不存在的 OpenCode 安装路径；`CLAUDE.md` 的「Supported Vulnerability Types」停留在 22 类。现全部对齐 `secguard types`（24 类），并补上 `argument-type` / `data-representation` / `dangerous-function` / `signal-handler`。
+- **README（中/英）Usage 重写**：区分全量扫描（`/secguard-clang/secguard`）与增量检视（`/pr`、`/mr`、`/diff`），并写明各平台命名空间分隔符（OpenCode `/`、Claude Code/CAC `:`）。
+- **基准门禁 `validate-benchmark.py` 修复两处静默缺口**：① `DETECTOR_TO_TYPE` 补 `memory.double_free` 映射——`P14B-01` 用例的 detector 标签此前未映射，`--selftest` **直接失败**；② `CWE_TO_TYPE` 补 `CWE-686`/`CWE-843`——`--coverage` 此前按 22 个类型枚举、静默漏掉 `argument-type`/`data-representation` 两个**零覆盖**类型，还会打印「every registered vuln type has both」。现按 24 类枚举，零覆盖类型显式报 `ZERO COVERAGE` 并以非零退出。
+- **`benchmark.md` 规模表按 ground truth 重算**：133 用例 / expect-finding 74 / expect-no_finding 59 / 覆盖 22/24 类；并注明分 Phase 数字为历史记录、总计以 `--coverage` 为准。
+- **`quickstart.md` → `QUICKSTART.md`**：仓库实际跟踪的是小写文件名，而 `CLAUDE.md` / `AGENTS.md` 引用大写名，在大小写敏感的平台（如 GitHub 网页端）会解析失败。
+
 ## [0.7.9] - 2026-09-24
 
 ### 误报修复

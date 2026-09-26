@@ -17,11 +17,11 @@
 
 | 指标 | 数值 |
 |------|------|
-| 源文件 | 29 |
-| 总测试用例 | 127 |
-| **覆盖漏洞类型（22 个注册 skill）** | **22 / 22** |
-| expect-finding（应报告） | 76 |
-| expect-no_finding（应被抑制） | 51 |
+| 源文件 | 32 |
+| 总测试用例 | 133 |
+| **覆盖漏洞类型（24 个注册 skill）** | **22 / 24** |
+| expect-finding（应报告） | 74 |
+| expect-no_finding（应被抑制） | 59 |
 | Phase 0（P0-P3/TP 反证骨架） | 18 |
 | Phase 1（CWE-190/362/798/667/327） | 12 |
 | Phase 2（扩展典型漏洞） | 4 |
@@ -40,9 +40,14 @@
 | 应产生 Finding 但被 P1 抑制 | 3 |
 | 应产生 Finding 但被 P2 抑制 | 4 |
 
-> 每个注册类型都同时具备 `finding` 与 `no_finding` 用例 —— 用 `--coverage` 可复核
-> （见「运行方式」）。这是本基准的意图：只测「能不能报」而不测「该不该闭嘴」的类型，
-> 其精度主张是没有被验证的。
+> 分 Phase 数字为各阶段新增时的记录，未随之后的补充逐一回填；**总计以 ground truth
+> 为准**（`python3 scripts/validate-benchmark.py --coverage`）。
+>
+> 每个**有 ground truth 的类型**都同时具备 `finding` 与 `no_finding` 用例 —— 用
+> `--coverage` 可复核（见「运行方式」）。`argument-type` / `data-representation`
+> 两个注册类型目前**零覆盖**，`--coverage` 会以非零退出显式提示，不再静默漏掉。
+> 这是本基准的意图：只测「能不能报」而不测「该不该闭嘴」的类型，其精度主张是没有
+> 被验证的。
 
 ## 分类定义
 
@@ -243,7 +248,7 @@ python3 scripts/validate-benchmark.py --coverage   # 每个类型的 finding/no_
 python3 scripts/validate-benchmark.py --selftest   # 校验 detector/cwe → 类型映射是否完整
 ```
 
-`--coverage` 按注册类型（`CWE_TO_TYPE` 的 22 个值）逐类统计 ground truth，标出
+`--coverage` 按注册类型（`CWE_TO_TYPE` 的 24 个值）逐类统计 ground truth，标出
 「一个用例都没有」与「有 finding 但缺 no_finding 守卫」两种缺口；前者是硬失败
 （退出码 1），后者只告警。`--selftest` 会断言 ground truth 里的每个 `detector` 标签
 **和每个 `cwe` 标签**都已映射 —— `cwe` 覆盖曾经是个静默缺口：SARIF 的 `ruleId` 是 CWE

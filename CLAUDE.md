@@ -146,10 +146,10 @@ suffix could silently go missing.
 - `sgre/testdata/phase1`–`phase7` — staged fixtures for the pipeline phases.
 - `sgre/testdata/perf/gen_codebase.go` — generates large synthetic codebases for perf testing: `go run testdata/perf/gen_codebase.go testdata/perf/large_codebase 100 50`.
 
-## Supported Vulnerability Types (22)
+## Supported Vulnerability Types (24)
 
 Each is registered as a `VulnTypeSpec` in `internal/planner/registry.go` and has a
-corresponding agent skill under `.claude/skills/`. The authoritative runtime list
+corresponding agent skill under `extension/shared/skills/`. The authoritative runtime list
 is `secguard types` — do not hardcode this list in tooling (see the OpenCode tool
 wrappers, which defer type validation to the binary). Each `VulnTypeSpec` carries
 its `CWE` field; `planner.AllCWEs()` / `CWEForType()` / `TypeForCWE()` are the
@@ -160,7 +160,8 @@ at CLI startup (`cli/root.go`), and the TS tool wrappers never hardcode CWE list
 `uninit`, `use-after-free`, `double-free`, `format-string`, `integer-overflow`,
 `race-condition`, `hardcoded-secret`, `deadlock`, `crypto-misuse`,
 `out-of-bounds`, `divide-by-zero`, `unchecked-return`, `path-traversal`,
-`sizeof-misuse`, `signed-compare`, `signal-handler`, `dangerous-function`.
+`sizeof-misuse`, `signed-compare`, `signal-handler`, `dangerous-function`,
+`argument-type`, `data-representation`.
 
 `out-of-bounds` (CWE-125) shares the
 `BUFFER_ACCESS` seed event with `buffer-overflow`: read-flavored categories

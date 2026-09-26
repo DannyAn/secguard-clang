@@ -12,7 +12,7 @@
 | Go | 1.25+ | 从源码构建 secguard 二进制 |
 | CGo (C 编译器) | gcc/clang | tree-sitter-c 需要 CGo |
 | SQLite | 内置 (modernc.org/sqlite) | 无需系统安装 |
-| OpenCode / Claude Code / DeepSeek Harness | 最新版 | AI Agent 交互（三选一） |
+| OpenCode / OpenCode-NGA / Claude Code / Claude CAC / DeepSeek Harness | 最新版 | AI Agent 交互（任选其一） |
 
 > 使用发行包安装（见第 2 节）无需 Go 和 C 编译器。
 
@@ -28,20 +28,22 @@ gcc --version       # 或 clang --version
 ### 2.1 从发行包安装（推荐）
 
 ```bash
-curl -L https://github.com/DannyAn/secguard-clang/releases/latest/download/secguard-0.3.2.zip -o secguard.zip
+curl -L https://github.com/DannyAn/secguard-clang/releases/latest/download/secguard-0.8.0.zip -o secguard.zip
 unzip secguard.zip
 ./install.sh
-secguard --version   # 输出: 0.3.2
+secguard --version   # 输出: 0.8.0
 ```
 
 `install.sh` 支持：
 
 ```bash
-./install.sh --target opencode     # 只装 OpenCode
-./install.sh --target claude-code  # 只装 Claude Code
-./install.sh --no-binary           # 只装扩展，跳过二进制
-./install.sh --verify              # 安装后自检
-./install.sh --uninstall --yes     # 卸载
+./install.sh --target opencode       # 只装 OpenCode
+./install.sh --target opencode-nga   # 只装 OpenCode 开源分支
+./install.sh --target claude-code    # 只装 Claude Code
+./install.sh --target claude-cac     # 只装 Claude Code 开源分支（~/.cac/）
+./install.sh --no-binary             # 只装扩展，跳过二进制
+./install.sh --verify                # 安装后自检
+./install.sh --uninstall --yes       # 卸载
 ```
 
 ### 2.2 从 AI Agent Market 安装（插件包）
@@ -50,15 +52,15 @@ secguard --version   # 输出: 0.3.2
 zip**。解压后把对应 zip 上传到 AI Agent Market 的「extension」发布入口即可（无需再手工打包）：
 
 ```bash
-unzip secguard-clang-plugins-0.6.1.zip
+unzip secguard-clang-plugins-0.8.0.zip
 # 以 Claude Code（CAC）为例：
-#   上传 secguard-clang-claude-cac-0.6.1.zip 到市场「extension」入口
+#   上传 secguard-clang-claude-cac-0.8.0.zip 到市场「extension」入口
 #   在目标机器进入 AI Agent TUI 安装后，输入 /secguard-clang:secguard 执行
 ```
 
 四个逐平台 zip 分别是 `secguard-clang-opencode-<v>.zip`、
 `secguard-clang-opencode-nga-<v>.zip`、`secguard-clang-claude-code-<v>.zip`、
-`secguard-clang-claude-cac-<v>.zip`，每个都带 22 个 skills、`bin/secguard` 调度 shim 和
+`secguard-clang-claude-cac-<v>.zip`，每个都带 24 个 skills、`bin/secguard` 调度 shim 和
 全部 5 个 OS×架构二进制，manifest 位于 zip 根。详见 `release/plugins-README.md`。
 
 ### 2.3 从源码构建（开发者）
@@ -80,9 +82,12 @@ cd secguard-clang
 开发模式快速部署（构建 + 装到用户级配置目录）：
 
 ```bash
-./deploy.sh                    # 构建二进制 + 安装 OpenCode + Claude Code
+./deploy.sh                    # 构建二进制 + 安装全部平台扩展
 ./deploy.sh opencode           # 仅 OpenCode
+./deploy.sh opencode-nga       # 仅 OpenCode 开源分支
 ./deploy.sh claude-code        # 仅 Claude Code
+./deploy.sh claude-cac         # 仅 Claude Code 开源分支（~/.cac/）
+./deploy.sh dsh                # 仅 DeepSeek Harness preset
 ./deploy.sh --no-binary        # 跳过二进制构建
 ```
 
@@ -90,7 +95,7 @@ cd secguard-clang
 
 ```bash
 # 1) 确保 secguard 在 PATH 上（见 2.1/2.2）
-# 2) 安装 DSH preset（组合 + 20 个 skill → ~/.dsh/.agent-presets/secguard/）
+# 2) 安装 DSH preset（组合 + 24 个 skill → ~/.dsh/.agent-presets/secguard/）
 ./release/install-dsh.sh
 
 # 3) 在 DSH 里选择「SecGuard 安全审计」preset，然后对话：
@@ -102,10 +107,14 @@ cd secguard-clang
 | 命令 | 说明 |
 |------|------|
 | `secguard scan <path>` | 完整管线：索引 + 检测 + 收敛 + 报告（最常用） |
+| `secguard diff [<base>]` | 只检视 git diff 的变更行（base 默认 `HEAD~1`） |
+| `secguard pr` | 检视 PR/MR diff（base 取与 main/master 的 merge-base） |
+| `secguard mr` | `pr` 的 GitLab 别名 |
 | `secguard plan <vuln>` | 对单个漏洞类型运行收敛管线 |
 | `secguard index <path>` | 仅索引（不跑检测器和收敛） |
 | `secguard status` | 索引状态（文件数、函数数、陈旧度） |
-| `secguard types` | 列出全部 20 种漏洞类型 + CWE |
+| `secguard types` | 列出全部 24 种漏洞类型 + CWE |
+| `secguard metrics` | 扫描性能与收敛指标 |
 | `secguard schema [table]` | 查询表 schema（写 SQL 前用） |
 | `secguard report` | 输出全部 findings（JSON） |
 | `secguard db <sql>` | 在 sgre.db 上执行 SQL（只读） |
@@ -119,6 +128,10 @@ secguard scan ./my-project
 # 指定数据库路径（避免污染默认库）
 secguard scan ./my-project --db /tmp/my-analysis.db
 
+# 只检视变更行（增量、大仓更快）
+secguard diff HEAD~1
+secguard pr
+
 # 单独收敛某类漏洞
 secguard plan null-deref
 secguard plan buffer-overflow
@@ -131,17 +144,28 @@ secguard report
 
 ## 4. 在 AI Agent 中使用
 
-安装后，在 OpenCode、Claude Code 或 DeepSeek Harness 中直接对话：
+安装后，在任一支持的 Agent（OpenCode / OpenCode-NGA / Claude Code / Claude CAC /
+DeepSeek Harness）中直接对话：
 
 ```
 > 扫描 src/ 目录的安全漏洞
 > 看看有没有 null-deref, buffer-overflow 问题
 ```
 
-### 4.1 OpenCode / Claude Code（`/secguard` 命令）
+### 4.1 OpenCode / Claude Code（斜杠命令）
 
 ```
-/secguard ./my-project
+# OpenCode（命名空间分隔符为 /）
+/secguard-clang/secguard ./my-project      # 全量扫描
+/secguard-clang/pr                         # 只检视 PR/MR 变更行
+/secguard-clang/mr                         # /pr 的 GitLab 别名
+/secguard-clang/diff HEAD~1                # 只检视任意 git diff
+/secguard-clang/metrics                    # 扫描性能与收敛指标
+
+# Claude Code / Claude CAC（命名空间分隔符为 :）
+/secguard-clang:secguard ./my-project
+/secguard-clang:pr
+/secguard-clang:diff HEAD~1
 ```
 
 触发 `security-auditor` 子代理执行完整流程：
@@ -151,8 +175,8 @@ secguard scan ./project → 收敛证据包 → 加载匹配 skill → 逐条分
                        → confirmed / dismissed（二元裁决）→ 结果表格 + 修复建议
 ```
 
-`security-auditor` 是 `mode: subagent`，不会通过自然语言自动触发，需用 `/secguard` 或
-`@security-auditor` 显式调用。
+`security-auditor` 是 `mode: subagent`，不会通过自然语言自动触发，需用斜杠命令
+（如 `/secguard-clang/secguard`）或 `@security-auditor` 显式调用。
 
 ### 4.2 DeepSeek Harness
 
@@ -170,13 +194,13 @@ secguard report --audit --scan-id <scan_id> \
     --output-dir examples/c-vuln-benchmark/.codeagent/secguard-clang/scans/<scan_id> \
     --db /tmp/sgbench.db
 
-# 校验基准（114 用例 · 22/22 注册类型 · recall 67/67 · FP 0/47）
+# 校验基准（ground truth 共 133 用例 · 覆盖 22/24 注册类型；recall/FP 由脚本按实扫 SARIF 输出，勿写死）
 python3 examples/c-vuln-benchmark/scripts/validate-benchmark.py
-python3 examples/c-vuln-benchmark/scripts/validate-benchmark.py --coverage   # 每个类型的用例覆盖
+python3 examples/c-vuln-benchmark/scripts/validate-benchmark.py --coverage   # 逐类型覆盖；argument-type / data-representation 目前零覆盖，故以非零退出
 python3 examples/c-vuln-benchmark/scripts/validate-benchmark.py --selftest   # 标签映射完整性
 
 # 在 OpenCode / Claude Code / DSH 中：
-#   /secguard ./examples/c-vuln-benchmark/src
+#   /secguard-clang/secguard ./examples/c-vuln-benchmark/src
 ```
 
 ## 6. 架构简述
@@ -245,12 +269,14 @@ GONOSUMDB='*' GOFLAGS=-mod=mod CGO_ENABLED=1 go build -o ../bin/secguard ./cmd/s
 secguard scan ./my-project --db /tmp/sgre.db
 ```
 
-### 7.5 OpenCode 中 `/secguard` 命令不出现
+### 7.5 OpenCode 中 `/secguard-clang/secguard` 命令不出现
 
 ```bash
-ls ~/.config/opencode/extensions/secguard-clang/
-ls ~/.config/opencode/commands/secguard.md
-# 不存在则重新部署：./deploy.sh opencode
+# OpenCode（官方）：插件安装在 plugins/ 下
+ls ~/.config/opencode/plugins/secguard-clang/commands/secguard.md
+# OpenCode-NGA：扩展安装在 extensions/ 下
+ls ~/.config/opencode/extensions/secguard-clang/commands/secguard.md
+# 不存在则重新部署：./deploy.sh opencode   （或 ./deploy.sh opencode-nga）
 ```
 
 ### 7.6 `secguard report` 返回空数组
@@ -271,15 +297,16 @@ secguard scan ./src 2>/dev/null          # 仅 JSON
 secguard scan ./src 1>results.json 2>logs.ndjson   # 分别保存
 ```
 
-## 8. 支持的漏洞类型（20 种）
+## 8. 支持的漏洞类型（24 种）
 
 完整列表见 [README-CN.md](README-CN.md) 或 `secguard types`：
 
-`null-deref` · `buffer-overflow` · `memory-leak` · `injection` · `resource-leak` ·
+`null-deref` · `buffer-overflow` · `out-of-bounds` · `memory-leak` · `resource-leak` ·
 `uninit` · `use-after-free` · `double-free` · `format-string` · `integer-overflow` ·
-`race-condition` · `hardcoded-secret` · `deadlock` · `crypto-misuse` ·
-`out-of-bounds` · `divide-by-zero` · `unchecked-return` · `path-traversal` ·
-`sizeof-misuse` · `signed-compare`
+`race-condition` · `hardcoded-secret` · `deadlock` · `crypto-misuse` · `injection` ·
+`divide-by-zero` · `unchecked-return` · `path-traversal` · `sizeof-misuse` ·
+`signed-compare` · `signal-handler` · `dangerous-function` · `argument-type` ·
+`data-representation`
 
 每种类型有对应的 AI Agent skill（`extension/shared/skills/<type>/SKILL.md`），提供
 分类规则与误报识别指南。

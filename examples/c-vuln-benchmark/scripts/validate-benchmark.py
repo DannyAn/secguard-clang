@@ -74,6 +74,7 @@ DETECTOR_TO_TYPE = {
     "double_free": "double-free",
     "null_deref": "null-deref",
     "memory.use_after_free": "use-after-free",
+    "memory.double_free": "double-free",
     "memory.memory_leak": "memory-leak",
     "unchecked_return": "unchecked-return",
     "hardcoded_secret": "hardcoded-secret",
@@ -113,6 +114,8 @@ CWE_TO_TYPE = {
     "CWE-416": "use-after-free",
     "CWE-479": "signal-handler",
     "CWE-676": "dangerous-function",
+    "CWE-686": "argument-type",
+    "CWE-843": "data-representation",
 }
 
 
