@@ -137,6 +137,9 @@ type Candidate struct {
 	SourceLine        int     `json:"source_line,omitempty"`
 	DeclLine          int     `json:"decl_line,omitempty"`
 	Origin            string  `json:"origin,omitempty"`
+	// FieldPath is the full member/element access text of an uninit read
+	// (`p->f`, `p[i]`, `s.f`); empty for whole/scalar reads.
+	FieldPath string `json:"field_path,omitempty"`
 	// ExpectedType/ActualType/CastType are the argument-type mismatch evidence
 	// (parameter type, pre-cast argument type, explicit cast target type).
 	ExpectedType string `json:"expected_type,omitempty"`

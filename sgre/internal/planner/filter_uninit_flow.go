@@ -64,76 +64,109 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 	}
 
 	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
-	flows, files, scopes := f.buildFlows(ctx, byFunc, fnByID, fileByID)
+	flows, files, scopes, hsFlows := f.buildFlows(ctx, byFunc, fnByID, fileByID)
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
 	for _, c := range candidates {
-		flow := flows[c.FunctionID]
-		if flow == nil {
-			kept = append(kept, c)
-			continue
-		}
-		if !f.isStackUninit(eventsByID, c) {
-			kept = append(kept, c)
-			continue
-		}
-		// A use under a preprocessor conditional is covered by an assignment
-		// under the SAME (or a subset of the) condition(s): the assignment
-		// happens whenever the use is compiled, so the uninitialized source
-		// reaching the use only via the "not compiled" branch is an
-		// inconsistent path (e.g. crc32.c's `#if N > 1 crc1 = 0` ... `#if N > 1
-		// word1 = crc1 ^ ...`).
-		reaching := flow.reaching(c.VariableName, c.Line)
-		if reaching && f.hasCoveringAssign(ctx, fnByID, files[c.FileID], c) {
-			dropped = dismiss(dropped, c, f.Name(),
-				fmt.Sprintf("variable %s is assigned under the same preprocessor condition before the use at line %d", c.VariableName, c.Line))
-			continue
-		}
-		if reaching {
-			// The uninitialized declaration reaches the use. It is a CERTAIN
-			// uninitialized read only when it reaches on every path (must);
-			// otherwise it stays a suspicion for the AI to confirm.
-			if flow.mustReaching(c.VariableName, c.Line) {
-				c.SuspicionLevel = "confirmed"
-				// An output-param write (`&x` passed to a callee) is invisible to
-				// the flow engine's gen/kill model (it only tracks direct
-				// assignments, field writes, and macro outputs), so "uninit on
-				// every path" is unproven when such a write precedes the use —
-				// the callee may have written x on the success path. Downgrade to
-				// suspected so the AI weighs the interprocedural write instead of
-				// rubber-stamping a machine-confirmed false positive.
-				if f.hasOutputParamWrite(fnByID, files[c.FileID], c, scopes[c.FunctionID]) {
-					c.SuspicionLevel = "suspected"
-				}
+		switch f.candidateOrigin(eventsByID, c) {
+		case "heap_uninit", "struct_partial_uninit":
+			hs := hsFlows[c.FunctionID]
+			if hs == nil {
+				kept = append(kept, c)
+				continue
 			}
+			kept, dropped = f.refineHeapStruct(hs, c, kept, dropped)
+		case "stack_uninit":
+			flow := flows[c.FunctionID]
+			if flow == nil {
+				kept = append(kept, c)
+				continue
+			}
+			// A use under a preprocessor conditional is covered by an assignment
+			// under the SAME (or a subset of the) condition(s): the assignment
+			// happens whenever the use is compiled, so the uninitialized source
+			// reaching the use only via the "not compiled" branch is an
+			// inconsistent path (e.g. crc32.c's `#if N > 1 crc1 = 0` ... `#if N > 1
+			// word1 = crc1 ^ ...`).
+			reaching := flow.reaching(c.VariableName, c.Line)
+			if reaching && f.hasCoveringAssign(ctx, fnByID, files[c.FileID], c) {
+				dropped = dismiss(dropped, c, f.Name(),
+					fmt.Sprintf("variable %s is assigned under the same preprocessor condition before the use at line %d", c.VariableName, c.Line))
+				continue
+			}
+			if reaching {
+				// The uninitialized declaration reaches the use. It is a CERTAIN
+				// uninitialized read only when it reaches on every path (must);
+				// otherwise it stays a suspicion for the AI to confirm.
+				if flow.mustReaching(c.VariableName, c.Line) {
+					c.SuspicionLevel = "confirmed"
+					// An output-param write (`&x` passed to a callee) is invisible to
+					// the flow engine's gen/kill model (it only tracks direct
+					// assignments, field writes, and macro outputs), so "uninit on
+					// every path" is unproven when such a write precedes the use —
+					// the callee may have written x on the success path. Downgrade to
+					// suspected so the AI weighs the interprocedural write instead of
+					// rubber-stamping a machine-confirmed false positive.
+					if f.hasOutputParamWrite(fnByID, files[c.FileID], c, scopes[c.FunctionID]) {
+						c.SuspicionLevel = "suspected"
+					}
+				}
+				kept = append(kept, c)
+			} else {
+				dropped = dismiss(dropped, c, f.Name(),
+					fmt.Sprintf("variable %s is definitely initialized before the use at line %d", c.VariableName, c.Line))
+			}
+		default:
 			kept = append(kept, c)
-		} else {
-			dropped = dismiss(dropped, c, f.Name(),
-				fmt.Sprintf("variable %s is definitely initialized before the use at line %d", c.VariableName, c.Line))
 		}
 	}
 	return kept, dropped, nil
 }
 
-// isStackUninit reports whether the candidate's VALUE_USE event is a
-// stack_uninit candidate (the origin the flow filter understands).
-func (f *DefiniteInitFilter) isStackUninit(eventsByID map[int64]*db.SecurityEvent, c Candidate) bool {
+// refineHeapStruct drops a heap/struct candidate whose field (or whole block) is
+// written on every path, and promotes it to confirmed only when the malloc/
+// declaration source reaches on every path with no write on any path.
+func (f *DefiniteInitFilter) refineHeapStruct(hs *heapStructFlow, c Candidate, kept []Candidate, dropped []Dismissed) ([]Candidate, []Dismissed) {
+	whole := c.VariableName
+	path := c.FieldPath
+	if hs.initOnEveryPath(path, c.Line) || hs.initOnEveryPath(whole, c.Line) {
+		key := path
+		if key == "" {
+			key = whole
+		}
+		return kept, dismiss(dropped, c, f.Name(),
+			fmt.Sprintf("%s is initialized on every path before the use at line %d", key, c.Line))
+	}
+	if hs.sourceOnEveryPath(whole, c.Line) && !hs.initOnAnyPath(path, c.Line) && !hs.initOnAnyPath(whole, c.Line) {
+		c.SuspicionLevel = "confirmed"
+	}
+	return append(kept, c), dropped
+}
+
+// candidateOrigin returns the event origin, preferring the already-parsed
+// candidate field and falling back to the raw event for callers that seed
+// candidates without an origin.
+func (f *DefiniteInitFilter) candidateOrigin(eventsByID map[int64]*db.SecurityEvent, c Candidate) string {
+	if c.Origin != "" {
+		return c.Origin
+	}
 	event := eventsByID[c.DerefEventID]
 	if event == nil {
-		return false
+		return ""
 	}
 	var props struct {
 		Origin string `json:"origin"`
 	}
 	json.Unmarshal([]byte(event.Properties), &props)
-	return props.Origin == "stack_uninit"
+	return props.Origin
 }
 
-func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, fnByID map[int64]*db.Function, fileByID map[int64]*db.File) (map[int64]*flowResult, map[int64]*hoistedUninitFile, map[int64]func(string) bool) {
+func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, fnByID map[int64]*db.Function, fileByID map[int64]*db.File) (map[int64]*flowResult, map[int64]*hoistedUninitFile, map[int64]func(string) bool, map[int64]*heapStructFlow) {
 	flows := make(map[int64]*flowResult, len(byFunc))
 	files := make(map[int64]*hoistedUninitFile)
 	scopes := make(map[int64]func(string) bool, len(byFunc))
+	hsFlows := make(map[int64]*heapStructFlow, len(byFunc))
 	macroWritesByFile := make(map[int64]map[string]macros.WriteSummary)
 	cache := newFileParseCache(f.parser)
 	for fid := range byFunc {
@@ -155,12 +188,13 @@ func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]
 			macroWritesByFile[file.ID] = macroWrites
 		}
 		flows[fid] = buildDefiniteInitFlow(fn, body, macroWrites)
+		hsFlows[fid] = buildHeapStructFlow(fn, body)
 		scopes[fid] = scopeOracleOf(parser.FunctionBoundNamesByBody(body))
 		if _, ok := files[file.ID]; !ok {
 			files[file.ID] = hoistUninitFile(root)
 		}
 	}
-	return flows, files, scopes
+	return flows, files, scopes, hsFlows
 }
 
 // buildDefiniteInitFlow runs the reaching-sources dataflow for uninitialized

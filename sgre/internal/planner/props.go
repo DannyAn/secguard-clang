@@ -28,6 +28,10 @@ type eventProps struct {
 	UseLine           int    `json:"use_line"`
 	Origin            string `json:"origin"`
 	DeclLine          int    `json:"decl_line"`
+	// FieldPath is the full member/element access text of an uninit read
+	// (`p->f`, `p[i]`, `s.f`), empty for whole/scalar reads. The definite-init
+	// filter uses it to refine heap/struct candidates at field granularity.
+	FieldPath string `json:"field_path"`
 	// AllocLine is the allocation/acquire source line a MEMORY_RELEASE /
 	// RESOURCE_RELEASE event releases. It lets ReleaseFilter correlate a release
 	// to a specific candidate (candidate.Line == the source line) instead of a

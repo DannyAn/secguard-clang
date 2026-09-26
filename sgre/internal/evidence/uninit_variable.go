@@ -1266,6 +1266,14 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		heapFieldWritten[base] = true
 	}
 
+	// A write inside a runtime branch (if/else body, loop body) is NOT a definite
+	// initialization — it happens on only some paths. Only a straight-line
+	// (unconditional) write suppresses a later read here; a conditional write
+	// leaves the read reported and the planner's CFG must-analysis drops it only
+	// when the write covers every path (UN-06). A loop init/condition write runs
+	// on every path, so it stays unconditional.
+	uncond := func(n parser.Node) bool { return !isConditionalNode(n) }
+
 	for _, assign := range assigns {
 		if !funcLineRange(f, assign.StartLine()) {
 			continue
@@ -1275,6 +1283,9 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 			continue
 		}
 		lhs := children[0]
+		if !uncond(assign) {
+			continue
+		}
 		switch lhs.Kind() {
 		case "field_expression", "subscript_expression":
 			name := fieldBaseName(lhs)
@@ -1307,6 +1318,9 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 	// fills that member.
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
+			continue
+		}
+		if !uncond(call) {
 			continue
 		}
 		name := extractCallName(call)
@@ -1400,7 +1414,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 			continue
 		}
 		if !initializedFields[path] {
-			d.insertValueUseEvent(ctx, f, file, field.StartLine(), mallocVars[varName], varName, "heap_uninit", result)
+			d.insertValueUseEventAt(ctx, f, file, field.StartLine(), mallocVars[varName], varName, fieldPath(field), "heap_uninit", result)
 		}
 	}
 
@@ -1427,7 +1441,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 			continue
 		}
 		if !initializedFields[path] {
-			d.insertValueUseEvent(ctx, f, file, sub.StartLine(), mallocVars[varName], varName, "heap_uninit", result)
+			d.insertValueUseEventAt(ctx, f, file, sub.StartLine(), mallocVars[varName], varName, sub.Text(), "heap_uninit", result)
 		}
 	}
 }
@@ -1439,6 +1453,10 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 	// detectStackUninit): without it a genuine bit-and argument would be read as
 	// an address-of and mark a field as callee-initialized.
 	isValue := func(name string) bool { return bound[name] }
+	// A write inside a runtime branch initializes a field on only some paths, so
+	// it must not suppress a later read here; the planner drops the read only when
+	// the write covers every path (UN-06).
+	uncond := func(n parser.Node) bool { return !isConditionalNode(n) }
 	// A struct passed by address to a KNOWN initializer (memset(&s, 0, ...),
 	// or an output-param filler) — or to a local function that writes the
 	// pointer parameter on every path — has its fields written by the callee,
@@ -1480,6 +1498,9 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 		if !funcLineRange(f, assign.StartLine()) {
 			continue
 		}
+		if !uncond(assign) {
+			continue
+		}
 		children := assign.NamedChildren()
 		if len(children) < 1 {
 			continue
@@ -1508,6 +1529,9 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 	// "fill a struct field-by-field through getter/read calls" idiom.
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
+			continue
+		}
+		if !uncond(call) {
 			continue
 		}
 		for _, child := range call.NamedChildren() {
@@ -1543,7 +1567,9 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 			continue
 		}
 		if args[0].Kind() == "field_expression" || args[0].Kind() == "subscript_expression" {
-			initializedFields[fieldPath(args[0])] = true
+			if uncond(call) {
+				initializedFields[fieldPath(args[0])] = true
+			}
 		}
 	}
 
@@ -1554,6 +1580,9 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 	// field-setter macro is not reported partial-init.
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
+			continue
+		}
+		if !uncond(call) {
 			continue
 		}
 		for name := range macros.WrittenArgs(call, macroWrites) {
@@ -1604,7 +1633,7 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 			continue
 		}
 		if !initializedFields[fieldPath(field)] {
-			d.insertValueUseEvent(ctx, f, file, field.StartLine(), structVars[varName], varName, "struct_partial_uninit", result)
+			d.insertValueUseEventAt(ctx, f, file, field.StartLine(), structVars[varName], varName, fieldPath(field), "struct_partial_uninit", result)
 		}
 	}
 }
@@ -1613,6 +1642,30 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 func isHeapVar(m map[string]int, name string) bool {
 	_, ok := m[name]
 	return ok
+}
+
+// isConditionalNode reports whether node sits inside a runtime BRANCH (an
+// if/else consequence or alternative, or a loop/switch body), so a write there
+// happens on only some paths. A loop init/condition (which runs on every path)
+// is NOT conditional.
+func isConditionalNode(node parser.Node) bool {
+	for n := node.Parent(); n != nil; n = n.Parent() {
+		switch n.Kind() {
+		case "if_statement":
+			cons := n.ChildByFieldName("consequence")
+			alt := n.ChildByFieldName("alternative")
+			if (cons != nil && nodeWithin(cons, &node)) || (alt != nil && nodeWithin(alt, &node)) {
+				return true
+			}
+			return false
+		case "while_statement", "for_statement", "do_statement", "switch_statement":
+			if body := n.ChildByFieldName("body"); body != nil && nodeWithin(body, &node) {
+				return true
+			}
+			return false
+		}
+	}
+	return false
 }
 
 // fieldBaseName returns the ROOT identifier of a field/subscript chain
@@ -1673,9 +1726,20 @@ func fieldWritePaths(lhs parser.Node) []string {
 }
 
 func (d *UninitVariableDetector) insertValueUseEvent(ctx context.Context, f *db.Function, file *db.File, line, declLine int, varName, origin string, result *DetectResult) {
+	d.insertValueUseEventAt(ctx, f, file, line, declLine, varName, "", origin, result)
+}
+
+// insertValueUseEventAt is insertValueUseEvent with an optional field path: for a
+// member/element read (`p->f`, `p[i]`, `s.f`) the path is the full access text, so
+// the planner's definite-init filter can refine field granularity (UN-01). Whole
+// reads (`*p`, `p`, scalar `v`) pass "".
+func (d *UninitVariableDetector) insertValueUseEventAt(ctx context.Context, f *db.Function, file *db.File, line, declLine int, varName, path, origin string, result *DetectResult) {
 	props := map[string]any{
 		"variable": varName,
 		"origin":   origin,
+	}
+	if path != "" {
+		props["field_path"] = path
 	}
 	if declLine > 0 {
 		props["decl_line"] = declLine

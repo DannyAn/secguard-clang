@@ -365,6 +365,7 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			SuspicionLevel:    suspicion,
 			DeclLine:          props.DeclLine,
 			Origin:            props.Origin,
+			FieldPath:         props.FieldPath,
 			ExpectedType:      props.Expected,
 			ActualType:        props.Actual,
 			CastType:          props.Cast,
