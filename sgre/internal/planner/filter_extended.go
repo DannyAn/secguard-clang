@@ -139,23 +139,24 @@ func (f *ReleaseFilter) Apply(ctx context.Context, candidates []Candidate) ([]Ca
 	return kept, dropped, nil
 }
 
-// LeakProofFilter promotes a memory-leak candidate whose detector proved the
-// pointer is DEFINITELY lost — no free/transfer/escape on any path, marked by the
-// detector's `definite` property on the MEMORY_ALLOC event — to the confirmed
-// tier (ML-01/18). A conditional leak (freed/escaped on some path only) carries
-// no marker and stays suspected for the AI.
+// LeakProofFilter promotes a leak candidate whose detector proved the pointer/
+// handle is DEFINITELY lost — no release/transfer/escape on any path, marked by
+// the detector's `definite` property on the seed event — to the confirmed tier
+// (ML-01/18, RL-03). A conditional leak (released/escaped on some path only)
+// carries no marker and stays suspected for the AI.
 type LeakProofFilter struct {
-	store db.Store
+	store     db.Store
+	eventType string
 }
 
-func NewLeakProofFilter(store db.Store) *LeakProofFilter {
-	return &LeakProofFilter{store: store}
+func NewLeakProofFilter(store db.Store, eventType string) *LeakProofFilter {
+	return &LeakProofFilter{store: store, eventType: eventType}
 }
 
 func (f *LeakProofFilter) Name() string { return "leak_proof" }
 
 func (f *LeakProofFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, []Dismissed, error) {
-	events, err := f.store.ListEventsByType(ctx, "MEMORY_ALLOC")
+	events, err := f.store.ListEventsByType(ctx, f.eventType)
 	if err != nil {
 		return nil, nil, fmt.Errorf("leak proof: %w", err)
 	}

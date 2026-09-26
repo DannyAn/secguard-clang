@@ -240,7 +240,7 @@ func (d *InjectionDetector) detectTaintFlowInjection(ctx context.Context, f *db.
 		}
 	}
 
-	processSinks := map[string]bool{"CreateProcessA": true, "CreateProcessW": true, "CreateProcessAsA": true, "CreateProcessAsW": true}
+	processSinks := map[string]bool{"CreateProcessA": true, "CreateProcessW": true, "CreateProcessAsA": true, "CreateProcessAsW": true, "ShellExecuteA": true, "ShellExecuteW": true}
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
 			continue
@@ -250,56 +250,76 @@ func (d *InjectionDetector) detectTaintFlowInjection(ctx context.Context, f *db.
 			continue
 		}
 		args := extractCallArgs(call)
-		cmdArgIdx := 1
-		if len(args) <= cmdArgIdx {
-			continue
-		}
-		cmdArg := strings.TrimSpace(args[cmdArgIdx])
-		if _, isTainted := formattedBuffers[cmdArg]; isTainted {
-			if emitEvent(ctx, d.store, d.logger, "INJECTION", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
-				"function":   callName,
-				"category":   "command_injection",
-				"taint":      "flow",
-				"source":     "wsprintf",
-				"expression": call.Text(),
-			}) {
-				result.EventsCreated++
+		// The tainted command text is NOT always args[1]: CreateProcessAsUser's
+		// lpCommandLine is args[2], ShellExecute's lpFile/lpParameters are
+		// args[2]/args[3] (INJ-02).
+		for _, cmdArgIdx := range commandTaintArgs(callName) {
+			if cmdArgIdx >= len(args) {
+				continue
+			}
+			cmdArg := strings.TrimSpace(args[cmdArgIdx])
+			if _, isTainted := formattedBuffers[cmdArg]; isTainted {
+				if emitEvent(ctx, d.store, d.logger, "INJECTION", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
+					"function":   callName,
+					"category":   "command_injection",
+					"taint":      "flow",
+					"source":     "wsprintf",
+					"expression": call.Text(),
+				}) {
+					result.EventsCreated++
+				}
 			}
 		}
 	}
 }
 
-// bareCommandArg returns the first argument of a command-injection sink when it
-// is a bare identifier (system(buf) -> "buf"), else "".
+// commandTaintArgs returns the argument positions that carry attacker-controlled
+// command text for a command-injection sink (INJ-01/02). The previous code always
+// looked at args[0], which is a constant handle/path for CreateProcess/ShellExecute
+// and so marked the sink non-tainted even when args[1]/args[2]/args[3] were
+// user-controlled.
+func commandTaintArgs(name string) []int {
+	switch name {
+	case "CreateProcessA", "CreateProcessW":
+		return []int{1} // lpCommandLine
+	case "CreateProcessAsA", "CreateProcessAsW":
+		return []int{2} // lpCommandLine (CreateProcessAsUser: token, app, cmdLine)
+	case "ShellExecuteA", "ShellExecuteW":
+		return []int{2, 3} // lpFile and lpParameters
+	default:
+		return []int{0} // system/popen/exec*: the command/path
+	}
+}
+
+// bareCommandArg returns the first bare-identifier tainted argument of a
+// command-injection sink (system(buf) -> "buf"), else "".
 func bareCommandArg(call parser.Node) string {
 	args := extractCallArgs(call)
-	if len(args) == 0 {
-		return ""
-	}
-	arg := strings.TrimSpace(args[0])
-	for i, c := range arg {
-		if !(c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (i > 0 && c >= '0' && c <= '9')) {
-			return ""
+	for _, idx := range commandTaintArgs(extractCallName(call)) {
+		if idx >= len(args) {
+			continue
+		}
+		if v := bareIdentString(args[idx]); v != "" {
+			return v
 		}
 	}
-	if arg == "" {
-		return ""
-	}
-	return arg
+	return ""
 }
 
 func isConstantCommandArg(call parser.Node) bool {
 	args := extractCallArgs(call)
-	if len(args) == 0 {
-		return true
-	}
-	arg := strings.TrimSpace(args[0])
-	if len(arg) >= 2 && arg[0] == '"' {
-		return true
-	}
-	for _, c := range arg {
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' {
-			return false
+	for _, idx := range commandTaintArgs(extractCallName(call)) {
+		if idx >= len(args) {
+			continue
+		}
+		arg := strings.TrimSpace(args[idx])
+		if len(arg) >= 2 && arg[0] == '"' {
+			continue // a string literal is a compile-time constant
+		}
+		for _, c := range arg {
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' {
+				return false // an identifier carries runtime (tainted) text
+			}
 		}
 	}
 	return true

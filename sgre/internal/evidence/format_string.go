@@ -25,6 +25,10 @@ var printfFamily = map[string]bool{
 	"printf": true, "fprintf": true, "sprintf": true, "snprintf": true,
 	"vprintf": true, "vfprintf": true, "vsprintf": true, "vsnprintf": true,
 	"syslog": true, "err": true, "warn": true, "errx": true, "warnx": true,
+	// Annex K `_s` variants carry the same non-literal-format risk as their
+	// unchecked counterparts (FS-02).
+	"printf_s": true, "fprintf_s": true, "sprintf_s": true, "snprintf_s": true,
+	"vprintf_s": true, "vfprintf_s": true, "vsprintf_s": true, "vsnprintf_s": true,
 }
 
 func (d *FormatStringDetector) Detect(ctx context.Context) (DetectResult, error) {
@@ -73,9 +77,20 @@ func (d *FormatStringDetector) extractFormatArg(call parser.Node) string {
 			switch callName {
 			case "fprintf", "vfprintf", "syslog":
 				formatIdx = 1
+			case "err", "errx":
+				// err(eval, fmt, ...) / errx(eval, fmt, ...): args[0] is the eval
+				// exit code, args[1] is the format (FS-01). warn/warnx put the
+				// format at args[0], so they keep the default.
+				formatIdx = 1
 			case "sprintf", "vsprintf":
 				formatIdx = 1
+			case "sprintf_s", "vsprintf_s":
+				// C11 Annex K: sprintf_s(s, n, format, ...) — format is args[2].
+				formatIdx = 2
 			case "snprintf", "vsnprintf":
+				formatIdx = 2
+			case "snprintf_s", "vsnprintf_s":
+				// C11 Annex K: snprintf_s(s, n, format, ...) — format is args[2].
 				formatIdx = 2
 			}
 			if len(args) <= formatIdx {
@@ -88,5 +103,14 @@ func (d *FormatStringDetector) extractFormatArg(call parser.Node) string {
 }
 
 func (d *FormatStringDetector) isStringLiteral(text string) bool {
-	return strings.HasPrefix(text, "\"") || strings.HasPrefix(text, "L\"")
+	t := strings.TrimSpace(text)
+	// C string literal prefixes: L (wide), u8/u/U (C11 UTF), and a plain string.
+	// A UTF/wide literal is still a compile-time literal, not a tainted format
+	// (FS-03).
+	for _, p := range []string{`u8"`, `u"`, `U"`, `L"`, `"`} {
+		if strings.HasPrefix(t, p) {
+			return true
+		}
+	}
+	return false
 }

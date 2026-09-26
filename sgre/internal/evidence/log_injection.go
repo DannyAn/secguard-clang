@@ -50,7 +50,7 @@ func (d *LogInjectionDetector) detectLogInjection(ctx context.Context, f *db.Fun
 			if len(args) > 1 {
 				formatStr = args[1]
 			}
-			if isProtocolHeaderContext(fileVarName, formatStr) {
+			if isProtocolHeaderFormat(formatStr) {
 				continue
 			}
 			if !isLogContextByHeuristic(fileVarName, callName) {

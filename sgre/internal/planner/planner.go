@@ -69,7 +69,7 @@ func (p *Planner) getFilters(chain string) ([]Filter, error) {
 			NewSafeFunctionFilter(p.store),
 			NewReleaseFilter(p.store, "MEMORY_RELEASE"),
 			NewOwnershipTransferFilter(p.store),
-			NewLeakProofFilter(p.store),
+			NewLeakProofFilter(p.store, "MEMORY_ALLOC"),
 		}, nil
 	case "buffer-overflow":
 		return []Filter{
@@ -83,6 +83,7 @@ func (p *Planner) getFilters(chain string) ([]Filter, error) {
 			NewSafeFunctionFilter(p.store),
 			NewReleaseFilter(p.store, "RESOURCE_RELEASE"),
 			NewOwnershipTransferFilter(p.store),
+			NewLeakProofFilter(p.store, "RESOURCE_ACQUIRE"),
 		}, nil
 	case "lifetime":
 		return []Filter{

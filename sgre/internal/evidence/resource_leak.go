@@ -41,7 +41,7 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 
 		for _, f := range funcs {
 			acquires := d.findAcquires(ctx, f, file, assigns, inits, calls, binaries, &result)
-			releases := d.findReleases(ctx, f, file, calls)
+			releases := d.findReleases(ctx, f, file, calls, inits, assigns)
 
 			returnLines := findReturnLinesFrom(returns, f)
 			localVars := findLocalVarsFrom(decls, f)
@@ -93,10 +93,18 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 						shouldReportRelease = true
 					}
 
-					if emitEvent(ctx, d.store, d.logger, "RESOURCE_ACQUIRE", f.ID, &db.Location{FileID: file.ID, Line: acquireLine}, map[string]string{
+					// RL-03: a handle with NO release/escape/transfer anywhere is
+					// DEFINITELY lost (hasLostResource proved a leak path AND no node
+					// releases/hands it off), so mark it for the planner's confirmed tier.
+					definiteLeak := !shouldReportRelease && len(releaseLines) == 0 && len(escapeLines) == 0 && len(transferLines) == 0
+					acquireProps := map[string]string{
 						"variable": varName,
 						"origin":   "resource_acquire",
-					}) {
+					}
+					if definiteLeak {
+						acquireProps["definite"] = "true"
+					}
+					if emitEvent(ctx, d.store, d.logger, "RESOURCE_ACQUIRE", f.ID, &db.Location{FileID: file.ID, Line: acquireLine}, acquireProps) {
 						result.EventsCreated++
 					}
 
@@ -221,10 +229,39 @@ func isLockAcquirer(name string) bool {
 }
 
 func isResourceReleaser(name string) bool {
+	if apikb.IsSafeWrapper(name) {
+		return false
+	}
 	lower := strings.ToLower(name)
-	releasers := []string{"fclose", "close", "unlock", "release", "destroy", "disconnect", "join", "deinit", "munmap"}
-	for _, r := range releasers {
-		if strings.Contains(lower, r) {
+	exact := map[string]bool{
+		"close": true, "fclose": true, "pclose": true, "closedir": true,
+		"closesocket": true, "close_range": true, "munmap": true,
+		"pthread_join": true, "thrd_join": true,
+		"pthread_mutex_unlock": true, "pthread_mutex_destroy": true,
+		"pthread_cond_destroy": true, "pthread_rwlock_destroy": true,
+		"sem_destroy": true, "sem_close": true, "sem_unlink": true,
+		"shutdown": true, "FreeLibrary": true, "RegCloseKey": true, "CloseHandle": true,
+	}
+	if exact[lower] {
+		return true
+	}
+	// Wrapper suffix (os_close, db_disconnect, ...). A `_` boundary only, so
+	// close_log / enclose / string_join / path_join / destroy_temp_string — which
+	// are NOT resource releases — no longer match (RL-01, the FN direction).
+	for _, suffix := range []string{"_close", "_fclose", "_munmap", "_unlock", "_release", "_disconnect", "_deinit"} {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	// Thread join wrappers must be thread-typed; a bare "_join" would match
+	// string_join / path_join (string concatenation).
+	if strings.Contains(lower, "thread_join") {
+		return true
+	}
+	// Mutex/sem/cond/rwlock destroy wrappers; a bare "_destroy" would match
+	// destroy_temp_string (a memory reclaimer handled by memory-leak).
+	for _, pat := range []string{"mutex_destroy", "sem_destroy", "cond_destroy", "rwlock_destroy"} {
+		if strings.Contains(lower, pat) {
 			return true
 		}
 	}
@@ -383,8 +420,9 @@ func isOKConstant(node parser.Node) bool {
 	return upper == "OK" || strings.HasSuffix(upper, "_OK")
 }
 
-func (d *ResourceLeakDetector) findReleases(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node) map[string][]int {
+func (d *ResourceLeakDetector) findReleases(ctx context.Context, f *db.Function, file *db.File, calls, inits, assigns []parser.Node) map[string][]int {
 	releases := make(map[string][]int)
+	aliases := findAliases(f, inits, assigns)
 
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
@@ -404,7 +442,14 @@ func (d *ResourceLeakDetector) findReleases(ctx context.Context, f *db.Function,
 					}
 					// `close(fd)` / `fclose(fp)` and `close(fds[0])`.
 					if arg.Kind() == "identifier" || arg.Kind() == "subscript_expression" {
-						releases[arg.Text()] = append(releases[arg.Text()], call.StartLine())
+						name := arg.Text()
+						releases[name] = append(releases[name], call.StartLine())
+						// Alias release: fd2 = fd; close(fd2) also releases fd (RL-02).
+						if arg.Kind() == "identifier" {
+							if base := terminalBaseVar(aliases, name); base != name {
+								releases[base] = append(releases[base], call.StartLine())
+							}
+						}
 					}
 				}
 			}

@@ -191,6 +191,16 @@ func isProtocolHeaderContext(fileVarName, formatStr string) bool {
 		strings.Contains(lower, "header") {
 		return true
 	}
+	return isProtocolHeaderFormat(formatStr)
+}
+
+// isProtocolHeaderFormat reports whether the FORMAT STRING itself carries a
+// protocol-header marker (a CRLF, HTTP, or an HTTP header field). This is the
+// strong signal the log-injection detector uses to skip a protocol-header sink
+// without consulting the variable name — a variable named `sock_log_fp` has a
+// coincidental "sock" but is a LOG sink, and the previous name-based skip made
+// both the CRLF and the log detector skip it (INJ-04).
+func isProtocolHeaderFormat(formatStr string) bool {
 	return strings.Contains(formatStr, "\\r\\n") || strings.Contains(formatStr, "\r\n") ||
 		strings.Contains(formatStr, "HTTP/") || strings.Contains(formatStr, "Header:") ||
 		strings.Contains(formatStr, "Set-Cookie:") || strings.Contains(formatStr, "Content-Type:")
