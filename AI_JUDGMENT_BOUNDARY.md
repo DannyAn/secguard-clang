@@ -58,3 +58,44 @@
   `DefaultSuspicion == "confirmed"`）在 `sgre/internal/planner/zz_ai_judgment_boundary_test.go`
   的 `TestConfirmedTierPolicy` 中登记为黄金清单：**新增任何 auto-confirm 必须在此
   登记其证明手段，否则构建失败**——防止「confirmed」被悄悄加到启发式上。
+
+## v0.8.0 完整确认覆盖（25 个 vuln 类型，两层 confirmed）
+
+`confirmed` 有两个来源：**静态**（registry 里写死）与**动态**（planner filter 在
+收敛时用图/CFG/区间/taint 证明后升级）。下表是 v0.8.0 的完整快照：
+
+| 类型 | confirmed 来源 | 证明手段 |
+|---|---|---|
+| null-deref | 动态 `NullableSourceFilter`（must-null） | CFG must 数据流 |
+| buffer-overflow | 静态 6 categories + 动态 `RangeOOBFilter` | 常量/区间 |
+| memory-leak | 动态 `LeakProofFilter`（definite） | CFG 无 free/escape/transfer |
+| injection | 动态 `TaintSourceFilter`（taint 达 sink） | taint 数据流 |
+| resource-leak | 动态 `LeakProofFilter`（definite） | CFG 无 release/escape/transfer |
+| uninit | 动态 `DefiniteInitFilter`（must） | CFG must 数据流 |
+| use-after-free | 动态 `LifetimeFilter`（must freed） | CFG must 数据流 |
+| double-free | 动态 `DoubleFreeFilter`（must） | CFG must 数据流 |
+| format-string | 动态 `TaintSourceFilter`（taint 达 format） | taint 数据流 |
+| integer-overflow | 静态 `definite_overflow` | 常量折叠 |
+| race-condition | 动态 `SharedAccessFilter`（同全局写） | graph 边 |
+| hardcoded-secret | 动态 `HardcodedSecretProofFilter`（值本身） | 字面量 |
+| deadlock | 动态 `LockOrderFilter`（环） | graph 边 |
+| crypto-misuse | 静态 weak_algorithm / weak_random / undersized_key | 字面量（弱算法/弱随机/密钥不足） |
+| out-of-bounds | 静态 2 categories + 动态 `RangeOOBFilter` | 常量/区间 |
+| divide-by-zero | 动态 `RangeFilter`（除数恒 0） | 区间/常量 |
+| unchecked-return | 动态 `ReturnCheckFilter` | 契约表 |
+| path-traversal | 动态 `TaintSourceFilter`（taint 达 sink） | taint 数据流 |
+| sizeof-misuse | 静态 `sizeof_pointer` | 字面量 |
+| signed-compare | 静态 `signed_compare` | 字面量 |
+| signal-handler | 静态 default | 类型固有 |
+| dangerous-function | 静态 default | 类型固有 |
+
+**故意留在 `suspected` 的两个类型（需要「意图/语义」研判，无法确定性证明）：**
+
+| 类型 | 为什么不能 auto-confirm |
+|---|---|
+| argument-type（CWE-686） | 显式指针 cast 可能是**有意的** ABI/opaque 边界——「不兼容」≠「缺陷」，需 AI 判意图 |
+| data-representation（CWE-843） | base 元素类型靠「数 `*`」解析，typedef/数组退化会数错——类型错配的「证明」不够可靠，需 AI 判实际表示 |
+
+其余类型的 `suspected` 尾巴（如 maybe-null、条件泄漏、未达 sink 的 taint、名字启发式）
+本质都是「**只在部分路径成立 / 未证明**」，属于同一原则：证明 → confirmed，启发式 → AI。
+

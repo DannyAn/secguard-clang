@@ -44,6 +44,7 @@ func TestConfirmedTierPolicy(t *testing.T) {
 		},
 		"crypto-misuse": {
 			"weak_algorithm": "literal: DES/3DES/MD5/SHA-1/RC4/rand() are weak by CWE-327 definition",
+			"weak_random":    "literal: rand()/srand() are weak PRNGs by CWE-338 definition",
 			"undersized_key": "literal: key size below the algorithm's minimum",
 		},
 		"sizeof-misuse": {

@@ -157,7 +157,7 @@ func TestCryptoMisuse_CategoryConfidence(t *testing.T) {
 	cases := map[string]string{
 		"weak_algorithm": "confirmed",
 		"undersized_key": "confirmed",
-		"weak_random":    "suspected",
+		"weak_random":    "confirmed",
 	}
 	for category, want := range cases {
 		if got := spec.CategoryConfidence[category]; got != want {

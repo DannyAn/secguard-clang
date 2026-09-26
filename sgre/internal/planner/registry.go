@@ -570,15 +570,15 @@ func init() {
 		EvidenceType:     "CRYPTO_MISUSE",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "default",
-		// weak_algorithm (DES/MD5/SHA1/RC4) and undersized_key are deterministic
-		// defects — the primitive itself is provably broken regardless of call
-		// context, so the detector's verdict is final and these are confirmed,
-		// not suspected. Only weak_random (rand/srand) depends on whether the
-		// output feeds a security context, which is an AI judgment call.
+		// weak_algorithm (DES/MD5/SHA1/RC4), weak_random (rand/srand) and
+		// undersized_key are deterministic defects — the primitive itself is
+		// provably broken regardless of call context, so the detector's verdict is
+		// final and these are confirmed, not suspected. This matches the agent
+		// prompt's "weak crypto is confirmed, period" rule (agent-body.md).
 		CategoryConfidence: map[string]string{
 			"weak_algorithm": "confirmed",
+			"weak_random":    "confirmed",
 			"undersized_key": "confirmed",
-			"weak_random":    "suspected",
 		},
 		ConvergeKey: func(c Candidate) string {
 			return fmt.Sprintf("crypto-misuse:%d:%s:%s", c.FileID, c.FunctionName, c.Category)
