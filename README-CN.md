@@ -4,425 +4,219 @@
 
 # SecGuard-Clang
 
-### AI 增强的 C 语言程序安全分析平台
+### 面向 AI Agent 的 C 语言安全分析
 
-**通过 5 级收敛管线解决"候选爆炸"问题——将 ~600 个原始候选收敛为 ~10 个高质量证据包（A1–A4），再经第 5 层二次审查（A5）提升真漏洞、剔除误报。**
+**基于语义图的安全引擎，把数千条原始检测事件收敛成一小撮 AI Agent 真正能推理的高信噪比证据包。**
 
-`v0.3.2` · `Go 1.25` · `Tree-sitter` · `SQLite` · `OpenCode / Claude Code / DeepSeek Harness`
+`v0.8.0` · `Go 1.25` · `Tree-sitter` · `SQLite` · `OpenCode / OpenCode-NGA / Claude Code / Claude CAC / DeepSeek Harness`
 
 </div>
 
 ---
 
-## 🏆 为什么 SecGuard 是世界级的？
-
-**一句话：SecGuard 是唯一为 AI Agent 而生的 C 语言安全分析平台。** 传统扫描器（CodeQL / Infer / Coverity / Semgrep）为"人看报告"而生，动辄输出上千条原始告警，直接丢给 LLM 会把它淹没。SecGuard 用 4 级确定性收敛（A1–A4）把 ~600 条压成 ~10 条高置信证据，再经第 5 层（A5）对每条疑似逐条二次确认，只留下真正"需人工判断"的残余。
-
-### 别人没有、我们独有的（蓝海）
-
-1. **连"安全函数"的误用都能抓** —— 业界普遍把 `memcpy_s` / `strcpy_s` / `scanf_s` 这类 `_s` 函数当"无条件安全"直接跳过，SecGuard 按契约逐个校验容量参数：`char buf[10]; memcpy_s(buf, 100, src, 50)` 这种"说谎的 size"照样抓出溢出。
-2. **把大模型当分析引擎** —— 静态分析证明不了的模糊边界（变量 `n` 会不会真的把 `malloc(n)` 撑爆），SecGuard 识别出来、带证据交给 AI 推理，而不是硬造一个可能出错的数学域。
-
-### 与业界顶尖工具对标（✅ 强 · ⚠️ 追平 · ❌ 弱）
-
-| 能力 | CodeQL | Infer | Coverity | Semgrep | **SecGuard** |
-|---|---|---|---|---|---|
-| 路径敏感数据流 | ✅ | ✅ | ✅ | ❌ | ✅ |
-| 跨函数分析 | ✅ | ✅ | ✅ | ❌ | ⚠️ |
-| 污点追踪 | ✅ | ✅ | ✅ | ⚠️ | ✅ |
-| 别名分析 | ✅ | ✅ | ✅ | ❌ | ✅ |
-| 数值范围分析 | ✅ | ✅ | ✅ | ❌ | ⚠️ |
-| 误报抑制 / 基线对比 / CI 拦截 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| SARIF 代码导航 | ✅ | ⚠️ | ✅ | ✅ | ✅ |
-| 并行 + 超时 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 增量索引 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 修复建议 | ⚠️ | ⚠️ | ✅ | ✅ | ✅ |
-| **AI Agent 原生** | ❌ | ❌ | ❌ | ❌ | ✅ |
-
-> 完整逐项说明（含 SecGuard 的实现机制）见 [docs/pk/competitive-analysis.md](docs/pk/competitive-analysis.md)。
-
-### 硬指标（可自行验证）
-
-| 指标 | 数值 |
-|---|---|
-| 漏洞类型 / 检测器 | **20 种 / 22 个**，CWE 全映射 |
-| 收敛效率 | ~600 原始告警 → **~10 证据包**（~4.5ms） |
-| 基准回归门禁 | 77 用例，**精度 100% / 召回 100%**（TP=43 / FP=0 / TN=34 / FN=0） |
-| 回归测试 | 74 个安全夹具 · 244 个测试函数，`go test -race` 0 数据竞争 |
-| 交付形态 | Linux / Windows / macOS 静态二进制 + OpenCode / Claude Code / DeepSeek Harness 三平台 |
-
-### 真实规模实测：Redis（约 21 万行 C 代码）
-
-为证明收敛效果在工业级 C 代码上同样成立（而不只是基准集），我们对 **Redis** 跑了完整管线
-（`src/`，231 个文件 · 6,001 个函数 · 68,512 个图节点 · 100,508 条图边）。第三方 `deps/`
-按默认 `--exclude` 跳过。
-
-| 阶段 | 数量 |
-|---|---|
-| 原始安全事件（22 个检测器） | 96,230 |
-| 进入收敛管线的候选 | 63,766 |
-| **收敛后的证据包（SARIF 结果）** | **2,931** — **约 22 倍压缩** |
-| 端到端墙钟时间 | **约 6.5 分钟**（索引 1.8s · 构图 20s · 检测 33s · 收敛约 5.6 分钟） |
-
-分类型收敛效果（候选 → 证据包）：
-
-| 类型 | 候选 → 证据包 | 压缩率 |
-|---|---|---|
-| use-after-free | 9,779 → 43 | 99.6% |
-| null-deref | 48,861 → 872 | 98.2% |
-| double-free | 241 → 17 | 92.9% |
-| format-string | 32 → 13 | 59.4% |
-| memory-leak | 16 → 0 | 100% |
-| buffer-overflow | 286 → 218 | 23.8% |
-| integer-overflow | 134 → 104 | 22.4% |
-| … 全部 20 类型 | 63,766 → 2,931 | 约 22× |
-
-复现命令：
-
-```bash
-secguard scan --db /tmp/redis.db <path-to-redis>
-```
-
-### 白话结论
-
-- **比 Semgrep 强**：Semgrep 只做文本模式匹配，SecGuard 真正分析代码的执行路径、数据流和跨函数传播。
-- **追平 Infer**：单函数内的精确分析能力同层。
-- **逼近 CodeQL / Coverity**：已实现轻量整数区间分析（跨赋值 + 守卫感知的界传播），抑制除零和整数溢出误报，并检出常量透传变量的数组越界；剩余差距在完整抽象解释区间域，已用"AI 推理兜底"补上大部分，详见 [docs/pk/competitive-analysis.md](docs/pk/competitive-analysis.md)。
-
----
-
 ## 什么是 SecGuard？
 
-SecGuard 不是一个传统的静态分析工具。它是一个 **AI Agent 的安全分析扩展**——部署到 OpenCode 或 Claude Code 中，让 AI Agent 具备深度 C 代码安全审计能力。
+SecGuard-Clang 是一个分成两层、各司其职的 C 语言安全分析平台：
 
-核心思路：传统静态分析器会产生大量原始候选（false positive 率），直接交给 AI 会**上下文爆炸**。SecGuard 在底层用语义图 + 数据流分析做 4 级确定性收敛（A1–A4），只把高质量证据包交给 AI Agent 做首轮分类，再经第 5 层（A5）对每条疑似发现二次审查，提升真漏洞、剔除误报。
+- **确定性引擎**（`sgre`）负责索引代码库、构建语义图（调用图、数据流、控制流、别名与污点边）、运行自注册检测器，并把原始证据收敛成候选线索。凡是语义图能够*证明*的缺陷，引擎会直接自动确认，不需要 AI 参与。
+- **AI Agent 层**只复核剩余的线索——每条线索都带有精确的源语句、管线预计算的 Hint 和小范围代码上下文——然后对每个候选给出一个二元裁决：`confirmed`（持久化并附上推理与修复建议）或 `dismissed`（排除，不持久化）。
 
-```
-                    ┌──────────────────────────────────────────────────┐
-                    │              AI Agent (OpenCode / Claude Code)      │
-                    │                                                      │
-                    │  secguard scan ──→ 收敛后的证据包 ──→ 分类判定       │
-                    │  secguard plan  ──→ 单类型证据   ──→ 分类判定       │
-                    │  secguard report ──→ 写入 findings                  │
-                    └────────────────────────┬─────────────────────────┘
-                                             │ shell 调用
-                    ┌────────────────────────▼─────────────────────────┐
-                    │           secguard 二进制 (sgre 引擎)               │
-                    │                                                      │
-                    │  index → graph → detect → plan(收敛) → report       │
-                    └────────────────────────┬─────────────────────────┘
-                                             │
-                    ┌────────────────────────▼─────────────────────────┐
-                    │              SQLite 语义图 (sgre.db)                │
-                    │                                                      │
-                    │  Layer 1: 程序事实  (files, functions, variables)   │
-                    │  Layer 2: 语义图    (call graph, data flow, CFG)    │
-                    │  Layer 3: 安全证据  (security_events)               │
-                    │  Layer 4: 发现     (findings, AI 写入)              │
-                    └──────────────────────────────────────────────────┘
-```
+价值在于两层之间的边界。传统扫描器会把每一条原始告警都吐出来，用大量误报淹没大模型、耗尽上下文窗口。SecGuard 只把紧凑的、已收敛的证据交给模型，让模型把推理预算花在确定性管线无法判定的那部分案例上。
 
-## 架构
+## 它有什么不同
 
-### 管线流程
+- **证据打包，而不是告警倾倒。** 扫描阶段会按类型生成候选索引（`Source` + `Hint` + `Evidence`）和逐候选代码上下文，Agent 基于结构化证据分类，而不是重新翻读整个仓库。
+- **校验契约，而不是无条件豁免。** `_s` 函数不会被想当然地当成安全函数。`char buf[10]; memcpy_s(buf, 100, src, 50)` 是“说谎的 size”，会被判为溢出；而正确的 `memcpy_s(dst, sizeof(dst), src, 8)` 则不会。
+- **二元裁决。** 每个候选最终只会是 `confirmed` 或 `dismissed`。不会留下一堆 `suspected` 让开发者事后慢慢挑；`findings/` 和 `result.sarif` 里只有真正可行动的结果。
+- **产物可复现。** 一次扫描会产出 `report.md`、`audit-report.md`、`result.sarif`、`result.xlsx` 和 `findings/` 目录，全部从同一个 SQLite 数据库重新推导。
+- **在工程师原本的工作流里工作。** 同一个核心以薄封装形式发布到 OpenCode、OpenCode-NGA、Claude Code、Claude CAC 和 DeepSeek Harness，另提供独立 CLI 供 CI 使用。
 
-SecGuard 运行**5 级收敛管线**：A1–A4 是确定性的（在语义图上能证的证、能证伪的证伪）；
-**A5 是复合补全层**——对每条疑似发现二次审查，解决语义图*证不了*的残余
-（外部输入除数、部分校验、短读语义、TOCTOU 窗口），靠 AI 的业务上下文推理拍板。
+## 管线
 
 ```
  C 源代码
     │
     ▼
-┌───────────────┐
-│  A1 Indexer    │  tree-sitter 增量索引（按 checksum 跳过未变更文件）
-│  (Tree-sitter) │  → Layer 1: 程序事实
-└───────┬───────┘
+┌────────────────┐   tree-sitter 增量索引（按 checksum 跳过未变更文件）
+│  Indexer        │
+└───────┬────────┘
         ▼
-┌───────────────┐
-│  A2 Semantic   │  调用图 + 数据流 + 可达性 + 语句级 CFG
-│  Graph Builder │  → Layer 2: 语义图
-└───────┬───────┘
+┌────────────────┐   调用图 + 数据流 + CFG + 别名/所有权边
+│  Semantic graph │
+└───────┬────────┘
         ▼
-┌───────────────┐
-│  A3 Detectors  │  22 个自注册检测器: null-deref, buffer-overflow, injection, ...
-│  (evidence)    │  → Layer 3: 安全证据 (security_events)
-└───────┬───────┘
+┌────────────────┐   32 个自注册检测器
+│  Detectors      │   （null-deref、buffer-overflow、injection …）
+└───────┬────────┘
         ▼
-┌───────────────┐
-│  A4 Planner    │  4 级收敛（确定性，在 planner 内部）
-│  (收敛引擎)    │
-└───────┬───────┘
-        │  ~600 原始候选
-        │     ▼  Filter 1: 可空源分析 (reaching-sources 数据流)
-        │   ~200
-        │     ▼  Filter 2: 调用可达性 (call graph)
-        │    ~80
-        │     ▼  Filter 3: 数据流验证 (CFG + guard)
-        │    ~30
-        │     ▼  Filter 4: 去重 + 风险排序
-        │    ~10  高质量证据包
-        ▼
-┌───────────────┐
-│  AI Agent      │  首轮: 按漏洞类型逐批分类 + 结构化判定依据补全
-│  (分类判定)    │  → Layer 4: findings (status + summary/reasoning/exception_check/fix_strategy)
-└───────┬───────┘
-        ▼
-┌───────────────┐
-│  A5 Second-    │  对每条疑似发现，重新读取 file:line 处源码逐一判定
-│  Round Review  │  → review_status = confirmed (提升) / dismissed (剔除) / suspected-kept
-│  (复合补全层)  │  持久化 review_reasoning；只留下真正"需人工判断"的残余
-└───────┬───────┘
-        ▼
-┌───────────────┐
-│  Report        │  SARIF 2.1 + Markdown + per-finding Markdown (_confirmed/_suspected/_dismissed)
-└───────────────┘
+┌────────────────┐   收敛过滤器：nullable-source、call-reach、
+│  Planner        │   dataflow、dedup + 风险排序
+└───────┬────────┘
+        │
+        ├── 可证明的缺陷 ──────────────► 自动确认（无需 AI 复核）
+        │
+        └── 剩余线索 ──► 证据包 ──► AI Agent
+                              │
+                              │  单轮二元裁决
+                              ▼
+                        confirmed → 持久化 + 修复建议
+                        dismissed → 排除，不持久化
+                              │
+                              ▼
+┌────────────────┐   report.md · audit-report.md · result.sarif ·
+│  Report / audit │   result.xlsx · findings/
+└────────────────┘
 ```
 
-A1–A4 解决语义图能证明的（confirmed）和能证伪的（drop）——它们产不出推理链和修复策略。
-首轮分类补上这块：对每条发现写 `summary` / `reasoning` / `exception_check` / `fix_strategy`
-（确定性引擎合成不了的"为什么信它 + 怎么修"）。A5 再复合一层，对每条疑似二次确认，
-所以经过 A5 仍留下的 `suspected` 是真正"需人工判断"的情形——而非图本已知道的确定性结论。
-最终报告通过 `EffectiveStatus()` 统计 A5 之后的裁决。
+确定性阶段只处理它能证明或证伪的部分。AI 阶段只负责分类残余线索，并为每一条 confirmed 发现补上确定性引擎无法生成的 `summary`、`reasoning`、`exception_check` 和 `fix_strategy`。
 
-### 4 层数据模型
+## 支持的漏洞类型
 
-| 层 | 内容 | 稳定性 | 表 |
-|----|------|--------|-----|
-| **Layer 1** | 程序事实 | 最稳定 | `files`, `functions`, `variables`, `expressions`, `types`, `locations` |
-| **Layer 2** | 语义图 | 稳定 | `graph_nodes`, `graph_edges` (CALL, DATA_FLOW, OWNERSHIP_TRANSFER, RELEASE, ALIAS, PARAM_BINDING, RETURN, LOCK_ORDER, GLOBAL_ACCESS) |
-| **Layer 3** | 安全证据 | 中等 | `security_events` (NULL_VALUE, DEREFERENCE, BUFFER_ACCESS, ...) |
-| **Layer 4** | 发现 | 最易变 | `findings` (首轮写 `status`；A5 二次审查写 `review_status` / `review_reasoning`) |
+SecGuard 内置 24 类漏洞类型，CWE 映射有单一事实源：
 
-### 多平台扩展架构
+| 类型 | CWE | 类型 | CWE |
+|---|---|---|---|
+| `null-deref` | CWE-476 | `use-after-free` | CWE-416 |
+| `buffer-overflow` | CWE-787 | `double-free` | CWE-415 |
+| `out-of-bounds` | CWE-125 | `uninit` | CWE-457 |
+| `memory-leak` | CWE-401 | `unchecked-return` | CWE-252 |
+| `resource-leak` | CWE-404 | `format-string` | CWE-134 |
+| `injection` | CWE-78 | `integer-overflow` | CWE-190 |
+| `path-traversal` | CWE-22 | `divide-by-zero` | CWE-369 |
+| `crypto-misuse` | CWE-327 | `hardcoded-secret` | CWE-798 |
+| `deadlock` | CWE-667 | `race-condition` | CWE-362 |
+| `dangerous-function` | CWE-676 | `signed-compare` | CWE-681 |
+| `sizeof-misuse` | CWE-467 | `signal-handler` | CWE-479 |
+| `argument-type` | CWE-686 | `data-representation` | CWE-843 |
 
-```
-extension/
-├── shared/                    ← 单一事实来源（编辑这里）
-│   ├── agent-body.md          ← AI Agent 提示词（工作流 + 分类规则）
-│   ├── command-instructions.md ← /secguard 命令指令
-│   └── skills/                ← 20 个漏洞类型 skill
-│       ├── null-deref/SKILL.md
-│       ├── buffer-overflow/SKILL.md
-│       └── ...
-├── opencode/                  ← OpenCode 薄包装
-│   ├── tools/*.ts             ← 7 个 TypeScript 工具
-│   └── extension.json
-├── claude-code/               ← Claude Code 薄包装
-│   └── ...
-└── deepseek-harness/          ← DeepSeek Harness 薄包装（Agent preset）
-    ├── preset.yml             ← preset 元数据
-    └── agent.cordis.yml       ← Cordis 组合（persona + 工具 + skill 根）
-```
-
-OpenCode / Claude Code 构建时 `release/build-packages.sh` 将 `shared/` 展开安装到 `.opencode/` 和 `.claude/`。
-DeepSeek Harness 用 `release/install-dsh.sh` 把 preset 装到 `~/.dsh/.agent-presets/secguard/`（skills 从 `shared/` 拷贝）。
+每种类型都有对应的 Agent 技能，位于 `extension/shared/skills/<type>/SKILL.md`，包含分类规则与误报识别指南。
 
 ## 快速开始
 
-### 方式一：从发行包安装（推荐）
+### 从发布包安装
 
 ```bash
-# 下载发行包
-curl -L https://github.com/DannyAn/secguard-clang/releases/latest/download/secguard-0.3.2.zip -o secguard.zip
+curl -L https://github.com/DannyAn/secguard-clang/releases/latest/download/secguard-0.8.0.zip -o secguard.zip
 unzip secguard.zip
 
-# 安装（自动检测 OS × 架构，装到 OpenCode + Claude Code）
+# 安装到所有受支持的 Agent 环境 + CLI 二进制
 ./install.sh
 
-# 验证
-secguard --version
-```
-
-安装脚本支持以下选项：
-
-```bash
-./install.sh --target opencode       # 只装 OpenCode 扩展
-./install.sh --target claude-code    # 只装 Claude Code 扩展
+# 或只安装某一个环境
+./install.sh --target opencode       # OpenCode
+./install.sh --target opencode-nga   # OpenCode-NGA
+./install.sh --target claude-code    # Claude Code
+./install.sh --target claude-cac     # Claude CAC
 ./install.sh --no-binary             # 只装扩展，跳过二进制
 ./install.sh --verify                # 安装后自检
-./install.sh --uninstall --yes       # 卸载
 ```
 
-### 方式二：从 AI Agent Market 安装（插件包）
+### 从 AI Agent Market 安装平台插件
 
-每次发布还会产出 `secguard-clang-plugins-<version>.zip` —— **一个聚合包，内含 4 个逐平台
-zip**。解压后把对应 zip 上传到 AI Agent Market 的「extension」发布入口即可（无需再手工打包）：
+每次发布还提供 `secguard-clang-plugins-<version>.zip`，内含每个平台的自包含插件（`secguard-clang-opencode`、`secguard-clang-opencode-nga`、`secguard-clang-claude-code`、`secguard-clang-claude-cac`）。把对应插件上传到市场的 extension 发布入口，然后在 Agent TUI 中安装即可。所有平台的命令命名空间都是 `secguard-clang`。完整矩阵见 `release/plugins-README.md`。
 
-```bash
-unzip secguard-clang-plugins-0.6.1.zip
-# 以 Claude Code（CAC）为例：
-#   上传 secguard-clang-claude-cac-0.6.1.zip 到市场「extension」入口
-#   在目标机器进入 AI Agent TUI 安装后，输入 /secguard-clang:secguard 执行
-```
-
-四个逐平台 zip 分别是 `secguard-clang-opencode-<v>.zip`、
-`secguard-clang-opencode-nga-<v>.zip`、`secguard-clang-claude-code-<v>.zip`、
-`secguard-clang-claude-cac-<v>.zip` —— 每个都带 22 个 skills、`bin/secguard` 调度 shim 和
-全部 5 个 OS×架构二进制，manifest 位于 zip 根。所有平台 TUI namespace 统一为
-`secguard-clang`：OpenCode 里是 `/secguard-clang/secguard`，Claude Code 里是
-`/secguard-clang:secguard`。详见 `release/plugins-README.md`。
-
-### 方式三：从源码构建
+### 从源码构建
 
 ```bash
 git clone https://github.com/DannyAn/secguard-clang.git
 cd secguard-clang
-
-# 构建二进制 + 安装扩展
-./build.sh --install
-
-# 或者只构建二进制
-./build.sh              # → bin/secguard
-
-# 构建发行包
-./build.sh --package
+./build.sh                 # 构建二进制 → bin/secguard
+./build.sh --install       # 安装二进制 → ~/.local/bin
+./build.sh --package       # 构建发布包
+./deploy.sh all            # 构建并安装 Agent 扩展
 ```
 
-### 方式四：DeepSeek Harness（DSH）
+`./deploy.sh` 支持 `opencode`、`opencode-nga`、`claude-code`、`claude-cac`、`dsh` 或 `all`，并可用 `--no-binary` 跳过二进制构建。
 
-SecGuard 提供了 DSH 的 Agent preset（Cordis 组合），装上后在 DSH 里选
-「SecGuard 安全审计」preset 即可让 Agent 具备 C 安全审计能力：
+### DeepSeek Harness
 
 ```bash
-# 1) 确保 secguard 二进制在 PATH 上（见方式一/二）
-# 2) 安装 DSH preset（把组合 + 20 个 skill 装到 ~/.dsh/.agent-presets/secguard/）
 ./release/install-dsh.sh
-
-# 3) 在 DSH 里选择「SecGuard 安全审计」preset，然后对话：
-#    > 扫描 src/ 目录的安全漏洞
-#    > 看看有没有 buffer-overflow, null-deref 问题
 ```
 
-DSH 的"角色"即 persona（`agent.cordis.yml` 里的 `dsh-persona`）；外部用户选这个
-preset 即得到一个专注 C 安全审计的 Agent，无需接触 OpenCode/Claude Code。
+然后在 DeepSeek Harness 中选择 **SecGuard Security Audit** preset。
 
-### 在 AI Agent 中使用
+## 使用
 
-安装后，在 OpenCode、Claude Code 或 DeepSeek Harness 中直接对话：
+在 Agent 里直接用自然语言提问：
 
 ```
 > 扫描 src/ 目录的安全漏洞
-> 看看有没有 null-deref, buffer-overflow 问题
-> 审计 ./src 的安全性
+> 重点看 null-deref 和 buffer-overflow 问题
 ```
 
-AI Agent 会自动调用 `secguard scan`，加载对应 skill，分类判定，输出报告。
-
-### 直接使用 CLI
+或直接使用 CLI：
 
 ```bash
-# 完整扫描（索引 + 检测 + 收敛 + 报告）
-secguard scan ./src
-
-# 查看支持的漏洞类型
-secguard types
-
-# 查看索引状态
-secguard status
-
-# 对单个漏洞类型运行收敛
-secguard plan null-deref
-
-# 查询 findings
-secguard report
-
-# 执行 SQL 查询
-secguard db "SELECT * FROM findings WHERE status='confirmed'"
+secguard scan ./src        # 索引 + 建图 + 检测 + 收敛 + 自动确认 + 候选
+secguard types             # 权威漏洞类型 + CWE
+secguard status            # 索引状态
+secguard plan null-deref   # 单类型收敛
+secguard report            # 读取已持久化的发现
+secguard metrics           # 扫描性能与收敛指标
+secguard schema findings   # 写 SQL 前先看表结构
+secguard db "SELECT ..."   # 对 sgre.db 执行只读 SQL
 ```
-
-## 支持的漏洞类型（20 种）
-
-| 漏洞类型 | CWE | 漏洞类型 | CWE |
-|---------|-----|---------|-----|
-| `null-deref` | CWE-476 | `hardcoded-secret` | CWE-798 |
-| `buffer-overflow` | CWE-787 | `deadlock` | CWE-667 |
-| `memory-leak` | CWE-401 | `crypto-misuse` | CWE-327 |
-| `injection` | CWE-78 | `out-of-bounds` | CWE-125 |
-| `resource-leak` | CWE-404 | `divide-by-zero` | CWE-369 |
-| `uninit` | CWE-457 | `unchecked-return` | CWE-252 |
-| `use-after-free` | CWE-416 | `path-traversal` | CWE-22 |
-| `double-free` | CWE-415 | `sizeof-misuse` | CWE-467 |
-| `format-string` | CWE-134 | `signed-compare` | CWE-681 |
-| `integer-overflow` | CWE-190 | `race-condition` | CWE-362 |
-
-每种类型有对应的 AI Agent skill（`extension/shared/skills/<type>/SKILL.md`），提供分类规则和误报识别指南。
-
-## CLI 命令
-
-| 命令 | 说明 |
-|------|------|
-| `secguard scan <path>` | 完整管线：索引 + 全部检测器 + 收敛 + 报告 |
-| `secguard plan <vuln>` | 对单个漏洞类型运行收敛管线 |
-| `secguard index <path>` | 仅索引（不跑检测器和收敛） |
-| `secguard status` | 索引状态（文件数、函数数、陈旧度） |
-| `secguard types` | 列出所有漏洞类型 + CWE（JSON） |
-| `secguard schema [table]` | 查询表 schema（列名/类型，写 SQL 前用） |
-| `secguard report` | 输出全部 findings（JSON） |
-| `secguard db <sql>` | 在 sgre.db 上执行 SQL 查询（只读） |
-
-全局选项：`--db <path>`（覆盖 DB 路径）、`--exclude <dirs>`（排除目录）、`--version`、`--help`
 
 ## 输出
 
 扫描结果写入 `.codeagent/secguard-clang/scans/<scan-id>/`：
 
 ```
-scans/2026-08-17_062452_e32eb1/
-├── candidates.sarif                ← SARIF 2.1，候选阶段（全部 level=note）
-├── result.sarif                    ← SARIF 2.1，判定阶段（AI 分类后生成）
-├── report.md                      ← Markdown 摘要（候选列表）
-├── audit-report.md                ← AI 审计报告（分类统计）
-├── candidates/                    ← 管线候选证据，按漏洞类型分组
-│   ├── buffer-overflow/
-│   │   ├── 001_allocator_99.md    ← 未判定的线索，不等于缺陷
-│   │   └── 002_parser_20.md
-│   └── null-deref/
-│       └── 001_network_45.md
-└── findings/                      ← AI 判定结论，员工只看这里
-    ├── buffer-overflow/
-    │   └── 001_allocator_99_confirmed.md
-    └── null-deref/
-        └── 001_network_45_suspected.md
+scans/<scan-id>/
+├── candidates.sarif              # 候选阶段（未分类线索，level "note"）
+├── result.sarif                  # 裁决阶段（仅 confirmed）
+├── report.md                     # 裁决阶段报告
+├── audit-report.md               # 每类型管线 + AI 分类统计
+├── result.xlsx                   # 可行动发现导出
+├── candidates/<type>/            # 管线证据，按漏洞类型分组
+│   └── 001_allocator_99.md       # 内嵌代码上下文的线索
+└── findings/<type>/              # 人工复核面——仅 confirmed 裁决
+    └── 001_allocator_99_confirmed.md
 ```
 
-`findings/` 只放"需要人处理"的结论：文件名必带 `_confirmed` / `_suspected`
-后缀；被 AI 判为误报的条目**不会**在这里生成文件（判定与理由记入数据库，并标注
-到对应的 `candidates/` 文件上）。`secguard report --audit` 会按数据库重建
-`findings/`，保证目录与已落库的判定始终一致。
+`findings/` 与 `result.sarif` 只包含 confirmed 结果。dismissed 候选不会生成文件、也不会持久化；分类轨迹保留排除理由以便审计。让 CI 直接指向 `result.sarif`：它不可能包含未分类的线索。
 
-每个判定文件都是**自包含**的——位置、证据链、缺陷处的源码片段（默认上下各 15
-行，带行号，问题行用 `>` 标出）、AI 的推理与误报排除、可直接粘贴的修复代码：
+每个裁决文件都是自包含的——位置、证据链、报告行附近的源码、AI 推理与例外检查，以及可直接粘贴的修复建议。用 `--context-lines <n>` 调节内嵌源码窗口，传 `0` 可不内嵌源码。
+
+## 架构
+
+### 4 层数据模型
+
+| 层 | 内容 | 稳定性 | 表 |
+|---|---|---|---|
+| **1. 程序事实** | 文件、函数、变量、表达式、类型、位置 | 最稳定 | `files`、`functions`、`variables`、`expressions`、`types`、`locations` |
+| **2. 语义图** | 调用/数据流/控制流/别名/所有权边 | 稳定 | `graph_nodes`、`graph_edges` |
+| **3. 安全证据** | 收敛前的检测器事件 | 中等 | `security_events` |
+| **4. 发现** | AI 确认与自动确认的裁决 | 最易变 | `findings` |
+
+### 多平台扩展
 
 ```
-## Code Context
-
-`/repo/src/tc01.c:15-31` — line 30 is the reported location.
-
-  28 | int tc01_null_return(int id) {
-  29 |     Node *node = get_node(id);
-> 30 |     return node->value;
-  31 | }
+extension/
+├── shared/                      # 单一事实源
+│   ├── agent-body.md            # 子代理角色 + 分类契约
+│   ├── command-instructions.md  # /secguard 工作流
+│   └── skills/                  # 24 个漏洞类型技能
+├── opencode/                    # OpenCode 封装 + 9 个 MCP 工具
+├── opencode-nga/                # OpenCode-NGA 封装（复用同一套工具）
+├── claude-code/                 # Claude Code 封装
+├── claude-cac/                  # Claude CAC 封装
+└── deepseek-harness/            # DeepSeek Harness Agent preset
 ```
 
-审阅者不必再跳回源码。窗口大小用 `--context-lines <n>` 调整，`--context-lines 0`
-则完全不把源码写入报告产物；同一设置也决定 SARIF 的 `region.snippet` /
-`contextRegion.snippet`。
-
-两个 SARIF 文件遵循与两棵 Markdown 树相同的规则：扫描阶段写 `candidates.sarif`
-（未判定候选，全部 level=note），`result.sarif` 只由已落库的判定生成。**CI 请对准
-`result.sarif`**——它里面不可能出现未判定候选。
+`shared/` 是权威来源。`release/build-packages.sh` 把它展开到各平台包，`release/check-extension-consistency.py` 负责保证工具注册、Agent 权限和 turn 预算跨平台一致。
 
 ## 技术栈
 
 | 组件 | 技术 | 说明 |
-|------|------|------|
-| **核心引擎** | Go 1.25 | 单一静态二进制，跨平台 |
-| **数据库** | SQLite (modernc.org/sqlite) | 纯 Go，无 CGo 依赖 |
-| **解析器** | Tree-sitter + tree-sitter-c | 增量解析 C 语法 |
-| **交叉编译** | zig (musl/mingw) | Linux/Windows 静态二进制 |
-| **AI 扩展** | TypeScript/Bun | 7 个 OpenCode 工具 |
-| **AI 平台** | OpenCode + Claude Code | 共享核心 + 薄包装 |
+|---|---|---|
+| 核心引擎 | Go 1.25 | 单一静态二进制，跨平台 |
+| 数据库 | SQLite（`modernc.org/sqlite`） | 纯 Go，无 CGo 依赖 |
+| 解析器 | Tree-sitter + tree-sitter-c | 增量 C 解析 |
+| 交叉编译 | zig（musl/mingw） | 静态 Linux/Windows 二进制 |
+| AI 扩展 | TypeScript/Bun | 9 个 OpenCode MCP 工具 |
+| Agent 环境 | OpenCode、OpenCode-NGA、Claude Code、Claude CAC、DeepSeek Harness | 共享核心 + 薄封装 |
 
 ## 项目结构
 
@@ -431,24 +225,18 @@ secguard-clang/
 ├── sgre/                          # Go 模块（核心引擎）
 │   ├── cmd/secguard/              # CLI 入口
 │   └── internal/
-│       ├── cli/                   # CLI 命令实现
+│       ├── cli/                   # 命令实现
 │       ├── db/                    # SQLite schema + CRUD
-│       ├── indexer/               # Tree-sitter 索引器
-│       ├── parser/                # 解析器包装
-│       ├── graph/                 # 语义图构建（调用图/数据流/CFG）
-│       ├── evidence/              # 22 个安全检测器
-│       ├── planner/               # A4: 4 级收敛管线 + 13 个过滤器
-│       ├── agent/                 # AI Agent 集成
-│       ├── report/                # SARIF + Markdown 报告
+│       ├── indexer/               # tree-sitter 索引器
+│       ├── parser/                # 解析器封装
+│       ├── graph/                 # 语义图构建
+│       ├── evidence/              # 自注册检测器
+│       ├── planner/               # 收敛管线 + 过滤器
+│       ├── report/                # SARIF / Markdown / XLSX 报告
 │       └── log/                   # 结构化日志
 ├── extension/                     # 多平台 AI Agent 扩展
-│   ├── shared/                    # 共享核心（skills + agent prompt）
-│   ├── opencode/                  # OpenCode 包装
-│   └── claude-code/               # Claude Code 包装
-│   └── deepseek-harness/          # DeepSeek Harness 包装（Agent preset）
 ├── release/                       # 构建/安装工具
-├── examples/                      # 示例和基准测试
-│   └── c-vuln-benchmark/          # 23 文件 / 77 测试用例 / 20 类型
+├── examples/c-vuln-benchmark/     # C 漏洞基准
 ├── docs/                          # 设计文档
 ├── build.sh                       # 构建入口
 └── .github/workflows/             # CI 发布工作流
@@ -458,43 +246,29 @@ secguard-clang/
 
 ```bash
 cd sgre
-
-# 全套测试（需 SQLite + tree-sitter）
-go test ./...
-
-# 无 SQLite 子集（mock store）
-go test -tags nosqlite ./internal/log/ ./internal/planner/ ./internal/db/
-
-# 收敛基准
-go test -tags nosqlite -bench=. ./internal/planner/
-
-# 安全测试夹具
-go test -run TestSecurity ./internal/evidence/
+go test ./...                        # 完整测试套件（SQLite + tree-sitter）
+go test -tags nosqlite ./internal/log/ ./internal/planner/ ./internal/db/   # 无 SQLite 子集
 ```
+
+`examples/c-vuln-benchmark` 是一套自包含的 C 回归用例，用作检测器与 planner 变更的 CI 门禁。
 
 ## 设计原则
 
-1. **表按程序事实类型组织**，不按漏洞类型——避免 schema 爆炸
-2. **Skills 是查询消费者**，永不创建表——保持关注点分离
-3. **AI Agent 只接收收敛后的证据包**，永不接触原始候选——这是管线的核心价值
-4. **CWE 映射的单一事实来源**——`VulnTypeSpec.CWE` 是唯一真相，所有消费者派生自它
-5. **按漏洞类型分批处理**——避免 AI Agent 上下文爆炸
-
-## 性能
-
-- 收敛管线（600 候选 → ≤30）：**~4.5ms**
-- 增量索引：按 checksum 跳过未变更文件
-- 大代码库生成器：`go run testdata/perf/gen_codebase.go testdata/perf/large_codebase 100 50`
+1. **按程序事实组织表，而不是按漏洞类型建表。** 避免检测覆盖增长时 schema 爆炸。
+2. **技能是查询消费者。** 技能只分类证据，从不建表。
+3. **AI 只看到已收敛的证据。** 原始候选不进 Agent 上下文。
+4. **CWE 映射单一事实源。** `planner.VulnTypeSpec.CWE` 是权威来源，消费者都从它派生。
+5. **dismissed 不持久化。** 复核面保持干净，最终计数来自 audit 汇总，而不是文件列表。
 
 ## 相关文档
 
-- [CLAUDE.md](CLAUDE.md) — 架构权威说明（Claude Code 工作指南）
-- [CHANGELOG.md](CHANGELOG.md) — 变更记录
-- [docs/pk/competitive-analysis.md](docs/pk/competitive-analysis.md) — 竞品分析（vs CodeQL / Infer / Coverity / Semgrep）
+- [CLAUDE.md](CLAUDE.md) — 架构与工作指南
+- [CHANGELOG.md](CHANGELOG.md) — 发布记录
 - [docs/output-protocol.md](docs/output-protocol.md) — 输出契约
-- [docs/parallelization-design.md](docs/parallelization-design.md) — 并行化设计
-- [examples/c-vuln-benchmark/](examples/c-vuln-benchmark/) — 漏洞基准测试集
+- [docs/parallelization-design.md](docs/parallelization-design.md) — 并行调度设计
+- [examples/c-vuln-benchmark/](examples/c-vuln-benchmark/) — 漏洞基准套件
+- [README.md](README.md) — English version
 
 ## License
 
-依据 [Apache License 2.0](LICENSE) 授权。© An Gang
+Licensed under the [Apache License 2.0](LICENSE). © An Gang

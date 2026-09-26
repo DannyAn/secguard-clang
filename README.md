@@ -4,441 +4,219 @@
 
 # SecGuard-Clang
 
-### AI-Augmented Security Analysis Platform for C
+### Security analysis for C, built natively for AI agents
 
-**Solves the "candidate explosion" problem with a 5-level convergence pipeline — shrinking ~600 raw candidates into ~10 high-quality evidence packages (A1–A4), then a second-round review layer (A5) that promotes real vulnerabilities and dismisses false positives.**
+**A semantic-graph security engine that turns thousands of raw detector events into a small set of high-signal evidence packages an AI agent can actually reason over.**
 
-`v0.3.2` · `Go 1.25` · `Tree-sitter` · `SQLite` · `OpenCode / Claude Code / DeepSeek Harness`
+`v0.8.0` · `Go 1.25` · `Tree-sitter` · `SQLite` · `OpenCode / OpenCode-NGA / Claude Code / Claude CAC / DeepSeek Harness`
 
 </div>
 
 ---
 
-## 🏆 Why is SecGuard world-class?
-
-**In one sentence: SecGuard is the only C security analysis platform built natively for AI agents.** Traditional scanners (CodeQL / Infer / Coverity / Semgrep) are built for *humans reading reports* — they routinely emit thousands of raw alerts that drown an LLM. SecGuard compresses ~600 raw candidates into ~10 high-confidence evidence packages via 4-level deterministic convergence (A1–A4), then a 5th layer (A5) re-reviews every suspected finding so only genuine "needs human judgment" cases survive.
-
-### Capabilities others lack (blue ocean)
-
-1. **It even catches misuse of "safe" functions** — the industry almost universally treats `_s` functions (`memcpy_s` / `strcpy_s` / `scanf_s`) as unconditionally safe and skips them. SecGuard validates each size argument against the actual buffer contract: `char buf[10]; memcpy_s(buf, 100, src, 50)` — a "lying size" — is still flagged as an overflow.
-2. **It uses the LLM as an analysis engine** — for the fuzzy boundaries static analysis cannot prove (does variable `n` actually blow up `malloc(n)`?), SecGuard recognizes them, packages the evidence, and hands them to the AI to reason about, instead of fabricating a possibly-wrong math domain.
-
-### Benchmark against industry leaders (✅ strong · ⚠️ on par · ❌ weak)
-
-| Capability | CodeQL | Infer | Coverity | Semgrep | **SecGuard** |
-|---|---|---|---|---|---|
-| Path-sensitive dataflow | ✅ | ✅ | ✅ | ❌ | ✅ |
-| Cross-function analysis | ✅ | ✅ | ✅ | ❌ | ⚠️ |
-| Taint tracking | ✅ | ✅ | ✅ | ⚠️ | ✅ |
-| Alias analysis | ✅ | ✅ | ✅ | ❌ | ✅ |
-| Numeric range analysis | ✅ | ✅ | ✅ | ❌ | ⚠️ |
-| FP suppression / baseline / CI gating | ✅ | ✅ | ✅ | ✅ | ✅ |
-| SARIF code navigation | ✅ | ⚠️ | ✅ | ✅ | ✅ |
-| Parallelism + timeout | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Incremental indexing | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Remediation advice | ⚠️ | ⚠️ | ✅ | ✅ | ✅ |
-| **AI-agent native** | ❌ | ❌ | ❌ | ❌ | ✅ |
-
-> See [docs/pk/competitive-analysis.md](docs/pk/competitive-analysis.md) for a capability-by-capability breakdown including SecGuard's implementation mechanism.
-
-### Hard numbers (verifiable)
-
-| Metric | Value |
-|---|---|
-| Vulnerability types / detectors | **20 / 22**, full CWE mapping |
-| Convergence efficiency | ~600 raw alerts → **~10 evidence packages** (~4.5ms) |
-| Benchmark regression gate | 77 cases, **100% precision / 100% recall** (TP=43 / FP=0 / TN=34 / FN=0) |
-| Regression tests | 74 security fixtures · 244 test functions, `go test -race` with 0 data races |
-| Delivery form | Static binaries for Linux / Windows / macOS + OpenCode / Claude Code / DeepSeek Harness |
-
-### Proven at scale: Redis (real-world, ~210k LOC)
-
-To show the convergence story holds on industry-scale C — not just the benchmark — we ran the
-full pipeline against **Redis** (`src/`, 231 files · 6,001 functions · 68,512 graph nodes ·
-100,508 graph edges). Third-party `deps/` are excluded by the default `--exclude`.
-
-| Stage | Count |
-|---|---|
-| Raw security events (22 detectors) | 96,230 |
-| Candidates seeded into the planner | 63,766 |
-| **Converged evidence packages (SARIF results)** | **2,931** — a **~22× reduction** |
-| End-to-end wall-clock time | **~6.5 min** (index 1.8s · graph 20s · detect 33s · convergence ~5.6 min) |
-
-Per-type convergence (seeded candidates → evidence packages):
-
-| Type | Seeded → Converged | Reduction |
-|---|---|---|
-| use-after-free | 9,779 → 43 | 99.6% |
-| null-deref | 48,861 → 872 | 98.2% |
-| double-free | 241 → 17 | 92.9% |
-| format-string | 32 → 13 | 59.4% |
-| memory-leak | 16 → 0 | 100% |
-| buffer-overflow | 286 → 218 | 23.8% |
-| integer-overflow | 134 → 104 | 22.4% |
-| … all 20 types | 63,766 → 2,931 | ~22× |
-
-Reproduce with:
-
-```bash
-secguard scan --db /tmp/redis.db <path-to-redis>
-```
-
-### Plain-language conclusion
-
-- **Stronger than Semgrep**: Semgrep only does textual pattern matching; SecGuard genuinely analyzes execution paths, dataflow, and cross-function propagation.
-- **On par with Infer**: single-function precision analysis is at the same tier.
-- **Approaching CodeQL / Coverity**: a lightweight integer-interval analysis (cross-assignment + guard-aware bounds propagation) now suppresses divide-by-zero and integer-overflow false positives and catches constant-valued-variable index out-of-bounds; the remaining gap is full abstract-interpretation interval domains, largely compensated by "AI-reasoning fallback" — see [docs/pk/competitive-analysis.md](docs/pk/competitive-analysis.md).
-
----
-
 ## What is SecGuard?
 
-SecGuard is not a traditional static analysis tool. It is a **security-analysis extension for AI agents** — deployed into OpenCode, Claude Code, or DeepSeek Harness so an AI agent gains deep C code-auditing capability.
+SecGuard-Clang is a C security analysis platform split across two layers that each do what they are good at:
 
-The core idea: traditional static analyzers produce a flood of raw candidates (high false-positive rate); handing them to an AI causes **context explosion**. SecGuard performs 4-level deterministic convergence (A1–A4) on a semantic graph + dataflow foundation, hands only high-quality evidence packages to the AI agent for first-pass classification, then runs a 5th layer (A5) second-round review over every suspected finding to promote real bugs and dismiss false positives.
+- **A deterministic engine** (`sgre`) indexes the codebase, builds a semantic graph (call graph, dataflow, control flow, alias and taint edges), runs self-registering detectors, and converges raw evidence into candidate leads. Where the graph can *prove* a defect, it auto-confirms it without AI involvement.
+- **An AI agent layer** reviews only the remaining leads — packaged with the exact source statement, the pipeline's precomputed hint, and a small code-context window — and returns a single binary verdict per candidate: `confirmed` (persisted with reasoning and a fix) or `dismissed` (excluded, never persisted).
 
-```
-                    ┌──────────────────────────────────────────────────┐
-                    │          AI Agent (OpenCode / Claude Code / DSH)    │
-                    │                                                      │
-                    │  secguard scan ──→ converged evidence ──→ classify   │
-                    │  secguard plan  ──→ per-type evidence ──→ classify   │
-                    │  secguard report ──→ write findings                  │
-                    └────────────────────────┬─────────────────────────┘
-                                             │ shell call
-                    ┌────────────────────────▼─────────────────────────┐
-                    │           secguard binary (sgre engine)             │
-                    │                                                      │
-                    │  index → graph → detect → plan(converge) → report    │
-                    └────────────────────────┬─────────────────────────┘
-                                             │
-                    ┌────────────────────────▼─────────────────────────┐
-                    │              SQLite semantic graph (sgre.db)        │
-                    │                                                      │
-                    │  Layer 1: program facts  (files, functions, vars)    │
-                    │  Layer 2: semantic graph (call graph, dataflow, CFG) │
-                    │  Layer 3: security evidence (security_events)        │
-                    │  Layer 4: findings     (written by the AI)           │
-                    └──────────────────────────────────────────────────┘
-```
+The value is the boundary between the two layers. Traditional scanners emit every raw alert, which drowns an LLM in false positives and wastes its context window. SecGuard instead hands the model compact, converged evidence and lets the model spend its reasoning budget on the cases the deterministic pipeline could not settle.
 
-## Architecture
+## Why it is different
 
-### Pipeline
+- **Evidence packaging, not alert dumping.** The scan stage writes per-type candidate indexes (`Source` + `Hint` + `Evidence`) and per-candidate code context, so the agent classifies from structured evidence rather than re-reading the repository.
+- **Contracts, not blanket "safe" exclusions.** A `_s` function is not assumed safe. `char buf[10]; memcpy_s(buf, 100, src, 50)` is a lying size and is reported as an overflow; a correct `memcpy_s(dst, sizeof(dst), src, 8)` is not.
+- **Binary verdicts.** Every candidate ends as `confirmed` or `dismissed`. There is no lingering `suspected` pile for a developer to triage later; `findings/` and `result.sarif` contain only actionable results.
+- **Reproducible artifacts.** One scan produces `report.md`, `audit-report.md`, `result.sarif`, `result.xlsx`, and a `findings/` tree, all re-derived from the same SQLite database.
+- **Works where the engineer already works.** The same core ships as a thin extension for OpenCode, OpenCode-NGA, Claude Code, Claude CAC, and DeepSeek Harness, plus a standalone CLI for CI.
 
-SecGuard runs a **5-level convergence pipeline**: A1–A4 are deterministic (they
-prove what they can and refute what they can on the semantic graph); **A5 is the
-composite complement** — a second-round review that resolves the residue the graph
-*cannot* prove (external-input divisors, partial validation, short-read semantics,
-TOCTOU windows) via AI business-context reasoning.
+## The pipeline
 
 ```
  C source code
     │
     ▼
-┌───────────────┐
-│  A1 Indexer    │  tree-sitter incremental indexing (skips unchanged files by checksum)
-│  (Tree-sitter) │  → Layer 1: program facts
-└───────┬───────┘
+┌────────────────┐   tree-sitter incremental indexing
+│  Indexer        │   (unchanged files skipped by checksum)
+└───────┬────────┘
         ▼
-┌───────────────┐
-│  A2 Semantic   │  call graph + dataflow + reachability + statement-level CFG
-│  Graph Builder │  → Layer 2: semantic graph
-└───────┬───────┘
+┌────────────────┐   call graph + dataflow + CFG + alias/ownership edges
+│  Semantic graph │
+└───────┬────────┘
         ▼
-┌───────────────┐
-│  A3 Detectors  │  22 self-registering detectors: null-deref, buffer-overflow, injection, ...
-│  (evidence)    │  → Layer 3: security evidence (security_events)
-└───────┬───────┘
+┌────────────────┐   32 self-registering detectors
+│  Detectors      │   (null-deref, buffer-overflow, injection, ...)
+└───────┬────────┘
         ▼
-┌───────────────┐
-│  A4 Planner    │  4-level convergence (deterministic, inside the planner)
-│  (convergence) │
-└───────┬───────┘
-        │  ~600 raw candidates
-        │     ▼  Filter 1: nullable-source analysis (reaching-sources dataflow)
-        │   ~200
-        │     ▼  Filter 2: call reachability (call graph)
-        │    ~80
-        │     ▼  Filter 3: dataflow validation (CFG + guard)
-        │    ~30
-        │     ▼  Filter 4: dedup + risk ranking
-        │    ~10  high-quality evidence packages
-        ▼
-┌───────────────┐
-│  AI Agent      │  first pass: per-type batch classification + structured justification
-│  (classifier)  │  → Layer 4: findings (status + summary/reasoning/exception_check/fix_strategy)
-└───────┬───────┘
-        ▼
-┌───────────────┐
-│  A5 Second-    │  for every suspected finding, re-read source at file:line and judge
-│  Round Review  │  → review_status = confirmed (promote) / dismissed (drop) / suspected-kept
-│  (composite    │  persists review_reasoning; only genuine "needs human judgment" survives
-│   complement)  │
-└───────┬───────┘
-        ▼
-┌───────────────┐
-│  Report        │  SARIF 2.1 + Markdown + candidate evidence + verdict files (_confirmed/_suspected)
-└───────────────┘
+┌────────────────┐   convergence filters: nullable-source, call-reach,
+│  Planner        │   dataflow, dedup + risk ranking
+└───────┬────────┘
+        │
+        ├── provable defects ──────────────► auto-confirmed (no AI review)
+        │
+        └── remaining leads ──► evidence packages ──► AI agent
+                                  │
+                                  │  single-pass binary verdict
+                                  ▼
+                            confirmed → persisted + fix strategy
+                            dismissed → excluded, not persisted
+                                  │
+                                  ▼
+┌────────────────┐   report.md · audit-report.md · result.sarif ·
+│  Report / audit │   result.xlsx · findings/
+└────────────────┘
 ```
 
-A1–A4 settle what the semantic graph can prove (confirmed) or refute (drop) —
-they cannot synthesize reasoning or fix strategies. The AI first pass fills that
-gap: for every finding it writes `summary` / `reasoning` / `exception_check` /
-`fix_strategy` (the "why I believe it + how to fix" a deterministic engine cannot
-produce). A5 then composes on top, re-reviewing each suspected finding so a
-surviving `suspected` is a genuine "needs human judgment" case — not a
-deterministic conclusion the graph already knew. The final report counts the
-post-A5 verdicts via `EffectiveStatus()`.
+The deterministic stages settle what they can prove or refute. The AI stage only classifies the residue and, for every confirmed finding, adds the `summary`, `reasoning`, `exception_check`, and `fix_strategy` a deterministic engine cannot synthesize.
 
-### 4-layer data model
+## Supported vulnerability types
 
-| Layer | Content | Stability | Tables |
-|----|------|--------|-----|
-| **Layer 1** | program facts | most stable | `files`, `functions`, `variables`, `expressions`, `types`, `locations` |
-| **Layer 2** | semantic graph | stable | `graph_nodes`, `graph_edges` (CALL, DATA_FLOW, OWNERSHIP_TRANSFER, RELEASE, ALIAS, PARAM_BINDING, RETURN, LOCK_ORDER, GLOBAL_ACCESS) |
-| **Layer 3** | security evidence | medium | `security_events` (NULL_VALUE, DEREFERENCE, BUFFER_ACCESS, ...) |
-| **Layer 4** | findings | most volatile | `findings` (AI first pass writes `status`; A5 second round writes `review_status` / `review_reasoning`) |
+SecGuard ships 24 vulnerability types with a single source of truth for CWE mapping:
 
-### Multi-platform extension architecture
+| Type | CWE | Type | CWE |
+|---|---|---|---|
+| `null-deref` | CWE-476 | `use-after-free` | CWE-416 |
+| `buffer-overflow` | CWE-787 | `double-free` | CWE-415 |
+| `out-of-bounds` | CWE-125 | `uninit` | CWE-457 |
+| `memory-leak` | CWE-401 | `unchecked-return` | CWE-252 |
+| `resource-leak` | CWE-404 | `format-string` | CWE-134 |
+| `injection` | CWE-78 | `integer-overflow` | CWE-190 |
+| `path-traversal` | CWE-22 | `divide-by-zero` | CWE-369 |
+| `crypto-misuse` | CWE-327 | `hardcoded-secret` | CWE-798 |
+| `deadlock` | CWE-667 | `race-condition` | CWE-362 |
+| `dangerous-function` | CWE-676 | `signed-compare` | CWE-681 |
+| `sizeof-misuse` | CWE-467 | `signal-handler` | CWE-479 |
+| `argument-type` | CWE-686 | `data-representation` | CWE-843 |
 
-```
-extension/
-├── shared/                    ← single source of truth (edit here)
-│   ├── agent-body.md          ← AI agent prompt (workflow + classification rules)
-│   ├── command-instructions.md ← /secguard command instructions
-│   └── skills/                ← 20 vulnerability-type skills
-│       ├── null-deref/SKILL.md
-│       ├── buffer-overflow/SKILL.md
-│       └── ...
-├── opencode/                  ← OpenCode thin wrapper
-│   ├── tools/*.ts             ← 7 TypeScript tools
-│   └── extension.json
-├── claude-code/               ← Claude Code thin wrapper
-│   └── ...
-└── deepseek-harness/          ← DeepSeek Harness thin wrapper (agent preset)
-    ├── preset.yml             ← preset metadata
-    └── agent.cordis.yml       ← Cordis composition (persona + tools + skill roots)
-```
-
-For OpenCode / Claude Code, `release/build-packages.sh` expands `shared/` and installs into `.opencode/` and `.claude/`.
-For DeepSeek Harness, `release/install-dsh.sh` installs the preset into `~/.dsh/.agent-presets/secguard/` (skills copied from `shared/`).
+Each type has a matching agent skill under `extension/shared/skills/<type>/SKILL.md` with classification rules and false-positive guidance.
 
 ## Quick start
 
-### Option 1: install from a release package (recommended)
+### Install from a release package
 
 ```bash
-# download the release package
-curl -L https://github.com/DannyAn/secguard-clang/releases/latest/download/secguard-0.3.2.zip -o secguard.zip
+curl -L https://github.com/DannyAn/secguard-clang/releases/latest/download/secguard-0.8.0.zip -o secguard.zip
 unzip secguard.zip
 
-# install (auto-detects OS × arch; installs into OpenCode + Claude Code)
+# install into every supported agent surface + the CLI binary
 ./install.sh
 
-# verify
-secguard --version
-```
-
-The install script supports:
-
-```bash
-./install.sh --target opencode       # OpenCode extension only
-./install.sh --target claude-code    # Claude Code extension only
-./install.sh --no-binary             # extension only, skip the binary
+# or target one surface
+./install.sh --target opencode       # OpenCode
+./install.sh --target opencode-nga   # OpenCode-NGA
+./install.sh --target claude-code    # Claude Code
+./install.sh --target claude-cac     # Claude CAC
+./install.sh --no-binary             # extension only
 ./install.sh --verify                # post-install self-check
-./install.sh --uninstall --yes       # uninstall
 ```
 
-### Option 2: install from an AI Agent Market (plugin package)
+### Install a platform plugin from an AI Agent Market
 
-Each release also ships `secguard-clang-plugins-<version>.zip` — a single bundle containing
-the 4 per-platform zips. Unzip it, then upload the matching zip to your AI Agent Market's
-"extension" publish entry (no manual re-packaging):
+Each release also ships `secguard-clang-plugins-<version>.zip`, which contains one self-contained plugin per platform (`secguard-clang-opencode`, `secguard-clang-opencode-nga`, `secguard-clang-claude-code`, `secguard-clang-claude-cac`). Upload the matching plugin to your market's extension entry, then install it in the agent TUI. The command namespace is `secguard-clang` on every platform. See `release/plugins-README.md` for the full matrix.
 
-```bash
-unzip secguard-clang-plugins-0.6.1.zip
-# e.g. publish the Claude Code (CAC) plugin:
-#   upload secguard-clang-claude-cac-0.6.1.zip to the market's "extension" entry
-#   then install it in the agent TUI on the target machine, and run /secguard-clang:secguard
-```
-
-The four per-platform zips are `secguard-clang-opencode-<v>.zip`,
-`secguard-clang-opencode-nga-<v>.zip`, `secguard-clang-claude-code-<v>.zip`, and
-`secguard-clang-claude-cac-<v>.zip` — each bundles the 22 skills, the `bin/secguard`
-dispatcher shim, and all 5 OS×arch binaries, with its manifest at the zip root.
-
-The TUI namespace is `secguard-clang` on every platform: `/secguard-clang/secguard` in
-OpenCode, `/secguard-clang:secguard` in Claude Code. See `release/plugins-README.md` for the
-full matrix.
-
-### Option 3: build from source
+### Build from source
 
 ```bash
 git clone https://github.com/DannyAn/secguard-clang.git
 cd secguard-clang
-
-# build the binary + install the extension
-./build.sh --install
-
-# or build the binary only
-./build.sh              # → bin/secguard
-
-# build a release package
-./build.sh --package
+./build.sh                 # binary → bin/secguard
+./build.sh --install       # binary → ~/.local/bin
+./build.sh --package       # release package
+./deploy.sh all            # build + install the agent extensions
 ```
 
-For a quick dev-mode deploy (build + install the extension into user-level config dirs), use `./deploy.sh [opencode|claude-code|all] [--no-binary]`.
+`./deploy.sh` targets `opencode`, `opencode-nga`, `claude-code`, `claude-cac`, `dsh`, or `all`, and accepts `--no-binary` to skip the binary build.
 
-### Option 4: DeepSeek Harness (DSH)
-
-SecGuard ships a DSH agent preset (a Cordis composition). After installing, select the
-"SecGuard Security Audit" preset in DSH to give an agent C security-auditing capability:
+### DeepSeek Harness
 
 ```bash
-# 1) ensure the secguard binary is on PATH (see option 1/2)
-# 2) install the DSH preset (composition + 20 skills → ~/.dsh/.agent-presets/secguard/)
 ./release/install-dsh.sh
-
-# 3) select the "SecGuard Security Audit" preset in DSH, then chat:
-#    > Scan the src/ directory for security vulnerabilities
-#    > Look for buffer-overflow and null-deref issues
 ```
 
-The DSH "role" is the persona (`dsh-persona` inside `agent.cordis.yml`); external users
-select the preset to get an agent focused on C security auditing, without touching
-OpenCode or Claude Code.
+Then select the **SecGuard Security Audit** preset in DeepSeek Harness.
 
-### Using it inside an AI agent
+## Usage
 
-After installation, chat directly in OpenCode, Claude Code, or DeepSeek Harness:
+Inside an agent, just ask in natural language:
 
 ```
 > Scan the src/ directory for security vulnerabilities
-> Look for null-deref, buffer-overflow issues
-> Audit ./src for security
+> Look for null-deref and buffer-overflow issues
 ```
 
-The AI agent automatically runs `secguard scan`, loads the matching skill, classifies, and emits a report.
-
-### Using the CLI directly
+Or drive the CLI directly:
 
 ```bash
-# full scan (index + detect + converge + report)
-secguard scan ./src
-
-# list supported vulnerability types
-secguard types
-
-# show index status
-secguard status
-
-# run convergence for a single vulnerability type
-secguard plan null-deref
-
-# query findings
-secguard report
-
-# execute a SQL query
-secguard db "SELECT * FROM findings WHERE status='confirmed'"
+secguard scan ./src        # index + graph + detect + converge + auto-confirm + candidates
+secguard types             # authoritative vulnerability types + CWE
+secguard status            # index status
+secguard plan null-deref   # convergence for one type
+secguard report            # read persisted findings
+secguard metrics           # scan performance and convergence metrics
+secguard schema findings   # table schema before raw SQL
+secguard db "SELECT ..."   # read-only SQL against sgre.db
 ```
-
-## Supported vulnerability types (20)
-
-| Type | CWE | Type | CWE |
-|---------|-----|---------|-----|
-| `null-deref` | CWE-476 | `hardcoded-secret` | CWE-798 |
-| `buffer-overflow` | CWE-787 | `deadlock` | CWE-667 |
-| `memory-leak` | CWE-401 | `crypto-misuse` | CWE-327 |
-| `injection` | CWE-78 | `out-of-bounds` | CWE-125 |
-| `resource-leak` | CWE-404 | `divide-by-zero` | CWE-369 |
-| `uninit` | CWE-457 | `unchecked-return` | CWE-252 |
-| `use-after-free` | CWE-416 | `path-traversal` | CWE-22 |
-| `double-free` | CWE-415 | `sizeof-misuse` | CWE-467 |
-| `format-string` | CWE-134 | `signed-compare` | CWE-681 |
-| `integer-overflow` | CWE-190 | `race-condition` | CWE-362 |
-
-Each type has a corresponding AI agent skill (`extension/shared/skills/<type>/SKILL.md`) with classification rules and false-positive recognition guidance.
-
-## CLI commands
-
-| Command | Description |
-|------|------|
-| `secguard scan <path>` | full pipeline: index + all detectors + convergence + report |
-| `secguard plan <vuln>` | run the convergence pipeline for one vulnerability type |
-| `secguard index <path>` | index only (skip detectors and convergence) |
-| `secguard status` | index status (file count, function count, staleness) |
-| `secguard types` | list all vulnerability types + CWE (JSON) |
-| `secguard schema [table]` | show a table's schema (columns/types; use before writing SQL) |
-| `secguard report` | output all findings (JSON) |
-| `secguard db <sql>` | run a SQL query against sgre.db (read-only) |
-
-Global options: `--db <path>` (override DB path), `--exclude <dirs>` (exclude directories), `--version`, `--help`
 
 ## Output
 
-Scan results are written to `.codeagent/secguard-clang/scans/<scan-id>/`:
+Scan results are written under `.codeagent/secguard-clang/scans/<scan-id>/`:
 
 ```
-scans/2026-08-17_062452_e32eb1/
-├── candidates.sarif                ← SARIF 2.1, candidate stage (all results level `note`)
-├── result.sarif                    ← SARIF 2.1, verdict stage (written after AI classification)
-├── report.md                      ← Markdown summary (candidate list)
-├── audit-report.md                ← AI audit report (classification stats)
-├── candidates/                    ← pipeline evidence, grouped by vuln type
-│   ├── buffer-overflow/
-│   │   ├── 001_allocator_99.md    ← unclassified lead, not a defect
-│   │   └── 002_parser_20.md
-│   └── null-deref/
-│       └── 001_network_45.md
-└── findings/                      ← AI verdicts — the review surface
-    ├── buffer-overflow/
-    │   └── 001_allocator_99_confirmed.md
-    └── null-deref/
-        └── 001_network_45_suspected.md
+scans/<scan-id>/
+├── candidates.sarif              # candidate stage (unclassified leads, level "note")
+├── result.sarif                  # verdict stage (confirmed only)
+├── report.md                     # verdict-stage report
+├── audit-report.md               # per-type pipeline + AI classification statistics
+├── result.xlsx                   # actionable findings export
+├── candidates/<type>/            # pipeline evidence, grouped by vulnerability type
+│   └── 001_allocator_99.md       # lead with embedded code context
+└── findings/<type>/              # human review surface — confirmed verdicts only
+    └── 001_allocator_99_confirmed.md
 ```
 
-`findings/` holds **only** what a developer must act on: every file carries a
-`_confirmed` / `_suspected` suffix, and entries the AI dismissed as false
-positives get no file at all (the verdict and its reason are kept in the
-database and annotated onto the matching `candidates/` file). `secguard report
---audit` re-derives `findings/` from the database, so it always matches the
-persisted verdicts.
+`findings/` and `result.sarif` contain only confirmed results. A dismissed candidate gets no finding file and is not persisted; the classification trail keeps the reason for auditability. Point CI at `result.sarif`: it cannot contain an unclassified lead.
 
-Each verdict file is **self-contained** — location, evidence chain, the source
-region around the defect (±15 lines, gutter-numbered with the reported line
-marked), the AI's reasoning and exception check, and a paste-ready fix:
+Each verdict file is self-contained — location, evidence chain, the surrounding source with the reported line marked, the AI reasoning and exception check, and a paste-ready fix. Use `--context-lines <n>` to tune the embedded source window, or `0` to omit it.
+
+## Architecture
+
+### 4-layer data model
+
+| Layer | Content | Stability | Tables |
+|---|---|---|---|
+| **1. Program facts** | files, functions, variables, expressions, types, locations | most stable | `files`, `functions`, `variables`, `expressions`, `types`, `locations` |
+| **2. Semantic graph** | call/dataflow/control-flow/alias/ownership edges | stable | `graph_nodes`, `graph_edges` |
+| **3. Security evidence** | detector events before convergence | medium | `security_events` |
+| **4. Findings** | AI-confirmed and auto-confirmed verdicts | most volatile | `findings` |
+
+### Multi-platform extension
 
 ```
-## Code Context
-
-`/repo/src/tc01.c:15-31` — line 30 is the reported location.
-
-  28 | int tc01_null_return(int id) {
-  29 |     Node *node = get_node(id);
-> 30 |     return node->value;
-  31 | }
+extension/
+├── shared/                      # single source of truth
+│   ├── agent-body.md            # subagent role + classification contract
+│   ├── command-instructions.md  # /secguard workflow
+│   └── skills/                  # 24 vulnerability-type skills
+├── opencode/                    # OpenCode wrapper + 9 MCP tools
+├── opencode-nga/                # OpenCode-NGA wrapper (shares the same tools)
+├── claude-code/                 # Claude Code wrapper
+├── claude-cac/                  # Claude CAC wrapper
+└── deepseek-harness/            # DeepSeek Harness agent preset
 ```
 
-Tune it with `--context-lines <n>`, or set `--context-lines 0` to keep source out
-of report artifacts. The same window feeds the SARIF `region.snippet` /
-`contextRegion.snippet` fields.
-
-The two SARIF files follow the same rule as the two Markdown trees: the scan
-writes `candidates.sarif` (unclassified leads, every result at level `note`), and
-`result.sarif` is produced only from persisted verdicts. **Point CI at
-`result.sarif`** — it cannot contain an unclassified candidate.
+`shared/` is authoritative. `release/build-packages.sh` expands it into each platform package, and `release/check-extension-consistency.py` keeps tool registration, agent permissions, and the turn budget aligned across platforms.
 
 ## Tech stack
 
 | Component | Technology | Notes |
-|------|------|------|
-| **Core engine** | Go 1.25 | single static binary, cross-platform |
-| **Database** | SQLite (modernc.org/sqlite) | pure Go, no CGo dependency |
-| **Parser** | Tree-sitter + tree-sitter-c | incremental C parsing |
-| **Cross-compilation** | zig (musl/mingw) | static Linux/Windows binaries |
-| **AI extension** | TypeScript/Bun | 7 OpenCode tools |
-| **AI platforms** | OpenCode + Claude Code + DSH | shared core + thin wrappers |
+|---|---|---|
+| Core engine | Go 1.25 | single static binary, cross-platform |
+| Database | SQLite (`modernc.org/sqlite`) | pure Go, no CGo dependency |
+| Parser | Tree-sitter + tree-sitter-c | incremental C parsing |
+| Cross-compilation | zig (musl/mingw) | static Linux/Windows binaries |
+| AI extension | TypeScript/Bun | 9 OpenCode MCP tools |
+| Agent surfaces | OpenCode, OpenCode-NGA, Claude Code, Claude CAC, DeepSeek Harness | shared core + thin wrappers |
 
 ## Project structure
 
@@ -447,24 +225,18 @@ secguard-clang/
 ├── sgre/                          # Go module (core engine)
 │   ├── cmd/secguard/              # CLI entrypoint
 │   └── internal/
-│       ├── cli/                   # CLI command implementations
+│       ├── cli/                   # command implementations
 │       ├── db/                    # SQLite schema + CRUD
-│       ├── indexer/               # Tree-sitter indexer
+│       ├── indexer/               # tree-sitter indexer
 │       ├── parser/                # parser wrapper
-│       ├── graph/                 # semantic graph builder (call graph/dataflow/CFG)
-│       ├── evidence/              # 22 security detectors
-│       ├── planner/               # A4: 4-level convergence pipeline + filters
-│       ├── agent/                 # AI agent integration
-│       ├── report/                # SARIF + Markdown reporting
+│       ├── graph/                 # semantic graph builder
+│       ├── evidence/              # self-registering detectors
+│       ├── planner/               # convergence pipeline + filters
+│       ├── report/                # SARIF / Markdown / XLSX reporting
 │       └── log/                   # structured logging
 ├── extension/                     # multi-platform AI agent extension
-│   ├── shared/                    # shared core (skills + agent prompt)
-│   ├── opencode/                  # OpenCode wrapper
-│   ├── claude-code/               # Claude Code wrapper
-│   └── deepseek-harness/          # DeepSeek Harness wrapper (agent preset)
 ├── release/                       # build/install tooling
-├── examples/                      # samples and benchmarks
-│   └── c-vuln-benchmark/          # 23 files / 77 test cases / 20 types
+├── examples/c-vuln-benchmark/     # C vulnerability benchmark
 ├── docs/                          # design docs
 ├── build.sh                       # build entrypoint
 └── .github/workflows/             # CI release workflow
@@ -474,41 +246,26 @@ secguard-clang/
 
 ```bash
 cd sgre
-
-# full suite (needs SQLite + tree-sitter)
-go test ./...
-
-# no-SQLite subset (mock store)
-go test -tags nosqlite ./internal/log/ ./internal/planner/ ./internal/db/
-
-# convergence benchmark
-go test -tags nosqlite -bench=. ./internal/planner/
-
-# security test fixtures
-go test -run TestSecurity ./internal/evidence/
+go test ./...                        # full suite (SQLite + tree-sitter)
+go test -tags nosqlite ./internal/log/ ./internal/planner/ ./internal/db/   # no-SQLite subset
 ```
+
+The `examples/c-vuln-benchmark` suite is a self-contained C regression fixture used as a CI gate for detector and planner changes.
 
 ## Design principles
 
-1. **Tables are organized by program-fact type**, not by vulnerability type — avoiding schema explosion.
-2. **Skills are query consumers** and never create tables — keeping concerns separated.
-3. **The AI agent receives converged evidence packages only** and never raw candidates — this is the pipeline's core value.
-4. **Single source of truth for CWE mapping** — `VulnTypeSpec.CWE` is the only truth; all consumers derive from it.
-5. **Batch per vulnerability type** — avoiding AI agent context explosion.
-
-## Performance
-
-- Convergence pipeline (600 candidates → ≤30): **~4.5ms**
-- Incremental indexing: skips unchanged files by checksum
-- Large-codebase generator: `go run testdata/perf/gen_codebase.go testdata/perf/large_codebase 100 50`
+1. **Program facts, not per-vulnerability tables.** Tables are organized by fact type, avoiding schema explosion as detector coverage grows.
+2. **Skills are query consumers.** A skill classifies evidence and never creates schema.
+3. **The AI sees converged evidence only.** Raw candidates stay out of the agent context.
+4. **One source of truth for CWE.** `planner.VulnTypeSpec.CWE` is canonical; consumers derive from it.
+5. **Dismissed is not persisted.** The review surface stays clean, and the final counts come from the audit summary, not from file listings.
 
 ## Related docs
 
-- [CLAUDE.md](CLAUDE.md) — authoritative architecture (working guide for Claude Code)
-- [CHANGELOG.md](CHANGELOG.md) — change log
-- [docs/pk/competitive-analysis.md](docs/pk/competitive-analysis.md) — competitive analysis (vs CodeQL / Infer / Coverity / Semgrep)
+- [CLAUDE.md](CLAUDE.md) — architecture and working guide
+- [CHANGELOG.md](CHANGELOG.md) — release notes
 - [docs/output-protocol.md](docs/output-protocol.md) — output contract
-- [docs/parallelization-design.md](docs/parallelization-design.md) — parallelization design
+- [docs/parallelization-design.md](docs/parallelization-design.md) — parallel dispatch design
 - [examples/c-vuln-benchmark/](examples/c-vuln-benchmark/) — vulnerability benchmark suite
 - [README-CN.md](README-CN.md) — 中文版
 
