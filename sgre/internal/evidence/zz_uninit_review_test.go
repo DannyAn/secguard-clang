@@ -221,3 +221,22 @@ int g(void) {
 		t.Errorf("g (*p = (S){0} whole-initializes the block), got %v", got)
 	}
 }
+
+// UN-10: a conditional malloc (`if (c) p = malloc(...)`) still leaves the block
+// uninitialized on the path that runs it; the read after the branch must be
+// flagged heap_uninit. The variable adopts its DECLARATION's scope, so the
+// conditional assignment does not hide the read.
+func TestUninitReview_ConditionalMalloc(t *testing.T) {
+	src := `#include <stdlib.h>
+typedef struct S { int len; } S;
+int f(int cond) {
+    S *p;
+    if (cond) p = malloc(sizeof(S));
+    return p->len;
+}
+`
+	got := uninitHeapOrigins(t, src)
+	if got["f|heap_uninit"] == 0 {
+		t.Errorf("f (conditional malloc then p->len) should be flagged heap_uninit, got %v", got)
+	}
+}

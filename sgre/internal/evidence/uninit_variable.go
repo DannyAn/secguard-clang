@@ -78,7 +78,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 			// never be in this set (see parser.FunctionBoundNames).
 			bound := parser.FunctionBoundNames(funcDefsByLine[f.StartLine])
 			d.detectStackUninit(ctx, f, file, bound, decls, assigns, calls, returns, inits, ifs, whiles, fors, bodies, summaries, macroWrites, &result)
-			d.detectHeapUninit(ctx, f, file, inits, assigns, calls, unarys, ptrs, fields, subscripts, &result)
+			d.detectHeapUninit(ctx, f, file, decls, inits, assigns, calls, unarys, ptrs, fields, subscripts, &result)
 			d.detectStructPartialUninit(ctx, f, file, bound, decls, assigns, calls, ifs, fields, summaries, macroWrites, &result)
 		}
 	})
@@ -153,6 +153,50 @@ func resolveVarKey(declsByName map[string][]varDecl, name string, useLine int) s
 		return ""
 	}
 	return varKey(name, best)
+}
+
+// resolveVarDecl returns the innermost declaration of name in scope at line. It
+// is resolveVarKey but yields the full varDecl (declLine AND scopeEnd) so a
+// malloc assignment can adopt the DECLARATION's scope, not the assignment's own
+// (a `p = malloc()` inside an `if` writes a variable declared at function scope,
+// whose scope is the function, not the if body).
+func resolveVarDecl(declsByName map[string][]varDecl, name string, useLine int) (varDecl, bool) {
+	best := -1
+	var d varDecl
+	for _, cand := range declsByName[name] {
+		if cand.declLine < useLine && cand.scopeEnd >= useLine && cand.declLine > best {
+			best = cand.declLine
+			d = cand
+		}
+	}
+	return d, best >= 0
+}
+
+// localVarDecls collects every local variable a declarations list introduces,
+// including init_declarator names (`S *p = malloc(...)` declares p), keyed by
+// name with each declaration's scopeEnd for scope-aware resolution.
+func localVarDecls(decls []parser.Node) map[string][]varDecl {
+	m := make(map[string][]varDecl)
+	for _, decl := range decls {
+		scopeEnd := enclosingScopeEnd(decl)
+		for _, child := range decl.NamedChildren() {
+			if child.Kind() == "identifier" && !parser.IsCTypeKeyword(child.Text()) {
+				m[child.Text()] = append(m[child.Text()], varDecl{name: child.Text(), declLine: decl.StartLine(), scopeEnd: scopeEnd})
+			}
+		}
+		for _, child := range decl.NamedChildren() {
+			if child.Kind() != "init_declarator" {
+				continue
+			}
+			dc := child.NamedChildren()
+			if len(dc) >= 1 {
+				if name := extractVarName(dc[0]); name != "" {
+					m[name] = append(m[name], varDecl{name: name, declLine: decl.StartLine(), scopeEnd: scopeEnd})
+				}
+			}
+		}
+	}
+	return m
 }
 
 func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, bound map[string]bool, decls, assigns, calls, returns, inits, ifs, whiles, fors []parser.Node, bodies map[int]parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, result *DetectResult) {
@@ -1164,13 +1208,16 @@ func isInIfRange(ifs []parser.Node, f *db.Function, line int) bool {
 	return false
 }
 
-func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Function, file *db.File, inits, assigns, calls, unarys, ptrs, fields, subscripts []parser.Node, result *DetectResult) {
+func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Function, file *db.File, decls, inits, assigns, calls, unarys, ptrs, fields, subscripts []parser.Node, result *DetectResult) {
 	// Scope-aware tracking (UN-04): mallocVars and every per-variable fact are
-	// keyed by varKey(name@mallocLine) so two `p` in nested blocks no longer
+	// keyed by varKey(name@declLine) so two `p` in nested blocks no longer
 	// collide — the previous bare-name maps let one scope's whole-init hide the
-	// other scope's genuinely-uninitialized block.
+	// other scope's genuinely-uninitialized block. A `p = malloc()` ASSIGNMENT
+	// adopts the DECLARATION's scope, so a conditional malloc (`if (c) p = ...`)
+	// still reaches a use after the branch.
 	mallocVars := make(map[string]int) // varKey -> line of the malloc assignment
 	mallocDeclsByName := make(map[string][]varDecl)
+	declByName := localVarDecls(decls)
 
 	checkInit := func(node parser.Node) {
 		children := node.NamedChildren()
@@ -1199,9 +1246,28 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 			// heap-uninit candidate set (UN-11). malloc/realloc leave the memory
 			// uninitialized and are tracked.
 			if apikb.IsAllocator(callName) && !isZeroInitAllocator(callName) {
-				key := varKey(varName, node.StartLine())
+				var key string
+				var decl varDecl
+				if node.Kind() == "init_declarator" {
+					// `S *p = malloc(...)` declares p here.
+					declLine := node.StartLine()
+					if p := node.Parent(); p != nil && p.Kind() == "declaration" {
+						declLine = p.StartLine()
+					}
+					decl = varDecl{name: varName, declLine: declLine, scopeEnd: enclosingScopeEnd(node)}
+					key = varKey(varName, declLine)
+				} else if d, ok := resolveVarDecl(declByName, varName, node.StartLine()); ok {
+					// `p = malloc(...)` writes a variable declared earlier; adopt
+					// the declaration's scope, not the assignment's.
+					decl = d
+					key = varKey(varName, d.declLine)
+				} else {
+					// Parameter or externally-scoped pointer: function scope.
+					decl = varDecl{name: varName, declLine: f.StartLine, scopeEnd: f.EndLine}
+					key = varKey(varName, f.StartLine)
+				}
 				mallocVars[key] = node.StartLine()
-				mallocDeclsByName[varName] = append(mallocDeclsByName[varName], varDecl{name: varName, declLine: node.StartLine(), scopeEnd: enclosingScopeEnd(node)})
+				mallocDeclsByName[varName] = append(mallocDeclsByName[varName], decl)
 			}
 		}
 	}
