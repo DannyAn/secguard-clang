@@ -6,6 +6,7 @@ import (
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -42,16 +43,34 @@ func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error)
 		assigns := root.FindAll("assignment_expression")
 		ptrs := root.FindAll("pointer_expression")
 		fields := root.FindAll("field_expression")
+		returns := root.FindAll("return_statement")
+		subs := root.FindAll("subscript_expression")
 		macros := macroFreeSummaries(root)
+		bodies := functionBodyMap(root.FindAll("function_definition"))
 
 		for _, f := range funcs {
 			aliases := findAliases(f, inits, assigns)
 			freeSites := d.findAllFreeSites(f, calls, summaries, aliases, macros)
-			useSites := d.findUseSites(f, ptrs, fields, calls, summaries)
+			useSites := d.findUseSites(f, ptrs, fields, calls, returns, assigns, subs, summaries)
+
+			// The statement CFG decides free→use reachability: a loop-carried
+			// `for(...) { use(p); free(p); }` has the use AFTER the free in source
+			// order on the second iteration, so line order alone missed it (UF-01/06).
+			cfg := graph.BuildStmtCFG(bodies[f.StartLine], f.EndLine)
 
 			for _, fs := range freeSites {
+				fsNode := cfg.NodeAt(fs.line)
 				for _, use := range useSites[fs.varName] {
-					if use.line < fs.line || (use.line == fs.line && use.column <= fs.column) {
+					// Fast path: use strictly after free in source order.
+					inOrder := use.line > fs.line || (use.line == fs.line && use.column > fs.column)
+					reach := inOrder
+					if !inOrder && fsNode != nil {
+						// Loop back-edge / goto: the free still reaches the use.
+						if useNode := cfg.NodeAt(use.line); useNode != nil {
+							reach = cfg.Reaches(fsNode.ID, useNode.ID)
+						}
+					}
+					if !reach {
 						continue
 					}
 					// A whole-variable free (free(p)) dangles every later use of p
@@ -126,33 +145,34 @@ func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.N
 			continue
 		}
 
-		if apikb.IsDeallocator(callName) {
-			// A heuristic-only deallocator (name ends with "free"/"free_f"
-			// but not a built-in or registered one) may not free its
-			// argument — e.g. poiner_in_bc_cache_free(cache_id) takes an
-			// int ID, not a pointer. Fail-closed: require the function
-			// summary to confirm the body frees the parameter. External
-			// functions without a summary are NOT flagged, because the
-			// "free" suffix alone is too broad to trust.
-			if !apikb.IsDeclaredDeallocator(callName) {
-				if s, ok := summaries[callName]; !ok || !summaryFreesAnyParam(s) {
-					continue
-				}
-			}
+		if apikb.IsDeclaredDeallocator(callName) {
+			// A DECLARED deallocator (free/freeaddrinfo/freeifaddrs + registered
+			// ones) frees its FIRST argument. Marking every argument would treat a
+			// multi-parameter project deallocator's flags/count as a freed pointer
+			// (UF-11). A heuristic-only deallocator (name ends with "free" but not
+			// declared) falls through to the function-summary branch below, which
+			// picks the freed parameter precisely (fail-closed).
 			args := getCallArgs(call)
-			for _, arg := range args {
+			for _, arg := range args[:1] {
 				arg = unwrapCastParen(arg)
 				switch arg.Kind() {
 				case "identifier":
 					name := arg.Text()
+					// free(p) also invalidates every pointer into p's block: a direct
+					// alias (q = p), a field alias (q = p->f), AND the terminal base
+					// when p itself is an alias (p = q; free(p); use(q)) — UF-04/08.
+					// Whole-variable alias chains resolve to their terminal base, which
+					// is the canonical freed object.
+					base := terminalBaseVar(aliases, name)
+					seen := map[string]bool{name: true}
 					sites = append(sites, freeSite{varName: name, column: call.StartColumn(), line: callLine})
-					// free(p) also invalidates every pointer into p's block:
-					// a direct alias (q = p) and a field alias (q = p->f) both
-					// dangle. Without this, `q = p; free(p); use(q)` was missed.
-					// Whole-variable alias chains (q = r; r = p) resolve to their
-					// terminal base before comparing.
-					for aliasVar, ai := range aliases {
-						if terminalBaseVar(aliases, ai.baseVar) == name {
+					if base != name {
+						seen[base] = true
+						sites = append(sites, freeSite{varName: base, column: call.StartColumn(), line: callLine})
+					}
+					for aliasVar := range aliases {
+						if !seen[aliasVar] && terminalBaseVar(aliases, aliasVar) == base {
+							seen[aliasVar] = true
 							sites = append(sites, freeSite{varName: aliasVar, column: call.StartColumn(), line: callLine})
 						}
 					}
@@ -248,6 +268,20 @@ func isDeallocatorArg(node parser.Node) bool {
 	}
 }
 
+// insideSizeof reports whether a node sits inside a sizeof expression, which is
+// a compile-time size query, not a read of the operand.
+func insideSizeof(node parser.Node) bool {
+	for p := node.Parent(); p != nil; p = p.Parent() {
+		switch p.Kind() {
+		case "sizeof_expression":
+			return true
+		case "function_definition":
+			return false
+		}
+	}
+	return false
+}
+
 // isFieldWrite reports whether a field_expression node is a write target (the
 // LHS of an assignment or the declarator of an initializer), so `s->msg = NULL`
 // addresses the field without reading it and must not count as a use. It does
@@ -275,7 +309,7 @@ type useSite struct {
 	field  string
 }
 
-func (d *UseAfterFreeDetector) findUseSites(f *db.Function, ptrs, fields, calls []parser.Node, summaries summaryMap) map[string][]useSite {
+func (d *UseAfterFreeDetector) findUseSites(f *db.Function, ptrs, fields, calls, returns, assigns, subs []parser.Node, summaries summaryMap) map[string][]useSite {
 	useSites := make(map[string][]useSite)
 
 	addUse := func(varName, field string, line, column int) {
@@ -334,6 +368,47 @@ func (d *UseAfterFreeDetector) findUseSites(f *db.Function, ptrs, fields, calls 
 		}
 		base, fld := extractFieldAccess(field)
 		addUse(base, fld, field.StartLine(), field.StartColumn())
+	}
+
+	// A bare identifier (or cast) in a return hands the dangling pointer out —
+	// `free(p); return p;` is the classic use-after-free (UF-05).
+	for _, ret := range returns {
+		if !funcLineRange(f, ret.StartLine()) {
+			continue
+		}
+		for _, child := range ret.NamedChildren() {
+			if name := argIdentifier(child); name != "" {
+				addUse(name, "", ret.StartLine(), ret.StartColumn())
+			}
+		}
+	}
+
+	// A bare identifier (or cast) on an assignment RHS reads the pointer —
+	// `free(p); q = p;` / `free(p); q = (T*)p;` (UF-05).
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
+			continue
+		}
+		children := assign.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		if name := argIdentifier(children[1]); name != "" {
+			addUse(name, "", assign.StartLine(), assign.StartColumn())
+		}
+	}
+
+	// A subscript read `p[i]` reads the base pointer to index it (UF-05).
+	for _, sub := range subs {
+		if !funcLineRange(f, sub.StartLine()) {
+			continue
+		}
+		if insideSizeof(sub) || isDeallocatorArg(sub) {
+			continue
+		}
+		if base, _ := subscriptAccess(sub); base != "" {
+			addUse(base, "", sub.StartLine(), sub.StartColumn())
+		}
 	}
 
 	for _, call := range calls {

@@ -55,6 +55,7 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 		for _, f := range funcs {
 			globalStores := d.findGlobalStoredVars(f, inits, assigns, summaries)
 			freeEvents := d.findAllFreeEvents(f, calls, summaries, globalStores, macros)
+			aliases := findAliases(f, inits, assigns)
 
 			byVar := make(map[string][]dfFreeEvent)
 			for _, fe := range freeEvents {
@@ -65,6 +66,11 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 					} else {
 						key = fe.varName + "->" + fe.field
 					}
+				} else if base := terminalBaseVar(aliases, fe.varName); base != "" {
+					// Whole-variable alias: free(p); q = p; free(q) aggregates both
+					// frees under the terminal base p (UF-02). A field alias
+					// (q = p->f) is not a whole-variable alias, so it is not merged.
+					key = base
 				}
 				byVar[key] = append(byVar[key], fe)
 			}
@@ -233,7 +239,12 @@ func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.No
 
 		if apikb.IsDeclaredDeallocator(callName) {
 			args := getCallArgs(call)
-			for _, arg := range args {
+			// A declared deallocator frees its FIRST argument (free(p),
+			// freeaddrinfo(p), freeifaddrs(p)). Marking every argument would treat
+			// a multi-parameter project deallocator's flags/count as a freed
+			// pointer (UF-11). The heuristic deallocator path below instead uses
+			// the function summary to pick the freed parameter precisely.
+			for _, arg := range args[:1] {
 				arg = unwrapCastParen(arg)
 				switch arg.Kind() {
 				case "identifier":
