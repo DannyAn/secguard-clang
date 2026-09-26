@@ -47,6 +47,10 @@ type eventProps struct {
 	ReverseFunc string `json:"reverse_function"`
 	Array       string `json:"array"`
 	Index       string `json:"index"`
+	// Size is the resolved array element count the buffer-overflow detector
+	// attached to a BUFFER_ACCESS event, used by the planner's range-oob filter
+	// to re-verify the index interval against the capacity (BO-01/02).
+	Size    int    `json:"size"`
 	KeySize     int    `json:"key_size"`
 	Reason      string `json:"reason"`
 	CheckFunc   string `json:"check_function"`

@@ -294,7 +294,7 @@ func init() {
 		SeedEventType:    "BUFFER_ACCESS",
 		EvidenceType:     "BUFFER_OVERFLOW",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "default",
+		FilterChain:      "buffer-overflow",
 		Categories:       []string{"buffer_overflow", "array_oob_write", "heap_oob_write", "format_overflow", "format_overflow_var", "bounded_copy_overflow", "bounded_copy_var_size", "secure_copy_overflow", "secure_copy_var_size", "secure_constraint_violation", "secure_scanf_overflow", "secure_scanf_var_size"},
 		// Provable out-of-bounds writes (a constant index past a known array or
 		// allocation size, a constant copy size exceeding a known capacity, or
@@ -597,7 +597,7 @@ func init() {
 		SeedEventType:    "BUFFER_ACCESS",
 		EvidenceType:     "OUT_OF_BOUNDS",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "default",
+		FilterChain:      "buffer-overflow",
 		Categories:       []string{"array_oob_read", "heap_oob_read"},
 		// A read-flavored OOB is only emitted when the detector proved the
 		// index outruns the array/allocation, so it is confirmed, not suspected.

@@ -32,6 +32,7 @@ func (d *BufferOverflowDetector) Detect(ctx context.Context) (DetectResult, erro
 			root:    root,
 			calls:   root.FindAll("call_expression"),
 			subs:    root.FindAll("subscript_expression"),
+			derefs:  root.FindAll("pointer_expression"),
 			ifs:     root.FindAll("if_statement"),
 			decls:   root.FindAll("declaration"),
 			assigns: root.FindAll("assignment_expression"),
@@ -70,6 +71,7 @@ type bufCtx struct {
 	root    parser.Node
 	calls   []parser.Node
 	subs    []parser.Node
+	derefs  []parser.Node
 	ifs     []parser.Node
 	decls   []parser.Node
 	assigns []parser.Node
@@ -789,76 +791,162 @@ func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Funct
 		if !ok {
 			continue
 		}
-
-		arrSize := findArraySize(bc, f, arrName, sub.StartLine())
 		kind := subscriptAccessKind(bc, f, sub)
-		isOOB := false
-		category := "array_oob_read"
-		if kind == "write" {
-			category = "array_oob_write"
+		if isOOB, category, arrSize := d.checkArrayOOB(bc, f, arrName, indexExpr, sub.StartLine(), kind); isOOB {
+			d.emitOOB(ctx, f, file, sub.StartLine(), arrName, indexExpr, category, text, arrSize, result)
 		}
+	}
 
-		if isConstantIndex(indexExpr) {
-			idx := parseConstantIndex(indexExpr)
-			if arrSize > 0 && idx >= 0 {
-				if idx >= arrSize {
+	// A pointer dereference `*(p + i)` is the same access as `p[i]` and must be
+	// checked too (BO-10). The previous scan only covered subscript_expression,
+	// so `*(arr + i)` overruns were missed.
+	for _, deref := range bc.derefs {
+		if !funcLineRange(f, deref.StartLine()) {
+			continue
+		}
+		if !strings.HasPrefix(strings.TrimSpace(deref.Text()), "*") {
+			continue
+		}
+		arrName, indexExpr, ok := derefBaseIndex(deref)
+		if !ok {
+			continue
+		}
+		kind := "read"
+		if isAssignTarget(deref) {
+			kind = "write"
+		}
+		if isOOB, category, arrSize := d.checkArrayOOB(bc, f, arrName, indexExpr, deref.StartLine(), kind); isOOB {
+			d.emitOOB(ctx, f, file, deref.StartLine(), arrName, indexExpr, category, deref.Text(), arrSize, result)
+		}
+	}
+}
+
+// checkArrayOOB runs the constant / loop-bound / heap-allocation OOB proof for a
+// base + index pair, returning the verdict and category (BO-10: shared by the
+// subscript and pointer-dereference scans).
+func (d *BufferOverflowDetector) checkArrayOOB(bc *bufCtx, f *db.Function, arrName, indexExpr string, line int, kind string) (bool, string, int) {
+	arrSize := findArraySize(bc, f, arrName, line)
+	isOOB := false
+	category := "array_oob_read"
+	if kind == "write" {
+		category = "array_oob_write"
+	}
+
+	if isConstantIndex(indexExpr) {
+		idx := parseConstantIndex(indexExpr)
+		if arrSize > 0 && idx >= 0 {
+			if idx >= arrSize {
+				isOOB = true
+			}
+		} else if arrSize == 0 && idx >= 0 {
+			if alloc, ok := heapAllocationSize(bc, f, arrName); ok {
+				if constAlloc := parseConstantIndex(alloc); constAlloc > 0 && idx >= constAlloc {
 					isOOB = true
-				}
-			} else if arrSize == 0 && idx >= 0 {
-				if alloc, ok := heapAllocationSize(bc, f, arrName); ok {
-					if constAlloc := parseConstantIndex(alloc); constAlloc > 0 && idx >= constAlloc {
-						isOOB = true
-						category = "heap_oob_write"
-						if kind != "write" {
-							category = "heap_oob_read"
-						}
+					category = "heap_oob_write"
+					if kind != "write" {
+						category = "heap_oob_read"
 					}
 				}
 			}
-		} else if arrSize > 0 {
-			// A variable index assigned a single constant value before the
-			// subscript (`int n = 12; buf[n] = 0`) provably holds that constant,
-			// so it is OOB exactly when the constant is.
-			if v, ok := constantIndexBefore(bc, f, indexExpr, sub.StartLine()); ok && v >= arrSize {
-				isOOB = true
-			}
-			if !isOOB && isLoopBoundOverflow(bc, f, sub, arrSize) {
-				isOOB = true
-			}
-		} else if arrSize == 0 {
-			// Heap pointer indexed inside a loop: flag only when the loop upper
-			// bound provably exceeds the allocation size, e.g.
-			// malloc(user_len) with `i < user_len + 10`.
-			if alloc, ok := heapAllocationSize(bc, f, arrName); ok && isLoopBoundOverflowForHeap(bc, f, sub, alloc) {
-				isOOB = true
-				category = "heap_oob_write"
-				if kind != "write" {
-					category = "heap_oob_read"
-				}
-			}
 		}
-		// A non-constant index (e.g. `buf[i]`, `g_entries[i]`, `p->data[i]`)
-		// is not, by itself, evidence of an out-of-bounds access: proving that
-		// requires bounds-check dataflow the detector does not yet have. The
-		// previous catch-all `else if !isConstantIndex(indexExpr)` flagged every
-		// variable-index subscript, emitting ~17 false positives on the
-		// benchmark. Only report OOB when it is provable (constant index past a
-		// known array size, a loop bound that provably overruns it, or a heap
-		// allocation whose loop bound provably overruns the allocation size).
-
-		if !isOOB {
-			continue
+	} else if arrSize > 0 {
+		// A variable index assigned a single constant value before the
+		// subscript (`int n = 12; buf[n] = 0`) provably holds that constant,
+		// so it is OOB exactly when the constant is.
+		if v, ok := constantIndexBefore(bc, f, indexExpr, line); ok && v >= arrSize {
+			isOOB = true
 		}
-
-		if emitEvent(ctx, d.store, d.logger, "BUFFER_ACCESS", f.ID, &db.Location{FileID: file.ID, Line: sub.StartLine()}, map[string]string{
-			"array":      arrName,
-			"index":      indexExpr,
-			"category":   category,
-			"expression": text,
-		}) {
-			result.EventsCreated++
+		if !isOOB && isLoopBoundOverflow(bc, f, indexExpr, line, arrSize) {
+			isOOB = true
+		}
+	} else if arrSize == 0 {
+		// Heap pointer indexed inside a loop: flag only when the loop upper
+		// bound provably exceeds the allocation size, e.g.
+		// malloc(user_len) with `i < user_len + 10`.
+		if alloc, ok := heapAllocationSize(bc, f, arrName); ok && isLoopBoundOverflowForHeap(bc, f, indexExpr, line, alloc) {
+			isOOB = true
+			category = "heap_oob_write"
+			if kind != "write" {
+				category = "heap_oob_read"
+			}
 		}
 	}
+	return isOOB, category, arrSize
+}
+
+func (d *BufferOverflowDetector) emitOOB(ctx context.Context, f *db.Function, file *db.File, line int, arrName, indexExpr, category, text string, arrSize int, result *DetectResult) {
+	props := map[string]string{
+		"array":      arrName,
+		"index":      indexExpr,
+		"category":   category,
+		"expression": text,
+	}
+	if arrSize > 0 {
+		props["size"] = strconv.Itoa(arrSize)
+	}
+	if emitEvent(ctx, d.store, d.logger, "BUFFER_ACCESS", f.ID, &db.Location{FileID: file.ID, Line: line}, props) {
+		result.EventsCreated++
+	}
+}
+
+// derefBaseIndex returns the (base, index) of a pointer-dereference access
+// `*(p + i)` (the same access as `p[i]`), or ok=false for any other deref.
+func derefBaseIndex(node parser.Node) (string, string, bool) {
+	if !strings.HasPrefix(strings.TrimSpace(node.Text()), "*") {
+		return "", "", false
+	}
+	children := node.NamedChildren()
+	if len(children) == 0 {
+		return "", "", false
+	}
+	operand := children[0]
+	for operand.Kind() == "parenthesized_expression" || operand.Kind() == "cast_expression" {
+		c := operand.NamedChildren()
+		if len(c) == 0 {
+			return "", "", false
+		}
+		operand = c[0]
+	}
+	if operand.Kind() != "binary_expression" {
+		return "", "", false
+	}
+	op := ""
+	for _, c := range operand.Children() {
+		if c.Kind() == "+" {
+			op = "+"
+		}
+	}
+	if op != "+" {
+		return "", "", false
+	}
+	kids := operand.NamedChildren()
+	if len(kids) < 2 {
+		return "", "", false
+	}
+	base, index := kids[0].Text(), kids[1].Text()
+	if kids[0].Kind() != "identifier" {
+		base, index = index, base
+	}
+	return strings.TrimSpace(base), strings.TrimSpace(index), true
+}
+
+// isAssignTarget reports whether a deref node is the target of an assignment
+// (`*(p+i) = 0`) by walking its parent chain to the nearest assignment.
+func isAssignTarget(node parser.Node) bool {
+	for p := node.Parent(); p != nil; p = p.Parent() {
+		switch p.Kind() {
+		case "assignment_expression", "init_declarator":
+			children := p.NamedChildren()
+			return len(children) >= 1 && sameNode(children[0], node)
+		case "binary_expression", "parenthesized_expression", "cast_expression",
+			"subscript_expression", "argument_list", "call_expression",
+			"field_expression", "unary_expression", "pointer_expression":
+			continue
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // constantIndexBefore returns (value, true) when indexVar is assigned a single
@@ -996,16 +1084,12 @@ func isFileScopeDecl(decl parser.Node) bool {
 	return false
 }
 
-func isLoopBoundOverflow(bc *bufCtx, f *db.Function, sub parser.Node, arrSize int) bool {
-	_, indexExpr, ok := subscriptBaseIndex(sub)
-	if !ok {
-		return false
-	}
+func isLoopBoundOverflow(bc *bufCtx, f *db.Function, indexExpr string, line int, arrSize int) bool {
 	for _, forNode := range bc.fors {
 		if forNode.StartLine() < f.StartLine || forNode.EndLine() > f.EndLine {
 			continue
 		}
-		if sub.StartLine() < forNode.StartLine() || sub.StartLine() > forNode.EndLine() {
+		if line < forNode.StartLine() || line > forNode.EndLine() {
 			continue
 		}
 		// Only the loop CONDITION constrains the index. Scanning every named
@@ -1547,28 +1631,30 @@ func unwrapAllocationCall(node parser.Node) *parser.Node {
 // isLoopBoundOverflowForHeap flags a heap-pointer subscript when the enclosing
 // loop bound provably exceeds the allocation size, e.g. `malloc(user_len)`
 // with `for (i = 0; i < user_len + 10; i++) buf[i]`.
-func isLoopBoundOverflowForHeap(bc *bufCtx, f *db.Function, sub parser.Node, allocExpr string) bool {
+func isLoopBoundOverflowForHeap(bc *bufCtx, f *db.Function, indexExpr string, line int, allocExpr string) bool {
 	for _, forNode := range bc.fors {
 		if forNode.StartLine() < f.StartLine || forNode.EndLine() > f.EndLine {
 			continue
 		}
-		if sub.StartLine() < forNode.StartLine() || sub.StartLine() > forNode.EndLine() {
+		if line < forNode.StartLine() || line > forNode.EndLine() {
 			continue
 		}
-		condText := ""
-		initText := ""
-		for _, child := range forNode.NamedChildren() {
-			text := child.Text()
-			if isRelationalCondition(text) {
-				condText = text
-			} else if strings.Contains(text, "=") && !strings.Contains(text, "<") && !strings.Contains(text, ">") {
-				initText = text
-			}
-		}
-		if condText == "" {
+		cond := forNode.ChildByFieldName("condition")
+		if cond == nil {
 			continue
 		}
-		if idx := extractLoopIndex(initText); idx != "" && !strings.Contains(sub.Text(), idx) {
+		condText := cond.Text()
+		if strings.Contains(condText, "&&") || strings.Contains(condText, "||") {
+			continue
+		}
+		// The subscript index must reference the loop variable (possibly offset).
+		// The previous child-scan also matched the loop BODY (`buf[i] = ...`) as an
+		// "init", extracting a bogus index and silently skipping the check.
+		loopVar := forLoopIndex(forNode)
+		if loopVar == "" {
+			continue
+		}
+		if _, ok := indexOffset(indexExpr, loopVar); !ok {
 			continue
 		}
 		bound := extractLoopBound(condText)

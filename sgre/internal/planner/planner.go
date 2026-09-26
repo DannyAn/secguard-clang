@@ -71,6 +71,12 @@ func (p *Planner) getFilters(chain string) ([]Filter, error) {
 			NewOwnershipTransferFilter(p.store),
 			NewLeakProofFilter(p.store),
 		}, nil
+	case "buffer-overflow":
+		return []Filter{
+			NewCallReachFilter(p.store, p.callReachCache),
+			NewSafeFunctionFilter(p.store),
+			NewRangeOOBFilter(p.store, p.parser, p.logger),
+		}, nil
 	case "resource-leak":
 		return []Filter{
 			NewCallReachFilter(p.store, p.callReachCache),
@@ -367,6 +373,9 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			DeclLine:          props.DeclLine,
 			Origin:            props.Origin,
 			FieldPath:         props.FieldPath,
+			Array:             props.Array,
+			Index:             props.Index,
+			Size:              props.Size,
 			ExpectedType:      props.Expected,
 			ActualType:        props.Actual,
 			CastType:          props.Cast,

@@ -189,3 +189,45 @@ int src_sizeof(void) {
 		t.Errorf("src_sizeof: memcpy(&dst, src, sizeof(*src)) copies 64 bytes into char[4], got %v", keysOf(got))
 	}
 }
+
+// BO-10: a pointer dereference `*(arr + i)` is the same access as `arr[i]` and is
+// checked for OOB.
+func TestBOverflow_PointerDerefOOB(t *testing.T) {
+	src := `int deref_oob(void) {
+    int arr[10];
+    for (int i = 0; i <= 10; i++) *(arr + i) = 0;
+    return 0;
+}
+int deref_ok(void) {
+    int arr[10];
+    for (int i = 0; i < 10; i++) *(arr + i) = 0;
+    return 0;
+}
+`
+	got := planBO(t, src, "buffer-overflow")
+	if got["deref_oob"].Target.Function == "" {
+		t.Errorf("deref_oob: *(arr+i) with i<=10 overruns int[10], got %v", keysOf(got))
+	}
+	if got["deref_ok"].Target.Function != "" {
+		t.Errorf("deref_ok: *(arr+i) with i<10 is in-bounds, got %q", got["deref_ok"].Target.Function)
+	}
+}
+
+// BO-01/02: the range-oob filter independently confirms a constant index past the
+// array bound via the interval engine.
+func TestBOverflow_RangeConfirmed(t *testing.T) {
+	src := `int range_confirmed(void) {
+    int arr[10];
+    arr[0x10] = 0;
+    return 0;
+}
+`
+	got := planBO(t, src, "buffer-overflow")
+	c, ok := got["range_confirmed"]
+	if !ok {
+		t.Fatalf("range_confirmed: arr[0x10] into int[10] must be a candidate, got %v", keysOf(got))
+	}
+	if c.SuspicionLevel != "confirmed" {
+		t.Errorf("range_confirmed: arr[0x10] (index [16,16] >= 10) should be confirmed, got %q", c.SuspicionLevel)
+	}
+}

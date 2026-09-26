@@ -140,6 +140,11 @@ type Candidate struct {
 	// FieldPath is the full member/element access text of an uninit read
 	// (`p->f`, `p[i]`, `s.f`); empty for whole/scalar reads.
 	FieldPath string `json:"field_path,omitempty"`
+	// Array/Index/Size carry the buffer-overflow detector's resolved access
+	// (array name, index expression, element count) for the range-oob filter.
+	Array string `json:"array,omitempty"`
+	Index string `json:"index,omitempty"`
+	Size  int    `json:"size,omitempty"`
 	// ExpectedType/ActualType/CastType are the argument-type mismatch evidence
 	// (parameter type, pre-cast argument type, explicit cast target type).
 	ExpectedType string `json:"expected_type,omitempty"`
