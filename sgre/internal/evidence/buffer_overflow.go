@@ -149,6 +149,14 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 				continue
 			}
 		}
+		// read/recv/fread write at most `count` bytes into the buffer, so
+		// `read(fd, buf, sizeof(buf))` is safe — the previous generic path flagged
+		// the sizeof(buf) idiom as a buffer overflow (BO-12).
+		if callName == "read" || callName == "recv" || callName == "fread" {
+			if d.suppressReadFamily(bc, f, call, callName) {
+				continue
+			}
+		}
 		if apikb.IsSafeFunction(callName) || apikb.IsSafeWrapper(callName) {
 			continue
 		}
@@ -158,7 +166,7 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 		if !apikb.BufferOverflowAPIs[callName] {
 			continue
 		}
-		if hasPrecedingBoundsCheck(bc.ifs, f, call.StartLine()) {
+		if hasPrecedingBoundsCheck(bc, f, call, callName) {
 			continue
 		}
 		if suppressConstantStringCopy(bc, f, call) {
@@ -205,23 +213,26 @@ func (d *BufferOverflowDetector) checkBoundedCopyOverflow(ctx context.Context, f
 	}
 	dstArg := args[0]
 	sizeArg := args[2]
-	// `memcpy(&var, src, sizeof(...))` copies exactly the destination object's
-	// own size (a value copy: `memcpy(&x, p, sizeof(x))`, `memcpy(&x, p,
-	// sizeof(T))` where x is of type T, `memcpy(&x.f, p, sizeof(x.f))`), so it
-	// cannot overflow. A pure `sizeof` of a different, larger type would
-	// overflow, but that pattern is vanishingly rare in real code; the common
-	// `sizeof(Type)` form (where the dst is of that type) is safe and far
-	// outweighs the rare false negative, so a sizeof-prefixed size with an
-	// address-taken destination is treated as a value copy.
+	// `memcpy(&var, src, sizeof(var))` / `sizeof(*var)` copies exactly the
+	// destination object's own size (a value copy), so it cannot overflow. The
+	// size must reference the DESTINATION: `memcpy(&dst, src, sizeof(*src))`
+	// copies the SOURCE's size into dst and overflows whenever *src is larger
+	// than dst, so it is NOT a value copy and falls through (BO-09). A `sizeof(T)`
+	// type-name form cannot be matched to dst without a type table and is kept
+	// conservative (falls through).
 	if strings.HasPrefix(strings.TrimSpace(dstArg.Text()), "&") &&
 		strings.HasPrefix(strings.TrimSpace(sizeArg.Text()), "sizeof") {
-		return true
+		dstName := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(dstArg.Text()), "&"))
+		dstName = strings.Trim(dstName, "()")
+		if dstName != "" && sizeofOperandMatches(sizeArg.Text(), dstName) {
+			return true
+		}
 	}
 	dstName := extractArgName(dstArg)
 	if dstName == "" {
 		return safeDefault
 	}
-	capacity := findArraySize(bc, f, dstName)
+	capacity := findArraySize(bc, f, dstName, call.StartLine())
 	if capacity <= 0 {
 		capacity = constantAllocationSize(bc, f, dstName)
 	}
@@ -258,7 +269,7 @@ func (d *BufferOverflowDetector) checkBoundedCopyOverflow(ctx context.Context, f
 			}
 			// A preceding bounds check (if (n >= sizeof(dst)) return;) already
 			// guards the copy, so the caller-influenced size cannot overflow.
-			if hasPrecedingBoundsCheck(bc.ifs, f, call.StartLine()) {
+			if hasPrecedingBoundsCheck(bc, f, call, callName) {
 				return true
 			}
 			d.emitBoundedCopy(ctx, f, file, call, callName, "bounded_copy_var_size",
@@ -302,7 +313,7 @@ func (d *BufferOverflowDetector) checkSecureFunction(ctx context.Context, f *db.
 	if dstName == "" {
 		return
 	}
-	capacity := findArraySize(bc, f, dstName)
+	capacity := findArraySize(bc, f, dstName, call.StartLine())
 	if capacity <= 0 {
 		capacity = constantAllocationSize(bc, f, dstName)
 	}
@@ -379,7 +390,7 @@ func (d *BufferOverflowDetector) evaluateSizeArg(node parser.Node, bc *bufCtx, f
 		// so walk every identifier descendant and pick the first known array/
 		// allocation size.
 		for _, id := range cur.FindAll("identifier") {
-			if s := findArraySize(bc, f, id.Text()); s > 0 {
+			if s := findArraySize(bc, f, id.Text(), node.StartLine()); s > 0 {
 				return s
 			}
 			if s := constantAllocationSize(bc, f, id.Text()); s > 0 {
@@ -444,7 +455,7 @@ func (d *BufferOverflowDetector) checkScanfBuffer(ctx context.Context, f *db.Fun
 	if bufName == "" {
 		return
 	}
-	capacity := findArraySize(bc, f, bufName)
+	capacity := findArraySize(bc, f, bufName, call.StartLine())
 	if capacity <= 0 {
 		capacity = constantAllocationSize(bc, f, bufName)
 	}
@@ -533,8 +544,7 @@ func isScanfLengthByte(b byte) bool {
 
 func parseConstantSize(node parser.Node) int {
 	if node.Kind() == "number_literal" {
-		v, err := strconv.Atoi(node.Text())
-		if err == nil {
+		if v := parseConstantIndex(node.Text()); v > 0 {
 			return v
 		}
 	}
@@ -584,7 +594,7 @@ func suppressConstantStringCopy(bc *bufCtx, f *db.Function, call parser.Node) bo
 	}
 	// A local fixed array `char dst[256]; strcpy(dst, "x")` is precise within
 	// the function.
-	if size := findArraySize(bc, f, dstName); size > 0 {
+	if size := findArraySize(bc, f, dstName, call.StartLine()); size > 0 {
 		return size >= srcLen+1
 	}
 	// A struct field fixed array `char id[4]; strcpy(log->id, "bad")` is safe
@@ -683,44 +693,77 @@ func constantAllocationSize(bc *bufCtx, f *db.Function, varName string) int {
 	return 0
 }
 
-func hasPrecedingBoundsCheck(ifs []parser.Node, f *db.Function, callLine int) bool {
-	for _, ifNode := range ifs {
-		if ifNode.StartLine() < f.StartLine || ifNode.StartLine() >= callLine {
+func hasPrecedingBoundsCheck(bc *bufCtx, f *db.Function, call parser.Node, callName string) bool {
+	args := callNamedArguments(call)
+	// The guard must reference the copy's DESTINATION or its SIZE argument; an
+	// unrelated `if (x < size) { y = 1; }` must NOT suppress a `memcpy(dst, src,
+	// huge)` (BO-04). The previous substring rule ("size"/"len" anywhere in the
+	// condition, "=" anywhere in the body) matched `if (x < size)` and `y = 1`.
+	var relevant []string
+	if len(args) >= 1 {
+		relevant = append(relevant, extractArgName(args[0]))
+	}
+	if idx := boundedCopySizeIdx(callName); idx >= 0 && len(args) > idx {
+		relevant = append(relevant, extractArgName(args[idx]))
+	}
+	for _, ifNode := range bc.ifs {
+		if ifNode.StartLine() < f.StartLine || ifNode.StartLine() >= call.StartLine() {
 			continue
 		}
-		condText := ""
-		bodyHasReturn := false
-		for _, child := range ifNode.NamedChildren() {
-			if child.Kind() == "parenthesized_expression" || strings.Contains(child.Text(), ">") || strings.Contains(child.Text(), "<") {
-				condText = child.Text()
-			}
-			if child.Kind() == "compound_statement" {
-				bodyText := child.Text()
-				if strings.Contains(bodyText, "return") || strings.Contains(bodyText, "break") || strings.Contains(bodyText, "continue") {
-					bodyHasReturn = true
-				}
-				if strings.Contains(bodyText, "=") && !strings.Contains(bodyText, "==") {
-					bodyHasReturn = true
-				}
-			}
-			if child.Kind() == "expression_statement" {
-				bodyText := child.Text()
-				if strings.Contains(bodyText, "return") || strings.Contains(bodyText, "=") {
-					bodyHasReturn = true
-				}
-			}
-		}
-		if condText == "" || !bodyHasReturn {
+		cond := ifNode.ChildByFieldName("condition")
+		if cond == nil || !isRelationalCondition(cond.Text()) {
 			continue
 		}
-		if !isRelationalCondition(condText) {
+		refs := false
+		for _, r := range relevant {
+			if r != "" && condReferences(cond.Text(), r) {
+				refs = true
+				break
+			}
+		}
+		if !refs {
 			continue
 		}
-		if hasCapacityExpression(condText) {
+		// The guard must actually exit on overflow (return/break/continue); a body
+		// that merely assigns (`y = 1`) is not a guard.
+		if cons := ifNode.ChildByFieldName("consequence"); cons != nil && bodyExits(*cons) {
 			return true
 		}
 	}
 	return false
+}
+
+// boundedCopySizeIdx returns the argument index of a bounded copy's size
+// argument, or -1 for a call with no explicit size.
+func boundedCopySizeIdx(callName string) int {
+	switch callName {
+	case "memcpy", "memmove", "strncpy", "strncat":
+		return 2
+	}
+	return -1
+}
+
+// condReferences reports whether a condition text names the identifier, using
+// token boundaries (so `n` does not match `next` or `count`).
+func condReferences(condText, name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, tok := range strings.FieldsFunc(condText, func(r rune) bool {
+		return !(r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'))
+	}) {
+		if tok == name {
+			return true
+		}
+	}
+	return false
+}
+
+// bodyExits reports whether an if consequence exits the current control flow
+// (return/break/continue) — a true error-exit guard, not a mere assignment.
+func bodyExits(node parser.Node) bool {
+	text := node.Text()
+	return strings.Contains(text, "return") || strings.Contains(text, "break") || strings.Contains(text, "continue")
 }
 
 func isRelationalCondition(text string) bool {
@@ -728,17 +771,6 @@ func isRelationalCondition(text string) bool {
 		strings.Contains(text, " < ") || strings.Contains(text, " <= ") ||
 		strings.Contains(text, ">=") || strings.Contains(text, "<=") ||
 		strings.Contains(text, " >") || strings.Contains(text, " <")
-}
-
-func hasCapacityExpression(text string) bool {
-	keywords := []string{"capacity", "size", "len", "sizeof", "MAX_", "BUF_", "LIMIT", "max_", "buf_"}
-	lower := strings.ToLower(text)
-	for _, kw := range keywords {
-		if strings.Contains(lower, strings.ToLower(kw)) {
-			return true
-		}
-	}
-	return false
 }
 
 func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, result *DetectResult) {
@@ -758,7 +790,7 @@ func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Funct
 			continue
 		}
 
-		arrSize := findArraySize(bc, f, arrName)
+		arrSize := findArraySize(bc, f, arrName, sub.StartLine())
 		kind := subscriptAccessKind(bc, f, sub)
 		isOOB := false
 		category := "array_oob_read"
@@ -860,12 +892,8 @@ func constantIndexBefore(bc *bufCtx, f *db.Function, indexVar string, useLine in
 			ambiguous = true
 			return true
 		}
-		if children[1].Kind() != "number_literal" {
-			ambiguous = true
-			return true
-		}
-		v := parseConstantIndex(children[1].Text())
-		if v < 0 {
+		v, ok := constantNodeValue(bc, children[1])
+		if !ok {
 			ambiguous = true
 			return true
 		}
@@ -896,7 +924,9 @@ func isBareIdent(s string) bool {
 	return len(s) > 0
 }
 
-func findArraySize(bc *bufCtx, f *db.Function, arrName string) int {
+func findArraySize(bc *bufCtx, f *db.Function, arrName string, useLine int) int {
+	best := 0
+	bestScopeEnd := 1 << 30
 	for _, decl := range bc.decls {
 		// Accept the declaration when it is inside f, OR at file scope (a
 		// global/static array like `int arr[10]` declared above every function).
@@ -906,24 +936,47 @@ func findArraySize(bc *bufCtx, f *db.Function, arrName string) int {
 			continue
 		}
 		for _, ad := range decl.FindAll("array_declarator") {
-			if extractDeclaratorName(ad) == arrName {
-				for _, child := range ad.NamedChildren() {
-					switch child.Kind() {
-					case "number_literal":
-						if size := parseConstantIndex(child.Text()); size > 0 {
-							return size
-						}
-					case "identifier":
-						// `int arr[MAX]` — resolve the object-like macro.
-						if size, ok := bc.macros[child.Text()]; ok && size > 0 {
-							return size
-						}
+			if extractDeclaratorName(ad) != arrName {
+				continue
+			}
+			size := 0
+			for _, child := range ad.NamedChildren() {
+				switch child.Kind() {
+				case "number_literal":
+					if s := parseConstantIndex(child.Text()); s > 0 {
+						size = s
+					}
+				case "identifier":
+					// `int arr[MAX]` — resolve the object-like macro.
+					if s, ok := bc.macros[child.Text()]; ok && s > 0 {
+						size = s
 					}
 				}
+				if size > 0 {
+					break
+				}
+			}
+			if size <= 0 {
+				continue
+			}
+			// Scope-sensitive resolution (BO-15): a same-named array in another
+			// block, or a file-scope array shadowed by a local, must not leak its
+			// size into this use. The declaration's enclosing SCOPE (its block),
+			// not its own line, must contain useLine, and the INNERMOST such
+			// declaration wins.
+			scopeEnd := enclosingScopeEnd(decl)
+			if useLine > 0 {
+				if !isFileScopeDecl(decl) && (decl.StartLine() > useLine || scopeEnd < useLine) {
+					continue
+				}
+			}
+			if scopeEnd < bestScopeEnd {
+				best = size
+				bestScopeEnd = scopeEnd
 			}
 		}
 	}
-	return 0
+	return best
 }
 
 // isFileScopeDecl reports whether a declaration node lives at file scope — i.e.
@@ -944,6 +997,10 @@ func isFileScopeDecl(decl parser.Node) bool {
 }
 
 func isLoopBoundOverflow(bc *bufCtx, f *db.Function, sub parser.Node, arrSize int) bool {
+	_, indexExpr, ok := subscriptBaseIndex(sub)
+	if !ok {
+		return false
+	}
 	for _, forNode := range bc.fors {
 		if forNode.StartLine() < f.StartLine || forNode.EndLine() > f.EndLine {
 			continue
@@ -968,24 +1025,102 @@ func isLoopBoundOverflow(bc *bufCtx, f *db.Function, sub parser.Node, arrSize in
 		if strings.Contains(condText, "&&") || strings.Contains(condText, "||") {
 			continue
 		}
-		if strings.Contains(condText, "<=") {
-			nums := extractNumbers(condText)
-			for _, n := range nums {
-				if n >= arrSize {
-					return true
-				}
-			}
+		// The subscript index must be the loop variable (possibly offset by a
+		// constant: arr[i-1], arr[i+1]); otherwise the loop bound does not prove
+		// this subscript's range (BO-11). Modeling the offset fixes the confirmed
+		// false positive `for (i=1; i<=10; i++) arr[i-1]` (i-1 ∈ [0,9]).
+		loopVar := forLoopIndex(forNode)
+		if loopVar == "" {
+			continue
 		}
-		if strings.Contains(condText, "<") && !strings.Contains(condText, "<=") {
-			nums := extractNumbers(condText)
-			for _, n := range nums {
-				if n > arrSize {
-					return true
-				}
-			}
+		offset, matches := indexOffset(indexExpr, loopVar)
+		if !matches {
+			continue
+		}
+		op := ""
+		switch {
+		case strings.Contains(condText, "<="):
+			op = "<="
+		case strings.Contains(condText, "<"):
+			op = "<"
+		default:
+			continue
+		}
+		// The loop bound is a number literal or an object-like macro (`SIZE`),
+		// so `for (i=0; i<=SIZE; i++) arr[i]` is provable (BO-05).
+		bound := boundValue(bc, extractLoopBound(condText))
+		if bound <= 0 {
+			continue
+		}
+		maxIdx := bound + offset
+		if op == "<" {
+			maxIdx = bound - 1 + offset
+		}
+		if maxIdx >= arrSize {
+			return true
 		}
 	}
 	return false
+}
+
+// forLoopIndex returns the loop counter variable of a for statement
+// (`for (i = 0; ...)` → "i"), via the initializer field or a child `i = ...`.
+func forLoopIndex(forNode parser.Node) string {
+	if init := forNode.ChildByFieldName("initializer"); init != nil {
+		if idx := extractLoopIndex(init.Text()); idx != "" {
+			return idx
+		}
+	}
+	for _, child := range forNode.NamedChildren() {
+		text := child.Text()
+		if strings.Contains(text, "=") && !strings.Contains(text, "<") &&
+			!strings.Contains(text, ">") && !strings.Contains(text, "==") {
+			if idx := extractLoopIndex(text); idx != "" {
+				return idx
+			}
+		}
+	}
+	return ""
+}
+
+// indexOffset returns the constant offset of a loop index expression relative to
+// the loop variable: `i` → 0, `i - 1` → -1, `i + 1` → +1 (with or without spaces
+// around the operator). ok=false when the expression is not loopVar ± constant.
+func indexOffset(indexExpr, loopVar string) (int, bool) {
+	indexExpr = strings.TrimSpace(indexExpr)
+	if indexExpr == loopVar {
+		return 0, true
+	}
+	if !strings.HasPrefix(indexExpr, loopVar) {
+		return 0, false
+	}
+	rest := strings.TrimSpace(indexExpr[len(loopVar):])
+	sign := 0
+	switch {
+	case strings.HasPrefix(rest, "-"):
+		sign = -1
+	case strings.HasPrefix(rest, "+"):
+		sign = 1
+	default:
+		return 0, false
+	}
+	if c := parseConstantIndex(strings.TrimSpace(rest[1:])); c >= 0 {
+		return sign * c, true
+	}
+	return 0, false
+}
+
+// boundValue resolves a loop-bound expression to its numeric value — a number
+// literal (any radix/suffix) or an object-like macro identifier.
+func boundValue(bc *bufCtx, expr string) int {
+	expr = strings.TrimSpace(expr)
+	if v := parseConstantIndex(expr); v > 0 {
+		return v
+	}
+	if v, ok := bc.macros[expr]; ok && v > 0 {
+		return v
+	}
+	return 0
 }
 
 func extractNumbers(text string) []int {
@@ -1013,24 +1148,77 @@ func extractNumbers(text string) []int {
 	return nums
 }
 
+// parseConstantIndex parses a C integer constant expression, handling decimal,
+// hexadecimal (0x/0X), octal (leading 0), a leading sign, and the u/U/l/L
+// suffixes (`10u`, `0x10`, `010`, `-1`), with optional parentheses. Returns -1
+// for anything that is not a compile-time integer constant (BO-06).
 func parseConstantIndex(expr string) int {
-	n := 0
-	for _, c := range expr {
-		if c < '0' || c > '9' {
+	s := strings.TrimSpace(expr)
+	for strings.HasPrefix(s, "(") && strings.HasSuffix(s, ")") {
+		inner := strings.TrimSpace(s[1 : len(s)-1])
+		if inner == "" || inner == s {
+			break
+		}
+		s = inner
+	}
+	s = strings.TrimRight(s, "uUlL")
+	if s == "" {
+		return -1
+	}
+	neg := false
+	if s[0] == '-' || s[0] == '+' {
+		neg = s[0] == '-'
+		s = s[1:]
+		if s == "" {
 			return -1
 		}
-		n = n*10 + int(c-'0')
 	}
-	return n
+	base := 10
+	switch {
+	case strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X"):
+		base, s = 16, s[2:]
+	case len(s) > 1 && s[0] == '0':
+		base, s = 8, s[1:]
+	}
+	if s == "" {
+		return -1
+	}
+	n, err := strconv.ParseInt(s, base, 64)
+	if err != nil {
+		return -1
+	}
+	if neg {
+		n = -n
+	}
+	return int(n)
 }
 
 func isConstantIndex(expr string) bool {
-	for _, c := range expr {
-		if c < '0' || c > '9' {
-			return false
+	return parseConstantIndex(expr) >= 0
+}
+
+// constantNodeValue returns the compile-time value of a constant-valued AST node
+// — a numeric literal (any radix/suffix), an object-like macro identifier, or a
+// cast/parenthesized wrapper of either. It reports ok=false for anything else
+// (BO-07: a hex literal or `int n = SIZE; buf[n]` is a definite constant).
+func constantNodeValue(bc *bufCtx, node parser.Node) (int, bool) {
+	switch node.Kind() {
+	case "number_literal":
+		if v := parseConstantIndex(node.Text()); v >= 0 {
+			return v, true
+		}
+	case "identifier":
+		if v, ok := bc.macros[node.Text()]; ok && v >= 0 {
+			return v, true
+		}
+	case "parenthesized_expression", "cast_expression":
+		for _, c := range node.NamedChildren() {
+			if v, ok := constantNodeValue(bc, c); ok {
+				return v, true
+			}
 		}
 	}
-	return len(expr) > 0
+	return 0, false
 }
 
 // formatOverflowAPIs are printf-family calls that write an unboundedly
@@ -1061,14 +1249,14 @@ func (d *BufferOverflowDetector) detectFormatOverflow(ctx context.Context, f *db
 			continue
 		}
 		dst := strings.TrimSpace(args[0])
-		capacity := findArraySize(bc, f, dst)
+		capacity := findArraySize(bc, f, dst, call.StartLine())
 		if capacity <= 0 {
 			capacity = findFieldArraySize(bc, dst)
 		}
 		if capacity <= 0 {
 			continue
 		}
-		if hasPrecedingBoundsCheck(bc.ifs, f, call.StartLine()) {
+		if hasPrecedingBoundsCheck(bc, f, call, callName) {
 			continue
 		}
 		if destFeedsInjectionSink(bc, f, dst, call.StartLine()) {
@@ -1112,6 +1300,17 @@ const (
 func classifyFormatOverflow(args []string, capacity int) formatOverflowKind {
 	nonConst := false
 	staticLen := 0
+	// The format string's literal characters are ALWAYS output (BO-16): a pure
+	// literal `sprintf(buf, "very long literal...")` has no arguments to sum, so
+	// the previous args[2:]-only loop reported formatNoOverflow even when the
+	// literal provably exceeds capacity.
+	if len(args) >= 2 {
+		if l, ok := formatLiteralLength(strings.TrimSpace(args[1])); ok {
+			staticLen += l
+		} else {
+			nonConst = true
+		}
+	}
 	for i := 2; i < len(args); i++ {
 		l, ok := constantStringLength(strings.TrimSpace(args[i]))
 		if !ok {
@@ -1127,6 +1326,38 @@ func classifyFormatOverflow(args []string, capacity int) formatOverflowKind {
 		return formatOverflowPossible
 	}
 	return formatNoOverflow
+}
+
+// formatLiteralLength returns the number of literal (non-conversion) characters
+// a printf format string emits. `%` conversions are skipped (their output comes
+// from the arguments, counted separately); `%%` counts as one literal `%`.
+// Escapes make the length nontrivial and are rejected (ok=false).
+func formatLiteralLength(fmt string) (int, bool) {
+	t := strings.TrimSpace(fmt)
+	if len(t) < 2 || t[0] != '"' || t[len(t)-1] != '"' {
+		return 0, false
+	}
+	inner := t[1 : len(t)-1]
+	if strings.Contains(inner, `\`) {
+		return 0, false
+	}
+	lit := 0
+	for i := 0; i < len(inner); i++ {
+		if inner[i] != '%' {
+			lit++
+			continue
+		}
+		if i+1 < len(inner) && inner[i+1] == '%' {
+			lit++
+			i++
+			continue
+		}
+		i++ // skip the '%'
+		for i < len(inner) && !strings.ContainsRune("diouxXfFeEgGcsaApn", rune(inner[i])) {
+			i++
+		}
+	}
+	return lit, true
 }
 
 func destFeedsInjectionSink(bc *bufCtx, f *db.Function, dst string, afterLine int) bool {
@@ -1218,28 +1449,26 @@ func arrayDeclaratorName(node parser.Node) string {
 // subscriptAccessKind reports whether a subscript expression is an assignment
 // target (write) or appears on the read side (read).
 func subscriptAccessKind(bc *bufCtx, f *db.Function, sub parser.Node) string {
-	subText := sub.Text()
-	for _, assign := range bc.assigns {
-		if !funcLineRange(f, assign.StartLine()) {
-			continue
-		}
-		if assign.StartLine() != sub.StartLine() {
-			continue
-		}
-		children := assign.NamedChildren()
-		if len(children) < 2 {
-			continue
-		}
-		if children[0].Text() == subText || strings.Contains(children[0].Text(), subText) {
+	// Decide read vs write by the AST parent relationship, not a same-line text
+	// match. The previous `strings.Contains(children[0].Text(), subText)` matched
+	// both subscripts of `a[i] = a[i] + 1` on one line and mis-categorized the
+	// read side as a write, routing it to the wrong vuln type (BO-14).
+	for p := sub.Parent(); p != nil; p = p.Parent() {
+		switch p.Kind() {
+		case "assignment_expression", "init_declarator":
+			children := p.NamedChildren()
+			if len(children) >= 1 && sameNode(children[0], sub) {
+				return "write"
+			}
+			return "read"
+		case "update_expression":
 			return "write"
-		}
-	}
-	for _, upd := range bc.updates {
-		if !funcLineRange(f, upd.StartLine()) {
-			continue
-		}
-		if upd.StartLine() == sub.StartLine() && strings.Contains(upd.Text(), subText) {
-			return "write"
+		case "binary_expression", "parenthesized_expression", "cast_expression",
+			"subscript_expression", "argument_list", "call_expression",
+			"field_expression", "pointer_expression", "unary_expression":
+			continue // nested inside a larger expression; keep walking up
+		default:
+			return "read"
 		}
 	}
 	return "read"
@@ -1264,6 +1493,14 @@ func heapAllocationSize(bc *bufCtx, f *db.Function, varName string) (string, boo
 		args := callNamedArguments(*call)
 		if len(args) == 0 {
 			return "", false
+		}
+		// realloc(p, n): the size is the SECOND argument (the first is the old
+		// pointer p) — taking args[0] returned the pointer and made the capacity
+		// completely wrong (BO-08). calloc(n, m): args[0] is the ELEMENT COUNT,
+		// which is the natural unit for a later p[idx] comparison, so it is kept.
+		// malloc(n): args[0] is the byte size.
+		if name == "realloc" && len(args) >= 2 {
+			return strings.TrimSpace(args[1].Text()), true
 		}
 		return strings.TrimSpace(args[0].Text()), true
 	}
@@ -1432,5 +1669,81 @@ func suppressExactFitCopy(bc *bufCtx, f *db.Function, call parser.Node) bool {
 	if rest := strings.TrimPrefix(allocExpr, copySize); strings.HasPrefix(strings.TrimSpace(rest), "+") {
 		return true
 	}
+	// Alloc is the copy size scaled by an element size: malloc(n * sizeof(int))
+	// then memcpy(..., n) copies n BYTES into n*sizeof(int) BYTES — safe (BO-13).
+	// The previous textual compare saw `n` != `n * sizeof(int)` and reported it.
+	if rest := strings.TrimSpace(strings.TrimPrefix(allocExpr, copySize)); strings.HasPrefix(rest, "*") {
+		return true
+	}
+	if rest := strings.TrimSpace(strings.TrimSuffix(allocExpr, copySize)); strings.HasSuffix(rest, "*") {
+		return true
+	}
 	return false
+}
+
+// suppressReadFamily reports whether a read/recv/fread call is provably bounded
+// by the destination's capacity (BO-12):
+//
+//   - read(fd, buf, sizeof(buf)) / recv(s, buf, sizeof(buf), 0): the sizeof size
+//     always fits the buffer;
+//   - read(fd, buf, n) with a constant n <= capacity;
+//   - fread(buf, size, nmemb, stream) with constant size*nmemb <= capacity.
+func (d *BufferOverflowDetector) suppressReadFamily(bc *bufCtx, f *db.Function, call parser.Node, callName string) bool {
+	args := callNamedArguments(call)
+	var dstArg parser.Node
+	byteSize := -1 // -1 unknown, -2 = sizeof(dst) (always fits)
+	switch callName {
+	case "read", "recv":
+		if len(args) < 3 {
+			return false
+		}
+		dstArg = args[1]
+		if strings.HasPrefix(strings.TrimSpace(args[2].Text()), "sizeof") {
+			byteSize = -2
+		} else if n := parseConstantSize(args[2]); n > 0 {
+			byteSize = n
+		} else {
+			return false
+		}
+	case "fread":
+		if len(args) < 3 {
+			return false
+		}
+		dstArg = args[0]
+		n := parseConstantSize(args[1])
+		m := parseConstantSize(args[2])
+		if n > 0 && m > 0 {
+			byteSize = n * m
+		} else {
+			return false
+		}
+	default:
+		return false
+	}
+	dstName := extractArgName(dstArg)
+	if dstName == "" {
+		return false
+	}
+	if byteSize == -2 {
+		return true
+	}
+	capacity := findArraySize(bc, f, dstName, call.StartLine())
+	if capacity <= 0 {
+		capacity = constantAllocationSize(bc, f, dstName)
+	}
+	return capacity > 0 && byteSize <= capacity
+}
+
+// sizeofOperandMatches reports whether a sizeof size expression references the
+// destination name (`sizeof(dst)`, `sizeof(*dst)`, `sizeof((dst))`). It does not
+// match `sizeof(*src)` (a different object) or `sizeof(T)` (an unmatched type).
+func sizeofOperandMatches(sizeText, dstName string) bool {
+	sizeText = strings.TrimSpace(sizeText)
+	if !strings.HasPrefix(sizeText, "sizeof") {
+		return false
+	}
+	rest := strings.TrimSpace(sizeText[len("sizeof"):])
+	rest = strings.Trim(rest, "()")
+	rest = strings.TrimSpace(strings.TrimPrefix(rest, "*"))
+	return rest == dstName
 }
