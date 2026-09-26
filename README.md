@@ -145,18 +145,44 @@ Inside an agent, just ask in natural language:
 > Look for null-deref and buffer-overflow issues
 ```
 
-Or drive the CLI directly:
+Or drive the agent with slash commands. The namespace is `secguard-clang` on every
+platform, but the separator differs: OpenCode uses `/` and Claude Code / Claude CAC use
+`:` — so `/secguard-clang/secguard` vs `/secguard-clang:secguard`:
+
+```text
+# Full scan — whole repository; slow on large codebases
+/secguard-clang/secguard ./src   # index + graph + detect + converge + auto-confirm + candidates
+
+# Incremental review — only the changed lines; fast on large codebases
+/secguard-clang/pr               # PR/MR diff; base defaults to the merge-base with main/master
+/secguard-clang/mr               # GitLab alias of /pr
+/secguard-clang/diff HEAD~1      # arbitrary git diff; base defaults to HEAD~1
+
+/secguard-clang/metrics          # scan performance and convergence metrics
+```
+
+The incremental commands run the same pipeline but keep only candidates whose sink or
+source line falls on a changed line, and dedupe them against past findings — use them to
+review a change set without re-surfacing pre-existing issues. Outside a git repository
+they fail instead of silently degrading to a full scan.
+
+Or drive the CLI directly (rarely needed — mainly CI and scripting):
 
 ```bash
 secguard scan ./src        # index + graph + detect + converge + auto-confirm + candidates
+secguard diff HEAD~1       # review only changed lines (base defaults to HEAD~1)
+secguard pr                # PR/MR diff (base = merge-base with main/master)
+secguard report            # read persisted findings
+secguard plan null-deref   # convergence for one type
 secguard types             # authoritative vulnerability types + CWE
 secguard status            # index status
-secguard plan null-deref   # convergence for one type
-secguard report            # read persisted findings
 secguard metrics           # scan performance and convergence metrics
 secguard schema findings   # table schema before raw SQL
 secguard db "SELECT ..."   # read-only SQL against sgre.db
 ```
+
+`secguard types` / `schema` / `db` are CLI (and MCP) surfaces only; the agent slash
+commands are exactly `secguard`, `pr`, `mr`, `diff`, and `metrics`.
 
 ## Output
 

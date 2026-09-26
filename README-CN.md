@@ -145,18 +145,43 @@ cd secguard-clang
 > 重点看 null-deref 和 buffer-overflow 问题
 ```
 
-或直接使用 CLI：
+也可以用斜杠命令直接驱动 Agent。命名空间在各平台都是 `secguard-clang`，但分隔符不同：
+OpenCode 用 `/`，Claude Code / Claude CAC 用 `:`——即 `/secguard-clang/secguard` 与
+`/secguard-clang:secguard`：
+
+```text
+# 全量扫描——整仓重跑，大仓较慢
+/secguard-clang/secguard ./src   # 索引 + 建图 + 检测 + 收敛 + 自动确认 + 候选
+
+# 增量检视——只看变更行，大仓很快
+/secguard-clang/pr               # PR/MR diff；base 默认取与 main/master 的 merge-base
+/secguard-clang/mr               # /pr 的 GitLab 别名
+/secguard-clang/diff HEAD~1      # 任意 git diff；base 默认 HEAD~1
+
+/secguard-clang/metrics          # 扫描性能与收敛指标
+```
+
+增量命令跑同一条管线，但只保留「sink 行或源头行落在变更行上、且指纹未在既往 findings 中
+出现」的候选——适合检视一个变更集，而不会把历史问题重新翻出来。不在 git 仓库里时它们会直接
+报错，而不是悄悄降级成全量扫描。
+
+或直接使用 CLI（很少需要——主要用于 CI 与脚本）：
 
 ```bash
 secguard scan ./src        # 索引 + 建图 + 检测 + 收敛 + 自动确认 + 候选
+secguard diff HEAD~1       # 只检视变更行（base 默认 HEAD~1）
+secguard pr                # PR/MR diff（base 取与 main/master 的 merge-base）
+secguard report            # 读取已持久化的发现
+secguard plan null-deref   # 单类型收敛
 secguard types             # 权威漏洞类型 + CWE
 secguard status            # 索引状态
-secguard plan null-deref   # 单类型收敛
-secguard report            # 读取已持久化的发现
 secguard metrics           # 扫描性能与收敛指标
 secguard schema findings   # 写 SQL 前先看表结构
 secguard db "SELECT ..."   # 对 sgre.db 执行只读 SQL
 ```
+
+`secguard types` / `schema` / `db` 只有 CLI（与 MCP）形态；Agent 侧的斜杠命令只有
+`secguard`、`pr`、`mr`、`diff`、`metrics` 五个。
 
 ## 输出
 
