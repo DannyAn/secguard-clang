@@ -608,8 +608,16 @@ func findAliases(f *db.Function, inits, assigns []parser.Node) map[string]aliasI
 }
 
 // recordAlias records that aliasVar aliases the object denoted by rhs (a bare
-// identifier, or a field access base.field).
+// identifier, a field access base.field, or a cast/parenthesized spelling of
+// either: `q = (T *)p`, `q = (p->f)`).
 func recordAlias(aliases map[string]aliasInfo, aliasVar string, rhs parser.Node) {
+	for rhs.Kind() == "cast_expression" || rhs.Kind() == "parenthesized_expression" {
+		children := rhs.NamedChildren()
+		if len(children) == 0 {
+			return
+		}
+		rhs = children[0]
+	}
 	if rhs.Kind() == "identifier" {
 		aliases[aliasVar] = aliasInfo{baseVar: rhs.Text(), field: ""}
 		return

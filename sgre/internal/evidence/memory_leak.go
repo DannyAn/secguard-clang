@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"strings"
 
@@ -28,87 +27,7 @@ func (d *MemoryLeakDetector) Name() string { return "memory_leak" }
 func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	funcs, err := d.store.ListFunctions(ctx)
-	if err != nil {
-		return result, fmt.Errorf("memory_leak: list functions: %w", err)
-	}
-
-	// C allows distinct static functions with the same name across files; a
-	// name->single-function map would shadow all but the last definition and
-	// mispair a create function with the wrong destroy, exactly like the call
-	// graph builder's old name->single-ID map. Track one entry per definition
-	// and pair by same file below.
-	funcMap := make(map[string][]*db.Function, len(funcs))
-	for _, f := range funcs {
-		funcMap[f.Name] = append(funcMap[f.Name], f)
-	}
-
-	// Scan for free() sites once per file so the RAII create/destroy pairing
-	// below no longer re-reads + re-parses each destroy function's file from
-	// disk per candidate (the old functionHasFrees path).
-	freeFuncs := make(map[int64]bool)
-	hasDestroyCandidates := false
-	for _, f := range funcs {
-		if destroyName := getDestroyCounterpart(f.Name); destroyName != "" {
-			if len(funcMap[destroyName]) > 0 {
-				hasDestroyCandidates = true
-			}
-		}
-	}
-	if hasDestroyCandidates {
-		if err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
-			calls := root.FindAll("call_expression")
-			for _, f := range fileFuncs {
-				if freeFuncs[f.ID] {
-					continue
-				}
-				for _, call := range calls {
-					if !funcLineRange(f, call.StartLine()) {
-						continue
-					}
-					if apikb.IsDeallocator(extractCallName(call)) {
-						freeFuncs[f.ID] = true
-						break
-					}
-				}
-			}
-		}); err != nil {
-			return result, fmt.Errorf("memory_leak: scan frees: %w", err)
-		}
-	}
-
-	raiiCreateFuncs := make(map[int64]bool)
-	for _, f := range funcs {
-		destroyName := getDestroyCounterpart(f.Name)
-		if destroyName == "" {
-			continue
-		}
-		destroyFuncs := funcMap[destroyName]
-		if len(destroyFuncs) == 0 {
-			continue
-		}
-		// A create function pairs with the destroy function in the SAME file
-		// (static functions with equal names in different files are distinct
-		// definitions). Only fall back to a lone cross-file destroy when there
-		// is exactly one candidate (external-linkage create/destroy split
-		// across files); with several same-name destroys and none in this file,
-		// the pairing is ambiguous and stays unexempted (no false negative).
-		var destroyFunc *db.Function
-		for _, df := range destroyFuncs {
-			if df.FileID == f.FileID {
-				destroyFunc = df
-				break
-			}
-		}
-		if destroyFunc == nil && len(destroyFuncs) == 1 {
-			destroyFunc = destroyFuncs[0]
-		}
-		if destroyFunc != nil && freeFuncs[destroyFunc.ID] {
-			raiiCreateFuncs[f.ID] = true
-		}
-	}
-
-	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
 		funcDefs := root.FindAll("function_definition")
 		bodies := functionBodyMap(funcDefs)
 		calls := root.FindAll("call_expression")
@@ -120,11 +39,9 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 		macros := macroFreeSummaries(root)
 
 		for _, f := range fileFuncs {
-			allocs := d.findAllocations(ctx, f, file, assigns, inits)
-			frees := d.findFrees(ctx, f, file, calls, macros)
+			allocs := d.findAllocations(ctx, f, file, assigns, inits, calls)
+			frees := d.findFrees(ctx, f, file, calls, macros, inits, assigns)
 			returnLines := findReturnLinesFrom(returns, f)
-
-			isRAII := raiiCreateFuncs[f.ID]
 
 			body := bodies[f.StartLine]
 			cfg := graph.BuildStmtCFG(body, f.EndLine)
@@ -133,6 +50,16 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 
 			for varName, allocLines := range allocs {
 				freeLines, hasFree := frees[varName]
+				// realloc into a DIFFERENT target (`tmp = realloc(p, n)`) consumes
+				// p's block on success and leaves p reachable on failure, so p is
+				// never leaked by that call — model it as a release at the realloc
+				// line so p is not reported.
+				for _, l := range findReallocConsumeLines(assigns, inits, f, varName) {
+					freeLines = append(freeLines, l)
+				}
+				// self-realloc `p = realloc(p, n)` leaks the OLD block when realloc
+				// fails (returns NULL) — ML-12.
+				selfReallocLines := findSelfReallocLines(assigns, inits, f, varName)
 				// Lines where a `return varName` hands the pointer to the caller.
 				// A return on ONE path is an ownership transfer on that path only;
 				// the path-sensitive analysis below treats it as a leak-avoiding
@@ -174,11 +101,42 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 						shouldReportRelease = true
 					}
 
-					if shouldReportLeak && !isRAII {
-						if emitEvent(ctx, d.store, d.logger, "MEMORY_ALLOC", f.ID, &db.Location{FileID: file.ID, Line: allocLine}, map[string]string{
+					// ML-12: a self-realloc p = realloc(p, n) immediately consuming
+					// this allocation leaks the OLD block when realloc fails (returns
+					// NULL), even if a later free(p) releases the NEW block. Force a
+					// suspected leak instead of a release.
+					for _, rl := range selfReallocLines {
+						if rl <= allocLine {
+							continue
+						}
+						immediate := true
+						for _, fl := range freeLines {
+							if fl > allocLine && fl < rl {
+								immediate = false
+								break
+							}
+						}
+						if immediate {
+							shouldReportLeak = true
+							shouldReportRelease = false
+							break
+						}
+					}
+
+					if shouldReportLeak {
+						// ML-01/18: a pointer with NO free/transfer/escape on any path is
+						// DEFINITELY lost (hasLostResource proved a leak path AND there is
+						// no releasing/handing-off node anywhere), so mark it so the
+						// planner can confirm instead of leaving it suspected.
+						definiteLeak := len(freeLines) == 0 && len(escapeLines) == 0 && len(transferLines) == 0
+						props := map[string]string{
 							"variable": varName,
 							"origin":   "malloc",
-						}) {
+						}
+						if definiteLeak {
+							props["definite"] = "true"
+						}
+						if emitEvent(ctx, d.store, d.logger, "MEMORY_ALLOC", f.ID, &db.Location{FileID: file.ID, Line: allocLine}, props) {
 							result.EventsCreated++
 						}
 					}
@@ -205,6 +163,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 							result.EventsCreated++
 						}
 					}
+
 				}
 			}
 		}
@@ -212,7 +171,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 	return result, err
 }
 
-func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function, file *db.File, assigns, inits []parser.Node) map[string][]int {
+func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function, file *db.File, assigns, inits, calls []parser.Node) map[string][]int {
 	allocs := make(map[string][]int)
 
 	checkNode := func(node parser.Node) {
@@ -258,14 +217,59 @@ func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function
 		checkNode(init)
 	}
 
+	// Output-parameter allocators (`asprintf(&p, ...)`, `getline(&p, ...)`)
+	// allocate into the addressed variable rather than returning it (ML-11).
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
+			continue
+		}
+		if name := outputParamAllocVar(call); name != "" {
+			allocs[name] = append(allocs[name], call.StartLine())
+		}
+	}
+
 	for name := range allocs {
 		sort.Ints(allocs[name])
 	}
 	return allocs
 }
 
-func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node, macros map[string]macroFreeSummary) map[string][]int {
+// outputParamAllocVar returns the variable an output-parameter allocator writes:
+// `asprintf(&p, ...)` / `getline(&p, ...)` / `getdelim(&p, ...)` allocate into p.
+var outputParamAllocators = map[string]bool{
+	"asprintf": true, "vasprintf": true, "getline": true, "getdelim": true,
+}
+
+func outputParamAllocVar(call parser.Node) string {
+	if !outputParamAllocators[extractCallName(call)] {
+		return ""
+	}
+	args := getCallArgs(call)
+	if len(args) == 0 {
+		return ""
+	}
+	target, ok := args[0].AddressTakenTarget()
+	if !ok || target.Kind() != "identifier" {
+		return ""
+	}
+	return target.Text()
+}
+
+func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node, macros map[string]macroFreeSummary, inits, assigns []parser.Node) map[string][]int {
 	frees := make(map[string][]int)
+	aliases := findAliases(f, inits, assigns)
+	recordFree := func(name string, line int) {
+		if name == "" {
+			return
+		}
+		frees[name] = append(frees[name], line)
+		// free(q) where q = p (whole-variable alias) releases p's block too, so
+		// a leak of p is not reported (ML-05). A field alias (q = p->f) is not a
+		// whole-variable alias, so terminalBaseVar stops there.
+		if base := terminalBaseVar(aliases, name); base != name {
+			frees[base] = append(frees[base], line)
+		}
+	}
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
 			continue
@@ -274,8 +278,8 @@ func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file
 		// A freeing function-like macro (free-only or free+null) releases its
 		// first argument; the free inside the macro is invisible to tree-sitter.
 		if s, ok := macros[callName]; ok && s.freesArg {
-			if args := getCallArgs(call); len(args) > 0 && args[0].Kind() == "identifier" {
-				frees[args[0].Text()] = append(frees[args[0].Text()], call.StartLine())
+			if args := getCallArgs(call); len(args) > 0 {
+				recordFree(argIdentifier(args[0]), call.StartLine())
 			}
 			continue
 		}
@@ -285,14 +289,30 @@ func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file
 		for _, child := range call.NamedChildren() {
 			if child.Kind() == "argument_list" {
 				for _, arg := range child.NamedChildren() {
-					if arg.Kind() == "identifier" {
-						frees[arg.Text()] = append(frees[arg.Text()], call.StartLine())
-					}
+					recordFree(argIdentifier(arg), call.StartLine())
 				}
 			}
 		}
 	}
 	return frees
+}
+
+// argIdentifier returns the bare identifier of a release-call argument, unwrapping
+// cast and parenthesized expressions (`free((void *)p)` → "p", ML-06). A non-trivial
+// expression (`free(p + i)`) is NOT unwrapped and returns "", because it does not
+// release a single tracked variable.
+func argIdentifier(arg parser.Node) string {
+	switch arg.Kind() {
+	case "identifier":
+		return arg.Text()
+	case "parenthesized_expression", "cast_expression":
+		for _, c := range arg.NamedChildren() {
+			if id := argIdentifier(c); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
 }
 
 func findReturnLinesFrom(returns []parser.Node, f *db.Function) []int {
@@ -336,22 +356,18 @@ func filterNullGuardReturns(ifs []parser.Node, returnLines []int, varName string
 }
 
 func isNullCheckCondition(cond *parser.Node, varName string) bool {
-	condText := cond.Text()
-	if strings.Contains(condText, "!"+varName) {
-		return true
+	if varName == "" {
+		return false
 	}
-	if strings.Contains(condText, varName+" == NULL") || strings.Contains(condText, varName+" == 0") {
-		return true
-	}
-	if strings.Contains(condText, "NULL == "+varName) || strings.Contains(condText, "0 == "+varName) {
-		return true
-	}
-	// Assignment-in-condition: `(var = malloc(...)) == NULL` is the short-circuit
-	// guard for a malloc inside an if condition (`if (fd == -1 || (path = malloc(n))
-	// == NULL) return NULL;`). var is assigned, then compared against NULL; the
-	// branch returns on failure, so it is a null-guard early return, not a leak.
-	if strings.Contains(condText, "("+varName+" =") && strings.Contains(condText, "== NULL") {
-		return true
+	// AST-based null-check (word-boundary safe, ML-08): the condition establishes
+	// varName as NULL/zero when it evaluates TRUE — `!p`, `p == NULL`, `p == 0`,
+	// `NULL == p`, `0 == p`, and the assignment-in-condition `(p = malloc()) ==
+	// NULL`. The previous strings.Contains matched `!ptr` against varName `p`
+	// (the "!p" substring) and misread a `return p` transfer as a null-guard.
+	for _, v := range parser.NullCheckedVars(*cond) {
+		if v == varName {
+			return true
+		}
 	}
 	return false
 }
@@ -425,7 +441,7 @@ func findEscapeLines(assigns []parser.Node, f *db.Function, varName string, loca
 		}
 		lhs, rhs := children[0], children[1]
 
-		if rhs.Kind() == "identifier" && rhs.Text() == varName {
+		if argIdentifier(rhs) == varName {
 			if lhs.Kind() == "subscript_expression" || lhs.Kind() == "field_expression" {
 				lines = append(lines, assign.StartLine())
 			} else if lhs.Kind() == "identifier" && !localVars[lhs.Text()] {
@@ -442,6 +458,12 @@ func findEscapeLines(assigns []parser.Node, f *db.Function, varName string, loca
 		// the struct/array — the field is owned by the caller, which frees it
 		// elsewhere (e.g. zlib's gz_state buffers freed by gzclose). A local
 		// base (`local.field = malloc(...)`) still leaks if never freed.
+		//
+		// ML-14 tradeoff: this errs toward NO false positive for the common
+		// caller-owned-field idiom. If a caller stores into the field but never
+		// frees it, that leak is intra-procedurally invisible here — resolving
+		// it requires interprocedural evidence that the field is (not) released
+		// somewhere in the call graph, which is beyond the detector's scope.
 		if (lhs.Kind() == "field_expression" || lhs.Kind() == "subscript_expression") && isMallocExpr(rhs) {
 			base := ""
 			for _, child := range lhs.NamedChildren() {
@@ -463,6 +485,20 @@ func findLocalVarsFrom(decls []parser.Node, f *db.Function) map[string]bool {
 	locals := make(map[string]bool)
 	for _, decl := range decls {
 		if !funcLineRange(f, decl.StartLine()) {
+			continue
+		}
+		// An `extern` declaration (`extern int *g;`) names an external object, not
+		// a local: storing p into it escapes ownership (ML-09). The previous code
+		// collected every in-function declaration as local, so `g = p` for an
+		// extern-declared global was misread as a local store and reported as a
+		// leak.
+		isExtern := false
+		for _, child := range decl.NamedChildren() {
+			if child.Kind() == "storage_class_specifier" && child.Text() == "extern" {
+				isExtern = true
+			}
+		}
+		if isExtern {
 			continue
 		}
 		for _, child := range decl.NamedChildren() {
@@ -553,8 +589,91 @@ func isReallocOf(expr parser.Node, varName string) bool {
 	return args[0].Kind() == "identifier" && args[0].Text() == varName
 }
 
+// lhsPlainVar returns the variable a direct-write LHS names: "p" for `p = ...`
+// and for a declarator `*p = ...` / `int *p = ...`, and "" for a field/subscript
+// write (`p->f = ...`). It distinguishes a whole-variable write from a member
+// write, which matters for self-realloc detection (a `p->f = realloc(p, n)` is
+// NOT a self-realloc of p).
+func lhsPlainVar(lhs parser.Node) string {
+	switch lhs.Kind() {
+	case "identifier":
+		return lhs.Text()
+	case "pointer_declarator", "array_declarator", "function_declarator", "parenthesized_declarator":
+		return extractVarName(lhs)
+	}
+	return ""
+}
+
+// findReallocConsumeLines returns the lines where realloc(varName, n) moves
+// varName's block into a DIFFERENT target (`tmp = realloc(p, n)`). The old block
+// is consumed on success and still reachable through p on failure, so p is not
+// leaked either way — model it as a release at that line so the leak analysis
+// does not report p (a realloc-into-temp is not a lost pointer).
+func findReallocConsumeLines(assigns, inits []parser.Node, f *db.Function, varName string) []int {
+	var lines []int
+	check := func(node parser.Node) {
+		children := node.NamedChildren()
+		if len(children) < 2 {
+			return
+		}
+		lhs, rhs := children[0], children[1]
+		if !isReallocOf(rhs, varName) {
+			return
+		}
+		if lhsPlainVar(lhs) == varName {
+			return // self-realloc, not a plain consume
+		}
+		lines = append(lines, node.StartLine())
+	}
+	for _, a := range assigns {
+		if funcLineRange(f, a.StartLine()) {
+			check(a)
+		}
+	}
+	for _, i := range inits {
+		if funcLineRange(f, i.StartLine()) {
+			check(i)
+		}
+	}
+	return lines
+}
+
+// findSelfReallocLines returns the lines where varName is realloc'd into itself
+// (`p = realloc(p, n)`). On realloc failure the OLD block leaks (the pointer is
+// overwritten with NULL), the classic CWE-401 form (ML-12).
+func findSelfReallocLines(assigns, inits []parser.Node, f *db.Function, varName string) []int {
+	var lines []int
+	check := func(node parser.Node) {
+		children := node.NamedChildren()
+		if len(children) < 2 {
+			return
+		}
+		lhs, rhs := children[0], children[1]
+		if lhsPlainVar(lhs) != varName {
+			return
+		}
+		if isReallocOf(rhs, varName) {
+			lines = append(lines, node.StartLine())
+		}
+	}
+	for _, a := range assigns {
+		if funcLineRange(f, a.StartLine()) {
+			check(a)
+		}
+	}
+	for _, i := range inits {
+		if funcLineRange(f, i.StartLine()) {
+			check(i)
+		}
+	}
+	return lines
+}
+
 // isMallocExpr reports whether expr is (or casts) a malloc/calloc/realloc call.
-// Nested casts (`(int)(size_t)malloc(64)`) are unwrapped recursively.
+// Nested casts (`(int)(size_t)malloc(64)`) are unwrapped recursively. The
+// implicit result-returning allocators (strdup/getcwd/...) are recognized via
+// apikb.IsAllocator, and realpath(path, NULL) — which allocates only when its
+// second argument is NULL — is recognized explicitly (ML-11).
 func isMallocExpr(expr parser.Node) bool {
 	if expr.Kind() == "cast_expression" {
 		for _, c := range expr.NamedChildren() {
@@ -567,7 +686,15 @@ func isMallocExpr(expr parser.Node) bool {
 	if expr.Kind() != "call_expression" {
 		return false
 	}
-	return apikb.IsAllocator(extractCallName(expr))
+	name := extractCallName(expr)
+	if apikb.IsAllocator(name) {
+		return true
+	}
+	if name == "realpath" {
+		args := getCallArgs(expr)
+		return len(args) >= 2 && parser.IsNullOperand(args[1])
+	}
+	return false
 }
 
 // containsLine reports whether lines contains target.

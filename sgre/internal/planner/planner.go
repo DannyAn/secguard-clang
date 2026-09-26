@@ -69,6 +69,7 @@ func (p *Planner) getFilters(chain string) ([]Filter, error) {
 			NewSafeFunctionFilter(p.store),
 			NewReleaseFilter(p.store, "MEMORY_RELEASE"),
 			NewOwnershipTransferFilter(p.store),
+			NewLeakProofFilter(p.store),
 		}, nil
 	case "resource-leak":
 		return []Filter{

@@ -531,14 +531,25 @@ func isErrorCheck(condText string) bool {
 // parenthesized).
 func returnReturnsVar(ret parser.Node, varName string) bool {
 	for _, child := range ret.NamedChildren() {
-		if child.Kind() == "identifier" && child.Text() == varName {
+		if returnOperandIs(child, varName) {
 			return true
 		}
-		if child.Kind() == "parenthesized_expression" {
-			for _, inner := range child.NamedChildren() {
-				if inner.Kind() == "identifier" && inner.Text() == varName {
-					return true
-				}
+	}
+	return false
+}
+
+// returnOperandIs reports whether a return operand is varName, unwrapping cast and
+// parenthesized expressions (`return (T *)p`, `return ((p))` both return p —
+// ML-15). The previous version only matched a bare identifier or one level of
+// parentheses, so `return (T *)p` was misread as a leak instead of a transfer.
+func returnOperandIs(node parser.Node, varName string) bool {
+	switch node.Kind() {
+	case "identifier":
+		return node.Text() == varName
+	case "parenthesized_expression", "cast_expression":
+		for _, c := range node.NamedChildren() {
+			if returnOperandIs(c, varName) {
+				return true
 			}
 		}
 	}

@@ -610,11 +610,21 @@ func IsLogSanitizer(name string) bool { return LogSanitizers[name] }
 
 // BuiltinAllocators are the C allocation APIs whose result may be NULL
 // (inherently nullable) and whose result must be released. Projects extend this
-// set via RegisterAllocator (secguard.toml [allocators]).
+// set via RegisterAllocator (secguard.toml [allocators]). The implicit string/
+// path allocators (strdup, getcwd, ...) return a malloc'd block released with
+// free() and are therefore first-class allocations, not name-heuristic matches.
 var BuiltinAllocators = map[string]bool{
 	"malloc":  true,
 	"calloc":  true,
 	"realloc": true,
+	// POSIX/ISO string duplication — returns a malloc'd buffer (free()).
+	"strdup":  true,
+	"strndup": true,
+	"wcsdup":  true,
+	// Path/cwd — returns a malloc'd buffer (free()).
+	"getcwd":                  true,
+	"get_current_dir_name":    true,
+	"canonicalize_file_name":  true,
 }
 
 // BuiltinDeallocators are the C release APIs. Projects extend this set via

@@ -139,6 +139,42 @@ func (f *ReleaseFilter) Apply(ctx context.Context, candidates []Candidate) ([]Ca
 	return kept, dropped, nil
 }
 
+// LeakProofFilter promotes a memory-leak candidate whose detector proved the
+// pointer is DEFINITELY lost — no free/transfer/escape on any path, marked by the
+// detector's `definite` property on the MEMORY_ALLOC event — to the confirmed
+// tier (ML-01/18). A conditional leak (freed/escaped on some path only) carries
+// no marker and stays suspected for the AI.
+type LeakProofFilter struct {
+	store db.Store
+}
+
+func NewLeakProofFilter(store db.Store) *LeakProofFilter {
+	return &LeakProofFilter{store: store}
+}
+
+func (f *LeakProofFilter) Name() string { return "leak_proof" }
+
+func (f *LeakProofFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, []Dismissed, error) {
+	events, err := f.store.ListEventsByType(ctx, "MEMORY_ALLOC")
+	if err != nil {
+		return nil, nil, fmt.Errorf("leak proof: %w", err)
+	}
+	definite := make(map[int64]bool, len(events))
+	for _, e := range events {
+		if parseEventProps(e.Properties).Definite == "true" {
+			definite[e.ID] = true
+		}
+	}
+	kept := make([]Candidate, 0, len(candidates))
+	for _, c := range candidates {
+		if definite[c.DerefEventID] {
+			c.SuspicionLevel = "confirmed"
+		}
+		kept = append(kept, c)
+	}
+	return kept, nil, nil
+}
+
 // HardcodedSecretProofFilter promotes a hardcoded-secret candidate whose
 // literal's VALUE is itself secret-shaped (a known token prefix, high Shannon
 // entropy, or URL-embedded credentials — the detector's `value_proven` marker)

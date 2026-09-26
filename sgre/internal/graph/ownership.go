@@ -66,11 +66,10 @@ func (b *OwnershipBuilder) Build(ctx context.Context) (*BuildResult, error) {
 					continue // error exit (`if (fd < 0) return fd`) is not a transfer
 				}
 				for _, child := range ret.NamedChildren() {
-					if child.Kind() != "identifier" {
-						continue
-					}
-					if b.persistTransfer(ctx, f, child.Text(), "return", "", ret.StartLine()) {
-						result.EdgesCreated++
+					if id := rhsIdentifier(child); id != "" {
+						if b.persistTransfer(ctx, f, id, "return", "", ret.StartLine()) {
+							result.EdgesCreated++
+						}
 					}
 				}
 			}
@@ -254,23 +253,9 @@ func releaseArgIdentifier(call parser.Node, callName string) string {
 func isErrorReturn(ret parser.Node) bool {
 	var name string
 	for _, child := range ret.NamedChildren() {
-		if child.Kind() == "identifier" {
-			name = child.Text()
+		if id := rhsIdentifier(child); id != "" {
+			name = id
 			break
-		}
-		// `return (fd);` wraps the identifier in one level of parentheses; a
-		// bare-identifier-only match would miss the error exit and misread it as
-		// an ownership transfer (suppressing a real leak downstream).
-		if child.Kind() == "parenthesized_expression" {
-			for _, inner := range child.NamedChildren() {
-				if inner.Kind() == "identifier" {
-					name = inner.Text()
-					break
-				}
-			}
-			if name != "" {
-				break
-			}
 		}
 	}
 	if name == "" {
@@ -297,17 +282,49 @@ func isErrorReturn(ret parser.Node) bool {
 }
 
 // errorCheckedVarIs reports whether a condition tests name for failure
-// (`fd < 0`, `fd == NULL`, `fd == -1`, `fd <= 0`).
+// (`fd < 0`, `fd == NULL`, `fd == -1`, `fd <= 0`). It compares the AST operand
+// exactly, so `if (nfd < 0) return fd` does NOT match name "fd" (the previous
+// strings.Contains("fd < 0") matched the "nfd < 0" substring and misread the
+// return as an error exit, swallowing the transfer) — ML-10.
 func errorCheckedVarIs(cond parser.Node, name string) bool {
-	ct := strings.TrimSpace(cond.Text())
-	ct = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(ct, "("), ")"))
-	for _, pat := range []string{
-		name + " < 0", name + "<0", name + " <= 0", name + "<=0",
-		name + " == NULL", name + " == -1", name + "==-1",
-	} {
-		if strings.Contains(ct, pat) {
-			return true
+	inner := cond
+	for inner.Kind() == "parenthesized_expression" || inner.Kind() == "cast_expression" {
+		kids := inner.NamedChildren()
+		if len(kids) == 0 {
+			return false
+		}
+		inner = kids[0]
+	}
+	if inner.Kind() != "binary_expression" {
+		return false
+	}
+	op := parser.BinaryOperator(inner)
+	kids := inner.NamedChildren()
+	if len(kids) < 2 {
+		return false
+	}
+	nameIdx := -1
+	for i, k := range kids {
+		if k.Kind() == "identifier" && k.Text() == name {
+			nameIdx = i
+			break
 		}
 	}
+	if nameIdx < 0 {
+		return false
+	}
+	other := kids[1-nameIdx]
+	switch op {
+	case "==":
+		return isFailureConstant(other)
+	case "<", "<=":
+		// `name < 0` / `name <= 0` require name on the LEFT side.
+		return nameIdx == 0 && strings.TrimSpace(other.Text()) == "0"
+	}
 	return false
+}
+
+func isFailureConstant(n parser.Node) bool {
+	t := strings.TrimSpace(n.Text())
+	return t == "0" || t == "-1" || parser.IsNullOperand(n)
 }
