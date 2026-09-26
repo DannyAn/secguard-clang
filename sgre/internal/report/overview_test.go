@@ -159,6 +159,11 @@ func TestScanOverview_SummaryFieldsAreSelfConsistent(t *testing.T) {
 	if _, ok := fields["suspected_total"]; ok {
 		t.Error("summary must not carry a suspected_total key (binary verdict)")
 	}
+	if dismissed, ok := fields["dismissed_total"]; !ok {
+		t.Error("summary must carry dismissed_total so the console can quote the excluded count without re-deriving it")
+	} else if dismissed != ov.AIDismissed {
+		t.Errorf("dismissed_total = %v, want %d", dismissed, ov.AIDismissed)
+	}
 	// The machine-readable aggregate is the console's source of truth for the
 	// headline; it must be present so the orchestrator never re-derives it.
 	if fields["headline"] == "" {

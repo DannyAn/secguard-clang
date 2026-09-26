@@ -279,6 +279,7 @@ func (o ScanOverview) SummaryFields() map[string]interface{} {
 		"auto_confirmed":          o.AutoConfirmed,
 		"ai_confirmed":            o.AIConfirmed,
 		"confirmed_total":         o.ConfirmedTotal(),
+		"dismissed_total":         o.DismissedTotal(),
 		"actionable_total":        o.ActionableTotal(),
 		"unclassified_candidates": o.Unclassified,
 		"types_scanned":           o.TypesScanned,

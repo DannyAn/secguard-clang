@@ -1090,6 +1090,13 @@ func buildScanOverview(ctx context.Context, store db.Store, scanID string, stats
 			ov.TypesWithFindings++
 		}
 	}
+	// Dismissed candidates are never persisted, so the count cannot be read
+	// back from findings. It is the residue of the AI classification pass:
+	// every converged candidate is either AI-confirmed or dismissed.
+	ov.AIDismissed = ov.Candidates - ov.AIConfirmed
+	if ov.AIDismissed < 0 {
+		ov.AIDismissed = 0
+	}
 	ov.Unclassified = unclassifiedCandidates(audits)
 
 	if run, err := store.GetScanRun(ctx, scanID); err == nil && run != nil {

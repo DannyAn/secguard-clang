@@ -394,13 +394,18 @@ as `result.sarif`.)
     For each chunk: write a FRESH `<scan_dir>/../../.sgre/.tmp/<type>-partN.json`
     with the Write tool (N increasing; if a Write returns "must read before
     overwriting", do NOT stop to inspect the directory — just use the next fresh
-    filename), then immediately
-    `secguard report --write-json <scan_dir>/../../.sgre/.tmp/<type>-partN.json --scan-id <scan_id> --db <scan_dir>/../../.sgre/sgre.db`
-    before starting the next chunk. The write is idempotent, so partial progress is safe.
+    filename), then persist it immediately before starting the next chunk:
+    - If the `secguard_report` MCP tool is in your toolset (OpenCode / OpenCode-NGA),
+      call it with the `findings` array and `finalize: false` (do NOT use Bash, and
+      do NOT call `--complete-type` — the orchestrator marks types complete in
+      step 5). The write is idempotent, so partial progress is safe.
+    - Otherwise (Claude Code / Claude CAC shell-only host), run
+      `secguard report --write-json <scan_dir>/../../.sgre/.tmp/<type>-partN.json --scan-id <scan_id> --db <scan_dir>/../../.sgre/sgre.db`
+      with Bash, then after that type's final chunk run
+      `secguard report --complete-type <type> --scan-id <scan_id> --db <db_path>`
+      to mark the type's AI stage done (sets ai_stage_status='done').
     Report back, per type: confirmed count + the written finding ids. Dismissed
-    count is not persisted (not counted, not reported). After reporting, call
-    `secguard report --complete-type <type> --scan-id <scan_id> --db <db_path>`
-    to mark the type's AI stage done (sets ai_stage_status='done').
+    count is not persisted (not counted, not reported).
    ```
    For many types, batch them — but NEVER exceed `MAX_TYPES_PER_BATCH` (4) types
    per subagent, and validate `batch_type_count × 12 < 54` before dispatching. A
@@ -454,6 +459,13 @@ as `result.sarif`.)
       cites the file:line-range or Evidence file it read.
     If the transcript/`scan.log` is unavailable, log warning and skip (do not block finalize).
 
+    After you have verified the subagent writes against the DB and before the
+    final audit, run `secguard report --complete-type <type> --scan-id <scan_id>
+    --db <db_path>` for every dispatched type whose candidates were classified.
+    This is the ORCHESTRATOR's step (OpenCode / OpenCode-NGA subagents have no
+    Bash and cannot do it themselves); skipping it leaves the type's
+    `ai_stage_status` as `pending` even though its findings landed.
+
     After ALL subagents (or your sequential loop) are done, run `secguard report --audit --scan-id <scan_id> --output-dir <output_dir> --ai-duration-ms <ms>`
    ONCE to regenerate `report.md` (verdict-stage, confirmed only) + `result.sarif`
    + `findings/`. `<ms>` is the MEASURED AI-classification wall-clock (from
@@ -479,7 +491,7 @@ as `result.sarif`.)
    `summary` 为准**；自行推算出的数字一旦与 `report.md` 不一致，就是错的。
 
 6. **Report**: emit the Markdown report (报告头 / 摘要 / 总览表 / 问题表 /
-   观察项表 / 逐条详情) per the Output Format, aggregating the
+   观察项表) per the Output Format, aggregating the
    subagents' returned counts. Reference `report.md`, `result.sarif`, and
    `findings/` only after step 5 verified them.
 
@@ -531,8 +543,7 @@ Report the diagnostic conclusion in Chinese, Markdown tables only:
 3. 总览表: `| Skill | 类别 | 确认 | 已排除 |`，末行加 `| **合计** | | **<X>** | **<D>** |`（数字须与第 2 段摘要完全一致）
 4. 问题表: `| Skill | 文件:行号 | 函数 | 严重度 | 结论 | 说明 |` (confirmed only)
 5. 观察项表 (if some types were not persisted): `| Skill | 说明 |`
-6. 逐条详情: Reasoning / Exception Check / Fix Strategy per confirmed
-7. 缺失类型章节 (only when types were not successfully processed — F1): a table
+6. 缺失类型章节 (only when types were not successfully processed — F1): a table
    `| 类型 | 候选数 | 失败原因 |` listing every missing-type, with 失败原因 from
    the enum below. This section is MANDATORY when any type was not classified —
    the user must know the scan is incomplete.
