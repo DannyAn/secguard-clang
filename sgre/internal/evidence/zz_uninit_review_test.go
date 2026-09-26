@@ -160,3 +160,64 @@ int g(void) {
 		t.Errorf("g (p[0]=1 then read p[0]) must NOT be flagged heap_uninit, got %v", got)
 	}
 }
+
+// UN-04: two same-named malloc'd/struct variables in nested scopes must not
+// collide. The outer block's whole-init must not hide the inner block's
+// genuinely-uninitialized read.
+func TestUninitReview_Shadowing(t *testing.T) {
+	src := `#include <stdlib.h>
+#include <string.h>
+typedef struct S { int len; } S;
+int f(int c) {
+    S *p = malloc(sizeof(S));
+    memset(p, 0, sizeof(S));
+    if (c) {
+        S *p = malloc(sizeof(S));
+        return p->len;
+    }
+    return p->len;
+}
+int g(int c) {
+    S s;
+    s.len = 1;
+    if (c) {
+        S s;
+        return s.len;
+    }
+    return s.len;
+}
+`
+	got := uninitHeapOrigins(t, src)
+	if got["f|heap_uninit"] == 0 {
+		t.Errorf("f: inner shadowed p (uninit) must be flagged heap_uninit, got %v", got)
+	}
+	if got["g|struct_partial_uninit"] == 0 {
+		t.Errorf("g: inner shadowed s (uninit) must be flagged struct_partial_uninit, got %v", got)
+	}
+}
+
+// UN-08: `*p->ptr = 5` writes THROUGH the pointer field, not to the field or the
+// block, so it must not whole-initialize p; `p->len` stays uninitialized.
+func TestUninitReview_PointerWriteThroughField(t *testing.T) {
+	src := `#include <stdlib.h>
+typedef struct S { int *ptr; int len; } S;
+int f(void) {
+    S *p = malloc(sizeof(S));
+    p->ptr = malloc(sizeof(int));
+    *p->ptr = 5;
+    return p->len;
+}
+int g(void) {
+    S *p = malloc(sizeof(S));
+    *p = (S){0};
+    return p->len;
+}
+`
+	got := uninitHeapOrigins(t, src)
+	if got["f|heap_uninit"] == 0 {
+		t.Errorf("f (*p->ptr = 5 writes through the field, p->len still uninit), got %v", got)
+	}
+	if got["g|heap_uninit"] != 0 {
+		t.Errorf("g (*p = (S){0} whole-initializes the block), got %v", got)
+	}
+}

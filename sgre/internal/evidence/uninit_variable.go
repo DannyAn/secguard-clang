@@ -1165,7 +1165,12 @@ func isInIfRange(ifs []parser.Node, f *db.Function, line int) bool {
 }
 
 func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Function, file *db.File, inits, assigns, calls, unarys, ptrs, fields, subscripts []parser.Node, result *DetectResult) {
-	mallocVars := make(map[string]int) // varName -> line of the malloc assignment
+	// Scope-aware tracking (UN-04): mallocVars and every per-variable fact are
+	// keyed by varKey(name@mallocLine) so two `p` in nested blocks no longer
+	// collide — the previous bare-name maps let one scope's whole-init hide the
+	// other scope's genuinely-uninitialized block.
+	mallocVars := make(map[string]int) // varKey -> line of the malloc assignment
+	mallocDeclsByName := make(map[string][]varDecl)
 
 	checkInit := func(node parser.Node) {
 		children := node.NamedChildren()
@@ -1194,7 +1199,9 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 			// heap-uninit candidate set (UN-11). malloc/realloc leave the memory
 			// uninitialized and are tracked.
 			if apikb.IsAllocator(callName) && !isZeroInitAllocator(callName) {
-				mallocVars[varName] = node.StartLine()
+				key := varKey(varName, node.StartLine())
+				mallocVars[key] = node.StartLine()
+				mallocDeclsByName[varName] = append(mallocDeclsByName[varName], varDecl{name: varName, declLine: node.StartLine(), scopeEnd: enclosingScopeEnd(node)})
 			}
 		}
 	}
@@ -1212,6 +1219,11 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		checkInit(assign)
 	}
 
+	// resolve maps a bare name at a line to the innermost malloc'd varKey in scope.
+	resolve := func(name string, line int) string {
+		return resolveVarKey(mallocDeclsByName, name, line)
+	}
+
 	// A whole-var reassignment after the malloc (p = &x, p = other) redirects p
 	// away from the allocated memory, so p is no longer an "uninitialized heap
 	// block". A re-malloc (p = malloc(...) again) keeps it allocated.
@@ -1227,8 +1239,8 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		if lhs.Kind() != "identifier" {
 			continue
 		}
-		name := lhs.Text()
-		mallocLine, isMalloc := mallocVars[name]
+		key := resolve(lhs.Text(), assign.StartLine())
+		mallocLine, isMalloc := mallocVars[key]
 		if !isMalloc || assign.StartLine() <= mallocLine {
 			continue
 		}
@@ -1243,11 +1255,11 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		}
 		if rhs.Kind() == "call_expression" {
 			if n := extractCallName(rhs); apikb.IsAllocator(n) {
-				mallocVars[name] = assign.StartLine()
+				mallocVars[key] = assign.StartLine()
 				continue
 			}
 		}
-		delete(mallocVars, name)
+		delete(mallocVars, key)
 	}
 
 	// Field-sensitive initialization: the previous all-or-nothing
@@ -1256,14 +1268,23 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 	// (`p->len`). Track per-member writes and whole-block initialization
 	// separately so a read is reported only when THAT member (or the whole block)
 	// has no write on any path.
-	wholeInit := make(map[string]bool)         // var -> whole block initialized
-	initializedFields := make(map[string]bool) // full field path -> written
-	writePaths := make(map[string]bool)        // field write-target paths (skip in read loop)
-	heapFieldWritten := make(map[string]bool)  // var -> has any member write
+	wholeInit := make(map[string]bool)         // varKey -> whole block initialized
+	initializedFields := make(map[string]bool) // scoped field path -> written
+	writePaths := make(map[string]bool)        // scoped field write-target paths
+	heapFieldWritten := make(map[string]bool)  // varKey -> has any member write
 
 	markField := func(base, path string) {
 		initializedFields[path] = true
 		heapFieldWritten[base] = true
+	}
+
+	// scopedPath replaces the bare base in a full access text with the scoped key
+	// so `p->f` on the `p` malloc'd at line L becomes `p@L->f`.
+	scopedPath := func(key, bareBase, full string) string {
+		if !strings.HasPrefix(full, bareBase) {
+			return full
+		}
+		return key + full[len(bareBase):]
 	}
 
 	// A write inside a runtime branch (if/else body, loop body) is NOT a definite
@@ -1288,27 +1309,33 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		}
 		switch lhs.Kind() {
 		case "field_expression", "subscript_expression":
-			name := fieldBaseName(lhs)
-			if name == "" {
+			base := fieldBaseName(lhs)
+			if base == "" {
 				continue
 			}
-			if _, ok := mallocVars[name]; !ok {
+			key := resolve(base, assign.StartLine())
+			if key == "" {
+				continue
+			}
+			if _, ok := mallocVars[key]; !ok {
 				continue
 			}
 			// Key by the FULL access text, preserving a subscript index: writing
 			// `p[0]` initializes element 0 only, so a later read of `p[1]` (a
-			// different element) must stay reported (UN-15). The previous
-			// fieldPath normalization collapsed `p[0]` to the base `p`, which let
-			// one element write suppress every other element read.
-			markField(name, lhs.Text())
+			// different element) must stay reported (UN-15).
+			markField(key, scopedPath(key, base, lhs.Text()))
 			for _, p := range fieldWritePaths(lhs) {
-				writePaths[p] = true
+				writePaths[scopedPath(key, base, p)] = true
 			}
 		case "pointer_expression":
 			// `*p = other` writes the whole pointed-to object.
 			name := extractVarName(lhs)
-			if _, ok := mallocVars[name]; ok {
-				wholeInit[name] = true
+			if name != "" {
+				if key := resolve(name, assign.StartLine()); key != "" {
+					if _, ok := mallocVars[key]; ok {
+						wholeInit[key] = true
+					}
+				}
 			}
 		}
 	}
@@ -1336,15 +1363,19 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 				// object, so the block is fully initialized. The previous text
 				// match only recognized `sizeof(*p)` and missed the type-name form
 				// (UN-14).
-				if _, ok := mallocVars[v]; ok && len(args) >= 3 && sizeIsWholeObject(args[2]) {
-					wholeInit[v] = true
+				if key := resolve(v, call.StartLine()); key != "" {
+					if _, ok := mallocVars[key]; ok && len(args) >= 3 && sizeIsWholeObject(args[2]) {
+						wholeInit[key] = true
+					}
 				}
 			} else if args[0].Kind() == "pointer_expression" {
 				target := args[0].NamedChildren()
 				if len(target) > 0 && (target[0].Kind() == "field_expression" || target[0].Kind() == "subscript_expression") {
 					if base := fieldBaseName(target[0]); base != "" {
-						if _, ok := mallocVars[base]; ok {
-							markField(base, fieldPath(target[0]))
+						if key := resolve(base, call.StartLine()); key != "" {
+							if _, ok := mallocVars[key]; ok {
+								markField(key, scopedPath(key, base, fieldPath(target[0])))
+							}
 						}
 					}
 				}
@@ -1352,8 +1383,10 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		default:
 			if isDestWriter(name) && (args[0].Kind() == "field_expression" || args[0].Kind() == "subscript_expression") {
 				if base := fieldBaseName(args[0]); base != "" {
-					if _, ok := mallocVars[base]; ok {
-						markField(base, fieldPath(args[0]))
+					if key := resolve(base, call.StartLine()); key != "" {
+						if _, ok := mallocVars[key]; ok {
+							markField(key, scopedPath(key, base, fieldPath(args[0])))
+						}
 					}
 				}
 			}
@@ -1371,9 +1404,13 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		if !strings.HasPrefix(text, "*") {
 			continue
 		}
-		varName := strings.TrimSpace(text[1:])
-		if isHeapVar(mallocVars, varName) && !wholeInit[varName] && !heapFieldWritten[varName] {
-			d.insertValueUseEvent(ctx, f, file, unary.StartLine(), mallocVars[varName], varName, "heap_uninit", result)
+		name := strings.TrimSpace(text[1:])
+		key := resolve(name, unary.StartLine())
+		if key == "" {
+			continue
+		}
+		if isHeapVar(mallocVars, key) && !wholeInit[key] && !heapFieldWritten[key] {
+			d.insertValueUseEvent(ctx, f, file, unary.StartLine(), mallocVars[key], name, "heap_uninit", result)
 		}
 	}
 
@@ -1388,9 +1425,13 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		if len(children) == 0 {
 			continue
 		}
-		varName := children[0].Text()
-		if isHeapVar(mallocVars, varName) && !wholeInit[varName] && !heapFieldWritten[varName] {
-			d.insertValueUseEvent(ctx, f, file, ptr.StartLine(), mallocVars[varName], varName, "heap_uninit", result)
+		name := children[0].Text()
+		key := resolve(name, ptr.StartLine())
+		if key == "" {
+			continue
+		}
+		if isHeapVar(mallocVars, key) && !wholeInit[key] && !heapFieldWritten[key] {
+			d.insertValueUseEvent(ctx, f, file, ptr.StartLine(), mallocVars[key], name, "heap_uninit", result)
 		}
 	}
 
@@ -1405,16 +1446,20 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		if len(children) == 0 {
 			continue
 		}
-		varName := fieldBaseName(field)
-		if !isHeapVar(mallocVars, varName) || wholeInit[varName] {
+		base := fieldBaseName(field)
+		key := resolve(base, field.StartLine())
+		if key == "" {
 			continue
 		}
-		path := fieldPath(field)
+		if !isHeapVar(mallocVars, key) || wholeInit[key] {
+			continue
+		}
+		path := scopedPath(key, base, fieldPath(field))
 		if writePaths[path] {
 			continue
 		}
 		if !initializedFields[path] {
-			d.insertValueUseEventAt(ctx, f, file, field.StartLine(), mallocVars[varName], varName, fieldPath(field), "heap_uninit", result)
+			d.insertValueUseEventAt(ctx, f, file, field.StartLine(), mallocVars[key], base, fieldPath(field), "heap_uninit", result)
 		}
 	}
 
@@ -1432,22 +1477,29 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		if len(children) == 0 {
 			continue
 		}
-		varName := fieldBaseName(sub)
-		if !isHeapVar(mallocVars, varName) || wholeInit[varName] {
+		base := fieldBaseName(sub)
+		key := resolve(base, sub.StartLine())
+		if key == "" {
 			continue
 		}
-		path := sub.Text()
+		if !isHeapVar(mallocVars, key) || wholeInit[key] {
+			continue
+		}
+		path := scopedPath(key, base, sub.Text())
 		if writePaths[path] {
 			continue
 		}
 		if !initializedFields[path] {
-			d.insertValueUseEventAt(ctx, f, file, sub.StartLine(), mallocVars[varName], varName, sub.Text(), "heap_uninit", result)
+			d.insertValueUseEventAt(ctx, f, file, sub.StartLine(), mallocVars[key], base, sub.Text(), "heap_uninit", result)
 		}
 	}
 }
 
 func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, f *db.Function, file *db.File, bound map[string]bool, decls, assigns, calls, ifs, fields []parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, result *DetectResult) {
-	structVars := make(map[string]int)
+	// Scope-aware tracking (UN-04): structVars and every per-variable fact are
+	// keyed by varKey(name@declLine) so two `s` in nested blocks no longer collide.
+	structVars := make(map[string]int) // varKey -> decl line
+	structDeclsByName := make(map[string][]varDecl)
 	initializedFields := make(map[string]bool)
 	// isValue is the same `(A) & x` disambiguation the scalar path uses (see
 	// detectStackUninit): without it a genuine bit-and argument would be read as
@@ -1480,9 +1532,21 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 		for _, child := range decl.NamedChildren() {
 
 			if child.Kind() == "identifier" && !parser.IsCTypeKeyword(child.Text()) {
-				structVars[child.Text()] = decl.StartLine()
+				key := varKey(child.Text(), decl.StartLine())
+				structVars[key] = decl.StartLine()
+				structDeclsByName[child.Text()] = append(structDeclsByName[child.Text()], varDecl{name: child.Text(), declLine: decl.StartLine(), scopeEnd: enclosingScopeEnd(decl)})
 			}
 		}
+	}
+
+	resolve := func(name string, line int) string {
+		return resolveVarKey(structDeclsByName, name, line)
+	}
+	scopedPath := func(key, bareBase, full string) string {
+		if !strings.HasPrefix(full, bareBase) {
+			return full
+		}
+		return key + full[len(bareBase):]
 	}
 
 	// A struct assigned as a whole (`s = other`) is fully initialized, so none
@@ -1507,8 +1571,10 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 		}
 		lhs := children[0]
 		if lhs.Kind() == "identifier" {
-			if _, isStruct := structVars[lhs.Text()]; isStruct {
-				wholeAssigned[lhs.Text()] = true
+			if key := resolve(lhs.Text(), assign.StartLine()); key != "" {
+				if _, isStruct := structVars[key]; isStruct {
+					wholeAssigned[key] = true
+				}
 			}
 			continue
 		}
@@ -1517,9 +1583,17 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 		// same key — the previous version keyed by the full assignment text,
 		// which never matched the field-read text.
 		if lhs.Kind() == "field_expression" || lhs.Kind() == "subscript_expression" {
-			initializedFields[fieldPath(lhs)] = true
+			base := fieldBaseName(lhs)
+			key := resolve(base, assign.StartLine())
+			if key == "" {
+				continue
+			}
+			if _, isStruct := structVars[key]; !isStruct {
+				continue
+			}
+			initializedFields[scopedPath(key, base, fieldPath(lhs))] = true
 			for _, p := range fieldWritePaths(lhs) {
-				writePaths[p] = true
+				writePaths[scopedPath(key, base, p)] = true
 			}
 		}
 	}
@@ -1544,7 +1618,11 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 					continue
 				}
 				if target.Kind() == "field_expression" || target.Kind() == "subscript_expression" {
-					initializedFields[fieldPath(target)] = true
+					if base := fieldBaseName(target); base != "" {
+						if key := resolve(base, call.StartLine()); key != "" {
+							initializedFields[scopedPath(key, base, fieldPath(target))] = true
+						}
+					}
 				}
 			}
 		}
@@ -1568,7 +1646,11 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 		}
 		if args[0].Kind() == "field_expression" || args[0].Kind() == "subscript_expression" {
 			if uncond(call) {
-				initializedFields[fieldPath(args[0])] = true
+				if base := fieldBaseName(args[0]); base != "" {
+					if key := resolve(base, call.StartLine()); key != "" {
+						initializedFields[scopedPath(key, base, fieldPath(args[0]))] = true
+					}
+				}
 			}
 		}
 	}
@@ -1612,28 +1694,32 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 		if len(children) == 0 {
 			continue
 		}
-		varName := fieldBaseName(field)
-		if _, isStruct := structVars[varName]; !isStruct {
+		base := fieldBaseName(field)
+		key := resolve(base, field.StartLine())
+		if key == "" {
 			continue
 		}
-		if initializedVars[varName] {
+		if _, isStruct := structVars[key]; !isStruct {
 			continue
 		}
-		if wholeAssigned[varName] {
+		if initializedVars[base] {
+			continue
+		}
+		if wholeAssigned[key] {
 			continue
 		}
 		// A path that is a write target (or its base) is not a read.
-		if writePaths[fieldPath(field)] {
+		if writePaths[scopedPath(key, base, fieldPath(field))] {
 			continue
 		}
 		// A write established only past a caller-side guard initializes the
 		// fields read on the success continuation; a read on or before the
 		// guard (the error branch) stays reported, matching the scalar path.
-		if from, ok := initializedFrom[varName]; ok && field.StartLine() > from {
+		if from, ok := initializedFrom[base]; ok && field.StartLine() > from {
 			continue
 		}
-		if !initializedFields[fieldPath(field)] {
-			d.insertValueUseEventAt(ctx, f, file, field.StartLine(), structVars[varName], varName, fieldPath(field), "struct_partial_uninit", result)
+		if !initializedFields[scopedPath(key, base, fieldPath(field))] {
+			d.insertValueUseEventAt(ctx, f, file, field.StartLine(), structVars[key], base, fieldPath(field), "struct_partial_uninit", result)
 		}
 	}
 }
