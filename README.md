@@ -6,7 +6,7 @@
 
 ### Security analysis for C, built natively for AI agents
 
-**A semantic-graph security engine that turns thousands of raw detector events into a small set of high-signal evidence packages an AI agent can actually reason over.**
+**Find memory, injection, and concurrency bugs in C code — and get a short, evidence-backed list of real issues instead of thousands of noisy scanner alerts.**
 
 `v0.8.0` · `Go 1.25` · `Tree-sitter` · `SQLite` · `OpenCode / OpenCode-NGA / Claude Code / Claude CAC / DeepSeek Harness`
 
@@ -18,7 +18,7 @@
 
 SecGuard-Clang is a C security analysis platform split across two layers that each do what they are good at:
 
-- **A deterministic engine** (`sgre`) indexes the codebase, builds a semantic graph (call graph, dataflow, control flow, alias and taint edges), runs self-registering detectors, and converges raw evidence into candidate leads. Where the graph can *prove* a defect, it auto-confirms it without AI involvement.
+- **A deterministic engine** (`sgre`) indexes the codebase, builds a semantic graph (call graph, dataflow, control flow, alias and taint edges), runs self-registering detectors, and converges raw evidence into a short list of suspicious locations — internally called *candidates*. Where the graph can *prove* a defect, it auto-confirms it without AI involvement.
 - **An AI agent layer** reviews only the remaining leads — packaged with the exact source statement, the pipeline's precomputed hint, and a small code-context window — and returns a single binary verdict per candidate: `confirmed` (persisted with reasoning and a fix) or `dismissed` (excluded, never persisted).
 
 The value is the boundary between the two layers. Traditional scanners emit every raw alert, which drowns an LLM in false positives and wastes its context window. SecGuard instead hands the model compact, converged evidence and lets the model spend its reasoning budget on the cases the deterministic pipeline could not settle.
