@@ -1284,7 +1284,12 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 			if _, ok := mallocVars[name]; !ok {
 				continue
 			}
-			markField(name, fieldPath(lhs))
+			// Key by the FULL access text, preserving a subscript index: writing
+			// `p[0]` initializes element 0 only, so a later read of `p[1]` (a
+			// different element) must stay reported (UN-15). The previous
+			// fieldPath normalization collapsed `p[0]` to the base `p`, which let
+			// one element write suppress every other element read.
+			markField(name, lhs.Text())
 			for _, p := range fieldWritePaths(lhs) {
 				writePaths[p] = true
 			}
@@ -1417,7 +1422,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		if !isHeapVar(mallocVars, varName) || wholeInit[varName] {
 			continue
 		}
-		path := fieldPath(sub)
+		path := sub.Text()
 		if writePaths[path] {
 			continue
 		}

@@ -134,3 +134,29 @@ int g(void) {
 		t.Errorf("g (uninit struct then s.inner.len) should be flagged struct_partial_uninit, got %v", got)
 	}
 }
+
+// UN-15: writing one element (`p[0] = 1`) initializes element 0 only; a read of a
+// DIFFERENT element (`p[1]`) is still an uninitialized read and must be flagged.
+// The previous fieldPath normalization collapsed `p[0]` to the base `p`, so one
+// element write suppressed every other element read.
+func TestUninitReview_ArrayElementPartialInit(t *testing.T) {
+	src := `#include <stdlib.h>
+int f(void) {
+    int *p = malloc(4 * sizeof(int));
+    p[0] = 1;
+    return p[1];
+}
+int g(void) {
+    int *p = malloc(4 * sizeof(int));
+    p[0] = 1;
+    return p[0];
+}
+`
+	got := uninitHeapOrigins(t, src)
+	if got["f|heap_uninit"] == 0 {
+		t.Errorf("f (p[0]=1 then read p[1]) should be flagged heap_uninit, got %v", got)
+	}
+	if got["g|heap_uninit"] != 0 {
+		t.Errorf("g (p[0]=1 then read p[0]) must NOT be flagged heap_uninit, got %v", got)
+	}
+}
