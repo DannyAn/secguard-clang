@@ -76,6 +76,16 @@ Schema is in `internal/db/schema.go` (`SchemaDDL`). CRUD is split per entity in 
 - The AI agent (via `security-auditor`) receives **converged evidence packages only**. It must not query `security_events` to recover filtered-out raw candidates — that defeats the pipeline. (Enforced by the agent prompt in `extension/shared/agent-body.md`.)
 - Layer stability: Program Facts are stable; Findings vary per scan.
 
+### AI 研判边界 (AI judgment boundary)
+
+The deterministic-pipeline-vs-AI split is the three `suspicion_level` tiers:
+**`confirmed` = sgre proved the defect on every path (CFG must-dataflow / interval /
+literal / type-inherent); `suspected`/`possible` = heuristic, handed to the AI.**
+The canonical rule, the four proof classes, and the machine guard are in
+[`AI_JUDGMENT_BOUNDARY.md`](AI_JUDGMENT_BOUNDARY.md). Adding any new auto-`confirmed`
+category/type requires registering its proof class in
+`sgre/internal/planner/zz_ai_judgment_boundary_test.go` (the build fails otherwise).
+
 ## CLI
 
 `cmd/secguard/main.go` → `internal/cli/root.go` dispatches:
