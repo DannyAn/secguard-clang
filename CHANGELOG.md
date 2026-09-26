@@ -2,6 +2,28 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.8.0] - 2026-09-26
+
+### 误报 / 漏报修复
+
+本轮集中修复 uninit、memory-leak、use-after-free / double-free / resource-leak、buffer-overflow / out-of-bounds 五条链路的确定性误报/漏报与 confirmed 精准性问题。
+
+#### uninit（CWE-457）
+
+- heap subscript 读、嵌套字段（p->inner->len）、calloc 零初始化、memset sizeof(type)、宏名启发式、数组元素局部初始化、shadowing 作用域、条件写、lazy-init 形态逐项修复；heap/struct 接入 planner 字段级收敛（field granularity）+ confirmed 通道。
+
+#### memory-leak（CWE-401）
+
+- 别名释放（free(q) 且 q=p）、cast 释放（free((void*)p)）、cast escape（g=(T*)p）、词边界 null-guard / error-return 判定、非 g_ 前缀全局 escape、隐式分配（strdup/asprintf/getline/realpath）、realloc 失败丢旧块、realloc-into-temp 消费、函数级 RAII 豁免粒度、cast 返回转移；新增 definite-leak 标记 + confirmed 通道。
+
+#### use-after-free / double-free / resource-leak
+
+- cast 释放实参解包、guard 词边界（positiveGuardOn）、address-of 解包（lock((T*)&m)）。
+
+#### buffer-overflow / out-of-bounds（CWE-120/CWE-125）
+
+- 常量索引 radix（hex/octal/suffix）、宏 loop bound、loop 索引偏移（arr[i-1]/arr[i+1]）、无关 bounds-check 误抑制、format 字面溢出、read/recv/fread 惯用法、subscript 读写 AST 判定、memcpy 源 sizeof 值拷贝、字节/元素单位归一、calloc/realloc 容量、数组作用域 shadowing；confirmed 精准性修复 + 回归测试。
+
 ## [0.7.9] - 2026-09-24
 
 ### 误报修复
