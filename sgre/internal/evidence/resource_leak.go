@@ -285,10 +285,8 @@ func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function,
 			for _, child := range call.NamedChildren() {
 				if child.Kind() == "argument_list" {
 					for _, arg := range child.NamedChildren() {
-						argText := arg.Text()
-						if strings.HasPrefix(argText, "&") {
-							varName := strings.TrimPrefix(argText, "&")
-							acquires[varName] = append(acquires[varName], call.StartLine())
+						if target, ok := addressOfTarget(arg); ok && target.Kind() == "identifier" {
+							acquires[target.Text()] = append(acquires[target.Text()], call.StartLine())
 						}
 					}
 				}
@@ -399,17 +397,14 @@ func (d *ResourceLeakDetector) findReleases(ctx context.Context, f *db.Function,
 		for _, child := range call.NamedChildren() {
 			if child.Kind() == "argument_list" {
 				for _, arg := range child.NamedChildren() {
-					argText := arg.Text()
-					if strings.HasPrefix(argText, "&") {
-						releases[strings.TrimPrefix(argText, "&")] = append(releases[strings.TrimPrefix(argText, "&")], call.StartLine())
+					arg = unwrapCastParen(arg)
+					// `close(&fd)` / `fclose(&fp)` — an address-of handle.
+					if target, ok := arg.AddressTakenTarget(); ok && target.Kind() == "identifier" {
+						releases[target.Text()] = append(releases[target.Text()], call.StartLine())
 					}
-					if arg.Kind() == "identifier" {
-						releases[argText] = append(releases[argText], call.StartLine())
-					}
-					// `close(fds[0])` releases the pipe element, matching the
-					// subscript key findAcquires recorded for pipe/socketpair.
-					if arg.Kind() == "subscript_expression" {
-						releases[argText] = append(releases[argText], call.StartLine())
+					// `close(fd)` / `fclose(fp)` and `close(fds[0])`.
+					if arg.Kind() == "identifier" || arg.Kind() == "subscript_expression" {
+						releases[arg.Text()] = append(releases[arg.Text()], call.StartLine())
 					}
 				}
 			}
@@ -464,16 +459,31 @@ func isGuardedRelease(ifs []parser.Node, varName string, releaseLines []int) boo
 }
 
 // positiveGuardOn reports whether cond is a positive guard on varName:
-// `if (var)`, `if (var >= 0)`, `if (var > 0)`, or `if (var != NULL)`.
+// `if (var)`, `if (var >= 0)`, `if (var > 0)`, or `if (var != NULL)`. The
+// operand is compared exactly, so `if (nfd >= 0)` does NOT guard `fd` (the
+// previous strings.Contains matched the "fd >=" substring in "nfd >=").
 func positiveGuardOn(cond *parser.Node, varName string) bool {
-	// `if (f)`'s condition node is a parenthesized_expression, so its text is
-	// "(f)" / "(dir_fd >= 0)" — strip one level of parens before matching.
-	ct := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(cond.Text()), "("), ")"))
-	if ct == varName {
-		return true
+	inner := *cond
+	for inner.Kind() == "parenthesized_expression" || inner.Kind() == "cast_expression" {
+		kids := inner.NamedChildren()
+		if len(kids) == 0 {
+			return false
+		}
+		inner = kids[0]
 	}
-	for _, op := range []string{" >=", " >", " !="} {
-		if strings.Contains(ct, varName+op) {
+	if inner.Kind() == "identifier" {
+		return inner.Text() == varName
+	}
+	if inner.Kind() != "binary_expression" {
+		return false
+	}
+	switch parser.BinaryOperator(inner) {
+	case ">=", ">", "!=":
+	default:
+		return false
+	}
+	for _, k := range inner.NamedChildren() {
+		if k.Kind() == "identifier" && k.Text() == varName {
 			return true
 		}
 	}

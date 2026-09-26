@@ -223,8 +223,10 @@ func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.No
 		// freed state is immediately overwritten.
 		if s, ok := macros[callName]; ok && s.freesArg && !s.nullsArg {
 			args := getCallArgs(call)
-			if len(args) > 0 && args[0].Kind() == "identifier" {
-				events = append(events, dfFreeEvent{varName: args[0].Text(), line: callLine})
+			if len(args) > 0 {
+				if a0 := unwrapCastParen(args[0]); a0.Kind() == "identifier" {
+					events = append(events, dfFreeEvent{varName: a0.Text(), line: callLine})
+				}
 			}
 			continue
 		}
@@ -232,6 +234,7 @@ func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.No
 		if apikb.IsDeclaredDeallocator(callName) {
 			args := getCallArgs(call)
 			for _, arg := range args {
+				arg = unwrapCastParen(arg)
 				switch arg.Kind() {
 				case "identifier":
 					events = append(events, dfFreeEvent{varName: arg.Text(), line: callLine})
@@ -265,6 +268,7 @@ func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.No
 				if !s.ParamDirectFrees[argIdx] && len(s.ParamFieldFrees[argIdx]) == 0 {
 					continue
 				}
+				arg = unwrapCastParen(arg)
 				switch arg.Kind() {
 				case "identifier":
 					events = append(events, dfFreeEvent{varName: arg.Text(), line: callLine})
@@ -288,6 +292,7 @@ func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.No
 		args := getCallArgs(call)
 
 		for argIdx, arg := range args {
+			arg = unwrapCastParen(arg)
 			if arg.Kind() != "identifier" {
 				continue
 			}

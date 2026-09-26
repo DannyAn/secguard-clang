@@ -315,6 +315,20 @@ func argIdentifier(arg parser.Node) string {
 	return ""
 }
 
+// unwrapCastParen unwraps cast/parenthesized wrappers to the wrapped VALUE
+// (`(T *)p` → p, `((p->f))` → p->f). The value is the last named child of a
+// cast (its operand) and the single child of a parenthesized expression.
+func unwrapCastParen(node parser.Node) parser.Node {
+	for node.Kind() == "cast_expression" || node.Kind() == "parenthesized_expression" {
+		kids := node.NamedChildren()
+		if len(kids) == 0 {
+			return node
+		}
+		node = kids[len(kids)-1]
+	}
+	return node
+}
+
 func findReturnLinesFrom(returns []parser.Node, f *db.Function) []int {
 	var returnLines []int
 	for _, ret := range returns {

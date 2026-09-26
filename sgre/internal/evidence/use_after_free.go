@@ -118,8 +118,10 @@ func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.N
 		// null-deref, not a use-after-free.
 		if s, ok := macros[callName]; ok && s.freesArg && !s.nullsArg {
 			args := getCallArgs(call)
-			if len(args) > 0 && args[0].Kind() == "identifier" {
-				sites = append(sites, freeSite{varName: args[0].Text(), column: call.StartColumn(), line: callLine})
+			if len(args) > 0 {
+				if a0 := unwrapCastParen(args[0]); a0.Kind() == "identifier" {
+					sites = append(sites, freeSite{varName: a0.Text(), column: call.StartColumn(), line: callLine})
+				}
 			}
 			continue
 		}
@@ -139,6 +141,7 @@ func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.N
 			}
 			args := getCallArgs(call)
 			for _, arg := range args {
+				arg = unwrapCastParen(arg)
 				switch arg.Kind() {
 				case "identifier":
 					name := arg.Text()
@@ -178,6 +181,7 @@ func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.N
 		args := getCallArgs(call)
 
 		for argIdx, arg := range args {
+			arg = unwrapCastParen(arg)
 			if arg.Kind() != "identifier" {
 				continue
 			}
