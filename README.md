@@ -6,7 +6,7 @@
 
 ### AI-Augmented Security Analysis Platform for C
 
-**Solves the "candidate explosion" problem with a 5-level convergence pipeline — shrinking ~600 raw candidates into ~10 high-quality evidence packages (A1–A4), then a second-round review layer (A5) that promotes real vulnerabilities and dismisses false positives.**
+**AI-native security analysis for C: fewer, higher-confidence findings with evidence and fixes.**
 
 `v0.3.2` · `Go 1.25` · `Tree-sitter` · `SQLite` · `OpenCode / Claude Code / DeepSeek Harness`
 
