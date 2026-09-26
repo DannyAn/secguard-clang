@@ -175,8 +175,8 @@ type IndexSummary struct {
 
 // DismissedSummary is the persisted dismissed ledger, keyed by vulnerability
 // type. It records the convergence pipeline's drops as a COUNT plus a per-filter
-// reason breakdown — the actionable audit trail for "~600 raw candidates → ~10
-// findings". The full per-candidate drop list is intentionally NOT persisted: it
+// reason breakdown — the actionable audit trail for the raw-candidates-to-findings
+// reduction. The full per-candidate drop list is intentionally NOT persisted: it
 // was ~8MB of write-only detail (null-deref alone dropped ~28k candidates) that
 // neither the AI classifier nor any tool reads back; `secguard plan <type>`
 // still emits the full trail on demand.
