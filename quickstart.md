@@ -148,7 +148,7 @@ secguard report
 
 ```
 secguard scan ./project → 收敛证据包 → 加载匹配 skill → 逐条分类
-                       → confirmed / suspected / false-positive → 结果表格 + 修复建议
+                       → confirmed / dismissed（二元裁决）→ 结果表格 + 修复建议
 ```
 
 `security-auditor` 是 `mode: subagent`，不会通过自然语言自动触发，需用 `/secguard` 或
@@ -188,7 +188,7 @@ Tree-sitter 解析 → AST
   ↓
 Indexer → 程序语义图 (SQLite)
   ↓
-22 个检测器 → ~600 原始候选 (security_events)
+32 个检测器 → 原始候选 (security_events)
   ↓
 4 层收敛管线:
   L1: 可空源分析 (reaching-sources 数据流)
@@ -196,11 +196,11 @@ Indexer → 程序语义图 (SQLite)
   L3: 数据流验证 (CFG + guard)
   L4: 去重 + 风险排序
   ↓
-~10 高质量证据包
+少量高质量证据包
   ↓
 AI Agent (security-auditor / DSH preset)
   ↓
-分类: confirmed / suspected / false-positive
+分类: confirmed / dismissed（二元裁决）
   ↓
 SARIF + Markdown 报告
 ```
