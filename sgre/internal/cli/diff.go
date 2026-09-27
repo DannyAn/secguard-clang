@@ -108,7 +108,11 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 		return 1
 	}
 	lineSets := buildChangedLines(d.Files, projectRoot)
-	changedJSON, _ := json.Marshal(d.Files)
+	changedJSON, err := json.Marshal(d.Files)
+	if err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to serialize changed files: %v", err))
+		return 1
+	}
 
 	store, err := openStore(ctx, dbPath)
 	if err != nil {
@@ -137,11 +141,17 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 		logger.Warn("upsert review session failed", "error", err)
 	}
 
-	sup := loadSuppressions(ctx, store)
+	sup, err := loadSuppressions(ctx, store)
+	if err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to load suppressions: %v", err))
+		return 1
+	}
 	baselineFp, err := store.ListFingerprintsExcludingScanID(ctx, reviewID)
+	baselineError := ""
 	if err != nil {
 		logger.Warn("load baseline fingerprints failed", "error", err)
 		baselineFp = map[string]bool{}
+		baselineError = err.Error()
 	}
 
 	logger.Info("review started", "review_id", reviewID, "kind", kind, "base", base, "head", head, "changed_files", len(d.Files))
@@ -176,7 +186,10 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 			continue
 		}
 		result := outcome.Plans[i]
-		filterChainJSON, _ := json.Marshal(result.Summary.Filters)
+		filterChainJSON, err := json.Marshal(result.Summary.Filters)
+		if err != nil {
+			filterChainJSON = []byte(`"filter_chain_marshal_failed"`)
+		}
 		cwe := report.VulnToCWE(vulnType)
 
 		// Incremental scoping: keep only candidates whose sink line OR flow-source
@@ -217,7 +230,7 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 				filesWithCandidates[c.Target.File] = true
 			}
 		}
-		totalCandidates += len(needsReview)
+		totalCandidates += distinctFindingLocations(needsReview)
 		evidencePackages = append(evidencePackages, map[string]interface{}{
 			"vulnerability_type":       vulnType,
 			"cwe":                      cwe,
@@ -292,8 +305,10 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 		logCloser = nil
 	}
 
+	statusUpdateError := ""
 	if err := store.UpdateReviewSessionStatus(ctx, reviewID, "done"); err != nil {
 		logger.Warn("mark review session done", "error", err)
+		statusUpdateError = err.Error()
 	}
 
 	output := map[string]interface{}{
@@ -304,6 +319,8 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 		"changed_files":               len(d.Files),
 		"candidates_by_type":          candidatesByType,
 		"plan_errors":                 planErrors,
+		"baseline_error":              baselineError,
+		"review_session_status_error": statusUpdateError,
 		"total_candidates":            totalCandidates,
 		"auto_confirmed_count":        totalAutoConfirmed,
 		"suppressed_count":            totalSuppressed,

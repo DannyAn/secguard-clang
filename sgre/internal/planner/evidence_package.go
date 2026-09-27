@@ -57,6 +57,7 @@ type FilterStats struct {
 	Name        string `json:"name"`
 	InputCount  int    `json:"input_count"`
 	OutputCount int    `json:"output_count"`
+	Error       string `json:"error,omitempty"`
 }
 
 type PlanResult struct {

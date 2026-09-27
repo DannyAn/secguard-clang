@@ -91,6 +91,7 @@ func CollectConstantSymbols(root Node) *ConstantEnv {
 	// Enumerators carry an implicit running value when no `=` is present:
 	// `enum { A, B, C = 5, D }` → A=0, B=1, C=5, D=6.
 	running := int64(0)
+	runningValid := true
 	for _, en := range root.FindAll("enumerator") {
 		name := ""
 		for _, child := range en.NamedChildren() {
@@ -105,10 +106,14 @@ func CollectConstantSymbols(root Node) *ConstantEnv {
 		if idx := strings.Index(en.Text(), "="); idx >= 0 {
 			pv, ok := parseConstantInt(strings.TrimSpace(en.Text()[idx+1:]))
 			if !ok {
+				runningValid = false
 				continue // undeterminable explicit value: stop tracking the run
 			}
 			v = pv
 		} else {
+			if !runningValid {
+				continue
+			}
 			v = running
 		}
 		if v == 0 {
@@ -117,6 +122,7 @@ func CollectConstantSymbols(root Node) *ConstantEnv {
 			env.nonZero[name] = true
 		}
 		running = v + 1
+		runningValid = true
 	}
 
 	for _, decl := range root.FindAll("declaration") {

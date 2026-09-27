@@ -131,11 +131,23 @@ func SetExplicitPath(path string) {
 // A missing file is not an error: the caller falls back to built-in behavior.
 // Both default locations share the .codeagent naming, consistent with the
 // runtime data dir (.codeagent/secguard-clang/).
+// Load returns the effective configuration, preserving the historical
+// "missing/invalid config degrades to an empty config" behavior for callers
+// outside the CLI. CLI startup should use LoadE so an explicitly requested
+// config that exists but cannot be read or parsed is fatal rather than silently
+// disabling every configured detector setting.
 func Load() *Config {
+	cfg, _ := LoadE()
+	return cfg
+}
+
+// LoadE is the checked variant of Load. A missing optional config is still not
+// an error; a resolved path that cannot be read or parsed is.
+func LoadE() (*Config, error) {
 	cfg := &Config{}
 	path := resolvePath(explicitPath)
 	if path == "" {
-		return cfg
+		return cfg, nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -144,8 +156,7 @@ func Load() *Config {
 		// zero config evaporates the banned-function / trusted-macro / disable
 		// settings with no trace. Missing-file fallback is handled by resolvePath
 		// returning "" BEFORE we get here, so a read error here is unexpected.
-		fmt.Fprintf(os.Stderr, "secguard: ignoring unreadable config %s: %v\n", path, err)
-		return cfg
+		return cfg, fmt.Errorf("read config %s: %w", path, err)
 	}
 	// A malformed or mistyped config must not be silently ignored: the user would
 	// get a "seems to load" config whose trusted-macro allowlist silently
@@ -153,10 +164,9 @@ func Load() *Config {
 	// file is not an error), so surface parse failures on stderr and keep the
 	// zero config rather than a half-populated one.
 	if err := toml.Unmarshal(data, cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "secguard: ignoring invalid config %s: %v\n", path, err)
-		return &Config{}
+		return &Config{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
-	return cfg
+	return cfg, nil
 }
 
 // TrustedMacroNames returns the configured trusted-macro allowlist.

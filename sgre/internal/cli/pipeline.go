@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -144,8 +145,12 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 	bwg.Wait()
 	close(bErrCh)
+	var errs []error
 	for err := range bErrCh {
-		return nil, fmt.Errorf("graph build failed: %w", err)
+		errs = append(errs, err)
+	}
+	if len(errs) > 0 {
+		return nil, fmt.Errorf("graph build failed: %w", errors.Join(errs...))
 	}
 	timings.GraphMs = time.Since(graphStart).Milliseconds()
 	logger.Info("phase timing", "phase", "graph_builders_parallel", "elapsed_ms", timings.GraphMs)

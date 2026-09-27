@@ -239,6 +239,9 @@ func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.No
 
 		if apikb.IsDeclaredDeallocator(callName) {
 			args := getCallArgs(call)
+			if len(args) == 0 {
+				continue
+			}
 			// A declared deallocator frees its FIRST argument (free(p),
 			// freeaddrinfo(p), freeifaddrs(p)). Marking every argument would treat
 			// a multi-parameter project deallocator's flags/count as a freed

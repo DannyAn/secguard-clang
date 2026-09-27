@@ -39,6 +39,10 @@ func runScanCmd(ctx context.Context, args []string) int {
 	remaining = removeFlag(remaining, "exclude")
 	failOn := parseStringFlag(remaining, "fail-on")
 	remaining = removeFlag(remaining, "fail-on")
+	if failOn != "" && failOn != "confirmed" {
+		WriteErrorJSON(fmt.Sprintf("invalid --fail-on %q (supported values: confirmed)", failOn))
+		return 1
+	}
 	baselineScanID := parseStringFlag(remaining, "baseline")
 	remaining = removeFlag(remaining, "baseline")
 	timeoutSec := parseIntFlag(remaining, "timeout")
@@ -120,10 +124,18 @@ func runScanCmd(ctx context.Context, args []string) int {
 		}
 	}()
 
-	sup := loadSuppressions(ctx, store)
+	sup, err := loadSuppressions(ctx, store)
+	if err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to load suppressions: %v", err))
+		return 1
+	}
 	var baseline *baselineIndex
 	if baselineScanID != "" {
-		baseline = loadBaseline(ctx, store, baselineScanID)
+		baseline, err = loadBaseline(ctx, store, baselineScanID)
+		if err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to load baseline: %v", err))
+			return 1
+		}
 		logger.Info("baseline diff enabled", "baseline_scan_id", baselineScanID, "baseline_findings", baseline.count)
 	}
 	if sup.suppressedCount() > 0 {
@@ -180,7 +192,10 @@ func runScanCmd(ctx context.Context, args []string) int {
 		totalSeedCount += result.Summary.SeedCount
 		seedsByType[vulnType] = result.Summary.SeedCount
 
-		filterChainJSON, _ := json.Marshal(result.Summary.Filters)
+		filterChainJSON, err := json.Marshal(result.Summary.Filters)
+		if err != nil {
+			filterChainJSON = []byte(`"filter_chain_marshal_failed"`)
+		}
 
 		if len(result.Summary.Dropped) > 0 {
 			dismissedByVuln = append(dismissedByVuln, report.VulnTypeDismissed{
@@ -239,7 +254,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 				filesWithCandidates[c.Target.File] = true
 			}
 		}
-		totalCandidates += len(needsReview)
+		totalCandidates += distinctFindingLocations(needsReview)
 		evidencePackages = append(evidencePackages, map[string]interface{}{
 			"vulnerability_type":       vulnType,
 			"cwe":                      cwe,

@@ -62,7 +62,7 @@ func (b *LockOrderBuilder) Build(ctx context.Context) (*BuildResult, error) {
 					held = append(held, mutexName)
 				}
 				if unlockCalls[callName] {
-					newHeld := held[:0]
+					newHeld := make([]string, 0, len(held))
 					for _, h := range held {
 						if h != mutexName {
 							newHeld = append(newHeld, h)

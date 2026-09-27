@@ -522,6 +522,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 						if _, serr := report.SyncPerFinding(scanDir, vulnType, in.File, in.Line, report.PerFindingUpdate{
 							Status:    "dismissed",
 							Reasoning: in.Reasoning,
+							CWE:       in.RuleID,
 						}); serr != nil {
 							fmt.Fprintf(os.Stderr, "warning: annotate dismissed candidate %s:%d: %v\n", in.File, in.Line, serr)
 						}
@@ -612,7 +613,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 			"skipped_dismissed": skippedDismissed,
 			"written":           written,
 			"scan_id":           scanID,
-			"failed_count":      len(failedDetails),
+			"failed_count":      len(errs),
 		}
 		if len(failedDetails) > 0 {
 			out["failed_details"] = failedDetails
@@ -942,7 +943,11 @@ func runReportCmd(ctx context.Context, args []string) int {
 		// converged candidate with no persisted verdict is a silent false
 		// negative unless the JSON the orchestrator reads says so.
 
-		orphans := countFindingsWithoutScanID(ctx, store)
+		orphans, err := countFindingsWithoutScanID(ctx, store)
+		if err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to count findings without scan_id: %v", err))
+			return 1
+		}
 
 		if outputDir != "" {
 			auditPath := filepath.Join(outputDir, "audit-report.md")
@@ -1287,6 +1292,7 @@ func syncPerFindingAfterWrite(args []string, finding *db.Finding) perFindingOutc
 		Confidence:     finding.Confidence,
 		FunctionName:   finding.FunctionName,
 		Evidence:       finding.Evidence,
+		CWE:            finding.RuleID,
 	})
 	if err != nil {
 		return perFindingOutcome{Action: "error", Warning: fmt.Sprintf("per-finding markdown failed: %v", err)}
@@ -1301,10 +1307,10 @@ func syncPerFindingAfterWrite(args []string, finding *db.Finding) perFindingOutc
 
 // countFindingsWithoutScanID reports how many findings cannot be placed in any
 // scan's findings/ directory because they carry no scan_id.
-func countFindingsWithoutScanID(ctx context.Context, store db.Store) int {
+func countFindingsWithoutScanID(ctx context.Context, store db.Store) (int, error) {
 	all, err := store.ListFindings(ctx)
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	n := 0
 	for _, f := range all {
@@ -1312,7 +1318,7 @@ func countFindingsWithoutScanID(ctx context.Context, store db.Store) int {
 			n++
 		}
 	}
-	return n
+	return n, nil
 }
 
 // unclassifiedCandidates is retained for buildScanOverview's overview.Unclassified

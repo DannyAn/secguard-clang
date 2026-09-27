@@ -206,6 +206,9 @@ func isIdentChar(c byte) bool {
 // character), so a single-character parameter (`c`) is not matched inside a
 // longer identifier (`combine`).
 func identTokenIndexes(s, name string) []int {
+	if len(name) == 0 {
+		return nil
+	}
 	var idxs []int
 	for i := 0; i+len(name) <= len(s); i++ {
 		if s[i:i+len(name)] != name {

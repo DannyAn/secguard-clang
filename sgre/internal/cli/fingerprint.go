@@ -47,5 +47,8 @@ func readStatement(filePath string, line int) string {
 			break
 		}
 	}
+	if err := sc.Err(); err != nil {
+		return ""
+	}
 	return ""
 }

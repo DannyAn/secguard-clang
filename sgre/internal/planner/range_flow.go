@@ -231,9 +231,20 @@ func foldConstExpr(n parser.Node) (int64, bool) {
 	}
 	switch op {
 	case "*":
-		return l * r, true
+		if l == 0 || r == 0 {
+			return 0, true
+		}
+		p := l * r
+		if p/l != r || (l == -1 && r == -1<<63) {
+			return 0, false
+		}
+		return p, true
 	case "+":
-		return l + r, true
+		sum := l + r
+		if (l > 0 && r > 0 && sum < 0) || (l < 0 && r < 0 && sum >= 0) {
+			return 0, false
+		}
+		return sum, true
 	case "-":
 		return l - r, true
 	case "/":

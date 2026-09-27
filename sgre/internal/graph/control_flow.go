@@ -521,6 +521,8 @@ func (b *cfgBuilder) buildDo(stmt parser.Node, from int) int {
 	}
 	b.edge(cond, firstID) // condition true → loop back
 	b.edge(cond, join)    // condition false → exit
+	b.cfg.Nodes[cond].TrueSuccs = append(b.cfg.Nodes[cond].TrueSuccs, firstID)
+	b.cfg.Nodes[cond].FalseSuccs = append(b.cfg.Nodes[cond].FalseSuccs, join)
 	return join
 }
 
@@ -758,7 +760,6 @@ func (b *cfgBuilder) buildPreproc(stmt parser.Node, from int) int {
 		case "preproc_elif":
 			flush()
 			cur = collectPreprocBranch(child)
-			flush()
 		case "preproc_else":
 			flush()
 			sawElse = true

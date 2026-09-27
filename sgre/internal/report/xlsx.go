@@ -260,6 +260,9 @@ func WriteXlsxFromFindings(xlsxPath, rootDir string, findings []*db.Finding) err
 // inverse of excelize.CoordinatesToCellName for the single-letter range used
 // here, so the writer can address cells by letter regardless of row.
 func columnIndex(col string) int {
+	if col == "" {
+		return 0
+	}
 	return int(col[0]-'A') + 1
 }
 

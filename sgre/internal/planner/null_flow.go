@@ -240,7 +240,7 @@ func (a *flowAnalyzer) analyzeFunction(ctx context.Context, fn *db.Function, bod
 	}
 	res := a.analyzeFlow(ctx, fn, body, fileRoot, genByLine, nil, true, false)
 	if res != nil && (len(definiteGenByLine) > 0 || len(a.definiteEntrySeeds) > 0) {
-		res.definite, res.definiteGenAt = a.analyzeDefiniteNull(res.cfg, a.scopeOracle(body), a.definiteEntrySeeds)
+		res.definite, res.definiteGenAt = a.analyzeDefiniteNull(res.cfg, fileRoot, a.scopeOracle(body), a.definiteEntrySeeds)
 	}
 	return res
 }
@@ -289,7 +289,8 @@ func (a *flowAnalyzer) analyzeFlowMust(ctx context.Context, fn *db.Function, bod
 // other non-copy reassignment, copy = `p = q`. A line-keyed map would collide
 // when a one-line `if (c) p = NULL; else p = &x;` puts both the header and its
 // branches on one line, falsely assigning the NULL gen to the `p = &x` branch.
-func (a *flowAnalyzer) analyzeDefiniteNull(cfg *graph.StmtCFG, isValue func(string) bool, entrySeeds map[string]bool) (map[int]map[string]bool, map[int]map[string]bool) {
+func (a *flowAnalyzer) analyzeDefiniteNull(cfg *graph.StmtCFG, fileRoot parser.Node, isValue func(string) bool, entrySeeds map[string]bool) (map[int]map[string]bool, map[int]map[string]bool) {
+	macroWrites := a.macroWritesFor(fileRoot, true)
 	effects := make(map[int]*nodeEffects, len(cfg.Nodes))
 	for _, n := range cfg.Nodes {
 		if n.Kind != "stmt" {
@@ -315,7 +316,7 @@ func (a *flowAnalyzer) analyzeDefiniteNull(cfg *graph.StmtCFG, isValue func(stri
 				e.kill[name] = true
 			}
 		}
-		addOutputParamKills(n.Stmt, e, true, nil, a.iterMacros, isValue)
+		addOutputParamKills(n.Stmt, e, true, macroWrites, a.iterMacros, isValue)
 		effects[n.ID] = e
 	}
 	return runMustDataflow(cfg, effects, entrySeeds)

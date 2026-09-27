@@ -31,13 +31,20 @@ type typedefs struct {
 	// isUnsigned is the cached resolution of "does this type (transitively)
 	// resolve to an unsigned integer type?".
 	isUnsigned map[string]bool
+	// pointerResolving / unsignedResolving track the active recursion chain so a
+	// malformed indirect typedef cycle terminates instead of overflowing the
+	// stack.
+	pointerResolving  map[string]bool
+	unsignedResolving map[string]bool
 }
 
 func emptyTypedefs() *typedefs {
 	return &typedefs{
-		underlying: make(map[string]string),
-		isPointer:  make(map[string]bool),
-		isUnsigned: make(map[string]bool),
+		underlying:        make(map[string]string),
+		isPointer:         make(map[string]bool),
+		isUnsigned:        make(map[string]bool),
+		pointerResolving:  make(map[string]bool),
+		unsignedResolving: make(map[string]bool),
 	}
 }
 
@@ -80,6 +87,8 @@ func (t *typedefs) addRoot(root parser.Node) {
 	// The underlying table changed, so any cached resolution is now stale.
 	t.isPointer = make(map[string]bool)
 	t.isUnsigned = make(map[string]bool)
+	t.pointerResolving = make(map[string]bool)
+	t.unsignedResolving = make(map[string]bool)
 }
 
 // clone returns a shallow copy of the underlying table with a fresh resolution
@@ -164,6 +173,11 @@ func (t *typedefs) resolvesToPointer(typeSpelling string) bool {
 	if !ok || base == name {
 		return false
 	}
+	if t.pointerResolving[name] {
+		return false
+	}
+	t.pointerResolving[name] = true
+	defer delete(t.pointerResolving, name)
 	res := t.resolvesToPointer(base)
 	t.isPointer[name] = res
 	return res
@@ -187,6 +201,11 @@ func (t *typedefs) resolvesToUnsigned(typeSpelling string) bool {
 	if !ok || base == name {
 		return false
 	}
+	if t.unsignedResolving[name] {
+		return false
+	}
+	t.unsignedResolving[name] = true
+	defer delete(t.unsignedResolving, name)
 	res := t.resolvesToUnsigned(base)
 	t.isUnsigned[name] = res
 	return res

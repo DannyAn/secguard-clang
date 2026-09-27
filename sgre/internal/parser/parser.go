@@ -113,8 +113,8 @@ func (p *Parser) CloseAll() {
 			ps.Close()
 		}
 	}
-	p.cache = nil
-	p.parsers = nil
+	p.cache = make(map[string]*Tree)
+	p.parsers = make(map[string]*sitter.Parser)
 	if p.parser != nil {
 		p.parser.Close()
 	}
@@ -262,10 +262,16 @@ func isIdentChar(b byte) bool {
 }
 
 func (t *Tree) RootNode() Node {
+	if t.tree == nil {
+		return Node{}
+	}
 	return Node{node: *t.tree.RootNode(), src: t.src}
 }
 
 func (t *Tree) HasError() bool {
+	if t.tree == nil {
+		return false
+	}
 	return t.tree.RootNode().HasError()
 }
 
@@ -278,6 +284,7 @@ func (t *Tree) Close() {
 		return // owned by the Parser cache; released in CloseAll
 	}
 	t.tree.Close()
+	t.tree = nil
 }
 
 type Node struct {

@@ -12,7 +12,14 @@ func (s *store) InsertScanStat(ctx context.Context, stat *ScanStat) (int64, erro
 	}
 	return withBusyRetryID(ctx, 3, func() (int64, error) {
 		res, err := s.exec.ExecContext(ctx,
-			`INSERT INTO scan_stats (scan_id, vuln_type, seed_count, final_count, filter_chain, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO scan_stats (scan_id, vuln_type, seed_count, final_count, filter_chain, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(scan_id, vuln_type) DO UPDATE SET
+			   seed_count = excluded.seed_count,
+			   final_count = excluded.final_count,
+			   filter_chain = excluded.filter_chain,
+			   ai_stage_status = 'pending',
+			   created_at = excluded.created_at`,
 			stat.ScanID, stat.VulnType, stat.SeedCount, stat.FinalCount, stat.FilterChain, stat.CreatedAt)
 		if err != nil {
 			return 0, fmt.Errorf("db: insert scan_stat: %w", err)

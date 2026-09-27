@@ -16,7 +16,6 @@ var SafeFunctions = map[string]bool{
 	"strcpy_s":  true,
 	"sprintf_s": true,
 	"strcat_s":  true,
-	"strncpy":   true,
 	"strlcpy":   true,
 	"strlcat":   true,
 	// The exec* family replaces the process image without invoking a shell, so
@@ -622,9 +621,9 @@ var BuiltinAllocators = map[string]bool{
 	"strndup": true,
 	"wcsdup":  true,
 	// Path/cwd — returns a malloc'd buffer (free()).
-	"getcwd":                  true,
-	"get_current_dir_name":    true,
-	"canonicalize_file_name":  true,
+	"getcwd":                 true,
+	"get_current_dir_name":   true,
+	"canonicalize_file_name": true,
 }
 
 // BuiltinDeallocators are the C release APIs. Projects extend this set via

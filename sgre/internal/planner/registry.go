@@ -188,7 +188,8 @@ func CWEForCategory(vulnType, category string) string {
 // per-finding markdown rewrite.
 func TypeForCWE(cwe string) string {
 	cweNorm := strings.ToUpper(strings.TrimSpace(cwe))
-	for name, spec := range vulnTypeRegistry {
+	for _, name := range AllVulnTypes() {
+		spec := vulnTypeRegistry[name]
 		if strings.ToUpper(spec.CWE) == cweNorm {
 			return name
 		}

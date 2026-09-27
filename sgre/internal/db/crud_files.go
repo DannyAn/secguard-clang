@@ -73,10 +73,17 @@ func (s *store) ListFiles(ctx context.Context) ([]*File, error) {
 }
 
 func (s *store) UpdateFileChecksum(ctx context.Context, id int64, checksum string, loc int) error {
-	_, err := s.exec.ExecContext(ctx,
+	res, err := s.exec.ExecContext(ctx,
 		`UPDATE files SET checksum = ?, loc = ? WHERE id = ?`, checksum, loc, id)
 	if err != nil {
 		return fmt.Errorf("db: update file checksum: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("db: update file checksum: rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("db: update file checksum: no file with id %d", id)
 	}
 	return nil
 }

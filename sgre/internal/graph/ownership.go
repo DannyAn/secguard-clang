@@ -313,6 +313,9 @@ func errorCheckedVarIs(cond parser.Node, name string) bool {
 	if nameIdx < 0 {
 		return false
 	}
+	if nameIdx > 1 {
+		return false
+	}
 	other := kids[1-nameIdx]
 	switch op {
 	case "==":

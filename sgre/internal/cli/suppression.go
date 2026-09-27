@@ -50,15 +50,15 @@ func (idx *suppressionIndex) suppressedCount() int {
 	return idx.count
 }
 
-func loadSuppressions(ctx context.Context, store db.Store) *suppressionIndex {
+func loadSuppressions(ctx context.Context, store db.Store) (*suppressionIndex, error) {
 	// Fetch all findings and filter by EffectiveStatus, so A5-dismissed findings
 	// (review_status="dismissed") are suppressed too, not just first-pass
 	// dismissed ones.
 	all, err := store.ListFindings(ctx)
 	if err != nil {
-		return &suppressionIndex{byKey: map[string]bool{}, rules: map[string]int{}}
+		return nil, err
 	}
-	return buildSuppressionIndex(all)
+	return buildSuppressionIndex(all), nil
 }
 
 type baselineIndex struct {
@@ -66,17 +66,23 @@ type baselineIndex struct {
 	count    int
 }
 
-func loadBaseline(ctx context.Context, store db.Store, baselineScanID string) *baselineIndex {
+func loadBaseline(ctx context.Context, store db.Store, baselineScanID string) (*baselineIndex, error) {
+	if baselineScanID == "" {
+		return &baselineIndex{existing: map[string]bool{}}, nil
+	}
 	findings, err := store.ListFindingsByScanID(ctx, baselineScanID)
-	if err != nil || len(findings) == 0 {
-		return &baselineIndex{existing: map[string]bool{}}
+	if err != nil {
+		return nil, err
+	}
+	if len(findings) == 0 {
+		return &baselineIndex{existing: map[string]bool{}}, nil
 	}
 	bi := &baselineIndex{existing: make(map[string]bool, len(findings))}
 	for _, f := range findings {
 		bi.existing[suppressionKey(f.FilePath, int(f.LineNumber), f.RuleID)] = true
 		bi.count++
 	}
-	return bi
+	return bi, nil
 }
 
 func (bi *baselineIndex) isExisting(file string, line int, ruleID string) bool {

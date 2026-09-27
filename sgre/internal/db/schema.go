@@ -304,6 +304,9 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 	if err := ensureColumn(ctx, db, "scan_stats", "ai_stage_status", "TEXT NOT NULL DEFAULT 'pending' CHECK (ai_stage_status IN ('pending', 'done', 'failed'))"); err != nil {
 		return fmt.Errorf("db: init schema: ensure scan_stats.ai_stage_status: %w", err)
 	}
+	if err := ensureScanStatUnique(ctx, db); err != nil {
+		return fmt.Errorf("db: init schema: ensure scan_stats uniqueness: %w", err)
+	}
 	// Secondary indexes must run after ensureColumn (idx_findings_fingerprint
 	// references the back-filled fingerprint column).
 	if _, err := db.ExecContext(ctx, secondaryIndexesDDL); err != nil {
@@ -316,6 +319,29 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 	// a full index rebuild per scan and raced concurrent writers.
 	if err := ensureFindingLocIndex(ctx, db); err != nil {
 		return err
+	}
+	return nil
+}
+
+// ensureScanStatUnique enforces the one-row-per-(scan_id, vuln_type) invariant
+// that InsertScanStat's UPSERT depends on. Older databases could accumulate
+// duplicate rows from repeated scan runs, so duplicates are collapsed before the
+// unique index is created (keeping the lowest id row).
+func ensureScanStatUnique(ctx context.Context, db *sql.DB) error {
+	var name string
+	err := db.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'uq_scan_stat_scan_type'`).Scan(&name)
+	if err == nil && name != "" {
+		return nil
+	}
+	if _, derr := db.ExecContext(ctx, `
+		DELETE FROM scan_stats
+		WHERE id NOT IN (
+			SELECT MIN(id) FROM scan_stats GROUP BY scan_id, vuln_type
+		)`); derr != nil {
+		return fmt.Errorf("db: init schema: dedupe scan_stats: %w", derr)
+	}
+	if _, cerr := db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS uq_scan_stat_scan_type ON scan_stats(scan_id, vuln_type)`); cerr != nil {
+		return fmt.Errorf("db: init schema: create scan_stats unique index: %w", cerr)
 	}
 	return nil
 }

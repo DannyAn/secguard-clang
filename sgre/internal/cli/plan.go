@@ -114,7 +114,11 @@ func runPlanCmd(ctx context.Context, args []string) int {
 		"candidates_file":    candidatesFile,
 		"filters":            filters,
 	}
-	summaryData, _ := json.MarshalIndent(summaryOutput, "", "  ")
+	summaryData, err := json.MarshalIndent(summaryOutput, "", "  ")
+	if err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to serialize summary: %v", err))
+		return 1
+	}
 	fmt.Fprintln(os.Stdout, string(summaryData))
 
 	report.PrintPlanSummary(os.Stderr, planSummaryData)

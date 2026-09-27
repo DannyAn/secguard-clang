@@ -46,7 +46,7 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding,
 	groups := []findingGroup{}
 	groupIdx := map[string]int{}
 
-	confirmed, suspected := 0, 0
+	confirmed := 0
 	autoConfirmed := 0
 	for _, f := range findings {
 		status := f.FinalStatus()
@@ -56,9 +56,6 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding,
 			if f.Status == db.StatusAutoConfirmed {
 				autoConfirmed++
 			}
-		case "suspected":
-			suspected++
-			continue
 		default:
 			continue
 		}
@@ -89,7 +86,7 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding,
 	overview.SeverityCounts = CountSeverities(findings)
 	overview.AutoConfirmed = autoConfirmed
 	overview.AIConfirmed = confirmed - autoConfirmed
-	overview.AISuspected = suspected
+	overview.AISuspected = 0
 
 	var b strings.Builder
 

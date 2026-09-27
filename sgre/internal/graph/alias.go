@@ -125,8 +125,6 @@ func assignTargetName(lhs parser.Node) string {
 	switch lhs.Kind() {
 	case "identifier":
 		return lhs.Text()
-	case "field_expression", "subscript_expression":
-		return lhs.Text()
 	case "pointer_declarator", "array_declarator", "function_declarator":
 		return declaratorName(lhs)
 	}

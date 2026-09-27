@@ -67,12 +67,16 @@ func runQueryCmd(ctx context.Context, args []string) int {
 		}
 	}
 
-	summary, _ := json.MarshalIndent(map[string]interface{}{
+	summary, err := json.MarshalIndent(map[string]interface{}{
 		"skill_name":         skillName,
 		"vulnerability_type": vulnType,
 		"candidate_count":    candidateCount,
 		"candidates_file":    candidatesFile,
 	}, "", "  ")
+	if err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to serialize summary: %v", err))
+		return 1
+	}
 	fmt.Fprintln(os.Stdout, string(summary))
 	return 0
 }

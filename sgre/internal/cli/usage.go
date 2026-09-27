@@ -53,7 +53,8 @@ Arguments:
   [type-filter] Optional: a single type, comma list, or "all" (default: all)
 
 Flags:
-  --exclude <dirs>  Comma-separated directory basenames to skip`+commonFlagsDoc+`
+  --exclude <dirs>  Comma-separated directory basenames to skip
+  --fail-on <level> Exit code 2 when any finding is confirmed (only "confirmed" is supported)`+commonFlagsDoc+`
 
 Examples:
   secguard scan ./src

@@ -67,19 +67,13 @@ func (s *store) ListSummariesByFunctionIDs(ctx context.Context, functionIDs []in
 }
 
 func (s *store) UpdateReturnNullable(ctx context.Context, functionID int64, nullable bool) error {
-	existing, err := s.GetSummaryByFunction(ctx, functionID)
+	_, err := s.exec.ExecContext(ctx,
+		`INSERT INTO function_summary (function_id, return_nullable)
+		 VALUES (?, ?)
+		 ON CONFLICT(function_id) DO UPDATE SET return_nullable = excluded.return_nullable`,
+		functionID, nullable)
 	if err != nil {
-		// Never overwrite an existing row with zero-valued fields just because a
-		// read failed: GetSummaryByFunction returns (nil, err) on real errors, so
-		// a swallowed error here would wipe parameter_nullable/side_effect/
-		// summary_json. ErrNoRows is returned as (nil, nil), so that path is fine.
-		return err
+		return fmt.Errorf("db: update return nullable: %w", err)
 	}
-	sum := &FunctionSummary{FunctionID: functionID, ReturnNullable: nullable}
-	if existing != nil {
-		sum.ParameterNullable = existing.ParameterNullable
-		sum.SideEffect = existing.SideEffect
-		sum.SummaryJSON = existing.SummaryJSON
-	}
-	return s.UpsertSummary(ctx, sum)
+	return nil
 }

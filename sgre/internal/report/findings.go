@@ -40,6 +40,9 @@ type PerFindingUpdate struct {
 	Confidence     float64
 	FunctionName   string
 	Evidence       string
+	// CWE is the exact rule_id the verdict file should render. When empty,
+	// buildFindingDoc falls back to the vuln_type's canonical CWE.
+	CWE string
 	// ContextLines overrides the global ContextLines for this finding; 0 means
 	// "use the global setting", negative means "no source context".
 	ContextLines int
@@ -276,7 +279,11 @@ func buildFindingDoc(vulnType, filePath string, line int, verdict string, u PerF
 		head = fmt.Sprintf("# %s in %s", title(vulnType), fn)
 	}
 	b.WriteString(head + "\n\n")
-	b.WriteString(fmt.Sprintf("**CWE:** %s\n\n", VulnToCWE(vulnType)))
+	cwe := u.CWE
+	if cwe == "" {
+		cwe = VulnToCWE(vulnType)
+	}
+	b.WriteString(fmt.Sprintf("**CWE:** %s\n\n", cwe))
 
 	b.WriteString("## Location\n\n")
 	if loc := extractSection(candidate, "## Location"); loc != "" {
@@ -349,7 +356,12 @@ func annotateCandidate(candPath, verdict, reason, findingRel string) error {
 	case verdict == VerdictDismissed:
 		line += " (false positive — excluded from `" + FindingsDir + "/`)"
 	}
-	content = replaceLineByPrefix(content, "- **AI Verdict:**", line)
+	updated := replaceLineByPrefix(content, "- **AI Verdict:**", line)
+	if updated == content && !(verdict == VerdictDismissed && reason != "") {
+		content = strings.TrimRight(content, "\n") + "\n\n## AI Verdict\n\n" + line + "\n"
+	} else {
+		content = updated
+	}
 
 	if verdict == VerdictDismissed && reason != "" {
 		content = strings.TrimRight(content, "\n") +
@@ -505,6 +517,7 @@ func ReconcileFindings(scanDir string, findings []*db.Finding) (ReconcileResult,
 			Confidence:     f.Confidence,
 			FunctionName:   f.FunctionName,
 			Evidence:       f.Evidence,
+			CWE:            f.RuleID,
 		})
 		if err != nil {
 			res.Errors = append(res.Errors, fmt.Sprintf("%s:%d: %v", f.FilePath, f.LineNumber, err))

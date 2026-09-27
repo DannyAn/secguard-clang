@@ -81,6 +81,9 @@ func (f *LifetimeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Cand
 	if err != nil {
 		return nil, fmt.Errorf("lifetime: load events: %w", err)
 	}
+	analyzer := newFlowAnalyzer(f.store, f.parser)
+	freeSites := analyzer.loadFreeSites(ctx, candidateFuncIDs(byFunc))
+	aliases := analyzer.loadAliases(ctx, candidateFuncIDs(byFunc))
 	for fid, cs := range byFunc {
 		fn := fnByID[fid]
 		if fn == nil {
@@ -95,11 +98,10 @@ func (f *LifetimeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Cand
 			continue
 		}
 
-		analyzer := newFlowAnalyzer(f.store, f.parser)
 		// Direct free sites come from the graph's RELEASE edges (release_fn ==
 		// "free"); indirect frees (a callee frees a parameter) have no RELEASE
 		// edge, so those are seeded from the detector's event properties.
-		genByLine := analyzer.loadFreeSites(ctx, []int64{fid})[fid]
+		genByLine := freeSites[fid]
 		if genByLine == nil {
 			genByLine = make(map[int][]string)
 		}
@@ -138,7 +140,7 @@ func (f *LifetimeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Cand
 
 		// free(p) dangles every alias of p, so propagate the freed source through
 		// the ALIAS edges the graph layer persists (q = p; free(p); *q).
-		expandGenToAliases(genByLine, analyzer.loadAliases(ctx, []int64{fid})[fid])
+		expandGenToAliases(genByLine, aliases[fid])
 		flows[fid] = analyzer.analyzeFlowMust(ctx, fn, body, root, genByLine, killByLine, false, false)
 	}
 	return flows, nil

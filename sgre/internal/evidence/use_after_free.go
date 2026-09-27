@@ -153,6 +153,9 @@ func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.N
 			// declared) falls through to the function-summary branch below, which
 			// picks the freed parameter precisely (fail-closed).
 			args := getCallArgs(call)
+			if len(args) == 0 {
+				continue
+			}
 			for _, arg := range args[:1] {
 				arg = unwrapCastParen(arg)
 				switch arg.Kind() {

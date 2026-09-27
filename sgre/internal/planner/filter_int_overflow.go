@@ -319,10 +319,7 @@ func operandPathName(node parser.Node) string {
 
 func parseIntLiteral(s string) (int64, error) {
 	s = strings.TrimSpace(s)
-	s = strings.TrimSuffix(s, "u")
-	s = strings.TrimSuffix(s, "U")
-	s = strings.TrimSuffix(s, "l")
-	s = strings.TrimSuffix(s, "L")
+	s = strings.TrimRight(s, "uUlL")
 	var v int64
 	_, err := fmt.Sscanf(s, "%d", &v)
 	return v, err

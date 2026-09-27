@@ -82,6 +82,8 @@ func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Ca
 	if err != nil {
 		return nil, fmt.Errorf("double free: load events: %w", err)
 	}
+	analyzer := newFlowAnalyzer(f.store, f.parser)
+	aliases := analyzer.loadAliases(ctx, candidateFuncIDs(byFunc))
 	for fid, cs := range byFunc {
 		fn := fnByID[fid]
 		if fn == nil {
@@ -96,7 +98,6 @@ func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Ca
 			continue
 		}
 
-		analyzer := newFlowAnalyzer(f.store, f.parser)
 		// Seed the freed-state ONLY at each candidate's first-free site. The UAF
 		// lifetime filter seeds every free site (loadFreeSites), but a double-free
 		// analysis must NOT seed the second free too: seeding both makes the
@@ -137,7 +138,7 @@ func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Ca
 
 		// free(p) dangles every alias of p, so the first-free source also reaches
 		// a later free(q) where q aliases p (q = p; free(p); free(q)).
-		expandGenToAliases(genByLine, analyzer.loadAliases(ctx, []int64{fid})[fid])
+		expandGenToAliases(genByLine, aliases[fid])
 		flows[fid] = analyzer.analyzeFlowMust(ctx, fn, body, root, genByLine, killByLine, false, false)
 	}
 	return flows, nil

@@ -205,9 +205,10 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 //   - Unknown capacity, or a bounded local n: strncpy (nominally safe) is
 //     suppressed; memcpy/memmove/strncat stay conservative and fall through.
 func (d *BufferOverflowDetector) checkBoundedCopyOverflow(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, call parser.Node, callName string, params map[string]bool, bounds *RangeFacts, result *DetectResult) bool {
-	// A nominally-safe bounded copy (strncpy) is suppressed by default; an
-	// unsafe one (memcpy/memmove/strncat) stays conservative by falling through.
-	safeDefault := apikb.IsSafeFunction(callName)
+	// A nominally-safe bounded copy (strncpy) is suppressed by default when the
+	// destination capacity is unknown, while a size-vs-capacity mismatch is still
+	// checked above. The other bounded copies stay conservative by falling through.
+	safeDefault := callName == "strncpy" || apikb.IsSafeFunction(callName)
 
 	args := callNamedArguments(call)
 	if len(args) < 3 {

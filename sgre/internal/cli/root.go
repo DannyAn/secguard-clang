@@ -54,7 +54,11 @@ func Execute(ctx context.Context, args []string) int {
 	// Register project-declared allocator/deallocator names (secguard.toml
 	// [allocators]/[deallocators]) so the memory detectors treat wrappers like
 	// nat_malloc/nat_free the same as malloc/free.
-	cfg := config.Load()
+	cfg, err := config.LoadE()
+	if err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to load configuration: %v", err))
+		return 1
+	}
 	for _, n := range cfg.AllocatorNames() {
 		apikb.RegisterAllocator(n)
 	}

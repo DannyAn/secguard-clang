@@ -109,19 +109,21 @@ func (s *store) ClearGraph(ctx context.Context) error {
 	// PRAGMA foreign_keys is enforced per-connection (it is not guaranteed to be
 	// on for whatever connection executes this), so deleting nodes first could
 	// leave orphaned edges or error depending on the executing connection.
-	if _, err := s.exec.ExecContext(ctx, `DELETE FROM graph_edges`); err != nil {
-		return fmt.Errorf("db: clear graph edges: %w", err)
-	}
-	if _, err := s.exec.ExecContext(ctx, `DELETE FROM graph_nodes`); err != nil {
-		return fmt.Errorf("db: clear graph nodes: %w", err)
-	}
-	// The variables table is write-only dead data (see graph/data_flow.go); a
-	// previous scan may have left rows under it, so clear it too for a clean
-	// slate. No code reads this table, so the delete is behavior-neutral.
-	if _, err := s.exec.ExecContext(ctx, `DELETE FROM variables`); err != nil {
-		return fmt.Errorf("db: clear variables: %w", err)
-	}
-	return nil
+	return s.WithImmediateTx(ctx, func(tx Store) error {
+		if _, err := tx.(*store).exec.ExecContext(ctx, `DELETE FROM graph_edges`); err != nil {
+			return fmt.Errorf("db: clear graph edges: %w", err)
+		}
+		if _, err := tx.(*store).exec.ExecContext(ctx, `DELETE FROM graph_nodes`); err != nil {
+			return fmt.Errorf("db: clear graph nodes: %w", err)
+		}
+		// The variables table is write-only dead data (see graph/data_flow.go); a
+		// previous scan may have left rows under it, so clear it too for a clean
+		// slate. No code reads this table, so the delete is behavior-neutral.
+		if _, err := tx.(*store).exec.ExecContext(ctx, `DELETE FROM variables`); err != nil {
+			return fmt.Errorf("db: clear variables: %w", err)
+		}
+		return nil
+	})
 }
 
 func (s *store) ListGraphEdgesByType(ctx context.Context, edgeType string) ([]*GraphEdge, error) {
