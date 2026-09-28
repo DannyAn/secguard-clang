@@ -12,12 +12,19 @@ import "strings"
 // (e.g. the *_s bounds-checked variants, parameterized SQL, mkstemp).
 // Detectors should EXCLUDE these at the syntax level.
 var SafeFunctions = map[string]bool{
-	"memcpy_s":  true,
-	"strcpy_s":  true,
-	"sprintf_s": true,
-	"strcat_s":  true,
-	"strlcpy":   true,
-	"strlcat":   true,
+	"memcpy_s":    true,
+	"memmove_s":   true,
+	"memset_s":    true,
+	"strcpy_s":    true,
+	"strncpy_s":   true,
+	"sprintf_s":   true,
+	"snprintf_s":  true,
+	"vsprintf_s":  true,
+	"vsnprintf_s": true,
+	"strcat_s":    true,
+	"strncat_s":   true,
+	"strlcpy":     true,
+	"strlcat":     true,
 	// The exec* family replaces the process image without invoking a shell, so
 	// none of them is a command-injection sink (no shell metacharacter
 	// interpretation). Only shell-invoking calls (system, popen) are.
