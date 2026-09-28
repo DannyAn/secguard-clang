@@ -161,45 +161,63 @@ func applyHeapStructAssign(se, ie *nodeEffects, lhs, rhs parser.Node) {
 }
 
 // applyHeapStructCall folds a memset/bzero/dest-writer call into the lattices.
+// The four arg-0 shapes (identifier, field, subscript, &field) are unified
+// through destWriteTargetName so memcpy_s(&p->f, ...) and memset_s(p->f, ...)
+// are both recognized as member writes — previously the memset_s case only
+// handled &p->f and the isDestWriter default only handled bare p->f, so each
+// function had a blind spot (UN-15).
 func applyHeapStructCall(se, ie *nodeEffects, call parser.Node) {
 	name := callName(call)
 	args := callArgs(call)
 	if len(args) == 0 {
 		return
 	}
-	switch name {
-	case "memset", "memset_s", "bzero":
-		if args[0].Kind() == "identifier" {
-			// memset(p, 0, sizeof(whole)) zeroes the whole block; a fixed byte
-			// count is partial and must not count as whole init.
+	if !isDestWriterName(name) {
+		return
+	}
+	base, fieldText, whole := destWriteTargetName(args[0])
+	if whole {
+		// memset/memset_s/bzero with a sizeof count zeroes the whole block;
+		// a fixed byte count is partial and must not count as whole init.
+		if name == "memset" || name == "memset_s" || name == "bzero" {
 			if len(args) >= 3 && wholeObjectSize(args[2]) {
-				v := args[0].Text()
-				se.kill[v] = true
-				se.killBase[v] = true
-				ie.gen[v] = true
-			}
-			return
-		}
-		if t := addressTakenFieldPath(args[0]); t != "" {
-			// memset(&p->f, ...) zeroes one member.
-			ie.gen[t] = true
-			return
-		}
-		if args[0].Kind() == "pointer_expression" && len(args) >= 3 && wholeObjectSize(args[2]) {
-			// memset(&s, 0, sizeof(s)) zeroes a whole struct passed by address.
-			if children := args[0].NamedChildren(); len(children) > 0 && children[0].Kind() == "identifier" {
-				v := children[0].Text()
-				se.kill[v] = true
-				se.killBase[v] = true
-				ie.gen[v] = true
+				se.kill[base] = true
+				se.killBase[base] = true
+				ie.gen[base] = true
 			}
 		}
-	default:
-		if isDestWriterName(name) && (args[0].Kind() == "field_expression" || args[0].Kind() == "subscript_expression") {
-			// strncpy(p->f, ...) / memcpy(s.name, ...) fills the member.
-			ie.gen[args[0].Text()] = true
+		return
+	}
+	if fieldText != "" {
+		ie.gen[fieldText] = true
+	}
+}
+
+// destWriteTargetName resolves the write target of a dest-writer call's first
+// argument for the planner lattice. It returns (base, fieldText, whole) where
+// fieldText is the full access text for a field/subscript write (for ie.gen)
+// and base is the whole-variable name (for se.kill). This mirrors the
+// detector-side destWriteTarget in evidence/uninit_variable.go (UN-15).
+func destWriteTargetName(arg parser.Node) (base, fieldText string, whole bool) {
+	switch arg.Kind() {
+	case "identifier":
+		return arg.Text(), "", true
+	case "field_expression", "subscript_expression":
+		return "", arg.Text(), false
+	case "pointer_expression":
+		children := arg.NamedChildren()
+		if len(children) == 0 {
+			return "", "", false
+		}
+		inner := children[0]
+		switch inner.Kind() {
+		case "field_expression", "subscript_expression":
+			return "", inner.Text(), false
+		case "identifier":
+			return inner.Text(), "", true
 		}
 	}
+	return "", "", false
 }
 
 func derefWholeBase(lhs parser.Node) string {

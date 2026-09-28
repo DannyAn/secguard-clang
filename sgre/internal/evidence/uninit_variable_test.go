@@ -550,3 +550,34 @@ func TestUninit_ThirdPartyOutParamNotReported(t *testing.T) {
 	store := runIndexAndDetect(t, "tc91_uninit_third_party.c")
 	assertNoEvent(t, store, "VALUE_USE", "tc91_uninit_third_party")
 }
+
+// TestUninit_DestWriterSafeFuncsHeap pins the dest-writer form unification
+// (UN-15): memcpy_s(&p->f, ...), memset_s(p->f, ...), strcpy_s(p->f, ...),
+// strncpy_s(p->f, ...), and memset_s(&p->f, ...) all WRITE their first
+// argument, so a later read of the written member is not heap_uninit.
+// Previously the detector split arg-0 shapes across a memset_s case (only
+// &p->f) and an isDestWriter default (only bare p->f), so each function had a
+// blind spot that mis-read the dest as a use of the base. The regression guard
+// (uninit_p->cpe_ip never written) must stay reported.
+func TestUninit_DestWriterSafeFuncsHeap(t *testing.T) {
+	store := runIndexAndDetect(t, "tc92_dest_writer_safe_funcs.c")
+	events, _ := store.ListEventsByType(context.Background(), "VALUE_USE")
+	flagged := make(map[string]map[string]bool) // variable -> origins
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+			Origin   string `json:"origin"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if flagged[props.Variable] == nil {
+			flagged[props.Variable] = map[string]bool{}
+		}
+		flagged[props.Variable][props.Origin] = true
+	}
+	if len(flagged["p"]) > 0 {
+		t.Errorf("p must not be flagged after dest-writer initialization, got %v", flagged["p"])
+	}
+	if !flagged["uninit_p"]["heap_uninit"] {
+		t.Errorf("uninit_p->cpe_ip (never written) must still be flagged as heap_uninit, got %v", flagged)
+	}
+}

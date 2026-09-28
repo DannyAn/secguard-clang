@@ -1407,8 +1407,12 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 	}
 
 	// memset(p, 0, sizeof(*p)) zeroes the whole block; memset(&p->f, ...) zeroes
-	// one member; a dest-writer (memcpy/strncpy) whose first argument is a member
-	// fills that member.
+	// one member; a dest-writer (memcpy_s/strcpy_s/strncpy_s/...) whose first
+	// argument is a member or &member fills that member. The four arg-0 shapes
+	// (identifier, field, subscript, &field) are unified through destWriteTarget
+	// so memcpy_s(&p->f, ...) and memset_s(p->f, ...) are both recognized as
+	// writes — previously the memset_s case only handled &p->f and the isDestWriter
+	// default only handled bare p->f, so each function had a blind spot (UN-15).
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
 			continue
@@ -1417,45 +1421,34 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 			continue
 		}
 		name := extractCallName(call)
+		if !isDestWriter(name) {
+			continue
+		}
 		args := getCallArgs(call)
 		if len(args) == 0 {
 			continue
 		}
-		switch name {
-		case "memset", "memset_s", "bzero":
-			if args[0].Kind() == "identifier" {
-				v := args[0].Text()
-				// A sizeof size (`sizeof(*p)`, `sizeof(struct S)`) covers the whole
-				// object, so the block is fully initialized. The previous text
-				// match only recognized `sizeof(*p)` and missed the type-name form
-				// (UN-14).
-				if key := resolve(v, call.StartLine()); key != "" {
-					if _, ok := mallocVars[key]; ok && len(args) >= 3 && sizeIsWholeObject(args[2]) {
-						wholeInit[key] = true
-					}
-				}
-			} else if args[0].Kind() == "pointer_expression" {
-				target := args[0].NamedChildren()
-				if len(target) > 0 && (target[0].Kind() == "field_expression" || target[0].Kind() == "subscript_expression") {
-					if base := fieldBaseName(target[0]); base != "" {
-						if key := resolve(base, call.StartLine()); key != "" {
-							if _, ok := mallocVars[key]; ok {
-								markField(key, scopedPath(key, base, fieldPath(target[0])))
-							}
-						}
-					}
+		base, path, whole := destWriteTarget(args[0])
+		if base == "" {
+			continue
+		}
+		key := resolve(base, call.StartLine())
+		if key == "" {
+			continue
+		}
+		if _, ok := mallocVars[key]; !ok {
+			continue
+		}
+		if whole {
+			// memset/memset_s/bzero with a sizeof count zeroes the whole block;
+			// a fixed byte count is partial and must not count as whole init.
+			if name == "memset" || name == "memset_s" || name == "bzero" {
+				if len(args) >= 3 && sizeIsWholeObject(args[2]) {
+					wholeInit[key] = true
 				}
 			}
-		default:
-			if isDestWriter(name) && (args[0].Kind() == "field_expression" || args[0].Kind() == "subscript_expression") {
-				if base := fieldBaseName(args[0]); base != "" {
-					if key := resolve(base, call.StartLine()); key != "" {
-						if _, ok := mallocVars[key]; ok {
-							markField(key, scopedPath(key, base, fieldPath(args[0])))
-						}
-					}
-				}
-			}
+		} else {
+			markField(key, scopedPath(key, base, path))
 		}
 	}
 
@@ -1695,10 +1688,12 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 	}
 
 	// A field/subscript passed as the raw destination of a copy/init call
-	// (`strncpy_s(msg.pool_name, ...)`) is written by the callee. The array
-	// decays to a pointer with no `&`, so the `&s.f` output-param loop above
-	// misses it; mark the field path initialized so a struct filled through
-	// strncpy_s/memcpy/sprintf is not reported as partial-init.
+	// (`strncpy_s(msg.pool_name, ...)`, `memcpy_s(&s.field, ...)`) is written
+	// by the callee. The array decays to a pointer with no `&`, so the `&s.f`
+	// output-param loop above misses it; mark the field path initialized so a
+	// struct filled through strncpy_s/memcpy_s/sprintf is not reported as
+	// partial-init. destWriteTarget unifies the bare and &-prefixed shapes
+	// (UN-15).
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
 			continue
@@ -1710,14 +1705,15 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 		if len(args) == 0 {
 			continue
 		}
-		if args[0].Kind() == "field_expression" || args[0].Kind() == "subscript_expression" {
-			if uncond(call) {
-				if base := fieldBaseName(args[0]); base != "" {
-					if key := resolve(base, call.StartLine()); key != "" {
-						initializedFields[scopedPath(key, base, fieldPath(args[0]))] = true
-					}
-				}
-			}
+		if !uncond(call) {
+			continue
+		}
+		base, path, whole := destWriteTarget(args[0])
+		if base == "" || whole {
+			continue
+		}
+		if key := resolve(base, call.StartLine()); key != "" {
+			initializedFields[scopedPath(key, base, path)] = true
 		}
 	}
 
@@ -1875,6 +1871,42 @@ func fieldWritePaths(lhs parser.Node) []string {
 			return paths
 		}
 	}
+}
+
+// destWriteTarget resolves the write target of a dest-writer call's first
+// argument. It handles four shapes:
+//   - identifier:        memcpy_s(buf, ...)           → base=buf, path="", whole=true
+//   - field_expression:  memcpy_s(p->f, ...)          → base=p,  path="p->f", whole=false
+//   - subscript:         memcpy_s(p[i], ...)          → base=p,  path="p[i]", whole=false
+//   - pointer_expression: memcpy_s(&p->f, ...)        → base=p,  path="p->f", whole=false
+//     memcpy_s(&s, sizeof(s), ...) → base=s,  path="",    whole=true
+//
+// The previous code split this across a memset/memset_s/bzero case (which
+// handled pointer_expression but not bare field_expression) and an isDestWriter
+// default branch (which handled bare field_expression but not
+// pointer_expression), so memcpy_s(&p->f, ...) and memset_s(p->f, ...) both
+// fell through unhandled — the dest write was mis-read as a use of the base,
+// producing heap_uninit false positives (UN-15).
+func destWriteTarget(arg parser.Node) (base, path string, whole bool) {
+	switch arg.Kind() {
+	case "identifier":
+		return arg.Text(), "", true
+	case "field_expression", "subscript_expression":
+		return fieldBaseName(arg), fieldPath(arg), false
+	case "pointer_expression":
+		children := arg.NamedChildren()
+		if len(children) == 0 {
+			return "", "", false
+		}
+		inner := children[0]
+		switch inner.Kind() {
+		case "field_expression", "subscript_expression":
+			return fieldBaseName(inner), fieldPath(inner), false
+		case "identifier":
+			return inner.Text(), "", true
+		}
+	}
+	return "", "", false
 }
 
 func (d *UninitVariableDetector) insertValueUseEvent(ctx context.Context, f *db.Function, file *db.File, line, declLine int, varName, origin string, result *DetectResult) {
