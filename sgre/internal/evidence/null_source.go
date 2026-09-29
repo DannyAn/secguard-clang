@@ -94,7 +94,7 @@ func (d *NullSourceDetector) detectReturnNull(ctx context.Context, f *db.Functio
 			continue
 		}
 		expr := strings.TrimSpace(children[0].Text())
-		if !isNullLiteral(expr) && expr != "0" {
+		if !isNullLiteral(children[0]) && expr != "0" {
 			continue
 		}
 		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: ret.StartLine(), Column: ret.StartColumn()}, map[string]string{"variable": "<return>", "origin": "return"}) {
@@ -168,7 +168,7 @@ func (d *NullSourceDetector) detectExplicitNull(ctx context.Context, f *db.Funct
 		if varName == "" {
 			return
 		}
-		if !isNullLiteral(children[1].Text()) {
+		if !isNullLiteral(children[1]) {
 			return
 		}
 		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: node.StartLine()}, map[string]string{"variable": varName, "origin": "explicit_null", "definite": "true"}) {
@@ -218,13 +218,40 @@ func (d *NullSourceDetector) detectMacroNull(ctx context.Context, f *db.Function
 }
 
 // isNullLiteral reports whether an expression is an explicit null pointer
-// constant (NULL, nullptr, or a (void*)0 cast). Bare 0 is excluded because it
-// is ambiguous with a zero integer value.
-func isNullLiteral(text string) bool {
-	t := stripParens(strings.TrimSpace(text))
-	switch t {
-	case "NULL", "nullptr", "(void*)0", "(void *)0", "((void*)0)", "((void *)0)":
+// constant (NULL, nullptr, or a pointer-cast zero such as `(T*)NULL` /
+// `(T*)0`). A bare 0 is excluded because it is ambiguous with a zero integer
+// value; only a pointer-typed cast makes it an unambiguous null pointer.
+func isNullLiteral(n parser.Node) bool {
+	switch n.Kind() {
+	case "parenthesized_expression":
+		children := n.NamedChildren()
+		if len(children) == 0 {
+			return false
+		}
+		return isNullLiteral(children[0])
+	case "cast_expression":
+		var operand parser.Node
+		isPointerCast := false
+		for _, child := range n.NamedChildren() {
+			if child.Kind() == "type_descriptor" {
+				if strings.Contains(child.Text(), "*") {
+					isPointerCast = true
+				}
+				continue
+			}
+			operand = child
+		}
+		if !isPointerCast || operand.Kind() == "" {
+			return false
+		}
+		return isNullLiteral(operand)
+	case "identifier":
+		t := strings.TrimSpace(n.Text())
+		return t == "NULL" || t == "nullptr"
+	case "null":
 		return true
+	case "number_literal":
+		return strings.TrimSpace(n.Text()) == "0"
 	}
 	return false
 }

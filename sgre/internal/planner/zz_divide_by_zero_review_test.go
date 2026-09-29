@@ -154,3 +154,45 @@ int f(int x) {
 		t.Errorf("f (d = 2*3 is provably non-zero) should NOT be flagged, got var=%s", c.Target.Variable)
 	}
 }
+
+// DBZ-01 (join semantics): a variable assigned zero on only one branch is not
+// zero on every path. Before the merge treated an absent predecessor fact as
+// equal to the other path, this false-confirmed the division.
+func TestDivideByZeroReview_JoinAbsentPath(t *testing.T) {
+	src := `#include <stdlib.h>
+int f(int c) {
+    int d;
+    if (c) {
+        d = 0;
+    }
+    return 10 / d;
+}
+`
+	result := planDivideByZero(t, src)
+	c := candidateForFunc(t, result, "f")
+	if c == nil {
+		t.Fatalf("f (d is only zero on one path) should stay a candidate, got none")
+	}
+	if c.SuspicionLevel == "confirmed" {
+		t.Errorf("f should be suspected, not confirmed: d is not zero on every path")
+	}
+}
+
+// DBZ-02 (if/else branch): a division in the alternative branch is guarded only
+// when the condition establishes zero. `if (d != 0) {} else { x / d; }` leaves
+// d == 0 on the division's path and must be flagged.
+func TestDivideByZeroReview_IfElseAlternative(t *testing.T) {
+	src := `#include <stdlib.h>
+int f(int d) {
+    if (d != 0) {
+        return 1;
+    } else {
+        return 10 / d;
+    }
+}
+`
+	result := planDivideByZero(t, src)
+	if c := candidateForFunc(t, result, "f"); c == nil {
+		t.Errorf("f (division in else branch with d == 0) should be flagged")
+	}
+}

@@ -142,7 +142,7 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 			finalKept = append(finalKept, c)
 			continue
 		}
-		zero, allNonZero := sites.paramVerdict(fn.Name, idx)
+		zero, allNonZero := sites.paramVerdict(fn.Name, fn.FileID, idx, fn.IsStatic)
 		// A non-static function has external callers outside the scan tree (or
 		// callers reached via a function pointer), so "every direct caller passes
 		// non-zero" cannot be asserted for it — keep it suspected rather than

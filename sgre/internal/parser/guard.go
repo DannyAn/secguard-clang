@@ -198,15 +198,21 @@ func NullCheckedVars(cond Node) []string {
 // nonNullSideVar returns the non-null operand of a `==`/`!=` comparison
 // (`p != NULL` → p, `NULL != p` → p, `(e = f()) != NULL` → e), or "".
 func nonNullSideVar(cond Node) string {
+	var nonNull string
+	hasNull := false
 	for _, c := range cond.NamedChildren() {
 		if IsNullOperand(c) {
+			hasNull = true
 			continue
 		}
-		if v := GuardVarName(strings.TrimSpace(c.Text())); v != "" && v != "NULL" && v != "0" {
-			return v
+		if v := GuardVarName(strings.TrimSpace(c.Text())); v != "" && v != "NULL" && v != "0" && nonNull == "" {
+			nonNull = v
 		}
 	}
-	return ""
+	if !hasNull {
+		return ""
+	}
+	return nonNull
 }
 
 // truthCheckedLvalue returns the lvalue path a bare truth-check tests (`if (p)`,

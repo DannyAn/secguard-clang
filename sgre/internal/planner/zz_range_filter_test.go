@@ -270,6 +270,57 @@ int tp_loop_and_overflow(int n, int m) {
 	}
 }
 
+// TestRangeFilter_ParamVerdictStaticScopedByFile pins the call-site resolver's
+// file scoping for static functions. Two translation units may each define a
+// same-named static helper; a literal-zero call in file B must not confirm the
+// division in file A's helper.
+func TestRangeFilter_ParamVerdictStaticScopedByFile(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	pathA := filepath.Join(dir, "a.c")
+	pathB := filepath.Join(dir, "b.c")
+	srcA := `static int helper(int d) { return 10 / d; }
+int caller_a(void) { return helper(5); }
+`
+	srcB := `static int helper(int d) { return 10 / d; }
+int caller_b(void) { return helper(0); }
+`
+	if err := os.WriteFile(pathA, []byte(srcA), 0644); err != nil {
+		t.Fatalf("write a.c: %v", err)
+	}
+	if err := os.WriteFile(pathB, []byte(srcB), 0644); err != nil {
+		t.Fatalf("write b.c: %v", err)
+	}
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, pathA); err != nil {
+		t.Fatalf("index a.c: %v", err)
+	}
+	if _, err := idx.Index(ctx, pathB); err != nil {
+		t.Fatalf("index b.c: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "divide-by-zero")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	if len(result.Candidates) != 1 {
+		t.Fatalf("expected only b.c's helper to be confirmed (zero caller), got %d candidates: %v", len(result.Candidates), candidateNames(result))
+	}
+	if got := result.Candidates[0].SuspicionLevel; got != "confirmed" {
+		t.Fatalf("b.c helper suspicion = %q, want confirmed", got)
+	}
+}
+
 // TestRangeFilter_DivideByZero_ReturnSummary pins the interprocedural return-
 // summary convergence (plan step 2): a divisor that is a call result or a local
 // seeded from one is suppressed when the callee provably never returns zero,

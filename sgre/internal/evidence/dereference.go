@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -103,9 +104,62 @@ func (d *DereferenceDetector) detectExplicitDeref(ctx context.Context, f *db.Fun
 		if len(text) == 0 || text[0] != '*' {
 			continue
 		}
-		varName := text[1:]
+		varName := explicitDerefVar(node)
+		if varName == "" {
+			continue
+		}
 		d.insertDerefEvent(ctx, f, file, node, varName, text, nonNullable, result)
 	}
+}
+
+// explicitDerefVar extracts the dereferenced location from a pointer_expression
+// node (`*p`, `*p++`, `*(S*)p`, `*p->f`) without text-slicing. The operand may
+// be a cast, parentheses, an update, or a member/subscript access, so it is
+// unwrapped structurally and returned as the same text the null-source keys use.
+func explicitDerefVar(node parser.Node) string {
+	if node.Kind() != "pointer_expression" {
+		return ""
+	}
+	for _, child := range node.NamedChildren() {
+		if v := derefOperandVar(child); v != "" {
+			return v
+		}
+	}
+	text := strings.TrimSpace(node.Text())
+	if len(text) > 1 && text[0] == '*' {
+		return strings.TrimSpace(text[1:])
+	}
+	return ""
+}
+
+func derefOperandVar(n parser.Node) string {
+	switch n.Kind() {
+	case "identifier", "field_expression", "subscript_expression":
+		return n.Text()
+	case "update_expression":
+		for _, child := range n.NamedChildren() {
+			if child.Kind() == "identifier" {
+				return child.Text()
+			}
+		}
+		return firstIdentifier(n)
+	case "parenthesized_expression":
+		for _, child := range n.NamedChildren() {
+			if v := derefOperandVar(child); v != "" {
+				return v
+			}
+		}
+	case "cast_expression":
+		for _, child := range n.NamedChildren() {
+			if child.Kind() == "type_descriptor" {
+				continue
+			}
+			if v := derefOperandVar(child); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
 }
 
 // detectExplicitDerefInBinary recovers an explicit `*p = v` write dereference

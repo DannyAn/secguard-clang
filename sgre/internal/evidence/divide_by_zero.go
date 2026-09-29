@@ -245,7 +245,24 @@ func divisionGuarded(expr parser.Node, divisor string) bool {
 			} else if condEstablishesNonZero(*cond, d) {
 				return true
 			}
-		case "if_statement", "while_statement":
+		case "if_statement":
+			// The guard must match the branch the division actually sits in:
+			// a division in the consequence is protected by a non-zero
+			// condition, while a division in the alternative is protected only
+			// when the condition establishes ZERO (`if (d == 0) a; else x/d;`).
+			cond := n.ChildByFieldName("condition")
+			if cond == nil {
+				continue
+			}
+			alt := n.ChildByFieldName("alternative")
+			if prev != nil && alt != nil && nodeWithin(alt, prev) {
+				if condEstablishesZero(*cond, d) {
+					return true
+				}
+			} else if condEstablishesNonZero(*cond, d) {
+				return true
+			}
+		case "while_statement":
 			// do_statement is deliberately excluded: its condition is evaluated
 			// AFTER the body, so the body's division is not guarded by it.
 			cond := n.ChildByFieldName("condition")

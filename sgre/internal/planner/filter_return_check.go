@@ -60,10 +60,11 @@ func (f *ReturnCheckFilter) Apply(ctx context.Context, candidates []Candidate) (
 		}
 
 		ifStmts := body.FindAll("if_statement")
+		condExprs := body.FindAll("conditional_expression")
 		callExprs := body.FindAll("call_expression")
 
 		for _, c := range funcCandidates {
-			result, _ := f.analyzeCandidate(c, callExprs, ifStmts)
+			result, _ := f.analyzeCandidate(c, callExprs, ifStmts, condExprs)
 			// The detector already suppresses genuinely-checked returns at
 			// emission (checkedVars). This filter only upgrades the two shapes
 			// whose "unchecked" nature it can prove deterministically — a bare
@@ -81,7 +82,7 @@ func (f *ReturnCheckFilter) Apply(ctx context.Context, candidates []Candidate) (
 	return kept, nil, nil
 }
 
-func (f *ReturnCheckFilter) analyzeCandidate(c Candidate, callExprs, ifStmts []parser.Node) (result, lhsVar string) {
+func (f *ReturnCheckFilter) analyzeCandidate(c Candidate, callExprs, ifStmts, condExprs []parser.Node) (result, lhsVar string) {
 	callNode := findCallAtLine(callExprs, c.Line, c.APIName)
 	if callNode == nil {
 		return "unknown", ""
@@ -90,6 +91,12 @@ func (f *ReturnCheckFilter) analyzeCandidate(c Candidate, callExprs, ifStmts []p
 	node := callNode.Parent()
 	for node != nil {
 		switch node.Kind() {
+		case "argument_list", "call_expression":
+			// The call's value is consumed as another call's argument, not left
+			// unchecked. This shape cannot be proven unchecked without
+			// inter-procedural value flow, so hand it to the AI agent.
+			return "unknown", ""
+
 		case "expression_statement":
 			return "unchecked", ""
 
@@ -98,7 +105,7 @@ func (f *ReturnCheckFilter) analyzeCandidate(c Candidate, callExprs, ifStmts []p
 			if len(children) >= 2 {
 				lhs := varText(children[0])
 				if lhs != "" {
-					return checkIfGuarded(lhs, c.Line, ifStmts), lhs
+					return checkIfGuarded(lhs, c.Line, ifStmts, condExprs, callExprs), lhs
 				}
 			}
 			return "unknown", ""
@@ -108,7 +115,7 @@ func (f *ReturnCheckFilter) analyzeCandidate(c Candidate, callExprs, ifStmts []p
 			if decl != nil && decl.Kind() == "declaration" {
 				lhs := declIdentifierName(*decl)
 				if lhs != "" {
-					return checkIfGuarded(lhs, c.Line, ifStmts), lhs
+					return checkIfGuarded(lhs, c.Line, ifStmts, condExprs, callExprs), lhs
 				}
 			}
 			return "unknown", ""
@@ -144,9 +151,12 @@ func callMatchesAPI(call parser.Node, apiName string) bool {
 	return fnChild != nil && fnChild.Text() == apiName
 }
 
-func checkIfGuarded(lhsVar string, assignLine int, ifStmts []parser.Node) string {
+func checkIfGuarded(lhsVar string, assignLine int, ifStmts, condExprs, callExprs []parser.Node) string {
 	if lhsVar == "" {
 		return "unknown"
+	}
+	if assertGuardedAfter(callExprs, lhsVar, assignLine) {
+		return "checked"
 	}
 	for _, ifStmt := range ifStmts {
 		if ifStmt.StartLine() <= assignLine {
@@ -160,7 +170,66 @@ func checkIfGuarded(lhsVar string, assignLine int, ifStmts []parser.Node) string
 			return "checked"
 		}
 	}
+	for _, ce := range condExprs {
+		if ce.StartLine() <= assignLine {
+			continue
+		}
+		cond := ce.ChildByFieldName("condition")
+		if cond == nil {
+			continue
+		}
+		if conditionTestsVar(*cond, lhsVar) {
+			return "checked"
+		}
+	}
 	return "unchecked"
+}
+
+// assertGuardedAfter reports whether lhsVar is checked by a standalone
+// assert(...) statement after the assignment. The assert aborts when its
+// condition is false, so code after it runs only on the checked path.
+func assertGuardedAfter(callExprs []parser.Node, lhsVar string, assignLine int) bool {
+	for i := range callExprs {
+		call := callExprs[i]
+		if call.StartLine() <= assignLine || callName(call) != "assert" {
+			continue
+		}
+		if p := call.Parent(); p == nil || p.Kind() != "expression_statement" {
+			continue
+		}
+		args := callArgs(call)
+		if len(args) == 0 || !assertGuardsVar(args[0], lhsVar) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// assertGuardsVar reports whether an assert condition establishes lhsVar as
+// checked on the fall-through. It handles `assert(p)`, `assert(p != NULL)`, and
+// conjunctions of those, but rejects `assert(!p)` (which asserts NULL).
+func assertGuardsVar(cond parser.Node, lhsVar string) bool {
+	node := cond
+	for node.Kind() == "parenthesized_expression" {
+		children := node.NamedChildren()
+		if len(children) == 0 {
+			return false
+		}
+		node = children[0]
+	}
+	if node.Kind() == "binary_expression" && binaryOperatorToken(node) == "&&" {
+		for _, child := range node.NamedChildren() {
+			if assertGuardsVar(child, lhsVar) {
+				return true
+			}
+		}
+		return false
+	}
+	if node.Kind() == "unary_expression" && strings.HasPrefix(strings.TrimSpace(node.Text()), "!") {
+		return false
+	}
+	return conditionTestsVar(node, lhsVar)
 }
 
 // conditionTestsVar reports whether cond actually tests varName's value — a

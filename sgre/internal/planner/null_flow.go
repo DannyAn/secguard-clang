@@ -308,7 +308,7 @@ func (a *flowAnalyzer) analyzeDefiniteNull(cfg *graph.StmtCFG, fileRoot parser.N
 				}
 				e.killBase[name] = true
 			}
-			if isNullLiteralExpr(p.rhs.Text()) {
+			if isNullLiteralNode(p.rhs) {
 				e.gen[name] = true
 			} else if rv := copySourceKey(p.rhs); rv != "" {
 				e.copy[name] = rv
@@ -1256,7 +1256,7 @@ func returnsNullable(body parser.Node, flow *flowResult, params map[string]int, 
 }
 
 func exprReturnsNullable(expr parser.Node, flow *flowResult, params map[string]int, retNullable map[string]bool, definedNames map[string]bool, line int) bool {
-	if isNullLiteralExpr(expr.Text()) {
+	if isNullLiteralNode(expr) {
 		return true
 	}
 	switch expr.Kind() {
@@ -1307,6 +1307,45 @@ func isNullLiteralExpr(text string) bool {
 	return false
 }
 
+// isNullLiteralNode is the node-precise form of isNullLiteralExpr. It also
+// recognizes a pointer-typed cast of a null constant (`p = (T*)NULL`,
+// `p = (T*)0`), which the text matcher missed and which therefore left the
+// assignment as a kill instead of a definite null source.
+func isNullLiteralNode(expr parser.Node) bool {
+	switch expr.Kind() {
+	case "parenthesized_expression":
+		children := expr.NamedChildren()
+		if len(children) == 0 {
+			return false
+		}
+		return isNullLiteralNode(children[0])
+	case "cast_expression":
+		var operand parser.Node
+		isPointerCast := false
+		for _, child := range expr.NamedChildren() {
+			if child.Kind() == "type_descriptor" {
+				if strings.Contains(child.Text(), "*") {
+					isPointerCast = true
+				}
+				continue
+			}
+			operand = child
+		}
+		if !isPointerCast || operand.Kind() == "" {
+			return false
+		}
+		return isNullLiteralNode(operand)
+	case "identifier":
+		t := strings.TrimSpace(expr.Text())
+		return t == "NULL" || t == "nullptr"
+	case "null":
+		return true
+	case "number_literal":
+		return strings.TrimSpace(expr.Text()) == "0"
+	}
+	return false
+}
+
 // nullLiteralParensBalanced reports whether s has balanced parentheses, so a
 // parenthesized null literal (`(NULL)`) is stripped while a non-literal
 // expression is left untouched.
@@ -1342,7 +1381,7 @@ func mayReturnPointer(body parser.Node) bool {
 			continue
 		}
 		expr := children[0]
-		if isNullLiteralExpr(expr.Text()) {
+		if isNullLiteralNode(expr) {
 			return true
 		}
 		switch expr.Kind() {

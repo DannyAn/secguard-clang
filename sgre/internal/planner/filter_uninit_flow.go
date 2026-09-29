@@ -76,7 +76,7 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 				kept = append(kept, c)
 				continue
 			}
-			kept, dropped = f.refineHeapStruct(hs, c, kept, dropped)
+			kept, dropped = f.refineHeapStruct(hs, c, kept, dropped, fnByID, files, scopes)
 		case "stack_uninit":
 			flow := flows[c.FunctionID]
 			if flow == nil {
@@ -127,7 +127,7 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 // refineHeapStruct drops a heap/struct candidate whose field (or whole block) is
 // written on every path, and promotes it to confirmed only when the malloc/
 // declaration source reaches on every path with no write on any path.
-func (f *DefiniteInitFilter) refineHeapStruct(hs *heapStructFlow, c Candidate, kept []Candidate, dropped []Dismissed) ([]Candidate, []Dismissed) {
+func (f *DefiniteInitFilter) refineHeapStruct(hs *heapStructFlow, c Candidate, kept []Candidate, dropped []Dismissed, fnByID map[int64]*db.Function, files map[int64]*hoistedUninitFile, scopes map[int64]func(string) bool) ([]Candidate, []Dismissed) {
 	whole := c.VariableName
 	path := c.FieldPath
 	if hs.initOnEveryPath(path, c.Line) || hs.initOnEveryPath(whole, c.Line) {
@@ -139,7 +139,14 @@ func (f *DefiniteInitFilter) refineHeapStruct(hs *heapStructFlow, c Candidate, k
 			fmt.Sprintf("%s is initialized on every path before the use at line %d", key, c.Line))
 	}
 	if hs.sourceOnEveryPath(whole, c.Line) && !hs.initOnAnyPath(path, c.Line) && !hs.initOnAnyPath(whole, c.Line) {
-		c.SuspicionLevel = "confirmed"
+		if f.hasOutputParamWrite(fnByID, files[c.FileID], c, scopes[c.FunctionID]) {
+			// `S s; fill_ext(&s); use(s.f);` — an output-parameter write can
+			// initialize the struct on the success path, so "uninit on every
+			// path" is unproven. Keep it suspected for the AI to judge.
+			c.SuspicionLevel = "suspected"
+		} else {
+			c.SuspicionLevel = "confirmed"
+		}
 	}
 	return append(kept, c), dropped
 }
@@ -203,6 +210,7 @@ func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]
 // function-like macro output argument), copy = `v = w`.
 func buildDefiniteInitFlow(fn *db.Function, body parser.Node, macroWrites map[string]macros.WriteSummary) *flowResult {
 	cfg := graph.BuildStmtCFG(body, fn.EndLine)
+	aliases := pointerAliases(body)
 
 	// Effects are computed per CFG node from that node's OWN statement — never
 	// from a line-keyed map. Line-keyed maps collide when several statements
@@ -237,9 +245,15 @@ func buildDefiniteInitFlow(fn *db.Function, body parser.Node, macroWrites map[st
 				continue
 			}
 			// field/subscript write initializes the base struct/array (field
-			// granularity belongs to struct_partial_uninit).
+			// granularity belongs to struct_partial_uninit). A write through a
+			// local pointer that is the address of another local (`int *px = &x;
+			// *px = 5`) also initializes that pointee.
 			if base := assignBaseName(p.lhs); base != "" {
 				e.kill[base] = true
+			} else if ptr := derefBaseName(p.lhs); ptr != "" {
+				if aliased := aliases[ptr]; aliased != "" {
+					e.kill[aliased] = true
+				}
 			}
 		}
 
@@ -259,6 +273,70 @@ func buildDefiniteInitFlow(fn *db.Function, body parser.Node, macroWrites map[st
 	res := &flowResult{cfg: cfg, nodeIn: nodeIn, genAt: genAt(cfg, effects)}
 	res.must, res.mustGenAt = runMustDataflow(cfg, effects, nil)
 	return res
+}
+
+// pointerAliases collects simple local pointer-to-local aliases (`int *px = &x;`
+// or `px = &x;`), keyed by the pointer variable. A write through the pointer is
+// then treated as a write to the pointee for stack-uninit convergence.
+func pointerAliases(body parser.Node) map[string]string {
+	aliases := make(map[string]string)
+	record := func(lhs, rhs parser.Node) {
+		name := declaratorName(lhs)
+		if name == "" {
+			return
+		}
+		if target, ok := rhs.AddressTakenTarget(); ok && target.Kind() == "identifier" {
+			aliases[name] = target.Text()
+		}
+	}
+	for _, a := range body.FindAll("assignment_expression") {
+		named := a.NamedChildren()
+		if len(named) < 2 {
+			continue
+		}
+		record(named[0], named[1])
+	}
+	for _, decl := range body.FindAll("declaration") {
+		for _, child := range decl.NamedChildren() {
+			if child.Kind() != "init_declarator" {
+				continue
+			}
+			named := child.NamedChildren()
+			if len(named) < 2 {
+				continue
+			}
+			record(named[0], named[1])
+		}
+	}
+	return aliases
+}
+
+// derefBaseName returns the pointer variable a `*p` write goes through, or ""
+// for a non-dereference or a write through a member (`*p->f`).
+func derefBaseName(lhs parser.Node) string {
+	if lhs.Kind() != "pointer_expression" {
+		return ""
+	}
+	children := lhs.NamedChildren()
+	if len(children) == 0 {
+		return ""
+	}
+	n := children[0]
+	for n.Kind() == "parenthesized_expression" || n.Kind() == "cast_expression" {
+		kids := n.NamedChildren()
+		if len(kids) == 0 {
+			return ""
+		}
+		if n.Kind() == "cast_expression" && kids[0].Kind() == "type_descriptor" {
+			n = kids[len(kids)-1]
+			continue
+		}
+		n = kids[0]
+	}
+	if n.Kind() == "identifier" {
+		return n.Text()
+	}
+	return ""
 }
 
 // assignPair is one (lhs, rhs) of an assignment/initializer that is a DIRECT

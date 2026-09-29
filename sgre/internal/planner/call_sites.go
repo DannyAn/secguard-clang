@@ -17,11 +17,16 @@ import (
 // semantic-graph (CALL + positional argument) step that the function-local
 // interval analysis cannot see.
 type callSiteResolver struct {
-	callsByName map[string][][]string
+	callsByName map[string][]callSite
+}
+
+type callSite struct {
+	fileID int64
+	args   []string
 }
 
 func newCallSiteResolver(ctx context.Context, store db.Store, p *parser.Parser) *callSiteResolver {
-	r := &callSiteResolver{callsByName: map[string][][]string{}}
+	r := &callSiteResolver{callsByName: map[string][]callSite{}}
 	files, err := store.ListFiles(ctx)
 	if err != nil {
 		return r
@@ -45,7 +50,7 @@ func newCallSiteResolver(ctx context.Context, store db.Store, p *parser.Parser) 
 			for _, a := range args {
 				texts = append(texts, a.Text())
 			}
-			r.callsByName[name] = append(r.callsByName[name], texts)
+			r.callsByName[name] = append(r.callsByName[name], callSite{fileID: file.ID, args: texts})
 		}
 	}
 	return r
@@ -56,13 +61,20 @@ func newCallSiteResolver(ctx context.Context, store db.Store, p *parser.Parser) 
 // EVERY direct call passes a provably non-zero constant (allNonZero). No call
 // sites yields (false, false) — unknown, so the caller keeps the conservative
 // "possibly zero" verdict.
-func (r *callSiteResolver) paramVerdict(name string, index int) (zeroReachable, allNonZero bool) {
+func (r *callSiteResolver) paramVerdict(name string, fileID int64, index int, static bool) (zeroReachable, allNonZero bool) {
 	sites := r.callsByName[name]
 	if len(sites) == 0 {
 		return false, false
 	}
 	allNonZero = true
-	for _, args := range sites {
+	for _, site := range sites {
+		// A static function can only be called from its own translation unit;
+		// same-named static helpers in other files are unrelated functions and
+		// must not pollute this one's parameter verdict.
+		if static && site.fileID != fileID {
+			continue
+		}
+		args := site.args
 		if index >= len(args) {
 			allNonZero = false
 			continue

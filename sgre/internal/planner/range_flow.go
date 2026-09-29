@@ -410,6 +410,22 @@ const widenDelay = 3
 // changed.
 func rangeMergeInto(dst map[string]interval, counts map[string]int, src map[string]interval) bool {
 	changed := false
+	// A variable absent from a predecessor's out-set is unknown on that path,
+	// not equal to whatever the other paths contributed. Hull-join with the
+	// full range so `if (c) d = 0; x / d;` cannot turn the fall-through path's
+	// missing fact into a false [0,0] (a machine-confirmed divide-by-zero).
+	for v := range dst {
+		if _, ok := src[v]; ok {
+			continue
+		}
+		prev := dst[v]
+		if prev == topInterval() {
+			continue
+		}
+		counts[v]++
+		dst[v] = topInterval()
+		changed = true
+	}
 	for v, r := range src {
 		prev, ok := dst[v]
 		if !ok {

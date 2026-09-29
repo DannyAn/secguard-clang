@@ -69,9 +69,10 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 		whiles := root.FindAll("while_statement")
 		fors := root.FindAll("for_statement")
 		dos := root.FindAll("do_statement")
+		conds := root.FindAll("conditional_expression")
 
 		for _, f := range funcs {
-			checked := d.checkedVars(ifs, whiles, fors, dos, f)
+			checked := d.checkedVars(ifs, whiles, fors, dos, conds, calls, f)
 			for _, call := range calls {
 				if !funcLineRange(f, call.StartLine()) {
 					continue
@@ -162,9 +163,9 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 // (the allocation's failure is never handled before `p` is used). This mirrors
 // the planner's ReturnCheckFilter (conditionTestsVar) so the detector and the
 // convergence filter agree on what "checked" means.
-func (d *UncheckedReturnDetector) checkedVars(ifs, whiles, fors, dos []parser.Node, f *db.Function) map[string]bool {
+func (d *UncheckedReturnDetector) checkedVars(ifs, whiles, fors, dos, conds, calls []parser.Node, f *db.Function) map[string]bool {
 	set := make(map[string]bool)
-	for _, cond := range [][]parser.Node{ifs, whiles, fors, dos} {
+	for _, cond := range [][]parser.Node{ifs, whiles, fors, dos, conds} {
 		for _, node := range cond {
 			if !funcLineRange(f, node.StartLine()) {
 				continue
@@ -183,6 +184,21 @@ func (d *UncheckedReturnDetector) checkedVars(ifs, whiles, fors, dos []parser.No
 			if v := bareConditionVar(c); v != "" {
 				set[v] = true
 			}
+		}
+	}
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) || extractCallName(call) != "assert" {
+			continue
+		}
+		if p := call.Parent(); p == nil || p.Kind() != "expression_statement" {
+			continue
+		}
+		args := getCallArgs(call)
+		if len(args) == 0 {
+			continue
+		}
+		for _, varName := range assertGuardedVars(args[0]) {
+			set[varName] = true
 		}
 	}
 	return set
@@ -434,13 +450,15 @@ func (d *UncheckedReturnDetector) passthroughAllocFuncs(ctx context.Context) (ma
 		ids := root.FindAll("identifier")
 		assigns := root.FindAll("assignment_expression")
 		inits := root.FindAll("init_declarator")
+		calls := root.FindAll("call_expression")
 		ifs := root.FindAll("if_statement")
 		whiles := root.FindAll("while_statement")
 		fors := root.FindAll("for_statement")
 		dos := root.FindAll("do_statement")
+		conds := root.FindAll("conditional_expression")
 
 		for _, f := range funcs {
-			checked := d.checkedVars(ifs, whiles, fors, dos, f)
+			checked := d.checkedVars(ifs, whiles, fors, dos, conds, calls, f)
 
 			// var -> (callee, assignLine) for `v = callee(...)`.
 			calleeOfVar := make(map[string]string)

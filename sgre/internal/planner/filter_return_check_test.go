@@ -18,6 +18,7 @@ import (
 
 const rcFixture = `#include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 
 typedef struct { char *buffer; size_t size; } Entry;
 
@@ -108,6 +109,26 @@ void *tp_use_then_return(void) {
     p[0] = 'x';
     return p;
 }
+
+extern void consume(void *p);
+
+int fp_arg_consumed(void) {
+    consume(malloc(16));
+    return 0;
+}
+
+int fp_ternary_checked(void) {
+    char *p = (char *)malloc(16);
+    size_t sz = p ? strlen(p) : 0;
+    return (int)sz;
+}
+
+int fp_assert_checked(void) {
+    char *p = (char *)malloc(16);
+    assert(p != NULL);
+    p[0] = 'x';
+    return 0;
+}
 `
 
 func TestReturnCheckFilter_Convergence(t *testing.T) {
@@ -183,5 +204,16 @@ func TestReturnCheckFilter_Convergence(t *testing.T) {
 	}
 	if s := suspicions["tp_use_then_return"]; s != "confirmed" {
 		t.Errorf("tp_use_then_return: expected confirmed (uses p before return, not a passthrough), got %s", s)
+	}
+	if _, ok := suspicions["fp_ternary_checked"]; ok {
+		t.Errorf("fp_ternary_checked: expected dismissed (ternary condition checks p), got candidate")
+	}
+	if _, ok := suspicions["fp_assert_checked"]; ok {
+		t.Errorf("fp_assert_checked: expected dismissed (assert checks p), got candidate")
+	}
+	if s, ok := suspicions["fp_arg_consumed"]; !ok {
+		t.Errorf("fp_arg_consumed: expected a candidate (AI-worthy argument passthrough), got none")
+	} else if s == "confirmed" {
+		t.Errorf("fp_arg_consumed: expected suspected (argument passthrough), got confirmed")
 	}
 }

@@ -201,10 +201,60 @@ void d_and_return(int q) {
     if (p == NULL && q) { return; }
     p->x = 1;
 }
+
 `
 	result := planNullDerefGuardReview(t, src)
 	if c := candidateForFunc(t, result, "d_and_return"); c == nil {
 		t.Errorf("d_and_return should STAY flagged (p == NULL && q does not prove p non-null on fall-through)")
+	}
+}
+
+// ND-01: explicit dereference operands wrapped in a cast or a post-increment
+// must still resolve to the base pointer, or the null source key never matches
+// and the null-deref is silently dropped.
+func TestNullDeref_GuardReview_ExplicitDerefShapes(t *testing.T) {
+	src := guardReviewPreamble + `
+void nd_cast_deref(void) {
+    void *p = NULL;
+    *(int *)p = 0;
+}
+
+void nd_update_deref(void) {
+    int *p = NULL;
+    *p++ = 0;
+}
+`
+	result := planNullDerefGuardReview(t, src)
+	if c := candidateForFunc(t, result, "nd_cast_deref"); c == nil {
+		t.Errorf("nd_cast_deref should be flagged (*(int *)p with p == NULL)")
+	}
+	if c := candidateForFunc(t, result, "nd_update_deref"); c == nil {
+		t.Errorf("nd_update_deref should be flagged (*p++ with p == NULL)")
+	}
+}
+
+// ND-05: a pointer-typed cast of NULL/0 is a definite null source, not a kill
+// of the previous may-source. Without this, `p = (S *)NULL; p->x;` was missed.
+func TestNullDeref_GuardReview_CastNullAssignment(t *testing.T) {
+	src := guardReviewPreamble + `
+void nd_cast_null(void) {
+    S *p = get_node();
+    p = (S *)NULL;
+    p->x = 1;
+}
+
+void nd_cast_zero(void) {
+    S *p = get_node();
+    p = (S *)0;
+    p->x = 1;
+}
+`
+	result := planNullDerefGuardReview(t, src)
+	if c := candidateForFunc(t, result, "nd_cast_null"); c == nil {
+		t.Errorf("nd_cast_null should be flagged (p = (S *)NULL)")
+	}
+	if c := candidateForFunc(t, result, "nd_cast_zero"); c == nil {
+		t.Errorf("nd_cast_zero should be flagged (p = (S *)0)")
 	}
 }
 

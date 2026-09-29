@@ -464,17 +464,27 @@ func assertGuardedVars(cond parser.Node) []string {
 		}
 		return nil
 	}
-	if cond.Kind() == "binary_expression" && binaryOperator(cond) == "&&" {
+	if cond.Kind() == "binary_expression" && parser.BinaryOperator(cond) == "&&" {
 		var vars []string
 		for _, child := range cond.NamedChildren() {
 			vars = append(vars, assertGuardedVars(child)...)
 		}
 		return vars
 	}
-	text := strings.TrimSpace(cond.Text())
-	if strings.Contains(text, "!=") && (strings.Contains(text, "NULL") || strings.Contains(text, "0")) {
-		if v := extractGuardedVariable(cond); v != "" {
-			return []string{v}
+	if cond.Kind() == "binary_expression" && parser.BinaryOperator(cond) == "!=" {
+		var guarded string
+		hasNull := false
+		for _, op := range cond.NamedChildren() {
+			if parser.IsNullOperand(op) {
+				hasNull = true
+				continue
+			}
+			if v := bareVarName(op); v != "" {
+				guarded = v
+			}
+		}
+		if guarded != "" && hasNull {
+			return []string{guarded}
 		}
 	}
 	if v := bareVarName(cond); v != "" {

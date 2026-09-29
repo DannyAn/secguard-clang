@@ -67,3 +67,23 @@ void no_guard_malloc(void)
 		t.Error("no_guard_malloc: expected >0 candidates (no guard), got 0")
 	}
 }
+
+// ND-08: `assert(p != err0)` compares p against a non-null sentinel, so it does
+// NOT establish p non-null and must not suppress the following dereference.
+func TestNullDeref_AssertNotGuardErr0(t *testing.T) {
+	src := `#include <stdlib.h>
+extern void assert(int expr);
+int err0;
+
+void assert_err0_malloc(void)
+{
+    int *p = malloc(sizeof(int));
+    assert(p != err0);
+    *p = 1;
+}
+`
+	result := planNullDerefGuardExit(t, src)
+	if c := candidateForFunc(t, result, "assert_err0_malloc"); c == nil {
+		t.Errorf("assert_err0_malloc should STAY flagged (assert(p != err0) does not prove p non-null)")
+	}
+}

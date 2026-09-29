@@ -139,6 +139,45 @@ int f(void) {
 	}
 }
 
+// UN-09: an output-parameter write to a whole struct can initialize it on the
+// success path, so the planner must not machine-confirm a struct field read
+// after `fill_ext(&s)`. The AI agent is the only stage that can weigh the
+// inter-procedural write.
+func TestUninitReviewStruct_OutputParamNotConfirmed(t *testing.T) {
+	src := `typedef struct S { int len; } S;
+extern void fill_ext(S *s);
+int f(void) {
+    S s;
+    fill_ext(&s);
+    return s.len;
+}
+`
+	got := uninitHeapStructPlan(t, src)
+	c, ok := got["f|s"]
+	if !ok {
+		t.Fatalf("f (struct field read after output-param write) should stay a candidate, got %v", keys(got))
+	}
+	if c.SuspicionLevel == "confirmed" {
+		t.Errorf("f should be suspected, not confirmed: fill_ext(&s) may initialize s")
+	}
+}
+
+// UN-08: a write through a local pointer that aliases another local initializes
+// the pointee. `*px = 5` must suppress the uninitialized read of x.
+func TestUninitReview_PointerAliasInit(t *testing.T) {
+	src := `int f(void) {
+    int x;
+    int *px = &x;
+    *px = 5;
+    return x;
+}
+`
+	got := uninitHeapStructPlan(t, src)
+	if _, ok := got["f|x"]; ok {
+		t.Errorf("f (x initialized through *px) should be dropped, got %v", keys(got))
+	}
+}
+
 func keys[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
