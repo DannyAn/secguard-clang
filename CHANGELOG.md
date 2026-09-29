@@ -2,6 +2,19 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.8.1] - 2026-09-30
+
+### Issue #122 四子链路检视修复
+
+- **divide-by-zero**：区间 join 对缺失 fact 回退 top，`if (c) d = 0; x / d` 不再被假 confirmed；`if/else` 分支区分 consequence/alternative；static 函数参数零传播按文件隔离。
+- **unchecked-return**：返回值作为实参传递不再误升 confirmed；三目判空与 `assert` 守卫纳入检测与 planner 两侧判定。
+- **uninit**：识别本地指针别名写（`int *px = &x; *px = 5`）；heap/struct confirmed 通道复用 output-param 降级护栏。
+- **null-deref**：显式解引用形状 `*(T*)p` / `*(p)` / `*p++` 结构化解包；`p = (T*)NULL / (T*)0` 识别为 definite null；`assert(p != err0)` 不再误判非空守卫。
+
+### 回归测试
+
+- 补充 DBZ-01/02/03、CR-01/02/03、UN-08/09、ND-01/05/08 的精确 fixture 与收敛断言。
+
 ## [0.8.0] - 2026-09-26
 
 ### 误报 / 漏报修复
