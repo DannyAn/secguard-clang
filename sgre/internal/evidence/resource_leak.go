@@ -3,6 +3,7 @@ package evidence
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -571,15 +572,31 @@ func findAcquireFailureReturns(ifs []parser.Node, returnLines []int, acquireLine
 }
 
 // isErrorCheck reports whether an acquire-guard condition tests the acquire
-// result for failure (`!= 0`, `== -1`, `< 0`, `== NULL`), as opposed to a
-// success test (`== 0`).
+// result for failure (`!= 0`, `== -1`, `< 0`, `== NULL`, `!= SQLITE_OK`), as
+// opposed to a success test (`== 0`). The macro form `rc != SUCCESS_MACRO`
+// covers APIs whose success code is a named constant (SQLITE_OK, E_OK,
+// RET_OK, ...) rather than literal 0.
 func isErrorCheck(condText string) bool {
 	for _, pat := range []string{"!= 0", "!=0", "== -1", "==-1", "< 0", "<0", "== NULL"} {
 		if strings.Contains(condText, pat) {
 			return true
 		}
 	}
+	if m := reNotEqualIdent.FindStringSubmatch(condText); m != nil {
+		return isSuccessCodeMacro(m[1])
+	}
 	return false
+}
+
+var reNotEqualIdent = regexp.MustCompile(`!=\s*([A-Za-z_]\w*)`)
+
+func isSuccessCodeMacro(name string) bool {
+	n := strings.ToUpper(name)
+	return strings.Contains(n, "OK") ||
+		strings.Contains(n, "SUCCESS") ||
+		strings.Contains(n, "NONE") ||
+		n == "NO_ERROR" ||
+		strings.Contains(n, "NO_ERR")
 }
 
 // returnReturnsVar reports whether a return statement returns varName (bare or
