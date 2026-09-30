@@ -45,6 +45,7 @@ var pathSinks = map[string]bool{
 
 func (d *PathTraversalDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
+	globalConsts := buildGlobalConstants(ctx, d.store, d.parser)
 
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		calls := root.FindAll("call_expression")
@@ -59,6 +60,11 @@ func (d *PathTraversalDetector) Detect(ctx context.Context) (DetectResult, error
 				}
 				pathArg := pathArgument(call, name)
 				if pathArg == "" || isStringLiteralText(pathArg) {
+					continue
+				}
+				// A compile-time constant macro/enum path is not
+				// attacker-controlled — skip it.
+				if globalConsts.NonZero(pathArg) || globalConsts.IsZero(pathArg) {
 					continue
 				}
 
