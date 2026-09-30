@@ -358,6 +358,9 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 				suspicion = override
 			}
 		}
+		if props.Tautology == "dead_branch" && suspicion == "confirmed" {
+			suspicion = "suspected"
+		}
 
 		candidates = append(candidates, Candidate{
 			DerefEventID:      e.ID,

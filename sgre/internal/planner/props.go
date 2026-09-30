@@ -50,18 +50,18 @@ type eventProps struct {
 	// Size is the resolved array element count the buffer-overflow detector
 	// attached to a BUFFER_ACCESS event, used by the planner's range-oob filter
 	// to re-verify the index interval against the capacity (BO-01/02).
-	Size    int    `json:"size"`
-	KeySize     int    `json:"key_size"`
-	Reason      string `json:"reason"`
-	CheckFunc   string `json:"check_function"`
-	UseFunc     string `json:"use_function"`
-	PathArg     string `json:"path_arg"`
-	Path        string `json:"path"`       // path-traversal sink argument text
-	FormatArg   string `json:"format_arg"` // format-string sink argument text
-	Mutex       string `json:"mutex"`
-	LockLine    int    `json:"lock_line"`
-	UnlockLine  int    `json:"unlock_line"`
-	Divisor     string `json:"divisor"` // divide-by-zero divisor expression
+	Size       int    `json:"size"`
+	KeySize    int    `json:"key_size"`
+	Reason     string `json:"reason"`
+	CheckFunc  string `json:"check_function"`
+	UseFunc    string `json:"use_function"`
+	PathArg    string `json:"path_arg"`
+	Path       string `json:"path"`       // path-traversal sink argument text
+	FormatArg  string `json:"format_arg"` // format-string sink argument text
+	Mutex      string `json:"mutex"`
+	LockLine   int    `json:"lock_line"`
+	UnlockLine int    `json:"unlock_line"`
+	Divisor    string `json:"divisor"` // divide-by-zero divisor expression
 	// DefinitelyZero is "true" when the divide-by-zero detector proved the
 	// divisor is exactly zero (a literal `x/0` or a zero-valued constant symbol),
 	// so the RangeFilter auto-confirms it instead of deferring to the AI agent.
@@ -84,6 +84,10 @@ type eventProps struct {
 	Expected string `json:"expected"`
 	Actual   string `json:"actual"`
 	Cast     string `json:"cast"`
+	// Tautology is "dead_branch" when a signed-compare comparison is provably
+	// always false (`u < 0`), so the branch is dead code with no runtime impact.
+	// The planner downgrades such findings from "confirmed" to "suspected".
+	Tautology string `json:"tautology"`
 }
 
 func parseEventProps(raw string) eventProps {

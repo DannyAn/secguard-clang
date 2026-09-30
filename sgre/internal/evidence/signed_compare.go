@@ -85,10 +85,15 @@ func (d *SignedCompareDetector) Detect(ctx context.Context) (DetectResult, error
 					continue
 				}
 
-				if emitEvent(ctx, d.store, d.logger, "SIGNED_COMPARE", f.ID, &db.Location{FileID: file.ID, Line: b.StartLine(), Column: b.StartColumn()}, map[string]string{
+				props := map[string]string{
 					"expression": b.Text(),
 					"category":   "signed_compare",
-				}) {
+				}
+				if isDeadBranchTautology(b, declsByName) {
+					props["tautology"] = "dead_branch"
+				}
+
+				if emitEvent(ctx, d.store, d.logger, "SIGNED_COMPARE", f.ID, &db.Location{FileID: file.ID, Line: b.StartLine(), Column: b.StartColumn()}, props) {
 					result.EventsCreated++
 				}
 			}
@@ -233,21 +238,56 @@ func classifyConst(text string) (isConst, negative bool) {
 // negative rather than zero.
 func deadUnsignedCompare(op string, uLeft, negative bool) bool {
 	if negative {
-		// An unsigned value is never equal to a negative literal, so every
-		// ordering comparison against -N is always true or always false.
 		return true
 	}
-	// Against zero only the comparisons whose result can never vary are dead:
-	//   u < 0  → always false
-	//   u >= 0 → always true
-	//   u <= 0 → u == 0 (legitimate)
-	//   u > 0  → u != 0 (legitimate)
 	if uLeft {
 		return op == "<" || op == ">="
 	}
-	//  0 < u  → u > 0  (legitimate)
-	//  0 <= u → u >= 0 (always true)
-	//  0 > u  → u < 0  (always false)
-	//  0 >= u → u <= 0 (legitimate)
 	return op == ">" || op == "<="
+}
+
+// isDeadBranchTautology reports whether the comparison is an always-false
+// dead branch (`u < 0`, `0 > u`) — the branch is never taken, so the dead
+// code is benign with no runtime impact. This is distinguished from
+// always-true tautologies (`u >= 0`, `0 <= u`) which can mask a missing
+// bounds check and remain confirmed.
+func isDeadBranchTautology(b parser.Node, declsByName map[string][]scVarDecl) bool {
+	op := ""
+	for _, child := range b.Children() {
+		switch child.Kind() {
+		case "<", "<=", ">", ">=":
+			op = child.Kind()
+		}
+	}
+	if op == "" {
+		return false
+	}
+	named := b.NamedChildren()
+	if len(named) < 2 {
+		return false
+	}
+	left, right := named[0], named[len(named)-1]
+	line := b.StartLine()
+
+	if decls, ok := declsByName[left.Text()]; ok && isUnsignedAtLine(decls, line) {
+		if ok, negative := classifyConst(right.Text()); ok {
+			return isAlwaysFalse(op, true, negative)
+		}
+	}
+	if decls, ok := declsByName[right.Text()]; ok && isUnsignedAtLine(decls, line) {
+		if ok, negative := classifyConst(left.Text()); ok {
+			return isAlwaysFalse(op, false, negative)
+		}
+	}
+	return false
+}
+
+func isAlwaysFalse(op string, uLeft, negative bool) bool {
+	if negative {
+		return (uLeft && (op == "<" || op == "<=")) || (!uLeft && (op == ">" || op == ">="))
+	}
+	if uLeft {
+		return op == "<"
+	}
+	return op == ">"
 }
