@@ -235,11 +235,11 @@ func computeParamFrees(bodies map[int]parser.Node, f *db.Function, params []stri
 	}
 
 	for idx := range params {
-		if anyFreeReachesFallthrough(cfg, directNodes[idx], terminators) {
+		if allFallthroughPathsFree(cfg, directNodes[idx], terminators) {
 			direct[idx] = true
 		}
 		for fieldName, nodes := range fieldNodes[idx] {
-			if anyFreeReachesFallthrough(cfg, nodes, terminators) {
+			if allFallthroughPathsFree(cfg, nodes, terminators) {
 				field[idx] = append(field[idx], fieldName)
 			}
 		}
@@ -247,19 +247,30 @@ func computeParamFrees(bodies map[int]parser.Node, f *db.Function, params []stri
 	return direct, field
 }
 
-// anyFreeReachesFallthrough reports whether any of the free nodes can reach the
-// exit WITHOUT passing through a terminator (return/break/continue/goto) — i.e.
-// some fall-through path frees the value.
-func anyFreeReachesFallthrough(cfg *graph.StmtCFG, freeNodes map[int]bool, terminators map[int]bool) bool {
+// allFallthroughPathsFree reports whether every fall-through path from entry
+// to exit passes through at least one free node. This is a must-analysis: the
+// free is unconditional only when the caller can assume the parameter is freed
+// after the function returns normally (via fall-through, not via a terminator).
+//
+// `if (cond) free(p);` is conditional — the false branch doesn't free.
+// `if (cond) free(p); else free(p);` is unconditional — both branches free.
+// `free(p); if (cond) return;` is unconditional — the only fall-through path
+// goes through the free.
+func allFallthroughPathsFree(cfg *graph.StmtCFG, freeNodes map[int]bool, terminators map[int]bool) bool {
 	if len(freeNodes) == 0 {
 		return false
 	}
-	for nid := range freeNodes {
-		if cfg.ReachesAvoiding(nid, terminators, cfg.Exit) {
-			return true
-		}
+	if !cfg.ReachesAvoiding(cfg.Entry, terminators, cfg.Exit) {
+		return false
 	}
-	return false
+	avoided := make(map[int]bool, len(terminators)+len(freeNodes))
+	for nid := range terminators {
+		avoided[nid] = true
+	}
+	for nid := range freeNodes {
+		avoided[nid] = true
+	}
+	return !cfg.ReachesAvoiding(cfg.Entry, avoided, cfg.Exit)
 }
 
 // directFree reports whether stmt is a direct `free(x)` expression statement,

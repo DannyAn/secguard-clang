@@ -64,9 +64,8 @@ func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error)
 					// Fast path: use strictly after free in source order.
 					inOrder := use.line > fs.line || (use.line == fs.line && use.column > fs.column)
 					reach := inOrder
-					if !inOrder && fsNode != nil {
-						// Loop back-edge / goto: the free still reaches the use.
-						if useNode := cfg.NodeAt(use.line); useNode != nil {
+					if fsNode != nil {
+						if useNode := cfg.NodeAt(use.line); useNode != nil && useNode.ID != fsNode.ID {
 							reach = cfg.Reaches(fsNode.ID, useNode.ID)
 						}
 					}
