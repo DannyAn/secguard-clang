@@ -213,7 +213,7 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 	retTainted := summaries.retTainted
 	paramTainted := summaries.paramTainted
 
-	flows, paramsByFunc, staticByFunc := f.buildFlows(ctx, byFunc, retTainted, returnsParam, paramTainted)
+	flows, paramsByFunc, staticByFunc, bodies := f.buildFlows(ctx, byFunc, retTainted, returnsParam, paramTainted)
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -241,6 +241,13 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 				dropped = dismiss(dropped, c, f.Name(),
 					fmt.Sprintf("path/format arg %s is a parameter of a static function with no tainted caller", sink))
 			} else {
+				if c.Category == "sql_injection" {
+					if body, ok := bodies[c.FunctionID]; ok && isPassthroughWrapper(body, sink) {
+						dropped = dismiss(dropped, c, f.Name(),
+							fmt.Sprintf("function is a pure passthrough wrapper for %s; no SQL construction in body", sink))
+						continue
+					}
+				}
 				kept = append(kept, c)
 			}
 			continue
@@ -288,10 +295,11 @@ func (f *TaintSourceFilter) sinkVariable(eventsByID map[int64]*db.SecurityEvent,
 	}
 }
 
-func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, retTainted map[string]bool, returnsParam map[string]map[int]bool, paramTainted map[int64]map[int]bool) (map[int64]*flowResult, map[int64]map[string]int, map[int64]bool) {
+func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, retTainted map[string]bool, returnsParam map[string]map[int]bool, paramTainted map[int64]map[int]bool) (map[int64]*flowResult, map[int64]map[string]int, map[int64]bool, map[int64]parser.Node) {
 	flows := make(map[int64]*flowResult, len(byFunc))
 	paramsByFunc := make(map[int64]map[string]int, len(byFunc))
 	staticByFunc := make(map[int64]bool, len(byFunc))
+	bodies := make(map[int64]parser.Node, len(byFunc))
 	cache := newFileParseCache(f.parser)
 	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
 	for fid := range byFunc {
@@ -307,6 +315,7 @@ func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]C
 		if body.Kind() != "compound_statement" {
 			continue
 		}
+		bodies[fid] = body
 
 		genByLine, killByLine := taintEffectsWithCallees(body, retTainted, returnsParam)
 		analyzer := newFlowAnalyzer(f.store, f.parser)
@@ -316,7 +325,7 @@ func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]C
 		paramsByFunc[fid] = paramsOf(fn, root)
 		staticByFunc[fid] = fn.IsStatic
 	}
-	return flows, paramsByFunc, staticByFunc
+	return flows, paramsByFunc, staticByFunc, bodies
 }
 
 // taintedParamsFor returns the parameter NAMES of fn that are tainted, or nil
@@ -1243,4 +1252,42 @@ func paramNamesOfDeclarator(decl parser.Node) []string {
 		}
 	}
 	return out
+}
+func isSQLConstructFunc(name string) bool {
+	if _, ok := apikb.SQLFormatFuncFmtIdx(name); ok {
+		return true
+	}
+	if _, ok := taintCopyFuncs[name]; ok {
+		return true
+	}
+	return false
+}
+
+func isPassthroughWrapper(body parser.Node, sinkParamName string) bool {
+	if sinkParamName == "" {
+		return false
+	}
+	calls := body.FindAll("call_expression")
+	if len(calls) != 1 {
+		return false
+	}
+	if isSQLConstructFunc(callName(calls[0])) {
+		return false
+	}
+	if len(body.FindAll("assignment_expression")) > 0 {
+		return false
+	}
+	if len(body.FindAll("init_declarator")) > 0 {
+		return false
+	}
+	rets := body.FindAll("return_statement")
+	if len(rets) != 1 {
+		return false
+	}
+	for _, arg := range callArgs(calls[0]) {
+		if arg.Kind() == "identifier" && arg.Text() == sinkParamName {
+			return true
+		}
+	}
+	return false
 }

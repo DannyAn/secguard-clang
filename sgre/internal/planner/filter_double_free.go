@@ -37,7 +37,7 @@ func (f *DoubleFreeFilter) Apply(ctx context.Context, candidates []Candidate) ([
 		byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
 	}
 
-	flows, err := f.buildFlows(ctx, byFunc)
+	flows, exclusive, err := f.buildFlows(ctx, byFunc)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -55,6 +55,11 @@ func (f *DoubleFreeFilter) Apply(ctx context.Context, candidates []Candidate) ([
 				fmt.Sprintf("variable %s is reassigned before the second free at line %d", c.VariableName, c.Line))
 			continue
 		}
+		if exclusive[c.DerefEventID] {
+			dropped = dismiss(dropped, c, f.Name(),
+				fmt.Sprintf("first free and second free at line %d are in mutually-exclusive if branches", c.Line))
+			continue
+		}
 		// The first-free state reaches the second free. It is a CERTAIN double-
 		// free only when the first free reaches on every path (must); otherwise
 		// it stays a suspicion for the AI to confirm.
@@ -66,8 +71,9 @@ func (f *DoubleFreeFilter) Apply(ctx context.Context, candidates []Candidate) ([
 	return kept, dropped, nil
 }
 
-func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate) (map[int64]*flowResult, error) {
+func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate) (map[int64]*flowResult, map[int64]bool, error) {
 	flows := make(map[int64]*flowResult, len(byFunc))
+	exclusive := make(map[int64]bool)
 	cache := newFileParseCache(f.parser)
 	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
 	// Batch-load every candidate's event once: the per-candidate GetEventByID
@@ -80,7 +86,7 @@ func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Ca
 	}
 	eventsByID, err := f.store.ListEventsByIDs(ctx, eventIDs)
 	if err != nil {
-		return nil, fmt.Errorf("double free: load events: %w", err)
+		return nil, nil, fmt.Errorf("double free: load events: %w", err)
 	}
 	analyzer := newFlowAnalyzer(f.store, f.parser)
 	aliases := analyzer.loadAliases(ctx, candidateFuncIDs(byFunc))
@@ -122,6 +128,9 @@ func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Ca
 			if !freeAlreadySeeded(genByLine, props.FirstFree, props.Variable) {
 				genByLine[props.FirstFree] = append(genByLine[props.FirstFree], props.Variable)
 			}
+			if mutuallyExclusiveIfs(body, props.FirstFree, c.Line) {
+				exclusive[c.DerefEventID] = true
+			}
 		}
 
 		killByLine := make(map[int][]string)
@@ -141,5 +150,83 @@ func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Ca
 		expandGenToAliases(genByLine, aliases[fid])
 		flows[fid] = analyzer.analyzeFlowMust(ctx, fn, body, root, genByLine, killByLine, false, false)
 	}
-	return flows, nil
+	return flows, exclusive, nil
+}
+func mutuallyExclusiveIfs(body parser.Node, line1, line2 int) bool {
+	if1 := findEnclosingIf(body, line1)
+	if2 := findEnclosingIf(body, line2)
+	if if1 == nil || if2 == nil {
+		return false
+	}
+	if if1.StartLine() == if2.StartLine() {
+		return false
+	}
+	v1, c1, ok1 := ifEqVarConst(*if1)
+	v2, c2, ok2 := ifEqVarConst(*if2)
+	if !ok1 || !ok2 {
+		return false
+	}
+	return v1 == v2 && c1 != c2
+}
+
+func findEnclosingIf(body parser.Node, line int) *parser.Node {
+	ifs := body.FindAll("if_statement")
+	var best *parser.Node
+	for i := range ifs {
+		ifNode := ifs[i]
+		if line < ifNode.StartLine() || line > ifNode.EndLine() {
+			continue
+		}
+		if best == nil || ifNode.EndLine()-ifNode.StartLine() < best.EndLine()-best.StartLine() {
+			best = &ifNode
+		}
+	}
+	return best
+}
+
+func ifEqVarConst(ifNode parser.Node) (varName, constText string, ok bool) {
+	cond := ifNode.ChildByFieldName("condition")
+	if cond == nil {
+		return "", "", false
+	}
+	node := *cond
+	for node.Kind() == "parenthesized_expression" {
+		children := node.NamedChildren()
+		if len(children) == 0 {
+			return "", "", false
+		}
+		node = children[0]
+	}
+	if node.Kind() != "binary_expression" {
+		return "", "", false
+	}
+	if binaryOperatorToken(node) != "==" {
+		return "", "", false
+	}
+	children := node.NamedChildren()
+	if len(children) != 2 {
+		return "", "", false
+	}
+	left, right := children[0], children[1]
+	if left.Kind() == "identifier" && isLiteralNode(right) {
+		return left.Text(), right.Text(), true
+	}
+	if right.Kind() == "identifier" && isLiteralNode(left) {
+		return right.Text(), left.Text(), true
+	}
+	return "", "", false
+}
+
+func isLiteralNode(node parser.Node) bool {
+	switch node.Kind() {
+	case "number_literal", "string_literal", "char_literal":
+		return true
+	case "parenthesized_expression", "cast_expression":
+		for _, c := range node.NamedChildren() {
+			if isLiteralNode(c) {
+				return true
+			}
+		}
+	}
+	return false
 }

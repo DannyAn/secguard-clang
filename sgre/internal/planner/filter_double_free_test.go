@@ -206,3 +206,68 @@ func TestDoubleFreeFilter_MutuallyExclusiveFrees(t *testing.T) {
 		t.Errorf("tp_sequential_free (sequential double-free) must be kept, got %v", candidateNames(result))
 	}
 }
+
+// dfExclusiveIfFixture covers two frees in independent if branches whose
+// conditions compare the same variable against different constants
+// (`mode == 1` / `mode == 2`). The branches are mutually exclusive, so the two
+// frees never execute on the same path and must NOT be reported as a
+// double-free.
+const dfExclusiveIfFixture = `#include <stdlib.h>
+
+int fp_exclusive_if(int mode) {
+    char *p = (char *)malloc(16);
+    if (mode == 1) {
+        free(p);
+    }
+    if (mode == 2) {
+        free(p);
+    }
+    return 0;
+}
+
+int tp_sequential_df(void) {
+    char *p = (char *)malloc(16);
+    free(p);
+    free(p);
+    return 0;
+}
+`
+
+func TestDoubleFreeFilter_MutuallyExclusiveIfBranches(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "df_excl_if.c")
+	if err := os.WriteFile(path, []byte(dfExclusiveIfFixture), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewDoubleFreeDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "double-free")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	kept := map[string]bool{}
+	for _, c := range result.Candidates {
+		kept[c.Target.Function] = true
+	}
+
+	if kept["fp_exclusive_if"] {
+		t.Errorf("fp_exclusive_if (frees in mutually-exclusive if branches) must be suppressed, got %v", candidateNames(result))
+	}
+	if !kept["tp_sequential_df"] {
+		t.Errorf("tp_sequential_df (sequential double-free) must be kept, got %v", candidateNames(result))
+	}
+}

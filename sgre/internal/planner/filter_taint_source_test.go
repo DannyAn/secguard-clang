@@ -1124,3 +1124,71 @@ void mysql_safe(void *conn) {
 		}
 	}
 }
+
+// TestTaintSourceFilter_PassthroughWrapper locks in the suppression of a pure
+// passthrough wrapper for a SQL sink: a non-static function whose body is just
+// `return sink(args)` with the SQL parameter forwarded verbatim and no
+// sprintf/strcat/strcpy construction is NOT an injection source — it does not
+// build SQL, so the injection risk (if any) belongs to the caller, not here.
+func TestTaintSourceFilter_PassthroughWrapper(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "passwrap.c")
+	src := `#include <sqlite3.h>
+#include <stdlib.h>
+#include <stdio.h>
+
+int fp_passthrough_wrapper(sqlite3 *db, const char *sql) {
+    return sqlite3_exec(db, sql, NULL, NULL, NULL);
+}
+
+int tp_with_log(sqlite3 *db, const char *sql) {
+    printf("exec: %s\n", sql);
+    return sqlite3_exec(db, sql, NULL, NULL, NULL);
+}
+
+int tp_constructed_sql(sqlite3 *db) {
+    char buf[256];
+    const char *user = getenv("USER");
+    sprintf(buf, "SELECT * FROM t WHERE u='%s'", user);
+    return sqlite3_exec(db, buf, NULL, NULL, NULL);
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	graph.NewInterprocBuilder(store, p, logger).Build(ctx)
+	evidence.NewInjectionDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "injection")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	byFunc := map[string]EvidenceItem{}
+	for _, c := range result.Candidates {
+		byFunc[c.Target.Function] = c
+	}
+
+	if _, ok := byFunc["fp_passthrough_wrapper"]; ok {
+		t.Errorf("fp_passthrough_wrapper (pure passthrough, no SQL construction) must be suppressed, got %v", candidateNames(result))
+	}
+	if _, ok := byFunc["tp_with_log"]; !ok {
+		t.Errorf("tp_with_log (extra call, not a pure passthrough) must be kept, got %v", candidateNames(result))
+	}
+	if _, ok := byFunc["tp_constructed_sql"]; !ok {
+		t.Errorf("tp_constructed_sql (sprintf-built SQL) must be kept, got %v", candidateNames(result))
+	}
+}
