@@ -98,14 +98,21 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 			// 64-bit (wide) integer variables: a product involving one cannot
 			// overflow a 64-bit result on LP64, so they gate the size-calc flag.
 			wideVars := make(map[string]bool)
+			narrowVars := make(map[string]uint64)
 			for _, v := range scopes[f.StartLine].locals {
 				if isWideIntegerType(v.typ, typedefs) {
 					wideVars[v.name] = true
+				}
+				if m := narrowTypeMax(v.typ, typedefs); m > 0 {
+					narrowVars[v.name] = m
 				}
 			}
 			for name, typ := range globals {
 				if isWideIntegerType(typ, typedefs) {
 					wideVars[name] = true
+				}
+				if m := narrowTypeMax(typ, typedefs); m > 0 {
+					narrowVars[name] = m
 				}
 			}
 
@@ -122,6 +129,13 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 				if !d.feedsIntoSizeCall(calls, expr, f) {
 					continue
 				}
+				// sizeof(header) + payload_len is the IPC/log message buffer
+				// allocation idiom: header is a compile-time constant struct
+				// size (tens of bytes), payload is bounded by channel MTU or
+				// buffer size (KB range) — the sum cannot overflow uint32_t.
+				if isSizeofPlusLen(expr, globalConsts) {
+					continue
+				}
 
 				if emitEvent(ctx, d.store, d.logger, "INTEGER_OVERFLOW", f.ID, &db.Location{FileID: file.ID, Line: expr.StartLine(), Column: expr.StartColumn()}, map[string]string{
 					"expression": expr.Text(),
@@ -131,7 +145,7 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 				}
 			}
 
-			d.detectSizeCalcOverflow(ctx, calls, f, file, influenced, wideVars, assigned, globalConsts, &result)
+			d.detectSizeCalcOverflow(ctx, calls, f, file, influenced, wideVars, narrowVars, assigned, globalConsts, &result)
 			d.detectUnsignedSubUnderflow(ctx, calls, assigns, f, file, scopes[f.StartLine], globals, typedefs, influenced, &result)
 		}
 	})
@@ -453,7 +467,7 @@ type sizeCalcCandidate struct {
 // the AI agent reasons over. This is the AI-fallback tier: static analysis
 // recognizes the risky shape, the model proves or refutes it with call-site
 // and API-contract reasoning.
-func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, calls []parser.Node, f *db.Function, file *db.File, influenced, wideVars map[string]bool, assigned map[string]parser.Node, consts *parser.ConstantEnv, result *DetectResult) {
+func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, calls []parser.Node, f *db.Function, file *db.File, influenced, wideVars map[string]bool, narrowVars map[string]uint64, assigned map[string]parser.Node, consts *parser.ConstantEnv, result *DetectResult) {
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
 			continue
@@ -485,7 +499,7 @@ func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, ca
 			// product the malloc(n * sizeof(T)) / malloc(n * 2) cases cover, but
 			// split across two arguments — the most common allocation idiom in
 			// real code and previously a systematic blind spot (CWE-190).
-			if c := d.callocOverflowCategory(a0, a1, influenced, wideVars, consts); c != "" {
+			if c := d.callocOverflowCategory(a0, a1, influenced, wideVars, narrowVars, consts); c != "" {
 				d.emitIntegerOverflowText(ctx, file, f, call, product, c, result)
 				continue
 			}
@@ -507,7 +521,7 @@ func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, ca
 				}
 				eff = expr
 			}
-			for _, c := range d.sizeCalcExprs(eff, influenced, wideVars, consts) {
+			for _, c := range d.sizeCalcExprs(eff, influenced, wideVars, narrowVars, consts) {
 				d.emitIntegerOverflow(ctx, file, f, c.expr, c.category, result)
 			}
 		}
@@ -523,8 +537,8 @@ func (d *IntegerOverflowDetector) detectSizeCalcOverflow(ctx context.Context, ca
 // A constant * constant, a sizeof(char) (==1) operand, or a CONST below
 // minMulConstOverflow cannot plausibly overflow and returns "". Both argument
 // orders are accepted.
-func (d *IntegerOverflowDetector) callocOverflowCategory(a0, a1 parser.Node, influenced, wideVars map[string]bool, consts *parser.ConstantEnv) string {
-	classify := func(arg parser.Node) (isVar, isParam, isSizeof, isNum, sizeofOne, isWide bool, constValue int) {
+func (d *IntegerOverflowDetector) callocOverflowCategory(a0, a1 parser.Node, influenced, wideVars map[string]bool, narrowVars map[string]uint64, consts *parser.ConstantEnv) string {
+	classify := func(arg parser.Node) (isVar, isParam, isSizeof, isNum, sizeofOne, isWide bool, constValue int, narrowMax uint64) {
 		for arg.Kind() == "parenthesized_expression" {
 			ch := arg.NamedChildren()
 			if len(ch) == 0 {
@@ -534,25 +548,26 @@ func (d *IntegerOverflowDetector) callocOverflowCategory(a0, a1 parser.Node, inf
 		}
 		switch {
 		case isVariableOperand(arg):
-			// A compile-time constant macro/enum is a known value, not a
-			// runtime variable — treat it as a number so calloc(MACRO, n)
-			// does not classify as var*sizeof or var*const overflow.
 			if consts != nil && consts.NonZero(arg.Text()) {
-				return false, false, false, true, false, false, 0
+				return false, false, false, true, false, false, 0, 0
 			}
-			return true, influenced[arg.Text()], false, false, false, wideVars[arg.Text()], 0
+			return true, influenced[arg.Text()], false, false, false, wideVars[arg.Text()], 0, narrowVars[arg.Text()]
 		case arg.Kind() == "sizeof_expression":
-			return false, false, true, false, sizeofIsOne(arg), true, 0 // sizeof is size_t (64-bit)
+			return false, false, true, false, sizeofIsOne(arg), true, 0, 0
 		case arg.Kind() == "number_literal":
-			return false, false, false, true, false, false, parseConstantIndex(arg.Text())
+			return false, false, false, true, false, false, parseConstantIndex(arg.Text()), 0
 		}
 		return
 	}
-	v0, p0, s0, n0, o0, w0, c0 := classify(a0)
-	v1, p1, s1, n1, o1, w1, c1 := classify(a1)
+	v0, p0, s0, n0, o0, w0, c0, nm0 := classify(a0)
+	v1, p1, s1, n1, o1, w1, c1, nm1 := classify(a1)
 	// var * sizeof(T): sizeof promotes the product to size_t (64-bit on LP64),
 	// so it cannot overflow a 64-bit product — not a CWE-190 on LP64.
 	if (v0 && s1 && !o1) || (s0 && !o0 && v1) {
+		return ""
+	}
+	// Two narrow-type vars whose worst-case product fits in size_t — safe.
+	if v0 && v1 && nm0 > 0 && nm1 > 0 && nm0 <= ^uint64(0)/nm1 {
 		return ""
 	}
 	// param * CONST: overflow only when the parameter is a NARROW (<=32-bit)
@@ -713,6 +728,26 @@ func isWideIntegerType(typ string, typedefs *typedefs) bool {
 	return false
 }
 
+// narrowTypeMax returns the maximum value of a narrow unsigned integer type
+// (uint8_t → 255, uint16_t → 65535, uint32_t → 4294967295), or 0 if the type
+// is not a recognized narrow unsigned type. A product of narrow-type operands
+// whose worst-case product fits in size_t (64-bit on LP64) cannot overflow and
+// is safe — this eliminates false positives where `sizeof(T) * vsys_id` with
+// `uint16_t vsys_id` is flagged even though 65535 * sizeof(T) is far below
+// SIZE_MAX.
+func narrowTypeMax(typ string, typedefs *typedefs) uint64 {
+	resolved := resolveType(strings.TrimSpace(typ), typedefs)
+	switch resolved {
+	case "uint8_t", "unsigned char", "_Bool", "bool":
+		return 255
+	case "uint16_t", "unsigned short", "short":
+		return 65535
+	case "uint32_t", "unsigned int", "unsigned":
+		return 4294967295
+	}
+	return 0
+}
+
 func exprTextKey(node parser.Node) string {
 	node = unwrapExprNode(node)
 	return strings.Join(strings.Fields(node.Text()), "")
@@ -767,6 +802,38 @@ func relationalOperator(node parser.Node) string {
 	return ""
 }
 
+// isSizeofPlusLen reports whether expr is a `sizeof(header) + len` or
+// `len + sizeof(header)` sum — the IPC/log message buffer allocation idiom.
+// The sizeof operand is a compile-time constant struct size (tens of bytes),
+// and a compile-time constant macro added to a length is the same idiom.
+// Such a sum cannot overflow uint32_t for realistic payload sizes.
+func isSizeofPlusLen(expr parser.Node, consts *parser.ConstantEnv) bool {
+	if arithOperator(expr) != "+" {
+		return false
+	}
+	children := expr.NamedChildren()
+	if len(children) < 2 {
+		return false
+	}
+	for _, c := range children {
+		n := c
+		for n.Kind() == "parenthesized_expression" {
+			inner := n.NamedChildren()
+			if len(inner) == 0 {
+				break
+			}
+			n = inner[0]
+		}
+		if n.Kind() == "sizeof_expression" {
+			return true
+		}
+		if n.Kind() == "identifier" && consts != nil && consts.NonZero(n.Text()) {
+			return true
+		}
+	}
+	return false
+}
+
 // sizeCalcExprs returns the argument's binary expressions that qualify as a
 // size-calculation overflow. Recognized patterns and their categories:
 //
@@ -781,12 +848,12 @@ func relationalOperator(node parser.Node) string {
 // The operator is read from the anonymous token child (*, +, -), never from the
 // whole text, so `->` member access inside an operand cannot fool the test. A
 // parenthesized argument is unwrapped.
-func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, influenced, wideVars map[string]bool, consts *parser.ConstantEnv) []sizeCalcCandidate {
+func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, influenced, wideVars map[string]bool, narrowVars map[string]uint64, consts *parser.ConstantEnv) []sizeCalcCandidate {
 	nodes := arg.NamedChildren()
 	if arg.Kind() == "parenthesized_expression" && len(nodes) > 0 {
 		var out []sizeCalcCandidate
 		for _, c := range nodes {
-			out = append(out, d.sizeCalcExprs(c, influenced, wideVars, consts)...)
+			out = append(out, d.sizeCalcExprs(c, influenced, wideVars, narrowVars, consts)...)
 		}
 		return out
 	}
@@ -803,8 +870,9 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, influenced, wid
 	// nested sub-expression of a DIFFERENT operator (`b+c` inside `a*(b+c)`)
 	// counts as one opaque operand: it can still overflow but is not a
 	// caller-influenced bare identifier.
-	var varCount, paramCount, numberCount, sizeofCount, wideCount int
+	var varCount, paramCount, numberCount, sizeofCount, wideCount, narrowVarCount int
 	constValue := 0
+	narrowProduct := uint64(1)
 	var collect func(n parser.Node)
 	collect = func(n parser.Node) {
 		for n.Kind() == "parenthesized_expression" {
@@ -827,12 +895,6 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, influenced, wid
 			if strings.Contains(n.Text(), "sizeof") {
 				return
 			}
-			// A compile-time constant macro/enum/const symbol is a known
-			// value, not a runtime variable — count it as a number so
-			// MACRO1*MACRO2 folds as a constant product (varCount stays 0)
-			// instead of a var*var size_calc_overflow false positive. The
-			// product of two compile-time constants that overflows is a
-			// compile-time error (-Woverflow), not a runtime CWE-190.
 			if consts != nil && consts.NonZero(n.Text()) {
 				numberCount++
 				return
@@ -841,6 +903,14 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, influenced, wid
 				wideCount++
 			} else {
 				varCount++
+			}
+			if m, ok := narrowVars[n.Text()]; ok && m > 0 {
+				narrowVarCount++
+				if narrowProduct <= ^uint64(0)/m {
+					narrowProduct *= m
+				} else {
+					narrowProduct = ^uint64(0)
+				}
 			}
 			if influenced[n.Text()] {
 				paramCount++
@@ -891,6 +961,12 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, influenced, wid
 			return nil
 		}
 		if varCount >= 2 {
+			// All operands are narrow-type (uint8_t/uint16_t/uint32_t) and
+			// their worst-case product fits in size_t (64-bit on LP64) —
+			// cannot overflow. E.g. uint16_t a * uint16_t b → max 4294836225.
+			if narrowVarCount == varCount && narrowProduct < ^uint64(0) {
+				return nil
+			}
 			return []sizeCalcCandidate{{arg, "size_calc_overflow"}}
 		}
 		if varCount == 1 && sizeofCount == 1 {
