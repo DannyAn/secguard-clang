@@ -70,9 +70,10 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 		fors := root.FindAll("for_statement")
 		dos := root.FindAll("do_statement")
 		conds := root.FindAll("conditional_expression")
+		switches := root.FindAll("switch_statement")
 
 		for _, f := range funcs {
-			checked := d.checkedVars(ifs, whiles, fors, dos, conds, calls, f)
+			checked := d.checkedVars(ifs, whiles, fors, dos, conds, switches, calls, f)
 			for _, call := range calls {
 				if !funcLineRange(f, call.StartLine()) {
 					continue
@@ -163,7 +164,7 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 // (the allocation's failure is never handled before `p` is used). This mirrors
 // the planner's ReturnCheckFilter (conditionTestsVar) so the detector and the
 // convergence filter agree on what "checked" means.
-func (d *UncheckedReturnDetector) checkedVars(ifs, whiles, fors, dos, conds, calls []parser.Node, f *db.Function) map[string]bool {
+func (d *UncheckedReturnDetector) checkedVars(ifs, whiles, fors, dos, conds, switches, calls []parser.Node, f *db.Function) map[string]bool {
 	set := make(map[string]bool)
 	for _, cond := range [][]parser.Node{ifs, whiles, fors, dos, conds} {
 		for _, node := range cond {
@@ -174,18 +175,27 @@ func (d *UncheckedReturnDetector) checkedVars(ifs, whiles, fors, dos, conds, cal
 			if c == nil {
 				continue
 			}
-			// For a comparison (`p == NULL` / `ret < 0`), register each operand
-			// that IS itself tested; a field/subscript operand is tested as a
-			// whole (`e->buffer == NULL` tests e->buffer, not e).
 			for _, id := range testedOperands(*c) {
 				set[id] = true
 			}
-			// A bare truthiness condition (`if (p)`) tests p directly, and a
-			// disjunction/conjunction of negations (`if (!a || !b || !c)`) —
-			// the delayed merge-check idiom — tests a, b, and c.
 			for _, v := range bareConditionVars(c) {
 				set[v] = true
 			}
+		}
+	}
+	for _, sw := range switches {
+		if !funcLineRange(f, sw.StartLine()) {
+			continue
+		}
+		c := sw.ChildByFieldName("condition")
+		if c == nil {
+			continue
+		}
+		for _, id := range testedOperands(*c) {
+			set[id] = true
+		}
+		if v := bareOperandVar(*c); v != "" {
+			set[v] = true
 		}
 	}
 	for _, call := range calls {
@@ -286,6 +296,16 @@ func bareConditionVars(cond *parser.Node) []string {
 			var vars []string
 			for _, child := range n.NamedChildren() {
 				vars = append(vars, bareConditionVars(&child)...)
+			}
+			return vars
+		}
+		if op == "&" {
+			var vars []string
+			for _, child := range n.NamedChildren() {
+				switch child.Kind() {
+				case "identifier", "field_expression", "subscript_expression":
+					vars = append(vars, child.Text())
+				}
 			}
 			return vars
 		}
@@ -470,9 +490,10 @@ func (d *UncheckedReturnDetector) passthroughAllocFuncs(ctx context.Context) (ma
 		fors := root.FindAll("for_statement")
 		dos := root.FindAll("do_statement")
 		conds := root.FindAll("conditional_expression")
+		switches := root.FindAll("switch_statement")
 
 		for _, f := range funcs {
-			checked := d.checkedVars(ifs, whiles, fors, dos, conds, calls, f)
+			checked := d.checkedVars(ifs, whiles, fors, dos, conds, switches, calls, f)
 
 			// var -> (callee, assignLine) for `v = callee(...)`.
 			calleeOfVar := make(map[string]string)
