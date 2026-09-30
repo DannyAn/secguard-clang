@@ -32,6 +32,14 @@ type returnSummaryResolver struct {
 	fnByID     map[int64]*db.Function
 	fileByID   map[int64]*db.File
 
+	// globalConsts is the merge of every translation unit's compile-time
+	// constants (object-like macros, enumerators, const variables). It lets
+	// funcNonZero resolve a `return GRAN_300;` whose GRAN_300 is defined in a
+	// header file included by the function's .c file — the per-file
+	// CollectConstantSymbols only sees the current TU's preproc_def nodes and
+	// misses #include'd headers.
+	globalConsts *parser.ConstantEnv
+
 	memo     map[int64]bool
 	visiting map[int64]bool
 }
@@ -54,7 +62,25 @@ func newReturnSummaryResolver(ctx context.Context, store db.Store, p *parser.Par
 		}
 	}
 	r.fileByID = listFilesByID(ctx, store)
+	r.globalConsts = r.buildGlobalConstants()
 	return r
+}
+
+// buildGlobalConstants parses every file in the scan tree and merges their
+// compile-time constant environments into one. A symbol defined identically
+// across files (the common case — a shared header) survives the merge; a
+// symbol with conflicting values (nonZero in one TU, zero in another) is
+// dropped so neither NonZero nor IsZero reports it.
+func (r *returnSummaryResolver) buildGlobalConstants() *parser.ConstantEnv {
+	env := parser.NewConstantEnv()
+	for _, file := range r.fileByID {
+		root := r.cache.rootForFile(file)
+		if root.Kind() == "" {
+			continue
+		}
+		env.Merge(parser.CollectConstantSymbols(root))
+	}
+	return env
 }
 
 // callResult implements the buildRangeEffects callResult resolver callback: it
@@ -115,7 +141,10 @@ func (r *returnSummaryResolver) funcNonZero(fnID int64) bool {
 	}
 
 	flow := analyzeRanges(fn, body)
-	consts := parser.CollectConstantSymbols(root)
+	consts := r.globalConsts
+	if consts == nil {
+		consts = parser.CollectConstantSymbols(root)
+	}
 	returns := body.FindAll("return_statement")
 	if len(returns) == 0 {
 		r.memo[fnID] = false

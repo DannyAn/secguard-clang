@@ -32,6 +32,32 @@ func (e *ConstantEnv) IsZero(name string) bool {
 	return e.zero[strings.TrimSpace(name)]
 }
 
+// Merge merges other into e. A symbol that is nonZero in one env and zero in
+// another is a conflict (the symbol has different values in different
+// translation units) and is dropped from both maps so neither NonZero nor
+// IsZero will report it — the conservative outcome for an undeterminable name.
+func (e *ConstantEnv) Merge(other *ConstantEnv) {
+	if other == nil {
+		return
+	}
+	for name := range other.nonZero {
+		if e.zero[name] {
+			delete(e.nonZero, name)
+			delete(e.zero, name)
+			continue
+		}
+		e.nonZero[name] = true
+	}
+	for name := range other.zero {
+		if e.nonZero[name] {
+			delete(e.nonZero, name)
+			delete(e.zero, name)
+			continue
+		}
+		e.zero[name] = true
+	}
+}
+
 // CollectConstantSymbols scans a translation unit for compile-time integer
 // constants with a determinable value: object-like AND constant-bodied
 // function-like macros (`#define X 20`, `#define WORKERS() 8`), enumerators

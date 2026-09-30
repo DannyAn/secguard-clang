@@ -73,6 +73,31 @@ func buildGlobalTypedefs(ctx context.Context, store db.Store, p *parser.Parser) 
 	return t
 }
 
+// buildGlobalConstants parses every file in the scan tree and merges their
+// compile-time constant environments (object-like macros, enumerators, const
+// variables) into one. It lets the integer-overflow detector treat
+// `malloc(MACRO1 * MACRO2)` as a constant product (not a var*var overflow)
+// when the macros are defined in a header file included by the current TU.
+func buildGlobalConstants(ctx context.Context, store db.Store, p *parser.Parser) *parser.ConstantEnv {
+	env := parser.NewConstantEnv()
+	files, err := store.ListFiles(ctx)
+	if err != nil {
+		return env
+	}
+	for _, file := range files {
+		source, err := os.ReadFile(file.Path)
+		if err != nil {
+			continue
+		}
+		tree, err := p.ParseCached(source, file.Path)
+		if err != nil {
+			continue
+		}
+		env.Merge(parser.CollectConstantSymbols(tree.RootNode()))
+	}
+	return env
+}
+
 // addRoot merges every typedef declaration in a file's root node, overriding any
 // earlier definition of the same name (so the current file wins over the global
 // pass).
