@@ -96,13 +96,14 @@ func (f *IntOverflowGuardFilter) Apply(ctx context.Context, candidates []Candida
 			if b, ok := bounds[op]; ok && b > 0 && b < guardMaxBound {
 				continue
 			}
-			// No guard: fall back to the interval engine. op ∈ [lo, hi] with
-			// 0 <= lo and hi < guardMaxBound proves op is a small non-negative
-			// constant on every path (`size_t n = 10; malloc(n * n)`).
 			if flow != nil {
 				if r := flow.at(op, c.Line); r.lo >= 0 && r.hi < guardMaxBound {
 					continue
 				}
+			}
+			if hasOverflowCheckGuard(c, bodies, operands) {
+				allBounded = true
+				break
 			}
 			allBounded = false
 			break
@@ -366,4 +367,86 @@ func identifiersInExpr(text string) []string {
 	}
 	flush()
 	return ids
+}
+
+// hasOverflowCheckGuard reports whether the function body contains an explicit
+// overflow-check guard before the candidate line: an early-return if-statement
+// whose condition compares a multiplication operand against a division
+// expression (`if (n > SIZE_MAX / sz) return NULL;`). This is the allocator
+// wrapper idiom — the guard proves n * sz does not overflow, so the candidate
+// is a false positive.
+func hasOverflowCheckGuard(c Candidate, bodies map[int64]parser.Node, operands []string) bool {
+	body, ok := bodies[c.FunctionID]
+	if !ok {
+		return false
+	}
+	operandSet := make(map[string]bool, len(operands))
+	for _, op := range operands {
+		operandSet[op] = true
+	}
+	for _, ifNode := range body.FindAll("if_statement") {
+		if ifNode.StartLine() >= c.Line {
+			continue
+		}
+		cond := ifNode.ChildByFieldName("condition")
+		cons := ifNode.ChildByFieldName("consequence")
+		if cond == nil || cons == nil {
+			continue
+		}
+		if !isEarlyExit(*cons) {
+			continue
+		}
+		if overflowGuardMatchesOperands(*cond, operandSet) {
+			return true
+		}
+	}
+	return false
+}
+
+func isEarlyExit(stmt parser.Node) bool {
+	for _, kind := range []string{"return_statement", "goto_statement"} {
+		if stmt.FindFirst(kind) != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func overflowGuardMatchesOperands(cond parser.Node, operands map[string]bool) bool {
+	for cond.Kind() == "parenthesized_expression" {
+		ch := cond.NamedChildren()
+		if len(ch) == 0 {
+			return false
+		}
+		cond = ch[0]
+	}
+	if cond.Kind() != "binary_expression" {
+		return false
+	}
+	op := binaryOperatorToken(cond)
+	if op != ">" && op != ">=" && op != "<" && op != "<=" {
+		return false
+	}
+	children := cond.NamedChildren()
+	if len(children) != 2 {
+		return false
+	}
+	for i, child := range children {
+		if name := operandPathName(child); name != "" && operands[name] {
+			other := children[1-i]
+			if containsDivision(other) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func containsDivision(node parser.Node) bool {
+	for _, b := range node.FindAll("binary_expression") {
+		if binaryOperatorToken(b) == "/" {
+			return true
+		}
+	}
+	return false
 }
