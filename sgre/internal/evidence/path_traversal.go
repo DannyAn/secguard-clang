@@ -49,7 +49,24 @@ func (d *PathTraversalDetector) Detect(ctx context.Context) (DetectResult, error
 
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		calls := root.FindAll("call_expression")
+		// Build a set of function start lines that are pure passthrough
+		// wrappers — their body is just `return sink(param);` or
+		// `sink(param);` with the path argument forwarded from a function
+		// parameter. The traversal risk is at the caller, not the wrapper.
+		wrapperLines := make(map[int]bool)
+		for _, fnNode := range root.FindAll("function_definition") {
+			params := make(map[string]bool)
+			for _, p := range findParamsInDefinition(fnNode) {
+				params[p] = true
+			}
+			if body := fnNode.FindFirst("compound_statement"); body != nil && isPassthroughPathWrapper(*body, params) {
+				wrapperLines[fnNode.StartLine()] = true
+			}
+		}
 		for _, f := range funcs {
+			if wrapperLines[f.StartLine] {
+				continue
+			}
 			for _, call := range calls {
 				if !funcLineRange(f, call.StartLine()) {
 					continue
@@ -62,8 +79,6 @@ func (d *PathTraversalDetector) Detect(ctx context.Context) (DetectResult, error
 				if pathArg == "" || isStringLiteralText(pathArg) {
 					continue
 				}
-				// A compile-time constant macro/enum path is not
-				// attacker-controlled — skip it.
 				if globalConsts.NonZero(pathArg) || globalConsts.IsZero(pathArg) {
 					continue
 				}
@@ -79,6 +94,40 @@ func (d *PathTraversalDetector) Detect(ctx context.Context) (DetectResult, error
 		}
 	})
 	return result, err
+}
+
+// isPassthroughPathWrapper reports whether a function body is a pure
+// passthrough wrapper for a path sink: the body contains only return/expression
+// statements (no declarations, no if/for/while), at least one of which calls a
+// path sink with a function-parameter argument. Such a wrapper
+// (`bool is_file_exist(const char *p) { return fopen(p, F_OK) == 0; }`)
+// forwards the path without constructing it — the traversal risk is at the
+// caller, not at the wrapper definition.
+func isPassthroughPathWrapper(body parser.Node, params map[string]bool) bool {
+	if body.Kind() != "compound_statement" {
+		return false
+	}
+	stmts := body.NamedChildren()
+	if len(stmts) == 0 || len(stmts) > 2 {
+		return false
+	}
+	for _, stmt := range stmts {
+		switch stmt.Kind() {
+		case "return_statement", "expression_statement":
+		default:
+			return false
+		}
+	}
+	for _, call := range body.FindAll("call_expression") {
+		name := extractCallName(call)
+		if !pathSinks[name] {
+			continue
+		}
+		if params[pathArgument(call, name)] {
+			return true
+		}
+	}
+	return false
 }
 
 // pathArgument returns the path argument of a filesystem call. openat takes

@@ -62,6 +62,7 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 	}
 
 	resolver := newReturnSummaryResolver(ctx, f.store, f.parser)
+	invariants := buildGlobalInvariants(ctx, f.store, f.parser)
 	flows := f.buildFlows(ctx, byFunc, resolver)
 
 	kept := make([]Candidate, 0, len(candidates))
@@ -75,6 +76,7 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 			kept = append(kept, c)
 			continue
 		}
+
 		flow := flows[c.FunctionID]
 		if flow == nil {
 			kept = append(kept, c)
@@ -91,6 +93,14 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 				continue
 			}
 			kept = append(kept, c)
+			continue
+		}
+		// A global/field divisor proven non-zero by a cross-function
+		// invariant (registered after a zero-check guard, backfilled with
+		// a default, etc.) is safe.
+		if invariants.NonZero(divisor) {
+			dropped = dismiss(dropped, c, f.Name(),
+				fmt.Sprintf("divisor %s is proven non-zero by a cross-function invariant at line %d", divisor, c.Line))
 			continue
 		}
 		r := flow.at(divisor, c.Line)
