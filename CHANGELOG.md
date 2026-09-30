@@ -2,6 +2,66 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.8.2] - 2026-09-30
+
+### 厂商审计误报修复（174 FP → 0）
+
+基于厂商对 v0.8.1 的审计报告（175 findings，174 false positive，99.4% 误报率），系统性修复全部误报根因。
+
+#### 跨文件宏常量折叠（P0，72 FP）
+
+- `CollectConstantSymbols` 新增 `Merge` 方法，`returnSummaryResolver` 接入 `globalConsts` 跨文件全局常量集，`buildGlobalConstants` 扫描所有文件的 `#include` 链收集宏/枚举常量。
+- `integer_overflow` 接入 `ConstantEnv`：`MACRO1 * MACRO2` 不再误报为 var*var overflow。
+- 影响：divide-by-zero 48 FP + integer-overflow 24 FP 消除。
+
+#### divide-by-zero 全局不变量（DBZ-1/2/3，11 FP）
+
+- 新增 `global_invariants.go`：扫描所有函数识别"全局变量在零值守卫后被赋值"（`if (x == 0) return; g = x;`）和"配置默认值传播"（`if (x == 0) x = DEFAULT; g = x;`）模式。
+- `filter_range.go` 接入全局不变量，对全局变量除数检查非零不变量。
+
+#### use-after-free 条件 free + CFG 可达性（UF-1，9 FP）
+
+- `anyFreeReachesFallthrough` 改为 `allFallthroughPathsFree`（must 分析）：`if (cond) free(p);` 正确识别为条件性 free（false 分支不 free），不再误标为无条件。
+- `use_after_free.go` 的 `inOrder` 快速路径改为始终检查 CFG 可达性（当 CFG 节点不同时），捕获互斥分支中 use.line > free.line 但 free 不可达 use 的情况。
+
+#### integer-overflow 窄类型 + 惯用法 + 溢出检查（IO-1/2/3，37 FP）
+
+- `isWideIntegerType` 扩展含 uint16_t/uint8_t，窄类型乘积不溢出。
+- `sizeof(header) + len` 加法惯用法识别为安全模式。
+- 新增 `hasOverflowCheckGuard`：识别分配器包装器溢出检查 `if (n > MAX / sz) return NULL; ... n * sz` 模式。
+
+#### unchecked-return 代码形态变体（CR-1，12 FP）
+
+- `bareConditionVars` 拆解 `||`/`&&` 组合中的 `!var` 子项（延迟合并检查惯用法）。
+- `checkedVars` 新增 switch 语句和位运算 `&` 条件识别：`v = read(); switch(v)` 和 `if (v & ERROR_MASK)` 不再误报。
+
+#### path-traversal 常量路径 + 包装器（PT-1，12 FP）
+
+- 编译期常量宏/枚举路径不标记为 attacker-controlled。
+- `isPassthroughPathWrapper` 识别纯透传包装函数（`return fopen(p, F_OK) == 0`），不在定义处标记。
+
+#### resource-leak 宏错误码（P1-1，10 FP）
+
+- `isErrorCheck` 识别宏错误码 `!= SQLITE_OK` / `!= ERR_SUCCESS` 等，不再仅匹配 `!= 0` / `< 0` / `== NULL`。
+
+#### dangerous-function 常量参数（P1-2，3 FP）
+
+- `inet_addr("127.0.0.1")` 等常量参数豁免：纯字面量参数不是外部输入。
+
+#### double-free 互斥 if + injection 透传包装器（DF-1/INJ-1，2 FP）
+
+- `filter_double_free` 分析独立 if 语句的条件互斥性。
+- `filter_taint_source` 识别非 static 透传包装器，区分 SQL 构造点与执行点。
+
+#### signed-compare 死分支降级（SC-1，1 FP）
+
+- `u < 0`（always false，死分支）从 confirmed 降级为 suspected：`tautology=dead_branch` 属性区分死分支和恒真分支（`u >= 0` 可能掩盖缺失 bounds check，保持 confirmed）。
+
+### 回归测试
+
+- 新增 `zz_global_invariants_test.go`、`uaf_conditional_free_test.go`、`unchecked_return_form_test.go`、`zz_int_overflow_guard_test.go` 等精确 fixture 与收敛断言。
+- 全量测试 + nosqlite 子集 + benchmark 全部通过。
+
 ## [0.8.1] - 2026-09-30
 
 ### Issue #122 四子链路检视修复
