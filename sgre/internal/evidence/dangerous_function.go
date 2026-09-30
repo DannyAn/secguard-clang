@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -59,13 +60,32 @@ var bannedFunctions = map[string]bool{
 	"bzero":         true, // CWE-477: obsolete BSD, replaced by memset
 }
 
+// paramSensitiveBanned lists banned functions whose risk depends on the
+// argument being attacker-controlled. A call with a compile-time constant
+// argument (a string literal or a #define macro) is safe — the danger of
+// inet_addr is injection/overflow via a runtime-controlled IP string, not the
+// function itself. gethostbyname/gethostbyaddr are NOT here: their CWE-477
+// risk is API obsolescence (should migrate to getaddrinfo), independent of
+// the argument. gets/mktemp/tmpnam/bcmp/bcopy/bzero are also NOT here: their
+// danger is inherent.
+var paramSensitiveBanned = map[string]bool{
+	"inet_addr": true,
+}
+
 func (d *DangerousFunctionDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
+	globalConsts := buildGlobalConstants(ctx, d.store, d.parser)
 
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		for _, call := range root.FindAll("call_expression") {
 			name := extractCallName(call)
 			if !d.banned[name] {
+				continue
+			}
+			// A param-sensitive ban (inet_addr, gethostbyname, ...) with a
+			// compile-time constant argument is safe — the injection risk
+			// requires a runtime-controlled value.
+			if paramSensitiveBanned[name] && hasConstantArg(call, globalConsts) {
 				continue
 			}
 			fnID := enclosingFuncID(call, funcs)
@@ -79,4 +99,21 @@ func (d *DangerousFunctionDetector) Detect(ctx context.Context) (DetectResult, e
 		}
 	})
 	return result, err
+}
+
+// hasConstantArg reports whether a call's first argument is a compile-time
+// constant: a string literal, a #define macro, or an enum value.
+func hasConstantArg(call parser.Node, consts *parser.ConstantEnv) bool {
+	args := getCallArgs(call)
+	if len(args) == 0 {
+		return false
+	}
+	arg := strings.TrimSpace(args[0].Text())
+	if isStringLiteralText(arg) {
+		return true
+	}
+	if consts != nil && (consts.NonZero(arg) || consts.IsZero(arg)) {
+		return true
+	}
+	return false
 }
