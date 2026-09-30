@@ -180,8 +180,10 @@ func (d *UncheckedReturnDetector) checkedVars(ifs, whiles, fors, dos, conds, cal
 			for _, id := range testedOperands(*c) {
 				set[id] = true
 			}
-			// A bare truthiness condition (`if (p)`) tests p directly.
-			if v := bareConditionVar(c); v != "" {
+			// A bare truthiness condition (`if (p)`) tests p directly, and a
+			// disjunction/conjunction of negations (`if (!a || !b || !c)`) —
+			// the delayed merge-check idiom — tests a, b, and c.
+			for _, v := range bareConditionVars(c) {
 				set[v] = true
 			}
 		}
@@ -248,23 +250,24 @@ func testedOperandVar(operand parser.Node) string {
 	return ""
 }
 
-// bareConditionVar returns the variable name when a condition is a bare
-// identifier (`if (p)`) or its negation (`if (!p)` / `if (!e->buffer)`),
-// unwrapping parentheses, or "" for any other shape.
-func bareConditionVar(cond *parser.Node) string {
+// bareConditionVars returns the variable names a condition tests directly via
+// bare truthiness (`if (p)`) or negation (`if (!p)` / `if (!e->buffer)`), and
+// recurses into `||`/`&&` combinations so the delayed merge-check idiom
+// `if (!a || !b || !c)` registers a, b, and c. Parentheses are unwrapped.
+func bareConditionVars(cond *parser.Node) []string {
 	if cond == nil {
-		return ""
+		return nil
 	}
 	n := *cond
 	for n.Kind() == "parenthesized_expression" {
 		inner := n.NamedChildren()
 		if len(inner) == 0 {
-			return ""
+			return nil
 		}
 		n = inner[0]
 	}
 	if n.Kind() == "identifier" {
-		return n.Text()
+		return []string{n.Text()}
 	}
 	// `if (!p)` / `if (!e->buffer)` — the negation of the variable itself is a
 	// null/error check; negating a derived value (`if (!(p->len > 0))`) is not.
@@ -272,11 +275,22 @@ func bareConditionVar(cond *parser.Node) string {
 		for _, child := range n.NamedChildren() {
 			switch child.Kind() {
 			case "identifier", "field_expression", "subscript_expression":
-				return child.Text()
+				return []string{child.Text()}
 			}
 		}
 	}
-	return ""
+	// Recurse into || / && so `if (!a || !b || !c)` registers a, b, c.
+	if n.Kind() == "binary_expression" {
+		op := parser.BinaryOperator(n)
+		if op == "||" || op == "&&" {
+			var vars []string
+			for _, child := range n.NamedChildren() {
+				vars = append(vars, bareConditionVars(&child)...)
+			}
+			return vars
+		}
+	}
+	return nil
 }
 
 // callResultChecked reports whether the call's value is consumed directly by a
