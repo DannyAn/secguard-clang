@@ -43,6 +43,7 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, l
 
 		for _, f := range funcs {
 			params := extractFunctionParamsFrom(funcDefs, f.StartLine)
+			pointerParams := extractPointerParamsFrom(funcDefs, f.StartLine)
 
 			paramWrites, paramCondWrites := computeParamWriteStates(bodies, f, params)
 			s := &FuncSummary{
@@ -52,7 +53,7 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, l
 				ParamConditionalWrites: paramCondWrites,
 			}
 
-			s.ParamDirectFrees, s.ParamFieldFrees = computeParamFrees(bodies, f, params)
+			s.ParamDirectFrees, s.ParamFieldFrees = computeParamFrees(bodies, f, params, pointerParams)
 
 			for _, call := range calls {
 				if !funcLineRange(f, call.StartLine()) {
@@ -181,7 +182,7 @@ func nullGuardedWrite(stmt parser.Node, p string) bool {
 // resumes only on paths where the free did NOT happen, so propagating it would
 // be a false positive (cf. gz_look freeing state->out on a malloc-failure path).
 // A NULL-guard `if (p != NULL) free(p)` falls through, so it is unconditional.
-func computeParamFrees(bodies map[int]parser.Node, f *db.Function, params []string) (map[int]bool, map[int][]string) {
+func computeParamFrees(bodies map[int]parser.Node, f *db.Function, params []string, pointerParams map[string]bool) (map[int]bool, map[int][]string) {
 	direct := make(map[int]bool)
 	field := make(map[int][]string)
 	body := bodies[f.StartLine]
@@ -218,11 +219,20 @@ func computeParamFrees(bodies map[int]parser.Node, f *db.Function, params []stri
 				continue
 			}
 			if fieldName == "" {
+				// A whole-variable free only frees a pointer/array param. A
+				// scalar count/flag param (`free(max_num)`) is not a real free,
+				// so skip it — otherwise a caller passing the same constant to
+				// two calls reads as a double-free of the count.
+				if !pointerParams[p] {
+					continue
+				}
 				if directNodes[idx] == nil {
 					directNodes[idx] = map[int]bool{}
 				}
 				directNodes[idx][n.ID] = true
 			} else {
+				// A field free (`free(p->f)`) is always a pointer free no matter
+				// what p's type is, so it is not gated on pointer-ness.
 				if fieldNodes[idx] == nil {
 					fieldNodes[idx] = map[string]map[int]bool{}
 				}
@@ -559,6 +569,75 @@ func extractFunctionParamsFrom(funcDefs []parser.Node, startLine int) []string {
 		}
 	}
 	return nil
+}
+
+func extractPointerParamsFrom(funcDefs []parser.Node, startLine int) map[string]bool {
+	pointerParams := make(map[string]bool)
+	for _, fnNode := range funcDefs {
+		if fnNode.StartLine() != startLine {
+			continue
+		}
+		for _, child := range fnNode.NamedChildren() {
+			if child.Kind() == "function_declarator" {
+				collectPointerParams(child, pointerParams)
+			}
+			if child.Kind() == "pointer_declarator" {
+				for _, gc := range child.NamedChildren() {
+					if gc.Kind() == "function_declarator" {
+						collectPointerParams(gc, pointerParams)
+					}
+				}
+			}
+		}
+	}
+	return pointerParams
+}
+
+func collectPointerParams(decl parser.Node, pointerParams map[string]bool) {
+	for _, child := range decl.NamedChildren() {
+		if child.Kind() != "parameter_list" {
+			continue
+		}
+		for _, param := range child.NamedChildren() {
+			if param.Kind() != "parameter_declaration" {
+				continue
+			}
+			if isPointerParam(param) {
+				if v := extractVarFromDeclarator(param); v != "" {
+					pointerParams[v] = true
+				}
+			}
+		}
+	}
+}
+
+func isPointerParam(param parser.Node) bool {
+	ptr := false
+	scalar := false
+	aggregate := false
+	for _, child := range param.NamedChildren() {
+		switch child.Kind() {
+		case "pointer_declarator", "abstract_pointer_declarator",
+			"array_declarator", "abstract_array_declarator":
+			ptr = true
+		case "primitive_type", "sized_type_specifier":
+			scalar = true
+		case "struct_specifier", "union_specifier", "enum_specifier":
+			aggregate = true
+		}
+	}
+	if ptr {
+		return true
+	}
+	if scalar || aggregate {
+		return false
+	}
+	// A typedef name (type_identifier) whose target is not visible here. It may
+	// hide a pointer (`typedef struct X *X_t`) or a scalar (`typedef unsigned
+	// int u32`). Treat it as a pointer so genuine double-frees through
+	// typedef'd pointer params are never missed; only unambiguous scalars are
+	// excluded.
+	return true
 }
 
 func contains(slice []string, s string) bool {
