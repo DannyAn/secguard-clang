@@ -138,7 +138,7 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 				}
 
 				if emitEvent(ctx, d.store, d.logger, "INTEGER_OVERFLOW", f.ID, &db.Location{FileID: file.ID, Line: expr.StartLine(), Column: expr.StartColumn()}, map[string]string{
-					"expression": expr.Text(),
+					"expression": expr.OriginalText(),
 					"category":   "integer_overflow",
 				}) {
 					result.EventsCreated++
@@ -156,6 +156,14 @@ type integerOverflowTypeScope struct {
 	locals []scopedVarDecl
 	params map[string]bool
 }
+
+// unknownType is the type marker assigned to a variable declared through a
+// typeof(...) rewrite. The preprocessor masks `typeof(expr)` as `void *` so
+// tree-sitter can parse it, which destroys the real type (a double becomes a
+// pointer); type-sensitive checks must treat such a variable as UNKNOWN rather
+// than trust the masked `void *`. It is deliberately not a valid C type spelling
+// so no real declaration can collide with it.
+const unknownType = "<typeof-unknown>"
 
 // buildIntegerOverflowTypeScopes resolves the variable types needed by the
 // unsigned-subtraction check. It includes parameters, locals, and file-scope
@@ -175,8 +183,12 @@ func buildIntegerOverflowTypeScopes(root parser.Node, funcs []*db.Function, type
 			continue
 		}
 		owner := functionContainingLine(funcs, line)
+		typeofDecl := decl.TypeofTypeSpecifier()
 		for _, v := range vars {
 			typ := base + starSuffix(v.stars)
+			if typeofDecl {
+				typ = unknownType
+			}
 			if owner == nil {
 				globals[v.name] = typ
 				continue
@@ -198,6 +210,9 @@ func buildIntegerOverflowTypeScopes(root parser.Node, funcs []*db.Function, type
 			continue
 		}
 		typ := typeSpelling(param)
+		if param.TypeofTypeSpecifier() {
+			typ = unknownType
+		}
 		name := extractVarFromDeclarator(param)
 		if typ == "" || name == "" || parser.IsCTypeKeyword(name) {
 			continue

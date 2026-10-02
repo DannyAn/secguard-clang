@@ -64,7 +64,7 @@ func (d *ArgumentInjectionDetector) detectArgumentInjection(ctx context.Context,
 			"function":   callName,
 			"category":   "argument_injection",
 			"variable":   variable,
-			"expression": call.Text(),
+			"expression": call.OriginalText(),
 		}) {
 			result.EventsCreated++
 		}

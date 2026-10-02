@@ -182,7 +182,7 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 		if emitEvent(ctx, d.store, d.logger, "BUFFER_ACCESS", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
 			"function":   callName,
 			"category":   category,
-			"expression": call.Text(),
+			"expression": call.OriginalText(),
 		}) {
 			result.EventsCreated++
 		}
@@ -287,7 +287,7 @@ func (d *BufferOverflowDetector) emitBoundedCopy(ctx context.Context, f *db.Func
 	if emitEvent(ctx, d.store, d.logger, "BUFFER_ACCESS", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
 		"function":     callName,
 		"category":     category,
-		"expression":   call.Text(),
+		"expression":   call.OriginalText(),
 		"copy_size":    copySize,
 		"dst_capacity": dstCapacity,
 	}) {
@@ -408,7 +408,7 @@ func (d *BufferOverflowDetector) emitSecure(ctx context.Context, f *db.Function,
 	if emitEvent(ctx, d.store, d.logger, "BUFFER_ACCESS", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
 		"function":      callName,
 		"category":      category,
-		"expression":    call.Text(),
+		"expression":    call.OriginalText(),
 		"size_argument": sizeArg,
 		"dst_capacity":  dstCapacity,
 	}) {
@@ -1359,7 +1359,7 @@ func (d *BufferOverflowDetector) detectFormatOverflow(ctx context.Context, f *db
 			if emitEvent(ctx, d.store, d.logger, "BUFFER_ACCESS", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
 				"function":   callName,
 				"category":   category,
-				"expression": call.Text(),
+				"expression": call.OriginalText(),
 			}) {
 				result.EventsCreated++
 			}

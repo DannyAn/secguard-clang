@@ -89,7 +89,7 @@ func (d *SizeofMisuseDetector) Detect(ctx context.Context) (DetectResult, error)
 					category = "sizeof_pointer"
 				}
 				if emitEvent(ctx, d.store, d.logger, "SIZEOF_MISUSE", f.ID, &db.Location{FileID: file.ID, Line: se.StartLine(), Column: se.StartColumn()}, map[string]string{
-					"expression": se.Text(),
+					"expression": se.OriginalText(),
 					"variable":   operand,
 					"category":   category,
 				}) {

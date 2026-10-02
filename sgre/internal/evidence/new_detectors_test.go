@@ -111,6 +111,24 @@ func TestNewDetector_DivideByZero_TernaryBranch(t *testing.T) {
 	}
 }
 
+// TestNewDetector_DivideByZero_TypeofUnknownType locks in TF-04: a variable
+// declared through typeof(expr) has its real type masked to void * by the
+// preprocessor. The detector must treat that type as UNKNOWN and NOT flag its
+// division as an integer divide-by-zero (it could be IEEE 754 float division,
+// which cannot trap). The plain integer division in the same file is the
+// positive control.
+func TestNewDetector_DivideByZero_TypeofUnknownType(t *testing.T) {
+	store := runOneDetector(t, "tc_typeof_divide_by_zero_fp.c",
+		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewDivideByZeroDetector(s, p, l) })
+	funcs := eventFuncs(t, store, "DIVIDE_BY_ZERO")
+	if funcs["f_typeof_float"] {
+		t.Error("FALSE POSITIVE: typeof(ratio) float division flagged as divide-by-zero")
+	}
+	if !funcs["g_int_control"] {
+		t.Error("positive control: integer division should be flagged")
+	}
+}
+
 func TestNewDetector_SQLInjectionLiteralSafe(t *testing.T) {
 	store := runOneDetector(t, "tc72_sql_literal_safe.c",
 		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewInjectionDetector(s, p, l) })

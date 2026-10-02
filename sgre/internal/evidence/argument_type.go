@@ -146,7 +146,7 @@ func (d *ArgumentTypeDetector) checkArgument(ctx context.Context, file *db.File,
 	return emitEvent(ctx, d.store, d.logger, "ARGUMENT_TYPE_MISMATCH", f.ID, &db.Location{FileID: file.ID, Line: arg.StartLine(), Column: arg.StartColumn()}, map[string]string{
 		"function":   callee,
 		"variable":   varName,
-		"expression": arg.Text(),
+		"expression": arg.OriginalText(),
 		"category":   "argument_type_mismatch",
 		"expected":   expected,
 		"actual":     actual,

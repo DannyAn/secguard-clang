@@ -89,7 +89,7 @@ func (d *InjectionDetector) detectCommandInjection(ctx context.Context, f *db.Fu
 			"function":   callName,
 			"category":   "command_injection",
 			"taint":      taint,
-			"expression": call.Text(),
+			"expression": call.OriginalText(),
 			"variable":   bareCommandArg(call),
 		}) {
 			result.EventsCreated++
@@ -126,7 +126,7 @@ func (d *InjectionDetector) detectSQLInjection(ctx context.Context, f *db.Functi
 			"function":   callName,
 			"category":   "sql_injection",
 			"variable":   sqlVar,
-			"expression": call.Text(),
+			"expression": call.OriginalText(),
 		}) {
 			result.EventsCreated++
 		}
@@ -161,7 +161,7 @@ func (d *InjectionDetector) detectSQLInjection(ctx context.Context, f *db.Functi
 			"function":   callName,
 			"category":   "sql_injection",
 			"variable":   bufVar,
-			"expression": call.Text(),
+			"expression": call.OriginalText(),
 		}) {
 			result.EventsCreated++
 		}
@@ -264,7 +264,7 @@ func (d *InjectionDetector) detectTaintFlowInjection(ctx context.Context, f *db.
 					"category":   "command_injection",
 					"taint":      "flow",
 					"source":     "wsprintf",
-					"expression": call.Text(),
+					"expression": call.OriginalText(),
 				}) {
 					result.EventsCreated++
 				}

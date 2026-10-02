@@ -70,7 +70,7 @@ func (d *LogInjectionDetector) detectLogInjection(ctx context.Context, f *db.Fun
 			"function":   callName,
 			"category":   "log_injection",
 			"variable":   variable,
-			"expression": call.Text(),
+			"expression": call.OriginalText(),
 		}) {
 			result.EventsCreated++
 		}

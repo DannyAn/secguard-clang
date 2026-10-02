@@ -92,7 +92,7 @@ func (d *DangerousFunctionDetector) Detect(ctx context.Context) (DetectResult, e
 			if emitEvent(ctx, d.store, d.logger, "DANGEROUS_FUNCTION", fnID, &db.Location{FileID: file.ID, Line: call.StartLine()}, map[string]string{
 				"variable":   name,
 				"category":   "dangerous_function",
-				"expression": call.Text(),
+				"expression": call.OriginalText(),
 			}) {
 				result.EventsCreated++
 			}

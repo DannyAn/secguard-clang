@@ -70,7 +70,7 @@ func (d *CRLFInjectionDetector) detectCRLFInjection(ctx context.Context, f *db.F
 					"function":   callName,
 					"category":   "crlf_injection",
 					"variable":   variable,
-					"expression": call.Text(),
+					"expression": call.OriginalText(),
 				}) {
 					result.EventsCreated++
 				}
@@ -87,7 +87,7 @@ func (d *CRLFInjectionDetector) detectCRLFInjection(ctx context.Context, f *db.F
 			"function":   callName,
 			"category":   "crlf_injection",
 			"variable":   variable,
-			"expression": call.Text(),
+			"expression": call.OriginalText(),
 		}) {
 			result.EventsCreated++
 		}

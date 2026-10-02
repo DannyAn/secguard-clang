@@ -428,6 +428,17 @@ func assignedVariable(lhs parser.Node) string {
 		// next `if (*out == NULL)` read as a null-deref (the dominant false
 		// positive). Match assignTargetName's semantics: return "".
 		return ""
+	case "pointer_declarator", "array_declarator":
+		// Recurse into nested declarators so `void **v = f()` (which the typeof
+		// rewrite produces for `typeof(x) *v = f()`) still resolves to `v`. The
+		// outer declarator wraps an inner one; without this the first child is a
+		// declarator, not an identifier, and the assignment target is lost.
+		for _, child := range lhs.NamedChildren() {
+			if v := assignedVariable(child); v != "" {
+				return v
+			}
+		}
+		return ""
 	}
 	// Other shapes: attribute to the first identifier inside.
 	for _, child := range lhs.NamedChildren() {

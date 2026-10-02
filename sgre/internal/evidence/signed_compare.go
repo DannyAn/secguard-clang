@@ -86,7 +86,7 @@ func (d *SignedCompareDetector) Detect(ctx context.Context) (DetectResult, error
 				}
 
 				props := map[string]string{
-					"expression": b.Text(),
+					"expression": b.OriginalText(),
 					"category":   "signed_compare",
 				}
 				if isDeadBranchTautology(b, declsByName) {

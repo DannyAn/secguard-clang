@@ -57,7 +57,7 @@ func (d *FormatStringDetector) Detect(ctx context.Context) (DetectResult, error)
 				if emitEvent(ctx, d.store, d.logger, "FORMAT_STRING", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
 					"function":   callName,
 					"format_arg": formatArg,
-					"expression": call.Text(),
+					"expression": call.OriginalText(),
 					"category":   "format_string",
 				}) {
 					result.EventsCreated++

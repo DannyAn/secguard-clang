@@ -121,7 +121,7 @@ func (d *SignalHandlerDetector) Detect(ctx context.Context) (DetectResult, error
 					"variable":   callee,
 					"function":   fnName,
 					"category":   "signal_handler_unsafe",
-					"expression": c.Text(),
+					"expression": c.OriginalText(),
 				}) {
 					result.EventsCreated++
 				}

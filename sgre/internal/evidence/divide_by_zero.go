@@ -63,7 +63,7 @@ func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error)
 				// (yields +/-Inf/NaN), not a crash or a memory-safety defect, so it is
 				// out of scope for CWE-369. Only integer / and % can trap. A float
 				// OPERAND (not just a float literal) makes the whole division float.
-				if isFloatDivisionText(expr.Text()) || isFloatDivisionExpr(expr, globals, scope, typedefs) {
+				if isFloatDivisionText(expr.Text()) || isNonIntegerDivision(expr, globals, scope, typedefs) {
 					return
 				}
 				// A guard that implies the divisor is non-zero (a ternary
@@ -82,7 +82,7 @@ func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error)
 				}
 
 				props := map[string]string{
-					"expression": expr.Text(),
+					"expression": expr.OriginalText(),
 					// The divisor is the root-cause variable the planner converges
 					// on; without it the seed falls back to the full `expression`
 					// text, so the dedup key and the report "Variable" column show
@@ -460,18 +460,25 @@ func intLiteralValue(n parser.Node) (int64, error) {
 	return strconv.ParseInt(strings.TrimSpace(n.Text()), 0, 64)
 }
 
-// isFloatDivisionExpr reports whether a division/modulo's OPERANDS are
-// floating-point typed (float/double), so the division is IEEE 754 float
-// division, not an integer trap. A bare-identifier operand is resolved via the
-// function type scope; a field/call/compound operand is left to the text
-// heuristic (isFloatDivisionText) and is not proven integer here.
-func isFloatDivisionExpr(expr parser.Node, globals map[string]string, scope integerOverflowTypeScope, typedefs *typedefs) bool {
+// isNonIntegerDivision reports whether a division/modulo is NOT provably an
+// integer trap, so it must not be flagged as CWE-369. Two cases:
+//   - an operand is floating-point typed (float/double), making the division
+//     IEEE 754 (no trap);
+//   - an operand's type is UNKNOWN (declared through a typeof(...) rewrite whose
+//     real type was masked to void *), so integer vs float cannot be proven and
+//     flagging it would be a false positive.
+//
+// A bare-identifier operand is resolved via the function type scope; a
+// field/call/compound operand is left to the text heuristic (isFloatDivisionText)
+// and is not proven integer here.
+func isNonIntegerDivision(expr parser.Node, globals map[string]string, scope integerOverflowTypeScope, typedefs *typedefs) bool {
 	for _, op := range expr.NamedChildren() {
 		name := bareOperandVar(op)
 		if name == "" {
 			continue
 		}
-		if isFloatType(resolveScopedVar(name, expr.StartLine(), globals, scope.locals), typedefs) {
+		typ := resolveScopedVar(name, expr.StartLine(), globals, scope.locals)
+		if typ == unknownType || isFloatType(typ, typedefs) {
 			return true
 		}
 	}

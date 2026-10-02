@@ -46,6 +46,22 @@ type Tree struct {
 	tree   *sitter.Tree
 	src    []byte
 	cached bool
+	// origSrc is the source as written on disk, before preprocessGccExtensions
+	// rewrote typeof(...) to a padded `void *`. The rewrite is length-preserving,
+	// so byte offsets are identical between src and origSrc; Node.OriginalText
+	// reads origSrc to let detectors report evidence text as the author wrote it.
+	origSrc []byte
+	// rewrites records every typeof(...) construct the preprocessor rewrote, for
+	// detectors that need to know a declaration's real type was masked to void *.
+	rewrites []TypeofRewrite
+}
+
+// TypeofRewrite records one typeof(expr) construct rewritten to a padded `void *`.
+// Start/End are byte offsets valid in BOTH src and origSrc (length-preserving).
+type TypeofRewrite struct {
+	Start int
+	End   int
+	Param string // the original parameter text inside the parens, e.g. "nodes->leafs"
 }
 
 func NewParser() *Parser {
@@ -65,9 +81,9 @@ func NewParser() *Parser {
 // next Parse on this parser — the indexer follows that pattern (the planner
 // filters use ParseCached, which is internally synchronized).
 func (p *Parser) Parse(source []byte, filename string) (*Tree, error) {
-	src := preprocessGccExtensions(source)
+	src, rewrites := preprocessGccExtensions(source)
 	tree := p.parser.Parse(src, nil)
-	return &Tree{tree: tree, src: src}, nil
+	return &Tree{tree: tree, src: src, origSrc: source, rewrites: rewrites}, nil
 }
 
 // ParseCached is Parse with a per-file cache keyed by filename. The scan runs
@@ -87,11 +103,11 @@ func (p *Parser) ParseCached(source []byte, filename string) (*Tree, error) {
 	if t, ok := p.cache[filename]; ok {
 		return t, nil
 	}
-	src := preprocessGccExtensions(source)
+	src, rewrites := preprocessGccExtensions(source)
 	ps := sitter.NewParser()
 	ps.SetLanguage(p.lang)
 	tree := ps.Parse(src, nil)
-	t := &Tree{tree: tree, src: src, cached: true}
+	t := &Tree{tree: tree, src: src, origSrc: source, rewrites: rewrites, cached: true}
 	p.cache[filename] = t
 	p.parsers[filename] = ps
 	return t, nil
@@ -139,16 +155,25 @@ var gccTypeofKeywords = []string{
 // detector that relies on the assignment chain (unchecked-return, null-source,
 // resource-leak). The replacement is padded with spaces to preserve source
 // positions (line/column) for accurate diagnostics.
-func preprocessGccExtensions(source []byte) []byte {
+func preprocessGccExtensions(source []byte) ([]byte, []TypeofRewrite) {
 	// Every supported spelling contains "typeof", so this cheap check is the
 	// fast path for the vast majority of files that never use the extension.
 	if !bytes.Contains(source, []byte("typeof")) {
-		return source
+		return source, nil
 	}
 	result := make([]byte, len(source))
 	copy(result, source)
 	replacement := []byte("void *")
+	var rewrites []TypeofRewrite
 	for i := 0; i < len(result); {
+		// A preprocessor directive line (`#define`, `#include`, ...) is not code:
+		// rewriting a typeof(...) inside a macro body would silently delete the
+		// macro's parameter references and diverge scanner semantics from the
+		// compiler's. Skip the whole logical line (following `\` continuations).
+		if result[i] == '#' && atLineStart(result, i) {
+			i = skipDirective(result, i)
+			continue
+		}
 		// Never rewrite a `typeof(` that lives inside a string/char literal or a
 		// comment — the byte-level match would silently corrupt that text (same
 		// length, so no parse error, but detectors reading string content would
@@ -157,14 +182,56 @@ func preprocessGccExtensions(source []byte) []byte {
 			i = n
 			continue
 		}
-		end, ok := replaceTypeofAt(result, i, replacement)
+		end, param, ok := replaceTypeofAt(result, i, replacement)
 		if !ok {
 			i++
 			continue
 		}
+		rewrites = append(rewrites, TypeofRewrite{Start: i, End: end, Param: param})
 		i = end
 	}
-	return result
+	return result, rewrites
+}
+
+// atLineStart reports whether result[i] is the first non-whitespace byte on its
+// line (or i==0). It distinguishes a real `#` directive from a `#` that merely
+// follows code on a line.
+func atLineStart(result []byte, i int) bool {
+	for j := i - 1; j >= 0; j-- {
+		switch result[j] {
+		case '\n':
+			return true
+		case ' ', '\t', '\r':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// skipDirective returns the index just past a preprocessor directive's logical
+// line (result[i] must be '#'), following backslash-newline continuations so a
+// multi-line `#define` is skipped as a unit.
+func skipDirective(result []byte, i int) int {
+	j := i
+	for j < len(result) {
+		switch result[j] {
+		case '\\':
+			if j+1 < len(result) && result[j+1] == '\n' {
+				j += 2
+				continue
+			}
+			if j+2 < len(result) && result[j+1] == '\r' && result[j+2] == '\n' {
+				j += 3
+				continue
+			}
+		case '\n':
+			return j + 1
+		}
+		j++
+	}
+	return len(result)
 }
 
 // skipNonCode returns the index just past the string literal, char literal,
@@ -179,6 +246,12 @@ func skipNonCode(result []byte, i int) int {
 			if result[j] == '\\' {
 				j++
 				continue
+			}
+			// An unterminated string/char literal cannot span a newline in C, so
+			// stop at the line boundary instead of jumping to EOF: that way a
+			// later typeof(...) on a following line is still rewritten.
+			if result[j] == '\n' {
+				return j
 			}
 			if result[j] == quote {
 				return j + 1
@@ -209,8 +282,9 @@ func skipNonCode(result []byte, i int) int {
 // replaceTypeofAt rewrites a typeof-spelling construct starting at result[i]
 // (`typeof(x)`, `__typeof__ (x)`, ...) into `void *` padded with spaces to keep
 // the byte length (and therefore line/column) unchanged. It returns the byte
-// index just past the rewritten construct and whether a rewrite happened.
-func replaceTypeofAt(result []byte, i int, replacement []byte) (int, bool) {
+// index just past the rewritten construct, the original parameter text between
+// the outer parens, and whether a rewrite happened.
+func replaceTypeofAt(result []byte, i int, replacement []byte) (int, string, bool) {
 	for _, kw := range gccTypeofKeywords {
 		n := len(kw)
 		if i+n > len(result) || string(result[i:i+n]) != kw {
@@ -231,9 +305,18 @@ func replaceTypeofAt(result []byte, i int, replacement []byte) (int, bool) {
 		if j >= len(result) || result[j] != '(' {
 			continue
 		}
+		// The parenthesis-balance scan must share the outer loop's string/comment
+		// skipping: a `)` or `(` inside a comment or string literal must not move
+		// depth. Otherwise `typeof(x /* ) */)` truncates the rewrite inside the
+		// comment (corrupting it) and `typeof(x /* ( */)` never balances (leaving
+		// typeof intact and silently mis-parsing the declaration).
 		depth := 1
 		k := j + 1
 		for k < len(result) && depth > 0 {
+			if n2 := skipNonCode(result, k); n2 > k {
+				k = n2
+				continue
+			}
 			switch result[k] {
 			case '(':
 				depth++
@@ -245,6 +328,10 @@ func replaceTypeofAt(result []byte, i int, replacement []byte) (int, bool) {
 		if depth != 0 {
 			continue
 		}
+		// Copy before the rewrite below overwrites result[i:k] (param aliases that
+		// backing array, so a bare slice would turn into spaces by the time the
+		// caller reads it).
+		param := string(result[j+1 : k-1])
 		for pos := i; pos < k; pos++ {
 			if pos-i < len(replacement) {
 				result[pos] = replacement[pos-i]
@@ -252,9 +339,9 @@ func replaceTypeofAt(result []byte, i int, replacement []byte) (int, bool) {
 				result[pos] = ' '
 			}
 		}
-		return k, true
+		return k, param, true
 	}
-	return i, false
+	return i, "", false
 }
 
 func isIdentChar(b byte) bool {
@@ -265,7 +352,7 @@ func (t *Tree) RootNode() Node {
 	if t.tree == nil {
 		return Node{}
 	}
-	return Node{node: *t.tree.RootNode(), src: t.src}
+	return Node{node: *t.tree.RootNode(), src: t.src, origSrc: t.origSrc, rewrites: t.rewrites}
 }
 
 func (t *Tree) HasError() bool {
@@ -279,6 +366,12 @@ func (t *Tree) Source() []byte {
 	return t.src
 }
 
+// TypeofRewrites returns every typeof(...) construct the preprocessor rewrote to
+// `void *`, in source order. Empty for files that use no GCC typeof extension.
+func (t *Tree) TypeofRewrites() []TypeofRewrite {
+	return t.rewrites
+}
+
 func (t *Tree) Close() {
 	if t.cached {
 		return // owned by the Parser cache; released in CloseAll
@@ -288,8 +381,10 @@ func (t *Tree) Close() {
 }
 
 type Node struct {
-	node sitter.Node
-	src  []byte
+	node     sitter.Node
+	src      []byte
+	origSrc  []byte
+	rewrites []TypeofRewrite
 }
 
 // isNull reports whether the wrapped tree-sitter node is the zero value (no
@@ -315,6 +410,47 @@ func (n Node) Text() string {
 		return ""
 	}
 	return string(n.src[n.node.StartByte():n.node.EndByte()])
+}
+
+// OriginalText returns the node's text from the source as written on disk,
+// before typeof(...) was rewritten to a padded `void *`. The rewrite is
+// length-preserving, so the byte range is valid in both buffers; this lets
+// detectors emit evidence text that matches what the AI classifier reads from
+// the file (e.g. `typeof(x)` instead of `void *` + spaces). It falls back to
+// Text() when the file used no typeof extension.
+func (n Node) OriginalText() string {
+	if n.isNull() {
+		return ""
+	}
+	if n.origSrc == nil {
+		return n.Text()
+	}
+	return string(n.origSrc[n.node.StartByte():n.node.EndByte()])
+}
+
+// TypeofTypeSpecifier reports whether this declaration/parameter node's leading
+// type specifier was produced by a typeof(...) rewrite. Such a declaration's
+// real type is unknowable from the AST (the rewrite masks it as `void *`), so
+// type-sensitive detectors should treat the declared variable's type as UNKNOWN
+// rather than misreading it as a pointer.
+func (n Node) TypeofTypeSpecifier() bool {
+	if len(n.rewrites) == 0 {
+		return false
+	}
+	for _, ch := range n.NamedChildren() {
+		switch ch.Kind() {
+		case "primitive_type", "sized_type_specifier", "type_identifier",
+			"struct_specifier", "union_specifier", "enum_specifier":
+			start, end := ch.StartByte(), ch.EndByte()
+			for _, r := range n.rewrites {
+				if r.Start <= start && end <= r.End {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	return false
 }
 
 func (n Node) StartByte() int {
@@ -384,7 +520,7 @@ func (n Node) Children() []Node {
 		if child == nil {
 			continue
 		}
-		children = append(children, Node{node: *child, src: n.src})
+		children = append(children, Node{node: *child, src: n.src, origSrc: n.origSrc, rewrites: n.rewrites})
 	}
 	return children
 }
@@ -400,7 +536,7 @@ func (n Node) NamedChildren() []Node {
 		if child == nil {
 			continue
 		}
-		children = append(children, Node{node: *child, src: n.src})
+		children = append(children, Node{node: *child, src: n.src, origSrc: n.origSrc, rewrites: n.rewrites})
 	}
 	return children
 }
@@ -413,7 +549,7 @@ func (n Node) ChildByFieldName(name string) *Node {
 	if child == nil {
 		return nil
 	}
-	return &Node{node: *child, src: n.src}
+	return &Node{node: *child, src: n.src, origSrc: n.origSrc, rewrites: n.rewrites}
 }
 
 // Parent returns the enclosing node, or nil at the root. It lets detectors walk
@@ -427,7 +563,7 @@ func (n Node) Parent() *Node {
 	if parent == nil {
 		return nil
 	}
-	return &Node{node: *parent, src: n.src}
+	return &Node{node: *parent, src: n.src, origSrc: n.origSrc, rewrites: n.rewrites}
 }
 
 func (n Node) FindAll(kind string) []Node {
@@ -487,7 +623,7 @@ func walkNode(n Node, visit func(Node)) {
 			if child == nil {
 				continue
 			}
-			stack = append(stack, Node{node: *child, src: node.src})
+			stack = append(stack, Node{node: *child, src: node.src, origSrc: node.origSrc, rewrites: node.rewrites})
 		}
 	}
 }

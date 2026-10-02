@@ -59,7 +59,7 @@ func (d *XMLInjectionDetector) detectXMLInjection(ctx context.Context, f *db.Fun
 			"function":   callName,
 			"category":   spec.Category,
 			"variable":   variable,
-			"expression": call.Text(),
+			"expression": call.OriginalText(),
 		}) {
 			result.EventsCreated++
 		}

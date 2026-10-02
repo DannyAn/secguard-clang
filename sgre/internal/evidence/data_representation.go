@@ -136,7 +136,7 @@ func (d *DataRepresentationDetector) Detect(ctx context.Context) (DetectResult, 
 			if emitEvent(ctx, d.store, d.logger, "DATA_REPRESENTATION_MISMATCH", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
 				"function":   compar,
 				"variable":   baseVarName(baseArg),
-				"expression": call.Text(),
+				"expression": call.OriginalText(),
 				"category":   "data_representation_mismatch",
 				"expected":   baseElementType(baseArg, call.StartLine(), globals, locals[f.StartLine], typedefs),
 				"actual":     ci.castType,

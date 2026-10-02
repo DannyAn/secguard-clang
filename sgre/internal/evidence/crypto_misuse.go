@@ -91,7 +91,7 @@ func (d *CryptoMisuseDetector) emitCryptoEvent(ctx context.Context, file *db.Fil
 		"function":   callName,
 		"reason":     reason,
 		"category":   category,
-		"expression": call.Text(),
+		"expression": call.OriginalText(),
 	}) {
 		result.EventsCreated++
 	}

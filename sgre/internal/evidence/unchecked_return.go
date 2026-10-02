@@ -145,7 +145,7 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 
 				if emitEvent(ctx, d.store, d.logger, "UNCHECKED_RETURN", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
 					"function":   extractCallName(call),
-					"expression": call.Text(),
+					"expression": call.OriginalText(),
 					"category":   "unchecked_return",
 				}) {
 					result.EventsCreated++
