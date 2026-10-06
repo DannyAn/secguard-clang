@@ -1,7 +1,7 @@
 github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk=
 github.com/BurntSushi/toml v1.6.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
-github.com/DannyAn/tree-sitter-c v0.24.3 h1:XB9geaw1YLDqQsb1tl+rVEiFF9vnw7KjLnfoxMRTAFA=
-github.com/DannyAn/tree-sitter-c v0.24.3/go.mod h1:/SpJlv2BuiCgFA5xvtgukFGi51WxctByPUGDxPl60fc=
+github.com/DannyAn/tree-sitter-c v0.24.4 h1:LaJBYLqBDLzIsv0BMns3Zb3rln4dBa/8qTEF4lZqJlg=
+github.com/DannyAn/tree-sitter-c v0.24.4/go.mod h1:/SpJlv2BuiCgFA5xvtgukFGi51WxctByPUGDxPl60fc=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
@@ -32,8 +32,6 @@ github.com/tiendc/go-deepcopy v1.7.2 h1:Ut2yYR7W9tWjTQitganoIue4UGxZwCcJy3orjrrI
 github.com/tiendc/go-deepcopy v1.7.2/go.mod h1:4bKjNC2r7boYOkD2IOuZpYjmlDdzjbpTRyCx+goBCJQ=
 github.com/tree-sitter/go-tree-sitter v0.25.0 h1:sx6kcg8raRFCvc9BnXglke6axya12krCJF5xJ2sftRU=
 github.com/tree-sitter/go-tree-sitter v0.25.0/go.mod h1:r77ig7BikoZhHrrsjAnv8RqGti5rtSyvDHPzgTPsUuU=
-github.com/tree-sitter/tree-sitter-c v0.24.2 h1:nW+M6BnPUa/fBwks8nqf1NiVvu7nltaC+5bR/lTtJCs=
-github.com/tree-sitter/tree-sitter-c v0.24.2/go.mod h1:/SpJlv2BuiCgFA5xvtgukFGi51WxctByPUGDxPl60fc=
 github.com/tree-sitter/tree-sitter-cpp v0.23.4 h1:LaWZsiqQKvR65yHgKmnaqA+uz6tlDJTJFCyFIeZU/8w=
 github.com/tree-sitter/tree-sitter-cpp v0.23.4/go.mod h1:doqNW64BriC7WBCQ1klf0KmJpdEvfxyXtoEybnBo6v8=
 github.com/tree-sitter/tree-sitter-embedded-template v0.23.2 h1:nFkkH6Sbe56EXLmZBqHHcamTpmz3TId97I16EnGy4rg=
