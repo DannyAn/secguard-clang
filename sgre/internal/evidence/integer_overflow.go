@@ -183,12 +183,8 @@ func buildIntegerOverflowTypeScopes(root parser.Node, funcs []*db.Function, type
 			continue
 		}
 		owner := functionContainingLine(funcs, line)
-		typeofDecl := decl.TypeofTypeSpecifier()
 		for _, v := range vars {
 			typ := base + starSuffix(v.stars)
-			if typeofDecl {
-				typ = unknownType
-			}
 			if owner == nil {
 				globals[v.name] = typ
 				continue
@@ -210,9 +206,7 @@ func buildIntegerOverflowTypeScopes(root parser.Node, funcs []*db.Function, type
 			continue
 		}
 		typ := typeSpelling(param)
-		if param.TypeofTypeSpecifier() {
-			typ = unknownType
-		}
+
 		name := extractVarFromDeclarator(param)
 		if typ == "" || name == "" || parser.IsCTypeKeyword(name) {
 			continue

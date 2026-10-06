@@ -533,6 +533,8 @@ func typeSpelling(node parser.Node) string {
 		case "primitive_type", "sized_type_specifier", "type_identifier",
 			"struct_specifier", "union_specifier", "enum_specifier":
 			spec = append(spec, child.Text())
+		case "typeof_specifier":
+			spec = append(spec, unknownType)
 		case "pointer_declarator", "abstract_pointer_declarator", "array_declarator":
 			stars += declaratorStars(child)
 		}
@@ -580,6 +582,8 @@ func varDeclParts(decl parser.Node) (string, []argVarDecl) {
 		case "primitive_type", "sized_type_specifier", "type_identifier",
 			"struct_specifier", "union_specifier", "enum_specifier":
 			spec = append(spec, child.Text())
+		case "typeof_specifier":
+			spec = append(spec, unknownType)
 		case "init_declarator", "pointer_declarator", "identifier":
 			if name, stars := argDeclaratorVar(child); name != "" {
 				decls = append(decls, argVarDecl{name: name, stars: stars})
