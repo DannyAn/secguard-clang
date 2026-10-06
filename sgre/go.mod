@@ -10,6 +10,8 @@ require (
 	modernc.org/sqlite v1.54.0
 )
 
+replace github.com/tree-sitter/tree-sitter-c => github.com/DannyAn/tree-sitter-c v0.24.3
+
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect

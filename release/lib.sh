@@ -1205,6 +1205,7 @@ build_target() {
     esac
     (
         cd "$SGRE_DIR"
+        mkdir -p .gocache .gotmp .zig-cache/global .zig-cache/local
         GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=1 \
         CC="$cc" CXX="$cxx" CGO_CFLAGS="$cflags" CGO_CXXFLAGS="$cflags" \
         GONOSUMDB='*' GOFLAGS=-mod=mod \
