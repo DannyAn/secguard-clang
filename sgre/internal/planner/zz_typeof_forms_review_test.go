@@ -48,10 +48,10 @@ func indexTypeofSrc(t *testing.T, src string) (db.Store, *Planner) {
 // TestTypeofForms_DetectionResults covers scenarios 5 and 7 of the regression
 // plan:
 //   - `typeof(*p) *v = malloc(n)` with a null check must NOT surface as an
-//     unchecked-return (the typeof rewrite must preserve the assignment→check
-//     chain), while an unguarded malloc in the same file still does;
+//     unchecked-return (tree-sitter-c v0.24.3 parses typeof natively, so the
+//     assignment→check chain is intact), while an unguarded malloc still does;
 //   - a real definite null-deref in the SAME file must still be reported and
-//     confirmed — the typeof rewrite must not hide genuine defects.
+//     confirmed — typeof coexistence must not hide genuine defects.
 func TestTypeofForms_DetectionResults(t *testing.T) {
 	src := `#include <stdlib.h>
 
@@ -113,7 +113,7 @@ int real_null_deref(void)
 		}
 	}
 	if !found {
-		t.Error("real_null_deref was not reported (typeof rewrite hid a real defect)")
+		t.Error("real_null_deref was not reported (typeof coexistence hid a real defect)")
 	}
 }
 
