@@ -2,6 +2,27 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.9.0] - 2026-10-07
+
+### 切换到自维护 tree-sitter-c fork + 原生解析 GNU C 扩展
+
+- `go.mod` 将 `github.com/tree-sitter/tree-sitter-c` 替换为 `github.com/DannyAn/tree-sitter-c v0.24.4`（fork）。
+- 原生解析 GCC `typeof`（`typeof_specifier` 四种拼写），移除先前的 GCC typeof 预处理重写链。
+- 补齐 6 类此前 `HasError()=true` 的 GNU C 语法（B1-B6）：
+  - B1 变量声明后置 `__attribute__`（`int g __attribute__((aligned(16))) = 0;`）
+  - B2 `typedef` 级 `__attribute__`（`typedef int __attribute__((vector_size(16))) v4si;`）
+  - B3 `enum` 级 `__attribute__`（`enum E __attribute__((packed)) { ... };`）
+  - B4 标签级 `__attribute__`（`L: __attribute__((cold));`）
+  - B5 GNU case range（`case 1 ... 5:`）
+  - B6 computed goto（`void *p = &&L; goto *p;`）
+
+### sgre 检测层适配（22 处）
+
+- v0.24.4 把 `attribute_specifier` 插进 `init_declarator` 的 declarator 与 value 之间，原先用位置索引 `NamedChildren()[1]` 取 initializer 的 22 处检测/图/规划点会误取到 attribute，导致带 `__attribute__` 的初始化（malloc / 显式 NULL / 别名 / 常量源）被漏检。
+- 新增 `parser.Node.AssignParts()`：对 `init_declarator` 按字段名（declarator/value）取，对 `assignment_expression` 保持位置索引。
+- 统一替换 22 处：null-source / memory-leak / resource-leak / double-free / uninit / unchecked-return / buffer-overflow 检测器，graph alias/interproc，planner uninit-flow/null-flow。
+- 新增回归测试：`tc121_attribute_init.c` + `AssignParts` 单测，锁定 `char *lp __attribute__((aligned(16))) = malloc(10)` 等场景不再漏报。
+
 ## [0.8.2] - 2026-09-30
 
 ### 厂商审计误报修复（174 FP → 0）
