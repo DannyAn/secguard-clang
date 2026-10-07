@@ -682,11 +682,9 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		if !funcLineRange(f, init.StartLine()) {
 			continue
 		}
-		children := init.NamedChildren()
-		if len(children) < 2 {
-			continue
+		if _, rhs, ok := init.AssignParts(); ok {
+			scanUses(rhs, init.StartLine(), "", nil)
 		}
-		scanUses(children[1], init.StartLine(), "", nil)
 	}
 
 	// Scan only the *condition* of a branch/loop, not the whole subtree. The
@@ -1130,11 +1128,11 @@ func nullZeroInitializedBefore(g string, loopStart int, decls, assigns []parser.
 			if child.Kind() != "init_declarator" {
 				continue
 			}
-			c := child.NamedChildren()
-			if len(c) < 2 || extractVarName(c[0]) != g {
+			lhs, rhs, ok := child.AssignParts()
+			if !ok || extractVarName(lhs) != g {
 				continue
 			}
-			if isNullZeroExpr(c[1]) {
+			if isNullZeroExpr(rhs) {
 				if decl.StartLine() > lastNull {
 					lastNull = decl.StartLine()
 				}
@@ -1220,12 +1218,10 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 	declByName := localVarDecls(decls)
 
 	checkInit := func(node parser.Node) {
-		children := node.NamedChildren()
-		if len(children) < 2 {
+		lhs, rhs, ok := node.AssignParts()
+		if !ok {
 			return
 		}
-		lhs := children[0]
-		rhs := children[1]
 		varName := extractVarName(lhs)
 		if varName == "" {
 			return

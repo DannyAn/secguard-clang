@@ -615,15 +615,15 @@ func returnedVar(ret parser.Node) string {
 // form `v = callee(...)` / `T v = callee(...)` (RHS possibly cast/parenthesised).
 // It returns ("", "") for any other RHS shape.
 func assignCallee(node parser.Node) (string, string) {
-	children := node.NamedChildren()
-	if len(children) < 2 {
+	lhs, rhs, ok := node.AssignParts()
+	if !ok {
 		return "", ""
 	}
-	v := assignedVariable(children[0])
+	v := assignedVariable(lhs)
 	if v == "" {
 		return "", ""
 	}
-	return v, calleeOfExpr(children[1])
+	return v, calleeOfExpr(rhs)
 }
 
 // returnedCalleeName returns the called function name when a return statement

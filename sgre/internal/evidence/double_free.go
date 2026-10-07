@@ -165,12 +165,10 @@ func (d *DoubleFreeDetector) findGlobalStoredVars(f *db.Function, inits, assigns
 		if !funcLineRange(f, decl.StartLine()) {
 			continue
 		}
-		children := decl.NamedChildren()
-		if len(children) < 2 {
+		lhs, rhs, ok := decl.AssignParts()
+		if !ok {
 			continue
 		}
-		lhs := children[0]
-		rhs := children[1]
 		varName := extractVarFromDeclarator(lhs)
 		if varName == "" {
 			continue

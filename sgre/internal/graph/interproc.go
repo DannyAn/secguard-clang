@@ -119,11 +119,11 @@ func (b *InterprocBuilder) Build(ctx context.Context) (*BuildResult, error) {
 				}
 			}
 			for _, init := range nodesInRange(inits, f.StartLine, f.EndLine) {
-				children := init.NamedChildren()
-				if len(children) < 2 {
+				lhs, rhs, ok := init.AssignParts()
+				if !ok {
 					continue
 				}
-				if b.bindReturn(ctx, f, funcByName, children[0], children[1], init.StartLine()) {
+				if b.bindReturn(ctx, f, funcByName, lhs, rhs, init.StartLine()) {
 					result.EdgesCreated++
 				}
 			}

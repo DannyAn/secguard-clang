@@ -301,11 +301,9 @@ func pointerAliases(body parser.Node) map[string]string {
 			if child.Kind() != "init_declarator" {
 				continue
 			}
-			named := child.NamedChildren()
-			if len(named) < 2 {
-				continue
+			if lhs, rhs, ok := child.AssignParts(); ok {
+				record(lhs, rhs)
 			}
-			record(named[0], named[1])
 		}
 	}
 	return aliases
@@ -377,9 +375,8 @@ func directAssignments(stmt parser.Node) []assignPair {
 			if child.Kind() != "init_declarator" {
 				continue
 			}
-			c := child.NamedChildren()
-			if len(c) >= 2 {
-				pairs = append(pairs, assignPair{lhs: c[0], rhs: c[1]})
+			if lhs, rhs, ok := child.AssignParts(); ok {
+				pairs = append(pairs, assignPair{lhs: lhs, rhs: rhs})
 			}
 		}
 	case "if_statement", "while_statement", "do_statement", "for_statement":

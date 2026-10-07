@@ -273,12 +273,10 @@ func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function,
 	acquires := make(map[string][]int)
 
 	checkNode := func(node parser.Node) {
-		children := node.NamedChildren()
-		if len(children) < 2 {
+		lhs, rhs, ok := node.AssignParts()
+		if !ok {
 			return
 		}
-		lhs := children[0]
-		rhs := children[1]
 		varName := extractVarName(lhs)
 		if varName == "" {
 			return

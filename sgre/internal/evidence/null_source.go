@@ -108,15 +108,15 @@ func (d *NullSourceDetector) detectReturnNull(ctx context.Context, f *db.Functio
 
 func (d *NullSourceDetector) detectMallocResult(ctx context.Context, f *db.Function, file *db.File, assigns, inits []parser.Node, result *DetectResult) {
 	checkNode := func(node parser.Node) {
-		children := node.NamedChildren()
-		if len(children) < 2 {
+		lhs, rhs, ok := node.AssignParts()
+		if !ok {
 			return
 		}
 		// Match the callee of a call in the RHS, not a "malloc" substring in the
 		// whole assignment text: `p = pre_malloc_log("called malloc")` must not be
 		// treated as a malloc return.
 		origin := ""
-		for _, call := range children[1].FindAll("call_expression") {
+		for _, call := range rhs.FindAll("call_expression") {
 			name := extractCallName(call)
 			// Precise set only: the NULL_VALUE "inherently-nullable allocator"
 			// tier must not be seeded by a naming-heuristic guess (pre_malloc_log).
@@ -130,7 +130,6 @@ func (d *NullSourceDetector) detectMallocResult(ctx context.Context, f *db.Funct
 		if origin == "" {
 			return
 		}
-		lhs := children[0]
 		varName := assignedVariable(lhs)
 		if varName != "" {
 			if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: node.StartLine()}, map[string]string{"variable": varName, "origin": origin}) {
@@ -160,15 +159,15 @@ func (d *NullSourceDetector) detectMallocResult(ctx context.Context, f *db.Funct
 // re-derive). It deliberately skips bare `0` (ambiguous with a zero int).
 func (d *NullSourceDetector) detectExplicitNull(ctx context.Context, f *db.Function, file *db.File, assigns, inits []parser.Node, result *DetectResult) {
 	checkNode := func(node parser.Node) {
-		children := node.NamedChildren()
-		if len(children) < 2 {
+		lhs, rhs, ok := node.AssignParts()
+		if !ok {
 			return
 		}
-		varName := assignedVariable(children[0])
+		varName := assignedVariable(lhs)
 		if varName == "" {
 			return
 		}
-		if !isNullLiteral(children[1]) {
+		if !isNullLiteral(rhs) {
 			return
 		}
 		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: node.StartLine()}, map[string]string{"variable": varName, "origin": "explicit_null", "definite": "true"}) {
@@ -258,12 +257,10 @@ func isNullLiteral(n parser.Node) bool {
 
 func (d *NullSourceDetector) detectExternalCall(ctx context.Context, f *db.Function, file *db.File, assigns, inits []parser.Node, result *DetectResult, knownFuncs map[string]bool, retTypes map[string]string, nullableFuncs map[string]bool, trusted map[string]bool) {
 	checkNode := func(node parser.Node) {
-		children := node.NamedChildren()
-		if len(children) < 2 {
+		lhs, rhs, ok := node.AssignParts()
+		if !ok {
 			return
 		}
-		lhs := children[0]
-		rhs := children[1]
 		varName := assignedVariable(lhs)
 		if varName == "" {
 			return

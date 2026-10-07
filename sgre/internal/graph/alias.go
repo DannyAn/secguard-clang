@@ -90,11 +90,10 @@ func (b *AliasBuilder) persistAlias(ctx context.Context, f *db.Function, rec ali
 // access. It returns ok=false for anything that is not a value alias (e.g. a
 // call result, an address-of, or a literal).
 func aliasFromAssign(node parser.Node) (aliasRecord, bool) {
-	children := node.NamedChildren()
-	if len(children) < 2 {
+	lhs, rhs, ok := node.AssignParts()
+	if !ok {
 		return aliasRecord{}, false
 	}
-	lhs, rhs := children[0], children[1]
 	aliasVar := assignTargetName(lhs)
 	if aliasVar == "" {
 		return aliasRecord{}, false

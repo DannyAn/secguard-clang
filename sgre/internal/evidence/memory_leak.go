@@ -175,11 +175,10 @@ func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function
 	allocs := make(map[string][]int)
 
 	checkNode := func(node parser.Node) {
-		children := node.NamedChildren()
-		if len(children) < 2 {
+		lhs, rhs, ok := node.AssignParts()
+		if !ok {
 			return
 		}
-		lhs, rhs := children[0], children[1]
 		// Only a real malloc/calloc/realloc CALL on the right-hand side is an
 		// allocation. A substring match would treat `strm->zalloc = zcalloc`
 		// (assigning an allocator function pointer) as an allocation because
@@ -556,11 +555,10 @@ func declaredIdentifier(node parser.Node) string {
 func writeLinesFor(assigns, inits []parser.Node, f *db.Function, varName string) []int {
 	var lines []int
 	check := func(node parser.Node) {
-		children := node.NamedChildren()
-		if len(children) < 2 {
+		lhs, rhs, ok := node.AssignParts()
+		if !ok {
 			return
 		}
-		lhs, rhs := children[0], children[1]
 		if lhs.Kind() != "identifier" || lhs.Text() != varName {
 			return
 		}
@@ -626,11 +624,10 @@ func lhsPlainVar(lhs parser.Node) string {
 func findReallocConsumeLines(assigns, inits []parser.Node, f *db.Function, varName string) []int {
 	var lines []int
 	check := func(node parser.Node) {
-		children := node.NamedChildren()
-		if len(children) < 2 {
+		lhs, rhs, ok := node.AssignParts()
+		if !ok {
 			return
 		}
-		lhs, rhs := children[0], children[1]
 		if !isReallocOf(rhs, varName) {
 			return
 		}
@@ -658,11 +655,10 @@ func findReallocConsumeLines(assigns, inits []parser.Node, f *db.Function, varNa
 func findSelfReallocLines(assigns, inits []parser.Node, f *db.Function, varName string) []int {
 	var lines []int
 	check := func(node parser.Node) {
-		children := node.NamedChildren()
-		if len(children) < 2 {
+		lhs, rhs, ok := node.AssignParts()
+		if !ok {
 			return
 		}
-		lhs, rhs := children[0], children[1]
 		if lhsPlainVar(lhs) != varName {
 			return
 		}

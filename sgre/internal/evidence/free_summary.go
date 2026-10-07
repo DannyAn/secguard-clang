@@ -662,12 +662,10 @@ func findAliases(f *db.Function, inits, assigns []parser.Node) map[string]aliasI
 		if !funcLineRange(f, decl.StartLine()) {
 			continue
 		}
-		children := decl.NamedChildren()
-		if len(children) < 2 {
+		lhs, rhs, ok := decl.AssignParts()
+		if !ok {
 			continue
 		}
-		lhs := children[0]
-		rhs := children[1]
 
 		aliasVar := extractVarFromDeclarator(lhs)
 		if aliasVar == "" {

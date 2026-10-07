@@ -860,11 +860,9 @@ func forEachAssignment(stmt parser.Node, fn func(lhs, rhs parser.Node)) {
 		fn(children[0], children[1])
 	}
 	for _, init := range stmt.FindAll("init_declarator") {
-		children := init.NamedChildren()
-		if len(children) < 2 {
-			continue
+		if lhs, rhs, ok := init.AssignParts(); ok {
+			fn(lhs, rhs)
 		}
-		fn(children[0], children[1])
 	}
 }
 

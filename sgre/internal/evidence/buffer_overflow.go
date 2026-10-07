@@ -638,14 +638,13 @@ func constantStringLength(exprText string) (int, bool) {
 // allocation size is not a known constant.
 func constantAllocationSize(bc *bufCtx, f *db.Function, varName string) int {
 	check := func(node parser.Node) int {
-		children := node.NamedChildren()
-		if len(children) < 2 {
+		lhs, rhs, ok := node.AssignParts()
+		if !ok {
 			return 0
 		}
-		if assignedVariable(children[0]) != varName {
+		if assignedVariable(lhs) != varName {
 			return 0
 		}
-		rhs := children[1]
 		if rhs.Kind() == "cast_expression" {
 			for _, c := range rhs.NamedChildren() {
 				if c.Kind() == "call_expression" {
@@ -966,11 +965,11 @@ func constantIndexBefore(bc *bufCtx, f *db.Function, indexVar string, useLine in
 		if node.StartLine() >= useLine || !funcLineRange(f, node.StartLine()) {
 			return false
 		}
-		children := node.NamedChildren()
-		if len(children) < 2 {
+		lhs, rhs, ok := node.AssignParts()
+		if !ok {
 			return false
 		}
-		if assignedVariable(children[0]) != indexVar {
+		if assignedVariable(lhs) != indexVar {
 			return false
 		}
 		// Any assignment to indexVar before useLine is evidence about its value:
@@ -981,7 +980,7 @@ func constantIndexBefore(bc *bufCtx, f *db.Function, indexVar string, useLine in
 			ambiguous = true
 			return true
 		}
-		v, ok := constantNodeValue(bc, children[1])
+		v, ok := constantNodeValue(bc, rhs)
 		if !ok {
 			ambiguous = true
 			return true
@@ -1594,11 +1593,11 @@ func heapAllocationSize(bc *bufCtx, f *db.Function, varName string) (string, boo
 		if !funcLineRange(f, decl.StartLine()) {
 			continue
 		}
-		children := decl.NamedChildren()
-		if len(children) < 2 {
+		lhs, rhs, ok := decl.AssignParts()
+		if !ok {
 			continue
 		}
-		if expr, ok := checkRHS(extractVarFromDeclarator(children[0]), children[1]); ok {
+		if expr, ok := checkRHS(extractVarFromDeclarator(lhs), rhs); ok {
 			return expr, true
 		}
 	}
