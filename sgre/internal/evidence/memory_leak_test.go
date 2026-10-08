@@ -312,3 +312,56 @@ func TestMemoryLeak_OverwrittenPointer(t *testing.T) {
 		}
 	}
 }
+
+// TestMemoryLeak_OutputParamEscape locks in the findEscapeLines fix for
+// pointer_expression lhs: *root = malloc() with root being a
+// non-local (parameter) is an output-parameter escape — ownership is
+// transferred to the caller, so no leak should be reported.
+func TestMemoryLeak_OutputParamEscape(t *testing.T) {
+	store := runIndexAndDetect(t, "tc114_memory_leak_output_param_escape.c")
+	ctx := context.Background()
+
+	releaseEvents, err := store.ListEventsByType(ctx, "MEMORY_RELEASE")
+	if err != nil {
+		t.Fatalf("list MEMORY_RELEASE: %v", err)
+	}
+	foundRelease := false
+	for _, e := range releaseEvents {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Variable == "root" {
+			foundRelease = true
+		}
+	}
+	if !foundRelease {
+		t.Errorf("root escapes via *root = cJSON_CreateObject() (output parameter); should be released, not leaked")
+	}
+}
+
+// TestMemoryLeak_OutputParamFree locks in the argIdentifier fix for
+// pointer_expression: cJSON_Delete(*root) is recognized as a
+// release of "root", so the allocation is not reported as a leak.
+func TestMemoryLeak_OutputParamFree(t *testing.T) {
+	store := runIndexAndDetect(t, "tc116_memory_leak_output_param_free.c")
+	ctx := context.Background()
+
+	releaseEvents, err := store.ListEventsByType(ctx, "MEMORY_RELEASE")
+	if err != nil {
+		t.Fatalf("list MEMORY_RELEASE: %v", err)
+	}
+	foundRelease := false
+	for _, e := range releaseEvents {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Variable == "root" {
+			foundRelease = true
+		}
+	}
+	if !foundRelease {
+		t.Errorf("root is freed via cJSON_Delete(*root); should be released, not leaked")
+	}
+}

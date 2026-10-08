@@ -313,6 +313,14 @@ func argIdentifier(arg parser.Node) string {
 				return id
 			}
 		}
+	case "pointer_expression":
+		if strings.HasPrefix(strings.TrimSpace(arg.Text()), "*") {
+			for _, c := range arg.NamedChildren() {
+				if id := argIdentifier(c); id != "" {
+					return id
+				}
+			}
+		}
 	}
 	return ""
 }
@@ -489,6 +497,17 @@ func findEscapeLines(assigns, calls []parser.Node, f *db.Function, varName strin
 		if argIdentifier(rhs) == varName {
 			if lhs.Kind() == "subscript_expression" || lhs.Kind() == "field_expression" {
 				lines = append(lines, assign.StartLine())
+			} else if lhs.Kind() == "pointer_expression" {
+				base := ""
+				for _, child := range lhs.NamedChildren() {
+					if child.Kind() == "identifier" {
+						base = child.Text()
+						break
+					}
+				}
+				if base != "" && !localVars[base] {
+					lines = append(lines, assign.StartLine())
+				}
 			} else if lhs.Kind() == "identifier" && !localVars[lhs.Text()] {
 				lines = append(lines, assign.StartLine())
 			}
@@ -497,6 +516,23 @@ func findEscapeLines(assigns, calls []parser.Node, f *db.Function, varName strin
 		// (`g = malloc()`) escapes at the allocation site itself.
 		if lhs.Kind() == "identifier" && lhs.Text() == varName && !localVars[varName] && isMallocExpr(rhs) {
 			lines = append(lines, assign.StartLine())
+		}
+		// A malloc assigned through a dereferenced non-local pointer
+		// (`*root = malloc(...)`) escapes at the allocation site: the
+		// caller owns the pointed-to object via the output parameter and
+		// frees it elsewhere. A local base (`*local = malloc(...)`) still
+		// leaks if never freed.
+		if lhs.Kind() == "pointer_expression" && isMallocExpr(rhs) {
+			base := ""
+			for _, child := range lhs.NamedChildren() {
+				if child.Kind() == "identifier" {
+					base = child.Text()
+					break
+				}
+			}
+			if base != "" && base == varName && !localVars[base] {
+				lines = append(lines, assign.StartLine())
+			}
 		}
 		// A malloc assigned directly to a field/subscript of a NON-LOCAL base
 		// (`state->in = malloc(...)` where state is a parameter) escapes into
