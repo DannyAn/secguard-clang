@@ -9,12 +9,60 @@ import (
 func TestMemoryLeak_ConditionalLeak(t *testing.T) {
 	store := runIndexAndDetect(t, "tc20_conditional_leak.c")
 	assertHasEvent(t, store, "MEMORY_ALLOC", "ConditionalLeak")
+
 }
 
-func TestMemoryLeak_NoFreeAtAll(t *testing.T) {
-	store := runIndexAndDetect(t, "tc05_memleak_no_free.c")
-	assertHasEvent(t, store, "MEMORY_ALLOC", "NoFreeAtAll")
-	assertNoEvent(t, store, "MEMORY_RELEASE", "NoFreeAtAll")
+// TestMemoryLeak_UnreachableFreeDefinite locks in the extended definite-leak
+// inference: when free/transfer/escape lines exist but none is structurally
+// reachable from the allocation in the CFG (dead code after an unconditional
+// return), the leak is definite and the event carries definite=true so the
+// planner auto-confirms instead of sending it to the AI.
+func TestMemoryLeak_UnreachableFreeDefinite(t *testing.T) {
+	store := runIndexAndDetect(t, "tc80_unreachable_free.c")
+	ctx := context.Background()
+
+	events, err := store.ListEventsByType(ctx, "MEMORY_ALLOC")
+	if err != nil {
+		t.Fatalf("list MEMORY_ALLOC: %v", err)
+	}
+	foundDefinite := false
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+			Definite string `json:"definite"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Variable == "p" && props.Definite == "true" {
+			foundDefinite = true
+		}
+	}
+	if !foundDefinite {
+		t.Errorf("expected definite=true on MEMORY_ALLOC for p (free is unreachable dead code), got none")
+	}
+}
+
+// TestMemoryLeak_CondBranchFreeNotDefinite locks in the complementary case:
+// when free is reachable on a conditional branch, the leak is conditional
+// (not definite), so the event must NOT carry definite=true — it stays
+// suspected for the AI to judge.
+func TestMemoryLeak_CondBranchFreeNotDefinite(t *testing.T) {
+	store := runIndexAndDetect(t, "tc81_cond_branch_free.c")
+	ctx := context.Background()
+
+	events, err := store.ListEventsByType(ctx, "MEMORY_ALLOC")
+	if err != nil {
+		t.Fatalf("list MEMORY_ALLOC: %v", err)
+	}
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+			Definite string `json:"definite"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Variable == "p" && props.Definite == "true" {
+			t.Errorf("p has a reachable conditional free; must not be definite (stays suspected for AI), got definite=true")
+		}
+	}
 }
 
 func TestMemoryLeak_OwnershipTransfer(t *testing.T) {

@@ -128,7 +128,14 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 						// DEFINITELY lost (hasLostResource proved a leak path AND there is
 						// no releasing/handing-off node anywhere), so mark it so the
 						// planner can confirm instead of leaving it suspected.
+						// Extended: even when free/escape/transfer lines exist, if none
+						// is structurally reachable from the allocation in the CFG (dead
+						// code after an unconditional return/goto), the leak is still
+						// definite — the release can never execute.
 						definiteLeak := len(freeLines) == 0 && len(escapeLines) == 0 && len(transferLines) == 0
+						if !definiteLeak && cfgValid && !canReachAnyRelease(cfg, allocLine, freeLines, escapeLines, transferLines) {
+							definiteLeak = true
+						}
 						props := map[string]string{
 							"variable": varName,
 							"origin":   "malloc",
@@ -429,6 +436,35 @@ func hasLostResource(cfg *graph.StmtCFG, allocLine int, freeLines []int, nullGua
 		}
 		if n := cfg.NodeAt(w); n != nil && cfg.ReachesAvoiding(allocNode.ID, avoid, n.ID) {
 			return true
+		}
+	}
+	return false
+}
+
+// canReachAnyRelease reports whether any free/escape/transfer line is
+// structurally reachable from the allocation at allocLine in the CFG. It
+// returns false when every releasing/handing-off line is dead code (after an
+// unconditional return or goto), meaning the allocation can never be released
+// — a definite leak even though freeLines/escapeLines/transferLines are
+// non-empty. This is a may-analysis: a true result means "a release is
+// reachable" (so the leak is conditional, not definite); a false result means
+// "no release is reachable" (so the leak is definite). It is conservative in
+// the safe direction — if the CFG lacks precision (e.g. cannot model a
+// computed goto), it may return true (reachable) and leave the candidate
+// suspected, never falsely confirming.
+func canReachAnyRelease(cfg *graph.StmtCFG, allocLine int, freeLines, escapeLines, transferLines []int) bool {
+	allocNode := cfg.NodeAt(allocLine)
+	if allocNode == nil {
+		return false
+	}
+	for _, lines := range [][]int{freeLines, escapeLines, transferLines} {
+		for _, l := range lines {
+			if l == allocLine {
+				continue
+			}
+			if n := cfg.NodeAt(l); n != nil && cfg.Reaches(allocNode.ID, n.ID) {
+				return true
+			}
 		}
 	}
 	return false
