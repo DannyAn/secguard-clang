@@ -69,7 +69,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 				transferLines := findReturnVarLines(varName, returns, f)
 				filteredReturns := filterNullGuardReturns(ifs, returnLines, varName)
 				nullGuardReturns := subtractLines(returnLines, filteredReturns)
-				escapeLines := findEscapeLines(assigns, f, varName, localVars)
+				escapeLines := findEscapeLines(assigns, calls, f, varName, localVars)
 				overwriteLines := writeLinesFor(assigns, inits, f, varName)
 
 				for _, allocLine := range allocLines {
@@ -285,12 +285,8 @@ func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file
 		if !apikb.IsDeallocator(callName) {
 			continue
 		}
-		for _, child := range call.NamedChildren() {
-			if child.Kind() == "argument_list" {
-				for _, arg := range child.NamedChildren() {
-					recordFree(argIdentifier(arg), call.StartLine())
-				}
-			}
+		if args := getCallArgs(call); len(args) > 0 {
+			recordFree(argIdentifier(args[0]), call.StartLine())
 		}
 	}
 	return frees
@@ -442,7 +438,7 @@ func hasLostResource(cfg *graph.StmtCFG, allocLine int, freeLines []int, nullGua
 // function: it is stored into a subscript/field, or assigned to an identifier
 // that is not a local of the function (a global/static). A value that escapes
 // is transferred ownership, not leaked.
-func findEscapeLines(assigns []parser.Node, f *db.Function, varName string, localVars map[string]bool) []int {
+func findEscapeLines(assigns, calls []parser.Node, f *db.Function, varName string, localVars map[string]bool) []int {
 	var lines []int
 	for _, assign := range assigns {
 		if !funcLineRange(f, assign.StartLine()) {
@@ -487,6 +483,19 @@ func findEscapeLines(assigns []parser.Node, f *db.Function, varName string, loca
 			}
 			if base != "" && !localVars[base] {
 				lines = append(lines, assign.StartLine())
+			}
+		}
+	}
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
+			continue
+		}
+		if !apikb.IsEscapeFunction(extractCallName(call)) {
+			continue
+		}
+		for _, arg := range getCallArgs(call) {
+			if argIdentifier(arg) == varName {
+				lines = append(lines, call.StartLine())
 			}
 		}
 	}

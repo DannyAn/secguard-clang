@@ -1063,7 +1063,7 @@ func sizeIsWholeObject(arg parser.Node) bool {
 // block (calloc and calloc-family wrappers), so a read of the returned memory is
 // never an uninitialized-read.
 func isZeroInitAllocator(name string) bool {
-	return strings.Contains(strings.ToLower(name), "calloc")
+	return apikb.IsZeroInitAllocator(name)
 }
 
 // isNullZeroExpr reports whether node is a literal null/zero sentinel. It

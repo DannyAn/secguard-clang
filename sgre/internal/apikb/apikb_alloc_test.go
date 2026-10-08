@@ -26,6 +26,30 @@ func TestIsDeallocator_FieldFreeNotDirectDeallocator(t *testing.T) {
 	}
 }
 
+func TestAllocatorAndDeallocatorNamePatterns(t *testing.T) {
+	for _, name := range []string{"ssl_ctx_new", "x509_dup", "pki_strdup", "pki_util_mem_create"} {
+		if !IsAllocator(name) {
+			t.Errorf("IsAllocator(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"ctx_destroy", "cache_delete", "list_cleanup", "node_recycle"} {
+		if !IsDeallocator(name) {
+			t.Errorf("IsDeallocator(%q) = false, want true", name)
+		}
+	}
+	if !IsZeroInitAllocator("ase_zmalloc") || !IsZeroInitAllocator("maf_compile_zmalloc") {
+		t.Error("zmalloc wrappers must be zero-initializing allocators")
+	}
+	if IsZeroInitAllocator("malloc") {
+		t.Error("malloc must not be treated as zero-initializing")
+	}
+	for _, name := range []string{"nlog_en_queue", "list_add", "ctx_put", "cache_register"} {
+		if !IsEscapeFunction(name) {
+			t.Errorf("IsEscapeFunction(%q) = false, want true", name)
+		}
+	}
+}
+
 func TestIsDeclaredAllocator_PreciseOnly(t *testing.T) {
 	if !IsDeclaredAllocator("malloc") {
 		t.Error("IsDeclaredAllocator(malloc) = false, want true")

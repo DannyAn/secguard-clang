@@ -686,7 +686,15 @@ func IsDeclaredDeallocator(name string) bool {
 // deliberately broad: false positives (e.g. pre_malloc_log) are surfaced as
 // candidates for the AI classifier to dismiss, never silently dropped.
 func IsAllocator(name string) bool {
-	return IsDeclaredAllocator(name) || strings.Contains(strings.ToLower(name), "alloc")
+	if IsDeclaredAllocator(name) {
+		return true
+	}
+	lower := strings.ToLower(name)
+	return strings.Contains(lower, "alloc") ||
+		strings.Contains(lower, "strdup") ||
+		strings.Contains(lower, "_new") ||
+		strings.Contains(lower, "_create") ||
+		strings.Contains(lower, "_dup")
 }
 
 // IsDeallocator reports whether name is a recognized release function: a
@@ -701,12 +709,45 @@ func IsDeallocator(name string) bool {
 		return true
 	}
 	lower := strings.ToLower(name)
-	return strings.HasSuffix(lower, "free") || strings.HasSuffix(lower, "free_f")
+	return strings.HasSuffix(lower, "free") ||
+		strings.HasSuffix(lower, "free_f") ||
+		strings.Contains(lower, "_destroy") ||
+		strings.Contains(lower, "_delete") ||
+		strings.Contains(lower, "_cleanup") ||
+		strings.Contains(lower, "_recycle")
 }
 
 // IsAllocatorOrDeallocator reports whether name is any recognized memory
 // allocation or release function.
 func IsAllocatorOrDeallocator(name string) bool { return IsAllocator(name) || IsDeallocator(name) }
+
+// IsZeroInitAllocator reports whether an allocation function zero-initializes
+// its block. This is a naming fallback for wrappers whose bodies are outside the
+// scan tree (calloc, zmalloc, zalloc, and reset-style allocators).
+func IsZeroInitAllocator(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.Contains(lower, "calloc") ||
+		strings.Contains(lower, "zmalloc") ||
+		strings.Contains(lower, "zalloc") ||
+		strings.Contains(lower, "_reset")
+}
+
+// IsEscapeFunction reports whether a call name has an ownership-transfer shape:
+// the pointer argument is handed into a container, queue, registry, or send
+// path rather than released locally. This is a conservative naming heuristic,
+// used only to stop the memory/resource leak detectors from reporting a pointer
+// that the callee now owns.
+func IsEscapeFunction(name string) bool {
+	lower := strings.ToLower(name)
+	for _, token := range []string{
+		"_put", "_push", "_queue", "_enqueue", "_register", "_insert", "_append", "_store", "_send", "_add",
+	} {
+		if strings.Contains(lower, token) {
+			return true
+		}
+	}
+	return false
+}
 
 // BuiltinNonNullReturning are libc/POSIX functions that return a pointer but are
 // guaranteed non-null by contract (e.g. strerror always returns an error

@@ -178,6 +178,18 @@ func TestMemoryLeak_GuardedFreeNoLeak(t *testing.T) {
 	}
 }
 
+// TestMemoryLeak_EscapeCall pins call-shaped ownership transfer: a local
+// allocation passed to a container/queue/send-style callee escapes into that
+// callee and must not be reported as a leak.
+func TestMemoryLeak_EscapeCall(t *testing.T) {
+	store := runIndexAndDetect(t, "tc_memory_leak_escape_call.c")
+	allocByFunc, releaseByFunc := countEventsByFunction(t, store, "MEMORY_ALLOC", "MEMORY_RELEASE")
+	if allocByFunc["f"] != 1 || releaseByFunc["f"] != 1 {
+		t.Errorf("f should have 1 allocation with 1 ownership-transfer release, got %d alloc / %d release",
+			allocByFunc["f"], releaseByFunc["f"])
+	}
+}
+
 // TestMemoryLeak_ErrorReturnPath pins the C1 fix: returning the pointer on ONE
 // path (`if (err) return p;`) is an ownership transfer on that path only, not a
 // function-wide transfer, so a function whose normal path never frees p still

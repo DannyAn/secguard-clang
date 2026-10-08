@@ -249,7 +249,7 @@ func addressTakenFieldPath(arg parser.Node) string {
 }
 
 func isZeroInitAllocName(name string) bool {
-	return strings.Contains(strings.ToLower(name), "calloc")
+	return apikb.IsZeroInitAllocator(name)
 }
 
 func wholeObjectSize(arg parser.Node) bool {
