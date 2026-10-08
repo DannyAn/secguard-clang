@@ -258,9 +258,9 @@ void nd_cast_zero(void) {
 	}
 }
 
-// The same `&&` compound guard must not be misread by the caller-null detector:
-// a caller `if (p == NULL && q) return; process(p);` still passes a possibly-null
-// p, so process's parameter deref must surface.
+// The same `&&` compound guard must not be misread as a proof of non-nullness.
+// Since the caller argument is still only "not proven non-null", R1 converges it
+// before AI; process must no longer surface.
 func TestNullDeref_GuardReview_AndEarlyReturnInterprocedural(t *testing.T) {
 	src := `#include <stdlib.h>
 typedef struct S { int x; } S;
@@ -275,8 +275,8 @@ void caller(int q) {
 }
 `
 	result := planNullDerefGuardReviewFull(t, src)
-	if c := candidateForFunc(t, result, "process"); c == nil {
-		t.Errorf("process should STAY flagged (caller's p == NULL && q guard does not prove p non-null)")
+	if c := candidateForFunc(t, result, "process"); c != nil {
+		t.Errorf("process should be converged before AI (caller argument is only not-proven-null), got %s", c.Target.Function)
 	}
 }
 

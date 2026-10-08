@@ -127,8 +127,8 @@ static void process(Context *ctx) {
 	})
 	t.Run("unguarded caller", func(t *testing.T) {
 		src := base + "void c(Context *ctx) {\n    process(ctx);\n}\n"
-		if has := setOf(planNullDerefFull(t, src)); !has["process"] {
-			t.Errorf("unguarded caller must surface as suspected, got %v", has)
+		if has := setOf(planNullDerefFull(t, src)); has["process"] {
+			t.Errorf("unguarded caller without a proven nullable argument must not surface, got %v", has)
 		}
 	})
 }
@@ -153,7 +153,7 @@ void unguarded(Context *ctx) {
 }
 `
 	has := setOf(planNullDerefFull(t, src))
-	if !has["process"] {
-		t.Errorf("process must surface (unguarded caller can pass NULL), got %v", has)
+	if has["process"] {
+		t.Errorf("process must not surface without a proven nullable caller argument, got %v", has)
 	}
 }

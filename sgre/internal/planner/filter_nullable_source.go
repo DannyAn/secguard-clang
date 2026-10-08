@@ -103,6 +103,11 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				c.HasDefiniteNull = fm.reachingDefinite(c.VariableName, c.Line)
 				c.SourceLine = fm.sourceLine(c.VariableName, c.Line)
 				c.CallerNullDetail = callerNullDetail(models[c.FunctionID], c.VariableName)
+				if models[c.FunctionID].onlyUnprovenCallerNullSources(c.VariableName) {
+					dropped = dismiss(dropped, c, f.Name(),
+						fmt.Sprintf("parameter %s has no proven nullable caller argument", c.VariableName))
+					continue
+				}
 				// Layering: reflect the must/may tier in the suspicion label so
 				// the AI budgets effort by certainty. A DEFINITE null source
 				// (p = NULL) reaching on every path is a certain null-deref →
@@ -130,6 +135,11 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 		// Fallback: line-order heuristic (no parser, unreadable file, or
 		// degenerate CFG). It cannot prove definite null, so a kept candidate is
 		// labelled suspected (conservative) rather than confirmed.
+		if models[c.FunctionID].onlyUnprovenCallerNullSources(c.VariableName) {
+			dropped = dismiss(dropped, c, f.Name(),
+				fmt.Sprintf("parameter %s has no proven nullable caller argument", c.VariableName))
+			continue
+		}
 		if models[c.FunctionID].hasSource(c.VariableName, c.Line) {
 			c.HasNullableSource = true
 			c.SuspicionLevel = "suspected"

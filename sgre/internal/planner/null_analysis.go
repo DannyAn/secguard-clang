@@ -134,3 +134,25 @@ func (m *nullModel) onlyCertainNullableSources(variable string) bool {
 	}
 	return seen
 }
+
+// onlyUnprovenCallerNullSources reports whether the variable's only null source
+// is a caller_null source whose argument was merely "not proven non-null". That
+// is an analyzer limitation, not evidence the caller can pass NULL; converging
+// it before AI keeps the AI budget on candidates with a concrete source line or
+// a literal NULL caller.
+func (m *nullModel) onlyUnprovenCallerNullSources(variable string) bool {
+	if m == nil {
+		return false
+	}
+	seen := false
+	for _, s := range m.sources {
+		if s.variable != variable {
+			continue
+		}
+		seen = true
+		if s.origin != "caller_null" || s.definite {
+			return false
+		}
+	}
+	return seen
+}
