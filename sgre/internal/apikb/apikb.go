@@ -738,6 +738,9 @@ func IsZeroInitAllocator(name string) bool {
 // used only to stop the memory/resource leak detectors from reporting a pointer
 // that the callee now owns.
 func IsEscapeFunction(name string) bool {
+	if extraOwnershipTransfer[name] {
+		return true
+	}
 	lower := strings.ToLower(name)
 	for _, token := range []string{
 		"_put", "_push", "_queue", "_enqueue", "_register", "_insert", "_append", "_store", "_send", "_add",
@@ -747,6 +750,22 @@ func IsEscapeFunction(name string) bool {
 		}
 	}
 	return false
+}
+
+// extraOwnershipTransfer holds project-declared ownership-transfer function
+// names registered at CLI startup from secguard.toml
+// [ownership_transfer_calls]. A pointer passed to such a call escapes — the
+// callee takes ownership and will release it — so the leak detector does not
+// report a false leak.
+var extraOwnershipTransfer = map[string]bool{}
+
+// RegisterOwnershipTransfer adds a project-specific function name that takes
+// ownership of a pointer argument (e.g. list_push_back, dict_set,
+// buffer_append) so IsEscapeFunction returns true for it.
+func RegisterOwnershipTransfer(name string) {
+	if name != "" {
+		extraOwnershipTransfer[name] = true
+	}
 }
 
 // BuiltinNonNullReturning are libc/POSIX functions that return a pointer but are

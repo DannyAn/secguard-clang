@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+
+	"github.com/DannyAn/secguard-clang/internal/apikb"
 )
 
 func TestMemoryLeak_ConditionalLeak(t *testing.T) {
@@ -62,6 +64,34 @@ func TestMemoryLeak_CondBranchFreeNotDefinite(t *testing.T) {
 		if props.Variable == "p" && props.Definite == "true" {
 			t.Errorf("p has a reachable conditional free; must not be definite (stays suspected for AI), got definite=true")
 		}
+	}
+}
+
+// TestMemoryLeak_CustomEscapeViaConfig locks in the config-driven
+// ownership-transfer escape: after RegisterOwnershipTransfer, a pointer
+// passed to a project-specific container function (dict_set) is recognized
+// as escaped and not reported as a leak.
+func TestMemoryLeak_CustomEscapeViaConfig(t *testing.T) {
+	apikb.RegisterOwnershipTransfer("dict_set")
+	store := runIndexAndDetect(t, "tc82_custom_escape.c")
+	ctx := context.Background()
+
+	releaseEvents, err := store.ListEventsByType(ctx, "MEMORY_RELEASE")
+	if err != nil {
+		t.Fatalf("list MEMORY_RELEASE: %v", err)
+	}
+	foundRelease := false
+	for _, e := range releaseEvents {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Variable == "p" {
+			foundRelease = true
+		}
+	}
+	if !foundRelease {
+		t.Errorf("p is passed to dict_set (registered ownership-transfer); should be released/escaped, not leaked")
 	}
 }
 

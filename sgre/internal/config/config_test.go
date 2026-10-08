@@ -173,3 +173,25 @@ names = ["VOS_FREE", "VOS_FREE_F"]
 		t.Errorf("deallocators = %v, want [VOS_FREE VOS_FREE_F]", got)
 	}
 }
+func TestLoad_OwnershipTransferCalls(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secguard.toml")
+	content := `[ownership_transfer_calls]
+names = ["list_push_back", "dict_set", "buffer_append"]
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	SetExplicitPath(path)
+	cfg := Load()
+	got := cfg.OwnershipTransferCallNames()
+	want := []string{"list_push_back", "dict_set", "buffer_append"}
+	if len(got) != len(want) {
+		t.Fatalf("ownership_transfer_calls = %v, want %v", got, want)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("ownership_transfer_calls[%d] = %q, want %q", i, got[i], w)
+		}
+	}
+}

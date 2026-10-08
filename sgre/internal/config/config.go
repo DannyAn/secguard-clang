@@ -18,14 +18,15 @@ import (
 // Config is the secguard.toml structure. Fields are additive and optional; a
 // missing file yields the zero Config with no error.
 type Config struct {
-	TrustedMacros   TrustedMacros   `toml:"trusted_macros"`
-	IteratorMacros  IteratorMacros  `toml:"iterator_macros"`
-	BannedFunctions BannedFunctions `toml:"banned_functions"`
-	Exclude         Exclude         `toml:"exclude"`
-	DisabledTypes   DisabledTypes   `toml:"disabled_types"`
-	Allocators      Allocators      `toml:"allocators"`
-	Deallocators    Deallocators    `toml:"deallocators"`
-	Nullability     Nullability     `toml:"nullability"`
+	TrustedMacros          TrustedMacros          `toml:"trusted_macros"`
+	IteratorMacros         IteratorMacros         `toml:"iterator_macros"`
+	BannedFunctions        BannedFunctions        `toml:"banned_functions"`
+	Exclude                Exclude                `toml:"exclude"`
+	DisabledTypes          DisabledTypes          `toml:"disabled_types"`
+	Allocators             Allocators             `toml:"allocators"`
+	Deallocators           Deallocators           `toml:"deallocators"`
+	OwnershipTransferCalls OwnershipTransferCalls `toml:"ownership_transfer_calls"`
+	Nullability            Nullability            `toml:"nullability"`
 }
 
 type TrustedMacros struct {
@@ -65,6 +66,19 @@ type Allocators struct {
 //	[deallocators]
 //	names = ["nat_free", "llm_free", "VOS_FREE", "VOS_FREE_F"]
 type Deallocators struct {
+	Names []string `toml:"names"`
+}
+
+// OwnershipTransferCalls declares project-specific functions that take
+// ownership of a pointer argument (the callee now owns and will release it).
+// The memory/resource leak detectors treat a pointer passed to such a call as
+// escaped, not leaked. Typical entries are container insert helpers
+// (list_push_back, dict_set, buffer_append) whose naming does not match the
+// built-in IsEscapeFunction heuristic (_put/_push/_add/...).
+//
+//	[ownership_transfer_calls]
+//	names = ["list_push_back", "dict_set", "buffer_append"]
+type OwnershipTransferCalls struct {
 	Names []string `toml:"names"`
 }
 
@@ -231,6 +245,16 @@ func (c *Config) NonNullReturnNames() []string {
 		return nil
 	}
 	return c.Nullability.NonNullReturns.Names
+}
+
+// OwnershipTransferCallNames returns the project-specific ownership-transfer
+// function names. These are registered into apikb at CLI startup so the leak
+// detectors treat a pointer passed to them as escaped, not leaked.
+func (c *Config) OwnershipTransferCallNames() []string {
+	if c == nil {
+		return nil
+	}
+	return c.OwnershipTransferCalls.Names
 }
 
 // ExcludePaths returns the configured directory paths to prune during indexing.

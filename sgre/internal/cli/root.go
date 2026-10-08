@@ -68,6 +68,9 @@ func Execute(ctx context.Context, args []string) int {
 	for _, n := range cfg.NonNullReturnNames() {
 		apikb.RegisterNonNullReturning(n)
 	}
+	for _, n := range cfg.OwnershipTransferCallNames() {
+		apikb.RegisterOwnershipTransfer(n)
+	}
 
 	if len(args) == 0 {
 		printUsage()

@@ -50,6 +50,16 @@ func TestAllocatorAndDeallocatorNamePatterns(t *testing.T) {
 	}
 }
 
+func TestRegisterOwnershipTransfer(t *testing.T) {
+	if IsEscapeFunction("dict_set") {
+		t.Error("dict_set must not match the built-in naming heuristic")
+	}
+	RegisterOwnershipTransfer("dict_set")
+	if !IsEscapeFunction("dict_set") {
+		t.Error("after RegisterOwnershipTransfer, dict_set must be an escape function")
+	}
+}
+
 func TestIsDeclaredAllocator_PreciseOnly(t *testing.T) {
 	if !IsDeclaredAllocator("malloc") {
 		t.Error("IsDeclaredAllocator(malloc) = false, want true")
