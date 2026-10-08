@@ -2,7 +2,14 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.9.0] - 2026-10-07
+## [0.9.0] - 2026-10-08
+
+### 出口前内存与空指针收敛
+
+- **uninit**：字段写目标和取地址表达式不再被当成未初始化读取，修复 `que_list->field = ...` 与 `&struct.field` 两类 pipeline-proved 误报。
+- **null-deref**：三态 return-nullability 模型补齐直接调用结果路径（`f()->x` / `*f()` / `f()[i]`），never-null 直接丢弃、known-nullable 自动确认；修复 `function_summary` 空文本列导致 planner 退回 fail-open 的精度降级。
+- **allocator/deallocator 语义**：扩展零配置识别到 `_new` / `_create` / `_dup` / `strdup` 与 `_destroy` / `_delete` / `_cleanup` / `_recycle`；统一 `calloc/zmalloc/zalloc` zero-init 判定。
+- **memory-leak**：deallocator 多参数只消费释放实参；`put/push/enqueue/register/insert/append/store/send/add` 等调用型所有权逃逸不再误报为泄漏。
 
 ### 切换到自维护 tree-sitter-c fork + 原生解析 GNU C 扩展
 
