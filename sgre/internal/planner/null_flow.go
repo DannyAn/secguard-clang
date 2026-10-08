@@ -1281,6 +1281,12 @@ func exprReturnsNullable(expr parser.Node, flow *flowResult, params map[string]i
 		if isAllocatorCall(name) {
 			return true
 		}
+		if apikb.IsKnownNullableReturn(name) {
+			return true
+		}
+		if apikb.IsNonNullReturning(name) {
+			return false
+		}
 		if definedNames[name] {
 			return retNullable[name] // defined in-scan: resolve via the fixpoint
 		}

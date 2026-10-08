@@ -70,15 +70,24 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 
 		// A direct dereference of a function-call result (`f()->field`, `*f()`,
 		// `f()[i]`) has no tracked variable, so the per-variable reaching
-		// analysis below cannot resolve it. Consult the inter-procedural
-		// retNullable set instead: a DEFINED callee that can return NULL → kept
-		// suspected; a DEFINED callee that provably never returns NULL → dropped;
-		// an EXTERNAL callee (declared but undefined in the scan) → kept
-		// suspected (open world — its nullability is unknown, so fail-open).
+		// analysis below cannot resolve it. Apply the same three-state return
+		// model used by detectExternalCall: known non-null → dropped; known
+		// nullable libc/POSIX → confirmed; a DEFINED callee resolves through the
+		// inter-procedural retNullable set; an unknown external callee stays
+		// suspected (open world, fail-open).
 		if c.IsCallResultDeref {
+			if apikb.IsNonNullReturning(c.CalleeName) {
+				dropped = dismiss(dropped, c, f.Name(),
+					fmt.Sprintf("callee %s is declared non-null", c.CalleeName))
+				continue
+			}
 			if !definedNames[c.CalleeName] || retNullable[c.CalleeName] {
 				c.HasNullableSource = true
-				c.SuspicionLevel = "suspected"
+				if apikb.IsKnownNullableReturn(c.CalleeName) {
+					c.SuspicionLevel = "confirmed"
+				} else {
+					c.SuspicionLevel = "suspected"
+				}
 				kept = append(kept, c)
 			} else {
 				dropped = dismiss(dropped, c, f.Name(),

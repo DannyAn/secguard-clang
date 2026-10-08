@@ -422,6 +422,28 @@ func TestStore_FunctionSummary_Upsert(t *testing.T) {
 	}
 }
 
+func TestStore_UpdateReturnNullableInsertOnly(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	fileID, _ := s.InsertFile(ctx, &File{Path: "test.c"})
+	funcID, _ := s.InsertFunction(ctx, &Function{FileID: fileID, Name: "f"})
+
+	if err := s.UpdateReturnNullable(ctx, funcID, true); err != nil {
+		t.Fatalf("UpdateReturnNullable failed: %v", err)
+	}
+	sum, err := s.GetSummaryByFunction(ctx, funcID)
+	if err != nil {
+		t.Fatalf("GetSummaryByFunction failed on insert-only summary: %v", err)
+	}
+	if sum == nil || !sum.ReturnNullable {
+		t.Fatalf("expected nullable insert-only summary, got %+v", sum)
+	}
+	if sum.ParameterNullable != "" || sum.SideEffect != "" || sum.SummaryJSON != "" {
+		t.Fatalf("NULL summary text columns should read as empty strings, got %+v", sum)
+	}
+}
+
 func TestStore_GetLatestScanID_Tiebreaker(t *testing.T) {
 	ctx := context.Background()
 	s := NewTestStore(t)

@@ -25,15 +25,19 @@ func (s *store) UpsertSummary(ctx context.Context, sum *FunctionSummary) error {
 
 func (s *store) GetSummaryByFunction(ctx context.Context, functionID int64) (*FunctionSummary, error) {
 	sum := &FunctionSummary{}
+	var parameterNullable, sideEffect, summaryJSON sql.NullString
 	err := s.exec.QueryRowContext(ctx,
 		`SELECT function_id, return_nullable, parameter_nullable, side_effect, summary_json FROM function_summary WHERE function_id = ?`, functionID).
-		Scan(&sum.FunctionID, &sum.ReturnNullable, &sum.ParameterNullable, &sum.SideEffect, &sum.SummaryJSON)
+		Scan(&sum.FunctionID, &sum.ReturnNullable, &parameterNullable, &sideEffect, &summaryJSON)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("db: get summary by function: %w", err)
 	}
+	sum.ParameterNullable = parameterNullable.String
+	sum.SideEffect = sideEffect.String
+	sum.SummaryJSON = summaryJSON.String
 	return sum, nil
 }
 
@@ -52,10 +56,14 @@ func (s *store) ListSummariesByFunctionIDs(ctx context.Context, functionIDs []in
 		}
 		for rows.Next() {
 			sum := &FunctionSummary{}
-			if scanErr := rows.Scan(&sum.FunctionID, &sum.ReturnNullable, &sum.ParameterNullable, &sum.SideEffect, &sum.SummaryJSON); scanErr != nil {
+			var parameterNullable, sideEffect, summaryJSON sql.NullString
+			if scanErr := rows.Scan(&sum.FunctionID, &sum.ReturnNullable, &parameterNullable, &sideEffect, &summaryJSON); scanErr != nil {
 				rows.Close()
 				return nil, fmt.Errorf("db: scan summary: %w", scanErr)
 			}
+			sum.ParameterNullable = parameterNullable.String
+			sum.SideEffect = sideEffect.String
+			sum.SummaryJSON = summaryJSON.String
 			result[sum.FunctionID] = sum
 		}
 		rows.Close()
