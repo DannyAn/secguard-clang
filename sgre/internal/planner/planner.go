@@ -60,6 +60,7 @@ func (p *Planner) getFilters(chain string) ([]Filter, error) {
 			NewNonNullableFilter(),
 			NewArrayOOBPrecedenceFilter(p.store),
 			NewNullableSourceFilter(p.store).WithParser(p.parser, p.logger),
+			NewMacroUncertainFilter(p.store, p.macro),
 			NewCallReachFilter(p.store, p.callReachCache),
 			NewSafeFunctionFilter(p.store),
 		}, nil

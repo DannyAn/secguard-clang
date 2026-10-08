@@ -9,6 +9,7 @@
 - **uninit**：字段写目标和取地址表达式不再被当成未初始化读取，修复 `que_list->field = ...` 与 `&struct.field` 两类 pipeline-proved 误报。
 - **null-deref**：三态 return-nullability 模型补齐直接调用结果路径（`f()->x` / `*f()` / `f()[i]`），never-null 直接丢弃、known-nullable 自动确认；修复 `function_summary` 空文本列导致 planner 退回 fail-open 的精度降级。
 - **null-deref triage**：`caller_null` 中仅“调用方实参未证明非空”的候选在 AI 前直接收敛；字面量 `NULL` 调用和带具体来源行的候选继续保留。
+- **null-deref guard/macro triage**：短路判空条件内的解引用（`p == NULL || p->field`）前置收敛；无具体 NULL 来源行的 macro-context 候选不再进入 AI。
 - **allocator/deallocator 语义**：扩展零配置识别到 `_new` / `_create` / `_dup` / `strdup` 与 `_destroy` / `_delete` / `_cleanup` / `_recycle`；统一 `calloc/zmalloc/zalloc` zero-init 判定。
 - **memory-leak**：deallocator 多参数只消费释放实参；`put/push/enqueue/register/insert/append/store/send/add` 等调用型所有权逃逸不再误报为泄漏。
 

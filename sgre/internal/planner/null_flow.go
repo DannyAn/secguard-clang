@@ -132,6 +132,10 @@ type flowResult struct {
 	definite map[int]map[string]bool
 	// definiteGenAt records the explicit-null gen at each node.
 	definiteGenAt map[int]map[string]bool
+	// weakGuard marks variables that are both null-checked and dereferenced in
+	// the same control-flow condition (`p == NULL || p->field`), where the
+	// dereference is short-circuit-protected and therefore not a null-deref.
+	weakGuard map[int]map[string]bool
 }
 
 // reaching reports whether variable has a reaching source at line.
@@ -165,6 +169,14 @@ func (m *flowResult) reachingDefinite(variable string, line int) bool {
 		return true
 	}
 	return m.definiteGenAt[n.ID][variable]
+}
+
+func (m *flowResult) weakGuardAt(variable string, line int) bool {
+	if m == nil || m.weakGuard == nil {
+		return false
+	}
+	n := m.cfg.NodeAt(line)
+	return n != nil && m.weakGuard[n.ID][variable]
 }
 
 // mustReaching reports whether the fact holds on EVERY path to line (the boolean
@@ -264,7 +276,7 @@ func (a *flowAnalyzer) analyzeFlow(ctx context.Context, fn *db.Function, body pa
 		guard = buildGuardModel(cfg, a.helperParams, a.macroGuards)
 	}
 	nodeIn := runDataflow(cfg, effects, a.entrySeeds, guard)
-	return &flowResult{cfg: cfg, nodeIn: nodeIn, genAt: genAt(cfg, effects)}
+	return &flowResult{cfg: cfg, nodeIn: nodeIn, genAt: genAt(cfg, effects), weakGuard: buildWeakGuardMap(cfg)}
 }
 
 // analyzeFlowMust runs the may reaching-sources dataflow and, over the SAME
@@ -847,6 +859,29 @@ func genAt(cfg *graph.StmtCFG, effects map[int]*nodeEffects) map[int]map[string]
 		}
 	}
 	return genAt
+}
+
+func buildWeakGuardMap(cfg *graph.StmtCFG) map[int]map[string]bool {
+	out := make(map[int]map[string]bool)
+	if cfg == nil {
+		return out
+	}
+	for _, n := range cfg.Nodes {
+		if n.Kind != "stmt" || !isConditionKind(n.Stmt.Kind()) {
+			continue
+		}
+		cond := n.Stmt.ChildByFieldName("condition")
+		if cond == nil {
+			continue
+		}
+		for _, v := range parser.NullCheckedVars(*cond) {
+			if out[n.ID] == nil {
+				out[n.ID] = map[string]bool{}
+			}
+			out[n.ID][v] = true
+		}
+	}
+	return out
 }
 
 // forEachAssignment visits every (lhs, rhs) pair of an assignment_expression or

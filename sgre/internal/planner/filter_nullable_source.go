@@ -108,6 +108,11 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 						fmt.Sprintf("parameter %s has no proven nullable caller argument", c.VariableName))
 					continue
 				}
+				if c.SourceLine > 0 && !c.HasDefiniteNull && fm.weakGuardAt(c.VariableName, c.Line) {
+					dropped = dismiss(dropped, c, f.Name(),
+						fmt.Sprintf("dereference of %s is short-circuit null-guarded in its condition", c.VariableName))
+					continue
+				}
 				// Layering: reflect the must/may tier in the suspicion label so
 				// the AI budgets effort by certainty. A DEFINITE null source
 				// (p = NULL) reaching on every path is a certain null-deref →
