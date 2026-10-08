@@ -707,3 +707,85 @@ func IsDeallocator(name string) bool {
 // IsAllocatorOrDeallocator reports whether name is any recognized memory
 // allocation or release function.
 func IsAllocatorOrDeallocator(name string) bool { return IsAllocator(name) || IsDeallocator(name) }
+
+// BuiltinNonNullReturning are libc/POSIX functions that return a pointer but are
+// guaranteed non-null by contract (e.g. strerror always returns an error
+// description string). Projects extend this set via RegisterNonNullReturning
+// (secguard.toml [nullability.non_null_returns]) for third-party wrappers with
+// an abort-on-failure contract (xmalloc, g_malloc, sdsnew, ...).
+var BuiltinNonNullReturning = map[string]bool{
+	"strerror":  true,
+	"strsignal": true,
+	"inet_ntoa": true,
+	"ctermid":   true,
+}
+
+// extraNonNullReturning holds project-declared never-null return names
+// registered at CLI startup from secguard.toml [nullability.non_null_returns].
+var extraNonNullReturning = map[string]bool{}
+
+// RegisterNonNullReturning adds a project-specific function name whose return
+// value is guaranteed non-null (e.g. xmalloc, g_malloc, sdsnew) so the null
+// source detector skips it instead of seeding a false null source.
+func RegisterNonNullReturning(name string) {
+	if name != "" {
+		extraNonNullReturning[name] = true
+	}
+}
+
+// IsNonNullReturning reports whether name is a built-in or project-declared
+// function whose return value is guaranteed non-null.
+func IsNonNullReturning(name string) bool {
+	return BuiltinNonNullReturning[name] || extraNonNullReturning[name]
+}
+
+// BuiltinNullableReturning are libc/POSIX functions that return a pointer and
+// MAY return NULL on failure/not-found. These are the "maybe-null libc" tier:
+// a dereference of their result with no null guard is a textbook CWE-476
+// regardless of path, so the null-deref filter auto-confirms them (same tier
+// as allocators) rather than downgrading to suspected for the AI. The set is
+// deliberately precise (built-in only): a naming-heuristic guess must not
+// auto-confirm, and project-specific maybe-null functions are registered as
+// allocators (which share the same auto-confirm channel).
+var BuiltinNullableReturning = map[string]bool{
+	// String search — return char*/void* or NULL when not found.
+	"strchr": true, "strrchr": true, "strstr": true, "strpbrk": true,
+	"strtok": true, "strtok_r": true, "memchr": true, "rawmemchr": true,
+	// Wide-char search.
+	"wcschr": true, "wcsrchr": true, "wcsstr": true, "wcspbrk": true,
+	"wmemchr": true,
+	// File open — return FILE* or NULL on failure.
+	"fopen": true, "freopen": true, "tmpfile": true,
+	// Environment / login.
+	"getenv": true, "getlogin": true,
+	// Binary search — return void* or NULL when not found.
+	"bsearch": true,
+	// Path resolution — return char* or NULL on failure.
+	"realpath": true,
+	// Password / group database.
+	"getpwuid": true, "getpwnam": true, "getgrnam": true, "getgrgid": true,
+	"getpwent": true, "getgrent": true,
+	// Directory open.
+	"opendir": true, "fdopendir": true,
+	// Time conversion — return struct tm* or NULL on error.
+	"gmtime": true, "localtime": true, "gmtime_r": true, "localtime_r": true,
+	// Dynamic linking.
+	"dlopen": true, "dlsym": true,
+	// Locale.
+	"setlocale": true, "newlocale": true,
+	// Tree search.
+	"tsearch": true, "tfind": true,
+	// Network database.
+	"gethostbyname": true, "gethostbyaddr": true,
+	"getservbyname": true, "getservbyport": true,
+	"getprotobyname": true, "getprotobynumber": true,
+	// Misc.
+	"cuserid": true, "tmpnam": true,
+	"setmntent": true, "getmntent": true,
+}
+
+// IsKnownNullableReturn reports whether name is a built-in libc/POSIX function
+// that returns a possibly-null pointer. It is the precise set (built-in only):
+// project-specific maybe-null functions are registered as allocators, which
+// share the same auto-confirm channel via onlyCertainNullableSources.
+func IsKnownNullableReturn(name string) bool { return BuiltinNullableReturning[name] }

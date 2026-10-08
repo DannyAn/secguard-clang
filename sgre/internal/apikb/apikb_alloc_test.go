@@ -41,3 +41,33 @@ func TestRegisterAllocator(t *testing.T) {
 		t.Error("RegisterAllocator should make it a declared allocator")
 	}
 }
+func TestIsNonNullReturning_BuiltinAndRegistered(t *testing.T) {
+	for _, name := range []string{"strerror", "strsignal", "inet_ntoa", "ctermid"} {
+		if !IsNonNullReturning(name) {
+			t.Errorf("IsNonNullReturning(%q) = false, want true (built-in)", name)
+		}
+	}
+	if IsNonNullReturning("strchr") {
+		t.Error("IsNonNullReturning(strchr) = true, want false (strchr is maybe-null, not never-null)")
+	}
+}
+
+func TestRegisterNonNullReturning(t *testing.T) {
+	RegisterNonNullReturning("__test_only_non_null__")
+	if !IsNonNullReturning("__test_only_non_null__") {
+		t.Error("RegisterNonNullReturning should make it a non-null return")
+	}
+}
+
+func TestIsKnownNullableReturn_BuiltinPreciseSet(t *testing.T) {
+	for _, name := range []string{"strchr", "strstr", "fopen", "getenv", "opendir", "realpath", "gmtime", "dlsym"} {
+		if !IsKnownNullableReturn(name) {
+			t.Errorf("IsKnownNullableReturn(%q) = false, want true (built-in maybe-null)", name)
+		}
+	}
+	for _, name := range []string{"my_lookup", "get_foo", "strerror", "malloc"} {
+		if IsKnownNullableReturn(name) {
+			t.Errorf("IsKnownNullableReturn(%q) = true, want false (not in built-in set)", name)
+		}
+	}
+}

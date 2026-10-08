@@ -107,14 +107,16 @@ func (m *nullModel) hasSource(variable string, line int) bool {
 	return false
 }
 
-// onlyAllocatorSources reports whether EVERY NULL_VALUE source for variable is a
-// malloc/calloc/realloc allocator. An allocator inherently returns NULL, so a
-// dereference of its result with no guard is a textbook null-deref regardless of
-// path — the filter keeps such candidates confirmed. An explicit `p = NULL` is
-// NOT an allocator (it is handled by the must-null `definite` analysis, which
-// confirms only when the null reaches on every path), and an unknown function
-// call stays suspected.
-func (m *nullModel) onlyAllocatorSources(variable string) bool {
+// onlyCertainNullableSources reports whether EVERY NULL_VALUE source for
+// variable is a "certain nullable" source: a declared allocator (malloc/
+// calloc/realloc/strdup/...) or a known maybe-null libc/POSIX function
+// (strchr/fopen/getenv/...). Both inherently return NULL, so a dereference
+// of their result with no guard is a textbook CWE-476 regardless of path —
+// the filter keeps such candidates confirmed. An explicit `p = NULL` is NOT
+// in this set (it is handled by the must-null `definite` analysis, which
+// confirms only when the null reaches on every path), and an unknown
+// external call stays suspected.
+func (m *nullModel) onlyCertainNullableSources(variable string) bool {
 	if m == nil {
 		return false
 	}
@@ -126,7 +128,7 @@ func (m *nullModel) onlyAllocatorSources(variable string) bool {
 		seen = true
 		// Precise set only: a naming-heuristic guess (e.g. a NULL_VALUE whose
 		// origin is a wrapper) must stay "suspected" for the AI, never confirm.
-		if !apikb.IsDeclaredAllocator(s.origin) {
+		if !apikb.IsDeclaredAllocator(s.origin) && !apikb.IsKnownNullableReturn(s.origin) {
 			return false
 		}
 	}

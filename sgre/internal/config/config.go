@@ -25,6 +25,7 @@ type Config struct {
 	DisabledTypes   DisabledTypes   `toml:"disabled_types"`
 	Allocators      Allocators      `toml:"allocators"`
 	Deallocators    Deallocators    `toml:"deallocators"`
+	Nullability     Nullability     `toml:"nullability"`
 }
 
 type TrustedMacros struct {
@@ -64,6 +65,25 @@ type Allocators struct {
 //	[deallocators]
 //	names = ["nat_free", "llm_free", "VOS_FREE", "VOS_FREE_F"]
 type Deallocators struct {
+	Names []string `toml:"names"`
+}
+
+// Nullability declares function return-value nullability for third-party
+// functions whose definitions live outside the scan tree. This is the
+// "never-null return" tier: functions with an abort-on-failure contract
+// (xmalloc, g_malloc, sdsnew, ...) that never return NULL, so a dereference
+// of their result is never a null-deref.
+//
+//	[nullability.non_null_returns]
+//	names = ["xmalloc", "g_malloc", "g_new", "sdsnew"]
+type Nullability struct {
+	NonNullReturns NonNullReturns `toml:"non_null_returns"`
+}
+
+// NonNullReturns declares function names whose return value is guaranteed
+// non-null. The null source detector skips these instead of seeding a false
+// null source.
+type NonNullReturns struct {
 	Names []string `toml:"names"`
 }
 
@@ -201,6 +221,16 @@ func (c *Config) DeallocatorNames() []string {
 		return nil
 	}
 	return c.Deallocators.Names
+}
+
+// NonNullReturnNames returns the project-specific never-null return function
+// names. These are registered into apikb at CLI startup so the null source
+// detector skips them instead of seeding a false null source.
+func (c *Config) NonNullReturnNames() []string {
+	if c == nil {
+		return nil
+	}
+	return c.Nullability.NonNullReturns.Names
 }
 
 // ExcludePaths returns the configured directory paths to prune during indexing.

@@ -297,10 +297,27 @@ func (d *NullSourceDetector) detectExternalCall(ctx context.Context, f *db.Funct
 		if rt, ok := retTypes[callName]; ok && neverNullReturnTypes[rt] {
 			return
 		}
+		if apikb.IsNonNullReturning(callName) {
+			return
+		}
 		if knownFuncs[callName] && !nullableFuncs[callName] {
 			return
 		}
-		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: node.StartLine()}, map[string]string{"variable": varName, "origin": "external_call", "function": callName}) {
+		// A known maybe-null libc/POSIX function (strchr, fopen, getenv, ...)
+		// inherently returns NULL on failure/not-found. Seed its origin as the
+		// function name (same semantics as allocators) so
+		// onlyCertainNullableSources auto-confirms the dereference instead of
+		// downgrading to suspected for the AI. An unknown external call keeps
+		// origin "external_call" (fail-open: suspected for the AI).
+		origin := "external_call"
+		if apikb.IsKnownNullableReturn(callName) {
+			origin = callName
+		}
+		props := map[string]string{"variable": varName, "origin": origin}
+		if origin == "external_call" {
+			props["function"] = callName
+		}
+		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: node.StartLine()}, props) {
 			result.EventsCreated++
 		}
 	}

@@ -65,6 +65,9 @@ func Execute(ctx context.Context, args []string) int {
 	for _, n := range cfg.DeallocatorNames() {
 		apikb.RegisterDeallocator(n)
 	}
+	for _, n := range cfg.NonNullReturnNames() {
+		apikb.RegisterNonNullReturning(n)
+	}
 
 	if len(args) == 0 {
 		printUsage()
