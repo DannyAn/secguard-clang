@@ -1494,7 +1494,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		if !funcLineRange(f, field.StartLine()) {
 			continue
 		}
-		if isInsideTypeExpr(field) {
+		if isInsideTypeExpr(field) || isFieldWriteTarget(field) || isAddressOnlyUse(field) {
 			continue
 		}
 		children := field.NamedChildren()
@@ -1748,6 +1748,9 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 		if !funcLineRange(f, field.StartLine()) {
 			continue
 		}
+		if isFieldWriteTarget(field) || isAddressOnlyUse(field) {
+			continue
+		}
 		children := field.NamedChildren()
 		if len(children) == 0 {
 			continue
@@ -1867,6 +1870,41 @@ func fieldWritePaths(lhs parser.Node) []string {
 			return paths
 		}
 	}
+}
+
+// isFieldWriteTarget reports whether field is part of the write target of a
+// plain assignment or declaration initializer. The assignment LHS is not a read
+// of the uninitialized memory, including when the write sits inside a runtime
+// branch; path sensitivity is handled separately by initializedFields.
+func isFieldWriteTarget(field parser.Node) bool {
+	for cur := field; cur.Parent() != nil; cur = *cur.Parent() {
+		parent := *cur.Parent()
+		switch parent.Kind() {
+		case "assignment_expression":
+			lhs, _, ok := parent.AssignParts()
+			if !ok || !nodeWithin(&lhs, &field) {
+				return false
+			}
+			rest := strings.TrimSpace(strings.TrimPrefix(parent.Text(), lhs.Text()))
+			return strings.HasPrefix(rest, "=") && !strings.HasPrefix(rest, "==")
+		case "init_declarator":
+			decl := parent.ChildByFieldName("declarator")
+			return decl != nil && nodeWithin(decl, &field)
+		}
+	}
+	return false
+}
+
+// isAddressOnlyUse reports whether field is evaluated only to form an address
+// (`&p->f`, `&s.f`). Taking the address does not read the member's value.
+func isAddressOnlyUse(field parser.Node) bool {
+	for cur := field; cur.Parent() != nil; cur = *cur.Parent() {
+		parent := *cur.Parent()
+		if parent.Kind() == "pointer_expression" && strings.HasPrefix(strings.TrimSpace(parent.Text()), "&") {
+			return true
+		}
+	}
+	return false
 }
 
 // destWriteTarget resolves the write target of a dest-writer call's first
