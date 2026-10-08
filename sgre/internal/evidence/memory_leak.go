@@ -186,6 +186,16 @@ func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function
 		if !ok {
 			return
 		}
+		// A compound assignment (`ret += foo_new(...)`) is arithmetic, not an
+		// allocation store — an allocator result is always assigned with `=`.
+		// Without this guard, `ret += CLI_NewDefineCmdElement(...)` produces a
+		// spurious MEMORY_ALLOC for the integer `ret` when `_new` triggers the
+		// zero-config allocator heuristic, leading to a confirmed false positive.
+		if node.Kind() == "assignment_expression" {
+			if op := node.ChildByFieldName("operator"); op != nil && op.Text() != "=" {
+				return
+			}
+		}
 		// Only a real malloc/calloc/realloc CALL on the right-hand side is an
 		// allocation. A substring match would treat `strm->zalloc = zcalloc`
 		// (assigning an allocator function pointer) as an allocation because

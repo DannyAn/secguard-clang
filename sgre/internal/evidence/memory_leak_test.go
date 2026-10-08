@@ -365,3 +365,26 @@ func TestMemoryLeak_OutputParamFree(t *testing.T) {
 		t.Errorf("root is freed via cJSON_Delete(*root); should be released, not leaked")
 	}
 }
+
+// TestMemoryLeak_CompoundAssignNoAlloc locks in the compound-assignment
+// guard in findAllocations: ret += foo_new(...) uses += (arithmetic), not =
+// (store), so no spurious MEMORY_ALLOC should be produced for the integer ret
+// even though "_new" triggers the zero-config allocator heuristic.
+func TestMemoryLeak_CompoundAssignNoAlloc(t *testing.T) {
+	store := runIndexAndDetect(t, "tc120_memory_leak_compound_assign.c")
+	ctx := context.Background()
+
+	allocEvents, err := store.ListEventsByType(ctx, "MEMORY_ALLOC")
+	if err != nil {
+		t.Fatalf("list MEMORY_ALLOC: %v", err)
+	}
+	for _, e := range allocEvents {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Variable == "ret" {
+			t.Errorf("ret += CLI_NewDefineCmdElement(...) is compound assignment; no MEMORY_ALLOC should be produced for integer ret")
+		}
+	}
+}
