@@ -15,6 +15,7 @@ import (
 
 	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/git"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/planner"
 	"github.com/DannyAn/secguard-clang/internal/report"
@@ -480,6 +481,7 @@ func runScanCmd(ctx context.Context, args []string) int {
 
 		run := &db.ScanRun{
 			ScanID:           scanID,
+			SourceRevision:   resolveSourceRevision(projectRoot),
 			DurationMs:       time.Since(scanStart).Milliseconds(),
 			IndexMs:          outcome.Timings.IndexMs,
 			GraphMs:          outcome.Timings.GraphMs,
@@ -613,6 +615,12 @@ func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType s
 		if summary == "" {
 			summary = fmt.Sprintf("%s in %s at line %d", vulnType, c.Target.Function, c.Target.Line)
 		}
+		properties, perr := buildAutoConfirmProperties(c.Evidence)
+		if perr != nil {
+			if logger != nil {
+				logger.Warn("auto-confirm properties build failed", "error", perr, "vuln_type", vulnType, "function", c.Target.Function)
+			}
+		}
 		f := &db.Finding{
 			RuleID:       cwe,
 			Severity:     "high",
@@ -622,6 +630,7 @@ func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType s
 			LineNumber:   c.Target.Line,
 			FunctionName: c.Target.Function,
 			Variable:     c.Target.Variable,
+			Properties:   properties,
 			Summary:      summary,
 			Reasoning:    "Pipeline-proved (auto-confirmed, no AI re-review): " + summary,
 			FixStrategy:  report.FixSuggestion(vulnType, cwe, c),
@@ -634,6 +643,30 @@ func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType s
 		written++
 	}
 	return written, unwritten, nil
+}
+
+func resolveSourceRevision(projectRoot string) string {
+	if !git.IsRepo(projectRoot) {
+		return ""
+	}
+	sha, err := git.RevParse(projectRoot, "HEAD")
+	if err != nil {
+		return ""
+	}
+	return sha
+}
+
+func buildAutoConfirmProperties(evidence []planner.EvidenceFragment) (string, error) {
+	evBytes, err := json.Marshal(evidence)
+	if err != nil {
+		return "", fmt.Errorf("marshal auto_confirm_evidence: %w", err)
+	}
+	base := map[string]json.RawMessage{"auto_confirm_evidence": evBytes}
+	out, err := json.Marshal(base)
+	if err != nil {
+		return "", fmt.Errorf("marshal properties: %w", err)
+	}
+	return string(out), nil
 }
 
 func newScanLogger(scanDir string) (*log.Logger, io.Closer) {

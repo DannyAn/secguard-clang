@@ -312,3 +312,63 @@ func TestSarifStages_EmitFileURI(t *testing.T) {
 		t.Errorf("result.sarif uri = %q, want file:///repo/src/a.c", got)
 	}
 }
+
+// The conservative re-review tiers (needs_more_evidence / review_error) stay
+// "confirmed" in result.sarif but carry a review_status marker so the user can
+// observe them; false_positive is dismissed and must not reach result.sarif.
+func TestWriteSarifFromFindings_ReviewStatusMarker(t *testing.T) {
+	dir := t.TempDir()
+	sarifPath := filepath.Join(dir, "result.sarif")
+
+	findings := []*db.Finding{
+		{ // AI agrees → confirmed, marker ai_confirmed
+			RuleID: "CWE-476", Severity: "high", Confidence: 1.0,
+			Status: "auto-confirmed", ReviewStatus: "ai_confirmed",
+			FilePath: "src/a.c", LineNumber: 10, FunctionName: "f", Summary: "null deref",
+		},
+		{ // inconclusive → still confirmed, marker needs_more_evidence
+			RuleID: "CWE-476", Severity: "high", Confidence: 1.0,
+			Status: "auto-confirmed", ReviewStatus: "needs_more_evidence",
+			FilePath: "src/b.c", LineNumber: 20, FunctionName: "g", Summary: "null deref",
+		},
+		{ // AI refutes → dismissed, must NOT reach result.sarif
+			RuleID: "CWE-476", Severity: "high", Confidence: 1.0,
+			Status: "auto-confirmed", ReviewStatus: "false_positive",
+			FilePath: "src/d.c", LineNumber: 40, FunctionName: "k", Summary: "false positive",
+		},
+	}
+
+	if err := WriteSarifFromFindings(sarifPath, "", findings); err != nil {
+		t.Fatalf("WriteSarifFromFindings: %v", err)
+	}
+	data, err := os.ReadFile(sarifPath)
+	if err != nil {
+		t.Fatalf("read result.sarif: %v", err)
+	}
+	var rep sarifReport
+	if err := json.Unmarshal(data, &rep); err != nil {
+		t.Fatalf("unmarshal sarif: %v", err)
+	}
+	results := rep.Runs[0].Results
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results (false_positive excluded), got %d", len(results))
+	}
+
+	byStatus := map[string]sarifResult{}
+	for _, r := range results {
+		byStatus[r.Properties["review_status"]] = r
+		if r.Properties["status"] != "confirmed" {
+			t.Errorf("tier %q: status = %q, want confirmed", r.Properties["review_status"], r.Properties["status"])
+		}
+	}
+	if _, ok := byStatus["ai_confirmed"]; !ok {
+		t.Error("ai_confirmed marker missing from result.sarif")
+	}
+	if _, ok := byStatus["needs_more_evidence"]; !ok {
+		t.Error("needs_more_evidence marker missing from result.sarif")
+	}
+	// review_error is not a persisted verdict, so it must never reach result.sarif.
+	if _, ok := byStatus["review_error"]; ok {
+		t.Error("review_error must not appear in result.sarif")
+	}
+}

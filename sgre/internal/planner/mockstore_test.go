@@ -359,6 +359,12 @@ func (s *mockStore) GetFindingByID(ctx context.Context, id int64) (*db.Finding, 
 func (s *mockStore) UpdateFindingReview(ctx context.Context, id int64, reviewStatus, reviewReasoning string) error {
 	return nil
 }
+func (s *mockStore) UpdateFindingReviewWithProperties(ctx context.Context, id int64, reviewStatus, reviewReasoning, properties string) error {
+	return nil
+}
+func (s *mockStore) ListAutoConfirmedForReview(ctx context.Context, scanID string, ruleIDs []string, limit int) ([]*db.Finding, error) {
+	return nil, nil
+}
 func (s *mockStore) ListFingerprintsExcludingScanID(ctx context.Context, excludeScanID string) (map[string]bool, error) {
 	set := make(map[string]bool)
 	for _, f := range s.findings {

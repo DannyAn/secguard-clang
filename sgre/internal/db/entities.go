@@ -54,10 +54,13 @@ const StatusAutoConfirmed = "auto-confirmed"
 // the single source of truth for developer-facing counts.
 func (f *Finding) EffectiveStatus() string {
 	switch f.ReviewStatus {
-	case "confirmed":
+	case "confirmed", "ai_confirmed":
 		return "confirmed"
-	case "dismissed", "suspected-kept": // legacy: keep-suspected == not confirmed == dismissed
+	case "dismissed", "suspected-kept", "false_positive": // legacy: keep-suspected == not confirmed == dismissed
 		return "dismissed"
+	case "needs_more_evidence":
+		// Conservative: the reviewer could neither confirm nor refute the
+		// finding, so the first-pass (pipeline) verdict stands.
 	}
 	if f.Status == StatusAutoConfirmed {
 		return "confirmed"
@@ -79,10 +82,13 @@ func (f *Finding) EffectiveStatus() string {
 // every exporter.
 func (f *Finding) FinalStatus() string {
 	switch f.ReviewStatus {
-	case "confirmed":
+	case "confirmed", "ai_confirmed":
 		return "confirmed"
-	case "dismissed", "suspected-kept":
+	case "dismissed", "suspected-kept", "false_positive":
 		return "dismissed"
+	case "needs_more_evidence":
+		// Conservative: fall through to the first-pass status so an inconclusive
+		// review never drops a potential real defect.
 	}
 	switch f.Status {
 	case "confirmed", StatusAutoConfirmed:
@@ -243,6 +249,7 @@ type ScanStat struct {
 type ScanRun struct {
 	ID               int64  `json:"id"`
 	ScanID           string `json:"scan_id"`
+	SourceRevision   string `json:"source_revision,omitempty"`
 	DurationMs       int64  `json:"duration_ms"`
 	AIDurationMs     int64  `json:"ai_duration_ms"`
 	IndexMs          int64  `json:"index_ms"`

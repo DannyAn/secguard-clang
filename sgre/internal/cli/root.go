@@ -19,7 +19,7 @@ import (
 // Version is the release version. It is a var (not const) so `go build
 // -ldflags "-X github.com/DannyAn/secguard-clang/internal/cli.Version=<v>"`
 // can inject the release version at build time; the fallback matches VERSION.
-var Version = "0.9.1"
+var Version = "0.9.2"
 
 func Execute(ctx context.Context, args []string) int {
 	// Sync the db layer's supported-CWE set from the planner registry so the
@@ -119,8 +119,10 @@ func Execute(ctx context.Context, args []string) int {
 		return runSchemaCmd(args[1:])
 	case "config":
 		return runConfigCmd(args[1:])
+	case "review-autoconfirmed":
+		return runReviewAutoConfirmedCmd(ctx, args[1:])
 	default:
-		WriteErrorJSON(fmt.Sprintf("unknown command %q; available: index, scan, diff, pr, mr, status, metrics, query, types, plan, report, db, schema, config", args[0]))
+		WriteErrorJSON(fmt.Sprintf("unknown command %q; available: index, scan, diff, pr, mr, status, metrics, query, types, plan, report, review-autoconfirmed, db, schema, config", args[0]))
 		return 1
 	}
 }

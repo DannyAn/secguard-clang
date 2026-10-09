@@ -115,6 +115,17 @@ type FindingStore interface {
 	ListFindingsByStatus(ctx context.Context, status string) ([]*Finding, error)
 	GetFindingByID(ctx context.Context, id int64) (*Finding, error)
 	UpdateFindingReview(ctx context.Context, id int64, reviewStatus, reviewReasoning string) error
+	// UpdateFindingReviewWithProperties records the second-round AI re-review
+	// verdict AND merges the structured review audit into properties (the
+	// auto_confirm_evidence key is preserved). This is the persist path for the
+	// auto-confirmed re-review; the verdict lands in review_status where
+	// EffectiveStatus/FinalStatus map it (false_positive → dismissed).
+	UpdateFindingReviewWithProperties(ctx context.Context, id int64, reviewStatus, reviewReasoning, properties string) error
+	// ListAutoConfirmedForReview returns auto-confirmed findings with no review
+	// verdict yet (review_status NULL/''). This is the re-review selection set;
+	// an errored review writes no verdict, so the finding stays here and is
+	// retried on the next run.
+	ListAutoConfirmedForReview(ctx context.Context, scanID string, ruleIDs []string, limit int) ([]*Finding, error)
 	// ListFingerprintsExcludingScanID returns the set of distinct non-empty
 	// finding fingerprints across every scan except excludeScanID. It is the
 	// incremental-review baseline: a candidate whose fingerprint is already

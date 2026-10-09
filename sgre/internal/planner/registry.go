@@ -54,7 +54,10 @@ type VulnTypeSpec struct {
 	// listed, CWEForCategory falls back to spec.CWE. This is the mechanism by
 	// which a single injection vuln_type + single injection/SKILL.md covers
 	// six CWEs without splitting into separate vuln_types.
-	CategoryCWEs map[string]string
+	CategoryCWEs      map[string]string
+	ReviewAssumptions []string
+	RequiredEvidence  []string
+	KnownLimitations  []string
 }
 
 var vulnTypeRegistry = map[string]*VulnTypeSpec{}
@@ -287,6 +290,15 @@ func init() {
 			}
 			return fragments
 		},
+		ReviewAssumptions: []string{
+			"A dereference of a pointer that is provably NULL on some path is a real defect",
+			"The pipeline tracks definite-null and nullable-source assignments",
+		},
+		RequiredEvidence: []string{"source of NULL value", "dereference location", "path from source to sink"},
+		KnownLimitations: []string{
+			"Macro context candidates are not auto-confirmed and excluded from review",
+			"Pointer aliasing across function boundaries may not be fully tracked",
+		},
 	})
 
 	RegisterVulnType(&VulnTypeSpec{
@@ -323,6 +335,15 @@ func init() {
 				{Type: "buffer_access", Role: "sink", Detail: fmt.Sprintf("buffer access in function %s at line %d", c.FunctionName, c.Line)},
 				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
 			}
+		},
+		ReviewAssumptions: []string{
+			"A write past the end of a buffer is a real defect",
+			"Constant indices/sizes past known bounds are confirmed by the detector",
+		},
+		RequiredEvidence: []string{"buffer allocation size", "access index or copy size", "bound check absence"},
+		KnownLimitations: []string{
+			"Variable indices/sizes require caller-influence analysis",
+			"Byte vs element unit confusion may cause false positives",
 		},
 	})
 
@@ -415,6 +436,15 @@ func init() {
 			frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
 			return frags
 		},
+		ReviewAssumptions: []string{
+			"Use of an uninitialized variable is a real defect",
+			"The pipeline tracks initialization state through the CFG",
+		},
+		RequiredEvidence: []string{"declaration without initialization", "use location", "path from declaration to use"},
+		KnownLimitations: []string{
+			"Heap/struct initialization via calloc/memset may not be fully recognized",
+			"Cross-function initialization via output parameters may be missed",
+		},
 	})
 
 	RegisterVulnType(&VulnTypeSpec{
@@ -431,6 +461,15 @@ func init() {
 				{Type: "use_after_free", Role: "sink", Detail: fmt.Sprintf("variable freed then used in function %s at line %d", c.FunctionName, c.Line)},
 				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
 			}
+		},
+		ReviewAssumptions: []string{
+			"Use of a pointer after it has been freed is a real defect",
+			"The pipeline tracks freed-state through the CFG",
+		},
+		RequiredEvidence: []string{"free location", "use location", "path from free to use"},
+		KnownLimitations: []string{
+			"Pointer aliasing may cause missed freed-state propagation",
+			"Cross-function free→use is not fully tracked",
 		},
 	})
 

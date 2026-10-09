@@ -2,6 +2,17 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.9.2] - 2026-10-09
+
+### AI 复核 auto-confirmed 结果（新能力）
+
+- 新增 `secguard review-autoconfirmed` 命令：对 sgre 判定为 `auto-confirmed` 的 finding 做一次独立 AI 复核，降低 pipeline 自动确认的误报、恢复 AI 研判价值。支持 `--scan-id` / `--type` / `--limit` / `--dry-run` / `--status` / `--output-json`。
+- 复核结论复用现有 `findings.review_status` 第二遍字段：`false_positive` 映射为 dismissed（真正过滤）、`ai_confirmed` 映射 confirmed、`needs_more_evidence` 保守保留原 confirmed，并在 `result.sarif` 以 `review_status` 属性暴露供观测。
+- `review_error`（复核调用失败）只写日志、不落库、不进 `result.sarif`：finding 保持未复核并在下次运行时自然重试，避免"复核失败却仍标 confirmed"误导用户。
+- 完整复核审计（supporting/contradicting/missing 证据数组、模型/provider、prompt/schema 版本、源码 revision、confidence、耗时）合并进 `properties.review`，与 `auto_confirm_evidence` 共存，不污染原始机器结论。
+- 扫描时记录源码 revision（`scan_runs.source_revision`），复核时校验 revision 一致性；payload 修复绝对路径解析与路径穿越防护。
+- 新增 `[ai_review]` 配置：`provider` / `model` / `endpoint` / `api_key_env` / `timeout_ms` / `max_retries` / `budget_usd` / `cost_per_call_usd` / `prompt_version` / `schema_version`。
+
 ## [0.9.1] - 2026-10-09
 
 ### memory-leak 准确率收敛（CWE-401）

@@ -27,6 +27,25 @@ type Config struct {
 	Deallocators           Deallocators           `toml:"deallocators"`
 	OwnershipTransferCalls OwnershipTransferCalls `toml:"ownership_transfer_calls"`
 	Nullability            Nullability            `toml:"nullability"`
+	AIReview               AIReview               `toml:"ai_review"`
+}
+
+type AIReview struct {
+	Provider       string  `toml:"provider"`
+	Model          string  `toml:"model"`
+	Endpoint       string  `toml:"endpoint"`
+	APIKeyEnv      string  `toml:"api_key_env"`
+	MaxConcurrency int     `toml:"max_concurrency"`
+	TimeoutMs      int     `toml:"timeout_ms"`
+	MaxRetries     int     `toml:"max_retries"`
+	BudgetUSD      float64 `toml:"budget_usd"`
+	// CostPerCallUSD is a user-supplied estimate of one review call's cost in
+	// USD. The reviewer cannot measure real token cost, so budget enforcement is
+	// only active when both BudgetUSD and CostPerCallUSD are positive — an
+	// honest estimate beats a hardcoded fake.
+	CostPerCallUSD float64 `toml:"cost_per_call_usd"`
+	PromptVersion  string  `toml:"prompt_version"`
+	SchemaVersion  string  `toml:"schema_version"`
 }
 
 type TrustedMacros struct {

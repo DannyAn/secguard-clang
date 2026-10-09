@@ -227,3 +227,68 @@ func (s *store) UpdateFindingReview(ctx context.Context, id int64, reviewStatus,
 	}
 	return nil
 }
+
+// UpdateFindingReviewWithProperties records the AI re-review verdict and merges
+// the structured review audit into properties. It is the auto-confirmed
+// re-review persist path: the verdict lands in review_status (mapped by
+// EffectiveStatus/FinalStatus, so false_positive → dismissed) while the full
+// audit (evidence arrays, model/prompt, revision identity) is kept in the
+// properties JSON blob under the "review" key.
+func (s *store) UpdateFindingReviewWithProperties(ctx context.Context, id int64, reviewStatus, reviewReasoning, properties string) error {
+	res, err := s.exec.ExecContext(ctx,
+		`UPDATE findings SET review_status = ?, review_reasoning = ?, properties = ? WHERE id = ?`,
+		reviewStatus, reviewReasoning, properties, id)
+	if err != nil {
+		return fmt.Errorf("db: update finding review with properties: %w", err)
+	}
+	n, rerr := res.RowsAffected()
+	if rerr != nil {
+		return fmt.Errorf("db: update finding review with properties: rows affected: %w", rerr)
+	}
+	if n == 0 {
+		return fmt.Errorf("db: update finding review with properties: no finding with id %d", id)
+	}
+	return nil
+}
+
+// ListAutoConfirmedForReview returns auto-confirmed findings that have no review
+// verdict yet (review_status NULL or empty). It is the re-review selection set.
+// A review that errored writes no verdict, so the finding stays in this set and
+// is naturally retried on the next run — review_error is a log event, not a
+// persisted state.
+func (s *store) ListAutoConfirmedForReview(ctx context.Context, scanID string, ruleIDs []string, limit int) ([]*Finding, error) {
+	return s.listAutoConfirmed(ctx, scanID, ruleIDs, limit, ` AND (review_status IS NULL OR review_status = '')`)
+}
+
+func (s *store) listAutoConfirmed(ctx context.Context, scanID string, ruleIDs []string, limit int, extraWhere string) ([]*Finding, error) {
+	var sb strings.Builder
+	sb.WriteString(`SELECT id, rule_id, severity, confidence, evidence, status, file_path, line_number, function_name, variable, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at FROM findings WHERE status = 'auto-confirmed'`)
+	var args []interface{}
+	if scanID != "" {
+		sb.WriteString(` AND scan_id = ?`)
+		args = append(args, scanID)
+	}
+	if len(ruleIDs) > 0 {
+		sb.WriteString(` AND rule_id IN (`)
+		for i, r := range ruleIDs {
+			if i > 0 {
+				sb.WriteString(`,`)
+			}
+			sb.WriteString(`?`)
+			args = append(args, r)
+		}
+		sb.WriteString(`)`)
+	}
+	sb.WriteString(extraWhere)
+	sb.WriteString(` ORDER BY id`)
+	if limit > 0 {
+		sb.WriteString(` LIMIT ?`)
+		args = append(args, limit)
+	}
+	rows, err := s.exec.QueryContext(ctx, sb.String(), args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: list auto-confirmed for review: %w", err)
+	}
+	defer rows.Close()
+	return scanFindings(rows)
+}

@@ -466,6 +466,18 @@ func writeSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding, k
 		if f.Reasoning != "" {
 			result.Properties["reasoning"] = f.Reasoning
 		}
+		// Surface the second-round AI re-review verdict (ai_confirmed /
+		// needs_more_evidence) on auto-confirmed findings. The binary `status`
+		// stays "confirmed" for the conservative needs_more_evidence tier, but
+		// this marker lets a reviewer observe how often the re-review was
+		// inconclusive without changing what is exported. review_error is not a
+		// persisted verdict (it is logged, not written), so it never appears here.
+		if f.ReviewStatus != "" {
+			result.Properties["review_status"] = f.ReviewStatus
+		}
+		if f.ReviewReasoning != "" {
+			result.Properties["review_reasoning"] = f.ReviewReasoning
+		}
 		if f.ExceptionCheck != "" {
 			result.Properties["exception_check"] = f.ExceptionCheck
 		}

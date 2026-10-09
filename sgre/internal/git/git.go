@@ -46,6 +46,18 @@ func RevParse(repoDir, ref string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// WorkingTreeDirty reports whether the working tree has uncommitted changes
+// (tracked or untracked). A dirty tree means a source excerpt read from disk may
+// not match HEAD; callers use it to flag revision verification as unproven.
+// On error it returns true (assume dirty rather than falsely claim clean).
+func WorkingTreeDirty(repoDir string) bool {
+	out, err := run(repoDir, "status", "--porcelain")
+	if err != nil {
+		return true
+	}
+	return strings.TrimSpace(out) != ""
+}
+
 // MergeBase returns the merge-base commit of a and b.
 func MergeBase(repoDir, a, b string) (string, error) {
 	out, err := run(repoDir, "merge-base", a, b)

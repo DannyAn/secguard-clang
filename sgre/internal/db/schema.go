@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS findings (
     reasoning       TEXT,
     fix_strategy    TEXT,
     exception_check TEXT,
-    review_status   TEXT CHECK (review_status IS NULL OR review_status = '' OR review_status IN ('confirmed', 'dismissed', 'suspected-kept')),
+    review_status   TEXT CHECK (review_status IS NULL OR review_status = '' OR review_status IN ('confirmed', 'dismissed', 'suspected-kept', 'ai_confirmed', 'false_positive', 'needs_more_evidence')),
     review_reasoning TEXT,
     scan_id         TEXT,
     fingerprint     TEXT,
@@ -190,6 +190,7 @@ CREATE TABLE IF NOT EXISTS scan_stats (
 CREATE TABLE IF NOT EXISTS scan_runs (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     scan_id           TEXT NOT NULL UNIQUE,
+    source_revision   TEXT,
     duration_ms       INTEGER,
     ai_duration_ms    INTEGER,
     index_ms          INTEGER,
@@ -295,6 +296,9 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 	// orchestrator reports at audit time, after the pipeline phase).
 	if err := ensureColumn(ctx, db, "scan_runs", "ai_duration_ms", "INTEGER"); err != nil {
 		return fmt.Errorf("db: init schema: ensure scan_runs.ai_duration_ms: %w", err)
+	}
+	if err := ensureColumn(ctx, db, "scan_runs", "source_revision", "TEXT"); err != nil {
+		return fmt.Errorf("db: init schema: ensure scan_runs.source_revision: %w", err)
 	}
 	// scan_stats.ai_stage_status is additive (the AI-classification completion
 	// marker set by `report --complete-type`). A pre-v0.7.4 database lacks the
