@@ -2,6 +2,19 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.9.1] - 2026-10-09
+
+### memory-leak 准确率收敛（CWE-401）
+
+- **definite 通道扩展到不可达释放**：`hasLostResource` 证明泄漏路径后，即使存在 `free`/`escape`/`transfer` 行，只要这些行在 CFG 上从分配点不可达（无条件 return / goto 之后的死代码），仍判定为 definite leak 并 auto-confirm；条件分支内的释放保持 suspected（ML-01/18 扩展）。
+- **compound assignment 不再当作分配**：`ret += CLI_NewDefineCmdElement(...)` 是算术运算而非存储分配，此前 `_new` 触发零配置分配器启发式导致 confirmed 误报。
+- **output-param escape/free 识别**：`*param` 输出参数形态的分配逃逸（`*root = malloc(...)`）与释放（`*p` 的 free）被正确解包，消除跨函数所有权的漏报/误报。
+- **config 驱动 `ownership_transfer_calls`**：新增 `[ownership_transfer_calls] names = [...]` 配置，项目自定义容器插入类函数（`list_push_back`/`dict_set`/`buffer_append` 等）在 CLI 启动时注册进 apikb，指针传入即视为所有权逃逸而非泄漏，替代原有硬编码。
+
+### SKILL 对齐
+
+- `extension/shared/skills/memory-leak/SKILL.md` 从通用方法论重写为对齐 detector 实际行为：真实事件（MEMORY_ALLOC / MEMORY_RELEASE）、definite 通道、confirmed/suspected/false-positive/dismissed 判定表，并补充别名释放、cast 释放、escape 变体、隐式分配器、self-realloc、goto cleanup、RAII 路径级等 false-positive 场景。
+
 ## [0.9.0] - 2026-10-08
 
 ### 出口前内存与空指针收敛
