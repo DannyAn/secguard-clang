@@ -5,16 +5,15 @@
  * so cJSON_Delete(*root) is recognized as a release of "root", and
  * the allocation is not reported as a leak.
  */
-
+ 
 #include <stdlib.h>
-
+ 
 typedef struct cJSON { int type; } cJSON;
-
-cJSON *cJSON_CreateObject(void);
+ 
 void cJSON_Delete(cJSON *obj);
-
+ 
 int tc116_output_param_free(cJSON **root) {
-    *root = cJSON_CreateObject();
+    *root = malloc(sizeof(cJSON));
     if (!*root) return -1;
     (*root)->type = 0;
     cJSON_Delete(*root);

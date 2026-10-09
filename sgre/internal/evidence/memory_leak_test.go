@@ -388,3 +388,21 @@ func TestMemoryLeak_CompoundAssignNoAlloc(t *testing.T) {
 		}
 	}
 }
+
+// TestMemoryLeak_CreateNotMalloc locks in the removal of "_create" from the
+// zero-config allocator heuristic: db_create_sync_conn, pthread_create, etc.
+// are resource/object factories, not heap malloc — treating them as malloc
+// produced confirmed false positives because the definite-leak path bypasses
+// the AI classifier.
+func TestMemoryLeak_CreateNotMalloc(t *testing.T) {
+	store := runIndexAndDetect(t, "tc122_create_not_malloc.c")
+	ctx := context.Background()
+
+	events, err := store.ListEventsByType(ctx, "MEMORY_ALLOC")
+	if err != nil {
+		t.Fatalf("list MEMORY_ALLOC: %v", err)
+	}
+	if len(events) > 0 {
+		t.Errorf("db_create_sync_conn is not a heap malloc; expected 0 MEMORY_ALLOC events, got %d", len(events))
+	}
+}

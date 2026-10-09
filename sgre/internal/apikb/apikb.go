@@ -685,6 +685,15 @@ func IsDeclaredDeallocator(name string) bool {
 // nat_malloc, VOS_MALLOC, VOS_MALLOC_F, xmalloc, ngx_alloc. The heuristic is
 // deliberately broad: false positives (e.g. pre_malloc_log) are surfaced as
 // candidates for the AI classifier to dismiss, never silently dropped.
+//
+// "_create" is NOT included: in C, *_create covers thread creation
+// (pthread_create), connection/object factories (db_create_sync_conn,
+// cJSON_CreateObject), and table/cache constructors — none of which is a
+// heap malloc. Matching them produced confirmed false positives because the
+// definite-leak path (no free/escape/transfer) bypasses the AI classifier.
+// The narrower "_mem_create" covers wrappers like pki_util_mem_create whose
+// name explicitly says "memory create". Real *_create heap allocators should
+// be registered via RegisterAllocator (secguard.toml [allocators]).
 func IsAllocator(name string) bool {
 	if IsDeclaredAllocator(name) {
 		return true
@@ -693,7 +702,7 @@ func IsAllocator(name string) bool {
 	return strings.Contains(lower, "alloc") ||
 		strings.Contains(lower, "strdup") ||
 		strings.Contains(lower, "_new") ||
-		strings.Contains(lower, "_create") ||
+		strings.Contains(lower, "_mem_create") ||
 		strings.Contains(lower, "_dup")
 }
 

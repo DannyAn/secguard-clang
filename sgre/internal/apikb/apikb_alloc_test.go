@@ -50,6 +50,18 @@ func TestAllocatorAndDeallocatorNamePatterns(t *testing.T) {
 	}
 }
 
+func TestIsAllocator_CreateNotMalloc(t *testing.T) {
+	for _, name := range []string{
+		"pthread_create", "db_create_sync_conn", "db_create_object",
+		"cJSON_CreateObject", "cJSON_CreateArray", "create_table_by_type",
+		"create_cache_base_addr", "ResourceHandle_create", "LockGuard_create",
+	} {
+		if IsAllocator(name) {
+			t.Errorf("IsAllocator(%q) = true, want false (_create is not a heap malloc)", name)
+		}
+	}
+}
+
 func TestRegisterOwnershipTransfer(t *testing.T) {
 	if IsEscapeFunction("dict_set") {
 		t.Error("dict_set must not match the built-in naming heuristic")
