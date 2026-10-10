@@ -319,6 +319,30 @@ missing `scan_id`/`output_dir`), and write that chunk again. (The single-finding
 `errors`.) Never re-run a write to "verify" — the write is idempotent; re-running
 never duplicates but wastes a turn.
 
+## Re-review auto-confirmed findings (reuse YOUR skill — no second agent)
+
+Your type's `candidates/<type>/_index.md` holds the suspected/possible candidates,
+but the scan ALSO machine-confirmed a set of findings the pipeline "proved"
+(they are NOT in `_index.md`). These are the highest false-positive risk — a
+getter misread as an allocation, a scalar status code misread as a pointer —
+so you MUST re-review them with the SAME skill before you finish the type:
+
+1. `secguard report --list-auto-confirmed --scan-id <scan_id> --type <type> --db <db_path>`
+   → a `findings` array (`id` / `rule_id` / `file` / `line` / `function` /
+   `variable` / `reasoning` / `snippet`).
+2. For each entry, apply the skill's false-positive rules against `reasoning` +
+   `snippet` (open the source line only when the snippet is insufficient — this is
+   a cheap table review, do NOT spend the ≤5 source-read budget here).
+3. Write your verdicts in ONE batch via `secguard report --review-json <tmpfile>
+   --db <db_path>` as `[{"id": <id>, "review_status": "confirmed"|"dismissed",
+   "review_reasoning": "..."}]`: a `dismissed` suppresses the machine false
+   positive from `result.sarif`; omit the entries you agree with (an unreviewed
+   auto-confirmed finding stays confirmed).
+
+A `dismissed` re-review reason must cite the same evidence contract as a
+candidate dismissal (the snippet / source line + why it is safe). Do NOT skip
+this step — it is what keeps the machine-proved tier honest.
+
 ## Single-pass verdicts (single pass — no second round)
 
 Your verdict is **FINAL and single-pass**. Classify each candidate once, pulling

@@ -466,23 +466,20 @@ as `result.sarif`.)
     Bash and cannot do it themselves); skipping it leaves the type's
     `ai_stage_status` as `pending` even though its findings landed.
 
-    **Auto-confirmed 二次复核（agent 原生，不是外部 AI provider）:** before the final
-    audit, re-review the machine auto-confirmed findings — they are the tier the
-    subagents never see, and a machine false positive (a getter misread as an
-    allocation, a scalar status code misread as a pointer, ...) would otherwise
-    ship to `result.sarif` unreviewed. Run
-    `secguard report --list-auto-confirmed --scan-id <scan_id> --db <db_path>`
-    (returns a `findings` array: `id` / `rule_id` / `file` / `line` / `function` /
-    `variable` / `reasoning` / `snippet`). For each entry apply the type's skill
-    false-positive rules against `reasoning` + `snippet` (open the source line only
-    when the snippet is insufficient). Write your verdicts in ONE batch via
-    `secguard report --review-json <tmpfile> --db <db_path>` as
-    `[{"id": <id>, "review_status": "confirmed"|"dismissed", "review_reasoning": "..."}]`:
-    `dismissed` suppresses the machine false positive from `result.sarif`; omit the
-    entries you agree with (an unreviewed auto-confirmed finding stays confirmed).
-    This is the agent-native replacement for the external-provider
-    `review-autoconfirmed` command — do NOT skip it, and do NOT shell out to an
-    external AI provider.
+    **Auto-confirmed 二次复核（复用 subagent 的 skill，不是外部 AI provider）:** the
+    subagents re-review their own type's machine auto-confirmed findings as part of
+    their per-type loop (see agent-body "Re-review auto-confirmed findings"):
+    `secguard report --list-auto-confirmed --scan-id <scan_id> --type <type> --db
+    <db_path>` → apply the skill's false-positive rules → write verdicts via
+    `secguard report --review-json <tmpfile> --db <db_path>` (`dismissed` suppresses
+    the machine false positive). Before the audit, VERIFY the subagents actually
+    did it: `secguard report --list-auto-confirmed --scan-id <scan_id> --db
+    <db_path>` should return `count: 0` (every auto-confirmed finding got a
+    review_status); a nonzero `count` means some machine findings are unreviewed —
+    surface that in the 观察项表 rather than silently auditing. On a MCP-only host
+    where the subagent has no Bash, the orchestrator runs these two commands with
+    the subagent's returned re-review verdicts. Do NOT shell out to an external AI
+    provider.
 
     After ALL subagents (or your sequential loop) are done, run `secguard report --audit --scan-id <scan_id> --output-dir <output_dir> --ai-duration-ms <ms>`
    ONCE to regenerate `report.md` (verdict-stage, confirmed only) + `result.sarif`

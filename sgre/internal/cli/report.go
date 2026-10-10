@@ -15,6 +15,7 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/planner"
 	"github.com/DannyAn/secguard-clang/internal/report"
+	"github.com/DannyAn/secguard-clang/internal/review"
 )
 
 // normalizeAIVerdict maps a raw agent-supplied status to the BINARY AI verdict:
@@ -260,7 +261,25 @@ func runReportCmd(ctx context.Context, args []string) int {
 		if scanID == "" {
 			scanID, _ = store.GetLatestScanID(ctx)
 		}
-		findings, err := store.ListAutoConfirmedForReview(ctx, scanID, nil, 0)
+		// --type <kebab,...> scopes the list to one type's CWE set, so a subagent
+		// re-reviews ONLY its own type's machine findings (same mapping the
+		// review-autoconfirmed selector uses).
+		var ruleIDs []string
+		if typeFilter := parseStringFlag(remaining, "type"); typeFilter != "" {
+			var types []string
+			for _, vt := range strings.Split(typeFilter, ",") {
+				if vt = strings.TrimSpace(vt); vt != "" {
+					types = append(types, vt)
+				}
+			}
+			var rerr error
+			ruleIDs, rerr = review.VulnTypesToRuleIDs(types)
+			if rerr != nil {
+				WriteErrorJSON(fmt.Sprintf("invalid --type filter: %v", rerr))
+				return 1
+			}
+		}
+		findings, err := store.ListAutoConfirmedForReview(ctx, scanID, ruleIDs, 0)
 		if err != nil {
 			WriteErrorJSON(fmt.Sprintf("failed to list auto-confirmed findings: %v", err))
 			return 1

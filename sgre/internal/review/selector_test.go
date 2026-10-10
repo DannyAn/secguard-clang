@@ -55,9 +55,9 @@ func TestSelector_RevisionVerified(t *testing.T) {
 }
 
 func TestVulnTypesToRuleIDs_CategoryCWEs(t *testing.T) {
-	ids, err := vulnTypesToRuleIDs([]string{"injection"})
+	ids, err := VulnTypesToRuleIDs([]string{"injection"})
 	if err != nil {
-		t.Fatalf("vulnTypesToRuleIDs: %v", err)
+		t.Fatalf("VulnTypesToRuleIDs: %v", err)
 	}
 	// injection covers multiple CWEs via CategoryCWEs; the canonical CWE-78
 	// alone would silently drop sql/argument/crlf injection findings.
@@ -74,15 +74,15 @@ func TestVulnTypesToRuleIDs_CategoryCWEs(t *testing.T) {
 }
 
 func TestVulnTypesToRuleIDs_UnknownType(t *testing.T) {
-	if _, err := vulnTypesToRuleIDs([]string{"not-a-type"}); err == nil {
+	if _, err := VulnTypesToRuleIDs([]string{"not-a-type"}); err == nil {
 		t.Fatal("expected error for unknown vuln type")
 	}
 }
 
 func TestVulnTypesToRuleIDs_Empty(t *testing.T) {
-	ids, err := vulnTypesToRuleIDs(nil)
+	ids, err := VulnTypesToRuleIDs(nil)
 	if err != nil {
-		t.Fatalf("vulnTypesToRuleIDs: %v", err)
+		t.Fatalf("VulnTypesToRuleIDs: %v", err)
 	}
 	if ids != nil {
 		t.Errorf("nil input should map to nil rule ids, got %v", ids)

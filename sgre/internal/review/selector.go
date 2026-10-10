@@ -24,7 +24,7 @@ func NewTargetSelector(store autoConfirmedFinder) *TargetSelector {
 }
 
 func (s *TargetSelector) SelectTargets(ctx context.Context, filter RunFilter, opts RunOptions) ([]ReviewTarget, error) {
-	ruleIDs, err := vulnTypesToRuleIDs(filter.VulnTypes)
+	ruleIDs, err := VulnTypesToRuleIDs(filter.VulnTypes)
 	if err != nil {
 		return nil, err
 	}
@@ -48,13 +48,13 @@ func (s *TargetSelector) SelectTargets(ctx context.Context, filter RunFilter, op
 	return targets, nil
 }
 
-// vulnTypesToRuleIDs maps vuln-type names to the full set of CWE rule_ids that
+// VulnTypesToRuleIDs maps vuln-type names to the full set of CWE rule_ids that
 // findings for those types can carry: canonical, legacy, and per-category CWEs.
 // A single injection vuln_type, for example, covers CWE-78/CWE-89/CWE-88/...; a
 // naive spec.CWE mapping would silently drop the category findings. An unknown
 // type is an error, not a silent no-op (a typo must not widen the selection to
 // everything).
-func vulnTypesToRuleIDs(vulnTypes []string) ([]string, error) {
+func VulnTypesToRuleIDs(vulnTypes []string) ([]string, error) {
 	if len(vulnTypes) == 0 {
 		return nil, nil
 	}
