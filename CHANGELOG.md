@@ -2,7 +2,7 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.9.3] - 2026-10-10
+## [0.9.2] - 2026-10-10
 
 ### 空运行检测器跳过（性能 P0-5）
 
@@ -32,8 +32,6 @@
 - **第三方 SDK 分配/释放名进入精确集合**：`VOS_Malloc_F` / `VOS_Free_F`、`HpeMemAlloc` / `HpeMemFree`、`VOS_Mem_Allock_F` / `VOS_Mem_ReAllock_F` / `VOS_MemFree_F` 加入 `BuiltinAllocators` / `BuiltinDeallocators`，使 null-deref 确认层与 double-free / UAF / unchecked-return 检测器像对待 `malloc/free` 一样精确对待这些跨仓库 SDK 宏，而非依赖 fail-open 命名启发式。
 - **"封装成函数"包装器识别（新增能力）**：识别"函数体返回分配器结果"的包装器（`p = malloc(n); if(!p) return NULL; memset_s(...); return p;`），即使包装器名不含 `alloc`/`malloc` 子串，调用方的未释放结果也会被检出为泄漏（memory-leak）。这是 40+ 个仓库各自命名、但都"判空 + memset_s 初始化后返回指针"的共性形态。
 - 回归夹具：`tc123_resleak_lock_pair.c`、`tc124_resleak_global_hold.c`、`tc125_prod_alloc_macros.c`、`tc126_passthrough_alloc_wrapper.c`。
-
-## [0.9.2] - 2026-10-09
 
 ### AI 复核 auto-confirmed 结果（新能力）
 
