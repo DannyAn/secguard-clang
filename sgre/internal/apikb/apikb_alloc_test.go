@@ -81,6 +81,24 @@ func TestIsDeclaredAllocator_PreciseOnly(t *testing.T) {
 	}
 }
 
+// TestDeclaredAllocator_ProductionSdkNames locks in the cross-repo third-party
+// allocator/deallocator names documented in
+// docs/req_内存分配释放典型性优化.md: VOS_Malloc_F/VOS_Free_F, HpeMemAlloc/HpeMemFree,
+// VOS_Mem_Allock_F / VOS_Mem_ReAllock_F / VOS_MemFree_F. They must be PRECISE
+// (IsDeclaredAllocator/IsDeclaredDeallocator), not just name-heuristic matches.
+func TestDeclaredAllocator_ProductionSdkNames(t *testing.T) {
+	for _, name := range []string{"VOS_Malloc_F", "VOS_Mem_Allock_F", "VOS_Mem_ReAllock_F", "HpeMemAlloc"} {
+		if !IsDeclaredAllocator(name) {
+			t.Errorf("IsDeclaredAllocator(%q) = false, want true (production SDK allocator)", name)
+		}
+	}
+	for _, name := range []string{"VOS_Free_F", "VOS_MemFree_F", "HpeMemFree"} {
+		if !IsDeclaredDeallocator(name) {
+			t.Errorf("IsDeclaredDeallocator(%q) = false, want true (production SDK deallocator)", name)
+		}
+	}
+}
+
 func TestRegisterAllocator(t *testing.T) {
 	RegisterAllocator("__test_only_allocator__")
 	if !IsDeclaredAllocator("__test_only_allocator__") {

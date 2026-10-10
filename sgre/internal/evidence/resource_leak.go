@@ -41,11 +41,11 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 		bodies := functionBodyMap(funcDefs)
 
 		for _, f := range funcs {
-			acquires := d.findAcquires(ctx, f, file, assigns, inits, calls, binaries, &result)
+			localVars := findLocalVarsFrom(decls, f)
+			acquires, safeHolds := d.findAcquires(ctx, f, file, assigns, inits, calls, binaries, localVars, &result)
 			releases := d.findReleases(ctx, f, file, calls, inits, assigns)
 
 			returnLines := findReturnLinesFrom(returns, f)
-			localVars := findLocalVarsFrom(decls, f)
 			body := bodies[f.StartLine]
 			cfg := graph.BuildStmtCFG(body, f.EndLine)
 			cfgValid := body.Kind() == "compound_statement"
@@ -54,7 +54,7 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 				releaseLines, hasRelease := releases[varName]
 				filteredReturns := filterNullGuardReturns(ifs, returnLines, varName)
 				nullGuardReturns := subtractLines(returnLines, filteredReturns)
-				escapeLines := findEscapeLines(assigns, calls, f, varName, localVars)
+				escapeLines := findEscapeLines(assigns, calls, f, varName, localVars, nil)
 				overwriteLines := writeLinesFor(assigns, inits, f, varName)
 
 				for _, acquireLine := range acquireLines {
@@ -97,7 +97,16 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 					// RL-03: a handle with NO release/escape/transfer anywhere is
 					// DEFINITELY lost (hasLostResource proved a leak path AND no node
 					// releases/hands it off), so mark it for the planner's confirmed tier.
-					definiteLeak := !shouldReportRelease && len(releaseLines) == 0 && len(escapeLines) == 0 && len(transferLines) == 0
+					//
+					// RL-04 (P0-1/P0-2): a lock acquire (mutex/rwlock locked in this
+					// function and released by a sibling unlock function) and a resource
+					// held in a global/static variable (process-lifetime cache: iconv
+					// handler, dlopen handle, epoll fd) are standard non-leak patterns.
+					// The detector cannot prove the cross-function unlock or the
+					// process-lifetime teardown, so they must never be auto-confirmed —
+					// they stay suspected for the AI to judge.
+					definiteLeak := !safeHolds[fmt.Sprintf("%s:%d", varName, acquireLine)] &&
+						!shouldReportRelease && len(releaseLines) == 0 && len(escapeLines) == 0 && len(transferLines) == 0
 					acquireProps := map[string]string{
 						"variable": varName,
 						"origin":   "resource_acquire",
@@ -269,8 +278,17 @@ func isResourceReleaser(name string) bool {
 	return false
 }
 
-func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function, file *db.File, assigns, inits, calls, binaries []parser.Node, result *DetectResult) map[string][]int {
+func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function, file *db.File, assigns, inits, calls, binaries []parser.Node, localVars map[string]bool, result *DetectResult) (map[string][]int, map[string]bool) {
 	acquires := make(map[string][]int)
+	// safeHolds marks, per "varName:line", an acquire that must NOT be
+	// auto-confirmed as a definite leak: a lock acquire (mutex/rwlock released by
+	// a sibling unlock function) or a resource held in a global/static variable
+	// (process-lifetime). The detector proves neither teardown, so they stay
+	// suspected for the AI (P0-1/P0-2).
+	safeHolds := make(map[string]bool)
+	markSafe := func(name string, line int) {
+		safeHolds[fmt.Sprintf("%s:%d", name, line)] = true
+	}
 
 	checkNode := func(node parser.Node) {
 		lhs, rhs, ok := node.AssignParts()
@@ -296,6 +314,11 @@ func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function,
 		callName := extractCallName(callExpr)
 		if isResourceAcquirer(callName) {
 			acquires[varName] = append(acquires[varName], node.StartLine())
+			// A global/static LHS (`g_handler = iconv_open(...)`) holds the
+			// resource for the process lifetime, not a leak (P0-2).
+			if lhs.Kind() == "identifier" && !localVars[varName] {
+				markSafe(varName, node.StartLine())
+			}
 		}
 	}
 
@@ -323,6 +346,10 @@ func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function,
 					for _, arg := range child.NamedChildren() {
 						if target, ok := addressOfTarget(arg); ok && target.Kind() == "identifier" {
 							acquires[target.Text()] = append(acquires[target.Text()], call.StartLine())
+							// A lock held at function exit is released by a sibling
+							// unlock function (or on the process's teardown), never
+							// proven leaked intra-procedurally (P0-1).
+							markSafe(target.Text(), call.StartLine())
 						}
 					}
 				}
@@ -381,7 +408,7 @@ func (d *ResourceLeakDetector) findAcquires(ctx context.Context, f *db.Function,
 		sort.Ints(acquires[name])
 	}
 
-	return acquires
+	return acquires, safeHolds
 }
 
 // isErrorCodeVar reports whether varName is used as an error code — compared

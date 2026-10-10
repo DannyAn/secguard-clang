@@ -35,6 +35,13 @@ func (d *DivideByZeroDetector) Capabilities() []string { return []string{"divisi
 func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 	globalTypedefs := buildGlobalTypedefs(ctx, d.store, d.parser)
+	// Cross-file constant environment: a `#define NLOG_SECOND_PER_MINUTE 60`
+	// lives in a .h header, so the per-file CollectConstantSymbols(root) below
+	// never sees it and would flag `x / NLOG_SECOND_PER_MINUTE` as a possibly-zero
+	// divisor. buildGlobalConstants merges every indexed file's constants (with a
+	// conflict dropped to "undeterminable", the conservative outcome), so a
+	// header-defined non-zero constant resolves exactly like a literal.
+	globalConsts := buildGlobalConstants(ctx, d.store, d.parser)
 
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		typedefs := globalTypedefs.clone()
@@ -43,7 +50,7 @@ func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error)
 		binaryExprs := root.FindAll("binary_expression")
 		allIfs := root.FindAll("if_statement")
 		allAssigns := root.FindAll("assignment_expression")
-		constants := parser.CollectConstantSymbols(root)
+		constants := globalConsts
 		for _, f := range funcs {
 			scope := scopes[f.StartLine]
 			bounds := AnalyzeBounds(IfsInFunc(allIfs, f.StartLine, f.EndLine), assignsInFunc(allAssigns, f.StartLine, f.EndLine))

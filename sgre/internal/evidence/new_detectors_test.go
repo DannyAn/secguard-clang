@@ -88,6 +88,33 @@ func TestNewDetector_DivideByZero_ReassignmentGuard(t *testing.T) {
 	}
 }
 
+// TestNewDetector_DivideByZero_CrossFileConstantSymbols pins the cross-file
+// constant suppression: a `#define NLOG_SECOND_PER_MINUTE 60` defined in a .h
+// header (not the .c file) is resolved by the global constant environment, so the
+// division by it is dropped like a literal. A variable divisor in the same file
+// still emits (the control).
+func TestNewDetector_DivideByZero_CrossFileConstantSymbols(t *testing.T) {
+	store := runOneDetector(t, "tc127_divide_by_zero_crossconst",
+		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewDivideByZeroDetector(s, p, l) })
+
+	events, err := store.ListEventsByType(context.Background(), "DIVIDE_BY_ZERO")
+	if err != nil {
+		t.Fatalf("list DIVIDE_BY_ZERO events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected exactly 1 DIVIDE_BY_ZERO event (the variable divisor `total`), got %d", len(events))
+	}
+	var props struct {
+		Divisor string `json:"divisor"`
+	}
+	if err := json.Unmarshal([]byte(events[0].Properties), &props); err != nil {
+		t.Fatalf("unmarshal properties: %v", err)
+	}
+	if props.Divisor != "total" {
+		t.Errorf("expected the surviving divisor to be the variable `total`, got %q", props.Divisor)
+	}
+}
+
 // TestNewDetector_DivideByZero_ConstantSymbols pins the deterministic
 // constant-symbol suppression: a divisor spelled as a non-zero macro / enumerator
 // / top-level const is dropped at the detector (like a literal), while a complex

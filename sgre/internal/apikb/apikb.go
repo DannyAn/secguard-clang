@@ -619,6 +619,13 @@ func IsLogSanitizer(name string) bool { return LogSanitizers[name] }
 // set via RegisterAllocator (secguard.toml [allocators]). The implicit string/
 // path allocators (strdup, getcwd, ...) return a malloc'd block released with
 // free() and are therefore first-class allocations, not name-heuristic matches.
+//
+// The VOS_* / HpeMem* entries are the cross-repo third-party SDK allocators that
+// production codebases (nlog/nat and 40+ sibling repos) funnel through macro
+// wrappers — see docs/req_内存分配释放典型性优化.md. They are precise (not a
+// naming-heuristic guess), so the null-deref "confirmed" tier and the
+// double-free/UAF detectors treat them exactly like malloc rather than relying
+// on the fail-open "alloc"/"malloc" substring heuristic.
 var BuiltinAllocators = map[string]bool{
 	"malloc":  true,
 	"calloc":  true,
@@ -631,6 +638,11 @@ var BuiltinAllocators = map[string]bool{
 	"getcwd":                 true,
 	"get_current_dir_name":   true,
 	"canonicalize_file_name": true,
+	// Third-party SDK allocators (production macro wrappers).
+	"VOS_Malloc_F":       true,
+	"VOS_Mem_Allock_F":   true,
+	"VOS_Mem_ReAllock_F": true,
+	"HpeMemAlloc":        true,
 }
 
 // BuiltinDeallocators are the C release APIs. Projects extend this set via
@@ -639,6 +651,10 @@ var BuiltinDeallocators = map[string]bool{
 	"free":         true,
 	"freeaddrinfo": true,
 	"freeifaddrs":  true,
+	// Third-party SDK deallocators (production macro wrappers).
+	"VOS_Free_F":    true,
+	"VOS_MemFree_F": true,
+	"HpeMemFree":    true,
 }
 
 // extraAllocators / extraDeallocators hold project-declared allocation/release

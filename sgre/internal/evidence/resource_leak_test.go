@@ -201,3 +201,46 @@ func TestResourceLeak_OverwrittenHandle(t *testing.T) {
 		}
 	}
 }
+
+// assertNoDefiniteAcquire fails if any RESOURCE_ACQUIRE event for fixture carries
+// the detector's definite=true marker (the auto-confirm signal).
+func assertNoDefiniteAcquire(t *testing.T, store db.Store, fixture string) {
+	t.Helper()
+	events, err := store.ListEventsByType(context.Background(), "RESOURCE_ACQUIRE")
+	if err != nil {
+		t.Fatalf("list RESOURCE_ACQUIRE: %v", err)
+	}
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+			Definite string `json:"definite"`
+		}
+		if json.Unmarshal([]byte(e.Properties), &props) == nil && props.Definite == "true" {
+			t.Errorf("%s: acquire of %q must not be auto-confirmed (definite=true), it is a non-leak pattern", fixture, props.Variable)
+		}
+	}
+}
+
+// TestResourceLeak_LockPairNotDefinite pins P0-1: a mutex/rwlock locked in one
+// function and unlocked in a sibling unlock function is a standard pairing, so
+// the lock acquire must stay suspected — never marked definite (auto-confirmed).
+func TestResourceLeak_LockPairNotDefinite(t *testing.T) {
+	store := runIndexAndDetect(t, "tc123_resleak_lock_pair.c")
+	acquireByFunc, _ := countEventsByFunction(t, store, "RESOURCE_ACQUIRE", "RESOURCE_RELEASE")
+	if acquireByFunc["foo_lock"] == 0 || acquireByFunc["bar_rdlock"] == 0 {
+		t.Errorf("expected lock acquires in foo_lock and bar_rdlock, got %v", acquireByFunc)
+	}
+	assertNoDefiniteAcquire(t, store, "tc123_resleak_lock_pair")
+}
+
+// TestResourceLeak_GlobalHoldNotDefinite pins P0-2: a resource stored to a
+// global/static variable is process-lifetime state, so the acquire must stay
+// suspected — never marked definite (auto-confirmed).
+func TestResourceLeak_GlobalHoldNotDefinite(t *testing.T) {
+	store := runIndexAndDetect(t, "tc124_resleak_global_hold.c")
+	acquireByFunc, _ := countEventsByFunction(t, store, "RESOURCE_ACQUIRE", "RESOURCE_RELEASE")
+	if acquireByFunc["init_handlers"] == 0 {
+		t.Errorf("expected resource acquires in init_handlers, got %v", acquireByFunc)
+	}
+	assertNoDefiniteAcquire(t, store, "tc124_resleak_global_hold")
+}

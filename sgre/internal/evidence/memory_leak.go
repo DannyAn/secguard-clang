@@ -27,7 +27,15 @@ func (d *MemoryLeakDetector) Name() string { return "memory_leak" }
 func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
+	// Wrapper functions that return an allocator result (the "封装成函数"
+	// production pattern) are allocation sites even with a custom name. Computed
+	// once for the whole codebase, not per file.
+	allocReturns, err := allocatorReturnFuncs(ctx, d.store, d.parser, d.logger)
+	if err != nil {
+		return result, err
+	}
+
+	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
 		funcDefs := root.FindAll("function_definition")
 		bodies := functionBodyMap(funcDefs)
 		calls := root.FindAll("call_expression")
@@ -39,7 +47,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 		macros := macroFreeSummaries(root)
 
 		for _, f := range fileFuncs {
-			allocs := d.findAllocations(ctx, f, file, assigns, inits, calls)
+			allocs := d.findAllocations(ctx, f, file, assigns, inits, calls, allocReturns)
 			frees := d.findFrees(ctx, f, file, calls, macros, inits, assigns)
 			returnLines := findReturnLinesFrom(returns, f)
 
@@ -69,7 +77,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 				transferLines := findReturnVarLines(varName, returns, f)
 				filteredReturns := filterNullGuardReturns(ifs, returnLines, varName)
 				nullGuardReturns := subtractLines(returnLines, filteredReturns)
-				escapeLines := findEscapeLines(assigns, calls, f, varName, localVars)
+				escapeLines := findEscapeLines(assigns, calls, f, varName, localVars, allocReturns)
 				overwriteLines := writeLinesFor(assigns, inits, f, varName)
 
 				for _, allocLine := range allocLines {
@@ -178,7 +186,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 	return result, err
 }
 
-func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function, file *db.File, assigns, inits, calls []parser.Node) map[string][]int {
+func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function, file *db.File, assigns, inits, calls []parser.Node, allocReturns map[string]bool) map[string][]int {
 	allocs := make(map[string][]int)
 
 	checkNode := func(node parser.Node) {
@@ -200,7 +208,7 @@ func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function
 		// allocation. A substring match would treat `strm->zalloc = zcalloc`
 		// (assigning an allocator function pointer) as an allocation because
 		// "zcalloc" contains "calloc".
-		if !isMallocExpr(rhs) {
+		if !isMallocExpr(rhs, allocReturns) {
 			return
 		}
 		varName := ""
@@ -492,7 +500,7 @@ func canReachAnyRelease(cfg *graph.StmtCFG, allocLine int, freeLines, escapeLine
 // function: it is stored into a subscript/field, or assigned to an identifier
 // that is not a local of the function (a global/static). A value that escapes
 // is transferred ownership, not leaked.
-func findEscapeLines(assigns, calls []parser.Node, f *db.Function, varName string, localVars map[string]bool) []int {
+func findEscapeLines(assigns, calls []parser.Node, f *db.Function, varName string, localVars map[string]bool, allocReturns map[string]bool) []int {
 	var lines []int
 	for _, assign := range assigns {
 		if !funcLineRange(f, assign.StartLine()) {
@@ -524,7 +532,7 @@ func findEscapeLines(assigns, calls []parser.Node, f *db.Function, varName strin
 		}
 		// A malloc whose result is assigned directly to a non-local identifier
 		// (`g = malloc()`) escapes at the allocation site itself.
-		if lhs.Kind() == "identifier" && lhs.Text() == varName && !localVars[varName] && isMallocExpr(rhs) {
+		if lhs.Kind() == "identifier" && lhs.Text() == varName && !localVars[varName] && isMallocExpr(rhs, allocReturns) {
 			lines = append(lines, assign.StartLine())
 		}
 		// A malloc assigned through a dereferenced non-local pointer
@@ -532,7 +540,7 @@ func findEscapeLines(assigns, calls []parser.Node, f *db.Function, varName strin
 		// caller owns the pointed-to object via the output parameter and
 		// frees it elsewhere. A local base (`*local = malloc(...)`) still
 		// leaks if never freed.
-		if lhs.Kind() == "pointer_expression" && isMallocExpr(rhs) {
+		if lhs.Kind() == "pointer_expression" && isMallocExpr(rhs, allocReturns) {
 			base := ""
 			for _, child := range lhs.NamedChildren() {
 				if child.Kind() == "identifier" {
@@ -555,7 +563,7 @@ func findEscapeLines(assigns, calls []parser.Node, f *db.Function, varName strin
 		// frees it, that leak is intra-procedurally invisible here — resolving
 		// it requires interprocedural evidence that the field is (not) released
 		// somewhere in the call graph, which is beyond the detector's scope.
-		if (lhs.Kind() == "field_expression" || lhs.Kind() == "subscript_expression") && isMallocExpr(rhs) {
+		if (lhs.Kind() == "field_expression" || lhs.Kind() == "subscript_expression") && isMallocExpr(rhs, allocReturns) {
 			base := ""
 			for _, child := range lhs.NamedChildren() {
 				if child.Kind() == "identifier" {
@@ -591,18 +599,22 @@ func findLocalVarsFrom(decls []parser.Node, f *db.Function) map[string]bool {
 		if !funcLineRange(f, decl.StartLine()) {
 			continue
 		}
-		// An `extern` declaration (`extern int *g;`) names an external object, not
-		// a local: storing p into it escapes ownership (ML-09). The previous code
-		// collected every in-function declaration as local, so `g = p` for an
-		// extern-declared global was misread as a local store and reported as a
-		// leak.
-		isExtern := false
+		// An `extern` declaration (`extern int *g;`) names an external object, and
+		// a `static` local has static storage duration — both live outside the
+		// call's lifetime, so a pointer stored into them escapes ownership rather
+		// than leaking (ML-09 extended to the static-cache idiom, e.g.
+		// `static iconv_t g; g = iconv_open(...)`). The previous code collected
+		// every in-function declaration as local, so `g = p` for an extern/static
+		// object was misread as a local store and reported as a leak.
+		hasStaticStorage := false
 		for _, child := range decl.NamedChildren() {
-			if child.Kind() == "storage_class_specifier" && child.Text() == "extern" {
-				isExtern = true
+			if child.Kind() == "storage_class_specifier" {
+				if child.Text() == "extern" || child.Text() == "static" {
+					hasStaticStorage = true
+				}
 			}
 		}
-		if isExtern {
+		if hasStaticStorage {
 			continue
 		}
 		for _, child := range decl.NamedChildren() {
@@ -770,15 +782,100 @@ func findSelfReallocLines(assigns, inits []parser.Node, f *db.Function, varName 
 	return lines
 }
 
+// allocatorReturnFuncs returns the set of function NAMES whose body returns an
+// allocator result — either directly (`return malloc(n)`) or via a local
+// (`p = malloc(n); ... return p`). This is the "封装成函数" production wrapper
+// pattern (docs/req_内存分配释放典型性优化.md): each repo wraps the third-party
+// allocator in its own function that NULL-checks and memset_s-initializes before
+// returning the pointer. A call to such a wrapper is itself an allocation site
+// even when the wrapper's name does not contain "alloc"/"malloc" (the name
+// heuristic already covers the nlog_malloc/NAT_MALLOC spellings; this covers the
+// custom-named ones). Unlike UncheckedReturnDetector.passthroughAllocFuncs, it
+// does NOT require the pointer to be unused between the allocation and the
+// return — the NULL-check + memset_s in the wrapper body uses the pointer, which
+// is exactly the shape that must still count as an allocator for leak detection.
+func allocatorReturnFuncs(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) (map[string]bool, error) {
+	returnedSource := make(map[string]map[string]bool)
+	add := func(name, callee string) {
+		if callee == "" {
+			return
+		}
+		if returnedSource[name] == nil {
+			returnedSource[name] = make(map[string]bool)
+		}
+		returnedSource[name][callee] = true
+	}
+
+	err := forEachFile(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		returns := root.FindAll("return_statement")
+		assigns := root.FindAll("assignment_expression")
+		inits := root.FindAll("init_declarator")
+		for _, f := range funcs {
+			calleeOfVar := make(map[string]string)
+			for _, a := range assigns {
+				if funcLineRange(f, a.StartLine()) {
+					if v, callee := assignCallee(a); v != "" && callee != "" {
+						calleeOfVar[v] = callee
+					}
+				}
+			}
+			for _, in := range inits {
+				if funcLineRange(f, in.StartLine()) {
+					if v, callee := assignCallee(in); v != "" && callee != "" {
+						calleeOfVar[v] = callee
+					}
+				}
+			}
+			for _, ret := range returns {
+				if !funcLineRange(f, ret.StartLine()) {
+					continue
+				}
+				if callee := returnedCalleeName(ret); callee != "" {
+					add(f.Name, callee)
+					continue
+				}
+				if v := returnedVar(ret); v != "" {
+					if callee, ok := calleeOfVar[v]; ok {
+						add(f.Name, callee)
+					}
+				}
+			}
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(map[string]bool)
+	for changed := true; changed; {
+		changed = false
+		for name, callees := range returnedSource {
+			if out[name] {
+				continue
+			}
+			for callee := range callees {
+				if apikb.IsAllocator(callee) || out[callee] {
+					out[name] = true
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
 // isMallocExpr reports whether expr is (or casts) a malloc/calloc/realloc call.
 // Nested casts (`(int)(size_t)malloc(64)`) are unwrapped recursively. The
 // implicit result-returning allocators (strdup/getcwd/...) are recognized via
 // apikb.IsAllocator, and realpath(path, NULL) — which allocates only when its
-// second argument is NULL — is recognized explicitly (ML-11).
-func isMallocExpr(expr parser.Node) bool {
+// second argument is NULL — is recognized explicitly (ML-11). A callee in
+// allocReturns (a wrapper function that returns an allocator result) is also an
+// allocation site (the "封装成函数" pattern).
+func isMallocExpr(expr parser.Node, allocReturns map[string]bool) bool {
 	if expr.Kind() == "cast_expression" {
 		for _, c := range expr.NamedChildren() {
-			if isMallocExpr(c) {
+			if isMallocExpr(c, allocReturns) {
 				return true
 			}
 		}
@@ -788,7 +885,7 @@ func isMallocExpr(expr parser.Node) bool {
 		return false
 	}
 	name := extractCallName(expr)
-	if apikb.IsAllocator(name) {
+	if apikb.IsAllocator(name) || allocReturns[name] {
 		return true
 	}
 	if name == "realpath" {
