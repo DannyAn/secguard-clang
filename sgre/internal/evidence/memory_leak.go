@@ -55,6 +55,14 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 			cfg := graph.BuildStmtCFG(body, f.EndLine)
 			cfgValid := body.Kind() == "compound_statement"
 			localVars := findLocalVarsFrom(decls, f)
+			// The set of variables this function allocates. A pointer stored
+			// through one of them (`*container = buf`) points INTO the heap, not
+			// the stack, so its content escapes with the container's ownership
+			// rather than leaking on its own (see findEscapeLines' pointer case).
+			allocVarNames := make(map[string]bool, len(allocs))
+			for name := range allocs {
+				allocVarNames[name] = true
+			}
 
 			for varName, allocLines := range allocs {
 				freeLines, hasFree := frees[varName]
@@ -77,7 +85,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 				transferLines := findReturnVarLines(varName, returns, f)
 				filteredReturns := filterNullGuardReturns(ifs, returnLines, varName)
 				nullGuardReturns := subtractLines(returnLines, filteredReturns)
-				escapeLines := findEscapeLines(assigns, calls, f, varName, localVars, allocReturns)
+				escapeLines := findEscapeLines(assigns, calls, f, varName, localVars, allocVarNames, allocReturns)
 				overwriteLines := writeLinesFor(assigns, inits, f, varName)
 
 				for _, allocLine := range allocLines {
@@ -497,10 +505,12 @@ func canReachAnyRelease(cfg *graph.StmtCFG, allocLine int, freeLines, escapeLine
 }
 
 // findEscapeLines returns the lines where varName's allocation "escapes" the
-// function: it is stored into a subscript/field, or assigned to an identifier
-// that is not a local of the function (a global/static). A value that escapes
-// is transferred ownership, not leaked.
-func findEscapeLines(assigns, calls []parser.Node, f *db.Function, varName string, localVars map[string]bool, allocReturns map[string]bool) []int {
+// function: it is stored into a subscript/field, assigned to an identifier
+// that is not a local of the function (a global/static), or stored through a
+// dereferenced pointer whose base is itself a heap allocation (`*container =
+// p` where container = malloc(...)). A value that escapes is transferred
+// ownership, not leaked.
+func findEscapeLines(assigns, calls []parser.Node, f *db.Function, varName string, localVars map[string]bool, allocVarNames map[string]bool, allocReturns map[string]bool) []int {
 	var lines []int
 	for _, assign := range assigns {
 		if !funcLineRange(f, assign.StartLine()) {
@@ -523,7 +533,12 @@ func findEscapeLines(assigns, calls []parser.Node, f *db.Function, varName strin
 						break
 					}
 				}
-				if base != "" && !localVars[base] {
+				// Escape through a non-local (parameter/global) base OR a base
+				// that is itself a heap allocation (`*container = p` where
+				// container = malloc(...)): both point outside the stack, so the
+				// stored pointer's ownership rides with that object, not the
+				// function's frame.
+				if base != "" && (!localVars[base] || allocVarNames[base]) {
 					lines = append(lines, assign.StartLine())
 				}
 			} else if lhs.Kind() == "identifier" && !localVars[lhs.Text()] {

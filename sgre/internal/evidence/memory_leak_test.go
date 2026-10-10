@@ -406,3 +406,32 @@ func TestMemoryLeak_CreateNotMalloc(t *testing.T) {
 		t.Errorf("db_create_sync_conn is not a heap malloc; expected 0 MEMORY_ALLOC events, got %d", len(events))
 	}
 }
+
+// TestMemoryLeak_ContainerEscape locks in the two-step container-escape fix:
+// `*container = buf` where container is ITSELF a malloc allocation points the
+// buffer INTO the heap (not the stack), and the container is then returned to
+// the caller, so the buffer rides along with it — neither pointer should be
+// reported as leaked on its own.
+func TestMemoryLeak_ContainerEscape(t *testing.T) {
+	store := runIndexAndDetect(t, "tc130_memory_leak_container_escape.c")
+	ctx := context.Background()
+
+	releaseEvents, err := store.ListEventsByType(ctx, "MEMORY_RELEASE")
+	if err != nil {
+		t.Fatalf("list MEMORY_RELEASE: %v", err)
+	}
+	released := map[string]bool{}
+	for _, e := range releaseEvents {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		released[props.Variable] = true
+	}
+	if !released["pchBuf"] {
+		t.Errorf("pchBuf is stored into *pduInfo (a malloc'd container that is returned); should be released (escaped), not leaked")
+	}
+	if !released["pduInfo"] {
+		t.Errorf("pduInfo is returned to the caller; should be released (ownership-transfer), not leaked")
+	}
+}
