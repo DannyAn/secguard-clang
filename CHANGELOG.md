@@ -2,6 +2,16 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.9.3] - 2026-10-10
+
+### uninit 自动确认与 out-param 误报（CWE-457）
+
+基于 nlog 生产扫描 `candidates/uninit/_index.md`（78 候选，5 个 `certain-uninit macro-context` 被 auto-confirm）诊断：
+
+- **macro-context 不再 auto-confirm**：`HTONBUF`/`NTOHBUF`/`memcpy_s` 等 ALL_CAPS 宏展开的写入对流模型不可见，此前"每路径未初始化"被机器确认为 confirmed。现把 `macroContextDetector` 接入 `DefiniteInitFilter`，macro-context 候选一律降级为 suspected 交 AI 研判（对齐 null-deref 的 `macro_uncertain`）。消除 5 个确定性 auto-confirm 误报。
+- **POSIX 时间转换 out-param**：`localtime_r`/`gmtime_r`/`localtime_s`/`gmtime_s`/`strptime` 加入 `outputParamInitializers`，`localtime_r(&t, &tm)` 后读 `tm.tm_year` 等字段不再被判为未初始化（此前与 `stat`/`gettimeofday` 同形却漏配）。消除 ~20 个 `local_tm`/`timeinfo`/`systime` 类误报。
+- 回归夹具：`tc130_uninit_localtime_outparam.c`；测试 `TestUninit_LocaltimeOutParam`、`TestUninit_MacroContextNotConfirmed`。
+
 ## [0.9.2] - 2026-10-10
 
 ### 空运行检测器跳过（性能 P0-5）

@@ -95,7 +95,7 @@ func (p *Planner) getFilters(chain string) ([]Filter, error) {
 	case "uninit":
 		return []Filter{
 			NewCallReachFilter(p.store, p.callReachCache),
-			NewDefiniteInitFilter(p.store, p.parser, p.logger),
+			NewDefiniteInitFilter(p.store, p.parser, p.logger, p.macro),
 			NewSafeFunctionFilter(p.store),
 		}, nil
 	case "double-free":

@@ -30,10 +30,11 @@ type DefiniteInitFilter struct {
 	store  db.Store
 	parser *parser.Parser
 	logger *log.Logger
+	macro  *macroContextDetector
 }
 
-func NewDefiniteInitFilter(store db.Store, p *parser.Parser, logger *log.Logger) *DefiniteInitFilter {
-	return &DefiniteInitFilter{store: store, parser: p, logger: logger}
+func NewDefiniteInitFilter(store db.Store, p *parser.Parser, logger *log.Logger, macro *macroContextDetector) *DefiniteInitFilter {
+	return &DefiniteInitFilter{store: store, parser: p, logger: logger, macro: macro}
 }
 
 func (f *DefiniteInitFilter) Name() string { return "definite_init" }
@@ -65,6 +66,17 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 
 	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
 	flows, files, scopes, hsFlows := f.buildFlows(ctx, byFunc, fnByID, fileByID)
+
+	// Macro-context: a candidate whose reported statement sits in a macro
+	// expansion (HTONBUF/NTOHBUF accessor, memcpy_s through a macro, ...) must
+	// not be auto-confirmed — the flow model cannot see the macro's writes, so
+	// "uninit on every path" is unproven there and it stays suspected for the AI.
+	allFiles := listFilesByID(ctx, f.store)
+	for i := range candidates {
+		if f.macro != nil && allFiles[candidates[i].FileID] != nil {
+			candidates[i].MacroContext = f.macro.hasMacroContext(allFiles[candidates[i].FileID].Path, candidates[i].Line)
+		}
+	}
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -100,16 +112,16 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 				// uninitialized read only when it reaches on every path (must);
 				// otherwise it stays a suspicion for the AI to confirm.
 				if flow.mustReaching(c.VariableName, c.Line) {
-					c.SuspicionLevel = "confirmed"
-					// An output-param write (`&x` passed to a callee) is invisible to
-					// the flow engine's gen/kill model (it only tracks direct
-					// assignments, field writes, and macro outputs), so "uninit on
-					// every path" is unproven when such a write precedes the use —
-					// the callee may have written x on the success path. Downgrade to
-					// suspected so the AI weighs the interprocedural write instead of
-					// rubber-stamping a machine-confirmed false positive.
-					if f.hasOutputParamWrite(fnByID, files[c.FileID], c, scopes[c.FunctionID]) {
+					// An output-param write (`&x` passed to a callee) or a
+					// macro-context statement (HTONBUF/NTOHBUF accessor, memcpy_s
+					// through a macro) is invisible to the flow engine's gen/kill
+					// model, so "uninit on every path" is unproven there. Downgrade
+					// to suspected so the AI weighs the interprocedural/macro write
+					// instead of rubber-stamping a machine-confirmed false positive.
+					if c.MacroContext || f.hasOutputParamWrite(fnByID, files[c.FileID], c, scopes[c.FunctionID]) {
 						c.SuspicionLevel = "suspected"
+					} else {
+						c.SuspicionLevel = "confirmed"
 					}
 				}
 				kept = append(kept, c)
@@ -139,10 +151,11 @@ func (f *DefiniteInitFilter) refineHeapStruct(hs *heapStructFlow, c Candidate, k
 			fmt.Sprintf("%s is initialized on every path before the use at line %d", key, c.Line))
 	}
 	if hs.sourceOnEveryPath(whole, c.Line) && !hs.initOnAnyPath(path, c.Line) && !hs.initOnAnyPath(whole, c.Line) {
-		if f.hasOutputParamWrite(fnByID, files[c.FileID], c, scopes[c.FunctionID]) {
-			// `S s; fill_ext(&s); use(s.f);` — an output-parameter write can
-			// initialize the struct on the success path, so "uninit on every
-			// path" is unproven. Keep it suspected for the AI to judge.
+		if c.MacroContext || f.hasOutputParamWrite(fnByID, files[c.FileID], c, scopes[c.FunctionID]) {
+			// `S s; fill_ext(&s); use(s.f);` or a macro-context statement — an
+			// output-parameter / macro write can initialize the struct on the
+			// success path, so "uninit on every path" is unproven. Keep it
+			// suspected for the AI to judge.
 			c.SuspicionLevel = "suspected"
 		} else {
 			c.SuspicionLevel = "confirmed"

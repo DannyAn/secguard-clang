@@ -2007,6 +2007,14 @@ var outputParamInitializers = map[string]bool{
 	"strtol":                true,
 	"strtoul":               true,
 	"wcstombs":              true,
+	// POSIX/Annex-K time conversions write their `struct tm *` output argument
+	// (`localtime_r(&t, &tm)` fills tm), so a later field read is initialized —
+	// the P1-3-adjacent production false-positive (`local_tm.tm_year`, ...).
+	"localtime_r":           true,
+	"gmtime_r":              true,
+	"localtime_s":           true,
+	"gmtime_s":              true,
+	"strptime":              true,
 	"memset":                true,
 	"memset_s":              true,
 	"bzero":                 true,
