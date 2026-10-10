@@ -119,3 +119,163 @@ int fp_backfill(void) {
 		t.Errorf("fp_backfill (g_size backfilled with default 1) should be suppressed, got %v", candidateNames(result))
 	}
 }
+func TestGlobalInvariants_NonZeroSourceField(t *testing.T) {
+	src := `#include <stdlib.h>
+#include <stdint.h>
+
+struct graph_info {
+    uint32_t gran_time;
+    uint32_t point_num;
+};
+
+uint32_t nlog_get_gran_time(int flag) {
+    return 60;
+}
+
+void init_graph(struct graph_info *graph, int flag) {
+    graph->gran_time = nlog_get_gran_time(flag);
+}
+
+uint32_t fp_field_from_func(struct graph_info *graph, uint32_t offset) {
+    return offset / graph->gran_time;
+}
+`
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "field.c")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "divide-by-zero")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	kept := map[string]bool{}
+	for _, c := range result.Candidates {
+		kept[c.Target.Function] = true
+	}
+
+	if kept["fp_field_from_func"] {
+		t.Errorf("fp_field_from_func (graph->gran_time assigned from non-zero-returning nlog_get_gran_time) should be suppressed, got %v", candidateNames(result))
+	}
+}
+
+func TestGlobalInvariants_NonZeroSourceGlobal(t *testing.T) {
+	src := `#include <stdlib.h>
+#include <stdint.h>
+
+static uint32_t g_thread_count = 0;
+
+void init_threads(void) {
+    g_thread_count = 4;
+}
+
+uint32_t fp_global_from_const(uint32_t index) {
+    return index % g_thread_count;
+}
+`
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "global.c")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "divide-by-zero")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	kept := map[string]bool{}
+	for _, c := range result.Candidates {
+		kept[c.Target.Function] = true
+	}
+
+	if kept["fp_global_from_const"] {
+		t.Errorf("fp_global_from_const (g_thread_count assigned from non-zero constant 4) should be suppressed, got %v", candidateNames(result))
+	}
+}
+
+func TestGlobalInvariants_NonZeroSourceMixed(t *testing.T) {
+	src := `#include <stdlib.h>
+#include <stdint.h>
+
+struct graph_info {
+    uint32_t gran_time;
+};
+
+uint32_t get_gran(void) {
+    return 60;
+}
+
+void init_good(struct graph_info *g) {
+    g->gran_time = get_gran();
+}
+
+void init_bad(struct graph_info *g, uint32_t x) {
+    g->gran_time = x;
+}
+
+uint32_t tp_mixed_assign(struct graph_info *g, uint32_t offset) {
+    return offset / g->gran_time;
+}
+`
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mixed.c")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "divide-by-zero")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	kept := map[string]bool{}
+	for _, c := range result.Candidates {
+		kept[c.Target.Function] = true
+	}
+
+	if !kept["tp_mixed_assign"] {
+		t.Errorf("tp_mixed_assign (g->gran_time has an assignment from unknown source x, should NOT be suppressed) should be kept, got %v", candidateNames(result))
+	}
+}

@@ -62,7 +62,7 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 	}
 
 	resolver := newReturnSummaryResolver(ctx, f.store, f.parser)
-	invariants := buildGlobalInvariants(ctx, f.store, f.parser)
+	invariants := buildGlobalInvariants(ctx, f.store, f.parser, resolver)
 	flows := f.buildFlows(ctx, byFunc, resolver)
 
 	kept := make([]Candidate, 0, len(candidates))
@@ -90,6 +90,15 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 			if name := f.callDivisorName(eventsByID, c); name != "" && resolver.nonZeroReturn(name) {
 				dropped = dismiss(dropped, c, f.Name(),
 					fmt.Sprintf("divisor %s() provably returns non-zero at line %d", name, c.Line))
+				continue
+			}
+			// A field-chain divisor (`graph->gran_time`) is stripped to "" by
+			// bareIdentVar, so the invariants.NonZero check below is never
+			// reached. Check the raw divisor text here so a field proven
+			// non-zero by a cross-function invariant is dismissed.
+			if raw := f.rawDivisor(eventsByID, c); raw != "" && invariants.NonZero(raw) {
+				dropped = dismiss(dropped, c, f.Name(),
+					fmt.Sprintf("divisor %s is proven non-zero by a cross-function invariant at line %d", raw, c.Line))
 				continue
 			}
 			kept = append(kept, c)
@@ -182,6 +191,17 @@ func (f *RangeFilter) divisor(eventsByID map[int64]*db.SecurityEvent, c Candidat
 		return ""
 	}
 	return bareIdentVar(parseEventProps(event.Properties).Divisor)
+}
+
+// rawDivisor returns the trimmed divisor text of a divide-by-zero candidate
+// without bare-identifier stripping, preserving field chains (`graph->gran_time`)
+// and call expressions (`get_count()`) for invariant matching.
+func (f *RangeFilter) rawDivisor(eventsByID map[int64]*db.SecurityEvent, c Candidate) string {
+	event := eventsByID[c.DerefEventID]
+	if event == nil {
+		return ""
+	}
+	return strings.TrimSpace(parseEventProps(event.Properties).Divisor)
 }
 
 // isDefinitelyZeroEvent reports whether the candidate's event carries an explicit

@@ -31,7 +31,16 @@ func newGlobalInvariants() *globalInvariants {
 //	if (x == 0) x = DEFAULT; g = x;                      → g non-zero
 //	if (x * y == 0) return;                              → x, y non-zero (if globals)
 //	g->field = x;  after `if (x == 0) return;`           → g->field non-zero
-func buildGlobalInvariants(ctx context.Context, store db.Store, p *parser.Parser) *globalInvariants {
+//	g = nonZeroFunc();  (all assignments non-zero)        → g non-zero
+//	g->field = 42;       (all assignments non-zero)        → g->field non-zero
+//
+// The last two patterns (non-zero-source assignments) require a whole-program
+// pass: a target is marked non-zero only when EVERY assignment to it across
+// the entire scan tree is from a provably non-zero source (non-zero literal,
+// non-zero constant, sizeof, or a call to a function that provably returns
+// non-zero). If any assignment is from an unknown source, the target stays
+// unmarked — the conservative outcome.
+func buildGlobalInvariants(ctx context.Context, store db.Store, p *parser.Parser, resolver *returnSummaryResolver) *globalInvariants {
 	inv := newGlobalInvariants()
 	if p == nil {
 		return inv
@@ -48,7 +57,98 @@ func buildGlobalInvariants(ctx context.Context, store db.Store, p *parser.Parser
 		}
 		scanInvariants(root, inv)
 	}
+	scanNonZeroSourceAssignments(ctx, store, p, resolver, inv)
 	return inv
+}
+
+// scanNonZeroSourceAssignments marks a field/global target as non-zero when
+// ALL assignments to it are from provably non-zero sources. This is
+// complementary to scanZeroGuardedAssignments: the zero-guarded pattern handles
+// `if (x == 0) return; g = x;`, while this handles `g = get_count()` /
+// `g = 42`. The two never conflict — a target with a zero-guarded assignment
+// from a parameter (not "obviously non-zero") simply isn't marked by this pass,
+// but may already be marked by the zero-guarded pass.
+func scanNonZeroSourceAssignments(ctx context.Context, store db.Store, p *parser.Parser, resolver *returnSummaryResolver, inv *globalInvariants) {
+	if resolver == nil {
+		return
+	}
+	files, err := store.ListFiles(ctx)
+	if err != nil {
+		return
+	}
+	cache := newFileParseCache(p)
+	type targetInfo struct {
+		hasAssignment bool
+		allNonZero    bool
+	}
+	targets := map[string]*targetInfo{}
+	for _, file := range files {
+		root := cache.rootForFile(file)
+		if root.Kind() == "" {
+			continue
+		}
+		for _, assign := range root.FindAll("assignment_expression") {
+			if !isSimpleAssign(assign) {
+				continue
+			}
+			children := assign.NamedChildren()
+			if len(children) < 2 {
+				continue
+			}
+			lhs, rhs := children[0], children[1]
+			target := assignTargetText(lhs)
+			if target == "" {
+				continue
+			}
+			info := targets[target]
+			if info == nil {
+				info = &targetInfo{allNonZero: true}
+				targets[target] = info
+			}
+			info.hasAssignment = true
+			if !isNonZeroSource(rhs, resolver) {
+				info.allNonZero = false
+			}
+		}
+	}
+	for target, info := range targets {
+		if info.hasAssignment && info.allNonZero {
+			inv.nonZeroVars[target] = true
+		}
+	}
+}
+
+// isSimpleAssign reports whether an assignment_expression uses the `=` operator
+// (not `+=`, `-=`, `/=`, etc.).
+func isSimpleAssign(assign parser.Node) bool {
+	for _, child := range assign.Children() {
+		if child.Kind() == "=" {
+			return true
+		}
+	}
+	return false
+}
+
+// isNonZeroSource reports whether an RHS expression is provably non-zero: a
+// non-zero literal, a non-zero constant symbol, a sizeof expression, or a call
+// to a function that provably returns non-zero.
+func isNonZeroSource(rhs parser.Node, resolver *returnSummaryResolver) bool {
+	text := strings.TrimSpace(rhs.Text())
+	if parser.NonZeroConstantValue(text) {
+		return true
+	}
+	if strings.Contains(text, "sizeof") {
+		return true
+	}
+	if resolver.globalConsts != nil {
+		if resolver.globalConsts.NonZero(text) || resolver.globalConsts.NonZeroExpr(text) {
+			return true
+		}
+	}
+	if name := rhsCallName(rhs); name != "" && resolver.nonZeroReturn(name) {
+		return true
+	}
+	return false
 }
 
 func scanInvariants(root parser.Node, inv *globalInvariants) {
