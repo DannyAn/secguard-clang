@@ -47,14 +47,15 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 		macros := macroFreeSummaries(root)
 
 		for _, f := range fileFuncs {
-			allocs := d.findAllocations(ctx, f, file, assigns, inits, calls, allocReturns)
+			localVars := findLocalVarsFrom(decls, f)
+			scalarVars := findScalarVarsFrom(decls, f)
+			allocs := d.findAllocations(ctx, f, file, assigns, inits, calls, allocReturns, scalarVars)
 			frees := d.findFrees(ctx, f, file, calls, macros, inits, assigns)
 			returnLines := findReturnLinesFrom(returns, f)
 
 			body := bodies[f.StartLine]
 			cfg := graph.BuildStmtCFG(body, f.EndLine)
 			cfgValid := body.Kind() == "compound_statement"
-			localVars := findLocalVarsFrom(decls, f)
 			// The set of variables this function allocates. A pointer stored
 			// through one of them (`*container = buf`) points INTO the heap, not
 			// the stack, so its content escapes with the container's ownership
@@ -194,7 +195,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 	return result, err
 }
 
-func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function, file *db.File, assigns, inits, calls []parser.Node, allocReturns map[string]bool) map[string][]int {
+func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function, file *db.File, assigns, inits, calls []parser.Node, allocReturns map[string]bool, scalarVars map[string]bool) map[string][]int {
 	allocs := make(map[string][]int)
 
 	checkNode := func(node parser.Node) {
@@ -222,6 +223,16 @@ func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function
 		varName := ""
 		if lhs.Kind() == "identifier" {
 			varName = lhs.Text()
+			// A whole-variable store to a SCALAR local (bool/int/uint32_t/...)
+			// is a status-code assignment, not a heap allocation, even when the
+			// callee name triggers the zero-config allocator heuristic (`_new`,
+			// `remalloc`, `*_alloc`). Only a pointer-typed target can hold an
+			// allocation; a known-scalar local is skipped. Typedef'd pointer
+			// types (`MsgPdu p` = `char **p`) are NOT in scalarVars, so they
+			// stay candidates (fail-open) — never a silent false negative.
+			if scalarVars[varName] {
+				return
+			}
 		} else {
 			for _, child := range lhs.NamedChildren() {
 				if child.Kind() == "identifier" {
@@ -642,6 +653,98 @@ func findLocalVarsFrom(decls []parser.Node, f *db.Function) map[string]bool {
 	return locals
 }
 
+// findScalarVarsFrom maps a local variable name to true when it is declared with
+// a CERTAINLY-SCALAR builtin type (`bool`, `int`, `uint32_t`, `unsigned`, ...):
+// a whole-variable store to it (`ret = foo_new(...)`) is a status-code assignment,
+// not a heap allocation, even when the callee name triggers the zero-config
+// allocator heuristic (`_new`, `remalloc`, `*_alloc`) — the dominant class of
+// confirmed false positives on production repos (nlog/stat-registry accessors).
+//
+// A typedef'd base type (`MsgPdu p` where `MsgPdu = char **`) hides its
+// pointer-ness inside the typedef, so it is NOT recorded here: the caller
+// fail-opens and keeps the store as a candidate rather than silently dropping a
+// real leak. Only `primitive_type`/`sized_type_specifier` bases are treated as
+// certainly-scalar; a pointer declarator (`T *p`) is never scalar.
+func findScalarVarsFrom(decls []parser.Node, f *db.Function) map[string]bool {
+	scalars := make(map[string]bool)
+	for _, decl := range decls {
+		if !funcLineRange(f, decl.StartLine()) {
+			continue
+		}
+		if hasStaticStorageSpecifier(decl) {
+			continue
+		}
+		if !hasScalarBaseType(decl) {
+			continue
+		}
+		for _, child := range decl.NamedChildren() {
+			var declarator parser.Node
+			switch child.Kind() {
+			case "init_declarator":
+				d := child.ChildByFieldName("declarator")
+				if d == nil {
+					continue
+				}
+				declarator = *d
+			case "identifier", "pointer_declarator", "array_declarator",
+				"function_declarator", "parenthesized_declarator":
+				declarator = child
+			default:
+				continue // attribute / type-position node
+			}
+			if name := declaredIdentifier(declarator); name != "" && !declaratorHasPointer(declarator) {
+				scalars[name] = true
+			}
+		}
+	}
+	return scalars
+}
+
+// hasStaticStorageSpecifier reports whether a declaration carries extern/static,
+// so its object has static storage duration (a pointer stored into it escapes
+// ownership rather than leaking).
+func hasStaticStorageSpecifier(decl parser.Node) bool {
+	for _, child := range decl.NamedChildren() {
+		if child.Kind() == "storage_class_specifier" {
+			if child.Text() == "extern" || child.Text() == "static" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasScalarBaseType reports whether a declaration's base type is a certainly-scalar
+// builtin (`primitive_type`/`sized_type_specifier`). A `type_identifier` base is a
+// typedef that may hide a pointer (`typedef char **MsgPdu; MsgPdu p`), and a
+// struct/union/enum base is a value type the caller still treats as fail-open.
+func hasScalarBaseType(decl parser.Node) bool {
+	for _, child := range decl.NamedChildren() {
+		if child.Kind() == "primitive_type" || child.Kind() == "sized_type_specifier" {
+			return true
+		}
+	}
+	return false
+}
+
+// declaratorHasPointer reports whether a declarator (sub)tree declares a
+// pointer-typed object: `T *p` and `void **p` are true, `T p`, `T a[4]` and a
+// function declarator are false. An array of pointers (`int *a[4]`) reports true,
+// which is harmless for the caller — an array can never be a whole-variable
+// allocation target, and over-reporting a pointer keeps the leak candidate rather
+// than silently dropping a real one.
+func declaratorHasPointer(node parser.Node) bool {
+	if node.Kind() == "pointer_declarator" {
+		return true
+	}
+	for _, c := range node.NamedChildren() {
+		if declaratorHasPointer(c) {
+			return true
+		}
+	}
+	return false
+}
+
 // declaredIdentifier returns the identifier a declaration child binds, descending
 // pointer/array/function/parenthesized declarator wrappers (`char *p` -> "p").
 // It returns "" for type-position nodes and for the initializer value, so a type
@@ -825,7 +928,10 @@ func allocatorReturnFuncs(ctx context.Context, store db.Store, p *parser.Parser,
 		returns := root.FindAll("return_statement")
 		assigns := root.FindAll("assignment_expression")
 		inits := root.FindAll("init_declarator")
+		calls := root.FindAll("call_expression")
+		decls := root.FindAll("declaration")
 		for _, f := range funcs {
+			localVars := findLocalVarsFrom(decls, f)
 			calleeOfVar := make(map[string]string)
 			for _, a := range assigns {
 				if funcLineRange(f, a.StartLine()) {
@@ -851,6 +957,17 @@ func allocatorReturnFuncs(ctx context.Context, store db.Store, p *parser.Parser,
 				}
 				if v := returnedVar(ret); v != "" {
 					if callee, ok := calleeOfVar[v]; ok {
+						// A wrapper that ESCAPES the returned pointer before
+						// returning it (stores it to a global/static/field, or
+						// hands it to a container) is a get-or-create-and-cache
+						// BORROW: the escape target owns the block, so the
+						// wrapper's callers must NOT free it. Marking it an
+						// allocator would turn every `x = get_item(...)` into a
+						// confirmed false-positive leak (the nlog stat-registry
+						// accessor pattern).
+						if len(findEscapeLines(assigns, calls, f, v, localVars, nil, nil)) > 0 {
+							continue
+						}
 						add(f.Name, callee)
 					}
 				}

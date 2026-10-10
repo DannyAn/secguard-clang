@@ -407,6 +407,80 @@ func TestMemoryLeak_CreateNotMalloc(t *testing.T) {
 	}
 }
 
+// TestMemoryLeak_ScalarStatusNoAlloc locks in the scalar type check: a
+// bool/int/uint32_t variable assigned from a callee whose name triggers the
+// zero-config allocator heuristic (`_new`, `remalloc`, `*_alloc`) is a status
+// code, not a heap pointer. It must not produce a MEMORY_ALLOC, while a real
+// `char *buf = malloc(8)` (never freed) still does.
+func TestMemoryLeak_ScalarStatusNoAlloc(t *testing.T) {
+	store := runIndexAndDetect(t, "tc131_memory_leak_scalar_status.c")
+	ctx := context.Background()
+
+	events, err := store.ListEventsByType(ctx, "MEMORY_ALLOC")
+	if err != nil {
+		t.Fatalf("list MEMORY_ALLOC: %v", err)
+	}
+	alloced := map[string]bool{}
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		alloced[props.Variable] = true
+	}
+	for _, scalar := range []string{"ret1", "ret2", "ret3", "resev2", "ret4", "ret5"} {
+		if alloced[scalar] {
+			t.Errorf("%s is a scalar status code, must not be a MEMORY_ALLOC", scalar)
+		}
+	}
+	if !alloced["buf"] {
+		t.Errorf("buf (char * malloc never freed) must still be reported as a leak")
+	}
+}
+
+// TestMemoryLeak_GetOrCreateBorrowNoLeak locks in the borrow-escape check in
+// allocatorReturnFuncs: a wrapper that allocates, caches into a global, and
+// returns the cached pointer is a get-or-create-and-cache BORROW, not an
+// allocator. Its caller's `item *x = get_item(k)` must not be an allocation
+// site, while the wrapper's own malloc still escapes (alloc+release pair).
+func TestMemoryLeak_GetOrCreateBorrowNoLeak(t *testing.T) {
+	store := runIndexAndDetect(t, "tc132_memory_leak_get_or_create_borrow.c")
+	ctx := context.Background()
+
+	alloced := map[string]bool{}
+	released := map[string]bool{}
+
+	allocEvents, err := store.ListEventsByType(ctx, "MEMORY_ALLOC")
+	if err != nil {
+		t.Fatalf("list MEMORY_ALLOC: %v", err)
+	}
+	for _, e := range allocEvents {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		alloced[props.Variable] = true
+	}
+	releaseEvents, err := store.ListEventsByType(ctx, "MEMORY_RELEASE")
+	if err != nil {
+		t.Fatalf("list MEMORY_RELEASE: %v", err)
+	}
+	for _, e := range releaseEvents {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		released[props.Variable] = true
+	}
+
+	if alloced["x"] {
+		t.Errorf("x = get_item(k) is a borrow (cached in g_cache), must not be an allocation site")
+	}
+	if !alloced["p"] || !released["p"] {
+		t.Errorf("get_item's p = malloc(...) is stored to g_cache (escape): want 1 alloc + 1 release, got alloc=%v release=%v", alloced["p"], released["p"])
+	}
+}
+
 // TestMemoryLeak_ContainerEscape locks in the two-step container-escape fix:
 // `*container = buf` where container is ITSELF a malloc allocation points the
 // buffer INTO the heap (not the stack), and the container is then returned to
