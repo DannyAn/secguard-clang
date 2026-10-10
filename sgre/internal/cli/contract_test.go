@@ -614,8 +614,7 @@ func TestAutoConfirmFindings_WritesMachineVerdict(t *testing.T) {
 // machine auto-confirmed finding is listed for re-review, the agent dismisses it
 // via the --review-json write path, and it is then suppressed (FinalStatus
 // dismissed) and no longer pending review. This is the loop wired into
-// command-instructions.md as the replacement for the external-provider
-// review-autoconfirmed command.
+// agent-body.md ("Re-review auto-confirmed findings").
 func TestAutoConfirmedReReviewLoop(t *testing.T) {
 	ctx := context.Background()
 	d, err := db.OpenInMemory(ctx)

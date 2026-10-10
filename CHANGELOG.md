@@ -12,6 +12,22 @@
 - **POSIX 时间转换 out-param**：`localtime_r`/`gmtime_r`/`localtime_s`/`gmtime_s`/`strptime` 加入 `outputParamInitializers`，`localtime_r(&t, &tm)` 后读 `tm.tm_year` 等字段不再被判为未初始化（此前与 `stat`/`gettimeofday` 同形却漏配）。消除 ~20 个 `local_tm`/`timeinfo`/`systime` 类误报。
 - 回归夹具：`tc130_uninit_localtime_outparam.c`；测试 `TestUninit_LocaltimeOutParam`、`TestUninit_MacroContextNotConfirmed`。
 
+### memory-leak 标量状态码与 getter 借用误报（CWE-401）
+
+生产 `result.sarif` 的 memory-leak 子集 34 条 auto-confirmed 中 21 条是确定性误报，两类根因：
+
+- **标量状态码当指针**：`bool ret = nlog_is_time_to_create_new(...)`、`uint32_t ret = nlog_disk_monitor_remalloc()`、`uint32_t resev2 = HpeDynmemAlloc(id, &pNewNode)`（真分配是 `&pNewNode` out-param）——`_new`/`remalloc`/`*_alloc` 名字启发式命中了返回状态码的函数，检测器未做类型校验。修复：`findScalarVarsFrom` 仅当基础类型是内建标量（`primitive_type`/`sized_type_specifier`）才跳过整变量目标；typedef 基础类型（`MsgPdu p` = `char **p`）fail-open。
+- **getter 借用当分配**：`nlog_db_get_ctrl_item` / `nlog_get_ai_detect_stat_list` 等 get-or-create-and-cache 访问器返回注册表/缓存的引用。修复：`allocatorReturnFuncs` 不再把「返回前已逃逸（存入全局/静态/字段或交给容器）的指针」标为分配器包装器。
+- 回归夹具：`tc131_memory_leak_scalar_status.c`、`tc132_memory_leak_get_or_create_borrow.c`。
+
+### AI 复核 auto-confirmed 结果改为 agent 原生（移除外部 AI provider）
+
+0.9.2 的 `secguard review-autoconfirmed` 走外部 HTTP AI（`[ai_review]` 配置 + `aireview`），与「AI 就是 agent」的架构冲突且未接入编排，已删除（命令 + `review`/`aireview` 包 + `[ai_review]` 配置）。二次复核现折回 security-auditor subagent 自身的 per-type 分类循环，复用已加载的 skill：
+
+- `secguard report --list-auto-confirmed [--type]` 列出机器 auto-confirmed finding（含 `id`/`rule_id`/`snippet`）；`secguard report --review-json` 回写 `dismissed` 覆盖（`dismissed` 经 `EffectiveStatus` 从 `result.sarif` 抑制）。
+- Bash 主机用两条命令；OpenCode-NGA（无 Bash）用新增的 `secguard_review` MCP 工具（`list_auto_confirmed`/`reviews`），已在 opencode + opencode-nga 双端注册并通过一致性检查。
+- `VulnTypesToRuleIDs` 迁入 `planner`。回归测试 `TestAutoConfirmedReReviewLoop`。
+
 ## [0.9.2] - 2026-10-10
 
 ### 空运行检测器跳过（性能 P0-5）
