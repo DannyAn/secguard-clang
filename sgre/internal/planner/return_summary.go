@@ -183,6 +183,15 @@ func (r *returnSummaryResolver) exprInterval(expr parser.Node, flow *rangeFlow, 
 		if flow != nil {
 			return flow.at(expr.Text(), expr.StartLine()), true
 		}
+	case "binary_expression":
+		// A return of a composite constant (`return 24 * 60 * 60;`, or
+		// `return HOURS * MINS * SECS;` with each symbol a known constant) folds
+		// non-zero. Only operators that cannot zero non-zero operands are folded
+		// (`*`, `<<`, unary +/-), so a `return a - b;` stays unknown and the
+		// caller keeps the conservative "possibly zero" verdict.
+		if consts != nil && consts.NonZeroExpr(expr.Text()) {
+			return interval{1, rMax}, true
+		}
 	case "parenthesized_expression", "cast_expression":
 		for _, c := range expr.NamedChildren() {
 			if iv, ok := r.exprInterval(c, flow, consts); ok {

@@ -62,8 +62,11 @@ func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error)
 				// provably non-zero compile-time constant (`x / BKT_NUM` with
 				// `#define BKT_NUM 4096`) is safe at the source, exactly like the
 				// literal `x / 4096` — drop it here instead of leaking it to the
-				// AI agent as a "possibly-zero variable".
-				if constants.NonZero(divisor) {
+				// AI agent as a "possibly-zero variable". NonZeroExpr extends that
+				// to a composite of such symbols (`x / (HOURS * MINS * SECS)`)
+				// whose factors are each known non-zero, folding like a literal
+				// product while staying conservative about `+ - / % >>` etc.
+				if constants.NonZero(divisor) || constants.NonZeroExpr(divisor) {
 					return
 				}
 				// Floating-point division by zero is well-defined by IEEE 754

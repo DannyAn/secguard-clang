@@ -117,13 +117,14 @@ func TestNewDetector_DivideByZero_CrossFileConstantSymbols(t *testing.T) {
 
 // TestNewDetector_DivideByZero_ConstantSymbols pins the deterministic
 // constant-symbol suppression: a divisor spelled as a non-zero macro / enumerator
-// / top-level const is dropped at the detector (like a literal), while a complex
-// macro body (`(1u << 3)`), a zero macro, and a plain variable still emit.
+// / top-level const — including a composite constant body (`(1u << 3)`,
+// `(24 * 60 * 60)`) and a product of constant symbols — is dropped at the
+// detector, while a zero macro and a plain variable still emit.
 func TestNewDetector_DivideByZero_ConstantSymbols(t *testing.T) {
 	store := runOneDetector(t, "tc80_divide_by_zero_const.c",
 		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewDivideByZeroDetector(s, p, l) })
-	if got := eventCount(t, store, "DIVIDE_BY_ZERO"); got != 3 {
-		t.Errorf("expected 3 DIVIDE_BY_ZERO events (macro/enum/const constants suppressed; shift-expr/zero/var kept), got %d", got)
+	if got := eventCount(t, store, "DIVIDE_BY_ZERO"); got != 2 {
+		t.Errorf("expected 2 DIVIDE_BY_ZERO events (macro/enum/const and composite-constant divisors suppressed; zero/var kept), got %d", got)
 	}
 }
 

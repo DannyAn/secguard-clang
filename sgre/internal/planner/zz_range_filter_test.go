@@ -329,6 +329,7 @@ func TestRangeFilter_DivideByZero_ReturnSummary(t *testing.T) {
 	src := `#include <stdlib.h>
 
 int get_worker_num(void) { return 8; }
+int get_seconds_per_day(void) { return 24 * 60 * 60; }
 int get_unknown(int a) { return a; }
 int get_zeroops(void) { return 0; }
 
@@ -344,6 +345,8 @@ int tp_unknown_return(int x, int a) { return x / get_unknown(a); }
 int tp_zero_return(int x) { return x / get_zeroops(); }
 
 int fp_apikb(int x) { return x / getpid(); }
+
+int fp_compound_return(int x) { return x / get_seconds_per_day(); }
 `
 	ctx := context.Background()
 	store := db.NewTestStore(t)
@@ -382,6 +385,9 @@ int fp_apikb(int x) { return x / getpid(); }
 	}
 	if kept["fp_apikb"] {
 		t.Errorf("fp_apikb (x / getpid(), apikb contract) should be suppressed, got %v", candidateNames(result))
+	}
+	if kept["fp_compound_return"] {
+		t.Errorf("fp_compound_return (x / get_seconds_per_day(), returns 24*60*60) should be suppressed, got %v", candidateNames(result))
 	}
 	if !kept["tp_unknown_return"] {
 		t.Errorf("tp_unknown_return (x / get_unknown(a), returns param) should be kept, got %v", candidateNames(result))

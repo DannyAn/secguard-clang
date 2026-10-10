@@ -32,6 +32,17 @@ func (e *ConstantEnv) IsZero(name string) bool {
 	return e.zero[strings.TrimSpace(name)]
 }
 
+// NonZeroExpr reports whether expr is a provably non-zero compile-time integer
+// constant expression, resolving identifier leaves against this environment so
+// a divisor spelled `HOURS * MINS * SECS` folds like `24 * 60 * 60` when each
+// symbol is a known non-zero constant. It is the expression-level counterpart
+// to NonZero (which matches one bare name). It stays conservative: only
+// operators that cannot turn non-zero operands into zero are folded (`*`, `<<`,
+// unary `+`/`-`, sizeof, parentheses); anything else returns false.
+func (e *ConstantEnv) NonZeroExpr(expr string) bool {
+	return foldNonZeroConstant(expr, e)
+}
+
 // Merge merges other into e. A symbol that is nonZero in one env and zero in
 // another is a conflict (the symbol has different values in different
 // translation units) and is dropped from both maps so neither NonZero nor
@@ -194,15 +205,18 @@ func CollectConstantSymbols(root Node) *ConstantEnv {
 // NonZeroConstantValue reports whether a constant-expression text is provably a
 // non-zero integer value: a non-zero integer literal (decimal/hex/octal, with C
 // suffixes and an optional sign), a sizeof (compile-time constant, always > 0),
-// or a parenthesized form of either. Complex expressions (`(1u << 3)`) and
-// non-integer literals are not resolved and return false, so the caller keeps the
-// conservative "possibly zero" verdict rather than risk a false negative.
+// or a parenthesized form of either. It also folds a conservative subset of
+// composite constant expressions (see foldNonZeroConstant) so a macro body like
+// `(24 * 60 * 60)` resolves non-zero exactly like the literal `86400`. Anything
+// that cannot be proven non-zero — a non-integer literal, an operator that can
+// yield zero from non-zero operands (`+ - / % >> & | ^`), or an unknown leaf —
+// returns false, so the caller keeps the conservative "possibly zero" verdict
+// rather than risk a false negative.
 func NonZeroConstantValue(text string) bool {
-	if strings.HasPrefix(strings.TrimSpace(text), "sizeof") {
-		return true
+	if v, ok := parseConstantInt(text); ok {
+		return v != 0
 	}
-	v, ok := parseConstantInt(text)
-	return ok && v != 0
+	return foldNonZeroConstant(text, nil)
 }
 
 // IsZeroConstantValue reports whether a constant-expression text is provably a
@@ -276,4 +290,119 @@ func balanced(s string) bool {
 		}
 	}
 	return depth == 0
+}
+
+// foldNonZeroConstant reports whether text is provably a non-zero integer
+// constant expression. It folds a conservative subset of C integer constant
+// expressions where non-zero inputs are GUARANTEED to stay non-zero:
+//   - a non-zero integer literal / sizeof / known non-zero symbol (leaf)
+//   - multiplication: nz * nz is nz (integer multiplication never zeroes two
+//     non-zero operands in source-level arithmetic)
+//   - left shift: nz << any is nz (a non-zero value shifted stays non-zero)
+//   - unary +/-, and parenthesized forms recurse
+//
+// Every other operator (`+ - / % >> & | ^`) is deliberately NOT folded: `a - b`
+// or `a / b` can be zero even when both operands are non-zero (e.g. `1 / 2`),
+// so folding it would risk suppressing a genuine divide-by-zero. Any unknown
+// leaf (a parameter, a field, a call, a non-integer literal) also returns false.
+func foldNonZeroConstant(text string, env *ConstantEnv) bool {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return false
+	}
+	if t[0] == '+' || t[0] == '-' {
+		return foldNonZeroConstant(t[1:], env)
+	}
+	t = strings.TrimSpace(stripParens(t))
+	if t == "" {
+		return false
+	}
+	left, op, right, found := topLevelBinaryOp(t)
+	if !found {
+		if strings.HasPrefix(strings.TrimSpace(t), "sizeof") {
+			return true
+		}
+		if v, ok := parseConstantInt(t); ok {
+			return v != 0
+		}
+		if env != nil && env.NonZero(t) {
+			return true
+		}
+		return false
+	}
+	switch op {
+	case "*":
+		return foldNonZeroConstant(left, env) && foldNonZeroConstant(right, env)
+	case "<<":
+		return foldNonZeroConstant(left, env)
+	default:
+		return false
+	}
+}
+
+// topLevelBinaryOp splits text at the parenthesization-depth-0 binary operator of
+// lowest precedence, returning that operator and its left/right operands, or
+// found=false when text has no top-level operator. Precedence follows C
+// (multiplicative 40 > additive 30 > shift 20); the lowest-precedence operator is
+// the split point so a `+`/`-` outermost operator is rejected even when its `*`
+// sub-expressions are individually non-zero. A lone `-`/`+` in front of an
+// operand is a unary sign, handled by foldNonZeroConstant before scanning.
+func topLevelBinaryOp(t string) (left, op, right string, found bool) {
+	depth := 0
+	minPrio := 1 << 30
+	bestIdx := -1
+	bestOp := ""
+	bestLen := 0
+	for i := 0; i < len(t); i++ {
+		switch t[i] {
+		case '(':
+			depth++
+			continue
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+			continue
+		}
+		if depth != 0 {
+			continue
+		}
+		var opTok string
+		var prio int
+		switch t[i] {
+		case '*', '/', '%':
+			opTok, prio = string(t[i]), 40
+		case '+', '-':
+			opTok, prio = string(t[i]), 30
+		case '<':
+			if i+1 < len(t) && t[i+1] == '<' {
+				opTok, prio = "<<", 20
+			}
+		case '>':
+			if i+1 < len(t) && t[i+1] == '>' {
+				opTok, prio = ">>", 20
+			}
+		}
+		if opTok == "" {
+			continue
+		}
+		if prio < minPrio {
+			minPrio = prio
+			bestIdx = i
+			bestOp = opTok
+			bestLen = len(opTok)
+		}
+		if len(opTok) == 2 {
+			i++
+		}
+	}
+	if bestIdx < 0 {
+		return "", "", "", false
+	}
+	left = strings.TrimSpace(t[:bestIdx])
+	right = strings.TrimSpace(t[bestIdx+bestLen:])
+	if left == "" || right == "" {
+		return "", "", "", false
+	}
+	return left, bestOp, right, true
 }
