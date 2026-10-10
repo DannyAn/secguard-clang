@@ -610,6 +610,60 @@ func TestAutoConfirmFindings_WritesMachineVerdict(t *testing.T) {
 	}
 }
 
+// TestAutoConfirmedReReviewLoop pins the agent-native second-round review: a
+// machine auto-confirmed finding is listed for re-review, the agent dismisses it
+// via the --review-json write path, and it is then suppressed (FinalStatus
+// dismissed) and no longer pending review. This is the loop wired into
+// command-instructions.md as the replacement for the external-provider
+// review-autoconfirmed command.
+func TestAutoConfirmedReReviewLoop(t *testing.T) {
+	ctx := context.Background()
+	d, err := db.OpenInMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := db.NewStore(d)
+	defer s.Close()
+	const scanID = "sc_2026-01-01_000000_bbbbbb"
+	if _, err := s.InsertScanStat(ctx, &db.ScanStat{ScanID: scanID, VulnType: "memory-leak", SeedCount: 1, FinalCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	confirmed := []planner.EvidenceItem{{
+		SuspicionLevel: "confirmed",
+		Target:         planner.TargetInfo{File: "src/a.c", Line: 42, Function: "f", Variable: "list"},
+		Evidence:       []planner.EvidenceFragment{{Role: "condition", Detail: "allocation never freed"}},
+	}}
+	if n, _, err := autoConfirmFindings(ctx, s, scanID, "memory-leak", confirmed, nil); err != nil || n != 1 {
+		t.Fatalf("autoConfirmFindings: n=%d err=%v", n, err)
+	}
+
+	pending, err := s.ListAutoConfirmedForReview(ctx, scanID, nil, 0)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending review = %d, err=%v; want 1", len(pending), err)
+	}
+	if pending[0].FinalStatus() != "confirmed" {
+		t.Fatalf("unreviewed auto-confirmed must stand as confirmed, got %q", pending[0].FinalStatus())
+	}
+
+	// The agent re-reviews and dismisses the machine false positive.
+	if err := s.UpdateFindingReview(ctx, pending[0].ID, "dismissed", "getter returns a borrowed registry reference, not an allocation"); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := s.GetFindingByID(ctx, pending[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.FinalStatus() != "dismissed" {
+		t.Errorf("after agent dismissal, FinalStatus = %q, want dismissed", f.FinalStatus())
+	}
+	again, _ := s.ListAutoConfirmedForReview(ctx, scanID, nil, 0)
+	if len(again) != 0 {
+		t.Errorf("dismissed finding should leave the re-review set, got %d", len(again))
+	}
+}
+
 // ---- --write-json payload shapes ----
 //
 // The documented payload is a bare JSON array (extension/shared/agent-body.md),

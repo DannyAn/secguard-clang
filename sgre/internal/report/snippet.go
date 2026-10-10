@@ -186,6 +186,16 @@ func (c *codeContext) text() string {
 	return strings.Join(c.Lines, "\n")
 }
 
+// SourceLineText returns the trimmed text of a single source line, so a report
+// or re-review listing can embed the exact statement next to each finding. It
+// lets the AI classifier verify the file:line directly from one read instead of
+// issuing one source READ per candidate — the dominant wall-clock cost of a large
+// scan. It uses the same process-wide file cache as readCodeContext, so a scan
+// with thousands of findings still reads each source file once.
+func SourceLineText(filePath string, line int, roots ...string) string {
+	return sourceLineText(filePath, line, roots...)
+}
+
 // sourceLineText returns the trimmed text of a single source line, so the
 // candidate-stage report can embed the exact dereference/access statement next
 // to each candidate. Embedding it there lets the AI classifier verify the

@@ -248,6 +248,42 @@ func runReportCmd(ctx context.Context, args []string) int {
 	}
 	defer store.Close()
 
+	// --list-auto-confirmed emits the machine auto-confirmed findings as a JSON
+	// list for the AI agent to RE-REVIEW. This is the agent-native second-round
+	// review: the agent (not an external HTTP provider) applies its skill rules
+	// to each entry and writes verdicts back via `--review-json` (confirmed |
+	// dismissed), which maps a `dismissed` to a suppressed finding in result.sarif.
+	// Each entry carries the exact source statement (snippet) so the agent can
+	// judge the machine verdict without a per-finding source READ.
+	if hasFlag(remaining, "list-auto-confirmed") {
+		scanID := parseStringFlag(remaining, "scan-id")
+		if scanID == "" {
+			scanID, _ = store.GetLatestScanID(ctx)
+		}
+		findings, err := store.ListAutoConfirmedForReview(ctx, scanID, nil, 0)
+		if err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to list auto-confirmed findings: %v", err))
+			return 1
+		}
+		cwd, _ := os.Getwd()
+		out := make([]map[string]interface{}, 0, len(findings))
+		for _, f := range findings {
+			out = append(out, map[string]interface{}{
+				"id":        f.ID,
+				"rule_id":   f.RuleID,
+				"file":      f.FilePath,
+				"line":      f.LineNumber,
+				"function":  f.FunctionName,
+				"variable":  f.Variable,
+				"summary":   f.Summary,
+				"reasoning": f.Reasoning,
+				"snippet":   report.SourceLineText(f.FilePath, f.LineNumber, cwd),
+			})
+		}
+		_ = WriteJSON(map[string]interface{}{"findings": out, "count": len(out)})
+		return 0
+	}
+
 	if hasFlag(remaining, "write") {
 		confidence := parseFloatFlag(remaining, "confidence")
 		if confidence > 1.0 {

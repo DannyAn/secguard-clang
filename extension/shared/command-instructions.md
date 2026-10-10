@@ -466,6 +466,24 @@ as `result.sarif`.)
     Bash and cannot do it themselves); skipping it leaves the type's
     `ai_stage_status` as `pending` even though its findings landed.
 
+    **Auto-confirmed 二次复核（agent 原生，不是外部 AI provider）:** before the final
+    audit, re-review the machine auto-confirmed findings — they are the tier the
+    subagents never see, and a machine false positive (a getter misread as an
+    allocation, a scalar status code misread as a pointer, ...) would otherwise
+    ship to `result.sarif` unreviewed. Run
+    `secguard report --list-auto-confirmed --scan-id <scan_id> --db <db_path>`
+    (returns a `findings` array: `id` / `rule_id` / `file` / `line` / `function` /
+    `variable` / `reasoning` / `snippet`). For each entry apply the type's skill
+    false-positive rules against `reasoning` + `snippet` (open the source line only
+    when the snippet is insufficient). Write your verdicts in ONE batch via
+    `secguard report --review-json <tmpfile> --db <db_path>` as
+    `[{"id": <id>, "review_status": "confirmed"|"dismissed", "review_reasoning": "..."}]`:
+    `dismissed` suppresses the machine false positive from `result.sarif`; omit the
+    entries you agree with (an unreviewed auto-confirmed finding stays confirmed).
+    This is the agent-native replacement for the external-provider
+    `review-autoconfirmed` command — do NOT skip it, and do NOT shell out to an
+    external AI provider.
+
     After ALL subagents (or your sequential loop) are done, run `secguard report --audit --scan-id <scan_id> --output-dir <output_dir> --ai-duration-ms <ms>`
    ONCE to regenerate `report.md` (verdict-stage, confirmed only) + `result.sarif`
    + `findings/`. `<ms>` is the MEASURED AI-classification wall-clock (from
