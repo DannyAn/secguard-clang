@@ -617,6 +617,11 @@ func (d *IntegerOverflowDetector) detectUnsignedSubUnderflow(ctx context.Context
 	if scope.locals == nil {
 		return
 	}
+	// Truncating-snprintf accumulators: a local accumulated ONLY by adding a
+	// truncating format wrapper's return value (`count += snprintf_truncated_s(...)`)
+	// is bounded by the destination size by contract, so a later `size - count`
+	// subtraction cannot underflow (P1-2).
+	truncAccums := truncatingAccumulators(assigns, f)
 	check := func(expr parser.Node) {
 		expr = unwrapExprNode(expr)
 		if expr.Kind() != "binary_expression" || arithOperator(expr) != "-" {
@@ -634,6 +639,11 @@ func (d *IntegerOverflowDetector) detectUnsignedSubUnderflow(ctx context.Context
 			return
 		}
 		if exprTextKey(lhs) == exprTextKey(rhs) || unsignedSubGuarded(expr, lhs, rhs) {
+			return
+		}
+		// `size - count` where count is a truncating-snprintf accumulator: count
+		// never exceeds size, so the subtraction cannot underflow.
+		if truncAccums[bareIdentText(rhs)] {
 			return
 		}
 		d.emitIntegerOverflow(ctx, file, f, expr, "unsigned_sub_underflow", result)
@@ -659,6 +669,84 @@ func (d *IntegerOverflowDetector) detectUnsignedSubUnderflow(ctx context.Context
 		}
 		check(children[1])
 	}
+}
+
+// isTruncatingFormatFunc reports whether name is a truncating format wrapper:
+// `snprintf_truncated_s` / `sprintf_truncated_s` etc. (the "truncated" spelling)
+// or the exact Annex K `sprintf_s`/`vsprintf_s` (which return the count WRITTEN,
+// bounded by destsz-1). These guarantee the return value is less than the
+// destination size, so an accumulator built from their returns stays <= the
+// buffer size. `snprintf`/`snprintf_s` (which return the would-have-written
+// count, unbounded) are deliberately excluded.
+func isTruncatingFormatFunc(name string) bool {
+	lower := strings.ToLower(name)
+	if strings.Contains(lower, "truncated") && (strings.Contains(lower, "printf") || strings.Contains(lower, "sprintf")) {
+		return true
+	}
+	return lower == "sprintf_s" || lower == "vsprintf_s"
+}
+
+// rhsHasTruncatingCall reports whether an expression contains a call to a
+// truncating format wrapper.
+func rhsHasTruncatingCall(rhs parser.Node) bool {
+	for _, call := range rhs.FindAll("call_expression") {
+		if isTruncatingFormatFunc(extractCallName(call)) {
+			return true
+		}
+	}
+	return false
+}
+
+// truncatingAccumulators returns the set of local variables whose ONLY writes are
+// `count += <truncating>(...)` or `count = count + <truncating>(...)`. Such a
+// count is bounded by the destination size by contract (the truncating wrapper
+// writes at most destsz-1 and returns that count), so `size - count` cannot
+// underflow. Any other whole-variable write (a reset, a `++`, a `= other`)
+// disqualifies the name as a pure accumulator.
+func truncatingAccumulators(assigns []parser.Node, f *db.Function) map[string]bool {
+	out := make(map[string]bool)
+	disqualified := make(map[string]bool)
+	record := func(name string, ok bool) {
+		if name == "" {
+			return
+		}
+		if ok && !disqualified[name] {
+			out[name] = true
+			return
+		}
+		disqualified[name] = true
+		delete(out, name)
+	}
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
+			continue
+		}
+		children := assign.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		lhs := children[0]
+		rhs := children[1]
+		if lhs.Kind() != "identifier" {
+			continue
+		}
+		// count += <truncating>(...)
+		if op := assign.ChildByFieldName("operator"); op != nil && op.Text() == "+=" {
+			record(lhs.Text(), rhsHasTruncatingCall(rhs))
+			continue
+		}
+		// count = count + <truncating>(...)
+		if rhs.Kind() == "binary_expression" && arithOperator(rhs) == "+" {
+			rc := rhs.NamedChildren()
+			if len(rc) == 2 && rc[0].Kind() == "identifier" && rc[0].Text() == lhs.Text() && rhsHasTruncatingCall(rc[1]) {
+				record(lhs.Text(), true)
+				continue
+			}
+		}
+		// Any other write to lhs is not a bounded accumulation.
+		record(lhs.Text(), false)
+	}
+	return out
 }
 
 func unwrapExprNode(node parser.Node) parser.Node {

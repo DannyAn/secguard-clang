@@ -57,3 +57,48 @@ func TestIntegerOverflow_UnsignedSubUnderflow(t *testing.T) {
 		}
 	}
 }
+
+// TestIntegerOverflow_UnsignedSubSnprintfAccumulator pins the P1-2 false-positive
+// suppression: `size - count` where count is accumulated ONLY by a truncating
+// snprintf wrapper (`count += snprintf_truncated_s(...)`) cannot underflow, so it
+// must NOT emit unsigned_sub_underflow. A plain unsigned subtraction (the control)
+// must still be flagged.
+func TestIntegerOverflow_UnsignedSubSnprintfAccumulator(t *testing.T) {
+	store, p := setupDetector(t, "tc128_int_overflow_snprintf_accumulator.c")
+	logger := log.New(io.Discard, log.LevelWarn)
+	if _, err := NewIntegerOverflowDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+
+	events, err := store.ListEventsByType(context.Background(), "INTEGER_OVERFLOW")
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	byFunction := make(map[string][]string)
+	for _, e := range events {
+		fn, err := store.GetFunctionByID(context.Background(), e.EntityID)
+		if err != nil || fn == nil {
+			continue
+		}
+		var props struct {
+			Category string `json:"category"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		byFunction[fn.Name] = append(byFunction[fn.Name], props.Category)
+	}
+
+	for _, cat := range byFunction["fmt_buf"] {
+		if cat == "unsigned_sub_underflow" {
+			t.Errorf("fmt_buf: size - count with a truncating-snprintf accumulator must not be flagged, got %v", byFunction["fmt_buf"])
+		}
+	}
+	found := false
+	for _, cat := range byFunction["bad_sub"] {
+		if cat == "unsigned_sub_underflow" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("bad_sub: plain unsigned subtraction must still be flagged, got %v", byFunction["bad_sub"])
+	}
+}

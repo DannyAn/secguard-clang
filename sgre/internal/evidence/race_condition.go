@@ -65,6 +65,13 @@ func (d *RaceConditionDetector) Detect(ctx context.Context) (DetectResult, error
 	// it cannot run inside the per-function loop below.
 	fileInfos := make(map[int64]*fileInfo)
 	threadCounts := make(map[string]int)
+	// lockWrappers / unlockWrappers map a pure lock/unlock WRAPPER function name
+	// (`xxx_lock()` whose body is only `pthread_mutex_lock(&g_mutex)`) to the
+	// mutex it acquires/releases. Production code funnels every lock through such
+	// a wrapper, so a shared access between `xxx_lock()` and `xxx_unlock()` was
+	// previously read as unprotected and flagged as a false-positive data race.
+	lockWrappers := make(map[string]string)
+	unlockWrappers := make(map[string]string)
 	// externGlobals aggregates every non-static file-scope variable across the
 	// whole project (headers carry most `extern` declarations), so a thread fn
 	// accessing a global declared `extern` in a header is still seen.
@@ -81,6 +88,7 @@ func (d *RaceConditionDetector) Detect(ctx context.Context) (DetectResult, error
 		}
 		for _, f := range funcs {
 			d.collectThreadTargets(calls, f, threadCounts)
+			d.collectLockWrapper(calls, f, lockWrappers, unlockWrappers)
 		}
 	})
 	if err != nil {
@@ -136,14 +144,14 @@ func (d *RaceConditionDetector) Detect(ctx context.Context) (DetectResult, error
 				}
 			}
 
-			d.detectLockUnlockPattern(ctx, calls, assigns, f, file, &result)
+			d.detectLockUnlockPattern(ctx, calls, assigns, f, file, lockWrappers, unlockWrappers, &result)
 		}
 
 		// Cross-function data race: aggregate every thread function's accesses
 		// to each global and intersect their locksets, so a race between two
 		// DIFFERENT thread functions (t1 under m1, t2 under m2) is caught — the
 		// per-function pass only saw a single function's own accesses.
-		d.detectCrossFunctionDataRace(ctx, file, funcs, funcDefs, fileInfos[file.ID], threadCounts, assigns, updates, ids, calls, &result)
+		d.detectCrossFunctionDataRace(ctx, file, funcs, funcDefs, fileInfos[file.ID], threadCounts, assigns, updates, ids, calls, lockWrappers, unlockWrappers, &result)
 	})
 	return result, err
 }
@@ -283,6 +291,64 @@ func (d *RaceConditionDetector) collectMutexVars(root parser.Node) map[string]bo
 	return mutexes
 }
 
+// collectLockWrapper recognizes a pure lock/unlock WRAPPER function: one whose
+// body's only calls are a lock primitive (`pthread_mutex_lock(&m)`, ...) with no
+// unlock, or an unlock primitive with no lock. Such a wrapper (`xxx_lock()` /
+// `xxx_unlock()`) acquires/releases the wrapped mutex, so a call to it must be
+// treated exactly like the primitive when computing which mutexes are held. A
+// function that both locks and unlocks (a critical-section helper), or that makes
+// any other call, is NOT a pure wrapper and is ignored (conservative: the access
+// stays unprotected rather than being wrongly credited with a held lock).
+func (d *RaceConditionDetector) collectLockWrapper(calls []parser.Node, f *db.Function, lockWrappers, unlockWrappers map[string]string) {
+	var locked, unlocked string
+	otherCall := false
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
+			continue
+		}
+		name := extractCallName(call)
+		mutex := strings.TrimPrefix(strings.TrimSpace(extractFirstArg(call)), "&")
+		switch {
+		case lockCalls[name]:
+			if locked == "" {
+				locked = mutex
+			}
+		case unlockCalls[name]:
+			if unlocked == "" {
+				unlocked = mutex
+			}
+		default:
+			otherCall = true
+		}
+	}
+	if locked != "" && unlocked == "" && !otherCall {
+		lockWrappers[f.Name] = locked
+		return
+	}
+	if unlocked != "" && locked == "" && !otherCall {
+		unlockWrappers[f.Name] = unlocked
+	}
+}
+
+// mutexArgOrWrapper returns the mutex a call locks/unlocks and whether it is a
+// lock, considering both direct primitives and pure lock/unlock wrappers.
+func mutexArgOrWrapper(call parser.Node, lockWrappers, unlockWrappers map[string]string) (mutex string, isLock bool, isUnlock bool) {
+	name := extractCallName(call)
+	switch {
+	case lockCalls[name]:
+		return strings.TrimPrefix(strings.TrimSpace(extractFirstArg(call)), "&"), true, false
+	case unlockCalls[name]:
+		return strings.TrimPrefix(strings.TrimSpace(extractFirstArg(call)), "&"), false, true
+	}
+	if m, ok := lockWrappers[name]; ok {
+		return m, true, false
+	}
+	if m, ok := unlockWrappers[name]; ok {
+		return m, false, true
+	}
+	return "", false, false
+}
+
 func (d *RaceConditionDetector) collectThreadTargets(calls []parser.Node, f *db.Function, counts map[string]int) {
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
@@ -325,7 +391,7 @@ func threadFnName(arg string) string {
 // mutex. Unlike the previous per-function pass, this intersects the locksets of
 // DIFFERENT thread functions, so `t1` writing g under m1 while `t2` writes g
 // under m2 is caught even though each function is created only once.
-func (d *RaceConditionDetector) detectCrossFunctionDataRace(ctx context.Context, file *db.File, funcs []*db.Function, funcDefs []parser.Node, info *fileInfo, threadCounts map[string]int, assigns, updates, ids, calls []parser.Node, result *DetectResult) {
+func (d *RaceConditionDetector) detectCrossFunctionDataRace(ctx context.Context, file *db.File, funcs []*db.Function, funcDefs []parser.Node, info *fileInfo, threadCounts map[string]int, assigns, updates, ids, calls []parser.Node, lockWrappers, unlockWrappers map[string]string, result *DetectResult) {
 	if info == nil {
 		return
 	}
@@ -343,7 +409,7 @@ func (d *RaceConditionDetector) detectCrossFunctionDataRace(ctx context.Context,
 			continue
 		}
 		body := bodies[f.StartLine]
-		heldByLine := d.mustHoldByLine(body, f.EndLine, calls, f)
+		heldByLine := d.mustHoldByLine(body, f.EndLine, calls, f, lockWrappers, unlockWrappers)
 		accesses := d.functionGlobalAccesses(f, info, assigns, updates, ids, heldByLine)
 		for name, acc := range accesses {
 			if len(acc.writes) == 0 {
@@ -508,7 +574,7 @@ func (d *RaceConditionDetector) functionGlobalAccesses(f *db.Function, info *fil
 // It is computed per mutex via a two-state reachability (held / not-held): a
 // node is "not held" iff it is reachable from the entry without holding the
 // mutex, and "held" otherwise.
-func (d *RaceConditionDetector) mustHoldByLine(body parser.Node, funcEnd int, calls []parser.Node, f *db.Function) map[int]map[string]bool {
+func (d *RaceConditionDetector) mustHoldByLine(body parser.Node, funcEnd int, calls []parser.Node, f *db.Function, lockWrappers, unlockWrappers map[string]string) map[int]map[string]bool {
 	cfg := graph.BuildStmtCFG(body, funcEnd)
 
 	mutexSet := make(map[string]bool)
@@ -518,21 +584,16 @@ func (d *RaceConditionDetector) mustHoldByLine(body parser.Node, funcEnd int, ca
 		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
-		name := extractCallName(call)
-		if !lockCalls[name] && !unlockCalls[name] {
+		mutex, isLock, isUnlock := mutexArgOrWrapper(call, lockWrappers, unlockWrappers)
+		if mutex == "" {
 			continue
 		}
-		args := extractCallArgs(call)
-		if len(args) == 0 {
-			continue
-		}
-		mutex := strings.TrimPrefix(strings.TrimSpace(args[0]), "&")
 		mutexSet[mutex] = true
 		if node := cfg.NodeAt(call.StartLine()); node != nil {
 			switch {
-			case lockCalls[name]:
+			case isLock:
 				lockAt[node.ID] = mutex
-			case unlockCalls[name]:
+			case isUnlock:
 				unlockAt[node.ID] = mutex
 			}
 		}
@@ -613,21 +674,17 @@ func (d *RaceConditionDetector) findCheckCall(cond parser.Node) *parser.Node {
 	return nil
 }
 
-func (d *RaceConditionDetector) detectLockUnlockPattern(ctx context.Context, calls, assigns []parser.Node, f *db.Function, file *db.File, result *DetectResult) {
+func (d *RaceConditionDetector) detectLockUnlockPattern(ctx context.Context, calls, assigns []parser.Node, f *db.Function, file *db.File, lockWrappers, unlockWrappers map[string]string, result *DetectResult) {
 	lockLines := make(map[int]string)
 	unlockLines := make(map[int]string)
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
-		callName := extractCallName(call)
-		if lockCalls[callName] {
-			mutexArg := extractFirstArg(call)
-			lockLines[call.StartLine()] = mutexArg
-		}
-		if unlockCalls[callName] {
-			mutexArg := extractFirstArg(call)
-			unlockLines[call.StartLine()] = mutexArg
+		if mutex, isLock, isUnlock := mutexArgOrWrapper(call, lockWrappers, unlockWrappers); isLock {
+			lockLines[call.StartLine()] = mutex
+		} else if isUnlock {
+			unlockLines[call.StartLine()] = mutex
 		}
 	}
 

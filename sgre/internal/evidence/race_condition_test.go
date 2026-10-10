@@ -89,3 +89,27 @@ func TestRaceCondition_CrossFunction(t *testing.T) {
 		t.Errorf("expected a cross-function shared_data_race for g (t1 under m1, t2 under m2), got no matching event")
 	}
 }
+
+// TestRaceCondition_LockWrapperPair pins P1-4: a shared global written between a
+// pure lock/unlock WRAPPER pair (foo_lock/foo_unlock wrapping
+// pthread_mutex_lock/unlock) is protected, so it must NOT be flagged as a
+// shared_data_race. The detector previously saw only the direct primitives and
+// read the wrapper-protected write as unprotected.
+func TestRaceCondition_LockWrapperPair(t *testing.T) {
+	store := runIndexAndDetect(t, "tc129_race_lock_wrapper.c")
+
+	events, err := store.ListEventsByType(context.Background(), "RACE_CONDITION")
+	if err != nil {
+		t.Fatalf("list RACE_CONDITION: %v", err)
+	}
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+			Category string `json:"category"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Variable == "g_shared" && props.Category == "shared_data_race" {
+			t.Errorf("g_shared written between foo_lock/foo_unlock wrappers must not be a data race, got %s", e.Properties)
+		}
+	}
+}

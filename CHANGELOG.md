@@ -4,6 +4,14 @@
 
 ## [0.9.3] - 2026-10-10
 
+### integer-overflow 截断累加器误报（CWE-190）
+
+- **`unsigned_sub_underflow` 截断累加器抑制（P1-2）**：`size - count` 中 `count` 若只由截断式格式化包装器累加（`count += snprintf_truncated_s(...)` / `count = count + sprintf_s(...)`），则按契约 `count` 不超过 `size`，该减法不会下溢，不再发 `unsigned_sub_underflow`。仅匹配 `*truncated*`（含 printf/sprintf）与精确 `sprintf_s`/`vsprintf_s`，`snprintf`/`snprintf_s`（返回值可超界）不匹配，保持保守。回归夹具：`tc128_int_overflow_snprintf_accumulator.c`。
+
+### race-condition 锁封装函数识别（CWE-362）
+
+- **纯 lock/unlock 封装函数对（P1-4）**：`xxx_lock()`（函数体仅 `pthread_mutex_lock(&g_mutex)`）与 `xxx_unlock()` 视为与直接原语等价，位于两者之间的共享状态写不再被误报为 shared_data_race。仅当函数体只有 lock（或只有 unlock）调用、无其它调用时才识别为纯封装，关键段 helper 不算。回归夹具：`tc129_race_lock_wrapper.c`。
+
 ### resource-leak 自动确认误报修复（CWE-404）
 
 生产环境反馈 0.9.2 的 resource-leak 自动确认（auto-confirmed）包含大量确定性误报，是"几乎无法使用"的主要原因。本轮针对两大非泄漏模式去掉自动确认（仍保留为 suspected 交由 AI 研判，不丢召回）：
