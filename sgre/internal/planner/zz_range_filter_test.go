@@ -401,7 +401,7 @@ int fp_compound_return(int x) { return x / get_seconds_per_day(); }
 // that is a struct/object field chain (`graph->gran_time`, `hdr->elements`) or a
 // module-global (`g_df_thread_count`) is a defensive-check gap whose zero
 // invariant lives at initialization, so the pipeline upgrades it to "confirmed"
-// (auto-confirm, no AI review) instead of handing it to the agent. A bare
+// (auto-confirm, skipping the first-round AI) instead of handing it to the agent. A bare
 // parameter and a compound field expression stay "suspected" (AI-worthy), and a
 // provably-zero divisor (`d = 0; x / d`) is also confirmed.
 func TestDivideByZero_ConfigFieldConfirm(t *testing.T) {

@@ -1215,7 +1215,7 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overvie
 	b.WriteString("| Metric | Value |\n")
 	b.WriteString("|--------|-------|\n")
 	fmt.Fprintf(&b, "| Raw evidence seeds | %d |\n", totalSeed)
-	fmt.Fprintf(&b, "| Auto-confirmed by pipeline (no AI review) | %d |\n", totalAutoConfirmed)
+	fmt.Fprintf(&b, "| Auto-confirmed by pipeline | %d |\n", totalAutoConfirmed)
 	fmt.Fprintf(&b, "| Candidates needing AI review (suspected/possible) | %d |\n", totalFinal)
 	fmt.Fprintf(&b, "| AI confirmed (actionable, with fix suggestion) | %d |\n", totalConfirmed)
 	fmt.Fprintf(&b, "| Actionable findings for human review (confirmed) | %d |\n", totalAutoConfirmed+totalConfirmed)

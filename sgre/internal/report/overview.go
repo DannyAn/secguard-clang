@@ -95,7 +95,7 @@ func (o ScanOverview) Headline() string {
 	s := fmt.Sprintf("This scan reported %d confirmed %s.",
 		o.ConfirmedTotal(), plural(o.ConfirmedTotal(), "issue", "issues"))
 	if o.AutoConfirmed > 0 {
-		s += fmt.Sprintf(" %d auto-confirmed by the pipeline (no AI review), %d classified by the AI.",
+		s += fmt.Sprintf(" %d auto-confirmed by the pipeline, %d classified by the AI.",
 			o.AutoConfirmed, o.AIConfirmed)
 	}
 	return s
@@ -217,7 +217,7 @@ func (o ScanOverview) VerdictMarkdown() string {
 	fmt.Fprintf(&b, "| Raw evidence seeds | %d |\n", o.RawSeeds)
 	fmt.Fprintf(&b, "| Converged candidates | %d |\n", o.Candidates)
 	fmt.Fprintf(&b, "| Confirmed findings | %d |\n", o.ConfirmedTotal())
-	fmt.Fprintf(&b, "| — proved by the pipeline (auto-confirmed, no AI review) | %d |\n", o.AutoConfirmed)
+	fmt.Fprintf(&b, "| — proved by the pipeline (auto-confirmed) | %d |\n", o.AutoConfirmed)
 	fmt.Fprintf(&b, "| — classified by the AI | %d |\n", o.AIConfirmed)
 
 	fmt.Fprintf(&b, "| Actionable findings (confirmed) | %d |\n", o.ActionableTotal())

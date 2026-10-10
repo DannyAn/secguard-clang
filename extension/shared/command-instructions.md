@@ -535,7 +535,7 @@ Report the diagnostic conclusion in Chinese, Markdown tables only:
    - `端到端耗时 = <秒>`（自动分析 + AI 研判 + 编排调度开销）。
    **不要用"流水线"描述时间**："流水线/收敛"是**候选数量**概念（raw seeds → 层层过滤 → final），不是时间口径；把二进制耗时说成"流水线耗时"既漏了 AI 研判这一环、又和"扫描耗时"语义打架，才会出现"10 分钟 vs 3~4 小时"的误会。
 2. 摘要（**必须，独立成段，位于总览表之前**）: 先给一句全轮汇总，再给确认数的构成，例如
-   `本轮扫描确认 <X> 个问题。其中 <X1> 个由流水线自动确认（无需 AI 研判）、<X2> 个由 AI 研判确认；已排除 <D> 个（误报或无法判定）。`
+   `本轮扫描确认 <X> 个问题。其中 <X1> 个由流水线自动确认、<X2> 个由 AI 研判确认；已排除 <D> 个（误报或无法判定）。`
    - `<X>` = `summary.confirmed_total`（**已含 auto-confirmed**）；`<X1>` = `summary.auto_confirmed`；`<X2>` = `summary.ai_confirmed`；`<D>` = `summary.dismissed_total`。`summary.actionable_total` 等于 `confirmed_total`（只有 confirmed 计入 actionable）。
    - **禁止**用 `audits` 数组自行相加、禁止用 `ls findings/` 反推：`findings/` 的 confirmed 文件数 = auto-confirmed + AI confirmed，多加出来的那部分不是漏报。
    - 若 `<X> == 0`：写 `本轮扫描未确认任何问题（<D> 项候选已排除）。`——**不要**省略本段。

@@ -64,7 +64,7 @@ func TestWriteReportFromFindings_ScaleAndAggregate(t *testing.T) {
 		"| Raw evidence seeds | 2920 |",
 		"| Converged candidates | 49 |",
 		"| Confirmed findings | 3 |",
-		"| — proved by the pipeline (auto-confirmed, no AI review) | 1 |",
+		"| — proved by the pipeline (auto-confirmed) | 1 |",
 		"| — classified by the AI | 2 |",
 		"| Actionable findings (confirmed) | 3 |",
 		"### Findings by Severity",
@@ -78,7 +78,7 @@ func TestWriteReportFromFindings_ScaleAndAggregate(t *testing.T) {
 	// auto-confirmed row must be counted inside "Confirmed findings", never in
 	// addition to it. The AI verdict is binary, so the headline carries only the
 	// confirmed aggregate and its auto-confirmed split.
-	if !strings.Contains(content, "**This scan reported 3 confirmed issues. 1 auto-confirmed by the pipeline (no AI review), 2 classified by the AI.**") {
+	if !strings.Contains(content, "**This scan reported 3 confirmed issues. 1 auto-confirmed by the pipeline, 2 classified by the AI.**") {
 		t.Errorf("headline should state the confirmed aggregate with its auto-confirmed split:\n%s", content)
 	}
 }

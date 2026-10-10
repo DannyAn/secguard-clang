@@ -46,7 +46,7 @@ function printScanSummary(
   let out = "## SecGuard Scan Summary\n\n"
   out += `**此轮扫描规模：${scaleParts.join(" / ")}；收敛候选 ${totalCandidates} 个`
   if (autoConfirmed > 0) {
-    out += `（其中 ${autoConfirmed} 个已由流水线自动确认，无需 AI 研判）`
+    out += `（其中 ${autoConfirmed} 个已由流水线自动确认）`
   }
   out += "。**\n\n"
   out += "| Field | Value |\n"
@@ -56,7 +56,7 @@ function printScanSummary(
   out += `| Workspace | ${workspace} |\n`
   out += `| Scan Dir | ${scanDir} |\n`
   out += `| Total Candidates | ${totalCandidates} |\n`
-  out += `| Auto-confirmed (pipeline-proved, no AI review) | ${autoConfirmed} |\n`
+  out += `| Auto-confirmed (pipeline-proved) | ${autoConfirmed} |\n`
   out += `| Files Indexed | ${filesIndexed} |\n`
   out += `| Functions Indexed | ${functionsIndexed} |\n`
   out += `| Lines of Code | ${linesOfCode} |\n\n`

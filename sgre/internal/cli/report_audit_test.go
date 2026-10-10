@@ -36,14 +36,14 @@ func TestWriteAuditReport_IncludesAIValueSummary(t *testing.T) {
 	checks := []string{
 		"## AI Value Summary",
 		"| Raw evidence seeds | 13 |",
-		"| Auto-confirmed by pipeline (no AI review) | 3 |",
+		"| Auto-confirmed by pipeline | 3 |",
 		"| Candidates needing AI review (suspected/possible) | 12 |",
 		"| AI confirmed (actionable, with fix suggestion) | 8 |",
 		"| Actionable findings for human review (confirmed) | 11 |",
 		"## Scan Overview",
 		"| Codebase scale | 26 files / 173 functions / 9001 lines |",
 		"| Target | `/repo/zlib` |",
-		"**This scan reported 11 confirmed issues. 3 auto-confirmed by the pipeline (no AI review), 8 classified by the AI.**",
+		"**This scan reported 11 confirmed issues. 3 auto-confirmed by the pipeline, 8 classified by the AI.**",
 	}
 	for _, check := range checks {
 		if !strings.Contains(out, check) {

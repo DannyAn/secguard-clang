@@ -356,7 +356,8 @@ func title(s string) string {
 
 // FixSuggestion returns a paste-ready remediation for a candidate, used both by
 // the candidate evidence files and by the scan's auto-confirm pass (which turns
-// a pipeline-proved candidate into a `confirmed` finding without AI review).
+// a pipeline-proved candidate into an `auto-confirmed` finding, skipping the
+// first-round AI classification).
 func FixSuggestion(vulnType, cwe string, c planner.EvidenceItem) string {
 	varName := c.Target.Variable
 	if varName == "" {

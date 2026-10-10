@@ -43,7 +43,7 @@ func BuildScanSummary(data SummaryData) string {
 	fmt.Fprintf(&b, "| Scan Dir | %s |\n", data.ScanDir)
 	fmt.Fprintf(&b, "| Total Candidates | %d |\n", data.TotalCandidates)
 	if data.AutoConfirmed > 0 {
-		fmt.Fprintf(&b, "| Auto-confirmed (pipeline-proved, no AI review) | %d |\n", data.AutoConfirmed)
+		fmt.Fprintf(&b, "| Auto-confirmed (pipeline-proved) | %d |\n", data.AutoConfirmed)
 	}
 	fmt.Fprintf(&b, "| Files Indexed | %d |\n", data.FilesIndexed)
 	fmt.Fprintf(&b, "| Functions Indexed | %d |\n", data.FunctionsIndexed)

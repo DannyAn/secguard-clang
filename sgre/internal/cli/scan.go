@@ -219,12 +219,14 @@ func runScanCmd(ctx context.Context, args []string) int {
 
 		// Auto-confirm the pipeline-PROVED tier: a `confirmed` suspicion means a
 		// flow filter or the detector proved the defect on the semantic graph, so
-		// it is written straight to findings (machine verdict). A second-round AI
-		// re-review (secguard review-auto-confirmed) re-checks these auto-confirmed
-		// findings afterwards. This removes the deterministic bulk (definite null,
-		// constant OOB, weak crypto, sizeof-pointer, signed-compare, hardcoded
-		// secret, OOB read) from the first-round AI workload, leaving only
-		// suspected/possible for initial judgment.
+		// it is written straight to findings (machine verdict) and does NOT go
+		// through the first-round AI classification. An OPTIONAL second-round AI
+		// re-review (secguard review-autoconfirmed, requires [ai_review] config)
+		// can re-check these afterwards and records its verdict in
+		// findings.review_status. This removes the deterministic bulk (definite
+		// null, constant OOB, weak crypto, sizeof-pointer, signed-compare,
+		// hardcoded secret, OOB read) from the first-round AI workload, leaving
+		// only suspected/possible for initial judgment.
 		autoConfirmed, needsReview := splitBySuspicion(keptCandidates)
 		autoWritten, autoUnwritten, autoErr := autoConfirmFindings(ctx, store, scanID, vulnType, autoConfirmed, logger)
 		if autoErr != nil {
@@ -586,13 +588,14 @@ func splitBySuspicion(candidates []planner.EvidenceItem) (confirmed, needsReview
 }
 
 // autoConfirmFindings writes pipeline-proved candidates straight to the findings
-// table as `auto-confirmed` (machine verdict); a second-round AI re-review
-// (secguard review-auto-confirmed) re-checks them later. Each finding carries the
-// pipeline's own evidence as summary/reasoning and a paste-ready fix, so a
-// reviewer sees why the machine confirmed it. It returns the number written and
-// the unwritten remainder (from the failing candidate onward); a write error
-// aborts the batch (silent false-negatives are not acceptable here), so the
-// caller can fall the remainder back to AI review.
+// table as `auto-confirmed` (machine verdict); an OPTIONAL second-round AI
+// re-review (secguard review-autoconfirmed, requires [ai_review] config) can
+// re-check them later and records its verdict in findings.review_status. Each
+// finding carries the pipeline's own evidence as summary/reasoning and a
+// paste-ready fix, so a reviewer sees why the machine confirmed it. It returns
+// the number written and the unwritten remainder (from the failing candidate
+// onward); a write error aborts the batch (silent false-negatives are not
+// acceptable here), so the caller can fall the remainder back to AI review.
 func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType string, candidates []planner.EvidenceItem, logger *log.Logger) (written int, unwritten []planner.EvidenceItem, err error) {
 	for i, c := range candidates {
 		cwe := report.VulnToCWEForCategory(vulnType, c.Category)
@@ -634,7 +637,7 @@ func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType s
 			Variable:     c.Target.Variable,
 			Properties:   properties,
 			Summary:      summary,
-			Reasoning:    "Pipeline-proved (auto-confirmed and AI re-review): " + summary,
+			Reasoning:    "Pipeline-proved (auto-confirmed): " + summary,
 			FixStrategy:  report.FixSuggestion(vulnType, cwe, c),
 			ScanID:       scanID,
 			Fingerprint:  computeFingerprint(cwe, c.Target.File, c.Target.Function, c.Target.Line),
