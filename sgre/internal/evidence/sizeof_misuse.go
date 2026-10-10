@@ -36,6 +36,14 @@ func (d *SizeofMisuseDetector) Capabilities() []string {
 func (d *SizeofMisuseDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
+	// Empty-run skip (P0-5): the detector only emits for `sizeof(identifier)` in a
+	// size context. Pre-scan for that trigger; when it is absent across the whole
+	// codebase the expensive cross-file typedef table + per-function
+	// pointer-typedef resolution is provably empty and is skipped.
+	if !d.hasSizeofPointerCandidate(ctx) {
+		return result, nil
+	}
+
 	// Cross-file typedef table: headers carry most typedefs, so build one shared
 	// table from every indexed file, then overlay the current file's own typedefs
 	// per function below (a translation unit's local typedef shadows a header's).
@@ -104,6 +112,30 @@ func (d *SizeofMisuseDetector) Detect(ctx context.Context) (DetectResult, error)
 type pointerDecl struct {
 	level int    // number of `*` levels (`T *p` → 1, `T **p` → 2)
 	base  string // base type spelling before the pointers (`char`, `Foo`, `struct node`)
+}
+
+// hasSizeofPointerCandidate pre-scans every indexed file for the detector's
+// trigger: a `sizeof` whose operand is a bare identifier and that is consumed by
+// a size function (malloc/memset/memcpy family). When absent, the full detection
+// is provably empty and skipped. A scan error fails open (returns true) so the
+// full detector still runs rather than risking a silent false-negative.
+func (d *SizeofMisuseDetector) hasSizeofPointerCandidate(ctx context.Context) bool {
+	found := false
+	err := forEachFileIncludingEmpty(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		if found {
+			return
+		}
+		for _, se := range root.FindAll("sizeof_expression") {
+			if sizeofOperandName(se) != "" && d.inSizeContext(se) {
+				found = true
+				return
+			}
+		}
+	})
+	if err != nil {
+		return true
+	}
+	return found
 }
 
 // pointerDecls returns, for each variable declared with a pointer declarator

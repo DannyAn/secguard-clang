@@ -46,6 +46,14 @@ var uncheckedReturnAPIs = map[string]bool{
 func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
+	// Empty-run skip (P0-5): the detector only flags calls to an unchecked-return
+	// API or an allocator. Pre-scan for that trigger; when absent, the expensive
+	// passthrough-allocator fixpoint + return-type table + per-file pass are
+	// provably empty and skipped.
+	if !d.hasUncheckedReturnCandidate(ctx) {
+		return result, nil
+	}
+
 	// User wrappers that return an unchecked allocation result (e.g.
 	// `void *x_malloc(n) { return malloc(n); }`) are passthrough allocators:
 	// a call to one must be NULL-checked at the call site exactly like the
@@ -464,6 +472,30 @@ func (d *UncheckedReturnDetector) funcReturnTypes(ctx context.Context) (map[stri
 // (`return other_wrapper(...)`). A call to such a wrapper must be NULL-checked at
 // the call site exactly like the allocator it wraps, so the main detection pass
 // treats calls to them as unchecked-return sources.
+// hasUncheckedReturnCandidate pre-scans every indexed file for the detector's
+// trigger: a call to an unchecked-return API or an allocator-name function. When
+// absent, the full detection is provably empty and skipped. A scan error fails
+// open (returns true) so the full detector still runs.
+func (d *UncheckedReturnDetector) hasUncheckedReturnCandidate(ctx context.Context) bool {
+	found := false
+	err := forEachFileIncludingEmpty(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		if found {
+			return
+		}
+		for _, call := range root.FindAll("call_expression") {
+			name := extractCallName(call)
+			if uncheckedReturnAPIs[name] || apikb.IsAllocator(name) {
+				found = true
+				return
+			}
+		}
+	})
+	if err != nil {
+		return true
+	}
+	return found
+}
+
 func (d *UncheckedReturnDetector) passthroughAllocFuncs(ctx context.Context) (map[string]bool, error) {
 	// returnedSource maps a function name to the set of callee names whose result
 	// it returns to its caller.

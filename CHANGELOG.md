@@ -4,6 +4,10 @@
 
 ## [0.9.3] - 2026-10-10
 
+### 空运行检测器跳过（性能 P0-5）
+
+- **`sizeof_misuse` / `unchecked_return` 空运行跳过**：启动前轻量预扫是否有触发形态（`sizeof(标识符)` 处于 size 上下文 / 存在 unchecked-return API 或分配器调用），无则跳过昂贵的跨文件 typedef 表与 passthrough 修复点。预扫出错时 fail-open 照常运行完整检测，不引入漏报。
+
 ### integer-overflow 截断累加器误报（CWE-190）
 
 - **`unsigned_sub_underflow` 截断累加器抑制（P1-2）**：`size - count` 中 `count` 若只由截断式格式化包装器累加（`count += snprintf_truncated_s(...)` / `count = count + sprintf_s(...)`），则按契约 `count` 不超过 `size`，该减法不会下溢，不再发 `unsigned_sub_underflow`。仅匹配 `*truncated*`（含 printf/sprintf）与精确 `sprintf_s`/`vsprintf_s`，`snprintf`/`snprintf_s`（返回值可超界）不匹配，保持保守。回归夹具：`tc128_int_overflow_snprintf_accumulator.c`。
