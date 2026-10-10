@@ -40,10 +40,11 @@ func (f *Finding) ApplyStructuredFromProperties() {
 
 // StatusAutoConfirmed is the status of a finding the convergence pipeline wrote
 // directly (suspicion_level "confirmed", proved by a flow filter or detector)
-// without a first-round AI classification; an optional second-round AI re-review
-// (secguard review-autoconfirmed) may still run and record its verdict in
-// review_status. It is a first-class verdict: EffectiveStatus/FinalStatus
-// map it to "confirmed" so it reaches every export, but it is excluded from the
+// without a first-round AI classification. The agent re-reviews it in the same
+// classification loop (`report --list-auto-confirmed` + `report --review-json`)
+// and records the verdict in review_status. It is a first-class verdict:
+// EffectiveStatus/FinalStatus map it to "confirmed" so it reaches every export,
+// but it is excluded from the
 // per-type `written_count` (which counts AI-written verdicts only), so the
 // orchestrator's resume check still detects "suspected/possible candidates the
 // AI never classified" rather than being masked by the machine rows.

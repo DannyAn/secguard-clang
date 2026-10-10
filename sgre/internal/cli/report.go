@@ -15,7 +15,6 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/planner"
 	"github.com/DannyAn/secguard-clang/internal/report"
-	"github.com/DannyAn/secguard-clang/internal/review"
 )
 
 // normalizeAIVerdict maps a raw agent-supplied status to the BINARY AI verdict:
@@ -262,8 +261,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 			scanID, _ = store.GetLatestScanID(ctx)
 		}
 		// --type <kebab,...> scopes the list to one type's CWE set, so a subagent
-		// re-reviews ONLY its own type's machine findings (same mapping the
-		// review-autoconfirmed selector uses).
+		// re-reviews ONLY its own type's machine findings.
 		var ruleIDs []string
 		if typeFilter := parseStringFlag(remaining, "type"); typeFilter != "" {
 			var types []string
@@ -273,7 +271,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 				}
 			}
 			var rerr error
-			ruleIDs, rerr = review.VulnTypesToRuleIDs(types)
+			ruleIDs, rerr = planner.VulnTypesToRuleIDs(types)
 			if rerr != nil {
 				WriteErrorJSON(fmt.Sprintf("invalid --type filter: %v", rerr))
 				return 1

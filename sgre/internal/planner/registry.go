@@ -74,6 +74,46 @@ func GetVulnTypeSpec(name string) (*VulnTypeSpec, error) {
 	return spec, nil
 }
 
+// VulnTypesToRuleIDs maps vuln-type names to the full set of CWE rule_ids that
+// findings for those types can carry: canonical, legacy, and per-category CWEs.
+// A single injection vuln_type, for example, covers CWE-78/CWE-89/CWE-88/...; a
+// naive spec.CWE mapping would silently drop the category findings. An unknown
+// type is an error, not a silent no-op (a typo must not widen the selection to
+// everything).
+func VulnTypesToRuleIDs(vulnTypes []string) ([]string, error) {
+	if len(vulnTypes) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]bool, len(vulnTypes))
+	ruleIDs := make([]string, 0, len(vulnTypes))
+	for _, vt := range vulnTypes {
+		vt = strings.TrimSpace(vt)
+		if vt == "" {
+			continue
+		}
+		spec, err := GetVulnTypeSpec(vt)
+		if err != nil {
+			return nil, fmt.Errorf("planner: %w", err)
+		}
+		add := func(cwe string) {
+			cwe = strings.ToUpper(strings.TrimSpace(cwe))
+			if cwe == "" || seen[cwe] {
+				return
+			}
+			seen[cwe] = true
+			ruleIDs = append(ruleIDs, cwe)
+		}
+		add(spec.CWE)
+		for _, legacy := range spec.LegacyCWEs {
+			add(legacy)
+		}
+		for _, catCWE := range spec.CategoryCWEs {
+			add(catCWE)
+		}
+	}
+	return ruleIDs, nil
+}
+
 func AllVulnTypeNames() string {
 	names := AllVulnTypes()
 	return strings.Join(names, ", ")

@@ -119,10 +119,8 @@ func Execute(ctx context.Context, args []string) int {
 		return runSchemaCmd(args[1:])
 	case "config":
 		return runConfigCmd(args[1:])
-	case "review-autoconfirmed":
-		return runReviewAutoConfirmedCmd(ctx, args[1:])
 	default:
-		WriteErrorJSON(fmt.Sprintf("unknown command %q; available: index, scan, diff, pr, mr, status, metrics, query, types, plan, report, review-autoconfirmed, db, schema, config", args[0]))
+		WriteErrorJSON(fmt.Sprintf("unknown command %q; available: index, scan, diff, pr, mr, status, metrics, query, types, plan, report, db, schema, config", args[0]))
 		return 1
 	}
 }

@@ -327,17 +327,20 @@ but the scan ALSO machine-confirmed a set of findings the pipeline "proved"
 getter misread as an allocation, a scalar status code misread as a pointer —
 so you MUST re-review them with the SAME skill before you finish the type:
 
-1. `secguard report --list-auto-confirmed --scan-id <scan_id> --type <type> --db <db_path>`
-   → a `findings` array (`id` / `rule_id` / `file` / `line` / `function` /
-   `variable` / `reasoning` / `snippet`).
+1. List them — via Bash `secguard report --list-auto-confirmed --scan-id <scan_id>
+   --type <type> --db <db_path>`, or the `secguard_review` MCP tool
+   (`list_auto_confirmed: true, type: <type>`) when you have it (OpenCode-NGA has
+   no Bash). → a `findings` array (`id` / `rule_id` / `file` / `line` /
+   `function` / `variable` / `reasoning` / `snippet`).
 2. For each entry, apply the skill's false-positive rules against `reasoning` +
    `snippet` (open the source line only when the snippet is insufficient — this is
    a cheap table review, do NOT spend the ≤5 source-read budget here).
-3. Write your verdicts in ONE batch via `secguard report --review-json <tmpfile>
-   --db <db_path>` as `[{"id": <id>, "review_status": "confirmed"|"dismissed",
-   "review_reasoning": "..."}]`: a `dismissed` suppresses the machine false
-   positive from `result.sarif`; omit the entries you agree with (an unreviewed
-   auto-confirmed finding stays confirmed).
+3. Write your verdicts in ONE batch — via Bash
+   `secguard report --review-json <tmpfile> --db <db_path>` as
+   `[{"id": <id>, "review_status": "confirmed"|"dismissed", "review_reasoning": "..."}]`,
+   or the `secguard_review` MCP tool (`reviews: [...]`). A `dismissed` suppresses
+   the machine false positive from `result.sarif`; omit the entries you agree with
+   (an unreviewed auto-confirmed finding stays confirmed).
 
 A `dismissed` re-review reason must cite the same evidence contract as a
 candidate dismissal (the snippet / source line + why it is safe). Do NOT skip

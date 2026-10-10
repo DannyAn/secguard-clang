@@ -11,6 +11,7 @@ import secguard_scan from "../tools/secguard_scan"
 import secguard_index from "../tools/secguard_index"
 import secguard_plan from "../tools/secguard_plan"
 import secguard_report from "../tools/secguard_report"
+import secguard_review from "../tools/secguard_review"
 import secguard_status from "../tools/secguard_status"
 import secguard_db from "../tools/secguard_db"
 import secguard_schema from "../tools/secguard_schema"
@@ -37,6 +38,7 @@ export const SecGuardContextPlugin: Plugin = async ({
       secguard_index,
       secguard_plan,
       secguard_report,
+      secguard_review,
       secguard_status,
       secguard_db,
       secguard_schema,

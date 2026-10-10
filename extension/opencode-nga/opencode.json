@@ -19,6 +19,7 @@
         "external_directory": "allow",
         "skill": "allow",
         "secguard_report": "allow",
+        "secguard_review": "allow",
         "secguard_db": "allow",
         "secguard_schema": "allow"
       }
@@ -30,6 +31,7 @@
     "secguard_index": "allow",
     "secguard_plan": "allow",
     "secguard_report": "allow",
+    "secguard_review": "allow",
     "secguard_status": "allow",
     "secguard_db": "allow",
     "secguard_schema": "allow",
