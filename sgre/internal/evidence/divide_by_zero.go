@@ -66,7 +66,9 @@ func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error)
 				// to a composite of such symbols (`x / (HOURS * MINS * SECS)`)
 				// whose factors are each known non-zero, folding like a literal
 				// product while staying conservative about `+ - / % >>` etc.
-				if constants.NonZero(divisor) || constants.NonZeroExpr(divisor) {
+				// NonZeroExpr folds a bare name through the same env, so a separate
+				// NonZero check is redundant (and misses parenthesized spellings).
+				if constants.NonZeroExpr(divisor) {
 					return
 				}
 				// Floating-point division by zero is well-defined by IEEE 754
@@ -202,7 +204,7 @@ func compoundDivModDivisor(assign parser.Node) (string, bool) {
 // strconv.ParseFloat path would have misread it as a possibly-zero variable.
 func possiblyZeroDivisor(divisor string) bool {
 	t := strings.TrimSpace(divisor)
-	if strings.Contains(t, "sizeof") {
+	if parser.IsSizeofExpr(t) {
 		return false
 	}
 	return !parser.NonZeroConstantValue(t)

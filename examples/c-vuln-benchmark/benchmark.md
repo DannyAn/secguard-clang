@@ -18,10 +18,10 @@
 | 指标 | 数值 |
 |------|------|
 | 源文件 | 32 |
-| 总测试用例 | 133 |
+| 总测试用例 | 137 |
 | **覆盖漏洞类型（24 个注册 skill）** | **22 / 24** |
 | expect-finding（应报告） | 74 |
-| expect-no_finding（应被抑制） | 59 |
+| expect-no_finding（应被抑制） | 63 |
 | Phase 0（P0-P3/TP 反证骨架） | 18 |
 | Phase 1（CWE-190/362/798/667/327） | 12 |
 | Phase 2（扩展典型漏洞） | 4 |
@@ -36,6 +36,9 @@
 | **Phase 11（补齐 4 个零覆盖 skill + 4 个缺失的 FP 守卫）** | **23** |
 | Phase 12（v0.7.1 缺陷修复回归） | 6 |
 | **Phase 13（v0.7.4 误报修复回归）** | **2** |
+| Phase 14（dealloc 启发式误报修复） | 3 |
+| **Phase 15（memory-leak 容器逃逸误报修复）** | **2** |
+| **Phase 16（divide-by-zero 非零源除数误报修复）** | **2** |
 | 应完全不产生 Finding (P0: Detector EXCLUDE) | 7 |
 | 应产生 Finding 但被 P1 抑制 | 3 |
 | 应产生 Finding 但被 P2 抑制 | 4 |
@@ -435,4 +438,38 @@ v0.7.0 打磨时发现一批**逻辑上可证明会漏报**的缺陷（Issue #95
 - `TestResourceLeak_ParenthesizedErrorReturnIsLeak`（fixture `tc92_resleak_defects.c` 增 `rl_paren_return`）—— RL-15 的 detector 级回归。
 - `TestSafeFunctionFilter_VariableNameNotDropped`（planner）—— SH-06 的 P3 回归。
 - `TestNullDeref_GlobalFieldReturnIsNullable`（planner，inline 源）—— ND-07 的 null-deref 回归。
+
+## Phase 15 — memory-leak 容器逃逸误报修复（2026-10 新增）
+
+`findEscapeLines` 的 pointer_expression 分支曾把 `*container = p`（container 本身是
+malloc 分配）无条件判为 `p` 的 escape。但只有当 container **自身**逃逸（被 return /
+存入非 local / 交给 escape 函数）时，`p` 的所有权才随之转移；若 container 最终只被
+`free(container)`，其成员 `p` 并未释放，`p` 真泄漏会被静默抑制。
+
+| # | 文件 | 行 | 场景 |
+|---|------|----|------|
+| ML-05 | p15_container_escape_fp.c | 28 | `pchBuf=malloc(100); *pduInfo=pchBuf; return pduInfo` —— 缓冲区写入堆容器后容器 return 转移所有权，不泄漏 |
+| ML-06 | p15_container_escape_fp.c | 24 | `pduInfo=malloc(sizeof(char*)); return pduInfo` —— 容器本身通过 return 转移所有权，不泄漏 |
+
+两条均为 `expect: no_finding`。注意行号须按 sink 实际行填写（ML-05=28、ML-06=24），
+validator 容差 ±3，写错行会使 no_finding 守卫完全失效。
+
+## Phase 16 — divide-by-zero 非零源除数误报修复（2026-10 新增）
+
+`RangeFilter` 之前只做 function-local 区间传播，对「结构体字段从非零返回函数赋值」
+（`graph->gran_time = nlog_get_gran_time_by_flag(...)`）和「全局变量从非零常量赋值」
+（`g_thread_count = 4`）这类跨函数非零源不变量无法识别。`global_invariants`
+补上非零源赋值扫描 + RangeFilter 的 field-chain invariant 检查后，这两类除数被正确
+dismiss。
+
+| # | 文件 | 行 | 场景 |
+|---|------|----|------|
+| P16-01 | p16_nonzero_source_divisor_fp.c | 32 | `offset / graph->gran_time` —— gran_time 由始终返回 60 的 `nlog_get_gran_time_by_flag` 赋值，field-chain invariant dismiss |
+| P16-02 | p16_nonzero_source_divisor_fp.c | 42 | `index % g_thread_count` —— g_thread_count 初始化为非零且只被非零常量赋值，全局 invariant dismiss |
+
+两条均为 `expect: no_finding`。注意：全局变量必须**初始值也非零**才可安全 dismiss ——
+若写 `static uint32_t g = 0; g = 4;`，g 在 init 前可为 0，是真除零，`global_invariants`
+按「存在任何可能为 0 的来源即不标非零」保守保留为候选（见
+`TestGlobalInvariants_ZeroInitNotSuppressed`）。行号须按 sink 实际行填写（P16-01=32、
+P16-02=42）。
 

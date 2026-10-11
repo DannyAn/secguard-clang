@@ -277,7 +277,13 @@ func runReportCmd(ctx context.Context, args []string) int {
 				return 1
 			}
 		}
-		findings, err := store.ListAutoConfirmedForReview(ctx, scanID, ruleIDs, 0)
+		// --limit <n> bounds the batch so a large auto-confirmed set is pulled in
+		// pages instead of overflowing the agent's context in one tool return.
+		limit := parseIntFlag(remaining, "limit")
+		if limit < 0 {
+			limit = 0
+		}
+		findings, err := store.ListAutoConfirmedForReview(ctx, scanID, ruleIDs, limit)
 		if err != nil {
 			WriteErrorJSON(fmt.Sprintf("failed to list auto-confirmed findings: %v", err))
 			return 1
@@ -839,6 +845,17 @@ func runReportCmd(ctx context.Context, args []string) int {
 					errs = append(errs, "missing id in review entry")
 					continue
 				}
+				// Only machine auto-confirmed findings are re-reviewable; a verdict
+				// for any other finding id must not overwrite its status (RV-04).
+				target, gerr := tx.GetFindingByID(ctx, in.ID)
+				if gerr != nil || target == nil || target.Status != db.StatusAutoConfirmed {
+					status := "<missing>"
+					if target != nil {
+						status = target.Status
+					}
+					errs = append(errs, fmt.Sprintf("finding %d — not an auto-confirmed finding (status=%q); re-review only applies to auto-confirmed findings", in.ID, status))
+					continue
+				}
 				if uerr := tx.UpdateFindingReview(ctx, in.ID, in.ReviewStatus, in.ReviewReasoning); uerr != nil {
 					errs = append(errs, fmt.Sprintf("finding %d — %v", in.ID, uerr))
 					continue
@@ -951,13 +968,13 @@ func runReportCmd(ctx context.Context, args []string) int {
 			// audit-report can show both, and so the "candidates without AI
 			// classification" remainder (final_count = needs-review candidates)
 			// is not masked by the auto-confirmed rows.
-			if f.Status == db.StatusAutoConfirmed {
-				countsByVuln[vt].autoConfirmed++
-				continue
-			}
 			switch f.FinalStatus() {
 			case "confirmed":
-				countsByVuln[vt].confirmed++
+				if f.Status == db.StatusAutoConfirmed {
+					countsByVuln[vt].autoConfirmed++
+				} else {
+					countsByVuln[vt].confirmed++
+				}
 			case "suspected":
 				countsByVuln[vt].suspected++
 

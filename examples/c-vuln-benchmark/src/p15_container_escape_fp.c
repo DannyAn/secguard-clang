@@ -12,7 +12,7 @@
  * the write *pduInfo = pchBuf was treated as a non-escaping store into
  * a stack slot, and pchBuf was falsely reported as leaked.
  *
- * The malloc at line 24 and the malloc at line 25 must NOT be reported
+ * The malloc at line 24 and the malloc at line 28 must NOT be reported
  * as memory-leak.
  */
 #include <stdlib.h>

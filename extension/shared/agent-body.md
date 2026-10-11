@@ -331,16 +331,21 @@ so you MUST re-review them with the SAME skill before you finish the type:
    --type <type> --db <db_path>`, or the `secguard_review` MCP tool
    (`list_auto_confirmed: true, type: <type>`) when you have it (OpenCode-NGA has
    no Bash). → a `findings` array (`id` / `rule_id` / `file` / `line` /
-   `function` / `variable` / `reasoning` / `snippet`).
+   `function` / `variable` / `reasoning` / `snippet`). If the set is large, pull
+   it in pages with `--limit <n>` (e.g. 50) so a single tool return never
+   overflows your context; re-list until `count: 0`.
 2. For each entry, apply the skill's false-positive rules against `reasoning` +
    `snippet` (open the source line only when the snippet is insufficient — this is
    a cheap table review, do NOT spend the ≤5 source-read budget here).
 3. Write your verdicts in ONE batch — via Bash
    `secguard report --review-json <tmpfile> --db <db_path>` as
    `[{"id": <id>, "review_status": "confirmed"|"dismissed", "review_reasoning": "..."}]`,
-   or the `secguard_review` MCP tool (`reviews: [...]`). A `dismissed` suppresses
-   the machine false positive from `result.sarif`; omit the entries you agree with
-   (an unreviewed auto-confirmed finding stays confirmed).
+   or the `secguard_review` MCP tool (`reviews: [...]`). Write a verdict for
+   EVERY entry — `dismissed` suppresses the machine false positive from
+   `result.sarif`, and `confirmed` records your agreement. Do NOT omit the
+   entries you agree with: the orchestrator verifies the re-review by checking
+   that `--list-auto-confirmed` returns `count: 0`, which only holds when every
+   entry got a review_status.
 
 A `dismissed` re-review reason must cite the same evidence contract as a
 candidate dismissal (the snippet / source line + why it is safe). Do NOT skip

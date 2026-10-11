@@ -12,6 +12,7 @@ import (
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/planner"
+	"github.com/DannyAn/secguard-clang/internal/report"
 )
 
 func TestScanCmd_RejectsBadOutputDirBasename(t *testing.T) {
@@ -482,7 +483,7 @@ func TestReportCmd_ReviewJsonFlow(t *testing.T) {
 	for i, line := range []int{1, 2} {
 		id, ierr := s.UpsertFinding(ctx, &db.Finding{
 			RuleID: "CWE-252", Severity: "high", Confidence: 0.5,
-			Status: "suspected", FilePath: "x.c", LineNumber: line,
+			Status: db.StatusAutoConfirmed, FilePath: "x.c", LineNumber: line,
 			FunctionName: "f", ScanID: scanID,
 		})
 		if ierr != nil {
@@ -660,6 +661,112 @@ func TestAutoConfirmedReReviewLoop(t *testing.T) {
 	again, _ := s.ListAutoConfirmedForReview(ctx, scanID, nil, 0)
 	if len(again) != 0 {
 		t.Errorf("dismissed finding should leave the re-review set, got %d", len(again))
+	}
+}
+
+// TestAutoConfirmedReReviewCLIFlow exercises the re-review loop through the CLI
+// surface (--list-auto-confirmed / --review-json / --audit), which the store-only
+// test above skips. It also pins that a dismissed machine finding leaves
+// result.sarif (BM-08 / BM-09).
+func TestAutoConfirmedReReviewCLIFlow(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "test.db")
+	const scanID = "sc_2026-01-01_000000_cccccc"
+
+	d, err := db.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := db.NewStore(d)
+	if _, err := s.InsertScanStat(ctx, &db.ScanStat{ScanID: scanID, VulnType: "memory-leak", SeedCount: 1, FinalCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+	confirmed := []planner.EvidenceItem{{
+		SuspicionLevel: "confirmed",
+		Target:         planner.TargetInfo{File: "src/a.c", Line: 42, Function: "f", Variable: "list"},
+		Evidence:       []planner.EvidenceFragment{{Role: "condition", Detail: "allocation never freed"}},
+	}}
+	if n, _, err := autoConfirmFindings(ctx, s, scanID, "memory-leak", confirmed, nil); err != nil || n != 1 {
+		t.Fatalf("autoConfirmFindings: n=%d err=%v", n, err)
+	}
+	all, err := s.ListAutoConfirmedForReview(ctx, scanID, nil, 0)
+	if err != nil || len(all) != 1 {
+		t.Fatalf("seed auto-confirmed finding: n=%d err=%v", len(all), err)
+	}
+	findingID := all[0].ID
+	s.Close()
+
+	// 1. List through the CLI (with --type → VulnTypesToRuleIDs) and parse the
+	// count + snippet out of the JSON envelope.
+	stdout, _, exitCode := captureOutput(func() int {
+		return runReportCmd(ctx, []string{"--db", dbPath, "--list-auto-confirmed", "--scan-id", scanID, "--type", "memory-leak"})
+	})
+	if exitCode != 0 {
+		t.Fatalf("--list-auto-confirmed failed: %s", stdout)
+	}
+	var listed struct {
+		Findings []struct {
+			ID      int64  `json:"id"`
+			File    string `json:"file"`
+			Snippet string `json:"snippet"`
+		} `json:"findings"`
+		Count int `json:"count"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &listed); err != nil {
+		t.Fatalf("unmarshal --list-auto-confirmed: %v", err)
+	}
+	if listed.Count != 1 || len(listed.Findings) != 1 || listed.Findings[0].ID != findingID {
+		t.Fatalf("--list-auto-confirmed returned count=%d findings=%v, want the seeded finding %d", listed.Count, listed.Findings, findingID)
+	}
+
+	// 2. Dismiss through --review-json.
+	reviewsFile := filepath.Join(root, "reviews.json")
+	payload, _ := json.Marshal([]map[string]interface{}{
+		{"id": findingID, "review_status": "dismissed", "review_reasoning": "getter borrow, not an allocation"},
+	})
+	if err := os.WriteFile(reviewsFile, payload, 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, exitCode = captureOutput(func() int {
+		return runReportCmd(ctx, []string{"--db", dbPath, "--review-json", reviewsFile})
+	})
+	if exitCode != 0 {
+		t.Fatalf("--review-json failed: %s", stdout)
+	}
+
+	// 3. Re-list: the dismissed finding must leave the re-review set (count 0).
+	stdout, _, exitCode = captureOutput(func() int {
+		return runReportCmd(ctx, []string{"--db", dbPath, "--list-auto-confirmed", "--scan-id", scanID})
+	})
+	if exitCode != 0 {
+		t.Fatalf("re-list failed: %s", stdout)
+	}
+	var relisted struct {
+		Count int `json:"count"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &relisted); err != nil {
+		t.Fatalf("unmarshal re-list: %v", err)
+	}
+	if relisted.Count != 0 {
+		t.Fatalf("dismissed finding should leave the re-review set, count=%d", relisted.Count)
+	}
+
+	// 4. Audit: the dismissed finding must NOT reach result.sarif.
+	outDir := filepath.Join(root, "out")
+	stdout, _, exitCode = captureOutput(func() int {
+		return runReportCmd(ctx, []string{"--db", dbPath, "--audit", "--scan-id", scanID, "--output-dir", outDir})
+	})
+	if exitCode != 0 {
+		t.Fatalf("--audit failed: %s", stdout)
+	}
+	sarifPath := filepath.Join(outDir, report.SarifFile)
+	raw, err := os.ReadFile(sarifPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", sarifPath, err)
+	}
+	if bytes.Contains(raw, []byte("src/a.c")) {
+		t.Errorf("dismissed finding leaked into result.sarif:\n%s", raw)
 	}
 }
 

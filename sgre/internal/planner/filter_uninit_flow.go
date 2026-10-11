@@ -30,11 +30,10 @@ type DefiniteInitFilter struct {
 	store  db.Store
 	parser *parser.Parser
 	logger *log.Logger
-	macro  *macroContextDetector
 }
 
-func NewDefiniteInitFilter(store db.Store, p *parser.Parser, logger *log.Logger, macro *macroContextDetector) *DefiniteInitFilter {
-	return &DefiniteInitFilter{store: store, parser: p, logger: logger, macro: macro}
+func NewDefiniteInitFilter(store db.Store, p *parser.Parser, logger *log.Logger) *DefiniteInitFilter {
+	return &DefiniteInitFilter{store: store, parser: p, logger: logger}
 }
 
 func (f *DefiniteInitFilter) Name() string { return "definite_init" }
@@ -66,17 +65,6 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 
 	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
 	flows, files, scopes, hsFlows := f.buildFlows(ctx, byFunc, fnByID, fileByID)
-
-	// Macro-context: a candidate whose reported statement sits in a macro
-	// expansion (HTONBUF/NTOHBUF accessor, memcpy_s through a macro, ...) must
-	// not be auto-confirmed — the flow model cannot see the macro's writes, so
-	// "uninit on every path" is unproven there and it stays suspected for the AI.
-	allFiles := listFilesByID(ctx, f.store)
-	for i := range candidates {
-		if f.macro != nil && allFiles[candidates[i].FileID] != nil {
-			candidates[i].MacroContext = f.macro.hasMacroContext(allFiles[candidates[i].FileID].Path, candidates[i].Line)
-		}
-	}
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -112,13 +100,12 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 				// uninitialized read only when it reaches on every path (must);
 				// otherwise it stays a suspicion for the AI to confirm.
 				if flow.mustReaching(c.VariableName, c.Line) {
-					// An output-param write (`&x` passed to a callee) or a
-					// macro-context statement (HTONBUF/NTOHBUF accessor, memcpy_s
-					// through a macro) is invisible to the flow engine's gen/kill
-					// model, so "uninit on every path" is unproven there. Downgrade
-					// to suspected so the AI weighs the interprocedural/macro write
-					// instead of rubber-stamping a machine-confirmed false positive.
-					if c.MacroContext || f.hasOutputParamWrite(fnByID, files[c.FileID], c, scopes[c.FunctionID]) {
+					// An output-param / decayed write (`&x`, `&x.f`, `x.f`, `x[i]`
+					// passed to a callee) is invisible to the flow engine's
+					// gen/kill model, so "uninit on every path" is unproven there.
+					// Downgrade to suspected so the AI weighs the write instead of
+					// rubber-stamping a machine-confirmed false positive.
+					if f.hasOutputParamWrite(fnByID, files[c.FileID], c, scopes[c.FunctionID]) {
 						c.SuspicionLevel = "suspected"
 					} else {
 						c.SuspicionLevel = "confirmed"
@@ -151,11 +138,10 @@ func (f *DefiniteInitFilter) refineHeapStruct(hs *heapStructFlow, c Candidate, k
 			fmt.Sprintf("%s is initialized on every path before the use at line %d", key, c.Line))
 	}
 	if hs.sourceOnEveryPath(whole, c.Line) && !hs.initOnAnyPath(path, c.Line) && !hs.initOnAnyPath(whole, c.Line) {
-		if c.MacroContext || f.hasOutputParamWrite(fnByID, files[c.FileID], c, scopes[c.FunctionID]) {
-			// `S s; fill_ext(&s); use(s.f);` or a macro-context statement — an
-			// output-parameter / macro write can initialize the struct on the
-			// success path, so "uninit on every path" is unproven. Keep it
-			// suspected for the AI to judge.
+		if f.hasOutputParamWrite(fnByID, files[c.FileID], c, scopes[c.FunctionID]) {
+			// `S s; fill_ext(&s); use(s.f);` — an output-parameter / decayed
+			// write can initialize the struct on the success path, so "uninit on
+			// every path" is unproven. Keep it suspected for the AI to judge.
 			c.SuspicionLevel = "suspected"
 		} else {
 			c.SuspicionLevel = "confirmed"
@@ -506,10 +492,15 @@ func hoistUninitFile(root parser.Node) *hoistedUninitFile {
 	}
 }
 
-// hasOutputParamWrite reports whether c.VariableName is passed by address
-// (`&x`) to a call before the use, within the candidate's function. Such a write
-// is invisible to buildDefiniteInitFlow's gen/kill model, so it is used only to
-// downgrade an otherwise-must-reachable uninit from `confirmed` to `suspected`.
+// hasOutputParamWrite reports whether c.VariableName (or a field/subscript of
+// it) is handed to a call before the use in a way the flow engine cannot see as
+// a write: `&x`, `&x.f`, `&x[i]` (address-of an lvalue), or `x.f`/`x[i]` passed
+// directly (an array field/subscript decays to a pointer the callee writes).
+// Such a write is invisible to buildDefiniteInitFlow's gen/kill model, so it is
+// used only to downgrade an otherwise-must-reachable uninit from `confirmed` to
+// `suspected`. A bare `x` by value is a READ (a scalar copy), not a write, so it
+// is deliberately NOT downgraded — this precise check replaces the former ±8-line
+// ALL_CAPS-macro window, which downgraded unrelated macros on nearby lines too.
 //
 // isValue is the `(A) & x` scope oracle (see
 // parser.Node.AddressTakenTargetScoped): without it a genuine bit-and argument
@@ -532,12 +523,22 @@ func (f *DefiniteInitFilter) hasOutputParamWrite(fnByID map[int64]*db.Function, 
 				continue
 			}
 			for _, arg := range child.NamedChildren() {
-				target, ok := arg.AddressTakenTargetScoped(isValue)
-				if !ok || target.Kind() != "identifier" {
+				// Address-of an lvalue derived from x (`&x`, `&x.f`, `&x[i]`):
+				// assignBaseName unwraps the field/subscript chain to x.
+				if target, ok := arg.AddressTakenTargetScoped(isValue); ok {
+					if assignBaseName(target) == c.VariableName {
+						return true
+					}
 					continue
 				}
-				if target.Text() == c.VariableName {
-					return true
+				// A field/subscript of x passed directly (`f(x.arr)`,
+				// `memcpy_s(x.buf, ...)`): an array field/subscript decays to a
+				// pointer the callee writes, an invisible write too.
+				switch arg.Kind() {
+				case "field_expression", "subscript_expression":
+					if assignBaseName(arg) == c.VariableName {
+						return true
+					}
 				}
 			}
 		}

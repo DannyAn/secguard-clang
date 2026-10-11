@@ -2007,14 +2007,6 @@ var outputParamInitializers = map[string]bool{
 	"strtol":                true,
 	"strtoul":               true,
 	"wcstombs":              true,
-	// POSIX/Annex-K time conversions write their `struct tm *` output argument
-	// (`localtime_r(&t, &tm)` fills tm), so a later field read is initialized —
-	// the P1-3-adjacent production false-positive (`local_tm.tm_year`, ...).
-	"localtime_r":           true,
-	"gmtime_r":              true,
-	"localtime_s":           true,
-	"gmtime_s":              true,
-	"strptime":              true,
 	"memset":                true,
 	"memset_s":              true,
 	"bzero":                 true,
@@ -2026,6 +2018,19 @@ var outputParamInitializers = map[string]bool{
 
 func isOutputParamInitializer(name string) bool {
 	return outputParamInitializers[name]
+}
+
+// outputParamInitializerArgs maps a function name to the argument indices it
+// WRITES. It is for functions whose pointer arguments are a mix of inputs and
+// outputs — `localtime_r(&t, &tm)` reads `t` and writes `tm`, so only arg 1 is
+// an output; marking the input `&t` as initialized would suppress a real
+// use-before-init of `t` (CWE-457).
+var outputParamInitializerArgs = map[string]map[int]bool{
+	"localtime_r": {1: true},
+	"gmtime_r":    {1: true},
+	"localtime_s": {0: true},
+	"gmtime_s":    {0: true},
+	"strptime":    {2: true},
 }
 
 // destWriters lists string/memory copy and init functions whose FIRST argument
@@ -2235,8 +2240,9 @@ func outputParamInitializedVars(calls, ifs []parser.Node, f *db.Function, summar
 		}
 		callName := extractCallName(call)
 		knownInit := isOutputParamInitializer(callName)
+		outArgs, hasSpecificOutArgs := outputParamInitializerArgs[callName]
 		summary, hasSummary := summaries[callName]
-		if !knownInit && !hasSummary {
+		if !knownInit && !hasSpecificOutArgs && !hasSummary {
 			continue
 		}
 		guarded := callInBranchCondition(call)
@@ -2252,6 +2258,8 @@ func outputParamInitializedVars(calls, ifs []parser.Node, f *db.Function, summar
 				name := target.Text()
 				switch {
 				case knownInit:
+					initialized[name] = true
+				case hasSpecificOutArgs && outArgs[argIdx]:
 					initialized[name] = true
 				case summary.ParamWrites[argIdx]:
 					initialized[name] = true

@@ -33,7 +33,7 @@ function findSecguard(context: { worktree?: string; directory?: string }): strin
 
 export default tool({
   description:
-    "Re-review the machine auto-confirmed findings (the pipeline-proved tier the candidate index does NOT show). Two operations: (1) list_auto_confirmed=true returns them for your type as JSON (id / rule_id / file / line / function / variable / reasoning / snippet) so you can apply the skill's false-positive rules; (2) reviews=[...] writes your verdicts back — review_status 'confirmed' (agree) or 'dismissed' (the machine verdict is a false positive → suppressed from result.sarif). Omit entries you agree with; an unreviewed auto-confirmed finding stays confirmed. This is the agent-native second-round review (no external AI provider).",
+    "Re-review the machine auto-confirmed findings (the pipeline-proved tier the candidate index does NOT show). Two operations: (1) list_auto_confirmed=true returns them for your type as JSON (id / rule_id / file / line / function / variable / reasoning / snippet) so you can apply the skill's false-positive rules; (2) reviews=[...] writes your verdicts back — review_status 'confirmed' (agree) or 'dismissed' (the machine verdict is a false positive → suppressed from result.sarif). Write a verdict for EVERY entry (do NOT omit the ones you agree with): the orchestrator verifies the re-review by checking that a later list_auto_confirmed returns count 0, which only holds when every entry got a review_status. This is the agent-native second-round review (no external AI provider).",
   args: {
     scan_id: tool.schema
       .string()
@@ -43,6 +43,10 @@ export default tool({
       .string()
       .optional()
       .describe("Vulnerability type (kebab-case, e.g. memory-leak). Scopes list_auto_confirmed to one type's CWE set — pass your assigned type."),
+    limit: tool.schema
+      .number()
+      .optional()
+      .describe("When list_auto_confirmed is true, cap the batch size (e.g. 50) so a large set is pulled in pages instead of overflowing context. Re-list until the returned count is 0."),
     list_auto_confirmed: tool.schema
       .boolean()
       .optional()
@@ -112,10 +116,11 @@ export default tool({
     // List path (also the default when neither arg is set): --list-auto-confirmed.
     const typeArg = args.type ? ` --type ${args.type}` : ""
     const scanArg = args.scan_id ? ` --scan-id ${args.scan_id}` : ""
+    const limitArg = args.limit && args.limit > 0 ? ` --limit ${args.limit}` : ""
     try {
       const out = (
         await withTimeout(
-          Bun.$`${secguardBin} report --db ${dbPath} --list-auto-confirmed${scanArg}${typeArg}`
+          Bun.$`${secguardBin} report --db ${dbPath} --list-auto-confirmed${scanArg}${typeArg}${limitArg}`
             .cwd(workDir)
             .quiet()
             .text(),

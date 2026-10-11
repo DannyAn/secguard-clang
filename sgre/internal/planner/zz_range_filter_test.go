@@ -404,7 +404,7 @@ int fp_compound_return(int x) { return x / get_seconds_per_day(); }
 // (auto-confirm, skipping the first-round AI) instead of handing it to the agent. A bare
 // parameter and a compound field expression stay "suspected" (AI-worthy), and a
 // provably-zero divisor (`d = 0; x / d`) is also confirmed.
-func TestDivideByZero_ConfigFieldConfirm(t *testing.T) {
+func TestDivideByZero_ConfigFieldSuspected(t *testing.T) {
 	src := `#include <stdlib.h>
 
 typedef unsigned int uint32_t;
@@ -415,16 +415,16 @@ typedef struct { uint32_t head; uint32_t elements; } ring_t;
 static uint32_t g_df_thread_count = 4;
 
 uint32_t index_of(graph_t *graph, uint32_t t) {
-    return t / graph->gran_time; /* field divisor: confirmed */
+    return t / graph->gran_time; /* field divisor: suspected (AI) */
 }
 
 uint32_t ring_advance(ring_t *hdr) {
-    hdr->head = (hdr->head + 1) % hdr->elements; /* field divisor: confirmed */
+    hdr->head = (hdr->head + 1) % hdr->elements; /* field divisor: suspected (AI) */
     return hdr->head;
 }
 
 uint32_t thread_next(uint32_t idx) {
-    return (idx + 1) % g_df_thread_count; /* global divisor: confirmed */
+    return (idx + 1) % g_df_thread_count; /* global divisor: suspected (AI) */
 }
 
 int bare_param(int n) {

@@ -21,7 +21,12 @@ func TestNonZeroConstantValue(t *testing.T) {
 		{"24 * 60 * 60", true}, // multiplication chain
 		{"(24 * 60 * 60)", true},
 		{"1024 * 1024 * 1024", true},
-		{"1 << 63", true}, // non-zero stays non-zero (source-level)
+		// Fixed-width overflow/UB is NOT folded (a wrap-around product or a
+		// shift at/beyond the 32-bit evaluation width can become zero):
+		{"1 << 63", false},                 // shift far past the width is UB
+		{"1u << 32", false},                // shift at the unsigned 32-bit width is UB
+		{"(1 << 62) * 4", false},           // product overflows int64
+		{"(1u << 16) * (1u << 16)", false}, // 32-bit product wraps to zero
 		// Operators that CAN zero out non-zero operands are NOT folded:
 		{"2 / 2", false},
 		{"5 % 5", false},

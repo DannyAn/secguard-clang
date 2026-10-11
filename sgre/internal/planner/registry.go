@@ -93,7 +93,7 @@ func VulnTypesToRuleIDs(vulnTypes []string) ([]string, error) {
 		}
 		spec, err := GetVulnTypeSpec(vt)
 		if err != nil {
-			return nil, fmt.Errorf("planner: %w", err)
+			return nil, err
 		}
 		add := func(cwe string) {
 			cwe = strings.ToUpper(strings.TrimSpace(cwe))
@@ -107,8 +107,15 @@ func VulnTypesToRuleIDs(vulnTypes []string) ([]string, error) {
 		for _, legacy := range spec.LegacyCWEs {
 			add(legacy)
 		}
-		for _, catCWE := range spec.CategoryCWEs {
-			add(catCWE)
+		// CategoryCWEs is a map, so sort its values for a deterministic rule-id
+		// order (an unsorted map yields a different order every run).
+		catCWEs := make([]string, 0, len(spec.CategoryCWEs))
+		for _, cwe := range spec.CategoryCWEs {
+			catCWEs = append(catCWEs, cwe)
+		}
+		sort.Strings(catCWEs)
+		for _, cwe := range catCWEs {
+			add(cwe)
 		}
 	}
 	return ruleIDs, nil

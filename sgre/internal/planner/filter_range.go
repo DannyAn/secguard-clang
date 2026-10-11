@@ -14,11 +14,12 @@ import (
 // RangeFilter is the divide-by-zero convergence stage. It drops candidates whose
 // divisor is provably non-zero (via cross-assignment interval propagation
 // `d = 0; d = 1; x / d`, and cross-function return summaries `x / get_count()`
-// where get_count never returns zero), and it upgrades to "confirmed" the two
-// shapes it can resolve deterministically: a config-field/global divisor
-// (`x / graph->gran_time`, a defensive-check gap) and a provably-zero divisor
-// (`d = 0; x / d`, a certain divide-by-zero). Confirmed candidates are handed to
-// the auto-confirm pass instead of the AI agent.
+// where get_count never returns zero), and it upgrades to "confirmed" the one
+// shape it can resolve deterministically: a provably-zero divisor (`d = 0;
+// x / d`, a certain divide-by-zero). A config-field/global divisor is NOT
+// auto-confirmed (see Apply): its zero-invariant is only "not proven locally",
+// not "proven possibly-zero", so it stays suspected for the AI. Confirmed
+// candidates are handed to the auto-confirm pass instead of the AI agent.
 type RangeFilter struct {
 	store  db.Store
 	parser *parser.Parser
@@ -266,26 +267,11 @@ func (f *RangeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candida
 // (`*p`), or calls (`foo()`), which stay suspected for the AI agent.
 var reFieldChain = regexp.MustCompile(`^[A-Za-z_]\w*\s*(?:(?:->|\.)\s*[A-Za-z_]\w*)+$`)
 
-// isConfigFieldDivisor reports whether a divide-by-zero divisor is an external
-// state value whose zero-invariant is established outside the use-site function:
-// a struct/object field chain (`graph->gran_time`, `hdr->elements`,
-// `hash->bkt_size`) or a module-global variable (`g_df_thread_count`). Because
-// the value is initialized elsewhere and no local guard re-proves it, the
-// unguarded division is a genuine defensive-check gap the pipeline confirms
-// deterministically rather than deferring to the AI agent.
-func isConfigFieldDivisor(divisor string) bool {
-	s := strings.TrimSpace(divisor)
-	if reFieldChain.MatchString(s) {
-		return true
-	}
-	return strings.HasPrefix(s, "g_") && bareIdentVar(s) != ""
-}
-
 // divisorShape classifies a divide-by-zero divisor's syntactic shape so the
 // candidate index's Hint column can tell the AI agent what it is looking at
 // without opening the evidence file. `bare` (a plain identifier) is the one the
-// classifier can settle from the Source column alone; `field`/`global` are
-// auto-confirmed by the pipeline; `call`/`compound` need the Code Context.
+// classifier can settle from the Source column alone; `field`/`global` stay
+// suspected for the AI; `call`/`compound` need the Code Context.
 func divisorShape(divisor string) string {
 	s := strings.TrimSpace(divisor)
 	switch {

@@ -31,11 +31,15 @@ type typedefs struct {
 	// isUnsigned is the cached resolution of "does this type (transitively)
 	// resolve to an unsigned integer type?".
 	isUnsigned map[string]bool
-	// pointerResolving / unsignedResolving track the active recursion chain so a
-	// malformed indirect typedef cycle terminates instead of overflowing the
-	// stack.
+	// isScalar is the cached resolution of "does this type (transitively)
+	// resolve to a builtin scalar (not a pointer, struct, union or enum)?".
+	isScalar map[string]bool
+	// pointerResolving / unsignedResolving / scalarResolving track the active
+	// recursion chain so a malformed indirect typedef cycle terminates instead
+	// of overflowing the stack.
 	pointerResolving  map[string]bool
 	unsignedResolving map[string]bool
+	scalarResolving   map[string]bool
 }
 
 func emptyTypedefs() *typedefs {
@@ -43,8 +47,10 @@ func emptyTypedefs() *typedefs {
 		underlying:        make(map[string]string),
 		isPointer:         make(map[string]bool),
 		isUnsigned:        make(map[string]bool),
+		isScalar:          make(map[string]bool),
 		pointerResolving:  make(map[string]bool),
 		unsignedResolving: make(map[string]bool),
+		scalarResolving:   make(map[string]bool),
 	}
 }
 
@@ -112,8 +118,10 @@ func (t *typedefs) addRoot(root parser.Node) {
 	// The underlying table changed, so any cached resolution is now stale.
 	t.isPointer = make(map[string]bool)
 	t.isUnsigned = make(map[string]bool)
+	t.isScalar = make(map[string]bool)
 	t.pointerResolving = make(map[string]bool)
 	t.unsignedResolving = make(map[string]bool)
+	t.scalarResolving = make(map[string]bool)
 }
 
 // clone returns a shallow copy of the underlying table with a fresh resolution
@@ -206,6 +214,57 @@ func (t *typedefs) resolvesToPointer(typeSpelling string) bool {
 	res := t.resolvesToPointer(base)
 	t.isPointer[name] = res
 	return res
+}
+
+// resolvesToScalar reports whether type (a type spelling) is, transitively, a
+// builtin scalar (integer/float) type: it spells a primitive/sized type
+// specifier, or it is a typedef whose base resolves to one. A pointer, struct,
+// union or enum type is NOT scalar. This backs the memory-leak detector's
+// scalar-status-code suppression for typedef'd scalars (`typedef int Status;
+// Status st = foo_new();`), which a plain primitive_type check misses (EL-06).
+func (t *typedefs) resolvesToScalar(typeSpelling string) bool {
+	sp := strings.TrimSpace(typeSpelling)
+	if sp == "" {
+		return false
+	}
+	if strings.HasSuffix(sp, "*") {
+		return false
+	}
+	if isPrimitiveScalarSpelling(sp) {
+		return true
+	}
+	name := sp
+	if v, ok := t.isScalar[name]; ok {
+		return v
+	}
+	base, ok := t.underlying[name]
+	if !ok || base == name {
+		return false
+	}
+	if t.scalarResolving[name] {
+		return false
+	}
+	t.scalarResolving[name] = true
+	defer delete(t.scalarResolving, name)
+	res := t.resolvesToScalar(base)
+	t.isScalar[name] = res
+	return res
+}
+
+// isPrimitiveScalarSpelling reports whether sp is a builtin scalar type
+// spelling (the text a primitive_type / sized_type_specifier node carries),
+// excluding void and non-scalar aggregates.
+func isPrimitiveScalarSpelling(sp string) bool {
+	switch sp {
+	case "char", "short", "int", "long", "float", "double",
+		"unsigned", "signed", "bool", "_Bool",
+		"unsigned int", "unsigned char", "unsigned short", "unsigned long",
+		"unsigned long long", "signed int", "signed char", "signed short",
+		"signed long", "signed long long", "long long", "long double",
+		"short int", "long int":
+		return true
+	}
+	return false
 }
 
 // resolvesToUnsigned reports whether type (a type spelling) is, transitively, an

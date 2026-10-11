@@ -1,3 +1,5 @@
+//go:build !nosqlite
+
 package evidence
 
 import (
@@ -490,22 +492,41 @@ func TestMemoryLeak_ContainerEscape(t *testing.T) {
 	store := runIndexAndDetect(t, "tc130_memory_leak_container_escape.c")
 	ctx := context.Background()
 
+	allocVars := make(map[string]bool)
+	releaseVars := make(map[string]bool)
+
+	allocEvents, err := store.ListEventsByType(ctx, "MEMORY_ALLOC")
+	if err != nil {
+		t.Fatalf("list MEMORY_ALLOC: %v", err)
+	}
+	for _, e := range allocEvents {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		allocVars[props.Variable] = true
+	}
 	releaseEvents, err := store.ListEventsByType(ctx, "MEMORY_RELEASE")
 	if err != nil {
 		t.Fatalf("list MEMORY_RELEASE: %v", err)
 	}
-	released := map[string]bool{}
 	for _, e := range releaseEvents {
 		var props struct {
 			Variable string `json:"variable"`
 		}
 		_ = json.Unmarshal([]byte(e.Properties), &props)
-		released[props.Variable] = true
+		releaseVars[props.Variable] = true
 	}
-	if !released["pchBuf"] {
-		t.Errorf("pchBuf is stored into *pduInfo (a malloc'd container that is returned); should be released (escaped), not leaked")
-	}
-	if !released["pduInfo"] {
-		t.Errorf("pduInfo is returned to the caller; should be released (ownership-transfer), not leaked")
+
+	for _, v := range []string{"pchBuf", "pduInfo"} {
+		// Reverse assertion: an escape must NOT also emit a leak (alloc without
+		// release). The old test only checked the release side, so a double
+		// release+leak would still have passed (EL-10).
+		if allocVars[v] && !releaseVars[v] {
+			t.Errorf("%s is stored into a returned container; must be released, not leaked (alloc without release); allocVars=%v releaseVars=%v", v, allocVars, releaseVars)
+		}
+		if !releaseVars[v] {
+			t.Errorf("%s should be released (escaped), got allocVars=%v releaseVars=%v", v, allocVars, releaseVars)
+		}
 	}
 }

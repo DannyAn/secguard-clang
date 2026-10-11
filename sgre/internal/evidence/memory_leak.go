@@ -34,6 +34,9 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 	if err != nil {
 		return result, err
 	}
+	// Cross-file typedef resolution: a `typedef int Status; Status st = ...` must
+	// count as a scalar status code, not an allocation (EL-06).
+	globalTypedefs := buildGlobalTypedefs(ctx, d.store, d.parser)
 
 	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
 		funcDefs := root.FindAll("function_definition")
@@ -45,10 +48,12 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 		decls := root.FindAll("declaration")
 		ifs := root.FindAll("if_statement")
 		macros := macroFreeSummaries(root)
+		typedefs := globalTypedefs.clone()
+		typedefs.addRoot(root)
 
 		for _, f := range fileFuncs {
 			localVars := findLocalVarsFrom(decls, f)
-			scalarVars := findScalarVarsFrom(decls, f)
+			scalarVars := findScalarVarsFrom(decls, f, typedefs)
 			allocs := d.findAllocations(ctx, f, file, assigns, inits, calls, allocReturns, scalarVars)
 			frees := d.findFrees(ctx, f, file, calls, macros, inits, assigns)
 			returnLines := findReturnLinesFrom(returns, f)
@@ -86,7 +91,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 				transferLines := findReturnVarLines(varName, returns, f)
 				filteredReturns := filterNullGuardReturns(ifs, returnLines, varName)
 				nullGuardReturns := subtractLines(returnLines, filteredReturns)
-				escapeLines := findEscapeLines(assigns, calls, f, varName, localVars, allocVarNames, allocReturns)
+				escapeLines := findEscapeLines(assigns, calls, returns, f, varName, localVars, allocVarNames, allocReturns, true)
 				overwriteLines := writeLinesFor(assigns, inits, f, varName)
 
 				for _, allocLine := range allocLines {
@@ -519,9 +524,14 @@ func canReachAnyRelease(cfg *graph.StmtCFG, allocLine int, freeLines, escapeLine
 // function: it is stored into a subscript/field, assigned to an identifier
 // that is not a local of the function (a global/static), or stored through a
 // dereferenced pointer whose base is itself a heap allocation (`*container =
-// p` where container = malloc(...)). A value that escapes is transferred
-// ownership, not leaked.
-func findEscapeLines(assigns, calls []parser.Node, f *db.Function, varName string, localVars map[string]bool, allocVarNames map[string]bool, allocReturns map[string]bool) []int {
+// p` where container = malloc(...) and the container itself escapes). A value
+// that escapes is transferred ownership, not leaked.
+//
+// useEscapeFuncs gates the naming-heuristic escape-function branch: full leak
+// detection uses it, but the getter-borrow classifier (allocatorReturnFuncs)
+// passes false so a wrapper that merely logs/stores its result via a
+// `_add`/`_store`-named helper is not misread as a borrow.
+func findEscapeLines(assigns, calls, returns []parser.Node, f *db.Function, varName string, localVars map[string]bool, allocVarNames map[string]bool, allocReturns map[string]bool, useEscapeFuncs bool) []int {
 	var lines []int
 	for _, assign := range assigns {
 		if !funcLineRange(f, assign.StartLine()) {
@@ -544,12 +554,18 @@ func findEscapeLines(assigns, calls []parser.Node, f *db.Function, varName strin
 						break
 					}
 				}
-				// Escape through a non-local (parameter/global) base OR a base
-				// that is itself a heap allocation (`*container = p` where
-				// container = malloc(...)): both point outside the stack, so the
-				// stored pointer's ownership rides with that object, not the
-				// function's frame.
-				if base != "" && (!localVars[base] || allocVarNames[base]) {
+				// Escape through a non-local (parameter/global) base: the stored
+				// pointer's ownership rides with that object, not the function's
+				// frame. A base that is itself a heap allocation (`*container = p`)
+				// escapes p only when the container ITSELF escapes (returned or
+				// stored to a non-local); a container that is only freed at the end
+				// does NOT free its members, so p still leaks (EL-01).
+				if base == "" {
+					continue
+				}
+				if !localVars[base] {
+					lines = append(lines, assign.StartLine())
+				} else if allocVarNames[base] && containerEscapes(assigns, calls, returns, f, base, localVars) {
 					lines = append(lines, assign.StartLine())
 				}
 			} else if lhs.Kind() == "identifier" && !localVars[lhs.Text()] {
@@ -597,8 +613,69 @@ func findEscapeLines(assigns, calls []parser.Node, f *db.Function, varName strin
 					break
 				}
 			}
-			if base != "" && !localVars[base] {
+			// Only the tracked variable's own field store escapes it; an unrelated
+			// `global->field = malloc()` must not suppress the leak of a different
+			// local (`char *p = malloc(10); g->buf = malloc(20);`).
+			if base != "" && base == varName && !localVars[base] {
 				lines = append(lines, assign.StartLine())
+			}
+		}
+	}
+	if useEscapeFuncs {
+		for _, call := range calls {
+			if !funcLineRange(f, call.StartLine()) {
+				continue
+			}
+			if !apikb.IsEscapeFunction(extractCallName(call)) {
+				continue
+			}
+			for _, arg := range getCallArgs(call) {
+				if argIdentifier(arg) == varName {
+					lines = append(lines, call.StartLine())
+				}
+			}
+		}
+	}
+	return lines
+}
+
+// containerEscapes reports whether a heap-allocated container variable escapes
+// the function — returned to the caller, stored to a non-local identifier or
+// field/subscript, or handed to an escape function — so a pointer stored through
+// it (`*container = p`) escapes with the container's ownership rather than
+// leaking on its own. A container that is merely freed at the end
+// (`*c = p; free(c);`) does NOT free its members, so it does not escape p.
+func containerEscapes(assigns, calls, returns []parser.Node, f *db.Function, base string, localVars map[string]bool) bool {
+	if len(findReturnVarLines(base, returns, f)) > 0 {
+		return true
+	}
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
+			continue
+		}
+		children := assign.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		lhs, rhs := children[0], children[1]
+		if argIdentifier(rhs) != base {
+			continue
+		}
+		switch lhs.Kind() {
+		case "identifier":
+			if !localVars[lhs.Text()] {
+				return true
+			}
+		case "field_expression", "subscript_expression":
+			b := ""
+			for _, child := range lhs.NamedChildren() {
+				if child.Kind() == "identifier" {
+					b = child.Text()
+					break
+				}
+			}
+			if b != "" && !localVars[b] {
+				return true
 			}
 		}
 	}
@@ -610,12 +687,12 @@ func findEscapeLines(assigns, calls []parser.Node, f *db.Function, varName strin
 			continue
 		}
 		for _, arg := range getCallArgs(call) {
-			if argIdentifier(arg) == varName {
-				lines = append(lines, call.StartLine())
+			if argIdentifier(arg) == base {
+				return true
 			}
 		}
 	}
-	return lines
+	return false
 }
 
 // findLocalVars returns the names of variables declared inside the function.
@@ -663,10 +740,14 @@ func findLocalVarsFrom(decls []parser.Node, f *db.Function) map[string]bool {
 // A typedef'd base type (`MsgPdu p` where `MsgPdu = char **`) hides its
 // pointer-ness inside the typedef, so it is NOT recorded here: the caller
 // fail-opens and keeps the store as a candidate rather than silently dropping a
-// real leak. Only `primitive_type`/`sized_type_specifier` bases are treated as
-// certainly-scalar; a pointer declarator (`T *p`) is never scalar.
-func findScalarVarsFrom(decls []parser.Node, f *db.Function) map[string]bool {
+// real leak. Only a `primitive_type`/`sized_type_specifier` base — or a
+// typedef that resolves to one (`typedef int Status`) — is treated as
+// certainly-scalar; a pointer declarator (`T *p`) is never scalar. A name
+// declared as a pointer anywhere in the function is dropped (block shadowing
+// `int ret; { char *ret = malloc(); }`).
+func findScalarVarsFrom(decls []parser.Node, f *db.Function, typedefs *typedefs) map[string]bool {
 	scalars := make(map[string]bool)
+	pointers := make(map[string]bool)
 	for _, decl := range decls {
 		if !funcLineRange(f, decl.StartLine()) {
 			continue
@@ -674,9 +755,7 @@ func findScalarVarsFrom(decls []parser.Node, f *db.Function) map[string]bool {
 		if hasStaticStorageSpecifier(decl) {
 			continue
 		}
-		if !hasScalarBaseType(decl) {
-			continue
-		}
+		baseScalar := hasScalarBaseType(decl, typedefs)
 		for _, child := range decl.NamedChildren() {
 			var declarator parser.Node
 			switch child.Kind() {
@@ -692,10 +771,21 @@ func findScalarVarsFrom(decls []parser.Node, f *db.Function) map[string]bool {
 			default:
 				continue // attribute / type-position node
 			}
-			if name := declaredIdentifier(declarator); name != "" && !declaratorHasPointer(declarator) {
+			name := declaredIdentifier(declarator)
+			if name == "" {
+				continue
+			}
+			if declaratorHasPointer(declarator) {
+				pointers[name] = true
+				continue
+			}
+			if baseScalar {
 				scalars[name] = true
 			}
 		}
+	}
+	for name := range pointers {
+		delete(scalars, name)
 	}
 	return scalars
 }
@@ -715,13 +805,18 @@ func hasStaticStorageSpecifier(decl parser.Node) bool {
 }
 
 // hasScalarBaseType reports whether a declaration's base type is a certainly-scalar
-// builtin (`primitive_type`/`sized_type_specifier`). A `type_identifier` base is a
-// typedef that may hide a pointer (`typedef char **MsgPdu; MsgPdu p`), and a
-// struct/union/enum base is a value type the caller still treats as fail-open.
-func hasScalarBaseType(decl parser.Node) bool {
+// builtin (`primitive_type`/`sized_type_specifier`), or a `type_identifier` that
+// resolves to one (`typedef int Status`). A typedef that hides a pointer
+// (`typedef char **MsgPdu; MsgPdu p`) or a struct/union/enum base is fail-open.
+func hasScalarBaseType(decl parser.Node, typedefs *typedefs) bool {
 	for _, child := range decl.NamedChildren() {
-		if child.Kind() == "primitive_type" || child.Kind() == "sized_type_specifier" {
+		switch child.Kind() {
+		case "primitive_type", "sized_type_specifier":
 			return true
+		case "type_identifier":
+			if typedefs != nil && typedefs.resolvesToScalar(child.Text()) {
+				return true
+			}
 		}
 	}
 	return false
@@ -965,7 +1060,12 @@ func allocatorReturnFuncs(ctx context.Context, store db.Store, p *parser.Parser,
 						// allocator would turn every `x = get_item(...)` into a
 						// confirmed false-positive leak (the nlog stat-registry
 						// accessor pattern).
-						if len(findEscapeLines(assigns, calls, f, v, localVars, nil, nil)) > 0 {
+						// Strong-evidence borrow only: field/subscript store to a
+						// non-local, assign to a non-local identifier, or return. The
+						// escape-function naming heuristic is disabled here — a real
+						// allocator wrapper that calls a `_add`/`_store` helper for
+						// logging must NOT be misread as a borrow (EL-03).
+						if len(findEscapeLines(assigns, calls, returns, f, v, localVars, nil, nil, false)) > 0 {
 							continue
 						}
 						add(f.Name, callee)

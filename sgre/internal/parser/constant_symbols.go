@@ -224,11 +224,31 @@ func NonZeroConstantValue(text string) bool {
 // It is the exact complement needed to auto-confirm `x / 0` as a certain
 // divide-by-zero rather than a "possibly-zero" suspected lead.
 func IsZeroConstantValue(text string) bool {
-	if strings.HasPrefix(strings.TrimSpace(text), "sizeof") {
+	if IsSizeofExpr(text) {
 		return false
 	}
 	v, ok := parseConstantInt(text)
 	return ok && v == 0
+}
+
+// IsSizeofExpr reports whether text is a sizeof expression (the C `sizeof`
+// keyword followed by `(`, whitespace, or end-of-input), not an identifier that
+// merely shares the prefix (`sizeof_x` / `sizeofvar`). sizeof is a compile-time
+// constant always greater than zero.
+func IsSizeofExpr(text string) bool {
+	t := strings.TrimSpace(text)
+	if !strings.HasPrefix(t, "sizeof") {
+		return false
+	}
+	rest := t[len("sizeof"):]
+	if rest == "" {
+		return true
+	}
+	switch rest[0] {
+	case '(', ' ', '\t', '\r', '\n':
+		return true
+	}
+	return false
 }
 
 // parseConstantInt parses a C integer literal (with optional sign and u/U/l/L
@@ -294,11 +314,13 @@ func balanced(s string) bool {
 
 // foldNonZeroConstant reports whether text is provably a non-zero integer
 // constant expression. It folds a conservative subset of C integer constant
-// expressions where non-zero inputs are GUARANTEED to stay non-zero:
+// expressions:
 //   - a non-zero integer literal / sizeof / known non-zero symbol (leaf)
-//   - multiplication: nz * nz is nz (integer multiplication never zeroes two
-//     non-zero operands in source-level arithmetic)
-//   - left shift: nz << any is nz (a non-zero value shifted stays non-zero)
+//   - multiplication and left shift. A LITERAL product or shift is evaluated
+//     with overflow detection — `(1 << 62) * 4` overflows and `1 << 63` is UB,
+//     so they are NOT non-zero. A symbolic operand (a known non-zero constant
+//     of unknown value) still folds, since the value set never carries it; the
+//     caller's macro bodies are small compile-time constants in practice.
 //   - unary +/-, and parenthesized forms recurse
 //
 // Every other operator (`+ - / % >> & | ^`) is deliberately NOT folded: `a - b`
@@ -319,7 +341,7 @@ func foldNonZeroConstant(text string, env *ConstantEnv) bool {
 	}
 	left, op, right, found := topLevelBinaryOp(t)
 	if !found {
-		if strings.HasPrefix(strings.TrimSpace(t), "sizeof") {
+		if IsSizeofExpr(t) {
 			return true
 		}
 		if v, ok := parseConstantInt(t); ok {
@@ -332,11 +354,120 @@ func foldNonZeroConstant(text string, env *ConstantEnv) bool {
 	}
 	switch op {
 	case "*":
+		if v, ok := constantIntValue(t); ok {
+			return v != 0
+		}
+		// constantIntValue failed: if the operands are all literals the failure
+		// is a width overflow (wrap-to-zero), so it is NOT non-zero; only a
+		// symbolic operand falls back to the conservative symbolic fold.
+		if isLiteralConstant(t) {
+			return false
+		}
 		return foldNonZeroConstant(left, env) && foldNonZeroConstant(right, env)
 	case "<<":
+		if v, ok := constantIntValue(t); ok {
+			return v != 0
+		}
+		if isLiteralConstant(t) {
+			return false
+		}
 		return foldNonZeroConstant(left, env)
 	default:
 		return false
+	}
+}
+
+// isLiteralConstant reports whether text is a literal-only integer constant
+// expression (integer literals, `*`, `<<`, unary +/- and parentheses) with no
+// symbolic leaf. It lets the caller tell a width-overflow failure (all literal,
+// provably wraps → not non-zero) from a symbolic leaf (fold conservatively).
+func isLiteralConstant(text string) bool {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return false
+	}
+	if t[0] == '+' || t[0] == '-' {
+		return isLiteralConstant(t[1:])
+	}
+	t = strings.TrimSpace(stripParens(t))
+	if t == "" {
+		return false
+	}
+	left, _, right, found := topLevelBinaryOp(t)
+	if !found {
+		_, ok := parseConstantInt(t)
+		return ok
+	}
+	return isLiteralConstant(left) && isLiteralConstant(right)
+}
+
+// foldWidth is the conservative C integer width used when folding `*` and `<<`:
+// 32 bits. A value that needs a 64-bit type may be non-zero on a 64-bit build,
+// but cannot be proven non-zero across the 32-bit int/unsigned types, so it is
+// rejected — a real divide-by-zero must never be suppressed by an over-eager
+// fold (`(1u<<16)*(1u<<16)` wraps to 0, `1u<<32` is UB).
+const foldWidth = 32
+
+// constantIntValue evaluates a literal-only integer constant expression (integer
+// literals, `*`, `<<`, unary +/- and parentheses) to an int64. It returns
+// ok=false for a sizeof, a symbol, a shift at/over foldWidth, a product that
+// overflows foldWidth (fixed-width wrap to zero), or anything it cannot bound,
+// so the caller stays conservative.
+func constantIntValue(text string) (int64, bool) {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return 0, false
+	}
+	if t[0] == '+' || t[0] == '-' {
+		v, ok := constantIntValue(t[1:])
+		if !ok {
+			return 0, false
+		}
+		if t[0] == '-' {
+			return -v, true
+		}
+		return v, true
+	}
+	t = strings.TrimSpace(stripParens(t))
+	if t == "" {
+		return 0, false
+	}
+	left, op, right, found := topLevelBinaryOp(t)
+	if !found {
+		return parseConstantInt(t)
+	}
+	lv, lok := constantIntValue(left)
+	rv, rok := constantIntValue(right)
+	if !lok || !rok {
+		return 0, false
+	}
+	switch op {
+	case "*":
+		p := lv * rv
+		if lv != 0 && p/lv != rv {
+			return 0, false // int64 overflow
+		}
+		// A non-negative product reaching 2^32 wraps to zero (or is UB) in a
+		// 32-bit type; a negative product is non-zero but already non-foldable as
+		// a divisor constant, so only the positive wrap matters.
+		if p >= 1<<foldWidth {
+			return 0, false
+		}
+		return p, true
+	case "<<":
+		if rv < 0 || rv >= foldWidth {
+			return 0, false // shift at/beyond the width is UB
+		}
+		s := lv << uint(rv)
+		if s>>uint(rv) != lv {
+			return 0, false
+		}
+		if s >= 1<<foldWidth {
+			return 0, false
+		}
+		return s, true
+	default:
+		return 0, false
 	}
 }
 
@@ -347,6 +478,10 @@ func foldNonZeroConstant(text string, env *ConstantEnv) bool {
 // the split point so a `+`/`-` outermost operator is rejected even when its `*`
 // sub-expressions are individually non-zero. A lone `-`/`+` in front of an
 // operand is a unary sign, handled by foldNonZeroConstant before scanning.
+// At equal precedence the LEFT-most operator wins (so `a * b * c` splits as
+// `a * (b * c)`, the left-associative reading). Operators it does not recognize
+// (`& | ^ && || == !=` etc.) are ignored, so `found` is false and the caller
+// stays conservative.
 func topLevelBinaryOp(t string) (left, op, right string, found bool) {
 	depth := 0
 	minPrio := 1 << 30

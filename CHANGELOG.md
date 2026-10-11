@@ -2,7 +2,18 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.9.3] - 2026-10-10
+## [0.9.3] - 2026-10-11
+
+### ds4.1 检视修复（40 项回源复核）
+
+对 v0.9.2→HEAD 的 12 个提交做全量回源复核（`docs/ds4.1检视sgre-20261019.md`），逐项验证并修复真实缺陷。关键项：
+
+- **uninit 自动确认精确化（修订本节的 macro-context 方案）**：上一版以"候选前后 ±8 行出现大写宏"降级 confirmed→suspected，既误伤无关宏（`a + 1 + MYMACRO(0)` 的 `a` 被拖下水）又漏掉取字段地址（`HTONBUF(&ipv6.hpfS6Addr32[0])`）。根因是 `hasOutputParamWrite` 只认 `&裸标识符`。现删除 ±8 窗口，改为精确识别 `&x`/`&x.f`/`&x[i]` 与 `x.f`/`x[i]` 退化传参（PP-06）。
+- **global_invariants**：`nonZeroVars` 不再跨函数按裸名共享（PP-01 真除零漏报）；静态零初值/BSS 计入"可能为零"（PP-05）；复合赋值置 `allNonZero=false`（PP-04）。
+- **divide-by-zero 常量折叠**：`*`/`<<` 折叠带 32 位宽度溢出/移位量判断，`(1u<<16)*(1u<<16)`、`1u<<32` 不再误判非零（EL-05/PP-03）；`sizeof_x` 前缀误判修复（PP-11）。
+- **memory-leak**：容器逃逸仅当容器自身逃逸才成立（EL-01）、字段逃逸补 `base==varName`（EL-02）、getter-borrow 禁用命名启发式（EL-03）、typedef 标量识别（EL-06）、同名遮蔽 fail-open（EL-07）。
+- **agent-native re-review 链路**：audit 计数以 `FinalStatus` 为准（RV-01）、三条 re-review 指令对齐（RV-02）、`--limit` 分批（RV-03）、`--review-json` 校验 auto-confirmed（RV-04）。
+- **benchmark**：Phase 15/16 行号修正、汇总计数同步、补 CLI 端到端 re-review 契约测试。
 
 ### uninit 自动确认与 out-param 误报（CWE-457）
 

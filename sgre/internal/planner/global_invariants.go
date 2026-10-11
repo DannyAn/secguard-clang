@@ -57,7 +57,9 @@ func buildGlobalInvariants(ctx context.Context, store db.Store, p *parser.Parser
 		}
 		scanInvariants(root, inv)
 	}
-	scanNonZeroSourceAssignments(ctx, store, p, resolver, inv)
+	// Reuse the already-listed files and parse cache instead of re-listing and
+	// re-parsing every translation unit (PP-10).
+	scanNonZeroSourceAssignments(files, cache, resolver, inv)
 	return inv
 }
 
@@ -68,15 +70,10 @@ func buildGlobalInvariants(ctx context.Context, store db.Store, p *parser.Parser
 // `g = 42`. The two never conflict — a target with a zero-guarded assignment
 // from a parameter (not "obviously non-zero") simply isn't marked by this pass,
 // but may already be marked by the zero-guarded pass.
-func scanNonZeroSourceAssignments(ctx context.Context, store db.Store, p *parser.Parser, resolver *returnSummaryResolver, inv *globalInvariants) {
+func scanNonZeroSourceAssignments(files []*db.File, cache *fileParseCache, resolver *returnSummaryResolver, inv *globalInvariants) {
 	if resolver == nil {
 		return
 	}
-	files, err := store.ListFiles(ctx)
-	if err != nil {
-		return
-	}
-	cache := newFileParseCache(p)
 	type targetInfo struct {
 		hasAssignment bool
 		allNonZero    bool
@@ -87,26 +84,49 @@ func scanNonZeroSourceAssignments(ctx context.Context, store db.Store, p *parser
 		if root.Kind() == "" {
 			continue
 		}
+		globals := collectFileGlobals(root)
+		initNonZero := collectGlobalInitializers(root)
 		for _, assign := range root.FindAll("assignment_expression") {
-			if !isSimpleAssign(assign) {
-				continue
-			}
 			children := assign.NamedChildren()
 			if len(children) < 2 {
 				continue
 			}
 			lhs, rhs := children[0], children[1]
-			target := assignTargetText(lhs)
-			if target == "" {
+			// A field chain (`g->field`) is inherently cross-function; a bare
+			// identifier is an invariant only when it is a file-scope global — a
+			// function-local `d = 5` in one function must not mark a same-named
+			// local `d` in another function non-zero (PP-01).
+			var target string
+			isGlobal := false
+			if lhs.Kind() == "field_expression" {
+				target = normalizeTarget(lhs.Text())
+			} else if lhs.Kind() == "identifier" {
+				if !globals[lhs.Text()] {
+					continue
+				}
+				target = lhs.Text()
+				isGlobal = true
+			} else {
 				continue
 			}
 			info := targets[target]
 			if info == nil {
-				info = &targetInfo{allNonZero: true}
+				// A global whose declaration initializer is zero/absent (BSS
+				// zero-init) can be zero before its first assignment, so it is not
+				// an all-paths non-zero invariant (PP-05). A field has no such
+				// initial state and starts as non-zero-until-proven-otherwise.
+				allNonZero := true
+				if isGlobal && !initNonZero[target] {
+					allNonZero = false
+				}
+				info = &targetInfo{allNonZero: allNonZero}
 				targets[target] = info
 			}
 			info.hasAssignment = true
-			if !isNonZeroSource(rhs, resolver) {
+			// A compound assignment (`g += k`, `g -= 100`, `g++`) is a write from
+			// an unknown source, so it must reset allNonZero rather than being
+			// skipped entirely (PP-04).
+			if !isSimpleAssign(assign) || !isNonZeroSource(rhs, resolver) {
 				info.allNonZero = false
 			}
 		}
@@ -116,6 +136,87 @@ func scanNonZeroSourceAssignments(ctx context.Context, store db.Store, p *parser
 			inv.nonZeroVars[target] = true
 		}
 	}
+}
+
+// functionRanges returns the [startLine, endLine] of every function definition
+// in root, so callers can tell a file-scope declaration from a function-local one.
+func functionRanges(root parser.Node) [][2]int {
+	var ranges [][2]int
+	for _, fn := range root.FindAll("function_definition") {
+		ranges = append(ranges, [2]int{fn.StartLine(), fn.EndLine()})
+	}
+	return ranges
+}
+
+func inFunction(ranges [][2]int, line int) bool {
+	for _, r := range ranges {
+		if line >= r[0] && line <= r[1] {
+			return true
+		}
+	}
+	return false
+}
+
+// collectFileGlobals returns the set of file-scope variable names in root: names
+// declared by a `declaration` that sits outside every function body. These are
+// the only bare identifiers a cross-function non-zero invariant may key on.
+func collectFileGlobals(root parser.Node) map[string]bool {
+	globals := make(map[string]bool)
+	ranges := functionRanges(root)
+	for _, decl := range root.FindAll("declaration") {
+		if inFunction(ranges, decl.StartLine()) {
+			continue
+		}
+		for _, child := range decl.NamedChildren() {
+			switch child.Kind() {
+			case "init_declarator", "identifier", "pointer_declarator", "array_declarator",
+				"function_declarator", "parenthesized_declarator":
+				if name := declaredName(child); name != "" {
+					globals[name] = true
+				}
+			}
+		}
+	}
+	return globals
+}
+
+// collectGlobalInitializers returns, for each file-scope variable, whether its
+// declaration initializer is a provably non-zero source. A variable with no
+// initializer (BSS zero-init) or a zero/unknown initializer is absent, so the
+// variable is treated as possibly-zero until an assignment proves otherwise.
+func collectGlobalInitializers(root parser.Node) map[string]bool {
+	init := make(map[string]bool)
+	ranges := functionRanges(root)
+	for _, decl := range root.FindAll("declaration") {
+		if inFunction(ranges, decl.StartLine()) {
+			continue
+		}
+		for _, initDecl := range decl.FindAll("init_declarator") {
+			name := declaredName(initDecl)
+			if name == "" {
+				continue
+			}
+			children := initDecl.NamedChildren()
+			if len(children) >= 2 && parser.NonZeroConstantValue(children[len(children)-1].Text()) {
+				init[name] = true
+			}
+		}
+	}
+	return init
+}
+
+// declaredName returns the identifier a declaration child binds, descending
+// pointer/array/function/parenthesized declarator wrappers (`char *p` -> "p").
+func declaredName(node parser.Node) string {
+	if node.Kind() == "identifier" {
+		return node.Text()
+	}
+	for _, child := range node.NamedChildren() {
+		if name := declaredName(child); name != "" {
+			return name
+		}
+	}
+	return ""
 }
 
 // isSimpleAssign reports whether an assignment_expression uses the `=` operator
@@ -135,9 +236,6 @@ func isSimpleAssign(assign parser.Node) bool {
 func isNonZeroSource(rhs parser.Node, resolver *returnSummaryResolver) bool {
 	text := strings.TrimSpace(rhs.Text())
 	if parser.NonZeroConstantValue(text) {
-		return true
-	}
-	if strings.Contains(text, "sizeof") {
 		return true
 	}
 	if resolver.globalConsts != nil {
@@ -296,15 +394,23 @@ func assignTargetText(lhs parser.Node) string {
 	}
 	switch lhs.Kind() {
 	case "identifier", "field_expression":
-		return lhs.Text()
+		return normalizeTarget(lhs.Text())
 	}
 	return ""
+}
+
+// normalizeTarget strips whitespace around the -> and . operators (and any stray
+// whitespace) so a field chain spelled `graph -> gran_time` in an assignment
+// matches `graph->gran_time` in a divisor (PP-09). Identifiers contain no
+// whitespace, so removing it is safe.
+func normalizeTarget(s string) string {
+	return strings.Join(strings.Fields(s), "")
 }
 
 // NonZero reports whether a global variable or field is proven non-zero by a
 // cross-function invariant.
 func (inv *globalInvariants) NonZero(name string) bool {
-	return inv.nonZeroVars[strings.TrimSpace(name)]
+	return inv.nonZeroVars[normalizeTarget(name)]
 }
 func bareOperandVar(n parser.Node) string {
 	for n.Kind() == "parenthesized_expression" {
