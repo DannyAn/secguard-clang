@@ -404,6 +404,47 @@ var NonZeroReturnFunctions = map[string]bool{
 // non-zero by contract.
 func NonZeroReturn(name string) bool { return NonZeroReturnFunctions[name] }
 
+// TruncatingWrappers are functions whose integer return value is provably ≤ one
+// of their arguments — the "capacity"/size argument — because they truncate their
+// output to fit (snprintf_truncated_s, sprintf_s, ...). The integer-overflow
+// detector uses this contract to prove that an accumulator built from their
+// returns (`length += add_*(buf, size)`) stays ≤ the buffer size, so a later
+// `size - length` subtraction cannot underflow. The map value is the 0-based
+// index of the capacity argument (for `f(buf, size, ...)` it is 1).
+//
+// Projects extend this set via RegisterTruncatingWrapper
+// (secguard.toml [integer_overflow.truncating_wrappers]) for third-party
+// truncating wrappers whose definitions live outside the scan tree. The name
+// pattern also covers the "*_truncated_s" spelling (the project's own truncating
+// snprintf wrapper family).
+func TruncatingWrapperCapArg(name string) (int, bool) {
+	if idx, ok := extraTruncatingWrappers[name]; ok {
+		return idx, true
+	}
+	lower := strings.ToLower(name)
+	switch lower {
+	case "sprintf_s", "vsprintf_s":
+		return 1, true
+	}
+	if strings.Contains(lower, "truncated") && (strings.Contains(lower, "printf") || strings.Contains(lower, "sprintf")) {
+		return 1, true
+	}
+	return 0, false
+}
+
+// extraTruncatingWrappers holds project-declared truncating-wrapper names
+// registered at CLI startup from secguard.toml [integer_overflow.truncating_wrappers].
+var extraTruncatingWrappers = map[string]int{}
+
+// RegisterTruncatingWrapper adds a project-specific function name whose return
+// value is bounded by its capArgIdx argument (0-based), so the integer-overflow
+// detector can treat an accumulator built from its returns as bounded.
+func RegisterTruncatingWrapper(name string, capArgIdx int) {
+	if name != "" {
+		extraTruncatingWrappers[name] = capArgIdx
+	}
+}
+
 // SQLFormatFuncs maps a string-formatting function to the index of its
 // format-string argument. The Annex K _s variants insert a destination-
 // capacity argument, shifting the format string one position later. These

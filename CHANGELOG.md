@@ -2,6 +2,22 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.9.4] - 2026-10-12
+
+### integer-overflow 子代理超时根治（CWE-190，紧急修复）
+
+v0.9.3 生产冒烟（nlog `src/` 全量扫描，1012 文件 / 7092 函数）中 `integer-overflow` 两个子代理均因 LLM 单次推理超时失败（`total_tokens: 0` + `Request timed out`），117 条候选全部未落库判定。根因是 `unsigned_sub_underflow` 候选（98/117）只有 `cat@` 类别标签、无任何数据流事实，子代理被迫逐候选打开 ±8 行源码找 guard 与操作数来源，单 turn 推理量过大导致 API 超时。本次从「收敛阶段用语义图算清事实」彻底闭环：
+
+- **interprocedural bounded-return summary（`evidence/bounded_return.go`）**：给每个被索引函数计算「返回值 ≤ 某 capacity 参数」的截断包装器契约（`snprintf_truncated_s`/`sprintf_s`/`vsprintf_s` 及转发到它们的一跳/多跳自定义包装器），带保守不动点 + 环保护。累加器模式 `length += add_*(buf, size - length)` 因此在检测阶段被证明有界并自动 dismissed，不再进入 AI 研判——这是 98 条 `buf_len - length` 类候选超时的直接原因。
+- **配置驱动截断包装器白名单（`apikb.TruncatingWrapperCapArg` + `secguard.toml [integer_overflow.truncating_wrappers]`）**：对定义在扫描树外的第三方截断包装器（如 `nlog_syslog_add_*`），用户可声明 `name = <capacity 实参下标>` 一键闭环，与 memory-leak 的 `[ownership_transfer_calls]` 同款机制。
+- **累加器容量实参校验（`boundedAccumulators`）**：只认「`total - length` 剩余空间 / 首次 `total` 全量」的严格形状，两个全量写（`length += f(buf, 100)` ×2）不会被误判有界，杜绝把真溢出当误报漏掉。
+- **operand provenance Hint**：`unsigned_sub_underflow` 的 Hint 从裸 `cat@` 升级为 `lhs@<kind> rhs@<kind> rhs-influenced sink@<kind> guard@none`，AI 从 `_index.md` 一行即可判断被减数来源（`rhs@param`/`rhs-influenced` = 外部可控，真实风险；`rhs@local` 无 `rhs-influenced` = 内部有界累加器）。
+- **入口 guard 自动消除（`planner/filter_unsigned_sub.go`）**：`if (consumed > total) return;` 早退 guard 证明减法安全，收敛阶段直接 dismissed。
+- **Fix Suggestion 按 category 细分**：`unsigned_sub_underflow` / `size_calc_overflow` / `integer_overflow` 各自给出减法 guard、乘法检查、加法检查模板，不再统一塞 malloc 场景。
+- 回退上一版「函数级 200 行 Code Context」为 ±8 窗口（保留 `## Location` 一行函数签名）：117 行 `_index.md` ≈ 8K token 本身不构成压力，真正会爆的是 106 个证据文件 × 200 行 ≈ 200K+ token，改为密集 Hint 承担判定，避免源码上下文炸弹。
+
+测试：`TestIntegerOverflow_MixedAccumulatorBoundedReturn`、`TestTruncatingWrapperCapArg_*`、`TestLoad_IntegerOverflowTruncatingWrappers`、`TestUnsignedSubGuard_*`、`TestBuildHint` 等全绿。
+
 ## [0.9.3] - 2026-10-11
 
 ### 重新发布（2026-10-12）：生产冒烟复核修复（12 项回源）

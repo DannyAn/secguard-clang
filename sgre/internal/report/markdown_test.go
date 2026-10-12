@@ -293,3 +293,69 @@ func mustReadFile(t *testing.T, path string) []byte {
 	}
 	return data
 }
+
+// integer-overflow evidence files must carry the function signature (operand
+// types) so the classifier can read them without a source READ, while keeping the
+// same ±N Code Context window as every other type.
+func TestWriteCandidates_IntegerOverflowSignature(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "buf.c")
+	body := "uint32_t grow(uint32_t n);\n" +
+		"uint32_t f(uint32_t buf_len, uint32_t x) {\n" +
+		"    uint32_t length = 0;\n" +
+		"    length += grow(1);\n" +
+		"    use(buf_len - length);\n" +
+		"    return length;\n" +
+		"}\n"
+	if err := os.WriteFile(src, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	o := &ScanOutput{ScanDir: dir, ScanID: "sc_test", RootDir: dir}
+	pkgs := []*planner.PlanResult{{
+		VulnerabilityType: "integer-overflow",
+		Candidates: []planner.EvidenceItem{{
+			SuspicionLevel: "suspected",
+			Category:       "unsigned_sub_underflow",
+			Hint:           "guard@none cat@unsigned_sub_underflow",
+			Signature:      "f(uint32_t buf_len, uint32_t x)",
+			Target: planner.TargetInfo{
+				File: "buf.c", Function: "f", Line: 5, Variable: "buf_len - length",
+			},
+			Evidence: []planner.EvidenceFragment{
+				{Role: "sink", Detail: "unsigned subtraction can underflow"},
+			},
+		}},
+	}}
+	if err := o.writeCandidates(pkgs); err != nil {
+		t.Fatal(err)
+	}
+
+	content := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "integer-overflow", "001_buf_c_5.md")))
+	if !strings.Contains(content, "- **Signature:** `f(uint32_t buf_len, uint32_t x)`") {
+		t.Errorf("integer-overflow evidence should embed the function signature:\n%s", content)
+	}
+}
+
+// FixSuggestion must branch integer-overflow by category: the dominant
+// unsigned_sub_underflow pattern is a subtraction guard, not a malloc product.
+func TestFixSuggestion_IntegerOverflowPerCategory(t *testing.T) {
+	underflow := FixSuggestion("integer-overflow", "CWE-190", planner.EvidenceItem{
+		Category: "unsigned_sub_underflow",
+		Target:   planner.TargetInfo{Variable: "buf_len - length", Function: "f"},
+	})
+	if strings.Contains(underflow, "SIZE_MAX / elem_size") || strings.Contains(underflow, "malloc(total)") {
+		t.Errorf("unsigned_sub_underflow fix suggestion must not be the malloc template:\n%s", underflow)
+	}
+	if !strings.Contains(underflow, "consumed > total") {
+		t.Errorf("unsigned_sub_underflow fix suggestion should show the subtraction guard:\n%s", underflow)
+	}
+
+	sizeCalc := FixSuggestion("integer-overflow", "CWE-190", planner.EvidenceItem{
+		Category: "size_calc_overflow",
+		Target:   planner.TargetInfo{Variable: "count * elem_size", Function: "g"},
+	})
+	if !strings.Contains(sizeCalc, "SIZE_MAX / elem_size") {
+		t.Errorf("size_calc_overflow fix suggestion should show the multiply check:\n%s", sizeCalc)
+	}
+}

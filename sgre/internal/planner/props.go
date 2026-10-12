@@ -88,6 +88,16 @@ type eventProps struct {
 	// always false (`u < 0`), so the branch is dead code with no runtime impact.
 	// The planner downgrades such findings from "confirmed" to "suspected".
 	Tautology string `json:"tautology"`
+	// LHSKind/RHSKind classify an integer-overflow unsigned_sub_underflow operand
+	// origin (param/local/global/deref/subscript/const/expr); LHSInfluenced/
+	// RHSInfluenced are "true" when that operand is caller/attacker-controlled;
+	// Sink is call_arg/assign. The planner surfaces these as a dense Hint so the
+	// AI classifies from the _index row instead of opening the source.
+	LHSKind       string `json:"lhs_kind"`
+	RHSKind       string `json:"rhs_kind"`
+	LHSInfluenced string `json:"lhs_influenced"`
+	RHSInfluenced string `json:"rhs_influenced"`
+	Sink          string `json:"sink"`
 }
 
 func parseEventProps(raw string) eventProps {

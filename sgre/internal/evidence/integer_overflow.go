@@ -72,6 +72,11 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 	result := DetectResult{}
 	globalTypedefs := buildGlobalTypedefs(ctx, d.store, d.parser)
 	globalConsts := buildGlobalConstants(ctx, d.store, d.parser)
+	// Truncating-wrapper summary: which functions return a value bounded by one
+	// of their arguments (snprintf_truncated_s & friends, plus any project
+	// wrappers that forward to them). It lets the unsigned-subtraction check drop
+	// the `length += add_*(buf, buf_len - length)` accumulator false positive.
+	boundedReturns := buildBoundedReturnSummary(ctx, d.store, d.parser, d.logger)
 
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		typedefs := globalTypedefs.clone()
@@ -146,7 +151,7 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 			}
 
 			d.detectSizeCalcOverflow(ctx, calls, f, file, influenced, wideVars, narrowVars, assigned, globalConsts, &result)
-			d.detectUnsignedSubUnderflow(ctx, calls, assigns, f, file, scopes[f.StartLine], globals, typedefs, influenced, &result)
+			d.detectUnsignedSubUnderflow(ctx, calls, assigns, f, file, scopes[f.StartLine], globals, typedefs, influenced, boundedReturns, &result)
 		}
 	})
 	return result, err
@@ -600,10 +605,24 @@ func (d *IntegerOverflowDetector) emitIntegerOverflow(ctx context.Context, file 
 // planner's operand extraction see the function name as an operand, so the guard
 // bound lookup never matches and the candidate can never be suppressed.
 func (d *IntegerOverflowDetector) emitIntegerOverflowText(ctx context.Context, file *db.File, f *db.Function, node parser.Node, exprText, category string, result *DetectResult) {
-	if emitEvent(ctx, d.store, d.logger, "INTEGER_OVERFLOW", f.ID, &db.Location{FileID: file.ID, Line: node.StartLine(), Column: node.StartColumn()}, map[string]string{
+	d.emitIntegerOverflowProps(ctx, file, f, node, exprText, category, nil, result)
+}
+
+// emitIntegerOverflowProps emits an overflow event carrying the operand
+// provenance facts the planner needs to build a dense Hint (`lhs_kind`/`rhs_kind`
+// = param/local/global/deref/subscript, `influenced` = caller-controlled,
+// `sink` = call_arg/assign). Surfacing these lets the AI classifier judge the
+// subtraction from the _index row (operand origin + whether it is externally
+// supplied) instead of opening the source.
+func (d *IntegerOverflowDetector) emitIntegerOverflowProps(ctx context.Context, file *db.File, f *db.Function, node parser.Node, exprText, category string, extra map[string]string, result *DetectResult) {
+	props := map[string]string{
 		"expression": exprText,
 		"category":   category,
-	}) {
+	}
+	for k, v := range extra {
+		props[k] = v
+	}
+	if emitEvent(ctx, d.store, d.logger, "INTEGER_OVERFLOW", f.ID, &db.Location{FileID: file.ID, Line: node.StartLine(), Column: node.StartColumn()}, props) {
 		result.EventsCreated++
 	}
 }
@@ -613,16 +632,16 @@ func (d *IntegerOverflowDetector) emitIntegerOverflowText(ctx context.Context, f
 // allocator/copy arguments and intentionally skip subtraction; this check uses
 // type information to handle the common `count - consumed` shape without
 // treating every C subtraction as an integer-overflow candidate.
-func (d *IntegerOverflowDetector) detectUnsignedSubUnderflow(ctx context.Context, calls, assigns []parser.Node, f *db.Function, file *db.File, scope integerOverflowTypeScope, globals map[string]string, typedefs *typedefs, influenced map[string]bool, result *DetectResult) {
+func (d *IntegerOverflowDetector) detectUnsignedSubUnderflow(ctx context.Context, calls, assigns []parser.Node, f *db.Function, file *db.File, scope integerOverflowTypeScope, globals map[string]string, typedefs *typedefs, influenced map[string]bool, boundedReturns boundedReturnSummary, result *DetectResult) {
 	if scope.locals == nil {
 		return
 	}
-	// Truncating-snprintf accumulators: a local accumulated ONLY by adding a
-	// truncating format wrapper's return value (`count += snprintf_truncated_s(...)`)
-	// is bounded by the destination size by contract, so a later `size - count`
-	// subtraction cannot underflow (P1-2).
-	truncAccums := truncatingAccumulators(assigns, f)
-	check := func(expr parser.Node) {
+	// Bounded accumulators: a local accumulated ONLY by adding a bounded-return
+	// wrapper's return value (`count += snprintf_truncated_s(buf, size - count, ...)`)
+	// is bounded by `size` by contract, so a later `size - count` subtraction
+	// cannot underflow.
+	boundedAccums := boundedAccumulators(assigns, f, boundedReturns)
+	check := func(expr parser.Node, sink string) {
 		expr = unwrapExprNode(expr)
 		if expr.Kind() != "binary_expression" || arithOperator(expr) != "-" {
 			return
@@ -641,19 +660,27 @@ func (d *IntegerOverflowDetector) detectUnsignedSubUnderflow(ctx context.Context
 		if exprTextKey(lhs) == exprTextKey(rhs) || unsignedSubGuarded(expr, lhs, rhs) {
 			return
 		}
-		// `size - count` where count is a truncating-snprintf accumulator: count
-		// never exceeds size, so the subtraction cannot underflow.
-		if truncAccums[bareIdentText(rhs)] {
+		// `size - count` where count is a bounded accumulator w.r.t. this exact
+		// size: count never exceeds size, so the subtraction cannot underflow.
+		if total := boundedAccums[bareIdentText(rhs)]; total != "" && total == exprTextKey(lhs) {
 			return
 		}
-		d.emitIntegerOverflow(ctx, file, f, expr, "unsigned_sub_underflow", result)
+		// Carry the operand provenance so the planner can emit a dense Hint
+		// (lhs@/rhs@ + rhs-influenced + sink@) instead of a bare cat@ label.
+		d.emitIntegerOverflowProps(ctx, file, f, expr, expr.Text(), "unsigned_sub_underflow", map[string]string{
+			"lhs_kind":       subOperandKind(lhs, scope, globals),
+			"rhs_kind":       subOperandKind(rhs, scope, globals),
+			"lhs_influenced": strconv.FormatBool(lhsInfl),
+			"rhs_influenced": strconv.FormatBool(rhsInfl),
+			"sink":           sink,
+		}, result)
 	}
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
 		for _, arg := range callNamedArguments(call) {
-			check(arg)
+			check(arg, "call_arg")
 		}
 	}
 	// A subtraction stored into a local first (`size_t rem = total - consumed;`)
@@ -667,86 +694,40 @@ func (d *IntegerOverflowDetector) detectUnsignedSubUnderflow(ctx context.Context
 		if len(children) < 2 {
 			continue
 		}
-		check(children[1])
+		check(children[1], "assign")
 	}
 }
 
-// isTruncatingFormatFunc reports whether name is a truncating format wrapper:
-// `snprintf_truncated_s` / `sprintf_truncated_s` etc. (the "truncated" spelling)
-// or the exact Annex K `sprintf_s`/`vsprintf_s` (which return the count WRITTEN,
-// bounded by destsz-1). These guarantee the return value is less than the
-// destination size, so an accumulator built from their returns stays <= the
-// buffer size. `snprintf`/`snprintf_s` (which return the would-have-written
-// count, unbounded) are deliberately excluded.
-func isTruncatingFormatFunc(name string) bool {
-	lower := strings.ToLower(name)
-	if strings.Contains(lower, "truncated") && (strings.Contains(lower, "printf") || strings.Contains(lower, "sprintf")) {
-		return true
-	}
-	return lower == "sprintf_s" || lower == "vsprintf_s"
-}
-
-// rhsHasTruncatingCall reports whether an expression contains a call to a
-// truncating format wrapper.
-func rhsHasTruncatingCall(rhs parser.Node) bool {
-	for _, call := range rhs.FindAll("call_expression") {
-		if isTruncatingFormatFunc(extractCallName(call)) {
-			return true
+// subOperandKind classifies a subtraction operand's origin so the Hint can say
+// whether `total - consumed` is a param-validation shape (`rhs@param`, externally
+// supplied) or an accumulator shape (`rhs@local`, bounded by the callee). Params
+// are also recorded in scope.locals, so the params set is checked first.
+func subOperandKind(node parser.Node, scope integerOverflowTypeScope, globals map[string]string) string {
+	node = unwrapExprNode(node)
+	switch node.Kind() {
+	case "identifier":
+		name := node.Text()
+		if scope.params[name] {
+			return "param"
 		}
-	}
-	return false
-}
-
-// truncatingAccumulators returns the set of local variables whose ONLY writes are
-// `count += <truncating>(...)` or `count = count + <truncating>(...)`. Such a
-// count is bounded by the destination size by contract (the truncating wrapper
-// writes at most destsz-1 and returns that count), so `size - count` cannot
-// underflow. Any other whole-variable write (a reset, a `++`, a `= other`)
-// disqualifies the name as a pure accumulator.
-func truncatingAccumulators(assigns []parser.Node, f *db.Function) map[string]bool {
-	out := make(map[string]bool)
-	disqualified := make(map[string]bool)
-	record := func(name string, ok bool) {
-		if name == "" {
-			return
-		}
-		if ok && !disqualified[name] {
-			out[name] = true
-			return
-		}
-		disqualified[name] = true
-		delete(out, name)
-	}
-	for _, assign := range assigns {
-		if !funcLineRange(f, assign.StartLine()) {
-			continue
-		}
-		children := assign.NamedChildren()
-		if len(children) < 2 {
-			continue
-		}
-		lhs := children[0]
-		rhs := children[1]
-		if lhs.Kind() != "identifier" {
-			continue
-		}
-		// count += <truncating>(...)
-		if op := assign.ChildByFieldName("operator"); op != nil && op.Text() == "+=" {
-			record(lhs.Text(), rhsHasTruncatingCall(rhs))
-			continue
-		}
-		// count = count + <truncating>(...)
-		if rhs.Kind() == "binary_expression" && arithOperator(rhs) == "+" {
-			rc := rhs.NamedChildren()
-			if len(rc) == 2 && rc[0].Kind() == "identifier" && rc[0].Text() == lhs.Text() && rhsHasTruncatingCall(rc[1]) {
-				record(lhs.Text(), true)
-				continue
+		for _, l := range scope.locals {
+			if l.name == name {
+				return "local"
 			}
 		}
-		// Any other write to lhs is not a bounded accumulation.
-		record(lhs.Text(), false)
+		if _, ok := globals[name]; ok {
+			return "global"
+		}
+		return "ident"
+	case "pointer_expression":
+		return "deref"
+	case "subscript_expression":
+		return "subscript"
+	case "number_literal":
+		return "const"
+	default:
+		return "expr"
 	}
-	return out
 }
 
 func unwrapExprNode(node parser.Node) parser.Node {

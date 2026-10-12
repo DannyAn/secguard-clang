@@ -154,4 +154,17 @@ type Candidate struct {
 	// parameter's nullability (e.g. "caller c passes NULL"), surfaced in the
 	// evidence so the AI can judge the caller contract instead of a bare "line 0".
 	CallerNullDetail string `json:"caller_null_detail,omitempty"`
+	// FunctionSignature is the enclosing function's declared signature (parameter
+	// names + types), propagated from the index so the AI classifier can read the
+	// operand types without opening the source file.
+	FunctionSignature string `json:"function_signature,omitempty"`
+	// LHSKind/RHSKind classify an integer-overflow unsigned_sub_underflow operand
+	// origin (param/local/global/deref/subscript/const/expr); SubRHSInfluenced is
+	// true when the subtrahend is caller/attacker-controlled; SubSink is
+	// call_arg/assign. These carry the operand provenance the detector already
+	// computed into the dense Hint, so the AI classifies from the _index row.
+	LHSKind          string `json:"lhs_kind,omitempty"`
+	RHSKind          string `json:"rhs_kind,omitempty"`
+	SubRHSInfluenced bool   `json:"sub_rhs_influenced,omitempty"`
+	SubSink          string `json:"sub_sink,omitempty"`
 }

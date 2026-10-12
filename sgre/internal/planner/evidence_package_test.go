@@ -5,6 +5,7 @@ import "testing"
 func TestBuildHint(t *testing.T) {
 	dbz := &VulnTypeSpec{Name: "divide-by-zero"}
 	uninit := &VulnTypeSpec{Name: "uninit"}
+	iof := &VulnTypeSpec{Name: "integer-overflow"}
 	cases := []struct {
 		name string
 		c    Candidate
@@ -25,6 +26,9 @@ func TestBuildHint(t *testing.T) {
 		{"api and category", Candidate{APIName: "memcpy", Category: "buffer_overflow"}, nil, "api@memcpy cat@buffer_overflow"},
 		{"uninit certain", Candidate{SuspicionLevel: "confirmed"}, uninit, "certain-uninit"},
 		{"uninit maybe", Candidate{SuspicionLevel: "suspected"}, uninit, "maybe-uninit"},
+		{"integer-overflow unsigned sub unguarded", Candidate{Category: "unsigned_sub_underflow"}, iof, "guard@none cat@unsigned_sub_underflow"},
+		{"integer-overflow unsigned sub provenance", Candidate{Category: "unsigned_sub_underflow", LHSKind: "param", RHSKind: "local", SubRHSInfluenced: true, SubSink: "call_arg"}, iof, "lhs@param rhs@local rhs-influenced sink@call_arg guard@none cat@unsigned_sub_underflow"},
+		{"integer-overflow size calc (no guard tag)", Candidate{Category: "size_calc_overflow"}, iof, "cat@size_calc_overflow"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

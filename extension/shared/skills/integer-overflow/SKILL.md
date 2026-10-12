@@ -28,6 +28,32 @@ The `category` field encodes the confidence tier the pipeline already computed:
 | `unsigned_sub_underflow` | unsigned `total - consumed` passed to an ordinary call | suspected |
 | `integer_overflow` | wraparound inside a bounds check | possible |
 
+### Hint column
+
+The `_index.md` `Hint` column for `unsigned_sub_underflow` carries the operand
+provenance and guard fact the pipeline computed, so you can usually classify from
+the row alone (no evidence-file open):
+
+- `lhs@<kind>` / `rhs@<kind>` — the minuend / subtrahend origin:
+  `param` (externally supplied), `local`, `global`, `deref` (`*p`),
+  `subscript` (`a[i]`), `const`, `expr`.
+- `rhs-influenced` — the subtrahend is caller/attacker-controlled. `rhs@param` or
+  `rhs@local` + `rhs-influenced` means the subtracted-away amount can exceed the
+  minuend → real underflow risk. `rhs@local` WITHOUT `rhs-influenced` is a bounded
+  internal accumulator → usually false-positive.
+- `sink@call_arg` / `sink@assign` — the subtraction flows into a call argument or
+  is stored into a local.
+- `guard@none` — the pipeline found no same-function ordering guard (the tight
+  `if (consumed <= total)` body guard and the `if (consumed > total) return;`
+  entry guard are already suppressed). **Stop hunting for a guard.**
+
+`guard@none` + `rhs@param`/`rhs-influenced` → the `total - consumed` input-validation
+shape: confirm unless a cross-function invariant bounds `consumed <= total`.
+`guard@none` + `rhs@local` (no `rhs-influenced`) → the `buf_len - length` accumulator
+shape: the verdict rests on whether the accumulator is bounded by the callee's
+truncation contract — the candidate file's `## Code Context` (±8 lines) + the
+`Signature`/`Source` columns are your inputs before any raw source READ.
+
 ### Dangerous Patterns
 
 | Pattern | Risk | Why |

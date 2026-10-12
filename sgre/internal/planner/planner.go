@@ -115,6 +115,7 @@ func (p *Planner) getFilters(chain string) ([]Filter, error) {
 			NewCallReachFilter(p.store, p.callReachCache),
 			NewSafeFunctionFilter(p.store),
 			NewIntOverflowGuardFilter(p.store, p.parser, p.logger),
+			NewUnsignedSubGuardFilter(p.store, p.parser, p.logger),
 		}, nil
 	case "divide-by-zero":
 		return []Filter{
@@ -324,9 +325,11 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 
 		funcName := ""
 		fileID := int64(0)
+		funcSignature := ""
 		if fn := funcsByID[e.EntityID]; fn != nil {
 			funcName = fn.Name
 			fileID = fn.FileID
+			funcSignature = fn.Signature
 		}
 
 		line := 0
@@ -403,6 +406,11 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			ExpectedType:      props.Expected,
 			ActualType:        props.Actual,
 			CastType:          props.Cast,
+			FunctionSignature: funcSignature,
+			LHSKind:           props.LHSKind,
+			RHSKind:           props.RHSKind,
+			SubRHSInfluenced:  props.RHSInfluenced == "true",
+			SubSink:           props.Sink,
 		})
 	}
 

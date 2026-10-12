@@ -27,6 +27,7 @@ type Config struct {
 	Deallocators           Deallocators           `toml:"deallocators"`
 	OwnershipTransferCalls OwnershipTransferCalls `toml:"ownership_transfer_calls"`
 	Nullability            Nullability            `toml:"nullability"`
+	IntegerOverflow        IntegerOverflow        `toml:"integer_overflow"`
 }
 
 type TrustedMacros struct {
@@ -99,6 +100,19 @@ type Nullability struct {
 // null source.
 type NonNullReturns struct {
 	Names []string `toml:"names"`
+}
+
+// IntegerOverflow declares project-specific facts that sharpen the
+// integer-overflow convergence. TruncatingWrappers lists functions whose return
+// value is bounded by one of their arguments (the capacity/size argument), so an
+// accumulator built from their returns stays within the buffer and a later
+// `size - length` subtraction cannot underflow.
+//
+//	[integer_overflow.truncating_wrappers]
+//	nlog_syslog_add_pri      = 1   # return <= arg 1 (the buffer size)
+//	nlog_syslog_add_hostname = 1
+type IntegerOverflow struct {
+	TruncatingWrappers map[string]int `toml:"truncating_wrappers"`
 }
 
 // DisabledTypes declares vulnerability types to turn OFF for the whole scan. A
@@ -255,6 +269,18 @@ func (c *Config) OwnershipTransferCallNames() []string {
 		return nil
 	}
 	return c.OwnershipTransferCalls.Names
+}
+
+// IntegerOverflowTruncatingWrappers returns the project-specific truncating
+// wrappers (function name -> 0-based capacity argument index) declared in
+// secguard.toml. These are registered into apikb at CLI startup so the
+// integer-overflow detector can prove an accumulator built from them stays
+// bounded by the buffer size.
+func (c *Config) IntegerOverflowTruncatingWrappers() map[string]int {
+	if c == nil {
+		return nil
+	}
+	return c.IntegerOverflow.TruncatingWrappers
 }
 
 // ExcludePaths returns the configured directory paths to prune during indexing.

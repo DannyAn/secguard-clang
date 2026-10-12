@@ -102,3 +102,48 @@ func TestIntegerOverflow_UnsignedSubSnprintfAccumulator(t *testing.T) {
 		t.Errorf("bad_sub: plain unsigned subtraction must still be flagged, got %v", byFunction["bad_sub"])
 	}
 }
+
+// TestIntegerOverflow_MixedAccumulatorBoundedReturn pins the interprocedural
+// bounded-return summary: a `size - count` accumulator built from CUSTOM
+// wrappers (add_pri / add_hostname) that each forward to snprintf_truncated_s is
+// provably bounded (the wrappers return <= their size argument), so the
+// subtraction must NOT emit unsigned_sub_underflow. The control must still flag.
+func TestIntegerOverflow_MixedAccumulatorBoundedReturn(t *testing.T) {
+	store, p := setupDetector(t, "tc129_int_overflow_mixed_accumulator.c")
+	logger := log.New(io.Discard, log.LevelWarn)
+	if _, err := NewIntegerOverflowDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+
+	events, err := store.ListEventsByType(context.Background(), "INTEGER_OVERFLOW")
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	byFunction := make(map[string][]string)
+	for _, e := range events {
+		fn, err := store.GetFunctionByID(context.Background(), e.EntityID)
+		if err != nil || fn == nil {
+			continue
+		}
+		var props struct {
+			Category string `json:"category"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		byFunction[fn.Name] = append(byFunction[fn.Name], props.Category)
+	}
+
+	for _, cat := range byFunction["fmt_buf"] {
+		if cat == "unsigned_sub_underflow" {
+			t.Errorf("fmt_buf: mixed accumulator (add_pri/add_hostname forwarding) must not be flagged, got %v", byFunction["fmt_buf"])
+		}
+	}
+	found := false
+	for _, cat := range byFunction["bad_sub"] {
+		if cat == "unsigned_sub_underflow" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("bad_sub: plain unsigned subtraction must still be flagged, got %v", byFunction["bad_sub"])
+	}
+}

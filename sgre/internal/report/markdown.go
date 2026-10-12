@@ -247,6 +247,9 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 			b.WriteString("## Location\n\n")
 			b.WriteString(fmt.Sprintf("- **File:** `%s:%d`\n", c.Target.File, c.Target.Line))
 			b.WriteString(fmt.Sprintf("- **Function:** `%s`\n", c.Target.Function))
+			if c.Signature != "" {
+				b.WriteString(fmt.Sprintf("- **Signature:** `%s`\n", c.Signature))
+			}
 			if c.Target.Variable != "" {
 				b.WriteString(fmt.Sprintf("- **Variable:** `%s`\n", c.Target.Variable))
 			}
@@ -302,7 +305,9 @@ func (o *ScanOutput) writeTypeIndex(dir string, pkg *planner.PlanResult) error {
 		"> Classify from the `Source` + `Hint` columns first — `Hint` is the pipeline's\n" +
 		"> precomputed verdict facts (`src@N` = null-source line, `certain-null`/\n" +
 		"> `maybe-null` = null certainty, `tainted` = injection source, `weak-guard` =\n" +
-		"> partial guard, `macro-context` = a macro is in play). Open the `Evidence`\n" +
+		"> partial guard, `lhs@`/`rhs@`/`rhs-influenced`/`sink@` = integer-overflow\n" +
+		"> operand provenance, `guard@none` = no same-function guard, `macro-context` =\n" +
+		"> a macro is in play). Open the `Evidence`\n" +
 		"> file (and its `## Code Context`) when the hint is insufficient; read the\n" +
 		"> source (≤5 turns per type) before dismissing something you cannot settle.\n\n")
 	b.WriteString("| # | Function | File:Line | Variable | Suspicion | Hint | Source | Evidence |\n")
@@ -519,21 +524,50 @@ func FixSuggestion(vulnType, cwe string, c planner.EvidenceItem) string {
 			funcName)
 
 	case "integer-overflow":
-		return fmt.Sprintf(
-			"Check for integer overflow before using the result in memory allocation\n"+
-				"or buffer operations in `%s`:\n\n"+
-				"```c\n"+
-				"// Check a + b > SIZE_MAX before allocating\n"+
-				"if (a > SIZE_MAX - b) {\n"+
-				"    return NULL;  // overflow would occur\n"+
-				"}\n"+
-				"size_t total = a + b;\n"+
-				"char *buf = malloc(total);\n"+
-				"```\n\n"+
-				"Use `size_t` for sizes (never `int`), and prefer checked-arithmetic\n"+
-				"helpers like `__builtin_add_overflow` (GCC/Clang) or manual bounds\n"+
-				"checks. Clamp `count * elem_size` products before passing to `malloc`/`memcpy`.\n",
-			funcName)
+		switch c.Category {
+		case "unsigned_sub_underflow":
+			return fmt.Sprintf(
+				"Guard the unsigned subtraction before it can underflow in `%s`:\n\n"+
+					"```c\n"+
+					"// Before `total - consumed`, prove the invariant consumed <= total\n"+
+					"if (consumed > total) {\n"+
+					"    return -1;  // or clamp/validate the inputs\n"+
+					"}\n"+
+					"size_t remaining = total - consumed;  // safe: consumed <= total\n"+
+					"```\n\n"+
+					"Ensure `%s` never exceeds its upper bound: either validate both\n"+
+					"operands at entry, or make every accumulator (`length += f(...)`)\n"+
+					"a truncating call whose return value stays within the remaining space.\n",
+				funcName, c.Target.Variable)
+
+		case "size_calc_overflow", "size_mul_const_overflow":
+			return fmt.Sprintf(
+				"Check the multiplication before allocating in `%s`:\n\n"+
+					"```c\n"+
+					"// Before count * elem_size, prove it cannot wrap\n"+
+					"if (count > SIZE_MAX / elem_size) {\n"+
+					"    return NULL;  // overflow would occur\n"+
+					"}\n"+
+					"size_t total = count * elem_size;\n"+
+					"char *buf = malloc(total);\n"+
+					"```\n\n"+
+					"Use `size_t` for sizes (never `int`) and prefer checked arithmetic\n"+
+					"(`__builtin_mul_overflow`) or a checked-allocation wrapper.\n",
+				funcName)
+
+		default:
+			return fmt.Sprintf(
+				"Check for integer overflow before using the result in `%s`:\n\n"+
+					"```c\n"+
+					"if (a > INT_MAX - b) {\n"+
+					"    return -1;  // overflow would occur\n"+
+					"}\n"+
+					"int total = a + b;\n"+
+					"```\n\n"+
+					"Use a wide-enough type for the operation and prefer\n"+
+					"`__builtin_add_overflow`/`__builtin_mul_overflow` for checked arithmetic.\n",
+				funcName)
+		}
 
 	case "race-condition":
 		return fmt.Sprintf(

@@ -25,6 +25,9 @@ type EvidenceItem struct {
 	// insufficient. It carries the flow facts the pipeline already computed.
 	Hint     string             `json:"hint,omitempty"`
 	Evidence []EvidenceFragment `json:"evidence"`
+	// Signature is the enclosing function's declared signature (parameter names
+	// + types), so the AI can read the operand types without a source READ.
+	Signature string `json:"signature,omitempty"`
 }
 
 type TargetInfo struct {
@@ -111,6 +114,32 @@ func buildHint(c Candidate, spec *VulnTypeSpec) string {
 			} else if c.SuspicionLevel == "suspected" {
 				parts = append(parts, "maybe-uninit")
 			}
+		case "integer-overflow":
+			// unsigned_sub_underflow survivors have no same-function ordering
+			// guard: the detector drops the tight `if (consumed <= total)` body
+			// guard and UnsignedSubGuardFilter drops the entry-return guard, so
+			// anything that reaches the hint has `guard@none`. The operand
+			// provenance (`lhs@`/`rhs@` + `rhs-influenced` + `sink@`) is the
+			// dataflow fact that lets the classifier judge the subtraction from
+			// the _index row — `rhs@param`/`rhs-influenced` means the subtracted
+			// amount is externally supplied (real underflow risk), `rhs@local`
+			// without `rhs-influenced` means a bounded internal accumulator —
+			// instead of opening the source to find the operand origins.
+			if c.Category == "unsigned_sub_underflow" {
+				if c.LHSKind != "" {
+					parts = append(parts, "lhs@"+c.LHSKind)
+				}
+				if c.RHSKind != "" {
+					parts = append(parts, "rhs@"+c.RHSKind)
+				}
+				if c.SubRHSInfluenced {
+					parts = append(parts, "rhs-influenced")
+				}
+				if c.SubSink != "" {
+					parts = append(parts, "sink@"+c.SubSink)
+				}
+				parts = append(parts, "guard@none")
+			}
 		}
 	}
 	if c.SourceLine > 0 {
@@ -159,6 +188,7 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 		Category:   c.Category,
 		Hint:       buildHint(c, spec),
 		Evidence:   spec.BuildEvidence(c),
+		Signature:  c.FunctionSignature,
 	}
 	if c.SuspicionLevel != "" {
 		item.SuspicionLevel = c.SuspicionLevel

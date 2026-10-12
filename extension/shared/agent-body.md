@@ -96,8 +96,10 @@ it, before you look at the next type.
 **Classify from the embedded evidence first; DO read source for what you cannot
 settle.** The scan pre-embeds the exact statement in
 `candidates/<type>/_index.md`'s `Source` column, the pipeline's precomputed
-verdict facts in its `Hint` column, and the ±context window in each
-`candidates/<type>/NNN_*.md` `## Code Context` block. A proved hint + context →
+verdict facts in its `Hint` column, and the source window in each
+`candidates/<type>/NNN_*.md` `## Code Context` block (a ±8-line window for most
+types; the WHOLE function span for `integer-overflow`, whose verdict needs the
+signature + accumulation chain). A proved hint + context →
 write the verdict, no read needed. Issuing a per-candidate source READ is the
 single biggest wall-clock cost of a large scan (one tool round-trip per candidate
 × thousands of candidates = tens of minutes), so never read for a candidate the
@@ -181,8 +183,12 @@ budget your effort, not to pre-judge the answer:
   line, `certain-null`/`maybe-null` = null certainty, `tainted` = injection
   source, `weak-guard` = partial guard, `certain-uninit`/`maybe-uninit` = uninit
   tier, `api@<name>` = the API in play, `cat@<name>` = the detector category,
-  `macro-context` = a function-like macro is in play and you MUST verify its
-  semantics before confirming), so
+  `lhs@<kind>`/`rhs@<kind>` = integer-overflow operand origin (param/local/global/
+  deref), `rhs-influenced` = the subtrahend is caller-controlled, `sink@call_arg`/
+  `sink@assign` = the underflow sink, `guard@none` = integer-overflow unsigned
+  subtraction with no same-function ordering guard, `macro-context` = a
+  function-like macro is in play and you MUST verify its semantics before
+  confirming), so
   you confirm or dismiss from the table
   itself (statement matches the evidence → confirmed; it is guarded/different →
   dismiss). Do NOT open the source file and do NOT open the `Evidence` candidate

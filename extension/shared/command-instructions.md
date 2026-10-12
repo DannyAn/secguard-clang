@@ -303,7 +303,7 @@ as `result.sarif`.)
      (matches the evidence) or dismiss (guarded/different) from the table itself.
      Do NOT read source or the candidate file. Batch all confirmed verdicts into
      one write call.
-   - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null`/`tainted`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`macro-context`); for divide-by-zero a `divisor@bare` row is settled from `Source` alone (no evidence open). When the hint is insufficient, open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source) and, if STILL insufficient, a raw source read within the ≤5-read budget — then classify. Only after spending that budget may you write `dismissed` (with a cited reason); never write `dismissed` without reading when the hint was insufficient. A `macro-context` hint means a macro is in play — open the `## Code Context` and verify the macro before `confirmed`.
+   - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null`/`tainted`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`); for divide-by-zero a `divisor@bare` row is settled from `Source` alone (no evidence open). When the hint is insufficient, open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source) and, if STILL insufficient, a raw source read within the ≤5-read budget — then classify. Only after spending that budget may you write `dismissed` (with a cited reason); never write `dismissed` without reading when the hint was insufficient. A `macro-context` hint means a macro is in play — open the `## Code Context` and verify the macro before `confirmed`.
     Write **confirmed** findings in ONE batch: write `<tmpdir>/<type>.json`
     containing only confirmed findings with the Write tool, then
     `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
@@ -348,7 +348,7 @@ as `result.sarif`.)
    — do NOT re-run secguard_scan or secguard_plan. The source is already embedded:
    `_index.md` has a `Source` column per candidate (the exact statement), a `Hint`
    column (the pipeline's precomputed verdict facts: `src@N`/`certain-null`/
-   `maybe-null`/`tainted`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`macro-context`), plus an `Evidence` column naming the exact
+   `maybe-null`/`tainted`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`), plus an `Evidence` column naming the exact
    candidate file, and each candidate file has a `## Code Context` block — do NOT
    issue per-candidate source READs (that is the tens-of-minutes cost). Read ONLY
    your type's `_index.md`, never the whole report.md.
@@ -376,15 +376,18 @@ as `result.sarif`.)
       open the source (within the ≤5 source-read budget) to settle it; only if
       STILL undecided after the budget, write `dismissed` with a cited reason —
       never write `dismissed` without reading when the hint was insufficient.
-    `## Code Context` is always a ±8-line window around the reported line — it
-    never embeds a whole function, so opening it cannot exhaust your context, and
-    a large function is NOT a reason to classify from the `Source` column alone.
+    `## Code Context` is a ±8-line window around the reported line for most types,
+    but **integer-overflow** embeds the WHOLE function span (signature → candidate,
+    up to ~200 lines) because its verdict needs the parameter types, the entry
+    guard, and the accumulation chain — facts a ±8 window cannot show. Either way
+    it never exceeds ~200 lines, so opening it cannot exhaust your context, and a
+    large function is NOT a reason to classify from the `Source` column alone.
     A complex function is exactly where careful analysis matters most: classify
-    from `Source` + `Hint` + the ±8 window first, and when that is insufficient,
-    spend the ≤5 source-read budget reading the SPECIFIC lines the `Hint` names
-    (the free / guard / return / source line) via offset/limit — never paste the
-    whole function, which is both unfocused and what actually overflows the
-    window. Read a big function MORE carefully, never less.
+    from `Source` + `Hint` + the Code Context window first, and when that is
+    insufficient, spend the ≤5 source-read budget reading the SPECIFIC lines the
+    `Hint` names (the free / guard / return / source line) via offset/limit —
+    never paste the whole function, which is both unfocused and what actually
+    overflows the window. Read a big function MORE carefully, never less.
     Derive the DB and the write dir from <scan_dir> (ABSOLUTE, never relative):
     - DB:  <scan_dir>/../../.sgre/sgre.db
     - tmp: <scan_dir>/../../.sgre/.tmp/

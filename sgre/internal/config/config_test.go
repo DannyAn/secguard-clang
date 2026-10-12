@@ -195,3 +195,21 @@ names = ["list_push_back", "dict_set", "buffer_append"]
 		}
 	}
 }
+
+func TestLoad_IntegerOverflowTruncatingWrappers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secguard.toml")
+	content := `[integer_overflow.truncating_wrappers]
+nlog_syslog_add_pri = 1
+nlog_syslog_add_hostname = 1
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	SetExplicitPath(path)
+	cfg := Load()
+	got := cfg.IntegerOverflowTruncatingWrappers()
+	if len(got) != 2 || got["nlog_syslog_add_pri"] != 1 || got["nlog_syslog_add_hostname"] != 1 {
+		t.Errorf("integer_overflow.truncating_wrappers = %v, want two wrappers with cap arg 1", got)
+	}
+}
