@@ -4,6 +4,27 @@
 
 ## [0.9.3] - 2026-10-11
 
+### 重新发布（2026-10-12）：生产冒烟复核修复（12 项回源）
+
+对 v0.9.3 生产冒烟报告（xlog 全量扫描，约 1012 文件 / 7092 函数 / 178358 行）的 12 项发现逐项回源复核：8 项含真实缺陷（其中"out-of-bounds 漏报"的漏洞判断为误诊、日志误报为真缺陷）已修复，4 项判定为误诊或能力空缺。
+
+- **uninit_variable 检测器 panic（P0，真缺陷）**：`outputParamInitializedVars`（`evidence/uninit_variable.go`）在调用点无函数摘要（外部库函数）时仍读取 `summary.ParamWrites`。命中"已知 out-param 函数 + 非输出参数取地址"形状（`localtime_r(&t, &tm)`：`&t` 不在 `outputParamInitializerArgs` 的输出下标集合内）即空指针崩溃，整个 uninit 检测器中断，候选被静默截断。根因定位方式：v0.9.3 日志只留一句 `nil pointer dereference`、无行号，本地用一个 C 代码库当复现靶子跑出同样 panic，补打堆栈后定位。现摘要为零值时以零值 `FuncSummary` 兜底；确定性回归夹具 `tc131_uninit_addr_outparam.c` + `TestUninit_AddrOutParamNilSummaryPanic`（修复前该测试必 panic，已验证）。`detector panicked` 日志同时补打完整堆栈（`debug.Stack()`），避免同类崩溃再次不可定位。
+- **category filter 告警误报（真缺陷，日志层）**：`category filter dropped all seed events` 打印的是 `spec.Categories`（本类型**允许**清单）而非真实被丢弃的 category，且对"种子事件被兄弟类型认领"这一正常路由也告警。真实会话中 out-of-bounds 丢弃写向 BUFFER_ACCESS 事件（归 buffer-overflow）被误读为"6 个 OOB 读取被类别过滤器一刀切"的漏报。现仅当被丢弃 category **无任何注册类型认领**（真实漂移）才 WARN，并输出真实 `orphan_categories` 计数；正常跨类型路由降为 Debug，明细写入 `PipelineSummary.SeedRoutedByCategory` 供审计。测试 `TestUnroutedCategories`。
+- **format-string（真缺陷 ×2）**：① `fprintf_s`/`vfprintf_s` 的格式串实参下标错为 0（`(FILE*, fmt, ...)` 应为 1），导致字面量格式串被当成非常量 sink 误报（实测 `fprintf_s(fp, "%d\n", 1)` 入选候选）。② Annex K `_s` printf 变体位于 `SafeFunctions`，被 `safe_function_exclude` 无条件丢弃——与 format-string 检测器刻意发射 `_s` 非常量格式串（CWE-134）自相矛盾，生产会话 36 个种子 100% 过滤为零。现格式串类别仅允许 curated 项目安全包装函数豁免，边界安全不再豁免格式串。回归 `tc132_format_string_annexk.c`、`TestFormatString_AnnexKFormatIndex`、`TestSafeFunctionFilter_FormatStringUnderscoreSNotDropped`。
+- **`--write-json` 定位字段静默丢失（真缺陷）**：缺省或拼错（如 `filepath`/`line_number`）的定位键解码为零值，静默落库为 `file_path=''`/`line=0` 且 exit 0。现拒绝空定位并指明期望键名，同时接受 DB 列名别名 `file_path`/`line_number`/`function_name`（`findingInput.normalizeAliases`）。
+- **`--review-json` 契约（真缺陷，轻）**：缺失/拼错必填字段时报 `entry N (finding M): missing required field "review_status" ...`（含期望值与"拼错即为空"的提示），不再只报 `invalid review_status ""`；`report --help` 补齐 `--review-json` / `--list-auto-confirmed` / `--type` / `--limit` 说明与必填字段清单。
+- **`report --audit` 复核兜底（真缺陷）**：audit 前不校验 `status=auto-confirmed 且 review_status 为空` 的 finding；0 候选类型不派子代理时，该机器确认项会被静默带过。现审计信封新增 `unreviewed_auto_confirmed` 与 `warning`（`auditNoticeFields`，不改变退出码契约）。
+- **scan.log 缺终态（真缺陷，轻）**：日志止于 plan 阶段且随即关闭，扫描结束边界与退出状态均不可审计。现以命名返回值在退出时补记 `scan finished` + `exit_code`（含 `--fail-on` 门禁的 2）。
+- **report.md 计数口径（真缺陷，轻）**：per-type 表新增 `Auto-confirmed` 列区分机器确认与 AI 确认；`findings/` 文案更正为 "confirmed（pipeline auto-confirmed + AI）"。
+
+#### 复核后判定为误诊 / 已实现（未改动代码）
+
+- **memory-leak 收敛链漏掉真实泄漏（`xlog_db_delete_all_table:234`）**：误诊。`candidates/` 只承载首轮待 AI 研判的 suspected 线索；`status=auto-confirmed` 的确定性发现按设计直接落 findings 表并进入二次复核。已按报告给出的形状构造最小复现：泄漏被检测器正确发射并 auto-confirm（`xlog_db_create_new_ctrl_item` 分配 + NULL 检查 + 后续早退），无需修改 `leak_proof`/`ownership_transfer`。
+- **out-of-bounds 6 个种子被类别过滤器丢弃 = 确定性漏报**：误诊，见上。读写向 category 已分别路由到 out-of-bounds / buffer-overflow，实测两类均正确进入候选/auto-confirm。
+- **`.sgre/.tmp/` 残留未清理**：误诊。`secguard scan` 启动即 `RemoveAll` + `MkdirAll`；残留的 `<type>-partN.json` 是 scan 结束后 AI 阶段写入的中间产物，由下一次 scan 清理，与文档一致。
+- **`TaskCreate` 工具参数契约**：误诊。项目源码与 `extension/shared/` 指令均无 `TaskCreate`，文档要求用宿主 todo 列表跟踪类型进度。
+- **缺官方编排命令（`secguard orchestrate`）**：确认是能力空缺而非缺陷；批次数/范围切分仍由编排器计算，本次未新增命令。
+
 ### ds4.1 检视修复（40 项回源复核）
 
 对 v0.9.2→HEAD 的 12 个提交做全量回源复核（`docs/ds4.1检视sgre-20261019.md`），逐项验证并修复真实缺陷。关键项：

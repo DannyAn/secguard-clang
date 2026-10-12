@@ -51,6 +51,13 @@ type PipelineSummary struct {
 	ShortCircuited  bool           `json:"short_circuited"`
 	Dropped         []Dismissed    `json:"dropped,omitempty"`
 	DroppedByReason map[string]int `json:"dropped_by_reason,omitempty"`
+	// SeedRoutedByCategory counts seed events dropped BEFORE the filter chain
+	// because their event category belongs to a sibling vuln type that shares
+	// the same seed event (BUFFER_ACCESS write categories seed buffer-overflow,
+	// read categories seed out-of-bounds). Keeping the breakdown makes the
+	// raw-event reduction auditable: a type with seed_count==0 but a non-empty
+	// SeedRoutedByCategory did receive events, it just routed them away.
+	SeedRoutedByCategory map[string]int `json:"seed_routed_by_category,omitempty"`
 }
 
 type FilterStats struct {

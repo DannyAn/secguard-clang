@@ -2245,6 +2245,20 @@ func outputParamInitializedVars(calls, ifs []parser.Node, f *db.Function, summar
 		if !knownInit && !hasSpecificOutArgs && !hasSummary {
 			continue
 		}
+		// Nil-summary safety: the switch below reads summary.ParamWrites /
+		// summary.ParamConditionalWrites even when hasSummary is false. A call that
+		// is a known output-param initializer (memset/stat/...) OR has spec'd
+		// arg indices (localtime_r/gmtime_r/strptime) but has no function summary
+		// reaches the switch with summary == nil; the previous code then
+		// dereferenced the nil pointer and PANICKED the whole uninit detector
+		// (reproduced on redis: localtime_r(&t, &tm) with arg0 not an output arg
+		// fell through to `summary.ParamWrites[0]`). A zero-value summary makes
+		// those reads safely return false — no candidate is invented, and the
+		// remaining events are still emitted instead of being truncated by the
+		// panic.
+		if summary == nil {
+			summary = &FuncSummary{}
+		}
 		guarded := callInBranchCondition(call)
 		for _, child := range call.NamedChildren() {
 			if child.Kind() != "argument_list" {

@@ -71,6 +71,22 @@ func (f *SafeFunctionFilter) Apply(ctx context.Context, candidates []Candidate) 
 			kept = append(kept, c)
 			continue
 		}
+		// format_string (CWE-134): the Annex K `_s` printf variants (sprintf_s,
+		// snprintf_s, vsprintf_s, vsnprintf_s) are listed in SafeFunctions because
+		// they bounds-check the DESTINATION buffer — but a non-literal FORMAT
+		// argument is still a format-string defect, and the detector emits those
+		// `_s` calls as candidates for exactly that reason. Letting
+		// IsSafeFunction fire here dropped 100% of them before the AI ever saw
+		// them (the detector and the filter contradicted each other). Only a
+		// curated project safe wrapper (which validates the format) may dismiss.
+		if c.Category == "format_string" {
+			if apikb.IsSafeWrapper(c.FunctionName) {
+				dropped = dismiss(dropped, c, f.Name(), fmt.Sprintf("function %s is a safe wrapper for format strings", c.FunctionName))
+				continue
+			}
+			kept = append(kept, c)
+			continue
+		}
 		reason := ""
 		// Project safe wrapper: match on the containing function name (a curated
 		// list of THIS project's own framework entry points, e.g. SafeCopy_copy).

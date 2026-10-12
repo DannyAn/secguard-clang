@@ -28,7 +28,9 @@ import (
 // (lexicographically 'l' < 's'), so latest is always first in directory listings.
 var scanIDPattern = regexp.MustCompile(`^sc_\d{4}-\d{2}-\d{2}_\d{6}_[0-9A-Za-z]{6}$`)
 
-func runScanCmd(ctx context.Context, args []string) int {
+// runScanCmd returns the process exit status as a NAMED result so the deferred
+// scan-log finalizer can record the real exit code in scan.log.
+func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	// scanStart anchors the wall-clock duration recorded in scan_runs. It is
 	// captured before argument parsing so the reported duration covers the whole
 	// command, not just the pipeline phases.
@@ -120,9 +122,18 @@ func runScanCmd(ctx context.Context, args []string) int {
 
 	logger, logCloser := newScanLogger(scanDir)
 	defer func() {
-		if logCloser != nil {
-			_ = logCloser.Close()
+		if logCloser == nil {
+			return
 		}
+		// Terminate the log with the REAL exit status. The last INFO used to be a
+		// per-type plan timing, so the log had no scan-end boundary and a run that
+		// failed (or was stopped by the --fail-on CI gate) looked identical to a
+		// clean one when read back. The named result carries the status here.
+		logger.Info("scan finished", "scan_id", scanID, "exit_code", exitCode)
+		if cerr := logCloser.Close(); cerr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to close scan log: %v\n", cerr)
+		}
+		logCloser = nil
 	}()
 
 	sup, err := loadSuppressions(ctx, store)
@@ -439,12 +450,6 @@ func runScanCmd(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stdout, string(jsonBytes))
 		return 1
 	} else {
-		if logCloser != nil {
-			if cerr := logCloser.Close(); cerr != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to close scan log: %v\n", cerr)
-			}
-			logCloser = nil
-		}
 		// 强制落盘验证：Write() 返回 nil 不代表文件实际存在（磁盘满、NFS 延迟、
 		// 权限问题在写入过程中发生等）。逐个检查输出契约文件存在且非空，
 		// 任一缺失则视为致命错误——不再静默返回 0 让 agent 误读"成功"。

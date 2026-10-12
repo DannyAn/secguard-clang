@@ -547,6 +547,15 @@ func runReportCmd(ctx context.Context, args []string) int {
 		skippedDismissed := 0
 		for i := range inputs {
 			in := &inputs[i]
+			in.normalizeAliases()
+			// A finding with no location cannot be keyed, written to findings/,
+			// or reconciled — the scan's auto-confirm path explicitly refuses
+			// one. Reject it here with the expected keys named instead of
+			// persisting a file_path='' line=0 row and exiting 0.
+			if strings.TrimSpace(in.File) == "" || in.Line <= 0 {
+				errs = append(errs, fmt.Sprintf("entry %d: missing location — expected \"file\" (string) and \"line\" (positive integer); the DB column names file_path/line_number are accepted as aliases", i))
+				continue
+			}
 			confidence := float64(in.Confidence)
 			if confidence > 1.0 {
 				confidence /= 100.0
@@ -834,15 +843,23 @@ func runReportCmd(ctx context.Context, args []string) int {
 		reviewedForSync := []reviewInput{}
 		var errs []string
 		err = store.WithTx(ctx, func(tx db.Store) error {
-			for _, in := range inputs {
+			for i, in := range inputs {
+				// A misspelled/omitted key decodes to the zero value, so name the
+				// offending entry position and the expected keys instead of
+				// reporting a bare `invalid review_status ""` — the caller
+				// otherwise cannot tell a typo'd key from an invalid value.
+				if in.ID == 0 {
+					errs = append(errs, fmt.Sprintf("entry %d: missing required field \"id\" (expected {\"id\": <finding id>, \"review_status\": \"confirmed\"|\"dismissed\"})", i))
+					continue
+				}
 				switch in.ReviewStatus {
 				case "confirmed", "dismissed":
 				default:
-					errs = append(errs, fmt.Sprintf("finding %d — invalid review_status %q", in.ID, in.ReviewStatus))
-					continue
-				}
-				if in.ID == 0 {
-					errs = append(errs, "missing id in review entry")
+					if in.ReviewStatus == "" {
+						errs = append(errs, fmt.Sprintf("entry %d (finding %d): missing required field \"review_status\" (expected \"confirmed\" or \"dismissed\"; a misspelled key decodes as empty)", i, in.ID))
+					} else {
+						errs = append(errs, fmt.Sprintf("entry %d (finding %d): invalid review_status %q (expected \"confirmed\" or \"dismissed\")", i, in.ID, in.ReviewStatus))
+					}
 					continue
 				}
 				// Only machine auto-confirmed findings are re-reviewable; a verdict
@@ -1019,6 +1036,18 @@ func runReportCmd(ctx context.Context, args []string) int {
 			return 1
 		}
 
+		// Machine (auto-confirmed) verdicts were written WITHOUT AI review; the
+		// re-review pass is what corrects a wrong one. A type with 0 candidates
+		// gets no subagent, so its auto-confirmed findings can be audited
+		// unreviewed — a real defect then reaches the final report machine-stamped
+		// and an FP reaches it as a false positive. Count them so the audit
+		// envelope says so instead of finalizing silently.
+		unreviewed, err := unreviewedAutoConfirmedCount(ctx, store, scanID)
+		if err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to count unreviewed auto-confirmed findings: %v", err))
+			return 1
+		}
+
 		if outputDir != "" {
 			auditPath := filepath.Join(outputDir, "audit-report.md")
 			if err := writeAuditReport(auditPath, scanID, audits, overview); err != nil {
@@ -1086,10 +1115,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 			// A finding with no scan_id has no scan directory, so its verdict
 			// file cannot be placed or reconciled. Surface it instead of
 			// letting the review surface be quietly incomplete.
-			if orphans > 0 {
-				out["findings_without_scan_id"] = orphans
-				out["warning"] = fmt.Sprintf("%d finding(s) carry no scan_id and are missing from %s/ — re-write them with --scan-id", orphans, report.FindingsDir)
-			}
+			auditNoticeFields(out, orphans, unreviewed)
 			WriteJSON(out)
 		} else {
 			out := map[string]interface{}{
@@ -1097,10 +1123,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 				"audits":  audits,
 				"summary": overview.SummaryFields(),
 			}
-			if orphans > 0 {
-				out["findings_without_scan_id"] = orphans
-				out["warning"] = fmt.Sprintf("%d finding(s) carry no scan_id and are missing from %s/ — re-write them with --scan-id", orphans, report.FindingsDir)
-			}
+			auditNoticeFields(out, orphans, unreviewed)
 			WriteJSON(out)
 		}
 		return 0
@@ -1391,6 +1414,37 @@ func countFindingsWithoutScanID(ctx context.Context, store db.Store) (int, error
 	return n, nil
 }
 
+// unreviewedAutoConfirmedCount returns how many findings for scanID carry a
+// machine (auto-confirmed) verdict but no AI review verdict. The audit is the
+// finalize step, so a non-zero count means the review pass has not covered every
+// machine verdict — a wrong auto-confirm would otherwise be reported as-is.
+func unreviewedAutoConfirmedCount(ctx context.Context, store db.Store, scanID string) (int, error) {
+	findings, err := store.ListAutoConfirmedForReview(ctx, scanID, nil, 0)
+	if err != nil {
+		return 0, err
+	}
+	return len(findings), nil
+}
+
+// auditNoticeFields adds the completeness notices shared by both `report --audit`
+// envelope shapes (with and without --output-dir) so the two can never drift:
+// findings that cannot be placed in findings/, and machine verdicts that were
+// never re-reviewed.
+func auditNoticeFields(out map[string]interface{}, orphans, unreviewed int) {
+	var msgs []string
+	if orphans > 0 {
+		out["findings_without_scan_id"] = orphans
+		msgs = append(msgs, fmt.Sprintf("%d finding(s) carry no scan_id and are missing from %s/ — re-write them with --scan-id", orphans, report.FindingsDir))
+	}
+	if unreviewed > 0 {
+		out["unreviewed_auto_confirmed"] = unreviewed
+		msgs = append(msgs, fmt.Sprintf("%d auto-confirmed finding(s) have no review verdict — re-review them (`report --list-auto-confirmed`, then `report --review-json`) before treating this audit as final", unreviewed))
+	}
+	if len(msgs) > 0 {
+		out["warning"] = strings.Join(msgs, "; ")
+	}
+}
+
 // unclassifiedCandidates is retained for buildScanOverview's overview.Unclassified
 // field. Under the "dismissed not persisted" model a type's AI stage is either
 // done (ai_stage_status='done', every candidate settled) or in-progress (reported
@@ -1402,6 +1456,15 @@ func unclassifiedCandidates(audits []vulnAuditEntry) int {
 
 // findingInput is one row of a `--write-json` payload: the single-finding object
 // shape, and the element type of the array/envelope shapes.
+//
+// The location keys are `file`/`line`/`function`, which differ from the findings
+// table's `file_path`/`line_number`/`function_name` columns (and from the JSON
+// `secguard db` / `report --list-auto-confirmed` emit for those columns). A
+// payload that copies the DB spelling therefore decoded to the zero value and
+// persisted a finding with an empty file_path and line 0, exit 0. The *Alias
+// fields accept the column spelling too, and normalizeAliases folds it into the
+// canonical fields — so both spellings now mean the same thing instead of one
+// of them silently producing a location-less finding.
 type findingInput struct {
 	RuleID         string        `json:"rule_id"`
 	Severity       string        `json:"severity"`
@@ -1415,6 +1478,24 @@ type findingInput struct {
 	Reasoning      string        `json:"reasoning"`
 	ExceptionCheck string        `json:"exception_check"`
 	FixStrategy    string        `json:"fix_strategy"`
+
+	FilePathAlias   string `json:"file_path"`
+	LineNumberAlias int    `json:"line_number"`
+	FunctionAlias   string `json:"function_name"`
+}
+
+// normalizeAliases folds the DB-column spellings into the canonical
+// file/line/function fields. The canonical value wins when both are present.
+func (in *findingInput) normalizeAliases() {
+	if in.File == "" {
+		in.File = in.FilePathAlias
+	}
+	if in.Line == 0 {
+		in.Line = in.LineNumberAlias
+	}
+	if in.Function == "" {
+		in.Function = in.FunctionAlias
+	}
 }
 
 // writeJSONShapeHint is appended to every parse failure. The batch path fails

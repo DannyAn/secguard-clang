@@ -138,10 +138,14 @@ Flags:
   --scan-id <id>           Scan ID to attach findings to
   --audit                  Regenerate report.md + result.sarif + result.xlsx + findings/ from DB
   --output-dir <dir>       Output directory for audit artifacts
+  --list-auto-confirmed    List machine (auto-confirmed) findings with no review verdict yet
+  --type <kebab,...>       With --list-auto-confirmed: scope the list to these vuln types
+  --limit <n>              With --list-auto-confirmed: cap the batch size (0 = no cap)
   --review                 Review a single finding by id
   --id <n>                 Finding id to review
   --review-status <s>      Review verdict: confirmed | dismissed
   --review-reasoning <r>   One-line review justification
+  --review-json <file>     Re-review auto-confirmed findings from a JSON array (see below)
   --complete-type <type>   Mark AI stage done for a vulnerability type (sets ai_stage_status=done)
   --db <path>              Path to sgre.db
   --help, -h               Show this usage
@@ -153,10 +157,21 @@ Flags:
   rule_id is the CWE; status is confirmed (dismissed candidates are not written — skipped). A single
   finding object, or an object {"scan_id":"...","findings":[...]}, is also
   accepted. The write is idempotent (UPSERT on scan_id+rule_id+file+line+function).
+  "file"/"line"/"function" are required for a confirmed finding; the DB-column
+  spellings "file_path"/"line_number"/"function_name" are accepted as aliases.
+
+--review-json payload: a JSON ARRAY of objects re-reviewing auto-confirmed findings.
+  REQUIRED per object: "id" (finding id from --list-auto-confirmed) and
+  "review_status" ("confirmed" | "dismissed"). "review_reasoning" is optional:
+  [{"id":13,"review_status":"dismissed","review_reasoning":"getter borrow, not an allocation"}]
+  A missing/misspelled required key is reported by entry position. A partial
+  batch exits non-zero; re-run --audit and check for unreviewed_auto_confirmed.
 
 Examples:
   secguard report
   secguard report --write-json /tmp/buffer-overflow.json --scan-id sc_2026-08-23_130813_395bcb
+  secguard report --list-auto-confirmed --scan-id sc_2026-08-23_130813_395bcb
+  secguard report --review-json /tmp/auto-confirmed-review.json
   secguard report --audit --scan-id sc_2026-08-23_130813_395bcb --output-dir ./scans/sc_x
   secguard report --review --id 1 --review-status dismissed --review-reasoning "guarded by bounds check"`)
 }

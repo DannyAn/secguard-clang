@@ -75,7 +75,13 @@ func (d *FormatStringDetector) extractFormatArg(call parser.Node) string {
 			args := child.NamedChildren()
 			formatIdx := 0
 			switch callName {
-			case "fprintf", "vfprintf", "syslog":
+			case "fprintf", "fprintf_s", "vfprintf", "vfprintf_s", "syslog":
+				// fprintf(FILE*, fmt, ...) / vfprintf(FILE*, fmt, ap): the stream
+				// is args[0], the format is args[1]. The Annex K `_s` variants keep
+				// the same layout — omitting them made the detector read the FILE*
+				// as the format, so a literal format (`fprintf_s(f, "%d\n", 1)`)
+				// was reported as a non-literal sink and a variable one carried the
+				// wrong `format_arg` evidence.
 				formatIdx = 1
 			case "err", "errx":
 				// err(eval, fmt, ...) / errx(eval, fmt, ...): args[0] is the eval

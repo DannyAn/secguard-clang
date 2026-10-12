@@ -3,6 +3,7 @@ package evidence
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -63,8 +64,14 @@ func RunAllDetectors(ctx context.Context, store db.Store, p *parser.Parser, logg
 	run := func(d Detector) {
 		defer func() {
 			if r := recover(); r != nil {
+				// The stack is the ONLY record of WHERE the panic happened: the
+				// recovered value alone ("invalid memory address or nil pointer
+				// dereference") identifies no line, so a panic in a real scan
+				// could not be diagnosed or reproduced from the log. Log the
+				// full stack; keep the short message in the returned data.
+				stack := string(debug.Stack())
 				if logger != nil {
-					logger.Warn("detector panicked", "detector", d.Name(), "panic", r)
+					logger.Warn("detector panicked", "detector", d.Name(), "panic", r, "stack", stack)
 				}
 				mu.Lock()
 				errs = append(errs, DetectorError{Detector: d.Name(), Err: fmt.Errorf("panicked: %v", r)})

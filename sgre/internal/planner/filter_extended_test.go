@@ -49,6 +49,47 @@ func TestSafeFunctionFilter_ArgumentInjectionSafeWrapper(t *testing.T) {
 	}
 }
 
+// TestSafeFunctionFilter_FormatStringUnderscoreSNotDropped pins the detector/
+// filter contradiction: the Annex K `_s` printf variants (sprintf_s, snprintf_s,
+// vsprintf_s, vsnprintf_s) are in SafeFunctions because they bounds-check the
+// DESTINATION, but the format-string detector deliberately emits them for a
+// non-literal FORMAT argument (CWE-134). IsSafeFunction firing here dropped
+// 100% of them before the AI saw them. A curated safe wrapper may still dismiss.
+func TestSafeFunctionFilter_FormatStringUnderscoreSNotDropped(t *testing.T) {
+	store := db.NewTestStore(t)
+	f := NewSafeFunctionFilter(store)
+	ctx := context.Background()
+
+	candidates := []Candidate{
+		{FunctionName: "sink", APIName: "sprintf_s", Category: "format_string", VariableName: "fmt", Line: 4},
+		{FunctionName: "sink", APIName: "snprintf_s", Category: "format_string", VariableName: "fmt", Line: 5},
+		{FunctionName: "sink", APIName: "vsprintf_s", Category: "format_string", VariableName: "fmt", Line: 6},
+		{FunctionName: "sink", APIName: "vsnprintf_s", Category: "format_string", VariableName: "fmt", Line: 7},
+	}
+	kept, dropped, err := f.Apply(ctx, candidates)
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+	if len(kept) != len(candidates) {
+		t.Errorf("format_string on a _s printf variant must reach the AI (bounds safety does not cover a non-literal fmt): kept=%d want=%d", len(kept), len(candidates))
+	}
+	if len(dropped) != 0 {
+		t.Errorf("format_string on a _s printf variant must not be dropped by IsSafeFunction, got dropped=%d", len(dropped))
+	}
+
+	// A curated project wrapper that validates the format may still dismiss.
+	wrapped := []Candidate{
+		{FunctionName: "validate_log", APIName: "sprintf_s", Category: "format_string", VariableName: "fmt", Line: 9},
+	}
+	kept, dropped, err = f.Apply(ctx, wrapped)
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+	if len(kept) != 0 || len(dropped) != 1 {
+		t.Errorf("format_string inside a safe wrapper should be dismissed, got kept=%d dropped=%d", len(kept), len(dropped))
+	}
+}
+
 func TestSafeFunctionFilter_CommandInjectionExecveTaintedPathKept(t *testing.T) {
 	store := db.NewTestStore(t)
 	f := NewSafeFunctionFilter(store)

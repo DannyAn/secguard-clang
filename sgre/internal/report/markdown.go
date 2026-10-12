@@ -98,12 +98,22 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding,
 	b.WriteString(overview.VerdictMarkdown())
 
 	b.WriteString("## Findings by Skill\n\n")
-	b.WriteString("| Skill | CWE | Confirmed |\n")
-	b.WriteString("|-------|-----|-----------|\n")
+	// Auto-confirmed is broken out per type as well as in the aggregate: without
+	// it the per-type "Confirmed" number mixed pipeline-proved and AI-classified
+	// findings, so a reader reconciling report.md against findings/ had no way to
+	// tell which rows were machine verdicts.
+	b.WriteString("| Skill | CWE | Confirmed | Auto-confirmed |\n")
+	b.WriteString("|-------|-----|-----------|----------------|\n")
 	for _, g := range groups {
-		b.WriteString(fmt.Sprintf("| %s | %s | %d |\n", g.vulnType, g.cwe, len(g.items)))
+		auto := 0
+		for _, f := range g.items {
+			if f.Status == db.StatusAutoConfirmed {
+				auto++
+			}
+		}
+		b.WriteString(fmt.Sprintf("| %s | %s | %d | %d |\n", g.vulnType, g.cwe, len(g.items), auto))
 	}
-	b.WriteString(fmt.Sprintf("| **TOTAL** | | **%d** |\n\n", confirmed))
+	b.WriteString(fmt.Sprintf("| **TOTAL** | | **%d** | **%d** |\n\n", confirmed, autoConfirmed))
 
 	for _, g := range groups {
 		b.WriteString(fmt.Sprintf("## %s (%s)\n\n", g.vulnType, g.cwe))
@@ -130,7 +140,7 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding,
 
 	b.WriteString("## Output Files\n\n")
 	b.WriteString(fmt.Sprintf("- SARIF (verdict stage, confirmed only): `%s`\n", SarifFile))
-	b.WriteString(fmt.Sprintf("- Findings to review (AI-confirmed verdicts): `%s/<vuln-type>/<NNN>_<file>_<line>_confirmed.md`\n", FindingsDir))
+	b.WriteString(fmt.Sprintf("- Findings to review (confirmed: pipeline auto-confirmed + AI-classified): `%s/<vuln-type>/<NNN>_<file>_<line>_confirmed.md`\n", FindingsDir))
 	b.WriteString(fmt.Sprintf("- Candidate evidence (pipeline output, pre-classification): `%s/<vuln-type>/`\n", CandidatesDir))
 	b.WriteString("- Audit report (pipeline statistics): `audit-report.md`\n")
 	b.WriteString("- Database: `.sgre/sgre.db`\n")

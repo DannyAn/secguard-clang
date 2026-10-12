@@ -156,13 +156,19 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 		return nil, err
 	}
 
-	seed, err := p.seedCandidatesByType(ctx, spec)
+	seed, routedAway, err := p.seedCandidatesByType(ctx, spec)
 	if err != nil {
 		return nil, fmt.Errorf("planner: seed: %w", err)
 	}
 
 	summary := PipelineSummary{
 		SeedCount: len(seed),
+		// Seed events this type routed to a sibling by event category. Recorded
+		// in the summary (not only in the log) so the raw-event-to-candidate
+		// reduction is auditable from `secguard plan`/the evidence package — a
+		// dropped-flavor category can no longer look like "the detector emitted
+		// nothing".
+		SeedRoutedByCategory: routedAway,
 	}
 
 	filters, err := p.getFilters(spec.FilterChain)
@@ -269,10 +275,13 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 	return result, nil
 }
 
-func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) ([]Candidate, error) {
+// seedCandidatesByType returns this type's seed candidates plus a count of the
+// seed events it routed away by event category (see SeedRoutedByCategory). The
+// second value is non-nil only when events were actually dropped by category.
+func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) ([]Candidate, map[string]int, error) {
 	events, err := p.store.ListEventsByType(ctx, spec.SeedEventType)
 	if err != nil {
-		return nil, fmt.Errorf("seed candidates: %w", err)
+		return nil, nil, fmt.Errorf("seed candidates: %w", err)
 	}
 
 	// Batch-load the functions and locations the seed events reference, so a type
@@ -295,15 +304,21 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 	// a location is worse than reporting nothing. Fail the type instead.
 	funcsByID, err := p.store.ListFunctionsByIDs(ctx, funcIDs)
 	if err != nil {
-		return nil, fmt.Errorf("seed candidates: list functions: %w", err)
+		return nil, nil, fmt.Errorf("seed candidates: list functions: %w", err)
 	}
 	locsByID, err := p.store.ListLocationsByIDs(ctx, locIDs)
 	if err != nil {
-		return nil, fmt.Errorf("seed candidates: list locations: %w", err)
+		return nil, nil, fmt.Errorf("seed candidates: list locations: %w", err)
 	}
 
 	var candidates []Candidate
 	droppedByCategory := 0
+	// droppedCategories counts the seed events this type routed away BY event
+	// category. Several types share one seed event (BUFFER_ACCESS feeds both
+	// buffer-overflow and out-of-bounds), so a type legitimately drops the other
+	// flavor's events; the map is what makes the log say which categories those
+	// were instead of echoing the type's own allow-list.
+	droppedCategories := map[string]int{}
 	for _, e := range events {
 		props := parseEventProps(e.Properties)
 
@@ -333,6 +348,7 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 		// types that carry no variable (e.g. integer-overflow, format-string).
 		if len(spec.Categories) > 0 && !containsString(spec.Categories, props.Category) {
 			droppedByCategory++
+			droppedCategories[props.Category]++
 			continue
 		}
 
@@ -391,16 +407,59 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 	}
 
 	// A detector/registry category-string drift is otherwise silent: the events
-	// exist, but the Categories filter drops every one and the type reads "0
-	// candidates" as if the detector had emitted nothing. Surface that specific
-	// signature so the drift is visible in the scan log instead of a phantom
-	// zero-candidate type.
-	if p.logger != nil && len(events) > 0 && len(candidates) == 0 && droppedByCategory > 0 {
-		p.logger.Warn("category filter dropped all seed events",
-			"vuln_type", spec.Name, "events", len(events), "categories", spec.Categories)
+	// exist, but the Categories filter drops them and the type reads "0
+	// candidates" as if the detector had emitted nothing. Warn ONLY when a
+	// dropped category is claimed by no registered type that shares this seed
+	// event — that is the real drift. The previous version warned whenever a type
+	// dropped all its events AND logged spec.Categories (the type's OWN allow-list),
+	// so a benign cross-type route read as "the allowed categories were dropped":
+	// out-of-bounds dropping the write-flavored BUFFER_ACCESS events (which
+	// buffer-overflow owns) produced a phantom OOB false-negative alarm.
+	if p.logger != nil && droppedByCategory > 0 {
+		orphan := p.unroutedCategories(spec, droppedCategories)
+		if len(orphan) > 0 {
+			p.logger.Warn("unrouted seed event categories: no vuln type claims them",
+				"vuln_type", spec.Name, "seed_event_type", spec.SeedEventType,
+				"events", len(events), "orphan_categories", orphan,
+				"allowed_categories", spec.Categories)
+		} else {
+			p.logger.Debug("seed events routed away by category to sibling vuln types",
+				"vuln_type", spec.Name, "events", len(events),
+				"dropped_by_category", droppedCategories, "candidates", len(candidates))
+		}
 	}
 
-	return candidates, nil
+	if droppedByCategory == 0 {
+		return candidates, nil, nil
+	}
+	return candidates, droppedCategories, nil
+}
+
+// unroutedCategories returns the subset of dropped that no registered vuln type
+// other than spec claims. Categories claimed only by spec itself cannot appear
+// here (spec would have kept them), so the result is exactly the events lost to
+// a detector/registry naming drift rather than to legitimate cross-type routing.
+func (p *Planner) unroutedCategories(spec *VulnTypeSpec, dropped map[string]int) map[string]int {
+	routed := make(map[string]bool)
+	for _, name := range AllVulnTypes() {
+		if name == spec.Name {
+			continue
+		}
+		other, err := GetVulnTypeSpec(name)
+		if err != nil || other.SeedEventType != spec.SeedEventType {
+			continue
+		}
+		for _, c := range other.Categories {
+			routed[c] = true
+		}
+	}
+	orphan := make(map[string]int)
+	for cat, n := range dropped {
+		if !routed[cat] {
+			orphan[cat] = n
+		}
+	}
+	return orphan
 }
 
 // suspicionRank orders suspicion tiers so a dedup merge can never let a
