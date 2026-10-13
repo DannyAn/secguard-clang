@@ -780,7 +780,7 @@ func runStatusCmd(ctx context.Context, args []string) int {
 			WriteErrorJSON("no scan found; run 'secguard scan <path>' first or pass --scan-id")
 			return 1
 		}
-		statuses, perr := store.ListPerTypeStatus(ctx, scanID, planner.CWEForType)
+		statuses, perr := store.ListPerTypeStatus(ctx, scanID, planner.CWEsForType)
 		if perr != nil {
 			WriteErrorJSON(fmt.Sprintf("failed to list per-type status: %v", perr))
 			return 1

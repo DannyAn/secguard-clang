@@ -121,6 +121,21 @@ func VulnTypesToRuleIDs(vulnTypes []string) ([]string, error) {
 	return ruleIDs, nil
 }
 
+// CWEsForType returns the full set of CWE rule_ids that findings for a single
+// vulnerability type can carry: its canonical CWE plus every legacy and
+// per-category CWE. It is the per-type form of VulnTypesToRuleIDs, used by the
+// per-type status counter so a multi-CWE type (injection → CWE-78/89/88/91/93/117,
+// crypto-misuse → CWE-327/326/338) counts its written findings under every one
+// of its rule_ids instead of only the canonical CWE. Returns nil for an unknown
+// type (the caller treats that as "no CWEs, zero written").
+func CWEsForType(vulnType string) []string {
+	ids, err := VulnTypesToRuleIDs([]string{vulnType})
+	if err != nil {
+		return nil
+	}
+	return ids
+}
+
 func AllVulnTypeNames() string {
 	names := AllVulnTypes()
 	return strings.Join(names, ", ")

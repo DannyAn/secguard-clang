@@ -179,7 +179,8 @@ security scan and reading them makes the verdicts worthless. The scan dir
 | `MAX_TYPES_PER_BATCH` | 4 | Hard ceiling on types assigned to one subagent |
 | `MAXTURNS` | 60 | security-auditor.md maxTurns (must match) |
 | `MAXTURNS_SAFETY_RATIO` | 0.9 | Use only 90% of maxTurns as the budget |
-| `TURNS_PER_TYPE_ESTIMATE` | 12 | Avg turns per type (skill load + classify + write) |
+| `PER_TYPE_FIXED_TURNS` | 6 | Fixed per-type overhead (skill load + `_index.md` read + write + complete-type) |
+| `PER_CANDIDATE_TURNS` | 0.8 | Avg turns per candidate (most settle from `Source`+`Hint`; ~20% need one `Evidence` open) |
 | `LARGE_CANDIDATE_THRESHOLD` | 100 | Types with > this many candidates get a dedicated subagent |
 | `SPLIT_CANDIDATE_THRESHOLD` | 100 | A type with > this many candidates is SPLIT across multiple subagents, each handling ≤ this many candidates |
 
@@ -192,7 +193,7 @@ as part of `release/build-packages.sh`.
 - If a batch has > `MAX_TYPES_PER_BATCH` (4) types, the orchestrator SHALL split it before dispatching.
 - Where a single type has > `LARGE_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL assign that type its own dedicated subagent.
 - Where a single type has > `SPLIT_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL split it into MULTIPLE subagents, each handling a ≤100-candidate RANGE of that type (pass the candidate # range, e.g. "candidates #1–100 of null-deref"), so no single subagent's context window is exceeded. The 100-candidate cap is a CONTEXT ceiling (not a turn ceiling): before the Hint column + Code Context compression, a suspected-heavy range opened an `Evidence` file per suspected candidate and a 100-candidate range could exhaust a 200K context before the tail; with `Source`+`Hint` classification and a ±8 Code Context window the same budget now carries ~2× more, so 100 is the test point — if a super-large function still overflows, the tail is surfaced via the partial-count path, never silently buried.
-- If `batch_type_count × TURNS_PER_TYPE_ESTIMATE` ≥ `MAXTURNS × MAXTURNS_SAFETY_RATIO` (i.e. ≥ 54), the orchestrator SHALL reject the batch as over-budget and split it.
+- The orchestrator SHALL estimate a batch's cost on BOTH axes (type count AND candidate count) — a type-count-only check lets 4 small-types-sounding batches hide a heavy candidate load and overflow the subagent before the tail (the 0.9.4 race-condition omission: 4 types × 12 = 48 < 54 passed, but 86 candidates + 4 skill loads exhausted the window). Compute `estimated_turns = batch_type_count × PER_TYPE_FIXED_TURNS + batch_candidate_count × PER_CANDIDATE_TURNS`; if `estimated_turns ≥ MAXTURNS × MAXTURNS_SAFETY_RATIO` (54), the orchestrator SHALL reject the batch as over-budget and split it (split off the heaviest type first, then re-check). `batch_candidate_count` is the SUM of the batch's per-type candidate counts.
 
 ## Full Scan Workflow
 
@@ -209,9 +210,9 @@ your todo list so no type is skipped or double-processed.
 **Context budget (the other thing that makes this fast).** Do NOT read all
 source files up front. The source-read budget is **≤5 source-read TURNS per
 type** — a read at the reported file:line (offset/limit around it), not a
-whole-file dump. It is derived from `TURNS_PER_TYPE_ESTIMATE` (12) minus the
-fixed skill-load + `_index.md`-read + evidence-open + write overhead, and it is
-per type — a file you already read for an earlier type is free the second time,
+whole-file dump. It is a fixed per-type allowance that stays well under the
+`PER_TYPE_FIXED_TURNS` (6) + candidate-classification budget, and it is per
+type — a file you already read for an earlier type is free the second time,
 so overlapping types do not multiply the budget.
 
 When a type's candidates span MORE source files than the budget can cover, do NOT
@@ -411,9 +412,13 @@ as `result.sarif`.)
     count is not persisted (not counted, not reported).
    ```
    For many types, batch them — but NEVER exceed `MAX_TYPES_PER_BATCH` (4) types
-   per subagent, and validate `batch_type_count × 12 < 54` before dispatching. A
-   batch that fails validation SHALL be split. Do NOT read `report.md` or all
-   source files yourself — each subagent reads only its own types' candidates.
+   per subagent, and validate the TWO-AXIS budget before dispatching:
+   `batch_type_count × PER_TYPE_FIXED_TURNS + batch_candidate_count ×
+   PER_CANDIDATE_TURNS < MAXTURNS × MAXTURNS_SAFETY_RATIO` (54). `batch_candidate_count`
+   is the SUM of the batch's per-type candidate counts. A batch that fails either
+   the type-count ceiling OR the two-axis budget SHALL be split (split off the
+   heaviest type first). Do NOT read `report.md` or all source files yourself —
+   each subagent reads only its own types' candidates.
 5. **Collect + finalize**:
 
    **DB schema 速查 (列名别猜 — 猜一个不存在的列如 `f.type` 会白费 1~2 轮 `secguard schema` 往返):**
@@ -440,8 +445,9 @@ as `result.sarif`.)
    - `candidate_count > 0 && written_count == 0` → FAILED with `reason: "empty-output"` (data did NOT land), regardless of the subagent's reported reason.
 
    **失败降级决策 (F1):** For each FAILED type (`candidate_count > 0 && written_count == 0`):
-   - Mark `missing-type` with the DB-derived `reason` and CONTINUE. **Do NOT re-dispatch a re-run task** — a re-run re-pays a fresh prompt + skill reload, and a `context-overflow` re-run overflows again on the same super-large function, so re-running wastes turns without recovering the tail. The unclassified candidates are surfaced in the 缺失类型章节 (候选数 = `candidate_count`) instead of being re-scanned.
-   - The orchestrator SHALL NOT run `report --audit` while ANY type still has `candidate_count > 0 && written_count == 0` — auditing now silently drops those unclassified candidates from `report.md`/`result.sarif` and fakes a complete scan. Mark every such type `missing-type` (do NOT re-dispatch) BEFORE audit.
+   - **Recover by re-dispatch first, not by sequential self-classification.** A `written_count == 0` type was almost always NEVER STARTED (a sibling type overflowed the subagent's context before it was reached), so its candidates are untouched. Dispatch ONE fresh single-type subagent per leftover type (single type, FULL candidate range) in a single turn — a fresh subagent has a full context window and will not overflow — then re-run the F5 DB check for that type before proceeding. **Do NOT fall back to classifying the leftover types yourself in sequence** — that serial loop is the 3–5-minute wall-clock cost this rule removes. (Guard: a type whose `terminal_state` is already `done` but `written_count == 0` means "all candidates dismissed", which is SUCCESS, not a leftover — do not re-dispatch it.)
+   - Only when a subagent is unavailable (parallel dispatch cannot run) OR the re-dispatched subagent AGAIN lands `written_count == 0`, mark the type `missing-type` with the DB-derived `reason` and CONTINUE. A `0 < written_count < candidate_count` type (mid-type `context-overflow`) is NOT re-dispatched — a re-run overflows again on the same super-large function; surface that gap in the 观察项表 instead.
+   - The orchestrator SHALL NOT run `report --audit` while ANY type still has `candidate_count > 0 && written_count == 0` and is not yet marked `missing-type` — auditing now silently drops those unclassified candidates from `report.md`/`result.sarif` and fakes a complete scan. Mark every such type `missing-type` (after the ONE re-dispatch attempt) BEFORE audit.
    - The orchestrator SHALL NOT finalize while any subagent terminal state is `unknown`.
 
     **Finalize 前置终态确认 (F1):** Before running audit, confirm every subagent terminal state ∈ {success, failed}. If any is `unknown`, run `secguard status --per-type --scan-id <scan_id>` and use the DB as the authority: types with `terminal_state: "done"` are success; `"in-progress"`/`"pending"` are failed (mark missing-type); `"unknown"` types were never dispatched — mark missing-type with `reason: "unknown"`.

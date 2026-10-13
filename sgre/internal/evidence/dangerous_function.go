@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"os"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/config"
@@ -75,6 +76,7 @@ var paramSensitiveBanned = map[string]bool{
 func (d *DangerousFunctionDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 	globalConsts := buildGlobalConstants(ctx, d.store, d.parser)
+	stringMacros := buildGlobalStringMacros(ctx, d.store, d.parser)
 
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		for _, call := range root.FindAll("call_expression") {
@@ -85,7 +87,7 @@ func (d *DangerousFunctionDetector) Detect(ctx context.Context) (DetectResult, e
 			// A param-sensitive ban (inet_addr, gethostbyname, ...) with a
 			// compile-time constant argument is safe — the injection risk
 			// requires a runtime-controlled value.
-			if paramSensitiveBanned[name] && hasConstantArg(call, globalConsts) {
+			if paramSensitiveBanned[name] && hasConstantArg(call, globalConsts, stringMacros) {
 				continue
 			}
 			fnID := enclosingFuncID(call, funcs)
@@ -101,15 +103,64 @@ func (d *DangerousFunctionDetector) Detect(ctx context.Context) (DetectResult, e
 	return result, err
 }
 
+// buildGlobalStringMacros parses every file in the scan tree and collects the
+// object-like macro names whose body is a C string literal (`#define
+// NLOG_HOST_IP "192.168.0.1"`). A call argument that is such a macro is a
+// compile-time constant — never a runtime-controlled value — so a
+// `inet_addr(NLOG_HOST_IP)` carries none of the injection/INADDR_NONE risk
+// that makes inet_addr dangerous. Uses ParseCached, so the parse is shared with
+// buildGlobalConstants and the main detection loop.
+func buildGlobalStringMacros(ctx context.Context, store db.Store, p *parser.Parser) map[string]bool {
+	macros := make(map[string]bool)
+	files, err := store.ListFiles(ctx)
+	if err != nil {
+		return macros
+	}
+	for _, file := range files {
+		source, err := os.ReadFile(file.Path)
+		if err != nil {
+			continue
+		}
+		tree, err := p.ParseCached(source, file.Path)
+		if err != nil {
+			continue
+		}
+		for _, def := range tree.RootNode().FindAll("preproc_def") {
+			name, value := "", ""
+			for _, child := range def.NamedChildren() {
+				switch child.Kind() {
+				case "identifier":
+					if name == "" {
+						name = child.Text()
+					}
+				case "preproc_arg":
+					value = child.Text()
+				}
+			}
+			if name == "" || value == "" {
+				continue
+			}
+			if isStringLiteralText(value) {
+				macros[name] = true
+			}
+		}
+	}
+	return macros
+}
+
 // hasConstantArg reports whether a call's first argument is a compile-time
-// constant: a string literal, a #define macro, or an enum value.
-func hasConstantArg(call parser.Node, consts *parser.ConstantEnv) bool {
+// constant: a string literal, a string-valued #define macro, a non-zero integer
+// #define/enum, or a zero constant.
+func hasConstantArg(call parser.Node, consts *parser.ConstantEnv, stringMacros map[string]bool) bool {
 	args := getCallArgs(call)
 	if len(args) == 0 {
 		return false
 	}
 	arg := strings.TrimSpace(args[0].Text())
 	if isStringLiteralText(arg) {
+		return true
+	}
+	if stringMacros[arg] {
 		return true
 	}
 	if consts != nil && (consts.NonZero(arg) || consts.IsZero(arg)) {

@@ -178,6 +178,30 @@ int f(int c) {
 	}
 }
 
+// DBZ-19: a divisor that is a call result (`x / nlog_get_clear_cycle_times()`)
+// whose body returns a ternary of two non-zero compile-time products must be
+// filtered — the callee provably never returns zero on ANY path, so the division
+// is not a CWE-369 candidate. This is the production config-getter shape
+// (`return cond ? (2*SECONDS_FOR_8H) : (2*SECONDS_FOR_1MIN);`).
+func TestDivideByZeroReview_TernaryReturnCall(t *testing.T) {
+	src := `#include <stdlib.h>
+#define NLOG_SECOND_FOR_8H (8 * 3600)
+#define NLOG_SECOND_FOR_1MIN 60
+#define NLOG_VMRSS_STATE_NORMAL 0
+static int nlog_get_vmrss_state(void) { return 0; }
+int nlog_get_clear_cycle_times(void) {
+    return nlog_get_vmrss_state() == NLOG_VMRSS_STATE_NORMAL ? (2 * NLOG_SECOND_FOR_8H) : (2 * NLOG_SECOND_FOR_1MIN);
+}
+int f(int entry_times) {
+    return entry_times % nlog_get_clear_cycle_times();
+}
+`
+	result := planDivideByZero(t, src)
+	if c := candidateForFunc(t, result, "f"); c != nil {
+		t.Errorf("f (divisor nlog_get_clear_cycle_times() always returns non-zero) should NOT be flagged, got var=%s", c.Target.Variable)
+	}
+}
+
 // DBZ-02 (if/else branch): a division in the alternative branch is guarded only
 // when the condition establishes zero. `if (d != 0) {} else { x / d; }` leaves
 // d == 0 on the division's path and must be flagged.

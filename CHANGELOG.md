@@ -37,6 +37,17 @@ v0.9.3 生产冒烟（nlog `src/` 全量扫描，1012 文件 / 7092 函数）中
 
 现 `boundedAccumulators` 区分「覆写写（`= f(...)`，恒有界）」与「累加写（`+= f(...)` / `= len + f(...)`，两个全量累加才可能超 total）」，并把 `len = 0` 识别为安全复位（重置增长、保持 total）。回归夹具 `tc129` 增加 `fmt_buf2`（赋值初始化）/`fmt_buf3`（纯赋值首写）两个形状，`TestIntegerOverflow_MixedAccumulatorBoundedReturn` 断言两者均不再发射候选。
 
+### 重新发布（2026-10-13，第二轮生产审视闭环）：跨函数误报消除 + 编排稳定性
+
+对「0.9.4 版本扫描审视改进建议第二轮」逐条回源核实后的闭环修复：三处跨函数误报（其中一处为 high 级 memory-leak 误报）与两处编排稳定性问题，其余条目核实为已修复或误诊、未改代码。
+
+- **injection per-type 统计漏计（真缺陷）**：`status --per-type` 的 `written_count` 只按主 CWE（CWE-78）计数，规则 id 为 `CWE-117` 的日志注入 finding 落库后仍显示 0，导致编排器 F5 误判子代理失败并触发不必要重试。现 `ListPerTypeStatus` 按类型全量 CWE（canonical + legacy + category，新增 `planner.CWEsForType`）求和并统一大小写归一化。测试 `TestListPerTypeStatus_MultiCWE`。
+- **divide-by-zero 跨函数三元返回值漏分析（真缺陷，medium 误报）**：`returnSummaryResolver.exprInterval` 缺 `conditional_expression` 分支，`nlog_get_clear_cycle_times()` 返回 `cond ? (2*SECONDS_FOR_8H) : (2*SECONDS_FOR_1MIN)` 被判「未知」而不过滤。现两臂皆非零才判非零（任一臂可能为零则保持保守）。测试 `TestDivideByZeroReview_TernaryReturnCall`。
+- **dangerous-function 字符串宏参数未按常量过滤（真缺陷）**：`inet_addr(NLOG_HOST_IP)` 中 `NLOG_HOST_IP` 是字符串型宏，`hasConstantArg` 只认直接字符串字面量与整数宏，导致本应安全（INADDR_NONE 混淆不存在）的调用被标 high。现新增 `buildGlobalStringMacros` 收集字符串型宏。测试 `TestDangerousFunction_StringMacroConstant`。
+- **memory-leak 经 helper 的所有权转移漏识别（真缺陷，high 误报）**：`nlog_db_create_new_ctrl_item` 分配后经 `nlog_set_mon_disk_head(p)`（内部 `g_head = p`）注册到全局链表并返回缓存指针，调用方不持有所有权；但借出检测只认直接写全局，且函数名 `_new` 子串被零配置分配器启发式独立命中，被误报为 high 泄漏。现新增精确的跨函数「参数存入全局」摘要（`globalStoreFuncs`/`storesParamToGlobal`）+ borrow 集合（`borrowFuncs`）抑制命名启发式（`isBorrowCall`）。夹具 `tc134` + 测试 `TestMemoryLeak_BorrowViaHelperCall`。
+- **编排：批量容量估算改为二维（真缺陷）**：`batch_type_count × 12 < 54` 只按类型数估算，4 类型 × 12 = 48 通过校验但 86 候选 + 4 次 skill 加载实际溢出子代理，遗留 race-condition 未处理。现改为 `type_count × PER_TYPE_FIXED_TURNS(6) + candidate_count × PER_CANDIDATE_TURNS(0.8) ≥ 54` 即拆分（`extension/shared/command-instructions.md`）。
+- **编排：遗留类型重派单而非放弃/顺序自分类（真缺陷）**：`written_count == 0`（从未启动）的类型此前被 F1 标记 missing-type 或顺序自分类（墙钟 +3~5 分钟）。现 F1 优先派全新单类型子代理重试一次，禁止顺序自分类，仅二次仍空或子代理不可用才标 missing-type；并加 `terminal_state == "done"` 守卫避免把「全 dismissed」误当「未启动」。
+
 ## [0.9.3] - 2026-10-11
 
 ### 重新发布（2026-10-12）：生产冒烟复核修复（12 项回源）

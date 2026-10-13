@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 func (s *store) InsertScanStat(ctx context.Context, stat *ScanStat) (int64, error) {
@@ -84,13 +85,16 @@ func (s *store) ListFindingsByScanID(ctx context.Context, scanID string) ([]*Fin
 
 // ListPerTypeStatus returns the per-vulnerability-type progress for a scan, the
 // authoritative resume state. CandidateCount comes from scan_stats.final_count;
-// WrittenCount is the live COUNT over findings for that type's CWE. cweForType
-// maps a vuln_type name to its CWE rule_id (planner.CWEForType at the cli layer)
-// — it is injected rather than imported so the db package never depends on
-// planner. Types present in planner.AllVulnTypes() but absent from scan_stats
-// (the scan never reached them) are NOT included here; the cli layer appends
-// them as terminal_state="unknown" so the orchestrator sees the full picture.
-func (s *store) ListPerTypeStatus(ctx context.Context, scanID string, cweForType func(string) string) ([]*PerTypeStatus, error) {
+// WrittenCount is the live COUNT over findings for that type's CWEs. cwesForType
+// maps a vuln_type name to the full set of CWE rule_ids its findings can carry
+// (planner.CWEsForType at the cli layer) — it is injected rather than imported
+// so the db package never depends on planner. A type that maps to several CWEs
+// (injection → CWE-78/89/88/91/93/117) has its written findings counted across
+// every one of them, not just the canonical CWE. Types present in
+// planner.AllVulnTypes() but absent from scan_stats (the scan never reached
+// them) are NOT included here; the cli layer appends them as
+// terminal_state="unknown" so the orchestrator sees the full picture.
+func (s *store) ListPerTypeStatus(ctx context.Context, scanID string, cwesForType func(string) []string) ([]*PerTypeStatus, error) {
 	stats, err := s.ListScanStats(ctx, scanID)
 	if err != nil {
 		return nil, fmt.Errorf("db: list per-type status: %w", err)
@@ -115,7 +119,9 @@ func (s *store) ListPerTypeStatus(ctx context.Context, scanID string, cweForType
 		if err := rows.Scan(&cwe, &cnt); err != nil {
 			return nil, fmt.Errorf("db: list per-type status: scan: %w", err)
 		}
-		cweCounts[cwe] = cnt
+		// Normalize the stored rule_id so a hand-written lowercase finding
+		// still matches the registry-derived uppercase CWE set.
+		cweCounts[strings.ToUpper(strings.TrimSpace(cwe))] += cnt
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("db: list per-type status: rows: %w", err)
@@ -124,10 +130,16 @@ func (s *store) ListPerTypeStatus(ctx context.Context, scanID string, cweForType
 	result := make([]*PerTypeStatus, 0, len(stats))
 	for _, st := range stats {
 		cwe := ""
-		if cweForType != nil {
-			cwe = cweForType(st.VulnType)
+		written := 0
+		if cwesForType != nil {
+			cwes := cwesForType(st.VulnType)
+			for _, id := range cwes {
+				written += cweCounts[id]
+			}
+			if len(cwes) > 0 {
+				cwe = cwes[0]
+			}
 		}
-		written := cweCounts[cwe]
 		result = append(result, &PerTypeStatus{
 			VulnType:       st.VulnType,
 			CWE:            cwe,

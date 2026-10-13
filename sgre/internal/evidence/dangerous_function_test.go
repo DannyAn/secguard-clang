@@ -51,6 +51,44 @@ func TestDangerousFunction_BannedCalls(t *testing.T) {
 	}
 }
 
+// TestDangerousFunction_StringMacroConstant pins the string-valued-macro fix:
+// `inet_addr(NLOG_HOST_IP)` with `#define NLOG_HOST_IP "192.168.0.1"` is a
+// compile-time constant (no INADDR_NONE / injection risk) and must NOT be
+// flagged, while `inet_addr(host)` with a runtime variable must still be.
+func TestDangerousFunction_StringMacroConstant(t *testing.T) {
+	dir := t.TempDir()
+	src := `#define NLOG_HOST_IP "192.168.0.1"
+int use_const(void) { return (int)inet_addr(NLOG_HOST_IP); }
+int use_var(const char *host) { return (int)inet_addr(host); }
+`
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+
+	path := filepath.Join(dir, "inet.c")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	if _, err := NewDangerousFunctionDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+
+	events, err := store.ListEventsByType(ctx, "DANGEROUS_FUNCTION")
+	if err != nil {
+		t.Fatalf("list DANGEROUS_FUNCTION: %v", err)
+	}
+	// The constant-macro call is safe and suppressed; only the runtime-variable
+	// call should surface.
+	if len(events) != 1 {
+		t.Errorf("expected 1 dangerous-function event (runtime-variable inet_addr), got %d", len(events))
+	}
+}
+
 // TestDangerousFunction_ConfigExtension pins the enterprise-policy extension: a
 // name listed in secguard.toml [banned_functions] is banned on top of the
 // built-in list, so a project-specific deprecated wrapper is also flagged.

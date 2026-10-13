@@ -433,7 +433,7 @@ func (s *mockStore) CountFindingsByScanAndStatus(ctx context.Context, scanID, st
 func (s *mockStore) ListFindingsByScanID(ctx context.Context, scanID string) ([]*db.Finding, error) {
 	return nil, nil
 }
-func (s *mockStore) ListPerTypeStatus(ctx context.Context, scanID string, cweForType func(string) string) ([]*db.PerTypeStatus, error) {
+func (s *mockStore) ListPerTypeStatus(ctx context.Context, scanID string, cwesForType func(string) []string) ([]*db.PerTypeStatus, error) {
 	return nil, nil
 }
 func (s *mockStore) MarkAIStageDone(ctx context.Context, scanID, vulnType string) error {

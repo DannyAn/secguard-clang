@@ -483,6 +483,26 @@ func TestMemoryLeak_GetOrCreateBorrowNoLeak(t *testing.T) {
 	}
 }
 
+// TestMemoryLeak_BorrowViaHelperCall locks in the helper-call ownership-transfer
+// summary: a wrapper that allocates, registers the pointer into a global through
+// a HELPER call (nlog_set_mon_disk_head → g_mon_disk_head = e), and returns the
+// cached pointer is a get-or-create-and-cache BORROW, not an allocator. Its
+// caller's `entry *e = nlog_db_create_new_ctrl_item()` must not be an allocation
+// site, while the wrapper's own malloc still escapes (alloc + release pair).
+func TestMemoryLeak_BorrowViaHelperCall(t *testing.T) {
+	store := runIndexAndDetect(t, "tc134_memory_leak_borrow_via_helper.c")
+	allocByFunc, releaseByFunc := countEventsByFunction(t, store, "MEMORY_ALLOC", "MEMORY_RELEASE")
+
+	if allocByFunc["nlog_db_delete_all_table"] != 0 {
+		t.Errorf("caller nlog_db_delete_all_table borrows the pointer (registered to a global via a helper); must NOT be an allocation site, got %d alloc",
+			allocByFunc["nlog_db_delete_all_table"])
+	}
+	if allocByFunc["nlog_db_create_new_ctrl_item"] != 1 || releaseByFunc["nlog_db_create_new_ctrl_item"] != 1 {
+		t.Errorf("wrapper nlog_db_create_new_ctrl_item should have 1 alloc + 1 release (escaped to a global), got %d alloc / %d release",
+			allocByFunc["nlog_db_create_new_ctrl_item"], releaseByFunc["nlog_db_create_new_ctrl_item"])
+	}
+}
+
 // TestMemoryLeak_ContainerEscape locks in the two-step container-escape fix:
 // `*container = buf` where container is ITSELF a malloc allocation points the
 // buffer INTO the heap (not the stack), and the container is then returned to

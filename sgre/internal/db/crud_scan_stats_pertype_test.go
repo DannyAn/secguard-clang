@@ -12,12 +12,12 @@ func TestListPerTypeStatus_TerminalStates(t *testing.T) {
 	ctx := context.Background()
 	scanID := "sc_test_pertype_1"
 
-	cweForType := func(vt string) string {
-		m := map[string]string{
-			"null-deref":      "CWE-476",
-			"buffer-overflow": "CWE-787",
-			"crypto-misuse":   "CWE-327",
-			"divide-by-zero":  "CWE-369",
+	cwesForType := func(vt string) []string {
+		m := map[string][]string{
+			"null-deref":      {"CWE-476"},
+			"buffer-overflow": {"CWE-787"},
+			"crypto-misuse":   {"CWE-327", "CWE-326", "CWE-338"},
+			"divide-by-zero":  {"CWE-369"},
 		}
 		return m[vt]
 	}
@@ -44,7 +44,7 @@ func TestListPerTypeStatus_TerminalStates(t *testing.T) {
 		t.Fatalf("mark ai_stage_done null-deref: %v", err)
 	}
 
-	statuses, err := s.ListPerTypeStatus(ctx, scanID, cweForType)
+	statuses, err := s.ListPerTypeStatus(ctx, scanID, cwesForType)
 	if err != nil {
 		t.Fatalf("ListPerTypeStatus: %v", err)
 	}
@@ -91,10 +91,57 @@ func TestListPerTypeStatus_TerminalStates(t *testing.T) {
 	}
 }
 
+// TestListPerTypeStatus_MultiCWE pins the fix for a multi-CWE vuln type: a
+// finding written under a non-canonical rule_id must count toward that type's
+// written_count, not be dropped because the canonical CWE differs. crypto-misuse
+// is the mirror of the injection case (canonical CWE-327 + legacy CWE-326/338,
+// all present in the test-only default supported-CWE set).
+func TestListPerTypeStatus_MultiCWE(t *testing.T) {
+	s := NewTestStore(t)
+	ctx := context.Background()
+	scanID := "sc_test_multicwe"
+
+	cwesForType := func(vt string) []string {
+		if vt == "crypto-misuse" {
+			return []string{"CWE-327", "CWE-326", "CWE-338"}
+		}
+		return nil
+	}
+
+	if _, err := s.InsertScanStat(ctx, &ScanStat{ScanID: scanID, VulnType: "crypto-misuse", FinalCount: 3}); err != nil {
+		t.Fatalf("insert scanstat crypto-misuse: %v", err)
+	}
+	// One canonical (CWE-327) + one legacy (CWE-326) finding.
+	if _, err := s.UpsertFinding(ctx, &Finding{RuleID: "CWE-327", Severity: "high", Status: "confirmed", FilePath: "a.c", LineNumber: 1, FunctionName: "f", ScanID: scanID}); err != nil {
+		t.Fatalf("insert CWE-327 finding: %v", err)
+	}
+	if _, err := s.UpsertFinding(ctx, &Finding{RuleID: "CWE-326", Severity: "medium", Status: "confirmed", FilePath: "a.c", LineNumber: 2, FunctionName: "g", ScanID: scanID}); err != nil {
+		t.Fatalf("insert CWE-326 finding: %v", err)
+	}
+
+	statuses, err := s.ListPerTypeStatus(ctx, scanID, cwesForType)
+	if err != nil {
+		t.Fatalf("ListPerTypeStatus: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("expected 1 status, got %d", len(statuses))
+	}
+	st := statuses[0]
+	if st.WrittenCount != 2 {
+		t.Errorf("crypto-misuse written_count = %d, want 2 (CWE-327 + CWE-326 both count)", st.WrittenCount)
+	}
+	if st.CWE != "CWE-327" {
+		t.Errorf("crypto-misuse CWE = %q, want canonical CWE-327", st.CWE)
+	}
+	if st.TerminalState != "in-progress" {
+		t.Errorf("3 candidates 2 written = in-progress, got %q", st.TerminalState)
+	}
+}
+
 func TestListPerTypeStatus_EmptyScanID(t *testing.T) {
 	s := NewTestStore(t)
 	ctx := context.Background()
-	statuses, err := s.ListPerTypeStatus(ctx, "nonexistent_scan", func(string) string { return "" })
+	statuses, err := s.ListPerTypeStatus(ctx, "nonexistent_scan", func(string) []string { return nil })
 	if err != nil {
 		t.Fatalf("expected no error for empty scan, got %v", err)
 	}

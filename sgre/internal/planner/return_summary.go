@@ -192,6 +192,24 @@ func (r *returnSummaryResolver) exprInterval(expr parser.Node, flow *rangeFlow, 
 		if consts != nil && consts.NonZeroExpr(expr.Text()) {
 			return interval{1, rMax}, true
 		}
+	case "conditional_expression":
+		// A ternary return (`return cond ? (2*A) : (2*B);`) is non-zero only
+		// when BOTH branches are provably non-zero — either branch can be the
+		// one taken, and a zero from either means the divisor can be zero. This
+		// closes the DBZ false positive where a config getter returns
+		// `2 * NLOG_SECOND_FOR_8H` vs `2 * NLOG_SECOND_FOR_1MIN` (both non-zero
+		// compile-time products) but the whole conditional stayed "unknown".
+		cons := expr.ChildByFieldName("consequence")
+		alt := expr.ChildByFieldName("alternative")
+		if cons == nil || alt == nil {
+			return interval{}, false
+		}
+		civ, cok := r.exprInterval(*cons, flow, consts)
+		aiv, aok := r.exprInterval(*alt, flow, consts)
+		if cok && aok && civ.isNonZero() && aiv.isNonZero() {
+			return interval{1, rMax}, true
+		}
+		return interval{}, false
 	case "parenthesized_expression", "cast_expression":
 		for _, c := range expr.NamedChildren() {
 			if iv, ok := r.exprInterval(c, flow, consts); ok {

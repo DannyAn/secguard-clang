@@ -30,7 +30,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 	// Wrapper functions that return an allocator result (the "封装成函数"
 	// production pattern) are allocation sites even with a custom name. Computed
 	// once for the whole codebase, not per file.
-	allocReturns, err := allocatorReturnFuncs(ctx, d.store, d.parser, d.logger)
+	allocReturns, borrowFuncs, err := allocatorReturnFuncs(ctx, d.store, d.parser, d.logger)
 	if err != nil {
 		return result, err
 	}
@@ -54,7 +54,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 		for _, f := range fileFuncs {
 			localVars := findLocalVarsFrom(decls, f)
 			scalarVars := findScalarVarsFrom(decls, f, typedefs)
-			allocs := d.findAllocations(ctx, f, file, assigns, inits, calls, allocReturns, scalarVars)
+			allocs := d.findAllocations(ctx, f, file, assigns, inits, calls, allocReturns, borrowFuncs, scalarVars)
 			frees := d.findFrees(ctx, f, file, calls, macros, inits, assigns)
 			returnLines := findReturnLinesFrom(returns, f)
 
@@ -200,7 +200,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 	return result, err
 }
 
-func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function, file *db.File, assigns, inits, calls []parser.Node, allocReturns map[string]bool, scalarVars map[string]bool) map[string][]int {
+func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function, file *db.File, assigns, inits, calls []parser.Node, allocReturns, borrowFuncs map[string]bool, scalarVars map[string]bool) map[string][]int {
 	allocs := make(map[string][]int)
 
 	checkNode := func(node parser.Node) {
@@ -217,6 +217,14 @@ func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function
 			if op := node.ChildByFieldName("operator"); op != nil && op.Text() != "=" {
 				return
 			}
+		}
+		// A get-or-create-and-cache BORROW (`x = get_or_create(...)` whose callee
+		// caches the pointer into a global before returning) is NOT an allocation
+		// site for the caller, even when the callee name matches the zero-config
+		// `_new`/`_alloc` heuristic (nlog_db_create_new_ctrl_item). The caller
+		// receives a reference the global owns; freeing it would double-free.
+		if isBorrowCall(rhs, borrowFuncs) {
+			return
 		}
 		// Only a real malloc/calloc/realloc CALL on the right-hand side is an
 		// allocation. A substring match would treat `strm->zalloc = zcalloc`
@@ -995,6 +1003,117 @@ func findSelfReallocLines(assigns, inits []parser.Node, f *db.Function, varName 
 	return lines
 }
 
+// rootObjectName returns the leftmost base identifier of a field/subscript/
+// pointer/cast/parenthesized expression chain (`g_list->next[i]` → "g_list",
+// `*out` → "out", `(T*)g_ptr` → "g_ptr"). It returns "" when the chain is not
+// rooted in a bare identifier (a call, a literal, or a nested deref `**pp`).
+func rootObjectName(node parser.Node) string {
+	for {
+		switch node.Kind() {
+		case "identifier":
+			return node.Text()
+		case "field_expression", "subscript_expression", "pointer_expression",
+			"cast_expression", "parenthesized_expression":
+			children := node.NamedChildren()
+			if len(children) == 0 {
+				return ""
+			}
+			node = children[0]
+		default:
+			return ""
+		}
+	}
+}
+
+// storesParamToGlobal reports whether function f stores pointer parameter param
+// (by value) into a NON-LOCAL object on some path: a global/static identifier
+// (`g_head = p`), a field/subscript of a non-local base (`g_list->next = p`,
+// `g_arr[i] = p`), or through a non-local pointer (`*out = p`). This is the
+// precise "callee takes ownership of the argument" signal allocatorReturnFuncs
+// uses to recognize a get-or-create-and-cache BORROW: a wrapper that registers
+// the returned pointer into a global list via a HELPER call (the
+// `nlog_set_mon_disk_head(p)` pattern) must not be marked an allocator. A store
+// into a LOCAL's field (`local.f = p`) does NOT count — that storage still dies
+// with f, so the caller would still own (and leak) the pointer.
+func storesParamToGlobal(assigns []parser.Node, f *db.Function, param string, localVars map[string]bool) bool {
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
+			continue
+		}
+		lhs, rhs, ok := assign.AssignParts()
+		if !ok {
+			continue
+		}
+		if argIdentifier(rhs) != param {
+			continue
+		}
+		switch lhs.Kind() {
+		case "identifier":
+			if !localVars[lhs.Text()] {
+				return true
+			}
+		case "field_expression", "subscript_expression", "pointer_expression":
+			if base := rootObjectName(lhs); base != "" && !localVars[base] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// globalStoreFuncs returns, keyed by function name, the set of pointer-parameter
+// indices that the function stores into a non-local object (a global/static/
+// field/subscript/out-param). It is the precise cross-function complement to the
+// apikb.IsEscapeFunction naming heuristic: a name like nlog_set_mon_disk_head
+// matches neither the `_put`/`_store` tokens nor the configured list, but its
+// body `g_mon_disk_head = entry` proves it takes ownership of its argument.
+func globalStoreFuncs(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) (map[string]map[int]bool, error) {
+	out := make(map[string]map[int]bool)
+	err := forEachFile(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		funcDefs := root.FindAll("function_definition")
+		assigns := root.FindAll("assignment_expression")
+		decls := root.FindAll("declaration")
+		for _, f := range funcs {
+			params := extractFunctionParamsFrom(funcDefs, f.StartLine)
+			localVars := findLocalVarsFrom(decls, f)
+			for idx, param := range params {
+				if param == "" {
+					continue
+				}
+				if storesParamToGlobal(assigns, f, param, localVars) {
+					if out[f.Name] == nil {
+						out[f.Name] = make(map[int]bool)
+					}
+					out[f.Name][idx] = true
+				}
+			}
+		}
+	})
+	return out, err
+}
+
+// passesToGlobalStoreFunc reports whether varName is passed (as a bare
+// identifier) to a call whose callee stores that argument position into a
+// non-local object — i.e. the callee takes ownership of varName.
+func passesToGlobalStoreFunc(calls []parser.Node, f *db.Function, varName string, escapeFuncs map[string]map[int]bool) bool {
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
+			continue
+		}
+		idxs := escapeFuncs[extractCallName(call)]
+		if len(idxs) == 0 {
+			continue
+		}
+		args := getCallArgs(call)
+		for idx := range idxs {
+			if idx < len(args) && argIdentifier(args[idx]) == varName {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // allocatorReturnFuncs returns the set of function NAMES whose body returns an
 // allocator result — either directly (`return malloc(n)`) or via a local
 // (`p = malloc(n); ... return p`). This is the "封装成函数" production wrapper
@@ -1007,8 +1126,28 @@ func findSelfReallocLines(assigns, inits []parser.Node, f *db.Function, varName 
 // does NOT require the pointer to be unused between the allocation and the
 // return — the NULL-check + memset_s in the wrapper body uses the pointer, which
 // is exactly the shape that must still count as an allocator for leak detection.
-func allocatorReturnFuncs(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) (map[string]bool, error) {
+// allocatorReturnFuncs returns two name sets over the whole scan tree:
+//
+//   - allocReturns: functions whose body returns an allocator result (a fresh
+//     allocation) that the CALLER must free — a call to one is an allocation
+//     site.
+//   - borrowFuncs: functions that allocate, register the pointer into a global
+//     (directly or via a helper that stores its argument to a global), and
+//     return the CACHED pointer — a call to one is a BORROW, not an allocation
+//     (the caller must NOT free it). This second set is what suppresses the
+//     name-heuristic false positive for `nlog_db_create_new_ctrl_item` (its
+//     `_new` substring matches apikb.IsAllocator even though it caches).
+func allocatorReturnFuncs(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) (allocReturns map[string]bool, borrowFuncs map[string]bool, err error) {
+	// Precise cross-function "callee takes ownership of an argument" summary.
+	// Computed before the borrow check so every wrapper can see helper functions
+	// defined in ANY file, not just the current translation unit.
+	escapeFuncs, err := globalStoreFuncs(ctx, store, p, logger)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	returnedSource := make(map[string]map[string]bool)
+	borrowFuncs = make(map[string]bool)
 	add := func(name, callee string) {
 		if callee == "" {
 			return
@@ -1019,7 +1158,7 @@ func allocatorReturnFuncs(ctx context.Context, store db.Store, p *parser.Parser,
 		returnedSource[name][callee] = true
 	}
 
-	err := forEachFile(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err = forEachFile(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		returns := root.FindAll("return_statement")
 		assigns := root.FindAll("assignment_expression")
 		inits := root.FindAll("init_declarator")
@@ -1061,11 +1200,16 @@ func allocatorReturnFuncs(ctx context.Context, store db.Store, p *parser.Parser,
 						// confirmed false-positive leak (the nlog stat-registry
 						// accessor pattern).
 						// Strong-evidence borrow only: field/subscript store to a
-						// non-local, assign to a non-local identifier, or return. The
+						// non-local, assign to a non-local identifier, a return, or
+						// a hand-off to a helper that itself stores the argument to
+						// a global (the nlog_set_mon_disk_head pattern). The
 						// escape-function naming heuristic is disabled here — a real
 						// allocator wrapper that calls a `_add`/`_store` helper for
-						// logging must NOT be misread as a borrow (EL-03).
-						if len(findEscapeLines(assigns, calls, returns, f, v, localVars, nil, nil, false)) > 0 {
+						// logging must NOT be misread as a borrow (EL-03); only a
+						// helper PROVEN to store its argument to a global counts.
+						if len(findEscapeLines(assigns, calls, returns, f, v, localVars, nil, nil, false)) > 0 ||
+							passesToGlobalStoreFunc(calls, f, v, escapeFuncs) {
+							borrowFuncs[f.Name] = true
 							continue
 						}
 						add(f.Name, callee)
@@ -1075,7 +1219,7 @@ func allocatorReturnFuncs(ctx context.Context, store db.Store, p *parser.Parser,
 		}
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	out := make(map[string]bool)
@@ -1094,7 +1238,29 @@ func allocatorReturnFuncs(ctx context.Context, store db.Store, p *parser.Parser,
 			}
 		}
 	}
-	return out, nil
+	return out, borrowFuncs, nil
+}
+
+// isBorrowCall reports whether expr is (or casts) a call to a function that
+// allocatorReturnFuncs identified as a get-or-create-and-cache BORROW. Such a
+// call yields a reference the global/list owns, so its caller's assignment is
+// not an allocation site — reporting it would be a confirmed false-positive leak.
+func isBorrowCall(expr parser.Node, borrowFuncs map[string]bool) bool {
+	if len(borrowFuncs) == 0 {
+		return false
+	}
+	if expr.Kind() == "cast_expression" {
+		for _, c := range expr.NamedChildren() {
+			if isBorrowCall(c, borrowFuncs) {
+				return true
+			}
+		}
+		return false
+	}
+	if expr.Kind() != "call_expression" {
+		return false
+	}
+	return borrowFuncs[extractCallName(expr)]
 }
 
 // isMallocExpr reports whether expr is (or casts) a malloc/calloc/realloc call.
