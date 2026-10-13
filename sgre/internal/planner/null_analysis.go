@@ -156,3 +156,20 @@ func (m *nullModel) onlyUnprovenCallerNullSources(variable string) bool {
 	}
 	return seen
 }
+
+// hasExternalCallSource reports whether the variable has an external_call null
+// source — a value produced by an unknown external function that the analyzer
+// cannot prove non-null. Such a value might genuinely be NULL, so the void*
+// contract convergence must NOT dismiss it (RISK-2: accessor that may return
+// NULL is not a framework-guaranteed-non-null accessor).
+func (m *nullModel) hasExternalCallSource(variable string) bool {
+	if m == nil {
+		return false
+	}
+	for _, s := range m.sources {
+		if s.variable == variable && s.origin == "external_call" {
+			return true
+		}
+	}
+	return false
+}

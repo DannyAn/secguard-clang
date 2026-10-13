@@ -13,8 +13,8 @@
     "phase6_resource_leak_finding": 9,
     "phase6_resource_leak_no_finding": 3,
     "phase6_resource_leak_known_gaps": 3,
-    "expected_final_certified": 76,
-    "expected_no_finding": 66,
+    "expected_final_certified": 77,
+    "expected_no_finding": 65,
     "phase1_confirmed": 9,
     "phase1_safe_excluded": 3,
     "phase2_confirmed": 4,
@@ -48,8 +48,8 @@
     "phase13_uaf_fp": 1,
     "phase13_signed_compare_fp": 1,
     "phase17_nd3_void_contract": 5,
-    "phase17_nd3_no_finding": 3,
-    "phase17_nd3_finding": 2
+    "phase17_nd3_no_finding": 2,
+    "phase17_nd3_finding": 3
   },
   "test_cases": [
     {
@@ -1198,10 +1198,10 @@
       "category": "phase17_nd3_void_contract",
       "file": "src/p5_null_flow.c",
       "line": 121,
-      "code": "void* 参数经外部 accessor 取出后 cast 解引用 —— 契约非空收敛，不应报",
+      "code": "void* 参数经外部 accessor 取出后 cast 解引用 —— accessor 可能返回 NULL，surface as suspected 交 AI 研判",
       "cwe": "CWE-476",
       "detector": "null_deref",
-      "expect": "no_finding"
+      "expect": "finding"
     },
     {
       "id": "ND-11",

@@ -113,7 +113,7 @@ void nd3_voidcast_handler(void *msg) {
 }
 void nd3_voidcast_caller(void *x) { nd3_voidcast_handler(x); }
 
-/* 误报：void* 参数经外部 accessor 取出后 cast 解引用 —— 不应报 */
+/* accessor 可能返回 NULL —— surface as suspected 交 AI 研判（RISK-2 修正） */
 extern void *nd3_get_payload(void *mbuf);
 void nd3_accessor_handler(void *mbuf) {
     void *raw = nd3_get_payload(mbuf);

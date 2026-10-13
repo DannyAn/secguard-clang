@@ -115,18 +115,19 @@ func (cc *contractCtx) aliasRoots(name string, line, depth int, out map[string]b
 
 // contractDerived reports whether v's value comes, without a NULL check, from a
 // void* parameter used by contract: directly, through casts / pointer
-// arithmetic, or through an UNKNOWN external accessor call whose argument is
-// such a parameter. A value produced by an allocator or a known maybe-null libc
-// function (malloc, getenv, ...) is deliberately NOT contract-derived — those
-// must stay reportable.
-func (cc *contractCtx) contractDerived(v string, line int) bool {
+// arithmetic, or through an external accessor call whose argument is such a
+// parameter. A value produced by an allocator, a known maybe-null libc function
+// (malloc, getenv, ...), or an UNKNOWN external call that the null model flags
+// with an external_call source is deliberately NOT contract-derived — those
+// might genuinely return NULL and must stay reportable (RISK-2).
+func (cc *contractCtx) contractDerived(v string, line int, models *nullModel) bool {
 	if cc == nil {
 		return false
 	}
-	return cc.derivedName(v, line, 0)
+	return cc.derivedName(v, line, 0, models)
 }
 
-func (cc *contractCtx) derivedName(name string, line, depth int) bool {
+func (cc *contractCtx) derivedName(name string, line, depth int, models *nullModel) bool {
 	if depth > contractDepth {
 		return false
 	}
@@ -137,39 +138,43 @@ func (cc *contractCtx) derivedName(name string, line, depth int) bool {
 	if a == nil {
 		return false
 	}
-	return cc.derivedExpr(a.rhs, a.line, depth+1)
+	// If the variable is assigned a call result AND the null model recorded an
+	// external_call source for it, the accessor might return NULL — do not
+	// treat the value as contract-derived. This prevents dismissing a genuine
+	// null-deref through an accessor that can fail (RISK-2).
+	if models != nil && models.hasExternalCallSource(name) && rhsContainsCall(a.rhs) {
+		return false
+	}
+	return cc.derivedExpr(a.rhs, a.line, depth+1, models)
 }
 
-func (cc *contractCtx) derivedExpr(expr parser.Node, line, depth int) bool {
+func (cc *contractCtx) derivedExpr(expr parser.Node, line, depth int, models *nullModel) bool {
 	if depth > contractDepth {
 		return false
 	}
 	switch expr.Kind() {
 	case "identifier":
-		return cc.derivedName(expr.Text(), line, depth)
+		return cc.derivedName(expr.Text(), line, depth, models)
 	case "parenthesized_expression":
 		for _, c := range expr.NamedChildren() {
-			if cc.derivedExpr(c, line, depth) {
+			if cc.derivedExpr(c, line, depth, models) {
 				return true
 			}
 		}
 	case "cast_expression":
 		if op, ok := aliasOperand(expr); ok {
-			return cc.derivedExpr(op, line, depth)
+			return cc.derivedExpr(op, line, depth, models)
 		}
 	case "pointer_expression":
-		// `&x` is an address (always non-null but not contract); `*x` is a value
-		// read through x, not x itself. Neither is a contract derivation unless
-		// its operand is, so recurse conservatively.
 		for _, c := range expr.NamedChildren() {
-			if cc.derivedExpr(c, line, depth) {
+			if cc.derivedExpr(c, line, depth, models) {
 				return true
 			}
 		}
 	case "binary_expression":
 		if op := parser.BinaryOperator(expr); op == "+" || op == "-" {
 			for _, c := range expr.NamedChildren() {
-				if cc.derivedExpr(c, line, depth) {
+				if cc.derivedExpr(c, line, depth, models) {
 					return true
 				}
 			}
@@ -180,9 +185,25 @@ func (cc *contractCtx) derivedExpr(expr parser.Node, line, depth int) bool {
 			return false
 		}
 		for _, arg := range callArgs(expr) {
-			if cc.derivedExpr(arg, line, depth) {
+			if cc.derivedExpr(arg, line, depth, models) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// rhsContainsCall reports whether expr is or contains a call_expression (an
+// accessor call whose result might be NULL). Used to gate the contract
+// derivation: a value from an external call that the null model flagged with an
+// external_call source must not be treated as contract-non-null.
+func rhsContainsCall(expr parser.Node) bool {
+	if expr.Kind() == "call_expression" {
+		return true
+	}
+	for _, c := range expr.NamedChildren() {
+		if rhsContainsCall(c) {
+			return true
 		}
 	}
 	return false

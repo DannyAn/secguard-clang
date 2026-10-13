@@ -121,7 +121,7 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				// explicit null are excluded, so a genuine possible-null value is
 				// still reported.
 				if !c.HasDefiniteNull && !models[c.FunctionID].onlyCertainNullableSources(c.VariableName) &&
-					fm.contract.contractDerived(c.VariableName, c.Line) {
+					fm.contract.contractDerived(c.VariableName, c.Line, models[c.FunctionID]) {
 					dropped = dismiss(dropped, c, f.Name(),
 						fmt.Sprintf("variable %s derives from a void* parameter dereferenced by non-null contract", c.VariableName))
 					continue

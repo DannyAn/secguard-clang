@@ -4,6 +4,16 @@
 
 ## [0.9.4] - 2026-10-12
 
+### null-deref void* 契约收敛漏报修正（ND-3 / RISK-2，CWE-476）
+
+v0.9.4 首次发布的 ND-3 修复（commit `d8410b4`）引入 `contractDerived` dismiss 规则收敛 void* 契约解引用误报，但端到端验证发现一条漏报路径：当 accessor 调用（`t = (T*)get_raw(p); t->f`）的 `get_raw` 是可能返回 NULL 的普通函数时，`contractDerived` 仍追溯赋值 RHS 到 void* 契约参数并 dismiss，导致真缺陷被抑制。
+
+根因：`contractDerived` 对 `call_expression` RHS 统一假设「函数名不在 allocator / known-nullable 列表 → 返回值非空 → 追溯参数到契约」，无法区分「框架保证非空的 accessor」与「可能返回 NULL 的普通函数」。
+
+修正：`contractDerived` / `derivedName` / `derivedExpr` 新增 `models *nullModel` 参数；遇到 accessor call 时调用新增的 `nullModel.hasExternalCallSource` 检查赋值目标变量是否存在 `external_call` null source。若存在（分析器认为 accessor 可能返回 NULL）则不追溯、不 dismiss，surface as suspected 交 AI 研判；直接 cast 无 external_call source 则仍追溯，正确收敛。
+
+端到端验证（本地 CLI + C 夹具）：FP-1 direct cast / FP-3 type-agnostic alias 仍正确抑制；FP-2 accessor cast 改为 surface as suspected（交 AI）；TP-1/2/3 仍正确检出；RISK-2（accessor 返回 NULL）从漏报修正为 candidate (suspected)。benchmark `ND-10` 从 `no_finding` 改为 `finding`，`expected_final_certified` 77 / `expected_no_finding` 65。
+
 ### integer-overflow 子代理超时根治（CWE-190，紧急修复）
 
 v0.9.3 生产冒烟（nlog `src/` 全量扫描，1012 文件 / 7092 函数）中 `integer-overflow` 两个子代理均因 LLM 单次推理超时失败（`total_tokens: 0` + `Request timed out`），117 条候选全部未落库判定。根因是 `unsigned_sub_underflow` 候选（98/117）只有 `cat@` 类别标签、无任何数据流事实，子代理被迫逐候选打开 ±8 行源码找 guard 与操作数来源，单 turn 推理量过大导致 API 超时。本次从「收敛阶段用语义图算清事实」彻底闭环：

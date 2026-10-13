@@ -16,7 +16,7 @@ func TestND3_VoidPointerContract(t *testing.T) {
 		wantDeref bool // true: must surface as a null-deref candidate
 	}{
 		{
-			name: "accessor cast (sub-pattern A)",
+			name: "accessor cast (sub-pattern A) — surfaces as suspected (accessor may return NULL)",
 			src: `
 typedef struct { int f; } T;
 extern void *get_buf(void *mbuf);
@@ -27,10 +27,10 @@ void proc(void *mbuf) {
 }
 void call(void *x) { proc(x); }
 `,
-			wantDeref: false,
+			wantDeref: true,
 		},
 		{
-			name: "inline accessor cast",
+			name: "inline accessor cast — surfaces as suspected (accessor may return NULL)",
 			src: `
 typedef struct { int f; } T;
 extern void *get_buf(void *mbuf);
@@ -40,7 +40,7 @@ void proc(void *mbuf) {
 }
 void call(void *x) { proc(x); }
 `,
-			wantDeref: false,
+			wantDeref: true,
 		},
 		{
 			name: "direct cast of void* param (sub-pattern B)",
