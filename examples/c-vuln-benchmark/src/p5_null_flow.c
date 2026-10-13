@@ -97,3 +97,54 @@ int nd_external_call_return(void) {
     c->x = 0;
     return 0;
 }
+/* ── ND-3: void* 契约非空收敛（v0.9.4 生产误报修复） ──
+ *
+ * IPC / 回调 / 消息处理函数收到 void* 框架缓冲区，立即 cast 并解引用，
+ * 从不 NULL 比较 —— 按调用方契约视为非空，不应报 null-deref。
+ * 同时锁定 type-agnostic 派生变量收敛（t = p; t->f）和真阳性对照。
+ */
+
+typedef struct { int field; } nd3_msg_t;
+
+/* 误报：void* 参数直接 cast 后解引用，从不判空 —— 不应报 */
+void nd3_voidcast_handler(void *msg) {
+    nd3_msg_t *t = (nd3_msg_t *)msg;
+    t->field = 1;
+}
+void nd3_voidcast_caller(void *x) { nd3_voidcast_handler(x); }
+
+/* 误报：void* 参数经外部 accessor 取出后 cast 解引用 —— 不应报 */
+extern void *nd3_get_payload(void *mbuf);
+void nd3_accessor_handler(void *mbuf) {
+    void *raw = nd3_get_payload(mbuf);
+    nd3_msg_t *t = (nd3_msg_t *)raw;
+    t->field = 1;
+}
+void nd3_accessor_caller(void *x) { nd3_accessor_handler(x); }
+
+/* 误报：普通指针参数 alias 拷贝后解引用，caller 未证空 —— 不应报
+ * （type-agnostic：非 void* 也需收敛派生变量） */
+void nd3_alias_handler(nd3_msg_t *src) {
+    nd3_msg_t *t = src;
+    t->field = 1;
+}
+void nd3_alias_caller(nd3_msg_t *x) { nd3_alias_handler(x); }
+
+/* 真阳性：caller 显式传 NULL，被调函数 cast 后解引用 —— 应报 */
+void nd3_voidcast_null_defect(void *msg) {
+    nd3_msg_t *t = (nd3_msg_t *)msg;
+    t->field = 1;
+}
+void nd3_voidcast_null_caller(void) { nd3_voidcast_null_defect(NULL); }
+
+/* 真阳性：void* 参数有 NULL 检查，契约不成立 —— 应报
+ * （null check 否定 contract，get_val 返回值需判空） */
+extern void *nd3_get_val(void *p);
+void nd3_nullcheck_handler(void *p) {
+    if (p == NULL) {
+        return;
+    }
+    nd3_msg_t *t = (nd3_msg_t *)nd3_get_val(p);
+    t->field = 1;
+}
+void nd3_nullcheck_caller(void *x) { nd3_nullcheck_handler(x); }

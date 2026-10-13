@@ -136,6 +136,10 @@ type flowResult struct {
 	// the same control-flow condition (`p == NULL || p->field`), where the
 	// dereference is short-circuit-protected and therefore not a null-deref.
 	weakGuard map[int]map[string]bool
+	// contract holds the alias / void*-contract provenance facts for the
+	// function, used by the nullable-source filter to converge derived variables
+	// that the event-keyed null model cannot resolve (see null_contract.go).
+	contract *contractCtx
 }
 
 // reaching reports whether variable has a reaching source at line.

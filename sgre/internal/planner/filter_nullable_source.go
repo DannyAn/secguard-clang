@@ -103,7 +103,8 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				c.HasDefiniteNull = fm.reachingDefinite(c.VariableName, c.Line)
 				c.SourceLine = fm.sourceLine(c.VariableName, c.Line)
 				c.CallerNullDetail = callerNullDetail(models[c.FunctionID], c.VariableName)
-				if models[c.FunctionID].onlyUnprovenCallerNullSources(c.VariableName) {
+				if models[c.FunctionID].onlyUnprovenCallerNullSources(c.VariableName) ||
+					(!c.HasDefiniteNull && fm.contract.paramAliasUnproven(c.VariableName, c.Line, models[c.FunctionID])) {
 					dropped = dismiss(dropped, c, f.Name(),
 						fmt.Sprintf("parameter %s has no proven nullable caller argument", c.VariableName))
 					continue
@@ -111,6 +112,18 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				if c.SourceLine > 0 && !c.HasDefiniteNull && fm.weakGuardAt(c.VariableName, c.Line) {
 					dropped = dismiss(dropped, c, f.Name(),
 						fmt.Sprintf("dereference of %s is short-circuit null-guarded in its condition", c.VariableName))
+					continue
+				}
+				// A value derived (directly, through a cast, or through an unknown
+				// external accessor) from an opaque void* parameter the function
+				// never null-checks is non-null by the caller contract of IPC /
+				// callback handlers. An allocator / known maybe-null source and an
+				// explicit null are excluded, so a genuine possible-null value is
+				// still reported.
+				if !c.HasDefiniteNull && !models[c.FunctionID].onlyCertainNullableSources(c.VariableName) &&
+					fm.contract.contractDerived(c.VariableName, c.Line) {
+					dropped = dismiss(dropped, c, f.Name(),
+						fmt.Sprintf("variable %s derives from a void* parameter dereferenced by non-null contract", c.VariableName))
 					continue
 				}
 				// Layering: reflect the must/may tier in the suspicion label so
@@ -303,7 +316,11 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 		lineSources = append(lineSources, callResultNullSources(body, retNullable)...)
 		analyzer.entrySeeds = entrySeeds
 		analyzer.definiteEntrySeeds = definiteEntrySeeds
-		results[fid] = analyzer.analyzeFunction(ctx, fn, body, root, lineSources)
+		res := analyzer.analyzeFunction(ctx, fn, body, root, lineSources)
+		if res != nil {
+			res.contract = buildContractCtx(fn, root, body)
+		}
+		results[fid] = res
 	}
 	return results, retNullable, definedNames, nil
 }

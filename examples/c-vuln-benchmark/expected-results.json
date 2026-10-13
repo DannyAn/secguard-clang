@@ -3,7 +3,7 @@
   "_benchmark_doc": "benchmark.md",
   "_validator": "scripts/validate-benchmark.py",
   "summary": {
-    "total_test_cases": 137,
+    "total_test_cases": 142,
     "phase0_test_cases": 18,
     "phase1_test_cases": 12,
     "phase2_test_cases": 4,
@@ -13,8 +13,8 @@
     "phase6_resource_leak_finding": 9,
     "phase6_resource_leak_no_finding": 3,
     "phase6_resource_leak_known_gaps": 3,
-    "expected_final_certified": 74,
-    "expected_no_finding": 63,
+    "expected_final_certified": 76,
+    "expected_no_finding": 66,
     "phase1_confirmed": 9,
     "phase1_safe_excluded": 3,
     "phase2_confirmed": 4,
@@ -46,7 +46,10 @@
     "phase12_null_deref": 2,
     "phase13_v074_test_cases": 2,
     "phase13_uaf_fp": 1,
-    "phase13_signed_compare_fp": 1
+    "phase13_signed_compare_fp": 1,
+    "phase17_nd3_void_contract": 5,
+    "phase17_nd3_no_finding": 3,
+    "phase17_nd3_finding": 2
   },
   "test_cases": [
     {
@@ -1176,6 +1179,56 @@
       "file": "src/p5_null_flow.c",
       "line": 97,
       "code": "getter 返回外部函数（声明未定义）的调用结果，调用方未判空即解引用 —— return 外部调用按开放世界 fail-open",
+      "cwe": "CWE-476",
+      "detector": "null_deref",
+      "expect": "finding"
+    },
+    {
+      "id": "ND-09",
+      "category": "phase17_nd3_void_contract",
+      "file": "src/p5_null_flow.c",
+      "line": 112,
+      "code": "void* 参数直接 cast 后解引用，从不判空 —— 契约非空收敛，不应报",
+      "cwe": "CWE-476",
+      "detector": "null_deref",
+      "expect": "no_finding"
+    },
+    {
+      "id": "ND-10",
+      "category": "phase17_nd3_void_contract",
+      "file": "src/p5_null_flow.c",
+      "line": 121,
+      "code": "void* 参数经外部 accessor 取出后 cast 解引用 —— 契约非空收敛，不应报",
+      "cwe": "CWE-476",
+      "detector": "null_deref",
+      "expect": "no_finding"
+    },
+    {
+      "id": "ND-11",
+      "category": "phase17_nd3_void_contract",
+      "file": "src/p5_null_flow.c",
+      "line": 129,
+      "code": "普通指针参数 alias 拷贝后解引用，caller 未证空 —— type-agnostic 派生变量收敛，不应报",
+      "cwe": "CWE-476",
+      "detector": "null_deref",
+      "expect": "no_finding"
+    },
+    {
+      "id": "ND-12",
+      "category": "phase17_nd3_void_contract",
+      "file": "src/p5_null_flow.c",
+      "line": 136,
+      "code": "caller 显式传 NULL，被调函数 cast 后解引用 —— 真阳性，应报",
+      "cwe": "CWE-476",
+      "detector": "null_deref",
+      "expect": "finding"
+    },
+    {
+      "id": "ND-13",
+      "category": "phase17_nd3_void_contract",
+      "file": "src/p5_null_flow.c",
+      "line": 148,
+      "code": "void* 参数有 NULL 检查，契约不成立 —— 真阳性，应报",
       "cwe": "CWE-476",
       "detector": "null_deref",
       "expect": "finding"
