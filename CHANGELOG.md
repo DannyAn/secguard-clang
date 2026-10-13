@@ -18,6 +18,15 @@ v0.9.3 生产冒烟（nlog `src/` 全量扫描，1012 文件 / 7092 函数）中
 
 测试：`TestIntegerOverflow_MixedAccumulatorBoundedReturn`、`TestTruncatingWrapperCapArg_*`、`TestLoad_IntegerOverflowTruncatingWrappers`、`TestUnsignedSubGuard_*`、`TestBuildHint` 等全绿。
 
+### 重新发布（2026-10-12，厂商复测反馈）：累加器真实代码形状补全
+
+厂商用 v0.9.4 复测后反馈：`unsigned_sub_underflow` 的累加器误报（`buf_size - len`）仍有 ~80 条未消减。回源定位到 `boundedAccumulators` 只认「`uint32_t len = 0;`（声明初始化）+ `len += f(...)`」这一种形状，漏掉了真实代码里两种同样常见、同样有界的形状：
+
+- **`len = 0;` 赋值语句初始化**：此前被当成「非累加写」而将 `len` 整体排除（disqualify），实际是安全复位，仍满足 `len <= total` 不变式。
+- **`len = f(...)` 纯赋值首写**（`len = snprintf_truncated_s(buf, size, ...)` 后接 `len += f(...)`）：此前同样被排除，实际是「覆写为 callee 的有界返回值」，恒 `len <= total`。
+
+现 `boundedAccumulators` 区分「覆写写（`= f(...)`，恒有界）」与「累加写（`+= f(...)` / `= len + f(...)`，两个全量累加才可能超 total）」，并把 `len = 0` 识别为安全复位（重置增长、保持 total）。回归夹具 `tc129` 增加 `fmt_buf2`（赋值初始化）/`fmt_buf3`（纯赋值首写）两个形状，`TestIntegerOverflow_MixedAccumulatorBoundedReturn` 断言两者均不再发射候选。
+
 ## [0.9.3] - 2026-10-11
 
 ### 重新发布（2026-10-12）：生产冒烟复核修复（12 项回源）

@@ -137,6 +137,15 @@ func TestIntegerOverflow_MixedAccumulatorBoundedReturn(t *testing.T) {
 			t.Errorf("fmt_buf: mixed accumulator (add_pri/add_hostname forwarding) must not be flagged, got %v", byFunction["fmt_buf"])
 		}
 	}
+	// Assignment-init and plain-assignment-first-write accumulators are the two
+	// real-code shapes that previously slipped through; both must now be dropped.
+	for _, fn := range []string{"fmt_buf2", "fmt_buf3"} {
+		for _, cat := range byFunction[fn] {
+			if cat == "unsigned_sub_underflow" {
+				t.Errorf("%s: bounded accumulator must not be flagged, got %v", fn, byFunction[fn])
+			}
+		}
+	}
 	found := false
 	for _, cat := range byFunction["bad_sub"] {
 		if cat == "unsigned_sub_underflow" {

@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -232,7 +233,16 @@ func boundedAccumulators(assigns []parser.Node, f *db.Function, summary boundedR
 		}
 		name := children[0].Text()
 
-		if !isAccumulateInto(assign, name) {
+		// `name = 0` is a constant-zero reset: name is back to 0, so the bounded
+		// invariant still holds (name <= total). It resets growth but keeps the
+		// consistent total.
+		if isConstantZero(children[1]) {
+			grown[name] = false
+			continue
+		}
+
+		call, accumulate, ok := accumulateWrite(assign, name)
+		if !ok {
 			disqualify(name)
 			continue
 		}
@@ -240,11 +250,6 @@ func boundedAccumulators(assigns []parser.Node, f *db.Function, summary boundedR
 			continue
 		}
 
-		call, ok := accumulateCall(assign, name)
-		if !ok {
-			disqualify(name)
-			continue
-		}
 		capIdx, ok := summary.capArg(extractCallName(call))
 		if !ok {
 			disqualify(name)
@@ -266,8 +271,9 @@ func boundedAccumulators(assigns []parser.Node, f *db.Function, summary boundedR
 			continue
 		}
 		totalOf[name] = total
-		if full && grown[name] {
-			// A second full-buffer write means length may exceed total.
+		if accumulate && full && grown[name] {
+			// A second full-buffer ACCUMULATION may exceed total (name was already
+			// grown once), so the invariant no longer holds.
 			disqualify(name)
 			continue
 		}
@@ -277,47 +283,52 @@ func boundedAccumulators(assigns []parser.Node, f *db.Function, summary boundedR
 	return out
 }
 
-// isAccumulateInto reports whether assign is `name += expr` or
-// `name = name + expr`.
-func isAccumulateInto(assign parser.Node, name string) bool {
-	children := assign.NamedChildren()
-	if len(children) < 2 || children[0].Kind() != "identifier" || children[0].Text() != name {
-		return false
-	}
-	if op := assign.ChildByFieldName("operator"); op != nil && op.Text() == "+=" {
-		return true
-	}
-	rhs := unwrapExprNode(children[1])
-	if rhs.Kind() == "binary_expression" && arithOperator(rhs) == "+" {
-		rc := rhs.NamedChildren()
-		return len(rc) == 2 && rc[0].Kind() == "identifier" && rc[0].Text() == name
-	}
-	return false
-}
-
-// accumulateCall returns the call_expression accumulated into name
-// (`name += f(...)` or `name = name + f(...)`).
-func accumulateCall(assign parser.Node, name string) (parser.Node, bool) {
+// accumulateWrite returns the call_expression written into name, and whether the
+// write ACCUMULATES (`+=` / `= name + ...`) rather than overwrites (`= f(...)`).
+// The flag matters because two full-buffer accumulations can exceed total, while
+// an overwrite always lands at the callee's bounded return value.
+func accumulateWrite(assign parser.Node, name string) (parser.Node, bool, bool) {
 	children := assign.NamedChildren()
 	if len(children) < 2 {
-		return parser.Node{}, false
+		return parser.Node{}, false, false
 	}
 	if op := assign.ChildByFieldName("operator"); op != nil && op.Text() == "+=" {
 		rhs := unwrapExprNode(children[1])
 		if rhs.Kind() == "call_expression" {
-			return rhs, true
+			return rhs, true, true
 		}
-		return parser.Node{}, false
+		return parser.Node{}, false, false
 	}
 	rhs := unwrapExprNode(children[1])
 	if rhs.Kind() == "binary_expression" && arithOperator(rhs) == "+" {
-		for _, c := range rhs.NamedChildren() {
-			if c.Kind() == "call_expression" {
-				return c, true
+		rc := rhs.NamedChildren()
+		if len(rc) == 2 && rc[0].Kind() == "identifier" && rc[0].Text() == name {
+			for _, c := range rc {
+				if c.Kind() == "call_expression" {
+					return c, true, true
+				}
 			}
 		}
+		return parser.Node{}, false, false
 	}
-	return parser.Node{}, false
+	// `name = f(...)`: a plain overwrite from a bounded-return call. The result
+	// replaces name and is <= the capacity, so it is always bounded.
+	if rhs.Kind() == "call_expression" {
+		return rhs, false, true
+	}
+	return parser.Node{}, false, false
+}
+
+// isConstantZero reports whether node is the integer literal 0 (possibly
+// parenthesized or cast).
+func isConstantZero(node parser.Node) bool {
+	node = unwrapExprNode(node)
+	if node.Kind() != "number_literal" {
+		return false
+	}
+	s := strings.TrimSpace(node.Text())
+	s = strings.TrimRight(s, "uUlL")
+	return s == "0"
 }
 
 // capacityTotal interprets an accumulator write's capacity argument. It must be

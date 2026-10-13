@@ -26,6 +26,22 @@ int fmt_buf(char *buf, unsigned int size) {
     return (int)count;
 }
 
+/* Assignment-init accumulator: `len = 0;` as a statement, not a declaration. */
+int fmt_buf2(char *buf, unsigned int size) {
+    unsigned int len;
+    len = 0;
+    len += snprintf_truncated_s(buf + len, size - len, "%d", 1);
+    return (int)len;
+}
+
+/* Plain-assignment first write: `len = snprintf_truncated_s(...)` then `+=`. */
+int fmt_buf3(char *buf, unsigned int size) {
+    unsigned int len;
+    len = snprintf_truncated_s(buf, size, "%d", 1);
+    len += snprintf_truncated_s(buf + len, size - len, "%d", 2);
+    return (int)len;
+}
+
 /* Control: a plain unsigned subtraction passed to a function is still flagged. */
 void bad_sub(unsigned int size, unsigned int *cnt) {
     consume(size - (*cnt));
