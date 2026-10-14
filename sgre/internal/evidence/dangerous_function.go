@@ -160,7 +160,12 @@ var builtinDangerRules = map[string]dangerRule{
 	"tmpnam_r":      {category: "insecure_temp", replacement: "mkstemp"},
 	"gethostbyname": {category: "obsolete_api", replacement: "getaddrinfo"},
 	"gethostbyaddr": {category: "obsolete_api", replacement: "getnameinfo"},
-	"inet_addr":     {category: "obsolete_api", replacement: "inet_pton", constExempt: true},
+	// inet_addr's CWE-676 risk is CONDITIONAL by the rule's own rationale (see
+	// constExempt above): an invalid string yields INADDR_NONE, and the impact
+	// depends on whether the caller controls the string and checks the sentinel.
+	// It gets a category that maps to `suspected`, so the AI weighs the argument's
+	// provenance instead of the pipeline asserting an unconditional defect.
+	"inet_addr": {category: "obsolete_api_conditional", replacement: "inet_pton", constExempt: true},
 }
 
 func (d *DangerousFunctionDetector) Detect(ctx context.Context) (DetectResult, error) {
@@ -220,11 +225,14 @@ func isEntryPoint(name string) bool {
 }
 
 // buildGlobalStringMacros parses every file in the scan tree and collects the
-// object-like macro names whose body is a C string literal (`#define
-// NLOG_HOST_IP "192.168.0.1"`). A call argument that is such a macro is a
+// object-like macro names that expand to a compile-time string: a string literal
+// body (`#define NLOG_HOST_IP "192.168.0.1"`), adjacent literal concatenation
+// (`#define P "/a" "/b"`), or literals combined with other string macros
+// (`#define LOG DIR "/log"`). A call argument that is such a macro is a
 // compile-time constant — never a runtime-controlled value — so a
-// `inet_addr(NLOG_HOST_IP)` carries none of the injection/INADDR_NONE risk
-// that makes inet_addr dangerous. Uses ParseCached, so the parse is shared with
+// `inet_addr(NLOG_HOST_IP)` carries none of the injection/INADDR_NONE risk that
+// makes inet_addr dangerous, and a filesystem sink given one cannot be
+// attacker-reached. Uses ParseCached, so the parse is shared with
 // buildGlobalConstants and the main detection loop.
 func buildGlobalStringMacros(ctx context.Context, store db.Store, p *parser.Parser) map[string]bool {
 	macros := make(map[string]bool)
@@ -232,6 +240,7 @@ func buildGlobalStringMacros(ctx context.Context, store db.Store, p *parser.Pars
 	if err != nil {
 		return macros
 	}
+	defs := make(map[string]string)
 	for _, file := range files {
 		source, err := os.ReadFile(file.Path)
 		if err != nil {
@@ -256,12 +265,79 @@ func buildGlobalStringMacros(ctx context.Context, store db.Store, p *parser.Pars
 			if name == "" || value == "" {
 				continue
 			}
-			if isStringLiteralText(value) {
-				macros[name] = true
+			defs[name] = value
+		}
+	}
+	// Fixpoint over macro references so `#define LOG DIR "/log"` counts once DIR
+	// is known. Bounded: a self-referential macro must not loop forever.
+	for round := 0; round < 4; round++ {
+		changed := false
+		for name, value := range defs {
+			if macros[name] {
+				continue
 			}
+			if macroExpandsToString(value, macros) {
+				macros[name] = true
+				changed = true
+			}
+		}
+		if !changed {
+			break
 		}
 	}
 	return macros
+}
+
+// macroExpandsToString reports whether a preprocessor definition's raw value is
+// composed only of string literals and names already known to be string macros.
+func macroExpandsToString(value string, known map[string]bool) bool {
+	tokens := splitCStringTokens(value)
+	if len(tokens) == 0 {
+		return false
+	}
+	for _, tk := range tokens {
+		if strings.HasPrefix(tk, "\"") || known[tk] {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// splitCStringTokens splits C source text on whitespace, keeping a quoted string
+// (with escapes, and therefore embedded spaces) as a single token.
+func splitCStringTokens(s string) []string {
+	var out []string
+	i := 0
+	for i < len(s) {
+		for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r') {
+			i++
+		}
+		if i >= len(s) {
+			break
+		}
+		start := i
+		if s[i] == '"' {
+			i++
+			for i < len(s) {
+				if s[i] == '\\' {
+					i += 2
+					continue
+				}
+				if s[i] == '"' {
+					i++
+					break
+				}
+				i++
+			}
+		} else {
+			for i < len(s) && s[i] != ' ' && s[i] != '\t' && s[i] != '\n' && s[i] != '\r' {
+				i++
+			}
+		}
+		out = append(out, s[start:i])
+	}
+	return out
 }
 
 // hasConstantArg reports whether a call's first argument is a compile-time

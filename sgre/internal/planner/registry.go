@@ -851,7 +851,8 @@ func init() {
 		// is handed to the AI, because whether an assert() guards caller input
 		// (a defect) or an internal invariant (fine) needs intent.
 		CategoryConfidence: map[string]string{
-			"assert_usage": "suspected",
+			"assert_usage":             "suspected",
+			"obsolete_api_conditional": "suspected",
 		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{

@@ -123,8 +123,13 @@ type Candidate struct {
 	// macro-context candidate is never auto-confirmed: it is routed to the AI
 	// agent for judgment.
 	MacroContext bool `json:"macro_context,omitempty"`
-	NonNullable  bool `json:"non_nullable"`
-	IsTypeExpr   bool `json:"is_type_expr"`
+	// ContractKnown marks an unchecked-return candidate whose callee's failure
+	// contract is known (built-in API table / declared allocator / inspected
+	// wrapper body) rather than inferred from the allocator name heuristic.
+	// ReturnCheckFilter only promotes these to the deterministic tier.
+	ContractKnown bool `json:"contract_known,omitempty"`
+	NonNullable   bool `json:"non_nullable"`
+	IsTypeExpr    bool `json:"is_type_expr"`
 	// IsCallResultDeref marks a dereference of a direct function-call result
 	// (`f()->field`, `*f()`, `f()[i]`); CalleeName is the called function. The
 	// nullable_source filter resolves these against the inter-procedural

@@ -233,6 +233,16 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 		if idx, isParam := paramsByFunc[c.FunctionID][sink]; isParam {
 			if paramTainted[c.FunctionID][idx] {
 				c.HasTaintSource = true
+				// A pure passthrough SQL wrapper (`return sqlite3_exec(db, sql, ...)`)
+				// performs no SQL construction: the string arrives from the caller, and
+				// whether THAT string is injectable cannot be decided here. Keep it a
+				// lead for the AI rather than promoting it to the deterministic tier.
+				// (The drop path below applies the same structural fact when no caller
+				// taint is visible.)
+				if c.Category == "sql_injection" && isPassthroughSQLBody(bodies, c.FunctionID, sink) {
+					kept = append(kept, c)
+					continue
+				}
 				promoteOnTaint(&c)
 				kept = append(kept, c)
 			} else if staticByFunc[c.FunctionID] {
@@ -265,6 +275,16 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 			fmt.Sprintf("no tainted source reaches %s at line %d", sink, c.Line))
 	}
 	return kept, dropped, nil
+}
+
+// isPassthroughSQLBody reports whether the function's body is a pure passthrough
+// wrapper for the SQL sink argument — one call, one return, no assignment, no
+// init, and no SQL-construction function in between. Such a body forwards a
+// caller-supplied string straight to the sink, so the injection (if any) is
+// constructed at the caller and cannot be proven here.
+func isPassthroughSQLBody(bodies map[int64]parser.Node, funcID int64, sink string) bool {
+	body, ok := bodies[funcID]
+	return ok && isPassthroughWrapper(body, sink)
 }
 
 // promoteOnTaint upgrades a may-taint hit to the deterministic tier. Injection

@@ -43,6 +43,55 @@ main/wmain/WinMain/wWinMain 之外报；`inet_addr(常量)` 仍豁免。
 `evaluateSizeArg` 对字符串字面量返回 0 而未造成误报，但合约定义错误已修正。
 `tc68` 增加 `secure_lying_snprintf` / `secure_correct_snprintf` 回归用例。
 
+### IDM 仓库误报治理：分级修正（第二轮）
+
+对 `docs/实战IDM仓库误报问题改进建议.md` 第一轮未闭环的项逐条复现后判定：**「机器自动
+确认」的误报必须修**（AI 没有机会过滤），**启发式命中不得进确定性层**，**漏报优先于
+误报**。本轮落地 4 项：
+
+- **dangerous-function / `inet_addr`（CWE-676）**：规则表自己写着它的风险是「运行期可控
+  字符串 + 未检查 `INADDR_NONE`」的**条件**风险，却按「调用即缺陷」自动确认，与规则自身
+  的理由矛盾。inet_addr 改用类别 `obsolete_api_conditional`（→ `suspected`），交 AI 按
+  实参来源与返回值检查研判；`gethostbyname`/`gethostbyaddr`/`mktemp` 等**无条件**风险项
+  仍是 `confirmed`，`inet_addr(<常量>)` 仍豁免。`SKILL.md` 补了对应研判规则（内部配置
+  字段/已解析协议值/已查 `INADDR_NONE` → dismiss）；`AI_JUDGMENT_BOUNDARY.md` 同步登记。
+- **injection：纯透传执行器不再自动确认**。`idm_exec_sql(sql) { return sqlite3_exec(g_db,
+  sql, ...); }` 体内**没有任何 SQL 构造**，字符串完全来自调用方，「调用方拼的 SQL 是否可
+  注入」在本地无法判定；这类候选改为 `suspected` 交 AI（原先的 drop 分支只在「看不到调用
+  方污染」时生效，一旦 PARAM_BINDING 证明有污染就升级 confirmed，正是误报来源）。函数内
+  `sprintf` 构造后 exec 的真实注入**仍为 confirmed**（回归用例覆盖两侧）。
+- **unchecked-return：名字启发式命中不再自动确认**。新增事件属性
+  `contract_known`：被调方是内置 API 表 / 已声明 allocator / **函数体已检视**的透传
+  wrapper 时为 true；仅凭名字像分配器（`alloc` 子串 / `_dup` / `_new`）+ 返回指针的匹配
+  为 false，`ReturnCheckFilter` 只提升 true 的候选。这与 hardcoded-secret 的
+  `value_proven`（值本身确定 vs 仅名字命中）同构。修掉文档 mode A 的 3 个误报
+  （`idm_asset_record_dup` 往调用方缓冲区拷贝、不会失败），而 `malloc(n)` 未判空这类
+  **契约已知**的漏判仍为 `confirmed`。
+- **use-after-free 漏报修复（非文档项，本轮复现发现）**：`free(p); p->n = 1;` 这类
+  **对被释放对象整体做字段写**此前被漏报——`isFieldWrite` 把所有字段写都排除在「使用」
+  之外，但该排除只对「被释放的是那个字段」成立。现在字段写会记一条**基对象**使用，
+  匹配阶段再按 `fs.field` 丢弃：`free(s->msg); s->msg = NULL;`（字段释放后清指针）与
+  `free(s->msg); return s->mode;` 仍不报，`free(p); p->n = 1;` 现在报（写已释放内存 =
+  堆破坏）。实测 `p->n=1`/`p->next=0`/`*p=`/`p[0]=`/读/传参 7 种形态全部命中。
+
+另外两项判定为**无需修改**（复现为「不产生候选」或已修）：
+- **double-free / use-after-free 的文档形态不成立**：`http_destroy_active_conn_list(pool)`
+  / `http_destroy_idle_conn_list(pool)` / `http_free(pool)` 与 `free(p); free(p);` 的复现
+  用例中，前者 `seed_count=0`（`_destroy` 名字启发式已不再等同「释放该对象」），后者只对
+  真 `free` 命中，与文档描述的误报不符——已在更早版本修掉。
+- **null-deref 的「被调函数入口守卫」已被识别**：复现中 `callee_guarded(p){ if(p==NULL)
+  return -1; return p->v; }` + caller 传未证非空变量 → **0 候选**，而未加守卫的对照函数
+  → 1 个 `suspected`。文档 risk #2 的 resize 语义在 v0.9.4 已修。
+
+同时把字符串常量表收敛为一份：`buildGlobalStringMacros` 扩展为支持宏拼接
+（`#define LOG DIR "/log"`）并被 path-traversal 复用（原先 path-traversal 自带一份
+per-file 宏表，属重复），path-traversal 只额外收集本文件的 `static const char` 对象。
+
+回归用例：`zz_quality_round_test.go`（UAF 字段写/字段释放对照、`contract_known` 两侧、
+inet_addr 三态：常量豁免 / 参数与字段 suspected / 其他 obsolete_api 仍 confirmed）、
+`TestReturnCheckFilter_HeuristicAllocatorStaysSuspected`、
+`TestTaintSourceFilter_PassthroughSQLNotAutoConfirmed`。未发布版本，`VERSION` 不变。
+
 ### IDM 仓库误报治理：常量路径与安全函数族（第一轮）
 
 针对 `docs/实战IDM仓库误报问题改进建议.md` 中 30 个误报的根因，检测器/收敛层收敛：

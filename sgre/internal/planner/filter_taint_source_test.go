@@ -1281,3 +1281,71 @@ int main(void) {
 		t.Errorf("expected an injection candidate in run(), got %v", candidateNames(inj))
 	}
 }
+
+// TestTaintSourceFilter_PassthroughSQLNotAutoConfirmed pins the injection tier
+// for a pure passthrough executor (`return sqlite3_exec(db, sql, ...)`): the
+// string comes from the caller and no SQL is constructed here, so the candidate
+// is a lead for the AI, not a machine-proven defect. An injection built inside
+// the function (sprintf into a buffer, then exec) stays confirmed.
+func TestTaintSourceFilter_PassthroughSQLNotAutoConfirmed(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sqltier.c")
+	src := `#include <stdlib.h>
+#include <stdio.h>
+
+typedef struct sqlite3 sqlite3;
+sqlite3 *g_db;
+int sqlite3_exec(sqlite3 *db, const char *sql, void *cb, void *arg, char **err);
+
+int idm_exec_sql(const char *sql) {
+    return sqlite3_exec(g_db, sql, NULL, NULL, NULL);
+}
+
+int built_here(const char *user) {
+    char buf[256];
+    snprintf(buf, sizeof(buf), "SELECT * FROM t WHERE n = '%s'", user);
+    return sqlite3_exec(g_db, buf, NULL, NULL, NULL);
+}
+
+int main(void) {
+    char *h = getenv("HOME");
+    return idm_exec_sql(h) + built_here(h);
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	graph.NewInterprocBuilder(store, p, logger).Build(ctx)
+	evidence.NewInjectionDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "injection")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	byFunc := map[string]EvidenceItem{}
+	for _, c := range result.Candidates {
+		byFunc[c.Target.Function] = c
+	}
+	if c, ok := byFunc["idm_exec_sql"]; !ok {
+		t.Errorf("expected the passthrough executor to be kept as a lead, got %v", candidateNames(result))
+	} else if c.SuspicionLevel != "suspected" {
+		t.Errorf("a pure passthrough SQL executor must stay suspected, got %q", c.SuspicionLevel)
+	}
+	if c, ok := byFunc["built_here"]; !ok {
+		t.Errorf("expected the in-function SQL construction to be kept, got %v", candidateNames(result))
+	} else if c.SuspicionLevel != "confirmed" {
+		t.Errorf("SQL built from caller data inside the function must stay confirmed, got %q", c.SuspicionLevel)
+	}
+}

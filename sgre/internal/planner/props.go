@@ -66,6 +66,13 @@ type eventProps struct {
 	// divisor is exactly zero (a literal `x/0` or a zero-valued constant symbol),
 	// so the RangeFilter auto-confirms it instead of deferring to the AI agent.
 	DefinitelyZero string `json:"definitely_zero"`
+	// ContractKnown is "true" when the unchecked-return detector derived the
+	// callee's failure contract from a built-in API table, a declared allocator,
+	// or an inspected wrapper body. A name-only allocator match (the "alloc"
+	// substring / "_dup" / "_new" heuristic) leaves it unset, so
+	// ReturnCheckFilter keeps that candidate suspected for the AI — mirroring
+	// ValueProven's name-vs-value split for hardcoded secrets.
+	ContractKnown string `json:"contract_known"`
 	// ValueProven is "true" when the hardcoded-secret detector found the literal's
 	// VALUE itself secret-shaped (known token prefix / high entropy / URL
 	// credentials); the HardcodedSecretProofFilter auto-confirms those, while a

@@ -72,7 +72,7 @@ func (f *ReturnCheckFilter) Apply(ctx context.Context, candidates []Candidate) (
 			// test. It never dismisses: a candidate the detector emitted is
 			// real enough that the AI agent, not this filter, should weigh any
 			// residual "is it checked?" ambiguity.
-			if result == "unchecked" {
+			if result == "unchecked" && c.ContractKnown {
 				c.SuspicionLevel = "confirmed"
 			}
 			kept = append(kept, c)

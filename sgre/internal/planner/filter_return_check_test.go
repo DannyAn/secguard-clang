@@ -217,3 +217,66 @@ func TestReturnCheckFilter_Convergence(t *testing.T) {
 		t.Errorf("fp_arg_consumed: expected suspected (argument passthrough), got confirmed")
 	}
 }
+
+// TestReturnCheckFilter_HeuristicAllocatorStaysSuspected pins the tier rule for
+// the unchecked-return filter: only a callee whose failure CONTRACT is known
+// (a built-in API, a declared allocator, or an inspected passthrough body) may
+// be auto-confirmed. A callee that is an "allocator" by NAME alone (`_dup`,
+// `_new`, an "alloc" substring) is a heuristic match, so the candidate stays
+// suspected for the AI — it may be a copy helper that never fails.
+func TestReturnCheckFilter_HeuristicAllocatorStaysSuspected(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "contract.c")
+	src := `#include <stdlib.h>
+#include <string.h>
+
+typedef struct rec { char name[64]; } rec_t;
+rec_t *idm_asset_record_dup(const rec_t *r, rec_t *out);
+
+void known_contract_unchecked(size_t n) {
+    void *p = malloc(n);
+    memset(p, 0, n);
+}
+
+void name_heuristic_unchecked(const rec_t *rec) {
+    char buf[256];
+    idm_asset_record_dup(rec, (rec_t *)buf);
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewUncheckedReturnDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "unchecked-return")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	byFunc := map[string]EvidenceItem{}
+	for _, c := range result.Candidates {
+		byFunc[c.Target.Function] = c
+	}
+	if c, ok := byFunc["known_contract_unchecked"]; !ok {
+		t.Errorf("expected the unchecked malloc() to be kept, got %v", candidateNames(result))
+	} else if c.SuspicionLevel != "confirmed" {
+		t.Errorf("malloc() has a known contract: expected confirmed, got %q", c.SuspicionLevel)
+	}
+	if c, ok := byFunc["name_heuristic_unchecked"]; !ok {
+		t.Errorf("expected the _dup call to be kept as a lead, got %v", candidateNames(result))
+	} else if c.SuspicionLevel != "suspected" {
+		t.Errorf("an allocator-name-only match must stay suspected (AI-judged), got %q", c.SuspicionLevel)
+	}
+}

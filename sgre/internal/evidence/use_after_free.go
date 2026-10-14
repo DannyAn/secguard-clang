@@ -286,10 +286,12 @@ func insideSizeof(node parser.Node) bool {
 
 // isFieldWrite reports whether a field_expression node is a write target (the
 // LHS of an assignment or the declarator of an initializer), so `s->msg = NULL`
-// addresses the field without reading it and must not count as a use. It does
-// NOT walk through a subscript: `q->msg[0] = 1` after `free(q->msg)` READS the
-// dangling q->msg to index it, so it is a genuine use-after-free — only the
-// direct `s->msg = ...` shape is a pure address-of write.
+// addresses the field without reading it and must not count as a use OF THAT
+// FIELD. It does NOT walk through a subscript: `q->msg[0] = 1` after
+// `free(q->msg)` READS the dangling q->msg to index it, so it is a genuine
+// use-after-free — only the direct `s->msg = ...` shape is a pure address-of
+// write. Callers still record a whole-variable use of the base, because writing
+// a field writes through the base object.
 func isFieldWrite(node parser.Node) bool {
 	p := node.Parent()
 	if p == nil {
@@ -360,8 +362,16 @@ func (d *UseAfterFreeDetector) findUseSites(f *db.Function, ptrs, fields, calls,
 			continue
 		}
 		// A field WRITE (`s->msg = NULL`, `s->msg = malloc(...)`) addresses the
-		// field without reading it, so it is not a use-after-free candidate.
+		// field without reading it, so it is not a use of a freed FIELD — but it
+		// does write through the BASE object. After a WHOLE-variable free,
+		// `p->n = 1` stores into freed memory and IS a use-after-free, so record
+		// it as a whole-variable use. The matcher discards it again when the free
+		// site is a field free (fs.field "msg" vs use.field ""), which is what
+		// keeps `free(s->msg); s->msg = NULL;` correct.
 		if isFieldWrite(field) {
+			if base, _ := extractFieldAccess(field); base != "" {
+				addUse(base, "", field.StartLine(), field.StartColumn())
+			}
 			continue
 		}
 		// A field passed to free() (`free(g.data)`) is the thing freed, not a use.

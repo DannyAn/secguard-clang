@@ -49,10 +49,11 @@ var pathSinks = map[string]bool{
 func (d *PathTraversalDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 	globalConsts := buildGlobalConstants(ctx, d.store, d.parser)
+	stringMacros := buildGlobalStringMacros(ctx, d.store, d.parser)
 
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		calls := root.FindAll("call_expression")
-		strConsts := buildStringConstants(root)
+		fileConsts := buildFileStringConstants(root)
 		// Build a set of function start lines that are pure passthrough
 		// wrappers — their body is just `return sink(param);` or
 		// `sink(param);` with the path argument forwarded from a function
@@ -91,10 +92,10 @@ func (d *PathTraversalDetector) Detect(ctx context.Context) (DetectResult, error
 				// (`fopen(DB_PATH, ...)`), or it is a local buffer assembled
 				// earlier in this function from constants only
 				// (`snprintf(path, sizeof path, "%s", DB_PATH)`).
-				if strConsts[stripCastsAndParens(pathArg)] {
+				if isStringConstant(stripCastsAndParens(pathArg), stringMacros, fileConsts) {
 					continue
 				}
-				if constantBuiltPath(calls, f, pathArg, call.StartLine(), strConsts) {
+				if constantBuiltPath(calls, f, pathArg, call.StartLine(), stringMacros, fileConsts) {
 					continue
 				}
 
@@ -156,43 +157,13 @@ var pathBuildCalls = map[string]bool{
 	"strcat_s": true, "strncat_s": true, "strlcat": true,
 }
 
-// buildStringConstants collects a file's compile-time string constants: an
-// object-like macro that expands to string literals and/or other known string
-// constants (`#define DB_PATH "/var/db"`, `#define LOG DIR "/log"`), and a
-// `static const char` object initialized with a string literal that the file
-// never reassigns (`static const char g_path[] = "/x"`). A filesystem sink whose
-// path argument is one of these names is a constant path: no caller can
-// influence it, so it is not a traversal candidate.
-//
-// The table is per file and conservative: a macro whose value is not fully
-// composed of string literals/known constants is dropped, so `#define P DIR
-// user_input` never counts as constant.
-func buildStringConstants(root parser.Node) map[string]bool {
+// buildFileStringConstants collects the file's `static const char` objects that
+// expand to a compile-time string: a static const array or pointer initialized
+// with a string literal and never reassigned in the file. String-valued macros
+// are collected globally by buildGlobalStringMacros (they may be defined in any
+// file of the scan tree), so they are not repeated here.
+func buildFileStringConstants(root parser.Node) map[string]bool {
 	out := make(map[string]bool)
-	defs := root.FindAll("preproc_def")
-	// Fixpoint over macro references (`#define A B`, `#define C A "/x"`); the
-	// depth is tiny, so bound it rather than risk a self-referential loop.
-	for round := 0; round < 4; round++ {
-		changed := false
-		for _, def := range defs {
-			name := def.ChildByFieldName("name")
-			value := def.ChildByFieldName("value")
-			if name == nil || value == nil {
-				continue
-			}
-			n := strings.TrimSpace(name.Text())
-			if n == "" || out[n] {
-				continue
-			}
-			if macroStringConstant(value.Text(), out) {
-				out[n] = true
-				changed = true
-			}
-		}
-		if !changed {
-			break
-		}
-	}
 	for _, decl := range root.FindAll("declaration") {
 		if !isStaticConstDeclaration(decl) {
 			continue
@@ -220,58 +191,11 @@ func buildStringConstants(root parser.Node) map[string]bool {
 	return out
 }
 
-// macroStringConstant reports whether a preprocessor definition's raw value text
-// is composed only of string literals and names already known to be string
-// constants — `"/a" "/b"`, `DIR "/db"`, `OTHER` — i.e. it expands to a
-// compile-time string.
-func macroStringConstant(value string, known map[string]bool) bool {
-	tokens := splitCStringTokens(value)
-	if len(tokens) == 0 {
-		return false
-	}
-	for _, tk := range tokens {
-		if strings.HasPrefix(tk, "\"") || known[tk] {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
-// splitCStringTokens splits C source text on whitespace, keeping a quoted string
-// (with escapes, and therefore embedded spaces) as a single token.
-func splitCStringTokens(s string) []string {
-	var out []string
-	i := 0
-	for i < len(s) {
-		for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r') {
-			i++
-		}
-		if i >= len(s) {
-			break
-		}
-		start := i
-		if s[i] == '"' {
-			i++
-			for i < len(s) {
-				if s[i] == '\\' {
-					i += 2
-					continue
-				}
-				if s[i] == '"' {
-					i++
-					break
-				}
-				i++
-			}
-		} else {
-			for i < len(s) && s[i] != ' ' && s[i] != '\t' && s[i] != '\n' && s[i] != '\r' {
-				i++
-			}
-		}
-		out = append(out, s[start:i])
-	}
-	return out
+// isStringConstant reports whether name is a compile-time string constant: a
+// string-valued macro anywhere in the scan tree, or a file-local static const
+// string object.
+func isStringConstant(name string, stringMacros, fileConsts map[string]bool) bool {
+	return name != "" && (stringMacros[name] || fileConsts[name])
 }
 
 // isStaticConstDeclaration reports whether a declaration carries both the
@@ -331,7 +255,7 @@ func assignedInFile(root parser.Node, name string) bool {
 // A constant BASE does not by itself prove safety — `filename` containing
 // `../` still escapes it — so whether that construction is safe is left to the
 // AI, which can see the validation the pipeline cannot.
-func constantBuiltPath(calls []parser.Node, f *db.Function, pathArg string, sinkLine int, strConsts map[string]bool) bool {
+func constantBuiltPath(calls []parser.Node, f *db.Function, pathArg string, sinkLine int, stringMacros, fileConsts map[string]bool) bool {
 	target := stripCastsAndParens(pathArg)
 	if bareIdentString(target) == "" {
 		return false
@@ -350,7 +274,7 @@ func constantBuiltPath(calls []parser.Node, f *db.Function, pathArg string, sink
 		if len(args) == 0 || bareIdentString(stripCastsAndParens(args[0].Text())) != target {
 			continue
 		}
-		if callArgsAllConstant(call, strConsts) {
+		if callArgsAllConstant(call, stringMacros, fileConsts) {
 			return true
 		}
 	}
@@ -362,7 +286,7 @@ func constantBuiltPath(calls []parser.Node, f *db.Function, pathArg string, sink
 // literal, a known string-constant name, a number, or a sizeof expression (the
 // destination-size argument). An unknown identifier — a parameter, a getenv
 // result, an unmodelled expression — makes the built value non-constant.
-func callArgsAllConstant(call parser.Node, strConsts map[string]bool) bool {
+func callArgsAllConstant(call parser.Node, stringMacros, fileConsts map[string]bool) bool {
 	args := getCallArgs(call)
 	if len(args) < 2 {
 		return false
@@ -372,7 +296,7 @@ func callArgsAllConstant(call parser.Node, strConsts map[string]bool) bool {
 		case "string_literal", "concatenated_string", "number_literal", "sizeof_expression":
 			continue
 		case "identifier":
-			if strConsts[arg.Text()] {
+			if isStringConstant(arg.Text(), stringMacros, fileConsts) {
 				continue
 			}
 		}

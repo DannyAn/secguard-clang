@@ -43,22 +43,27 @@ A dangerous-function candidate has:
 | `unsafe_alloc` | `realloc` | `malloc` + copy + `free` (project policy) |
 | `assert_usage` | `assert` | validate caller input and return an error |
 | `insecure_temp` | `mktemp`, `tmpnam`, `tmpnam_r` | `mkstemp` |
-| `obsolete_api` | `gethostbyname`, `gethostbyaddr`, `inet_addr` | `getaddrinfo`, `getnameinfo`, `inet_pton` |
+| `obsolete_api` | `gethostbyname`, `gethostbyaddr` | `getaddrinfo`, `getnameinfo` |
+| `obsolete_api_conditional` | `inet_addr` | `inet_pton` |
 | `config_banned` | project names from `[banned_functions]` | project-defined |
 
 ### Classification Rules
 
 | Condition | Classification |
 |-----------|---------------|
-| A call to a banned function (any category except `assert_usage`) | **confirmed** |
+| A call to a banned function (any category except the two below) | **confirmed** |
 | A call to `assert` (`assert_usage`) | **suspected** — the AI decides whether it guards caller input (defect) vs an internal invariant (fine) |
+| A call to `inet_addr` (`obsolete_api_conditional`) | **suspected** — its risk is conditional on the argument's provenance and the `INADDR_NONE` check, so you must decide: `dismiss` when the argument is not caller-controlled (an internal config field, an already-parsed protocol value, a constant) or when the result is tested against `INADDR_NONE` / `(in_addr_t)-1`; `confirm` when a caller-supplied string is converted and the sentinel is not checked |
 | `exit`/`ExitProcess`/`pthread_exit`/`ExitThread` inside the entry point | **false-positive** (the detector never emits it) |
 | `inet_addr(<constant>)` | **false-positive** (the detector never emits it) |
 | A call to a function NOT in the ban table | **false-positive** (the detector never emits it) |
 
 The table is a fixed policy: the functions are banned or obsolete by name,
 regardless of surrounding code, so the pipeline auto-confirms every category
-except `assert_usage` (a name match, not a may-analysis). These policy findings
+except `assert_usage` and `obsolete_api_conditional` — both are name matches
+whose defect needs intent the rule cannot see (`assert` guards caller input vs
+an internal invariant; `inet_addr` needs a runtime-controlled string AND an
+unchecked sentinel). These policy findings
 intentionally OVERLAP the context-sensitive `buffer-overflow` / `injection` /
 `format-string` detectors: those answer "does THIS call overflow / inject",
 while this type answers "is a non-`_s` API used at all". Both are reported.
@@ -101,7 +106,8 @@ while this type answers "is a non-`_s` API used at all". Both are reported.
 | `insecure_temp` (`mktemp` / `tmpnam`) | HIGH |
 | `nonlocal_jump` (`setjmp` / `longjmp`) | MEDIUM |
 | `unsafe_alloc` (`realloc`) | MEDIUM |
-| `obsolete_api` (`gethostbyname`, `bcopy`, `bzero`, ...) | MEDIUM |
+| `obsolete_api` (`gethostbyname`, `gethostbyaddr`) | MEDIUM |
+| `obsolete_api_conditional` (`inet_addr`) | LOW |
 | `unsafe_memory` / `unsafe_string` / `unsafe_format` / `unsafe_scan` | MEDIUM |
 | `unchecked_conversion` (`atoi`, ...) | LOW |
 | `assert_usage` (`assert`) | LOW |

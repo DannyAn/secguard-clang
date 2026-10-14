@@ -3,6 +3,7 @@ package evidence
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
@@ -141,6 +142,15 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 				// function not in the index is likewise fail-closed: the "alloc"
 				// substring heuristic is too broad to trust without a confirmed
 				// pointer return type.
+				// A callee that is neither a built-in unchecked-return API nor a
+				// declared allocator is only a source because its NAME matches the
+				// allocator heuristic ("alloc" substring, "_dup", "_new") and it
+				// returns a pointer. That is a name guess, not a known failure
+				// contract: mark it so the planner hands it to the AI instead of
+				// auto-confirming it (a project's `idm_asset_record_dup` that copies
+				// into a caller buffer never fails, and confirming it is a false
+				// positive no AI can filter out).
+				contractKnown := uncheckedReturnAPIs[callee] || apikb.IsDeclaredAllocator(callee) || passthrough[callee]
 				if !uncheckedReturnAPIs[callee] && !apikb.IsDeclaredAllocator(callee) {
 					rt, ok := retTypes[callee]
 					if !ok || !strings.HasSuffix(rt, "*") {
@@ -189,9 +199,10 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 				}
 
 				if emitEvent(ctx, d.store, d.logger, "UNCHECKED_RETURN", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
-					"function":   extractCallName(call),
-					"expression": call.OriginalText(),
-					"category":   "unchecked_return",
+					"function":       extractCallName(call),
+					"expression":     call.OriginalText(),
+					"category":       "unchecked_return",
+					"contract_known": strconv.FormatBool(contractKnown),
 				}) {
 					result.EventsCreated++
 				}

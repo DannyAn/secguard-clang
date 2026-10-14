@@ -395,6 +395,7 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			NonNullable:       props.NonNullable == "true",
 			IsTypeExpr:        props.IsTypeExpr == "true",
 			IsCallResultDeref: props.IsCallResultDeref == "true",
+			ContractKnown:     props.ContractKnown == "true",
 			CalleeName:        props.Callee,
 			SuspicionLevel:    suspicion,
 			DeclLine:          props.DeclLine,

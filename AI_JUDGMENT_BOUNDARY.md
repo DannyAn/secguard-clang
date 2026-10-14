@@ -88,13 +88,14 @@
 | sizeof-misuse | 静态 `sizeof_pointer` | 字面量 |
 | signed-compare | 静态 `signed_compare` | 字面量 |
 | signal-handler | 静态 default | 类型固有 |
-| dangerous-function | 静态 default（`assert_usage` 除外 → suspected） | 类型固有 |
+| dangerous-function | 静态 default（`assert_usage` / `obsolete_api_conditional` 除外 → suspected） | 类型固有 |
 
-**故意留在 `suspected` 的类型（需要「意图/语义」研判，无法确定性证明）：**
+**故意留在 `suspected` 的类型 / 类别（需要「意图/语义」研判，无法确定性证明）：**
 
 | 类型 | 为什么不能 auto-confirm |
 |---|---|
 | path-traversal（CWE-22） | 「外部数据到达路径参数」只证明调用方能**影响**这个字符串，不证明字符串里能出现目录逃逸分量（`../`）——内容未知，且调用方可能已做校验。确定性层要求缺陷在**每条路径**上成立，因此 `TaintSourceFilter` 不再为它升级 `confirmed`，一律 `suspected` 交 AI 研判。（编译期常量路径——字面量 / 字符串宏 / `static const char` / 仅由常量拼装的缓冲区——在检测器层直接抑制，不产候选，见 `path_traversal.go` 的 `buildStringConstants`。） |
+| `dangerous-function` 的 `obsolete_api_conditional`（`inet_addr`） | 规则自身写明其风险是「运行期可控字符串 + 未检查 `INADDR_NONE`」的**条件**风险，不是「调用即缺陷」；名字匹配证明不了这个条件，故降为 suspected 交 AI 按实参来源与返回值检查研判 |
 | argument-type（CWE-686） | 显式指针 cast 可能是**有意的** ABI/opaque 边界——「不兼容」≠「缺陷」，需 AI 判意图 |
 | data-representation（CWE-843） | base 元素类型靠「数 `*`」解析，typedef/数组退化会数错——类型错配的「证明」不够可靠，需 AI 判实际表示 |
 
