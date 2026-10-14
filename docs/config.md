@@ -18,12 +18,17 @@ SecGuard 已经**不再依赖「配例外 → 重扫」的循环**来消宏误�
 
 因此，遇到宏误报时，**首选不是在本文件加例外**，而是让它走 AI 研判；AI 看到
 `DBM_CHECK_RET(ctrl == NULL, FALSE)` 这类判空宏、迭代宏、访问宏后会正确判为
-`dismissed`（排除）。只有下面两类场景才需要本文件配置：
+`dismissed`（排除）。只有下面这些**确定性事实**才值得写进本文件：
 
-- **`[trusted_macros]`**：访问宏的定义落在扫描范围之外，且你希望确定性过滤器
-  **在 AI 之前就 kill 掉空源**（减少 AI 工作量、让真正确定的项仍可 auto-confirm）。
-- **`[iterator_macros.macros]`**：迭代宏定义在扫描范围外，且你希望确定性过滤器
-  **在 AI 之前就 kill 迭代子空源**（同上，是优化而非必需）。
+- **`[trusted_macros]` / `[iterator_macros.macros]`**：访问宏/迭代宏的定义落在扫描
+  范围之外，且你希望确定性过滤器**在 AI 之前就 kill 掉空源**（减少 AI 工作量、
+  让真正确定的项仍可 auto-confirm）。
+- **`[allocators]` / `[deallocators]` / `[ownership_transfer_calls]` /
+  `[nullability.non_null_returns]`**：项目自有的分配/释放/所有权转移/永不返回 NULL
+  的函数契约（定义落在扫描范围之外）。
+- **`[integer_overflow.truncating_wrappers]` / `[guards.path_traversal]`**：项目声明的
+  返回值上界契约 / 路径校验契约。
+- **`[banned_functions]` / `[exclude]` / `[disabled_types]`**：策略与扫描范围开关。
 
 一句话：**本文件的配置现在是「确定性前置优化」，不是「误报兜底」**。兜底由
 「宏上下文 → AI 研判 → 拿不准直接 dismissed」这条链负责。
@@ -191,6 +196,109 @@ skill 拿不到它，也就自动被过滤掉；同时省下该类型收敛/研�
 >   本次扫描是否产出候选。
 > - 未知类型名会被忽略并打印一条 warning（拼写错误不会静默关错类型）。
 
+### `[allocators]` / `[deallocators]` — 项目分配/释放函数（v0.7.4）
+
+```toml
+[allocators]
+names = ["nat_malloc", "VOS_MALLOC", "VOS_MALLOC_F"]
+
+[deallocators]
+names = ["nat_free", "VOS_FREE"]
+```
+
+CLI 启动时注册进 `apikb` 的**精确层**：被登记的名字与内置 `malloc`/`calloc`/`realloc`、
+`free` 完全等价——调用结果可能为 NULL（需判空）、分配必须被释放（否则 memory-leak），
+且可参与 `confirmed` 判定。
+
+> 说明：未登记时仍有**宽松层**兜底（名字含 `alloc` 视为分配、以 `free` 结尾视为释放），
+> 但宽松层只出 `suspected` 交 AI。本项仅用于**定义落在扫描树之外**的包装
+> （SDK 头文件、被 `[exclude]` 跳过的目录）；定义在扫描范围内的包装，SecGuard 会
+> 通过函数体自动识别。
+
+### `[ownership_transfer_calls]` — 所有权转移函数（v0.9.1）
+
+```toml
+[ownership_transfer_calls]
+names = ["list_push_back", "dict_set", "buffer_append"]
+```
+
+`names` 里的函数视为**接管其指针参数的所有权**：指针传入即算「已逃逸」，释放责任
+转移到被调方，memory-leak / resource-leak 不再报泄漏。
+
+适用场景：定义在扫描范围之外的容器插入类 helper，其命名不匹配内置的逃逸启发式
+（`_put` / `_push` / `_add` / `_insert` 等）。
+
+### `[nullability.non_null_returns]` — 永不返回 NULL 的函数（v0.9.0）
+
+```toml
+[nullability.non_null_returns]
+names = ["xmalloc", "g_malloc", "g_new", "sdsnew"]
+```
+
+`names` 里的函数返回值被判定为**保证非 NULL**（失败即 abort/退出）。null_source
+检测器不会为它们播种空源，因此对调用结果直接解引用不再报 null-deref。
+
+适用场景：定义在扫描范围之外的「分配即断言」函数（glib 的 `g_malloc`、`sdsnew`、
+`xmalloc` 这类）。
+
+### `[integer_overflow.truncating_wrappers]` — 返回值有界的包装函数（v0.9.4）
+
+```toml
+[integer_overflow.truncating_wrappers]
+nlog_syslog_add_pri = 1          # 返回值 <= 实参 1（缓冲区大小）
+nlog_syslog_add_hostname = 1
+```
+
+每个键是函数名，值是它的**容量/长度实参的 0-based 下标**。声明后，由该返回值累加而
+成的累加器被视为**不超过**这个容量，因此后续 `size - total` 减法不可能无符号下溢，
+`integer-overflow` 不再报。
+
+适用场景：定义在扫描范围之外、契约已知的截断式追加函数。
+
+### `[guards.path_traversal]` — 路径校验防护函数（v0.9.5，未发布）
+
+```toml
+[guards.path_traversal]
+names = ["idm_file_path_is_valid", "idm_validate_path"]
+```
+
+`names` 列出的函数被项目断言为「校验路径安全」（例如实现是
+`strstr(path, "../") == NULL`）。抑制规则：
+
+1. 该函数在**同一函数体内**、以**同一个实参**、且在文件系统 sink
+   （`fopen` / `open` / `openat` / `opendir` / `unlink` / `remove` / `rename`）
+   **之前**被调用；
+2. 实参比较会剥离前置的强制类型转换/括号——`fopen((const char *)p, ...)` 与
+   `guard(p)` 视为同一实参。
+
+命中则抑制该 `path-traversal` 候选。
+
+判定**与 `if` 的写法无关**：规则只看「防护函数调用发生在哪一行、实参是谁」，因此下面
+这些写法全部等效（`tc` 回归用例覆盖）：
+
+```c
+if (!guard(p)) return ERR;                /* 取反 + early return   */
+if (guard(p) == false) goto err;          /* 显式比较 + goto       */
+if (guard(p)) { log(); return ERR; }      /* 反向判断              */
+ret = guard(p); if (ret) return ERR;      /* 结果存变量再判断      */
+assert(guard(p));                         /* 断言                  */
+if (!guard(p) || !guard(q)) return ERR;   /* 组合条件              */
+```
+
+> **边界（重要）**：本配置只能表达「函数 F 校验值 V」这一**确定性事实**，因此仅覆盖
+> 「被校验的值**本身**就是 sink 的路径实参」这一形态。它**无法**表达：
+>
+> - 路径由 `snprintf(path, sizeof path, "%s/%s", BASE, name)` **构造**后再传给 sink：
+>   此时 `path` 能否逃逸取决于 `BASE` 与 `name` 各自的来源（编译期常量 or 用户输入），
+>   那是**数据流事实**，不是函数名能表达的。这类形态需要「基目录为编译期常量」的
+>   数据流识别（或用 taint 降级交 AI），不在本配置范围内。
+> - 防护发生在**调用方**（sink 在被调函数里）：需要跨函数分析。
+> - **分支覆盖不建模**：防护调用在 sink 之前但只覆盖部分路径时**仍会**抑制——
+>   把函数写进 `names` 即视为项目声明它支配其 sink。
+>
+> 因此本项与 `[trusted_macros]` 同性质，是**减少 AI 工作量的确定性前置优化**，
+> 不是「配了就不再漏」的兜底。
+
 ## 完整示例
 
 ```toml
@@ -227,6 +335,43 @@ names = [
 # types = [
 #     "path-traversal",
 #     "divide-by-zero",
+# ]
+
+# 项目自有的分配/释放包装（定义在扫描范围之外）：与 malloc/free 等价。
+[allocators]
+# names = [
+#     "nat_malloc",
+# ]
+
+[deallocators]
+# names = [
+#     "nat_free",
+# ]
+
+# 接管指针参数所有权的函数：指针传入即视为已逃逸，不算泄漏。
+[ownership_transfer_calls]
+# names = [
+#     "list_push_back",
+# ]
+
+# 保证永不返回 NULL 的函数：对其结果直接解引用不报 null-deref。
+[nullability.non_null_returns]
+# names = [
+#     "xmalloc",
+# ]
+
+# 返回值有界的包装函数：键是函数名，值是其容量实参的 0-based 下标。
+# 由这些返回值累加而成的累加器不会超过该容量，`size - total` 不会下溢。
+[integer_overflow.truncating_wrappers]
+# nlog_syslog_add_pri = 1
+
+# 路径校验防护函数：在同一函数内、以同一实参、先于 fopen/open/remove/rename
+# 等 sink 调用时，判定该路径已校验，抑制 path-traversal 候选。
+# 注意：仅覆盖「被校验的值本身就是 sink 的路径实参」；由 snprintf 拼接基目录
+# 构造出来的路径不在本项范围内（见上文「边界」说明）。
+[guards.path_traversal]
+# names = [
+#     "idm_file_path_is_valid",
 # ]
 ```
 

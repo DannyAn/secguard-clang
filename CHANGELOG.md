@@ -73,6 +73,16 @@ main/wmain/WinMain/wWinMain 之外报；`inet_addr(常量)` 仍豁免。
   - `[guards.path_traversal]` 与 `secguard config --example` 补齐其余 6 个此前
     未在 `--help`/示例中列出的配置段（`allocators`/`deallocators`/
     `ownership_transfer_calls`/`nullability`/`integer_overflow`）。
+  - `docs/config.md` 同步补齐上述 6 个配置段（该文件由 CHANGELOG 约定与
+    `SKILL.md`/`vuln_type_skill.go`/`usage.go` 一起同步，此前 5 个段连同本轮新增的
+    `[guards]` 都只存在于代码里）。并写明 `[guards.path_traversal]` 的**能力边界**：
+    判定只看「防护函数调用在哪一行、实参是谁」，与 `if` 写法无关（取反/显式比较/
+    goto/结果存变量/assert/组合条件/if-else 全部等效，`TestPathTraversal_GuardCallForms`
+    覆盖）；但**仅覆盖「被校验的值本身就是 sink 的路径实参」**——由
+    `snprintf(path, sizeof path, "%s/%s", BASE, name)` **构造**出来的路径参数不在
+    范围内（能否逃逸取决于 `BASE`/`name` 各自的来源，是数据流事实而非函数名），
+    调用方防护（sink 在被调函数内）与分支覆盖同样不在范围内。该构造形态作为
+    **负例**固定在 `TestPathTraversal_GuardCallForms` 中，避免边界被无声扩大。
 
 回归用例：`tc_unchecked_return_indirect_guard.c`（含极性/成功返回/解引用三类反例）、
 `integer_overflow_safe_sink_test.go`（`sprintf_s` 抑制 + `malloc`/`strlcpy`/
