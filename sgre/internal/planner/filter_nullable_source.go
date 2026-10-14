@@ -126,6 +126,17 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 						fmt.Sprintf("variable %s derives from a void* parameter dereferenced by non-null contract", c.VariableName))
 					continue
 				}
+				// The "checked grow then access" idiom: the container was grown
+				// under a failure guard, so an accessor fetch at a strictly lower
+				// index is in range and returns a valid interior pointer. The
+				// fail-open external_call source is an analyzer limitation, not a
+				// candidate the AI should spend a verdict on.
+				if !c.HasDefiniteNull && !models[c.FunctionID].onlyCertainNullableSources(c.VariableName) &&
+					fm.contract.growThenAccess(c.VariableName, c.Line, models[c.FunctionID]) {
+					dropped = dismiss(dropped, c, f.Name(),
+						fmt.Sprintf("variable %s is re-fetched from an accessor after a checked grow on the same container", c.VariableName))
+					continue
+				}
 				// Layering: reflect the must/may tier in the suspicion label so
 				// the AI budgets effort by certainty. A DEFINITE null source
 				// (p = NULL) reaching on every path is a certain null-deref →

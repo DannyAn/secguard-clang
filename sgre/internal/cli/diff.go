@@ -172,6 +172,10 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 	totalSuppressed := 0
 	totalBaselineExisting := 0
 	totalAutoConfirmed := 0
+	// autoConfirmedByType mirrors the full-scan output: per-type machine-confirmed
+	// findings so the orchestrator can dispatch re-review for a type whose
+	// candidates converged to 0 (the global count cannot name which types).
+	autoConfirmedByType := map[string]int{}
 	filesWithCandidates := map[string]bool{}
 	planErrors := outcome.PlanErrors
 	vulnTypes := planner.ActiveVulnTypes(config.Load().DisabledTypeSet())
@@ -212,6 +216,7 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 			needsReview = append(needsReview, autoUnwritten...)
 		}
 		totalAutoConfirmed += autoWritten
+		autoConfirmedByType[vulnType] = autoWritten
 		totalSeedCount += result.Summary.SeedCount
 
 		if _, err := store.InsertScanStat(ctx, &db.ScanStat{
@@ -318,6 +323,7 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 		"head":                        head,
 		"changed_files":               len(d.Files),
 		"candidates_by_type":          candidatesByType,
+		"auto_confirmed_by_type":      autoConfirmedByType,
 		"plan_errors":                 planErrors,
 		"baseline_error":              baselineError,
 		"review_session_status_error": statusUpdateError,

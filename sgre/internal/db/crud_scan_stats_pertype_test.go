@@ -138,6 +138,48 @@ func TestListPerTypeStatus_MultiCWE(t *testing.T) {
 	}
 }
 
+func TestListPerTypeStatus_AutoConfirmedCounts(t *testing.T) {
+	s := NewTestStore(t)
+	ctx := context.Background()
+	scanID := "sc_test_autoconf"
+
+	cwesForType := func(vt string) []string {
+		if vt == "crypto-misuse" {
+			return []string{"CWE-327", "CWE-326", "CWE-338"}
+		}
+		return nil
+	}
+
+	// A 0-candidate type that still carries machine auto-confirmed findings.
+	if _, err := s.InsertScanStat(ctx, &ScanStat{ScanID: scanID, VulnType: "crypto-misuse", FinalCount: 0}); err != nil {
+		t.Fatalf("insert scanstat: %v", err)
+	}
+	for _, f := range []*Finding{
+		{RuleID: "CWE-327", Severity: "high", Status: StatusAutoConfirmed, ReviewStatus: "confirmed", FilePath: "a.c", LineNumber: 1, FunctionName: "f", ScanID: scanID},
+		{RuleID: "CWE-327", Severity: "high", Status: StatusAutoConfirmed, ReviewStatus: "dismissed", FilePath: "a.c", LineNumber: 2, FunctionName: "f", ScanID: scanID},
+		{RuleID: "CWE-326", Severity: "high", Status: StatusAutoConfirmed, ReviewStatus: "", FilePath: "a.c", LineNumber: 3, FunctionName: "g", ScanID: scanID},
+	} {
+		if _, err := s.UpsertFinding(ctx, f); err != nil {
+			t.Fatalf("insert auto-confirmed finding: %v", err)
+		}
+	}
+
+	statuses, err := s.ListPerTypeStatus(ctx, scanID, cwesForType)
+	if err != nil {
+		t.Fatalf("ListPerTypeStatus: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("expected 1 status, got %d", len(statuses))
+	}
+	st := statuses[0]
+	if st.AutoConfirmed != 3 {
+		t.Errorf("auto_confirmed = %d, want 3", st.AutoConfirmed)
+	}
+	if st.UnreviewedAutoConfirmed != 1 {
+		t.Errorf("unreviewed_auto_confirmed = %d, want 1 (the review_status='' row)", st.UnreviewedAutoConfirmed)
+	}
+}
+
 func TestListPerTypeStatus_EmptyScanID(t *testing.T) {
 	s := NewTestStore(t)
 	ctx := context.Background()

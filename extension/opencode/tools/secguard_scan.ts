@@ -34,6 +34,7 @@ function printScanSummary(
   const linesOfCode = goJson?.index_summary?.lines_of_code ?? 0
   const autoConfirmed = goJson?.auto_confirmed_count ?? 0
   const candidatesByType: Record<string, number> = goJson?.candidates_by_type ?? {}
+  const autoConfirmedByType: Record<string, number> = goJson?.auto_confirmed_by_type ?? {}
 
   // One scale line up front, mirroring report.md's `## Scan Overview`: the
   // console and the artifact must answer "how big was this scan" identically.
@@ -74,6 +75,17 @@ function printScanSummary(
     out += "\n"
   }
 
+  const autoEntries = Object.entries(autoConfirmedByType).filter(([, count]) => (count as number) > 0)
+  if (autoEntries.length > 0) {
+    out += "### Auto-confirmed by Type (machine-proved, needs AI re-review)\n\n"
+    out += "| Skill | Count |\n"
+    out += "|-------|-------|\n"
+    for (const [vt, count] of autoEntries) {
+      out += `| ${vt} | ${count} |\n`
+    }
+    out += "\n"
+  }
+
   out += "### Output Files\n\n"
   out += `- Report: ${path.join(scanDir, "report.md")}\n`
   out += `- SARIF (candidate stage, unclassified): ${path.join(scanDir, "candidates.sarif")}\n`
@@ -85,7 +97,7 @@ function printScanSummary(
 
 export default tool({
   description:
-    "Run full SecGuard security scan: index codebase, run all registered detectors, apply the convergence pipeline for every registered vulnerability type. Writes report.md (summary + per-type counts) + candidates.sarif (unclassified leads at SARIF level note) + per-type candidate indexes (candidates/<vuln-type>/_index.md, the Source/Hint/Evidence table the AI classifies from) + candidate evidence Markdown to .codeagent/secguard-clang/scans/<scan_id>/; findings/<vuln-type>/ and result.sarif are produced later from the AI verdicts via secguard_report, stores DB at .codeagent/secguard-clang/.sgre/sgre.db. Returns JSON with scan_id, output_dir, total_candidates, auto_confirmed_count, candidates_by_type, seeds_by_type, plan_errors, detector_errors, files_indexed/functions_indexed/lines_of_code (scan scale). The Go binary generates scan_id, creates the scan directory, and updates the latest symlink — this wrapper only invokes the binary and parses its JSON output.",
+    "Run full SecGuard security scan: index codebase, run all registered detectors, apply the convergence pipeline for every registered vulnerability type. Writes report.md (summary + per-type counts) + candidates.sarif (unclassified leads at SARIF level note) + per-type candidate indexes (candidates/<vuln-type>/_index.md, the Source/Hint/Evidence table the AI classifies from) + candidate evidence Markdown to .codeagent/secguard-clang/scans/<scan_id>/; findings/<vuln-type>/ and result.sarif are produced later from the AI verdicts via secguard_report, stores DB at .codeagent/secguard-clang/.sgre/sgre.db. Returns JSON with scan_id, output_dir, total_candidates, auto_confirmed_count, auto_confirmed_by_type (per-type machine-confirmed counts — a type with 0 candidates but auto_confirmed_by_type > 0 still needs an AI re-review subagent), candidates_by_type, seeds_by_type, plan_errors, detector_errors, files_indexed/functions_indexed/lines_of_code (scan scale). The Go binary generates scan_id, creates the scan directory, and updates the latest symlink — this wrapper only invokes the binary and parses its JSON output.",
   args: {
     path: tool.schema
       .string()
@@ -122,6 +134,7 @@ export default tool({
         const linesOfCode = goJson?.index_summary?.lines_of_code ?? 0
         const autoConfirmed = goJson?.auto_confirmed_count ?? 0
         const candidatesByType = goJson?.candidates_by_type ?? {}
+        const autoConfirmedByType = goJson?.auto_confirmed_by_type ?? {}
         const seedsByType = goJson?.seeds_by_type ?? {}
         const planErrors = goJson?.plan_errors ?? {}
         const detectorErrors = goJson?.detector_errors ?? {}
@@ -152,6 +165,7 @@ export default tool({
           functions_indexed: functionsIndexed,
           lines_of_code: linesOfCode,
           auto_confirmed_count: autoConfirmed,
+          auto_confirmed_by_type: autoConfirmedByType,
           candidates_by_type: typeCounts,
           seeds_by_type: seedsByType,
           plan_errors: planErrors,

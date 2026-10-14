@@ -100,53 +100,75 @@ func (s *store) ListPerTypeStatus(ctx context.Context, scanID string, cwesForTyp
 		return nil, fmt.Errorf("db: list per-type status: %w", err)
 	}
 
-	cweCounts := make(map[string]int)
-	// written_count counts AI-written confirmed verdicts only. Dismissed
-	// candidates are not persisted (no finding row), and auto-confirmed rows
-	// are machine verdicts excluded so the resume check compares final_count
-	// (the candidates the AI must classify) against the number the AI actually
-	// wrote — an AI pass that never ran stays 0 even when the pipeline
-	// auto-confirmed a chunk of the type.
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT rule_id, COUNT(*) FROM findings WHERE scan_id = ? AND status = 'confirmed' GROUP BY rule_id`, scanID)
-	if err != nil {
-		return nil, fmt.Errorf("db: list per-type status: count findings: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cwe string
-		var cnt int
-		if err := rows.Scan(&cwe, &cnt); err != nil {
-			return nil, fmt.Errorf("db: list per-type status: scan: %w", err)
+	// countByRule tallies findings per rule_id (CWE) under an extra WHERE
+	// fragment. written_count uses status='confirmed' (AI verdicts only, so a
+	// machine auto-confirmed chunk never inflates the resume comparison);
+	// auto_confirmed / unreviewed_auto_confirmed expose the machine tier and its
+	// re-review progress so the orchestrator can see, in ONE status call, whether
+	// a 0-candidate type still has machine findings awaiting re-review.
+	countByRule := func(whereFragment string) (map[string]int, error) {
+		counts := make(map[string]int)
+		rows, err := s.exec.QueryContext(ctx,
+			`SELECT rule_id, COUNT(*) FROM findings WHERE scan_id = ? `+whereFragment+` GROUP BY rule_id`, scanID)
+		if err != nil {
+			return nil, fmt.Errorf("db: list per-type status: count findings: %w", err)
 		}
-		// Normalize the stored rule_id so a hand-written lowercase finding
-		// still matches the registry-derived uppercase CWE set.
-		cweCounts[strings.ToUpper(strings.TrimSpace(cwe))] += cnt
+		defer rows.Close()
+		for rows.Next() {
+			var cwe string
+			var cnt int
+			if err := rows.Scan(&cwe, &cnt); err != nil {
+				return nil, fmt.Errorf("db: list per-type status: scan: %w", err)
+			}
+			// Normalize the stored rule_id so a hand-written lowercase finding
+			// still matches the registry-derived uppercase CWE set.
+			counts[strings.ToUpper(strings.TrimSpace(cwe))] += cnt
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("db: list per-type status: rows: %w", err)
+		}
+		return counts, nil
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("db: list per-type status: rows: %w", err)
+
+	cweCounts, err := countByRule(`AND status = 'confirmed'`)
+	if err != nil {
+		return nil, err
+	}
+	autoCweCounts, err := countByRule(`AND status = 'auto-confirmed'`)
+	if err != nil {
+		return nil, err
+	}
+	unreviewedCweCounts, err := countByRule(`AND status = 'auto-confirmed' AND (review_status IS NULL OR review_status = '')`)
+	if err != nil {
+		return nil, err
 	}
 
 	result := make([]*PerTypeStatus, 0, len(stats))
 	for _, st := range stats {
 		cwe := ""
 		written := 0
+		autoConfirmed := 0
+		unreviewed := 0
 		if cwesForType != nil {
 			cwes := cwesForType(st.VulnType)
 			for _, id := range cwes {
 				written += cweCounts[id]
+				autoConfirmed += autoCweCounts[id]
+				unreviewed += unreviewedCweCounts[id]
 			}
 			if len(cwes) > 0 {
 				cwe = cwes[0]
 			}
 		}
 		result = append(result, &PerTypeStatus{
-			VulnType:       st.VulnType,
-			CWE:            cwe,
-			CandidateCount: st.FinalCount,
-			WrittenCount:   written,
-			TerminalState:  inferTerminalStateByAIStageStatus(st.AIStageStatus, st.FinalCount, written),
-			AIStageStatus:  st.AIStageStatus,
+			VulnType:                st.VulnType,
+			CWE:                     cwe,
+			CandidateCount:          st.FinalCount,
+			WrittenCount:            written,
+			AutoConfirmed:           autoConfirmed,
+			UnreviewedAutoConfirmed: unreviewed,
+			TerminalState:           inferTerminalStateByAIStageStatus(st.AIStageStatus, st.FinalCount, written),
+			AIStageStatus:           st.AIStageStatus,
 		})
 	}
 	return result, nil

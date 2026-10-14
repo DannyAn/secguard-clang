@@ -173,3 +173,25 @@ func (m *nullModel) hasExternalCallSource(variable string) bool {
 	}
 	return false
 }
+
+// onlyExternalCallSources reports whether EVERY null source for variable is an
+// unknown external call (origin "external_call") and there is at least one. A
+// mixed model (an explicit NULL, an allocator, or a caller argument) is not
+// "only external" and must not be converged by the grow-then-access rule, which
+// reasons about an accessor's return value alone.
+func (m *nullModel) onlyExternalCallSources(variable string) bool {
+	if m == nil {
+		return false
+	}
+	seen := false
+	for _, s := range m.sources {
+		if s.variable != variable {
+			continue
+		}
+		seen = true
+		if s.origin != "external_call" {
+			return false
+		}
+	}
+	return seen
+}

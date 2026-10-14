@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
@@ -38,6 +39,9 @@ type contractCtx struct {
 	// assigns indexes every assignment/initializer in the body by target name,
 	// so a variable's value can be traced back to its parameter root.
 	assigns map[string][]contractAssign
+	// body is the function body, walked for the checked-grow-then-access idiom
+	// (growThenAccess).
+	body parser.Node
 }
 
 type contractAssign struct {
@@ -55,6 +59,7 @@ func buildContractCtx(fn *db.Function, root, body parser.Node) *contractCtx {
 	cc := &contractCtx{
 		voidParams: map[string]bool{},
 		assigns:    collectContractAssigns(body),
+		body:       body,
 	}
 	for p := range voidPtrParamsOf(fn, root) {
 		if bodyNullChecksVar(body, p) || bodyReturnsVar(body, p) {
@@ -342,4 +347,193 @@ func bodyReturnsVar(body parser.Node, v string) bool {
 		}
 	}
 	return false
+}
+
+// growThenAccess reports whether v's value at line comes from an accessor fetch
+// `v = f(container, idx)` that is preceded, on the same path, by a CHECKED growth
+// of the same container to a strictly larger size:
+//
+//	if (deque_resize(deq, uid + 1) != 0) return -1;
+//	data = (T *)deque_at(deq, uid);   // idx < idx + 1 → in range → non-null
+//	*data = ...;
+//
+// The caller resized the container so the fetched index is valid, which is the
+// standard "grow then index" contract: an in-range accessor returns an interior
+// pointer, so the fetch carries no null risk. Without this, an unknown external
+// accessor seeds a fail-open external_call null source and the dereference is
+// handed to the AI as a suspected false positive.
+//
+// The rule is deliberately narrow — a candidate is converged only when EVERY
+// condition holds, so a genuine possible-null accessor stays reportable:
+//   - v's last assignment before the dereference is a call to an unknown
+//     external accessor (not an allocator, not a known maybe-null libc call),
+//     and v's only null source is that external_call;
+//   - a preceding call `g(container, size)` takes the SAME container expression
+//     as the fetch and a size that is provably larger than the fetched index
+//     (same base expression, strictly larger constant offset);
+//   - that grow call is name-identifiable (resize/grow/ensure/reserve/expand/
+//     extend) and failure-checked with an early exit, so reaching the fetch
+//     means the grow succeeded.
+func (cc *contractCtx) growThenAccess(v string, line int, models *nullModel) bool {
+	if cc == nil || cc.body.Kind() == "" {
+		return false
+	}
+	a := cc.lastAssignBefore(v, line)
+	if a == nil {
+		return false
+	}
+	fetch := unwrapCalleeCall(a.rhs)
+	if fetch == nil {
+		return false
+	}
+	fname := callName(*fetch)
+	if fname == "" || isAllocatorCall(fname) || apikb.IsKnownNullableReturn(fname) {
+		return false
+	}
+	// Only the unknown-external accessor case is converged here; an explicit NULL
+	// or a known maybe-null source is handled by the must-null / certain tiers.
+	if models == nil || !models.onlyExternalCallSources(v) {
+		return false
+	}
+	fargs := callArgs(*fetch)
+	if len(fargs) < 2 {
+		return false
+	}
+	for i := range fargs {
+		container := normExprText(fargs[i].Text())
+		if container == "" {
+			continue
+		}
+		for j := range fargs {
+			if i == j {
+				continue
+			}
+			idxBase, idxOff, ok := offsetExpr(fargs[j].Text())
+			if !ok || idxBase == "" {
+				continue
+			}
+			if cc.guardedGrowCovers(container, idxBase, idxOff, a.line) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// guardedGrowCovers reports whether some if-statement before beforeLine checks a
+// grow call on container, the call's size argument is provably greater than the
+// fetched index (same base expression, larger offset), and the if-body exits
+// early on failure.
+func (cc *contractCtx) guardedGrowCovers(container, idxBase string, idxOff, beforeLine int) bool {
+	for _, ifNode := range cc.body.FindAll("if_statement") {
+		if ifNode.StartLine() >= beforeLine {
+			continue
+		}
+		cond := ifNode.ChildByFieldName("condition")
+		cons := ifNode.ChildByFieldName("consequence")
+		if cond == nil || cons == nil || !isEarlyExit(*cons) {
+			continue
+		}
+		for _, call := range cond.FindAll("call_expression") {
+			if growCallCovers(call, container, idxBase, idxOff) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// growCallCovers reports whether call is a grow/resize-style call on container
+// whose size argument is provably larger than the fetched index.
+func growCallCovers(call parser.Node, container, idxBase string, idxOff int) bool {
+	if !isGrowCall(callName(call)) {
+		return false
+	}
+	hasContainer, hasLarger := false, false
+	for _, arg := range callArgs(call) {
+		if normExprText(arg.Text()) == container {
+			hasContainer = true
+			continue
+		}
+		if base, off, ok := offsetExpr(arg.Text()); ok && base == idxBase && off > idxOff {
+			hasLarger = true
+		}
+	}
+	return hasContainer && hasLarger
+}
+
+// isGrowCall reports whether a callee name marks a capacity-growth operation:
+// `g(container, n)` guarantees the container holds at least n elements.
+func isGrowCall(name string) bool {
+	n := strings.ToLower(name)
+	for _, frag := range []string{"resize", "grow", "ensure", "reserve", "expand", "extend"} {
+		if strings.Contains(n, frag) {
+			return true
+		}
+	}
+	return false
+}
+
+// unwrapCalleeCall unwraps parentheses/casts and returns the call expression, or
+// nil when the value is not a call.
+func unwrapCalleeCall(expr parser.Node) *parser.Node {
+	for expr.Kind() == "parenthesized_expression" || expr.Kind() == "cast_expression" {
+		op, ok := aliasOperand(expr)
+		if !ok {
+			return nil
+		}
+		expr = op
+	}
+	if expr.Kind() != "call_expression" {
+		return nil
+	}
+	return &expr
+}
+
+// offsetExpr parses a "base with constant offset" integer expression: `X`
+// (offset 0), `X + k` / `k + X` (offset +k), `X - k` (offset -k). Anything more
+// complex is rejected so a size/index relationship is never guessed.
+func offsetExpr(text string) (string, int, bool) {
+	norm := normExprText(text)
+	if norm == "" {
+		return "", 0, false
+	}
+	idx := topLevelAddSub(norm)
+	if idx < 0 {
+		return norm, 0, true
+	}
+	left, op, right := norm[:idx], norm[idx], norm[idx+1:]
+	if n, err := strconv.Atoi(right); err == nil {
+		if op == '+' {
+			return left, n, true
+		}
+		return left, -n, true
+	}
+	if n, err := strconv.Atoi(left); err == nil && op == '+' {
+		return right, n, true
+	}
+	return "", 0, false
+}
+
+// topLevelAddSub returns the index of the top-level '+'/'-' in s, or -1 for a
+// plain expression. Unary signs and the '-' of an arrow (`p->f`) are skipped.
+func topLevelAddSub(s string) int {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		case '+', '-':
+			if depth != 0 || i == 0 {
+				continue
+			}
+			if s[i] == '-' && i+1 < len(s) && s[i+1] == '>' {
+				continue
+			}
+			return i
+		}
+	}
+	return -1
 }

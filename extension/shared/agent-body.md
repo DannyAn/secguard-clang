@@ -333,6 +333,12 @@ but the scan ALSO machine-confirmed a set of findings the pipeline "proved"
 getter misread as an allocation, a scalar status code misread as a pointer —
 so you MUST re-review them with the SAME skill before you finish the type:
 
+**Re-review-only dispatch (0 candidates):** if your type has 0 candidates (no
+`candidates/<type>/_index.md`, or it exists but is empty), you were dispatched for
+re-review ONLY — do NOT look for candidates and do NOT run the classification
+loop above. Start here at step 1, load the <type> skill, and re-review every
+machine auto-confirmed finding. This is the only path a 0-candidate type needs.
+
 1. List them — via Bash `secguard report --list-auto-confirmed --scan-id <scan_id>
    --type <type> --db <db_path>`, or the `secguard_review` MCP tool
    (`list_auto_confirmed: true, type: <type>`) when you have it (OpenCode-NGA has

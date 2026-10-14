@@ -281,8 +281,15 @@ type PerTypeStatus struct {
 	CWE            string `json:"cwe"`
 	CandidateCount int    `json:"candidate_count"`
 	WrittenCount   int    `json:"written_count"`
-	TerminalState  string `json:"terminal_state"`
-	AIStageStatus  string `json:"ai_stage_status"`
+	// AutoConfirmed is the count of findings the pipeline wrote straight to
+	// findings/ as `auto-confirmed` (machine verdict) for this type.
+	AutoConfirmed int `json:"auto_confirmed"`
+	// UnreviewedAutoConfirmed is the subset of AutoConfirmed that has no AI
+	// re-review verdict yet (review_status NULL/''). A nonzero value means this
+	// type still needs a re-review subagent even when candidate_count == 0.
+	UnreviewedAutoConfirmed int    `json:"unreviewed_auto_confirmed"`
+	TerminalState           string `json:"terminal_state"`
+	AIStageStatus           string `json:"ai_stage_status"`
 }
 
 type FunctionSummary struct {

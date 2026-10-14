@@ -252,9 +252,10 @@ as `result.sarif`.)
 **长扫描超时策略 (F4):** Before calling `secguard_scan`, estimate scan duration. If the project has > 100 C files OR the scan is expected to exceed 120s (the default Bash timeout), the orchestrator SHALL either (a) invoke the scan with an explicit timeout ≥ 600s, or (b) use the host's background-task + Monitor mechanism from the start. When a scan is moved to the background, the orchestrator SHALL switch to Monitor within 1 turn — it SHALL NOT use `sleep N; tail` (blocked by Bash safety policy) and SHALL NOT leave a backgrounded scan unmonitored. While the Monitor is pending, the orchestrator SHALL NOT issue parallel Bash commands (the host may buffer their results until the Monitor completes, wasting the parallel window); any preparation (type list, agent-definition read) MUST complete before the Monitor starts.
 
 1. **Scan**: call the `secguard_scan` tool with the target path. It returns a
-   summary (`scan_id`, `output_dir`, `candidates_by_type`, `seeds_by_type`,
-   `plan_errors`, `detector_errors`, `total_candidates`, and `index_summary` with
-   `files_indexed` / `functions_indexed`). Record `scan_id`, `output_dir`, and
+   summary (`scan_id`, `output_dir`, `candidates_by_type`, `auto_confirmed_by_type`,
+   `seeds_by_type`, `plan_errors`, `detector_errors`, `total_candidates`, and
+   `index_summary` with `files_indexed` / `functions_indexed`). Record `scan_id`,
+   `output_dir`, and
    the codebase scale (`files_indexed` files / `functions_indexed` functions) —
    surface the scale in your next message and in the final 报告头. If the summary
    has `report_error`, stop and surface it.
@@ -277,9 +278,16 @@ as `result.sarif`.)
    × 20+ types ≈ 90+ SERIAL round-trips in a single context. That overhead scales
    with **type count**, not candidate count, so a "small" project with many types
    is NOT a small scan. Gate on BOTH axes. Let `type_count` = the number of types
-   with `candidates_by_type > 0` in the scan summary (`total_candidates` EXCLUDES
-   auto-confirmed pipeline findings — those are already written, so only
-   suspected/possible candidates remain for the AI):
+   that need an AI subagent — i.e. `candidates_by_type > 0` OR
+   `auto_confirmed_by_type > 0` in the scan summary. `total_candidates` EXCLUDES
+   auto-confirmed pipeline findings (those are already written), so it counts only
+   suspected/possible candidates awaiting first-round classification; a type with
+   `candidates_by_type == 0` but `auto_confirmed_by_type > 0` contributes 0 to
+   `total_candidates` yet MUST still count toward `type_count` (it needs a
+   re-review-only subagent — no `_index.md`, see step 3/4). **This is the 0.9.4
+   AI-review blind spot: a 0-candidate type with machine findings was silently
+   excluded from the gate, so its auto-confirmed findings were never re-reviewed
+   and `--list-auto-confirmed` stayed nonzero at audit time.**
    - **`type_count ≤ 3 AND total_candidates ≤ 200` → SEQUENTIAL (step 3).** The
      whole scan is at most one subagent-batch's worth of work; one context avoids
      the dispatch overhead. Do NOT spawn subagents.
@@ -297,9 +305,10 @@ as `result.sarif`.)
    > **降级处理：** 当 parallel dispatch 因故不可用（如子代理不可用）且 gate 判定
    > PARALLEL 时，orchestrator 应明确告知用户"扫描规模超出单代理能力，需要并行处理
    > 支持"，而不可擅自降级为 SEQUENTIAL。
-3. **Sequential loop** (the normal path for small scans): for each type with
-   candidates > 0 — load that type's skill, then read
-   `candidates/<type>/_index.md` and classify by suspicion_level:
+3. **Sequential loop** (the normal path for small scans): for each type that needs
+   AI work (`candidates_by_type > 0` OR `auto_confirmed_by_type > 0`), load that
+   type's skill. If `candidates_by_type > 0`, read `candidates/<type>/_index.md`
+   and classify by suspicion_level:
    - **confirmed** → read the `_index.md` `Source` column for the statement; confirm
      (matches the evidence) or dismiss (guarded/different) from the table itself.
      Do NOT read source or the candidate file. Batch all confirmed verdicts into
@@ -314,8 +323,16 @@ as `result.sarif`.)
     to mark the type's AI stage done (sets ai_stage_status='done'). This is REQUIRED
     for the orchestrator's resume logic (`status --per-type` terminal_state) to
     correctly report `done`.
-    Never skip a type. Obey the context budget (no per-candidate source reads;
-    no skill for a 0-candidate type).
+    Never skip a type. Obey the context budget (no per-candidate source reads).
+    **0-candidate re-review type (`candidates_by_type == 0 && auto_confirmed_by_type > 0`):**
+    there is no `_index.md` (empty/absent) — do NOT read it and do NOT classify.
+    Go straight to the auto-confirmed re-review (agent-body "Re-review auto-confirmed
+    findings"): `secguard report --list-auto-confirmed --type <type> --scan-id <scan_id>
+    --db <db_path>`, apply the skill's false-positive rules to each entry, write a
+    verdict for EVERY entry via `--review-json`, then
+    `secguard report --complete-type <type> --scan-id <scan_id> --db <db_path>`.
+    A 0-candidate type STILL loads its skill — the re-review is skill-driven, not
+    candidate-driven.
 **调度时序合规规则 (F3):** All subagent dispatches SHALL occur in a single assistant turn — N `Agent`/`task` calls issued consecutively with the first-to-last timestamp span ≤ 10s. (Claude Code's subagent-dispatch tool is `Agent`; older Claude Code versions name it `Task`.) The orchestrator SHALL NOT split dispatches across turns. After dispatch, while subagents run, the orchestrator SHALL NOT poll their transcripts or issue `sleep`.
 
 **子代理返回模型 (F7) — 这是"任务卡住不结束/结果丢失/重复下发"的根因，必读：** 三个平台的返回模型不同，绝不可混用：
@@ -330,7 +347,8 @@ as `result.sarif`.)
 **子代理句柄失效 (F9) — `No task found with ID <id>` 的恢复：** 异步宿主的后台任务句柄偶发被回收，返回 `No task found with ID <id>`。这是宿主侧竞态，**不是扫描失败，也绝不等于该子代理没跑**。遇到时**禁止**反复用同一 ID 重试、禁止死等、禁止把该类型当 `failed` 丢弃。正确动作：立即 `secguard status --per-type --scan-id <scan_id>`，以 DB 的 `terminal_state` 为唯一权威（`done`=成功；`in-progress`/`pending`=未写完；`unknown`=未下发）。对非 `done` 的类型**只重下发缺失部分**（带上候选范围），`done` 的绝不下发。重下发后照常进第 5 步 Collect+finalize，第 6 步出报告。
 
 4. **Parallel dispatch** (ONLY when step 2 says so): validate every batch against the Batch Capacity Configuration above, then spawn one subagent PER BATCH
-   of types that have candidates > 0, ALL IN THE SAME TURN so they run
+   of types that need AI work (`candidates_by_type > 0` OR
+   `auto_confirmed_by_type > 0`), ALL IN THE SAME TURN so they run
    concurrently:
    - Claude Code: the `Agent` tool (the subagent-dispatch tool; older versions
      name it `Task`) with `subagent_type: "security-auditor"`.
@@ -353,6 +371,10 @@ as `result.sarif`.)
    candidate file, and each candidate file has a `## Code Context` block — do NOT
    issue per-candidate source READs (that is the tens-of-minutes cost). Read ONLY
    your type's `_index.md`, never the whole report.md.
+    **Re-review-only type (0 candidates, auto_confirmed > 0):** if a type has
+   `auto_confirmed_by_type > 0` but NO `_index.md` (or it is empty), do NOT read
+   `_index.md` and do NOT classify. Skip straight to the auto-confirmed re-review
+   (list + review-json, below), then `--complete-type <type>`.
     For each type: load the <type> skill, then classify by suspicion_level:
     - confirmed → read the `Source` column in <scan_dir>/candidates/<type>/_index.md
       (do NOT read the candidate files and do NOT open source), confirm/dismiss from
@@ -423,7 +445,7 @@ as `result.sarif`.)
 
    **DB schema 速查 (列名别猜 — 猜一个不存在的列如 `f.type` 会白费 1~2 轮 `secguard schema` 往返):**
    Prefer structured tools over raw SQL — every count you need already has one:
-   - per-type candidate/written → `secguard status --per-type --scan-id <id>` (`candidate_count`/`written_count`/`terminal_state`, no SQL).
+   - per-type candidate/written → `secguard status --per-type --scan-id <id>` (`candidate_count`/`written_count`/`auto_confirmed`/`unreviewed_auto_confirmed`/`terminal_state`, no SQL). `unreviewed_auto_confirmed > 0` = the type's machine findings still lack AI re-review.
     - per-type verdict split → `secguard report --audit --scan-id <id> --output-dir <dir>` returns an `audits` array (`vuln_type`/`confirmed`/`auto_confirmed`/`ai_stage_status`; `dismissed` and `suspected` are not present — dismissed candidates are not persisted). `ai_stage_status` values: `pending` (AI stage not done), `done` (AI stage complete), `failed` (AI stage failed, reserved). Sum that array for the report — do NOT raw-query `findings` to recompute it.
     **findings/ 里的 confirmed 文件 ≠ 子代理报告的 confirmed（auto-confirmed 已落库）:** `findings/<type>/NNN_*_confirmed.md` 是两类之和——(a) `auto-confirmed`：pipeline 在 scan 阶段直接机器确认的确定性发现（divide-by-zero 的 `divisor@field`/`global`、null-deref 的 certain-null、uninit 的 certain-uninit 等），它们**不在** `candidates/_index.md` 里、子代理从来看不到；(b) 子代理写的 `confirmed`。所以 findings/ 的 confirmed 文件数可以明显大于子代理报告的数，多出的就是 auto-confirmed，**不是漏报也不是子代理说错**。最终计数一律以 `report --audit` 的 `audits` 数组（含 `auto_confirmed` 字段）为准，不要 `ls findings/` 反推、不要为这个对账。
    **DB 路径（绝对路径，否则 Exit code 1）:** every `secguard db` / `secguard schema` / `secguard report` call that takes `--db` MUST pass the ABSOLUTE path `<scan_dir>/../../.sgre/sgre.db`. A relative `.sgre/sgre.db` fails with `Error: Exit code 1` whenever your cwd is not the project root — do NOT retry it as-is; re-run with the ABSOLUTE path. **Do NOT `cd` into the scan dir to "fix" it:** commands run WITHOUT `--db` (`secguard plan`/`status`/`metrics`/`query` and `report --audit`) resolve the DB relative to cwd, so cd'ing into the scan dir would mint a second, empty `sgre.db` under the scan dir (doubling build time and splitting findings across two databases). Keep cwd at the project root for the whole run.
@@ -483,8 +505,25 @@ as `result.sarif`.)
     suppresses the machine false positive. Before the audit, VERIFY the subagents
     actually did it: `secguard report --list-auto-confirmed --scan-id <scan_id>
     --db <db_path>` should return `count: 0` (every auto-confirmed finding got a
-    review_status); a nonzero `count` means some machine findings are unreviewed —
-    surface that in the 观察项表 rather than silently auditing. Do NOT shell out to
+    review_status). **A nonzero `count` is a completeness failure, not a
+    note-taking event — fix it before auditing:**
+    1. Find the remaining types: `secguard status --per-type --scan-id <scan_id>`
+       returns per-type `auto_confirmed` / `unreviewed_auto_confirmed`; any type
+       with `unreviewed_auto_confirmed > 0` still needs re-review. Do NOT use
+       `terminal_state` alone for this — a 0-candidate type reads `terminal_state:
+       done` (its classification IS complete) even while its machine findings are
+       unreviewed. (Fallback: run `secguard report --list-auto-confirmed --type
+       <type> --scan-id <scan_id> --db <db_path>` per type from the scan summary's
+       `auto_confirmed_by_type`.)
+    2. For each such type, dispatch a re-review-only subagent (or a sequential
+       re-review pass if small) — load the type's skill, list + `--review-json`
+       every entry, then `--complete-type <type>`. The re-review is idempotent:
+       `--list-auto-confirmed` only returns entries with no review verdict, so
+       re-dispatching an already-reviewed type finds 0 and is harmless.
+    3. Re-run the global `--list-auto-confirmed` check; only when it reads
+       `count: 0` may you proceed to audit. If a re-dispatch STILL leaves
+       `count > 0` (e.g. no subagent available), surface the unreviewed count in
+       the 观察项表 as a FALLBACK — never as the design. Do NOT shell out to
     an external AI provider.
 
     After ALL subagents (or your sequential loop) are done, run `secguard report --audit --scan-id <scan_id> --output-dir <output_dir> --ai-duration-ms <ms>`

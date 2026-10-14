@@ -188,6 +188,14 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	// read as "0 candidates" in candidates_by_type, and the distinction is what
 	// answers "is zero candidates a detector bug or a filter over-aggressive".
 	seedsByType := map[string]int{}
+	// autoConfirmedByType mirrors seedsByType for the machine-confirmed tier: the
+	// per-type count of findings the pipeline wrote straight to findings/ as
+	// `auto-confirmed` (without a first-round AI pass). The orchestrator needs this
+	// to dispatch re-review subagents for a type whose candidates converged to 0
+	// but which still carries machine findings — otherwise that type skips the
+	// AI second-round review entirely (the global auto_confirmed_count cannot
+	// name WHICH types have them).
+	autoConfirmedByType := map[string]int{}
 
 	vulnTypes := planner.ActiveVulnTypes(config.Load().DisabledTypeSet())
 
@@ -250,6 +258,7 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 			needsReview = append(needsReview, autoUnwritten...)
 		}
 		totalAutoConfirmed += autoWritten
+		autoConfirmedByType[vulnType] = autoWritten
 
 		finalLocations := distinctFindingLocations(needsReview)
 		totalFinalCount += finalLocations
@@ -377,6 +386,7 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	output := map[string]interface{}{
 		"scan_id":                 scanID,
 		"candidates_by_type":      candidatesByType,
+		"auto_confirmed_by_type":  autoConfirmedByType,
 		"seeds_by_type":           seedsByType,
 		"plan_errors":             planErrors,
 		"detector_errors":         detectorErrors,

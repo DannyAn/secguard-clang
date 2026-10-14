@@ -4,6 +4,49 @@
 
 ## [0.9.4] - 2026-10-12
 
+### null-deref「检查后扩容再取址」误报收敛（CWE-476）
+
+厂商反馈 `*data` 误报：
+
+```c
+data = (user_binds_t *)shm_deque_at_safe(&g_user_bind_tbl.deq, uid);
+if (data == NULL) {
+    if (shm_deque_resize(&g_user_bind_tbl.deq, uid + 1) != 0) return -1;
+    data = (user_binds_t *)shm_deque_at(&g_user_bind_tbl.deq, uid);
+    *data = (user_binds_t){0};   // 误报
+}
+```
+
+`shm_deque_at` 是未知外部函数，其返回值按 fail-open 记为 `external_call` 可能为空来源，故 `*data` 被列为 suspected 交 AI 研判。
+
+根因：这是标准的「先检查扩容、再按下标取址」惯用法——容器已成功扩容到 `uid + 1`，取下标 `uid` 必然在界内，访问器返回有效内部指针，不可能为 NULL。
+
+修正（`planner/null_contract.go` 新增 `growThenAccess`，由 `filter_nullable_source.go` 收敛）：
+- 变量最后一次赋值是指向未知外部访问器的调用（非 allocator、非已知可能为空 libc），且其唯一空来源为 `external_call`；
+- 该赋值之前存在一个**受失败保护**（`if (g(...) != 0) return;`）的扩容调用 `g(container, size)`，与取址调用**同一容器表达式**，且 `size` 与下标为**同基表达式且常量偏移更大**（`resize(d, uid+1)` + `at(d, uid)`，或 `resize(d, n)` + `at(d, n-1)`）；
+- 扩容调用名可识别（resize/grow/ensure/reserve/expand/extend）。
+
+边界（反例用例保证不引入漏报）：取址发生在扩容之前、调用非扩容函数、下标不小于 size、allocator 结果、不同容器、size 与下标无同基关系、扩容未做失败检查——以上均仍作为候选上报。
+
+测试：新增 `TestNullDeref_CheckedGrowThenAccess`（4 正例收敛 + 7 反例仍上报）；`go build` / `go test ./...` / nosqlite 子集 / `go vet` 全绿。
+
+### 重新发布（2026-10-14，厂商演示反馈）：0 候选类型的 auto-confirmed 复核盲区
+
+厂商对 `/usr1/code/support/idm/src` 全量扫描发现 41 条流水线 auto-confirmed 发现（5 个类型：crypto-misuse、double-free、injection、unchecked-return、use-after-free）因 `candidates_by_type == 0` 未进入 Scale gate 分发，跳过 AI 二次复核直接计入最终报告。
+
+根因：`secguard scan` 输出只给全局 `auto_confirmed_count`，没有 per-type 分项；工作流 Scale gate 仅按 `candidates_by_type > 0` 派发子代理，0 候选但有 auto-confirmed 的类型（收敛阶段被全部机器确认）无人复核，`--list-auto-confirmed` 在审计时仍返回 41 条未复核项。
+
+修正：
+- `secguard scan` / `diff` 输出新增 `auto_confirmed_by_type`（每类型机器确认数），orchestrator 在分发阶段即可识别 0 候选但需复核的类型。
+- OpenCode / opencode-nga 的 `secguard_scan` MCP wrapper 同步转发 `auto_confirmed_by_type`（此前只透传精选字段，会丢掉该字段使 OpenCode 平台编排仍失明），并在控制台摘要打印 Auto-confirmed by Type 表。
+- `secguard status --per-type` 新增 `auto_confirmed` / `unreviewed_auto_confirmed` 每类型字段，兜底时无需逐类型 `--list-auto-confirmed` 即可定位未复核项。
+- Scale gate 的 `type_count` 改为 `candidates_by_type > 0 OR auto_confirmed_by_type > 0`，0 候选类型按「re-review-only」模式派发子代理。
+- 子代理 prompt（`agent-body.md` / `command-instructions.md`）新增 0 候选复核模式：跳过 `_index.md`，直接 `--list-auto-confirmed --type <type>` + `--review-json`。
+- finalize 阶段兜底：`--list-auto-confirmed` 非 0 时按类型补发复核子代理，而非仅在观察项表提示。
+- 注：`--list-auto-confirmed --type` 过滤本已存在（建议 5 无需改动）；SARIF 已标注 `review_status`/`review_reasoning`（建议 6 已部分覆盖，unreviewed 因 finalize 阻断不再进入最终报告）。
+
+测试：`go build ./...`、`go test ./...` 全绿；新增 `TestListPerTypeStatus_AutoConfirmedCounts`（0 候选类型 auto_confirmed/unreviewed 计数），scan 输出契约测试新增 `auto_confirmed_by_type` / `seeds_by_type` 键断言。
+
 ### null-deref void* 契约收敛漏报修正（ND-3 / RISK-2，CWE-476）
 
 v0.9.4 首次发布的 ND-3 修复（commit `d8410b4`）引入 `contractDerived` dismiss 规则收敛 void* 契约解引用误报，但端到端验证发现一条漏报路径：当 accessor 调用（`t = (T*)get_raw(p); t->f`）的 `get_raw` 是可能返回 NULL 的普通函数时，`contractDerived` 仍追溯赋值 RHS 到 void* 契约参数并 dismiss，导致真缺陷被抑制。
