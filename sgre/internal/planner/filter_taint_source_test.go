@@ -1192,3 +1192,92 @@ int tp_constructed_sql(sqlite3 *db) {
 		t.Errorf("tp_constructed_sql (sprintf-built SQL) must be kept, got %v", candidateNames(result))
 	}
 }
+
+// TestTaintSourceFilter_PathTraversalNotAutoConfirmed pins the AI judgment
+// boundary for path traversal: external reachability of the path argument does
+// NOT prove the value can carry a `../` component, so a taint hit keeps the
+// candidate at `suspected` for the AI to judge. Injection keeps the opposite
+// policy — an unparameterized sink that external data reaches IS the defect —
+// so the two must not be promoted by the same rule.
+func TestTaintSourceFilter_PathTraversalNotAutoConfirmed(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tier.c")
+	src := `#include <stdlib.h>
+#include <stdio.h>
+
+int read_path(char *path) {
+    FILE *f = fopen(path, "r");
+    return f != 0;
+}
+
+void run(char *c) {
+    system(c);
+}
+
+int main(void) {
+    char *p = getenv("PATH_ARG");
+    char *cmd = getenv("CMD");
+    run(cmd);
+    return read_path(p);
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	graph.NewInterprocBuilder(store, p, logger).Build(ctx)
+	evidence.NewPathTraversalDetector(store, p, logger).Detect(ctx)
+	evidence.NewInjectionDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+
+	pt, err := pl.Plan(ctx, "path-traversal")
+	if err != nil {
+		t.Fatalf("plan path-traversal: %v", err)
+	}
+	ptSeen := false
+	for _, c := range pt.Candidates {
+		if c.Target.Function != "read_path" {
+			continue
+		}
+		ptSeen = true
+		if !hasTaintEvidence(c) {
+			t.Errorf("read_path should carry taint_source evidence, got %+v", c.Evidence)
+		}
+		if c.SuspicionLevel != "suspected" {
+			t.Errorf("path-traversal with a tainted caller must stay suspected (AI-judged), got %q", c.SuspicionLevel)
+		}
+	}
+	if !ptSeen {
+		t.Errorf("expected a path-traversal candidate in read_path, got %v", candidateNames(pt))
+	}
+
+	inj, err := pl.Plan(ctx, "injection")
+	if err != nil {
+		t.Fatalf("plan injection: %v", err)
+	}
+	injSeen := false
+	for _, c := range inj.Candidates {
+		if c.Target.Function != "run" {
+			continue
+		}
+		injSeen = true
+		if c.SuspicionLevel != "confirmed" {
+			t.Errorf("injection with a tainted param sink must stay confirmed, got %q", c.SuspicionLevel)
+		}
+	}
+	if !injSeen {
+		t.Errorf("expected an injection candidate in run(), got %v", candidateNames(inj))
+	}
+}

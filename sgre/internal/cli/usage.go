@@ -226,8 +226,7 @@ What it is:
   it. It exists for the trusted-macro allowlist, project iterator macros, the
   banned-function extension, directory exclusions, the vulnerability-type
   switch, project allocator/deallocator/ownership-transfer names, return
-  nullability, integer-overflow truncating wrappers, and path-traversal guard
-  functions.
+  nullability, and integer-overflow truncating wrappers.
 
   Config file locations, in priority order (first existing wins):
     1. --config <path>                     explicit flag
@@ -309,14 +308,6 @@ What it is:
     capacity/size argument at the given 0-based index), so an accumulator built
     from their returns cannot exceed the buffer and a later 'size - total'
     subtraction cannot underflow.
-
-  [guards.path_traversal] — path-validation guard functions
-    names = ["..."]
-    Project functions that prove a path is safe before it reaches a filesystem
-    sink (idm_file_path_is_valid, idm_validate_path). When such a function is
-    called with the same path argument EARLIER in the same function than
-    fopen/openat/remove/rename/unlink, the candidate is suppressed — a guard
-    called after the sink proves nothing.
 
 Examples:
   secguard config
@@ -402,17 +393,7 @@ names = [
 # from their returns cannot exceed the buffer and a later 'size - total'
 # subtraction cannot underflow.
 [integer_overflow.truncating_wrappers]
-# nlog_syslog_add_pri = 1
-
-# Project path-validation functions: a call with the same path argument EARLIER
-# in the same function than fopen/openat/remove/rename/unlink proves the path is
-# safe, so the path-traversal candidate is suppressed. A guard called after the
-# sink proves nothing.
-[guards.path_traversal]
-names = [
-    # "idm_file_path_is_valid",
-    # "idm_validate_path",
-]`)
+# nlog_syslog_add_pri = 1`)
 }
 
 // subcommandUsage maps a subcommand name to its usage printer. Execute uses this

@@ -37,6 +37,7 @@
 ## 什么交给 AI 研判（`suspected` / `possible`）
 
 1. **may 数据流**（只在部分路径成立）：maybe-null、条件 free / 条件泄漏 / 条件 OOB。
+   路径遍历的「外部可达」也属于这一类：可达性证明不了字符串里能出现 `../`。
 2. **名字 / 启发式**：函数名含 `alloc`/`open`/`join` 等、taint 未证明、格式串非字面量但未到 sink。
 3. **参数 / 跨函数 / 宏**：外部函数契约未知、macro-context（宏语义不可见）、参数驱动的值。
 
@@ -84,16 +85,16 @@
 | out-of-bounds | 静态 2 categories + 动态 `RangeOOBFilter` | 常量/区间 |
 | divide-by-zero | 动态 `RangeFilter`（除数恒 0） | 区间/常量 |
 | unchecked-return | 动态 `ReturnCheckFilter` | 契约表 |
-| path-traversal | 动态 `TaintSourceFilter`（taint 达 sink） | taint 数据流 |
 | sizeof-misuse | 静态 `sizeof_pointer` | 字面量 |
 | signed-compare | 静态 `signed_compare` | 字面量 |
 | signal-handler | 静态 default | 类型固有 |
 | dangerous-function | 静态 default（`assert_usage` 除外 → suspected） | 类型固有 |
 
-**故意留在 `suspected` 的两个类型（需要「意图/语义」研判，无法确定性证明）：**
+**故意留在 `suspected` 的类型（需要「意图/语义」研判，无法确定性证明）：**
 
 | 类型 | 为什么不能 auto-confirm |
 |---|---|
+| path-traversal（CWE-22） | 「外部数据到达路径参数」只证明调用方能**影响**这个字符串，不证明字符串里能出现目录逃逸分量（`../`）——内容未知，且调用方可能已做校验。确定性层要求缺陷在**每条路径**上成立，因此 `TaintSourceFilter` 不再为它升级 `confirmed`，一律 `suspected` 交 AI 研判。（编译期常量路径——字面量 / 字符串宏 / `static const char` / 仅由常量拼装的缓冲区——在检测器层直接抑制，不产候选，见 `path_traversal.go` 的 `buildStringConstants`。） |
 | argument-type（CWE-686） | 显式指针 cast 可能是**有意的** ABI/opaque 边界——「不兼容」≠「缺陷」，需 AI 判意图 |
 | data-representation（CWE-843） | base 元素类型靠「数 `*`」解析，typedef/数组退化会数错——类型错配的「证明」不够可靠，需 AI 判实际表示 |
 

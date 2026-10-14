@@ -225,7 +225,7 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 			continue
 		}
 		// A parameter can be tainted by the caller. Outcomes:
-		//   - a PARAM_BINDING edge proves a tainted arg flows in → confirmed.
+		//   - a PARAM_BINDING edge proves a tainted arg flows in → taint hit.
 		//   - the function is static (all callers known) and none pass taint →
 		//     the path is provably constant/safe → drop.
 		//   - the function is non-static (public API) → an external caller may
@@ -233,9 +233,7 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 		if idx, isParam := paramsByFunc[c.FunctionID][sink]; isParam {
 			if paramTainted[c.FunctionID][idx] {
 				c.HasTaintSource = true
-				if c.SuspicionLevel == "suspected" {
-					c.SuspicionLevel = "confirmed"
-				}
+				promoteOnTaint(&c)
 				kept = append(kept, c)
 			} else if staticByFunc[c.FunctionID] {
 				dropped = dismiss(dropped, c, f.Name(),
@@ -259,9 +257,7 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 		}
 		if flow.reaching(sink, c.Line) {
 			c.HasTaintSource = true
-			if c.SuspicionLevel == "suspected" {
-				c.SuspicionLevel = "confirmed"
-			}
+			promoteOnTaint(&c)
 			kept = append(kept, c)
 			continue
 		}
@@ -269,6 +265,27 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 			fmt.Sprintf("no tainted source reaches %s at line %d", sink, c.Line))
 	}
 	return kept, dropped, nil
+}
+
+// promoteOnTaint upgrades a may-taint hit to the deterministic tier. Injection
+// and format-string are promoted: a parameterized query / a literal format
+// string is safe by construction, so a call external data reaches without that
+// protection IS the defect.
+//
+// Path traversal is NOT promoted. "External data reaches the path argument"
+// proves only that the caller can influence the string; it does not prove the
+// string can carry a directory-escape component (`../`) — the content is
+// unknown, and the caller may have validated it. The deterministic tier requires
+// the defect to hold on every path (AI_JUDGMENT_BOUNDARY.md), so a
+// path-traversal candidate stays `suspected` and is handed to the AI, which can
+// weigh the validation the pipeline cannot see.
+func promoteOnTaint(c *Candidate) {
+	if c.Category == "path_traversal" {
+		return
+	}
+	if c.SuspicionLevel == "suspected" {
+		c.SuspicionLevel = "confirmed"
+	}
 }
 
 // sinkVariable returns the bare identifier of the sink argument, or "" when the

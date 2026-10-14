@@ -26,8 +26,7 @@ SecGuard 已经**不再依赖「配例外 → 重扫」的循环**来消宏误�
 - **`[allocators]` / `[deallocators]` / `[ownership_transfer_calls]` /
   `[nullability.non_null_returns]`**：项目自有的分配/释放/所有权转移/永不返回 NULL
   的函数契约（定义落在扫描范围之外）。
-- **`[integer_overflow.truncating_wrappers]` / `[guards.path_traversal]`**：项目声明的
-  返回值上界契约 / 路径校验契约。
+- **`[integer_overflow.truncating_wrappers]`**：项目声明的返回值上界契约。
 - **`[banned_functions]` / `[exclude]` / `[disabled_types]`**：策略与扫描范围开关。
 
 一句话：**本文件的配置现在是「确定性前置优化」，不是「误报兜底」**。兜底由
@@ -255,50 +254,6 @@ nlog_syslog_add_hostname = 1
 
 适用场景：定义在扫描范围之外、契约已知的截断式追加函数。
 
-### `[guards.path_traversal]` — 路径校验防护函数（v0.9.5，未发布）
-
-```toml
-[guards.path_traversal]
-names = ["idm_file_path_is_valid", "idm_validate_path"]
-```
-
-`names` 列出的函数被项目断言为「校验路径安全」（例如实现是
-`strstr(path, "../") == NULL`）。抑制规则：
-
-1. 该函数在**同一函数体内**、以**同一个实参**、且在文件系统 sink
-   （`fopen` / `open` / `openat` / `opendir` / `unlink` / `remove` / `rename`）
-   **之前**被调用；
-2. 实参比较会剥离前置的强制类型转换/括号——`fopen((const char *)p, ...)` 与
-   `guard(p)` 视为同一实参。
-
-命中则抑制该 `path-traversal` 候选。
-
-判定**与 `if` 的写法无关**：规则只看「防护函数调用发生在哪一行、实参是谁」，因此下面
-这些写法全部等效（`tc` 回归用例覆盖）：
-
-```c
-if (!guard(p)) return ERR;                /* 取反 + early return   */
-if (guard(p) == false) goto err;          /* 显式比较 + goto       */
-if (guard(p)) { log(); return ERR; }      /* 反向判断              */
-ret = guard(p); if (ret) return ERR;      /* 结果存变量再判断      */
-assert(guard(p));                         /* 断言                  */
-if (!guard(p) || !guard(q)) return ERR;   /* 组合条件              */
-```
-
-> **边界（重要）**：本配置只能表达「函数 F 校验值 V」这一**确定性事实**，因此仅覆盖
-> 「被校验的值**本身**就是 sink 的路径实参」这一形态。它**无法**表达：
->
-> - 路径由 `snprintf(path, sizeof path, "%s/%s", BASE, name)` **构造**后再传给 sink：
->   此时 `path` 能否逃逸取决于 `BASE` 与 `name` 各自的来源（编译期常量 or 用户输入），
->   那是**数据流事实**，不是函数名能表达的。这类形态需要「基目录为编译期常量」的
->   数据流识别（或用 taint 降级交 AI），不在本配置范围内。
-> - 防护发生在**调用方**（sink 在被调函数里）：需要跨函数分析。
-> - **分支覆盖不建模**：防护调用在 sink 之前但只覆盖部分路径时**仍会**抑制——
->   把函数写进 `names` 即视为项目声明它支配其 sink。
->
-> 因此本项与 `[trusted_macros]` 同性质，是**减少 AI 工作量的确定性前置优化**，
-> 不是「配了就不再漏」的兜底。
-
 ## 完整示例
 
 ```toml
@@ -364,15 +319,6 @@ names = [
 # 由这些返回值累加而成的累加器不会超过该容量，`size - total` 不会下溢。
 [integer_overflow.truncating_wrappers]
 # nlog_syslog_add_pri = 1
-
-# 路径校验防护函数：在同一函数内、以同一实参、先于 fopen/open/remove/rename
-# 等 sink 调用时，判定该路径已校验，抑制 path-traversal 候选。
-# 注意：仅覆盖「被校验的值本身就是 sink 的路径实参」；由 snprintf 拼接基目录
-# 构造出来的路径不在本项范围内（见上文「边界」说明）。
-[guards.path_traversal]
-# names = [
-#     "idm_file_path_is_valid",
-# ]
 ```
 
 ## 与扩展的关系

@@ -43,16 +43,34 @@ main/wmain/WinMain/wWinMain 之外报；`inet_addr(常量)` 仍豁免。
 `evaluateSizeArg` 对字符串字面量返回 0 而未造成误报，但合约定义错误已修正。
 `tc68` 增加 `secure_lying_snprintf` / `secure_correct_snprintf` 回归用例。
 
-### IDM 仓库误报治理：防护函数与安全函数族（第一轮）
+### IDM 仓库误报治理：常量路径与安全函数族（第一轮）
 
-针对 `docs/实战IDM仓库误报问题改进建议.md` 中 30 个误报的根因，检测器层面收敛：
+针对 `docs/实战IDM仓库误报问题改进建议.md` 中 30 个误报的根因，检测器/收敛层收敛：
 
-- **path-traversal（CWE-22）**：新增 `[guards.path_traversal]` `names` 配置，声明项目
-  自有的路径校验函数（`idm_file_path_is_valid`）。同函数内**先于**文件系统 sink
-  （`fopen`/`openat`/`remove`/`rename`/`unlink`）以同一参数调用该函数时，判定为已防护
-  并抑制候选；参数比较会剥离前置的强制类型转换/括号，因此
-  `fopen((const char *)path, ...)` 与 `guard(path)` 仍匹配。顺序是判定的一部分：
-  在 sink **之后**调用、用**其他参数**调用、或在**其他函数**中调用都不构成防护。
+- **path-traversal（CWE-22）**：
+  - **编译期常量路径识别（零配置）**：`buildStringConstants` 收集文件内的字符串常量
+    ——展开后只由字符串字面量/已知常量构成的宏（`#define DIR "/var"`、
+    `#define DB DIR "/db"`）、以及 `static const char` 且未被重新赋值的对象
+    （数组形式 / 指针形式；指针形式要求 `static` 且在文件内无赋值）。sink 的路径实参
+    直接是这些名字时抑制候选；实参是**仅由常量拼装**的本地缓冲区时同样抑制
+    （`snprintf(path, sizeof path, "%s", DB_PATH)`、`strcpy(path, DB_PATH)`，按
+    dest-arg + 全常量实参列表判定）。反例全部保持上报：`#define P DIR user_name`
+    这类混入未知标识符的宏、非 const 的 `static char[]`、被重新赋值的
+    `static const char *`、非 static 的 `const char *`，以及
+    `snprintf(path, sizeof path, "%s/%s", BASE, name)` 这类含运行期分量的构造
+    （常量 BASE 本身不构成安全证明：`name` 里的 `../` 仍能逃出 BASE，故交 AI 研判）。
+  - **AI 研判边界收紧**：`TaintSourceFilter` 不再因「外部可达的参数流到 sink」把
+    path-traversal 升级 `confirmed`，改为保持 `suspected` 交 AI。「外部数据到达路径
+    参数」只证明调用方能影响字符串，不证明能出现目录逃逸分量——按
+    `AI_JUDGMENT_BOUNDARY.md` 的定义，confirmed 要求缺陷在每条路径上成立。
+    injection/format-string 的升级保持不变（未参数化的 sink 被外部数据触达即为缺陷）。
+    `AI_JUDGMENT_BOUNDARY.md` 已把 path-traversal 从 confirmed 表移入「故意留在
+    suspected」表。这正是文档 P0 建议「auto-confirm 分级」的落地，一次性消除该类
+    9/9 的自动确认误报。
+  - 未采用 `[guards.path_traversal]` 配置：名称白名单只能表达「函数 F 校验值 V」，
+    覆盖不到「路径由谁拼出来」这一数据流事实（IDM 9 个误报里仅 2~3 个属于该形态），
+    却引入一个需要用户维护、配错就静默漏报的配置面，因此改为零配置的常量识别 +
+    交 AI 研判。
 - **integer-overflow（CWE-190）**：无符号减法流入 Annex K / Windows `_s` 安全函数族
   （`sprintf_s`/`memcpy_s`/`strcpy_s` 等，`apikb.SecureFunctions`）的参数时不再报
   `unsigned_sub_underflow`——这些函数在运行期校验容量/长度并以错误码返回，不会越界。
@@ -70,24 +88,17 @@ main/wmain/WinMain/wWinMain 之外报；`inet_addr(常量)` 仍豁免。
     （`if (p != NULL) ... else return -1;` 算，`if (p != NULL) return 0;` 不算）。
     仅凭「变量出现在条件里的某个调用实参中」不再抑制——`if (strlen(p) > 0)` 是对
     可能为 NULL 的指针解引用，仍然上报。
-  - `[guards.path_traversal]` 与 `secguard config --example` 补齐其余 6 个此前
-    未在 `--help`/示例中列出的配置段（`allocators`/`deallocators`/
-    `ownership_transfer_calls`/`nullability`/`integer_overflow`）。
-  - `docs/config.md` 同步补齐上述 6 个配置段（该文件由 CHANGELOG 约定与
-    `SKILL.md`/`vuln_type_skill.go`/`usage.go` 一起同步，此前 5 个段连同本轮新增的
-    `[guards]` 都只存在于代码里）。并写明 `[guards.path_traversal]` 的**能力边界**：
-    判定只看「防护函数调用在哪一行、实参是谁」，与 `if` 写法无关（取反/显式比较/
-    goto/结果存变量/assert/组合条件/if-else 全部等效，`TestPathTraversal_GuardCallForms`
-    覆盖）；但**仅覆盖「被校验的值本身就是 sink 的路径实参」**——由
-    `snprintf(path, sizeof path, "%s/%s", BASE, name)` **构造**出来的路径参数不在
-    范围内（能否逃逸取决于 `BASE`/`name` 各自的来源，是数据流事实而非函数名），
-    调用方防护（sink 在被调函数内）与分支覆盖同样不在范围内。该构造形态作为
-    **负例**固定在 `TestPathTraversal_GuardCallForms` 中，避免边界被无声扩大。
+- **配置文档同步**：`secguard config --help`/`--example` 与 `docs/config.md` 补齐 5 个
+  此前只存在于代码里的配置段（`allocators`/`deallocators`/`ownership_transfer_calls`/
+  `nullability`/`integer_overflow`）。`docs/config.md` 是本仓库约定与
+  `SKILL.md`/`vuln_type_skill.go`/`usage.go` 一起同步的配置面文档，此前一直缺失。
 
-回归用例：`tc_unchecked_return_indirect_guard.c`（含极性/成功返回/解引用三类反例）、
+回归用例：`path_traversal_constant_test.go`（7 个常量形态抑制 + 6 个可影响形态上报）、
+`tc_unchecked_return_indirect_guard.c`（含极性/成功返回/解引用三类反例）、
 `integer_overflow_safe_sink_test.go`（`sprintf_s` 抑制 + `malloc`/`strlcpy`/
-`sqlite3_bind_blob` 仍报）、`path_traversal_guard_test.go`（防护位置/参数/跨函数反例）。
-未发布版本，`VERSION` 不变。
+`sqlite3_bind_blob` 仍报）、`filter_taint_source_test.go`
+`TestTaintSourceFilter_PathTraversalNotAutoConfirmed`（path-traversal 保持 suspected、
+injection 仍为 confirmed）。未发布版本，`VERSION` 不变。
 
 
 ## [0.9.4] - 2026-10-12
