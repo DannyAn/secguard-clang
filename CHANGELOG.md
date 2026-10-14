@@ -4,6 +4,31 @@
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-10-14
+
+### implicit-contract 隐式契约缺失检测（CWE-20，新增 vuln type）
+
+新增 `implicit-contract` 能力：检测「函数入口缺少对输入对象关联状态校验」的隐式契约
+缺失——结构体指针参数的可空指针字段（如 `tree = (T*)resp->group_data`）在无支配性判空的
+情况下被解引用。区别于 null-deref 的「可证明空源」，本类型覆盖**开放世界**场景（字段由
+调用方/框架供给、函数自身不写该字段），全部 `suspected` 交 AI 研判，绝不 machine-confirm。
+
+- **证据门（三选一，无证据不产候选）**：
+  - E-b 自证：函数自身在另一条路径判过该字段空；
+  - E-a 同类契约：同形参类型的兄弟函数判过该字段空（按声明类型锚定，不跨 struct 裸名匹配）；
+  - E-c 调用方：调用方判空作证据；**所有**调用方都判空则抑制（调用方已完成校验，§7.1）。
+- **确定性砍刀**：call-reach 不可达丢弃；CFG `ReachesAvoiding` 守卫支配丢弃（逐 use site）；
+  字段被函数自身写则归 null-deref（避免双告警）。
+- **count/length 只作可选增强证据**，不 gate 检测——`tree == NULL`（指针判空）独立于任何
+  计数关系；`count==0` 是业务语义，不做独立 `count_guard`。
+
+配套：新增 `CONTRACT_GAP` 事件 + `evidence/contract_gap.go` detector +
+`planner/filter_contract_gap.go`（守卫支配 + 调用方校验抑制）+ `implicit-contract` skill；
+schema 枚举/`vuln_type_skill.go` 同步。回归用例：`tc_contract_gap.c`（E-b 部分守卫/纯指针
+无 count/无人判空反例/调用方校验两侧）、`tc_contract_gap_prod.c`（生产用例
+`import_dn_group_tree_refresh` 镜像 + 变体：兄弟契约、单分支判空、count==0 处理但指针未判、
+字段读未解引用、调用方已判空）。
+
 ### dangerous-function 分层策略扩展（CWE-676）
 
 将 `dangerous-function` 从「10 个无争议函数的极简名单」扩展为**分层的禁用函数策略

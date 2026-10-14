@@ -147,6 +147,12 @@ func (p *Planner) getFilters(chain string) ([]Filter, error) {
 			NewSafeFunctionFilter(p.store),
 			NewHardcodedSecretProofFilter(p.store),
 		}, nil
+	case "implicit-contract":
+		return []Filter{
+			NewCallReachFilter(p.store, p.callReachCache),
+			NewSafeFunctionFilter(p.store),
+			NewContractGapFilter(p.store).WithParser(p.parser, p.logger),
+		}, nil
 	}
 	return nil, fmt.Errorf("unknown filter chain %q", chain)
 }
@@ -412,6 +418,11 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			RHSKind:           props.RHSKind,
 			SubRHSInfluenced:  props.RHSInfluenced == "true",
 			SubSink:           props.Sink,
+			Subject:           props.Subject,
+			CountField:        props.CountField,
+			UseLine:           props.UseLine,
+			Missing:           props.Missing,
+			EvidenceKind:      props.EvidenceKind,
 		})
 	}
 

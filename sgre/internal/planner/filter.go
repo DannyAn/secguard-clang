@@ -172,4 +172,16 @@ type Candidate struct {
 	RHSKind          string `json:"rhs_kind,omitempty"`
 	SubRHSInfluenced bool   `json:"sub_rhs_influenced,omitempty"`
 	SubSink          string `json:"sub_sink,omitempty"`
+	// Subject is the struct-pointer parameter the implicit-contract candidate
+	// is about (e.g. "resp" for resp->group_data).
+	Subject string `json:"subject,omitempty"`
+	// CountField is the count/length field gating the pointer use
+	// (e.g. "resp->group_num"), empty when no count gates the deref.
+	CountField string `json:"count_field,omitempty"`
+	// UseLine is the dereference line the missing guard fails to cover.
+	UseLine int `json:"use_line,omitempty"`
+	// Missing names the precondition that is absent ("ptr-null").
+	Missing string `json:"missing,omitempty"`
+	// EvidenceKind is the nullable-field evidence source ("self" / "caller").
+	EvidenceKind string `json:"evidence_kind,omitempty"`
 }

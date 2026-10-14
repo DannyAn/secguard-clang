@@ -105,6 +105,15 @@ type eventProps struct {
 	LHSInfluenced string `json:"lhs_influenced"`
 	RHSInfluenced string `json:"rhs_influenced"`
 	Sink          string `json:"sink"`
+	// Subject/CountField/Missing/EvidenceKind carry the implicit-contract
+	// candidate's structured evidence: the struct-pointer parameter being
+	// validated (subject), the count/length field gating the pointer use
+	// (count), the missing precondition (missing), and the evidence kind
+	// (self/caller) that proves the field is treated as nullable.
+	Subject      string `json:"subject"`
+	CountField   string `json:"count"`
+	Missing      string `json:"missing"`
+	EvidenceKind string `json:"evidence"`
 }
 
 func parseEventProps(raw string) eventProps {

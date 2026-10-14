@@ -79,6 +79,7 @@ var allSkillSpecs = []skillSpec{
 	{"dangerous-function", "boundary", "Detects calls to banned libc/runtime functions and non-safe APIs that must be replaced (CWE-676)"},
 	{"argument-type", "contract", "Detects incompatible pointer-cast function arguments (CWE-686)"},
 	{"data-representation", "contract", "Detects callback/generic-pointer representation mismatches (CWE-843)"},
+	{"implicit-contract", "contract", "Detects missing entry validation of a caller/framework-supplied struct field dereferenced without a null guard (CWE-20)"},
 }
 
 func DefaultRegistry(store db.Store, logger *log.Logger) *Registry {

@@ -152,4 +152,5 @@ func init() {
 		return NewDataRepresentationDetector(s, p, l)
 	})
 	RegisterDetector(func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewCallerNullDetector(s, p, l) })
+	RegisterDetector(func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewContractGapDetector(s, p, l) })
 }
