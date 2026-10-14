@@ -43,6 +43,42 @@ main/wmain/WinMain/wWinMain 之外报；`inet_addr(常量)` 仍豁免。
 `evaluateSizeArg` 对字符串字面量返回 0 而未造成误报，但合约定义错误已修正。
 `tc68` 增加 `secure_lying_snprintf` / `secure_correct_snprintf` 回归用例。
 
+### IDM 仓库误报治理：防护函数与安全函数族（第一轮）
+
+针对 `docs/实战IDM仓库误报问题改进建议.md` 中 30 个误报的根因，检测器层面收敛：
+
+- **path-traversal（CWE-22）**：新增 `[guards.path_traversal]` `names` 配置，声明项目
+  自有的路径校验函数（`idm_file_path_is_valid`）。同函数内**先于**文件系统 sink
+  （`fopen`/`openat`/`remove`/`rename`/`unlink`）以同一参数调用该函数时，判定为已防护
+  并抑制候选；参数比较会剥离前置的强制类型转换/括号，因此
+  `fopen((const char *)path, ...)` 与 `guard(path)` 仍匹配。顺序是判定的一部分：
+  在 sink **之后**调用、用**其他参数**调用、或在**其他函数**中调用都不构成防护。
+- **integer-overflow（CWE-190）**：无符号减法流入 Annex K / Windows `_s` 安全函数族
+  （`sprintf_s`/`memcpy_s`/`strcpy_s` 等，`apikb.SecureFunctions`）的参数时不再报
+  `unsigned_sub_underflow`——这些函数在运行期校验容量/长度并以错误码返回，不会越界。
+  抑制范围**仅限** `_s` 族：`apikb.SafeFunctions` 还包含 `strlcpy`/`strlcat`、
+  `sqlite3_bind_blob`、`openat`、`exec*` 等「长度参数被无校验消费」的 API，其下溢仍是
+  真实缺陷，必须继续上报。
+- **unchecked-return（CWE-252）**：
+  - 函数指针遮蔽系统调用名：函数内以 `read`/`write` 等名字声明了**先于调用点**的局部
+    对象（如 `int (*read)(void *, size_t, void *);`）时，该调用不是 POSIX 系统调用，
+    不再上报。
+  - 间接防护改为**基于被调函数入口守卫**：`v` 作为实参传给一个在入口处拒绝该参数并
+    返回失败码的被调函数（`if (p == NULL) return -1;`），且调用结果被检查（内联判断，
+    或存入随后被检查的变量），则 `v` 的 unchecked-return 事件是误报。判定要求：
+    守卫分支必须返回**失败**哨兵（`return 0;` / 裸 `return;` 不算）、极性正确
+    （`if (p != NULL) ... else return -1;` 算，`if (p != NULL) return 0;` 不算）。
+    仅凭「变量出现在条件里的某个调用实参中」不再抑制——`if (strlen(p) > 0)` 是对
+    可能为 NULL 的指针解引用，仍然上报。
+  - `[guards.path_traversal]` 与 `secguard config --example` 补齐其余 6 个此前
+    未在 `--help`/示例中列出的配置段（`allocators`/`deallocators`/
+    `ownership_transfer_calls`/`nullability`/`integer_overflow`）。
+
+回归用例：`tc_unchecked_return_indirect_guard.c`（含极性/成功返回/解引用三类反例）、
+`integer_overflow_safe_sink_test.go`（`sprintf_s` 抑制 + `malloc`/`strlcpy`/
+`sqlite3_bind_blob` 仍报）、`path_traversal_guard_test.go`（防护位置/参数/跨函数反例）。
+未发布版本，`VERSION` 不变。
+
 
 ## [0.9.4] - 2026-10-12
 

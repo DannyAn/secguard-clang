@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -169,6 +170,39 @@ func forEachFileIncludingEmpty(ctx context.Context, store db.Store, p *parser.Pa
 // [StartLine, EndLine] range.
 func funcLineRange(f *db.Function, line int) bool {
 	return line >= f.StartLine && line <= f.EndLine
+}
+
+// stripCastsAndParens strips the leading balanced `(...)` groups (a cast or
+// plain parentheses) and surrounding whitespace from an expression's source
+// text, so `(const char *)p`, `(p)` and `p` all compare equal. Callers use it
+// to normalise argument/variable text before matching.
+func stripCastsAndParens(text string) string {
+	t := strings.TrimSpace(text)
+	for {
+		if t == "" || t[0] != '(' {
+			return t
+		}
+		depth := 0
+		end := -1
+		for i := 0; i < len(t); i++ {
+			switch t[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 {
+					end = i
+				}
+			}
+			if end >= 0 {
+				break
+			}
+		}
+		if end < 0 {
+			return t // unbalanced
+		}
+		t = strings.TrimSpace(t[end+1:])
+	}
 }
 
 // emitEvent inserts a location and a security event, logging (and returning

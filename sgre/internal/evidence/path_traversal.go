@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
@@ -15,13 +16,18 @@ import (
 // not track taint back to a source, so it tiers the candidate as "suspected"
 // and leaves source attribution to the AI agent.
 type PathTraversalDetector struct {
-	store  db.Store
-	parser *parser.Parser
-	logger *log.Logger
+	store      db.Store
+	parser     *parser.Parser
+	logger     *log.Logger
+	guardFuncs map[string]bool
 }
 
 func NewPathTraversalDetector(store db.Store, p *parser.Parser, logger *log.Logger) *PathTraversalDetector {
-	return &PathTraversalDetector{store: store, parser: p, logger: logger}
+	guardFuncs := make(map[string]bool)
+	for _, name := range config.Load().PathTraversalGuardNames() {
+		guardFuncs[name] = true
+	}
+	return &PathTraversalDetector{store: store, parser: p, logger: logger, guardFuncs: guardFuncs}
 }
 
 func (d *PathTraversalDetector) Name() string { return "path_traversal" }
@@ -67,6 +73,41 @@ func (d *PathTraversalDetector) Detect(ctx context.Context) (DetectResult, error
 			if wrapperLines[f.StartLine] {
 				continue
 			}
+			// Project-declared guard functions: a call BEFORE the sink proves the
+			// path argument was validated (no directory-escape component), so the
+			// sink is not a traversal candidate. Order matters: a guard called
+			// after the sink proves nothing, and a guard in another function is
+			// not in f's line range at all. The argument comparison normalises
+			// casts/parentheses so `fopen((const char *)p, ...)` still matches a
+			// guard called with `p`. Branch coverage is NOT modelled — a guard
+			// that precedes the sink but only runs on some paths still counts;
+			// declaring a guard in [guards.path_traversal] is the project's
+			// assertion that it dominates its sinks.
+			type guardCall struct {
+				arg  string
+				line int
+			}
+			var guards []guardCall
+			if len(d.guardFuncs) > 0 {
+				for _, call := range calls {
+					line := call.StartLine()
+					if !funcLineRange(f, line) || !d.guardFuncs[extractCallName(call)] {
+						continue
+					}
+					if args := getCallArgs(call); len(args) > 0 {
+						guards = append(guards, guardCall{arg: stripCastsAndParens(args[0].Text()), line: line})
+					}
+				}
+			}
+			guardedBefore := func(pathArg string, sinkLine int) bool {
+				arg := stripCastsAndParens(pathArg)
+				for _, g := range guards {
+					if g.line < sinkLine && g.arg == arg {
+						return true
+					}
+				}
+				return false
+			}
 			for _, call := range calls {
 				if !funcLineRange(f, call.StartLine()) {
 					continue
@@ -80,6 +121,9 @@ func (d *PathTraversalDetector) Detect(ctx context.Context) (DetectResult, error
 					continue
 				}
 				if globalConsts.NonZero(pathArg) || globalConsts.IsZero(pathArg) {
+					continue
+				}
+				if guardedBefore(pathArg, call.StartLine()) {
 					continue
 				}
 
@@ -154,37 +198,9 @@ func pathArgument(call parser.Node, name string) string {
 // isStringLiteralText reports whether the sink argument text is a string literal,
 // possibly wrapped in casts/parentheses: `(const char *)"/etc/x"` and
 // `("/etc/x")` are constants, never attacker-controlled, so they must not be
-// flagged. It strips leading balanced `(...)` groups (cast or plain parens) and
-// then checks the C string-literal prefixes.
+// flagged. It strips the leading balanced `(...)` groups (cast or plain parens)
+// and then checks the C string-literal prefixes.
 func isStringLiteralText(text string) bool {
-	t := strings.TrimSpace(text)
-	for {
-		if t == "" {
-			return false
-		}
-		if t[0] != '(' {
-			break
-		}
-		depth := 0
-		end := -1
-		for i := 0; i < len(t); i++ {
-			switch t[i] {
-			case '(':
-				depth++
-			case ')':
-				depth--
-				if depth == 0 {
-					end = i
-				}
-			}
-			if end >= 0 {
-				break
-			}
-		}
-		if end < 0 {
-			return false // unbalanced
-		}
-		t = strings.TrimSpace(t[end+1:])
-	}
+	t := stripCastsAndParens(text)
 	return strings.HasPrefix(t, "\"") || strings.HasPrefix(t, "L\"") || strings.HasPrefix(t, "u\"")
 }

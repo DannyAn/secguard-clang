@@ -58,11 +58,14 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 	// `void *x_malloc(n) { return malloc(n); }`) are passthrough allocators:
 	// a call to one must be NULL-checked at the call site exactly like the
 	// wrapped allocator. Compute that set once so the per-file pass below
-	// treats calls to them as unchecked-return sources too.
-	passthrough, err := d.passthroughAllocFuncs(ctx)
+	// treats calls to them as unchecked-return sources too. The same pass
+	// collects each function's entry NULL-reject parameters, which the per-file
+	// pass uses to recognise a value the callee has already validated.
+	summaries, err := d.funcSummaries(ctx)
 	if err != nil {
 		return result, err
 	}
+	passthrough := summaries.passthrough
 
 	retTypes, err := d.funcReturnTypes(ctx)
 	if err != nil {
@@ -79,15 +82,49 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 		dos := root.FindAll("do_statement")
 		conds := root.FindAll("conditional_expression")
 		switches := root.FindAll("switch_statement")
+		inits := root.FindAll("init_declarator")
+		decls := root.FindAll("declaration")
 
 		for _, f := range funcs {
 			checked := d.checkedVars(ifs, whiles, fors, dos, conds, switches, calls, f)
+			// A local object whose name matches a built-in unchecked-return API
+			// shadows it: `int (*read)(void *, size_t, void *);` declares a
+			// function pointer, so `read(buf, n, ctx)` is not POSIX read(). The
+			// declaration must precede the call for it to be in scope at it.
+			localDeclLines := make(map[string]int)
+			noteDecl := func(node parser.Node) {
+				name := extractVarFromDeclarator(node)
+				if name == "" {
+					return
+				}
+				if line, ok := localDeclLines[name]; !ok || node.StartLine() < line {
+					localDeclLines[name] = node.StartLine()
+				}
+			}
+			for _, decl := range decls {
+				if !funcLineRange(f, decl.StartLine()) {
+					continue
+				}
+				if declarator := decl.ChildByFieldName("declarator"); declarator != nil {
+					noteDecl(*declarator)
+				}
+			}
+			for _, init := range inits {
+				if !funcLineRange(f, init.StartLine()) {
+					continue
+				}
+				noteDecl(init)
+			}
+			indirectGuarded := indirectGuardedVars(calls, f, checked, summaries.nullRejectParams)
 			for _, call := range calls {
 				if !funcLineRange(f, call.StartLine()) {
 					continue
 				}
 				callee := extractCallName(call)
 				if !uncheckedReturnAPIs[callee] && !passthrough[callee] && !apikb.IsAllocator(callee) {
+					continue
+				}
+				if line, ok := localDeclLines[callee]; ok && uncheckedReturnAPIs[callee] && line < call.StartLine() {
 					continue
 				}
 				// A function that is neither a built-in unchecked-return API
@@ -136,7 +173,7 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 				if vars := assignedVarsOfCall(call); len(vars) > 0 {
 					checkedAny := false
 					for _, v := range vars {
-						if checked[v] {
+						if checked[v] || indirectGuarded[v] {
 							checkedAny = true
 							break
 						}
@@ -321,6 +358,207 @@ func bareConditionVars(cond *parser.Node) []string {
 	return nil
 }
 
+// indirectGuardedVars returns the variables whose unchecked-return event another
+// call in the same function has already handled. The shape is
+//
+//	filter = idm_db_filter_new(2);
+//	ret = idm_fill_filter(filter, ...);   /* entry-guards its NULL parameter */
+//	if (ret != 0) { ... return ret; }     /* caller acts on the failure */
+//
+// `filter` is passed as argument i of a callee whose parameter i is rejected at
+// entry with a failure return (nullRejectParams), and the call's result is
+// acted on — either tested inline (`if (wrap(p) != 0)`) or stored in a variable
+// that is itself checked. A NULL `filter` therefore becomes an error the caller
+// handles, so the unchecked-return candidate on the source call is a false
+// positive. Requiring the callee's entry guard is what keeps a
+// dereferencing call such as `if (strlen(p) > 0)` reportable: the argument is
+// used, not validated.
+func indirectGuardedVars(calls []parser.Node, f *db.Function, checked map[string]bool, nullRejectParams map[string]map[int]bool) map[string]bool {
+	if len(nullRejectParams) == 0 {
+		return nil
+	}
+	// The variables a call's result is stored into, with the assignment line:
+	// only a variable that is itself a call result can carry an
+	// unchecked-return event.
+	callResultVars := make(map[string]int)
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
+			continue
+		}
+		for _, v := range assignedVarsOfCall(call) {
+			if v == "" {
+				continue
+			}
+			if _, ok := callResultVars[v]; !ok {
+				callResultVars[v] = call.StartLine()
+			}
+		}
+	}
+	var out map[string]bool
+	for _, call := range calls {
+		line := call.StartLine()
+		if !funcLineRange(f, line) {
+			continue
+		}
+		rejects := nullRejectParams[extractCallName(call)]
+		if len(rejects) == 0 {
+			continue
+		}
+		if !callResultChecked(call) {
+			checkedResult := false
+			for _, v := range assignedVarsOfCall(call) {
+				if checked[v] {
+					checkedResult = true
+					break
+				}
+			}
+			if !checkedResult {
+				continue
+			}
+		}
+		args := getCallArgs(call)
+		for i, arg := range args {
+			if !rejects[i] || arg.Kind() != "identifier" {
+				continue
+			}
+			name := arg.Text()
+			assignLine, ok := callResultVars[name]
+			if !ok || assignLine >= line {
+				continue
+			}
+			if out == nil {
+				out = make(map[string]bool)
+			}
+			out[name] = true
+		}
+	}
+	return out
+}
+
+// entryNullRejectParams returns the 0-based parameter indices a function rejects
+// at entry: a top-level `if` whose NULL-direction branch returns a failure
+// sentinel (`if (p == NULL) return -1;` rejects parameter p). The polarity
+// matters — `if (p != NULL) { ... } else { return -1; }` rejects p too (the
+// branch taken when p is NULL returns), while `if (p != NULL) return 0;` does
+// not. A branch that returns success (bare `return;`, `return 0;`) is not a
+// rejection: the caller's `ret != 0` test could not detect a NULL argument.
+func entryNullRejectParams(fnNode parser.Node) map[int]bool {
+	body := fnNode.FindFirst("compound_statement")
+	if body == nil {
+		return nil
+	}
+	params := paramPositions(fnNode)
+	if len(params) == 0 {
+		return nil
+	}
+	index := make(map[string]int, len(params))
+	for i, name := range params {
+		if name == "" {
+			continue
+		}
+		if _, dup := index[name]; !dup {
+			index[name] = i
+		}
+	}
+	var out map[int]bool
+	mark := func(vars []string) {
+		for _, v := range vars {
+			i, ok := index[v]
+			if !ok {
+				continue
+			}
+			if out == nil {
+				out = make(map[int]bool)
+			}
+			out[i] = true
+		}
+	}
+	for _, stmt := range body.NamedChildren() {
+		if stmt.Kind() != "if_statement" {
+			continue
+		}
+		cond := stmt.ChildByFieldName("condition")
+		if cond == nil {
+			continue
+		}
+		// NullCheckedVars = the variables the condition proves NULL when it is
+		// false, i.e. the ones the then-branch sees as NULL; GuardedNonnullVars
+		// is the dual for the else-branch.
+		if cons := stmt.ChildByFieldName("consequence"); cons != nil && branchFailureReturns(*cons) {
+			mark(parser.NullCheckedVars(*cond))
+		}
+		if alt := stmt.ChildByFieldName("alternative"); alt != nil && branchFailureReturns(*alt) {
+			mark(parser.GuardedNonnullVars(*cond))
+		}
+	}
+	return out
+}
+
+// branchFailureReturns reports whether a branch body returns a failure sentinel:
+// any `return <value>` whose value is not provably zero/success. A bare
+// `return;` cannot be observed by a `ret != 0` test and `return 0;` reports
+// success, so neither counts. Non-numeric error tokens (`return IDM_ERR;`),
+// `return -1;` and `return NULL;` all count.
+func branchFailureReturns(branch parser.Node) bool {
+	for _, ret := range branch.FindAll("return_statement") {
+		children := ret.NamedChildren()
+		if len(children) == 0 {
+			continue
+		}
+		text := stripCastsAndParens(children[0].Text())
+		if text == "" || text == "0" || text == "false" || text == "FALSE" {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// paramPositions returns a function definition's parameter names in declaration
+// order, keeping an empty entry for an unnamed parameter so a call argument's
+// index still lines up with the declaration (`int f(int, char *p)` → ["", "p"]).
+func paramPositions(fnNode parser.Node) []string {
+	var decl parser.Node
+	for _, child := range fnNode.NamedChildren() {
+		switch child.Kind() {
+		case "function_declarator":
+			decl = child
+		case "pointer_declarator":
+			for _, gc := range child.NamedChildren() {
+				if gc.Kind() == "function_declarator" {
+					decl = gc
+				}
+			}
+		}
+		if decl.Kind() != "" {
+			break
+		}
+	}
+	if decl.Kind() == "" {
+		return nil
+	}
+	var out []string
+	for _, child := range decl.NamedChildren() {
+		if child.Kind() != "parameter_list" {
+			continue
+		}
+		for _, param := range child.NamedChildren() {
+			if param.Kind() != "parameter_declaration" {
+				continue
+			}
+			name := ""
+			for _, pc := range param.NamedChildren() {
+				if v := extractVarFromDeclarator(pc); v != "" {
+					name = v
+					break
+				}
+			}
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // callResultChecked reports whether the call's value is consumed directly by a
 // comparison, a `!` negation, or a branch/loop condition — i.e. validated at
 // the call site without going through a named variable.
@@ -466,12 +704,22 @@ func (d *UncheckedReturnDetector) funcReturnTypes(ctx context.Context) (map[stri
 	return types, nil
 }
 
-// passthroughAllocFuncs returns the set of function names whose body returns an
-// unchecked allocation result without checking it — directly (`return malloc(n)`)
-// or via an unchecked variable (`void *p = malloc(n); return p;`), or transitively
-// (`return other_wrapper(...)`). A call to such a wrapper must be NULL-checked at
-// the call site exactly like the allocator it wraps, so the main detection pass
-// treats calls to them as unchecked-return sources.
+// funcSummaries bundles the two cross-function facts the detector derives from
+// a single pass over the indexed functions.
+type funcSummaries struct {
+	// passthrough names the functions whose body returns an unchecked
+	// allocation result without checking it — directly (`return malloc(n)`) or
+	// via an unchecked variable (`void *p = malloc(n); return p;`), or
+	// transitively (`return other_wrapper(...)`). A call to such a wrapper must
+	// be NULL-checked at the call site exactly like the allocator it wraps, so
+	// the main detection pass treats calls to them as unchecked-return sources.
+	passthrough map[string]bool
+	// nullRejectParams maps a function name to the 0-based indices of the
+	// parameters it rejects at entry with a failure return (see
+	// entryNullRejectParams).
+	nullRejectParams map[string]map[int]bool
+}
+
 // hasUncheckedReturnCandidate pre-scans every indexed file for the detector's
 // trigger: a call to an unchecked-return API or an allocator-name function. When
 // absent, the full detection is provably empty and skipped. A scan error fails
@@ -496,10 +744,11 @@ func (d *UncheckedReturnDetector) hasUncheckedReturnCandidate(ctx context.Contex
 	return found
 }
 
-func (d *UncheckedReturnDetector) passthroughAllocFuncs(ctx context.Context) (map[string]bool, error) {
+func (d *UncheckedReturnDetector) funcSummaries(ctx context.Context) (*funcSummaries, error) {
 	// returnedSource maps a function name to the set of callee names whose result
 	// it returns to its caller.
 	returnedSource := make(map[string]map[string]bool)
+	nullReject := make(map[string]map[int]bool)
 
 	add := func(name, callee string) {
 		if callee == "" {
@@ -523,6 +772,20 @@ func (d *UncheckedReturnDetector) passthroughAllocFuncs(ctx context.Context) (ma
 		dos := root.FindAll("do_statement")
 		conds := root.FindAll("conditional_expression")
 		switches := root.FindAll("switch_statement")
+
+		nameByLine := make(map[int]string, len(funcs))
+		for _, f := range funcs {
+			nameByLine[f.StartLine] = f.Name
+		}
+		for _, fnNode := range root.FindAll("function_definition") {
+			name := nameByLine[fnNode.StartLine()]
+			if name == "" {
+				continue
+			}
+			if reject := entryNullRejectParams(fnNode); len(reject) > 0 {
+				nullReject[name] = reject
+			}
+		}
 
 		for _, f := range funcs {
 			checked := d.checkedVars(ifs, whiles, fors, dos, conds, switches, calls, f)
@@ -594,7 +857,7 @@ func (d *UncheckedReturnDetector) passthroughAllocFuncs(ctx context.Context) (ma
 			}
 		}
 	}
-	return passthrough, nil
+	return &funcSummaries{passthrough: passthrough, nullRejectParams: nullReject}, nil
 }
 
 // passthroughReturnVar reports whether variable v, assigned at assignLine in f,

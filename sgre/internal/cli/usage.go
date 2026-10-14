@@ -223,9 +223,11 @@ Flags:
 
 What it is:
   secguard.toml is an OPTIONAL configuration file. Most users need nothing in
-  it. It exists today for five options: the trusted-macro allowlist, the
-  iterator-macro declaration, the banned-function extension, directory
-  exclusions, and the vulnerability-type switch.
+  it. It exists for the trusted-macro allowlist, project iterator macros, the
+  banned-function extension, directory exclusions, the vulnerability-type
+  switch, project allocator/deallocator/ownership-transfer names, return
+  nullability, integer-overflow truncating wrappers, and path-traversal guard
+  functions.
 
   Config file locations, in priority order (first existing wins):
     1. --config <path>                     explicit flag
@@ -284,6 +286,38 @@ What it is:
     Use this for noisy/slow types you do not want surfaced or billed for.
     Example: types = ["path-traversal", "divide-by-zero"].
 
+  [allocators] / [deallocators] — project allocation/release names
+    names = ["..."]
+    Allocation (nat_malloc, VOS_MALLOC) and release (nat_free, VOS_FREE)
+    wrappers whose definitions live outside the scan tree. The memory
+    detectors treat their results/calls exactly like malloc/free (the result
+    may be NULL and must be released).
+
+  [ownership_transfer_calls] — project ownership-transfer names
+    names = ["..."]
+    Functions that take ownership of a pointer argument (list_push_back,
+    dict_set), so a pointer passed to them has escaped rather than leaked.
+
+  [nullability.non_null_returns] — never-null return names
+    names = ["..."]
+    Functions with an abort-on-failure contract (xmalloc, g_malloc, sdsnew)
+    whose result is never NULL, so a dereference of it is not a null-deref.
+
+  [integer_overflow.truncating_wrappers] — bounded-return wrappers
+    wrapper_name = <size_arg_index>
+    Functions whose return value is bounded by one of their arguments (the
+    capacity/size argument at the given 0-based index), so an accumulator built
+    from their returns cannot exceed the buffer and a later 'size - total'
+    subtraction cannot underflow.
+
+  [guards.path_traversal] — path-validation guard functions
+    names = ["..."]
+    Project functions that prove a path is safe before it reaches a filesystem
+    sink (idm_file_path_is_valid, idm_validate_path). When such a function is
+    called with the same path argument EARLIER in the same function than
+    fopen/openat/remove/rename/unlink, the candidate is suppressed — a guard
+    called after the sink proves nothing.
+
 Examples:
   secguard config
   secguard config --example`)
@@ -334,6 +368,50 @@ paths = [
 types = [
     # "path-traversal",
     # "divide-by-zero",
+]
+
+# Project-specific allocation / release wrappers whose definitions live outside
+# the scan tree. The memory detectors treat their results/calls exactly like
+# malloc/free (the result may be NULL and must be released).
+[allocators]
+names = [
+    # "nat_malloc",
+]
+
+[deallocators]
+names = [
+    # "nat_free",
+]
+
+# Functions that take ownership of a pointer argument, so a pointer passed to
+# them has escaped rather than leaked.
+[ownership_transfer_calls]
+names = [
+    # "list_push_back",
+]
+
+# Functions with an abort-on-failure contract whose result is never NULL, so a
+# dereference of it is not a null-deref.
+[nullability.non_null_returns]
+names = [
+    # "xmalloc",
+]
+
+# Functions whose return value is bounded by one of their arguments (the
+# capacity/size argument at the given 0-based index), so an accumulator built
+# from their returns cannot exceed the buffer and a later 'size - total'
+# subtraction cannot underflow.
+[integer_overflow.truncating_wrappers]
+# nlog_syslog_add_pri = 1
+
+# Project path-validation functions: a call with the same path argument EARLIER
+# in the same function than fopen/openat/remove/rename/unlink proves the path is
+# safe, so the path-traversal candidate is suppressed. A guard called after the
+# sink proves nothing.
+[guards.path_traversal]
+names = [
+    # "idm_file_path_is_valid",
+    # "idm_validate_path",
 ]`)
 }
 

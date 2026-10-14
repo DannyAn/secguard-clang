@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
@@ -677,6 +678,17 @@ func (d *IntegerOverflowDetector) detectUnsignedSubUnderflow(ctx context.Context
 	}
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
+			continue
+		}
+		// Annex K / Windows `_s` functions validate their capacity and count
+		// arguments at run time and report a constraint violation through their
+		// return value, so a subtraction that underflows into one of their
+		// arguments cannot overflow — the call fails instead. This covers the
+		// `_s` family only (apikb.SecureFunctions). The wider apikb.SafeFunctions
+		// set is NOT interchangeable here: it also holds APIs whose size argument
+		// is consumed unchecked (strlcpy/strlcat, sqlite3_bind_blob, openat,
+		// exec*), where an underflowed length is still a real defect.
+		if _, secure := apikb.SecureFunctionSpec(extractCallName(call)); secure {
 			continue
 		}
 		for _, arg := range callNamedArguments(call) {

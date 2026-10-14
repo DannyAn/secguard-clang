@@ -28,6 +28,7 @@ type Config struct {
 	OwnershipTransferCalls OwnershipTransferCalls `toml:"ownership_transfer_calls"`
 	Nullability            Nullability            `toml:"nullability"`
 	IntegerOverflow        IntegerOverflow        `toml:"integer_overflow"`
+	Guards                 Guards                 `toml:"guards"`
 }
 
 type TrustedMacros struct {
@@ -115,6 +116,25 @@ type NonNullReturns struct {
 //	nlog_syslog_add_hostname = 1
 type IntegerOverflow struct {
 	TruncatingWrappers map[string]int `toml:"truncating_wrappers"`
+}
+
+// Guards declares project-specific validation functions that prove a path is
+// safe before it reaches a filesystem sink, so the path-traversal detector
+// suppresses the candidate. This is the "guard function" tier: a function like
+// idm_file_path_is_valid(path) that checks for "../" and returns false, called
+// in an early-return guard before fopen(path, ...), proves the path cannot
+// escape the intended directory.
+//
+//	[guards.path_traversal]
+//	names = ["idm_file_path_is_valid", "idm_validate_path"]
+type Guards struct {
+	PathTraversal PathTraversalGuards `toml:"path_traversal"`
+}
+
+// PathTraversalGuards lists functions whose call before a filesystem sink
+// proves the path argument is validated (no directory-escape component).
+type PathTraversalGuards struct {
+	Names []string `toml:"names"`
 }
 
 // DisabledTypes declares vulnerability types to turn OFF for the whole scan. A
@@ -251,6 +271,16 @@ func (c *Config) DeallocatorNames() []string {
 		return nil
 	}
 	return c.Deallocators.Names
+}
+
+// PathTraversalGuardNames returns the project-specific path-validation function
+// names. The path-traversal detector suppresses a sink candidate when a guard
+// function is called with the same path argument earlier in the same function.
+func (c *Config) PathTraversalGuardNames() []string {
+	if c == nil {
+		return nil
+	}
+	return c.Guards.PathTraversal.Names
 }
 
 // NonNullReturnNames returns the project-specific never-null return function
