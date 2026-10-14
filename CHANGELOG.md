@@ -34,6 +34,14 @@ main/wmain/WinMain/wWinMain 之外报；`inet_addr(常量)` 仍豁免。
 `p11_dangerous_function.c`（DGF-01..15）扩展；`AI_JUDGMENT_BOUNDARY.md` 登记
 `assert_usage` 例外。
 
+### Annex K `_s` 合约表修正：`snprintf_s`/`vsnprintf_s` CountArgIdx
+
+`SecureFunctions` 中 `snprintf_s` 和 `vsnprintf_s` 的 `CountArgIdx` 误设为 `2`，
+指向 format 字符串参数而非 count 参数。C11 Annex K 的签名为
+`snprintf_s(s, n, format, ...)` / `vsnprintf_s(s, n, format, ap)`——`n` 既是容量
+也是最大写入数，无独立 count 参数。修正为 `CountArgIdx: -1`。原值因
+`evaluateSizeArg` 对字符串字面量返回 0 而未造成误报，但合约定义错误已修正。
+`tc68` 增加 `secure_lying_snprintf` / `secure_correct_snprintf` 回归用例。
 
 
 ## [0.9.4] - 2026-10-12

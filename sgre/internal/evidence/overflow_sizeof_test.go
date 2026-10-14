@@ -225,7 +225,7 @@ func TestSecureFunctionMisuse(t *testing.T) {
 		cats[fn.Name][props.Category] = true
 	}
 
-	for _, fn := range []string{"secure_lying_memcpy", "secure_lying_strcpy", "secure_lying_sprintf"} {
+	for _, fn := range []string{"secure_lying_memcpy", "secure_lying_strcpy", "secure_lying_sprintf", "secure_lying_snprintf"} {
 		if !cats[fn]["secure_copy_overflow"] {
 			t.Errorf("expected %s (lying size > capacity) to be flagged secure_copy_overflow, got %v", fn, cats[fn])
 		}
@@ -235,6 +235,9 @@ func TestSecureFunctionMisuse(t *testing.T) {
 	}
 	if len(cats["secure_correct"]) != 0 {
 		t.Errorf("expected secure_correct (sizeof(dst)) NOT to be flagged, got %v", cats["secure_correct"])
+	}
+	if len(cats["secure_correct_snprintf"]) != 0 {
+		t.Errorf("expected secure_correct_snprintf (snprintf_s with sizeof(dst)) NOT to be flagged, got %v", cats["secure_correct_snprintf"])
 	}
 	for _, fn := range []string{"secure_constraint_memcpy", "secure_constraint_strcpy"} {
 		if !cats[fn]["secure_constraint_violation"] {

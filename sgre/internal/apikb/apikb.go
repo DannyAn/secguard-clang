@@ -234,9 +234,9 @@ var SecureFunctions = map[string]SecureFuncSpec{
 	"strcat_s":    {CapArgIdx: 1, CountArgIdx: -1},
 	"strncat_s":   {CapArgIdx: 1, CountArgIdx: 3},
 	"sprintf_s":   {CapArgIdx: 1, CountArgIdx: -1},
-	"snprintf_s":  {CapArgIdx: 1, CountArgIdx: 2},
+	"snprintf_s":  {CapArgIdx: 1, CountArgIdx: -1},
 	"vsprintf_s":  {CapArgIdx: 1, CountArgIdx: -1},
-	"vsnprintf_s": {CapArgIdx: 1, CountArgIdx: 2},
+	"vsnprintf_s": {CapArgIdx: 1, CountArgIdx: -1},
 	"asctime_s":   {CapArgIdx: 1, CountArgIdx: -1},
 	"ctime_s":     {CapArgIdx: 1, CountArgIdx: -1},
 }

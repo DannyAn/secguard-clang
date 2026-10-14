@@ -35,3 +35,12 @@ void secure_constraint_strcpy(void) {
     char dst[4];
     strcpy_s(dst, 4, "hello"); /* constraint violation: strlen("hello")+1 = 6 > 4 */
 }
+void secure_lying_snprintf(char *src) {
+    char dst[8];
+    snprintf_s(dst, 64, "%s", src); /* BUFFER_OVERFLOW: size 64 > capacity 8 */
+}
+
+void secure_correct_snprintf(char *src) {
+    char dst[32];
+    snprintf_s(dst, sizeof(dst), "%s", src); /* safe: no false positive from CountArgIdx */
+}
