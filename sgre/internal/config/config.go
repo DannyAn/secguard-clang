@@ -38,13 +38,15 @@ type TrustedMacros struct {
 	Names []string `toml:"names"`
 }
 
-// BannedFunctions extends the built-in dangerous/obsolete function list
-// (CWE-676) with project-specific bans. The built-in list is always active;
-// this section only ADDS names, so an enterprise can ban a function the default
-// list does not (e.g. a wrapper it has deprecated).
+// BannedFunctions extends the built-in banned-function policy table (CWE-676)
+// with project-specific bans. The built-in table (process/thread exit, alloca,
+// setjmp/longjmp, the non-`_s` mem/str/format/scan families, atoi-family,
+// realloc, assert, and the obsolete/insecure APIs) is always active; this
+// section only ADDS names (category "config_banned"), so an enterprise can ban
+// a function the default table does not (e.g. a wrapper it has deprecated).
 //
 //	[banned_functions]
-//	names = ["strcpy", "my_legacy_alloc"]
+//	names = ["my_legacy_alloc"]
 type BannedFunctions struct {
 	Names []string `toml:"names"`
 }

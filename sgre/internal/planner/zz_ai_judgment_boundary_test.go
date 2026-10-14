@@ -24,16 +24,16 @@ func TestConfirmedTierPolicy(t *testing.T) {
 	defaultConfirmed := map[string]string{
 		"null-deref":         "flow filter upgrades to confirmed only on must-null (has_definite_null)",
 		"signal-handler":     "type-inherent: POSIX async-signal-safe list is fixed and authoritative",
-		"dangerous-function": "type-inherent: a banned/obsolete libc call is a policy defect by name",
+		"dangerous-function": "type-inherent: a banned call is a policy defect by name (assert_usage excluded → suspected)",
 	}
 	confirmedCategories := map[string]map[string]string{
 		"buffer-overflow": {
-			"array_oob_write":        "constant index past a known array/allocation size, or interval lo >= size",
-			"heap_oob_write":         "constant index past a known allocation size, or interval lo >= size",
-			"bounded_copy_overflow":  "constant copy size > known capacity",
-			"secure_copy_overflow":   "Annex K _s given a lying destination-capacity argument (constant > capacity)",
-			"secure_scanf_overflow":  "scanf_s %s/%c/%[ width argument > real buffer (constant)",
-			"format_overflow":        "format literal + argument output provably >= capacity (constant fold)",
+			"array_oob_write":       "constant index past a known array/allocation size, or interval lo >= size",
+			"heap_oob_write":        "constant index past a known allocation size, or interval lo >= size",
+			"bounded_copy_overflow": "constant copy size > known capacity",
+			"secure_copy_overflow":  "Annex K _s given a lying destination-capacity argument (constant > capacity)",
+			"secure_scanf_overflow": "scanf_s %s/%c/%[ width argument > real buffer (constant)",
+			"format_overflow":       "format literal + argument output provably >= capacity (constant fold)",
 		},
 		"integer-overflow": {
 			"definite_overflow": "literal-constant arithmetic provably overflows the type (constant fold)",

@@ -17,8 +17,9 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
-// TestDangerousFunction_BannedCalls pins CWE-676: calls to the built-in banned
-// list are flagged, while memcpy (not banned) is not. Second run-through of the
+// TestDangerousFunction_BannedCalls pins CWE-676: calls to the built-in ban
+// table are flagged (across categories), while the `_s` variants and the
+// recommended replacements are not. Second run-through of the
 // ADDING_A_VULN_TYPE.md standard.
 func TestDangerousFunction_BannedCalls(t *testing.T) {
 	store, p := setupDetector(t, "tc109_dangerous_function.c")
@@ -41,13 +42,95 @@ func TestDangerousFunction_BannedCalls(t *testing.T) {
 		}
 	}
 
-	for _, banned := range []string{"gets", "mktemp", "gethostbyname", "bcopy"} {
+	for _, banned := range []string{"gets", "mktemp", "gethostbyname", "bcopy", "memcpy", "strcpy", "sprintf", "atoi"} {
 		if !flagged[banned] {
-			t.Errorf("%s should be flagged as dangerous/obsolete, got %v", banned, flagged)
+			t.Errorf("%s should be flagged as banned, got %v", banned, flagged)
 		}
 	}
-	if flagged["memcpy"] {
-		t.Errorf("memcpy must NOT be flagged (not in the banned list), got %v", flagged)
+	for _, safe := range []string{"memcpy_s", "strcpy_s", "sprintf_s", "strtol"} {
+		if flagged[safe] {
+			t.Errorf("%s is a safe/replacement API and must NOT be flagged, got %v", safe, flagged)
+		}
+	}
+}
+
+// TestDangerousFunction_CategoriesAndMainContext pins the two layered rules:
+// each banned call carries its category, and a nonMainOnly rule (exit) fires
+// only OUTSIDE the program entry point.
+func TestDangerousFunction_CategoriesAndMainContext(t *testing.T) {
+	dir := t.TempDir()
+	src := `#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+
+static void helper(void) { exit(1); }
+
+int helper2(const char *s) { return atoi(s); }
+
+int main(void) {
+    char b[8];
+    void *p;
+    memcpy(b, b, 8);
+    p = alloca(8);
+    assert(p != 0);
+    abort();
+    exit(0);
+    return 0;
+}
+`
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+
+	path := filepath.Join(dir, "dm.c")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	if _, err := NewDangerousFunctionDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+
+	events, err := store.ListEventsByType(ctx, "DANGEROUS_FUNCTION")
+	if err != nil {
+		t.Fatalf("list DANGEROUS_FUNCTION: %v", err)
+	}
+	byVar := map[string]int{}
+	cat := map[string]string{}
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+			Category string `json:"category"`
+		}
+		if json.Unmarshal([]byte(e.Properties), &props) == nil {
+			byVar[props.Variable]++
+			cat[props.Variable] = props.Category
+		}
+	}
+
+	wantCat := map[string]string{
+		"exit":   "process_exit",
+		"atoi":   "unchecked_conversion",
+		"memcpy": "unsafe_memory",
+		"alloca": "stack_allocation",
+		"assert": "assert_usage",
+		"abort":  "process_exit",
+	}
+	for name, c := range wantCat {
+		if byVar[name] == 0 {
+			t.Errorf("%s should be flagged, got %v", name, byVar)
+			continue
+		}
+		if cat[name] != c {
+			t.Errorf("%s category = %q, want %q", name, cat[name], c)
+		}
+	}
+	if byVar["exit"] != 1 {
+		t.Errorf("exit must be reported once (only the non-main helper), got %d", byVar["exit"])
 	}
 }
 

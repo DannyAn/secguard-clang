@@ -31,7 +31,8 @@
    hardcoded-secret 的**值本身** secret-shaped、`_s` 函数给出撒谎容量、
    `sizeof(pointer)` 这类无条件成立。
 4. **类型固有**（无需数据流）：signal-handler 的异步不安全 API、dangerous-function
-   的禁用 API——「调用即命中」。
+   的禁用 API——「调用即命中」（例外：dangerous-function 的 `assert_usage`
+   是否用于校验入参需意图判断，归 `suspected`）。
 
 ## 什么交给 AI 研判（`suspected` / `possible`）
 
@@ -87,7 +88,7 @@
 | sizeof-misuse | 静态 `sizeof_pointer` | 字面量 |
 | signed-compare | 静态 `signed_compare` | 字面量 |
 | signal-handler | 静态 default | 类型固有 |
-| dangerous-function | 静态 default | 类型固有 |
+| dangerous-function | 静态 default（`assert_usage` 除外 → suspected） | 类型固有 |
 
 **故意留在 `suspected` 的两个类型（需要「意图/语义」研判，无法确定性证明）：**
 

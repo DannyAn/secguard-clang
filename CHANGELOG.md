@@ -2,6 +2,40 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [Unreleased]
+
+### dangerous-function 分层策略扩展（CWE-676）
+
+将 `dangerous-function` 从「10 个无争议函数的极简名单」扩展为**分层的禁用函数策略
+检查**，覆盖企业编码规范中「调用即违规」的函数族。检测器仍在
+`evidence/dangerous_function.go`，内置规则表按 category 分层：
+
+- `process_exit`：`exit`/`ExitProcess`/`pthread_exit`/`ExitThread`（仅**非入口函数**）、
+  `atexit`、`abort`
+- `stack_allocation`：`alloca`
+- `nonlocal_jump`：`setjmp`/`longjmp`
+- `unsafe_memory`/`unsafe_string`/`unsafe_format`/`unsafe_scan`：非 `_s` 的
+  `mem*`/`str*`/`wcs*`/格式化输出/格式化输入/`gets` 族
+- `unchecked_conversion`：`atoi`/`atol`/`atoll`/`atof`
+- `unsafe_alloc`：`realloc`
+- `assert_usage`：`assert`
+- `insecure_temp`/`obsolete_api`：原有清单（`mktemp`/`gethostbyname`/`inet_addr` …）
+
+判定：除 `assert_usage` 外全部 **confirmed**（名字匹配即缺陷）；`assert` 是否用于
+校验入参需意图判断，交 AI 研判（**suspected**）。`exit` 族仅在
+main/wmain/WinMain/wWinMain 之外报；`inet_addr(常量)` 仍豁免。
+
+`unsafe_memory`/`unsafe_string`/`unsafe_format`/`unsafe_scan` 与
+`buffer-overflow`/`injection`/`format-string` **刻意重叠**：后者回答「这一次调用会不会
+溢出/注入」，前者回答策略维度「是否使用了非 `_s` API」。
+
+配套：`registry.go` 增加 `CategoryConfidence{assert_usage: suspected}`；
+`SKILL.md`/`vuln_type_skill.go`/`docs/config.md`/`usage.go` 同步；`tc109` 与 benchmark
+`p11_dangerous_function.c`（DGF-01..15）扩展；`AI_JUDGMENT_BOUNDARY.md` 登记
+`assert_usage` 例外。
+
+
+
 ## [0.9.4] - 2026-10-12
 
 ### null-deref「检查后扩容再取址」误报收敛（CWE-476）

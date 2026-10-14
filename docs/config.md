@@ -102,9 +102,9 @@ LIST_FOR_EACH_SAFE = [0, 1]
 >   自动收集宏写入摘要并 kill 迭代器 null 源，同样**无需**手动配置。
 > - 此配置仅用于定义在扫描树之外的 SDK 头文件中的项目自定义迭代器宏。
 
-### `[banned_functions]` — 危险/废弃函数禁用扩展（CWE-676）
+### `[banned_functions]` — 禁用函数策略清单扩展（CWE-676）
 
-`dangerous-function`（CWE-676）检测器内置了一份**保守**的危险/废弃函数清单，
+`dangerous-function`（CWE-676）检测器内置了一份**分层**的禁用函数策略清单，
 `[banned_functions] names` 用于向这份清单**追加**企业自定义的禁用项。
 
 ```toml
@@ -115,19 +115,29 @@ names = [
 ]
 ```
 
-内置清单（始终生效，`names` 只能追加、不能移除）：
+内置清单（始终生效，`names` 只能追加、不能移除），按 category 分层：
 
-| 内置函数 | 废弃/危险原因 |
-|----------|----------------|
-| `gets` | 无边界检查，C11 已移除 |
-| `mktemp` `tmpnam` `tmpnam_r` | 不安全的临时文件 API |
-| `gethostbyname` `gethostbyaddr` | 废弃，改用 `getaddrinfo` |
-| `inet_addr` | 废弃，改用 `inet_pton` |
-| `bcmp` `bcopy` `bzero` | 废弃 BSD API，改用 `memcmp`/`memmove`/`memset` |
+| category | 内置函数 | 建议替代 |
+|----------|----------|----------|
+| `process_exit` | `exit` `ExitProcess`（仅非入口函数）、`pthread_exit` `ExitThread`（仅非入口函数）、`atexit` `abort` | 返回错误 / 优雅退出 |
+| `stack_allocation` | `alloca` | `malloc`/`free` 或定长缓冲 |
+| `nonlocal_jump` | `setjmp` `longjmp` | 返回值错误传播 |
+| `unsafe_memory` | `memcpy` `wmemcpy` `memmove` `wmemmove` `memset` `bcopy` `bzero` | `memcpy_s` `memmove_s` `memset_s` … |
+| `unsafe_string` | `strcpy` `wcscpy` `strncpy` `wcsncpy` `strcat` `wcscat` `strncat` `wcsncat` `bcmp` | `strcpy_s` `strncpy_s` `strcat_s` … / `memcmp` |
+| `unsafe_format` | `sprintf` `swprintf` `vsprintf` `vswprintf` `snprintf` `vsnprintf` | `sprintf_s` `snprintf_s` `vsnprintf_s` … |
+| `unsafe_scan` | `scanf`/`wscanf`/`vscanf`/`vwscanf`/`fscanf`/`fwscanf`/`vfscanf`/`vfwscanf`/`sscanf`/`swscanf`/`vsscanf`/`vswscanf` `gets` | `scanf_s` `sscanf_s` … / `fgets` |
+| `unchecked_conversion` | `atoi` `atol` `atoll` `atof` | `strtol` `strtoll` `strtod` |
+| `unsafe_alloc` | `realloc` | `malloc` + 拷贝 + `free` |
+| `assert_usage` | `assert` | 校验入参并返回错误 |
+| `insecure_temp` | `mktemp` `tmpnam` `tmpnam_r` | `mkstemp` |
+| `obsolete_api` | `gethostbyname` `gethostbyaddr` `inet_addr` | `getaddrinfo` `getnameinfo` `inet_pton` |
+| `config_banned` | `names` 追加的项目自定义名 | 项目自定义 |
 
 > 说明：
 > - **策略检查**，非上下文敏感：调用即报，不看调用点是否做了边界检查——企业禁用的是函数本身，检测健全、无数据流误报。
-> - `strcpy`/`sprintf`/`system` 等无界字符串/格式化函数**故意不内置**（`buffer-overflow`/`injection` 已上下文敏感地处理，内置会重复噪音）；企业若要一刀切禁用，把它们加进 `names` 即可。
+> - 除 `assert_usage` 外，所有 category 由管线自动 **confirmed**；`assert` 是否用于校验入参需意图判断，交 AI 研判（**suspected**）。
+> - `exit`/`ExitProcess`/`pthread_exit`/`ExitThread` 仅在**非入口函数**（main/wmain/WinMain/wWinMain 之外）报。
+> - `unsafe_memory`/`unsafe_string`/`unsafe_format`/`unsafe_scan` 与 `buffer-overflow`/`injection`/`format-string` **刻意重叠**：后者回答「这一次调用会不会溢出/注入」，前者回答策略维度「是否使用了非 `_s` API」，两个维度都会报。
 
 ### `[exclude]` — 索引阶段排除目录
 

@@ -76,7 +76,7 @@ var allSkillSpecs = []skillSpec{
 	{"sizeof-misuse", "boundary", "Detects sizeof on pointer variables in size contexts (CWE-467/468)"},
 	{"signed-compare", "boundary", "Detects unsigned values compared with zero/negative (CWE-681/195)"},
 	{"signal-handler", "concurrency", "Detects non-async-signal-safe calls in signal handlers (CWE-479)"},
-	{"dangerous-function", "boundary", "Detects calls to banned/obsolete libc functions (CWE-676)"},
+	{"dangerous-function", "boundary", "Detects calls to banned libc/runtime functions and non-safe APIs that must be replaced (CWE-676)"},
 	{"argument-type", "contract", "Detects incompatible pointer-cast function arguments (CWE-686)"},
 	{"data-representation", "contract", "Detects callback/generic-pointer representation mismatches (CWE-843)"},
 }

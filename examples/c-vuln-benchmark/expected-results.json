@@ -1,9 +1,9 @@
 {
-  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327) + 4 个测试用例 (Phase 2: heap OOB write / format overflow / data race / OOB read) + 4 个测试用例 (Phase 3: null-deref sizeof + 流敏感 FP 抑制) + 3 个测试用例 (Phase 4: uninit 流敏感收敛，来自 zlib 生产环境缺陷) + 12 个测试用例 (Phase 6: resource-leak CWE-404，其中 RL-10~RL-12 为已确认检测缺口 known-gap 标记保留作回归目标，validator 对这类用例的漏报不判失败）。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。校验按 (漏洞类型, 文件, 行±容差) 与 verdict 阶段 result.sarif 交叉比对（见 benchmark.md「运行方式」）；detector → 漏洞类型映射见 scripts/validate-benchmark.py 的 DETECTOR_TO_TYPE，用 `--selftest` 可校验该映射是否覆盖全部标签；另加 23 个测试用例 (Phase 11: 补齐 dangerous-function / double-free / format-string / signal-handler 四个零覆盖 skill，并为 deadlock / hardcoded-secret / out-of-bounds / use-after-free 补上缺失的 no_finding 反证防线 —— 22 个注册漏洞类型至此每个都有「该报」与「不该报」对照；FS-05/DF-05/SH-05 为其存量文件上已检出但未纳入 ground truth 的缺陷)；ND-05/ND-06 由已删除的 examples/nullflow-demo/src/demo.c 迁入（拷贝传播收敛、return 之后不可达解引用），该独立样例项目的其余 3 个场景与 p5_null_flow.c 重复，故随迁移一并移除；ML-01/ML-02 补上 memory-leak 两条此前未锁定、仅以候选形式存在的真泄漏（条件路径泄漏 + 从不 free），使该类型每条候选都有 ground truth 对应；另加 5 个测试用例 (Phase 12: v0.7.1 缺陷修复回归 —— memory-leak 错误路径 return p 泄漏 (ML-03)、覆盖指针丢分配 (ML-04)、resource-leak 括号错误返回 (RL-15)、mmap 泄漏 (RL-16)、signal-handler strncpy 变量名巧合误杀 (SH-06))；另加 2 个测试用例 (Phase 13: v0.7.4 误报修复回归 —— 链表删除间接释放函数 + alias 重新赋值 UAF 误报 (UAF-02)、signed-compare 跨作用域同名遮蔽误报 (SC-01))；另加 2 个测试用例 (Phase 15: memory-leak 容器逃逸误报修复回归 —— malloc 容器写入缓冲区后 return 转移所有权，findEscapeLines pointer_expression 分支 allocVarNames 回归 (ML-05/ML-06))；另加 2 个测试用例 (Phase 16: divide-by-zero 非零源除数误报修复回归 —— 结构体字段从非零返回函数赋值 (P16-01)、全局变量从非零常量赋值 (P16-02)，globalInvariants 非零源赋值扫描 + RangeFilter field-chain invariant 检查回归)。",
+  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327) + 4 个测试用例 (Phase 2: heap OOB write / format overflow / data race / OOB read) + 4 个测试用例 (Phase 3: null-deref sizeof + 流敏感 FP 抑制) + 3 个测试用例 (Phase 4: uninit 流敏感收敛，来自 zlib 生产环境缺陷) + 12 个测试用例 (Phase 6: resource-leak CWE-404，其中 RL-10~RL-12 为已确认检测缺口 known-gap 标记保留作回归目标，validator 对这类用例的漏报不判失败）。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。校验按 (漏洞类型, 文件, 行±容差) 与 verdict 阶段 result.sarif 交叉比对（见 benchmark.md「运行方式」）；detector → 漏洞类型映射见 scripts/validate-benchmark.py 的 DETECTOR_TO_TYPE，用 `--selftest` 可校验该映射是否覆盖全部标签；另加 34 个测试用例 (Phase 11: 补齐 dangerous-function / double-free / format-string / signal-handler 四个零覆盖 skill，并为 deadlock / hardcoded-secret / out-of-bounds / use-after-free 补上缺失的 no_finding 反证防线 —— 22 个注册漏洞类型至此每个都有「该报」与「不该报」对照；FS-05/DF-05/SH-05 为其存量文件上已检出但未纳入 ground truth 的缺陷)；ND-05/ND-06 由已删除的 examples/nullflow-demo/src/demo.c 迁入（拷贝传播收敛、return 之后不可达解引用），该独立样例项目的其余 3 个场景与 p5_null_flow.c 重复，故随迁移一并移除；ML-01/ML-02 补上 memory-leak 两条此前未锁定、仅以候选形式存在的真泄漏（条件路径泄漏 + 从不 free），使该类型每条候选都有 ground truth 对应；另加 5 个测试用例 (Phase 12: v0.7.1 缺陷修复回归 —— memory-leak 错误路径 return p 泄漏 (ML-03)、覆盖指针丢分配 (ML-04)、resource-leak 括号错误返回 (RL-15)、mmap 泄漏 (RL-16)、signal-handler strncpy 变量名巧合误杀 (SH-06))；另加 2 个测试用例 (Phase 13: v0.7.4 误报修复回归 —— 链表删除间接释放函数 + alias 重新赋值 UAF 误报 (UAF-02)、signed-compare 跨作用域同名遮蔽误报 (SC-01))；另加 2 个测试用例 (Phase 15: memory-leak 容器逃逸误报修复回归 —— malloc 容器写入缓冲区后 return 转移所有权，findEscapeLines pointer_expression 分支 allocVarNames 回归 (ML-05/ML-06))；另加 2 个测试用例 (Phase 16: divide-by-zero 非零源除数误报修复回归 —— 结构体字段从非零返回函数赋值 (P16-01)、全局变量从非零常量赋值 (P16-02)，globalInvariants 非零源赋值扫描 + RangeFilter field-chain invariant 检查回归)。",
   "_benchmark_doc": "benchmark.md",
   "_validator": "scripts/validate-benchmark.py",
   "summary": {
-    "total_test_cases": 142,
+    "total_test_cases": 153,
     "phase0_test_cases": 18,
     "phase1_test_cases": 12,
     "phase2_test_cases": 4,
@@ -28,8 +28,8 @@
       "CWE-667",
       "CWE-327"
     ],
-    "phase11_test_cases": 23,
-    "phase11_dangerous_function": 4,
+    "phase11_test_cases": 34,
+    "phase11_dangerous_function": 15,
     "phase11_format_string": 5,
     "phase11_double_free": 5,
     "phase11_signal_handler": 5,
@@ -91,6 +91,7 @@
       "file": "src/p0_safe_functions.c",
       "line": 37,
       "code": "snprintf + sizeof + return check",
+      "detector": "memory.buffer_overflow",
       "expect": "no_finding"
     },
     {
@@ -115,6 +116,7 @@
       "file": "src/p1_safecopy_wrapper.c",
       "line": 18,
       "code": "memcpy(dst->ptr, src, n) inside SafeCopy_copy",
+      "detector": "memory.buffer_overflow",
       "expect": "no_finding"
     },
     {
@@ -123,6 +125,7 @@
       "file": "src/p1_safecopy_wrapper.c",
       "line": 28,
       "code": "memcpy(dst->ptr, src, len) inside SafeCopy_strcpy",
+      "detector": "memory.buffer_overflow",
       "expect": "no_finding"
     },
     {
@@ -157,6 +160,7 @@
       "file": "src/p2_bounds_checked.c",
       "line": 14,
       "code": "memcpy after if(user_len > MAX_MSG_SIZE) return",
+      "detector": "memory.buffer_overflow",
       "expect": "no_finding"
     },
     {
@@ -165,6 +169,7 @@
       "file": "src/p2_bounds_checked.c",
       "line": 30,
       "code": "memcpy after if(user_len >= sizeof(dst)) return",
+      "detector": "memory.buffer_overflow",
       "expect": "no_finding"
     },
     {
@@ -915,8 +920,8 @@
       "id": "DGF-01",
       "category": "phase11_dangerous_function",
       "file": "src/p11_dangerous_function.c",
-      "line": 24,
-      "code": "gets(buf) —— C11 已移除的无边界读，内置禁用名单命中",
+      "line": 29,
+      "code": "gets(g_dst) —— C11 已移除的无边界读（unsafe_scan）",
       "cwe": "CWE-676",
       "detector": "dangerous_function",
       "expect": "finding"
@@ -925,8 +930,8 @@
       "id": "DGF-02",
       "category": "phase11_dangerous_function",
       "file": "src/p11_dangerous_function.c",
-      "line": 32,
-      "code": "mktemp(tmpl) —— 可预测的临时文件名，内置禁用名单命中",
+      "line": 34,
+      "code": "mktemp(tmpl) —— 可预测的临时文件名（insecure_temp）",
       "cwe": "CWE-676",
       "detector": "dangerous_function",
       "expect": "finding"
@@ -935,18 +940,128 @@
       "id": "DGF-03",
       "category": "phase11_dangerous_function",
       "file": "src/p11_dangerous_function.c",
-      "line": 40,
-      "code": "gethostbyname(host) —— 已过时且不可重入，内置禁用名单命中",
+      "line": 41,
+      "code": "gethostbyname(host) —— 已过时且不可重入（obsolete_api）",
       "cwe": "CWE-676",
       "detector": "dangerous_function",
       "expect": "finding"
     },
     {
       "id": "DGF-04",
-      "category": "phase11_dangerous_function_safe",
+      "category": "phase11_dangerous_function",
+      "file": "src/p11_dangerous_function.c",
+      "line": 48,
+      "code": "memcpy(...) —— 非 _s 内存复制（unsafe_memory → memcpy_s）",
+      "cwe": "CWE-676",
+      "detector": "dangerous_function",
+      "expect": "finding"
+    },
+    {
+      "id": "DGF-05",
+      "category": "phase11_dangerous_function",
+      "file": "src/p11_dangerous_function.c",
+      "line": 52,
+      "code": "strcpy(...) —— 非 _s 字符串复制（unsafe_string → strcpy_s）",
+      "cwe": "CWE-676",
+      "detector": "dangerous_function",
+      "expect": "finding"
+    },
+    {
+      "id": "DGF-06",
+      "category": "phase11_dangerous_function",
+      "file": "src/p11_dangerous_function.c",
+      "line": 56,
+      "code": "sprintf(...) —— 非 _s 格式化输出（unsafe_format → sprintf_s）",
+      "cwe": "CWE-676",
+      "detector": "dangerous_function",
+      "expect": "finding"
+    },
+    {
+      "id": "DGF-07",
+      "category": "phase11_dangerous_function",
+      "file": "src/p11_dangerous_function.c",
+      "line": 61,
+      "code": "sscanf(...) —— 非 _s 格式化输入（unsafe_scan → sscanf_s）",
+      "cwe": "CWE-676",
+      "detector": "dangerous_function",
+      "expect": "finding"
+    },
+    {
+      "id": "DGF-08",
+      "category": "phase11_dangerous_function",
       "file": "src/p11_dangerous_function.c",
       "line": 65,
-      "code": "安全替代集群：fgets + getaddrinfo + mkstemp + memmove，均不在禁用名单",
+      "code": "atoi(...) —— 无错误检测的转换（unchecked_conversion → strtol）",
+      "cwe": "CWE-676",
+      "detector": "dangerous_function",
+      "expect": "finding"
+    },
+    {
+      "id": "DGF-09",
+      "category": "phase11_dangerous_function",
+      "file": "src/p11_dangerous_function.c",
+      "line": 69,
+      "code": "abort() —— 非入口函数内的进程终止（process_exit）",
+      "cwe": "CWE-676",
+      "detector": "dangerous_function",
+      "expect": "finding"
+    },
+    {
+      "id": "DGF-10",
+      "category": "phase11_dangerous_function",
+      "file": "src/p11_dangerous_function.c",
+      "line": 73,
+      "code": "alloca(64) —— 栈上动态分配（stack_allocation）",
+      "cwe": "CWE-676",
+      "detector": "dangerous_function",
+      "expect": "finding"
+    },
+    {
+      "id": "DGF-11",
+      "category": "phase11_dangerous_function",
+      "file": "src/p11_dangerous_function.c",
+      "line": 78,
+      "code": "setjmp(...) —— 非局部跳转（nonlocal_jump）",
+      "cwe": "CWE-676",
+      "detector": "dangerous_function",
+      "expect": "finding"
+    },
+    {
+      "id": "DGF-12",
+      "category": "phase11_dangerous_function",
+      "file": "src/p11_dangerous_function.c",
+      "line": 79,
+      "code": "longjmp(...) —— 非局部跳转（nonlocal_jump）",
+      "cwe": "CWE-676",
+      "detector": "dangerous_function",
+      "expect": "finding"
+    },
+    {
+      "id": "DGF-13",
+      "category": "phase11_dangerous_function",
+      "file": "src/p11_dangerous_function.c",
+      "line": 84,
+      "code": "realloc(...) —— 策略禁用分配器（unsafe_alloc）",
+      "cwe": "CWE-676",
+      "detector": "dangerous_function",
+      "expect": "finding"
+    },
+    {
+      "id": "DGF-14",
+      "category": "phase11_dangerous_function_safe",
+      "file": "src/p11_dangerous_function.c",
+      "line": 96,
+      "code": "安全 _s 替代集群：memset_s/memcpy_s/strcpy_s/snprintf_s/sprintf_s/fgets/getaddrinfo/mkstemp，均不在禁用表",
+      "cwe": "CWE-676",
+      "detector": "dangerous_function",
+      "expect": "no_finding"
+    },
+    {
+      "id": "DGF-15",
+      "category": "phase11_dangerous_function_safe",
+      "file": "src/p11_dangerous_function.c",
+      "line": 133,
+      "code": "exit(0) 位于 main 内 —— 程序入口允许进程退出",
       "cwe": "CWE-676",
       "detector": "dangerous_function",
       "expect": "no_finding"

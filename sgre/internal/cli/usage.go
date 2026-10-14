@@ -258,11 +258,14 @@ What it is:
 
   [banned_functions] — banned-function extension (CWE-676)
     names = ["..."]
-    Adds to the built-in dangerous/obsolete function list (CWE-676). The
-    built-in list (gets, mktemp, tmpnam, tmpnam_r, gethostbyname,
-    gethostbyaddr, inet_addr, bcmp, bcopy, bzero) is always active; these names
-    only EXTEND it. It is a policy check: a call is flagged regardless of
-    surrounding bounds checks, because the enterprise bans the function itself.
+    Adds to the built-in banned-function policy table (CWE-676). The built-in
+    table (process/thread exit, alloca, setjmp/longjmp, the non-_s
+    mem/str/format/scan families, atoi/atol/atoll/atof, realloc, assert, and
+    the obsolete/insecure APIs) is always active; these names only EXTEND it
+    (as category "config_banned"). It is a policy check: a call is flagged
+    regardless of surrounding bounds checks, because the enterprise bans the
+    function itself. Every category is auto-confirmed except assert usage
+    (handed to the AI agent).
 
   [exclude] — directory trees to skip at index time
     paths = ["..."]
@@ -304,8 +307,9 @@ names = [
 # SAMPLE_Scan = [1]
 # POOL_FOR = [1]
 
-# Enterprise-specific banned functions: ADD to the built-in dangerous/obsolete
-# list (CWE-676). The built-in list is always active; these only extend it.
+# Enterprise-specific banned functions: ADD to the built-in banned-function
+# policy table (CWE-676). The built-in table is always active; these only
+# extend it (category "config_banned").
 [banned_functions]
 names = [
     # "my_legacy_alloc",

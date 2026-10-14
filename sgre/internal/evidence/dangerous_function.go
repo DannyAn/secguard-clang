@@ -11,66 +11,156 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
-// DangerousFunctionDetector flags calls to a fixed list of inherently dangerous
-// or obsolete libc functions (CWE-676). This is a POLICY check, not a
-// context-sensitive analysis: a call is a finding regardless of whether the
-// surrounding code bounds the destination, because the enterprise bans the
-// function itself. The list is deliberately conservative — only functions whose
-// obsolescence/danger is uncontested — so the detection is sound (no false
-// positives from dataflow). It is one whole-tree FindAll per file, so it is
-// effectively free.
+// DangerousFunctionDetector flags calls to banned libc/runtime functions
+// (CWE-676). This is a POLICY check, not a context-sensitive analysis: a call
+// is a finding regardless of whether the surrounding code guards the
+// destination, because the enterprise bans the function itself and mandates a
+// safer replacement (typically the Annex K `_s` variants, strtol, getaddrinfo,
+// ...).
+//
+// The ban set is layered into categories (see builtinDangerRules). Every
+// category is a sound name match and is auto-confirmed by the planner EXCEPT
+// `assert_usage`: whether an assert() guards caller input (a defect) or an
+// internal invariant (fine) needs intent, so it is handed to the AI agent.
+// A `nonMainOnly` rule (exit / pthread_exit / ExitThread / ExitProcess) fires
+// only OUTSIDE the program entry point.
 type DangerousFunctionDetector struct {
 	store  db.Store
 	parser *parser.Parser
 	logger *log.Logger
-	// banned is the merged ban set: the built-in dangerous/obsolete list PLUS
-	// the project-specific [banned_functions] names from secguard.toml.
-	banned map[string]bool
+	// rules is the merged ban set: the built-in rule table PLUS the
+	// project-specific [banned_functions] names from secguard.toml (which get
+	// the generic `config_banned` category).
+	rules map[string]dangerRule
+}
+
+// dangerRule describes one banned function's policy shape.
+type dangerRule struct {
+	// category is the event category, which drives the planner's per-category
+	// confidence and the evidence detail.
+	category string
+	// replacement is the mandated safer API (best-effort, informational). It is
+	// emitted on the event so a report/consumer can cite it; the AI's per-shape
+	// fix text comes from the skill's category table.
+	replacement string
+	// nonMainOnly restricts the finding to calls OUTSIDE the program entry
+	// point. exit()/ExitProcess()/pthread_exit()/ExitThread() are permitted in
+	// main (they are the process/thread exit), but forbidden elsewhere: a
+	// callee tearing down the whole process/thread breaks control flow and
+	// resource release for its caller.
+	nonMainOnly bool
+	// constExempt suppresses the finding when the FIRST argument is a
+	// compile-time constant. inet_addr is the only such rule: its danger is
+	// injection / INADDR_NONE confusion via a runtime-controlled string, not
+	// the function itself.
+	constExempt bool
 }
 
 func NewDangerousFunctionDetector(store db.Store, p *parser.Parser, logger *log.Logger) *DangerousFunctionDetector {
-	banned := make(map[string]bool, len(bannedFunctions))
-	for name := range bannedFunctions {
-		banned[name] = true
+	rules := make(map[string]dangerRule, len(builtinDangerRules)+8)
+	for name, rule := range builtinDangerRules {
+		rules[name] = rule
 	}
 	for _, name := range config.Load().BannedFunctionNames() {
-		banned[name] = true
+		if _, exists := rules[name]; !exists {
+			rules[name] = dangerRule{category: "config_banned"}
+		}
 	}
-	return &DangerousFunctionDetector{store: store, parser: p, logger: logger, banned: banned}
+	return &DangerousFunctionDetector{store: store, parser: p, logger: logger, rules: rules}
 }
 
 func (d *DangerousFunctionDetector) Name() string { return "dangerous_function" }
 
-// bannedFunctions is the built-in dangerous/obsolete function list. It is kept
-// minimal and uncontested: gets (removed in C11, no bounds), the insecure temp
-// file makers, and the obsolete name/network/BSD-memory APIs. The unbounded
-// string/format functions (strcpy/sprintf/system) are deliberately NOT here —
-// buffer-overflow and injection already handle them context-sensitively, and a
-// blanket ban would duplicate noise. Extend this list (or make it configurable)
-// when an enterprise policy demands a broader ban.
-var bannedFunctions = map[string]bool{
-	"gets":          true, // CWE-242: no bounds, removed in C11
-	"mktemp":        true, // CWE-377: insecure temporary file
-	"tmpnam":        true, // CWE-377
-	"tmpnam_r":      true, // CWE-377
-	"gethostbyname": true, // CWE-477: obsolete, replaced by getaddrinfo
-	"gethostbyaddr": true, // CWE-477
-	"inet_addr":     true, // CWE-477: obsolete, replaced by inet_pton
-	"bcmp":          true, // CWE-477: obsolete BSD, replaced by memcmp
-	"bcopy":         true, // CWE-477: obsolete BSD, replaced by memmove
-	"bzero":         true, // CWE-477: obsolete BSD, replaced by memset
-}
+// builtinDangerRules is the built-in ban table. Categories group functions by
+// the shape of the defect and its mandated replacement; the planner maps
+// `assert_usage` to `suspected` and every other category to `confirmed`.
+//
+// This is a POLICY table — a call to any listed function is a finding by name,
+// independent of dataflow. The unbounded string/format functions here
+// (strcpy/sprintf/...) intentionally OVERLAP the context-sensitive
+// buffer-overflow / injection / format-string detectors: those answer "does
+// THIS call overflow / inject", while this table answers the orthogonal policy
+// question "is a non-`_s` API used at all". Both dimensions are reported.
+var builtinDangerRules = map[string]dangerRule{
+	// --- process / thread termination (禁用退出与终止函数) ---
+	"exit":         {category: "process_exit", replacement: "return from the enclosing function", nonMainOnly: true},
+	"ExitProcess":  {category: "process_exit", replacement: "return from main", nonMainOnly: true},
+	"pthread_exit": {category: "process_exit", replacement: "return from the thread start routine", nonMainOnly: true},
+	"ExitThread":   {category: "process_exit", replacement: "return from the thread start routine", nonMainOnly: true},
+	"atexit":       {category: "process_exit", replacement: "release resources explicitly on each exit path"},
+	"abort":        {category: "process_exit", replacement: "return an error / graceful shutdown"},
 
-// paramSensitiveBanned lists banned functions whose risk depends on the
-// argument being attacker-controlled. A call with a compile-time constant
-// argument (a string literal or a #define macro) is safe — the danger of
-// inet_addr is injection/overflow via a runtime-controlled IP string, not the
-// function itself. gethostbyname/gethostbyaddr are NOT here: their CWE-477
-// risk is API obsolescence (should migrate to getaddrinfo), independent of
-// the argument. gets/mktemp/tmpnam/bcmp/bcopy/bzero are also NOT here: their
-// danger is inherent.
-var paramSensitiveBanned = map[string]bool{
-	"inet_addr": true,
+	// --- stack allocation (禁止 alloca 申请栈上内存) ---
+	"alloca": {category: "stack_allocation", replacement: "malloc/free or a fixed-size buffer"},
+
+	// --- non-local jump (禁用 setjmp/longjmp) ---
+	"setjmp":  {category: "nonlocal_jump", replacement: "return-value error propagation"},
+	"longjmp": {category: "nonlocal_jump", replacement: "return-value error propagation"},
+
+	// --- memory copy / init (内存复制/初始化 → _s) ---
+	"memcpy":   {category: "unsafe_memory", replacement: "memcpy_s"},
+	"wmemcpy":  {category: "unsafe_memory", replacement: "wmemcpy_s"},
+	"memmove":  {category: "unsafe_memory", replacement: "memmove_s"},
+	"wmemmove": {category: "unsafe_memory", replacement: "wmemmove_s"},
+	"memset":   {category: "unsafe_memory", replacement: "memset_s"},
+	"bcopy":    {category: "unsafe_memory", replacement: "memmove_s"},
+	"bzero":    {category: "unsafe_memory", replacement: "memset_s"},
+
+	// --- string copy (字符串复制 → _s) ---
+	"strcpy":  {category: "unsafe_string", replacement: "strcpy_s"},
+	"wcscpy":  {category: "unsafe_string", replacement: "wcscpy_s"},
+	"strncpy": {category: "unsafe_string", replacement: "strncpy_s"},
+	"wcsncpy": {category: "unsafe_string", replacement: "wcsncpy_s"},
+
+	// --- string concat (字符串连接 → _s) ---
+	"strcat":  {category: "unsafe_string", replacement: "strcat_s"},
+	"wcscat":  {category: "unsafe_string", replacement: "wcscat_s"},
+	"strncat": {category: "unsafe_string", replacement: "strncat_s"},
+	"wcsncat": {category: "unsafe_string", replacement: "wcsncat_s"},
+	"bcmp":    {category: "unsafe_string", replacement: "memcmp"},
+
+	// --- formatted output (格式化输出 → _s) ---
+	"sprintf":   {category: "unsafe_format", replacement: "sprintf_s"},
+	"swprintf":  {category: "unsafe_format", replacement: "swprintf_s"},
+	"vsprintf":  {category: "unsafe_format", replacement: "vsprintf_s"},
+	"vswprintf": {category: "unsafe_format", replacement: "vswprintf_s"},
+	"snprintf":  {category: "unsafe_format", replacement: "snprintf_s"},
+	"vsnprintf": {category: "unsafe_format", replacement: "vsnprintf_s"},
+
+	// --- formatted input (格式化输入 → _s) ---
+	"scanf":    {category: "unsafe_scan", replacement: "scanf_s"},
+	"wscanf":   {category: "unsafe_scan", replacement: "wscanf_s"},
+	"vscanf":   {category: "unsafe_scan", replacement: "vscanf_s"},
+	"vwscanf":  {category: "unsafe_scan", replacement: "vwscanf_s"},
+	"fscanf":   {category: "unsafe_scan", replacement: "fscanf_s"},
+	"fwscanf":  {category: "unsafe_scan", replacement: "fwscanf_s"},
+	"vfscanf":  {category: "unsafe_scan", replacement: "vfscanf_s"},
+	"vfwscanf": {category: "unsafe_scan", replacement: "vfwscanf_s"},
+	"sscanf":   {category: "unsafe_scan", replacement: "sscanf_s"},
+	"swscanf":  {category: "unsafe_scan", replacement: "swscanf_s"},
+	"vsscanf":  {category: "unsafe_scan", replacement: "vsscanf_s"},
+	"vswscanf": {category: "unsafe_scan", replacement: "vswscanf_s"},
+	"gets":     {category: "unsafe_scan", replacement: "fgets"},
+
+	// --- unchecked string→number conversion (→ strtol family) ---
+	"atoi":  {category: "unchecked_conversion", replacement: "strtol"},
+	"atol":  {category: "unchecked_conversion", replacement: "strtol"},
+	"atoll": {category: "unchecked_conversion", replacement: "strtoll"},
+	"atof":  {category: "unchecked_conversion", replacement: "strtod"},
+
+	// --- allocator policy (禁止 realloc，用 malloc 代替) ---
+	"realloc": {category: "unsafe_alloc", replacement: "malloc + copy + free"},
+
+	// --- assert (suspected; the planner hands this to the AI) ---
+	"assert": {category: "assert_usage", replacement: "validate the caller input and return an error"},
+
+	// --- obsolete / insecure APIs (原有清单，保留) ---
+	"mktemp":        {category: "insecure_temp", replacement: "mkstemp"},
+	"tmpnam":        {category: "insecure_temp", replacement: "mkstemp"},
+	"tmpnam_r":      {category: "insecure_temp", replacement: "mkstemp"},
+	"gethostbyname": {category: "obsolete_api", replacement: "getaddrinfo"},
+	"gethostbyaddr": {category: "obsolete_api", replacement: "getnameinfo"},
+	"inet_addr":     {category: "obsolete_api", replacement: "inet_pton", constExempt: true},
 }
 
 func (d *DangerousFunctionDetector) Detect(ctx context.Context) (DetectResult, error) {
@@ -79,28 +169,54 @@ func (d *DangerousFunctionDetector) Detect(ctx context.Context) (DetectResult, e
 	stringMacros := buildGlobalStringMacros(ctx, d.store, d.parser)
 
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		byID := make(map[int64]*db.Function, len(funcs))
+		for _, f := range funcs {
+			byID[f.ID] = f
+		}
 		for _, call := range root.FindAll("call_expression") {
 			name := extractCallName(call)
-			if !d.banned[name] {
+			rule, ok := d.rules[name]
+			if !ok {
 				continue
 			}
-			// A param-sensitive ban (inet_addr, gethostbyname, ...) with a
-			// compile-time constant argument is safe — the injection risk
-			// requires a runtime-controlled value.
-			if paramSensitiveBanned[name] && hasConstantArg(call, globalConsts, stringMacros) {
+			// A nonMainOnly rule is safe inside the program entry point, where
+			// the process/thread exit IS the intended control flow.
+			if rule.nonMainOnly {
+				if fn := byID[enclosingFuncID(call, funcs)]; fn != nil && isEntryPoint(fn.Name) {
+					continue
+				}
+			}
+			// A const-exempt rule (inet_addr) with a compile-time constant
+			// argument is safe — the injection/INADDR_NONE risk requires a
+			// runtime-controlled value.
+			if rule.constExempt && hasConstantArg(call, globalConsts, stringMacros) {
 				continue
 			}
 			fnID := enclosingFuncID(call, funcs)
-			if emitEvent(ctx, d.store, d.logger, "DANGEROUS_FUNCTION", fnID, &db.Location{FileID: file.ID, Line: call.StartLine()}, map[string]string{
+			props := map[string]string{
 				"variable":   name,
-				"category":   "dangerous_function",
+				"category":   rule.category,
 				"expression": call.OriginalText(),
-			}) {
+			}
+			if rule.replacement != "" {
+				props["replacement"] = rule.replacement
+			}
+			if emitEvent(ctx, d.store, d.logger, "DANGEROUS_FUNCTION", fnID, &db.Location{FileID: file.ID, Line: call.StartLine()}, props) {
 				result.EventsCreated++
 			}
 		}
 	})
 	return result, err
+}
+
+// isEntryPoint reports whether a function name is a program entry point, where
+// a process/thread exit is legitimate (so a nonMainOnly rule must not fire).
+func isEntryPoint(name string) bool {
+	switch name {
+	case "main", "wmain", "WinMain", "wWinMain":
+		return true
+	}
+	return false
 }
 
 // buildGlobalStringMacros parses every file in the scan tree and collects the

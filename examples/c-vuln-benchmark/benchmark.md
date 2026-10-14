@@ -361,8 +361,9 @@ acquirer），任一回归会翻回 FN、recall 下降。
 
 | 文件 | 用例 | 形态 | expect |
 |------|------|------|--------|
-| `p11_dangerous_function.c` | DGF-01..03 | `gets` / `mktemp` / `gethostbyname` —— 名单命中即是缺陷（POLICY 检查） | finding |
-| `p11_dangerous_function.c` | DGF-04 | `fgets` + `getaddrinfo` + `mkstemp` + `memmove` 安全替代集群 | no_finding |
+| `p11_dangerous_function.c` | DGF-01..13 | `gets` / `mktemp` / `gethostbyname` + 分层策略：`memcpy` / `strcpy` / `sprintf` / `sscanf` / `atoi` / `abort` / `alloca` / `setjmp` / `longjmp` / `realloc` —— 名单命中即是缺陷（POLICY 检查，按 category 分层） | finding |
+| `p11_dangerous_function.c` | DGF-14 | `memset_s` + `memcpy_s` + `strcpy_s` + `snprintf_s` + `sprintf_s` + `fgets` + `getaddrinfo` + `mkstemp` 安全 `_s` 替代集群 | no_finding |
+| `p11_dangerous_function.c` | DGF-15 | `exit(0)` 位于 `main` 内 —— 程序入口允许进程退出 | no_finding |
 | `p11_format_string.c` | FS-01..03 | `printf(user_msg)` / `fprintf(log, fmt)` / `syslog(LOG_ERR, msg)` | finding |
 | `p11_format_string.c` | FS-04 | `printf("%s", user_msg)` —— 字面量格式串 | no_finding |
 | `parser.c` | FS-05 | 存量已检出缺陷纳入回归防线 | finding |
