@@ -125,6 +125,9 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 				if !uncheckedReturnAPIs[callee] && !passthrough[callee] && !apikb.IsAllocator(callee) {
 					continue
 				}
+				if apikb.IsNonNullReturning(callee) {
+					continue
+				}
 				if line, ok := localDeclLines[callee]; ok && uncheckedReturnAPIs[callee] && line < call.StartLine() {
 					continue
 				}
@@ -144,12 +147,11 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 				// pointer return type.
 				// A callee that is neither a built-in unchecked-return API nor a
 				// declared allocator is only a source because its NAME matches the
-				// allocator heuristic ("alloc" substring, "_dup", "_new") and it
-				// returns a pointer. That is a name guess, not a known failure
-				// contract: mark it so the planner hands it to the AI instead of
-				// auto-confirming it (a project's `idm_asset_record_dup` that copies
-				// into a caller buffer never fails, and confirming it is a false
-				// positive no AI can filter out).
+				// allocator heuristic (alloc/strdup/_new/_dup/...) and it returns a
+				// pointer. That is a name guess, not a known failure contract:
+				// contractKnown is false so the planner hands it to the AI (Hint
+				// contract@unknown) instead of auto-confirming. The AI must prove
+				// the callee returns a failure sentinel or dismiss.
 				contractKnown := uncheckedReturnAPIs[callee] || apikb.IsDeclaredAllocator(callee) || passthrough[callee]
 				if !uncheckedReturnAPIs[callee] && !apikb.IsDeclaredAllocator(callee) {
 					rt, ok := retTypes[callee]
@@ -856,7 +858,7 @@ func (d *UncheckedReturnDetector) funcSummaries(ctx context.Context) (*funcSumma
 	for changed {
 		changed = false
 		for name, callees := range returnedSource {
-			if passthrough[name] {
+			if passthrough[name] || apikb.IsNonNullReturning(name) {
 				continue
 			}
 			for callee := range callees {
