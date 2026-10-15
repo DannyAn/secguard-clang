@@ -39,6 +39,7 @@
 1. **may 数据流**（只在部分路径成立）：maybe-null、条件 free / 条件泄漏 / 条件 OOB。
    路径遍历的「外部可达」也属于这一类：可达性证明不了字符串里能出现 `../`。
 2. **名字 / 启发式**：函数名含 `alloc`/`open`/`join` 等、taint 未证明、格式串非字面量但未到 sink。
+   unchecked-return 的 `contract@unknown` 属于此类：callee 仅凭名字匹配，失败契约未证明。
 3. **参数 / 跨函数 / 宏**：外部函数契约未知、macro-context（宏语义不可见）、参数驱动的值。
 
 ## AI 的契约（写进 `agent-body.md`）
@@ -49,6 +50,10 @@
 - `suspected` / `possible`：先看 index 行的 Hint，不够才开 `## Code Context`；
   按 skill 规则 `confirm` 或 `dismiss`。
 - **macro-context 永不盲 confirm**：必须读 Code Context 搞清宏语义，看不清 → dismiss。
+- **unchecked-return `contract@unknown`**：Hint 标 `contract@unknown` 的候选，
+  其 callee 仅凭名字启发式匹配（`alloc` 子串 / `*_new` / `*_dup`），失败契约未证明。
+  AI 必须从 Code Context 证明 callee 返回失败哨兵（`NULL` / `-1` / error code），
+  否则 **dismiss**——「名字像 allocator」不是缺陷证据。
 - `dismissed` 必须引用证据（guard 行 / `_s` 安全调用 / 契约 / 读过的 file:line），
   否则被审计为「未研判即弃」。
 

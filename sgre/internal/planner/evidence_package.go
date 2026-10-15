@@ -28,6 +28,18 @@ type EvidenceItem struct {
 	// Signature is the enclosing function's declared signature (parameter names
 	// + types), so the AI can read the operand types without a source READ.
 	Signature string `json:"signature,omitempty"`
+	// Contract carries the callee failure-contract provenance for an
+	// unchecked-return candidate so the AI classifier can see — from the index
+	// row or the evidence file alone — whether "the return is unchecked" is by
+	// itself enough to confirm. "known": the pipeline holds a real contract (a
+	// standard unchecked-return API, a declared allocator, or a body-verified
+	// passthrough wrapper) — an unchecked call is a genuine CWE-252 defect.
+	// "unknown": the callee is an allocator by NAME only (a `*_new` / `*_dup`
+	// factory or copy helper, an `alloc` substring) whose failure behaviour is
+	// unproven; it may be pool-, stack- or caller-buffer-backed and never fail,
+	// so it must not be confirmed without evidence that the callee returns a
+	// failure sentinel. Empty for every other vuln type.
+	Contract string `json:"contract,omitempty"`
 }
 
 type TargetInfo struct {
@@ -104,6 +116,19 @@ func buildHint(c Candidate, spec *VulnTypeSpec) string {
 	var parts []string
 	if spec != nil {
 		switch spec.Name {
+		case "unchecked-return":
+			// The decisive fact for this type is the callee's failure contract.
+			// "contract@unknown" means the source is only the allocator NAME
+			// heuristic (a `*_new`/`*_dup` factory, an `alloc` substring): the
+			// "return is unchecked" observation alone is NOT a defect, so the
+			// classifier must prove the callee returns a failure sentinel or
+			// dismiss. "contract@known" is a real contract (standard API /
+			// declared allocator / body-verified passthrough).
+			if c.ContractKnown {
+				parts = append(parts, "contract@known")
+			} else {
+				parts = append(parts, "contract@unknown")
+			}
 		case "divide-by-zero":
 			if shape := divisorShape(c.VariableName); shape != "" {
 				parts = append(parts, "divisor@"+shape)
@@ -194,6 +219,13 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 		item.SuspicionLevel = c.SuspicionLevel
 	} else {
 		item.SuspicionLevel = spec.DefaultSuspicion
+	}
+	if spec.Name == "unchecked-return" {
+		if c.ContractKnown {
+			item.Contract = "known"
+		} else {
+			item.Contract = "unknown"
+		}
 	}
 	if c.GuardStrength == "weak" {
 		item.Evidence = append(item.Evidence, EvidenceFragment{

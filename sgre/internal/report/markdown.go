@@ -265,6 +265,15 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 				b.WriteString("\n")
 			}
 
+			if pkg.VulnerabilityType == "unchecked-return" && c.Contract != "" {
+				b.WriteString("## Failure Contract\n\n")
+				if c.Contract == "known" {
+					b.WriteString("- **Contract:** `known` — the callee is a standard unchecked-return API, a declared allocator, or a body-verified passthrough wrapper. An unchecked return is a genuine CWE-252 defect.\n\n")
+				} else {
+					b.WriteString("- **Contract:** `unknown` — the callee is an allocator by NAME only (an `alloc` substring, a `*_new`/`*_dup` factory). Its failure behaviour is unproven: it may be pool-, stack- or caller-buffer-backed and never fail. You must prove the callee returns a failure sentinel (NULL / -1 / error code) on the unchecked path, otherwise **dismiss**.\n\n")
+				}
+			}
+
 			b.WriteString("## Evidence\n\n")
 			for _, e := range c.Evidence {
 				label := e.Role
@@ -307,7 +316,10 @@ func (o *ScanOutput) writeTypeIndex(dir string, pkg *planner.PlanResult) error {
 		"> `maybe-null` = null certainty, `tainted` = injection source, `weak-guard` =\n" +
 		"> partial guard, `lhs@`/`rhs@`/`rhs-influenced`/`sink@` = integer-overflow\n" +
 		"> operand provenance, `guard@none` = no same-function guard, `macro-context` =\n" +
-		"> a macro is in play). Open the `Evidence`\n" +
+		"> a macro is in play, `contract@known`/`contract@unknown` = unchecked-return\n" +
+		"> callee failure contract — `unknown` means the source is a name heuristic\n" +
+		"> only and you must prove the callee returns a failure sentinel or dismiss).\n" +
+		"> Open the `Evidence`\n" +
 		"> file (and its `## Code Context`) when the hint is insufficient; read the\n" +
 		"> source (≤5 turns per type) before dismissing something you cannot settle.\n\n")
 	b.WriteString("| # | Function | File:Line | Variable | Suspicion | Hint | Source | Evidence |\n")
