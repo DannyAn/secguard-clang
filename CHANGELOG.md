@@ -4,7 +4,21 @@
 
 ## [Unreleased]
 
-## [0.9.5] - 2026-10-14
+## [0.9.5] - 2026-10-14（2026-10-15 重发）
+
+### null-deref 字段强转派生指针漏检修复（重发）
+
+修复 0.9.5 生产验证发现的系统性漏检（false negative）：`tree = (T*)(resp->group_data);
+tree[0]` 这类「字段读取 + 强转 → 局部指针」的空指针解引用未被 null-deref 检出。根因是
+字段/下标读取赋值 `q = p->f` 只传播字段位置 `p->f` 自身的空值源、不传播基指针 `p` 的
+空值源，导致派生指针 `tree` 无法继承参数 `resp` 的 caller-null 源，在 `nullable_source`
+过滤环节被淘汰。
+
+- `null_flow.go`：字段/下标读取复制新增 `copyFieldBase` 效应——`q = p->f` / `q = (T*)p->f`
+  同时把基指针的空值源传导给 `q`（字段位置自身空值之外），派生指针得以继承 caller-null 源；
+- 仅作用于 null-deref（`nonNullKills` 门控），taint / use-after-free / uninit 流不变；
+- 派生指针仍为 `suspected`、不 machine-confirm，判空守卫（`if (tree == NULL) return;`）正确抑制；
+- 回归用例 `zz_null_deref_field_cast_test.go`：未判空调用方 / 字面 NULL 调用方 / 不透明结构体 / 判空抑制。
 
 ### implicit-contract 隐式契约缺失检测（CWE-20，新增 vuln type）
 

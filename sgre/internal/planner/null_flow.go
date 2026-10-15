@@ -237,6 +237,14 @@ type nodeEffects struct {
 	gen  map[string]bool
 	kill map[string]bool
 	copy map[string]string
+	// copyFieldBase records, for a field/subscript-read copy (`q = p->f`,
+	// `q = p[i]`, `q = (T*)p->f`), the base pointer `p` whose null sources ALSO
+	// propagate to q. Reading a field of a possibly-null base yields a value of
+	// unknown nullness (the read is UB if p is null; the field value is
+	// independently nullable otherwise), so q inherits p's may-null fact in
+	// addition to the field location p->f's own. Null-deref only (populated when
+	// nonNullKills is set), so taint / freed-state / uninit flows are unchanged.
+	copyFieldBase map[string]string
 	// killBase records whole-variable reassignments (`p = ...`). Because the key
 	// "p->f" is the field f of whatever object p CURRENTLY points to, reassigning
 	// p to a different object invalidates every p->f / p[i] fact.
@@ -403,6 +411,23 @@ func (a *flowAnalyzer) collectNodeEffects(n *graph.StmtNode, genByLine, killByLi
 	// nonNullKills: the taint source filter reuses this engine with
 	// nonNullKills=false and must not lose copy taint through memcpy/strcpy.
 	addOutputParamKills(n.Stmt, e, nonNullKills, macroWrites, a.iterMacros, isValue)
+
+	// A field/subscript-read copy (`q = p->f`, `q = (T*)p->f`) propagates the
+	// base pointer's null sources to q in addition to the field location's own:
+	// a value read through a possibly-null base is itself possibly-null. This is
+	// the null-deref analogue of the field-sensitive whole-variable copy and is
+	// what lets `tree = (T*)(resp->group_data); tree[0]` inherit resp's
+	// caller-null source (the derived pointer would otherwise have no source).
+	if nonNullKills {
+		for lhs, rhs := range e.copy {
+			if base := fieldBaseName(rhs); base != "" {
+				if e.copyFieldBase == nil {
+					e.copyFieldBase = make(map[string]string)
+				}
+				e.copyFieldBase[lhs] = base
+			}
+		}
+	}
 
 	return e
 }
@@ -664,6 +689,14 @@ func transfer(in map[string]map[int]bool, e *nodeEffects, nodeID int) map[string
 	}
 	for lhs, rhs := range e.copy {
 		out[lhs] = cloneSet(in[rhs])
+	}
+	for lhs, base := range e.copyFieldBase {
+		if out[lhs] == nil {
+			out[lhs] = map[int]bool{}
+		}
+		for s := range in[base] {
+			out[lhs][s] = true
+		}
 	}
 	for v := range e.kill {
 		out[v] = map[int]bool{}
@@ -948,6 +981,25 @@ func rhsVarName(rhs parser.Node) string {
 			if name := rhsVarName(c); name != "" {
 				return name
 			}
+		}
+	}
+	return ""
+}
+
+// fieldBaseName returns the base variable of a field/subscript location key
+// (`p->f`, `p[i]`, `s.f`, `p->a->b`), or "" when the key is a bare variable or
+// not a field/subscript path. It is the identifier before the first member or
+// subscript access, so a chained path yields its top-level base. The base is
+// trimmed so a spaced `p -> f` still resolves to the parameter name `p`.
+func fieldBaseName(key string) string {
+	for i := 0; i < len(key); i++ {
+		switch key[i] {
+		case '-':
+			if i+1 < len(key) && key[i+1] == '>' {
+				return strings.TrimSpace(key[:i])
+			}
+		case '.', '[':
+			return strings.TrimSpace(key[:i])
 		}
 	}
 	return ""
