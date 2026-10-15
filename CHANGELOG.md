@@ -4,7 +4,27 @@
 
 ## [Unreleased]
 
-## [0.9.5] - 2026-10-14（2026-10-15 重发）
+## [0.9.5] - 2026-10-14（2026-10-15 二次重发）
+
+### unchecked-return 全局变量存工厂函数误报修复（二次重发）
+
+修复 0.9.5 生产冒烟发现的 unchecked-return 误报：`g_user_grp_id_mgr = idm_new_idmgr(&cfg)`
+这类「`_new` 工厂函数返回值存入全局变量」被误判为 CWE-252。根因有二：
+
+1. `apikb.IsAllocator` 的 `_new` 子串启发式把 `idm_new_idmgr` 这类对象工厂当成了分配器，
+   契约仅按名字猜测（`contract@unknown`）；
+2. 检测器的「返回值是否被检查」分析（`checkedVars`）是**函数作用域**的，而全局变量的
+   判空发生在别的函数的 use 处（或懒初始化守卫），检测器看不到，于是把「存入全局」误判为
+   「未检查」。
+
+修复：`unchecked_return.go` 对 `contract@unknown`（名字启发式）的分配器调用，当返回值存入
+**非局部存储**（全局/static/extern，判定为「既非本函数局部声明、也非参数」）时不再产事件。
+真正缺陷（解引用 NULL 全局）由 null-deref 在 use 处兜底；声明式分配器（malloc/strdup/VOS_*）
+存全局、启发式工厂存局部，均仍照旧报告。
+
+回归用例：`tc_unchecked_return_global_assign.c`（单文件）+ `unchecked_return_crossfile/`
+（跨文件复现 `idm_db_id.c` 引用 `idm_idmgr.h` 声明、`idm_idmgr.c` 实现的真实场景）+
+`unchecked_return_global_assign_test.go`（全局存工厂 0 事件 / 局部存工厂仍 lead / malloc 存全局仍报）。
 
 ### null-deref 字段强转派生指针漏检修复（重发）
 

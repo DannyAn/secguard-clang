@@ -86,6 +86,22 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 		inits := root.FindAll("init_declarator")
 		decls := root.FindAll("declaration")
 
+		// Function parameter names, keyed by the definition's start line. An
+		// assignment target that is neither a function-local declaration nor a
+		// parameter is a file-scope/global/external storage whose "checked"
+		// state lives at its use sites in OTHER functions — invisible to the
+		// function-scoped checked analysis below.
+		paramsByLine := make(map[int]map[string]bool)
+		for _, fnNode := range root.FindAll("function_definition") {
+			set := make(map[string]bool)
+			for _, p := range paramPositions(fnNode) {
+				if p != "" {
+					set[p] = true
+				}
+			}
+			paramsByLine[fnNode.StartLine()] = set
+		}
+
 		for _, f := range funcs {
 			checked := d.checkedVars(ifs, whiles, fors, dos, conds, switches, calls, f)
 			// A local object whose name matches a built-in unchecked-return API
@@ -180,6 +196,15 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 				// NULL check, not the wrapper. Flagging the wrapper is a false
 				// positive, so skip it.
 				if callResultReturned(call) {
+					continue
+				}
+				// A name-heuristic match (contract@unknown) whose result is stored to
+				// a non-local (global/static/external) variable is not an
+				// unchecked-return defect: the "check" for a global is cross-function
+				// and invisible to this function-scoped detector, and the contract is
+				// only a name guess. A genuine NULL global is caught by null-deref at
+				// its use site, not by unchecked-return at the store.
+				if !contractKnown && anyGlobalTarget(assignedVarsOfCall(call), localDeclLines, paramsByLine[f.StartLine]) {
 					continue
 				}
 				if vars := assignedVarsOfCall(call); len(vars) > 0 {
@@ -676,6 +701,46 @@ func assignedLocationText(lhs parser.Node) string {
 		return lhs.Text()
 	}
 	return assignedVariable(lhs)
+}
+
+// anyGlobalTarget reports whether any assigned location is NOT a function-local
+// storage — i.e. a file-scope global/static, an external, or a field/subscript
+// of one (`g_s.f`, `g_arr[i]`). A location is local when its base identifier is
+// a function-local declaration (locals) or a parameter (params).
+func anyGlobalTarget(vars []string, locals map[string]int, params map[string]bool) bool {
+	for _, v := range vars {
+		if v == "" {
+			continue
+		}
+		base := v
+		if b := locationBase(v); b != "" {
+			base = b
+		}
+		if _, isLocal := locals[base]; isLocal {
+			continue
+		}
+		if params[base] {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// locationBase returns the base variable of a field/subscript location
+// (`g_s.f`, `g_arr[i]` -> "g_s"/"g_arr"), or "" for a bare identifier.
+func locationBase(v string) string {
+	for i := 0; i < len(v); i++ {
+		switch v[i] {
+		case '-':
+			if i+1 < len(v) && v[i+1] == '>' {
+				return strings.TrimSpace(v[:i])
+			}
+		case '.', '[':
+			return strings.TrimSpace(v[:i])
+		}
+	}
+	return ""
 }
 
 // hasCompareOp reports whether a binary expression is an equality/relational
