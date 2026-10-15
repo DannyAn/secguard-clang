@@ -1489,6 +1489,16 @@
       "expect": "finding"
     },
     {
+      "id": "UC-04",
+      "category": "phase13_v074_fp_fixes",
+      "file": "src/p13_v074_fp_fixes.c",
+      "line": 190,
+      "code": "idm_new_idmgr(1) —— \"_new\" 名字启发式保留，产生 suspected 候选 (contract@unknown)，AI 须证明失败哨兵否则 dismiss",
+      "cwe": "CWE-252",
+      "detector": "unchecked_return",
+      "expect": "finding"
+    },
+    {
       "id": "P14-01",
       "category": "p14_dealloc_heuristic_fp",
       "file": "src/p14_dealloc_heuristic_fp.c",

@@ -170,3 +170,24 @@ void uc_passthrough_caller(void)
     void *p = passthrough_wrapper(64);
     (void)p;
 }
+/* ---------------------------------------------------------------------------
+ * UC-04 — object factory whose name ends in "_new" (name heuristic retained).
+ *
+ * idm_new_idmgr is matched by the allocator name heuristic (_new), so the call
+ * site is reported as a suspected lead with contract@unknown — the pipeline
+ * cannot prove a failure contract from the name alone. The AI must prove the
+ * callee returns a failure sentinel or dismiss. A never-null wrapper is excluded
+ * via [nullability.non_null_returns]. UC-03 (alloc verb) is the control: both
+ * produce leads, both contract@unknown.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    int v;
+} idm_obj;
+
+idm_obj *idm_new_idmgr(int n);
+
+void uc_factory_caller(void)
+{
+    idm_obj *p = idm_new_idmgr(1);
+    (void)p;
+}
