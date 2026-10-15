@@ -184,4 +184,35 @@ type Candidate struct {
 	Missing string `json:"missing,omitempty"`
 	// EvidenceKind is the nullable-field evidence source ("self" / "caller").
 	EvidenceKind string `json:"evidence_kind,omitempty"`
+	// FreeLine is the free-site line for a use-after-free candidate (where the
+	// variable was freed before the use at Line).
+	FreeLine int `json:"free_line,omitempty"`
+	// FirstFree/SecondFree are the two free-site lines for a double-free
+	// candidate.
+	FirstFree  int `json:"first_free,omitempty"`
+	SecondFree int `json:"second_free,omitempty"`
+	// DefiniteLeak is true when the leak detector proved no release/escape/
+	// transfer is reachable on any path (memory-leak / resource-leak).
+	DefiniteLeak bool `json:"definite_leak,omitempty"`
+	// ThreadFunctions is the comma-separated list of pthread thread function
+	// names for a shared_data_race candidate (race-condition).
+	ThreadFunctions string `json:"thread_functions,omitempty"`
+	// ThreadInstances is the number of distinct thread instances for a
+	// shared_data_race candidate.
+	ThreadInstances int `json:"thread_instances,omitempty"`
+	// WriteLine is the line of the conflicting write for a shared_data_race
+	// candidate.
+	WriteLine int `json:"write_line,omitempty"`
+	// CopySize/DstCapacity are the copy-size expression and destination capacity
+	// for a bounded-copy or secure-copy buffer-overflow candidate.
+	CopySize    string `json:"copy_size,omitempty"`
+	DstCapacity string `json:"dst_capacity,omitempty"`
+	// SizeArgument is the _s destination-capacity argument for a secure-copy
+	// buffer-overflow candidate.
+	SizeArgument string `json:"size_argument,omitempty"`
+	// MutexA/MutexB are the two locks in a lock-order inversion (deadlock).
+	// ReverseFunc is the function that acquires them in the opposite order.
+	MutexA      string `json:"mutex_a,omitempty"`
+	MutexB      string `json:"mutex_b,omitempty"`
+	ReverseFunc string `json:"reverse_func,omitempty"`
 }

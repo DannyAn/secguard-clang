@@ -85,6 +85,22 @@ type eventProps struct {
 	// ThreadFunctions is the comma-separated list of pthread thread function
 	// names a shared_data_race event reports (race-condition detector).
 	ThreadFunctions string `json:"thread_functions"`
+	// ThreadInstances is the number of distinct pthread thread instances a
+	// shared_data_race event reports (race-condition detector).
+	ThreadInstances int `json:"thread_instances"`
+	// WriteLine is the line of the conflicting write in a shared_data_race
+	// event (race-condition detector).
+	WriteLine int `json:"write_line"`
+	// FirstFree/SecondFree are the two free-site lines a double-free event
+	// reports (double-free detector).
+	FirstFree  int `json:"first_free"`
+	SecondFree int `json:"second_free"`
+	// CopySize/DstCapacity are the copy-size expression and destination capacity
+	// a bounded-copy or secure-copy BUFFER_ACCESS event carries (buffer-overflow
+	// detector). SizeArgument is the _s destination-capacity argument.
+	CopySize     string `json:"copy_size"`
+	DstCapacity  string `json:"dst_capacity"`
+	SizeArgument string `json:"size_argument"`
 	// Expected/Actual/Cast are the argument-type mismatch evidence: the callee's
 	// declared parameter type (e.g. "uint *"), the argument's actual pointer type
 	// before the cast (e.g. "bool *"), and the explicit cast target type.

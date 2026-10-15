@@ -393,10 +393,29 @@ func init() {
 			"format_overflow_var":         "suspected",
 		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
-			return []EvidenceFragment{
+			frags := []EvidenceFragment{
 				{Type: "buffer_access", Role: "sink", Detail: fmt.Sprintf("buffer access in function %s at line %d", c.FunctionName, c.Line)},
-				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
 			}
+			if c.APIName != "" {
+				frags = append(frags, EvidenceFragment{Type: "api", Role: "sink", Detail: fmt.Sprintf("unsafe API: %s", c.APIName)})
+			}
+			if c.Array != "" {
+				frags = append(frags, EvidenceFragment{Type: "buffer", Role: "sink", Detail: fmt.Sprintf("buffer: %s (capacity: %d elements)", c.Array, c.Size)})
+			}
+			if c.Index != "" {
+				frags = append(frags, EvidenceFragment{Type: "index", Role: "condition", Detail: fmt.Sprintf("access index/copy size: %s", c.Index)})
+			}
+			if c.CopySize != "" {
+				frags = append(frags, EvidenceFragment{Type: "copy_size", Role: "condition", Detail: fmt.Sprintf("copy size: %s", c.CopySize)})
+			}
+			if c.DstCapacity != "" {
+				frags = append(frags, EvidenceFragment{Type: "dst_capacity", Role: "condition", Detail: fmt.Sprintf("destination capacity: %s", c.DstCapacity)})
+			}
+			if c.SizeArgument != "" {
+				frags = append(frags, EvidenceFragment{Type: "size_argument", Role: "condition", Detail: fmt.Sprintf("_s size argument: %s", c.SizeArgument)})
+			}
+			frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
+			return frags
 		},
 		ReviewAssumptions: []string{
 			"A write past the end of a buffer is a real defect",
@@ -417,10 +436,16 @@ func init() {
 		DefaultSuspicion: "suspected",
 		FilterChain:      "memory-leak",
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
-			return []EvidenceFragment{
-				{Type: "memory_alloc", Role: "source", Detail: fmt.Sprintf("allocation in function %s at line %d", c.FunctionName, c.Line)},
-				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
+			frags := []EvidenceFragment{
+				{Type: "memory_alloc", Role: "source", Detail: fmt.Sprintf("allocation of %s in function %s at line %d", c.VariableName, c.FunctionName, c.Line)},
 			}
+			if c.DefiniteLeak {
+				frags = append(frags, EvidenceFragment{Type: "definite", Role: "condition", Detail: "no free, escape, or ownership transfer is reachable on any path from the allocation to function exit"})
+			} else {
+				frags = append(frags, EvidenceFragment{Type: "conditional", Role: "condition", Detail: "released/escaped/transferred on some paths but potentially leaked on others — trace each error/early-return path for a missing free"})
+			}
+			frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
+			return frags
 		},
 	})
 
@@ -452,11 +477,11 @@ func init() {
 		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{
-				{Type: "unsafe_call", Role: "sink", Detail: fmt.Sprintf("unsafe function call in %s at line %d", c.FunctionName, c.Line)},
+				{Type: "unsafe_call", Role: "sink", Detail: fmt.Sprintf("unsafe function call %s in %s at line %d", c.APIName, c.FunctionName, c.Line)},
 				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
 			}
 			if c.HasTaintSource {
-				frags = append(frags, EvidenceFragment{Type: "taint_source", Role: "source", Detail: fmt.Sprintf("user-controlled value reaches the sink at line %d", c.Line)})
+				frags = append(frags, EvidenceFragment{Type: "taint_source", Role: "source", Detail: fmt.Sprintf("user-controlled value (from getenv/scanf/recv/argv or similar taint source — identify the specific source in Code Context) reaches the sink at line %d", c.Line)})
 			}
 			return frags
 		},
@@ -470,10 +495,16 @@ func init() {
 		DefaultSuspicion: "suspected",
 		FilterChain:      "resource-leak",
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
-			return []EvidenceFragment{
-				{Type: "resource_acquire", Role: "source", Detail: fmt.Sprintf("resource acquired in function %s at line %d", c.FunctionName, c.Line)},
-				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
+			frags := []EvidenceFragment{
+				{Type: "resource_acquire", Role: "source", Detail: fmt.Sprintf("resource %s acquired in function %s at line %d", c.VariableName, c.FunctionName, c.Line)},
 			}
+			if c.DefiniteLeak {
+				frags = append(frags, EvidenceFragment{Type: "definite", Role: "condition", Detail: "no release is reachable on any path from the acquire to function exit"})
+			} else {
+				frags = append(frags, EvidenceFragment{Type: "conditional", Role: "condition", Detail: "released on some paths but potentially leaked on others — trace each error/early-return path for a missing close/release"})
+			}
+			frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
+			return frags
 		},
 	})
 
@@ -519,10 +550,15 @@ func init() {
 		// One freed variable used at many sites is one defect, not one per use.
 		ConvergeByVariable: true,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
-			return []EvidenceFragment{
-				{Type: "use_after_free", Role: "sink", Detail: fmt.Sprintf("variable freed then used in function %s at line %d", c.FunctionName, c.Line)},
-				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
+			frags := []EvidenceFragment{
+				{Type: "use_after_free", Role: "sink", Detail: fmt.Sprintf("variable %s freed at line %d then used at line %d in function %s", c.VariableName, c.FreeLine, c.Line, c.FunctionName)},
 			}
+			if c.FreeLine > 0 {
+				frags = append(frags, EvidenceFragment{Type: "free_site", Role: "source", Detail: fmt.Sprintf("free(%s) at line %d", c.VariableName, c.FreeLine)})
+			}
+			frags = append(frags, EvidenceFragment{Type: "use_site", Role: "sink", Detail: fmt.Sprintf("use of %s at line %d", c.VariableName, c.Line)})
+			frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
+			return frags
 		},
 		ReviewAssumptions: []string{
 			"Use of a pointer after it has been freed is a real defect",
@@ -545,10 +581,19 @@ func init() {
 		// One variable freed twice is one defect, not one per (first,second) pair.
 		ConvergeByVariable: true,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
-			return []EvidenceFragment{
-				{Type: "double_free", Role: "sink", Detail: fmt.Sprintf("variable freed twice in function %s at line %d", c.FunctionName, c.Line)},
-				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
+			frags := []EvidenceFragment{
+				{Type: "double_free", Role: "sink", Detail: fmt.Sprintf("variable %s freed twice in function %s", c.VariableName, c.FunctionName)},
 			}
+			if c.FirstFree > 0 {
+				frags = append(frags, EvidenceFragment{Type: "first_free", Role: "source", Detail: fmt.Sprintf("first free(%s) at line %d", c.VariableName, c.FirstFree)})
+			}
+			secondFree := c.SecondFree
+			if secondFree == 0 {
+				secondFree = c.Line
+			}
+			frags = append(frags, EvidenceFragment{Type: "second_free", Role: "sink", Detail: fmt.Sprintf("second free(%s) at line %d", c.VariableName, secondFree)})
+			frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
+			return frags
 		},
 	})
 
@@ -562,10 +607,13 @@ func init() {
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{
 				{Type: "format_string", Role: "sink", Detail: fmt.Sprintf("printf-family called with non-literal format in %s at line %d", c.FunctionName, c.Line)},
-				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
 			}
+			if c.APIName != "" {
+				frags = append(frags, EvidenceFragment{Type: "api", Role: "sink", Detail: fmt.Sprintf("format function: %s", c.APIName)})
+			}
+			frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
 			if c.HasTaintSource {
-				frags = append(frags, EvidenceFragment{Type: "taint_source", Role: "source", Detail: fmt.Sprintf("user-controlled value reaches the format argument at line %d", c.Line)})
+				frags = append(frags, EvidenceFragment{Type: "taint_source", Role: "source", Detail: fmt.Sprintf("user-controlled value (from getenv/scanf/recv/argv or similar taint source — identify the specific source in Code Context) reaches the format argument at line %d", c.Line)})
 			}
 			return frags
 		},
@@ -617,10 +665,20 @@ func init() {
 		FilterChain:      "race-condition",
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			if c.Category == "shared_data_race" {
-				return []EvidenceFragment{
-					{Type: "data_race", Role: "sink", Detail: fmt.Sprintf("unsynchronized shared-variable access in %s at line %d", c.FunctionName, c.Line)},
-					{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
+				frags := []EvidenceFragment{
+					{Type: "data_race", Role: "sink", Detail: fmt.Sprintf("unsynchronized shared-variable access to %s in %s at line %d", c.VariableName, c.FunctionName, c.Line)},
 				}
+				if c.ThreadFunctions != "" {
+					frags = append(frags, EvidenceFragment{Type: "thread_functions", Role: "condition", Detail: fmt.Sprintf("accessed by thread functions: %s", c.ThreadFunctions)})
+				}
+				if c.ThreadInstances > 0 {
+					frags = append(frags, EvidenceFragment{Type: "thread_instances", Role: "condition", Detail: fmt.Sprintf("%d distinct thread instances", c.ThreadInstances)})
+				}
+				if c.WriteLine > 0 {
+					frags = append(frags, EvidenceFragment{Type: "write_line", Role: "source", Detail: fmt.Sprintf("conflicting write at line %d", c.WriteLine)})
+				}
+				frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
+				return frags
 			}
 			return []EvidenceFragment{
 				{Type: "toctou", Role: "sink", Detail: fmt.Sprintf("time-of-check-time-of-use in %s at line %d", c.FunctionName, c.Line)},
@@ -645,7 +703,8 @@ func init() {
 		// false positive the skill's rules can never reach.
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
-				{Type: "hardcoded_secret", Role: "sink", Detail: fmt.Sprintf("hardcoded secret in %s at line %d", c.FunctionName, c.Line)},
+				{Type: "hardcoded_secret", Role: "sink", Detail: fmt.Sprintf("hardcoded secret candidate in %s at line %d", c.FunctionName, c.Line)},
+				{Type: "match_kind", Role: "condition", Detail: "name-only match: the variable/field name is secret-bearing but the value is low-entropy — judge whether it is a real credential, a placeholder, or a test value (value-proven secrets are auto-confirmed and never reach this stage)"},
 			}
 		},
 	})
@@ -658,9 +717,16 @@ func init() {
 		DefaultSuspicion: "suspected",
 		FilterChain:      "deadlock",
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
-			return []EvidenceFragment{
+			frags := []EvidenceFragment{
 				{Type: "deadlock", Role: "sink", Detail: fmt.Sprintf("lock-order inversion (potential deadlock) in %s at line %d", c.FunctionName, c.Line)},
 			}
+			if c.MutexA != "" && c.MutexB != "" {
+				frags = append(frags, EvidenceFragment{Type: "lock_pair", Role: "condition", Detail: fmt.Sprintf("this function locks %s then %s", c.MutexA, c.MutexB)})
+			}
+			if c.ReverseFunc != "" {
+				frags = append(frags, EvidenceFragment{Type: "reverse_order", Role: "source", Detail: fmt.Sprintf("function %s acquires the same locks in the opposite order", c.ReverseFunc)})
+			}
+			return frags
 		},
 	})
 
@@ -765,7 +831,7 @@ func init() {
 				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
 			}
 			if c.HasTaintSource {
-				frags = append(frags, EvidenceFragment{Type: "taint_source", Role: "source", Detail: fmt.Sprintf("user-controlled value reaches the path argument at line %d", c.Line)})
+				frags = append(frags, EvidenceFragment{Type: "taint_source", Role: "source", Detail: fmt.Sprintf("user-controlled value (from getenv/scanf/recv/argv or similar taint source — identify the specific source in Code Context) reaches the path argument at line %d", c.Line)})
 			}
 			return frags
 		},

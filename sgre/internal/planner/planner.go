@@ -423,6 +423,19 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			UseLine:           props.UseLine,
 			Missing:           props.Missing,
 			EvidenceKind:      props.EvidenceKind,
+			FreeLine:          props.FreeLine,
+			FirstFree:         props.FirstFree,
+			SecondFree:        props.SecondFree,
+			DefiniteLeak:      props.Definite == "true",
+			ThreadFunctions:   props.ThreadFunctions,
+			ThreadInstances:   props.ThreadInstances,
+			WriteLine:         props.WriteLine,
+			CopySize:          props.CopySize,
+			DstCapacity:       props.DstCapacity,
+			SizeArgument:      props.SizeArgument,
+			MutexA:            props.MutexA,
+			MutexB:            props.MutexB,
+			ReverseFunc:       props.ReverseFunc,
 		})
 	}
 
