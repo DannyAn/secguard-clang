@@ -31,11 +31,13 @@ that another caller violates. These surface as `suspected`, never auto-confirmed
 
 ### Evidence Pattern
 A null-deref candidate has:
+- **definite_null**: The variable is provably NULL — assigned NULL (or a null constant) and dereferenced with no intervening reassignment. The strongest evidence tier; the pipeline has already auto-confirmed these, so a candidate reaching you with this fragment needs verification, not re-derivation
 - **nullable_source**: Variable has a NULL_VALUE origin (malloc return, function return NULL, external call, or a free+null macro `SAFE_FREE(p)` that sets `p = NULL`)
 - **caller_null**: A `void *`/`T *` parameter is nullable because a caller passes it a value it has not proven non-null (`caller c passes NULL`, `caller c passes x (not proven non-null)`)
 - **call_path**: The function is reachable from an entry point
 - **data_flow**: The NULL value propagates to the dereference location
-- **guard**: A NULL_GUARD event may or may not exist
+- **weak_guard**: A NULL guard exists but is insufficient (scope misses the deref, or only partially protects) — the pipeline kept the candidate because the guard does NOT dominate the dereference; verify the guard's scope before dismissing
+- **dereference**: Bare fallback fragment — only the deref itself is known (no null source, no flow proof). Judge reachability and nullability yourself from the source
 
 ### Classification Rules
 

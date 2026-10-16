@@ -21,6 +21,7 @@ metadata:
 #### Name-only match — the AI decides
 - **HARDCODED_SECRET event** with category `hardcoded_secret` and NO `value_proven` marker
 - Only the variable/field name is secret-bearing (`password`, `passwd`, `pwd`, `secret`, `api_key`, `apikey`, `access_key`, `private_key`, `token`, `credential`, `auth_key`, `client_secret`, `\bkey\b`, `\bpin\b`, `\bsalt\b`, `\bhash\b`) while the value is low-entropy
+- A `secret_value` fragment shows the literal MASKED (first 4 chars + total length, e.g. `"REPL… (11 chars)"`): judge placeholder (`REPL…`/`CHANG…`/`xxxx…`) vs test value (`test…`) vs real weak credential (`admi…`) from the prefix and length; the full literal is withheld from the evidence file, but it is in the ±8 Code Context window of the candidate line
 - This is where placeholders and test credentials land — judge each one
 
 ### Safe Patterns (P0 Exclusion)

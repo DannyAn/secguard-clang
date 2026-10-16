@@ -485,6 +485,7 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			MutexA:            props.MutexA,
 			MutexB:            props.MutexB,
 			ReverseFunc:       props.ReverseFunc,
+			SecretValue:       props.Value,
 		})
 	}
 

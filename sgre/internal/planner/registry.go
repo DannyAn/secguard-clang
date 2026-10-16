@@ -702,10 +702,18 @@ func init() {
 		// and the AI judges it, instead of the pipeline emitting a confirmed
 		// false positive the skill's rules can never reach.
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
-			return []EvidenceFragment{
+			frags := []EvidenceFragment{
 				{Type: "hardcoded_secret", Role: "sink", Detail: fmt.Sprintf("hardcoded secret candidate in %s at line %d", c.FunctionName, c.Line)},
 				{Type: "match_kind", Role: "condition", Detail: "name-only match: the variable/field name is secret-bearing but the value is low-entropy — judge whether it is a real credential, a placeholder, or a test value (value-proven secrets are auto-confirmed and never reach this stage)"},
 			}
+			if c.SecretValue != "" {
+				frags = append(frags, EvidenceFragment{
+					Type:   "secret_value",
+					Role:   "source",
+					Detail: fmt.Sprintf("literal value: %s — judge from the prefix and length whether it is a placeholder (REPLACE…), a test value (test…), or a real weak credential; the full literal is withheld from the evidence file", maskSecret(c.SecretValue)),
+				})
+			}
+			return frags
 		},
 	})
 
@@ -1074,6 +1082,21 @@ func containsString(s []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// maskSecret renders a hardcoded-secret literal for the evidence file without
+// echoing the full value: a report file must not become the leak it reports.
+// The first 4 characters plus the total length are enough for the classifier
+// to separate a placeholder (REPL…), a test value (test…), a URL credential
+// (mysq…) from a real credential — the value-proven (high-entropy) branch is
+// auto-confirmed and never reaches the AI, but the mask is applied uniformly
+// so a confirmed finding's markdown cannot echo the secret either.
+func maskSecret(value string) string {
+	n := len(value)
+	if n <= 4 {
+		return fmt.Sprintf("\"%s\" (%d chars)", strings.Repeat("*", n), n)
+	}
+	return fmt.Sprintf("\"%s…\" (%d chars)", value[:4], n)
 }
 
 // nullableSourceDetail describes where a possibly-null value comes from without

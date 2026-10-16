@@ -738,7 +738,7 @@ func FixSuggestion(vulnType, cwe string, c planner.EvidenceItem) string {
 				"```c\n"+
 				"// BAD:  const char *password = \"admin123\";\n"+
 				"// GOOD: read from env var, vault, or config file with restricted perms\n"+
-				"const char *password = getenv(\"APP_PASSWORD\"));\n"+
+				"const char *password = getenv(\"APP_PASSWORD\");\n"+
 				"if (!password) { return -1; }\n"+
 				"```\n\n"+
 				"Store secrets in a secrets manager (HashiCorp Vault, cloud KMS) or a\n"+

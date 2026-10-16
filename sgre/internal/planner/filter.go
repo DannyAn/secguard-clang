@@ -204,6 +204,12 @@ type Candidate struct {
 	// divisor the filter could not settle (some caller passes a non-constant),
 	// e.g. "3 direct call sites, 2 pass non-zero constants".
 	DivisorCallers string `json:"divisor_callers,omitempty"`
+	// SecretValue is the hardcoded-secret literal's value as the detector
+	// extracted it. The evidence builder renders it MASKED (prefix + length,
+	// never the full literal) — a report file must not become the leak it
+	// reports, and the name-only candidates that reach the AI are judged from
+	// the value's prefix/length shape (placeholder vs test vs credential).
+	SecretValue string `json:"secret_value,omitempty"`
 	// CountField is the count/length field gating the pointer use
 	// (e.g. "resp->group_num"), empty when no count gates the deref.
 	CountField string `json:"count_field,omitempty"`
