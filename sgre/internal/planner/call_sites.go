@@ -89,3 +89,23 @@ func (r *callSiteResolver) paramVerdict(name string, fileID int64, index int, st
 	}
 	return zeroReachable, allNonZero
 }
+
+// paramSummary reports, for a parameter the verdict could not settle (some
+// caller passes a non-constant), how many direct call sites exist and how many
+// of them pass a provably non-zero constant. That middle-ground fact — "2 of 3
+// callers pass non-zero constants, the third passes a variable" — is what the
+// classifier needs to judge the one unchecked caller instead of re-deriving
+// the call graph from the source.
+func (r *callSiteResolver) paramSummary(name string, fileID int64, index int, static bool) (sites, nonZero int) {
+	for _, site := range r.callsByName[name] {
+		if static && site.fileID != fileID {
+			continue
+		}
+		sites++
+		args := site.args
+		if index < len(args) && parser.NonZeroConstantValue(strings.TrimSpace(args[index])) {
+			nonZero++
+		}
+	}
+	return sites, nonZero
+}

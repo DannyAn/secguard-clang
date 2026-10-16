@@ -123,6 +123,11 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 			// `d = 0; x / d` — the interval analysis proves the divisor is
 			// exactly zero at the division, a certain divide-by-zero.
 			c.SuspicionLevel = "confirmed"
+		} else if !r.isTop() {
+			// The engine has a tighter-than-top fact but cannot exclude 0
+			// (e.g. `d ∈ [0, 5]`). Hand the interval to the classifier —
+			// whether 0 is reachable within it is exactly what it must judge.
+			c.DivisorInterval = r.String()
 		}
 		kept = append(kept, c)
 	}
@@ -178,6 +183,12 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 			dropped = dismiss(dropped, c, f.Name(),
 				fmt.Sprintf("divisor %s is a parameter every direct caller passes non-zero at line %d", divisor, c.Line))
 		default:
+			// Unsettled: some caller passes a non-constant. Record the
+			// middle-ground verdict so the classifier can judge the unchecked
+			// callers by name instead of re-deriving the call graph.
+			if n, nz := sites.paramSummary(fn.Name, fn.FileID, idx, fn.IsStatic); n > 0 {
+				c.DivisorCallers = fmt.Sprintf("%d direct call sites, %d pass non-zero constants", n, nz)
+			}
 			finalKept = append(finalKept, c)
 		}
 	}

@@ -365,3 +365,42 @@ func TestTypeForCWE_InjectionCategoryCWEs(t *testing.T) {
 		}
 	}
 }
+
+func TestDivideByZero_EvidenceCarriesIntervalAndCallers(t *testing.T) {
+	spec, err := GetVulnTypeSpec("divide-by-zero")
+	if err != nil {
+		t.Fatal(err)
+	}
+	frags := spec.BuildEvidence(Candidate{
+		FunctionName:    "calc",
+		VariableName:    "d",
+		Line:            12,
+		DivisorInterval: "[0, +inf)",
+		DivisorCallers:  "3 direct call sites, 2 pass non-zero constants",
+	})
+	var hasInterval, hasCallers bool
+	for _, e := range frags {
+		switch e.Type {
+		case "divisor_interval":
+			hasInterval = true
+			if e.Detail != "divisor d interval is [0, +inf) (includes 0)" {
+				t.Errorf("divisor_interval detail = %q, want interval text", e.Detail)
+			}
+		case "param_flow":
+			hasCallers = true
+			if e.Detail != "divisor d is a parameter: 3 direct call sites, 2 pass non-zero constants" {
+				t.Errorf("param_flow detail = %q, want caller census", e.Detail)
+			}
+		}
+	}
+	if !hasInterval || !hasCallers {
+		t.Errorf("divide-by-zero evidence should carry interval + callers, got interval=%v callers=%v (%+v)", hasInterval, hasCallers, frags)
+	}
+
+	bare := spec.BuildEvidence(Candidate{FunctionName: "f", VariableName: "d", Line: 5})
+	for _, e := range bare {
+		if e.Type == "divisor_interval" || e.Type == "param_flow" {
+			t.Errorf("candidate without interval/caller facts must not render them, got %+v", e)
+		}
+	}
+}

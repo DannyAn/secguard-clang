@@ -492,3 +492,121 @@ int definite_zero(void) {
 		}
 	}
 }
+
+// TestRangeFilter_DivisorIntervalCarried pins E-04: when the interval engine
+// computes a tighter-than-top interval that still contains 0 (if/else both
+// branches assign: d ∈ [0, 1], the else path is a REAL divide-by-zero), the
+// surviving candidate must CARRY the interval text instead of the AI
+// re-deriving it from the ±8 window. A top interval (param-derived) and a
+// definite-zero carry nothing.
+func TestRangeFilter_DivisorIntervalCarried(t *testing.T) {
+	src := `int interval_case(int c) {
+    int d;
+    if (c) {
+        d = 1;
+    } else {
+        d = 0;
+    }
+    return 100 / d;
+}
+
+int top_case(int x) {
+    int d = x;
+    return 10 / d;
+}
+
+int zero_case(void) {
+    int d = 0;
+    return 10 / d;
+}
+`
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dbz_iv.c")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "divide-by-zero")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	iv, top, zero := "", "", ""
+	for _, c := range result.Candidates {
+		switch c.Target.Function {
+		case "interval_case":
+			iv = c.DivisorInterval
+		case "top_case":
+			top = c.DivisorInterval
+		case "zero_case":
+			zero = c.DivisorInterval
+		}
+	}
+	if iv != "[0, 1]" {
+		t.Errorf("interval_case DivisorInterval = %q, want [0, 1]", iv)
+	}
+	if top != "" {
+		t.Errorf("top_case (param-derived top interval) DivisorInterval = %q, want empty", top)
+	}
+	if zero != "" {
+		t.Errorf("zero_case (definite-zero) DivisorInterval = %q, want empty", zero)
+	}
+}
+
+// TestRangeFilter_DivisorCallersCarried pins the param middle-ground handoff:
+// when the call-site verdict cannot settle a parameter divisor (some caller
+// passes a variable), the candidate carries the caller census so the
+// classifier judges the unchecked sites instead of re-deriving the call graph.
+func TestRangeFilter_DivisorCallersCarried(t *testing.T) {
+	src := `static int ratio(int d) {
+    return 100 / d;
+}
+
+int probe(int seed) {
+    int v = seed + 1;
+    return ratio(3) + ratio(v);
+}
+`
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dbz_pc.c")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "divide-by-zero")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	for _, c := range result.Candidates {
+		if c.Target.Function == "ratio" {
+			if c.DivisorCallers != "2 direct call sites, 1 pass non-zero constants" {
+				t.Errorf("ratio DivisorCallers = %q, want caller census", c.DivisorCallers)
+			}
+			return
+		}
+	}
+	t.Fatal("ratio candidate not found")
+}

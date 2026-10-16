@@ -47,3 +47,25 @@ func TestAnalyzeRanges_TerminatesOnLoop(t *testing.T) {
 		t.Fatal("analyzeRanges did not terminate on a loop counter (widening regression)")
 	}
 }
+
+func TestInterval_StringAndTop(t *testing.T) {
+	cases := []struct {
+		iv   interval
+		text string
+		top  bool
+	}{
+		{topInterval(), "[-inf, +inf]", true},
+		{constInterval(0), "[0, 0]", false},
+		{interval{lo: 0, hi: rMax}, "[0, +inf]", false},
+		{interval{lo: rMin, hi: -1}, "[-inf, -1]", false},
+		{interval{lo: -3, hi: 7}, "[-3, 7]", false},
+	}
+	for _, c := range cases {
+		if got := c.iv.String(); got != c.text {
+			t.Errorf("interval(%d,%d).String() = %q, want %q", c.iv.lo, c.iv.hi, got, c.text)
+		}
+		if got := c.iv.isTop(); got != c.top {
+			t.Errorf("interval(%d,%d).isTop() = %v, want %v", c.iv.lo, c.iv.hi, got, c.top)
+		}
+	}
+}

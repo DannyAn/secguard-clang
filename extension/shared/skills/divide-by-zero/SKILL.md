@@ -14,6 +14,8 @@ metadata:
 ### Evidence Pattern
 A divide-by-zero candidate has:
 - **divide_by_zero**: A `/` or `%` binary expression whose right operand is a variable, call result, or compound expression (not a non-zero literal, not `sizeof`)
+- **divisor_interval**: (when present) the range engine's own conclusion for the divisor — a tighter-than-top interval that still includes 0, e.g. `divisor d interval is [0, 1] (includes 0)`. Zero is reachable inside that interval; the classifier judges whether a reaching path is real
+- **param_flow**: (when present) the call-site census for a parameter divisor the pipeline could not settle, e.g. `divisor d is a parameter: 2 direct call sites, 1 pass non-zero constants`. Judge the callers that pass a non-constant
 - **call_path**: The function is reachable from an entry point
 
 ### Detection Logic

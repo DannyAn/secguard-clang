@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -54,6 +55,26 @@ func (r interval) isNonZero() bool {
 // divide-by-zero, not merely a possible one).
 func (r interval) isDefinitelyZero() bool {
 	return r.lo == 0 && r.hi == 0
+}
+
+// String renders the interval with ±inf for the unbounded ends, so a
+// divide-by-zero candidate can carry the engine's conclusion ("d ∈ [1, +inf)"
+// vs "d ∈ [0, +inf)") into its evidence instead of the AI re-deriving it.
+func (r interval) String() string {
+	lo, hi := fmt.Sprintf("%d", r.lo), fmt.Sprintf("%d", r.hi)
+	if r.lo == rMin {
+		lo = "-inf"
+	}
+	if r.hi == rMax {
+		hi = "+inf"
+	}
+	return fmt.Sprintf("[%s, %s]", lo, hi)
+}
+
+// isTop reports whether the interval is the unbounded lattice top, i.e. the
+// engine knows nothing beyond "any int64" — not worth reporting.
+func (r interval) isTop() bool {
+	return r.lo == rMin && r.hi == rMax
 }
 
 // shift adds delta to both bounds, saturating at rMin/rMax so a loop counter

@@ -190,6 +190,15 @@ type Candidate struct {
 	// Subject is the struct-pointer parameter the implicit-contract candidate
 	// is about (e.g. "resp" for resp->group_data).
 	Subject string `json:"subject,omitempty"`
+	// DivisorInterval renders the range engine's conclusion for a
+	// divide-by-zero divisor that survives the filter (the interval contains 0
+	// but is not the unbounded top), e.g. "[0, +inf)" or "[-3, 7]". An empty
+	// value means the engine had no tighter-than-top fact.
+	DivisorInterval string `json:"divisor_interval,omitempty"`
+	// DivisorCallers summarizes the direct call-site verdict for a parameter
+	// divisor the filter could not settle (some caller passes a non-constant),
+	// e.g. "3 direct call sites, 2 pass non-zero constants".
+	DivisorCallers string `json:"divisor_callers,omitempty"`
 	// CountField is the count/length field gating the pointer use
 	// (e.g. "resp->group_num"), empty when no count gates the deref.
 	CountField string `json:"count_field,omitempty"`

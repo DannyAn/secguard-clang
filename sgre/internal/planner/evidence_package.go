@@ -64,6 +64,13 @@ type EvidenceItem struct {
 	CalleeDefFile      string `json:"callee_def_file,omitempty"`
 	CalleeDefLine      int    `json:"callee_def_line,omitempty"`
 	CalleeDefSignature string `json:"callee_def_signature,omitempty"`
+	// DivisorInterval renders the range engine's tighter-than-top interval
+	// for a divide-by-zero divisor it could not clear (contains 0), e.g.
+	// "[0, 1]". DivisorCallers summarizes the direct-call-site census for a
+	// parameter divisor the verdict could not settle. Empty values mean the
+	// engine had no fact worth reporting.
+	DivisorInterval string `json:"divisor_interval,omitempty"`
+	DivisorCallers  string `json:"divisor_callers,omitempty"`
 }
 
 type TargetInfo struct {
@@ -252,6 +259,9 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 		CalleeDefFile:      c.CalleeDefFile,
 		CalleeDefLine:      c.CalleeDefLine,
 		CalleeDefSignature: c.CalleeDefSignature,
+
+		DivisorInterval: c.DivisorInterval,
+		DivisorCallers:  c.DivisorCallers,
 	}
 	for _, ln := range []int{c.SourceLine, c.DeclLine, c.FreeLine, c.FirstFree, c.SecondFree, c.UseLine, c.WriteLine} {
 		if ln > 0 {
