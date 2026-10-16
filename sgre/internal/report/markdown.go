@@ -188,13 +188,17 @@ func (o *ScanOutput) writeReport(packages []*planner.PlanResult, indexSummary In
 	b.WriteString(overview.CandidateMarkdown())
 
 	b.WriteString("## Candidates by Skill\n\n")
-	b.WriteString("| Skill | CWE | Count |\n")
-	b.WriteString("|-------|-----|-------|\n")
+	b.WriteString("| Skill | CWE | Candidates | Auto-confirmed |\n")
+	b.WriteString("|-------|-----|-----------|----------------|\n")
 	for _, pkg := range packages {
 		cwe := VulnToCWE(pkg.VulnerabilityType)
-		b.WriteString(fmt.Sprintf("| %s | %s | %d |\n", pkg.VulnerabilityType, cwe, len(pkg.Candidates)))
+		auto := 0
+		if indexSummary.AutoConfirmedByType != nil {
+			auto = indexSummary.AutoConfirmedByType[pkg.VulnerabilityType]
+		}
+		b.WriteString(fmt.Sprintf("| %s | %s | %d | %d |\n", pkg.VulnerabilityType, cwe, len(pkg.Candidates), auto))
 	}
-	b.WriteString(fmt.Sprintf("| **TOTAL** | | **%d** |\n\n", totalCandidates))
+	b.WriteString(fmt.Sprintf("| **TOTAL** | | **%d** | **%d** |\n\n", totalCandidates, indexSummary.AutoConfirmed))
 
 	// The per-candidate tables live in per-type index files under candidates/, so
 	// a subagent assigned one type (or a candidate range of one type) reads only

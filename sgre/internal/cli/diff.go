@@ -286,14 +286,15 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 		ScanID:              reviewID,
 	}
 	if err := scanOutput.Write(planResults, report.IndexSummary{
-		FilesIndexed:     indexResult.FilesIndexed,
-		FunctionsIndexed: indexResult.FunctionsIndexed,
-		FunctionsInIndex: functionsInIndex,
-		FilesSkipped:     indexResult.FilesSkipped,
-		LinesOfCode:      indexResult.LinesOfCode,
-		TargetPath:       absPath,
-		SeedCount:        totalSeedCount,
-		AutoConfirmed:    totalAutoConfirmed,
+		FilesIndexed:        indexResult.FilesIndexed,
+		FunctionsIndexed:    indexResult.FunctionsIndexed,
+		FunctionsInIndex:    functionsInIndex,
+		FilesSkipped:        indexResult.FilesSkipped,
+		LinesOfCode:         indexResult.LinesOfCode,
+		TargetPath:          absPath,
+		SeedCount:           totalSeedCount,
+		AutoConfirmed:       totalAutoConfirmed,
+		AutoConfirmedByType: autoConfirmedByType,
 		// A review writes no scan_runs row, so the phase timings are the only
 		// duration figure available for its report header.
 		DurationMs:   outcome.Timings.IndexMs + outcome.Timings.GraphMs + outcome.Timings.DetectorsMs + outcome.Timings.PlanMs,

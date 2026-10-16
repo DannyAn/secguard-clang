@@ -164,6 +164,10 @@ type IndexSummary struct {
 	// the reduction (raw seeds -> converged candidates -> machine verdicts).
 	SeedCount     int `json:"seed_count"`
 	AutoConfirmed int `json:"auto_confirmed"`
+	// AutoConfirmedByType breaks the machine-confirmed tier down per vuln type
+	// so the candidate-stage report can show a type that auto-confirmed N
+	// findings (e.g. out-of-bounds) instead of listing it as 0 candidates.
+	AutoConfirmedByType map[string]int `json:"auto_confirmed_by_type,omitempty"`
 	// StartedAt / DurationMs are the automated-analysis wall clock (index +
 	// graph + detectors + convergence + auto-confirm), never the AI stage.
 	StartedAt  time.Time `json:"started_at"`

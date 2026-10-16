@@ -440,17 +440,18 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	}
 	reportStart := time.Now()
 	if err := scanOutput.Write(planResults, report.IndexSummary{
-		FilesIndexed:     indexResult.FilesIndexed,
-		FunctionsIndexed: indexResult.FunctionsIndexed,
-		FunctionsInIndex: functionsInIndex,
-		FilesSkipped:     indexResult.FilesSkipped,
-		LinesOfCode:      indexResult.LinesOfCode,
-		TargetPath:       absPath,
-		SeedCount:        totalSeedCount,
-		AutoConfirmed:    totalAutoConfirmed,
-		StartedAt:        scanStart,
-		DurationMs:       time.Since(scanStart).Milliseconds(),
-		TypesScanned:     len(evidencePackages),
+		FilesIndexed:        indexResult.FilesIndexed,
+		FunctionsIndexed:    indexResult.FunctionsIndexed,
+		FunctionsInIndex:    functionsInIndex,
+		FilesSkipped:        indexResult.FilesSkipped,
+		LinesOfCode:         indexResult.LinesOfCode,
+		TargetPath:          absPath,
+		SeedCount:           totalSeedCount,
+		AutoConfirmed:       totalAutoConfirmed,
+		AutoConfirmedByType: autoConfirmedByType,
+		StartedAt:           scanStart,
+		DurationMs:          time.Since(scanStart).Milliseconds(),
+		TypesScanned:        len(evidencePackages),
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to write output: %v\n", err)
 		output["report_error"] = fmt.Sprintf("failed to write report: %v", err)
