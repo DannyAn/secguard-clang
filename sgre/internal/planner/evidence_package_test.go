@@ -123,3 +123,23 @@ func TestTaintSourceDetail_ParamOrigin(t *testing.T) {
 		t.Errorf("taint_source fragment missing: %+v", frags)
 	}
 }
+
+// E-06 regression: the decisive source lines (free site, both frees, uninit
+// declaration, racing write, unguarded dereference, null/taint origin) must
+// reach the evidence item so the report can widen the Code Context window to
+// cover the source→sink span.
+func TestNewEvidenceItem_SourceLinesCollection(t *testing.T) {
+	spec := &VulnTypeSpec{Name: "use-after-free", EvidenceType: "USE_AFTER_FREE", BuildEvidence: func(c Candidate) []EvidenceFragment { return nil }}
+	uaf := newEvidenceItem(Candidate{FunctionName: "f", Line: 40, FreeLine: 12}, spec, "uaf.c")
+	if len(uaf.SourceLines) != 1 || uaf.SourceLines[0] != 12 {
+		t.Errorf("UAF SourceLines = %v, want [12]", uaf.SourceLines)
+	}
+	df := newEvidenceItem(Candidate{FunctionName: "g", Line: 9, FirstFree: 4, SecondFree: 9}, spec, "df.c")
+	if len(df.SourceLines) != 2 || df.SourceLines[0] != 4 || df.SourceLines[1] != 9 {
+		t.Errorf("DF SourceLines = %v, want [4 9]", df.SourceLines)
+	}
+	none := newEvidenceItem(Candidate{FunctionName: "h", Line: 3}, spec, "x.c")
+	if len(none.SourceLines) != 0 {
+		t.Errorf("no source facts: SourceLines = %v, want empty", none.SourceLines)
+	}
+}

@@ -574,3 +574,85 @@ func TestWriteCandidates_TaintSourceSection(t *testing.T) {
 		t.Errorf("Taint Source section must carry the origin statement text:\n%s", content)
 	}
 }
+
+// E-06 regression: when a decisive source line (the free site of a UAF, the
+// declaration of an uninit read, ...) sits outside the ±8 window, the Code
+// Context widens to cover the whole source→sink span so the fragment's
+// "free(p) at line N" is checkable in view; a span longer than
+// maxContextLines falls back to the plain window.
+func TestWriteCandidates_SourceSinkSpanWindow(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "uaf.c")
+	var lines []string
+	lines = append(lines, "#include <stdlib.h>", "")
+	freeLine := len(lines) + 1
+	lines = append(lines, "    free(p);")
+	for i := 0; i < 27; i++ {
+		lines = append(lines, fmt.Sprintf("    pad%d = %d;", i, i))
+	}
+	useLine := len(lines) + 1
+	lines = append(lines, "    x = p->field;")
+	lines = append(lines, "}", "")
+	for i := 0; i < 250; i++ {
+		lines = append(lines, "    more_pad;")
+	}
+	farUseSink := len(lines) + 1
+	lines = append(lines, "    y = p->field;", "}")
+	total := len(lines)
+	if err := os.WriteFile(src, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	o := &ScanOutput{ScanDir: dir, ScanID: "sc_test", RootDir: dir}
+	mk := func(line, freeLn int) planner.EvidenceItem {
+		return planner.EvidenceItem{
+			SuspicionLevel: "suspected",
+			Category:       "use_after_free",
+			SourceLines:    []int{freeLn},
+			Target:         planner.TargetInfo{File: "uaf.c", Function: "f", Line: line},
+		}
+	}
+	pkgs := []*planner.PlanResult{{
+		VulnerabilityType: "use-after-free",
+		Candidates: []planner.EvidenceItem{
+			mk(useLine, freeLine),
+			mk(farUseSink, freeLine),
+		},
+	}}
+	if err := o.writeCandidates(pkgs); err != nil {
+		t.Fatal(err)
+	}
+
+	widened := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "use-after-free", "001_uaf_c_"+strconv.Itoa(useLine)+".md")))
+	wantLo, wantHi := freeLine-3, useLine+3
+	if wantLo < 1 {
+		wantLo = 1
+	}
+	if !strings.Contains(widened, fmt.Sprintf("`%s:%d-%d`", src, wantLo, wantHi)) {
+		t.Errorf("distant free: Code Context should span [%d,%d] (free→use), got:\n%s", wantLo, wantHi, widened)
+	}
+	if !strings.Contains(widened, fmt.Sprintf("%d |     free(p);", freeLine)) {
+		t.Errorf("distant free: widened window must show the free site:\n%s", widened)
+	}
+
+	plain := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "use-after-free", "002_uaf_c_"+strconv.Itoa(farUseSink)+".md")))
+	wantLo2, wantHi2 := farUseSink-8, farUseSink+8
+	if wantHi2 > total {
+		wantHi2 = total
+	}
+	if !strings.Contains(plain, fmt.Sprintf("`%s:%d-%d`", src, wantLo2, wantHi2)) {
+		t.Errorf("overlong span: Code Context should fall back to the ±8 window [%d,%d]:\n%s", wantLo2, wantHi2, plain)
+	}
+
+	near := mk(useLine, useLine-2)
+	near.SourceLines = []int{useLine - 2}
+	pkgs2 := []*planner.PlanResult{{VulnerabilityType: "use-after-free", Candidates: []planner.EvidenceItem{near}}}
+	if err := o.writeCandidates(pkgs2); err != nil {
+		t.Fatal(err)
+	}
+	nearMd := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "use-after-free", "001_uaf_c_"+strconv.Itoa(useLine)+".md")))
+	nearLo, nearHi := useLine-8, useLine+8
+	if !strings.Contains(nearMd, fmt.Sprintf("`%s:%d-%d`", src, nearLo, nearHi)) {
+		t.Errorf("near source: Code Context should stay the ±8 window [%d,%d]:\n%s", nearLo, nearHi, nearMd)
+	}
+}

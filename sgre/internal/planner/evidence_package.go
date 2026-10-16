@@ -15,6 +15,13 @@ type EvidenceItem struct {
 	MacroContext      bool       `json:"macro_context,omitempty"`
 	Target            TargetInfo `json:"target"`
 	SourceLine        int        `json:"source_line,omitempty"`
+	// SourceLines collects every pipeline-proven decisive source line for the
+	// candidate — the free-site of a use-after-free, the two frees of a
+	// double-free, the declaration of an uninit read, the origin of a null or
+	// taint value, the racing write, the unguarded dereference. The report
+	// widens the Code Context window to cover the source→sink span so a
+	// fragment's "free(p) at line N" is checkable in view, not just trusted.
+	SourceLines []int `json:"source_lines,omitempty"`
 	// Category carries the event's sub-class (e.g. command_injection,
 	// argument_injection, crlf_injection) so report consumers can resolve the
 	// per-category CWE via CWEForCategory(vulnType, category) when a single
@@ -245,6 +252,11 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 		CalleeDefFile:      c.CalleeDefFile,
 		CalleeDefLine:      c.CalleeDefLine,
 		CalleeDefSignature: c.CalleeDefSignature,
+	}
+	for _, ln := range []int{c.SourceLine, c.DeclLine, c.FreeLine, c.FirstFree, c.SecondFree, c.UseLine, c.WriteLine} {
+		if ln > 0 {
+			item.SourceLines = append(item.SourceLines, ln)
+		}
 	}
 	if c.SuspicionLevel != "" {
 		item.SuspicionLevel = c.SuspicionLevel

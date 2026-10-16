@@ -323,34 +323,83 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 
 // candidateContext resolves the Code Context region for one candidate.
 // Most types read a ±candidateContextLines window around the reported line,
-// but integer-overflow embeds the WHOLE function span (signature → candidate)
-// as command-instructions.md promises the classifier: its verdict needs the
-// parameter types, the entry guard and the accumulation chain, none of which
-// sit inside a ±8 window. A span longer than maxContextLines is truncated from
-// the signature (the first maxContextLines lines); when the candidate falls
-// outside that truncated window — a pathological >200-line function body — the
-// ±8 local window is used instead so the reported statement stays visible. An
-// unknown span (0) or a stale span (candidate line outside it) also falls back
-// to the local window, so behavior is unchanged for every other type and for
-// candidates whose function span the index did not record.
+// but two span policies widen it:
+//
+//   - integer-overflow embeds the WHOLE function span (signature → candidate)
+//     as command-instructions.md promises the classifier: its verdict needs the
+//     parameter types, the entry guard and the accumulation chain, none of
+//     which sit inside a ±8 window. A span longer than maxContextLines is
+//     truncated from the signature; when the candidate falls outside that
+//     truncated window the ±8 local window is used instead.
+//
+//   - a source→sink span (E-06): when a decisive source line (the free site of
+//     a use-after-free, the two frees of a double-free, the uninit declaration,
+//     the null/taint origin, the racing write) falls OUTSIDE the ±8 window, the
+//     window widens to [min-3, max+3] over all decisive lines so the fragment's
+//     "free(p) at line N" is checkable in view rather than trusted. A span
+//     longer than maxContextLines stays on the local window — mostly padding,
+//     and the fragment's line number still directs a targeted READ.
+//
+// An unknown span (0), a stale span, or a span the file cannot satisfy falls
+// back to the local window, so behavior is unchanged for every other producer.
 func (o *ScanOutput) candidateContext(vulnType string, c planner.EvidenceItem) *codeContext {
 	local := func() *codeContext {
 		return readCodeContext(c.Target.File, c.Target.Line, candidateContextLines, o.RootDir)
 	}
-	if vulnType != "integer-overflow" || c.FunctionStartLine <= 0 || c.FunctionEndLine < c.FunctionStartLine {
+	if vulnType == "integer-overflow" && c.FunctionStartLine > 0 && c.FunctionEndLine >= c.FunctionStartLine {
+		start, end := c.FunctionStartLine, c.FunctionEndLine
+		if end-start+1 > maxContextLines {
+			end = start + maxContextLines - 1
+		}
+		if c.Target.Line >= start && c.Target.Line <= end {
+			if ctx := readCodeSpan(c.Target.File, start, end, c.Target.Line, o.RootDir); ctx != nil {
+				return ctx
+			}
+		}
 		return local()
 	}
-	start, end := c.FunctionStartLine, c.FunctionEndLine
-	if end-start+1 > maxContextLines {
-		end = start + maxContextLines - 1
-	}
-	if c.Target.Line < start || c.Target.Line > end {
-		return local()
-	}
-	if ctx := readCodeSpan(c.Target.File, start, end, c.Target.Line, o.RootDir); ctx != nil {
-		return ctx
+	if lo, hi, ok := sourceSinkSpan(c); ok {
+		if ctx := readCodeSpan(c.Target.File, lo, hi, c.Target.Line, o.RootDir); ctx != nil {
+			return ctx
+		}
 	}
 	return local()
+}
+
+// sourceSinkSpan returns the widened [lo, hi] window covering the reported
+// line plus every decisive source line, and whether widening is warranted:
+// only when at least one decisive line sits outside the ±candidateContextLines
+// window (inside it the plain window already shows it), and only when the
+// resulting span stays within maxContextLines.
+func sourceSinkSpan(c planner.EvidenceItem) (int, int, bool) {
+	if len(c.SourceLines) == 0 {
+		return 0, 0, false
+	}
+	lo, hi := c.Target.Line, c.Target.Line
+	outside := false
+	for _, ln := range c.SourceLines {
+		if ln < lo {
+			lo = ln
+		}
+		if ln > hi {
+			hi = ln
+		}
+		if ln < c.Target.Line-candidateContextLines || ln > c.Target.Line+candidateContextLines {
+			outside = true
+		}
+	}
+	if !outside {
+		return 0, 0, false
+	}
+	lo -= 3
+	if lo < 1 {
+		lo = 1
+	}
+	hi += 3
+	if hi-lo+1 > maxContextLines {
+		return 0, 0, false
+	}
+	return lo, hi, true
 }
 
 // isTaintVulnType reports whether the type's candidates flow user-controlled
