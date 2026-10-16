@@ -486,6 +486,17 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			MutexB:            props.MutexB,
 			ReverseFunc:       props.ReverseFunc,
 			SecretValue:       props.Value,
+			CheckFunction:     props.CheckFunc,
+			UseFunction:       props.UseFunc,
+			CheckPathArg:      props.PathArg,
+			Mutex:             props.Mutex,
+			LockLine:          int(props.LockLine),
+			UnlockLine:        int(props.UnlockLine),
+			CryptoReason:      props.Reason,
+			CryptoKeySize:     int(props.KeySize),
+			FormatArg:         props.FormatArg,
+			PathExpr:          props.Path,
+			SubLHSInfluenced:  props.LHSInfluenced == "true",
 		})
 	}
 

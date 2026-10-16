@@ -161,6 +161,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 						props := map[string]string{
 							"variable": varName,
 							"origin":   "malloc",
+							"api":      callNameAtLine(calls, allocLine),
 						}
 						if definiteLeak {
 							props["definite"] = "true"
@@ -174,6 +175,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 						if emitEvent(ctx, d.store, d.logger, "MEMORY_ALLOC", f.ID, &db.Location{FileID: file.ID, Line: allocLine}, map[string]string{
 							"variable": varName,
 							"origin":   "malloc",
+							"api":      callNameAtLine(calls, allocLine),
 						}) {
 							result.EventsCreated++
 						}
@@ -456,6 +458,18 @@ func isNullCheckCondition(cond *parser.Node, varName string) bool {
 // body) no longer degenerate to a path-insensitive fallback. The overwrite
 // targets catch a lost allocation even when a later pointer is freed
 // (`p = malloc(); p = malloc(); free(p);` leaks the first block).
+// callNameAtLine returns the callee name of the call expression at line, so
+// leak events can carry the concrete acquire API (malloc/fopen/socket)
+// alongside the line the analyzer already matched.
+func callNameAtLine(calls []parser.Node, line int) string {
+	for _, call := range calls {
+		if call.StartLine() == line {
+			return extractCallName(call)
+		}
+	}
+	return ""
+}
+
 func hasLostResource(cfg *graph.StmtCFG, allocLine int, freeLines []int, nullGuardReturns []int, escapeLines []int, transferLines []int, overwriteLines []int) bool {
 	if cfg == nil {
 		return false

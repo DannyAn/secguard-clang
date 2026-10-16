@@ -436,8 +436,12 @@ func init() {
 		DefaultSuspicion: "suspected",
 		FilterChain:      "memory-leak",
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
+			allocAPI := ""
+			if c.APIName != "" {
+				allocAPI = fmt.Sprintf(" via %s", c.APIName)
+			}
 			frags := []EvidenceFragment{
-				{Type: "memory_alloc", Role: "source", Detail: fmt.Sprintf("allocation of %s in function %s at line %d", c.VariableName, c.FunctionName, c.Line)},
+				{Type: "memory_alloc", Role: "source", Detail: fmt.Sprintf("allocation of %s%s in function %s at line %d", c.VariableName, allocAPI, c.FunctionName, c.Line)},
 			}
 			if c.DefiniteLeak {
 				frags = append(frags, EvidenceFragment{Type: "definite", Role: "condition", Detail: "no free, escape, or ownership transfer is reachable on any path from the allocation to function exit"})
@@ -495,8 +499,12 @@ func init() {
 		DefaultSuspicion: "suspected",
 		FilterChain:      "resource-leak",
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
+			acquireAPI := ""
+			if c.APIName != "" {
+				acquireAPI = fmt.Sprintf(" via %s", c.APIName)
+			}
 			frags := []EvidenceFragment{
-				{Type: "resource_acquire", Role: "source", Detail: fmt.Sprintf("resource %s acquired in function %s at line %d", c.VariableName, c.FunctionName, c.Line)},
+				{Type: "resource_acquire", Role: "source", Detail: fmt.Sprintf("resource %s acquired%s in function %s at line %d", c.VariableName, acquireAPI, c.FunctionName, c.Line)},
 			}
 			if c.DefiniteLeak {
 				frags = append(frags, EvidenceFragment{Type: "definite", Role: "condition", Detail: "no release is reachable on any path from the acquire to function exit"})
@@ -611,6 +619,9 @@ func init() {
 			if c.APIName != "" {
 				frags = append(frags, EvidenceFragment{Type: "api", Role: "sink", Detail: fmt.Sprintf("format function: %s", c.APIName)})
 			}
+			if c.FormatArg != "" {
+				frags = append(frags, EvidenceFragment{Type: "format_arg", Role: "condition", Detail: fmt.Sprintf("format argument: %s", c.FormatArg)})
+			}
 			frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
 			if c.HasTaintSource {
 				frags = append(frags, EvidenceFragment{Type: "taint_source", Role: "source", Detail: taintSourceDetail(c, "the format argument")})
@@ -649,10 +660,14 @@ func init() {
 			if c.Category == "unsigned_sub_underflow" {
 				detail = fmt.Sprintf("unsigned subtraction can underflow before use in %s at line %d", c.FunctionName, c.Line)
 			}
-			return []EvidenceFragment{
+			frags := []EvidenceFragment{
 				{Type: "integer_overflow", Role: "sink", Detail: detail},
-				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
 			}
+			if c.SubLHSInfluenced {
+				frags = append(frags, EvidenceFragment{Type: "operand_influenced", Role: "source", Detail: "left operand is caller/attacker-controlled"})
+			}
+			frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
+			return frags
 		},
 	})
 
@@ -680,10 +695,34 @@ func init() {
 				frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
 				return frags
 			}
-			return []EvidenceFragment{
-				{Type: "toctou", Role: "sink", Detail: fmt.Sprintf("time-of-check-time-of-use in %s at line %d", c.FunctionName, c.Line)},
-				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
+			if c.Category == "toctou_shared_state" {
+				frags := []EvidenceFragment{
+					{Type: "shared_state", Role: "sink", Detail: fmt.Sprintf("shared state written after its lock is released in %s at line %d", c.FunctionName, c.Line)},
+				}
+				if c.Mutex != "" {
+					detail := fmt.Sprintf("state guarded by %s", c.Mutex)
+					if c.LockLine > 0 && c.UnlockLine > 0 {
+						detail = fmt.Sprintf("state guarded by %s (locked at line %d, unlocked at line %d)", c.Mutex, c.LockLine, c.UnlockLine)
+					}
+					frags = append(frags, EvidenceFragment{Type: "lock_scope", Role: "condition", Detail: detail})
+				}
+				frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
+				return frags
 			}
+			frags := []EvidenceFragment{
+				{Type: "toctou", Role: "sink", Detail: fmt.Sprintf("time-of-check-time-of-use in %s at line %d", c.FunctionName, c.Line)},
+			}
+			if c.CheckFunction != "" {
+				frags = append(frags, EvidenceFragment{Type: "check_call", Role: "source", Detail: fmt.Sprintf("check call: %s", c.CheckFunction)})
+			}
+			if c.UseFunction != "" {
+				frags = append(frags, EvidenceFragment{Type: "use_call", Role: "sink", Detail: fmt.Sprintf("use call: %s", c.UseFunction)})
+			}
+			if c.CheckPathArg != "" {
+				frags = append(frags, EvidenceFragment{Type: "shared_arg", Role: "condition", Detail: fmt.Sprintf("argument checked then used: %s", c.CheckPathArg)})
+			}
+			frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
+			return frags
 		},
 	})
 
@@ -760,10 +799,18 @@ func init() {
 			return fmt.Sprintf("crypto-misuse:%d:%s:%s", c.FileID, c.FunctionName, c.Category)
 		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
-			return []EvidenceFragment{
-				{Type: "crypto_misuse", Role: "sink", Detail: fmt.Sprintf("weak crypto in %s at line %d", c.FunctionName, c.Line)},
-				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
+			detail := fmt.Sprintf("weak crypto in %s at line %d", c.FunctionName, c.Line)
+			if c.CryptoReason != "" {
+				detail = fmt.Sprintf("%s in %s at line %d", c.CryptoReason, c.FunctionName, c.Line)
 			}
+			frags := []EvidenceFragment{
+				{Type: "crypto_misuse", Role: "sink", Detail: detail},
+			}
+			if c.CryptoKeySize > 0 {
+				frags = append(frags, EvidenceFragment{Type: "key_size", Role: "condition", Detail: fmt.Sprintf("declared key size: %d bytes", c.CryptoKeySize)})
+			}
+			frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
+			return frags
 		},
 	})
 
@@ -881,6 +928,9 @@ func init() {
 			frags := []EvidenceFragment{
 				{Type: "path_traversal", Role: "sink", Detail: fmt.Sprintf("filesystem call %s receives a path that is not a fixed string literal — an attacker-controlled value could use ../ to escape the intended directory and read/overwrite/delete an arbitrary file", c.APIName)},
 				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
+			}
+			if c.PathExpr != "" {
+				frags = append(frags, EvidenceFragment{Type: "path_arg", Role: "condition", Detail: fmt.Sprintf("path argument: %s", c.PathExpr)})
 			}
 			if c.HasTaintSource {
 				frags = append(frags, EvidenceFragment{Type: "taint_source", Role: "source", Detail: taintSourceDetail(c, "the path argument")})

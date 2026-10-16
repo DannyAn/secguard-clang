@@ -250,4 +250,26 @@ type Candidate struct {
 	MutexA      string `json:"mutex_a,omitempty"`
 	MutexB      string `json:"mutex_b,omitempty"`
 	ReverseFunc string `json:"reverse_func,omitempty"`
+	// CheckFunction/UseFunction/CheckPathArg carry a TOCTOU candidate's
+	// check call (e.g. access), its later use call (e.g. fopen), and the
+	// argument expression shared between them.
+	CheckFunction string `json:"check_function,omitempty"`
+	UseFunction   string `json:"use_function,omitempty"`
+	CheckPathArg  string `json:"check_path_arg,omitempty"`
+	// Mutex/LockLine/UnlockLine identify the lock and its critical section
+	// for a toctou_shared_state candidate.
+	Mutex      string `json:"mutex,omitempty"`
+	LockLine   int    `json:"lock_line,omitempty"`
+	UnlockLine int    `json:"unlock_line,omitempty"`
+	// CryptoReason/CryptoKeySize are the crypto-misuse finding's reason text
+	// (e.g. "weak hash") and the key size in bits.
+	CryptoReason  string `json:"crypto_reason,omitempty"`
+	CryptoKeySize int    `json:"crypto_key_size,omitempty"`
+	// FormatArg/PathExpr are the sink argument expressions for a
+	// format-string and a path-traversal candidate.
+	FormatArg string `json:"format_arg,omitempty"`
+	PathExpr  string `json:"path_expr,omitempty"`
+	// SubLHSInfluenced is true when an integer-overflow candidate's LHS
+	// operand is caller/attacker-controlled (mirror of SubRHSInfluenced).
+	SubLHSInfluenced bool `json:"sub_lhs_influenced,omitempty"`
 }

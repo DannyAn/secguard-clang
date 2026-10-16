@@ -110,6 +110,7 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 					acquireProps := map[string]string{
 						"variable": varName,
 						"origin":   "resource_acquire",
+						"api":      callNameAtLine(calls, acquireLine),
 					}
 					if definiteLeak {
 						acquireProps["definite"] = "true"

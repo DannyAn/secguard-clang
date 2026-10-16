@@ -86,8 +86,8 @@ type eventProps struct {
 	Path       string  `json:"path"`       // path-traversal sink argument text
 	FormatArg  string  `json:"format_arg"` // format-string sink argument text
 	Mutex      string  `json:"mutex"`
-	LockLine   int     `json:"lock_line"`
-	UnlockLine int     `json:"unlock_line"`
+	LockLine   flexInt `json:"lock_line"`
+	UnlockLine flexInt `json:"unlock_line"`
 	Divisor    string  `json:"divisor"` // divide-by-zero divisor expression
 	// DefinitelyZero is "true" when the divide-by-zero detector proved the
 	// divisor is exactly zero (a literal `x/0` or a zero-valued constant symbol),
