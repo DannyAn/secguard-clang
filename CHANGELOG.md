@@ -2,7 +2,24 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [Unreleased]
+## [0.9.6] - 2026-10-16
+
+### 证据契约断链修复（round2，R2-01~17 闭环）
+
+本轮修复检测器已算出的语义事实在「候选装载 → Evidence 渲染 → Hint → 候选文件/索引」链路上被丢弃的问题，使 AI Agent 能从 `_index.md` 的 `Source`+`Hint` 列直接研判，而不是打开源码或凭空推断。
+
+- **补齐字段流**：TOCTOU 的 `check_function`/`use_function`/`path_arg`、`toctou_shared_state` 的 `mutex`/锁行、crypto `reason`/`key_size`、`format_arg`、path-traversal `path`、memory/resource-leak 的 acquire `api`、integer-overflow `lhs_influenced` 等此前静默归零的字段，现经 `eventProps` 统一解码（数字字符串兼容）后真正进入 `Candidate`。
+- **补齐空 Hint 列**：unchecked-return 的 `contract@known/unknown` + `callee@<file>:<line>` 定义定位、divide-by-zero 的 `divisor@<shape>`、deadlock 的 `locks@A|B` + `reverse@<fn>`、use-after-free/double-free 的 `free@N`/`free@N,M`、uninit 的 `certain/maybe-uninit` 等，任何类型的 Hint 不再出现裸 "—"。
+- **Code Context 策略**：integer-overflow 改按整函数 span 渲染（上限 200 行，签名→候选）；源→汇锚行落在 ±8 窗口外时按 `[min-3, max+3]` 拓宽；taint 类候选填充 `SourceLine` 并新增 `## Taint Source` 段。
+- **unchecked-return**：候选文件新增 `## Failure Contract` 段——`contract@unknown` 时给出 callee 定义定位（跨文件工厂常见），无定义时显式标注"external/library"，AI 不再烧 read 预算盲找。
+- **hardcoded-secret**：结构化 `secret_value` 片段脱敏（前缀 4 字符 + 长度），避免报告文件泄露完整字面量。
+- **deadlock**：反向持锁函数回填，`reverse_order` 片段与 `reverse@` Hint 在生产链路首次可用。
+
+### 契约守卫测试
+
+- `TestSkillFragmentsMatchBuildEvidence`：SKILL.md 的 Evidence Pattern 与 `BuildEvidence` 片段词汇双向一致性机器守卫。
+- `TestSeedPropsFlowToCandidate`：props→Candidate 字段流守卫（覆盖 R2-01~07 的断链）。
+- `buildhint_test` / `evidence_package_test` / `zz_range_filter_test` / `zz_lock_order_test` / `zz_unchecked_return_callee_test`：Hint 非空、DivisorInterval 传递、reverse 回填、callee 定位等定向回归。
 
 ## [0.9.5] - 2026-10-14（2026-10-15 二次重发）
 
