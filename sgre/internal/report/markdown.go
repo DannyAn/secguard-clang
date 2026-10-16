@@ -272,6 +272,15 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 					b.WriteString("- **Contract:** `known` — the callee is a standard unchecked-return API, a declared allocator, or a body-verified passthrough wrapper. An unchecked return is a genuine CWE-252 defect.\n\n")
 				} else {
 					b.WriteString("- **Contract:** `unknown` — the callee is an allocator by NAME only (an `alloc` substring, a `*_new`/`*_dup` factory). Its failure behaviour is unproven: it may be pool-, stack- or caller-buffer-backed and never fail. You must prove the callee returns a failure sentinel (NULL / -1 / error code) on the unchecked path, otherwise **dismiss**.\n\n")
+					if c.CalleeDefFile != "" {
+						sig := ""
+						if c.CalleeDefSignature != "" {
+							sig = fmt.Sprintf(" (`%s`)", c.CalleeDefSignature)
+						}
+						b.WriteString(fmt.Sprintf("- **Callee definition:** `%s:%d`%s\n\n", c.CalleeDefFile, c.CalleeDefLine, sig))
+					} else {
+						b.WriteString("- **Callee definition:** none in scan — the callee is external/library; prove its contract from API knowledge or dismiss\n\n")
+					}
 				}
 			}
 
@@ -351,7 +360,8 @@ func (o *ScanOutput) writeTypeIndex(dir string, pkg *planner.PlanResult) error {
 		"> operand provenance, `guard@none` = no same-function guard, `macro-context` =\n" +
 		"> a macro is in play, `contract@known`/`contract@unknown` = unchecked-return\n" +
 		"> callee failure contract — `unknown` means the source is a name heuristic\n" +
-		"> only and you must prove the callee returns a failure sentinel or dismiss).\n" +
+		"> only and you must prove the callee returns a failure sentinel or dismiss;\n" +
+		"> `callee@<file>:<line>` = that callee's definition location in the scan).\n" +
 		"> Open the `Evidence`\n" +
 		"> file (and its `## Code Context`) when the hint is insufficient; read the\n" +
 		"> source (≤5 turns per type) before dismissing something you cannot settle.\n\n")

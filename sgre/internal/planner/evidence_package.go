@@ -3,6 +3,7 @@ package planner
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -47,6 +48,15 @@ type EvidenceItem struct {
 	// so it must not be confirmed without evidence that the callee returns a
 	// failure sentinel. Empty for every other vuln type.
 	Contract string `json:"contract,omitempty"`
+	// CalleeDefFile/CalleeDefLine/CalleeDefSignature carry the unchecked-return
+	// callee's definition location for contract@unknown candidates: the
+	// classifier must prove the callee returns a failure sentinel, and the
+	// definition is frequently in ANOTHER file (static factory in pool.c called
+	// from server.c), so a file:line beats a source-READ search. Empty
+	// CalleeDefFile = no definition in the scan (external/library callee).
+	CalleeDefFile      string `json:"callee_def_file,omitempty"`
+	CalleeDefLine      int    `json:"callee_def_line,omitempty"`
+	CalleeDefSignature string `json:"callee_def_signature,omitempty"`
 }
 
 type TargetInfo struct {
@@ -135,6 +145,13 @@ func buildHint(c Candidate, spec *VulnTypeSpec) string {
 				parts = append(parts, "contract@known")
 			} else {
 				parts = append(parts, "contract@unknown")
+				// The definition location for the contract@unknown proof burden:
+				// the callee body is often in ANOTHER file, so the hint lets the
+				// classifier jump straight to it. External callees (no definition
+				// in the scan) get no token — the evidence file says so instead.
+				if c.CalleeDefFile != "" {
+					parts = append(parts, fmt.Sprintf("callee@%s:%d", filepath.Base(c.CalleeDefFile), c.CalleeDefLine))
+				}
 			}
 		case "divide-by-zero":
 			if shape := divisorShape(c.VariableName); shape != "" {
@@ -224,6 +241,10 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 
 		FunctionStartLine: c.FuncStartLine,
 		FunctionEndLine:   c.FuncEndLine,
+
+		CalleeDefFile:      c.CalleeDefFile,
+		CalleeDefLine:      c.CalleeDefLine,
+		CalleeDefSignature: c.CalleeDefSignature,
 	}
 	if c.SuspicionLevel != "" {
 		item.SuspicionLevel = c.SuspicionLevel

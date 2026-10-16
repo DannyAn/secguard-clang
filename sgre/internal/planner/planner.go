@@ -274,12 +274,54 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 		filePathByID[f.ID] = f.Path
 	}
 
+	if spec.Name == "unchecked-return" {
+		if err := p.resolveCalleeDefs(ctx, candidates, filePathByID); err != nil {
+			return nil, fmt.Errorf("planner: resolve callee definitions: %w", err)
+		}
+	}
+
 	for _, c := range candidates {
 		c.MacroContext = p.macro.hasMacroContext(filePathByID[c.FileID], c.Line)
 		result.Candidates = append(result.Candidates, newEvidenceItem(c, spec, filePathByID[c.FileID]))
 	}
 
 	return result, nil
+}
+
+// resolveCalleeDefs fills CalleeDefFile/CalleeDefLine/CalleeDefSignature on
+// unchecked-return candidates by joining the callee name (APIName) against the
+// function index. contract@unknown candidates put the burden of proof on the
+// classifier ("prove the callee returns a failure sentinel or dismiss"), and
+// the callee is frequently a static factory defined in ANOTHER file — without
+// a file:line the classifier burns its source-READ budget locating a body the
+// index already knows. A batch ListFunctions failure fails the type (same
+// fail-fast as the seed lookups); a callee simply missing from the index is
+// legitimate (external/library function) and leaves the fields zero.
+func (p *Planner) resolveCalleeDefs(ctx context.Context, candidates []Candidate, filePathByID map[int64]string) error {
+	funcs, err := p.store.ListFunctions(ctx)
+	if err != nil {
+		return fmt.Errorf("list functions: %w", err)
+	}
+	defsByName := make(map[string]*db.Function, len(funcs))
+	for _, fn := range funcs {
+		if _, ok := defsByName[fn.Name]; !ok {
+			defsByName[fn.Name] = fn
+		}
+	}
+	for i := range candidates {
+		c := &candidates[i]
+		if c.APIName == "" {
+			continue
+		}
+		fn := defsByName[c.APIName]
+		if fn == nil {
+			continue
+		}
+		c.CalleeDefFile = filePathByID[fn.FileID]
+		c.CalleeDefLine = fn.StartLine
+		c.CalleeDefSignature = fn.Signature
+	}
+	return nil
 }
 
 // seedCandidatesByType returns this type's seed candidates plus a count of the

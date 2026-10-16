@@ -128,8 +128,16 @@ type Candidate struct {
 	// wrapper body) rather than inferred from the allocator name heuristic.
 	// ReturnCheckFilter only promotes these to the deterministic tier.
 	ContractKnown bool `json:"contract_known,omitempty"`
-	NonNullable   bool `json:"non_nullable"`
-	IsTypeExpr    bool `json:"is_type_expr"`
+	// CalleeDefFile/CalleeDefLine/CalleeDefSignature locate the unchecked-return
+	// callee's definition (resolved from the function index) so a
+	// contract@unknown classifier can go straight to the callee body instead of
+	// burning source READs locating it. Empty CalleeDefFile = the callee has no
+	// definition in the scan (external/library function).
+	CalleeDefFile      string `json:"callee_def_file,omitempty"`
+	CalleeDefLine      int    `json:"callee_def_line,omitempty"`
+	CalleeDefSignature string `json:"callee_def_signature,omitempty"`
+	NonNullable        bool   `json:"non_nullable"`
+	IsTypeExpr         bool   `json:"is_type_expr"`
 	// IsCallResultDeref marks a dereference of a direct function-call result
 	// (`f()->field`, `*f()`, `f()[i]`); CalleeName is the called function. The
 	// nullable_source filter resolves these against the inter-procedural

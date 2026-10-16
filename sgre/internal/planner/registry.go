@@ -811,10 +811,29 @@ func init() {
 		DefaultSuspicion: "suspected",
 		FilterChain:      "unchecked-return",
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
-			return []EvidenceFragment{
+			frags := []EvidenceFragment{
 				{Type: "unchecked_return", Role: "sink", Detail: fmt.Sprintf("return value of %s is not checked in function %s at line %d", c.APIName, c.FunctionName, c.Line)},
 				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
 			}
+			// contract@unknown puts the proof burden on the classifier, so the
+			// evidence must say WHERE the callee body is: cross-file static
+			// factories are the norm and a ±8 window cannot hold a callee from
+			// another file. An external callee gets an explicit "no body in
+			// scan" so the classifier goes to API knowledge instead of burning
+			// READs on a search that cannot succeed.
+			if c.APIName != "" && !c.ContractKnown {
+				if c.CalleeDefFile != "" {
+					detail := fmt.Sprintf("callee %s is defined in the scan at %s:%d", c.APIName, c.CalleeDefFile, c.CalleeDefLine)
+					if c.CalleeDefSignature != "" {
+						detail += fmt.Sprintf(" (signature: %s)", c.CalleeDefSignature)
+					}
+					detail += " — read the definition to prove or refute that it returns a failure sentinel"
+					frags = append(frags, EvidenceFragment{Type: "callee_definition", Role: "callee", Detail: detail})
+				} else {
+					frags = append(frags, EvidenceFragment{Type: "callee_definition", Role: "callee", Detail: fmt.Sprintf("callee %s has no definition in the scan (external/library function) — there is no body to read; prove the contract from API knowledge or dismiss", c.APIName)})
+				}
+			}
+			return frags
 		},
 	})
 

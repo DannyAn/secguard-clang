@@ -466,6 +466,54 @@ func TestWriteCandidates_IntegerOverflowSpanFallback(t *testing.T) {
 	checkWindow(fmt.Sprintf("002_overlong_c_%d.md", longCand), srcLong, longCand, longTotal)
 }
 
+// E-03 regression: the Failure Contract section of a contract@unknown
+// unchecked-return candidate file must carry the callee's definition location
+// (the callee is typically defined in another file) or the explicit
+// "none in scan" for external callees, so the classifier never burns source
+// READs locating a body the index already knows about.
+func TestWriteCandidates_UncheckedReturnCalleeDefinition(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "call.c")
+	body := "int handle(void) {\n    obj_pool_new(1);\n    return 0;\n}\n\nint handle_ext(void) {\n    ext_buf_dup(s);\n    return 0;\n}\n"
+	if err := os.WriteFile(src, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	o := &ScanOutput{ScanDir: dir, ScanID: "sc_test", RootDir: dir}
+	pkgs := []*planner.PlanResult{{
+		VulnerabilityType: "unchecked-return",
+		Candidates: []planner.EvidenceItem{
+			{
+				SuspicionLevel:     "suspected",
+				Category:           "unchecked_return",
+				Contract:           "unknown",
+				CalleeDefFile:      "pool.c",
+				CalleeDefLine:      42,
+				CalleeDefSignature: "Obj *obj_pool_new(int n)",
+				Target:             planner.TargetInfo{File: "call.c", Function: "handle", Line: 2},
+			},
+			{
+				SuspicionLevel: "suspected",
+				Category:       "unchecked_return",
+				Contract:       "unknown",
+				Target:         planner.TargetInfo{File: "call.c", Function: "handle_ext", Line: 6},
+			},
+		},
+	}}
+	if err := o.writeCandidates(pkgs); err != nil {
+		t.Fatal(err)
+	}
+
+	def := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "unchecked-return", "001_call_c_2.md")))
+	if !strings.Contains(def, "- **Callee definition:** `pool.c:42` (`Obj *obj_pool_new(int n)`)") {
+		t.Errorf("in-scan callee must render the definition location:\n%s", def)
+	}
+	ext := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "unchecked-return", "002_call_c_6.md")))
+	if !strings.Contains(ext, "none in scan") {
+		t.Errorf("external callee must render the explicit no-definition note:\n%s", ext)
+	}
+}
+
 // FixSuggestion must branch integer-overflow by category: the dominant
 // unsigned_sub_underflow pattern is a subtraction guard, not a malloc product.
 func TestFixSuggestion_IntegerOverflowPerCategory(t *testing.T) {
