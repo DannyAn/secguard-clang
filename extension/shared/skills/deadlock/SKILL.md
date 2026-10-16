@@ -16,6 +16,9 @@ A deadlock candidate has:
 - **DEADLOCK event**: Lock-order inversion detected via lock graph cycle
 - Two or more threads acquire locks in different orders
 - Thread 1: `lock(A) → lock(B)`, Thread 2: `lock(B) → lock(A)` → cycle in lock graph
+- **deadlock**: the inversion site
+- **lock_pair**: this function locks A then B
+- **reverse_order**: the function that acquires the same locks in the opposite order
 
 ### Dangerous Patterns
 

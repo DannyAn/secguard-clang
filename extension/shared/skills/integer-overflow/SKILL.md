@@ -28,6 +28,11 @@ The `category` field encodes the confidence tier the pipeline already computed:
 | `unsigned_sub_underflow` | unsigned `total - consumed` passed to an ordinary call | suspected |
 | `integer_overflow` | wraparound inside a bounds check | possible |
 
+Evidence file fragments:
+- **integer_overflow**: the site, with a category-shaped description (size calculation / unsigned subtraction underflow)
+- **operand_influenced**: the left operand is caller/attacker-controlled (when proved)
+- **call_path**: the function is reachable from an entry point
+
 ### Hint column
 
 The `_index.md` `Hint` column for `unsigned_sub_underflow` carries the operand

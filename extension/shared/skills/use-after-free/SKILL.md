@@ -14,6 +14,8 @@ metadata:
 ### Evidence Pattern
 A use-after-free candidate has:
 - **use_after_free**: Variable was freed (free() call) then subsequently used (dereference, passed to function, or accessed via pointer)
+- **free_site**: the `free(<var>)` line
+- **use_site**: the use line
 - **call_path**: The function is reachable from an entry point
 
 ### Detection Logic

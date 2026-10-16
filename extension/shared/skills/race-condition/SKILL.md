@@ -29,6 +29,12 @@ metadata:
 - Examples: `g_shared_counter++` in two threads, writer/reader pairs on `g_flag`/`g_data`
 - The event carries `thread_functions`, `thread_instances` and `write_line` properties
 
+Evidence file fragments (per category):
+- `toctou` — **toctou**: the site; **check_call** / **use_call** / **shared_arg**: the check call (e.g. `access`), the later use call (e.g. `fopen`), and the argument shared between them
+- `toctou_shared_state` — **shared_state**: the post-unlock write; **lock_scope**: the guarding mutex and its lock/unlock lines
+- `shared_data_race` — **data_race**: the access; **thread_functions** / **thread_instances** / **write_line**: the racing threads and the conflicting write
+- all — **call_path**: the function is reachable from an entry point
+
 ### Safe Patterns (P0 Exclusion)
 
 | Safe Pattern | Why Safe |

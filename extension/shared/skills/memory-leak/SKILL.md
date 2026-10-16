@@ -13,9 +13,12 @@ metadata:
 
 ### Evidence Pattern
 A memory-leak candidate has:
-- **memory_alloc**: an allocation at a source line — `malloc`/`calloc`/`realloc` (raw or cast), an implicit allocator (`strdup`, `asprintf`/`vasprintf`, `getline`/`getdelim`, `realpath(path, NULL)`), or a custom allocator from the project contract
-- **memory_release**: a matching release event for a freed site (`alloc_line` keys it to its allocation)
+- **memory_alloc**: an allocation at a source line — `malloc`/`calloc`/`realloc` (raw or cast), an implicit allocator (`strdup`, `asprintf`/`vasprintf`, `getline`/`getdelim`, `realpath(path, NULL)`), or a custom allocator from the project contract; carries the acquire API (`via malloc`)
+- **definite** / **conditional**: the CFG reachability verdict — `definite` = no free/escape/transfer is reachable on any path to function exit; `conditional` = released on some paths, trace each error/early-return path
 - **call_path**: the function is reachable from an entry point
+
+Released sites never reach you: the pipeline's ReleaseFilter drops a proved-released
+allocation before a candidate is written.
 
 The detector marks the seed event `definite=true` when the CFG proves no free/escape/transfer is reachable from the allocation; the planner's leak-proof filter promotes a `definite` candidate to `confirmed`.
 

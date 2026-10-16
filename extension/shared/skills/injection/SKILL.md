@@ -45,6 +45,11 @@ metadata:
 - Message parameter is non-constant
 - Structured logging APIs (`log_structured`/`json_log`/`log_field_set`) are safe
 
+Evidence file fragments:
+- **unsafe_call**: the sink call and its category
+- **taint_source**: where the user-controlled value originates (when the taint filter proved one)
+- **call_path**: the function is reachable from an entry point
+
 ### Safe Alternatives (P0 Exclusion)
 
 | Unsafe | Safe Alternative | Why Safe |

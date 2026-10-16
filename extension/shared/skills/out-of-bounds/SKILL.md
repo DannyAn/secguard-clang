@@ -18,7 +18,10 @@ An out-of-bounds candidate has:
   `malloc`/`calloc` allocation)
 - The subscript appears on the read side of an expression, e.g.
   `secret = arr[i];` or `sum += buf[i];`
-- **Reachable**: the function is reachable from an entry point
+- **buffer**: the array being read (`array: <name> (capacity: N elements)` when
+  the declared size resolved)
+- **index**: the access index expression
+- **call_path**: the function is reachable from an entry point
 
 ### Typical Example
 ```c

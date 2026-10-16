@@ -29,6 +29,11 @@ metadata:
 - RSA key < 2048 bits, AES key < 128 bits
 - Insufficient entropy for the security level
 
+Evidence file fragments:
+- **crypto_misuse**: the site with the detector's reason (e.g. "MD5 is cryptographically broken", "weak PRNG for security context")
+- **key_size**: the declared key size in bytes (undersized-key category)
+- **call_path**: the function is reachable from an entry point
+
 ### Safe Patterns (P0 Exclusion)
 
 | Safe Pattern | Why Safe |

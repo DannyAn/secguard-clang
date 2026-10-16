@@ -14,6 +14,9 @@ metadata:
 ### Evidence Pattern
 A format-string candidate has:
 - **format_string**: A printf-family function is called where the format argument is not a string literal
+- **api**: the format function called
+- **format_arg**: the non-literal format argument expression
+- **taint_source**: where the user-controlled value behind the format argument originates (when the taint filter proved one)
 - **call_path**: The function is reachable from an entry point
 
 ### Functions Checked

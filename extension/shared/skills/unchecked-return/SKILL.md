@@ -14,6 +14,7 @@ metadata:
 ### Evidence Pattern
 An unchecked-return candidate has:
 - **unchecked_return**: A call to `malloc`/`calloc`/`realloc`/`fopen`/`opendir`/`read`/`recv`/`write`/`send` whose value is not compared directly and is not assigned to a variable that is later compared
+- **callee_definition**: For a `contract@unknown` candidate, where the callee is defined in the scan (`<file>:<line>`, with signature) — or an explicit "no definition in the scan" for external/library callees, so you go to API knowledge instead of searching
 - **call_path**: The function is reachable from an entry point
 
 ### Detection Logic

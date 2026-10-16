@@ -34,6 +34,14 @@ Detector categories that route to this type:
 Read-flavored events (`array_oob_read`, `heap_oob_read`) belong to the
 `out-of-bounds` type (CWE-125), not this one.
 
+Evidence file fragments:
+- **buffer_access**: the access site
+- **api**: the unsafe API called
+- **buffer**: the destination buffer and its resolved capacity
+- **index**: the access index / copy size expression
+- **copy_size** / **dst_capacity** / **size_argument**: the copy size, destination capacity, and `_s` size argument for the bounded/secure-copy categories
+- **call_path**: the function is reachable from an entry point
+
 ### Safe Function Alternatives (P0 Exclusion)
 
 | Unsafe | Safe Alternative | Notes |

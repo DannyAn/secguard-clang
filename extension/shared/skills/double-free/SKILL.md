@@ -14,6 +14,7 @@ metadata:
 ### Evidence Pattern
 A double-free candidate has:
 - **double_free**: Variable is passed to `free()` two or more times in the same function
+- **first_free** / **second_free**: the first and second `free()` lines
 - **call_path**: The function is reachable from an entry point
 
 ### Detection Logic
