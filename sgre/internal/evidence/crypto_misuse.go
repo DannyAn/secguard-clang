@@ -25,7 +25,7 @@ func (d *CryptoMisuseDetector) Name() string { return "crypto_misuse" }
 func (d *CryptoMisuseDetector) Domain() string { return "crypto" }
 
 func (d *CryptoMisuseDetector) Capabilities() []string {
-	return []string{"weak-algorithm", "weak-random", "undersized-key", "unchecked-key"}
+	return []string{"weak-algorithm", "weak-random", "undersized-key"}
 }
 
 var weakCryptoFunctions = map[string]string{

@@ -263,7 +263,7 @@ func (d *InjectionDetector) detectTaintFlowInjection(ctx context.Context, f *db.
 					"function":   callName,
 					"category":   "command_injection",
 					"taint":      "flow",
-					"source":     "wsprintf",
+					"source":     callName,
 					"expression": call.OriginalText(),
 				}) {
 					result.EventsCreated++

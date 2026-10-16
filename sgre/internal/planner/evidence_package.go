@@ -141,7 +141,10 @@ func (r *PlanResult) CandidateCount() int {
 // "divisor@call" / "divisor@compound"), so the classifier can settle a bare
 // divisor from the Source column instead of opening an evidence file per
 // candidate — the per-candidate open that previously exhausted a subagent's
-// turn budget before it could write.
+// turn budget before it could write. Deadlock emits the inversion pair
+// ("locks@A|B", plus "reverse@<fn>"), and use-after-free/double-free emit the
+// free line(s) ("free@N" / "free@N,M"), so those types are settled from the
+// row too.
 //
 // Every type also gets its API and category when present ("api@<name>",
 // "cat@<name>"), and uninit gets a "certain-uninit"/"maybe-uninit" tier, so no
@@ -202,10 +205,31 @@ func buildHint(c Candidate, spec *VulnTypeSpec) string {
 				if c.SubRHSInfluenced {
 					parts = append(parts, "rhs-influenced")
 				}
+				if c.SubLHSInfluenced {
+					parts = append(parts, "lhs-influenced")
+				}
 				if c.SubSink != "" {
 					parts = append(parts, "sink@"+c.SubSink)
 				}
 				parts = append(parts, "guard@none")
+			}
+		case "deadlock":
+			// The inversion pair and its reverse acquirer are the whole defect:
+			// "locks@A|B" lets the classifier match the pair across functions
+			// from the _index row alone.
+			if c.MutexA != "" && c.MutexB != "" {
+				parts = append(parts, "locks@"+c.MutexA+"|"+c.MutexB)
+			}
+			if c.ReverseFunc != "" {
+				parts = append(parts, "reverse@"+c.ReverseFunc)
+			}
+		case "use-after-free":
+			if c.FreeLine > 0 {
+				parts = append(parts, fmt.Sprintf("free@%d", c.FreeLine))
+			}
+		case "double-free":
+			if c.FirstFree > 0 && c.SecondFree > 0 {
+				parts = append(parts, fmt.Sprintf("free@%d,%d", c.FirstFree, c.SecondFree))
 			}
 		}
 	}

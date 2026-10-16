@@ -447,12 +447,17 @@ func (o *ScanOutput) writeTypeIndex(dir string, pkg *planner.PlanResult) error {
 		"> Classify from the `Source` + `Hint` columns first — `Hint` is the pipeline's\n" +
 		"> precomputed verdict facts (`src@N` = null/taint source line, `certain-null`/\n" +
 		"> `maybe-null` = null certainty, `tainted` = injection source, `weak-guard` =\n" +
-		"> partial guard, `lhs@`/`rhs@`/`rhs-influenced`/`sink@` = integer-overflow\n" +
-		"> operand provenance, `guard@none` = no same-function guard, `macro-context` =\n" +
-		"> a macro is in play, `contract@known`/`contract@unknown` = unchecked-return\n" +
-		"> callee failure contract — `unknown` means the source is a name heuristic\n" +
-		"> only and you must prove the callee returns a failure sentinel or dismiss;\n" +
-		"> `callee@<file>:<line>` = that callee's definition location in the scan).\n" +
+		"> partial guard, `lhs@`/`rhs@`/`rhs-influenced`/`lhs-influenced`/`sink@` =\n" +
+		"> integer-overflow operand provenance, `guard@none` = no same-function guard,\n" +
+		"> `macro-context` = a macro is in play, `contract@known`/`contract@unknown` =\n" +
+		"> unchecked-return callee failure contract — `unknown` means the source is a\n" +
+		"> name heuristic only and you must prove the callee returns a failure sentinel\n" +
+		"> or dismiss; `callee@<file>:<line>` = that callee's definition location in\n" +
+		"> the scan; `divisor@<shape>` = divide-by-zero divisor shape,\n" +
+		"> `certain-uninit`/`maybe-uninit` = uninit certainty, `locks@A|B` +\n" +
+		"> `reverse@<fn>` = deadlock lock pair and its reverse acquirer,\n" +
+		"> `free@N`/`free@N,M` = use-after-free/double-free free line(s); every type\n" +
+		"> also carries `api@<name>` (the callee) and `cat@<category>` when present).\n" +
 		"> Open the `Evidence`\n" +
 		"> file (and its `## Code Context`) when the hint is insufficient; read the\n" +
 		"> source (≤5 turns per type) before dismissing something you cannot settle.\n\n")
