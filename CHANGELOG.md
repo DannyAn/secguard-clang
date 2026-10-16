@@ -2,12 +2,13 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.9.7] - 2026-10-16
+## [0.9.7] - 2026-10-16（二次重发）
 
 ### 发布后修复（审计 P3 收尾）
 
 - 候选阶段 `report.md` 的 "Candidates by Skill" 表新增 `Auto-confirmed` 列，逐类型拆分机器确认数——此前纯 auto-confirmed 类型（如 out-of-bounds）在表中显示 0 候选，掩盖了实际已确认的发现。
 - 移除 injection 检测器命令注入事件中无人读取的死字段 `source`。
+- dangerous-function：`pthread_exit`/`ExitThread` 从「非入口函数才触发」改为**无条件禁用**——线程应 `return` 其启动例程（正常退栈 + 返回值交给 joiner），而非调用线程退出 API；`exit`/`ExitProcess` 保留 main 豁免（进程在 main 里退出是预期控制流）。回归用例 `TestDangerousFunction_CategoriesAndMainContext` 增加 `pthread_exit` 在 main 内也必须被标记的断言。
 
 ## [0.9.6] - 2026-10-16
 
