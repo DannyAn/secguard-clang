@@ -22,8 +22,10 @@ import (
 // category is a sound name match and is auto-confirmed by the planner EXCEPT
 // `assert_usage`: whether an assert() guards caller input (a defect) or an
 // internal invariant (fine) needs intent, so it is handed to the AI agent.
-// A `nonMainOnly` rule (exit / pthread_exit / ExitThread / ExitProcess) fires
-// only OUTSIDE the program entry point.
+// A `nonMainOnly` rule (exit / ExitProcess) fires only OUTSIDE the program
+// entry point — a process exit in main is the intended control flow. Thread
+// exit APIs (pthread_exit / ExitThread) carry no such exemption: a thread
+// should `return` from its start routine, so they are banned unconditionally.
 type DangerousFunctionDetector struct {
 	store  db.Store
 	parser *parser.Parser
@@ -44,10 +46,11 @@ type dangerRule struct {
 	// fix text comes from the skill's category table.
 	replacement string
 	// nonMainOnly restricts the finding to calls OUTSIDE the program entry
-	// point. exit()/ExitProcess()/pthread_exit()/ExitThread() are permitted in
-	// main (they are the process/thread exit), but forbidden elsewhere: a
-	// callee tearing down the whole process/thread breaks control flow and
-	// resource release for its caller.
+	// point. exit()/ExitProcess() are permitted in main (the process exit IS
+	// the intended control flow there), but forbidden elsewhere: a callee
+	// tearing down the whole process breaks control flow and resource release
+	// for its caller. Thread exit APIs (pthread_exit/ExitThread) do NOT get
+	// this exemption — a thread should return from its start routine.
 	nonMainOnly bool
 	// constExempt suppresses the finding when the FIRST argument is a
 	// compile-time constant. inet_addr is the only such rule: its danger is
@@ -85,8 +88,8 @@ var builtinDangerRules = map[string]dangerRule{
 	// --- process / thread termination (禁用退出与终止函数) ---
 	"exit":         {category: "process_exit", replacement: "return from the enclosing function", nonMainOnly: true},
 	"ExitProcess":  {category: "process_exit", replacement: "return from main", nonMainOnly: true},
-	"pthread_exit": {category: "process_exit", replacement: "return from the thread start routine", nonMainOnly: true},
-	"ExitThread":   {category: "process_exit", replacement: "return from the thread start routine", nonMainOnly: true},
+	"pthread_exit": {category: "process_exit", replacement: "return from the thread start routine"},
+	"ExitThread":   {category: "process_exit", replacement: "return from the thread start routine"},
 	"atexit":       {category: "process_exit", replacement: "release resources explicitly on each exit path"},
 	"abort":        {category: "process_exit", replacement: "return an error / graceful shutdown"},
 

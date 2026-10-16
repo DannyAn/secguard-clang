@@ -62,6 +62,7 @@ func TestDangerousFunction_CategoriesAndMainContext(t *testing.T) {
 	src := `#include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <pthread.h>
 
 static void helper(void) { exit(1); }
 
@@ -74,6 +75,7 @@ int main(void) {
     p = alloca(8);
     assert(p != 0);
     abort();
+    pthread_exit(0);
     exit(0);
     return 0;
 }
@@ -113,12 +115,13 @@ int main(void) {
 	}
 
 	wantCat := map[string]string{
-		"exit":   "process_exit",
-		"atoi":   "unchecked_conversion",
-		"memcpy": "unsafe_memory",
-		"alloca": "stack_allocation",
-		"assert": "assert_usage",
-		"abort":  "process_exit",
+		"exit":         "process_exit",
+		"pthread_exit": "process_exit",
+		"atoi":         "unchecked_conversion",
+		"memcpy":       "unsafe_memory",
+		"alloca":       "stack_allocation",
+		"assert":       "assert_usage",
+		"abort":        "process_exit",
 	}
 	for name, c := range wantCat {
 		if byVar[name] == 0 {
@@ -131,6 +134,9 @@ int main(void) {
 	}
 	if byVar["exit"] != 1 {
 		t.Errorf("exit must be reported once (only the non-main helper), got %d", byVar["exit"])
+	}
+	if byVar["pthread_exit"] != 1 {
+		t.Errorf("pthread_exit must be reported even inside main (banned unconditionally), got %d", byVar["pthread_exit"])
 	}
 }
 
