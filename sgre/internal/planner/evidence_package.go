@@ -71,6 +71,10 @@ type EvidenceItem struct {
 	// engine had no fact worth reporting.
 	DivisorInterval string `json:"divisor_interval,omitempty"`
 	DivisorCallers  string `json:"divisor_callers,omitempty"`
+	// Expression is the detector's full statement text (multi-line calls keep
+	// their wrapped arguments), rendered in the evidence file's Location
+	// section so a wrapped statement is not reduced to its first line.
+	Expression string `json:"expression,omitempty"`
 }
 
 type TargetInfo struct {
@@ -205,6 +209,17 @@ func buildHint(c Candidate, spec *VulnTypeSpec) string {
 			}
 		}
 	}
+	// api@/cat@ sit RIGHT after the type-specific tokens (not at the tail):
+	// the Hint column is markdownCell-truncated at 120 chars, and api@ (the
+	// callee name) is the core classifier input for unchecked-return — the
+	// longest hints are exactly that type's, so a tail position let the
+	// callee name be the first thing the truncation ate.
+	if c.APIName != "" {
+		parts = append(parts, "api@"+c.APIName)
+	}
+	if c.Category != "" {
+		parts = append(parts, "cat@"+c.Category)
+	}
 	if c.SourceLine > 0 {
 		parts = append(parts, fmt.Sprintf("src@%d", c.SourceLine))
 	}
@@ -222,12 +237,6 @@ func buildHint(c Candidate, spec *VulnTypeSpec) string {
 	}
 	if c.MacroContext {
 		parts = append(parts, "macro-context")
-	}
-	if c.APIName != "" {
-		parts = append(parts, "api@"+c.APIName)
-	}
-	if c.Category != "" {
-		parts = append(parts, "cat@"+c.Category)
 	}
 	if len(parts) == 0 {
 		return "—"
@@ -262,6 +271,8 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 
 		DivisorInterval: c.DivisorInterval,
 		DivisorCallers:  c.DivisorCallers,
+
+		Expression: c.Expression,
 	}
 	for _, ln := range []int{c.SourceLine, c.DeclLine, c.FreeLine, c.FirstFree, c.SecondFree, c.UseLine, c.WriteLine} {
 		if ln > 0 {

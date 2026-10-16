@@ -656,3 +656,84 @@ func TestWriteCandidates_SourceSinkSpanWindow(t *testing.T) {
 		t.Errorf("near source: Code Context should stay the ±8 window [%d,%d]:\n%s", nearLo, nearHi, nearMd)
 	}
 }
+
+// TestWriteCandidates_ExpressionAndContextFallback pins E-07 + E-09:
+// a wrapped multi-line statement is rendered in full in the Location section
+// (the single-line Source column would show only `memcpy(dst,`), and a
+// candidate whose source cannot be read at report time gets an explicit
+// degradation note instead of a silently missing Code Context section.
+func TestWriteCandidates_ExpressionAndContextFallback(t *testing.T) {
+	dir := t.TempDir()
+	o := &ScanOutput{ScanDir: dir, ScanID: "sc_test"}
+	pkgs := []*planner.PlanResult{{
+		VulnerabilityType: "buffer-overflow",
+		Candidates: []planner.EvidenceItem{{
+			SuspicionLevel: "suspected",
+			Target: planner.TargetInfo{
+				File: "/repo/gone/wrap.c", Function: "copy", Line: 7, Variable: "dst_buf",
+			},
+			Expression: "memcpy(dst,\n  src,\n  n)",
+			Evidence: []planner.EvidenceFragment{
+				{Role: "sink", Detail: "buffer access in function copy at line 7"},
+			},
+		}},
+	}}
+	if err := o.writeCandidates(pkgs); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, CandidatesDir, "buffer-overflow", "001_gone_wrap_c_7.md"))
+	if err != nil {
+		t.Fatalf("candidate evidence file: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "**Expression:** `memcpy(dst,   src,   n)`") {
+		t.Errorf("Location section should render the full wrapped statement on one line:\n%s", content)
+	}
+	if !strings.Contains(content, "Source unavailable") {
+		t.Errorf("an unreadable source must render an explicit degradation note, not a silent gap:\n%s", content)
+	}
+	if strings.Contains(content, "is the reported location") {
+		t.Errorf("no context window should be rendered when the source is unavailable:\n%s", content)
+	}
+}
+
+// TestWriteCandidates_VariableExpressionFallbackCollapse pins the
+// unchecked-return shape: the Variable column IS the expression fallback (no
+// variable key in the event props), so it carries the detector's raw multi-line
+// text. The Location section must collapse it to one line instead of rendering
+// wrapped C, and must not duplicate it as a separate Expression row.
+func TestWriteCandidates_VariableExpressionFallbackCollapse(t *testing.T) {
+	dir := t.TempDir()
+	o := &ScanOutput{ScanDir: dir, ScanID: "sc_test"}
+	expr := "obj_pool_new(\n            n)"
+	pkgs := []*planner.PlanResult{{
+		VulnerabilityType: "unchecked-return",
+		Candidates: []planner.EvidenceItem{{
+			SuspicionLevel: "suspected",
+			Target: planner.TargetInfo{
+				File: "/repo/wrap.c", Function: "caller", Line: 5, Variable: expr,
+			},
+			Expression: expr,
+			Evidence: []planner.EvidenceFragment{
+				{Role: "sink", Detail: "return value of obj_pool_new is not checked in function caller at line 5"},
+			},
+		}},
+	}}
+	if err := o.writeCandidates(pkgs); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, CandidatesDir, "unchecked-return", "001_repo_wrap_c_5.md"))
+	if err != nil {
+		t.Fatalf("candidate evidence file: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "**Variable:** `obj_pool_new(             n)`") {
+		t.Errorf("Variable fallback should be collapsed to one line:\n%s", content)
+	}
+	if strings.Contains(content, "**Expression:**") {
+		t.Errorf("Variable==Expression must not render a duplicate Expression row:\n%s", content)
+	}
+	if strings.Contains(content, "\n            n)") {
+		t.Errorf("no raw multi-line text should survive in the Location section:\n%s", content)
+	}
+}

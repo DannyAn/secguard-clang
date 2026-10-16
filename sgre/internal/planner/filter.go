@@ -99,10 +99,15 @@ func listFilesByID(ctx context.Context, store db.Store) map[int64]*db.File {
 }
 
 type Candidate struct {
-	DerefEventID      int64  `json:"deref_event_id"`
-	FunctionID        int64  `json:"function_id"`
-	FunctionName      string `json:"function_name"`
-	VariableName      string `json:"variable_name"`
+	DerefEventID int64  `json:"deref_event_id"`
+	FunctionID   int64  `json:"function_id"`
+	FunctionName string `json:"function_name"`
+	VariableName string `json:"variable_name"`
+	// Expression is the detector's full multi-line statement text
+	// (call.OriginalText()), carried through so the report can render the
+	// complete statement when the single reported line is a wrapped fragment
+	// (`memcpy(dst,\n  src,\n  n)` shows only `memcpy(dst,` otherwise).
+	Expression        string `json:"expression,omitempty"`
 	APIName           string `json:"api_name,omitempty"`
 	Category          string `json:"category,omitempty"`
 	LocationID        int64  `json:"location_id"`

@@ -439,6 +439,7 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			FunctionID:        e.EntityID,
 			FunctionName:      funcName,
 			VariableName:      varName,
+			Expression:        props.Expression,
 			APIName:           apiName,
 			Category:          props.Category,
 			LocationID:        e.LocationID,

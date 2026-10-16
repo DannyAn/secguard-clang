@@ -251,7 +251,22 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 				b.WriteString(fmt.Sprintf("- **Signature:** `%s`\n", c.Signature))
 			}
 			if c.Target.Variable != "" {
-				b.WriteString(fmt.Sprintf("- **Variable:** `%s`\n", c.Target.Variable))
+				// When the Variable column IS the expression fallback
+				// (types without a variable key, e.g. unchecked-return), it
+				// carries the detector's raw multi-line text — collapse it to
+				// one line so the Location section does not render wrapped C.
+				variableDisplay := c.Target.Variable
+				if c.Expression != "" && variableDisplay == c.Expression {
+					variableDisplay = strings.ReplaceAll(c.Expression, "\n", " ")
+				}
+				b.WriteString(fmt.Sprintf("- **Variable:** `%s`\n", variableDisplay))
+			}
+			// The full multi-line statement when the detector captured one and
+			// it is more than the Variable already shows: a wrapped call
+			// (`memcpy(dst,\n  src,\n  n)`) is otherwise reduced to its first
+			// line by the single-line Source column.
+			if c.Expression != "" && c.Expression != c.Target.Variable {
+				fmt.Fprintf(&b, "- **Expression:** `%s`\n", strings.ReplaceAll(c.Expression, "\n", " "))
 			}
 			b.WriteString("\n")
 
@@ -263,6 +278,15 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 				fmt.Fprintf(&b, "`%s:%d-%d` — line %d is the reported location.\n\n", ctx.Path, ctx.StartLine, ctx.EndLine, ctx.Line)
 				b.WriteString(ctx.render())
 				b.WriteString("\n")
+			} else {
+				// An absent Code Context must be LOUD, not silent: the
+				// classifier would otherwise mistake "no source shown" for
+				// "no source semantics" and judge the candidate blind. The
+				// usual cause is the file changing between scan and report
+				// (line drift in a diff/incremental workflow).
+				b.WriteString("## Code Context\n\n")
+				fmt.Fprintf(&b, "- Source unavailable: `%s:%d` could not be read at report time (file changed or moved since the scan?).\n", c.Target.File, c.Target.Line)
+				b.WriteString("- The Evidence fragments below are all the proof available for this candidate.\n\n")
 			}
 
 			// The taint origin statement, so the classifier never has to take

@@ -143,3 +143,33 @@ func TestNewEvidenceItem_SourceLinesCollection(t *testing.T) {
 		t.Errorf("no source facts: SourceLines = %v, want empty", none.SourceLines)
 	}
 }
+
+// TestBuildHint_ApiBeforeFlowTokens pins E-08: api@ (the callee name) must sit
+// right after the type-specific tokens and BEFORE the flow tokens (src@, null
+// tier, tainted, ...) — the Hint cell is markdownCell-truncated at 120 chars,
+// and unchecked-return's hints are the longest, so a tail position let the
+// callee name be the first thing the truncation ate.
+func TestBuildHint_ApiBeforeFlowTokens(t *testing.T) {
+	got := buildHint(Candidate{
+		APIName:           "obfuscated_pool_allocator_factory",
+		Category:          "unchecked_return",
+		SourceLine:        123,
+		HasNullableSource: true,
+	}, &VulnTypeSpec{Name: "null-deref"})
+	want := "api@obfuscated_pool_allocator_factory cat@unchecked_return src@123 maybe-null"
+	if got != want {
+		t.Errorf("buildHint() = %q, want %q", got, want)
+	}
+}
+
+func TestNewEvidenceItem_ExpressionCarried(t *testing.T) {
+	spec := &VulnTypeSpec{Name: "buffer-overflow", EvidenceType: "BUFFER_OVERFLOW", BuildEvidence: func(c Candidate) []EvidenceFragment { return nil }}
+	item := newEvidenceItem(Candidate{
+		FunctionName: "copy",
+		Line:         7,
+		Expression:   "memcpy(dst,\n  src,\n  n)",
+	}, spec, "wrap.c")
+	if item.Expression != "memcpy(dst,\n  src,\n  n)" {
+		t.Errorf("EvidenceItem.Expression = %q, want the detector's full statement text", item.Expression)
+	}
+}
