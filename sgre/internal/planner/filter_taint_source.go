@@ -267,6 +267,13 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 		}
 		if flow.reaching(sink, c.Line) {
 			c.HasTaintSource = true
+			// The reaching source's line, so the hint carries src@N and the
+			// evidence fragment can state the taint origin instead of telling
+			// the classifier to "identify the source in Code Context" — the
+			// source is frequently more than ±8 lines from the sink, so the
+			// window cannot contain it. Param-bound taint (the other HasTaintSource
+			// path above) has its origin at a CALLER and stays unnumbered.
+			c.SourceLine = flow.sourceLine(sink, c.Line)
 			promoteOnTaint(&c)
 			kept = append(kept, c)
 			continue

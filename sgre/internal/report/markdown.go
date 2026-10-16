@@ -263,7 +263,18 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 				fmt.Fprintf(&b, "`%s:%d-%d` — line %d is the reported location.\n\n", ctx.Path, ctx.StartLine, ctx.EndLine, ctx.Line)
 				b.WriteString(ctx.render())
 				b.WriteString("\n")
+			}
 
+			// The taint origin statement, so the classifier never has to take
+			// the fragment's word for it nor hunt for it inside the ±8 Code
+			// Context window: the source is frequently farther from the sink
+			// than the window reaches (that gap is E-05's whole point).
+			if isTaintVulnType(pkg.VulnerabilityType) && c.SourceLine > 0 {
+				if txt := sourceLineText(c.Target.File, c.SourceLine, o.RootDir); txt != "" {
+					b.WriteString("## Taint Source\n\n")
+					fmt.Fprintf(&b, "`%s:%d` — the user-controlled value originates here.\n\n", c.Target.File, c.SourceLine)
+					fmt.Fprintf(&b, "```c\n%s\n```\n\n", txt)
+				}
 			}
 
 			if pkg.VulnerabilityType == "unchecked-return" && c.Contract != "" {
@@ -342,6 +353,13 @@ func (o *ScanOutput) candidateContext(vulnType string, c planner.EvidenceItem) *
 	return local()
 }
 
+// isTaintVulnType reports whether the type's candidates flow user-controlled
+// data toward a sink, so a numbered taint origin (src@N) is meaningful for
+// them. These are exactly the types the taint_source filter converges.
+func isTaintVulnType(vulnType string) bool {
+	return vulnType == "injection" || vulnType == "format-string" || vulnType == "path-traversal"
+}
+
 // writeTypeIndex writes candidates/<vuln-type>/_index.md — the single table a
 // subagent reads to classify ONE type (the # column matches the NNN candidate
 // filenames, and the Source column carries the exact statement so the classifier
@@ -354,7 +372,7 @@ func (o *ScanOutput) writeTypeIndex(dir string, pkg *planner.PlanResult) error {
 	b.WriteString(fmt.Sprintf("# %s (%s) — Candidates\n\n", pkg.VulnerabilityType, cwe))
 	b.WriteString("> Classify each candidate as confirmed / dismissed (BINARY).\n" +
 		"> Classify from the `Source` + `Hint` columns first — `Hint` is the pipeline's\n" +
-		"> precomputed verdict facts (`src@N` = null-source line, `certain-null`/\n" +
+		"> precomputed verdict facts (`src@N` = null/taint source line, `certain-null`/\n" +
 		"> `maybe-null` = null certainty, `tainted` = injection source, `weak-guard` =\n" +
 		"> partial guard, `lhs@`/`rhs@`/`rhs-influenced`/`sink@` = integer-overflow\n" +
 		"> operand provenance, `guard@none` = no same-function guard, `macro-context` =\n" +

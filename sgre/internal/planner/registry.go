@@ -481,7 +481,7 @@ func init() {
 				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
 			}
 			if c.HasTaintSource {
-				frags = append(frags, EvidenceFragment{Type: "taint_source", Role: "source", Detail: fmt.Sprintf("user-controlled value (from getenv/scanf/recv/argv or similar taint source — identify the specific source in Code Context) reaches the sink at line %d", c.Line)})
+				frags = append(frags, EvidenceFragment{Type: "taint_source", Role: "source", Detail: taintSourceDetail(c, "the sink")})
 			}
 			return frags
 		},
@@ -613,7 +613,7 @@ func init() {
 			}
 			frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
 			if c.HasTaintSource {
-				frags = append(frags, EvidenceFragment{Type: "taint_source", Role: "source", Detail: fmt.Sprintf("user-controlled value (from getenv/scanf/recv/argv or similar taint source — identify the specific source in Code Context) reaches the format argument at line %d", c.Line)})
+				frags = append(frags, EvidenceFragment{Type: "taint_source", Role: "source", Detail: taintSourceDetail(c, "the format argument")})
 			}
 			return frags
 		},
@@ -850,7 +850,7 @@ func init() {
 				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
 			}
 			if c.HasTaintSource {
-				frags = append(frags, EvidenceFragment{Type: "taint_source", Role: "source", Detail: fmt.Sprintf("user-controlled value (from getenv/scanf/recv/argv or similar taint source — identify the specific source in Code Context) reaches the path argument at line %d", c.Line)})
+				frags = append(frags, EvidenceFragment{Type: "taint_source", Role: "source", Detail: taintSourceDetail(c, "the path argument")})
 			}
 			return frags
 		},
@@ -1063,4 +1063,19 @@ func nullableSourceDetail(c Candidate) string {
 		return fmt.Sprintf("variable %s is assigned a possibly-null value at line %d, which reaches the dereference at line %d only through a loop back-edge (the assignment textually follows the use, so the guard on this path decides it)", c.VariableName, c.SourceLine, c.Line)
 	}
 	return fmt.Sprintf("variable %s is assigned a possibly-null value at line %d before the dereference at line %d", c.VariableName, c.SourceLine, c.Line)
+}
+
+// taintSourceDetail states the taint-origin fact a classifier can act on. The
+// old wording told the classifier to "identify the specific source in Code
+// Context", but the taint source is frequently more than ±8 lines from the
+// sink — or enters through a caller's argument — so the window physically
+// cannot contain it, and the instruction sent the classifier hunting for
+// evidence that was never in view (dismiss-by-budget false negatives). The
+// line-numbered form carries the pipeline-proven origin; the param form says
+// where the taint actually enters instead of pointing at an empty window.
+func taintSourceDetail(c Candidate, sinkDesc string) string {
+	if c.SourceLine > 0 {
+		return fmt.Sprintf("user-controlled value originates at line %d and reaches %s at line %d — the evidence file's Taint Source section carries the origin statement", c.SourceLine, sinkDesc, c.Line)
+	}
+	return fmt.Sprintf("a tainted parameter of this function reaches %s at line %d — the taint enters from a CALLER argument (inter-procedural summary), so there is no in-function source statement to read", sinkDesc, c.Line)
 }

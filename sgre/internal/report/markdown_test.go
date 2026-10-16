@@ -536,3 +536,41 @@ func TestFixSuggestion_IntegerOverflowPerCategory(t *testing.T) {
 		t.Errorf("size_calc_overflow fix suggestion should show the multiply check:\n%s", sizeCalc)
 	}
 }
+
+// E-05 regression: a taint candidate whose source is more than ±8 lines from
+// the sink gets the origin statement rendered in its own section — the Code
+// Context window cannot contain it, so this section is the only in-file view
+// of the taint origin the classifier needs.
+func TestWriteCandidates_TaintSourceSection(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "taint.c")
+	body := "int distant(void) {\n    char *env = getenv(\"USER\");\n    char *p = env;\n    FILE *f = fopen(p, \"r\");\n    return f != 0;\n}\n"
+	if err := os.WriteFile(src, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	o := &ScanOutput{ScanDir: dir, ScanID: "sc_test", RootDir: dir}
+	pkgs := []*planner.PlanResult{{
+		VulnerabilityType: "path-traversal",
+		Candidates: []planner.EvidenceItem{{
+			SuspicionLevel: "suspected",
+			Category:       "path_traversal",
+			SourceLine:     2,
+			Target:         planner.TargetInfo{File: "taint.c", Function: "distant", Line: 4},
+		}},
+	}}
+	if err := o.writeCandidates(pkgs); err != nil {
+		t.Fatal(err)
+	}
+
+	content := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "path-traversal", "001_taint_c_4.md")))
+	if !strings.Contains(content, "## Taint Source") {
+		t.Errorf("candidate file must carry a Taint Source section:\n%s", content)
+	}
+	if !strings.Contains(content, "`taint.c:2`") {
+		t.Errorf("Taint Source section must locate the origin line:\n%s", content)
+	}
+	if !strings.Contains(content, "getenv(\"USER\")") {
+		t.Errorf("Taint Source section must carry the origin statement text:\n%s", content)
+	}
+}

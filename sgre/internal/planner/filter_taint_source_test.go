@@ -1349,3 +1349,81 @@ int main(void) {
 		t.Errorf("SQL built from caller data inside the function must stay confirmed, got %q", c.SuspicionLevel)
 	}
 }
+
+// E-05 regression: an in-function taint hit must carry the ORIGIN line, not an
+// instruction to "identify the source in Code Context" — the source is
+// frequently farther from the sink than the ±8 window reaches, so the window
+// physically cannot contain it and the instruction only produced
+// dismiss-by-budget false negatives.
+func TestTaintSourceFilter_SourceLineBackfill(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	// getenv at line 5, sink at line 20: 15 lines apart, beyond the ±8 window.
+	src := `#include <stdlib.h>
+#include <stdio.h>
+
+int distant_source(void) {
+    char *env = getenv("USER");
+    int pad1 = 1;
+    int pad2 = 2;
+    int pad3 = 3;
+    int pad4 = 4;
+    int pad5 = 5;
+    int pad6 = 6;
+    int pad7 = 7;
+    int pad8 = 8;
+    int pad9 = 9;
+    int pad10 = 10;
+    int pad11 = 11;
+    int pad12 = 12;
+    char *p = env;
+    FILE *f = fopen(p, "r");
+    return f != 0;
+}
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "distant.c")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.NewPathTraversalDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "path-traversal")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	var hit *EvidenceItem
+	for i := range result.Candidates {
+		if result.Candidates[i].Target.Function == "distant_source" {
+			hit = &result.Candidates[i]
+		}
+	}
+	if hit == nil {
+		t.Fatalf("distant_source must be a candidate, got %v", candidateNames(result))
+	}
+	if hit.SourceLine != 5 {
+		t.Errorf("SourceLine = %d, want 5 (the getenv line)", hit.SourceLine)
+	}
+	if !strings.Contains(hit.Hint, "src@5") {
+		t.Errorf("Hint %q must carry src@5", hit.Hint)
+	}
+	fragOK := false
+	for _, f := range hit.Evidence {
+		if f.Type == "taint_source" && strings.Contains(f.Detail, "originates at line 5") {
+			fragOK = true
+		}
+	}
+	if !fragOK {
+		t.Errorf("taint_source fragment must state the origin line, got %+v", hit.Evidence)
+	}
+}

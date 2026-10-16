@@ -100,3 +100,26 @@ func TestBuildEvidence_UncheckedReturnCalleeDefinition(t *testing.T) {
 		t.Errorf("contract@known: callee-definition fragment must not appear:\n%s", known)
 	}
 }
+
+// E-05, param half: taint that enters through a caller's argument has no
+// in-function origin statement — the fragment must say where the taint enters
+// instead of sending the classifier to hunt a source the window cannot hold.
+func TestTaintSourceDetail_ParamOrigin(t *testing.T) {
+	inj, err := GetVulnTypeSpec("injection")
+	if err != nil {
+		t.Fatal(err)
+	}
+	frags := inj.BuildEvidence(Candidate{HasTaintSource: true, FunctionName: "f", Line: 9})
+	found := false
+	for _, f := range frags {
+		if f.Type == "taint_source" {
+			found = true
+			if !strings.Contains(f.Detail, "tainted parameter") || !strings.Contains(f.Detail, "CALLER") {
+				t.Errorf("param-origin taint fragment must say the taint enters from a caller:\n%s", f.Detail)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("taint_source fragment missing: %+v", frags)
+	}
+}
