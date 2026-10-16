@@ -13,8 +13,7 @@ metadata:
 
 ### Evidence Pattern
 A signal-handler candidate has:
-- **SIGNAL_HANDLER event** with category `signal_handler_unsafe`
-- The event's `variable` is the non-async-signal-safe function called (e.g. `malloc`, `printf`, `pthread_mutex_lock`)
+- **signal_handler_unsafe**: the non-async-signal-safe call (e.g. `malloc`, `printf`, `pthread_mutex_lock`) with category `signal_handler_unsafe`
 - The event's `function` is the handler registered via `signal(SIGxxx, handler)`
 - **call_path**: The registering function is reachable from an entry point
 

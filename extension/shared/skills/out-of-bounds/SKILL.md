@@ -18,6 +18,7 @@ An out-of-bounds candidate has:
   `malloc`/`calloc` allocation)
 - The subscript appears on the read side of an expression, e.g.
   `secret = arr[i];` or `sum += buf[i];`
+- **out_of_bounds**: the access site (function and line)
 - **buffer**: the array being read (`array: <name> (capacity: N elements)` when
   the declared size resolved)
 - **index**: the access index expression

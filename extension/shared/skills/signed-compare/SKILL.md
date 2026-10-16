@@ -13,7 +13,7 @@ metadata:
 
 ### Evidence Pattern
 A signed-compare candidate has:
-- **signed_compare**: An ordering comparison between an `unsigned` variable and `0`/a negative literal whose result is a **tautology** because an unsigned value is never negative:
+- **signed_compare**: An ordering comparison between an `unsigned` variable and `0`/a negative literal whose result is a tautology because an unsigned value is never negative:
   - `u < 0`, `u <= -1`, `0 > u` → always false
   - `u >= 0`, `u > -1`, `0 <= u` → always true
 - **call_path**: The function is reachable from an entry point

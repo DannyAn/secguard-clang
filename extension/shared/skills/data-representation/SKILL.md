@@ -49,16 +49,17 @@ cast rule.
 ### Evidence Pattern
 A data-representation candidate has:
 - **data_representation_mismatch**: a `qsort`/`bsearch` call whose base element
-  representation differs from how the comparator casts its `void *` parameter.
-- **expected** / **actual**: the base's element type (e.g. `char`) and the
-  comparator's cast target (e.g. `char **`).
+  representation differs from how the comparator casts its `void *` parameter —
+  the detail names the comparator, the base variable with its true element type
+  (`expected`, e.g. `char`), and the comparator's cast target (`actual`,
+  e.g. `char **`)
+- **call_path**: the function is reachable from an entry point
 
 Pointer-depth (indirection-level) mismatch is **one strong evidence signal, not
 the definition**: confirmation must rest on the actual element representation
 versus the comparator's interpretation of the opaque pointer. Depth is the
 phase-1 signal; struct-field / object-size mismatches are future signals under
-the same pattern. (The standard `call_path` reachability tag is supplied by the
-pipeline, not re-derived by this skill.)
+the same pattern.
 
 ### Detection Logic
 1. For each function, record how it casts its `void *` parameters

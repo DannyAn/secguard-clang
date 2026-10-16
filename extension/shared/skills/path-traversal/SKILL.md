@@ -19,6 +19,7 @@ the intended directory and read / overwrite / delete an arbitrary file.
 ### Evidence Pattern
 A path-traversal candidate has:
 - **path_traversal**: a filesystem sink whose path argument is not a string literal
+- **path_arg**: the path argument expression of the sink call
 - **call_path**: the function is reachable from an entry point
 - **taint_source** (when the pipeline proved it): a user-controlled value
   (getenv / argv / recv / scanf / fgets …) reaches the path argument

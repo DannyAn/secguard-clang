@@ -13,7 +13,7 @@ metadata:
 
 ### Evidence Pattern
 A dangerous-function candidate has:
-- **DANGEROUS_FUNCTION event** with a `category` (see the category table below)
+- **dangerous_function**: the banned call with its `category` (see the category table below)
 - The event's `variable` is the banned function called (`memcpy`, `strcpy`, `exit`, `atoi`, ...)
 - The event's `replacement` is the mandated safer API (best-effort)
 - **call_path**: The containing function is reachable from an entry point

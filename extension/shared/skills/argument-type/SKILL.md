@@ -18,9 +18,10 @@ An argument-type candidate has:
 - **argument_type_mismatch**: A direct call passes an argument that is an
   **explicit cast to a pointer type**, where the cast's pointed-to object type
   is incompatible with the source object's type — e.g. `void f(uint *p); bool b;
-  f((uint *)&b);` (the callee reads a 1-byte `bool` as a 4-byte `uint`).
-- **expected** / **actual** / **cast**: the parameter type (`uint *`), the
-  argument's pre-cast pointer type (`bool *`), and the explicit cast target.
+  f((uint *)&b);` (the callee reads a 1-byte `bool` as a 4-byte `uint`). Names
+  the parameter type (`uint *`), the argument's pre-cast pointer type (`bool *`),
+  and the explicit cast target.
+- **explicit_cast**: the cast expression at the call site.
 - **call_path**: The function is reachable from an entry point.
 
 The detector only emits **direct calls** with an **explicit pointer cast**, and

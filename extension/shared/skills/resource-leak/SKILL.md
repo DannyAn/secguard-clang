@@ -13,9 +13,18 @@ metadata:
 
 ### Evidence Pattern
 A resource-leak candidate has:
-- **resource_acquire**: A file descriptor, socket, database handle, or lock is acquired
+- **resource_acquire**: A file descriptor, socket, database handle, or lock is
+  acquired — carries the acquire API (`via fopen`) when the call name resolved
+- **definite** / **conditional**: the CFG reachability verdict — `definite` =
+  no release is reachable on any path from the acquire to function exit;
+  `conditional` = released on some paths, trace each error/early-return path
+  for a missing close/release
 - **call_path**: The function is reachable from an entry point
-- **no resource_release on some path**: No matching release before a function exit
+
+Released acquires never reach you: the pipeline's ReleaseFilter drops a
+proved-released resource before a candidate is written. The detector marks the
+seed event `definite=true` when the CFG proves no release is reachable on any
+path, and the leak-proof filter promotes a `definite` candidate to `confirmed`.
 
 ### Detection Signals
 - `open()`, `fopen()`, `socket()`, `accept()`, `dup()`, `epoll_create()`, `eventfd()`, `signalfd()`, `timerfd()`, `mkstemp()` → resource acquired
