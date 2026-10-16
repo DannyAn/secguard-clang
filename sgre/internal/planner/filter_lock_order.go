@@ -14,6 +14,8 @@ import (
 // the persisted LOCK_ORDER graph. It upgrades a candidate to "confirmed" when its
 // two mutexes are mutually reachable (a cycle), and otherwise keeps it as a
 // suspicion (fail-open: an incomplete graph must never drop a detector finding).
+// It also back-fills the candidate's ReverseFunc from the reversed edge's
+// function property so the reverse_order evidence fragment renders.
 type LockOrderFilter struct {
 	store  db.Store
 	parser *parser.Parser
@@ -63,6 +65,7 @@ func (f *LockOrderFilter) Apply(ctx context.Context, candidates []Candidate) ([]
 	}
 
 	adj := make(map[string]map[string]bool)
+	edgeFns := make(map[string]map[string]bool)
 	for _, e := range edges {
 		from, to := nameByNode[e.SrcID], nameByNode[e.DstID]
 		if from == "" || to == "" || from == to {
@@ -72,6 +75,13 @@ func (f *LockOrderFilter) Apply(ctx context.Context, candidates []Candidate) ([]
 			adj[from] = map[string]bool{}
 		}
 		adj[from][to] = true
+		if fn := edgeHolder(e.Properties); fn != "" {
+			key := from + "\x00" + to
+			if edgeFns[key] == nil {
+				edgeFns[key] = map[string]bool{}
+			}
+			edgeFns[key][fn] = true
+		}
 	}
 
 	kept := make([]Candidate, 0, len(candidates))
@@ -86,6 +96,13 @@ func (f *LockOrderFilter) Apply(ctx context.Context, candidates []Candidate) ([]
 			kept = append(kept, c)
 			continue
 		}
+		// The reversed edge's holder is the OTHER site of the inversion —
+		// without it the AI sees "locks A then B" but never learns who locks
+		// them the other way around, so the reverse_order fragment and the
+		// reverse@ hint never rendered before this back-fill.
+		if c.ReverseFunc == "" {
+			c.ReverseFunc = reverseHolder(edgeFns, p.MutexB, p.MutexA, c.FunctionName)
+		}
 		if p.Timed == "true" {
 			// The cycle needed a pthread_mutex_timedlock acquisition, which
 			// returns ETIMEDOUT, so the inversion is recoverable: report it
@@ -99,6 +116,35 @@ func (f *LockOrderFilter) Apply(ctx context.Context, candidates []Candidate) ([]
 		kept = append(kept, c)
 	}
 	return kept, nil, nil
+}
+
+// edgeHolder returns the acquiring function recorded in a LOCK_ORDER edge's
+// properties.
+func edgeHolder(props string) string {
+	var ep struct {
+		Function string `json:"function"`
+	}
+	if json.Unmarshal([]byte(props), &ep) == nil {
+		return ep.Function
+	}
+	return ""
+}
+
+// reverseHolder picks a function that acquires the reversed pair (from→to),
+// preferring one other than the candidate's own function: the AI needs the
+// OTHER site of the inversion to confirm the deadlock.
+func reverseHolder(edgeFns map[string]map[string]bool, from, to, self string) string {
+	fns := edgeFns[from+"\x00"+to]
+	first := ""
+	for fn := range fns {
+		if fn != self {
+			return fn
+		}
+		if first == "" {
+			first = fn
+		}
+	}
+	return first
 }
 
 // reachable reports whether to is reachable from from in adj.

@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -68,6 +69,21 @@ void g(void) {
 		found = true
 		if c.SuspicionLevel != "confirmed" {
 			t.Errorf("deadlock candidate should be confirmed by the lock-order graph, got %q", c.SuspicionLevel)
+		}
+		if !strings.Contains(c.Hint, "locks@m1|m2") {
+			t.Errorf("hint should carry the lock pair, got %q", c.Hint)
+		}
+		if !strings.Contains(c.Hint, "reverse@") {
+			t.Errorf("hint should carry the reverse acquirer (reverse@ back-fill from the LOCK_ORDER edge), got %q", c.Hint)
+		}
+		hasReverse := false
+		for _, f := range c.Evidence {
+			if f.Type == "reverse_order" && strings.Contains(f.Detail, "opposite order") {
+				hasReverse = true
+			}
+		}
+		if !hasReverse {
+			t.Errorf("evidence should include a reverse_order fragment, got %+v", c.Evidence)
 		}
 	}
 	if !found {
