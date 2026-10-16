@@ -2,6 +2,13 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.9.7] - 2026-10-16
+
+### 发布后修复（审计 P3 收尾）
+
+- 候选阶段 `report.md` 的 "Candidates by Skill" 表新增 `Auto-confirmed` 列，逐类型拆分机器确认数——此前纯 auto-confirmed 类型（如 out-of-bounds）在表中显示 0 候选，掩盖了实际已确认的发现。
+- 移除 injection 检测器命令注入事件中无人读取的死字段 `source`。
+
 ## [0.9.6] - 2026-10-16
 
 ### 证据契约断链修复（round2，R2-01~17 闭环）
