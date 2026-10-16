@@ -78,3 +78,66 @@
 
 - resource-leak 把 pthread_mutex_lock 识别为资源获取（hint_case fixture 实证 2 候选）——检测器语义问题，超出证据链范围。
 - wsprintf 污点分支无 variable 键 → varName fallback 到 Expression 全文，dedup 键较长。影响低。
+## 三、交付报告（2026-10-16）
+
+分支 `round2-evidence-contract`（基线 3f8d221），6 个提交，36 文件 +691/-40，
+R2-01~R2-17 全部闭环。**不合并不发布**，留待独立代码评审。
+
+### 3.1 提交清单
+
+| 提交 | 内容 |
+|---|---|
+| `248c9fc` | 审计矩阵与问题清单（本文档一、二节） |
+| `2cd4583` | R2-01~07 字段流补链：props.go flexInt（LockLine/UnlockLine）、Candidate +11 字段、planner 装载、registry 七类 BuildEvidence 渲染（race/toctou_shared_state/crypto/integer/format/path/leak via API） |
+| `8586d34` | R2-08/09/17：buildHint 五类空 Hint 补 token（deadlock locks@/reverse@、UAF/DF free@、lhs-influenced）；_index 表头 token 说明；crypto 死 capability 删除；wsprintf source 键改真实调用名 |
+| `df7fb32` | R2-10~13：12 个 SKILL Evidence Pattern 对齐 |
+| `fb3b156` | R2-14~16 契约测试三件套（守卫首跑抓 12 类漂移，全部修复，含 6 类审计未发现的新漂移） |
+| `65491b8` | 端到端阶段发现的 deadlock ReverseFunc 回填（见 3.3） |
+
+### 3.2 契约测试资产（防回归）
+
+- `sgre/internal/skills/vuln_type_skill_fragments_test.go` — 双向守卫：
+  SKILL 承诺的每个 fragment 必须是 registry 对应块的 `Type:` 字面量，
+  实现发射的必须被 SKILL 承诺。exemptBold 豁免事件命名 bullet 与
+  判定词（confirmed/dismissed/possible——fragment 恒为 snake_case，永不冲突）。
+- `sgre/internal/planner/props_field_flow_test.go` — 事件属性→Candidate→
+  BuildEvidence 渲染链 8 用例（含 flexInt 回归）。
+- `sgre/internal/planner/buildhint_test.go` — 11 类 buildHint 非空不变量。
+
+### 3.3 端到端验证（CLI 0.9.5 重建后实测）
+
+| 验证点 | 结果 |
+|---|---|
+| hint_case（死锁+双泄漏） | Hint `api@pthread_mutex_lock`；CWE-401 Summary 含 `via malloc`；CWE-667 含 locks mA→mB 与 reverse lock_ba |
+| crypto_case（MD5） | 事件与证据均含 `MD5 is cryptographically broken`；Hint `api@MD5 cat@weak_algorithm`；macro-context 按设计走 AI 复核 |
+| secret_case | 值脱敏 `s3cr… (15 chars)`；match_kind 渲染；name-only 保持 suspected |
+| 第一轮回归 fixture×7 | uninit_far3/oob_macro/dbz_case/expr_case2/secret_case/uaf_case/taint_case 全部 rc=0，findings 数符合预期 |
+| write-json 回写 | 幂等 UPSERT 验证：两次写入均 findings_written=1、单行、status 更新 |
+| benchmark 回归 | TestBenchmark_ConvergencePipeline/SafeFunctionFilter/PipelineByVulnType 全绿 |
+| 全量测试 | `go test ./...` 全绿 + nosqlite 子集绿 + check-extension-consistency.py 通过 |
+
+**端到端新发现并已修复**（单测绿≠检出 的实证）：ReverseFunc 全链路无生产者——
+检测器事件不发 reverse_func，LockOrderFilter 丢弃 LOCK_ORDER 边的 function 属性，
+导致 R2-08 的 reverse@ Hint 与 registry 的 reverse_order fragment 在生产环境永远为空。
+修复（`65491b8`）：LockOrderFilter 从反向边回填 ReverseFunc（优先非自身函数），
+timed 周期同样回填供 AI 复核。
+
+### 3.4 前后成本对比（AI 判定视角）
+
+| 维度 | 修复前 | 修复后 |
+|---|---|---|
+| deadlock 复核输入 | "lock-order inversion … locks mA then mB"（无反序站点） | + "function lock_ba acquires the same locks in the opposite order" |
+| 泄漏类复核输入 | "resource mA acquired …"（不知道经哪个 API 获取） | + "via pthread_mutex_lock / via malloc" |
+| crypto 复核输入 | 泛化 weak crypto at line N | "MD5 is cryptographically broken"（可追溯到具体 API） |
+| 5 类 _index 行 Hint | "—"（必须打开证据文件） | locks@/api@/free@ 紧凑 token，多数可从行内判定 |
+| SKILL 承诺与证据文件 | 12+6 类漂移（AI 按文档找不到字段） | 双向守卫锁定，漂移即构建失败 |
+
+### 3.5 未解决项（移交后续轮次）
+
+1. **resource-leak 误报 pthread_mutex_lock**（检测器语义）：hint_case 实证
+   4 候选中 2 个是锁获取；与 deadlock 类型语义重叠。需检测器侧决策
+   （锁获取是否归属 resource-leak，还是仅 deadlock）。
+2. **wsprintf 污点分支无 variable 键**：dedup 键退化为 Expression 全文。
+3. **NULL_GUARD props 四键不被消费**（设计正确，已知遗留，见二节）。
+4. **R2-14 守卫的既有格式化豁免**：`internal/evidence/data_representation_test.go`
+   gofmt 未格式化为仓库既有状态，本轮未触碰。
