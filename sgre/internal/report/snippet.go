@@ -157,6 +157,35 @@ func readCodeContext(filePath string, line, ctx int, roots ...string) *codeConte
 	return &codeContext{Path: path, StartLine: start, EndLine: end, Line: line, Lines: region}
 }
 
+// readCodeSpan reads an explicit [startLine, endLine] region (clamped to the
+// file), for evidence windows anchored on a function span rather than a single
+// line. Line marks the reported line so render() keeps the `>` gutter. It
+// returns nil under the same degrade-not-fail conditions as readCodeContext.
+func readCodeSpan(filePath string, start, end, line int, roots ...string) *codeContext {
+	if start <= 0 || end < start || line <= 0 {
+		return nil
+	}
+	path := resolveSourcePath(filePath, roots...)
+	if path == "" {
+		return nil
+	}
+	all := globalSourceLineCache.fileLines(path)
+	if all == nil || line > len(all) {
+		return nil
+	}
+	if end > len(all) {
+		end = len(all)
+	}
+	region := make([]string, 0, end-start+1)
+	for _, l := range all[start-1 : end] {
+		if len(l) > maxSnippetLineLen {
+			l = l[:maxSnippetLineLen] + " …"
+		}
+		region = append(region, l)
+	}
+	return &codeContext{Path: path, StartLine: start, EndLine: end, Line: line, Lines: region}
+}
+
 // render produces a gutter-numbered C block with the finding line marked, in
 // the compiler-diagnostic style developers already read fluently.
 func (c *codeContext) render() string {

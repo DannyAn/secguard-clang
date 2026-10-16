@@ -163,6 +163,13 @@ type Candidate struct {
 	// names + types), propagated from the index so the AI classifier can read the
 	// operand types without opening the source file.
 	FunctionSignature string `json:"function_signature,omitempty"`
+	// FuncStartLine/FuncEndLine are the enclosing function's body span from the
+	// index. integer-overflow evidence renders the WHOLE span (signature →
+	// candidate, capped at maxContextLines) because its verdict needs the
+	// parameter types, the entry guard and the accumulation chain — the promise
+	// command-instructions.md makes to the classifier.
+	FuncStartLine int `json:"func_start_line,omitempty"`
+	FuncEndLine   int `json:"func_end_line,omitempty"`
 	// LHSKind/RHSKind classify an integer-overflow unsigned_sub_underflow operand
 	// origin (param/local/global/deref/subscript/const/expr); SubRHSInfluenced is
 	// true when the subtrahend is caller/attacker-controlled; SubSink is

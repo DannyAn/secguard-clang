@@ -51,8 +51,9 @@ the row alone (no evidence-file open):
 shape: confirm unless a cross-function invariant bounds `consumed <= total`.
 `guard@none` + `rhs@local` (no `rhs-influenced`) → the `buf_len - length` accumulator
 shape: the verdict rests on whether the accumulator is bounded by the callee's
-truncation contract — the candidate file's `## Code Context` (±8 lines) + the
-`Signature`/`Source` columns are your inputs before any raw source READ.
+truncation contract — the candidate file's `## Code Context` (the WHOLE function
+span, signature → candidate, up to ~200 lines) + the `Signature`/`Source` columns
+are your inputs before any raw source READ.
 
 ### Dangerous Patterns
 

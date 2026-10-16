@@ -258,11 +258,12 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 			// Embed the surrounding source so the classifier does not need a
 			// separate source READ for a suspected/possible candidate. The same
 			// window also appears in report.md's Source column for confirmed.
-			if ctx := readCodeContext(c.Target.File, c.Target.Line, candidateContextLines, o.RootDir); ctx != nil {
+			if ctx := o.candidateContext(pkg.VulnerabilityType, c); ctx != nil {
 				b.WriteString("## Code Context\n\n")
 				fmt.Fprintf(&b, "`%s:%d-%d` — line %d is the reported location.\n\n", ctx.Path, ctx.StartLine, ctx.EndLine, ctx.Line)
 				b.WriteString(ctx.render())
 				b.WriteString("\n")
+
 			}
 
 			if pkg.VulnerabilityType == "unchecked-return" && c.Contract != "" {
@@ -298,6 +299,38 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 		}
 	}
 	return nil
+}
+
+// candidateContext resolves the Code Context region for one candidate.
+// Most types read a ±candidateContextLines window around the reported line,
+// but integer-overflow embeds the WHOLE function span (signature → candidate)
+// as command-instructions.md promises the classifier: its verdict needs the
+// parameter types, the entry guard and the accumulation chain, none of which
+// sit inside a ±8 window. A span longer than maxContextLines is truncated from
+// the signature (the first maxContextLines lines); when the candidate falls
+// outside that truncated window — a pathological >200-line function body — the
+// ±8 local window is used instead so the reported statement stays visible. An
+// unknown span (0) or a stale span (candidate line outside it) also falls back
+// to the local window, so behavior is unchanged for every other type and for
+// candidates whose function span the index did not record.
+func (o *ScanOutput) candidateContext(vulnType string, c planner.EvidenceItem) *codeContext {
+	local := func() *codeContext {
+		return readCodeContext(c.Target.File, c.Target.Line, candidateContextLines, o.RootDir)
+	}
+	if vulnType != "integer-overflow" || c.FunctionStartLine <= 0 || c.FunctionEndLine < c.FunctionStartLine {
+		return local()
+	}
+	start, end := c.FunctionStartLine, c.FunctionEndLine
+	if end-start+1 > maxContextLines {
+		end = start + maxContextLines - 1
+	}
+	if c.Target.Line < start || c.Target.Line > end {
+		return local()
+	}
+	if ctx := readCodeSpan(c.Target.File, start, end, c.Target.Line, o.RootDir); ctx != nil {
+		return ctx
+	}
+	return local()
 }
 
 // writeTypeIndex writes candidates/<vuln-type>/_index.md — the single table a

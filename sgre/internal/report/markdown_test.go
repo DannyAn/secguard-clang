@@ -1,8 +1,10 @@
 package report
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -335,6 +337,133 @@ func TestWriteCandidates_IntegerOverflowSignature(t *testing.T) {
 	if !strings.Contains(content, "- **Signature:** `f(uint32_t buf_len, uint32_t x)`") {
 		t.Errorf("integer-overflow evidence should embed the function signature:\n%s", content)
 	}
+}
+
+// E-01 regression: integer-overflow candidates embed the WHOLE function span
+// (signature → candidate) in Code Context — the promise command-instructions.md
+// makes to the classifier — instead of the ±8 local window. A candidate whose
+// span is unknown (0) keeps the ±8 window, so every other producer is unchanged.
+func TestWriteCandidates_IntegerOverflowFunctionSpan(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "span.c")
+	var lines []string
+	lines = append(lines, "#include <stdlib.h>", "")
+	lines = append(lines, "static unsigned int process(unsigned int r) { return r; }", "")
+	funcStart := len(lines) + 1
+	lines = append(lines, "int f(unsigned int total, unsigned int consumed) {")
+	for i := 0; i < 14; i++ {
+		lines = append(lines, fmt.Sprintf("    acc%d = %d;", i, i))
+	}
+	candLine := len(lines) + 1
+	lines = append(lines, "    process(total - consumed);")
+	lines = append(lines, "    return 0;", "}")
+	funcEnd := len(lines)
+	body := strings.Join(lines, "\n") + "\n"
+	if err := os.WriteFile(src, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	o := &ScanOutput{ScanDir: dir, ScanID: "sc_test", RootDir: dir}
+	spanPkg := &planner.PlanResult{
+		VulnerabilityType: "integer-overflow",
+		Candidates: []planner.EvidenceItem{{
+			SuspicionLevel:    "suspected",
+			Category:          "unsigned_sub_underflow",
+			FunctionStartLine: funcStart,
+			FunctionEndLine:   funcEnd,
+			Target:            planner.TargetInfo{File: "span.c", Function: "f", Line: candLine},
+		}},
+	}
+	if err := o.writeCandidates([]*planner.PlanResult{spanPkg}); err != nil {
+		t.Fatal(err)
+	}
+
+	content := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "integer-overflow", "001_span_c_"+strconv.Itoa(candLine)+".md")))
+	if !strings.Contains(content, fmt.Sprintf("`%s:%d-%d`", src, funcStart, funcEnd)) {
+		t.Errorf("integer-overflow Code Context should embed the whole function span [%d,%d]:\n%s", funcStart, funcEnd, content)
+	}
+	if !strings.Contains(content, fmt.Sprintf("%d | int f(unsigned int total, unsigned int consumed) {", funcStart)) {
+		t.Errorf("integer-overflow Code Context should include the signature line %d:\n%s", funcStart, content)
+	}
+	if !strings.Contains(content, fmt.Sprintf("> %d |     process(total - consumed);", candLine)) {
+		t.Errorf("integer-overflow Code Context should mark the candidate line %d:\n%s", candLine, content)
+	}
+}
+
+// E-01 regression, fallback half: a candidate whose line falls outside its
+// recorded span (stale index) or whose span exceeds maxContextLines with the
+// candidate beyond the truncated window keeps the ±8 local window, so the
+// reported statement is always visible.
+func TestWriteCandidates_IntegerOverflowSpanFallback(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "fallback.c")
+	var lines []string
+	lines = append(lines, "#include <stdlib.h>", "")
+	lines = append(lines, "int g(unsigned int a, unsigned int b) {")
+	candLine := len(lines) + 1
+	lines = append(lines, "    process(a - b);")
+	lines = append(lines, "    return 0;", "}")
+	totalLines := len(lines)
+	body := strings.Join(lines, "\n") + "\n"
+	if err := os.WriteFile(src, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A >maxContextLines function span whose candidate sits at line 204: the
+	// span truncates to [1,200] from the signature, so the candidate falls
+	// outside and must fall back to the ±8 window.
+	srcLong := filepath.Join(dir, "overlong.c")
+	var longLines []string
+	longLines = append(longLines, "#include <stdlib.h>")
+	for i := 0; i < 202; i++ {
+		longLines = append(longLines, "    int pad;")
+	}
+	longCand := len(longLines) + 1
+	longLines = append(longLines, "    process(a - b);")
+	longLines = append(longLines, "    return 0;", "}")
+	longTotal := len(longLines)
+	if err := os.WriteFile(srcLong, []byte(strings.Join(longLines, "\n")+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	o := &ScanOutput{ScanDir: dir, ScanID: "sc_test", RootDir: dir}
+	mk := func(file string, line, spanStart, spanEnd int) planner.EvidenceItem {
+		return planner.EvidenceItem{
+			SuspicionLevel:    "suspected",
+			Category:          "unsigned_sub_underflow",
+			FunctionStartLine: spanStart,
+			FunctionEndLine:   spanEnd,
+			Target:            planner.TargetInfo{File: file, Function: "g", Line: line},
+		}
+	}
+	// stale span: candidate line is outside [start,end] entirely
+	stale := mk("fallback.c", candLine, candLine+50, candLine+60)
+	// over-long span: candidate beyond the truncated [1,200] window
+	overlong := mk("overlong.c", longCand, 1, 300)
+	pkgs := []*planner.PlanResult{{
+		VulnerabilityType: "integer-overflow",
+		Candidates:        []planner.EvidenceItem{stale, overlong},
+	}}
+	if err := o.writeCandidates(pkgs); err != nil {
+		t.Fatal(err)
+	}
+
+	checkWindow := func(name string, file string, line, total int) {
+		t.Helper()
+		content := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "integer-overflow", name)))
+		wantStart, wantEnd := line-8, line+8
+		if wantStart < 1 {
+			wantStart = 1
+		}
+		if wantEnd > total {
+			wantEnd = total
+		}
+		if !strings.Contains(content, fmt.Sprintf("`%s:%d-%d`", file, wantStart, wantEnd)) {
+			t.Errorf("%s with unusable span should fall back to the ±8 window [%d,%d]:\n%s", name, wantStart, wantEnd, content)
+		}
+	}
+	checkWindow(fmt.Sprintf("001_fallback_c_%d.md", candLine), src, candLine, totalLines)
+	checkWindow(fmt.Sprintf("002_overlong_c_%d.md", longCand), srcLong, longCand, longTotal)
 }
 
 // FixSuggestion must branch integer-overflow by category: the dominant

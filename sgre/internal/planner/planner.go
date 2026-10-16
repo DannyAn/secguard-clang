@@ -332,10 +332,14 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 		funcName := ""
 		fileID := int64(0)
 		funcSignature := ""
+		funcStartLine := 0
+		funcEndLine := 0
 		if fn := funcsByID[e.EntityID]; fn != nil {
 			funcName = fn.Name
 			fileID = fn.FileID
 			funcSignature = fn.Signature
+			funcStartLine = fn.StartLine
+			funcEndLine = fn.EndLine
 		}
 
 		line := 0
@@ -414,6 +418,8 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			ActualType:        props.Actual,
 			CastType:          props.Cast,
 			FunctionSignature: funcSignature,
+			FuncStartLine:     funcStartLine,
+			FuncEndLine:       funcEndLine,
 			LHSKind:           props.LHSKind,
 			RHSKind:           props.RHSKind,
 			SubRHSInfluenced:  props.RHSInfluenced == "true",

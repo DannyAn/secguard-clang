@@ -28,6 +28,13 @@ type EvidenceItem struct {
 	// Signature is the enclosing function's declared signature (parameter names
 	// + types), so the AI can read the operand types without a source READ.
 	Signature string `json:"signature,omitempty"`
+	// FunctionStartLine/FunctionEndLine are the enclosing function's body span
+	// (1-based, inclusive). integer-overflow renders the whole span in its Code
+	// Context ("signature → candidate, up to ~200 lines" — the promise
+	// command-instructions.md and agent-body.md make to the classifier); other
+	// types keep the ±8 local window around the reported line. 0 = span unknown.
+	FunctionStartLine int `json:"function_start_line,omitempty"`
+	FunctionEndLine   int `json:"function_end_line,omitempty"`
 	// Contract carries the callee failure-contract provenance for an
 	// unchecked-return candidate so the AI classifier can see — from the index
 	// row or the evidence file alone — whether "the return is unchecked" is by
@@ -214,6 +221,9 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 		Hint:       buildHint(c, spec),
 		Evidence:   spec.BuildEvidence(c),
 		Signature:  c.FunctionSignature,
+
+		FunctionStartLine: c.FuncStartLine,
+		FunctionEndLine:   c.FuncEndLine,
 	}
 	if c.SuspicionLevel != "" {
 		item.SuspicionLevel = c.SuspicionLevel
