@@ -220,6 +220,49 @@ func TestNullDeref_EvidenceRoles(t *testing.T) {
 	t.Errorf("null-deref definite-null evidence should carry a condition role, got %+v", def)
 }
 
+func TestOutOfBounds_EvidenceCarriesBufferIndex(t *testing.T) {
+	spec, err := GetVulnTypeSpec("out-of-bounds")
+	if err != nil {
+		t.Fatal(err)
+	}
+	frags := spec.BuildEvidence(Candidate{
+		FunctionName: "parse",
+		Line:         27,
+		Array:        "buf",
+		Index:        "user_len + 1",
+		Size:         16,
+	})
+	var hasBuffer, hasIndex, hasPath bool
+	for _, e := range frags {
+		switch e.Type {
+		case "buffer":
+			hasBuffer = true
+			if e.Detail != "array: buf (capacity: 16 elements)" {
+				t.Errorf("buffer fragment detail = %q, want array + capacity", e.Detail)
+			}
+		case "index":
+			hasIndex = true
+			if e.Detail != "access index: user_len + 1" {
+				t.Errorf("index fragment detail = %q, want the access index expression", e.Detail)
+			}
+		case "call_path":
+			hasPath = true
+		}
+	}
+	if !hasBuffer || !hasIndex || !hasPath {
+		t.Errorf("out-of-bounds evidence should carry buffer + index + path, got buffer=%v index=%v path=%v (%+v)", hasBuffer, hasIndex, hasPath, frags)
+	}
+
+	// A heap OOB with no statically-known allocation size must not render an
+	// empty capacity parenthetical.
+	heap := spec.BuildEvidence(Candidate{FunctionName: "walk", Line: 9, Array: "blk", Index: "i"})
+	for _, e := range heap {
+		if e.Type == "buffer" && e.Detail != "array: blk" {
+			t.Errorf("heap buffer detail = %q, want no capacity suffix when size is unknown", e.Detail)
+		}
+	}
+}
+
 func TestRegistry_SizeofMisuseCategoryConfidence(t *testing.T) {
 	spec, err := GetVulnTypeSpec("sizeof-misuse")
 	if err != nil {

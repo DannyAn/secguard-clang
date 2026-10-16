@@ -1,6 +1,33 @@
 package planner
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strconv"
+	"strings"
+)
+
+// flexInt decodes a JSON number or a numeric string ("4"). Some detectors emit
+// properties through map[string]string (numbers via strconv.Itoa), so a plain
+// int field silently zeroes on unmarshal and the value never reaches the
+// candidate. flexInt accepts both shapes; a non-numeric value (e.g. crypto
+// key_size carrying source text) decodes to 0 without aborting the decode of
+// the sibling fields.
+type flexInt int
+
+func (n *flexInt) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(strings.TrimSpace(string(b)), `"`)
+	if s == "" || s == "null" {
+		*n = 0
+		return nil
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		*n = 0
+		return nil
+	}
+	*n = flexInt(v)
+	return nil
+}
 
 // eventProps is the unified, typed view of the free-form JSON stored in
 // security_events.properties. Detectors emit a loose subset of these keys;
@@ -50,18 +77,18 @@ type eventProps struct {
 	// Size is the resolved array element count the buffer-overflow detector
 	// attached to a BUFFER_ACCESS event, used by the planner's range-oob filter
 	// to re-verify the index interval against the capacity (BO-01/02).
-	Size       int    `json:"size"`
-	KeySize    int    `json:"key_size"`
-	Reason     string `json:"reason"`
-	CheckFunc  string `json:"check_function"`
-	UseFunc    string `json:"use_function"`
-	PathArg    string `json:"path_arg"`
-	Path       string `json:"path"`       // path-traversal sink argument text
-	FormatArg  string `json:"format_arg"` // format-string sink argument text
-	Mutex      string `json:"mutex"`
-	LockLine   int    `json:"lock_line"`
-	UnlockLine int    `json:"unlock_line"`
-	Divisor    string `json:"divisor"` // divide-by-zero divisor expression
+	Size       flexInt `json:"size"`
+	KeySize    flexInt `json:"key_size"`
+	Reason     string  `json:"reason"`
+	CheckFunc  string  `json:"check_function"`
+	UseFunc    string  `json:"use_function"`
+	PathArg    string  `json:"path_arg"`
+	Path       string  `json:"path"`       // path-traversal sink argument text
+	FormatArg  string  `json:"format_arg"` // format-string sink argument text
+	Mutex      string  `json:"mutex"`
+	LockLine   int     `json:"lock_line"`
+	UnlockLine int     `json:"unlock_line"`
+	Divisor    string  `json:"divisor"` // divide-by-zero divisor expression
 	// DefinitelyZero is "true" when the divide-by-zero detector proved the
 	// divisor is exactly zero (a literal `x/0` or a zero-valued constant symbol),
 	// so the RangeFilter auto-confirms it instead of deferring to the AI agent.

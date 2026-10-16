@@ -774,10 +774,21 @@ func init() {
 			"heap_oob_read":  "confirmed",
 		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
-			return []EvidenceFragment{
+			frags := []EvidenceFragment{
 				{Type: "out_of_bounds", Role: "sink", Detail: fmt.Sprintf("out-of-bounds access in function %s at line %d", c.FunctionName, c.Line)},
-				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},
 			}
+			if c.Array != "" {
+				capacity := ""
+				if c.Size > 0 {
+					capacity = fmt.Sprintf(" (capacity: %d elements)", c.Size)
+				}
+				frags = append(frags, EvidenceFragment{Type: "buffer", Role: "sink", Detail: fmt.Sprintf("array: %s%s", c.Array, capacity)})
+			}
+			if c.Index != "" {
+				frags = append(frags, EvidenceFragment{Type: "index", Role: "condition", Detail: fmt.Sprintf("access index: %s", c.Index)})
+			}
+			frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
+			return frags
 		},
 	})
 

@@ -455,7 +455,7 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			FieldPath:         props.FieldPath,
 			Array:             props.Array,
 			Index:             props.Index,
-			Size:              props.Size,
+			Size:              int(props.Size),
 			ExpectedType:      props.Expected,
 			ActualType:        props.Actual,
 			CastType:          props.Cast,
