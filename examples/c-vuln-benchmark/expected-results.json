@@ -1,5 +1,5 @@
 {
-  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327) + 4 个测试用例 (Phase 2: heap OOB write / format overflow / data race / OOB read) + 4 个测试用例 (Phase 3: null-deref sizeof + 流敏感 FP 抑制) + 3 个测试用例 (Phase 4: uninit 流敏感收敛，来自 zlib 生产环境缺陷) + 12 个测试用例 (Phase 6: resource-leak CWE-404，其中 RL-10~RL-12 为已确认检测缺口 known-gap 标记保留作回归目标，validator 对这类用例的漏报不判失败）。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。校验按 (漏洞类型, 文件, 行±容差) 与 verdict 阶段 result.sarif 交叉比对（见 benchmark.md「运行方式」）；detector → 漏洞类型映射见 scripts/validate-benchmark.py 的 DETECTOR_TO_TYPE，用 `--selftest` 可校验该映射是否覆盖全部标签；另加 34 个测试用例 (Phase 11: 补齐 dangerous-function / double-free / format-string / signal-handler 四个零覆盖 skill，并为 deadlock / hardcoded-secret / out-of-bounds / use-after-free 补上缺失的 no_finding 反证防线 —— 22 个注册漏洞类型至此每个都有「该报」与「不该报」对照；FS-05/DF-05/SH-05 为其存量文件上已检出但未纳入 ground truth 的缺陷)；ND-05/ND-06 由已删除的 examples/nullflow-demo/src/demo.c 迁入（拷贝传播收敛、return 之后不可达解引用），该独立样例项目的其余 3 个场景与 p5_null_flow.c 重复，故随迁移一并移除；ML-01/ML-02 补上 memory-leak 两条此前未锁定、仅以候选形式存在的真泄漏（条件路径泄漏 + 从不 free），使该类型每条候选都有 ground truth 对应；另加 5 个测试用例 (Phase 12: v0.7.1 缺陷修复回归 —— memory-leak 错误路径 return p 泄漏 (ML-03)、覆盖指针丢分配 (ML-04)、resource-leak 括号错误返回 (RL-15)、mmap 泄漏 (RL-16)、signal-handler strncpy 变量名巧合误杀 (SH-06))；另加 2 个测试用例 (Phase 13: v0.7.4 误报修复回归 —— 链表删除间接释放函数 + alias 重新赋值 UAF 误报 (UAF-02)、signed-compare 跨作用域同名遮蔽误报 (SC-01))；另加 2 个测试用例 (Phase 15: memory-leak 容器逃逸误报修复回归 —— malloc 容器写入缓冲区后 return 转移所有权，findEscapeLines pointer_expression 分支 allocVarNames 回归 (ML-05/ML-06))；另加 2 个测试用例 (Phase 16: divide-by-zero 非零源除数误报修复回归 —— 结构体字段从非零返回函数赋值 (P16-01)、全局变量从非零常量赋值 (P16-02)，globalInvariants 非零源赋值扫描 + RangeFilter field-chain invariant 检查回归)。",
+  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327) + 4 个测试用例 (Phase 2: heap OOB write / format overflow / data race / OOB read) + 4 个测试用例 (Phase 3: null-deref sizeof + 流敏感 FP 抑制) + 3 个测试用例 (Phase 4: uninit 流敏感收敛，来自 zlib 生产环境缺陷) + 12 个测试用例 (Phase 6: resource-leak CWE-404，其中 RL-10~RL-12 为已确认检测缺口 known-gap 标记保留作回归目标，validator 对这类用例的漏报不判失败）。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。校验按 (漏洞类型, 文件, 行±容差) 与 verdict 阶段 result.sarif 交叉比对（见 benchmark.md「运行方式」）；detector → 漏洞类型映射见 scripts/validate-benchmark.py 的 DETECTOR_TO_TYPE，用 `--selftest` 可校验该映射是否覆盖全部标签；另加 34 个测试用例 (Phase 11: 补齐 dangerous-function / double-free / format-string / signal-handler 四个零覆盖 skill，并为 deadlock / hardcoded-secret / out-of-bounds / use-after-free 补上缺失的 no_finding 反证防线 —— 22 个注册漏洞类型至此每个都有「该报」与「不该报」对照；FS-05/DF-05/SH-05 为其存量文件上已检出但未纳入 ground truth 的缺陷)；ND-05/ND-06 由已删除的 examples/nullflow-demo/src/demo.c 迁入（拷贝传播收敛、return 之后不可达解引用），该独立样例项目的其余 3 个场景与 p5_null_flow.c 重复，故随迁移一并移除；ML-01/ML-02 补上 memory-leak 两条此前未锁定、仅以候选形式存在的真泄漏（条件路径泄漏 + 从不 free），使该类型每条候选都有 ground truth 对应；另加 5 个测试用例 (Phase 12: v0.7.1 缺陷修复回归 —— memory-leak 错误路径 return p 泄漏 (ML-03)、覆盖指针丢分配 (ML-04)、resource-leak 括号错误返回 (RL-15)、mmap 泄漏 (RL-16)、signal-handler strncpy 变量名巧合误杀 (SH-06))；另加 2 个测试用例 (Phase 13: v0.7.4 误报修复回归 —— 链表删除间接释放函数 + alias 重新赋值 UAF 误报 (UAF-02)、signed-compare 跨作用域同名遮蔽误报 (SC-01))；另加 2 个测试用例 (Phase 15: memory-leak 容器逃逸误报修复回归 —— malloc 容器写入缓冲区后 return 转移所有权，findEscapeLines pointer_expression 分支 allocVarNames 回归 (ML-05/ML-06))；另加 2 个测试用例 (Phase 16: divide-by-zero 非零源除数误报修复回归 —— 结构体字段从非零返回函数赋值 (P16-01)、全局变量从非零常量赋值 (P16-02)，globalInvariants 非零源赋值扫描 + RangeFilter field-chain invariant 检查回归)；另加 12 个测试用例 (Phase 17: 补齐 argument-type / data-representation / implicit-contract 三个此前零覆盖的 contract 类型 —— 每类 2 个 finding + 2 个 no_finding；P17-01~04 显式指针 cast 的越字节读与同尺寸/void* 合法边界，P17-05~08 qsort/bsearch base 元素表示与 comparator 解释一致/不一致，P17-09~12 结构体指针字段部分守卫 vs 完全守卫/函数内写入)。",
   "_benchmark_doc": "benchmark.md",
   "_validator": "scripts/validate-benchmark.py",
   "summary": {
@@ -1546,6 +1546,126 @@
       "code": "index % g_thread_count —— g_thread_count assigned from non-zero constant 4, global invariant dismisses",
       "cwe": "CWE-369",
       "detector": "divide_by_zero",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P17-01",
+      "category": "p17_contract_types",
+      "file": "src/p17_contract_types.c",
+      "line": 31,
+      "code": "p17_sink_u32((uint32_t *)&flag) —— bool 对象(1 byte)被当作 uint32(4 byte)读取",
+      "cwe": "CWE-686",
+      "detector": "argument_type",
+      "expect": "finding"
+    },
+    {
+      "id": "P17-02",
+      "category": "p17_contract_types",
+      "file": "src/p17_contract_types.c",
+      "line": 36,
+      "code": "p17_sink_u64((uint64_t *)&n) —— uint32 对象被当作 uint64 读取",
+      "cwe": "CWE-686",
+      "detector": "argument_type",
+      "expect": "finding"
+    },
+    {
+      "id": "P17-03",
+      "category": "p17_contract_types",
+      "file": "src/p17_contract_types.c",
+      "line": 41,
+      "code": "p17_sink_u32((uint32_t *)&n) —— int32/uint32 同尺寸整数重解释，合法边界",
+      "cwe": "CWE-686",
+      "detector": "argument_type",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P17-04",
+      "category": "p17_contract_types",
+      "file": "src/p17_contract_types.c",
+      "line": 46,
+      "code": "p17_sink_void((uint32_t *)&flag) —— void* 形参是合法泛型边界",
+      "cwe": "CWE-686",
+      "detector": "argument_type",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P17-05",
+      "category": "p17_contract_types",
+      "file": "src/p17_contract_types.c",
+      "line": 67,
+      "code": "qsort(char buf[], sizeof(char), cmp_ptr) —— char 元素被 comparator 当作 char* 读取",
+      "cwe": "CWE-843",
+      "detector": "data_representation",
+      "expect": "finding"
+    },
+    {
+      "id": "P17-06",
+      "category": "p17_contract_types",
+      "file": "src/p17_contract_types.c",
+      "line": 73,
+      "code": "bsearch(key, char buf[], sizeof(char), cmp_ptr) —— bsearch base 元素同样是 char，comparator 仍按 char* 解释",
+      "cwe": "CWE-843",
+      "detector": "data_representation",
+      "expect": "finding"
+    },
+    {
+      "id": "P17-07",
+      "category": "p17_contract_types",
+      "file": "src/p17_contract_types.c",
+      "line": 78,
+      "code": "qsort(char *arr[], sizeof(char *), cmp_ptr) —— 元素本身就是 char*，表示一致",
+      "cwe": "CWE-843",
+      "detector": "data_representation",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P17-08",
+      "category": "p17_contract_types",
+      "file": "src/p17_contract_types.c",
+      "line": 83,
+      "code": "qsort(char buf[], sizeof(char), cmp_scalar) —— 标量 comparator 与 char 元素一致",
+      "cwe": "CWE-843",
+      "detector": "data_representation",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P17-09",
+      "category": "p17_contract_types",
+      "file": "src/p17_contract_types.c",
+      "line": 109,
+      "code": "p17_contract_partial_guard —— group_data 在 flag!=0 路径被 null-check，flag==0 路径无守卫解引用",
+      "cwe": "CWE-20",
+      "detector": "contract_gap",
+      "expect": "finding"
+    },
+    {
+      "id": "P17-10",
+      "category": "p17_contract_types",
+      "file": "src/p17_contract_types.c",
+      "line": 121,
+      "code": "p17_contract_direct_counted —— 直接字段下标在 count 循环内无守卫解引用（部分守卫）",
+      "cwe": "CWE-20",
+      "detector": "contract_gap",
+      "expect": "finding"
+    },
+    {
+      "id": "P17-11",
+      "category": "p17_contract_types",
+      "file": "src/p17_contract_types.c",
+      "line": 132,
+      "code": "p17_contract_fully_guarded —— null 守卫支配该解引用，planner 守卫支配性过滤丢弃",
+      "cwe": "CWE-20",
+      "detector": "contract_gap",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P17-12",
+      "category": "p17_contract_types",
+      "file": "src/p17_contract_types.c",
+      "line": 142,
+      "code": "p17_contract_written_in_scope —— 字段在函数内被写，属 function-controlled，不产生 implicit-contract 候选",
+      "cwe": "CWE-20",
+      "detector": "contract_gap",
       "expect": "no_finding"
     }
   ]

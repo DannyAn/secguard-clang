@@ -84,6 +84,9 @@ DETECTOR_TO_TYPE = {
     "out_of_bounds": "out-of-bounds",
     "deadlock": "deadlock",
     "uninit": "uninit",
+    "argument_type": "argument-type",
+    "data_representation": "data-representation",
+    "contract_gap": "implicit-contract",
 }
 
 # Every registered vuln type must appear here, and so must every CWE a type can

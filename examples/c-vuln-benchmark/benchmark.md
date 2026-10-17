@@ -11,17 +11,23 @@
 >   --expected examples/c-vuln-benchmark/expected-results.json
 > ```
 >
-> **历史 detector 覆盖缺口（已闭环）**：`PH1-01` 整数溢出 `malloc(count * obj_size)` 与 `PH1-06` 注册表凭据 `RegSetValueExA` 曾未被 detector 捕获，现均已产出候选。
+> **历史 detector 覆盖缺口**：`PH1-06` 注册表凭据 `RegSetValueExA` 已闭环（hardcoded-secret
+> 有候选）。`PH1-01` 仍是 **open gap**：fixture 的 `malloc(count * obj_size)` 两个形参都是
+> `size_t`，在 LP64 下乘积是 64 位、不会溢出（detector 的 `wideCount > 0` 规则据此不报，
+> 这条规则本身是对的）；要让它成为真阳性，需把 fixture 改成真正的 32 位乘积（如
+> `uint32_t count, uint32_t obj_size`），并修 `sizeCalcExprs` 的 narrow-product 守卫
+> （当前它拿乘积和 64 位上限比较，但 C 的乘法按操作数公共类型求值，两个 `uint32_t`
+> 的乘积在 32 位就回绕）。详见文末「检测器缺口 backlog」。
 
 ## 测试规模
 
 | 指标 | 数值 |
 |------|------|
-| 源文件 | 32 |
-| 总测试用例 | 137 |
-| **覆盖漏洞类型（24 个注册 skill）** | **22 / 24** |
-| expect-finding（应报告） | 74 |
-| expect-no_finding（应被抑制） | 63 |
+| 源文件 | 35 |
+| 总测试用例 | 166 |
+| **覆盖漏洞类型（25 个注册 skill）** | **25 / 25** |
+| expect-finding（应报告） | 92 |
+| expect-no_finding（应被抑制） | 74 |
 | Phase 0（P0-P3/TP 反证骨架） | 18 |
 | Phase 1（CWE-190/362/798/667/327） | 12 |
 | Phase 2（扩展典型漏洞） | 4 |
@@ -39,6 +45,7 @@
 | Phase 14（dealloc 启发式误报修复） | 3 |
 | **Phase 15（memory-leak 容器逃逸误报修复）** | **2** |
 | **Phase 16（divide-by-zero 非零源除数误报修复）** | **2** |
+| **Phase 17（补齐 3 个零覆盖 contract 类型：argument-type / data-representation / implicit-contract）** | **12** |
 | 应完全不产生 Finding (P0: Detector EXCLUDE) | 7 |
 | 应产生 Finding 但被 P1 抑制 | 3 |
 | 应产生 Finding 但被 P2 抑制 | 4 |
@@ -47,10 +54,11 @@
 > 为准**（`python3 scripts/validate-benchmark.py --coverage`）。
 >
 > 每个**有 ground truth 的类型**都同时具备 `finding` 与 `no_finding` 用例 —— 用
-> `--coverage` 可复核（见「运行方式」）。`argument-type` / `data-representation`
-> 两个注册类型目前**零覆盖**，`--coverage` 会以非零退出显式提示，不再静默漏掉。
-> 这是本基准的意图：只测「能不能报」而不测「该不该闭嘴」的类型，其精度主张是没有
-> 被验证的。
+> `--coverage` 可复核（见「运行方式」）。Phase 17 补齐了 `argument-type`
+> （CWE-686）、`data-representation`（CWE-843）、`implicit-contract`（CWE-20）三个
+> 此前零覆盖的 contract 类型，25 个注册类型现在全部有「该报」与「不该报」对照；
+> `--coverage` 退出码 0。这是本基准的意图：只测「能不能报」而不测「该不该闭嘴」的
+> 类型，其精度主张是没有被验证的。
 
 ## 分类定义
 
@@ -479,3 +487,53 @@ dismiss。
 `TestGlobalInvariants_ZeroInitNotSuppressed`）。行号须按 sink 实际行填写（P16-01=32、
 P16-02=42）。
 
+
+## Phase 17 — 补齐三个零覆盖 contract 类型（2026-10 新增）
+
+`--coverage` 之前把 `argument-type`（CWE-686）、`data-representation`（CWE-843）、
+`implicit-contract`（CWE-20）列为**零覆盖**：这三个类型有 detector、有 skill、有
+planner 过滤链，却没有任何 ground truth 用例，等于「召回与精度都未被验证」。
+Phase 17 用 `src/p17_contract_types.c` 给每类补 2 个 finding + 2 个 no_finding。
+
+| # | 类型 | 行 | 场景 | 期望 |
+|---|------|----|------|------|
+| P17-01 | argument-type | 31 | `p17_sink_u32((uint32_t *)&flag)`：`bool`(1B) 对象被当 `uint32_t`(4B) 读 | finding |
+| P17-02 | argument-type | 36 | `p17_sink_u64((uint64_t *)&n)`：`uint32_t`(4B) 对象被当 `uint64_t`(8B) 读 | finding |
+| P17-03 | argument-type | 41 | `p17_sink_u32((uint32_t *)&n)`：int32/uint32 同尺寸整数重解释，合法边界 | no_finding |
+| P17-04 | argument-type | 46 | `p17_sink_void((uint32_t *)&flag)`：`void *` 形参是合法泛型边界 | no_finding |
+| P17-05 | data-representation | 67 | `qsort(char buf[], sizeof(char), cmp_ptr)`：char 元素被 comparator 当 `char *` 读 | finding |
+| P17-06 | data-representation | 73 | `bsearch(needle, char buf[], sizeof(char), cmp_ptr)`：bsearch base 元素同样是 char | finding |
+| P17-07 | data-representation | 78 | `qsort(char *arr[], sizeof(char *), cmp_ptr)`：元素本身就是 `char *`，表示一致 | no_finding |
+| P17-08 | data-representation | 83 | `qsort(char buf[], sizeof(char), cmp_scalar)`：标量 comparator 与 char 元素一致 | no_finding |
+| P17-09 | implicit-contract | 109 | `p17_contract_partial_guard`：`flag != 0` 路径 null-check，`flag == 0` 路径无守卫解引用 | finding |
+| P17-10 | implicit-contract | 121 | `p17_contract_direct_counted`：直接字段下标在 count 循环内无守卫解引用（部分守卫） | finding |
+| P17-11 | implicit-contract | 132 | `p17_contract_fully_guarded`：null 守卫支配该解引用，planner guard-dominance 过滤丢弃 | no_finding |
+| P17-12 | implicit-contract | 142 | `p17_contract_written_in_scope`：字段在函数内被写，function-controlled，不产生候选 | no_finding |
+
+六条 `no_finding` 都是**确定性抑制**，不是靠 AI 研判放水：argument-type 的同尺寸/
+`void *` 在 `compatibleObjectTypes` 直接过滤；data-representation 的 depth 相等在
+detector 直接跳过；implicit-contract 的 fully-guarded 被 planner 的
+`ContractGapFilter` 守卫支配性分析丢弃、written-in-scope 被 `writtenFields` 排除。
+因此这四条在候选阶段就看不到条目，validator 不会出现「无候选 → 误判 PASS」的假阳性
+守卫（`no_finding` 的语义是「result.sarif 同类型同位置没有 finding」，与候选存在与否
+无关；这里额外保证了候选也不存在，避免浪费 AI 复核预算）。
+
+> 行号以 `src/p17_contract_types.c` 当前内容为准（validator 容差 ±3）。改动该 fixture
+> 的任何一行后，务必同步本表与 `expected-results.json` 的 `line`，否则 no_finding
+> 守卫会因行号漂移而失效（Phase 15 的教训）。
+
+## 检测器缺口 backlog（2026-10 盘点）
+
+以下三条是 **open gap**（不在 Phase 17 的 contract 类型范围内），已回源定位到具体
+detector/filter，而不是「再写一个 detector」能解决的：
+
+| ID | 类型 | 根因（已回源） | 落地方案 | 工作量/风险 |
+|----|------|----------------|----------|-------------|
+| RL-13 | resource-leak (CWE-404) | `mkstemp` 在 `apikb.SafeFunctions`（临时文件竞态安全），`SafeFunctionFilter` 把整个 acquire 丢弃；但 fd 生命周期与「临时文件名安全」是两回事 | 在该 filter 增加 `resource_acquire`/`resource_leak` category 的 carve-out（与 path_traversal / format_string / argument_injection 现有 carve-out 同款）；`IsSafeWrapper` 仍可 dismiss | 小 / 低 |
+| PH1-01 | integer-overflow (CWE-190) | ① fixture 两个形参都是 `size_t`，LP64 下乘积 64 位、不会溢出（ground truth 平台歧义）；② `sizeCalcExprs` 的 narrow-product 守卫拿 `product < 2^64` 判安全，但 C 的乘法按操作数**公共类型**求值——两个 `uint32_t` 在 32 位就回绕，`uint16_t` 提升到 `int` 后也可能溢出 `INT_MAX` | ① fixture 改 `uint32_t`（或产品明确声明支持 32 位目标，再按 target width 判定）；② 按公共类型宽度重写守卫：只有 worst-case product 能放进公共类型上限才 suppress（`uint8×uint8` 可 suppress；`uint16/uint32` 不可） | 中 / 中 |
+| DF-05 | double-free (CWE-415) | detector 已有 call summary + 全局槽位聚合，但没有「callee 释放全局数组槽位」的 release-effect summary；`main` 里 `release_entry(e1)` 已释放的槽位被 `cleanup_entries()` 再次 free，跨函数不可见 | 给 summary 增加 release-effect（callee 释放 `g_entries[*]` 一类全局数组元素），再与「局部变量存入该槽位 + 已 release」匹配；**不要**升级成通用 points-to 分析 | 大 / 中高 |
+
+**决策规则（以后遇到同类缺口）**：CWE 已注册、且 pipeline 已能为该缺陷的某些形状产
+seed → **增强现有 detector/filter**，不新增 vuln type。只有出现新 CWE 类，或需要独立
+研判策略/skill 时，才走 `ADDING_A_VULN_TYPE.md` 的 6 步流程新增类型（同时要过
+`TestVulnTypeSkillConsistency` 与 `TestConfirmedTierPolicy` 两个守卫）。
