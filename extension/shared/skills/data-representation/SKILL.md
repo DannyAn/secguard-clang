@@ -61,6 +61,15 @@ versus the comparator's interpretation of the opaque pointer. Depth is the
 phase-1 signal; struct-field / object-size mismatches are future signals under
 the same pattern.
 
+### Hint Tokens (Verdict Basis)
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `cast@<type>` | the value is explicitly cast to this type at the candidate line | judge the truncation/reinterpretation intent |
+
+The cast token names the reinterpretation; the surrounding statement
+(from the `Source` column) states whether width or representation is lost.
+
 ### Detection Logic
 1. For each function, record how it casts its `void *` parameters
    (`(char **)a` → element is a pointer, `(char *)a` → element is a scalar).

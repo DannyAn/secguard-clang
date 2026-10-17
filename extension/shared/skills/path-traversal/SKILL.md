@@ -24,6 +24,16 @@ A path-traversal candidate has:
 - **taint_source** (when the pipeline proved it): a user-controlled value
   (getenv / argv / recv / scanf / fgets …) reaches the path argument
 
+### Hint Tokens (Verdict Basis)
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `path-arg@<expr>` | the path argument expression — the traversal root | judge whether a caller can inject `../` segments |
+
+`path-arg@` names the argument the traversal rides on; `tainted` alongside
+it means the segments come from outside — confirm unless a sanitizer is
+visible in the Code Context.
+
 ### Classification Rules
 
 | Condition | Classification |

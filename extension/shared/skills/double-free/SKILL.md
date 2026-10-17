@@ -18,6 +18,18 @@ A double-free candidate has:
 - **may_free**: the first release is CONDITIONAL — the release helper frees only when its own condition holds (`if (ref_count <= 0) free(p)`). The candidate is a possible double free, never a must-proof.
 - **call_path**: The function is reachable from an entry point
 
+### Hint Tokens (Verdict Basis)
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `free@N,M` | the two free-site lines | the ## Code Context window covers both |
+| `may-free` | the first release is conditional (a helper frees only on some paths) | the double free is possible, not must-proven |
+| `cond@<helper>` | the helper performing the conditional first release | its body decides the verdict |
+
+Two unconditional `free@N,M` sites on the same object are confirmed from
+the Hint; `may-free` + `cond@<helper>` shifts the proof to the helper's
+condition — reachable-both-times means confirmed.
+
 ### Detection Logic
 1. Find all frees in a function — `free(ptr)`, `free(p->field)` (field free), `free(arr[0])` / `free(arr[i])` (subscript free), and a freeing function-like macro (`#define my_free(p) free(p)`).
 2. Group by variable name, and by field for field frees (so `free(p->msg)` twice is a double-free of `p->msg`, but `free(p->msg)` then `free(p->mode)` is two different objects).

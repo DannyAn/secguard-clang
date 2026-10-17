@@ -30,6 +30,18 @@ the source object holds (bool→uint, uint32→uint64) or changes the representa
 kind (int↔float). It does **not** flag `void *`, char/byte casts, identical
 types, or same-size integer reinterpretation — those are legal C boundaries.
 
+### Hint Tokens (Verdict Basis)
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `expected@<type>` | the callee's declared parameter type | the contract the caller must meet |
+| `actual@<type>` | the argument's actual pointer type before any cast | the fact being judged |
+| `cast@<type>` | an explicit cast bridges the mismatch | judge whether it is an intentional ABI/opaque boundary or a papered-over reinterpretation |
+
+The type triple is the whole verdict: an intentional
+`expected@void *` + `cast@void *` boundary is dismissed; a
+`cast@<unrelated>` that only silences the warning is confirmed.
+
 ### Detection Logic
 1. Resolve the callee of a direct call and its parameter type spellings
    (cross-file, from definitions and prototypes).

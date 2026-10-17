@@ -17,6 +17,16 @@ A signal-handler candidate has:
 - The event's `function` is the handler registered via `signal(SIGxxx, handler)`
 - **call_path**: The registering function is reachable from an entry point
 
+### Hint Tokens (Verdict Basis)
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `async-unsafe@<fn>` | the handler calls this function, which is off the POSIX async-signal-safe list | a certain CWE-479 — verify the call is inside the handler, then confirm |
+
+`async-unsafe@` names the offending call; the defect is the
+non-reentrancy itself, so no dataflow proof is needed beyond the call
+being in the handler.
+
 ### Detection Logic
 1. Find `signal(SIGxxx, handler)` registrations where `handler` is a named function (not `SIG_DFL`/`SIG_IGN`)
 2. Find the handler's function definition

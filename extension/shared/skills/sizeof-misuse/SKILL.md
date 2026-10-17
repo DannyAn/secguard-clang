@@ -16,6 +16,16 @@ A sizeof-misuse candidate has:
 - **sizeof_misuse**: A `sizeof(ptr)` where `ptr` is a pointer VARIABLE (not `sizeof(*ptr)`, not `sizeof(T)`) consumed as a size argument to `malloc`/`calloc`/`realloc`/`memset`/`memcpy`/`memmove`
 - **call_path**: The function is reachable from an entry point
 
+### Hint Tokens (Verdict Basis)
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `subject@<name>` | the operand `sizeof` is applied to | the category states whether the result is a pointer width instead of the pointee size |
+
+`subject@` plus the detector category is the verdict basis:
+`sizeof_pointer` on a single-level pointer is machine-confirmed; the
+ambiguous pointer-to-pointer case stays your judgment.
+
 ### Detection Logic
 1. Collect pointer variables (declared with `*`), counting pointer levels and the base type
 2. Find `sizeof_expression` whose operand is a bare identifier that is a pointer variable

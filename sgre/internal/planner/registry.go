@@ -487,6 +487,186 @@ func buildLeakVerdictFacts(c Candidate) []VerdictFact {
 	return facts
 }
 
+func buildDivideByZeroVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 3)
+	if shape := divisorShape(c.VariableName); shape != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "divisor@" + shape,
+			Detail: fmt.Sprintf("the divisor is %s (`%s`) — the shape states what the judgment needs", shape, c.VariableName),
+		})
+	}
+	if c.DivisorInterval != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "range@" + c.DivisorInterval,
+			Detail: "the range engine proved the divisor's interval is exactly this (and it contains 0) — judge whether the 0 endpoint is actually reachable",
+		})
+	}
+	if c.DivisorCallers != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "callers@" + c.DivisorCallers,
+			Detail: "the call-site census — the callers passing non-constants are the ones to check for a 0 argument",
+		})
+	}
+	return facts
+}
+
+func buildUninitVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 4)
+	if c.SuspicionLevel == "confirmed" {
+		facts = append(facts, VerdictFact{
+			Token:  "certain-uninit",
+			Detail: "three layers converged — the read is provably uninitialized; verify the statement matches and confirm",
+		})
+	} else if c.SuspicionLevel == "suspected" {
+		facts = append(facts, VerdictFact{
+			Token:  "maybe-uninit",
+			Detail: "weaker tier — trace the write paths to the declaration",
+		})
+	}
+	if c.Origin != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "origin@" + c.Origin,
+			Detail: fmt.Sprintf("the uninitialized storage is %s storage", c.Origin),
+		})
+	}
+	if c.DeclLine > 0 {
+		facts = append(facts, VerdictFact{
+			Token:  fmt.Sprintf("decl@%d", c.DeclLine),
+			Detail: "the storage is declared here — the ## Code Context window covers it",
+		})
+	}
+	return facts
+}
+
+func buildArgumentTypeVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 3)
+	if c.ExpectedType != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "expected@" + c.ExpectedType,
+			Detail: fmt.Sprintf("the callee declares the parameter as %s", c.ExpectedType),
+		})
+	}
+	if c.ActualType != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "actual@" + c.ActualType,
+			Detail: fmt.Sprintf("the argument is actually %s before any cast", c.ActualType),
+		})
+	}
+	if c.CastType != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "cast@" + c.CastType,
+			Detail: fmt.Sprintf("an explicit cast to %s bridges the mismatch — judge whether it is an intentional ABI/opaque boundary or a papered-over reinterpretation", c.CastType),
+		})
+	}
+	return facts
+}
+
+func buildDataRepVerdictFacts(c Candidate) []VerdictFact {
+	if c.CastType == "" {
+		return nil
+	}
+	return []VerdictFact{{
+		Token:  "cast@" + c.CastType,
+		Detail: fmt.Sprintf("the value is explicitly cast to %s at line %d — judge the truncation/reinterpretation intent", c.CastType, c.Line),
+	}}
+}
+
+func buildFormatStringVerdictFacts(c Candidate) []VerdictFact {
+	if c.FormatArg == "" {
+		return nil
+	}
+	return []VerdictFact{{
+		Token:  "fmt-arg@" + c.FormatArg,
+		Detail: fmt.Sprintf("the format argument is `%s` — attacker-controlled (paired with tainted) means arbitrary format-specifier injection; a constant literal means dismissed", c.FormatArg),
+	}}
+}
+
+func buildPathTraversalVerdictFacts(c Candidate) []VerdictFact {
+	if c.PathExpr == "" {
+		return nil
+	}
+	return []VerdictFact{{
+		Token:  "path-arg@" + c.PathExpr,
+		Detail: fmt.Sprintf("the path argument is `%s` — the traversal root; judge whether a caller can inject `../` segments", c.PathExpr),
+	}}
+}
+
+func buildHardcodedSecretVerdictFacts(c Candidate) []VerdictFact {
+	if c.SecretValue == "" {
+		return nil
+	}
+	return []VerdictFact{{
+		Token:  "value-shape@" + maskSecret(c.SecretValue),
+		Detail: "the literal's masked shape — judge from the prefix and length: a placeholder (REPLACE…) or test value (test…) is dismissed; a real credential shape is confirmed",
+	}}
+}
+
+func buildSignalHandlerVerdictFacts(c Candidate) []VerdictFact {
+	if c.VariableName == "" {
+		return nil
+	}
+	return []VerdictFact{{
+		Token:  "async-unsafe@" + c.VariableName,
+		Detail: fmt.Sprintf("handler %s calls %s(), which is off the POSIX async-signal-safe list — a certain CWE-479", c.FunctionName, c.VariableName),
+	}}
+}
+
+func buildImplicitContractVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 3)
+	if c.Subject != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "subject@" + c.Subject,
+			Detail: fmt.Sprintf("the contract is about parameter `%s`", c.Subject),
+		})
+	}
+	if c.CountField != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "count-field@" + c.CountField,
+			Detail: fmt.Sprintf("`%s` gates the pointer use — the contract the function actually enforces", c.CountField),
+		})
+	}
+	if c.EvidenceKind != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "evidence-kind@" + c.EvidenceKind,
+			Detail: fmt.Sprintf("the nullable treatment is proven in the %s — judge whether the missing precondition is a real contract gap", c.EvidenceKind),
+		})
+	}
+	return facts
+}
+
+func buildSizeofMisuseVerdictFacts(c Candidate) []VerdictFact {
+	if c.VariableName == "" {
+		return nil
+	}
+	return []VerdictFact{{
+		Token:  "subject@" + c.VariableName,
+		Detail: fmt.Sprintf("sizeof is applied to `%s` — the category states whether the result is a pointer width instead of the pointee size", c.VariableName),
+	}}
+}
+
+func buildDoubleFreeVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 3)
+	if c.FirstFree > 0 && c.SecondFree > 0 {
+		facts = append(facts, VerdictFact{
+			Token:  fmt.Sprintf("free@%d,%d", c.FirstFree, c.SecondFree),
+			Detail: "the two free sites — the ## Code Context window covers both",
+		})
+	}
+	if c.MayFree {
+		facts = append(facts, VerdictFact{
+			Token:  "may-free",
+			Detail: "the first release is conditional — the double free is possible, not must-proven",
+		})
+	}
+	if c.FirstCallee != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "cond@" + c.FirstCallee,
+			Detail: fmt.Sprintf("helper %s performs the conditional first release — its body decides the verdict", c.FirstCallee),
+		})
+	}
+	return facts
+}
+
 func init() {
 	RegisterVulnType(&VulnTypeSpec{
 		Name:               "null-deref",
@@ -711,12 +891,13 @@ func init() {
 	})
 
 	RegisterVulnType(&VulnTypeSpec{
-		Name:             "uninit",
-		CWE:              "CWE-457",
-		SeedEventType:    "VALUE_USE",
-		EvidenceType:     "UNINIT_USE",
-		DefaultSuspicion: "suspected",
-		FilterChain:      "uninit",
+		Name:              "uninit",
+		CWE:               "CWE-457",
+		SeedEventType:     "VALUE_USE",
+		EvidenceType:      "UNINIT_USE",
+		DefaultSuspicion:  "suspected",
+		FilterChain:       "uninit",
+		BuildVerdictFacts: buildUninitVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{
 				{Type: "uninit_use", Role: "sink", Detail: fmt.Sprintf("uninitialized variable '%s' used in function %s at line %d", c.VariableName, c.FunctionName, c.Line)},
@@ -774,12 +955,13 @@ func init() {
 	})
 
 	RegisterVulnType(&VulnTypeSpec{
-		Name:             "double-free",
-		CWE:              "CWE-415",
-		SeedEventType:    "DOUBLE_FREE",
-		EvidenceType:     "DOUBLE_FREE",
-		DefaultSuspicion: "suspected",
-		FilterChain:      "double-free",
+		Name:              "double-free",
+		CWE:               "CWE-415",
+		SeedEventType:     "DOUBLE_FREE",
+		EvidenceType:      "DOUBLE_FREE",
+		DefaultSuspicion:  "suspected",
+		FilterChain:       "double-free",
+		BuildVerdictFacts: buildDoubleFreeVerdictFacts,
 		// One variable freed twice is one defect, not one per (first,second) pair.
 		ConvergeByVariable: true,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
@@ -813,12 +995,13 @@ func init() {
 	})
 
 	RegisterVulnType(&VulnTypeSpec{
-		Name:             "format-string",
-		CWE:              "CWE-134",
-		SeedEventType:    "FORMAT_STRING",
-		EvidenceType:     "FORMAT_STRING_VULN",
-		DefaultSuspicion: "suspected",
-		FilterChain:      "format-string",
+		Name:              "format-string",
+		CWE:               "CWE-134",
+		SeedEventType:     "FORMAT_STRING",
+		EvidenceType:      "FORMAT_STRING_VULN",
+		DefaultSuspicion:  "suspected",
+		FilterChain:       "format-string",
+		BuildVerdictFacts: buildFormatStringVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{
 				{Type: "format_string", Role: "sink", Detail: fmt.Sprintf("printf-family called with non-literal format in %s at line %d", c.FunctionName, c.Line)},
@@ -934,12 +1117,13 @@ func init() {
 	})
 
 	RegisterVulnType(&VulnTypeSpec{
-		Name:             "hardcoded-secret",
-		CWE:              "CWE-798",
-		SeedEventType:    "HARDCODED_SECRET",
-		EvidenceType:     "HARDCODED_SECRET",
-		DefaultSuspicion: "suspected",
-		FilterChain:      "hardcoded-secret",
+		Name:              "hardcoded-secret",
+		CWE:               "CWE-798",
+		SeedEventType:     "HARDCODED_SECRET",
+		EvidenceType:      "HARDCODED_SECRET",
+		DefaultSuspicion:  "suspected",
+		FilterChain:       "hardcoded-secret",
+		BuildVerdictFacts: buildHardcodedSecretVerdictFacts,
 		// A literal whose VALUE is secret-shaped (a known token prefix, high
 		// Shannon entropy, URL-embedded credentials) is proven, so the
 		// HardcodedSecretProofFilter auto-confirms it. A match on the
@@ -1057,12 +1241,13 @@ func init() {
 	})
 
 	RegisterVulnType(&VulnTypeSpec{
-		Name:             "divide-by-zero",
-		CWE:              "CWE-369",
-		SeedEventType:    "DIVIDE_BY_ZERO",
-		EvidenceType:     "DIVIDE_BY_ZERO",
-		DefaultSuspicion: "suspected",
-		FilterChain:      "divide-by-zero",
+		Name:              "divide-by-zero",
+		CWE:               "CWE-369",
+		SeedEventType:     "DIVIDE_BY_ZERO",
+		EvidenceType:      "DIVIDE_BY_ZERO",
+		DefaultSuspicion:  "suspected",
+		FilterChain:       "divide-by-zero",
+		BuildVerdictFacts: buildDivideByZeroVerdictFacts,
 		// Dedup the SAME divisor divided at many sites into one finding, but keep a
 		// confirmed and a suspected division of that divisor distinct: the
 		// higher-rank "confirmed" must not mask a suspected site (DBZ-18). The key
@@ -1131,12 +1316,13 @@ func init() {
 	})
 
 	RegisterVulnType(&VulnTypeSpec{
-		Name:             "path-traversal",
-		CWE:              "CWE-22",
-		SeedEventType:    "PATH_TRAVERSAL",
-		EvidenceType:     "PATH_TRAVERSAL",
-		DefaultSuspicion: "suspected",
-		FilterChain:      "path-traversal",
+		Name:              "path-traversal",
+		CWE:               "CWE-22",
+		SeedEventType:     "PATH_TRAVERSAL",
+		EvidenceType:      "PATH_TRAVERSAL",
+		DefaultSuspicion:  "suspected",
+		FilterChain:       "path-traversal",
+		BuildVerdictFacts: buildPathTraversalVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{
 				{Type: "path_traversal", Role: "sink", Detail: fmt.Sprintf("filesystem call %s receives a path that is not a fixed string literal — an attacker-controlled value could use ../ to escape the intended directory and read/overwrite/delete an arbitrary file", c.APIName)},
@@ -1153,13 +1339,14 @@ func init() {
 	})
 
 	RegisterVulnType(&VulnTypeSpec{
-		Name:             "sizeof-misuse",
-		CWE:              "CWE-467",
-		SeedEventType:    "SIZEOF_MISUSE",
-		EvidenceType:     "SIZEOF_MISUSE",
-		DefaultSuspicion: "suspected",
-		FilterChain:      "default",
-		Categories:       []string{"sizeof_pointer", "sizeof_pointer_ambig"},
+		Name:              "sizeof-misuse",
+		CWE:               "CWE-467",
+		SeedEventType:     "SIZEOF_MISUSE",
+		EvidenceType:      "SIZEOF_MISUSE",
+		DefaultSuspicion:  "suspected",
+		FilterChain:       "default",
+		BuildVerdictFacts: buildSizeofMisuseVerdictFacts,
+		Categories:        []string{"sizeof_pointer", "sizeof_pointer_ambig"},
 		// `sizeof(p)` on a single-level pointer `T *p` is provably the pointer
 		// width where the object size is intended (CWE-467) — confirmed. A
 		// pointer-to-pointer `T **p` is legitimately sized by `sizeof(p)` when
@@ -1201,12 +1388,13 @@ func init() {
 	})
 
 	RegisterVulnType(&VulnTypeSpec{
-		Name:             "signal-handler",
-		CWE:              "CWE-479",
-		SeedEventType:    "SIGNAL_HANDLER",
-		EvidenceType:     "SIGNAL_HANDLER",
-		DefaultSuspicion: "confirmed",
-		FilterChain:      "default",
+		Name:              "signal-handler",
+		CWE:               "CWE-479",
+		SeedEventType:     "SIGNAL_HANDLER",
+		EvidenceType:      "SIGNAL_HANDLER",
+		DefaultSuspicion:  "confirmed",
+		FilterChain:       "default",
+		BuildVerdictFacts: buildSignalHandlerVerdictFacts,
 		// A signal handler that DIRECTLY calls a known non-async-signal-safe libc
 		// function (malloc, printf, pthread_mutex_lock, ...) is a certain CWE-479
 		// defect: the POSIX async-signal-safe list is fixed and authoritative, so
@@ -1244,12 +1432,13 @@ func init() {
 	})
 
 	RegisterVulnType(&VulnTypeSpec{
-		Name:             "argument-type",
-		CWE:              "CWE-686",
-		SeedEventType:    "ARGUMENT_TYPE_MISMATCH",
-		EvidenceType:     "ARGUMENT_TYPE_MISMATCH",
-		DefaultSuspicion: "suspected",
-		FilterChain:      "default",
+		Name:              "argument-type",
+		CWE:               "CWE-686",
+		SeedEventType:     "ARGUMENT_TYPE_MISMATCH",
+		EvidenceType:      "ARGUMENT_TYPE_MISMATCH",
+		DefaultSuspicion:  "suspected",
+		FilterChain:       "default",
+		BuildVerdictFacts: buildArgumentTypeVerdictFacts,
 		// An incompatible pointer cast is evidence of a type reinterpretation,
 		// but an explicit cast is not proof of a defect (it can be an intentional
 		// ABI/opaque boundary), so the AI agent judges intent rather than the
@@ -1267,12 +1456,13 @@ func init() {
 	})
 
 	RegisterVulnType(&VulnTypeSpec{
-		Name:             "data-representation",
-		CWE:              "CWE-843",
-		SeedEventType:    "DATA_REPRESENTATION_MISMATCH",
-		EvidenceType:     "DATA_REPRESENTATION_MISMATCH",
-		DefaultSuspicion: "suspected",
-		FilterChain:      "default",
+		Name:              "data-representation",
+		CWE:               "CWE-843",
+		SeedEventType:     "DATA_REPRESENTATION_MISMATCH",
+		EvidenceType:      "DATA_REPRESENTATION_MISMATCH",
+		DefaultSuspicion:  "suspected",
+		FilterChain:       "default",
+		BuildVerdictFacts: buildDataRepVerdictFacts,
 		// A pointer-depth mismatch between a qsort/bsearch base element and the
 		// comparator's void* cast is strong evidence of type confusion, but the
 		// base's declared type can be a decayed/aliased array, so the AI agent
@@ -1286,13 +1476,14 @@ func init() {
 	})
 
 	RegisterVulnType(&VulnTypeSpec{
-		Name:             "implicit-contract",
-		CWE:              "CWE-20",
-		SeedEventType:    "CONTRACT_GAP",
-		EvidenceType:     "IMPLICIT_CONTRACT",
-		DefaultSuspicion: "suspected",
-		FilterChain:      "implicit-contract",
-		Categories:       []string{"ptr_guard"},
+		Name:              "implicit-contract",
+		CWE:               "CWE-20",
+		SeedEventType:     "CONTRACT_GAP",
+		EvidenceType:      "IMPLICIT_CONTRACT",
+		DefaultSuspicion:  "suspected",
+		FilterChain:       "implicit-contract",
+		BuildVerdictFacts: buildImplicitContractVerdictFacts,
+		Categories:        []string{"ptr_guard"},
 		// One candidate per dereference site: a field null-checked on one path but
 		// dereferenced on several others has one defect PER unguarded site, and the
 		// guard-dominance filter drops only the guarded sites. Keying on use_line

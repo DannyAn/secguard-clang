@@ -40,6 +40,18 @@ An implicit-contract candidate has:
   caught independently of any count relationship.
 - **call_path**: the function is reachable from an entry point.
 
+### Hint Tokens (Verdict Basis)
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `subject@<name>` | the struct-pointer parameter the contract is about | the entity to validate |
+| `count-field@<name>` | the count/length field gating the pointer use | the contract the function actually enforces |
+| `evidence-kind@self` | the nullable treatment is proven in the function body itself | judge whether the missing precondition is a real contract gap |
+| `evidence-kind@caller` | the nullable treatment is proven at an inter-procedural call site | check that caller's handling |
+
+`subject@` + `count-field@` name the enforced contract; the verdict is
+whether relying on it (without asserting the precondition) is a real gap.
+
 ### Detection Logic
 1. Identify struct-pointer parameters whose fields are **read but never written**
    in the function (a field written in-scope belongs to null-deref, not here).

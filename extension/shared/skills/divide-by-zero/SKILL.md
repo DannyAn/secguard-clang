@@ -18,6 +18,18 @@ A divide-by-zero candidate has:
 - **param_flow**: (when present) the call-site census for a parameter divisor the pipeline could not settle, e.g. `divisor d is a parameter: 2 direct call sites, 1 pass non-zero constants`. Judge the callers that pass a non-constant
 - **call_path**: The function is reachable from an entry point
 
+### Hint Tokens (Verdict Basis)
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `divisor@<shape>` | the divisor's syntactic shape (`bare`/`field`/`global`/`call`/`compound`) | a `divisor@bare` row settles from the `Source` column alone; `call`/`compound` need the Code Context |
+| `range@[lo,hi]` | the range engine's proved interval for the divisor — it contains 0 (else the filter would have dropped the row) | judge whether the 0 endpoint is actually reachable |
+| `callers@<summary>` | the direct call-site census for a parameter divisor | check the callers passing non-constants for a 0 argument |
+
+The shape plus `range@` is the verdict basis: an interval whose only 0
+endpoint is an unreachable constant bound is dismissed; a caller-counted
+non-constant flow toward 0 is confirmed.
+
 ### Detection Logic
 1. Find all `binary_expression` nodes with `/` or `%` operator
 2. Take the right operand as the divisor

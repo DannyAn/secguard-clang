@@ -24,6 +24,15 @@ metadata:
 - **secret_value**: the literal MASKED (first 4 chars + total length, e.g. `"REPL… (11 chars)"`): judge placeholder (`REPL…`/`CHANG…`/`xxxx…`) vs test value (`test…`) vs real weak credential (`admi…`) from the prefix and length; the full literal is withheld from the evidence file, but it is in the ±8 Code Context window of the candidate line
 - This is where placeholders and test credentials land — judge each one
 
+### Hint Tokens (Verdict Basis)
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `value-shape@<masked>` | the literal's masked shape (4-char prefix + length; the report must not become the leak it reports) | a placeholder (REPLACE…) or test value (test…) prefix is dismissed; a real credential shape (key-style prefix, credential length) is confirmed |
+
+The masked shape is the whole verdict basis — judge from the prefix and
+length, never demand the raw literal.
+
 ### Safe Patterns (P0 Exclusion)
 
 | Safe Pattern | Why Safe |

@@ -19,6 +19,15 @@ A format-string candidate has:
 - **taint_source**: where the user-controlled value behind the format argument originates (when the taint filter proved one)
 - **call_path**: The function is reachable from an entry point
 
+### Hint Tokens (Verdict Basis)
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `fmt-arg@<expr>` | the format argument expression | attacker-controlled (paired with `tainted`) means arbitrary format-specifier injection — confirm; a constant literal means dismissed |
+
+`fmt-arg@` names the sink argument; its constancy versus taint is the
+verdict split.
+
 ### Functions Checked
 `printf`, `fprintf`, `sprintf`, `snprintf`, `vprintf`, `vfprintf`, `vsprintf`, `vsnprintf`, `syslog`, `err`, `warn`, `errx`, `warnx`
 

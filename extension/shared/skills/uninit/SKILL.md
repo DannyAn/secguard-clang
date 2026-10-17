@@ -17,6 +17,18 @@ An uninit candidate has:
 - **declaration** / **allocation**: Where the variable is declared (or heap-allocated and left uninitialized)
 - **call_path**: The function is reachable from an entry point
 
+### Hint Tokens (Verdict Basis)
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `certain-uninit` | three layers converged — the read is provably uninitialized | verify the statement matches, then confirm |
+| `maybe-uninit` | weaker tier — the read may be uninitialized | trace the write paths to the declaration |
+| `origin@<kind>` | the uninitialized storage's kind (`stack_uninit`/`heap_uninit`/`struct_partial_uninit`) | where the missing write must be |
+| `decl@N` | the declaration line of the uninitialized storage | the ## Code Context window covers it |
+
+`certain-uninit` settles the row from the Hint; for `maybe-uninit`,
+`origin@` + `decl@N` name the storage whose write paths you trace.
+
 ### Detection Signals
 - Local variable declared without initializer: `int x;`
 - Used before first assignment: `return x;` or `arr[x]` or `if (x > 0)`

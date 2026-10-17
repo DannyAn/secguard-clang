@@ -201,7 +201,26 @@ budget your effort, not to pre-judge the answer:
   on any path), `leak@conditional` = a release channel exists but the CFG
   proved a leak path bypasses it, `escape@none|store|return` = the
   ownership-transfer channel state, `free@N,M` = the release sites that
-  exist but do not cover the leak path)), so
+  exist but do not cover the leak path, `range@<interval>` = the range
+  engine's proved interval for the divisor (it contains 0 — judge the 0
+  endpoint), `callers@<census>` = the divide-by-zero call-site census (the
+  callers passing non-constants are the ones to check), `origin@<kind>` =
+  the uninitialized storage kind, `decl@N` = the uninit declaration line
+  (the Code Context window covers it), `expected@<type>`/`actual@<type>` =
+  the argument-type mismatch (callee-declared vs actually passed),
+  `cast@<type>` = an explicit cast bridges the mismatch — judge whether it
+  is an intentional ABI/opaque boundary or a papered-over reinterpretation,
+  `fmt-arg@<expr>` = the format argument (a constant literal means
+  dismissed; attacker-controlled means injection), `path-arg@<expr>` = the
+  path argument — the traversal root, `value-shape@<masked>` = the
+  hardcoded literal's masked shape (a placeholder or test prefix is
+  dismissed; a real credential shape is confirmed), `async-unsafe@<fn>` =
+  the handler calls a function off the POSIX async-signal-safe list,
+  `subject@<name>` = implicit-contract's struct parameter or
+  sizeof-misuse's operand, `count-field@<field>` = the field gating the
+  pointer use, `evidence-kind@<kind>` = where the nullable treatment is
+  proven (self/caller), `cond@<callee>` = double-free's conditional
+  first-release helper — its body decides the verdict)), so
   you confirm or dismiss from the table
   itself (statement matches the evidence → confirmed; it is guarded/different →
   dismiss). Do NOT open the source file and do NOT open the `Evidence` candidate

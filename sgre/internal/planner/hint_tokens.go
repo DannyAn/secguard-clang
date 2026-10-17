@@ -70,6 +70,8 @@ var hintTokenRegistry = []HintTokenSpec{
 
 	// ---- divide-by-zero ----
 	{Key: "divisor@", Display: "divisor@<shape>", Description: "the divisor's shape: {value} (`bare` = plain identifier, `call` = call result, `compound` = complex expression; `field`/`global` are auto-confirmed and never reach you)"},
+	{Key: "range@", Display: "range@[lo,hi]", Description: "the range engine's provable interval for the divisor: {value} — it contains 0 (else the filter would have dropped the row); judge whether the 0 endpoint is reachable"},
+	{Key: "callers@", Display: "callers@<summary>", Description: "the direct call-site census for a parameter divisor: {value} — judge the callers that pass non-constants"},
 
 	// ---- uninit ----
 	{Key: "certain-uninit", Description: "the read is provably uninitialized (three-layer converged)"},
@@ -99,6 +101,8 @@ var hintTokenRegistry = []HintTokenSpec{
 
 	// ---- use-after-free / double-free / leaks ----
 	{Key: "free@", Display: "free@N / free@N,M", Description: "the free site line(s): {value} (one for use-after-free, two for double-free; on a leak candidate they are the release sites that exist but do not cover the leak path)"},
+	{Key: "may-free", Description: "the double-free's first release is conditional (a release helper frees only on some paths) — the verdict is possible, not proved"},
+	{Key: "cond@", Display: "cond@<helper>", Description: "the conditional first release helper: {value} frees only when its own condition holds — the double free is possible, not must-proven"},
 
 	// ---- memory-leak / resource-leak ----
 	// The verdict basis for a leak: the acquire line, the certainty tier
@@ -113,7 +117,32 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "escape@return", Description: "the value is returned to the caller somewhere (an ownership transfer exists) — the leak path must be a NON-returning path"},
 	{Key: "escape@store", Description: "the value is stored into a non-local (global/parameter/container) somewhere — the leak path must bypass that store"},
 	{Key: "escape@none", Description: "no ownership-transfer channel exists anywhere in the function"},
-	{Key: "may-free", Description: "the double-free's first release is conditional (a release helper frees only on some paths) — the verdict is possible, not proved"},
+
+	// ---- uninit (storage facts) ----
+	{Key: "origin@", Display: "origin@<kind>", Description: "the uninitialized storage's kind: {value} (stack/heap/struct)"},
+	{Key: "decl@", Display: "decl@N", Description: "the declaration line of the uninitialized storage: {value}"},
+
+	// ---- argument-type / data-representation ----
+	{Key: "expected@", Display: "expected@<type>", Description: "the callee's declared parameter type: {value}"},
+	{Key: "actual@", Display: "actual@<type>", Description: "the argument's actual pointer type before any cast: {value}"},
+	{Key: "cast@", Display: "cast@<type>", Description: "the explicit cast target type: {value} — a reinterpretation between incompatible pointer types"},
+
+	// ---- format-string ----
+	{Key: "fmt-arg@", Display: "fmt-arg@<expr>", Description: "the format argument expression: {value} — judge whether it is attacker-controlled (paired with `tainted`) or a constant literal"},
+
+	// ---- path-traversal ----
+	{Key: "path-arg@", Display: "path-arg@<expr>", Description: "the path argument expression: {value} — the traversal root; judge whether it can carry `../` segments from a caller"},
+
+	// ---- hardcoded-secret ----
+	{Key: "value-shape@", Display: "value-shape@<masked>", Description: "the literal's masked shape (4-char prefix + length): {value} — judge placeholder (REPLACE…), test value (test…), or real credential"},
+
+	// ---- signal-handler ----
+	{Key: "async-unsafe@", Display: "async-unsafe@<fn>", Description: "the non-async-signal-safe call inside the handler: {value} (off the POSIX async-signal-safe list) — a certain CWE-479"},
+
+	// ---- implicit-contract / sizeof-misuse ----
+	{Key: "subject@", Display: "subject@<name>", Description: "the entity the contract/judgment is about: {value} (the struct-pointer parameter for implicit-contract, the sizeof operand for sizeof-misuse)"},
+	{Key: "count-field@", Display: "count-field@<name>", Description: "the count/length field gating the pointer use: {value} — the contract the function actually enforces"},
+	{Key: "evidence-kind@", Display: "evidence-kind@self|caller", Description: "where the field's nullable treatment is proven: {value} (self = the function body, caller = an inter-procedural call site)"},
 }
 
 // matchHintToken resolves one emitted token against the registry: an exact

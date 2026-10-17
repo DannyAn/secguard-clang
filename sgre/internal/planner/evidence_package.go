@@ -306,11 +306,77 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			if shape := divisorShape(c.VariableName); shape != "" {
 				parts = append(parts, "divisor@"+shape)
 			}
+			// The range engine's interval and the call-site census: an
+			// interval NOT containing 0 never reaches here (the filter drops
+			// it), so the classifier's job is the 0-endpoint reachability.
+			if c.DivisorInterval != "" {
+				parts = append(parts, "range@"+c.DivisorInterval)
+			}
+			if c.DivisorCallers != "" {
+				parts = append(parts, "callers@"+c.DivisorCallers)
+			}
 		case "uninit":
 			if c.SuspicionLevel == "confirmed" {
 				parts = append(parts, "certain-uninit")
 			} else if c.SuspicionLevel == "suspected" {
 				parts = append(parts, "maybe-uninit")
+			}
+			// The storage facts: what kind of storage is uninitialized and
+			// where it is declared — the write-path trace target.
+			if c.Origin != "" {
+				parts = append(parts, "origin@"+c.Origin)
+			}
+			if c.DeclLine > 0 {
+				parts = append(parts, fmt.Sprintf("decl@%d", c.DeclLine))
+			}
+		case "argument-type":
+			// The type triple is the whole verdict: what the callee expects,
+			// what the caller actually passes, and the cast that bridges (or
+			// papers over) the mismatch.
+			if c.ExpectedType != "" {
+				parts = append(parts, "expected@"+c.ExpectedType)
+			}
+			if c.ActualType != "" {
+				parts = append(parts, "actual@"+c.ActualType)
+			}
+			if c.CastType != "" {
+				parts = append(parts, "cast@"+c.CastType)
+			}
+		case "data-representation":
+			if c.CastType != "" {
+				parts = append(parts, "cast@"+c.CastType)
+			}
+		case "format-string":
+			if c.FormatArg != "" {
+				parts = append(parts, "fmt-arg@"+c.FormatArg)
+			}
+		case "path-traversal":
+			if c.PathExpr != "" {
+				parts = append(parts, "path-arg@"+c.PathExpr)
+			}
+		case "hardcoded-secret":
+			// The masked shape only — the report must not become the leak it
+			// reports; the prefix + length is enough to judge the tier.
+			if c.SecretValue != "" {
+				parts = append(parts, "value-shape@"+maskSecret(c.SecretValue))
+			}
+		case "signal-handler":
+			if c.VariableName != "" {
+				parts = append(parts, "async-unsafe@"+c.VariableName)
+			}
+		case "implicit-contract":
+			if c.Subject != "" {
+				parts = append(parts, "subject@"+c.Subject)
+			}
+			if c.CountField != "" {
+				parts = append(parts, "count-field@"+c.CountField)
+			}
+			if c.EvidenceKind != "" {
+				parts = append(parts, "evidence-kind@"+c.EvidenceKind)
+			}
+		case "sizeof-misuse":
+			if c.VariableName != "" {
+				parts = append(parts, "subject@"+c.VariableName)
 			}
 		case "integer-overflow":
 			// unsigned_sub_underflow survivors have no same-function ordering
@@ -364,6 +430,10 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			// classifier from treating the row as a proved defect.
 			if c.MayFree {
 				parts = append(parts, "may-free")
+			}
+			// The conditional helper's name: its body decides the verdict.
+			if c.FirstCallee != "" {
+				parts = append(parts, "cond@"+c.FirstCallee)
 			}
 		case "race-condition":
 			// BuildEvidence already computed these facts; without them in the

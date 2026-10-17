@@ -60,6 +60,22 @@ func TestBuildHint(t *testing.T) {
 		{"memory-leak definite no channel", Candidate{Line: 12, DefiniteLeak: true, LeakEscapeKind: "none", APIName: "malloc"}, ml, "alloc@12 leak@definite escape@none api@malloc"},
 		{"memory-leak conditional store bypass", Candidate{Line: 12, LeakEscapeKind: "store", LeakFreeLines: "30,45"}, ml, "alloc@12 leak@conditional escape@store free@30,45"},
 		{"resource-leak conditional return bypass", Candidate{Line: 8, LeakEscapeKind: "return", LeakFreeLines: "22", Category: "resource_acquire", APIName: "fopen"}, rl, "acquire@8 leak@conditional escape@return free@22 api@fopen cat@resource_acquire"},
+		// B4 §3.5 fact contracts: each remaining type's hint carries its
+		// decisive machine-proven facts so the classifier can judge from the
+		// index row instead of opening the evidence file.
+		{"divide-by-zero interval and callers", Candidate{VariableName: "count", DivisorInterval: "[0,100]", DivisorCallers: "3 direct call sites, 2 pass non-zero constants"}, dbz, "divisor@bare range@[0,100] callers@3 direct call sites, 2 pass non-zero constants"},
+		{"uninit storage facts", Candidate{SuspicionLevel: "confirmed", Origin: "heap", DeclLine: 17}, uninit, "certain-uninit origin@heap decl@17"},
+		{"uninit suspected with stack origin", Candidate{SuspicionLevel: "suspected", Origin: "stack", DeclLine: 4}, uninit, "maybe-uninit origin@stack decl@4"},
+		{"argument-type triple", Candidate{ExpectedType: "size_t", ActualType: "int", CastType: "size_t"}, &VulnTypeSpec{Name: "argument-type"}, "expected@size_t actual@int cast@size_t"},
+		{"data-representation cast", Candidate{CastType: "unsigned int"}, &VulnTypeSpec{Name: "data-representation"}, "cast@unsigned int"},
+		{"format-string argument", Candidate{FormatArg: "user_fmt"}, &VulnTypeSpec{Name: "format-string"}, "fmt-arg@user_fmt"},
+		{"path-traversal argument", Candidate{PathExpr: "rel_path"}, &VulnTypeSpec{Name: "path-traversal"}, "path-arg@rel_path"},
+		{"hardcoded-secret masked shape", Candidate{SecretValue: "AKIAIOSFODNN7EXAMPLE"}, &VulnTypeSpec{Name: "hardcoded-secret"}, "value-shape@\"AKIA…\" (20 chars)"},
+		{"hardcoded-secret short value fully masked", Candidate{SecretValue: "abcd"}, &VulnTypeSpec{Name: "hardcoded-secret"}, "value-shape@\"****\" (4 chars)"},
+		{"signal-handler unsafe call", Candidate{VariableName: "fprintf", FunctionName: "on_signal"}, &VulnTypeSpec{Name: "signal-handler"}, "async-unsafe@fprintf"},
+		{"implicit-contract facts", Candidate{Subject: "ctx", CountField: "ctx->len", EvidenceKind: "self"}, &VulnTypeSpec{Name: "implicit-contract"}, "subject@ctx count-field@ctx->len evidence-kind@self"},
+		{"sizeof-misuse subject", Candidate{VariableName: "ptr"}, &VulnTypeSpec{Name: "sizeof-misuse"}, "subject@ptr"},
+		{"double-free conditional helper", Candidate{Category: "double_free", FirstFree: 40, SecondFree: 52, MayFree: true, FirstCallee: "maybe_release"}, &VulnTypeSpec{Name: "double-free"}, "free@40,52 may-free cond@maybe_release cat@double_free"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
