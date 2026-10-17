@@ -24,6 +24,17 @@ An out-of-bounds candidate has:
 - **index**: the access index expression
 - **call_path**: the function is reachable from an entry point
 
+### Hint Tokens (Verdict Basis)
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `buf@<name>` | the array being read | the object of the OOB read |
+| `cap@N` | the array's declared size in elements | compare `idx@` against this |
+| `idx@<expr>` | the access index expression | CONSTANT: the detector already proved it reaches past `cap@` (machine-proved, confirm) |
+
+This type only carries detector-proved reads, so a constant `idx@` past `cap@`
+settles the row from the Hint alone — no evidence-file open needed.
+
 ### Typical Example
 ```c
 int arr[10];

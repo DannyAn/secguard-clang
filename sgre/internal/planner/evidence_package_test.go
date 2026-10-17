@@ -10,6 +10,9 @@ func TestBuildHint(t *testing.T) {
 	uninit := &VulnTypeSpec{Name: "uninit"}
 	iof := &VulnTypeSpec{Name: "integer-overflow"}
 	nil2 := &VulnTypeSpec{Name: "null-deref"}
+	cm := &VulnTypeSpec{Name: "crypto-misuse"}
+	bo := &VulnTypeSpec{Name: "buffer-overflow"}
+	oob := &VulnTypeSpec{Name: "out-of-bounds"}
 	cases := []struct {
 		name string
 		c    Candidate
@@ -47,6 +50,11 @@ func TestBuildHint(t *testing.T) {
 		{"race toctou shared state", Candidate{Category: "toctou_shared_state", Mutex: "g_mutex", LockLine: 42, UnlockLine: 44}, &VulnTypeSpec{Name: "race-condition"}, "mutex@g_mutex lock@42-44 cat@toctou_shared_state"},
 		{"race toctou", Candidate{Category: "toctou", CheckFunction: "access", UseFunction: "fopen", CheckPathArg: "path"}, &VulnTypeSpec{Name: "race-condition"}, "check@access→use@fopen arg@path cat@toctou"},
 		{"double-free may-free", Candidate{Category: "double_free", FirstFree: 117, SecondFree: 123, MayFree: true}, &VulnTypeSpec{Name: "double-free"}, "free@117,123 may-free cat@double_free"},
+		{"crypto-misuse reason and key size", Candidate{CryptoReason: "DES is weak (56-bit key)", CryptoKeySize: 7, Category: "undersized_key"}, cm, "reason@DES is weak (56-bit key) key-size@7 cat@undersized_key"},
+		{"crypto-misuse reason only", Candidate{CryptoReason: "MD5 is cryptographically broken", Category: "weak_algorithm"}, cm, "reason@MD5 is cryptographically broken cat@weak_algorithm"},
+		{"buffer-overflow constant index", Candidate{Array: "buf", Size: 16, Index: "20", Category: "array_oob_write"}, bo, "buf@buf cap@16 idx@20 cat@array_oob_write"},
+		{"buffer-overflow variable copy size", Candidate{Array: "dst", Size: 64, CopySize: "n", Category: "bounded_copy_var_size"}, bo, "buf@dst cap@64 idx@n cat@bounded_copy_var_size"},
+		{"out-of-bounds constant read", Candidate{Array: "data", Size: 8, Index: "12", Category: "array_oob_read"}, oob, "buf@data cap@8 idx@12 cat@array_oob_read"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

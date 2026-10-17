@@ -191,7 +191,12 @@ budget your effort, not to pre-judge the answer:
   `sink@assign` = the underflow sink, `guard@none` = integer-overflow unsigned
   subtraction with no same-function ordering guard, `macro-context` = a
   function-like macro is in play and you MUST verify its semantics before
-  confirming), so
+  confirming, `reason@<text>` = crypto-misuse detector rationale (judge from
+  it, not the API name alone), `key-size@N` = declared key bytes (under 16
+  is below the modern-cipher minimum), `buf@<name>`/`cap@N`/`idx@<expr>` =
+  buffer-overflow/out-of-bounds buffer, capacity, and access index/copy
+  size (a constant past cap@ is detector-proved; a variable one needs your
+  range judgment)), so
   you confirm or dismiss from the table
   itself (statement matches the evidence → confirmed; it is guarded/different →
   dismiss). Do NOT open the source file and do NOT open the `Evidence` candidate

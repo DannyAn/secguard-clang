@@ -251,6 +251,33 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 				parts = append(parts, fmt.Sprintf("callee@%s:%d", filepath.Base(c.CalleeDefFile), c.CalleeDefLine))
 			}
 
+		case "crypto-misuse":
+			// The detector's own rationale (weak algorithm name / key-size
+			// observation) is the decisive fact — the API name alone does not
+			// separate a weak cipher from a strong one.
+			if c.CryptoReason != "" {
+				parts = append(parts, "reason@"+c.CryptoReason)
+			}
+			if c.CryptoKeySize > 0 {
+				parts = append(parts, fmt.Sprintf("key-size@%d", c.CryptoKeySize))
+			}
+		case "buffer-overflow", "out-of-bounds":
+			// The buffer/capacity/index triple is the verdict basis: a constant
+			// index past cap@ is detector-proved; a variable index/copy size is
+			// what the classifier must range-judge.
+			if c.Array != "" {
+				parts = append(parts, "buf@"+c.Array)
+			}
+			if c.Size > 0 {
+				parts = append(parts, fmt.Sprintf("cap@%d", c.Size))
+			}
+			idx := c.Index
+			if idx == "" {
+				idx = c.CopySize
+			}
+			if idx != "" {
+				parts = append(parts, "idx@"+idx)
+			}
 		case "divide-by-zero":
 			if shape := divisorShape(c.VariableName); shape != "" {
 				parts = append(parts, "divisor@"+shape)

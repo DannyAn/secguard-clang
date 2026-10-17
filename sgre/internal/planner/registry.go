@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -366,6 +367,65 @@ func buildNullDerefVerdictFacts(c Candidate) []VerdictFact {
 	return facts
 }
 
+// buildCryptoMisuseVerdictFacts distills the crypto verdict basis: the
+// detector's own rationale — not the API name — is what separates a broken
+// primitive from a strong one, and an undersized key is a number, not a
+// judgment call.
+func buildCryptoMisuseVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 2)
+	if c.CryptoReason != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "reason@" + c.CryptoReason,
+			Detail: fmt.Sprintf("the detector's observed weakness at line %d: %s — the primitive itself is broken regardless of call context", c.Line, c.CryptoReason),
+		})
+	}
+	if c.CryptoKeySize > 0 {
+		facts = append(facts, VerdictFact{
+			Token:  fmt.Sprintf("key-size@%d", c.CryptoKeySize),
+			Detail: fmt.Sprintf("the declared key size is %d bytes — under 16 bytes (128 bits) is below the modern-cipher minimum", c.CryptoKeySize),
+		})
+	}
+	return facts
+}
+
+// buildBufferVerdictFacts distills the BO/OOB verdict basis: the
+// buffer/capacity/index triple. A constant index or copy size that reached a
+// candidate is detector-proved out-of-bounds; a variable one is exactly what
+// the classifier must range-judge against cap@.
+func buildBufferVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 3)
+	if c.Array != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "buf@" + c.Array,
+			Detail: fmt.Sprintf("the buffer written/read at line %d", c.Line),
+		})
+	}
+	if c.Size > 0 {
+		facts = append(facts, VerdictFact{
+			Token:  fmt.Sprintf("cap@%d", c.Size),
+			Detail: fmt.Sprintf("the detector-resolved capacity of %s is %d elements (from the array declaration or allocation size)", c.Array, c.Size),
+		})
+	}
+	idx := c.Index
+	if idx == "" {
+		idx = c.CopySize
+	}
+	if idx != "" {
+		if _, err := strconv.Atoi(strings.TrimSpace(idx)); err == nil {
+			facts = append(facts, VerdictFact{
+				Token:  "idx@" + idx,
+				Detail: fmt.Sprintf("constant index/copy size %s against the capacity — the detector already proved it reaches past cap@, machine-proved out-of-bounds", idx),
+			})
+		} else {
+			facts = append(facts, VerdictFact{
+				Token:  "idx@" + idx,
+				Detail: "variable index/copy size — judge its reachable range against cap@ (caller-influenced parameters are the dangerous case)",
+			})
+		}
+	}
+	return facts
+}
+
 func init() {
 	RegisterVulnType(&VulnTypeSpec{
 		Name:               "null-deref",
@@ -434,13 +494,14 @@ func init() {
 	})
 
 	RegisterVulnType(&VulnTypeSpec{
-		Name:             "buffer-overflow",
-		CWE:              "CWE-787",
-		SeedEventType:    "BUFFER_ACCESS",
-		EvidenceType:     "BUFFER_OVERFLOW",
-		DefaultSuspicion: "suspected",
-		FilterChain:      "buffer-overflow",
-		Categories:       []string{"buffer_overflow", "array_oob_write", "heap_oob_write", "format_overflow", "format_overflow_var", "bounded_copy_overflow", "bounded_copy_var_size", "secure_copy_overflow", "secure_copy_var_size", "secure_constraint_violation", "secure_scanf_overflow", "secure_scanf_var_size"},
+		Name:              "buffer-overflow",
+		CWE:               "CWE-787",
+		SeedEventType:     "BUFFER_ACCESS",
+		EvidenceType:      "BUFFER_OVERFLOW",
+		DefaultSuspicion:  "suspected",
+		FilterChain:       "buffer-overflow",
+		BuildVerdictFacts: buildBufferVerdictFacts,
+		Categories:        []string{"buffer_overflow", "array_oob_write", "heap_oob_write", "format_overflow", "format_overflow_var", "bounded_copy_overflow", "bounded_copy_var_size", "secure_copy_overflow", "secure_copy_var_size", "secure_constraint_violation", "secure_scanf_overflow", "secure_scanf_var_size"},
 		// Provable out-of-bounds writes (a constant index past a known array or
 		// allocation size, a constant copy size exceeding a known capacity, or
 		// an Annex K `_s` function given a lying destination-capacity argument)
@@ -861,13 +922,14 @@ func init() {
 	})
 
 	RegisterVulnType(&VulnTypeSpec{
-		Name:             "crypto-misuse",
-		CWE:              "CWE-327",
-		LegacyCWEs:       []string{"CWE-326", "CWE-338"},
-		SeedEventType:    "CRYPTO_MISUSE",
-		EvidenceType:     "CRYPTO_MISUSE",
-		DefaultSuspicion: "suspected",
-		FilterChain:      "default",
+		Name:              "crypto-misuse",
+		CWE:               "CWE-327",
+		LegacyCWEs:        []string{"CWE-326", "CWE-338"},
+		SeedEventType:     "CRYPTO_MISUSE",
+		EvidenceType:      "CRYPTO_MISUSE",
+		DefaultSuspicion:  "suspected",
+		FilterChain:       "default",
+		BuildVerdictFacts: buildCryptoMisuseVerdictFacts,
 		// weak_algorithm (DES/MD5/SHA1/RC4), weak_random (rand/srand) and
 		// undersized_key are deterministic defects — the primitive itself is
 		// provably broken regardless of call context, so the detector's verdict is
@@ -898,13 +960,14 @@ func init() {
 	})
 
 	RegisterVulnType(&VulnTypeSpec{
-		Name:             "out-of-bounds",
-		CWE:              "CWE-125",
-		SeedEventType:    "BUFFER_ACCESS",
-		EvidenceType:     "OUT_OF_BOUNDS",
-		DefaultSuspicion: "suspected",
-		FilterChain:      "buffer-overflow",
-		Categories:       []string{"array_oob_read", "heap_oob_read"},
+		Name:              "out-of-bounds",
+		CWE:               "CWE-125",
+		SeedEventType:     "BUFFER_ACCESS",
+		EvidenceType:      "OUT_OF_BOUNDS",
+		DefaultSuspicion:  "suspected",
+		FilterChain:       "buffer-overflow",
+		BuildVerdictFacts: buildBufferVerdictFacts,
+		Categories:        []string{"array_oob_read", "heap_oob_read"},
 		// A read-flavored OOB is only emitted when the detector proved the
 		// index outruns the array/allocation, so it is confirmed, not suspected.
 		CategoryConfidence: map[string]string{

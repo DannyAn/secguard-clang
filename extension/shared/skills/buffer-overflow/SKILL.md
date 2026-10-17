@@ -42,6 +42,20 @@ Evidence file fragments:
 - **copy_size** / **dst_capacity** / **size_argument**: the copy size, destination capacity, and `_s` size argument for the bounded/secure-copy categories
 - **call_path**: the function is reachable from an entry point
 
+### Hint Tokens (Verdict Basis)
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `buf@<name>` | the buffer being written | the object of the overflow |
+| `cap@N` | the buffer's detector-resolved capacity in elements (array declaration or allocation size) | compare `idx@` against this |
+| `idx@<expr>` | the access index / copy size expression | CONSTANT: the detector already proved it reaches past `cap@` (machine-proved, confirm) — VARIABLE (`n`, a parameter): judge its reachable range against `cap@`; a caller-influenced parameter with no clamp is the dangerous case |
+
+The variable-`idx@` shapes (`bounded_copy_var_size`, `secure_copy_var_size`,
+`secure_scanf_var_size`, `format_overflow_var`) are exactly the delegation
+cases in the Classification Rules below — the tokens name the destination
+(`buf@`), the capacity (`cap@`), and the expression you must range-judge
+(`idx@`) without opening the evidence file.
+
 ### Safe Function Alternatives (P0 Exclusion)
 
 | Unsafe | Safe Alternative | Notes |

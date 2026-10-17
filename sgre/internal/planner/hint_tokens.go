@@ -59,6 +59,15 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "null@caller-arg", Description: "the null source is an inter-procedural caller argument (not proven non-null) — judge whether that caller can pass NULL"},
 	{Key: "null@external-unknown", Description: "the ONLY null source is an unproven external call — an analyzer fail-open ASSUMPTION, not evidence: verify the callee can return NULL or dismiss"},
 
+	// ---- crypto-misuse ----
+	{Key: "reason@", Display: "reason@<text>", Description: "the detector's specific finding rationale: {value} (the algorithm/key weakness it observed — judge from this, not from the API name alone)"},
+	{Key: "key-size@", Display: "key-size@N", Description: "the observed key size in bytes: {value} (below 16 bytes / 128 bits is under the modern-cipher minimum)"},
+
+	// ---- buffer-overflow / out-of-bounds ----
+	{Key: "buf@", Display: "buf@<name>", Description: "the buffer being written/read: {value} — the resolved array or allocation name"},
+	{Key: "cap@", Display: "cap@N", Description: "the buffer's known capacity in elements: {value} (from the array declaration or allocation size)"},
+	{Key: "idx@", Display: "idx@<expr>", Description: "the access index or copy size expression: {value} — a constant past cap@ is detector-proved; a variable one needs your judgment of its reachable range"},
+
 	// ---- divide-by-zero ----
 	{Key: "divisor@", Display: "divisor@<shape>", Description: "the divisor's shape: {value} (`bare` = plain identifier, `call` = call result, `compound` = complex expression; `field`/`global` are auto-confirmed and never reach you)"},
 

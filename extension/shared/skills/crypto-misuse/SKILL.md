@@ -34,6 +34,17 @@ Evidence file fragments:
 - **key_size**: the declared key size in bytes (undersized-key category)
 - **call_path**: the function is reachable from an entry point
 
+### Hint Tokens (Verdict Basis)
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `reason@<text>` | the detector's observed weakness (e.g. "DES is weak (56-bit key)", "MD5 is cryptographically broken", "weak PRNG for security context") | judge from THIS text, not from the API name alone — it is the detector's rationale, already category-specific |
+| `key-size@N` | the declared key size in bytes | N < 16 (128 bits) is below the modern-cipher minimum — confirm as undersized |
+
+A `reason@` token alone (no `key-size@`) is the weak_algorithm / weak_random
+shape: the primitive itself is broken regardless of call context, so the row is
+settled from the Hint — no evidence-file open needed.
+
 ### Safe Patterns (P0 Exclusion)
 
 | Safe Pattern | Why Safe |
