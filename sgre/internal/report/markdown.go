@@ -342,6 +342,39 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 				}
 			}
 
+			// The pipeline's verdict tokens with their registry descriptions, so
+			// the candidate file is self-contained for RE-REVIEW and deep-dive:
+			// the classifier that opens this file sees the same machine facts
+			// the _index.md Hint column carried (previously the only place they
+			// existed), each annotated with what it means — no legend lookup and
+			// no re-derivation from the narrative fragments below.
+			if len(c.HintTokens) > 0 {
+				b.WriteString("## Pipeline Tokens\n\n")
+				fmt.Fprintf(&b, "`%s`\n\n", strings.Join(c.HintTokens, " "))
+				for _, tok := range c.HintTokens {
+					b.WriteString(planner.DescribeHintToken(tok))
+					b.WriteString("\n")
+				}
+				b.WriteString("\n")
+			}
+
+			// The type's decisive facts (Evidence Contract v2): each line is a
+			// distilled semantic-graph ANSWER with provenance, elaborating the
+			// token it names. Rendered only for types whose contract has rolled
+			// out (BuildVerdictFacts); absent for types still on the fragment
+			// narrative alone.
+			if len(c.VerdictFacts) > 0 {
+				b.WriteString("## Verdict Facts\n\n")
+				for _, f := range c.VerdictFacts {
+					if f.Token != "" {
+						fmt.Fprintf(&b, "- `%s`: %s\n", f.Token, f.Detail)
+					} else {
+						fmt.Fprintf(&b, "- %s\n", f.Detail)
+					}
+				}
+				b.WriteString("\n")
+			}
+
 			b.WriteString("## Evidence\n\n")
 			for _, e := range c.Evidence {
 				label := e.Role
@@ -481,6 +514,31 @@ func calleeDefContext(c planner.EvidenceItem, rootDir string) *codeContext {
 	return readCodeSpan(c.CalleeDefFile, start, end, start, rootDir)
 }
 
+// typeIndexLegend renders the _index.md header: the workflow framing (binary
+// verdict, Source+Hint-first classification, evidence-open fallback) plus the
+// token legend generated from the planner's hint token registry — the single
+// source of truth for the vocabulary. Before this, the legend was hand-copied
+// here and drifted from the tokens buildHint actually emits; now the guard
+// test (zz_hint_protocol_guard_test.go) keeps every referenced token
+// registered, and this rendering keeps every legend line in sync for free.
+func typeIndexLegend() string {
+	var b strings.Builder
+	b.WriteString("> Classify each candidate as confirmed / dismissed (BINARY).\n")
+	b.WriteString("> Classify from the `Source` + `Hint` columns first — `Hint` is the pipeline's\n")
+	b.WriteString("> precomputed verdict facts (legend generated from the single source in\n")
+	b.WriteString("> `sgre/internal/planner/hint_tokens.go`):\n>\n")
+	for _, line := range planner.HintLegendLines() {
+		b.WriteString("> ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	b.WriteString(">\n")
+	b.WriteString("> Open the `Evidence` file (and its `## Code Context`) when the hint is\n")
+	b.WriteString("> insufficient; read the source (≤5 turns per type) before dismissing\n")
+	b.WriteString("> something you cannot settle.\n\n")
+	return b.String()
+}
+
 // writeTypeIndex writes candidates/<vuln-type>/_index.md — the single table a
 // subagent reads to classify ONE type (the # column matches the NNN candidate
 // filenames, and the Source column carries the exact statement so the classifier
@@ -491,31 +549,7 @@ func (o *ScanOutput) writeTypeIndex(dir string, pkg *planner.PlanResult) error {
 	cwe := VulnToCWE(pkg.VulnerabilityType)
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("# %s (%s) — Candidates\n\n", pkg.VulnerabilityType, cwe))
-	b.WriteString("> Classify each candidate as confirmed / dismissed (BINARY).\n" +
-		"> Classify from the `Source` + `Hint` columns first — `Hint` is the pipeline's\n" +
-		"> precomputed verdict facts (`src@N` = null/taint source line, `certain-null`/\n" +
-		"> `maybe-null` = null certainty, `tainted` = injection source, `weak-guard` =\n" +
-		"> partial guard, `lhs@`/`rhs@`/`rhs-influenced`/`lhs-influenced`/`sink@` =\n" +
-		"> integer-overflow operand provenance, `guard@none` = no same-function guard,\n" +
-		"> `macro-context` = a macro is in play, `contract@known`/`contract@unknown` =\n" +
-		"> unchecked-return callee failure contract — `unknown` means the source is a\n" +
-		"> name heuristic only and you must prove the callee returns a failure sentinel\n" +
-		"> or dismiss; `callee@<file>:<line>` = that callee's definition location in\n" +
-		"> the scan (its body is embedded in the candidate file's `## Callee Definition`);\n" +
-		"> `divisor@<shape>` = divide-by-zero divisor shape,\n" +
-		"> `certain-uninit`/`maybe-uninit` = uninit certainty, `locks@A|B` +\n" +
-		"> `reverse@<fn>` = deadlock lock pair and its reverse acquirer,\n" +
-		"> `threads@<fn>`/`instances@N`/`write@N` = race-condition shared-data race\n" +
-		"> (thread functions, instance count, conflicting write line),\n" +
-		"> `mutex@<name>`/`lock@<lo>-<hi>` = toctou_shared_state critical section,\n" +
-		"> `check@<fn>→use@<fn>`/`arg@<expr>` = TOCTOU check/use pair,\n" +
-		"> `free@N`/`free@N,M` = use-after-free/double-free free line(s); `may-free` =\n" +
-		"> the double-free first release is conditional (a release helper frees only\n" +
-		"> on some paths), so the verdict is possible rather than proved; every type\n" +
-		"> also carries `api@<name>` (the callee) and `cat@<category>` when present).\n" +
-		"> Open the `Evidence`\n" +
-		"> file (and its `## Code Context`) when the hint is insufficient; read the\n" +
-		"> source (≤5 turns per type) before dismissing something you cannot settle.\n\n")
+	b.WriteString(typeIndexLegend())
 	b.WriteString("| # | Function | File:Line | Variable | Suspicion | Hint | Source | Evidence |\n")
 	b.WriteString("|---|----------|-----------|----------|-----------|------|--------|----------|\n")
 	for i, c := range pkg.Candidates {

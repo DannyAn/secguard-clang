@@ -35,8 +35,23 @@ type EvidenceItem struct {
 	// index (_index.md) so the AI classifier can usually decide from the row
 	// alone — opening the evidence file / source only when the hint is
 	// insufficient. It carries the flow facts the pipeline already computed.
-	Hint     string             `json:"hint,omitempty"`
-	Evidence []EvidenceFragment `json:"evidence"`
+	Hint string `json:"hint,omitempty"`
+	// HintTokens is the decomposed token sequence behind Hint (same order,
+	// same content), so the report layer can render each token with its
+	// registry description (the candidate file's "## Pipeline Tokens"
+	// section) without re-parsing the joined hint. Empty = no tokens (Hint
+	// is the "—" placeholder).
+	HintTokens []string `json:"hint_tokens,omitempty"`
+	// VerdictFacts are the type's decisive facts as short structured lines
+	// (token + one sentence + provenance line numbers), rendered in the
+	// candidate file's "## Verdict Facts" section. They are the distilled
+	// semantic-graph answers the classifier needs — NOT raw CFG/DFG/call
+	// dumps (those are pure noise to an LLM and blow the per-range context
+	// budget). Empty = the type has not declared a facts contract yet
+	// (Evidence Contract v2 rolls out per type; see
+	// docs/evidence-contract-v2-design.md).
+	VerdictFacts []VerdictFact      `json:"verdict_facts,omitempty"`
+	Evidence     []EvidenceFragment `json:"evidence"`
 	// Signature is the enclosing function's declared signature (parameter names
 	// + types), so the AI can read the operand types without a source READ.
 	Signature string `json:"signature,omitempty"`
@@ -99,6 +114,23 @@ type EvidenceFragment struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// VerdictFact is ONE distilled decisive fact for a candidate: the hint token
+// it elaborates (when it has a token twin) plus a one-sentence answer with
+// its provenance (file:line), e.g.
+//
+//	Token: "null@caller-arg"
+//	Detail: "parameter `t` — caller `dispatch(t)` passes it unproven non-null (p5.c:119)"
+//
+// The distinction from EvidenceFragment: fragments are the narrative chain
+// (source→sink→path→condition), VerdictFacts are the machine-distilled
+// Q&A the classifier decides from — same registry vocabulary as the Hint,
+// so the three rendering surfaces (index row, candidate file, re-review
+// payload) stay coherent.
+type VerdictFact struct {
+	Token  string `json:"token,omitempty"`
+	Detail string `json:"detail"`
+}
+
 type PipelineSummary struct {
 	SeedCount       int            `json:"seed_count"`
 	Filters         []FilterStats  `json:"filters"`
@@ -157,6 +189,19 @@ func (r *PlanResult) CandidateCount() int {
 // type's Hint column is a bare "—": a subagent should never have to open every
 // evidence file just to learn what a candidate is.
 func buildHint(c Candidate, spec *VulnTypeSpec) string {
+	parts := buildHintParts(c, spec)
+	if len(parts) == 0 {
+		return "—"
+	}
+	return strings.Join(parts, " ")
+}
+
+// buildHintParts is the token-emitting core behind buildHint: it returns the
+// ordered token sequence instead of the joined string, so newEvidenceItem can
+// carry the decomposition (EvidenceItem.HintTokens) for the per-candidate
+// "## Pipeline Tokens" rendering. Every token it emits must be declared in
+// hintTokenRegistry (hint_tokens.go) — the guard test enforces it.
+func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 	var parts []string
 	if spec != nil {
 		switch spec.Name {
@@ -309,13 +354,15 @@ func buildHint(c Candidate, spec *VulnTypeSpec) string {
 	if c.MacroContext {
 		parts = append(parts, "macro-context")
 	}
-	if len(parts) == 0 {
-		return "—"
-	}
-	return strings.Join(parts, " ")
+	return parts
 }
 
 func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceItem {
+	hintTokens := buildHintParts(c, spec)
+	hint := "—"
+	if len(hintTokens) > 0 {
+		hint = strings.Join(hintTokens, " ")
+	}
 	item := EvidenceItem{
 		Type:              spec.EvidenceType,
 		VulnerabilityType: spec.Name,
@@ -330,7 +377,8 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 		},
 		SourceLine: c.SourceLine,
 		Category:   c.Category,
-		Hint:       buildHint(c, spec),
+		Hint:       hint,
+		HintTokens: hintTokens,
 		Evidence:   spec.BuildEvidence(c),
 		Signature:  c.FunctionSignature,
 
@@ -346,6 +394,9 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 		DivisorCallers:  c.DivisorCallers,
 
 		Expression: c.Expression,
+	}
+	if spec.BuildVerdictFacts != nil {
+		item.VerdictFacts = spec.BuildVerdictFacts(c)
 	}
 	for _, ln := range []int{c.SourceLine, c.DeclLine, c.FreeLine, c.FirstFree, c.SecondFree, c.UseLine, c.WriteLine} {
 		if ln > 0 {

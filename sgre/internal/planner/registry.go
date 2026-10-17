@@ -31,6 +31,18 @@ type VulnTypeSpec struct {
 	// one line.
 	ConvergeKey   func(c Candidate) string
 	BuildEvidence func(c Candidate) []EvidenceFragment
+	// BuildVerdictFacts, when set, renders the type's decisive facts as
+	// short structured lines (VerdictFact: token + one sentence + provenance
+	// line numbers) for the candidate file's "## Verdict Facts" section and
+	// the auto-confirmed re-review payload. It is the per-type Evidence
+	// Contract v2 hook (docs/evidence-contract-v2-design.md §3.1): the
+	// pipeline computes the fact (a semantic-graph query: does the callee
+	// return NULL, does a guard dominate, what is the divisor's interval)
+	// and the AI reads the ANSWER, never the raw graph. Facts must carry
+	// their provenance file:line so a targeted read can verify them. A nil
+	// BuildVerdictFacts means the type's contract is not rolled out yet —
+	// the section simply does not render.
+	BuildVerdictFacts func(c Candidate) []VerdictFact
 	// CategoryConfidence overrides DefaultSuspicion per event category. A
 	// category is "confirmed" when the detector *proved* the defect (e.g. a
 	// constant index past a known array size), versus "suspected" when it only

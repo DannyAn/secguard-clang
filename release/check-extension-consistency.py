@@ -364,6 +364,30 @@ def check_tool_arg_passing():
     print("  tool arg passing: no pre-joined leading-space flags in Bun.$ templates")
 
 
+def check_hint_tokens():
+    """Guard the hint token registry (Evidence Contract v2 single source).
+
+    The _index.md legend, the per-candidate "## Pipeline Tokens" section and
+    every extension document's token references hang off ONE registry:
+    sgre/internal/planner/hint_tokens.go. A deleted or hollowed-out registry
+    would silently render empty legends everywhere, so guard its presence
+    and size here. The vocabulary itself (every emitted/documented token is
+    registered) is guarded by the Go test suite
+    (internal/planner/zz_hint_protocol_guard_test.go) — this check only
+    fails fast at release time when the file is gone or gutted.
+    """
+    repo = os.path.dirname(EXT)
+    path = os.path.join(repo, "sgre", "internal", "planner", "hint_tokens.go")
+    if not os.path.isfile(path):
+        fail("sgre/internal/planner/hint_tokens.go missing — the hint token registry is the single source for every rendered legend")
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    count = len(re.findall(r"\{Key: \"", text))
+    if count < 25:
+        fail(f"hint token registry has only {count} entries (< 25) — gutted? Each removed token breaks the generated legend and the per-candidate annotations")
+    print(f"  hint tokens: registry present with {count} entries (vocabulary guarded by Go tests)")
+
+
 def main():
     check_turn_budget()
     check_tools()
@@ -372,6 +396,7 @@ def main():
     check_skills()
     check_dsh_preset()
     check_plugin_packaging()
+    check_hint_tokens()
     print("Extension consistency check passed.")
 
 
