@@ -229,7 +229,18 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 					// classic false positive is `p = malloc(n); free(p);` (e.g.
 					// tp_sizeof_pointer), which used to reach the auto-confirmed
 					// tier as a confirmed CWE-252 finding.
-					if onlyFreedAfter(vars, call, f, ids) {
+					//
+					// Only function-local storage qualifies for the
+					// never-observably-used judgement: a global/external
+					// target's real uses live in other functions and are
+					// invisible here, so they must keep the event.
+					isLocalTarget := func(v string) bool {
+						if _, ok := localDeclLines[v]; ok {
+							return true
+						}
+						return paramsByLine[f.StartLine][v]
+					}
+					if neverUsedAfter(vars, call, f, ids, isLocalTarget) {
 						continue
 					}
 				}
@@ -971,26 +982,53 @@ func (d *UncheckedReturnDetector) funcSummaries(ctx context.Context) (*funcSumma
 // real defect.
 var nullSafeFreeCalls = map[string]bool{"free": true, "cfree": true, "kfree": true}
 
-// onlyFreedAfter reports whether every use of the assigned pointer variables
-// after the allocation is a NULL-safe deallocation, with at least one such call.
-// `p = malloc(n); free(p);` is the classic false positive: free(NULL) is a
-// no-op, so the ignored failure cannot be observed (the round-2 benchmark's
-// tp_sizeof_pointer reached the auto-confirmed tier as a CWE-252 finding this
-// way). The allocation's own declarator/assignment is not a use. Any other
-// occurrence — dereference, field/subscript, sizeof, another call, a return —
-// disqualifies the suppression, so a macro that hides a dereference is not
-// swallowed.
-func onlyFreedAfter(vars []string, call parser.Node, f *db.Function, ids []parser.Node) bool {
+// neverUsedAfter reports whether the assigned pointer variables' stored value
+// is never observably used in the function, with every in-scope occurrence
+// being either a NULL-safe deallocation or none at all:
+//
+//   - `p = malloc(n); free(p);` — free(NULL) is a no-op, so the ignored
+//     failure cannot be observed (the classic tp_sizeof_pointer false
+//     positive that once reached the auto-confirmed tier).
+//   - `p = malloc(n);` with no later occurrence — a dead store: the value is
+//     never consumed at all. The accompanying leak, if any, is the
+//     resource-leak detector's domain, not an unchecked return.
+//   - a rebinding occurrence (`p = malloc(16); p = malloc(32); free(p);`)
+//     kills the old value at the rebind line: occurrences from there on
+//     belong to the new value, so the old allocation's window ends at the
+//     first rebind. `free(p); p = &fallback;` likewise only ever freed the
+//     stored value.
+//   - a sizeof operand (`sizeof(*p)`, `sizeof(p->len)`, `sizeof(p[0])`) is an
+//     unevaluated compile-time size query, not a use.
+//
+// Only function-local targets qualify (isLocal): a global/external storage's
+// uses are cross-function and invisible here. The allocation's own
+// declarator/assignment is not a use. Any other occurrence — dereference,
+// field/subscript write or read, another call, a return — disqualifies the
+// suppression, so a macro that hides a dereference is not swallowed.
+func neverUsedAfter(vars []string, call parser.Node, f *db.Function, ids []parser.Node, isLocal func(string) bool) bool {
 	targets := make(map[string]bool, len(vars))
 	for _, v := range vars {
-		// Only a bare identifier can be judged: `*p = malloc(n)` stores into a
-		// pointed-to location whose aliases this function cannot see.
-		if v == "" || strings.ContainsAny(v, ".[>*") {
+		// Only a bare local identifier can be judged: `*p = malloc(n)` stores
+		// into a pointed-to location, and `obj->f = malloc(n)` into a field,
+		// whose aliases this function cannot see.
+		if v == "" || strings.ContainsAny(v, ".[>*") || !isLocal(v) {
 			return false
 		}
 		targets[v] = true
 	}
 	allocStmt := storeStatementOfCall(call)
+	rebindLine := 0
+	for _, id := range ids {
+		if !targets[id.Text()] || !funcLineRange(f, id.StartLine()) || id.StartLine() <= call.StartLine() {
+			continue
+		}
+		if allocStmt != nil && nodeContains(*allocStmt, id) {
+			continue
+		}
+		if isRebindTarget(id) && (rebindLine == 0 || id.StartLine() < rebindLine) {
+			rebindLine = id.StartLine()
+		}
+	}
 	freed := 0
 	for _, id := range ids {
 		if !targets[id.Text()] || !funcLineRange(f, id.StartLine()) || id.StartLine() < call.StartLine() {
@@ -999,12 +1037,43 @@ func onlyFreedAfter(vars []string, call parser.Node, f *db.Function, ids []parse
 		if allocStmt != nil && nodeContains(*allocStmt, id) {
 			continue
 		}
+		if rebindLine > 0 && id.StartLine() >= rebindLine {
+			continue
+		}
+		if insideSizeof(id) {
+			continue
+		}
+		if isRebindTarget(id) {
+			continue
+		}
 		if !nullSafeFreedArg(id) {
 			return false
 		}
 		freed++
 	}
-	return freed > 0
+	return true
+}
+
+// isRebindTarget reports whether the identifier occurrence is the bare storage
+// location a new value is being written to — the left side of an assignment
+// (`p = ...`), or a declaration's own declarator. Such an occurrence rebinds
+// the name instead of using the previously stored value. A write THROUGH the
+// pointer (`p[0] = 1`, `p->len = 1`, `*p = 1`) is a use of the stored pointer
+// value, not a rebind, so only a pure-identifier left side qualifies.
+func isRebindTarget(id parser.Node) bool {
+	p := id.Parent()
+	if p == nil {
+		return false
+	}
+	switch p.Kind() {
+	case "assignment_expression":
+		children := p.NamedChildren()
+		return len(children) > 0 && children[0].Kind() == "identifier" && children[0].Text() == id.Text()
+	case "init_declarator":
+		children := p.NamedChildren()
+		return len(children) > 0 && nodeContains(children[0], id)
+	}
+	return false
 }
 
 // storeStatementOfCall returns the assignment/initializer whose right-hand side
