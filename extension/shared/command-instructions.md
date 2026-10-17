@@ -314,7 +314,7 @@ as `result.sarif`.)
      (matches the evidence) or dismiss (guarded/different) from the table itself.
      Do NOT read source or the candidate file. Batch all confirmed verdicts into
      one write call.
-   - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null` (non-null-deref types)/`null@cfg-proof`/`null@malloc-fail`/`null@caller-arg`/`null@external-unknown` (null-deref origin tier)/`tainted`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`threads@<fn>`/`instances@N`/`write@N`/`mutex@<name>`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`arg@<expr>`/`may-free`/`reason@<text>`/`key-size@N` (crypto-misuse)/`buf@<name>`/`cap@N`/`idx@<expr>` (buffer-overflow/out-of-bounds)); for divide-by-zero a `divisor@bare` row is settled from `Source` alone (no evidence open). When the hint is insufficient, open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source, a `contract@unknown` unchecked-return candidate embeds its callee body under `## Callee Definition`, and a null-deref `callee@` candidate embeds the dereferenced callee's body there too) and, if STILL insufficient, a raw source read within the ≤5-read budget — then classify. Only after spending that budget may you write `dismissed` (with a cited reason); never write `dismissed` without reading when the hint was insufficient. A `macro-context` hint means a macro is in play — open the `## Code Context` and verify the macro before `confirmed`.
+   - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null` (non-null-deref types)/`null@cfg-proof`/`null@malloc-fail`/`null@caller-arg`/`null@external-unknown` (null-deref origin tier)/`tainted`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`threads@<fn>`/`instances@N`/`write@N`/`mutex@<name>`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`arg@<expr>`/`may-free`/`reason@<text>`/`key-size@N` (crypto-misuse)/`buf@<name>`/`cap@N`/`idx@<expr>` (buffer-overflow/out-of-bounds)/`alloc@N`/`acquire@N`/`leak@definite`/`leak@conditional`/`escape@none|store|return`/`free@N,M` (leaks)); for divide-by-zero a `divisor@bare` row is settled from `Source` alone (no evidence open). When the hint is insufficient, open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source, a `contract@unknown` unchecked-return candidate embeds its callee body under `## Callee Definition`, and a null-deref `callee@` candidate embeds the dereferenced callee's body there too) and, if STILL insufficient, a raw source read within the ≤5-read budget — then classify. Only after spending that budget may you write `dismissed` (with a cited reason); never write `dismissed` without reading when the hint was insufficient. A `macro-context` hint means a macro is in play — open the `## Code Context` and verify the macro before `confirmed`.
     Write **confirmed** findings in ONE batch: write `<tmpdir>/<type>.json`
     containing only confirmed findings with the Write tool, then
     `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
@@ -369,7 +369,7 @@ as `result.sarif`.)
    `_index.md` has a `Source` column per candidate (the exact statement), a `Hint`
    column (the pipeline's precomputed verdict facts: `src@N`/`certain-null`/
    `maybe-null` (non-null-deref types)/`null@cfg-proof`/`null@malloc-fail`/
-   `null@caller-arg`/`null@external-unknown` (null-deref origin tier)/`tainted`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`threads@<fn>`/`write@N`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`reason@<text>`/`key-size@N`/`buf@<name>`/`cap@N`/`idx@<expr>`), plus an `Evidence` column naming the exact
+   `null@caller-arg`/`null@external-unknown` (null-deref origin tier)/`tainted`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`threads@<fn>`/`write@N`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`reason@<text>`/`key-size@N`/`buf@<name>`/`cap@N`/`idx@<expr>`/`alloc@N`/`acquire@N`/`leak@definite`/`leak@conditional`/`escape@none|store|return`), plus an `Evidence` column naming the exact
    candidate file, and each candidate file has a `## Code Context` block — do NOT
    issue per-candidate source READs (that is the tens-of-minutes cost). Read ONLY
    your type's `_index.md`, never the whole report.md.
@@ -397,10 +397,16 @@ as `result.sarif`.)
       `macro-context` = a function-like macro is in play — verify it before
       confirming, `reason@<text>` = crypto-misuse detector rationale (judge
       from it, not the API name alone), `key-size@N` = declared key bytes
-      (under 16 is below the modern-cipher minimum), `buf@<name>`/`cap@N`/
+      (under 16 is below the modern-cipher minimum),       `buf@<name>`/`cap@N`/
       `idx@<expr>` = buffer-overflow/out-of-bounds buffer, capacity, and
       access index/copy size (a constant past cap@ is detector-proved; a
-      variable one needs your range judgment). For
+      variable one needs your range judgment), `alloc@N`/`acquire@N` =
+      the leak's allocation/acquisition line, `leak@definite` = no
+      release/escape/transfer reachable on any path (machine-proved loss),
+      `leak@conditional` = a release channel exists but the CFG proved a
+      leak path bypasses it, `escape@none|store|return` = the
+      ownership-transfer channel state, `free@N,M` = the release sites
+      that exist but do not cover the leak path. For
       divide-by-zero, `Hint` is `divisor@<shape>`
       (`bare` = a plain identifier, `call` = a call result, `compound` = a complex
       expression; `field`/`global` are already auto-confirmed and never reach you):

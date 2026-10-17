@@ -13,6 +13,8 @@ func TestBuildHint(t *testing.T) {
 	cm := &VulnTypeSpec{Name: "crypto-misuse"}
 	bo := &VulnTypeSpec{Name: "buffer-overflow"}
 	oob := &VulnTypeSpec{Name: "out-of-bounds"}
+	ml := &VulnTypeSpec{Name: "memory-leak"}
+	rl := &VulnTypeSpec{Name: "resource-leak"}
 	cases := []struct {
 		name string
 		c    Candidate
@@ -55,6 +57,9 @@ func TestBuildHint(t *testing.T) {
 		{"buffer-overflow constant index", Candidate{Array: "buf", Size: 16, Index: "20", Category: "array_oob_write"}, bo, "buf@buf cap@16 idx@20 cat@array_oob_write"},
 		{"buffer-overflow variable copy size", Candidate{Array: "dst", Size: 64, CopySize: "n", Category: "bounded_copy_var_size"}, bo, "buf@dst cap@64 idx@n cat@bounded_copy_var_size"},
 		{"out-of-bounds constant read", Candidate{Array: "data", Size: 8, Index: "12", Category: "array_oob_read"}, oob, "buf@data cap@8 idx@12 cat@array_oob_read"},
+		{"memory-leak definite no channel", Candidate{Line: 12, DefiniteLeak: true, LeakEscapeKind: "none", APIName: "malloc"}, ml, "alloc@12 leak@definite escape@none api@malloc"},
+		{"memory-leak conditional store bypass", Candidate{Line: 12, LeakEscapeKind: "store", LeakFreeLines: "30,45"}, ml, "alloc@12 leak@conditional escape@store free@30,45"},
+		{"resource-leak conditional return bypass", Candidate{Line: 8, LeakEscapeKind: "return", LeakFreeLines: "22", Category: "resource_acquire", APIName: "fopen"}, rl, "acquire@8 leak@conditional escape@return free@22 api@fopen cat@resource_acquire"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

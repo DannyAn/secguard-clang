@@ -97,8 +97,22 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "use@", Display: "use@<fn>", Description: "TOCTOU use call: {value}"},
 	{Key: "arg@", Display: "arg@<expr>", Description: "the argument checked then used: {value}"},
 
-	// ---- use-after-free / double-free ----
-	{Key: "free@", Display: "free@N / free@N,M", Description: "the free site line(s): {value} (one for use-after-free, two for double-free)"},
+	// ---- use-after-free / double-free / leaks ----
+	{Key: "free@", Display: "free@N / free@N,M", Description: "the free site line(s): {value} (one for use-after-free, two for double-free; on a leak candidate they are the release sites that exist but do not cover the leak path)"},
+
+	// ---- memory-leak / resource-leak ----
+	// The verdict basis for a leak: the acquire line, the certainty tier
+	// (DefiniteLeak), and the ownership-release channel state. The channel
+	// split is what separates the two classifier actions: "no channel at all"
+	// is machine-proved loss, "a channel exists but the CFG proved a leak path
+	// bypasses it" is where the judgment lives.
+	{Key: "alloc@", Display: "alloc@N", Description: "the allocation site line: {value} (memory-leak)"},
+	{Key: "acquire@", Display: "acquire@N", Description: "the resource acquisition site line: {value} (resource-leak)"},
+	{Key: "leak@definite", Description: "no free/escape/transfer is reachable on ANY path from the allocation to function exit — machine-proved loss"},
+	{Key: "leak@conditional", Description: "a release channel exists but the CFG proved a leak path bypasses it — judge that path (error/early-return) against free@/escape@"},
+	{Key: "escape@return", Description: "the value is returned to the caller somewhere (an ownership transfer exists) — the leak path must be a NON-returning path"},
+	{Key: "escape@store", Description: "the value is stored into a non-local (global/parameter/container) somewhere — the leak path must bypass that store"},
+	{Key: "escape@none", Description: "no ownership-transfer channel exists anywhere in the function"},
 	{Key: "may-free", Description: "the double-free's first release is conditional (a release helper frees only on some paths) — the verdict is possible, not proved"},
 }
 

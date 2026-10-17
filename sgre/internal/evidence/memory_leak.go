@@ -3,6 +3,7 @@ package evidence
 import (
 	"context"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
@@ -159,9 +160,13 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 							definiteLeak = true
 						}
 						props := map[string]string{
-							"variable": varName,
-							"origin":   "malloc",
-							"api":      callNameAtLine(calls, allocLine),
+							"variable":    varName,
+							"origin":      "malloc",
+							"api":         callNameAtLine(calls, allocLine),
+							"escape_kind": leakEscapeKind(escapeLines, transferLines),
+						}
+						if len(freeLines) > 0 {
+							props["free_lines"] = joinIntLines(freeLines)
 						}
 						if definiteLeak {
 							props["definite"] = "true"
@@ -553,6 +558,31 @@ func canReachAnyRelease(cfg *graph.StmtCFG, allocLine int, freeLines, escapeLine
 // detection uses it, but the getter-borrow classifier (allocatorReturnFuncs)
 // passes false so a wrapper that merely logs/stores its result via a
 // `_add`/`_store`-named helper is not misread as a borrow.
+// leakEscapeKind summarizes the ownership-release channels a leak event's
+// variable has (shared by the memory- and resource-leak detectors): "return"
+// when the value is returned to the caller somewhere, "store" when it is
+// stored into a non-local (global/parameter/container), "none" when no
+// channel exists. The planner surfaces it as the escape@ hint token so the
+// classifier can tell "no channel at all" (machine-proved loss) from "a
+// channel exists but the CFG proved a leak path bypasses it".
+func leakEscapeKind(escapeLines, transferLines []int) string {
+	if len(transferLines) > 0 {
+		return "return"
+	}
+	if len(escapeLines) > 0 {
+		return "store"
+	}
+	return "none"
+}
+
+func joinIntLines(lines []int) string {
+	parts := make([]string, len(lines))
+	for i, l := range lines {
+		parts[i] = strconv.Itoa(l)
+	}
+	return strings.Join(parts, ",")
+}
+
 func findEscapeLines(assigns, calls, returns []parser.Node, f *db.Function, varName string, localVars map[string]bool, allocVarNames map[string]bool, allocReturns map[string]bool, useEscapeFuncs bool) []int {
 	var lines []int
 	for _, assign := range assigns {

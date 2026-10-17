@@ -115,7 +115,11 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 						// mkstemp/mkostemp are "safe" for TEMP-FILE RACE, but the
 						// returned fd still leaks when never closed. The two
 						// concerns are orthogonal.
-						"category": "resource_acquire",
+						"category":    "resource_acquire",
+						"escape_kind": leakEscapeKind(escapeLines, transferLines),
+					}
+					if len(releaseLines) > 0 {
+						acquireProps["free_lines"] = joinIntLines(releaseLines)
 					}
 					if definiteLeak {
 						acquireProps["definite"] = "true"

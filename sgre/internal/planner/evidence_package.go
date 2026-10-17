@@ -278,6 +278,30 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			if idx != "" {
 				parts = append(parts, "idx@"+idx)
 			}
+		case "memory-leak", "resource-leak":
+			// The verdict basis: WHERE the resource is acquired, HOW certain
+			// the loss is (DefiniteLeak), and WHAT ownership-transfer channels
+			// exist. escape@none + leak@definite is machine-proved loss; a
+			// channel that exists while the candidate survived means the CFG
+			// proved a leak path bypasses it — that path is the judgment.
+			if spec.Name == "memory-leak" {
+				parts = append(parts, fmt.Sprintf("alloc@%d", c.Line))
+			} else {
+				parts = append(parts, fmt.Sprintf("acquire@%d", c.Line))
+			}
+			if c.DefiniteLeak {
+				parts = append(parts, "leak@definite")
+			} else {
+				parts = append(parts, "leak@conditional")
+			}
+			if c.LeakEscapeKind != "" {
+				parts = append(parts, "escape@"+c.LeakEscapeKind)
+			}
+			// The release sites that exist but do not cover the leak path —
+			// the classifier checks that path against these lines.
+			if c.LeakFreeLines != "" {
+				parts = append(parts, "free@"+c.LeakFreeLines)
+			}
 		case "divide-by-zero":
 			if shape := divisorShape(c.VariableName); shape != "" {
 				parts = append(parts, "divisor@"+shape)

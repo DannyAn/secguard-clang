@@ -249,6 +249,16 @@ type Candidate struct {
 	// DefiniteLeak is true when the leak detector proved no release/escape/
 	// transfer is reachable on any path (memory-leak / resource-leak).
 	DefiniteLeak bool `json:"definite_leak,omitempty"`
+	// LeakEscapeKind is the ownership-release channel summary for a leak
+	// candidate: "return" (the value is returned to the caller somewhere),
+	// "store" (stored into a non-local), "none" (no channel at all). A channel
+	// that exists while the candidate is still a leak means the CFG proved a
+	// leak path bypasses it.
+	LeakEscapeKind string `json:"leak_escape_kind,omitempty"`
+	// LeakFreeLines is the comma-separated release-line list for a conditional
+	// leak candidate (the free/close sites that exist but do not cover the
+	// leak path).
+	LeakFreeLines string `json:"leak_free_lines,omitempty"`
 	// ThreadFunctions is the comma-separated list of pthread thread function
 	// names for a shared_data_race candidate (race-condition).
 	ThreadFunctions string `json:"thread_functions,omitempty"`

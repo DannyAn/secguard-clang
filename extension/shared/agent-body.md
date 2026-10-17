@@ -196,7 +196,12 @@ budget your effort, not to pre-judge the answer:
   is below the modern-cipher minimum), `buf@<name>`/`cap@N`/`idx@<expr>` =
   buffer-overflow/out-of-bounds buffer, capacity, and access index/copy
   size (a constant past cap@ is detector-proved; a variable one needs your
-  range judgment)), so
+  range judgment), `alloc@N`/`acquire@N` = the leak's allocation/acquisition
+  line, `leak@definite` = machine-proved loss (no release channel reachable
+  on any path), `leak@conditional` = a release channel exists but the CFG
+  proved a leak path bypasses it, `escape@none|store|return` = the
+  ownership-transfer channel state, `free@N,M` = the release sites that
+  exist but do not cover the leak path)), so
   you confirm or dismiss from the table
   itself (statement matches the evidence → confirmed; it is guarded/different →
   dismiss). Do NOT open the source file and do NOT open the `Evidence` candidate

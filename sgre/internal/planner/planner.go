@@ -492,6 +492,8 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			FirstCallee:       props.FirstCallee,
 			Victims:           props.Victims,
 			DefiniteLeak:      props.Definite == "true",
+			LeakEscapeKind:    props.EscapeKind,
+			LeakFreeLines:     props.FreeLines,
 			ThreadFunctions:   props.ThreadFunctions,
 			ThreadInstances:   props.ThreadInstances,
 			WriteLine:         props.WriteLine,

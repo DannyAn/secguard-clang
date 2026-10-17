@@ -163,6 +163,13 @@ type eventProps struct {
 	CountField   string `json:"count"`
 	Missing      string `json:"missing"`
 	EvidenceKind string `json:"evidence"`
+	// EscapeKind is the ownership-release channel summary a leak event carries
+	// ("return"/"store"/"none", from leakEscapeKind); FreeLines is the comma-
+	// separated release-line list. Together they let the classifier tell a
+	// machine-proved loss from a conditional leak whose release exists but is
+	// bypassed on the leak path.
+	EscapeKind string `json:"escape_kind"`
+	FreeLines  string `json:"free_lines"`
 }
 
 func parseEventProps(raw string) eventProps {

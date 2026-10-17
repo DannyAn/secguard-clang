@@ -426,6 +426,67 @@ func buildBufferVerdictFacts(c Candidate) []VerdictFact {
 	return facts
 }
 
+// buildLeakVerdictFacts distills the memory/resource-leak verdict basis: the
+// acquire line, the certainty tier, and the ownership-release channel state.
+// The channel split is the classifier's decision point — escape@none is a
+// machine-proved loss, while a channel that exists alongside a surviving
+// leak candidate means the CFG proved a bypass path.
+func buildLeakVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 4)
+	acquire := "acquisition"
+	if c.APIName != "" {
+		acquire = fmt.Sprintf("%s acquisition", c.APIName)
+	}
+	if c.Line > 0 {
+		if c.Category == "resource_acquire" {
+			facts = append(facts, VerdictFact{
+				Token:  fmt.Sprintf("acquire@%d", c.Line),
+				Detail: fmt.Sprintf("the resource is acquired at line %d (%s) in function %s", c.Line, acquire, c.FunctionName),
+			})
+		} else {
+			facts = append(facts, VerdictFact{
+				Token:  fmt.Sprintf("alloc@%d", c.Line),
+				Detail: fmt.Sprintf("the memory is allocated at line %d (%s) in function %s", c.Line, acquire, c.FunctionName),
+			})
+		}
+	}
+	if c.DefiniteLeak {
+		facts = append(facts, VerdictFact{
+			Token:  "leak@definite",
+			Detail: "no free/escape/transfer is reachable on ANY path from the allocation to function exit — machine-proved loss, verify the statement matches and confirm",
+		})
+	} else {
+		facts = append(facts, VerdictFact{
+			Token:  "leak@conditional",
+			Detail: "a release channel exists but the CFG proved a leak path bypasses it — trace the error/early-return path and check it against free@",
+		})
+	}
+	switch c.LeakEscapeKind {
+	case "return":
+		facts = append(facts, VerdictFact{
+			Token:  "escape@return",
+			Detail: "the value is returned to the caller somewhere — an ownership transfer exists; the leak path must be a NON-returning path",
+		})
+	case "store":
+		facts = append(facts, VerdictFact{
+			Token:  "escape@store",
+			Detail: "the value is stored into a non-local (global/parameter/container) somewhere — the leak path must bypass that store",
+		})
+	case "none":
+		facts = append(facts, VerdictFact{
+			Token:  "escape@none",
+			Detail: "no ownership-transfer channel exists anywhere in the function",
+		})
+	}
+	if c.LeakFreeLines != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "free@" + c.LeakFreeLines,
+			Detail: "the release site(s) that exist but do not cover the leak path — the ## Code Context window covers them",
+		})
+	}
+	return facts
+}
+
 func init() {
 	RegisterVulnType(&VulnTypeSpec{
 		Name:               "null-deref",
@@ -560,12 +621,13 @@ func init() {
 	})
 
 	RegisterVulnType(&VulnTypeSpec{
-		Name:             "memory-leak",
-		CWE:              "CWE-401",
-		SeedEventType:    "MEMORY_ALLOC",
-		EvidenceType:     "MEMORY_LEAK",
-		DefaultSuspicion: "suspected",
-		FilterChain:      "memory-leak",
+		Name:              "memory-leak",
+		CWE:               "CWE-401",
+		SeedEventType:     "MEMORY_ALLOC",
+		EvidenceType:      "MEMORY_LEAK",
+		DefaultSuspicion:  "suspected",
+		FilterChain:       "memory-leak",
+		BuildVerdictFacts: buildLeakVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			allocAPI := ""
 			if c.APIName != "" {
@@ -623,12 +685,13 @@ func init() {
 	})
 
 	RegisterVulnType(&VulnTypeSpec{
-		Name:             "resource-leak",
-		CWE:              "CWE-404",
-		SeedEventType:    "RESOURCE_ACQUIRE",
-		EvidenceType:     "RESOURCE_LEAK",
-		DefaultSuspicion: "suspected",
-		FilterChain:      "resource-leak",
+		Name:              "resource-leak",
+		CWE:               "CWE-404",
+		SeedEventType:     "RESOURCE_ACQUIRE",
+		EvidenceType:      "RESOURCE_LEAK",
+		DefaultSuspicion:  "suspected",
+		FilterChain:       "resource-leak",
+		BuildVerdictFacts: buildLeakVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			acquireAPI := ""
 			if c.APIName != "" {

@@ -26,6 +26,23 @@ proved-released resource before a candidate is written. The detector marks the
 seed event `definite=true` when the CFG proves no release is reachable on any
 path, and the leak-proof filter promotes a `definite` candidate to `confirmed`.
 
+### Hint Tokens (Verdict Basis)
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `acquire@N` | the acquisition site line | where the ownership starts |
+| `leak@definite` | no release/escape/transfer is reachable on ANY path — machine-proved loss | verify the statement matches, then confirm |
+| `leak@conditional` | a release channel exists but the CFG proved a leak path bypasses it | trace that error/early-return path against `free@N,M` |
+| `escape@none` | no ownership-transfer channel exists anywhere | nothing to weigh — the loss is total |
+| `escape@return` | the handle is returned to the caller somewhere | the leak path must be a NON-returning path — find it |
+| `escape@store` | the handle is stored into a non-local somewhere | the leak path must bypass that store — find it |
+| `free@N,M` | the close/release sites that exist but do not cover the leak path | the ## Code Context window covers them |
+
+The decisive split is the escape token plus the leak token:
+`escape@none` + `leak@definite` settles the row from the Hint; any channel
+token alongside `leak@conditional` names exactly the release the leak path
+skips.
+
 ### Detection Signals
 - `open()`, `fopen()`, `socket()`, `accept()`, `dup()`, `epoll_create()`, `eventfd()`, `signalfd()`, `timerfd()`, `mkstemp()` → resource acquired
 - Lock/semaphore acquirers and initializers (`pthread_mutex_lock`, `pthread_rwlock_init`, `acquire(...)`) → resource acquired
