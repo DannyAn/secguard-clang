@@ -85,8 +85,18 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				c.HasNullableSource = true
 				if apikb.IsKnownNullableReturn(c.CalleeName) {
 					c.SuspicionLevel = "confirmed"
+					c.NullOriginTier = "malloc-fail"
+					c.NullableOriginName = c.CalleeName
+				} else if retNullable[c.CalleeName] {
+					c.SuspicionLevel = "suspected"
+					// A defined callee whose body provably returns NULL is the
+					// same textbook tier as an allocator: a proven-nullable
+					// origin. Its definition is embedded for the verdict.
+					c.NullOriginTier = "malloc-fail"
+					c.NullableOriginName = c.CalleeName
 				} else {
 					c.SuspicionLevel = "suspected"
+					c.NullOriginTier = "external-unknown"
 				}
 				kept = append(kept, c)
 			} else {
@@ -153,6 +163,22 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				if !c.HasDefiniteNull && !models[c.FunctionID].onlyCertainNullableSources(c.VariableName) {
 					c.SuspicionLevel = "suspected"
 				}
+				// The nullable-origin tier feeds the null@<tier> hint token:
+				// the classifier's job differs per tier (cfg-proof and
+				// malloc-fail are machine-proved textbook CWE-476; caller-arg
+				// needs the caller's contract; external-unknown is a fail-open
+				// assumption the AI must verify or dismiss).
+				switch {
+				case c.HasDefiniteNull:
+					c.NullOriginTier = "cfg-proof"
+				case models[c.FunctionID].onlyCertainNullableSources(c.VariableName):
+					c.NullOriginTier = "malloc-fail"
+					c.NullableOriginName = models[c.FunctionID].certainNullableOrigin(c.VariableName)
+				case c.CallerNullDetail != "":
+					c.NullOriginTier = "caller-arg"
+				default:
+					c.NullOriginTier = "external-unknown"
+				}
 				kept = append(kept, c)
 			} else {
 				dropped = dismiss(dropped, c, f.Name(),
@@ -172,6 +198,9 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 		if models[c.FunctionID].hasSource(c.VariableName, c.Line) {
 			c.HasNullableSource = true
 			c.SuspicionLevel = "suspected"
+			// The line-order fallback cannot classify the origin — the
+			// conservative tier tells the AI this is an unproven assumption.
+			c.NullOriginTier = "external-unknown"
 			kept = append(kept, c)
 		} else {
 			dropped = dismiss(dropped, c, f.Name(),

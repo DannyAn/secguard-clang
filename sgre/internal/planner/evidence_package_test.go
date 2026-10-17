@@ -9,6 +9,7 @@ func TestBuildHint(t *testing.T) {
 	dbz := &VulnTypeSpec{Name: "divide-by-zero"}
 	uninit := &VulnTypeSpec{Name: "uninit"}
 	iof := &VulnTypeSpec{Name: "integer-overflow"}
+	nil2 := &VulnTypeSpec{Name: "null-deref"}
 	cases := []struct {
 		name string
 		c    Candidate
@@ -28,6 +29,12 @@ func TestBuildHint(t *testing.T) {
 		{"divide-by-zero global divisor", Candidate{VariableName: "g_count"}, dbz, "divisor@global"},
 		{"api and category", Candidate{APIName: "memcpy", Category: "buffer_overflow"}, nil, "api@memcpy cat@buffer_overflow"},
 		{"uninit certain", Candidate{SuspicionLevel: "confirmed"}, uninit, "certain-uninit"},
+		// null-deref states certainty through the null@<tier> token instead of
+		// the shared certain-null/maybe-null pair, plus guard@none at the tail.
+		{"null-deref cfg-proof", Candidate{SourceLine: 5, NullOriginTier: "cfg-proof"}, nil2, "null@cfg-proof src@5 guard@none"},
+		{"null-deref malloc-fail with callee", Candidate{SourceLine: 5, NullOriginTier: "malloc-fail", IsCallResultDeref: true, CalleeDefFile: "src/util.c", CalleeDefLine: 42}, nil2, "null@malloc-fail callee@util.c:42 src@5 guard@none"},
+		{"null-deref caller-arg", Candidate{NullOriginTier: "caller-arg"}, nil2, "null@caller-arg guard@none"},
+		{"null-deref external-unknown", Candidate{NullOriginTier: "external-unknown"}, nil2, "null@external-unknown guard@none"},
 		{"uninit maybe", Candidate{SuspicionLevel: "suspected"}, uninit, "maybe-uninit"},
 		{"integer-overflow unsigned sub unguarded", Candidate{Category: "unsigned_sub_underflow"}, iof, "guard@none cat@unsigned_sub_underflow"},
 		{"integer-overflow unsigned sub provenance", Candidate{Category: "unsigned_sub_underflow", LHSKind: "param", RHSKind: "local", SubRHSInfluenced: true, SubSink: "call_arg"}, iof, "lhs@param rhs@local rhs-influenced sink@call_arg guard@none cat@unsigned_sub_underflow"},
@@ -154,13 +161,17 @@ func TestNewEvidenceItem_SourceLinesCollection(t *testing.T) {
 // and unchecked-return's hints are the longest, so a tail position let the
 // callee name be the first thing the truncation ate.
 func TestBuildHint_ApiBeforeFlowTokens(t *testing.T) {
+	// The nullable-origin tier is loaded by the nullable-source filter; a
+	// Candidate that skipped it (tier empty) still carries the shared flow
+	// tokens — and null-deref's guard@none (machine-verified absence) instead
+	// of the flat maybe-null it no longer emits.
 	got := buildHint(Candidate{
 		APIName:           "obfuscated_pool_allocator_factory",
 		Category:          "unchecked_return",
 		SourceLine:        123,
 		HasNullableSource: true,
 	}, &VulnTypeSpec{Name: "null-deref"})
-	want := "api@obfuscated_pool_allocator_factory cat@unchecked_return src@123 maybe-null"
+	want := "api@obfuscated_pool_allocator_factory cat@unchecked_return src@123 guard@none"
 	if got != want {
 		t.Errorf("buildHint() = %q, want %q", got, want)
 	}

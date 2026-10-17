@@ -180,7 +180,10 @@ budget your effort, not to pre-judge the answer:
   semantic graph. Do NOT re-derive the dataflow or re-prove the defect. Read the
   `_index.md` row only: its `Source` column already shows the exact statement at
   file:line and its `Hint` column carries the flow facts (`src@N` = null-source
-  line, `certain-null`/`maybe-null` = null certainty, `tainted` = injection
+  line, `certain-null`/`maybe-null` = null certainty for non-null-deref types,
+  `null@cfg-proof`/`null@malloc-fail`/`null@caller-arg`/`null@external-unknown`
+  = null-deref nullable-origin tier (CFG-proved / proven-nullable call result /
+  unproven caller argument / fail-open external assumption), `tainted` = injection
   source, `weak-guard` = partial guard, `certain-uninit`/`maybe-uninit` = uninit
   tier, `api@<name>` = the API in play, `cat@<name>` = the detector category,
   `lhs@<kind>`/`rhs@<kind>` = integer-overflow operand origin (param/local/global/
@@ -195,7 +198,9 @@ budget your effort, not to pre-judge the answer:
   file for a confirmed candidate.
 - **suspected** — a heuristic recognized the pattern but the graph could not
   prove it. First classify from the `_index.md` row's `Source` + `Hint` columns:
-  `certain-null` + `src@N` usually settles the verdict. For divide-by-zero, the
+  `certain-null` + `src@N` (or null-deref's `null@cfg-proof`) usually settles
+  the verdict, and a `null@external-unknown` row is the opposite — an unproven
+  fail-open assumption you verify or dismiss. For divide-by-zero, the
   `Hint` is `divisor@<shape>` (`bare` = plain identifier, `call` = call result,
   `compound` = complex expression): a `divisor@bare` row is settled from the
   `Source` column alone (unguarded plain divisor → `suspected`), with no
@@ -343,11 +348,21 @@ machine auto-confirmed finding. This is the only path a 0-candidate type needs.
    --type <type> --db <db_path>`, or the `secguard_review` MCP tool
    (`list_auto_confirmed: true, type: <type>`) when you have it. → a `findings`
    array (`id` / `rule_id` / `file` / `line` /
-   `function` / `variable` / `reasoning` / `snippet` / `context`). If the set is
+   `function` / `variable` / `reasoning` / `snippet` / `context`, plus `hint` /
+   `facts` — the pipeline's own verdict basis persisted at auto-confirm time:
+   `hint` is the same token sequence the `_index.md` Hint column would carry,
+   `facts` is the structured `token`/`detail` pairs; findings auto-confirmed
+   before that field existed have neither and fall back to `reasoning`).
+   If the set is
    large, pull it in pages with `--limit <n>` (e.g. 50) so a single tool return
    never overflows your context; re-list until `count: 0`.
-2. For each entry, apply the skill's false-positive rules against `reasoning` +
-   `context` — a gutter-numbered ±8-line window (> marks the finding line) that
+2. For each entry, apply the skill's false-positive rules against `hint` +
+   `facts` first — they state HOW the pipeline proved the verdict (e.g. a
+   `null@malloc-fail` fact names the exact nullable origin; a
+   `null@external-unknown` fact tells you the machine's only basis was a
+   fail-open assumption, which is exactly the tier to scrutinize), then against
+   `reasoning` + `context` — a gutter-numbered ±8-line window (> marks the
+   finding line) that
    shows the guard / return / neighbouring use which settles the machine verdict.
    `snippet` is the single finding line when you only need the statement. Read the
    source file only when the window is genuinely insufficient — this is a cheap

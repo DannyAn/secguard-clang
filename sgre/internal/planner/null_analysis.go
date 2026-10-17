@@ -135,6 +135,25 @@ func (m *nullModel) onlyCertainNullableSources(variable string) bool {
 	return seen
 }
 
+// certainNullableOrigin returns the origin name (a declared allocator or a
+// known maybe-null libc function) of the variable's first certain-tier null
+// source, or "" when none is certain. It powers the null@malloc-fail verdict
+// detail, which names the exact proven-nullable origin.
+func (m *nullModel) certainNullableOrigin(variable string) string {
+	if m == nil {
+		return ""
+	}
+	for _, s := range m.sources {
+		if s.variable != variable {
+			continue
+		}
+		if apikb.IsDeclaredAllocator(s.origin) || apikb.IsKnownNullableReturn(s.origin) {
+			return s.origin
+		}
+	}
+	return ""
+}
+
 // onlyUnprovenCallerNullSources reports whether the variable's only null source
 // is a caller_null source whose argument was merely "not proven non-null". That
 // is an analyzer limitation, not evidence the caller can pass NULL; converging

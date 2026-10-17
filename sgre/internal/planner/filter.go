@@ -171,6 +171,16 @@ type Candidate struct {
 	ExpectedType string `json:"expected_type,omitempty"`
 	ActualType   string `json:"actual_type,omitempty"`
 	CastType     string `json:"cast_type,omitempty"`
+	// NullOriginTier classifies HOW the pipeline knows the value can be null:
+	// "cfg-proof" (a NULL definite assignment provably reaches the deref),
+	// "malloc-fail" (a proven-nullable call result: allocator / known libc /
+	// callee with a return-NULL body), "caller-arg" (inter-procedural caller
+	// argument, not proven non-null), "external-unknown" (fail-open external
+	// call — an assumption, not evidence). It feeds the null@<tier> hint token.
+	NullOriginTier string `json:"null_origin_tier,omitempty"`
+	// NullableOriginName is the proven-nullable origin's name (the allocator,
+	// libc function, or callee) when NullOriginTier is "malloc-fail".
+	NullableOriginName string `json:"nullable_origin_name,omitempty"`
 	// CallerNullDetail describes the inter-procedural caller_null origin of a
 	// parameter's nullability (e.g. "caller c passes NULL"), surfaced in the
 	// evidence so the AI can judge the caller contract instead of a bare "line 0".

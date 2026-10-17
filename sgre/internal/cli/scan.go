@@ -636,7 +636,7 @@ func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType s
 		if summary == "" {
 			summary = fmt.Sprintf("%s in %s at line %d", vulnType, c.Target.Function, c.Target.Line)
 		}
-		properties, perr := buildAutoConfirmProperties(c.Evidence)
+		properties, perr := buildAutoConfirmProperties(c)
 		if perr != nil {
 			if logger != nil {
 				logger.Warn("auto-confirm properties build failed", "error", perr, "vuln_type", vulnType, "function", c.Target.Function)
@@ -677,12 +677,32 @@ func resolveSourceRevision(projectRoot string) string {
 	return sha
 }
 
-func buildAutoConfirmProperties(evidence []planner.EvidenceFragment) (string, error) {
-	evBytes, err := json.Marshal(evidence)
+// buildAutoConfirmProperties serializes what the re-review (`report
+// --list-auto-confirmed`) needs to judge the machine verdict WITHOUT a source
+// read: the evidence fragments (the narrative) plus the hint tokens and
+// verdict facts (the distilled basis, Evidence Contract v2). The re-review
+// reads the same facts the initial classification saw, so a "getter mistaken
+// for an allocator" false positive is visible at a glance.
+func buildAutoConfirmProperties(c planner.EvidenceItem) (string, error) {
+	evBytes, err := json.Marshal(c.Evidence)
 	if err != nil {
 		return "", fmt.Errorf("marshal auto_confirm_evidence: %w", err)
 	}
 	base := map[string]json.RawMessage{"auto_confirm_evidence": evBytes}
+	if len(c.HintTokens) > 0 {
+		htBytes, err := json.Marshal(c.HintTokens)
+		if err != nil {
+			return "", fmt.Errorf("marshal auto_confirm_hint_tokens: %w", err)
+		}
+		base["auto_confirm_hint_tokens"] = htBytes
+	}
+	if len(c.VerdictFacts) > 0 {
+		vfBytes, err := json.Marshal(c.VerdictFacts)
+		if err != nil {
+			return "", fmt.Errorf("marshal auto_confirm_verdict_facts: %w", err)
+		}
+		base["auto_confirm_verdict_facts"] = vfBytes
+	}
 	out, err := json.Marshal(base)
 	if err != nil {
 		return "", fmt.Errorf("marshal properties: %w", err)

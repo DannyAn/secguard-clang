@@ -325,21 +325,15 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 					// index located. Embedding it turns a source READ (a large
 					// share of the classifier's read budget on this type) into
 					// an in-file judgment.
-					if c.CalleeDefFile != "" {
-						if ctx := calleeDefContext(c, o.RootDir); ctx != nil {
-							b.WriteString("## Callee Definition\n\n")
-							fmt.Fprintf(&b, "`%s:%d-%d` — the unchecked callee's body. Judge the failure sentinel from this body; no source read is needed.\n\n", displayPath(c.CalleeDefFile, o.RootDir), ctx.StartLine, ctx.EndLine)
-							b.WriteString(ctx.render())
-							if c.CalleeDefEndLine > ctx.EndLine {
-								fmt.Fprintf(&b, "\nBody truncated at line %d of %d — the callee continues past this window.\n", ctx.EndLine, c.CalleeDefEndLine)
-							}
-							b.WriteString("\n")
-						} else {
-							b.WriteString("## Callee Definition\n\n")
-							fmt.Fprintf(&b, "- Body unavailable at report time: `%s:%d` could not be read (file changed or moved since the scan?).\n- The callee is in the scan; read that location only if the signature above is insufficient.\n\n", displayPath(c.CalleeDefFile, o.RootDir), c.CalleeDefLine)
-						}
-					}
+					writeCalleeDefinition(&b, c, o, "the unchecked callee's body. Judge the failure sentinel from this body; no source read is needed.")
 				}
+			}
+			// null-deref call-result dereferences (`f()->field`): the callee's
+			// body decides whether its return can be NULL — the null@malloc-fail
+			// verdict fact names it, and the embedded body settles it without a
+			// source read.
+			if pkg.VulnerabilityType == "null-deref" && c.IsCallResultDeref {
+				writeCalleeDefinition(&b, c, o, "the callee whose return is dereferenced. Judge whether its body can return NULL; no source read is needed.")
 			}
 
 			// The pipeline's verdict tokens with their registry descriptions, so
@@ -498,7 +492,34 @@ const maxCalleeDefLines = 40
 // embedding. The function index gives the exact span (StartLine-EndLine), so the
 // body is usually complete; an unknown end line falls back to a bounded window
 // from the definition's first line. A nil result means the file cannot be read
-// at report time, and the caller degrades to the location pointer.
+// writeCalleeDefinition embeds the callee's in-scan body under
+// ## Callee Definition with a type-specific intro line. It is the shared
+// embedding path for unchecked-return (failure-sentinel proof) and null-deref
+// call-result dereferences (return-nullability proof); a callee with no
+// definition in the scan (external/library) renders nothing — the token-level
+// contract already says so.
+func writeCalleeDefinition(b *strings.Builder, c planner.EvidenceItem, o *ScanOutput, intro string) {
+	if c.CalleeDefFile == "" {
+		return
+	}
+	if ctx := calleeDefContext(c, o.RootDir); ctx != nil {
+		b.WriteString("## Callee Definition\n\n")
+		fmt.Fprintf(b, "`%s:%d-%d` — %s\n\n", displayPath(c.CalleeDefFile, o.RootDir), ctx.StartLine, ctx.EndLine, intro)
+		b.WriteString(ctx.render())
+		if c.CalleeDefEndLine > ctx.EndLine {
+			fmt.Fprintf(b, "\nBody truncated at line %d of %d — the callee continues past this window.\n", ctx.EndLine, c.CalleeDefEndLine)
+		}
+		b.WriteString("\n")
+	} else {
+		b.WriteString("## Callee Definition\n\n")
+		fmt.Fprintf(b, "- Body unavailable at report time: `%s:%d` could not be read (file changed or moved since the scan?).\n- The callee is in the scan; read that location only if the signature above is insufficient.\n\n", displayPath(c.CalleeDefFile, o.RootDir), c.CalleeDefLine)
+	}
+}
+
+// calleeDefContext locates the callee's definition body for embedding. The
+// window is clamped to maxCalleeDefLines; the actual body span is preserved in
+// the EvidenceItem so the truncation note stays honest. A body that cannot be
+// read at report time, and the caller degrades to the location pointer.
 func calleeDefContext(c planner.EvidenceItem, rootDir string) *codeContext {
 	start := c.CalleeDefLine
 	if start <= 0 {

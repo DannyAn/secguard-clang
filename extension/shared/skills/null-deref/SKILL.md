@@ -56,6 +56,21 @@ A null-deref candidate has:
 - `if (!ptr) { ... return; }` early return → guard eliminates risk for rest of function
 - `ptr = malloc(n); if (!ptr) return; ptr->field;` → malloc checked
 
+### Nullable-Origin Tier (Hint null@ tokens)
+
+The Hint's first null token states HOW the pipeline knows the value can be null —
+your job differs per tier, so read it before anything else:
+
+| Tier token | Meaning | Your action |
+|------------|---------|-------------|
+| `null@cfg-proof` | CFG proves a NULL assignment reaches the dereference on every path | machine-proved CWE-476 — verify the statement matches, then confirm |
+| `null@malloc-fail` | the null source is a proven-nullable call result (allocator / known maybe-null libc / a callee whose body returns NULL) | textbook CWE-476 — confirm unless the `## Code Context` shows a check; when the Hint also carries `callee@file:line`, the callee body is embedded under `## Callee Definition`, judge it there instead of reading source |
+| `null@caller-arg` | an inter-procedural caller passes the parameter unproven non-null | judge the caller contract — confirm only if a caller can actually pass NULL |
+| `null@external-unknown` | the ONLY null source is an unproven external call — a fail-open analyzer ASSUMPTION, not evidence | verify the callee can return NULL (API knowledge), otherwise dismiss |
+
+`guard@none` in the same Hint means no same-function null guard precedes the
+deref (machine-verified) — do not spend a read looking for one.
+
 ### Macro Context (Hint `macro-context`)
 When the Hint carries `macro-context`, a function-like macro is in play and the
 pipeline's null-flow proof may be wrong. Verify the macro before confirming:

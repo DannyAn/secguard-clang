@@ -2,6 +2,7 @@ package planner
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -309,6 +310,62 @@ func AllCWEs() map[string]bool {
 	return out
 }
 
+// buildNullDerefVerdictFacts distills the null-deref verdict basis into
+// structured facts (token + one sentence). The tier is the headline: it states
+// how the pipeline KNOWS the value can be null, which is exactly what the
+// classifier must judge — and for external-unknown, that the pipeline does NOT
+// know (fail-open assumption).
+func buildNullDerefVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 4)
+	switch c.NullOriginTier {
+	case "cfg-proof":
+		facts = append(facts, VerdictFact{
+			Token:  "null@cfg-proof",
+			Detail: fmt.Sprintf("the CFG proves a NULL assignment to %s reaches the dereference at line %d on every path — machine-proved CWE-476", c.VariableName, c.Line),
+		})
+	case "malloc-fail":
+		name := c.NullableOriginName
+		if name == "" {
+			name = "a nullable callee"
+		}
+		facts = append(facts, VerdictFact{
+			Token:  "null@malloc-fail",
+			Detail: fmt.Sprintf("the null source is `%s` — a proven-nullable call result (allocator / known libc / return-NULL callee); dereferencing it without a null check is a textbook CWE-476", name),
+		})
+	case "caller-arg":
+		detail := c.CallerNullDetail
+		if detail == "" {
+			detail = "an inter-procedural caller passes the value unproven non-null"
+		}
+		facts = append(facts, VerdictFact{
+			Token:  "null@caller-arg",
+			Detail: fmt.Sprintf("the null source is parameter `%s`: %s — judge whether that caller can pass NULL", c.VariableName, detail),
+		})
+	case "external-unknown":
+		facts = append(facts, VerdictFact{
+			Token:  "null@external-unknown",
+			Detail: "the ONLY null source is an unproven external call — an analyzer fail-open assumption, NOT evidence: verify the callee can return NULL, otherwise dismiss",
+		})
+	}
+	if c.SourceLine > 0 && c.NullOriginTier != "cfg-proof" {
+		facts = append(facts, VerdictFact{
+			Token:  fmt.Sprintf("src@%d", c.SourceLine),
+			Detail: "the nullable origin is assigned here — the ## Code Context window covers it",
+		})
+	}
+	if c.IsCallResultDeref && c.CalleeDefFile != "" {
+		facts = append(facts, VerdictFact{
+			Token:  fmt.Sprintf("callee@%s:%d", filepath.Base(c.CalleeDefFile), c.CalleeDefLine),
+			Detail: "the callee's definition in this scan; its body is embedded under ## Callee Definition — judge the return-nullability from the body, no source read needed",
+		})
+	}
+	facts = append(facts, VerdictFact{
+		Token:  "guard@none",
+		Detail: "no same-function null guard precedes the dereference (short-circuit guards were filtered before this candidate reached you)",
+	})
+	return facts
+}
+
 func init() {
 	RegisterVulnType(&VulnTypeSpec{
 		Name:               "null-deref",
@@ -318,6 +375,7 @@ func init() {
 		DefaultSuspicion:   "confirmed",
 		FilterChain:        "null-deref",
 		ConvergeByVariable: true,
+		BuildVerdictFacts:  buildNullDerefVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			fragments := make([]EvidenceFragment, 0, 4)
 			if c.HasDefiniteNull {

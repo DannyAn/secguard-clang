@@ -50,8 +50,17 @@ type EvidenceItem struct {
 	// budget). Empty = the type has not declared a facts contract yet
 	// (Evidence Contract v2 rolls out per type; see
 	// docs/evidence-contract-v2-design.md).
-	VerdictFacts []VerdictFact      `json:"verdict_facts,omitempty"`
-	Evidence     []EvidenceFragment `json:"evidence"`
+	VerdictFacts []VerdictFact `json:"verdict_facts,omitempty"`
+	// NullOriginTier is the null-deref nullable-origin classification
+	// ("cfg-proof" / "malloc-fail" / "caller-arg" / "external-unknown"),
+	// carried so the report layer can embed the callee definition for the
+	// malloc-fail call-result tier without re-deriving it.
+	NullOriginTier string `json:"null_origin_tier,omitempty"`
+	// IsCallResultDeref marks a dereference of a direct call result
+	// (`f()->field`, `*f()`, `f()[i]`): the callee's body (when defined in
+	// the scan) is embedded under ## Callee Definition.
+	IsCallResultDeref bool               `json:"is_call_result_deref,omitempty"`
+	Evidence          []EvidenceFragment `json:"evidence"`
 	// Signature is the enclosing function's declared signature (parameter names
 	// + types), so the AI can read the operand types without a source READ.
 	Signature string `json:"signature,omitempty"`
@@ -225,6 +234,23 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 					parts = append(parts, fmt.Sprintf("callee@%s:%d", filepath.Base(c.CalleeDefFile), c.CalleeDefLine))
 				}
 			}
+		case "null-deref":
+			// The nullable-origin tier replaces this type's flat
+			// certain-null/maybe-null pair (other types keep the shared
+			// tokens): what the classifier must DO differs by tier.
+			// cfg-proof / malloc-fail are machine-proved textbook CWE-476;
+			// caller-arg needs the caller's contract; external-unknown is a
+			// fail-open ASSUMPTION the AI must verify or dismiss.
+			if c.NullOriginTier != "" {
+				parts = append(parts, "null@"+c.NullOriginTier)
+			}
+			// A call-result dereference (`f()->field`) whose callee is
+			// defined in the scan: the callee body decides whether its
+			// return can be NULL, and it is embedded in the candidate file.
+			if c.IsCallResultDeref && c.CalleeDefFile != "" {
+				parts = append(parts, fmt.Sprintf("callee@%s:%d", filepath.Base(c.CalleeDefFile), c.CalleeDefLine))
+			}
+
 		case "divide-by-zero":
 			if shape := divisorShape(c.VariableName); shape != "" {
 				parts = append(parts, "divisor@"+shape)
@@ -339,17 +365,27 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 	if c.SourceLine > 0 {
 		parts = append(parts, fmt.Sprintf("src@%d", c.SourceLine))
 	}
-	switch {
-	case c.HasDefiniteNull:
-		parts = append(parts, "certain-null")
-	case c.HasNullableSource:
-		parts = append(parts, "maybe-null")
+	// null-deref states its certainty through the null@<tier> token instead;
+	// every other type keeps the shared certainty pair.
+	if spec == nil || spec.Name != "null-deref" {
+		switch {
+		case c.HasDefiniteNull:
+			parts = append(parts, "certain-null")
+		case c.HasNullableSource:
+			parts = append(parts, "maybe-null")
+		}
 	}
 	if c.HasTaintSource {
 		parts = append(parts, "tainted")
 	}
 	if c.GuardStrength == "weak" {
 		parts = append(parts, "weak-guard")
+	}
+	// Every null-deref candidate that reaches the AI survived the
+	// short-circuit guard filter: no same-function null guard precedes the
+	// dereference (machine-verified absence). Tail position, like weak-guard.
+	if spec != nil && spec.Name == "null-deref" {
+		parts = append(parts, "guard@none")
 	}
 	if c.MacroContext {
 		parts = append(parts, "macro-context")
@@ -381,6 +417,9 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 		HintTokens: hintTokens,
 		Evidence:   spec.BuildEvidence(c),
 		Signature:  c.FunctionSignature,
+
+		NullOriginTier:    c.NullOriginTier,
+		IsCallResultDeref: c.IsCallResultDeref,
 
 		FunctionStartLine: c.FuncStartLine,
 		FunctionEndLine:   c.FuncEndLine,

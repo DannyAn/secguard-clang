@@ -50,6 +50,15 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "contract@unknown", Description: "the callee is an allocator by NAME only (`alloc` substring, `*_new`/`*_dup` factory): prove it returns a failure sentinel (NULL/-1/error code) or dismiss"},
 	{Key: "callee@", Display: "callee@<file>:<line>", Description: "the callee's definition location in the scan ({value}); its body is embedded in the candidate file's `## Callee Definition`"},
 
+	// ---- null-deref ----
+	// The nullable-origin tier replaces the flat certain-null/maybe-null pair
+	// for this type: what the classifier must DO differs by tier, so the tier
+	// is the first thing it reads.
+	{Key: "null@cfg-proof", Description: "the CFG proves a NULL definite assignment reaches this dereference — machine-proved CWE-476, verify nothing"},
+	{Key: "null@malloc-fail", Description: "the null source is a PROVEN-nullable call result (allocator / known maybe-null libc / a callee whose body returns NULL): an unchecked dereference is a textbook CWE-476"},
+	{Key: "null@caller-arg", Description: "the null source is an inter-procedural caller argument (not proven non-null) — judge whether that caller can pass NULL"},
+	{Key: "null@external-unknown", Description: "the ONLY null source is an unproven external call — an analyzer fail-open ASSUMPTION, not evidence: verify the callee can return NULL or dismiss"},
+
 	// ---- divide-by-zero ----
 	{Key: "divisor@", Display: "divisor@<shape>", Description: "the divisor's shape: {value} (`bare` = plain identifier, `call` = call result, `compound` = complex expression; `field`/`global` are auto-confirmed and never reach you)"},
 
@@ -63,7 +72,7 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "rhs-influenced", Description: "the subtracted amount is caller/attacker-controlled"},
 	{Key: "lhs-influenced", Description: "the left operand is caller/attacker-controlled"},
 	{Key: "sink@", Display: "sink@<kind>", Description: "where the subtraction result flows: {value} (call_arg/assign)"},
-	{Key: "guard@none", Description: "no same-function ordering guard survived the filters"},
+	{Key: "guard@none", Description: "no same-function guard survived the filters (ordering guard for integer-overflow, null guard for null-deref) — machine-verified absence, do not spend a read looking for one"},
 
 	// ---- deadlock ----
 	{Key: "locks@", Display: "locks@A|B", Description: "deadlock: this function locks {value} in that order; match the inversion pair across functions"},

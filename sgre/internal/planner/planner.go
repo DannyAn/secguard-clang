@@ -274,7 +274,10 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 		filePathByID[f.ID] = f.Path
 	}
 
-	if spec.Name == "unchecked-return" {
+	// unchecked-return resolves the callee for the failure-contract proof;
+	// null-deref for the call-result-deref null@malloc-fail verdict (the
+	// callee's body decides whether its return can be NULL).
+	if spec.Name == "unchecked-return" || spec.Name == "null-deref" {
 		if err := p.resolveCalleeDefs(ctx, candidates, filePathByID); err != nil {
 			return nil, fmt.Errorf("planner: resolve callee definitions: %w", err)
 		}
@@ -311,10 +314,18 @@ func (p *Planner) resolveCalleeDefs(ctx context.Context, candidates []Candidate,
 	}
 	for i := range candidates {
 		c := &candidates[i]
-		if c.APIName == "" {
+		// null-deref call-result dereferences (`f()->field`, `*f()`) carry
+		// the callee in CalleeName instead of APIName, so the same resolver
+		// gives them an embedded ## Callee Definition for the
+		// null@malloc-fail verdict.
+		name := c.APIName
+		if name == "" {
+			name = c.CalleeName
+		}
+		if name == "" {
 			continue
 		}
-		fn := defsByName[c.APIName]
+		fn := defsByName[name]
 		if fn == nil {
 			continue
 		}

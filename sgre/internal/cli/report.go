@@ -23,6 +23,35 @@ import (
 // that a 50-entry page stays a cheap table review.
 const reviewContextLines = 8
 
+// autoConfirmBasis decodes the hint token sequence and the structured verdict
+// facts persisted in a finding's properties at auto-confirm time (see
+// buildAutoConfirmProperties in scan.go). Findings written before Evidence
+// Contract v2 carry only the evidence fragments — both returns are empty and
+// the re-review listing falls back to snippet+context, exactly the old
+// behaviour.
+func autoConfirmBasis(properties string) (hint string, facts []map[string]string) {
+	if properties == "" {
+		return "", nil
+	}
+	var parsed struct {
+		HintTokens   []string `json:"auto_confirm_hint_tokens"`
+		VerdictFacts []struct {
+			Token  string `json:"Token"`
+			Detail string `json:"Detail"`
+		} `json:"auto_confirm_verdict_facts"`
+	}
+	if err := json.Unmarshal([]byte(properties), &parsed); err != nil {
+		return "", nil
+	}
+	hint = strings.Join(parsed.HintTokens, " ")
+	for _, vf := range parsed.VerdictFacts {
+		if vf.Token != "" {
+			facts = append(facts, map[string]string{"token": vf.Token, "detail": vf.Detail})
+		}
+	}
+	return hint, facts
+}
+
 // normalizeAIVerdict maps a raw agent-supplied status to the BINARY AI verdict:
 // confirmed (a real defect) or dismissed (everything else, including
 // "undecidable"). There is no third state: if the AI cannot prove a defect, it
@@ -317,7 +346,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 		cwd, _ := os.Getwd()
 		out := make([]map[string]interface{}, 0, len(findings))
 		for _, f := range findings {
-			out = append(out, map[string]interface{}{
+			entry := map[string]interface{}{
 				"id":        f.ID,
 				"rule_id":   f.RuleID,
 				"file":      f.FilePath,
@@ -335,7 +364,21 @@ func runReportCmd(ctx context.Context, args []string) int {
 				// remove. Kept beside snippet (not replacing it) so a consumer
 				// that only needs the statement still gets one line.
 				"context": report.SourceWindowText(f.FilePath, f.LineNumber, reviewContextLines, cwd),
-			})
+			}
+			// hint/facts carry the SAME distilled basis the initial
+			// classification saw (Evidence Contract v2): the pipeline's hint
+			// token sequence and the structured verdict facts persisted at
+			// auto-confirm time. A re-reviewer holding only snippet+context
+			// re-derived what the pipeline already knew — the round3 "getter
+			// mistaken for an allocator" dismissals came exactly from there.
+			hint, facts := autoConfirmBasis(f.Properties)
+			if hint != "" {
+				entry["hint"] = hint
+			}
+			if len(facts) > 0 {
+				entry["facts"] = facts
+			}
+			out = append(out, entry)
 		}
 		_ = WriteJSON(map[string]interface{}{"findings": out, "count": len(out)})
 		return 0
