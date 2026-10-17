@@ -44,6 +44,16 @@ false negative).
   flow filter in `planner.go` `getFilters`.
 - `Categories` / `CategoryConfidence` — only when the detector distinguishes
   proved vs unproved shapes (mirror `format_overflow` vs `format_overflow_var`).
+- `BuildVerdictFacts` — the fact contract: distill the machine-proven
+  verdict basis into `(token, one-sentence judgment guide)` pairs so the
+  classifier can judge from the `_index.md` row instead of opening the
+  evidence file. Rules: every token must first be registered in
+  `sgre/internal/planner/hint_tokens.go` (value-bearing keys end in `@`,
+  enumerated keys are exact matches — the guard
+  `zz_hint_protocol_guard_test.go` rejects unregistered spellings); the
+  same tokens are emitted by the type's branch in
+  `sgre/internal/planner/evidence_package.go` `buildHintParts`; no raw
+  CFG/DFG/call-site dumps — one sentence plus the `file:line` origin.
 
 ## 3. Filter (optional) — `sgre/internal/planner/planner.go`
 
@@ -65,6 +75,10 @@ Copy `extension/shared/skills/SKILL_TEMPLATE.md`, fill it in. Hard rules
 - `### Classification Rules` opens with the `| Condition | Classification |`
   table and names `confirmed` + `false-positive` (`suspected` optional when the
   type has no suspected tier).
+- `### Hint Tokens (Verdict Basis)` right after `### Evidence Pattern` — the
+  token table for what `buildHintParts` emits for this type. Tokens in
+  backticks must be full registry forms (value-bearing like `free@N,M`,
+  enumerated like `leak@definite`) — the Go guard rejects shorthand.
 
 ## 6. Tests + guard
 

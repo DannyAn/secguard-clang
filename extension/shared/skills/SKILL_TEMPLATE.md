@@ -16,6 +16,20 @@ A <type-name> candidate has:
 - **<supporting_event>**: <any aux event the detector/filter relies on>
 - **call_path**: The function is reachable from an entry point
 
+### Hint Tokens (Verdict Basis)
+
+The pipeline precomputes this type's verdict basis into the `_index.md`
+`Hint` column and the candidate's `## Verdict Facts` section — document the
+tokens your detector/planner emits (registered in
+`sgre/internal/planner/hint_tokens.go`):
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `<token>@<value>` | <the machine-proven fact it carries> | <what it settles, or the judgment that remains> |
+
+<One paragraph: which token combination settles the row from the Hint
+alone, and which shapes still need the `## Code Context`.>
+
 ### Detection Logic
 1. <step 1 the detector performs>
 2. <step 2>

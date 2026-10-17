@@ -1,6 +1,6 @@
 # Evidence Contract v2 — candidates 证据链路与 Hint 体系重构设计
 
-> 状态：设计稿（2026-10-17），待用户确认后分批落地。
+> 状态：**已落地（B0-B5，2026-10-18）**——见 §5 末尾的落地记录与 deferred 清单。
 > 前序：round2 证据契约审计（docs/round2-evidence-contract-audit.md）、round2/round3 扫描会话自检
 > （docs/第二轮样例项目扫描会话自检报告与改建建议.md）、round3 机器 FP 修复（684863a/b602785/0704443）。
 
@@ -213,6 +213,35 @@ divide-by-zero `divisor@bare`（从行直接定夺）验证价值。重新定位
 每批固定流程：单测 → 全量 → benchmark A/B（干净目录，见记忆
 sgre_ab_validation_suppression_index）→ 会话级验证（Level 2/3 触发率对比：
 evidence_opens / source_reads 自报计数）→ commit。
+
+### 落地记录（2026-10-18）
+
+| 批次 | commit | 实际交付 | A/B |
+|------|--------|----------|-----|
+| B0 架构层 | `b6cb0e9` | hint_tokens.go 注册表单一源 + buildHintParts 重构 + `_index.md` 顶部 `## Pipeline Tokens` 生成图例 + VerdictFact 类型 + `BuildVerdictFacts` 契约 + candidate 文件 `## Verdict Facts` 渲染节 | 115/115 零扰动 |
+| B1 null-deref | `d50924c` | `null@` 四档（cfg-proof/malloc-fail/caller-arg/external-unknown）+ `callee@` 嵌入 + re-review hint/facts 字段 + `guard@none` 尾位；p13:170 重判维持 confirmed | 115/115 |
+| B2 实证断链 | `3e577be` | crypto-misuse `reason@`/`key-size@` + BO/OOB `buf@`/`cap@`/`idx@`（常量 vs 变量 idx 区分 machine-proved 与 range-judgment） | 115/115 |
+| B3 leak 双类型 | `bf12a34` | detector 侧 escape_kind/free_lines props → `alloc@`/`acquire@`/`leak@definite|conditional`/`escape@none|store|return`/`free@N,M` | 115/115 |
+| B4 剩余类型 | `a78401f` | 11 类型 × 15 token：`range@`/`callers@`（dbz）、`origin@`/`decl@`（uninit）、`expected@`/`actual@`/`cast@`（argument-type/data-rep）、`fmt-arg@`、`path-arg@`、`value-shape@`（经 maskSecret）、`async-unsafe@`、`subject@`/`count-field@`/`evidence-kind@`、`cond@`（double-free）；17/25 类型挂 BuildVerdictFacts | 115/115 |
+| B5 文档与流程 | 本 commit | ADDING_A_VULN_TYPE.md 第 2/5 步纳入 fact 契约；SKILL_TEMPLATE.md 加 `### Hint Tokens (Verdict Basis)` 模板节；本状态记录 | — |
+
+**与原计划的偏差（如实记录）：**
+
+- instructions/agent-body 的 Hint 词汇段落**未改为纯引用生成图例**——保留完整
+  枚举文本（agent 需在离线上下文里理解 token 语义，`_index.md` 图例作为运行时
+  对照），守护由 `zz_hint_protocol_guard_test.go` + check-extension-consistency.py
+  的 63-entry 计数承担。
+- **Deferred token（未实施及原因）：**
+  - `writeback@` — out-param 写回的语义已被 `escape@store`（非 local base 的
+    所有权转移）涵盖，单独发射会造成同事实双 token。
+  - `raii@` — C++ 概念，C detector 无对应分析可承载。
+  - `size-unit@`/`bound-check@`/`idx-form@`（§3.5 个别类型的 ▲ 细化项）—
+    现有 `idx@` 常量/变量二分 + SKILL 判定指引已覆盖判定所需；等真实
+    误报再补，避免 token 通胀。
+- 25 类型中 8 类（injection/use-after-free/race-condition/integer-overflow/
+  unchecked-return/deadlock/signed-compare 等沿用 B0 前既有 token 集合的类型）
+  未新增 BuildVerdictFacts builder——其判定事实在 B0 架构层已进 Verdict Facts
+  渲染，§3.5 对这些类型的 `●` 项即其既有 token。
 
 ## 6. 风险与对策
 
