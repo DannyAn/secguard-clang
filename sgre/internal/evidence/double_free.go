@@ -31,6 +31,12 @@ type dfFreeEvent struct {
 	indirect bool
 	callee   string
 	global   string
+	// mayFree marks an indirect free that a callee performs on at least one path
+	// but not every path (`if (ref_count <= 0) free(p);` in a release helper).
+	// It is enough for a double-free CANDIDATE (the later free is a possible
+	// double free), never for a confirmed verdict: the planner keeps the
+	// candidate suspected instead of promoting it via the must-flow.
+	mayFree bool
 }
 
 type globalDFEntry struct {
@@ -39,6 +45,9 @@ type globalDFEntry struct {
 	callee     string
 	victims    []string
 	firstFrees []int
+	// mayFree is true when at least one contributing first free is conditional
+	// (a callee may-free on some paths). The candidate stays suspected.
+	mayFree bool
 }
 
 func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
@@ -94,11 +103,21 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 				key := fmt.Sprintf("%s:%d", second.global, second.line)
 				e := collective[key]
 				if e == nil {
-					e = &globalDFEntry{slot: second.global, line: second.line, callee: second.callee}
+					// first_callee names the RELEASE HELPER that performed the
+					// first (may-)free; the collective's second free is the
+					// cleanup call that frees the slot again.
+					firstCallee := events[0].callee
+					if firstCallee == "" {
+						firstCallee = second.callee
+					}
+					e = &globalDFEntry{slot: second.global, line: second.line, callee: firstCallee}
 					collective[key] = e
 				}
 				e.victims = append(e.victims, varName)
 				e.firstFrees = append(e.firstFrees, events[0].line)
+				if events[0].mayFree {
+					e.mayFree = true
+				}
 				mergedVars[varName] = true
 			}
 
@@ -123,6 +142,9 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 					props["first_free"] = e.firstFrees[0]
 					props["first_free_lines"] = joinInts(e.firstFrees)
 				}
+				if e.mayFree {
+					props["may_free"] = "true"
+				}
 				if emitEvent(ctx, d.store, d.logger, "DOUBLE_FREE", f.ID, &db.Location{FileID: file.ID, Line: e.line}, props) {
 					result.EventsCreated++
 				}
@@ -144,6 +166,9 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 					}
 					if events[0].callee != "" {
 						props["first_callee"] = events[0].callee
+					}
+					if events[0].mayFree {
+						props["may_free"] = "true"
 					}
 					if events[i].callee != "" {
 						props["second_callee"] = events[i].callee
@@ -264,34 +289,52 @@ func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.No
 		}
 
 		if apikb.IsDeallocator(callName) {
-			// Heuristic-only match (name ends with "free"/"free_f" but not a
-			// declared deallocator). The function may not free its argument —
+			// Heuristic-only match (name ends with "free"/"free_f", or contains
+			// "_destroy"/"_delete"/"_cleanup"/"_recycle", but not a declared
+			// deallocator). The function may not free its argument —
 			// e.g. seccloud_send_list_free(ptr, max_num) takes a pointer AND
 			// an integer count; only arg0 is freed. Fail-closed: require the
 			// function summary to confirm WHICH parameters are freed, and
 			// only mark those. External functions without a summary are NOT
 			// flagged, because the "free" suffix alone is too broad to trust.
 			s, ok := summaries[callName]
-			if !ok || !summaryFreesAnyParam(s) {
+			if !ok {
 				continue
 			}
-			args := getCallArgs(call)
-			for argIdx, arg := range args {
-				if !s.ParamDirectFrees[argIdx] && len(s.ParamFieldFrees[argIdx]) == 0 {
-					continue
+			if summaryFreesAnyParam(s) {
+				args := getCallArgs(call)
+				for argIdx, arg := range args {
+					if !s.ParamDirectFrees[argIdx] && len(s.ParamFieldFrees[argIdx]) == 0 {
+						continue
+					}
+					arg = unwrapCastParen(arg)
+					switch arg.Kind() {
+					case "identifier":
+						events = append(events, dfFreeEvent{varName: arg.Text(), line: callLine})
+					case "field_expression":
+						if base, field := extractFieldAccess(arg); base != "" && field != "" {
+							events = append(events, dfFreeEvent{varName: base, field: field, line: callLine})
+						}
+					case "subscript_expression":
+						if base, field := subscriptAccess(arg); base != "" && field != "" {
+							events = append(events, dfFreeEvent{varName: base, field: field, line: callLine})
+						}
+					}
 				}
-				arg = unwrapCastParen(arg)
-				switch arg.Kind() {
-				case "identifier":
-					events = append(events, dfFreeEvent{varName: arg.Text(), line: callLine})
-				case "field_expression":
-					if base, field := extractFieldAccess(arg); base != "" && field != "" {
-						events = append(events, dfFreeEvent{varName: base, field: field, line: callLine})
-					}
-				case "subscript_expression":
-					if base, field := subscriptAccess(arg); base != "" && field != "" {
-						events = append(events, dfFreeEvent{varName: base, field: field, line: callLine})
-					}
+			}
+			// A zero-argument deallocator-named cleanup (`item_cleanup_all()`)
+			// frees GLOBALS, not parameters: its summary has GlobalFrees but no
+			// param frees, so the param gate above must not skip the global
+			// handling. This is exactly the DF-05 slot-release shape.
+			for _, globalName := range s.GlobalFrees {
+				for _, storedVar := range globalStores[globalName] {
+					events = append(events, dfFreeEvent{
+						varName:  storedVar,
+						line:     callLine,
+						indirect: true,
+						callee:   callName,
+						global:   globalName,
+					})
 				}
 			}
 			continue
@@ -316,6 +359,14 @@ func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.No
 					line:     callLine,
 					indirect: true,
 					callee:   callName,
+				})
+			} else if s.ParamMayDirectFrees[argIdx] {
+				events = append(events, dfFreeEvent{
+					varName:  argVar,
+					line:     callLine,
+					indirect: true,
+					callee:   callName,
+					mayFree:  true,
 				})
 			}
 		}

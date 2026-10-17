@@ -134,3 +134,39 @@ func TestSafeFunctionFilter_CommandInjectionExecveNonBarePathKept(t *testing.T) 
 		t.Errorf("command_injection + execve with non-bare path should not be dropped, got dropped=%d", len(dropped))
 	}
 }
+
+// TestSafeFunctionFilter_ResourceAcquireNotDropped pins RL-13: mkstemp is in
+// SafeFunctions because it creates a temp file without the mktemp TOCTOU race,
+// but the fd it returns still leaks when never closed. IsSafeFunction firing on
+// the acquire dropped the candidate before the leak proof could run. A curated
+// RAII wrapper may still dismiss.
+func TestSafeFunctionFilter_ResourceAcquireNotDropped(t *testing.T) {
+	store := db.NewTestStore(t)
+	f := NewSafeFunctionFilter(store)
+	ctx := context.Background()
+
+	candidates := []Candidate{
+		{FunctionName: "rl13_mkstemp_leak", APIName: "mkstemp", Category: "resource_acquire", VariableName: "fd", Line: 153, DefiniteLeak: true},
+	}
+	kept, dropped, err := f.Apply(ctx, candidates)
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+	if len(kept) != 1 {
+		t.Errorf("resource_acquire via mkstemp must be kept (temp-file safety does not cover the fd lifecycle), got kept=%d", len(kept))
+	}
+	if len(dropped) != 0 {
+		t.Errorf("resource_acquire via mkstemp must not be dropped by IsSafeFunction, got dropped=%d", len(dropped))
+	}
+
+	wrapped := []Candidate{
+		{FunctionName: "ResourceHandle_create", APIName: "mkstemp", Category: "resource_acquire", VariableName: "fd", Line: 160, DefiniteLeak: true},
+	}
+	kept, dropped, err = f.Apply(ctx, wrapped)
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+	if len(kept) != 0 || len(dropped) != 1 {
+		t.Errorf("resource_acquire inside an RAII safe wrapper should be dismissed, got kept=%d dropped=%d", len(kept), len(dropped))
+	}
+}

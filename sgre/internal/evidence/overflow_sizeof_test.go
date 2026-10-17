@@ -53,6 +53,22 @@ func TestIntegerOverflow_SizeofProduct(t *testing.T) {
 	if flagged["safe_constant_alloc"] {
 		t.Errorf("expected safe_constant_alloc (constant 256) NOT to be flagged, got %v", flagged)
 	}
+	// The product is evaluated in the operands' common type after integer
+	// promotion, not in the 64-bit size_t the allocation stores. uint32*uint32
+	// wraps at 2^32 and uint16*uint16 overflows INT_MAX; uint8*uint8 (and
+	// uint8*uint16) stay within INT_MAX after promotion and are safe.
+	if !flagged["narrow_u32_product"] {
+		t.Errorf("expected narrow_u32_product (uint32 * uint32 wraps in 32-bit) to be flagged, got %v", flagged)
+	}
+	if !flagged["narrow_u16_product"] {
+		t.Errorf("expected narrow_u16_product (promoted int product exceeds INT_MAX) to be flagged, got %v", flagged)
+	}
+	if flagged["narrow_u8_product"] {
+		t.Errorf("expected narrow_u8_product (255*255 fits int) NOT to be flagged, got %v", flagged)
+	}
+	if flagged["narrow_u8_u16_product"] {
+		t.Errorf("expected narrow_u8_u16_product (255*65535 fits int) NOT to be flagged, got %v", flagged)
+	}
 }
 
 func TestBoundedCopyOverflow(t *testing.T) {

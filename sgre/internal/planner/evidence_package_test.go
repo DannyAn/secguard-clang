@@ -39,6 +39,7 @@ func TestBuildHint(t *testing.T) {
 		{"race shared data race", Candidate{Category: "shared_data_race", ThreadFunctions: "thread_race", ThreadInstances: 2, WriteLine: 15}, &VulnTypeSpec{Name: "race-condition"}, "threads@thread_race instances@2 write@15 cat@shared_data_race"},
 		{"race toctou shared state", Candidate{Category: "toctou_shared_state", Mutex: "g_mutex", LockLine: 42, UnlockLine: 44}, &VulnTypeSpec{Name: "race-condition"}, "mutex@g_mutex lock@42-44 cat@toctou_shared_state"},
 		{"race toctou", Candidate{Category: "toctou", CheckFunction: "access", UseFunction: "fopen", CheckPathArg: "path"}, &VulnTypeSpec{Name: "race-condition"}, "check@access→use@fopen arg@path cat@toctou"},
+		{"double-free may-free", Candidate{Category: "double_free", FirstFree: 117, SecondFree: 123, MayFree: true}, &VulnTypeSpec{Name: "double-free"}, "free@117,123 may-free cat@double_free"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

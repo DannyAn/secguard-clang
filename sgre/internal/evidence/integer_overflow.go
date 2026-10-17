@@ -46,6 +46,17 @@ var sizeFunctions = map[string]bool{
 // canonical count × element-size CWE-190 and is handled separately.
 const minMulConstOverflow = 256
 
+// Integer-promotion bounds for a narrow-operand product. After the usual
+// arithmetic conversions a product of uint8_t/uint16_t operands is evaluated as
+// int (32-bit signed); a uint32_t operand keeps the product in 32-bit unsigned.
+// The product can wrap at these bounds even though the surrounding allocation
+// takes a 64-bit size_t, so the narrow-product suppression must use them rather
+// than 2^64.
+const (
+	maxInt32Value  = uint64(1)<<31 - 1
+	maxUint32Value = uint64(1)<<32 - 1
+)
+
 // isSizeFunction reports whether a call name is a size-bearing allocation/copy
 // function. Beyond the exact libc set, any name whose lowercased form contains
 // "alloc" is treated as an allocator — every allocator-family name (malloc,
@@ -963,6 +974,7 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, influenced, wid
 	var varCount, paramCount, numberCount, sizeofCount, wideCount, narrowVarCount int
 	constValue := 0
 	narrowProduct := uint64(1)
+	narrowMax := uint64(0)
 	var collect func(n parser.Node)
 	collect = func(n parser.Node) {
 		for n.Kind() == "parenthesized_expression" {
@@ -996,6 +1008,9 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, influenced, wid
 			}
 			if m, ok := narrowVars[n.Text()]; ok && m > 0 {
 				narrowVarCount++
+				if m > narrowMax {
+					narrowMax = m
+				}
 				if narrowProduct <= ^uint64(0)/m {
 					narrowProduct *= m
 				} else {
@@ -1051,11 +1066,22 @@ func (d *IntegerOverflowDetector) sizeCalcExprs(arg parser.Node, influenced, wid
 			return nil
 		}
 		if varCount >= 2 {
-			// All operands are narrow-type (uint8_t/uint16_t/uint32_t) and
-			// their worst-case product fits in size_t (64-bit on LP64) —
-			// cannot overflow. E.g. uint16_t a * uint16_t b → max 4294836225.
-			if narrowVarCount == varCount && narrowProduct < ^uint64(0) {
-				return nil
+			// All variable operands are narrow-typed (uint8/16/32). The product
+			// is evaluated in the operands' COMMON type after integer promotion,
+			// NOT in size_t: uint8_t promotes to int (32-bit signed), uint16_t
+			// promotes to int (so 65535^2 overflows INT_MAX), and uint32_t stays
+			// 32-bit unsigned (so the product wraps at 2^32). Suppress only when
+			// the worst-case product fits that common type — comparing against
+			// 2^64 (size_t) was a false-negative: `uint32_t n * uint32_t m`
+			// allocates the wrapped 32-bit product.
+			if narrowVarCount == varCount {
+				narrowCap := maxInt32Value
+				if narrowMax > maxInt32Value {
+					narrowCap = maxUint32Value
+				}
+				if narrowProduct <= narrowCap {
+					return nil
+				}
 			}
 			return []sizeCalcCandidate{{arg, "size_calc_overflow"}}
 		}

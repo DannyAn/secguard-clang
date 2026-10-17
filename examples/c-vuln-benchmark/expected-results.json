@@ -902,7 +902,7 @@
       "id": "RL-13",
       "category": "phase6_resource_leak",
       "file": "src/rl_resource_leak.c",
-      "line": 153,
+      "line": 156,
       "code": "mkstemp 无 close（长名子串匹配的 fd 工厂，返回值型）",
       "cwe": "CWE-404",
       "detector": "resource.resource_leak",

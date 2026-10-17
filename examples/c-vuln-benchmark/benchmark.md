@@ -11,13 +11,11 @@
 >   --expected examples/c-vuln-benchmark/expected-results.json
 > ```
 >
-> **历史 detector 覆盖缺口**：`PH1-06` 注册表凭据 `RegSetValueExA` 已闭环（hardcoded-secret
-> 有候选）。`PH1-01` 仍是 **open gap**：fixture 的 `malloc(count * obj_size)` 两个形参都是
-> `size_t`，在 LP64 下乘积是 64 位、不会溢出（detector 的 `wideCount > 0` 规则据此不报，
-> 这条规则本身是对的）；要让它成为真阳性，需把 fixture 改成真正的 32 位乘积（如
-> `uint32_t count, uint32_t obj_size`），并修 `sizeCalcExprs` 的 narrow-product 守卫
-> （当前它拿乘积和 64 位上限比较，但 C 的乘法按操作数公共类型求值，两个 `uint32_t`
-> 的乘积在 32 位就回绕）。详见文末「检测器缺口 backlog」。
+> **历史 detector 覆盖缺口（本轮已全部闭环）**：`PH1-06` 注册表凭据 `RegSetValueExA`、
+> `PH1-01` 乘法溢出、`RL-13` mkstemp fd 工厂、`DF-05` 跨函数槽位二次释放均已修复。
+> `PH1-01` 的 fixture 从 `size_t` 改为 `unsigned int`（真正的 32 位乘积），并修了
+> `sizeCalcExprs` 的 narrow-product 守卫（原先拿乘积和 2^64 比较，但 C 的乘法按操作数
+> 公共类型求值，两个 `uint32_t` 在 32 位就回绕）。详见文末「检测器缺口」。
 
 ## 测试规模
 
@@ -274,7 +272,7 @@ CWE-326/338），所以 `CWE_TO_TYPE` 必须覆盖整个 `AllCWEs()` 集合 —�
 
 validator 按 **(漏洞类型, 文件, 行 ± 容差)** 比对，默认容差 ±3，并打印命中偏移。两处必须放宽，都是实测踩出来的：
 
-1. **行号口径不同**：SecGuard 报的是 **sink/调用行**，而部分用例标签写的是**函数定义行**或**格式化行** —— RL-13 标 153 / 实报 155（`mkstemp` 调用）、RL-14 标 163 / 实报 165、TP-02 标 49 / 实报 50（`sqlite3_exec` sink）。纯相等比对会把**已经检出**的算成漏报。
+1. **行号口径不同**：SecGuard 报的是 **sink/调用行**，而部分用例标签写的是**函数定义行**或**格式化行** —— RL-13 标 156 / 实报 156（`mkstemp` 调用）、RL-14 标 163 / 实报 165、TP-02 标 49 / 实报 50（`sqlite3_exec` sink）。纯相等比对会把**已经检出**的算成漏报。
 2. **同一行可能有多种漏洞**：P10-02 是 `input.path_traversal` 的 `no_finding`，而 SecGuard 在该行报 unchecked-return (CWE-252) —— 正确且与该用例无关。因此**按类型比对**；命中但类型不同的只作 info 列出。
 
 `detector` → 漏洞类型的映射见 `scripts/validate-benchmark.py` 的 `DETECTOR_TO_TYPE`。注意 **`concurrency.lock` 映射到 `race-condition`**：它的两个用例分别是「加锁保护不该报」(P2-02) 与 TOCTOU (P3-02)，SecGuard 报的是 CWE-362；`deadlock` (CWE-667) 有独立的 detector 标签。未带 `detector` 的用例按「任意类型」比对。
@@ -342,7 +340,7 @@ validator 按 **(漏洞类型, 文件, 行 ± 容差)** 比对，默认容差 ±
 | RL-10 | `if (fd < 0) return fd;` 正常路径忘 close | detector `hasNonFailureReturn` + graph `isErrorReturn` 排除错误返回 |
 | RL-11 | `dup(STDOUT_FILENO)` 无 close | `isResourceAcquirer` 补 dup/dup2/dup3（短名精确匹配） |
 | RL-12 | `sqlite3_open(path, &db)` 无 sqlite3_close | `outParamAcquirers` 白名单扫描 `&arg` |
-| RL-13 | `mkstemp(tmpl)` 无 close | `isResourceAcquirer` 补 mkstemp/mkostemp（长名子串匹配） |
+| RL-13 | `mkstemp(tmpl)` 无 close | `isResourceAcquirer` 补 mkstemp/mkostemp（0.6.0）+ `SafeFunctionFilter` 对 `resource_acquire` 放行（本轮） |
 | RL-14 | `fopen_s(&f, ...)` 无 fclose | `outParamAcquirers` 白名单另一成员 |
 
 **验证**：RL-01..06 守住现有检出（如 4afad45 的 epoll/eventfd fd 工厂修复），
@@ -522,16 +520,16 @@ detector 直接跳过；implicit-contract 的 fully-guarded 被 planner 的
 > 的任何一行后，务必同步本表与 `expected-results.json` 的 `line`，否则 no_finding
 > 守卫会因行号漂移而失效（Phase 15 的教训）。
 
-## 检测器缺口 backlog（2026-10 盘点）
+## 检测器缺口（2026-10 盘点，本轮已全部闭环）
 
-以下三条是 **open gap**（不在 Phase 17 的 contract 类型范围内），已回源定位到具体
-detector/filter，而不是「再写一个 detector」能解决的：
+三条 open gap 已回源定位到具体 detector/filter 并修复。结论：**都应在现有 CWE 上增强，
+不新增 vuln type / detector / skill**——新增只会把同一 CWE 拆成两套判据。
 
-| ID | 类型 | 根因（已回源） | 落地方案 | 工作量/风险 |
-|----|------|----------------|----------|-------------|
-| RL-13 | resource-leak (CWE-404) | `mkstemp` 在 `apikb.SafeFunctions`（临时文件竞态安全），`SafeFunctionFilter` 把整个 acquire 丢弃；但 fd 生命周期与「临时文件名安全」是两回事 | 在该 filter 增加 `resource_acquire`/`resource_leak` category 的 carve-out（与 path_traversal / format_string / argument_injection 现有 carve-out 同款）；`IsSafeWrapper` 仍可 dismiss | 小 / 低 |
-| PH1-01 | integer-overflow (CWE-190) | ① fixture 两个形参都是 `size_t`，LP64 下乘积 64 位、不会溢出（ground truth 平台歧义）；② `sizeCalcExprs` 的 narrow-product 守卫拿 `product < 2^64` 判安全，但 C 的乘法按操作数**公共类型**求值——两个 `uint32_t` 在 32 位就回绕，`uint16_t` 提升到 `int` 后也可能溢出 `INT_MAX` | ① fixture 改 `uint32_t`（或产品明确声明支持 32 位目标，再按 target width 判定）；② 按公共类型宽度重写守卫：只有 worst-case product 能放进公共类型上限才 suppress（`uint8×uint8` 可 suppress；`uint16/uint32` 不可） | 中 / 中 |
-| DF-05 | double-free (CWE-415) | detector 已有 call summary + 全局槽位聚合，但没有「callee 释放全局数组槽位」的 release-effect summary；`main` 里 `release_entry(e1)` 已释放的槽位被 `cleanup_entries()` 再次 free，跨函数不可见 | 给 summary 增加 release-effect（callee 释放 `g_entries[*]` 一类全局数组元素），再与「局部变量存入该槽位 + 已 release」匹配；**不要**升级成通用 points-to 分析 | 大 / 中高 |
+| ID | 类型 | 根因（已回源） | 本轮修复 | 回归 |
+|----|------|----------------|----------|------|
+| RL-13 | resource-leak (CWE-404) | `mkstemp` 在 `apikb.SafeFunctions`（临时文件竞态安全），`SafeFunctionFilter` 把整个 acquire 丢弃；但 fd 生命周期与「临时文件名安全」是两回事 | resource-leak 事件补 `category: resource_acquire`；`SafeFunctionFilter` 对该 category 放行（`IsSafeWrapper` 仍可 dismiss） | `TestSafeFunctionFilter_ResourceAcquireNotDropped` + RL-13 实跑 |
+| PH1-01 | integer-overflow (CWE-190) | ① fixture 两个形参都是 `size_t`，LP64 下乘积 64 位、不会溢出（ground truth 平台歧义）；② `sizeCalcExprs` 的 narrow-product 守卫拿 `product < 2^64` 判安全，但 C 的乘法按操作数**公共类型**求值——两个 `uint32_t` 在 32 位就回绕，`uint16_t` 提升到 `int` 后也可能溢出 `INT_MAX` | ① fixture 改为 `unsigned int`（保持行 110）；② 守卫按公共类型上限判定（`uint8×uint8` / `uint8×uint16` 可 suppress；`uint16/uint32` 不可） | `TestIntegerOverflow_SizeofProduct`（新增 8/16/32 位四例）+ PH1-01 实跑 |
+| DF-05 | double-free (CWE-415) | detector 已有 call summary + 全局槽位聚合，但没有「callee 条件释放参数」的 may-free summary；`main` 里 `release_entry(e1)`（`if (ref_count <= 0)` 才 free）已释放的槽位被 `cleanup_entries()` 再次 free，跨函数不可见 | summary 增加 `ParamMayDirectFrees`/`ParamMayFieldFrees`；全局槽位释放事件带 `may_free`；候选保持 `suspected`（`DoubleFreeFilter` 不因 may-free 升级 confirmed），证据/Hint 明确 `may-free` | `TestDoubleFree_GlobalSlotMayFree` + DF-05 实跑 |
 
 **决策规则（以后遇到同类缺口）**：CWE 已注册、且 pipeline 已能为该缺陷的某些形状产
 seed → **增强现有 detector/filter**，不新增 vuln type。只有出现新 CWE 类，或需要独立

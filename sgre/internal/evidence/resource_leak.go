@@ -111,6 +111,11 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 						"variable": varName,
 						"origin":   "resource_acquire",
 						"api":      callNameAtLine(calls, acquireLine),
+						// The category lets SafeFunctionFilter keep the candidate:
+						// mkstemp/mkostemp are "safe" for TEMP-FILE RACE, but the
+						// returned fd still leaks when never closed. The two
+						// concerns are orthogonal.
+						"category": "resource_acquire",
 					}
 					if definiteLeak {
 						acquireProps["definite"] = "true"

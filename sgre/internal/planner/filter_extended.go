@@ -87,6 +87,20 @@ func (f *SafeFunctionFilter) Apply(ctx context.Context, candidates []Candidate) 
 			kept = append(kept, c)
 			continue
 		}
+		// resource-leak (CWE-404): mkstemp/mkostemp are listed in SafeFunctions
+		// because they create a temp file safely (no mktemp TOCTOU race), but
+		// the fd they return still leaks when never closed. The safe-function
+		// exclusion is about the API's original race class, not the resource
+		// lifecycle, so it must not drop the acquire. Only a curated project
+		// safe wrapper (an RAII handle owner) may dismiss it.
+		if c.Category == "resource_acquire" {
+			if apikb.IsSafeWrapper(c.FunctionName) {
+				dropped = dismiss(dropped, c, f.Name(), fmt.Sprintf("function %s is a safe wrapper for resource lifetimes", c.FunctionName))
+				continue
+			}
+			kept = append(kept, c)
+			continue
+		}
 		reason := ""
 		// Project safe wrapper: match on the containing function name (a curated
 		// list of THIS project's own framework entry points, e.g. SafeCopy_copy).

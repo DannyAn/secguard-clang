@@ -119,9 +119,15 @@ type eventProps struct {
 	// event (race-condition detector).
 	WriteLine int `json:"write_line"`
 	// FirstFree/SecondFree are the two free-site lines a double-free event
-	// reports (double-free detector).
-	FirstFree  int `json:"first_free"`
-	SecondFree int `json:"second_free"`
+	// reports (double-free detector). MayFree is "true" when the first free is a
+	// conditional callee release (may-free), so the double free is possible but
+	// not must-proven; FirstCallee/Victims carry the release helper and the
+	// stored variables behind a global-slot double free.
+	FirstFree   int    `json:"first_free"`
+	SecondFree  int    `json:"second_free"`
+	MayFree     string `json:"may_free"`
+	FirstCallee string `json:"first_callee"`
+	Victims     string `json:"victims"`
 	// CopySize/DstCapacity are the copy-size expression and destination capacity
 	// a bounded-copy or secure-copy BUFFER_ACCESS event carries (buffer-overflow
 	// detector). SizeArgument is the _s destination-capacity argument.

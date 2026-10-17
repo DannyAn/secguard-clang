@@ -22,6 +22,7 @@ func TestBuildHintNeverEmpty(t *testing.T) {
 		{"deadlock reverse func", "deadlock", Candidate{MutexA: "a", MutexB: "b", ReverseFunc: "other_fn"}, "reverse@other_fn"},
 		{"use-after-free free line", "use-after-free", Candidate{FreeLine: 42}, "free@42"},
 		{"double-free free lines", "double-free", Candidate{FirstFree: 10, SecondFree: 20}, "free@10,20"},
+		{"double-free may-free", "double-free", Candidate{FirstFree: 117, SecondFree: 123, MayFree: true}, "may-free"},
 		{"memory-leak acquire api", "memory-leak", Candidate{APIName: "malloc"}, "api@malloc"},
 		{"resource-leak acquire api", "resource-leak", Candidate{APIName: "fopen"}, "api@fopen"},
 		{"unchecked-return unknown contract", "unchecked-return", Candidate{}, "contract@unknown"},

@@ -226,9 +226,16 @@ type Candidate struct {
 	// variable was freed before the use at Line).
 	FreeLine int `json:"free_line,omitempty"`
 	// FirstFree/SecondFree are the two free-site lines for a double-free
-	// candidate.
-	FirstFree  int `json:"first_free,omitempty"`
-	SecondFree int `json:"second_free,omitempty"`
+	// candidate. MayFree marks a first free that a callee performs only on some
+	// paths (a release helper with an internal condition): the candidate is a
+	// possible double free, so the flow filter must not upgrade it to confirmed.
+	// FirstCallee/Victims name the may-free helper and the stored variables
+	// behind a global-slot double free (`g_entries[]`).
+	FirstFree   int    `json:"first_free,omitempty"`
+	SecondFree  int    `json:"second_free,omitempty"`
+	MayFree     bool   `json:"may_free,omitempty"`
+	FirstCallee string `json:"first_callee,omitempty"`
+	Victims     string `json:"victims,omitempty"`
 	// DefiniteLeak is true when the leak detector proved no release/escape/
 	// transfer is reachable on any path (memory-leak / resource-leak).
 	DefiniteLeak bool `json:"definite_leak,omitempty"`

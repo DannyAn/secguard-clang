@@ -509,7 +509,9 @@ func (o *ScanOutput) writeTypeIndex(dir string, pkg *planner.PlanResult) error {
 		"> (thread functions, instance count, conflicting write line),\n" +
 		"> `mutex@<name>`/`lock@<lo>-<hi>` = toctou_shared_state critical section,\n" +
 		"> `check@<fn>→use@<fn>`/`arg@<expr>` = TOCTOU check/use pair,\n" +
-		"> `free@N`/`free@N,M` = use-after-free/double-free free line(s); every type\n" +
+		"> `free@N`/`free@N,M` = use-after-free/double-free free line(s); `may-free` =\n" +
+		"> the double-free first release is conditional (a release helper frees only\n" +
+		"> on some paths), so the verdict is possible rather than proved; every type\n" +
 		"> also carries `api@<name>` (the callee) and `cat@<category>` when present).\n" +
 		"> Open the `Evidence`\n" +
 		"> file (and its `## Code Context`) when the hint is insufficient; read the\n" +

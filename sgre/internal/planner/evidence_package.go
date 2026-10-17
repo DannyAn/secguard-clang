@@ -8,13 +8,17 @@ import (
 )
 
 type EvidenceItem struct {
-	Type              string     `json:"type"`
-	VulnerabilityType string     `json:"vulnerability_type"`
-	SuspicionLevel    string     `json:"suspicion_level,omitempty"`
-	HasDefiniteNull   bool       `json:"has_definite_null,omitempty"`
-	MacroContext      bool       `json:"macro_context,omitempty"`
-	Target            TargetInfo `json:"target"`
-	SourceLine        int        `json:"source_line,omitempty"`
+	Type              string `json:"type"`
+	VulnerabilityType string `json:"vulnerability_type"`
+	SuspicionLevel    string `json:"suspicion_level,omitempty"`
+	// MayFree marks a double-free candidate whose first release is conditional
+	// (a release helper that frees only on some paths). The candidate is a
+	// possible double free; the report and the Hint say so explicitly.
+	MayFree         bool       `json:"may_free,omitempty"`
+	HasDefiniteNull bool       `json:"has_definite_null,omitempty"`
+	MacroContext    bool       `json:"macro_context,omitempty"`
+	Target          TargetInfo `json:"target"`
+	SourceLine      int        `json:"source_line,omitempty"`
 	// SourceLines collects every pipeline-proven decisive source line for the
 	// candidate — the free-site of a use-after-free, the two frees of a
 	// double-free, the declaration of an uninit read, the origin of a null or
@@ -233,6 +237,12 @@ func buildHint(c Candidate, spec *VulnTypeSpec) string {
 			if c.FirstFree > 0 && c.SecondFree > 0 {
 				parts = append(parts, fmt.Sprintf("free@%d,%d", c.FirstFree, c.SecondFree))
 			}
+			// A conditional first release (a helper that frees only when its own
+			// condition holds) is a POSSIBLE double free; the token stops the
+			// classifier from treating the row as a proved defect.
+			if c.MayFree {
+				parts = append(parts, "may-free")
+			}
 		case "race-condition":
 			// BuildEvidence already computed these facts; without them in the
 			// Hint every race candidate needed an Evidence-file open just to
@@ -310,6 +320,7 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 		Type:              spec.EvidenceType,
 		VulnerabilityType: spec.Name,
 		HasDefiniteNull:   c.HasDefiniteNull,
+		MayFree:           c.MayFree,
 		MacroContext:      c.MacroContext,
 		Target: TargetInfo{
 			File:     fileName,

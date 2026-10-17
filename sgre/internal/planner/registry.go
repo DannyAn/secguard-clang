@@ -593,13 +593,26 @@ func init() {
 				{Type: "double_free", Role: "sink", Detail: fmt.Sprintf("variable %s freed twice in function %s", c.VariableName, c.FunctionName)},
 			}
 			if c.FirstFree > 0 {
-				frags = append(frags, EvidenceFragment{Type: "first_free", Role: "source", Detail: fmt.Sprintf("first free(%s) at line %d", c.VariableName, c.FirstFree)})
+				detail := fmt.Sprintf("first free(%s) at line %d", c.VariableName, c.FirstFree)
+				if c.MayFree {
+					via := c.FirstCallee
+					if via == "" {
+						via = "a release helper"
+					}
+					detail = fmt.Sprintf("first release at line %d via %s%s, which frees the object only on some paths (may-free)", c.FirstFree, via, victimSuffix(c.Victims))
+				} else if c.FirstCallee != "" {
+					detail = fmt.Sprintf("first free via %s on %s at line %d", c.FirstCallee, c.VariableName, c.FirstFree)
+				}
+				frags = append(frags, EvidenceFragment{Type: "first_free", Role: "source", Detail: detail})
 			}
 			secondFree := c.SecondFree
 			if secondFree == 0 {
 				secondFree = c.Line
 			}
 			frags = append(frags, EvidenceFragment{Type: "second_free", Role: "sink", Detail: fmt.Sprintf("second free(%s) at line %d", c.VariableName, secondFree)})
+			if c.MayFree {
+				frags = append(frags, EvidenceFragment{Type: "may_free", Role: "condition", Detail: "the first release is conditional (the release helper frees only on some paths), so this is a POSSIBLE double free — confirm only if the two frees can both execute on one path"})
+			}
 			frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
 			return frags
 		},
@@ -1180,4 +1193,14 @@ func taintSourceDetail(c Candidate, sinkDesc string) string {
 		return fmt.Sprintf("user-controlled value originates at line %d and reaches %s at line %d — the evidence file's Taint Source section carries the origin statement", c.SourceLine, sinkDesc, c.Line)
 	}
 	return fmt.Sprintf("a tainted parameter of this function reaches %s at line %d — the taint enters from a CALLER argument (inter-procedural summary), so there is no in-function source statement to read", sinkDesc, c.Line)
+}
+
+// victimSuffix names the stored values behind a collective global-slot double
+// free (`g_entries[0]` held e1/e2), so the evidence says WHICH objects the
+// release helper may have freed instead of only the slot name.
+func victimSuffix(victims string) string {
+	if victims == "" {
+		return ""
+	}
+	return " (stored values: " + victims + ")"
 }

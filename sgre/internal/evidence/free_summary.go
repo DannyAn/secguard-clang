@@ -14,8 +14,17 @@ import (
 type FuncSummary struct {
 	ParamDirectFrees map[int]bool
 	ParamFieldFrees  map[int][]string
-	GlobalFrees      []string
-	ReturnStores     []string
+	// ParamMayDirectFrees records a whole-parameter free that happens on at
+	// least one path, not every fall-through path (e.g. `if (ref_count <= 0)
+	// free(p);` in a project release helper). It must NOT be used for
+	// use-after-free / leak proofs (a may-free does not prove the object is
+	// dead), but a double-free candidate needs it: a caller that frees after a
+	// release helper already (conditionally) freed the object is a possible
+	// double free that the AI should judge. The detector marks such events
+	// may_free and the planner never auto-confirms them.
+	ParamMayDirectFrees map[int]bool
+	GlobalFrees         []string
+	ReturnStores        []string
 	// ParamWrites marks which pointer parameters the function writes through on
 	// every path to exit (`*p = ...`, `p->f = ...`, `p[i] = ...`). A caller that
 	// passes `&s` to such a parameter can treat s as initialized. A parameter
@@ -49,11 +58,12 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, l
 			s := &FuncSummary{
 				ParamDirectFrees:       make(map[int]bool),
 				ParamFieldFrees:        make(map[int][]string),
+				ParamMayDirectFrees:    make(map[int]bool),
 				ParamWrites:            paramWrites,
 				ParamConditionalWrites: paramCondWrites,
 			}
 
-			s.ParamDirectFrees, s.ParamFieldFrees = computeParamFrees(bodies, f, params, pointerParams)
+			s.ParamDirectFrees, s.ParamFieldFrees, s.ParamMayDirectFrees = computeParamFrees(bodies, f, params, pointerParams)
 
 			for _, call := range calls {
 				if !funcLineRange(f, call.StartLine()) {
@@ -74,7 +84,7 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, l
 
 			s.ReturnStores = findReturnStoresFrom(returns, assigns, f)
 
-			if len(s.ParamDirectFrees) > 0 || len(s.ParamFieldFrees) > 0 || len(s.GlobalFrees) > 0 || len(s.ReturnStores) > 0 || len(s.ParamWrites) > 0 || len(s.ParamConditionalWrites) > 0 {
+			if len(s.ParamDirectFrees) > 0 || len(s.ParamFieldFrees) > 0 || len(s.ParamMayDirectFrees) > 0 || len(s.GlobalFrees) > 0 || len(s.ReturnStores) > 0 || len(s.ParamWrites) > 0 || len(s.ParamConditionalWrites) > 0 {
 				summaries[f.Name] = s
 			}
 		}
@@ -177,17 +187,23 @@ func nullGuardedWrite(stmt parser.Node, p string) bool {
 }
 
 // computeParamFrees reports, per parameter, the whole-param and per-field frees
-// that reach the function's fall-through exit. A free on a path that RETURNS
-// immediately (`if (err) { free(p); return -1; }`) is conditional: the caller
-// resumes only on paths where the free did NOT happen, so propagating it would
-// be a false positive (cf. gz_look freeing state->out on a malloc-failure path).
-// A NULL-guard `if (p != NULL) free(p)` falls through, so it is unconditional.
-func computeParamFrees(bodies map[int]parser.Node, f *db.Function, params []string, pointerParams map[string]bool) (map[int]bool, map[int][]string) {
-	direct := make(map[int]bool)
-	field := make(map[int][]string)
+// that reach the function's fall-through exit, plus the may-free sets (a free on
+// at least one path). The must sets feed use-after-free / leak proofs; the may
+// sets feed the double-free candidate only (a conditional release helper still
+// makes a later caller free a possible double free).
+//
+// A free on a path that RETURNS immediately (`if (err) { free(p); return -1; }`)
+// is conditional: the caller resumes only on paths where the free did NOT happen,
+// so propagating it into a must-set would be a false positive (cf. gz_look
+// freeing state->out on a malloc-failure path). A NULL-guard
+// `if (p != NULL) free(p)` falls through, so it is unconditional.
+func computeParamFrees(bodies map[int]parser.Node, f *db.Function, params []string, pointerParams map[string]bool) (direct map[int]bool, field map[int][]string, mayDirect map[int]bool) {
+	direct = make(map[int]bool)
+	field = make(map[int][]string)
+	mayDirect = make(map[int]bool)
 	body := bodies[f.StartLine]
 	if body.Kind() != "compound_statement" {
-		return direct, field
+		return direct, field, mayDirect
 	}
 	cfg := graph.BuildStmtCFG(body, f.EndLine)
 
@@ -247,6 +263,9 @@ func computeParamFrees(bodies map[int]parser.Node, f *db.Function, params []stri
 	for idx := range params {
 		if allFallthroughPathsFree(cfg, directNodes[idx], terminators) {
 			direct[idx] = true
+		} else if len(directNodes[idx]) > 0 {
+			// A free exists on at least one path: may-free.
+			mayDirect[idx] = true
 		}
 		for fieldName, nodes := range fieldNodes[idx] {
 			if allFallthroughPathsFree(cfg, nodes, terminators) {
@@ -254,7 +273,7 @@ func computeParamFrees(bodies map[int]parser.Node, f *db.Function, params []stri
 			}
 		}
 	}
-	return direct, field
+	return direct, field, mayDirect
 }
 
 // allFallthroughPathsFree reports whether every fall-through path from entry

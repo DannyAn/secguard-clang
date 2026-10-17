@@ -104,7 +104,7 @@ int alloc_user_buffer(int user_size) {
 }
 
 
-void *alloc_objects(size_t count, size_t obj_size) {
+void *alloc_objects(unsigned int count, unsigned int obj_size) {
 
     
     return malloc(count * obj_size);
