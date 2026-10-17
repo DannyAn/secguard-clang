@@ -103,7 +103,7 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 		}
 
 		for _, f := range funcs {
-			checked := d.checkedVars(ifs, whiles, fors, dos, conds, switches, calls, f)
+			checked := d.checkedVars(ifs, whiles, fors, dos, conds, switches, calls, returns, f)
 			// A local object whose name matches a built-in unchecked-return API
 			// shadows it: `int (*read)(void *, size_t, void *);` declares a
 			// function pointer, so `read(buf, n, ctx)` is not POSIX read(). The
@@ -249,14 +249,15 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 }
 
 // checkedVars returns the set of variable names that are validated somewhere in
-// f: compared against a sentinel (`p == NULL`, `ret < 0`), negated (`!p`), or
-// used as a bare truthiness condition (`if (p)`). A condition that merely
-// dereferences the variable (`if (p->len > 0)`) is NOT a null/error check, so
-// it must not mark `p` checked — that would suppress a genuine CWE-252 defect
-// (the allocation's failure is never handled before `p` is used). This mirrors
-// the planner's ReturnCheckFilter (conditionTestsVar) so the detector and the
-// convergence filter agree on what "checked" means.
-func (d *UncheckedReturnDetector) checkedVars(ifs, whiles, fors, dos, conds, switches, calls []parser.Node, f *db.Function) map[string]bool {
+// f: compared against a sentinel (`p == NULL`, `ret < 0`), negated (`!p`), used
+// as a bare truthiness condition (`if (p)`), or consumed as the comparison a
+// return statement hands to the caller (`return f != 0;`). A condition that
+// merely dereferences the variable (`if (p->len > 0)`) is NOT a null/error
+// check, so it must not mark `p` checked — that would suppress a genuine
+// CWE-252 defect (the allocation's failure is never handled before `p` is
+// used). This mirrors the planner's ReturnCheckFilter (conditionTestsVar) so
+// the detector and the convergence filter agree on what "checked" means.
+func (d *UncheckedReturnDetector) checkedVars(ifs, whiles, fors, dos, conds, switches, calls, returns []parser.Node, f *db.Function) map[string]bool {
 	set := make(map[string]bool)
 	for _, cond := range [][]parser.Node{ifs, whiles, fors, dos, conds} {
 		for _, node := range cond {
@@ -288,6 +289,22 @@ func (d *UncheckedReturnDetector) checkedVars(ifs, whiles, fors, dos, conds, swi
 		}
 		if v := bareOperandVar(*c); v != "" {
 			set[v] = true
+		}
+	}
+	// `return f != 0;` hands the stored call result to the caller as a boolean
+	// predicate: the failure sentinel decides the function's own return value,
+	// so the result IS consumed. Without this, `FILE *f = fopen(p, "r");
+	// return f != 0;` was emitted as an unchecked return and reached the
+	// auto-confirmed tier (benchmark p10 round-3). Only a comparison counts —
+	// a bare `return f;` stays the passthrough wrapper's own contract.
+	for _, ret := range returns {
+		if !funcLineRange(f, ret.StartLine()) {
+			continue
+		}
+		for _, child := range ret.NamedChildren() {
+			for _, v := range testedOperands(child) {
+				set[v] = true
+			}
 		}
 	}
 	for _, call := range calls {
@@ -875,7 +892,7 @@ func (d *UncheckedReturnDetector) funcSummaries(ctx context.Context) (*funcSumma
 		}
 
 		for _, f := range funcs {
-			checked := d.checkedVars(ifs, whiles, fors, dos, conds, switches, calls, f)
+			checked := d.checkedVars(ifs, whiles, fors, dos, conds, switches, calls, returns, f)
 
 			// var -> (callee, assignLine) for `v = callee(...)`.
 			calleeOfVar := make(map[string]string)
