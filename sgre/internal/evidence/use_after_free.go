@@ -52,6 +52,7 @@ func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error)
 			aliases := findAliases(f, inits, assigns)
 			freeSites := d.findAllFreeSites(f, calls, summaries, aliases, macros)
 			useSites := d.findUseSites(f, ptrs, fields, calls, returns, assigns, subs, summaries)
+			reassignKills := wholeVarReassignKills(f, assigns)
 
 			// The statement CFG decides free→use reachability: a loop-carried
 			// `for(...) { use(p); free(p); }` has the use AFTER the free in source
@@ -79,6 +80,16 @@ func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error)
 					if fs.field != "" && use.field != fs.field {
 						continue
 					}
+					// A whole-variable reassignment between the free and the use
+					// kills the dangling state: `free(p); p = &g_fallback; use(p)`
+					// uses the new object, not the freed one. Only an unconditional
+					// reassignment whose RHS does not mention the freed variable or
+					// any of its aliases kills — `p = p->next` still reads p, and a
+					// branch-local reassignment leaves the fall-through path
+					// dangling (mirrors the SAFE_FREE nullsArg semantics).
+					if reassignKilled(reassignKills, aliases, fs.varName, fs.line, use.line) {
+						continue
+					}
 					props := map[string]interface{}{
 						"variable":  fs.varName,
 						"free_line": fs.line,
@@ -100,6 +111,64 @@ func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error)
 		}
 	})
 	return result, err
+}
+
+// reassignKill is one whole-variable reassignment `p = <expr>` that may kill
+// the dangling state of p between a free and a later use.
+type reassignKill struct {
+	line    int
+	rhsText string
+}
+
+// wholeVarReassignKills collects, per variable name, the unconditional
+// whole-variable reassignments (`p = <expr>`) in f. A reassignment inside a
+// runtime branch does not kill (the fall-through path keeps the dangling
+// value); the RHS-mentions check happens at match time because whether `p = q`
+// kills depends on which variable was freed.
+func wholeVarReassignKills(f *db.Function, assigns []parser.Node) map[string][]reassignKill {
+	kills := make(map[string][]reassignKill)
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
+			continue
+		}
+		children := assign.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		lhs, rhs := children[0], children[1]
+		if lhs.Kind() != "identifier" {
+			continue
+		}
+		if isConditionalNode(assign) {
+			continue
+		}
+		kills[lhs.Text()] = append(kills[lhs.Text()], reassignKill{line: assign.StartLine(), rhsText: rhs.Text()})
+	}
+	return kills
+}
+
+// reassignKilled reports whether an unconditional reassignment of varName
+// between freeLine and useLine kills the dangling state: the reassignment must
+// sit in the line window, and its RHS must not mention the freed variable or
+// any of its whole-variable aliases (`free(p); q = p; p = q; use(p)` re-seats
+// p on the SAME dangling object, and `p = p->next` reads p on the RHS).
+func reassignKilled(kills map[string][]reassignKill, aliases map[string]aliasInfo, varName string, freeLine, useLine int) bool {
+	candidates, ok := kills[varName]
+	if !ok {
+		return false
+	}
+	dangling := map[string]bool{varName: true}
+	for a, ai := range aliases {
+		if ai.baseVar == varName && ai.field == "" {
+			dangling[a] = true
+		}
+	}
+	for _, k := range candidates {
+		if k.line > freeLine && k.line <= useLine && !mentionsAnyIdentifier(k.rhsText, dangling) {
+			return true
+		}
+	}
+	return false
 }
 
 // terminalBaseVar resolves baseVar through whole-variable alias chains: while

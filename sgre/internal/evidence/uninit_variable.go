@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/config"
@@ -1840,6 +1841,20 @@ func rhsAllocates(rhs parser.Node) bool {
 }
 
 // mentionsAnyIdentifier reports whether text references any of the given
+// identifiers as a whole word (identifier-boundary tokenization), so `ptr`
+// does not match `p` and `p2` does not match `p`.
+func mentionsAnyIdentifier(text string, names map[string]bool) bool {
+	for _, tok := range strings.FieldsFunc(text, func(r rune) bool {
+		return !(r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r))
+	}) {
+		if names[tok] {
+			return true
+		}
+	}
+	return false
+}
+
+// isConditionalNode reports whether node sits inside a runtime BRANCH (an
 // if/else consequence or alternative, or a loop/switch body), so a write there
 // happens on only some paths. A loop init/condition (which runs on every path)
 // is NOT conditional.

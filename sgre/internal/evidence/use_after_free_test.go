@@ -325,3 +325,48 @@ int tp_alias_chain(void) {
 		t.Errorf("expected alias-chain use-after-free (q=r; r=p; free(p); *q) to flag q, got %v", flagged)
 	}
 }
+
+// TestUseAfterFree_ReassignKillsUse pins the free→use reassignment kill:
+// an unconditional whole-variable reassignment of a DIFFERENT value between
+// the free and the use ends the dangling state (`free(p); p = other; use(p)`
+// uses the new object). A reassignment whose RHS mentions the freed variable
+// (`p = p->next`, the linked-list traversal shape) or inside a branch does
+// not kill — those keep the candidate.
+func TestUseAfterFree_ReassignKillsUse(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, fixturePath("tc137_uaf_reassign_kill.c")); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	NewUseAfterFreeDetector(store, p, logger).Detect(ctx)
+
+	events, err := store.ListEventsByType(ctx, "USE_AFTER_FREE")
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	flagged := map[string]bool{}
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Variable != "" {
+			flagged[props.Variable] = true
+		}
+	}
+
+	if flagged["a"] {
+		t.Errorf("expected free(a); a = fallback; a[0] NOT to be flagged (reassignment kills the dangling state), got %v", flagged)
+	}
+	// p covers the three keep-flagged shapes: no reassignment, self-RHS
+	// (`p = p->next`), and a branch-local reassignment.
+	if !flagged["p"] {
+		t.Errorf("expected no-reassign / self-RHS / branch-local-reassign uses of p to stay flagged, got %v", flagged)
+	}
+}
