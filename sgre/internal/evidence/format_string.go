@@ -96,8 +96,20 @@ func (d *FormatStringDetector) extractFormatArg(call parser.Node) string {
 			case "snprintf", "vsnprintf":
 				formatIdx = 2
 			case "snprintf_s", "vsnprintf_s":
-				// C11 Annex K: snprintf_s(s, n, format, ...) — format is args[2].
-				formatIdx = 2
+				// MSVC: snprintf_s(buf, size, count, format, ...) — the format is
+				// args[3]; args[2] is the count (sizeof(buf) or _TRUNCATE). The C11
+				// Annex K layout snprintf_s(s, n, format, ...) instead puts the
+				// format at args[2]; disambiguate by probing which slot holds the
+				// string literal — and by arity: MSVC needs at least four args, so
+				// a three-argument call must be the Annex K layout. Annex K is
+				// essentially unimplemented in real toolchains, so MSVC wins when
+				// neither probe decides.
+				formatIdx = 3
+				if len(args) > 2 {
+					if d.isStringLiteral(args[2].Text()) || len(args) == 3 {
+						formatIdx = 2
+					}
+				}
 			}
 			if len(args) <= formatIdx {
 				return ""
