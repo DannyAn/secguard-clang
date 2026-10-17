@@ -736,6 +736,16 @@ func IsDeclaredDeallocator(name string) bool {
 	return BuiltinDeallocators[name] || extraDeallocators[name]
 }
 
+// stackAllocators are stack allocation primitives (C alloca / MSVC _alloca /
+// GCC __builtin_alloca): the memory lives on the stack frame and is reclaimed
+// on return, so it can NEVER heap-leak. The "alloc" substring heuristic in
+// IsAllocator used to match them, turning every alloca into a phantom heap
+// allocation for the memory-leak detector.
+var stackAllocators = map[string]bool{
+	"alloca": true, "_alloca": true, "__alloca": true,
+	"__builtin_alloca": true, "__builtin_alloca_with_align": true,
+}
+
 // IsAllocator reports whether name is a recognized allocation function: a
 // built-in / declared allocator, or (zero-config fail-open) any name whose
 // lowercased form contains "alloc" — covering third-party wrappers like
@@ -751,11 +761,15 @@ func IsDeclaredDeallocator(name string) bool {
 // The narrower "_mem_create" covers wrappers like pki_util_mem_create whose
 // name explicitly says "memory create". Real *_create heap allocators should
 // be registered via RegisterAllocator (secguard.toml [allocators]).
+
 func IsAllocator(name string) bool {
 	if IsDeclaredAllocator(name) {
 		return true
 	}
 	lower := strings.ToLower(name)
+	if stackAllocators[lower] {
+		return false
+	}
 	return strings.Contains(lower, "alloc") ||
 		strings.Contains(lower, "strdup") ||
 		strings.Contains(lower, "_new") ||

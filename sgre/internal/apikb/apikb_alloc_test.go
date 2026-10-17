@@ -135,3 +135,16 @@ func TestIsKnownNullableReturn_BuiltinPreciseSet(t *testing.T) {
 		}
 	}
 }
+
+func TestIsAllocator_ExcludesStackAllocators(t *testing.T) {
+	for _, name := range []string{"alloca", "_alloca", "__alloca", "__builtin_alloca", "__builtin_alloca_with_align", "ALLOCA", "_Alloca"} {
+		if IsAllocator(name) {
+			t.Errorf("IsAllocator(%q) = true, want false: stack allocation is reclaimed on return and can never heap-leak; the \"alloc\" substring heuristic used to match it", name)
+		}
+	}
+	for _, name := range []string{"malloc", "xmalloc", "nat_malloc", "VOS_MALLOC", "my_alloca_wrapper"} {
+		if !IsAllocator(name) {
+			t.Errorf("IsAllocator(%q) = false, want true (real heap allocator / wrapper must keep matching)", name)
+		}
+	}
+}
