@@ -249,6 +249,10 @@ func isResourceReleaser(name string) bool {
 		return false
 	}
 	lower := strings.ToLower(name)
+	// Keys are lowercase because the lookup is by the lowercased name: the
+	// Win32 releasers (CloseHandle/RegCloseKey/FreeLibrary) used to be listed
+	// in camelCase, so `exact[lower]` never matched them and every guarded
+	// Win32 release fell through to the leak path.
 	exact := map[string]bool{
 		"close": true, "fclose": true, "pclose": true, "closedir": true,
 		"closesocket": true, "close_range": true, "munmap": true,
@@ -256,7 +260,7 @@ func isResourceReleaser(name string) bool {
 		"pthread_mutex_unlock": true, "pthread_mutex_destroy": true,
 		"pthread_cond_destroy": true, "pthread_rwlock_destroy": true,
 		"sem_destroy": true, "sem_close": true, "sem_unlink": true,
-		"shutdown": true, "FreeLibrary": true, "RegCloseKey": true, "CloseHandle": true,
+		"shutdown": true, "freelibrary": true, "regclosekey": true, "closehandle": true,
 	}
 	if exact[lower] {
 		return true

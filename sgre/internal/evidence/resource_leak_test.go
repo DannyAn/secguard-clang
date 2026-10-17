@@ -244,3 +244,15 @@ func TestResourceLeak_GlobalHoldNotDefinite(t *testing.T) {
 	}
 	assertNoDefiniteAcquire(t, store, "tc124_resleak_global_hold")
 }
+
+func TestResourceReleaser_Win32CamelCase(t *testing.T) {
+	// The exact map is keyed by the LOWERCASED name, so the Win32 releasers
+	// must be listed lowercase. They used to be listed in camelCase
+	// (CloseHandle/RegCloseKey/FreeLibrary), `exact[lower]` never matched, and
+	// every guarded Win32 release fell through to the leak path.
+	for _, name := range []string{"CloseHandle", "RegCloseKey", "FreeLibrary", "closehandle", "regclosekey", "freelibrary"} {
+		if !isResourceReleaser(name) {
+			t.Errorf("isResourceReleaser(%q) = false, want true: a guarded Win32 release must count as a release, not a leak", name)
+		}
+	}
+}
