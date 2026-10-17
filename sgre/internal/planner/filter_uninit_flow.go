@@ -69,14 +69,15 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
 	for _, c := range candidates {
-		switch f.candidateOrigin(eventsByID, c) {
+		origin := f.candidateOrigin(eventsByID, c)
+		switch origin {
 		case "heap_uninit", "struct_partial_uninit":
 			hs := hsFlows[c.FunctionID]
 			if hs == nil {
 				kept = append(kept, c)
 				continue
 			}
-			kept, dropped = f.refineHeapStruct(hs, c, kept, dropped, fnByID, files, scopes)
+			kept, dropped = f.refineHeapStruct(origin, hs, c, kept, dropped, fnByID, files, scopes)
 		case "stack_uninit":
 			flow := flows[c.FunctionID]
 			if flow == nil {
@@ -126,7 +127,7 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 // refineHeapStruct drops a heap/struct candidate whose field (or whole block) is
 // written on every path, and promotes it to confirmed only when the malloc/
 // declaration source reaches on every path with no write on any path.
-func (f *DefiniteInitFilter) refineHeapStruct(hs *heapStructFlow, c Candidate, kept []Candidate, dropped []Dismissed, fnByID map[int64]*db.Function, files map[int64]*hoistedUninitFile, scopes map[int64]func(string) bool) ([]Candidate, []Dismissed) {
+func (f *DefiniteInitFilter) refineHeapStruct(origin string, hs *heapStructFlow, c Candidate, kept []Candidate, dropped []Dismissed, fnByID map[int64]*db.Function, files map[int64]*hoistedUninitFile, scopes map[int64]func(string) bool) ([]Candidate, []Dismissed) {
 	whole := c.VariableName
 	path := c.FieldPath
 	if hs.initOnEveryPath(path, c.Line) || hs.initOnEveryPath(whole, c.Line) {
@@ -138,7 +139,18 @@ func (f *DefiniteInitFilter) refineHeapStruct(hs *heapStructFlow, c Candidate, k
 			fmt.Sprintf("%s is initialized on every path before the use at line %d", key, c.Line))
 	}
 	if hs.sourceOnEveryPath(whole, c.Line) && !hs.initOnAnyPath(path, c.Line) && !hs.initOnAnyPath(whole, c.Line) {
-		if f.hasOutputParamWrite(fnByID, files[c.FileID], c, scopes[c.FunctionID]) {
+		// A heap never-written read is flow-provable as uninitialized, but the
+		// pointer itself was assigned (and usually NULL-checked) right after the
+		// allocator call, and the dominant real defects on that shape — an
+		// unchecked allocation (CWE-252/476) or a later use-after-free/leak —
+		// are reported by their own detectors at the same location. An
+		// independent CWE-457 verdict needs callee semantics (e.g. a custom
+		// allocator that fully initializes the block before returning it)
+		// that only the AI agent can weigh, so a heap_uninit origin is handed
+		// over as suspected instead of machine-confirmed. A stack struct
+		// partial-init (`S s; return s.len;`) has no such competing detector
+		// and stays confirmed.
+		if f.hasOutputParamWrite(fnByID, files[c.FileID], c, scopes[c.FunctionID]) || origin == "heap_uninit" {
 			// `S s; fill_ext(&s); use(s.f);` — an output-parameter / decayed
 			// write can initialize the struct on the success path, so "uninit on
 			// every path" is unproven. Keep it suspected for the AI to judge.

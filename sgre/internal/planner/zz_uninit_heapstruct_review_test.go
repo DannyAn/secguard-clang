@@ -78,8 +78,14 @@ int both_branches(int c) {
 }
 
 // UN-17/18: a heap block never written after malloc is a definite uninitialized
-// read and must be confirmed by the planner.
-func TestUninitReviewHeap_Confirmed(t *testing.T) {
+// read, but the planner must NOT machine-confirm it. The pointer itself was
+// assigned right after the allocator call, and the dominant defects on the
+// shape (unchecked allocation, use-after-free, leak) are covered by their own
+// CWE-252/476/401 detectors at the same location; an independent CWE-457
+// verdict needs callee semantics (a custom allocator that initializes the
+// block) only the AI can weigh, so it stays suspected (benchmark round-3: all
+// 7 machine-confirmed heap never-written findings were AI-dismissed).
+func TestUninitReviewHeap_NeverWrittenSuspected(t *testing.T) {
 	src := `#include <stdlib.h>
 typedef struct S { int len; } S;
 int f(void) {
@@ -92,8 +98,8 @@ int f(void) {
 	if !ok {
 		t.Fatalf("f (malloc then p->len) should be a candidate, got %v", keys(got))
 	}
-	if c.SuspicionLevel != "confirmed" {
-		t.Errorf("f should be confirmed (never written on any path), got %q", c.SuspicionLevel)
+	if c.SuspicionLevel != "suspected" {
+		t.Errorf("f should be suspected (heap never-written read is handed to the AI, not machine-confirmed), got %q", c.SuspicionLevel)
 	}
 }
 
