@@ -17,6 +17,12 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/report"
 )
 
+// reviewContextLines is the ± window embedded as `context` in the
+// --list-auto-confirmed listing. It matches the candidate evidence window (±8):
+// big enough to show a guard/return that settles a machine finding, small enough
+// that a 50-entry page stays a cheap table review.
+const reviewContextLines = 8
+
 // normalizeAIVerdict maps a raw agent-supplied status to the BINARY AI verdict:
 // confirmed (a real defect) or dismissed (everything else, including
 // "undecidable"). There is no third state: if the AI cannot prove a defect, it
@@ -75,6 +81,23 @@ func parseStringFlag(args []string, flag string) string {
 		}
 	}
 	return ""
+}
+
+// rejectConcatenatedArgs fails a command whose argv contains an element that
+// looks like flags pre-joined into one string with a leading space, e.g.
+// " --type path-traversal". Bun.$ template interpolation does not word-split, so
+// an MCP tool that builds ` --type ${x}` and interpolates it as one element
+// silently drops the flag — parseStringFlag matches `--type` or `--type=` only,
+// and the leading-space element matches neither. Fail loudly instead of
+// degrading to an unfiltered full dump.
+func rejectConcatenatedArgs(args []string) bool {
+	for _, a := range args {
+		if strings.HasPrefix(a, " ") && strings.Contains(a, " --") {
+			WriteErrorJSON(fmt.Sprintf("argument %q looks like concatenated flags — pass each flag as a separate argument (e.g. --type path-traversal, not \" --type path-traversal\")", a))
+			return false
+		}
+	}
+	return true
 }
 
 // classifyWriteErr categorizes a finding-write error for the failed_details
@@ -234,6 +257,9 @@ func dedupeAndNormalizeFindings(ctx context.Context, store db.Store, findings []
 
 func runReportCmd(ctx context.Context, args []string) int {
 	dbPath, dbExplicit, remaining := parseDBFlag(args)
+	if !rejectConcatenatedArgs(remaining) {
+		return 1
+	}
 
 	dbPath, found := resolveExistingDBPath(dbExplicit, dbPath)
 	if !found {
@@ -301,6 +327,14 @@ func runReportCmd(ctx context.Context, args []string) int {
 				"summary":   f.Summary,
 				"reasoning": f.Reasoning,
 				"snippet":   report.SourceLineText(f.FilePath, f.LineNumber, cwd),
+				// context is the ±reviewContextLines window around the finding.
+				// The false-positive judgment this listing feeds ("the result IS
+				// checked", "the buffer is never used") needs the statement's
+				// neighbours; a single-line snippet forced one source READ per
+				// re-review, which is exactly the cost the snippet exists to
+				// remove. Kept beside snippet (not replacing it) so a consumer
+				// that only needs the statement still gets one line.
+				"context": report.SourceWindowText(f.FilePath, f.LineNumber, reviewContextLines, cwd),
 			})
 		}
 		_ = WriteJSON(map[string]interface{}{"findings": out, "count": len(out)})
@@ -1127,6 +1161,16 @@ func runReportCmd(ctx context.Context, args []string) int {
 			WriteJSON(out)
 		}
 		return 0
+	}
+
+	// The read action is now explicit. Reaching this point WITHOUT --list means
+	// no recognized action flag was passed at all: a mangled/typo'd flag (or a
+	// caller that concatenated flags into one argv element) would otherwise
+	// degrade into silently dumping the whole findings table. Fail loud instead.
+	if !hasFlag(remaining, "list") {
+		printReportUsage()
+		WriteErrorJSON("no action flag: pass --list (read all findings), --write-json (persist), --list-auto-confirmed (re-review), --review-json, --complete-type, or --audit")
+		return 1
 	}
 
 	statusFilter := parseStringFlag(remaining, "status")

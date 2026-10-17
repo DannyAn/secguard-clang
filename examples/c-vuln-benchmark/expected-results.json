@@ -492,10 +492,11 @@
       "category": "phase5_path_traversal",
       "file": "src/p6_new_detectors.c",
       "line": 51,
-      "code": "fopen with non-literal path",
+      "code": "fopen with non-literal path (unproven parameter)",
       "cwe": "CWE-22",
       "detector": "path_traversal",
-      "expect": "finding"
+      "expect": "no_finding",
+      "_note": "design decision, not a detector gap: path-traversal is deliberately left suspected because reaching a path parameter does not prove the content can contain ../, and the skill dismisses a parameter with no tainted caller (path-traversal/SKILL.md; AI_JUDGMENT_BOUNDARY.md). Proven-taint recall lives in P7-01 / P10-01 / P10-03; P6-05 is the unproven-parameter precision case."
     },
     {
       "id": "P6-06",
@@ -512,10 +513,11 @@
       "category": "phase5_sizeof_misuse",
       "file": "src/p6_new_detectors.c",
       "line": 67,
-      "code": "malloc(n * sizeof(p)) with pointer p",
+      "code": "malloc(n * sizeof(p)) with a single-level pointer p",
       "cwe": "CWE-467",
       "detector": "sizeof_misuse",
-      "expect": "finding"
+      "expect": "finding",
+      "_note": "single-level T *p only: sizeof_pointer is the literal-confirmed tier (AI_JUDGMENT_BOUNDARY.md). A T **p allocation would be sizeof_pointer_ambig — legitimately an array of pointers, deliberately left to the AI — so the fixture must not use char **p (that version asserted a false positive)."
     },
     {
       "id": "P6-08",
@@ -1496,7 +1498,8 @@
       "code": "idm_new_idmgr(1) —— \"_new\" 名字启发式保留，产生 suspected 候选 (contract@unknown)，AI 须证明失败哨兵否则 dismiss",
       "cwe": "CWE-252",
       "detector": "unchecked_return",
-      "expect": "finding"
+      "expect": "no_finding",
+      "_note": "the callee is declared only (no body in the scan), so the contract@unknown proof ('does it return a failure sentinel?') cannot be discharged; the case's own description says dismiss unless the sentinel is proven, and AI_JUDGMENT_BOUNDARY.md + unchecked-return/SKILL.md prescribe dismiss. Expecting a finding contradicted the product rule. UC-03 remains the finding control."
     },
     {
       "id": "P14-01",

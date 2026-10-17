@@ -710,6 +710,7 @@ func TestAutoConfirmedReReviewCLIFlow(t *testing.T) {
 			ID      int64  `json:"id"`
 			File    string `json:"file"`
 			Snippet string `json:"snippet"`
+			Context string `json:"context"`
 		} `json:"findings"`
 		Count int `json:"count"`
 	}
@@ -718,6 +719,12 @@ func TestAutoConfirmedReReviewCLIFlow(t *testing.T) {
 	}
 	if listed.Count != 1 || len(listed.Findings) != 1 || listed.Findings[0].ID != findingID {
 		t.Fatalf("--list-auto-confirmed returned count=%d findings=%v, want the seeded finding %d", listed.Count, listed.Findings, findingID)
+	}
+	// The re-review listing must carry a source window beside the single-line
+	// snippet; the key is always present (empty when the file is unreadable), so
+	// consumers can rely on it.
+	if !strings.Contains(stdout, `"context"`) {
+		t.Errorf("--list-auto-confirmed must emit a context field for re-review:\n%s", stdout)
 	}
 
 	// 2. Dismiss through --review-json.
@@ -903,5 +910,56 @@ func TestReportCmd_WriteJsonParseErrorIsActionable(t *testing.T) {
 		if !bytes.Contains([]byte(stdout), []byte(want)) {
 			t.Errorf("parse error should mention %q, got: %s", want, stdout)
 		}
+	}
+}
+
+// A flag built with a leading space (the Bun.$ no-word-split failure mode: one
+// argv element " --type x") must fail loudly, not silently drop the filter and
+// degrade to an unfiltered full dump. Pins the P1 CLI-side defense.
+func TestReportCmd_RejectsConcatenatedFlags(t *testing.T) {
+	ctx := context.Background()
+	cases := []string{
+		" --type path-traversal",
+		" --scan-id sc_2026-01-01_000000_cccccc",
+		" --limit 50",
+	}
+	for _, bad := range cases {
+		stdout, _, exitCode := captureOutput(func() int {
+			return runReportCmd(ctx, []string{"--db", "/nonexistent/sgre.db", "--list-auto-confirmed", bad})
+		})
+		if exitCode == 0 {
+			t.Errorf("arg %q: expected non-zero exit, got 0", bad)
+		}
+		if !strings.Contains(stdout, "concatenated flags") {
+			t.Errorf("arg %q: stdout should mention concatenated flags, got: %s", bad, stdout)
+		}
+	}
+}
+
+// A bare `secguard report` (no action flag) must print usage + exit non-zero
+// instead of silently dumping the whole findings table; `--list` is the explicit
+// read action. Pins the P2 change.
+func TestReportCmd_RequiresExplicitAction(t *testing.T) {
+	ctx := context.Background()
+	dbPath, _ := envelopeFixtureDB(t, ctx)
+
+	stdout, _, exitCode := captureOutput(func() int {
+		return runReportCmd(ctx, []string{"--db", dbPath})
+	})
+	if exitCode == 0 {
+		t.Errorf("bare report: expected non-zero exit, got 0")
+	}
+	if !strings.Contains(stdout, "no action flag") {
+		t.Errorf("bare report: stdout should say no action flag, got: %s", stdout)
+	}
+
+	stdout, _, exitCode = captureOutput(func() int {
+		return runReportCmd(ctx, []string{"--db", dbPath, "--list"})
+	})
+	if exitCode != 0 {
+		t.Fatalf("--list failed: %s", stdout)
+	}
+	if !strings.Contains(stdout, `"findings"`) {
+		t.Errorf("--list should return a findings envelope, got: %s", stdout)
 	}
 }

@@ -478,6 +478,14 @@ func TestWriteCandidates_UncheckedReturnCalleeDefinition(t *testing.T) {
 	if err := os.WriteFile(src, []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
+	// The callee body lives in ANOTHER file: the candidate must embed it so the
+	// contract@unknown proof ("does it return a failure sentinel?") is an
+	// in-file judgment, not a source READ.
+	pool := filepath.Join(dir, "pool.c")
+	poolBody := "/* pad */\n\nObj *obj_pool_new(int n) {\n    if (n <= 0) return NULL;\n    Obj *o = calloc(1, sizeof(*o));\n    if (!o) return NULL;\n    return o;\n}\n"
+	if err := os.WriteFile(pool, []byte(poolBody), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	o := &ScanOutput{ScanDir: dir, ScanID: "sc_test", RootDir: dir}
 	pkgs := []*planner.PlanResult{{
@@ -488,7 +496,8 @@ func TestWriteCandidates_UncheckedReturnCalleeDefinition(t *testing.T) {
 				Category:           "unchecked_return",
 				Contract:           "unknown",
 				CalleeDefFile:      "pool.c",
-				CalleeDefLine:      42,
+				CalleeDefLine:      3,
+				CalleeDefEndLine:   8,
 				CalleeDefSignature: "Obj *obj_pool_new(int n)",
 				Target:             planner.TargetInfo{File: "call.c", Function: "handle", Line: 2},
 			},
@@ -505,12 +514,51 @@ func TestWriteCandidates_UncheckedReturnCalleeDefinition(t *testing.T) {
 	}
 
 	def := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "unchecked-return", "001_call_c_2.md")))
-	if !strings.Contains(def, "- **Callee definition:** `pool.c:42` (`Obj *obj_pool_new(int n)`)") {
+	if !strings.Contains(def, "- **Callee definition:** `pool.c:3` (`Obj *obj_pool_new(int n)`)") {
 		t.Errorf("in-scan callee must render the definition location:\n%s", def)
+	}
+	if !strings.Contains(def, "## Callee Definition") || !strings.Contains(def, "if (n <= 0) return NULL;") {
+		t.Errorf("in-scan callee body must be embedded:\n%s", def)
+	}
+	if strings.Contains(def, "read the definition") {
+		t.Errorf("evidence must not send the classifier on a source READ once the body is embedded:\n%s", def)
 	}
 	ext := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "unchecked-return", "002_call_c_6.md")))
 	if !strings.Contains(ext, "none in scan") {
 		t.Errorf("external callee must render the explicit no-definition note:\n%s", ext)
+	}
+	if strings.Contains(ext, "## Callee Definition") {
+		t.Errorf("an external callee has no body and must not get a Callee Definition section:\n%s", ext)
+	}
+}
+
+// A callee whose body cannot be read at report time (file moved/deleted since
+// the scan) must degrade to an explicit "body unavailable" note, never a silent
+// omission that leaves the classifier thinking the contract is settled.
+func TestWriteCandidates_CalleeDefinitionUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "call.c")
+	if err := os.WriteFile(src, []byte("int handle(void) {\n    pool_new(1);\n    return 0;\n}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	o := &ScanOutput{ScanDir: dir, ScanID: "sc_test", RootDir: dir}
+	pkgs := []*planner.PlanResult{{
+		VulnerabilityType: "unchecked-return",
+		Candidates: []planner.EvidenceItem{{
+			SuspicionLevel: "suspected",
+			Category:       "unchecked_return",
+			Contract:       "unknown",
+			CalleeDefFile:  "gone.c",
+			CalleeDefLine:  7,
+			Target:         planner.TargetInfo{File: "call.c", Function: "handle", Line: 2},
+		}},
+	}}
+	if err := o.writeCandidates(pkgs); err != nil {
+		t.Fatal(err)
+	}
+	out := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "unchecked-return", "001_call_c_2.md")))
+	if !strings.Contains(out, "Body unavailable at report time") || !strings.Contains(out, "`gone.c:7`") {
+		t.Errorf("unreadable callee body must be explicit, not silent:\n%s", out)
 	}
 }
 
@@ -735,5 +783,33 @@ func TestWriteCandidates_VariableExpressionFallbackCollapse(t *testing.T) {
 	}
 	if strings.Contains(content, "\n            n)") {
 		t.Errorf("no raw multi-line text should survive in the Location section:\n%s", content)
+	}
+}
+
+// TestSourceWindowText pins the re-review window: the ±ctx block must expose
+// the statements around a machine finding (the guard/return that settles it)
+// and mark the finding line, while a disabled window (ctx<=0) yields "".
+func TestSourceWindowText(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "w.c")
+	lines := "int f(void) {\n    char *p = malloc(4);\n    if (p) {\n        p[0] = 0;\n        free(p);\n    }\n    return 0;\n}\n"
+	if err := os.WriteFile(src, []byte(lines), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := SourceWindowText(src, 4, 2, dir)
+	for _, want := range []string{"  2 |     char *p = malloc(4);", "> 4 |         p[0] = 0;", "  6 |     }"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("window missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "  1 |") || strings.Contains(got, "  7 |") {
+		t.Errorf("window of ±2 must not include lines outside [2,6]:\n%s", got)
+	}
+	if disable := SourceWindowText(src, 4, 0, dir); disable != "" {
+		t.Errorf("ctx<=0 must disable the window, got: %q", disable)
+	}
+	if missing := SourceWindowText(filepath.Join(dir, "nope.c"), 4, 2, dir); missing != "" {
+		t.Errorf("unreadable file must degrade to the empty string, got: %q", missing)
 	}
 }

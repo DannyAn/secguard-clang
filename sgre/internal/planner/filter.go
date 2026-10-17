@@ -133,13 +133,16 @@ type Candidate struct {
 	// wrapper body) rather than inferred from the allocator name heuristic.
 	// ReturnCheckFilter only promotes these to the deterministic tier.
 	ContractKnown bool `json:"contract_known,omitempty"`
-	// CalleeDefFile/CalleeDefLine/CalleeDefSignature locate the unchecked-return
-	// callee's definition (resolved from the function index) so a
-	// contract@unknown classifier can go straight to the callee body instead of
-	// burning source READs locating it. Empty CalleeDefFile = the callee has no
-	// definition in the scan (external/library function).
+	// CalleeDefFile/CalleeDefLine/CalleeDefEndLine/CalleeDefSignature locate the
+	// unchecked-return callee's definition (resolved from the function index) so
+	// a contract@unknown classifier can read the callee body in the candidate
+	// file instead of burning source READs locating it. CalleeDefEndLine bounds
+	// the embedded body; 0 means the span is unknown and the report falls back
+	// to a fixed window from CalleeDefLine. Empty CalleeDefFile = the callee has
+	// no definition in the scan (external/library function).
 	CalleeDefFile      string `json:"callee_def_file,omitempty"`
 	CalleeDefLine      int    `json:"callee_def_line,omitempty"`
+	CalleeDefEndLine   int    `json:"callee_def_end_line,omitempty"`
 	CalleeDefSignature string `json:"callee_def_signature,omitempty"`
 	NonNullable        bool   `json:"non_nullable"`
 	IsTypeExpr         bool   `json:"is_type_expr"`

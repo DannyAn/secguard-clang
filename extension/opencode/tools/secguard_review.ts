@@ -33,7 +33,7 @@ function findSecguard(context: { worktree?: string; directory?: string }): strin
 
 export default tool({
   description:
-    "Re-review the machine auto-confirmed findings (the pipeline-proved tier the candidate index does NOT show). Two operations: (1) list_auto_confirmed=true returns them for your type as JSON (id / rule_id / file / line / function / variable / reasoning / snippet) so you can apply the skill's false-positive rules; (2) reviews=[...] writes your verdicts back — review_status 'confirmed' (agree) or 'dismissed' (the machine verdict is a false positive → suppressed from result.sarif). Write a verdict for EVERY entry (do NOT omit the ones you agree with): the orchestrator verifies the re-review by checking that a later list_auto_confirmed returns count 0, which only holds when every entry got a review_status. This is the agent-native second-round review (no external AI provider).",
+    "Re-review the machine auto-confirmed findings (the pipeline-proved tier the candidate index does NOT show). Two operations: (1) list_auto_confirmed=true returns them for your type as JSON (id / rule_id / file / line / function / variable / reasoning / snippet / context — a gutter-numbered ±8-line source window) so you can apply the skill's false-positive rules; (2) reviews=[...] writes your verdicts back — review_status 'confirmed' (agree) or 'dismissed' (the machine verdict is a false positive → suppressed from result.sarif). Write a verdict for EVERY entry (do NOT omit the ones you agree with): the orchestrator verifies the re-review by checking that a later list_auto_confirmed returns count 0, which only holds when every entry got a review_status. This is the agent-native second-round review (no external AI provider).",
   args: {
     scan_id: tool.schema
       .string()
@@ -114,13 +114,19 @@ export default tool({
     }
 
     // List path (also the default when neither arg is set): --list-auto-confirmed.
-    const typeArg = args.type ? ` --type ${args.type}` : ""
-    const scanArg = args.scan_id ? ` --scan-id ${args.scan_id}` : ""
-    const limitArg = args.limit && args.limit > 0 ? ` --limit ${args.limit}` : ""
+    // Optional flags are pushed as SEPARATE argv elements (array interpolation).
+    // A flag joined into one string with a leading space is passed by Bun.$ as a
+    // SINGLE argv element (no word-splitting), which the CLI's flag parser does
+    // not match — the filter is silently dropped and the subagent gets the whole
+    // scan's list instead of its own type's page.
+    const listCmd = [secguardBin, "report", "--db", dbPath, "--list-auto-confirmed"]
+    if (args.scan_id) listCmd.push("--scan-id", args.scan_id)
+    if (args.type) listCmd.push("--type", args.type)
+    if (args.limit && args.limit > 0) listCmd.push("--limit", String(args.limit))
     try {
       const out = (
         await withTimeout(
-          Bun.$`${secguardBin} report --db ${dbPath} --list-auto-confirmed${scanArg}${typeArg}${limitArg}`
+          Bun.$`${listCmd}`
             .cwd(workDir)
             .quiet()
             .text(),

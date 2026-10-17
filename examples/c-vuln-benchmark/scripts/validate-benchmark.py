@@ -86,17 +86,30 @@ DETECTOR_TO_TYPE = {
     "uninit": "uninit",
 }
 
-# Every registered vuln type must appear here. A missing entry is SILENT — the
-# SARIF ruleId (a CWE string) falls through `CWE_TO_TYPE.get(rule, rule)` and the
-# findings of that type become unmatchable, so both recall and precision
-# measurements for it are quietly skipped. `--selftest` asserts coverage of every
-# `cwe` label in the ground truth for exactly this reason.
+# Every registered vuln type must appear here, and so must every CWE a type can
+# actually EMIT — a multi-CWE type emits the per-category CWE, not its canonical
+# one (injection: CWE-78/89/88/91/93/117; see planner.VulnTypeSpec.CategoryCWEs).
+# A missing entry is SILENT — the SARIF ruleId (a CWE string) falls through
+# `CWE_TO_TYPE.get(rule, rule)` and the findings of that type become unmatchable,
+# so both recall and precision measurements for it are quietly skipped. TP-02 was
+# a phantom FN for exactly this reason: the SQL-injection finding existed at the
+# right line, but CWE-89 was unmapped. `--selftest` asserts coverage of every
+# `cwe` label in the ground truth; `TestBenchmarkValidatorCWEMap` in
+# sgre/internal/planner asserts coverage of every planner.AllCWEs() value.
 CWE_TO_TYPE = {
     "CWE-476": "null-deref",
     "CWE-787": "buffer-overflow",
     "CWE-190": "integer-overflow",
     "CWE-327": "crypto-misuse",
+    "CWE-326": "crypto-misuse",
+    "CWE-338": "crypto-misuse",
+    "CWE-20": "implicit-contract",
     "CWE-78": "injection",
+    "CWE-89": "injection",
+    "CWE-88": "injection",
+    "CWE-91": "injection",
+    "CWE-93": "injection",
+    "CWE-117": "injection",
     "CWE-22": "path-traversal",
     "CWE-457": "uninit",
     "CWE-362": "race-condition",
@@ -268,6 +281,20 @@ def selftest():
         3,
     )
     check("same-type FP detected", fp[0]["verdict"], "FP")
+
+    # A multi-CWE type emits the per-category CWE as its SARIF ruleId. The
+    # injection type covers CWE-78/89/88/91/93/117, so a SQL-injection finding
+    # (CWE-89) must resolve to the same type as a command-injection one
+    # (CWE-78) — the TP-02 phantom-FN regression.
+    check("CWE-89 maps to injection", CWE_TO_TYPE.get("CWE-89"), "injection")
+    sql = evaluate(
+        [{"id": "T-sql", "file": "src/f.c", "line": 9,
+          "detector": "injection.command_injection", "expect": "finding"}],
+        [{"type": CWE_TO_TYPE.get("CWE-89", "CWE-89"), "file": "src/f.c", "line": 9,
+          "rule": "CWE-89", "level": "error"}],
+        3,
+    )
+    check("CWE-89 finding matches an injection case", sql[0]["verdict"], "PASS")
 
     # Ground-truth coverage: every `detector` AND every `cwe` label must be
     # mapped. A missing CWE entry is invisible at runtime (the ruleId falls

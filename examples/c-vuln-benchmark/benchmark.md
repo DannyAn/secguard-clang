@@ -251,11 +251,16 @@ python3 scripts/validate-benchmark.py --coverage   # 每个类型的 finding/no_
 python3 scripts/validate-benchmark.py --selftest   # 校验 detector/cwe → 类型映射是否完整
 ```
 
-`--coverage` 按注册类型（`CWE_TO_TYPE` 的 24 个值）逐类统计 ground truth，标出
+`--coverage` 按注册类型（`CWE_TO_TYPE` 的 25 个值）逐类统计 ground truth，标出
 「一个用例都没有」与「有 finding 但缺 no_finding 守卫」两种缺口；前者是硬失败
 （退出码 1），后者只告警。`--selftest` 会断言 ground truth 里的每个 `detector` 标签
 **和每个 `cwe` 标签**都已映射 —— `cwe` 覆盖曾经是个静默缺口：SARIF 的 `ruleId` 是 CWE
 字符串，缺一条映射该类型的 finding 就不再参与比对，召回和精度会同时被悄悄跳过而不报错。
+注意 ground truth 的 `cwe` 标签只是**用例声称的** CWE；流水线实际能发出的 ruleId 是
+`planner.AllCWEs()`（含 `CategoryCWEs`/`LegacyCWEs`，如 injection 的 CWE-89、crypto 的
+CWE-326/338），所以 `CWE_TO_TYPE` 必须覆盖整个 `AllCWEs()` 集合 ——
+`TestBenchmarkValidatorCWEMap`（`sgre/internal/planner`）会对照 Go 侧的权威清单，
+漏一条即构建失败。
 
 **校验口径（为什么不是单纯的「(文件, 行) 相等」）：**
 

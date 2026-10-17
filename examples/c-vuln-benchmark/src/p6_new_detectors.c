@@ -64,7 +64,7 @@ void tn_path_literal(void) {
 /* ---- sizeof-misuse (CWE-467/468) ---- */
 
 void tp_sizeof_pointer(int n) {
-    char **p = malloc(n * sizeof(p)); /* finding: sizeof pointer var */
+    char *p = malloc(n * sizeof(p)); /* finding: single-level pointer, sizeof(p) is the pointer width */
     free(p);
 }
 

@@ -230,7 +230,7 @@ export default tool({
       )
     }
 
-    const result = await withTimeout(Bun.$`${secguardBin} report --db ${dbPath}`
+    const result = await withTimeout(Bun.$`${secguardBin} report --db ${dbPath} --list`
       .cwd(workDir)
       .quiet()
       .text(), 30_000, "secguard report (read)")

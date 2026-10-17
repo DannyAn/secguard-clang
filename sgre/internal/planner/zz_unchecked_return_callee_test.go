@@ -98,6 +98,11 @@ void handle_ext(const char *s) {
 	if !strings.HasSuffix(inScan.CalleeDefFile, "pool.c") || inScan.CalleeDefLine == 0 {
 		t.Errorf("in-scan callee: CalleeDefFile/Line = %q/%d, want pool.c:<def line>", inScan.CalleeDefFile, inScan.CalleeDefLine)
 	}
+	// The report embeds the callee body from this span; without EndLine it can
+	// only show a fixed window. The function index knows the exact extent.
+	if inScan.CalleeDefEndLine <= inScan.CalleeDefLine {
+		t.Errorf("in-scan callee: CalleeDefEndLine = %d, want > CalleeDefLine (%d) so the body can be embedded", inScan.CalleeDefEndLine, inScan.CalleeDefLine)
+	}
 	if !strings.Contains(inScan.Hint, "callee@pool.c:") {
 		t.Errorf("in-scan callee: Hint %q must carry callee@pool.c:<line>", inScan.Hint)
 	}

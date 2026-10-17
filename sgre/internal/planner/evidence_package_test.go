@@ -36,6 +36,9 @@ func TestBuildHint(t *testing.T) {
 		{"unchecked-return contract unknown", Candidate{ContractKnown: false, APIName: "my_alloc", Category: "unchecked_return"}, &VulnTypeSpec{Name: "unchecked-return"}, "contract@unknown api@my_alloc cat@unchecked_return"},
 		{"unchecked-return contract unknown with callee def", Candidate{ContractKnown: false, APIName: "obj_pool_new", Category: "unchecked_return", CalleeDefFile: "/srv/app/pool.c", CalleeDefLine: 42}, &VulnTypeSpec{Name: "unchecked-return"}, "contract@unknown callee@pool.c:42 api@obj_pool_new cat@unchecked_return"},
 		{"unchecked-return contract known ignores callee def", Candidate{ContractKnown: true, APIName: "obj_pool_new", Category: "unchecked_return", CalleeDefFile: "/srv/app/pool.c", CalleeDefLine: 42}, &VulnTypeSpec{Name: "unchecked-return"}, "contract@known api@obj_pool_new cat@unchecked_return"},
+		{"race shared data race", Candidate{Category: "shared_data_race", ThreadFunctions: "thread_race", ThreadInstances: 2, WriteLine: 15}, &VulnTypeSpec{Name: "race-condition"}, "threads@thread_race instances@2 write@15 cat@shared_data_race"},
+		{"race toctou shared state", Candidate{Category: "toctou_shared_state", Mutex: "g_mutex", LockLine: 42, UnlockLine: 44}, &VulnTypeSpec{Name: "race-condition"}, "mutex@g_mutex lock@42-44 cat@toctou_shared_state"},
+		{"race toctou", Candidate{Category: "toctou", CheckFunction: "access", UseFunction: "fopen", CheckPathArg: "path"}, &VulnTypeSpec{Name: "race-condition"}, "check@access→use@fopen arg@path cat@toctou"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

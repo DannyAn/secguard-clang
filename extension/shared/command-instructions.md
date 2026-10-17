@@ -181,6 +181,7 @@ security scan and reading them makes the verdicts worthless. The scan dir
 | `MAXTURNS_SAFETY_RATIO` | 0.9 | Use only 90% of maxTurns as the budget |
 | `PER_TYPE_FIXED_TURNS` | 6 | Fixed per-type overhead (skill load + `_index.md` read + write + complete-type) |
 | `PER_CANDIDATE_TURNS` | 0.8 | Avg turns per candidate (most settle from `Source`+`Hint`; ~20% need one `Evidence` open) |
+| `PER_AUTO_CONFIRMED_TURNS` | 0.3 | Avg turns per auto-confirmed re-review entry (batch paged list + no findings write, cheaper than a candidate) |
 | `LARGE_CANDIDATE_THRESHOLD` | 100 | Types with > this many candidates get a dedicated subagent |
 | `SPLIT_CANDIDATE_THRESHOLD` | 100 | A type with > this many candidates is SPLIT across multiple subagents, each handling ≤ this many candidates |
 
@@ -193,7 +194,7 @@ as part of `release/build-packages.sh`.
 - If a batch has > `MAX_TYPES_PER_BATCH` (4) types, the orchestrator SHALL split it before dispatching.
 - Where a single type has > `LARGE_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL assign that type its own dedicated subagent.
 - Where a single type has > `SPLIT_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL split it into MULTIPLE subagents, each handling a ≤100-candidate RANGE of that type (pass the candidate # range, e.g. "candidates #1–100 of null-deref"), so no single subagent's context window is exceeded. The 100-candidate cap is a CONTEXT ceiling (not a turn ceiling): before the Hint column + Code Context compression, a suspected-heavy range opened an `Evidence` file per suspected candidate and a 100-candidate range could exhaust a 200K context before the tail; with `Source`+`Hint` classification and a ±8 Code Context window the same budget now carries ~2× more, so 100 is the test point — if a super-large function still overflows, the tail is surfaced via the partial-count path, never silently buried.
-- The orchestrator SHALL estimate a batch's cost on BOTH axes (type count AND candidate count) — a type-count-only check lets 4 small-types-sounding batches hide a heavy candidate load and overflow the subagent before the tail (the 0.9.4 race-condition omission: 4 types × 12 = 48 < 54 passed, but 86 candidates + 4 skill loads exhausted the window). Compute `estimated_turns = batch_type_count × PER_TYPE_FIXED_TURNS + batch_candidate_count × PER_CANDIDATE_TURNS`; if `estimated_turns ≥ MAXTURNS × MAXTURNS_SAFETY_RATIO` (54), the orchestrator SHALL reject the batch as over-budget and split it (split off the heaviest type first, then re-check). `batch_candidate_count` is the SUM of the batch's per-type candidate counts.
+- The orchestrator SHALL estimate a batch's cost on BOTH axes (type count AND candidate count) — a type-count-only check lets 4 small-types-sounding batches hide a heavy candidate load and overflow the subagent before the tail (the 0.9.4 race-condition omission: 4 types × 12 = 48 < 54 passed, but 86 candidates + 4 skill loads exhausted the window). Compute `estimated_turns = batch_type_count × PER_TYPE_FIXED_TURNS + batch_candidate_count × PER_CANDIDATE_TURNS + batch_auto_confirmed_count × PER_AUTO_CONFIRMED_TURNS`; if `estimated_turns ≥ MAXTURNS × MAXTURNS_SAFETY_RATIO` (54), the orchestrator SHALL reject the batch as over-budget and split it (split off the heaviest type first, then re-check). `batch_candidate_count` is the SUM of the batch's per-type candidate counts, and `batch_auto_confirmed_count` is the SUM of the batch's per-type `auto_confirmed_by_type` counts — a re-review-only batch (0 candidates, many auto-confirmed) is still real work and must not be budgeted as free.
 
 ## Full Scan Workflow
 
@@ -313,7 +314,7 @@ as `result.sarif`.)
      (matches the evidence) or dismiss (guarded/different) from the table itself.
      Do NOT read source or the candidate file. Batch all confirmed verdicts into
      one write call.
-   - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null`/`tainted`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`); for divide-by-zero a `divisor@bare` row is settled from `Source` alone (no evidence open). When the hint is insufficient, open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source) and, if STILL insufficient, a raw source read within the ≤5-read budget — then classify. Only after spending that budget may you write `dismissed` (with a cited reason); never write `dismissed` without reading when the hint was insufficient. A `macro-context` hint means a macro is in play — open the `## Code Context` and verify the macro before `confirmed`.
+   - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null`/`tainted`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`threads@<fn>`/`instances@N`/`write@N`/`mutex@<name>`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`arg@<expr>`); for divide-by-zero a `divisor@bare` row is settled from `Source` alone (no evidence open). When the hint is insufficient, open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source, and a `contract@unknown` unchecked-return candidate embeds its callee body under `## Callee Definition`) and, if STILL insufficient, a raw source read within the ≤5-read budget — then classify. Only after spending that budget may you write `dismissed` (with a cited reason); never write `dismissed` without reading when the hint was insufficient. A `macro-context` hint means a macro is in play — open the `## Code Context` and verify the macro before `confirmed`.
     Write **confirmed** findings in ONE batch: write `<tmpdir>/<type>.json`
     containing only confirmed findings with the Write tool, then
     `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
@@ -367,7 +368,7 @@ as `result.sarif`.)
    — do NOT re-run secguard_scan or secguard_plan. The source is already embedded:
    `_index.md` has a `Source` column per candidate (the exact statement), a `Hint`
    column (the pipeline's precomputed verdict facts: `src@N`/`certain-null`/
-   `maybe-null`/`tainted`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`), plus an `Evidence` column naming the exact
+   `maybe-null`/`tainted`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`threads@<fn>`/`write@N`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`), plus an `Evidence` column naming the exact
    candidate file, and each candidate file has a `## Code Context` block — do NOT
    issue per-candidate source READs (that is the tens-of-minutes cost). Read ONLY
    your type's `_index.md`, never the whole report.md.
@@ -384,6 +385,9 @@ as `result.sarif`.)
       = definitely null, `maybe-null` = possibly null, `tainted` = injection source,
       `weak-guard` = partial guard, `certain-uninit`/`maybe-uninit` = uninit tier,
       `api@<name>` = the API in play, `cat@<name>` = the detector category,
+      `contract@known`/`contract@unknown` = unchecked-return callee contract,
+      `threads@<fn>`/`write@N` = shared-data race, `lock@<lo>-<hi>` = TOCTOU
+      critical section, `check@<fn>→use@<fn>` = TOCTOU check/use pair,
       `macro-context` = a function-like macro is in play — verify it before
       confirming). For
       divide-by-zero, `Hint` is `divisor@<shape>`
@@ -411,6 +415,10 @@ as `result.sarif`.)
     `Hint` names (the free / guard / return / source line) via offset/limit —
     never paste the whole function, which is both unfocused and what actually
     overflows the window. Read a big function MORE carefully, never less.
+    A `contract@unknown` unchecked-return candidate also carries a
+    `## Callee Definition` section with the callee's body (in-scan callees only):
+    judge the failure sentinel there — do NOT spend a source read on a body the
+    evidence already shows.
     Derive the DB and the write dir from <scan_dir> (ABSOLUTE, never relative):
     - DB:  <scan_dir>/../../.sgre/sgre.db
     - tmp: <scan_dir>/../../.sgre/.tmp/
@@ -452,19 +460,41 @@ as `result.sarif`.)
     **dismissed 不持久化，`final_count − confirmed` 不是漏写:** dismissed candidates are intentionally NOT persisted (no finding row, no count). When `ai_stage_status='done'` for a type, the AI has processed all candidates — the `final_count − confirmed` gap is the dismissed count, which is normal, not a missing write. When `ai_stage_status='pending'` the type is in-progress (reported by `status --per-type`, not as unclassified). Because `--write-json` UPSERTs keyed on `(scan_id, rule_id, file, line, function, variable)`, candidates for the SAME variable at the SAME file:line:function collapse into ONE finding. Do NOT inspect the schema or raw-query `findings` to "persist" dismissed; trust `secguard status --per-type --scan-id <id>` (`written_count`/`terminal_state`/`ai_stage_status`) instead.
    If you MUST raw-query, run `secguard schema <table>` first, or use these exact names — never guess:
     - `findings`: `id, rule_id (CWE, e.g. CWE-476 — there is NO type/vuln_type column), severity, status (confirmed|auto-confirmed for new scans; legacy dismissed/suspected rows tolerated but ignored), file_path (NOT file), line_number (NOT line), function_name, scan_id, review_status`
+      **终报/问题表查询必须过滤 `review_status`:** a re-reviewed auto-confirmed
+      finding that was dismissed keeps its row (`status='auto-confirmed'` +
+      `review_status='dismissed'`), so a raw `SELECT ... FROM findings` counts it
+      as still-present even though it is suppressed. Any final-total query must add
+      `AND (review_status IS NULL OR review_status NOT IN ('dismissed'))` — or use
+      `report --list --status confirmed` (which already applies the
+      `EffectiveStatus` verdict) instead of raw SQL.
     - `scan_stats`: `scan_id, vuln_type (kebab-case type name), seed_count, final_count, ai_stage_status (pending|done|failed)`
 
    **上报解析与 DB 二次校验 (F5):** For each subagent result, parse by `format_version`
-   to know which types it was ASSIGNED, but do NOT trust its self-reported `reason`
-   — the LLM misreports (e.g. a Bash-permission misjudgment reported as
-   `api-quota-exhausted`). The DB is the SOLE authority. For EVERY assigned type,
-   run `secguard status --per-type --scan-id <scan_id>` and decide by per-type
-   `candidate_count` + `written_count` (NOT the raw `findings` count, which cannot
-   tell "no candidates" from "candidates but never written"):
+   to know which types it was ASSIGNED, which it reports as FINISHED
+   (`processed_types`), and which it reports as ABANDONED (`failed_types`, with a
+   `reason`). Do NOT trust the self-reported `reason` or counts — the LLM
+   misreports (e.g. a Bash-permission misjudgment reported as
+   `api-quota-exhausted`, or dismissed candidates counted into `written`). The DB
+   is the SOLE authority for "did data land"; the subagent's processed/failed
+   split is the only signal for "did it FINISH", because **dismissed candidates
+   are NOT persisted — `written_count < candidate_count` is NORMAL whenever
+   anything was dismissed, never a missing write by itself.** For EVERY assigned
+   type, run `secguard status --per-type --scan-id <scan_id>` and decide by
+   `terminal_state` (the authoritative signal) + `candidate_count` + `written_count`
+   (NOT the raw `findings` count, which cannot tell "no candidates" from
+   "candidates but never written"):
    - `candidate_count == 0` → the type had nothing to classify → `done` (success), NEVER failed.
-   - `candidate_count > 0 && written_count >= candidate_count` → full success (every candidate classified).
-   - `candidate_count > 0 && 0 < written_count < candidate_count` → PARTIAL (context-overflow): `candidate_count - written_count` candidates were never written. Surface the gap in the 观察项表 (`| <type> | context-overflow 未落库 N 条 |`), do NOT re-dispatch, then continue.
-   - `candidate_count > 0 && written_count == 0` → FAILED with `reason: "empty-output"` (data did NOT land), regardless of the subagent's reported reason.
+   - Subagent reports the type FINISHED (`processed_types`) → run `--complete-type`
+     for it FIRST (the orchestrator's step, below), then re-read `terminal_state`:
+     `done` = full success — the `candidate_count − written_count` gap is the
+     DISMISSED count (normal, not persisted). NEVER judge this PARTIAL.
+   - Subagent reports the type ABANDONED (`failed_types`), or never reports it
+     finished → decide by DB `written_count`:
+       - `written_count == 0` → FAILED with `reason: "empty-output"` (data did NOT
+         land), regardless of the subagent's self-reported reason.
+       - `written_count > 0` → PARTIAL (context-overflow): `candidate_count −
+         written_count` candidates were never written. Surface the gap in the
+         观察项表 (`| <type> | context-overflow 未落库 N 条 |`), do NOT re-dispatch.
 
    **失败降级决策 (F1):** For each FAILED type (`candidate_count > 0 && written_count == 0`):
    - **Recover by re-dispatch first, not by sequential self-classification.** A `written_count == 0` type was almost always NEVER STARTED (a sibling type overflowed the subagent's context before it was reached), so its candidates are untouched. Dispatch ONE fresh single-type subagent per leftover type (single type, FULL candidate range) in a single turn — a fresh subagent has a full context window and will not overflow — then re-run the F5 DB check for that type before proceeding. **Do NOT fall back to classifying the leftover types yourself in sequence** — that serial loop is the 3–5-minute wall-clock cost this rule removes. (Guard: a type whose `terminal_state` is already `done` but `written_count == 0` means "all candidates dismissed", which is SUCCESS, not a leftover — do not re-dispatch it.)
@@ -489,19 +519,29 @@ as `result.sarif`.)
       contract (agent-body) makes this checkable: a valid dismissed reason always
       cites the file:line-range or Evidence file it read.
     If the transcript/`scan.log` is unavailable, log warning and skip (do not block finalize).
+    On OpenCode the orchestrator cannot see a subagent's INTERNAL tool calls (the
+    `task` return is only the subagent's final message), so F6 there degrades to
+    the subagent's self-reported `source_reads`/`evidence_opens` counts (see the
+    Structured Report Protocol in agent-body): mark any type whose self-report
+    exceeds the budget (`source_reads > 5` or a dismissed-without-read pattern) in
+    the 观察项表 as "读源审计受限（无 transcript）" rather than claiming a verified
+    audit. Do not treat the missing transcript as proof of compliance.
 
     After you have verified the subagent writes against the DB and before the
     final audit, run `secguard report --complete-type <type> --scan-id <scan_id>
-    --db <db_path>` for every dispatched type whose candidates were classified.
-    This is the ORCHESTRATOR's step (OpenCode / OpenCode-NGA subagents have no
-    Bash and cannot do it themselves); skipping it leaves the type's
-    `ai_stage_status` as `pending` even though its findings landed.
+    --db <db_path>` for every type the subagent reported FINISHED
+    (`processed_types`). This is the ORCHESTRATOR's step — a single writer of
+    `ai_stage_status` keeps the terminal state authoritative (subagents MUST NOT
+    call it themselves, per step 4); skipping it leaves the type's
+    `ai_stage_status` as `pending`, which F5 would then misread as incomplete. A
+    type the subagent reported ABANDONED (`failed_types`) is NOT marked complete
+    — it goes through the F5 FAILED/PARTIAL branch instead.
 
     **Auto-confirmed 二次复核（复用 subagent 的 skill，不是外部 AI provider）:** the
     subagents re-review their own type's machine auto-confirmed findings as part of
     their per-type loop (see agent-body "Re-review auto-confirmed findings"), via
     `secguard report --list-auto-confirmed` / `--review-json` (Bash host) or the
-    `secguard_review` MCP tool (OpenCode-NGA, no Bash). A `dismissed` verdict
+    `secguard_review` MCP tool (OpenCode). A `dismissed` verdict
     suppresses the machine false positive. Before the audit, VERIFY the subagents
     actually did it: `secguard report --list-auto-confirmed --scan-id <scan_id>
     --db <db_path>` should return `count: 0` (every auto-confirmed finding got a
@@ -603,6 +643,9 @@ Report the diagnostic conclusion in Chinese, Markdown tables only:
 3. 总览表: `| Skill | 类别 | 确认 | 已排除 |`，末行加 `| **合计** | | **<X>** | **<D>** |`（数字须与第 2 段摘要完全一致）
 4. 问题表: `| Skill | 文件:行号 | 函数 | 严重度 | 结论 | 说明 |` (confirmed only)
 5. 观察项表 (if some types were not persisted): `| Skill | 说明 |`
+   **异常必须对用户可见：** 任何空回（`state=completed` 且 `task_result` 为空）、
+   整波重派、或 `failed_types` 重派事件都必须在观察项表里各占一行（类型 + 发生了什么 +
+   是否已恢复），不得静默吸收——重派占掉的墙钟（第二波 turn）用户有权知道。
 6. 缺失类型章节 (only when types were not successfully processed — F1): a table
    `| 类型 | 候选数 | 失败原因 |` listing every missing-type, with 失败原因 from
    the enum below. This section is MANDATORY when any type was not classified —

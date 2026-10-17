@@ -225,6 +225,17 @@ func SourceLineText(filePath string, line int, roots ...string) string {
 	return sourceLineText(filePath, line, roots...)
 }
 
+// SourceWindowText renders a gutter-numbered ±ctx source window for one line.
+// The re-review listing (`report --list-auto-confirmed`) uses it instead of the
+// single-line SourceLineText: a machine finding's false-positive judgment
+// ("the result IS checked", "the buffer is never used") needs the statement's
+// neighbours, and a one-line snippet forces a source READ per re-review — the
+// per-candidate cost the snippet exists to avoid. Reuses the same file cache.
+// Returns "" when the window is disabled (ctx <= 0) or the file cannot be read.
+func SourceWindowText(filePath string, line, ctx int, roots ...string) string {
+	return readCodeContext(filePath, line, ctx, roots...).render()
+}
+
 // sourceLineText returns the trimmed text of a single source line, so the
 // candidate-stage report can embed the exact dereference/access statement next
 // to each candidate. Embedding it there lets the AI classifier verify the

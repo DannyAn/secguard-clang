@@ -288,14 +288,15 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 	return result, nil
 }
 
-// resolveCalleeDefs fills CalleeDefFile/CalleeDefLine/CalleeDefSignature on
-// unchecked-return candidates by joining the callee name (APIName) against the
-// function index. contract@unknown candidates put the burden of proof on the
-// classifier ("prove the callee returns a failure sentinel or dismiss"), and
-// the callee is frequently a static factory defined in ANOTHER file — without
-// a file:line the classifier burns its source-READ budget locating a body the
-// index already knows. A batch ListFunctions failure fails the type (same
-// fail-fast as the seed lookups); a callee simply missing from the index is
+// resolveCalleeDefs fills CalleeDefFile/CalleeDefLine/CalleeDefEndLine/
+// CalleeDefSignature on unchecked-return candidates by joining the callee name
+// (APIName) against the function index. contract@unknown candidates put the
+// burden of proof on the classifier ("prove the callee returns a failure
+// sentinel or dismiss"), and the callee is frequently a static factory defined
+// in ANOTHER file — the report embeds the StartLine..EndLine body under
+// ## Callee Definition so the classifier never burns its source-READ budget on a
+// body the index already knows. A batch ListFunctions failure fails the type
+// (same fail-fast as the seed lookups); a callee simply missing from the index is
 // legitimate (external/library function) and leaves the fields zero.
 func (p *Planner) resolveCalleeDefs(ctx context.Context, candidates []Candidate, filePathByID map[int64]string) error {
 	funcs, err := p.store.ListFunctions(ctx)
@@ -319,6 +320,7 @@ func (p *Planner) resolveCalleeDefs(ctx context.Context, candidates []Candidate,
 		}
 		c.CalleeDefFile = filePathByID[fn.FileID]
 		c.CalleeDefLine = fn.StartLine
+		c.CalleeDefEndLine = fn.EndLine
 		c.CalleeDefSignature = fn.Signature
 	}
 	return nil

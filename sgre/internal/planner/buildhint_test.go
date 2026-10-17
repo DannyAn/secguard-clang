@@ -29,6 +29,10 @@ func TestBuildHintNeverEmpty(t *testing.T) {
 		{"integer-overflow lhs influenced", "integer-overflow", Candidate{Category: "unsigned_sub_underflow", LHSKind: "param", SubLHSInfluenced: true}, "lhs-influenced"},
 		{"crypto category", "crypto-misuse", Candidate{Category: "weak_algorithm"}, "cat@weak_algorithm"},
 		{"format-string api", "format-string", Candidate{APIName: "printf"}, "api@printf"},
+		{"race shared data race threads", "race-condition", Candidate{Category: "shared_data_race", ThreadFunctions: "thread_race"}, "threads@thread_race"},
+		{"race shared data race write", "race-condition", Candidate{Category: "shared_data_race", WriteLine: 15}, "write@15"},
+		{"race toctou shared state lock range", "race-condition", Candidate{Category: "toctou_shared_state", Mutex: "g_mutex", LockLine: 42, UnlockLine: 44}, "lock@42-44"},
+		{"race toctou check/use pair", "race-condition", Candidate{Category: "toctou", CheckFunction: "access", UseFunction: "fopen", CheckPathArg: "path"}, "check@access→use@fopen"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -99,8 +99,10 @@ void deref_not_guard(int n) {
     free(p);
 }
 
-/* No check at all. */
+/* No check at all: the allocation is dereferenced. (A pointer whose only use is
+ * free(p) is deliberately NOT reported — free(NULL) is a no-op.) */
 void no_check_unsafe(int n) {
     filter_t *filter = malloc(n);
+    filter->count = n;
     free(filter);
 }

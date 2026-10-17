@@ -55,14 +55,16 @@ type EvidenceItem struct {
 	// so it must not be confirmed without evidence that the callee returns a
 	// failure sentinel. Empty for every other vuln type.
 	Contract string `json:"contract,omitempty"`
-	// CalleeDefFile/CalleeDefLine/CalleeDefSignature carry the unchecked-return
-	// callee's definition location for contract@unknown candidates: the
-	// classifier must prove the callee returns a failure sentinel, and the
-	// definition is frequently in ANOTHER file (static factory in pool.c called
-	// from server.c), so a file:line beats a source-READ search. Empty
+	// CalleeDefFile/CalleeDefLine/CalleeDefEndLine/CalleeDefSignature carry the
+	// unchecked-return callee's definition location and body span for
+	// contract@unknown candidates: the classifier must prove the callee returns
+	// a failure sentinel, and the definition is frequently in ANOTHER file
+	// (static factory in pool.c called from server.c), so the report embeds the
+	// body rather than sending the classifier on a source-READ search. Empty
 	// CalleeDefFile = no definition in the scan (external/library callee).
 	CalleeDefFile      string `json:"callee_def_file,omitempty"`
 	CalleeDefLine      int    `json:"callee_def_line,omitempty"`
+	CalleeDefEndLine   int    `json:"callee_def_end_line,omitempty"`
 	CalleeDefSignature string `json:"callee_def_signature,omitempty"`
 	// DivisorInterval renders the range engine's tighter-than-top interval
 	// for a divide-by-zero divisor it could not clear (contains 0), e.g.
@@ -231,6 +233,41 @@ func buildHint(c Candidate, spec *VulnTypeSpec) string {
 			if c.FirstFree > 0 && c.SecondFree > 0 {
 				parts = append(parts, fmt.Sprintf("free@%d,%d", c.FirstFree, c.SecondFree))
 			}
+		case "race-condition":
+			// BuildEvidence already computed these facts; without them in the
+			// Hint every race candidate needed an Evidence-file open just to
+			// learn who races / where the lock ends. Each sub-shape carries the
+			// pair that settles it:
+			//   shared_data_race    -> threads@<fn> (+ instances@N, write@N)
+			//   toctou_shared_state -> mutex@<name> lock@<lo>-<hi> (state write
+			//                          at the candidate line is outside it)
+			//   toctou              -> check@<fn>→use@<fn> arg@<expr>
+			switch c.Category {
+			case "shared_data_race":
+				if c.ThreadFunctions != "" {
+					parts = append(parts, "threads@"+c.ThreadFunctions)
+				}
+				if c.ThreadInstances > 0 {
+					parts = append(parts, fmt.Sprintf("instances@%d", c.ThreadInstances))
+				}
+				if c.WriteLine > 0 {
+					parts = append(parts, fmt.Sprintf("write@%d", c.WriteLine))
+				}
+			case "toctou_shared_state":
+				if c.Mutex != "" {
+					parts = append(parts, "mutex@"+c.Mutex)
+				}
+				if c.LockLine > 0 && c.UnlockLine > 0 {
+					parts = append(parts, fmt.Sprintf("lock@%d-%d", c.LockLine, c.UnlockLine))
+				}
+			case "toctou":
+				if c.CheckFunction != "" && c.UseFunction != "" {
+					parts = append(parts, "check@"+c.CheckFunction+"→use@"+c.UseFunction)
+				}
+				if c.CheckPathArg != "" {
+					parts = append(parts, "arg@"+c.CheckPathArg)
+				}
+			}
 		}
 	}
 	// api@/cat@ sit RIGHT after the type-specific tokens (not at the tail):
@@ -291,6 +328,7 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 
 		CalleeDefFile:      c.CalleeDefFile,
 		CalleeDefLine:      c.CalleeDefLine,
+		CalleeDefEndLine:   c.CalleeDefEndLine,
 		CalleeDefSignature: c.CalleeDefSignature,
 
 		DivisorInterval: c.DivisorInterval,

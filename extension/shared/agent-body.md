@@ -219,9 +219,9 @@ field (it is not a valid status and rejects the whole batch).
 Write ONE batch per type (all of that type's findings in one call), passing
 `scan_id` — without it the verdict cannot be attached to the scan. **Persist via
 the `secguard_report` MCP tool if it is in your toolset (preferred — it runs in
-the host environment with the binary on PATH, and on OpenCode-NGA your Bash tool
-is not available at all).** Only on a shell-only host without the MCP tool, fall
-back to Bash:
+the host environment with the binary on PATH and passes arguments as structured
+fields, avoiding shell-quoting pitfalls).** Only on a shell-only host without the
+MCP tool, fall back to Bash:
 
 1. Write the JSON array to `<tmpdir>/<type>.json` with the Write/Edit tool
    (escape every inner `"` as `\"` and every `\` as `\\`).
@@ -341,14 +341,17 @@ machine auto-confirmed finding. This is the only path a 0-candidate type needs.
 
 1. List them — via Bash `secguard report --list-auto-confirmed --scan-id <scan_id>
    --type <type> --db <db_path>`, or the `secguard_review` MCP tool
-   (`list_auto_confirmed: true, type: <type>`) when you have it (OpenCode-NGA has
-   no Bash). → a `findings` array (`id` / `rule_id` / `file` / `line` /
-   `function` / `variable` / `reasoning` / `snippet`). If the set is large, pull
-   it in pages with `--limit <n>` (e.g. 50) so a single tool return never
-   overflows your context; re-list until `count: 0`.
+   (`list_auto_confirmed: true, type: <type>`) when you have it. → a `findings`
+   array (`id` / `rule_id` / `file` / `line` /
+   `function` / `variable` / `reasoning` / `snippet` / `context`). If the set is
+   large, pull it in pages with `--limit <n>` (e.g. 50) so a single tool return
+   never overflows your context; re-list until `count: 0`.
 2. For each entry, apply the skill's false-positive rules against `reasoning` +
-   `snippet` (open the source line only when the snippet is insufficient — this is
-   a cheap table review, do NOT spend the ≤5 source-read budget here).
+   `context` — a gutter-numbered ±8-line window (> marks the finding line) that
+   shows the guard / return / neighbouring use which settles the machine verdict.
+   `snippet` is the single finding line when you only need the statement. Read the
+   source file only when the window is genuinely insufficient — this is a cheap
+   table review, do NOT spend the ≤5 source-read budget here.
 3. Write your verdicts in ONE batch — via Bash
    `secguard report --review-json <tmpfile> --db <db_path>` as
    `[{"id": <id>, "review_status": "confirmed"|"dismissed", "review_reasoning": "..."}]`,
@@ -376,8 +379,8 @@ budget.
   user (`result.sarif`, `result.xlsx`, `report.md`, `findings/`).
 - `dismissed` → everything else: a false positive (a guard, a `_s` safe call, a
   checked allocation, a call contract that proves safety) OR a candidate you
-  could not settle after reading its source. Recorded in the DB with your
-  reasoning (never shown to the user).
+  could not settle after reading its source. NOT persisted — your reasoning stays
+  in your transcript (the conversation record), never shown to the user.
 
 **Every `dismissed` must cite its evidence — this is what makes "did you actually
 analyze" checkable.** A `dismissed` reason names the specific evidence: the guard /
@@ -425,7 +428,7 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
   "subagent_id": "<your id>",
   "scan_id": "<scan_id>",
   "processed_types": [
-    {"type": "null-deref", "cwe": "CWE-476", "written": 1149, "confirmed": 3, "dismissed": 1146}
+    {"type": "null-deref", "cwe": "CWE-476", "written": 3, "re_reviewed": 0, "dismissed": 1146, "source_reads": 1, "evidence_opens": 2}
   ],
   "failed_types": [
     {"type": "buffer-overflow", "reason": "api-quota-exhausted"}
@@ -439,8 +442,20 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
   `reason: "empty-output"` for every assigned type.
 - `reason` enum: `api-quota-exhausted` | `maxturns-exceeded` | `context-overflow` |
   `write-busy` | `empty-output` | `unknown`.
-- `written` = total findings persisted (confirmed + dismissed) for that type;
-  `confirmed`/`dismissed` are the verdict breakdown.
+- `written` = the number of CONFIRMED findings you PERSISTED (dismissed
+  candidates are NOT persisted, so they are NOT part of `written`).
+- `re_reviewed` = the number of auto-confirmed findings you re-reviewed via
+  `--list-auto-confirmed` + `--review-json` (they already exist in the DB; they
+  are NOT part of `written`).
+- `dismissed` = the number of candidates you judged dismissed (NOT persisted,
+  NOT part of `written`). Never mix auto-confirmed re-review or dismissed
+  candidates into `written` — the orchestrator reconciles `written` against the
+  DB's per-type `written_count`, and a conflated number forces it to re-derive
+  your real progress.
+- `source_reads` / `evidence_opens` = the counts of raw source reads and
+  `Evidence` file opens you actually performed for the type. These are the
+  orchestrator's only F6 read-source audit signal on hosts without subagent
+  transcripts — report them honestly (≤5 source reads per type is the budget).
 - Your counts are PER ASSIGNED TYPE only. Never state a scan-wide total
   (`本轮扫描发现 N 个问题`) — that aggregate is the orchestrator's, taken from
   `report --audit`'s `summary` field so it matches report.md exactly. A

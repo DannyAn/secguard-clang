@@ -320,6 +320,25 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 					} else {
 						b.WriteString("- **Callee definition:** none in scan — the callee is external/library; prove its contract from API knowledge or dismiss\n\n")
 					}
+					// The proof burden is "does this callee return a failure
+					// sentinel?", and every in-scan callee already has a body the
+					// index located. Embedding it turns a source READ (a large
+					// share of the classifier's read budget on this type) into
+					// an in-file judgment.
+					if c.CalleeDefFile != "" {
+						if ctx := calleeDefContext(c, o.RootDir); ctx != nil {
+							b.WriteString("## Callee Definition\n\n")
+							fmt.Fprintf(&b, "`%s:%d-%d` — the unchecked callee's body. Judge the failure sentinel from this body; no source read is needed.\n\n", displayPath(c.CalleeDefFile, o.RootDir), ctx.StartLine, ctx.EndLine)
+							b.WriteString(ctx.render())
+							if c.CalleeDefEndLine > ctx.EndLine {
+								fmt.Fprintf(&b, "\nBody truncated at line %d of %d — the callee continues past this window.\n", ctx.EndLine, c.CalleeDefEndLine)
+							}
+							b.WriteString("\n")
+						} else {
+							b.WriteString("## Callee Definition\n\n")
+							fmt.Fprintf(&b, "- Body unavailable at report time: `%s:%d` could not be read (file changed or moved since the scan?).\n- The callee is in the scan; read that location only if the signature above is insufficient.\n\n", displayPath(c.CalleeDefFile, o.RootDir), c.CalleeDefLine)
+						}
+					}
 				}
 			}
 
@@ -437,6 +456,31 @@ func isTaintVulnType(vulnType string) bool {
 	return vulnType == "injection" || vulnType == "format-string" || vulnType == "path-traversal"
 }
 
+// maxCalleeDefLines caps the embedded callee body. A callee proving (or
+// refuting) a NULL/-1/error sentinel is normally a short factory; the cap keeps
+// one giant callee from turning a candidate file into a source dump.
+const maxCalleeDefLines = 40
+
+// calleeDefContext resolves the unchecked-return callee's definition body for
+// embedding. The function index gives the exact span (StartLine-EndLine), so the
+// body is usually complete; an unknown end line falls back to a bounded window
+// from the definition's first line. A nil result means the file cannot be read
+// at report time, and the caller degrades to the location pointer.
+func calleeDefContext(c planner.EvidenceItem, rootDir string) *codeContext {
+	start := c.CalleeDefLine
+	if start <= 0 {
+		return nil
+	}
+	end := c.CalleeDefEndLine
+	if end < start {
+		end = start + maxCalleeDefLines - 1
+	}
+	if end-start+1 > maxCalleeDefLines {
+		end = start + maxCalleeDefLines - 1
+	}
+	return readCodeSpan(c.CalleeDefFile, start, end, start, rootDir)
+}
+
 // writeTypeIndex writes candidates/<vuln-type>/_index.md — the single table a
 // subagent reads to classify ONE type (the # column matches the NNN candidate
 // filenames, and the Source column carries the exact statement so the classifier
@@ -457,9 +501,14 @@ func (o *ScanOutput) writeTypeIndex(dir string, pkg *planner.PlanResult) error {
 		"> unchecked-return callee failure contract — `unknown` means the source is a\n" +
 		"> name heuristic only and you must prove the callee returns a failure sentinel\n" +
 		"> or dismiss; `callee@<file>:<line>` = that callee's definition location in\n" +
-		"> the scan; `divisor@<shape>` = divide-by-zero divisor shape,\n" +
+		"> the scan (its body is embedded in the candidate file's `## Callee Definition`);\n" +
+		"> `divisor@<shape>` = divide-by-zero divisor shape,\n" +
 		"> `certain-uninit`/`maybe-uninit` = uninit certainty, `locks@A|B` +\n" +
 		"> `reverse@<fn>` = deadlock lock pair and its reverse acquirer,\n" +
+		"> `threads@<fn>`/`instances@N`/`write@N` = race-condition shared-data race\n" +
+		"> (thread functions, instance count, conflicting write line),\n" +
+		"> `mutex@<name>`/`lock@<lo>-<hi>` = toctou_shared_state critical section,\n" +
+		"> `check@<fn>→use@<fn>`/`arg@<expr>` = TOCTOU check/use pair,\n" +
 		"> `free@N`/`free@N,M` = use-after-free/double-free free line(s); every type\n" +
 		"> also carries `api@<name>` (the callee) and `cat@<category>` when present).\n" +
 		"> Open the `Evidence`\n" +

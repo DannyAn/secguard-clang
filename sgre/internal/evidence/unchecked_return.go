@@ -223,6 +223,15 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 					if passthroughReturnVar(vars[0], call.StartLine(), f, returns, ids, checked) {
 						continue
 					}
+					// A pointer whose ONLY later use is `free(p)` has no
+					// unchecked-return defect: free(NULL) is a defined no-op, so
+					// an unnoticed failure cannot corrupt or crash anything. The
+					// classic false positive is `p = malloc(n); free(p);` (e.g.
+					// tp_sizeof_pointer), which used to reach the auto-confirmed
+					// tier as a confirmed CWE-252 finding.
+					if onlyFreedAfter(vars, call, f, ids) {
+						continue
+					}
 				}
 
 				if emitEvent(ctx, d.store, d.logger, "UNCHECKED_RETURN", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
@@ -936,6 +945,89 @@ func (d *UncheckedReturnDetector) funcSummaries(ctx context.Context) (*funcSumma
 		}
 	}
 	return &funcSummaries{passthrough: passthrough, nullRejectParams: nullReject}, nil
+}
+
+// nullSafeFreeCalls are deallocators for which NULL is a defined no-op, so an
+// unchecked allocation whose only consumer is one of them cannot misbehave.
+// A generic deallocator (`obj_destroy(p)`, `buf_cleanup(p)`) is deliberately NOT
+// here: it may dereference its argument, so passing a NULL allocation to it is a
+// real defect.
+var nullSafeFreeCalls = map[string]bool{"free": true, "cfree": true, "kfree": true}
+
+// onlyFreedAfter reports whether every use of the assigned pointer variables
+// after the allocation is a NULL-safe deallocation, with at least one such call.
+// `p = malloc(n); free(p);` is the classic false positive: free(NULL) is a
+// no-op, so the ignored failure cannot be observed (the round-2 benchmark's
+// tp_sizeof_pointer reached the auto-confirmed tier as a CWE-252 finding this
+// way). The allocation's own declarator/assignment is not a use. Any other
+// occurrence — dereference, field/subscript, sizeof, another call, a return —
+// disqualifies the suppression, so a macro that hides a dereference is not
+// swallowed.
+func onlyFreedAfter(vars []string, call parser.Node, f *db.Function, ids []parser.Node) bool {
+	targets := make(map[string]bool, len(vars))
+	for _, v := range vars {
+		// Only a bare identifier can be judged: `*p = malloc(n)` stores into a
+		// pointed-to location whose aliases this function cannot see.
+		if v == "" || strings.ContainsAny(v, ".[>*") {
+			return false
+		}
+		targets[v] = true
+	}
+	allocStmt := storeStatementOfCall(call)
+	freed := 0
+	for _, id := range ids {
+		if !targets[id.Text()] || !funcLineRange(f, id.StartLine()) || id.StartLine() < call.StartLine() {
+			continue
+		}
+		if allocStmt != nil && nodeContains(*allocStmt, id) {
+			continue
+		}
+		if !nullSafeFreedArg(id) {
+			return false
+		}
+		freed++
+	}
+	return freed > 0
+}
+
+// storeStatementOfCall returns the assignment/initializer whose right-hand side
+// is the call, so only that statement's own identifiers are exempted from the
+// use census. Nil when the call's value is not stored (a bare expression).
+func storeStatementOfCall(call parser.Node) *parser.Node {
+	for p := call.Parent(); p != nil; p = p.Parent() {
+		switch p.Kind() {
+		case "assignment_expression", "init_declarator":
+			return p
+		case "parenthesized_expression", "cast_expression", "binary_expression",
+			"argument_list", "call_expression", "field_expression", "subscript_expression":
+			continue
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
+// nullSafeFreedArg reports whether the identifier is passed directly (possibly
+// parenthesised/cast) as the argument of a NULL-safe deallocator. A member,
+// element, dereference or arithmetic argument is not the pointer itself, so it
+// does not count.
+func nullSafeFreedArg(id parser.Node) bool {
+	for p := id.Parent(); p != nil; p = p.Parent() {
+		switch p.Kind() {
+		case "parenthesized_expression", "cast_expression":
+			continue
+		case "argument_list":
+			call := p.Parent()
+			if call == nil || call.Kind() != "call_expression" {
+				return false
+			}
+			return nullSafeFreeCalls[extractCallName(*call)]
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // passthroughReturnVar reports whether variable v, assigned at assignLine in f,

@@ -337,10 +337,38 @@ def check_plugin_packaging():
     print("  plugin packaging: uniform namespace + shim templates + bundled-bin resolution")
 
 
+def check_tool_arg_passing():
+    """Guard the Bun.$ pre-joined-flag bug class.
+
+    Bun.$ does NOT word-split its ${...} interpolations, so a flag built as ONE
+    template literal with a leading space (` --type ${x}`) becomes ONE argv
+    element. The CLI's flag parser matches `--type` / `--type=` only, so the
+    leading-space element matches neither and the filter is silently dropped —
+    the caller gets an unfiltered dump instead of its own scoped page (the
+    secguard_review --type/--scan-id/--limit outage). Optional flags must be
+    pushed as separate array elements, never pre-joined into a string.
+    """
+    for fn in sorted(os.listdir(os.path.join(EXT, "opencode", "tools"))):
+        if not fn.endswith(".ts"):
+            continue
+        text = read(f"opencode/tools/{fn}")
+        for i, line in enumerate(text.splitlines(), 1):
+            if line.lstrip().startswith("//"):
+                continue
+            if re.search(r"[`\"][ ]--", line):
+                fail(
+                    f"opencode/tools/{fn}:{i}: flag string built with a leading space "
+                    f"(Bun.$ passes it as ONE argv element, silently dropping the filter); "
+                    f"push each optional flag as a separate array element"
+                )
+    print("  tool arg passing: no pre-joined leading-space flags in Bun.$ templates")
+
+
 def main():
     check_turn_budget()
     check_tools()
     check_agent_permissions()
+    check_tool_arg_passing()
     check_skills()
     check_dsh_preset()
     check_plugin_packaging()

@@ -136,9 +136,13 @@ Usage:
 Flags:
   --write-json <file>      Persist findings from a JSON array file (see below)
   --scan-id <id>           Scan ID to attach findings to
+  --list                   Read all findings from the DB (optional --status filter)
+  --status <s>             With --list: filter by effective verdict (confirmed | dismissed)
   --audit                  Regenerate report.md + result.sarif + result.xlsx + findings/ from DB
   --output-dir <dir>       Output directory for audit artifacts
   --list-auto-confirmed    List machine (auto-confirmed) findings with no review verdict yet
+                           (each entry carries reasoning, the one-line snippet, and a
+                           gutter-numbered ±8-line context window around the finding)
   --type <kebab,...>       With --list-auto-confirmed: scope the list to these vuln types
   --limit <n>              With --list-auto-confirmed: cap the batch size (0 = no cap)
   --review                 Review a single finding by id
@@ -168,7 +172,8 @@ Flags:
   batch exits non-zero; re-run --audit and check for unreviewed_auto_confirmed.
 
 Examples:
-  secguard report
+  secguard report --list
+  secguard report --list --status confirmed
   secguard report --write-json /tmp/buffer-overflow.json --scan-id sc_2026-08-23_130813_395bcb
   secguard report --list-auto-confirmed --scan-id sc_2026-08-23_130813_395bcb
   secguard report --review-json /tmp/auto-confirmed-review.json
