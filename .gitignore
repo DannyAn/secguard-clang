@@ -32,3 +32,8 @@ sgre/.tmpcache/
 # AI session transcripts / runtime artifacts (not source)
 examples/c-vuln-benchmark/session-*
 examples/c-vuln-benchmark/*-round*.txt
+# OS / runtime noise
+.DS_Store
+__pycache__/
+/output/
+examples/c-vuln-benchmark/*session*
