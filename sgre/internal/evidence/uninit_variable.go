@@ -1332,8 +1332,15 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 	// has no write on any path.
 	wholeInit := make(map[string]bool)         // varKey -> whole block initialized
 	initializedFields := make(map[string]bool) // scoped field path -> written
-	writePaths := make(map[string]bool)        // scoped field write-target paths
-	heapFieldWritten := make(map[string]bool)  // varKey -> has any member write
+	// contentInitFields records scoped field paths whose CONTENT is provably
+	// written (dest-writer copy `memcpy(p->f, ...)`, scalar member assignment
+	// `p->f = 0`). A pointer-only assignment `p->f = malloc(...)` defines the
+	// pointer value but leaves the pointed-to block uninitialized, so it is
+	// deliberately NOT recorded here: an element read `p->f[0]` right after a
+	// bare malloc stays a genuine uninitialized read.
+	contentInitFields := make(map[string]bool)
+	writePaths := make(map[string]bool)       // scoped field write-target paths
+	heapFieldWritten := make(map[string]bool) // varKey -> has any member write
 
 	markField := func(base, path string) {
 		initializedFields[path] = true
@@ -1388,6 +1395,14 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 			markField(key, scopedPath(key, base, lhs.Text()))
 			for _, p := range fieldWritePaths(lhs) {
 				writePaths[scopedPath(key, base, p)] = true
+			}
+			// A non-allocator field assignment (`p->f = 0`, `p->f = q`) writes
+			// the member content at field granularity, so it covers a later
+			// subscript read `p->f[i]` too. `p->f = malloc(...)` only defines
+			// the pointer value and must NOT cover it (UN-05 field shape). An
+			// element write `p->f[i] = x` stays element-granular (UN-15).
+			if lhs.Kind() == "field_expression" && !rhsAllocates(children[1]) {
+				contentInitFields[scopedPath(key, base, fieldPath(lhs))] = true
 			}
 		case "pointer_expression":
 			// `*p = other` writes the whole pointed-to object.
@@ -1444,7 +1459,14 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 				}
 			}
 		} else {
-			markField(key, scopedPath(key, base, path))
+			// A copy/init call writes the member's CONTENT at field granularity
+			// (`memcpy(p->f, ...)` fills the buffer the field points at), so it
+			// also covers a later subscript read `p->f[i]` — the element read
+			// used to key on the full subscript text and never matched this
+			// field-level write, so a memcpy-filled member was still reported.
+			scoped := scopedPath(key, base, path)
+			markField(key, scoped)
+			contentInitFields[scoped] = true
 		}
 	}
 
@@ -1544,9 +1566,15 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		if writePaths[path] {
 			continue
 		}
-		if !initializedFields[path] {
-			d.insertValueUseEventAt(ctx, f, file, sub.StartLine(), mallocVars[key], base, sub.Text(), "heap_uninit", result)
+		// An element read is covered either by an element-granular write
+		// (`p->f[i] = x`, exact key) or by a field-granular CONTENT write
+		// (`memcpy(p->f, ...)`, `p->f = 0`). A pointer-only assignment
+		// `p->f = malloc(...)` does not count: `p->f[0]` right after it reads
+		// uninitialized heap memory (UN-05 field shape).
+		if initializedFields[path] || contentInitFields[scopedPath(key, base, fieldPath(sub))] {
+			continue
 		}
+		d.insertValueUseEventAt(ctx, f, file, sub.StartLine(), mallocVars[key], base, sub.Text(), "heap_uninit", result)
 	}
 }
 
@@ -1791,7 +1819,27 @@ func isHeapVar(m map[string]int, name string) bool {
 	return ok
 }
 
-// isConditionalNode reports whether node sits inside a runtime BRANCH (an
+// rhsAllocates reports whether an assignment RHS (after unwrapping a cast) is
+// a heap-allocator call: `p->f = malloc(...)` stores a FRESH pointer into the
+// field — the pointer value is defined, but the pointed-to content is not
+// initialized, so it must not count as a content write for element reads.
+func rhsAllocates(rhs parser.Node) bool {
+
+	if rhs.Kind() == "cast_expression" {
+		for _, child := range rhs.NamedChildren() {
+			if child.Kind() == "call_expression" {
+				rhs = child
+				break
+			}
+		}
+	}
+	if rhs.Kind() == "call_expression" {
+		return apikb.IsAllocator(extractCallName(rhs))
+	}
+	return false
+}
+
+// mentionsAnyIdentifier reports whether text references any of the given
 // if/else consequence or alternative, or a loop/switch body), so a write there
 // happens on only some paths. A loop init/condition (which runs on every path)
 // is NOT conditional.

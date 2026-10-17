@@ -581,3 +581,35 @@ func TestUninit_DestWriterSafeFuncsHeap(t *testing.T) {
 		t.Errorf("uninit_p->cpe_ip (never written) must still be flagged as heap_uninit, got %v", flagged)
 	}
 }
+
+// TestUninit_FieldContentInitCoversSubscript pins the field-granular content
+// write: memcpy(p->data, ...) writes the member's CONTENT, so a later element
+// read p->data[i] is initialized. The element read used to key on the full
+// subscript text and never matched the field-level write, so a memcpy-filled
+// member was still reported as heap_uninit (tc136). A pointer-only assignment
+// `p->data = malloc(...)` must NOT cover the element read — `p->data[0]`
+// right after it reads uninitialized heap memory (the UN-05 field shape).
+func TestUninit_FieldContentInitCoversSubscript(t *testing.T) {
+	store := runIndexAndDetect(t, "tc136_uninit_field_content_init.c")
+	events, _ := store.ListEventsByType(context.Background(), "VALUE_USE")
+	flagged := make(map[string]bool) // variable -> heap_uninit flagged
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+			Origin   string `json:"origin"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Origin == "heap_uninit" {
+			flagged[props.Variable] = true
+		}
+	}
+	if flagged["pkt_memcpy_ok"] {
+		t.Errorf("pkt_memcpy_ok: a memcpy-filled member's element reads must not be flagged, got heap_uninit")
+	}
+	if flagged["pkt_reassign_ok"] {
+		t.Errorf("pkt_reassign_ok: a non-allocator pointer assignment covers the element read for the heap tracker, got heap_uninit")
+	}
+	if !flagged["pkt_malloc_bad"] {
+		t.Errorf("pkt_malloc_bad: an element read right after a pointer-only malloc assignment must stay flagged (UN-05 field shape), got none")
+	}
+}
