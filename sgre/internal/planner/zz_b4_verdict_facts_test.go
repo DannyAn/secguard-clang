@@ -46,6 +46,26 @@ func TestBuildVerdictFacts_B4Types(t *testing.T) {
 		}
 	})
 
+	t.Run("uninit never-written fact", func(t *testing.T) {
+		facts := spec("uninit").BuildVerdictFacts(Candidate{SuspicionLevel: "suspected", Origin: "heap_uninit", DeclLine: 18, InitWrite: "none"})
+		if got := tokens(facts); got != "maybe-uninit origin@heap_uninit decl@18 init@none" {
+			t.Fatalf("tokens = %q", got)
+		}
+		if !strings.Contains(facts[3].Detail, "NO write") {
+			t.Errorf("init@none must state the machine-proved no-write:\n%s", facts[3].Detail)
+		}
+	})
+
+	t.Run("uninit loop-only write facts", func(t *testing.T) {
+		facts := spec("uninit").BuildVerdictFacts(Candidate{SuspicionLevel: "suspected", Origin: "stack_uninit", DeclLine: 32, InitWrite: "loop", InitWriteLine: 33})
+		if got := tokens(facts); got != "maybe-uninit origin@stack_uninit decl@32 init@33 may-skip" {
+			t.Fatalf("tokens = %q", got)
+		}
+		if !strings.Contains(facts[3].Detail, "loop") || !strings.Contains(facts[4].Detail, "loop condition") {
+			t.Errorf("loop facts must frame the loop-condition judgment:\n%s\n%s", facts[3].Detail, facts[4].Detail)
+		}
+	})
+
 	t.Run("argument-type", func(t *testing.T) {
 		facts := spec("argument-type").BuildVerdictFacts(Candidate{ExpectedType: "size_t", ActualType: "int", CastType: "size_t"})
 		if got := tokens(facts); got != "expected@size_t actual@int cast@size_t" {
