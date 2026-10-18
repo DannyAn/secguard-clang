@@ -2,6 +2,31 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.9.8] - 2026-10-18
+
+### 证据契约 v2（B0-B5）——Hint 体系单一事实源 + 每类型 Verdict Facts
+
+把 AI 研判/复核的判定依据从"临时读源码"改成"管线机器证明的事实包"，目标是在不牺牲准确率的前提下减少 AI 读 .c 源码。
+
+- **单一事实源**：新增 `hint_tokens.go` 注册表统一 72 个 hint token（`src@`/`buf@`/`cap@`/`null@` 等）的语义与消费规则，`_index.md` 图例与候选文件 `## Pipeline Tokens` 由注册表生成，协议由 `zz_hint_protocol_guard_test.go` + `check-extension-consistency.py` 机器守护。
+- **每类型 Verdict Facts**：`VulnTypeSpec.BuildVerdictFacts` 契约，候选文件新增 `## Verdict Facts` 节（token + 一句话事实 + 出处行号），复核材料（`--list-auto-confirmed`）新增 `hint`/`facts` 字段。
+- **F1-F4 修复**：buffer/race props 断链（`src_capacity`/TOCTOU 字段）回填；null-deref 把"被证明可空的在扫 callee"归入 `null@malloc-fail`；uninit 把机器证明的写路径事实挂到 `VALUE_USE` 事件。
+
+### AI 研判/复核降读源（样例项目 dogfood 收敛）
+
+围绕 `examples/c-vuln-benchmark` 的 5 轮扫描会话自检，把"AI 反复读 .c 源码"的根因逐一收敛为机器可证明的事实或代码内嵌：
+
+- **图例按类型裁剪**：`_index.md` 图例从"全量 72 token"改为"仅该类型实际产出的 token"。
+- **buffer-overflow**：新增 `src-cap@`（源缓冲区容量）、format_overflow 携带 `buf@`/`cap@`、`sscanf("%d",…)` 标量写不再产候选、`memcpy(&x->field, src, sizeof(T))` 且字段类型 == T 判为精确拟合拷贝（压制）。
+- **unchecked-return**：`discard`（返回值被 `(void)` 显式丢弃）；把"入口 NULL 检查的 void 消费者"（`if (!e) return;`）判为空安全消费者，源调用的未检查返回被压制——修掉 `alloc_entry` 误报（`branchReturns` 接受裸 return 与失败哨兵、仍排除 `return 0`）。
+- **uninit**：`init@unseen`（heap/struct "函数内未见写"降级，不再谎称"机器证明未写"）+ `field@`（命名被读成员 `p->value` 而非基指针 `p`）。
+- **implicit-contract**：`self-guard@N`（字段 NULL 检查所在行）。
+- **injection**：`sanitizer@<fn>`（命名调用方自定义校验器）。
+- **double-free**：`cond@` 助手函数体 + `## Second Callee Definition` 双双内嵌。
+- **指令收紧**：agent-body/command-instructions 明确区分"机器证明（可判决）"与"启发式（判断 + 读源兜底）"，避免把启发式误写成证明（防误报/漏报）。
+
+A/B：auto-confirmed **115/115 不变**；候选 69→65（2 个 buffer-overflow 误报候选 + 2 个 unchecked-return 误报压制）。
+
 ## [0.9.7] - 2026-10-16（二次重发）
 
 ### 发布后修复（审计 P3 收尾）
