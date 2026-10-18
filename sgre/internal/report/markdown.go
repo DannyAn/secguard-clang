@@ -328,11 +328,12 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 					writeCalleeDefinition(&b, c, o, "the unchecked callee's body. Judge the failure sentinel from this body; no source read is needed.")
 				}
 			}
-			// null-deref call-result dereferences (`f()->field`): the callee's
-			// body decides whether its return can be NULL — the null@malloc-fail
-			// verdict fact names it, and the embedded body settles it without a
-			// source read.
-			if pkg.VulnerabilityType == "null-deref" && c.IsCallResultDeref {
+			// null-deref call-result dereferences (`f()->field`) and the variable
+			// path whose malloc-fail origin is an in-scan callee (`p = f();
+			// p->field`): the callee's body decides whether its return can be
+			// NULL — the null@malloc-fail verdict fact names it, and the embedded
+			// body settles it without a source read.
+			if pkg.VulnerabilityType == "null-deref" && (c.IsCallResultDeref || (c.NullOriginTier == "malloc-fail" && c.CalleeDefFile != "")) {
 				writeCalleeDefinition(&b, c, o, "the callee whose return is dereferenced. Judge whether its body can return NULL; no source read is needed.")
 			}
 

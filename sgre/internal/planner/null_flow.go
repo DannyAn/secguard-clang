@@ -1307,7 +1307,10 @@ func freeAlreadySeeded(genByLine map[int][]string, line int, variable string) bo
 // the planner (not emitted as NULL_VALUE events) because the detector only
 // recognizes a literal `return NULL`; a function that returns a possibly-null
 // variable, an allocator, or another nullable callee is only discoverable via
-// the RETURN edges + intra-procedural flow, which the planner owns.
+// the RETURN edges + intra-procedural flow, which the planner owns. The origin
+// carries the CALLEE NAME (not the "external_call" marker): the nullable-source
+// filter reads it back to tell an in-scan callee — whose body the report can
+// embed — from a genuinely external one.
 func callResultNullSources(body parser.Node, retNullable map[string]bool) []nullSource {
 	if len(retNullable) == 0 {
 		return nil
@@ -1322,7 +1325,7 @@ func callResultNullSources(body parser.Node, retNullable map[string]bool) []null
 		if callee == "" || !retNullable[callee] {
 			return
 		}
-		out = append(out, nullSource{variable: name, line: rhs.StartLine(), origin: "external_call", definite: false})
+		out = append(out, nullSource{variable: name, line: rhs.StartLine(), origin: callee, definite: false})
 	})
 	return out
 }

@@ -55,7 +55,7 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 		byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
 	}
 
-	flowResults, retNullable, definedNames, err := f.buildFlowResults(ctx, byFunc, models)
+	flowResults, retNullable, definedNames, synthByFunc, err := f.buildFlowResults(ctx, byFunc, models)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -168,6 +168,7 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				// malloc-fail are machine-proved textbook CWE-476; caller-arg
 				// needs the caller's contract; external-unknown is a fail-open
 				// assumption the AI must verify or dismiss).
+				synthCallee := synthCalleeAt(synthByFunc[c.FunctionID], c.VariableName, c.Line)
 				switch {
 				case c.HasDefiniteNull:
 					c.NullOriginTier = "cfg-proof"
@@ -176,6 +177,16 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 					c.NullableOriginName = models[c.FunctionID].certainNullableOrigin(c.VariableName)
 				case c.CallerNullDetail != "":
 					c.NullOriginTier = "caller-arg"
+				case synthCallee != "":
+					// An in-scan callee the inter-procedural fixpoint PROVED
+					// can return NULL (retNullable): the same textbook tier as
+					// an allocator — a proven-nullable origin, not a fail-open
+					// assumption. CalleeName makes resolveCalleeDefs embed the
+					// callee body under ## Callee Definition, so the AI never
+					// opens the source to see why it can return NULL.
+					c.NullOriginTier = "malloc-fail"
+					c.NullableOriginName = synthCallee
+					c.CalleeName = synthCallee
 				default:
 					c.NullOriginTier = "external-unknown"
 				}
@@ -215,10 +226,14 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 // falls back to the line-order heuristic). The returned retNullable set is the
 // inter-procedural "which functions can return NULL" map, consumed by Apply for
 // call-result dereferences (`f()->field`, `*f()`, `f()[i]`) that have no
-// tracked variable to feed the per-variable reaching analysis.
-func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[int64][]Candidate, models map[int64]*nullModel) (map[int64]*flowResult, map[string]bool, map[string]bool, error) {
+// tracked variable to feed the per-variable reaching analysis. The returned
+// synthByFunc map carries, per candidate function, the planner-synthesized
+// `p = f()` null sources whose callee the fixpoint proved nullable — Apply
+// reads them back to classify such variables as malloc-fail (proven-nullable
+// in-scan callee) instead of external-unknown (fail-open assumption).
+func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[int64][]Candidate, models map[int64]*nullModel) (map[int64]*flowResult, map[string]bool, map[string]bool, map[int64][]nullSource, error) {
 	if f.parser == nil {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 
 	funcIDs := make([]int64, 0, len(byFunc))
@@ -233,7 +248,7 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 	// and the analyze loop below do not each issue N+1 point queries.
 	fnByID, err := f.store.ListFunctionsByIDs(ctx, funcIDs)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("nullable source: list functions: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("nullable source: list functions: %w", err)
 	}
 	fileByID := map[int64]*db.File{}
 	if files, ferr := f.store.ListFiles(ctx); ferr == nil {
@@ -314,6 +329,7 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 		}
 	}
 
+	synthByFunc := make(map[int64][]nullSource, len(byFunc))
 	results := make(map[int64]*flowResult, len(byFunc))
 	for fid := range byFunc {
 		fn := fnByID[fid]
@@ -353,7 +369,11 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 				lineSources = append(lineSources, s)
 			}
 		}
-		lineSources = append(lineSources, callResultNullSources(body, retNullable)...)
+		synth := callResultNullSources(body, retNullable)
+		lineSources = append(lineSources, synth...)
+		if len(synth) > 0 {
+			synthByFunc[fid] = synth
+		}
 		analyzer.entrySeeds = entrySeeds
 		analyzer.definiteEntrySeeds = definiteEntrySeeds
 		res := analyzer.analyzeFunction(ctx, fn, body, root, lineSources)
@@ -362,7 +382,29 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 		}
 		results[fid] = res
 	}
-	return results, retNullable, definedNames, nil
+	return results, retNullable, definedNames, synthByFunc, nil
+}
+
+// synthCalleeAt returns the callee name of the planner-synthesized `p = f()`
+// null source for variable that reaches the dereference line — the assignment
+// closest before line (multiple assignments of different callees to the same
+// variable take the latest one, matching the flow engine's kill semantics).
+// The origin of such a source is the callee name, and callResultNullSources
+// only synthesizes it when retNullable already PROVED that callee can return
+// NULL, so a non-empty return is a proven-nullable in-scan origin.
+func synthCalleeAt(synth []nullSource, variable string, line int) string {
+	best := ""
+	bestLine := 0
+	for _, s := range synth {
+		if s.variable != variable || s.line <= 0 || s.line > line {
+			continue
+		}
+		if best == "" || s.line >= bestLine {
+			best = s.origin
+			bestLine = s.line
+		}
+	}
+	return best
 }
 
 // computeRetNullable returns the set of function NAMES that can return a
