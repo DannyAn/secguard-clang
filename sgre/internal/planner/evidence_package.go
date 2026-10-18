@@ -205,6 +205,14 @@ func buildHint(c Candidate, spec *VulnTypeSpec) string {
 	return strings.Join(parts, " ")
 }
 
+// compactHintValue strips whitespace from a free-form source expression before
+// it becomes a hint/verdict token value: hint tokens are space-separated, so a
+// value like "n + 1" or "sizeof(struct x)" would otherwise split into fragments
+// and break both the human reading and any token-wise grep.
+func compactHintValue(s string) string {
+	return strings.Join(strings.Fields(s), "")
+}
+
 // buildHintParts is the token-emitting core behind buildHint: it returns the
 // ordered token sequence instead of the joined string, so newEvidenceItem can
 // carry the decomposition (EvidenceItem.HintTokens) for the per-candidate
@@ -247,7 +255,11 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			// A call-result dereference (`f()->field`) whose callee is
 			// defined in the scan: the callee body decides whether its
 			// return can be NULL, and it is embedded in the candidate file.
-			if c.IsCallResultDeref && c.CalleeDefFile != "" {
+			// CalleeName covers both that path and the variable path
+			// (`p = f(); p->field`) where the fixpoint proved the in-scan
+			// callee nullable: the nullable-source filter sets CalleeName so
+			// resolveCalleeDefs embeds the same body.
+			if (c.IsCallResultDeref || c.CalleeName != "") && c.CalleeDefFile != "" {
 				parts = append(parts, fmt.Sprintf("callee@%s:%d", filepath.Base(c.CalleeDefFile), c.CalleeDefLine))
 			}
 
@@ -275,8 +287,11 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			if idx == "" {
 				idx = c.CopySize
 			}
+			if idx == "" {
+				idx = c.SizeArgument
+			}
 			if idx != "" {
-				parts = append(parts, "idx@"+idx)
+				parts = append(parts, "idx@"+compactHintValue(idx))
 			}
 		case "memory-leak", "resource-leak":
 			// The verdict basis: WHERE the resource is acquired, HOW certain
@@ -328,6 +343,18 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			}
 			if c.DeclLine > 0 {
 				parts = append(parts, fmt.Sprintf("decl@%d", c.DeclLine))
+			}
+			// The machine-proven write-path fact replaces the open-ended
+			// "trace the write paths" burden: init@none closes the case from the
+			// row, init@N + may-skip reduces it to judging the loop condition.
+			switch c.InitWrite {
+			case "none":
+				parts = append(parts, "init@none")
+			case "loop":
+				if c.InitWriteLine > 0 {
+					parts = append(parts, fmt.Sprintf("init@%d", c.InitWriteLine))
+					parts = append(parts, "may-skip")
+				}
 			}
 		case "argument-type":
 			// The type triple is the whole verdict: what the callee expects,

@@ -161,6 +161,12 @@ type Candidate struct {
 	// FieldPath is the full member/element access text of an uninit read
 	// (`p->f`, `p[i]`, `s.f`); empty for whole/scalar reads.
 	FieldPath string `json:"field_path,omitempty"`
+	// InitWrite/InitWriteLine carry the uninit detector's machine-proven
+	// write-path fact: "none" (the read target is never written before the
+	// read) or "loop" (the only writes sit inside a skippable loop body,
+	// InitWriteLine = the first write). Empty = no proven fact.
+	InitWrite     string `json:"init_write,omitempty"`
+	InitWriteLine int    `json:"init_write_line,omitempty"`
 	// Array/Index/Size carry the buffer-overflow detector's resolved access
 	// (array name, index expression, element count) for the range-oob filter.
 	Array string `json:"array,omitempty"`

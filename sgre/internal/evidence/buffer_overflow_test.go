@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -243,5 +244,146 @@ int f_nonliteral(void) {
 		if props.Array == "buf" || props.Array == "buf2" {
 			t.Errorf("reassigned index %q must not be treated as its earlier constant; got OOB event", props.Array)
 		}
+	}
+}
+
+// TestBufferOverflow_GenericPathCarriesBufferProps pins the F1 props chain:
+// every generic buffer_overflow event — and the bounded/secure-copy events —
+// must carry the destination name (array) and its resolved capacity (size), so
+// the planner hint renders buf@/cap@/idx@ and the classifier can judge from
+// the index row without opening the source. The scanf family only names the
+// vararg of a buffer-consuming conversion (a numeric conversion's argument is
+// not a buffer).
+func TestBufferOverflow_GenericPathCarriesBufferProps(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "generic_props.c")
+	src := `struct entry { char id[8]; };
+
+void gen_field(struct entry *log) {
+    strcpy(log->id, "way_too_long_string_for_this_field");
+}
+
+void gen_scanf_buf(void) {
+    char buf[64];
+    scanf("%s", buf);
+}
+
+void gen_scanf_num(int *out) {
+    scanf("%d", out);
+}
+
+void gen_read(int n) {
+    char rbuf[32];
+    read(0, rbuf, n);
+}
+
+void gen_memcpy_unknown(char *unk, char *src) {
+    memcpy(unk, src, 16);
+}
+
+void gen_bounded(char *src) {
+    char dst[8];
+    memcpy(dst, src, 64);
+}
+
+void gen_secure(void) {
+    char dst[16];
+    strcpy_s(dst, 128, "hello");
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	NewBufferOverflowDetector(store, p, logger).Detect(ctx)
+
+	events, err := store.ListEventsByType(ctx, "BUFFER_ACCESS")
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	type want struct {
+		category     string
+		contains     string
+		array        string
+		size         string
+		sizeArgument string
+		copySize     string
+		dstCapacity  string
+		needSize     bool
+		needCopySize bool
+		needSizeArg  bool
+		needDstCap   bool
+	}
+	wants := []want{
+		{category: "buffer_overflow", contains: "log->id", array: "log->id", size: "8", needSize: true},
+		{category: "buffer_overflow", contains: "scanf(\"%s\"", array: "buf", size: "64", needSize: true},
+		{category: "buffer_overflow", contains: "read(0", array: "rbuf", size: "32", copySize: "n", needSize: true, needCopySize: true},
+		{category: "buffer_overflow", contains: "memcpy(unk", array: "unk", copySize: "16", needCopySize: true},
+		{category: "bounded_copy_overflow", contains: "memcpy(dst", array: "dst", size: "8", copySize: "64", dstCapacity: "8", needSize: true, needCopySize: true, needDstCap: true},
+		{category: "secure_copy_overflow", contains: "strcpy_s", array: "dst", size: "16", sizeArgument: "128", dstCapacity: "16", needSize: true, needSizeArg: true, needDstCap: true},
+	}
+	matched := make([]bool, len(wants))
+	sawScanfNum := false
+	for _, e := range events {
+		var props struct {
+			Function     string `json:"function"`
+			Category     string `json:"category"`
+			Expression   string `json:"expression"`
+			Array        string `json:"array"`
+			Size         string `json:"size"`
+			SizeArgument string `json:"size_argument"`
+			CopySize     string `json:"copy_size"`
+			DstCapacity  string `json:"dst_capacity"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Function == "scanf" && strings.Contains(props.Expression, "%d") {
+			sawScanfNum = true
+			if props.Array != "" {
+				t.Errorf("scanf(\"%%d\") argument is not a buffer; array must stay empty, got %q", props.Array)
+			}
+			continue
+		}
+		for i, w := range wants {
+			if matched[i] || props.Category != w.category || !strings.Contains(props.Expression, w.contains) {
+				continue
+			}
+			matched[i] = true
+			if props.Array != w.array {
+				t.Errorf("%s: array = %q, want %q", w.contains, props.Array, w.array)
+			}
+			if w.needSize && props.Size != w.size {
+				t.Errorf("%s: size = %q, want %q", w.contains, props.Size, w.size)
+			}
+			if !w.needSize && props.Size != "" {
+				t.Errorf("%s: size = %q, want empty", w.contains, props.Size)
+			}
+			if w.needCopySize && props.CopySize != w.copySize {
+				t.Errorf("%s: copy_size = %q, want %q", w.contains, props.CopySize, w.copySize)
+			}
+			if w.needSizeArg && props.SizeArgument != w.sizeArgument {
+				t.Errorf("%s: size_argument = %q, want %q", w.contains, props.SizeArgument, w.sizeArgument)
+			}
+			if w.needDstCap && props.DstCapacity != w.dstCapacity {
+				t.Errorf("%s: dst_capacity = %q, want %q", w.contains, props.DstCapacity, w.dstCapacity)
+			}
+		}
+	}
+	for i, w := range wants {
+		if !matched[i] {
+			t.Errorf("expected a %s event containing %q with the destination-buffer props; not found", w.category, w.contains)
+		}
+	}
+	if !sawScanfNum {
+		t.Logf("note: scanf(\"%%d\") produced no BUFFER_ACCESS event; the no-array guarantee held vacuously")
 	}
 }

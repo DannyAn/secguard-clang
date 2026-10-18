@@ -55,6 +55,12 @@ type eventProps struct {
 	UseLine           int    `json:"use_line"`
 	Origin            string `json:"origin"`
 	DeclLine          int    `json:"decl_line"`
+	// InitWrite is the machine-proven write-path fact of an uninit read:
+	// "none" = the read target is never written before the read,
+	// "loop" = the only writes sit inside a loop body the condition may skip
+	// (InitWriteLine = the first such write). Empty = no proven fact.
+	InitWrite     string  `json:"init_write"`
+	InitWriteLine flexInt `json:"init_write_line"`
 	// FieldPath is the full member/element access text of an uninit read
 	// (`p->f`, `p[i]`, `s.f`), empty for whole/scalar reads. The definite-init
 	// filter uses it to refine heap/struct candidates at field granularity.
@@ -114,10 +120,10 @@ type eventProps struct {
 	ThreadFunctions string `json:"thread_functions"`
 	// ThreadInstances is the number of distinct pthread thread instances a
 	// shared_data_race event reports (race-condition detector).
-	ThreadInstances int `json:"thread_instances"`
+	ThreadInstances flexInt `json:"thread_instances"`
 	// WriteLine is the line of the conflicting write in a shared_data_race
 	// event (race-condition detector).
-	WriteLine int `json:"write_line"`
+	WriteLine flexInt `json:"write_line"`
 	// FirstFree/SecondFree are the two free-site lines a double-free event
 	// reports (double-free detector). MayFree is "true" when the first free is a
 	// conditional callee release (may-free), so the double free is possible but

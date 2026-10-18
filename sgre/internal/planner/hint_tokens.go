@@ -66,7 +66,7 @@ var hintTokenRegistry = []HintTokenSpec{
 	// ---- buffer-overflow / out-of-bounds ----
 	{Key: "buf@", Display: "buf@<name>", Description: "the buffer being written/read: {value} — the resolved array or allocation name"},
 	{Key: "cap@", Display: "cap@N", Description: "the buffer's known capacity in elements: {value} (from the array declaration or allocation size)"},
-	{Key: "idx@", Display: "idx@<expr>", Description: "the access index or copy size expression: {value} — a constant past cap@ is detector-proved; a variable one needs your judgment of its reachable range"},
+	{Key: "idx@", Display: "idx@<expr>", Description: "the access index, copy size, or declared size argument: {value} — a constant past cap@ is detector-proved; a variable one needs your judgment of its reachable range"},
 
 	// ---- divide-by-zero ----
 	{Key: "divisor@", Display: "divisor@<shape>", Description: "the divisor's shape: {value} (`bare` = plain identifier, `call` = call result, `compound` = complex expression; `field`/`global` are auto-confirmed and never reach you)"},
@@ -121,6 +121,11 @@ var hintTokenRegistry = []HintTokenSpec{
 	// ---- uninit (storage facts) ----
 	{Key: "origin@", Display: "origin@<kind>", Description: "the uninitialized storage's kind: {value} (stack/heap/struct)"},
 	{Key: "decl@", Display: "decl@N", Description: "the declaration line of the uninitialized storage: {value}"},
+	// The write-path facts close the "trace the write paths" burden from the
+	// row: init@none is machine-proved never-written, init@N + may-skip
+	// reduces the verdict to judging the loop condition.
+	{Key: "init@", Display: "init@none / init@N", Description: "the initialization write: {value} — `none` = the detector proved the read target is never written before the read (confirm from the row); a line = the only write site"},
+	{Key: "may-skip", Description: "the only initialization writes sit inside a loop body the condition may skip on the first pass — judge the loop condition (in the Code Context window), nothing else"},
 
 	// ---- argument-type / data-representation ----
 	{Key: "expected@", Display: "expected@<type>", Description: "the callee's declared parameter type: {value}"},

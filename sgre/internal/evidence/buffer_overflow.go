@@ -179,12 +179,116 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 		}
 		category := "buffer_overflow"
 
-		if emitEvent(ctx, d.store, d.logger, "BUFFER_ACCESS", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
+		props := map[string]string{
 			"function":   callName,
 			"category":   category,
 			"expression": call.OriginalText(),
-		}) {
+		}
+		annotateGenericBufferProps(props, bc, f, call, callName)
+		if emitEvent(ctx, d.store, d.logger, "BUFFER_ACCESS", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, props) {
 			result.EventsCreated++
+		}
+	}
+}
+
+// genericDestArg locates the destination-buffer argument of a call that reached
+// the generic buffer-overflow path. The bounded-copy and Annex-K checks locate
+// their own destination; this covers the rest: the copy/gets/fread family
+// writes arg 0, read/recv write arg 1, and the scanf family writes the vararg
+// of the first buffer-consuming conversion (%s/%c/%[) — a numeric conversion's
+// argument (&n) is not a buffer and must not be named as one.
+func genericDestArg(args []parser.Node, callName string) (parser.Node, bool) {
+	switch callName {
+	case "scanf":
+		return scanfBufferArg(args, 0)
+	case "sscanf", "fscanf":
+		if len(args) < 2 {
+			return parser.Node{}, false
+		}
+		return scanfBufferArg(args, 1)
+	case "read", "recv":
+		if len(args) < 2 {
+			return parser.Node{}, false
+		}
+		return args[1], true
+	default:
+		if len(args) < 1 {
+			return parser.Node{}, false
+		}
+		return args[0], true
+	}
+}
+
+// scanfBufferArg returns the vararg bound to the first buffer-consuming scanf
+// conversion, or false when the format is not a plain literal, has no such
+// conversion, or the argument is missing.
+func scanfBufferArg(args []parser.Node, fmtIdx int) (parser.Node, bool) {
+	if fmtIdx >= len(args) {
+		return parser.Node{}, false
+	}
+	format, ok := stringLiteralContent(args[fmtIdx].Text())
+	if !ok {
+		return parser.Node{}, false
+	}
+	argIdx := fmtIdx + 1
+	for _, isBuffer := range scanfConversionKinds(format) {
+		if isBuffer {
+			if argIdx < len(args) {
+				return args[argIdx], true
+			}
+			return parser.Node{}, false
+		}
+		argIdx++
+	}
+	return parser.Node{}, false
+}
+
+// annotateGenericBufferProps attaches the destination-buffer facts to a generic
+// buffer_overflow event so the planner hint can carry buf@/cap@/idx@ without
+// the classifier opening the source: the destination argument name (array),
+// its resolved capacity (size, from the array declaration, the constant
+// allocation, or the field-array table for a member access like log->id), and
+// — for the APIs with an explicit write bound — the count/copy-size
+// expression (copy_size).
+func annotateGenericBufferProps(props map[string]string, bc *bufCtx, f *db.Function, call parser.Node, callName string) {
+	args := callNamedArguments(call)
+	dstArg, ok := genericDestArg(args, callName)
+	if !ok {
+		return
+	}
+	dstText := strings.TrimSpace(dstArg.Text())
+	if dstText == "" {
+		return
+	}
+	dstName := extractArgName(dstArg)
+	capacity := 0
+	if dstName != "" {
+		capacity = findArraySize(bc, f, dstName, call.StartLine())
+		if capacity <= 0 {
+			capacity = constantAllocationSize(bc, f, dstName)
+		}
+	} else {
+		// A non-identifier destination is only nameable when its field-array
+		// size resolves (`strcpy(log->id, ...)` against `char id[8]`).
+		capacity = findFieldArraySize(bc, dstText)
+		if capacity > 0 {
+			dstName = dstText
+		}
+	}
+	if dstName == "" {
+		return
+	}
+	props["array"] = dstName
+	if capacity > 0 {
+		props["size"] = strconv.Itoa(capacity)
+	}
+	// memcpy/memmove/strncat fall through to this path with an explicit size
+	// argument, and read/recv write at most their count: that expression is
+	// the copy size the classifier range-judges against cap@.
+	switch callName {
+	case "memcpy", "memmove", "strncat", "read", "recv":
+		if len(args) >= 3 {
+			props["copy_size"] = strings.TrimSpace(args[2].Text())
 		}
 	}
 }
@@ -246,7 +350,7 @@ func (d *BufferOverflowDetector) checkBoundedCopyOverflow(ctx context.Context, f
 	if n := parseConstantSize(sizeArg); n > 0 {
 		if n > capacity {
 			d.emitBoundedCopy(ctx, f, file, call, callName, "bounded_copy_overflow",
-				fmt.Sprintf("%d", n), fmt.Sprintf("%d", capacity), result)
+				dstName, fmt.Sprintf("%d", n), fmt.Sprintf("%d", capacity), result)
 			return true
 		}
 		// n fits, but append semantics make "fits" insufficient for strncat.
@@ -276,20 +380,22 @@ func (d *BufferOverflowDetector) checkBoundedCopyOverflow(ctx context.Context, f
 				return true
 			}
 			d.emitBoundedCopy(ctx, f, file, call, callName, "bounded_copy_var_size",
-				sizeArg.Text(), fmt.Sprintf("%d", capacity), result)
+				dstName, sizeArg.Text(), fmt.Sprintf("%d", capacity), result)
 			return true
 		}
 	}
 	return safeDefault
 }
 
-func (d *BufferOverflowDetector) emitBoundedCopy(ctx context.Context, f *db.Function, file *db.File, call parser.Node, callName, category, copySize, dstCapacity string, result *DetectResult) {
+func (d *BufferOverflowDetector) emitBoundedCopy(ctx context.Context, f *db.Function, file *db.File, call parser.Node, callName, category, dstName, copySize, dstCapacity string, result *DetectResult) {
 	if emitEvent(ctx, d.store, d.logger, "BUFFER_ACCESS", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
 		"function":     callName,
 		"category":     category,
 		"expression":   call.OriginalText(),
 		"copy_size":    copySize,
 		"dst_capacity": dstCapacity,
+		"array":        dstName,
+		"size":         dstCapacity,
 	}) {
 		result.EventsCreated++
 	}
@@ -330,7 +436,7 @@ func (d *BufferOverflowDetector) checkSecureFunction(ctx context.Context, f *db.
 	// capacity-lie: the declared capacity exceeds the real buffer.
 	if declaredCap > 0 && declaredCap > capacity {
 		d.emitSecure(ctx, f, file, call, callName, "secure_copy_overflow",
-			fmt.Sprintf("%d", declaredCap), fmt.Sprintf("%d", capacity), result)
+			dstName, fmt.Sprintf("%d", declaredCap), fmt.Sprintf("%d", capacity), result)
 		return
 	}
 
@@ -339,7 +445,7 @@ func (d *BufferOverflowDetector) checkSecureFunction(ctx context.Context, f *db.
 	if declaredCap > 0 {
 		if required := d.secureRequiredSize(call, callName, spec, args, bc, f); required > 0 && required > declaredCap {
 			d.emitSecure(ctx, f, file, call, callName, "secure_constraint_violation",
-				fmt.Sprintf("%d", required), fmt.Sprintf("%d", declaredCap), result)
+				dstName, fmt.Sprintf("%d", required), fmt.Sprintf("%d", declaredCap), result)
 		}
 		return
 	}
@@ -347,7 +453,7 @@ func (d *BufferOverflowDetector) checkSecureFunction(ctx context.Context, f *db.
 	// Variable capacity argument: only meaningful when caller-influenced.
 	if capArg.Kind() == "identifier" && params[capArg.Text()] {
 		d.emitSecure(ctx, f, file, call, callName, "secure_copy_var_size",
-			capArg.Text(), fmt.Sprintf("%d", capacity), result)
+			dstName, capArg.Text(), fmt.Sprintf("%d", capacity), result)
 	}
 }
 
@@ -404,13 +510,15 @@ func (d *BufferOverflowDetector) evaluateSizeArg(node parser.Node, bc *bufCtx, f
 	return 0
 }
 
-func (d *BufferOverflowDetector) emitSecure(ctx context.Context, f *db.Function, file *db.File, call parser.Node, callName, category, sizeArg, dstCapacity string, result *DetectResult) {
+func (d *BufferOverflowDetector) emitSecure(ctx context.Context, f *db.Function, file *db.File, call parser.Node, callName, category, dstName, sizeArg, dstCapacity string, result *DetectResult) {
 	if emitEvent(ctx, d.store, d.logger, "BUFFER_ACCESS", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
 		"function":      callName,
 		"category":      category,
 		"expression":    call.OriginalText(),
 		"size_argument": sizeArg,
 		"dst_capacity":  dstCapacity,
+		"array":         dstName,
+		"size":          dstCapacity,
 	}) {
 		result.EventsCreated++
 	}
@@ -468,13 +576,13 @@ func (d *BufferOverflowDetector) checkScanfBuffer(ctx context.Context, f *db.Fun
 	if k := parseConstantSize(sizeArg); k > 0 {
 		if k > capacity {
 			d.emitSecure(ctx, f, file, call, callName, "secure_scanf_overflow",
-				fmt.Sprintf("%d", k), fmt.Sprintf("%d", capacity), result)
+				bufName, fmt.Sprintf("%d", k), fmt.Sprintf("%d", capacity), result)
 		}
 		return
 	}
 	if sizeArg.Kind() == "identifier" && params[sizeArg.Text()] {
 		d.emitSecure(ctx, f, file, call, callName, "secure_scanf_var_size",
-			sizeArg.Text(), fmt.Sprintf("%d", capacity), result)
+			bufName, sizeArg.Text(), fmt.Sprintf("%d", capacity), result)
 	}
 }
 

@@ -56,6 +56,11 @@ func TestBuildHint(t *testing.T) {
 		{"crypto-misuse reason only", Candidate{CryptoReason: "MD5 is cryptographically broken", Category: "weak_algorithm"}, cm, "reason@MD5 is cryptographically broken cat@weak_algorithm"},
 		{"buffer-overflow constant index", Candidate{Array: "buf", Size: 16, Index: "20", Category: "array_oob_write"}, bo, "buf@buf cap@16 idx@20 cat@array_oob_write"},
 		{"buffer-overflow variable copy size", Candidate{Array: "dst", Size: 64, CopySize: "n", Category: "bounded_copy_var_size"}, bo, "buf@dst cap@64 idx@n cat@bounded_copy_var_size"},
+		{"buffer-overflow secure lying capacity", Candidate{Array: "dst", Size: 64, SizeArgument: "128", Category: "secure_copy_overflow"}, bo, "buf@dst cap@64 idx@128 cat@secure_copy_overflow"},
+		{"buffer-overflow secure var size", Candidate{Array: "dst", Size: 64, SizeArgument: "n", Category: "secure_copy_var_size"}, bo, "buf@dst cap@64 idx@n cat@secure_copy_var_size"},
+		{"buffer-overflow generic field-array strcpy", Candidate{Array: "log->id", Size: 8, Category: "buffer_overflow"}, bo, "buf@log->id cap@8 cat@buffer_overflow"},
+		{"buffer-overflow generic read variable count", Candidate{Array: "rbuf", Size: 32, CopySize: "n", Category: "buffer_overflow"}, bo, "buf@rbuf cap@32 idx@n cat@buffer_overflow"},
+		{"buffer-overflow copy size whitespace compacted", Candidate{Array: "dst", Size: 64, CopySize: "n + 1", Category: "bounded_copy_var_size"}, bo, "buf@dst cap@64 idx@n+1 cat@bounded_copy_var_size"},
 		{"out-of-bounds constant read", Candidate{Array: "data", Size: 8, Index: "12", Category: "array_oob_read"}, oob, "buf@data cap@8 idx@12 cat@array_oob_read"},
 		{"memory-leak definite no channel", Candidate{Line: 12, DefiniteLeak: true, LeakEscapeKind: "none", APIName: "malloc"}, ml, "alloc@12 leak@definite escape@none api@malloc"},
 		{"memory-leak conditional store bypass", Candidate{Line: 12, LeakEscapeKind: "store", LeakFreeLines: "30,45"}, ml, "alloc@12 leak@conditional escape@store free@30,45"},
@@ -66,6 +71,11 @@ func TestBuildHint(t *testing.T) {
 		{"divide-by-zero interval and callers", Candidate{VariableName: "count", DivisorInterval: "[0,100]", DivisorCallers: "3 direct call sites, 2 pass non-zero constants"}, dbz, "divisor@bare range@[0,100] callers@3 direct call sites, 2 pass non-zero constants"},
 		{"uninit storage facts", Candidate{SuspicionLevel: "confirmed", Origin: "heap", DeclLine: 17}, uninit, "certain-uninit origin@heap decl@17"},
 		{"uninit suspected with stack origin", Candidate{SuspicionLevel: "suspected", Origin: "stack", DeclLine: 4}, uninit, "maybe-uninit origin@stack decl@4"},
+		// F4: the machine-proven write-path facts close the "trace the write
+		// paths" burden from the row.
+		{"uninit never-written", Candidate{SuspicionLevel: "suspected", Origin: "heap_uninit", DeclLine: 18, InitWrite: "none"}, uninit, "maybe-uninit origin@heap_uninit decl@18 init@none"},
+		{"uninit loop-only write", Candidate{SuspicionLevel: "suspected", Origin: "stack_uninit", DeclLine: 32, InitWrite: "loop", InitWriteLine: 33}, uninit, "maybe-uninit origin@stack_uninit decl@32 init@33 may-skip"},
+		{"uninit loop fact without line is dropped", Candidate{SuspicionLevel: "suspected", Origin: "stack_uninit", DeclLine: 32, InitWrite: "loop"}, uninit, "maybe-uninit origin@stack_uninit decl@32"},
 		{"argument-type triple", Candidate{ExpectedType: "size_t", ActualType: "int", CastType: "size_t"}, &VulnTypeSpec{Name: "argument-type"}, "expected@size_t actual@int cast@size_t"},
 		{"data-representation cast", Candidate{CastType: "unsigned int"}, &VulnTypeSpec{Name: "data-representation"}, "cast@unsigned int"},
 		{"format-string argument", Candidate{FormatArg: "user_fmt"}, &VulnTypeSpec{Name: "format-string"}, "fmt-arg@user_fmt"},

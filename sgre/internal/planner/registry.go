@@ -354,7 +354,7 @@ func buildNullDerefVerdictFacts(c Candidate) []VerdictFact {
 			Detail: "the nullable origin is assigned here — the ## Code Context window covers it",
 		})
 	}
-	if c.IsCallResultDeref && c.CalleeDefFile != "" {
+	if (c.IsCallResultDeref || c.CalleeName != "") && c.CalleeDefFile != "" {
 		facts = append(facts, VerdictFact{
 			Token:  fmt.Sprintf("callee@%s:%d", filepath.Base(c.CalleeDefFile), c.CalleeDefLine),
 			Detail: "the callee's definition in this scan; its body is embedded under ## Callee Definition — judge the return-nullability from the body, no source read needed",
@@ -410,7 +410,11 @@ func buildBufferVerdictFacts(c Candidate) []VerdictFact {
 	if idx == "" {
 		idx = c.CopySize
 	}
+	if idx == "" {
+		idx = c.SizeArgument
+	}
 	if idx != "" {
+		idx = compactHintValue(idx)
 		if _, err := strconv.Atoi(strings.TrimSpace(idx)); err == nil {
 			facts = append(facts, VerdictFact{
 				Token:  "idx@" + idx,
@@ -534,6 +538,24 @@ func buildUninitVerdictFacts(c Candidate) []VerdictFact {
 			Token:  fmt.Sprintf("decl@%d", c.DeclLine),
 			Detail: "the storage is declared here — the ## Code Context window covers it",
 		})
+	}
+	switch c.InitWrite {
+	case "none":
+		facts = append(facts, VerdictFact{
+			Token:  "init@none",
+			Detail: "the detector proved the read target has NO write between the declaration/allocation and this read — the read is uninitialized by construction; confirm without tracing write paths",
+		})
+	case "loop":
+		if c.InitWriteLine > 0 {
+			facts = append(facts, VerdictFact{
+				Token:  fmt.Sprintf("init@%d", c.InitWriteLine),
+				Detail: "the ONLY writes to the read target sit inside the loop body at line " + strconv.Itoa(c.InitWriteLine) + " — the loop condition may skip them on the first pass",
+			})
+			facts = append(facts, VerdictFact{
+				Token:  "may-skip",
+				Detail: "the initialization writes are loop-body-only: judge whether the loop condition can be false at entry (the Code Context window covers it); nothing else is in scope",
+			})
+		}
 	}
 	return facts
 }

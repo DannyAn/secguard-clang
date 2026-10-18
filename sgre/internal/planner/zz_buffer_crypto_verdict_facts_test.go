@@ -74,6 +74,30 @@ func TestBuildVerdictFacts_BufferOverflow(t *testing.T) {
 		t.Errorf("out-of-bounds shares the buffer builder: %+v", read)
 	}
 
+	// F1: the Annex-K paths surface their declared size argument through idx@
+	// (the value the function trusts / requires), so the secure_* categories
+	// get the same triple as the bounded-copy ones.
+	secureLie := bo.BuildVerdictFacts(Candidate{Array: "dst", Size: 64, SizeArgument: "128", Line: 22, Category: "secure_copy_overflow"})
+	if len(secureLie) != 3 || secureLie[2].Token != "idx@128" {
+		t.Fatalf("secure lying-capacity facts = %+v", secureLie)
+	}
+	if !strings.Contains(secureLie[2].Detail, "machine-proved") {
+		t.Errorf("a declared 128 against cap@64 is detector-proved; the detail must say so:\n%s", secureLie[2].Detail)
+	}
+
+	secureVar := bo.BuildVerdictFacts(Candidate{Array: "dst", Size: 64, SizeArgument: "n", Line: 25, Category: "secure_copy_var_size"})
+	if len(secureVar) != 3 || secureVar[2].Token != "idx@n" {
+		t.Fatalf("secure variable-size facts = %+v", secureVar)
+	}
+	if !strings.Contains(secureVar[2].Detail, "reachable range") {
+		t.Errorf("variable declared size needs the range judgment:\n%s", secureVar[2].Detail)
+	}
+
+	compact := bo.BuildVerdictFacts(Candidate{Array: "dst", Size: 64, CopySize: "n + 1", Line: 28, Category: "bounded_copy_var_size"})
+	if len(compact) != 3 || compact[2].Token != "idx@n+1" {
+		t.Errorf("a spaced copy-size expression must be whitespace-compacted into one token: %+v", compact)
+	}
+
 	bare := bo.BuildVerdictFacts(Candidate{Line: 5})
 	if len(bare) != 0 {
 		t.Errorf("no buffer facts: facts must be empty, got %+v", bare)

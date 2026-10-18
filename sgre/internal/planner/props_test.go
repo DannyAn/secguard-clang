@@ -37,3 +37,28 @@ func TestParseEventProps_FlexIntSize(t *testing.T) {
 		t.Errorf("non-numeric key_size = %d, want 0", bad.KeySize)
 	}
 }
+
+// F2 regression: the race-condition detector emits thread_instances/write_line
+// through a map[string]string, so they arrive as numeric STRINGS in the event
+// JSON. Plain int fields silently zeroed on unmarshal, which dropped the
+// instances@/write@ facts from every shared_data_race hint. flexInt must decode
+// both the string shape and the numeric (map[string]any) shape.
+func TestParseEventProps_RaceCountersDecodeFromStringAndNumber(t *testing.T) {
+	fromString := parseEventProps(`{"variable":"g_count","category":"shared_data_race","thread_functions":"t_a,t_b","thread_instances":"2","write_line":"40"}`)
+	if fromString.ThreadInstances != 2 || fromString.WriteLine != 40 {
+		t.Errorf("string-shaped race counters must decode: instances=%d write_line=%d", fromString.ThreadInstances, fromString.WriteLine)
+	}
+	if fromString.ThreadFunctions != "t_a,t_b" {
+		t.Errorf("thread_functions = %q", fromString.ThreadFunctions)
+	}
+
+	fromNumber := parseEventProps(`{"variable":"g_count","thread_instances":3,"write_line":77}`)
+	if fromNumber.ThreadInstances != 3 || fromNumber.WriteLine != 77 {
+		t.Errorf("number-shaped race counters must decode: instances=%d write_line=%d", fromNumber.ThreadInstances, fromNumber.WriteLine)
+	}
+
+	garbage := parseEventProps(`{"thread_instances":"many","write_line":""}`)
+	if garbage.ThreadInstances != 0 || garbage.WriteLine != 0 {
+		t.Errorf("non-numeric values must decode to 0 without breaking sibling fields: %+v", garbage)
+	}
+}

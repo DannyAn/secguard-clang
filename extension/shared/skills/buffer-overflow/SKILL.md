@@ -48,7 +48,7 @@ Evidence file fragments:
 |-------|---------|-------------|
 | `buf@<name>` | the buffer being written | the object of the overflow |
 | `cap@N` | the buffer's detector-resolved capacity in elements (array declaration or allocation size) | compare `idx@` against this |
-| `idx@<expr>` | the access index / copy size expression | CONSTANT: the detector already proved it reaches past `cap@` (machine-proved, confirm) — VARIABLE (`n`, a parameter): judge its reachable range against `cap@`; a caller-influenced parameter with no clamp is the dangerous case |
+| `idx@<expr>` | the access index / copy size / declared size argument (the `_s` capacity or required size) | CONSTANT: the detector already proved it reaches past `cap@` (machine-proved, confirm) — VARIABLE (`n`, a parameter): judge its reachable range against `cap@`; a caller-influenced parameter with no clamp is the dangerous case |
 
 The variable-`idx@` shapes (`bounded_copy_var_size`, `secure_copy_var_size`,
 `secure_scanf_var_size`, `format_overflow_var`) are exactly the delegation

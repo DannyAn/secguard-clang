@@ -192,11 +192,11 @@ budget your effort, not to pre-judge the answer:
   subtraction with no same-function ordering guard, `macro-context` = a
   function-like macro is in play and you MUST verify its semantics before
   confirming, `reason@<text>` = crypto-misuse detector rationale (judge from
-  it, not the API name alone), `key-size@N` = declared key bytes (under 16
-  is below the modern-cipher minimum), `buf@<name>`/`cap@N`/`idx@<expr>` =
-  buffer-overflow/out-of-bounds buffer, capacity, and access index/copy
-  size (a constant past cap@ is detector-proved; a variable one needs your
-  range judgment), `alloc@N`/`acquire@N` = the leak's allocation/acquisition
+   it, not the API name alone), `key-size@N` = declared key bytes (under 16
+   is below the modern-cipher minimum), `buf@<name>`/`cap@N`/`idx@<expr>` =
+   buffer-overflow/out-of-bounds buffer, capacity, and access index/copy
+   size/declared size argument (a constant past cap@ is detector-proved; a
+   variable one needs your range judgment), `alloc@N`/`acquire@N` = the leak's allocation/acquisition
   line, `leak@definite` = machine-proved loss (no release channel reachable
   on any path), `leak@conditional` = a release channel exists but the CFG
   proved a leak path bypasses it, `escape@none|store|return` = the
@@ -206,7 +206,10 @@ budget your effort, not to pre-judge the answer:
   endpoint), `callers@<census>` = the divide-by-zero call-site census (the
   callers passing non-constants are the ones to check), `origin@<kind>` =
   the uninitialized storage kind, `decl@N` = the uninit declaration line
-  (the Code Context window covers it), `expected@<type>`/`actual@<type>` =
+  (the Code Context window covers it), `init@none` = the detector PROVED the
+  read target is never written before the read (confirm from the row),
+  `init@N`+`may-skip` = the only writes are loop-body-only — judge the loop
+  condition, nothing else, `expected@<type>`/`actual@<type>` =
   the argument-type mismatch (callee-declared vs actually passed),
   `cast@<type>` = an explicit cast bridges the mismatch — judge whether it
   is an intentional ABI/opaque boundary or a papered-over reinterpretation,
