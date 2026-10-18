@@ -106,6 +106,10 @@ type eventProps struct {
 	// ReturnCheckFilter keeps that candidate suspected for the AI — mirroring
 	// ValueProven's name-vs-value split for hardcoded secrets.
 	ContractKnown string `json:"contract_known"`
+	// Consumed is "discard" when the unchecked-return result's only observable
+	// use is an explicit `(void)` cast — the value is deliberately discarded, so
+	// the ignored failure is unobservable; the AI dismisses from the hint.
+	Consumed string `json:"consumed"`
 	// ValueProven is "true" when the hardcoded-secret detector found the literal's
 	// VALUE itself secret-shaped (known token prefix / high entropy / URL
 	// credentials); the HardcodedSecretProofFilter auto-confirms those, while a
@@ -133,6 +137,7 @@ type eventProps struct {
 	SecondFree  int    `json:"second_free"`
 	MayFree     string `json:"may_free"`
 	FirstCallee string `json:"first_callee"`
+	SecondCallee string `json:"second_callee"`
 	Victims     string `json:"victims"`
 	// CopySize/DstCapacity are the copy-size expression and destination capacity
 	// a bounded-copy or secure-copy BUFFER_ACCESS event carries (buffer-overflow
@@ -140,6 +145,13 @@ type eventProps struct {
 	CopySize     string `json:"copy_size"`
 	DstCapacity  string `json:"dst_capacity"`
 	SizeArgument string `json:"size_argument"`
+	// SrcCapacity is the resolved capacity of the SOURCE buffer of an unbounded
+	// copy (`strcpy(g_dst, g_src)`, `strcat`, `memcpy`): when the source is a
+	// fixed-size array/global the detector already knows, its element count is
+	// attached so the classifier can judge "is the source itself bounded" without
+	// reading the source file — the round3 `dgf_string`/`dgf_format` dismissal
+	// (both operands are 128-byte globals) needed exactly this fact.
+	SrcCapacity flexInt `json:"src_capacity"`
 	// Expected/Actual/Cast are the argument-type mismatch evidence: the callee's
 	// declared parameter type (e.g. "uint *"), the argument's actual pointer type
 	// before the cast (e.g. "bool *"), and the explicit cast target type.
@@ -160,6 +172,10 @@ type eventProps struct {
 	LHSInfluenced string `json:"lhs_influenced"`
 	RHSInfluenced string `json:"rhs_influenced"`
 	Sink          string `json:"sink"`
+	// Sanitizer names a caller-defined sanitizer/validator function guarding the
+	// injection sink's argument (is_safe_input / *_validate / *_filter): a
+	// partial validation signal, never a proof of safety.
+	Sanitizer string `json:"sanitizer"`
 	// Subject/CountField/Missing/EvidenceKind carry the implicit-contract
 	// candidate's structured evidence: the struct-pointer parameter being
 	// validated (subject), the count/length field gating the pointer use
@@ -169,6 +185,11 @@ type eventProps struct {
 	CountField   string `json:"count"`
 	Missing      string `json:"missing"`
 	EvidenceKind string `json:"evidence"`
+	// GuardLine is the line of the same-function NULL check that guards the
+	// field for the "self" evidence kind; the deref site sits OUTSIDE that
+	// guard's scope (the contract gap). Surfacing it lets the classifier see
+	// the guard structure without a source read.
+	GuardLine flexInt `json:"guard_line"`
 	// EscapeKind is the ownership-release channel summary a leak event carries
 	// ("return"/"store"/"none", from leakEscapeKind); FreeLines is the comma-
 	// separated release-line list. Together they let the classifier tell a

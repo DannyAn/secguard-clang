@@ -37,9 +37,11 @@ type HintTokenSpec struct {
 var hintTokenRegistry = []HintTokenSpec{
 	// ---- shared across every type ----
 	{Key: "src@", Display: "src@N", Description: "the null/taint source is assigned at line {value}"},
+	{Key: "sanitizer@", Display: "sanitizer@<fn>", Description: "a caller-defined validator `<fn>` guards the sink argument — judge whether `<fn>` is a complete whitelist (dismiss) or a partial blacklist that misses `|`/`$()`/backticks (confirm); its body is in the scan"},
 	{Key: "certain-null", Description: "the null is CFG-proved definite (assigned NULL, no intervening reassignment)"},
 	{Key: "maybe-null", Description: "the source is possibly null — a nullable origin, NOT a proof; judge the source itself"},
 	{Key: "tainted", Description: "the value is user/attacker-controlled (an injection/taint source)"},
+	{Key: "taint@none", Description: "the pipeline's taint analysis did NOT connect a user source (argv/getenv/network/…) to this sink — judge from the ## Location signature whether the sink argument is a public entry-point parameter (attacker-reachable → confirm) or an internal/trusted value (dismiss); NOT 'proven safe'"},
 	{Key: "weak-guard", Description: "a guard exists but only partially protects (scope misses the deref); verify its scope before dismissing"},
 	{Key: "macro-context", Description: "a function-like macro is in play — verify the macro's contract before confirming; never confirm from the Source column alone"},
 	{Key: "api@", Display: "api@<name>", Description: "the callee/API in play: {value}"},
@@ -48,7 +50,9 @@ var hintTokenRegistry = []HintTokenSpec{
 	// ---- unchecked-return ----
 	{Key: "contract@known", Description: "the callee's failure contract is proven (standard unchecked-return API / declared allocator / body-verified wrapper): an unchecked return is a genuine CWE-252 defect"},
 	{Key: "contract@unknown", Description: "the callee is an allocator by NAME only (`alloc` substring, `*_new`/`*_dup` factory): prove it returns a failure sentinel (NULL/-1/error code) or dismiss"},
+	{Key: "discard", Description: "the return value is stored then explicitly `(void)`-cast away — the programmer deliberately discards it, so the ignored failure is unobservable: dismiss from the row, no source read"},
 	{Key: "callee@", Display: "callee@<file>:<line>", Description: "the callee's definition location in the scan ({value}); its body is embedded in the candidate file's `## Callee Definition`"},
+	{Key: "second-callee@", Display: "second-callee@<file>:<line>", Description: "double-free: the SECOND release helper's definition ({value}) — its body is embedded in the candidate file's `## Second Callee Definition`; judge whether both frees can execute on one path from these two bodies"},
 
 	// ---- null-deref ----
 	// The nullable-origin tier replaces the flat certain-null/maybe-null pair
@@ -67,6 +71,7 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "buf@", Display: "buf@<name>", Description: "the buffer being written/read: {value} — the resolved array or allocation name"},
 	{Key: "cap@", Display: "cap@N", Description: "the buffer's known capacity in elements: {value} (from the array declaration or allocation size)"},
 	{Key: "idx@", Display: "idx@<expr>", Description: "the access index, copy size, or declared size argument: {value} — a constant past cap@ is detector-proved; a variable one needs your judgment of its reachable range"},
+	{Key: "src-cap@", Display: "src-cap@N", Description: "the SOURCE buffer's known capacity in elements: {value} — a source that is itself a bounded fixed-size global/array cannot feed more bytes than this (a `strcpy(g_dst, g_src)` with src-cap@ ≤ cap@ is bounded, dismiss)"},
 
 	// ---- divide-by-zero ----
 	{Key: "divisor@", Display: "divisor@<shape>", Description: "the divisor's shape: {value} (`bare` = plain identifier, `call` = call result, `compound` = complex expression; `field`/`global` are auto-confirmed and never reach you)"},
@@ -121,10 +126,13 @@ var hintTokenRegistry = []HintTokenSpec{
 	// ---- uninit (storage facts) ----
 	{Key: "origin@", Display: "origin@<kind>", Description: "the uninitialized storage's kind: {value} (stack/heap/struct)"},
 	{Key: "decl@", Display: "decl@N", Description: "the declaration line of the uninitialized storage: {value}"},
+	{Key: "field@", Display: "field@<path>", Description: "the uninitialized read target is the member/element `{value}` — NOT the base pointer; the Code Context shows the read but NOT cross-function writes, so check the base object's factory before confirming"},
 	// The write-path facts close the "trace the write paths" burden from the
-	// row: init@none is machine-proved never-written, init@N + may-skip
-	// reduces the verdict to judging the loop condition.
-	{Key: "init@", Display: "init@none / init@N", Description: "the initialization write: {value} — `none` = the detector proved the read target is never written before the read (confirm from the row); a line = the only write site"},
+	// row: init@none is machine-proved never-written (stack scalar only),
+	// init@unseen is the honest weak tier for heap/struct storage whose
+	// initializer may live in a callee, and init@N + may-skip reduces the
+	// verdict to judging the loop condition.
+	{Key: "init@", Display: "init@none / init@unseen / init@N", Description: "the initialization write state: {value} — `none` = the detector proved a stack scalar is never written before the read (confirm from the row); `unseen` = heap/struct storage with no in-function write found, but a cross-function factory/memset/output-param may have initialized it — do NOT confirm from the row alone; the ≤5-read budget covers checking the base object's factory; a line = the only write site"},
 	{Key: "may-skip", Description: "the only initialization writes sit inside a loop body the condition may skip on the first pass — judge the loop condition (in the Code Context window), nothing else"},
 
 	// ---- argument-type / data-representation ----
@@ -133,10 +141,10 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "cast@", Display: "cast@<type>", Description: "the explicit cast target type: {value} — a reinterpretation between incompatible pointer types"},
 
 	// ---- format-string ----
-	{Key: "fmt-arg@", Display: "fmt-arg@<expr>", Description: "the format argument expression: {value} — judge whether it is attacker-controlled (paired with `tainted`) or a constant literal"},
+	{Key: "fmt-arg@", Display: "fmt-arg@<expr>", Description: "the format argument expression: {value} — a non-literal (variable) format is the CWE-134 signal; a function PARAMETER (see ## Location signature) is attacker-reachable → confirmed; a constant string literal → dismissed"},
 
 	// ---- path-traversal ----
-	{Key: "path-arg@", Display: "path-arg@<expr>", Description: "the path argument expression: {value} — the traversal root; judge whether it can carry `../` segments from a caller"},
+	{Key: "path-arg@", Display: "path-arg@<expr>", Description: "the path argument expression: {value} — judge whether a caller can inject `../`: a tainted source (paired with `tainted`) or a public entry-point parameter → confirmed; an internal/trusted path or an O_NOFOLLOW/dir_fd-anchored sink → dismissed"},
 
 	// ---- hardcoded-secret ----
 	{Key: "value-shape@", Display: "value-shape@<masked>", Description: "the literal's masked shape (4-char prefix + length): {value} — judge placeholder (REPLACE…), test value (test…), or real credential"},
@@ -146,6 +154,7 @@ var hintTokenRegistry = []HintTokenSpec{
 
 	// ---- implicit-contract / sizeof-misuse ----
 	{Key: "subject@", Display: "subject@<name>", Description: "the entity the contract/judgment is about: {value} (the struct-pointer parameter for implicit-contract, the sizeof operand for sizeof-misuse)"},
+	{Key: "self-guard@", Display: "self-guard@N", Description: "implicit-contract: the field IS null-checked at line {value}, but the reported deref sits outside that guard's scope — that scope gap is the defect; verify from the Code Context, no source read"},
 	{Key: "count-field@", Display: "count-field@<name>", Description: "the count/length field gating the pointer use: {value} — the contract the function actually enforces"},
 	{Key: "evidence-kind@", Display: "evidence-kind@self|caller", Description: "where the field's nullable treatment is proven: {value} (self = the function body, caller = an inter-procedural call site)"},
 }
@@ -191,6 +200,37 @@ func DescribeHintToken(token string) string {
 func HintLegendLines() []string {
 	lines := make([]string, 0, len(hintTokenRegistry))
 	for _, spec := range hintTokenRegistry {
+		display := spec.Display
+		if display == "" {
+			display = spec.Key
+		}
+		desc := strings.ReplaceAll(spec.Description, "{value}", "<value>")
+		lines = append(lines, fmt.Sprintf("- `%s` — %s", display, desc))
+	}
+	return lines
+}
+
+// HintLegendForTokens renders the legend body for ONLY the registry entries a
+// given emitted-token sequence actually uses (in registry order). The per-type
+// _index.md legend calls this with the type's own token union instead of the
+// whole registry, so a subagent reading `null-deref` never carries the
+// deadlock/race/leak vocabulary — the full-registry legend was ~60 lines of
+// mostly-irrelevant tokens on EVERY type's first read, the dominant context
+// bloat before this. Bare tokens and value-bearing tokens both match their
+// registry spec; a token the registry does not carry is skipped (the guard
+// test fails the build before that can happen in a shipped build).
+func HintLegendForTokens(tokens []string) []string {
+	used := make(map[string]bool, len(hintTokenRegistry))
+	for _, tok := range tokens {
+		if spec, _, ok := matchHintToken(tok); ok {
+			used[spec.Key] = true
+		}
+	}
+	lines := make([]string, 0, len(used))
+	for _, spec := range hintTokenRegistry {
+		if !used[spec.Key] {
+			continue
+		}
 		display := spec.Display
 		if display == "" {
 			display = spec.Key

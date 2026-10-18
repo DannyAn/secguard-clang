@@ -57,6 +57,11 @@ type candidateField struct {
 	field     string
 	sites     []derefSite
 	selfGuard bool
+	// guardLine is the line of the same-function NULL check that guards the
+	// field (0 = no self-guard). The deref site sits OUTSIDE this guard's scope,
+	// which is the contract gap; surfacing the line lets the classifier see the
+	// guard structure without a source read.
+	guardLine int
 }
 
 type fieldAccess struct {
@@ -119,6 +124,11 @@ func (d *ContractGapDetector) Detect(ctx context.Context) (DetectResult, error) 
 				"evidence":   evidence,
 				"expression": site.text,
 			}
+			// The self-guard's line: the field IS null-checked there, but this
+			// deref site sits outside that guard's scope — the contract gap.
+			if cand.selfGuard && cand.guardLine > 0 {
+				props["guard_line"] = cand.guardLine
+			}
 			if emitEvent(ctx, d.store, d.logger, "CONTRACT_GAP", cand.fn.ID, &db.Location{FileID: cand.file.ID, Line: site.line, Column: 1}, props) {
 				result.EventsCreated++
 			}
@@ -172,7 +182,7 @@ func (d *ContractGapDetector) collectFunctionCandidates(f *db.Function, file *db
 				countField, _ := countFieldGates(f, obj, field, sites[i].line, accesses, loops, subs)
 				sites[i].count = countField
 			}
-			selfGuard := fieldNullChecked(f, obj, field, derived, comparisons)
+			selfGuard, guardLine := fieldNullChecked(f, obj, field, derived, comparisons)
 			out = append(out, candidateField{
 				fn:        f,
 				file:      file,
@@ -181,6 +191,7 @@ func (d *ContractGapDetector) collectFunctionCandidates(f *db.Function, file *db
 				field:     field,
 				sites:     sites,
 				selfGuard: selfGuard,
+				guardLine: guardLine,
 			})
 		}
 	}
@@ -443,8 +454,9 @@ func fieldDerefSites(f *db.Function, obj, field string, derived map[string]bool,
 }
 
 // fieldNullChecked reports whether `obj->field` (or a derived local) is compared
-// against NULL anywhere in f — the E-b self-guard evidence.
-func fieldNullChecked(f *db.Function, obj, field string, derived map[string]bool, comparisons []parser.Node) bool {
+// against NULL anywhere in f — the E-b self-guard evidence — and the line of the
+// first such check (0 when none).
+func fieldNullChecked(f *db.Function, obj, field string, derived map[string]bool, comparisons []parser.Node) (bool, int) {
 	for _, be := range comparisons {
 		if !funcLineRange(f, be.StartLine()) {
 			continue
@@ -470,10 +482,10 @@ func fieldNullChecked(f *db.Function, obj, field string, derived map[string]bool
 			}
 		}
 		if hasNull && hasField {
-			return true
+			return true, be.StartLine()
 		}
 	}
-	return false
+	return false, 0
 }
 
 // countFieldGates reports whether a count/length field `obj->N` (N != field)

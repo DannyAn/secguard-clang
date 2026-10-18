@@ -115,10 +115,13 @@ func TestWriteCandidates_NoEmptyContractSections(t *testing.T) {
 	}
 }
 
-// The _index.md legend must be GENERATED from the registry: every registered
-// token appears, and the header names the single source.
+// The _index.md legend must be GENERATED from the registry: passing every
+// registered key renders every token, and the header names the single source.
+// The per-type legend scopes to the tokens a type actually emits (see
+// TestTypeIndexLegendScoped), but the full-registry render must never be
+// hand-written either.
 func TestTypeIndexLegendGenerated(t *testing.T) {
-	legend := typeIndexLegend()
+	legend := typeIndexLegend(planner.RegisteredHintKeys())
 	if !strings.Contains(legend, "sgre/internal/planner/hint_tokens.go") {
 		t.Errorf("legend must name the single-source registry:\n%s", legend)
 	}
@@ -129,5 +132,21 @@ func TestTypeIndexLegendGenerated(t *testing.T) {
 	}
 	if !strings.Contains(legend, "Classify each candidate as confirmed / dismissed (BINARY)") {
 		t.Errorf("legend must keep the workflow framing:\n%s", legend)
+	}
+}
+
+// The per-type legend must be scoped to the tokens that type emits: a
+// null-deref index must not carry the deadlock/race/leak vocabulary (the
+// pre-scoping legend bloat that pushed the classifier to skim the Hint column).
+func TestTypeIndexLegendScoped(t *testing.T) {
+	legend := typeIndexLegend([]string{"null@cfg-proof", "guard@none", "api@malloc", "src@44"})
+	if strings.Contains(legend, "locks@") || strings.Contains(legend, "leak@") ||
+		strings.Contains(legend, "threads@") || strings.Contains(legend, "divisor@") {
+		t.Errorf("per-type legend must not carry unrelated types' tokens:\n%s", legend)
+	}
+	for _, want := range []string{"null@", "guard@none", "api@", "src@"} {
+		if !strings.Contains(legend, "`"+want) {
+			t.Errorf("per-type legend is missing %q for the emitted tokens:\n%s", want, legend)
+		}
 	}
 }

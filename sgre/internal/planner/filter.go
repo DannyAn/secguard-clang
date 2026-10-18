@@ -133,6 +133,10 @@ type Candidate struct {
 	// wrapper body) rather than inferred from the allocator name heuristic.
 	// ReturnCheckFilter only promotes these to the deterministic tier.
 	ContractKnown bool `json:"contract_known,omitempty"`
+	// Consumed carries the unchecked-return result's consumption shape: "discard"
+	// = the only observable use is an explicit `(void)` cast (deliberate discard,
+	// unobservable failure). Empty = a normal stored-and-used-unchecked lead.
+	Consumed string `json:"consumed,omitempty"`
 	// CalleeDefFile/CalleeDefLine/CalleeDefEndLine/CalleeDefSignature locate the
 	// unchecked-return callee's definition (resolved from the function index) so
 	// a contract@unknown classifier can read the callee body in the candidate
@@ -144,6 +148,13 @@ type Candidate struct {
 	CalleeDefLine      int    `json:"callee_def_line,omitempty"`
 	CalleeDefEndLine   int    `json:"callee_def_end_line,omitempty"`
 	CalleeDefSignature string `json:"callee_def_signature,omitempty"`
+	// SecondCalleeDefFile/Line/EndLine locate the SECOND release helper of a
+	// global-slot double-free (cleanup_entries in allocator.c main): the first
+	// free is a conditional helper (cond@/may-free), the second is the
+	// unconditional cleanup call whose body decides "both frees on one path".
+	SecondCalleeDefFile    string `json:"second_callee_def_file,omitempty"`
+	SecondCalleeDefLine    int    `json:"second_callee_def_line,omitempty"`
+	SecondCalleeDefEndLine int    `json:"second_callee_def_end_line,omitempty"`
 	NonNullable        bool   `json:"non_nullable"`
 	IsTypeExpr         bool   `json:"is_type_expr"`
 	// IsCallResultDeref marks a dereference of a direct function-call result
@@ -172,6 +183,12 @@ type Candidate struct {
 	Array string `json:"array,omitempty"`
 	Index string `json:"index,omitempty"`
 	Size  int    `json:"size,omitempty"`
+	// SrcCapacity is the resolved element count of the SOURCE buffer of an
+	// unbounded copy (strcpy/strcat/memcpy/…). A known source capacity lets the
+	// classifier judge "the source is itself a bounded fixed-size global" (the
+	// round3 `strcpy(g_dst, g_src)` dismissal) from the hint, without a source
+	// read. 0 = unknown / not a fixed-size source.
+	SrcCapacity int `json:"src_capacity,omitempty"`
 	// ExpectedType/ActualType/CastType are the argument-type mismatch evidence
 	// (parameter type, pre-cast argument type, explicit cast target type).
 	ExpectedType string `json:"expected_type,omitempty"`
@@ -214,6 +231,9 @@ type Candidate struct {
 	// Subject is the struct-pointer parameter the implicit-contract candidate
 	// is about (e.g. "resp" for resp->group_data).
 	Subject string `json:"subject,omitempty"`
+	// Sanitizer names a caller-defined sanitizer/validator guarding the
+	// injection sink's argument (partial validation, not a proof of safety).
+	Sanitizer string `json:"sanitizer,omitempty"`
 	// DivisorInterval renders the range engine's conclusion for a
 	// divide-by-zero divisor that survives the filter (the interval contains 0
 	// but is not the unbounded top), e.g. "[0, +inf)" or "[-3, 7]". An empty
@@ -238,6 +258,10 @@ type Candidate struct {
 	Missing string `json:"missing,omitempty"`
 	// EvidenceKind is the nullable-field evidence source ("self" / "caller").
 	EvidenceKind string `json:"evidence_kind,omitempty"`
+	// GuardLine is the line of the same-function NULL check guarding the field
+	// (implicit-contract, "self" evidence); the deref at UseLine sits outside
+	// it. Surfaced so the classifier sees the guard structure without a read.
+	GuardLine int `json:"guard_line,omitempty"`
 	// FreeLine is the free-site line for a use-after-free candidate (where the
 	// variable was freed before the use at Line).
 	FreeLine int `json:"free_line,omitempty"`
@@ -251,6 +275,7 @@ type Candidate struct {
 	SecondFree  int    `json:"second_free,omitempty"`
 	MayFree     bool   `json:"may_free,omitempty"`
 	FirstCallee string `json:"first_callee,omitempty"`
+	SecondCallee string `json:"second_callee,omitempty"`
 	Victims     string `json:"victims,omitempty"`
 	// DefiniteLeak is true when the leak detector proved no release/escape/
 	// transfer is reachable on any path (memory-leak / resource-leak).

@@ -168,6 +168,15 @@ func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Fu
 		if !apikb.BufferOverflowAPIs[callName] {
 			continue
 		}
+		// A scanf-family call whose conversions are all scalar (`sscanf(s,
+		// "%d", &n)`) writes to scalar variables, not buffers — there is no
+		// buffer to overflow, so it must not reach the generic emit (round3
+		// `dgf_scan` was a scalar %d target, handed to the AI as a false lead).
+		if callName == "scanf" || callName == "sscanf" || callName == "fscanf" {
+			if _, ok := genericDestArg(callNamedArguments(call), callName); !ok {
+				continue
+			}
+		}
 		if hasPrecedingBoundsCheck(bc, f, call, callName) {
 			continue
 		}
@@ -291,6 +300,40 @@ func annotateGenericBufferProps(props map[string]string, bc *bufCtx, f *db.Funct
 			props["copy_size"] = strings.TrimSpace(args[2].Text())
 		}
 	}
+	// The SOURCE buffer's capacity (strcpy/strcat/memcpy/memmove arg 1): when it
+	// resolves to a fixed array/global size, the classifier can judge "the source
+	// is itself bounded" (round3 `strcpy(g_dst, g_src)` — both 128-byte globals)
+	// without a source read. An unknown source stays 0 (absent).
+	if srcIdx := sourceArgIndex(callName); srcIdx >= 0 && srcIdx < len(args) {
+		srcText := strings.TrimSpace(args[srcIdx].Text())
+		if srcText != "" {
+			srcName := extractArgName(args[srcIdx])
+			srcCap := 0
+			if srcName != "" {
+				srcCap = findArraySize(bc, f, srcName, call.StartLine())
+				if srcCap <= 0 {
+					srcCap = constantAllocationSize(bc, f, srcName)
+				}
+			}
+			if srcCap <= 0 {
+				srcCap = findFieldArraySize(bc, srcText)
+			}
+			if srcCap > 0 {
+				props["src_capacity"] = strconv.Itoa(srcCap)
+			}
+		}
+	}
+}
+
+// sourceArgIndex returns the argument index of the SOURCE buffer for a copy API
+// (the data being copied FROM), or -1 when the call has no single source buffer
+// (sprintf/gets/scanf write to arg 0 and read from the format/stream instead).
+func sourceArgIndex(callName string) int {
+	switch callName {
+	case "strcpy", "strcat", "strncpy", "strncat", "memcpy", "memmove", "memccpy", "bcopy":
+		return 1
+	}
+	return -1
 }
 
 // checkBoundedCopyOverflow refines a bounded copy (strncpy/strncat/memcpy/
@@ -333,6 +376,15 @@ func (d *BufferOverflowDetector) checkBoundedCopyOverflow(ctx context.Context, f
 		dstName = strings.Trim(dstName, "()")
 		if dstName != "" && sizeofOperandMatches(sizeArg.Text(), dstName) {
 			return true
+		}
+		// `memcpy(&packet->header, src, sizeof(PacketHeader))` — a struct-field
+		// exact-fit: the size names a TYPE, and the field is declared with that
+		// same type. Without a full type table this resolves via the field's
+		// declaration in the file (unambiguous only when every match agrees).
+		if typeName := sizeofTypeName(sizeArg.Text()); typeName != "" {
+			if field := fieldAccessName(dstName); field != "" && findFieldTypeName(bc, field) == typeName {
+				return true
+			}
 		}
 	}
 	dstName := extractArgName(dstArg)
@@ -1463,11 +1515,26 @@ func (d *BufferOverflowDetector) detectFormatOverflow(ctx context.Context, f *db
 				// AI reads the actual argument width before confirming.
 				category = "format_overflow_var"
 			}
-			if emitEvent(ctx, d.store, d.logger, "BUFFER_ACCESS", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
+			// Attach the resolved destination capacity and name so the hint
+			// carries buf@/cap@: a format-overflow row used to show only
+			// api@sprintf, forcing the classifier to open the source just to
+			// learn the destination is a bounded 128-byte global.
+			props := map[string]string{
 				"function":   callName,
 				"category":   category,
 				"expression": call.OriginalText(),
-			}) {
+				"array":      dst,
+				"size":       strconv.Itoa(capacity),
+			}
+			// The format's variable arguments are the overflow contributors; a
+			// %s conversion whose operand is a bounded global is the common
+			// "both sides bounded" safe shape (sprintf(g_dst, "%s", g_src)).
+			if len(args) >= 3 {
+				if srcCap := findArraySize(bc, f, strings.TrimSpace(args[2]), call.StartLine()); srcCap > 0 {
+					props["src_capacity"] = strconv.Itoa(srcCap)
+				}
+			}
+			if emitEvent(ctx, d.store, d.logger, "BUFFER_ACCESS", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, props) {
 				result.EventsCreated++
 			}
 		}
@@ -1621,6 +1688,69 @@ func findFieldArraySize(bc *bufCtx, dst string) int {
 		return seen
 	}
 	return 0
+}
+
+// sizeofTypeName returns the plain type name inside `sizeof(T)` when T is a
+// bare type identifier (`sizeof(PacketHeader)` → "PacketHeader"), or "" for any
+// other operand (`sizeof(dst)`, `sizeof(*p)`, `sizeof(n)`, `sizeof(int)`'s
+// primitive). It feeds the struct-field exact-fit proof: `memcpy(&x->field,
+// src, sizeof(T))` where x->field is declared as type T.
+func sizeofTypeName(sizeText string) string {
+	t := strings.TrimSpace(sizeText)
+	if !strings.HasPrefix(t, "sizeof") {
+		return ""
+	}
+	rest := strings.TrimSpace(t[len("sizeof"):])
+	rest = strings.Trim(rest, "()")
+	rest = strings.TrimSpace(rest)
+	// Only a bare identifier could be a typedef/struct type name; a keyword
+	// (int/char/struct) or an expression is not a field type we can match.
+	if !isBareIdent(rest) || parser.IsCTypeKeyword(rest) {
+		return ""
+	}
+	return rest
+}
+
+// fieldAccessName returns the field name of a member access (`x->f`, `x.f` →
+// "f"), or "" for a bare identifier.
+func fieldAccessName(dst string) string {
+	if idx := strings.LastIndex(dst, "->"); idx >= 0 {
+		return strings.TrimSpace(dst[idx+2:])
+	}
+	if idx := strings.LastIndex(dst, "."); idx >= 0 {
+		return strings.TrimSpace(dst[idx+1:])
+	}
+	return ""
+}
+
+// findFieldTypeName resolves the declared TYPE of a struct field by scanning the
+// file's field_declarations (`struct S { T field; }`). It returns the type
+// spelling only when every declaration of that field name agrees on one type
+// (mirroring findFieldArraySize's ambiguity guard); otherwise "".
+func findFieldTypeName(bc *bufCtx, field string) string {
+	seen := make(map[string]bool)
+	var found string
+	for _, fd := range bc.fields {
+		hasField := false
+		for _, child := range fd.NamedChildren() {
+			if child.Kind() == "field_identifier" && child.Text() == field {
+				hasField = true
+			}
+		}
+		if !hasField {
+			continue
+		}
+		t := typeSpelling(fd)
+		if t == "" {
+			continue
+		}
+		seen[t] = true
+		found = t
+	}
+	if len(seen) == 1 {
+		return found
+	}
+	return ""
 }
 
 // arrayDeclaratorName returns the declared name of an array declarator,

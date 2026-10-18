@@ -43,6 +43,7 @@ type globalDFEntry struct {
 	slot       string
 	line       int
 	callee     string
+	secondCallee string
 	victims    []string
 	firstFrees []int
 	// mayFree is true when at least one contributing first free is conditional
@@ -110,7 +111,7 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 					if firstCallee == "" {
 						firstCallee = second.callee
 					}
-					e = &globalDFEntry{slot: second.global, line: second.line, callee: firstCallee}
+					e = &globalDFEntry{slot: second.global, line: second.line, callee: firstCallee, secondCallee: second.callee}
 					collective[key] = e
 				}
 				e.victims = append(e.victims, varName)
@@ -131,12 +132,13 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 				sort.Strings(e.victims)
 				sort.Ints(e.firstFrees)
 				props := map[string]interface{}{
-					"variable":     e.slot + "[]",
-					"second_free":  e.line,
-					"category":     "double_free",
-					"indirect":     true,
-					"first_callee": e.callee,
-					"victims":      strings.Join(e.victims, ","),
+					"variable":      e.slot + "[]",
+					"second_free":   e.line,
+					"category":      "double_free",
+					"indirect":      true,
+					"first_callee":  e.callee,
+					"second_callee": e.secondCallee,
+					"victims":       strings.Join(e.victims, ","),
 				}
 				if len(e.firstFrees) > 0 {
 					props["first_free"] = e.firstFrees[0]

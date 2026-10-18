@@ -406,6 +406,12 @@ func buildBufferVerdictFacts(c Candidate) []VerdictFact {
 			Detail: fmt.Sprintf("the detector-resolved capacity of %s is %d elements (from the array declaration or allocation size)", c.Array, c.Size),
 		})
 	}
+	if c.SrcCapacity > 0 {
+		facts = append(facts, VerdictFact{
+			Token:  fmt.Sprintf("src-cap@%d", c.SrcCapacity),
+			Detail: fmt.Sprintf("the SOURCE buffer's resolved capacity is %d elements — a source this size cannot feed more than %d bytes, so a copy into a cap@ ≥ src-cap@ destination is bounded (dismiss)", c.SrcCapacity, c.SrcCapacity),
+		})
+	}
 	idx := c.Index
 	if idx == "" {
 		idx = c.CopySize
@@ -539,12 +545,25 @@ func buildUninitVerdictFacts(c Candidate) []VerdictFact {
 			Detail: "the storage is declared here — the ## Code Context window covers it",
 		})
 	}
+	if c.FieldPath != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "field@" + compactHintValue(c.FieldPath),
+			Detail: fmt.Sprintf("the uninitialized read target is `%s`, NOT the base pointer `%s` — judge whether that field/element is written before the read", c.FieldPath, c.VariableName),
+		})
+	}
 	switch c.InitWrite {
 	case "none":
-		facts = append(facts, VerdictFact{
-			Token:  "init@none",
-			Detail: "the detector proved the read target has NO write between the declaration/allocation and this read — the read is uninitialized by construction; confirm without tracing write paths",
-		})
+		if c.Origin == "heap_uninit" || c.Origin == "struct_partial_uninit" {
+			facts = append(facts, VerdictFact{
+				Token:  "init@unseen",
+				Detail: "no in-function write to the read target was found before the read, but heap/struct storage can be initialized by the allocating callee, memset, or an output parameter — verify the init path, do NOT confirm from this alone",
+			})
+		} else {
+			facts = append(facts, VerdictFact{
+				Token:  "init@none",
+				Detail: "the detector proved the read target has NO write between the declaration/allocation and this read — the read is uninitialized by construction; confirm without tracing write paths",
+			})
+		}
 	case "loop":
 		if c.InitWriteLine > 0 {
 			facts = append(facts, VerdictFact{

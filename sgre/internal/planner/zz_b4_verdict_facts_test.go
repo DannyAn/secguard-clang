@@ -46,13 +46,13 @@ func TestBuildVerdictFacts_B4Types(t *testing.T) {
 		}
 	})
 
-	t.Run("uninit never-written fact", func(t *testing.T) {
+	t.Run("uninit heap no in-function write fact", func(t *testing.T) {
 		facts := spec("uninit").BuildVerdictFacts(Candidate{SuspicionLevel: "suspected", Origin: "heap_uninit", DeclLine: 18, InitWrite: "none"})
-		if got := tokens(facts); got != "maybe-uninit origin@heap_uninit decl@18 init@none" {
+		if got := tokens(facts); got != "maybe-uninit origin@heap_uninit decl@18 init@unseen" {
 			t.Fatalf("tokens = %q", got)
 		}
-		if !strings.Contains(facts[3].Detail, "NO write") {
-			t.Errorf("init@none must state the machine-proved no-write:\n%s", facts[3].Detail)
+		if !strings.Contains(facts[3].Detail, "allocating callee") {
+			t.Errorf("init@unseen must name the callee/memset/output-param init path:\n%s", facts[3].Detail)
 		}
 	})
 

@@ -23,10 +23,7 @@ A format-string candidate has:
 
 | Token | Meaning | Your action |
 |-------|---------|-------------|
-| `fmt-arg@<expr>` | the format argument expression | attacker-controlled (paired with `tainted`) means arbitrary format-specifier injection — confirm; a constant literal means dismissed |
-
-`fmt-arg@` names the sink argument; its constancy versus taint is the
-verdict split.
+| `fmt-arg@<expr>` | the format argument expression | a non-literal (variable) format is the CWE-134 signal: a function **parameter** (see `## Location` signature) is attacker-reachable → **confirmed**; a constant string literal → **dismissed**; a local that is never externally controlled → judge |
 
 ### Functions Checked
 `printf`, `fprintf`, `sprintf`, `snprintf`, `vprintf`, `vfprintf`, `vsprintf`, `vsnprintf`, `syslog`, `err`, `warn`, `errx`, `warnx`
@@ -42,7 +39,8 @@ verdict split.
 | Condition | Classification |
 |-----------|---------------|
 | printf(user_input) — format is external input | **confirmed** |
-| printf(log_msg) — format is a variable | **dismissed** (may be safe if controlled) |
+| printf(log_msg) — format is a function parameter (non-literal) | **confirmed** (attacker-reachable via the parameter) |
+| printf(local_buf) — format is a local, never externally controlled | **dismissed** |
 | printf("%s", user_input) — format is literal | **false-positive** (safe) |
 | snprintf(buf, sizeof(buf), fmt, ...) — bounded with sizeof | **false-positive** (safe) |
 

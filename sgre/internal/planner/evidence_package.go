@@ -94,6 +94,12 @@ type EvidenceItem struct {
 	CalleeDefLine      int    `json:"callee_def_line,omitempty"`
 	CalleeDefEndLine   int    `json:"callee_def_end_line,omitempty"`
 	CalleeDefSignature string `json:"callee_def_signature,omitempty"`
+	// SecondCalleeDef* carry the double-free second release helper's definition
+	// (the unconditional cleanup call), embedded beside the conditional first
+	// helper's body.
+	SecondCalleeDefFile    string `json:"second_callee_def_file,omitempty"`
+	SecondCalleeDefLine    int    `json:"second_callee_def_line,omitempty"`
+	SecondCalleeDefEndLine int    `json:"second_callee_def_end_line,omitempty"`
 	// DivisorInterval renders the range engine's tighter-than-top interval
 	// for a divide-by-zero divisor it could not clear (contains 0), e.g.
 	// "[0, 1]". DivisorCallers summarizes the direct-call-site census for a
@@ -242,6 +248,13 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 					parts = append(parts, fmt.Sprintf("callee@%s:%d", filepath.Base(c.CalleeDefFile), c.CalleeDefLine))
 				}
 			}
+			// A stored result whose only observable use is a `(void)` cast is a
+			// deliberate discard — the failure is unobservable, so the classifier
+			// dismisses from the row instead of reading the source to find the
+			// (void)p (round3 idm_new_idmgr).
+			if c.Consumed == "discard" {
+				parts = append(parts, "discard")
+			}
 		case "null-deref":
 			// The nullable-origin tier replaces this type's flat
 			// certain-null/maybe-null pair (other types keep the shared
@@ -282,6 +295,12 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			}
 			if c.Size > 0 {
 				parts = append(parts, fmt.Sprintf("cap@%d", c.Size))
+			}
+			// The source buffer's capacity: a bounded source (both sides are
+			// fixed-size globals/arrays) means the copy cannot overflow, which
+			// the classifier settles from the row instead of a source read.
+			if c.SrcCapacity > 0 {
+				parts = append(parts, fmt.Sprintf("src-cap@%d", c.SrcCapacity))
 			}
 			idx := c.Index
 			if idx == "" {
@@ -336,20 +355,33 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			} else if c.SuspicionLevel == "suspected" {
 				parts = append(parts, "maybe-uninit")
 			}
-			// The storage facts: what kind of storage is uninitialized and
-			// where it is declared — the write-path trace target.
+			// The storage facts: what kind of storage is uninitialized, where it
+			// is declared, and — for a member/element read — WHICH field is read
+			// (the Variable column names the base pointer, so without this the
+			// classifier reads "p is uninitialized" when the read is `p->value`).
 			if c.Origin != "" {
 				parts = append(parts, "origin@"+c.Origin)
 			}
 			if c.DeclLine > 0 {
 				parts = append(parts, fmt.Sprintf("decl@%d", c.DeclLine))
 			}
+			if c.FieldPath != "" {
+				parts = append(parts, "field@"+compactHintValue(c.FieldPath))
+			}
 			// The machine-proven write-path fact replaces the open-ended
-			// "trace the write paths" burden: init@none closes the case from the
-			// row, init@N + may-skip reduces it to judging the loop condition.
+			// "trace the write paths" burden. init@none is ONLY the strong
+			// "never written" claim for a stack scalar (intra-procedural writes
+			// are complete there); heap/struct storage may be initialized by the
+			// allocating callee / memset / an output parameter the write-path
+			// analysis cannot see, so it gets the honest init@unseen tier.
+			// init@N + may-skip reduces the verdict to judging the loop condition.
 			switch c.InitWrite {
 			case "none":
-				parts = append(parts, "init@none")
+				if c.Origin == "heap_uninit" || c.Origin == "struct_partial_uninit" {
+					parts = append(parts, "init@unseen")
+				} else {
+					parts = append(parts, "init@none")
+				}
 			case "loop":
 				if c.InitWriteLine > 0 {
 					parts = append(parts, fmt.Sprintf("init@%d", c.InitWriteLine))
@@ -381,6 +413,12 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			if c.PathExpr != "" {
 				parts = append(parts, "path-arg@"+c.PathExpr)
 			}
+		case "injection":
+			// A caller-defined sanitizer guarding the sink argument is a partial
+			// validation signal, never a proof of safety — confirm from the row.
+			if c.Sanitizer != "" {
+				parts = append(parts, "sanitizer@"+c.Sanitizer)
+			}
 		case "hardcoded-secret":
 			// The masked shape only — the report must not become the leak it
 			// reports; the prefix + length is enough to judge the tier.
@@ -400,6 +438,12 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			}
 			if c.EvidenceKind != "" {
 				parts = append(parts, "evidence-kind@"+c.EvidenceKind)
+			}
+			// The self-guard's line: the field IS null-checked there, but the
+			// deref at use_line sits outside it — the classifier sees the guard
+			// structure from the row + Code Context instead of reading source.
+			if c.GuardLine > 0 {
+				parts = append(parts, fmt.Sprintf("self-guard@%d", c.GuardLine))
 			}
 		case "sizeof-misuse":
 			if c.VariableName != "" {
@@ -458,9 +502,20 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			if c.MayFree {
 				parts = append(parts, "may-free")
 			}
-			// The conditional helper's name: its body decides the verdict.
+			// The conditional helper's name: its body decides the verdict. When
+			// the helper is defined in the scan, its body is embedded under
+			// ## Callee Definition — the classifier judges the conditional
+			// release from that body instead of a whole-file source read.
 			if c.FirstCallee != "" {
 				parts = append(parts, "cond@"+c.FirstCallee)
+				if c.CalleeDefFile != "" {
+					parts = append(parts, fmt.Sprintf("callee@%s:%d", filepath.Base(c.CalleeDefFile), c.CalleeDefLine))
+				}
+			}
+			// The SECOND release helper (the unconditional cleanup call): its
+			// body decides "both frees on one path", embedded beside the first.
+			if c.SecondCalleeDefFile != "" {
+				parts = append(parts, fmt.Sprintf("second-callee@%s:%d", filepath.Base(c.SecondCalleeDefFile), c.SecondCalleeDefLine))
 			}
 		case "race-condition":
 			// BuildEvidence already computed these facts; without them in the
@@ -525,6 +580,14 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 	}
 	if c.HasTaintSource {
 		parts = append(parts, "tainted")
+	} else if spec != nil && (spec.Name == "injection" || spec.Name == "format-string" || spec.Name == "path-traversal") {
+		// Make the ABSENCE of a taint source explicit for the taint-based
+		// types: a bare "no tainted token" is ambiguous (could mean "detector
+		// did not run"), so the classifier used to read source to check for a
+		// sanitizer/canonicalization that the pipeline never claimed to model.
+		// taint@none says the pipeline looked and found none — the classifier
+		// then judges the sink argument's API contract, not a guessed absence.
+		parts = append(parts, "taint@none")
 	}
 	if c.GuardStrength == "weak" {
 		parts = append(parts, "weak-guard")
@@ -576,6 +639,10 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 		CalleeDefLine:      c.CalleeDefLine,
 		CalleeDefEndLine:   c.CalleeDefEndLine,
 		CalleeDefSignature: c.CalleeDefSignature,
+
+		SecondCalleeDefFile:    c.SecondCalleeDefFile,
+		SecondCalleeDefLine:    c.SecondCalleeDefLine,
+		SecondCalleeDefEndLine: c.SecondCalleeDefEndLine,
 
 		DivisorInterval: c.DivisorInterval,
 		DivisorCallers:  c.DivisorCallers,

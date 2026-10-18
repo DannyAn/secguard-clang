@@ -223,14 +223,29 @@ that actually need verification instead. Never turn the budget into "read the
 whole repo" — on a real codebase that is what exhausts the context window and
 leaves the tail candidates unclassified.
 
-**A verdict you cannot reach is still `dismissed` — but only after you tried.**
-When the `Source`/`Hint`/`Code Context` is genuinely insufficient, spend the
-source-read budget (≤5 turns) trying to settle it; only if STILL undecided after
-that may you write `dismissed`, with a reason citing what you read. Skipping the
-read and writing `dismissed` converts "couldn't confirm" into a silent false
-negative. The budget is the WHOLE type's source-read budget (there is no second
-round — your single-pass verdict is final). Do NOT load a skill for a type that
-has 0 candidates.
+**The embedded evidence IS the source — classify from it, and treat a raw `.c`
+read as a last resort for what the scan could not embed.** Two kinds of hint, do
+NOT conflate them:
+
+- **Machine-proved facts → decisive, no read.** confirm: `certain-null`/
+  `null@cfg-proof`/`null@malloc-fail`/`tainted`/constant-`idx@`-past-`cap@`/
+  `contract@known`/`leak@definite`/`reason@` weak-crypto/`async-unsafe@`/
+  `cast@`(incompatible types). dismiss: `contract@unknown` name-guess,
+  `macro-context` unproven macro, `discard`, `src-cap@ ≤ cap@`, `value-shape@`
+  placeholder/test.
+- **Heuristic observations → keep your judgment** (the ≤5-read budget is the
+  backstop when the embedded context cannot settle them): `maybe-null`/
+  `maybe-uninit`, `init@unseen` (a cross-function factory/memset may have
+  initialized the field — the Code Context does NOT show cross-function writes),
+  `taint@none` (judge from the signature whether the argument is a public
+  entry-point parameter or internal/trusted), non-literal `fmt-arg@`/`path-arg@`
+  (judge the argument's origin), `sanitizer@` (complete whitelist → dismiss,
+  partial blacklist → confirm).
+
+A heuristic hint that the embedded context cannot settle is a legitimate use of
+the ≤5-turn source-read budget (the WHOLE type's budget, no second round); then
+write the verdict with a cited reason. Do NOT load a skill for a type that has 0
+candidates.
 `candidates/<type>/_index.md` is your primary candidate input (one compact read
 per type); the scan summary already gives you the per-type counts.
 
@@ -314,7 +329,7 @@ as `result.sarif`.)
      (matches the evidence) or dismiss (guarded/different) from the table itself.
      Do NOT read source or the candidate file. Batch all confirmed verdicts into
      one write call.
-   - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null` (non-null-deref types)/`null@cfg-proof`/`null@malloc-fail`/`null@caller-arg`/`null@external-unknown` (null-deref origin tier)/`tainted`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`threads@<fn>`/`instances@N`/`write@N`/`mutex@<name>`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`arg@<expr>`/`may-free`/`reason@<text>`/`key-size@N` (crypto-misuse)/`buf@<name>`/`cap@N`/`idx@<expr>` (buffer-overflow/out-of-bounds)/`alloc@N`/`acquire@N`/`leak@definite`/`leak@conditional`/`escape@none|store|return`/`free@N,M` (leaks)/`range@<interval>`/`callers@<census>` (divide-by-zero)/`origin@<kind>`/`decl@N`/`init@none`/`init@N`+`may-skip` (uninit; `init@none` = machine-proved never-written, `may-skip` = the only writes are loop-body-only — judge the loop condition)/`expected@<type>`/`actual@<type>`/`cast@<type>` (argument-type/data-representation)/`fmt-arg@<expr>` (format-string)/`path-arg@<expr>` (path-traversal)/`value-shape@<masked>` (hardcoded-secret)/`async-unsafe@<fn>` (signal-handler)/`subject@<name>`/`count-field@<field>`/`evidence-kind@<kind>` (implicit-contract/sizeof-misuse)/`cond@<callee>` (double-free)); for divide-by-zero a `divisor@bare` row is settled from `Source` alone (no evidence open). When the hint is insufficient, open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source, a `contract@unknown` unchecked-return candidate embeds its callee body under `## Callee Definition`, and a null-deref `callee@` candidate embeds the dereferenced callee's body there too) and, if STILL insufficient, a raw source read within the ≤5-read budget — then classify. Only after spending that budget may you write `dismissed` (with a cited reason); never write `dismissed` without reading when the hint was insufficient. A `macro-context` hint means a macro is in play — open the `## Code Context` and verify the macro before `confirmed`.
+   - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null` (non-null-deref types)/`null@cfg-proof`/`null@malloc-fail`/`null@caller-arg`/`null@external-unknown` (null-deref origin tier)/`tainted`/`taint@none`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`threads@<fn>`/`instances@N`/`write@N`/`mutex@<name>`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`arg@<expr>`/`may-free`/`reason@<text>`/`key-size@N` (crypto-misuse)/`buf@<name>`/`cap@N`/`idx@<expr>`/`src-cap@N` (buffer-overflow/out-of-bounds)/`alloc@N`/`acquire@N`/`leak@definite`/`leak@conditional`/`escape@none|store|return`/`free@N,M` (leaks)/`range@<interval>`/`callers@<census>` (divide-by-zero)/`origin@<kind>`/`decl@N`/`field@<path>`/`init@none`/`init@unseen`/`init@N`+`may-skip` (uninit; `init@none` = machine-proved never-written stack scalar, `init@unseen` = heap/struct storage a callee/memset/output-param may have initialized — verify the init path, `may-skip` = the only writes are loop-body-only — judge the loop condition)/`expected@<type>`/`actual@<type>`/`cast@<type>` (argument-type/data-representation)/`fmt-arg@<expr>` (format-string)/`path-arg@<expr>` (path-traversal)/`value-shape@<masked>` (hardcoded-secret)/`async-unsafe@<fn>` (signal-handler)/`subject@<name>`/`count-field@<field>`/`evidence-kind@<kind>` (implicit-contract/sizeof-misuse)/`cond@<callee>` (double-free)); for divide-by-zero a `divisor@bare` row is settled from `Source` alone (no evidence open). When the hint is insufficient, open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source, a `contract@unknown` unchecked-return candidate embeds its callee body under `## Callee Definition`, and a null-deref `callee@` candidate embeds the dereferenced callee's body there too) and, if STILL insufficient, a raw source read within the ≤5-read budget — then classify. Only after spending that budget may you write `dismissed` (with a cited reason); never write `dismissed` without reading when the hint was insufficient. A `macro-context` hint means a macro is in play — open the `## Code Context` and verify the macro before `confirmed`.
     Write **confirmed** findings in ONE batch: write `<tmpdir>/<type>.json`
     containing only confirmed findings with the Write tool, then
     `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
@@ -369,7 +384,7 @@ as `result.sarif`.)
    `_index.md` has a `Source` column per candidate (the exact statement), a `Hint`
    column (the pipeline's precomputed verdict facts: `src@N`/`certain-null`/
    `maybe-null` (non-null-deref types)/`null@cfg-proof`/`null@malloc-fail`/
-   `null@caller-arg`/`null@external-unknown` (null-deref origin tier)/`tainted`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`threads@<fn>`/`write@N`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`reason@<text>`/`key-size@N`/`buf@<name>`/`cap@N`/`idx@<expr>`/`alloc@N`/`acquire@N`/`leak@definite`/`leak@conditional`/`escape@none|store|return`/`range@<interval>`/`callers@<census>`/`origin@<kind>`/`decl@N`/`init@none`/`init@N`+`may-skip`/`expected@<type>`/`actual@<type>`/`cast@<type>`/`fmt-arg@<expr>`/`path-arg@<expr>`/`value-shape@<masked>`/`async-unsafe@<fn>`/`subject@<name>`/`count-field@<field>`/`evidence-kind@<kind>`/`cond@<callee>`), plus an `Evidence` column naming the exact
+   `null@caller-arg`/`null@external-unknown` (null-deref origin tier)/`tainted`/`taint@none`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`threads@<fn>`/`write@N`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`reason@<text>`/`key-size@N`/`buf@<name>`/`cap@N`/`idx@<expr>`/`src-cap@N`/`alloc@N`/`acquire@N`/`leak@definite`/`leak@conditional`/`escape@none|store|return`/`range@<interval>`/`callers@<census>`/`origin@<kind>`/`decl@N`/`field@<path>`/`init@none`/`init@unseen`/`init@N`+`may-skip`/`expected@<type>`/`actual@<type>`/`cast@<type>`/`fmt-arg@<expr>`/`path-arg@<expr>`/`value-shape@<masked>`/`async-unsafe@<fn>`/`subject@<name>`/`count-field@<field>`/`evidence-kind@<kind>`/`cond@<callee>`), plus an `Evidence` column naming the exact
    candidate file, and each candidate file has a `## Code Context` block — do NOT
    issue per-candidate source READs (that is the tens-of-minutes cost). Read ONLY
    your type's `_index.md`, never the whole report.md.
@@ -384,9 +399,15 @@ as `result.sarif`.)
     - suspected/possible → classify from the `Source` + `Hint` columns FIRST. `Hint`
       is the pipeline's precomputed facts (`src@N` = null-source line, `certain-null`
       = definitely null, `maybe-null` = possibly null, `tainted` = injection source,
+       `taint@none` = the pipeline found NO taint chain reaching the sink — this is
+       NOT 'proven safe': a bare parameter/global or chained call may still be
+       caller-controlled, so judge the argument's origin from the signature,
        `weak-guard` = partial guard, `certain-uninit`/`maybe-uninit` = uninit tier,
-       `init@none` = the detector PROVED the read target is never written before
-       the read (confirm from the row), `init@N`+`may-skip` = the only writes are
+       `field@<path>` = the uninit read target is that member/element, NOT the base
+       pointer, `init@none` = the detector PROVED a stack scalar is never written
+       before the read (confirm from the row), `init@unseen` = heap/struct storage a
+       callee/memset/output-param may have initialized (verify the init path, do NOT
+       confirm from it alone), `init@N`+`may-skip` = the only writes are
        loop-body-only — judge the loop condition, nothing else,
       `null@cfg-proof` = CFG-proved NULL reaches the deref (machine-proved),
       `null@malloc-fail` = proven-nullable call result (allocator / libc /
@@ -395,6 +416,8 @@ as `result.sarif`.)
       fail-open external assumption — verify or dismiss,
       `api@<name>` = the API in play, `cat@<name>` = the detector category,
       `contract@known`/`contract@unknown` = unchecked-return callee contract,
+      `discard` = the return value is stored then `(void)`-cast away (a
+      deliberate discard — the failure is unobservable, dismiss from the row),
       `threads@<fn>`/`write@N` = shared-data race, `lock@<lo>-<hi>` = TOCTOU
       critical section, `check@<fn>→use@<fn>` = TOCTOU check/use pair,
       `macro-context` = a function-like macro is in play — verify it before
@@ -403,7 +426,10 @@ as `result.sarif`.)
       (under 16 is below the modern-cipher minimum),       `buf@<name>`/`cap@N`/
       `idx@<expr>` = buffer-overflow/out-of-bounds buffer, capacity, and
       access index/copy size/declared size argument (a constant past cap@ is
-      detector-proved; a variable one needs your range judgment), `alloc@N`/`acquire@N` =
+      detector-proved; a variable one needs your range judgment),
+      `src-cap@N` = the SOURCE buffer's known capacity (a `strcpy(g_dst, g_src)`
+      with src-cap@ ≤ cap@ copies a bounded source into a same-or-larger
+      destination — dismiss from the row, no read), `alloc@N`/`acquire@N` =
       the leak's allocation/acquisition line, `leak@definite` = no
       release/escape/transfer reachable on any path (machine-proved loss),
       `leak@conditional` = a release channel exists but the CFG proved a
@@ -420,10 +446,15 @@ as `result.sarif`.)
       decide — a `certain-null` + `src@N` hint (or null-deref's `null@cfg-proof`)
       usually settles the verdict with no
       file open, and a `divisor@call`/`divisor@compound` hint is the only
-      divide-by-zero shape that needs the open. When the hint is inconclusive,
-      open the source (within the ≤5 source-read budget) to settle it; only if
-      STILL undecided after the budget, write `dismissed` with a cited reason —
-      never write `dismissed` without reading when the hint was insufficient.
+      divide-by-zero shape that needs the open. A decisive hint is a verdict:
+      `contract@unknown` / `macro-context` / `maybe-null` (no provable source)
+      → `dismissed` from the row, citing the token; `init@unseen` and
+      `taint@none` narrow the question to "was the field initialized by a
+      callee?" / "is the argument caller-supplied?" — judge that from the
+      embedded signature/context. Only when the row has NO decisive or narrowing
+      fact do you open the source (within the ≤5 source-read budget) to settle
+      it, then write the verdict with a cited reason — never write `dismissed`
+      without a decisive/narrowing fact AND without reading.
     `## Code Context` is a ±8-line window around the reported line for most types,
     but **integer-overflow** embeds the WHOLE function span (signature → candidate,
     up to ~200 lines) because its verdict needs the parameter types, the entry

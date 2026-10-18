@@ -276,8 +276,10 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 
 	// unchecked-return resolves the callee for the failure-contract proof;
 	// null-deref for the call-result-deref null@malloc-fail verdict (the
-	// callee's body decides whether its return can be NULL).
-	if spec.Name == "unchecked-return" || spec.Name == "null-deref" {
+	// callee's body decides whether its return can be NULL); double-free for
+	// the conditional first-release helper (cond@<callee>) whose body decides
+	// whether the first release is conditional.
+	if spec.Name == "unchecked-return" || spec.Name == "null-deref" || spec.Name == "double-free" {
 		if err := p.resolveCalleeDefs(ctx, candidates, filePathByID); err != nil {
 			return nil, fmt.Errorf("planner: resolve callee definitions: %w", err)
 		}
@@ -317,10 +319,15 @@ func (p *Planner) resolveCalleeDefs(ctx context.Context, candidates []Candidate,
 		// null-deref call-result dereferences (`f()->field`, `*f()`) carry
 		// the callee in CalleeName instead of APIName, so the same resolver
 		// gives them an embedded ## Callee Definition for the
-		// null@malloc-fail verdict.
+		// null@malloc-fail verdict. double-free's conditional first-release
+		// helper (`cond@<callee>`) carries it in FirstCallee — its body decides
+		// whether the release is conditional, so embed it the same way.
 		name := c.APIName
 		if name == "" {
 			name = c.CalleeName
+		}
+		if name == "" {
+			name = c.FirstCallee
 		}
 		if name == "" {
 			continue
@@ -333,6 +340,16 @@ func (p *Planner) resolveCalleeDefs(ctx context.Context, candidates []Candidate,
 		c.CalleeDefLine = fn.StartLine
 		c.CalleeDefEndLine = fn.EndLine
 		c.CalleeDefSignature = fn.Signature
+		// double-free's SECOND release helper (the unconditional cleanup call
+		// whose body decides "both frees on one path") gets its own def span so
+		// the report embeds it beside the conditional first helper.
+		if c.SecondCallee != "" {
+			if sfn := defsByName[c.SecondCallee]; sfn != nil {
+				c.SecondCalleeDefFile = filePathByID[sfn.FileID]
+				c.SecondCalleeDefLine = sfn.StartLine
+				c.SecondCalleeDefEndLine = sfn.EndLine
+			}
+		}
 	}
 	return nil
 }
@@ -462,6 +479,7 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			IsTypeExpr:        props.IsTypeExpr == "true",
 			IsCallResultDeref: props.IsCallResultDeref == "true",
 			ContractKnown:     props.ContractKnown == "true",
+			Consumed:          props.Consumed,
 			CalleeName:        props.Callee,
 			SuspicionLevel:    suspicion,
 			DeclLine:          props.DeclLine,
@@ -483,15 +501,18 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			SubRHSInfluenced:  props.RHSInfluenced == "true",
 			SubSink:           props.Sink,
 			Subject:           props.Subject,
+			Sanitizer:         props.Sanitizer,
 			CountField:        props.CountField,
 			UseLine:           props.UseLine,
 			Missing:           props.Missing,
 			EvidenceKind:      props.EvidenceKind,
+			GuardLine:         int(props.GuardLine),
 			FreeLine:          props.FreeLine,
 			FirstFree:         props.FirstFree,
 			SecondFree:        props.SecondFree,
 			MayFree:           props.MayFree == "true",
 			FirstCallee:       props.FirstCallee,
+			SecondCallee:      props.SecondCallee,
 			Victims:           props.Victims,
 			DefiniteLeak:      props.Definite == "true",
 			LeakEscapeKind:    props.EscapeKind,
@@ -502,6 +523,7 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			CopySize:          props.CopySize,
 			DstCapacity:       props.DstCapacity,
 			SizeArgument:      props.SizeArgument,
+			SrcCapacity:       int(props.SrcCapacity),
 			MutexA:            props.MutexA,
 			MutexB:            props.MutexB,
 			ReverseFunc:       props.ReverseFunc,

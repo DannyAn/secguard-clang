@@ -93,29 +93,45 @@ it, before you look at the next type.
 
 ## Context budget
 
-**Classify from the embedded evidence first; DO read source for what you cannot
-settle.** The scan pre-embeds the exact statement in
-`candidates/<type>/_index.md`'s `Source` column, the pipeline's precomputed
-verdict facts in its `Hint` column, and the source window in each
-`candidates/<type>/NNN_*.md` `## Code Context` block (a ±8-line window for most
-types; the WHOLE function span for `integer-overflow`, whose verdict needs the
-signature + accumulation chain). A proved hint + context →
-write the verdict, no read needed. Issuing a per-candidate source READ is the
-single biggest wall-clock cost of a large scan (one tool round-trip per candidate
-× thousands of candidates = tens of minutes), so never read for a candidate the
-embedded evidence already settles.
+**The embedded evidence IS the source — classify from it, and treat a raw `.c`
+read as a last resort for a cross-file body the pipeline could NOT embed.** The
+scan pre-embeds, for every candidate: the exact statement (`_index.md` `Source`
+column), the pipeline's verdict facts (`Hint` column + the candidate file's
+`## Pipeline Tokens` / `## Verdict Facts`), the `## Code Context` window (±8 for
+most types; the WHOLE function span for `integer-overflow`), the enclosing
+function's `## Location` signature, and — for unchecked-return / null-deref /
+double-free — the referenced callee/helper's `## Callee Definition` body. All of
+these are pre-read for you.
 
-But a `suspected`/`possible` candidate whose Hint/Source/Code Context is
-insufficient MUST be escalated to a raw source read — at the reported file:line
-via offset/limit, within the ≤5 source-read turns per type budget (a file already
-read for an earlier type is free). **"Undecidable" is not a valid verdict from
-the embedded evidence alone:** you may write `dismissed` for a candidate ONLY
-after the read budget is spent on it (or the defining evidence genuinely does not
-exist in the scan — a macro/callee defined in an unindexed header). Skipping the
-read and writing `dismissed` is the false-negative this rule exists to prevent.
-Never turn the budget into "read the whole repo": on a real codebase that
-exhausts the context window and silently drops the tail candidates. Do NOT read
-source for types you weren't assigned.
+Two kinds of hint — do NOT conflate them:
+
+**Machine-proved facts → decisive, classify from the row with no read:**
+- confirm: `certain-null`/`null@cfg-proof`/`null@malloc-fail`/`tainted`/
+  constant-`idx@`-past-`cap@`/`contract@known`/`leak@definite`/`reason@`(weak
+  crypto)/`async-unsafe@`/`cast@`(incompatible types).
+- dismiss: `contract@unknown`/`macro-context`(unproven macro)/`discard`/
+  `src-cap@ ≤ cap@`/`value-shape@`(placeholder/test).
+
+**Heuristic observations → keep your judgment, and use the ≤5-read budget when
+the embedded context cannot settle it:**
+- `maybe-null`/`maybe-uninit` (a suspicion, not a proof),
+- `init@unseen` (no in-function write, but a cross-function factory/memset may
+  have initialized the field — the Code Context does NOT show cross-function
+  writes; check the base object's factory before confirming),
+- `taint@none` (no taint chain proven — judge from the `## Location` signature
+  whether the argument is a public entry-point parameter or internal/trusted),
+- non-literal `fmt-arg@`/`path-arg@` (judge the argument's origin: a parameter
+  is attacker-reachable, an internal/trusted value or literal is not),
+- `sanitizer@` (a validator guards the sink — judge whether it is a complete
+  whitelist or a partial blacklist).
+
+Only a candidate whose defining evidence lives in an UN-indexed location (a
+macro/callee in a header the scan did not index, so its body is NOT embedded) is
+what the ≤5 source-read budget exists for — but a heuristic hint that the
+embedded context cannot settle is ALSO a legitimate use of that budget. Never use
+it to re-read what the Code Context/`## Callee Definition` already shows. Do NOT
+read source for types you weren't assigned, and never turn the budget into "read
+the whole repo".
 
 Classify ONLY from the candidates + the scan target's own sources. Never go
 looking for external labels or ground truth that happens to sit near the target
@@ -184,7 +200,10 @@ budget your effort, not to pre-judge the answer:
   `null@cfg-proof`/`null@malloc-fail`/`null@caller-arg`/`null@external-unknown`
   = null-deref nullable-origin tier (CFG-proved / proven-nullable call result /
   unproven caller argument / fail-open external assumption), `tainted` = injection
-  source, `weak-guard` = partial guard, `certain-uninit`/`maybe-uninit` = uninit
+  source, `taint@none` = the pipeline found NO taint chain reaching the sink —
+  this is NOT 'proven safe': a bare parameter/global or chained call may still be
+  caller-controlled, so judge the argument's origin from the signature,
+  `weak-guard` = partial guard, `certain-uninit`/`maybe-uninit` = uninit
   tier, `api@<name>` = the API in play, `cat@<name>` = the detector category,
   `lhs@<kind>`/`rhs@<kind>` = integer-overflow operand origin (param/local/global/
   deref), `rhs-influenced` = the subtrahend is caller-controlled, `sink@call_arg`/
@@ -196,7 +215,10 @@ budget your effort, not to pre-judge the answer:
    is below the modern-cipher minimum), `buf@<name>`/`cap@N`/`idx@<expr>` =
    buffer-overflow/out-of-bounds buffer, capacity, and access index/copy
    size/declared size argument (a constant past cap@ is detector-proved; a
-   variable one needs your range judgment), `alloc@N`/`acquire@N` = the leak's allocation/acquisition
+   variable one needs your range judgment), `src-cap@N` = the SOURCE buffer's
+   known capacity (a `strcpy(g_dst, g_src)` with src-cap@ ≤ cap@ copies a
+   bounded source into a same-or-larger destination — dismiss from the row, no
+   read), `alloc@N`/`acquire@N` = the leak's allocation/acquisition
   line, `leak@definite` = machine-proved loss (no release channel reachable
   on any path), `leak@conditional` = a release channel exists but the CFG
   proved a leak path bypasses it, `escape@none|store|return` = the
@@ -206,8 +228,11 @@ budget your effort, not to pre-judge the answer:
   endpoint), `callers@<census>` = the divide-by-zero call-site census (the
   callers passing non-constants are the ones to check), `origin@<kind>` =
   the uninitialized storage kind, `decl@N` = the uninit declaration line
-  (the Code Context window covers it), `init@none` = the detector PROVED the
-  read target is never written before the read (confirm from the row),
+  (the Code Context window covers it), `field@<path>` = the uninit read target
+  is that member/element, NOT the base pointer, `init@none` = the detector
+  PROVED a stack scalar is never written before the read (confirm from the row),
+  `init@unseen` = heap/struct storage a callee/memset/output-param may have
+  initialized (verify the init path, do NOT confirm from it alone),
   `init@N`+`may-skip` = the only writes are loop-body-only — judge the loop
   condition, nothing else, `expected@<type>`/`actual@<type>` =
   the argument-type mismatch (callee-declared vs actually passed),
@@ -222,7 +247,9 @@ budget your effort, not to pre-judge the answer:
   `subject@<name>` = implicit-contract's struct parameter or
   sizeof-misuse's operand, `count-field@<field>` = the field gating the
   pointer use, `evidence-kind@<kind>` = where the nullable treatment is
-  proven (self/caller), `cond@<callee>` = double-free's conditional
+  proven (self/caller), `self-guard@N` = the field IS null-checked at line N
+  but the deref sits outside that guard (the scope gap is the defect),
+  `cond@<callee>` = double-free's conditional
   first-release helper — its body decides the verdict)), so
   you confirm or dismiss from the table
   itself (statement matches the evidence → confirmed; it is guarded/different →
@@ -438,16 +465,20 @@ ownership of p after the loop is ambiguous". A bare "insufficient context" with 
 cited read is the tell that you never tried: it is not a reason, it is a bail, and
 the orchestrator audits it as "未研判即弃".
 
-**The precision rule: when in doubt, do not confirm — read first, then dismiss
-with a cited reason.** A `confirmed` false positive is the worst outcome, but a
-`dismissed` written WITHOUT reading the source hides a real bug, which a security
-scanner must also avoid. Before writing `confirmed` you MUST have settled it from
-evidence: a proved hint (`certain-null`/`tainted`/constant-OOB) + confirming
-context → `confirmed`; a guard / `_s` safe call / checked allocation / call
-contract that proves safety → `dismissed`. If you cannot settle it from the
-embedded evidence, spend the source-read budget first; only after that may you
-write `dismissed` (with the cited reason). Do NOT confirm a candidate merely
-because its `suspicion_level` is `confirmed` — that is a prior, not a verdict.
+**The precision rule: the hint IS the verdict basis — never read a `.c` file to
+re-derive what the embedded evidence already shows.** A `confirmed` false
+positive is the worst outcome, but a `dismissed` written without a decisive fact
+(a rebuttal token OR, only when the fact is un-embedded, a source read) hides a
+real bug. Before `confirmed` you MUST have settled it from embedded evidence: a
+proved hint (`certain-null`/`null@cfg-proof`/`tainted`/constant-OOB/non-literal
+`fmt-arg@`/`cast@`) → `confirmed`; a guard / `_s` safe call / checked allocation
+/ call contract / `discard` / `src-cap@ ≤ cap@` / `init@unseen`-with-a-factory-
+or-free-in-the-Code-Context → `dismissed`. A bare parameter/global is
+caller-supplied by the embedded `## Location` signature — confirm from that, no
+read. Only a fact that lives in an UN-indexed location (a header macro/callee
+whose body is NOT embedded) may trigger the ≤5-read budget, and then write the
+verdict with the cited read. Do NOT confirm a candidate merely because its
+`suspicion_level` is `confirmed` — that is a prior, not a verdict.
 
 **Macro-context candidates (Hint contains `macro-context`).** These are the
 highest false-positive risk: the pipeline could not see a macro's true semantics

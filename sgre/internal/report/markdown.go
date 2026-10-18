@@ -336,6 +336,19 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 			if pkg.VulnerabilityType == "null-deref" && (c.IsCallResultDeref || (c.NullOriginTier == "malloc-fail" && c.CalleeDefFile != "")) {
 				writeCalleeDefinition(&b, c, o, "the callee whose return is dereferenced. Judge whether its body can return NULL; no source read is needed.")
 			}
+			// double-free's conditional first-release helper (cond@<callee>): its
+			// body decides whether the first release is conditional, so embed it
+			// rather than sending the classifier on a whole-file source read to
+			// find release_entry/cleanup_entries (round3 allocator.c:123).
+			if pkg.VulnerabilityType == "double-free" && c.CalleeDefFile != "" {
+				writeCalleeDefinition(&b, c, o, "the conditional first-release helper. Judge whether it frees only on some paths; no source read is needed.")
+			}
+			// The SECOND release helper (the unconditional cleanup call): its body
+			// decides "both frees on one path" — embed it beside the first so the
+			// classifier never reads the whole file to find cleanup_entries.
+			if pkg.VulnerabilityType == "double-free" && c.SecondCalleeDefFile != "" {
+				writeSecondCalleeDefinition(&b, c, o, "the second (unconditional cleanup) release helper. Judge whether it frees the slot again; no source read is needed.")
+			}
 
 			// The pipeline's verdict tokens with their registry descriptions, so
 			// the candidate file is self-contained for RE-REVIEW and deep-dive:
@@ -536,20 +549,50 @@ func calleeDefContext(c planner.EvidenceItem, rootDir string) *codeContext {
 	return readCodeSpan(c.CalleeDefFile, start, end, start, rootDir)
 }
 
+// writeSecondCalleeDefinition embeds the double-free SECOND release helper's
+// body under ## Second Callee Definition, mirroring writeCalleeDefinition.
+func writeSecondCalleeDefinition(b *strings.Builder, c planner.EvidenceItem, o *ScanOutput, intro string) {
+	if c.SecondCalleeDefFile == "" {
+		return
+	}
+	start := c.SecondCalleeDefLine
+	if start <= 0 {
+		return
+	}
+	end := c.SecondCalleeDefEndLine
+	if end < start {
+		end = start + maxCalleeDefLines - 1
+	}
+	if end-start+1 > maxCalleeDefLines {
+		end = start + maxCalleeDefLines - 1
+	}
+	b.WriteString("## Second Callee Definition\n\n")
+	if ctx := readCodeSpan(c.SecondCalleeDefFile, start, end, start, o.RootDir); ctx != nil {
+		fmt.Fprintf(b, "`%s:%d-%d` — %s\n\n", displayPath(c.SecondCalleeDefFile, o.RootDir), ctx.StartLine, ctx.EndLine, intro)
+		b.WriteString(ctx.render())
+		if c.SecondCalleeDefEndLine > ctx.EndLine {
+			fmt.Fprintf(b, "\nBody truncated at line %d of %d — the callee continues past this window.\n", ctx.EndLine, c.SecondCalleeDefEndLine)
+		}
+		b.WriteString("\n")
+	} else {
+		fmt.Fprintf(b, "- Body unavailable at report time: `%s:%d` could not be read.\n\n", displayPath(c.SecondCalleeDefFile, o.RootDir), c.SecondCalleeDefLine)
+	}
+}
+
 // typeIndexLegend renders the _index.md header: the workflow framing (binary
 // verdict, Source+Hint-first classification, evidence-open fallback) plus the
 // token legend generated from the planner's hint token registry — the single
-// source of truth for the vocabulary. Before this, the legend was hand-copied
-// here and drifted from the tokens buildHint actually emits; now the guard
-// test (zz_hint_protocol_guard_test.go) keeps every referenced token
-// registered, and this rendering keeps every legend line in sync for free.
-func typeIndexLegend() string {
+// source of truth for the vocabulary. It renders ONLY the registry entries the
+// type's own emitted tokens use (HintLegendForTokens): the full-registry legend
+// was ~60 lines of mostly-irrelevant tokens on every type's first read, which
+// pushed the classifier to skim the Hint column instead of trusting it.
+func typeIndexLegend(tokens []string) string {
 	var b strings.Builder
 	b.WriteString("> Classify each candidate as confirmed / dismissed (BINARY).\n")
 	b.WriteString("> Classify from the `Source` + `Hint` columns first — `Hint` is the pipeline's\n")
 	b.WriteString("> precomputed verdict facts (legend generated from the single source in\n")
 	b.WriteString("> `sgre/internal/planner/hint_tokens.go`):\n>\n")
-	for _, line := range planner.HintLegendLines() {
+	for _, line := range planner.HintLegendForTokens(tokens) {
 		b.WriteString("> ")
 		b.WriteString(line)
 		b.WriteString("\n")
@@ -571,7 +614,19 @@ func (o *ScanOutput) writeTypeIndex(dir string, pkg *planner.PlanResult) error {
 	cwe := VulnToCWE(pkg.VulnerabilityType)
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("# %s (%s) — Candidates\n\n", pkg.VulnerabilityType, cwe))
-	b.WriteString(typeIndexLegend())
+	// The legend is scoped to the tokens this type actually emitted (the union
+	// across its candidates), so a subagent reads only its type's vocabulary.
+	seen := make(map[string]bool)
+	var legendTokens []string
+	for _, c := range pkg.Candidates {
+		for _, tok := range c.HintTokens {
+			if !seen[tok] {
+				seen[tok] = true
+				legendTokens = append(legendTokens, tok)
+			}
+		}
+	}
+	b.WriteString(typeIndexLegend(legendTokens))
 	b.WriteString("| # | Function | File:Line | Variable | Suspicion | Hint | Source | Evidence |\n")
 	b.WriteString("|---|----------|-----------|----------|-----------|------|--------|----------|\n")
 	for i, c := range pkg.Candidates {

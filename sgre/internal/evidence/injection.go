@@ -85,13 +85,24 @@ func (d *InjectionDetector) detectCommandInjection(ctx context.Context, f *db.Fu
 
 		// variable: the sink argument when it is a bare identifier, so the
 		// planner's taint filter can track it (system(buf) -> variable "buf").
-		if emitEvent(ctx, d.store, d.logger, "INJECTION", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
+		props := map[string]string{
 			"function":   callName,
 			"category":   "command_injection",
 			"taint":      taint,
 			"expression": call.OriginalText(),
 			"variable":   bareCommandArg(call),
-		}) {
+		}
+		// A caller-defined sanitizer (is_safe_input / *_validate / *_filter)
+		// guarding the sink argument is a PARTIAL-validation signal, not a proof
+		// of safety: a blacklist still lets `|`/`$()`/backticks through. Surface
+		// its name so the classifier confirms from the hint instead of reading
+		// the sanitizer body to characterise it.
+		if arg := bareCommandArg(call); arg != "" {
+			if sn := sanitizerGuardName(calls, f, call.StartLine(), arg); sn != "" {
+				props["sanitizer"] = sn
+			}
+		}
+		if emitEvent(ctx, d.store, d.logger, "INJECTION", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, props) {
 			result.EventsCreated++
 		}
 	}
@@ -334,4 +345,57 @@ func extractCallArgs(call parser.Node) []string {
 		}
 	}
 	return args
+}
+
+// isSanitizerName reports whether a function name is a caller-defined sanitizer/
+// validator (is_safe_input, validate_cmd, sanitize_*, *_filter, *_check). It is
+// a deliberate-name heuristic: the presence of such a guard is surfaced as a
+// `sanitizer@` fact (partial validation is still injection), never as a verdict.
+func isSanitizerName(name string) bool {
+	l := strings.ToLower(name)
+	for _, k := range []string{"safe", "sanitize", "validate", "filter", "check", "escape", "guard"} {
+		if strings.Contains(l, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// sanitizerGuardName returns the name of a sanitizer-named function called in f
+// before sinkLine, or "" when none. The argument is not matched exactly — the
+// sanitizer usually guards the TAINT SOURCE (`is_safe_input(user_cmd)`) while
+// the sink consumes a DERIVED buffer (`system(cmd)`), so the fact only says "a
+// validator named X is in play"; the classifier applies the partial-validation
+// rule (a blacklist is still injection). A sanitizer on an unrelated argument is
+// a rare false signal and harmless, since the fact never changes the taint
+// verdict.
+func sanitizerGuardName(calls []parser.Node, f *db.Function, sinkLine int, arg string) string {
+	for _, c := range calls {
+		if !funcLineRange(f, c.StartLine()) || c.StartLine() >= sinkLine {
+			continue
+		}
+		name := extractCallName(c)
+		if !isSanitizerName(name) {
+			continue
+		}
+		// Exact-arg match first (sink arg == sanitizer arg), then any sanitizer
+		// call (the source-guard shape). The exact match wins for a direct guard.
+		for _, a := range extractCallArgs(c) {
+			if strings.TrimSpace(a) == arg {
+				return name
+			}
+		}
+	}
+	// Second pass: a sanitizer on the source (a parameter / chained variable)
+	// still marks the function as partially-validated.
+	for _, c := range calls {
+		if !funcLineRange(f, c.StartLine()) || c.StartLine() >= sinkLine {
+			continue
+		}
+		name := extractCallName(c)
+		if isSanitizerName(name) {
+			return name
+		}
+	}
+	return ""
 }

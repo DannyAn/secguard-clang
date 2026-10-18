@@ -132,7 +132,7 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 				}
 				noteDecl(init)
 			}
-			indirectGuarded := indirectGuardedVars(calls, f, checked, summaries.nullRejectParams)
+			indirectGuarded := indirectGuardedVars(calls, f, checked, summaries.nullRejectParams, retTypes)
 			for _, call := range calls {
 				if !funcLineRange(f, call.StartLine()) {
 					continue
@@ -245,12 +245,20 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 					}
 				}
 
-				if emitEvent(ctx, d.store, d.logger, "UNCHECKED_RETURN", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
+				props := map[string]string{
 					"function":       extractCallName(call),
 					"expression":     call.OriginalText(),
 					"category":       "unchecked_return",
 					"contract_known": strconv.FormatBool(contractKnown),
-				}) {
+				}
+				// A result whose only observable use is a `(void)` cast is
+				// deliberately discarded: the failure cannot be observed, but the
+				// lead stays (name-heuristic contract) with a discard@ fact so the
+				// AI dismisses from the hint without a source read.
+				if vars := assignedVarsOfCall(call); len(vars) > 0 && resultVoidDiscarded(vars, call, f, ids) {
+					props["consumed"] = "discard"
+				}
+				if emitEvent(ctx, d.store, d.logger, "UNCHECKED_RETURN", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, props) {
 					result.EventsCreated++
 				}
 			}
@@ -448,7 +456,7 @@ func bareConditionVars(cond *parser.Node) []string {
 // positive. Requiring the callee's entry guard is what keeps a
 // dereferencing call such as `if (strlen(p) > 0)` reportable: the argument is
 // used, not validated.
-func indirectGuardedVars(calls []parser.Node, f *db.Function, checked map[string]bool, nullRejectParams map[string]map[int]bool) map[string]bool {
+func indirectGuardedVars(calls []parser.Node, f *db.Function, checked map[string]bool, nullRejectParams map[string]map[int]bool, retTypes map[string]string) map[string]bool {
 	if len(nullRejectParams) == 0 {
 		return nil
 	}
@@ -487,7 +495,15 @@ func indirectGuardedVars(calls []parser.Node, f *db.Function, checked map[string
 					break
 				}
 			}
-			if !checkedResult {
+			// A VOID-returning consumer that entry-rejects its parameter
+			// (`void release_entry(Entry *e) { if (!e) return; ... }`) handles
+			// the NULL internally — there is no result to check and no error to
+			// propagate, and the consumer does not dereference a NULL argument.
+			// The possibly-NULL variable is therefore still safe, so the source
+			// call's unchecked-return is a false positive (alloc_entry → main →
+			// release_entry). A subsequent dereference of the same variable is
+			// caught by the null-deref detector, not by CWE-252.
+			if !checkedResult && !voidReturning(retTypes, extractCallName(call)) {
 				continue
 			}
 		}
@@ -510,13 +526,16 @@ func indirectGuardedVars(calls []parser.Node, f *db.Function, checked map[string
 	return out
 }
 
-// entryNullRejectParams returns the 0-based parameter indices a function rejects
-// at entry: a top-level `if` whose NULL-direction branch returns a failure
-// sentinel (`if (p == NULL) return -1;` rejects parameter p). The polarity
-// matters — `if (p != NULL) { ... } else { return -1; }` rejects p too (the
-// branch taken when p is NULL returns), while `if (p != NULL) return 0;` does
-// not. A branch that returns success (bare `return;`, `return 0;`) is not a
-// rejection: the caller's `ret != 0` test could not detect a NULL argument.
+// entryNullRejectParams returns the 0-based parameter indices a function
+// null-safely rejects at entry: a top-level `if` whose NULL-direction branch
+// returns (`if (p == NULL) return -1;`, `if (!e) return;`, `if (!p) return 0;`
+// all reject parameter p — the branch taken when p is NULL exits the function
+// before any dereference). The polarity matters — `if (p != NULL) { ... } else
+// { return; }` rejects p too, while `if (p != NULL) return 0;` does not (the
+// p == NULL path falls through). A BARE or success return counts: a NULL-safe
+// consumer handles NULL internally (`void release_entry(Entry *e) { if (!e)
+// return; ... }`), so the caller's unchecked return is a false positive even
+// though there is no failure sentinel for the caller to observe.
 func entryNullRejectParams(fnNode parser.Node) map[int]bool {
 	body := fnNode.FindFirst("compound_statement")
 	if body == nil {
@@ -559,26 +578,30 @@ func entryNullRejectParams(fnNode parser.Node) map[int]bool {
 		// NullCheckedVars = the variables the condition proves NULL when it is
 		// false, i.e. the ones the then-branch sees as NULL; GuardedNonnullVars
 		// is the dual for the else-branch.
-		if cons := stmt.ChildByFieldName("consequence"); cons != nil && branchFailureReturns(*cons) {
+		if cons := stmt.ChildByFieldName("consequence"); cons != nil && branchReturns(*cons) {
 			mark(parser.NullCheckedVars(*cond))
 		}
-		if alt := stmt.ChildByFieldName("alternative"); alt != nil && branchFailureReturns(*alt) {
+		if alt := stmt.ChildByFieldName("alternative"); alt != nil && branchReturns(*alt) {
 			mark(parser.GuardedNonnullVars(*cond))
 		}
 	}
 	return out
 }
 
-// branchFailureReturns reports whether a branch body returns a failure sentinel:
-// any `return <value>` whose value is not provably zero/success. A bare
-// `return;` cannot be observed by a `ret != 0` test and `return 0;` reports
-// success, so neither counts. Non-numeric error tokens (`return IDM_ERR;`),
-// `return -1;` and `return NULL;` all count.
-func branchFailureReturns(branch parser.Node) bool {
+// branchReturns reports whether a branch body exits the function on the NULL
+// path in a way that makes the argument null-safe: a bare `return;` (a void
+// consumer handles NULL internally — `void release_entry(Entry *e) { if (!e)
+// return; ... }`), or a failure sentinel (`return -1;` / `return NULL;` /
+// `return IDM_ERR;`, which the caller can observe). A success return
+// (`return 0;` / `return false;`) is NOT a guard: the caller's `ret != 0` test
+// cannot distinguish a NULL argument from success, so the NULL is unhandled.
+// The polarity of WHICH branch is the NULL branch is decided by
+// NullCheckedVars/GuardedNonnullVars in the caller.
+func branchReturns(branch parser.Node) bool {
 	for _, ret := range branch.FindAll("return_statement") {
 		children := ret.NamedChildren()
 		if len(children) == 0 {
-			continue
+			return true
 		}
 		text := stripCastsAndParens(children[0].Text())
 		if text == "" || text == "0" || text == "false" || text == "FALSE" {
@@ -656,6 +679,61 @@ func callResultChecked(call parser.Node) bool {
 		}
 	}
 	return false
+}
+
+// insideVoidCast reports whether an identifier is the operand of a cast to
+// void (`(void)p`) — the programmer's explicit "discard this value"
+// annotation. It walks parenthesized expressions but stops at the statement
+// boundary, so a `(void)` on an unrelated expression cannot swallow a later use.
+func insideVoidCast(id parser.Node) bool {
+	for p := id.Parent(); p != nil; p = p.Parent() {
+		switch p.Kind() {
+		case "cast_expression":
+			for _, c := range p.NamedChildren() {
+				if c.Kind() == "type_descriptor" {
+					return typeSpelling(c) == "void"
+				}
+			}
+			return false
+		case "parenthesized_expression":
+			continue
+		case "expression_statement", "function_definition":
+			return false
+		}
+	}
+	return false
+}
+
+// resultVoidDiscarded reports whether an assigned result is consumed ONLY by
+// explicit `(void)` casts after the call (with free/sizeof/rebind occurrences
+// also tolerated). It is distinct from neverUsedAfter's dead store (no
+// occurrence at all): the value IS discarded deliberately, so the failure
+// cannot be observed, but the event stays as a lead carrying a `discard@` fact
+// so the AI dismisses from the hint instead of reading the source to find the
+// `(void)p` (round3 idm_new_idmgr).
+func resultVoidDiscarded(vars []string, call parser.Node, f *db.Function, ids []parser.Node) bool {
+	targets := make(map[string]bool, len(vars))
+	for _, v := range vars {
+		if v == "" || strings.ContainsAny(v, ".[>*") {
+			return false
+		}
+		targets[v] = true
+	}
+	discarded := false
+	for _, id := range ids {
+		if !targets[id.Text()] || !funcLineRange(f, id.StartLine()) || id.StartLine() <= call.StartLine() {
+			continue
+		}
+		if insideSizeof(id) || isRebindTarget(id) || nullSafeFreedArg(id) {
+			continue
+		}
+		if insideVoidCast(id) {
+			discarded = true
+			continue
+		}
+		return false // a real observable use — not a pure discard
+	}
+	return discarded
 }
 
 // isVoidCast reports whether the call is wrapped in a (void) cast — the
@@ -817,6 +895,20 @@ func (d *UncheckedReturnDetector) funcReturnTypes(ctx context.Context) (map[stri
 		}
 	}
 	return types, nil
+}
+
+// voidReturning reports whether the indexed function's declared return type is
+// exactly `void` (no result to check). Used by indirectGuardedVars to relax the
+// "consumer's result must be checked" requirement: a void consumer that
+// entry-rejects its parameter handles a NULL argument internally, so the source
+// call's unchecked return is a false positive. An unknown/empty type stays
+// non-void (conservative) so a missing return-type cannot silently widen the
+// suppression.
+func voidReturning(retTypes map[string]string, name string) bool {
+	if retTypes == nil {
+		return false
+	}
+	return strings.TrimSpace(retTypes[name]) == "void"
 }
 
 // funcSummaries bundles the two cross-function facts the detector derives from
