@@ -72,6 +72,12 @@ func TestWriteSarifFromFindings(t *testing.T) {
 	if results[0].Properties["reasoning"] != "分配后立即解引用" {
 		t.Errorf("properties.reasoning not carried, got %+v", results[0].Properties)
 	}
+	if results[0].Properties["evidence"] != "分配器可能返回 NULL" {
+		t.Errorf("properties.evidence not carried, got %+v", results[0].Properties)
+	}
+	if !strings.Contains(results[0].Message.Markdown, "分配后立即解引用") || !strings.Contains(results[0].Message.Markdown, "分配器可能返回 NULL") {
+		t.Errorf("message.markdown must surface reasoning + evidence up front, got %q", results[0].Message.Markdown)
+	}
 	if results[0].Properties["variable"] != "p" {
 		t.Errorf("properties.variable = %q, want p", results[0].Properties["variable"])
 	}
@@ -104,6 +110,7 @@ func sarifVerdictFindings() []*db.Finding {
 			FilePath: "src/a.c", LineNumber: 13, FunctionName: "f",
 			Variable: "p",
 			Summary:  "malloc 未判空即解引用", Reasoning: "分配后立即解引用",
+			Evidence: "分配器可能返回 NULL",
 			ExceptionCheck: "无 safe wrapper", FixStrategy: "if (p == NULL) return -1;",
 		},
 		{

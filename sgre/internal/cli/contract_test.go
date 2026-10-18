@@ -694,6 +694,12 @@ func TestAutoConfirmedReReviewCLIFlow(t *testing.T) {
 	if err != nil || len(all) != 1 {
 		t.Fatalf("seed auto-confirmed finding: n=%d err=%v", len(all), err)
 	}
+	// The finding file's Evidence section is rendered from the DB evidence
+	// column (auto-confirmed findings have no candidate file), so the column
+	// must carry the rendered evidence bullets.
+	if got := all[0].Evidence; !strings.Contains(got, "- **condition:** allocation never freed") {
+		t.Errorf("auto-confirmed finding must carry rendered evidence in the Evidence column, got %q", got)
+	}
 	findingID := all[0].ID
 	s.Close()
 

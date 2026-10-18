@@ -81,7 +81,8 @@ type sarifSuppression struct {
 }
 
 type sarifMessage struct {
-	Text string `json:"text"`
+	Text     string `json:"text"`
+	Markdown string `json:"markdown,omitempty"`
 }
 
 type sarifLocation struct {
@@ -436,11 +437,25 @@ func writeSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding, k
 			}
 		}
 
+		// The reasoning + evidence are what a reviewer actually reads to decide
+		// "is this right", so they travel in the SARIF `message.markdown` (the
+		// third result field, right after ruleId/level) instead of being buried
+		// at the tail of the properties bag — reviewers previously had to scroll
+		// past locations/fingerprints/fixes to reach them.
+		var md strings.Builder
+		if f.Reasoning != "" {
+			fmt.Fprintf(&md, "**Reasoning:** %s\n\n", f.Reasoning)
+		}
+		if f.Evidence != "" {
+			fmt.Fprintf(&md, "**Evidence:**\n%s", f.Evidence)
+		}
+
 		result := sarifResult{
 			RuleID: cwe,
 			Level:  level,
 			Message: sarifMessage{
-				Text: verdictMessageText(vulnType, f.FunctionName, f.FilePath, f.LineNumber, f.Variable, sev, status, msg),
+				Text:     verdictMessageText(vulnType, f.FunctionName, f.FilePath, f.LineNumber, f.Variable, sev, status, msg),
+				Markdown: strings.TrimSpace(md.String()),
 			},
 			Locations: []sarifLocation{{PhysicalLocation: physical}},
 			PartialFingerprints: map[string]string{
@@ -465,6 +480,9 @@ func writeSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding, k
 		}
 		if f.Reasoning != "" {
 			result.Properties["reasoning"] = f.Reasoning
+		}
+		if f.Evidence != "" {
+			result.Properties["evidence"] = f.Evidence
 		}
 		// Surface the second-round AI re-review verdict (ai_confirmed /
 		// needs_more_evidence) on auto-confirmed findings. The binary `status`

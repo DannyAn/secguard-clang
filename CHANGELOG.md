@@ -4,6 +4,11 @@
 
 ## [0.9.8] - 2026-10-18
 
+### 发布后修复（版本验证期）
+
+- **auto-confirmed 发现 Evidence 为空**：机器自动确认的发现此前不写 `findings.evidence` 列（证据只进了 `properties.auto_confirm_evidence`），且没有候选文件，导致 `findings/*/NNN_*_confirmed.md` 的 Evidence 段显示 "(no pipeline evidence package recorded for this location)"。现在 `autoConfirmFindings` 把证据片段渲染成与候选文件一致的 bullet 形式写入 `evidence` 列，findings 文档 Evidence 段与 SARIF `properties.evidence` 均可见。
+- **SARIF reasoning/evidence 位置靠后**：`result.sarif` 的 `reasoning` 此前只放在结果对象末尾的 `properties` 里，研发需反复滚动。现在 reasoning + evidence 同时进入 `message.markdown`（结果第 3 个字段，紧邻 ruleId/level），`properties.reasoning`/`properties.evidence` 保留供程序化消费。
+
 ### 证据契约 v2（B0-B5）——Hint 体系单一事实源 + 每类型 Verdict Facts
 
 把 AI 研判/复核的判定依据从"临时读源码"改成"管线机器证明的事实包"，目标是在不牺牲准确率的前提下减少 AI 读 .c 源码。

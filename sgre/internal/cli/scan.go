@@ -627,10 +627,22 @@ func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType s
 			continue
 		}
 		var details []string
+		var evidenceLines []string
 		for _, e := range c.Evidence {
-			if d := strings.TrimSpace(e.Detail); d != "" {
-				details = append(details, d)
+			d := strings.TrimSpace(e.Detail)
+			if d == "" {
+				continue
 			}
+			details = append(details, d)
+			// Render the pipeline evidence as the same bullet form the
+			// candidate file uses, so the finding's Evidence section (and the
+			// SARIF evidence property) is self-contained even though an
+			// auto-confirmed finding has no candidate file.
+			label := e.Role
+			if label == "" {
+				label = e.Type
+			}
+			evidenceLines = append(evidenceLines, fmt.Sprintf("- **%s:** %s", label, d))
 		}
 		summary := strings.Join(details, "; ")
 		if summary == "" {
@@ -654,6 +666,7 @@ func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType s
 			Properties:   properties,
 			Summary:      summary,
 			Reasoning:    "Pipeline-proved (auto-confirmed): " + summary,
+			Evidence:     strings.Join(evidenceLines, "\n"),
 			FixStrategy:  report.FixSuggestion(vulnType, cwe, c),
 			ScanID:       scanID,
 			Fingerprint:  computeFingerprint(cwe, c.Target.File, c.Target.Function, c.Target.Line),
