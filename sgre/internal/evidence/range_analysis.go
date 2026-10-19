@@ -42,18 +42,34 @@ type reassignSite struct {
 	rhs  string
 }
 
+// guardLoc matches the subject of a zero/non-zero guard: a bare identifier or a
+// field-access chain (`g_pool_bt.inst_num`, `show_data->total_resource`). The
+// chain form is preferred so `a->b` is one location, not the bare `a`. The char
+// class is `\w` plus explicit `.`/`->` separators — never a bare `-` — so a
+// compound `a - b` condition is not mistaken for a field chain.
+const guardLoc = `[A-Za-z_]\w*(?:(?:->|\.)[A-Za-z_]\w*)*`
+
 var (
 	reLt     = regexp.MustCompile(`^(\w+)\s*<\s*(\d+)$`)
 	reLe     = regexp.MustCompile(`^(\w+)\s*<=\s*(\d+)$`)
-	reGt     = regexp.MustCompile(`^(\w+)\s*>\s*(\d+)$`)
-	reGe     = regexp.MustCompile(`^(\w+)\s*>=\s*(\d+)$`)
-	reNeZero = regexp.MustCompile(`^(\w+)\s*!=\s*0$`)
-	reEqZero = regexp.MustCompile(`^(\w+)\s*==\s*0$`)
-	reNot    = regexp.MustCompile(`^!(\w+)$`)
-	reBare   = regexp.MustCompile(`^(\w+)$`)
+	reGt     = regexp.MustCompile(`^(` + guardLoc + `)\s*>\s*(\d+)$`)
+	reGe     = regexp.MustCompile(`^(` + guardLoc + `)\s*>=\s*(\d+)$`)
+	reNeZero = regexp.MustCompile(`^(` + guardLoc + `)\s*!=\s*0$`)
+	reEqZero = regexp.MustCompile(`^(` + guardLoc + `)\s*==\s*0$`)
+	reNot    = regexp.MustCompile(`^!(` + guardLoc + `)$`)
+	reBare   = regexp.MustCompile(`^(` + guardLoc + `)$`)
 	reNeNull = regexp.MustCompile(`^(\w+)\s*!=\s*NULL$`)
 	reEqNull = regexp.MustCompile(`^(\w+)\s*==\s*NULL$`)
 )
+
+// normalizeGuardText strips whitespace from a guard subject or divisor text so a
+// field chain spelled `g_pool_bt . inst_num` in the condition matches the divisor
+// spelling `g_pool_bt.inst_num`. Identifiers and field chains contain no interior
+// whitespace in practice, so the collapse is lossless for the shapes guardOperandText
+// accepts (identifier / field_expression).
+func normalizeGuardText(s string) string {
+	return strings.Join(strings.Fields(s), "")
+}
 
 // IfsInFunc returns the if-statements whose line range falls within [start,
 // end], so AnalyzeBounds only sees guards from the same function and cannot
@@ -98,10 +114,21 @@ func AnalyzeBounds(ifs, assigns []parser.Node) *RangeFacts {
 	}
 	for _, assign := range assigns {
 		children := assign.NamedChildren()
-		if len(children) < 2 || children[0].Kind() != "identifier" {
+		if len(children) < 2 {
 			continue
 		}
-		r.reassigns[children[0].Text()] = append(r.reassigns[children[0].Text()], reassignSite{line: assign.StartLine(), rhs: children[1].Text()})
+		// Track whole-variable reassignment for bare identifiers AND field chains
+		// (`g->count = get()` must kill a `if (g->count == 0) return;` fact just as
+		// `d = get()` kills a bare `d` fact). The key is normalized so a guard
+		// subject and a reassignment spelled with different whitespace still match.
+		var target string
+		switch children[0].Kind() {
+		case "identifier", "field_expression":
+			target = normalizeGuardText(children[0].Text())
+		default:
+			continue
+		}
+		r.reassigns[target] = append(r.reassigns[target], reassignSite{line: assign.StartLine(), rhs: children[1].Text()})
 	}
 	for _, ifStmt := range ifs {
 		cond := ifStmt.ChildByFieldName("condition")
@@ -205,7 +232,7 @@ func elseAssignsPossiblyZero(ifStmt parser.Node, varName string) bool {
 	}
 	for _, assign := range alt.FindAll("assignment_expression") {
 		named := assign.NamedChildren()
-		if len(named) < 2 || strings.TrimSpace(named[0].Text()) != varName {
+		if len(named) < 2 || normalizeGuardText(named[0].Text()) != varName {
 			continue
 		}
 		if possiblyZeroDivisor(named[1].Text()) {
@@ -222,7 +249,7 @@ func elseAssignsPossiblyZero(ifStmt parser.Node, varName string) bool {
 func consequenceAssignsNonZero(node parser.Node, varName string) bool {
 	for _, assign := range node.FindAll("assignment_expression") {
 		named := assign.NamedChildren()
-		if len(named) < 2 || strings.TrimSpace(named[0].Text()) != varName {
+		if len(named) < 2 || normalizeGuardText(named[0].Text()) != varName {
 			continue
 		}
 		if !possiblyZeroDivisor(named[1].Text()) {
@@ -237,6 +264,7 @@ func consequenceAssignsNonZero(node parser.Node, varName string) bool {
 // early-return guard whose fall-through precedes the line. A whole-variable
 // reassignment between the guard and the line kills the fact.
 func (r *RangeFacts) NonZeroAt(v string, line int) bool {
+	v = normalizeGuardText(v)
 	for _, rng := range r.nonZeroInside[v] {
 		if line >= rng[0] && line <= rng[1] && !r.reassignedToPossiblyZeroIn(v, rng[0], line) {
 			return true

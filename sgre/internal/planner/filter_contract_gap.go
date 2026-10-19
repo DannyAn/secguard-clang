@@ -111,8 +111,14 @@ func (f *ContractGapFilter) Apply(ctx context.Context, candidates []Candidate) (
 }
 
 // targetsGuardDominates reports whether every CFG path from entry to line passes
-// through an early-exit null guard of one of targets.
+// through an early-exit null guard of one of targets, or the line sits inside a
+// loop whose condition establishes a target non-null on the body (the loop
+// condition is re-checked each iteration, so every path into the body has the
+// target non-null).
 func targetsGuardDominates(body parser.Node, funcEnd int, targets map[string]bool, line int) bool {
+	if loopGuardsTarget(body, targets, line) {
+		return true
+	}
 	cfg := graph.BuildStmtCFG(body, funcEnd)
 	var guardIDs map[int]bool
 	for _, n := range cfg.Nodes {
@@ -142,6 +148,31 @@ func targetsGuardDominates(body parser.Node, funcEnd int, targets map[string]boo
 		return false
 	}
 	return !cfg.ReachesAvoiding(cfg.Entry, guardIDs, deref.ID)
+}
+
+// loopGuardsTarget reports whether line sits inside the body of a for/while loop
+// whose condition establishes one of targets non-null on the true branch
+// (`for (...; cur != NULL && cur->data != NULL; ...) { ...line... }`). Every path
+// into the body passes through the condition's true edge, so the target is
+// non-null at line.
+func loopGuardsTarget(body parser.Node, targets map[string]bool, line int) bool {
+	loops := append(body.FindAll("for_statement"), body.FindAll("while_statement")...)
+	for _, loop := range loops {
+		cond := loop.ChildByFieldName("condition")
+		loopBody := loop.ChildByFieldName("body")
+		if cond == nil || loopBody == nil {
+			continue
+		}
+		if line < loopBody.StartLine() || line > loopBody.EndLine() {
+			continue
+		}
+		for _, v := range parser.GuardedNonnullVars(*cond) {
+			if targets[v] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // allCallersValidate reports whether the candidate function has at least one

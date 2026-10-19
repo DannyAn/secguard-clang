@@ -237,7 +237,7 @@ func isDefiniteZeroDivisor(divisor string, constants *parser.ConstantEnv) bool {
 // that reaches the division, the guard has already established d != 0. The
 // condition is parsed as AST (direction + compound + word boundary), not text.
 func divisionGuarded(expr parser.Node, divisor string) bool {
-	d := strings.TrimSpace(divisor)
+	d := normalizeGuardText(divisor)
 	for n, prev := &expr, (*parser.Node)(nil); n != nil; n, prev = n.Parent(), n {
 		switch n.Kind() {
 		case "conditional_expression":
@@ -324,8 +324,10 @@ func nonZeroGuardedVars(cond parser.Node) []string {
 		}
 		cond = ch[0]
 	}
-	if cond.Kind() == "identifier" {
-		return []string{cond.Text()}
+	// A bare identifier (`if (d)`) or a field chain (`if (pool->ip_num)`) both
+	// establish the location non-zero when the condition is true.
+	if name := guardOperandText(cond); name != "" {
+		return []string{name}
 	}
 	if cond.Kind() != "binary_expression" {
 		return nil
@@ -354,7 +356,7 @@ func nonZeroComparisonVar(cond parser.Node) []string {
 		if isZeroLiteralNode(c) {
 			continue
 		}
-		if name := bareOperandVar(c); name != "" {
+		if name := guardOperandText(c); name != "" {
 			return []string{name}
 		}
 	}
@@ -375,12 +377,12 @@ func relationalNonZeroVar(cond parser.Node) []string {
 	var bound int64
 	var reversed bool
 	if lv, err := intLiteralValue(l); err == nil {
-		if name = bareOperandVar(r); name == "" {
+		if name = guardOperandText(r); name == "" {
 			return nil
 		}
 		bound, reversed = lv, true
 	} else if rv, err := intLiteralValue(r); err == nil {
-		if name = bareOperandVar(l); name == "" {
+		if name = guardOperandText(l); name == "" {
 			return nil
 		}
 		bound, reversed = rv, false
@@ -442,7 +444,7 @@ func zeroGuardedVars(cond parser.Node) []string {
 			if isZeroLiteralNode(c) {
 				continue
 			}
-			if name := bareOperandVar(c); name != "" {
+			if name := guardOperandText(c); name != "" {
 				return []string{name}
 			}
 		}
@@ -450,7 +452,7 @@ func zeroGuardedVars(cond parser.Node) []string {
 	}
 	if cond.Kind() == "unary_expression" && strings.HasPrefix(strings.TrimSpace(cond.Text()), "!") {
 		for _, c := range cond.NamedChildren() {
-			if name := bareOperandVar(c); name != "" {
+			if name := guardOperandText(c); name != "" {
 				return []string{name}
 			}
 		}
@@ -509,6 +511,27 @@ func bareOperandVar(n parser.Node) string {
 	}
 	if n.Kind() == "identifier" {
 		return n.Text()
+	}
+	return ""
+}
+
+// guardOperandText returns the normalized text of an operand that can be the
+// subject of a zero/non-zero guard: a bare identifier or a field-access chain
+// (`show_data->total_resource`, `g_pool_bt.inst_num`). A call, subscript,
+// dereference, or compound arithmetic operand returns "" — a guard over those
+// does not establish a simple fact about a single divisor location. The result is
+// whitespace-normalized so it matches the divisor spelling in divisionGuarded.
+func guardOperandText(n parser.Node) string {
+	for n.Kind() == "parenthesized_expression" {
+		ch := n.NamedChildren()
+		if len(ch) == 0 {
+			return ""
+		}
+		n = ch[0]
+	}
+	switch n.Kind() {
+	case "identifier", "field_expression":
+		return normalizeGuardText(n.Text())
 	}
 	return ""
 }

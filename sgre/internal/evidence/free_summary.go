@@ -311,7 +311,11 @@ func directFree(stmt parser.Node) (base, field string, ok bool) {
 		return "", "", false
 	}
 	for _, child := range stmt.NamedChildren() {
-		if child.Kind() != "call_expression" || !apikb.IsDeallocator(extractCallName(child)) {
+		if child.Kind() != "call_expression" {
+			continue
+		}
+		callName := extractCallName(child)
+		if !apikb.IsDeallocator(callName) {
 			continue
 		}
 		args := getCallArgs(child)
@@ -323,6 +327,16 @@ func directFree(stmt parser.Node) (base, field string, ok bool) {
 			return arg.Text(), "", true
 		}
 		if arg.Kind() == "field_expression" {
+			// A field free (`free(p->f)`) is only trusted for DECLARED
+			// deallocators. A heuristic `_delete`/`_destroy`-named function
+			// taking a field (`portrng_delete_syslog_server(host->vsys_id, ...)`)
+			// deletes the ENTRY, not the field — treating host->vsys_id as freed
+			// fabricates a use-after-free on the caller's later read of the
+			// cleared config. Real field-frees through a project wrapper are
+			// declared via secguard.toml [deallocators].
+			if !apikb.IsDeclaredDeallocator(callName) {
+				continue
+			}
 			b, f := extractFieldAccess(arg)
 			return b, f, true
 		}
