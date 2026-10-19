@@ -141,10 +141,13 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "cast@", Display: "cast@<type>", Description: "the explicit cast target type: {value} — a reinterpretation between incompatible pointer types"},
 
 	// ---- format-string ----
-	{Key: "fmt-arg@", Display: "fmt-arg@<expr>", Description: "the format argument expression: {value} — a non-literal (variable) format is the CWE-134 signal; a function PARAMETER (see ## Location signature) is attacker-reachable → confirmed; a constant string literal → dismissed"},
+	{Key: "fmt-arg@", Display: "fmt-arg@<expr>", Description: "the format argument expression: {value} — a non-literal (variable) format is the CWE-134 signal; a function PARAMETER is attacker-reachable only when callsites@ shows a non-constant argument or no in-tree call site — pair with callsites@ before confirming; a constant string literal → dismissed"},
 
 	// ---- path-traversal ----
-	{Key: "path-arg@", Display: "path-arg@<expr>", Description: "the path argument expression: {value} — judge whether a caller can inject `../`: a tainted source (paired with `tainted`) or a public entry-point parameter → confirmed; an internal/trusted path or an O_NOFOLLOW/dir_fd-anchored sink → dismissed"},
+	{Key: "path-arg@", Display: "path-arg@<expr>", Description: "the path argument expression: {value} — judge whether a caller can inject `../`: a tainted source (paired with `tainted`) or a non-constant call-site argument (see callsites@) → confirmed; an internal/trusted path or an O_NOFOLLOW/dir_fd-anchored sink → dismissed"},
+
+	// ---- format-string / path-traversal (caller-side census) ----
+	{Key: "callsites@", Display: "callsites@<census>", Description: "the in-tree call-site census for the sink parameter: {value} — `N:all-literal` means every in-tree caller passes a compile-time constant → dismiss; `N:K-literal,J-var` means the var/tainted callers are where attacker input could enter → inspect those callers before confirming; absent means no in-tree call site binds the parameter (an external TU may call it)"},
 
 	// ---- hardcoded-secret ----
 	{Key: "value-shape@", Display: "value-shape@<masked>", Description: "the literal's masked shape (4-char prefix + length): {value} — judge placeholder (REPLACE…), test value (test…), or real credential"},

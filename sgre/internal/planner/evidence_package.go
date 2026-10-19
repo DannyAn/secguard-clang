@@ -409,9 +409,19 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			if c.FormatArg != "" {
 				parts = append(parts, "fmt-arg@"+c.FormatArg)
 			}
+			// The caller-side census replaces the "a parameter is
+			// attacker-reachable" assumption: all-literal callers pass
+			// compile-time constants, var/tainted callers are the ones to
+			// inspect.
+			if c.CallsiteSummary != "" {
+				parts = append(parts, "callsites@"+c.CallsiteSummary)
+			}
 		case "path-traversal":
 			if c.PathExpr != "" {
 				parts = append(parts, "path-arg@"+c.PathExpr)
+			}
+			if c.CallsiteSummary != "" {
+				parts = append(parts, "callsites@"+c.CallsiteSummary)
 			}
 		case "injection":
 			// A caller-defined sanitizer guarding the sink argument is a partial
