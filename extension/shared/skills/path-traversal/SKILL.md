@@ -23,12 +23,16 @@ A path-traversal candidate has:
 - **call_path**: the function is reachable from an entry point
 - **taint_source** (when the pipeline proved it): a user-controlled value
   (getenv / argv / recv / scanf / fgets …) reaches the path argument
+- **callsite_census** (when the path argument is a function parameter): the
+  in-tree call-site argument census for that parameter — `all-literal` means
+  every caller passes a compile-time constant
 
 ### Hint Tokens (Verdict Basis)
 
 | Token | Meaning | Your action |
 |-------|---------|-------------|
-| `path-arg@<expr>` | the path argument expression — the traversal root | judge whether a caller can inject `../` segments |
+| `path-arg@<expr>` | the path argument expression — the traversal root | judge whether a caller can inject `../` segments; pair with `callsites@` when the argument is a parameter |
+| `callsites@<census>` | the in-tree call-site census for the path parameter | `N:all-literal` = every in-tree caller passes a compile-time constant → **dismissed**; `N:K-literal,J-var` = the var/tainted callers are where attacker input could enter → inspect those callers before confirming; token absent = no in-tree call site binds the parameter (an external TU may call it) |
 
 `path-arg@` names the argument the traversal rides on; `tainted` alongside
 it means the segments come from outside — confirm unless a sanitizer is
@@ -39,17 +43,20 @@ visible in the Code Context.
 | Condition | Classification |
 |-----------|---------------|
 | `fopen(user_input, "r")` where a taint source reaches the path | **confirmed** |
-| `fopen(path, ...)` where `path` is a function parameter with no provable tainted caller | **dismissed** |
+| `fopen(path, ...)` — path is a parameter, `callsites@` shows a non-constant caller | **confirmed** (attacker-reachable via that caller) |
+| `fopen(path, ...)` — path is a parameter, `callsites@N:all-literal` | **dismissed** (every in-tree caller passes a compile-time constant) |
+| `fopen(path, ...)` — path is a parameter with no provable tainted caller and no census | **dismissed** |
 | `fopen("/etc/config", "r")` — literal or compile-time-constant path | **false-positive** (safe) |
 
 The **confirmed** verdict only applies when the pipeline proved a taint source
-(`taint_source` evidence fragment). A parameter of unknown origin stays
-**dismissed** — do not promote it without tracing a caller that passes
-attacker-controlled data.
+(`taint_source` evidence fragment) or `callsites@` names a non-constant caller.
+A parameter of unknown origin stays **dismissed** — do not promote it without
+tracing a caller that passes attacker-controlled data.
 
 ### Common False Positives
 - Literal or compile-time-constant paths (config file paths, fixed install locations)
-- A path parameter that is always called with a trusted constant (trace the callers)
+- A path parameter that is always called with a trusted constant — the `callsites@N:all-literal` census settles this from the row (the pipeline drops these before they reach you; if one slips through with the census, dismiss it)
+- A path segment derived from `basename(p)` / `strrchr(p, '/')` — the result cannot contain a directory component, so it cannot carry `../`
 
 ### Fix Suggestions
 

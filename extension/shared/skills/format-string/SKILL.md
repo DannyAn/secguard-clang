@@ -17,13 +17,15 @@ A format-string candidate has:
 - **api**: the format function called
 - **format_arg**: the non-literal format argument expression
 - **taint_source**: where the user-controlled value behind the format argument originates (when the taint filter proved one)
+- **callsite_census** (when the format argument is a function parameter): the in-tree call-site argument census for that parameter — `all-literal` means every caller passes a compile-time constant
 - **call_path**: The function is reachable from an entry point
 
 ### Hint Tokens (Verdict Basis)
 
 | Token | Meaning | Your action |
 |-------|---------|-------------|
-| `fmt-arg@<expr>` | the format argument expression | a non-literal (variable) format is the CWE-134 signal: a function **parameter** (see `## Location` signature) is attacker-reachable → **confirmed**; a constant string literal → **dismissed**; a local that is never externally controlled → judge |
+| `fmt-arg@<expr>` | the format argument expression | a non-literal (variable) format is the CWE-134 signal; a function **parameter** is attacker-reachable only when `callsites@` shows a non-constant argument or no in-tree call site — **pair with `callsites@` before confirming**; a constant string literal → **dismissed**; a local that is never externally controlled → judge |
+| `callsites@<census>` | the in-tree call-site census for the format parameter | `N:all-literal` = every in-tree caller passes a compile-time constant → **dismissed**; `N:K-literal,J-var` = the var/tainted callers are where attacker input could enter → inspect those callers before confirming; token absent = no in-tree call site binds the parameter (an external TU may call it) |
 
 ### Functions Checked
 `printf`, `fprintf`, `sprintf`, `snprintf`, `vprintf`, `vfprintf`, `vsprintf`, `vsnprintf`, `syslog`, `err`, `warn`, `errx`, `warnx`
@@ -39,7 +41,9 @@ A format-string candidate has:
 | Condition | Classification |
 |-----------|---------------|
 | printf(user_input) — format is external input | **confirmed** |
-| printf(log_msg) — format is a function parameter (non-literal) | **confirmed** (attacker-reachable via the parameter) |
+| printf(log_msg) — format is a function parameter, `callsites@` shows a non-constant caller | **confirmed** (attacker-reachable via that caller) |
+| printf(log_msg) — format is a function parameter, `callsites@N:all-literal` | **dismissed** (every in-tree caller passes a compile-time constant) |
+| printf(log_msg) — format is a function parameter, no `callsites@` token | **judge** (no in-tree call site: an external TU may call it) |
 | printf(local_buf) — format is a local, never externally controlled | **dismissed** |
 | printf("%s", user_input) — format is literal | **false-positive** (safe) |
 | snprintf(buf, sizeof(buf), fmt, ...) — bounded with sizeof | **false-positive** (safe) |
@@ -48,6 +52,7 @@ A format-string candidate has:
 - `printf("%s\n", msg)` — format is a string literal (safe)
 - `snprintf(buf, sizeof(buf), "%d", val)` — bounded write with literal format (safe)
 - `printf(const_format_string)` — format is a compile-time constant (safe, but detector can't verify)
+- A log/format wrapper whose every in-tree call site passes a string literal (`callsites@N:all-literal`) — the pipeline drops these before they reach you; if one slips through with the census, dismiss it
 
 ### Fix Suggestions
 - Always use string literal as format: `printf("%s", user_input)` instead of `printf(user_input)`
