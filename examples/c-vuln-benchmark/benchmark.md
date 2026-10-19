@@ -44,6 +44,7 @@
 | **Phase 15（memory-leak 容器逃逸误报修复）** | **2** |
 | **Phase 16（divide-by-zero 非零源除数误报修复）** | **2** |
 | **Phase 17（补齐 3 个零覆盖 contract 类型：argument-type / data-representation / implicit-contract）** | **12** |
+| **Phase 18（P1 调用点实参普查 gate / 净化 kill 回归）** | **5** |
 | 应完全不产生 Finding (P0: Detector EXCLUDE) | 7 |
 | 应产生 Finding 但被 P1 抑制 | 3 |
 | 应产生 Finding 但被 P2 抑制 | 4 |
@@ -375,7 +376,7 @@ acquirer），任一回归会翻回 FN、recall 下降。
 | `p11_dangerous_function.c` | DGF-01..13 | `gets` / `mktemp` / `gethostbyname` + 分层策略：`memcpy` / `strcpy` / `sprintf` / `sscanf` / `atoi` / `abort` / `alloca` / `setjmp` / `longjmp` / `realloc` —— 名单命中即是缺陷（POLICY 检查，按 category 分层） | finding |
 | `p11_dangerous_function.c` | DGF-14 | `memset_s` + `memcpy_s` + `strcpy_s` + `snprintf_s` + `sprintf_s` + `fgets` + `getaddrinfo` + `mkstemp` 安全 `_s` 替代集群 | no_finding |
 | `p11_dangerous_function.c` | DGF-15 | `exit(0)` 位于 `main` 内 —— 程序入口允许进程退出 | no_finding |
-| `p11_format_string.c` | FS-01..03 | `printf(user_msg)` / `fprintf(log, fmt)` / `syslog(LOG_ERR, msg)` | finding |
+| `p11_format_string.c` | FS-01..03 | `printf(user_msg)` / `fprintf(log, fmt)` / `syslog(LOG_ERR, msg)` —— 树内唯一调用点传字面量，P1 census gate drop（旧保守语义期为 finding） | no_finding |
 | `p11_format_string.c` | FS-04 | `printf("%s", user_msg)` —— 字面量格式串 | no_finding |
 | `parser.c` | FS-05 | 存量已检出缺陷纳入回归防线 | finding |
 | `p11_double_free.c` | DF-01..02 | 同一指针两次 free / 结构体字段两次 free | finding |
@@ -519,6 +520,36 @@ detector 直接跳过；implicit-contract 的 fully-guarded 被 planner 的
 > 行号以 `src/p17_contract_types.c` 当前内容为准（validator 容差 ±3）。改动该 fixture
 > 的任何一行后，务必同步本表与 `expected-results.json` 的 `line`，否则 no_finding
 > 守卫会因行号漂移而失效（Phase 15 的教训）。
+
+## Phase 18 — P1 调用点实参普查 / 净化 kill 回归（2026-10 新增）
+
+P1（调用点实参聚合）改变了非 static 函数形参 sink 的保守语义：planner 现在对每个
+(callee, param) 做树内调用点实参普查（callsite census，`callsites@N:K-literal,J-var`
+token），并识别 basename / strrchr(p,'/') 的路径净化。语义变更的三条影响：
+
+1. **FS-01..03 重定性为 no_finding**：非 static + 树内调用点全部传编译期常量且未被
+   取地址 → pipeline gate drop。旧行为（保守播种 → AI 一律 confirmed）在 SSL-VPN
+   生产扫描中把 `svn_output_dbg` 类 wrapper 全部误 confirmed，是 P1 的直接动因。
+   封闭程序内全字面量调用的形参 sink 不可利用；"变量调用点"的正样本防线由 FS-05
+   （parser.c:45，调用点传变量）与 P18-02 继续守卫。
+2. **零树内调用点不 gate**：外部 TU 仍可能调用（与所有 reachability filter 的
+   scan-tree 边界假设一致）——P18-02 的 wrapper 同族对照。
+3. **净化 kill 只作用 path-traversal**：basename / strrchr(p,'/') 派生段不含目录
+   组件，但格式指示符仍在（format 流不 kill）。
+
+| 用例 | 类型 | 行 | 形态 | expect |
+|------|------|----|------|--------|
+| P18-01 | format-string | 24 | `cs_log_wrapper`：非 static wrapper，树内 2 个调用点全字面量 → gate drop | no_finding |
+| P18-02 | format-string | 30 | `cs_log_var`：同族 wrapper，但存在 `getenv` 污点调用点 → census 保留 + taint promote | finding |
+| P18-03 | path-traversal | 43 | `fopen(basename(user_path))` → 净化 kill | no_finding |
+| P18-04 | path-traversal | 46 | `fopen(strrchr(user_path,'/') + 1)` → 净化 kill + 尾部整型指针算术 sink 解析（taintLocKey `seg + 1` → `seg`） | no_finding |
+| P18-05 | path-traversal | 35 | `cs_open_config`：非 static path wrapper，树内调用点全字面量 → gate drop | no_finding |
+
+四条 `no_finding` 同样是**确定性抑制**（gate drop / sanitize kill 在候选阶段发生），
+不依赖 AI 研判。P18-02 走 paramTainted promote 的 auto-confirm 路径，pipeline 阶段
+即写入 findings，无需 AI 复核。
+
+> 行号以 `src/p18_callsite_census.c` 当前内容为准（validator 容差 ±3）。
 
 ## 检测器缺口（2026-10 盘点，本轮已全部闭环）
 
