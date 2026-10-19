@@ -791,6 +791,28 @@ var stackAllocators = map[string]bool{
 // name explicitly says "memory create". Real *_create heap allocators should
 // be registered via RegisterAllocator (secguard.toml [allocators]).
 
+// NoReturnCalls are the standard functions whose call never returns: abort
+// kills the process, the exit family terminates it, and __assert_fail is what
+// a glibc assert(0) expands to. A guard whose consequence ends in one of
+// these ("if (x == 0) { exit(1); }") proves x non-zero on the surviving path,
+// the same way a return/continue/break guard does. The list is deliberately
+// small and standard-only: a project's assert macro (HPE_ASSERT, ...) is not
+// listed because whether it aborts depends on its #define, which the caller
+// resolves from the macro body in the scan tree.
+var NoReturnCalls = map[string]bool{
+	"abort":         true,
+	"exit":          true,
+	"_exit":         true,
+	"_Exit":         true,
+	"quick_exit":    true,
+	"__assert_fail": true,
+}
+
+// IsNoReturnCall reports whether name is a standard never-returning function.
+func IsNoReturnCall(name string) bool {
+	return NoReturnCalls[name]
+}
+
 func IsAllocator(name string) bool {
 	if IsDeclaredAllocator(name) {
 		return true

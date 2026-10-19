@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -50,12 +51,16 @@ func buildGlobalInvariants(ctx context.Context, store db.Store, p *parser.Parser
 		return inv
 	}
 	cache := newFileParseCache(p)
+	// Collect the whole-tree no-return closure (standard functions + macro
+	// definitions whose body calls one) BEFORE scanning guards: an assert
+	// macro defined in one header must be recognizable in every file.
+	noReturnMacros := collectNoReturnMacros(files, cache)
 	for _, file := range files {
 		root := cache.rootForFile(file)
 		if root.Kind() == "" {
 			continue
 		}
-		scanInvariants(root, inv)
+		scanInvariants(root, inv, noReturnMacros)
 	}
 	// Reuse the already-listed files and parse cache instead of re-listing and
 	// re-parsing every translation unit (PP-10).
@@ -249,19 +254,27 @@ func isNonZeroSource(rhs parser.Node, resolver *returnSummaryResolver) bool {
 	return false
 }
 
-func scanInvariants(root parser.Node, inv *globalInvariants) {
+func scanInvariants(root parser.Node, inv *globalInvariants, noReturnMacros map[string]bool) {
+	globals := collectFileGlobals(root)
 	for _, fn := range root.FindAll("function_definition") {
 		body := fn.FindFirst("compound_statement")
 		if body == nil {
 			continue
 		}
-		scanZeroGuardedAssignments(*body, inv)
+		scanZeroGuardedAssignments(*body, globals, collectLocalNames(*body), inv, noReturnMacros)
 	}
 }
 
-// scanZeroGuardedAssignments finds `if (x == 0) return; ... g = x;` and
-// `if (x == 0) x = DEFAULT; ... g = x;` patterns, recording g as non-zero.
-func scanZeroGuardedAssignments(body parser.Node, inv *globalInvariants) {
+// scanZeroGuardedAssignments finds the guard patterns that establish a
+// variable as non-zero on the surviving path:
+//
+//	if (x == 0) return/continue/break/goto; ... g = x;   -> g non-zero
+//	if (x == 0) x = DEFAULT; ... g = x;                  -> g non-zero
+//	if (x == 0) abort/exit/HPE_ASSERT(0); ... g = x;     -> g non-zero (a
+//	    no-return consequence kills the zero path exactly like return does)
+//	if (g == 0) return/abort/exit;                        -> g non-zero
+//	    (a guard on the global itself needs no propagating assignment)
+func scanZeroGuardedAssignments(body parser.Node, globals, locals map[string]bool, inv *globalInvariants, noReturnMacros map[string]bool) {
 	ifs := body.FindAll("if_statement")
 	for _, ifStmt := range ifs {
 		cond := ifStmt.ChildByFieldName("condition")
@@ -276,13 +289,139 @@ func scanZeroGuardedAssignments(body parser.Node, inv *globalInvariants) {
 		if consequence == nil {
 			continue
 		}
-		if !exitsEarly(*consequence) && !backfillsToNonZero(*consequence, guarded) {
+		if !exitsEarly(*consequence) && !callsNoReturn(*consequence, noReturnMacros) && !backfillsToNonZero(*consequence, guarded) {
 			continue
 		}
 		for _, varName := range guarded {
+			// A guard on the global itself proves the global non-zero on the
+			// surviving path, with no propagating assignment needed. The
+			// locals shadow check keeps a function-local that shadows a
+			// same-named global from marking the global (PP-01 class).
+			if globals[varName] && !locals[varName] {
+				inv.nonZeroVars[varName] = true
+			}
 			recordNonZeroAssignsAfter(body, ifStmt.EndLine(), varName, inv)
 		}
 	}
+}
+
+// callsNoReturn reports whether a guard consequence ends in a call that never
+// returns: a standard noreturn function (abort/exit/...) or a macro whose
+// #define body (resolved across the whole scan tree) calls one. This is how a
+// project assert macro (HPE_ASSERT) earns the same "the zero path dies here"
+// semantics as an explicit return — but only when its definition actually
+// aborts, never by name alone.
+func callsNoReturn(consequence parser.Node, noReturnMacros map[string]bool) bool {
+	for _, call := range consequence.FindAll("call_expression") {
+		name := callName(call)
+		if apikb.IsNoReturnCall(name) || noReturnMacros[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// collectNoReturnMacros returns the names of macros (function-like or object)
+// whose definition body calls a standard never-returning function, transitively
+// through other macros: `#define HPE_ASSERT(x) do { if (!(x)) abort(); } while(0)`
+// is no-return, and so is a macro that only forwards to HPE_ASSERT. A macro
+// whose body merely logs never qualifies — a project assert's fatality is
+// resolved from its #define, never assumed from its name.
+func collectNoReturnMacros(files []*db.File, cache *fileParseCache) map[string]bool {
+	bodies := make(map[string]string)
+	for _, file := range files {
+		root := cache.rootForFile(file)
+		if root.Kind() == "" {
+			continue
+		}
+		for _, kind := range []string{"preproc_function_def", "preproc_def"} {
+			for _, def := range root.FindAll(kind) {
+				name, body := "", ""
+				for _, child := range def.NamedChildren() {
+					switch child.Kind() {
+					case "identifier":
+						if name == "" {
+							name = child.Text()
+						}
+					case "preproc_arg":
+						body = child.Text()
+					}
+				}
+				if name != "" && body != "" {
+					bodies[name] = body
+				}
+			}
+		}
+	}
+	noReturn := make(map[string]bool)
+	for changed := true; changed; {
+		changed = false
+		for name, body := range bodies {
+			if noReturn[name] {
+				continue
+			}
+			for callee := range apikb.NoReturnCalls {
+				if macroBodyCalls(body, callee) {
+					noReturn[name] = true
+					changed = true
+					break
+				}
+			}
+			if !noReturn[name] {
+				for callee := range noReturn {
+					if macroBodyCalls(body, callee) {
+						noReturn[name] = true
+						changed = true
+						break
+					}
+				}
+			}
+		}
+	}
+	return noReturn
+}
+
+// macroBodyCalls reports whether a macro body calls callee at a word boundary
+// ("abort(" inside the #define text), so a name embedded in a longer
+// identifier (my_abort) does not match.
+func macroBodyCalls(body, callee string) bool {
+	for i := 0; i+len(callee) <= len(body); i++ {
+		if body[i:i+len(callee)] != callee {
+			continue
+		}
+		if i > 0 && isIdentByte(body[i-1]) {
+			continue
+		}
+		j := i + len(callee)
+		for j < len(body) && (body[j] == ' ' || body[j] == '\t') {
+			j++
+		}
+		if j < len(body) && body[j] == '(' {
+			return true
+		}
+	}
+	return false
+}
+
+func isIdentByte(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+// collectLocalNames returns the names a function body binds locally
+// (declarations and parameters), so a guard on a shadowing local is never
+// misattributed to a same-named file-scope global.
+func collectLocalNames(body parser.Node) map[string]bool {
+	locals := make(map[string]bool)
+	for _, kind := range []string{"declaration", "parameter_declaration"} {
+		for _, decl := range body.FindAll(kind) {
+			for _, child := range decl.NamedChildren() {
+				if name := declaredName(child); name != "" {
+					locals[name] = true
+				}
+			}
+		}
+	}
+	return locals
 }
 
 // zeroGuardedVarAST returns variables established as zero by a condition

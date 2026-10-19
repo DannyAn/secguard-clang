@@ -286,3 +286,60 @@ void real_null_bug(unsigned int node_id) {
 		t.Errorf("real_null_bug must still be flagged (find_opt returns literal NULL) (control)")
 	}
 }
+
+// §3.2（第二轮生产复核）: init 函数的 abort/assert 退出守卫。`if (x == 0) { HPE_ASSERT(0); }`
+// 与 `if (g == 0) { exit(1); }` 中，零值路径已终止（no-return consequence），
+// 存活路径上变量非零 —— 与 return 守卫同语义。HPE_ASSERT 是否 fatal 由其
+// #define 展开体是否调用标准 no-return 函数决定（跨全树解析），宏名本身不背书；
+// 仅打日志的宏不建立不变量；局部遮蔽同名的全局不得被误标。
+func TestNatDBZ_AbortExitGuardedNonZero(t *testing.T) {
+	src := `#include <stdlib.h>
+#include <stdio.h>
+
+#define HPE_ASSERT(x) do { if (!(x)) { (void)printf("fail"); abort(); } } while (0)
+#define LOG_ONLY(x) do { if (!(x)) { (void)printf("fail"); } } while (0)
+
+int g_max_sess;
+int g_min_sess;
+int g_shadow;
+int g_log_sess;
+
+void nat_init_a(int cfg) {
+    int n = cfg * 2;
+    if (n == 0) { HPE_ASSERT(0); }
+    g_max_sess = n;
+}
+
+void nat_init_b(int cfg) {
+    g_min_sess = cfg;
+    if (g_min_sess == 0) { exit(1); }
+}
+
+void shadow_init(int cfg) {
+    int g_shadow = cfg;
+    if (g_shadow == 0) { exit(1); }
+}
+
+void log_init(int cfg) {
+    int n = cfg;
+    if (n == 0) { LOG_ONLY(n); }
+    g_log_sess = n;
+}
+
+unsigned long nat_avg_a(unsigned long total) { return total / g_max_sess; }
+unsigned long nat_avg_b(unsigned long total) { return total / g_min_sess; }
+unsigned long shadow_avg(unsigned long total) { return total / g_shadow; }
+unsigned long log_avg(unsigned long total) { return total / g_log_sess; }
+`
+	result := planDivideByZero(t, src)
+	for _, fn := range []string{"nat_avg_a", "nat_avg_b"} {
+		if c := candidateForFunc(t, result, fn); c != nil {
+			t.Errorf("%s: abort/exit-guarded divisor is non-zero on the surviving path, should NOT be flagged, got var=%s level=%s line=%d", fn, c.Target.Variable, c.SuspicionLevel, c.Target.Line)
+		}
+	}
+	for _, fn := range []string{"shadow_avg", "log_avg"} {
+		if c := candidateForFunc(t, result, fn); c == nil {
+			t.Errorf("%s: must still be flagged (shadowing local / non-fatal macro establishes nothing) (control)", fn)
+		}
+	}
+}
