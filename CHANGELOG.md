@@ -2,7 +2,17 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.9.8] - 2026-10-18
+## [0.9.8] - 2026-10-18（二次重发）
+
+### 二次重发修复（SSL VPN + NAT 生产复核闭环）
+
+- **format-string / path-traversal 调用点普查（call-site census）**：非 static 函数的形参 sink（`fmt`/`path`）不再无条件保守保留——对每个 (callee, param) 做树内调用点实参普查，全部传编译期常量且函数未被取地址时 pipeline 直接 drop；存在变量/污点调用点时保留候选并附 `callsites@` 普查 token 供 AI 研判。path-traversal 另增 basename / `strrchr(p, '/')` 派生路径段的净化 kill。回归 `examples/c-vuln-benchmark/src/p18_callsite_census.c`。
+- **divide-by-zero 字段链防护**：字段/全局链除数（`show_data->total_resource`、`g_pool_bt.inst_num`、`g_alert_threshold.user_num`）的显式非零防护（`!= 0`/真值/`== 0` 早退/`== 0` 置 1）此前被误报为未防护——防护识别只匹配裸标识符。现 `divisionGuarded` 与 `AnalyzeBounds` 的防护识别接受 `identifier`+`field_expression` 并做空白归一化，`AnalyzeBounds` 的再赋值跟踪同步覆盖字段链。
+- **null-deref 校验函数跨函数判空**：check/prepare 校验函数入口 `if (p == NULL) return 错误码` + 调用方 `if (check(p) != 0) return;` 的组合此前被报"未防护解引用"。现 `collectNullCheckHelpers` 识别入口判空+非零早退，guard model 覆盖 `f(p)`/`f(p) != 0`/`f(p) == 0`/`!f(p)` 四种守卫方向，返回后的指针视为非空。
+- **implicit-contract 调用点循环守卫传播**：调用点 for 循环条件（`for (; cur != NULL && cur->data != NULL; ...)`）对字段的守卫此前未传播到被调函数，`stat_sum(cur)` 内 `cur->data` 解引用被误报。现 `targetsGuardDominates` 识别循环条件真值分支对字段的非空保证。
+- **use-after-free 释放点收紧**：名字含 `_delete` 的"清配置"函数（体内仅 memset 清零 + 计数减一、从不 free，如 `portrng_syslog_host_delete`）此前被当作释放其入参字段，凭空构造 UAF。现 `directFree` 对字段表达式实参仅对已声明释放 API（`free` 族/`[deallocators]`）视为字段释放，启发式 `_delete` 命名的字段实参不再当作释放。
+- **宏迭代器（NAT 根因 A）复核**：`SLL_Scan`/`POOL_FOR_ALL`/`POOL_FOR_SECT` 已由跨文件宏写入摘要 + `secguard.toml [iterator_macros]` 覆盖，本轮补充 `POOL_FOR_SECT` 判空回归确认（无代码改动）。
+- 回归测试 `zz_nat_production_regression_test.go`：覆盖 NAT 生产复核（`sc_2026-10-19_100105_8cac41`）5 类误报根因（DBZ/null-deref/implicit-contract/UAF/format-string），每条配"真实缺陷仍被报"控制用例防过度压制。
 
 ### 发布后修复（版本验证期）
 
