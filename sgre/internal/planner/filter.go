@@ -155,8 +155,8 @@ type Candidate struct {
 	SecondCalleeDefFile    string `json:"second_callee_def_file,omitempty"`
 	SecondCalleeDefLine    int    `json:"second_callee_def_line,omitempty"`
 	SecondCalleeDefEndLine int    `json:"second_callee_def_end_line,omitempty"`
-	NonNullable        bool   `json:"non_nullable"`
-	IsTypeExpr         bool   `json:"is_type_expr"`
+	NonNullable            bool   `json:"non_nullable"`
+	IsTypeExpr             bool   `json:"is_type_expr"`
 	// IsCallResultDeref marks a dereference of a direct function-call result
 	// (`f()->field`, `*f()`, `f()[i]`); CalleeName is the called function. The
 	// nullable_source filter resolves these against the inter-procedural
@@ -271,12 +271,12 @@ type Candidate struct {
 	// possible double free, so the flow filter must not upgrade it to confirmed.
 	// FirstCallee/Victims name the may-free helper and the stored variables
 	// behind a global-slot double free (`g_entries[]`).
-	FirstFree   int    `json:"first_free,omitempty"`
-	SecondFree  int    `json:"second_free,omitempty"`
-	MayFree     bool   `json:"may_free,omitempty"`
-	FirstCallee string `json:"first_callee,omitempty"`
+	FirstFree    int    `json:"first_free,omitempty"`
+	SecondFree   int    `json:"second_free,omitempty"`
+	MayFree      bool   `json:"may_free,omitempty"`
+	FirstCallee  string `json:"first_callee,omitempty"`
 	SecondCallee string `json:"second_callee,omitempty"`
-	Victims     string `json:"victims,omitempty"`
+	Victims      string `json:"victims,omitempty"`
 	// DefiniteLeak is true when the leak detector proved no release/escape/
 	// transfer is reachable on any path (memory-leak / resource-leak).
 	DefiniteLeak bool `json:"definite_leak,omitempty"`
@@ -330,6 +330,12 @@ type Candidate struct {
 	// format-string and a path-traversal candidate.
 	FormatArg string `json:"format_arg,omitempty"`
 	PathExpr  string `json:"path_expr,omitempty"`
+	// CallsiteSummary is the compact in-tree call-site census for the sink
+	// parameter ("5:3-literal,2-var" / "3:all-literal"), set when the sink
+	// argument is a function parameter. It feeds the callsites@ hint token so
+	// the classifier weighs caller provenance instead of assuming every
+	// parameter is attacker-reachable.
+	CallsiteSummary string `json:"callsite_summary,omitempty"`
 	// SubLHSInfluenced is true when an integer-overflow candidate's LHS
 	// operand is caller/attacker-controlled (mirror of SubRHSInfluenced).
 	SubLHSInfluenced bool `json:"sub_lhs_influenced,omitempty"`

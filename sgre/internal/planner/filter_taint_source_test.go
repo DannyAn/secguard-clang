@@ -138,11 +138,16 @@ int public_api_nonconst(char *path) {
     return f != 0;
 }
 
+int orphan_api(const char *path) {
+    FILE *f = fopen(path, "r");
+    return f != 0;
+}
+
 int main(void) {
     int a = read_cfg("/etc/config");      /* constant caller -> static -> dropped */
     int b = read_user(getenv("HOME"));    /* tainted caller -> confirmed */
-    int c = public_api("x");              /* non-static -> kept (external caller may taint) */
-    int d = public_api_nonconst("y");     /* non-static -> kept (external caller may taint) */
+    int c = public_api("x");              /* non-static, all in-tree callers constant -> dropped by census gate */
+    int d = public_api_nonconst("y");     /* non-static, all in-tree callers constant -> dropped by census gate */
     return a + b + c + d;
 }
 `
@@ -178,11 +183,14 @@ int main(void) {
 	} else if !hasTaintEvidence(ru) {
 		t.Errorf("read_user should carry taint_source evidence, got %+v", ru.Evidence)
 	}
-	if _, ok := byFunc["public_api"]; !ok {
-		t.Errorf("public_api (const char* param, non-static) should be kept (external caller may taint), got %v", candidateNames(result))
+	if _, ok := byFunc["public_api"]; ok {
+		t.Errorf("public_api (non-static, sole in-tree call passes a constant) should be dropped by the census gate, got %v", candidateNames(result))
 	}
-	if _, ok := byFunc["public_api_nonconst"]; !ok {
-		t.Errorf("public_api_nonconst (non-const param, non-static) should be kept (external caller may taint), got %v", candidateNames(result))
+	if _, ok := byFunc["public_api_nonconst"]; ok {
+		t.Errorf("public_api_nonconst (non-static, sole in-tree call passes a constant) should be dropped by the census gate, got %v", candidateNames(result))
+	}
+	if _, ok := byFunc["orphan_api"]; !ok {
+		t.Errorf("orphan_api (non-static, zero in-tree callers) should be kept (external caller may taint), got %v", candidateNames(result))
 	}
 }
 

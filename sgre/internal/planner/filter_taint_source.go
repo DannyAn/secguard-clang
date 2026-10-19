@@ -23,6 +23,10 @@ type taintSummary struct {
 	returnsParam map[string]map[int]bool
 	retTainted   map[string]bool
 	paramTainted map[int64]map[int]bool
+	// callsites is the in-tree call-site argument census (see
+	// callsiteCensus): the caller-side evidence the PARAM_BINDING fixpoint
+	// cannot express, since literal arguments bind no variable_ref edge.
+	callsites *callsiteCensus
 }
 
 // taintSummaryCache memoizes taintSummary across the Planner's Plan() calls.
@@ -72,10 +76,15 @@ func (c *taintSummaryCache) compute(ctx context.Context) (*taintSummary, error) 
 	if err != nil {
 		return nil, err
 	}
+	callsites, err := f.computeCallsiteSummary(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return &taintSummary{
 		returnsParam: returnsParam,
 		retTainted:   retTainted,
 		paramTainted: paramTainted,
+		callsites:    callsites,
 	}, nil
 }
 
@@ -121,10 +130,15 @@ func (f *TaintSourceFilter) taintSummaries(ctx context.Context) (*taintSummary, 
 	if err != nil {
 		return nil, err
 	}
+	callsites, err := f.computeCallsiteSummary(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return &taintSummary{
 		returnsParam: returnsParam,
 		retTainted:   retTainted,
 		paramTainted: paramTainted,
+		callsites:    callsites,
 	}, nil
 }
 
@@ -213,7 +227,7 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 	retTainted := summaries.retTainted
 	paramTainted := summaries.paramTainted
 
-	flows, paramsByFunc, staticByFunc, bodies := f.buildFlows(ctx, byFunc, retTainted, returnsParam, paramTainted)
+	flows, pathFlows, paramsByFunc, staticByFunc, bodies := f.buildFlows(ctx, byFunc, retTainted, returnsParam, paramTainted)
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -228,9 +242,14 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 		//   - a PARAM_BINDING edge proves a tainted arg flows in → taint hit.
 		//   - the function is static (all callers known) and none pass taint →
 		//     the path is provably constant/safe → drop.
-		//   - the function is non-static (public API) → an external caller may
-		//     supply attacker input → keep as suspected.
+		//   - the function is non-static (public API) but the call-site census
+		//     proves every in-tree direct caller passes a compile-time
+		//     constant → drop (an external caller outside the scan tree is the
+		//     boundary assumption every reachability filter already makes).
+		//   - otherwise an external caller may supply attacker input → keep
+		//     as suspected, now with the callsites@ census attached.
 		if idx, isParam := paramsByFunc[c.FunctionID][sink]; isParam {
+			c.CallsiteSummary = summaries.callsites.factFor(c.FunctionID, idx)
 			if paramTainted[c.FunctionID][idx] {
 				c.HasTaintSource = true
 				// A pure passthrough SQL wrapper (`return sqlite3_exec(db, sql, ...)`)
@@ -248,6 +267,17 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 			} else if staticByFunc[c.FunctionID] {
 				dropped = dismiss(dropped, c, f.Name(),
 					fmt.Sprintf("path/format arg %s is a parameter of a static function with no tainted caller", sink))
+			} else if (c.Category == "path_traversal" || c.Category == "format_string") &&
+				summaries.callsites != nil &&
+				func() bool {
+					if shapes, ok := summaries.callsites.gateDrop(c.FunctionID, c.FunctionName, idx); ok {
+						dropped = dismiss(dropped, c, f.Name(),
+							fmt.Sprintf("path/format arg %s is a parameter of a non-static function, but all %d in-tree call sites pass compile-time constants (census %s)", sink, shapes.sites(), shapes.fact()))
+						return true
+					}
+					return false
+				}() {
+				continue
 			} else {
 				if c.Category == "sql_injection" {
 					if body, ok := bodies[c.FunctionID]; ok && isPassthroughWrapper(body, sink) {
@@ -261,6 +291,15 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 			continue
 		}
 		flow := flows[c.FunctionID]
+		// The sanitize kill (basename/strrchr(x,'/')) only holds for
+		// path-traversal — a sanitized filename still carries format
+		// specifiers — so the two types read different flows for the same
+		// function when it hosts candidates of both.
+		if c.Category == "path_traversal" {
+			if pf := pathFlows[c.FunctionID]; pf != nil {
+				flow = pf
+			}
+		}
 		if flow == nil {
 			kept = append(kept, c)
 			continue
@@ -339,8 +378,9 @@ func (f *TaintSourceFilter) sinkVariable(eventsByID map[int64]*db.SecurityEvent,
 	}
 }
 
-func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, retTainted map[string]bool, returnsParam map[string]map[int]bool, paramTainted map[int64]map[int]bool) (map[int64]*flowResult, map[int64]map[string]int, map[int64]bool, map[int64]parser.Node) {
+func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, retTainted map[string]bool, returnsParam map[string]map[int]bool, paramTainted map[int64]map[int]bool) (map[int64]*flowResult, map[int64]*flowResult, map[int64]map[string]int, map[int64]bool, map[int64]parser.Node) {
 	flows := make(map[int64]*flowResult, len(byFunc))
+	pathFlows := make(map[int64]*flowResult, len(byFunc))
 	paramsByFunc := make(map[int64]map[string]int, len(byFunc))
 	staticByFunc := make(map[int64]bool, len(byFunc))
 	bodies := make(map[int64]parser.Node, len(byFunc))
@@ -368,8 +408,46 @@ func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]C
 		flows[fid] = analyzer.analyzeFlow(ctx, fn, body, root, genByLine, killByLine, false, false)
 		paramsByFunc[fid] = paramsOf(fn, root)
 		staticByFunc[fid] = fn.IsStatic
+
+		// The sanitize kill (basename / strrchr(x,'/')) is path-traversal-only
+		// — a sanitized filename still carries format specifiers — so a
+		// function hosting BOTH path-traversal and other taint-type candidates
+		// gets a second flow with the kill merged, while a path-only function
+		// applies it to the shared flow.
+		hasPath, hasOther := funcCandidateCategories(byFunc[fid])
+		if !hasPath {
+			continue
+		}
+		sk := sanitizeKills(body)
+		if len(sk) == 0 {
+			continue
+		}
+		if hasOther {
+			a2 := newFlowAnalyzer(f.store, f.parser)
+			a2.dfgCopies = analyzer.dfgCopies
+			a2.entrySeeds = analyzer.entrySeeds
+			pathFlows[fid] = a2.analyzeFlow(ctx, fn, body, root, genByLine, mergeKills(killByLine, sk), false, false)
+		} else {
+			a2 := newFlowAnalyzer(f.store, f.parser)
+			a2.dfgCopies = analyzer.dfgCopies
+			a2.entrySeeds = analyzer.entrySeeds
+			flows[fid] = a2.analyzeFlow(ctx, fn, body, root, genByLine, mergeKills(killByLine, sk), false, false)
+		}
 	}
-	return flows, paramsByFunc, staticByFunc, bodies
+	return flows, pathFlows, paramsByFunc, staticByFunc, bodies
+}
+
+// funcCandidateCategories reports whether a function's candidate set contains
+// a path-traversal candidate and/or a candidate of another taint type.
+func funcCandidateCategories(cs []Candidate) (hasPath, hasOther bool) {
+	for _, c := range cs {
+		if c.Category == "path_traversal" {
+			hasPath = true
+		} else {
+			hasOther = true
+		}
+	}
+	return
 }
 
 // taintedParamsFor returns the parameter NAMES of fn that are tainted, or nil
@@ -1213,6 +1291,22 @@ func taintLocKey(s string) string {
 			if !closed {
 				return "" // unbalanced
 			}
+		case t[i] == '+' || t[i] == '-':
+			// Trailing integer pointer arithmetic: "seg + 1" / "p - 1" -> the
+			// base identifier (an integer offset cannot change taint). Any
+			// other arithmetic operand stays unresolvable (conservative).
+			j := i + 1
+			for j < len(t) && (t[j] == ' ' || t[j] == '\t') {
+				j++
+			}
+			k := j
+			for k < len(t) && t[k] >= '0' && t[k] <= '9' {
+				k++
+			}
+			if k == j || k != len(t) {
+				return "" // not a trailing bare integer offset
+			}
+			return strings.TrimRight(t[:i], " \t")
 		default:
 			return ""
 		}
