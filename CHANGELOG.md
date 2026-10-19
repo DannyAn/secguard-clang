@@ -2,7 +2,13 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.9.8] - 2026-10-18（二次重发）
+## [0.9.8] - 2026-10-19（三次重发）
+
+### NAT 生产第二轮反馈修复（逐条验证，仅修真实问题）
+
+- **null-deref 静态数组基址指针运算误报（§3.1）**：内联 getter 返回 `g_pool_var.sects + node_id`（静态数组基址 ± 偏移）结果永不为 NULL，此前 `exprReturnsNullable` 对所有 binary_expression fail-open，把这类 getter 标成可空返回源、全部调用点解引用被误报（6 confirmed + 4 suspected）。现 binary_expression 任一侧解析为静态地址（文件/函数作用域数组、struct 数组成员）即判非空。回归 benchmark ND-14（no_finding）/ND-15（literal-NULL 真缺陷对照仍报）。
+- **divide-by-zero abort/exit 退出守卫误报（§3.2）**：`if (n == 0) { HPE_ASSERT(0); } g_max_sess = n;` 与 `if (g_min_sess == 0) { exit(1); }` 的零值路径已终止、存活路径除数非零，此前 `exitsEarly` 只认 return/continue/break/goto，no-return 守卫不建立非零不变量致误报。现 apikb 新增标准 no-return 名单（abort/exit/_exit/_Exit/quick_exit/__assert_fail）；项目 assert 宏的致命性由其 #define 展开体跨全树传递闭包解析（仅打日志的宏不成立，宏名不背书）；新增"守卫全局自身"模式并带局部遮蔽防护。回归 benchmark P19-03/P19-04（dbz_real 控制组仍报）。
+- 反馈中 §4.1/§4.3 经回源验证不成立（SARIF 写入逻辑正常、统计口径误读），未做代码改动。
 
 ### 二次重发修复（SSL VPN + NAT 生产复核闭环）
 
