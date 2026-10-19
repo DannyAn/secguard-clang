@@ -736,6 +736,35 @@ func IsDeclaredDeallocator(name string) bool {
 	return BuiltinDeallocators[name] || extraDeallocators[name]
 }
 
+// BuiltinPathSanitizers are functions whose return value is a directory-free
+// copy of their argument's path content (the basename contract). The
+// path-traversal convergence treats an assignment from such a call as killing
+// the target's path taint. strrchr/rindex are handled separately in the
+// planner (they sanitize only with a '/' separator).
+var BuiltinPathSanitizers = map[string]bool{
+	"basename": true, "__basename": true,
+}
+
+// extraPathSanitizers holds project-declared sanitizer names (secguard.toml
+// [sanitize_functions]) registered at CLI startup.
+var extraPathSanitizers = map[string]bool{}
+
+// RegisterPathSanitizer adds a project-specific function whose return value
+// is a sanitized (directory-free) copy of its argument, so
+// `seg = <name>(p); unlink(seg);` no longer surfaces as a path-traversal
+// candidate.
+func RegisterPathSanitizer(name string) {
+	if name != "" {
+		extraPathSanitizers[name] = true
+	}
+}
+
+// IsPathSanitizer reports whether name is a built-in or project-declared
+// path-sanitizing function.
+func IsPathSanitizer(name string) bool {
+	return BuiltinPathSanitizers[name] || extraPathSanitizers[name]
+}
+
 // stackAllocators are stack allocation primitives (C alloca / MSVC _alloca /
 // GCC __builtin_alloca): the memory lives on the stack frame and is reclaimed
 // on return, so it can NEVER heap-leak. The "alloc" substring heuristic in

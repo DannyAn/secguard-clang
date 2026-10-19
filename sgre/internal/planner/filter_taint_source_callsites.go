@@ -1,0 +1,284 @@
+package planner
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/DannyAn/secguard-clang/internal/apikb"
+	"github.com/DannyAn/secguard-clang/internal/parser"
+)
+
+// argShapeCounts is the per-(callee, parameter) census of in-tree call-site
+// argument shapes. literal counts provably-constant arguments (string/number
+// literals, address-of, compound literals — isDefinitelyUnTainted), tainted
+// counts direct taint-source expressions (getenv(...), argv[1], ...), and
+// variable counts everything else (bare identifiers, complex expressions)
+// whose provenance the census does not resolve.
+type argShapeCounts struct {
+	literal  int
+	tainted  int
+	variable int
+}
+
+func (a *argShapeCounts) sites() int {
+	if a == nil {
+		return 0
+	}
+	return a.literal + a.tainted + a.variable
+}
+
+// allLiteral reports whether the census PROVES the parameter cannot receive
+// non-constant data in-tree: at least one call site binds it, and every one
+// binds a compile-time constant.
+func (a *argShapeCounts) allLiteral() bool {
+	return a != nil && a.literal > 0 && a.tainted == 0 && a.variable == 0
+}
+
+// fact renders the compact census for the callsites@ hint token value:
+// "3:all-literal" or "5:3-literal,2-var" (only non-zero classes listed, in
+// literal/tainted/var order). Empty when no call site binds the parameter.
+func (a *argShapeCounts) fact() string {
+	if a == nil || a.sites() == 0 {
+		return ""
+	}
+	if a.allLiteral() {
+		return fmt.Sprintf("%d:all-literal", a.literal)
+	}
+	var classes []string
+	if a.literal > 0 {
+		classes = append(classes, fmt.Sprintf("%d-literal", a.literal))
+	}
+	if a.tainted > 0 {
+		classes = append(classes, fmt.Sprintf("%d-tainted", a.tainted))
+	}
+	if a.variable > 0 {
+		classes = append(classes, fmt.Sprintf("%d-var", a.variable))
+	}
+	return fmt.Sprintf("%d:%s", a.sites(), strings.Join(classes, ","))
+}
+
+// callsiteCensus aggregates the in-tree call sites of every function: per
+// (callee, parameter index) the shape of the bound argument, plus the set of
+// function names whose address is taken anywhere in the scan (a function
+// referenced through a pointer has callers the direct-call census cannot see).
+//
+// It exists because a non-static function's parameters are conservatively
+// treated as attacker-reachable (an external caller may pass anything), which
+// kept every "wrapper called only with literals" candidate alive as suspected
+// and the AI then confirmed them from the parameter shape alone. The census
+// gives both the filter (a provably all-literal parameter can be dropped) and
+// the classifier (the callsites@ token names the non-constant callers worth
+// inspecting) the caller-side evidence the PARAM_BINDING graph cannot express:
+// literal arguments bind no variable_ref edge, so the existing fixpoint is
+// silent about them.
+type callsiteCensus struct {
+	params    map[int64]map[int]*argShapeCounts
+	addrTaken map[string]bool
+}
+
+// shapes returns the census of one (function, parameter), nil when no in-tree
+// call site binds it.
+func (cs *callsiteCensus) shapes(funcID int64, paramIdx int) *argShapeCounts {
+	if cs == nil {
+		return nil
+	}
+	return cs.params[funcID][paramIdx]
+}
+
+// gateDrop reports whether the census proves a non-static function's
+// parameter cannot receive attacker-controlled data in-tree: the function is
+// never address-taken (every caller is a direct, visible call) and every
+// in-tree call site binds a compile-time constant to this parameter. Zero
+// call sites does NOT gate — an external TU may still call it — matching the
+// scan-tree boundary assumption every reachability filter already makes.
+func (cs *callsiteCensus) gateDrop(funcID int64, funcName string, paramIdx int) (*argShapeCounts, bool) {
+	if cs == nil || cs.addrTaken[funcName] {
+		return nil, false
+	}
+	shapes := cs.shapes(funcID, paramIdx)
+	if !shapes.allLiteral() {
+		return nil, false
+	}
+	return shapes, true
+}
+
+// factFor renders the callsites@ token value for one (function, parameter).
+func (cs *callsiteCensus) factFor(funcID int64, paramIdx int) string {
+	return cs.shapes(funcID, paramIdx).fact()
+}
+
+// computeCallsiteSummary walks every function body's call expressions and
+// every file's address-of expressions, producing the call-site census. It is
+// a single AST pass (no fixpoint): shapes are syntactic, so callee summaries
+// cannot change them.
+func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context) (*callsiteCensus, error) {
+	census := &callsiteCensus{
+		params:    make(map[int64]map[int]*argShapeCounts),
+		addrTaken: make(map[string]bool),
+	}
+	funcs, err := f.store.ListFunctions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("callsite census: list functions: %w", err)
+	}
+	funcByName := make(map[string][]int64, len(funcs))
+	for _, fn := range funcs {
+		funcByName[fn.Name] = append(funcByName[fn.Name], fn.ID)
+	}
+	if len(funcByName) == 0 {
+		return census, nil
+	}
+
+	cache := newFileParseCache(f.parser)
+	fileByID := listFilesByID(ctx, f.store)
+	scannedRoot := make(map[int64]bool)
+	for _, fn := range funcs {
+		file := fileByID[fn.FileID]
+		if file == nil {
+			continue
+		}
+		body, root := cache.get(file, fn)
+		if body.Kind() != "compound_statement" {
+			continue
+		}
+
+		for _, call := range body.FindAll("call_expression") {
+			name := callName(call)
+			if name == "" {
+				continue
+			}
+			calleeIDs := funcByName[name]
+			if len(calleeIDs) == 0 {
+				continue
+			}
+			for i, arg := range callArgs(call) {
+				var kind int // 0 literal, 1 tainted, 2 variable
+				switch {
+				case isDefinitelyUnTainted(arg):
+					kind = 0
+				case isTaintSourceExpr(arg):
+					kind = 1
+				default:
+					kind = 2
+				}
+				for _, calleeID := range calleeIDs {
+					if census.params[calleeID] == nil {
+						census.params[calleeID] = make(map[int]*argShapeCounts)
+					}
+					shapes := census.params[calleeID][i]
+					if shapes == nil {
+						shapes = &argShapeCounts{}
+						census.params[calleeID][i] = shapes
+					}
+					switch kind {
+					case 0:
+						shapes.literal++
+					case 1:
+						shapes.tainted++
+					default:
+						shapes.variable++
+					}
+				}
+			}
+		}
+
+		// Address-taken / decay scan runs once per FILE over the whole tree:
+		// any identifier that names a function but is NOT the definition's own
+		// declarator and NOT a direct-call callee is a function-pointer
+		// reference (`&fn`, `fp = fn`, `register(fn)`, `(cast)fn`) — the
+		// function then has callers the direct-call census cannot see, so the
+		// all-literal gate must not fire for it. Over-marking (a same-named
+		// local/field/parameter) only keeps candidates, never drops them.
+		if !scannedRoot[fn.FileID] {
+			scannedRoot[fn.FileID] = true
+			for _, id := range root.FindAll("identifier") {
+				if len(funcByName[id.Text()]) == 0 || isDirectCallee(id) {
+					continue
+				}
+				census.addrTaken[id.Text()] = true
+			}
+		}
+	}
+	return census, nil
+}
+
+// isDirectCallee reports whether the identifier is the callee of a direct
+// call (`fn(args)`) or the function's own definition/declaration declarator
+// — the two identifier positions that are NOT function-pointer references.
+func isDirectCallee(id parser.Node) bool {
+	parent := id.Parent()
+	if parent == nil {
+		return false
+	}
+	switch parent.Kind() {
+	case "function_declarator":
+		return true
+	case "call_expression":
+		kids := parent.NamedChildren()
+		return len(kids) > 0 && kids[0].Kind() == "identifier" &&
+			kids[0].StartLine() == id.StartLine() && kids[0].StartColumn() == id.StartColumn()
+	}
+	return false
+}
+
+// sanitizeKills returns the per-line path-taint kills introduced by
+// path-sanitizer calls: `base = basename(p)` / `seg = strrchr(p, '/')` assign
+// a value that cannot contain a directory component, so the assignment
+// target's PATH taint is killed. The kill is deliberately path-traversal-
+// only: a sanitized filename still carries format specifiers, so applying it
+// to the format-string flow would turn real CWE-134 findings into drops.
+func sanitizeKills(body parser.Node) map[int][]string {
+	out := make(map[int][]string)
+	forEachAssignment(body, func(lhs, rhs parser.Node) {
+		name := assignTargetName(lhs)
+		if name == "" || !isPathSanitizeCall(rhs) {
+			return
+		}
+		out[rhs.StartLine()] = append(out[rhs.StartLine()], name)
+	})
+	return out
+}
+
+// isPathSanitizeCall reports whether expr is a call whose result is provably
+// directory-free: basename-family (including project-declared
+// [sanitize_functions] entries), or strrchr/rindex with a '/' separator (any
+// other needle leaves the directory structure intact).
+func isPathSanitizeCall(expr parser.Node) bool {
+	if expr.Kind() != "call_expression" {
+		return false
+	}
+	name := callName(expr)
+	if name == "strrchr" || name == "rindex" {
+		args := callArgs(expr)
+		return len(args) >= 2 && strings.TrimSpace(args[1].Text()) == "'/'"
+	}
+	return apikb.IsPathSanitizer(name)
+}
+
+// mergeKills returns kill merged with extra without mutating either input.
+func mergeKills(kill, extra map[int][]string) map[int][]string {
+	if len(extra) == 0 {
+		return kill
+	}
+	out := make(map[int][]string, len(kill)+len(extra))
+	for line, vars := range kill {
+		out[line] = append([]string(nil), vars...)
+	}
+	for line, vars := range extra {
+		out[line] = append(out[line], vars...)
+	}
+	return out
+}
+
+// expandCallsiteFact renders the compact census fact for evidence text:
+// "5:3-literal,2-var" → "5 call sites (3 literal, 2 var)".
+func expandCallsiteFact(fact string) string {
+	parts := strings.SplitN(fact, ":", 2)
+	if len(parts) != 2 {
+		return fact
+	}
+	if parts[1] == "all-literal" {
+		return fmt.Sprintf("%s call sites (all literal)", parts[0])
+	}
+	return fmt.Sprintf("%s call sites (%s)", parts[0], parts[1])
+}

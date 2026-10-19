@@ -25,6 +25,7 @@ type Config struct {
 	DisabledTypes          DisabledTypes          `toml:"disabled_types"`
 	Allocators             Allocators             `toml:"allocators"`
 	Deallocators           Deallocators           `toml:"deallocators"`
+	SanitizeFunctions      SanitizeFunctions      `toml:"sanitize_functions"`
 	OwnershipTransferCalls OwnershipTransferCalls `toml:"ownership_transfer_calls"`
 	Nullability            Nullability            `toml:"nullability"`
 	IntegerOverflow        IntegerOverflow        `toml:"integer_overflow"`
@@ -69,6 +70,20 @@ type Allocators struct {
 //	[deallocators]
 //	names = ["nat_free", "llm_free", "VOS_FREE", "VOS_FREE_F"]
 type Deallocators struct {
+	Names []string `toml:"names"`
+}
+
+// SanitizeFunctions declares project-specific functions whose return value is
+// a directory-free (sanitized) copy of their argument's path content — the
+// basename-family contract. The path-traversal convergence treats an
+// assignment from such a call as killing the target's path taint, so
+// `seg = my_sanitize(p); unlink(seg);` is dropped instead of surfacing as a
+// candidate the AI must dismiss. Builtin basename is always recognized;
+// strrchr/rindex are recognized only with a '/' separator.
+//
+//	[sanitize_functions]
+//	names = ["my_basename_wrapper"]
+type SanitizeFunctions struct {
 	Names []string `toml:"names"`
 }
 
@@ -251,6 +266,17 @@ func (c *Config) DeallocatorNames() []string {
 		return nil
 	}
 	return c.Deallocators.Names
+}
+
+// SanitizeFunctionNames returns the project-specific path-sanitizer names
+// (functions returning a directory-free copy of their argument), registered
+// into apikb at CLI startup so the path-traversal convergence treats an
+// assignment from them as killing the target's path taint.
+func (c *Config) SanitizeFunctionNames() []string {
+	if c == nil {
+		return nil
+	}
+	return c.SanitizeFunctions.Names
 }
 
 // NonNullReturnNames returns the project-specific never-null return function

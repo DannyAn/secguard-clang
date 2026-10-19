@@ -213,3 +213,18 @@ nlog_syslog_add_hostname = 1
 		t.Errorf("integer_overflow.truncating_wrappers = %v, want two wrappers with cap arg 1", got)
 	}
 }
+func TestLoad_SanitizeFunctions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secguard.toml")
+	content := `[sanitize_functions]
+names = ["my_basename", "sanitize_path_segment"]
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	SetExplicitPath(path)
+	cfg := Load()
+	if got := cfg.SanitizeFunctionNames(); len(got) != 2 || got[0] != "my_basename" || got[1] != "sanitize_path_segment" {
+		t.Errorf("sanitize_functions = %v, want [my_basename sanitize_path_segment]", got)
+	}
+}
