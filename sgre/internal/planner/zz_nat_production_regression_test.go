@@ -235,3 +235,54 @@ int real_bug(int group) {
 		t.Errorf("real_bug must still be flagged (control)")
 	}
 }
+
+// §3.1（第二轮生产复核）: POOL_SECT 类内联函数 `return g_pool_var.sects + node_id`
+// 是静态数组基址的指针运算，返回值是数组内部/尾后地址，永不可能是 NULL。
+// exprReturnsNullable 此前对 binary_expression 一律 fail-open，把这类函数标成
+// 可空，使所有调用点保留为 null-deref 候选（6 条明确误报 + 4 条疑似）。
+func TestNatNullDeref_PoolSectArrayBaseArithmetic(t *testing.T) {
+	src := `#include <stdlib.h>
+
+#define POOL_MAX_SECT 64
+
+typedef struct { unsigned int node_id; unsigned short flag; } pool_sect_t;
+typedef struct { pool_sect_t sects[POOL_MAX_SECT]; unsigned int sect_cnt; } pool_var_t;
+
+pool_var_t g_pool_var;
+
+static pool_sect_t *POOL_SECT(unsigned int node_id)
+{
+    return g_pool_var.sects + node_id;
+}
+
+static pool_sect_t *find_opt(unsigned int node_id)
+{
+    if (node_id >= g_pool_var.sect_cnt) { return NULL; }
+    return POOL_SECT(node_id);
+}
+
+void pool_update_flag(unsigned int node_id, unsigned short flag) {
+    pool_sect_t *sect = POOL_SECT(node_id);
+    sect->flag = flag;
+}
+
+void pool_update_flag_extern(unsigned int node_id, unsigned short flag) {
+    pool_sect_t *sect = (pool_sect_t *)(g_pool_var.sects + node_id);
+    sect->flag = flag;
+}
+
+void real_null_bug(unsigned int node_id) {
+    pool_sect_t *sect = find_opt(node_id);
+    sect->flag = 1;
+}
+`
+	got := planType(t, src, "null-deref")
+	for _, fn := range []string{"pool_update_flag", "pool_update_flag_extern"} {
+		if c, ok := got[fn]; ok {
+			t.Errorf("%s: array-base pointer arithmetic never returns NULL, should NOT be flagged, got var=%s level=%s line=%d", fn, c.Target.Variable, c.SuspicionLevel, c.Target.Line)
+		}
+	}
+	if _, ok := got["real_null_bug"]; !ok {
+		t.Errorf("real_null_bug must still be flagged (find_opt returns literal NULL) (control)")
+	}
+}

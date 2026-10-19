@@ -1334,20 +1334,20 @@ func callResultNullSources(body parser.Node, retNullable map[string]bool) []null
 // NULL literal, an allocator call, a pointer parameter, a variable with a
 // reaching may-null source, a field/subscript read, a deref, a call to another
 // possibly-null-returning function, or an external call (open world).
-func returnsNullable(body parser.Node, flow *flowResult, params map[string]int, retNullable map[string]bool, definedNames map[string]bool) bool {
+func returnsNullable(body parser.Node, flow *flowResult, params map[string]int, retNullable map[string]bool, definedNames map[string]bool, arrs *arrayBaseInfo) bool {
 	for _, ret := range body.FindAll("return_statement") {
 		children := ret.NamedChildren()
 		if len(children) == 0 {
 			continue
 		}
-		if exprReturnsNullable(children[0], flow, params, retNullable, definedNames, ret.StartLine()) {
+		if exprReturnsNullable(children[0], flow, params, retNullable, definedNames, arrs, ret.StartLine()) {
 			return true
 		}
 	}
 	return false
 }
 
-func exprReturnsNullable(expr parser.Node, flow *flowResult, params map[string]int, retNullable map[string]bool, definedNames map[string]bool, line int) bool {
+func exprReturnsNullable(expr parser.Node, flow *flowResult, params map[string]int, retNullable map[string]bool, definedNames map[string]bool, arrs *arrayBaseInfo, line int) bool {
 	if isNullLiteralNode(expr) {
 		return true
 	}
@@ -1365,11 +1365,23 @@ func exprReturnsNullable(expr parser.Node, flow *flowResult, params map[string]i
 		return flow != nil && flow.reaching(expr.Text(), line)
 	case "cast_expression", "parenthesized_expression":
 		for _, c := range expr.NamedChildren() {
-			if exprReturnsNullable(c, flow, params, retNullable, definedNames, line) {
+			if exprReturnsNullable(c, flow, params, retNullable, definedNames, arrs, line) {
 				return true
 			}
 		}
 		return false
+	case "binary_expression":
+		// Pointer arithmetic on a static base (`return g_pool_var.sects + id`,
+		// `return arr - 1`): the result is an address inside or one past the
+		// array and can never be NULL. Only + and - are pointer arithmetic;
+		// every other binary operator yields an integer, which the fail-open
+		// default below keeps conservatively nullable.
+		if op := parser.BinaryOperator(expr); op == "+" || op == "-" {
+			children := expr.NamedChildren()
+			if len(children) == 2 && (isNonNullArrayBase(children[0], arrs) || isNonNullArrayBase(children[1], arrs)) {
+				return false
+			}
+		}
 	case "call_expression":
 		name := callName(expr)
 		if isAllocatorCall(name) {
@@ -1391,6 +1403,145 @@ func exprReturnsNullable(expr parser.Node, flow *flowResult, params map[string]i
 	// therefore may be NULL. Conservative (fail-open): an unknown return
 	// expression is treated as possibly-null, never assumed non-null.
 	return true
+}
+
+// arrayBaseInfo is the static-array knowledge that lets exprReturnsNullable
+// recognize pointer arithmetic on a static array base
+// (`return g_pool_var.sects + id`) as non-null: an array lives at a fixed
+// address, so base ± any offset yields an address inside (or one past) the
+// array and can never be NULL.
+type arrayBaseInfo struct {
+	arrays      map[string]bool
+	arrayFields map[string]bool
+}
+
+func (a *arrayBaseInfo) isArray(name string) bool {
+	return a != nil && a.arrays[name]
+}
+
+func (a *arrayBaseInfo) isArrayField(name string) bool {
+	return a != nil && a.arrayFields[name]
+}
+
+// collectArrayBaseInfo gathers, for one function, the names that provably
+// denote static arrays: array declarators at file scope (globals, including
+// extern ones) or inside the function's own body, minus the function's
+// parameters (an array parameter is really a caller-controlled pointer), plus
+// struct field names whose visible declarations are arrays. A field name also
+// declared as a non-array is dropped: the name alone does not identify the
+// struct, so an ambiguous name stays fail-open (the same ambiguity guard
+// findFieldTypeName uses).
+func collectArrayBaseInfo(root, body parser.Node, params map[string]int) *arrayBaseInfo {
+	info := &arrayBaseInfo{arrays: make(map[string]bool), arrayFields: make(map[string]bool)}
+	if root.Kind() == "" {
+		return info
+	}
+	for _, decl := range root.FindAll("declaration") {
+		// Other functions' locals must not leak their array names into this
+		// function; file-scope declarations and the function's own locals are kept.
+		if !nodeInsideTree(decl, body) && nodeInsideFunction(decl) {
+			continue
+		}
+		for _, ad := range decl.FindAll("array_declarator") {
+			if name := arrayBaseDeclaratorName(ad); name != "" {
+				info.arrays[name] = true
+			}
+		}
+	}
+	for name := range params {
+		delete(info.arrays, name)
+	}
+	nonArrayFields := make(map[string]bool)
+	for _, fd := range root.FindAll("field_declaration") {
+		ads := fd.FindAll("array_declarator")
+		for _, ad := range ads {
+			if name := arrayBaseDeclaratorName(ad); name != "" {
+				info.arrayFields[name] = true
+			}
+		}
+		if len(ads) == 0 {
+			for _, fi := range fd.FindAll("field_identifier") {
+				nonArrayFields[fi.Text()] = true
+			}
+		}
+	}
+	for name := range nonArrayFields {
+		delete(info.arrayFields, name)
+	}
+	return info
+}
+
+// arrayBaseDeclaratorName returns the declared name of an array declarator,
+// covering both plain identifiers and struct field identifiers (which
+// declaratorName does not resolve).
+func arrayBaseDeclaratorName(n parser.Node) string {
+	switch n.Kind() {
+	case "identifier", "field_identifier":
+		return n.Text()
+	case "pointer_declarator", "array_declarator", "function_declarator":
+		for _, c := range n.NamedChildren() {
+			if name := arrayBaseDeclaratorName(c); name != "" {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+// isNonNullArrayBase reports whether expr is a pointer expression whose value
+// is a static address: a file/function-scoped array name, a struct field that
+// is an array, an address-of, or a string literal. Such a base plus or minus
+// any offset stays at or past the array — never NULL.
+func isNonNullArrayBase(expr parser.Node, arrs *arrayBaseInfo) bool {
+	switch expr.Kind() {
+	case "identifier":
+		return arrs.isArray(expr.Text())
+	case "field_expression":
+		for _, c := range expr.NamedChildren() {
+			if c.Kind() == "field_identifier" {
+				return arrs.isArrayField(c.Text())
+			}
+		}
+		return false
+	case "pointer_expression":
+		return strings.HasPrefix(strings.TrimSpace(expr.Text()), "&")
+	case "string_literal":
+		return true
+	case "parenthesized_expression", "cast_expression":
+		for _, c := range expr.NamedChildren() {
+			if isNonNullArrayBase(c, arrs) {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
+// nodeInsideTree reports whether node lies within the subtree rooted at tree.
+// The walk follows node's parent chain and compares byte ranges, so a match is
+// always a node on the same tree.
+func nodeInsideTree(node, tree parser.Node) bool {
+	if tree.Kind() == "" || node.Kind() == "" {
+		return false
+	}
+	for p := node.Parent(); p != nil; p = p.Parent() {
+		if p.Kind() == tree.Kind() && p.StartByte() == tree.StartByte() && p.EndByte() == tree.EndByte() {
+			return true
+		}
+	}
+	return false
+}
+
+// nodeInsideFunction reports whether node sits inside any function definition,
+// i.e. it is function-local rather than file-scope.
+func nodeInsideFunction(node parser.Node) bool {
+	for p := node.Parent(); p != nil; p = p.Parent() {
+		if p.Kind() == "function_definition" {
+			return true
+		}
+	}
+	return false
 }
 
 func isNullLiteralExpr(text string) bool {

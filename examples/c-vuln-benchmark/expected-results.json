@@ -1,9 +1,9 @@
 {
-  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327) + 4 个测试用例 (Phase 2: heap OOB write / format overflow / data race / OOB read) + 4 个测试用例 (Phase 3: null-deref sizeof + 流敏感 FP 抑制) + 3 个测试用例 (Phase 4: uninit 流敏感收敛，来自 zlib 生产环境缺陷) + 12 个测试用例 (Phase 6: resource-leak CWE-404，其中 RL-10~RL-12 为已确认检测缺口 known-gap 标记保留作回归目标，validator 对这类用例的漏报不判失败）。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。校验按 (漏洞类型, 文件, 行±容差) 与 verdict 阶段 result.sarif 交叉比对（见 benchmark.md「运行方式」）；detector → 漏洞类型映射见 scripts/validate-benchmark.py 的 DETECTOR_TO_TYPE，用 `--selftest` 可校验该映射是否覆盖全部标签；另加 34 个测试用例 (Phase 11: 补齐 dangerous-function / double-free / format-string / signal-handler 四个零覆盖 skill，并为 deadlock / hardcoded-secret / out-of-bounds / use-after-free 补上缺失的 no_finding 反证防线 —— 22 个注册漏洞类型至此每个都有「该报」与「不该报」对照；FS-05/DF-05/SH-05 为其存量文件上已检出但未纳入 ground truth 的缺陷)；ND-05/ND-06 由已删除的 examples/nullflow-demo/src/demo.c 迁入（拷贝传播收敛、return 之后不可达解引用），该独立样例项目的其余 3 个场景与 p5_null_flow.c 重复，故随迁移一并移除；ML-01/ML-02 补上 memory-leak 两条此前未锁定、仅以候选形式存在的真泄漏（条件路径泄漏 + 从不 free），使该类型每条候选都有 ground truth 对应；另加 5 个测试用例 (Phase 12: v0.7.1 缺陷修复回归 —— memory-leak 错误路径 return p 泄漏 (ML-03)、覆盖指针丢分配 (ML-04)、resource-leak 括号错误返回 (RL-15)、mmap 泄漏 (RL-16)、signal-handler strncpy 变量名巧合误杀 (SH-06))；另加 2 个测试用例 (Phase 13: v0.7.4 误报修复回归 —— 链表删除间接释放函数 + alias 重新赋值 UAF 误报 (UAF-02)、signed-compare 跨作用域同名遮蔽误报 (SC-01))；另加 2 个测试用例 (Phase 15: memory-leak 容器逃逸误报修复回归 —— malloc 容器写入缓冲区后 return 转移所有权，findEscapeLines pointer_expression 分支 allocVarNames 回归 (ML-05/ML-06))；另加 2 个测试用例 (Phase 16: divide-by-zero 非零源除数误报修复回归 —— 结构体字段从非零返回函数赋值 (P16-01)、全局变量从非零常量赋值 (P16-02)，globalInvariants 非零源赋值扫描 + RangeFilter field-chain invariant 检查回归)；另加 12 个测试用例 (Phase 17: 补齐 argument-type / data-representation / implicit-contract 三个此前零覆盖的 contract 类型 —— 每类 2 个 finding + 2 个 no_finding；P17-01~04 显式指针 cast 的越字节读与同尺寸/void* 合法边界，P17-05~08 qsort/bsearch base 元素表示与 comparator 解释一致/不一致，P17-09~12 结构体指针字段部分守卫 vs 完全守卫/函数内写入)。；另加 5 个测试用例 (Phase 18: P1 调用点实参普查回归 —— 非 static wrapper 树内全字面量 gate drop (P18-01/P18-05)、污点调用点保留 promote (P18-02)、basename/strrchr 净化 kill 含尾部整型指针算术 sink 解析 (P18-03/P18-04)；FS-01..03 随 P1 语义重定性为 no_finding：树内唯一调用点传字面量的形参 sink 在封闭程序内不可利用)",
+  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327) + 4 个测试用例 (Phase 2: heap OOB write / format overflow / data race / OOB read) + 4 个测试用例 (Phase 3: null-deref sizeof + 流敏感 FP 抑制) + 3 个测试用例 (Phase 4: uninit 流敏感收敛，来自 zlib 生产环境缺陷) + 12 个测试用例 (Phase 6: resource-leak CWE-404，其中 RL-10~RL-12 为已确认检测缺口 known-gap 标记保留作回归目标，validator 对这类用例的漏报不判失败）。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。校验按 (漏洞类型, 文件, 行±容差) 与 verdict 阶段 result.sarif 交叉比对（见 benchmark.md「运行方式」）；detector → 漏洞类型映射见 scripts/validate-benchmark.py 的 DETECTOR_TO_TYPE，用 `--selftest` 可校验该映射是否覆盖全部标签；另加 34 个测试用例 (Phase 11: 补齐 dangerous-function / double-free / format-string / signal-handler 四个零覆盖 skill，并为 deadlock / hardcoded-secret / out-of-bounds / use-after-free 补上缺失的 no_finding 反证防线 —— 22 个注册漏洞类型至此每个都有「该报」与「不该报」对照；FS-05/DF-05/SH-05 为其存量文件上已检出但未纳入 ground truth 的缺陷)；ND-05/ND-06 由已删除的 examples/nullflow-demo/src/demo.c 迁入（拷贝传播收敛、return 之后不可达解引用），该独立样例项目的其余 3 个场景与 p5_null_flow.c 重复，故随迁移一并移除；ML-01/ML-02 补上 memory-leak 两条此前未锁定、仅以候选形式存在的真泄漏（条件路径泄漏 + 从不 free），使该类型每条候选都有 ground truth 对应；另加 5 个测试用例 (Phase 12: v0.7.1 缺陷修复回归 —— memory-leak 错误路径 return p 泄漏 (ML-03)、覆盖指针丢分配 (ML-04)、resource-leak 括号错误返回 (RL-15)、mmap 泄漏 (RL-16)、signal-handler strncpy 变量名巧合误杀 (SH-06))；另加 2 个测试用例 (Phase 13: v0.7.4 误报修复回归 —— 链表删除间接释放函数 + alias 重新赋值 UAF 误报 (UAF-02)、signed-compare 跨作用域同名遮蔽误报 (SC-01))；另加 2 个测试用例 (Phase 15: memory-leak 容器逃逸误报修复回归 —— malloc 容器写入缓冲区后 return 转移所有权，findEscapeLines pointer_expression 分支 allocVarNames 回归 (ML-05/ML-06))；另加 2 个测试用例 (Phase 16: divide-by-zero 非零源除数误报修复回归 —— 结构体字段从非零返回函数赋值 (P16-01)、全局变量从非零常量赋值 (P16-02)，globalInvariants 非零源赋值扫描 + RangeFilter field-chain invariant 检查回归)；另加 12 个测试用例 (Phase 17: 补齐 argument-type / data-representation / implicit-contract 三个此前零覆盖的 contract 类型 —— 每类 2 个 finding + 2 个 no_finding；P17-01~04 显式指针 cast 的越字节读与同尺寸/void* 合法边界，P17-05~08 qsort/bsearch base 元素表示与 comparator 解释一致/不一致，P17-09~12 结构体指针字段部分守卫 vs 完全守卫/函数内写入)。；另加 5 个测试用例 (Phase 18: P1 调用点实参普查回归 —— 非 static wrapper 树内全字面量 gate drop (P18-01/P18-05)、污点调用点保留 promote (P18-02)、basename/strrchr 净化 kill 含尾部整型指针算术 sink 解析 (P18-03/P18-04)；FS-01..03 随 P1 语义重定性为 no_finding：树内唯一调用点传字面量的形参 sink 在封闭程序内不可利用)；另加 2 个测试用例 (Phase 19: NAT 生产第二轮复核 null-deref 误报修复回归 —— 内联 getter 返回静态数组基址指针运算 (g_pool_var.sects + node_id) 永不为 NULL，调用点解引用不得误报 (ND-14)；literal-NULL 返回链真缺陷对照必须仍报 (ND-15)，exprReturnsNullable binary_expression 数组基址识别回归)",
   "_benchmark_doc": "benchmark.md",
   "_validator": "scripts/validate-benchmark.py",
   "summary": {
-    "total_test_cases": 171,
+    "total_test_cases": 173,
     "phase0_test_cases": 18,
     "phase1_test_cases": 12,
     "phase2_test_cases": 4,
@@ -1720,6 +1720,26 @@
       "cwe": "CWE-22",
       "detector": "input.path_traversal",
       "expect": "no_finding"
+    },
+    {
+      "id": "ND-14",
+      "category": "nat_production_null_deref",
+      "file": "src/nat_null_deref_regress.c",
+      "line": 34,
+      "code": "POOL_SECT(node_id) deref (array-base + offset return, never NULL)",
+      "cwe": "CWE-476",
+      "detector": "null_deref",
+      "expect": "no_finding"
+    },
+    {
+      "id": "ND-15",
+      "category": "nat_production_null_deref",
+      "file": "src/nat_null_deref_regress.c",
+      "line": 40,
+      "code": "find_opt(node_id) deref after literal-NULL return",
+      "cwe": "CWE-476",
+      "detector": "null_deref",
+      "expect": "finding"
     }
   ]
 }

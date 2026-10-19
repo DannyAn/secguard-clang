@@ -496,6 +496,7 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 		body   parser.Node
 		root   parser.Node
 		params map[string]int
+		arrs   *arrayBaseInfo
 		srcs   []nullSource
 	}
 	infos := make([]funcInfo, 0, len(needNames))
@@ -531,7 +532,8 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 			if models != nil && models[fn.ID] != nil {
 				srcs = models[fn.ID].sources
 			}
-			infos = append(infos, funcInfo{fn: fn, body: body, root: root, params: paramsOf(fn, root), srcs: srcs})
+			params := paramsOf(fn, root)
+			infos = append(infos, funcInfo{fn: fn, body: body, root: root, params: params, arrs: collectArrayBaseInfo(root, body, params), srcs: srcs})
 		}
 	}
 
@@ -556,7 +558,7 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 			srcs := append([]nullSource(nil), info.srcs...)
 			srcs = append(srcs, callResultNullSources(info.body, retNullable)...)
 			flow := analyzer.analyzeFlow(ctx, info.fn, info.body, info.root, nullGenByLine(srcs), nil, true, false)
-			if returnsNullable(info.body, flow, info.params, retNullable, definedNames) {
+			if returnsNullable(info.body, flow, info.params, retNullable, definedNames, info.arrs) {
 				retNullable[info.fn.Name] = true
 				changed = true
 			}
