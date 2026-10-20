@@ -43,11 +43,15 @@ unchecked-return candidate. This is the decisive fact:
 | `p = malloc(n); if (!p) return;` | **false-positive** (checked) |
 | `if (malloc(n) == NULL) ...` | **false-positive** (checked inline) |
 | `p = malloc(n); free(p);` — the result's ONLY use is a NULL-safe deallocation | **false-positive** (`free(NULL)` is a no-op; the detector already suppresses this shape, so seeing it means a freeing macro is involved — judge the macro) |
+| Every consumer of the result is NULL-safe — an entry-guarded callee (`if (p == NULL) return -1;`, possibly through a cast alias `T *q = (T *)p`), a positively-guarded callee (`if (p != NULL) { ... }`), a void callee that handles NULL internally — with the call result checked (guarding callee) or deliberately discarded (`(void)add(p, x)`) | **false-positive** (consumer census: a NULL result cannot misbehave anywhere; the detector suppresses the in-scan shapes, so seeing this means a consumer is external — judge its NULL contract from API knowledge) |
+| The result is stored into a struct field that a shared downstream validator checks (`if (s->field == NULL) return -1;`) | **false-positive** (field escape validated downstream) |
+| One consumer is NULL-safe but another dereferences the value | **confirmed** (the census is AND — one unsafe consumer keeps the defect) |
 
 ### Common False Positives
 - Assignment followed by a check in a macro or helper (`xmalloc` wrappers)
 - `read()` used where a short read is acceptable (e.g. `read(fd, &ch, 1)` loops)
 - A pointer whose only consumer is `free()` / `cfree()` / `kfree()`
+- All consumers entry-guard or positively guard the argument and the results are discarded (`(void)filter_add(f, x)`) or void-internal — a NULL result has no observable consequence
 
 ### Severity Matrix
 

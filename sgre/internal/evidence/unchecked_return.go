@@ -132,7 +132,7 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 				}
 				noteDecl(init)
 			}
-			indirectGuarded := indirectGuardedVars(calls, f, checked, summaries.nullRejectParams, retTypes)
+
 			for _, call := range calls {
 				if !funcLineRange(f, call.StartLine()) {
 					continue
@@ -210,7 +210,7 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 				if vars := assignedVarsOfCall(call); len(vars) > 0 {
 					checkedAny := false
 					for _, v := range vars {
-						if checked[v] || indirectGuarded[v] {
+						if checked[v] {
 							checkedAny = true
 							break
 						}
@@ -241,6 +241,30 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 						return paramsByLine[f.StartLine][v]
 					}
 					if neverUsedAfter(vars, call, f, ids, isLocalTarget) {
+						continue
+					}
+					// Consumer census (AND semantics): every observable use of
+					// the stored result after the call is NULL-safe — free,
+					// sizeof, a rebind, or an argument to a consumer whose that
+					// parameter is null-safe (see nullSafeConsumerArg). A NULL
+					// result then cannot misbehave anywhere in this function, so
+					// the unchecked-return event is a false positive even though
+					// the value itself is never compared (report shape A2:
+					// `(void)filter_add(f, key)` with entry-guarded consumers).
+					// One unsafe use — a dereference, an unguarded callee — keeps
+					// the event, so a value validated at one consumer and
+					// dereferenced at another stays reported.
+					if allUsesNullSafe(vars, call, f, ids, checked, summaries, retTypes, isLocalTarget) {
+						continue
+					}
+					// Field escape: the target is a member of a local struct that
+					// is later passed (as `s` / `&s`) to a function validating
+					// exactly that member path against NULL with a failure return
+					// (report shape B: `para->user_filter = import_strdup(...)` +
+					// `para_is_valid(&para)`). The field's NULL is handled
+					// downstream by the shared validator, so the event on the
+					// field store is noise.
+					if fieldValidatedElsewhere(vars, call.StartLine(), f, calls, summaries.fieldNullChecks, isLocalTarget) {
 						continue
 					}
 				}
@@ -441,89 +465,252 @@ func bareConditionVars(cond *parser.Node) []string {
 	return nil
 }
 
-// indirectGuardedVars returns the variables whose unchecked-return event another
-// call in the same function has already handled. The shape is
+// allUsesNullSafe reports whether every observable use of the assigned
+// variables after the call is NULL-safe, so a NULL result cannot misbehave
+// anywhere in the function. Safe uses are a NULL-safe deallocation (free),
+// a sizeof operand, a rebind (ends the value's window), and an argument
+// passed to a consumer whose that parameter is null-safe under the channel
+// rules in nullSafeConsumerArg. Any other occurrence — a dereference, an
+// argument to an unguarded callee, a return — disqualifies (AND semantics):
+// a value validated at some consumers and dereferenced at another keeps its
+// event. Only bare local (or parameter) identifiers qualify: a global
+// target's real uses live in other functions and are invisible here, and a
+// field/pointed-to target is the fieldValidatedElsewhere escape's business,
+// not a consumer census.
+func allUsesNullSafe(vars []string, call parser.Node, f *db.Function, ids []parser.Node, checked map[string]bool, sums *funcSummaries, retTypes map[string]string, isLocal func(string) bool) bool {
+	targets := make(map[string]bool, len(vars))
+	for _, v := range vars {
+		if v == "" || strings.ContainsAny(v, ".[>*") || !isLocal(v) {
+			return false
+		}
+		targets[v] = true
+	}
+	allocStmt := storeStatementOfCall(call)
+	rebindLine := 0
+	for _, id := range ids {
+		if !targets[id.Text()] || !funcLineRange(f, id.StartLine()) || id.StartLine() <= call.StartLine() {
+			continue
+		}
+		if allocStmt != nil && nodeContains(*allocStmt, id) {
+			continue
+		}
+		if isRebindTarget(id) && (rebindLine == 0 || id.StartLine() < rebindLine) {
+			rebindLine = id.StartLine()
+		}
+	}
+	for _, id := range ids {
+		if !targets[id.Text()] || !funcLineRange(f, id.StartLine()) || id.StartLine() < call.StartLine() {
+			continue
+		}
+		if allocStmt != nil && nodeContains(*allocStmt, id) {
+			continue
+		}
+		if rebindLine > 0 && id.StartLine() >= rebindLine {
+			continue
+		}
+		if insideSizeof(id) || isRebindTarget(id) || nullSafeFreedArg(id) {
+			continue
+		}
+		if nullSafeConsumerArg(id, checked, sums, retTypes) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// nullSafeConsumerArg reports whether the identifier occurrence is passed
+// (bare, possibly cast/parenthesised) as argument i of a call whose parameter
+// i is null-safe in the callee's body, under the channel rules that keep the
+// polarity traps reportable:
 //
-//	filter = idm_db_filter_new(2);
-//	ret = idm_fill_filter(filter, ...);   /* entry-guards its NULL parameter */
-//	if (ret != 0) { ... return ret; }     /* caller acts on the failure */
-//
-// `filter` is passed as argument i of a callee whose parameter i is rejected at
-// entry with a failure return (nullRejectParams), and the call's result is
-// acted on — either tested inline (`if (wrap(p) != 0)`) or stored in a variable
-// that is itself checked. A NULL `filter` therefore becomes an error the caller
-// handles, so the unchecked-return candidate on the source call is a false
-// positive. Requiring the callee's entry guard is what keeps a
-// dereferencing call such as `if (strlen(p) > 0)` reportable: the argument is
-// used, not validated.
-func indirectGuardedVars(calls []parser.Node, f *db.Function, checked map[string]bool, nullRejectParams map[string]map[int]bool, retTypes map[string]string) map[string]bool {
-	if len(nullRejectParams) == 0 {
+//   - the callee returns void: it handles a NULL internally (the
+//     `void release_entry(Entry *e) { if (!e) return; ... }` consumer), so
+//     there is no result to check and no error to propagate;
+//   - the call's result is checked — inline, or via a variable that is itself
+//     checked: the caller RELIES on a failure sentinel, so the callee must
+//     actually reject NULL with a failure return (nullRejectParams). A callee
+//     that answers success on NULL turns the caller's check into a false
+//     sense of safety, so the event must stay;
+//   - the result is discarded — `(void)f(p)`, a bare statement, a variable
+//     that is stored but never checked: the caller relies on nothing, so the
+//     callee merely has to not dereference the NULL (paramNullSafe). This is
+//     report shape A2: `(void)filter_add(f, key)` with an entry-guarded
+//     consumer whose int result the caller deliberately drops.
+func nullSafeConsumerArg(id parser.Node, checked map[string]bool, sums *funcSummaries, retTypes map[string]string) bool {
+	var list *parser.Node
+	for p := id.Parent(); p != nil; p = p.Parent() {
+		if p.Kind() == "argument_list" {
+			list = p
+			break
+		}
+		if p.Kind() != "parenthesized_expression" && p.Kind() != "cast_expression" {
+			return false
+		}
+	}
+	if list == nil {
+		return false
+	}
+	call := list.Parent()
+	if call == nil || call.Kind() != "call_expression" {
+		return false
+	}
+	callee := extractCallName(*call)
+	idx := -1
+	for i, arg := range list.NamedChildren() {
+		if nodeContains(arg, id) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 || !sums.paramNullSafe[callee][idx] {
+		return false
+	}
+	if voidReturning(retTypes, callee) {
+		return true
+	}
+	if callResultChecked(*call) {
+		return sums.nullRejectParams[callee][idx]
+	}
+	for _, v := range assignedVarsOfCall(*call) {
+		if checked[v] {
+			return sums.nullRejectParams[callee][idx]
+		}
+	}
+	return true
+}
+
+// fieldValidatedElsewhere reports whether every assigned target is a member
+// of a local struct whose containing value is passed (as `s` or `&s`) to a
+// function that validates exactly that member path against NULL with a
+// failure return (fieldNullChecks). Report shape B: `para->user_filter =
+// import_strdup(flt); ... if (para_is_valid(&para) != 0) return -1;` — the
+// field's NULL is handled downstream by the shared validator, so the
+// unchecked-return event on the field store is a false positive.
+func fieldValidatedElsewhere(vars []string, assignLine int, f *db.Function, calls []parser.Node, fieldChecks map[string]map[string]bool, isLocal func(string) bool) bool {
+	if len(fieldChecks) == 0 || len(vars) == 0 {
+		return false
+	}
+	for _, v := range vars {
+		if !fieldValidated(v, assignLine, f, calls, fieldChecks, isLocal) {
+			return false
+		}
+	}
+	return true
+}
+
+// fieldValidated checks one assigned location against the downstream
+// validators. The base of the member path must be a local (or parameter) so
+// the passing call's argument really is that storage, and the validating call
+// must come after the field store.
+func fieldValidated(v string, assignLine int, f *db.Function, calls []parser.Node, fieldChecks map[string]map[string]bool, isLocal func(string) bool) bool {
+	base := locationBase(v)
+	if base == "" || !isLocal(base) {
+		return false
+	}
+	field := strings.TrimPrefix(strings.TrimPrefix(v[len(base):], "->"), ".")
+	if field == "" {
+		return false
+	}
+	for _, c := range calls {
+		if c.StartLine() <= assignLine || !funcLineRange(f, c.StartLine()) {
+			continue
+		}
+		if !fieldChecks[extractCallName(c)][field] {
+			continue
+		}
+		for _, arg := range getCallArgs(c) {
+			switch stripCastsAndParens(arg.Text()) {
+			case base, "&" + base:
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// paramAliases returns the local variables that merely rename a parameter
+// through a cast or plain binding (`filter_t *ft = (filter_t *)f;`,
+// `q = p;`), keyed by the alias name. Only names whose EVERY binding resolves
+// to the same parameter qualify: a name ever rebound to something else stops
+// tracking the parameter. Guards on such an alias (`if (ft == NULL) return
+// -1;`) validate the parameter itself, which is how the entry-guard and
+// null-safe summaries see through the `void *`-to-typed-pointer rebinding
+// idiom of the report's filter_add shape.
+func paramAliases(fnNode parser.Node) map[string]string {
+	body := fnNode.FindFirst("compound_statement")
+	if body == nil {
 		return nil
 	}
-	// The variables a call's result is stored into, with the assignment line:
-	// only a variable that is itself a call result can carry an
-	// unchecked-return event.
-	callResultVars := make(map[string]int)
-	for _, call := range calls {
-		if !funcLineRange(f, call.StartLine()) {
+	params := paramPositions(fnNode)
+	if len(params) == 0 {
+		return nil
+	}
+	paramSet := make(map[string]bool, len(params))
+	for _, p := range params {
+		if p != "" {
+			paramSet[p] = true
+		}
+	}
+	bindings := make(map[string][]string)
+	record := func(lhs, rhs parser.Node) {
+		// assignedVariable unwraps the declarator shapes a binding can take:
+		// a bare identifier (`q = p`) or a pointer declarator
+		// (`filter_t *ft = (filter_t *)f`).
+		name := assignedVariable(lhs)
+		if name == "" || paramSet[name] {
+			return
+		}
+		target, ok := bareIdentifierOf(rhs)
+		if !ok || !paramSet[target] {
+			bindings[name] = append(bindings[name], "")
+			return
+		}
+		bindings[name] = append(bindings[name], target)
+	}
+	for _, node := range body.FindAll("init_declarator") {
+		if lhs, rhs, ok := node.AssignParts(); ok {
+			record(lhs, rhs)
+		}
+	}
+	for _, node := range body.FindAll("assignment_expression") {
+		if lhs, rhs, ok := node.AssignParts(); ok {
+			record(lhs, rhs)
+		}
+	}
+	aliases := make(map[string]string)
+	for alias, names := range bindings {
+		first := names[0]
+		if first == "" {
 			continue
 		}
-		for _, v := range assignedVarsOfCall(call) {
-			if v == "" {
-				continue
+		for _, n := range names[1:] {
+			if n != first {
+				first = ""
+				break
 			}
-			if _, ok := callResultVars[v]; !ok {
-				callResultVars[v] = call.StartLine()
+		}
+		if first != "" {
+			aliases[alias] = first
+		}
+	}
+	return aliases
+}
+
+// bareIdentifierOf strips casts/parentheses from expr and returns its text
+// when the result is a bare identifier.
+func bareIdentifierOf(expr parser.Node) (string, bool) {
+	switch expr.Kind() {
+	case "identifier":
+		return expr.Text(), true
+	case "parenthesized_expression", "cast_expression":
+		for _, c := range expr.NamedChildren() {
+			if name, ok := bareIdentifierOf(c); ok {
+				return name, true
 			}
 		}
 	}
-	var out map[string]bool
-	for _, call := range calls {
-		line := call.StartLine()
-		if !funcLineRange(f, line) {
-			continue
-		}
-		rejects := nullRejectParams[extractCallName(call)]
-		if len(rejects) == 0 {
-			continue
-		}
-		if !callResultChecked(call) {
-			checkedResult := false
-			for _, v := range assignedVarsOfCall(call) {
-				if checked[v] {
-					checkedResult = true
-					break
-				}
-			}
-			// A VOID-returning consumer that entry-rejects its parameter
-			// (`void release_entry(Entry *e) { if (!e) return; ... }`) handles
-			// the NULL internally — there is no result to check and no error to
-			// propagate, and the consumer does not dereference a NULL argument.
-			// The possibly-NULL variable is therefore still safe, so the source
-			// call's unchecked-return is a false positive (alloc_entry → main →
-			// release_entry). A subsequent dereference of the same variable is
-			// caught by the null-deref detector, not by CWE-252.
-			if !checkedResult && !voidReturning(retTypes, extractCallName(call)) {
-				continue
-			}
-		}
-		args := getCallArgs(call)
-		for i, arg := range args {
-			if !rejects[i] || arg.Kind() != "identifier" {
-				continue
-			}
-			name := arg.Text()
-			assignLine, ok := callResultVars[name]
-			if !ok || assignLine >= line {
-				continue
-			}
-			if out == nil {
-				out = make(map[string]bool)
-			}
-			out[name] = true
-		}
-	}
-	return out
+	return "", false
 }
 
 // entryNullRejectParams returns the 0-based parameter indices a function
@@ -535,7 +722,9 @@ func indirectGuardedVars(calls []parser.Node, f *db.Function, checked map[string
 // p == NULL path falls through). A BARE or success return counts: a NULL-safe
 // consumer handles NULL internally (`void release_entry(Entry *e) { if (!e)
 // return; ... }`), so the caller's unchecked return is a false positive even
-// though there is no failure sentinel for the caller to observe.
+// though there is no failure sentinel for the caller to observe. A guard on a
+// cast alias of the parameter (`filter_t *ft = (filter_t *)f; if (ft == NULL)
+// return -1;`) rejects the parameter too.
 func entryNullRejectParams(fnNode parser.Node) map[int]bool {
 	body := fnNode.FindFirst("compound_statement")
 	if body == nil {
@@ -554,10 +743,15 @@ func entryNullRejectParams(fnNode parser.Node) map[int]bool {
 			index[name] = i
 		}
 	}
+	aliases := paramAliases(fnNode)
 	var out map[int]bool
 	mark := func(vars []string) {
 		for _, v := range vars {
-			i, ok := index[v]
+			name := v
+			if param, aliased := aliases[v]; aliased {
+				name = param
+			}
+			i, ok := index[name]
 			if !ok {
 				continue
 			}
@@ -610,6 +804,220 @@ func branchReturns(branch parser.Node) bool {
 		return true
 	}
 	return false
+}
+
+// paramNullSafeParams returns the 0-based parameter indices that are NULL-safe
+// in the function's body: a NULL argument cannot be dereferenced there. That
+// is the union of
+//
+//   - entry rejection (entryNullRejectParams, cast-alias aware): a NULL
+//     argument exits at the guard before any dereference, and
+//   - positive body guards: at least one `if (p != NULL)`-style guard exists,
+//     and every dereference of the parameter (or of a cast alias of it) is
+//     dominated by such a guard's non-null branch.
+//
+// A function with no guard and no dereference (e.g. one that merely stashes
+// the pointer into a global) is deliberately NOT null-safe: the value escapes
+// unchecked, and the caller cannot see what happens to it.
+func paramNullSafeParams(fnNode parser.Node) map[int]bool {
+	safe := entryNullRejectParams(fnNode)
+	body := fnNode.FindFirst("compound_statement")
+	if body == nil {
+		return safe
+	}
+	params := paramPositions(fnNode)
+	if len(params) == 0 {
+		return safe
+	}
+	aliases := paramAliases(fnNode)
+	paramIndex := func(name string) int {
+		for i, p := range params {
+			if p == name {
+				return i
+			}
+		}
+		return -1
+	}
+	for _, param := range params {
+		if param == "" {
+			continue
+		}
+		names := map[string]bool{param: true}
+		for alias, p := range aliases {
+			if p == param {
+				names[alias] = true
+			}
+		}
+		guarded := false
+		for _, ifn := range body.FindAll("if_statement") {
+			cond := ifn.ChildByFieldName("condition")
+			if cond == nil {
+				continue
+			}
+			for _, g := range parser.GuardedNonnullVars(*cond) {
+				if names[g] {
+					guarded = true
+					break
+				}
+			}
+			if guarded {
+				break
+			}
+		}
+		if !guarded {
+			continue
+		}
+		allGuarded := true
+		for _, deref := range paramDerefPoints(*body, names) {
+			if !guardedByIf(deref, names) {
+				allGuarded = false
+				break
+			}
+		}
+		if allGuarded {
+			idx := paramIndex(param)
+			if idx >= 0 {
+				if safe == nil {
+					safe = make(map[int]bool)
+				}
+				safe[idx] = true
+			}
+		}
+	}
+	return safe
+}
+
+// paramDerefPoints returns the nodes in body that dereference any of the
+// given names: `n->f`, `n[i]`, `(*n)` — a field/subscript whose base (after
+// cast/paren stripping) is one of the names, or a `*` pointer_expression of
+// one of them. A dereference inside a guard condition (`if (p->count > 0)`)
+// counts too; guardedByIf decides whether it is actually guarded.
+func paramDerefPoints(body parser.Node, names map[string]bool) []parser.Node {
+	var out []parser.Node
+	for _, kind := range []string{"field_expression", "subscript_expression"} {
+		for _, n := range body.FindAll(kind) {
+			children := n.NamedChildren()
+			if len(children) == 0 {
+				continue
+			}
+			if base, ok := bareIdentifierOf(children[0]); ok && names[base] {
+				out = append(out, n)
+			}
+		}
+	}
+	for _, n := range body.FindAll("pointer_expression") {
+		if !strings.HasPrefix(strings.TrimSpace(n.Text()), "*") {
+			continue // & — address-of, not a dereference
+		}
+		for _, c := range n.NamedChildren() {
+			if base, ok := bareIdentifierOf(c); ok && names[base] {
+				out = append(out, n)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// guardedByIf reports whether the dereference node is dominated by a null
+// guard on one of names: walking up the ancestors, an if_statement whose
+// consequence contains the node and whose condition establishes non-null
+// (`if (p != NULL) { ... p->f ... }`), or whose alternative contains the node
+// and whose condition establishes NULL (`if (p == NULL) { ... } else { p->f }`).
+func guardedByIf(deref parser.Node, names map[string]bool) bool {
+	for p := deref.Parent(); p != nil; p = p.Parent() {
+		if p.Kind() != "if_statement" {
+			continue
+		}
+		cond := p.ChildByFieldName("condition")
+		if cond == nil {
+			continue
+		}
+		if cons := p.ChildByFieldName("consequence"); cons != nil && nodeContains(*cons, deref) {
+			for _, g := range parser.GuardedNonnullVars(*cond) {
+				if names[g] {
+					return true
+				}
+			}
+		}
+		if alt := p.ChildByFieldName("alternative"); alt != nil && nodeContains(*alt, deref) {
+			for _, g := range parser.NullCheckedVars(*cond) {
+				if names[g] {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// fieldNullChecksOfBody returns the member paths a function validates against
+// NULL at a top-level guard with a failure/bare return:
+// `if (p->user_filter == NULL || p->dst_name == NULL) return -1;` yields
+// {"user_filter", "dst_name"}. Only NULL comparisons (`== NULL`, `!p->f`,
+// bare pointer truthiness) contribute — a numeric comparison on a member
+// (`p->count > 0`) validates nothing about NULL. The base name is dropped so
+// a caller holding a differently-named struct still matches; nested paths
+// keep their relative shape (`p->a->b` -> "a->b").
+func fieldNullChecksOfBody(fnNode parser.Node) map[string]bool {
+	body := fnNode.FindFirst("compound_statement")
+	if body == nil {
+		return nil
+	}
+	var out map[string]bool
+	add := func(loc string) {
+		base := locationBase(loc)
+		if base == "" {
+			return
+		}
+		rest := strings.TrimPrefix(strings.TrimPrefix(loc[len(base):], "->"), ".")
+		if rest == "" || strings.ContainsAny(rest, "(<&*+-") {
+			return
+		}
+		if out == nil {
+			out = make(map[string]bool)
+		}
+		out[rest] = true
+	}
+	for _, stmt := range body.NamedChildren() {
+		if stmt.Kind() != "if_statement" {
+			continue
+		}
+		cons := stmt.ChildByFieldName("consequence")
+		if cons == nil || !branchReturns(*cons) {
+			continue
+		}
+		cond := stmt.ChildByFieldName("condition")
+		if cond == nil {
+			continue
+		}
+		for _, b := range cond.FindAll("binary_expression") {
+			if parser.BinaryOperator(b) != "==" {
+				continue
+			}
+			children := b.NamedChildren()
+			if len(children) < 2 {
+				continue
+			}
+			var other parser.Node
+			switch {
+			case parser.IsNullOperand(children[0]):
+				other = children[1]
+			case parser.IsNullOperand(children[1]):
+				other = children[0]
+			default:
+				continue
+			}
+			switch other.Kind() {
+			case "field_expression", "subscript_expression", "pointer_expression":
+				add(other.Text())
+			}
+		}
+		for _, v := range bareConditionVars(cond) {
+			add(v)
+		}
+	}
+	return out
 }
 
 // paramPositions returns a function definition's parameter names in declaration
@@ -898,12 +1306,11 @@ func (d *UncheckedReturnDetector) funcReturnTypes(ctx context.Context) (map[stri
 }
 
 // voidReturning reports whether the indexed function's declared return type is
-// exactly `void` (no result to check). Used by indirectGuardedVars to relax the
-// "consumer's result must be checked" requirement: a void consumer that
-// entry-rejects its parameter handles a NULL argument internally, so the source
-// call's unchecked return is a false positive. An unknown/empty type stays
-// non-void (conservative) so a missing return-type cannot silently widen the
-// suppression.
+// exactly `void` (no result to check). Used by nullSafeConsumerArg to recognise
+// a void consumer whose null-safe parameter handles a NULL argument
+// internally, so the source call's unchecked return is a false positive. An
+// unknown/empty type stays non-void (conservative) so a missing return-type
+// cannot silently widen the suppression.
 func voidReturning(retTypes map[string]string, name string) bool {
 	if retTypes == nil {
 		return false
@@ -911,7 +1318,7 @@ func voidReturning(retTypes map[string]string, name string) bool {
 	return strings.TrimSpace(retTypes[name]) == "void"
 }
 
-// funcSummaries bundles the two cross-function facts the detector derives from
+// funcSummaries bundles the cross-function facts the detector derives from
 // a single pass over the indexed functions.
 type funcSummaries struct {
 	// passthrough names the functions whose body returns an unchecked
@@ -925,6 +1332,19 @@ type funcSummaries struct {
 	// parameters it rejects at entry with a failure return (see
 	// entryNullRejectParams).
 	nullRejectParams map[string]map[int]bool
+	// paramNullSafe maps a function name to the 0-based indices of the
+	// parameters that are NULL-safe in its body: a NULL argument cannot be
+	// dereferenced there (see paramNullSafeParams). Superset of
+	// nullRejectParams — rejecting at entry is one way to be null-safe, while
+	// a positive guard `if (p != NULL) { ... }` protects the dereferences
+	// without exposing a failure the caller could observe.
+	paramNullSafe map[string]map[int]bool
+	// fieldNullChecks maps a function name to the member paths it validates
+	// against NULL at a top-level guard with a failure return (see
+	// fieldNullChecksOfBody). A caller that stores an allocation into a local
+	// struct field and then passes the struct to such a validator has the
+	// field's NULL handled downstream.
+	fieldNullChecks map[string]map[string]bool
 }
 
 // hasUncheckedReturnCandidate pre-scans every indexed file for the detector's
@@ -956,6 +1376,8 @@ func (d *UncheckedReturnDetector) funcSummaries(ctx context.Context) (*funcSumma
 	// it returns to its caller.
 	returnedSource := make(map[string]map[string]bool)
 	nullReject := make(map[string]map[int]bool)
+	nullSafe := make(map[string]map[int]bool)
+	fieldChecks := make(map[string]map[string]bool)
 
 	add := func(name, callee string) {
 		if callee == "" {
@@ -991,6 +1413,12 @@ func (d *UncheckedReturnDetector) funcSummaries(ctx context.Context) (*funcSumma
 			}
 			if reject := entryNullRejectParams(fnNode); len(reject) > 0 {
 				nullReject[name] = reject
+			}
+			if safe := paramNullSafeParams(fnNode); len(safe) > 0 {
+				nullSafe[name] = safe
+			}
+			if checks := fieldNullChecksOfBody(fnNode); len(checks) > 0 {
+				fieldChecks[name] = checks
 			}
 		}
 
@@ -1064,7 +1492,7 @@ func (d *UncheckedReturnDetector) funcSummaries(ctx context.Context) (*funcSumma
 			}
 		}
 	}
-	return &funcSummaries{passthrough: passthrough, nullRejectParams: nullReject}, nil
+	return &funcSummaries{passthrough: passthrough, nullRejectParams: nullReject, paramNullSafe: nullSafe, fieldNullChecks: fieldChecks}, nil
 }
 
 // nullSafeFreeCalls are deallocators for which NULL is a defined no-op, so an
