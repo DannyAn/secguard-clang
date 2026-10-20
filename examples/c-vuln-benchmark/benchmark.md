@@ -21,11 +21,11 @@
 
 | 指标 | 数值 |
 |------|------|
-| 源文件 | 36 |
-| 总测试用例 | 183 |
+| 源文件 | 37 |
+| 总测试用例 | 189 |
 | **覆盖漏洞类型（25 个注册 skill）** | **25 / 25** |
-| expect-finding（应报告） | 95 |
-| expect-no_finding（应被抑制） | 88 |
+| expect-finding（应报告） | 98 |
+| expect-no_finding（应被抑制） | 91 |
 | Phase 0（P0-P3/TP 反证骨架） | 18 |
 | Phase 1（CWE-190/362/798/667/327） | 12 |
 | Phase 2（扩展典型漏洞） | 4 |
@@ -46,6 +46,7 @@
 | **Phase 17（补齐 3 个零覆盖 contract 类型：argument-type / data-representation / implicit-contract）** | **12** |
 | **Phase 18（P1 调用点实参普查 gate / 净化 kill 回归）** | **5** |
 | **Phase 21（unchecked-return 消费点普查误报修复）** | **7** |
+| **Phase 22（null-deref 三类误报修复）** | **6** |
 | 应完全不产生 Finding (P0: Detector EXCLUDE) | 7 |
 | 应产生 Finding 但被 P1 抑制 | 3 |
 | 应产生 Finding 但被 P2 抑制 | 4 |
@@ -586,6 +587,46 @@ candidate（contract@unknown，`_new`/`strdup` 名字启发式）交 AI 研判�
 19 函数逐一断言），间接守卫极性陷阱由既有 `TestUncheckedReturn_IndirectGuard` 保持。
 
 > 行号以 `src/p21_consumer_census_fp.c` 当前内容为准（validator 容差 ±3）。
+
+## Phase 22 — null-deref 三类误报修复（2026-10 新增）
+
+生产环境 AI 复核报告 null-deref (CWE-476) 6 项误报（R1×4 / R2×1 / R3×1）。
+三个根因与对应修复：
+
+1. **R1 短路守卫行**：`p == NULL || !p->field` 右项解引用发生在守卫条件行
+   本身（短路求值保证右操作数仅在 p 非空时求值），而 `paramUnguarded` 的
+   守卫区间从 if 行 +1 起，被误判 unguarded → 调用点合成 DEREFERENCE 事件。
+   修复：evidence 层短路分析（`||` 右项继承左项 NullCheckedVars、`&&` 右项
+   继承左项 GuardedNonnullVars、`?:` 两分支分别继承条件真/假向事实）。
+2. **R2 条件非空 getter**：`if (x == NULL) return NULL; return &x->f;` 的
+   返回值仅当实参为 NULL 时才可空，`callResultNullSources` 却为 `p = f(x)`
+   无条件合成 null source。修复：实参事实记录（六形态分类，不透明形态
+   fail-open）+ `retNullGuardContract` paramNullOnly 契约——调用点实参自身
+   已判空守卫（无 reaching null source）→ 候选消除。
+3. **R3 守卫互斥**：strip 类函数 NULL 路径 = 入参 NULL 检查 + `strlen(p) >= len`
+   溢出检查；调用点 `strlen(arg) != 0 && lhs == NULL` 早退守卫与溢出路径互斥
+   （溢出蕴含 strlen(arg) >= len > 0，守卫必先命中）→ 残余路径 lhs 非空。
+   修复：`retNullGuardContract` 溢出契约（overflowArg/overflowLen）+
+   `overflowGuardMutex` 调用点互斥验证。
+
+| ID | 文件 | 行 | 期望 | 说明 |
+|----|------|----|------|------|
+| P22-01 | p22_null_deref_fp.c | 130 | no_finding | R1：`p == NULL \|\| !p->field` 短路守卫调用点 |
+| P22-02 | p22_null_deref_fp.c | 143 | no_finding | R2：实参判空守卫内调用条件非空 getter |
+| P22-03 | p22_null_deref_fp.c | 157 | no_finding | R3：strip + strlen 合取守卫互斥 |
+| P22-04 | p22_null_deref_fp.c | 163 | finding | TP-1 真阳性控制组：id 范围 getter（NULL 依赖越界而非参数 null 检查）无守卫消费 |
+| P22-05 | p22_null_deref_fp.c | 177 | finding | TP-2 真阳性控制组：全局状态 getter（无参数）相邻函数判空不一致 |
+| P22-06 | p22_null_deref_fp.c | 187 | finding | TP-3 真阳性控制组：布尔分支 is_all 绕过判空守卫 |
+
+P22-01 在**检测器层**抑制（evidence 不发事件），P22-02/03 在 **planner 层**
+dismiss（filter_nullable_source 契约判定），均在 AI 研判之前，不依赖候选
+质量。三条抑制均为确定性逻辑；真阳性控制组防止为降误报而整体关停或过度
+放宽。单测防线：`TestInterproceduralShortCircuitGuardedParam`（evidence 层
+R1 正反例）+ `TestNullDerefGuardContracts`（planner 层 R2/R3 契约正反例 +
+TP 控制组 + ND-16 `id == 0` 守卫回归控制组 use_zero_cfg——`pureNullCheckVar`
+收紧后 id 范围 getter 不得被误认 paramNullOnly 契约）。
+
+> 行号以 `src/p22_null_deref_fp.c` 当前内容为准（validator 容差 ±3）。
 
 ## 检测器缺口（2026-10 盘点，本轮已全部闭环）
 
