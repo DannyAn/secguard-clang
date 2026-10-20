@@ -2,7 +2,49 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.9.8] - 2026-10-19（六次重发）
+## [0.9.8] - 2026-10-20（七次重发）
+
+### null-deref 候选偏多检视：三类守卫契约误报（6 项 FP）修复
+
+生产环境 AI 复核报告 null-deref（CWE-476）6 项误报（#045/#048/#049-#052），
+逐条回源验证后落地三机制（检测器/planner 层抑制，不新增类型），同时保住
+5 项真阳性（TP-1 #046/#047 可空 getter 无防御消费、TP-2 #043/#044 相邻函数
+判空不一致、TP-3 #033 布尔分支绕过守卫）：
+
+- **R1 短路守卫行（4 项，#049-#052）**：`paramUnguarded` 要求 callee 体内解引用
+  行落在 `[scope_start, scope_end]` 内，而 `detectEarlyReturnGuards` 设
+  `scope_start = ifNode.StartLine()+1`——`p == NULL || !p->field` 形态右项的
+  解引用就发生在守卫条件行本身（短路求值保证右操作数仅在 p 非空时求值），被
+  判 unguarded → 调用点误报。现 evidence 层对每个 function_definition 做短路
+  分析：`||` 右项继承左项 `NullCheckedVars`、`&&` 右项继承左项
+  `GuardedNonnullVars`、`?:` 两分支分别继承条件真/假向事实，`paramUnguarded`
+  接受短路保护行集合。
+- **R2 条件非空 getter（1 项，#045）**：`callResultNullSources` 为每个
+  `p = f(x)` 无条件合成 null source，`if (x == NULL) return NULL;
+  return &x->f;` 的 getter 被当作无条件可空。现 planner 为合成 source 记录
+  实参事实（identifier/字符串字面量/`&x`/sizeof/正数字面量六形态分类，
+  不透明形态 fail-open 置 argUnsafe），`retNullGuardContract` 判定「仅参数
+  NULL 时返回 NULL、其余返回 address-of 或参数转发」契约（paramNullOnly）；
+  调用点实参无 reaching null source（自身已判空守卫）→ 候选消除。
+- **R3 守卫互斥（1 项，#048）**：strip 类函数 NULL 路径 = 入参 NULL 检查 +
+  `strlen(p) >= len` 溢出检查，成功路径转发 buf；调用点
+  `strlen(arg) != 0 && lhs == NULL` 早退守卫与溢出路径互斥（溢出蕴含
+  `strlen(arg) >= len > 0` 即 `strlen(arg) != 0`，守卫必先命中）→ 残余路径
+  lhs 非空。`retNullGuardContract` 识别溢出契约（overflowArg/overflowLen，
+  多溢出分支须实参/长度位置一致），`overflowGuardMutex` 在调用点验证实参已证
+  非空 + strlen 合取守卫位于赋值与解引用行之间 → 候选消除。
+- **真阳性防误消除**：`pureNullCheckVar` 对 binary `==` 的 null 侧收紧为 null
+  字面量形态（排除数值 0——`id == 0` 是值比较非判空，否则 ND-16 的
+  `find_opt_cfg` id 范围 getter 会被误认契约而漏报）。
+- 验证：六组 fixture（fp1/fp2/fp3 + tp1/tp2/tp3）+ 两个 R3 负控（删调用点
+  strlen 守卫、callee 溢出守卫改恒假形态）全部干净目录 A/B——fp 三组消除、
+  tp 三组保持、负控重新报出；benchmark 全量 42 → 39 fails（P22 六例全 PASS
+  offset 0，ND-16 恢复，39 条与基线完全一致零新增回归）。
+  回归防线：单测 `TestInterproceduralShortCircuitGuardedParam`（evidence 层
+  R1 正反例）+ `TestNullDerefGuardContracts`（planner 层 R2/R3 契约正反例 +
+  TP 控制组 + ND-16 回归控制组）+ benchmark Phase 22（P22-01..06）；null-deref
+  `SKILL.md` 补「Short-Circuit & Interprocedural Guard Contracts」三条研判
+  规则（R1 守卫行短路 / R2 条件非空 getter / R3 守卫互斥，各含不适用形态）。
 
 ### unchecked-return 消费点普查：IDM 报告 25/25 全误报的根因修复
 
