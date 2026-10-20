@@ -56,6 +56,31 @@ A null-deref candidate has:
 - `if (!ptr) { ... return; }` early return → guard eliminates risk for rest of function
 - `ptr = malloc(n); if (!ptr) return; ptr->field;` → malloc checked
 
+### Short-Circuit & Interprocedural Guard Contracts
+
+Three guard shapes the pipeline recognizes and dismisses automatically; when
+one of these reaches you anyway (e.g. under the `assumed-return` or
+`caller-arg` tier), apply the same reasoning before confirming:
+
+- **Short-circuit guard line** (callee side): a dereference ON the guard
+  condition line (`p == NULL || !p->is_used`, `p == NULL || p[0] == '\0'`) is
+  protected by short-circuit evaluation — the right operand only evaluates
+  when `p` is non-null → **false-positive**.
+- **Conditional-nonnull getter** (callee contract): the callee returns NULL
+  only under a null check of a pointer parameter (`if (c == NULL) return
+  NULL; return &c->addr;`) and the call site sits inside the argument's own
+  null guard → the callee cannot return NULL for these arguments →
+  **false-positive**. A getter whose NULL path depends on anything else (an
+  id range check `id >= MAX`, global state `!g_loaded`) does NOT carry this
+  contract — judge it on its own NULL paths.
+- **Guard-mutex strip helper** (callee contract + caller guard): the callee
+  returns NULL only under a parameter null check or a `strlen(p) >= len`
+  overflow check, and the caller early-returns under the conjunctive guard
+  `strlen(arg) != 0 && lhs == NULL` — an overflow implies
+  `strlen(arg) >= len > 0`, so the guard fires before the dereference →
+  **false-positive**. The length argument must be provably positive
+  (sizeof / positive literal) for the mutex to hold.
+
 ### Nullable-Origin Tier (Hint null@ tokens)
 
 The Hint's first null token states HOW the pipeline knows the value can be null —
