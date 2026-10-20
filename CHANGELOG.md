@@ -2,7 +2,7 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [Unreleased] - 2026-10-20
+## [0.9.8] - 2026-10-19（四次重发）
 
 ### null-deref 候选质量治理：retNullable 三态化（proven/assumed）+ 四项误报收敛
 
@@ -41,9 +41,7 @@ null-deref AI 候选 6 → 4，pipeline 自动确认 7 → 9。
   矛盾；正确实现需要 AccessPath 字段级流分析（架构演进，另立项）。
 
 同步：`hint_tokens.go` 新增 `null@assumed-return` token；null-deref `SKILL.md` tier
-表补 assumed-return 行；benchmark 新增 ND-16。未发布版本，`VERSION` 不变。
-
-## [0.9.8] - 2026-10-19（三次重发）
+表补 assumed-return 行；benchmark 新增 ND-16。
 
 ### NAT 生产第二轮反馈修复（逐条验证，仅修真实问题）
 
