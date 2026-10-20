@@ -64,8 +64,9 @@ your job differs per tier, so read it before anything else:
 | Tier token | Meaning | Your action |
 |------------|---------|-------------|
 | `null@cfg-proof` | CFG proves a NULL assignment reaches the dereference on every path | machine-proved CWE-476 — verify the statement matches, then confirm |
-| `null@malloc-fail` | the null source is a proven-nullable call result (allocator / known maybe-null libc / a callee whose body returns NULL) | textbook CWE-476 — confirm unless the `## Code Context` shows a check; when the Hint also carries `callee@file:line`, the callee body is embedded under `## Callee Definition`, judge it there instead of reading source |
+| `null@malloc-fail` | the null source is a proven-nullable call result (allocator / known maybe-null libc / a callee whose body PROVABLY returns NULL: a literal NULL path or an allocator result) | textbook CWE-476 — confirm unless the `## Code Context` shows a check; when the Hint also carries `callee@file:line`, the callee body is embedded under `## Callee Definition`, judge it there instead of reading source |
 | `null@caller-arg` | an inter-procedural caller passes the parameter unproven non-null | judge the caller contract — confirm only if a caller can actually pass NULL |
+| `null@assumed-return` | an IN-SCAN callee graded maybe-null only by fail-open (it returns a parameter, a struct field, or an unknown call) — its body is embedded under `## Callee Definition` | judge the assumption from the embedded body — confirm only if the returned value can actually be NULL (a zero-initialized field, a nullable forward), otherwise dismiss |
 | `null@external-unknown` | the ONLY null source is an unproven external call — a fail-open analyzer ASSUMPTION, not evidence | verify the callee can return NULL (API knowledge), otherwise dismiss |
 
 `guard@none` in the same Hint means no same-function null guard precedes the

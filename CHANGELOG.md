@@ -2,6 +2,47 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [Unreleased] - 2026-10-20
+
+### null-deref 候选质量治理：retNullable 三态化（proven/assumed）+ 四项误报收敛
+
+围绕「null-deref 留给 AI 研判的候选偏多」的生产反馈，逐条验证检视文档（998 行）后落地净增量修复。
+干净目录 A/B（benchmark，CLI-only 无 AI 阶段）：recall 54/91 → 56/92，FP 恒为 0；
+null-deref AI 候选 6 → 4，pipeline 自动确认 7 → 9。
+
+- **retNullable 三态化 + `assumed-return` tier（核心）**：过程间返回可空性定点分析从单一
+  bool 拆为 `retNotNull < retNullAssumed < retNullProven` 三态。callee 体内有**具体 NULL
+  witness**（字面 `return NULL` 路径、分配器结果、proven 链）时调用点候选**自动确认**
+  （malloc-fail tier，不再消耗 AI 研判）；仅 **fail-open 假设**（返回参数、字段读取、
+  转发未知外部调用）的 callee 保持 suspected，归入新 `null@assumed-return` tier——其
+  函数体经 `callee@` 嵌入候选文件，AI 直接研判假设本身而非盲目盖章"proven"先验。
+  回归：ND-15（find_opt literal-NULL）与 ND-16（新增 P5 proven getter 转正用例）转
+  自动确认，ND-07/ND-08 纠正为 assumed-return。
+- **返回类型门控**：`return 0` 在 never-null 标量返回函数（int/unsigned/size_t/bool 等）
+  中是整数零而非空指针，不再播种 null source；cast 包裹的 `(T*)0` 保持 null 语义。
+- **同名函数保守合并**：`computeRetNullable` 的 funcsByName 合并规则从"任一定义可空则
+  名字可空"改为按 FunctionID 分别定级后**取最保守**（任一 assumed 定义则整个名字
+  assumed），同名 static 定义不再因 fail-open 混入自动确认。
+- **宏上下文让位于函数索引**：ALL_CAPS 命名约定启发式会把扫描内的 static 函数
+  （`POOL_SECT`）误标为宏上下文，阻止 confirmed 自动确认走 AI 复核。现 detector 启动时
+  加载函数定义名集合，启发式分支跳过已定义名（`secguard.toml` 显式声明的宏名优先级
+  不变）；`#define FOO(x)` 预处理行是声明而非调用，不再计入 ±8 行窗口。
+- **mem*/str* 拷贝族返回值非空**：memcpy/memmove/memset/strcpy/strncpy/strcat/strncat
+  原样返回调用方传入的 dest 指针——返回值是 dest 的别名而非独立 null 源，此前被
+  fail-open 播为 external-unknown 误导性候选；dest 自身可空的场景由 dest 变量自身的
+  候选覆盖。
+- **caller 侧守卫识别扩展**：`callerGuardsVar` 此前只认提前 return 负向守卫，现补齐
+  正分支（`if (p != NULL) f(p)`）、短路合取（`p != NULL && f(p)`，call 须字节包含于
+  && 右操作数以防 `a && b || f(p)` 误配）、assert 前置（`assert(p != NULL); f(p);`）
+  三种惯用法；else 分支不建立非空（仍播种），各守卫事实经 `guardScopeEnd` 在首次
+  重赋值处截断。
+- **aliasRoots field-read 扩展经评估不实施**：`q = p->f` 的可空性来自字段值而非 p 的
+  参数契约，扩展 paramAliasUnproven（drop 规则）会引入 FN 且与 assumed-return 语义
+  矛盾；正确实现需要 AccessPath 字段级流分析（架构演进，另立项）。
+
+同步：`hint_tokens.go` 新增 `null@assumed-return` token；null-deref `SKILL.md` tier
+表补 assumed-return 行；benchmark 新增 ND-16。未发布版本，`VERSION` 不变。
+
 ## [0.9.8] - 2026-10-19（三次重发）
 
 ### NAT 生产第二轮反馈修复（逐条验证，仅修真实问题）

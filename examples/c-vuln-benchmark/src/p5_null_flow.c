@@ -148,3 +148,21 @@ void nd3_nullcheck_handler(void *p) {
     t->field = 1;
 }
 void nd3_nullcheck_caller(void *x) { nd3_nullcheck_handler(x); }
+/* 真阳性：getter 带字面 return NULL 路径（proven-nullable），调用方未判空即解引用。
+ * retNullable 三态化（v0.9.9）：proven getter 的调用点候选自动确认（malloc-fail
+ * tier，不消耗 AI 研判预算）—— ND-15 find_opt 的 P5 对照，锁定三态中 proven 一侧；
+ * assumed 一侧（ND-07/ND-08）保持 suspected 交 AI。 */
+typedef struct { int opt; } opt_cfg_t;
+
+static opt_cfg_t g_opt_cfg;
+
+opt_cfg_t *find_opt_cfg(unsigned int id) {
+    if (id == 0) { return NULL; }
+    return &g_opt_cfg;
+}
+
+int nd_proven_getter_deref(unsigned int id) {
+    opt_cfg_t *cfg = find_opt_cfg(id);
+    cfg->opt = 1;
+    return 0;
+}
