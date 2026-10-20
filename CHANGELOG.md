@@ -2,6 +2,25 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [Unreleased]
+
+### redispatch 修复：CodeAgentCLI（claude-cac）宿主下子代理名解析
+
+- **根因**：claude-cac（CodeAgentCLI）宿主把插件 agent 注册为插件命名空间形态
+  `secguard-clang:security-auditor`，而编排指令（`command-instructions.md` 的
+  Parallel dispatch 平台列表）只写了官方 Claude Code（裸名）/OpenCode/DSH 三个
+  条目，按文档下发裸名 `security-auditor` 必然返回 `Agent type not found`，整批
+  失败后靠模型自行纠错重发（ssl-vpn 569 文件扫描实测：11 个子代理全失败 → 空参
+  重发触发 loop 检测 → 第三次才带命名空间名成功；0.9.5 起即可复现）。
+- **修复**：① 平台列表补 `CodeAgentCLI (claude-cac)` 条目，明确用
+  `subagent_type: "secguard-clang:security-auditor"` 下发；② 新增 **F10 规则**
+  （子代理名解析）：`Agent type not found` 是名字不匹配而非扫描失败——禁止同名
+  原样重试、禁止空参重发、禁止标 `missing-type`、禁止降级顺序自理，须读错误消息
+  的 `Available agents:` 列表选出 `…:security-auditor` 条目、同回合重发全部失败
+  批次；③ claude-cac 的 `/secguard` 命令包装器顶部加宿主声明（该宿主与官方
+  Claude Code 工具同名，模型无法从工具名区分宿主，须显式路由）。
+- pr/diff/mr 三个增量命令不含子代理调度（orchestrator 直接研判），无需改动。
+
 ## [0.9.8] - 2026-10-19（四次重发）
 
 ### null-deref 候选质量治理：retNullable 三态化（proven/assumed）+ 四项误报收敛

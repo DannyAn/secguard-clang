@@ -366,11 +366,21 @@ as `result.sarif`.)
    of types that need AI work (`candidates_by_type > 0` OR
    `auto_confirmed_by_type > 0`), ALL IN THE SAME TURN so they run
    concurrently:
-   - Claude Code: the `Agent` tool (the subagent-dispatch tool; older versions
-     name it `Task`) with `subagent_type: "security-auditor"`.
-   - OpenCode: the `task` tool with the `security-auditor` agent (same name).
+   - Claude Code (official): the `Agent` tool (the subagent-dispatch tool; older
+     versions name it `Task`) with `subagent_type: "security-auditor"` (bare name).
+   - CodeAgentCLI (claude-cac): the same `Agent`/`Task` tool, but this host
+     registers plugin agents under their plugin namespace — dispatch with
+     `subagent_type: "secguard-clang:security-auditor"`.
+   - OpenCode (incl. opencode-nga): the `task` tool with the `security-auditor`
+     agent (bare name).
    - DeepSeek Harness (DSH): the `subagent` tool (provider `spawn`), background
      by default — omit `run_in_background` and dispatch all batches in one turn.
+   **子代理名解析 (F10) — `Agent type '<name>' not found` 的恢复：** 该错误是
+   **名字不匹配**，不是扫描失败。遇到时**禁止**用同名原样重试、**禁止**用空参数重发
+   （会触发宿主 loop 检测被拦截）、**禁止**把该类型标 `missing-type`、**禁止**降级为
+   orchestrator 顺序自理。正确动作：读错误消息里的 `Available agents:` 列表，选出以
+   `security-auditor` 结尾的条目（裸名或 `<plugin>:security-auditor` 形态），**同一回合**
+   用该精确名重发全部失败的批次，然后照常进第 5 步 Collect+finalize。
    Each subagent prompt must be self-contained (the subagent cannot see this
    conversation):
    ```
