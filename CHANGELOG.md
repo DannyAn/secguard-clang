@@ -2,7 +2,35 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.9.8] - 2026-10-19（五次重发）
+## [0.9.8] - 2026-10-19（六次重发）
+
+### unchecked-return 消费点普查：IDM 报告 25/25 全误报的根因修复
+
+生产环境 AI 复核报告 unchecked-return（CWE-252）候选 25/25 全部误报。逐条核验后
+落地三机制（检测器层抑制，不新增类型/不改 planner 契约分档）：
+
+- **消费通道分档（根因一）**：旧 `indirectGuardedVars` 要求「消费调用的结果被
+  检查 OR callee 返回 void」——报告模式 A（`(void)filter_add(f, x)` 丢弃结果 +
+  int 返回）两条都不满足而误报。新语义：结果**被检查** → callee 必须 NULL→失败
+  暴露（`nullRejectParams`，success-on-NULL / 正守卫早退等极性陷阱保持报告）；
+  结果**被丢弃**或 callee 为 void → callee 只需不解引用 NULL（`paramNullSafe`）。
+- **paramNullSafe 摘要（根因一）**：入口负向守卫早退（失败/bare return）∪ 体内
+  正守卫全包裹解引用（`if (p != NULL) { p->f = 1; }`）；**cast 别名感知**
+  （根因二：`filter_t *ft = (filter_t *)f; if (ft == NULL) return -1;` 旧摘要
+  看不见——`paramAliases` 要求绑定全一致才算别名）；零守卫零解引用的转存
+  （值逃逸）刻意不算 null-safe。
+- **消费点普查 AND 语义**：局部变量的**所有**后续消费必须全部 NULL 安全
+  （paramNullSafe 消费 + free + sizeof + rebind），任一违规（直接解引用、无守卫
+  callee、值逃逸）保留事件——OR→AND 收紧，单一安全消费不再豁免。
+- **字段逃逸（根因三）**：新增 `fieldNullChecks` 摘要（函数顶层 `== NULL` 判空 +
+  失败早退的字段路径集合，bare truthiness/`!p->f` 计入、数值比较不计入）。
+  `para->user_filter = import_strdup(...)` + `para_is_valid(&para)` 形态在赋值
+  目标为本地结构体字段且容器被传给覆盖该字段的校验函数时抑制。
+- 验证：4 fixture 端到端 A/B（干净目录）——4.2 字段逃逸 2 条全消、A2 无 void
+  消费点变体 1 条消、4.1 void 混合消费保持不报、4.3 真阳性（直接解引用）保持
+  报告；既有 `TestUncheckedReturn_IndirectGuard` 七个极性断言全部保持。
+  回归防线：单测 `TestUncheckedReturn_ConsumerCensus`（19 函数逐断言）+
+  benchmark Phase 21（UR-01~07：4 抑制 + 3 报告负控/真阳性）。
 
 ### redispatch 修复：CodeAgentCLI（claude-cac）宿主下子代理名解析
 
