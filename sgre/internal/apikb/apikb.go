@@ -900,15 +900,25 @@ func RegisterOwnershipTransfer(name string) {
 }
 
 // BuiltinNonNullReturning are libc/POSIX functions that return a pointer but are
-// guaranteed non-null by contract (e.g. strerror always returns an error
-// description string). Projects extend this set via RegisterNonNullReturning
-// (secguard.toml [nullability.non_null_returns]) for third-party wrappers with
-// an abort-on-failure contract (xmalloc, g_malloc, sdsnew, ...).
+// guaranteed non-null by contract. The mem*/str* copy family (memcpy, strcpy,
+// ...) returns the caller-supplied dest pointer verbatim — the return value is
+// an alias of dest, not an independent null source; if dest itself can be
+// null, the dest variable's own candidate covers it. Projects extend this set
+// via RegisterNonNullReturning (secguard.toml
+// [nullability.non_null_returns]) for third-party wrappers with an
+// abort-on-failure contract (xmalloc, g_malloc, sdsnew, ...).
 var BuiltinNonNullReturning = map[string]bool{
 	"strerror":  true,
 	"strsignal": true,
 	"inet_ntoa": true,
 	"ctermid":   true,
+	"memcpy":    true,
+	"memmove":   true,
+	"memset":    true,
+	"strcpy":    true,
+	"strncpy":   true,
+	"strcat":    true,
+	"strncat":   true,
 }
 
 // extraNonNullReturning holds project-declared never-null return names

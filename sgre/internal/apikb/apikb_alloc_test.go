@@ -106,7 +106,13 @@ func TestRegisterAllocator(t *testing.T) {
 	}
 }
 func TestIsNonNullReturning_BuiltinAndRegistered(t *testing.T) {
-	for _, name := range []string{"strerror", "strsignal", "inet_ntoa", "ctermid"} {
+	for _, name := range []string{
+		"strerror", "strsignal", "inet_ntoa", "ctermid",
+		// mem*/str* copy family: they return the caller-supplied dest
+		// pointer verbatim, so the return value is an alias of dest, never
+		// an independent null source.
+		"memcpy", "memmove", "memset", "strcpy", "strncpy", "strcat", "strncat",
+	} {
 		if !IsNonNullReturning(name) {
 			t.Errorf("IsNonNullReturning(%q) = false, want true (built-in)", name)
 		}
