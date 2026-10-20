@@ -78,6 +78,7 @@ func (d *InterproceduralDetector) Detect(ctx context.Context) (DetectResult, err
 
 	callsByFunc := make(map[int64][]parser.Node)
 	paramsByFunc := make(map[int64][]string, len(funcs))
+	shortCircuit := make(map[int64]map[string]map[int]bool)
 	for fileID, fileFuncs := range funcsByFile {
 		tree := d.treeFor(ctx, treeCache, fileID)
 		if tree == nil {
@@ -85,13 +86,22 @@ func (d *InterproceduralDetector) Detect(ctx context.Context) (DetectResult, err
 		}
 		root := tree.RootNode()
 
-		paramsByLine := make(map[int][]string, len(fileFuncs))
+		funcNodesByLine := make(map[int]parser.Node, len(fileFuncs))
 		for _, fnNode := range root.FindAll("function_definition") {
-			paramsByLine[fnNode.StartLine()] = findParamsInDefinition(fnNode)
+			funcNodesByLine[fnNode.StartLine()] = fnNode
+		}
+		paramsByLine := make(map[int][]string, len(fileFuncs))
+		for line, fnNode := range funcNodesByLine {
+			paramsByLine[line] = findParamsInDefinition(fnNode)
 		}
 		for _, f := range fileFuncs {
 			if params := paramsByLine[f.StartLine]; len(params) > 0 {
 				paramsByFunc[f.ID] = params
+			}
+			if fnNode, ok := funcNodesByLine[f.StartLine]; ok {
+				if lines := shortCircuitProtectedLines(fnNode); len(lines) > 0 {
+					shortCircuit[f.ID] = lines
+				}
 			}
 		}
 
@@ -114,7 +124,7 @@ func (d *InterproceduralDetector) Detect(ctx context.Context) (DetectResult, err
 			if !derefSet[param] {
 				continue
 			}
-			if paramUnguarded(derefLines[calleeID][param], guardScopes[calleeID][param]) {
+			if paramUnguarded(derefLines[calleeID][param], guardScopes[calleeID][param], shortCircuit[calleeID][param]) {
 				unguarded[idx] = param
 			}
 		}
@@ -269,9 +279,15 @@ func (d *InterproceduralDetector) loadDerefLines(ctx context.Context) (map[int64
 
 // paramUnguarded reports whether any dereference line of a parameter falls
 // outside every guard scope for that parameter, i.e. the parameter is
-// dereferenced without a null guard on at least one line.
-func paramUnguarded(lines []int, scopes [][2]int) bool {
+// dereferenced without a null guard on at least one line. Lines the
+// short-circuit analysis proved safe (a dereference in the right operand of
+// `p == NULL || …` / `p != NULL && …`, evaluated only when p is non-null) are
+// excluded even though NULL_GUARD scopes start after the guard line.
+func paramUnguarded(lines []int, scopes [][2]int, protected map[int]bool) bool {
 	for _, line := range lines {
+		if protected != nil && protected[line] {
+			continue
+		}
 		guarded := false
 		for _, sc := range scopes {
 			if line >= sc[0] && line <= sc[1] {
@@ -284,6 +300,105 @@ func paramUnguarded(lines []int, scopes [][2]int) bool {
 		}
 	}
 	return false
+}
+
+// shortCircuitProtectedLines walks a function definition and records, per
+// variable, the source lines where that variable is dereferenced under
+// short-circuit protection: inside the right operand of `&&`/`||` (or a
+// branch of `?:`) whose left operand already established the variable
+// non-null. `p == NULL || !p->is_used` evaluates `p->is_used` only when p is
+// non-null, so the dereference on the guard line itself is safe; symmetrically
+// `p != NULL && p->used` protects its right operand. The knowledge flows
+// recursively through nested short-circuit operators.
+func shortCircuitProtectedLines(fnNode parser.Node) map[string]map[int]bool {
+	out := make(map[string]map[int]bool)
+	walkShortCircuit(fnNode, nil, out)
+	return out
+}
+
+func walkShortCircuit(n parser.Node, known map[string]bool, out map[string]map[int]bool) {
+	if n.Kind() == "" {
+		return
+	}
+	if n.Kind() == "binary_expression" {
+		switch op := parser.BinaryOperator(n); op {
+		case "&&", "||":
+			kids := n.NamedChildren()
+			if len(kids) == 2 {
+				walkShortCircuit(kids[0], known, out)
+				var side []string
+				if op == "&&" {
+					side = parser.GuardedNonnullVars(kids[0])
+				} else {
+					side = parser.NullCheckedVars(kids[0])
+				}
+				if len(side) > 0 {
+					merged := make(map[string]bool, len(known)+len(side))
+					for v := range known {
+						merged[v] = true
+					}
+					for _, v := range side {
+						merged[v] = true
+					}
+					known = merged
+				}
+				walkShortCircuit(kids[1], known, out)
+				return
+			}
+		}
+	} else if n.Kind() == "conditional_expression" {
+		kids := n.NamedChildren()
+		if len(kids) == 3 {
+			walkShortCircuit(kids[0], known, out)
+			walkShortCircuit(kids[1], unionKnown(known, parser.GuardedNonnullVars(kids[0])), out)
+			walkShortCircuit(kids[2], unionKnown(known, parser.NullCheckedVars(kids[0])), out)
+			return
+		}
+	}
+	if known != nil {
+		if v := protectedDerefVar(n); v != "" && known[v] {
+			if out[v] == nil {
+				out[v] = make(map[int]bool)
+			}
+			out[v][n.StartLine()] = true
+		}
+	}
+	for _, c := range n.NamedChildren() {
+		walkShortCircuit(c, known, out)
+	}
+}
+
+func unionKnown(known map[string]bool, side []string) map[string]bool {
+	if len(side) == 0 {
+		return known
+	}
+	merged := make(map[string]bool, len(known)+len(side))
+	for v := range known {
+		merged[v] = true
+	}
+	for _, v := range side {
+		merged[v] = true
+	}
+	return merged
+}
+
+// protectedDerefVar returns the base variable when node is a dereference
+// whose base is a plain identifier (`p->f`, `p[i]`, `*p`) — the same name the
+// dereference detector records on DEREFERENCE events — or "" otherwise.
+// A chained base (`p->a->b`, `*(p+1)`) is not a parameter dereference and
+// never matches a parameter name, so it stays unprotected.
+func protectedDerefVar(n parser.Node) string {
+	switch n.Kind() {
+	case "field_expression", "subscript_expression":
+		kids := n.NamedChildren()
+		if len(kids) > 0 && kids[0].Kind() == "identifier" {
+			return kids[0].Text()
+		}
+		return ""
+	case "pointer_expression":
+		return explicitDerefVar(n)
+	}
+	return ""
 }
 
 // treeFor parses the file once and caches the tree, keyed by file ID.
