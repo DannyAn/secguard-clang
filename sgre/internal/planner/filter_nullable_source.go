@@ -3,6 +3,7 @@ package planner
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
@@ -56,7 +57,7 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 		byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
 	}
 
-	flowResults, retNullable, definedNames, synthByFunc, err := f.buildFlowResults(ctx, byFunc, models)
+	flowResults, retNullable, definedNames, synthByFunc, retGuards, err := f.buildFlowResults(ctx, byFunc, models)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -160,6 +161,44 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 						fmt.Sprintf("variable %s is re-fetched from an accessor after a checked grow on the same container", c.VariableName))
 					continue
 				}
+				// Inter-procedural guard contracts on the callee (see
+				// retNullGuardContract): a conditional-nonnull getter (R2)
+				// returns NULL only under a null check of a pointer
+				// parameter and otherwise an address-of value; a strip-style
+				// helper (R3) returns NULL only under a parameter null check
+				// or a strlen(p) >= len overflow check and otherwise forwards
+				// a parameter. When every identifier argument at the
+				// assignment line has no reaching null source (the call sits
+				// inside the argument's own null guard, which the flow
+				// analysis already honours) and no argument is an opaque
+				// shape, the parameter-null paths are unreachable; for R3 the
+				// overflow path additionally needs the caller's conjunctive
+				// early return `strlen(arg) != 0 && lhs == NULL` (an overflow
+				// implies strlen(arg) >= len > 0, so the guard fires first)
+				// and a provably positive length argument.
+				if !c.HasDefiniteNull && retGuards != nil {
+					if src := synthSourceAt(synthByFunc[c.FunctionID], c.VariableName, c.Line); src != nil && !src.argUnsafe {
+						if g := retGuards[src.origin]; g != nil {
+							argsSafe := true
+							for _, av := range src.argVarNames {
+								if fm.reaching(av, src.line) {
+									argsSafe = false
+									break
+								}
+							}
+							if argsSafe && g.paramNullOnly {
+								dropped = dismiss(dropped, c, f.Name(),
+									fmt.Sprintf("callee %s returns null only for a null argument; argument is non-null at line %d", src.origin, src.line))
+								continue
+							}
+							if argsSafe && g.overflowArg >= 0 && overflowGuardMutex(fm, src, g, c.Line) {
+								dropped = dismiss(dropped, c, f.Name(),
+									fmt.Sprintf("callee %s returns null only for a null or overflowing argument; caller guards strlen != 0 with %s == NULL before line %d", src.origin, c.VariableName, c.Line))
+								continue
+							}
+						}
+					}
+				}
 				// Layering: reflect the must/may tier in the suspicion label so
 				// the AI budgets effort by certainty. A DEFINITE null source
 				// (p = NULL) reaching on every path is a certain null-deref →
@@ -252,9 +291,9 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 // `p = f()` null sources whose callee the fixpoint proved nullable — Apply
 // reads them back to classify such variables as malloc-fail (proven-nullable
 // in-scan callee) instead of external-unknown (fail-open assumption).
-func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[int64][]Candidate, models map[int64]*nullModel) (map[int64]*flowResult, map[string]retNullability, map[string]bool, map[int64][]nullSource, error) {
+func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[int64][]Candidate, models map[int64]*nullModel) (map[int64]*flowResult, map[string]retNullability, map[string]bool, map[int64][]nullSource, map[string]*retNullGuard, error) {
 	if f.parser == nil {
-		return nil, nil, nil, nil, nil
+		return nil, nil, nil, nil, nil, nil
 	}
 
 	funcIDs := make([]int64, 0, len(byFunc))
@@ -269,7 +308,7 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 	// and the analyze loop below do not each issue N+1 point queries.
 	fnByID, err := f.store.ListFunctionsByIDs(ctx, funcIDs)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("nullable source: list functions: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("nullable source: list functions: %w", err)
 	}
 	fileByID := map[int64]*db.File{}
 	if files, ferr := f.store.ListFiles(ctx); ferr == nil {
@@ -341,12 +380,14 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 	// error: keep candidates.
 	retNullable := map[string]retNullability{}
 	definedNames := map[string]bool{}
+	retGuards := map[string]*retNullGuard{}
 	if len(assignedCallees) > 0 {
 		var err error
-		retNullable, definedNames, err = f.computeRetNullable(ctx, models, assignedCallees)
+		retNullable, definedNames, retGuards, err = f.computeRetNullable(ctx, models, assignedCallees)
 		if err != nil {
 			retNullable = map[string]retNullability{}
 			definedNames = map[string]bool{}
+			retGuards = map[string]*retNullGuard{}
 		}
 	}
 
@@ -403,7 +444,483 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 		}
 		results[fid] = res
 	}
-	return results, retNullable, definedNames, synthByFunc, nil
+	return results, retNullable, definedNames, synthByFunc, retGuards, nil
+}
+
+// synthSourceAt returns the planner-synthesized `p = f()` null source whose
+// assignment to variable is closest before line — the same selection rule as
+// synthCalleeAt, but carrying the full source (origin, assignment line, and
+// call-site argument facts) so the conditional-nonnull-getter dismissal can
+// check the arguments against the reaching analysis.
+func synthSourceAt(synth []nullSource, variable string, line int) *nullSource {
+	var best *nullSource
+	for i := range synth {
+		s := &synth[i]
+		if s.variable != variable || s.line <= 0 || s.line > line {
+			continue
+		}
+		if best == nil || s.line >= best.line {
+			best = s
+		}
+	}
+	return best
+}
+
+// retNullGuard is the inter-procedural NULL-return contract of one callee
+// name, computed from its body by retNullGuardContract.
+type retNullGuard struct {
+	// paramNullOnly (the R2 conditional-nonnull getter): every NULL return
+	// sits under a null check of a pointer parameter and every other return
+	// is an address-of value, so a call site with non-null arguments gets a
+	// non-null result.
+	paramNullOnly bool
+	// overflowArg / overflowLen (the R3 strip-style helper): NULL returns sit
+	// under a parameter null check or a strlen(p) >= len overflow check —
+	// one consistent p and len across the body — and every other return
+	// forwards a parameter or takes an address. overflowArg is the index of
+	// the strlen-checked parameter; overflowLen the index of the length
+	// parameter, or -1 when the length is a sizeof/positive literal inside
+	// the callee itself (already provably positive). Both are -1 when the
+	// contract carries no overflow branch.
+	overflowArg int
+	overflowLen int
+}
+
+// retNullGuardContract classifies how a callee can return NULL. It returns
+// nil when the body has no qualifying contract, so the true positives behind
+// real nullable getters are preserved: a getter whose NULL path depends on
+// anything but a parameter null check or a strlen overflow check (an id
+// range check, global state) does not qualify, nor does a function with a
+// non-parameter, non-address-of, non-forwarding success return.
+func retNullGuardContract(body parser.Node, params map[string]int) *retNullGuard {
+	var nullReturns, otherReturns, addrReturns int
+	var hasOverflow, allParamNull = false, true
+	ovArg, ovLen := -1, -1
+	for _, ret := range body.FindAll("return_statement") {
+		kids := ret.NamedChildren()
+		if len(kids) == 0 {
+			continue
+		}
+		expr := kids[0]
+		if parser.IsNullOperand(expr) {
+			nullReturns++
+			if returnGuardedByParamNull(ret, params) {
+				continue
+			}
+			argIdx, lenIdx, ok := returnGuardedByStrlenOverflow(ret, params)
+			if !ok {
+				return nil
+			}
+			if hasOverflow && (ovArg != argIdx || ovLen != lenIdx) {
+				return nil
+			}
+			if !hasOverflow {
+				ovArg, ovLen, hasOverflow = argIdx, lenIdx, true
+			}
+			allParamNull = false
+			continue
+		}
+		otherReturns++
+		if isAddressOfExpr(expr) {
+			addrReturns++
+			continue
+		}
+		if name := identifierName(expr); name == "" {
+			return nil
+		} else if _, ok := params[name]; !ok {
+			return nil
+		}
+	}
+	// The contract needs at least one guarded NULL return (the relaxation
+	// target) and one non-null return (otherwise the callee returns NULL on
+	// every path, argument or not).
+	if nullReturns == 0 || otherReturns == 0 {
+		return nil
+	}
+	if allParamNull && addrReturns == otherReturns {
+		return &retNullGuard{paramNullOnly: true, overflowArg: -1, overflowLen: -1}
+	}
+	if hasOverflow {
+		return &retNullGuard{overflowArg: ovArg, overflowLen: ovLen}
+	}
+	return nil
+}
+
+// identifierName returns the plain identifier behind node, peeling
+// parentheses and casts, or "" for anything else.
+func identifierName(n parser.Node) string {
+	switch n.Kind() {
+	case "identifier":
+		return n.Text()
+	case "parenthesized_expression", "cast_expression":
+		kids := n.NamedChildren()
+		if len(kids) == 1 {
+			return identifierName(kids[0])
+		}
+	}
+	return ""
+}
+
+// returnGuardedByParamNull reports whether a `return NULL` statement sits on
+// a path guarded by a null check of one of the given parameters: walking the
+// if ancestors whose consequence contains the return, the path condition
+// must establish some parameter null.
+func returnGuardedByParamNull(ret parser.Node, params map[string]int) bool {
+	for p := ret.Parent(); p != nil; p = p.Parent() {
+		if p.Kind() != "if_statement" {
+			continue
+		}
+		cons := p.ChildByFieldName("consequence")
+		if cons == nil || !nodeContainsLine(*cons, ret.StartLine()) {
+			continue
+		}
+		cond := p.ChildByFieldName("condition")
+		if cond == nil {
+			continue
+		}
+		for _, v := range trueNullVars(*cond) {
+			if _, ok := params[v]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// nodeContainsLine reports whether node's line range covers line.
+func nodeContainsLine(n parser.Node, line int) bool {
+	return n.StartLine() <= line && line <= n.EndLine()
+}
+
+// trueNullVars returns the variables a condition establishes as NULL when it
+// evaluates TRUE — the direction needed to prove a `return NULL` path is
+// entered only under a parameter null check. A top-level `||` qualifies only
+// when EVERY operand is a pure null check (`p == NULL`, `!p`): the condition
+// being true then guarantees at least one operand's variable is null. A `&&`
+// contributes the union of its operands' facts. `p != NULL` true is a
+// NON-null fact and never qualifies; comparisons like `id >= MAX` establish
+// nothing about nullness.
+func trueNullVars(cond parser.Node) []string {
+	switch cond.Kind() {
+	case "parenthesized_expression", "cast_expression":
+		for _, c := range cond.NamedChildren() {
+			if vars := trueNullVars(c); len(vars) > 0 {
+				return vars
+			}
+		}
+		return nil
+	case "binary_expression":
+		switch parser.BinaryOperator(cond) {
+		case "||":
+			var vars []string
+			for _, child := range cond.NamedChildren() {
+				v := pureNullCheckVar(child)
+				if v == "" {
+					return nil
+				}
+				vars = append(vars, v)
+			}
+			return vars
+		case "&&":
+			var vars []string
+			for _, child := range cond.NamedChildren() {
+				vars = append(vars, trueNullVars(child)...)
+			}
+			return vars
+		case "==":
+			if v := pureNullCheckVar(cond); v != "" {
+				return []string{v}
+			}
+		}
+		return nil
+	case "unary_expression":
+		if v := pureNullCheckVar(cond); v != "" {
+			return []string{v}
+		}
+	}
+	return nil
+}
+
+// pureNullCheckVar returns the variable when cond is a pure null check whose
+// TRUE direction establishes that variable null (`p == NULL`, `NULL == p`,
+// `!p`, possibly parenthesized), or "". The dual parser helpers distinguish
+// the polarity: a pure null check has a false-direction non-null fact and no
+// true-direction non-null fact. For the `==` form the null side must be a
+// null LITERAL (NULL / nullptr), never the integer zero: `p == 0` on an
+// integer parameter is a value comparison (`id == 0`, an id-range getter),
+// not a null-pointer check — accepting it would qualify the getter for the
+// parameter-null contract and dismiss its true-positive consumers.
+func pureNullCheckVar(cond parser.Node) string {
+	if cond.Kind() == "binary_expression" && parser.BinaryOperator(cond) == "==" {
+		kids := cond.NamedChildren()
+		if len(kids) == 2 && !isNullLiteralIdent(kids[0]) && !isNullLiteralIdent(kids[1]) {
+			return ""
+		}
+	}
+	checked := parser.NullCheckedVars(cond)
+	if len(checked) == 0 || len(parser.GuardedNonnullVars(cond)) > 0 {
+		return ""
+	}
+	return checked[0]
+}
+
+// isNullLiteralIdent reports whether node is an unambiguous null literal in a
+// COMPARISON context — the `null` kind, the NULL / nullptr identifiers, or a
+// parenthesized null literal. The integer zero is deliberately excluded:
+// unlike the assignment-context matcher in null_flow.go (`p = (T*)0` is a
+// null pointer), a bare `x == 0` comparison is a value test (`id == 0`, an
+// id-range getter), not a null-pointer check.
+func isNullLiteralIdent(n parser.Node) bool {
+	switch n.Kind() {
+	case "null":
+		return true
+	case "identifier":
+		return n.Text() == "NULL" || n.Text() == "nullptr"
+	case "parenthesized_expression":
+		kids := n.NamedChildren()
+		return len(kids) == 1 && isNullLiteralIdent(kids[0])
+	}
+	return false
+}
+
+// returnGuardedByStrlenOverflow reports whether a `return NULL` statement
+// sits on a path guarded by a strlen overflow check of a parameter
+// (`strlen(p) >= len`), and which parameter indices play p and len. lenIdx
+// is -1 when the length side is a sizeof/positive literal in the callee
+// itself (already provably positive). Only conjuncts of the guarding
+// condition qualify: the condition being true must imply the overflow.
+func returnGuardedByStrlenOverflow(ret parser.Node, params map[string]int) (int, int, bool) {
+	for p := ret.Parent(); p != nil; p = p.Parent() {
+		if p.Kind() != "if_statement" {
+			continue
+		}
+		cons := p.ChildByFieldName("consequence")
+		if cons == nil || !nodeContainsLine(*cons, ret.StartLine()) {
+			continue
+		}
+		cond := p.ChildByFieldName("condition")
+		if cond == nil {
+			continue
+		}
+		var conjuncts []parser.Node
+		collectConjuncts(*cond, &conjuncts)
+		for _, cj := range conjuncts {
+			if argIdx, lenIdx, ok := strlenOverflowTest(cj, params); ok {
+				return argIdx, lenIdx, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+// collectConjuncts flattens the `&&` conjuncts of a condition (peeling
+// parentheses) into out. `||` operands are NOT split: a disjunction being
+// true does not imply any single operand.
+func collectConjuncts(cond parser.Node, out *[]parser.Node) {
+	switch {
+	case cond.Kind() == "parenthesized_expression":
+		for _, c := range cond.NamedChildren() {
+			collectConjuncts(c, out)
+		}
+		return
+	case cond.Kind() == "binary_expression" && parser.BinaryOperator(cond) == "&&":
+		for _, c := range cond.NamedChildren() {
+			collectConjuncts(c, out)
+		}
+		return
+	}
+	*out = append(*out, cond)
+}
+
+// strlenOverflowTest matches one conjunct as `strlen(p) >= len` (or the
+// mirrored `len <= strlen(p)`, or the strict > / < forms): the TRUE
+// direction establishes strlen(p) >= len. p must be a parameter; len must be
+// a parameter or a sizeof/positive literal.
+func strlenOverflowTest(cond parser.Node, params map[string]int) (int, int, bool) {
+	if cond.Kind() != "binary_expression" {
+		return 0, 0, false
+	}
+	kids := cond.NamedChildren()
+	if len(kids) != 2 {
+		return 0, 0, false
+	}
+	var strlenSide, lenSide parser.Node
+	switch parser.BinaryOperator(cond) {
+	case ">=", ">":
+		strlenSide, lenSide = kids[0], kids[1]
+	case "<=", "<":
+		strlenSide, lenSide = kids[1], kids[0]
+	default:
+		return 0, 0, false
+	}
+	argIdx, ok := strlenCallParamIndex(strlenSide, params)
+	if !ok {
+		return 0, 0, false
+	}
+	lenIdx, ok := overflowLenIndex(lenSide, params)
+	if !ok {
+		return 0, 0, false
+	}
+	return argIdx, lenIdx, true
+}
+
+// strlenCallParamIndex matches node as `strlen(p)` with p a parameter,
+// returning p's index.
+func strlenCallParamIndex(n parser.Node, params map[string]int) (int, bool) {
+	if n.Kind() != "call_expression" {
+		return 0, false
+	}
+	callee := n.ChildByFieldName("function")
+	if callee == nil || callee.Kind() != "identifier" || callee.Text() != "strlen" {
+		return 0, false
+	}
+	args := callArgs(n)
+	if len(args) != 1 {
+		return 0, false
+	}
+	name := identifierName(args[0])
+	if name == "" {
+		return 0, false
+	}
+	idx, ok := params[name]
+	if !ok {
+		return 0, false
+	}
+	return idx, true
+}
+
+// overflowLenIndex resolves the length side of an overflow test: a parameter
+// index, or -1 for a sizeof/positive literal (provably positive in the
+// callee itself). Anything else fails the contract.
+func overflowLenIndex(n parser.Node, params map[string]int) (int, bool) {
+	if name := identifierName(n); name != "" {
+		if idx, ok := params[name]; ok {
+			return idx, true
+		}
+		return 0, false
+	}
+	if isPositiveSizeExpr(n) {
+		return -1, true
+	}
+	return 0, false
+}
+
+// isPositiveSizeExpr reports whether node is a sizeof expression or a
+// positive integer literal — a provably positive length.
+func isPositiveSizeExpr(n parser.Node) bool {
+	switch n.Kind() {
+	case "sizeof_expression":
+		return true
+	case "number_literal":
+		v, err := strconv.ParseInt(strings.TrimSpace(n.Text()), 0, 64)
+		return err == nil && v > 0
+	}
+	return false
+}
+
+// overflowGuardMutex discharges the strlen-overflow NULL path of an R3
+// contract at one call site: the overflow argument is a plain identifier,
+// the length argument (when the callee takes it as a parameter) is provably
+// positive, and the caller early-returns under the conjunctive guard
+// `strlen(arg) != 0 && lhs == NULL` between the assignment and the
+// dereference. An overflow implies strlen(arg) >= len > 0, i.e.
+// strlen(arg) != 0, so the guard fires before the dereference is reached.
+func overflowGuardMutex(fm *flowResult, src *nullSource, g *retNullGuard, derefLine int) bool {
+	if fm == nil || fm.contract == nil || fm.contract.body.Kind() == "" {
+		return false
+	}
+	if g.overflowArg >= len(src.argInfo) {
+		return false
+	}
+	arg := src.argInfo[g.overflowArg]
+	if arg.kind != argIdent {
+		return false
+	}
+	if g.overflowLen >= 0 {
+		if g.overflowLen >= len(src.argInfo) {
+			return false
+		}
+		if la := src.argInfo[g.overflowLen]; la.kind != argSizeof && la.kind != argPosLit {
+			return false
+		}
+	}
+	return callerStrlenMutexGuard(fm.contract.body, arg.name, src.variable, src.line, derefLine)
+}
+
+// callerStrlenMutexGuard finds, between the assignment line (exclusive) and
+// the dereference line (inclusive), an early-return if whose condition is a
+// conjunction of a `strlen(argName) != 0` (or > 0 / mirrored) test and an
+// `lhsVar == NULL` test.
+func callerStrlenMutexGuard(body parser.Node, argName, lhsVar string, fromLine, toLine int) bool {
+	for _, ifn := range body.FindAll("if_statement") {
+		line := ifn.StartLine()
+		if line <= fromLine || line > toLine {
+			continue
+		}
+		cons := ifn.ChildByFieldName("consequence")
+		if cons == nil || len(cons.FindAll("return_statement")) == 0 {
+			continue
+		}
+		cond := ifn.ChildByFieldName("condition")
+		if cond == nil {
+			continue
+		}
+		var conjuncts []parser.Node
+		collectConjuncts(*cond, &conjuncts)
+		strlenOK, nullOK := false, false
+		for _, cj := range conjuncts {
+			if isStrlenNonEmptyTest(cj, argName) {
+				strlenOK = true
+			}
+			if pureNullCheckVar(cj) == lhsVar && lhsVar != "" {
+				nullOK = true
+			}
+		}
+		if strlenOK && nullOK {
+			return true
+		}
+	}
+	return false
+}
+
+// isStrlenNonEmptyTest matches cond as `strlen(argName) != 0`, `> 0`, or the
+// literal-mirrored `0 != strlen(argName)` / `0 < strlen(argName)` — the TRUE
+// direction establishes strlen(argName) > 0. A `strlen(arg) < 0` /
+// `0 > strlen(arg)` shape is rejected: it is always false for size_t.
+func isStrlenNonEmptyTest(cond parser.Node, argName string) bool {
+	if cond.Kind() != "binary_expression" {
+		return false
+	}
+	kids := cond.NamedChildren()
+	if len(kids) != 2 {
+		return false
+	}
+	zero := func(n parser.Node) bool {
+		return n.Kind() == "number_literal" && strings.TrimSpace(n.Text()) == "0"
+	}
+	switch parser.BinaryOperator(cond) {
+	case "!=":
+		return (isStrlenCallOn(kids[0], argName) && zero(kids[1])) ||
+			(zero(kids[0]) && isStrlenCallOn(kids[1], argName))
+	case ">":
+		return isStrlenCallOn(kids[0], argName) && zero(kids[1])
+	case "<":
+		return zero(kids[0]) && isStrlenCallOn(kids[1], argName)
+	}
+	return false
+}
+
+// isStrlenCallOn matches node as `strlen(argName)`.
+func isStrlenCallOn(n parser.Node, argName string) bool {
+	if n.Kind() != "call_expression" {
+		return false
+	}
+	callee := n.ChildByFieldName("function")
+	if callee == nil || callee.Kind() != "identifier" || callee.Text() != "strlen" {
+		return false
+	}
+	args := callArgs(n)
+	return len(args) == 1 && identifierName(args[0]) == argName
 }
 
 // synthCalleeAt returns the callee name of the planner-synthesized `p = f()`
@@ -437,14 +954,14 @@ func synthCalleeAt(synth []nullSource, variable string, line int) string {
 // `return NULL`), then extended to functions returning an allocator, a pointer
 // parameter, a variable with a reaching may-null source, or a call to another
 // nullable-returning function.
-func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models map[int64]*nullModel, seedNames map[string]bool) (map[string]retNullability, map[string]bool, error) {
+func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models map[int64]*nullModel, seedNames map[string]bool) (map[string]retNullability, map[string]bool, map[string]*retNullGuard, error) {
 	// The fixpoint runs on a graded map: any non-notNull value means
 	// "nullable" for the iteration; the final collapse below re-grades each
 	// nullable name from the per-definition assumed evidence.
 	retNullable := make(map[string]retNullability)
 	funcs, err := f.store.ListFunctions(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("ret nullable summary: list functions: %w", err)
+		return nil, nil, nil, fmt.Errorf("ret nullable summary: list functions: %w", err)
 	}
 
 	// name -> functions (same-name overloads are merged conservatively: if any
@@ -470,7 +987,7 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 	}
 	summariesByID, err := f.store.ListSummariesByFunctionIDs(ctx, allFnIDs)
 	if err != nil {
-		return nil, nil, fmt.Errorf("ret nullable summary: list summaries: %w", err)
+		return nil, nil, nil, fmt.Errorf("ret nullable summary: list summaries: %w", err)
 	}
 	fileByID := make(map[int64]*db.File)
 	if files, ferr := f.store.ListFiles(ctx); ferr == nil {
@@ -524,6 +1041,7 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 		srcs   []nullSource
 	}
 	infos := make([]funcInfo, 0, len(needNames))
+	seededDefs := make([]funcInfo, 0)
 	seen := make(map[int64]bool)
 	for name := range needNames {
 		for _, fn := range funcsByName[name] {
@@ -547,8 +1065,13 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 			if sum := summariesByID[fn.ID]; sum != nil && sum.ReturnNullable &&
 				!apikb.IsNeverNullScalarType(strings.TrimSpace(fn.ReturnType)) {
 				// A literal NULL return in a pointer-returning function is a
-				// concrete witness: the seed grade is proven.
+				// concrete witness: the seed grade is proven. The body still
+				// carries the facts the conditional-nonnull-getter contract
+				// needs (where the NULL returns sit, what else is returned),
+				// so the definition is recorded for that pass — the fixpoint
+				// itself is skipped via the seeded grade.
 				retNullable[fn.Name] = retNullProven
+				seededDefs = append(seededDefs, funcInfo{fn: fn, body: body, root: root, params: paramsOf(fn, root)})
 				continue
 			}
 
@@ -623,7 +1146,56 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 		}
 		retGrade[name] = grade
 	}
-	return retGrade, definedNames, nil
+
+	// Inter-procedural NULL-return guard contracts: names proven nullable
+	// whose every definition returns NULL only under a parameter null check
+	// (R2 getter) or a parameter null check / strlen overflow check (R3
+	// strip-style helper), with otherwise non-null returns (address-of or
+	// parameter forwarding). A name qualifies only when ALL of its
+	// definitions qualify consistently (a same-name call site cannot resolve
+	// to one definition, so one non-qualifying or divergent definition must
+	// keep the name off the list). Seeded definitions (a literal NULL return
+	// with a function_summary row) skipped the fixpoint body pass, so they
+	// are merged back here.
+	infoByID := make(map[int64]*funcInfo, len(infos)+len(seededDefs))
+	for i := range infos {
+		infoByID[infos[i].fn.ID] = &infos[i]
+	}
+	for i := range seededDefs {
+		if infoByID[seededDefs[i].fn.ID] == nil {
+			infoByID[seededDefs[i].fn.ID] = &seededDefs[i]
+		}
+	}
+	retGuards := make(map[string]*retNullGuard)
+	for name, grade := range retGrade {
+		if grade != retNullProven {
+			continue
+		}
+		allOK, seen := true, false
+		var merged *retNullGuard
+		for _, fn := range funcsByName[name] {
+			info := infoByID[fn.ID]
+			if info == nil {
+				allOK = false
+				break
+			}
+			g := retNullGuardContract(info.body, info.params)
+			if g == nil {
+				allOK = false
+				break
+			}
+			if merged != nil && (merged.paramNullOnly != g.paramNullOnly || merged.overflowArg != g.overflowArg || merged.overflowLen != g.overflowLen) {
+				allOK = false
+				break
+			}
+			merged = g
+			seen = true
+		}
+		if seen && allOK {
+			retGuards[name] = merged
+		}
+	}
+	return retGrade, definedNames, retGuards, nil
 }
 
 // nullGenByLine folds a slice of null sources into the per-line gen map the

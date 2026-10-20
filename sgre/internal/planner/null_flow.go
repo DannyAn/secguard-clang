@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
@@ -1325,9 +1326,110 @@ func callResultNullSources(body parser.Node, retNullable map[string]retNullabili
 		if callee == "" || retNullable[callee] == retNotNull {
 			return
 		}
-		out = append(out, nullSource{variable: name, line: rhs.StartLine(), origin: callee, definite: false})
+		src := nullSource{variable: name, line: rhs.StartLine(), origin: callee, definite: false}
+		classifySynthArgs(rhs, &src)
+		out = append(out, src)
 	})
 	return out
+}
+
+// classifySynthArgs records the call-site argument facts a
+// conditional-nonnull-getter dismissal needs: identifier arguments (checked
+// against the reaching analysis at the assignment line) and whether any
+// argument is an opaque shape that cannot be proven non-null. An
+// address-of argument (`&x`) and a string literal are always non-null; a
+// parenthesized/cast wrapper is unwrapped; everything else (NULL literal,
+// call result, arithmetic) marks the source unsafe to dismiss.
+// synthArgKind classifies one call-site argument by its syntactic shape for
+// the inter-procedural guard contracts: an identifier's nullability resolves
+// against the reaching analysis, a string literal / address-of / sizeof /
+// positive literal is provably non-null (and a sizeof or positive literal is
+// additionally a positive length), and anything else (a NULL literal, a
+// nested call, arithmetic) is opaque and keeps the source fail-open.
+type synthArgKind uint8
+
+const (
+	argIdent synthArgKind = iota
+	argStrLit
+	argAddrOf
+	argSizeof
+	argPosLit
+	argOther
+)
+
+// synthArgInfo is one argument's shape; name is set only for argIdent.
+type synthArgInfo struct {
+	name string
+	kind synthArgKind
+}
+
+func classifySynthArgs(rhs parser.Node, src *nullSource) {
+	if rhs.Kind() != "call_expression" {
+		src.argUnsafe = true
+		return
+	}
+	args := callArgs(rhs)
+	if len(args) == 0 {
+		src.argUnsafe = true
+		return
+	}
+	for _, a := range args {
+		info := synthArgInfo{kind: argOther}
+		switch a.Kind() {
+		case "identifier":
+			if a.Text() == "NULL" {
+				src.argUnsafe = true
+				break
+			}
+			info.kind, info.name = argIdent, a.Text()
+			src.argVarNames = append(src.argVarNames, a.Text())
+		case "string_literal":
+			info.kind = argStrLit
+		case "parenthesized_expression", "cast_expression":
+			kids := a.NamedChildren()
+			if len(kids) == 1 && kids[0].Kind() == "identifier" && kids[0].Text() != "NULL" {
+				info.kind, info.name = argIdent, kids[0].Text()
+				src.argVarNames = append(src.argVarNames, kids[0].Text())
+			} else {
+				src.argUnsafe = true
+			}
+		case "unary_expression", "pointer_expression":
+			if isAddressOfExpr(a) {
+				info.kind = argAddrOf
+			} else {
+				src.argUnsafe = true
+			}
+		case "sizeof_expression":
+			info.kind = argSizeof
+		case "number_literal":
+			if v, err := strconv.ParseInt(strings.TrimSpace(a.Text()), 0, 64); err == nil && v > 0 {
+				info.kind = argPosLit
+			} else {
+				src.argUnsafe = true
+			}
+		default:
+			src.argUnsafe = true
+		}
+		src.argInfo = append(src.argInfo, info)
+	}
+}
+
+// isAddressOfExpr reports whether node is a unary address-of expression
+// (`&x`, `&s->f`, `&arr[i]`) — a value that can never be null. tree-sitter-c
+// parses both `*p` and `&x` as pointer_expression, distinguished by the
+// operator token.
+func isAddressOfExpr(n parser.Node) bool {
+	switch n.Kind() {
+	case "unary_expression", "pointer_expression":
+	default:
+		return false
+	}
+	for _, c := range n.Children() {
+		if c.Kind() == "&" {
+			return true
+		}
+	}
+	return false
 }
 
 // retNullability grades HOW the pipeline knows a function can return a

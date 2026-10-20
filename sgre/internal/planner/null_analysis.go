@@ -33,6 +33,20 @@ type nullSource struct {
 	// argument, and that argument's text (e.g. caller "c", argText "NULL").
 	caller  string
 	argText string
+	// argVarNames / argUnsafe carry the call-site argument facts for a
+	// planner-synthesized `p = f(a, b)` source: which arguments are plain
+	// identifiers (their nullability is checked against the reaching analysis
+	// at the assignment line), and whether any argument is an opaque shape
+	// (a NULL literal, another call, arithmetic) that cannot be proven
+	// non-null syntactically.
+	argVarNames []string
+	argUnsafe   bool
+	// argInfo records every argument's syntactic shape BY POSITION, so the
+	// guard-mutex dismissal can correlate the callee's overflow parameter
+	// index with the caller's actual argument (an identifier) and prove the
+	// length argument is positive (a sizeof expression or a positive
+	// literal). argVarNames alone drops the position information.
+	argInfo []synthArgInfo
 }
 
 // nullModel is the L1 null model for a single function.
