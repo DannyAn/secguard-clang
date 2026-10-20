@@ -21,11 +21,11 @@
 
 | 指标 | 数值 |
 |------|------|
-| 源文件 | 35 |
-| 总测试用例 | 166 |
+| 源文件 | 36 |
+| 总测试用例 | 183 |
 | **覆盖漏洞类型（25 个注册 skill）** | **25 / 25** |
-| expect-finding（应报告） | 92 |
-| expect-no_finding（应被抑制） | 74 |
+| expect-finding（应报告） | 95 |
+| expect-no_finding（应被抑制） | 88 |
 | Phase 0（P0-P3/TP 反证骨架） | 18 |
 | Phase 1（CWE-190/362/798/667/327） | 12 |
 | Phase 2（扩展典型漏洞） | 4 |
@@ -45,6 +45,7 @@
 | **Phase 16（divide-by-zero 非零源除数误报修复）** | **2** |
 | **Phase 17（补齐 3 个零覆盖 contract 类型：argument-type / data-representation / implicit-contract）** | **12** |
 | **Phase 18（P1 调用点实参普查 gate / 净化 kill 回归）** | **5** |
+| **Phase 21（unchecked-return 消费点普查误报修复）** | **7** |
 | 应完全不产生 Finding (P0: Detector EXCLUDE) | 7 |
 | 应产生 Finding 但被 P1 抑制 | 3 |
 | 应产生 Finding 但被 P2 抑制 | 4 |
@@ -550,6 +551,41 @@ token），并识别 basename / strrchr(p,'/') 的路径净化。语义变更的
 即写入 findings，无需 AI 复核。
 
 > 行号以 `src/p18_callsite_census.c` 当前内容为准（validator 容差 ±3）。
+
+## Phase 21 — unchecked-return 消费点普查误报修复（2026-10 新增）
+
+IDM 生产环境 AI 复核报告 unchecked-return (CWE-252) 25/25 全误报。三个根因与对应修复：
+
+1. **消费门槛错档**：旧 `indirectGuardedVars` 要求"消费调用的结果被检查 **OR**
+   callee 返回 void"，报告模式 A（`(void)filter_add(f, x)` 丢弃结果 + int 返回）
+   两条都不满足。修复：消费通道分档 —— 结果被检查 → callee 必须 NULL→失败暴露
+   （nullReject，极性陷阱保持报告）；结果被丢弃或 void → callee 只需不解引用 NULL
+   （paramNullSafe）。
+2. **cast 别名守卫不可见**：`filter_t *ft = (filter_t *)f; if (ft == NULL) return -1;`
+   对参数 f 的守卫旧摘要看不见。修复：paramAliases（绑定全一致才算别名）。
+3. **字段逃逸无建模**：`para->user_filter = import_strdup(...)` 的判空在下游共享校验
+   函数里。修复：fieldNullChecks 摘要（顶层判空 + 失败早退的字段路径集合）。
+
+paramNullSafe = 入口早退（nullReject）∪ 体内正守卫全包裹解引用；零守卫零解引用的
+转存（值逃逸）刻意不算。消费点普查为 **AND 语义**：任一不安全消费（直接解引用、
+无守卫 callee）保留事件。
+
+| ID | 文件 | 行 | 期望 | 说明 |
+|----|------|----|------|------|
+| UR-01 | p21_consumer_census_fp.c | 137 | no_finding | 模式 A2：int 消费全丢弃，入口守卫（cast 别名）/正守卫 |
+| UR-02 | p21_consumer_census_fp.c | 146 | no_finding | 模式 4.1：void/int 混合消费全 NULL 防御 |
+| UR-03 | p21_consumer_census_fp.c | 159 | no_finding | 模式 4.2：字段逃逸 + 下游共享校验 |
+| UR-04 | p21_consumer_census_fp.c | 172 | finding | 真阳性控制组：分配结果直接解引用 |
+| UR-05 | p21_consumer_census_fp.c | 180 | finding | census AND 负控：一安全消费 + 一直接解引用 |
+| UR-06 | p21_consumer_census_fp.c | 197 | finding | 值逃逸负控：无守卫转存全局 |
+| UR-07 | p21_consumer_census_fp.c | 212 | no_finding | void 消费 + 体内正守卫全包裹解引用 |
+
+UR-01/02/03/07 在**检测器层**抑制（不发事件），不依赖 AI 研判；UR-04/05/06 保持
+candidate（contract@unknown，`_new`/`strdup` 名字启发式）交 AI 研判。单测防线：
+`TestUncheckedReturn_ConsumerCensus`（fixture `tc_unchecked_return_consumer_census.c`，
+19 函数逐一断言），间接守卫极性陷阱由既有 `TestUncheckedReturn_IndirectGuard` 保持。
+
+> 行号以 `src/p21_consumer_census_fp.c` 当前内容为准（validator 容差 ±3）。
 
 ## 检测器缺口（2026-10 盘点，本轮已全部闭环）
 
