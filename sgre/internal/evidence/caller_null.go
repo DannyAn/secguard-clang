@@ -67,6 +67,7 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		ifs := root.FindAll("if_statement")
 		assigns := root.FindAll("assignment_expression")
+		calls := root.FindAll("call_expression")
 
 		// A call argument that names an array (global or caller-local) can never
 		// be NULL, so it must not seed a caller_null source. Precompute per caller
@@ -76,7 +77,7 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 			nonNullArrays[fn.ID] = collectNonNullableArrays(root, fn)
 		}
 
-		for _, call := range root.FindAll("call_expression") {
+		for _, call := range calls {
 			callee := calleeName(call)
 			info, ok := callees[callee]
 			if !ok {
@@ -100,7 +101,7 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 				if !strings.HasSuffix(strings.TrimSpace(info.types[i]), "*") {
 					continue
 				}
-				kind, definite := d.classifyArg(arg, caller, ifs, assigns, nonNullArrays[caller.ID], call)
+				kind, definite := d.classifyArg(arg, caller, ifs, assigns, calls, nonNullArrays[caller.ID], call)
 				if kind == "safe" {
 					continue
 				}
@@ -223,7 +224,7 @@ func functionParamNames(fnDef parser.Node) (string, []string, []string) {
 }
 
 // classifyArg classifies a call argument's nullability at the call site.
-func (d *CallerNullDetector) classifyArg(arg parser.Node, caller *db.Function, ifs, assigns []parser.Node, nonNullArrays map[string]bool, call parser.Node) (string, bool) {
+func (d *CallerNullDetector) classifyArg(arg parser.Node, caller *db.Function, ifs, assigns, calls []parser.Node, nonNullArrays map[string]bool, call parser.Node) (string, bool) {
 	switch arg.Kind() {
 	case "null":
 		// tree-sitter-c parses `NULL` as a `null` literal node (not an
@@ -236,7 +237,7 @@ func (d *CallerNullDetector) classifyArg(arg parser.Node, caller *db.Function, i
 		if nonNullArrays[arg.Text()] {
 			return "safe", false
 		}
-		if callerGuardsVar(caller, ifs, assigns, arg.Text(), call) {
+		if callerGuardsVar(caller, ifs, assigns, calls, arg.Text(), call) {
 			return "safe", false
 		}
 		return "null", false
@@ -264,12 +265,29 @@ func (d *CallerNullDetector) classifyArg(arg parser.Node, caller *db.Function, i
 	return "null", false
 }
 
-// callerGuardsVar reports whether the caller proves varName non-null at the call
-// via a dominating early-return null check (`if (v == NULL) return;`). The guard
-// must lexically precede the call (byte offset, so a same-line
-// `if (v == NULL) return; f(v);` still counts) and its non-null scope must cover
-// the call line.
-func callerGuardsVar(f *db.Function, ifs, assigns []parser.Node, varName string, call parser.Node) bool {
+// callerGuardsVar reports whether the caller proves varName non-null at the
+// call. Four idioms count: a dominating early-return null check
+// (`if (v == NULL) return;`), a positive branch (`if (v != NULL) { f(v); }`),
+// a short-circuit conjunction (`v != NULL && f(v)`), and an assert
+// precondition (`assert(v != NULL); f(v);`).
+func callerGuardsVar(f *db.Function, ifs, assigns, calls []parser.Node, varName string, call parser.Node) bool {
+	if callerEarlyReturnGuards(f, ifs, assigns, varName, call) {
+		return true
+	}
+	if callerPositiveBranchGuards(f, ifs, assigns, varName, call) {
+		return true
+	}
+	if callerShortCircuitGuards(varName, call) {
+		return true
+	}
+	return callerAssertGuards(f, assigns, calls, varName, call)
+}
+
+// callerEarlyReturnGuards covers a dominating early-return null check
+// (`if (v == NULL) return;`). The guard must lexically precede the call (byte
+// offset, so a same-line `if (v == NULL) return; f(v);` still counts) and its
+// non-null scope must cover the call line.
+func callerEarlyReturnGuards(f *db.Function, ifs, assigns []parser.Node, varName string, call parser.Node) bool {
 	for _, ifNode := range ifs {
 		if !funcLineRange(f, ifNode.StartLine()) {
 			continue
@@ -301,6 +319,99 @@ func callerGuardsVar(f *db.Function, ifs, assigns []parser.Node, varName string,
 		}
 		if call.StartLine() <= scopeEnd {
 			return true
+		}
+	}
+	return false
+}
+
+// callerPositiveBranchGuards covers `if (v != NULL) { ...; f(v); ... }`: a
+// call inside the consequence runs only when the condition is TRUE — exactly
+// the direction that establishes v non-null. The else branch proves nothing
+// (a call there sees v NULL), and a reassignment of v inside the branch
+// truncates the fact.
+func callerPositiveBranchGuards(f *db.Function, ifs, assigns []parser.Node, varName string, call parser.Node) bool {
+	for _, ifNode := range ifs {
+		if !funcLineRange(f, ifNode.StartLine()) {
+			continue
+		}
+		condition := ifNode.ChildByFieldName("condition")
+		consequence := ifNode.ChildByFieldName("consequence")
+		if condition == nil || consequence == nil {
+			continue
+		}
+		if call.StartByte() < consequence.StartByte() || call.EndByte() > consequence.EndByte() {
+			continue
+		}
+		guarded := false
+		for _, gv := range parser.GuardedNonnullVars(*condition) {
+			if gv == varName {
+				guarded = true
+				break
+			}
+		}
+		if !guarded {
+			continue
+		}
+		if call.StartLine() <= guardScopeEnd(assigns, f, varName, consequence.StartLine()-1) {
+			return true
+		}
+	}
+	return false
+}
+
+// callerShortCircuitGuards covers `v != NULL && f(v)` and nested conjunctions:
+// the right operand of && evaluates only when the left is TRUE, so a call
+// inside the right operand of an ancestor && whose left establishes varName
+// non-null is guarded. An || ancestor proves nothing about its right side
+// (that side runs when the left is FALSE) and is skipped; the call must be
+// byte-contained in the right operand so `a && b || f(v)` (where f runs with
+// a possibly-false left) does not match the && layer.
+func callerShortCircuitGuards(varName string, call parser.Node) bool {
+	for node := call.Parent(); node != nil; node = node.Parent() {
+		if node.Kind() != "binary_expression" || parser.BinaryOperator(*node) != "&&" {
+			continue
+		}
+		kids := node.NamedChildren()
+		if len(kids) < 2 {
+			continue
+		}
+		if call.StartByte() < kids[1].StartByte() || call.EndByte() > kids[1].EndByte() {
+			continue
+		}
+		for _, gv := range parser.GuardedNonnullVars(kids[0]) {
+			if gv == varName {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// callerAssertGuards covers `assert(v != NULL); f(v);`: the assert aborts on
+// the false branch, so the variables it establishes non-null hold on the
+// fall-through up to a reassignment.
+func callerAssertGuards(f *db.Function, assigns, calls []parser.Node, varName string, call parser.Node) bool {
+	for _, ac := range calls {
+		if !funcLineRange(f, ac.StartLine()) {
+			continue
+		}
+		if ac.EndByte() > call.StartByte() {
+			continue
+		}
+		if calleeName(ac) != "assert" {
+			continue
+		}
+		if p := ac.Parent(); p == nil || p.Kind() != "expression_statement" {
+			continue
+		}
+		args := getCallArgs(ac)
+		if len(args) == 0 {
+			continue
+		}
+		for _, gv := range assertGuardedVars(args[0]) {
+			if gv == varName && call.StartLine() <= guardScopeEnd(assigns, f, varName, ac.StartLine()) {
+				return true
+			}
 		}
 	}
 	return false
