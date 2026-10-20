@@ -163,6 +163,13 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 		return nil, err
 	}
 
+	// The macro-context detector needs the scan's function-definition names
+	// BEFORE the filter chain runs (MacroUncertainFilter consults it): an
+	// ALL_CAPS static function (POOL_SECT) is a definition, not a #define.
+	// Idempotent and mutex-guarded, so concurrent per-type Plan() calls load
+	// the set exactly once.
+	p.macro.ensureDefinedFuncs(ctx, p.store)
+
 	seed, routedAway, err := p.seedCandidatesByType(ctx, spec)
 	if err != nil {
 		return nil, fmt.Errorf("planner: seed: %w", err)

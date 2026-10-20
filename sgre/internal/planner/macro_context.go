@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"context"
 	"os"
 	"regexp"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/config"
+	"github.com/DannyAn/secguard-clang/internal/db"
 )
 
 // macroCallRe matches a function-like call identifier immediately followed by
@@ -30,6 +32,15 @@ type macroContextDetector struct {
 	mu    sync.Mutex
 	lines map[string][]string
 	known map[string]bool
+
+	// definedFuncs holds the names of every function DEFINED in the current
+	// scan, loaded once from the function index. The ALL_CAPS convention is
+	// only a heuristic: a static function named like a macro (POOL_SECT) is
+	// a real function, and flagging its call as macro context wrongly
+	// blocks the auto-confirm gate. Names in the explicit `known` config
+	// sets keep priority — user intent beats the index.
+	funcsLoaded  bool
+	definedFuncs map[string]bool
 }
 
 func newMacroContextDetector() *macroContextDetector {
@@ -73,6 +84,39 @@ func (d *macroContextDetector) fileLines(path string) []string {
 	return all
 }
 
+// ensureDefinedFuncs loads the scan's function-definition names into the
+// detector once. Best-effort like fileLines: on a store failure the detector
+// falls back to the pure ALL_CAPS heuristic (the flag is an AI-routing hint,
+// not a proof, and the seed stage has already failed loudly on a broken store
+// long before this point).
+func (d *macroContextDetector) ensureDefinedFuncs(ctx context.Context, store db.Store) {
+	if store == nil {
+		return
+	}
+	d.mu.Lock()
+	if d.funcsLoaded {
+		d.mu.Unlock()
+		return
+	}
+	d.mu.Unlock()
+
+	funcs, err := store.ListFunctions(ctx)
+	if err != nil {
+		return
+	}
+	names := make(map[string]bool, len(funcs))
+	for _, fn := range funcs {
+		names[fn.Name] = true
+	}
+
+	d.mu.Lock()
+	if !d.funcsLoaded {
+		d.definedFuncs = names
+		d.funcsLoaded = true
+	}
+	d.mu.Unlock()
+}
+
 // hasMacroContext reports whether the source region around line (the statement
 // at line plus ±macroContextWindow) contains a function-like macro call.
 func (d *macroContextDetector) hasMacroContext(path string, line int) bool {
@@ -83,6 +127,13 @@ func (d *macroContextDetector) hasMacroContext(path string, line int) bool {
 	if all == nil || line > len(all) {
 		return false
 	}
+	// Snapshot the defined-name set: the writer replaces the map wholesale
+	// (never mutates a published one), so the reference is stable for the
+	// scan below without holding the mutex per regex match.
+	d.mu.Lock()
+	defined := d.definedFuncs
+	d.mu.Unlock()
+
 	start := line - macroContextWindow
 	if start < 1 {
 		start = 1
@@ -92,8 +143,21 @@ func (d *macroContextDetector) hasMacroContext(path string, line int) bool {
 		end = len(all)
 	}
 	for _, l := range all[start-1 : end] {
+		// A preprocessor line (#define FOO(x) ...) DECLARES a macro, it does
+		// not CALL one: the dereference does not involve FOO just because
+		// its definition sits in the window.
+		if strings.HasPrefix(strings.TrimSpace(l), "#") {
+			continue
+		}
 		for _, m := range macroCallRe.FindAllStringSubmatch(l, -1) {
-			if name := m[1]; isAllCapsMacroName(name) || d.known[name] {
+			name := m[1]
+			if d.known[name] {
+				return true
+			}
+			// An ALL_CAPS name that the function index knows as a scanned
+			// DEFINITION is a function, not a #define: the convention
+			// heuristic yields to the index.
+			if isAllCapsMacroName(name) && (defined == nil || !defined[name]) {
 				return true
 			}
 		}
