@@ -97,6 +97,13 @@ func (d *NullSourceDetector) detectReturnNull(ctx context.Context, f *db.Functio
 		if !isNullLiteral(children[0]) && expr != "0" {
 			continue
 		}
+		// Return-type gate: in a function whose declared return type is a
+		// never-null C scalar, the literal is the integer zero, not a null
+		// pointer — `int f(void) { return 0; }` must not become a null source.
+		// Unrecognized type text (typedefs, macro-prefixed decls) fails open.
+		if apikb.IsNeverNullScalarType(strings.TrimSpace(f.ReturnType)) {
+			continue
+		}
 		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: ret.StartLine(), Column: ret.StartColumn()}, map[string]string{"variable": "<return>", "origin": "return"}) {
 			result.EventsCreated++
 			if err := d.store.UpdateReturnNullable(ctx, f.ID, true); err != nil && d.logger != nil {
@@ -362,17 +369,9 @@ func (d *NullSourceDetector) getKnownFunctionNames(ctx context.Context) (map[str
 }
 
 // neverNullReturnTypes are C primitive types that can never hold a pointer.
-// A function returning one of these cannot return NULL. Deliberately excludes
-// "char"/"unsigned char"/struct names/typedefs: those may be `T *` in disguise
-// (the indexer stores the base type name without the `*`).
-var neverNullReturnTypes = map[string]bool{
-	"size_t": true, "ssize_t": true, "int": true, "long": true, "short": true,
-	"double": true, "float": true, "unsigned": true, "unsigned int": true,
-	"unsigned long": true, "unsigned short": true, "unsigned long long": true,
-	"long long": true, "int64_t": true, "uint64_t": true, "int32_t": true,
-	"uint32_t": true, "int16_t": true, "uint16_t": true, "int8_t": true,
-	"uint8_t": true, "bool": true, "_Bool": true,
-}
+// Kept as the apikb single source (see apikb.IsNeverNullScalarType); the local
+// alias preserves the detectExternalCall call sites.
+var neverNullReturnTypes = apikb.NeverNullScalarTypes()
 
 // neverNullFunctions are libc/posix functions whose return is never a null
 // pointer (non-pointer return). Pointer-returning "can be null" functions

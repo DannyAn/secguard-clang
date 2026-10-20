@@ -72,6 +72,7 @@ func TestNullDeref_OriginTiers(t *testing.T) {
 			{"cfg-proof", "null@cfg-proof"},
 			{"malloc-fail", "null@malloc-fail"},
 			{"caller-arg", "null@caller-arg"},
+			{"assumed-return", "null@assumed-return"},
 			{"external-unknown", "null@external-unknown"},
 		} {
 			facts := buildNullDerefVerdictFacts(Candidate{NullOriginTier: tc.tier, VariableName: "p", Line: 9})
@@ -85,13 +86,59 @@ func TestNullDeref_OriginTiers(t *testing.T) {
 		}
 	})
 
-	// The Evidence Contract v2 F3 fix: a variable assigned the result of an
-	// IN-SCAN callee the inter-procedural fixpoint proved nullable
-	// (`cfg = get_shell_cfg(); cfg->field`) is malloc-fail — a proven-nullable
-	// origin — not external-unknown. The callee body is embedded via
-	// CalleeName → resolveCalleeDefs, so the hint carries callee@ and the AI
-	// never opens the source.
-	t.Run("in-scan nullable callee is malloc-fail", func(t *testing.T) {
+	// The Evidence Contract v2 F3 fix, proven half: a variable assigned the
+	// result of an IN-SCAN callee the inter-procedural fixpoint graded
+	// PROVEN (a concrete NULL witness: a literal return NULL path) keeps the
+	// textbook malloc-fail tier and the auto-confirm. The callee body is
+	// embedded via CalleeName → resolveCalleeDefs, so the hint carries
+	// callee@ and the AI never opens the source.
+	t.Run("in-scan proven callee is malloc-fail", func(t *testing.T) {
+		src := `typedef struct { int x; } cfg_t;
+
+static cfg_t g_cfg;
+
+cfg_t *find_opt(void) {
+    if (g_cfg.x == 0) {
+        return NULL;
+    }
+    return &g_cfg;
+}
+
+void use_opt(void) {
+    cfg_t *opt = find_opt();
+    opt->x = 1;
+}
+`
+		c := firstNullCandidate(t, planNullDerefSrc(t, src), "use_opt")
+		if c.NullOriginTier != "malloc-fail" {
+			t.Fatalf("in-scan proven callee: tier = %q, want malloc-fail", c.NullOriginTier)
+		}
+		if c.SuspicionLevel != "confirmed" {
+			t.Fatalf("a proven-nullable callee (literal return NULL) auto-confirms, got %q", c.SuspicionLevel)
+		}
+		if !strings.Contains(c.Hint, "null@malloc-fail") {
+			t.Fatalf("hint %q must carry null@malloc-fail", c.Hint)
+		}
+		if !strings.Contains(c.Hint, "callee@nd.c:") {
+			t.Fatalf("hint %q must carry callee@ (the find_opt body is embedded, no source read needed)", c.Hint)
+		}
+		if c.CalleeDefFile == "" {
+			t.Fatalf("callee definition must be resolved for the embedded body")
+		}
+		for _, f := range c.VerdictFacts {
+			if strings.HasPrefix(f.Token, "callee@") {
+				return
+			}
+		}
+		t.Fatalf("verdict facts %v must carry a callee@ fact", c.VerdictFacts)
+	})
+
+	// The Evidence Contract v2 F3 fix, assumed half: an IN-SCAN callee graded
+	// only by FAIL-OPEN (it returns a zero-initialized struct field) is
+	// labelled assumed-return and stays suspected — the AI judges the
+	// assumption from the embedded body instead of rubber-stamping a
+	// "proven" prior.
+	t.Run("in-scan fail-open callee is assumed-return", func(t *testing.T) {
 		src := `typedef struct {
     unsigned int detect_time;
 } shell_config_t;
@@ -112,11 +159,14 @@ void set_detect_time(unsigned int time) {
 }
 `
 		c := firstNullCandidate(t, planNullDerefSrc(t, src), "set_detect_time")
-		if c.NullOriginTier != "malloc-fail" {
-			t.Fatalf("in-scan nullable callee: tier = %q, want malloc-fail", c.NullOriginTier)
+		if c.NullOriginTier != "assumed-return" {
+			t.Fatalf("in-scan fail-open callee: tier = %q, want assumed-return", c.NullOriginTier)
 		}
-		if !strings.Contains(c.Hint, "null@malloc-fail") {
-			t.Fatalf("hint %q must carry null@malloc-fail", c.Hint)
+		if c.SuspicionLevel != "suspected" {
+			t.Fatalf("a fail-open callee stays suspected, got %q", c.SuspicionLevel)
+		}
+		if !strings.Contains(c.Hint, "null@assumed-return") {
+			t.Fatalf("hint %q must carry null@assumed-return", c.Hint)
 		}
 		if !strings.Contains(c.Hint, "callee@nd.c:") {
 			t.Fatalf("hint %q must carry callee@ (the get_shell_cfg body is embedded, no source read needed)", c.Hint)

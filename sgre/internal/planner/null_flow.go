@@ -1311,7 +1311,7 @@ func freeAlreadySeeded(genByLine map[int][]string, line int, variable string) bo
 // carries the CALLEE NAME (not the "external_call" marker): the nullable-source
 // filter reads it back to tell an in-scan callee — whose body the report can
 // embed — from a genuinely external one.
-func callResultNullSources(body parser.Node, retNullable map[string]bool) []nullSource {
+func callResultNullSources(body parser.Node, retNullable map[string]retNullability) []nullSource {
 	if len(retNullable) == 0 {
 		return nil
 	}
@@ -1322,7 +1322,7 @@ func callResultNullSources(body parser.Node, retNullable map[string]bool) []null
 			return
 		}
 		callee := rhsCallName(rhs)
-		if callee == "" || !retNullable[callee] {
+		if callee == "" || retNullable[callee] == retNotNull {
 			return
 		}
 		out = append(out, nullSource{variable: name, line: rhs.StartLine(), origin: callee, definite: false})
@@ -1330,46 +1330,94 @@ func callResultNullSources(body parser.Node, retNullable map[string]bool) []null
 	return out
 }
 
-// returnsNullable reports whether body can return a possibly-null pointer: a
-// NULL literal, an allocator call, a pointer parameter, a variable with a
-// reaching may-null source, a field/subscript read, a deref, a call to another
-// possibly-null-returning function, or an external call (open world).
-func returnsNullable(body parser.Node, flow *flowResult, params map[string]int, retNullable map[string]bool, definedNames map[string]bool, arrs *arrayBaseInfo) bool {
+// retNullability grades HOW the pipeline knows a function can return a
+// possibly-null pointer: proven (a concrete witness — a literal NULL return,
+// an allocator, a known maybe-null libc API, or a callee already graded
+// proven), assumed (a fail-open assumption — a pointer parameter, a field
+// read, an unknown external call, an unrecognized expression), or notNull.
+// Only proven may auto-confirm: an assumed source stays suspected for the AI
+// so an analyzer limitation is never presented to the classifier as a
+// machine proof.
+type retNullability uint8
+
+const (
+	retNotNull retNullability = iota
+	retNullAssumed
+	retNullProven
+)
+
+// returnsNullability grades body's return-nullability: the strongest grade
+// over all return expressions (proven > assumed > notNull). fnRetType is the
+// enclosing function's declared return type: a bare integer zero (or a bare
+// NULL identifier) in a never-null scalar return function is the integer
+// zero, not a null pointer — the return-type gate.
+func returnsNullability(body parser.Node, flow *flowResult, params map[string]int, retNullable map[string]retNullability, definedNames map[string]bool, arrs *arrayBaseInfo, srcs []nullSource, fnRetType string) retNullability {
+	grade := retNotNull
 	for _, ret := range body.FindAll("return_statement") {
 		children := ret.NamedChildren()
 		if len(children) == 0 {
 			continue
 		}
-		if exprReturnsNullable(children[0], flow, params, retNullable, definedNames, arrs, ret.StartLine()) {
-			return true
+		switch exprRetNullability(children[0], flow, params, retNullable, definedNames, arrs, ret.StartLine(), srcs, fnRetType) {
+		case retNullProven:
+			return retNullProven
+		case retNullAssumed:
+			grade = retNullAssumed
 		}
 	}
-	return false
+	return grade
 }
 
-func exprReturnsNullable(expr parser.Node, flow *flowResult, params map[string]int, retNullable map[string]bool, definedNames map[string]bool, arrs *arrayBaseInfo, line int) bool {
+func exprRetNullability(expr parser.Node, flow *flowResult, params map[string]int, retNullable map[string]retNullability, definedNames map[string]bool, arrs *arrayBaseInfo, line int, srcs []nullSource, fnRetType string) retNullability {
 	if isNullLiteralNode(expr) {
-		return true
+		// Return-type gate: a bare zero/NULL literal in a never-null scalar
+		// return function is the integer zero, not a null pointer. A
+		// pointer-cast zero (`(T *)0`) keeps its null literal meaning
+		// regardless of the function's declared return type.
+		if apikb.IsNeverNullScalarType(fnRetType) && expr.Kind() != "cast_expression" {
+			return retNotNull
+		}
+		return retNullProven
 	}
 	switch expr.Kind() {
 	case "number_literal", "char_literal", "string_literal", "true", "false", "sizeof_expression":
 		// Non-pointer scalars and string literals (static storage) are non-null.
-		return false
+		return retNotNull
 	case "pointer_expression":
-		// `&x` is an address (always non-null); `*p` is a deref (possibly null).
-		return !strings.HasPrefix(strings.TrimSpace(expr.Text()), "&")
+		// `&x` is an address (always non-null); `*p` is a deref whose pointed-to
+		// value is unknown — an assumption, not a proof.
+		if strings.HasPrefix(strings.TrimSpace(expr.Text()), "&") {
+			return retNotNull
+		}
+		return retNullAssumed
 	case "identifier":
 		if _, isParam := params[expr.Text()]; isParam {
-			return true
+			return retNullAssumed
 		}
-		return flow != nil && flow.reaching(expr.Text(), line)
+		if flow != nil && flow.reaching(expr.Text(), line) {
+			if variableRetStrength(srcs, expr.Text(), line, retNullable) {
+				return retNullProven
+			}
+			return retNullAssumed
+		}
+		return retNotNull
 	case "cast_expression", "parenthesized_expression":
+		grade := retNotNull
 		for _, c := range expr.NamedChildren() {
-			if exprReturnsNullable(c, flow, params, retNullable, definedNames, arrs, line) {
-				return true
+			// Inside a cast the operand's null-ness is fixed by the cast, not
+			// the function's return type; a parenthesized wrapper preserves it.
+			inner := fnRetType
+			if expr.Kind() == "cast_expression" {
+				inner = ""
+			}
+			switch exprRetNullability(c, flow, params, retNullable, definedNames, arrs, line, srcs, inner) {
+			case retNullProven:
+				return retNullProven
+			case retNullAssumed:
+				grade = retNullAssumed
 			}
 		}
-		return false
+		return grade
 	case "binary_expression":
 		// Pointer arithmetic on a static base (`return g_pool_var.sects + id`,
 		// `return arr - 1`): the result is an address inside or one past the
@@ -1379,29 +1427,79 @@ func exprReturnsNullable(expr parser.Node, flow *flowResult, params map[string]i
 		if op := parser.BinaryOperator(expr); op == "+" || op == "-" {
 			children := expr.NamedChildren()
 			if len(children) == 2 && (isNonNullArrayBase(children[0], arrs) || isNonNullArrayBase(children[1], arrs)) {
-				return false
+				return retNotNull
 			}
 		}
 	case "call_expression":
 		name := callName(expr)
 		if isAllocatorCall(name) {
-			return true
+			return retNullProven
 		}
 		if apikb.IsKnownNullableReturn(name) {
-			return true
+			return retNullProven
 		}
 		if apikb.IsNonNullReturning(name) {
-			return false
+			return retNotNull
 		}
 		if definedNames[name] {
 			return retNullable[name] // defined in-scan: resolve via the fixpoint
 		}
-		return true // external/unknown callee: fail-open (open world)
+		return retNullAssumed // external/unknown callee: fail-open (open world)
 	}
 	// field_expression (e.g. `return g_space.shell_conf`, NULL-initialized),
-	// subscript_expression, conditional/binary/unary — all may yield a pointer and
-	// therefore may be NULL. Conservative (fail-open): an unknown return
-	// expression is treated as possibly-null, never assumed non-null.
+	// subscript_expression, conditional/binary/unary — all may yield a pointer
+	// and therefore may be NULL, but without a concrete witness this is an
+	// assumption (fail-open), never a proof.
+	return retNullAssumed
+}
+
+// variableRetStrength reports whether every null source for variable that can
+// reach line is a proven-nullable origin: an explicit NULL assignment
+// (definite), a declared allocator, a known maybe-null libc function, or a
+// call result of a callee the fixpoint graded proven. Any other origin (an
+// external_call, a caller_null, an assumed callee) downgrades to assumed —
+// the conservative direction: the candidate stays suspected for the AI instead
+// of auto-confirming on incomplete evidence. Only the sources on the LAST
+// source line at or before line are considered, matching single-variable
+// sequential reassignment; an unpositioned source cannot be ordered and is
+// treated as assumed.
+func variableRetStrength(srcs []nullSource, variable string, line int, retNullable map[string]retNullability) bool {
+	best := 0
+	var at []nullSource
+	for _, s := range srcs {
+		if s.variable != variable {
+			continue
+		}
+		if s.line <= 0 {
+			return false // unpositioned source: cannot grade, fail open
+		}
+		if s.line > line {
+			continue
+		}
+		if s.line > best {
+			best = s.line
+			at = at[:0]
+		}
+		if s.line == best {
+			at = append(at, s)
+		}
+	}
+	if len(at) == 0 {
+		return false
+	}
+	for _, s := range at {
+		switch {
+		case s.definite:
+			// `p = NULL` — a concrete witness.
+		case apikb.IsDeclaredAllocator(s.origin) || apikb.IsKnownNullableReturn(s.origin):
+			// malloc/strchr/... — inherently maybe-null by contract.
+		case s.origin != "" && retNullable[s.origin] == retNullProven:
+			// Planner-synthesized `p = f()` source whose callee the fixpoint
+			// graded proven.
+		default:
+			return false
+		}
+	}
 	return true
 }
 

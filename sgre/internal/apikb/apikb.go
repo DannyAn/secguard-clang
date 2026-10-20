@@ -980,3 +980,37 @@ var BuiltinNullableReturning = map[string]bool{
 // project-specific maybe-null functions are registered as allocators, which
 // share the same auto-confirm channel via onlyCertainNullableSources.
 func IsKnownNullableReturn(name string) bool { return BuiltinNullableReturning[name] }
+
+// neverNullScalarTypes are C primitive types that can never hold a pointer.
+// A function returning one of these cannot return NULL. Deliberately excludes
+// "char"/"unsigned char"/struct names/typedefs: those may be `T *` in disguise
+// (the indexer stores the base type name without the `*`), so an unrecognized
+// type text fails OPEN (treated as possibly a pointer) rather than gating the
+// null seed and hiding a genuine nullable return.
+var neverNullScalarTypes = map[string]bool{
+	"size_t": true, "ssize_t": true, "int": true, "long": true, "short": true,
+	"double": true, "float": true, "unsigned": true, "unsigned int": true,
+	"unsigned long": true, "unsigned short": true, "unsigned long long": true,
+	"long long": true, "int64_t": true, "uint64_t": true, "int32_t": true,
+	"uint32_t": true, "int16_t": true, "uint16_t": true, "int8_t": true,
+	"uint8_t": true, "bool": true, "_Bool": true,
+}
+
+// IsNeverNullScalarType reports whether a stored return-type text names a C
+// primitive that can never be a pointer, so a literal `return 0` in such a
+// function is the integer zero, not a null pointer. Empty or unrecognized type
+// text (typedefs, function pointers, macro-prefixed decls) returns false: the
+// caller must fail open.
+func IsNeverNullScalarType(typeText string) bool {
+	return neverNullScalarTypes[typeText]
+}
+
+// NeverNullScalarTypes exposes the never-null scalar set as a shared map for
+// packages that key other lookups off it (evidence's detectExternalCall).
+func NeverNullScalarTypes() map[string]bool {
+	out := make(map[string]bool, len(neverNullScalarTypes))
+	for k := range neverNullScalarTypes {
+		out[k] = true
+	}
+	return out
+}

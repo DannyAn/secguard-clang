@@ -3,6 +3,7 @@ package planner
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/config"
@@ -81,28 +82,40 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 					fmt.Sprintf("callee %s is declared non-null", c.CalleeName))
 				continue
 			}
-			if !definedNames[c.CalleeName] || retNullable[c.CalleeName] {
+			if apikb.IsKnownNullableReturn(c.CalleeName) {
 				c.HasNullableSource = true
-				if apikb.IsKnownNullableReturn(c.CalleeName) {
-					c.SuspicionLevel = "confirmed"
-					c.NullOriginTier = "malloc-fail"
-					c.NullableOriginName = c.CalleeName
-				} else if retNullable[c.CalleeName] {
-					c.SuspicionLevel = "suspected"
-					// A defined callee whose body provably returns NULL is the
-					// same textbook tier as an allocator: a proven-nullable
-					// origin. Its definition is embedded for the verdict.
-					c.NullOriginTier = "malloc-fail"
-					c.NullableOriginName = c.CalleeName
-				} else {
-					c.SuspicionLevel = "suspected"
-					c.NullOriginTier = "external-unknown"
-				}
-				kept = append(kept, c)
+				c.SuspicionLevel = "confirmed"
+				c.NullOriginTier = "malloc-fail"
+				c.NullableOriginName = c.CalleeName
+			} else if retNullable[c.CalleeName] == retNullProven {
+				// A defined callee whose body PROVABLY returns NULL (a literal
+				// NULL path, an allocator result, or a proven callee chain):
+				// the same textbook tier as an allocator — a proven-nullable
+				// origin, auto-confirmed. Its definition is embedded for the
+				// re-review loop.
+				c.HasNullableSource = true
+				c.SuspicionLevel = "confirmed"
+				c.NullOriginTier = "malloc-fail"
+				c.NullableOriginName = c.CalleeName
+			} else if retNullable[c.CalleeName] == retNullAssumed {
+				// The callee's nullability is a FAIL-OPEN assumption (it
+				// returns a parameter, a field, or an unknown call): keep it
+				// suspected, labelled assumed-return so the AI judges the
+				// assumption instead of rubber-stamping a "proven" prior.
+				c.HasNullableSource = true
+				c.SuspicionLevel = "suspected"
+				c.NullOriginTier = "assumed-return"
+				c.NullableOriginName = c.CalleeName
+			} else if !definedNames[c.CalleeName] {
+				c.HasNullableSource = true
+				c.SuspicionLevel = "suspected"
+				c.NullOriginTier = "external-unknown"
 			} else {
 				dropped = dismiss(dropped, c, f.Name(),
 					fmt.Sprintf("callee %s does not return a nullable value (inter-procedural retNullable analysis)", c.CalleeName))
+				continue
 			}
+			kept = append(kept, c)
 			continue
 		}
 
@@ -154,21 +167,24 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				// only maybe-null → suspected, so the AI reasons about it instead
 				// of rubber-stamping a "confirmed" prior.
 				//
-				// Exception: an ALLOCATOR source (malloc/calloc/realloc) or a
+				// Exceptions: an ALLOCATOR source (malloc/calloc/realloc) or a
 				// known maybe-null libc/POSIX function (strchr/fopen/getenv/...)
-				// inherently returns NULL, so dereferencing it with no guard is a
-				// textbook CWE-476 regardless of path — keep it confirmed rather
-				// than downgrading. Only an unknown external call (a function
-				// that may or may not return NULL) stays suspected.
-				if !c.HasDefiniteNull && !models[c.FunctionID].onlyCertainNullableSources(c.VariableName) {
+				// inherently returns NULL, and a planner-synthesized `p = f()`
+				// whose callee the fixpoint graded PROVEN has a concrete NULL
+				// witness in its body — all textbook CWE-476 regardless of path,
+				// kept confirmed rather than downgraded. Only a fail-open source
+				// (unknown external call, assumed callee) stays suspected.
+				synthCallee := synthCalleeAt(synthByFunc[c.FunctionID], c.VariableName, c.Line)
+				synthProven := synthCallee != "" && retNullable[synthCallee] == retNullProven
+				if !c.HasDefiniteNull && !models[c.FunctionID].onlyCertainNullableSources(c.VariableName) && !synthProven {
 					c.SuspicionLevel = "suspected"
 				}
 				// The nullable-origin tier feeds the null@<tier> hint token:
 				// the classifier's job differs per tier (cfg-proof and
 				// malloc-fail are machine-proved textbook CWE-476; caller-arg
-				// needs the caller's contract; external-unknown is a fail-open
-				// assumption the AI must verify or dismiss).
-				synthCallee := synthCalleeAt(synthByFunc[c.FunctionID], c.VariableName, c.Line)
+				// needs the caller's contract; assumed-return is a fail-open
+				// assumption on an in-scan callee; external-unknown is a fail-open
+				// assumption on an out-of-scan callee).
 				switch {
 				case c.HasDefiniteNull:
 					c.NullOriginTier = "cfg-proof"
@@ -178,15 +194,20 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				case c.CallerNullDetail != "":
 					c.NullOriginTier = "caller-arg"
 				case synthCallee != "":
-					// An in-scan callee the inter-procedural fixpoint PROVED
-					// can return NULL (retNullable): the same textbook tier as
-					// an allocator — a proven-nullable origin, not a fail-open
+					// An in-scan callee the inter-procedural fixpoint graded:
+					// proven (a concrete NULL witness in the body) keeps the
+					// textbook malloc-fail tier and the auto-confirm above;
+					// assumed (fail-open) is labelled so the AI judges the
 					// assumption. CalleeName makes resolveCalleeDefs embed the
 					// callee body under ## Callee Definition, so the AI never
 					// opens the source to see why it can return NULL.
-					c.NullOriginTier = "malloc-fail"
-					c.NullableOriginName = synthCallee
 					c.CalleeName = synthCallee
+					c.NullableOriginName = synthCallee
+					if synthProven {
+						c.NullOriginTier = "malloc-fail"
+					} else {
+						c.NullOriginTier = "assumed-return"
+					}
 				default:
 					c.NullOriginTier = "external-unknown"
 				}
@@ -231,7 +252,7 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 // `p = f()` null sources whose callee the fixpoint proved nullable — Apply
 // reads them back to classify such variables as malloc-fail (proven-nullable
 // in-scan callee) instead of external-unknown (fail-open assumption).
-func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[int64][]Candidate, models map[int64]*nullModel) (map[int64]*flowResult, map[string]bool, map[string]bool, map[int64][]nullSource, error) {
+func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[int64][]Candidate, models map[int64]*nullModel) (map[int64]*flowResult, map[string]retNullability, map[string]bool, map[int64][]nullSource, error) {
 	if f.parser == nil {
 		return nil, nil, nil, nil, nil
 	}
@@ -318,13 +339,13 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 	// candidate function actually assigns a call result to a variable
 	// (`p = f()`) or directly dereferences one (`f()->field`). Fail-open on
 	// error: keep candidates.
-	retNullable := map[string]bool{}
+	retNullable := map[string]retNullability{}
 	definedNames := map[string]bool{}
 	if len(assignedCallees) > 0 {
 		var err error
 		retNullable, definedNames, err = f.computeRetNullable(ctx, models, assignedCallees)
 		if err != nil {
-			retNullable = map[string]bool{}
+			retNullable = map[string]retNullability{}
 			definedNames = map[string]bool{}
 		}
 	}
@@ -416,8 +437,11 @@ func synthCalleeAt(synth []nullSource, variable string, line int) string {
 // `return NULL`), then extended to functions returning an allocator, a pointer
 // parameter, a variable with a reaching may-null source, or a call to another
 // nullable-returning function.
-func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models map[int64]*nullModel, seedNames map[string]bool) (map[string]bool, map[string]bool, error) {
-	retNullable := make(map[string]bool)
+func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models map[int64]*nullModel, seedNames map[string]bool) (map[string]retNullability, map[string]bool, error) {
+	// The fixpoint runs on a graded map: any non-notNull value means
+	// "nullable" for the iteration; the final collapse below re-grades each
+	// nullable name from the per-definition assumed evidence.
+	retNullable := make(map[string]retNullability)
 	funcs, err := f.store.ListFunctions(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("ret nullable summary: list functions: %w", err)
@@ -517,8 +541,14 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 			}
 
 			// Seed from the detector's function_summary (literal `return NULL`/`0`).
-			if sum := summariesByID[fn.ID]; sum != nil && sum.ReturnNullable {
-				retNullable[fn.Name] = true
+			// Return-type gate: on a never-null scalar return type the literal
+			// is the integer zero, not a null pointer (a legacy summary row).
+			// A gated seed falls through to the ordinary body analysis.
+			if sum := summariesByID[fn.ID]; sum != nil && sum.ReturnNullable &&
+				!apikb.IsNeverNullScalarType(strings.TrimSpace(fn.ReturnType)) {
+				// A literal NULL return in a pointer-returning function is a
+				// concrete witness: the seed grade is proven.
+				retNullable[fn.Name] = retNullProven
 				continue
 			}
 
@@ -548,26 +578,52 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 	analyzer.helperParams = collectNullCheckHelpers(cache, funcs, fileByID)
 	analyzer.macroGuards = collectMacroGuards(cache, fileByID)
 
+	// defAssumed records, per function definition, whether its nullable
+	// evidence is fail-open (assumed) rather than proven. The name-level
+	// grade then merges conservatively: any assumed definition downgrades the
+	// whole name, because a same-name call site cannot be resolved to one
+	// definition and an assumption must never reach the auto-confirm channel.
+	defAssumed := make(map[int64]bool)
+	firstRound := true
 	for {
 		changed := false
 		for i := range infos {
 			info := &infos[i]
-			if retNullable[info.fn.Name] {
+			// First round computes every definition unconditionally so each
+			// one records its assumed/proven grade; later rounds keep the
+			// original skip (the name is already nullable, no new bool fact).
+			if !firstRound && retNullable[info.fn.Name] != retNotNull {
 				continue
 			}
 			srcs := append([]nullSource(nil), info.srcs...)
 			srcs = append(srcs, callResultNullSources(info.body, retNullable)...)
 			flow := analyzer.analyzeFlow(ctx, info.fn, info.body, info.root, nullGenByLine(srcs), nil, true, false)
-			if returnsNullable(info.body, flow, info.params, retNullable, definedNames, info.arrs) {
-				retNullable[info.fn.Name] = true
+			if ns := returnsNullability(info.body, flow, info.params, retNullable, definedNames, info.arrs, srcs, strings.TrimSpace(info.fn.ReturnType)); ns != retNotNull {
+				retNullable[info.fn.Name] = ns
+				defAssumed[info.fn.ID] = ns == retNullAssumed
 				changed = true
 			}
 		}
+		firstRound = false
 		if !changed {
 			break
 		}
 	}
-	return retNullable, definedNames, nil
+	// Collapse the boolean fixpoint result into the graded map: a nullable
+	// name is proven only when NONE of its definitions carries assumed-only
+	// evidence.
+	retGrade := make(map[string]retNullability, len(retNullable))
+	for name := range retNullable {
+		grade := retNullProven
+		for _, fn := range funcsByName[name] {
+			if defAssumed[fn.ID] {
+				grade = retNullAssumed
+				break
+			}
+		}
+		retGrade[name] = grade
+	}
+	return retGrade, definedNames, nil
 }
 
 // nullGenByLine folds a slice of null sources into the per-line gen map the

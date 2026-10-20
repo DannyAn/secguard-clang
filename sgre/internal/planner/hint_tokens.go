@@ -59,8 +59,9 @@ var hintTokenRegistry = []HintTokenSpec{
 	// for this type: what the classifier must DO differs by tier, so the tier
 	// is the first thing it reads.
 	{Key: "null@cfg-proof", Description: "the CFG proves a NULL definite assignment reaches this dereference — machine-proved CWE-476, verify nothing"},
-	{Key: "null@malloc-fail", Description: "the null source is a PROVEN-nullable call result (allocator / known maybe-null libc / a callee whose body returns NULL): an unchecked dereference is a textbook CWE-476"},
+	{Key: "null@malloc-fail", Description: "the null source is a PROVEN-nullable call result (allocator / known maybe-null libc / a callee whose body provably returns NULL): an unchecked dereference is a textbook CWE-476"},
 	{Key: "null@caller-arg", Description: "the null source is an inter-procedural caller argument (not proven non-null) — judge whether that caller can pass NULL"},
+	{Key: "null@assumed-return", Description: "the callee's nullability is a FAIL-OPEN assumption (it returns a parameter, a field, or an unknown call) — its body is embedded; judge whether that value can actually be NULL rather than treating the tier as proof"},
 	{Key: "null@external-unknown", Description: "the ONLY null source is an unproven external call — an analyzer fail-open ASSUMPTION, not evidence: verify the callee can return NULL or dismiss"},
 
 	// ---- crypto-misuse ----
