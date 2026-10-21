@@ -2,7 +2,38 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.9.8] - 2026-10-20（七次重发）
+## [0.9.8] - 2026-10-21（八次重发）
+
+### null-deref 不完整类型信息场景检测能力增强：opaque 双通道 fail-open 播种
+
+生产打回（历史问题）：参数使用第三方 typedef（类型定义不在扫描树内、项目不要求
+完整编译）的 `import_dn_group_tree_refresh` 产出**零** CWE-476 候选。逐层定位：
+**语法层完全正常**（tree-sitter 对未知 typedef 容错，sink 事件齐全），断链在
+null source 播种层——参数可空性只由 caller_null 从树内调用点合成（调用方在树外
+的导出 API/回调零覆盖）；外部结构体字段值（`tree = (T *)(resp->group_data)`）与
+链式中间层（`para->orig->base_dn`）无播种通道。新增 `OpaqueNullDetector` 两条
+**fail-open 播种通道**（全部 suspected 级交 AI 研判，绝不 auto-confirmed）：
+
+- **opaque_param**：非 static 函数 + 树内零调用点（取地址豁免、main 豁免、static
+  死代码豁免）+ 指针参数 + 体内有解引用 → 入口播种 assumed source（与 caller_null
+  同走 planner entry seed 通道）。
+- **opaque_field_read**：字段读的 base 参数类型树内无定义（typedef/struct 定义
+  全树普查 + 基础类型白名单）→ 赋值转存（cast/下标变体）在赋值行播种；链式中间层
+  在函数头播种（birth 形态转 entry seed）。树内已定义类型维持既有行为。
+- planner 侧：entry seed 分流扩展 + `null@opaque-origin` tier（hasOpaqueSource）
+  + verdict fact + hint token 注册；守卫 kill / 非空重赋值 kill / ConvergeByVariable
+  等既有机制对 fail-open source 统一生效。
+- 验证：报告原帖精确形态 0→4 候选（resp/para/para->orig/tree，issue 验收 A 三处
+  位置全覆盖，全 suspected + opaque-origin）；正反例 8/9（守卫不报、非空重赋值
+  kill、三种解引用形态收敛、调用点/类型可见豁免、guarded_chain 一报一不报的
+  精确分离）；干净目录 benchmark A/B：候选 69→76（+7 全为未判空参数解引用的真实
+  形态暴露，逐条人工核对无 FP），validator PASS 129/189→134/194、recall
+  40→43、FP 恒 2、FN 恒 55、auto-confirmed 恒 139（零 confirmed 污染）。
+  回归防线：evidence 直测（播种形态+豁免域）+ planner 端到端红绿（tier 断言+守卫
+  kill）+ benchmark Phase 23（P23-01..05）；SKILL.md tier 表补 opaque-origin 行。
+- 已知边界（记录不修）：局部语法 ERROR（缺分号被吞进 ERROR 节点）内的解引用
+  丢失属解析层恢复问题；全局变量来源的 opaque 字段读不在参数域内；两者均不归
+  null source 播种层。
 
 ### null-deref 候选偏多检视：三类守卫契约误报（6 项 FP）修复
 
