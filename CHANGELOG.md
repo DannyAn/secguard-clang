@@ -2,7 +2,66 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.9.8] - 2026-10-21（十一次重发）
+## [0.9.8] - 2026-10-21（十二次重发）
+
+### null-deref：把「布局可见=非空」的伪契约改为「入口边界」策略
+
+复核 0.9.8 十一次重发时发现一条被当契约执行的判据：**布局可见的树内定义类型维持
+v0.9.4 契约闭合**（`typedef struct X {...} X_t;` 可见 ⇒ 其指针参数"按调用方约定
+非空"、不播种）。它不是可空性规则：布局可见只回答"我们知道结构体长什么样"，与
+"这个**值**能不能为空"正交——公共 API 收自家 `MyCtx_t *` 恰恰是外部调用方可能传
+NULL 的地方，而外部 typedef 但树内调用点全部判空的函数反而安全。更直接的证据：同一
+段代码把 typedef 从 `.c` 挪进 `.h` 就改变结论（普查 bug 放大了这一荒诞性）。
+
+实测（redis 7.2.4 / 136k LOC / 102 文件，null-deref 候选总量）：
+
+| 策略 | 候选 | 备注 |
+|---|---|---|
+| 现状（布局闸门） | 1283 | — |
+| 直接删闸门 | 1908（+49%） | 新增基本都是命令表回调（`client *c` 类框架类型） |
+| 「外部 API 一律 fail-open」+ 注册表地址取用普查 | 1753（+37%） | 仍以框架回调为主 |
+| 字段通道删闸门 | 1944（+52%） | 新增基本是 `list->head` / `c->user` 这类树内不变式 |
+
+→ 结论：布局闸门**不是**可空性规则，但确实是有效的**精度代理**（框架类型与框架
+非空保证强相关）。正确判据应是"函数如何被调用"，不是"类型在哪定义"。
+
+新策略按**扫描边界**判定：扫描树内存在 `main`（完整程序扫描）时，树内可见布局按
+项目自身非空不变式收敛（明确标注为精度策略、不是证明）；扫描树内**没有** `main`
+（库 / 部分子树）时，扫描边界本身就是外部 ABI，所有边界指针参数与从它读出的字段值
+一律 fail-open，与类型可见性无关。app 模式体量不变（redis 1283 / benchmark 22 条
+候选零变化），库扫描拿回"公共 API 收自家结构体"这一类漏报。
+
+- 入口边界事实：`scanHasEntryPoint`（detector.go），`CallerNullDetector` 与
+  `OpaqueNullDetector` 共用。
+- 回归：`TestBoundaryScanExportedAPIIsFailOpen`（evidence：参数 + 字段值两通道）、
+  `TestBoundaryScanExportedAPI`（planner e2e：无 main 出两条候选、加 main 后消失）；
+  既有 app 模式用例补 `int main(void)` 并改注释为"入口边界策略"。
+
+### null-deref：派生指针的来源归因、多解引用点证据、头文件类型普查
+
+- **派生指针 tier 误标**：`q = (T *)param`、`q = t`（t 是 opaque 字段读）、
+  `q = dm_p`（malloc 结果别名）此前一律落到 `external-unknown`，其文案还写
+  "the ONLY null source is an unproven external CALL"——这些形态根本没有 callee。
+  新增 `contractCtx.valueOriginRoot` 沿 copy/cast 链回溯到真正持有 NULL_VALUE 的
+  变量，tier 取根来源（caller-arg / opaque-origin / malloc-fail / external-unknown），
+  `Candidate.DerivedFrom` 进入候选 JSON、证据包与 VerdictFacts（"`q` is a copy/cast
+  of parameter `c`"）。派生 malloc 保持 suspected：不扩 `confirmed` 边界。
+- **同一基指针多处解引用**：按变量收敛仍是一条候选（量级契约不变），但
+  `deduplicateCandidates` 现在合并 `DerefLines`（排序，首行即报告行），候选证据新增
+  sink 段列出其余解引用行，`deref_lines` 进证据包——报告行不再被误解为全部爆点，
+  修复建议能覆盖分支内和分支后的两处 `tree[0].group_name`。
+- **头文件类型普查修复**：`collectDefinedTypes` 原由 `forEachFile`（只遍历"含已索引
+  函数"的文件）驱动，而真实 C 工程的 struct/typedef 几乎全在**无函数的头文件**里，
+  导致普查几乎看不到类型、所有树内 header 类型都被当成 opaque，两通道对可见契约误
+  播种（实测：同一 header 加/不加一个 stub 函数，候选 1 → 0；生产形态 4 → 2 条）。
+  改为 `forEachIndexedFile`；`typedef struct X X_t;`（前向声明、无 body）仍判 opaque，
+  issue 原帖前提不回归。
+- **benchmark**：Phase 23 增补 header 定义类型两例（P23-09/P23-10 no_finding），
+  锁住"头文件里的类型可见时不得误播种"。
+- **验证**：新增 evidence/planner 回归（header 普查、边界扫描、派生 tier、多 sink），
+  `go test ./...` 16 包通过（唯一失败 `TestResolveExistingDBPath_NotExists` 由工作区
+  内 `.codeagent` 残留 DB 引起的既有环境失败，stash 改动后同样失败）；redis app 模式
+  候选零变化；95k LOC / 100 文件合成语料 detectors 85.0s → 87.4s（+2.8%）。
 
 ### out-of-bounds 覆盖未校验外部索引：固定数组 + 配置字段索引（客户现网 maf_rbl 打回）
 
@@ -62,7 +121,7 @@ buffer-overflow CWE-787），并携带完整链条交 AI 研判：
   当且仅当 possibly-null 值**真实可达**——① 树内调用点传 literal NULL（definite
   witness）；② 函数树内零调用点且外部可调用（非 static / static+取地址，main 豁免）
   的**开放入口**参数（类型布局不可见：前向声明 typedef `typedef struct X X_t;` 与
-  未知 typedef；**布局可见的树内定义类型维持 v0.9.4 契约闭合**，ND-10/ND-11 决策
+  未知 typedef；**布局可见的树内定义类型维持 v0.9.4 契约闭合**，ND-10/ND-11 决策（该判据已在十二次重发中被「入口边界」策略取代：布局可见只作为完整程序扫描的精度假设，边界扫描一律 fail-open）
   保持）；③ 调用点转发 caller 自身的未守卫参数——开放性沿转发链传播。
   **守卫在链上任一层出现即截断整条链**（灵魂拷问的答案：所有调用方都防护的参数
   严格不报——early-return/正分支/短路/assert 四惯用法作用在传播边上）。
