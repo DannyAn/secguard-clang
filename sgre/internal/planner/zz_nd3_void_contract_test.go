@@ -138,6 +138,10 @@ void call(void *x) { proc(x); }
 // dereference of that parameter, for ordinary pointer parameters too — not only
 // void*. Previously `t = p; t->f` surfaced while `p->f` did not.
 func TestND3_DerivedParameterAlias_TypeAgnostic(t *testing.T) {
+	// call has zero in-tree callers, but its parameter type Ctx is tree-
+	// defined, so the entry stays closed (v0.9.4 contract) and none of the
+	// three surfaces. The incomplete-type form of the same chain (opaque
+	// typedef at the entry) is what surfaces — see the opaque_null tests.
 	src := `
 typedef struct { int f; } Ctx;
 
@@ -156,7 +160,7 @@ void call(Ctx *x) { direct(x); alias(x); cast(x); }
 	has := setOf(planNullDerefFull(t, src))
 	for _, fn := range []string{"direct", "alias", "cast"} {
 		if has[fn] {
-			t.Errorf("%s must NOT surface for an unproven caller (candidates=%v)", fn, has)
+			t.Errorf("%s must NOT surface for a tree-defined type entry (candidates=%v)", fn, has)
 		}
 	}
 }

@@ -43,7 +43,9 @@ const opaqueNullReportFixture = `int import_dn_group_tree_refresh(
 
 // Positive and negative control shapes for both seeding channels. Parameter
 // names are unique per function so per-function assertions stay unambiguous.
-const opaqueNullControlFixture = `typedef struct KnownRec KnownRec_t;
+const opaqueNullControlFixture = `typedef struct KnownRec {
+    unsigned int len;
+} KnownRec_t;
 
 int guarded_handler(ExtMsg_t *gh_msg)
 {
@@ -144,10 +146,9 @@ func runOpaqueNullDetect(t *testing.T, fixtures map[string]string) []opaqueSourc
 			t.Fatalf("index %s: %v", path, err)
 		}
 	}
-	// Mirror the production detector phasing (RunAllDetectors): caller_null
-	// runs in the concurrent batch, opaque_null in the deferred serial phase
-	// AFTER it, because the in-tree-caller channel consumes the caller_null
-	// seeds from the store.
+	// Both detectors are order-independent now (caller_null's open-chain
+	// fixpoint is self-contained; opaque_null reads no detector output), but
+	// run both so the record set reflects the production event stream.
 	if _, err := NewCallerNullDetector(store, p, logger).Detect(ctx); err != nil {
 		t.Fatalf("caller null detect: %v", err)
 	}
@@ -176,7 +177,7 @@ func runOpaqueNullDetect(t *testing.T, fixtures map[string]string) []opaqueSourc
 		if err := json.Unmarshal([]byte(e.Properties), &props); err != nil {
 			continue
 		}
-		if props.Origin != "opaque_param" && props.Origin != "opaque_field_read" {
+		if props.Origin != "caller_null" && props.Origin != "opaque_field_read" {
 			continue
 		}
 		line := 0
@@ -197,10 +198,12 @@ func TestOpaqueNullDetectorReportForm(t *testing.T) {
 
 	// The three report-mandated positions: resp->group_data (parameter),
 	// tree[0].group_name (assigned field read), plus the shared para contract
-	// and the chained intermediate para->orig.
+	// and the chained intermediate para->orig. The isolated report form has
+	// zero in-tree callers, so the parameters' openness comes from the
+	// caller_null open-entry base (origin caller_null, chain open).
 	for _, want := range []struct{ variable, origin string }{
-		{"resp", "opaque_param"},
-		{"para", "opaque_param"},
+		{"resp", "caller_null"},
+		{"para", "caller_null"},
 		{"tree", "opaque_field_read"},
 		{"para->orig", "opaque_field_read"},
 	} {
@@ -237,8 +240,9 @@ func TestOpaqueNullDetectorControls(t *testing.T) {
 
 	// A guarded parameter still seeds at the evidence layer (the planner's
 	// path-sensitive guard model is what kills it), so the channel itself must
-	// not grow a guard check that would duplicate that logic.
-	if !has("gh_msg", "opaque_param") {
+	// not grow a guard check that would duplicate that logic. Zero in-tree
+	// callers => the caller_null open-entry base seeds every pointer parameter.
+	if !has("gh_msg", "caller_null") {
 		t.Errorf("guarded_handler's gh_msg must still seed (guard is the planner's job); got %v", records)
 	}
 	// Chained intermediate + subscript field-read sources.
@@ -252,14 +256,14 @@ func TestOpaqueNullDetectorControls(t *testing.T) {
 		t.Errorf("subscript_source's n (ss_m->items[0]) must seed a field-read source; got %v", records)
 	}
 
-	// Zero-caller exemptions: a static dead helper must not seed opaque_param.
-	if has("dsh_m", "opaque_param") {
+	// Zero-caller exemptions: a static dead helper must not seed.
+	if has("dsh_m", "caller_null") {
 		t.Errorf("dead_static_helper is static with zero callers: dsh_m must not seed; got %v", records)
 	}
-	if has("ku_k", "opaque_param") {
-		t.Errorf("known_user's caller passes &kk (provably non-null): ku_k must not seed opaque_param; got %v", records)
+	if has("ku_k", "caller_null") {
+		t.Errorf("known_user's caller passes &kk (provably non-null): ku_k must not seed; got %v", records)
 	}
-	if has("argv", "opaque_param") {
+	if has("argv", "caller_null") {
 		t.Errorf("main's argv must be exempt; got %v", records)
 	}
 	// A tree-defined typedef (KnownRec_t) is not opaque: known_user must not
@@ -268,16 +272,19 @@ func TestOpaqueNullDetectorControls(t *testing.T) {
 		t.Errorf("KnownRec_t is defined in-tree: no opaque_field_read for ku_k; got %v", records)
 	}
 
-	// The in-tree-caller channel (the production shape): an opaque-typed
-	// parameter forwarded unproven keeps its fail-open seed, which is what
-	// blocks the planner's onlyUnprovenCallerNullSources dismissal.
-	if !has("oft_m", "opaque_param") {
-		t.Errorf("opaque_fwd_target's oft_m (opaque type + unproven forward caller) must seed opaque_param; got %v", records)
+	// The open-chain volume contract (the soul-searching answer): an unproven
+	// FORWARDING caller only keeps the callee parameter open when the chain is
+	// itself open at the root. opaque_fwd_caller has zero in-tree callers and
+	// its parameter type is invisible, so its forwarding edge propagates the
+	// open entry to opaque_fwd_target.
+	if !has("oft_m", "caller_null") {
+		t.Errorf("opaque_fwd_target's oft_m (forwarded from a zero-caller open entry) must seed; got %v", records)
 	}
-	// The volume guard: the same unproven forward shape with a TREE-DEFINED
-	// parameter type must NOT seed — that candidate stays dismissible.
-	if has("ttt_k", "opaque_param") {
-		t.Errorf("tree_typed_target's ttt_k (KnownRec_t defined in-tree) must not seed opaque_param; got %v", records)
+	// The type gate: tree_typed_caller has zero in-tree callers too, but
+	// KnownRec_t is defined in-tree — the v0.9.4 contract keeps that entry
+	// closed, so ttt_k does not seed.
+	if has("ttt_k", "caller_null") {
+		t.Errorf("tree_typed_target's ttt_k (tree-defined type entry) must not seed; got %v", records)
 	}
 }
 
@@ -319,11 +326,11 @@ func TestOpaqueNullDetectorInTreeCallerReportForm(t *testing.T) {
 		}
 		return false
 	}
-	if !has("resp", "opaque_param") {
-		t.Errorf("resp (unproven forward caller + opaque type) must seed opaque_param; got %v", records)
+	if !has("resp", "caller_null") {
+		t.Errorf("resp (forwarded from the zero-caller open entry import_dn_group_tree) must seed; got %v", records)
 	}
-	if !has("para", "opaque_param") {
-		t.Errorf("para (unproven forward caller + opaque type) must seed opaque_param; got %v", records)
+	if !has("para", "caller_null") {
+		t.Errorf("para (forwarded from the zero-caller open entry import_dn_group_tree) must seed; got %v", records)
 	}
 	if !has("tree", "opaque_field_read") {
 		t.Errorf("tree = (T *)(resp->group_data) must still seed opaque_field_read; got %v", records)

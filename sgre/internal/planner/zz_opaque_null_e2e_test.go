@@ -96,9 +96,6 @@ func runOpaqueNullPlan(t *testing.T, files map[string]string) *PlanResult {
 	evidence.NewNullSourceDetector(store, p, logger).Detect(ctx)
 	evidence.NewDereferenceDetector(store, p, logger).Detect(ctx)
 	evidence.NewNullGuardDetector(store, p, logger).Detect(ctx)
-	// Mirror RunAllDetectors phasing: caller_null in the concurrent batch,
-	// opaque_null deferred after it (the in-tree-caller channel consumes the
-	// caller_null seeds).
 	evidence.NewCallerNullDetector(store, p, logger).Detect(ctx)
 	evidence.NewOpaqueNullDetector(store, p, logger).Detect(ctx)
 
@@ -124,7 +121,17 @@ func TestOpaqueNullEndToEndReportForm(t *testing.T) {
 		if c.SuspicionLevel != "suspected" {
 			t.Errorf("variable %s: suspicion = %s, want suspected (a fail-open source must never auto-confirm)", variable, c.SuspicionLevel)
 		}
-		if c.NullOriginTier != "opaque-origin" {
+	}
+	// The isolated form has zero in-tree callers: resp/para come from the
+	// caller_null open-entry base (caller-arg tier), the field-read positions
+	// keep the opaque-origin tier.
+	for _, variable := range []string{"resp", "para"} {
+		if c := byVar[variable]; c.NullOriginTier != "caller-arg" {
+			t.Errorf("variable %s: tier = %s, want caller-arg (open-entry base)", variable, c.NullOriginTier)
+		}
+	}
+	for _, variable := range []string{"para->orig", "tree"} {
+		if c := byVar[variable]; c.NullOriginTier != "opaque-origin" {
 			t.Errorf("variable %s: tier = %s, want opaque-origin", variable, c.NullOriginTier)
 		}
 	}
@@ -235,8 +242,9 @@ int tree_typed_caller(KnownRec_t *k2f)
 			t.Errorf("variable %s: suspicion = %s, want suspected", variable, c.SuspicionLevel)
 		}
 	}
-	// resp/para resolve through the caller-arg tier (a concrete unproven
-	// caller exists); the field-read positions keep the opaque-origin tier.
+	// resp/para resolve through the caller-arg tier (the open entry
+	// import_dn_group_tree forwards them); the field-read positions keep the
+	// opaque-origin tier.
 	for _, variable := range []string{"resp", "para"} {
 		if c := byVar[variable]; c.NullOriginTier != "caller-arg" {
 			t.Errorf("variable %s: tier = %s, want caller-arg", variable, c.NullOriginTier)
@@ -248,13 +256,99 @@ int tree_typed_caller(KnownRec_t *k2f)
 		}
 	}
 
-	// Volume guards: a guarded caller (the call site proves the argument
-	// non-null, so no source at all) and a tree-defined forwarded type (the
-	// onlyUnprovenCallerNullSources dismissal keeps operating) must NOT
-	// surface parameter candidates.
+	// Volume guards — the soul-searching answer: a guarded caller proves the
+	// argument non-null, closing its edge; the tree-defined forward shape
+	// (tree_typed_caller has zero in-tree callers, but KnownRec_t is defined
+	// in-tree) also stays closed — the type gate keeps the v0.9.4 contract
+	// while the opaque-typed open entry surfaces.
 	for _, variable := range []string{"m2", "k2"} {
 		if _, ok := byVar[variable]; ok {
-			t.Errorf("variable %s must not surface (guarded caller / tree-defined type volume guard)", variable)
+			t.Errorf("variable %s must not surface (guarded caller / tree-defined type entry)", variable)
 		}
+	}
+}
+
+// The production soul-searching case: EVERY call site of a function guards
+// its argument (the guard may sit at ANY link of the forwarding chain — the C
+// convention "guard once at the outer entry, inner functions assume non-null
+// by contract"). The open-chain fixpoint must keep such parameters closed —
+// no candidate at all — while an identically-shaped UNguarded chain surfaces.
+// This is the candidate-volume contract whose violation flooded a production
+// scan with 1264 null-deref candidates (every forwarded "unproven" argument
+// had been seeded fail-open).
+func TestOpaqueNullEndToEndAllCallersGuarded(t *testing.T) {
+	r := runOpaqueNullPlan(t, map[string]string{"soul.c": `typedef struct KnownRec {
+    unsigned int len;
+} KnownRec_t;
+
+int inner_guarded_user(KnownRec_t *k)
+{
+    return k->len;
+}
+
+int middle_forwarder(KnownRec_t *mk)
+{
+    return inner_guarded_user(mk);
+}
+
+int outer_entry(KnownRec_t *ok)
+{
+    if (ok == NULL) {
+        return -1;
+    }
+    return middle_forwarder(ok);
+}
+
+int opaque_inner(ExtMsg_t *m)
+{
+    return m->len;
+}
+
+int opaque_middle(ExtMsg_t *om)
+{
+    return opaque_inner(om);
+}
+
+int opaque_entry(ExtMsg_t *oe)
+{
+    if (oe == NULL) {
+        return -1;
+    }
+    return opaque_middle(oe);
+}
+
+int open_entry(ExtMsg_t *pe)
+{
+    return opaque_inner(pe);
+}
+`})
+	byVar := map[string]EvidenceItem{}
+	for _, c := range r.Candidates {
+		byVar[c.Target.Variable] = c
+	}
+	// The guarded chains (outer_entry → middle_forwarder → inner_guarded_user
+	// and opaque_entry → opaque_middle) must stay completely dark: the guard
+	// at the chain's root closes every forwarded parameter below it.
+	for _, variable := range []string{"k", "mk", "ok", "om", "oe"} {
+		if _, ok := byVar[variable]; ok {
+			t.Errorf("variable %s must not surface (its whole forwarding chain is guarded at the entry)", variable)
+		}
+	}
+	// The unguarded chain (open_entry → opaque_inner) is the true-positive
+	// direction: an unguarded entry's value reaches a dereference.
+	c, ok := byVar["m"]
+	if !ok {
+		t.Fatalf("variable m must surface through the unguarded open_entry chain; got %v", byVar)
+	}
+	if c.SuspicionLevel != "suspected" {
+		t.Errorf("variable m: suspicion = %s, want suspected (open chain, no witness)", c.SuspicionLevel)
+	}
+	if c.NullOriginTier != "caller-arg" {
+		t.Errorf("variable m: tier = %s, want caller-arg", c.NullOriginTier)
+	}
+	// The pure forwarder's own parameter (pe) has no dereference sink in
+	// open_entry, so it must not surface either.
+	if _, ok := byVar["pe"]; ok {
+		t.Errorf("variable pe must not surface (no sink in open_entry)")
 	}
 }

@@ -26,7 +26,7 @@ import (
 func TestCallerGuardKinds(t *testing.T) {
 	src := `#include <assert.h>
 
-typedef struct { int field; } Context;
+typedef struct Context_struct Context;
 
 int process_branch(Context *ctx) { ctx->field = 1; return 0; }
 int process_short(Context *ctx)  { ctx->field = 2; return 0; }

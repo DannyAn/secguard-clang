@@ -644,13 +644,15 @@ TP 控制组 + ND-16 `id == 0` 守卫回归控制组 use_zero_cfg——`pureNull
 
 修复为两条 **fail-open 播种通道**（全部 suspected 级交 AI 研判，绝不 auto-confirm，
 守卫 kill 与非空重赋值 kill 由 planner 既有 guard/non-null 机制统一处理）：
-**第二轮补充（树内调用点形态）**——上轮复现 fixture 是孤立零调用点函数，生产环境
-目标函数几乎必有树内调用者；此时 caller_null 会播种（非 definite）却被 planner 的
-`onlyUnprovenCallerNullSources` dismiss（"analyzer limitation" 降噪），参数级候选
-（resp/para）恰在有调用者时全灭。补充通道：opaque_param 消费 caller_null 播种
-结果（检测器 deferred 串行段执行，位于并发段 caller_null 之后），对「有 unsafe
-调用点 + 参数类型树内无定义」的参数加播，阻断该 dismiss；树内定义类型维持
-dismissable（体量守卫，防普通调用链候选爆炸）。
+**第二轮补充（树内调用点形态）→ 第三轮重建（调用链开放性 fixpoint）**——第二轮的
+「unsafe 调用点 + 类型不可见即播种」在生产现网引爆（null-deref 候选 ≤160 → 1264）：
+C 惯例是外层入口判空一次、内层按非空契约直接用，转发链每层实参都"未证明非空"，
+该判定等于逐层全播。第三轮以**调用链开放性 fixpoint** 取代：参数可空当且仅当
+possibly-null 值真实可达——literal NULL witness（definite）/ 树内零调用点且外部
+可调用的开放入口（仅类型布局不可见参数：前向声明 typedef 与未知 typedef；布局
+可见类型维持 v0.9.4 契约闭合）/ 转发边传播 caller 自身未守卫参数的开放性；
+**守卫在链上任一层即截断整条链**（所有调用方都防护的参数严格不报）；
+纯转发参数（体内无解引用/转存消费）不播种（链收敛到解引用处一条）。
 
 - **opaque_param**：非 static 函数 + 树内零调用点（含取地址豁免、main 豁免）+
   指针参数 + 体内有解引用 → 入口播种 assumed source。
@@ -671,15 +673,16 @@ dismissable（体量守卫，防普通调用链候选爆炸）。
 | P23-08 | p23_opaque_type_null.c | 104 | no_finding | 守卫调用者反例：guarded_caller 判空后调用 → classifyArg safe → 无 source |
 
 四条 finding 均为 **suspected 级**（fail-open 假设交 AI 研判外部契约，不进
-auto-confirmed）：resp/para 走 `null@caller-arg`（有具名未证明调用者，指引更具体），
-para->orig/tree 走 `null@opaque-origin`。单测防线：`TestOpaqueNullDetectorReportForm` /
-`TestOpaqueNullDetectorControls` / `TestOpaqueNullDetectorInTreeCallerReportForm`
-（evidence 层播种形态、豁免域与树内调用点通道）+
-`TestOpaqueNullEndToEndReportForm` / `TestOpaqueNullEndToEndControls` /
-`TestOpaqueNullEndToEndInTreeCaller`（planner 端到端红绿：tier/suspected 断言 +
-守卫 kill + 非空重赋值 kill + 体量守卫负控）。已知边界：全局变量来源的 opaque
-字段读、树内语法 ERROR 吞掉的解引用（缺分号形态）不在两通道覆盖内（后者属解析层
-恢复问题，见 CHANGELOG）。
+auto-confirmed）：resp/para 走 `null@caller-arg`（detail 标注开放链来源：
+witness / 转发链 / 开放入口三形态），para->orig/tree 走 `null@opaque-origin`。
+单测防线：`TestOpaqueNullDetectorReportForm` / `TestOpaqueNullDetectorControls` /
+`TestOpaqueNullDetectorInTreeCallerReportForm`（evidence 层播种形态、豁免域与
+前向声明判定）+ `TestOpaqueNullEndToEndReportForm` / `TestOpaqueNullEndToEndControls` /
+`TestOpaqueNullEndToEndInTreeCaller` / `TestOpaqueNullEndToEndAllCallersGuarded`
+（planner 端到端红绿：tier/suspected 断言 + 守卫 kill + 非空重赋值 kill +
+**全守卫链零候选的灵魂拷问负控** + 类型门控负控）。已知边界：全局变量来源的
+opaque 字段读、树内语法 ERROR 吞掉的解引用（缺分号形态）不在覆盖内（后者属
+解析层恢复问题，见 CHANGELOG）。
 
 > 行号以 `src/p23_opaque_type_null.c` 当前内容为准（validator 容差 ±3）。
 

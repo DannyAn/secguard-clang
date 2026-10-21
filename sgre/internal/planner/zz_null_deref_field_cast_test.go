@@ -75,10 +75,10 @@ func containsStr(xs []string, want string) bool {
 // field value is independently nullable (the builder may leave it NULL), so the
 // dereference of the derived pointer `tree` must surface for the AI to judge.
 func TestNullDeref_FieldCastDerivedPointer(t *testing.T) {
-	src := `typedef struct {
-    unsigned int group_num;
-    unsigned char *group_data;
-} Nac_LdapSearchAckMsg_t;
+	// The issue's exact form: the ACK typedef is a FORWARD DECLARATION (the
+	// third-party layout never appears in the scan tree), so the entry is an
+	// open one and the field value is an opaque read.
+	src := `typedef struct Nac_LdapSearchAckMsg_struct Nac_LdapSearchAckMsg_t;
 
 typedef struct {
     char group_name[64];

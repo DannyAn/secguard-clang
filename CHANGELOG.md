@@ -2,7 +2,44 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.9.8] - 2026-10-21（九次重发）
+## [0.9.8] - 2026-10-21（十次重发）
+
+### null-deref 候选量级失控修复：调用链开放性 fixpoint（客户现网 1264 候选打回）
+
+九次重发的 opaque_param 第二形态在生产现网引爆：null-deref 候选从历史 ≤160 爆炸到
+**1264**。根因是语义错误：C 项目的标准惯例是"最外层入口判空一次，内层函数按非空
+契约直接用"，转发链每一层的实参都"未证明非空"——把「调用点实参未证明非空 + 类型
+树内无定义」当播种条件，等于给每条转发链的每一层每个 opaque 指针参数都开 fail-open
+闸门。benchmark（320 函数）只有 +1 候选完全没暴露这个量级，是验证量尺的教训。
+
+- **语义重建（调用链开放性 fixpoint，取代"调用点局部未证明"判定）**：一个参数可空
+  当且仅当 possibly-null 值**真实可达**——① 树内调用点传 literal NULL（definite
+  witness）；② 函数树内零调用点且外部可调用（非 static / static+取地址，main 豁免）
+  的**开放入口**参数（类型布局不可见：前向声明 typedef `typedef struct X X_t;` 与
+  未知 typedef；**布局可见的树内定义类型维持 v0.9.4 契约闭合**，ND-10/ND-11 决策
+  保持）；③ 调用点转发 caller 自身的未守卫参数——开放性沿转发链传播。
+  **守卫在链上任一层出现即截断整条链**（灵魂拷问的答案：所有调用方都防护的参数
+  严格不报——early-return/正分支/短路/assert 四惯用法作用在传播边上）。
+  局部变量/不透明表达式实参不再播种（analyzer limitation 不是 NULL 证据）。
+- **纯转发去重**：参数仅作为调用实参转发、函数体内无解引用/转存消费时不播种——
+  链收敛到解引用处一条候选，不再逐层重复报告。
+- **前向声明 typedef 判定修复**：`typedef struct X X_t;`（无 body）此前被误判
+  "树内已定义"（typedef 名一律收录）——issue 原帖精确形态因此被两个通道漏掉。
+  现按"布局可见性"判定：有 body 定义/基础类型别名/可见类型别名才算 defined。
+- **planner**：caller_null 事件带 `chain=open` 属性（nullSource.chainOpen），开放链
+  候选不被 onlyUnprovenCallerNullSources dismiss（该 dismiss 保留为播种端回归的
+  防御闸）；caller-arg tier 的 detail 文案区分 witness / 转发链 / 开放入口三种
+  来源。opaque_param 通道整体删除（参数级开放性归 caller_null 单一模型），
+  opaque_null 检测器只保留 opaque_field_read 字段值通道，回归并发段执行。
+- 验证：**灵魂拷问红绿**（守卫链 outer→middle→inner 零候选 / 无守卫链
+  open_entry→inner 单候选，e2e 测试锁死）；合成规模仓库 620 函数 = 100 开放入口
+  ×2 参数恰 200 候选、80 条全守卫链零候选、40 个 literal NULL witness 走
+  auto-confirm；报告原帖形态 4 候选保留（resp/para/para->orig/tree）。干净目录
+  benchmark：null-deref 候选 16→8，validator PASS 137/197、recall 44/102、
+  FP 2/95、FN 55、auto-confirmed 139——与九次重发前基线**完全持平**且
+  P23 全部 8 用例 ground truth 零改动。测试防线：evidence 三件 + e2e 四件
+  （新增 TestOpaqueNullEndToEndAllCallersGuarded）+ 既有 caller-arg 语义测试
+  翻转/回滚各按新语义钉死。
 
 ### null-deref opaque 双通道二轮收口：树内调用点形态（客户打回复现）
 

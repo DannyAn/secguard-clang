@@ -97,8 +97,12 @@ void local_null(void) {
 	if has["guarded_scope"] {
 		t.Errorf("guarded_scope must NOT be a null-deref, got %v", has)
 	}
+	// The open-chain model grades a zero-caller function's parameter open
+	// only when its type is NOT defined in the scan tree (the incomplete-type
+	// issue); Context IS defined here, so process stays closed (v0.9.4
+	// contract — see the opaque_null tests for the open half).
 	if has["process"] {
-		t.Errorf("process (bare param deref, no caller) must NOT be a null-deref, got %v", has)
+		t.Errorf("process (bare param deref, tree-defined type) must NOT be a null-deref, got %v", has)
 	}
 }
 
@@ -126,15 +130,21 @@ static void process(Context *ctx) {
 		}
 	})
 	t.Run("unguarded caller", func(t *testing.T) {
+		// c's parameter type (Context) is tree-defined, so the zero-caller
+		// entry stays closed and process must not surface. The incomplete-type
+		// form (opaque typedef at the entry) is the one that surfaces — pinned
+		// in TestOpaqueNullEndToEndInTreeCaller.
 		src := base + "void c(Context *ctx) {\n    process(ctx);\n}\n"
 		if has := setOf(planNullDerefFull(t, src)); has["process"] {
-			t.Errorf("unguarded caller without a proven nullable argument must not surface, got %v", has)
+			t.Errorf("unguarded caller of a tree-defined type must not surface, got %v", has)
 		}
 	})
 }
 
 // TestContractNullability_AnyCallerViolates pins the path-dependent contract: a
-// guarded caller does not rescue a function that another caller violates.
+// guarded caller does not rescue a function that another caller violates. The
+// violation is a literal-NULL call site (the definite witness); guarded chains
+// alone keep a function closed.
 func TestContractNullability_AnyCallerViolates(t *testing.T) {
 	src := `
 typedef struct { int value; } Context;
@@ -148,12 +158,12 @@ void guarded(Context *ctx) {
     process(ctx);
 }
 
-void unguarded(Context *ctx) {
-    process(ctx);
+void violator(void) {
+    process(NULL);
 }
 `
 	has := setOf(planNullDerefFull(t, src))
-	if has["process"] {
-		t.Errorf("process must not surface without a proven nullable caller argument, got %v", has)
+	if !has["process"] {
+		t.Errorf("process must surface when one caller passes literal NULL, got %v", has)
 	}
 }
