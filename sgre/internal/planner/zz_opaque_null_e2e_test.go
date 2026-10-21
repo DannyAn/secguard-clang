@@ -472,3 +472,40 @@ int api_tree(ApiCtx_t *at_ctx)
 		}
 	}
 }
+
+// End to end for the address-taken census: a STATIC callback registered in a
+// generated #include fragment (the redis commands.def shape) must produce a
+// candidate. It is invoked by the framework, so it is not dead code — the old
+// `&f`-only census missed the bare-name registration and the handler read as
+// dead, leaving its opaque message parameter with no null source.
+func TestStaticCallbackRegisteredInFragmentSurfaces(t *testing.T) {
+	r := runOpaqueNullPlan(t, map[string]string{
+		"frag.c": `typedef struct {
+    const char *name;
+    void (*fn)(ExtMsg_t *);
+} census_entry_t;
+
+static void census_frag_handler(ExtMsg_t *cf_m)
+{
+    (void)cf_m->len;
+}
+
+#include "census_table.def"
+
+int main(void) { return census_frag_table[0].fn != 0; }
+`,
+		"census_table.def": `static census_entry_t census_frag_table[] = {
+    { "frag", census_frag_handler },
+};
+`,
+	})
+	for _, c := range r.Candidates {
+		if c.Target.Variable == "cf_m" {
+			if c.NullOriginTier != "caller-arg" {
+				t.Fatalf("cf_m tier = %q, want caller-arg", c.NullOriginTier)
+			}
+			return
+		}
+	}
+	t.Fatalf("the registered static handler's parameter must surface; got %+v", r.Candidates)
+}

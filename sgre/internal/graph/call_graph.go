@@ -3,6 +3,8 @@ package graph
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -52,9 +54,6 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 
 	err = forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
 		callNodes := root.FindAll("call_expression")
-		for name := range collectAddrRefNames(root, funcMap) {
-			addrRefs[name] = true
-		}
 
 		for _, f := range fileFuncs {
 			callerNodeID, err := b.store.GetOrCreateGraphNode(ctx, "function", f.ID, "")
@@ -97,6 +96,16 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 		}
 	})
 	if err != nil {
+		return nil, err
+	}
+
+	// The address-reference census must see EVERY indexed file, not just the
+	// ones that define a function: a callback table is usually a header-only or
+	// generated fragment. The old census ran inside forEachFile (function-bearing
+	// files) and only matched direct `&f` uses, so a table-registered static
+	// callback read as dead code and every candidate in it was later dropped as
+	// unreachable by call_reach.
+	if err := b.collectAddrRefs(ctx, funcMap, addrRefs); err != nil {
 		return nil, err
 	}
 
@@ -195,4 +204,56 @@ func extractCallName(node parser.Node) string {
 		}
 	}
 	return ""
+}
+
+// maxAddrRefFragmentBytes bounds a quoted #include fragment parsed for the
+// address-reference census. Registration tables are small; anything larger is
+// not a table.
+const maxAddrRefFragmentBytes = 4 << 20
+
+// collectAddrRefs walks every indexed file (header-only files included) and every
+// quoted #include fragment it pulls in, and records the function names referenced
+// as values. `#include "commands.def"` is how a generated registration table
+// enters a normal build; the walker never indexes the fragment, but the
+// address-taken fact depends on the text, not the extension.
+func (b *CallGraphBuilder) collectAddrRefs(ctx context.Context, funcMap map[string][]int64, addrRefs map[string]bool) error {
+	files, err := b.store.ListFiles(ctx)
+	if err != nil {
+		return fmt.Errorf("call graph: list files: %w", err)
+	}
+	visited := make(map[string]bool, len(files))
+	for _, file := range files {
+		visited[filepath.Clean(file.Path)] = true
+	}
+	for _, file := range files {
+		source, err := os.ReadFile(file.Path)
+		if err != nil {
+			continue
+		}
+		tree, err := b.parser.ParseCached(source, file.Path)
+		if err != nil {
+			continue
+		}
+		for name := range collectAddrRefNames(tree.RootNode(), funcMap) {
+			addrRefs[name] = true
+		}
+		for _, fragment := range parser.QuotedIncludePaths(file.Path, tree.RootNode()) {
+			if visited[fragment] {
+				continue
+			}
+			visited[fragment] = true
+			src, err := os.ReadFile(fragment)
+			if err != nil || len(src) == 0 || len(src) > maxAddrRefFragmentBytes {
+				continue
+			}
+			ftree, err := b.parser.ParseCached(src, fragment)
+			if err != nil {
+				continue
+			}
+			for name := range collectAddrRefNames(ftree.RootNode(), funcMap) {
+				addrRefs[name] = true
+			}
+		}
+	}
+	return nil
 }

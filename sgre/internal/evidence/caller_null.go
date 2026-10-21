@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -101,12 +102,40 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 	// It is built over EVERY indexed file: a header that defines a struct but
 	// no function is exactly where a normal C project keeps its type layouts,
 	// and forEachFile would skip it, marking every header-defined type opaque
-	// and opening far more entries than the v0.9.4 contract allows.
+	// and opening far more entries than the policy allows.
+	//
+	// The same pass builds the ADDRESS-TAKEN census: a registered callback is
+	// invoked by someone else, so a static one must not be dismissed as dead
+	// code. Two forms matter and the old `&f`-only scan saw neither reliably:
+	//   - a bare function name used as a value (`{"get", getCommand, ...}`,
+	//     `.proc = handler`): C decays it to its address;
+	//   - a registration table that lives in a quoted #include fragment
+	//     (redis's commands.def), which the indexer never walks.
+	// The census stays name-based and over-marking is the safe direction: an
+	// over-marked function is treated as externally invoked (candidate), never
+	// as dead code (silent false negative).
 	definedTypes := map[string]bool{}
+	valueUsed := map[string]bool{}
+	visited := map[string]bool{}
 	if err := forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node) {
+		visited[filepath.Clean(file.Path)] = true
 		collectDefinedTypes(root, definedTypes)
+		for name := range parser.ValueReferencedNames(root) {
+			valueUsed[name] = true
+		}
 	}); err != nil {
 		return result, fmt.Errorf("caller null: type census: %w", err)
+	}
+	if err := d.collectIncludedFragmentCensus(ctx, visited, valueUsed); err != nil {
+		return result, fmt.Errorf("caller null: include census: %w", err)
+	}
+	// Only names that are actually function definitions (and uniquely
+	// defined) count: a global/local variable that happens to share a name
+	// with some function must not mark that function as address-taken.
+	for name := range callees {
+		if valueUsed[name] {
+			addrTaken[name] = true
+		}
 	}
 
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
@@ -134,17 +163,6 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 			}
 			callerParams[fn.ID] = idx
 			consumedParams[fn.ID] = paramConsumedIn(fnDef)
-		}
-
-		for _, unary := range root.FindAll("unary_expression") {
-			if !strings.HasPrefix(strings.TrimSpace(unary.Text()), "&") {
-				continue
-			}
-			for _, c := range unary.NamedChildren() {
-				if c.Kind() == "identifier" {
-					addrTaken[c.Text()] = true
-				}
-			}
 		}
 
 		for _, call := range calls {
@@ -665,4 +683,38 @@ func paramConsumedIn(fnDef parser.Node) map[string]bool {
 		record(i)
 	}
 	return consumed
+}
+
+// maxCensusFragmentBytes bounds a quoted #include fragment parsed only for the
+// address-taken census. Registration tables are small; anything larger is not a
+// table and must not cost a parse.
+const maxCensusFragmentBytes = 4 << 20
+
+// collectIncludedFragmentCensus parses quoted #include fragments and folds their
+// value uses into the census. The indexer walks only *.c/*.h, so a registration
+// table emitted into an included fragment (redis's commands.def is pulled in by
+// commands.c / cli_commands.c) is invisible to every syntax-based analysis — but
+// the address-taken fact depends on the TEXT, not on the file's extension. One
+// level is enough for generated tables; fragments are visited once and bounded.
+func (d *CallerNullDetector) collectIncludedFragmentCensus(ctx context.Context, visited, valueUsed map[string]bool) error {
+	err := forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node) {
+		for _, path := range parser.QuotedIncludePaths(file.Path, root) {
+			if visited[path] {
+				continue
+			}
+			visited[path] = true
+			src, err := os.ReadFile(path)
+			if err != nil || len(src) == 0 || len(src) > maxCensusFragmentBytes {
+				continue
+			}
+			tree, err := d.parser.ParseCached(src, path)
+			if err != nil {
+				continue
+			}
+			for name := range parser.ValueReferencedNames(tree.RootNode()) {
+				valueUsed[name] = true
+			}
+		}
+	})
+	return err
 }
