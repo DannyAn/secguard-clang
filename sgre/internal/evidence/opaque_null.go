@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -30,11 +31,14 @@ import (
 // AI judges the contract, mirroring the external_call / assumed-return tiers.
 // The domains are deliberately narrow to keep the fail-open surface bounded:
 //
-//   - opaque_param: a NON-STATIC function with zero in-tree call sites (and
-//     not merely address-taken), a pointer parameter that the body actually
-//     dereferences. Entry guards are not checked here — the planner's
-//     path-sensitive guard model kills the source behind `if (p == NULL)
-//     return;`, so a guarded body never surfaces.
+//   - opaque_param: a function with ZERO in-tree call sites (an exported API,
+//     a registered callback) seeds every dereferenced pointer parameter; a
+//     function WITH in-tree callers seeds only an OPAQUE-typed parameter that
+//     some call site passes unproven non-null (blocking the planner's
+//     onlyUnprovenCallerNullSources dismissal — the volume guard keeps
+//     tree-defined types dismissible). Entry guards are not checked here —
+//     the planner's path-sensitive guard model kills the source behind
+//     `if (p == NULL) return;`, so a guarded body never surfaces.
 //   - opaque_field_read: the base parameter's type is not defined anywhere in
 //     the scan tree (unknown typedef / struct), so the field VALUE contract is
 //     invisible. A locally-defined struct keeps its current behavior (field
@@ -68,6 +72,16 @@ func (d *OpaqueNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 		return result, err
 	}
 
+	// The caller_null seeds (origin "caller_null", variable = the CALLEE's
+	// parameter name, entity = the callee's function ID) mark the parameters
+	// that at least one in-tree call site passes UNPROVEN non-null. This
+	// detector runs in the deferred serial phase after caller_null (see
+	// RunAllDetectors), so the events are already in the store.
+	callerNullParams, err := d.collectCallerNullParams(ctx)
+	if err != nil {
+		return result, err
+	}
+
 	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		fnDefs := root.FindAll("function_definition")
 		for _, f := range funcs {
@@ -75,7 +89,7 @@ func (d *OpaqueNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 			if fnDef.Kind() == "" {
 				continue
 			}
-			d.seedOpaqueParam(ctx, f, file, fnDef, calleeNames, addrTaken, &result)
+			d.seedOpaqueParam(ctx, f, file, fnDef, calleeNames, addrTaken, callerNullParams, definedTypes, &result)
 			d.seedOpaqueFieldRead(ctx, f, file, fnDef, definedTypes, &result)
 		}
 	})
@@ -83,6 +97,36 @@ func (d *OpaqueNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 		return result, fmt.Errorf("opaque null: %w", err)
 	}
 	return result, nil
+}
+
+// collectCallerNullParams maps a callee function ID to the set of its
+// parameter names for which the caller_null detector seeded an unproven
+// argument (classifyArg != safe). A literal-NULL caller also lands here, which
+// is fine: a definite caller_null source never triggers the dismissal this
+// feed exists to block.
+func (d *OpaqueNullDetector) collectCallerNullParams(ctx context.Context) (map[int64]map[string]bool, error) {
+	events, err := d.store.ListEventsByType(ctx, "NULL_VALUE")
+	if err != nil {
+		return nil, fmt.Errorf("opaque null: list null value events: %w", err)
+	}
+	out := map[int64]map[string]bool{}
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+			Origin   string `json:"origin"`
+		}
+		if err := json.Unmarshal([]byte(e.Properties), &props); err != nil {
+			continue
+		}
+		if props.Origin != "caller_null" || props.Variable == "" || e.EntityID == 0 {
+			continue
+		}
+		if out[e.EntityID] == nil {
+			out[e.EntityID] = map[string]bool{}
+		}
+		out[e.EntityID][props.Variable] = true
+	}
+	return out, nil
 }
 
 // collectGlobalFacts walks every file once and gathers the tree-wide facts the
@@ -144,18 +188,35 @@ func (d *OpaqueNullDetector) collectGlobalFacts(ctx context.Context) (map[string
 	return definedTypes, calleeNames, addrTaken, err
 }
 
-// seedOpaqueParam emits a fail-open null source for each pointer parameter of
-// a function whose callers are all outside the scan tree. The body must
-// actually dereference the parameter (a sink to reach); entry guards are left
-// to the planner's guard model, which kills the source behind a null check.
-func (d *OpaqueNullDetector) seedOpaqueParam(ctx context.Context, f *db.Function, file *db.File, fnDef parser.Node, calleeNames, addrTaken map[string]bool, result *DetectResult) {
+// seedOpaqueParam emits a fail-open null source for pointer parameters whose
+// external contract the scan tree cannot see. Two shapes:
+//
+//   - ZERO in-tree callers (the original channel): a non-static function no
+//     in-tree call site names (an exported API, a registered callback, or a
+//     static function whose only address-taken use is external). The external
+//     contract covers EVERY dereferenced pointer parameter regardless of
+//     type visibility — no caller is visible to argue otherwise.
+//   - IN-TREE callers, opaque type only: when a call site passes a parameter
+//     UNPROVEN non-null (a caller_null seed exists for it) AND the
+//     parameter's type is not defined in the scan tree, the fail-open seed
+//     must keep the candidate out of the planner's
+//     onlyUnprovenCallerNullSources dismissal — otherwise an opaque-type
+//     contract would be dropped as an "analyzer limitation" and the report
+//     form's parameter positions (resp->group_data) would go dark exactly
+//     when the function HAS callers (the production shape). A tree-defined
+//     type stays dismissible: that is the candidate-volume guard, so the
+//     ordinary in-tree call chain does not explode.
+//
+// Entry guards are never checked here — the planner's path-sensitive guard
+// model kills the source behind `if (p == NULL) return;`.
+func (d *OpaqueNullDetector) seedOpaqueParam(ctx context.Context, f *db.Function, file *db.File, fnDef parser.Node, calleeNames, addrTaken map[string]bool, callerNullParams map[int64]map[string]bool, definedTypes map[string]bool, result *DetectResult) {
 	if f.Name == "main" {
 		return
 	}
-	if f.IsStatic && !addrTaken[f.Name] {
-		return
-	}
-	if calleeNames[f.Name] {
+	hasCallers := calleeNames[f.Name]
+	unsafeParams := callerNullParams[f.ID]
+	if f.IsStatic && !addrTaken[f.Name] && !hasCallers {
+		// Dead code: no caller anywhere, and the name was never taken.
 		return
 	}
 	name, names, types := functionParamNames(fnDef)
@@ -163,6 +224,32 @@ func (d *OpaqueNullDetector) seedOpaqueParam(ctx context.Context, f *db.Function
 		return
 	}
 	derefBases := derefBaseTexts(fnDef)
+
+	seed := func(pname string) {
+		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: f.StartLine, Column: 1}, map[string]string{
+			"variable": pname,
+			"origin":   "opaque_param",
+			"definite": "false",
+		}) {
+			result.EventsCreated++
+		}
+	}
+
+	if !hasCallers && len(unsafeParams) == 0 {
+		for i, pname := range names {
+			if pname == "..." {
+				continue
+			}
+			if !strings.HasSuffix(strings.TrimSpace(types[i]), "*") {
+				continue
+			}
+			if !derefBases[pname] {
+				continue
+			}
+			seed(pname)
+		}
+		return
+	}
 	for i, pname := range names {
 		if pname == "..." {
 			continue
@@ -173,12 +260,8 @@ func (d *OpaqueNullDetector) seedOpaqueParam(ctx context.Context, f *db.Function
 		if !derefBases[pname] {
 			continue
 		}
-		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: f.StartLine, Column: 1}, map[string]string{
-			"variable": pname,
-			"origin":   "opaque_param",
-			"definite": "false",
-		}) {
-			result.EventsCreated++
+		if unsafeParams[pname] && typeSpellingOpaque(types[i], definedTypes) {
+			seed(pname)
 		}
 	}
 }

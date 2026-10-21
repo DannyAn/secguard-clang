@@ -49,7 +49,13 @@ func RunAllDetectors(ctx context.Context, store db.Store, p *parser.Parser, logg
 	var deferred []Detector
 	var independent []Detector
 	for _, det := range all {
-		if det.Name() == "interprocedural" {
+		// interprocedural must run after every other evidence stream (it
+		// consults their events); opaque_null must run after caller_null
+		// (it consumes the caller_null seeds to decide which parameters of
+		// a function with in-tree callers still need a fail-open source).
+		// Both are order-dependent second-pass detectors: defer them past
+		// the concurrent batch.
+		if det.Name() == "interprocedural" || det.Name() == "opaque_null" {
 			deferred = append(deferred, det)
 			continue
 		}
