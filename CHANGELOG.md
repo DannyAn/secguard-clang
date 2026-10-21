@@ -2,7 +2,34 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.9.8] - 2026-10-21（八次重发）
+## [0.9.8] - 2026-10-21（九次重发）
+
+### null-deref opaque 双通道二轮收口：树内调用点形态（客户打回复现）
+
+客户对同一 issue 原文再次打回。复现定位：上轮修复的复现 fixture 是**孤立零调用点**
+函数，而生产环境 `import_dn_group_tree_refresh` 几乎必有树内调用者——此时
+opaque_param 被「有调用点」短路不播种，caller_null 虽播种（非 definite，实参是
+上层未判空转发参数）却被 planner 的 `onlyUnprovenCallerNullSources` dismiss
+（"analyzer limitation" 降噪），**参数级候选（resp/para）恰在有调用者时全灭**
+（tree/para->orig 的 opaque_field_read 不受影响）。
+
+- **修复（opaque_param 第二形态）**：`OpaqueNullDetector` 移入检测器 **deferred
+  串行段**（与 interprocedural 同类，位于并发段之后——并发执行下注册顺序不保证
+  caller_null 先完成），消费 caller_null 播种结果（`collectCallerNullParams`：
+  callee 函数 ID → 未证明非空参数集合），对「有 unsafe 调用点 + 参数类型树内
+  无定义」的参数加播 opaque_param，阻断 onlyUnprovenCallerNullSources 的 dismiss；
+  **体量守卫**：树内定义类型维持 dismissable（普通树内调用链不爆炸）、守卫调用者
+  （classifyArg safe 无 caller_null）与 static 死代码不播、零调用点形态保持原全参
+  数播种语义。resp/para 候选以 `null@caller-arg` tier 保留（具名未证明调用者的
+  研判指引比 opaque-origin 更具体）。
+- 验证：报告原帖**含调用者**精确形态 2→4 候选（resp/para 恢复 + tree/para->orig
+  保持）；负控三组零误报（守卫调用者、树内定义类型转发、guarded 入口）；干净目录
+  benchmark：PASS 134/194→137/197、recall 43→44、FP 恒 2、FN 恒 55、auto-confirmed
+  恒 139。回归防线：evidence 直测三件（含树内调用点通道）+ planner 端到端三件
+  （含 tier 断言与体量守卫负控）+ benchmark Phase 23 扩至 8 用例
+  （P23-06 para finding + P23-07/08 体量守卫负控）。
+- 检测器执行序依赖固化：opaque_null 归入 RunAllDetectors 的 deferred 段（并发段
+  全部完成后串行），与 interprocedural 共享该机制；测试 helper 同序镜像。
 
 ### null-deref 不完整类型信息场景检测能力增强：opaque 双通道 fail-open 播种
 
