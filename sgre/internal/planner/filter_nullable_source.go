@@ -1241,6 +1241,18 @@ func callerNullDetail(m *nullModel, variable string) string {
 		if s.variable != variable || s.origin != "caller_null" {
 			continue
 		}
+		if s.chainOpen {
+			// The open-chain fixpoint graded this parameter OPEN: a possibly-
+			// null value can actually reach it (a literal-NULL call site, or a
+			// forwarding chain rooted at an unguarded external entry).
+			if s.argText == "NULL" || s.argText == "0" {
+				return fmt.Sprintf("caller %s passes NULL", s.caller)
+			}
+			if s.caller == "" {
+				return "the value flows from an unguarded external entry (no in-tree call site guards this parameter)"
+			}
+			return fmt.Sprintf("caller %s forwards %s from an unguarded entry chain", s.caller, s.argText)
+		}
 		if s.argText == "NULL" || s.argText == "0" {
 			return fmt.Sprintf("caller %s passes NULL", s.caller)
 		}

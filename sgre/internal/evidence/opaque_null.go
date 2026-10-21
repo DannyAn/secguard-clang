@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -11,41 +10,28 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
-// OpaqueNullDetector closes the null-source gap for code whose type contracts
-// are not visible in the scan tree. Tree-sitter recovers the full syntax of a
+// OpaqueNullDetector seeds null sources for code whose type contracts are not
+// visible in the scan tree. Tree-sitter recovers the full syntax of a
 // function whose parameter uses a third-party typedef (the AST, the deref
 // sinks, everything), but the null-deref pipeline only reports a dereference
-// a NULL_VALUE source can reach — and the two existing seeding directions both
-// need information this code cannot supply:
+// a NULL_VALUE source can reach — and a field value of an externally-defined
+// struct (`tree = (T *)(resp->group_data)`) has no seeding path: the field's
+// VALUE nullability contract is invisible.
 //
-//   - parameters: caller_null synthesizes a source only from an IN-TREE call
-//     site. A function called from outside the scan tree (an exported API, a
-//     registered callback) has no visible caller, so its parameters have no
-//     nullability model at all.
-//   - field reads: `tree = (T *)(resp->group_data)` stores a field value of an
-//     externally-defined struct. The field's value nullability is unknown, and
-//     no seeding path records it.
+// The gap is filled with a FAIL-OPEN source (origin "opaque_field_read",
+// never definite): the candidate stays suspected and the AI judges the
+// contract, mirroring the external_call / assumed-return tiers. The domain is
+// deliberately narrow: the base parameter's type must not be defined anywhere
+// in the scan tree (unknown typedef / struct); a locally-defined struct keeps
+// its current behavior (field value flow is a separate analysis). Recorded
+// for a pointer assigned the field read (`p = base->f`, cast allowed) at the
+// assignment line, and for a chained dereference's intermediate value
+// (`base->f1->f2` reads the `base->f1` field value) at function entry.
 //
-// Both gaps are filled with FAIL-OPEN sources (origin "opaque_param" /
-// "opaque_field_read", never definite): the candidate stays suspected and the
-// AI judges the contract, mirroring the external_call / assumed-return tiers.
-// The domains are deliberately narrow to keep the fail-open surface bounded:
-//
-//   - opaque_param: a function with ZERO in-tree call sites (an exported API,
-//     a registered callback) seeds every dereferenced pointer parameter; a
-//     function WITH in-tree callers seeds only an OPAQUE-typed parameter that
-//     some call site passes unproven non-null (blocking the planner's
-//     onlyUnprovenCallerNullSources dismissal — the volume guard keeps
-//     tree-defined types dismissible). Entry guards are not checked here —
-//     the planner's path-sensitive guard model kills the source behind
-//     `if (p == NULL) return;`, so a guarded body never surfaces.
-//   - opaque_field_read: the base parameter's type is not defined anywhere in
-//     the scan tree (unknown typedef / struct), so the field VALUE contract is
-//     invisible. A locally-defined struct keeps its current behavior (field
-//     value flow is a separate analysis). Recorded for a pointer assigned the
-//     field read (`p = base->f`, cast allowed) at the assignment line, and for
-//     a chained dereference's intermediate value (`base->f1->f2` reads the
-//     `base->f1` field value) at function entry.
+// Parameter-level opacity is NOT this detector's job: whether a pointer
+// PARAMETER can be NULL is decided by CallerNullDetector's open-chain
+// fixpoint (zero-call-site entries are open there), which also owns the
+// candidate-volume contract for forwarding chains.
 type OpaqueNullDetector struct {
 	store  db.Store
 	parser *parser.Parser
@@ -67,17 +53,7 @@ func (d *OpaqueNullDetector) Capabilities() []string {
 func (d *OpaqueNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	definedTypes, calleeNames, addrTaken, err := d.collectGlobalFacts(ctx)
-	if err != nil {
-		return result, err
-	}
-
-	// The caller_null seeds (origin "caller_null", variable = the CALLEE's
-	// parameter name, entity = the callee's function ID) mark the parameters
-	// that at least one in-tree call site passes UNPROVEN non-null. This
-	// detector runs in the deferred serial phase after caller_null (see
-	// RunAllDetectors), so the events are already in the store.
-	callerNullParams, err := d.collectCallerNullParams(ctx)
+	definedTypes, err := d.collectGlobalFacts(ctx)
 	if err != nil {
 		return result, err
 	}
@@ -89,7 +65,6 @@ func (d *OpaqueNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 			if fnDef.Kind() == "" {
 				continue
 			}
-			d.seedOpaqueParam(ctx, f, file, fnDef, calleeNames, addrTaken, callerNullParams, definedTypes, &result)
 			d.seedOpaqueFieldRead(ctx, f, file, fnDef, definedTypes, &result)
 		}
 	})
@@ -99,169 +74,82 @@ func (d *OpaqueNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 	return result, nil
 }
 
-// collectCallerNullParams maps a callee function ID to the set of its
-// parameter names for which the caller_null detector seeded an unproven
-// argument (classifyArg != safe). A literal-NULL caller also lands here, which
-// is fine: a definite caller_null source never triggers the dismissal this
-// feed exists to block.
-func (d *OpaqueNullDetector) collectCallerNullParams(ctx context.Context) (map[int64]map[string]bool, error) {
-	events, err := d.store.ListEventsByType(ctx, "NULL_VALUE")
-	if err != nil {
-		return nil, fmt.Errorf("opaque null: list null value events: %w", err)
-	}
-	out := map[int64]map[string]bool{}
-	for _, e := range events {
-		var props struct {
-			Variable string `json:"variable"`
-			Origin   string `json:"origin"`
-		}
-		if err := json.Unmarshal([]byte(e.Properties), &props); err != nil {
-			continue
-		}
-		if props.Origin != "caller_null" || props.Variable == "" || e.EntityID == 0 {
-			continue
-		}
-		if out[e.EntityID] == nil {
-			out[e.EntityID] = map[string]bool{}
-		}
-		out[e.EntityID][props.Variable] = true
-	}
-	return out, nil
+// collectGlobalFacts walks every file once and gathers the tree-wide fact the
+// field-read channel needs: which type names are DEFINED in the scan tree.
+func (d *OpaqueNullDetector) collectGlobalFacts(ctx context.Context) (map[string]bool, error) {
+	definedTypes := map[string]bool{}
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		collectDefinedTypes(root, definedTypes)
+	})
+	return definedTypes, err
 }
 
-// collectGlobalFacts walks every file once and gathers the tree-wide facts the
-// two seeding channels need: which type names are DEFINED in the scan tree
-// (typedefs and struct/union/enum definitions), which function names are
-// called somewhere in the tree, and which function names are address-taken.
-func (d *OpaqueNullDetector) collectGlobalFacts(ctx context.Context) (map[string]bool, map[string]bool, map[string]bool, error) {
-	definedTypes := map[string]bool{}
-	calleeNames := map[string]bool{}
-	addrTaken := map[string]bool{}
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
-		for _, td := range root.FindAll("type_definition") {
-			// The typedef NAME is the trailing type_identifier (after the
-			// underlying type): `typedef struct x_struct x_t;` names x_t.
-			kids := td.NamedChildren()
-			for i := len(kids) - 1; i >= 0; i-- {
-				if kids[i].Kind() == "type_identifier" {
-					definedTypes[strings.TrimSpace(kids[i].Text())] = true
+// collectDefinedTypes adds every type name whose LAYOUT is visible in this
+// file's tree to definedTypes:
+//
+//   - a struct/union/enum specifier WITH a body defines its tag;
+//   - a typedef defines its name when the underlying type is a body-having
+//     specifier, a primitive/sizeof-composable spelling, or a type_identifier
+//     that is itself defined in-tree;
+//   - a FORWARD-DECLARATION typedef (`typedef struct x_struct x_t;`, the
+//     incomplete-type issue's exact form) defines nothing — the layout stays
+//     invisible, so x_t remains opaque.
+func collectDefinedTypes(root parser.Node, definedTypes map[string]bool) {
+	bodied := map[string]bool{}
+	for _, kind := range []string{"struct_specifier", "union_specifier", "enum_specifier"} {
+		for _, ss := range root.FindAll(kind) {
+			hasBody := false
+			for _, c := range ss.NamedChildren() {
+				if c.Kind() == "field_declaration_list" || c.Kind() == "enumerator_list" {
+					hasBody = true
+					break
+				}
+			}
+			if !hasBody {
+				continue
+			}
+			for _, c := range ss.NamedChildren() {
+				if c.Kind() == "type_identifier" {
+					name := strings.TrimSpace(c.Text())
+					bodied[name] = true
+					definedTypes[name] = true
 					break
 				}
 			}
 		}
-		for _, kind := range []string{"struct_specifier", "union_specifier", "enum_specifier"} {
-			for _, ss := range root.FindAll(kind) {
-				hasBody := false
-				for _, c := range ss.NamedChildren() {
-					if c.Kind() == "field_declaration_list" || c.Kind() == "enumerator_list" {
-						hasBody = true
-						break
-					}
-				}
-				if !hasBody {
-					continue
-				}
-				for _, c := range ss.NamedChildren() {
-					if c.Kind() == "type_identifier" {
-						definedTypes[strings.TrimSpace(c.Text())] = true
-						break
-					}
-				}
-			}
-		}
-		for _, call := range root.FindAll("call_expression") {
-			if name := calleeName(call); name != "" {
-				calleeNames[name] = true
-			}
-		}
-		for _, unary := range root.FindAll("unary_expression") {
-			if !strings.HasPrefix(strings.TrimSpace(unary.Text()), "&") {
-				continue
-			}
-			for _, c := range unary.NamedChildren() {
-				if c.Kind() == "identifier" {
-					addrTaken[c.Text()] = true
-				}
-			}
-		}
-	})
-	return definedTypes, calleeNames, addrTaken, err
-}
-
-// seedOpaqueParam emits a fail-open null source for pointer parameters whose
-// external contract the scan tree cannot see. Two shapes:
-//
-//   - ZERO in-tree callers (the original channel): a non-static function no
-//     in-tree call site names (an exported API, a registered callback, or a
-//     static function whose only address-taken use is external). The external
-//     contract covers EVERY dereferenced pointer parameter regardless of
-//     type visibility — no caller is visible to argue otherwise.
-//   - IN-TREE callers, opaque type only: when a call site passes a parameter
-//     UNPROVEN non-null (a caller_null seed exists for it) AND the
-//     parameter's type is not defined in the scan tree, the fail-open seed
-//     must keep the candidate out of the planner's
-//     onlyUnprovenCallerNullSources dismissal — otherwise an opaque-type
-//     contract would be dropped as an "analyzer limitation" and the report
-//     form's parameter positions (resp->group_data) would go dark exactly
-//     when the function HAS callers (the production shape). A tree-defined
-//     type stays dismissible: that is the candidate-volume guard, so the
-//     ordinary in-tree call chain does not explode.
-//
-// Entry guards are never checked here — the planner's path-sensitive guard
-// model kills the source behind `if (p == NULL) return;`.
-func (d *OpaqueNullDetector) seedOpaqueParam(ctx context.Context, f *db.Function, file *db.File, fnDef parser.Node, calleeNames, addrTaken map[string]bool, callerNullParams map[int64]map[string]bool, definedTypes map[string]bool, result *DetectResult) {
-	if f.Name == "main" {
-		return
 	}
-	hasCallers := calleeNames[f.Name]
-	unsafeParams := callerNullParams[f.ID]
-	if f.IsStatic && !addrTaken[f.Name] && !hasCallers {
-		// Dead code: no caller anywhere, and the name was never taken.
-		return
-	}
-	name, names, types := functionParamNames(fnDef)
-	if name == "" {
-		return
-	}
-	derefBases := derefBaseTexts(fnDef)
-
-	seed := func(pname string) {
-		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: f.StartLine, Column: 1}, map[string]string{
-			"variable": pname,
-			"origin":   "opaque_param",
-			"definite": "false",
-		}) {
-			result.EventsCreated++
-		}
-	}
-
-	if !hasCallers && len(unsafeParams) == 0 {
-		for i, pname := range names {
-			if pname == "..." {
-				continue
-			}
-			if !strings.HasSuffix(strings.TrimSpace(types[i]), "*") {
-				continue
-			}
-			if !derefBases[pname] {
-				continue
-			}
-			seed(pname)
-		}
-		return
-	}
-	for i, pname := range names {
-		if pname == "..." {
+	for _, td := range root.FindAll("type_definition") {
+		kids := td.NamedChildren()
+		if len(kids) == 0 {
 			continue
 		}
-		if !strings.HasSuffix(strings.TrimSpace(types[i]), "*") {
+		// The typedef NAME is the trailing type_identifier: `typedef <underlying> x_t`.
+		name := ""
+		if kids[len(kids)-1].Kind() == "type_identifier" {
+			name = strings.TrimSpace(kids[len(kids)-1].Text())
+		}
+		if name == "" {
 			continue
 		}
-		if !derefBases[pname] {
-			continue
-		}
-		if unsafeParams[pname] && typeSpellingOpaque(types[i], definedTypes) {
-			seed(pname)
+		underlying := kids[0]
+		switch underlying.Kind() {
+		case "struct_specifier", "union_specifier", "enum_specifier":
+			// `typedef struct x {...} x_t;` (body) or `typedef struct x x_t;`
+			// (forward declaration). Opaque unless the specifier has a body.
+			for _, c := range underlying.NamedChildren() {
+				if c.Kind() == "field_declaration_list" || c.Kind() == "enumerator_list" {
+					definedTypes[name] = true
+					break
+				}
+			}
+		case "primitive_type", "sized_type_specifier":
+			definedTypes[name] = true
+		case "type_identifier":
+			// `typedef known_s alias_t;`: visible only when the referenced
+			// name is itself defined in-tree.
+			if definedTypes[strings.TrimSpace(underlying.Text())] {
+				definedTypes[name] = true
+			}
 		}
 	}
 }

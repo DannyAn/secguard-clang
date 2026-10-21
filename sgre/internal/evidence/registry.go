@@ -50,12 +50,10 @@ func RunAllDetectors(ctx context.Context, store db.Store, p *parser.Parser, logg
 	var independent []Detector
 	for _, det := range all {
 		// interprocedural must run after every other evidence stream (it
-		// consults their events); opaque_null must run after caller_null
-		// (it consumes the caller_null seeds to decide which parameters of
-		// a function with in-tree callers still need a fail-open source).
-		// Both are order-dependent second-pass detectors: defer them past
-		// the concurrent batch.
-		if det.Name() == "interprocedural" || det.Name() == "opaque_null" {
+		// consults their events). It is the only order-dependent detector:
+		// caller_null's open-chain fixpoint is computed inside its own single
+		// Detect pass, and opaque_null reads no detector output.
+		if det.Name() == "interprocedural" {
 			deferred = append(deferred, det)
 			continue
 		}

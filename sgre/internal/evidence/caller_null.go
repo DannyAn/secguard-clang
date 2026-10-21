@@ -3,7 +3,6 @@ package evidence
 import (
 	"context"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -14,20 +13,30 @@ import (
 // CallerNullDetector closes the inter-procedural null gap for function
 // parameters: a callee that dereferences its parameter without a guard has an
 // implicit non-null precondition, and that precondition is violated when a
-// caller can pass NULL (or a value it has not proven non-null) for that
-// parameter. It emits a NULL_VALUE with origin "caller_null" for each such
-// (callee, parameter) pair, which the null-deref flow then seeds at the
-// callee's entry — so `process(NULL)` reaches `ctx->field` in process.
+// caller can pass NULL for that parameter. It emits a NULL_VALUE with origin
+// "caller_null" for each such (callee, parameter) pair, which the null-deref
+// flow then seeds at the callee's entry — so `process(NULL)` reaches
+// `ctx->field` in process.
 //
-// Argument classification is conservative and low-false-positive:
-//   - literal NULL (`NULL`, `0`, `(T *)NULL`) → a definite null source;
-//   - `&x` / string literal / guarded variable → provably non-null, skipped;
-//   - anything else (an unguarded variable) → an UNKNOWN null source, so the
-//     dereference stays suspected and the AI confirms the caller contract.
+// Whether a parameter CAN be NULL is decided by an OPEN-CHAIN fixpoint over
+// the in-tree call graph, NOT by "the immediate caller did not prove the
+// argument non-null" (that reading floods: the C convention is to guard once
+// at the outer entry while inner functions assume non-null by contract, so
+// almost every forwarded argument is locally unproven). A parameter is open
+// when a possibly-null value can actually REACH it:
 //
-// A caller whose early-return null check (`if (ctx == NULL) return;`) dominates
-// the call proves non-null and is skipped, so an all-guarded function does not
-// surface. Same-name static overloads across files are skipped (never guessed).
+//   - some in-tree call site passes a literal NULL (definite witness);
+//   - the function has ZERO in-tree call sites and is externally callable
+//     (non-static, or static with its address taken; main is exempt) — every
+//     pointer parameter is open to the outside world;
+//   - an unguarded call site forwards the CALLER'S OWN parameter, which is
+//     itself open — openness propagates down forwarding chains.
+//
+// A guarded call site (early-return / positive branch / short-circuit /
+// assert — classifyArg "safe") closes its edge, so a parameter guarded on ANY
+// link of its chain never surfaces. Local-variable and opaque-expression
+// arguments seed nothing (an analyzer limitation is not NULL evidence).
+// Same-name static overloads across files are skipped (never guessed).
 type CallerNullDetector struct {
 	store  db.Store
 	parser *parser.Parser
@@ -55,30 +64,90 @@ type calleeParamInfo struct {
 func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 	callees := d.buildCalleeIndex(ctx)
-
-	type agg struct {
-		definite bool
-		caller   string
-		line     int
-		argText  string
+	infoByFnID := make(map[int64]calleeParamInfo, len(callees))
+	for _, info := range callees {
+		infoByFnID[info.fn.ID] = info
 	}
-	sites := map[string]agg{}
+
+	// sites aggregates every in-tree call edge that reaches a (callee,
+	// pointer-parameter) pair. hasCaller records that the pair HAS a call site
+	// (a guarded site proves non-null on that edge and closes the chain);
+	// definite records a literal-NULL witness; fwds records the parameter
+	// FORWARDING edges (the argument is the caller's own unguarded parameter
+	// j) that the open-chain fixpoint propagates along.
+	type siteAgg struct {
+		definite  bool
+		caller    string
+		line      int
+		argText   string
+		hasCaller bool
+	}
+	sites := map[int64]map[int]*siteAgg{}
+	type fwdEdge struct {
+		callerID    int64
+		callerParam int
+		calleeID    int64
+		calleeParam int
+		callerName  string
+		argText     string
+	}
+	var fwds []fwdEdge
+	calledNames := map[string]bool{}
+	addrTaken := map[string]bool{}
+	consumedParams := map[int64]map[string]bool{}
+	definedTypes := map[string]bool{}
 
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		ifs := root.FindAll("if_statement")
 		assigns := root.FindAll("assignment_expression")
 		calls := root.FindAll("call_expression")
+		fnDefs := root.FindAll("function_definition")
 
 		// A call argument that names an array (global or caller-local) can never
 		// be NULL, so it must not seed a caller_null source. Precompute per caller
 		// to avoid re-walking the tree for every call site.
 		nonNullArrays := make(map[int64]map[string]bool, len(funcs))
+		callerParams := make(map[int64]map[string]int, len(funcs))
+
 		for _, fn := range funcs {
 			nonNullArrays[fn.ID] = collectNonNullableArrays(root, fn)
+			fnDef := findFnDefByName(fnDefs, fn.Name)
+			if fnDef.Kind() == "" {
+				continue
+			}
+			_, names, _ := functionParamNames(fnDef)
+			idx := make(map[string]int, len(names))
+			for i, n := range names {
+				idx[n] = i
+			}
+			callerParams[fn.ID] = idx
+			consumedParams[fn.ID] = paramConsumedIn(fnDef)
 		}
+
+		for _, unary := range root.FindAll("unary_expression") {
+			if !strings.HasPrefix(strings.TrimSpace(unary.Text()), "&") {
+				continue
+			}
+			for _, c := range unary.NamedChildren() {
+				if c.Kind() == "identifier" {
+					addrTaken[c.Text()] = true
+				}
+			}
+		}
+
+		// The tree-wide defined-type census (layout-visible names only — a
+		// forward-declaration typedef stays opaque) gates the open-entry base.
+		collectDefinedTypes(root, definedTypes)
 
 		for _, call := range calls {
 			callee := calleeName(call)
+			if callee == "" {
+				continue
+			}
+			// calledNames records every callee NAME seen in a call, index or no
+			// index: an overloaded (duplicate-definition) name must never be
+			// mistaken for a zero-call-site open entry.
+			calledNames[callee] = true
 			info, ok := callees[callee]
 			if !ok {
 				continue
@@ -101,23 +170,25 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 				if !strings.HasSuffix(strings.TrimSpace(info.types[i]), "*") {
 					continue
 				}
-				kind, definite := d.classifyArg(arg, caller, ifs, assigns, calls, nonNullArrays[caller.ID], call)
-				if kind == "safe" {
-					continue
+				if sites[info.fn.ID] == nil {
+					sites[info.fn.ID] = map[int]*siteAgg{}
 				}
-				key := callee + "\x00" + strconv.Itoa(i)
-				cur := sites[key]
-				if definite && !cur.definite {
-					cur.definite = true
-					cur.caller = caller.Name
-					cur.line = call.StartLine()
-					cur.argText = arg.Text()
-				} else if cur.caller == "" {
-					cur.caller = caller.Name
-					cur.line = call.StartLine()
-					cur.argText = arg.Text()
+				agg := sites[info.fn.ID][i]
+				if agg == nil {
+					agg = &siteAgg{}
+					sites[info.fn.ID][i] = agg
 				}
-				sites[key] = cur
+				agg.hasCaller = true
+				kind, definite, fwdIdx := d.classifyArg(arg, caller, callerParams[caller.ID], ifs, assigns, calls, nonNullArrays[caller.ID], call)
+				if definite && !agg.definite {
+					agg.definite = true
+					agg.caller = caller.Name
+					agg.line = call.StartLine()
+					agg.argText = arg.Text()
+				}
+				if kind == "fwd" {
+					fwds = append(fwds, fwdEdge{callerID: caller.ID, callerParam: fwdIdx, calleeID: info.fn.ID, calleeParam: i, callerName: caller.Name, argText: arg.Text()})
+				}
 			}
 		}
 	})
@@ -125,25 +196,142 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 		return result, err
 	}
 
-	for key, s := range sites {
-		parts := strings.SplitN(key, "\x00", 2)
-		info := callees[parts[0]]
-		idx, _ := strconv.Atoi(parts[1])
-		if info.fn == nil || idx >= len(info.names) {
+	// Open-chain fixpoint. A parameter's value is OPEN when a possibly-null
+	// value can actually reach it from an unguarded entry:
+	//
+	//   - base (witness): some in-tree call site passes a literal NULL;
+	//   - base (open entry): the function has ZERO in-tree call sites and is
+	//     externally callable (non-static, or static with its address taken;
+	//     main is exempt) — every pointer parameter is open;
+	//   - propagation: a call site whose argument is the caller's own
+	//     UNGUARDED parameter j forwards that parameter's openness.
+	//
+	// A guarded call site (early return / positive branch / short-circuit /
+	// assert — classifyArg "safe") closes its edge, so a parameter whose every
+	// call chain is guarded somewhere stays closed and never surfaces. This is
+	// the candidate-volume contract: the C convention "guard once at the outer
+	// entry, inner functions assume non-null by contract" must NOT explode
+	// into one candidate per forwarded parameter — the guard on ANY link of
+	// the chain closes the whole chain. An "unproven" argument that is NOT a
+	// forwarded parameter (a local variable, an opaque expression) seeds
+	// nothing: that is the analyzer's limitation, not evidence of NULL.
+	open := map[int64]map[int]bool{}
+	definite := map[int64]map[int]bool{}
+	for calleeID, params := range sites {
+		for i, agg := range params {
+			if !agg.definite {
+				continue
+			}
+			if open[calleeID] == nil {
+				open[calleeID] = map[int]bool{}
+			}
+			open[calleeID][i] = true
+			if definite[calleeID] == nil {
+				definite[calleeID] = map[int]bool{}
+			}
+			definite[calleeID][i] = true
+		}
+	}
+	for name, info := range callees {
+		if calledNames[name] || info.fn.Name == "main" {
 			continue
 		}
-		definite := "false"
-		if s.definite {
-			definite = "true"
+		if info.fn.IsStatic && !addrTaken[name] {
+			continue
 		}
-		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", info.fn.ID, &db.Location{FileID: info.fn.FileID, Line: info.fn.StartLine}, map[string]string{
-			"variable":   info.names[idx],
-			"origin":     "caller_null",
-			"definite":   definite,
-			"function":   s.caller,
-			"expression": s.argText,
-		}) {
-			result.EventsCreated++
+		for i, t := range info.types {
+			if t == "..." || !strings.HasSuffix(strings.TrimSpace(t), "*") {
+				continue
+			}
+			// Type gate (product decision, not type-system semantics): a
+			// parameter whose type is DEFINED in the scan tree keeps the
+			// v0.9.4 contract — an in-tree ordinary typed forward is judged
+			// non-null by its caller's convention and stays closed (ND-10/
+			// ND-11). A parameter of a type the tree cannot see (the
+			// incomplete-type issue: third-party typedefs) has no visible
+			// contract anywhere and IS open. Literal-NULL witnesses and guard
+			//截断 are unaffected — evidence beats the gate in both directions.
+			if !typeSpellingOpaque(t, definedTypes) {
+				continue
+			}
+			if open[info.fn.ID] == nil {
+				open[info.fn.ID] = map[int]bool{}
+			}
+			open[info.fn.ID][i] = true
+		}
+	}
+	fwdBy := map[int64]map[int]fwdEdge{}
+	for changed := true; changed; {
+		changed = false
+		for _, e := range fwds {
+			if open[e.callerID] == nil || !open[e.callerID][e.callerParam] {
+				continue
+			}
+			if open[e.calleeID] == nil {
+				open[e.calleeID] = map[int]bool{}
+			}
+			if !open[e.calleeID][e.calleeParam] {
+				open[e.calleeID][e.calleeParam] = true
+				changed = true
+				if fwdBy[e.calleeID] == nil {
+					fwdBy[e.calleeID] = map[int]fwdEdge{}
+				}
+				fwdBy[e.calleeID][e.calleeParam] = e
+			}
+		}
+	}
+
+	// No deref filter on the seed: a parameter consumed INDIRECTLY (cast into
+	// a local, then dereferenced — `T *t = (T *)msg; t->f`) has no direct deref
+	// base, and a source with no sink at all simply never becomes a candidate
+	// (the planner only reports variables a DEREFERENCE event names).
+	for fnID, params := range open {
+		info, ok := infoByFnID[fnID]
+		if !ok {
+			continue
+		}
+		consumed := consumedParams[fnID]
+		for i := range params {
+			if i >= len(info.names) || info.names[i] == "..." {
+				continue
+			}
+			// A PURE FORWARDER (the parameter is only ever passed on as a call
+			// argument, never dereferenced nor stored locally in this body)
+			// does not seed: the chain continues in the callee, which has its
+			// own candidate at the actual dereference — seeding here too would
+			// report the same open chain once per forwarding level.
+			if consumed != nil && !consumed[info.names[i]] {
+				continue
+			}
+			props := map[string]string{
+				"variable": info.names[i],
+				"origin":   "caller_null",
+			}
+			if definite[fnID] != nil && definite[fnID][i] {
+				agg := sites[fnID][i]
+				props["definite"] = "true"
+				if agg != nil {
+					props["function"] = agg.caller
+					props["expression"] = agg.argText
+				}
+			} else {
+				// An open chain without a literal-NULL witness: the value CAN be
+				// NULL (it flows from an unguarded entry), but nothing proves it
+				// IS — suspected, never auto-confirmed. "chain": "open" is what
+				// keeps the planner's onlyUnprovenCallerNullSources dismissal
+				// away from this event. The first forwarding caller names the
+				// link the openness came through (an open-entry function has
+				// no forwarding caller and no function field).
+				props["definite"] = "false"
+				props["chain"] = "open"
+				if e := fwdBy[fnID][i]; e.callerName != "" {
+					props["function"] = e.callerName
+					props["expression"] = e.argText
+				}
+			}
+			if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", fnID, &db.Location{FileID: info.fn.FileID, Line: info.fn.StartLine}, props) {
+				result.EventsCreated++
+			}
 		}
 	}
 	return result, nil
@@ -223,46 +411,67 @@ func functionParamNames(fnDef parser.Node) (string, []string, []string) {
 	return name, names, types
 }
 
-// classifyArg classifies a call argument's nullability at the call site.
-func (d *CallerNullDetector) classifyArg(arg parser.Node, caller *db.Function, ifs, assigns, calls []parser.Node, nonNullArrays map[string]bool, call parser.Node) (string, bool) {
+// classifyArg classifies a call argument's nullability at the call site. The
+// third return value is the caller's parameter index the argument forwards
+// (-1 when it is not a forward), which is what the open-chain fixpoint
+// propagates along.
+//
+//   - "null" + definite=true: a literal NULL witness;
+//   - "safe": provably non-null on this edge (&x / string literal / guarded
+//     variable / non-null array) — the edge is CLOSED, openness does not
+//     propagate through it;
+//   - "fwd": the argument is the caller's own UNGUARDED parameter — the edge
+//     carries the caller parameter's openness downstream;
+//   - "other": a local variable or opaque expression — an analyzer
+//     limitation, neither seeded nor propagated.
+func (d *CallerNullDetector) classifyArg(arg parser.Node, caller *db.Function, callerParams map[string]int, ifs, assigns, calls []parser.Node, nonNullArrays map[string]bool, call parser.Node) (string, bool, int) {
+	classifyIdent := func(name string) (string, bool, int) {
+		if name == "NULL" {
+			return "null", true, -1
+		}
+		if nonNullArrays[name] {
+			return "safe", false, -1
+		}
+		if callerGuardsVar(caller, ifs, assigns, calls, name, call) {
+			return "safe", false, -1
+		}
+		if idx, ok := callerParams[name]; ok {
+			return "fwd", false, idx
+		}
+		return "other", false, -1
+	}
 	switch arg.Kind() {
 	case "null":
 		// tree-sitter-c parses `NULL` as a `null` literal node (not an
 		// identifier), so a literal NULL argument is a DEFINITE null source.
-		return "null", true
+		return "null", true, -1
 	case "identifier":
-		if arg.Text() == "NULL" {
-			return "null", true
-		}
-		if nonNullArrays[arg.Text()] {
-			return "safe", false
-		}
-		if callerGuardsVar(caller, ifs, assigns, calls, arg.Text(), call) {
-			return "safe", false
-		}
-		return "null", false
+		return classifyIdent(arg.Text())
 	case "number_literal":
 		if strings.TrimSpace(arg.Text()) == "0" {
-			return "null", true
+			return "null", true, -1
 		}
-		return "safe", false
+		return "safe", false, -1
 	case "cast_expression":
 		op := castOperand(arg)
 		if op.Kind() == "null" || (op.Kind() == "identifier" && op.Text() == "NULL") {
-			return "null", true
+			return "null", true, -1
 		}
 		if op.Kind() == "number_literal" && strings.TrimSpace(op.Text()) == "0" {
-			return "null", true
+			return "null", true, -1
+		}
+		if op.Kind() == "identifier" {
+			return classifyIdent(op.Text())
 		}
 		if isNonNullExpr(arg) {
-			return "safe", false
+			return "safe", false, -1
 		}
-		return "null", false
+		return "other", false, -1
 	}
 	if isNonNullExpr(arg) {
-		return "safe", false
+		return "safe", false, -1
 	}
-	return "null", false
+	return "other", false, -1
 }
 
 // callerGuardsVar reports whether the caller proves varName non-null at the
@@ -415,4 +624,30 @@ func callerAssertGuards(f *db.Function, assigns, calls []parser.Node, varName st
 		}
 	}
 	return false
+}
+
+// paramConsumedIn returns the set of parameter names a function body actually
+// CONSUMES: a direct dereference base (`p->f`, `p[i]`, `*p`) or a local
+// re-storage (`T *t = (T *)p;` — the RHS names the parameter, cast/paren
+// stripped). Merely forwarding the parameter as a call argument does not
+// count: the callee's own candidate covers the chain's continuation.
+func paramConsumedIn(fnDef parser.Node) map[string]bool {
+	consumed := derefBaseTexts(fnDef)
+	record := func(n parser.Node) {
+		_, rhs, ok := n.AssignParts()
+		if !ok {
+			return
+		}
+		inner := stripCasts(rhs)
+		if inner.Kind() == "identifier" {
+			consumed[strings.TrimSpace(inner.Text())] = true
+		}
+	}
+	for _, a := range fnDef.FindAll("assignment_expression") {
+		record(a)
+	}
+	for _, i := range fnDef.FindAll("init_declarator") {
+		record(i)
+	}
+	return consumed
 }

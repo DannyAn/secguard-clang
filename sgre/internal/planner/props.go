@@ -54,7 +54,11 @@ type eventProps struct {
 	FreeLine          int    `json:"free_line"`
 	UseLine           int    `json:"use_line"`
 	Origin            string `json:"origin"`
-	DeclLine          int    `json:"decl_line"`
+	// Chain is "open" on a caller_null NULL_VALUE whose value the open-chain
+	// fixpoint graded OPEN (reachable from an unguarded entry), which keeps it
+	// out of the onlyUnprovenCallerNullSources dismissal. Empty otherwise.
+	Chain    string `json:"chain"`
+	DeclLine int    `json:"decl_line"`
 	// InitWrite is the machine-proven write-path fact of an uninit read:
 	// "none" = the read target is never written before the read,
 	// "loop" = the only writes sit inside a loop body the condition may skip
@@ -133,12 +137,12 @@ type eventProps struct {
 	// conditional callee release (may-free), so the double free is possible but
 	// not must-proven; FirstCallee/Victims carry the release helper and the
 	// stored variables behind a global-slot double free.
-	FirstFree   int    `json:"first_free"`
-	SecondFree  int    `json:"second_free"`
-	MayFree     string `json:"may_free"`
-	FirstCallee string `json:"first_callee"`
+	FirstFree    int    `json:"first_free"`
+	SecondFree   int    `json:"second_free"`
+	MayFree      string `json:"may_free"`
+	FirstCallee  string `json:"first_callee"`
 	SecondCallee string `json:"second_callee"`
-	Victims     string `json:"victims"`
+	Victims      string `json:"victims"`
 	// CopySize/DstCapacity are the copy-size expression and destination capacity
 	// a bounded-copy or secure-copy BUFFER_ACCESS event carries (buffer-overflow
 	// detector). SizeArgument is the _s destination-capacity argument.

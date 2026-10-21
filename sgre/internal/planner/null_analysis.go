@@ -28,6 +28,11 @@ type nullSource struct {
 	// possible-null source (malloc/fopen/function-return). A definite source
 	// reaching a dereference is a certain null-deref, not a maybe.
 	definite bool
+	// chainOpen marks a caller_null source that the open-chain fixpoint
+	// graded OPEN (a possibly-null value can actually reach the parameter
+	// from an unguarded entry), as opposed to a legacy "unproven" argument
+	// event (an analyzer limitation, dismissible).
+	chainOpen bool
 	// caller / argText carry the inter-procedural origin for a caller_null
 	// source (origin "caller_null"): the function that passed a possibly-null
 	// argument, and that argument's text (e.g. caller "c", argText "NULL").
@@ -91,12 +96,13 @@ func buildNullModel(ctx context.Context, store db.Store) (map[int64]*nullModel, 
 			line = loc.Line
 		}
 		m.sources = append(m.sources, nullSource{
-			variable: props.Variable,
-			line:     line,
-			origin:   props.Origin,
-			definite: props.Definite == "true",
-			caller:   props.Function,
-			argText:  props.Expression,
+			variable:  props.Variable,
+			line:      line,
+			origin:    props.Origin,
+			definite:  props.Definite == "true",
+			chainOpen: props.Chain == "open",
+			caller:    props.Function,
+			argText:   props.Expression,
 		})
 	}
 
@@ -169,10 +175,12 @@ func (m *nullModel) certainNullableOrigin(variable string) string {
 }
 
 // onlyUnprovenCallerNullSources reports whether the variable's only null source
-// is a caller_null source whose argument was merely "not proven non-null". That
-// is an analyzer limitation, not evidence the caller can pass NULL; converging
-// it before AI keeps the AI budget on candidates with a concrete source line or
-// a literal NULL caller.
+// is a caller_null source that was neither graded open by the open-chain
+// fixpoint nor carries a literal-NULL witness. That is an analyzer limitation,
+// not evidence the caller can pass NULL; converging it before AI keeps the AI
+// budget on candidates with a concrete source line or a literal NULL caller.
+// (The fixpoint normally never seeds such an event anymore — this stays as a
+// defensive gate should a seeding path regress.)
 func (m *nullModel) onlyUnprovenCallerNullSources(variable string) bool {
 	if m == nil {
 		return false
@@ -183,7 +191,7 @@ func (m *nullModel) onlyUnprovenCallerNullSources(variable string) bool {
 			continue
 		}
 		seen = true
-		if s.origin != "caller_null" || s.definite {
+		if s.origin != "caller_null" || s.definite || s.chainOpen {
 			return false
 		}
 	}
