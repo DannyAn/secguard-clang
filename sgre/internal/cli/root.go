@@ -202,15 +202,42 @@ func resolveDBPath(explicit bool, dbPath, projectRoot string) string {
 // The second return value reports whether an existing DB was found. Consumer
 // commands must treat found==false as "no sgre.db found; run secguard scan first"
 // and never call openStore (which would create an empty DB).
+//
+// The upward walk stops at the PROJECT ROOT (the first ancestor carrying a
+// `.git` entry, checked inclusive). Without that boundary a stale DB from an
+// enclosing checkout — a developer's own scan, a home-directory sgre.db — would
+// be adopted silently by a command run somewhere underneath it, i.e. the command
+// would analyze a different project than the one the caller is in. The DB at a
+// project root IS found (the candidate paths are tested before the boundary
+// check), so the documented "cd into scans/<id>/" flow is unchanged.
 func resolveExistingDBPath(explicit bool, dbPath string) (string, bool) {
-	if explicit {
-		return dbPath, true
-	}
 	cwd, err := os.Getwd()
 	if err != nil || cwd == "" {
 		return dbPath, false
 	}
-	for dir := cwd; ; dir = filepath.Dir(dir) {
+	return resolveExistingDBPathFrom(explicit, dbPath, cwd, "")
+}
+
+// resolveExistingDBPathFrom is the search behind resolveExistingDBPath, exposed
+// to tests with an explicit start directory and an optional (inclusive) stop
+// boundary. An empty stop keeps the project-root rule only.
+//
+// The seam exists because the production search is deliberately NOT hermetic: it
+// walks a real filesystem, so a test that asserts "nothing above this temp dir
+// has a DB" is only true on a machine whose ancestors happen to be clean. That
+// is exactly why the old not-found test failed on any checkout whose TMPDIR sits
+// inside the repository (a scan artifact in sgre/.codeagent was enough).
+func resolveExistingDBPathFrom(explicit bool, dbPath, cwd, stop string) (string, bool) {
+	if explicit {
+		return dbPath, true
+	}
+	if cwd == "" {
+		return dbPath, false
+	}
+	if stop != "" {
+		stop = filepath.Clean(stop)
+	}
+	for dir := filepath.Clean(cwd); ; dir = filepath.Dir(dir) {
 		canonical := report.GetDbPath(dir)
 		if _, err := os.Stat(canonical); err == nil {
 			return canonical, true
@@ -218,6 +245,12 @@ func resolveExistingDBPath(explicit bool, dbPath string) (string, bool) {
 		legacy := filepath.Join(dir, "sgre.db")
 		if _, err := os.Stat(legacy); err == nil {
 			return legacy, true
+		}
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			break
+		}
+		if stop != "" && dir == stop {
+			break
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {

@@ -59,23 +59,101 @@ func TestResolveExistingDBPath_FindsProjectDBFromScanDir(t *testing.T) {
 	}
 }
 
-// TestResolveExistingDBPath_NotExists reports found=false when no DB exists
-// anywhere up the tree, so consumers error instead of creating an empty DB.
+// TestResolveExistingDBPath_NotExists reports found=false when no DB exists in
+// the searched tree, so consumers error instead of creating an empty DB.
+//
+// It drives resolveExistingDBPathFrom with an explicit boundary instead of the
+// cwd-based entry point: the production walk climbs the real filesystem, so
+// "nothing above this temp dir has a DB" is a property the test cannot control.
+// It used to fail on any checkout whose TMPDIR sits inside the repository (the
+// documented `TMPDIR=$PWD/.tmpcache` invocation puts t.TempDir() under
+// sgre/.tmpcache, and a single scan artifact in sgre/.codeagent is then found on
+// the way up). The boundary makes the assertion deterministic.
 func TestResolveExistingDBPath_NotExists(t *testing.T) {
 	root := t.TempDir()
 	sub := filepath.Join(root, "a", "b")
 	if err := os.MkdirAll(sub, 0755); err != nil {
 		t.Fatal(err)
 	}
-	t.Chdir(sub)
 
-	got, found := resolveExistingDBPath(false, "./sgre.db")
+	got, found := resolveExistingDBPathFrom(false, "./sgre.db", sub, root)
 	if found {
 		t.Fatalf("expected found=false, got path %s", got)
 	}
 	// Must not have created the DB anywhere under root.
 	if _, err := os.Stat(report.GetDbPath(root)); err == nil {
 		t.Fatal("resolveExistingDBPath must not create a DB")
+	}
+}
+
+// TestResolveExistingDBPath_StopBoundary pins the explicit stop: a DB above the
+// boundary belongs to someone else and must not be adopted, while the same tree
+// searched without a boundary does find it (the legacy unbounded walk).
+func TestResolveExistingDBPath_StopBoundary(t *testing.T) {
+	root := t.TempDir()
+	// The enclosing project's DB sits at the temp root — an ANCESTOR of the
+	// boundary (a sibling would never be visited by an upward walk).
+	project := filepath.Join(root, "project")
+	sub := filepath.Join(project, "a", "b")
+	if err := os.MkdirAll(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := report.GetDbPath(root)
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dbPath, []byte("fake"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, found := resolveExistingDBPathFrom(false, "./sgre.db", sub, project); found {
+		t.Fatalf("must not escape the boundary: got %s", got)
+	}
+	got, found := resolveExistingDBPathFrom(false, "./sgre.db", sub, "")
+	if !found {
+		t.Fatalf("without a boundary the ancestor DB must be found")
+	}
+	if gotAbs, _ := filepath.Abs(got); gotAbs != dbPath {
+		t.Fatalf("got %s, want %s", gotAbs, dbPath)
+	}
+}
+
+// TestResolveExistingDBPath_StopsAtProjectRoot pins the production boundary: the
+// walk stops at the first ancestor carrying `.git`, so a stale DB from an
+// enclosing checkout is never adopted silently by a command run inside a
+// different project.
+func TestResolveExistingDBPath_StopsAtProjectRoot(t *testing.T) {
+	base := t.TempDir()
+	// A DB that belongs to an enclosing tree (the "wrong project").
+	outer := report.GetDbPath(base)
+	if err := os.MkdirAll(filepath.Dir(outer), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outer, []byte("fake"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	project := filepath.Join(base, "project")
+	sub := filepath.Join(project, "x", "y")
+	if err := os.MkdirAll(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(project, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, found := resolveExistingDBPathFrom(false, "./sgre.db", sub, ""); found {
+		t.Fatalf("the walk must stop at the project root, got %s", got)
+	}
+	// A DB AT the project root is still found (checked before the boundary).
+	own := report.GetDbPath(project)
+	if err := os.MkdirAll(filepath.Dir(own), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(own, []byte("fake"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got, found := resolveExistingDBPathFrom(false, "./sgre.db", sub, ""); !found || got != own {
+		t.Fatalf("project-root DB must be found, got %s found=%v", got, found)
 	}
 }
 
