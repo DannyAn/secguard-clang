@@ -2,7 +2,44 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.9.8] - 2026-10-21（十二次重发）
+## [0.9.8] - 2026-10-21（十三次重发）
+
+### null-deref：地址取用普查补全（注册表裸函数名 + 生成 include 片段）
+
+上一轮复核点名的"另一处硬伤"：`addrTaken` 只认 `&f`。C 的注册表（命令表 / 回调
+结构体初始化）用的是**裸函数名**（`{"get", getCommand, ...}`、`.proc = handler`），
+靠函数名退化为指针；生成表还可能放在被 `#include` 的 `.def`/`.inc` 片段里（indexer
+只走 `.c/.h`，`commands.def` 这类文件根本不在索引里）。后果是两层同时漏：
+
+- 证据层把注册的 `static` 回调当死代码跳过，它的 opaque 指针参数从不播种；
+- 即使播种，`call_reach` 也会因为没有 `ADDR_TAKEN` 边把该函数判成不可达并丢弃候选。
+
+修复：
+
+- `parser.ValueReferencedNames`：值位置标识符普查（排除 callee / 声明名 / 类型名），
+  `parser.QuotedIncludePaths`：引号 `#include` 目标解析（相对包含者目录，跳过绝对路径
+  与 `<>`）。两个共享助手，证据层与图层的普查口径一致。
+- evidence `CallerNullDetector`：地址取用普查覆盖全部索引文件 + 引号 include 片段
+  （一层，4MB 上限），结果与函数定义名取交集；删除原来只扫 `&` 的循环。
+- graph `CallGraphBuilder`：`ADDR_TAKEN` 普查从 `forEachFile`（仅含函数的文件）扩到
+  **全部索引文件 + include 片段**，注册回调因此被 `call_reach` 当作入口。
+- 验证：evidence 三例（裸名注册 / `&f` 注册 / 未注册的 static 仍闭合）+ include 片段
+  注册 + 未注册片段不误报；planner e2e（片段注册的 static handler 出候选，caller-arg）。
+  均验证"去掉修复即失败"。体量：benchmark 22 条不变；redis 1283 → 1320（+37，+2.9%），
+  新增全是注册回调（config 校验器的 `*err = ...` 出参，suspected 交 AI）；ADDR_TAKEN
+  边 793 条。
+
+### CLI：DB 向上查找在项目根停止；"每次必挂"的定位测试去抖动
+
+- `resolveExistingDBPath` 原先把光标从 cwd 一路找到 `/`，外层 checkout 的陈旧 DB 会被
+  静默当成"本项目"（`secguard plan` 分析了另一个项目）。现在在**第一个含 `.git` 的
+  祖先**停止；项目根自己的 DB 仍然命中（候选路径先于边界判断），`cd scans/<id>/` 的
+  既有恢复流程不变。
+- `TestResolveExistingDBPath_NotExists` 长期必挂的真因不是产品 bug：它断言"整条祖先链
+  上没有 DB"，而文档推荐的 `TMPDIR=$PWD/.tmpcache` 把 `t.TempDir()` 放进仓库内，
+  `sgre/.codeagent` 里一次历史扫描留下的 DB 就会被找到（`TMPDIR=/tmp` 时通过）。
+  改为驱动带边界参数的 `resolveExistingDBPathFrom`，另加"显式边界"与"项目根边界"两例；
+  两种 TMPDIR 下均稳定通过。
 
 ### null-deref：把「布局可见=非空」的伪契约改为「入口边界」策略
 
