@@ -139,9 +139,11 @@ void call(void *x) { proc(x); }
 // void*. Previously `t = p; t->f` surfaced while `p->f` did not.
 func TestND3_DerivedParameterAlias_TypeAgnostic(t *testing.T) {
 	// call has zero in-tree callers, but its parameter type Ctx is tree-
-	// defined, so the entry stays closed (v0.9.4 contract) and none of the
-	// three surfaces. The incomplete-type form of the same chain (opaque
-	// typedef at the entry) is what surfaces — see the opaque_null tests.
+	// defined AND this fixture defines main (a complete-program scan), so the
+	// in-tree-invariant precision policy keeps the entry closed and none of the
+	// three surfaces. Boundary scans (no main) drop that assumption, and the
+	// incomplete-type form surfaces in both — pinned by TestBoundaryScanExportedAPI
+	// and the opaque_null tests.
 	src := `
 typedef struct { int f; } Ctx;
 
@@ -156,6 +158,8 @@ void cast(Ctx *src) {
 }
 
 void call(Ctx *x) { direct(x); alias(x); cast(x); }
+
+int main(void) { return 0; }
 `
 	has := setOf(planNullDerefFull(t, src))
 	for _, fn := range []string{"direct", "alias", "cast"} {

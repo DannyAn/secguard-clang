@@ -240,6 +240,7 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 			definite[calleeID][i] = true
 		}
 	}
+	hasEntryPoint := scanHasEntryPoint(ctx, d.store)
 	for name, info := range callees {
 		if calledNames[name] || info.fn.Name == "main" {
 			continue
@@ -251,15 +252,21 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 			if t == "..." || !strings.HasSuffix(strings.TrimSpace(t), "*") {
 				continue
 			}
-			// Type gate (product decision, not type-system semantics): a
-			// parameter whose type is DEFINED in the scan tree keeps the
-			// v0.9.4 contract — an in-tree ordinary typed forward is judged
-			// non-null by its caller's convention and stays closed (ND-10/
-			// ND-11). A parameter of a type the tree cannot see (the
-			// incomplete-type issue: third-party typedefs) has no visible
-			// contract anywhere and IS open. Literal-NULL witnesses and guard
-			//截断 are unaffected — evidence beats the gate in both directions.
-			if !typeSpellingOpaque(t, definedTypes) {
+			// IN-TREE-INVARIANT POLICY (formerly named the "v0.9.4
+			// layout-visible type contract"). Layout visibility answers "do we
+			// know the struct's fields", NOT "can this VALUE be NULL" — the two
+			// are orthogonal: an exported API taking the project's OWN struct
+			// is exactly where an out-of-tree caller passes NULL, while an
+			// external typedef whose every in-tree caller is guarded is safe.
+			// The gate below is therefore a PRECISION policy, not a proof, and
+			// it is only assumed for a COMPLETE-PROGRAM scan (an entry point
+			// exists): there the project's own conventions are in-tree and a
+			// boundary symbol with a visible layout is most likely an internal
+			// function or an in-tree-registered callback. A BOUNDARY scan (no
+			// `main`: a library, a partial tree) has no such convention —
+			// its edge IS an external ABI, so every boundary parameter is
+			// fail-open regardless of where its type is defined.
+			if hasEntryPoint && !typeSpellingOpaque(t, definedTypes) {
 				continue
 			}
 			if open[info.fn.ID] == nil {

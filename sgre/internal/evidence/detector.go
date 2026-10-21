@@ -238,3 +238,34 @@ func emitEvent(ctx context.Context, store db.Store, logger *log.Logger, eventTyp
 	}
 	return true
 }
+
+// scanHasEntryPoint reports whether the scan tree defines a program entry point
+// (`main`). It separates a COMPLETE-PROGRAM scan from a BOUNDARY scan (a
+// library, or a partial subtree with no entry point):
+//
+//   - entry point present: the project's own non-null conventions are in-tree,
+//     so a boundary symbol with a VISIBLE type layout may be assumed to follow
+//     them (a precision policy — see CallerNullDetector's in-tree-invariant
+//     gate). The assumption is not a proof and is never presented as one.
+//   - no entry point: the scan edge itself is an external ABI, so every
+//     boundary parameter is fail-open regardless of where its type is defined.
+//
+// The fact is deliberately coarse (does `main` exist anywhere) because the
+// indexer sees declarations, not a link line; a partial scan therefore lands on
+// the fail-open side, which is the direction that avoids false negatives.
+func scanHasEntryPoint(ctx context.Context, store db.Store) bool {
+	funcs, err := store.ListFunctions(ctx)
+	if err != nil {
+		// A store error must not silently switch the pipeline into the
+		// fail-open mode (candidate volume is the expensive direction); keep
+		// the precision policy, and let the caller's own error handling surface
+		// real failures.
+		return true
+	}
+	for _, f := range funcs {
+		if f.Name == "main" {
+			return true
+		}
+	}
+	return false
+}

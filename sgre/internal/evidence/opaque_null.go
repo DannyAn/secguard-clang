@@ -58,6 +58,7 @@ func (d *OpaqueNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 		return result, err
 	}
 
+	hasEntryPoint := scanHasEntryPoint(ctx, d.store)
 	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		fnDefs := root.FindAll("function_definition")
 		for _, f := range funcs {
@@ -65,7 +66,7 @@ func (d *OpaqueNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 			if fnDef.Kind() == "" {
 				continue
 			}
-			d.seedOpaqueFieldRead(ctx, f, file, fnDef, definedTypes, &result)
+			d.seedOpaqueFieldRead(ctx, f, file, fnDef, definedTypes, hasEntryPoint, &result)
 		}
 	})
 	if err != nil {
@@ -166,9 +167,12 @@ func collectDefinedTypes(root parser.Node, definedTypes map[string]bool) {
 // base parameter type is not defined in the scan tree: an assigned pointer
 // (`tree = (T *)(resp->group_data)`) gets a source at the assignment line, and
 // a chained dereference's intermediate value (`para->orig->base_dn` reads the
-// `para->orig` field value) gets one at function entry. Structs defined
-// in-tree keep their current behavior.
-func (d *OpaqueNullDetector) seedOpaqueFieldRead(ctx context.Context, f *db.Function, file *db.File, fnDef parser.Node, definedTypes map[string]bool, result *DetectResult) {
+// `para->orig` field value) gets one at function entry. In a COMPLETE-PROGRAM
+// scan a struct defined in-tree keeps its current behavior (the visible layout
+// is assumed to carry the project's field invariants); in a BOUNDARY scan (no
+// entry point) that assumption is dropped and every base pointer parameter is
+// fail-open, because the field VALUE comes from an out-of-tree caller.
+func (d *OpaqueNullDetector) seedOpaqueFieldRead(ctx context.Context, f *db.Function, file *db.File, fnDef parser.Node, definedTypes map[string]bool, hasEntryPoint bool, result *DetectResult) {
 	_, names, types := functionParamNames(fnDef)
 	opaqueParams := map[string]bool{}
 	for i, pname := range names {
@@ -178,7 +182,12 @@ func (d *OpaqueNullDetector) seedOpaqueFieldRead(ctx context.Context, f *db.Func
 		if !strings.HasSuffix(strings.TrimSpace(types[i]), "*") {
 			continue
 		}
-		if typeSpellingOpaque(types[i], definedTypes) {
+		// In a BOUNDARY scan (no `main`) the base parameter's field VALUE comes
+		// from an out-of-tree caller even when its layout is fully visible, so
+		// every pointer parameter is fail-open. In a COMPLETE-PROGRAM scan a
+		// visible layout is assumed to carry the project's own field invariants
+		// (precision policy, not a proof).
+		if !hasEntryPoint || typeSpellingOpaque(types[i], definedTypes) {
 			opaqueParams[pname] = true
 		}
 	}

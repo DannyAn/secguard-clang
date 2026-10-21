@@ -367,6 +367,8 @@ int ext_known_refresh(ExtAck_t *ek_resp)
     UnknownNode_t *uo_tree = (UnknownNode_t *)(uo_resp->group_data);
     return uo_tree[0].name[0];
 }
+
+int main(void) { return 0; }
 `,
 	})
 	has := func(variable, origin string) bool {
@@ -391,5 +393,51 @@ int ext_known_refresh(ExtAck_t *ek_resp)
 	// the fix cannot blind the detector wholesale.
 	if !has("uo_tree", "opaque_field_read") {
 		t.Errorf("UnknownAck_t is not defined anywhere: uo_tree must still seed opaque_field_read; got %v", records)
+	}
+}
+
+// A BOUNDARY scan (no program entry point: a library, or a partial subtree) has
+// no in-tree convention to assume — its edge IS an external ABI. So an exported
+// function's pointer parameter, and a field value read off it, are fail-open
+// even when the type layout is fully visible. The app-mode counterpart (same
+// layout, `main` present) stays closed: TestOpaqueNullDetectorHeaderDefinedTypeIsNotOpaque.
+func TestBoundaryScanExportedAPIIsFailOpen(t *testing.T) {
+	records := runOpaqueNullDetect(t, map[string]string{
+		"api.h": `typedef struct ApiCtx_s {
+    unsigned int len;
+    void *group_data;
+} ApiCtx_t;
+
+typedef struct ApiNode_s {
+    char name[32];
+} ApiNode_t;
+`,
+		"api.c": `#include "api.h"
+
+int api_len(ApiCtx_t *ac_ctx)
+{
+    return ac_ctx->len;
+}
+
+int api_tree(ApiCtx_t *at_ctx)
+{
+    ApiNode_t *at_tree = (ApiNode_t *)(at_ctx->group_data);
+    return at_tree[0].name[0];
+}
+`,
+	})
+	has := func(variable, origin string) bool {
+		for _, r := range records {
+			if r.variable == variable && r.origin == origin {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("ac_ctx", "caller_null") {
+		t.Errorf("boundary scan: the exported API parameter must be an open entry; got %v", records)
+	}
+	if !has("at_tree", "opaque_field_read") {
+		t.Errorf("boundary scan: the field value read off an exported API parameter must seed; got %v", records)
 	}
 }

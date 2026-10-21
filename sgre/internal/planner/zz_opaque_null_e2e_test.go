@@ -227,6 +227,8 @@ int tree_typed_caller(KnownRec_t *k2f)
 {
     return tree_typed_target(k2f);
 }
+
+int main(void) { return 0; }
 `,
 	})
 	byVar := map[string]EvidenceItem{}
@@ -384,6 +386,8 @@ int ext_known_refresh(ExtAck_t *ek_resp)
     UnknownNode_t *uo_tree = (UnknownNode_t *)(uo_resp->group_data);
     return uo_tree[0].name[0];
 }
+
+int main(void) { return 0; }
 `,
 	})
 	byVar := map[string]EvidenceItem{}
@@ -404,5 +408,67 @@ int ext_known_refresh(ExtAck_t *ek_resp)
 	}
 	if c.SuspicionLevel != "suspected" {
 		t.Errorf("uo_tree: suspicion = %s, want suspected (fail-open never auto-confirms)", c.SuspicionLevel)
+	}
+}
+
+// The boundary-scan policy end to end. A library / partial tree (no `main`) has
+// no in-tree caller convention to lean on: the scan edge IS an external ABI, so
+// an exported function's in-tree-typed parameter and the field value read off
+// it surface as suspected candidates. The SAME source plus an entry point is a
+// complete-program scan, where the visible layout is assumed to carry the
+// project's own invariant — and both candidates disappear.
+func TestBoundaryScanExportedAPI(t *testing.T) {
+	files := func(withMain bool) map[string]string {
+		m := map[string]string{
+			"api.h": `typedef struct ApiCtx_s {
+    unsigned int len;
+    void *group_data;
+} ApiCtx_t;
+
+typedef struct ApiNode_s {
+    char name[32];
+} ApiNode_t;
+`,
+			"api.c": `#include "api.h"
+
+int api_len(ApiCtx_t *ac_ctx)
+{
+    return ac_ctx->len;
+}
+
+int api_tree(ApiCtx_t *at_ctx)
+{
+    ApiNode_t *at_tree = (ApiNode_t *)(at_ctx->group_data);
+    return at_tree[0].name[0];
+}
+`,
+		}
+		if withMain {
+			m["main.c"] = "int main(void) { return 0; }\n"
+		}
+		return m
+	}
+
+	lib := runOpaqueNullPlan(t, files(false))
+	byVar := map[string]EvidenceItem{}
+	for _, c := range lib.Candidates {
+		byVar[c.Target.Variable] = c
+	}
+	if c, ok := byVar["ac_ctx"]; !ok {
+		t.Fatalf("boundary scan: the exported API parameter must surface; got %v", byVar)
+	} else if c.NullOriginTier != "caller-arg" {
+		t.Fatalf("boundary parameter tier = %q, want caller-arg", c.NullOriginTier)
+	}
+	if c, ok := byVar["at_tree"]; !ok {
+		t.Fatalf("boundary scan: the field-value pointer must surface; got %v", byVar)
+	} else if c.NullOriginTier != "opaque-origin" {
+		t.Fatalf("boundary field tier = %q, want opaque-origin", c.NullOriginTier)
+	}
+
+	app := runOpaqueNullPlan(t, files(true))
+	for _, c := range app.Candidates {
+		if c.Target.Variable == "ac_ctx" || c.Target.Variable == "at_tree" {
+			t.Errorf("complete-program scan: an in-tree-typed boundary parameter stays closed, got %+v", c.Target)
+		}
 	}
 }

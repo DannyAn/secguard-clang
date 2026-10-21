@@ -85,6 +85,8 @@ void local_null(void) {
     Context *ctx = NULL;
     ctx->field = 1;
 }
+
+int main(void) { return 0; }
 `
 	has := setOf(planNullDerefFull(t, src))
 
@@ -97,10 +99,12 @@ void local_null(void) {
 	if has["guarded_scope"] {
 		t.Errorf("guarded_scope must NOT be a null-deref, got %v", has)
 	}
-	// The open-chain model grades a zero-caller function's parameter open
-	// only when its type is NOT defined in the scan tree (the incomplete-type
-	// issue); Context IS defined here, so process stays closed (v0.9.4
-	// contract — see the opaque_null tests for the open half).
+	// This fixture defines main => a COMPLETE-PROGRAM scan, where a visible
+	// in-tree layout is assumed to carry the project's own non-null convention
+	// (the in-tree-invariant precision policy, not a proof); Context IS defined
+	// here, so process stays closed. A BOUNDARY scan (no main: library or
+	// partial tree) drops that assumption and surfaces it — pinned by
+	// TestBoundaryScanExportedAPI. The incomplete-type form surfaces in both.
 	if has["process"] {
 		t.Errorf("process (bare param deref, tree-defined type) must NOT be a null-deref, got %v", has)
 	}
@@ -116,6 +120,8 @@ func TestContractNullability_InterProcedural(t *testing.T) {
 static void process(Context *ctx) {
     ctx->value = 1;
 }
+
+int main(void) { return 0; }
 `
 	t.Run("literal NULL caller", func(t *testing.T) {
 		src := base + "void c(void) {\n    process(NULL);\n}\n"
@@ -130,10 +136,11 @@ static void process(Context *ctx) {
 		}
 	})
 	t.Run("unguarded caller", func(t *testing.T) {
-		// c's parameter type (Context) is tree-defined, so the zero-caller
-		// entry stays closed and process must not surface. The incomplete-type
-		// form (opaque typedef at the entry) is the one that surfaces — pinned
-		// in TestOpaqueNullEndToEndInTreeCaller.
+		// This fixture defines main (complete program), so the visible-layout
+		// in-tree-invariant policy keeps c's zero-caller entry closed and
+		// process must not surface. The boundary-scan (no main) and
+		// incomplete-type forms are pinned by TestBoundaryScanExportedAPI and
+		// TestOpaqueNullEndToEndInTreeCaller.
 		src := base + "void c(Context *ctx) {\n    process(ctx);\n}\n"
 		if has := setOf(planNullDerefFull(t, src)); has["process"] {
 			t.Errorf("unguarded caller of a tree-defined type must not surface, got %v", has)
