@@ -2,415 +2,79 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.9.8] - 2026-10-21（十三次重发）
+## [0.9.8] - 2026-10-21
 
-### null-deref：地址取用普查补全（注册表裸函数名 + 生成 include 片段）
+本版本经多轮重发收敛为最终内容：正文只列最终能力、验证结果与升级方式（逐轮迭代
+明细见 git log 中各提交说明）。
 
-上一轮复核点名的"另一处硬伤"：`addrTaken` 只认 `&f`。C 的注册表（命令表 / 回调
-结构体初始化）用的是**裸函数名**（`{"get", getCommand, ...}`、`.proc = handler`），
-靠函数名退化为指针；生成表还可能放在被 `#include` 的 `.def`/`.inc` 片段里（indexer
-只走 `.c/.h`，`commands.def` 这类文件根本不在索引里）。后果是两层同时漏：
+### 发布概要
 
-- 证据层把注册的 `static` 回调当死代码跳过，它的 opaque 指针参数从不播种；
-- 即使播种，`call_reach` 也会因为没有 `ADDR_TAKEN` 边把该函数判成不可达并丢弃候选。
+- **null-deref**：第三方 typedef / 前向声明 / 头文件定义的类型不再因为"类型信息不完整"
+  而漏报；外部入口按扫描边界判定是否 fail-open；派生指针的来源归因正确；同一指针的
+  多处解引用在一份候选证据里列全。
+- **out-of-bounds**：固定数组成员以未校验配置字段为下标的越界读，连同下游空指针以
+  "一条 finding + CWE-125→CWE-476 链条"上报。
+- **unchecked-return**：按消费点普查收敛"调用处未检查返回值"的系统性误报。
+- **CLI**：DB 向上查找在项目根停止，避免把外层 checkout 的旧库当成当前项目。
 
-修复：
+### null-deref：不完整类型信息
 
-- `parser.ValueReferencedNames`：值位置标识符普查（排除 callee / 声明名 / 类型名），
-  `parser.QuotedIncludePaths`：引号 `#include` 目标解析（相对包含者目录，跳过绝对路径
-  与 `<>`）。两个共享助手，证据层与图层的普查口径一致。
-- evidence `CallerNullDetector`：地址取用普查覆盖全部索引文件 + 引号 include 片段
-  （一层，4MB 上限），结果与函数定义名取交集；删除原来只扫 `&` 的循环。
-- graph `CallGraphBuilder`：`ADDR_TAKEN` 普查从 `forEachFile`（仅含函数的文件）扩到
-  **全部索引文件 + include 片段**，注册回调因此被 `call_reach` 当作入口。
-- 验证：evidence 三例（裸名注册 / `&f` 注册 / 未注册的 static 仍闭合）+ include 片段
-  注册 + 未注册片段不误报；planner e2e（片段注册的 static handler 出候选，caller-arg）。
-  均验证"去掉修复即失败"。体量：benchmark 22 条不变；redis 1283 → 1320（+37，+2.9%），
-  新增全是注册回调（config 校验器的 `*err = ...` 出参，suspected 交 AI）；ADDR_TAKEN
-  边 793 条。
+- **断点在播种，不在解析**：tree-sitter 对未知 typedef 完全容错，语法与解引用节点都在。
+- **opaque 字段值通道**：base 参数类型在扫描树内不可见时，`p = (T *)base->field` 与
+  链式中间值 `base->f1->f2` 播种 fail-open 来源（suspected，永不 auto-confirm）。
+- **类型普查**：`collectDefinedTypes` 覆盖无函数的头文件（此前被跳过，导致树内 header
+  类型被误判 opaque）；`typedef struct X X_t;` 前向声明仍判不可见。
+- **入口边界策略**（取代旧"布局可见 = 非空"判据）：扫描树内有 `main` 时按项目自身非空
+  不变式收敛；无 `main`（库 / 部分子树）时边界即外部 ABI，一律 fail-open。两个基准语料
+  均为完整程序，候选量零变化。
+- **派生指针来源**：`q = (T *)param`、`q = t`（opaque 字段读）、`q = malloc 别名` 的
+  tier 归到真正持有来源的变量（caller-arg / opaque-origin / malloc-fail），不再一律
+  external-unknown。
+- **多解引用点**：按变量收敛仍是一条候选，但 `deref_lines` 与证据 sink 段列出全部解引用
+  行（分支内与分支后的 `tree[0].group_name` 都在）。
+- **地址取用普查**：注册表裸函数名（`{"get", getCommand}`）与被 `#include` 的生成注册
+  片段（`commands.def`）都计入；`ADDR_TAKEN` 因此补齐，注册回调不再被当作死代码或
+  不可达而丢弃。
 
-### CLI：DB 向上查找在项目根停止；"每次必挂"的定位测试去抖动
+### null-deref：误报与候选量级
 
-- `resolveExistingDBPath` 原先把光标从 cwd 一路找到 `/`，外层 checkout 的陈旧 DB 会被
-  静默当成"本项目"（`secguard plan` 分析了另一个项目）。现在在**第一个含 `.git` 的
-  祖先**停止；项目根自己的 DB 仍然命中（候选路径先于边界判断），`cd scans/<id>/` 的
-  既有恢复流程不变。
-- `TestResolveExistingDBPath_NotExists` 长期必挂的真因不是产品 bug：它断言"整条祖先链
-  上没有 DB"，而文档推荐的 `TMPDIR=$PWD/.tmpcache` 把 `t.TempDir()` 放进仓库内，
-  `sgre/.codeagent` 里一次历史扫描留下的 DB 就会被找到（`TMPDIR=/tmp` 时通过）。
-  改为驱动带边界参数的 `resolveExistingDBPathFrom`，另加"显式边界"与"项目根边界"两例；
-  两种 TMPDIR 下均稳定通过。
+- **调用链开放性 fixpoint**：只在"可能为空的值真能到达参数"时播种；纯转发不播种、任一
+  环节的守卫闭合整条链。修复生产环境候选从历史 ≤160 爆炸到 1264 的问题。
+- **守卫契约**：短路求值、条件非空 getter、guard-mutex 调用三类误报收敛（6 项 FP）。
+- **retNullable 三态**：proven（体内有 NULL 路径）/ assumed（fail-open）/ 不可为空，
+  分别对应 confirmed / suspected / dismiss。
 
-### null-deref：把「布局可见=非空」的伪契约改为「入口边界」策略
+### out-of-bounds：未校验外部索引
 
-复核 0.9.8 十一次重发时发现一条被当契约执行的判据：**布局可见的树内定义类型维持
-v0.9.4 契约闭合**（`typedef struct X {...} X_t;` 可见 ⇒ 其指针参数"按调用方约定
-非空"、不播种）。它不是可空性规则：布局可见只回答"我们知道结构体长什么样"，与
-"这个**值**能不能为空"正交——公共 API 收自家 `MyCtx_t *` 恰恰是外部调用方可能传
-NULL 的地方，而外部 typedef 但树内调用点全部判空的函数反而安全。更直接的证据：同一
-段代码把 typedef 从 `.c` 挪进 `.h` 就改变结论（普查 bug 放大了这一荒诞性）。
+- 新增 `array_oob_read_unchecked` / `array_oob_write_unchecked`（suspected）：结构体
+  固定数组 + 字段来源下标 + 函数内无与容量相等的边界检查。
+- 链条以 `cwe-chain@CWE-125→CWE-476` token、候选 `## Vulnerability Chain` 段、SARIF
+  `properties.cwe_chain` 导出；根因与后果只出一条 finding。
 
-实测（redis 7.2.4 / 136k LOC / 102 文件，null-deref 候选总量）：
+### unchecked-return
 
-| 策略 | 候选 | 备注 |
-|---|---|---|
-| 现状（布局闸门） | 1283 | — |
-| 直接删闸门 | 1908（+49%） | 新增基本都是命令表回调（`client *c` 类框架类型） |
-| 「外部 API 一律 fail-open」+ 注册表地址取用普查 | 1753（+37%） | 仍以框架回调为主 |
-| 字段通道删闸门 | 1944（+52%） | 新增基本是 `list->head` / `c->user` 这类树内不变式 |
+- 消费点普查：调用结果被使用却未检查、且没有其他消费点做过检查时才上报，修复 IDM 报告
+  25/25 全误报的根因。
 
-→ 结论：布局闸门**不是**可空性规则，但确实是有效的**精度代理**（框架类型与框架
-非空保证强相关）。正确判据应是"函数如何被调用"，不是"类型在哪定义"。
+### CLI / 扩展
 
-新策略按**扫描边界**判定：扫描树内存在 `main`（完整程序扫描）时，树内可见布局按
-项目自身非空不变式收敛（明确标注为精度策略、不是证明）；扫描树内**没有** `main`
-（库 / 部分子树）时，扫描边界本身就是外部 ABI，所有边界指针参数与从它读出的字段值
-一律 fail-open，与类型可见性无关。app 模式体量不变（redis 1283 / benchmark 22 条
-候选零变化），库扫描拿回"公共 API 收自家结构体"这一类漏报。
+- `resolveExistingDBPath` 在第一个含 `.git` 的祖先停止（项目根自己的 DB 仍然命中）。
+- `claude-cac`（CodeAgentCLI）宿主下子代理按命名空间名分发。
 
-- 入口边界事实：`scanHasEntryPoint`（detector.go），`CallerNullDetector` 与
-  `OpaqueNullDetector` 共用。
-- 回归：`TestBoundaryScanExportedAPIIsFailOpen`（evidence：参数 + 字段值两通道）、
-  `TestBoundaryScanExportedAPI`（planner e2e：无 main 出两条候选、加 main 后消失）；
-  既有 app 模式用例补 `int main(void)` 并改注释为"入口边界策略"。
+### 验证
 
-### null-deref：派生指针的来源归因、多解引用点证据、头文件类型普查
+- `go test ./...`：16 个包全绿；`-tags nosqlite` 子集通过。
+- benchmark `--selftest`：204 用例、25 个 CWE 标签全映射。
+- 本版新增 evidence / planner 回归覆盖不完整类型、入口边界、派生来源、多解引用点、
+  注册表与 include 片段；均验证"去掉修复即失败"。
+- 体量：redis 7.2.4（136k LOC）null-deref 候选 1283 → 1320（+2.9%，新增为注册回调的
+  框架出参，suspected 交 AI）；benchmark 22 条不变。
+- 性能：95k LOC / 100 文件合成语料 detectors 85.0s → 87.4s（+2.8%）。
 
-- **派生指针 tier 误标**：`q = (T *)param`、`q = t`（t 是 opaque 字段读）、
-  `q = dm_p`（malloc 结果别名）此前一律落到 `external-unknown`，其文案还写
-  "the ONLY null source is an unproven external CALL"——这些形态根本没有 callee。
-  新增 `contractCtx.valueOriginRoot` 沿 copy/cast 链回溯到真正持有 NULL_VALUE 的
-  变量，tier 取根来源（caller-arg / opaque-origin / malloc-fail / external-unknown），
-  `Candidate.DerivedFrom` 进入候选 JSON、证据包与 VerdictFacts（"`q` is a copy/cast
-  of parameter `c`"）。派生 malloc 保持 suspected：不扩 `confirmed` 边界。
-- **同一基指针多处解引用**：按变量收敛仍是一条候选（量级契约不变），但
-  `deduplicateCandidates` 现在合并 `DerefLines`（排序，首行即报告行），候选证据新增
-  sink 段列出其余解引用行，`deref_lines` 进证据包——报告行不再被误解为全部爆点，
-  修复建议能覆盖分支内和分支后的两处 `tree[0].group_name`。
-- **头文件类型普查修复**：`collectDefinedTypes` 原由 `forEachFile`（只遍历"含已索引
-  函数"的文件）驱动，而真实 C 工程的 struct/typedef 几乎全在**无函数的头文件**里，
-  导致普查几乎看不到类型、所有树内 header 类型都被当成 opaque，两通道对可见契约误
-  播种（实测：同一 header 加/不加一个 stub 函数，候选 1 → 0；生产形态 4 → 2 条）。
-  改为 `forEachIndexedFile`；`typedef struct X X_t;`（前向声明、无 body）仍判 opaque，
-  issue 原帖前提不回归。
-- **benchmark**：Phase 23 增补 header 定义类型两例（P23-09/P23-10 no_finding），
-  锁住"头文件里的类型可见时不得误播种"。
-- **验证**：新增 evidence/planner 回归（header 普查、边界扫描、派生 tier、多 sink），
-  `go test ./...` 16 包通过（唯一失败 `TestResolveExistingDBPath_NotExists` 由工作区
-  内 `.codeagent` 残留 DB 引起的既有环境失败，stash 改动后同样失败）；redis app 模式
-  候选零变化；95k LOC / 100 文件合成语料 detectors 85.0s → 87.4s（+2.8%）。
+### 升级
 
-### out-of-bounds 覆盖未校验外部索引：固定数组 + 配置字段索引（客户现网 maf_rbl 打回）
-
-生产反馈的 `maf_rbl` 形态：结构体固定数组 `svr[MAF_RBL_SVR_CFG_COUNT]` 以未校验的
-配置字段 `actived_index` 为下标（`rbl_profile->svr[rbl_profile->actived_index]`），
-越界读到的元素内 `domain` 指针野化，`&svr[idx]` 传入子函数后解引用触发空指针。
-**修复前该文件扫描 0 候选**（AI 无料可判），逐层定位到三个断点：
-
-- **容量断点**：`findArraySize` 只认 `declaration` 里的 `array_declarator`，结构体
-  成员数组在 `field_declaration` 里，容量（还是宏拼写 `COUNT`）根本解析不到。
-- **基址断点**：`subscriptBaseIndex` 只认裸标识符基址，`p->svr[idx]` 直接被跳过。
-- **判定断点**：`checkArrayOOB` 只报**可证明**越界（常量索引 / 循环上界）；未知
-  字段索引既不证明也不判危险——而"C 项目在入口校验一次配置"恰恰把可空/越界判断
-  推给运行时契约。
-
-修复为 **`array_oob_read_unchecked` / `array_oob_write_unchecked`** 两条启发式
-（suspected，绝不 auto-confirm；读路由 out-of-bounds CWE-125，写路由
-buffer-overflow CWE-787），并携带完整链条交 AI 研判：
-
-- **播种**：成员数组容量可解析（字面量 / 对象宏）；索引来自**结构体字段**（直接
-  `p->idx` / `p.idx`，或一层本地拷贝 `unsigned i = p->idx`，cast 形态透明）；函数内
-  没有「与容量相等」的边界检查支配该访问（`field >= CAPACITY` 出口 / `field <
-  CAPACITY` 正分支；用更大上界的伪守卫不算防护，避免 FN）。
-- **体积守卫**：只认字段来源索引——普通形参/循环变量索引不播种（否则重演
-  null-deref 1264 候选的量级失控）；同函数内相同 (数组, 索引字段, 读写) 折叠一条。
-  326 函数 benchmark 仅新增 P24 fixture 的 2 条，其余零增量。
-- **链条证据（CWE-125 → CWE-476）**：`elem_field` 记录从越界元素读出的指针成员
-  （`svr[idx].domain`）；`escape`/`escape_deref` 记录元素（或地址）逃逸到的子函数及
-  其解引用的指针成员（同文件定义可解析时给 member@line）。Hint/VerdictFacts 新 token：
-  `idx-src@` / `elem-field@` / `oob-escape@`——AI 不读源码即可给出「越界读 → 空指针
-  解引用」链条与修复建议（入口 `if (idx >= CAP) return;`）。
-- **链条的机器可读落地（一次 finding，两个 CWE）**：根因是缺失边界检查（CWE-125，
-  可修、可施策），下游空指针是后果——按项目既有 `ArrayOOBPrecedenceFilter` 的
-  「OOB 才是根因」取向，**不重复产 CWE-476 finding**（重复上报同一根因是精度污染，
-  且 CWE-476 侧依赖「越界内存内容恰为 NULL」这一未证明假设）。链条改以结构化元数据
-  三处导出：候选 Hint 的 `cwe-chain@CWE-125→CWE-476` token、候选文件新增
-  `## Vulnerability Chain` 段、候选 SARIF `properties.cwe_chain`；skill 明确要求
-  verdict 的 `reasoning` 陈述两段 CWE 且禁止再开一条后果 finding。写形态（CWE-787）
-  同理，仅当元素确有指针成员读出/逃逸时才带链条（纯标量写不带）。
-- **顺带修复**：`subscriptAccessKind` 的写判定用「走到 assignment 时的直接子节点」
-  比较，`p->svr[i].field = x`（经成员写入）此前被误判为 read 并路由错类型。
-- 验证：evidence 五件（播种形态 / 入口检查零候选 / 四种守卫惯用法 + 伪守卫不抑制 /
-  形参·循环·常量索引零候选 / 写形态）+ planner e2e 四件（单候选 suspected + Hint 三 token + VerdictFacts 链条 /
-  修复对照 / 体量守卫 / 读写路由）；benchmark **Phase 24** 五用例（P24-01/02 finding，
-  P24-03/04/05 no_finding），`--coverage` 与 `--selftest` 通过；渲染层三件
-  （`## Vulnerability Chain` 段 / SARIF `cwe_chain` 属性 / 段落顺序）。
-
-### null-deref 候选量级失控修复：调用链开放性 fixpoint（客户现网 1264 候选打回）
-
-九次重发的 opaque_param 第二形态在生产现网引爆：null-deref 候选从历史 ≤160 爆炸到
-**1264**。根因是语义错误：C 项目的标准惯例是"最外层入口判空一次，内层函数按非空
-契约直接用"，转发链每一层的实参都"未证明非空"——把「调用点实参未证明非空 + 类型
-树内无定义」当播种条件，等于给每条转发链的每一层每个 opaque 指针参数都开 fail-open
-闸门。benchmark（320 函数）只有 +1 候选完全没暴露这个量级，是验证量尺的教训。
-
-- **语义重建（调用链开放性 fixpoint，取代"调用点局部未证明"判定）**：一个参数可空
-  当且仅当 possibly-null 值**真实可达**——① 树内调用点传 literal NULL（definite
-  witness）；② 函数树内零调用点且外部可调用（非 static / static+取地址，main 豁免）
-  的**开放入口**参数（类型布局不可见：前向声明 typedef `typedef struct X X_t;` 与
-  未知 typedef；**布局可见的树内定义类型维持 v0.9.4 契约闭合**，ND-10/ND-11 决策（该判据已在十二次重发中被「入口边界」策略取代：布局可见只作为完整程序扫描的精度假设，边界扫描一律 fail-open）
-  保持）；③ 调用点转发 caller 自身的未守卫参数——开放性沿转发链传播。
-  **守卫在链上任一层出现即截断整条链**（灵魂拷问的答案：所有调用方都防护的参数
-  严格不报——early-return/正分支/短路/assert 四惯用法作用在传播边上）。
-  局部变量/不透明表达式实参不再播种（analyzer limitation 不是 NULL 证据）。
-- **纯转发去重**：参数仅作为调用实参转发、函数体内无解引用/转存消费时不播种——
-  链收敛到解引用处一条候选，不再逐层重复报告。
-- **前向声明 typedef 判定修复**：`typedef struct X X_t;`（无 body）此前被误判
-  "树内已定义"（typedef 名一律收录）——issue 原帖精确形态因此被两个通道漏掉。
-  现按"布局可见性"判定：有 body 定义/基础类型别名/可见类型别名才算 defined。
-- **planner**：caller_null 事件带 `chain=open` 属性（nullSource.chainOpen），开放链
-  候选不被 onlyUnprovenCallerNullSources dismiss（该 dismiss 保留为播种端回归的
-  防御闸）；caller-arg tier 的 detail 文案区分 witness / 转发链 / 开放入口三种
-  来源。opaque_param 通道整体删除（参数级开放性归 caller_null 单一模型），
-  opaque_null 检测器只保留 opaque_field_read 字段值通道，回归并发段执行。
-- 验证：**灵魂拷问红绿**（守卫链 outer→middle→inner 零候选 / 无守卫链
-  open_entry→inner 单候选，e2e 测试锁死）；合成规模仓库 620 函数 = 100 开放入口
-  ×2 参数恰 200 候选、80 条全守卫链零候选、40 个 literal NULL witness 走
-  auto-confirm；报告原帖形态 4 候选保留（resp/para/para->orig/tree）。干净目录
-  benchmark：null-deref 候选 16→8，validator PASS 137/197、recall 44/102、
-  FP 2/95、FN 55、auto-confirmed 139——与九次重发前基线**完全持平**且
-  P23 全部 8 用例 ground truth 零改动。测试防线：evidence 三件 + e2e 四件
-  （新增 TestOpaqueNullEndToEndAllCallersGuarded）+ 既有 caller-arg 语义测试
-  翻转/回滚各按新语义钉死。
-
-### null-deref opaque 双通道二轮收口：树内调用点形态（客户打回复现）
-
-客户对同一 issue 原文再次打回。复现定位：上轮修复的复现 fixture 是**孤立零调用点**
-函数，而生产环境 `import_dn_group_tree_refresh` 几乎必有树内调用者——此时
-opaque_param 被「有调用点」短路不播种，caller_null 虽播种（非 definite，实参是
-上层未判空转发参数）却被 planner 的 `onlyUnprovenCallerNullSources` dismiss
-（"analyzer limitation" 降噪），**参数级候选（resp/para）恰在有调用者时全灭**
-（tree/para->orig 的 opaque_field_read 不受影响）。
-
-- **修复（opaque_param 第二形态）**：`OpaqueNullDetector` 移入检测器 **deferred
-  串行段**（与 interprocedural 同类，位于并发段之后——并发执行下注册顺序不保证
-  caller_null 先完成），消费 caller_null 播种结果（`collectCallerNullParams`：
-  callee 函数 ID → 未证明非空参数集合），对「有 unsafe 调用点 + 参数类型树内
-  无定义」的参数加播 opaque_param，阻断 onlyUnprovenCallerNullSources 的 dismiss；
-  **体量守卫**：树内定义类型维持 dismissable（普通树内调用链不爆炸）、守卫调用者
-  （classifyArg safe 无 caller_null）与 static 死代码不播、零调用点形态保持原全参
-  数播种语义。resp/para 候选以 `null@caller-arg` tier 保留（具名未证明调用者的
-  研判指引比 opaque-origin 更具体）。
-- 验证：报告原帖**含调用者**精确形态 2→4 候选（resp/para 恢复 + tree/para->orig
-  保持）；负控三组零误报（守卫调用者、树内定义类型转发、guarded 入口）；干净目录
-  benchmark：PASS 134/194→137/197、recall 43→44、FP 恒 2、FN 恒 55、auto-confirmed
-  恒 139。回归防线：evidence 直测三件（含树内调用点通道）+ planner 端到端三件
-  （含 tier 断言与体量守卫负控）+ benchmark Phase 23 扩至 8 用例
-  （P23-06 para finding + P23-07/08 体量守卫负控）。
-- 检测器执行序依赖固化：opaque_null 归入 RunAllDetectors 的 deferred 段（并发段
-  全部完成后串行），与 interprocedural 共享该机制；测试 helper 同序镜像。
-
-### null-deref 不完整类型信息场景检测能力增强：opaque 双通道 fail-open 播种
-
-生产打回（历史问题）：参数使用第三方 typedef（类型定义不在扫描树内、项目不要求
-完整编译）的 `import_dn_group_tree_refresh` 产出**零** CWE-476 候选。逐层定位：
-**语法层完全正常**（tree-sitter 对未知 typedef 容错，sink 事件齐全），断链在
-null source 播种层——参数可空性只由 caller_null 从树内调用点合成（调用方在树外
-的导出 API/回调零覆盖）；外部结构体字段值（`tree = (T *)(resp->group_data)`）与
-链式中间层（`para->orig->base_dn`）无播种通道。新增 `OpaqueNullDetector` 两条
-**fail-open 播种通道**（全部 suspected 级交 AI 研判，绝不 auto-confirmed）：
-
-- **opaque_param**：非 static 函数 + 树内零调用点（取地址豁免、main 豁免、static
-  死代码豁免）+ 指针参数 + 体内有解引用 → 入口播种 assumed source（与 caller_null
-  同走 planner entry seed 通道）。
-- **opaque_field_read**：字段读的 base 参数类型树内无定义（typedef/struct 定义
-  全树普查 + 基础类型白名单）→ 赋值转存（cast/下标变体）在赋值行播种；链式中间层
-  在函数头播种（birth 形态转 entry seed）。树内已定义类型维持既有行为。
-- planner 侧：entry seed 分流扩展 + `null@opaque-origin` tier（hasOpaqueSource）
-  + verdict fact + hint token 注册；守卫 kill / 非空重赋值 kill / ConvergeByVariable
-  等既有机制对 fail-open source 统一生效。
-- 验证：报告原帖精确形态 0→4 候选（resp/para/para->orig/tree，issue 验收 A 三处
-  位置全覆盖，全 suspected + opaque-origin）；正反例 8/9（守卫不报、非空重赋值
-  kill、三种解引用形态收敛、调用点/类型可见豁免、guarded_chain 一报一不报的
-  精确分离）；干净目录 benchmark A/B：候选 69→76（+7 全为未判空参数解引用的真实
-  形态暴露，逐条人工核对无 FP），validator PASS 129/189→134/194、recall
-  40→43、FP 恒 2、FN 恒 55、auto-confirmed 恒 139（零 confirmed 污染）。
-  回归防线：evidence 直测（播种形态+豁免域）+ planner 端到端红绿（tier 断言+守卫
-  kill）+ benchmark Phase 23（P23-01..05）；SKILL.md tier 表补 opaque-origin 行。
-- 已知边界（记录不修）：局部语法 ERROR（缺分号被吞进 ERROR 节点）内的解引用
-  丢失属解析层恢复问题；全局变量来源的 opaque 字段读不在参数域内；两者均不归
-  null source 播种层。
-
-### null-deref 候选偏多检视：三类守卫契约误报（6 项 FP）修复
-
-生产环境 AI 复核报告 null-deref（CWE-476）6 项误报（#045/#048/#049-#052），
-逐条回源验证后落地三机制（检测器/planner 层抑制，不新增类型），同时保住
-5 项真阳性（TP-1 #046/#047 可空 getter 无防御消费、TP-2 #043/#044 相邻函数
-判空不一致、TP-3 #033 布尔分支绕过守卫）：
-
-- **R1 短路守卫行（4 项，#049-#052）**：`paramUnguarded` 要求 callee 体内解引用
-  行落在 `[scope_start, scope_end]` 内，而 `detectEarlyReturnGuards` 设
-  `scope_start = ifNode.StartLine()+1`——`p == NULL || !p->field` 形态右项的
-  解引用就发生在守卫条件行本身（短路求值保证右操作数仅在 p 非空时求值），被
-  判 unguarded → 调用点误报。现 evidence 层对每个 function_definition 做短路
-  分析：`||` 右项继承左项 `NullCheckedVars`、`&&` 右项继承左项
-  `GuardedNonnullVars`、`?:` 两分支分别继承条件真/假向事实，`paramUnguarded`
-  接受短路保护行集合。
-- **R2 条件非空 getter（1 项，#045）**：`callResultNullSources` 为每个
-  `p = f(x)` 无条件合成 null source，`if (x == NULL) return NULL;
-  return &x->f;` 的 getter 被当作无条件可空。现 planner 为合成 source 记录
-  实参事实（identifier/字符串字面量/`&x`/sizeof/正数字面量六形态分类，
-  不透明形态 fail-open 置 argUnsafe），`retNullGuardContract` 判定「仅参数
-  NULL 时返回 NULL、其余返回 address-of 或参数转发」契约（paramNullOnly）；
-  调用点实参无 reaching null source（自身已判空守卫）→ 候选消除。
-- **R3 守卫互斥（1 项，#048）**：strip 类函数 NULL 路径 = 入参 NULL 检查 +
-  `strlen(p) >= len` 溢出检查，成功路径转发 buf；调用点
-  `strlen(arg) != 0 && lhs == NULL` 早退守卫与溢出路径互斥（溢出蕴含
-  `strlen(arg) >= len > 0` 即 `strlen(arg) != 0`，守卫必先命中）→ 残余路径
-  lhs 非空。`retNullGuardContract` 识别溢出契约（overflowArg/overflowLen，
-  多溢出分支须实参/长度位置一致），`overflowGuardMutex` 在调用点验证实参已证
-  非空 + strlen 合取守卫位于赋值与解引用行之间 → 候选消除。
-- **真阳性防误消除**：`pureNullCheckVar` 对 binary `==` 的 null 侧收紧为 null
-  字面量形态（排除数值 0——`id == 0` 是值比较非判空，否则 ND-16 的
-  `find_opt_cfg` id 范围 getter 会被误认契约而漏报）。
-- 验证：六组 fixture（fp1/fp2/fp3 + tp1/tp2/tp3）+ 两个 R3 负控（删调用点
-  strlen 守卫、callee 溢出守卫改恒假形态）全部干净目录 A/B——fp 三组消除、
-  tp 三组保持、负控重新报出；benchmark 全量 42 → 39 fails（P22 六例全 PASS
-  offset 0，ND-16 恢复，39 条与基线完全一致零新增回归）。
-  回归防线：单测 `TestInterproceduralShortCircuitGuardedParam`（evidence 层
-  R1 正反例）+ `TestNullDerefGuardContracts`（planner 层 R2/R3 契约正反例 +
-  TP 控制组 + ND-16 回归控制组）+ benchmark Phase 22（P22-01..06）；null-deref
-  `SKILL.md` 补「Short-Circuit & Interprocedural Guard Contracts」三条研判
-  规则（R1 守卫行短路 / R2 条件非空 getter / R3 守卫互斥，各含不适用形态）。
-
-### unchecked-return 消费点普查：IDM 报告 25/25 全误报的根因修复
-
-生产环境 AI 复核报告 unchecked-return（CWE-252）候选 25/25 全部误报。逐条核验后
-落地三机制（检测器层抑制，不新增类型/不改 planner 契约分档）：
-
-- **消费通道分档（根因一）**：旧 `indirectGuardedVars` 要求「消费调用的结果被
-  检查 OR callee 返回 void」——报告模式 A（`(void)filter_add(f, x)` 丢弃结果 +
-  int 返回）两条都不满足而误报。新语义：结果**被检查** → callee 必须 NULL→失败
-  暴露（`nullRejectParams`，success-on-NULL / 正守卫早退等极性陷阱保持报告）；
-  结果**被丢弃**或 callee 为 void → callee 只需不解引用 NULL（`paramNullSafe`）。
-- **paramNullSafe 摘要（根因一）**：入口负向守卫早退（失败/bare return）∪ 体内
-  正守卫全包裹解引用（`if (p != NULL) { p->f = 1; }`）；**cast 别名感知**
-  （根因二：`filter_t *ft = (filter_t *)f; if (ft == NULL) return -1;` 旧摘要
-  看不见——`paramAliases` 要求绑定全一致才算别名）；零守卫零解引用的转存
-  （值逃逸）刻意不算 null-safe。
-- **消费点普查 AND 语义**：局部变量的**所有**后续消费必须全部 NULL 安全
-  （paramNullSafe 消费 + free + sizeof + rebind），任一违规（直接解引用、无守卫
-  callee、值逃逸）保留事件——OR→AND 收紧，单一安全消费不再豁免。
-- **字段逃逸（根因三）**：新增 `fieldNullChecks` 摘要（函数顶层 `== NULL` 判空 +
-  失败早退的字段路径集合，bare truthiness/`!p->f` 计入、数值比较不计入）。
-  `para->user_filter = import_strdup(...)` + `para_is_valid(&para)` 形态在赋值
-  目标为本地结构体字段且容器被传给覆盖该字段的校验函数时抑制。
-- 验证：4 fixture 端到端 A/B（干净目录）——4.2 字段逃逸 2 条全消、A2 无 void
-  消费点变体 1 条消、4.1 void 混合消费保持不报、4.3 真阳性（直接解引用）保持
-  报告；既有 `TestUncheckedReturn_IndirectGuard` 七个极性断言全部保持。
-  回归防线：单测 `TestUncheckedReturn_ConsumerCensus`（19 函数逐断言）+
-  benchmark Phase 21（UR-01~07：4 抑制 + 3 报告负控/真阳性）。
-
-### redispatch 修复：CodeAgentCLI（claude-cac）宿主下子代理名解析
-
-- **根因**：claude-cac（CodeAgentCLI）宿主把插件 agent 注册为插件命名空间形态
-  `secguard-clang:security-auditor`，而编排指令（`command-instructions.md` 的
-  Parallel dispatch 平台列表）只写了官方 Claude Code（裸名）/OpenCode/DSH 三个
-  条目，按文档下发裸名 `security-auditor` 必然返回 `Agent type not found`，整批
-  失败后靠模型自行纠错重发（ssl-vpn 569 文件扫描实测：11 个子代理全失败 → 空参
-  重发触发 loop 检测 → 第三次才带命名空间名成功；0.9.5 起即可复现）。
-- **修复**：① 平台列表补 `CodeAgentCLI (claude-cac)` 条目，明确用
-  `subagent_type: "secguard-clang:security-auditor"` 下发；② 新增 **F10 规则**
-  （子代理名解析）：`Agent type not found` 是名字不匹配而非扫描失败——禁止同名
-  原样重试、禁止空参重发、禁止标 `missing-type`、禁止降级顺序自理，须读错误消息
-  的 `Available agents:` 列表选出 `…:security-auditor` 条目、同回合重发全部失败
-  批次；③ claude-cac 的 `/secguard` 命令包装器顶部加宿主声明（该宿主与官方
-  Claude Code 工具同名，模型无法从工具名区分宿主，须显式路由）。
-- pr/diff/mr 三个增量命令不含子代理调度（orchestrator 直接研判），无需改动。
-
-
-### null-deref 候选质量治理：retNullable 三态化（proven/assumed）+ 四项误报收敛
-
-围绕「null-deref 留给 AI 研判的候选偏多」的生产反馈，逐条验证检视文档（998 行）后落地净增量修复。
-干净目录 A/B（benchmark，CLI-only 无 AI 阶段）：recall 54/91 → 56/92，FP 恒为 0；
-null-deref AI 候选 6 → 4，pipeline 自动确认 7 → 9。
-
-- **retNullable 三态化 + `assumed-return` tier（核心）**：过程间返回可空性定点分析从单一
-  bool 拆为 `retNotNull < retNullAssumed < retNullProven` 三态。callee 体内有**具体 NULL
-  witness**（字面 `return NULL` 路径、分配器结果、proven 链）时调用点候选**自动确认**
-  （malloc-fail tier，不再消耗 AI 研判）；仅 **fail-open 假设**（返回参数、字段读取、
-  转发未知外部调用）的 callee 保持 suspected，归入新 `null@assumed-return` tier——其
-  函数体经 `callee@` 嵌入候选文件，AI 直接研判假设本身而非盲目盖章"proven"先验。
-  回归：ND-15（find_opt literal-NULL）与 ND-16（新增 P5 proven getter 转正用例）转
-  自动确认，ND-07/ND-08 纠正为 assumed-return。
-- **返回类型门控**：`return 0` 在 never-null 标量返回函数（int/unsigned/size_t/bool 等）
-  中是整数零而非空指针，不再播种 null source；cast 包裹的 `(T*)0` 保持 null 语义。
-- **同名函数保守合并**：`computeRetNullable` 的 funcsByName 合并规则从"任一定义可空则
-  名字可空"改为按 FunctionID 分别定级后**取最保守**（任一 assumed 定义则整个名字
-  assumed），同名 static 定义不再因 fail-open 混入自动确认。
-- **宏上下文让位于函数索引**：ALL_CAPS 命名约定启发式会把扫描内的 static 函数
-  （`POOL_SECT`）误标为宏上下文，阻止 confirmed 自动确认走 AI 复核。现 detector 启动时
-  加载函数定义名集合，启发式分支跳过已定义名（`secguard.toml` 显式声明的宏名优先级
-  不变）；`#define FOO(x)` 预处理行是声明而非调用，不再计入 ±8 行窗口。
-- **mem*/str* 拷贝族返回值非空**：memcpy/memmove/memset/strcpy/strncpy/strcat/strncat
-  原样返回调用方传入的 dest 指针——返回值是 dest 的别名而非独立 null 源，此前被
-  fail-open 播为 external-unknown 误导性候选；dest 自身可空的场景由 dest 变量自身的
-  候选覆盖。
-- **caller 侧守卫识别扩展**：`callerGuardsVar` 此前只认提前 return 负向守卫，现补齐
-  正分支（`if (p != NULL) f(p)`）、短路合取（`p != NULL && f(p)`，call 须字节包含于
-  && 右操作数以防 `a && b || f(p)` 误配）、assert 前置（`assert(p != NULL); f(p);`）
-  三种惯用法；else 分支不建立非空（仍播种），各守卫事实经 `guardScopeEnd` 在首次
-  重赋值处截断。
-- **aliasRoots field-read 扩展经评估不实施**：`q = p->f` 的可空性来自字段值而非 p 的
-  参数契约，扩展 paramAliasUnproven（drop 规则）会引入 FN 且与 assumed-return 语义
-  矛盾；正确实现需要 AccessPath 字段级流分析（架构演进，另立项）。
-
-同步：`hint_tokens.go` 新增 `null@assumed-return` token；null-deref `SKILL.md` tier
-表补 assumed-return 行；benchmark 新增 ND-16。
-
-### NAT 生产第二轮反馈修复（逐条验证，仅修真实问题）
-
-- **null-deref 静态数组基址指针运算误报（§3.1）**：内联 getter 返回 `g_pool_var.sects + node_id`（静态数组基址 ± 偏移）结果永不为 NULL，此前 `exprReturnsNullable` 对所有 binary_expression fail-open，把这类 getter 标成可空返回源、全部调用点解引用被误报（6 confirmed + 4 suspected）。现 binary_expression 任一侧解析为静态地址（文件/函数作用域数组、struct 数组成员）即判非空。回归 benchmark ND-14（no_finding）/ND-15（literal-NULL 真缺陷对照仍报）。
-- **divide-by-zero abort/exit 退出守卫误报（§3.2）**：`if (n == 0) { HPE_ASSERT(0); } g_max_sess = n;` 与 `if (g_min_sess == 0) { exit(1); }` 的零值路径已终止、存活路径除数非零，此前 `exitsEarly` 只认 return/continue/break/goto，no-return 守卫不建立非零不变量致误报。现 apikb 新增标准 no-return 名单（abort/exit/_exit/_Exit/quick_exit/__assert_fail）；项目 assert 宏的致命性由其 #define 展开体跨全树传递闭包解析（仅打日志的宏不成立，宏名不背书）；新增"守卫全局自身"模式并带局部遮蔽防护。回归 benchmark P19-03/P19-04（dbz_real 控制组仍报）。
-- 反馈中 §4.1/§4.3 经回源验证不成立（SARIF 写入逻辑正常、统计口径误读），未做代码改动。
-
-### 二次重发修复（SSL VPN + NAT 生产复核闭环）
-
-- **format-string / path-traversal 调用点普查（call-site census）**：非 static 函数的形参 sink（`fmt`/`path`）不再无条件保守保留——对每个 (callee, param) 做树内调用点实参普查，全部传编译期常量且函数未被取地址时 pipeline 直接 drop；存在变量/污点调用点时保留候选并附 `callsites@` 普查 token 供 AI 研判。path-traversal 另增 basename / `strrchr(p, '/')` 派生路径段的净化 kill。回归 `examples/c-vuln-benchmark/src/p18_callsite_census.c`。
-- **divide-by-zero 字段链防护**：字段/全局链除数（`show_data->total_resource`、`g_pool_bt.inst_num`、`g_alert_threshold.user_num`）的显式非零防护（`!= 0`/真值/`== 0` 早退/`== 0` 置 1）此前被误报为未防护——防护识别只匹配裸标识符。现 `divisionGuarded` 与 `AnalyzeBounds` 的防护识别接受 `identifier`+`field_expression` 并做空白归一化，`AnalyzeBounds` 的再赋值跟踪同步覆盖字段链。
-- **null-deref 校验函数跨函数判空**：check/prepare 校验函数入口 `if (p == NULL) return 错误码` + 调用方 `if (check(p) != 0) return;` 的组合此前被报"未防护解引用"。现 `collectNullCheckHelpers` 识别入口判空+非零早退，guard model 覆盖 `f(p)`/`f(p) != 0`/`f(p) == 0`/`!f(p)` 四种守卫方向，返回后的指针视为非空。
-- **implicit-contract 调用点循环守卫传播**：调用点 for 循环条件（`for (; cur != NULL && cur->data != NULL; ...)`）对字段的守卫此前未传播到被调函数，`stat_sum(cur)` 内 `cur->data` 解引用被误报。现 `targetsGuardDominates` 识别循环条件真值分支对字段的非空保证。
-- **use-after-free 释放点收紧**：名字含 `_delete` 的"清配置"函数（体内仅 memset 清零 + 计数减一、从不 free，如 `portrng_syslog_host_delete`）此前被当作释放其入参字段，凭空构造 UAF。现 `directFree` 对字段表达式实参仅对已声明释放 API（`free` 族/`[deallocators]`）视为字段释放，启发式 `_delete` 命名的字段实参不再当作释放。
-- **宏迭代器（NAT 根因 A）复核**：`SLL_Scan`/`POOL_FOR_ALL`/`POOL_FOR_SECT` 已由跨文件宏写入摘要 + `secguard.toml [iterator_macros]` 覆盖，本轮补充 `POOL_FOR_SECT` 判空回归确认（无代码改动）。
-- 回归测试 `zz_nat_production_regression_test.go`：覆盖 NAT 生产复核（`sc_2026-10-19_100105_8cac41`）5 类误报根因（DBZ/null-deref/implicit-contract/UAF/format-string），每条配"真实缺陷仍被报"控制用例防过度压制。
-
-### 发布后修复（版本验证期）
-
-- **auto-confirmed 发现 Evidence 为空**：机器自动确认的发现此前不写 `findings.evidence` 列（证据只进了 `properties.auto_confirm_evidence`），且没有候选文件，导致 `findings/*/NNN_*_confirmed.md` 的 Evidence 段显示 "(no pipeline evidence package recorded for this location)"。现在 `autoConfirmFindings` 把证据片段渲染成与候选文件一致的 bullet 形式写入 `evidence` 列，findings 文档 Evidence 段与 SARIF `properties.evidence` 均可见。
-- **SARIF reasoning/evidence 位置靠后**：`result.sarif` 的 `reasoning` 此前只放在结果对象末尾的 `properties` 里，研发需反复滚动。现在 reasoning + evidence 同时进入 `message.markdown`（结果第 3 个字段，紧邻 ruleId/level），`properties.reasoning`/`properties.evidence` 保留供程序化消费。
-
-### 证据契约 v2（B0-B5）——Hint 体系单一事实源 + 每类型 Verdict Facts
-
-把 AI 研判/复核的判定依据从"临时读源码"改成"管线机器证明的事实包"，目标是在不牺牲准确率的前提下减少 AI 读 .c 源码。
-
-- **单一事实源**：新增 `hint_tokens.go` 注册表统一 72 个 hint token（`src@`/`buf@`/`cap@`/`null@` 等）的语义与消费规则，`_index.md` 图例与候选文件 `## Pipeline Tokens` 由注册表生成，协议由 `zz_hint_protocol_guard_test.go` + `check-extension-consistency.py` 机器守护。
-- **每类型 Verdict Facts**：`VulnTypeSpec.BuildVerdictFacts` 契约，候选文件新增 `## Verdict Facts` 节（token + 一句话事实 + 出处行号），复核材料（`--list-auto-confirmed`）新增 `hint`/`facts` 字段。
-- **F1-F4 修复**：buffer/race props 断链（`src_capacity`/TOCTOU 字段）回填；null-deref 把"被证明可空的在扫 callee"归入 `null@malloc-fail`；uninit 把机器证明的写路径事实挂到 `VALUE_USE` 事件。
-
-### AI 研判/复核降读源（样例项目 dogfood 收敛）
-
-围绕 `examples/c-vuln-benchmark` 的 5 轮扫描会话自检，把"AI 反复读 .c 源码"的根因逐一收敛为机器可证明的事实或代码内嵌：
-
-- **图例按类型裁剪**：`_index.md` 图例从"全量 72 token"改为"仅该类型实际产出的 token"。
-- **buffer-overflow**：新增 `src-cap@`（源缓冲区容量）、format_overflow 携带 `buf@`/`cap@`、`sscanf("%d",…)` 标量写不再产候选、`memcpy(&x->field, src, sizeof(T))` 且字段类型 == T 判为精确拟合拷贝（压制）。
-- **unchecked-return**：`discard`（返回值被 `(void)` 显式丢弃）；把"入口 NULL 检查的 void 消费者"（`if (!e) return;`）判为空安全消费者，源调用的未检查返回被压制——修掉 `alloc_entry` 误报（`branchReturns` 接受裸 return 与失败哨兵、仍排除 `return 0`）。
-- **uninit**：`init@unseen`（heap/struct "函数内未见写"降级，不再谎称"机器证明未写"）+ `field@`（命名被读成员 `p->value` 而非基指针 `p`）。
-- **implicit-contract**：`self-guard@N`（字段 NULL 检查所在行）。
-- **injection**：`sanitizer@<fn>`（命名调用方自定义校验器）。
-- **double-free**：`cond@` 助手函数体 + `## Second Callee Definition` 双双内嵌。
-- **指令收紧**：agent-body/command-instructions 明确区分"机器证明（可判决）"与"启发式（判断 + 读源兜底）"，避免把启发式误写成证明（防误报/漏报）。
-
-A/B：auto-confirmed **115/115 不变**；候选 69→65（2 个 buffer-overflow 误报候选 + 2 个 unchecked-return 误报压制）。
+- 重装二进制与扩展（`./deploy.sh` 或对应平台安装包），确认 `secguard --version` 为
+  `0.9.8`。
 
 ## [0.9.7] - 2026-10-16（二次重发）
 
