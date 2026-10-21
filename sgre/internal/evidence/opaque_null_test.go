@@ -89,6 +89,26 @@ int known_caller(void)
     return known_user(&kk);
 }
 
+int opaque_fwd_target(ExtMsg_t *oft_m)
+{
+    return oft_m->len;
+}
+
+int opaque_fwd_caller(ExtMsg_t *oft_p)
+{
+    return opaque_fwd_target(oft_p);
+}
+
+int tree_typed_target(KnownRec_t *ttt_k)
+{
+    return ttt_k->len;
+}
+
+int tree_typed_caller(KnownRec_t *ttt_p)
+{
+    return tree_typed_target(ttt_p);
+}
+
 int main(int argc, char **argv)
 {
     (void)argc;
@@ -123,6 +143,13 @@ func runOpaqueNullDetect(t *testing.T, fixtures map[string]string) []opaqueSourc
 		if _, err := idx.Index(ctx, path); err != nil {
 			t.Fatalf("index %s: %v", path, err)
 		}
+	}
+	// Mirror the production detector phasing (RunAllDetectors): caller_null
+	// runs in the concurrent batch, opaque_null in the deferred serial phase
+	// AFTER it, because the in-tree-caller channel consumes the caller_null
+	// seeds from the store.
+	if _, err := NewCallerNullDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("caller null detect: %v", err)
 	}
 	if _, err := NewOpaqueNullDetector(store, p, logger).Detect(ctx); err != nil {
 		t.Fatalf("detect: %v", err)
@@ -230,7 +257,7 @@ func TestOpaqueNullDetectorControls(t *testing.T) {
 		t.Errorf("dead_static_helper is static with zero callers: dsh_m must not seed; got %v", records)
 	}
 	if has("ku_k", "opaque_param") {
-		t.Errorf("known_user has an in-tree caller: ku_k must not seed opaque_param; got %v", records)
+		t.Errorf("known_user's caller passes &kk (provably non-null): ku_k must not seed opaque_param; got %v", records)
 	}
 	if has("argv", "opaque_param") {
 		t.Errorf("main's argv must be exempt; got %v", records)
@@ -239,5 +266,66 @@ func TestOpaqueNullDetectorControls(t *testing.T) {
 	// get an opaque_field_read source even though it reads a field.
 	if has("ku_k", "opaque_field_read") {
 		t.Errorf("KnownRec_t is defined in-tree: no opaque_field_read for ku_k; got %v", records)
+	}
+
+	// The in-tree-caller channel (the production shape): an opaque-typed
+	// parameter forwarded unproven keeps its fail-open seed, which is what
+	// blocks the planner's onlyUnprovenCallerNullSources dismissal.
+	if !has("oft_m", "opaque_param") {
+		t.Errorf("opaque_fwd_target's oft_m (opaque type + unproven forward caller) must seed opaque_param; got %v", records)
+	}
+	// The volume guard: the same unproven forward shape with a TREE-DEFINED
+	// parameter type must NOT seed — that candidate stays dismissible.
+	if has("ttt_k", "opaque_param") {
+		t.Errorf("tree_typed_target's ttt_k (KnownRec_t defined in-tree) must not seed opaque_param; got %v", records)
+	}
+}
+
+// The in-tree-caller channel against the report's exact production shape: the
+// target function HAS an in-tree caller forwarding its own unproven opaque
+// parameters. The fail-open opaque_param seed must land for resp/para (without
+// it the planner's onlyUnprovenCallerNullSources dismissal drops the parameter
+// candidates as an "analyzer limitation"), while a guarded caller and a
+// tree-defined type stay dark.
+func TestOpaqueNullDetectorInTreeCallerReportForm(t *testing.T) {
+	records := runOpaqueNullDetect(t, map[string]string{
+		"target.c": `int import_dn_group_tree_refresh(
+    Nac_LdapSearchAckMsg_t *resp,
+    import_para_ext_t *para)
+{
+    ldap_usrgroup_node_t *tree =
+        (ldap_usrgroup_node_t *)(resp->group_data);
+    if ((para->search_index != INVALID_SEARCHDN_IDX) &&
+        (import_get_dn_level_diff(para->orig->base_dn, para->search_dn) > 1)) {
+        return -1;
+    }
+    strcpy_s((char *)tree[0].group_name,
+             sizeof(tree[0].group_name),
+             path);
+    return 0;
+}
+`,
+		"caller.c": `int import_dn_group_tree(Nac_LdapSearchAckMsg_t *ack, import_para_ext_t *p)
+{
+    return import_dn_group_tree_refresh(ack, p);
+}
+`,
+	})
+	has := func(variable, origin string) bool {
+		for _, r := range records {
+			if r.variable == variable && r.origin == origin {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("resp", "opaque_param") {
+		t.Errorf("resp (unproven forward caller + opaque type) must seed opaque_param; got %v", records)
+	}
+	if !has("para", "opaque_param") {
+		t.Errorf("para (unproven forward caller + opaque type) must seed opaque_param; got %v", records)
+	}
+	if !has("tree", "opaque_field_read") {
+		t.Errorf("tree = (T *)(resp->group_data) must still seed opaque_field_read; got %v", records)
 	}
 }
