@@ -672,6 +672,8 @@ possibly-null 值真实可达——literal NULL witness（definite）/ 树内零
 | P23-06 | p23_opaque_type_null.c | 50 | finding | 树内调用点形态 para：opaque_param 阻断 onlyUnprovenCallerNullSources dismiss（caller-arg tier） |
 | P23-07 | p23_opaque_type_null.c | 94 | no_finding | 体量守卫反例：同样未证明转发但 KnownRec_t 树内定义 → 不加播，dismiss 维持 |
 | P23-08 | p23_opaque_type_null.c | 104 | no_finding | 守卫调用者反例：guarded_caller 判空后调用 → classifyArg safe → 无 source |
+| P23-09 | p23_opaque_type_null.c | 123 | no_finding | 头文件定义类型反例：P23HdrRec_t 布局在无函数的 p23_header_type.h 可见 + 完整程序扫描 → 类型普查不得误判 opaque |
+| P23-10 | p23_opaque_type_null.c | 129 | no_finding | 头文件定义类型反例：从可见类型参数读出的字段指针不得播种 opaque_field_read |
 
 四条 finding 均为 **suspected 级**（fail-open 假设交 AI 研判外部契约，不进
 auto-confirmed）：resp/para 走 `null@caller-arg`（detail 标注开放链来源：

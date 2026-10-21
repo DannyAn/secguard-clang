@@ -112,3 +112,19 @@ int guarded_caller(ExtMsg_t *g2)
     }
     return opaque_unguarded(g2);
 }
+/*
+ * Header-defined layouts (the production shape): P23HdrRec_t / P23HdrNode_t
+ * live in p23_header_type.h, which defines no function. The census must see
+ * them so neither the parameter nor the assigned field-read pointer is opaque
+ * (P23-09 / P23-10). Before the census fix both seeded and both surfaced.
+ */
+int header_typed_reader(P23HdrRec_t *ht_resp)
+{
+    return ht_resp->len;
+}
+
+int header_typed_tree(P23HdrRec_t *hh_resp)
+{
+    P23HdrNode_t *hh_tree = (P23HdrNode_t *)(hh_resp->group_data);
+    return hh_tree[0].len;
+}

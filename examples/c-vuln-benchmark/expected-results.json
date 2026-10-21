@@ -3,7 +3,7 @@
   "_benchmark_doc": "benchmark.md",
   "_validator": "scripts/validate-benchmark.py",
   "summary": {
-    "total_test_cases": 202,
+    "total_test_cases": 204,
     "phase0_test_cases": 18,
     "phase1_test_cases": 12,
     "phase2_test_cases": 4,
@@ -14,7 +14,7 @@
     "phase6_resource_leak_no_finding": 3,
     "phase6_resource_leak_known_gaps": 3,
     "expected_final_certified": 77,
-    "expected_no_finding": 91,
+    "expected_no_finding": 93,
     "phase1_confirmed": 9,
     "phase1_safe_excluded": 3,
     "phase2_confirmed": 4,
@@ -60,8 +60,8 @@
     "phase22_null_deref_fp_test_cases": 6,
     "phase22_no_finding": 3,
     "phase22_finding": 3,
-    "phase23_opaque_type_null_test_cases": 8,
-    "phase23_no_finding": 4,
+    "phase23_opaque_type_null_test_cases": 10,
+    "phase23_no_finding": 6,
     "phase23_finding": 4,
     "phase24_unchecked_index_test_cases": 5,
     "phase24_finding": 2,
@@ -2042,6 +2042,26 @@
       "code": "普通参数索引形态反证：p->svr[n] 的 n 是函数参数（非结构体字段）→ 不播种（未校验外部索引通道仅限字段来源，避免逐调用点泛滥）",
       "cwe": "CWE-125",
       "detector": "out_of_bounds",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P23-09",
+      "category": "phase23_opaque_type_null",
+      "file": "src/p23_opaque_type_null.c",
+      "line": 123,
+      "code": "头文件定义类型反例：P23HdrRec_t 布局在无函数的 p23_header_type.h 里可见 + 完整程序扫描 → 类型普查不得误判 opaque → 不报",
+      "cwe": "CWE-476",
+      "detector": "null_deref",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P23-10",
+      "category": "phase23_opaque_type_null",
+      "file": "src/p23_opaque_type_null.c",
+      "line": 129,
+      "code": "头文件定义类型反例：从可见类型参数读出的字段指针不得播种 opaque_field_read → 不报",
+      "cwe": "CWE-476",
+      "detector": "null_deref",
       "expect": "no_finding"
     }
   ]
