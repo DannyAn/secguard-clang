@@ -22,10 +22,10 @@
 | 指标 | 数值 |
 |------|------|
 | 源文件 | 38 |
-| 总测试用例 | 194 |
+| 总测试用例 | 197 |
 | **覆盖漏洞类型（25 个注册 skill）** | **25 / 25** |
-| expect-finding（应报告） | 101 |
-| expect-no_finding（应被抑制） | 93 |
+| expect-finding（应报告） | 102 |
+| expect-no_finding（应被抑制） | 95 |
 | Phase 0（P0-P3/TP 反证骨架） | 18 |
 | Phase 1（CWE-190/362/798/667/327） | 12 |
 | Phase 2（扩展典型漏洞） | 4 |
@@ -47,7 +47,7 @@
 | **Phase 18（P1 调用点实参普查 gate / 净化 kill 回归）** | **5** |
 | **Phase 21（unchecked-return 消费点普查误报修复）** | **7** |
 | **Phase 22（null-deref 三类误报修复）** | **6** |
-| **Phase 23（不完整类型信息 null-deref 检测能力增强）** | **5** |
+| **Phase 23（不完整类型信息 null-deref 检测能力增强）** | **8** |
 | 应完全不产生 Finding (P0: Detector EXCLUDE) | 7 |
 | 应产生 Finding 但被 P1 抑制 | 3 |
 | 应产生 Finding 但被 P2 抑制 | 4 |
@@ -644,6 +644,13 @@ TP 控制组 + ND-16 `id == 0` 守卫回归控制组 use_zero_cfg——`pureNull
 
 修复为两条 **fail-open 播种通道**（全部 suspected 级交 AI 研判，绝不 auto-confirm，
 守卫 kill 与非空重赋值 kill 由 planner 既有 guard/non-null 机制统一处理）：
+**第二轮补充（树内调用点形态）**——上轮复现 fixture 是孤立零调用点函数，生产环境
+目标函数几乎必有树内调用者；此时 caller_null 会播种（非 definite）却被 planner 的
+`onlyUnprovenCallerNullSources` dismiss（"analyzer limitation" 降噪），参数级候选
+（resp/para）恰在有调用者时全灭。补充通道：opaque_param 消费 caller_null 播种
+结果（检测器 deferred 串行段执行，位于并发段 caller_null 之后），对「有 unsafe
+调用点 + 参数类型树内无定义」的参数加播，阻断该 dismiss；树内定义类型维持
+dismissable（体量守卫，防普通调用链候选爆炸）。
 
 - **opaque_param**：非 static 函数 + 树内零调用点（含取地址豁免、main 豁免）+
   指针参数 + 体内有解引用 → 入口播种 assumed source。
@@ -654,19 +661,25 @@ TP 控制组 + ND-16 `id == 0` 守卫回归控制组 use_zero_cfg——`pureNull
 
 | ID | 文件 | 行 | 期望 | 说明 |
 |----|------|----|------|------|
-| P23-01 | p23_opaque_type_null.c | 41 | finding | 报告原帖形态：未知 typedef 参数 resp 无判空解引用 resp->group_data（opaque_param） |
-| P23-02 | p23_opaque_type_null.c | 49 | finding | 报告原帖形态：tree = (T*)(resp->group_data) 转存后 tree[0].group_name 解引用（opaque_field_read） |
-| P23-03 | p23_opaque_type_null.c | 45 | finding | 链式中间层：para->orig->base_dn 的中间字段值解引用（链式 opaque_field_read） |
-| P23-04 | p23_opaque_type_null.c | 57 | no_finding | 守卫反例：opaque 参数入口判空早退 → planner guard kill fail-open source |
-| P23-05 | p23_opaque_type_null.c | 65 | no_finding | 类型可见反例：树内 typedef + 树内调用点传 &kk → 两通道均不播种 |
+| P23-01 | p23_opaque_type_null.c | 48 | finding | 报告原帖形态（树内调用点版）：转发未证明 + resp 类型不可见 → caller_null + opaque_param 双通道（caller-arg tier） |
+| P23-02 | p23_opaque_type_null.c | 56 | finding | 报告原帖形态：tree = (T*)(resp->group_data) 转存后 tree[0].group_name 解引用（opaque_field_read） |
+| P23-03 | p23_opaque_type_null.c | 52 | finding | 链式中间层：para->orig->base_dn 的中间字段值解引用（链式 opaque_field_read） |
+| P23-04 | p23_opaque_type_null.c | 67 | no_finding | 守卫反例：opaque 参数入口判空早退 → planner guard kill fail-open source |
+| P23-05 | p23_opaque_type_null.c | 72 | no_finding | 类型可见反例：树内 typedef + 树内调用点传 &kk → 两通道均不播种 |
+| P23-06 | p23_opaque_type_null.c | 50 | finding | 树内调用点形态 para：opaque_param 阻断 onlyUnprovenCallerNullSources dismiss（caller-arg tier） |
+| P23-07 | p23_opaque_type_null.c | 94 | no_finding | 体量守卫反例：同样未证明转发但 KnownRec_t 树内定义 → 不加播，dismiss 维持 |
+| P23-08 | p23_opaque_type_null.c | 104 | no_finding | 守卫调用者反例：guarded_caller 判空后调用 → classifyArg safe → 无 source |
 
-三条 finding 均为 **suspected 级 + null@opaque-origin tier**（fail-open 假设交 AI
-研判外部契约），不进 auto-confirmed。单测防线：`TestOpaqueNullDetectorReportForm` /
-`TestOpaqueNullDetectorControls`（evidence 层播种形态与豁免域）+
-`TestOpaqueNullEndToEndReportForm` / `TestOpaqueNullEndToEndControls`（planner
-端到端红绿：tier/suspected 断言 + 守卫 kill + 非空重赋值 kill）。已知边界：全局
-变量来源的 opaque 字段读、树内语法 ERROR 吞掉的解引用（缺分号形态）不在两通道
-覆盖内（后者属解析层恢复问题，见 CHANGELOG）。
+四条 finding 均为 **suspected 级**（fail-open 假设交 AI 研判外部契约，不进
+auto-confirmed）：resp/para 走 `null@caller-arg`（有具名未证明调用者，指引更具体），
+para->orig/tree 走 `null@opaque-origin`。单测防线：`TestOpaqueNullDetectorReportForm` /
+`TestOpaqueNullDetectorControls` / `TestOpaqueNullDetectorInTreeCallerReportForm`
+（evidence 层播种形态、豁免域与树内调用点通道）+
+`TestOpaqueNullEndToEndReportForm` / `TestOpaqueNullEndToEndControls` /
+`TestOpaqueNullEndToEndInTreeCaller`（planner 端到端红绿：tier/suspected 断言 +
+守卫 kill + 非空重赋值 kill + 体量守卫负控）。已知边界：全局变量来源的 opaque
+字段读、树内语法 ERROR 吞掉的解引用（缺分号形态）不在两通道覆盖内（后者属解析层
+恢复问题，见 CHANGELOG）。
 
 > 行号以 `src/p23_opaque_type_null.c` 当前内容为准（validator 容差 ±3）。
 

@@ -20,7 +20,8 @@
  *     defined in the scan tree (assigned pointer or chained intermediate).
  *
  * Cases (exact report form first):
- *   P23-01 expect=finding     report form: resp (opaque_param) dereferenced
+ *   P23-01 expect=finding     report form: resp dereferenced (in-tree caller
+ *                             forwarding unproven + opaque type)
  *   P23-02 expect=finding     report form: tree = (T*)(resp->group_data),
  *                             tree[0].group_name dereferenced
  *   P23-03 expect=finding     chained intermediate para->orig dereferenced
@@ -28,6 +29,13 @@
  *                             fail-open source (planner guard model)
  *   P23-05 expect=no_finding  in-tree typedef + in-tree caller passing a
  *                             non-null value: no opaque source at all
+ *   P23-06 expect=finding     same in-tree-caller form for para (caller-arg
+ *                             tier; the opaque_param seed blocks the
+ *                             onlyUnprovenCallerNullSources dismissal)
+ *   P23-07 expect=no_finding  volume guard: the same unproven forward shape
+ *                             over a tree-defined type stays dismissed
+ *   P23-08 expect=no_finding  volume guard: a guarded caller proves the
+ *                             argument non-null, no source at all
  */
 typedef struct KnownRec {
     unsigned int len;
@@ -70,4 +78,37 @@ int known_caller(void)
     KnownRec_t kk;
     kk.len = 1;
     return known_user(&kk);
+}
+/*
+ * In-tree-caller shapes (the production report form actually has a caller):
+ * an unproven forward caller of opaque-typed parameters keeps the parameter
+ * candidates (P23-06), while the same forward shape over a tree-defined type
+ * (P23-07) and a guarded caller (P23-08) stay dismissed.
+ */
+int import_dn_group_tree(Nac_LdapSearchAckMsg_t *ack, import_para_ext_t *p)
+{
+    return import_dn_group_tree_refresh(ack, p);
+}
+
+int tree_typed_target(KnownRec_t *tt_k)
+{
+    return tt_k->len;
+}
+
+int tree_typed_caller(KnownRec_t *tt_p)
+{
+    return tree_typed_target(tt_p);
+}
+
+int opaque_unguarded(ExtMsg_t *m2)
+{
+    return m2->len;
+}
+
+int guarded_caller(ExtMsg_t *g2)
+{
+    if (g2 == NULL) {
+        return -1;
+    }
+    return opaque_unguarded(g2);
 }
