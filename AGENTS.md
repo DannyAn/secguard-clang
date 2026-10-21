@@ -168,6 +168,15 @@ triggered by pushing a `v*` tag. The workflow builds 5 platform binaries
 assembles a single `dist/secguard-<version>.zip` + `SHA256SUMS`, and publishes
 a GitHub Release with `CHANGELOG.md` as the body.
 
+> **NEVER download GitHub release assets.** Do not run `gh release download`,
+> `curl`/`wget` a release asset URL, or otherwise fetch `secguard-*.zip` /
+> `SHA256SUMS` from a published Release. Release verification is METADATA-ONLY:
+> tag SHA (`gh api repos/.../git/refs/tags/<tag>`), asset names/sizes/timestamps
+> and release body (`gh release view <tag> --json ...`), and the workflow
+> conclusion (`gh run view <id>`). The assets are large and the download buys
+> nothing the metadata does not already prove (the workflow builds them from the
+> tagged commit).
+
 **Steps to release version `X.Y.Z`:**
 
 1. **Update version files** (if not already):
