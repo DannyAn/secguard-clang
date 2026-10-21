@@ -336,3 +336,60 @@ func TestOpaqueNullDetectorInTreeCallerReportForm(t *testing.T) {
 		t.Errorf("tree = (T *)(resp->group_data) must still seed opaque_field_read; got %v", records)
 	}
 }
+
+// The type census must see types defined in FUNCTION-LESS headers. A normal C
+// project keeps every struct/typedef in a header that defines no function, so a
+// census built over "files that contain an indexed function" marks those
+// layouts invisible and seeds fail-open field-read sources for a contract the
+// scan tree can see completely — the in-tree-type false-positive class the
+// opaque channel must never introduce.
+func TestOpaqueNullDetectorHeaderDefinedTypeIsNotOpaque(t *testing.T) {
+	records := runOpaqueNullDetect(t, map[string]string{
+		"ext.h": `typedef struct ExtAck_s {
+    unsigned int len;
+    void *group_data;
+} ExtAck_t;
+
+typedef struct ExtNode_s {
+    char name[32];
+} ExtNode_t;
+`,
+		"known.c": `#include "ext.h"
+
+int ext_known_refresh(ExtAck_t *ek_resp)
+{
+    ExtNode_t *ek_tree = (ExtNode_t *)(ek_resp->group_data);
+    return ek_tree[0].name[0];
+}
+`,
+		"opaque.c": `int ext_opaque_refresh(UnknownAck_t *uo_resp)
+{
+    UnknownNode_t *uo_tree = (UnknownNode_t *)(uo_resp->group_data);
+    return uo_tree[0].name[0];
+}
+`,
+	})
+	has := func(variable, origin string) bool {
+		for _, r := range records {
+			if r.variable == variable && r.origin == origin {
+				return true
+			}
+		}
+		return false
+	}
+
+	// ExtAck_t / ExtNode_t are layout-visible in ext.h: the assignment's base
+	// parameter type is NOT opaque, so no fail-open field-read source.
+	if has("ek_tree", "opaque_field_read") {
+		t.Errorf("ext.h defines ExtAck_t/ExtNode_t: ek_tree must not get an opaque_field_read source; got %v", records)
+	}
+	// The type gate closes the zero-caller entry for a visible type too.
+	if has("ek_resp", "caller_null") {
+		t.Errorf("ext_known_refresh's parameter type is defined in ext.h: ek_resp must not be an open entry; got %v", records)
+	}
+	// The undefined-type counterpart must keep the fail-open channel alive, so
+	// the fix cannot blind the detector wholesale.
+	if !has("uo_tree", "opaque_field_read") {
+		t.Errorf("UnknownAck_t is not defined anywhere: uo_tree must still seed opaque_field_read; got %v", records)
+	}
+}

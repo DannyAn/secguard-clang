@@ -352,3 +352,57 @@ int open_entry(ExtMsg_t *pe)
 		t.Errorf("variable pe must not surface (no sink in open_entry)")
 	}
 }
+
+// A type whose layout is defined in a FUNCTION-LESS header is fully visible to
+// the scan tree — and that is where a real C project keeps its type layouts.
+// The opaque fail-open channels must stay silent for it (a header type is not
+// an "unknown external contract"), while the identical shape over a typedef
+// absent from the tree still surfaces. Before the census visited every indexed
+// file, the header was skipped (no function in it), the type read as opaque,
+// and the in-tree-type false-positive class opened for every project struct.
+func TestOpaqueNullEndToEndHeaderDefinedType(t *testing.T) {
+	r := runOpaqueNullPlan(t, map[string]string{
+		"ext.h": `typedef struct ExtAck_s {
+    unsigned int len;
+    void *group_data;
+} ExtAck_t;
+
+typedef struct ExtNode_s {
+    char name[32];
+} ExtNode_t;
+`,
+		"known.c": `#include "ext.h"
+
+int ext_known_refresh(ExtAck_t *ek_resp)
+{
+    ExtNode_t *ek_tree = (ExtNode_t *)(ek_resp->group_data);
+    return ek_tree[0].name[0];
+}
+`,
+		"opaque.c": `int ext_opaque_refresh(UnknownAck_t *uo_resp)
+{
+    UnknownNode_t *uo_tree = (UnknownNode_t *)(uo_resp->group_data);
+    return uo_tree[0].name[0];
+}
+`,
+	})
+	byVar := map[string]EvidenceItem{}
+	for _, c := range r.Candidates {
+		byVar[c.Target.Variable] = c
+	}
+	for _, variable := range []string{"ek_tree", "ek_resp"} {
+		if _, ok := byVar[variable]; ok {
+			t.Errorf("variable %s: ext.h defines its type, so no opaque candidate may surface; got %+v", variable, byVar[variable])
+		}
+	}
+	c, ok := byVar["uo_tree"]
+	if !ok {
+		t.Fatalf("the undefined-type counterpart must still surface uo_tree; got %v", byVar)
+	}
+	if c.NullOriginTier != "opaque-origin" {
+		t.Errorf("uo_tree: tier = %s, want opaque-origin", c.NullOriginTier)
+	}
+	if c.SuspicionLevel != "suspected" {
+		t.Errorf("uo_tree: suspicion = %s, want suspected (fail-open never auto-confirms)", c.SuspicionLevel)
+	}
+}

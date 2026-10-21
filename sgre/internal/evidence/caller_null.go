@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 
@@ -95,7 +96,18 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 	calledNames := map[string]bool{}
 	addrTaken := map[string]bool{}
 	consumedParams := map[int64]map[string]bool{}
+	// The tree-wide defined-type census (layout-visible names only — a
+	// forward-declaration typedef stays opaque) gates the open-entry base.
+	// It is built over EVERY indexed file: a header that defines a struct but
+	// no function is exactly where a normal C project keeps its type layouts,
+	// and forEachFile would skip it, marking every header-defined type opaque
+	// and opening far more entries than the v0.9.4 contract allows.
 	definedTypes := map[string]bool{}
+	if err := forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node) {
+		collectDefinedTypes(root, definedTypes)
+	}); err != nil {
+		return result, fmt.Errorf("caller null: type census: %w", err)
+	}
 
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		ifs := root.FindAll("if_statement")
@@ -134,10 +146,6 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 				}
 			}
 		}
-
-		// The tree-wide defined-type census (layout-visible names only — a
-		// forward-declaration typedef stays opaque) gates the open-entry base.
-		collectDefinedTypes(root, definedTypes)
 
 		for _, call := range calls {
 			callee := calleeName(call)

@@ -74,11 +74,19 @@ func (d *OpaqueNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 	return result, nil
 }
 
-// collectGlobalFacts walks every file once and gathers the tree-wide fact the
-// field-read channel needs: which type names are DEFINED in the scan tree.
+// collectGlobalFacts walks every INDEXED file and gathers the tree-wide fact
+// the field-read channel needs: which type names are DEFINED in the scan tree.
+//
+// It must use forEachIndexedFile, not forEachFile: the latter only visits files
+// that contain at least one indexed function, and in a real C tree essentially
+// every struct/typedef lives in a header that defines no function. A
+// function-only census therefore sees almost no types at all, marks every
+// in-tree header type opaque, and seeds fail-open field-read sources for
+// contracts the tree can fully see (a false-positive class the opaque
+// channel must never introduce).
 func (d *OpaqueNullDetector) collectGlobalFacts(ctx context.Context) (map[string]bool, error) {
 	definedTypes := map[string]bool{}
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node) {
 		collectDefinedTypes(root, definedTypes)
 	})
 	return definedTypes, err
