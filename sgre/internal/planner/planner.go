@@ -3,6 +3,7 @@ package planner
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -629,24 +630,59 @@ func deduplicateCandidates(candidates []Candidate, spec *VulnTypeSpec) []Candida
 	seen := make(map[string]int)
 	result := make([]Candidate, 0, len(candidates))
 	for _, c := range candidates {
+		// Variable-converged types keep ONE candidate per (function, variable)
+		// but must carry every sink line: a nullable pointer dereferenced on
+		// several paths is one root cause whose blast radius is the full sink
+		// list, and the classifier/fix suggestion needs all of them.
+		if spec.ConvergeByVariable {
+			c.DerefLines = appendUniqueLine(c.DerefLines, c.Line)
+		}
 		key := spec.dedupKey(c)
-		if idx, ok := seen[key]; ok {
-			// Prefer the higher-confidence tier (confirmed > suspected >
-			// possible) so a detector-proved candidate is never downgraded to a
-			// needsReview twin; when the tier ties, keep the earliest line so
-			// merged findings anchor at the source (e.g. sprintf) rather than
-			// the sink (sqlite3_exec).
-			if suspicionRank(c.SuspicionLevel) > suspicionRank(result[idx].SuspicionLevel) {
-				result[idx] = c
-			} else if suspicionRank(c.SuspicionLevel) == suspicionRank(result[idx].SuspicionLevel) && c.Line < result[idx].Line {
-				result[idx] = c
-			}
+		idx, ok := seen[key]
+		if !ok {
+			seen[key] = len(result)
+			result = append(result, c)
 			continue
 		}
-		seen[key] = len(result)
-		result = append(result, c)
+		keep := &result[idx]
+		// Prefer the higher-confidence tier (confirmed > suspected > possible)
+		// so a detector-proved candidate is never downgraded to a needsReview
+		// twin; when the tier ties, keep the earliest line so merged findings
+		// anchor at the source (e.g. sprintf) rather than the sink
+		// (sqlite3_exec).
+		replace := suspicionRank(c.SuspicionLevel) > suspicionRank(keep.SuspicionLevel) ||
+			(suspicionRank(c.SuspicionLevel) == suspicionRank(keep.SuspicionLevel) && c.Line < keep.Line)
+		if spec.ConvergeByVariable {
+			for _, l := range c.DerefLines {
+				keep.DerefLines = appendUniqueLine(keep.DerefLines, l)
+			}
+		}
+		if replace {
+			lines := keep.DerefLines
+			*keep = c
+			keep.DerefLines = lines
+		}
+	}
+	for i := range result {
+		if len(result[i].DerefLines) > 1 {
+			sort.Ints(result[i].DerefLines)
+		}
 	}
 	return result
+}
+
+// appendUniqueLine adds line to a sorted-on-return sink list, ignoring the
+// unknown (0) line and duplicates.
+func appendUniqueLine(lines []int, line int) []int {
+	if line <= 0 {
+		return lines
+	}
+	for _, l := range lines {
+		if l == line {
+			return lines
+		}
+	}
+	return append(lines, line)
 }
 
 func (spec *VulnTypeSpec) dedupKey(c Candidate) string {

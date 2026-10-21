@@ -230,6 +230,13 @@ type Candidate struct {
 	// without it `q` was labelled external-unknown ("an unproven external
 	// call") even though its source is a caller argument or an opaque field.
 	DerivedFrom string `json:"derived_from,omitempty"`
+	// DerefLines lists EVERY line at which this candidate's variable is
+	// dereferenced (sorted, first = the reported Line) for variable-converged
+	// types. The candidate stays one entry — one root cause is one finding — but
+	// a null source reaches all of these sinks, so the classifier and the fix
+	// suggestion must see the full set (`tree[0].group_name` inside and after a
+	// branch is one nullable `tree`, not two independent leads).
+	DerefLines []int `json:"deref_lines,omitempty"`
 	// FunctionSignature is the enclosing function's declared signature (parameter
 	// names + types), propagated from the index so the AI classifier can read the
 	// operand types without opening the source file.

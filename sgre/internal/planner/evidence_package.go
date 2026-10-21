@@ -70,6 +70,10 @@ type EvidenceItem struct {
 	// (`q = (T *)param`), so the classifier attributes the contract to the
 	// right variable.
 	DerivedFrom string `json:"derived_from,omitempty"`
+	// DerefLines lists every line at which the candidate's variable is
+	// dereferenced (first = Target.Line). One candidate still means one finding;
+	// this is the sink blast radius the classifier and the fix suggestion need.
+	DerefLines []int `json:"deref_lines,omitempty"`
 	// IsCallResultDeref marks a dereference of a direct call result
 	// (`f()->field`, `*f()`, `f()[i]`): the callee's body (when defined in
 	// the scan) is embedded under ## Callee Definition.
@@ -688,6 +692,7 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 		NullOriginTier:    c.NullOriginTier,
 		IsCallResultDeref: c.IsCallResultDeref,
 		DerivedFrom:       c.DerivedFrom,
+		DerefLines:        c.DerefLines,
 
 		FunctionStartLine: c.FuncStartLine,
 		FunctionEndLine:   c.FuncEndLine,

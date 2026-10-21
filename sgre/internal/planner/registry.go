@@ -322,6 +322,27 @@ func derivedSuffix(c Candidate) string {
 	return fmt.Sprintf(" (reached through `%s`)", c.DerivedFrom)
 }
 
+// otherDerefLines returns the additional sink lines of a variable-converged
+// candidate, i.e. every dereference site except the reported one.
+func otherDerefLines(c Candidate) []int {
+	out := make([]int, 0, len(c.DerefLines))
+	for _, l := range c.DerefLines {
+		if l > 0 && l != c.Line {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// joinLines renders sink line numbers for the evidence sentence.
+func joinLines(lines []int) string {
+	parts := make([]string, 0, len(lines))
+	for _, l := range lines {
+		parts = append(parts, strconv.Itoa(l))
+	}
+	return strings.Join(parts, ", ")
+}
+
 // buildNullDerefVerdictFacts distills the null-deref verdict basis into
 // structured facts (token + one sentence). The tier is the headline: it states
 // how the pipeline KNOWS the value can be null, which is exactly what the
@@ -825,6 +846,18 @@ func init() {
 					Type:   "data_flow",
 					Role:   "path",
 					Detail: fmt.Sprintf("NULL value propagates to dereference at line %d", c.Line),
+				})
+			}
+			// Every sink of the same nullable variable, not just the reported
+			// line: the candidate is converged per variable, so a dereference
+			// inside and after a branch are one root cause — but the fix must
+			// cover all of them and the classifier must not read the single line
+			// as the whole blast radius.
+			if extra := otherDerefLines(c); len(extra) > 0 {
+				fragments = append(fragments, EvidenceFragment{
+					Type:   "dereference",
+					Role:   "sink",
+					Detail: fmt.Sprintf("the same nullable %s is also dereferenced at line(s) %s — one candidate covers every sink because every one of them reads the same null source", c.VariableName, joinLines(extra)),
 				})
 			}
 			if len(fragments) == 0 {
