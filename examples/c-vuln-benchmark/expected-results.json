@@ -1,9 +1,9 @@
 {
-  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327) + 4 个测试用例 (Phase 2: heap OOB write / format overflow / data race / OOB read) + 4 个测试用例 (Phase 3: null-deref sizeof + 流敏感 FP 抑制) + 3 个测试用例 (Phase 4: uninit 流敏感收敛，来自 zlib 生产环境缺陷) + 12 个测试用例 (Phase 6: resource-leak CWE-404，其中 RL-10~RL-12 为已确认检测缺口 known-gap 标记保留作回归目标，validator 对这类用例的漏报不判失败）。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。校验按 (漏洞类型, 文件, 行±容差) 与 verdict 阶段 result.sarif 交叉比对（见 benchmark.md「运行方式」）；detector → 漏洞类型映射见 scripts/validate-benchmark.py 的 DETECTOR_TO_TYPE，用 `--selftest` 可校验该映射是否覆盖全部标签；另加 34 个测试用例 (Phase 11: 补齐 dangerous-function / double-free / format-string / signal-handler 四个零覆盖 skill，并为 deadlock / hardcoded-secret / out-of-bounds / use-after-free 补上缺失的 no_finding 反证防线 —— 22 个注册漏洞类型至此每个都有「该报」与「不该报」对照；FS-05/DF-05/SH-05 为其存量文件上已检出但未纳入 ground truth 的缺陷)；ND-05/ND-06 由已删除的 examples/nullflow-demo/src/demo.c 迁入（拷贝传播收敛、return 之后不可达解引用），该独立样例项目的其余 3 个场景与 p5_null_flow.c 重复，故随迁移一并移除；ML-01/ML-02 补上 memory-leak 两条此前未锁定、仅以候选形式存在的真泄漏（条件路径泄漏 + 从不 free），使该类型每条候选都有 ground truth 对应；另加 5 个测试用例 (Phase 12: v0.7.1 缺陷修复回归 —— memory-leak 错误路径 return p 泄漏 (ML-03)、覆盖指针丢分配 (ML-04)、resource-leak 括号错误返回 (RL-15)、mmap 泄漏 (RL-16)、signal-handler strncpy 变量名巧合误杀 (SH-06))；另加 2 个测试用例 (Phase 13: v0.7.4 误报修复回归 —— 链表删除间接释放函数 + alias 重新赋值 UAF 误报 (UAF-02)、signed-compare 跨作用域同名遮蔽误报 (SC-01))；另加 2 个测试用例 (Phase 15: memory-leak 容器逃逸误报修复回归 —— malloc 容器写入缓冲区后 return 转移所有权，findEscapeLines pointer_expression 分支 allocVarNames 回归 (ML-05/ML-06))；另加 2 个测试用例 (Phase 16: divide-by-zero 非零源除数误报修复回归 —— 结构体字段从非零返回函数赋值 (P16-01)、全局变量从非零常量赋值 (P16-02)，globalInvariants 非零源赋值扫描 + RangeFilter field-chain invariant 检查回归)；另加 12 个测试用例 (Phase 17: 补齐 argument-type / data-representation / implicit-contract 三个此前零覆盖的 contract 类型 —— 每类 2 个 finding + 2 个 no_finding；P17-01~04 显式指针 cast 的越字节读与同尺寸/void* 合法边界，P17-05~08 qsort/bsearch base 元素表示与 comparator 解释一致/不一致，P17-09~12 结构体指针字段部分守卫 vs 完全守卫/函数内写入)。；另加 5 个测试用例 (Phase 18: P1 调用点实参普查回归 —— 非 static wrapper 树内全字面量 gate drop (P18-01/P18-05)、污点调用点保留 promote (P18-02)、basename/strrchr 净化 kill 含尾部整型指针算术 sink 解析 (P18-03/P18-04)；FS-01..03 随 P1 语义重定性为 no_finding：树内唯一调用点传字面量的形参 sink 在封闭程序内不可利用)；另加 2 个测试用例 (Phase 19: NAT 生产第二轮复核 null-deref 误报修复回归 —— 内联 getter 返回静态数组基址指针运算 (g_pool_var.sects + node_id) 永不为 NULL，调用点解引用不得误报 (ND-14)；literal-NULL 返回链真缺陷对照必须仍报 (ND-15)，exprReturnsNullable binary_expression 数组基址识别回归)；Phase 19 同批追加 divide-by-zero abort/assert 退出守卫回归 (P19-03/P19-04)：HPE_ASSERT 宏展开含 abort 的 no-return consequence 与守卫全局自身的 exit 守卫均建立非零不变量；另加 1 个测试用例 (Phase 20: v0.9.9 retNullable 三态化回归 —— proven getter (字面 return NULL 路径) 的调用点解引用自动确认 (ND-16)，assumed 一侧由 ND-07/ND-08 保持 suspected 交 AI 研判锁定，同名 static 定义保守合并为 assumed 由单测锁定)。；另加 7 个测试用例 (Phase 21: unchecked-return 消费点普查误报修复回归 —— IDM 报告 25/25 全误报的三个形态：结果丢弃 + 入口守卫（cast 别名）消费者 (UR-01)、void/int 混合 NULL 防御消费 (UR-02)、字段逃逸下游共享校验 (UR-03)；真阳性控制组直接解引用 (UR-04)；census AND 负控一安全一解引用 (UR-05)；值逃逸无守卫转存 (UR-06)；void 正守卫全包裹 (UR-07)。检测器层 paramNullSafe 摘要（入口早退 ∪ 体内正守卫全包裹，cast 别名感知）+ 消费点 census AND + fieldNullChecks 字段逃逸三机制回归。；另加 6 个测试用例 (Phase 22: null-deref 三类误报修复回归 —— R1 短路守卫 (P22-01)、R2 条件非空 getter (P22-02)、R3 strip 守卫互斥 (P22-03)；真阳性控制组 id 范围 getter (P22-04)、全局 getter 相邻判空不一致 (P22-05)、布尔分支绕过守卫 (P22-06)。evidence 短路保护分析 + planner retNullGuardContract 双契约（paramNullOnly / overflowArg+overflowLen）+ 调用点 strlen 合取互斥三机制回归。；另加 8 个测试用例 (Phase 23: 不完整类型信息场景 null-deref 检测能力增强回归 —— 报告原帖树内调用点形态（转发未证明 + 类型不可见 → caller_null + opaque_param 双通道）(P23-01/P23-06)、field-read+cast 赋值转存 opaque_field_read 播种 (P23-02)、链式中间层字段值播种 (P23-03)；守卫 kill 反例 (P23-04)、树内类型+安全实参反例 (P23-05)、体量守卫反例：树内定义类型同样未证明转发不加播 (P23-07)、守卫调用者反例 (P23-08)。两通道均 fail-open suspected 级，AI 研判裁决外部契约。",
+  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327) + 4 个测试用例 (Phase 2: heap OOB write / format overflow / data race / OOB read) + 4 个测试用例 (Phase 3: null-deref sizeof + 流敏感 FP 抑制) + 3 个测试用例 (Phase 4: uninit 流敏感收敛，来自 zlib 生产环境缺陷) + 12 个测试用例 (Phase 6: resource-leak CWE-404，其中 RL-10~RL-12 为已确认检测缺口 known-gap 标记保留作回归目标，validator 对这类用例的漏报不判失败）。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。校验按 (漏洞类型, 文件, 行±容差) 与 verdict 阶段 result.sarif 交叉比对（见 benchmark.md「运行方式」）；detector → 漏洞类型映射见 scripts/validate-benchmark.py 的 DETECTOR_TO_TYPE，用 `--selftest` 可校验该映射是否覆盖全部标签；另加 34 个测试用例 (Phase 11: 补齐 dangerous-function / double-free / format-string / signal-handler 四个零覆盖 skill，并为 deadlock / hardcoded-secret / out-of-bounds / use-after-free 补上缺失的 no_finding 反证防线 —— 22 个注册漏洞类型至此每个都有「该报」与「不该报」对照；FS-05/DF-05/SH-05 为其存量文件上已检出但未纳入 ground truth 的缺陷)；ND-05/ND-06 由已删除的 examples/nullflow-demo/src/demo.c 迁入（拷贝传播收敛、return 之后不可达解引用），该独立样例项目的其余 3 个场景与 p5_null_flow.c 重复，故随迁移一并移除；ML-01/ML-02 补上 memory-leak 两条此前未锁定、仅以候选形式存在的真泄漏（条件路径泄漏 + 从不 free），使该类型每条候选都有 ground truth 对应；另加 5 个测试用例 (Phase 12: v0.7.1 缺陷修复回归 —— memory-leak 错误路径 return p 泄漏 (ML-03)、覆盖指针丢分配 (ML-04)、resource-leak 括号错误返回 (RL-15)、mmap 泄漏 (RL-16)、signal-handler strncpy 变量名巧合误杀 (SH-06))；另加 2 个测试用例 (Phase 13: v0.7.4 误报修复回归 —— 链表删除间接释放函数 + alias 重新赋值 UAF 误报 (UAF-02)、signed-compare 跨作用域同名遮蔽误报 (SC-01))；另加 2 个测试用例 (Phase 15: memory-leak 容器逃逸误报修复回归 —— malloc 容器写入缓冲区后 return 转移所有权，findEscapeLines pointer_expression 分支 allocVarNames 回归 (ML-05/ML-06))；另加 2 个测试用例 (Phase 16: divide-by-zero 非零源除数误报修复回归 —— 结构体字段从非零返回函数赋值 (P16-01)、全局变量从非零常量赋值 (P16-02)，globalInvariants 非零源赋值扫描 + RangeFilter field-chain invariant 检查回归)；另加 12 个测试用例 (Phase 17: 补齐 argument-type / data-representation / implicit-contract 三个此前零覆盖的 contract 类型 —— 每类 2 个 finding + 2 个 no_finding；P17-01~04 显式指针 cast 的越字节读与同尺寸/void* 合法边界，P17-05~08 qsort/bsearch base 元素表示与 comparator 解释一致/不一致，P17-09~12 结构体指针字段部分守卫 vs 完全守卫/函数内写入)。；另加 5 个测试用例 (Phase 18: P1 调用点实参普查回归 —— 非 static wrapper 树内全字面量 gate drop (P18-01/P18-05)、污点调用点保留 promote (P18-02)、basename/strrchr 净化 kill 含尾部整型指针算术 sink 解析 (P18-03/P18-04)；FS-01..03 随 P1 语义重定性为 no_finding：树内唯一调用点传字面量的形参 sink 在封闭程序内不可利用)；另加 2 个测试用例 (Phase 19: NAT 生产第二轮复核 null-deref 误报修复回归 —— 内联 getter 返回静态数组基址指针运算 (g_pool_var.sects + node_id) 永不为 NULL，调用点解引用不得误报 (ND-14)；literal-NULL 返回链真缺陷对照必须仍报 (ND-15)，exprReturnsNullable binary_expression 数组基址识别回归)；Phase 19 同批追加 divide-by-zero abort/assert 退出守卫回归 (P19-03/P19-04)：HPE_ASSERT 宏展开含 abort 的 no-return consequence 与守卫全局自身的 exit 守卫均建立非零不变量；另加 1 个测试用例 (Phase 20: v0.9.9 retNullable 三态化回归 —— proven getter (字面 return NULL 路径) 的调用点解引用自动确认 (ND-16)，assumed 一侧由 ND-07/ND-08 保持 suspected 交 AI 研判锁定，同名 static 定义保守合并为 assumed 由单测锁定)。；另加 7 个测试用例 (Phase 21: unchecked-return 消费点普查误报修复回归 —— IDM 报告 25/25 全误报的三个形态：结果丢弃 + 入口守卫（cast 别名）消费者 (UR-01)、void/int 混合 NULL 防御消费 (UR-02)、字段逃逸下游共享校验 (UR-03)；真阳性控制组直接解引用 (UR-04)；census AND 负控一安全一解引用 (UR-05)；值逃逸无守卫转存 (UR-06)；void 正守卫全包裹 (UR-07)。检测器层 paramNullSafe 摘要（入口早退 ∪ 体内正守卫全包裹，cast 别名感知）+ 消费点 census AND + fieldNullChecks 字段逃逸三机制回归。；另加 6 个测试用例 (Phase 22: null-deref 三类误报修复回归 —— R1 短路守卫 (P22-01)、R2 条件非空 getter (P22-02)、R3 strip 守卫互斥 (P22-03)；真阳性控制组 id 范围 getter (P22-04)、全局 getter 相邻判空不一致 (P22-05)、布尔分支绕过守卫 (P22-06)。evidence 短路保护分析 + planner retNullGuardContract 双契约（paramNullOnly / overflowArg+overflowLen）+ 调用点 strlen 合取互斥三机制回归。；另加 8 个测试用例 (Phase 23: 不完整类型信息场景 null-deref 检测能力增强回归 —— 报告原帖树内调用点形态（转发未证明 + 类型不可见 → caller_null + opaque_param 双通道）(P23-01/P23-06)、field-read+cast 赋值转存 opaque_field_read 播种 (P23-02)、链式中间层字段值播种 (P23-03)；守卫 kill 反例 (P23-04)、树内类型+安全实参反例 (P23-05)、体量守卫反例：树内定义类型同样未证明转发不加播 (P23-07)、守卫调用者反例 (P23-08)。两通道均 fail-open suspected 级，AI 研判裁决外部契约；另加 5 个测试用例 (Phase 24: 未校验外部索引越界检测能力增强 —— 生产 maf_rbl 形态 p->svr[p->actived_index] 无边界检查 → array_oob_read_unchecked 越界读 (P24-01)、同形态写路由 buffer-overflow (P24-02)；入口容量检查修复对照 (P24-03)、循环变量索引 (P24-04) 与普通参数索引 (P24-05) 两个体量守卫反证。候选保持 suspected 级，idx-src@/elem-field@/oob-escape@ 三个 Hint token 承载 CWE-125→CWE-476 链条交 AI 研判)。",
   "_benchmark_doc": "benchmark.md",
   "_validator": "scripts/validate-benchmark.py",
   "summary": {
-    "total_test_cases": 189,
+    "total_test_cases": 202,
     "phase0_test_cases": 18,
     "phase1_test_cases": 12,
     "phase2_test_cases": 4,
@@ -62,7 +62,10 @@
     "phase22_finding": 3,
     "phase23_opaque_type_null_test_cases": 8,
     "phase23_no_finding": 4,
-    "phase23_finding": 4
+    "phase23_finding": 4,
+    "phase24_unchecked_index_test_cases": 5,
+    "phase24_finding": 2,
+    "phase24_no_finding": 3
   },
   "test_cases": [
     {
@@ -1989,6 +1992,56 @@
       "code": "守卫调用者反例：guarded_caller 判空后调用 → classifyArg safe 无 caller_null 无 opaque_param → 无 source 不报",
       "cwe": "CWE-476",
       "detector": "null_deref",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P24-01",
+      "category": "phase24_unchecked_index_oob",
+      "file": "src/p24_unchecked_index_oob.c",
+      "line": 29,
+      "code": "生产现网形态：rbl_profile->svr[idx] 的 idx 来自未校验配置字段 actived_index（无边界检查）→ 越界读（CWE-125）；越界元素 domain 指针野化并经 &svr[idx] 传入 maf_show_dataplane_config_all_reply_code 解引用 → CWE-125→CWE-476 链",
+      "cwe": "CWE-125",
+      "detector": "out_of_bounds",
+      "expect": "finding"
+    },
+    {
+      "id": "P24-02",
+      "category": "phase24_unchecked_index_oob",
+      "file": "src/p24_unchecked_index_oob.c",
+      "line": 44,
+      "code": "写形态：p->svr[p->actived_index].code = 7，同一未校验外部索引作为写下标 → 越界写路由 buffer-overflow（CWE-787）",
+      "cwe": "CWE-787",
+      "detector": "buffer_overflow",
+      "expect": "finding"
+    },
+    {
+      "id": "P24-03",
+      "category": "phase24_unchecked_index_oob",
+      "file": "src/p24_unchecked_index_oob.c",
+      "line": 39,
+      "code": "修复对照：入口 if (actived_index >= MAF_RBL_SVR_CFG_COUNT) return → 与容量符号相等的边界检查截断，不产候选",
+      "cwe": "CWE-125",
+      "detector": "out_of_bounds",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P24-04",
+      "category": "phase24_unchecked_index_oob",
+      "file": "src/p24_unchecked_index_oob.c",
+      "line": 50,
+      "code": "普通循环形态反证：for (i < MAF_RBL_SVR_CFG_COUNT) dst[i] = p->svr[i]，索引为循环变量而非外部字段 → 不播种（体量守卫）",
+      "cwe": "CWE-125",
+      "detector": "out_of_bounds",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P24-05",
+      "category": "phase24_unchecked_index_oob",
+      "file": "src/p24_unchecked_index_oob.c",
+      "line": 56,
+      "code": "普通参数索引形态反证：p->svr[n] 的 n 是函数参数（非结构体字段）→ 不播种（未校验外部索引通道仅限字段来源，避免逐调用点泛滥）",
+      "cwe": "CWE-125",
+      "detector": "out_of_bounds",
       "expect": "no_finding"
     }
   ]

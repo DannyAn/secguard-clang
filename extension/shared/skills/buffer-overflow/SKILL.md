@@ -20,6 +20,7 @@ A buffer-overflow candidate has:
 Detector categories that route to this type:
 - `buffer_overflow` — unsafe copy API call (memcpy/strcpy/strcat/gets/...)
 - `array_oob_write` — constant index, a constant-valued variable index (`int n = 12; buf[n]`), or a loop bound past a fixed-size array, as a write
+- `array_oob_write_unchecked` — suspected tier: a fixed-size struct array member written through a struct-field index with no bounds check at the access (`p->svr[p->actived_index] = ...`); the external/config-index shape, handed to you because the field's range is unknown at the write
 - `heap_oob_write` — loop bound provably exceeds a `malloc`/`calloc` size (e.g. `malloc(user_len)` + `i < user_len + 10`)
 - `format_overflow` — **confirmed**: `sprintf`/`wsprintf` into a known-capacity buffer whose constant (literal) output length is provably >= capacity
 - `format_overflow_var` — **dismissed**: `sprintf`/`wsprintf` into a known-capacity buffer with a non-constant source (overflow possible but not provable — `sprintf(buf, "%d", n)` never overflows a 64-byte buffer for any `int n`)
@@ -31,14 +32,19 @@ Detector categories that route to this type:
 - `secure_scanf_overflow` — **confirmed**: a `scanf_s`/`sscanf_s`/`fscanf_s` `%s`/`%c`/`%[` conversion whose buffer-size argument (constant) exceeds the real buffer (`scanf_s("%s", buf, (rsize_t)100)` with `char buf[10]`)
 - `secure_scanf_var_size` — **possible**: a `scanf_s` conversion whose buffer-size argument is a caller-influenced variable
 
-Read-flavored events (`array_oob_read`, `heap_oob_read`) belong to the
-`out-of-bounds` type (CWE-125), not this one.
+Read-flavored events (`array_oob_read`, `heap_oob_read`,
+`array_oob_read_unchecked`) belong to the `out-of-bounds` type (CWE-125), not
+this one.
 
 Evidence file fragments:
 - **buffer_access**: the access site
 - **api**: the unsafe API called
 - **buffer**: the destination buffer and its resolved capacity
 - **index**: the access index / copy size expression
+- **index_source**: the struct field an unchecked write index was read from
+  (`array_oob_write_unchecked`)
+- **element_field**: the pointer-typed member read out of the written element
+- **escape**: the callee the out-of-bounds element (or its address) reaches
 - **copy_size** / **dst_capacity** / **size_argument**: the copy size, destination capacity, and `_s` size argument for the bounded/secure-copy categories
 - **call_path**: the function is reachable from an entry point
 
@@ -49,6 +55,8 @@ Evidence file fragments:
 | `buf@<name>` | the buffer being written | the object of the overflow |
 | `cap@N` | the buffer's detector-resolved capacity in elements (array declaration or allocation size) | compare `idx@` against this |
 | `idx@<expr>` | the access index / copy size / declared size argument (the `_s` capacity or required size) | CONSTANT: the detector already proved it reaches past `cap@` (machine-proved, confirm) — VARIABLE (`n`, a parameter): judge its reachable range against `cap@`; a caller-influenced parameter with no clamp is the dangerous case |
+| `idx-src@<field>` | the write index is the struct field `<field>`, with no bounds check against `cap@` dominating the write | unvalidated config/input index -> **confirm**; a bounded field or a caller-validated contract -> **dismiss** |
+| `elem-field@<member>` / `oob-escape@<callee>` | the written element's pointer member / the callee the element escapes to | secondary chain facts — the root cause stays the missing bounds check |
 
 The variable-`idx@` shapes (`bounded_copy_var_size`, `secure_copy_var_size`,
 `secure_scanf_var_size`, `format_overflow_var`) are exactly the delegation
@@ -83,6 +91,8 @@ cases in the Classification Rules below — the tokens name the destination
 | `memcpy` with `sizeof(dst)` as size | **false-positive** |
 | `strncpy` with `sizeof(dst) - 1` + null terminate | **false-positive** |
 | Array write with constant index >= array size | **confirmed** |
+| `array_oob_write_unchecked`: struct-field index, no check against `cap@`/its macro on the path to the write | **confirmed** |
+| `array_oob_write_unchecked`: the field is validated (exit on `>= CAPACITY`, positive branch `< CAPACITY`) or provably bounded below capacity | **false-positive** |
 | Loop bound provably exceeds array/heap allocation size (write) | **confirmed** |
 | `sprintf(dst, ..., var)` into known-capacity `dst`, no size arg | **confirmed** |
 | `format_overflow` (constant literal output length >= capacity) | **confirmed** — the detector proved it |

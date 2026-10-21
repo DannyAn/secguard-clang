@@ -2,7 +2,46 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.9.8] - 2026-10-21（十次重发）
+## [0.9.8] - 2026-10-21（十一次重发）
+
+### out-of-bounds 覆盖未校验外部索引：固定数组 + 配置字段索引（客户现网 maf_rbl 打回）
+
+生产反馈的 `maf_rbl` 形态：结构体固定数组 `svr[MAF_RBL_SVR_CFG_COUNT]` 以未校验的
+配置字段 `actived_index` 为下标（`rbl_profile->svr[rbl_profile->actived_index]`），
+越界读到的元素内 `domain` 指针野化，`&svr[idx]` 传入子函数后解引用触发空指针。
+**修复前该文件扫描 0 候选**（AI 无料可判），逐层定位到三个断点：
+
+- **容量断点**：`findArraySize` 只认 `declaration` 里的 `array_declarator`，结构体
+  成员数组在 `field_declaration` 里，容量（还是宏拼写 `COUNT`）根本解析不到。
+- **基址断点**：`subscriptBaseIndex` 只认裸标识符基址，`p->svr[idx]` 直接被跳过。
+- **判定断点**：`checkArrayOOB` 只报**可证明**越界（常量索引 / 循环上界）；未知
+  字段索引既不证明也不判危险——而"C 项目在入口校验一次配置"恰恰把可空/越界判断
+  推给运行时契约。
+
+修复为 **`array_oob_read_unchecked` / `array_oob_write_unchecked`** 两条启发式
+（suspected，绝不 auto-confirm；读路由 out-of-bounds CWE-125，写路由
+buffer-overflow CWE-787），并携带完整链条交 AI 研判：
+
+- **播种**：成员数组容量可解析（字面量 / 对象宏）；索引来自**结构体字段**（直接
+  `p->idx` / `p.idx`，或一层本地拷贝 `unsigned i = p->idx`，cast 形态透明）；函数内
+  没有「与容量相等」的边界检查支配该访问（`field >= CAPACITY` 出口 / `field <
+  CAPACITY` 正分支；用更大上界的伪守卫不算防护，避免 FN）。
+- **体积守卫**：只认字段来源索引——普通形参/循环变量索引不播种（否则重演
+  null-deref 1264 候选的量级失控）；同函数内相同 (数组, 索引字段, 读写) 折叠一条。
+  326 函数 benchmark 仅新增 P24 fixture 的 2 条，其余零增量。
+- **链条证据（CWE-125 → CWE-476）**：`elem_field` 记录从越界元素读出的指针成员
+  （`svr[idx].domain`）；`escape`/`escape_deref` 记录元素（或地址）逃逸到的子函数及
+  其解引用的指针成员（同文件定义可解析时给 member@line）。Hint/VerdictFacts 三个
+  新 token：`idx-src@` / `elem-field@` / `oob-escape@`——AI 不读源码即可给出
+  「越界读 → 空指针解引用」链条与修复建议（入口 `if (idx >= CAP) return;`）。
+  **一次候选承载整条链**：根因是缺失边界检查（CWE-125），下游空指针是后果，
+  不重复产 CWE-476 finding。
+- **顺带修复**：`subscriptAccessKind` 的写判定用「走到 assignment 时的直接子节点」
+  比较，`p->svr[i].field = x`（经成员写入）此前被误判为 read 并路由错类型。
+- 验证：evidence 五件（播种形态 / 入口检查零候选 / 四种守卫惯用法 + 伪守卫不抑制 /
+  形参·循环·常量索引零候选 / 写形态）+ planner e2e 四件（单候选 suspected + Hint 三 token + VerdictFacts 链条 /
+  修复对照 / 体量守卫 / 读写路由）；benchmark **Phase 24** 五用例（P24-01/02 finding，
+  P24-03/04/05 no_finding），`--coverage` 与 `--selftest` 通过。
 
 ### null-deref 候选量级失控修复：调用链开放性 fixpoint（客户现网 1264 候选打回）
 

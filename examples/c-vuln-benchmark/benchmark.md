@@ -21,11 +21,11 @@
 
 | 指标 | 数值 |
 |------|------|
-| 源文件 | 38 |
-| 总测试用例 | 197 |
+| 源文件 | 39 |
+| 总测试用例 | 202 |
 | **覆盖漏洞类型（25 个注册 skill）** | **25 / 25** |
-| expect-finding（应报告） | 102 |
-| expect-no_finding（应被抑制） | 95 |
+| expect-finding（应报告） | 104 |
+| expect-no_finding（应被抑制） | 98 |
 | Phase 0（P0-P3/TP 反证骨架） | 18 |
 | Phase 1（CWE-190/362/798/667/327） | 12 |
 | Phase 2（扩展典型漏洞） | 4 |
@@ -48,6 +48,7 @@
 | **Phase 21（unchecked-return 消费点普查误报修复）** | **7** |
 | **Phase 22（null-deref 三类误报修复）** | **6** |
 | **Phase 23（不完整类型信息 null-deref 检测能力增强）** | **8** |
+| **Phase 24（未校验外部索引越界检测能力增强）** | **5** |
 | 应完全不产生 Finding (P0: Detector EXCLUDE) | 7 |
 | 应产生 Finding 但被 P1 抑制 | 3 |
 | 应产生 Finding 但被 P2 抑制 | 4 |
@@ -685,6 +686,60 @@ opaque 字段读、树内语法 ERROR 吞掉的解引用（缺分号形态）不
 解析层恢复问题，见 CHANGELOG）。
 
 > 行号以 `src/p23_opaque_type_null.c` 当前内容为准（validator 容差 ±3）。
+
+## Phase 24 — 未校验外部索引越界检测能力增强（2026-10 新增）
+
+生产反馈：`maf_rbl` 的 `rbl_profile->svr[rbl_profile->actived_index]` 是
+「固定长度数组成员 + 未校验外部配置索引」的教科书形态——`actived_index` 来自外部
+配置/输入、入口未做范围校验，越界读到的元素内 `domain` 指针野化，`&svr[idx]` 传入
+子函数后解引用 `svr->domain` 触发空指针解引用。**修复前该形态零候选**：OOB 检测
+（`checkArrayOOB`）只报**可证明**的越界（常量索引 / 循环上界），未知字段索引既不
+可证也不判危险；成员数组（`field_declaration` 里的 `array_declarator`）连容量都
+解析不到（`findArraySize` 只认局部/全局 `declaration`），下标基址也被
+`subscriptBaseIndex`（只认裸标识符）直接跳过。
+
+修复为 `array_oob_read_unchecked` / `array_oob_write_unchecked` 两条**启发式**
+（suspected）事件，交 AI 研判，绝不 auto-confirm：
+
+- **播种条件（全部满足）**：下标基址是**结构体成员数组**且容量可解析（数字字面量
+  或对象宏）；索引来自**结构体字段**（直接 `p->idx`/`p.idx` 或一层本地拷贝
+  `unsigned idx = p->actived_index`，含 cast 形态）；函数内**没有**与容量相等的
+  边界检查支配该访问（`field >= CAPACITY` 且出口，或 `field < CAPACITY` 正分支
+  包裹访问；容量符号与数组声明的宏一致，用「更大上界」的伪守卫不算防护）。
+- **体积守卫**：只认字段来源索引——普通形参/循环变量索引不播种（普通循环形态是
+  C 代码的绝大多数，若播种即重演 null-deref 1264 候选的量级失控）；同一函数内
+  相同 (数组, 索引字段, 读写) 的多次访问折叠为一条候选。
+- **链条证据（CWE-125 → CWE-476）**：`elem_field` 记录从越界元素读出的指针成员
+  （`svr[idx].domain`）；`escape`/`escape_deref` 记录元素（或其地址）逃逸到的子函数
+  及该子函数解引用的指针成员（同文件可解析时给出 member@line）。Hint 三 token：
+  `idx-src@` / `elem-field@` / `oob-escape@`，AI 无需读源码即可给出完整链条与
+  修复建议（入口 `if (idx >= CAP) return;`）。
+- **路由**：读形态 `array_oob_read_unchecked` → out-of-bounds（CWE-125）；写形态
+  `array_oob_write_unchecked` → buffer-overflow（CWE-787）。共享同一
+  `BUFFER_ACCESS` 种子事件，由 `Categories` 分流。
+
+| ID | 文件 | 行 | 期望 | 说明 |
+|----|------|----|------|------|
+| P24-01 | p24_unchecked_index_oob.c | 29 | finding | 生产形态越界读：`svr[idx].domain` + `&svr[idx]` 传入子函数（out-of-bounds suspected，携带 idx-src/elem-field/oob-escape 链条） |
+| P24-02 | p24_unchecked_index_oob.c | 44 | finding | 写形态：`p->svr[p->actived_index].code = 7` 路由 buffer-overflow（写侧 CWE-787） |
+| P24-03 | p24_unchecked_index_oob.c | 39 | no_finding | 修复对照：入口 `actived_index >= MAF_RBL_SVR_CFG_COUNT` 早退，容量符号相等 → 不播种 |
+| P24-04 | p24_unchecked_index_oob.c | 50 | no_finding | 体量守卫反证：`for (i < MAF_RBL_SVR_CFG_COUNT) dst[i] = p->svr[i]` 循环变量索引 → 不播种 |
+| P24-05 | p24_unchecked_index_oob.c | 56 | no_finding | 体量守卫反证：`p->svr[n]` 的 n 是普通形参（非字段）→ 不播种 |
+
+单测防线：evidence 层 `TestUncheckedIndexReadReportForm`（播种形态 + 容量宏 +
+链条证据）/ `TestUncheckedIndexGuardedControl`（入口检查零候选）/
+`TestUncheckedIndexGuardShapes`（`>=` / `>` / `<` / `<=` 四种守卫惯用法全部抑制，
+且「上界大于容量」的伪守卫不抑制）/ `TestUncheckedIndexParameterIndexControl`
+（形参/循环/常量索引零候选）/ `TestUncheckedIndexWriteCategory`（写形态路由）；
+planner 端到端
+`TestUncheckedIndexOutOfBoundsEndToEnd`（单候选 + suspected + Hint 三 token +
+VerdictFacts 链条）/ `TestUncheckedIndexGuardedEndToEnd` /
+`TestUncheckedIndexOrdinaryShapesEndToEnd` / `TestUncheckedIndexWriteRoutesToBufferOverflow`。
+已知边界：索引经跨函数传递（调用方把未校验字段作为形参传入被调方）不在本通道内
+——候选收敛到字段读取处，避免逐调用点重复；成员数组的常量/循环越界证明仍走
+`array_oob_read` 的既有证明通道（当前只覆盖裸数组，属后续增强）。
+
+> 行号以 `src/p24_unchecked_index_oob.c` 当前内容为准（validator 容差 ±3）。
 
 ## 检测器缺口（2026-10 盘点，本轮已全部闭环）
 

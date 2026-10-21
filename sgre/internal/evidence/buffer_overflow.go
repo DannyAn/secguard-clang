@@ -46,8 +46,9 @@ func (d *BufferOverflowDetector) Detect(ctx context.Context) (DetectResult, erro
 		// Parameter names per function: a variable copy size that is a function
 		// parameter (caller-influenced) is the signal for the variable-length
 		// bounded-copy overflow tier (handed to the AI agent to reason about).
+		fnDefs := root.FindAll("function_definition")
 		paramsByLine := make(map[int][]string)
-		for _, fnNode := range root.FindAll("function_definition") {
+		for _, fnNode := range fnDefs {
 			paramsByLine[fnNode.StartLine()] = findParamsInDefinition(fnNode)
 		}
 
@@ -58,6 +59,7 @@ func (d *BufferOverflowDetector) Detect(ctx context.Context) (DetectResult, erro
 			}
 			d.detectUnsafeCalls(ctx, f, file, bc, params, &result)
 			d.detectArrayOOB(ctx, f, file, bc, &result)
+			d.detectUncheckedIndex(ctx, f, file, bc, fnDefs, &result)
 			d.detectFormatOverflow(ctx, f, file, bc, &result)
 		}
 	})
@@ -1775,11 +1777,15 @@ func subscriptAccessKind(bc *bufCtx, f *db.Function, sub parser.Node) string {
 	// match. The previous `strings.Contains(children[0].Text(), subText)` matched
 	// both subscripts of `a[i] = a[i] + 1` on one line and mis-categorized the
 	// read side as a write, routing it to the wrong vuln type (BO-14).
+	// `prev` tracks the outermost expression seen so far, so a write through an
+	// element member (`p->arr[i].field = x`) is still recognized: the assignment
+	// target is the enclosing field_expression, not the subscript itself.
+	prev := sub
 	for p := sub.Parent(); p != nil; p = p.Parent() {
 		switch p.Kind() {
 		case "assignment_expression", "init_declarator":
 			children := p.NamedChildren()
-			if len(children) >= 1 && sameNode(children[0], sub) {
+			if len(children) >= 1 && sameNode(children[0], prev) {
 				return "write"
 			}
 			return "read"
@@ -1788,6 +1794,7 @@ func subscriptAccessKind(bc *bufCtx, f *db.Function, sub parser.Node) string {
 		case "binary_expression", "parenthesized_expression", "cast_expression",
 			"subscript_expression", "argument_list", "call_expression",
 			"field_expression", "pointer_expression", "unary_expression":
+			prev = *p
 			continue // nested inside a larger expression; keep walking up
 		default:
 			return "read"

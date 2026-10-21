@@ -74,6 +74,9 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "cap@", Display: "cap@N", Description: "the buffer's known capacity in elements: {value} (from the array declaration or allocation size)"},
 	{Key: "idx@", Display: "idx@<expr>", Description: "the access index, copy size, or declared size argument: {value} — a constant past cap@ is detector-proved; a variable one needs your judgment of its reachable range"},
 	{Key: "src-cap@", Display: "src-cap@N", Description: "the SOURCE buffer's known capacity in elements: {value} — a source that is itself a bounded fixed-size global/array cannot feed more bytes than this (a `strcpy(g_dst, g_src)` with src-cap@ ≤ cap@ is bounded, dismiss)"},
+	{Key: "idx-src@", Display: "idx-src@<field>", Description: "the index is read from struct field {value} and no bounds check against cap@ dominates the access — judge the field's real range: an unvalidated external/config index reaching cap@ or beyond confirms the out-of-bounds access; a bounded field or a validated caller contract dismisses"},
+	{Key: "elem-field@", Display: "elem-field@<member>", Description: "the indexed element's pointer member {value} is read at the access site — out-of-range memory yields an indeterminate pointer, so its downstream dereference is the null-deref leg of the chain"},
+	{Key: "oob-escape@", Display: "oob-escape@<callee>", Description: "the out-of-bounds element (or its address) is passed to callee {value}; when the callee reads a pointer member from it, the OOB element feeds the downstream null-deref sink (CWE-125 → CWE-476)"},
 
 	// ---- divide-by-zero ----
 	{Key: "divisor@", Display: "divisor@<shape>", Description: "the divisor's shape: {value} (`bare` = plain identifier, `call` = call result, `compound` = complex expression; `field`/`global` are auto-confirmed and never reach you)"},

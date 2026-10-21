@@ -447,6 +447,32 @@ func buildBufferVerdictFacts(c Candidate) []VerdictFact {
 			})
 		}
 	}
+	if c.IndexSource != "" {
+		symbol := ""
+		if c.CapacitySymbol != "" {
+			symbol = fmt.Sprintf(" (`%s`)", c.CapacitySymbol)
+		}
+		facts = append(facts, VerdictFact{
+			Token:  "idx-src@" + c.IndexSource,
+			Detail: fmt.Sprintf("the index is the struct field `%s`, and no bounds check against cap@%d%s dominates this access — judge the field's real range: an external/config-supplied index with no entry guard is the dangerous case (confirm); a bounded field or a validated caller contract dismisses", c.IndexSource, c.Size, symbol),
+		})
+	}
+	if c.ElemField != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "elem-field@" + c.ElemField,
+			Detail: fmt.Sprintf("the indexed element's pointer member `%s` is read here — if the index is out of range this pointer comes from out-of-range memory (indeterminate), so its downstream dereference is the null-deref/use-of-wild-pointer leg of the chain", c.ElemField),
+		})
+	}
+	if c.Escape != "" {
+		deref := ""
+		if c.EscapeDeref != "" {
+			deref = fmt.Sprintf(", which reads its pointer member `%s`", strings.SplitN(c.EscapeDeref, "@", 2)[0])
+		}
+		facts = append(facts, VerdictFact{
+			Token:  "oob-escape@" + c.Escape,
+			Detail: fmt.Sprintf("the out-of-bounds element (or its address) is passed to `%s`%s — the OOB element feeds that sink, the second link of the CWE-125 → CWE-476 chain", c.Escape, deref),
+		})
+	}
 	return facts
 }
 
@@ -811,7 +837,7 @@ func init() {
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "buffer-overflow",
 		BuildVerdictFacts: buildBufferVerdictFacts,
-		Categories:        []string{"buffer_overflow", "array_oob_write", "heap_oob_write", "format_overflow", "format_overflow_var", "bounded_copy_overflow", "bounded_copy_var_size", "secure_copy_overflow", "secure_copy_var_size", "secure_constraint_violation", "secure_scanf_overflow", "secure_scanf_var_size"},
+		Categories:        []string{"buffer_overflow", "array_oob_write", "heap_oob_write", "array_oob_write_unchecked", "format_overflow", "format_overflow_var", "bounded_copy_overflow", "bounded_copy_var_size", "secure_copy_overflow", "secure_copy_var_size", "secure_constraint_violation", "secure_scanf_overflow", "secure_scanf_var_size"},
 		// Provable out-of-bounds writes (a constant index past a known array or
 		// allocation size, a constant copy size exceeding a known capacity, or
 		// an Annex K `_s` function given a lying destination-capacity argument)
@@ -823,6 +849,7 @@ func init() {
 		CategoryConfidence: map[string]string{
 			"array_oob_write":             "confirmed",
 			"heap_oob_write":              "confirmed",
+			"array_oob_write_unchecked":   "suspected",
 			"bounded_copy_overflow":       "confirmed",
 			"bounded_copy_var_size":       "possible",
 			"secure_copy_overflow":        "confirmed",
@@ -845,6 +872,15 @@ func init() {
 			}
 			if c.Index != "" {
 				frags = append(frags, EvidenceFragment{Type: "index", Role: "condition", Detail: fmt.Sprintf("access index/copy size: %s", c.Index)})
+			}
+			if c.IndexSource != "" {
+				frags = append(frags, EvidenceFragment{Type: "index_source", Role: "condition", Detail: fmt.Sprintf("index source: struct field %s — no bounds check against the array's capacity dominates this access", c.IndexSource)})
+			}
+			if c.ElemField != "" {
+				frags = append(frags, EvidenceFragment{Type: "element_field", Role: "sink", Detail: fmt.Sprintf("pointer member read from the indexed element: %s", c.ElemField)})
+			}
+			if c.Escape != "" {
+				frags = append(frags, EvidenceFragment{Type: "escape", Role: "sink", Detail: fmt.Sprintf("the element (or its address) escapes to %s", c.Escape)})
 			}
 			if c.CopySize != "" {
 				frags = append(frags, EvidenceFragment{Type: "copy_size", Role: "condition", Detail: fmt.Sprintf("copy size: %s", c.CopySize)})
@@ -1286,12 +1322,13 @@ func init() {
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "buffer-overflow",
 		BuildVerdictFacts: buildBufferVerdictFacts,
-		Categories:        []string{"array_oob_read", "heap_oob_read"},
+		Categories:        []string{"array_oob_read", "heap_oob_read", "array_oob_read_unchecked"},
 		// A read-flavored OOB is only emitted when the detector proved the
 		// index outruns the array/allocation, so it is confirmed, not suspected.
 		CategoryConfidence: map[string]string{
-			"array_oob_read": "confirmed",
-			"heap_oob_read":  "confirmed",
+			"array_oob_read":           "confirmed",
+			"heap_oob_read":            "confirmed",
+			"array_oob_read_unchecked": "suspected",
 		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{
@@ -1306,6 +1343,19 @@ func init() {
 			}
 			if c.Index != "" {
 				frags = append(frags, EvidenceFragment{Type: "index", Role: "condition", Detail: fmt.Sprintf("access index: %s", c.Index)})
+			}
+			if c.IndexSource != "" {
+				frags = append(frags, EvidenceFragment{Type: "index_source", Role: "condition", Detail: fmt.Sprintf("index source: struct field %s — no bounds check against the array's capacity dominates this access", c.IndexSource)})
+			}
+			if c.ElemField != "" {
+				frags = append(frags, EvidenceFragment{Type: "element_field", Role: "sink", Detail: fmt.Sprintf("pointer member read from the indexed element: %s (indeterminate when the index is out of range)", c.ElemField)})
+			}
+			if c.Escape != "" {
+				deref := ""
+				if c.EscapeDeref != "" {
+					deref = fmt.Sprintf(" and reads its pointer member %s", strings.SplitN(c.EscapeDeref, "@", 2)[0])
+				}
+				frags = append(frags, EvidenceFragment{Type: "escape", Role: "sink", Detail: fmt.Sprintf("the element (or its address) escapes to %s, which dereferences it%s — the OOB element feeds a null-deref sink", c.Escape, deref)})
 			}
 			frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
 			return frags

@@ -87,18 +87,33 @@ type eventProps struct {
 	// Size is the resolved array element count the buffer-overflow detector
 	// attached to a BUFFER_ACCESS event, used by the planner's range-oob filter
 	// to re-verify the index interval against the capacity (BO-01/02).
-	Size       flexInt `json:"size"`
-	KeySize    flexInt `json:"key_size"`
-	Reason     string  `json:"reason"`
-	CheckFunc  string  `json:"check_function"`
-	UseFunc    string  `json:"use_function"`
-	PathArg    string  `json:"path_arg"`
-	Path       string  `json:"path"`       // path-traversal sink argument text
-	FormatArg  string  `json:"format_arg"` // format-string sink argument text
-	Mutex      string  `json:"mutex"`
-	LockLine   flexInt `json:"lock_line"`
-	UnlockLine flexInt `json:"unlock_line"`
-	Divisor    string  `json:"divisor"` // divide-by-zero divisor expression
+	Size flexInt `json:"size"`
+	// IndexSource names the struct field an unchecked array index was read
+	// from (array_oob_{read,write}_unchecked), the field-derived external
+	// index shape the detector seeds heuristically.
+	IndexSource string `json:"index_source"`
+	// CapacitySymbol is the macro spelling of the array's element count
+	// (`MAF_RBL_SVR_CFG_COUNT`) when the declarator used one.
+	CapacitySymbol string `json:"capacity_symbol"`
+	// ElemField is the pointer-typed member read out of the indexed element
+	// (`svr[idx].domain`), an indeterminate pointer taken from possibly
+	// out-of-range memory.
+	ElemField string `json:"elem_field"`
+	// Escape/EscapeDeref name the callee the out-of-bounds element escapes to
+	// and the pointer member that callee reads from it (the null-deref sink).
+	Escape      string  `json:"escape"`
+	EscapeDeref string  `json:"escape_deref"`
+	KeySize     flexInt `json:"key_size"`
+	Reason      string  `json:"reason"`
+	CheckFunc   string  `json:"check_function"`
+	UseFunc     string  `json:"use_function"`
+	PathArg     string  `json:"path_arg"`
+	Path        string  `json:"path"`       // path-traversal sink argument text
+	FormatArg   string  `json:"format_arg"` // format-string sink argument text
+	Mutex       string  `json:"mutex"`
+	LockLine    flexInt `json:"lock_line"`
+	UnlockLine  flexInt `json:"unlock_line"`
+	Divisor     string  `json:"divisor"` // divide-by-zero divisor expression
 	// DefinitelyZero is "true" when the divide-by-zero detector proved the
 	// divisor is exactly zero (a literal `x/0` or a zero-valued constant symbol),
 	// so the RangeFilter auto-confirms it instead of deferring to the AI agent.

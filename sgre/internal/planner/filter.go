@@ -183,6 +183,21 @@ type Candidate struct {
 	Array string `json:"array,omitempty"`
 	Index string `json:"index,omitempty"`
 	Size  int    `json:"size,omitempty"`
+	// IndexSource names the struct field an unchecked array index came from
+	// (array_oob_{read,write}_unchecked): the field-derived external index
+	// shape, with no bounds check dominating the access.
+	IndexSource string `json:"index_source,omitempty"`
+	// CapacitySymbol is the macro spelling of the array's element count when
+	// the declarator used one (the symbol a caller-side guard compares to).
+	CapacitySymbol string `json:"capacity_symbol,omitempty"`
+	// ElemField is the pointer-typed member read out of the indexed element
+	// (the indeterminate pointer an out-of-range element yields).
+	ElemField string `json:"elem_field,omitempty"`
+	// Escape is the callee an out-of-bounds element (or its address) is passed
+	// to; EscapeDeref is the pointer member that callee reads from it, i.e. the
+	// downstream null-deref sink of the OOB chain.
+	Escape      string `json:"escape,omitempty"`
+	EscapeDeref string `json:"escape_deref,omitempty"`
 	// SrcCapacity is the resolved element count of the SOURCE buffer of an
 	// unbounded copy (strcpy/strcat/memcpy/…). A known source capacity lets the
 	// classifier judge "the source is itself a bounded fixed-size global" (the

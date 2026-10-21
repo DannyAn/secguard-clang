@@ -312,6 +312,19 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			if idx != "" {
 				parts = append(parts, "idx@"+compactHintValue(idx))
 			}
+			// The unchecked-external-index chain: the field the index came
+			// from, the pointer member read out of the element, and the callee
+			// the out-of-range element escapes to. Together they are the
+			// CWE-125 → CWE-476 link the classifier states in its verdict.
+			if c.IndexSource != "" {
+				parts = append(parts, "idx-src@"+compactHintValue(c.IndexSource))
+			}
+			if c.ElemField != "" {
+				parts = append(parts, "elem-field@"+compactHintValue(c.ElemField))
+			}
+			if c.Escape != "" {
+				parts = append(parts, "oob-escape@"+compactHintValue(c.Escape))
+			}
 		case "memory-leak", "resource-leak":
 			// The verdict basis: WHERE the resource is acquired, HOW certain
 			// the loss is (DefiniteLeak), and WHAT ownership-transfer channels

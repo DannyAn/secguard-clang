@@ -41,6 +41,11 @@
 2. **名字 / 启发式**：函数名含 `alloc`/`open`/`join` 等、taint 未证明、格式串非字面量但未到 sink。
    unchecked-return 的 `contract@unknown` 属于此类：callee 仅凭名字匹配，失败契约未证明。
 3. **参数 / 跨函数 / 宏**：外部函数契约未知、macro-context（宏语义不可见）、参数驱动的值。
+4. **未校验的外部索引**：固定长度数组成员以**结构体字段**为下标、且函数内没有与容量
+   相等的边界检查（`array_oob_read_unchecked` / `array_oob_write_unchecked`）。
+   字段的真实取值范围是运行期契约（配置/输入侧可能校验过，也可能没有），管线证明不了；
+   只播种字段来源索引（普通形参/循环变量不播种）以守住候选体量，链条证据
+   （`idx-src@` / `elem-field@` / `oob-escape@`）交 AI 判「越界读 → 空指针解引用」。
 
 ## AI 的契约（写进 `agent-body.md`）
 
