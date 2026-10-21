@@ -351,6 +351,11 @@ func buildNullDerefVerdictFacts(c Candidate) []VerdictFact {
 			Token:  "null@caller-arg",
 			Detail: fmt.Sprintf("the null source is parameter `%s`: %s — judge whether that caller can pass NULL", c.VariableName, detail),
 		})
+	case "opaque-origin":
+		facts = append(facts, VerdictFact{
+			Token:  "null@opaque-origin",
+			Detail: fmt.Sprintf("the null source of `%s` is a contract the scan tree cannot see (an external caller's argument, or a field value of an externally-defined type) — the pipeline only ASSUMES it may be NULL; judge whether that external contract can actually yield NULL", c.VariableName),
+		})
 	case "external-unknown":
 		facts = append(facts, VerdictFact{
 			Token:  "null@external-unknown",

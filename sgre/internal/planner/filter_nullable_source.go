@@ -232,6 +232,13 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 					c.NullableOriginName = models[c.FunctionID].certainNullableOrigin(c.VariableName)
 				case c.CallerNullDetail != "":
 					c.NullOriginTier = "caller-arg"
+				case models[c.FunctionID].hasOpaqueSource(c.VariableName):
+					// An opaque_param / opaque_field_read source: the value's
+					// nullability comes from a contract the scan tree cannot
+					// see (an external caller's argument, an externally-defined
+					// struct's field value). Fail-open: suspected, the AI
+					// judges the contract.
+					c.NullOriginTier = "opaque-origin"
 				case synthCallee != "":
 					// An in-scan callee the inter-procedural fixpoint graded:
 					// proven (a concrete NULL witness in the body) keeps the
@@ -408,13 +415,21 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 		}
 		// Split sources: caller_null sources (origin "caller_null") are seeded at
 		// the CFG ENTRY (a parameter has no body statement to hang a line-keyed
-		// gen on), while intra-procedural sources stay line-keyed.
+		// gen on), while intra-procedural sources stay line-keyed. An
+		// opaque_param source (a pointer parameter of a function with zero
+		// in-tree callers) is seeded at the entry the same way — never definite.
+		// An opaque_field_read source seeds at the entry when its line sits at
+		// or before the function header (the chained-dereference intermediate
+		// form: the field value is possibly-null from birth, there is no
+		// assignment statement to hang the gen on) and stays line-keyed when it
+		// is an actual assignment (`tree = (T *)(resp->group_data)`).
 		sources := nullSourcesFor(models, fid)
 		var entrySeeds map[string]bool
 		var definiteEntrySeeds map[string]bool
 		var lineSources []nullSource
 		for _, s := range sources {
-			if s.origin == "caller_null" {
+			birthField := s.origin == "opaque_field_read" && s.line <= fn.StartLine
+			if s.origin == "caller_null" || s.origin == "opaque_param" || birthField {
 				if entrySeeds == nil {
 					entrySeeds = map[string]bool{}
 				}

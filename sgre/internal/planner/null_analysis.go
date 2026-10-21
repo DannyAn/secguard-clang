@@ -207,6 +207,22 @@ func (m *nullModel) hasExternalCallSource(variable string) bool {
 	return false
 }
 
+// hasOpaqueSource reports whether the variable has an opaque null source: an
+// opaque_param source (a pointer parameter of a function whose callers are
+// all outside the scan tree) or an opaque_field_read source (a field value of
+// an externally-defined struct). These feed the null@opaque-origin tier.
+func (m *nullModel) hasOpaqueSource(variable string) bool {
+	if m == nil {
+		return false
+	}
+	for _, s := range m.sources {
+		if s.variable == variable && (s.origin == "opaque_param" || s.origin == "opaque_field_read") {
+			return true
+		}
+	}
+	return false
+}
+
 // onlyExternalCallSources reports whether EVERY null source for variable is an
 // unknown external call (origin "external_call") and there is at least one. A
 // mixed model (an explicit NULL, an allocator, or a caller argument) is not
