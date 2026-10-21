@@ -244,3 +244,134 @@ func firstNullCandidate(t *testing.T, res *PlanResult, fn string) EvidenceItem {
 	t.Fatalf("no null-deref candidate in function %s", fn)
 	return EvidenceItem{}
 }
+
+// TestNullDeref_DerivedOriginTier pins the tier of a DERIVED pointer: when the
+// candidate's variable is only a value-preserving copy/cast of another variable
+// (`q = (T *)param`, `q = t` where t is the opaque field read), the nullable
+// origin belongs to that variable. Before this, every such candidate fell
+// through to external-unknown, whose detail claims "the ONLY null source is an
+// unproven external CALL" — false when there is no callee at all, and enough to
+// make the classifier dismiss a real caller-argument / opaque-field source.
+func TestNullDeref_DerivedOriginTier(t *testing.T) {
+	src := `typedef struct { int x; } T_t;
+
+T_t *ext_obtain(void);
+
+int derived_cast(Opaque_t *dc_src)
+{
+    T_t *dc_q = (T_t *)dc_src;
+    return dc_q->x;
+}
+
+int derived_field(Opaque_t *df_m)
+{
+    T_t *df_t = (T_t *)(df_m->data);
+    T_t *df_q = df_t;
+    return df_q->x;
+}
+
+int derived_malloc(void)
+{
+    T_t *dm_p = (T_t *)malloc(sizeof(T_t));
+    T_t *dm_q = dm_p;
+    return dm_q->x;
+}
+
+int derived_chain(Opaque_t *dh_z)
+{
+    T_t *dh_a = (T_t *)dh_z;
+    T_t *dh_b = (T_t *)dh_a;
+    return dh_b->x;
+}
+
+int derived_external(void)
+{
+    T_t *de_p = ext_obtain();
+    T_t *de_q = de_p;
+    return de_q->x;
+}
+`
+	// runOpaqueNullPlan also runs the caller_null / opaque_null detectors, which
+	// are what seed the parameter- and opaque-field-derived sources this test is
+	// about (planNullDerefSrc covers literal / external-call sources only).
+	res := runOpaqueNullPlan(t, map[string]string{"nd.c": src})
+	candidateFor := func(fn, variable string) EvidenceItem {
+		t.Helper()
+		for _, c := range res.Candidates {
+			if c.Target.Function == fn && c.Target.Variable == variable {
+				return c
+			}
+		}
+		t.Fatalf("no null-deref candidate for %s/%s; got %+v", fn, variable, res.Candidates)
+		return EvidenceItem{}
+	}
+
+	// A cast of a pointer parameter: the origin is the caller argument, and the
+	// verdict sentence must name the parameter, not the derived local.
+	cast := candidateFor("derived_cast", "dc_q")
+	if cast.NullOriginTier != "caller-arg" {
+		t.Fatalf("derived_cast dc_q: tier = %q, want caller-arg", cast.NullOriginTier)
+	}
+	if cast.DerivedFrom != "dc_src" {
+		t.Fatalf("derived_cast dc_q: derived_from = %q, want dc_src", cast.DerivedFrom)
+	}
+	if cast.Hint != "null@caller-arg guard@none" {
+		t.Fatalf("derived_cast dc_q: hint = %q, want null@caller-arg guard@none", cast.Hint)
+	}
+	for _, f := range cast.VerdictFacts {
+		if f.Token != "null@caller-arg" {
+			continue
+		}
+		if !strings.Contains(f.Detail, "copy/cast of parameter `dc_src`") {
+			t.Fatalf("verdict fact must attribute the origin parameter, got %q", f.Detail)
+		}
+	}
+
+	// A copy of the opaque field-read value keeps the opaque-origin tier.
+	field := candidateFor("derived_field", "df_q")
+	if field.NullOriginTier != "opaque-origin" {
+		t.Fatalf("derived_field df_q: tier = %q, want opaque-origin", field.NullOriginTier)
+	}
+	if field.DerivedFrom != "df_t" {
+		t.Fatalf("derived_field df_q: derived_from = %q, want df_t", field.DerivedFrom)
+	}
+
+	// A copy of an allocator result is the proven-nullable tier, naming the
+	// allocator. It stays suspected: widening the auto-confirm tier is a
+	// boundary change, not part of a tier-label fix.
+	alloc := candidateFor("derived_malloc", "dm_q")
+	if alloc.NullOriginTier != "malloc-fail" {
+		t.Fatalf("derived_malloc dm_q: tier = %q, want malloc-fail", alloc.NullOriginTier)
+	}
+	if alloc.DerivedFrom != "dm_p" {
+		t.Fatalf("derived_malloc dm_q: derived_from = %q, want dm_p", alloc.DerivedFrom)
+	}
+	var allocFact string
+	for _, f := range alloc.VerdictFacts {
+		if f.Token == "null@malloc-fail" {
+			allocFact = f.Detail
+		}
+	}
+	if !strings.Contains(allocFact, "`malloc`") || !strings.Contains(allocFact, "reached through `dm_p`") {
+		t.Fatalf("malloc-fail verdict fact must name the allocator and the origin variable, got %q", allocFact)
+	}
+	if alloc.SuspicionLevel != "suspected" {
+		t.Fatalf("a DERIVED allocator copy must not auto-confirm in this round, got %q", alloc.SuspicionLevel)
+	}
+
+	// Chained casts resolve to the parameter root, not the intermediate hop.
+	chain := candidateFor("derived_chain", "dh_b")
+	if chain.NullOriginTier != "caller-arg" || chain.DerivedFrom != "dh_z" {
+		t.Fatalf("derived_chain dh_b: tier/from = %q/%q, want caller-arg/dh_z", chain.NullOriginTier, chain.DerivedFrom)
+	}
+
+	// A copy of an unknown external call stays external-unknown (the tier is
+	// correct there), but still names the variable that owns the source.
+	ext := candidateFor("derived_external", "de_q")
+	if ext.NullOriginTier != "external-unknown" {
+		t.Fatalf("derived_external de_q: tier = %q, want external-unknown", ext.NullOriginTier)
+	}
+	if ext.DerivedFrom != "de_p" {
+		t.Fatalf("derived_external de_q: derived_from = %q, want de_p", ext.DerivedFrom)
+	}
+}

@@ -223,6 +223,13 @@ type Candidate struct {
 	// parameter's nullability (e.g. "caller c passes NULL"), surfaced in the
 	// evidence so the AI can judge the caller contract instead of a bare "line 0".
 	CallerNullDetail string `json:"caller_null_detail,omitempty"`
+	// DerivedFrom names the variable that OWNS the null source when the
+	// candidate's own variable is only a value-preserving copy/cast of it
+	// (`q = (T *)param; q->f`, `q = t` where `t = (T *)base->field`). The tier
+	// and its detail belong to that origin variable, not to the derived name:
+	// without it `q` was labelled external-unknown ("an unproven external
+	// call") even though its source is a caller argument or an opaque field.
+	DerivedFrom string `json:"derived_from,omitempty"`
 	// FunctionSignature is the enclosing function's declared signature (parameter
 	// names + types), propagated from the index so the AI classifier can read the
 	// operand types without opening the source file.

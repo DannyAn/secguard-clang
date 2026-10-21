@@ -65,6 +65,11 @@ type EvidenceItem struct {
 	// carried so the report layer can embed the callee definition for the
 	// malloc-fail call-result tier without re-deriving it.
 	NullOriginTier string `json:"null_origin_tier,omitempty"`
+	// DerivedFrom names the variable that owns the null source when the
+	// candidate variable is only a value-preserving copy/cast of it
+	// (`q = (T *)param`), so the classifier attributes the contract to the
+	// right variable.
+	DerivedFrom string `json:"derived_from,omitempty"`
 	// IsCallResultDeref marks a dereference of a direct call result
 	// (`f()->field`, `*f()`, `f()[i]`): the callee's body (when defined in
 	// the scan) is embedded under ## Callee Definition.
@@ -682,6 +687,7 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 
 		NullOriginTier:    c.NullOriginTier,
 		IsCallResultDeref: c.IsCallResultDeref,
+		DerivedFrom:       c.DerivedFrom,
 
 		FunctionStartLine: c.FuncStartLine,
 		FunctionEndLine:   c.FuncEndLine,

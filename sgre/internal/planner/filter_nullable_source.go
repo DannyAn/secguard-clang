@@ -255,7 +255,26 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 						c.NullOriginTier = "assumed-return"
 					}
 				default:
-					c.NullOriginTier = "external-unknown"
+					// A DERIVED pointer (`q = (T *)param`, `q = t` where `t` is
+					// the opaque field read, `b = (T *)a` where `a = (T *)param`)
+					// has no source of its own: its nullability is inherited
+					// through a pure copy/cast chain. Classify by the variable
+					// that actually OWNS the source — external-unknown's "the
+					// only null source is an unproven external CALL" detail is
+					// simply false when there is no callee at all (the real
+					// source is a caller argument or an opaque field value).
+					// Suspicion is deliberately untouched: this corrects WHICH
+					// assumption the AI is asked to judge, it does not widen the
+					// auto-confirm tier.
+					if derived := derivedOriginTier(fm, models[c.FunctionID], c.VariableName, c.Line); derived.tier != "" {
+						c.NullOriginTier = derived.tier
+						c.DerivedFrom = derived.root
+						c.CallerNullDetail = derived.callerDetail
+						c.NullableOriginName = derived.originName
+					}
+					if c.NullOriginTier == "" {
+						c.NullOriginTier = "external-unknown"
+					}
 				}
 				kept = append(kept, c)
 			} else {
@@ -1228,6 +1247,44 @@ func nullSourcesFor(m map[int64]*nullModel, fid int64) []nullSource {
 		return nil
 	}
 	return m[fid].sources
+}
+
+// derivedOrigin is the nullable-origin classification resolved from a derived
+// pointer's origin variable (see derivedOriginTier).
+type derivedOrigin struct {
+	tier         string
+	root         string
+	callerDetail string
+	originName   string
+}
+
+// derivedOriginTier classifies a candidate whose variable is only a
+// value-preserving derivation (copy / cast chain) of another variable: the
+// nullable origin belongs to the variable that OWNS the source, so the tier
+// must be read from there. `q = (T *)param; q->f` is a caller argument, not an
+// "unproven external call"; `q = t` where `t = (T *)base->field` is an opaque
+// field value. It mirrors the per-variable tier order in Apply and returns a
+// zero value when the candidate owns its own source (nothing to attribute) or
+// the chain leaves the null model, so the caller keeps its current behavior.
+func derivedOriginTier(fm *flowResult, m *nullModel, variable string, line int) derivedOrigin {
+	if fm == nil || fm.contract == nil || m == nil {
+		return derivedOrigin{}
+	}
+	root := fm.contract.valueOriginRoot(m, variable, line)
+	if root == "" {
+		return derivedOrigin{}
+	}
+	switch {
+	case m.onlyCertainNullableSources(root):
+		return derivedOrigin{tier: "malloc-fail", root: root, originName: m.certainNullableOrigin(root)}
+	case callerNullDetail(m, root) != "":
+		return derivedOrigin{tier: "caller-arg", root: root, callerDetail: callerNullDetail(m, root)}
+	case m.hasOpaqueSource(root):
+		return derivedOrigin{tier: "opaque-origin", root: root}
+	case m.hasExternalCallSource(root):
+		return derivedOrigin{tier: "external-unknown", root: root}
+	}
+	return derivedOrigin{}
 }
 
 // callerNullDetail returns a human-readable origin for a parameter whose

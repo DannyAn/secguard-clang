@@ -311,6 +311,17 @@ func AllCWEs() map[string]bool {
 	return out
 }
 
+// derivedSuffix names the origin variable when the candidate is only a value-
+// preserving copy/cast of it (`q = (T *)param`, `q = t` where t is the opaque
+// field read), so the verdict sentence attributes the contract to the variable
+// that actually holds it instead of the derived name.
+func derivedSuffix(c Candidate) string {
+	if c.DerivedFrom == "" {
+		return ""
+	}
+	return fmt.Sprintf(" (reached through `%s`)", c.DerivedFrom)
+}
+
 // buildNullDerefVerdictFacts distills the null-deref verdict basis into
 // structured facts (token + one sentence). The tier is the headline: it states
 // how the pipeline KNOWS the value can be null, which is exactly what the
@@ -331,7 +342,7 @@ func buildNullDerefVerdictFacts(c Candidate) []VerdictFact {
 		}
 		facts = append(facts, VerdictFact{
 			Token:  "null@malloc-fail",
-			Detail: fmt.Sprintf("the null source is `%s` — a proven-nullable call result (allocator / known libc / return-NULL callee); dereferencing it without a null check is a textbook CWE-476", name),
+			Detail: fmt.Sprintf("the null source is `%s`%s — a proven-nullable call result (allocator / known libc / return-NULL callee); dereferencing it without a null check is a textbook CWE-476", name, derivedSuffix(c)),
 		})
 	case "assumed-return":
 		name := c.NullableOriginName
@@ -347,14 +358,21 @@ func buildNullDerefVerdictFacts(c Candidate) []VerdictFact {
 		if detail == "" {
 			detail = "an inter-procedural caller passes the value unproven non-null"
 		}
-		facts = append(facts, VerdictFact{
-			Token:  "null@caller-arg",
-			Detail: fmt.Sprintf("the null source is parameter `%s`: %s — judge whether that caller can pass NULL", c.VariableName, detail),
-		})
+		if c.DerivedFrom != "" {
+			facts = append(facts, VerdictFact{
+				Token:  "null@caller-arg",
+				Detail: fmt.Sprintf("`%s` is a copy/cast of parameter `%s`: %s — judge whether that caller can pass NULL", c.VariableName, c.DerivedFrom, detail),
+			})
+		} else {
+			facts = append(facts, VerdictFact{
+				Token:  "null@caller-arg",
+				Detail: fmt.Sprintf("the null source is parameter `%s`: %s — judge whether that caller can pass NULL", c.VariableName, detail),
+			})
+		}
 	case "opaque-origin":
 		facts = append(facts, VerdictFact{
 			Token:  "null@opaque-origin",
-			Detail: fmt.Sprintf("the null source of `%s` is a contract the scan tree cannot see (an external caller's argument, or a field value of an externally-defined type) — the pipeline only ASSUMES it may be NULL; judge whether that external contract can actually yield NULL", c.VariableName),
+			Detail: fmt.Sprintf("the null source of `%s`%s is a contract the scan tree cannot see (an external caller's argument, or a field value of an externally-defined type) — the pipeline only ASSUMES it may be NULL; judge whether that external contract can actually yield NULL", c.VariableName, derivedSuffix(c)),
 		})
 	case "external-unknown":
 		facts = append(facts, VerdictFact{

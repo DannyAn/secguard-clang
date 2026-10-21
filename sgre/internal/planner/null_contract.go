@@ -118,6 +118,54 @@ func (cc *contractCtx) aliasRoots(name string, line, depth int, out map[string]b
 	return false
 }
 
+// valueOriginRoot walks v's value chain backwards to the variable that OWNS the
+// null source the candidate reaches through — the origin of a derived pointer:
+// `q = (T *)param` → param, `q = t` (t = (T *)base->field) → t, `b = (T *)a`
+// (a = (T *)param) → param. Only value-preserving hops are followed (copy, cast,
+// parentheses): a call result or a field read is where the detectors seed the
+// DERIVED variable itself, so the chain stops there and "" is returned (the
+// candidate keeps its own origin, e.g. opaque_field_read seeded at q).
+//
+// It returns "" when v itself owns a source (no derivation to attribute) or the
+// chain does not terminate on a modelled source, so a caller can fall back to
+// the existing per-variable classification unchanged.
+func (cc *contractCtx) valueOriginRoot(models *nullModel, v string, line int) string {
+	if cc == nil || models == nil {
+		return ""
+	}
+	seen := map[string]bool{}
+	cur, at := v, line
+	for depth := 0; depth <= contractDepth; depth++ {
+		if seen[cur] {
+			return ""
+		}
+		seen[cur] = true
+		if models.hasSource(cur, at) {
+			if cur == v {
+				return "" // v owns its own source: no derivation to attribute
+			}
+			return cur
+		}
+		a := cc.lastAssignBefore(cur, at)
+		if a == nil {
+			return ""
+		}
+		rhs := a.rhs
+		for rhs.Kind() == "parenthesized_expression" || rhs.Kind() == "cast_expression" {
+			op, ok := aliasOperand(rhs)
+			if !ok {
+				return ""
+			}
+			rhs = op
+		}
+		if rhs.Kind() != "identifier" {
+			return ""
+		}
+		cur, at = rhs.Text(), a.line
+	}
+	return ""
+}
+
 // contractDerived reports whether v's value comes, without a NULL check, from a
 // void* parameter used by contract: directly, through casts / pointer
 // arithmetic, or through an external accessor call whose argument is such a
