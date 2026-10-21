@@ -21,11 +21,11 @@
 
 | 指标 | 数值 |
 |------|------|
-| 源文件 | 37 |
-| 总测试用例 | 189 |
+| 源文件 | 38 |
+| 总测试用例 | 194 |
 | **覆盖漏洞类型（25 个注册 skill）** | **25 / 25** |
-| expect-finding（应报告） | 98 |
-| expect-no_finding（应被抑制） | 91 |
+| expect-finding（应报告） | 101 |
+| expect-no_finding（应被抑制） | 93 |
 | Phase 0（P0-P3/TP 反证骨架） | 18 |
 | Phase 1（CWE-190/362/798/667/327） | 12 |
 | Phase 2（扩展典型漏洞） | 4 |
@@ -47,6 +47,7 @@
 | **Phase 18（P1 调用点实参普查 gate / 净化 kill 回归）** | **5** |
 | **Phase 21（unchecked-return 消费点普查误报修复）** | **7** |
 | **Phase 22（null-deref 三类误报修复）** | **6** |
+| **Phase 23（不完整类型信息 null-deref 检测能力增强）** | **5** |
 | 应完全不产生 Finding (P0: Detector EXCLUDE) | 7 |
 | 应产生 Finding 但被 P1 抑制 | 3 |
 | 应产生 Finding 但被 P2 抑制 | 4 |
@@ -627,6 +628,47 @@ TP 控制组 + ND-16 `id == 0` 守卫回归控制组 use_zero_cfg——`pureNull
 收紧后 id 范围 getter 不得被误认 paramNullOnly 契约）。
 
 > 行号以 `src/p22_null_deref_fp.c` 当前内容为准（validator 容差 ±3）。
+
+## Phase 23 — 不完整类型信息 null-deref 检测能力增强（2026-10 新增）
+
+生产打回：参数使用第三方 typedef（`Nac_LdapSearchAckMsg_t` 等类型定义不在扫描树内、
+项目不要求编译成功）的函数 `import_dn_group_tree_refresh` 产出**零** null-deref 候选。
+逐层定位结论：**语法层完全正常**（tree-sitter 对未知 typedef 容错，函数体全部语法
+节点恢复、sink 事件齐全），断链在 **null source 播种层**的两条通道：
+
+1. **参数方向**：参数可空性只由 caller_null 检测器从**树内调用点**合成；调用点在
+   扫描树外（导出 API / 注册回调）时参数无任何可空性建模。
+2. **字段读方向**：`tree = (ldap_usrgroup_node_t *)(resp->group_data)` 的字段值
+   可空性（外部结构体的成员契约不可见）无播种通道；链式解引用
+   `para->orig->base_dn` 的中间层字段值同样无建模。
+
+修复为两条 **fail-open 播种通道**（全部 suspected 级交 AI 研判，绝不 auto-confirm，
+守卫 kill 与非空重赋值 kill 由 planner 既有 guard/non-null 机制统一处理）：
+
+- **opaque_param**：非 static 函数 + 树内零调用点（含取地址豁免、main 豁免）+
+  指针参数 + 体内有解引用 → 入口播种 assumed source。
+- **opaque_field_read**：字段读的 base 参数类型**树内无定义**（未知 typedef/struct，
+  基础类型白名单除外）→ 赋值转存（`p = base->f`，cast/下标变体均可）在赋值行播种；
+  链式中间层（`base->f1->f2` 读 `base->f1` 字段值）在函数头播种（birth 形态，
+  planner 转入 entry seed）。树内已定义类型维持既有行为（字段值流属另一分析层）。
+
+| ID | 文件 | 行 | 期望 | 说明 |
+|----|------|----|------|------|
+| P23-01 | p23_opaque_type_null.c | 41 | finding | 报告原帖形态：未知 typedef 参数 resp 无判空解引用 resp->group_data（opaque_param） |
+| P23-02 | p23_opaque_type_null.c | 49 | finding | 报告原帖形态：tree = (T*)(resp->group_data) 转存后 tree[0].group_name 解引用（opaque_field_read） |
+| P23-03 | p23_opaque_type_null.c | 45 | finding | 链式中间层：para->orig->base_dn 的中间字段值解引用（链式 opaque_field_read） |
+| P23-04 | p23_opaque_type_null.c | 57 | no_finding | 守卫反例：opaque 参数入口判空早退 → planner guard kill fail-open source |
+| P23-05 | p23_opaque_type_null.c | 65 | no_finding | 类型可见反例：树内 typedef + 树内调用点传 &kk → 两通道均不播种 |
+
+三条 finding 均为 **suspected 级 + null@opaque-origin tier**（fail-open 假设交 AI
+研判外部契约），不进 auto-confirmed。单测防线：`TestOpaqueNullDetectorReportForm` /
+`TestOpaqueNullDetectorControls`（evidence 层播种形态与豁免域）+
+`TestOpaqueNullEndToEndReportForm` / `TestOpaqueNullEndToEndControls`（planner
+端到端红绿：tier/suspected 断言 + 守卫 kill + 非空重赋值 kill）。已知边界：全局
+变量来源的 opaque 字段读、树内语法 ERROR 吞掉的解引用（缺分号形态）不在两通道
+覆盖内（后者属解析层恢复问题，见 CHANGELOG）。
+
+> 行号以 `src/p23_opaque_type_null.c` 当前内容为准（validator 容差 ±3）。
 
 ## 检测器缺口（2026-10 盘点，本轮已全部闭环）
 
