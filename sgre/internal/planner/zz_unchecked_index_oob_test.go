@@ -167,7 +167,10 @@ func TestUncheckedIndexOutOfBoundsEndToEnd(t *testing.T) {
 	if c.Category != "array_oob_read_unchecked" {
 		t.Errorf("category = %s, want array_oob_read_unchecked", c.Category)
 	}
-	for _, token := range []string{"cap@4", "idx-src@actived_index", "elem-field@domain", "oob-escape@maf_show_dataplane_config_all_reply_code"} {
+	if c.CWEChain != "CWE-125 → CWE-476" {
+		t.Errorf("cwe_chain = %q, want the root-cause chain (one finding, consequence CWE as metadata)", c.CWEChain)
+	}
+	for _, token := range []string{"cap@4", "idx-src@actived_index", "elem-field@domain", "oob-escape@maf_show_dataplane_config_all_reply_code", "cwe-chain@CWE-125→CWE-476"} {
 		if !strings.Contains(c.Hint, token) {
 			t.Errorf("hint %q missing %s (the chain must be settleable from the index row)", c.Hint, token)
 		}
@@ -221,6 +224,12 @@ func TestUncheckedIndexWriteRoutesToBufferOverflow(t *testing.T) {
 	}
 	if !strings.Contains(c.Hint, "idx-src@slot") {
 		t.Errorf("hint %q missing idx-src@slot", c.Hint)
+	}
+	// A scalar element write has no pointer-member read and no escape, so it
+	// carries no CWE-476 consequence: the chain token only appears when the
+	// element yields an indeterminate pointer (elem-field@ / oob-escape@).
+	if c.CWEChain != "" {
+		t.Errorf("scalar element write cwe_chain = %q, want empty (no pointer leg)", c.CWEChain)
 	}
 	// The read flavor must not see the write event.
 	r = runUncheckedIndexPlan(t, map[string]string{"wr.c": uncheckedIndexE2EWrite}, "out-of-bounds")

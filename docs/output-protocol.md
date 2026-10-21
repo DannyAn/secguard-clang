@@ -261,6 +261,14 @@ Written at scan time, one file per converged candidate:
 - A banner stating this is candidate evidence, not a defect or a verdict
 - **Location**: file:line, function, variable
 - **Evidence**: the source → sink → path fragments the detectors and filters produced
+- **Pipeline Tokens**: the compact hint tokens with their registry descriptions
+- **Verdict Facts**: the type's distilled decisive facts (Evidence Contract v2)
+- **Vulnerability Chain** (only for types that declare one, e.g. an OOB access whose
+  element pointer member is dereferenced downstream): the root-cause CWE followed by
+  the consequence CWE (`CWE-125 → CWE-476`). It is ONE finding — the chain is
+  metadata, and the same fact is exported as the candidate SARIF `properties.cwe_chain`
+  and the `cwe-chain@` hint token; the AI states both CWEs in its verdict reasoning
+  rather than opening a second finding for the consequence.
 - **Pipeline Assessment**: `Suspicion Level (pipeline prior, not a verdict)` and `AI Verdict` (`_unclassified_` until the AI classifies, then the verdict plus a link to the verdict file, or the dismissal reason)
 - **Fix Suggestion**: generic per-type remediation guidance
 

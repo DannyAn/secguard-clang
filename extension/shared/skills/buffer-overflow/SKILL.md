@@ -57,6 +57,7 @@ Evidence file fragments:
 | `idx@<expr>` | the access index / copy size / declared size argument (the `_s` capacity or required size) | CONSTANT: the detector already proved it reaches past `cap@` (machine-proved, confirm) — VARIABLE (`n`, a parameter): judge its reachable range against `cap@`; a caller-influenced parameter with no clamp is the dangerous case |
 | `idx-src@<field>` | the write index is the struct field `<field>`, with no bounds check against `cap@` dominating the write | unvalidated config/input index -> **confirm**; a bounded field or a caller-validated contract -> **dismiss** |
 | `elem-field@<member>` / `oob-escape@<callee>` | the written element's pointer member / the callee the element escapes to | secondary chain facts — the root cause stays the missing bounds check |
+| `cwe-chain@CWE-787→CWE-476` | the root-cause chain exported with this candidate: this finding's CWE, then the consequence CWE | state both in `reasoning`; ONE finding — never a second CWE-476 finding for the same defect |
 
 The variable-`idx@` shapes (`bounded_copy_var_size`, `secure_copy_var_size`,
 `secure_scanf_var_size`, `format_overflow_var`) are exactly the delegation

@@ -31,17 +31,24 @@ buffer-overflow CWE-787），并携带完整链条交 AI 研判：
   326 函数 benchmark 仅新增 P24 fixture 的 2 条，其余零增量。
 - **链条证据（CWE-125 → CWE-476）**：`elem_field` 记录从越界元素读出的指针成员
   （`svr[idx].domain`）；`escape`/`escape_deref` 记录元素（或地址）逃逸到的子函数及
-  其解引用的指针成员（同文件定义可解析时给 member@line）。Hint/VerdictFacts 三个
-  新 token：`idx-src@` / `elem-field@` / `oob-escape@`——AI 不读源码即可给出
-  「越界读 → 空指针解引用」链条与修复建议（入口 `if (idx >= CAP) return;`）。
-  **一次候选承载整条链**：根因是缺失边界检查（CWE-125），下游空指针是后果，
-  不重复产 CWE-476 finding。
+  其解引用的指针成员（同文件定义可解析时给 member@line）。Hint/VerdictFacts 新 token：
+  `idx-src@` / `elem-field@` / `oob-escape@`——AI 不读源码即可给出「越界读 → 空指针
+  解引用」链条与修复建议（入口 `if (idx >= CAP) return;`）。
+- **链条的机器可读落地（一次 finding，两个 CWE）**：根因是缺失边界检查（CWE-125，
+  可修、可施策），下游空指针是后果——按项目既有 `ArrayOOBPrecedenceFilter` 的
+  「OOB 才是根因」取向，**不重复产 CWE-476 finding**（重复上报同一根因是精度污染，
+  且 CWE-476 侧依赖「越界内存内容恰为 NULL」这一未证明假设）。链条改以结构化元数据
+  三处导出：候选 Hint 的 `cwe-chain@CWE-125→CWE-476` token、候选文件新增
+  `## Vulnerability Chain` 段、候选 SARIF `properties.cwe_chain`；skill 明确要求
+  verdict 的 `reasoning` 陈述两段 CWE 且禁止再开一条后果 finding。写形态（CWE-787）
+  同理，仅当元素确有指针成员读出/逃逸时才带链条（纯标量写不带）。
 - **顺带修复**：`subscriptAccessKind` 的写判定用「走到 assignment 时的直接子节点」
   比较，`p->svr[i].field = x`（经成员写入）此前被误判为 read 并路由错类型。
 - 验证：evidence 五件（播种形态 / 入口检查零候选 / 四种守卫惯用法 + 伪守卫不抑制 /
   形参·循环·常量索引零候选 / 写形态）+ planner e2e 四件（单候选 suspected + Hint 三 token + VerdictFacts 链条 /
   修复对照 / 体量守卫 / 读写路由）；benchmark **Phase 24** 五用例（P24-01/02 finding，
-  P24-03/04/05 no_finding），`--coverage` 与 `--selftest` 通过。
+  P24-03/04/05 no_finding），`--coverage` 与 `--selftest` 通过；渲染层三件
+  （`## Vulnerability Chain` 段 / SARIF `cwe_chain` 属性 / 段落顺序）。
 
 ### null-deref 候选量级失控修复：调用链开放性 fixpoint（客户现网 1264 候选打回）
 

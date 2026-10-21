@@ -31,6 +31,15 @@ type EvidenceItem struct {
 	// per-category CWE via CWEForCategory(vulnType, category) when a single
 	// vuln_type covers multiple CWEs.
 	Category string `json:"category,omitempty"`
+	// CWEChain is the machine-readable root-cause chain when the candidate
+	// carries one: the finding's own CWE (the fixable root cause) followed by
+	// the consequence CWE, e.g. "CWE-125 → CWE-476" for an out-of-bounds access
+	// whose element pointer member is dereferenced downstream. It is ONE
+	// finding, deliberately: the missing bounds check is the defect, the
+	// wild/null dereference is what it produces. The chain is exported here (and
+	// as a SARIF property) so downstream consumers see the second CWE without a
+	// duplicate finding.
+	CWEChain string `json:"cwe_chain,omitempty"`
 	// Hint is a compact, Go-precomputed verdict hint rendered in the candidate
 	// index (_index.md) so the AI classifier can usually decide from the row
 	// alone — opening the evidence file / source only when the hint is
@@ -324,6 +333,9 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			}
 			if c.Escape != "" {
 				parts = append(parts, "oob-escape@"+compactHintValue(c.Escape))
+			}
+			if chain := candidateCWEChain(c, spec); chain != "" {
+				parts = append(parts, "cwe-chain@"+strings.ReplaceAll(chain, " ", ""))
 			}
 		case "memory-leak", "resource-leak":
 			// The verdict basis: WHERE the resource is acquired, HOW certain
@@ -627,6 +639,22 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 	return parts
 }
 
+// candidateCWEChain returns the root-cause chain exported alongside the
+// finding's own CWE. An out-of-bounds access that hands an element's pointer
+// member (or the element address) to a downstream dereference is ONE defect —
+// the missing bounds check is the fixable root cause, the wild/null pointer
+// dereference is its consequence — so it stays one finding and carries the
+// consequence CWE as chain metadata instead of a duplicate row.
+func candidateCWEChain(c Candidate, spec *VulnTypeSpec) string {
+	if c.ElemField == "" && c.Escape == "" {
+		return ""
+	}
+	if spec.CWE == "" {
+		return ""
+	}
+	return spec.CWE + " → CWE-476"
+}
+
 func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceItem {
 	hintTokens := buildHintParts(c, spec)
 	hint := "—"
@@ -671,6 +699,7 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 		DivisorCallers:  c.DivisorCallers,
 
 		Expression: c.Expression,
+		CWEChain:   candidateCWEChain(c, spec),
 	}
 	if spec.BuildVerdictFacts != nil {
 		item.VerdictFacts = spec.BuildVerdictFacts(c)

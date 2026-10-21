@@ -47,6 +47,14 @@
    只播种字段来源索引（普通形参/循环变量不播种）以守住候选体量，链条证据
    （`idx-src@` / `elem-field@` / `oob-escape@`）交 AI 判「越界读 → 空指针解引用」。
 
+**根因 + 后果 = 一条 finding（链条只做元数据）**：越界读（CWE-125）与随后的空指针
+解引用（CWE-476）在语义上是「缺失边界检查」这一个根因的后果。后果性 CWE 不单独出
+候选/finding（否则同一根因被计两次、精度被污染，且 CWE-476 侧依赖「越界内存恰为
+NULL」这一未证明假设）。链条以 `cwe-chain@CWE-125→CWE-476` token / 候选
+`## Vulnerability Chain` 段 / SARIF `properties.cwe_chain` 导出，AI 在 verdict 的
+`reasoning` 中同时陈述两段 CWE——与 `ArrayOOBPrecedenceFilter`「OOB 覆盖同位置
+空指针候选」的既有取向一致。
+
 ## AI 的契约（写进 `agent-body.md`）
 
 - `suspicion_level` 是 **prior，不是 verdict**：AI 不重推数据流。

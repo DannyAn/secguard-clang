@@ -45,9 +45,12 @@ dereferenced (`svr[idx].domain` passed to a callee that calls `strlen` on it),
 the OOB read is the root cause and the null/wild-pointer dereference is its
 consequence. The Hint carries the chain: `idx-src@` (the source field),
 `elem-field@` (the pointer member read out of the element), `oob-escape@` (the
-callee the element reaches, with the member it dereferences). State the chain in
-the verdict; the finding stays ONE out-of-bounds defect (CWE-125) — do not count
-the downstream dereference as a separate root cause.
+callee the element reaches, with the member it dereferences), and
+`cwe-chain@CWE-125→CWE-476` (the same chain as machine-readable metadata).
+State the chain in the verdict (`reasoning`); the finding stays ONE out-of-bounds
+defect (CWE-125) — do not count the downstream dereference as a separate root
+cause. The candidate file's `## Vulnerability Chain` section and the SARIF
+`cwe_chain` property carry the same fact.
 
 ### Hint Tokens (Verdict Basis)
 
@@ -59,6 +62,7 @@ the downstream dereference as a separate root cause.
 | `idx-src@<field>` | the index is the struct field `<field>`, with no bounds check against `cap@` dominating the access | unvalidated config/input index -> **confirm**; a bounded field or a validated caller contract -> **dismiss** |
 | `elem-field@<member>` | the indexed element's pointer member read at the access site | when the index is out of range this pointer comes from out-of-range memory (indeterminate) — the null-deref leg of the chain |
 | `oob-escape@<callee>` | the out-of-bounds element (or its address) is passed to `<callee>` | if that callee dereferences a pointer member of the element, the OOB element feeds a null-deref sink — state the CWE-125 -> CWE-476 chain |
+| `cwe-chain@CWE-125→CWE-476` | the root-cause chain exported with this candidate: this finding's CWE, then the consequence CWE | state both in `reasoning` (`out-of-bounds ... → null-pointer dereference ...`); it is ONE finding — never write a second CWE-476 finding for the same defect |
 
 A constant `idx@` past `cap@` settles the row from the Hint alone — no
 evidence-file open needed. An `idx-src@` row needs the field's contract: read

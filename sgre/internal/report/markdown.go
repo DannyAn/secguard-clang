@@ -383,6 +383,15 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 				b.WriteString("\n")
 			}
 
+			// The root-cause chain: one finding, two CWEs. Exported as its own
+			// section (and as the `cwe-chain@` token / SARIF `cwe_chain`
+			// property) so the classifier states the consequence without
+			// inventing a duplicate finding for it.
+			if c.CWEChain != "" {
+				b.WriteString("## Vulnerability Chain\n\n")
+				fmt.Fprintf(&b, "`%s` — the first CWE is the root cause and the fixable defect; the second is the consequence the verdict must name. Report ONE finding.\n\n", c.CWEChain)
+			}
+
 			b.WriteString("## Evidence\n\n")
 			for _, e := range c.Evidence {
 				label := e.Role

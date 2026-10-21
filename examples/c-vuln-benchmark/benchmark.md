@@ -711,9 +711,14 @@ opaque 字段读、树内语法 ERROR 吞掉的解引用（缺分号形态）不
   相同 (数组, 索引字段, 读写) 的多次访问折叠为一条候选。
 - **链条证据（CWE-125 → CWE-476）**：`elem_field` 记录从越界元素读出的指针成员
   （`svr[idx].domain`）；`escape`/`escape_deref` 记录元素（或其地址）逃逸到的子函数
-  及该子函数解引用的指针成员（同文件可解析时给出 member@line）。Hint 三 token：
-  `idx-src@` / `elem-field@` / `oob-escape@`，AI 无需读源码即可给出完整链条与
-  修复建议（入口 `if (idx >= CAP) return;`）。
+  及该子函数解引用的指针成员（同文件可解析时给出 member@line）。Hint 四 token：
+  `idx-src@` / `elem-field@` / `oob-escape@` / `cwe-chain@CWE-125→CWE-476`，AI 无需
+  读源码即可给出完整链条与修复建议（入口 `if (idx >= CAP) return;`）。
+- **一次 finding、两个 CWE**：越界是根因（可修），空指针是后果。按项目既有
+  `ArrayOOBPrecedenceFilter` 的取向不重复上报后果 finding；链条以
+  `cwe-chain@` token / 候选文件 `## Vulnerability Chain` 段 / 候选 SARIF
+  `properties.cwe_chain` 三处机器可读导出，skill 要求 verdict 的 `reasoning`
+  同时陈述两段 CWE。
 - **路由**：读形态 `array_oob_read_unchecked` → out-of-bounds（CWE-125）；写形态
   `array_oob_write_unchecked` → buffer-overflow（CWE-787）。共享同一
   `BUFFER_ACCESS` 种子事件，由 `Categories` 分流。

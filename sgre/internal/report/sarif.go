@@ -283,6 +283,11 @@ func (o *ScanOutput) writeCandidatesSarif(packages []*planner.PlanResult) error 
 				// an effort budget for the classifier, not a severity.
 				result.Properties["suspicion_level"] = c.SuspicionLevel
 			}
+			if c.CWEChain != "" {
+				// Root cause + consequence on ONE finding: a consumer filtering
+				// for the crash CWE must see it without a duplicate result.
+				result.Properties["cwe_chain"] = c.CWEChain
+			}
 
 			if c.SourceLine > 0 && c.SourceLine != c.Target.Line {
 				result.CodeFlows = []sarifCodeFlow{{
