@@ -1,6 +1,7 @@
 package evidence
 
 import (
+	"io"
 	"context"
 	"encoding/json"
 	"os"
@@ -137,7 +138,7 @@ func runUncheckedIndexDetect(t *testing.T, fixtures map[string]string) []uncheck
 	t.Helper()
 	ctx := context.Background()
 	store := db.NewTestStore(t)
-	logger := log.New(os.NewFile(0, os.DevNull), log.LevelWarn)
+	logger := log.New(io.Discard, log.LevelWarn)
 	p := parser.NewParser()
 
 	dir := t.TempDir()
@@ -413,5 +414,65 @@ int show_dataplane_config_active_rbl_server(struct maf_rbl_profile *rbl_profile,
 	}
 	if e.Escape != "maf_show_dataplane_config_all_reply_code" {
 		t.Errorf("escape = %s, want the sink that receives &svr[idx]", e.Escape)
+	}
+}
+
+// Same blind spot, the bare-array half: a file-scope array declared in a header
+// (`extern char g_buf[256];`) used with a constant index in another file. The
+// per-file declaration scan cannot see it, so before the tree-wide census the
+// capacity was unknown and the proved OOB channel stayed silent.
+func TestArrayCapacityDeclaredInHeader(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	fixtures := map[string]string{
+		"glob.h": "#define G_TBL_LEN 4\nextern int g_tbl[G_TBL_LEN];\n",
+		"use.c":  "#include \"glob.h\"\n\nint read_tbl(void)\n{\n    return g_tbl[7];\n}\n",
+	}
+	idx := indexer.NewIndexer(store, logger)
+	for name, src := range fixtures {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := idx.Index(ctx, path); err != nil {
+			t.Fatalf("index %s: %v", name, err)
+		}
+	}
+	if _, err := NewBufferOverflowDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := store.ListEventsByType(ctx, "BUFFER_ACCESS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range events {
+		var props struct {
+			Array          string `json:"array"`
+			Category       string `json:"category"`
+			Size           string `json:"size"`
+			CapacitySymbol string `json:"capacity_symbol"`
+		}
+		if err := json.Unmarshal([]byte(e.Properties), &props); err != nil {
+			t.Fatalf("unmarshal props: %v", err)
+		}
+		if props.Array != "g_tbl" {
+			continue
+		}
+		found = true
+		if props.Category != "array_oob_read" {
+			t.Errorf("category = %s, want array_oob_read", props.Category)
+		}
+		if props.Size != "4" {
+			t.Errorf("size = %s, want 4 (capacity macro from the header)", props.Size)
+		}
+	}
+	if !found {
+		t.Fatalf("want an out-of-bounds event for g_tbl[7] (capacity from the header), got %d events", len(events))
 	}
 }

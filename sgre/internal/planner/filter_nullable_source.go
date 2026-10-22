@@ -12,6 +12,7 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/macros"
 	"github.com/DannyAn/secguard-clang/internal/parser"
+	"github.com/DannyAn/secguard-clang/internal/repofacts"
 )
 
 // NullableSourceFilter drops null-deref candidates whose variable has no null
@@ -1074,6 +1075,10 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 		arrs   *arrayBaseInfo
 		srcs   []nullSource
 	}
+	repoFacts, err := repofacts.Build(ctx, f.store, f.parser, nil)
+	if err != nil {
+		repoFacts = nil
+	}
 	infos := make([]funcInfo, 0, len(needNames))
 	seededDefs := make([]funcInfo, 0)
 	seen := make(map[int64]bool)
@@ -1120,7 +1125,7 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 				srcs = models[fn.ID].sources
 			}
 			params := paramsOf(fn, root)
-			infos = append(infos, funcInfo{fn: fn, body: body, root: root, params: params, arrs: collectArrayBaseInfo(root, body, params), srcs: srcs})
+			infos = append(infos, funcInfo{fn: fn, body: body, root: root, params: params, arrs: collectArrayBaseInfo(root, body, params, repoFacts), srcs: srcs})
 		}
 	}
 

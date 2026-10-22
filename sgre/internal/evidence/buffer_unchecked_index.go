@@ -169,10 +169,8 @@ func fieldArrayCapacity(bc *bufCtx, field string) (int, string) {
 	if size, symbol := fieldArrayCapacityLocal(bc, field); size > 0 {
 		return size, symbol
 	}
-	if bc.tree != nil {
-		if n, ok := bc.tree.fieldSizes[field]; ok {
-			return n, bc.tree.fieldSymbol[field]
-		}
+	if ff, ok := bc.facts.FieldByName(field); ok && ff.Array && ff.Count > 0 {
+		return ff.Count, ff.Symbol
 	}
 	return 0, ""
 }
@@ -471,7 +469,10 @@ func isPointerTypedField(bc *bufCtx, field string) bool {
 			}
 		}
 	}
-	return bc.tree != nil && bc.tree.ptrFields[field]
+	if ff, ok := bc.facts.FieldByName(field); ok {
+		return ff.Pointer
+	}
+	return false
 }
 
 // escapedElementDeref reports the callee that receives the out-of-bounds

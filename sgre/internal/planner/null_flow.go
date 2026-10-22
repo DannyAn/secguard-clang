@@ -12,6 +12,7 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/macros"
 	"github.com/DannyAn/secguard-clang/internal/parser"
+	"github.com/DannyAn/secguard-clang/internal/repofacts"
 )
 
 // null_flow.go implements a flow-sensitive "may be null" analysis for the
@@ -1613,14 +1614,33 @@ func variableRetStrength(srcs []nullSource, variable string, line int, retNullab
 type arrayBaseInfo struct {
 	arrays      map[string]bool
 	arrayFields map[string]bool
+	// facts is the tree-wide fallback: an array or an array-typed field declared
+	// in a header (the normal C layout) is invisible to the per-file scan above,
+	// and treating it as a pointer would manufacture a null-deref candidate for
+	// `hdr_array[i]`.
+	facts *repofacts.Facts
 }
 
 func (a *arrayBaseInfo) isArray(name string) bool {
-	return a != nil && a.arrays[name]
+	if a == nil {
+		return false
+	}
+	if a.arrays[name] {
+		return true
+	}
+	_, ok := a.facts.GlobalArray(name)
+	return ok
 }
 
 func (a *arrayBaseInfo) isArrayField(name string) bool {
-	return a != nil && a.arrayFields[name]
+	if a == nil {
+		return false
+	}
+	if a.arrayFields[name] {
+		return true
+	}
+	ff, ok := a.facts.FieldByName(name)
+	return ok && ff.Array
 }
 
 // collectArrayBaseInfo gathers, for one function, the names that provably
@@ -1631,8 +1651,8 @@ func (a *arrayBaseInfo) isArrayField(name string) bool {
 // declared as a non-array is dropped: the name alone does not identify the
 // struct, so an ambiguous name stays fail-open (the same ambiguity guard
 // findFieldTypeName uses).
-func collectArrayBaseInfo(root, body parser.Node, params map[string]int) *arrayBaseInfo {
-	info := &arrayBaseInfo{arrays: make(map[string]bool), arrayFields: make(map[string]bool)}
+func collectArrayBaseInfo(root, body parser.Node, params map[string]int, facts *repofacts.Facts) *arrayBaseInfo {
+	info := &arrayBaseInfo{arrays: make(map[string]bool), arrayFields: make(map[string]bool), facts: facts}
 	if root.Kind() == "" {
 		return info
 	}
