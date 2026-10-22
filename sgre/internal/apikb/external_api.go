@@ -167,10 +167,10 @@ var ExternalAPIs = map[string]ExternalAPISpec{
 
 	// ---- libxml2: document parsing (xmlDoc released by xmlFreeDoc only;
 	// the tree's nodes are managed by the document, docs §5.1/§6) ----
-	"xmlReadMemory": {Library: "libxml2", Source: "libxml2-2.x-doc", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"xmlFreeDoc"}},
-	"xmlReadFile":   {Library: "libxml2", Source: "libxml2-2.x-doc", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"xmlFreeDoc"}},
-	"xmlParseDoc":   {Library: "libxml2", Source: "libxml2-2.x-doc", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"xmlFreeDoc"}},
-	"xmlReadDoc":    {Library: "libxml2", Source: "libxml2-2.x-doc", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"xmlFreeDoc"}},
+	"xmlReadMemory":  {Library: "libxml2", Source: "libxml2-2.x-doc", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"xmlFreeDoc"}},
+	"xmlReadFile":    {Library: "libxml2", Source: "libxml2-2.x-doc", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"xmlFreeDoc"}},
+	"xmlParseDoc":    {Library: "libxml2", Source: "libxml2-2.x-doc", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"xmlFreeDoc"}},
+	"xmlReadDoc":     {Library: "libxml2", Source: "libxml2-2.x-doc", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"xmlFreeDoc"}},
 	"xmlSAXParseDoc": {Library: "libxml2", Source: "libxml2-2.x-doc", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"xmlFreeDoc"}},
 
 	// ---- libxml2: XPath objects (context and result object are DIFFERENT
@@ -181,13 +181,13 @@ var ExternalAPIs = map[string]ExternalAPISpec{
 	"xmlXPathCompiledEval":   {Library: "libxml2", Source: "libxml2-2.x-doc", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"xmlXPathFreeObject"}},
 
 	// ---- libxml2: releasers ----
-	"xmlFreeDoc":            {Library: "libxml2", Source: "libxml2-2.x-doc", Releases: true, FreeArgIdx: 0},
-	"xmlFreeNode":           {Library: "libxml2", Source: "libxml2-2.x-doc", Releases: true, FreeArgIdx: 0},
-	"xmlFreeNodeList":       {Library: "libxml2", Source: "libxml2-2.x-doc", Releases: true, FreeArgIdx: 0},
-	"xmlFreeNs":             {Library: "libxml2", Source: "libxml2-2.x-doc", Releases: true, FreeArgIdx: 0},
-	"xmlXPathFreeContext":   {Library: "libxml2", Source: "libxml2-2.x-doc", Releases: true, FreeArgIdx: 0},
-	"xmlXPathFreeObject":    {Library: "libxml2", Source: "libxml2-2.x-doc", Releases: true, FreeArgIdx: 0},
-	"xmlFree":               {Library: "libxml2", Source: "libxml2-2.x-doc", Releases: true, FreeArgIdx: 0},
+	"xmlFreeDoc":          {Library: "libxml2", Source: "libxml2-2.x-doc", Releases: true, FreeArgIdx: 0},
+	"xmlFreeNode":         {Library: "libxml2", Source: "libxml2-2.x-doc", Releases: true, FreeArgIdx: 0},
+	"xmlFreeNodeList":     {Library: "libxml2", Source: "libxml2-2.x-doc", Releases: true, FreeArgIdx: 0},
+	"xmlFreeNs":           {Library: "libxml2", Source: "libxml2-2.x-doc", Releases: true, FreeArgIdx: 0},
+	"xmlXPathFreeContext": {Library: "libxml2", Source: "libxml2-2.x-doc", Releases: true, FreeArgIdx: 0},
+	"xmlXPathFreeObject":  {Library: "libxml2", Source: "libxml2-2.x-doc", Releases: true, FreeArgIdx: 0},
+	"xmlFree":             {Library: "libxml2", Source: "libxml2-2.x-doc", Releases: true, FreeArgIdx: 0},
 
 	// ---- libxml2: tree attach (ownership transfer). Success means a
 	// non-NULL return (xmlAddChild/xmlAddSibling) or the document accepting
@@ -203,6 +203,19 @@ var ExternalAPIs = map[string]ExternalAPISpec{
 	// transfer is modeled unconditionally — the conservative direction.
 	"xmlSetNs": {Library: "libxml2", Source: "libxml2-2.x-doc", Ownership: OwnershipTransferAlways, OwnArgIdx: 1},
 
+	// ---- libc: borrowed views (docs §5.4/§6): return a pointer INTO the
+	// input string / environment / locale storage — possibly NULL, never a
+	// caller-owned allocation, never freed by the caller. These names also
+	// live in BuiltinNullableReturning; the model adds the borrow dimension
+	// so free-on-borrow detection can fire on them. Only the five APIs the
+	// docs explicitly list are modeled — the wider search family
+	// (strpbrk/memchr/...) is left unknown rather than guessed.
+	"strstr":    {Library: "libc", Source: "C89", RetNull: RetNullMay, RetBorrow: true},
+	"strchr":    {Library: "libc", Source: "C89", RetNull: RetNullMay, RetBorrow: true},
+	"strrchr":   {Library: "libc", Source: "C89", RetNull: RetNullMay, RetBorrow: true},
+	"getenv":    {Library: "libc", Source: "C89", RetNull: RetNullMay, RetBorrow: true},
+	"setlocale": {Library: "libc", Source: "C89", RetNull: RetNullMay, RetBorrow: true},
+
 	// ---- libxml2: borrowed tree navigation (possibly NULL, never owned) ----
 	"xmlDocGetRootElement":  {Library: "libxml2", Source: "libxml2-2.x-doc", RetNull: RetNullMay, RetBorrow: true},
 	"xmlFirstElementChild":  {Library: "libxml2", Source: "libxml2-2.x-doc", RetNull: RetNullMay, RetBorrow: true},
@@ -210,28 +223,28 @@ var ExternalAPIs = map[string]ExternalAPISpec{
 
 	// ---- cJSON: item creation (all Create* build a new item the caller
 	// owns until it is attached to a parent; cJSON_Delete releases it) ----
-	"cJSON_CreateObject":         {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
-	"cJSON_CreateArray":          {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
-	"cJSON_CreateString":         {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
-	"cJSON_CreateNumber":         {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
-	"cJSON_CreateDouble":         {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
-	"cJSON_CreateBool":           {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
-	"cJSON_CreateNull":           {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
-	"cJSON_CreateTrue":           {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
-	"cJSON_CreateFalse":          {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
-	"cJSON_CreateRaw":            {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
-	"cJSON_CreateArrayReference": {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
+	"cJSON_CreateObject":          {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
+	"cJSON_CreateArray":           {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
+	"cJSON_CreateString":          {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
+	"cJSON_CreateNumber":          {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
+	"cJSON_CreateDouble":          {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
+	"cJSON_CreateBool":            {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
+	"cJSON_CreateNull":            {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
+	"cJSON_CreateTrue":            {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
+	"cJSON_CreateFalse":           {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
+	"cJSON_CreateRaw":             {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
+	"cJSON_CreateArrayReference":  {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
 	"cJSON_CreateObjectReference": {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
-	"cJSON_Duplicate":            {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
-	"cJSON_Parse":                {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
-	"cJSON_ParseWithLength":      {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
-	"cJSON_ParseWithOpts":        {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
+	"cJSON_Duplicate":             {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
+	"cJSON_Parse":                 {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
+	"cJSON_ParseWithLength":       {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
+	"cJSON_ParseWithOpts":         {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
 
 	// ---- cJSON: string printing (malloc'd string; cJSON_free is free by
 	// default per the 1.7 readme, so generic free() is also legal) ----
-	"cJSON_Print":             {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_free"}, AllowGenericFree: true},
-	"cJSON_PrintUnformatted":  {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_free"}, AllowGenericFree: true},
-	"cJSON_PrintBuffered":     {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_free"}, AllowGenericFree: true},
+	"cJSON_Print":            {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_free"}, AllowGenericFree: true},
+	"cJSON_PrintUnformatted": {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_free"}, AllowGenericFree: true},
+	"cJSON_PrintBuffered":    {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_free"}, AllowGenericFree: true},
 
 	// ---- cJSON: releasers ----
 	"cJSON_Delete": {Library: "cjson", Source: "cJSON-1.7-readme", Releases: true, FreeArgIdx: 0},
@@ -247,12 +260,20 @@ var ExternalAPIs = map[string]ExternalAPISpec{
 	"cJSON_AddItemReferenceToArray":  {Library: "cjson", Source: "cJSON-1.7-readme", Ownership: OwnershipBorrow},
 	"cJSON_AddItemReferenceToObject": {Library: "cjson", Source: "cJSON-1.7-readme", Ownership: OwnershipBorrow},
 
+	// ---- cJSON: detach (the item is REMOVED from the parent: ownership
+	// moves to the caller, so the parent's later cJSON_Delete no longer
+	// covers it — the caller must delete it or hand it to a new owner.
+	// Modeled as a caller-acquired allocation for the leak pairing) ----
+	"cJSON_DetachItemFromObject":              {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
+	"cJSON_DetachItemFromObjectCaseSensitive": {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
+	"cJSON_DetachItemFromArray":               {Library: "cjson", Source: "cJSON-1.7-readme", Alloc: AllocRet, RetNull: RetNullMay, ValidFrees: []string{"cJSON_Delete"}},
+
 	// ---- cJSON: borrowed lookups (possibly NULL — missing key / bad index;
 	// case sensitivity differs between GetObjectItem variants, which does
 	// not change the nullable-borrow semantics modeled here) ----
-	"cJSON_GetObjectItem":               {Library: "cjson", Source: "cJSON-1.7-readme", RetNull: RetNullMay, RetBorrow: true},
-	"cJSON_GetObjectItemCaseSensitive":  {Library: "cjson", Source: "cJSON-1.7-readme", RetNull: RetNullMay, RetBorrow: true},
-	"cJSON_GetArrayItem":                {Library: "cjson", Source: "cJSON-1.7-readme", RetNull: RetNullMay, RetBorrow: true},
+	"cJSON_GetObjectItem":              {Library: "cjson", Source: "cJSON-1.7-readme", RetNull: RetNullMay, RetBorrow: true},
+	"cJSON_GetObjectItemCaseSensitive": {Library: "cjson", Source: "cJSON-1.7-readme", RetNull: RetNullMay, RetBorrow: true},
+	"cJSON_GetArrayItem":               {Library: "cjson", Source: "cJSON-1.7-readme", RetNull: RetNullMay, RetBorrow: true},
 }
 
 // ExternalAPISpecByName reports the model record for name, if modeled.

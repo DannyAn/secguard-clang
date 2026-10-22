@@ -157,6 +157,32 @@ func TestExternalAPI_OwnershipSemantics(t *testing.T) {
 	}
 }
 
+// TestExternalAPI_CJSONDetachVsGet locks the detach-vs-get distinction
+// (user-provided semantics table): Detach hands the item's ownership to the
+// caller (a caller-acquired allocation paired with cJSON_Delete), while Get
+// only borrows (possibly NULL, never owned, never freed by the caller).
+func TestExternalAPI_CJSONDetachVsGet(t *testing.T) {
+	for _, name := range []string{"cJSON_DetachItemFromObject", "cJSON_DetachItemFromObjectCaseSensitive", "cJSON_DetachItemFromArray"} {
+		s, ok := ExternalAPISpecByName(name)
+		if !ok {
+			t.Errorf("%s: not modeled", name)
+			continue
+		}
+		if s.Alloc != AllocRet || s.RetNull != RetNullMay {
+			t.Errorf("%s: want AllocRet+RetNullMay (detached item is caller-owned and detach may fail), got Alloc=%v RetNull=%v", name, s.Alloc, s.RetNull)
+		}
+		if len(s.ValidFrees) != 1 || s.ValidFrees[0] != "cJSON_Delete" {
+			t.Errorf("%s: ValidFrees = %v, want [cJSON_Delete]", name, s.ValidFrees)
+		}
+		if s.RetBorrow {
+			t.Errorf("%s: a detached item is owned by the caller, not borrowed", name)
+		}
+		if !IsDeclaredAllocator(name) {
+			t.Errorf("IsDeclaredAllocator(%q) = false, want true (detach acquires ownership)", name)
+		}
+	}
+}
+
 // TestExternalAPI_BorrowReturns locks the nullable-borrow lookups (docs §5.1D,
 // §5.2A): possibly NULL, but never a fresh allocation owned by the caller.
 func TestExternalAPI_BorrowReturns(t *testing.T) {
@@ -343,17 +369,25 @@ func TestExternalAPI_ModelCoversFirstBatchDocs(t *testing.T) {
 		}
 	}
 	// The libc §5.4 nullable non-owning set (strstr/strchr/strrchr/getenv/
-	// setlocale) is carried by the pre-existing BuiltinNullableReturning
-	// table — the model extends it, it does not duplicate it.
+	// setlocale) is carried by BuiltinNullableReturning AND now modeled with
+	// RetBorrow so the free-on-borrow channel recognizes them (free() on
+	// strstr's in-string pointer is an invalid free). Nullable behavior is
+	// unchanged — the model tier and the builtin tier agree.
 	for _, name := range []string{"strstr", "strchr", "strrchr", "getenv", "setlocale"} {
 		if !IsKnownNullableReturn(name) {
 			t.Errorf("IsKnownNullableReturn(%q) = false, want true (libc §5.4)", name)
 		}
-		if IsBorrowReturn(name) {
-			t.Errorf("IsBorrowReturn(%q) = true; libc §5.4 borrow status is handled by BuiltinNullableReturning semantics, not the model", name)
+		if !IsBorrowReturn(name) {
+			t.Errorf("IsBorrowReturn(%q) = false, want true (borrowed view of input/environment storage)", name)
 		}
 		if IsAllocator(name) && !IsDeclaredAllocator(name) {
 			t.Errorf("%s must not match the allocator heuristic", name)
+		}
+	}
+	// The wider libc search family stays unmodeled (unknown, not guessed).
+	for _, name := range []string{"strpbrk", "memchr", "strtok"} {
+		if IsBorrowReturn(name) {
+			t.Errorf("IsBorrowReturn(%q) = true; unmodeled search family must stay unknown", name)
 		}
 	}
 }
