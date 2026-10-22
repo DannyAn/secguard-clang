@@ -381,6 +381,12 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			if c.LeakTransferConditional != "" {
 				parts = append(parts, "transfer-cond@"+c.LeakTransferConditional)
 			}
+			// A release on a borrowed pointer (cJSON_Delete on
+			// cJSON_GetObjectItem's result, free on strstr's): an invalid
+			// free of an object owned elsewhere.
+			if c.LeakFreeOnBorrow != "" {
+				parts = append(parts, "free-on-borrow@"+c.LeakFreeOnBorrow)
+			}
 		case "divide-by-zero":
 			if shape := divisorShape(c.VariableName); shape != "" {
 				parts = append(parts, "divisor@"+shape)

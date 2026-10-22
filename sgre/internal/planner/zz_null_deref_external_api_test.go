@@ -2,7 +2,19 @@
 
 package planner
 
-import "testing"
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/evidence"
+	"github.com/DannyAn/secguard-clang/internal/graph"
+	"github.com/DannyAn/secguard-clang/internal/indexer"
+	"github.com/DannyAn/secguard-clang/internal/log"
+	"github.com/DannyAn/secguard-clang/internal/parser"
+)
 
 // External-API null-deref matrix (docs §9.2): modeled library APIs whose
 // returns are documented maybe-NULL (xmlDocGetRootElement, cJSON_GetObjectItem,
@@ -139,5 +151,74 @@ void g(const char *buf, int size) {
 		if !hasNullDerefCandidate(res, fn) {
 			t.Errorf("%s: unguarded call-result deref of a maybe-NULL library API must surface a candidate", fn)
 		}
+	}
+}
+
+// TestMemoryLeak_FreeOnBorrowPipeline locks the user-provided cJSON misuse
+// end-to-end through the planner: cJSON_Delete on cJSON_GetObjectItem's
+// borrowed result surfaces as a suspected memory-leak candidate (never
+// auto-confirmed — the classifier judges the CWE-415/416 consequence)
+// carrying the free-on-borrow hint token, while the correctly-paired root
+// produces nothing.
+func TestMemoryLeak_FreeOnBorrowPipeline(t *testing.T) {
+	src := `typedef struct cJSON { int valueint; struct cJSON *child; } cJSON;
+extern cJSON *cJSON_Parse(const char *value);
+extern cJSON *cJSON_GetObjectItem(const cJSON *obj, const char *key);
+extern void cJSON_Delete(cJSON *item);
+
+void f(const char *value) {
+    cJSON *root = cJSON_Parse(value);
+    if (root == NULL) return;
+    cJSON *name = cJSON_GetObjectItem(root, "name");
+    cJSON_Delete(name);
+    cJSON_Delete(root);
+}
+`
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "borrow.c")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	evidence.RunAllDetectors(ctx, store, p, logger)
+	res, err := NewPlanner(store, p, logger).Plan(ctx, "memory-leak")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	var found bool
+	for _, c := range res.Candidates {
+		if c.Target.Function != "f" {
+			continue
+		}
+		if c.Target.Variable == "root" {
+			t.Errorf("the correctly-paired root must not surface a candidate, got %s", c.SuspicionLevel)
+		}
+		if c.Target.Variable == "name" {
+			found = true
+			if c.SuspicionLevel != "suspected" {
+				t.Errorf("free-on-borrow must stay suspected for the AI (invalid-free/UAF consequence), got %q", c.SuspicionLevel)
+			}
+			hasToken := false
+			for _, tok := range c.HintTokens {
+				if tok == "free-on-borrow@cJSON_Delete" {
+					hasToken = true
+				}
+			}
+			if !hasToken {
+				t.Errorf("candidate hint must carry free-on-borrow@cJSON_Delete, got %v", c.HintTokens)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("cJSON_Delete on cJSON_GetObjectItem's borrowed result must surface a free-on-borrow candidate")
 	}
 }

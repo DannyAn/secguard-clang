@@ -326,6 +326,10 @@ type Candidate struct {
 	// LeakTransferConditional is the "api:line,..." list of guarded conditional
 	// ownership transfers whose failure branch still owns the object.
 	LeakTransferConditional string `json:"leak_transfer_conditional,omitempty"`
+	// LeakFreeOnBorrow is the release API called on a borrowed pointer
+	// (cJSON_Delete on cJSON_GetObjectItem's result, free on strstr's) —
+	// an invalid free of an object owned elsewhere.
+	LeakFreeOnBorrow string `json:"leak_free_on_borrow,omitempty"`
 	// ThreadFunctions is the comma-separated list of pthread thread function
 	// names for a shared_data_race candidate (race-condition).
 	ThreadFunctions string `json:"thread_functions,omitempty"`

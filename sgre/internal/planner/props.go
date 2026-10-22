@@ -224,6 +224,10 @@ type eventProps struct {
 	// TransferOnSuccess calls whose failure branch still owns the object —
 	// the transfer is conditional, so the leak rides the failure path.
 	TransferConditional string `json:"transfer_conditional"`
+	// BorrowFree is the release API called on a borrowed pointer
+	// (origin=free-borrow): the variable came from a borrow-return API and
+	// the call releases an object the caller does not own.
+	BorrowFree string `json:"borrow_free"`
 }
 
 func parseEventProps(raw string) eventProps {

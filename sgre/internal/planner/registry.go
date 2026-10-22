@@ -585,6 +585,12 @@ func buildLeakVerdictFacts(c Candidate) []VerdictFact {
 			Detail: "guarded ownership-transfer call(s): ownership moves only on the success branch, so the FAILURE branch (error return without release) is the leak path",
 		})
 	}
+	if c.LeakFreeOnBorrow != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "free-on-borrow@" + c.LeakFreeOnBorrow,
+			Detail: fmt.Sprintf("the variable holds a BORROWED pointer (from %s) and %s releases an object the caller does not own — an invalid free with use-after-free / double-free consequences when the real owner releases it; the correct fix is to drop the release, not add one", c.APIName, c.LeakFreeOnBorrow),
+		})
+	}
 	return facts
 }
 
