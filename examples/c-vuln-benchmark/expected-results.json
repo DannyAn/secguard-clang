@@ -1,9 +1,9 @@
 {
-  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327) + 4 个测试用例 (Phase 2: heap OOB write / format overflow / data race / OOB read) + 4 个测试用例 (Phase 3: null-deref sizeof + 流敏感 FP 抑制) + 3 个测试用例 (Phase 4: uninit 流敏感收敛，来自 zlib 生产环境缺陷) + 12 个测试用例 (Phase 6: resource-leak CWE-404，其中 RL-10~RL-12 为已确认检测缺口 known-gap 标记保留作回归目标，validator 对这类用例的漏报不判失败）。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。校验按 (漏洞类型, 文件, 行±容差) 与 verdict 阶段 result.sarif 交叉比对（见 benchmark.md「运行方式」）；detector → 漏洞类型映射见 scripts/validate-benchmark.py 的 DETECTOR_TO_TYPE，用 `--selftest` 可校验该映射是否覆盖全部标签；另加 34 个测试用例 (Phase 11: 补齐 dangerous-function / double-free / format-string / signal-handler 四个零覆盖 skill，并为 deadlock / hardcoded-secret / out-of-bounds / use-after-free 补上缺失的 no_finding 反证防线 —— 22 个注册漏洞类型至此每个都有「该报」与「不该报」对照；FS-05/DF-05/SH-05 为其存量文件上已检出但未纳入 ground truth 的缺陷)；ND-05/ND-06 由已删除的 examples/nullflow-demo/src/demo.c 迁入（拷贝传播收敛、return 之后不可达解引用），该独立样例项目的其余 3 个场景与 p5_null_flow.c 重复，故随迁移一并移除；ML-01/ML-02 补上 memory-leak 两条此前未锁定、仅以候选形式存在的真泄漏（条件路径泄漏 + 从不 free），使该类型每条候选都有 ground truth 对应；另加 5 个测试用例 (Phase 12: v0.7.1 缺陷修复回归 —— memory-leak 错误路径 return p 泄漏 (ML-03)、覆盖指针丢分配 (ML-04)、resource-leak 括号错误返回 (RL-15)、mmap 泄漏 (RL-16)、signal-handler strncpy 变量名巧合误杀 (SH-06))；另加 2 个测试用例 (Phase 13: v0.7.4 误报修复回归 —— 链表删除间接释放函数 + alias 重新赋值 UAF 误报 (UAF-02)、signed-compare 跨作用域同名遮蔽误报 (SC-01))；另加 2 个测试用例 (Phase 15: memory-leak 容器逃逸误报修复回归 —— malloc 容器写入缓冲区后 return 转移所有权，findEscapeLines pointer_expression 分支 allocVarNames 回归 (ML-05/ML-06))；另加 2 个测试用例 (Phase 16: divide-by-zero 非零源除数误报修复回归 —— 结构体字段从非零返回函数赋值 (P16-01)、全局变量从非零常量赋值 (P16-02)，globalInvariants 非零源赋值扫描 + RangeFilter field-chain invariant 检查回归)；另加 12 个测试用例 (Phase 17: 补齐 argument-type / data-representation / implicit-contract 三个此前零覆盖的 contract 类型 —— 每类 2 个 finding + 2 个 no_finding；P17-01~04 显式指针 cast 的越字节读与同尺寸/void* 合法边界，P17-05~08 qsort/bsearch base 元素表示与 comparator 解释一致/不一致，P17-09~12 结构体指针字段部分守卫 vs 完全守卫/函数内写入)。；另加 5 个测试用例 (Phase 18: P1 调用点实参普查回归 —— 非 static wrapper 树内全字面量 gate drop (P18-01/P18-05)、污点调用点保留 promote (P18-02)、basename/strrchr 净化 kill 含尾部整型指针算术 sink 解析 (P18-03/P18-04)；FS-01..03 随 P1 语义重定性为 no_finding：树内唯一调用点传字面量的形参 sink 在封闭程序内不可利用)；另加 2 个测试用例 (Phase 19: NAT 生产第二轮复核 null-deref 误报修复回归 —— 内联 getter 返回静态数组基址指针运算 (g_pool_var.sects + node_id) 永不为 NULL，调用点解引用不得误报 (ND-14)；literal-NULL 返回链真缺陷对照必须仍报 (ND-15)，exprReturnsNullable binary_expression 数组基址识别回归)；Phase 19 同批追加 divide-by-zero abort/assert 退出守卫回归 (P19-03/P19-04)：HPE_ASSERT 宏展开含 abort 的 no-return consequence 与守卫全局自身的 exit 守卫均建立非零不变量；另加 1 个测试用例 (Phase 20: v0.9.9 retNullable 三态化回归 —— proven getter (字面 return NULL 路径) 的调用点解引用自动确认 (ND-16)，assumed 一侧由 ND-07/ND-08 保持 suspected 交 AI 研判锁定，同名 static 定义保守合并为 assumed 由单测锁定)。；另加 7 个测试用例 (Phase 21: unchecked-return 消费点普查误报修复回归 —— IDM 报告 25/25 全误报的三个形态：结果丢弃 + 入口守卫（cast 别名）消费者 (UR-01)、void/int 混合 NULL 防御消费 (UR-02)、字段逃逸下游共享校验 (UR-03)；真阳性控制组直接解引用 (UR-04)；census AND 负控一安全一解引用 (UR-05)；值逃逸无守卫转存 (UR-06)；void 正守卫全包裹 (UR-07)。检测器层 paramNullSafe 摘要（入口早退 ∪ 体内正守卫全包裹，cast 别名感知）+ 消费点 census AND + fieldNullChecks 字段逃逸三机制回归。；另加 6 个测试用例 (Phase 22: null-deref 三类误报修复回归 —— R1 短路守卫 (P22-01)、R2 条件非空 getter (P22-02)、R3 strip 守卫互斥 (P22-03)；真阳性控制组 id 范围 getter (P22-04)、全局 getter 相邻判空不一致 (P22-05)、布尔分支绕过守卫 (P22-06)。evidence 短路保护分析 + planner retNullGuardContract 双契约（paramNullOnly / overflowArg+overflowLen）+ 调用点 strlen 合取互斥三机制回归。；另加 8 个测试用例 (Phase 23: 不完整类型信息场景 null-deref 检测能力增强回归 —— 报告原帖树内调用点形态（转发未证明 + 类型不可见 → caller_null + opaque_param 双通道）(P23-01/P23-06)、field-read+cast 赋值转存 opaque_field_read 播种 (P23-02)、链式中间层字段值播种 (P23-03)；守卫 kill 反例 (P23-04)、树内类型+安全实参反例 (P23-05)、体量守卫反例：树内定义类型同样未证明转发不加播 (P23-07)、守卫调用者反例 (P23-08)。两通道均 fail-open suspected 级，AI 研判裁决外部契约；另加 5 个测试用例 (Phase 24: 未校验外部索引越界检测能力增强 —— 生产 maf_rbl 形态 p->svr[p->actived_index] 无边界检查 → array_oob_read_unchecked 越界读 (P24-01)、同形态写路由 buffer-overflow (P24-02)；入口容量检查修复对照 (P24-03)、循环变量索引 (P24-04) 与普通参数索引 (P24-05) 两个体量守卫反证。候选保持 suspected 级，idx-src@/elem-field@/oob-escape@ 三个 Hint token 承载 CWE-125→CWE-476 链条交 AI 研判)。；另加 8 个测试用例 (Phase 26: 第三方库 API 语义模型回归 —— libxml2/cJSON/libc 专用分配配对与族错配 (P26-01/02/03/05)、引用型添加不转移 (P26-04)、asprintf 出参成功分支绑定 (P26-06)、可空借用解引用与全守卫反证 (P26-07/08)；模型见 sgre/internal/apikb/external_api.go)；另加 3 个测试用例 (Phase 26b: 用户标准 cJSON 用法形态回归 —— main 全流程正例 (P26-09)、Detach 正例 (P26-11)、Detach 后不删 definite 泄漏 (P26-12)；P26-10 借用 item 单独 Delete 为 free-on-borrow suspected 候选不进 ground truth（validator 只读 verdict 阶段 result.sarif），由 tc160 单测锁定)；另加 2 个测试用例 (Phase 27: 用户 cbwl_tbl.c UAF 样例回归 —— 跨函数 wrapper 释放后宏包装使用（must 变体 P27-01 finding）与用户修复方案先日志后释放对照 (P27-02 no_finding)；防御式条件释放（if (node != NULL) free）变体为 may-free suspected 候选不进 ground truth，由 tc_uaf_conditional_release_use.c 单测锁定；本批同时落地 UAF may-free 通道：findAllFreeSites 消费 ParamMayDirectFrees 生成 may free site、事件带 may_free、LifetimeFilter 不升 confirmed)",
+  "_description": "FP Verification Benchmark — Ground Truth。18 个测试用例 (Phase 0) + 12 个测试用例 (Phase 1: CWE-190/362/798/667/327) + 4 个测试用例 (Phase 2: heap OOB write / format overflow / data race / OOB read) + 4 个测试用例 (Phase 3: null-deref sizeof + 流敏感 FP 抑制) + 3 个测试用例 (Phase 4: uninit 流敏感收敛，来自 zlib 生产环境缺陷) + 12 个测试用例 (Phase 6: resource-leak CWE-404，其中 RL-10~RL-12 为已确认检测缺口 known-gap 标记保留作回归目标，validator 对这类用例的漏报不判失败）。每个用例的 expect 字段为机器可读：finding=应报告，no_finding=应被收敛管道抑制。校验按 (漏洞类型, 文件, 行±容差) 与 verdict 阶段 result.sarif 交叉比对（见 benchmark.md「运行方式」）；detector → 漏洞类型映射见 scripts/validate-benchmark.py 的 DETECTOR_TO_TYPE，用 `--selftest` 可校验该映射是否覆盖全部标签；另加 34 个测试用例 (Phase 11: 补齐 dangerous-function / double-free / format-string / signal-handler 四个零覆盖 skill，并为 deadlock / hardcoded-secret / out-of-bounds / use-after-free 补上缺失的 no_finding 反证防线 —— 22 个注册漏洞类型至此每个都有「该报」与「不该报」对照；FS-05/DF-05/SH-05 为其存量文件上已检出但未纳入 ground truth 的缺陷)；ND-05/ND-06 由已删除的 examples/nullflow-demo/src/demo.c 迁入（拷贝传播收敛、return 之后不可达解引用），该独立样例项目的其余 3 个场景与 p5_null_flow.c 重复，故随迁移一并移除；ML-01/ML-02 补上 memory-leak 两条此前未锁定、仅以候选形式存在的真泄漏（条件路径泄漏 + 从不 free），使该类型每条候选都有 ground truth 对应；另加 5 个测试用例 (Phase 12: v0.7.1 缺陷修复回归 —— memory-leak 错误路径 return p 泄漏 (ML-03)、覆盖指针丢分配 (ML-04)、resource-leak 括号错误返回 (RL-15)、mmap 泄漏 (RL-16)、signal-handler strncpy 变量名巧合误杀 (SH-06))；另加 2 个测试用例 (Phase 13: v0.7.4 误报修复回归 —— 链表删除间接释放函数 + alias 重新赋值 UAF 误报 (UAF-02)、signed-compare 跨作用域同名遮蔽误报 (SC-01))；另加 2 个测试用例 (Phase 15: memory-leak 容器逃逸误报修复回归 —— malloc 容器写入缓冲区后 return 转移所有权，findEscapeLines pointer_expression 分支 allocVarNames 回归 (ML-05/ML-06))；另加 2 个测试用例 (Phase 16: divide-by-zero 非零源除数误报修复回归 —— 结构体字段从非零返回函数赋值 (P16-01)、全局变量从非零常量赋值 (P16-02)，globalInvariants 非零源赋值扫描 + RangeFilter field-chain invariant 检查回归)；另加 12 个测试用例 (Phase 17: 补齐 argument-type / data-representation / implicit-contract 三个此前零覆盖的 contract 类型 —— 每类 2 个 finding + 2 个 no_finding；P17-01~04 显式指针 cast 的越字节读与同尺寸/void* 合法边界，P17-05~08 qsort/bsearch base 元素表示与 comparator 解释一致/不一致，P17-09~12 结构体指针字段部分守卫 vs 完全守卫/函数内写入)。；另加 5 个测试用例 (Phase 18: P1 调用点实参普查回归 —— 非 static wrapper 树内全字面量 gate drop (P18-01/P18-05)、污点调用点保留 promote (P18-02)、basename/strrchr 净化 kill 含尾部整型指针算术 sink 解析 (P18-03/P18-04)；FS-01..03 随 P1 语义重定性为 no_finding：树内唯一调用点传字面量的形参 sink 在封闭程序内不可利用)；另加 2 个测试用例 (Phase 19: NAT 生产第二轮复核 null-deref 误报修复回归 —— 内联 getter 返回静态数组基址指针运算 (g_pool_var.sects + node_id) 永不为 NULL，调用点解引用不得误报 (ND-14)；literal-NULL 返回链真缺陷对照必须仍报 (ND-15)，exprReturnsNullable binary_expression 数组基址识别回归)；Phase 19 同批追加 divide-by-zero abort/assert 退出守卫回归 (P19-03/P19-04)：HPE_ASSERT 宏展开含 abort 的 no-return consequence 与守卫全局自身的 exit 守卫均建立非零不变量；另加 1 个测试用例 (Phase 20: v0.9.9 retNullable 三态化回归 —— proven getter (字面 return NULL 路径) 的调用点解引用自动确认 (ND-16)，assumed 一侧由 ND-07/ND-08 保持 suspected 交 AI 研判锁定，同名 static 定义保守合并为 assumed 由单测锁定)。；另加 7 个测试用例 (Phase 21: unchecked-return 消费点普查误报修复回归 —— IDM 报告 25/25 全误报的三个形态：结果丢弃 + 入口守卫（cast 别名）消费者 (UR-01)、void/int 混合 NULL 防御消费 (UR-02)、字段逃逸下游共享校验 (UR-03)；真阳性控制组直接解引用 (UR-04)；census AND 负控一安全一解引用 (UR-05)；值逃逸无守卫转存 (UR-06)；void 正守卫全包裹 (UR-07)。检测器层 paramNullSafe 摘要（入口早退 ∪ 体内正守卫全包裹，cast 别名感知）+ 消费点 census AND + fieldNullChecks 字段逃逸三机制回归。；另加 6 个测试用例 (Phase 22: null-deref 三类误报修复回归 —— R1 短路守卫 (P22-01)、R2 条件非空 getter (P22-02)、R3 strip 守卫互斥 (P22-03)；真阳性控制组 id 范围 getter (P22-04)、全局 getter 相邻判空不一致 (P22-05)、布尔分支绕过守卫 (P22-06)。evidence 短路保护分析 + planner retNullGuardContract 双契约（paramNullOnly / overflowArg+overflowLen）+ 调用点 strlen 合取互斥三机制回归。；另加 8 个测试用例 (Phase 23: 不完整类型信息场景 null-deref 检测能力增强回归 —— 报告原帖树内调用点形态（转发未证明 + 类型不可见 → caller_null + opaque_param 双通道）(P23-01/P23-06)、field-read+cast 赋值转存 opaque_field_read 播种 (P23-02)、链式中间层字段值播种 (P23-03)；守卫 kill 反例 (P23-04)、树内类型+安全实参反例 (P23-05)、体量守卫反例：树内定义类型同样未证明转发不加播 (P23-07)、守卫调用者反例 (P23-08)。两通道均 fail-open suspected 级，AI 研判裁决外部契约；另加 5 个测试用例 (Phase 24: 未校验外部索引越界检测能力增强 —— 生产 maf_rbl 形态 p->svr[p->actived_index] 无边界检查 → array_oob_read_unchecked 越界读 (P24-01)、同形态写路由 buffer-overflow (P24-02)；入口容量检查修复对照 (P24-03)、循环变量索引 (P24-04) 与普通参数索引 (P24-05) 两个体量守卫反证。候选保持 suspected 级，idx-src@/elem-field@/oob-escape@ 三个 Hint token 承载 CWE-125→CWE-476 链条交 AI 研判)。；另加 8 个测试用例 (Phase 26: 第三方库 API 语义模型回归 —— libxml2/cJSON/libc 专用分配配对与族错配 (P26-01/02/03/05)、引用型添加不转移 (P26-04)、asprintf 出参成功分支绑定 (P26-06)、可空借用解引用与全守卫反证 (P26-07/08)；模型见 sgre/internal/apikb/external_api.go)；另加 3 个测试用例 (Phase 26b: 用户标准 cJSON 用法形态回归 —— main 全流程正例 (P26-09)、Detach 正例 (P26-11)、Detach 后不删 definite 泄漏 (P26-12)；P26-10 借用 item 单独 Delete 为 free-on-borrow suspected 候选不进 ground truth（validator 只读 verdict 阶段 result.sarif），由 tc160 单测锁定)；另加 2 个测试用例 (Phase 27: 用户 cbwl_tbl.c UAF 样例回归 —— 跨函数 wrapper 释放后宏包装使用（must 变体 P27-01 finding）与用户修复方案先日志后释放对照 (P27-02 no_finding)；防御式条件释放（if (node != NULL) free）变体为 may-free suspected 候选不进 ground truth，由 tc_uaf_conditional_release_use.c 单测锁定；本批同时落地 UAF may-free 通道：findAllFreeSites 消费 ParamMayDirectFrees 生成 may free site、事件带 may_free、LifetimeFilter 不升 confirmed)；另加 4 个测试用例 (Phase 28: 用户 HRP 空指针审计样例回归 —— PATTERN-02 guard 分支内重赋值 proven-nullable 后未判空 (P28-01 finding, auto-confirm 档) 与用户三个修复方案反证 (P28-02/03/04 no_finding)；PATTERN-03 成员链/PATTERN-09 IPC 强转/PATTERN-05 分支外解引用为 suspected 候选不进 ground truth，由 zz_null_deref_hrp_test.go 单测锁定)",
   "_benchmark_doc": "benchmark.md",
   "_validator": "scripts/validate-benchmark.py",
   "summary": {
-    "total_test_cases": 219,
+    "total_test_cases": 223,
     "phase0_test_cases": 18,
     "phase1_test_cases": 12,
     "phase2_test_cases": 4,
@@ -74,7 +74,10 @@
     "phase26_no_finding": 6,
     "phase27_uaf_conditional_release": 2,
     "phase27_finding": 1,
-    "phase27_no_finding": 1
+    "phase27_no_finding": 1,
+    "phase28_hrp_null_deref": 4,
+    "phase28_finding": 1,
+    "phase28_no_finding": 3
   },
   "test_cases": [
     {
@@ -2221,6 +2224,46 @@
       "code": "修复对照（用户修复方案）：日志（含宏包装使用）在前、释放殿后 → 使用先于释放 → 不报",
       "cwe": "CWE-416",
       "detector": "use_after_free",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P28-01",
+      "category": "phase28_hrp_null_deref",
+      "file": "src/p28_hrp_session_null_deref.c",
+      "line": 52,
+      "code": "用户 hrp_session.c PATTERN-02：guard 分支内 ctx 重赋值为树内 proven-nullable wrapper（malloc+字面 return NULL）返回值且未再判空 → auto-confirm 档 confirmed 候选（入口 ctx==NULL 守卫不保护重赋值后的解引用）",
+      "cwe": "CWE-476",
+      "detector": "null_deref",
+      "expect": "finding"
+    },
+    {
+      "id": "P28-02",
+      "category": "phase28_hrp_null_deref",
+      "file": "src/p28_hrp_fixed_forms.c",
+      "line": 62,
+      "code": "用户修复方案 1 反证：重赋值后判空（ctx==NULL 早退）+ 成员判空（negotiator==NULL 早退）→ 两个守卫 kill 全部 nullable 源 → 不报",
+      "cwe": "CWE-476",
+      "detector": "null_deref",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P28-03",
+      "category": "phase28_hrp_null_deref",
+      "file": "src/p28_hrp_fixed_forms.c",
+      "line": 72,
+      "code": "用户修复方案 2 反证：IPC 外部数据校验（msg==NULL||ctxPtr==0 早退）+ 查表替代强转 + ctx 判空 → 不报",
+      "cwe": "CWE-476",
+      "detector": "null_deref",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P28-04",
+      "category": "phase28_hrp_null_deref",
+      "file": "src/p28_hrp_fixed_forms.c",
+      "line": 80,
+      "code": "用户修复方案 3 反证：入口判空（peer==NULL 早退）→ 分支内外解引用均在守卫保护下 → 不报",
+      "cwe": "CWE-476",
+      "detector": "null_deref",
       "expect": "no_finding"
     }
   ]

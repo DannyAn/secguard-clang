@@ -65,6 +65,26 @@ must 确认、修复对照零事件）+ planner 分级测试（may=suspected、m
 + benchmark Phase 27（P27-01 must+宏 finding 走 macro-context AI 复核、
 P27-02 修复对照 no_finding）；A/B 全量 78→78 / 145→145 双向差集空（零回归）。
 
+## [未发布]（续二）
+
+### 用户 HRP 空指针审计样例回归（能力锁定，零检测器改动）
+
+用户两文件五步审计样例（CWD-1031/1034 四 PATTERN）端到端判定全部已检出，无需修复：
+P-02（guard 分支内 `ctx = Hrp_AllocSession(peerId)` 重赋值为树内 proven-nullable
+wrapper（malloc+字面 return NULL）后未判空）→ retNullable proven 通道
+**auto-confirmed**（入口 ctx==NULL 守卫不保护重赋值后的解引用，ND-16 同档）；
+P-03（`ctx->negotiator->state` 成员链，extern assumed 源）→ null@opaque-origin
+suspected + implicit-contract ptr_guard 双通道；P-09（IPC `msg->ctxPtr` 强转
+解引用）→ null@opaque-origin src@ 强转行 suspected + implicit-contract；
+P-05（条件与指针无关的分支内外双重解引用）→ null@caller-arg suspected
+（boundary 场景实证）。用户三个修复方案全通道零候选（FP=0）。落地：
+tc164/tc165/tc166 fixture + planner 五组单测（四 PATTERN tier 断言 + 修复
+对照零候选）+ benchmark Phase 28（P28-01 finding + P28-02/03/04 修复
+no_finding；P-03/P-09/P-05 suspected 侧由单测锁定——P-05 依赖 boundary 语义，
+全量目录含 main 时 hrp 函数不可达被 CallReachFilter 正确丢弃）。A/B 80→80 /
+146→146 双向差集空（零回归）。**判定记录**：现有 fixture（tc106 等）仅覆盖
+cast-reassign 防误报方向，用户四 PATTERN 正向形态此前无同类用例，本轮补齐。
+
 ## [0.9.8] - 2026-10-21
 
 ### 两项"待拍板"的结论（已按方案落地，不再等决策）

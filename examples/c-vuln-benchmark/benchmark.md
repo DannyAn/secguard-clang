@@ -827,3 +827,25 @@ LifetimeFilter 对 may 不升 confirmed——对齐 double-free 的 MayFree 先�
 锁定，suspected 级不进 ground truth）。A/B（HEAD vs 本轮）：候选 78→78、
 auto-confirmed 145→145、双向差集均空（benchmark 全量零回归；增量全部由
 单测矩阵承载）。
+
+### Phase 28 — 用户 HRP 空指针审计样例回归（2026-10-22 追加）
+
+`src/p28_hrp_session_null_deref.c` / `p28_hrp_peer_branch_deref.c` /
+`p28_hrp_fixed_forms.c`：用户两文件五步审计形态——PATTERN-02（guard 分支内
+`ctx = Hrp_AllocSession(peerId)` 重赋值为树内 proven-nullable wrapper
+（malloc+字面 return NULL）后未再判空，P28-01 finding：入口 `ctx == NULL`
+守卫不保护重赋值后的解引用，retNullable proven 通道 auto-confirm 档）、
+PATTERN-03（`ctx->negotiator->state` 成员链，extern assumed-nullable 源 →
+null@opaque-origin suspected；全量下另有 implicit-contract ptr_guard 契约
+通道候选）、PATTERN-09（IPC `msg->ctxPtr` 强转解引用 → null@opaque-origin
+src@ 强转行 suspected + implicit-contract）、PATTERN-05（条件与指针无关的
+分支内外双重解引用 → null@caller-arg suspected）。P-03/P-09/P-05 为
+suspected 候选不进 ground truth（P-05 依赖 boundary 语义：全量目录含
+p26b 的 main 时 hrp 函数从 entry 不可达被 CallReachFilter 正确丢弃；boundary
+场景 /tmp 双文件端到端已实证候选），统一由 zz_null_deref_hrp_test.go 五组
+单测锁定（四 PATTERN 检出 + 三修复对照零候选）。P28-02/03/04 锁定用户三个
+修复方案（判空返回值+判空成员 / 校验外部数据+查表 / 入口判空）——全量下
+为不可达平凡通过，真正的红绿对照在单测（boundary fail-open 下修复形态
+零候选 vs 漏报形态有候选）。A/B（HEAD vs 本轮）：候选 80→80、
+auto-confirmed 146→146、双向差集均空——本轮是**能力锁定**（既有链路
+四 PATTERN 全检出、零检测器改动）。
