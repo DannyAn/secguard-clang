@@ -4,6 +4,37 @@
 
 ## [0.9.8] - 2026-10-21
 
+### 测试夹具的 fd 0 关闭竞态（随机 FAIL 的真因）
+
+`log.New(os.NewFile(0, os.DevNull), ...)` 把 **fd 0** 包成了 `*os.File`：GC 执行该
+File 的 finalizer 时会 `close(0)`；此后任何 `open()` 拿到 fd 0，再被下一次 finalize
+关闭，就出现随机的 `TempDir RemoveAll cleanup: unlinkat ...: bad file descriptor`。
+这就是十轮里"不同用例随机挂、单独跑又过"的根因（与检测逻辑无关），在 `TMPDIR` 放进
+仓库或 `/tmp` 时都会出现。四处测试助手改为 `log.New(io.Discard, ...)`；`planner` +
+`evidence` 连续 8 轮全量复跑 **0 失败**（此前约 2/6 轮随机失败）。
+
+### 检测器输入统一为全树事实层（声明在头文件不再丢失）
+
+审计发现的系统性缺陷：多处以 `root.FindAll(...)` 只采当前文件的声明事实，声明放在
+头文件（`axxx.h -> axxx.c`、`axxx.h + bxxx.h -> cxxx.c` 这种 C 最常规布局）时容量/
+类型/宏静默取不到，检测直接消失——out-of-bounds 的 `svr[actived_index]` 只是被撞见的
+一个实例。
+
+- 新增共享事实层 `internal/repofacts`：一次遍历全部索引文件，聚合 typedef 别名、对象
+  宏、struct/union 布局（成员类型/指针/数组容量+容量符号）、文件作用域数组；按 struct
+  tag / typedef 别名精确解析（同名字段互不遮蔽），冲突即判未知（不猜）。
+- 接入的消费者：out-of-bounds / buffer-overflow 的成员数组与全局数组容量、容量宏；
+  null-deref planner 的数组基址判定（头文件里的数组不再被当成可空指针）。per-file
+  扫描仍是快路径，事实层只做兜底。
+- 类级回归：`TestDeclarationFactInvariance` —— 同一组 fixture 的内联版与头文件拆分版
+  必须产出**完全相同的候选**（out-of-bounds、buffer-overflow），以后任何"只看当前
+  文件"的退化都会被它挡住；另加 `TestUncheckedIndexHeaderDeclaredStruct`（原帖形态）与
+  `TestArrayCapacityDeclaredInHeader`（头文件全局数组）。
+- 体量：benchmark out-of-bounds 2 → 3（新增即 P25）、null-deref 22 不变；redis
+  out-of-bounds 1 → 36、buffer-overflow 219 → 230、null-deref 1320 不变。
+- 已知未覆盖：`crypto_misuse` 的 undersized-key 仍只扫 `declaration`，结构体成员 key
+  在头文件时不报——它需要"非函数实体归属"的事件模型，本轮不改（明确记录）。
+
 本版本经多轮重发收敛为最终内容：正文只列最终能力、验证结果与升级方式（逐轮迭代
 明细见 git log 中各提交说明）。
 
