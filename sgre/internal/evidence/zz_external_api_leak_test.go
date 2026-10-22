@@ -212,3 +212,114 @@ func TestExternalAPI_XmlTreeInternalNodesNotLeakedWhenDocReleased(t *testing.T) 
 		t.Error("correctly paired xmlDoc/cJSON roots must not leak")
 	}
 }
+
+// hasFreeOnBorrowEvent reports whether the variable has a free-on-borrow
+// candidate event: a deallocator call on the result of a borrowed-return API
+// (cJSON_GetObjectItem → cJSON_Delete, strstr → free).
+func hasFreeOnBorrowEvent(t *testing.T, store db.Store, variable string) bool {
+	t.Helper()
+	for _, props := range externalAPITestEvents(t, store, "MEMORY_ALLOC", variable) {
+		if props["origin"] == "free-borrow" {
+			return true
+		}
+	}
+	return false
+}
+
+// TestExternalAPI_CJSONStandardUsage locks the user-provided canonical
+// create/attach/print/release form (tc159): three ownership rules exercised
+// and zero findings on every channel — no leak for root/name/json, and no
+// free-on-borrow candidate for any of them.
+func TestExternalAPI_CJSONStandardUsage(t *testing.T) {
+	store := runIndexAndDetect(t, "tc159_cjson_standard_usage.c")
+	for _, v := range []string{"root", "name", "json"} {
+		if hasLeakEvent(t, store, v) {
+			t.Errorf("%s: the standard create/attach/print/release form must not report a leak", v)
+		}
+		if hasFreeOnBorrowEvent(t, store, v) {
+			t.Errorf("%s: correctly-paired objects must not raise a free-on-borrow candidate", v)
+		}
+	}
+}
+
+// TestExternalAPI_CJSONDeleteBorrowedItem locks the user-provided misuse
+// (tc160): deleting an item borrowed from the parent tree. The root itself
+// stays correctly paired (no false leak), and the free-on-borrow channel
+// must surface a candidate for `name` — releasing an object the caller does
+// not own is an invalid-free/UAF risk.
+func TestExternalAPI_CJSONDeleteBorrowedItem(t *testing.T) {
+	store := runIndexAndDetect(t, "tc160_cjson_delete_borrowed.c")
+	if hasLeakEvent(t, store, "root") {
+		t.Error("cJSON_Parse + cJSON_Delete keeps the root correctly paired; no false leak")
+	}
+	if hasLeakEvent(t, store, "name") {
+		t.Error("the borrowed item is not an allocation; the finding must be free-on-borrow, not a leak")
+	}
+	if !hasFreeOnBorrowEvent(t, store, "name") {
+		t.Error("cJSON_Delete on cJSON_GetObjectItem's borrowed result must surface a free-on-borrow candidate")
+	}
+	for _, props := range externalAPITestEvents(t, store, "MEMORY_ALLOC", "name") {
+		if props["origin"] == "free-borrow" {
+			if props["api"] != "cJSON_GetObjectItem" {
+				t.Errorf("free-on-borrow event must carry the borrow source API, got %q", props["api"])
+			}
+			if props["borrow_free"] != "cJSON_Delete" {
+				t.Errorf("free-on-borrow event must carry the releasing call, got %q", props["borrow_free"])
+			}
+		}
+	}
+}
+
+// TestExternalAPI_CJSONDetach covers the Detach family (user-provided form):
+// the detached item is caller-owned (needs its own delete), unlike Get which
+// only borrows. Correct pairing must stay silent; a detached item never
+// deleted is a definite leak the root's delete does NOT cover.
+func TestExternalAPI_CJSONDetach(t *testing.T) {
+	store := runIndexAndDetect(t, "tc161_cjson_detach_ok.c")
+	if hasLeakEvent(t, store, "name") || hasLeakEvent(t, store, "root") {
+		t.Error("Detach + cJSON_Delete + cJSON_Delete(root) is correctly paired on both chains")
+	}
+	if hasFreeOnBorrowEvent(t, store, "name") {
+		t.Error("a detached item is caller-owned; deleting it must not raise free-on-borrow")
+	}
+
+	store = runIndexAndDetect(t, "tc162_cjson_detach_leak.c")
+	if !hasDefiniteLeakEvent(t, store, "name") {
+		t.Error("a detached item never deleted is a definite leak (the root's delete no longer covers it)")
+	}
+	if hasLeakEvent(t, store, "root") {
+		t.Error("the root stays correctly paired in the detach-leak case")
+	}
+}
+
+// TestExternalAPI_CJSONAddThenDeleteItemBoundary locks the boundary semantics
+// (tc163): after a checked owning add succeeds, the item belongs to the
+// parent. The cross-object double free is out of the leak detector's scope —
+// the leak channel must stay silent for both the item and the root (no
+// false leak, no fabricated conclusion either way).
+func TestExternalAPI_CJSONAddThenDeleteItemBoundary(t *testing.T) {
+	store := runIndexAndDetect(t, "tc163_cjson_add_then_delete.c")
+	if hasLeakEvent(t, store, "name") || hasLeakEvent(t, store, "root") {
+		t.Error("the add-then-delete boundary must not fabricate a leak on either object")
+	}
+	if hasFreeOnBorrowEvent(t, store, "name") {
+		t.Error("name is a created (owned) item, not a borrow; free-on-borrow must not fire")
+	}
+}
+
+// TestExternalAPI_FreeOnBorrowStrchr extends tc152: free() on strstr's
+// borrowed result is now surfaced as a free-on-borrow candidate (an invalid
+// free of a pointer into the input string), in addition to staying off the
+// leak and release channels.
+func TestExternalAPI_FreeOnBorrowStrchr(t *testing.T) {
+	store := runIndexAndDetect(t, "tc152_free_borrow_no_release.c")
+	if hasLeakEvent(t, store, "p") {
+		t.Error("strstr's borrowed result must not be reported as a leaked allocation")
+	}
+	if releases := externalAPITestEvents(t, store, "MEMORY_RELEASE", "p"); len(releases) > 0 {
+		t.Errorf("free() on a borrowed pointer must not be recorded as a valid release, got %d MEMORY_RELEASE events", len(releases))
+	}
+	if !hasFreeOnBorrowEvent(t, store, "p") {
+		t.Error("free() on strstr's borrowed result must surface a free-on-borrow candidate")
+	}
+}

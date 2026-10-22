@@ -234,6 +234,26 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 
 				}
 			}
+			// Free-on-borrow: a deallocator call on a variable whose value
+			// came from a borrowed-return API (cJSON_GetObjectItem, strstr,
+			// getenv, ...) releases an object the caller does not own — an
+			// invalid free with use-after-free / double-free / heap-corruption
+			// consequences when the real owner releases it later
+			// (cJSON_Delete(root) walking a child list whose item was already
+			// deleted). Surfaced as a suspected candidate (never
+			// auto-confirmed: the memory-leak type carries it, the classifier
+			// judges the CWE-415/416 consequence).
+			for _, site := range findFreeOnBorrowSites(assigns, inits, calls, f) {
+				props := map[string]string{
+					"variable":    site.variable,
+					"origin":      "free-borrow",
+					"api":         site.borrowAPI,
+					"borrow_free": site.freeAPI,
+				}
+				if emitEvent(ctx, d.store, d.logger, "MEMORY_ALLOC", f.ID, &db.Location{FileID: file.ID, Line: site.line}, props) {
+					result.EventsCreated++
+				}
+			}
 		}
 	})
 	return result, err
@@ -883,6 +903,117 @@ func isFailureLiteral(side parser.Node, op string) bool {
 		return op == "==" || op == "!=" || op == "<"
 	}
 	return false
+}
+
+// borrowFreeSite is one releasing call on a borrowed pointer: the variable,
+// the releasing call's line and API, and the borrow-source API the value
+// came from.
+type borrowFreeSite struct {
+	variable  string
+	line      int
+	borrowAPI string
+	freeAPI   string
+}
+
+// findFreeOnBorrowSites returns the deallocator calls whose argument
+// variable still holds a borrowed pointer: the variable's most recent
+// assignment before the call is a direct `var = <borrow-returning API>(...)`
+// (apikb.IsBorrowReturn — cJSON_GetObjectItem, strstr, getenv, ...) with no
+// intervening reassignment, and the call releases that variable. The object
+// is owned elsewhere (the parent JSON tree, the input string, the
+// environment), so releasing it locally is an invalid free.
+func findFreeOnBorrowSites(assigns, inits, calls []parser.Node, f *db.Function) []borrowFreeSite {
+	type borrowAssign struct {
+		line int
+		api  string
+	}
+	assignLines := map[string][]int{}
+	borrowAssigns := map[string][]borrowAssign{}
+	record := func(lhs, rhs parser.Node, line int) {
+		name := assignedVariable(lhs)
+		if name == "" {
+			return
+		}
+		assignLines[name] = append(assignLines[name], line)
+		if rhs.Kind() == "call_expression" {
+			if api := extractCallName(rhs); api != "" && apikb.IsBorrowReturn(api) {
+				borrowAssigns[name] = append(borrowAssigns[name], borrowAssign{line: line, api: api})
+			}
+		}
+	}
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
+			continue
+		}
+		children := assign.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		record(children[0], children[1], assign.StartLine())
+	}
+	for _, init := range inits {
+		if !funcLineRange(f, init.StartLine()) {
+			continue
+		}
+		children := init.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		record(children[0], children[1], init.StartLine())
+	}
+	var sites []borrowFreeSite
+	seen := map[string]bool{}
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
+			continue
+		}
+		freeAPI := extractCallName(call)
+		if freeAPI == "" || !apikb.IsDeallocator(freeAPI) {
+			continue
+		}
+		args := getCallArgs(call)
+		if len(args) == 0 {
+			continue
+		}
+		name := argIdentifier(args[0])
+		if name == "" {
+			continue
+		}
+		key := name + ":" + strconv.Itoa(call.StartLine())
+		if seen[key] {
+			continue
+		}
+		borrowList := borrowAssigns[name]
+		if len(borrowList) == 0 {
+			continue
+		}
+		borrowLine, borrowAPI := 0, ""
+		for _, b := range borrowList {
+			if b.line < call.StartLine() && b.line > borrowLine {
+				borrowLine, borrowAPI = b.line, b.api
+			}
+		}
+		if borrowLine == 0 {
+			continue
+		}
+		// A reassignment between the borrow and the release means the freed
+		// object may no longer be the borrowed one — stay silent rather
+		// than guess (`p = strstr(...); p = malloc(n); free(p);` frees the
+		// malloc'd block and is correct).
+		reassigned := false
+		for _, l := range assignLines[name] {
+			if l > borrowLine && l < call.StartLine() {
+				reassigned = true
+				break
+			}
+		}
+		if reassigned {
+			continue
+		}
+		seen[key] = true
+		sites = append(sites, borrowFreeSite{variable: name, line: call.StartLine(), borrowAPI: borrowAPI, freeAPI: freeAPI})
+	}
+	return sites
 }
 
 func findEscapeLines(assigns, calls, returns []parser.Node, f *db.Function, varName string, localVars map[string]bool, allocVarNames map[string]bool, allocReturns map[string]bool, useEscapeFuncs bool) []int {
