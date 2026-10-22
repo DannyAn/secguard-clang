@@ -2,7 +2,7 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [未发布]
+## [0.9.9] - 2026-10-22
 
 ### 第三方库 API 语义模型（libxml2 / cJSON / libc 扩展 API）
 
@@ -45,8 +45,6 @@ double-free、graph ownership 边共同消费——不在各 detector 里散落�
   （26b）候选 76→77（post-only 恰为 P26-10 借用删除预期新增）、auto-confirm 143→144
   （+1 = P26-12 Detach 泄漏）、pre-only 空。
 
-## [未发布]（续）
-
 ### use-after-free may-free 通道（用户 cbwl_tbl.c 样例）
 
 用户五步审计法样例（PATTERN-02 释放后间接访问 + PATTERN-07 宏展开隐式 UAF）暴露
@@ -65,8 +63,6 @@ must 确认、修复对照零事件）+ planner 分级测试（may=suspected、m
 + benchmark Phase 27（P27-01 must+宏 finding 走 macro-context AI 复核、
 P27-02 修复对照 no_finding）；A/B 全量 78→78 / 145→145 双向差集空（零回归）。
 
-## [未发布]（续二）
-
 ### 用户 HRP 空指针审计样例回归（能力锁定，零检测器改动）
 
 用户两文件五步审计样例（CWD-1031/1034 四 PATTERN）端到端判定全部已检出，无需修复：
@@ -84,8 +80,6 @@ no_finding；P-03/P-09/P-05 suspected 侧由单测锁定——P-05 依赖 bounda
 全量目录含 main 时 hrp 函数不可达被 CallReachFilter 正确丢弃）。A/B 80→80 /
 146→146 双向差集空（零回归）。**判定记录**：现有 fixture（tc106 等）仅覆盖
 cast-reassign 防误报方向，用户四 PATTERN 正向形态此前无同类用例，本轮补齐。
-
-## [未发布]（续三）
 
 ### goto cleanup 形态 CFG 缺口修复（用户 hrp_buf.c double-free 样例）
 
@@ -107,6 +101,19 @@ P-06 suspected+mayFree+may-free/cond@queue_push、修复对照零候选、goto
 null-guard fall-through 反证）+ benchmark Phase 29（P29-01 finding /
 P29-02/03 no_finding）；A/B 候选 83→83 双向差集空、auto 148→149（+1 =
 P29-01），`go test ./...` + nosqlite 全绿。
+
+### 0.9.9 发布前自检修复（GLM5.3 改动复核）
+
+发布前对 0.9.8 之后 20 个提交（GLM5.3 为主）逐项复核，`go build ./...` /
+`go test ./...` / nosqlite 子集全绿；发现并修正两处：
+
+- **use-after-free `cond@` hint 越界**：`buildHintParts` 对任何带 callee 的 UAF 候选
+  都发 `cond@<helper>`，但 `callee` 在 must 间接释放（callee 无条件 free）与字段释放时
+  也会置位——`cond@`（"条件释放 helper"）语义被错误安到已证实释放的候选上。改为仅在
+  `may_free` 时发 `cond@`，并把 hint token 描述从 double-free 专属措辞泛化。
+- **出参分配失败守卫 `<` 方向过宽**：`isFailureLiteral` 对 `op == "<"` 对任意数字字面量
+  都返回真，`if (ret < 5) return;` 这类正值比较会被误判为"分配失败"而吞掉成功短输出
+  分支上的真实泄漏。收紧为字面量 `<= 0` 才算失败守卫（`< 0` 与负边界），正值比较不再豁免。
 
 ## [0.9.8] - 2026-10-21
 
