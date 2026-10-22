@@ -24,6 +24,16 @@ API）/`weak_algorithm`/`weak_random` 的证明就是"名字在名单里"，复�
   其余行复用 `group:<fn>:<tier>`；boundary 扫描额外给"树外调用方"快捷判据。
   候选条数不变（每个 still 一条审计记录），但研判从"逐行重推契约"变成"每函数一次"。
 
+### out-of-bounds 边界扫描漏报：声明事实普查扩展到 worktree 头文件
+
+子树扫描（`secguard scan maf/src`）时，结构体与容量宏声明在目标目录**之外**的头文件里
+（如 `maf/include`），声明事实普查（`repofacts.Build`）只走扫描目标树、取不到
+`svr[MAF_RBL_COUNT]` 的容量，unchecked-index 检测器因 `size <= 0` 静默丢弃
+`svr[actived_index]`——生产回归 `maf_show_dataplane_config_active_rbl_server` 漏报。
+普查现在额外解析索引文件所在 git worktree 内、尚未索引的 `.h` 文件（跳过 `.git`/
+vendored/test 目录，同名冲突仍按"取不到即丢弃"处理），子树扫描也能取到结构体布局与
+容量宏。
+
 ### 扫描流程闭环：读源/证据预算、子代理红线、组裁决、扫描边界诊断
 
 按 maf 生产扫描复盘（122 文件 / 977 函数，种子 5250 → 候选 314，AI 研判 520s）逐条核对：

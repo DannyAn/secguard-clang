@@ -13,6 +13,9 @@ package repofacts
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -63,21 +66,53 @@ func Build(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Lo
 		root parser.Node
 	}
 	var trees []fileNode
+	var indexedPaths []string
 
-	// Pass 1: collect every parse tree and the tree-wide macro values.
+	// Macros are merged from every parsed file (indexed files AND worktree
+	// headers) into one tree-wide map; a name with two different values is
+	// dropped (a guessed value is worse than an unknown one).
 	conflict := map[string]bool{}
-	err := eachIndexedFile(ctx, store, p, logger, func(file *db.File, root parser.Node) {
-		trees = append(trees, fileNode{path: file.Path, root: root})
-		for name, v := range parser.CollectMacroValues(root) {
+	addTree := func(tn fileNode) {
+		trees = append(trees, tn)
+		for name, v := range parser.CollectMacroValues(tn.root) {
 			if prev, ok := f.Macros[name]; ok && prev != v {
 				conflict[name] = true
 				continue
 			}
 			f.Macros[name] = v
 		}
+	}
+
+	// Pass 1: collect every indexed parse tree and the tree-wide macro values.
+	err := eachIndexedFile(ctx, store, p, logger, func(file *db.File, root parser.Node) {
+		indexedPaths = append(indexedPaths, file.Path)
+		addTree(fileNode{path: file.Path, root: root})
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	// Pass 1.5: headers from the enclosing git worktree(s) of the indexed files.
+	// A subtree scan (`maf/src`) must still resolve a struct layout / capacity
+	// macro declared in a header OUTSIDE the target (`maf/include`), or the
+	// member-array capacity is unresolvable and the unchecked-index detector
+	// silently drops the access (the production `svr[actived_index]` miss).
+	for _, path := range worktreeHeaders(indexedPaths) {
+		source, err := readFile(path)
+		if err != nil {
+			if logger != nil {
+				logger.Debug("repofacts: read worktree header failed, skipping", "file", path, "error", err)
+			}
+			continue
+		}
+		tree, err := p.ParseCached(source, path)
+		if err != nil {
+			if logger != nil {
+				logger.Debug("repofacts: parse worktree header failed, skipping", "file", path, "error", err)
+			}
+			continue
+		}
+		addTree(fileNode{path: path, root: tree.RootNode()})
 	}
 	for name := range conflict {
 		delete(f.Macros, name)
@@ -196,6 +231,82 @@ func Build(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Lo
 		f.globals[name] = []GlobalArray{g}
 	}
 	return f, nil
+}
+
+// worktreeHeaders returns .h files under the enclosing git worktree(s) of the
+// indexed files that are NOT already indexed. It is the declaration-fact
+// fallback for a subtree scan: headers outside the scan target (but inside the
+// project) still carry the struct layouts and macros the census needs.
+func worktreeHeaders(indexedPaths []string) []string {
+	indexed := make(map[string]bool, len(indexedPaths))
+	for _, p := range indexedPaths {
+		indexed[p] = true
+	}
+	roots := make(map[string]bool)
+	for _, p := range indexedPaths {
+		if r := enclosingWorktree(p); r != "" {
+			roots[r] = true
+		}
+	}
+	var out []string
+	for root := range roots {
+		_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				if info != nil && info.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if info.IsDir() {
+				name := info.Name()
+				if path != root && strings.HasPrefix(name, ".") {
+					return filepath.SkipDir
+				}
+				if worktreeExcludeDirs[strings.ToLower(name)] {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if strings.EqualFold(filepath.Ext(path), ".h") && !indexed[path] {
+				out = append(out, path)
+			}
+			return nil
+		})
+	}
+	sort.Strings(out)
+	return out
+}
+
+// enclosingWorktree walks up from path and returns the first ancestor carrying
+// a `.git` entry (a directory, or a file for worktrees/submodules), or "" when
+// path is not inside a git worktree.
+func enclosingWorktree(path string) string {
+	dir, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	if info, err := os.Stat(dir); err == nil && !info.IsDir() {
+		dir = filepath.Dir(dir)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// worktreeExcludeDirs are the vendored / test / build directories pruned from
+// the worktree-header census, mirroring indexer.DefaultExcludeDirs so the extra
+// headers come from the project's own code rather than vendored noise.
+var worktreeExcludeDirs = map[string]bool{
+	"deps": true, "third_party": true, "third-party": true, "vendor": true,
+	"external": true, "node_modules": true, "tests": true, "test": true,
+	"fuzzing": true, "contrib": true, "examples": true,
 }
 
 // MacroValue resolves an object-like macro tree-wide.
