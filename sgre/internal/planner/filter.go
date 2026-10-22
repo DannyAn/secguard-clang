@@ -319,6 +319,13 @@ type Candidate struct {
 	// leak candidate (the free/close sites that exist but do not cover the
 	// leak path).
 	LeakFreeLines string `json:"leak_free_lines,omitempty"`
+	// LeakFreeMismatch is the "api:line,..." list of release calls rejected by
+	// the ExternalAPIs family pairing for this allocation — they exist but
+	// release the wrong object family.
+	LeakFreeMismatch string `json:"leak_free_mismatch,omitempty"`
+	// LeakTransferConditional is the "api:line,..." list of guarded conditional
+	// ownership transfers whose failure branch still owns the object.
+	LeakTransferConditional string `json:"leak_transfer_conditional,omitempty"`
 	// ThreadFunctions is the comma-separated list of pthread thread function
 	// names for a shared_data_race candidate (race-condition).
 	ThreadFunctions string `json:"thread_functions,omitempty"`

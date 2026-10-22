@@ -216,6 +216,14 @@ type eventProps struct {
 	// bypassed on the leak path.
 	EscapeKind string `json:"escape_kind"`
 	FreeLines  string `json:"free_lines"`
+	// FreeMismatch is the "api:line,..." list of release calls the ExternalAPIs
+	// family pairing rejected for this allocation (e.g. xmlXPathFreeContext on
+	// an XPath object) — they exist but do NOT release the object.
+	FreeMismatch string `json:"free_mismatch"`
+	// TransferConditional is the "api:line,..." list of guarded
+	// TransferOnSuccess calls whose failure branch still owns the object —
+	// the transfer is conditional, so the leak rides the failure path.
+	TransferConditional string `json:"transfer_conditional"`
 }
 
 func parseEventProps(raw string) eventProps {

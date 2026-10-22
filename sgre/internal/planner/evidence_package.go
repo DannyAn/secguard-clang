@@ -370,6 +370,17 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			if c.LeakFreeLines != "" {
 				parts = append(parts, "free@"+c.LeakFreeLines)
 			}
+			// Library-API family mismatches (xmlXPathFreeContext on an XPath
+			// object, free() on an XPath context, cJSON_Delete on strdup's
+			// block): the call exists but releases the WRONG family.
+			if c.LeakFreeMismatch != "" {
+				parts = append(parts, "free-mismatch@"+c.LeakFreeMismatch)
+			}
+			// Guarded conditional ownership transfers: the failure branch of
+			// the guard is the leak path.
+			if c.LeakTransferConditional != "" {
+				parts = append(parts, "transfer-cond@"+c.LeakTransferConditional)
+			}
 		case "divide-by-zero":
 			if shape := divisorShape(c.VariableName); shape != "" {
 				parts = append(parts, "divisor@"+shape)

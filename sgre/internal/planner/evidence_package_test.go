@@ -65,6 +65,8 @@ func TestBuildHint(t *testing.T) {
 		{"out-of-bounds constant read", Candidate{Array: "data", Size: 8, Index: "12", Category: "array_oob_read"}, oob, "buf@data cap@8 idx@12 cat@array_oob_read"},
 		{"memory-leak definite no channel", Candidate{Line: 12, DefiniteLeak: true, LeakEscapeKind: "none", APIName: "malloc"}, ml, "alloc@12 leak@definite escape@none api@malloc"},
 		{"memory-leak conditional store bypass", Candidate{Line: 12, LeakEscapeKind: "store", LeakFreeLines: "30,45"}, ml, "alloc@12 leak@conditional escape@store free@30,45"},
+		{"memory-leak external API family mismatch", Candidate{Line: 18, LeakEscapeKind: "none", LeakFreeMismatch: "xmlXPathFreeContext:24", APIName: "xmlXPathEvalExpression"}, ml, "alloc@18 leak@conditional escape@none free-mismatch@xmlXPathFreeContext:24 api@xmlXPathEvalExpression"},
+		{"memory-leak conditional ownership transfer", Candidate{Line: 15, LeakEscapeKind: "none", LeakTransferConditional: "cJSON_AddItemToObject:19", APIName: "cJSON_CreateString"}, ml, "alloc@15 leak@conditional escape@none transfer-cond@cJSON_AddItemToObject:19 api@cJSON_CreateString"},
 		{"resource-leak conditional return bypass", Candidate{Line: 8, LeakEscapeKind: "return", LeakFreeLines: "22", Category: "resource_acquire", APIName: "fopen"}, rl, "acquire@8 leak@conditional escape@return free@22 api@fopen cat@resource_acquire"},
 		// B4 §3.5 fact contracts: each remaining type's hint carries its
 		// decisive machine-proven facts so the classifier can judge from the

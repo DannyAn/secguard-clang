@@ -573,6 +573,18 @@ func buildLeakVerdictFacts(c Candidate) []VerdictFact {
 			Detail: "the release site(s) that exist but do not cover the leak path — the ## Code Context window covers them",
 		})
 	}
+	if c.LeakFreeMismatch != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "free-mismatch@" + c.LeakFreeMismatch,
+			Detail: "release call(s) rejected by the library API family pairing (the acquire API's documented releaser differs) — they do NOT release this object; verify the intended releaser against the acquire API",
+		})
+	}
+	if c.LeakTransferConditional != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "transfer-cond@" + c.LeakTransferConditional,
+			Detail: "guarded ownership-transfer call(s): ownership moves only on the success branch, so the FAILURE branch (error return without release) is the leak path",
+		})
+	}
 	return facts
 }
 
