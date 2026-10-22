@@ -808,3 +808,22 @@ result.sarif，suspected 候选不在其中，由 tc160 单测锁定）、Detach
 归调用方，root 的 Delete 不再覆盖）。A/B（HEAD 基线 vs 本轮）：候选 76→77
 （post-only 恰为 P26-10 一条预期新增），auto-confirmed 143→144（+1 =
 P26-12），pre-only 为空。
+
+
+### Phase 27 — 用户 cbwl_tbl.c UAF 样例回归（2026-10-22 追加）
+
+`src/p27_uaf_conditional_release.c`：用户五步审计法的 PATTERN-02（释放后间接
+访问）+ PATTERN-07（宏展开隐式 UAF）形态——wrapper 释放
+（cbwl_tbl_destory，跨函数释放经 FuncSummary）后使用点经宏 cbwl_nodeinfo
+包装（展开为 cbwl_dfx_node_info 解引用 node->key）。P27-01（must 变体，
+wrapper 体内无条件 free）为 finding：跨函数释放 summary 直达 + 宏使用点
+call 参数 → confirmed 候选（使用点在宏内触发 macro-context 门控，交 AI
+复核，非纯 auto-confirm）；P27-02 为用户修复方案对照（先日志后释放）→
+no_finding。**防御式条件释放变体**（`if (node != NULL) free(node)`——用户
+样例的真实形态）为 may-free suspected 候选：本轮新增 UAF may-free 通道
+（findAllFreeSites 消费 ParamMayDirectFrees、事件带 may_free、
+LifetimeFilter 对 may 不升 confirmed——对齐 double-free 的 MayFree 先例），
+修复前该形态**完全漏报**（红→绿由 tc_uaf_conditional_release_use.c 单测
+锁定，suspected 级不进 ground truth）。A/B（HEAD vs 本轮）：候选 78→78、
+auto-confirmed 145→145、双向差集均空（benchmark 全量零回归；增量全部由
+单测矩阵承载）。

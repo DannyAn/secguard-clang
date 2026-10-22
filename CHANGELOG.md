@@ -45,6 +45,26 @@ double-free、graph ownership 边共同消费——不在各 detector 里散落�
   （26b）候选 76→77（post-only 恰为 P26-10 借用删除预期新增）、auto-confirm 143→144
   （+1 = P26-12 Detach 泄漏）、pre-only 空。
 
+## [未发布]（续）
+
+### use-after-free may-free 通道（用户 cbwl_tbl.c 样例）
+
+用户五步审计法样例（PATTERN-02 释放后间接访问 + PATTERN-07 宏展开隐式 UAF）暴露
+的漏报：防御式条件释放 wrapper（`cbwl_tbl_destory` 体内 `if (node != NULL)
+free(node)`）的 FuncSummary 是 may-free（ParamMayDirectFrees），而
+findAllFreeSites 只消费 must 的 ParamDirectFrees——跨函数条件释放后的使用
+（含经宏 cbwl_nodeinfo 包装、展开后解引用 node->key 的间接使用）**全部漏报**。
+修复：may-free 也生成 free site（事件带 may_free + callee）；findUseSites 的
+wrapper 参数 skip 同步扩 may（防释放行自报）；LifetimeFilter 的
+mustReaching→confirmed 加 `!c.MayFree` gate（对齐 double-free 的 MayFree
+先例——conditional release 永不自动确认，suspected 交 AI，hint 带
+`may-free`/`cond@<helper>`）；use-after-free 的 SKILL.md Evidence Pattern 与
+守卫测试同步（may_free fragment）。测试：
+tc_uaf_conditional_release_use.c（用户精确形态三变体：may 漏报红→绿、
+must 确认、修复对照零事件）+ planner 分级测试（may=suspected、must=confirmed）
++ benchmark Phase 27（P27-01 must+宏 finding 走 macro-context AI 复核、
+P27-02 修复对照 no_finding）；A/B 全量 78→78 / 145→145 双向差集空（零回归）。
+
 ## [0.9.8] - 2026-10-21
 
 ### 两项"待拍板"的结论（已按方案落地，不再等决策）
