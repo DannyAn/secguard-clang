@@ -25,7 +25,7 @@ func runHrpBufPlan(t *testing.T, fixture string) *PlanResult {
 	logger := log.Default()
 	p := parser.NewParser()
 	idx := indexer.NewIndexer(store, logger)
-		fixturePath := filepath.Join("..", "..", "testdata", fixture)
+	fixturePath := filepath.Join("..", "..", "testdata", fixture)
 	if _, err := idx.Index(ctx, fixturePath); err != nil {
 		t.Fatalf("index: %v", err)
 	}
