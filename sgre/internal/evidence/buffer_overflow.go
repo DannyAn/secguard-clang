@@ -27,6 +27,10 @@ func (d *BufferOverflowDetector) Name() string { return "buffer_overflow" }
 func (d *BufferOverflowDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
+	// Struct member arrays and capacity macros usually live in headers, i.e. in
+	// a file other than the one being analyzed. Resolve them once, tree-wide.
+	treeFacts := collectTreeArrayFacts(ctx, d.store, d.parser, d.logger)
+
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		bc := &bufCtx{
 			root:    root,
@@ -40,7 +44,8 @@ func (d *BufferOverflowDetector) Detect(ctx context.Context) (DetectResult, erro
 			fors:    root.FindAll("for_statement"),
 			inits:   root.FindAll("init_declarator"),
 			fields:  root.FindAll("field_declaration"),
-			macros:  buildMacroValues(root),
+			macros:  mergeMacros(treeFacts.macros, buildMacroValues(root)),
+			tree:    treeFacts,
 		}
 
 		// Parameter names per function: a variable copy size that is a function
@@ -82,6 +87,9 @@ type bufCtx struct {
 	inits   []parser.Node
 	fields  []parser.Node
 	macros  map[string]int
+	// tree is the tree-wide fallback census: a struct member array declared in a
+	// header is invisible to the per-file fields slice above.
+	tree *treeArrayFacts
 }
 
 // buildMacroValues resolves object-like `#define NAME 10` macros to their
@@ -1689,6 +1697,9 @@ func findFieldArraySize(bc *bufCtx, dst string) int {
 	if len(sizes) == 1 {
 		return seen
 	}
+	if bc.tree != nil {
+		return bc.tree.fieldSizes[field]
+	}
 	return 0
 }
 
@@ -1751,6 +1762,9 @@ func findFieldTypeName(bc *bufCtx, field string) string {
 	}
 	if len(seen) == 1 {
 		return found
+	}
+	if bc.tree != nil {
+		return bc.tree.fieldTypes[field]
 	}
 	return ""
 }
@@ -2077,4 +2091,321 @@ func sizeofOperandMatches(sizeText, dstName string) bool {
 	rest = strings.Trim(rest, "()")
 	rest = strings.TrimSpace(strings.TrimPrefix(rest, "*"))
 	return rest == dstName
+}
+
+// treeArrayFacts is the tree-wide census the buffer detector needs when a struct
+// member array is declared in ANOTHER file — a header, which is where real C
+// projects keep every struct. The per-file bufCtx lookup stays the fast path; a
+// fact is used only when the local lookup cannot resolve the name.
+//
+// The field NAME is all a subscript carries (`p->svr[i]`), so a fact is kept
+// only when every declaration of that name in the tree agrees; a conflicting
+// redefinition is dropped rather than guessed.
+type treeArrayFacts struct {
+	fieldSizes  map[string]int
+	fieldSymbol map[string]string
+	fieldTypes  map[string]string
+	ptrFields   map[string]bool
+	macros      map[string]int
+	// structSizes is keyed by STRUCT TAG (or typedef alias) and then by field:
+	// the subscript's base type identifies the struct precisely, so two structs
+	// that reuse a field name with different capacities cannot shadow each
+	// other. structSymbols carries the macro spelling for the same key.
+	structSizes  map[string]map[string]int
+	structSymbol map[string]string
+}
+
+func collectTreeArrayFacts(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) *treeArrayFacts {
+	facts := &treeArrayFacts{
+		fieldSizes:   map[string]int{},
+		fieldSymbol:  map[string]string{},
+		fieldTypes:   map[string]string{},
+		ptrFields:    map[string]bool{},
+		macros:       map[string]int{},
+		structSizes:  map[string]map[string]int{},
+		structSymbol: map[string]string{},
+	}
+	// Pass 1: object-like macros, merged across files. A conflicting
+	// redefinition is dropped (a guessed capacity would be worse than none).
+	conflict := map[string]bool{}
+	_ = forEachIndexedFile(ctx, store, p, logger, func(file *db.File, root parser.Node) {
+		for name, v := range buildMacroValues(root) {
+			if prev, ok := facts.macros[name]; ok && prev != v {
+				conflict[name] = true
+				continue
+			}
+			facts.macros[name] = v
+		}
+	})
+	for name := range conflict {
+		delete(facts.macros, name)
+	}
+
+	// Pass 2: struct field declarations.
+	sizes := map[string]map[int]bool{}
+	symbols := map[string]string{}
+	types := map[string]map[string]bool{}
+	_ = forEachIndexedFile(ctx, store, p, logger, func(file *db.File, root parser.Node) {
+		for _, fd := range root.FindAll("field_declaration") {
+			t := typeSpelling(fd)
+			for _, c := range fd.NamedChildren() {
+				if c.Kind() != "field_identifier" {
+					continue
+				}
+				name := c.Text()
+				if t != "" {
+					if types[name] == nil {
+						types[name] = map[string]bool{}
+					}
+					types[name][t] = true
+				}
+			}
+			for _, ad := range fd.FindAll("array_declarator") {
+				name := arrayDeclaratorName(ad)
+				if name == "" {
+					continue
+				}
+				for _, child := range ad.NamedChildren() {
+					switch child.Kind() {
+					case "number_literal":
+						if n := parseConstantIndex(child.Text()); n > 0 {
+							if sizes[name] == nil {
+								sizes[name] = map[int]bool{}
+							}
+							sizes[name][n] = true
+						}
+					case "identifier":
+						if n, ok := facts.macros[child.Text()]; ok && n > 0 {
+							if sizes[name] == nil {
+								sizes[name] = map[int]bool{}
+							}
+							sizes[name][n] = true
+							symbols[name] = child.Text()
+						}
+					}
+				}
+			}
+			for _, pd := range fd.FindAll("pointer_declarator") {
+				if name := arrayDeclaratorName(pd); name != "" {
+					facts.ptrFields[name] = true
+				}
+			}
+		}
+	})
+	for name, set := range sizes {
+		if len(set) != 1 {
+			continue
+		}
+		for n := range set {
+			facts.fieldSizes[name] = n
+		}
+		if sym := symbols[name]; sym != "" {
+			facts.fieldSymbol[name] = sym
+		}
+	}
+	// Struct-tag keyed capacities (the precise lookup): a tag describes exactly
+	// one struct, so same-named fields in different structs stay separate.
+	rawStruct := map[string]map[string]map[int]bool{}
+	rawStructSym := map[string]map[string]string{}
+	_ = forEachIndexedFile(ctx, store, p, logger, func(file *db.File, root parser.Node) {
+		for _, ss := range root.FindAll("struct_specifier") {
+			if ss.FindFirst("field_declaration_list") == nil {
+				continue
+			}
+			keys := structTypeKeys(ss)
+			if len(keys) == 0 {
+				continue
+			}
+			for _, fd := range ss.FindAll("field_declaration") {
+				for _, ad := range fd.FindAll("array_declarator") {
+					name := arrayDeclaratorName(ad)
+					if name == "" {
+						continue
+					}
+					n, sym, ok := arrayDeclaratorCapacity(ad, facts.macros)
+					if !ok {
+						continue
+					}
+					for _, key := range keys {
+						if rawStruct[key] == nil {
+							rawStruct[key] = map[string]map[int]bool{}
+						}
+						if rawStruct[key][name] == nil {
+							rawStruct[key][name] = map[int]bool{}
+						}
+						rawStruct[key][name][n] = true
+						if sym != "" {
+							if rawStructSym[key] == nil {
+								rawStructSym[key] = map[string]string{}
+							}
+							rawStructSym[key][name] = sym
+						}
+					}
+				}
+			}
+		}
+	})
+	for tag, fields := range rawStruct {
+		for field, set := range fields {
+			if len(set) != 1 {
+				continue // the same tag defined twice with different sizes
+			}
+			if facts.structSizes[tag] == nil {
+				facts.structSizes[tag] = map[string]int{}
+			}
+			for n := range set {
+				facts.structSizes[tag][field] = n
+			}
+			if sym := rawStructSym[tag][field]; sym != "" {
+				facts.structSymbol[tag+"\x00"+field] = sym
+			}
+		}
+	}
+	for name, set := range types {
+		if len(set) != 1 {
+			continue
+		}
+		for t := range set {
+			facts.fieldTypes[name] = t
+		}
+	}
+	return facts
+}
+
+// mergeMacros layers the tree-wide macro values under the file's own (the local
+// definition wins; the tree fills names the file never defines, e.g. a capacity
+// macro from an included header).
+func mergeMacros(tree, local map[string]int) map[string]int {
+	out := make(map[string]int, len(tree)+len(local))
+	for k, v := range tree {
+		out[k] = v
+	}
+	for k, v := range local {
+		out[k] = v
+	}
+	return out
+}
+
+// structTypeKeys returns the names a struct's layout can be referenced by: its
+// tag (`struct X`) and, for `typedef struct {...} X_t;`, the alias.
+func structTypeKeys(ss parser.Node) []string {
+	var keys []string
+	for _, c := range ss.NamedChildren() {
+		if c.Kind() == "type_identifier" {
+			keys = append(keys, strings.TrimSpace(c.Text()))
+			break
+		}
+	}
+	if p := ss.Parent(); p != nil && p.Kind() == "type_definition" {
+		if kids := p.NamedChildren(); len(kids) > 0 {
+			if last := kids[len(kids)-1]; last.Kind() == "type_identifier" {
+				keys = append(keys, strings.TrimSpace(last.Text()))
+			}
+		}
+	}
+	return keys
+}
+
+// arrayDeclaratorCapacity resolves an array declarator's element count (numeric
+// literal or object-like macro) and the macro spelling when one was used.
+func arrayDeclaratorCapacity(ad parser.Node, macros map[string]int) (int, string, bool) {
+	symbol := ""
+	for _, child := range ad.NamedChildren() {
+		switch child.Kind() {
+		case "number_literal":
+			if n := parseConstantIndex(child.Text()); n > 0 {
+				return n, symbol, true
+			}
+		case "identifier":
+			if n, ok := macros[child.Text()]; ok && n > 0 {
+				return n, child.Text(), true
+			}
+		}
+	}
+	return 0, "", false
+}
+
+// typeIdentifierOf extracts the type name from a declaration spelling
+// (`struct maf_rbl_profile *`, `const maf_rbl_profile_t *` → the identifier).
+func typeIdentifierOf(spelling string) string {
+	t := strings.TrimSpace(spelling)
+	for strings.HasSuffix(t, "*") {
+		t = strings.TrimSpace(strings.TrimSuffix(t, "*"))
+	}
+	for _, kw := range []string{"const ", "volatile ", "struct ", "union ", "enum "} {
+		t = strings.TrimSpace(strings.TrimPrefix(t, kw))
+	}
+	if t == "" || strings.ContainsAny(t, "*()[]") {
+		return ""
+	}
+	return t
+}
+
+// structFieldCapacity resolves a member array's capacity by the base root's
+// declared TYPE: `struct maf_rbl_profile *rbl_profile` + `->svr` looks up the
+// layout under the tag, so a same-named field in another struct cannot shadow
+// it. Returns ok=false when the type cannot be resolved (the caller falls back
+// to the name-based census).
+func structFieldCapacity(bc *bufCtx, f *db.Function, fnDef parser.Node, baseExpr, field string) (int, string, bool) {
+	if bc == nil || bc.tree == nil || fnDef.Kind() == "" {
+		return 0, "", false
+	}
+	root := leftmostIdentifierText(baseExpr)
+	if root == "" {
+		return 0, "", false
+	}
+	var spelling string
+	_, names, types := functionParamNames(fnDef)
+	for i, n := range names {
+		if n == root && i < len(types) {
+			spelling = types[i]
+			break
+		}
+	}
+	if spelling == "" {
+		for _, decl := range bc.decls {
+			if decl.StartLine() < f.StartLine || decl.StartLine() > f.EndLine {
+				continue
+			}
+			if !declaresVariable(decl, root) {
+				continue
+			}
+			spelling = typeSpelling(decl)
+		}
+	}
+	tag := typeIdentifierOf(spelling)
+	if tag == "" {
+		return 0, "", false
+	}
+	size, ok := bc.tree.structSizes[tag][field]
+	if !ok {
+		return 0, "", false
+	}
+	return size, bc.tree.structSymbol[tag+"\x00"+field], true
+}
+
+// leftmostIdentifierText returns the root identifier of a member/subscript chain
+// (`rbl_profile->svr` → rbl_profile).
+func leftmostIdentifierText(expr string) string {
+	base := strings.TrimSpace(expr)
+	for _, sep := range []string{"->", ".", "["} {
+		if i := strings.Index(base, sep); i > 0 {
+			base = base[:i]
+		}
+	}
+	base = strings.TrimSpace(base)
+	if base == "" || strings.ContainsAny(base, " ()&*[],") {
+		return ""
+	}
+	return base
+}
+
+// declaresVariable reports whether a declaration declares name.
+func declaresVariable(decl parser.Node, name string) bool {
+	for _, id := range decl.FindAll("identifier") {
+		if strings.TrimSpace(id.Text()) == name {
+			return true
+		}
+	}
+	return false
 }

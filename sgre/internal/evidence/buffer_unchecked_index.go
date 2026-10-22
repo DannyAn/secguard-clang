@@ -68,7 +68,15 @@ func (d *BufferOverflowDetector) detectUncheckedIndex(ctx context.Context, f *db
 		if !ok {
 			continue
 		}
-		size, sizeName := fieldArrayCapacity(bc, field)
+		size, sizeName := 0, ""
+		if fnDef := findFnDefByName(fnDefs, f.Name); fnDef.Kind() != "" {
+			if n, sym, ok := structFieldCapacity(bc, f, fnDef, array, field); ok {
+				size, sizeName = n, sym
+			}
+		}
+		if size <= 0 {
+			size, sizeName = fieldArrayCapacity(bc, field)
+		}
 		if size <= 0 {
 			continue
 		}
@@ -150,11 +158,29 @@ func memberSubscriptBase(sub parser.Node) (string, string, bool) {
 }
 
 // fieldArrayCapacity resolves the element count of a struct member array FIELD
-// declared in this file (numeric literal or object-like macro). The field name
-// alone does not identify the struct, so the size is returned only when every
-// declaration of that field agrees; sizeName reports the macro spelling when
-// the declarator used one (it is the symbol a bounds check compares against).
+// (numeric literal or object-like macro). The field name alone does not identify
+// the struct, so the size is returned only when every declaration of that field
+// agrees; sizeName reports the macro spelling when the declarator used one (it
+// is the symbol a bounds check compares against). A struct declared in an
+// included header — the normal C layout — is resolved through the tree-wide
+// census, so `p->svr[p->idx]` is analyzed even when the struct is not in this
+// translation unit''s file.
 func fieldArrayCapacity(bc *bufCtx, field string) (int, string) {
+	if size, symbol := fieldArrayCapacityLocal(bc, field); size > 0 {
+		return size, symbol
+	}
+	if bc.tree != nil {
+		if n, ok := bc.tree.fieldSizes[field]; ok {
+			return n, bc.tree.fieldSymbol[field]
+		}
+	}
+	return 0, ""
+}
+
+// fieldArrayCapacityLocal resolves the capacity from the CURRENT file's field
+// declarations (the fast path). A struct declared in a header is served by the
+// tree-wide fallback in fieldArrayCapacity.
+func fieldArrayCapacityLocal(bc *bufCtx, field string) (int, string) {
 	sizes := map[int]bool{}
 	symbol := ""
 	for _, fd := range bc.fields {
@@ -445,7 +471,7 @@ func isPointerTypedField(bc *bufCtx, field string) bool {
 			}
 		}
 	}
-	return false
+	return bc.tree != nil && bc.tree.ptrFields[field]
 }
 
 // escapedElementDeref reports the callee that receives the out-of-bounds
@@ -454,7 +480,22 @@ func isPointerTypedField(bc *bufCtx, field string) bool {
 // same file can be followed; an external callee still yields its name so the
 // classifier knows the element escapes.
 func escapedElementDeref(bc *bufCtx, fnDefs []parser.Node, group []uncheckedIndexAccess) (string, string) {
+	// An element passed BY ADDRESS (`&p->svr[idx]`) escapes as a pointer: the
+	// callee can dereference any member of a possibly out-of-range element, so
+	// that is the strongest chain link. Prefer it over a by-value argument
+	// (`p->svr[idx].domain`) and keep the source order within each class.
+	ordered := make([]uncheckedIndexAccess, 0, len(group))
 	for _, g := range group {
+		if subscriptAddressed(g.sub) {
+			ordered = append(ordered, g)
+		}
+	}
+	for _, g := range group {
+		if !subscriptAddressed(g.sub) {
+			ordered = append(ordered, g)
+		}
+	}
+	for _, g := range ordered {
 		call, argIdx, ok := enclosingCallArgument(g.sub)
 		if !ok {
 			continue
@@ -523,6 +564,22 @@ func enclosingCallArgument(node parser.Node) (parser.Node, int, bool) {
 func containsNode(outer, inner parser.Node) bool {
 	if outer.StartByte() <= inner.StartByte() && outer.EndByte() >= inner.EndByte() {
 		return true
+	}
+	return false
+}
+
+// subscriptAddressed reports whether a subscript is passed by address
+// (`&arr[idx]`, optionally cast/parenthesized) rather than by value.
+func subscriptAddressed(sub parser.Node) bool {
+	for p := sub.Parent(); p != nil; p = p.Parent() {
+		switch p.Kind() {
+		case "cast_expression", "parenthesized_expression":
+			continue
+		case "pointer_expression":
+			return strings.HasPrefix(strings.TrimSpace(p.Text()), "&")
+		default:
+			return false
+		}
 	}
 	return false
 }

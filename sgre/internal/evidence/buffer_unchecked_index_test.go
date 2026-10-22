@@ -347,3 +347,71 @@ func TestUncheckedIndexWriteCategory(t *testing.T) {
 		t.Errorf("index_source = %s, want slot (direct field index)", events[0].IndexSource)
 	}
 }
+
+// The exact production report form, with the struct split into a header — the
+// normal C layout. Before the tree-wide census, `bc.fields` and `bc.macros` were
+// scoped to the file being analyzed, so the member array's capacity was
+// unresolvable and the function produced ZERO candidates (the production
+// regression: "out-of-bounds 0 candidates").
+func TestUncheckedIndexHeaderDeclaredStruct(t *testing.T) {
+	events := runUncheckedIndexDetect(t, map[string]string{
+		"maf.h": `#define MAF_RBL_SVR_CFG_COUNT 8
+#define SHOW_CONTINUE 0
+
+struct maf_rbl_svr_cfg {
+    char *domain;
+    unsigned int action;
+    unsigned int reply_code_any;
+};
+
+struct maf_rbl_profile {
+    unsigned int actived_index;
+    char actived_svr_name[64];
+    struct maf_rbl_svr_cfg svr[MAF_RBL_SVR_CFG_COUNT];
+};
+
+extern int maf_write_to_buffer(char *outbuf, int buflen, int *pos, const char *fmt, ...);
+extern int maf_show_dataplane_config_all_reply_code(const struct maf_rbl_svr_cfg *svr, char *outbuf, int buflen, int *pos);
+`,
+		"show.c": `#include "maf.h"
+
+int show_dataplane_config_active_rbl_server(struct maf_rbl_profile *rbl_profile, char *outbuf, int buflen, int *pos)
+{
+    int ret = maf_write_to_buffer(outbuf, buflen, pos, "%s",
+        rbl_profile->svr[rbl_profile->actived_index].domain);
+    if (ret != SHOW_CONTINUE) {
+        return ret;
+    }
+    return maf_show_dataplane_config_all_reply_code(&rbl_profile->svr[rbl_profile->actived_index], outbuf, buflen, pos);
+}
+`,
+	})
+	if len(events) != 1 {
+		t.Fatalf("want exactly 1 unchecked-index event for the header-split production shape, got %d: %+v", len(events), events)
+	}
+	e := events[0]
+	if e.Category != "array_oob_read_unchecked" {
+		t.Errorf("category = %s, want array_oob_read_unchecked", e.Category)
+	}
+	if e.Function != "show_dataplane_config_active_rbl_server" {
+		t.Errorf("function = %s", e.Function)
+	}
+	if e.Array != "rbl_profile->svr" {
+		t.Errorf("array = %s, want rbl_profile->svr", e.Array)
+	}
+	if e.IndexSource != "actived_index" {
+		t.Errorf("index_source = %s, want actived_index", e.IndexSource)
+	}
+	if e.Size != 8 {
+		t.Errorf("size = %d, want 8 (capacity macro from the header)", e.Size)
+	}
+	if e.CapacitySymbol != "MAF_RBL_SVR_CFG_COUNT" {
+		t.Errorf("capacity_symbol = %s, want MAF_RBL_SVR_CFG_COUNT", e.CapacitySymbol)
+	}
+	if e.ElemField != "domain" {
+		t.Errorf("elem_field = %s, want domain (pointer member of the element)", e.ElemField)
+	}
+	if e.Escape != "maf_show_dataplane_config_all_reply_code" {
+		t.Errorf("escape = %s, want the sink that receives &svr[idx]", e.Escape)
+	}
+}
