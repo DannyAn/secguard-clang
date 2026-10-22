@@ -49,6 +49,7 @@
 | **Phase 22（null-deref 三类误报修复）** | **6** |
 | **Phase 23（不完整类型信息 null-deref 检测能力增强）** | **8** |
 | **Phase 24（未校验外部索引越界检测能力增强）** | **5** |
+| **Phase 26（第三方库 API 语义模型回归）** | **8** |
 | 应完全不产生 Finding (P0: Detector EXCLUDE) | 7 |
 | 应产生 Finding 但被 P1 抑制 | 3 |
 | 应产生 Finding 但被 P2 抑制 | 4 |
@@ -765,3 +766,30 @@ VerdictFacts 链条）/ `TestUncheckedIndexGuardedEndToEnd` /
 seed → **增强现有 detector/filter**，不新增 vuln type。只有出现新 CWE 类，或需要独立
 研判策略/skill 时，才走 `ADDING_A_VULN_TYPE.md` 的 6 步流程新增类型（同时要过
 `TestVulnTypeSkillConsistency` 与 `TestConfirmedTierPolicy` 两个守卫）。
+
+## Phase 26 — 第三方库 API 语义模型回归（2026-10-22 新增）
+
+`docs/secguard-clang支持第三方库函数.md` 首批清单的端到端回归：模型
+（`sgre/internal/apikb/external_api.go`）为 libxml2 / cJSON / libc 扩展 API 建立
+分配/释放/所有权/可空性四维独立语义，memory-leak 与 null-deref 检测器经既有
+`IsDeclaredAllocator` / `IsDeclaredDeallocator` / `IsKnownNullableReturn` /
+`IsEscapeFunction` 查询通道消费（不新增 vuln type / detector / skill）。
+
+| ID | 语义 | 期望 |
+|----|------|------|
+| P26-01 | xmlReadMemory 的 xmlDoc 从不释放也从不转移 → definite 泄漏 | finding |
+| P26-02 | xmlReadMemory + xmlFreeDoc 正确配对 | no_finding |
+| P26-03 | xmlXPathEvalExpression 的结果对象交给 xmlXPathFreeContext（族错配，释放被拒） | finding |
+| P26-04 | cJSON_CreateString 的 item 经 cJSON_AddItemReferenceToObject 添加引用（不转移）且从不 Delete | finding |
+| P26-05 | cJSON_Parse + cJSON_Delete 正确配对 | no_finding |
+| P26-06 | asprintf 失败早退（`< 0` 守卫）不算泄漏证据 + 成功路径 free | no_finding |
+| P26-07 | xmlDocGetRootElement(doc)->name 未判空解引用（可空借用） | finding |
+| P26-08 | cJSON_Parse/GetObjectItem 全链判空 | no_finding |
+
+干净目录 A/B（独立 `--db`，CWD=/tmp）：基线 memory-leak 对 P26 全漏报（0/3）、
+P26-07 仅为弱证据 suspected 候选；新二进制 4 条 finding 全部检出（3 泄漏
+auto-confirmed + 1 null-deref auto-confirmed），候选池 78→76（-1 条 asprintf
+失败早退误报修复、-1 条 P26-07 升级出候选池），**post-only 候选为空（零新增
+误报）**。P26-01..08 的行号以 `src/p26_external_api_semantics.c` 当前内容为准
+（validator 容差 ±3）。注意：A/B 对照必须每轮独立 `--db` 且在干净 CWD 跑——
+共享 DB 的第二轮会受第一轮 findings/events 影响（p23/concurrency 曾出现假漂移）。
