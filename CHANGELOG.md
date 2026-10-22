@@ -85,6 +85,29 @@ no_finding；P-03/P-09/P-05 suspected 侧由单测锁定——P-05 依赖 bounda
 146→146 双向差集空（零回归）。**判定记录**：现有 fixture（tc106 等）仅覆盖
 cast-reassign 防误报方向，用户四 PATTERN 正向形态此前无同类用例，本轮补齐。
 
+## [未发布]（续三）
+
+### goto cleanup 形态 CFG 缺口修复（用户 hrp_buf.c double-free 样例）
+
+用户样例 PATTERN-01（错误路径 free 后 `goto cleanup` 跳到 `return 0;` 之后的
+label 块再次 free）暴露 StmtCFG 架构缺口：buildBlock 在 terminator 后 break，
+label 块整体不建模（无节点/无事实/无可达性）；goto 的 dead-end 处理注释
+"exact for forward jumps" 前提不成立——cleanup 形态的 label 恰位于 return 之后，
+流 filter 将候选误 dismiss 为 unreachable（端到端实证漏报，detector 事件已生成、
+filter input=2 output=1）。修复（graph/control_flow.go）：
+(1) buildBlock 在 terminated 后为 labeled_statement 建 detached 孤立链
+（from=-1 无直连入边，label 后续语句链式挂接，return 出口正常连 exit）；
+(2) 新增 linkGotoLabels 后处理——解析 goto_statement 的 statement_identifier
+目标与 labeled_statement 名匹配，补 goto 节点→label 首语句节点边（去重、
+self-edge 防护）；(3) fall-through NULL 事实语义保持（goto 边只从 goto 节点
+出发，`if (p==NULL) goto out;` 反证单测锁定）。P-06（跨函数条件释放）走
+既有 may-free 通道零改动即检出（suspected + may-free/cond@ hint）。测试：
+tc167/tc168 fixture + planner 四组单测（P-01 confirmed 含 free@30,38 hint、
+P-06 suspected+mayFree+may-free/cond@queue_push、修复对照零候选、goto
+null-guard fall-through 反证）+ benchmark Phase 29（P29-01 finding /
+P29-02/03 no_finding）；A/B 候选 83→83 双向差集空、auto 148→149（+1 =
+P29-01），`go test ./...` + nosqlite 全绿。
+
 ## [0.9.8] - 2026-10-21
 
 ### 两项"待拍板"的结论（已按方案落地，不再等决策）

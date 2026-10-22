@@ -849,3 +849,24 @@ p26b 的 main 时 hrp 函数从 entry 不可达被 CallReachFilter 正确丢弃�
 零候选 vs 漏报形态有候选）。A/B（HEAD vs 本轮）：候选 80→80、
 auto-confirmed 146→146、双向差集均空——本轮是**能力锁定**（既有链路
 四 PATTERN 全检出、零检测器改动）。
+
+### Phase 29 — 用户 hrp_buf.c double-free 审计样例回归（2026-10-22 追加）
+
+`src/p29_hrp_buf_double_free.c` / `p29_hrp_buf_fixed.c`：用户五步审计双
+PATTERN——PATTERN-01（同函数：错误路径 free(buf) 后 `goto cleanup` 跳到
+`return 0;` **之后**的 label 块再次 free，同一路径顺序两次释放）与
+PATTERN-06（跨函数：queue_push 失败分支内部释放 + 调用方 rc 检查后再次
+释放）。**P-01 暴露 CFG 架构缺口并修复**：buildBlock 在 terminator 后
+break，label 块被整体丢弃（无节点、无事实、无可达性）→ 流 filter 把候选
+误 dismiss 为 "reassigned/unreachable"（漏报）；goto 作为 dead-end 的注释
+"exact for forward jumps" 前提不成立——cleanup 形态的 label 恰在 return
+之后。修复：terminator 后仍为 labeled_statement 建 **detached 孤立链**
+（无直连入边，label 后续语句链式挂接），linkGotoLabels 后处理补
+goto→label 首语句边；fall-through NULL 事实语义不变（goto 边只从 goto 节点
+出发，guard 反证单测锁定）。P29-01（P-01）修复后 must→confirmed
+auto-confirm；P-06 走既有 may-free 通道（suspected，hint may-free +
+cond@queue_push，单测锁定不进 ground truth）；P29-02/03 用户修复方案
+（单一 cleanup 释放点+置空 / queue_push 所有权契约修正）no_finding。A/B
+（HEAD vs 本轮，同 src 独立 --db）：候选 83→83 双向差集**空**（CFG 修复
+全量零候选漂移），auto-confirmed 148→149（+1 = P29-01 预期漏报修复
+增量）。
