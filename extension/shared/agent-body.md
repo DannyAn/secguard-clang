@@ -181,9 +181,17 @@ maintains the directory.
 - Bounds checks before unsafe call → false-positive for buffer-overflow
 - Partial validation (blacklist only, TOCTOU window) → dismissed (cannot prove exploitability)
 - No guard, reachable, nullable source, data flow to deref → confirmed
+- **Boundary-scan contract shortcut.** If the scan summary announces a
+  `Boundary scan` (no `main`; the target is a subtree of a named worktree), the
+  `null@opaque-origin` / `null@caller-arg` tiers mean "the caller is outside the
+  scanned tree". Judge them per FUNCTION and cite the boundary fact
+  (`group:<fn>:boundary-contract: <why>`); do not re-derive the same external
+  contract for every field. If the caller lives in the named worktree root, say
+  so and recommend a complete-program re-scan rather than dismissing blind.
 - **Group verdict (large suspected types: null-deref, uninit, leak).** Rows that
   share `Function` + the same origin token + `guard@none` are ONE contract
-  question (`proc->profile`, `proc->ctx`, `msg->ctx` in the same handler all
+  question, and same-function rows are CONTIGUOUS in `_index.md` (sorted by
+  file:line), so one block read settles the group (`proc->profile`, `proc->ctx`, `msg->ctx` in the same handler all
   stand or fall on "can this function's parameter be NULL?"). Decide the group
   ONCE from the first row, then reuse that reasoning for the rest with the group
   key in each reason (`group:<fn>:<tier>: <why>`). Do not re-derive the same
@@ -458,6 +466,17 @@ machine auto-confirmed finding. This is the only path a 0-candidate type needs.
    `snippet` is the single finding line when you only need the statement. Read the
    source file only when the window is genuinely insufficient — this is a cheap
    table review, do NOT spend the ≤5 source-read budget here.
+**Policy-category fast path (no sampling, gate unchanged).** When the category's
+proof is an API/name MEMBERSHIP test — `dangerous-function` (banned API),
+`signal-handler` (async-unsafe API), `weak_algorithm`/`weak_random` (literal
+list) — the re-review is ONE bulk `--review-json` marking every entry
+`confirmed` with `reason: "policy:<list>"`. Do NOT open evidence or source for
+these: there is nothing semantic to check beyond the name the skill already
+asserts. The semantic tiers (`null@cfg-proof` / `null@malloc-fail` / `null@caller-arg` /
+`null@opaque-origin`), leak, uninit and oob keep the full per-entry review. Sampling is deliberately NOT allowed — `unreviewed=0` is the
+terminal gate that keeps the machine-proved tier honest, and these rows cost one
+write, not one investigation.
+
 3. Write your verdicts in ONE batch — via Bash
    `secguard report --review-json <tmpfile> --db <db_path>` as
    `[{"id": <id>, "review_status": "confirmed"|"dismissed", "review_reasoning": "..."}]`,
