@@ -152,7 +152,73 @@ func BuildStmtCFG(body parser.Node, funcEnd int) *StmtCFG {
 	if last >= 0 {
 		b.edge(last, cfg.Exit)
 	}
+	linkGotoLabels(cfg, body)
 	return cfg
+}
+
+// linkGotoLabels adds the goto→label edges the straight-line build cannot
+// express. The builder treats a goto as a dead-end (correct: the
+// straight-line continuation must not observe the jumped-from branch's
+// facts) and a label as a no-op reached by straight-line order. That is only
+// exact while the label block is still reachable sequentially — the
+// canonical cleanup form places it AFTER a terminator (`return 0; ... cleanup:
+// free(buf);`), so the label block is left dangling with no predecessors and
+// every path fact seeded before the goto (a freed-state gen, a NULL fact)
+// stops at the dead-end. This pass resolves each goto's target label and
+// links the goto node to the label's statement node: forward cleanup jumps
+// become exact (the freed state reaches the cleanup free), and a backward
+// goto models the loop it creates. Fall-through semantics are untouched —
+// the edge is added FROM the goto node, never TO the next statement.
+func linkGotoLabels(cfg *StmtCFG, body parser.Node) {
+	labelLine := map[string]int{}
+	for _, ls := range body.FindAll("labeled_statement") {
+		name, stmtLine := "", 0
+		for _, k := range ls.NamedChildren() {
+			if k.Kind() == "statement_identifier" && name == "" {
+				name = k.Text()
+				continue
+			}
+			if isStmtNode(k) && k.StartLine() > 0 {
+				stmtLine = k.StartLine()
+			}
+		}
+		if name != "" && stmtLine > 0 {
+			if prev, ok := labelLine[name]; !ok || stmtLine < prev {
+				labelLine[name] = stmtLine
+			}
+		}
+	}
+	if len(labelLine) == 0 {
+		return
+	}
+	for _, gs := range body.FindAll("goto_statement") {
+		target := ""
+		for _, k := range gs.NamedChildren() {
+			if k.Kind() == "statement_identifier" {
+				target = k.Text()
+				break
+			}
+		}
+		line, ok := labelLine[target]
+		if !ok {
+			continue
+		}
+		gn := cfg.NodeAt(gs.StartLine())
+		tn := cfg.NodeAt(line)
+		if gn == nil || tn == nil || gn.ID == tn.ID {
+			continue
+		}
+		dup := false
+		for _, s := range gn.Succs {
+			if s == tn.ID {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			gn.Succs = append(gn.Succs, tn.ID)
+		}
+	}
 }
 
 func (b *cfgBuilder) newNode(kind string, start, end int, stmt parser.Node) int {
@@ -180,12 +246,28 @@ func (b *cfgBuilder) edge(from, to int) {
 func (b *cfgBuilder) buildBlock(body parser.Node, from int) int {
 	last := from
 	terminated := false
+	detached := -1
 	for _, stmt := range body.NamedChildren() {
 		if !isStmtNode(stmt) {
 			continue
 		}
 		if terminated {
-			break
+			// Statements after a terminator are unreachable by straight-line
+			// flow — except a LABELLED block, which may still be a goto
+			// target. The canonical cleanup form (`goto cleanup; ... return 0;
+			// cleanup: free(buf); return -1;`) places the label AFTER the
+			// return, so skipping it would drop the cleanup statements from
+			// the CFG entirely (no node, no facts, no reachability). Build the
+			// label block DETACHED (from = -1: no incoming straight-line edge)
+			// and chain its following statements onto it;
+			// linkGotoLabels connects the goto to the label's head
+			// afterwards. Plain dead code before any label stays unmodeled.
+			if stmt.Kind() == "labeled_statement" {
+				detached = b.build(stmt, detached)
+			} else if detached >= 0 {
+				detached = b.build(stmt, detached)
+			}
+			continue
 		}
 		next := b.build(stmt, last)
 		if next < 0 {
