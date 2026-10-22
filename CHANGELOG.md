@@ -48,8 +48,13 @@
 
 - 新增 `array_oob_read_unchecked` / `array_oob_write_unchecked`（suspected）：结构体
   固定数组 + 字段来源下标 + 函数内无与容量相等的边界检查。
+- **头文件拆分形态**：成员数组容量改为全树普查（宏跨文件合并、按 struct tag / typedef
+  别名精确解析），结构体定义在头文件时不再漏报——生产回归即 `svr[actived_index]`
+  全仓库 0 候选；`&arr[idx]` 传址逃逸优先作为 `oob-escape@`。
 - 链条以 `cwe-chain@CWE-125→CWE-476` token、候选 `## Vulnerability Chain` 段、SARIF
   `properties.cwe_chain` 导出；根因与后果只出一条 finding。
+- 回归：benchmark Phase 24/25（含头文件拆分正例与修复对照）+ evidence 同形态用例；
+  体量 redis out-of-bounds 1 → 30、benchmark 2 → 3，其它类型不变。
 
 ### unchecked-return
 
@@ -64,7 +69,7 @@
 ### 验证
 
 - `go test ./...`：16 个包全绿；`-tags nosqlite` 子集通过。
-- benchmark `--selftest`：204 用例、25 个 CWE 标签全映射。
+- benchmark `--selftest`：206 用例、25 个 CWE 标签全映射。
 - 本版新增 evidence / planner 回归覆盖不完整类型、入口边界、派生来源、多解引用点、
   注册表与 include 片段；均验证"去掉修复即失败"。
 - 体量：redis 7.2.4（136k LOC）null-deref 候选 1283 → 1320（+2.9%，新增为注册回调的
