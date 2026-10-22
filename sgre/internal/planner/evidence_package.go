@@ -553,6 +553,15 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			if c.FreeLine > 0 {
 				parts = append(parts, fmt.Sprintf("free@%d", c.FreeLine))
 			}
+			// A conditional release helper (may-free): the freed state is
+			// possible, not proved — the candidate stays suspected and the
+			// classifier judges from the helper's embedded definition.
+			if c.MayFree {
+				parts = append(parts, "may-free")
+			}
+			if c.CalleeName != "" {
+				parts = append(parts, "cond@"+c.CalleeName)
+			}
 		case "double-free":
 			if c.FirstFree > 0 && c.SecondFree > 0 {
 				parts = append(parts, fmt.Sprintf("free@%d,%d", c.FirstFree, c.SecondFree))

@@ -57,7 +57,9 @@ func (f *LifetimeFilter) Apply(ctx context.Context, candidates []Candidate) ([]C
 		// The freed state reaches the use. It is a CERTAIN use-after-free only
 		// when the free reaches on every path (must); a free confined to one of
 		// several branches (may-only) stays a suspicion for the AI to confirm.
-		if flow.mustReaching(c.VariableName, useLine) {
+		// A conditional release helper (may_free) is may-only by construction,
+		// so it never upgrades either — mirroring the double-free filter.
+		if !c.MayFree && flow.mustReaching(c.VariableName, useLine) {
 			c.SuspicionLevel = "confirmed"
 		}
 		kept = append(kept, c)

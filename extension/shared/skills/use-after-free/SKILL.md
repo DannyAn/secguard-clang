@@ -14,7 +14,8 @@ metadata:
 ### Evidence Pattern
 A use-after-free candidate has:
 - **use_after_free**: Variable was freed (free() call) then subsequently used (dereference, passed to function, or accessed via pointer)
-- **free_site**: the `free(<var>)` line
+- **free_site**: the `free(<var>)` line (for a conditional release helper the detail says the helper frees only on some paths)
+- **may_free**: the release is CONDITIONAL — the release helper frees only when its own condition holds (`if (p != NULL) free(p)`). The candidate is a possible use-after-free, never a must-proof; it stays suspected and is never auto-confirmed.
 - **use_site**: the use line
 - **call_path**: The function is reachable from an entry point
 
