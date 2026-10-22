@@ -72,13 +72,13 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 			}
 
 			for varName, allocLines := range allocs {
-				freeLines, hasFree := frees[varName]
+				allFreeCalls := frees[varName]
 				// realloc into a DIFFERENT target (`tmp = realloc(p, n)`) consumes
 				// p's block on success and leaves p reachable on failure, so p is
 				// never leaked by that call — model it as a release at the realloc
 				// line so p is not reported.
 				for _, l := range findReallocConsumeLines(assigns, inits, f, varName) {
-					freeLines = append(freeLines, l)
+					allFreeCalls = append(allFreeCalls, freeCall{line: l, api: "realloc"})
 				}
 				// self-realloc `p = realloc(p, n)` leaks the OLD block when realloc
 				// fails (returns NULL) — ML-12.
@@ -92,10 +92,30 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 				transferLines := findReturnVarLines(varName, returns, f)
 				filteredReturns := filterNullGuardReturns(ifs, returnLines, varName)
 				nullGuardReturns := subtractLines(returnLines, filteredReturns)
-				escapeLines := findEscapeLines(assigns, calls, returns, f, varName, localVars, allocVarNames, allocReturns, true)
+				// Early returns guarded by a FAILED output-param allocator check
+				// (`if (asprintf(&p, ...) < 0) return;`) are not leak evidence for
+				// the out-param variable: the allocation never happened on that
+				// branch (docs §5.3 success-branch binding).
+				nullGuardReturns = append(nullGuardReturns, findAllocGuardedReturns(ifs, returns, assigns, inits, f, varName)...)
+				escapeLinesAll := findEscapeLines(assigns, calls, returns, f, varName, localVars, allocVarNames, allocReturns, true)
 				overwriteLines := writeLinesFor(assigns, inits, f, varName)
 
 				for _, allocLine := range allocLines {
+					allocAPI := callNameAtLine(calls, allocLine)
+					// Family pairing (docs §6): an object allocated by a modeled
+					// API is validly released only by its ValidFrees (plus generic
+					// releases where the model allows). A mismatched releaser —
+					// xmlXPathFreeContext on an XPath object, free() on an XPath
+					// context, cJSON_Delete on strdup's block — does NOT count as a
+					// release; the allocation leaks and the mismatch is surfaced in
+					// the event props for the AI.
+					effectiveCalls, hasFree, mismatchedCalls := effectiveFreeCalls(allFreeCalls, allocAPI)
+					freeLines := freeCallLines(effectiveCalls)
+					// Conditional ownership transfer (docs §5.2C): a modeled
+					// TransferOnSuccess call guarded by its own return value with
+					// no failure-branch release is NOT an unconditional escape —
+					// the failure path still owns (and leaks) the object.
+					escapeLines, conditionalTransfers := splitConditionalEscapes(escapeLinesAll, calls, ifs, freeLines)
 					shouldReportLeak := false
 					shouldReportRelease := false
 
@@ -154,19 +174,28 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 						// Extended: even when free/escape/transfer lines exist, if none
 						// is structurally reachable from the allocation in the CFG (dead
 						// code after an unconditional return/goto), the leak is still
-						// definite — the release can never execute.
-						definiteLeak := len(freeLines) == 0 && len(escapeLines) == 0 && len(transferLines) == 0
-						if !definiteLeak && cfgValid && !canReachAnyRelease(cfg, allocLine, freeLines, escapeLines, transferLines) {
+						// definite — the release can never execute. A conditional
+						// transfer is a channel that exists (the success branch hands
+						// the object off), so it keeps the guarded-failure leak
+						// suspected for the AI rather than definite.
+						definiteLeak := len(freeLines) == 0 && len(escapeLines) == 0 && len(conditionalTransfers) == 0 && len(transferLines) == 0
+						if !definiteLeak && cfgValid && !canReachAnyRelease(cfg, allocLine, freeLines, append(append([]int{}, escapeLines...), conditionalTransfers...), transferLines) {
 							definiteLeak = true
 						}
 						props := map[string]string{
 							"variable":    varName,
 							"origin":      "malloc",
-							"api":         callNameAtLine(calls, allocLine),
+							"api":         allocAPI,
 							"escape_kind": leakEscapeKind(escapeLines, transferLines),
 						}
 						if len(freeLines) > 0 {
 							props["free_lines"] = joinIntLines(freeLines)
+						}
+						if len(conditionalTransfers) > 0 {
+							props["transfer_conditional"] = joinCallLines(calls, conditionalTransfers)
+						}
+						if len(mismatchedCalls) > 0 {
+							props["free_mismatch"] = joinFreeCalls(mismatchedCalls)
 						}
 						if definiteLeak {
 							props["definite"] = "true"
@@ -180,13 +209,15 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 						if emitEvent(ctx, d.store, d.logger, "MEMORY_ALLOC", f.ID, &db.Location{FileID: file.ID, Line: allocLine}, map[string]string{
 							"variable": varName,
 							"origin":   "malloc",
-							"api":      callNameAtLine(calls, allocLine),
+							"api":      allocAPI,
 						}) {
 							result.EventsCreated++
 						}
 						releaseLine := allocLine
-						if len(freeLines) > 0 {
-							releaseLine = freeLines[0]
+						freeAPI := allocAPI
+						if len(effectiveCalls) > 0 {
+							releaseLine = effectiveCalls[0].line
+							freeAPI = effectiveCalls[0].api
 						}
 						// alloc_line ties this release to its specific allocation
 						// site, so the planner's ReleaseFilter drops only the released
@@ -195,6 +226,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 							"variable":   varName,
 							"origin":     "free",
 							"alloc_line": allocLine,
+							"free_api":   freeAPI,
 						}) {
 							result.EventsCreated++
 						}
@@ -297,40 +329,49 @@ func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function
 	return allocs
 }
 
-// outputParamAllocVar returns the variable an output-parameter allocator writes:
-// `asprintf(&p, ...)` / `getline(&p, ...)` / `getdelim(&p, ...)` allocate into p.
-var outputParamAllocators = map[string]bool{
-	"asprintf": true, "vasprintf": true, "getline": true, "getdelim": true,
-}
-
+// outputParamAllocVar returns the variable an output-parameter allocator
+// writes: `asprintf(&p, ...)` / `getline(&p, ...)` allocate into p. The
+// allocator set and the char** argument index come from the ExternalAPIs
+// model (apikb.IsOutParamAllocator), so third-party out-param allocators
+// are added in one place instead of a detector-local hardcoded table.
 func outputParamAllocVar(call parser.Node) string {
-	if !outputParamAllocators[extractCallName(call)] {
+	idx, ok := apikb.IsOutParamAllocator(extractCallName(call))
+	if !ok {
 		return ""
 	}
 	args := getCallArgs(call)
-	if len(args) == 0 {
+	if idx >= len(args) {
 		return ""
 	}
-	target, ok := args[0].AddressTakenTarget()
+	target, ok := args[idx].AddressTakenTarget()
 	if !ok || target.Kind() != "identifier" {
 		return ""
 	}
 	return target.Text()
 }
 
-func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node, macros map[string]macroFreeSummary, inits, assigns []parser.Node) map[string][]int {
-	frees := make(map[string][]int)
+// freeCall is one release site: the line and the release API name. Carrying
+// the API lets the detector validate the allocator↔deallocator family
+// pairing (docs §6): xmlXPathEvalExpression's object must be released by
+// xmlXPathFreeObject, not by xmlXPathFreeContext or free().
+type freeCall struct {
+	line int
+	api  string
+}
+
+func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node, macros map[string]macroFreeSummary, inits, assigns []parser.Node) map[string][]freeCall {
+	frees := make(map[string][]freeCall)
 	aliases := findAliases(f, inits, assigns)
-	recordFree := func(name string, line int) {
+	recordFree := func(name string, line int, api string) {
 		if name == "" {
 			return
 		}
-		frees[name] = append(frees[name], line)
+		frees[name] = append(frees[name], freeCall{line: line, api: api})
 		// free(q) where q = p (whole-variable alias) releases p's block too, so
 		// a leak of p is not reported (ML-05). A field alias (q = p->f) is not a
 		// whole-variable alias, so terminalBaseVar stops there.
 		if base := terminalBaseVar(aliases, name); base != name {
-			frees[base] = append(frees[base], line)
+			frees[base] = append(frees[base], freeCall{line: line, api: api})
 		}
 	}
 	for _, call := range calls {
@@ -340,9 +381,11 @@ func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file
 		callName := extractCallName(call)
 		// A freeing function-like macro (free-only or free+null) releases its
 		// first argument; the free inside the macro is invisible to tree-sitter.
+		// The macro's release API is recorded as "free" — freesArg is only set
+		// when the macro body calls free(param) itself.
 		if s, ok := macros[callName]; ok && s.freesArg {
 			if args := getCallArgs(call); len(args) > 0 {
-				recordFree(argIdentifier(args[0]), call.StartLine())
+				recordFree(argIdentifier(args[0]), call.StartLine(), "free")
 			}
 			continue
 		}
@@ -350,7 +393,7 @@ func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file
 			continue
 		}
 		if args := getCallArgs(call); len(args) > 0 {
-			recordFree(argIdentifier(args[0]), call.StartLine())
+			recordFree(argIdentifier(args[0]), call.StartLine(), callName)
 		}
 	}
 	return frees
@@ -583,6 +626,265 @@ func joinIntLines(lines []int) string {
 	return strings.Join(parts, ",")
 }
 
+// freeCallLines extracts the bare line numbers of a freeCall slice.
+func freeCallLines(calls []freeCall) []int {
+	lines := make([]int, len(calls))
+	for i, c := range calls {
+		lines[i] = c.line
+	}
+	return lines
+}
+
+// effectiveFreeCalls filters a variable's release sites against the family
+// policy of the specific allocation API (docs §6). For an unmodeled
+// allocator every deallocator counts — the pre-model behavior. For a
+// modeled one, only the policy's ValidFrees (plus generic releases when
+// allowed) release the object; mismatched releasers are returned separately
+// so the leak event can surface them as evidence for the AI.
+func effectiveFreeCalls(all []freeCall, allocAPI string) (effective []freeCall, hasFree bool, mismatched []freeCall) {
+	policy := apikb.AllocatorReleasePolicy(allocAPI)
+	for _, fc := range all {
+		if policy.Releases(fc.api) {
+			effective = append(effective, fc)
+		} else {
+			mismatched = append(mismatched, fc)
+		}
+	}
+	return effective, len(effective) > 0, mismatched
+}
+
+// joinFreeCalls renders mismatched releasers as "api:line,api:line" for the
+// leak event's free_mismatch prop.
+func joinFreeCalls(calls []freeCall) string {
+	parts := make([]string, len(calls))
+	for i, c := range calls {
+		parts[i] = c.api + ":" + strconv.Itoa(c.line)
+	}
+	return strings.Join(parts, ",")
+}
+
+// joinCallLines renders conditional transfer sites as "api:line,..." for the
+// leak event's transfer_conditional prop.
+func joinCallLines(calls []parser.Node, lines []int) string {
+	parts := make([]string, 0, len(lines))
+	for _, l := range lines {
+		parts = append(parts, callNameAtLine(calls, l)+":"+strconv.Itoa(l))
+	}
+	return strings.Join(parts, ",")
+}
+
+// splitConditionalEscapes separates conditional ownership transfers from
+// unconditional escapes (docs §5.2C). A modeled TransferOnSuccess call whose
+// result is guarded by the call's own return value (`if (!cJSON_AddItemToObject(...))`)
+// transfers only on the success branch: with NO failure-branch release to
+// fall back on, the transfer must not suppress the leak — the failure path
+// still owns (and leaks) the object. The line moves to conditional, which
+// counts as "a channel exists" for the definite-leak decision (staying
+// suspected for the AI) but never enters the hasLostResource avoid set.
+// When a release exists anywhere, both branches are covered and the full
+// escape stands.
+func splitConditionalEscapes(escapeLines []int, calls []parser.Node, ifs []parser.Node, freeLines []int) (unconditional, conditional []int) {
+	if len(freeLines) > 0 {
+		return escapeLines, nil
+	}
+	guardedLines := make(map[int]bool, len(ifs))
+	for _, ifStmt := range ifs {
+		guardedLines[ifStmt.StartLine()] = true
+	}
+	for _, l := range escapeLines {
+		kind, _, modeled := apikb.EscapeOwnership(callNameAtLine(calls, l))
+		if modeled && kind == apikb.OwnershipTransferOnSuccess && guardedLines[l] {
+			conditional = append(conditional, l)
+			continue
+		}
+		unconditional = append(unconditional, l)
+	}
+	return unconditional, conditional
+}
+
+// findAllocGuardedReturns returns the return lines guarded by a FAILED
+// output-parameter allocator check, for one out-param variable (docs §5.3):
+// `if (asprintf(&p, ...) < 0) return;` and the assigned-status form
+// `ret = asprintf(&p, ...); if (ret < 0) return;`. On the failing branch the
+// allocation never happened, so the early return is not leak evidence.
+// The failure comparison is deliberately narrow — `< 0`-style strict
+// comparisons and equality against negative literals only: asprintf/getline
+// return non-negative counts or -1, so `== 0`/`<= 0` can denote SUCCESS
+// (empty output) and would misclassify the branch.
+func findAllocGuardedReturns(ifs, returns, assigns, inits []parser.Node, f *db.Function, varName string) []int {
+	if varName == "" {
+		return nil
+	}
+	// A status variable is either assigned (`ret = asprintf(&p, ...)`) or
+	// declared-with-initializer (`int ret = asprintf(&p, ...)`) from the
+	// out-param allocator call for varName.
+	statusVars := map[string]bool{}
+	recordStatus := func(lhs, rhs parser.Node) {
+		if lhs.Kind() != "identifier" && lhs.Kind() != "pointer_declarator" && lhs.Kind() != "init_declarator" {
+			return
+		}
+		name := assignedVariable(lhs)
+		if name == "" {
+			return
+		}
+		if rhs.Kind() == "parenthesized_expression" || rhs.Kind() == "cast_expression" {
+			for _, c := range rhs.NamedChildren() {
+				rhs = c
+				break
+			}
+		}
+		if rhs.Kind() != "call_expression" {
+			return
+		}
+		idx, ok := apikb.IsOutParamAllocator(extractCallName(rhs))
+		if !ok {
+			return
+		}
+		args := getCallArgs(rhs)
+		if idx >= len(args) {
+			return
+		}
+		target, ok := args[idx].AddressTakenTarget()
+		if !ok || target.Kind() != "identifier" || target.Text() != varName {
+			return
+		}
+		statusVars[name] = true
+	}
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
+			continue
+		}
+		children := assign.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		recordStatus(children[0], children[1])
+	}
+	for _, init := range inits {
+		if !funcLineRange(f, init.StartLine()) {
+			continue
+		}
+		children := init.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		recordStatus(children[0], children[1])
+	}
+	var lines []int
+	for _, ifStmt := range ifs {
+		cond := ifStmt.ChildByFieldName("condition")
+		if cond == nil || !isOutParamAllocFailureGuard(*cond, varName, statusVars) {
+			continue
+		}
+		consequence := ifStmt.ChildByFieldName("consequence")
+		if consequence == nil {
+			continue
+		}
+		for _, ret := range consequence.FindAll("return_statement") {
+			lines = append(lines, ret.StartLine())
+		}
+	}
+	return lines
+}
+
+// isOutParamAllocFailureGuard reports whether an if condition tests the
+// FAILURE of an out-param allocation for varName, either directly
+// (`asprintf(&p, ...) < 0`) or through a status variable assigned from the
+// call (`ret = asprintf(&p, ...); if (ret < 0)`).
+func isOutParamAllocFailureGuard(cond parser.Node, varName string, statusVars map[string]bool) bool {
+	for _, bin := range cond.FindAll("binary_expression") {
+		lhs, rhs, op := binaryOperands(bin)
+		if op != "<" && op != "==" && op != "!=" {
+			continue
+		}
+		callSide, otherSide := lhs, rhs
+		if callSide.Kind() != "call_expression" && rhs.Kind() == "call_expression" {
+			callSide, otherSide = rhs, lhs
+		}
+		if callSide.Kind() != "call_expression" {
+			// The assigned-status form: one side is the status variable.
+			idSide, numSide := lhs, rhs
+			if idSide.Kind() != "identifier" && rhs.Kind() == "identifier" {
+				idSide, numSide = rhs, lhs
+			}
+			if idSide.Kind() != "identifier" || !statusVars[idSide.Text()] {
+				continue
+			}
+			if !isFailureLiteral(numSide, op) {
+				continue
+			}
+			return true
+		}
+		idx, ok := apikb.IsOutParamAllocator(extractCallName(callSide))
+		if !ok {
+			continue
+		}
+		args := getCallArgs(callSide)
+		if idx >= len(args) {
+			continue
+		}
+		target, ok := args[idx].AddressTakenTarget()
+		if !ok || target.Kind() != "identifier" || target.Text() != varName {
+			continue
+		}
+		if !isFailureLiteral(otherSide, op) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// binaryOperands returns a binary expression's left/right operands and the
+// operator text. tree-sitter exposes the operator as an anonymous token, so
+// it is reachable only through the operator field, not NamedChildren.
+func binaryOperands(bin parser.Node) (parser.Node, parser.Node, string) {
+	op := ""
+	if o := bin.ChildByFieldName("operator"); o != nil {
+		op = strings.TrimSpace(o.Text())
+	}
+	lhs, rhs := parser.Node{}, parser.Node{}
+	if l := bin.ChildByFieldName("left"); l != nil {
+		lhs = *l
+	}
+	if r := bin.ChildByFieldName("right"); r != nil {
+		rhs = *r
+	}
+	return lhs, rhs, op
+}
+
+// isFailureLiteral reports whether the compared operand denotes the FAILURE
+// value of an out-param allocator's status result: strictly negative for
+// `<`, or a negative literal for `==` (e.g. -1). A bare 0 is rejected for
+// `==` (an empty successful output) and `!=` is only accepted against a
+// negative literal for symmetry.
+func isFailureLiteral(side parser.Node, op string) bool {
+	node := side
+	if node.Kind() == "" {
+		return false
+	}
+	if node.Kind() == "parenthesized_expression" {
+		kids := node.NamedChildren()
+		if len(kids) == 1 {
+			node = kids[0]
+		}
+	}
+	switch node.Kind() {
+	case "number_literal":
+		neg := strings.HasPrefix(strings.TrimSpace(node.Text()), "-")
+		if op == "<" {
+			// `< 0` (and any negative bound): failure for a non-negative-or
+			// -1 status domain.
+			return true
+		}
+		return neg
+	case "unary_expression":
+		// `-1` spelled as unary minus.
+		return op == "==" || op == "!=" || op == "<"
+	}
+	return false
+}
+
 func findEscapeLines(assigns, calls, returns []parser.Node, f *db.Function, varName string, localVars map[string]bool, allocVarNames map[string]bool, allocReturns map[string]bool, useEscapeFuncs bool) []int {
 	var lines []int
 	for _, assign := range assigns {
@@ -678,13 +980,31 @@ func findEscapeLines(assigns, calls, returns []parser.Node, f *db.Function, varN
 			if !funcLineRange(f, call.StartLine()) {
 				continue
 			}
-			if !apikb.IsEscapeFunction(extractCallName(call)) {
+			callName := extractCallName(call)
+			if !apikb.IsEscapeFunction(callName) {
 				continue
 			}
-			for _, arg := range getCallArgs(call) {
-				if argIdentifier(arg) == varName {
-					lines = append(lines, call.StartLine())
+			// Modeled transfers escape through the modeled argument only
+			// (cJSON_AddItemToObject takes the item as arg 2, xmlAddChild as
+			// arg 1 — the parent argument must not be dragged in). Unmodeled
+			// escape-shaped helpers keep the any-argument match.
+			_, argIdx, modeled := apikb.EscapeOwnership(callName)
+			args := getCallArgs(call)
+			matched := false
+			if modeled {
+				if argIdx < len(args) && argIdentifier(args[argIdx]) == varName {
+					matched = true
 				}
+			} else {
+				for _, arg := range args {
+					if argIdentifier(arg) == varName {
+						matched = true
+						break
+					}
+				}
+			}
+			if matched {
+				lines = append(lines, call.StartLine())
 			}
 		}
 	}
