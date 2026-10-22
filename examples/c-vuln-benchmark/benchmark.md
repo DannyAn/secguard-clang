@@ -793,3 +793,18 @@ auto-confirmed + 1 null-deref auto-confirmed），候选池 78→76（-1 条 asp
 误报）**。P26-01..08 的行号以 `src/p26_external_api_semantics.c` 当前内容为准
 （validator 容差 ±3）。注意：A/B 对照必须每轮独立 `--db` 且在干净 CWD 跑——
 共享 DB 的第二轮会受第一轮 findings/events 影响（p23/concurrency 曾出现假漂移）。
+
+### Phase 26b — 用户标准 cJSON 用法形态（2026-10-22 追加）
+
+`src/p26b_cjson_lifecycle.c`：用户提供的三个权威形态——标准用法 main
+（Create→挂接（失败分支删除）→Print→cJSON_free(json)→Delete(root)，P26-09
+no_finding）、借用 item 单独 Delete（P26-10，**free-on-borrow 新通道**：借
+用指针（cJSON_GetObjectItem/strstr/getenv 的返回）被释放器调用 → invalid
+free/UAF 风险，suspected 候选交 AI，hint `free-on-borrow@<releaseAPI>` +
+verdict fact；**不进 ground truth**——validator 只读 verdict 阶段
+result.sarif，suspected 候选不在其中，由 tc160 单测锁定）、Detach 正反例
+（P26-11 正例 no_finding / P26-12 脱离后不删 definite 泄漏 finding；
+`cJSON_DetachItemFromObject/CaseSensitive/FromArray` 建模为 AllocRet——脱离后
+归调用方，root 的 Delete 不再覆盖）。A/B（HEAD 基线 vs 本轮）：候选 76→77
+（post-only 恰为 P26-10 一条预期新增），auto-confirmed 143→144（+1 =
+P26-12），pre-only 为空。

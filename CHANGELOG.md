@@ -2,6 +2,49 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [未发布]
+
+### 第三方库 API 语义模型（libxml2 / cJSON / libc 扩展 API）
+
+`docs/secguard-clang支持第三方库函数.md` 首批清单落地：`sgre/internal/apikb/external_api.go`
+新增 `ExternalAPISpec`（API 身份 / 分配 / 释放 / 所有权 / 返回可空性 / 借用，各维独立、
+来源可审计），模型通过既有 `IsDeclaredAllocator` / `IsDeclaredDeallocator` /
+`IsKnownNullableReturn` / `IsEscapeFunction` 查询通道被 memory-leak、null-deref、UAF/
+double-free、graph ownership 边共同消费——不在各 detector 里散落第二份名单。落地能力：
+
+- **专用配对验证（docs §6）**：xmlNewDoc→xmlFreeDoc、xmlXPathNewContext→xmlXPathFreeContext、
+  xmlXPathEvalExpression→xmlXPathFreeObject、cJSON_Create*/Parse*→cJSON_Delete、
+  cJSON_Print*→cJSON_free（free 等价）；错配释放（XPath 对象交给 context 释放器、
+  free() 释放 XPath context、cJSON_Delete 释放 strdup 块）不再算有效释放，泄漏候选带
+  `free_mismatch` 证据与 `free-mismatch@` verdict fact 交 AI 研判。malloc/calloc/realloc
+  为 unrestricted（保持 tc116 等既有行为）；未建模分配 API 行为不变。
+- **所有权三态（docs §5.2C）**：`cJSON_AddItemReferenceToObject/Array` 建模为 Borrow，
+  覆盖 `_add` 启发式的误转移（引用型添加后不删 item 的泄漏从漏报翻为 definite）；
+  `cJSON_AddItemTo*` / `xmlDocSetRootElement` / `xmlAddChild` / `xmlAddSibling` 建模为
+  TransferOnSuccess——未检查返回值时豁免，守卫内（`if (!add(...))`）且无失败分支释放时
+  不再无条件豁免（失败分支泄漏以 suspected 候选报出，`transfer-cond@` 提示 AI）；
+  `xmlSetNs` 因版本差异保守取 TransferAlways。转移参数按模型 argIdx 精确匹配。
+- **出参分配成功分支绑定（docs §5.3）**：`asprintf/vasprintf/getline/getdelim` 的
+  `char**` 出参分配从 detector 硬编码迁入模型；`if (asprintf(&p,...) < 0) return;`
+  （含 `ret = asprintf(...); if (ret < 0)` 赋值形态）的失败早退不再当泄漏证据
+  （该分支分配未发生）。失败方向只匹配 `< 0` / `== -1`（空输出 0 是成功，防漏报）。
+- **可空借用（docs §5.1D/§5.2A）**：`xmlDocGetRootElement` / `xmlFirst/NextElementChild` /
+  `cJSON_GetObjectItem*` / `cJSON_GetArrayItem` 挂 nullable 精确表（与 strchr 同档
+  auto-confirm），同时 RetBorrow 保证永不当作新分配——null-deref 对这批 API 的
+  unguarded 解引用从 external-unknown suspected 升为 confirmed，守卫/仅比较形态不报。
+- **cJSON 生命周期标准用法（用户权威形态）**：`cJSON_DetachItemFromObject/CaseSensitive/
+  FromArray` 建模为 AllocRet（脱离后归调用方，root 的 Delete 不再覆盖 → 脱离后不删是
+  definite 泄漏）；新增 **free-on-borrow 通道**——释放借用指针（cJSON_GetObjectItem 的
+  item 被 cJSON_Delete、strstr/getenv/setlocale 结果被 free）报 invalid-free/UAF 风险
+  suspected 候选（hint `free-on-borrow@<api>` + verdict fact，永不 auto-confirm，AI 判
+  CWE-415/416 后果）；借出后重新赋值则不报（不能证明释放的还是同一对象）。
+- 测试：apikb 模型表驱动 11 组；evidence 泄漏矩阵 24 个 tc140-163 fixture（含用户
+  main 标准用法/Detach/借用删除形态）；planner null-deref 6 组 + free-on-borrow 管道
+  1 组；benchmark Phase 26+26b（P26-01..12，5 finding + 6 no_finding + 1 suspected 侧）。
+  干净 A/B（独立 --db）：第一轮候选 78→76、auto-confirm 139→143、post-only 空；第二轮
+  （26b）候选 76→77（post-only 恰为 P26-10 借用删除预期新增）、auto-confirm 143→144
+  （+1 = P26-12 Detach 泄漏）、pre-only 空。
+
 ## [0.9.8] - 2026-10-21
 
 ### 两项"待拍板"的结论（已按方案落地，不再等决策）
