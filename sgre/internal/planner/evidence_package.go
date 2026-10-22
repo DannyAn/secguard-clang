@@ -555,12 +555,16 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			}
 			// A conditional release helper (may-free): the freed state is
 			// possible, not proved — the candidate stays suspected and the
-			// classifier judges from the helper's embedded definition.
+			// classifier judges from the helper's embedded definition. cond@
+			// names that helper, so it must ride the may-free gate only: a
+			// MUST indirect release (callee frees unconditionally) or a field
+			// free also carries a callee, but tagging it cond@ would claim the
+			// release is conditional when it is a proved free.
 			if c.MayFree {
 				parts = append(parts, "may-free")
-			}
-			if c.CalleeName != "" {
-				parts = append(parts, "cond@"+c.CalleeName)
+				if c.CalleeName != "" {
+					parts = append(parts, "cond@"+c.CalleeName)
+				}
 			}
 		case "double-free":
 			if c.FirstFree > 0 && c.SecondFree > 0 {

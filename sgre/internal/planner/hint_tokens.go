@@ -113,7 +113,7 @@ var hintTokenRegistry = []HintTokenSpec{
 	// ---- use-after-free / double-free / leaks ----
 	{Key: "free@", Display: "free@N / free@N,M", Description: "the free site line(s): {value} (one for use-after-free, two for double-free; on a leak candidate they are the release sites that exist but do not cover the leak path)"},
 	{Key: "may-free", Description: "the release is conditional (a release helper frees only on some paths) — the verdict is possible, not proved"},
-	{Key: "cond@", Display: "cond@<helper>", Description: "the conditional first release helper: {value} frees only when its own condition holds — the double free is possible, not must-proven"},
+	{Key: "cond@", Display: "cond@<helper>", Description: "the conditional release helper: {value} frees only when its own condition holds — the verdict is possible, not must-proven"},
 
 	// ---- memory-leak / resource-leak ----
 	// The verdict basis for a leak: the acquire line, the certainty tier

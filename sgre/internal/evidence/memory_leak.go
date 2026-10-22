@@ -891,11 +891,19 @@ func isFailureLiteral(side parser.Node, op string) bool {
 	}
 	switch node.Kind() {
 	case "number_literal":
-		neg := strings.HasPrefix(strings.TrimSpace(node.Text()), "-")
+		text := strings.TrimSpace(node.Text())
+		neg := strings.HasPrefix(text, "-")
 		if op == "<" {
 			// `< 0` (and any negative bound): failure for a non-negative-or
-			// -1 status domain.
-			return true
+			// -1 status domain. A POSITIVE bound (`< 5`) is a length/count
+			// comparison — asprintf/getline return non-negative counts on
+			// success, so such a guard fires on a SUCCESS branch where the
+			// allocation exists and the early return is a real leak. Reject
+			// it rather than suppress the leak.
+			if v, err := strconv.ParseInt(text, 0, 64); err == nil {
+				return v <= 0
+			}
+			return neg
 		}
 		return neg
 	case "unary_expression":
