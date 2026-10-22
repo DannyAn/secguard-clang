@@ -30,6 +30,10 @@ type freeSite struct {
 	column   int
 	indirect bool
 	callee   string
+	// may marks a release a callee performs only on some paths (a defensive
+	// `if (p != NULL) free(p)` wrapper): the object MAY still be dead, so the
+	// candidate is a possible use-after-free that stays suspected for the AI.
+	may bool
 }
 
 func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
@@ -99,6 +103,9 @@ func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error)
 					if fs.indirect {
 						props["indirect"] = true
 						props["callee"] = fs.callee
+					}
+					if fs.may {
+						props["may_free"] = "true"
 					}
 					if fs.field != "" {
 						props["freed_field"] = fs.field
@@ -285,6 +292,22 @@ func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.N
 					column:   call.StartColumn(),
 					indirect: true,
 					callee:   callName,
+				})
+			} else if s.ParamMayDirectFrees[argIdx] {
+				// A defensive wrapper (`if (p != NULL) free(p)`) frees the
+				// parameter on SOME paths only: the freed state is possible,
+				// not proved. The free site still generates a candidate (a
+				// use after a conditional release is a possible UAF the AI
+				// must judge — silently skipping it missed the whole
+				// defensive-release idiom), but the event carries may_free so
+				// the planner never auto-confirms it.
+				sites = append(sites, freeSite{
+					varName:  argVar,
+					line:     callLine,
+					column:   call.StartColumn(),
+					indirect: true,
+					callee:   callName,
+					may:      true,
 				})
 			}
 
@@ -520,7 +543,7 @@ func (d *UseAfterFreeDetector) findUseSites(f *db.Function, ptrs, fields, calls,
 				if arg.Kind() != "identifier" {
 					continue
 				}
-				if s != nil && (s.ParamDirectFrees[argIdx] || len(s.ParamFieldFrees[argIdx]) > 0) {
+				if s != nil && (s.ParamDirectFrees[argIdx] || s.ParamMayDirectFrees[argIdx] || len(s.ParamFieldFrees[argIdx]) > 0) {
 					continue
 				}
 				addUse(arg.Text(), "", call.StartLine(), call.StartColumn())
