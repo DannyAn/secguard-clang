@@ -3,7 +3,7 @@
   "_benchmark_doc": "benchmark.md",
   "_validator": "scripts/validate-benchmark.py",
   "summary": {
-    "total_test_cases": 204,
+    "total_test_cases": 206,
     "phase0_test_cases": 18,
     "phase1_test_cases": 12,
     "phase2_test_cases": 4,
@@ -14,7 +14,7 @@
     "phase6_resource_leak_no_finding": 3,
     "phase6_resource_leak_known_gaps": 3,
     "expected_final_certified": 77,
-    "expected_no_finding": 93,
+    "expected_no_finding": 94,
     "phase1_confirmed": 9,
     "phase1_safe_excluded": 3,
     "phase2_confirmed": 4,
@@ -65,7 +65,10 @@
     "phase23_finding": 4,
     "phase24_unchecked_index_test_cases": 5,
     "phase24_finding": 2,
-    "phase24_no_finding": 3
+    "phase24_no_finding": 3,
+    "phase25_header_split_oob_test_cases": 2,
+    "phase25_header_split_oob_finding": 1,
+    "phase25_header_split_oob_no_finding": 1
   },
   "test_cases": [
     {
@@ -2062,6 +2065,26 @@
       "code": "头文件定义类型反例：从可见类型参数读出的字段指针不得播种 opaque_field_read → 不报",
       "cwe": "CWE-476",
       "detector": "null_deref",
+      "expect": "no_finding"
+    },
+    {
+      "id": "P25-01",
+      "category": "phase25_header_split_oob",
+      "file": "src/p25_header_split_oob.c",
+      "line": 11,
+      "code": "生产现网形态（结构体在头文件、函数在 .c）：rbl_profile->svr[rbl_profile->actived_index] 未校验字段索引 → 越界读（CWE-125）；&svr[idx] 传入子函数 → CWE-125→CWE-476 链",
+      "cwe": "CWE-125",
+      "detector": "out_of_bounds",
+      "expect": "finding"
+    },
+    {
+      "id": "P25-02",
+      "category": "phase25_header_split_oob",
+      "file": "src/p25_header_split_oob.c",
+      "line": 23,
+      "code": "修复对照（头文件拆分版）：入口 if (actived_index >= MAF_RBL_HDR_CFG_COUNT) 早退，容量符号相等 → 不播种",
+      "cwe": "CWE-125",
+      "detector": "out_of_bounds",
       "expect": "no_finding"
     }
   ]

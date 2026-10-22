@@ -732,6 +732,8 @@ opaque 字段读、树内语法 ERROR 吞掉的解引用（缺分号形态）不
 | P24-03 | p24_unchecked_index_oob.c | 39 | no_finding | 修复对照：入口 `actived_index >= MAF_RBL_SVR_CFG_COUNT` 早退，容量符号相等 → 不播种 |
 | P24-04 | p24_unchecked_index_oob.c | 50 | no_finding | 体量守卫反证：`for (i < MAF_RBL_SVR_CFG_COUNT) dst[i] = p->svr[i]` 循环变量索引 → 不播种 |
 | P24-05 | p24_unchecked_index_oob.c | 56 | no_finding | 体量守卫反证：`p->svr[n]` 的 n 是普通形参（非字段）→ 不播种 |
+| P25-01 | p25_header_split_oob.c | 11 | finding | 生产现网形态（结构体在 p25_header_split.h、函数在 .c）：`svr[rbl_profile->actived_index]` 越界读 + `&svr[idx]` 传入子函数（CWE-125→CWE-476） |
+| P25-02 | p25_header_split_oob.c | 23 | no_finding | 修复对照（头文件拆分版）：入口 `actived_index >= MAF_RBL_HDR_CFG_COUNT` 早退 → 不播种 |
 
 单测防线：evidence 层 `TestUncheckedIndexReadReportForm`（播种形态 + 容量宏 +
 链条证据）/ `TestUncheckedIndexGuardedControl`（入口检查零候选）/
