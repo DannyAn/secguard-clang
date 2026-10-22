@@ -353,8 +353,10 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		FunctionsIndexed: indexResult.FunctionsIndexed,
 		FunctionsInIndex: functionsInIndex,
 		LinesOfCode:      indexResult.LinesOfCode,
-		TypeBreakdown:    typeBreakdown,
-		ReportPath:       filepath.Join(scanDir, report.ReportFile),
+		TypeBreakdown:     typeBreakdown,
+		ScanMode:          scopeMode(scanScope(absPath, funcs)),
+		EnclosingWorktree: scopeWorktree(scanScope(absPath, funcs)),
+		ReportPath:        filepath.Join(scanDir, report.ReportFile),
 		SarifPath:        filepath.Join(scanDir, report.CandidatesSarifFile),
 		LatestPath:       filepath.Join(scansDir, report.LatestName),
 	}

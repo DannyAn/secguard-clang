@@ -67,3 +67,19 @@ func enclosingWorktree(targetPath string) string {
 		dir = parent
 	}
 }
+
+// scopeMode / scopeWorktree read one field of the scan-scope map without
+// threading the whole map through the report data model.
+func scopeMode(scope map[string]interface{}) string {
+	if v, ok := scope["mode"].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func scopeWorktree(scope map[string]interface{}) string {
+	if v, ok := scope["enclosing_worktree"].(string); ok {
+		return v
+	}
+	return ""
+}

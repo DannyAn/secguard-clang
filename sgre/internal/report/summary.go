@@ -19,7 +19,15 @@ type SummaryData struct {
 	// LinesOfCode completes the scan-scale trio (files / functions / lines)
 	// reported alongside report.md's `## Scan Overview`.
 	LinesOfCode   int
-	TypeBreakdown []TypeBreakdownEntry
+	// ScanMode / EnclosingWorktree come from the scan-scope diagnostic
+	// ("complete-program" when the tree defines main, "boundary" when it does
+	// not). A boundary scan inside a git worktree is very likely a subtree scan,
+	// where every zero-in-caller pointer parameter is fail-open — the single
+	// largest source of null-deref contract candidates in production. The AI
+	// needs that fact to dismiss them as a group instead of judging 200 rows.
+	ScanMode          string
+	EnclosingWorktree string
+	TypeBreakdown     []TypeBreakdownEntry
 	ReportPath    string
 	SarifPath     string
 	LatestPath    string
@@ -52,6 +60,25 @@ func BuildScanSummary(data SummaryData) string {
 		fmt.Fprintf(&b, "| Lines Of Code | %d |\n", data.LinesOfCode)
 	}
 	b.WriteString("\n")
+
+	if data.ScanMode == "boundary" {
+		b.WriteString("> **Boundary scan: no entry point (`main`) in the scanned tree.**\n")
+		if data.EnclosingWorktree != "" {
+			fmt.Fprintf(&b, "> The target is a subtree of the git worktree `%s`. Every zero-in-caller\n", data.EnclosingWorktree)
+			b.WriteString("> pointer parameter is therefore treated as an external caller's argument\n")
+			b.WriteString("> (fail-open), which inflates null-deref with external-contract candidates.\n")
+			fmt.Fprintf(&b, "> Scan `%s` for a complete-program result if the callers live there.\n", data.EnclosingWorktree)
+		} else {
+			b.WriteString("> Every zero-in-caller pointer parameter is treated as an external\n")
+			b.WriteString("> caller's argument (fail-open); judge those tiers as one boundary\n")
+			b.WriteString("> contract per function, not per row.\n")
+		}
+		if n := typeCount(data.TypeBreakdown, "null-deref"); n > 0 {
+			fmt.Fprintf(&b, "> This scan has **%d** null-deref candidates in boundary mode.\n\n", n)
+		} else {
+			b.WriteString("\n")
+		}
+	}
 
 	b.WriteString("### Candidates by Skill\n\n")
 	if len(data.TypeBreakdown) == 0 || data.TotalCandidates == 0 {
@@ -150,4 +177,14 @@ func PrintPlanSummary(w io.Writer, data PlanSummaryData) {
 		return
 	}
 	fmt.Fprint(w, BuildPlanSummary(data))
+}
+
+// typeCount returns the candidate count for one vuln type in the breakdown.
+func typeCount(entries []TypeBreakdownEntry, vulnType string) int {
+	for _, e := range entries {
+		if e.Type == vulnType {
+			return e.Count
+		}
+	}
+	return 0
 }
