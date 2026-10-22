@@ -3,6 +3,7 @@
 package planner
 
 import (
+	"io"
 	"testing"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -73,7 +74,7 @@ func runOpaqueNullPlan(t *testing.T, files map[string]string) *PlanResult {
 	t.Helper()
 	ctx := context.Background()
 	store := db.NewTestStore(t)
-	logger := log.New(os.NewFile(0, os.DevNull), log.LevelWarn)
+	logger := log.New(io.Discard, log.LevelWarn)
 	p := parser.NewParser()
 
 	dir := t.TempDir()

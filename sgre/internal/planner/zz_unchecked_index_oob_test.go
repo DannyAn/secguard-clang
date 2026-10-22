@@ -3,6 +3,7 @@
 package planner
 
 import (
+	"io"
 	"context"
 	"os"
 	"path/filepath"
@@ -122,7 +123,7 @@ func runUncheckedIndexPlan(t *testing.T, files map[string]string, vulnType strin
 	t.Helper()
 	ctx := context.Background()
 	store := db.NewTestStore(t)
-	logger := log.New(os.NewFile(0, os.DevNull), log.LevelWarn)
+	logger := log.New(io.Discard, log.LevelWarn)
 	p := parser.NewParser()
 
 	dir := t.TempDir()
