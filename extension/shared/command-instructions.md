@@ -184,6 +184,7 @@ security scan and reading them makes the verdicts worthless. The scan dir
 | `PER_AUTO_CONFIRMED_TURNS` | 0.3 | Avg turns per auto-confirmed re-review entry (batch paged list + no findings write, cheaper than a candidate) |
 | `LARGE_CANDIDATE_THRESHOLD` | 100 | Types with > this many candidates get a dedicated subagent |
 | `SPLIT_CANDIDATE_THRESHOLD` | 100 | A type with > this many candidates is SPLIT across multiple subagents, each handling ≤ this many candidates |
+| `MAX_EVIDENCE_OPENS_PER_TYPE` | 12 | Evidence-file-open budget per subagent; beyond it the subagent reports `needs_context` instead of opening everything |
 
 `MAXTURNS` is a single source of truth: it must equal the turn cap every platform's
 `security-auditor` agent declares (`maxTurns` on Claude Code / Claude CAC, `steps`
@@ -193,7 +194,7 @@ as part of `release/build-packages.sh`.
 **Pre-dispatch validation (EARS):**
 - If a batch has > `MAX_TYPES_PER_BATCH` (4) types, the orchestrator SHALL split it before dispatching.
 - Where a single type has > `LARGE_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL assign that type its own dedicated subagent.
-- Where a single type has > `SPLIT_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL split it into MULTIPLE subagents, each handling a ≤100-candidate RANGE of that type (pass the candidate # range, e.g. "candidates #1–100 of null-deref"), so no single subagent's context window is exceeded. The 100-candidate cap is a CONTEXT ceiling (not a turn ceiling): before the Hint column + Code Context compression, a suspected-heavy range opened an `Evidence` file per suspected candidate and a 100-candidate range could exhaust a 200K context before the tail; with `Source`+`Hint` classification and a ±8 Code Context window the same budget now carries ~2× more, so 100 is the test point — if a super-large function still overflows, the tail is surfaced via the partial-count path, never silently buried.
+- Where a single type has > `SPLIT_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL split it into MULTIPLE subagents, each handling a ≤100-candidate RANGE of that type (pass the candidate # range, e.g. "candidates #1–100 of null-deref"), so no single subagent's context window is exceeded. Balance the ranges: split into `n = ceil(count / 100)` ranges of `ceil(count / n)` candidates (201 → 3 × 67), never one 100-range plus slivers. The 100-candidate cap is a CONTEXT ceiling (not a turn ceiling): before the Hint column + Code Context compression, a suspected-heavy range opened an `Evidence` file per suspected candidate and a 100-candidate range could exhaust a 200K context before the tail; with `Source`+`Hint` classification and a ±8 Code Context window the same budget now carries ~2× more, so 100 is the test point — if a super-large function still overflows, the tail is surfaced via the partial-count path, never silently buried.
 - The orchestrator SHALL estimate a batch's cost on BOTH axes (type count AND candidate count) — a type-count-only check lets 4 small-types-sounding batches hide a heavy candidate load and overflow the subagent before the tail (the 0.9.4 race-condition omission: 4 types × 12 = 48 < 54 passed, but 86 candidates + 4 skill loads exhausted the window). Compute `estimated_turns = batch_type_count × PER_TYPE_FIXED_TURNS + batch_candidate_count × PER_CANDIDATE_TURNS + batch_auto_confirmed_count × PER_AUTO_CONFIRMED_TURNS`; if `estimated_turns ≥ MAXTURNS × MAXTURNS_SAFETY_RATIO` (54), the orchestrator SHALL reject the batch as over-budget and split it (split off the heaviest type first, then re-check). `batch_candidate_count` is the SUM of the batch's per-type candidate counts, and `batch_auto_confirmed_count` is the SUM of the batch's per-type `auto_confirmed_by_type` counts — a re-review-only batch (0 candidates, many auto-confirmed) is still real work and must not be budgeted as free.
 
 ## Full Scan Workflow
@@ -264,6 +265,30 @@ classify from `Source` + `Hint` first, and open the `Evidence` candidate file ON
 for a `suspected`/`possible` candidate whose Hint is insufficient. (`report --audit`
 later overwrites `report.md` with the final findings report — the same data source
 as `result.sarif`.)
+
+**Evidence-open budget (P0 — the other dominant cost).** `evidence_opens` is a
+budgeted resource, not a default step: a DECISIVE hint settles the row with NO
+open. Open an `Evidence` file only for a HEURISTIC token the row cannot settle.
+Budget: `MAX_EVIDENCE_OPENS_PER_TYPE` (12) per subagent. A type that needs more
+than that is a signal the HINT is under-powered, not that the subagent should
+open the whole type: it settles the rest from `Source` + `Hint` with a cited
+token and lists the unsettleable candidates in the report's `needs_context`
+array; the orchestrator re-dispatches that range ONCE with an explicit
+"open the Evidence files, then the ≤5 source reads" prompt. **Leak types are
+Hint-decidable**: `leak@definite` + `escape@none` → confirm from the row;
+`leak@conditional` → compare `free@N,M` with the row's Source; only
+`escape@return|store` + `leak@conditional` needs the Code Context open.
+
+**Group verdict (large suspected types).** Rows sharing `Function` + the same
+origin token + `guard@none` are one contract question. Decide the group ONCE
+from the first row, then reuse the reasoning for the siblings with
+`group:<fn>:<tier>` in each reason. A function whose `proc->profile` is a
+non-null contract also dismisses its `proc->ctx` rows; do not re-derive the
+contract per row.
+
+**Zero-confirmed shard: skip the write.** If nothing in the type/range is
+confirmed, do NOT create a findings file and do NOT call `--write-json`; go
+straight to the structured report (`written: 0`).
 
 **长扫描超时策略 (F4):** Before calling `secguard_scan`, estimate scan duration. If the project has > 100 C files OR the scan is expected to exceed 120s (the default Bash timeout), the orchestrator SHALL either (a) invoke the scan with an explicit timeout ≥ 600s, or (b) use the host's background-task + Monitor mechanism from the start. When a scan is moved to the background, the orchestrator SHALL switch to Monitor within 1 turn — it SHALL NOT use `sleep N; tail` (blocked by Bash safety policy) and SHALL NOT leave a backgrounded scan unmonitored. While the Monitor is pending, the orchestrator SHALL NOT issue parallel Bash commands (the host may buffer their results until the Monitor completes, wasting the parallel window); any preparation (type list, agent-definition read) MUST complete before the Monitor starts.
 
@@ -384,6 +409,10 @@ as `result.sarif`.)
    Each subagent prompt must be self-contained (the subagent cannot see this
    conversation):
    ```
+   RED LINE: you are a SUBAGENT. Never call `secguard report --complete-type`
+   or `secguard report --audit` (the orchestrator is the single writer of
+   ai_stage_status), and never re-run secguard scan/plan/index.
+
    Process type(s) <t1, t2, ...> ONLY. scan_id=<scan_id>, scan_dir=<output_dir>.
    (If a type is split by candidate RANGE, e.g. "null-deref #1-100", classify ONLY
    those candidates — the # column in <scan_dir>/candidates/<type>/_index.md — and
@@ -497,12 +526,20 @@ as `result.sarif`.)
       step 5). The write is idempotent, so partial progress is safe.
     - Otherwise (Claude Code / Claude CAC shell-only host), run
       `secguard report --write-json <scan_dir>/../../.sgre/.tmp/<type>-partN.json --scan-id <scan_id> --db <scan_dir>/../../.sgre/sgre.db`
-      with Bash, then after that type's final chunk run
-      `secguard report --complete-type <type> --scan-id <scan_id> --db <db_path>`
-      to mark the type's AI stage done (sets ai_stage_status='done').
+      with Bash. Do NOT call `--complete-type` — it is the orchestrator's
+      single-writer step (step 5); a subagent call races it and can flip the
+      terminal state under the orchestrator. Report `processed_types` instead.
+      If nothing in the range is confirmed, skip the write entirely.
     Report back, per type: confirmed count + the written finding ids. Dismissed
-    count is not persisted (not counted, not reported).
+    count is not persisted (not counted, not reported). Emit the Structured
+    Report Protocol block; if the ≤12 Evidence-open / ≤5 source-read budget could
+    not settle some candidates, list them in `needs_context` instead of opening
+    the whole type.
    ```
+   **Shell note when scripting the dispatch:** never prefix a loop with
+   `VAR=... for ...` (`VAR=x for i in ...` is a shell syntax error); export the
+   variable or set it inside the loop body.
+
    For many types, batch them — but NEVER exceed `MAX_TYPES_PER_BATCH` (4) types
    per subagent, and validate the TWO-AXIS budget before dispatching:
    `batch_type_count × PER_TYPE_FIXED_TURNS + batch_candidate_count ×
@@ -585,9 +622,19 @@ as `result.sarif`.)
     `task` return is only the subagent's final message), so F6 there degrades to
     the subagent's self-reported `source_reads`/`evidence_opens` counts (see the
     Structured Report Protocol in agent-body): mark any type whose self-report
-    exceeds the budget (`source_reads > 5` or a dismissed-without-read pattern) in
-    the 观察项表 as "读源审计受限（无 transcript）" rather than claiming a verified
-    audit. Do not treat the missing transcript as proof of compliance.
+    exceeds a budget (`source_reads > 5`, `evidence_opens > 12`, or a
+    dismissed-without-read pattern) in the 观察项表 as "读源审计受限（无
+    transcript）" rather than claiming a verified audit. Do not treat the missing
+    transcript as proof of compliance. An over-budget `evidence_opens` is a
+    TRIAGE-STRATEGY signal (the Hint was under-used), not a recall failure — do
+    not re-dispatch for it; note it and move on.
+
+    **`needs_context` 二次下发:** if a subagent reports `needs_context`, the
+    orchestrator re-dispatches EXACTLY those candidate `#`s ONCE (one subagent,
+    same type, explicit "open the Evidence files, then the ≤5 source reads,
+    before you may write dismissed"), then re-runs the F5 DB check for that type.
+    Do not re-dispatch a whole type for a handful of `needs_context` entries and
+    do not silently drop them — a dropped entry is an unclassified candidate.
 
     After you have verified the subagent writes against the DB and before the
     final audit, run `secguard report --complete-type <type> --scan-id <scan_id>

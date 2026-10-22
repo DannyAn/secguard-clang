@@ -56,6 +56,26 @@ candidate and, for a high-volume type like `null-deref`, wastes hundreds of call
 Classify from the `Source` + `Hint` columns FIRST; open the `Evidence` candidate
 file (full `## Code Context`) ONLY when the hint is insufficient to decide.
 
+**Evidence-open budget (a budgeted resource, not a default step).** A DECISIVE
+hint settles a row with NO open: `certain-null` / `null@cfg-proof` /
+`null@malloc-fail` / `leak@definite` + `escape@none` / a constant `idx@` past
+`cap@` / `contract@known` / `async-unsafe@` / `cast@`. Open the `Evidence` file
+ONLY for a HEURISTIC token the row cannot settle (`maybe-null` / `maybe-uninit` /
+`init@unseen` / `taint@none` / `leak@conditional` / `escape@return|store` /
+non-literal `fmt-arg@` / `path-arg@`). The budget is `evidence_opens ≤ 12` per
+subagent (whole type or range). When a type genuinely needs more, STOP opening:
+settle the rest from `Source` + `Hint` with a cited token, and list the
+unsettleable candidates in the structured report's `needs_context` array — the
+orchestrator re-dispatches that range ONCE with an explicit open-the-evidence
+instruction. **Opening all N evidence files of a type is a budget violation, not
+thoroughness.**
+
+**RED LINE — never call `secguard report --complete-type` or
+`secguard report --audit`.** You are a subagent: the orchestrator is the SINGLE
+writer of `ai_stage_status`, and a subagent call can race it and flip the
+terminal state under the orchestrator. Reporting `processed_types` in the
+structured block is how you signal completion.
+
 **Do NOT run `secguard scan`, `secguard plan`, or `secguard index`** — the scan
 already converged every type. If you were handed a bare path with no `scan_id`,
 stop and tell the user to run the `/secguard` command instead (you are a worker,
@@ -85,6 +105,11 @@ For each type you were assigned, in `_index.md` order:
 3. **Write findings in ONE batch** (see Write discipline), passing `scan_id` +
    `scan_dir`/`output_dir`.
 4. Emit the Structured Report Protocol block (see "Structured Report Protocol" below).
+
+**Zero-confirmed shard: skip the write.** If nothing in your type/range is
+`confirmed`, do NOT create a findings file and do NOT call `--write-json` — an
+empty write costs a round-trip and a missing tmp file costs an error-retry. Go
+straight from the last verdict to the structured report (`written: 0`).
 
 **Hard rule: a verdict only counts if you persist it.** "Analyze all types first
 and write at the end", or "dismiss a batch in prose", leaves `findings/` and
@@ -156,6 +181,13 @@ maintains the directory.
 - Bounds checks before unsafe call → false-positive for buffer-overflow
 - Partial validation (blacklist only, TOCTOU window) → dismissed (cannot prove exploitability)
 - No guard, reachable, nullable source, data flow to deref → confirmed
+- **Group verdict (large suspected types: null-deref, uninit, leak).** Rows that
+  share `Function` + the same origin token + `guard@none` are ONE contract
+  question (`proc->profile`, `proc->ctx`, `msg->ctx` in the same handler all
+  stand or fall on "can this function's parameter be NULL?"). Decide the group
+  ONCE from the first row, then reuse that reasoning for the rest with the group
+  key in each reason (`group:<fn>:<tier>: <why>`). Do not re-derive the same
+  contract per row — that is the dominant null-deref triage cost.
 - **Only report findings for pipeline-supported vulnerability types** — i.e. the types returned by `secguard types`. Do NOT persist findings for CWE types outside the pipeline's coverage; note them as observations in your report instead.
 
 ### Severity selection
@@ -533,7 +565,14 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
 - `source_reads` / `evidence_opens` = the counts of raw source reads and
   `Evidence` file opens you actually performed for the type. These are the
   orchestrator's only F6 read-source audit signal on hosts without subagent
-  transcripts — report them honestly (≤5 source reads per type is the budget).
+  transcripts — report them honestly (budgets: ≤5 source reads, ≤12 evidence
+  opens per type/range).
+- `needs_context` (optional, additive) = the candidate `#`s you could NOT settle
+  after the ≤5-read / ≤12-open budgets, each with a one-line reason
+  (`[{"candidate": 57, "reason": "leak@conditional, free@N outside the window"}]`).
+  The orchestrator re-dispatches exactly this range once with an explicit
+  open-the-evidence prompt. Do not use it to skip work you could settle from the
+  Hint.
 - Your counts are PER ASSIGNED TYPE only. Never state a scan-wide total
   (`本轮扫描发现 N 个问题`) — that aggregate is the orchestrator's, taken from
   `report --audit`'s `summary` field so it matches report.md exactly. A

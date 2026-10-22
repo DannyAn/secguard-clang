@@ -51,6 +51,17 @@ A null-deref candidate has:
 | `caller_null` (parameter) + no guard + deref | **suspected** — the caller contract is unproven; confirm only if a caller actually passes NULL/unproven value |
 | `caller_null` (parameter) + every caller proves non-null (`if (v == NULL) return;` dominates the call) | **false-positive** — the pipeline filters these before they surface |
 
+### Group verdict (large candidate sets)
+
+Rows that share `Function` + the same origin tier (caller-arg / opaque-origin / external-unknown / assumed-return) + `guard@none` answer ONE
+question: "can this function's parameter / this object graph be NULL?" Decide
+the group once from the highest-signal row (or the `## Location` signature),
+then reuse that reasoning for the siblings with `group:<fn>:<tier>: <why>` in
+each reason. A `proc->profile` judged non-null by the function's entry contract
+also dismisses `proc->ctx` for the same reason — re-deriving it per row is the
+dominant cost of a 100+ candidate null-deref type, and it is what a 201-candidate
+zero-confirmed review looks like when it is done row by row.
+
 ### Common False Positives
 - `if (ptr == NULL) return;` before `ptr->field` → guard eliminates risk
 - `if (!ptr) { ... return; }` early return → guard eliminates risk for rest of function

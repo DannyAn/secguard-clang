@@ -39,6 +39,14 @@ The decisive split is the escape token plus the leak token:
 token alongside `leak@conditional` names exactly the release the leak path
 skips.
 
+**Evidence budget:** the common shapes are row-decidable — `leak@definite` +
+`escape@none` → confirm with no open; `leak@conditional` → compare `free@N,M`
+with the row's `Source`; `escape@return|store` + `leak@conditional` is the only
+shape that needs the `## Code Context` open. Opening every candidate's Evidence
+file in a 25-candidate leak type is a budget violation (`evidence_opens ≤ 12`),
+not thoroughness: settle what the Hint decides, open for the genuine channel
+cases, and list anything still unsettled in `needs_context`.
+
 ### Detection Logic
 1. Collect allocations: whole-variable `p = malloc(...)` (with or without a cast), implicit result-returning allocators, and output-parameter allocators (`asprintf(&p, ...)`, `getline(&p, ...)`).
 2. Collect releases: `free` and deallocators, unwrapping cast/paren (`free((void *)p)`) and following whole-variable aliases (`q = p; free(q)` releases p).
