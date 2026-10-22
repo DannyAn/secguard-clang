@@ -51,13 +51,27 @@ func TestAllocatorAndDeallocatorNamePatterns(t *testing.T) {
 }
 
 func TestIsAllocator_CreateNotMalloc(t *testing.T) {
+	// Unmodeled *_create names must stay heuristic misses: in C, *_create
+	// covers thread creation (pthread_create), connection/object factories,
+	// and table/cache constructors — none of which is a heap malloc.
 	for _, name := range []string{
 		"pthread_create", "db_create_sync_conn", "db_create_object",
-		"cJSON_CreateObject", "cJSON_CreateArray", "create_table_by_type",
-		"create_cache_base_addr", "ResourceHandle_create", "LockGuard_create",
+		"create_table_by_type", "create_cache_base_addr",
+		"ResourceHandle_create", "LockGuard_create",
 	} {
 		if IsAllocator(name) {
 			t.Errorf("IsAllocator(%q) = true, want false (_create is not a heap malloc)", name)
+		}
+	}
+	// cJSON_CreateObject/Array are now PRECISE matches via the ExternalAPIs
+	// model (verified cJSON-1.7 semantics), not heuristic matches: they are
+	// declared allocators even though the _create heuristic still misses.
+	for _, name := range []string{"cJSON_CreateObject", "cJSON_CreateArray"} {
+		if !IsDeclaredAllocator(name) {
+			t.Errorf("IsDeclaredAllocator(%q) = false, want true (ExternalAPIs model)", name)
+		}
+		if !IsAllocator(name) {
+			t.Errorf("IsAllocator(%q) = false, want true (model-backed)", name)
 		}
 	}
 }
@@ -135,9 +149,13 @@ func TestIsKnownNullableReturn_BuiltinPreciseSet(t *testing.T) {
 			t.Errorf("IsKnownNullableReturn(%q) = false, want true (built-in maybe-null)", name)
 		}
 	}
-	for _, name := range []string{"my_lookup", "get_foo", "strerror", "malloc"} {
+	// malloc's maybe-NULL contract is now expressed by the ExternalAPIs model
+	// (RetNull=RetNullMay), so IsKnownNullableReturn(malloc) is true — every
+	// consumer treats it identically to the allocator channel (which matched
+	// first anyway). Unknown project names still fail.
+	for _, name := range []string{"my_lookup", "get_foo", "strerror"} {
 		if IsKnownNullableReturn(name) {
-			t.Errorf("IsKnownNullableReturn(%q) = true, want false (not in built-in set)", name)
+			t.Errorf("IsKnownNullableReturn(%q) = true, want false (not a modeled maybe-null API)", name)
 		}
 	}
 }

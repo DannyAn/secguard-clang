@@ -724,16 +724,18 @@ func RegisterDeallocator(name string) {
 	}
 }
 
-// IsDeclaredAllocator reports whether name is a built-in or project-declared
-// allocation function (the precise set). It does NOT apply the alloc/free
-// naming heuristic, so callers that need certainty — the null-deref "confirmed"
-// tier — use this instead of IsAllocator.
-func IsDeclaredAllocator(name string) bool { return BuiltinAllocators[name] || extraAllocators[name] }
+// IsDeclaredAllocator reports whether name is a built-in, project-declared,
+// or externally-modeled allocation function (the precise set). It does NOT
+// apply the alloc/free naming heuristic, so callers that need certainty —
+// the null-deref "confirmed" tier — use this instead of IsAllocator.
+func IsDeclaredAllocator(name string) bool {
+	return BuiltinAllocators[name] || extraAllocators[name] || externalAPIAllocates(name)
+}
 
-// IsDeclaredDeallocator reports whether name is a built-in or project-declared
-// release function (the precise set).
+// IsDeclaredDeallocator reports whether name is a built-in, project-declared,
+// or externally-modeled release function (the precise set).
 func IsDeclaredDeallocator(name string) bool {
-	return BuiltinDeallocators[name] || extraDeallocators[name]
+	return BuiltinDeallocators[name] || extraDeallocators[name] || externalAPIReleases(name)
 }
 
 // BuiltinPathSanitizers are functions whose return value is a directory-free
@@ -783,13 +785,16 @@ var stackAllocators = map[string]bool{
 // candidates for the AI classifier to dismiss, never silently dropped.
 //
 // "_create" is NOT included: in C, *_create covers thread creation
-// (pthread_create), connection/object factories (db_create_sync_conn,
-// cJSON_CreateObject), and table/cache constructors — none of which is a
-// heap malloc. Matching them produced confirmed false positives because the
-// definite-leak path (no free/escape/transfer) bypasses the AI classifier.
-// The narrower "_mem_create" covers wrappers like pki_util_mem_create whose
-// name explicitly says "memory create". Real *_create heap allocators should
-// be registered via RegisterAllocator (secguard.toml [allocators]).
+// (pthread_create), connection/object factories (db_create_sync_conn), and
+// table/cache constructors — none of which is a heap malloc. Matching them
+// produced confirmed false positives because the definite-leak path (no
+// free/escape/transfer) bypasses the AI classifier. The narrower
+// "_mem_create" covers wrappers like pki_util_mem_create whose name
+// explicitly says "memory create". Verified *_create heap allocators
+// (cJSON_CreateObject/Array/...) are modeled precisely in ExternalAPIs and
+// reach IsAllocator through IsDeclaredAllocator — the heuristic itself
+// still never matches a bare _create. Unverified ones should be registered
+// via RegisterAllocator (secguard.toml [allocators]).
 
 // NoReturnCalls are the standard functions whose call never returns: abort
 // kills the process, the exit family terminates it, and __assert_fail is what
@@ -865,10 +870,18 @@ func IsZeroInitAllocator(name string) bool {
 
 // IsEscapeFunction reports whether a call name has an ownership-transfer shape:
 // the pointer argument is handed into a container, queue, registry, or send
-// path rather than released locally. This is a conservative naming heuristic,
-// used only to stop the memory/resource leak detectors from reporting a pointer
-// that the callee now owns.
+// path rather than released locally. Modeled external APIs take precedence:
+// a Borrow model (cJSON_AddItemReferenceToObject) returns false even though
+// the `_add` token would match — a reference add must NOT transfer — while a
+// TransferOnSuccess/TransferAlways model returns true (the conditional
+// nature is consumed via EscapeOwnership by the leak detector). Unmodeled
+// names keep the conservative naming heuristic, used only to stop the
+// memory/resource leak detectors from reporting a pointer that the callee
+// now owns.
 func IsEscapeFunction(name string) bool {
+	if s, ok := ExternalAPIs[name]; ok && s.Ownership != OwnershipNone {
+		return s.Ownership == OwnershipTransferOnSuccess || s.Ownership == OwnershipTransferAlways
+	}
 	if extraOwnershipTransfer[name] {
 		return true
 	}
@@ -934,9 +947,12 @@ func RegisterNonNullReturning(name string) {
 	}
 }
 
-// IsNonNullReturning reports whether name is a built-in or project-declared
-// function whose return value is guaranteed non-null.
+// IsNonNullReturning reports whether name is a built-in, project-declared,
+// or externally-modeled function whose return value is guaranteed non-null.
 func IsNonNullReturning(name string) bool {
+	if s, ok := ExternalAPIs[name]; ok {
+		return s.RetNull == RetNullNever
+	}
 	return BuiltinNonNullReturning[name] || extraNonNullReturning[name]
 }
 
@@ -986,10 +1002,16 @@ var BuiltinNullableReturning = map[string]bool{
 }
 
 // IsKnownNullableReturn reports whether name is a built-in libc/POSIX function
-// that returns a possibly-null pointer. It is the precise set (built-in only):
-// project-specific maybe-null functions are registered as allocators, which
-// share the same auto-confirm channel via onlyCertainNullableSources.
-func IsKnownNullableReturn(name string) bool { return BuiltinNullableReturning[name] }
+// or an externally-modeled library API that returns a possibly-null pointer.
+// Both are the precise set: a naming-heuristic guess must not auto-confirm,
+// and project-specific maybe-null functions are registered as allocators,
+// which share the same auto-confirm channel via onlyCertainNullableSources.
+func IsKnownNullableReturn(name string) bool {
+	if s, ok := ExternalAPIs[name]; ok && s.RetNull == RetNullMay {
+		return true
+	}
+	return BuiltinNullableReturning[name]
+}
 
 // neverNullScalarTypes are C primitive types that can never hold a pointer.
 // A function returning one of these cannot return NULL. Deliberately excludes
