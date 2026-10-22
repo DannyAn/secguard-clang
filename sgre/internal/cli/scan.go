@@ -410,6 +410,7 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 			// scan" is answered identically wherever it is read.
 			"lines_of_code": indexResult.LinesOfCode,
 		},
+		"scan_scope":        scanScope(absPath, funcs),
 		"target_path":       absPath,
 		"scan_dir":          scanDir,
 		"candidates_sarif":  filepath.Join(scanDir, report.CandidatesSarifFile),

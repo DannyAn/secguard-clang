@@ -4,6 +4,38 @@
 
 ## [0.9.8] - 2026-10-21
 
+### 扫描流程闭环：读源/证据预算、子代理红线、组裁决、扫描边界诊断
+
+按 maf 生产扫描复盘（122 文件 / 977 函数，种子 5250 → 候选 314，AI 研判 520s）逐条核对：
+
+- **`--complete-type` 协议矛盾（真 bug）**：step 4 的 Claude Code 分支原文让子代理写完
+  findings 后调 `--complete-type`，而 OpenCode 分支与"子代理禁止"规则说不要——子代理
+  照做了。已删除该指令，并在子代理提示词顶部加红线（禁止 `--complete-type`/`--audit`、
+  禁止重跑 scan/plan/index）。`MarkAIStageDone` 是幂等 UPDATE（同值并发不会写坏行），
+  真正的风险是"提前置 done"让 orchestrator 跳过未写完的类型。
+- **Evidence 打开预算**：此前只有 ≤5 源读取预算，Evidence 打开无上限（memory-leak 25/25
+  全开）。新增 `MAX_EVIDENCE_OPENS_PER_TYPE=12`：决定性 Hint 必须零打开结案
+  （`null@cfg-proof`/`null@malloc-fail`/`leak@definite`+`escape@none`/常量 `idx@` 越
+  `cap@`/`contract@known`/`async-unsafe@`/`cast@`），只有启发式 token 才开；超预算时
+  未决候选进结构化报告 `needs_context`，orchestrator 按候选范围二次下发一次。F6 审计
+  增加 `evidence_opens > 12` 观察项。
+- **leak 类型 Hint 可裁决**：memory-leak 技能补明确表（`leak@definite`+`escape@none`
+  直接 confirm；`leak@conditional` 对比 `free@N,M`；只有 `escape@return|store` 才开
+  Code Context）。
+- **组裁决**：null-deref / uninit / leak 中同 `Function` + 同来源 token + `guard@none`
+  的行按一个契约问题判一次，其余复用 `group:<fn>:<tier>`，不再逐行重推（对应"201 候选
+  0 确认"的研判成本）。
+- **confirmed=0 跳过写入**：全 dismissed 的分片不写 findings 文件、不调 `--write-json`。
+- **分片均衡**：`n = ceil(count/100)` 段、每段 `ceil(count/n)`（201 → 3×67），不再
+  100+100+1 或 55/55/55/36。
+- **扫描边界诊断（新增 `scan_scope`）**：scan 输出新增 `mode`（`complete-program` /
+  `boundary`）+ `enclosing_worktree` + 提示。扫描 `repo/src` 而 `main` 在 `repo/app`
+  时，整个模块会被当作外部边界 fail-open——这是 maf 201 条 null-deref 候选最可能的
+  量级来源；诊断让它第一次就可见，而不是靠 AI 判 201 次"外部契约"。
+- **PATH 写法**：orchestrator 脚本禁止 `VAR=... for ...`，已写进提示词。
+- 未改（需产品决策）：auto-confirmed 抽样复核（会破坏 `unreviewed=0` 终态门禁）；
+  null-deref 的项目级非空约定建模（需跨函数字段写入分析）。
+
 ### 测试夹具的 fd 0 关闭竞态（随机 FAIL 的真因）
 
 `log.New(os.NewFile(0, os.DevNull), ...)` 把 **fd 0** 包成了 `*os.File`：GC 执行该
