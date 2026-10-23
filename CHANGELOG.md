@@ -223,6 +223,41 @@ P29-01），`go test ./...` + nosqlite 全绿。
   独立 --db、构建修复前基线二进制对照）：**PASS 159/226、recall 48/113、
   false positives 2/113、false negatives 62——与基线完全一致，零回归**。
 
+### NAT 生产 asprintf 框架误报修复（239/271 = 88% 误报的生产反馈）
+
+NAT 组件 `src/api_modules/` 扫描中 239 条确认发现（184 unchecked-return + 55
+memory-leak）全部为误报——`asprintf(&err_msg,...); return fail(error, err_msg, ...)`
+框架形态的所有权转移（fail / fail_nc_err / transapi_comm_with_vrp 在外部仓库
+transapi_pub.c 内部 free）未被识别：
+
+- **CWE-252（184 条）**：asprintf 经 externalAPIAllocates → IsDeclaredAllocator →
+  contractKnown=true 直接 auto-confirm。但 asprintf 是**出参分配器**（返回值是
+  状态码，失败时出参置 NULL——glibc 语义），"返回值未检查"的直接后果只在本函数内
+  解引用出参时成立（`asprintf(&p,...); p[0]=x;`）；出参仅传给外部 callee 时，其
+  NULL 命运属 null-deref 链路（callee 有定义时）或项目框架约定（callee 无定义时），
+  unchecked-return 报它就是 confirmed 精准违规。修复：AllocOutParam 型 callee 只在
+  出参被本函数内无 guard 解引用时才报（`outParamVar` 剥 `&` 提取出参 +
+  `unguardedDerefAfter` 判定 + NULL guard 支配识别）。**首个修复版本曾在多函数
+  同文件场景误判**——`unguardedDerefAfter` 扫全文件 identifier 未限定函数范围，
+  兄弟函数的同名 `err_msg` 的 deref 泄漏进本函数判定（NAT api_modules 的 50 个
+  handler 全共享 err_msg）——已补 funcLineRange 门禁 + 跨函数同名对照回归。
+- **CWE-401（55 条）**：fail/fail_nc_err/transapi_comm_with_vrp 不在 escape 命名
+  启发（_put/_push/_add/...）中 → escape 不识别 → 泄漏候选。修复：findEscapeLines
+  新增带上下文的所有权转移判定——**return 直用 + 函数名含 fail/err/_comm/_send +
+  参数调用后不再使用** 三条件同时满足才 escape（`return printf(p)` 不误豁免，
+  printf 命名不命中；`fail(err,p); use(p);` 不误豁免，调用后仍使用）。
+  `[ownership_transfer_calls]` config 通道保持（项目可显式注册框架函数）。
+- **验证**：TDD red→green（模式 A/B/C 豁免 + 4 对照全报）；全量 14 包 + nosqlite
+  3 包绿；本地 CLI 端到端 NAT 精确形态（7 函数 fixture 复刻模式 A/B/C + 4 对照）：
+  模式 A/B/C 零候选零 finding，对照全部 auto-confirmed 检出（含 nat_bad_use 的
+  CWE-252+CWE-401、nat_malloc_unchecked 的 CWE-252+CWE-401+CWE-476 三检）；
+  新增全 detector 链 CLI 对等回归（nat_framework_escape_test.go）——曾发现最小
+  detector 链 helper 与 CLI 全链行为不一致的中间态；c-vuln-benchmark A/B 与基线
+  完全一致（PASS 159/226、FP 2/113、FN 62，零回归）。
+- **预期效果**：NAT 扫描的 239 条 asprintf 相关误报消除，有效确认数从 271 降回
+  真实的 32 条（divide-by-zero 18 + null-deref 7 + unchecked-return 4 + uninit 1
+  + dangerous-function 1 + memory-leak 1）。
+
 ## [0.9.8] - 2026-10-21
 
 ### 两项"待拍板"的结论（已按方案落地，不再等决策）
