@@ -106,7 +106,11 @@ type SanitizeFunctions struct {
 // The memory/resource leak detectors treat a pointer passed to such a call as
 // escaped, not leaked. Typical entries are container insert helpers
 // (list_push_back, dict_set, buffer_append) whose naming does not match the
-// built-in IsEscapeFunction heuristic (_put/_push/_add/...).
+// built-in IsEscapeFunction heuristic (_put/_push/_add/...), and error-handling
+// or comm framework functions that free the message/path they receive
+// (fail, fail_nc_err, transapi_comm_with_vrp) when the built-in
+// directly-returned + unused-afterwards shape does not already cover the call
+// site (e.g. the call is stored, not returned).
 //
 //	[ownership_transfer_calls]
 //	names = ["list_push_back", "dict_set", "buffer_append"]
