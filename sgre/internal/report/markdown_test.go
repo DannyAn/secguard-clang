@@ -532,6 +532,71 @@ func TestWriteCandidates_UncheckedReturnCalleeDefinition(t *testing.T) {
 	}
 }
 
+// NC-06: when the source→sink span exceeds maxContextLines the window falls
+// back to ±8 — but the decisive source line then sits OUTSIDE the shown
+// window with no visible note. The classifier must be told the window was
+// truncated and which line to read directly.
+func TestWriteCandidates_SourceSinkSpanTruncationNote(t *testing.T) {
+	dir := t.TempDir()
+	// Build a 250-line function: malloc at line 5, deref at line 250.
+	var sb strings.Builder
+	sb.WriteString("#include <stdlib.h>\ntypedef struct { int x; } T;\n\nT *f(void) {\n    T *p = malloc(sizeof(T));\n")
+	for i := 6; i < 250; i++ {
+		sb.WriteString("    (void)0;\n")
+	}
+	sb.WriteString("    p->x = 1;\n    return p;\n}\n")
+	src := filepath.Join(dir, "big.c")
+	if err := os.WriteFile(src, []byte(sb.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	o := &ScanOutput{ScanDir: dir, ScanID: "sc_test", RootDir: dir}
+	pkgs := []*planner.PlanResult{{
+		VulnerabilityType: "null-deref",
+		Candidates: []planner.EvidenceItem{{
+			SuspicionLevel: "suspected",
+			NullOriginTier: "malloc-fail",
+			SourceLines:    []int{5},
+			Target:         planner.TargetInfo{File: "big.c", Function: "f", Line: 250, Variable: "p"},
+		}},
+	}}
+	if err := o.writeCandidates(pkgs); err != nil {
+		t.Fatal(err)
+	}
+	def := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "null-deref", "001_big_c_250.md")))
+	if !strings.Contains(def, "outside the window") && !strings.Contains(def, "targeted read") {
+		t.Errorf("span-truncated candidate must note the window truncation and name the source line to read directly:\n%s", def)
+	}
+}
+
+// NC-05: one candidate can cover SEVERAL dereference lines of the same
+// variable (the variable-level converge). The fix suggestion must tell the
+// developer to guard every sink, not just the reported line.
+func TestFixSuggestion_NullDerefMultiSink(t *testing.T) {
+	s := FixSuggestion("null-deref", "CWE-476", planner.EvidenceItem{
+		Target:     planner.TargetInfo{Function: "traverse", Variable: "p", Line: 12},
+		DerefLines: []int{12, 13},
+	})
+	if !strings.Contains(s, "12") || !strings.Contains(s, "13") {
+		t.Errorf("multi-sink fix suggestion must name every dereference line (12 and 13), got:\n%s", s)
+	}
+	if !strings.Contains(s, "every") && !strings.Contains(s, "all") {
+		t.Errorf("multi-sink fix suggestion must state the fix covers every sink, got:\n%s", s)
+	}
+}
+
+// NC-05 sibling: a single-sink candidate keeps the plain suggestion (no
+// phantom "other lines" note).
+func TestFixSuggestion_NullDerefSingleSink(t *testing.T) {
+	s := FixSuggestion("null-deref", "CWE-476", planner.EvidenceItem{
+		Target:     planner.TargetInfo{Function: "f", Variable: "p", Line: 12},
+		DerefLines: []int{12},
+	})
+	if strings.Contains(s, "other dereference line") || strings.Contains(s, "every sink") {
+		t.Errorf("single-sink fix suggestion must not mention other lines, got:\n%s", s)
+	}
+}
+
 // NC-02: an assumed-return VARIABLE-path candidate (`p = f(); p->field`, where
 // f is a fail-open in-scan callee) carries callee@file:line in its Hint and a
 // Verdict Fact promising "its body is embedded under ## Callee Definition".

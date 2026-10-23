@@ -42,6 +42,10 @@ type codeContext struct {
 	EndLine   int
 	Line      int
 	Lines     []string // the region, in order, starting at StartLine
+	// Note, when non-empty, is an advisory line rendered under the Code
+	// Context header — e.g. that the source→sink span exceeded the window
+	// cap and a decisive line sits outside the shown region.
+	Note string
 }
 
 // resolveSourcePath finds the source file on disk. A finding's file path may be

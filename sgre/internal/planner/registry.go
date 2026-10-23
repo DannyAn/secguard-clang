@@ -413,10 +413,17 @@ func buildNullDerefVerdictFacts(c Candidate) []VerdictFact {
 			Detail: "the callee's definition in this scan; its body is embedded under ## Callee Definition — judge the return-nullability from the body, no source read needed",
 		})
 	}
-	facts = append(facts, VerdictFact{
-		Token:  "guard@none",
-		Detail: "no same-function null guard precedes the dereference (short-circuit guards were filtered before this candidate reached you)",
-	})
+	// cfg-proof already entails "no guard" (the CFG proved NULL reaches on
+	// every path), so restating it is redundant noise. For the fail-open
+	// tiers the fact is real but bounded: the pipeline only proved it found
+	// no DOMINATING same-function guard — caller-side and cross-function
+	// guards may still exist, and the tier judgment is where they belong.
+	if c.NullOriginTier != "cfg-proof" {
+		facts = append(facts, VerdictFact{
+			Token:  "guard@none",
+			Detail: "the pipeline found no dominating same-function null guard before the dereference (short-circuit and ternary shapes were filtered); caller-side or cross-function guards may still exist — judge them when judging the tier",
+		})
+	}
 	return facts
 }
 

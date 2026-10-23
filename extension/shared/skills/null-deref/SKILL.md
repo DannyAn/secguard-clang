@@ -130,6 +130,7 @@ pipeline's null-flow proof may be wrong. Verify the macro before confirming:
 - Use early return pattern: `if (!ptr) return;`
 - For malloc: always check return before use
 - For function returns: check API contract — does it document NULL return?
+- When the Evidence section notes `the same nullable X is also dereferenced at line(s) N, M`, the candidate covers EVERY sink of that variable — the fix must guard all of them, not just the reported line.
 
 ### Severity Matrix
 

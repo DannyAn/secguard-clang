@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -280,6 +281,9 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 			if ctx := o.candidateContext(pkg.VulnerabilityType, c); ctx != nil {
 				b.WriteString("## Code Context\n\n")
 				fmt.Fprintf(&b, "`%s:%d-%d` — line %d is the reported location.\n\n", ctx.Path, ctx.StartLine, ctx.EndLine, ctx.Line)
+				if ctx.Note != "" {
+					b.WriteString(ctx.Note)
+				}
 				b.WriteString(ctx.render())
 				b.WriteString("\n")
 			} else {
@@ -463,7 +467,55 @@ func (o *ScanOutput) candidateContext(vulnType string, c planner.EvidenceItem) *
 			return ctx
 		}
 	}
-	return local()
+	ctx := local()
+	if ctx != nil {
+		ctx.Note = sourceSinkTruncationNote(c)
+	}
+	return ctx
+}
+
+// sourceSinkTruncationNote names the decisive source lines that fell OUTSIDE
+// the local window when the source→sink span exceeded maxContextLines and the
+// window fell back to ±candidateContextLines. Without it the classifier sees
+// a window with no origin line in view and may dismiss the fragment's src@N
+// as unrelated.
+func sourceSinkTruncationNote(c planner.EvidenceItem) string {
+	if len(c.SourceLines) == 0 {
+		return ""
+	}
+	lo, hi := c.Target.Line, c.Target.Line
+	outside := false
+	for _, ln := range c.SourceLines {
+		if ln < lo {
+			lo = ln
+		}
+		if ln > hi {
+			hi = ln
+		}
+		if ln < c.Target.Line-candidateContextLines || ln > c.Target.Line+candidateContextLines {
+			outside = true
+		}
+	}
+	if !outside {
+		return ""
+	}
+	lo -= 3
+	if lo < 1 {
+		lo = 1
+	}
+	hi += 3
+	span := hi - lo + 1
+	if span <= maxContextLines {
+		return ""
+	}
+	var outsideLines []string
+	for _, ln := range c.SourceLines {
+		if ln < c.Target.Line-candidateContextLines || ln > c.Target.Line+candidateContextLines {
+			outsideLines = append(outsideLines, strconv.Itoa(ln))
+		}
+	}
+	return fmt.Sprintf("- Source line(s) %s sit outside the window (span %d lines > %d cap); use a targeted read for them.\n\n",
+		strings.Join(outsideLines, ", "), span, maxContextLines)
 }
 
 // sourceSinkSpan returns the widened [lo, hi] window covering the reported
@@ -711,7 +763,7 @@ func FixSuggestion(vulnType, cwe string, c planner.EvidenceItem) string {
 
 	switch vulnType {
 	case "null-deref":
-		return fmt.Sprintf(
+		suggestion := fmt.Sprintf(
 			"Add a NULL check before dereferencing `%s` in `%s`:\n\n"+
 				"```c\n"+
 				"if (%s == NULL) {\n"+
@@ -722,6 +774,19 @@ func FixSuggestion(vulnType, cwe string, c planner.EvidenceItem) string {
 				"```\n\n"+
 				"Also ensure `%s` is properly initialized on all code paths leading to this point.\n",
 			varName, funcName, varName, varName, varName)
+		// One candidate can cover EVERY dereference of the variable (the
+		// variable-level converge merges the sinks into DerefLines). Guarding
+		// only the reported line leaves the siblings live — name them.
+		if len(c.DerefLines) > 1 {
+			parts := make([]string, len(c.DerefLines))
+			for i, l := range c.DerefLines {
+				parts[i] = strconv.Itoa(l)
+			}
+			suggestion += fmt.Sprintf(
+				"\nThis one candidate covers every dereference of `%s`; the fix must guard every sink (line(s) %s), not just the reported line.\n",
+				varName, strings.Join(parts, ", "))
+		}
+		return suggestion
 
 	case "buffer-overflow":
 		return fmt.Sprintf(
