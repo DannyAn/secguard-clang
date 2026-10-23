@@ -62,6 +62,14 @@ int bad_use(void) {
     p[0] = 'y';
     return 0;
 }
+
+/* Cross-function same-name interference guard: safe_use's p must not be
+ * judged by bad_use's p[0] deref — ids is file-scoped. */
+int safe_use(void) {
+    char *p = NULL;
+    asprintf(&p, "x");
+    return 0;
+}
 `
 
 func planUncheckedReturnAsprintf(t *testing.T, src string) *PlanResult {
@@ -110,5 +118,10 @@ func TestUncheckedReturn_AsprinfFrameworkPatterns(t *testing.T) {
 	// consequence unchecked-return owns.
 	if _, ok := byFunc["bad_use"]; !ok {
 		t.Errorf("bad_use: asprintf unchecked + in-function deref `p[0]` must STAY flagged (failure leaves p NULL)")
+	}
+	// Cross-function same-name guard: safe_use's `p` is never dereferenced in
+	// ITS function; bad_use's `p[0]` must not leak into safe_use's judgement.
+	if c, ok := byFunc["safe_use"]; ok {
+		t.Errorf("safe_use: asprintf with no in-function use of `p` must NOT flag (bad_use's deref is a different function's variable), got %q", c.SuspicionLevel)
 	}
 }

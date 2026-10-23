@@ -1782,7 +1782,10 @@ func outParamVar(call parser.Node, idx int) string {
 // `if (v != NULL) { ... }` / `if (v) { ... }` covering it.
 func unguardedDerefAfter(varName string, after int, f *db.Function, ids, ifs []parser.Node) bool {
 	for _, id := range ids {
-		if id.Text() != varName || id.StartLine() <= after {
+		// ids spans the whole FILE — a same-named variable in a sibling
+		// function (the NAT api_modules handlers all share `err_msg`) must
+		// not count as this function's deref.
+		if id.Text() != varName || id.StartLine() <= after || !funcLineRange(f, id.StartLine()) {
 			continue
 		}
 		p := id.Parent()
