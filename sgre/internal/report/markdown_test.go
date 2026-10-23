@@ -532,6 +532,51 @@ func TestWriteCandidates_UncheckedReturnCalleeDefinition(t *testing.T) {
 	}
 }
 
+// NC-02: an assumed-return VARIABLE-path candidate (`p = f(); p->field`, where
+// f is a fail-open in-scan callee) carries callee@file:line in its Hint and a
+// Verdict Fact promising "its body is embedded under ## Callee Definition".
+// The markdown writer must keep that promise for the assumed-return tier too —
+// previously only IsCallResultDeref and malloc-fail candidates embedded the
+// body, so the AI opened the candidate file, read the promise, and found no
+// such section.
+func TestWriteCandidates_NullDerefAssumedReturnCalleeDefinition(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "use.c")
+	if err := os.WriteFile(src, []byte("int use(void) {\n    T *p = get_obj();\n    return p->x;\n}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	callee := filepath.Join(dir, "obj.c")
+	calleeBody := "/* pad */\nT *get_obj(void) {\n    return g_holder.field;\n}\n"
+	if err := os.WriteFile(callee, []byte(calleeBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	o := &ScanOutput{ScanDir: dir, ScanID: "sc_test", RootDir: dir}
+	pkgs := []*planner.PlanResult{{
+		VulnerabilityType: "null-deref",
+		Candidates: []planner.EvidenceItem{
+			{
+				SuspicionLevel: "suspected",
+				NullOriginTier: "assumed-return",
+
+				CalleeDefFile:      "obj.c",
+				CalleeDefLine:      2,
+				CalleeDefEndLine:   4,
+				CalleeDefSignature: "T *get_obj(void)",
+				Target:             planner.TargetInfo{File: "use.c", Function: "use", Line: 3, Variable: "p"},
+			},
+		},
+	}}
+	if err := o.writeCandidates(pkgs); err != nil {
+		t.Fatal(err)
+	}
+
+	def := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "null-deref", "001_use_c_3.md")))
+	if !strings.Contains(def, "## Callee Definition") || !strings.Contains(def, "return g_holder.field;") {
+		t.Errorf("assumed-return variable-path candidate must embed the callee body (Hint/VerdictFact/SKILL all promise it):\n%s", def)
+	}
+}
+
 // A callee whose body cannot be read at report time (file moved/deleted since
 // the scan) must degrade to an explicit "body unavailable" note, never a silent
 // omission that leaves the classifier thinking the contract is settled.

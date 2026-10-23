@@ -329,11 +329,14 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 				}
 			}
 			// null-deref call-result dereferences (`f()->field`) and the variable
-			// path whose malloc-fail origin is an in-scan callee (`p = f();
+			// path whose nullable origin is an in-scan callee (`p = f();
 			// p->field`): the callee's body decides whether its return can be
-			// NULL — the null@malloc-fail verdict fact names it, and the embedded
-			// body settles it without a source read.
-			if pkg.VulnerabilityType == "null-deref" && (c.IsCallResultDeref || (c.NullOriginTier == "malloc-fail" && c.CalleeDefFile != "")) {
+			// NULL. Both the malloc-fail tier (proven) and the assumed-return
+			// tier (fail-open) carry a callee@file:line hint and a Verdict Fact
+			// promising "its body is embedded under ## Callee Definition" — the
+			// writer must keep that promise for both tiers, or the AI reads the
+			// promise and finds no such section.
+			if pkg.VulnerabilityType == "null-deref" && (c.IsCallResultDeref || ((c.NullOriginTier == "malloc-fail" || c.NullOriginTier == "assumed-return") && c.CalleeDefFile != "")) {
 				writeCalleeDefinition(&b, c, o, "the callee whose return is dereferenced. Judge whether its body can return NULL; no source read is needed.")
 			}
 			// double-free's conditional first-release helper (cond@<callee>): its
