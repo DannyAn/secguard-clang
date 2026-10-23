@@ -47,6 +47,7 @@ func (f *NullableSourceFilter) WithCFGCache(c *graph.CFGCache) *NullableSourceFi
 	f.cfgCache = c
 	return f
 }
+
 // SetCFGCache is the uniform-injection entrypoint used by Planner.Plan.
 func (f *NullableSourceFilter) SetCFGCache(c *graph.CFGCache) { f.cfgCache = c }
 

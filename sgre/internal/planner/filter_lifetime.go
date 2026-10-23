@@ -27,6 +27,7 @@ func (f *LifetimeFilter) WithCFGCache(c *graph.CFGCache) *LifetimeFilter {
 	f.cfgCache = c
 	return f
 }
+
 // SetCFGCache is the uniform-injection entrypoint used by Planner.Plan.
 func (f *LifetimeFilter) SetCFGCache(c *graph.CFGCache) { f.cfgCache = c }
 

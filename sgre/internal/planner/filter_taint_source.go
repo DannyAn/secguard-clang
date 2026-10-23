@@ -118,6 +118,7 @@ func (f *TaintSourceFilter) WithCFGCache(c *graph.CFGCache) *TaintSourceFilter {
 	f.cfgCache = c
 	return f
 }
+
 // SetCFGCache is the uniform-injection entrypoint used by Planner.Plan.
 func (f *TaintSourceFilter) SetCFGCache(c *graph.CFGCache) { f.cfgCache = c }
 
