@@ -93,3 +93,45 @@ func TestExtensionDocsHintTokensRegistered(t *testing.T) {
 			strings.Join(offenders, "\n"))
 	}
 }
+
+// TestNullTierTokensDocumentedInProtocolDocs is the reverse guard of
+// TestExtensionDocsHintTokensRegistered: every `null@<tier>` enum key the
+// registry carries must be named in at least one of the two protocol
+// documents the AI classifier reads first (agent-body.md,
+// command-instructions.md). The forward guard only stops a doc from naming an
+// UNREGISTERED token; it cannot see a registry token no protocol document
+// names. That is exactly how null@opaque-origin and null@assumed-return
+// shipped: registered, emitted, and documented in SKILL.md — but invisible to
+// the classifier reading only the top-level token lists.
+func TestNullTierTokensDocumentedInProtocolDocs(t *testing.T) {
+	repoRoot := filepath.Join("..", "..", "..")
+	var corpus strings.Builder
+	for _, rel := range []string{
+		filepath.Join("extension", "shared", "agent-body.md"),
+		filepath.Join("extension", "shared", "command-instructions.md"),
+	} {
+		data, err := os.ReadFile(filepath.Join(repoRoot, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		corpus.Write(data)
+		corpus.WriteString("\n")
+	}
+	text := corpus.String()
+
+	var missing []string
+	for _, key := range RegisteredHintKeys() {
+		if !strings.HasPrefix(key, "null@") {
+			continue
+		}
+		if !strings.Contains(text, "`"+key+"`") {
+			missing = append(missing, key)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		t.Fatalf("registry carries null@ tier tokens no protocol document names —\n"+
+			"document them in extension/shared/agent-body.md and command-instructions.md:\n%s",
+			strings.Join(missing, "\n"))
+	}
+}

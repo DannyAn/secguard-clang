@@ -247,9 +247,13 @@ budget your effort, not to pre-judge the answer:
   `_index.md` row only: its `Source` column already shows the exact statement at
   file:line and its `Hint` column carries the flow facts (`src@N` = null-source
   line, `certain-null`/`maybe-null` = null certainty for non-null-deref types,
-  `null@cfg-proof`/`null@malloc-fail`/`null@caller-arg`/`null@external-unknown`
+  `null@cfg-proof`/`null@malloc-fail`/`null@caller-arg`/`null@opaque-origin`/
+  `null@assumed-return`/`null@external-unknown`
   = null-deref nullable-origin tier (CFG-proved / proven-nullable call result /
-  unproven caller argument / fail-open external assumption), `tainted` = injection
+  unproven caller argument / opaque external contract — external caller argument or
+  externally-defined field value, fail-open assumption / fail-open callee-return
+  assumption — body embedded under `## Callee Definition` / fail-open external
+  assumption), `tainted` = injection
   source, `taint@none` = the pipeline found NO taint chain reaching the sink —
   this is NOT 'proven safe': a bare parameter/global or chained call may still be
   caller-controlled, so judge the argument's origin from the signature,
