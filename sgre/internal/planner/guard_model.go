@@ -229,12 +229,22 @@ func statementGuardVars(stmt parser.Node, macroGuards map[string]macros.GuardSum
 // helper call gives the clean "helper non-zero ⟹ param NULL" implication.
 func helperGuard(cond parser.Node, helperParams map[string][]int) (string, []parser.Node, bool) {
 	inner := cond
-	for inner.Kind() == "parenthesized_expression" || inner.Kind() == "cast_expression" {
-		kids := inner.NamedChildren()
-		if len(kids) == 0 {
-			return "", nil, false
+	for {
+		if inner.Kind() == "parenthesized_expression" || inner.Kind() == "cast_expression" {
+			kids := inner.NamedChildren()
+			if len(kids) == 0 {
+				return "", nil, false
+			}
+			inner = kids[0]
+			continue
 		}
-		inner = kids[0]
+		// A branch-hint wrapper (`unlikely(is_empty(p))`) is transparent: the
+		// wrapped helper call is what the guard is built from.
+		if unwrapped, ok := parser.UnwrapBranchHint(inner); ok {
+			inner = unwrapped
+			continue
+		}
+		break
 	}
 	// Bare call `f(p)`.
 	if inner.Kind() == "call_expression" {
@@ -275,12 +285,20 @@ func helperGuard(cond parser.Node, helperParams map[string][]int) (string, []par
 			continue
 		}
 		callNode := children[1-i]
-		for callNode.Kind() == "parenthesized_expression" || callNode.Kind() == "cast_expression" {
-			kids := callNode.NamedChildren()
-			if len(kids) == 0 {
-				return "", nil, false
+		for {
+			if callNode.Kind() == "parenthesized_expression" || callNode.Kind() == "cast_expression" {
+				kids := callNode.NamedChildren()
+				if len(kids) == 0 {
+					return "", nil, false
+				}
+				callNode = kids[0]
+				continue
 			}
-			callNode = kids[0]
+			if unwrapped, ok := parser.UnwrapBranchHint(callNode); ok {
+				callNode = unwrapped
+				continue
+			}
+			break
 		}
 		if callNode.Kind() != "call_expression" {
 			return "", nil, false

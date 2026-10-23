@@ -153,6 +153,46 @@ void d7_eqnull(void) {
 	}
 }
 
+// NP-03: a branch-hint-wrapped helper guard `if (unlikely(is_empty(p)))
+// return;` must protect the fall-through dereference — helperGuard only
+// unwrapped paren/cast, so the hint made the whole helper shape invisible.
+func TestNullDeref_GuardReview_BranchHintWrappedHelper(t *testing.T) {
+	src := guardReviewPreamble + `
+int is_empty(S *p) { return p == NULL; }
+
+void hint_helper(void) {
+    S *p = malloc(sizeof(S));
+    if (unlikely(is_empty(p))) {
+        return;
+    }
+    p->x = 1;
+}
+`
+	result := planNullDerefGuardReview(t, src)
+	if c := candidateForFunc(t, result, "hint_helper"); c != nil {
+		t.Errorf("hint_helper p->x must NOT be flagged (unlikely(is_empty(p)) return guards the fall-through), got var=%s line=%d", c.Target.Variable, c.Target.Line)
+	}
+}
+
+// NP-03 sibling: the comparison form `if (likely(check(p) == 0))` (hint
+// wrapping the whole == condition) must also resolve the helper.
+func TestNullDeref_GuardReview_BranchHintWrappedHelperComparison(t *testing.T) {
+	src := guardReviewPreamble + `
+int check(S *p) { if (p == NULL) return -1; return 0; }
+
+void hint_helper_cmp(void) {
+    S *p = malloc(sizeof(S));
+    if (likely(check(p) == 0)) {
+        p->x = 1;
+    }
+}
+`
+	result := planNullDerefGuardReview(t, src)
+	if c := candidateForFunc(t, result, "hint_helper_cmp"); c != nil {
+		t.Errorf("hint_helper_cmp p->x must NOT be flagged (likely(check(p) == 0) proves p non-null on the true branch), got var=%s line=%d", c.Target.Variable, c.Target.Line)
+	}
+}
+
 // NP-02: a switch whose condition is a (cast) pointer and whose `case 0` /
 // `case NULL` branch RETURNS is a null guard for the fall-through: after
 // `switch ((intptr_t)p) { case 0: return; default: break; }`, p is non-null.

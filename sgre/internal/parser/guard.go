@@ -131,7 +131,7 @@ func GuardedNonnullVars(cond Node) []string {
 		}
 		return nil
 	}
-	if inner, ok := unwrapBranchHint(cond); ok {
+	if inner, ok := UnwrapBranchHint(cond); ok {
 		return GuardedNonnullVars(inner)
 	}
 	if cond.Kind() == "binary_expression" {
@@ -174,7 +174,7 @@ func NullCheckedVars(cond Node) []string {
 		}
 		return nil
 	}
-	if inner, ok := unwrapBranchHint(cond); ok {
+	if inner, ok := UnwrapBranchHint(cond); ok {
 		return NullCheckedVars(inner)
 	}
 	if cond.Kind() == "binary_expression" {
@@ -358,7 +358,7 @@ func isCIdentPart(c byte) bool {
 // is conventionally double-negated (`__builtin_expect(!!(x), 0)`), so paired
 // `!!` negations are stripped too — an odd single `!` is left in place
 // (stripping it would invert the guard's direction).
-func unwrapBranchHint(cond Node) (Node, bool) {
+func UnwrapBranchHint(cond Node) (Node, bool) {
 	if cond.Kind() != "call_expression" {
 		return Node{}, false
 	}
