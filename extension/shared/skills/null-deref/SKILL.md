@@ -41,12 +41,17 @@ A null-deref candidate has:
 
 ### Classification Rules
 
+The confirmed/false-positive rows below apply ONLY to the two proven tiers
+(`null@cfg-proof`, `null@malloc-fail`). The four fail-open tiers are never
+settled by this table — the Nullable-Origin Tier table below rules them.
+
 | Condition | Classification |
 |-----------|---------------|
-| Nullable source + reachable + data flow + NO guard | **confirmed** |
-| Nullable source + reachable + data flow + guard BEFORE deref (scope covers) | **false-positive** |
-| Nullable source + reachable + data flow + guard AFTER deref (scope misses) | **confirmed** |
+| `null@cfg-proof` / `null@malloc-fail` + reachable + NO guard | **confirmed** |
+| `null@cfg-proof` / `null@malloc-fail` + guard BEFORE deref (scope covers) | **false-positive** |
+| `null@cfg-proof` / `null@malloc-fail` + guard AFTER deref (scope misses) | **confirmed** |
 | Nullable source + NOT reachable | **false-positive** (dead code) |
+| `null@caller-arg` / `null@opaque-origin` / `null@assumed-return` / `null@external-unknown` (any guard state) | **suspected** — a fail-open tier is NEVER confirmed from this table; judge it by the Nullable-Origin Tier table below |
 | External call return + no guard + deref | **dismissed** (external may never return NULL) |
 | `caller_null` (parameter) + no guard + deref | **suspected** — the caller contract is unproven; confirm only if a caller actually passes NULL/unproven value |
 | `caller_null` (parameter) + every caller proves non-null (`if (v == NULL) return;` dominates the call) | **false-positive** — the pipeline filters these before they surface |
