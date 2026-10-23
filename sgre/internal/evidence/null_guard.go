@@ -156,8 +156,10 @@ func (d *NullGuardDetector) detectGuards(ctx context.Context, f *db.Function, fi
 		// Only a condition whose TRUE branch establishes a variable non-null is a
 		// guard. `p != NULL` / `p` / `p && q` qualify; `p == NULL` / `!p` /
 		// `p || q` establish NULL (or nothing) on the taken branch and must not
-		// suppress a dereference inside it.
-		vars := guardedNonnullVars(*condition)
+		// suppress a dereference inside it. Share parser.GuardedNonnullVars
+		// with the planner's guard model — a local copy had drifted in both
+		// directions (accepting `p != q`, never unwrapping branch hints).
+		vars := parser.GuardedNonnullVars(*condition)
 		if len(vars) == 0 {
 			continue
 		}
@@ -195,79 +197,11 @@ func (d *NullGuardDetector) detectGuards(ctx context.Context, f *db.Function, fi
 	}
 }
 
-// guardedNonnullVars returns the variables a condition establishes as non-null
-// when it evaluates TRUE. It is the direction-aware, compound-aware core of
-// detectGuards: a `&&` conjunction guards every operand, a `||` disjunction
-// guards none (at most one operand need be non-null), `p != NULL` guards p, and
-// `p == NULL` / `!p` establish NULL rather than non-null and guard nothing.
-func guardedNonnullVars(cond parser.Node) []string {
-	switch cond.Kind() {
-	case "parenthesized_expression", "cast_expression":
-		for _, c := range cond.NamedChildren() {
-			if vars := guardedNonnullVars(c); len(vars) > 0 {
-				return vars
-			}
-		}
-		return nil
-	}
-	if cond.Kind() == "binary_expression" {
-		switch binaryOperator(cond) {
-		case "&&":
-			var vars []string
-			for _, child := range cond.NamedChildren() {
-				vars = append(vars, guardedNonnullVars(child)...)
-			}
-			return vars
-		case "||":
-			return nil
-		case "!=":
-			if v := nonNullSideVar(cond); v != "" {
-				return []string{v}
-			}
-		}
-		return nil
-	}
-	if v := truthCheckedLvalue(cond); v != "" {
-		return []string{v}
-	}
-	return nil
-}
-
-// nonNullSideVar returns the non-null operand of a `!=` comparison (`p != NULL`
-// → p, `NULL != p` → p, `(e = f()) != NULL` → e), or "".
-func nonNullSideVar(cond parser.Node) string {
-	for _, c := range cond.NamedChildren() {
-		if isNullOperand(c) {
-			continue
-		}
-		if v := guardVarName(strings.TrimSpace(c.Text())); v != "" && v != "NULL" && v != "0" {
-			return v
-		}
-	}
-	return ""
-}
-
-// truthCheckedLvalue returns the lvalue path a bare truth-check tests (`if (p)`,
-// `if (arr[i])`, `if (p->f)`), or "" for a negation (`!p` — establishes NULL),
-// a dereference (`*pp` — tests the pointee, not pp), or any non-lvalue.
-func truthCheckedLvalue(cond parser.Node) string {
-	inner := cond
-	for inner.Kind() == "parenthesized_expression" || inner.Kind() == "cast_expression" {
-		kids := inner.NamedChildren()
-		if len(kids) == 0 {
-			break
-		}
-		inner = kids[0]
-	}
-	if inner.Kind() == "unary_expression" {
-		return ""
-	}
-	expr := strings.TrimSpace(inner.Text())
-	if strings.HasPrefix(expr, "*") {
-		return ""
-	}
-	return lvaluePath(expr)
-}
+// guardedNonnullVars was deleted: guard detection shares
+// parser.GuardedNonnullVars with the planner's guard model. The former local
+// copy accepted `p != q` (both operands non-null) as a guard and never
+// unwrapped branch hints (`unlikely(p != NULL)`) — a two-way drift that is
+// impossible with a single shared implementation.
 
 func (d *NullGuardDetector) detectEarlyReturnGuards(ctx context.Context, f *db.Function, file *db.File, ifs, assigns []parser.Node, result *DetectResult) {
 	for _, ifNode := range ifs {
