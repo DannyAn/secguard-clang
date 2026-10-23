@@ -351,13 +351,16 @@ func isCIdentPart(c byte) bool {
 	return isCIdentStart(c) || (c >= '0' && c <= '9')
 }
 
-// unwrapBranchHint strips a branch-prediction hint wrapper from a condition:
-// `unlikely(x)` / `likely(x)` / `__builtin_expect(x, n)` (and `*_likely` /
-// `*_unlikely` vendor spellings) evaluate to exactly x, so the wrapped
-// condition carries the guard semantics. `__builtin_expect`'s first argument
-// is conventionally double-negated (`__builtin_expect(!!(x), 0)`), so paired
-// `!!` negations are stripped too — an odd single `!` is left in place
-// (stripping it would invert the guard's direction).
+// UnwrapBranchHint strips a branch-prediction hint wrapper from a condition:
+// `unlikely(x)` / `likely(x)` / `__builtin_expect(x, n)` evaluate to exactly
+// x, so the wrapped condition carries the guard semantics. Only these exact
+// spellings unwrap — a *_likely/*_unlikely suffix match would also unwrap a
+// user function (check_likely, my_unlikely_handler) and treat its argument
+// as the condition itself, manufacturing phantom guards. `__builtin_expect`'s
+// first argument is conventionally double-negated
+// (`__builtin_expect(!!(x), 0)`), so paired `!!` negations are stripped too —
+// an odd single `!` is left in place (stripping it would invert the guard's
+// direction).
 func UnwrapBranchHint(cond Node) (Node, bool) {
 	if cond.Kind() != "call_expression" {
 		return Node{}, false
@@ -370,10 +373,9 @@ func UnwrapBranchHint(cond Node) (Node, bool) {
 	switch name {
 	case "likely", "unlikely", "__builtin_expect":
 	default:
-		if !strings.HasSuffix(name, "_likely") && !strings.HasSuffix(name, "_unlikely") {
-			return Node{}, false
-		}
+		return Node{}, false
 	}
+
 	args := kids[1].NamedChildren()
 	if len(args) == 0 {
 		return Node{}, false

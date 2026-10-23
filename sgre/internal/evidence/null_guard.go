@@ -163,7 +163,7 @@ func (d *NullGuardDetector) detectGuards(ctx context.Context, f *db.Function, fi
 		if len(vars) == 0 {
 			continue
 		}
-		condPattern := classifyGuard(strings.TrimSpace(condition.Text()))
+		condPattern := classifyGuard(*condition)
 
 		// if uses "consequence", while/for use "body"; either delimits the
 		// guarded scope.
@@ -684,15 +684,31 @@ func guardVarName(operand string) string {
 	return strings.TrimSpace(t)
 }
 
-func classifyGuard(condText string) string {
-	condText = strings.TrimSpace(condText)
-	if strings.Contains(condText, "==") {
-		if strings.Contains(condText, "NULL") || strings.Contains(condText, "0") {
-			return "NULL_CHECK"
+// classifyGuard decides a guard's condition class structurally: a ==/!=
+// comparison against a null operand is NULL_CHECK; everything else is
+// TRUTH_CHECK. The previous substring match (`strings.Contains(condText,"0")`)
+// tagged `flags == 0xFFFF` / `ret == err0` as NULL_CHECK — DB evidence noise
+// that misleads any future consumer of the condition field.
+func classifyGuard(cond parser.Node) string {
+	inner := cond
+	for inner.Kind() == "parenthesized_expression" {
+		kids := inner.NamedChildren()
+		if len(kids) == 0 {
+			break
 		}
+		inner = kids[0]
 	}
-	if strings.Contains(condText, "!=") {
-		if strings.Contains(condText, "NULL") || strings.Contains(condText, "0") {
+	if unwrapped, ok := parser.UnwrapBranchHint(inner); ok {
+		inner = unwrapped
+	}
+	if inner.Kind() != "binary_expression" {
+		return "TRUTH_CHECK"
+	}
+	if op := parser.BinaryOperator(inner); op != "==" && op != "!=" {
+		return "TRUTH_CHECK"
+	}
+	for _, c := range inner.NamedChildren() {
+		if parser.IsNullOperand(c) {
 			return "NULL_CHECK"
 		}
 	}

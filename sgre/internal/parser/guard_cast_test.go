@@ -35,6 +35,55 @@ void f(T *p) {
 	}
 }
 
+// NE-08: a user-defined `check_likely(x)` is NOT a branch hint — the
+// *_likely/*_unlikely suffix match unwrapped ANY such call and treated its
+// argument as the condition itself, manufacturing a phantom guard for `p`.
+// Only the exact spellings (likely/unlikely/__builtin_expect) unwrap.
+func TestGuardedNonnullVarsNonHintCallNotUnwrapped(t *testing.T) {
+	src := `void f(void *p) {
+    if (check_likely(p)) {
+    }
+}
+`
+	tree, err := NewParser().Parse([]byte(src), "fixture.c")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var cond Node
+	for _, ifs := range tree.RootNode().FindAll("if_statement") {
+		if c := ifs.ChildByFieldName("condition"); c != nil {
+			cond = *c
+			break
+		}
+	}
+	if vars := GuardedNonnullVars(cond); len(vars) != 0 {
+		t.Errorf("GuardedNonnullVars(check_likely(p)) = %v, want [] (a user call is not a branch hint and not a guard)", vars)
+	}
+}
+
+// The exact hint spellings keep unwrapping (no regression).
+func TestGuardedNonnullVarsExactHintUnwrapped(t *testing.T) {
+	src := `void f(void *p) {
+    if (unlikely(p != NULL)) {
+    }
+}
+`
+	tree, err := NewParser().Parse([]byte(src), "fixture.c")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var cond Node
+	for _, ifs := range tree.RootNode().FindAll("if_statement") {
+		if c := ifs.ChildByFieldName("condition"); c != nil {
+			cond = *c
+			break
+		}
+	}
+	if vars := GuardedNonnullVars(cond); len(vars) != 1 || vars[0] != "p" {
+		t.Errorf("GuardedNonnullVars(unlikely(p != NULL)) = %v, want [p]", vars)
+	}
+}
+
 // The plain form must keep working (no regression from the structural unwrap).
 func TestGuardedNonnullVarsPlainGuard(t *testing.T) {
 	src := `void f(void *p) {
