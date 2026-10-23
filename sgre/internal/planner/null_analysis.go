@@ -224,7 +224,19 @@ func (m *nullModel) hasOpaqueSource(variable string) bool {
 		return false
 	}
 	for _, s := range m.sources {
-		if s.variable == variable && (s.origin == "opaque_param" || s.origin == "opaque_field_read") {
+		if s.variable != variable {
+			continue
+		}
+		switch s.origin {
+		case "opaque_param", "opaque_field_read":
+			return true
+		case "field_read", "deref_read":
+			// A self-referential field-read reassignment (`p = p->next`) and a
+			// dereference-read assignment (`r = *(T **)msg`) yield values the
+			// scan tree cannot see — open-world field / pointed-to content.
+			// They belong to the opaque-origin tier; without this they fell
+			// through to external-unknown, whose verdict fact claims an
+			// unproven external CALL that does not exist.
 			return true
 		}
 	}

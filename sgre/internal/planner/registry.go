@@ -393,7 +393,7 @@ func buildNullDerefVerdictFacts(c Candidate) []VerdictFact {
 	case "opaque-origin":
 		facts = append(facts, VerdictFact{
 			Token:  "null@opaque-origin",
-			Detail: fmt.Sprintf("the null source of `%s`%s is a contract the scan tree cannot see (an external caller's argument, or a field value of an externally-defined type) — the pipeline only ASSUMES it may be NULL; judge whether that external contract can actually yield NULL", c.VariableName, derivedSuffix(c)),
+			Detail: fmt.Sprintf("the null source of `%s`%s is a value the scan tree cannot see (an external caller's argument, a field value whose definition is out of tree, or an open-world value read through an opaque field/dereference) — the pipeline only ASSUMES it may be NULL; judge whether that source can actually yield NULL", c.VariableName, derivedSuffix(c)),
 		})
 	case "external-unknown":
 		facts = append(facts, VerdictFact{

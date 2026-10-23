@@ -375,3 +375,47 @@ int derived_external(void)
 		t.Fatalf("derived_external de_q: derived_from = %q, want de_p", ext.DerivedFrom)
 	}
 }
+
+// The field_read / deref_read origins introduced for `p = p->next` (ND-02) and
+// `r = *(T **)msg` (NP-04) are values the scan tree cannot see — a field value /
+// a pointed-to value whose content is open-world — so they belong to the
+// opaque-origin tier, NOT external-unknown. Falling through to external-unknown
+// made the verdict fact claim "the only null source is an unproven external
+// CALL", which is false and misdirects the classifier.
+func TestNullDerefOriginTiers_FieldReadAndDerefRead(t *testing.T) {
+	src := `typedef struct node { int x; int y; struct node *next; } node_t;
+extern node_t *get_node(void);
+
+void traverse(void) {
+    node_t *p = get_node();
+    while (p != NULL) {
+        p = p->next;
+        p->y = 2;
+    }
+}
+
+void deref_read_case(void *msg) {
+    int *r = *(int **)msg;
+    *r = 1;
+}
+`
+	result := planNullDerefGuardReview(t, src)
+	byFn := map[string]EvidenceItem{}
+	for _, c := range result.Candidates {
+		byFn[c.Target.Function] = c
+	}
+	if c, ok := byFn["traverse"]; ok {
+		if c.NullOriginTier != "opaque-origin" {
+			t.Errorf("traverse (p = p->next, field_read source): tier = %q, want opaque-origin", c.NullOriginTier)
+		}
+	} else {
+		t.Errorf("traverse: expected a candidate (post-advance p->y), got none")
+	}
+	if c, ok := byFn["deref_read_case"]; ok {
+		if c.NullOriginTier != "opaque-origin" {
+			t.Errorf("deref_read_case (r = *(int**)msg, deref_read source): tier = %q, want opaque-origin", c.NullOriginTier)
+		}
+	} else {
+		t.Errorf("deref_read_case: expected a candidate, got none")
+	}
+}
