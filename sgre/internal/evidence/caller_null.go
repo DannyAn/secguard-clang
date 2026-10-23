@@ -622,16 +622,21 @@ func callerPositiveBranchGuards(f *db.Function, ifs, assigns []parser.Node, varN
 	return false
 }
 
-// callerShortCircuitGuards covers `v != NULL && f(v)` and nested conjunctions:
-// the right operand of && evaluates only when the left is TRUE, so a call
-// inside the right operand of an ancestor && whose left establishes varName
-// non-null is guarded. An || ancestor proves nothing about its right side
-// (that side runs when the left is FALSE) and is skipped; the call must be
-// byte-contained in the right operand so `a && b || f(v)` (where f runs with
-// a possibly-false left) does not match the && layer.
+// callerShortCircuitGuards covers `v != NULL && f(v)` and `v == NULL || f(v)`
+// (plus nested forms): the right operand of && evaluates only when the left is
+// TRUE, and the right operand of || evaluates only when the left is FALSE — so
+// a call inside the right operand of an ancestor && / || whose left
+// establishes varName non-null (in the TRUE direction for &&, the FALSE
+// direction for ||) is guarded. The call must be byte-contained in the right
+// operand so `a && b || f(v)` (where f runs with a possibly-false left) does
+// not match the && layer.
 func callerShortCircuitGuards(varName string, call parser.Node) bool {
 	for node := call.Parent(); node != nil; node = node.Parent() {
-		if node.Kind() != "binary_expression" || parser.BinaryOperator(*node) != "&&" {
+		if node.Kind() != "binary_expression" {
+			continue
+		}
+		op := parser.BinaryOperator(*node)
+		if op != "&&" && op != "||" {
 			continue
 		}
 		kids := node.NamedChildren()
@@ -641,7 +646,16 @@ func callerShortCircuitGuards(varName string, call parser.Node) bool {
 		if call.StartByte() < kids[1].StartByte() || call.EndByte() > kids[1].EndByte() {
 			continue
 		}
-		for _, gv := range parser.GuardedNonnullVars(kids[0]) {
+		var guarded []string
+		if op == "&&" {
+			guarded = parser.GuardedNonnullVars(kids[0])
+		} else {
+			// `v == NULL || f(v)`: the right side runs when the left is FALSE,
+			// and NullCheckedVars gives the variables the left's FALSE
+			// direction establishes non-null.
+			guarded = parser.NullCheckedVars(kids[0])
+		}
+		for _, gv := range guarded {
 			if gv == varName {
 				return true
 			}
