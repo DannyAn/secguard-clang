@@ -143,6 +143,17 @@ func derefOperandVar(n parser.Node) string {
 			}
 		}
 		return firstIdentifier(n)
+	case "binary_expression":
+		// Pointer arithmetic (`*(p+1)`, `*(p-i)`, `*((T*)p+off)`): the
+		// dereferenced variable is the base pointer operand, not the whole
+		// arithmetic text. Recurse into both operands — the cast-wrapped base
+		// (`(T*)p`) resolves through the cast_expression case below, and the
+		// plain base (`p`) through the identifier case.
+		for _, child := range n.NamedChildren() {
+			if v := derefOperandVar(child); v != "" {
+				return v
+			}
+		}
 	case "parenthesized_expression":
 		for _, child := range n.NamedChildren() {
 			if v := derefOperandVar(child); v != "" {
