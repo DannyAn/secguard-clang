@@ -196,6 +196,16 @@ maintains the directory.
   ONCE from the first row, then reuse that reasoning for the rest with the group
   key in each reason (`group:<fn>:<tier>: <why>`). Do not re-derive the same
   contract per row — that is the dominant null-deref triage cost.
+- **Cross-function pattern reuse (same tier, same file, same shape).** When
+  several functions in the SAME file expose the identical contract shape — a
+  callback quartet registered into one `ops` struct (`.hash_func =` /
+  `.key_cmp =` / `.event_merge =` …), an iterator family over one container,
+  sibling handlers taking the same framework parameter — settle the pattern
+  from ONE representative function's `## Code Context`, then cite it across
+  the siblings (`pattern:<file>:<tier>: <why, judged at <fn>>` in each row's
+  reason). A sibling whose shape DIVERGES (extra guard, different registration,
+  tree-visible caller) must be judged on its own — pattern reuse is a bulk
+  path for genuinely identical contracts, never a shortcut past an outlier.
 - **Only report findings for pipeline-supported vulnerability types** — i.e. the types returned by `secguard types`. Do NOT persist findings for CWE types outside the pipeline's coverage; note them as observations in your report instead.
 
 ### Severity selection
@@ -436,6 +446,14 @@ but the scan ALSO machine-confirmed a set of findings the pipeline "proved"
 (they are NOT in `_index.md`). These are the highest false-positive risk — a
 getter misread as an allocation, a scalar status code misread as a pointer —
 so you MUST re-review them with the SAME skill before you finish the type:
+
+**RANGE-split sibling rule (concurrent dedup):** if your dispatch prompt says your
+type was split into sibling RANGE subagents AND you are NOT the re-review owner,
+SKIP this entire section — the owner sibling re-reviews the type's auto-confirmed
+set once, and a concurrent duplicate read of the same `--list-auto-confirmed`
+entries is pure wasted turns (the idempotent list only filters entries that
+already have a verdict, which the racing siblings have not written yet). If you
+ARE the owner (or your type has no siblings), proceed as follows.
 
 **Re-review-only dispatch (0 candidates):** if your type has 0 candidates (no
 `candidates/<type>/_index.md`, or it exists but is empty), you were dispatched for
