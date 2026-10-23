@@ -115,6 +115,49 @@ P29-01），`go test ./...` + nosqlite 全绿。
   都返回真，`if (ret < 5) return;` 这类正值比较会被误判为"分配失败"而吞掉成功短输出
   分支上的真实泄漏。收紧为字面量 `<= 0` 才算失败守卫（`< 0` 与负边界），正值比较不再豁免。
 
+### null-deref 守卫形态误判修复（生产 MAF 扫描报告，候选重发）
+
+生产环境 MAF 全量扫描（122 文件 / 977 函数）反馈报告经逐条实证后落地两项修复
+（报告的 boundary tier 一刀切降级建议经三重语义冲突验证后否决，未采纳）：
+
+- **ternary 内联守卫识别（auto-confirmed 误报修复）**：`return (profile != NULL ?
+  profile->field : default)` 形态被机器判定为 `null@malloc-fail + confirmed` 并
+  auto-confirmed——三元表达式位于单条直线 CFG 节点内，边 kill 守卫模型不可见。
+  新增 `buildTernaryGuardMap`：从 AST 精确记录守卫分支（consequence /
+  alternative）内 base 与行号均精确的解引用点，`nullable_source` 收敛阶段消费。
+  AST 级分支判定保证同行 `p == NULL ? p->a : 0`（NULL 路径解引用在 consequence）
+  仍可报出——行区间近似会误杀该真缺陷形态。
+- **branch-hint 宏包装条件解包（auto-confirmed 误报修复）**：
+  `if (unlikely(slot == NULL)) return;` 形态同样产生 confirmed 误报——
+  call_expression 条件对守卫解析不透明。`parser` 层 `GuardedNonnullVars` /
+  `NullCheckedVars` 入口统一解包 `likely` / `unlikely` / `__builtin_expect`
+  （含 `*_likely` / `*_unlikely` 厂商变体与成对 `!!` 否定），全部 20+ 消费点
+  （guard_model 边 kill、短路弱守卫、caller_null、null_guard、unchecked_return、
+  contract_gap、memory_leak）一次受益。
+- **验证**：A/B 基线对照——修复前 2 个 CWE-476 auto-confirmed 误报（ternary +
+  unlikely 各一），修复后 0；benchmark 83/83 候选与 16/16 null-deref
+  auto-confirmed 完全一致（零回归）；全量测试与 nosqlite 子集绿；7 个红绿对照
+  用例转正回归测试（`zz_null_deref_guard_forms_test.go`），boundary fail-open
+  契约另固化 characterization 测试（`zz_null_deref_boundary_char_test.go`）。
+
+### AI 研判编排优化（并发复核去重 + 跨函数模式复用）
+
+同报告落地的指令层两项（extension/shared，一致性守卫通过）：
+
+- **RANGE-split 类型 auto-confirmed 复核 owner 去重**：单类型按候选区间拆分为多个
+  并发子代理时，`--list-auto-confirmed` 对每个 sibling 返回同一批未复核条目（幂等
+  过滤只剔除已有 verdict 的条目，并发竞态下 sibling 尚未写入），201 候选 4 分片
+  场景 7 条 auto-confirmed 被复核 28 次。编排指令改为指定首个分片为该类型复核
+  owner、其余 sibling 跳过该节；audit 前 `count: 0` 全局校验保持兜底（owner 分片
+  失败时补派 re-review-only 子代理）。
+- **跨函数同模式研判复用（Group verdict 扩展）**：同文件同 tier 同形态的候选组
+  （回调四件套注册进同一 ops 结构、迭代器族、同框架参数的 sibling handler）从
+  一个代表函数的 Code Context 一次研判，跨 sibling 以 `pattern:<file>:<tier>`
+  引用；形态分叉的 sibling 必须单独研判，模式复用不得越过异质项。
+- **预期效果**：MAF 场景 null-deref 2 个 auto-confirmed 误报归零（对应复核负担
+  消除）+ 同质合约研判成本经模式复用显著下降；201 候选量级压缩需按"根因审查
+  单元"方向另行立项，本版本不改变 boundary fail-open 候选协议。
+
 ## [0.9.8] - 2026-10-21
 
 ### 两项"待拍板"的结论（已按方案落地，不再等决策）
