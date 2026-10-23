@@ -14,6 +14,12 @@ type VulnTypeSpec struct {
 	EvidenceType     string
 	DefaultSuspicion string
 	FilterChain      string
+	// FilterFactories declares this type's filter chain next to the rest of
+	// its metadata. When empty, Planner falls back to the legacy string-keyed
+	// switch via FilterChain; RegisterVulnType populates it from FilterChain
+	// if the caller did not set it explicitly, so new types can go declarative
+	// while existing types migrate one at a time.
+	FilterFactories []FilterFactory
 	// ConvergeByVariable collapses multiple candidates for the same
 	// (function, variable) into one. This is correct for variable-centric
 	// types where a single nullable/tainted variable yields one DEREFERENCE
@@ -77,6 +83,13 @@ type VulnTypeSpec struct {
 var vulnTypeRegistry = map[string]*VulnTypeSpec{}
 
 func RegisterVulnType(spec *VulnTypeSpec) {
+	// Populate FilterFactories from FilterChain when the caller did not set it
+	// explicitly. This is the migration bridge: existing types keep only the
+	// string, new types can declare factories directly; a future Phase removes
+	// the string entirely once every type is migrated.
+	if len(spec.FilterFactories) == 0 {
+		spec.FilterFactories = filterFactoriesFor(spec.FilterChain)
+	}
 	vulnTypeRegistry[spec.Name] = spec
 }
 
@@ -1488,12 +1501,12 @@ func init() {
 	})
 
 	RegisterVulnType(&VulnTypeSpec{
-		Name:             "unchecked-return",
-		CWE:              "CWE-252",
-		SeedEventType:    "UNCHECKED_RETURN",
-		EvidenceType:     "UNCHECKED_RETURN",
-		DefaultSuspicion: "suspected",
-		FilterChain:      "unchecked-return",
+		Name:              "unchecked-return",
+		CWE:               "CWE-252",
+		SeedEventType:     "UNCHECKED_RETURN",
+		EvidenceType:      "UNCHECKED_RETURN",
+		DefaultSuspicion:  "suspected",
+		FilterChain:       "unchecked-return",
 		BuildVerdictFacts: buildUncheckedReturnVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{

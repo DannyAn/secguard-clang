@@ -209,7 +209,7 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 		SeedRoutedByCategory: routedAway,
 	}
 
-	filters, err := p.getFilters(spec.FilterChain)
+	filters, err := p.buildFilters(spec)
 	if err != nil {
 		return nil, err
 	}
