@@ -554,6 +554,35 @@ func TestNullDeref_OutputParam(t *testing.T) {
 	}
 }
 
+// TestNullDeref_InterproceduralCastAndFieldArg locks in NE-09: a caller
+// passing a cast-wrapped (`send_msg((msg_t *)m)`) or field-read
+// (`send_msg(h->slot)`) nullable variable into an unguarded callee must still
+// synthesize the caller-side DEREFERENCE — the arg matcher only accepted a
+// bare identifier and skipped both shapes (a false negative).
+func TestNullDeref_InterproceduralCastAndFieldArg(t *testing.T) {
+	store, p := setupDetector(t, "tc121_interproc_cast_arg.c")
+	logger := log.New(io.Discard, log.LevelWarn)
+	NewNullSourceDetector(store, p, logger).Detect(context.Background())
+	NewDereferenceDetector(store, p, logger).Detect(context.Background())
+	NewInterproceduralDetector(store, p, logger).Detect(context.Background())
+
+	ctx := context.Background()
+	pl := planner.NewPlanner(store, p, logger)
+	res, err := pl.Plan(ctx, "null-deref")
+	if err != nil {
+		t.Fatalf("plan null-deref: %v", err)
+	}
+	suspicion := map[string]string{}
+	for _, c := range res.Candidates {
+		suspicion[c.Target.Function] = c.SuspicionLevel
+	}
+	for _, fn := range []string{"caller_cast", "caller_field"} {
+		if _, present := suspicion[fn]; !present {
+			t.Errorf("%s should STAY flagged (cast/field arg into an unguarded callee; NE-09 regression); candidates: %v", fn, suspicion)
+		}
+	}
+}
+
 // TestNullDeref_CrossFileOutputParam locks in the cross-file output-param rule:
 // `n = NULL; crossfile_get(&n); n->f` must not be a null-deref, because the
 // callee defined in another file writes `*out`. The kill is syntactic at the

@@ -11,6 +11,22 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
+// InterproceduralDetector synthesizes a caller-side DEREFERENCE when a caller
+// passes a NULL_VALUE variable into a callee that dereferences the parameter
+// WITHOUT a null guard. It covers exactly one gap caller_null does not: the
+// caller's argument is a LOCAL nullable variable (a malloc result, a field
+// read), not a forwarded parameter or a literal NULL — caller_null seeds
+// nothing for those by design.
+//
+// It consumes the NULL_GUARD event stream (loadGuardScopes) to decide whether
+// the callee guards its parameter. That stream's line-range scope semantics
+// predate the planner's CFG guard model; they serve a different, coarser
+// purpose here (a per-parameter "any guard in scope?" check for caller
+// synthesis, not a path-sensitive kill). Do not read the two as one guard
+// engine: the planner's guardModel is the authoritative guard semantics for
+// candidate suppression inside a function body; NULL_GUARD + this detector
+// only answer "should the CALLER also get a deref candidate for this call
+// site?".
 type InterproceduralDetector struct {
 	store  db.Store
 	parser *parser.Parser
@@ -150,11 +166,36 @@ func (d *InterproceduralDetector) Detect(ctx context.Context) (DetectResult, err
 				}
 				for argIdx, arg := range args {
 					paramName, isUnguarded := unguarded[argIdx]
-					if !isUnguarded || arg.Kind() != "identifier" {
+					if !isUnguarded {
 						continue
 					}
-					argVarName := arg.Text()
-					if !nullVars[caller.ID][argVarName] {
+					// Align the argument matcher with caller_null's classifyArg: a
+					// cast/paren wrapper around the value is transparent, and a
+					// field/subscript read names its own source key — a bare
+					// identifier-only matcher skipped `callee((T*)p)` and
+					// `callee(p->f)` and dropped the caller's candidate (NE-09).
+					argVarName := ""
+					inner := arg
+					for inner.Kind() == "cast_expression" || inner.Kind() == "parenthesized_expression" {
+						kids := inner.NamedChildren()
+						var next parser.Node
+						for _, k := range kids {
+							if k.Kind() == "type_descriptor" {
+								continue
+							}
+							next = k
+							break
+						}
+						if next.Kind() == "" {
+							break
+						}
+						inner = next
+					}
+					switch inner.Kind() {
+					case "identifier", "field_expression", "subscript_expression":
+						argVarName = inner.Text()
+					}
+					if argVarName == "" || !nullVars[caller.ID][argVarName] {
 						continue
 					}
 
