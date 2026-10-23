@@ -233,3 +233,64 @@ int use_dup_b(void) {
 		}
 	}
 }
+
+// NP-01: a caller_null source (a caller passing a literal NULL to a
+// parameter) seeds at the FUNCTION DEFINITION line (fn.StartLine), but the
+// fixpoint analyzer in computeRetNullable never populated entrySeeds — it
+// passed the sources through nullGenByLine, which buckets by line, and the
+// body's first statement sits at a different line, so the source never
+// landed on any CFG node. A callee that derives a local from a caller-null
+// parameter and returns it (`T *q = p; return q;`) was misjudged notNull,
+// silently dropping every call-site dereference.
+func TestRetNullableDerivedLocalReturnFromCallerNullParam(t *testing.T) {
+	fixture := `#include <stdlib.h>
+typedef struct { int x; } T;
+
+T *callee(T *p) {
+    T *q = p;
+    return q;
+}
+
+void caller(void) {
+    T *r = callee(NULL);
+    r->x = 1;
+}
+`
+	result := runOpaqueNullPlan(t, map[string]string{"np01.c": fixture})
+	c, ok := candidateByFunction(result, "caller")
+	if !ok {
+		t.Errorf("caller: expected a kept candidate (callee returns a local derived from caller-null param), got candidates: %v (dropped=%v)", candidateNames(result), droppedByFunction(result, "caller"))
+		return
+	}
+	if c.SuspicionLevel == "" {
+		t.Errorf("caller: expected a non-empty SuspicionLevel, got candidate %+v", c)
+	}
+}
+
+// NP-01 sibling shape: a caller_null source seeded via a non-literal NULL
+// witness (unproven caller) must still reach the fixpoint — the callee is
+// nullable (assumed tier), not silently notNull.
+func TestRetNullableDerivedLocalReturnFromUnprovenCallerParam(t *testing.T) {
+	fixture := `#include <stdlib.h>
+typedef struct { int x; } T;
+
+T *callee(T *p) {
+    T *q = p;
+    return q;
+}
+
+void intermediate(T *w) {
+    T *r = callee(w);
+    r->x = 1;
+}
+`
+	result := runOpaqueNullPlan(t, map[string]string{"np01b.c": fixture})
+	c, ok := candidateByFunction(result, "intermediate")
+	if !ok {
+		t.Errorf("intermediate: expected a kept candidate (callee returns a local derived from caller param), got candidates: %v (dropped=%v)", candidateNames(result), droppedByFunction(result, "intermediate"))
+		return
+	}
+	if c.SuspicionLevel == "" {
+		t.Errorf("intermediate: expected a non-empty SuspicionLevel, got candidate %+v", c)
+	}
+}

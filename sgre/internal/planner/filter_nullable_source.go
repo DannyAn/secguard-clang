@@ -1164,7 +1164,38 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 			}
 			srcs := append([]nullSource(nil), info.srcs...)
 			srcs = append(srcs, callResultNullSources(info.body, retNullable)...)
-			flow := analyzer.analyzeFlow(ctx, info.fn, info.body, info.root, nullGenByLine(srcs), nil, true, false)
+			// Split sources the same way buildFlowResults does: caller_null /
+			// opaque_param / birthField sources seed at the CFG entry (a
+			// parameter has no body statement to hang a line-keyed gen on),
+			// while intra-procedural sources stay line-keyed. Without this the
+			// fixpoint's analyzeFlow sees an entrySeeds=nil analyzer, and a
+			// caller-null source bucketed at fn.StartLine never lands on any
+			// CFG node — a callee returning a local derived from a caller-null
+			// parameter (`T *q = p; return q;`) is misjudged notNull, silently
+			// dropping every call-site dereference.
+			var entrySeeds map[string]bool
+			var definiteEntrySeeds map[string]bool
+			var lineSources []nullSource
+			for _, s := range srcs {
+				birthField := s.origin == "opaque_field_read" && s.line <= info.fn.StartLine
+				if s.origin == "caller_null" || s.origin == "opaque_param" || birthField {
+					if entrySeeds == nil {
+						entrySeeds = map[string]bool{}
+					}
+					entrySeeds[s.variable] = true
+					if s.definite {
+						if definiteEntrySeeds == nil {
+							definiteEntrySeeds = map[string]bool{}
+						}
+						definiteEntrySeeds[s.variable] = true
+					}
+				} else {
+					lineSources = append(lineSources, s)
+				}
+			}
+			analyzer.entrySeeds = entrySeeds
+			analyzer.definiteEntrySeeds = definiteEntrySeeds
+			flow := analyzer.analyzeFlow(ctx, info.fn, info.body, info.root, nullGenByLine(lineSources), nil, true, false)
 			if ns := returnsNullability(info.body, flow, info.params, retNullable, definedNames, info.arrs, srcs, strings.TrimSpace(info.fn.ReturnType)); ns != retNotNull {
 				retNullable[info.fn.Name] = ns
 				defAssumed[info.fn.ID] = ns == retNullAssumed

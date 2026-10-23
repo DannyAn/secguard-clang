@@ -328,6 +328,7 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 			if i >= len(info.names) || info.names[i] == "..." {
 				continue
 			}
+
 			// A PURE FORWARDER (the parameter is only ever passed on as a call
 			// argument, never dereferenced nor stored locally in this body)
 			// does not seed: the chain continues in the callee, which has its
@@ -403,6 +404,7 @@ func (d *CallerNullDetector) buildCalleeIndex(ctx context.Context) map[string]ca
 		}
 		for _, fnDef := range tree.RootNode().FindAll("function_definition") {
 			name, names, types := functionParamNames(fnDef)
+
 			if name == "" || dup[name] {
 				continue
 			}
@@ -420,10 +422,29 @@ func functionParamNames(fnDef parser.Node) (string, []string, []string) {
 	var name string
 	var names, types []string
 	for _, child := range fnDef.NamedChildren() {
-		if child.Kind() != "function_declarator" {
+		// Unwrap pointer_declarator layers: a function returning a pointer
+		// (`T *callee(T *p)`) wraps its function_declarator in one or more
+		// pointer_declarator nodes. Without this the callee is invisible to
+		// the caller_null index and its parameters never seed — a systematic
+		// blind spot for every pointer-returning function in the tree.
+		decl := child
+		for decl.Kind() == "pointer_declarator" {
+			var next parser.Node
+			for _, c := range decl.NamedChildren() {
+				if k := c.Kind(); k == "function_declarator" || k == "pointer_declarator" {
+					next = c
+					break
+				}
+			}
+			if next.Kind() == "" {
+				break
+			}
+			decl = next
+		}
+		if decl.Kind() != "function_declarator" {
 			continue
 		}
-		for _, c := range child.NamedChildren() {
+		for _, c := range decl.NamedChildren() {
 			switch c.Kind() {
 			case "identifier":
 				name = c.Text()
