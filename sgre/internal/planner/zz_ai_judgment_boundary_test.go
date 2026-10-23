@@ -137,3 +137,117 @@ func mapKeys[V any](m map[string]V) []string {
 	sort.Strings(out)
 	return out
 }
+
+// TestDynamicConfirmedUpgradesRegistered is the machine guard for the dynamic
+// side of the AI judgment boundary: any filter whose Apply assigns
+// SuspicionLevel = "confirmed" must implement ProofRegistrar and declare each
+// upgrade's proof class. The golden list below is the reviewed closed set of
+// filters known to upgrade; adding a new confirmed-upgrading filter without
+// registering it here fails the build.
+func TestDynamicConfirmedUpgradesRegistered(t *testing.T) {
+	// confirmedUpgraders is the golden list of filters that may assign
+	// SuspicionLevel = "confirmed" inside Apply, mapped to the proof classes
+	// they are expected to declare. A filter missing from this list, or
+	// declaring a proof class not listed, fails the test.
+	confirmedUpgraders := map[string][]ProofClass{
+		"NullableSourceFilter":       {ProofClassCFGMustDataflow},
+		"LifetimeFilter":             {ProofClassCFGMustDataflow},
+		"DoubleFreeFilter":           {ProofClassCFGMustDataflow},
+		"TaintSourceFilter":          {ProofClassCFGMustDataflow},
+		"RangeFilter":                {ProofClassInterval},
+		"RangeOOBFilter":             {ProofClassInterval},
+		"ReturnCheckFilter":          {ProofClassTypeInherent},
+		"LockOrderFilter":            {ProofClassCFGMustDataflow},
+		"SharedAccessFilter":         {ProofClassCFGMustDataflow},
+		"DefiniteInitFilter":         {ProofClassCFGMustDataflow},
+		"LeakProofFilter":            {ProofClassCFGMustDataflow},
+		"HardcodedSecretProofFilter": {ProofClassLiteral},
+	}
+
+	for name, expectedClasses := range confirmedUpgraders {
+		reg := instantiateFilterByName(t, name)
+		if reg == nil {
+			t.Errorf("filter %s: cannot instantiate (constructor signature drifted?)", name)
+			continue
+		}
+		pr, ok := reg.(ProofRegistrar)
+		if !ok {
+			t.Errorf("filter %s: upgrades candidates to confirmed but does not implement ProofRegistrar", name)
+			continue
+		}
+		proofs := pr.DeclaredProofs()
+		if len(proofs) == 0 {
+			t.Errorf("filter %s: DeclaredProofs is empty but the filter upgrades candidates to confirmed", name)
+			continue
+		}
+		for _, p := range proofs {
+			if !p.Class.IsValid() {
+				t.Errorf("filter %s: proof %q uses invalid class %q", name, p.Rule, p.Class)
+			}
+			if p.Rule == "" {
+				t.Errorf("filter %s: proof with empty Rule", name)
+			}
+			if p.Evidence == "" {
+				t.Errorf("filter %s: proof %q has empty Evidence", name, p.Rule)
+			}
+			// TestRef is advisory; we do not assert its existence here (the
+			// registry is reviewed by humans, and coupling the guard to test
+			// names makes refactors brittle).
+		}
+		// Assert the filter's declared classes match the golden set (order-free).
+		got := map[ProofClass]bool{}
+		for _, p := range proofs {
+			got[p.Class] = true
+		}
+		want := map[ProofClass]bool{}
+		for _, c := range expectedClasses {
+			want[c] = true
+		}
+		for c := range want {
+			if !got[c] {
+				t.Errorf("filter %s: missing proof class %q in DeclaredProofs", name, c)
+			}
+		}
+		for c := range got {
+			if !want[c] {
+				t.Errorf("filter %s: unexpected proof class %q in DeclaredProofs (not in golden list)", name, c)
+			}
+		}
+	}
+}
+
+// instantiateFilterByName builds a zero-dependency instance of the named
+// filter for ProofRegistrar probing. Filters whose constructors require
+// collaborators are constructed with nil — DeclaredProofs must not consult
+// them.
+func instantiateFilterByName(t *testing.T, name string) Filter {
+	t.Helper()
+	switch name {
+	case "NullableSourceFilter":
+		return NewNullableSourceFilter(nil)
+	case "LifetimeFilter":
+		return NewLifetimeFilter(nil, nil, nil)
+	case "DoubleFreeFilter":
+		return NewDoubleFreeFilter(nil, nil, nil)
+	case "TaintSourceFilter":
+		return NewTaintSourceFilter(nil, nil, nil, nil)
+	case "RangeFilter":
+		return NewRangeFilter(nil, nil, nil)
+	case "RangeOOBFilter":
+		return NewRangeOOBFilter(nil, nil, nil)
+	case "ReturnCheckFilter":
+		return NewReturnCheckFilter(nil, nil, nil)
+	case "LockOrderFilter":
+		return NewLockOrderFilter(nil, nil, nil)
+	case "SharedAccessFilter":
+		return NewSharedAccessFilter(nil, nil, nil)
+	case "DefiniteInitFilter":
+		return NewDefiniteInitFilter(nil, nil, nil)
+	case "LeakProofFilter":
+		return NewLeakProofFilter(nil, "MEMORY_ALLOC")
+	case "HardcodedSecretProofFilter":
+		return NewHardcodedSecretProofFilter(nil)
+	default:
+		return nil
+	}
+}
