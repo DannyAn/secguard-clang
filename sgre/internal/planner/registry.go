@@ -1240,6 +1240,7 @@ func init() {
 		ConvergeKey: func(c Candidate) string {
 			return fmt.Sprintf("integer-overflow:%d:%s:%d", c.FileID, c.FunctionName, c.Line)
 		},
+		BuildVerdictFacts: buildIntegerOverflowVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			detail := fmt.Sprintf("arithmetic overflow in size calculation in %s at line %d", c.FunctionName, c.Line)
 			if c.Category == "unsigned_sub_underflow" {
@@ -1493,6 +1494,7 @@ func init() {
 		EvidenceType:     "UNCHECKED_RETURN",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "unchecked-return",
+		BuildVerdictFacts: buildUncheckedReturnVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{
 				{Type: "unchecked_return", Role: "sink", Detail: fmt.Sprintf("return value of %s is not checked in function %s at line %d", c.APIName, c.FunctionName, c.Line)},
@@ -1802,4 +1804,85 @@ func victimSuffix(victims string) string {
 		return ""
 	}
 	return " (stored values: " + victims + ")"
+}
+
+// buildIntegerOverflowVerdictFacts renders the decisive facts for an
+// integer-overflow candidate: the operand origins (param / local / global /
+// const), whether they are caller-influenced, and the sink shape. The AI
+// classifies from these + the whole-function Code Context without opening
+// the raw source.
+func buildIntegerOverflowVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 5)
+	if c.Category != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "cat@" + c.Category,
+			Detail: "detector category: " + c.Category + " (definite_overflow is literal-proved; the rest need interval/context)",
+		})
+	}
+	if c.LHSKind != "" {
+		influenced := "no"
+		if c.SubLHSInfluenced {
+			influenced = "yes (caller/attacker-controlled)"
+		}
+		facts = append(facts, VerdictFact{
+			Token:  "lhs@" + c.LHSKind,
+			Detail: fmt.Sprintf("left operand origin = %s, caller-influenced = %s", c.LHSKind, influenced),
+		})
+	}
+	if c.RHSKind != "" {
+		influenced := "no"
+		if c.SubRHSInfluenced {
+			influenced = "yes (caller/attacker-controlled)"
+		}
+		facts = append(facts, VerdictFact{
+			Token:  "rhs@" + c.RHSKind,
+			Detail: fmt.Sprintf("right operand origin = %s, caller-influenced = %s", c.RHSKind, influenced),
+		})
+	}
+	if c.SubSink != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "sink@" + c.SubSink,
+			Detail: "sink shape: " + c.SubSink + " (call_arg = passed into an allocation / copy call, assign = stored into a variable)",
+		})
+	}
+	return facts
+}
+
+// buildUncheckedReturnVerdictFacts renders the decisive facts for an
+// unchecked-return candidate: whether the callee's failure contract is known,
+// whether the return value is deliberately discarded, and (for contract@unknown)
+// where the callee definition is embedded so the classifier proves or refutes
+// the sentinel without a source READ.
+func buildUncheckedReturnVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 4)
+	if c.APIName != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "api@" + c.APIName,
+			Detail: "the callee whose return value is unchecked",
+		})
+	}
+	if c.ContractKnown {
+		facts = append(facts, VerdictFact{
+			Token:  "contract@known",
+			Detail: "the callee has a proven failure-return contract (built-in API table / declared allocator / body-verified wrapper) — an unchecked call IS a genuine CWE-252 defect",
+		})
+	} else {
+		facts = append(facts, VerdictFact{
+			Token:  "contract@unknown",
+			Detail: "the callee is an allocator by NAME only (alloc substring / *_new / *_dup); the failure contract is unproven — the classifier must prove the callee returns a failure sentinel from the embedded ## Callee Definition or dismiss",
+		})
+	}
+	if c.Consumed == "discard" {
+		facts = append(facts, VerdictFact{
+			Token:  "discard",
+			Detail: "the return value is stored then (void)-cast away — the failure is unobservable; dismiss",
+		})
+	}
+	if c.CalleeDefFile != "" {
+		facts = append(facts, VerdictFact{
+			Token:  fmt.Sprintf("callee@%s:%d", c.CalleeDefFile, c.CalleeDefLine),
+			Detail: "the callee's body is embedded under ## Callee Definition in this candidate file — judge the sentinel there",
+		})
+	}
+	return facts
 }
