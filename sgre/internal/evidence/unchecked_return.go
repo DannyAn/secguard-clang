@@ -178,6 +178,22 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 				if callResultChecked(call) {
 					continue
 				}
+				// Out-param allocators (asprintf/vasprintf/getline/getdelim):
+				// the return value is a status code and a failed call leaves
+				// the out-param NULL (glibc semantics). The defect's DIRECT
+				// consequence is an in-function deref of that possibly-NULL
+				// out-param (`asprintf(&p,...); p[0]=x;`). When the out-param
+				// is only handed to callees — the NAT framework's
+				// `asprintf(&err_msg,...); return fail(error, err_msg, ...)`
+				// pattern — its NULL fate belongs to the null-deref chain (a
+				// callee with a definition) or to the project's framework
+				// contract (an external callee), never to a confirmed
+				// unchecked-return verdict here.
+				if outIdx, ok := apikb.IsOutParamAllocator(callee); ok {
+					if v := outParamVar(call, outIdx); v != "" && !unguardedDerefAfter(v, call.StartLine(), f, ids, ifs) {
+						continue
+					}
+				}
 				// A (void) cast is the programmer's explicit "intentionally
 				// ignoring this return value" annotation. For an allocator-name
 				// heuristic match (not a declared allocator, not an unchecked-
@@ -1722,4 +1738,113 @@ func calleeOfExpr(expr parser.Node) string {
 		}
 	}
 	return ""
+}
+
+// outParamVar returns the variable an out-param-allocator call writes into
+// (`asprintf(&err_msg, ...)` → "err_msg"): the OutParamIdx argument with
+// `&`/parentheses stripped.
+func outParamVar(call parser.Node, idx int) string {
+	args := getCallArgs(call)
+	if idx >= len(args) {
+		return ""
+	}
+	inner := args[idx]
+	for {
+		switch inner.Kind() {
+		case "parenthesized_expression":
+			kids := inner.NamedChildren()
+			if len(kids) == 0 {
+				return ""
+			}
+			inner = kids[0]
+		case "pointer_expression":
+			if !strings.HasPrefix(strings.TrimSpace(inner.Text()), "&") {
+				return ""
+			}
+			kids := inner.NamedChildren()
+			if len(kids) == 0 {
+				return ""
+			}
+			inner = kids[0]
+		default:
+			if inner.Kind() == "identifier" {
+				return inner.Text()
+			}
+			return ""
+		}
+	}
+}
+
+// unguardedDerefAfter reports whether varName is dereferenced in f after line
+// `after` without a dominating NULL check. Only the DIRECT consequence an
+// unchecked out-param-allocator return can have in this function counts: a
+// `*v` / `v->f` / `v[i]` with no `if (v == NULL) return` / `if (!v) return` /
+// `if (v != NULL) { ... }` / `if (v) { ... }` covering it.
+func unguardedDerefAfter(varName string, after int, f *db.Function, ids, ifs []parser.Node) bool {
+	for _, id := range ids {
+		if id.Text() != varName || id.StartLine() <= after {
+			continue
+		}
+		p := id.Parent()
+		if p == nil {
+			continue
+		}
+		isDeref := false
+		switch p.Kind() {
+		case "pointer_expression":
+			isDeref = strings.HasPrefix(strings.TrimSpace(p.Text()), "*")
+		case "field_expression", "subscript_expression":
+			kids := p.NamedChildren()
+			isDeref = len(kids) > 0 && kids[0].Kind() == "identifier" && kids[0].Text() == varName
+		}
+		if isDeref && !derefGuardedByNullCheck(f, varName, p.StartLine(), ifs) {
+			return true
+		}
+	}
+	return false
+}
+
+// derefGuardedByNullCheck reports whether a NULL check on varName dominates
+// the dereference at derefLine: an early-exit `if (v == NULL)` / `if (!v)`
+// before it, or a positive `if (v != NULL)` / `if (v)` whose consequence
+// contains it.
+func derefGuardedByNullCheck(f *db.Function, varName string, derefLine int, ifs []parser.Node) bool {
+	for _, ifNode := range ifs {
+		if !funcLineRange(f, ifNode.StartLine()) || ifNode.StartLine() >= derefLine {
+			continue
+		}
+		cond := ifNode.ChildByFieldName("condition")
+		if cond == nil {
+			continue
+		}
+		for _, v := range parser.NullCheckedVars(*cond) {
+			if v == varName && ifConsequenceExits(ifNode) {
+				return true
+			}
+		}
+		for _, v := range parser.GuardedNonnullVars(*cond) {
+			if v == varName {
+				if cons := ifNode.ChildByFieldName("consequence"); cons != nil && derefLine >= cons.StartLine() && derefLine <= cons.EndLine() {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// ifConsequenceExits reports whether an if statement's consequence always
+// leaves the function/loop (return / goto / break / continue).
+func ifConsequenceExits(ifNode parser.Node) bool {
+	cons := ifNode.ChildByFieldName("consequence")
+	if cons == nil {
+		return false
+	}
+	for _, stmt := range cons.NamedChildren() {
+		switch stmt.Kind() {
+		case "return_statement", "goto_statement", "break_statement", "continue_statement":
+			return true
+		}
+	}
+	return false
 }
