@@ -514,11 +514,16 @@ func growCallCovers(call parser.Node, container, idxBase string, idxOff int) boo
 }
 
 // isGrowCall reports whether a callee name marks a capacity-growth operation:
-// `g(container, n)` guarantees the container holds at least n elements.
+// `g(container, n)` guarantees the container holds at least n elements. Match
+// on `_`-separated word tokens, not a raw substring — `growth_rate` and
+// `growing_pains` are not grow calls. A log-only namesake
+// (`ensure_capacity_log`) still hits the `ensure` token, but the size>idx
+// argument form growCallCovers requires is what actually disarms a dismissal.
 func isGrowCall(name string) bool {
 	n := strings.ToLower(name)
-	for _, frag := range []string{"resize", "grow", "ensure", "reserve", "expand", "extend"} {
-		if strings.Contains(n, frag) {
+	for _, tok := range strings.Split(n, "_") {
+		switch tok {
+		case "resize", "grow", "ensure", "reserve", "expand", "extend":
 			return true
 		}
 	}

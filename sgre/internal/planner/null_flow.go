@@ -1637,6 +1637,13 @@ func exprRetNullability(expr parser.Node, flow *flowResult, params map[string]in
 	case "cast_expression", "parenthesized_expression":
 		grade := retNotNull
 		for _, c := range expr.NamedChildren() {
+			// A cast's type_descriptor child names the TARGET TYPE, not a
+			// value — recursing into it hits the fail-open default and
+			// downgrades the whole cast to assumed even when the operand is a
+			// provably non-null static-array base (`(T *)(g_arr + i * 8)`).
+			if c.Kind() == "type_descriptor" {
+				continue
+			}
 			// Inside a cast the operand's null-ness is fixed by the cast, not
 			// the function's return type; a parenthesized wrapper preserves it.
 			inner := fnRetType

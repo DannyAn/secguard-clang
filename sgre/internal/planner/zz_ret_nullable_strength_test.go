@@ -234,6 +234,29 @@ int use_dup_b(void) {
 	}
 }
 
+// NP-05: pointer arithmetic on a STATIC ARRAY base (`(T *)(g_arr + i * 8)`)
+// is provably non-null — the result is an address inside (or one past) the
+// array, never NULL. The cast's type_descriptor child used to be recursed
+// into like a value, hit the fail-open default, and downgraded the whole cast
+// to assumed — flooding the call site with a suspected candidate that should
+// never exist.
+func TestRetNullableStaticArrayBasePointerArithmetic(t *testing.T) {
+	fixture := `typedef struct { int x; } T;
+static char g_arr[256];
+
+T *get_elem(int i) { return (T *)(g_arr + i * 8); }
+
+void use(void) {
+    T *p = get_elem(2);
+    p->x = 1;
+}
+`
+	result := runRetStrengthPlan(t, map[string]string{"np05.c": fixture})
+	if c, ok := candidateByFunction(result, "use"); ok {
+		t.Errorf("use: expected NO candidate (static-array base arithmetic is provably non-null), got tier %q suspicion %q", c.NullOriginTier, c.SuspicionLevel)
+	}
+}
+
 // NP-01: a caller_null source (a caller passing a literal NULL to a
 // parameter) seeds at the FUNCTION DEFINITION line (fn.StartLine), but the
 // fixpoint analyzer in computeRetNullable never populated entrySeeds — it
