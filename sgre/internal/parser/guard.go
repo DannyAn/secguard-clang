@@ -119,7 +119,8 @@ func GuardVarName(operand string) string {
 // when it evaluates TRUE. A `&&` conjunction guards every operand, a `||`
 // disjunction guards none (at most one operand need be non-null), `p != NULL`
 // guards p, and `p == NULL` / `!p` establish NULL rather than non-null and guard
-// nothing.
+// nothing. A branch-hint wrapper (`unlikely(p == NULL)`) is transparent: the
+// wrapped condition is analysed instead.
 func GuardedNonnullVars(cond Node) []string {
 	switch cond.Kind() {
 	case "parenthesized_expression", "cast_expression":
@@ -129,6 +130,9 @@ func GuardedNonnullVars(cond Node) []string {
 			}
 		}
 		return nil
+	}
+	if inner, ok := unwrapBranchHint(cond); ok {
+		return GuardedNonnullVars(inner)
 	}
 	if cond.Kind() == "binary_expression" {
 		switch BinaryOperator(cond) {
@@ -158,7 +162,8 @@ func GuardedNonnullVars(cond Node) []string {
 // is non-null, so it guards p; `p != NULL` false means p is NULL and guards
 // nothing; a `||` disjunction being false means every operand is false (so every
 // operand's false-direction variable is guarded); a `&&` conjunction being false
-// means at most one operand is false (nothing is guarded).
+// means at most one operand is false (nothing is guarded). A branch-hint wrapper
+// (`unlikely(p == NULL)`) is transparent: the wrapped condition is analysed.
 func NullCheckedVars(cond Node) []string {
 	switch cond.Kind() {
 	case "parenthesized_expression", "cast_expression":
@@ -168,6 +173,9 @@ func NullCheckedVars(cond Node) []string {
 			}
 		}
 		return nil
+	}
+	if inner, ok := unwrapBranchHint(cond); ok {
+		return NullCheckedVars(inner)
 	}
 	if cond.Kind() == "binary_expression" {
 		switch BinaryOperator(cond) {
@@ -323,4 +331,42 @@ func isCIdentStart(c byte) bool {
 
 func isCIdentPart(c byte) bool {
 	return isCIdentStart(c) || (c >= '0' && c <= '9')
+}
+
+// unwrapBranchHint strips a branch-prediction hint wrapper from a condition:
+// `unlikely(x)` / `likely(x)` / `__builtin_expect(x, n)` (and `*_likely` /
+// `*_unlikely` vendor spellings) evaluate to exactly x, so the wrapped
+// condition carries the guard semantics. `__builtin_expect`'s first argument
+// is conventionally double-negated (`__builtin_expect(!!(x), 0)`), so paired
+// `!!` negations are stripped too — an odd single `!` is left in place
+// (stripping it would invert the guard's direction).
+func unwrapBranchHint(cond Node) (Node, bool) {
+	if cond.Kind() != "call_expression" {
+		return Node{}, false
+	}
+	kids := cond.NamedChildren()
+	if len(kids) < 2 {
+		return Node{}, false
+	}
+	name := strings.TrimSpace(kids[0].Text())
+	switch name {
+	case "likely", "unlikely", "__builtin_expect":
+	default:
+		if !strings.HasSuffix(name, "_likely") && !strings.HasSuffix(name, "_unlikely") {
+			return Node{}, false
+		}
+	}
+	args := kids[1].NamedChildren()
+	if len(args) == 0 {
+		return Node{}, false
+	}
+	inner := args[0]
+	for inner.Kind() == "unary_expression" {
+		ukids := inner.NamedChildren()
+		if len(ukids) != 1 || ukids[0].Kind() != "unary_expression" || len(ukids[0].NamedChildren()) != 1 {
+			break
+		}
+		inner = ukids[0].NamedChildren()[0]
+	}
+	return inner, true
 }

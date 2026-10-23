@@ -138,6 +138,13 @@ type flowResult struct {
 	// the same control-flow condition (`p == NULL || p->field`), where the
 	// dereference is short-circuit-protected and therefore not a null-deref.
 	weakGuard map[int]map[string]bool
+	// ternaryGuard records the guarded branches of conditional expressions
+	// (`p != NULL ? p->field : d` guards p inside the consequence; `p == NULL ?
+	// d : p->field` guards p inside the alternative). A conditional expression
+	// stays inside one straight-line CFG node, so these guards cannot ride the
+	// edge-kill model; they are resolved by line range at the nullable-source
+	// convergence stage.
+	ternaryGuard []ternaryGuardEntry
 	// contract holds the alias / void*-contract provenance facts for the
 	// function, used by the nullable-source filter to converge derived variables
 	// that the event-keyed null model cannot resolve (see null_contract.go).
@@ -183,6 +190,20 @@ func (m *flowResult) weakGuardAt(variable string, line int) bool {
 	}
 	n := m.cfg.NodeAt(line)
 	return n != nil && m.weakGuard[n.ID][variable]
+}
+
+// ternaryGuardAt reports whether the dereference of variable at line sits
+// inside a guarded branch of a conditional expression (`p != NULL ? p->f : d`).
+func (m *flowResult) ternaryGuardAt(variable string, line int) bool {
+	if m == nil || len(m.ternaryGuard) == 0 {
+		return false
+	}
+	for _, g := range m.ternaryGuard {
+		if g.variable == variable && g.line == line {
+			return true
+		}
+	}
+	return false
 }
 
 // mustReaching reports whether the fact holds on EVERY path to line (the boolean
@@ -290,7 +311,7 @@ func (a *flowAnalyzer) analyzeFlow(ctx context.Context, fn *db.Function, body pa
 		guard = buildGuardModel(cfg, a.helperParams, a.macroGuards)
 	}
 	nodeIn := runDataflow(cfg, effects, a.entrySeeds, guard)
-	return &flowResult{cfg: cfg, nodeIn: nodeIn, genAt: genAt(cfg, effects), weakGuard: buildWeakGuardMap(cfg)}
+	return &flowResult{cfg: cfg, nodeIn: nodeIn, genAt: genAt(cfg, effects), weakGuard: buildWeakGuardMap(cfg), ternaryGuard: buildTernaryGuardMap(body)}
 }
 
 // analyzeFlowMust runs the may reaching-sources dataflow and, over the SAME
@@ -921,6 +942,115 @@ func buildWeakGuardMap(cfg *graph.StmtCFG) map[int]map[string]bool {
 		}
 	}
 	return out
+}
+
+// ternaryGuardEntry is one dereference point proven non-null by a conditional
+// expression's guard: `p != NULL ? p->f : d` proves p non-null for the `p->f`
+// dereference inside the consequence (true branch); `p == NULL ? d : p->f`
+// proves it for the alternative (false branch). The entry records the exact
+// dereference line, so a same-line `p == NULL ? p->a : 0` (the NULL-path
+// dereference in the consequence) is NOT guarded by the alternative-side guard.
+type ternaryGuardEntry struct {
+	variable string
+	line     int
+}
+
+// buildTernaryGuardMap collects the null-guarded dereference points of every
+// conditional expression in a function body. A conditional expression stays
+// inside one straight-line CFG node, so these guards cannot ride the edge-kill
+// model; the guarded branch's own dereference sites are recorded from the AST
+// (base-precise, line-precise) and resolved at the nullable-source convergence
+// stage. Only dereferences whose BASE is exactly the guarded variable match:
+// `p->a->b` contributes the inner `p->a` read (base p), which is what a guard
+// on p protects.
+func buildTernaryGuardMap(body parser.Node) []ternaryGuardEntry {
+	if body.Kind() != "compound_statement" {
+		return nil
+	}
+	var out []ternaryGuardEntry
+	for _, ce := range body.FindAll("conditional_expression") {
+		cond := ce.ChildByFieldName("condition")
+		if cond == nil {
+			continue
+		}
+		if cons := ce.ChildByFieldName("consequence"); cons != nil {
+			for _, v := range parser.GuardedNonnullVars(*cond) {
+				out = append(out, guardedDerefEntries(*cons, v)...)
+			}
+		}
+		if alt := ce.ChildByFieldName("alternative"); alt != nil {
+			for _, v := range parser.NullCheckedVars(*cond) {
+				out = append(out, guardedDerefEntries(*alt, v)...)
+			}
+		}
+	}
+	return out
+}
+
+// guardedDerefEntries finds branch's dereference points of variable: field
+// accesses (`v->f`, including the inner read of `v->f->g`), pointer
+// dereferences (`*v`), and subscripts (`v[i]`) whose base is exactly variable.
+func guardedDerefEntries(branch parser.Node, variable string) []ternaryGuardEntry {
+	var out []ternaryGuardEntry
+	for _, fe := range branch.FindAll("field_expression") {
+		base := stripGuardCasts(derefGuardBaseChild(fe))
+		if base.Kind() == "identifier" && base.Text() == variable {
+			out = append(out, ternaryGuardEntry{variable: variable, line: fe.StartLine()})
+		}
+	}
+	for _, pd := range branch.FindAll("pointer_dereference_expression") {
+		kids := pd.NamedChildren()
+		if len(kids) == 1 {
+			inner := stripGuardCasts(kids[0])
+			if inner.Kind() == "identifier" && inner.Text() == variable {
+				out = append(out, ternaryGuardEntry{variable: variable, line: pd.StartLine()})
+			}
+		}
+	}
+	for _, se := range branch.FindAll("subscript_expression") {
+		kids := se.NamedChildren()
+		if len(kids) >= 1 {
+			base := stripGuardCasts(kids[0])
+			if base.Kind() == "identifier" && base.Text() == variable {
+				out = append(out, ternaryGuardEntry{variable: variable, line: se.StartLine()})
+			}
+		}
+	}
+	return out
+}
+
+// stripGuardCasts unwraps cast and parenthesized expressions down to the
+// operand (a local twin of evidence's stripCasts, kept in-package so the
+// planner does not reach into evidence internals).
+func stripGuardCasts(n parser.Node) parser.Node {
+	for n.Kind() == "cast_expression" || n.Kind() == "parenthesized_expression" {
+		next := parser.Node{}
+		for _, c := range n.NamedChildren() {
+			if c.Kind() == "type_descriptor" {
+				continue
+			}
+			next = c
+			break
+		}
+		if next.Kind() == "" {
+			return n
+		}
+		n = next
+	}
+	return n
+}
+
+// derefGuardBaseChild returns the base operand of a field/subscript
+// expression (the dereferenced pointer), or a zero Node.
+func derefGuardBaseChild(n parser.Node) parser.Node {
+	if n.Kind() != "field_expression" && n.Kind() != "subscript_expression" {
+		return parser.Node{}
+	}
+	kids := n.NamedChildren()
+	if len(kids) == 0 {
+		return parser.Node{}
+	}
+	return kids[0]
 }
 
 // forEachAssignment visits every (lhs, rhs) pair of an assignment_expression or

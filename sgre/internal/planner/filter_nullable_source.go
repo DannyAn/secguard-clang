@@ -139,6 +139,11 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 						fmt.Sprintf("dereference of %s is short-circuit null-guarded in its condition", c.VariableName))
 					continue
 				}
+				if c.SourceLine > 0 && !c.HasDefiniteNull && fm.ternaryGuardAt(c.VariableName, c.Line) {
+					dropped = dismiss(dropped, c, f.Name(),
+						fmt.Sprintf("dereference of %s is inside the guarded branch of a ternary conditional", c.VariableName))
+					continue
+				}
 				// A value derived (directly, through a cast, or through an unknown
 				// external accessor) from an opaque void* parameter the function
 				// never null-checks is non-null by the caller contract of IPC /
