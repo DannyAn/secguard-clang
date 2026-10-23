@@ -37,6 +37,7 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 		returns := root.FindAll("return_statement")
 		decls := root.FindAll("declaration")
 		ifs := root.FindAll("if_statement")
+		ids := root.FindAll("identifier")
 		funcDefs := root.FindAll("function_definition")
 		bodies := functionBodyMap(funcDefs)
 
@@ -54,7 +55,7 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 				releaseLines, hasRelease := releases[varName]
 				filteredReturns := filterNullGuardReturns(ifs, returnLines, varName)
 				nullGuardReturns := subtractLines(returnLines, filteredReturns)
-				escapeLines := findEscapeLines(assigns, calls, returns, f, varName, localVars, nil, nil, true)
+				escapeLines := findEscapeLines(assigns, calls, returns, ids, f, varName, localVars, nil, nil, true)
 				overwriteLines := writeLinesFor(assigns, inits, f, varName)
 
 				for _, acquireLine := range acquireLines {

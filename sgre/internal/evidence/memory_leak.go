@@ -48,6 +48,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 		inits := root.FindAll("init_declarator")
 		decls := root.FindAll("declaration")
 		ifs := root.FindAll("if_statement")
+		ids := root.FindAll("identifier")
 		macros := macroFreeSummaries(root)
 		typedefs := globalTypedefs.clone()
 		typedefs.addRoot(root)
@@ -97,7 +98,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 				// the out-param variable: the allocation never happened on that
 				// branch (docs §5.3 success-branch binding).
 				nullGuardReturns = append(nullGuardReturns, findAllocGuardedReturns(ifs, returns, assigns, inits, f, varName)...)
-				escapeLinesAll := findEscapeLines(assigns, calls, returns, f, varName, localVars, allocVarNames, allocReturns, true)
+				escapeLinesAll := findEscapeLines(assigns, calls, returns, ids, f, varName, localVars, allocVarNames, allocReturns, true)
 				overwriteLines := writeLinesFor(assigns, inits, f, varName)
 
 				for _, allocLine := range allocLines {
@@ -1024,7 +1025,7 @@ func findFreeOnBorrowSites(assigns, inits, calls []parser.Node, f *db.Function) 
 	return sites
 }
 
-func findEscapeLines(assigns, calls, returns []parser.Node, f *db.Function, varName string, localVars map[string]bool, allocVarNames map[string]bool, allocReturns map[string]bool, useEscapeFuncs bool) []int {
+func findEscapeLines(assigns, calls, returns, ids []parser.Node, f *db.Function, varName string, localVars map[string]bool, allocVarNames map[string]bool, allocReturns map[string]bool, useEscapeFuncs bool) []int {
 	var lines []int
 	for _, assign := range assigns {
 		if !funcLineRange(f, assign.StartLine()) {
@@ -1147,7 +1148,70 @@ func findEscapeLines(assigns, calls, returns []parser.Node, f *db.Function, varN
 			}
 		}
 	}
+	// Error-handling / comm ownership transfer (NAT production pattern):
+	// `asprintf(&err_msg,...); return fail(error, err_msg, ...)` /
+	// `return fail_nc_err(...)` / `return transapi_comm_with_vrp(..., path)`.
+	// The external callee takes ownership of the message/path argument and
+	// releases it. The shape is gated on "directly returned + the argument is
+	// never used afterwards" so a framework fail that does NOT release cannot
+	// silently swallow a real leak.
+	if useEscapeFuncs {
+		for _, call := range calls {
+			if !funcLineRange(f, call.StartLine()) {
+				continue
+			}
+			if !ownershipTakingErrorCall(call) {
+				continue
+			}
+			for _, arg := range getCallArgs(call) {
+				if argIdentifier(arg) == varName && !usedAfterLine(varName, call.StartLine(), f, ids) {
+					lines = append(lines, call.StartLine())
+					break
+				}
+			}
+		}
+	}
 	return lines
+}
+
+// ownershipTakingErrorCall reports whether call is a directly-returned call
+// to an error-handling / comm function whose name carries the semantics
+// (fail / *_err* / *_comm* / *_send*).
+func ownershipTakingErrorCall(call parser.Node) bool {
+	if !callDirectlyReturned(call) {
+		return false
+	}
+	lower := strings.ToLower(extractCallName(call))
+	for _, tok := range []string{"fail", "_err", "_comm", "_send"} {
+		if strings.Contains(lower, tok) {
+			return true
+		}
+	}
+	return false
+}
+
+// callDirectlyReturned reports whether call sits inside a return statement's
+// value (possibly through casts/parentheses): `return fail(...)`.
+func callDirectlyReturned(call parser.Node) bool {
+	for p := call.Parent(); p != nil; p = p.Parent() {
+		switch p.Kind() {
+		case "return_statement":
+			return true
+		case "expression_statement", "compound_statement", "function_definition", "if_statement", "while_statement", "for_statement", "do_statement", "switch_statement":
+			return false
+		}
+	}
+	return false
+}
+
+// usedAfterLine reports whether varName appears anywhere in f after line.
+func usedAfterLine(varName string, line int, f *db.Function, ids []parser.Node) bool {
+	for _, id := range ids {
+		if id.Text() == varName && funcLineRange(f, id.StartLine()) && id.StartLine() > line {
+			return true
+		}
+	}
+	return false
 }
 
 // containerEscapes reports whether a heap-allocated container variable escapes
@@ -1710,7 +1774,7 @@ func allocatorReturnFuncs(ctx context.Context, store db.Store, p *parser.Parser,
 						// allocator wrapper that calls a `_add`/`_store` helper for
 						// logging must NOT be misread as a borrow (EL-03); only a
 						// helper PROVEN to store its argument to a global counts.
-						if len(findEscapeLines(assigns, calls, returns, f, v, localVars, nil, nil, false)) > 0 ||
+						if len(findEscapeLines(assigns, calls, returns, nil, f, v, localVars, nil, nil, false)) > 0 ||
 							passesToGlobalStoreFunc(calls, f, v, escapeFuncs) {
 							borrowFuncs[f.Name] = true
 							continue

@@ -141,6 +141,67 @@ int strdup_free(void) {
 	}
 }
 
+// NAT production feedback: 55 asprintf-related memory-leak findings (part of
+// the 239/271 = 88% false-positive batch). The
+// asprintf→fail/fail_nc_err/transapi_comm_with_vrp framework pattern hands
+// the allocation to an external function that takes ownership and releases
+// it — the `return f(...)` is directly returned, the variable is never used
+// afterwards, and f's name carries the error-handling / comm semantics
+// (fail / *_err* / *_comm* / *_send*). That shape is an escape, not a leak.
+func TestMemoryLeakReview_AsprinfFrameworkEscape(t *testing.T) {
+	src := `#include <stdio.h>
+#include <stdlib.h>
+
+struct nc_err;
+extern int fail(struct nc_err **err, char *msg, int ret);
+extern int fail_nc_err(struct nc_err **err, char *msg, char *path, int ret, unsigned int err_code);
+extern int transapi_comm_with_vrp(void *header, int op, void *rcv_data, struct nc_err **error, char *path);
+
+int nat_set_name(void *error) {
+    char *err_msg = NULL;
+    asprintf(&err_msg, "name is NULL");
+    return fail(error, err_msg, EXIT_FAILURE);
+}
+
+int nat_validate(void *error) {
+    char *err_msg = NULL;
+    char *path_message = NULL;
+    asprintf(&err_msg, "validation error");
+    asprintf(&path_message, "module:container:[field]");
+    return fail_nc_err(error, err_msg, path_message, EXIT_FAILURE, 1001);
+}
+
+int nat_send(void *header, int op, void *rcv_data, struct nc_err **error, const char *key) {
+    char *path_message = NULL;
+    asprintf(&path_message, "/hw-nat/key=[%s]", key);
+    return transapi_comm_with_vrp(header, op, rcv_data, error, path_message);
+}
+
+int leak_no_transfer(void) {
+    char *p = NULL;
+    asprintf(&p, "x");
+    return 0;
+}
+
+int leak_printf(void) {
+    char *p = NULL;
+    asprintf(&p, "x");
+    return printf("%s", p);
+}
+`
+	got := planMemoryLeak(t, src)
+	for _, fn := range []string{"nat_set_name", "nat_validate", "nat_send"} {
+		if _, ok := got[fn]; ok {
+			t.Errorf("%s: asprintf→ownership-taking external callee (fail/fail_nc_err/transapi_comm_with_vrp) must NOT leak (escape), got %v", fn, keysOf(got))
+		}
+	}
+	for _, fn := range []string{"leak_no_transfer", "leak_printf"} {
+		if _, ok := got[fn]; !ok {
+			t.Errorf("%s: asprintf without an ownership transfer (no call / printf does not take ownership) must STAY leak, got %v", fn, keysOf(got))
+		}
+	}
+}
+
 // ML-12: self-realloc leaks the OLD block on failure; realloc-into-temp does not
 // leak the source.
 func TestMemoryLeakReview_Realloc(t *testing.T) {
