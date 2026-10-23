@@ -213,7 +213,25 @@ func nonNullSideVar(cond Node) string {
 			hasNull = true
 			continue
 		}
-		if v := GuardVarName(strings.TrimSpace(c.Text())); v != "" && v != "NULL" && v != "0" && nonNull == "" {
+		// Unwrap cast/paren structurally: `(struct T *)p != NULL` tests p, not
+		// the garbage text `"struct T *)p"` a textual parenthesis trim produces.
+		inner := c
+		for inner.Kind() == "cast_expression" || inner.Kind() == "parenthesized_expression" {
+			kids := inner.NamedChildren()
+			var next Node
+			for _, k := range kids {
+				if k.Kind() == "type_descriptor" {
+					continue
+				}
+				next = k
+				break
+			}
+			if next.Kind() == "" {
+				break
+			}
+			inner = next
+		}
+		if v := GuardVarName(strings.TrimSpace(inner.Text())); v != "" && v != "NULL" && v != "0" && nonNull == "" {
 			nonNull = v
 		}
 	}

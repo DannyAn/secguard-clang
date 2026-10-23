@@ -153,6 +153,24 @@ void d7_eqnull(void) {
 	}
 }
 
+// ND-04: a cast guard `if ((S*)q != NULL)` must protect the dereference of q —
+// the guarded-variable key is extracted structurally (not by trimming the
+// operand text, which produced the garbage name `"S*)q"`).
+func TestNullDeref_GuardReview_CastGuard(t *testing.T) {
+	src := guardReviewPreamble + `
+void cast_guard(void) {
+    S *q = malloc(sizeof(S));
+    if ((S*)q != NULL) {
+        q->x = 1;
+    }
+}
+`
+	result := planNullDerefGuardReview(t, src)
+	if c := candidateForFunc(t, result, "cast_guard"); c != nil {
+		t.Errorf("cast_guard q->x must NOT be flagged (cast guard (S*)q != NULL protects it), got var=%s line=%d", c.Target.Variable, c.Target.Line)
+	}
+}
+
 // D8: a while-loop guard protects only the value it TESTED at the loop head.
 // `p->x` before the advance is guarded; `p->y` AFTER `p = p->next` dereferences
 // the NEW value — an open-world field read that can be NULL on the last hop.
