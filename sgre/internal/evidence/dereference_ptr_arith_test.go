@@ -56,3 +56,40 @@ func TestNullDeref_PointerArithmeticDefinite(t *testing.T) {
 	}
 	t.Errorf("ptr_arith_definite `*(p+1)` null-deref was dropped (NE-01 regression); candidates: %+v", result.Candidates)
 }
+
+// ND-09: `(*p).x` is a dereference of p (equivalent to `p->x`) but its
+// field_expression text has no `->`, so detectMemberAccess skipped it and the
+// parenthesized base fell back to the garbage key "(*p)". The base resolves
+// through the parenthesized pointer_expression to p.
+func TestExplicitDerefVarParenDerefField(t *testing.T) {
+	src := `typedef struct { int x; } T;
+void f(T *p) {
+    (*p).x = 1;
+}
+`
+	p := parser.NewParser()
+	tree, err := p.Parse([]byte(src), "fixture.c")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var got []string
+	for _, fe := range tree.RootNode().FindAll("field_expression") {
+		if v := extractBaseOperand(fe); v != "" {
+			got = append(got, v)
+		}
+	}
+	if len(got) != 1 || got[0] != "p" {
+		t.Errorf("extractBaseOperand((*p).x) = %v, want [p]", got)
+	}
+}
+
+// ND-09 end-to-end: `(*p).x = 1` of a definite-null pointer must surface.
+func TestNullDeref_ParenDerefFieldDefinite(t *testing.T) {
+	result, _ := runFullPipeline(t, "tc120_paren_deref_field.c")
+	for _, c := range result.Candidates {
+		if c.Target.Function == "paren_deref" && c.Target.Variable == "p" {
+			return
+		}
+	}
+	t.Errorf("paren_deref `(*p).x` null-deref was dropped (ND-09 regression); candidates: %+v", result.Candidates)
+}

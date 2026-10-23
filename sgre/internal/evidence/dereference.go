@@ -359,6 +359,18 @@ func extractBaseOperand(node parser.Node) string {
 	if children[0].Kind() == "identifier" {
 		return children[0].Text()
 	}
+	// `(*p).x` — the base is a parenthesized dereference. The dereferenced
+	// variable is the pointer inside, matching the `p->x` key scheme instead
+	// of the garbage text "(*p)".
+	if children[0].Kind() == "parenthesized_expression" {
+		for _, c := range children[0].NamedChildren() {
+			if c.Kind() == "pointer_expression" {
+				if v := explicitDerefVar(c); v != "" {
+					return v
+				}
+			}
+		}
+	}
 	for _, child := range children {
 		if child.Kind() == "ERROR" {
 			if name := firstIdentifier(child); name != "" {
@@ -424,6 +436,16 @@ func firstIdentifier(node parser.Node) string {
 // pointerFromArrowError recovers the pointer identifier from an ERROR node whose
 // text contains a `->` (e.g. ERROR("q->") → "q"). The identifier is the operand
 // immediately before the arrow.
+//
+// NOTE (ND-11 deferred): a depth-first firstIdentifier can in principle pick an
+// identifier that is not the dereference base in a macro-mangled subtree. The
+// left-of-arrow fix was tried and REVERTED: the iterator-macro machinery's
+// guard suppression does not currently cover dereferences inside the macro
+// ERROR body, so correcting the key to the real base (e.g. "policy") made the
+// previously key-mismatched candidates surface en masse
+// (zz_null_deref_iter_macro_*). The key fix must land together with
+// iterator-macro guard coverage of ERROR-body dereferences — a separate,
+// larger change.
 func pointerFromArrowError(errNode parser.Node) string {
 	if name := firstIdentifier(errNode); name != "" {
 		return name
