@@ -158,6 +158,71 @@ P29-01），`go test ./...` + nosqlite 全绿。
   消除）+ 同质合约研判成本经模式复用显著下降；201 候选量级压缩需按"根因审查
   单元"方向另行立项，本版本不改变 boundary fail-open 候选协议。
 
+### null-deref 端到端复检与系统性修复（20 commits，全程 TDD）
+
+对 null-deref 子链路（detector → planner → auto-confirm → candidates → AI 研判）
+做端到端复检并逐项修复，覆盖 2 CRITICAL / 12 MAJOR / 5 MINOR + 1 项编排文档：
+
+- **跨函数空值传播断链（CRITICAL）**：`functionParamNames` 只认直接
+  function_declarator，**所有返回指针的函数**（`T *f(T *p)` 的 declarator 被
+  pointer_declarator 包裹）被 caller_null / opaque_null / buffer_overflow /
+  buffer_unchecked_index / contract_gap 五个 detector 同时跳过，参数永不 seed；
+  叠加 `computeRetNullable` fixpoint 未按 buildFlowResults 方式拆分
+  entrySeeds/definiteEntrySeeds——caller_null 源按行号分桶后不落任何 CFG 节点，
+  `T *q = p; return q;` 形态的 callee 被误判 notNull，所有调用点派生解引用静默
+  漏报。两处协同修复（evidence 剥壳 + planner 拆分），端到端实证 `callee(NULL)`
+  调用点候选恢复。
+- **AI 举证断链（CRITICAL）**：assumed-return 变量路径候选（`p = f(); p->field`，
+  f 为 fail-open in-scan callee）的 Hint/VerdictFact/SKILL 三处都承诺"callee body
+  已嵌入 `## Callee Definition`"，但 markdown 嵌入条件只覆盖 IsCallResultDeref 与
+  malloc-fail——AI 翻遍候选文件找不到承诺的段落。嵌入条件对齐 buildHintParts。
+- **detector / evidence 形态覆盖（9 项）**：指针算术解引用（`*(p+1)`）基指针
+  提取；guard 判定删除 evidence 本地漂移副本统一走 `parser.GuardedNonnullVars`
+  （`p != q` 误判 + `unlikely()` 漏识双向漂移）；caller 短路 `||` 守卫；cast
+  guard 结构提取变量名（`"(struct T *)p"` 垃圾键）；`p = p->next` 循环携带发
+  field_read 源（**D8 测试断言曾把漏报固化为正确，已修正**）；out-of-scan alloc
+  wrapper（`xmalloc` 仅声明）双边真空按"谁实际处理"拆分 skip；`(*p).x` 基变量
+  键卫生；assert 必须 dominating call（嵌套 assert 不再误 guard）；interprocedural
+  arg 对齐 classifyArg（cast/field 形态不再跳过）。
+- **planner 守卫与分析（6 项）**：switch null-case-return 守卫（buildSwitch 新建
+  透明 header 节点供 guard 挂载）；branch-hint + helper 复合守卫
+  （`unlikely(is_empty(p))`）；deref-read 赋值（`r = *(T**)msg`）发 deref_read
+  源且不 contract-derived；cast 跳 type_descriptor（`g_arr + i * 8` 静态数组
+  算术不再残留 suspected）；isGrowCall 词边界（`growth_rate` 不再误命中）；
+  typedef 拆分形态 opaque 判定（`typedef struct Foo Foo_t;` + 独立定义）。
+- **AI 协议一致性（5 项）**：`null@opaque-origin` / `null@assumed-return` 两个
+  tier token 补入 agent-body / command-instructions 主清单，新增 **registry→doc
+  反向守护测试**（原守护只 doc→registry 单向，漂移因此溜入）；SKILL.md
+  Classification Rules 表 confirmed 判定限定到 proven tier（消除四档 fail-open
+  tier 被 AI 按表误升 confirmed 的系统性精准违规）；`guard@none` verdict fact 对
+  cfg-proof 不再冗余发射、fail-open tier 措辞分层；多 sink 修复建议点名全部
+  deref 行；source→sink span 超 200 行回退 ±8 时 Code Context 头部明示截断与
+  源行位置。
+- **实证后关闭/调整（3 项，未盲从检视清单）**：NP-08 关闭（端到端证实
+  `callee(NULL)` 已走 definite 通道 confirmed）；ND-11 回退并记录前置依赖
+  （修正 `->` 左侧取键虽正确，但暴露 iterMacro guard 不覆盖 ERROR 节点内 deref
+  的深层缺口，需专项）；NE-07 部分采纳（`&base->f`/`base->f+1` 结果确定非 null，
+  按"严控误报"准则不修）。ND-13 经**删除实验**证明 interprocedural 非冗余
+  （caller_null 不 seed 局部变量参数，interprocedural 是"局部变量传参"场景唯一
+  覆盖），改为文档化其与 guardModel 的关系 + 删除 extractGuardedVariable 整条
+  死代码链。
+- **分支预测提示精确集**：UnwrapBranchHint 的 `*_likely`/`*_unlikely` 后缀匹配
+  收窄为精确集（likely/unlikely/__builtin_expect）——用户自定义
+  `check_likely(x)` 曾被误剥成 x 制造幻影守卫。
+- **编排批次规则**：`command-instructions.md` 的"production: 4 × 50 beat 3 × 67"
+  单点经验改为成本模型规则——194 候选的 null-deref 应拆 2 × 97 而非 3 × 65
+  （SPLIT_CANDIDATE_THRESHOLD=100 是 context ceiling 不是 turn ceiling，group
+  verdict 友好的类型过度拆分只会浪费 type-load 开销）。
+- **配置新增**：`[scan].entry_points`（默认 main/WinMain/wWinMain/DllMain/
+  app_main，可追加项目特有入口）——Windows DLL / firmware / library 项目不再被
+  整体误判为 boundary fail-open 扫描。
+- **验证**：每 commit TDD red→green→全量；最终 14 包全量测试 + nosqlite 子集
+  （3 包）+ extension 一致性守卫全绿；本地 CLI 端到端 5 场景全中（跨函数 caller-
+  null 派生返回 / `p = p->next` 循环携带 / out-of-scan wrapper 检出、`*(p+1)`
+  auto-confirmed、静态数组算术正确无候选）；c-vuln-benchmark A/B（干净目录、
+  独立 --db、构建修复前基线二进制对照）：**PASS 159/226、recall 48/113、
+  false positives 2/113、false negatives 62——与基线完全一致，零回归**。
+
 ## [0.9.8] - 2026-10-21
 
 ### 两项"待拍板"的结论（已按方案落地，不再等决策）
