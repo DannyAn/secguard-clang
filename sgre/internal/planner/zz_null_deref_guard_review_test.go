@@ -153,6 +153,49 @@ void d7_eqnull(void) {
 	}
 }
 
+// NP-02: a switch whose condition is a (cast) pointer and whose `case 0` /
+// `case NULL` branch RETURNS is a null guard for the fall-through: after
+// `switch ((intptr_t)p) { case 0: return; default: break; }`, p is non-null.
+func TestNullDeref_GuardReview_SwitchNullCaseReturn(t *testing.T) {
+	src := guardReviewPreamble + `
+void sw_guard(void) {
+    S *p = malloc(sizeof(S));
+    switch ((intptr_t)p) {
+    case 0:
+        return;
+    default:
+        break;
+    }
+    p->x = 1;
+}
+`
+	result := planNullDerefGuardReview(t, src)
+	if c := candidateForFunc(t, result, "sw_guard"); c != nil {
+		t.Errorf("sw_guard p->x must NOT be flagged (switch null-case-return guards the fall-through), got var=%s line=%d", c.Target.Variable, c.Target.Line)
+	}
+}
+
+// NP-02 sibling: a `case 0: break;` does NOT exit — p stays nullable on the
+// fall-through, and the dereference must STAY flagged.
+func TestNullDeref_GuardReview_SwitchNullCaseBreak(t *testing.T) {
+	src := guardReviewPreamble + `
+void sw_no_guard(void) {
+    S *p = malloc(sizeof(S));
+    switch ((intptr_t)p) {
+    case 0:
+        break;
+    default:
+        break;
+    }
+    p->x = 1;
+}
+`
+	result := planNullDerefGuardReview(t, src)
+	if c := candidateForFunc(t, result, "sw_no_guard"); c == nil {
+		t.Errorf("sw_no_guard p->x must STAY flagged (case 0: break; does not exit — p stays nullable)")
+	}
+}
+
 // ND-04: a cast guard `if ((S*)q != NULL)` must protect the dereference of q —
 // the guarded-variable key is extracted structurally (not by trimming the
 // operand text, which produced the garbage name `"S*)q"`).

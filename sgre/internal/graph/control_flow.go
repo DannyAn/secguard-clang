@@ -708,17 +708,22 @@ func isConstantTrue(cond *parser.Node) bool {
 	return t != "" && t != "0"
 }
 
-// buildSwitch builds a switch as: the switch entry reaches every case directly
-// (the condition jumps to the matching case), consecutive cases fall through to
-// one another, and a break inside a case exits to the switch's join. This is an
-// over-approximation (the safe direction for may-analyses): a case is reachable
-// from the entry even when an earlier case ends in break, because the jump path
-// is always present.
+// buildSwitch builds a switch as: a header node (the switch statement itself)
+// reaches every case directly (the condition jumps to the matching case),
+// consecutive cases fall through to one another, and a break inside a case
+// exits to the switch's join. This is an over-approximation (the safe
+// direction for may-analyses): a case is reachable from the entry even when an
+// earlier case ends in break, because the jump path is always present. The
+// header node is transparent to the dataflow (a control-flow header carries no
+// gen/kill effects) but gives path-sensitive consumers (the guard model) an
+// edge to attach case-dependent facts to.
 func (b *cfgBuilder) buildSwitch(stmt parser.Node, from int) int {
+	header := b.newNode("stmt", stmt.StartLine(), stmt.EndLine(), stmt)
+	b.edge(from, header)
 	body := stmt.ChildByFieldName("body")
 	join := b.newNode("join", 0, 0, parser.Node{})
 	if body == nil {
-		b.edge(from, join)
+		b.edge(header, join)
 		return join
 	}
 
@@ -740,7 +745,7 @@ func (b *cfgBuilder) buildSwitch(stmt parser.Node, from int) int {
 			hasDefault = true
 		}
 		pre := len(b.cfg.Nodes)
-		last := b.buildBlock(child, from) // jump: from -> the case's first statement
+		last := b.buildBlock(child, header) // jump: header -> the case's first statement
 		first := -1
 		if pre < len(b.cfg.Nodes) {
 			first = pre
@@ -771,7 +776,7 @@ func (b *cfgBuilder) buildSwitch(stmt parser.Node, from int) int {
 		b.edge(cases[n-1].last, join)
 	}
 	if !hasDefault {
-		b.edge(from, join)
+		b.edge(header, join)
 	}
 	return join
 }

@@ -31,6 +31,22 @@ func buildGuardModel(cfg *graph.StmtCFG, helperParams map[string][]int, macroGua
 		if n.Kind != "stmt" {
 			continue
 		}
+		// A switch whose condition is a (cast) pointer variable and whose every
+		// `case 0` / `case NULL` branch EXITS the function is a null guard for
+		// the fall-through: any other case, the default, or the no-match exit
+		// proves the variable non-null.
+		if n.Stmt.Kind() == "switch_statement" {
+			v, nullCases := switchNullCaseGuard(n.Stmt)
+			if v != "" {
+				for _, s := range n.Succs {
+					if successorInCases(cfg.Nodes[s], nullCases) {
+						continue
+					}
+					gm.addKills(n.ID, s, []string{v})
+				}
+			}
+			continue
+		}
 		if isConditionKind(n.Stmt.Kind()) {
 			cond := n.Stmt.ChildByFieldName("condition")
 			if cond == nil {
@@ -67,6 +83,81 @@ func (gm *guardModel) addKills(from, to int, vars []string) {
 		}
 		gm.edgeKills[key][v] = true
 	}
+}
+
+// switchNullCaseGuard extracts the pointer variable a switch statement guards
+// when every `case 0` / `case NULL` branch exits the function. It returns the
+// guarded variable plus the StartByte set of the null case_statement nodes
+// (used to keep the guard OFF the edge into the null branch itself). A
+// `case 0: break;` does not exit and yields no guard: the variable stays
+// nullable on the fall-through.
+func switchNullCaseGuard(stmt parser.Node) (string, map[int]bool) {
+	cond := stmt.ChildByFieldName("condition")
+	if cond == nil {
+		return "", nil
+	}
+	inner := *cond
+	for inner.Kind() == "cast_expression" || inner.Kind() == "parenthesized_expression" {
+		kids := inner.NamedChildren()
+		var next parser.Node
+		for _, k := range kids {
+			if k.Kind() == "type_descriptor" {
+				continue
+			}
+			next = k
+			break
+		}
+		if next.Kind() == "" {
+			break
+		}
+		inner = next
+	}
+	if inner.Kind() != "identifier" {
+		return "", nil
+	}
+	body := stmt.ChildByFieldName("body")
+	if body == nil {
+		return "", nil
+	}
+	nullCases := map[int]bool{}
+	for _, c := range body.NamedChildren() {
+		if c.Kind() != "case_statement" {
+			continue
+		}
+		v := c.ChildByFieldName("value")
+		if v == nil || !parser.IsNullOperand(*v) {
+			continue
+		}
+		if len(c.FindAll("return_statement")) == 0 {
+			continue
+		}
+		nullCases[c.StartByte()] = true
+	}
+	if len(nullCases) == 0 {
+		return "", nil
+	}
+	return strings.TrimSpace(inner.Text()), nullCases
+}
+
+// successorInCases reports whether a switch successor node belongs to one of
+// the given case_statement subtrees (walking the statement's ancestor chain).
+// Join nodes and statements of other cases return false — the guard applies
+// to them.
+func successorInCases(s *graph.StmtNode, cases map[int]bool) bool {
+	if s.Stmt.Kind() == "" {
+		return false
+	}
+	for node := s.Stmt; node.Kind() != ""; {
+		if cases[node.StartByte()] && node.Kind() == "case_statement" {
+			return true
+		}
+		p := node.Parent()
+		if p == nil {
+			break
+		}
+		node = *p
+	}
+	return false
 }
 
 // conditionGuardVars returns the variables a condition proves non-null on its
