@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
@@ -262,8 +263,12 @@ func scanHasEntryPoint(ctx context.Context, store db.Store) bool {
 		// real failures.
 		return true
 	}
+	entries := map[string]bool{}
+	for _, name := range config.Load().EntryPointNames() {
+		entries[name] = true
+	}
 	for _, f := range funcs {
-		if f.Name == "main" {
+		if entries[f.Name] {
 			return true
 		}
 	}

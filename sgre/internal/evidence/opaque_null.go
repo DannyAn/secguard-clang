@@ -144,12 +144,22 @@ func collectDefinedTypes(root parser.Node, definedTypes map[string]bool) {
 		switch underlying.Kind() {
 		case "struct_specifier", "union_specifier", "enum_specifier":
 			// `typedef struct x {...} x_t;` (body) or `typedef struct x x_t;`
-			// (forward declaration). Opaque unless the specifier has a body.
+			// (forward declaration). Opaque unless the specifier has a body —
+			// OR the tag it names is defined elsewhere in the tree: the split
+			// form `typedef struct Foo Foo_t;` + `struct Foo { ... };` defines
+			// the alias through the tag's body, not the typedef's own node.
+			hasBody := false
+			tagName := ""
 			for _, c := range underlying.NamedChildren() {
-				if c.Kind() == "field_declaration_list" || c.Kind() == "enumerator_list" {
-					definedTypes[name] = true
-					break
+				switch c.Kind() {
+				case "field_declaration_list", "enumerator_list":
+					hasBody = true
+				case "type_identifier":
+					tagName = strings.TrimSpace(c.Text())
 				}
+			}
+			if hasBody || (tagName != "" && definedTypes[tagName]) {
+				definedTypes[name] = true
 			}
 		case "primitive_type", "sized_type_specifier":
 			definedTypes[name] = true
@@ -236,14 +246,15 @@ func (d *OpaqueNullDetector) seedOpaqueFieldRead(ctx context.Context, f *db.Func
 		checkAssign(init)
 	}
 
-	// A chained field dereference `base->f1->f2` dereferences the VALUE of
-	// `base->f1`; when base's type is opaque that value's nullability is
-	// unknown. The intermediate variable is attributed exactly like the
-	// dereference detector attributes it (the outer field's base text), so
-	// the planner's reaching analysis matches source to sink.
+	// A chained field dereference `base->f1->f2` (or through a subscript,
+	// `base->f1[i]->f2`) dereferences the VALUE of `base->f1`; when base's
+	// type is opaque that value's nullability is unknown. The intermediate
+	// variable is attributed exactly like the dereference detector attributes
+	// it (the outer field's base text), so the planner's reaching analysis
+	// matches source to sink.
 	for _, fe := range fnDef.FindAll("field_expression") {
 		base := stripCasts(derefBaseChild(fe))
-		if base.Kind() != "field_expression" {
+		if base.Kind() != "field_expression" && base.Kind() != "subscript_expression" {
 			continue
 		}
 		if root := leftmostIdentifier(base); root != "" && opaqueParams[root] {

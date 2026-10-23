@@ -686,7 +686,19 @@ func callerAssertGuards(f *db.Function, assigns, calls []parser.Node, varName st
 			continue
 		}
 		for _, gv := range assertGuardedVars(args[0]) {
-			if gv == varName && call.StartLine() <= guardScopeEnd(assigns, f, varName, ac.StartLine()) {
+			if gv != varName {
+				continue
+			}
+			// The assert must DOMINATE the call: one nested inside a
+			// non-taken branch (`if (c) { assert(p != NULL); } f(p);`) guards
+			// nothing on the fall-through. enclosingBlockEnd returns the
+			// enclosing compound's end for a same-block assert, or the
+			// assert's own end when it sits inside a control-flow branch —
+			// a call beyond that end is not guarded.
+			if call.StartLine() > enclosingBlockEnd(ac) {
+				continue
+			}
+			if call.StartLine() <= guardScopeEnd(assigns, f, varName, ac.StartLine()) {
 				return true
 			}
 		}

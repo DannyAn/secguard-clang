@@ -75,6 +75,39 @@ void caller_unguarded(Context *ctx) {
 	}
 }
 
+// NE-04: an assert nested inside a non-dominating branch
+// (`if (c) { assert(p != NULL); } f(p);`) proves NOTHING on the fall-through —
+// callerAssertGuards only checked "the assert sits before the call", so the
+// phantom guard closed the open chain and the callee's candidate vanished.
+func TestCallerAssertGuardsNestedBranch(t *testing.T) {
+	src := `#include <assert.h>
+
+typedef struct Context_struct Context;
+
+int process_nested(Context *ctx) { ctx->field = 1; return 0; }
+int process_flat(Context *ctx)   { ctx->field = 2; return 0; }
+
+void caller_nested_assert(Context *ctx, int c) {
+    if (c) {
+        assert(ctx != NULL);
+    }
+    process_nested(ctx);
+}
+
+void caller_flat_assert(Context *ctx) {
+    assert(ctx != NULL);
+    process_flat(ctx);
+}
+`
+	seeds := callerNullSeeds(t, src)
+	if _, ok := seeds["caller_nested_assert"]; !ok {
+		t.Errorf("caller_nested_assert: an assert inside a non-dominating branch must NOT close the open chain; expected a caller_null seed, got %v", seeds)
+	}
+	if _, ok := seeds["caller_flat_assert"]; ok {
+		t.Errorf("caller_flat_assert: a dominating same-block assert closes the chain; no seed expected, got %v", seeds)
+	}
+}
+
 // callerNullSeeds runs just the CallerNullDetector and maps each seeded caller
 // function name to its callee-parameter variable.
 func callerNullSeeds(t *testing.T, src string) map[string]string {

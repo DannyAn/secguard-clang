@@ -29,6 +29,20 @@ type Config struct {
 	OwnershipTransferCalls OwnershipTransferCalls `toml:"ownership_transfer_calls"`
 	Nullability            Nullability            `toml:"nullability"`
 	IntegerOverflow        IntegerOverflow        `toml:"integer_overflow"`
+	Scan                   Scan                   `toml:"scan"`
+}
+
+// Scan tunes whole-scan boundary policy.
+type Scan struct {
+	// EntryPoints extends the built-in program entry-point set (main /
+	// WinMain / wWinMain / DllMain / app_main) with project-specific entry
+	// functions (a firmware `thread_entry`, an RTOS task body). A scan tree
+	// containing any entry point is treated as a complete program, so
+	// boundary parameters stay closed-world instead of failing open.
+	//
+	//	[scan]
+	//	entry_points = ["thread_entry"]
+	EntryPoints []string `toml:"entry_points"`
 }
 
 type TrustedMacros struct {
@@ -266,6 +280,20 @@ func (c *Config) DeallocatorNames() []string {
 		return nil
 	}
 	return c.Deallocators.Names
+}
+
+// defaultEntryPoints are the platform entry-point names that always mark the
+// scan tree as a complete program.
+var defaultEntryPoints = []string{"main", "WinMain", "wWinMain", "DllMain", "app_main"}
+
+// EntryPointNames returns the built-in entry-point set merged with the
+// project-specific `[scan].entry_points`.
+func (c *Config) EntryPointNames() []string {
+	names := append([]string{}, defaultEntryPoints...)
+	if c == nil {
+		return names
+	}
+	return append(names, c.Scan.EntryPoints...)
 }
 
 // SanitizeFunctionNames returns the project-specific path-sanitizer names

@@ -16,6 +16,31 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
+// NE-05: `typedef struct Foo Foo_t;` (forward-declaration typedef) followed by
+// a BODIED `struct Foo { ... };` elsewhere defines the alias too — the typedef
+// node's own specifier has no body, but the tag it names does. Previously the
+// alias stayed opaque and every `Foo_t *` parameter grew a phantom
+// fail-open seed.
+func TestCollectDefinedTypesSplitTypedef(t *testing.T) {
+	src := `typedef struct Foo Foo_t;
+struct Foo { int x; };
+typedef struct Bar Bar_t;
+`
+	p := parser.NewParser()
+	tree, err := p.Parse([]byte(src), "fixture.c")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defined := map[string]bool{}
+	collectDefinedTypes(tree.RootNode(), defined)
+	if !defined["Foo"] || !defined["Foo_t"] {
+		t.Errorf("split typedef: Foo and Foo_t must both be defined (the tag has a body), got %v", defined)
+	}
+	if defined["Bar"] || defined["Bar_t"] {
+		t.Errorf("forward-only typedef: Bar/Bar_t must stay opaque (no body anywhere), got %v", defined)
+	}
+}
+
 // The production scenario the OpaqueNullDetector closes: a function whose
 // parameters use third-party typedefs that are not defined anywhere in the
 // scan tree (exact report form — no typedef, no struct definition, external
@@ -187,6 +212,27 @@ func runOpaqueNullDetect(t *testing.T, fixtures map[string]string) []opaqueSourc
 		out = append(out, opaqueSourceRecord{variable: props.Variable, origin: props.Origin, line: line})
 	}
 	return out
+}
+
+// NE-07: a chained dereference through a SUBSCRIPT (`a->b[0]->c`) reads the
+// same open-world intermediate value as `a->b->c` does — the chained-deref
+// seed only matched a field_expression base, so the subscript form's
+// intermediate value never seeded and the chain's nullability was lost.
+func TestOpaqueNullDetectorChainedSubscriptDeref(t *testing.T) {
+	src := `typedef struct ExtMsg ExtMsg_t;
+
+void chain_subscript(ExtMsg_t *a) {
+    int x = a->b[0]->c;
+    (void)x;
+}
+`
+	records := runOpaqueNullDetect(t, map[string]string{"chain.c": src})
+	for _, r := range records {
+		if r.variable == "a->b[0]" && r.origin == "opaque_field_read" {
+			return
+		}
+	}
+	t.Errorf("`a->b[0]->c`: the intermediate subscript value must seed an opaque_field_read source, got %v", records)
 }
 
 func TestOpaqueNullDetectorReportForm(t *testing.T) {
