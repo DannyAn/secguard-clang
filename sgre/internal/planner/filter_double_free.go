@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -16,14 +17,23 @@ import (
 // from the first free no longer reaches the second free (the pointer was
 // reassigned in between, so the second free frees a different block).
 type DoubleFreeFilter struct {
-	store  db.Store
-	parser *parser.Parser
-	logger *log.Logger
+	store    db.Store
+	parser   *parser.Parser
+	logger   *log.Logger
+	cfgCache *graph.CFGCache
 }
 
 func NewDoubleFreeFilter(store db.Store, p *parser.Parser, logger *log.Logger) *DoubleFreeFilter {
 	return &DoubleFreeFilter{store: store, parser: p, logger: logger}
 }
+
+// WithCFGCache attaches the per-scan statement-CFG cache.
+func (f *DoubleFreeFilter) WithCFGCache(c *graph.CFGCache) *DoubleFreeFilter {
+	f.cfgCache = c
+	return f
+}
+// SetCFGCache is the uniform-injection entrypoint used by Planner.Plan.
+func (f *DoubleFreeFilter) SetCFGCache(c *graph.CFGCache) { f.cfgCache = c }
 
 func (f *DoubleFreeFilter) Name() string { return "double_free_flow" }
 
@@ -92,7 +102,7 @@ func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Ca
 	if err != nil {
 		return nil, nil, fmt.Errorf("double free: load events: %w", err)
 	}
-	analyzer := newFlowAnalyzer(f.store, f.parser)
+	analyzer := newFlowAnalyzer(f.store, f.parser, f.cfgCache)
 	aliases := analyzer.loadAliases(ctx, candidateFuncIDs(byFunc))
 	for fid, cs := range byFunc {
 		fn := fnByID[fid]

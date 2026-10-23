@@ -61,7 +61,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 			returnLines := findReturnLinesFrom(returns, f)
 
 			body := bodies[f.StartLine]
-			cfg := graph.BuildStmtCFG(body, f.EndLine)
+			cfg := buildStmtCFGFromCtx(ctx, f, body)
 			cfgValid := body.Kind() == "compound_statement"
 			// The set of variables this function allocates. A pointer stored
 			// through one of them (`*container = buf`) points INTO the heap, not

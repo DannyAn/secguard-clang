@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -26,6 +27,12 @@ type Planner struct {
 	// every Plan() call, so a file is read at most once per scan even though up
 	// to 24 vuln types run Plan concurrently.
 	macro *macroContextDetector
+	// cfgCache memoizes per-function *graph.StmtCFG across every filter that
+	// needs one. Without it, each filter that consumes CFG (nullable-source /
+	// lifetime / double-free / uninit / range / range-oob / int-overflow /
+	// contract-gap) rebuilt the same function's CFG independently — a 10×
+	// waste on a redis-scale scan.
+	cfgCache *graph.CFGCache
 }
 
 func NewPlanner(store db.Store, p *parser.Parser, logger *log.Logger) *Planner {
@@ -36,7 +43,18 @@ func NewPlanner(store db.Store, p *parser.Parser, logger *log.Logger) *Planner {
 		callReachCache: &callReachCache{},
 		taintCache:     newTaintSummaryCache(store, p),
 		macro:          newMacroContextDetector(),
+		cfgCache:       graph.NewCFGCache(),
 	}
+}
+
+// NewPlannerWithCache shares cfgCache with an upstream stage (typically the
+// evidence stage) so CFGs built during detection hit the cache during plan.
+func NewPlannerWithCache(store db.Store, p *parser.Parser, logger *log.Logger, cfgCache *graph.CFGCache) *Planner {
+	pl := NewPlanner(store, p, logger)
+	if cfgCache != nil {
+		pl.cfgCache = cfgCache
+	}
+	return pl
 }
 
 func (p *Planner) getFilters(chain string) ([]Filter, error) {
@@ -164,6 +182,11 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 		return nil, err
 	}
 
+	// Share this Planner's CFG cache with every filter via ctx so that a
+	// function's statement CFG is built at most once per scan (see the
+	// cfgCache field comment).
+	ctx = withCFGCache(ctx, p.cfgCache)
+
 	// The macro-context detector needs the scan's function-definition names
 	// BEFORE the filter chain runs (MacroUncertainFilter consults it): an
 	// ALL_CAPS static function (POOL_SECT) is a definition, not a #define.
@@ -189,6 +212,14 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 	filters, err := p.getFilters(spec.FilterChain)
 	if err != nil {
 		return nil, err
+	}
+	// Uniformly inject the per-scan CFG cache into every filter that supports
+	// it. Filters that do not build statement CFGs simply do not implement
+	// SetCFGCache and are skipped by the type assertion.
+	for _, f := range filters {
+		if ca, ok := f.(interface{ SetCFGCache(*graph.CFGCache) }); ok {
+			ca.SetCFGCache(p.cfgCache)
+		}
 	}
 
 	candidates := seed

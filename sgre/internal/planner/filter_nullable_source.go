@@ -9,6 +9,7 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/macros"
 	"github.com/DannyAn/secguard-clang/internal/parser"
@@ -22,9 +23,10 @@ import (
 // edges (see null_flow.go); otherwise it falls back to the earlier line-order
 // heuristic so offline/mock callers keep working.
 type NullableSourceFilter struct {
-	store  db.Store
-	parser *parser.Parser
-	logger *log.Logger
+	store    db.Store
+	parser   *parser.Parser
+	logger   *log.Logger
+	cfgCache *graph.CFGCache
 }
 
 func NewNullableSourceFilter(store db.Store) *NullableSourceFilter {
@@ -38,6 +40,15 @@ func (f *NullableSourceFilter) WithParser(p *parser.Parser, l *log.Logger) *Null
 	f.logger = l
 	return f
 }
+
+// WithCFGCache attaches the per-scan statement-CFG cache so a function's CFG
+// is built at most once across every filter that needs it.
+func (f *NullableSourceFilter) WithCFGCache(c *graph.CFGCache) *NullableSourceFilter {
+	f.cfgCache = c
+	return f
+}
+// SetCFGCache is the uniform-injection entrypoint used by Planner.Plan.
+func (f *NullableSourceFilter) SetCFGCache(c *graph.CFGCache) { f.cfgCache = c }
 
 func (f *NullableSourceFilter) Name() string { return "nullable_source" }
 
@@ -333,7 +344,7 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 		funcIDs = append(funcIDs, fid)
 	}
 
-	analyzer := newFlowAnalyzer(f.store, f.parser)
+	analyzer := newFlowAnalyzer(f.store, f.parser, f.cfgCache)
 	analyzer.dfgCopies = analyzer.loadDFGCopies(ctx, funcIDs)
 
 	// Batch-load the candidate functions and their files ONCE, so the pre-scan
@@ -1138,7 +1149,7 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 	for i := range infos {
 		allIDs = append(allIDs, infos[i].fn.ID)
 	}
-	analyzer := newFlowAnalyzer(f.store, f.parser)
+	analyzer := newFlowAnalyzer(f.store, f.parser, f.cfgCache)
 	analyzer.dfgCopies = analyzer.loadDFGCopies(ctx, allIDs)
 	analyzer.macroWrites = collectMacroWrites(cache, fileByID)
 	analyzer.iterMacros = mergedIterMacros()

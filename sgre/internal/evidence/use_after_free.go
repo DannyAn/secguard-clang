@@ -6,7 +6,6 @@ import (
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
-	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -61,7 +60,7 @@ func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error)
 			// The statement CFG decides free→use reachability: a loop-carried
 			// `for(...) { use(p); free(p); }` has the use AFTER the free in source
 			// order on the second iteration, so line order alone missed it (UF-01/06).
-			cfg := graph.BuildStmtCFG(bodies[f.StartLine], f.EndLine)
+			cfg := buildStmtCFGFromCtx(ctx, f, bodies[f.StartLine])
 
 			for _, fs := range freeSites {
 				fsNode := cfg.NodeAt(fs.line)

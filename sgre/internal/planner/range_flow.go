@@ -146,18 +146,19 @@ func (f *rangeFlow) at(variable string, line int) interval {
 // analyzeRanges builds and runs the interval analysis for one function body
 // without cross-function call-result resolution (the function-local behavior).
 func analyzeRanges(fn *db.Function, body parser.Node) *rangeFlow {
-	return analyzeRangesWithCalls(fn, body, nil)
+	return analyzeRangesWithCalls(nil, fn, body, nil)
 }
 
 // analyzeRangesWithCalls is analyzeRanges with an optional callResult resolver,
 // which assigns `d = foo()` the return-value interval of foo when that interval
 // is provably non-zero. A nil resolver keeps the function-local behavior (a call
-// RHS is a kill).
-func analyzeRangesWithCalls(fn *db.Function, body parser.Node, callResult func(string) (interval, bool)) *rangeFlow {
+// RHS is a kill). cfgCache, when non-nil, memoizes the per-function statement
+// CFG so repeated calls across filters do not rebuild it.
+func analyzeRangesWithCalls(cfgCache *graph.CFGCache, fn *db.Function, body parser.Node, callResult func(string) (interval, bool)) *rangeFlow {
 	if body.Kind() != "compound_statement" {
 		return nil
 	}
-	cfg := graph.BuildStmtCFG(body, fn.EndLine)
+	cfg := graph.BuildStmtCFGWithCache(cfgCache, fn.ID, body, fn.EndLine)
 	return &rangeFlow{cfg: cfg, nodeIn: runRangeDataflow(cfg, buildRangeEffects(cfg, callResult))}
 }
 

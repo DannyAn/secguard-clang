@@ -66,8 +66,8 @@ func (h *heapStructFlow) initOnEveryPath(v string, line int) bool {
 }
 
 // buildHeapStructFlow runs the source and init lattices over fn's statement CFG.
-func buildHeapStructFlow(fn *db.Function, body parser.Node) *heapStructFlow {
-	cfg := graph.BuildStmtCFG(body, fn.EndLine)
+func buildHeapStructFlow(cfgCache *graph.CFGCache, fn *db.Function, body parser.Node) *heapStructFlow {
+	cfg := graph.BuildStmtCFGWithCache(cfgCache, fn.ID, body, fn.EndLine)
 	srcEff := make(map[int]*nodeEffects, len(cfg.Nodes))
 	initEff := make(map[int]*nodeEffects, len(cfg.Nodes))
 	for _, n := range cfg.Nodes {

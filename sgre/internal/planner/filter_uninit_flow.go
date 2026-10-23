@@ -27,10 +27,14 @@ import (
 // and heap_uninit have field/pointer granularity and different kill semantics,
 // so they are left for the detector + ranking.
 type DefiniteInitFilter struct {
-	store  db.Store
-	parser *parser.Parser
-	logger *log.Logger
+	store    db.Store
+	parser   *parser.Parser
+	logger   *log.Logger
+	cfgCache *graph.CFGCache
 }
+
+// SetCFGCache is the uniform-injection entrypoint used by Planner.Plan.
+func (f *DefiniteInitFilter) SetCFGCache(c *graph.CFGCache) { f.cfgCache = c }
 
 func NewDefiniteInitFilter(store db.Store, p *parser.Parser, logger *log.Logger) *DefiniteInitFilter {
 	return &DefiniteInitFilter{store: store, parser: p, logger: logger}
@@ -205,8 +209,8 @@ func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]
 			macroWrites = macros.WriteSummaries(root)
 			macroWritesByFile[file.ID] = macroWrites
 		}
-		flows[fid] = buildDefiniteInitFlow(fn, body, macroWrites)
-		hsFlows[fid] = buildHeapStructFlow(fn, body)
+		flows[fid] = buildDefiniteInitFlow(f.cfgCache, fn, body, macroWrites)
+		hsFlows[fid] = buildHeapStructFlow(f.cfgCache, fn, body)
 		scopes[fid] = scopeOracleOf(parser.FunctionBoundNamesByBody(body))
 		if _, ok := files[file.ID]; !ok {
 			files[file.ID] = hoistUninitFile(root)
@@ -219,8 +223,8 @@ func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]
 // stack variables: gen = a local declaration without initializer, kill = any
 // subsequent write to the variable (full or field/subscript, plus a
 // function-like macro output argument), copy = `v = w`.
-func buildDefiniteInitFlow(fn *db.Function, body parser.Node, macroWrites map[string]macros.WriteSummary) *flowResult {
-	cfg := graph.BuildStmtCFG(body, fn.EndLine)
+func buildDefiniteInitFlow(cfgCache *graph.CFGCache, fn *db.Function, body parser.Node, macroWrites map[string]macros.WriteSummary) *flowResult {
+	cfg := graph.BuildStmtCFGWithCache(cfgCache, fn.ID, body, fn.EndLine)
 	aliases := pointerAliases(body)
 
 	// Effects are computed per CFG node from that node's OWN statement — never

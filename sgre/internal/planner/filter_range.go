@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -21,10 +22,14 @@ import (
 // not "proven possibly-zero", so it stays suspected for the AI. Confirmed
 // candidates are handed to the auto-confirm pass instead of the AI agent.
 type RangeFilter struct {
-	store  db.Store
-	parser *parser.Parser
-	logger *log.Logger
+	store    db.Store
+	parser   *parser.Parser
+	logger   *log.Logger
+	cfgCache *graph.CFGCache
 }
+
+// SetCFGCache is the uniform-injection entrypoint used by Planner.Plan.
+func (f *RangeFilter) SetCFGCache(c *graph.CFGCache) { f.cfgCache = c }
 
 func NewRangeFilter(store db.Store, p *parser.Parser, logger *log.Logger) *RangeFilter {
 	return &RangeFilter{store: store, parser: p, logger: logger}
@@ -267,7 +272,7 @@ func (f *RangeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candida
 		if body.Kind() != "compound_statement" {
 			continue
 		}
-		flows[fid] = analyzeRangesWithCalls(fn, body, resolver.callResult)
+		flows[fid] = analyzeRangesWithCalls(f.cfgCache, fn, body, resolver.callResult)
 	}
 	return flows
 }
