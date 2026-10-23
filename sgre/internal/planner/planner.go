@@ -33,10 +33,15 @@ type Planner struct {
 	// contract-gap) rebuilt the same function's CFG independently — a 10×
 	// waste on a redis-scale scan.
 	cfgCache *graph.CFGCache
+	// querier is the per-scan semantic-query facade (graph.Querier). Filters
+	// that need an ad-hoc flow answer should call Querier() instead of
+	// rebuilding a flow engine; the querier reuses the same cfgCache so the
+	// per-function CFG is still built at most once.
+	querier graph.Querier
 }
 
 func NewPlanner(store db.Store, p *parser.Parser, logger *log.Logger) *Planner {
-	return &Planner{
+	pl := &Planner{
 		store:          store,
 		parser:         p,
 		logger:         logger,
@@ -45,6 +50,8 @@ func NewPlanner(store db.Store, p *parser.Parser, logger *log.Logger) *Planner {
 		macro:          newMacroContextDetector(),
 		cfgCache:       graph.NewCFGCache(),
 	}
+	pl.querier = NewQuerier(store, p, pl.cfgCache)
+	return pl
 }
 
 // NewPlannerWithCache shares cfgCache with an upstream stage (typically the
@@ -53,9 +60,14 @@ func NewPlannerWithCache(store db.Store, p *parser.Parser, logger *log.Logger, c
 	pl := NewPlanner(store, p, logger)
 	if cfgCache != nil {
 		pl.cfgCache = cfgCache
+		pl.querier = NewQuerier(store, p, cfgCache)
 	}
 	return pl
 }
+
+// Querier returns the per-scan semantic-query facade. The instance is
+// shareable across goroutines (its state is read-only after construction).
+func (p *Planner) Querier() graph.Querier { return p.querier }
 
 func (p *Planner) getFilters(chain string) ([]Filter, error) {
 	// Bounds-check suppression already happens in the buffer-overflow detector
