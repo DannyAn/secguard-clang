@@ -153,10 +153,10 @@ void d7_eqnull(void) {
 	}
 }
 
-// D8: a while-loop guard protects the WHOLE body on the taken branch, so every
-// dereference inside — including the `p->next` read in the advance and the
-// post-advance `p->y` — is guarded by `p != NULL`. The CFG guard kills p's null
-// source on the loop body's entry edge, so nothing inside is flagged.
+// D8: a while-loop guard protects only the value it TESTED at the loop head.
+// `p->x` before the advance is guarded; `p->y` AFTER `p = p->next` dereferences
+// the NEW value — an open-world field read that can be NULL on the last hop.
+// The guard says nothing about that new value, so `p->y` must STAY flagged.
 func TestNullDeref_GuardReview_WhileReassign(t *testing.T) {
 	src := guardReviewPreamble + `
 void d8_while(void) {
@@ -169,8 +169,31 @@ void d8_while(void) {
 }
 `
 	result := planNullDerefGuardReview(t, src)
-	if c := candidateForFunc(t, result, "d8_while"); c != nil {
-		t.Errorf("d8_while should NOT be flagged (whole loop body guarded by p != NULL), got var=%s line=%d", c.Target.Variable, c.Target.Line)
+	// The variable-level converge merges p's dereferences into one candidate
+	// whose DerefLines lists every sink; assert on the sink list.
+	for _, c := range result.Candidates {
+		if c.Target.Function != "d8_while" || c.Target.Variable != "p" {
+			continue
+		}
+		for _, dl := range c.DerefLines {
+			if dl == 11 {
+				t.Errorf("d8_while p->x (line 11) must NOT be flagged (guard protects the value tested at the loop head), got DerefLines=%v", c.DerefLines)
+			}
+		}
+	}
+	found := false
+	for _, c := range result.Candidates {
+		if c.Target.Function != "d8_while" || c.Target.Variable != "p" {
+			continue
+		}
+		for _, dl := range c.DerefLines {
+			if dl == 13 {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("d8_while p->y (line 13, after `p = p->next`) must STAY flagged (the guard tested the OLD value; the new value is an open-world field read)")
 	}
 }
 

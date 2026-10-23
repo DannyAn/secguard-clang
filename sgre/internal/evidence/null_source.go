@@ -50,6 +50,7 @@ func (d *NullSourceDetector) Detect(ctx context.Context) (DetectResult, error) {
 			d.detectReturnNull(ctx, f, file, returns, &result)
 			d.detectMallocResult(ctx, f, file, assigns, inits, &result)
 			d.detectExplicitNull(ctx, f, file, assigns, inits, &result)
+			d.detectFieldReadSelfAssign(ctx, f, file, assigns, &result)
 			d.detectMacroNull(ctx, f, file, calls, macros, &result)
 		}
 	})
@@ -193,6 +194,41 @@ func (d *NullSourceDetector) detectExplicitNull(ctx context.Context, f *db.Funct
 			continue
 		}
 		checkNode(init)
+	}
+}
+
+// detectFieldReadSelfAssign records a MAY-null source for a self-referential
+// field-read reassignment (`p = p->next`, `it = it->prev->next`). The old
+// value is overwritten and the new value is an open-world field read that can
+// be NULL — the last hop of every linked-list/tree walk. Without this source
+// the planner's copy target (`p->next`) had no source of its own, the
+// reassigned variable went sourceless, and the post-advance dereference was
+// silently dropped (the loop-head guard only tested the OLD value). The
+// source is never definite: the field value is an assumption, not a proof.
+func (d *NullSourceDetector) detectFieldReadSelfAssign(ctx context.Context, f *db.Function, file *db.File, assigns []parser.Node, result *DetectResult) {
+	for _, node := range assigns {
+		if !funcLineRange(f, node.StartLine()) {
+			continue
+		}
+		lhs, rhs, ok := node.AssignParts()
+		if !ok || lhs.Kind() != "identifier" {
+			continue
+		}
+		name := strings.TrimSpace(lhs.Text())
+		inner := rhs
+		for inner.Kind() == "cast_expression" || inner.Kind() == "parenthesized_expression" {
+			kids := inner.NamedChildren()
+			if len(kids) == 0 {
+				break
+			}
+			inner = kids[len(kids)-1]
+		}
+		if fieldBaseName(inner) != name {
+			continue
+		}
+		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: node.StartLine()}, map[string]string{"variable": name, "origin": "field_read", "definite": "false"}) {
+			result.EventsCreated++
+		}
 	}
 }
 
