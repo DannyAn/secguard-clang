@@ -1,8 +1,10 @@
 package config
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -226,5 +228,44 @@ names = ["my_basename", "sanitize_path_segment"]
 	cfg := Load()
 	if got := cfg.SanitizeFunctionNames(); len(got) != 2 || got[0] != "my_basename" || got[1] != "sanitize_path_segment" {
 		t.Errorf("sanitize_functions = %v, want [my_basename sanitize_path_segment]", got)
+	}
+}
+
+// TestLoad_LogsOnUnreadableConfig pins the v0.10 warning contract: a config
+// file that resolves but cannot be read (or parses invalid TOML) must produce
+// a stderr warning, not silent zero-config degradation. This was the root
+// cause of the v0.7.0 disabled_types/exclude "silently off" incident.
+func TestLoad_LogsOnUnreadableConfig(t *testing.T) {
+	dir := t.TempDir()
+	bad := filepath.Join(dir, "secguard.toml")
+	if err := os.WriteFile(bad, []byte("[not toml"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	old := explicitPath
+	t.Cleanup(func() { explicitPath = old })
+	explicitPath = bad
+
+	// Capture stderr.
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = oldStderr })
+
+	cfg := Load()
+
+	w.Close()
+	os.Stderr = oldStderr
+	out, _ := io.ReadAll(r)
+	r.Close()
+
+	if cfg == nil {
+		t.Fatal("Load returned nil config on parse failure")
+	}
+	if !strings.Contains(string(out), "config load warning") {
+		t.Fatalf("expected stderr warning about config load failure, got: %q", string(out))
 	}
 }
