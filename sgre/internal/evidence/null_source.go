@@ -374,7 +374,22 @@ func (d *NullSourceDetector) detectExternalCall(ctx context.Context, f *db.Funct
 			return
 		}
 		callName := extractCallName(callExpr)
-		if callName == "" || isAllocator(callName) {
+		if callName == "" {
+			return
+		}
+		// Skip a name the OTHER passes settle: a DECLARED allocator gets a
+		// proven malloc-tier source from detectMallocResult, and an in-scan
+		// DEFINED alloc-named wrapper gets its nullability from the
+		// retNullable fixpoint (a literal `return malloc(n)` / `return NULL`
+		// marks the summary). An alloc-NAMED wrapper with NO definition in
+		// the scan tree must fall through to the fail-open external_call
+		// source below — skipping it here (the name merely LOOKS like an
+		// allocator) while the precise-set pass also skipped it (it is not
+		// declared) was the ND-06 double vacuum.
+		if apikb.IsDeclaredAllocator(callName) {
+			return
+		}
+		if isAllocator(callName) && knownFuncs[callName] {
 			return
 		}
 		// A trusted accessor macro (field + offset arithmetic, possibly wrapped

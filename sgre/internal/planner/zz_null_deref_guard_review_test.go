@@ -153,6 +153,47 @@ void d7_eqnull(void) {
 	}
 }
 
+// ND-06: an out-of-scan alloc-named wrapper (declared, never defined) must
+// not fall into the double vacuum: detectExternalCall skipped it for looking
+// like an allocator while detectMallocResult skipped it for not being a
+// declared one. Its result must seed a fail-open external_call source.
+func TestNullDeref_GuardReview_OutOfScanAllocWrapper(t *testing.T) {
+	src := guardReviewPreamble + `
+extern void *xmalloc(size_t n);
+
+void nd06(void) {
+    S *p = xmalloc(sizeof(S));
+    p->x = 1;
+}
+`
+	result := planNullDerefGuardReview(t, src)
+	if c := candidateForFunc(t, result, "nd06"); c == nil {
+		t.Errorf("nd06 p->x must STAY flagged (out-of-scan xmalloc seeds a fail-open external_call source; the double vacuum is closed)")
+	}
+}
+
+// ND-06 sibling (no regression): an IN-SCAN defined alloc-named wrapper keeps
+// its proven retNullable grade — no fail-open external_call source may leak
+// in and downgrade the candidate.
+func TestNullDeref_GuardReview_InScanAllocWrapper(t *testing.T) {
+	src := guardReviewPreamble + `
+void *xmalloc(size_t n) { return malloc(n); }
+
+void wrapper(void) {
+    S *p = xmalloc(sizeof(S));
+    p->x = 1;
+}
+`
+	result := planNullDerefGuardReview(t, src)
+	c := candidateForFunc(t, result, "wrapper")
+	if c == nil {
+		t.Fatalf("wrapper p->x must STAY flagged (in-scan xmalloc returns the malloc result)")
+	}
+	if c.SuspicionLevel != "confirmed" {
+		t.Errorf("wrapper p->x must stay confirmed (in-scan wrapper is proven-nullable), got %q", c.SuspicionLevel)
+	}
+}
+
 // NP-03: a branch-hint-wrapped helper guard `if (unlikely(is_empty(p)))
 // return;` must protect the fall-through dereference — helperGuard only
 // unwrapped paren/cast, so the hint made the whole helper shape invisible.
