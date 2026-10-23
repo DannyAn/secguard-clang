@@ -258,6 +258,37 @@ transapi_pub.c 内部 free）未被识别：
   真实的 32 条（divide-by-zero 18 + null-deref 7 + unchecked-return 4 + uninit 1
   + dangerous-function 1 + memory-leak 1）。
 
+### 候选重发前自检修复（kimi k3 方案与本轮修复的交叉复核）
+
+发布前对 0.9.9 候选内容做整体自检（版本/扩展一致性、守卫测试、全量 14 包 +
+nosqlite 3 包、benchmark A/B、NAT 端到端），并对 kimi k3 最近方案
+（a46df706 ternary/branch-hint 守卫、c46ecb57 编排去重/模式复用）与本轮 26
+commits 的交叉影响逐点复核，发现并修正三处：
+
+- **vendor 分支提示宏漏识（会致误报）**：本轮 NE-08 将 `UnwrapBranchHint` 收窄为
+  精确集（likely/unlikely/__builtin_expect），静默丢失了 kimi k3 a46df706 引入的
+  `*_likely`/`*_unlikely` vendor 拼写支持——企业全大写宏（`VOS_LIKELY` /
+  `HRP_UNLIKELY` / `OS_LIKELY`）不再被剥离，guard 失效、被保护的解引用会误报。
+  恢复 vendor 通道但**要求全大写后缀**：企业惯例命中，而小写用户检查函数
+  （`check_likely`）不被误剥（误剥会制造幻影 guard —— 正是 NE-08 要修的方向）；
+  小写 vendor 拼写保持 fail-open。
+- **field_read / deref_read 源 tier 误归（会误导 AI 研判）**：ND-02（`p = p->next`）
+  与 NP-04（`r = *(T **)msg`）新增的两个 origin 在 tier 判定链中无分支，落到
+  `external-unknown`——其 verdict fact 声称"唯一的 NULL 源是未证明的外部调用"，
+  而实际源是自引用字段读取 / 解引用读取，AI 会被指引去找不存在的调用。
+  `hasOpaqueSource` 纳入这两个 origin（同为"扫描树看不见的开放世界值"）→
+  opaque-origin tier，并放宽 opaque-origin 的措辞覆盖之。
+- **编排示例与批次规则不一致（会诱导过度拆分）**：kimi k3 c46ecb57 的 re-review
+  owner 示例用 `null-deref #1–50`，而上方两行的批次规则设的是 100 候选 CONTEXT
+  ceiling（194 → 2 × 97）——50 的例子与规则矛盾、重新暗示了刚被成本规则移除的
+  过度拆分。改为 `#1–100`。
+
+验证：全量 14 包 + nosqlite 3 包绿；benchmark A/B 与基线完全一致（PASS 159/226、
+FP 2/113、FN 62）；NAT 端到端复测与修复前逐条一致（模式 A/B/C 零候选、7 条对照
+auto-confirmed）。自检另记录两处不构成发布问题的观察：`MEMORY_RELEASE` 的
+`free_api` 在无 release 调用时默认取 alloc API（只写不读的字段，无当前消费者）；
+候选人选日期沿用首次 prepare 日（候选迭代惯例）。
+
 ## [0.9.8] - 2026-10-21
 
 ### 两项"待拍板"的结论（已按方案落地，不再等决策）
