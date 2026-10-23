@@ -119,6 +119,18 @@ void call(void *x) { proc(x); }
 `,
 			wantDeref: true,
 		},
+		{
+			name: "NP-04: deref-read through a cast void* param is NOT contract-derived",
+			src: `
+typedef struct { int f; } T;
+void proc(void *msg) {
+    T *r = *(T **)msg;
+    r->f = 1;
+}
+void call(void *x) { proc(x); }
+`,
+			wantDeref: true,
+		},
 	}
 
 	for _, tc := range cases {

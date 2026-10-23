@@ -219,11 +219,14 @@ func (cc *contractCtx) derivedExpr(expr parser.Node, line, depth int, models *nu
 			return cc.derivedExpr(op, line, depth, models)
 		}
 	case "pointer_expression":
-		for _, c := range expr.NamedChildren() {
-			if cc.derivedExpr(c, line, depth, models) {
-				return true
-			}
-		}
+		// A dereference READ (`*p`, `*(T **)msg`) yields the value p POINTS TO,
+		// whose nullability is open-world and unrelated to p's own contract —
+		// the contract guarantees p itself is valid, never that *p is non-null.
+		// An address-of (`&x`) is a non-null address by construction, but it is
+		// likewise not "derived from a void* parameter". Neither shape is
+		// contract-derived; previously the recursive walk dismissed the genuine
+		// null-deref in `T *r = *(T **)msg; r->f`.
+		return false
 	case "binary_expression":
 		if op := parser.BinaryOperator(expr); op == "+" || op == "-" {
 			for _, c := range expr.NamedChildren() {

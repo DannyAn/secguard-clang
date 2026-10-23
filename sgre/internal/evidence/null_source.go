@@ -51,6 +51,7 @@ func (d *NullSourceDetector) Detect(ctx context.Context) (DetectResult, error) {
 			d.detectMallocResult(ctx, f, file, assigns, inits, &result)
 			d.detectExplicitNull(ctx, f, file, assigns, inits, &result)
 			d.detectFieldReadSelfAssign(ctx, f, file, assigns, &result)
+			d.detectDerefReadAssign(ctx, f, file, assigns, inits, &result)
 			d.detectMacroNull(ctx, f, file, calls, macros, &result)
 		}
 	})
@@ -228,6 +229,58 @@ func (d *NullSourceDetector) detectFieldReadSelfAssign(ctx context.Context, f *d
 		}
 		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: node.StartLine()}, map[string]string{"variable": name, "origin": "field_read", "definite": "false"}) {
 			result.EventsCreated++
+		}
+	}
+}
+
+// detectDerefReadAssign records a MAY-null source for a dereference-read
+// assignment (`r = *p;`, `T *r = *(T **)msg;`): the value read through p is
+// open-world nullable (the contract on p guarantees p is valid, never that
+// *p is non-null). Only the `*` form counts — `&x` takes an address, which is
+// neither null nor an open-world read. A non-pointer lhs (e.g. `int v = *pi;`)
+// harmlessly collects a source that no dereference will ever consume. Never
+// definite: the read value is an assumption, not a proof.
+func (d *NullSourceDetector) detectDerefReadAssign(ctx context.Context, f *db.Function, file *db.File, assigns, inits []parser.Node, result *DetectResult) {
+	checkNode := func(node parser.Node) {
+		lhs, rhs, ok := node.AssignParts()
+		if !ok {
+			return
+		}
+		name := assignedVariable(lhs)
+		if name == "" {
+			return
+		}
+		inner := rhs
+		for inner.Kind() == "cast_expression" || inner.Kind() == "parenthesized_expression" {
+			kids := inner.NamedChildren()
+			var next parser.Node
+			for _, k := range kids {
+				if k.Kind() == "type_descriptor" {
+					continue
+				}
+				next = k
+				break
+			}
+			if next.Kind() == "" {
+				break
+			}
+			inner = next
+		}
+		if inner.Kind() != "pointer_expression" || !strings.HasPrefix(strings.TrimSpace(inner.Text()), "*") {
+			return
+		}
+		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: node.StartLine()}, map[string]string{"variable": name, "origin": "deref_read", "definite": "false"}) {
+			result.EventsCreated++
+		}
+	}
+	for _, assign := range assigns {
+		if funcLineRange(f, assign.StartLine()) {
+			checkNode(assign)
+		}
+	}
+	for _, init := range inits {
+		if funcLineRange(f, init.StartLine()) {
+			checkNode(init)
 		}
 	}
 }
