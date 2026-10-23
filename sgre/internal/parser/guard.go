@@ -353,11 +353,14 @@ func isCIdentPart(c byte) bool {
 
 // UnwrapBranchHint strips a branch-prediction hint wrapper from a condition:
 // `unlikely(x)` / `likely(x)` / `__builtin_expect(x, n)` evaluate to exactly
-// x, so the wrapped condition carries the guard semantics. Only these exact
-// spellings unwrap — a *_likely/*_unlikely suffix match would also unwrap a
-// user function (check_likely, my_unlikely_handler) and treat its argument
-// as the condition itself, manufacturing phantom guards. `__builtin_expect`'s
-// first argument is conventionally double-negated
+// x, so the wrapped condition carries the guard semantics. Enterprise vendor
+// macros are conventionally ALL-CAPS (`VOS_LIKELY`, `HRP_UNLIKELY`, `OS_LIKELY`)
+// and are unwrapped by their `_LIKELY` / `_UNLIKELY` suffix — the CAPS suffix is
+// required so a lowercase user checker (`check_likely`, `my_unlikely_handler`)
+// is never unwrapped (that would treat its argument as the condition itself and
+// manufacture a phantom guard). A lowercase vendor spelling stays fail-open:
+// the guard is unrecognized and the candidate survives for the AI.
+// `__builtin_expect`'s first argument is conventionally double-negated
 // (`__builtin_expect(!!(x), 0)`), so paired `!!` negations are stripped too —
 // an odd single `!` is left in place (stripping it would invert the guard's
 // direction).
@@ -373,7 +376,9 @@ func UnwrapBranchHint(cond Node) (Node, bool) {
 	switch name {
 	case "likely", "unlikely", "__builtin_expect":
 	default:
-		return Node{}, false
+		if !strings.HasSuffix(name, "_LIKELY") && !strings.HasSuffix(name, "_UNLIKELY") {
+			return Node{}, false
+		}
 	}
 
 	args := kids[1].NamedChildren()

@@ -84,6 +84,30 @@ func TestGuardedNonnullVarsExactHintUnwrapped(t *testing.T) {
 	}
 }
 
+// Enterprise vendor hint macros are conventionally ALL-CAPS (Huawei VOS/HRP
+// style). The ALL-CAPS suffix is unwrapped, so a guarded dereference is not
+// falsely reported — while a lowercase user checker (check_likely) stays
+// uncut, and a lowercase vendor spelling stays fail-open.
+func TestGuardedNonnullVarsCapsVendorHintUnwrapped(t *testing.T) {
+	for _, spelling := range []string{"VOS_LIKELY", "HRP_LIKELY", "OS_UNLIKELY", "DBM_LIKELY"} {
+		src := "void f(void *p) {\n    if (" + spelling + "(p != NULL)) {\n    }\n}\n"
+		tree, err := NewParser().Parse([]byte(src), "fixture.c")
+		if err != nil {
+			t.Fatalf("parse %s: %v", spelling, err)
+		}
+		var cond Node
+		for _, ifs := range tree.RootNode().FindAll("if_statement") {
+			if c := ifs.ChildByFieldName("condition"); c != nil {
+				cond = *c
+				break
+			}
+		}
+		if vars := GuardedNonnullVars(cond); len(vars) != 1 || vars[0] != "p" {
+			t.Errorf("GuardedNonnullVars(%s(p != NULL)) = %v, want [p] (ALL-CAPS vendor hint)", spelling, vars)
+		}
+	}
+}
+
 // The plain form must keep working (no regression from the structural unwrap).
 func TestGuardedNonnullVarsPlainGuard(t *testing.T) {
 	src := `void f(void *p) {
