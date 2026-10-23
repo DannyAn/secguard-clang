@@ -183,3 +183,15 @@ func isBareIdent(s string) bool {
 	}
 	return true
 }
+
+// DeclaredProofs implements ProofRegistrar.
+func (f *RangeOOBFilter) DeclaredProofs() []Proof {
+	return []Proof{
+		{
+			Class:    ProofClassInterval,
+			Rule:     "index-past-capacity",
+			Evidence: "interval analysis proves the access index lower bound is >= the known capacity",
+			TestRef:  "TestRangeOOBFilter",
+		},
+	}
+}

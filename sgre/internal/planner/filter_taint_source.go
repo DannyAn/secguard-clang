@@ -1439,3 +1439,15 @@ func isPassthroughWrapper(body parser.Node, sinkParamName string) bool {
 	}
 	return false
 }
+
+// DeclaredProofs implements ProofRegistrar.
+func (f *TaintSourceFilter) DeclaredProofs() []Proof {
+	return []Proof{
+		{
+			Class:    ProofClassCFGMustDataflow,
+			Rule:     "taint-reaches-sink-on-all-paths",
+			Evidence: "taint dataflow over CALL/PARAM_BINDING/RETURN edges proves attacker-controlled data reaches the sink",
+			TestRef:  "TestTaintSourceFilter",
+		},
+	}
+}

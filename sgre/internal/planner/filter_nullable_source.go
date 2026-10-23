@@ -1403,3 +1403,15 @@ func mergedIterMacros() map[string][]int {
 	}
 	return out
 }
+
+// DeclaredProofs implements ProofRegistrar.
+func (f *NullableSourceFilter) DeclaredProofs() []Proof {
+	return []Proof{
+		{
+			Class:    ProofClassCFGMustDataflow,
+			Rule:     "must-null-on-all-paths",
+			Evidence: "reaching-sources must-dataflow over the statement CFG proves a NULL source reaches the dereference on every path",
+			TestRef:  "TestNullableSourceFilter",
+		},
+	}
+}

@@ -244,3 +244,15 @@ func isLiteralNode(node parser.Node) bool {
 	}
 	return false
 }
+
+// DeclaredProofs implements ProofRegistrar.
+func (f *DoubleFreeFilter) DeclaredProofs() []Proof {
+	return []Proof{
+		{
+			Class:    ProofClassCFGMustDataflow,
+			Rule:     "must-double-free-on-all-paths",
+			Evidence: "freed-state must-dataflow proves the first free reaches the second free on every path",
+			TestRef:  "TestDoubleFreeFilter",
+		},
+	}
+}

@@ -157,3 +157,15 @@ func (f *LifetimeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Cand
 	}
 	return flows, nil
 }
+
+// DeclaredProofs implements ProofRegistrar.
+func (f *LifetimeFilter) DeclaredProofs() []Proof {
+	return []Proof{
+		{
+			Class:    ProofClassCFGMustDataflow,
+			Rule:     "must-freed-on-all-paths",
+			Evidence: "freed-state must-dataflow proves the pointer is freed on every path reaching the use",
+			TestRef:  "TestLifetimeFilter",
+		},
+	}
+}

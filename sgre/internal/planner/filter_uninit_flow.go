@@ -691,3 +691,15 @@ func scopeOracleOf(bound map[string]bool) func(string) bool {
 	}
 	return func(name string) bool { return bound[name] }
 }
+
+// DeclaredProofs implements ProofRegistrar.
+func (f *DefiniteInitFilter) DeclaredProofs() []Proof {
+	return []Proof{
+		{
+			Class:    ProofClassCFGMustDataflow,
+			Rule:     "must-uninit-on-all-paths",
+			Evidence: "definite-init must-dataflow proves no write reaches the read on any path",
+			TestRef:  "TestDefiniteInitFilter",
+		},
+	}
+}

@@ -331,3 +331,15 @@ func declIdentifierName(decl parser.Node) string {
 	}
 	return ""
 }
+
+// DeclaredProofs implements ProofRegistrar.
+func (f *ReturnCheckFilter) DeclaredProofs() []Proof {
+	return []Proof{
+		{
+			Class:    ProofClassTypeInherent,
+			Rule:     "known-failure-contract-unchecked",
+			Evidence: "callee has a known failure-return contract (declared allocator / library table / body-verified wrapper) and the caller ignores it",
+			TestRef:  "TestReturnCheckFilter",
+		},
+	}
+}

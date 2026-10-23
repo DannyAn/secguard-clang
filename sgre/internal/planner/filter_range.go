@@ -305,3 +305,15 @@ func divisorShape(divisor string) string {
 		return "compound"
 	}
 }
+
+// DeclaredProofs implements ProofRegistrar.
+func (f *RangeFilter) DeclaredProofs() []Proof {
+	return []Proof{
+		{
+			Class:    ProofClassInterval,
+			Rule:     "divisor-always-zero",
+			Evidence: "interval analysis proves the divisor is exactly zero at the division site",
+			TestRef:  "TestRangeFilter",
+		},
+	}
+}
