@@ -10,15 +10,16 @@ func init() {
 		EvidenceType:      "SIZEOF_MISUSE",
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "default",
-		FilterFactories:    chainDefault(),
+		FilterFactories:   chainDefault(),
 		BuildVerdictFacts: buildSizeofMisuseVerdictFacts,
 		Categories:        []string{"sizeof_pointer", "sizeof_pointer_ambig"},
-		// `sizeof(p)` on a single-level pointer `T *p` is provably the pointer
-		// width where the object size is intended (CWE-467) — confirmed. A
-		// pointer-to-pointer `T **p` is legitimately sized by `sizeof(p)` when
-		// allocating an array of pointers, so it stays suspected.
+		// `sizeof(p)` on a single-level pointer `T *p` is the pointer width where
+		// the object size is intended (CWE-467) — but whether the object size WAS
+		// intended is a context question the detector cannot prove (the redis scan
+		// dismissed 11/11 of these auto-confirms). Both categories stay suspected
+		// for the AI.
 		CategoryConfidence: map[string]string{
-			"sizeof_pointer":       "confirmed",
+			"sizeof_pointer":       "suspected",
 			"sizeof_pointer_ambig": "suspected",
 		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {

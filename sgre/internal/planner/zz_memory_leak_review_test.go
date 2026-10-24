@@ -247,8 +247,12 @@ int conditional(int c) {
 	if !ok {
 		t.Fatalf("definite must be a candidate, got %v", keysOf(got))
 	}
-	if c.SuspicionLevel != "confirmed" {
-		t.Errorf("definite (never freed/escaped/returned) should be confirmed, got %q", c.SuspicionLevel)
+	// The "definite leak" proof (no free/escape/transfer) was found unsound on
+	// real-world code (custom deallocators/containers the closed-world escape
+	// analysis cannot see), so it no longer auto-confirms — it stays suspected
+	// for the AI, exactly like the conditional case.
+	if c.SuspicionLevel != "suspected" {
+		t.Errorf("definite (never freed/escaped/returned) should stay suspected (auto-confirm demoted), got %q", c.SuspicionLevel)
 	}
 	if cc, ok := got["conditional"]; ok && cc.SuspicionLevel == "confirmed" {
 		t.Errorf("conditional (freed on one path only) must stay suspected, got %q", cc.SuspicionLevel)

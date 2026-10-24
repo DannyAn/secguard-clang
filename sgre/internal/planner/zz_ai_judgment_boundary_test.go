@@ -47,9 +47,6 @@ func TestConfirmedTierPolicy(t *testing.T) {
 			"weak_random":    "literal: rand()/srand() are weak PRNGs by CWE-338 definition",
 			"undersized_key": "literal: key size below the algorithm's minimum",
 		},
-		"sizeof-misuse": {
-			"sizeof_pointer": "literal: sizeof(pointer) vs sizeof(pointee) is always wrong",
-		},
 		"signed-compare": {
 			"signed_compare": "literal: signed/unsigned comparison with a provable sign",
 		},
@@ -160,7 +157,6 @@ func TestDynamicConfirmedUpgradesRegistered(t *testing.T) {
 		"LockOrderFilter":            {ProofClassCFGMustDataflow},
 		"SharedAccessFilter":         {ProofClassCFGMustDataflow},
 		"DefiniteInitFilter":         {ProofClassCFGMustDataflow},
-		"LeakProofFilter":            {ProofClassCFGMustDataflow},
 		"HardcodedSecretProofFilter": {ProofClassLiteral},
 	}
 

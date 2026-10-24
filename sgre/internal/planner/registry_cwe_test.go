@@ -272,7 +272,7 @@ func TestRegistry_SizeofMisuseCategoryConfidence(t *testing.T) {
 		t.Errorf("sizeof-misuse DefaultSuspicion = %q, want suspected (backstop for unknown categories)", spec.DefaultSuspicion)
 	}
 	cases := map[string]string{
-		"sizeof_pointer":       "confirmed", // single `*`: sizeof(p) is provably the pointer width, CWE-467
+		"sizeof_pointer":       "suspected", // the "object size intended" context cannot be proved — stay suspected
 		"sizeof_pointer_ambig": "suspected", // `**`: sizeof(p) may legitimately size an array of pointers
 	}
 	for category, want := range cases {

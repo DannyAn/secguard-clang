@@ -169,11 +169,19 @@ func (f *ReleaseFilter) Apply(ctx context.Context, candidates []Candidate) ([]Ca
 	return kept, dropped, nil
 }
 
-// LeakProofFilter promotes a leak candidate whose detector proved the pointer/
-// handle is DEFINITELY lost — no release/transfer/escape on any path, marked by
-// the detector's `definite` property on the seed event — to the confirmed tier
-// (ML-01/18, RL-03). A conditional leak (released/escaped on some path only)
-// carries no marker and stays suspected for the AI.
+// LeakProofFilter previously promoted a leak candidate whose detector proved the
+// pointer/handle DEFINITELY lost (the detector's `definite` marker) to the
+// confirmed tier. The redis real-world scan showed that proof is UNSOUND at
+// scale: the detector's free/escape/transfer analysis is closed-world (it only
+// knows libc + a modeled third-party table), so a real codebase's custom
+// deallocators (`sdsfreesplitres`), container stores (`listAddNodeHead`), and
+// ownership wrappers read as "no release" and the "definite" leak auto-confirmed
+// ~100% false positives (626/627 memory-leak, 351/351 resource-leak dismissed on
+// re-review). The filter now PASSES THROUGH — `definite` stays suspected and the
+// AI judges it from the evidence (the detector's `definite` fragment is still
+// rendered, it just no longer auto-confirms). Re-enabling needs a closed-world
+// soundness guard (only auto-confirm when the function body contains NO unknown
+// call that could release/transfer/escape the value).
 type LeakProofFilter struct {
 	store     db.Store
 	eventType string
@@ -186,24 +194,9 @@ func NewLeakProofFilter(store db.Store, eventType string) *LeakProofFilter {
 func (f *LeakProofFilter) Name() string { return "leak_proof" }
 
 func (f *LeakProofFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, []Dismissed, error) {
-	events, err := f.store.ListEventsByType(ctx, f.eventType)
-	if err != nil {
-		return nil, nil, fmt.Errorf("leak proof: %w", err)
-	}
-	definite := make(map[int64]bool, len(events))
-	for _, e := range events {
-		if parseEventProps(e.Properties).Definite == "true" {
-			definite[e.ID] = true
-		}
-	}
-	kept := make([]Candidate, 0, len(candidates))
-	for _, c := range candidates {
-		if definite[c.DerefEventID] {
-			c.SuspicionLevel = "confirmed"
-		}
-		kept = append(kept, c)
-	}
-	return kept, nil, nil
+	// No promotion: the "definite leak" proof is unsound on real-world code (see
+	// the type comment). Candidates stay at their seeded suspicion tier.
+	return candidates, nil, nil
 }
 
 // HardcodedSecretProofFilter promotes a hardcoded-secret candidate whose
@@ -247,14 +240,9 @@ func (f *HardcodedSecretProofFilter) Apply(ctx context.Context, candidates []Can
 
 // DeclaredProofs implements ProofRegistrar for LeakProofFilter.
 func (f *LeakProofFilter) DeclaredProofs() []Proof {
-	return []Proof{
-		{
-			Class:    ProofClassCFGMustDataflow,
-			Rule:     "definite-leak-no-release",
-			Evidence: "detector proved no release/escape/transfer reaches the pointer on any CFG path",
-			TestRef:  "TestLeakProofFilter",
-		},
-	}
+	// No confirmed promotion: the definite-leak proof was found unsound on
+	// real-world code and the filter now passes through (suspected).
+	return nil
 }
 
 // DeclaredProofs implements ProofRegistrar for HardcodedSecretProofFilter.
