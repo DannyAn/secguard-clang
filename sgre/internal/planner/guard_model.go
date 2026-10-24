@@ -190,7 +190,7 @@ func statementGuardVars(stmt parser.Node, macroGuards map[string]macros.GuardSum
 	var vars []string
 	for _, call := range stmt.FindAll("call_expression") {
 		name := callName(call)
-		if name == "assert" {
+		if isAssertLikeName(name) {
 			if args := callArgs(call); len(args) > 0 {
 				vars = append(vars, parser.GuardedNonnullVars(args[0])...)
 			}
@@ -214,6 +214,17 @@ func statementGuardVars(stmt parser.Node, macroGuards map[string]macros.GuardSum
 		}
 	}
 	return vars
+}
+
+// isAssertLikeName reports whether a call target is an assert-style guard:
+// the standard `assert`, or a project's own `serverAssert`/`ASSERT`/`Assert`
+// macro, which establishes its first argument's non-null-ness on fall-through
+// (a false condition aborts). The extra targets matter on real codebases
+// (redis `serverAssert(x != NULL)`) that never spell it `assert`. The argument
+// itself is still gated by GuardedNonnullVars, so `serverAssert((n % 2) == 0)`
+// and a string-message `_serverAssert("...")` establish nothing.
+func isAssertLikeName(name string) bool {
+	return strings.HasSuffix(strings.ToLower(name), "assert")
 }
 
 // helperGuard returns the helper name, its arguments, and whether the guard's

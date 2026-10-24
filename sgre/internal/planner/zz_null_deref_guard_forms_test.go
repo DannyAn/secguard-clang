@@ -174,4 +174,28 @@ int f(struct s *p, int mode)
 			t.Errorf("__builtin_expect(!!(p == NULL), 0) fall-through is guarded: got %d candidate(s)", n)
 		}
 	})
+
+	// The redis `hashslot ? *hashslot : INVALID_CLUSTER_SLOT` shape: a ternary
+	// truthiness guard protects a caller-null PARAMETER's dereference. The
+	// parameter has no positioned source (SourceLine 0) and its entry seed is
+	// definite, but the ternary branch still guarantees non-null on that path —
+	// it must not auto-confirm.
+	t.Run("ternary-guard-caller-null-param", func(t *testing.T) {
+		src := `int f(int *p)
+{
+    int slot = p ? *p : -1;
+    return slot;
+}
+`
+		res := planNullDerefFullSrc(t, src)
+		for _, c := range res.Candidates {
+			t.Logf("candidate: fn=%s var=%s line=%d tier=%s suspicion=%s hint=%s",
+				c.Target.Function, c.Target.Variable, c.Target.Line, c.NullOriginTier, c.SuspicionLevel, c.Hint)
+		}
+		if n := len(res.Candidates); n != 0 {
+			c := res.Candidates[0]
+			t.Errorf("ternary truthiness guard on a caller-null param: got %d candidate(s), first: fn=%s var=%s suspicion=%s",
+				n, c.Target.Function, c.Target.Variable, c.SuspicionLevel)
+		}
+	})
 }

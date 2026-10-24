@@ -87,3 +87,35 @@ void assert_err0_malloc(void)
 		t.Errorf("assert_err0_malloc should STAY flagged (assert(p != err0) does not prove p non-null)")
 	}
 }
+
+// TestNullDeref_AssertLikeGuard pins a PROJECT assert macro: `serverAssert(p !=
+// NULL)` (never spelled `assert`) establishes p non-null on fall-through — the
+// redis shape. The argument is still gated by GuardedNonnullVars, so
+// `serverAssert((n % 2) == 0)` (a non-null-check) establishes nothing.
+func TestNullDeref_AssertLikeGuard(t *testing.T) {
+	src := `#include <stdlib.h>
+extern void abort(void);
+#define serverAssert(_e) ((_e) ? (void)0 : abort())
+
+void server_assert_guard(void)
+{
+    int *p = malloc(sizeof(int));
+    serverAssert(p != NULL);
+    *p = 1;
+}
+
+void server_assert_non_null_check(void)
+{
+    int *p = malloc(sizeof(int));
+    serverAssert((*p % 2) == 0);
+    *p = 1;
+}
+`
+	result := planNullDerefGuardExit(t, src)
+	if c := candidateForFunc(t, result, "server_assert_guard"); c != nil {
+		t.Errorf("server_assert_guard: serverAssert(p != NULL) must guard the deref, got %q", c.SuspicionLevel)
+	}
+	if c := candidateForFunc(t, result, "server_assert_non_null_check"); c == nil {
+		t.Error("server_assert_non_null_check: serverAssert((*p % 2)==0) is not a null guard, must STAY flagged")
+	}
+}

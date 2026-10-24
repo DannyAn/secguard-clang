@@ -1003,7 +1003,12 @@ func guardedDerefEntries(branch parser.Node, variable string) []ternaryGuardEntr
 			out = append(out, ternaryGuardEntry{variable: variable, line: fe.StartLine()})
 		}
 	}
-	for _, pd := range branch.FindAll("pointer_dereference_expression") {
+	for _, pd := range branch.FindAll("pointer_expression") {
+		// pointer_expression covers both `*p` (deref) and `&x` (address-of);
+		// only the deref is a null-deref sink, so skip the address-of form.
+		if strings.HasPrefix(strings.TrimSpace(pd.Text()), "&") {
+			continue
+		}
 		kids := pd.NamedChildren()
 		if len(kids) == 1 {
 			inner := stripGuardCasts(kids[0])
