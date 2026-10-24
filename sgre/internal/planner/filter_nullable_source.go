@@ -1049,6 +1049,7 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 	}
 
 	cache := newFileParseCache(f.parser)
+	noreturnCalls := collectNoreturnCalls(cache, funcs, fileByID)
 
 	// Transitive closure: from seedNames, follow `p = f()` assignments to find
 	// every function the return-nullability query can reach.
@@ -1208,7 +1209,7 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 			analyzer.entrySeeds = entrySeeds
 			analyzer.definiteEntrySeeds = definiteEntrySeeds
 			flow := analyzer.analyzeFlow(ctx, info.fn, info.body, info.root, nullGenByLine(lineSources), nil, true, false)
-			if ns := returnsNullability(info.body, flow, info.params, retNullable, definedNames, info.arrs, srcs, strings.TrimSpace(info.fn.ReturnType)); ns != retNotNull {
+			if ns := returnsNullability(info.body, flow, info.params, retNullable, definedNames, info.arrs, srcs, strings.TrimSpace(info.fn.ReturnType), noreturnCalls); ns != retNotNull {
 				retNullable[info.fn.Name] = ns
 				defAssumed[info.fn.ID] = ns == retNullAssumed
 				changed = true

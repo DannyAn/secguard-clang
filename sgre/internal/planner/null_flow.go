@@ -1589,11 +1589,158 @@ const (
 // enclosing function's declared return type: a bare integer zero (or a bare
 // NULL identifier) in a never-null scalar return function is the integer
 // zero, not a null pointer — the return-type gate.
-func returnsNullability(body parser.Node, flow *flowResult, params map[string]int, retNullable map[string]retNullability, definedNames map[string]bool, arrs *arrayBaseInfo, srcs []nullSource, fnRetType string) retNullability {
+// collectNoreturnCalls returns the set of call-target names that never return:
+// the standard noreturn functions (abort/exit/...), in-scan functions whose body
+// has no return statement and calls a noreturn target (transitive), and global
+// function-pointer variables initialized to a noreturn function
+// (`static void (*X)(size_t) = zmalloc_default_oom;`). This is how
+// `if (!p) zmalloc_oom_handler(size)` (a pointer to a function that aborts)
+// earns "the null path dies here" without a config entry — resolved from the
+// scan tree itself.
+func collectNoreturnCalls(cache *fileParseCache, funcs []*db.Function, fileByID map[int64]*db.File) map[string]bool {
+	noreturn := make(map[string]bool, len(apikb.NoReturnCalls))
+	for name := range apikb.NoReturnCalls {
+		noreturn[name] = true
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, fn := range funcs {
+			if noreturn[fn.Name] {
+				continue
+			}
+			file := fileByID[fn.FileID]
+			if file == nil {
+				continue
+			}
+			body, root := cache.get(file, fn)
+			if body.Kind() == "compound_statement" {
+				// A function with no return statement that calls a noreturn
+				// target never returns (its only exits are noreturn calls).
+				if len(body.FindAll("return_statement")) == 0 {
+					for _, call := range body.FindAll("call_expression") {
+						if noreturn[callName(call)] {
+							noreturn[fn.Name] = true
+							changed = true
+							break
+						}
+					}
+				}
+			}
+			// Function-pointer globals: `static void (*X)(...) = Y;` where Y is
+			// noreturn makes X() noreturn.
+			if root.Kind() != "" {
+				for _, decl := range root.FindAll("declaration") {
+					for _, init := range decl.FindAll("init_declarator") {
+						lhs := init.ChildByFieldName("declarator")
+						rhs := init.ChildByFieldName("value")
+						if lhs == nil || rhs == nil || rhs.Kind() != "identifier" {
+							continue
+						}
+						name := functionPointerVarName(lhs.Text())
+						if name == "" || noreturn[name] {
+							continue
+						}
+						if noreturn[rhs.Text()] {
+							noreturn[name] = true
+							changed = true
+						}
+					}
+				}
+			}
+		}
+	}
+	return noreturn
+}
+
+// functionPointerVarName pulls the variable name out of a function-pointer
+// declarator text `(*zmalloc_oom_handler)(size_t)` → "zmalloc_oom_handler".
+// A non-function-pointer declarator returns "".
+func functionPointerVarName(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) < 3 || s[0] != '(' || s[1] != '*' {
+		return ""
+	}
+	s = s[2:]
+	for i, c := range s {
+		if c == ')' {
+			return strings.TrimSpace(s[:i])
+		}
+	}
+	return ""
+}
+
+// abortGuardVar returns the variable an `if (!v) <noreturn-call>` guard protects:
+// the consequence calls a never-returning target, so the null path dies there
+// and the fall-through (and any later `return v`) is non-null.
+func abortGuardVar(ifStmt parser.Node, noreturnCalls map[string]bool) string {
+	cond := ifStmt.ChildByFieldName("condition")
+	if cond == nil {
+		return ""
+	}
+	vars := parser.NullCheckedVars(*cond)
+	if len(vars) == 0 {
+		return ""
+	}
+	cons := ifStmt.ChildByFieldName("consequence")
+	if cons == nil || !callsNoreturn(*cons, noreturnCalls) {
+		return ""
+	}
+	return vars[0]
+}
+
+// callsNoreturn reports whether node (a guard consequence) contains a call to a
+// never-returning target.
+func callsNoreturn(node parser.Node, noreturnCalls map[string]bool) bool {
+	for _, call := range node.FindAll("call_expression") {
+		if noreturnCalls[callName(call)] {
+			return true
+		}
+	}
+	return false
+}
+
+// isAbortGuardedReturn reports whether a return expression is a bare identifier
+// (or a cast/paren of one) that an `if (!v) <noreturn>` guard protects.
+func isAbortGuardedReturn(expr parser.Node, abortGuarded map[string]bool) bool {
+	inner := expr
+	for inner.Kind() == "cast_expression" || inner.Kind() == "parenthesized_expression" {
+		kids := inner.NamedChildren()
+		var next parser.Node
+		for _, k := range kids {
+			if k.Kind() == "type_descriptor" {
+				continue
+			}
+			next = k
+			break
+		}
+		if next.Kind() == "" {
+			break
+		}
+		inner = next
+	}
+	return inner.Kind() == "identifier" && abortGuarded[inner.Text()]
+}
+
+func returnsNullability(body parser.Node, flow *flowResult, params map[string]int, retNullable map[string]retNullability, definedNames map[string]bool, arrs *arrayBaseInfo, srcs []nullSource, fnRetType string, noreturnCalls map[string]bool) retNullability {
+	// abort-on-OOM contract: a returned variable guarded by `if (!v) <noreturn>`
+	// is non-null at the return — the null path dies in the never-returning
+	// call. This is the scan-tree resolution of the same contract
+	// config [nullability.non_null_returns] declares by name (xmalloc, zmalloc,
+	// ...): a wrapper `p = alloc(); if (!p) abort(); return p;` never returns
+	// NULL, so a deref of its result is not a null-deref.
+	abortGuarded := map[string]bool{}
+	for _, ifStmt := range body.FindAll("if_statement") {
+		if v := abortGuardVar(ifStmt, noreturnCalls); v != "" {
+			abortGuarded[v] = true
+		}
+	}
 	grade := retNotNull
 	for _, ret := range body.FindAll("return_statement") {
 		children := ret.NamedChildren()
 		if len(children) == 0 {
+			continue
+		}
+		if isAbortGuardedReturn(children[0], abortGuarded) {
 			continue
 		}
 		switch exprRetNullability(children[0], flow, params, retNullable, definedNames, arrs, ret.StartLine(), srcs, fnRetType) {
