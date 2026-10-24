@@ -4,6 +4,30 @@
 
 ## [0.10.0] - 2026-10-24
 
+### 跨函数 double-free 补全（dangling-return 门控）
+
+- `AliasGraph` 新增 `AliasEdgeReturnDangling` 边类型：只有"被调函数无条件 free 其返回值（`free(p); return p;`）"才记为悬空返回；条件释放（`if (fail) { free(p); return NULL; } return p;`）仍是普通 `AliasEdgeReturn`。
+- `detectCrossFunctionDoubleFree` 正式启用，仅按 `AliasEdgeReturnDangling` 聚合跨函数两次释放（工厂内部 free + 调用方再 free），修正了架构重构提交中"gated on return-alias"但实际未启用/门控不足的缺陷；事件定位改为第二次 free，与函数内 double-free 约定一致。
+- 参数别名、活返回、同一工厂多次调用均不会被合并（消除 allocator.c 式误报）。
+
+### AliasGraph 全局别名完整实现
+
+- indexer 新增 `file_scope_variables` 表（static/extern 区分，纯加法 schema），暴露文件作用域符号表。
+- `AliasKey` 新增 `FileID`：`static` 全局按文件隔离、`extern` 全局程序级共享；`g = p` 仅当 `g` 是已声明文件作用域变量时才记全局别名（未知名不再误判）。
+
+### Evidence Code Context 升级为"相关路径段"
+
+- `resolveCalleeDefs` 去掉 3 类型硬编码门控，对全部类型解析 in-scan callee 定义；报告层由 `CalleeDefFile` 驱动，任何携带 in-scan callee 的类型都嵌入 callee 体（保留类型化引导语）。
+
+### 缺陷修复
+
+- `SummaryQuerier` 的 `joinIntervals` Top 分支写反（不健全）已修复并补回归测试。
+
+### benchmark 防护网
+
+- `validate-benchmark.py` 的 `finding` 用例同时认 `candidates.sarif`（recall 覆盖 suspected 层，68/114 → 114/114）；`no_finding` 仍只认 `result.sarif`（auto-confirmed FP=0 红线不变）。
+- 新增 `p30_cross_fn_return_double_free.c` 用例；修复 `use_after_free` 裸拼写映射。
+
 ### 架构重构（2026Q4）：graph 语义查询服务 + 证明链机器守卫 + 并发友好 CFG 缓存
 
 本版本是**架构性升级**（对应 `docs/kimi_k3_架构设计检视.md` 与 `docs/kimi_k3_架构优化改善实施方案.md`），不动 CLI 契约、不改 vuln type 名单、不改 CWE 映射，全部改动在 sgre 引擎内部。用户可见收益：plan 阶段 CFG 重复构建消除（cache 命中率 90.6%）、confirmed 精准性从"文档约束"升级为"构建约束"、AI 举证链路进一步结构化。
