@@ -62,7 +62,32 @@ var floatKinds = map[string]bool{
 // spelling is not a recognized integer / float type (a typedef, a struct
 // name, a pointer — those need the caller to look through repofacts /
 // declarator structure).
+//
+// The `unsigned ` / `signed ` prefixes are handled by flipping the default
+// signedness of the base spelling: `unsigned long` → Uint64, `signed char`
+// → Int8 (plain `char` is signed by default in our model).
 func TypeByName(name string) (Type, bool) {
+	// Peel signed/unsigned prefixes.
+	if rest, ok := stripPrefix(name, "unsigned "); ok {
+		base, found := TypeByName(rest)
+		if !found || base.Kind == TypeFloat {
+			return Type{}, false
+		}
+		base.Kind = TypeUint
+		base.Signed = false
+		base.Name = name
+		return base, true
+	}
+	if rest, ok := stripPrefix(name, "signed "); ok {
+		base, found := TypeByName(rest)
+		if !found || base.Kind == TypeFloat {
+			return Type{}, false
+		}
+		base.Kind = TypeInt
+		base.Signed = true
+		base.Name = name
+		return base, true
+	}
 	if floatKinds[name] {
 		return Type{Kind: TypeFloat, Width: lp64Widths[name], Name: name}, true
 	}
@@ -75,6 +100,15 @@ func TypeByName(name string) (Type, bool) {
 		return Type{Kind: kind, Width: w, Signed: signed, Name: name}, true
 	}
 	return Type{}, false
+}
+
+// stripPrefix removes a leading prefix from s, returning the rest and true
+// when the prefix matched.
+func stripPrefix(s, prefix string) (string, bool) {
+	if len(s) >= len(prefix) && s[:len(prefix)] == prefix {
+		return s[len(prefix):], true
+	}
+	return s, false
 }
 
 // WidthOfName is a convenience for the common "integer width by name" query.

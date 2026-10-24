@@ -116,3 +116,71 @@ func (q *querier) IntervalAt(ctx context.Context, fn *db.Function, v string, lin
 	}
 	return graph.Interval{Lo: iv.lo, Hi: iv.hi}, true
 }
+
+// TypeOf resolves the C type of variable v inside fn from its declaration.
+// The skeleton handles plain declarator shapes (`int x`, `unsigned long n`,
+// `size_t s`, `double d`, `T *p`): it walks fn's body for the declaration
+// of v, reads the type spelling, and resolves it via graph.TypeByName.
+// Typedefs, struct names, and expression shapes return ok=false — callers
+// must treat that as "type unknown" and keep the candidate at its seeded
+// suspicion tier rather than assuming a default.
+func (q *querier) TypeOf(ctx context.Context, fn *db.Function, v string) (graph.Type, bool) {
+	if q.parser == nil || fn == nil || v == "" {
+		return graph.Type{}, false
+	}
+	cache := newFileParseCache(q.parser)
+	file, err := q.store.GetFileByID(ctx, fn.FileID)
+	if err != nil || file == nil {
+		return graph.Type{}, false
+	}
+	body, _ := cache.get(file, fn)
+	if body.Kind() != "compound_statement" {
+		return graph.Type{}, false
+	}
+	// Scan declarations in fn's body for v.
+	for _, decl := range body.FindAll("declaration") {
+		typ := decl.ChildByFieldName("type")
+		if typ == nil {
+			continue
+		}
+		for _, d := range decl.FindAll("init_declarator") {
+			if d.ChildByFieldName("declarator") == nil {
+				continue
+			}
+			name := d.ChildByFieldName("declarator").Text()
+			if stripDeclaratorName(name) != v {
+				continue
+			}
+			if t, ok := graph.TypeByName(typ.Text()); ok {
+				return t, true
+			}
+			return graph.Type{}, false
+		}
+		for _, d := range decl.FindAll("declarator") {
+			if stripDeclaratorName(d.Text()) != v {
+				continue
+			}
+			if t, ok := graph.TypeByName(typ.Text()); ok {
+				return t, true
+			}
+			return graph.Type{}, false
+		}
+	}
+	// Parameter fallback: fn's signature carries parameter types, but the
+	// skeleton does not parse the signature yet — report unknown.
+	return graph.Type{}, false
+}
+
+// stripDeclaratorName peels pointer stars and array brackets off a
+// declarator text so `*p` matches `p`, `arr[8]` matches `arr`.
+func stripDeclaratorName(s string) string {
+	for len(s) > 0 && (s[0] == '*' || s[0] == ' ') {
+		s = s[1:]
+	}
+	for i, c := range s {
+		if c == '[' || c == '(' {
+			return s[:i]
+		}
+	}
+	return s
+}

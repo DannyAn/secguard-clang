@@ -51,6 +51,11 @@ type Querier interface {
 	// inside fn. The boolean is false when the engine cannot produce a
 	// tighter-than-top fact.
 	IntervalAt(ctx context.Context, fn *db.Function, v string, line int) (Interval, bool)
+	// TypeOf reports the C type of the named variable inside fn, resolved
+	// from the variable's declaration. The boolean is false when the type
+	// cannot be determined (a typedef needing repofacts, a field access, an
+	// expression shape the skeleton does not yet handle).
+	TypeOf(ctx context.Context, fn *db.Function, v string) (Type, bool)
 }
 
 // Interval is the integer interval used by the range engine. It is declared
