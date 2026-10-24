@@ -25,44 +25,68 @@ func NewQuerier(store db.Store, p *parser.Parser, cfgCache *graph.CFGCache) grap
 	return &querier{store: store, parser: p, cfgCache: cfgCache}
 }
 
-// MustNonNullAt reports whether variable v is definitely non-null at line
-// inside fn. The current null-flow engine computes reaching-sources, not
-// must-non-null directly, so this conservative implementation returns
-// TriUnknown unless we have an explicit proof (TriYes); a "proven may-null"
-// is NOT sufficient to answer must-non-null = no (a may-null on one path
-// still allows must-non-null on the others).
-//
-// The proper must-non-null engine is Phase 11's work; until then callers
-// must treat TriUnknown as "cannot prove either way" and keep the candidate
-// at its seeded suspicion tier.
-func (q *querier) MustNonNullAt(ctx context.Context, fn *db.Function, v string, line int) graph.Tri {
-	// We do not yet have a must-non-null lattice; the must analysis in
-	// null_flow is for must-NULL (the opposite direction). Returning Unknown
-	// here is the honest answer and prevents a caller from upgrading a
-	// candidate on an unsound proof.
-	_ = ctx
-	_ = fn
-	_ = v
-	_ = line
-	return graph.TriUnknown
+// nullFlowFor builds fn's null-source reaching-sources flow via the shared
+// engine. The sources come from the scan's NULL_VALUE events (the same
+// source pool the NullableSourceFilter consumes), so the answer matches the
+// pipeline's null-deref judgment, not a re-derivation. Returns nil when the
+// body cannot be located (mock store, missing file, non-compound body) — the
+// caller must then fall back to TriUnknown rather than guessing.
+func (q *querier) nullFlowFor(ctx context.Context, fn *db.Function) *flowResult {
+	if q.parser == nil || q.store == nil || fn == nil {
+		return nil
+	}
+	cache := newFileParseCache(q.parser)
+	file, err := q.store.GetFileByID(ctx, fn.FileID)
+	if err != nil || file == nil {
+		return nil
+	}
+	body, root := cache.get(file, fn)
+	if body.Kind() != "compound_statement" {
+		return nil
+	}
+	models, err := buildNullModel(ctx, q.store)
+	if err != nil {
+		return nil
+	}
+	sources := nullSourcesFor(models, fn.ID)
+	a := newFlowAnalyzer(q.store, q.parser, q.cfgCache)
+	return a.analyzeFunction(ctx, fn, body, root, sources)
 }
 
 // MayBeNullAt reports whether variable v may be null at line inside fn: a
-// nullable source reaches the line on some path. This delegates to the
-// null_flow reaching-sources engine when a parse of fn's file is available;
-// without one we return TriUnknown (never a false "no").
+// nullable source reaches the line on some path. TriYes = a source provably
+// reaches; TriUnknown = we cannot prove reach (either no source or the flow
+// could not be built) — the caller must NOT treat TriUnknown as "provably
+// non-null", only as "no evidence of nullability".
 func (q *querier) MayBeNullAt(ctx context.Context, fn *db.Function, v string, line int) graph.Tri {
-	if q.parser == nil || fn == nil {
+	flow := q.nullFlowFor(ctx, fn)
+	if flow == nil {
 		return graph.TriUnknown
 	}
-	// Wire through the file parse cache the same way the filters do. We do
-	// not precompute sources here — callers that need a real flow answer
-	// should still go through NullableSourceFilter which holds the full
-	// context (sources, guards, DFG). This Querier skeleton is the seam,
-	// not a reimplementation of the filter.
-	_ = ctx
-	_ = v
-	_ = line
+	if flow.reaching(v, line) {
+		return graph.TriYes
+	}
+	return graph.TriUnknown
+}
+
+// MustNonNullAt reports whether variable v is definitely non-null at line
+// inside fn. The conservative truth table:
+//   - reachingDefinite(v, line) = true → v is PROVEN null → TriNo (must-non-null
+//     is provably false)
+//   - otherwise → TriUnknown (we have no must-non-null lattice yet; claiming
+//     TriYes without one would let a caller upgrade a candidate on an unsound
+//     proof)
+//
+// A future Phase adds the must-non-null lattice (a guard-dominated reaching
+// analysis); until then this seam stays conservative.
+func (q *querier) MustNonNullAt(ctx context.Context, fn *db.Function, v string, line int) graph.Tri {
+	flow := q.nullFlowFor(ctx, fn)
+	if flow == nil {
+		return graph.TriUnknown
+	}
+	if flow.reachingDefinite(v, line) {
+		return graph.TriNo
+	}
 	return graph.TriUnknown
 }
 
@@ -73,8 +97,6 @@ func (q *querier) IntervalAt(ctx context.Context, fn *db.Function, v string, lin
 	if q.parser == nil || fn == nil {
 		return graph.Interval{Top: true}, false
 	}
-	// Resolve fn's body through the shared file parse cache so we do not
-	// re-read the file per query.
 	cache := newFileParseCache(q.parser)
 	file, err := q.store.GetFileByID(ctx, fn.FileID)
 	if err != nil || file == nil {
