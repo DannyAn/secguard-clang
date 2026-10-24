@@ -260,7 +260,7 @@ func extractCallAliases(g *AliasGraph, fn *db.Function, body parser.Node, fnByNa
 			}
 			a := AliasKey{FunctionID: fn.ID, Name: arg.Text()}
 			b := AliasKey{FunctionID: calleeFn.ID, Name: calleeFacts.params[i]}
-			g.Add(a, b)
+			g.AddWithKind(a, b, AliasEdgeParam)
 		}
 		// Return aliasing: `q = foo()` links q to foo's return-alias sources.
 		// The parent must be an assignment or init_declarator whose LHS is q.
@@ -289,7 +289,7 @@ func extractCallAliases(g *AliasGraph, fn *db.Function, body parser.Node, fnByNa
 		for _, src := range calleeFacts.returnSources {
 			a := AliasKey{FunctionID: fn.ID, Name: name}
 			b := AliasKey{FunctionID: calleeFn.ID, Name: src}
-			g.Add(a, b)
+			g.AddWithKind(a, b, AliasEdgeReturn)
 		}
 	}
 }
@@ -314,9 +314,11 @@ func recordAliasFromAssign(g *AliasGraph, fn *db.Function, lhs, rhs string, loca
 	if locals != nil && !locals[name] {
 		// lhs is not a local of fn — record it as a global alias.
 		a = AliasKey{FunctionID: 0, Name: name}
+		g.AddWithKind(a, AliasKey{FunctionID: fn.ID, Name: base}, AliasEdgeGlobal)
+		return
 	}
 	b := AliasKey{FunctionID: fn.ID, Name: base}
-	g.Add(a, b)
+	g.AddWithKind(a, b, AliasEdgeLocal)
 }
 
 // extractIdentifierFromDeclarator pulls the bare identifier out of a
