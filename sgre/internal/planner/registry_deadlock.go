@@ -11,6 +11,7 @@ func init() {
 		DefaultSuspicion: "suspected",
 		FilterChain:      "deadlock",
 		FilterFactories:    chainDeadlock(),
+		BuildVerdictFacts: buildDeadlockVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{
 				{Type: "deadlock", Role: "sink", Detail: fmt.Sprintf("lock-order inversion (potential deadlock) in %s at line %d", c.FunctionName, c.Line)},
@@ -24,4 +25,21 @@ func init() {
 			return frags
 		},
 	})
+}
+
+func buildDeadlockVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 4)
+	if c.MutexA != "" && c.MutexB != "" {
+		facts = append(facts, VerdictFact{
+			Token:  fmt.Sprintf("lock@%s-%s", c.MutexA, c.MutexB),
+			Detail: fmt.Sprintf("lock-order cycle between %s and %s (LOCK_ORDER graph edge)", c.MutexA, c.MutexB),
+		})
+	}
+	if c.ReverseFunc != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "reverse@" + c.ReverseFunc,
+			Detail: "the reverse-order acquirer: " + c.ReverseFunc + " acquires the two locks in the opposite order",
+		})
+	}
+	return facts
 }

@@ -11,6 +11,7 @@ func init() {
 		DefaultSuspicion: "suspected",
 		FilterChain:      "race-condition",
 		FilterFactories:    chainRaceCondition(),
+		BuildVerdictFacts: buildRaceConditionVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			if c.Category == "shared_data_race" {
 				frags := []EvidenceFragment{
@@ -58,4 +59,27 @@ func init() {
 			return frags
 		},
 	})
+}
+
+func buildRaceConditionVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 4)
+	if c.Category != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "cat@" + c.Category,
+			Detail: "detector category: " + c.Category + " (shared_global_write / toctou / lock_order / shared_access)",
+		})
+	}
+	if c.ThreadFunctions != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "threads@" + c.ThreadFunctions,
+			Detail: "the thread functions that access the shared variable: " + c.ThreadFunctions,
+		})
+	}
+	if c.Mutex != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "mutex@" + c.Mutex,
+			Detail: "the mutex guarding the critical section: " + c.Mutex,
+		})
+	}
+	return facts
 }

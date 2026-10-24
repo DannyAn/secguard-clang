@@ -88,3 +88,18 @@ func TestUncheckedReturnVerdictFacts(t *testing.T) {
 		t.Errorf("discard candidate missing discard token: %v", tokens)
 	}
 }
+
+// TestVerdictFactsCoverageAll25Types pins the P0-3 contract: every registered
+// vuln type has a non-nil BuildVerdictFacts, so no candidate reaches the AI
+// without structured verdict facts (the hint-token-only era is over).
+func TestVerdictFactsCoverageAll25Types(t *testing.T) {
+	for _, name := range AllVulnTypes() {
+		spec, err := GetVulnTypeSpec(name)
+		if err != nil {
+			t.Fatalf("GetVulnTypeSpec(%q): %v", name, err)
+		}
+		if spec.BuildVerdictFacts == nil {
+			t.Errorf("type %s: BuildVerdictFacts is nil", name)
+		}
+	}
+}

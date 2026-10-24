@@ -20,6 +20,7 @@ func init() {
 		CategoryConfidence: map[string]string{
 			"signed_compare": "confirmed",
 		},
+		BuildVerdictFacts: buildSignedCompareVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
 				{Type: "signed_compare", Role: "sink", Detail: fmt.Sprintf("unsigned value compared with zero/negative at line %d in function %s", c.Line, c.FunctionName)},
@@ -27,4 +28,21 @@ func init() {
 			}
 		},
 	})
+}
+
+func buildSignedCompareVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 3)
+	if c.Category != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "cat@" + c.Category,
+			Detail: "detector category: " + c.Category + " (signed_compare)",
+		})
+	}
+	if c.ExpectedType != "" && c.ActualType != "" {
+		facts = append(facts, VerdictFact{
+			Token:  fmt.Sprintf("sign@%s-vs-%s", c.ExpectedType, c.ActualType),
+			Detail: fmt.Sprintf("signed/unsigned comparison: %s vs %s (type-width model proves the sign mismatch)", c.ExpectedType, c.ActualType),
+		})
+	}
+	return facts
 }

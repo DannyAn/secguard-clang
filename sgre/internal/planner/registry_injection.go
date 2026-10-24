@@ -30,6 +30,7 @@ func init() {
 			// variable deliberately collapse (same taint → same defect).
 			return fmt.Sprintf("injection:%d:%s:%s:%s", c.FileID, c.FunctionName, c.Category, c.VariableName)
 		},
+		BuildVerdictFacts: buildInjectionVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{
 				{Type: "unsafe_call", Role: "sink", Detail: fmt.Sprintf("unsafe function call %s in %s at line %d", c.APIName, c.FunctionName, c.Line)},
@@ -41,4 +42,32 @@ func init() {
 			return frags
 		},
 	})
+}
+
+func buildInjectionVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 4)
+	if c.Category != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "cat@" + c.Category,
+			Detail: "detector category: " + c.Category + " (command_injection / sql_injection / xml_injection / log_injection / argument_injection)",
+		})
+	}
+	if c.HasTaintSource {
+		facts = append(facts, VerdictFact{
+			Token:  "tainted",
+			Detail: "the pipeline proved a taint chain from an attacker-controlled source to this sink (command/SQL/XML/CRLF/log)",
+		})
+	} else {
+		facts = append(facts, VerdictFact{
+			Token:  "taint@none",
+			Detail: "no taint chain proven — the classifier must judge whether the argument is a public entry-point parameter or internal/trusted from the signature/context",
+		})
+	}
+	if c.Sanitizer != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "sanitizer@" + c.Sanitizer,
+			Detail: "a caller-defined sanitizer guards the sink: " + c.Sanitizer,
+		})
+	}
+	return facts
 }

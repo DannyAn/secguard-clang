@@ -13,6 +13,7 @@ func init() {
 		FilterFactories:    chainLifetime(),
 		// One freed variable used at many sites is one defect, not one per use.
 		ConvergeByVariable: true,
+		BuildVerdictFacts: buildUseAfterFreeVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{
 				{Type: "use_after_free", Role: "sink", Detail: fmt.Sprintf("variable %s freed at line %d then used at line %d in function %s", c.VariableName, c.FreeLine, c.Line, c.FunctionName)},
@@ -45,4 +46,27 @@ func init() {
 			"Cross-function free→use is not fully tracked",
 		},
 	})
+}
+
+func buildUseAfterFreeVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 4)
+	if c.FreeLine > 0 {
+		facts = append(facts, VerdictFact{
+			Token:  fmt.Sprintf("free@%d", c.FreeLine),
+			Detail: fmt.Sprintf("the free site line: %d", c.FreeLine),
+		})
+	}
+	if c.Category != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "cat@" + c.Category,
+			Detail: "detector category: " + c.Category + " (use_after_free / double_free)",
+		})
+	}
+	if c.MayFree {
+		facts = append(facts, VerdictFact{
+			Token:  "may-free",
+			Detail: "the release is conditional (a release helper frees only on some paths) — the verdict is possible, not proved",
+		})
+	}
+	return facts
 }
