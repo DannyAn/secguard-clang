@@ -314,13 +314,12 @@ func literalInt(n parser.Node) (int64, bool) {
 }
 
 // joinIntervals returns the hull of two intervals (the over-approximation
-// covering both).
+// covering both). Joining anything with the unbounded interval (Top) yields
+// Top: if one return path has an unknown value, the function's return range
+// is unknown, not the concrete interval of the other path.
 func joinIntervals(a, b graph.Interval) graph.Interval {
-	if a.Top {
-		return b
-	}
-	if b.Top {
-		return a
+	if a.Top || b.Top {
+		return graph.Interval{Top: true}
 	}
 	lo, hi := a.Lo, a.Hi
 	if b.Lo < lo {

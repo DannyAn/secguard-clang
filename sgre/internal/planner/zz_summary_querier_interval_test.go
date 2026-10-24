@@ -92,6 +92,63 @@ int returns_mixed(int n) {
 	}
 }
 
+// TestSummaryQuerierIntervalTopJoin pins the hull semantics of the interval
+// join: a function whose return value is a literal on one path and an unknown
+// call on another has an UNKNOWN return range (Top), never the literal's
+// concrete interval. The pre-fix joinIntervals inverted the Top branch and
+// reported the concrete interval, which is unsound (it claims the function
+// always returns the literal).
+func TestSummaryQuerierIntervalTopJoin(t *testing.T) {
+	src := []byte(`
+extern int unknown_call(void);
+int mixed_top(int n) {
+    if (n > 0) {
+        return 1;
+    }
+    return unknown_call();
+}
+`)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "x.c")
+	if err := os.WriteFile(path, src, 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	store := db.NewTestStore(t)
+	p := parser.NewParser()
+	defer p.CloseAll()
+
+	fileID, err := store.InsertFile(context.Background(), &db.File{Path: path, Checksum: "x", LOC: 20})
+	if err != nil {
+		t.Fatalf("insert file: %v", err)
+	}
+	if _, err := store.InsertFunction(context.Background(), &db.Function{
+		FileID: fileID, Name: "mixed_top", Signature: "int mixed_top(int n)",
+		StartLine: 3, EndLine: 9,
+	}); err != nil {
+		t.Fatalf("insert function: %v", err)
+	}
+
+	q := NewSummaryQuerier(store, p, graph.NewCFGCache(), nil)
+	s, _ := q.SummaryOf(context.Background(), "mixed_top")
+	if !s.Interval.Top {
+		t.Errorf("mixed_top.Interval = %+v, want Top (one path returns an unknown call)", s.Interval)
+	}
+}
+
+// TestJoinIntervalsTopHull pins joinIntervals directly: joining Top with a
+// concrete interval must stay Top.
+func TestJoinIntervalsTopHull(t *testing.T) {
+	top := graph.Interval{Top: true}
+	concrete := graph.Interval{Lo: 1, Hi: 5}
+	for _, pair := range [][2]graph.Interval{{top, concrete}, {concrete, top}, {top, top}} {
+		got := joinIntervals(pair[0], pair[1])
+		if !got.Top {
+			t.Errorf("joinIntervals(%+v, %+v) = %+v, want Top", pair[0], pair[1], got)
+		}
+	}
+}
+
 // TestSummaryQuerierCapacityDimension pins the Capacity dimension: a function
 // returning `malloc(N)` with a literal N yields Capacity = N; any other shape
 // yields -1.
