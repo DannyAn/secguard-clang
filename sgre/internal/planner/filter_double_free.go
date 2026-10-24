@@ -56,6 +56,17 @@ func (f *DoubleFreeFilter) Apply(ctx context.Context, candidates []Candidate) ([
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
 	for _, c := range candidates {
+		// A cross-function double-free (`free(q)` in A while `free(p)` in B,
+		// q a cross-function alias of p) cannot be proven by the function-local
+		// must dataflow — the first free's evidence lives in another function's
+		// body. Pass it through as suspected for the AI to judge.
+		if c.CrossFunction {
+			if f.logger != nil {
+				f.logger.Info("double_free cross_function candidate passed through", "fn", c.FunctionName, "line", c.Line, "var", c.VariableName)
+			}
+			kept = append(kept, c)
+			continue
+		}
 		flow := flows[c.FunctionID]
 		if flow == nil {
 			kept = append(kept, c)

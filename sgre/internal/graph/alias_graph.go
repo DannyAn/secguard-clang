@@ -76,6 +76,22 @@ func appendUniqueAlias(xs []AliasKey, k AliasKey) []AliasKey {
 	return append(xs, k)
 }
 
+// CanonicalKey returns the canonical representative of k's alias set: the
+// AliasKey with the smallest (FunctionID, Name) in lexicographic order.
+// Consumers that aggregate events across functions use this to key the
+// group so `free(p)` in A and `free(q)` in B (q a cross-function alias of p)
+// collapse into one defect.
+func (g *AliasGraph) CanonicalKey(k AliasKey) AliasKey {
+	set := g.AliasesOf(k)
+	best := set[0]
+	for _, k2 := range set[1:] {
+		if k2.FunctionID < best.FunctionID || (k2.FunctionID == best.FunctionID && k2.Name < best.Name) {
+			best = k2
+		}
+	}
+	return best
+}
+
 // AliasQuerier is the interface the detectors consume. It is separate from
 // Querier so the two can evolve independently (the null/range flows are
 // flow-sensitive; aliasing is currently flow-insensitive).

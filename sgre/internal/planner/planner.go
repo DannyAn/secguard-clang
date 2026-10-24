@@ -451,6 +451,7 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			FirstCallee:             props.FirstCallee,
 			SecondCallee:            props.SecondCallee,
 			Victims:                 props.Victims,
+			CrossFunction:           props.CrossFunction,
 			DefiniteLeak:            props.Definite == "true",
 			LeakEscapeKind:          props.EscapeKind,
 			LeakFreeLines:           props.FreeLines,

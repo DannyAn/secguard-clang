@@ -8,6 +8,7 @@ import (
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -16,6 +17,15 @@ type DoubleFreeDetector struct {
 	store  db.Store
 	parser *parser.Parser
 	logger *log.Logger
+}
+
+// dfFreeWithFn is a free event paired with the function that produced it,
+// collected across every function so the cross-function aggregation pass
+// can group by the AliasGraph canonical key.
+type dfFreeWithFn struct {
+	fn     *db.Function
+	fe     dfFreeEvent
+	fileID int64
 }
 
 func NewDoubleFreeDetector(store db.Store, p *parser.Parser, logger *log.Logger) *DoubleFreeDetector {
@@ -40,12 +50,12 @@ type dfFreeEvent struct {
 }
 
 type globalDFEntry struct {
-	slot       string
-	line       int
-	callee     string
+	slot         string
+	line         int
+	callee       string
 	secondCallee string
-	victims    []string
-	firstFrees []int
+	victims      []string
+	firstFrees   []int
 	// mayFree is true when at least one contributing first free is conditional
 	// (a callee may-free on some paths). The candidate stays suspected.
 	mayFree bool
@@ -55,6 +65,12 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
 	summaries := buildFuncSummaries(ctx, d.store, d.parser, d.logger)
+
+	// Collect every function's free events for the cross-function aggregation
+	// pass at the end (a free in A of a variable that is a cross-function
+	// alias of a free in B is a double-free the function-local pass cannot
+	// see).
+	var allFrees []dfFreeWithFn
 
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		inits := root.FindAll("init_declarator")
@@ -66,6 +82,10 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 			globalStores := d.findGlobalStoredVars(f, inits, assigns, summaries)
 			freeEvents := d.findAllFreeEvents(f, calls, summaries, globalStores, macros)
 			aliases := findAliases(f, inits, assigns)
+
+			for _, fe := range freeEvents {
+				allFrees = append(allFrees, dfFreeWithFn{fn: f, fe: fe, fileID: file.ID})
+			}
 
 			byVar := make(map[string][]dfFreeEvent)
 			for _, fe := range freeEvents {
@@ -182,7 +202,92 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 			}
 		}
 	})
+
+	// Cross-function double-free aggregation: a free in A of a variable that
+	// is a cross-function alias of a free in B is a double-free the
+	// function-local pass cannot see (`q = foo(); free(q)` in the caller
+	// while foo itself freed the object it returned).
+	//
+	// NOT ENABLED: the current AliasGraph does not tag edge provenance
+	// (return-alias vs parameter-alias), so the aggregation cannot tell
+	// "one object, two owners" (return-alias) from "same name, different
+	// object on every call" (parameter-alias). Enabling it without that
+	// distinction produced a confirmed false-positive on allocator.c's
+	// alloc_entry/release_entry pair (the local `entry` in alloc_entry and
+	// the parameter `entry` in release_entry are NOT the same object).
+	// The builder + ctx plumbing stay in place; enabling requires tagging
+	// return-alias edges in AliasGraph.Add and gating on that tag here.
+	_ = allFrees
 	return result, err
+}
+
+// detectCrossFunctionDoubleFree groups every function's free events by the
+// AliasGraph canonical key of their variable and emits a DOUBLE_FREE event
+// when the same canonical object is freed in two distinct functions. The
+// event carries the same category as a function-local double-free plus
+// `cross_function: true` so the planner's filter chain and the AI classifier
+// can tell the two shapes apart.
+func (d *DoubleFreeDetector) detectCrossFunctionDoubleFree(ctx context.Context, allFrees []dfFreeWithFn) int {
+	ag := graph.AliasGraphFromCtx(ctx)
+	if ag == nil {
+		return 0
+	}
+	byCanonical := make(map[graph.AliasKey][]dfFreeWithFn)
+	for _, f := range allFrees {
+		if f.fe.varName == "" || f.fe.field != "" {
+			continue // field frees stay function-local (the field is the victim)
+		}
+		ck := ag.CanonicalKey(graph.AliasKey{FunctionID: f.fn.ID, Name: f.fe.varName})
+		byCanonical[ck] = append(byCanonical[ck], f)
+	}
+	created := 0
+	for canonical, es := range byCanonical {
+		if len(es) < 2 {
+			continue
+		}
+		// Distinct-function check: same-function multiple frees are handled by
+		// the function-local pass.
+		fnIDs := make(map[int64]bool)
+		for _, e := range es {
+			fnIDs[e.fn.ID] = true
+		}
+		if len(fnIDs) < 2 {
+			continue
+		}
+		// Sort by (function ID, line) so the "second" free is deterministic.
+		sort.Slice(es, func(i, j int) bool {
+			if es[i].fn.ID != es[j].fn.ID {
+				return es[i].fn.ID < es[j].fn.ID
+			}
+			return es[i].fe.line < es[j].fe.line
+		})
+		// The event is attached to the FIRST free's function (the caller that
+		// received the object via `q = foo()` and freed it) — that function is
+		// the one that must be reachable for the candidate to matter; the
+		// second free's function may be a helper that is never called from an
+		// entry point directly.
+		first := es[0]
+		second := es[1]
+		props := map[string]interface{}{
+			"variable":        canonical.Name,
+			"first_free":      first.fe.line,
+			"second_free":     second.fe.line,
+			"category":        "double_free",
+			"cross_function":  true,
+			"first_function":  first.fn.Name,
+			"second_function": second.fn.Name,
+		}
+		if first.fe.callee != "" {
+			props["first_callee"] = first.fe.callee
+		}
+		if second.fe.callee != "" {
+			props["second_callee"] = second.fe.callee
+		}
+		if emitEvent(ctx, d.store, d.logger, "DOUBLE_FREE", first.fn.ID, &db.Location{FileID: first.fileID, Line: first.fe.line}, props) {
+			created++
+		}
+	}
+	return created
 }
 
 func (d *DoubleFreeDetector) findGlobalStoredVars(f *db.Function, inits, assigns []parser.Node, summaries summaryMap) map[string][]string {

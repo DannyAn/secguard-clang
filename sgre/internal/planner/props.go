@@ -158,6 +158,13 @@ type eventProps struct {
 	FirstCallee  string `json:"first_callee"`
 	SecondCallee string `json:"second_callee"`
 	Victims      string `json:"victims"`
+	// CrossFunction is "true" when the double-free candidate spans two
+	// functions (a free in A of a variable that is a cross-function alias of
+	// a free in B). The function-local must dataflow cannot prove it, so the
+	// DoubleFreeFilter must pass it through as suspected for the AI to judge.
+	// The detector writes it as a JSON bool (true), so the field is a bool
+	// here (not a string like MayFree which is a string for legacy reasons).
+	CrossFunction bool `json:"cross_function"`
 	// CopySize/DstCapacity are the copy-size expression and destination capacity
 	// a bounded-copy or secure-copy BUFFER_ACCESS event carries (buffer-overflow
 	// detector). SizeArgument is the _s destination-capacity argument.
