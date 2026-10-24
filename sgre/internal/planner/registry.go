@@ -839,7 +839,6 @@ func buildDoubleFreeVerdictFacts(c Candidate) []VerdictFact {
 	return facts
 }
 
-
 func containsString(s []string, v string) bool {
 	for _, item := range s {
 		if item == v {
