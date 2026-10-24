@@ -14,7 +14,7 @@ import (
 // it does not have) so callers cannot accidentally rely on the dimensions
 // the fixpoints have not yet been promoted for.
 func TestSummaryQuerierSeam(t *testing.T) {
-	q := NewSummaryQuerier(nil, nil, nil)
+	q := NewSummaryQuerier(nil, nil, nil, nil)
 
 	s, ok := q.SummaryOf(context.Background(), "foo")
 	if !ok {

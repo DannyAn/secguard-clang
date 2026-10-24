@@ -2,6 +2,7 @@ package planner
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/graph"
@@ -9,14 +10,16 @@ import (
 )
 
 // summaryQuerier implements graph.SummaryQuerier by reusing the existing
-// null-return summary (computeRetNullable). The other dimensions (interval,
-// taint, capacity) are placeholders until their fixpoints are promoted to
-// graph-level utilities — the skeleton establishes the interface so
-// detectors can start consuming it.
+// null-return summary (computeRetNullable) and the taint summary cache. The
+// Interval dimension is computed per-function from the return statements
+// (a literal → const interval; an identifier → the range flow's interval at
+// the return line; a call → the callee's summary interval); the Capacity
+// dimension is a placeholder until the capacity fixpoint lands.
 type summaryQuerier struct {
-	store    db.Store
-	parser   *parser.Parser
-	cfgCache *graph.CFGCache
+	store      db.Store
+	parser     *parser.Parser
+	cfgCache   *graph.CFGCache
+	taintCache *taintSummaryCache
 	// memo memoizes SummaryOf results per function name so a call-heavy
 	// detector does not re-analyze the same callee body for every call site.
 	memo map[string]graph.Summary
@@ -26,14 +29,16 @@ type summaryQuerier struct {
 	visiting map[string]bool
 }
 
-// NewSummaryQuerier builds the per-scan SummaryQuerier.
-func NewSummaryQuerier(store db.Store, p *parser.Parser, cfgCache *graph.CFGCache) graph.SummaryQuerier {
+// NewSummaryQuerier builds the per-scan SummaryQuerier. taintCache may be
+// nil (the Taint dimension then stays TriUnknown for every function).
+func NewSummaryQuerier(store db.Store, p *parser.Parser, cfgCache *graph.CFGCache, taintCache *taintSummaryCache) graph.SummaryQuerier {
 	return &summaryQuerier{
-		store:    store,
-		parser:   p,
-		cfgCache: cfgCache,
-		memo:     make(map[string]graph.Summary),
-		visiting: make(map[string]bool),
+		store:      store,
+		parser:     p,
+		cfgCache:   cfgCache,
+		taintCache: taintCache,
+		memo:       make(map[string]graph.Summary),
+		visiting:   make(map[string]bool),
 	}
 }
 
@@ -41,9 +46,11 @@ func NewSummaryQuerier(store db.Store, p *parser.Parser, cfgCache *graph.CFGCach
 // is computed by a bounded recursive descent over the callee's return
 // statements (literal NULL → TriYes, call to another named function →
 // recurse with cycle guard, anything else → TriNo when every return is
-// provably non-null, TriUnknown otherwise). Interval / Taint / Capacity are
-// placeholders reporting their "unknown" shape so a caller must not rely on
-// them until their fixpoints land.
+// provably non-null, TriUnknown otherwise). The Interval dimension is the
+// join of every return expression's interval (literal → const, identifier →
+// range flow at the return line, call → the callee's summary interval).
+// Taint is read from the shared taintSummaryCache. Capacity is a
+// placeholder reporting -1 until the capacity fixpoint lands.
 func (q *summaryQuerier) SummaryOf(ctx context.Context, funcName string) (graph.Summary, bool) {
 	if funcName == "" {
 		return graph.Summary{}, false
@@ -54,8 +61,8 @@ func (q *summaryQuerier) SummaryOf(ctx context.Context, funcName string) (graph.
 	s := graph.Summary{
 		Function: funcName,
 		Null:     q.nullOf(ctx, funcName),
-		Interval: graph.Interval{Top: true},
-		Taint:    graph.TriUnknown,
+		Interval: q.intervalOf(ctx, funcName),
+		Taint:    q.taintOf(ctx, funcName),
 		Capacity: -1,
 	}
 	q.memo[funcName] = s
@@ -106,11 +113,6 @@ func (q *summaryQuerier) nullOf(ctx context.Context, funcName string) graph.Tri 
 		}
 		sawReturn = true
 		expr := children[0]
-		// A literal NULL / 0 in a pointer-return function is a proven null
-		// return (the return-type gate: bare 0 in an int-return function is
-		// the integer zero, not a null pointer; we do not yet consult the
-		// declared return type here, so we treat both as candidate nulls and
-		// let the caller's type knowledge refine).
 		if isNullLiteralNode(expr) {
 			return graph.TriYes
 		}
@@ -129,9 +131,6 @@ func (q *summaryQuerier) nullOf(ctx context.Context, funcName string) graph.Tri 
 			sawUnknown = true
 			continue
 		}
-		// Any other return expression shape is conservatively unknown: a
-		// parameter, a field read, an arithmetic expression — any of them
-		// could carry a null without a local proof.
 		if !isProvablyNonNullExpr(expr) {
 			sawUnknown = true
 		}
@@ -143,6 +142,114 @@ func (q *summaryQuerier) nullOf(ctx context.Context, funcName string) graph.Tri 
 		return graph.TriUnknown
 	}
 	return graph.TriNo
+}
+
+// intervalOf resolves the Interval dimension for funcName: the join of every
+// return expression's interval. A literal return contributes a const
+// interval; an identifier contributes the range flow's interval at the
+// return line; a call contributes the callee's summary interval. The
+// boolean is false when no return yields a tighter-than-top fact.
+func (q *summaryQuerier) intervalOf(ctx context.Context, funcName string) graph.Interval {
+	if q.store == nil || q.parser == nil {
+		return graph.Interval{Top: true}
+	}
+	fn, err := q.store.GetFunctionByName(ctx, funcName)
+	if err != nil || fn == nil {
+		return graph.Interval{Top: true}
+	}
+	cache := newFileParseCache(q.parser)
+	file, err := q.store.GetFileByID(ctx, fn.FileID)
+	if err != nil || file == nil {
+		return graph.Interval{Top: true}
+	}
+	body, _ := cache.get(file, fn)
+	if body.Kind() != "compound_statement" {
+		return graph.Interval{Top: true}
+	}
+	flow := analyzeRangesWithCalls(q.cfgCache, fn, body, nil)
+	if flow == nil {
+		return graph.Interval{Top: true}
+	}
+	var joined graph.Interval
+	sawAny := false
+	for _, ret := range body.FindAll("return_statement") {
+		children := ret.NamedChildren()
+		if len(children) == 0 {
+			continue
+		}
+		expr := children[0]
+		var iv graph.Interval
+		switch expr.Kind() {
+		case "number_literal":
+			var v int64
+			if _, err := fmt.Sscanf(expr.Text(), "%d", &v); err == nil {
+				iv = graph.Interval{Lo: v, Hi: v}
+			} else {
+				iv = graph.Interval{Top: true}
+			}
+		case "identifier":
+			if r := flow.at(expr.Text(), ret.StartLine()); !r.isTop() {
+				iv = graph.Interval{Lo: r.lo, Hi: r.hi}
+			} else {
+				iv = graph.Interval{Top: true}
+			}
+		case "call_expression":
+			callee := expr.ChildByFieldName("function")
+			if callee != nil && callee.Kind() == "identifier" {
+				sub, _ := q.SummaryOf(ctx, callee.Text())
+				iv = sub.Interval
+			} else {
+				iv = graph.Interval{Top: true}
+			}
+		default:
+			iv = graph.Interval{Top: true}
+		}
+		if !sawAny {
+			joined = iv
+			sawAny = true
+		} else {
+			joined = joinIntervals(joined, iv)
+		}
+	}
+	if !sawAny {
+		return graph.Interval{Top: true}
+	}
+	return joined
+}
+
+// taintOf resolves the Taint dimension for funcName from the shared
+// taintSummaryCache. A nil cache or a compute failure yields TriUnknown.
+func (q *summaryQuerier) taintOf(ctx context.Context, funcName string) graph.Tri {
+	if q.taintCache == nil {
+		return graph.TriUnknown
+	}
+	ts, err := q.taintCache.get(ctx)
+	if err != nil || ts == nil {
+		return graph.TriUnknown
+	}
+	if ts.retTainted[funcName] {
+		return graph.TriYes
+	}
+	return graph.TriNo
+}
+
+// joinIntervals returns the hull of two intervals (the over-approximation
+// covering both).
+func joinIntervals(a, b graph.Interval) graph.Interval {
+	if a.Top {
+		return b
+	}
+	if b.Top {
+		return a
+	}
+	lo, hi := a.Lo, a.Hi
+	if b.Lo < lo {
+		lo = b.Lo
+	}
+	if b.Hi > hi {
+		hi = b.Hi
+	}
+	return graph.Interval{Lo: lo, Hi: hi}
 }
 
 // isProvablyNonNullExpr reports whether expr is a syntactic non-null shape:

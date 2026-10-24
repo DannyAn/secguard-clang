@@ -64,7 +64,7 @@ void *returns_string(void) {
 		}
 	}
 
-	q := NewSummaryQuerier(store, p, graph.NewCFGCache())
+	q := NewSummaryQuerier(store, p, graph.NewCFGCache(), nil)
 
 	// returns_null → TriYes (literal 0 return).
 	if s, _ := q.SummaryOf(context.Background(), "returns_null"); s.Null != graph.TriYes {
@@ -86,9 +86,16 @@ void *returns_string(void) {
 	if s, _ := q.SummaryOf(context.Background(), "nonexistent"); s.Null != graph.TriUnknown {
 		t.Errorf("nonexistent.Null = %v, want TriUnknown", s.Null)
 	}
-	// Interval/Taint/Capacity stay at their "unknown" placeholders.
+	// Interval is [0,0] for returns_null (return 0 is a const interval);
+	// Taint stays TriUnknown (no taintCache); Capacity stays -1 (placeholder).
 	s, _ := q.SummaryOf(context.Background(), "returns_null")
-	if !s.Interval.Top || s.Taint != graph.TriUnknown || s.Capacity != -1 {
-		t.Errorf("non-null dimensions must stay at unknown placeholders, got %+v", s)
+	if s.Interval.Top || s.Interval.Lo != 0 || s.Interval.Hi != 0 {
+		t.Errorf("returns_null.Interval = %+v, want [0,0]", s.Interval)
+	}
+	if s.Taint != graph.TriUnknown {
+		t.Errorf("returns_null.Taint = %v, want TriUnknown (no taintCache)", s.Taint)
+	}
+	if s.Capacity != -1 {
+		t.Errorf("returns_null.Capacity = %d, want -1 (placeholder)", s.Capacity)
 	}
 }
