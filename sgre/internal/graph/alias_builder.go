@@ -94,7 +94,6 @@ func BuildInterproceduralAlias(ctx context.Context, store db.Store, p *parser.Pa
 	return g, nil
 }
 
-
 // collectLocalNames returns fn's local variable names: every declaration's
 // declarator identifier plus the parameter names. A name in this set is a
 // function-local; a name NOT in this set on the LHS of `g = p` is a global
