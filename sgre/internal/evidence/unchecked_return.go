@@ -67,6 +67,7 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 		return result, err
 	}
 	passthrough := summaries.passthrough
+	nonNullReturn := summaries.nonNullReturn
 
 	retTypes, err := d.funcReturnTypes(ctx)
 	if err != nil {
@@ -141,7 +142,7 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 				if !uncheckedReturnAPIs[callee] && !passthrough[callee] && !apikb.IsAllocator(callee) {
 					continue
 				}
-				if apikb.IsNonNullReturning(callee) {
+				if apikb.IsNonNullReturning(callee) || nonNullReturn[callee] {
 					continue
 				}
 				if line, ok := localDeclLines[callee]; ok && uncheckedReturnAPIs[callee] && line < call.StartLine() {
@@ -1361,6 +1362,11 @@ type funcSummaries struct {
 	// struct field and then passes the struct to such a validator has the
 	// field's NULL handled downstream.
 	fieldNullChecks map[string]map[string]bool
+	// nonNullReturn names the functions that never return NULL via the
+	// abort-on-OOM contract: they return a variable NULL-checked with a
+	// never-returning consequence (`p = alloc(); if (!p) abort(); return p;`).
+	// A call to such a function has no NULL to check.
+	nonNullReturn map[string]bool
 }
 
 // hasUncheckedReturnCandidate pre-scans every indexed file for the detector's
@@ -1508,7 +1514,143 @@ func (d *UncheckedReturnDetector) funcSummaries(ctx context.Context) (*funcSumma
 			}
 		}
 	}
-	return &funcSummaries{passthrough: passthrough, nullRejectParams: nullReject, paramNullSafe: nullSafe, fieldNullChecks: fieldChecks}, nil
+	nonNullReturn := collectNonNullReturns(ctx, d.store, d.parser, d.logger, collectNoreturnFuncs(ctx, d.store, d.parser, d.logger))
+	return &funcSummaries{passthrough: passthrough, nullRejectParams: nullReject, paramNullSafe: nullSafe, fieldNullChecks: fieldChecks, nonNullReturn: nonNullReturn}, nil
+}
+
+// collectNoreturnFuncs returns the set of call-target names that never return:
+// standard noreturn calls (abort/exit/...), in-scan functions with no return
+// statement that call a noreturn target (transitive), and global function-pointer
+// variables initialized to a noreturn function (`static void (*X)(size_t) =
+// oom_default;`). This is the evidence layer's twin of the planner's
+// collectNoreturnCalls — the abort-on-OOM contract is resolved from the scan tree
+// itself, not from a config list.
+func collectNoreturnFuncs(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) map[string]bool {
+	noreturn := make(map[string]bool, len(apikb.NoReturnCalls))
+	for name := range apikb.NoReturnCalls {
+		noreturn[name] = true
+	}
+	for changed := true; changed; {
+		changed = false
+		_ = forEachFileIncludingEmpty(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+			for _, fn := range funcs {
+				if noreturn[fn.Name] {
+					continue
+				}
+				hasReturn := false
+				for _, ret := range root.FindAll("return_statement") {
+					if funcLineRange(fn, ret.StartLine()) {
+						hasReturn = true
+						break
+					}
+				}
+				if hasReturn {
+					continue
+				}
+				for _, call := range root.FindAll("call_expression") {
+					if funcLineRange(fn, call.StartLine()) && noreturn[extractCallName(call)] {
+						noreturn[fn.Name] = true
+						changed = true
+						break
+					}
+				}
+			}
+			for _, decl := range root.FindAll("declaration") {
+				for _, init := range decl.FindAll("init_declarator") {
+					lhs, rhs, ok := init.AssignParts()
+					if !ok {
+						continue
+					}
+					name := functionPointerVarName(lhs.Text())
+					if name == "" || noreturn[name] {
+						continue
+					}
+					if rhs.Kind() == "identifier" && noreturn[rhs.Text()] {
+						noreturn[name] = true
+						changed = true
+					}
+				}
+			}
+		})
+	}
+	return noreturn
+}
+
+// collectNonNullReturns returns the set of function names that never return NULL
+// via the abort-on-OOM contract: they return a variable NULL-checked with a
+// never-returning consequence (`p = alloc(); if (!p) oom_handler(); return p;`).
+func collectNonNullReturns(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, noreturn map[string]bool) map[string]bool {
+	out := make(map[string]bool)
+	_ = forEachFileIncludingEmpty(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		for _, fn := range funcs {
+			if out[fn.Name] {
+				continue
+			}
+			returned := make(map[string]bool)
+			for _, ret := range root.FindAll("return_statement") {
+				if !funcLineRange(fn, ret.StartLine()) {
+					continue
+				}
+				if v := returnedVar(ret); v != "" {
+					returned[v] = true
+				}
+			}
+			if len(returned) == 0 {
+				continue
+			}
+			for _, ifStmt := range root.FindAll("if_statement") {
+				if !funcLineRange(fn, ifStmt.StartLine()) {
+					continue
+				}
+				cond := ifStmt.ChildByFieldName("condition")
+				if cond == nil {
+					continue
+				}
+				vars := parser.NullCheckedVars(*cond)
+				if len(vars) == 0 {
+					continue
+				}
+				cons := ifStmt.ChildByFieldName("consequence")
+				if cons == nil || !callsNoreturn(*cons, noreturn) {
+					continue
+				}
+				for _, v := range vars {
+					if returned[v] {
+						out[fn.Name] = true
+						break
+					}
+				}
+			}
+		}
+	})
+	return out
+}
+
+// callsNoreturn reports whether node (a guard consequence) contains a call to a
+// never-returning target.
+func callsNoreturn(node parser.Node, noreturn map[string]bool) bool {
+	for _, call := range node.FindAll("call_expression") {
+		if noreturn[extractCallName(call)] {
+			return true
+		}
+	}
+	return false
+}
+
+// functionPointerVarName pulls the variable name out of a function-pointer
+// declarator text (`(*zmalloc_oom_handler)(size_t)` → "zmalloc_oom_handler").
+func functionPointerVarName(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) < 3 || s[0] != '(' || s[1] != '*' {
+		return ""
+	}
+	s = s[2:]
+	for i, c := range s {
+		if c == ')' {
+			return strings.TrimSpace(s[:i])
+		}
+	}
+	return ""
 }
 
 // nullSafeFreeCalls are deallocators for which NULL is a defined no-op, so an
