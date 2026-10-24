@@ -33,3 +33,20 @@ func init() {
 		},
 	})
 }
+
+func buildFormatStringVerdictFacts(c Candidate) []VerdictFact {
+	if c.FormatArg == "" {
+		return nil
+	}
+	facts := []VerdictFact{{
+		Token:  "fmt-arg@" + c.FormatArg,
+		Detail: fmt.Sprintf("the format argument is `%s` — attacker-controlled (paired with tainted) means arbitrary format-specifier injection; a constant literal means dismissed", c.FormatArg),
+	}}
+	if c.CallsiteSummary != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "callsites@" + c.CallsiteSummary,
+			Detail: fmt.Sprintf("in-tree call-site census for the format parameter: %s — all-literal callers pass compile-time constants (dismiss); the var/tainted callers are where attacker input could enter (inspect them)", expandCallsiteFact(c.CallsiteSummary)),
+		})
+	}
+	return facts
+}

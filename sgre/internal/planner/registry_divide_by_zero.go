@@ -41,3 +41,26 @@ func init() {
 		},
 	})
 }
+
+func buildDivideByZeroVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 3)
+	if shape := divisorShape(c.VariableName); shape != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "divisor@" + shape,
+			Detail: fmt.Sprintf("the divisor is %s (`%s`) — the shape states what the judgment needs", shape, c.VariableName),
+		})
+	}
+	if c.DivisorInterval != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "range@" + c.DivisorInterval,
+			Detail: "the range engine proved the divisor's interval is exactly this (and it contains 0) — judge whether the 0 endpoint is actually reachable",
+		})
+	}
+	if c.DivisorCallers != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "callers@" + c.DivisorCallers,
+			Detail: "the call-site census — the callers passing non-constants are the ones to check for a 0 argument",
+		})
+	}
+	return facts
+}

@@ -43,3 +43,37 @@ func init() {
 		},
 	})
 }
+
+func buildUncheckedReturnVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 4)
+	if c.APIName != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "api@" + c.APIName,
+			Detail: "the callee whose return value is unchecked",
+		})
+	}
+	if c.ContractKnown {
+		facts = append(facts, VerdictFact{
+			Token:  "contract@known",
+			Detail: "the callee has a proven failure-return contract (built-in API table / declared allocator / body-verified wrapper) — an unchecked call IS a genuine CWE-252 defect",
+		})
+	} else {
+		facts = append(facts, VerdictFact{
+			Token:  "contract@unknown",
+			Detail: "the callee is an allocator by NAME only (alloc substring / *_new / *_dup); the failure contract is unproven — the classifier must prove the callee returns a failure sentinel from the embedded ## Callee Definition or dismiss",
+		})
+	}
+	if c.Consumed == "discard" {
+		facts = append(facts, VerdictFact{
+			Token:  "discard",
+			Detail: "the return value is stored then (void)-cast away — the failure is unobservable; dismiss",
+		})
+	}
+	if c.CalleeDefFile != "" {
+		facts = append(facts, VerdictFact{
+			Token:  fmt.Sprintf("callee@%s:%d", c.CalleeDefFile, c.CalleeDefLine),
+			Detail: "the callee's body is embedded under ## Callee Definition in this candidate file — judge the sentinel there",
+		})
+	}
+	return facts
+}

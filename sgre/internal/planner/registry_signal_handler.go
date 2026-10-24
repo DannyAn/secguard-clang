@@ -24,3 +24,13 @@ func init() {
 		},
 	})
 }
+
+func buildSignalHandlerVerdictFacts(c Candidate) []VerdictFact {
+	if c.VariableName == "" {
+		return nil
+	}
+	return []VerdictFact{{
+		Token:  "async-unsafe@" + c.VariableName,
+		Detail: fmt.Sprintf("handler %s calls %s(), which is off the POSIX async-signal-safe list — a certain CWE-479", c.FunctionName, c.VariableName),
+	}}
+}

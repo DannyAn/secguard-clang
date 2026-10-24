@@ -42,3 +42,20 @@ func init() {
 		},
 	})
 }
+
+func buildCryptoMisuseVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 2)
+	if c.CryptoReason != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "reason@" + c.CryptoReason,
+			Detail: fmt.Sprintf("the detector's observed weakness at line %d: %s — the primitive itself is broken regardless of call context", c.Line, c.CryptoReason),
+		})
+	}
+	if c.CryptoKeySize > 0 {
+		facts = append(facts, VerdictFact{
+			Token:  fmt.Sprintf("key-size@%d", c.CryptoKeySize),
+			Detail: fmt.Sprintf("the declared key size is %d bytes — under 16 bytes (128 bits) is below the modern-cipher minimum", c.CryptoKeySize),
+		})
+	}
+	return facts
+}

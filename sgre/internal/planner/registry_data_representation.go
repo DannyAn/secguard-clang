@@ -24,3 +24,13 @@ func init() {
 		},
 	})
 }
+
+func buildDataRepVerdictFacts(c Candidate) []VerdictFact {
+	if c.CastType == "" {
+		return nil
+	}
+	return []VerdictFact{{
+		Token:  "cast@" + c.CastType,
+		Detail: fmt.Sprintf("the value is explicitly cast to %s at line %d — judge the truncation/reinterpretation intent", c.CastType, c.Line),
+	}}
+}

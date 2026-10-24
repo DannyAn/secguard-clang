@@ -46,3 +46,40 @@ func init() {
 		},
 	})
 }
+
+func buildIntegerOverflowVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 5)
+	if c.Category != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "cat@" + c.Category,
+			Detail: "detector category: " + c.Category + " (definite_overflow is literal-proved; the rest need interval/context)",
+		})
+	}
+	if c.LHSKind != "" {
+		influenced := "no"
+		if c.SubLHSInfluenced {
+			influenced = "yes (caller/attacker-controlled)"
+		}
+		facts = append(facts, VerdictFact{
+			Token:  "lhs@" + c.LHSKind,
+			Detail: fmt.Sprintf("left operand origin = %s, caller-influenced = %s", c.LHSKind, influenced),
+		})
+	}
+	if c.RHSKind != "" {
+		influenced := "no"
+		if c.SubRHSInfluenced {
+			influenced = "yes (caller/attacker-controlled)"
+		}
+		facts = append(facts, VerdictFact{
+			Token:  "rhs@" + c.RHSKind,
+			Detail: fmt.Sprintf("right operand origin = %s, caller-influenced = %s", c.RHSKind, influenced),
+		})
+	}
+	if c.SubSink != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "sink@" + c.SubSink,
+			Detail: "sink shape: " + c.SubSink + " (call_arg = passed into an allocation / copy call, assign = stored into a variable)",
+		})
+	}
+	return facts
+}

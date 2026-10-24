@@ -57,3 +57,26 @@ func init() {
 		},
 	})
 }
+
+func buildImplicitContractVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 3)
+	if c.Subject != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "subject@" + c.Subject,
+			Detail: fmt.Sprintf("the contract is about parameter `%s`", c.Subject),
+		})
+	}
+	if c.CountField != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "count-field@" + c.CountField,
+			Detail: fmt.Sprintf("`%s` gates the pointer use — the contract the function actually enforces", c.CountField),
+		})
+	}
+	if c.EvidenceKind != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "evidence-kind@" + c.EvidenceKind,
+			Detail: fmt.Sprintf("the nullable treatment is proven in the %s — judge whether the missing precondition is a real contract gap", c.EvidenceKind),
+		})
+	}
+	return facts
+}

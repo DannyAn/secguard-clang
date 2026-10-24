@@ -44,3 +44,26 @@ func init() {
 		},
 	})
 }
+
+func buildDoubleFreeVerdictFacts(c Candidate) []VerdictFact {
+	facts := make([]VerdictFact, 0, 3)
+	if c.FirstFree > 0 && c.SecondFree > 0 {
+		facts = append(facts, VerdictFact{
+			Token:  fmt.Sprintf("free@%d,%d", c.FirstFree, c.SecondFree),
+			Detail: "the two free sites — the ## Code Context window covers both",
+		})
+	}
+	if c.MayFree {
+		facts = append(facts, VerdictFact{
+			Token:  "may-free",
+			Detail: "the first release is conditional — the double free is possible, not must-proven",
+		})
+	}
+	if c.FirstCallee != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "cond@" + c.FirstCallee,
+			Detail: fmt.Sprintf("helper %s performs the conditional first release — its body decides the verdict", c.FirstCallee),
+		})
+	}
+	return facts
+}

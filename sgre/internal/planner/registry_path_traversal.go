@@ -30,3 +30,20 @@ func init() {
 		},
 	})
 }
+
+func buildPathTraversalVerdictFacts(c Candidate) []VerdictFact {
+	if c.PathExpr == "" {
+		return nil
+	}
+	facts := []VerdictFact{{
+		Token:  "path-arg@" + c.PathExpr,
+		Detail: fmt.Sprintf("the path argument is `%s` — the traversal root; judge whether a caller can inject `../` segments", c.PathExpr),
+	}}
+	if c.CallsiteSummary != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "callsites@" + c.CallsiteSummary,
+			Detail: fmt.Sprintf("in-tree call-site census for the path parameter: %s — all-literal callers pass compile-time constants (dismiss); the var/tainted callers are where attacker input could enter (inspect them)", expandCallsiteFact(c.CallsiteSummary)),
+		})
+	}
+	return facts
+}

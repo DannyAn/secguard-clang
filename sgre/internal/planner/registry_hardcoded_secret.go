@@ -35,3 +35,13 @@ func init() {
 		},
 	})
 }
+
+func buildHardcodedSecretVerdictFacts(c Candidate) []VerdictFact {
+	if c.SecretValue == "" {
+		return nil
+	}
+	return []VerdictFact{{
+		Token:  "value-shape@" + maskSecret(c.SecretValue),
+		Detail: "the literal's masked shape — judge from the prefix and length: a placeholder (REPLACE…) or test value (test…) is dismissed; a real credential shape is confirmed",
+	}}
+}

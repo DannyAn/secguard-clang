@@ -29,3 +29,13 @@ func init() {
 		},
 	})
 }
+
+func buildSizeofMisuseVerdictFacts(c Candidate) []VerdictFact {
+	if c.VariableName == "" {
+		return nil
+	}
+	return []VerdictFact{{
+		Token:  "subject@" + c.VariableName,
+		Detail: fmt.Sprintf("sizeof is applied to `%s` — the category states whether the result is a pointer width instead of the pointee size", c.VariableName),
+	}}
+}
