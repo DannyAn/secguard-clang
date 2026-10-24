@@ -17,8 +17,8 @@ func TestFilterChainMigration(t *testing.T) {
 	expectedOrder := map[string][]string{
 		"null-deref":        {"sizeof_pseudo_deref", "non_nullable_array_suppress", "array_oob_precedence", "nullable_source", "macro_uncertain", "call_reach", "safe_function_exclude"},
 		"memory-leak":       {"call_reach", "safe_function_exclude", "has_release", "ownership_transfer", "leak_proof"},
-		"buffer-overflow":   {"call_reach", "safe_function_exclude", "range_oob"},
-		"out-of-bounds":     {"call_reach", "safe_function_exclude", "range_oob"},
+		"buffer-overflow":   {"call_reach", "safe_function_exclude", "range_oob", "buffer_range"},
+		"out-of-bounds":     {"call_reach", "safe_function_exclude", "range_oob", "buffer_range"},
 		"resource-leak":     {"call_reach", "safe_function_exclude", "has_release", "ownership_transfer", "leak_proof"},
 		"use-after-free":    {"call_reach", "safe_function_exclude", "lifetime"},
 		"uninit":            {"call_reach", "definite_init", "safe_function_exclude"},

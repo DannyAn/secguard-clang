@@ -84,6 +84,10 @@ func chainBufferOverflow() []FilterFactory {
 		func(d FilterDeps) Filter { return NewCallReachFilter(d.Store, d.CallReachCache) },
 		func(d FilterDeps) Filter { return NewSafeFunctionFilter(d.Store) },
 		func(d FilterDeps) Filter { return NewRangeOOBFilter(d.Store, d.Parser, d.Logger) },
+		// BufferRangeFilter covers the bounded_copy_* / secure_copy_* / format_*
+		// categories RangeOOBFilter does not (they carry CopySize + DstCapacity,
+		// not Index + Size).
+		func(d FilterDeps) Filter { return NewBufferRangeFilter(d.Store, d.Parser, d.Logger) },
 	}
 }
 
