@@ -177,26 +177,28 @@ security scan and reading them makes the verdicts worthless. The scan dir
 | Parameter | Value | Meaning |
 |---|---|---|
 | `MAX_TYPES_PER_BATCH` | 4 | Hard ceiling on types assigned to one subagent |
-| `MAXTURNS` | 60 | security-auditor.md maxTurns (must match) |
-| `MAXTURNS_SAFETY_RATIO` | 0.9 | Use only 90% of maxTurns as the budget |
-| `PER_TYPE_FIXED_TURNS` | 6 | Fixed per-type overhead (skill load + `_index.md` read + write + complete-type) |
-| `PER_CANDIDATE_TURNS` | 0.8 | Avg turns per candidate (most settle from `Source`+`Hint`; ~20% need one `Evidence` open) |
-| `PER_AUTO_CONFIRMED_TURNS` | 0.3 | Avg turns per auto-confirmed re-review entry (batch paged list + no findings write, cheaper than a candidate) |
+| `MAX_CANDIDATES_PER_BATCH` | 20 | Hard ceiling on candidates assigned to one subagent (most settle from `Source`+`Hint`; ~20% need one `Evidence` open) |
+| `MAX_AUTO_CONFIRMED_PER_BATCH` | 50 | Hard ceiling on auto-confirmed re-review entries assigned to one subagent (batch paged list + no findings write, cheaper than a candidate) |
+| `MAXTURNS` | 60 | security-auditor.md maxTurns (reference value — each platform's agent turn cap must still match; NOT used for batch-capacity math, which is count-based) |
 | `LARGE_CANDIDATE_THRESHOLD` | 100 | Types with > this many candidates get a dedicated subagent |
 | `SPLIT_CANDIDATE_THRESHOLD` | 100 | A type with > this many candidates is SPLIT across multiple subagents, each handling ≤ this many candidates |
 | `MAX_EVIDENCE_OPENS_PER_TYPE` | 12 | Evidence-file-open budget per subagent; beyond it the subagent reports `needs_context` instead of opening everything |
 
-`MAXTURNS` is a single source of truth: it must equal the turn cap every platform's
-`security-auditor` agent declares (`maxTurns` on Claude Code / Claude CAC, `steps`
-on OpenCode / OpenCode-NGA). `release/check-extension-consistency.py` enforces this and runs
-as part of `release/build-packages.sh`.
+`MAX_TYPES_PER_BATCH` / `MAX_CANDIDATES_PER_BATCH` / `MAX_AUTO_CONFIRMED_PER_BATCH`
+are the ONLY three batch-capacity knobs — the orchestrator counts types and
+candidates and auto-confirmed entries, no budget formula. A batch that fits all
+three ceilings is dispatchable; a batch that exceeds any one is split (split off
+the heaviest type first, then re-check). `MAXTURNS` remains the reference value
+every platform's agent turn cap must match (`release/check-extension-consistency.py`
+enforces this), but it is NOT part of the batch-capacity decision — the
+count-based ceilings above already keep a batch well under any platform's turn cap.
 
 **Pre-dispatch validation (EARS):**
 - If a batch has > `MAX_TYPES_PER_BATCH` (4) types, the orchestrator SHALL split it before dispatching.
 - Where a single type has > `LARGE_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL assign that type its own dedicated subagent.
 - Where a single type has > `SPLIT_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL split it into MULTIPLE subagents, each handling a ≤100-candidate RANGE of that type (pass the candidate # range, e.g. "candidates #1–100 of null-deref"), so no single subagent's context window is exceeded. Balance the ranges: split into AT LEAST `n = ceil(count / 100)` ranges of `ceil(count / n)` candidates (201 → at least 3 × 67). Smaller ranges are allowed ONLY when the type's per-candidate cost is demonstrably low — a group-verdict-friendly type like null-deref settles most candidates from the `Source`+`Hint` row plus one group judgment per function, without an Evidence open per candidate. Never a sliver tail (100 + 100 + 1): a tiny final range still costs a whole subagent, and every extra range re-reads the `_index.md` and the skill once, so over-splitting burns the same turns it saves. The 100-candidate cap is a CONTEXT ceiling (not a turn ceiling): before the Hint column + Code Context compression, a suspected-heavy range opened an `Evidence` file per suspected candidate and a 100-candidate range could exhaust a 200K context before the tail; with `Source`+`Hint` classification and a ±8 Code Context window the same budget now carries ~2× more, so 100 is the test point — if a super-large function still overflows, the tail is surfaced via the partial-count path, never silently buried.
 - **Re-review ownership of a RANGE-split type (parallel dedup):** when a type is split into multiple RANGE subagents that run CONCURRENTLY, `--list-auto-confirmed` returns the SAME unreviewed entries to every sibling (the idempotent filter only removes entries that already have a verdict, and siblings race before the first write lands). The orchestrator SHALL designate exactly ONE sibling (the FIRST range, e.g. "null-deref #1–100") as the type's **re-review owner** and say so in its prompt ("You are the auto-confirmed re-review owner for <type>: run the Re-review section"); every OTHER sibling's prompt SHALL say "You are NOT the re-review owner for <type>: SKIP the auto-confirmed re-review section entirely — a sibling owns it." The pre-audit `--list-auto-confirmed` count:0 check stays the backstop: if the owner batch failed or was skipped, the leftover unreviewed entries surface there and the orchestrator dispatches the re-review-only fallback as usual.
-- The orchestrator SHALL estimate a batch's cost on BOTH axes (type count AND candidate count) — a type-count-only check lets 4 small-types-sounding batches hide a heavy candidate load and overflow the subagent before the tail (the 0.9.4 race-condition omission: 4 types × 12 = 48 < 54 passed, but 86 candidates + 4 skill loads exhausted the window). Compute `estimated_turns = batch_type_count × PER_TYPE_FIXED_TURNS + batch_candidate_count × PER_CANDIDATE_TURNS + batch_auto_confirmed_count × PER_AUTO_CONFIRMED_TURNS`; if `estimated_turns ≥ MAXTURNS × MAXTURNS_SAFETY_RATIO` (54), the orchestrator SHALL reject the batch as over-budget and split it (split off the heaviest type first, then re-check). `batch_candidate_count` is the SUM of the batch's per-type candidate counts, and `batch_auto_confirmed_count` is the SUM of the batch's per-type `auto_confirmed_by_type` counts — a re-review-only batch (0 candidates, many auto-confirmed) is still real work and must not be budgeted as free.
+- The orchestrator SHALL validate a batch against the three capacity ceilings (types, candidates, auto-confirmed entries) — no budget formula, just counts. A batch that fits all three is dispatchable; a batch that exceeds any one is split (split off the heaviest type first, then re-check). `batch_candidate_count` is the SUM of the batch's per-type candidate counts, and `batch_auto_confirmed_count` is the SUM of the batch's per-type `auto_confirmed_by_type` counts — a re-review-only batch (0 candidates, many auto-confirmed) is still real work and must not be budgeted as free.
 
 ## Full Scan Workflow
 
@@ -213,8 +215,7 @@ your todo list so no type is skipped or double-processed.
 **Context budget (the other thing that makes this fast).** Do NOT read all
 source files up front. The source-read budget is **≤5 source-read TURNS per
 type** — a read at the reported file:line (offset/limit around it), not a
-whole-file dump. It is a fixed per-type allowance that stays well under the
-`PER_TYPE_FIXED_TURNS` (6) + candidate-classification budget, and it is per
+whole-file dump. It is a fixed per-type allowance, and it is per
 type — a file you already read for an earlier type is free the second time,
 so overlapping types do not multiply the budget.
 
@@ -550,13 +551,13 @@ straight to the structured report (`written: 0`).
    variable or set it inside the loop body.
 
    For many types, batch them — but NEVER exceed `MAX_TYPES_PER_BATCH` (4) types
-   per subagent, and validate the TWO-AXIS budget before dispatching:
-   `batch_type_count × PER_TYPE_FIXED_TURNS + batch_candidate_count ×
-   PER_CANDIDATE_TURNS < MAXTURNS × MAXTURNS_SAFETY_RATIO` (54). `batch_candidate_count`
-   is the SUM of the batch's per-type candidate counts. A batch that fails either
-   the type-count ceiling OR the two-axis budget SHALL be split (split off the
-   heaviest type first). Do NOT read `report.md` or all source files yourself —
-   each subagent reads only its own types' candidates.
+   per subagent, and validate the capacity ceilings before dispatching:
+   `batch_type_count ≤ MAX_TYPES_PER_BATCH` (4) AND `batch_candidate_count ≤
+   MAX_CANDIDATES_PER_BATCH` (20) AND `batch_auto_confirmed_count ≤
+   MAX_AUTO_CONFIRMED_PER_BATCH` (50). `batch_candidate_count` is the SUM of the
+   batch's per-type candidate counts. A batch that fails any ceiling SHALL be
+   split (split off the heaviest type first). Do NOT read `report.md` or all
+   source files yourself — each subagent reads only its own types' candidates.
 5. **Collect + finalize**:
 
    **DB schema 速查 (列名别猜 — 猜一个不存在的列如 `f.type` 会白费 1~2 轮 `secguard schema` 往返):**
