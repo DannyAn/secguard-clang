@@ -616,15 +616,6 @@ func splitBySuspicion(candidates []planner.EvidenceItem) (confirmed, needsReview
 // aborts the batch (silent false-negatives are not acceptable here), so the
 // caller can fall the remainder back to AI review.
 func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType string, candidates []planner.EvidenceItem, logger *log.Logger) (written int, unwritten []planner.EvidenceItem, err error) {
-	// A type whose auto-confirm is a deterministic name/pattern match
-	// (dangerous-function's banned-API policy check) pre-marks its findings as
-	// reviewed, so the AI's auto-confirmed re-review loop skips them entirely —
-	// re-reviewing a policy violation has nothing to judge. A may-analysis type
-	// (flow proof that can be wrong) keeps review_status empty and is re-reviewed.
-	skipReReview := false
-	if spec, serr := planner.GetVulnTypeSpec(vulnType); serr == nil && spec != nil {
-		skipReReview = spec.SkipAutoConfirmReReview
-	}
 	for i, c := range candidates {
 		cwe := report.VulnToCWEForCategory(vulnType, c.Category)
 		if c.Target.File == "" || c.Target.Line <= 0 {
@@ -683,10 +674,13 @@ func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType s
 			ScanID:       scanID,
 			Fingerprint:  computeFingerprint(cwe, c.Target.File, c.Target.Function, c.Target.Line),
 		}
-		if skipReReview {
-			f.ReviewStatus = "confirmed"
-			f.ReviewReasoning = "auto-confirmed policy/pattern match (deterministic); re-review skipped"
-		}
+		// The auto-confirmed finding is a machine verdict, not an open lead: the
+		// dedicated re-review loop is removed. The final AI pass is a FREE-FORM
+		// judgment over the whole result set (candidates + these findings), and it
+		// may downgrade one only with a concrete code reason. Marking it reviewed
+		// here is what keeps `report --audit` from treating it as still-pending.
+		f.ReviewStatus = "confirmed"
+		f.ReviewReasoning = "auto-confirmed (deterministic proof); final judgment is the free-form AI pass"
 		if _, err := store.UpsertFinding(ctx, f); err != nil {
 			return written, append(unwritten, candidates[i:]...), fmt.Errorf("upsert auto-confirmed %s:%d: %w", c.Target.File, c.Target.Line, err)
 		}

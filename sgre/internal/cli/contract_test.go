@@ -616,7 +616,7 @@ func TestAutoConfirmFindings_WritesMachineVerdict(t *testing.T) {
 // via the --review-json write path, and it is then suppressed (FinalStatus
 // dismissed) and no longer pending review. This is the loop wired into
 // agent-body.md ("Re-review auto-confirmed findings").
-func TestAutoConfirmedReReviewLoop(t *testing.T) {
+func TestAutoConfirmedNoReReview(t *testing.T) {
 	ctx := context.Background()
 	d, err := db.OpenInMemory(ctx)
 	if err != nil {
@@ -638,29 +638,22 @@ func TestAutoConfirmedReReviewLoop(t *testing.T) {
 		t.Fatalf("autoConfirmFindings: n=%d err=%v", n, err)
 	}
 
+	// Machine verdict is marked reviewed at write time, so it is NOT in the
+	// re-review set and stands as confirmed (no re-review loop).
 	pending, err := s.ListAutoConfirmedForReview(ctx, scanID, nil, 0)
-	if err != nil || len(pending) != 1 {
-		t.Fatalf("pending review = %d, err=%v; want 1", len(pending), err)
-	}
-	if pending[0].FinalStatus() != "confirmed" {
-		t.Fatalf("unreviewed auto-confirmed must stand as confirmed, got %q", pending[0].FinalStatus())
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("pending review = %d, err=%v; want 0 (no re-review loop)", len(pending), err)
 	}
 
-	// The agent re-reviews and dismisses the machine false positive.
-	if err := s.UpdateFindingReview(ctx, pending[0].ID, "dismissed", "getter returns a borrowed registry reference, not an allocation"); err != nil {
-		t.Fatal(err)
+	findings, err := s.ListFindingsByScanID(ctx, scanID)
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("findings = %d, err=%v; want 1", len(findings), err)
 	}
-
-	f, err := s.GetFindingByID(ctx, pending[0].ID)
-	if err != nil {
-		t.Fatal(err)
+	if findings[0].ReviewStatus != "confirmed" {
+		t.Errorf("auto-confirmed finding must carry review_status=confirmed at scan, got %q", findings[0].ReviewStatus)
 	}
-	if f.FinalStatus() != "dismissed" {
-		t.Errorf("after agent dismissal, FinalStatus = %q, want dismissed", f.FinalStatus())
-	}
-	again, _ := s.ListAutoConfirmedForReview(ctx, scanID, nil, 0)
-	if len(again) != 0 {
-		t.Errorf("dismissed finding should leave the re-review set, got %d", len(again))
+	if findings[0].FinalStatus() != "confirmed" {
+		t.Errorf("FinalStatus = %q, want confirmed", findings[0].FinalStatus())
 	}
 }
 
@@ -668,7 +661,7 @@ func TestAutoConfirmedReReviewLoop(t *testing.T) {
 // surface (--list-auto-confirmed / --review-json / --audit), which the store-only
 // test above skips. It also pins that a dismissed machine finding leaves
 // result.sarif (BM-08 / BM-09).
-func TestAutoConfirmedReReviewCLIFlow(t *testing.T) {
+func TestAutoConfirmedCLIFlow(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "test.db")
@@ -691,81 +684,29 @@ func TestAutoConfirmedReReviewCLIFlow(t *testing.T) {
 		t.Fatalf("autoConfirmFindings: n=%d err=%v", n, err)
 	}
 	all, err := s.ListAutoConfirmedForReview(ctx, scanID, nil, 0)
-	if err != nil || len(all) != 1 {
-		t.Fatalf("seed auto-confirmed finding: n=%d err=%v", len(all), err)
+	if err != nil || len(all) != 0 {
+		t.Fatalf("auto-confirmed findings must need no review, got %d err=%v", len(all), err)
 	}
-	// The finding file's Evidence section is rendered from the DB evidence
-	// column (auto-confirmed findings have no candidate file), so the column
-	// must carry the rendered evidence bullets.
-	if got := all[0].Evidence; !strings.Contains(got, "- **condition:** allocation never freed") {
-		t.Errorf("auto-confirmed finding must carry rendered evidence in the Evidence column, got %q", got)
-	}
-	findingID := all[0].ID
 	s.Close()
 
-	// 1. List through the CLI (with --type → VulnTypesToRuleIDs) and parse the
-	// count + snippet out of the JSON envelope.
+	// 1. --list-auto-confirmed returns count 0 (machine verdict, no re-review).
 	stdout, _, exitCode := captureOutput(func() int {
-		return runReportCmd(ctx, []string{"--db", dbPath, "--list-auto-confirmed", "--scan-id", scanID, "--type", "memory-leak"})
+		return runReportCmd(ctx, []string{"--db", dbPath, "--list-auto-confirmed", "--scan-id", scanID})
 	})
 	if exitCode != 0 {
 		t.Fatalf("--list-auto-confirmed failed: %s", stdout)
 	}
 	var listed struct {
-		Findings []struct {
-			ID      int64  `json:"id"`
-			File    string `json:"file"`
-			Snippet string `json:"snippet"`
-			Context string `json:"context"`
-		} `json:"findings"`
 		Count int `json:"count"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &listed); err != nil {
 		t.Fatalf("unmarshal --list-auto-confirmed: %v", err)
 	}
-	if listed.Count != 1 || len(listed.Findings) != 1 || listed.Findings[0].ID != findingID {
-		t.Fatalf("--list-auto-confirmed returned count=%d findings=%v, want the seeded finding %d", listed.Count, listed.Findings, findingID)
-	}
-	// The re-review listing must carry a source window beside the single-line
-	// snippet; the key is always present (empty when the file is unreadable), so
-	// consumers can rely on it.
-	if !strings.Contains(stdout, `"context"`) {
-		t.Errorf("--list-auto-confirmed must emit a context field for re-review:\n%s", stdout)
+	if listed.Count != 0 {
+		t.Fatalf("--list-auto-confirmed returned count=%d, want 0 (machine verdict, no re-review)", listed.Count)
 	}
 
-	// 2. Dismiss through --review-json.
-	reviewsFile := filepath.Join(root, "reviews.json")
-	payload, _ := json.Marshal([]map[string]interface{}{
-		{"id": findingID, "review_status": "dismissed", "review_reasoning": "getter borrow, not an allocation"},
-	})
-	if err := os.WriteFile(reviewsFile, payload, 0644); err != nil {
-		t.Fatal(err)
-	}
-	stdout, _, exitCode = captureOutput(func() int {
-		return runReportCmd(ctx, []string{"--db", dbPath, "--review-json", reviewsFile})
-	})
-	if exitCode != 0 {
-		t.Fatalf("--review-json failed: %s", stdout)
-	}
-
-	// 3. Re-list: the dismissed finding must leave the re-review set (count 0).
-	stdout, _, exitCode = captureOutput(func() int {
-		return runReportCmd(ctx, []string{"--db", dbPath, "--list-auto-confirmed", "--scan-id", scanID})
-	})
-	if exitCode != 0 {
-		t.Fatalf("re-list failed: %s", stdout)
-	}
-	var relisted struct {
-		Count int `json:"count"`
-	}
-	if err := json.Unmarshal([]byte(stdout), &relisted); err != nil {
-		t.Fatalf("unmarshal re-list: %v", err)
-	}
-	if relisted.Count != 0 {
-		t.Fatalf("dismissed finding should leave the re-review set, count=%d", relisted.Count)
-	}
-
-	// 4. Audit: the dismissed finding must NOT reach result.sarif.
+	// 2. Audit: the auto-confirmed finding reaches result.sarif as confirmed.
 	outDir := filepath.Join(root, "out")
 	stdout, _, exitCode = captureOutput(func() int {
 		return runReportCmd(ctx, []string{"--db", dbPath, "--audit", "--scan-id", scanID, "--output-dir", outDir})
@@ -778,8 +719,8 @@ func TestAutoConfirmedReReviewCLIFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s: %v", sarifPath, err)
 	}
-	if bytes.Contains(raw, []byte("src/a.c")) {
-		t.Errorf("dismissed finding leaked into result.sarif:\n%s", raw)
+	if !bytes.Contains(raw, []byte("src/a.c")) {
+		t.Errorf("auto-confirmed finding must reach result.sarif:\n%s", raw)
 	}
 }
 

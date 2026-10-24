@@ -178,27 +178,31 @@ security scan and reading them makes the verdicts worthless. The scan dir
 |---|---|---|
 | `MAX_TYPES_PER_BATCH` | 4 | Hard ceiling on types assigned to one subagent |
 | `MAX_CANDIDATES_PER_BATCH` | 20 | Hard ceiling on candidates assigned to one subagent (most settle from `Source`+`Hint`; ~20% need one `Evidence` open) |
-| `MAX_AUTO_CONFIRMED_PER_BATCH` | 50 | Hard ceiling on auto-confirmed re-review entries assigned to one subagent (batch paged list + no findings write, cheaper than a candidate) |
 | `MAXTURNS` | 60 | security-auditor.md maxTurns (reference value — each platform's agent turn cap must still match; NOT used for batch-capacity math, which is count-based) |
 | `LARGE_CANDIDATE_THRESHOLD` | 100 | Types with > this many candidates get a dedicated subagent |
 | `SPLIT_CANDIDATE_THRESHOLD` | 100 | A type with > this many candidates is SPLIT across multiple subagents, each handling ≤ this many candidates |
 | `MAX_EVIDENCE_OPENS_PER_TYPE` | 12 | Evidence-file-open budget per subagent; beyond it the subagent reports `needs_context` instead of opening everything |
 
-`MAX_TYPES_PER_BATCH` / `MAX_CANDIDATES_PER_BATCH` / `MAX_AUTO_CONFIRMED_PER_BATCH`
-are the ONLY three batch-capacity knobs — the orchestrator counts types and
-candidates and auto-confirmed entries, no budget formula. A batch that fits all
-three ceilings is dispatchable; a batch that exceeds any one is split (split off
-the heaviest type first, then re-check). `MAXTURNS` remains the reference value
-every platform's agent turn cap must match (`release/check-extension-consistency.py`
-enforces this), but it is NOT part of the batch-capacity decision — the
-count-based ceilings above already keep a batch well under any platform's turn cap.
+`MAX_TYPES_PER_BATCH` / `MAX_CANDIDATES_PER_BATCH` are the ONLY two batch-capacity
+knobs — the orchestrator counts types and candidates, no budget formula. A batch
+that fits both ceilings is dispatchable; a batch that exceeds either one is split
+(split off the heaviest type first, then re-check). `MAXTURNS` remains the
+reference value every platform's agent turn cap must match
+(`release/check-extension-consistency.py` enforces this), but it is NOT part of the
+batch-capacity decision — the count-based ceilings above already keep a batch well
+under any platform's turn cap. Auto-confirmed findings are machine verdicts (marked
+reviewed at scan time), so they are NOT budgeted or dispatched at all.
 
 **Pre-dispatch validation (EARS):**
 - If a batch has > `MAX_TYPES_PER_BATCH` (4) types, the orchestrator SHALL split it before dispatching.
 - Where a single type has > `LARGE_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL assign that type its own dedicated subagent.
 - Where a single type has > `SPLIT_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL split it into MULTIPLE subagents, each handling a ≤100-candidate RANGE of that type (pass the candidate # range, e.g. "candidates #1–100 of null-deref"), so no single subagent's context window is exceeded. Balance the ranges: split into AT LEAST `n = ceil(count / 100)` ranges of `ceil(count / n)` candidates (201 → at least 3 × 67). Smaller ranges are allowed ONLY when the type's per-candidate cost is demonstrably low — a group-verdict-friendly type like null-deref settles most candidates from the `Source`+`Hint` row plus one group judgment per function, without an Evidence open per candidate. Never a sliver tail (100 + 100 + 1): a tiny final range still costs a whole subagent, and every extra range re-reads the `_index.md` and the skill once, so over-splitting burns the same turns it saves. The 100-candidate cap is a CONTEXT ceiling (not a turn ceiling): before the Hint column + Code Context compression, a suspected-heavy range opened an `Evidence` file per suspected candidate and a 100-candidate range could exhaust a 200K context before the tail; with `Source`+`Hint` classification and a ±8 Code Context window the same budget now carries ~2× more, so 100 is the test point — if a super-large function still overflows, the tail is surfaced via the partial-count path, never silently buried.
-- **Re-review ownership of a RANGE-split type (parallel dedup):** when a type is split into multiple RANGE subagents that run CONCURRENTLY, `--list-auto-confirmed` returns the SAME unreviewed entries to every sibling (the idempotent filter only removes entries that already have a verdict, and siblings race before the first write lands). The orchestrator SHALL designate exactly ONE sibling (the FIRST range, e.g. "null-deref #1–100") as the type's **re-review owner** and say so in its prompt ("You are the auto-confirmed re-review owner for <type>: run the Re-review section"); every OTHER sibling's prompt SHALL say "You are NOT the re-review owner for <type>: SKIP the auto-confirmed re-review section entirely — a sibling owns it." The pre-audit `--list-auto-confirmed` count:0 check stays the backstop: if the owner batch failed or was skipped, the leftover unreviewed entries surface there and the orchestrator dispatches the re-review-only fallback as usual.
-- The orchestrator SHALL validate a batch against the three capacity ceilings (types, candidates, auto-confirmed entries) — no budget formula, just counts. A batch that fits all three is dispatchable; a batch that exceeds any one is split (split off the heaviest type first, then re-check). `batch_candidate_count` is the SUM of the batch's per-type candidate counts, and `batch_auto_confirmed_count` is the SUM of the batch's per-type `auto_confirmed_by_type` counts — a re-review-only batch (0 candidates, many auto-confirmed) is still real work and must not be budgeted as free.
+- The orchestrator SHALL validate a batch against the two capacity ceilings (types,
+  candidates) — no budget formula, just counts. A batch that fits both is
+  dispatchable; a batch that exceeds either one is split (split off the heaviest
+  type first, then re-check). `batch_candidate_count` is the SUM of the batch's
+  per-type candidate counts. Auto-confirmed findings carry no unreviewed entries
+  (machine verdicts, marked reviewed at scan), so they add nothing to the budget.
 
 ## Full Scan Workflow
 
@@ -321,16 +325,11 @@ straight to the structured report (`written: 0`).
    × 20+ types ≈ 90+ SERIAL round-trips in a single context. That overhead scales
    with **type count**, not candidate count, so a "small" project with many types
    is NOT a small scan. Gate on BOTH axes. Let `type_count` = the number of types
-   that need an AI subagent — i.e. `candidates_by_type > 0` OR
-   `auto_confirmed_by_type > 0` in the scan summary. `total_candidates` EXCLUDES
-   auto-confirmed pipeline findings (those are already written), so it counts only
-   suspected/possible candidates awaiting first-round classification; a type with
-   `candidates_by_type == 0` but `auto_confirmed_by_type > 0` contributes 0 to
-   `total_candidates` yet MUST still count toward `type_count` (it needs a
-   re-review-only subagent — no `_index.md`, see step 3/4). **This is the 0.9.4
-   AI-review blind spot: a 0-candidate type with machine findings was silently
-   excluded from the gate, so its auto-confirmed findings were never re-reviewed
-   and `--list-auto-confirmed` stayed nonzero at audit time.**
+    that need an AI subagent — i.e. `candidates_by_type > 0` in the scan summary.
+    `total_candidates` counts only suspected/possible candidates awaiting
+    classification. A type with `candidates_by_type == 0` needs NO AI subagent:
+    its `auto_confirmed_by_type` findings are machine verdicts already marked
+    reviewed at scan time (there is no re-review loop).
    - **`type_count ≤ 3 AND total_candidates ≤ 200` → SEQUENTIAL (step 3).** The
      whole scan is at most one subagent-batch's worth of work; one context avoids
      the dispatch overhead. Do NOT spawn subagents.
@@ -349,7 +348,7 @@ straight to the structured report (`written: 0`).
    > PARALLEL 时，orchestrator 应明确告知用户"扫描规模超出单代理能力，需要并行处理
    > 支持"，而不可擅自降级为 SEQUENTIAL。
 3. **Sequential loop** (the normal path for small scans): for each type that needs
-   AI work (`candidates_by_type > 0` OR `auto_confirmed_by_type > 0`), load that
+    AI work (`candidates_by_type > 0`), load that type's skill.
    type's skill. If `candidates_by_type > 0`, read `candidates/<type>/_index.md`
    and classify by suspicion_level:
    - **confirmed** → read the `_index.md` `Source` column for the statement; confirm
@@ -367,15 +366,6 @@ straight to the structured report (`written: 0`).
     for the orchestrator's resume logic (`status --per-type` terminal_state) to
     correctly report `done`.
     Never skip a type. Obey the context budget (no per-candidate source reads).
-    **0-candidate re-review type (`candidates_by_type == 0 && auto_confirmed_by_type > 0`):**
-    there is no `_index.md` (empty/absent) — do NOT read it and do NOT classify.
-    Go straight to the auto-confirmed re-review (agent-body "Re-review auto-confirmed
-    findings"): `secguard report --list-auto-confirmed --type <type> --scan-id <scan_id>
-    --db <db_path>`, apply the skill's false-positive rules to each entry, write a
-    verdict for EVERY entry via `--review-json`, then
-    `secguard report --complete-type <type> --scan-id <scan_id> --db <db_path>`.
-    A 0-candidate type STILL loads its skill — the re-review is skill-driven, not
-    candidate-driven.
 **调度时序合规规则 (F3):** All subagent dispatches SHALL occur in a single assistant turn — N `Agent`/`task` calls issued consecutively with the first-to-last timestamp span ≤ 10s. (Claude Code's subagent-dispatch tool is `Agent`; older Claude Code versions name it `Task`.) The orchestrator SHALL NOT split dispatches across turns. After dispatch, while subagents run, the orchestrator SHALL NOT poll their transcripts or issue `sleep`.
 
 **子代理返回模型 (F7) — 这是"任务卡住不结束/结果丢失/重复下发"的根因，必读：** 三个平台的返回模型不同，绝不可混用：
@@ -390,9 +380,8 @@ straight to the structured report (`written: 0`).
 **子代理句柄失效 (F9) — `No task found with ID <id>` 的恢复：** 异步宿主的后台任务句柄偶发被回收，返回 `No task found with ID <id>`。这是宿主侧竞态，**不是扫描失败，也绝不等于该子代理没跑**。遇到时**禁止**反复用同一 ID 重试、禁止死等、禁止把该类型当 `failed` 丢弃。正确动作：立即 `secguard status --per-type --scan-id <scan_id>`，以 DB 的 `terminal_state` 为唯一权威（`done`=成功；`in-progress`/`pending`=未写完；`unknown`=未下发）。对非 `done` 的类型**只重下发缺失部分**（带上候选范围），`done` 的绝不下发。重下发后照常进第 5 步 Collect+finalize，第 6 步出报告。
 
 4. **Parallel dispatch** (ONLY when step 2 says so): validate every batch against the Batch Capacity Configuration above, then spawn one subagent PER BATCH
-   of types that need AI work (`candidates_by_type > 0` OR
-   `auto_confirmed_by_type > 0`), ALL IN THE SAME TURN so they run
-   concurrently:
+   of types that need AI work (`candidates_by_type > 0`), ALL IN THE SAME TURN so
+   they run concurrently:
    - Claude Code (official): the `Agent` tool (the subagent-dispatch tool; older
      versions name it `Task`) with `subagent_type: "security-auditor"` (bare name).
    - CodeAgentCLI (claude-cac): the same `Agent`/`Task` tool, but this host
@@ -419,9 +408,6 @@ straight to the structured report (`written: 0`).
    (If a type is split by candidate RANGE, e.g. "null-deref #1-100", classify ONLY
    those candidates — the # column in <scan_dir>/candidates/<type>/_index.md — and
    leave the rest to sibling subagents.)
-   (If sibling RANGE subagents of one type run concurrently, exactly ONE of them is
-   the type's re-review owner — the prompt says which. If you are NOT the owner,
-   SKIP the auto-confirmed re-review section entirely; if you ARE, run it once.)
    The scan already ran: your type's candidates are in
    <scan_dir>/candidates/<type>/_index.md and <scan_dir>/candidates/<type>/NNN_*.md
    — do NOT re-run secguard_scan or secguard_plan. The source is already embedded:
@@ -432,10 +418,6 @@ straight to the structured report (`written: 0`).
    candidate file, and each candidate file has a `## Code Context` block — do NOT
    issue per-candidate source READs (that is the tens-of-minutes cost). Read ONLY
    your type's `_index.md`, never the whole report.md.
-    **Re-review-only type (0 candidates, auto_confirmed > 0):** if a type has
-   `auto_confirmed_by_type > 0` but NO `_index.md` (or it is empty), do NOT read
-   `_index.md` and do NOT classify. Skip straight to the auto-confirmed re-review
-   (list + review-json, below), then `--complete-type <type>`.
     For each type: load the <type> skill, then classify by suspicion_level:
     - confirmed → read the `Source` column in <scan_dir>/candidates/<type>/_index.md
       (do NOT read the candidate files and do NOT open source), confirm/dismiss from
@@ -553,8 +535,7 @@ straight to the structured report (`written: 0`).
    For many types, batch them — but NEVER exceed `MAX_TYPES_PER_BATCH` (4) types
    per subagent, and validate the capacity ceilings before dispatching:
    `batch_type_count ≤ MAX_TYPES_PER_BATCH` (4) AND `batch_candidate_count ≤
-   MAX_CANDIDATES_PER_BATCH` (20) AND `batch_auto_confirmed_count ≤
-   MAX_AUTO_CONFIRMED_PER_BATCH` (50). `batch_candidate_count` is the SUM of the
+    MAX_CANDIDATES_PER_BATCH` (20). `batch_candidate_count` is the SUM of the
    batch's per-type candidate counts. A batch that fails any ceiling SHALL be
    split (split off the heaviest type first). Do NOT read `report.md` or all
    source files yourself — each subagent reads only its own types' candidates.
@@ -562,20 +543,20 @@ straight to the structured report (`written: 0`).
 
    **DB schema 速查 (列名别猜 — 猜一个不存在的列如 `f.type` 会白费 1~2 轮 `secguard schema` 往返):**
    Prefer structured tools over raw SQL — every count you need already has one:
-   - per-type candidate/written → `secguard status --per-type --scan-id <id>` (`candidate_count`/`written_count`/`auto_confirmed`/`unreviewed_auto_confirmed`/`terminal_state`, no SQL). `unreviewed_auto_confirmed > 0` = the type's machine findings still lack AI re-review.
+    - per-type candidate/written → `secguard status --per-type --scan-id <id>` (`candidate_count`/`written_count`/`auto_confirmed`/`terminal_state`, no SQL). `auto_confirmed` findings are machine verdicts (marked reviewed at scan time) — they need no AI review.
     - per-type verdict split → `secguard report --audit --scan-id <id> --output-dir <dir>` returns an `audits` array (`vuln_type`/`confirmed`/`auto_confirmed`/`ai_stage_status`; `dismissed` and `suspected` are not present — dismissed candidates are not persisted). `ai_stage_status` values: `pending` (AI stage not done), `done` (AI stage complete), `failed` (AI stage failed, reserved). Sum that array for the report — do NOT raw-query `findings` to recompute it.
     **findings/ 里的 confirmed 文件 ≠ 子代理报告的 confirmed（auto-confirmed 已落库）:** `findings/<type>/NNN_*_confirmed.md` 是两类之和——(a) `auto-confirmed`：pipeline 在 scan 阶段直接机器确认的确定性发现（divide-by-zero 的 `divisor@field`/`global`、null-deref 的 `null@cfg-proof`/`null@malloc-fail`、uninit 的 certain-uninit 等），它们**不在** `candidates/_index.md` 里、子代理从来看不到；(b) 子代理写的 `confirmed`。所以 findings/ 的 confirmed 文件数可以明显大于子代理报告的数，多出的就是 auto-confirmed，**不是漏报也不是子代理说错**。最终计数一律以 `report --audit` 的 `audits` 数组（含 `auto_confirmed` 字段）为准，不要 `ls findings/` 反推、不要为这个对账。
    **DB 路径（绝对路径，否则 Exit code 1）:** every `secguard db` / `secguard schema` / `secguard report` call that takes `--db` MUST pass the ABSOLUTE path `<scan_dir>/../../.sgre/sgre.db`. A relative `.sgre/sgre.db` fails with `Error: Exit code 1` whenever your cwd is not the project root — do NOT retry it as-is; re-run with the ABSOLUTE path. **Do NOT `cd` into the scan dir to "fix" it:** commands run WITHOUT `--db` (`secguard plan`/`status`/`metrics`/`query` and `report --audit`) resolve the DB relative to cwd, so cd'ing into the scan dir would mint a second, empty `sgre.db` under the scan dir (doubling build time and splitting findings across two databases). Keep cwd at the project root for the whole run.
     **dismissed 不持久化，`final_count − confirmed` 不是漏写:** dismissed candidates are intentionally NOT persisted (no finding row, no count). When `ai_stage_status='done'` for a type, the AI has processed all candidates — the `final_count − confirmed` gap is the dismissed count, which is normal, not a missing write. When `ai_stage_status='pending'` the type is in-progress (reported by `status --per-type`, not as unclassified). Because `--write-json` UPSERTs keyed on `(scan_id, rule_id, file, line, function, variable)`, candidates for the SAME variable at the SAME file:line:function collapse into ONE finding. Do NOT inspect the schema or raw-query `findings` to "persist" dismissed; trust `secguard status --per-type --scan-id <id>` (`written_count`/`terminal_state`/`ai_stage_status`) instead.
    If you MUST raw-query, run `secguard schema <table>` first, or use these exact names — never guess:
     - `findings`: `id, rule_id (CWE, e.g. CWE-476 — there is NO type/vuln_type column), severity, status (confirmed|auto-confirmed for new scans; legacy dismissed/suspected rows tolerated but ignored), file_path (NOT file), line_number (NOT line), function_name, scan_id, review_status`
-      **终报/问题表查询必须过滤 `review_status`:** a re-reviewed auto-confirmed
-      finding that was dismissed keeps its row (`status='auto-confirmed'` +
-      `review_status='dismissed'`), so a raw `SELECT ... FROM findings` counts it
-      as still-present even though it is suppressed. Any final-total query must add
-      `AND (review_status IS NULL OR review_status NOT IN ('dismissed'))` — or use
-      `report --list --status confirmed` (which already applies the
-      `EffectiveStatus` verdict) instead of raw SQL.
+       **终报/问题表查询必须过滤 `review_status`:** an auto-confirmed finding
+       carries `review_status='confirmed'` (machine verdict, no re-review). If a
+       later pass ever downgrades one to `dismissed`, a raw `SELECT ... FROM
+       findings` would still count it as present, so any final-total query must
+       add `AND (review_status IS NULL OR review_status NOT IN ('dismissed'))` —
+       or use `report --list --status confirmed` (which applies `EffectiveStatus`)
+       instead of raw SQL.
     - `scan_stats`: `scan_id, vuln_type (kebab-case type name), seed_count, final_count, ai_stage_status (pending|done|failed)`
 
    **上报解析与 DB 二次校验 (F5):** For each subagent result, parse by `format_version`
@@ -656,34 +637,11 @@ straight to the structured report (`written: 0`).
     type the subagent reported ABANDONED (`failed_types`) is NOT marked complete
     — it goes through the F5 FAILED/PARTIAL branch instead.
 
-    **Auto-confirmed 二次复核（复用 subagent 的 skill，不是外部 AI provider）:** the
-    subagents re-review their own type's machine auto-confirmed findings as part of
-    their per-type loop (see agent-body "Re-review auto-confirmed findings"), via
-    `secguard report --list-auto-confirmed` / `--review-json` (Bash host) or the
-    `secguard_review` MCP tool (OpenCode). A `dismissed` verdict
-    suppresses the machine false positive. Before the audit, VERIFY the subagents
-    actually did it: `secguard report --list-auto-confirmed --scan-id <scan_id>
-    --db <db_path>` should return `count: 0` (every auto-confirmed finding got a
-    review_status). **A nonzero `count` is a completeness failure, not a
-    note-taking event — fix it before auditing:**
-    1. Find the remaining types: `secguard status --per-type --scan-id <scan_id>`
-       returns per-type `auto_confirmed` / `unreviewed_auto_confirmed`; any type
-       with `unreviewed_auto_confirmed > 0` still needs re-review. Do NOT use
-       `terminal_state` alone for this — a 0-candidate type reads `terminal_state:
-       done` (its classification IS complete) even while its machine findings are
-       unreviewed. (Fallback: run `secguard report --list-auto-confirmed --type
-       <type> --scan-id <scan_id> --db <db_path>` per type from the scan summary's
-       `auto_confirmed_by_type`.)
-    2. For each such type, dispatch a re-review-only subagent (or a sequential
-       re-review pass if small) — load the type's skill, list + `--review-json`
-       every entry, then `--complete-type <type>`. The re-review is idempotent:
-       `--list-auto-confirmed` only returns entries with no review verdict, so
-       re-dispatching an already-reviewed type finds 0 and is harmless.
-    3. Re-run the global `--list-auto-confirmed` check; only when it reads
-       `count: 0` may you proceed to audit. If a re-dispatch STILL leaves
-       `count > 0` (e.g. no subagent available), surface the unreviewed count in
-       the 观察项表 as a FALLBACK — never as the design. Do NOT shell out to
-    an external AI provider.
+    **Auto-confirmed findings are machine verdicts (no re-review):** the scan
+    marks them `review_status='confirmed'` at write time, so there is no
+    re-review loop and no `--list-auto-confirmed` completeness gate. The final
+    free-form judgment happens on the CUSTOMER side over `result.sarif`; sgre's
+    agent only classifies candidates.
 
     After ALL subagents (or your sequential loop) are done, run `secguard report --audit --scan-id <scan_id> --output-dir <output_dir> --ai-duration-ms <ms>`
    ONCE to regenerate `report.md` (verdict-stage, confirmed only) + `result.sarif`

@@ -443,75 +443,21 @@ missing `scan_id`/`output_dir`), and write that chunk again. (The single-finding
 `errors`.) Never re-run a write to "verify" — the write is idempotent; re-running
 never duplicates but wastes a turn.
 
-## Re-review auto-confirmed findings (reuse YOUR skill — no second agent)
+## Auto-confirmed findings (machine verdict — no dedicated re-review loop)
 
-Your type's `candidates/<type>/_index.md` holds the suspected/possible candidates,
-but the scan ALSO machine-confirmed a set of findings the pipeline "proved"
-(they are NOT in `_index.md`). These are the highest false-positive risk — a
-getter misread as an allocation, a scalar status code misread as a pointer —
-so you MUST re-review them with the SAME skill before you finish the type:
+Your type's `candidates/<type>/_index.md` holds the suspected/possible candidates
+you classify below. The scan ALSO machine-confirmed a set of findings the pipeline
+PROVED (they are NOT in `_index.md`). Those are already marked reviewed at scan
+time and flow straight into `result.sarif` as `auto-confirmed` — there is NO
+dedicated re-review loop for them, so you do NOT list or re-verify them.
 
-**RANGE-split sibling rule (concurrent dedup):** if your dispatch prompt says your
-type was split into sibling RANGE subagents AND you are NOT the re-review owner,
-SKIP this entire section — the owner sibling re-reviews the type's auto-confirmed
-set once, and a concurrent duplicate read of the same `--list-auto-confirmed`
-entries is pure wasted turns (the idempotent list only filters entries that
-already have a verdict, which the racing siblings have not written yet). If you
-ARE the owner (or your type has no siblings), proceed as follows.
-
-**Re-review-only dispatch (0 candidates):** if your type has 0 candidates (no
-`candidates/<type>/_index.md`, or it exists but is empty), you were dispatched for
-re-review ONLY — do NOT look for candidates and do NOT run the classification
-loop above. Start here at step 1, load the <type> skill, and re-review every
-machine auto-confirmed finding. This is the only path a 0-candidate type needs.
-
-1. List them — via Bash `secguard report --list-auto-confirmed --scan-id <scan_id>
-   --type <type> --db <db_path>`, or the `secguard_review` MCP tool
-   (`list_auto_confirmed: true, type: <type>`) when you have it. → a `findings`
-   array (`id` / `rule_id` / `file` / `line` /
-   `function` / `variable` / `reasoning` / `snippet` / `context`, plus `hint` /
-   `facts` — the pipeline's own verdict basis persisted at auto-confirm time:
-   `hint` is the same token sequence the `_index.md` Hint column would carry,
-   `facts` is the structured `token`/`detail` pairs; findings auto-confirmed
-   before that field existed have neither and fall back to `reasoning`).
-   If the set is
-   large, pull it in pages with `--limit <n>` (e.g. 50) so a single tool return
-   never overflows your context; re-list until `count: 0`.
-2. For each entry, apply the skill's false-positive rules against `hint` +
-   `facts` first — they state HOW the pipeline proved the verdict (e.g. a
-   `null@malloc-fail` fact names the exact nullable origin; a
-   `null@external-unknown` fact tells you the machine's only basis was a
-   fail-open assumption, which is exactly the tier to scrutinize), then against
-   `reasoning` + `context` — a gutter-numbered ±8-line window (> marks the
-   finding line) that
-   shows the guard / return / neighbouring use which settles the machine verdict.
-   `snippet` is the single finding line when you only need the statement. Read the
-   source file only when the window is genuinely insufficient — this is a cheap
-   table review, do NOT spend the ≤5 source-read budget here.
-**Policy-category fast path (no sampling, gate unchanged).** When the category's
-proof is an API/name MEMBERSHIP test — `dangerous-function` (banned API),
-`signal-handler` (async-unsafe API), `weak_algorithm`/`weak_random` (literal
-list) — the re-review is ONE bulk `--review-json` marking every entry
-`confirmed` with `reason: "policy:<list>"`. Do NOT open evidence or source for
-these: there is nothing semantic to check beyond the name the skill already
-asserts. The semantic tiers (`null@cfg-proof` / `null@malloc-fail` / `null@caller-arg` /
-`null@opaque-origin`), leak, uninit and oob keep the full per-entry review. Sampling is deliberately NOT allowed — `unreviewed=0` is the
-terminal gate that keeps the machine-proved tier honest, and these rows cost one
-write, not one investigation.
-
-3. Write your verdicts in ONE batch — via Bash
-   `secguard report --review-json <tmpfile> --db <db_path>` as
-   `[{"id": <id>, "review_status": "confirmed"|"dismissed", "review_reasoning": "..."}]`,
-   or the `secguard_review` MCP tool (`reviews: [...]`). Write a verdict for
-   EVERY entry — `dismissed` suppresses the machine false positive from
-   `result.sarif`, and `confirmed` records your agreement. Do NOT omit the
-   entries you agree with: the orchestrator verifies the re-review by checking
-   that `--list-auto-confirmed` returns `count: 0`, which only holds when every
-   entry got a review_status.
-
-A `dismissed` re-review reason must cite the same evidence contract as a
-candidate dismissal (the snippet / source line + why it is safe). Do NOT skip
-this step — it is what keeps the machine-proved tier honest.
+The FREE-FORM judgment below applies to the whole result set. You MAY downgrade an
+auto-confirmed finding to `dismissed` when, reading its code context, you find a
+concrete rebuttal the deterministic proof missed (a guard, a call contract, a
+size-check correlation) — but ONLY with a `file:line + why-safe` reason, never a
+bare "looks fine". You may NOT "re-confirm" a machine-proved finding (it already
+is confirmed) and may NOT upgrade a suspected candidate beyond its embedded
+evidence.
 
 ## Single-pass verdicts (single pass — no second round)
 
@@ -528,6 +474,15 @@ budget.
   checked allocation, a call contract that proves safety) OR a candidate you
   could not settle after reading its source. NOT persisted — your reasoning stays
   in your transcript (the conversation record), never shown to the user.
+
+**The skill is a FLOOR, not a ceiling.** The skill's false-positive rules are the
+minimum bar you MUST apply first, but you are not a rule executor — reason freely
+about the actual code semantics. You may `dismissed` beyond the rules when you see
+a concrete safety argument the rules do not encode (a size-check correlation, a
+call contract, an ownership transfer the deterministic proof missed), as long as
+you cite the `file:line + why-safe` evidence. You may NOT `confirmed` beyond the
+embedded evidence (no hallucinated upgrades): `confirmed` requires the pipeline's
+proof OR a source read that shows the defect concretely.
 
 **Every `dismissed` must cite its evidence — this is what makes "did you actually
 analyze" checkable.** A `dismissed` reason names the specific evidence: the guard /
@@ -579,7 +534,7 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
   "subagent_id": "<your id>",
   "scan_id": "<scan_id>",
   "processed_types": [
-    {"type": "null-deref", "cwe": "CWE-476", "written": 3, "re_reviewed": 0, "dismissed": 1146, "source_reads": 1, "evidence_opens": 2}
+    {"type": "null-deref", "cwe": "CWE-476", "written": 3, "dismissed": 1146, "source_reads": 1, "evidence_opens": 2}
   ],
   "failed_types": [
     {"type": "buffer-overflow", "reason": "api-quota-exhausted"}
@@ -595,14 +550,10 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
   `write-busy` | `empty-output` | `unknown`.
 - `written` = the number of CONFIRMED findings you PERSISTED (dismissed
   candidates are NOT persisted, so they are NOT part of `written`).
-- `re_reviewed` = the number of auto-confirmed findings you re-reviewed via
-  `--list-auto-confirmed` + `--review-json` (they already exist in the DB; they
-  are NOT part of `written`).
 - `dismissed` = the number of candidates you judged dismissed (NOT persisted,
-  NOT part of `written`). Never mix auto-confirmed re-review or dismissed
-  candidates into `written` — the orchestrator reconciles `written` against the
-  DB's per-type `written_count`, and a conflated number forces it to re-derive
-  your real progress.
+  NOT part of `written`). Never mix dismissed candidates into `written` — the
+  orchestrator reconciles `written` against the DB's per-type `written_count`,
+  and a conflated number forces it to re-derive your real progress.
 - `source_reads` / `evidence_opens` = the counts of raw source reads and
   `Evidence` file opens you actually performed for the type. These are the
   orchestrator's only F6 read-source audit signal on hosts without subagent

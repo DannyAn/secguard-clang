@@ -20,12 +20,7 @@ func init() {
 			"assert_usage":             "suspected",
 			"obsolete_api_conditional": "suspected",
 		},
-		// The auto-confirmed tier here is the banned-API POLICY check (a
-		// deterministic name match — memcpy/strcpy/exit are banned regardless of
-		// call context), so re-reviewing it is pure waste. assert_usage /
-		// obsolete_api_conditional stay suspected and never reach auto-confirm.
-		SkipAutoConfirmReReview: true,
-		BuildVerdictFacts:       buildDangerousFunctionVerdictFacts,
+		BuildVerdictFacts: buildDangerousFunctionVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
 				{Type: "dangerous_function", Role: "sink", Detail: fmt.Sprintf("call to banned %s() (%s) at line %d in function %s", c.VariableName, c.Category, c.Line, c.FunctionName)},
