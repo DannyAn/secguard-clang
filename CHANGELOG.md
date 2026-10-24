@@ -2,6 +2,53 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.10.0] - 2026-10-24
+
+### 架构重构（2026Q4）：graph 语义查询服务 + 证明链机器守卫 + 并发友好 CFG 缓存
+
+本版本是**架构性升级**（对应 `docs/kimi_k3_架构设计检视.md` 与 `docs/kimi_k3_架构优化改善实施方案.md`），不动 CLI 契约、不改 vuln type 名单、不改 CWE 映射，全部改动在 sgre 引擎内部。用户可见收益：plan 阶段 CFG 重复构建消除（cache 命中率 90.6%）、confirmed 精准性从"文档约束"升级为"构建约束"、AI 举证链路进一步结构化。
+
+#### 性能
+
+- **函数级 CFG 缓存**（`graph.CFGCache`）：同一函数在一次扫描中只构建一次 statement CFG，被 detector 与 planner 全阶段共享。`examples/c-vuln-benchmark`（366 函数）一次扫描内 cache 命中 3525/3891 = **90.6% 消除重复构建**；redis 级负载预期 plan + detectors 阶段耗时降 30-50%。
+- **跨函数别名图**（`graph.AliasGraph`）：扫描启动时构建一次，ctx 共享给 detector 与 planner；覆盖函数内别名（init/assign/cast/field/elem-addr）+ 跨函数 return 别名 + 参数别名 + 全局别名骨架。
+
+#### 准确率（confirmed 精准性）
+
+- **`ProofRegistrar` 机器守卫**：12 个会升级 confirmed 的 filter 全部实现 `DeclaredProofs()`；`TestDynamicConfirmedUpgradesRegistered` 上线——**新增任何 filter 内 confirmed 升级而未登记者，构建失败**。静态集合由 `TestConfirmedTierPolicy` 守卫，动态升级由本测试守卫，两者一起覆盖 confirmed 的全部来源。
+- **`AI_JUDGMENT_BOUNDARY.md` 新增"动态升级登记（v0.10.0 起）"章节**：filter 在 `Apply` 中升级 confirmed 必须声明证明类别（cfg-must-dataflow / interval-or-const-fold / literal / type-inherent）+ 规则名 + 可审计证据描述。
+- **`graph.Querier` 语义查询服务**：`MayBeNullAt` / `MustNonNullAt` / `IntervalAt` / `TypeOf` 四个查询落地（null 维度接 null_flow reaching-sources，Interval 接 range_flow，TypeOf 接 LP64 宽度表 + 参数列表解析）。detector 后续可迁移到 Querier 而非自建启发式。
+- **`graph.SummaryQuerier` 跨函数返回摘要**：Null（递归 return 语句下降）+ Interval（return 语句区间 join）+ Taint（接 taintSummaryCache）+ Capacity（malloc/calloc 字面量大小）四维度就位。
+
+#### 可维护性
+
+- **filter chain 声明式化**：`VulnTypeSpec.FilterFactories []FilterFactory` 取代 `planner.go` 的 switch-case；`RegisterVulnType` 对空 FilterFactories 直接 panic（注册期 bug，而非运行期回退）；`TestFilterChainMigration` 锁定 25 个类型的 filter 名称与顺序。
+- **registry.go 拆分**：1901 行 → 592 行主体 + 25 个 `registry_<type>.go` 独立文件（每文件 25-83 行）+ 15 个 `buildXXXVerdictFacts` 搬到对应类型文件。
+- **`Candidate` 类型化视图**：`Common()` / `Leak()` / `Free()` / `Buffer()` / `IntOverflow()` / `Race()` / `Divisor()` / `Contract()` 八个只读视图，快照语义（修改视图不影响源 Candidate），零破坏落地（嵌入方案撤回）。
+- **config 显式告警**：`config.Load()` 在配置文件找到但读不出/解析失败时打 stderr 警告（历史 v0.7.0 "secguard.toml 写错位置静默归零"事故的根因修复）。
+
+#### AI 举证链路
+
+- **Evidence Contract v2 批次 A**：`integer-overflow` + `unchecked-return` 补 `BuildVerdictFacts`（`cat@` / `lhs@` / `rhs@` / `sink@` / `api@` / `contract@known|unknown` / `discard` / `callee@<file>:<line>` 维度）。
+- **跨函数 double-free 骨架**（未启用）：`detectCrossFunctionDoubleFree` 就位，需 AliasGraph 标记边 provenance（return-alias vs parameter-alias）后启用。
+
+#### CI / 回归
+
+- **benchmark PR 级 CI**：`.github/workflows/pr-benchmark.yml` 在 PR 上自动跑 `secguard scan examples/c-vuln-benchmark` + `validate-benchmark.py --allow-fn`（**FP=0 红线**）；`docs/benchmark-ci.md` 记录本地复现步骤。
+- **pinned 测试**：`TestStmtCFGSharedAcrossFilters` / `TestDynamicConfirmedUpgradesRegistered` / `TestFilterChainMigration` / `TestCandidateTypedViews` / `TestQuerierIntervalAt` / `TestQuerierMayBeNullAt_RealFlow` / `TestQuerierTypeOf` / `TestQuerierTypeOf_Parameter` / `TestSummaryQuerierNullDimension` / `TestSummaryQuerierIntervalDimension` / `TestSummaryQuerierCapacityDimension` / `TestBuildInterproceduralAlias_LocalShapes` / `TestBuildInterproceduralAlias_CrossFunction` / `TestBuildInterproceduralAlias_NoCycle` / `TestBuildInterproceduralAlias_GlobalAlias` / `TestCFGCache*`（5 个）/ `TestLoad_LogsOnUnreadableConfig` 全绿。
+
+#### 关闭清单
+
+以下项已评估不实施，理由与启用条件见 `docs/arch-refactor-2026q4-closure.md`：
+
+- MustNonNullAt must-non-null lattice（现有引擎不足以支撑 TriYes，强行加会引入 unsound）
+- Phase 14 graph 层增量扫描（方案默认不启动，需独立评审）
+- F1-F4 真实 AI 研判会话复测（需真实 AI 会话，留待用户本地 E2E 验证）
+- UAF/DF/ML/RL detector 迁移 AliasGraphFromCtx（函数内别名已成熟，跨函数迁移需独立 A/B）
+- TypeOf typedef/struct 字段解析（需 repofacts 结构体布局表）
+- AliasGraph 全局别名完整实现（需 indexer 暴露文件作用域符号表）
+- SummaryQuerier Capacity 非字面量大小（需 range_flow 区间分析）
+
 ## [0.9.9] - 2026-10-22
 
 ### 第三方库 API 语义模型（libxml2 / cJSON / libc 扩展 API）
