@@ -10,6 +10,7 @@ func init() {
 		EvidenceType:     "RACE_CONDITION",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "race-condition",
+		FilterFactories:    chainRaceCondition(),
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			if c.Category == "shared_data_race" {
 				frags := []EvidenceFragment{

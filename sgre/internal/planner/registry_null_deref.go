@@ -10,6 +10,7 @@ func init() {
 		EvidenceType:       "NULL_DEREFERENCE",
 		DefaultSuspicion:   "confirmed",
 		FilterChain:        "null-deref",
+		FilterFactories:    chainNullDeref(),
 		ConvergeByVariable: true,
 		BuildVerdictFacts:  buildNullDerefVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {

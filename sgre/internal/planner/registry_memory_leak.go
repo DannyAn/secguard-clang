@@ -10,6 +10,7 @@ func init() {
 		EvidenceType:      "MEMORY_LEAK",
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "memory-leak",
+		FilterFactories:    chainMemoryLeak(),
 		BuildVerdictFacts: buildLeakVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			allocAPI := ""

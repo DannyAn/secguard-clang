@@ -10,6 +10,7 @@ func init() {
 		EvidenceType:      "IMPLICIT_CONTRACT",
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "implicit-contract",
+		FilterFactories:    chainImplicitContract(),
 		BuildVerdictFacts: buildImplicitContractVerdictFacts,
 		Categories:        []string{"ptr_guard"},
 		// One candidate per dereference site: a field null-checked on one path but

@@ -10,6 +10,7 @@ func init() {
 		EvidenceType:      "DIVIDE_BY_ZERO",
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "divide-by-zero",
+		FilterFactories:    chainDivideByZero(),
 		BuildVerdictFacts: buildDivideByZeroVerdictFacts,
 		// Dedup the SAME divisor divided at many sites into one finding, but keep a
 		// confirmed and a suspected division of that divisor distinct: the

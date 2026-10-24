@@ -83,12 +83,12 @@ type VulnTypeSpec struct {
 var vulnTypeRegistry = map[string]*VulnTypeSpec{}
 
 func RegisterVulnType(spec *VulnTypeSpec) {
-	// Populate FilterFactories from FilterChain when the caller did not set it
-	// explicitly. This is the migration bridge: existing types keep only the
-	// string, new types can declare factories directly; a future Phase removes
-	// the string entirely once every type is migrated.
+	// FilterFactories is authoritative: every registered type declares its
+	// chain explicitly in registry_<type>.go (Phase 7 follow-up). A missing
+	// FilterFactories is a registration-time bug — the legacy string fallback
+	// was removed once every type was migrated.
 	if len(spec.FilterFactories) == 0 {
-		spec.FilterFactories = filterFactoriesFor(spec.FilterChain)
+		panic("RegisterVulnType: " + spec.Name + " has no FilterFactories (declare them explicitly in registry_<type>.go)")
 	}
 	vulnTypeRegistry[spec.Name] = spec
 }
@@ -197,9 +197,9 @@ func ActiveVulnTypes(disabled map[string]bool) []string {
 	return names
 }
 
-// ValidateRegistry checks every registered vulnerability type's spec and filter
-// chain, returning an error for any type whose FilterChain has no handler in
-// getFilters. It is called once at pipeline startup so a registry typo fails
+// ValidateRegistry checks every registered vulnerability type's spec has a
+// non-empty FilterFactories (the authoritative declaration since Phase 7
+// follow-up). It is called once at pipeline startup so a registry typo fails
 // immediately (before the expensive index/graph/detector phases) rather than
 // mid-scan as a per-type Plan failure. TestAllVulnTypesHaveKnownFilterChain
 // enforces the same invariant at test time; this is the runtime guard.
@@ -210,7 +210,7 @@ func ValidateRegistry() error {
 		if err != nil {
 			return err
 		}
-		if _, err := p.getFilters(spec.FilterChain); err != nil {
+		if _, err := p.buildFilters(spec); err != nil {
 			return fmt.Errorf("planner: vuln type %s: %w", name, err)
 		}
 	}

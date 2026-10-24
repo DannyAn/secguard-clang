@@ -10,6 +10,7 @@ func init() {
 		EvidenceType:     "USE_AFTER_FREE",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "lifetime",
+		FilterFactories:    chainLifetime(),
 		// One freed variable used at many sites is one defect, not one per use.
 		ConvergeByVariable: true,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {

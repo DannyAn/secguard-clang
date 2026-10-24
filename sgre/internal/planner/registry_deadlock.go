@@ -10,6 +10,7 @@ func init() {
 		EvidenceType:     "DEADLOCK",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "deadlock",
+		FilterFactories:    chainDeadlock(),
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{
 				{Type: "deadlock", Role: "sink", Detail: fmt.Sprintf("lock-order inversion (potential deadlock) in %s at line %d", c.FunctionName, c.Line)},

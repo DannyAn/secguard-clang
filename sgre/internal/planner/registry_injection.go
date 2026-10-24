@@ -20,6 +20,7 @@ func init() {
 		EvidenceType:     "INJECTION",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "injection",
+		FilterFactories:    chainTaint(),
 		ConvergeKey: func(c Candidate) string {
 			// Key on (function, category, variable) so sprintf(source) +
 			// sqlite3_exec(sink) sharing one buffer merge into one finding — the

@@ -10,6 +10,7 @@ func init() {
 		EvidenceType:     "INTEGER_OVERFLOW",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "integer-overflow",
+		FilterFactories:    chainIntegerOverflow(),
 		// Value-analysis tiers. size_calc_overflow (malloc(a * b) / malloc(n *
 		// sizeof(T))) and size_mul_const_overflow (malloc(n * CONST), CONST >= 256
 		// and n caller-influenced) are concrete CWE-190 patterns and stay

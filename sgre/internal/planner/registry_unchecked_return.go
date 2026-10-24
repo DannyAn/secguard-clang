@@ -10,6 +10,7 @@ func init() {
 		EvidenceType:      "UNCHECKED_RETURN",
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "unchecked-return",
+		FilterFactories:    chainUncheckedReturn(),
 		BuildVerdictFacts: buildUncheckedReturnVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{

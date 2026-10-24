@@ -10,6 +10,7 @@ func init() {
 		EvidenceType:      "PATH_TRAVERSAL",
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "path-traversal",
+		FilterFactories:    chainTaint(),
 		BuildVerdictFacts: buildPathTraversalVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{

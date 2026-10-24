@@ -10,6 +10,7 @@ func init() {
 		EvidenceType:      "FORMAT_STRING_VULN",
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "format-string",
+		FilterFactories:    chainTaint(),
 		BuildVerdictFacts: buildFormatStringVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{

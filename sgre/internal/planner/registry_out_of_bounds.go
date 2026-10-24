@@ -13,6 +13,7 @@ func init() {
 		EvidenceType:      "OUT_OF_BOUNDS",
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "buffer-overflow",
+		FilterFactories:    chainBufferOverflow(),
 		BuildVerdictFacts: buildBufferVerdictFacts,
 		Categories:        []string{"array_oob_read", "heap_oob_read", "array_oob_read_unchecked"},
 		// A read-flavored OOB is only emitted when the detector proved the

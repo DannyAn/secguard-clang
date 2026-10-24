@@ -10,6 +10,7 @@ func init() {
 		EvidenceType:      "SIZEOF_MISUSE",
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "default",
+		FilterFactories:    chainDefault(),
 		BuildVerdictFacts: buildSizeofMisuseVerdictFacts,
 		Categories:        []string{"sizeof_pointer", "sizeof_pointer_ambig"},
 		// `sizeof(p)` on a single-level pointer `T *p` is provably the pointer

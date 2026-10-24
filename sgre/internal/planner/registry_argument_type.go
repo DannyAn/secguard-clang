@@ -10,6 +10,7 @@ func init() {
 		EvidenceType:      "ARGUMENT_TYPE_MISMATCH",
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "default",
+		FilterFactories:    chainDefault(),
 		BuildVerdictFacts: buildArgumentTypeVerdictFacts,
 		// An incompatible pointer cast is evidence of a type reinterpretation,
 		// but an explicit cast is not proof of a defect (it can be an intentional

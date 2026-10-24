@@ -10,6 +10,7 @@ func init() {
 		EvidenceType:     "DANGEROUS_FUNCTION",
 		DefaultSuspicion: "confirmed",
 		FilterChain:      "default",
+		FilterFactories:    chainDefault(),
 		// A call to a banned function is a POLICY finding — the function itself
 		// is the defect, no context matters — so every category is confirmed
 		// soundly (a name match, not a may-analysis). EXCEPTION: `assert_usage`

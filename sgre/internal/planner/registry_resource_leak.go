@@ -10,6 +10,7 @@ func init() {
 		EvidenceType:      "RESOURCE_LEAK",
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "resource-leak",
+		FilterFactories:    chainResourceLeak(),
 		BuildVerdictFacts: buildLeakVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			acquireAPI := ""

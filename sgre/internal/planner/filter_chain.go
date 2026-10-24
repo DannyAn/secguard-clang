@@ -27,13 +27,12 @@ type FilterDeps struct {
 // planner.go.
 type FilterFactory func(deps FilterDeps) Filter
 
-// buildFilters instantiates the filters for spec. When spec.FilterFactories
-// is non-empty it is authoritative; otherwise we fall back to the legacy
-// string-keyed switch (kept during the migration window).
+// buildFilters instantiates the filters for spec from its declarative
+// FilterFactories. The legacy string-keyed switch was removed once every
+// registered type declared its chain explicitly (Phase 7 follow-up); a
+// missing FilterFactories fails at RegisterVulnType, so it cannot reach
+// this point.
 func (p *Planner) buildFilters(spec *VulnTypeSpec) ([]Filter, error) {
-	if len(spec.FilterFactories) == 0 {
-		return p.getFilters(spec.FilterChain)
-	}
 	deps := FilterDeps{
 		Store:          p.store,
 		Parser:         p.parser,
@@ -189,43 +188,4 @@ func chainImplicitContract() []FilterFactory {
 	}
 }
 
-// filterFactoriesFor maps a legacy FilterChain string to its declarative
-// factories. It exists so the migration to spec.FilterFactories can be done
-// one type at a time while the legacy switch is still the fallback.
-func filterFactoriesFor(chain string) []FilterFactory {
-	switch chain {
-	case "default":
-		return chainDefault()
-	case "null-deref":
-		return chainNullDeref()
-	case "memory-leak":
-		return chainMemoryLeak()
-	case "buffer-overflow":
-		return chainBufferOverflow()
-	case "resource-leak":
-		return chainResourceLeak()
-	case "lifetime":
-		return chainLifetime()
-	case "uninit":
-		return chainUninit()
-	case "double-free":
-		return chainDoubleFree()
-	case "injection", "path-traversal", "format-string":
-		return chainTaint()
-	case "integer-overflow":
-		return chainIntegerOverflow()
-	case "divide-by-zero":
-		return chainDivideByZero()
-	case "deadlock":
-		return chainDeadlock()
-	case "race-condition":
-		return chainRaceCondition()
-	case "unchecked-return":
-		return chainUncheckedReturn()
-	case "hardcoded-secret":
-		return chainHardcodedSecret()
-	case "implicit-contract":
-		return chainImplicitContract()
-	}
-	return nil
-}
+

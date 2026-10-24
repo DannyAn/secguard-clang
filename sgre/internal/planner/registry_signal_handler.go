@@ -10,6 +10,7 @@ func init() {
 		EvidenceType:      "SIGNAL_HANDLER",
 		DefaultSuspicion:  "confirmed",
 		FilterChain:       "default",
+		FilterFactories:    chainDefault(),
 		BuildVerdictFacts: buildSignalHandlerVerdictFacts,
 		// A signal handler that DIRECTLY calls a known non-async-signal-safe libc
 		// function (malloc, printf, pthread_mutex_lock, ...) is a certain CWE-479
