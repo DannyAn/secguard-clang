@@ -187,5 +187,3 @@ func chainImplicitContract() []FilterFactory {
 		func(d FilterDeps) Filter { return NewContractGapFilter(d.Store).WithParser(d.Parser, d.Logger) },
 	}
 }
-
-
