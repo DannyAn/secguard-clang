@@ -165,6 +165,16 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	// overhead this Phase removes).
 	sharedCFGCache := graph.NewCFGCache()
 
+	// Build the per-scan interprocedural alias graph once and share it via
+	// ctx with both stages. The current skeleton covers function-local
+	// shapes; cross-function return/parameter/global aliasing is a follow-up.
+	aliasGraph, aliasErr := graph.BuildInterproceduralAlias(ctx, store, p)
+	if aliasErr != nil {
+		logger.Warn("alias graph build degraded", "err", aliasErr)
+		aliasGraph = graph.NewAliasGraph()
+	}
+	ctx = graph.WithAliasGraph(ctx, aliasGraph)
+
 	detStart := time.Now()
 	detectorErrors := evidence.RunAllDetectorsWithCache(ctx, store, p, logger, sharedCFGCache)
 	timings.DetectorsMs = time.Since(detStart).Milliseconds()
