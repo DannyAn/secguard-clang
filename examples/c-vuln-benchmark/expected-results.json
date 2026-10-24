@@ -3,7 +3,7 @@
   "_benchmark_doc": "benchmark.md",
   "_validator": "scripts/validate-benchmark.py",
   "summary": {
-    "total_test_cases": 226,
+    "total_test_cases": 227,
     "phase0_test_cases": 18,
     "phase1_test_cases": 12,
     "phase2_test_cases": 4,
@@ -80,7 +80,8 @@
     "phase28_no_finding": 3,
     "phase29_hrp_double_free": 3,
     "phase29_finding": 1,
-    "phase29_no_finding": 2
+    "phase29_no_finding": 2,
+    "phase30_cross_fn_double_free": 1
   },
   "test_cases": [
     {
@@ -2298,6 +2299,16 @@
       "cwe": "CWE-415",
       "detector": "double_free",
       "expect": "no_finding"
+    },
+    {
+      "id": "P30-01",
+      "category": "phase30_cross_fn_double_free",
+      "file": "src/p30_cross_fn_return_double_free.c",
+      "line": 24,
+      "code": "make_ptr 无条件 free(p) 后返回悬空 p；caller free(q=make_ptr()) 再次释放同一对象 —— 跨函数 return-alias double-free（dangling-return 门控启用后检出）",
+      "cwe": "CWE-415",
+      "detector": "double_free",
+      "expect": "finding"
     }
   ]
 }

@@ -73,6 +73,7 @@ DETECTOR_TO_TYPE = {
     "format_string": "format-string",
     "double_free": "double-free",
     "null_deref": "null-deref",
+    "use_after_free": "use-after-free",
     "memory.use_after_free": "use-after-free",
     "memory.double_free": "double-free",
     "memory.memory_leak": "memory-leak",
@@ -196,10 +197,34 @@ def discover_sarif(root):
     return max(hits, key=os.path.getmtime)
 
 
-def evaluate(cases, findings, tol):
-    by_type = defaultdict(list)
-    for f in findings:
-        by_type[f["type"]].append(f)
+def discover_candidates_sarif(root):
+    """Newest `candidates.sarif` (every converged candidate, any suspicion
+    tier) under the project's scan output, if any. It backs recall: a `finding`
+    case is detected when a candidate exists, even before the AI classifies it."""
+    pats = [
+        os.path.join(root, ".codeagent/secguard-clang/scans/*/candidates.sarif"),
+        os.path.join(root, ".codeagent/secguard-clang/reviews/*/candidates.sarif"),
+    ]
+    hits = [p for pat in pats for p in glob.glob(pat)]
+    if not hits:
+        return None
+    return max(hits, key=os.path.getmtime)
+
+
+def evaluate(cases, verdicts, candidates, tol):
+    """Score ground-truth cases.
+
+    `verdicts` are the auto-confirmed findings (result.sarif) — they decide both
+    PASS and FP. `candidates` are the pipeline's converged candidates
+    (candidates.sarif, any suspicion tier) — they count a `finding` case as
+    DETECTED (recall), but never as a false positive (a suspected lead is the
+    AI's job to dismiss, not a machine error)."""
+    by_type_v = defaultdict(list)
+    for f in verdicts:
+        by_type_v[f["type"]].append(f)
+    by_type_c = defaultdict(list)
+    for f in candidates:
+        by_type_c[f["type"]].append(f)
 
     results = []
     for c in cases:
@@ -207,24 +232,34 @@ def evaluate(cases, findings, tol):
         ctype = case_type(c)
         key = rel_key(c["file"])
         line = int(c["line"])
-        pool = findings if ctype is None else by_type.get(ctype, [])
-        near = [
-            f for f in pool
-            if f["file"] == key and abs(f["line"] - line) <= tol
-        ]
-        exact = [f for f in near if f["line"] == line]
-        offset = min((f["line"] - line for f in near), key=abs) if near else None
         known_gap = "known_gap" in (c.get("category") or "")
         if want == "finding":
+            # A candidate of ANY tier counts as detected (recall); a verdict is
+            # just the strongest tier. This makes suspected-tier detection
+            # (which CI has no LLM to classify) visible instead of a phantom FN.
+            pool = (verdicts if ctype is None else by_type_v.get(ctype, [])) + \
+                (candidates if ctype is None else by_type_c.get(ctype, []))
+            near = [
+                f for f in pool
+                if f["file"] == key and abs(f["line"] - line) <= tol
+            ]
             ok = bool(near)
             verdict = "PASS" if ok else ("FN-known-gap" if known_gap else "FN")
         else:
+            # Only a VERDICT (auto-confirmed) can be a false positive.
+            pool = verdicts if ctype is None else by_type_v.get(ctype, [])
+            near = [
+                f for f in pool
+                if f["file"] == key and abs(f["line"] - line) <= tol
+            ]
             ok = not near
             verdict = "PASS" if ok else "FP"
-        # A same-line finding of a DIFFERENT type is not a verdict either way,
+        exact = [f for f in near if f["line"] == line]
+        offset = min((f["line"] - line for f in near), key=abs) if near else None
+        # A same-line VERDICT of a DIFFERENT type is not a verdict either way,
         # but it is useful triage context (P10-02).
         cross = [
-            f for f in findings
+            f for f in verdicts
             if f["file"] == key and f["line"] == line and f["type"] != ctype
         ]
         results.append({
@@ -264,7 +299,7 @@ def selftest():
         {"type": "unchecked-return", "file": "src/b.c", "line": 30, "rule": "CWE-252", "level": "error"},
         {"type": "race-condition", "file": "src/d.c", "line": 3, "rule": "CWE-362", "level": "error"},
     ]
-    got = {r["id"]: r for r in evaluate(cases, findings, 3)}
+    got = {r["id"]: r for r in evaluate(cases, findings, [], 3)}
     check("exact", got["T-exact"]["verdict"], "PASS")
     check("exact offset", got["T-exact"]["offset"], 0)
     check("within tolerance", got["T-offset"]["verdict"], "PASS")
@@ -281,6 +316,7 @@ def selftest():
         [{"id": "T", "file": "src/e.c", "line": 1, "detector": "memory.buffer_overflow",
           "expect": "no_finding"}],
         [{"type": "buffer-overflow", "file": "src/e.c", "line": 2, "rule": "CWE-787", "level": "error"}],
+        [],
         3,
     )
     check("same-type FP detected", fp[0]["verdict"], "FP")
@@ -295,6 +331,7 @@ def selftest():
           "detector": "injection.command_injection", "expect": "finding"}],
         [{"type": CWE_TO_TYPE.get("CWE-89", "CWE-89"), "file": "src/f.c", "line": 9,
           "rule": "CWE-89", "level": "error"}],
+        [],
         3,
     )
     check("CWE-89 finding matches an injection case", sql[0]["verdict"], "PASS")
@@ -430,7 +467,9 @@ def main():
     with open(args.expected, encoding="utf-8") as f:
         cases = json.load(f)["test_cases"]
     findings = load_sarif_findings(sarif)
-    results = evaluate(cases, findings, args.line_tolerance)
+    candidates_sarif = discover_candidates_sarif(args.root)
+    candidates = load_sarif_findings(candidates_sarif) if candidates_sarif else []
+    results = evaluate(cases, findings, candidates, args.line_tolerance)
 
     fp = [r for r in results if r["verdict"] == "FP"]
     fn = [r for r in results if r["verdict"] in ("FN", "FN-known-gap")]
@@ -445,6 +484,7 @@ def main():
             "sarif": sarif, "line_tolerance": args.line_tolerance,
             "expected_findings": len(pos), "expected_no_finding": len(neg),
             "sarif_findings": len(findings),
+            "candidate_findings": len(candidates),
             "passed": len(passed),
             "recall": f"{len([r for r in pos if r['verdict'] == 'PASS'])}/{len(pos)}",
             "false_positives": len(fp), "false_negatives": len(fn_real),
