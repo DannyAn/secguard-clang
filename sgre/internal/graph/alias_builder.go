@@ -8,18 +8,17 @@ import (
 )
 
 // BuildInterproceduralAlias constructs the per-scan AliasGraph from the
-// indexed functions. The current skeleton extracts the function-LOCAL
-// aliasing shapes the UAF / double-free / memory-leak detectors already
-// rely on (declaration initializer `q = p`, plain assignment `q = p`, cast
-// alias `q = (T*)p`, field alias `q = p->f`, element-address `q = &p[i]`) so
-// the graph answers the same questions findAliases answers today — but in a
-// shared, queryable form.
+// indexed functions. It runs in two passes:
 //
-// Cross-function shapes (return-alias `return p`, parameter-alias `f(p)`
-// binding the formal to the actual, global alias `g = p`) are Phase 12
-// follow-up: the builder's loop already visits every function, so adding
-// those rules is an additive change once the detector migration validates
-// the function-local layer.
+//  1. Function-local shapes (declaration initializer `q = p`, plain
+//     assignment `q = p`, cast alias `q = (T*)p`, field alias `q = p->f`,
+//     element-address `q = &p[i]`), plus per-function fact collection
+//     (return-alias sources, parameter names).
+//  2. Cross-function shapes: `q = foo()` links q to foo's return-alias
+//     sources; `foo(p)` links p to foo's corresponding parameter. Global
+//     aliasing (`g = p` where g is a file-scope variable) is a follow-up —
+//     it needs the file-scope symbol table, which the indexer does not yet
+//     expose.
 func BuildInterproceduralAlias(ctx context.Context, store db.Store, p *parser.Parser) (*AliasGraph, error) {
 	g := NewAliasGraph()
 	if store == nil || p == nil {
@@ -37,6 +36,10 @@ func BuildInterproceduralAlias(ctx context.Context, store db.Store, p *parser.Pa
 	for _, f := range files {
 		fileByID[f.ID] = f
 	}
+	fnByName := make(map[string]*db.Function, len(fns))
+	for _, fn := range fns {
+		fnByName[fn.Name] = fn
+	}
 	// One parse per file, all functions in it share the tree.
 	type fileWork struct {
 		root   parser.Node
@@ -52,6 +55,7 @@ func BuildInterproceduralAlias(ctx context.Context, store db.Store, p *parser.Pa
 		}
 		fw.funcs = append(fw.funcs, fn)
 	}
+	facts := make(map[int64]*functionAliasFacts, len(fns))
 	for fid, fw := range byFile {
 		file := fileByID[fid]
 		if file == nil {
@@ -65,10 +69,63 @@ func BuildInterproceduralAlias(ctx context.Context, store db.Store, p *parser.Pa
 			if body.Kind() != "compound_statement" {
 				continue
 			}
-			extractFunctionAliases(g, fn, body)
+			facts[fn.ID] = &functionAliasFacts{params: paramNamesOf(body)}
+			extractFunctionAliases(g, fn, body, facts[fn.ID])
+		}
+	}
+	// Second pass: cross-function call edges.
+	for _, fw := range byFile {
+		for _, fn := range fw.funcs {
+			body := fw.bodies[fn.StartLine]
+			if body.Kind() != "compound_statement" {
+				continue
+			}
+			extractCallAliases(g, fn, body, fnByName, facts)
 		}
 	}
 	return g, nil
+}
+
+// paramNamesOf extracts fn's parameter names in order from its body (walking
+// up to the function_definition's declarator → parameter_list).
+func paramNamesOf(body parser.Node) []string {
+	fd := body.Parent()
+	if fd == nil || fd.Kind() != "function_definition" {
+		return nil
+	}
+	decl := fd.ChildByFieldName("declarator")
+	if decl == nil {
+		return nil
+	}
+	var params parser.Node
+	var findParams func(n parser.Node)
+	findParams = func(n parser.Node) {
+		if params.Kind() != "" {
+			return
+		}
+		if n.Kind() == "parameter_list" {
+			params = n
+			return
+		}
+		for _, c := range n.Children() {
+			findParams(c)
+		}
+	}
+	findParams(*decl)
+	if params.Kind() == "" {
+		return nil
+	}
+	var out []string
+	for _, pdecl := range params.FindAll("parameter_declaration") {
+		d := pdecl.ChildByFieldName("declarator")
+		if d == nil {
+			continue
+		}
+		if name := extractIdentifierFromDeclarator(d.Text()); name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // parseFileBodies parses file once and returns the root + per-function
@@ -93,8 +150,10 @@ func parseFileBodies(p *parser.Parser, file *db.File) (parser.Node, map[int]pars
 }
 
 // extractFunctionAliases walks fn's body and records the function-local
-// alias shapes into g.
-func extractFunctionAliases(g *AliasGraph, fn *db.Function, body parser.Node) {
+// alias shapes into g. It also collects fn's return-alias sources (the
+// variables named in `return p;`) and parameter names, so the second pass
+// (extractCallAliases) can wire cross-function edges.
+func extractFunctionAliases(g *AliasGraph, fn *db.Function, body parser.Node, fnFacts *functionAliasFacts) {
 	// Declaration initializers: `T *q = p;` / `T *q = p->f;` / `T *q = (T*)p;`.
 	for _, decl := range body.FindAll("declaration") {
 		for _, init := range decl.FindAll("init_declarator") {
@@ -114,6 +173,90 @@ func extractFunctionAliases(g *AliasGraph, fn *db.Function, body parser.Node) {
 			continue
 		}
 		recordAliasFromAssign(g, fn, lhs.Text(), rhs.Text())
+	}
+	// Return-alias sources: `return p;` marks p as fn's return-alias source.
+	for _, ret := range body.FindAll("return_statement") {
+		children := ret.NamedChildren()
+		if len(children) == 0 {
+			continue
+		}
+		expr := children[0]
+		if expr.Kind() == "identifier" {
+			fnFacts.returnSources = append(fnFacts.returnSources, expr.Text())
+		}
+	}
+}
+
+// functionAliasFacts collects per-function facts for the cross-function pass.
+type functionAliasFacts struct {
+	returnSources []string // variables named in `return p;`
+	params        []string // parameter names in order
+}
+
+// extractCallAliases walks fn's body for call expressions and wires
+// cross-function alias edges: `q = foo()` links q to foo's return-alias
+// sources; `foo(p)` links p to foo's corresponding parameter.
+func extractCallAliases(g *AliasGraph, fn *db.Function, body parser.Node, fnByName map[string]*db.Function, facts map[int64]*functionAliasFacts) {
+	for _, call := range body.FindAll("call_expression") {
+		callee := call.ChildByFieldName("function")
+		if callee == nil || callee.Kind() != "identifier" {
+			continue
+		}
+		calleeName := callee.Text()
+		calleeFn, ok := fnByName[calleeName]
+		if !ok {
+			continue
+		}
+		calleeFacts := facts[calleeFn.ID]
+		if calleeFacts == nil {
+			continue
+		}
+		args := call.ChildByFieldName("arguments")
+		if args == nil {
+			continue
+		}
+		// Parameter aliasing: `foo(p)` links p to foo's i-th parameter.
+		argList := args.NamedChildren()
+		for i, arg := range argList {
+			if i >= len(calleeFacts.params) {
+				break
+			}
+			if arg.Kind() != "identifier" {
+				continue
+			}
+			a := AliasKey{FunctionID: fn.ID, Name: arg.Text()}
+			b := AliasKey{FunctionID: calleeFn.ID, Name: calleeFacts.params[i]}
+			g.Add(a, b)
+		}
+		// Return aliasing: `q = foo()` links q to foo's return-alias sources.
+		// The parent must be an assignment or init_declarator whose LHS is q.
+		parent := call.Parent()
+		if parent == nil {
+			continue
+		}
+		var lhsText string
+		switch parent.Kind() {
+		case "assignment_expression":
+			if lhs := parent.ChildByFieldName("left"); lhs != nil {
+				lhsText = lhs.Text()
+			}
+		case "init_declarator":
+			if d := parent.ChildByFieldName("declarator"); d != nil {
+				lhsText = d.Text()
+			}
+		}
+		if lhsText == "" {
+			continue
+		}
+		name := extractIdentifierFromDeclarator(lhsText)
+		if name == "" {
+			continue
+		}
+		for _, src := range calleeFacts.returnSources {
+			a := AliasKey{FunctionID: fn.ID, Name: name}
+			b := AliasKey{FunctionID: calleeFn.ID, Name: src}
+			g.Add(a, b)
+		}
 	}
 }
 
