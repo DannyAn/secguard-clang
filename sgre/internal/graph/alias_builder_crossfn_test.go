@@ -142,3 +142,77 @@ void caller(void) {
 		t.Error("AliasesOf(p) returned empty set, want at least {p}")
 	}
 }
+
+// TestBuildInterproceduralAlias_GlobalAlias pins the global-alias shape: a
+// `g = p` whose g is NOT a local of fn is recorded with FunctionID=0 (a
+// global / file-scope name), so a global written in fn and read in another
+// function shares the object with fn's p.
+func TestBuildInterproceduralAlias_GlobalAlias(t *testing.T) {
+	src := []byte(`
+void *malloc(long);
+void free(void *);
+void *g_sink;
+void writer(void) {
+    void *p = malloc(16);
+    g_sink = p;
+}
+void reader(void) {
+    free(g_sink);
+}
+`)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "x.c")
+	if err := os.WriteFile(path, src, 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	store := db.NewTestStore(t)
+	fileID, err := store.InsertFile(context.Background(), &db.File{Path: path, Checksum: "x", LOC: 20})
+	if err != nil {
+		t.Fatalf("insert file: %v", err)
+	}
+	for _, fn := range []struct {
+		name  string
+		start int
+		end   int
+	}{
+		{"writer", 5, 8},
+		{"reader", 9, 11},
+	} {
+		if _, err := store.InsertFunction(context.Background(), &db.Function{
+			FileID: fileID, Name: fn.name, Signature: "void " + fn.name + "(void)",
+			StartLine: fn.start, EndLine: fn.end,
+		}); err != nil {
+			t.Fatalf("insert function %s: %v", fn.name, err)
+		}
+	}
+
+	p := parser.NewParser()
+	defer p.CloseAll()
+
+	g, err := BuildInterproceduralAlias(context.Background(), store, p)
+	if err != nil {
+		t.Fatalf("BuildInterproceduralAlias: %v", err)
+	}
+
+	// writer.p should alias the global g_sink (FunctionID=0).
+	writerFn, _ := store.GetFunctionByName(context.Background(), "writer")
+	set := g.AliasesOf(AliasKey{FunctionID: writerFn.ID, Name: "p"})
+	names := map[string]bool{}
+	for _, k := range set {
+		names[k.Name] = true
+	}
+	if !names["p"] || !names["g_sink"] {
+		t.Errorf("writer.p alias set = %v, want {p, g_sink}", names)
+	}
+	// The global alias has FunctionID=0.
+	found := false
+	for _, k := range set {
+		if k.Name == "g_sink" && k.FunctionID == 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("g_sink alias must have FunctionID=0 (global)")
+	}
+}

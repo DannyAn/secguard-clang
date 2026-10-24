@@ -13,12 +13,11 @@ import (
 //  1. Function-local shapes (declaration initializer `q = p`, plain
 //     assignment `q = p`, cast alias `q = (T*)p`, field alias `q = p->f`,
 //     element-address `q = &p[i]`), plus per-function fact collection
-//     (return-alias sources, parameter names).
+//     (return-alias sources, parameter names), plus GLOBAL aliases
+//     (`g = p` where g is not a local of the current function — the
+//     global's AliasKey has FunctionID=0).
 //  2. Cross-function shapes: `q = foo()` links q to foo's return-alias
-//     sources; `foo(p)` links p to foo's corresponding parameter. Global
-//     aliasing (`g = p` where g is a file-scope variable) is a follow-up —
-//     it needs the file-scope symbol table, which the indexer does not yet
-//     expose.
+//     sources; `foo(p)` links p to foo's corresponding parameter.
 func BuildInterproceduralAlias(ctx context.Context, store db.Store, p *parser.Parser) (*AliasGraph, error) {
 	g := NewAliasGraph()
 	if store == nil || p == nil {
@@ -40,6 +39,11 @@ func BuildInterproceduralAlias(ctx context.Context, store db.Store, p *parser.Pa
 	for _, fn := range fns {
 		fnByName[fn.Name] = fn
 	}
+	// Collect every function's local variable names once, so the global-alias
+	// check below is a set lookup instead of a per-assignment DB query.
+	// (The locals are derived from the function body itself in the first
+	// pass, not from the db — the db's Variable table does not carry
+	// declaration-line precision.)
 	// One parse per file, all functions in it share the tree.
 	type fileWork struct {
 		root   parser.Node
@@ -70,7 +74,11 @@ func BuildInterproceduralAlias(ctx context.Context, store db.Store, p *parser.Pa
 				continue
 			}
 			facts[fn.ID] = &functionAliasFacts{params: paramNamesOf(body)}
-			extractFunctionAliases(g, fn, body, facts[fn.ID])
+			// Collect fn's local names (declarations + parameters) so a
+			// `g = p` whose g is not in this set is recorded as a global
+			// alias (FunctionID=0) rather than a function-local one.
+			locals := collectLocalNames(body, facts[fn.ID].params)
+			extractFunctionAliases(g, fn, body, facts[fn.ID], locals)
 		}
 	}
 	// Second pass: cross-function call edges.
@@ -84,6 +92,33 @@ func BuildInterproceduralAlias(ctx context.Context, store db.Store, p *parser.Pa
 		}
 	}
 	return g, nil
+}
+
+
+// collectLocalNames returns fn's local variable names: every declaration's
+// declarator identifier plus the parameter names. A name in this set is a
+// function-local; a name NOT in this set on the LHS of `g = p` is a global
+// (or a file-scope static), recorded with FunctionID=0.
+func collectLocalNames(body parser.Node, params []string) map[string]bool {
+	locals := make(map[string]bool, len(params))
+	for _, p := range params {
+		locals[p] = true
+	}
+	for _, decl := range body.FindAll("declaration") {
+		for _, d := range decl.FindAll("init_declarator") {
+			if dec := d.ChildByFieldName("declarator"); dec != nil {
+				if name := extractIdentifierFromDeclarator(dec.Text()); name != "" {
+					locals[name] = true
+				}
+			}
+		}
+		for _, d := range decl.FindAll("declarator") {
+			if name := extractIdentifierFromDeclarator(d.Text()); name != "" {
+				locals[name] = true
+			}
+		}
+	}
+	return locals
 }
 
 // paramNamesOf extracts fn's parameter names in order from its body (walking
@@ -153,7 +188,7 @@ func parseFileBodies(p *parser.Parser, file *db.File) (parser.Node, map[int]pars
 // alias shapes into g. It also collects fn's return-alias sources (the
 // variables named in `return p;`) and parameter names, so the second pass
 // (extractCallAliases) can wire cross-function edges.
-func extractFunctionAliases(g *AliasGraph, fn *db.Function, body parser.Node, fnFacts *functionAliasFacts) {
+func extractFunctionAliases(g *AliasGraph, fn *db.Function, body parser.Node, fnFacts *functionAliasFacts, locals map[string]bool) {
 	// Declaration initializers: `T *q = p;` / `T *q = p->f;` / `T *q = (T*)p;`.
 	for _, decl := range body.FindAll("declaration") {
 		for _, init := range decl.FindAll("init_declarator") {
@@ -162,7 +197,7 @@ func extractFunctionAliases(g *AliasGraph, fn *db.Function, body parser.Node, fn
 			if lhs == nil || rhs == nil {
 				continue
 			}
-			recordAliasFromAssign(g, fn, lhs.Text(), rhs.Text())
+			recordAliasFromAssign(g, fn, lhs.Text(), rhs.Text(), locals)
 		}
 	}
 	// Plain assignments: `q = p;` / `q = (T*)p;` / `q = p->f;`.
@@ -172,7 +207,7 @@ func extractFunctionAliases(g *AliasGraph, fn *db.Function, body parser.Node, fn
 		if lhs == nil || rhs == nil {
 			continue
 		}
-		recordAliasFromAssign(g, fn, lhs.Text(), rhs.Text())
+		recordAliasFromAssign(g, fn, lhs.Text(), rhs.Text(), locals)
 	}
 	// Return-alias sources: `return p;` marks p as fn's return-alias source.
 	for _, ret := range body.FindAll("return_statement") {
@@ -264,7 +299,7 @@ func extractCallAliases(g *AliasGraph, fn *db.Function, body parser.Node, fnByNa
 // simple alias shape (identifier / cast of identifier / field of identifier /
 // address-of-element). Anything else (arithmetic, call, literal) is not an
 // alias.
-func recordAliasFromAssign(g *AliasGraph, fn *db.Function, lhs, rhs string) {
+func recordAliasFromAssign(g *AliasGraph, fn *db.Function, lhs, rhs string, locals map[string]bool) {
 	// Strip a leading cast from rhs: `q = (T*)p` aliases q to p.
 	base := stripCast(rhs)
 	if !isSimpleAliasSource(base) {
@@ -277,6 +312,10 @@ func recordAliasFromAssign(g *AliasGraph, fn *db.Function, lhs, rhs string) {
 		return
 	}
 	a := AliasKey{FunctionID: fn.ID, Name: name}
+	if locals != nil && !locals[name] {
+		// lhs is not a local of fn — record it as a global alias.
+		a = AliasKey{FunctionID: 0, Name: name}
+	}
 	b := AliasKey{FunctionID: fn.ID, Name: base}
 	g.Add(a, b)
 }
