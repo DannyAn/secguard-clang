@@ -211,6 +211,17 @@ func (m *flowResult) ternaryGuardAt(variable string, line int) bool {
 	return false
 }
 
+// loopBoundGuardAt reports whether (variable, line) is a subscript dereference
+// guarded by a loop bound (`for (i < n) arr[i]` with arr = f(&n)).
+func loopBoundGuardAt(entries []ternaryGuardEntry, variable string, line int) bool {
+	for _, g := range entries {
+		if g.variable == variable && g.line == line {
+			return true
+		}
+	}
+	return false
+}
+
 // mustReaching reports whether the fact holds on EVERY path to line (the boolean
 // must tier). It is the freed-state / uninit analogue of reachingDefinite: used
 // to promote a may-reachable candidate to "confirmed" only when the fact is not
@@ -989,6 +1000,30 @@ func buildTernaryGuardMap(body parser.Node) []ternaryGuardEntry {
 			}
 		}
 	}
+	// Short-circuit guards: `p && p->x` evaluates p->x only when p is truthy,
+	// and `p == NULL || p->x` evaluates p->x only when p != NULL. These are
+	// binary_expression shapes (not conditional_expression), so they need their
+	// own pass over the same base-precise, line-precise deref recording.
+	for _, be := range body.FindAll("binary_expression") {
+		op := parser.BinaryOperator(be)
+		if op != "&&" && op != "||" {
+			continue
+		}
+		children := be.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		left, right := children[0], children[1]
+		if op == "&&" {
+			for _, v := range parser.GuardedNonnullVars(left) {
+				out = append(out, guardedDerefEntries(right, v)...)
+			}
+		} else {
+			for _, v := range parser.NullCheckedVars(left) {
+				out = append(out, guardedDerefEntries(right, v)...)
+			}
+		}
+	}
 	return out
 }
 
@@ -1027,6 +1062,180 @@ func guardedDerefEntries(branch parser.Node, variable string) []ternaryGuardEntr
 		}
 	}
 	return out
+}
+
+// collectCountOutputFuncs returns, per in-scan function name, the set of
+// PARAMETER INDICES whose pointed-to value the body zeroes (`*p = 0` /
+// `*p = NULL`) AND whose body has a literal NULL return. That is the
+// count-output contract: when such a function returns NULL it has already
+// zeroed the pointed-to count, so a caller loop `for (i < n) arr[i]` over
+// `arr = f(&n)` never dereferences a NULL arr (arr NULL forces n 0, the loop
+// body never runs).
+func collectCountOutputFuncs(cache *fileParseCache, funcs []*db.Function, fileByID map[int64]*db.File) map[string]map[int]bool {
+	out := make(map[string]map[int]bool)
+	for _, fn := range funcs {
+		file := fileByID[fn.FileID]
+		if file == nil {
+			continue
+		}
+		body, root := cache.get(file, fn)
+		if body.Kind() != "compound_statement" {
+			continue
+		}
+		params := paramsOf(fn, root)
+		if len(params) == 0 {
+			continue
+		}
+		zeroed := make(map[int]bool)
+		for _, assign := range body.FindAll("assignment_expression") {
+			lhs, rhs, ok := assign.AssignParts()
+			if !ok {
+				continue
+			}
+			param := derefParamName(lhs)
+			if param == "" {
+				continue
+			}
+			idx, isParam := params[param]
+			if !isParam {
+				continue
+			}
+			if isNullLiteralNode(rhs) {
+				zeroed[idx] = true
+			}
+		}
+		if len(zeroed) == 0 {
+			continue
+		}
+		hasNullReturn := false
+		for _, ret := range body.FindAll("return_statement") {
+			children := ret.NamedChildren()
+			if len(children) > 0 && isNullLiteralNode(children[0]) {
+				hasNullReturn = true
+				break
+			}
+		}
+		if !hasNullReturn {
+			continue
+		}
+		out[fn.Name] = zeroed
+	}
+	return out
+}
+
+// derefParamName returns the parameter name when expr is a pointer-dereference
+// of a plain identifier (`*argc` → "argc"), else "".
+func derefParamName(expr parser.Node) string {
+	if expr.Kind() != "pointer_expression" {
+		return ""
+	}
+	if strings.HasPrefix(strings.TrimSpace(expr.Text()), "&") {
+		return ""
+	}
+	kids := expr.NamedChildren()
+	if len(kids) != 1 || kids[0].Kind() != "identifier" {
+		return ""
+	}
+	return kids[0].Text()
+}
+
+// addressOfVar returns the variable name when expr is `&x` (address-of a plain
+// identifier), else "".
+func addressOfVar(expr parser.Node) string {
+	if expr.Kind() != "pointer_expression" {
+		return ""
+	}
+	if !strings.HasPrefix(strings.TrimSpace(expr.Text()), "&") {
+		return ""
+	}
+	kids := expr.NamedChildren()
+	if len(kids) == 1 && kids[0].Kind() == "identifier" {
+		return kids[0].Text()
+	}
+	return ""
+}
+
+// buildLoopBoundGuardMap records the subscript dereferences a loop bound
+// guards: `arr = f(..., &n); for (i = 0; i < n; i++) arr[i]` dereferences arr
+// only when n > 0, and f's count-output contract means arr == NULL forces
+// n == 0 — so arr[i] is never a NULL deref.
+func buildLoopBoundGuardMap(body parser.Node, countOutputFuncs map[string]map[int]bool) []ternaryGuardEntry {
+	if body.Kind() != "compound_statement" || len(countOutputFuncs) == 0 {
+		return nil
+	}
+	countPairs := make(map[string]string)
+	forEachAssignment(body, func(lhs, rhs parser.Node) {
+		arr := assignTargetName(lhs)
+		if arr == "" {
+			return
+		}
+		callee := rhsCallName(rhs)
+		if callee == "" {
+			return
+		}
+		zeroedIdx := countOutputFuncs[callee]
+		if len(zeroedIdx) == 0 {
+			return
+		}
+		for i, arg := range callArgs(rhs) {
+			if v := addressOfVar(arg); v != "" && zeroedIdx[i] {
+				countPairs[arr] = v
+			}
+		}
+	})
+	if len(countPairs) == 0 {
+		return nil
+	}
+	var out []ternaryGuardEntry
+	for _, forStmt := range body.FindAll("for_statement") {
+		cond := forStmt.ChildByFieldName("condition")
+		if cond == nil {
+			continue
+		}
+		induction, bound := loopInductionAndBound(*cond)
+		if induction == "" || bound == "" {
+			continue
+		}
+		loopBody := forStmt.ChildByFieldName("body")
+		if loopBody == nil {
+			continue
+		}
+		for _, se := range loopBody.FindAll("subscript_expression") {
+			kids := se.NamedChildren()
+			if len(kids) != 2 {
+				continue
+			}
+			base := stripGuardCasts(kids[0])
+			if base.Kind() != "identifier" || countPairs[base.Text()] != bound {
+				continue
+			}
+			if strings.TrimSpace(kids[1].Text()) == induction {
+				out = append(out, ternaryGuardEntry{variable: base.Text(), line: se.StartLine()})
+			}
+		}
+	}
+	return out
+}
+
+// loopInductionAndBound extracts the induction variable and upper bound of a
+// plain `i < n` / `i <= n` / `i != n` loop condition, else ("", "").
+func loopInductionAndBound(cond parser.Node) (string, string) {
+	if cond.Kind() != "binary_expression" {
+		return "", ""
+	}
+	switch parser.BinaryOperator(cond) {
+	case "<", "<=", "!=":
+	default:
+		return "", ""
+	}
+	children := cond.NamedChildren()
+	if len(children) != 2 {
+		return "", ""
+	}
+	if children[0].Kind() != "identifier" || children[1].Kind() != "identifier" {
+		return "", ""
+	}
+	return children[0].Text(), children[1].Text()
 }
 
 // stripGuardCasts unwraps cast and parenthesized expressions down to the

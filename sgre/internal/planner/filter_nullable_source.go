@@ -70,7 +70,7 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 		byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
 	}
 
-	flowResults, retNullable, definedNames, synthByFunc, retGuards, err := f.buildFlowResults(ctx, byFunc, models)
+	flowResults, retNullable, definedNames, synthByFunc, retGuards, loopBoundByFunc, err := f.buildFlowResults(ctx, byFunc, models)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -154,6 +154,11 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				if fm.ternaryGuardAt(c.VariableName, c.Line) {
 					dropped = dismiss(dropped, c, f.Name(),
 						fmt.Sprintf("dereference of %s is inside the guarded branch of a ternary conditional", c.VariableName))
+					continue
+				}
+				if loopBoundGuardAt(loopBoundByFunc[c.FunctionID], c.VariableName, c.Line) {
+					dropped = dismiss(dropped, c, f.Name(),
+						fmt.Sprintf("dereference of %s is loop-bound guarded (count-output call f(&n) + for(i<n) arr[i])", c.VariableName))
 					continue
 				}
 				// A value derived (directly, through a cast, or through an unknown
@@ -335,9 +340,9 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 // `p = f()` null sources whose callee the fixpoint proved nullable — Apply
 // reads them back to classify such variables as malloc-fail (proven-nullable
 // in-scan callee) instead of external-unknown (fail-open assumption).
-func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[int64][]Candidate, models map[int64]*nullModel) (map[int64]*flowResult, map[string]retNullability, map[string]bool, map[int64][]nullSource, map[string]*retNullGuard, error) {
+func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[int64][]Candidate, models map[int64]*nullModel) (map[int64]*flowResult, map[string]retNullability, map[string]bool, map[int64][]nullSource, map[string]*retNullGuard, map[int64][]ternaryGuardEntry, error) {
 	if f.parser == nil {
-		return nil, nil, nil, nil, nil, nil
+		return nil, nil, nil, nil, nil, nil, nil
 	}
 
 	funcIDs := make([]int64, 0, len(byFunc))
@@ -352,7 +357,7 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 	// and the analyze loop below do not each issue N+1 point queries.
 	fnByID, err := f.store.ListFunctionsByIDs(ctx, funcIDs)
 	if err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("nullable source: list functions: %w", err)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("nullable source: list functions: %w", err)
 	}
 	fileByID := map[int64]*db.File{}
 	if files, ferr := f.store.ListFiles(ctx); ferr == nil {
@@ -374,6 +379,7 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 	}
 	analyzer.helperParams = collectNullCheckHelpers(cache, allFuncs, fileByID)
 	analyzer.macroGuards = collectMacroGuards(cache, fileByID)
+	countOutputFuncs := collectCountOutputFuncs(cache, allFuncs, fileByID)
 
 	// Pre-scan: parse each candidate function's body and collect the callees
 	// assigned to a variable (`p = f()`). retNullable is ONLY consumed by
@@ -437,6 +443,7 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 
 	synthByFunc := make(map[int64][]nullSource, len(byFunc))
 	results := make(map[int64]*flowResult, len(byFunc))
+	loopBoundByFunc := make(map[int64][]ternaryGuardEntry, len(byFunc))
 	for fid := range byFunc {
 		fn := fnByID[fid]
 		if fn == nil {
@@ -495,8 +502,11 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 			res.contract = buildContractCtx(fn, root, body)
 		}
 		results[fid] = res
+		if guard := buildLoopBoundGuardMap(body, countOutputFuncs); len(guard) > 0 {
+			loopBoundByFunc[fid] = guard
+		}
 	}
-	return results, retNullable, definedNames, synthByFunc, retGuards, nil
+	return results, retNullable, definedNames, synthByFunc, retGuards, loopBoundByFunc, nil
 }
 
 // synthSourceAt returns the planner-synthesized `p = f()` null source whose

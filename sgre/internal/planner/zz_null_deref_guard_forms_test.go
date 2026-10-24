@@ -198,4 +198,84 @@ int f(struct s *p, int mode)
 				n, c.Target.Function, c.Target.Variable, c.SuspicionLevel)
 		}
 	})
+
+	// `p && p->x` short-circuits: p->x is evaluated only when p is truthy, so a
+	// caller-null param deref in the right operand must not be flagged (redis
+	// `start && (start->ms || start->seq)`).
+	t.Run("short-circuit-and-guard", func(t *testing.T) {
+		src := `int f(int *p)
+{
+    if (p && *p) {
+        return 1;
+    }
+    return 0;
+}
+`
+		res := planNullDerefFullSrc(t, src)
+		for _, c := range res.Candidates {
+			t.Logf("candidate: fn=%s var=%s line=%d tier=%s suspicion=%s hint=%s",
+				c.Target.Function, c.Target.Variable, c.Target.Line, c.NullOriginTier, c.SuspicionLevel, c.Hint)
+		}
+		if n := len(res.Candidates); n != 0 {
+			c := res.Candidates[0]
+			t.Errorf("p && *p short-circuit guard: got %d candidate(s), first: fn=%s var=%s suspicion=%s",
+				n, c.Target.Function, c.Target.Variable, c.SuspicionLevel)
+		}
+	})
+
+	// `if (error) *error = ...` guards the body's deref on the true edge; a
+	// caller-null param deref there must not be flagged.
+	t.Run("if-truthiness-guard-caller-null-param", func(t *testing.T) {
+		src := `int f(int *error)
+{
+    if (error) {
+        *error = 1;
+    }
+    return 0;
+}
+`
+		res := planNullDerefFullSrc(t, src)
+		for _, c := range res.Candidates {
+			t.Logf("candidate: fn=%s var=%s line=%d tier=%s suspicion=%s hint=%s",
+				c.Target.Function, c.Target.Variable, c.Target.Line, c.NullOriginTier, c.SuspicionLevel, c.Hint)
+		}
+		if n := len(res.Candidates); n != 0 {
+			c := res.Candidates[0]
+			t.Errorf("if(error) *error guard: got %d candidate(s), first: fn=%s var=%s suspicion=%s",
+				n, c.Target.Function, c.Target.Variable, c.SuspicionLevel)
+		}
+	})
+
+	// The redis sdssplitargs shape: `argv = f(&argc); for (i < argc) argv[i]`
+	// — f zeroes *argc on its NULL return, so argv==NULL forces argc==0 and the
+	// loop body (argv[i]) never runs. Must not be a null-deref.
+	t.Run("loop-bound-count-output-guard", func(t *testing.T) {
+		src := `char **split(char *s, int *n)
+{
+    *n = 0;
+    if (!s) return 0;
+    static char *arr[4];
+    return arr;
+}
+
+void use(char *s)
+{
+    int n = 0;
+    char **argv = split(s, &n);
+    for (int i = 0; i < n; i++) {
+        argv[i];
+    }
+}
+`
+		res := planNullDerefFullSrc(t, src)
+		for _, c := range res.Candidates {
+			t.Logf("candidate: fn=%s var=%s line=%d tier=%s suspicion=%s hint=%s",
+				c.Target.Function, c.Target.Variable, c.Target.Line, c.NullOriginTier, c.SuspicionLevel, c.Hint)
+		}
+		if n := len(res.Candidates); n != 0 {
+			c := res.Candidates[0]
+			t.Errorf("loop-bound count-output guard: got %d candidate(s), first: fn=%s var=%s suspicion=%s",
+				n, c.Target.Function, c.Target.Variable, c.SuspicionLevel)
+		}
+	})
 }

@@ -1375,14 +1375,36 @@ func paramNamesOfDef(def parser.Node) []string {
 			return paramNamesOfDeclarator(child)
 		}
 		if child.Kind() == "pointer_declarator" {
-			for _, gc := range child.NamedChildren() {
-				if gc.Kind() == "function_declarator" {
-					return paramNamesOfDeclarator(gc)
-				}
+			if fd := findFunctionDeclarator(child); fd.Kind() != "" {
+				return paramNamesOfDeclarator(fd)
 			}
 		}
 	}
 	return nil
+}
+
+// findFunctionDeclarator recurses through nested pointer_declarator nodes
+// (`char **f(...)` nests one pointer_declarator per `*`) to the
+// function_declarator, or a zero Node when there is none.
+func findFunctionDeclarator(n parser.Node) parser.Node {
+	for n.Kind() == "pointer_declarator" {
+		for _, c := range n.NamedChildren() {
+			if c.Kind() == "function_declarator" {
+				return c
+			}
+		}
+		var next parser.Node
+		for _, c := range n.NamedChildren() {
+			if c.Kind() == "pointer_declarator" {
+				next = c
+			}
+		}
+		if next.Kind() == "" {
+			return parser.Node{}
+		}
+		n = next
+	}
+	return parser.Node{}
 }
 
 func paramNamesOfDeclarator(decl parser.Node) []string {

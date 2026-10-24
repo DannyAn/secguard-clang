@@ -336,14 +336,36 @@ func extractFunction(node parser.Node, fileID int64) *db.Function {
 		case "function_declarator":
 			extractDeclarator(child, fn)
 		case "pointer_declarator":
-			// The declarator carries `*`: the return type is a pointer. Record it
-			// so `char *`/`T *` is never mistaken for the scalar `char`/`T`.
+			// The declarator carries one or more `*` (`char *f`, `char **f`,
+			// `sds *f` for a pointer-to-pointer return): the return type is a
+			// pointer at each level. Recurse through nested pointer_declarators
+			// (tree-sitter nests one per `*`) to the function_declarator and
+			// record every level, so `char **` is never mistaken for `char *` or
+			// scalar `char`.
 			isPointer = true
-			for _, grandchild := range child.NamedChildren() {
-				if grandchild.Kind() == "function_declarator" {
-					extractDeclarator(grandchild, fn)
+			depth := 0
+			cur := child
+			for {
+				depth++
+				var fnDecl, inner parser.Node
+				for _, grandchild := range cur.NamedChildren() {
+					switch grandchild.Kind() {
+					case "function_declarator":
+						fnDecl = grandchild
+					case "pointer_declarator":
+						inner = grandchild
+					}
 				}
+				if fnDecl.Kind() != "" {
+					extractDeclarator(fnDecl, fn)
+					break
+				}
+				if inner.Kind() == "" {
+					break
+				}
+				cur = inner
 			}
+			fn.ReturnType += strings.Repeat("*", depth)
 		case "storage_class_specifier":
 			if child.Text() == "static" {
 				fn.IsStatic = true
@@ -351,7 +373,7 @@ func extractFunction(node parser.Node, fileID int64) *db.Function {
 		}
 	}
 
-	if isPointer {
+	if isPointer && !strings.HasSuffix(fn.ReturnType, "*") {
 		fn.ReturnType += "*"
 	}
 
