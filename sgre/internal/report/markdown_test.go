@@ -532,6 +532,44 @@ func TestWriteCandidates_UncheckedReturnCalleeDefinition(t *testing.T) {
 	}
 }
 
+// P1-5: the callee-body embedding is driven by CalleeDefFile, not a hardcoded
+// type list — a type WITHOUT a dedicated intro (here data-representation, whose
+// comparator body decides the verdict) still embeds the in-scan callee body as a
+// related Code Context path segment.
+func TestWriteCandidates_GenericCalleeDefinition(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "use.c")
+	if err := os.WriteFile(src, []byte("int use(void) { return cmp_fn(1); }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cmp := filepath.Join(dir, "cmp.c")
+	cmpBody := "/* pad */\nint cmp_fn(int a) {\n    return a > 0;\n}\n"
+	if err := os.WriteFile(cmp, []byte(cmpBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	o := &ScanOutput{ScanDir: dir, ScanID: "sc_test", RootDir: dir}
+	pkgs := []*planner.PlanResult{{
+		VulnerabilityType: "data-representation",
+		Candidates: []planner.EvidenceItem{{
+			SuspicionLevel:   "suspected",
+			Category:         "data_representation_mismatch",
+			CalleeDefFile:    "cmp.c",
+			CalleeDefLine:    2,
+			CalleeDefEndLine: 4,
+			Target:           planner.TargetInfo{File: "use.c", Function: "use", Line: 1},
+		}},
+	}}
+	if err := o.writeCandidates(pkgs); err != nil {
+		t.Fatal(err)
+	}
+
+	def := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "data-representation", "001_use_c_1.md")))
+	if !strings.Contains(def, "## Callee Definition") || !strings.Contains(def, "int cmp_fn(int a)") {
+		t.Errorf("a non-hardcoded type with an in-scan callee must embed its body:\n%s", def)
+	}
+}
+
 // NC-06: when the source→sink span exceeds maxContextLines the window falls
 // back to ±8 — but the decisive source line then sits OUTSIDE the shown
 // window with no visible note. The classifier must be told the window was

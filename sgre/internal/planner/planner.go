@@ -206,15 +206,14 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 		filePathByID[f.ID] = f.Path
 	}
 
-	// unchecked-return resolves the callee for the failure-contract proof;
-	// null-deref for the call-result-deref null@malloc-fail verdict (the
-	// callee's body decides whether its return can be NULL); double-free for
-	// the conditional first-release helper (cond@<callee>) whose body decides
-	// whether the first release is conditional.
-	if spec.Name == "unchecked-return" || spec.Name == "null-deref" || spec.Name == "double-free" {
-		if err := p.resolveCalleeDefs(ctx, candidates, filePathByID); err != nil {
-			return nil, fmt.Errorf("planner: resolve callee definitions: %w", err)
-		}
+	// Resolve the callee's in-scan definition for any candidate that carries a
+	// callee reference (APIName / CalleeName / FirstCallee): the report embeds
+	// the callee body as a related Code Context path segment so the AI can
+	// judge cross-function decisive evidence (a failure sentinel, a nullable
+	// return, a conditional release) without burning a source READ. Types with
+	// no callee reference resolve nothing and are unaffected.
+	if err := p.resolveCalleeDefs(ctx, candidates, filePathByID); err != nil {
+		return nil, fmt.Errorf("planner: resolve callee definitions: %w", err)
 	}
 
 	for _, c := range candidates {
@@ -236,6 +235,20 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 // (same fail-fast as the seed lookups); a callee simply missing from the index is
 // legitimate (external/library function) and leaves the fields zero.
 func (p *Planner) resolveCalleeDefs(ctx context.Context, candidates []Candidate, filePathByID map[int64]string) error {
+	// Cheap guard: most vuln types never carry a callee reference, so skip the
+	// full function-index load when no candidate can resolve one (running this
+	// for every type would otherwise issue a ListFunctions per type).
+	hasCalleeRef := false
+	for i := range candidates {
+		c := &candidates[i]
+		if c.APIName != "" || c.CalleeName != "" || c.FirstCallee != "" || c.SecondCallee != "" {
+			hasCalleeRef = true
+			break
+		}
+	}
+	if !hasCalleeRef {
+		return nil
+	}
 	funcs, err := p.store.ListFunctions(ctx)
 	if err != nil {
 		return fmt.Errorf("list functions: %w", err)

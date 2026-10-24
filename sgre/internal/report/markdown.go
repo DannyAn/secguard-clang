@@ -332,28 +332,21 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 					writeCalleeDefinition(&b, c, o, "the unchecked callee's body. Judge the failure sentinel from this body; no source read is needed.")
 				}
 			}
-			// null-deref call-result dereferences (`f()->field`) and the variable
-			// path whose nullable origin is an in-scan callee (`p = f();
-			// p->field`): the callee's body decides whether its return can be
-			// NULL. Both the malloc-fail tier (proven) and the assumed-return
-			// tier (fail-open) carry a callee@file:line hint and a Verdict Fact
-			// promising "its body is embedded under ## Callee Definition" — the
-			// writer must keep that promise for both tiers, or the AI reads the
-			// promise and finds no such section.
-			if pkg.VulnerabilityType == "null-deref" && (c.IsCallResultDeref || ((c.NullOriginTier == "malloc-fail" || c.NullOriginTier == "assumed-return") && c.CalleeDefFile != "")) {
-				writeCalleeDefinition(&b, c, o, "the callee whose return is dereferenced. Judge whether its body can return NULL; no source read is needed.")
-			}
-			// double-free's conditional first-release helper (cond@<callee>): its
-			// body decides whether the first release is conditional, so embed it
-			// rather than sending the classifier on a whole-file source read to
-			// find release_entry/cleanup_entries (round3 allocator.c:123).
-			if pkg.VulnerabilityType == "double-free" && c.CalleeDefFile != "" {
-				writeCalleeDefinition(&b, c, o, "the conditional first-release helper. Judge whether it frees only on some paths; no source read is needed.")
+			// Related Code Context path segment: the callee body that decides this
+			// candidate (in-scan, possibly another file). Driven by CalleeDefFile
+			// rather than the vuln type, so any type whose candidate carries an
+			// in-scan callee gets its body embedded — the AI reads the decisive
+			// cross-function body in-file instead of issuing a source READ to find
+			// it (null-deref's nullable return, double-free's conditional release,
+			// and any future type that sets a callee reference). unchecked-return
+			// embeds its own callee inside the Failure Contract section above.
+			if c.CalleeDefFile != "" && pkg.VulnerabilityType != "unchecked-return" {
+				writeCalleeDefinition(&b, c, o, calleeDefIntro(pkg.VulnerabilityType))
 			}
 			// The SECOND release helper (the unconditional cleanup call): its body
 			// decides "both frees on one path" — embed it beside the first so the
 			// classifier never reads the whole file to find cleanup_entries.
-			if pkg.VulnerabilityType == "double-free" && c.SecondCalleeDefFile != "" {
+			if c.SecondCalleeDefFile != "" {
 				writeSecondCalleeDefinition(&b, c, o, "the second (unconditional cleanup) release helper. Judge whether it frees the slot again; no source read is needed.")
 			}
 
@@ -566,16 +559,32 @@ func isTaintVulnType(vulnType string) bool {
 // one giant callee from turning a candidate file into a source dump.
 const maxCalleeDefLines = 40
 
-// calleeDefContext resolves the unchecked-return callee's definition body for
-// embedding. The function index gives the exact span (StartLine-EndLine), so the
-// body is usually complete; an unknown end line falls back to a bounded window
-// from the definition's first line. A nil result means the file cannot be read
+// calleeDefContext resolves a callee's definition body for embedding. The
+// function index gives the exact span (StartLine-EndLine), so the body is
+// usually complete; an unknown end line falls back to a bounded window from the
+// definition's first line. A nil result means the file cannot be read.
+
+// calleeDefIntro returns the type-specific intro line for the embedded callee
+// body. A type without a dedicated intro gets a generic one, so any type whose
+// candidate carries an in-scan callee still embeds its body meaningfully.
+func calleeDefIntro(vulnType string) string {
+	switch vulnType {
+	case "null-deref":
+		return "the callee whose return is dereferenced. Judge whether its body can return NULL; no source read is needed."
+	case "double-free":
+		return "the conditional first-release helper. Judge whether it frees only on some paths; no source read is needed."
+	default:
+		return "the callee whose body decides this candidate. Judge the decisive fact from this body; no source read is needed."
+	}
+}
+
 // writeCalleeDefinition embeds the callee's in-scan body under
 // ## Callee Definition with a type-specific intro line. It is the shared
-// embedding path for unchecked-return (failure-sentinel proof) and null-deref
-// call-result dereferences (return-nullability proof); a callee with no
-// definition in the scan (external/library) renders nothing — the token-level
-// contract already says so.
+// embedding path for unchecked-return (failure-sentinel proof), null-deref
+// call-result dereferences (return-nullability proof), double-free (conditional
+// release), and any type whose candidate carries an in-scan callee; a callee
+// with no definition in the scan (external/library) renders nothing — the
+// token-level contract already says so.
 func writeCalleeDefinition(b *strings.Builder, c planner.EvidenceItem, o *ScanOutput, intro string) {
 	if c.CalleeDefFile == "" {
 		return
