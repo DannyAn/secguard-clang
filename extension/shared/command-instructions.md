@@ -640,8 +640,9 @@ straight to the structured report (`written: 0`).
     **Auto-confirmed findings are machine verdicts (no re-review):** the scan
     marks them `review_status='confirmed'` at write time, so there is no
     re-review loop and no `--list-auto-confirmed` completeness gate. The final
-    free-form judgment happens on the CUSTOMER side over `result.sarif`; sgre's
-    agent only classifies candidates.
+    free-form judgment is done by the SAME AI agent (the security-auditor
+    subagent's own LLM) as it classifies candidates — there is NO separate or
+    customer-configured LLM anywhere in the pipeline.
 
     After ALL subagents (or your sequential loop) are done, run `secguard report --audit --scan-id <scan_id> --output-dir <output_dir> --ai-duration-ms <ms>`
    ONCE to regenerate `report.md` (verdict-stage, confirmed only) + `result.sarif`

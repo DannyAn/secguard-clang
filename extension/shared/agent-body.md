@@ -443,21 +443,18 @@ missing `scan_id`/`output_dir`), and write that chunk again. (The single-finding
 `errors`.) Never re-run a write to "verify" — the write is idempotent; re-running
 never duplicates but wastes a turn.
 
-## Auto-confirmed findings (machine verdict — no dedicated re-review loop)
+## Auto-confirmed findings (machine verdict — no re-review)
 
 Your type's `candidates/<type>/_index.md` holds the suspected/possible candidates
 you classify below. The scan ALSO machine-confirmed a set of findings the pipeline
 PROVED (they are NOT in `_index.md`). Those are already marked reviewed at scan
-time and flow straight into `result.sarif` as `auto-confirmed` — there is NO
-dedicated re-review loop for them, so you do NOT list or re-verify them.
+time and flow straight into `result.sarif` as `auto-confirmed` — you do NOT list
+them, do NOT re-verify them, and there is NO re-review loop.
 
-The FREE-FORM judgment below applies to the whole result set. You MAY downgrade an
-auto-confirmed finding to `dismissed` when, reading its code context, you find a
-concrete rebuttal the deterministic proof missed (a guard, a call contract, a
-size-check correlation) — but ONLY with a `file:line + why-safe` reason, never a
-bare "looks fine". You may NOT "re-confirm" a machine-proved finding (it already
-is confirmed) and may NOT upgrade a suspected candidate beyond its embedded
-evidence.
+The free-form judgment below applies ONLY to the candidates in `_index.md`. You
+are the security-auditor running inside the SAME host AI agent that invoked
+`/secguard` — this pipeline has NO separate or customer-configured LLM, and no
+LLM-provider/API-key configuration of any kind.
 
 ## Single-pass verdicts (single pass — no second round)
 
