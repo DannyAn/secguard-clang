@@ -7,6 +7,7 @@ import (
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
@@ -24,9 +25,10 @@ import (
 // the whole function to "unknown", so a real divide-by-zero is never suppressed
 // by an imprecise summary.
 type returnSummaryResolver struct {
-	store  db.Store
-	parser *parser.Parser
-	cache  *fileParseCache
+	store    db.Store
+	parser   *parser.Parser
+	cache    *fileParseCache
+	cfgCache *graph.CFGCache
 
 	funcByName map[string][]int64
 	fnByID     map[int64]*db.Function
@@ -140,7 +142,7 @@ func (r *returnSummaryResolver) funcNonZero(fnID int64) bool {
 		return false
 	}
 
-	flow := analyzeRanges(fn, body)
+	flow := analyzeRangesWithCalls(r.cfgCache, fn, body, nil)
 	consts := r.globalConsts
 	if consts == nil {
 		consts = parser.CollectConstantSymbols(root)

@@ -159,10 +159,29 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 		return nil, fmt.Errorf("clear security events: %w", err)
 	}
 
+	// Share one statement-CFG cache across the detector and plan stages: a
+	// function's CFG is built at most once per scan, instead of once per
+	// consuming detector plus once per consuming filter (the 8-12x rebuild
+	// overhead this Phase removes).
+	sharedCFGCache := graph.NewCFGCache()
+
+	// Build the per-scan interprocedural alias graph once and share it via
+	// ctx with both stages. The current skeleton covers function-local
+	// shapes; cross-function return/parameter/global aliasing is a follow-up.
+	aliasGraph, aliasErr := graph.BuildInterproceduralAlias(ctx, store, p)
+	if aliasErr != nil {
+		logger.Warn("alias graph build degraded", "err", aliasErr)
+		aliasGraph = graph.NewAliasGraph()
+	}
+	ctx = graph.WithAliasGraph(ctx, aliasGraph)
+
 	detStart := time.Now()
-	detectorErrors := evidence.RunAllDetectors(ctx, store, p, logger)
+	detectorErrors := evidence.RunAllDetectorsWithCache(ctx, store, p, logger, sharedCFGCache)
 	timings.DetectorsMs = time.Since(detStart).Milliseconds()
 	logger.Info("phase timing", "phase", "detectors_total", "elapsed_ms", timings.DetectorsMs)
+	if b, h := sharedCFGCache.Stats(); b+h > 0 {
+		logger.Info("cfg cache stats after detectors", "builds", b, "hits", h)
+	}
 
 	// Apply the type switch at the SOURCE: a disabled type is dropped from the
 	// plan loop, so it produces no candidates and the AI agent's skills never
@@ -196,8 +215,9 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	// only a SUCCESS so a transient failure is retried), which exists to compute
 	// call-graph reachability once per scan instead of once per type. Plan()
 	// keeps all per-type state local, so concurrent Plan calls are safe (the
-	// shared parser is internally synchronized).
-	pl := planner.NewPlanner(store, p, logger)
+	// shared parser is internally synchronized). The Planner also receives the
+	// shared CFG cache so plan-stage filters hit the detector-stage builds.
+	pl := planner.NewPlannerWithCache(store, p, logger, sharedCFGCache)
 
 	const planConcurrency = 8
 	planSem := make(chan struct{}, planConcurrency)
@@ -232,6 +252,9 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 	pwg.Wait()
 	timings.PlanMs = time.Since(planStart).Milliseconds()
+	if b, h := sharedCFGCache.Stats(); b+h > 0 {
+		logger.Info("cfg cache stats after plan", "builds", b, "hits", h)
+	}
 
 	return &pipelineOutcome{
 		Index:          indexResult,

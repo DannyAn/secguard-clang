@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -21,10 +22,14 @@ import (
 // introduce a false negative from an imprecise bound. It adds path sensitivity
 // to a type that previously ran only the call-reach + safe-function chain.
 type IntOverflowGuardFilter struct {
-	store  db.Store
-	parser *parser.Parser
-	logger *log.Logger
+	store    db.Store
+	parser   *parser.Parser
+	logger   *log.Logger
+	cfgCache *graph.CFGCache
 }
+
+// SetCFGCache is the uniform-injection entrypoint used by Planner.Plan.
+func (f *IntOverflowGuardFilter) SetCFGCache(c *graph.CFGCache) { f.cfgCache = c }
 
 func NewIntOverflowGuardFilter(store db.Store, p *parser.Parser, logger *log.Logger) *IntOverflowGuardFilter {
 	return &IntOverflowGuardFilter{store: store, parser: p, logger: logger}
@@ -131,7 +136,7 @@ func (f *IntOverflowGuardFilter) buildRangeFlows(byFunc map[int64][]Candidate, f
 		if !ok {
 			continue
 		}
-		flows[fid] = analyzeRanges(fn, body)
+		flows[fid] = analyzeRangesWithCalls(f.cfgCache, fn, body, nil)
 	}
 	return flows
 }

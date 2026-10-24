@@ -244,3 +244,27 @@ func (f *HardcodedSecretProofFilter) Apply(ctx context.Context, candidates []Can
 	}
 	return kept, nil, nil
 }
+
+// DeclaredProofs implements ProofRegistrar for LeakProofFilter.
+func (f *LeakProofFilter) DeclaredProofs() []Proof {
+	return []Proof{
+		{
+			Class:    ProofClassCFGMustDataflow,
+			Rule:     "definite-leak-no-release",
+			Evidence: "detector proved no release/escape/transfer reaches the pointer on any CFG path",
+			TestRef:  "TestLeakProofFilter",
+		},
+	}
+}
+
+// DeclaredProofs implements ProofRegistrar for HardcodedSecretProofFilter.
+func (f *HardcodedSecretProofFilter) DeclaredProofs() []Proof {
+	return []Proof{
+		{
+			Class:    ProofClassLiteral,
+			Rule:     "secret-shaped-literal",
+			Evidence: "the literal value itself is secret-shaped (known token prefix / high entropy / URL credentials)",
+			TestRef:  "TestHardcodedSecretProofFilter",
+		},
+	}
+}

@@ -50,6 +50,11 @@ type copyPair struct {
 type flowAnalyzer struct {
 	store  db.Store
 	parser *parser.Parser
+	// cfgCache memoizes per-function *graph.StmtCFG across analyzeFlow /
+	// analyzeFlowMust and across the filters that share this analyzer's
+	// callsite. nil falls back to uncached BuildStmtCFG.
+	cfgCache *graph.CFGCache
+
 	// dfgEdges caches all DATA_FLOW edges, resolved to (function, lhs, rhs, line)
 	// copies, keyed by function ID then line.
 	dfgCopies map[int64]map[int][]copyPair
@@ -103,8 +108,8 @@ func (a *flowAnalyzer) scopeOracle(body parser.Node) func(string) bool {
 	return o
 }
 
-func newFlowAnalyzer(store db.Store, p *parser.Parser) *flowAnalyzer {
-	return &flowAnalyzer{store: store, parser: p}
+func newFlowAnalyzer(store db.Store, p *parser.Parser, cfgCache *graph.CFGCache) *flowAnalyzer {
+	return &flowAnalyzer{store: store, parser: p, cfgCache: cfgCache}
 }
 
 // flowResult is the per-function dataflow result.
@@ -302,7 +307,7 @@ func (a *flowAnalyzer) analyzeFlow(ctx context.Context, fn *db.Function, body pa
 		return nil
 	}
 
-	cfg := graph.BuildStmtCFG(body, fn.EndLine)
+	cfg := graph.BuildStmtCFGWithCache(a.cfgCache, fn.ID, body, fn.EndLine)
 	effects := a.buildEffects(cfg, genByLine, killByLine, a.dfgCopies[fn.ID], nonNullKills, definiteKills, a.macroWritesFor(fileRoot, nonNullKills), a.scopeOracle(body))
 	// Null guards are path-sensitive kills; they apply only to the null-deref
 	// may-analysis (nonNullKills), never to taint/freed-state/uninit flows.
@@ -323,7 +328,7 @@ func (a *flowAnalyzer) analyzeFlowMust(ctx context.Context, fn *db.Function, bod
 		return nil
 	}
 
-	cfg := graph.BuildStmtCFG(body, fn.EndLine)
+	cfg := graph.BuildStmtCFGWithCache(a.cfgCache, fn.ID, body, fn.EndLine)
 	effects := a.buildEffects(cfg, genByLine, killByLine, a.dfgCopies[fn.ID], nonNullKills, definiteKills, a.macroWritesFor(fileRoot, nonNullKills), a.scopeOracle(body))
 	res := &flowResult{cfg: cfg, nodeIn: runDataflow(cfg, effects, a.entrySeeds, nil), genAt: genAt(cfg, effects)}
 	res.must, res.mustGenAt = runMustDataflow(cfg, effects, nil)

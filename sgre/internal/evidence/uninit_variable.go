@@ -448,7 +448,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 	}
 
 	body := bodies[f.StartLine]
-	cfg := graph.BuildStmtCFG(body, f.EndLine)
+	cfg := buildStmtCFGFromCtx(ctx, f, body)
 	cfgValid := body.Kind() == "compound_statement"
 	if !cfgValid && d.logger != nil {
 		d.logger.Debug("uninit: CFG construction degenerate, using conservative fallback",

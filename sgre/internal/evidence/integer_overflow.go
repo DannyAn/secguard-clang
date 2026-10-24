@@ -58,24 +58,24 @@ const (
 )
 
 // isSizeFunction reports whether a call name is a size-bearing allocation/copy
-// function. Beyond the exact libc set, any name whose lowercased form contains
-// "alloc" is treated as an allocator — every allocator-family name (malloc,
-// calloc, realloc, alloca, palloc, kmalloc, vmalloc) contains that substring, so
-// this one rule covers third-party wrappers like VOS_MALLOC, VOS_MALLOC_F,
-// VOS_CALLOC_F, ngx_alloc, apr_palloc, devm_kmalloc, etc. A free/dealloc wrapper
-// takes a pointer, not a size, so it carries no overflow-prone arithmetic arg
-// and is safely excluded by the arithmetic check even if a name like "dealloc"
-// matched.
+// function. Beyond the exact libc set, it defers to apikb.IsAllocator, which
+// carries the exact declared-allocator table, the stack-allocator (alloca) /
+// "_create" anti-patterns, and the "alloc"/"strdup" substring heuristic in one
+// authoritative place — a second local copy would drift the moment one side
+// learned a new anti-pattern (see the apikb.IsAllocator comment for the
+// historical alloca/_create false-positive incidents).
 func isSizeFunction(name string) bool {
 	if sizeFunctions[name] {
 		return true
 	}
-	return strings.Contains(strings.ToLower(name), "alloc")
+	return apikb.IsAllocator(name)
 }
 
 // isCallocLike reports whether a call name is calloc or a calloc-family wrapper
 // (VOS_CALLOC_F, kcalloc, ngx_calloc, ...), whose first two (or last two, for a
 // flags-prefixed wrapper) size arguments carry an implicit multiplication.
+// The apikb layer does not yet expose a dedicated calloc-family query; the
+// local substring remains as the documented approximation.
 func isCallocLike(name string) bool {
 	return strings.Contains(strings.ToLower(name), "calloc")
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -44,6 +45,18 @@ func AllDetectors(store db.Store, p *parser.Parser, logger *log.Logger) []Detect
 // which is what would otherwise make its vuln types read as a genuine "0
 // candidates".
 func RunAllDetectors(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) []DetectorError {
+	return RunAllDetectorsWithCache(ctx, store, p, logger, nil)
+}
+
+// RunAllDetectorsWithCache is RunAllDetectors with a shared per-scan
+// *graph.CFGCache injected into every detector's ctx. Detectors that build
+// statement CFGs hit the cache instead of rebuilding per function per
+// detector. A nil cache preserves the legacy behavior (each detector builds
+// its own CFGs).
+func RunAllDetectorsWithCache(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, cfgCache *graph.CFGCache) []DetectorError {
+	if cfgCache != nil {
+		ctx = withCFGCache(ctx, cfgCache)
+	}
 	all := AllDetectors(store, p, logger)
 
 	var deferred []Detector

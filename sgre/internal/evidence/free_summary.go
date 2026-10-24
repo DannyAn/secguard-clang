@@ -54,7 +54,7 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, l
 			params := extractFunctionParamsFrom(funcDefs, f.StartLine)
 			pointerParams := extractPointerParamsFrom(funcDefs, f.StartLine)
 
-			paramWrites, paramCondWrites := computeParamWriteStates(bodies, f, params)
+			paramWrites, paramCondWrites := computeParamWriteStates(ctx, bodies, f, params)
 			s := &FuncSummary{
 				ParamDirectFrees:       make(map[int]bool),
 				ParamFieldFrees:        make(map[int][]string),
@@ -63,7 +63,7 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, l
 				ParamConditionalWrites: paramCondWrites,
 			}
 
-			s.ParamDirectFrees, s.ParamFieldFrees, s.ParamMayDirectFrees = computeParamFrees(bodies, f, params, pointerParams)
+			s.ParamDirectFrees, s.ParamFieldFrees, s.ParamMayDirectFrees = computeParamFrees(ctx, bodies, f, params, pointerParams)
 
 			for _, call := range calls {
 				if !funcLineRange(f, call.StartLine()) {
@@ -104,14 +104,14 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, l
 // It builds the function CFG and checks whether the exit is reachable from the
 // entry without passing a write-through statement; if it is reachable, some
 // path skips the write.
-func computeParamWriteStates(bodies map[int]parser.Node, f *db.Function, params []string) (map[int]bool, map[int]bool) {
+func computeParamWriteStates(ctx context.Context, bodies map[int]parser.Node, f *db.Function, params []string) (map[int]bool, map[int]bool) {
 	every := make(map[int]bool)
 	some := make(map[int]bool)
 	body := bodies[f.StartLine]
 	if body.Kind() != "compound_statement" {
 		return every, some
 	}
-	cfg := graph.BuildStmtCFG(body, f.EndLine)
+	cfg := buildStmtCFGFromCtx(ctx, f, body)
 
 	for idx, p := range params {
 		if p == "" {
@@ -197,7 +197,7 @@ func nullGuardedWrite(stmt parser.Node, p string) bool {
 // so propagating it into a must-set would be a false positive (cf. gz_look
 // freeing state->out on a malloc-failure path). A NULL-guard
 // `if (p != NULL) free(p)` falls through, so it is unconditional.
-func computeParamFrees(bodies map[int]parser.Node, f *db.Function, params []string, pointerParams map[string]bool) (direct map[int]bool, field map[int][]string, mayDirect map[int]bool) {
+func computeParamFrees(ctx context.Context, bodies map[int]parser.Node, f *db.Function, params []string, pointerParams map[string]bool) (direct map[int]bool, field map[int][]string, mayDirect map[int]bool) {
 	direct = make(map[int]bool)
 	field = make(map[int][]string)
 	mayDirect = make(map[int]bool)
@@ -205,7 +205,7 @@ func computeParamFrees(bodies map[int]parser.Node, f *db.Function, params []stri
 	if body.Kind() != "compound_statement" {
 		return direct, field, mayDirect
 	}
-	cfg := graph.BuildStmtCFG(body, f.EndLine)
+	cfg := buildStmtCFGFromCtx(ctx, f, body)
 
 	// Terminator nodes dead-end a path (they do not fall through to the next
 	// statement), so a free reached only via a terminator is conditional.

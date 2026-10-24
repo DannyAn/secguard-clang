@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -16,14 +17,24 @@ import (
 // from the first free no longer reaches the second free (the pointer was
 // reassigned in between, so the second free frees a different block).
 type DoubleFreeFilter struct {
-	store  db.Store
-	parser *parser.Parser
-	logger *log.Logger
+	store    db.Store
+	parser   *parser.Parser
+	logger   *log.Logger
+	cfgCache *graph.CFGCache
 }
 
 func NewDoubleFreeFilter(store db.Store, p *parser.Parser, logger *log.Logger) *DoubleFreeFilter {
 	return &DoubleFreeFilter{store: store, parser: p, logger: logger}
 }
+
+// WithCFGCache attaches the per-scan statement-CFG cache.
+func (f *DoubleFreeFilter) WithCFGCache(c *graph.CFGCache) *DoubleFreeFilter {
+	f.cfgCache = c
+	return f
+}
+
+// SetCFGCache is the uniform-injection entrypoint used by Planner.Plan.
+func (f *DoubleFreeFilter) SetCFGCache(c *graph.CFGCache) { f.cfgCache = c }
 
 func (f *DoubleFreeFilter) Name() string { return "double_free_flow" }
 
@@ -45,6 +56,17 @@ func (f *DoubleFreeFilter) Apply(ctx context.Context, candidates []Candidate) ([
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
 	for _, c := range candidates {
+		// A cross-function double-free (`free(q)` in A while `free(p)` in B,
+		// q a cross-function alias of p) cannot be proven by the function-local
+		// must dataflow — the first free's evidence lives in another function's
+		// body. Pass it through as suspected for the AI to judge.
+		if c.CrossFunction {
+			if f.logger != nil {
+				f.logger.Info("double_free cross_function candidate passed through", "fn", c.FunctionName, "line", c.Line, "var", c.VariableName)
+			}
+			kept = append(kept, c)
+			continue
+		}
 		flow := flows[c.FunctionID]
 		if flow == nil {
 			kept = append(kept, c)
@@ -92,7 +114,7 @@ func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Ca
 	if err != nil {
 		return nil, nil, fmt.Errorf("double free: load events: %w", err)
 	}
-	analyzer := newFlowAnalyzer(f.store, f.parser)
+	analyzer := newFlowAnalyzer(f.store, f.parser, f.cfgCache)
 	aliases := analyzer.loadAliases(ctx, candidateFuncIDs(byFunc))
 	for fid, cs := range byFunc {
 		fn := fnByID[fid]
@@ -233,4 +255,16 @@ func isLiteralNode(node parser.Node) bool {
 		}
 	}
 	return false
+}
+
+// DeclaredProofs implements ProofRegistrar.
+func (f *DoubleFreeFilter) DeclaredProofs() []Proof {
+	return []Proof{
+		{
+			Class:    ProofClassCFGMustDataflow,
+			Rule:     "must-double-free-on-all-paths",
+			Evidence: "freed-state must-dataflow proves the first free reaches the second free on every path",
+			TestRef:  "TestDoubleFreeFilter",
+		},
+	}
 }

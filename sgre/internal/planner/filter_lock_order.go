@@ -169,3 +169,15 @@ func reachable(adj map[string]map[string]bool, from, to string) bool {
 	}
 	return false
 }
+
+// DeclaredProofs implements ProofRegistrar.
+func (f *LockOrderFilter) DeclaredProofs() []Proof {
+	return []Proof{
+		{
+			Class:    ProofClassCFGMustDataflow,
+			Rule:     "lock-order-cycle",
+			Evidence: "LOCK_ORDER graph edges form a cycle between two mutexes",
+			TestRef:  "TestLockOrderFilter",
+		},
+	}
+}

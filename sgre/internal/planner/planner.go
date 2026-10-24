@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -26,143 +27,58 @@ type Planner struct {
 	// every Plan() call, so a file is read at most once per scan even though up
 	// to 24 vuln types run Plan concurrently.
 	macro *macroContextDetector
+	// cfgCache memoizes per-function *graph.StmtCFG across every filter that
+	// needs one. Without it, each filter that consumes CFG (nullable-source /
+	// lifetime / double-free / uninit / range / range-oob / int-overflow /
+	// contract-gap) rebuilt the same function's CFG independently — a 10×
+	// waste on a redis-scale scan.
+	cfgCache *graph.CFGCache
+	// querier is the per-scan semantic-query facade (graph.Querier). Filters
+	// that need an ad-hoc flow answer should call Querier() instead of
+	// rebuilding a flow engine; the querier reuses the same cfgCache so the
+	// per-function CFG is still built at most once.
+	querier graph.Querier
 }
 
 func NewPlanner(store db.Store, p *parser.Parser, logger *log.Logger) *Planner {
-	return &Planner{
+	pl := &Planner{
 		store:          store,
 		parser:         p,
 		logger:         logger,
 		callReachCache: &callReachCache{},
 		taintCache:     newTaintSummaryCache(store, p),
 		macro:          newMacroContextDetector(),
+		cfgCache:       graph.NewCFGCache(),
 	}
+	pl.querier = NewQuerier(store, p, pl.cfgCache)
+	return pl
 }
 
-func (p *Planner) getFilters(chain string) ([]Filter, error) {
-	// Bounds-check suppression already happens in the buffer-overflow detector
-	// (hasPrecedingBoundsCheck / constant-index analysis); there is no
-	// bounds-check *event* for a filter to read, and the previous
-	// BoundsCheckFilter wrongly keyed on NULL_GUARD events at function
-	// granularity. So the default chain (buffer-overflow, out-of-bounds,
-	// crypto-misuse, hardcoded-secret, signed-compare, sizeof-misuse) is
-	// call-reach + safe-function only.
-	defaultChain := []Filter{
-		NewCallReachFilter(p.store, p.callReachCache),
-		NewSafeFunctionFilter(p.store),
+// NewPlannerWithCache shares cfgCache with an upstream stage (typically the
+// evidence stage) so CFGs built during detection hit the cache during plan.
+func NewPlannerWithCache(store db.Store, p *parser.Parser, logger *log.Logger, cfgCache *graph.CFGCache) *Planner {
+	pl := NewPlanner(store, p, logger)
+	if cfgCache != nil {
+		pl.cfgCache = cfgCache
+		pl.querier = NewQuerier(store, p, cfgCache)
 	}
-
-	switch chain {
-	case "default":
-		return defaultChain, nil
-	case "null-deref":
-		return []Filter{
-			NewTypeExprFilter(),
-			NewNonNullableFilter(),
-			NewArrayOOBPrecedenceFilter(p.store),
-			NewNullableSourceFilter(p.store).WithParser(p.parser, p.logger),
-			NewMacroUncertainFilter(p.store, p.macro),
-			NewCallReachFilter(p.store, p.callReachCache),
-			NewSafeFunctionFilter(p.store),
-		}, nil
-	case "memory-leak":
-		return []Filter{
-			NewCallReachFilter(p.store, p.callReachCache),
-			NewSafeFunctionFilter(p.store),
-			NewReleaseFilter(p.store, "MEMORY_RELEASE"),
-			NewOwnershipTransferFilter(p.store),
-			NewLeakProofFilter(p.store, "MEMORY_ALLOC"),
-		}, nil
-	case "buffer-overflow":
-		return []Filter{
-			NewCallReachFilter(p.store, p.callReachCache),
-			NewSafeFunctionFilter(p.store),
-			NewRangeOOBFilter(p.store, p.parser, p.logger),
-		}, nil
-	case "resource-leak":
-		return []Filter{
-			NewCallReachFilter(p.store, p.callReachCache),
-			NewSafeFunctionFilter(p.store),
-			NewReleaseFilter(p.store, "RESOURCE_RELEASE"),
-			NewOwnershipTransferFilter(p.store),
-			NewLeakProofFilter(p.store, "RESOURCE_ACQUIRE"),
-		}, nil
-	case "lifetime":
-		return []Filter{
-			NewCallReachFilter(p.store, p.callReachCache),
-			NewSafeFunctionFilter(p.store),
-			NewLifetimeFilter(p.store, p.parser, p.logger),
-		}, nil
-	case "uninit":
-		return []Filter{
-			NewCallReachFilter(p.store, p.callReachCache),
-			NewDefiniteInitFilter(p.store, p.parser, p.logger),
-			NewSafeFunctionFilter(p.store),
-		}, nil
-	case "double-free":
-		return []Filter{
-			NewCallReachFilter(p.store, p.callReachCache),
-			NewSafeFunctionFilter(p.store),
-			NewDoubleFreeFilter(p.store, p.parser, p.logger),
-		}, nil
-	case "injection", "path-traversal", "format-string":
-		return []Filter{
-			NewCallReachFilter(p.store, p.callReachCache),
-			NewSafeFunctionFilter(p.store),
-			NewTaintSourceFilter(p.store, p.parser, p.logger, p.taintCache),
-		}, nil
-	case "integer-overflow":
-		return []Filter{
-			NewCallReachFilter(p.store, p.callReachCache),
-			NewSafeFunctionFilter(p.store),
-			NewIntOverflowGuardFilter(p.store, p.parser, p.logger),
-			NewUnsignedSubGuardFilter(p.store, p.parser, p.logger),
-		}, nil
-	case "divide-by-zero":
-		return []Filter{
-			NewCallReachFilter(p.store, p.callReachCache),
-			NewSafeFunctionFilter(p.store),
-			NewRangeFilter(p.store, p.parser, p.logger),
-		}, nil
-	case "deadlock":
-		return []Filter{
-			NewCallReachFilter(p.store, p.callReachCache),
-			NewSafeFunctionFilter(p.store),
-			NewLockOrderFilter(p.store, p.parser, p.logger),
-		}, nil
-	case "race-condition":
-		return []Filter{
-			NewCallReachFilter(p.store, p.callReachCache),
-			NewSafeFunctionFilter(p.store),
-			NewSharedAccessFilter(p.store, p.parser, p.logger),
-		}, nil
-	case "unchecked-return":
-		return []Filter{
-			NewCallReachFilter(p.store, p.callReachCache),
-			NewSafeFunctionFilter(p.store),
-			NewReturnCheckFilter(p.store, p.parser, p.logger),
-		}, nil
-	case "hardcoded-secret":
-		return []Filter{
-			NewCallReachFilter(p.store, p.callReachCache),
-			NewSafeFunctionFilter(p.store),
-			NewHardcodedSecretProofFilter(p.store),
-		}, nil
-	case "implicit-contract":
-		return []Filter{
-			NewCallReachFilter(p.store, p.callReachCache),
-			NewSafeFunctionFilter(p.store),
-			NewContractGapFilter(p.store).WithParser(p.parser, p.logger),
-		}, nil
-	}
-	return nil, fmt.Errorf("unknown filter chain %q", chain)
+	return pl
 }
+
+// Querier returns the per-scan semantic-query facade. The instance is
+// shareable across goroutines (its state is read-only after construction).
+func (p *Planner) Querier() graph.Querier { return p.querier }
 
 func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error) {
 	spec, err := GetVulnTypeSpec(vulnType)
 	if err != nil {
 		return nil, err
 	}
+
+	// Share this Planner's CFG cache with every filter via ctx so that a
+	// function's statement CFG is built at most once per scan (see the
+	// cfgCache field comment).
+	ctx = withCFGCache(ctx, p.cfgCache)
 
 	// The macro-context detector needs the scan's function-definition names
 	// BEFORE the filter chain runs (MacroUncertainFilter consults it): an
@@ -186,9 +102,17 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 		SeedRoutedByCategory: routedAway,
 	}
 
-	filters, err := p.getFilters(spec.FilterChain)
+	filters, err := p.buildFilters(spec)
 	if err != nil {
 		return nil, err
+	}
+	// Uniformly inject the per-scan CFG cache into every filter that supports
+	// it. Filters that do not build statement CFGs simply do not implement
+	// SetCFGCache and are skipped by the type assertion.
+	for _, f := range filters {
+		if ca, ok := f.(interface{ SetCFGCache(*graph.CFGCache) }); ok {
+			ca.SetCFGCache(p.cfgCache)
+		}
 	}
 
 	candidates := seed
@@ -527,6 +451,7 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			FirstCallee:             props.FirstCallee,
 			SecondCallee:            props.SecondCallee,
 			Victims:                 props.Victims,
+			CrossFunction:           props.CrossFunction,
 			DefiniteLeak:            props.Definite == "true",
 			LeakEscapeKind:          props.EscapeKind,
 			LeakFreeLines:           props.FreeLines,

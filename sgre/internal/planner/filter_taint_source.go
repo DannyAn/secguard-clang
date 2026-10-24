@@ -9,6 +9,7 @@ import (
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -101,15 +102,25 @@ func (c *taintSummaryCache) compute(ctx context.Context) (*taintSummary, error) 
 // types: a non-literal path/format/command that never touches a taint source is
 // provably safe and no longer reaches the AI agent.
 type TaintSourceFilter struct {
-	store  db.Store
-	parser *parser.Parser
-	logger *log.Logger
-	cache  *taintSummaryCache
+	store    db.Store
+	parser   *parser.Parser
+	logger   *log.Logger
+	cache    *taintSummaryCache
+	cfgCache *graph.CFGCache
 }
 
 func NewTaintSourceFilter(store db.Store, p *parser.Parser, logger *log.Logger, cache *taintSummaryCache) *TaintSourceFilter {
 	return &TaintSourceFilter{store: store, parser: p, logger: logger, cache: cache}
 }
+
+// WithCFGCache attaches the per-scan statement-CFG cache.
+func (f *TaintSourceFilter) WithCFGCache(c *graph.CFGCache) *TaintSourceFilter {
+	f.cfgCache = c
+	return f
+}
+
+// SetCFGCache is the uniform-injection entrypoint used by Planner.Plan.
+func (f *TaintSourceFilter) SetCFGCache(c *graph.CFGCache) { f.cfgCache = c }
 
 // taintSummaries returns the shared interprocedural taint summaries, either from
 // the Planner's cache or computed inline when the filter was constructed without
@@ -402,7 +413,7 @@ func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]C
 		bodies[fid] = body
 
 		genByLine, killByLine := taintEffectsWithCallees(body, retTainted, returnsParam)
-		analyzer := newFlowAnalyzer(f.store, f.parser)
+		analyzer := newFlowAnalyzer(f.store, f.parser, f.cfgCache)
 		analyzer.dfgCopies = map[int64]map[int][]copyPair{fid: taintCopiesFor(body, returnsParam)}
 		analyzer.entrySeeds = taintedParamsFor(fn, root, paramTainted[fid])
 		flows[fid] = analyzer.analyzeFlow(ctx, fn, body, root, genByLine, killByLine, false, false)
@@ -423,12 +434,12 @@ func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]C
 			continue
 		}
 		if hasOther {
-			a2 := newFlowAnalyzer(f.store, f.parser)
+			a2 := newFlowAnalyzer(f.store, f.parser, f.cfgCache)
 			a2.dfgCopies = analyzer.dfgCopies
 			a2.entrySeeds = analyzer.entrySeeds
 			pathFlows[fid] = a2.analyzeFlow(ctx, fn, body, root, genByLine, mergeKills(killByLine, sk), false, false)
 		} else {
-			a2 := newFlowAnalyzer(f.store, f.parser)
+			a2 := newFlowAnalyzer(f.store, f.parser, f.cfgCache)
 			a2.dfgCopies = analyzer.dfgCopies
 			a2.entrySeeds = analyzer.entrySeeds
 			flows[fid] = a2.analyzeFlow(ctx, fn, body, root, genByLine, mergeKills(killByLine, sk), false, false)
@@ -530,7 +541,7 @@ func (f *TaintSourceFilter) computeRetTainted(ctx context.Context, returnsParam 
 			}
 			b := base[info.fn.ID]
 			gen := addCalleeTaintGen(info.body, b.gen, retTainted, returnsParam)
-			analyzer := newFlowAnalyzer(f.store, f.parser)
+			analyzer := newFlowAnalyzer(f.store, f.parser, f.cfgCache)
 			analyzer.dfgCopies = map[int64]map[int][]copyPair{info.fn.ID: taintCopiesFor(info.body, returnsParam)}
 			flow := analyzer.analyzeFlow(ctx, info.fn, info.body, info.root, gen, b.kill, false, false)
 			if returnsTaint(info.body, flow) {
@@ -909,7 +920,7 @@ func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted 
 		changed := false
 		callerFlows := make(map[int64]*flowResult)
 		for fid, info := range callers {
-			analyzer := newFlowAnalyzer(f.store, f.parser)
+			analyzer := newFlowAnalyzer(f.store, f.parser, f.cfgCache)
 			analyzer.dfgCopies = map[int64]map[int][]copyPair{fid: info.copies}
 			// Seed this caller's already-proven tainted parameters so its own
 			// parameter arguments (which may be its params) carry taint forward.
@@ -1428,4 +1439,16 @@ func isPassthroughWrapper(body parser.Node, sinkParamName string) bool {
 		}
 	}
 	return false
+}
+
+// DeclaredProofs implements ProofRegistrar.
+func (f *TaintSourceFilter) DeclaredProofs() []Proof {
+	return []Proof{
+		{
+			Class:    ProofClassCFGMustDataflow,
+			Rule:     "taint-reaches-sink-on-all-paths",
+			Evidence: "taint dataflow over CALL/PARAM_BINDING/RETURN edges proves attacker-controlled data reaches the sink",
+			TestRef:  "TestTaintSourceFilter",
+		},
+	}
 }

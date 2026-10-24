@@ -6,19 +6,30 @@ import (
 	"fmt"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
 type LifetimeFilter struct {
-	store  db.Store
-	parser *parser.Parser
-	logger *log.Logger
+	store    db.Store
+	parser   *parser.Parser
+	logger   *log.Logger
+	cfgCache *graph.CFGCache
 }
 
 func NewLifetimeFilter(store db.Store, p *parser.Parser, logger *log.Logger) *LifetimeFilter {
 	return &LifetimeFilter{store: store, parser: p, logger: logger}
 }
+
+// WithCFGCache attaches the per-scan statement-CFG cache.
+func (f *LifetimeFilter) WithCFGCache(c *graph.CFGCache) *LifetimeFilter {
+	f.cfgCache = c
+	return f
+}
+
+// SetCFGCache is the uniform-injection entrypoint used by Planner.Plan.
+func (f *LifetimeFilter) SetCFGCache(c *graph.CFGCache) { f.cfgCache = c }
 
 func (f *LifetimeFilter) Name() string { return "lifetime" }
 
@@ -83,7 +94,7 @@ func (f *LifetimeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Cand
 	if err != nil {
 		return nil, fmt.Errorf("lifetime: load events: %w", err)
 	}
-	analyzer := newFlowAnalyzer(f.store, f.parser)
+	analyzer := newFlowAnalyzer(f.store, f.parser, f.cfgCache)
 	freeSites := analyzer.loadFreeSites(ctx, candidateFuncIDs(byFunc))
 	aliases := analyzer.loadAliases(ctx, candidateFuncIDs(byFunc))
 	for fid, cs := range byFunc {
@@ -146,4 +157,16 @@ func (f *LifetimeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Cand
 		flows[fid] = analyzer.analyzeFlowMust(ctx, fn, body, root, genByLine, killByLine, false, false)
 	}
 	return flows, nil
+}
+
+// DeclaredProofs implements ProofRegistrar.
+func (f *LifetimeFilter) DeclaredProofs() []Proof {
+	return []Proof{
+		{
+			Class:    ProofClassCFGMustDataflow,
+			Rule:     "must-freed-on-all-paths",
+			Evidence: "freed-state must-dataflow proves the pointer is freed on every path reaching the use",
+			TestRef:  "TestLifetimeFilter",
+		},
+	}
 }

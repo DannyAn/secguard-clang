@@ -409,7 +409,7 @@ func (d *RaceConditionDetector) detectCrossFunctionDataRace(ctx context.Context,
 			continue
 		}
 		body := bodies[f.StartLine]
-		heldByLine := d.mustHoldByLine(body, f.EndLine, calls, f, lockWrappers, unlockWrappers)
+		heldByLine := d.mustHoldByLine(ctx, body, f.EndLine, calls, f, lockWrappers, unlockWrappers)
 		accesses := d.functionGlobalAccesses(f, info, assigns, updates, ids, heldByLine)
 		for name, acc := range accesses {
 			if len(acc.writes) == 0 {
@@ -574,8 +574,8 @@ func (d *RaceConditionDetector) functionGlobalAccesses(f *db.Function, info *fil
 // It is computed per mutex via a two-state reachability (held / not-held): a
 // node is "not held" iff it is reachable from the entry without holding the
 // mutex, and "held" otherwise.
-func (d *RaceConditionDetector) mustHoldByLine(body parser.Node, funcEnd int, calls []parser.Node, f *db.Function, lockWrappers, unlockWrappers map[string]string) map[int]map[string]bool {
-	cfg := graph.BuildStmtCFG(body, funcEnd)
+func (d *RaceConditionDetector) mustHoldByLine(ctx context.Context, body parser.Node, funcEnd int, calls []parser.Node, f *db.Function, lockWrappers, unlockWrappers map[string]string) map[int]map[string]bool {
+	cfg := graph.BuildStmtCFGWithCache(cfgCacheFromCtx(ctx), f.ID, body, funcEnd)
 
 	mutexSet := make(map[string]bool)
 	lockAt := make(map[int]string)

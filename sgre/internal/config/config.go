@@ -214,13 +214,20 @@ func SetExplicitPath(path string) {
 // A missing file is not an error: the caller falls back to built-in behavior.
 // Both default locations share the .codeagent naming, consistent with the
 // runtime data dir (.codeagent/secguard-clang/).
-// Load returns the effective configuration, preserving the historical
-// "missing/invalid config degrades to an empty config" behavior for callers
-// outside the CLI. CLI startup should use LoadE so an explicitly requested
-// config that exists but cannot be read or parsed is fatal rather than silently
-// disabling every configured detector setting.
+// Load returns the effective configuration. A missing optional config still
+// degrades to the zero Config silently (a nil config file is not an error);
+// a config that was located but cannot be read or parsed is logged to stderr
+// so a mistyped secguard.toml never silently disables every detector setting
+// (the historical "secguard.toml written to the project root instead of
+// .codeagent/" failure mode).
+//
+// CLI startup should call LoadE and treat a read/parse error as fatal; Load
+// is kept for detectors / planners that do not have an error channel.
 func Load() *Config {
-	cfg, _ := LoadE()
+	cfg, err := LoadE()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "secguard: config load warning: %v (using zero config)\n", err)
+	}
 	return cfg
 }
 

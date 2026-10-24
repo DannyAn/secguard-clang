@@ -81,29 +81,39 @@ func TestSkillFragmentsMatchBuildEvidence(t *testing.T) {
 	}
 }
 
-// registryFragmentSets splits registry.go into per-spec blocks keyed by the
-// `Name: "<type>"` literal and collects every `Type: "<fragment>"` literal in
-// the block — the fragment vocabulary that spec's BuildEvidence can emit.
+// registryFragmentSets splits registry.go AND its per-type companions
+// (registry_<type>.go, introduced by the Phase-8 registry split) into
+// per-spec blocks keyed by the `Name: "<type>"` literal and collects every
+// `Type: "<fragment>"` literal in the block — the fragment vocabulary that
+// spec's BuildEvidence can emit.
 func registryFragmentSets(t *testing.T) map[string]map[string]bool {
-	src, err := os.ReadFile(filepath.Join("..", "planner", "registry.go"))
+	paths := []string{filepath.Join("..", "planner", "registry.go")}
+	matches, err := filepath.Glob(filepath.Join("..", "planner", "registry_*.go"))
 	if err != nil {
-		t.Fatalf("read registry.go: %v", err)
+		t.Fatalf("glob registry_*.go: %v", err)
 	}
+	paths = append(paths, matches...)
 	sets := map[string]map[string]bool{}
-	current := ""
-	for _, line := range strings.Split(string(src), "\n") {
-		if m := specNameRe.FindStringSubmatch(line); m != nil {
-			current = m[1]
-			if sets[current] == nil {
-				sets[current] = map[string]bool{}
+	for _, path := range paths {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		current := ""
+		for _, line := range strings.Split(string(src), "\n") {
+			if m := specNameRe.FindStringSubmatch(line); m != nil {
+				current = m[1]
+				if sets[current] == nil {
+					sets[current] = map[string]bool{}
+				}
+				continue
 			}
-			continue
-		}
-		if current == "" {
-			continue
-		}
-		if m := fragmentTypeRe.FindStringSubmatch(line); m != nil {
-			sets[current][m[1]] = true
+			if current == "" {
+				continue
+			}
+			if m := fragmentTypeRe.FindStringSubmatch(line); m != nil {
+				sets[current][m[1]] = true
+			}
 		}
 	}
 	return sets

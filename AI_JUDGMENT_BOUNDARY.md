@@ -79,6 +79,25 @@ NULL」这一未证明假设）。链条以 `cwe-chain@CWE-125→CWE-476` token 
   的 `TestConfirmedTierPolicy` 中登记为黄金清单：**新增任何 auto-confirm 必须在此
   登记其证明手段，否则构建失败**——防止「confirmed」被悄悄加到启发式上。
 
+### 动态升级登记（v0.10.0 起）
+
+filter 在 `Apply` 中把候选升级为 `confirmed` 同样受机器守卫约束：
+
+1. 该 filter 必须实现 `planner.ProofRegistrar` 接口（`DeclaredProofs() []Proof`），
+   为每条升级路径声明证明类别（`Proof.Class` 四选一：cfg-must-dataflow /
+   interval-or-const-fold / literal / type-inherent）、规则名（`Proof.Rule`）、
+   可审计的证据描述（`Proof.Evidence`）与建议的测试引用（`Proof.TestRef`）。
+2. `TestDynamicConfirmedUpgradesRegistered` 持有一份**已审阅的 filter 黄金清单**
+   （当前 12 个：NullableSourceFilter / LifetimeFilter / DoubleFreeFilter /
+   TaintSourceFilter / RangeFilter / RangeOOBFilter / ReturnCheckFilter /
+   LockOrderFilter / SharedAccessFilter / DefiniteInitFilter / LeakProofFilter /
+   HardcodedSecretProofFilter），逐 filter 断言 ProofRegistrar 实现、声明的
+   ProofClass 集合与黄金清单一致；**新增任何"filter 内升级 confirmed"的代码
+   路径而未在此登记，构建失败**。
+3. `TestConfirmedTierPolicy` 管静态（registry 声明），
+   `TestDynamicConfirmedUpgradesRegistered` 管动态（filter Apply 升级）；
+   两者一起覆盖"confirmed"的全部来源，任何一处绕过都会让构建失败。
+
 ## v0.8.0 完整确认覆盖（25 个 vuln 类型，两层 confirmed）
 
 `confirmed` 有两个来源：**静态**（registry 里写死）与**动态**（planner filter 在

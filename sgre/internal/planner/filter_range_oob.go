@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -19,10 +20,14 @@ import (
 // provably fits the array is DROPPED (the heuristic over-flagged), and one whose
 // interval provably equals-or-exceeds the capacity on every path is CONFIRMED.
 type RangeOOBFilter struct {
-	store  db.Store
-	parser *parser.Parser
-	logger *log.Logger
+	store    db.Store
+	parser   *parser.Parser
+	logger   *log.Logger
+	cfgCache *graph.CFGCache
 }
+
+// SetCFGCache is the uniform-injection entrypoint used by Planner.Plan.
+func (f *RangeOOBFilter) SetCFGCache(c *graph.CFGCache) { f.cfgCache = c }
 
 func NewRangeOOBFilter(store db.Store, p *parser.Parser, logger *log.Logger) *RangeOOBFilter {
 	return &RangeOOBFilter{store: store, parser: p, logger: logger}
@@ -61,7 +66,7 @@ func (f *RangeOOBFilter) Apply(ctx context.Context, candidates []Candidate) ([]C
 			continue
 		}
 		body, _ := cache.get(file, fn)
-		flows[fid] = analyzeRanges(fn, body)
+		flows[fid] = analyzeRangesWithCalls(f.cfgCache, fn, body, nil)
 	}
 
 	kept := make([]Candidate, 0, len(candidates))
@@ -177,4 +182,16 @@ func isBareIdent(s string) bool {
 		return false
 	}
 	return true
+}
+
+// DeclaredProofs implements ProofRegistrar.
+func (f *RangeOOBFilter) DeclaredProofs() []Proof {
+	return []Proof{
+		{
+			Class:    ProofClassInterval,
+			Rule:     "index-past-capacity",
+			Evidence: "interval analysis proves the access index lower bound is >= the known capacity",
+			TestRef:  "TestRangeOOBFilter",
+		},
+	}
 }

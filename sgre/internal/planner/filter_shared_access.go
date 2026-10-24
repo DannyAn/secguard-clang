@@ -131,3 +131,15 @@ func (f *SharedAccessFilter) Apply(ctx context.Context, candidates []Candidate) 
 	}
 	return kept, nil, nil
 }
+
+// DeclaredProofs implements ProofRegistrar.
+func (f *SharedAccessFilter) DeclaredProofs() []Proof {
+	return []Proof{
+		{
+			Class:    ProofClassCFGMustDataflow,
+			Rule:     "shared-global-write-race",
+			Evidence: "GLOBAL_ACCESS graph edges prove two thread functions write the same global",
+			TestRef:  "TestSharedAccessFilter",
+		},
+	}
+}

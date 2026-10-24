@@ -306,6 +306,11 @@ type Candidate struct {
 	FirstCallee  string `json:"first_callee,omitempty"`
 	SecondCallee string `json:"second_callee,omitempty"`
 	Victims      string `json:"victims,omitempty"`
+	// CrossFunction is true when the double-free candidate spans two functions
+	// (a free in A of a variable that is a cross-function alias of a free in
+	// B). The function-local must dataflow cannot prove it, so the
+	// DoubleFreeFilter passes it through as suspected for the AI to judge.
+	CrossFunction bool `json:"cross_function,omitempty"`
 	// DefiniteLeak is true when the leak detector proved no release/escape/
 	// transfer is reachable on any path (memory-leak / resource-leak).
 	DefiniteLeak bool `json:"definite_leak,omitempty"`

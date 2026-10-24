@@ -23,10 +23,14 @@ import (
 //     field before the call, the caller already proved non-null → dropped
 //     (guide §7.1).
 type ContractGapFilter struct {
-	store  db.Store
-	parser *parser.Parser
-	logger *log.Logger
+	store    db.Store
+	parser   *parser.Parser
+	logger   *log.Logger
+	cfgCache *graph.CFGCache
 }
+
+// SetCFGCache is the uniform-injection entrypoint used by Planner.Plan.
+func (f *ContractGapFilter) SetCFGCache(c *graph.CFGCache) { f.cfgCache = c }
 
 func NewContractGapFilter(store db.Store) *ContractGapFilter {
 	return &ContractGapFilter{store: store}
@@ -92,7 +96,7 @@ func (f *ContractGapFilter) Apply(ctx context.Context, candidates []Candidate) (
 				}
 			}
 		})
-		if targetsGuardDominates(body, fn.EndLine, targets, c.UseLine) {
+		if targetsGuardDominates(f.cfgCache, fn.ID, body, fn.EndLine, targets, c.UseLine) {
 			dropped = dismiss(dropped, c, f.Name(),
 				fmt.Sprintf("field %s is null-guarded on every path before its use at line %d", c.VariableName, c.UseLine))
 			continue
@@ -115,11 +119,11 @@ func (f *ContractGapFilter) Apply(ctx context.Context, candidates []Candidate) (
 // loop whose condition establishes a target non-null on the body (the loop
 // condition is re-checked each iteration, so every path into the body has the
 // target non-null).
-func targetsGuardDominates(body parser.Node, funcEnd int, targets map[string]bool, line int) bool {
+func targetsGuardDominates(cfgCache *graph.CFGCache, fnID int64, body parser.Node, funcEnd int, targets map[string]bool, line int) bool {
 	if loopGuardsTarget(body, targets, line) {
 		return true
 	}
-	cfg := graph.BuildStmtCFG(body, funcEnd)
+	cfg := graph.BuildStmtCFGWithCache(cfgCache, fnID, body, funcEnd)
 	var guardIDs map[int]bool
 	for _, n := range cfg.Nodes {
 		if n.Kind != "stmt" || n.Stmt.Kind() != "if_statement" {
@@ -228,7 +232,7 @@ func (f *ContractGapFilter) callerGuardsField(s contractCallSite, arg, field str
 	if body.Kind() != "compound_statement" {
 		return false
 	}
-	return targetsGuardDominates(body, s.callerEnd, map[string]bool{target: true}, s.callLine)
+	return targetsGuardDominates(f.cfgCache, 0, body, s.callerEnd, map[string]bool{target: true}, s.callLine)
 }
 
 // normalizeCallArg trims a call argument to a bare lvalue path, or "" for a

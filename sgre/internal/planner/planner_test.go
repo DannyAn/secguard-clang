@@ -290,9 +290,13 @@ func TestPlan_CategorySplit_BufferAccess(t *testing.T) {
 func TestPlan_UncheckedReturn_UsesReturnCheckFilter(t *testing.T) {
 	store := newMockStore()
 	pl := NewPlanner(store, nil, nil)
-	filters, err := pl.getFilters("unchecked-return")
+	spec, err := GetVulnTypeSpec("unchecked-return")
 	if err != nil {
-		t.Fatalf("getFilters(unchecked-return) failed: %v", err)
+		t.Fatalf("GetVulnTypeSpec: %v", err)
+	}
+	filters, err := pl.buildFilters(spec)
+	if err != nil {
+		t.Fatalf("buildFilters(unchecked-return) failed: %v", err)
 	}
 
 	found := false
