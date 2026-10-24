@@ -166,8 +166,62 @@ func (q *querier) TypeOf(ctx context.Context, fn *db.Function, v string) (graph.
 			return graph.Type{}, false
 		}
 	}
-	// Parameter fallback: fn's signature carries parameter types, but the
-	// skeleton does not parse the signature yet — report unknown.
+	// Parameter fallback: walk up from body to the function_definition's
+	// declarator and scan its parameter_list for v.
+	if t, ok := typeOfParameter(body, v); ok {
+		return t, true
+	}
+	return graph.Type{}, false
+}
+
+// typeOfParameter resolves v's type from fn's parameter_list when v is a
+// parameter. body is fn's compound_statement; its parent is the
+// function_definition, whose declarator carries the parameter_list. Returns
+// ok=false when v is not a parameter or its type is not a recognized name.
+func typeOfParameter(body parser.Node, v string) (graph.Type, bool) {
+	// body.Parent is the function_definition.
+	fd := body.Parent()
+	if fd == nil || fd.Kind() != "function_definition" {
+		return graph.Type{}, false
+	}
+	decl := fd.ChildByFieldName("declarator")
+	if decl == nil {
+		return graph.Type{}, false
+	}
+	// declarator may nest (pointer_declarator / function_declarator); find
+	// the parameter_list anywhere under it.
+	var params parser.Node
+	var findParams func(n parser.Node)
+	findParams = func(n parser.Node) {
+		if params.Kind() != "" {
+			return
+		}
+		if n.Kind() == "parameter_list" {
+			params = n
+			return
+		}
+		for _, c := range n.Children() {
+			findParams(c)
+		}
+	}
+	findParams(*decl)
+	if params.Kind() == "" {
+		return graph.Type{}, false
+	}
+	for _, pdecl := range params.FindAll("parameter_declaration") {
+		typ := pdecl.ChildByFieldName("type")
+		pdeclDeclarator := pdecl.ChildByFieldName("declarator")
+		if typ == nil || pdeclDeclarator == nil {
+			continue
+		}
+		if stripDeclaratorName(pdeclDeclarator.Text()) != v {
+			continue
+		}
+		if t, ok := graph.TypeByName(typ.Text()); ok {
+			return t, true
+		}
+		return graph.Type{}, false
+	}
 	return graph.Type{}, false
 }
 

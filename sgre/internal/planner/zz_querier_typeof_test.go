@@ -74,3 +74,60 @@ void target(void) {
 		}
 	}
 }
+
+// TestQuerierTypeOf_Parameter pins the parameter fallback: TypeOf resolves a
+// function parameter's type from the function_definition's parameter_list,
+// so `int n` in `void target(int n, unsigned long m)` returns Int32 for n
+// and Uint64 for m.
+func TestQuerierTypeOf_Parameter(t *testing.T) {
+	src := []byte(`
+void target(int n, unsigned long m, double d, void *p) {
+    (void)n; (void)m; (void)d; (void)p;
+}
+`)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "x.c")
+	if err := os.WriteFile(path, src, 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	store := db.NewTestStore(t)
+	p := parser.NewParser()
+	defer p.CloseAll()
+
+	fileID, err := store.InsertFile(context.Background(), &db.File{Path: path, Checksum: "x", LOC: 5})
+	if err != nil {
+		t.Fatalf("insert file: %v", err)
+	}
+	fnID, err := store.InsertFunction(context.Background(), &db.Function{
+		FileID: fileID, Name: "target", Signature: "void target(int n, unsigned long m, double d, void *p)",
+		StartLine: 2, EndLine: 4,
+	})
+	if err != nil {
+		t.Fatalf("insert function: %v", err)
+	}
+	fn := &db.Function{ID: fnID, Name: "target", FileID: fileID, StartLine: 2, EndLine: 4}
+
+	q := NewQuerier(store, p, graph.NewCFGCache())
+
+	cases := []struct {
+		name     string
+		wantKind graph.TypeKind
+		wantOK   bool
+	}{
+		{"n", graph.TypeInt, true},
+		{"m", graph.TypeUint, true},
+		{"d", graph.TypeFloat, true},
+		{"p", graph.TypeUnknown, false}, // void * is not in the name table
+	}
+	for _, tc := range cases {
+		ty, ok := q.TypeOf(context.Background(), fn, tc.name)
+		if ok != tc.wantOK {
+			t.Errorf("TypeOf(%q).ok = %v, want %v", tc.name, ok, tc.wantOK)
+			continue
+		}
+		if ok && ty.Kind != tc.wantKind {
+			t.Errorf("TypeOf(%q).Kind = %v, want %v", tc.name, ty.Kind, tc.wantKind)
+		}
+	}
+}
