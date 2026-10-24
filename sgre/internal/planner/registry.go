@@ -56,6 +56,14 @@ type VulnTypeSpec struct {
 	// recognized a heuristic pattern (e.g. an unguarded strcpy). The AI agent
 	// then spends its depth only on the suspected tier.
 	CategoryConfidence map[string]string
+	// SkipAutoConfirmReReview, when true, marks this type's machine-confirmed
+	// findings as already reviewed (review_status=confirmed) at write time, so
+	// they never enter the AI's auto-confirmed re-review loop. It is for types
+	// whose auto-confirm is a DETERMINISTIC name/pattern match with no context
+	// to judge (e.g. dangerous-function's banned-API policy check) — re-reviewing
+	// them is pure waste. Types whose auto-confirm is a may-analysis (a flow
+	// proof that can be wrong) MUST keep this false.
+	SkipAutoConfirmReReview bool
 	// CWE is the canonical CWE identifier for this vulnerability type (e.g.
 	// "CWE-476"). It is the single source of truth for the CWE↔vuln-type
 	// mapping — every consumer (report, db, cli, extension) must derive from

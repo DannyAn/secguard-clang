@@ -10,7 +10,7 @@ func init() {
 		EvidenceType:     "DANGEROUS_FUNCTION",
 		DefaultSuspicion: "confirmed",
 		FilterChain:      "default",
-		FilterFactories:    chainDefault(),
+		FilterFactories:  chainDefault(),
 		// A call to a banned function is a POLICY finding — the function itself
 		// is the defect, no context matters — so every category is confirmed
 		// soundly (a name match, not a may-analysis). EXCEPTION: `assert_usage`
@@ -20,7 +20,12 @@ func init() {
 			"assert_usage":             "suspected",
 			"obsolete_api_conditional": "suspected",
 		},
-		BuildVerdictFacts: buildDangerousFunctionVerdictFacts,
+		// The auto-confirmed tier here is the banned-API POLICY check (a
+		// deterministic name match — memcpy/strcpy/exit are banned regardless of
+		// call context), so re-reviewing it is pure waste. assert_usage /
+		// obsolete_api_conditional stay suspected and never reach auto-confirm.
+		SkipAutoConfirmReReview: true,
+		BuildVerdictFacts:       buildDangerousFunctionVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			return []EvidenceFragment{
 				{Type: "dangerous_function", Role: "sink", Detail: fmt.Sprintf("call to banned %s() (%s) at line %d in function %s", c.VariableName, c.Category, c.Line, c.FunctionName)},
