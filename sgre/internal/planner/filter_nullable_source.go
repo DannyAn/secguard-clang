@@ -1082,6 +1082,31 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 					queue = append(queue, callee)
 				}
 			})
+			// A return-call callee also feeds the grade: `return xmalloc()`
+			// makes xmalloc's nullability matter here. Without this the closure
+			// misses abort-on-OOM wrappers only reached via a return, and their
+			// result is then graded by the "contains malloc" name heuristic
+			// instead of the fixpoint's body analysis (the xmalloc FP).
+			for _, ret := range body.FindAll("return_statement") {
+				children := ret.NamedChildren()
+				if len(children) == 0 {
+					continue
+				}
+				if callee := rhsCallName(children[0]); callee != "" && !needNames[callee] {
+					needNames[callee] = true
+					queue = append(queue, callee)
+				}
+			}
+		}
+	}
+	// analyzed = in-scan functions the fixpoint will actually process (the
+	// closure ∩ in-scan). External names the closure reached (malloc) are NOT
+	// analyzed; `exprRetNullability` uses this to resolve in-scan callees via
+	// retNullable and fall through to the heuristic/fail-open for the rest.
+	analyzed := make(map[string]bool, len(needNames))
+	for name := range needNames {
+		if len(funcsByName[name]) > 0 {
+			analyzed[name] = true
 		}
 	}
 
@@ -1209,7 +1234,7 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 			analyzer.entrySeeds = entrySeeds
 			analyzer.definiteEntrySeeds = definiteEntrySeeds
 			flow := analyzer.analyzeFlow(ctx, info.fn, info.body, info.root, nullGenByLine(lineSources), nil, true, false)
-			if ns := returnsNullability(info.body, flow, info.params, retNullable, definedNames, info.arrs, srcs, strings.TrimSpace(info.fn.ReturnType), noreturnCalls); ns != retNotNull {
+			if ns := returnsNullability(info.body, flow, info.params, retNullable, analyzed, info.arrs, srcs, strings.TrimSpace(info.fn.ReturnType), noreturnCalls); ns != retNotNull {
 				retNullable[info.fn.Name] = ns
 				defAssumed[info.fn.ID] = ns == retNullAssumed
 				changed = true

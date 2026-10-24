@@ -1721,7 +1721,7 @@ func isAbortGuardedReturn(expr parser.Node, abortGuarded map[string]bool) bool {
 	return inner.Kind() == "identifier" && abortGuarded[inner.Text()]
 }
 
-func returnsNullability(body parser.Node, flow *flowResult, params map[string]int, retNullable map[string]retNullability, definedNames map[string]bool, arrs *arrayBaseInfo, srcs []nullSource, fnRetType string, noreturnCalls map[string]bool) retNullability {
+func returnsNullability(body parser.Node, flow *flowResult, params map[string]int, retNullable map[string]retNullability, analyzed map[string]bool, arrs *arrayBaseInfo, srcs []nullSource, fnRetType string, noreturnCalls map[string]bool) retNullability {
 	// abort-on-OOM contract: a returned variable guarded by `if (!v) <noreturn>`
 	// is non-null at the return — the null path dies in the never-returning
 	// call. This is the scan-tree resolution of the same contract
@@ -1743,7 +1743,7 @@ func returnsNullability(body parser.Node, flow *flowResult, params map[string]in
 		if isAbortGuardedReturn(children[0], abortGuarded) {
 			continue
 		}
-		switch exprRetNullability(children[0], flow, params, retNullable, definedNames, arrs, ret.StartLine(), srcs, fnRetType) {
+		switch exprRetNullability(children[0], flow, params, retNullable, analyzed, arrs, ret.StartLine(), srcs, fnRetType) {
 		case retNullProven:
 			return retNullProven
 		case retNullAssumed:
@@ -1753,7 +1753,7 @@ func returnsNullability(body parser.Node, flow *flowResult, params map[string]in
 	return grade
 }
 
-func exprRetNullability(expr parser.Node, flow *flowResult, params map[string]int, retNullable map[string]retNullability, definedNames map[string]bool, arrs *arrayBaseInfo, line int, srcs []nullSource, fnRetType string) retNullability {
+func exprRetNullability(expr parser.Node, flow *flowResult, params map[string]int, retNullable map[string]retNullability, analyzed map[string]bool, arrs *arrayBaseInfo, line int, srcs []nullSource, fnRetType string) retNullability {
 	if isNullLiteralNode(expr) {
 		// Return-type gate: a bare zero/NULL literal in a never-null scalar
 		// return function is the integer zero, not a null pointer. A
@@ -1802,7 +1802,7 @@ func exprRetNullability(expr parser.Node, flow *flowResult, params map[string]in
 			if expr.Kind() == "cast_expression" {
 				inner = ""
 			}
-			switch exprRetNullability(c, flow, params, retNullable, definedNames, arrs, line, srcs, inner) {
+			switch exprRetNullability(c, flow, params, retNullable, analyzed, arrs, line, srcs, inner) {
 			case retNullProven:
 				return retNullProven
 			case retNullAssumed:
@@ -1824,17 +1824,24 @@ func exprRetNullability(expr parser.Node, flow *flowResult, params map[string]in
 		}
 	case "call_expression":
 		name := callName(expr)
+		// A function the fixpoint actually analyzed resolves via its body
+		// analysis (abort-on-OOM wrappers, transitive nullability) — NOT the
+		// "contains malloc" name heuristic (xmalloc is an abort-on-OOM wrapper
+		// that heuristic would grade nullable). `analyzed` is the caller-closure
+		// (`needNames`); an in-scan function NOT in the closure falls through to
+		// the fail-open default, same as an external one — never an unsound
+		// "non-null because unanalyzed".
+		if analyzed[name] {
+			return retNullable[name]
+		}
+		if apikb.IsNonNullReturning(name) {
+			return retNotNull
+		}
 		if isAllocatorCall(name) {
 			return retNullProven
 		}
 		if apikb.IsKnownNullableReturn(name) {
 			return retNullProven
-		}
-		if apikb.IsNonNullReturning(name) {
-			return retNotNull
-		}
-		if definedNames[name] {
-			return retNullable[name] // defined in-scan: resolve via the fixpoint
 		}
 		return retNullAssumed // external/unknown callee: fail-open (open world)
 	}
