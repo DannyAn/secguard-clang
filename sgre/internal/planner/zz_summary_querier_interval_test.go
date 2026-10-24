@@ -91,3 +91,74 @@ int returns_mixed(int n) {
 		t.Errorf("nonexistent.Interval.Top = %v, want true", s.Interval.Top)
 	}
 }
+
+// TestSummaryQuerierCapacityDimension pins the Capacity dimension: a function
+// returning `malloc(N)` with a literal N yields Capacity = N; any other shape
+// yields -1.
+func TestSummaryQuerierCapacityDimension(t *testing.T) {
+	src := []byte(`
+void *malloc(long);
+void *returns_malloc_16(void) {
+    return malloc(16);
+}
+void *returns_malloc_var(int n) {
+    return malloc(n);
+}
+void *returns_calloc(void) {
+    return calloc(4, 8);
+}
+void *returns_null(void) {
+    return (void*)0;
+}
+`)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "x.c")
+	if err := os.WriteFile(path, src, 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	store := db.NewTestStore(t)
+	p := parser.NewParser()
+	defer p.CloseAll()
+
+	fileID, err := store.InsertFile(context.Background(), &db.File{Path: path, Checksum: "x", LOC: 20})
+	if err != nil {
+		t.Fatalf("insert file: %v", err)
+	}
+	for _, fn := range []struct {
+		name  string
+		start int
+		end   int
+	}{
+		{"returns_malloc_16", 3, 5},
+		{"returns_malloc_var", 6, 8},
+		{"returns_calloc", 9, 11},
+		{"returns_null", 12, 14},
+	} {
+		if _, err := store.InsertFunction(context.Background(), &db.Function{
+			FileID: fileID, Name: fn.name, Signature: "void *" + fn.name + "(void)",
+			StartLine: fn.start, EndLine: fn.end,
+		}); err != nil {
+			t.Fatalf("insert function %s: %v", fn.name, err)
+		}
+	}
+
+	q := NewSummaryQuerier(store, p, graph.NewCFGCache(), nil)
+
+	cases := []struct {
+		name string
+		want int64
+	}{
+		{"returns_malloc_16", 16},
+		{"returns_malloc_var", -1}, // non-literal size
+		{"returns_calloc", 32},     // calloc(4, 8) = 32
+		{"returns_null", -1},       // no malloc return
+		{"nonexistent", -1},
+	}
+	for _, tc := range cases {
+		s, _ := q.SummaryOf(context.Background(), tc.name)
+		if s.Capacity != tc.want {
+			t.Errorf("%s.Capacity = %d, want %d", tc.name, s.Capacity, tc.want)
+		}
+	}
+}

@@ -63,7 +63,7 @@ func (q *summaryQuerier) SummaryOf(ctx context.Context, funcName string) (graph.
 		Null:     q.nullOf(ctx, funcName),
 		Interval: q.intervalOf(ctx, funcName),
 		Taint:    q.taintOf(ctx, funcName),
-		Capacity: -1,
+		Capacity: q.capacityOf(ctx, funcName),
 	}
 	q.memo[funcName] = s
 	return s, true
@@ -231,6 +231,86 @@ func (q *summaryQuerier) taintOf(ctx context.Context, funcName string) graph.Tri
 		return graph.TriYes
 	}
 	return graph.TriNo
+}
+
+// capacityOf resolves the Capacity dimension for funcName: when the
+// function's body returns the result of a `malloc(N)` / `calloc(N, ...)`
+// call with a literal N, Capacity = N (the byte capacity of the returned
+// buffer). Any other shape (non-literal size, no malloc return, multiple
+// returns with different sizes) yields -1 (unknown).
+func (q *summaryQuerier) capacityOf(ctx context.Context, funcName string) int64 {
+	if q.store == nil || q.parser == nil {
+		return -1
+	}
+	fn, err := q.store.GetFunctionByName(ctx, funcName)
+	if err != nil || fn == nil {
+		return -1
+	}
+	cache := newFileParseCache(q.parser)
+	file, err := q.store.GetFileByID(ctx, fn.FileID)
+	if err != nil || file == nil {
+		return -1
+	}
+	body, _ := cache.get(file, fn)
+	if body.Kind() != "compound_statement" {
+		return -1
+	}
+	for _, ret := range body.FindAll("return_statement") {
+		children := ret.NamedChildren()
+		if len(children) == 0 {
+			continue
+		}
+		expr := children[0]
+		if expr.Kind() != "call_expression" {
+			continue
+		}
+		callee := expr.ChildByFieldName("function")
+		if callee == nil || callee.Kind() != "identifier" {
+			continue
+		}
+		name := callee.Text()
+		if name != "malloc" && name != "calloc" {
+			continue
+		}
+		args := expr.ChildByFieldName("arguments")
+		if args == nil {
+			continue
+		}
+		argList := args.NamedChildren()
+		if len(argList) == 0 {
+			continue
+		}
+		// malloc(N): capacity = N. calloc(N, M): capacity = N * M.
+		if name == "malloc" {
+			if v, ok := literalInt(argList[0]); ok {
+				return v
+			}
+			continue
+		}
+		// calloc
+		if len(argList) >= 2 {
+			n, ok1 := literalInt(argList[0])
+			m, ok2 := literalInt(argList[1])
+			if ok1 && ok2 {
+				return n * m
+			}
+		}
+	}
+	return -1
+}
+
+// literalInt parses a number_literal node's text as an int64. The second
+// return value is false when the node is not a number_literal or the text
+// is not a decimal integer.
+func literalInt(n parser.Node) (int64, bool) {
+	if n.Kind() != "number_literal" {
+		return 0, false
+	}
+	var v int64
+	if _, err := fmt.Sscanf(n.Text(), "%d", &v); err != nil {
+		return 0, false
+	}
+	return v, true
 }
 
 // joinIntervals returns the hull of two intervals (the over-approximation
