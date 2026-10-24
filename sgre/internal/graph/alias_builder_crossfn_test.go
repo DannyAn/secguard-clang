@@ -143,10 +143,111 @@ void caller(void) {
 	}
 }
 
+// TestBuildInterproceduralAlias_StaticGlobalFileScoped pins the static-vs-extern
+// distinction: a `static void *g` in two files is TWO objects (internal
+// linkage, one per file), so `g = p` in file A and `g = q` in file B produce
+// two DISTINCT global alias keys (FileID A vs FileID B) that do not merge.
+func TestBuildInterproceduralAlias_StaticGlobalFileScoped(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, src string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(src), 0644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		return p
+	}
+	pathA := write("a.c", `
+void *malloc(long);
+static void *g;
+void f1(void) { void *p = malloc(8); g = p; }
+`)
+	pathB := write("b.c", `
+void *malloc(long);
+static void *g;
+void f2(void) { void *q = malloc(8); g = q; }
+`)
+
+	store := db.NewTestStore(t)
+	ctx := context.Background()
+	fa, _ := store.InsertFile(ctx, &db.File{Path: pathA, Checksum: "a", LOC: 10})
+	fb, _ := store.InsertFile(ctx, &db.File{Path: pathB, Checksum: "b", LOC: 10})
+	faFn, _ := store.InsertFunction(ctx, &db.Function{FileID: fa, Name: "f1", Signature: "void f1(void)", StartLine: 4, EndLine: 4})
+	fbFn, _ := store.InsertFunction(ctx, &db.Function{FileID: fb, Name: "f2", Signature: "void f2(void)", StartLine: 4, EndLine: 4})
+	store.InsertFileScopeVariable(ctx, &db.FileScopeVariable{FileID: fa, Name: "g", Type: "void", StorageClass: "static", DeclarationLine: 3, IsPointer: true})
+	store.InsertFileScopeVariable(ctx, &db.FileScopeVariable{FileID: fb, Name: "g", Type: "void", StorageClass: "static", DeclarationLine: 3, IsPointer: true})
+
+	p := parser.NewParser()
+	defer p.CloseAll()
+	g, err := BuildInterproceduralAlias(ctx, store, p)
+	if err != nil {
+		t.Fatalf("BuildInterproceduralAlias: %v", err)
+	}
+
+	setA := g.AliasesOf(AliasKey{FunctionID: faFn, Name: "p"})
+	var ga *AliasKey
+	for _, k := range setA {
+		if k.Name == "g" && k.FunctionID == 0 {
+			ga = &k
+		}
+	}
+	if ga == nil || ga.FileID != fa {
+		t.Fatalf("f1.p must alias the file-A static global g (FileID=%d), got set %v", fa, setA)
+	}
+
+	setB := g.AliasesOf(AliasKey{FunctionID: fbFn, Name: "q"})
+	for _, k := range setB {
+		if k.Name == "g" && k.FunctionID == 0 && k.FileID == fa {
+			t.Errorf("f2.q must NOT alias file-A's static global g (different file, different object); set %v", setB)
+		}
+	}
+	// The two static globals must be distinct keys (different FileID), so the
+	// closure of p never reaches q's global.
+	for _, k := range setA {
+		if k.FunctionID == 0 && k.Name == "g" && k.FileID == fb {
+			t.Errorf("f1.p must not reach file-B's static global g")
+		}
+	}
+}
+
+// TestBuildInterproceduralAlias_UnknownLHSNotGlobal pins the symbol-table
+// guard: a `typo_name = p` whose lhs is NOT a declared file-scope variable (and
+// not a local) is NOT recorded as a global alias.
+func TestBuildInterproceduralAlias_UnknownLHSNotGlobal(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "x.c")
+	src := []byte(`
+void *malloc(long);
+void f(void) {
+    void *p = malloc(8);
+    undefined_name = p;
+}
+`)
+	if err := os.WriteFile(path, src, 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	store := db.NewTestStore(t)
+	ctx := context.Background()
+	fileID, _ := store.InsertFile(ctx, &db.File{Path: path, Checksum: "x", LOC: 10})
+	fnID, _ := store.InsertFunction(ctx, &db.Function{FileID: fileID, Name: "f", Signature: "void f(void)", StartLine: 3, EndLine: 6})
+
+	p := parser.NewParser()
+	defer p.CloseAll()
+	g, err := BuildInterproceduralAlias(ctx, store, p)
+	if err != nil {
+		t.Fatalf("BuildInterproceduralAlias: %v", err)
+	}
+	set := g.AliasesOf(AliasKey{FunctionID: fnID, Name: "p"})
+	for _, k := range set {
+		if k.Name == "undefined_name" {
+			t.Errorf("undefined_name must not be recorded as a global alias (not a declared file-scope name); set %v", set)
+		}
+	}
+}
+
 // TestBuildInterproceduralAlias_GlobalAlias pins the global-alias shape: a
-// `g = p` whose g is NOT a local of fn is recorded with FunctionID=0 (a
-// global / file-scope name), so a global written in fn and read in another
-// function shares the object with fn's p.
+// `g = p` whose g is a declared file-scope (extern) name is recorded with
+// FunctionID=0 / FileID=0 (one object program-wide), so a global written in fn
+// and read in another function shares the object with fn's p.
 func TestBuildInterproceduralAlias_GlobalAlias(t *testing.T) {
 	src := []byte(`
 void *malloc(long);
@@ -186,6 +287,13 @@ void reader(void) {
 			t.Fatalf("insert function %s: %v", fn.name, err)
 		}
 	}
+	// g_sink is a declared file-scope variable (extern by default): the global
+	// alias is recorded only because the file-scope symbol table knows it.
+	if _, err := store.InsertFileScopeVariable(context.Background(), &db.FileScopeVariable{
+		FileID: fileID, Name: "g_sink", Type: "void", StorageClass: "extern", DeclarationLine: 4, IsPointer: true,
+	}); err != nil {
+		t.Fatalf("insert file-scope variable: %v", err)
+	}
 
 	p := parser.NewParser()
 	defer p.CloseAll()
@@ -195,7 +303,7 @@ void reader(void) {
 		t.Fatalf("BuildInterproceduralAlias: %v", err)
 	}
 
-	// writer.p should alias the global g_sink (FunctionID=0).
+	// writer.p should alias the global g_sink (FunctionID=0, FileID=0).
 	writerFn, _ := store.GetFunctionByName(context.Background(), "writer")
 	set := g.AliasesOf(AliasKey{FunctionID: writerFn.ID, Name: "p"})
 	names := map[string]bool{}

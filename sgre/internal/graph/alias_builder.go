@@ -39,6 +39,21 @@ func BuildInterproceduralAlias(ctx context.Context, store db.Store, p *parser.Pa
 	for _, fn := range fns {
 		fnByName[fn.Name] = fn
 	}
+	// File-scope symbol table (indexer): a name → storage-class map per file so
+	// `g = p` is a GLOBAL alias only when g is a declared file-scope name, and a
+	// `static` g (one object per file) is keyed apart from an `extern` g (one
+	// object program-wide).
+	fileScopeByFile := make(map[int64]map[string]string)
+	if fsv, err := store.ListFileScopeVariables(ctx); err == nil {
+		for _, v := range fsv {
+			m := fileScopeByFile[v.FileID]
+			if m == nil {
+				m = make(map[string]string)
+				fileScopeByFile[v.FileID] = m
+			}
+			m[v.Name] = v.StorageClass
+		}
+	}
 	// Collect every function's local variable names once, so the global-alias
 	// check below is a set lookup instead of a per-assignment DB query.
 	// (The locals are derived from the function body itself in the first
@@ -78,7 +93,7 @@ func BuildInterproceduralAlias(ctx context.Context, store db.Store, p *parser.Pa
 			// `g = p` whose g is not in this set is recorded as a global
 			// alias (FunctionID=0) rather than a function-local one.
 			locals := collectLocalNames(body, facts[fn.ID].params)
-			extractFunctionAliases(g, fn, body, facts[fn.ID], locals)
+			extractFunctionAliases(g, fn, body, facts[fn.ID], locals, fid, fileScopeByFile[fid])
 		}
 	}
 	// Second pass: cross-function call edges.
@@ -187,7 +202,7 @@ func parseFileBodies(p *parser.Parser, file *db.File) (parser.Node, map[int]pars
 // alias shapes into g. It also collects fn's return-alias sources (the
 // variables named in `return p;`) and parameter names, so the second pass
 // (extractCallAliases) can wire cross-function edges.
-func extractFunctionAliases(g *AliasGraph, fn *db.Function, body parser.Node, fnFacts *functionAliasFacts, locals map[string]bool) {
+func extractFunctionAliases(g *AliasGraph, fn *db.Function, body parser.Node, fnFacts *functionAliasFacts, locals map[string]bool, fileID int64, fileScopeVars map[string]string) {
 	// Declaration initializers: `T *q = p;` / `T *q = p->f;` / `T *q = (T*)p;`.
 	for _, decl := range body.FindAll("declaration") {
 		for _, init := range decl.FindAll("init_declarator") {
@@ -196,7 +211,7 @@ func extractFunctionAliases(g *AliasGraph, fn *db.Function, body parser.Node, fn
 			if lhs == nil || rhs == nil {
 				continue
 			}
-			recordAliasFromAssign(g, fn, lhs.Text(), rhs.Text(), locals)
+			recordAliasFromAssign(g, fn, lhs.Text(), rhs.Text(), locals, fileID, fileScopeVars)
 		}
 	}
 	// Plain assignments: `q = p;` / `q = (T*)p;` / `q = p->f;`.
@@ -206,7 +221,7 @@ func extractFunctionAliases(g *AliasGraph, fn *db.Function, body parser.Node, fn
 		if lhs == nil || rhs == nil {
 			continue
 		}
-		recordAliasFromAssign(g, fn, lhs.Text(), rhs.Text(), locals)
+		recordAliasFromAssign(g, fn, lhs.Text(), rhs.Text(), locals, fileID, fileScopeVars)
 	}
 	// Return-alias sources: `return p;` marks p as fn's return-alias source.
 	for _, ret := range body.FindAll("return_statement") {
@@ -219,12 +234,26 @@ func extractFunctionAliases(g *AliasGraph, fn *db.Function, body parser.Node, fn
 			fnFacts.returnSources = append(fnFacts.returnSources, expr.Text())
 		}
 	}
+	// A return source that is UNCONDITIONALLY freed (a `free(p)` not nested in
+	// any if/loop/switch) is a dangling return: every caller receives an
+	// already-freed pointer. This is the sound gate for cross-function
+	// double-free — a conditional free (`if (err) { free(p); return NULL; }
+	// return p;`) does NOT make the return dangling.
+	for _, src := range fnFacts.returnSources {
+		if fnFacts.danglingReturns == nil {
+			fnFacts.danglingReturns = make(map[string]bool)
+		}
+		if returnSourceUnconditionallyFreed(body, src) {
+			fnFacts.danglingReturns[src] = true
+		}
+	}
 }
 
 // functionAliasFacts collects per-function facts for the cross-function pass.
 type functionAliasFacts struct {
-	returnSources []string // variables named in `return p;`
-	params        []string // parameter names in order
+	returnSources   []string        // variables named in `return p;`
+	danglingReturns map[string]bool // return sources unconditionally freed
+	params          []string        // parameter names in order
 }
 
 // extractCallAliases walks fn's body for call expressions and wires
@@ -289,7 +318,11 @@ func extractCallAliases(g *AliasGraph, fn *db.Function, body parser.Node, fnByNa
 		for _, src := range calleeFacts.returnSources {
 			a := AliasKey{FunctionID: fn.ID, Name: name}
 			b := AliasKey{FunctionID: calleeFn.ID, Name: src}
-			g.AddWithKind(a, b, AliasEdgeReturn)
+			kind := AliasEdgeReturn
+			if calleeFacts.danglingReturns[src] {
+				kind = AliasEdgeReturnDangling
+			}
+			g.AddWithKind(a, b, kind)
 		}
 	}
 }
@@ -298,7 +331,7 @@ func extractCallAliases(g *AliasGraph, fn *db.Function, body parser.Node, fnByNa
 // simple alias shape (identifier / cast of identifier / field of identifier /
 // address-of-element). Anything else (arithmetic, call, literal) is not an
 // alias.
-func recordAliasFromAssign(g *AliasGraph, fn *db.Function, lhs, rhs string, locals map[string]bool) {
+func recordAliasFromAssign(g *AliasGraph, fn *db.Function, lhs, rhs string, locals map[string]bool, fileID int64, fileScopeVars map[string]string) {
 	// Strip a leading cast from rhs: `q = (T*)p` aliases q to p.
 	base := stripCast(rhs)
 	if !isSimpleAliasSource(base) {
@@ -312,9 +345,20 @@ func recordAliasFromAssign(g *AliasGraph, fn *db.Function, lhs, rhs string, loca
 	}
 	a := AliasKey{FunctionID: fn.ID, Name: name}
 	if locals != nil && !locals[name] {
-		// lhs is not a local of fn — record it as a global alias.
-		a = AliasKey{FunctionID: 0, Name: name}
-		g.AddWithKind(a, AliasKey{FunctionID: fn.ID, Name: base}, AliasEdgeGlobal)
+		// lhs is not a local of fn — it is a global alias only when it is a
+		// declared file-scope name. A static global is keyed by its file
+		// (internal linkage, one object per file); an extern global is
+		// program-wide (FileID=0). An unknown lhs (typo, macro, field) is not a
+		// global and is dropped.
+		sc, ok := fileScopeVars[name]
+		if !ok {
+			return
+		}
+		key := AliasKey{FunctionID: 0, Name: name}
+		if sc == "static" {
+			key.FileID = fileID
+		}
+		g.AddWithKind(key, AliasKey{FunctionID: fn.ID, Name: base}, AliasEdgeGlobal)
 		return
 	}
 	b := AliasKey{FunctionID: fn.ID, Name: base}
@@ -428,4 +472,48 @@ func stripCast(s string) string {
 		s = s[end+1:]
 	}
 	return s
+}
+
+// returnSourceUnconditionallyFreed reports whether the function body has a
+// direct `free(x)` / `free((T*)x)` call that is NOT nested inside any
+// if/for/while/do/switch statement — i.e. every path through the body frees x,
+// so `return x` hands the caller a dangling pointer. This is the sound gate for
+// the cross-function double-free: a conditional free (`if (err) { free(p);
+// return NULL; } return p;`) does NOT make the return dangling.
+func returnSourceUnconditionallyFreed(body parser.Node, name string) bool {
+	for _, call := range body.FindAll("call_expression") {
+		callee := call.ChildByFieldName("function")
+		if callee == nil || callee.Text() != "free" {
+			continue
+		}
+		args := call.ChildByFieldName("arguments")
+		if args == nil {
+			continue
+		}
+		argList := args.NamedChildren()
+		if len(argList) == 0 {
+			continue
+		}
+		if stripCast(argList[0].Text()) != name {
+			continue
+		}
+		if lineInConditional(body, call.StartLine()) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// lineInConditional reports whether line sits inside any if / loop / switch
+// statement within body (i.e. it runs on SOME paths only).
+func lineInConditional(body parser.Node, line int) bool {
+	for _, kind := range []string{"if_statement", "for_statement", "while_statement", "do_statement", "switch_statement"} {
+		for _, stmt := range body.FindAll(kind) {
+			if line >= stmt.StartLine() && line <= stmt.EndLine() {
+				return true
+			}
+		}
+	}
+	return false
 }

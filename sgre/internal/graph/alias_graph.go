@@ -6,13 +6,19 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/db"
 )
 
-// AliasKey identifies a tracked storage location across the program: either
-// a local variable of a specific function, or a global.
+// AliasKey identifies a tracked storage location across the program: a local
+// variable of a specific function, an extern global (one object program-wide),
+// or a static global (one object per file).
 type AliasKey struct {
 	// FunctionID > 0 identifies a function-local variable; 0 identifies a
-	// global.
+	// global / file-scope name.
 	FunctionID int64
-	Name       string
+	// FileID distinguishes a static global (FileID = its file, internal
+	// linkage, one object per file) from an extern global (FileID = 0,
+	// external linkage, one object program-wide). Function-local keys always
+	// have FileID = 0 (the FunctionID already disambiguates them).
+	FileID int64
+	Name   string
 }
 
 // AliasGraph maps an AliasKey to the set of AliasKeys that may refer to the
@@ -21,9 +27,9 @@ type AliasKey struct {
 // releasing p, `free((void*)p)` as freeing p, and a global `g = (T*)p` as
 // aliasing p across function boundaries.
 // AliasEdgeKind tags the provenance of an alias edge: which C shape created
-// it. The cross-function double-free aggregation consumes it to distinguish
-// "one object, two owners" (return-alias) from "same name, different object
-// on every call" (parameter-alias).
+// it. Consumers can distinguish "one object, two owners" (return-alias) from
+// "same name, different object on every call" (parameter-alias) with
+// AliasesOfKind.
 type AliasEdgeKind int
 
 const (
@@ -33,6 +39,13 @@ const (
 	// AliasEdgeReturn is a cross-function return alias: `q = foo()` in the
 	// caller + `return p;` in foo links q to p (foo's local).
 	AliasEdgeReturn
+	// AliasEdgeReturnDangling is a cross-function return alias where foo
+	// UNCONDITIONALLY frees its return source (`free(p); return p;`): every
+	// caller that frees q = foo() is a genuine cross-function double-free.
+	// It is the sound gate for the cross-function double-free aggregation —
+	// a live return (`return p` on the success path only) stays AliasEdgeReturn
+	// and does NOT participate.
+	AliasEdgeReturnDangling
 	// AliasEdgeParam is a cross-function parameter alias: `foo(p)` in the
 	// caller + foo's formal `x` links p to x (foo's parameter).
 	AliasEdgeParam
@@ -114,11 +127,12 @@ func (g *AliasGraph) AliasesOf(k AliasKey) []AliasKey {
 }
 
 // AliasesOfKind is AliasesOf filtered to edges of the given kind: the
-// traversal only follows edges whose provenance matches. The cross-function
-// double-free aggregation uses it with AliasEdgeReturn so a parameter-alias
-// (`foo(p)` + `free(p)` inside foo + `free(p)` in the caller) does NOT
-// collapse the two frees into one defect (the caller's p is a different
-// object on every call).
+// traversal only follows edges whose provenance matches. It is the seam a
+// provenance-aware consumer (e.g. a future cross-function double-free) uses to
+// separate return-alias (one object crossing a call) from parameter-alias
+// (same name, potentially a different object on every call). The graph is
+// flow- and call-site-insensitive, so kind-filtering alone is not sound for
+// that consumer — it also needs one-object-per-call accounting.
 func (g *AliasGraph) AliasesOfKind(k AliasKey, kind AliasEdgeKind) []AliasKey {
 	if g == nil {
 		return []AliasKey{k}
@@ -151,7 +165,7 @@ func (g *AliasGraph) CanonicalKeyOfKind(k AliasKey, kind AliasEdgeKind) AliasKey
 	set := g.AliasesOfKind(k, kind)
 	best := set[0]
 	for _, k2 := range set[1:] {
-		if k2.FunctionID < best.FunctionID || (k2.FunctionID == best.FunctionID && k2.Name < best.Name) {
+		if aliasKeyLess(k2, best) {
 			best = k2
 		}
 	}
@@ -168,19 +182,32 @@ func appendUniqueAlias(xs []AliasKey, k AliasKey) []AliasKey {
 }
 
 // CanonicalKey returns the canonical representative of k's alias set: the
-// AliasKey with the smallest (FunctionID, Name) in lexicographic order.
-// Consumers that aggregate events across functions use this to key the
+// AliasKey with the smallest (FunctionID, FileID, Name) in lexicographic
+// order. Consumers that aggregate events across functions use this to key the
 // group so `free(p)` in A and `free(q)` in B (q a cross-function alias of p)
 // collapse into one defect.
 func (g *AliasGraph) CanonicalKey(k AliasKey) AliasKey {
 	set := g.AliasesOf(k)
 	best := set[0]
 	for _, k2 := range set[1:] {
-		if k2.FunctionID < best.FunctionID || (k2.FunctionID == best.FunctionID && k2.Name < best.Name) {
+		if aliasKeyLess(k2, best) {
 			best = k2
 		}
 	}
 	return best
+}
+
+// aliasKeyLess orders keys by (FunctionID, FileID, Name) so a static global in
+// file A and one in file B (same FunctionID=0, same Name, different FileID) are
+// distinct representatives.
+func aliasKeyLess(a, b AliasKey) bool {
+	if a.FunctionID != b.FunctionID {
+		return a.FunctionID < b.FunctionID
+	}
+	if a.FileID != b.FileID {
+		return a.FileID < b.FileID
+	}
+	return a.Name < b.Name
 }
 
 // AliasQuerier is the interface the detectors consume. It is separate from

@@ -204,29 +204,26 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 	})
 
 	// Cross-function double-free aggregation: a free in A of a variable that
-	// is a cross-function alias of a free in B is a double-free the
-	// function-local pass cannot see (`q = foo(); free(q)` in the caller
-	// while foo itself freed the object it returned).
-	//
-	// NOT ENABLED: the current AliasGraph does not tag edge provenance
-	// (return-alias vs parameter-alias), so the aggregation cannot tell
-	// "one object, two owners" (return-alias) from "same name, different
-	// object on every call" (parameter-alias). Enabling it without that
-	// distinction produced a confirmed false-positive on allocator.c's
-	// alloc_entry/release_entry pair (the local `entry` in alloc_entry and
-	// the parameter `entry` in release_entry are NOT the same object).
-	// The builder + ctx plumbing stay in place; enabling requires tagging
-	// return-alias edges in AliasGraph.Add and gating on that tag here.
-	_ = allFrees
+	// is a DANGLING-RETURN alias of a free in B is a double-free the
+	// function-local pass cannot see (`q = foo(); free(q)` in the caller while
+	// foo itself unconditionally freed the object it returned). The gate is
+	// AliasEdgeReturnDangling — a return source foo frees on EVERY path — so a
+	// live return (alloc_entry returns a valid entry, its free is on the error
+	// path only) and a parameter alias (same name, different object per call)
+	// never collapse.
+	if created := d.detectCrossFunctionDoubleFree(ctx, allFrees); created > 0 {
+		result.EventsCreated += created
+	}
 	return result, err
 }
 
 // detectCrossFunctionDoubleFree groups every function's free events by the
-// AliasGraph canonical key of their variable and emits a DOUBLE_FREE event
-// when the same canonical object is freed in two distinct functions. The
-// event carries the same category as a function-local double-free plus
-// `cross_function: true` so the planner's filter chain and the AI classifier
-// can tell the two shapes apart.
+// DANGLING-RETURN canonical key of their variable (CanonicalKeyOfKind with
+// AliasEdgeReturnDangling) and emits a DOUBLE_FREE event when the same
+// canonical object is freed in two distinct functions. The event carries the
+// same category as a function-local double-free plus `cross_function: true` so
+// the planner's filter chain and the AI classifier can tell the two shapes
+// apart.
 func (d *DoubleFreeDetector) detectCrossFunctionDoubleFree(ctx context.Context, allFrees []dfFreeWithFn) int {
 	ag := graph.AliasGraphFromCtx(ctx)
 	if ag == nil {
@@ -237,7 +234,7 @@ func (d *DoubleFreeDetector) detectCrossFunctionDoubleFree(ctx context.Context, 
 		if f.fe.varName == "" || f.fe.field != "" {
 			continue // field frees stay function-local (the field is the victim)
 		}
-		ck := ag.CanonicalKey(graph.AliasKey{FunctionID: f.fn.ID, Name: f.fe.varName})
+		ck := ag.CanonicalKeyOfKind(graph.AliasKey{FunctionID: f.fn.ID, Name: f.fe.varName}, graph.AliasEdgeReturnDangling)
 		byCanonical[ck] = append(byCanonical[ck], f)
 	}
 	created := 0
@@ -261,11 +258,10 @@ func (d *DoubleFreeDetector) detectCrossFunctionDoubleFree(ctx context.Context, 
 			}
 			return es[i].fe.line < es[j].fe.line
 		})
-		// The event is attached to the FIRST free's function (the caller that
-		// received the object via `q = foo()` and freed it) — that function is
-		// the one that must be reachable for the candidate to matter; the
-		// second free's function may be a helper that is never called from an
-		// entry point directly.
+		// The event is attached to the SECOND free — the caller's `free(q)` that
+		// re-frees the dangling object the factory returned. This matches the
+		// function-local double-free convention (reported at the second free),
+		// and the caller is the function reachable from an entry point.
 		first := es[0]
 		second := es[1]
 		props := map[string]interface{}{
@@ -283,7 +279,7 @@ func (d *DoubleFreeDetector) detectCrossFunctionDoubleFree(ctx context.Context, 
 		if second.fe.callee != "" {
 			props["second_callee"] = second.fe.callee
 		}
-		if emitEvent(ctx, d.store, d.logger, "DOUBLE_FREE", first.fn.ID, &db.Location{FileID: first.fileID, Line: first.fe.line}, props) {
+		if emitEvent(ctx, d.store, d.logger, "DOUBLE_FREE", second.fn.ID, &db.Location{FileID: second.fileID, Line: second.fe.line}, props) {
 			created++
 		}
 	}
