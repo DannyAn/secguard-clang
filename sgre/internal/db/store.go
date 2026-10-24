@@ -41,6 +41,12 @@ type VariableStore interface {
 	ListPointerVariables(ctx context.Context) ([]*Variable, error)
 }
 
+type FileScopeVariableStore interface {
+	InsertFileScopeVariable(ctx context.Context, v *FileScopeVariable) (int64, error)
+	ListFileScopeVariables(ctx context.Context) ([]*FileScopeVariable, error)
+	DeleteFileScopeVariablesByFile(ctx context.Context, fileID int64) error
+}
+
 type ExpressionStore interface {
 	InsertExpression(ctx context.Context, e *Expression) (int64, error)
 	ListExpressionsByFunction(ctx context.Context, functionID int64) ([]*Expression, error)
@@ -176,6 +182,7 @@ type Store interface {
 	FunctionStore
 	FunctionDeclarationStore
 	VariableStore
+	FileScopeVariableStore
 	ExpressionStore
 	TypeStore
 	LocationStore

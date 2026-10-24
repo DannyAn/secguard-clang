@@ -143,6 +143,24 @@ type Variable struct {
 	SourceKind      string
 }
 
+// FileScopeVariable is a file-scope (global) variable declaration: `static T g`
+// or `T g` / `extern T g` at translation-unit level. It is the symbol table the
+// interprocedural alias graph consumes so `g = p` is recognized as a GLOBAL
+// alias only when g is a real file-scope name, and so a `static` g (internal
+// linkage, one object per file) is never conflated with an `extern` g (external
+// linkage, one object program-wide).
+type FileScopeVariable struct {
+	ID     int64
+	FileID int64
+	Name   string
+	Type   string
+	// StorageClass is "static" (internal linkage) or "extern" (external linkage,
+	// including the default for a non-static file-scope declaration).
+	StorageClass    string
+	DeclarationLine int
+	IsPointer       bool
+}
+
 type Expression struct {
 	ID         int64
 	FunctionID int64

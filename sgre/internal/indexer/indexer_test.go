@@ -339,3 +339,61 @@ func TestIndexer_FilesTablePopulated(t *testing.T) {
 		t.Error("expected positive LOC")
 	}
 }
+
+func TestIndexer_ExtractsFileScopeVariables(t *testing.T) {
+	s := db.NewTestStore(t)
+	idx := NewIndexer(s, testLogger())
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "globals.c")
+	src := `#include <stdlib.h>
+typedef struct { int x; } item_t;
+static char *g_static;
+char *g_extern;
+extern char *g_declared_extern;
+static int g_count = 0;
+int ext_fn(int arg);
+
+int use(int arg) {
+    char *local = g_extern;
+    return (int)local[arg];
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+
+	vars, err := s.ListFileScopeVariables(ctx)
+	if err != nil {
+		t.Fatalf("ListFileScopeVariables: %v", err)
+	}
+	byName := map[string]*db.FileScopeVariable{}
+	for _, v := range vars {
+		byName[v.Name] = v
+	}
+
+	if byName["g_static"] == nil || byName["g_static"].StorageClass != "static" {
+		t.Errorf("g_static = %+v, want storage_class static", byName["g_static"])
+	}
+	if !byName["g_static"].IsPointer {
+		t.Error("g_static must be pointer")
+	}
+	if byName["g_extern"] == nil || byName["g_extern"].StorageClass != "extern" {
+		t.Errorf("g_extern = %+v, want storage_class extern", byName["g_extern"])
+	}
+	if byName["g_declared_extern"] == nil || byName["g_declared_extern"].StorageClass != "extern" {
+		t.Errorf("g_declared_extern = %+v, want storage_class extern", byName["g_declared_extern"])
+	}
+	if byName["g_count"] == nil || byName["g_count"].StorageClass != "static" || byName["g_count"].IsPointer {
+		t.Errorf("g_count = %+v, want static non-pointer", byName["g_count"])
+	}
+	for _, excluded := range []string{"item_t", "ext_fn", "local"} {
+		if byName[excluded] != nil {
+			t.Errorf("%s must NOT be indexed as a file-scope variable, got %+v", excluded, byName[excluded])
+		}
+	}
+}

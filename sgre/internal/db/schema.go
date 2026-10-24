@@ -62,6 +62,18 @@ CREATE TABLE IF NOT EXISTS variables (
     FOREIGN KEY(function_id) REFERENCES functions(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS file_scope_variables (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id          INTEGER NOT NULL,
+    name             TEXT NOT NULL,
+    type             TEXT,
+    storage_class    TEXT NOT NULL DEFAULT 'extern' CHECK (storage_class IN ('static', 'extern')),
+    declaration_line INTEGER,
+    is_pointer       BOOLEAN,
+    UNIQUE(file_id, name),
+    FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS expressions (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     function_id  INTEGER,
@@ -257,6 +269,8 @@ CREATE INDEX IF NOT EXISTS idx_function_declarations_name ON function_declaratio
 CREATE INDEX IF NOT EXISTS idx_variables_function_id ON variables(function_id);
 CREATE INDEX IF NOT EXISTS idx_variables_is_pointer ON variables(is_pointer);
 CREATE INDEX IF NOT EXISTS idx_variables_storage_class ON variables(storage_class);
+
+CREATE INDEX IF NOT EXISTS idx_file_scope_variables_file ON file_scope_variables(file_id);
 
 CREATE INDEX IF NOT EXISTS idx_expressions_function_id ON expressions(function_id);
 

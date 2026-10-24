@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -138,6 +139,7 @@ func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *Inde
 	root := tree.RootNode()
 	funcNodes := root.FindAll("function_definition")
 	declNodes := root.FindAll("declaration")
+	fileScopeVars := extractFileScopeVariables(root)
 
 	// Rebuild the file's rows atomically. The checksum update (or insert) plus
 	// the stale-function delete plus the function inserts must commit together:
@@ -160,6 +162,9 @@ func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *Inde
 			}
 			if err := tx.DeleteFunctionDeclarationsByFile(ctx, existing.ID); err != nil {
 				return fmt.Errorf("delete stale function declarations: %w", err)
+			}
+			if err := tx.DeleteFileScopeVariablesByFile(ctx, existing.ID); err != nil {
+				return fmt.Errorf("delete stale file-scope variables: %w", err)
 			}
 			fileID = existing.ID
 		} else {
@@ -205,6 +210,16 @@ func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *Inde
 				return fmt.Errorf("insert function declaration %s: %w", funcRecord.Name, err)
 			}
 		}
+		// File-scope variables feed the interprocedural alias graph's global
+		// alias resolution: `g = p` is a global alias only when g is a declared
+		// file-scope name, and a `static` g (one object per file) is keyed apart
+		// from an `extern` g (one object program-wide).
+		for _, v := range fileScopeVars {
+			v.FileID = fileID
+			if _, err := tx.InsertFileScopeVariable(ctx, v); err != nil {
+				return fmt.Errorf("insert file-scope variable %s: %w", v.Name, err)
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -214,6 +229,84 @@ func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *Inde
 	result.FilesIndexed++
 	result.FunctionsIndexed += inserted
 	return nil
+}
+
+// extractFileScopeVariables returns the file-scope (translation-unit-level)
+// variable declarations, distinguishing `static` (internal linkage, one object
+// per file) from `extern` (external linkage, one object program-wide — the
+// default for a non-static file-scope declaration). Function prototypes and
+// typedefs are not variables and are skipped. Local declarations (inside a
+// function body) are excluded by the parent-kind filter.
+func extractFileScopeVariables(root parser.Node) []*db.FileScopeVariable {
+	var out []*db.FileScopeVariable
+	for _, decl := range root.FindAll("declaration") {
+		parent := decl.Parent()
+		if parent == nil || parent.Kind() != "translation_unit" {
+			continue
+		}
+		storage := "extern"
+		for _, c := range decl.NamedChildren() {
+			if c.Kind() != "storage_class_specifier" {
+				continue
+			}
+			switch c.Text() {
+			case "static":
+				storage = "static"
+			case "typedef":
+				storage = "typedef"
+			}
+		}
+		if storage == "typedef" {
+			continue
+		}
+		dec := decl.ChildByFieldName("declarator")
+		if dec == nil {
+			continue
+		}
+		name := declaredVarName(*dec)
+		if name == "" {
+			continue // function prototype or unrecognized declarator
+		}
+		typ := ""
+		if t := decl.ChildByFieldName("type"); t != nil {
+			typ = t.Text()
+		}
+		out = append(out, &db.FileScopeVariable{
+			Name: name, Type: typ, StorageClass: storage,
+			DeclarationLine: decl.StartLine(), IsPointer: fileScopeVarIsPointer(dec.Text()),
+		})
+	}
+	return out
+}
+
+// declaredVarName returns the bare identifier declared by a declarator node,
+// or "" when the declarator is a function (a prototype, not a variable). It
+// recurses through pointer/array/parenthesized/init declarators to the
+// innermost identifier.
+func declaredVarName(n parser.Node) string {
+	switch n.Kind() {
+	case "identifier":
+		return n.Text()
+	case "function_declarator":
+		return ""
+	case "init_declarator":
+		if dec := n.ChildByFieldName("declarator"); dec != nil {
+			return declaredVarName(*dec)
+		}
+		return ""
+	case "pointer_declarator", "array_declarator", "parenthesized_declarator":
+		for _, c := range n.NamedChildren() {
+			if name := declaredVarName(c); name != "" {
+				return name
+			}
+		}
+		return ""
+	}
+	return ""
+}
+
+func fileScopeVarIsPointer(s string) bool {
+	return strings.HasPrefix(strings.TrimSpace(s), "*")
 }
 
 func extractFunction(node parser.Node, fileID int64) *db.Function {

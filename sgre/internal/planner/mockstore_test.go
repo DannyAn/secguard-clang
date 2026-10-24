@@ -146,6 +146,16 @@ func (s *mockStore) ListPointerVariables(ctx context.Context) ([]*db.Variable, e
 	return nil, nil
 }
 
+func (s *mockStore) InsertFileScopeVariable(ctx context.Context, v *db.FileScopeVariable) (int64, error) {
+	return s.nextID, nil
+}
+func (s *mockStore) ListFileScopeVariables(ctx context.Context) ([]*db.FileScopeVariable, error) {
+	return nil, nil
+}
+func (s *mockStore) DeleteFileScopeVariablesByFile(ctx context.Context, fileID int64) error {
+	return nil
+}
+
 func (s *mockStore) InsertExpression(ctx context.Context, e *db.Expression) (int64, error) {
 	return s.nextID, nil
 }
