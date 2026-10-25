@@ -205,6 +205,17 @@ type SecurityEvent struct {
 	Properties string
 }
 
+// BatchEvent is one pending security event plus its own location, collected by
+// a detector before a batched flush (see SecurityEventStore.InsertEventBatch).
+type BatchEvent struct {
+	EventType  string
+	EntityID   int64
+	FileID     int64
+	Line       int
+	Column     int
+	Properties string
+}
+
 type Finding struct {
 	ID           int64   `json:"id"`
 	RuleID       string  `json:"rule_id"`

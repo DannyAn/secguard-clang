@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -206,19 +208,12 @@ func stripCastsAndParens(text string) string {
 	}
 }
 
-// emitEvent inserts a location and a security event, logging (and returning
-// false) on any failure. This replaces the detectors' previous pattern of
-// swallowing both InsertLocation (whose failure yielded locID=0 and a foreign-key
-// violation that silently dropped the event) and InsertEvent errors, so a DB
-// write failure is surfaced instead of silently losing a finding.
+// emitEvent inserts (or, in batch mode, buffers) a location and a security
+// event, logging (and returning false) on any marshal failure. In batch mode
+// (RunAllDetectors) the event is buffered and flushed in one transaction per
+// phase; in write-through mode (a direct single-detector call, e.g. a test) the
+// event is inserted immediately, preserving the pre-batch contract.
 func emitEvent(ctx context.Context, store db.Store, logger *log.Logger, eventType string, entityID int64, loc *db.Location, props any) bool {
-	locID, err := store.InsertLocation(ctx, loc)
-	if err != nil {
-		if logger != nil {
-			logger.Warn("insert location failed", "event_type", eventType, "error", err)
-		}
-		return false
-	}
 	data, err := json.Marshal(props)
 	if err != nil {
 		if logger != nil {
@@ -226,11 +221,37 @@ func emitEvent(ctx context.Context, store db.Store, logger *log.Logger, eventTyp
 		}
 		return false
 	}
+	if !batchMode.Load() {
+		return insertEventDirect(ctx, store, logger, eventType, entityID, loc, string(data))
+	}
+	eventBatch.mu.Lock()
+	eventBatch.events = append(eventBatch.events, db.BatchEvent{
+		EventType:  eventType,
+		EntityID:   entityID,
+		FileID:     loc.FileID,
+		Line:       loc.Line,
+		Column:     loc.Column,
+		Properties: string(data),
+	})
+	eventBatch.mu.Unlock()
+	return true
+}
+
+// insertEventDirect is the write-through path: one location insert + one event
+// insert, used outside batch mode (tests and single-detector runs).
+func insertEventDirect(ctx context.Context, store db.Store, logger *log.Logger, eventType string, entityID int64, loc *db.Location, data string) bool {
+	locID, err := store.InsertLocation(ctx, loc)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("insert location failed", "event_type", eventType, "error", err)
+		}
+		return false
+	}
 	if _, err := store.InsertEvent(ctx, &db.SecurityEvent{
 		EventType:  eventType,
 		EntityID:   entityID,
 		LocationID: locID,
-		Properties: string(data),
+		Properties: data,
 	}); err != nil {
 		if logger != nil {
 			logger.Warn("insert event failed", "event_type", eventType, "error", err)
@@ -238,6 +259,35 @@ func emitEvent(ctx context.Context, store db.Store, logger *log.Logger, eventTyp
 		return false
 	}
 	return true
+}
+
+// batchMode, when set (RunAllDetectors), routes emitEvent into the shared event
+// batch. A direct detector call (tests) leaves it unset and write-through.
+var batchMode atomic.Bool
+
+// eventBatch collects emitted events across concurrent detectors; flushEventBatch
+// drains it into one BEGIN IMMEDIATE transaction.
+var eventBatch struct {
+	mu     sync.Mutex
+	events []db.BatchEvent
+}
+
+// flushEventBatch drains the shared event batch and inserts it in one
+// transaction, then clears it so a panic mid-detector never leaks events into
+// the next detector phase.
+func flushEventBatch(ctx context.Context, store db.Store, logger *log.Logger) {
+	eventBatch.mu.Lock()
+	events := eventBatch.events
+	eventBatch.events = nil
+	eventBatch.mu.Unlock()
+	if len(events) == 0 {
+		return
+	}
+	if n, err := store.InsertEventBatch(ctx, events); err != nil {
+		if logger != nil {
+			logger.Warn("flush event batch failed", "count", len(events), "inserted", n, "error", err)
+		}
+	}
 }
 
 // scanHasEntryPoint reports whether the scan tree defines a program entry point

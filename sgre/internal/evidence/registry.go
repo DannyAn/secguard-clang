@@ -57,6 +57,12 @@ func RunAllDetectorsWithCache(ctx context.Context, store db.Store, p *parser.Par
 	if cfgCache != nil {
 		ctx = withCFGCache(ctx, cfgCache)
 	}
+	// Batch the detector phase: emitEvent buffers into a shared batch, flushed
+	// once per phase in a single transaction instead of one autocommit write per
+	// event+location. The flag is reset on every exit so a direct detector call
+	// (tests) stays write-through.
+	batchMode.Store(true)
+	defer batchMode.Store(false)
 	all := AllDetectors(store, p, logger)
 
 	var deferred []Detector
@@ -120,6 +126,10 @@ func RunAllDetectorsWithCache(ctx context.Context, store db.Store, p *parser.Par
 	}
 	wg.Wait()
 
+	// Flush the independent detectors' buffered events before the deferred
+	// detector runs: interprocedural reads the events they emitted.
+	flushEventBatch(ctx, store, logger)
+
 	for _, det := range deferred {
 		start := time.Now()
 		run(det)
@@ -127,6 +137,9 @@ func RunAllDetectorsWithCache(ctx context.Context, store db.Store, p *parser.Par
 			logger.Info("detector timing", "detector", det.Name(), "elapsed_ms", time.Since(start).Milliseconds())
 		}
 	}
+
+	// Flush the deferred detector's own buffered events.
+	flushEventBatch(ctx, store, logger)
 
 	return errs
 }

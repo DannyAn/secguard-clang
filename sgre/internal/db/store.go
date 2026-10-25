@@ -100,6 +100,10 @@ type GraphEdgeStore interface {
 
 type SecurityEventStore interface {
 	InsertEvent(ctx context.Context, e *SecurityEvent) (int64, error)
+	// InsertEventBatch inserts the events (each with its own location) in one
+	// BEGIN IMMEDIATE transaction — a single SQLite write-lock acquisition
+	// instead of one autocommit write per event+location.
+	InsertEventBatch(ctx context.Context, events []BatchEvent) (int, error)
 	GetEventByID(ctx context.Context, id int64) (*SecurityEvent, error)
 	ListEventsByType(ctx context.Context, eventType string) ([]*SecurityEvent, error)
 	// CountEventsByType returns the number of events of eventType without

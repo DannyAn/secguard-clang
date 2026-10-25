@@ -294,6 +294,18 @@ func (s *mockStore) InsertEvent(ctx context.Context, e *db.SecurityEvent) (int64
 	s.events = append(s.events, e)
 	return e.ID, nil
 }
+func (s *mockStore) InsertEventBatch(ctx context.Context, events []db.BatchEvent) (int, error) {
+	for _, be := range events {
+		locID, err := s.InsertLocation(ctx, &db.Location{FileID: be.FileID, Line: be.Line, Column: be.Column})
+		if err != nil {
+			return 0, err
+		}
+		if _, err := s.InsertEvent(ctx, &db.SecurityEvent{EventType: be.EventType, EntityID: be.EntityID, LocationID: locID, Properties: be.Properties}); err != nil {
+			return 0, err
+		}
+	}
+	return len(events), nil
+}
 func (s *mockStore) GetEventByID(ctx context.Context, id int64) (*db.SecurityEvent, error) {
 	for _, e := range s.events {
 		if e.ID == id {

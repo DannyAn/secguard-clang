@@ -27,6 +27,31 @@ func (s *store) InsertEvent(ctx context.Context, e *SecurityEvent) (int64, error
 	})
 }
 
+// InsertEventBatch inserts the events (each with its own location) in one
+// BEGIN IMMEDIATE transaction: a single write-lock acquisition and fsync instead
+// of one autocommit write per event+location — the dominant detector-phase cost
+// on a large tree. A mid-batch error rolls the whole batch back.
+func (s *store) InsertEventBatch(ctx context.Context, events []BatchEvent) (int, error) {
+	if len(events) == 0 {
+		return 0, nil
+	}
+	inserted := 0
+	err := s.WithImmediateTx(ctx, func(tx Store) error {
+		for _, e := range events {
+			locID, err := tx.InsertLocation(ctx, &Location{FileID: e.FileID, Line: e.Line, Column: e.Column})
+			if err != nil {
+				return err
+			}
+			if _, err := tx.InsertEvent(ctx, &SecurityEvent{EventType: e.EventType, EntityID: e.EntityID, LocationID: locID, Properties: e.Properties}); err != nil {
+				return err
+			}
+			inserted++
+		}
+		return nil
+	})
+	return inserted, err
+}
+
 func (s *store) GetEventByID(ctx context.Context, id int64) (*SecurityEvent, error) {
 	row := s.exec.QueryRowContext(ctx,
 		`SELECT id, event_type, entity_id, location_id, properties FROM security_events WHERE id = ?`, id)

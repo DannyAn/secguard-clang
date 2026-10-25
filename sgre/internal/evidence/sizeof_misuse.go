@@ -52,6 +52,8 @@ func (d *SizeofMisuseDetector) Detect(ctx context.Context) (DetectResult, error)
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		sizeExprs := root.FindAll("sizeof_expression")
 		ptrDecls := root.FindAll("pointer_declarator")
+		paramDecls := root.FindAll("parameter_declaration")
+		declNodes := root.FindAll("declaration")
 		typedefs := global.clone()
 		typedefs.addRoot(root)
 
@@ -60,7 +62,7 @@ func (d *SizeofMisuseDetector) Detect(ctx context.Context) (DetectResult, error)
 			// Parameters/locals declared via a pointer typedef (`cstr_t s`)
 			// carry no `*` and therefore no pointer_declarator node, so merge
 			// them in — otherwise `sizeof(s)` on such a pointer is missed.
-			for name, pd := range d.typedefPointerDecls(root, f, typedefs) {
+			for name, pd := range d.typedefPointerDecls(paramDecls, declNodes, f, typedefs) {
 				if _, exists := decls[name]; !exists {
 					decls[name] = pd
 				}
@@ -178,15 +180,19 @@ func (d *SizeofMisuseDetector) pointerDecls(ptrDecls []parser.Node, f *db.Functi
 // see it; here its type spelling is resolved against the typedef table and, when
 // it is (transitively) a pointer, recorded at level 1 with the typedef name as
 // the base — resolvesToPointer(base) then tiers it "sizeof_pointer_ambig".
-func (d *SizeofMisuseDetector) typedefPointerDecls(root parser.Node, f *db.Function, typedefs *typedefs) map[string]pointerDecl {
+func (d *SizeofMisuseDetector) typedefPointerDecls(paramDecls, declNodes []parser.Node, f *db.Function, typedefs *typedefs) map[string]pointerDecl {
 	decls := make(map[string]pointerDecl)
-	for _, kind := range []string{"parameter_declaration", "declaration"} {
-		for _, decl := range root.FindAll(kind) {
-			if !funcLineRange(f, decl.StartLine()) {
-				continue
-			}
-			d.addTypedefPointer(decl, decls, typedefs)
+	for _, decl := range paramDecls {
+		if !funcLineRange(f, decl.StartLine()) {
+			continue
 		}
+		d.addTypedefPointer(decl, decls, typedefs)
+	}
+	for _, decl := range declNodes {
+		if !funcLineRange(f, decl.StartLine()) {
+			continue
+		}
+		d.addTypedefPointer(decl, decls, typedefs)
 	}
 	return decls
 }

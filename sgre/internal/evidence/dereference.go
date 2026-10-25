@@ -39,11 +39,16 @@ func (d *DereferenceDetector) Detect(ctx context.Context) (DetectResult, error) 
 		// `*q = v` at a macro call site mangles into a binary_expression whose
 		// `*` is misread as multiplication (see detectExplicitDerefInBinary).
 		binaryNodes := root.FindAll("binary_expression")
+		// Hoisted once per file: collectNonNullableArrays previously re-walked the
+		// whole AST per function (FindAll over the root in a per-function loop),
+		// an O(functions × AST) cost that dominated this detector on large trees.
+		paramDecls := root.FindAll("parameter_declaration")
+		decls := root.FindAll("declaration")
 
 		for _, f := range funcs {
 			// Non-nullable arrays are scoped to f so a same-named pointer in a
 			// sibling function is not wrongly suppressed (P5).
-			nonNullable := collectNonNullableArrays(root, f)
+			nonNullable := collectNonNullableArraysFast(f, paramDecls, decls)
 			// Null-guard suppression is NOT done here: a dereference is always
 			// emitted as a sink, and the planner's flow analysis decides whether a
 			// null source reaches it through the CFG guards. Suppressing at the
@@ -256,8 +261,15 @@ func (d *DereferenceDetector) insertDerefEvent(ctx context.Context, f *db.Functi
 // negative), and a same-named array parameter wrongly cleared another function's
 // real array (a false positive). Scoping to f fixes both directions.
 func collectNonNullableArrays(root parser.Node, f *db.Function) map[string]bool {
+	return collectNonNullableArraysFast(f, root.FindAll("parameter_declaration"), root.FindAll("declaration"))
+}
+
+// collectNonNullableArraysFast is the pre-collected-node form of
+// collectNonNullableArrays: the FindAll walks are hoisted to the per-file loop
+// so this is O(f's relevant nodes) rather than O(AST) per function.
+func collectNonNullableArraysFast(f *db.Function, paramDecls, decls []parser.Node) map[string]bool {
 	params := make(map[string]bool)
-	for _, param := range root.FindAll("parameter_declaration") {
+	for _, param := range paramDecls {
 		if !funcLineRange(f, param.StartLine()) {
 			continue // only f's own parameters can be nullable here
 		}
@@ -271,7 +283,7 @@ func collectNonNullableArrays(root parser.Node, f *db.Function) map[string]bool 
 		}
 	}
 	arrays := make(map[string]bool)
-	for _, decl := range root.FindAll("declaration") {
+	for _, decl := range decls {
 		// Keep f's locals and file-scope globals; skip a declaration that is
 		// local to some OTHER function (its name must not leak into f).
 		if !funcLineRange(f, decl.StartLine()) && insideFunctionBody(decl) {
