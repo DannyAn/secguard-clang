@@ -48,6 +48,18 @@ func TestAllocatorAndDeallocatorNamePatterns(t *testing.T) {
 			t.Errorf("IsEscapeFunction(%q) = false, want true", name)
 		}
 	}
+	// CamelCase ownership-transfer verbs (listAddNodeHead, raxInsert, dictAdd)
+	// transfer ownership; "Add" inside "Additional"/"address" must NOT.
+	for _, name := range []string{"listAddNodeHead", "raxInsert", "dictAdd", "listAddNodeTail", "AddReply"} {
+		if !IsEscapeFunction(name) {
+			t.Errorf("IsEscapeFunction(%q) = false, want true (CamelCase transfer verb)", name)
+		}
+	}
+	for _, name := range []string{"Additional", "address", "adder"} {
+		if IsEscapeFunction(name) {
+			t.Errorf("IsEscapeFunction(%q) = true, want false (no whole-word transfer verb)", name)
+		}
+	}
 }
 
 func TestIsAllocator_CreateNotMalloc(t *testing.T) {

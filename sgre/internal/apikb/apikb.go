@@ -893,7 +893,39 @@ func IsEscapeFunction(name string) bool {
 			return true
 		}
 	}
+	// CamelCase ownership-transfer verbs (`listAddNodeHead`, `raxInsert`,
+	// `dictAdd`): the capitalized verb is a whole CamelCase word, matched at a
+	// boundary (followed by an uppercase letter or end), so "Add" in
+	// "listAddNodeHead" transfers but "Add" inside "Additional" does not.
+	for _, word := range []string{"Add", "Insert", "Push", "Put", "Append", "Store", "Enqueue", "Register", "Send", "Queue"} {
+		if containsCamelWord(name, word) {
+			return true
+		}
+	}
 	return false
+}
+
+// containsCamelWord reports whether word (a capitalized CamelCase token, e.g.
+// "Add") appears in name as a whole word: followed by an uppercase letter or the
+// end of the string. This keeps "Add" in "listAddNodeHead" as a match while
+// "Add" inside "Additional" (followed by lowercase) is not.
+func containsCamelWord(name, word string) bool {
+	idx := 0
+	for {
+		i := strings.Index(name[idx:], word)
+		if i < 0 {
+			return false
+		}
+		i += idx
+		after := i + len(word)
+		if after >= len(name) {
+			return true
+		}
+		if c := name[after]; c >= 'A' && c <= 'Z' {
+			return true
+		}
+		idx = after
+	}
 }
 
 // extraOwnershipTransfer holds project-declared ownership-transfer function

@@ -1525,53 +1525,83 @@ func (d *UncheckedReturnDetector) funcSummaries(ctx context.Context) (*funcSumma
 // oom_default;`). This is the evidence layer's twin of the planner's
 // collectNoreturnCalls — the abort-on-OOM contract is resolved from the scan tree
 // itself, not from a config list.
+//
+// The facts are collected in ONE tree pass and the fixpoint then runs in memory:
+// the previous per-iteration re-scan re-read and re-walked every file once per
+// fixpoint step, which on a large tree (redis: 216 files) added tens of seconds.
 func collectNoreturnFuncs(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) map[string]bool {
 	noreturn := make(map[string]bool, len(apikb.NoReturnCalls))
 	for name := range apikb.NoReturnCalls {
 		noreturn[name] = true
 	}
+
+	// noReturnFuncs: function name -> true when NONE of its definitions has a
+	// return statement. callsOf: function name -> the callees it calls (merged
+	// across same-name overloads). fpGlobals: function-pointer var -> init target.
+	noReturnFuncs := make(map[string]bool)
+	callsOf := make(map[string]map[string]bool)
+	var fpGlobals []struct{ name, init string }
+
+	_ = forEachFileIncludingEmpty(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		returns := root.FindAll("return_statement")
+		calls := root.FindAll("call_expression")
+		for _, fn := range funcs {
+			if callsOf[fn.Name] == nil {
+				callsOf[fn.Name] = make(map[string]bool)
+			}
+			hasReturn := false
+			for _, ret := range returns {
+				if funcLineRange(fn, ret.StartLine()) {
+					hasReturn = true
+					break
+				}
+			}
+			if !hasReturn {
+				noReturnFuncs[fn.Name] = true
+			}
+			for _, call := range calls {
+				if funcLineRange(fn, call.StartLine()) {
+					callsOf[fn.Name][extractCallName(call)] = true
+				}
+			}
+		}
+		for _, decl := range root.FindAll("declaration") {
+			for _, init := range decl.FindAll("init_declarator") {
+				lhs, rhs, ok := init.AssignParts()
+				if !ok {
+					continue
+				}
+				name := functionPointerVarName(lhs.Text())
+				if name == "" || rhs.Kind() != "identifier" {
+					continue
+				}
+				fpGlobals = append(fpGlobals, struct{ name, init string }{name, rhs.Text()})
+			}
+		}
+	})
+
+	// In-memory monotone fixpoint: no-return functions whose callees are all
+	// noreturn, and function-pointer globals pointing at a noreturn target.
 	for changed := true; changed; {
 		changed = false
-		_ = forEachFileIncludingEmpty(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
-			for _, fn := range funcs {
-				if noreturn[fn.Name] {
-					continue
-				}
-				hasReturn := false
-				for _, ret := range root.FindAll("return_statement") {
-					if funcLineRange(fn, ret.StartLine()) {
-						hasReturn = true
-						break
-					}
-				}
-				if hasReturn {
-					continue
-				}
-				for _, call := range root.FindAll("call_expression") {
-					if funcLineRange(fn, call.StartLine()) && noreturn[extractCallName(call)] {
-						noreturn[fn.Name] = true
-						changed = true
-						break
-					}
+		for name := range noReturnFuncs {
+			if noreturn[name] {
+				continue
+			}
+			for callee := range callsOf[name] {
+				if noreturn[callee] {
+					noreturn[name] = true
+					changed = true
+					break
 				}
 			}
-			for _, decl := range root.FindAll("declaration") {
-				for _, init := range decl.FindAll("init_declarator") {
-					lhs, rhs, ok := init.AssignParts()
-					if !ok {
-						continue
-					}
-					name := functionPointerVarName(lhs.Text())
-					if name == "" || noreturn[name] {
-						continue
-					}
-					if rhs.Kind() == "identifier" && noreturn[rhs.Text()] {
-						noreturn[name] = true
-						changed = true
-					}
-				}
+		}
+		for _, g := range fpGlobals {
+			if !noreturn[g.name] && noreturn[g.init] {
+				noreturn[g.name] = true
+				changed = true
 			}
-		})
+		}
 	}
 	return noreturn
 }
