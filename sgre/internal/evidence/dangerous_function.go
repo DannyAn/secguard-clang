@@ -181,6 +181,15 @@ func (d *DangerousFunctionDetector) Detect(ctx context.Context) (DetectResult, e
 		for _, f := range funcs {
 			byID[f.ID] = f
 		}
+		// param names per function-definition start line, so an assert on a
+		// caller parameter can be told apart from an internal-invariant assert.
+		paramsByLine := make(map[int]map[string]bool)
+		for _, fnNode := range root.FindAll("function_definition") {
+			paramsByLine[fnNode.StartLine()] = make(map[string]bool)
+			for _, p := range findParamsInDefinition(fnNode) {
+				paramsByLine[fnNode.StartLine()][p] = true
+			}
+		}
 		for _, call := range root.FindAll("call_expression") {
 			name := extractCallName(call)
 			rule, ok := d.rules[name]
@@ -200,6 +209,16 @@ func (d *DangerousFunctionDetector) Detect(ctx context.Context) (DetectResult, e
 			if rule.constExempt && hasConstantArg(call, globalConsts, stringMacros) {
 				continue
 			}
+			// assert_usage is the caller-input-validation defect only when the
+			// assert directly null-checks a caller PARAMETER (assert(p != NULL)).
+			// An assert on a local, a test value, or an internal consistency
+			// computation is an internal invariant, not a caller-input defect —
+			// flagging it floods the AI with ~100% false positives.
+			if rule.category == "assert_usage" {
+				if fn := byID[enclosingFuncID(call, funcs)]; fn == nil || !assertChecksParam(call, paramsByLine[fn.StartLine]) {
+					continue
+				}
+			}
 			fnID := enclosingFuncID(call, funcs)
 			props := map[string]string{
 				"variable":   name,
@@ -215,6 +234,63 @@ func (d *DangerousFunctionDetector) Detect(ctx context.Context) (DetectResult, e
 		}
 	})
 	return result, err
+}
+
+// assertChecksParam reports whether an assert(...) call directly checks a caller
+// parameter's value — `assert(p != NULL)`, `assert(p)`, `assert(flags > 0)`, or a
+// conjunction of those. Only that shape is the caller-input-validation defect;
+// an assert on a local, a computed value (`assert(dictSize(d) == 16)`), or a
+// function result is an internal invariant and is not flagged.
+func assertChecksParam(call parser.Node, params map[string]bool) bool {
+	if len(params) == 0 {
+		return false
+	}
+	args := getCallArgs(call)
+	if len(args) == 0 {
+		return false
+	}
+	return assertExprChecksParam(args[0], params)
+}
+
+func assertExprChecksParam(expr parser.Node, params map[string]bool) bool {
+	switch expr.Kind() {
+	case "identifier":
+		return params[expr.Text()]
+	case "parenthesized_expression":
+		for _, c := range expr.NamedChildren() {
+			if assertExprChecksParam(c, params) {
+				return true
+			}
+		}
+	case "unary_expression":
+		for _, c := range expr.NamedChildren() {
+			if c.Kind() == "identifier" && params[c.Text()] {
+				return true
+			}
+			if assertExprChecksParam(c, params) {
+				return true
+			}
+		}
+	case "binary_expression":
+		op := parser.BinaryOperator(expr)
+		if op == "&&" || op == "||" {
+			for _, c := range expr.NamedChildren() {
+				if assertExprChecksParam(c, params) {
+					return true
+				}
+			}
+			return false
+		}
+		// A comparison whose operand is a DIRECT parameter identifier
+		// (`flags > 0`, `p != NULL`) is a caller-input check; a call result
+		// (`dictSize(d) == 16`) or a field (`d->x == 0`) is not.
+		for _, c := range expr.NamedChildren() {
+			if c.Kind() == "identifier" && params[c.Text()] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isEntryPoint reports whether a function name is a program entry point, where

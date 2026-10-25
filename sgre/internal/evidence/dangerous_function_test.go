@@ -68,12 +68,15 @@ static void helper(void) { exit(1); }
 
 int helper2(const char *s) { return atoi(s); }
 
+// assert on a caller PARAMETER is the caller-input-validation defect.
+void assert_param(const char *s) { assert(s != NULL); }
+
 int main(void) {
     char b[8];
     void *p;
     memcpy(b, b, 8);
     p = alloca(8);
-    assert(p != 0);
+    assert(p != 0); /* local sanity check — NOT a caller-input defect */
     abort();
     pthread_exit(0);
     exit(0);
