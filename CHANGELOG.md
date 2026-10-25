@@ -2,6 +2,32 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.11.0] - 2026-10-25
+
+### 判定可信度重构：auto-confirm 只认"每条路径成立"的真证明
+
+- **null-deref auto-confirm 收紧**：`malloc-fail`（分配器 / 已知 maybe-null libc / 带 `return NULL` 的 callee）从 auto-confirmed 降级为 `suspected`——这是 may 事实（"可能返回 NULL"），不是 must 事实。`null@cfg-proof`（简单局部变量 `p = NULL` 后全路径 deref）成为唯一证明类；caller-null 的"某调用方传 NULL"不再种入 must-null；字段/下标 NULL 赋值不种 must-null（可被跨函数调用改写）。redis 实测 null-deref 自动确认 **205 → 0**。
+- **abort-on-OOM 传播**：识别 `zmalloc`/`zcalloc` 系（OOM 即 abort、永不返回 NULL），并沿 `if ((l = zmalloc()) == NULL) return NULL` 包装链传播（`listCreate` 的该分支是死代码）。redis null-deref malloc-fail 205 → 175。
+- **dangerous-function `assert_usage` 精确化**：只标"直接校验调用方参数"的 `assert(p != NULL)` / `assert(flags > 0)`，跳过内部不变量与测试断言。redis dangerous-function 候选 1195 → 134。
+
+### AI 研判自由化
+
+- 移除 auto-confirm re-review loop：机器判定与 AI 自由研判彻底分离，最终判定自由形式（skill 规则为"下限而非上限"），dismiss 必须引用 `file:line + why-safe`；全程运行在宿主 AI Agent 内，无第三方 LLM / API-key 配置。
+
+### 性能
+
+- 检测器事件批量写库（单事务，BEGIN IMMEDIATE）；修复多处 `O(functions × AST)` 的 FindAll 重复遍历（dereference / sizeof_misuse / caller_null / collectNonNullReturns）；noreturn fixpoint 单趟化 + 内存单调收敛。redis 端到端扫描 **500s → 265s（-47%）**。
+
+### 准确率
+
+- unchecked-return 识别 abort-on-OOM 分配器为永不返回 NULL（redis 候选 465 → 97）。
+- `IsEscapeFunction` 增加驼峰整词所有权转移动词（Add/Insert/Push/Put/Append/Store/Enqueue/Register/Send/Queue），memory-leak 979 → 774。
+- asprintf 框架所有权转移（`fail`/`fail_nc_err`/`transapi_comm_with_vrp` 内部 free msg/path）在 memory-leak 与 unchecked-return 两端确定性消伪，并在两个 SKILL.md 增加防御纵深例外。
+
+### benchmark 防护网
+
+- benchmark FP=0、recall 114/114 全程保持。
+
 ## [0.10.0] - 2026-10-24
 
 ### 跨函数 double-free 补全（dangling-return 门控）
