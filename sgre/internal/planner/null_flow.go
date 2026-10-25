@@ -1897,6 +1897,84 @@ func collectNoreturnCalls(cache *fileParseCache, funcs []*db.Function, fileByID 
 	return noreturn
 }
 
+// collectAbortOnOOM finds functions that never return NULL because their null
+// path dies in a never-returning call (`p = alloc(); if (!p) oom(); return p;`).
+// This is the LOCAL seed (no inter-procedural dependency) of the abort-on-OOM
+// closure; the propagation — a wrapper `if (alloc() == NULL) return NULL` whose
+// alloc is never-null — runs as a monotone fixpoint in the caller.
+func collectAbortOnOOM(cache *fileParseCache, funcs []*db.Function, fileByID map[int64]*db.File, noreturnCalls map[string]bool) map[string]bool {
+	out := make(map[string]bool)
+	for _, fn := range funcs {
+		file := fileByID[fn.FileID]
+		if file == nil {
+			continue
+		}
+		body, _ := cache.get(file, fn)
+		if body.Kind() != "compound_statement" {
+			continue
+		}
+		abortGuarded := map[string]bool{}
+		for _, ifStmt := range body.FindAll("if_statement") {
+			if v := abortGuardVar(ifStmt, noreturnCalls); v != "" {
+				abortGuarded[v] = true
+			}
+		}
+		hasGuardedReturn := false
+		hasNullReturn := false
+		for _, ret := range body.FindAll("return_statement") {
+			children := ret.NamedChildren()
+			if len(children) == 0 {
+				continue
+			}
+			if isAbortGuardedReturn(children[0], abortGuarded) {
+				hasGuardedReturn = true
+				continue
+			}
+			if isNullLiteralNode(children[0]) {
+				hasNullReturn = true
+			}
+		}
+		if hasGuardedReturn && !hasNullReturn {
+			out[fn.Name] = true
+		}
+	}
+	return out
+}
+
+// fnReturnsNullOnlyUnderNeverNull reports whether every `return NULL` in body is
+// guarded by `if (neverNullCallee() == NULL)` — i.e. the wrapper's null path is
+// dead because the allocator never returns NULL (listCreate wrapping zmalloc).
+func fnReturnsNullOnlyUnderNeverNull(body parser.Node, neverNull map[string]bool) bool {
+	hasNull := false
+	for _, ret := range body.FindAll("return_statement") {
+		children := ret.NamedChildren()
+		if len(children) == 0 || !isNullLiteralNode(children[0]) {
+			continue
+		}
+		hasNull = true
+		if !returnGuardedByNeverNull(ret, neverNull) {
+			return false
+		}
+	}
+	return hasNull
+}
+
+// returnGuardedByNeverNull reports whether ret sits directly inside an
+// `if (neverNullCallee() == NULL)` guard.
+func returnGuardedByNeverNull(ret parser.Node, neverNull map[string]bool) bool {
+	for p := ret.Parent(); p != nil; p = p.Parent() {
+		switch p.Kind() {
+		case "if_statement":
+			return nullGuardedNeverNullCall(*p, neverNull) != ""
+		case "compound_statement":
+			continue
+		case "function_definition":
+			return false
+		}
+	}
+	return false
+}
+
 // functionPointerVarName pulls the variable name out of a function-pointer
 // declarator text `(*zmalloc_oom_handler)(size_t)` → "zmalloc_oom_handler".
 // A non-function-pointer declarator returns "".
@@ -1966,7 +2044,7 @@ func isAbortGuardedReturn(expr parser.Node, abortGuarded map[string]bool) bool {
 	return inner.Kind() == "identifier" && abortGuarded[inner.Text()]
 }
 
-func returnsNullability(body parser.Node, flow *flowResult, params map[string]int, retNullable map[string]retNullability, analyzed map[string]bool, arrs *arrayBaseInfo, srcs []nullSource, fnRetType string, noreturnCalls map[string]bool) retNullability {
+func returnsNullability(body parser.Node, flow *flowResult, params map[string]int, retNullable map[string]retNullability, analyzed map[string]bool, arrs *arrayBaseInfo, srcs []nullSource, fnRetType string, noreturnCalls map[string]bool, neverNull map[string]bool) retNullability {
 	// abort-on-OOM contract: a returned variable guarded by `if (!v) <noreturn>`
 	// is non-null at the return — the null path dies in the never-returning
 	// call. This is the scan-tree resolution of the same contract
@@ -1979,13 +2057,32 @@ func returnsNullability(body parser.Node, flow *flowResult, params map[string]in
 			abortGuarded[v] = true
 		}
 	}
+	// abort-on-OOM propagation (inter-procedural): `if (alloc() == NULL) return
+	// NULL` is dead when alloc never returns NULL — the return-NULL branch is
+	// unreachable (listCreate wrapping zmalloc is the canonical case).
+	deadReturns := map[int]bool{}
+	if neverNull != nil {
+		for _, ifStmt := range body.FindAll("if_statement") {
+			if nullGuardedNeverNullCall(ifStmt, neverNull) == "" {
+				continue
+			}
+			if cons := ifStmt.ChildByFieldName("consequence"); cons != nil {
+				for _, ret := range cons.FindAll("return_statement") {
+					children := ret.NamedChildren()
+					if len(children) > 0 && isNullLiteralNode(children[0]) {
+						deadReturns[ret.StartLine()] = true
+					}
+				}
+			}
+		}
+	}
 	grade := retNotNull
 	for _, ret := range body.FindAll("return_statement") {
 		children := ret.NamedChildren()
 		if len(children) == 0 {
 			continue
 		}
-		if isAbortGuardedReturn(children[0], abortGuarded) {
+		if deadReturns[ret.StartLine()] || isAbortGuardedReturn(children[0], abortGuarded) {
 			continue
 		}
 		switch exprRetNullability(children[0], flow, params, retNullable, analyzed, arrs, ret.StartLine(), srcs, fnRetType) {
@@ -1996,6 +2093,32 @@ func returnsNullability(body parser.Node, flow *flowResult, params map[string]in
 		}
 	}
 	return grade
+}
+
+// nullGuardedNeverNullCall returns the callee name when ifStmt's condition is a
+// null comparison (`X == NULL` / `X != NULL`) whose operand X is a call (or
+// `v = call()`) to a never-null function — i.e. `if (alloc() == NULL) return
+// NULL` where alloc never returns NULL, so the return-NULL branch is dead.
+func nullGuardedNeverNullCall(ifStmt parser.Node, neverNull map[string]bool) string {
+	cond := ifStmt.ChildByFieldName("condition")
+	if cond == nil {
+		return ""
+	}
+	return neverNullCallFromOperand(*cond, neverNull)
+}
+
+func neverNullCallFromOperand(expr parser.Node, neverNull map[string]bool) string {
+	if name := rhsCallName(expr); name != "" && neverNull[name] {
+		return name
+	}
+	// Recurse into compound expressions: `(v = f())`, `((v = f()) == NULL)`,
+	// an assignment whose RHS is a call, etc.
+	for _, c := range expr.NamedChildren() {
+		if name := neverNullCallFromOperand(c, neverNull); name != "" {
+			return name
+		}
+	}
+	return ""
 }
 
 func exprRetNullability(expr parser.Node, flow *flowResult, params map[string]int, retNullable map[string]retNullability, analyzed map[string]bool, arrs *arrayBaseInfo, line int, srcs []nullSource, fnRetType string) retNullability {

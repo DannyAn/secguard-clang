@@ -475,6 +475,14 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 		var entrySeeds map[string]bool
 		var lineSources []nullSource
 		for _, s := range sources {
+			// An external_call source for an IN-SCAN function is redundant: the
+			// retNullable fixpoint grades the callee and callResultNullSources
+			// seeds the precise tier. Without this, an abort-on-OOM wrapper
+			// (listCreate) — graded never-null by the fixpoint — still leaks a
+			// fail-open external_call source and re-flags its callers.
+			if s.origin == "external_call" && definedNames[s.caller] {
+				continue
+			}
 			birthField := s.origin == "opaque_field_read" && s.line <= fn.StartLine
 			if s.origin == "caller_null" || s.origin == "opaque_param" || birthField {
 				if entrySeeds == nil {
@@ -1058,7 +1066,31 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 
 	cache := newFileParseCache(f.parser)
 	noreturnCalls := collectNoreturnCalls(cache, funcs, fileByID)
-
+	// Abort-on-OOM closure: functions that never return NULL, from the LOCAL
+	// abort-guard seed (zmalloc) through wrappers whose `return NULL` is guarded
+	// by a never-null callee (`listCreate` wrapping zmalloc). A monotone fixpoint
+	// (facts only grow), computed once before the nullability fixpoint.
+	neverNull := collectAbortOnOOM(cache, funcs, fileByID, noreturnCalls)
+	for changed := true; changed; {
+		changed = false
+		for _, fn := range funcs {
+			if neverNull[fn.Name] {
+				continue
+			}
+			file := fileByID[fn.FileID]
+			if file == nil {
+				continue
+			}
+			body, _ := cache.get(file, fn)
+			if body.Kind() != "compound_statement" {
+				continue
+			}
+			if fnReturnsNullOnlyUnderNeverNull(body, neverNull) {
+				neverNull[fn.Name] = true
+				changed = true
+			}
+		}
+	}
 	// Transitive closure: from seedNames, follow `p = f()` assignments to find
 	// every function the return-nullability query can reach.
 	needNames := make(map[string]bool, len(seedNames))
@@ -1151,9 +1183,13 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 			// Seed from the detector's function_summary (literal `return NULL`/`0`).
 			// Return-type gate: on a never-null scalar return type the literal
 			// is the integer zero, not a null pointer (a legacy summary row).
-			// A gated seed falls through to the ordinary body analysis.
+			// A gated seed falls through to the ordinary body analysis. An
+			// abort-on-OOM never-null function (zmalloc, or a wrapper whose only
+			// `return NULL` is guarded by a never-null callee) also falls through
+			// — its literal `return NULL` is dead code, not a nullable witness.
 			if sum := summariesByID[fn.ID]; sum != nil && sum.ReturnNullable &&
-				!apikb.IsNeverNullScalarType(strings.TrimSpace(fn.ReturnType)) {
+				!apikb.IsNeverNullScalarType(strings.TrimSpace(fn.ReturnType)) &&
+				!neverNull[fn.Name] {
 				// A literal NULL return in a pointer-returning function is a
 				// concrete witness: the seed grade is proven. The body still
 				// carries the facts the conditional-nonnull-getter contract
@@ -1236,7 +1272,7 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 			}
 			analyzer.entrySeeds = entrySeeds
 			flow := analyzer.analyzeFlow(ctx, info.fn, info.body, info.root, nullGenByLine(lineSources), nil, true, false)
-			if ns := returnsNullability(info.body, flow, info.params, retNullable, analyzed, info.arrs, srcs, strings.TrimSpace(info.fn.ReturnType), noreturnCalls); ns != retNotNull {
+			if ns := returnsNullability(info.body, flow, info.params, retNullable, analyzed, info.arrs, srcs, strings.TrimSpace(info.fn.ReturnType), noreturnCalls, neverNull); ns != retNotNull {
 				retNullable[info.fn.Name] = ns
 				defAssumed[info.fn.ID] = ns == retNullAssumed
 				changed = true
