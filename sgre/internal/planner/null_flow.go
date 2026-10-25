@@ -372,7 +372,15 @@ func (a *flowAnalyzer) analyzeDefiniteNull(cfg *graph.StmtCFG, fileRoot parser.N
 				e.killBase[name] = true
 			}
 			if isNullLiteralNode(p.rhs) {
-				e.gen[name] = true
+				// A definite-null fact is only reliable for a SIMPLE local
+				// (`p = NULL`, `int *p = NULL`): a field access or subscript
+				// (`config.cluster_nodes = NULL`, `arr[i] = NULL`) names a
+				// global/heap location a function call can reassign without the
+				// address being passed, so it must not seed the must-null tier —
+				// the may tier still reports it as suspected.
+				if p.lhs.Kind() != "field_expression" && p.lhs.Kind() != "subscript_expression" {
+					e.gen[name] = true
+				}
 			} else if rv := copySourceKey(p.rhs); rv != "" {
 				e.copy[name] = rv
 			} else {
