@@ -52,6 +52,7 @@ unchecked-return candidate. This is the decisive fact:
 - `read()` used where a short read is acceptable (e.g. `read(fd, &ch, 1)` loops)
 - A pointer whose only consumer is `free()` / `cfree()` / `kfree()`
 - All consumers entry-guard or positively guard the argument and the results are discarded (`(void)filter_add(f, x)`) or void-internal — a NULL result has no observable consequence
+- Out-param allocator (`asprintf`/`vasprintf`/`getline`/`getdelim`) whose target is only handed to a callee, not dereferenced in-function: `asprintf(&err_msg, ...); return fail(error, err_msg, EXIT_FAILURE);`. The return value is a status code, and a failed call leaves the out-param NULL (glibc semantics); the NULL risk belongs to the null-deref chain (the callee's NULL contract, e.g. `fail` handles `msg == NULL` with a default message), never to unchecked-return. The detector already suppresses this shape — it fires only when the out-param is dereferenced in-function without a guard (`asprintf(&p, ...); p[0] = x;`).
 
 ### Severity Matrix
 

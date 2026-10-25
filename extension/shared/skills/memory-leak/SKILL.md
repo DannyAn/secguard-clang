@@ -94,6 +94,7 @@ An **error-path leak is confirmed, not suspected**: if the function demonstrably
 - RAII create/destroy pair — but only the returned/transferred allocation is safe; a temporary the create function never returns or frees still leaks
 - `realloc` into a different target: `int *tmp = realloc(p, n);` consumes p's block, so p is not lost
 - A freed implicit allocator: `p = strdup(s); free(p);`
+- Error-handling ownership transfer (framework `fail` family): `asprintf(&err_msg, ...); return fail(error, err_msg, EXIT_FAILURE);` — the external callee takes ownership of the message/path argument and releases it (`fail` → `free(msg)`, `fail_nc_err` → `free(msg)` + `free(path)`, `*_transapi_comm_with_vrp` → `free(path)`). The shape is "directly returned + the argument is never used afterward", so the caller must NOT free it again — a second `free` would be a double-free. The detector already suppresses this shape; when a case reaches you anyway (a differently-named wrapper, e.g. `report_error`), judge the callee's contract from `## Callee Definition` / API knowledge before confirming a leak.
 
 ### Fix Suggestions
 - Release on every relevant error path, or route every exit through one `goto cleanup`
