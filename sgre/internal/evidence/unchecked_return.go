@@ -1612,12 +1612,16 @@ func collectNoreturnFuncs(ctx context.Context, store db.Store, p *parser.Parser,
 func collectNonNullReturns(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, noreturn map[string]bool) map[string]bool {
 	out := make(map[string]bool)
 	_ = forEachFileIncludingEmpty(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		// Hoisted once per file: the previous form re-walked the whole file AST
+		// (return_statement + if_statement FindAll) per function.
+		returns := root.FindAll("return_statement")
+		ifStmts := root.FindAll("if_statement")
 		for _, fn := range funcs {
 			if out[fn.Name] {
 				continue
 			}
 			returned := make(map[string]bool)
-			for _, ret := range root.FindAll("return_statement") {
+			for _, ret := range returns {
 				if !funcLineRange(fn, ret.StartLine()) {
 					continue
 				}
@@ -1628,7 +1632,7 @@ func collectNonNullReturns(ctx context.Context, store db.Store, p *parser.Parser
 			if len(returned) == 0 {
 				continue
 			}
-			for _, ifStmt := range root.FindAll("if_statement") {
+			for _, ifStmt := range ifStmts {
 				if !funcLineRange(fn, ifStmt.StartLine()) {
 					continue
 				}
