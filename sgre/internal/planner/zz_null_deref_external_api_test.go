@@ -39,8 +39,8 @@ void f(xmlDoc *doc) {
 		t.Fatal("unguarded xmlDocGetRootElement(doc)->name must surface a null-deref candidate")
 	}
 	for _, c := range res.Candidates {
-		if c.Target.Function == "f" && c.SuspicionLevel != "confirmed" {
-			t.Fatalf("documented maybe-NULL borrow deref should be auto-confirmed (strchr tier), got %q", c.SuspicionLevel)
+		if c.Target.Function == "f" && c.SuspicionLevel != "suspected" {
+			t.Fatalf("documented maybe-NULL borrow deref should be suspected (may-null, AI-judged), got %q", c.SuspicionLevel)
 		}
 	}
 }

@@ -59,8 +59,8 @@ int use_pool_sect_near_macro(int id) {
 	if c.NullOriginTier != "malloc-fail" {
 		t.Errorf("proven-nullable POOL_SECT: tier = %q, want malloc-fail", c.NullOriginTier)
 	}
-	if c.SuspicionLevel != "confirmed" {
-		t.Errorf("without the false macro flag the confirmed verdict stands, got %q", c.SuspicionLevel)
+	if c.SuspicionLevel != "suspected" {
+		t.Errorf("a proven-nullable callee is may-null, not must-null: suspected, got %q", c.SuspicionLevel)
 	}
 
 	near, ok := candidateByFunction(result, "use_pool_sect_near_macro")

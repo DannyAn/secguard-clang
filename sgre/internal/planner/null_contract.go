@@ -185,6 +185,11 @@ func (cc *contractCtx) derivedName(name string, line, depth int, models *nullMod
 		return false
 	}
 	if cc.voidParams[name] {
+		// A caller passing literal NULL violates the non-null contract, so the
+		// parameter is NOT contract-derived — the caller-arg tier judges it.
+		if models != nil && models.hasDefiniteCallerNullSource(name) {
+			return false
+		}
 		return true
 	}
 	a := cc.lastAssignBefore(name, line)

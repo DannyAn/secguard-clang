@@ -41,8 +41,8 @@ func TestNullDeref_OriginTiers(t *testing.T) {
 		if !strings.Contains(c.Hint, "null@malloc-fail") {
 			t.Fatalf("hint %q must carry null@malloc-fail", c.Hint)
 		}
-		if c.SuspicionLevel != "confirmed" {
-			t.Fatalf("allocator source keeps the confirmed tier, got %q", c.SuspicionLevel)
+		if c.SuspicionLevel != "suspected" {
+			t.Fatalf("allocator source is may-null, not must-null: suspected, got %q", c.SuspicionLevel)
 		}
 	})
 
@@ -89,9 +89,10 @@ func TestNullDeref_OriginTiers(t *testing.T) {
 	// The Evidence Contract v2 F3 fix, proven half: a variable assigned the
 	// result of an IN-SCAN callee the inter-procedural fixpoint graded
 	// PROVEN (a concrete NULL witness: a literal return NULL path) keeps the
-	// textbook malloc-fail tier and the auto-confirm. The callee body is
-	// embedded via CalleeName → resolveCalleeDefs, so the hint carries
-	// callee@ and the AI never opens the source.
+	// textbook malloc-fail tier, but a literal return NULL is a may-null
+	// witness, not a must-null proof — suspected for the AI. The callee body
+	// is embedded via CalleeName → resolveCalleeDefs, so the hint carries
+	// callee@ and the AI judges the embedded body.
 	t.Run("in-scan proven callee is malloc-fail", func(t *testing.T) {
 		src := `typedef struct { int x; } cfg_t;
 
@@ -113,8 +114,8 @@ void use_opt(void) {
 		if c.NullOriginTier != "malloc-fail" {
 			t.Fatalf("in-scan proven callee: tier = %q, want malloc-fail", c.NullOriginTier)
 		}
-		if c.SuspicionLevel != "confirmed" {
-			t.Fatalf("a proven-nullable callee (literal return NULL) auto-confirms, got %q", c.SuspicionLevel)
+		if c.SuspicionLevel != "suspected" {
+			t.Fatalf("a proven-nullable callee (literal return NULL) is may-null, got %q", c.SuspicionLevel)
 		}
 		if !strings.Contains(c.Hint, "null@malloc-fail") {
 			t.Fatalf("hint %q must carry null@malloc-fail", c.Hint)

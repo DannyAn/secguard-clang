@@ -41,17 +41,20 @@ A null-deref candidate has:
 
 ### Classification Rules
 
-The confirmed/false-positive rows below apply ONLY to the two proven tiers
-(`null@cfg-proof`, `null@malloc-fail`). The four fail-open tiers are never
-settled by this table — the Nullable-Origin Tier table below rules them.
+The confirmed/false-positive rows below apply ONLY to the one proven tier
+(`null@cfg-proof` — a definite NULL assignment reaching the deref on every
+path). Every other tier (`null@malloc-fail`, `null@caller-arg`,
+`null@opaque-origin`, `null@assumed-return`, `null@external-unknown`) is a
+**may-null heuristic**, never auto-confirmed — the Nullable-Origin Tier table
+below rules them.
 
 | Condition | Classification |
 |-----------|---------------|
-| `null@cfg-proof` / `null@malloc-fail` + reachable + NO guard | **confirmed** |
-| `null@cfg-proof` / `null@malloc-fail` + guard BEFORE deref (scope covers) | **false-positive** |
-| `null@cfg-proof` / `null@malloc-fail` + guard AFTER deref (scope misses) | **confirmed** |
+| `null@cfg-proof` + reachable + NO guard | **confirmed** |
+| `null@cfg-proof` + guard BEFORE deref (scope covers) | **false-positive** |
+| `null@cfg-proof` + guard AFTER deref (scope misses) | **confirmed** |
 | Nullable source + NOT reachable | **false-positive** (dead code) |
-| `null@caller-arg` / `null@opaque-origin` / `null@assumed-return` / `null@external-unknown` (any guard state) | **suspected** — a fail-open tier is NEVER confirmed from this table; judge it by the Nullable-Origin Tier table below |
+| `null@malloc-fail` / `null@caller-arg` / `null@opaque-origin` / `null@assumed-return` / `null@external-unknown` (any guard state) | **suspected** — a may-null tier is NEVER confirmed from this table; judge it by the Nullable-Origin Tier table below |
 | External call return + no guard + deref | **dismissed** (external may never return NULL) |
 | `caller_null` (parameter) + no guard + deref | **suspected** — the caller contract is unproven; confirm only if a caller actually passes NULL/unproven value |
 | `caller_null` (parameter) + every caller proves non-null (`if (v == NULL) return;` dominates the call) | **false-positive** — the pipeline filters these before they surface |
@@ -71,6 +74,8 @@ zero-confirmed review looks like when it is done row by row.
 - `if (ptr == NULL) return;` before `ptr->field` → guard eliminates risk
 - `if (!ptr) { ... return; }` early return → guard eliminates risk for rest of function
 - `ptr = malloc(n); if (!ptr) return; ptr->field;` → malloc checked
+- `ptr = zmalloc(n); ptr->field;` → zmalloc aborts on OOM (never returns NULL) → **false-positive**; the same holds for any wrapper whose only `return NULL` is guarded by `zmalloc`/`zcalloc`/`xmalloc`/`oom()` (`listCreate`, `sdsnew`, ...) — the `return NULL` is dead code
+- `while (p) { use(p); p = lpNext(lp, p); }` → `lpNext` returns NULL at end-of-list, but the NULL is consumed by the NEXT `while (p)` check, so `use(p)` is guarded → **false-positive**
 
 ### Short-Circuit & Interprocedural Guard Contracts
 
@@ -105,7 +110,7 @@ your job differs per tier, so read it before anything else:
 | Tier token | Meaning | Your action |
 |------------|---------|-------------|
 | `null@cfg-proof` | CFG proves a NULL assignment reaches the dereference on every path | machine-proved CWE-476 — verify the statement matches, then confirm |
-| `null@malloc-fail` | the null source is a proven-nullable call result (allocator / known maybe-null libc / a callee whose body PROVABLY returns NULL: a literal NULL path or an allocator result) | textbook CWE-476 — confirm unless the `## Code Context` shows a check; when the Hint also carries `callee@file:line`, the callee body is embedded under `## Callee Definition`, judge it there instead of reading source |
+| `null@malloc-fail` | the null source is a **may-null** call result (allocator / known maybe-null libc / a callee whose body has a NULL-return path: a literal NULL or an allocator result) — NOT a must-null proof | judge reachability, not just the shape: (1) does the callee actually return NULL, or does it abort-on-OOM (`zmalloc`/`xmalloc`/`oom()` never returns) making its `return NULL` dead code? (2) is the deref loop-guarded (`while(p)`) or otherwise checked? (3) can the NULL case actually occur for this call's arguments? Confirm only when the callee can really return NULL AND the deref is unguarded; otherwise dismiss. When the Hint carries `callee@file:line`, the callee body is embedded under `## Callee Definition`, judge it there instead of reading source |
 | `null@caller-arg` | an inter-procedural caller passes the parameter unproven non-null | judge the caller contract — confirm only if a caller can actually pass NULL |
 | `null@opaque-origin` | the null source is a contract the scan tree cannot see: a pointer parameter of a function with zero in-tree callers (an exported API / registered callback), or a field value of an externally-defined type (`tree = (T *)(resp->group_data)`, `para->orig->base_dn`) | a fail-open ASSUMPTION, not evidence — confirm when the external contract can plausibly yield NULL (an entry point that parses external input, a lookup that can miss), dismiss when the non-null precondition is an established project convention (an internal API whose other callers all pass non-null) |
 | `null@assumed-return` | an IN-SCAN callee graded maybe-null only by fail-open (it returns a parameter, a struct field, or an unknown call) — its body is embedded under `## Callee Definition` | judge the assumption from the embedded body — confirm only if the returned value can actually be NULL (a zero-initialized field, a nullable forward), otherwise dismiss |

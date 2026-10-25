@@ -50,8 +50,8 @@ void f(void) {
 			t.Fatal("strchr direct dereference must remain a candidate")
 		}
 		for _, c := range res.Candidates {
-			if c.Target.Function == "f" && c.SuspicionLevel != "confirmed" {
-				t.Fatalf("strchr direct dereference should be auto-confirmed, got %q", c.SuspicionLevel)
+			if c.Target.Function == "f" && c.SuspicionLevel != "suspected" {
+				t.Fatalf("strchr direct dereference should be suspected (may-null libc, AI-judged), got %q", c.SuspicionLevel)
 			}
 		}
 	})

@@ -145,19 +145,19 @@ func droppedByFunction(r *PlanResult, fn string) bool {
 func TestRetNullableStrengthTiers(t *testing.T) {
 	result := runRetStrengthPlan(t, map[string]string{"ret_strength.c": retStrengthFixture})
 
-	// A proven-nullable callee (literal NULL return) auto-confirms the
-	// unchecked call-site dereference instead of spending an AI verdict.
+	// A proven-nullable callee (literal NULL return) keeps the malloc-fail tier
+	// but is may-null, not must-null — suspected for the AI, never auto-confirmed.
 	for _, fn := range []string{"use_proven_getter", "use_proven_wrapper"} {
 		c, ok := candidateByFunction(result, fn)
 		if !ok {
 			t.Errorf("%s: expected a kept candidate, got candidates: %v (dropped=%v)", fn, candidateNames(result), droppedByFunction(result, fn))
 			continue
 		}
-		if c.SuspicionLevel != "confirmed" {
-			t.Errorf("%s: expected confirmed (proven-nullable callee), got %q", fn, c.SuspicionLevel)
+		if c.SuspicionLevel != "suspected" {
+			t.Errorf("%s: expected suspected (proven-nullable callee is a may-null), got %q", fn, c.SuspicionLevel)
 		}
 		if c.NullOriginTier != "malloc-fail" {
-			t.Errorf("%s: expected tier malloc-fail (proven), got %q", fn, c.NullOriginTier)
+			t.Errorf("%s: expected tier malloc-fail, got %q", fn, c.NullOriginTier)
 		}
 	}
 

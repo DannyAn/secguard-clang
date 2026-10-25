@@ -97,18 +97,21 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				continue
 			}
 			if apikb.IsKnownNullableReturn(c.CalleeName) {
+				// A known maybe-null libc/POSIX callee (strchr/fopen/getenv/...)
+				// CAN return NULL, but that is a may-fact, not a must-fact — the
+				// specific call site does not provably return NULL on every path.
+				// Handed to the AI as suspected, never auto-confirmed.
 				c.HasNullableSource = true
-				c.SuspicionLevel = "confirmed"
+				c.SuspicionLevel = "suspected"
 				c.NullOriginTier = "malloc-fail"
 				c.NullableOriginName = c.CalleeName
 			} else if retNullable[c.CalleeName] == retNullProven {
-				// A defined callee whose body PROVABLY returns NULL (a literal
-				// NULL path, an allocator result, or a proven callee chain):
-				// the same textbook tier as an allocator — a proven-nullable
-				// origin, auto-confirmed. Its definition is embedded for the
-				// re-review loop.
+				// A defined callee whose body has a NULL-return path (a literal
+				// NULL path or an allocator result) CAN return NULL — a may-fact,
+				// not a proof the dereference is NULL on every path. Its
+				// definition is embedded under ## Callee Definition for the AI.
 				c.HasNullableSource = true
-				c.SuspicionLevel = "confirmed"
+				c.SuspicionLevel = "suspected"
 				c.NullOriginTier = "malloc-fail"
 				c.NullableOriginName = c.CalleeName
 			} else if retNullable[c.CalleeName] == retNullAssumed {
@@ -164,10 +167,11 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				// A value derived (directly, through a cast, or through an unknown
 				// external accessor) from an opaque void* parameter the function
 				// never null-checks is non-null by the caller contract of IPC /
-				// callback handlers. An allocator / known maybe-null source and an
-				// explicit null are excluded, so a genuine possible-null value is
+				// callback handlers. An allocator / known maybe-null source, an
+				// explicit null, and a caller-null witness (a caller actually
+				// passes NULL) are excluded, so a genuine possible-null value is
 				// still reported.
-				if !c.HasDefiniteNull && !models[c.FunctionID].onlyCertainNullableSources(c.VariableName) &&
+				if !c.HasDefiniteNull && c.CallerNullDetail == "" && !models[c.FunctionID].onlyCertainNullableSources(c.VariableName) &&
 					fm.contract.contractDerived(c.VariableName, c.Line, models[c.FunctionID]) {
 					dropped = dismiss(dropped, c, f.Name(),
 						fmt.Sprintf("variable %s derives from a void* parameter dereferenced by non-null contract", c.VariableName))
@@ -225,20 +229,20 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				// Layering: reflect the must/may tier in the suspicion label so
 				// the AI budgets effort by certainty. A DEFINITE null source
 				// (p = NULL) reaching on every path is a certain null-deref →
-				// confirmed; a possible-null source (malloc/function return) is
-				// only maybe-null → suspected, so the AI reasons about it instead
-				// of rubber-stamping a "confirmed" prior.
+				// confirmed; everything else — a possible-null source
+				// (malloc/function return/libc maybe-null) — is only maybe-null
+				// → suspected, so the AI reasons about it instead of
+				// rubber-stamping a "confirmed" prior.
 				//
-				// Exceptions: an ALLOCATOR source (malloc/calloc/realloc) or a
-				// known maybe-null libc/POSIX function (strchr/fopen/getenv/...)
-				// inherently returns NULL, and a planner-synthesized `p = f()`
-				// whose callee the fixpoint graded PROVEN has a concrete NULL
-				// witness in its body — all textbook CWE-476 regardless of path,
-				// kept confirmed rather than downgraded. Only a fail-open source
-				// (unknown external call, assumed callee) stays suspected.
+				// A maybe-null origin (allocator / known maybe-null libc / a
+				// callee whose body has a NULL-return path) is a MAY fact, not a
+				// proof that the dereference is NULL on every path — and an
+				// abort-on-OOM allocator (zmalloc) never returns NULL at all. It
+				// is therefore never auto-confirmed; the AI judges the reachable
+				// NULL case and the guard state.
 				synthCallee := synthCalleeAt(synthByFunc[c.FunctionID], c.VariableName, c.Line)
 				synthProven := synthCallee != "" && retNullable[synthCallee] == retNullProven
-				if !c.HasDefiniteNull && !models[c.FunctionID].onlyCertainNullableSources(c.VariableName) && !synthProven {
+				if !c.HasDefiniteNull {
 					c.SuspicionLevel = "suspected"
 				}
 				// The nullable-origin tier feeds the null@<tier> hint token:
@@ -469,7 +473,6 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 		// is an actual assignment (`tree = (T *)(resp->group_data)`).
 		sources := nullSourcesFor(models, fid)
 		var entrySeeds map[string]bool
-		var definiteEntrySeeds map[string]bool
 		var lineSources []nullSource
 		for _, s := range sources {
 			birthField := s.origin == "opaque_field_read" && s.line <= fn.StartLine
@@ -478,14 +481,10 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 					entrySeeds = map[string]bool{}
 				}
 				entrySeeds[s.variable] = true
-				// A caller passing a literal NULL is a CERTAIN null at entry, so it
-				// seeds the must-null tier (confirmed) rather than only the may tier.
-				if s.definite {
-					if definiteEntrySeeds == nil {
-						definiteEntrySeeds = map[string]bool{}
-					}
-					definiteEntrySeeds[s.variable] = true
-				}
+				// A caller passing a literal NULL is a MAY-fact (ONE call site
+				// passes NULL, others may not), so it seeds only the may-null
+				// tier — never the must-null (definite) tier. Only an explicit
+				// intra-procedural `p = NULL` seeds definite (cfg-proof).
 			} else {
 				lineSources = append(lineSources, s)
 			}
@@ -496,7 +495,6 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 			synthByFunc[fid] = synth
 		}
 		analyzer.entrySeeds = entrySeeds
-		analyzer.definiteEntrySeeds = definiteEntrySeeds
 		res := analyzer.analyzeFunction(ctx, fn, body, root, lineSources)
 		if res != nil {
 			res.contract = buildContractCtx(fn, root, body)
@@ -1222,7 +1220,6 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 			// parameter (`T *q = p; return q;`) is misjudged notNull, silently
 			// dropping every call-site dereference.
 			var entrySeeds map[string]bool
-			var definiteEntrySeeds map[string]bool
 			var lineSources []nullSource
 			for _, s := range srcs {
 				birthField := s.origin == "opaque_field_read" && s.line <= info.fn.StartLine
@@ -1231,18 +1228,13 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 						entrySeeds = map[string]bool{}
 					}
 					entrySeeds[s.variable] = true
-					if s.definite {
-						if definiteEntrySeeds == nil {
-							definiteEntrySeeds = map[string]bool{}
-						}
-						definiteEntrySeeds[s.variable] = true
-					}
+					// caller-null "definite" is a MAY-fact (one call site passes
+					// NULL), never a must-null seed.
 				} else {
 					lineSources = append(lineSources, s)
 				}
 			}
 			analyzer.entrySeeds = entrySeeds
-			analyzer.definiteEntrySeeds = definiteEntrySeeds
 			flow := analyzer.analyzeFlow(ctx, info.fn, info.body, info.root, nullGenByLine(lineSources), nil, true, false)
 			if ns := returnsNullability(info.body, flow, info.params, retNullable, analyzed, info.arrs, srcs, strings.TrimSpace(info.fn.ReturnType), noreturnCalls); ns != retNotNull {
 				retNullable[info.fn.Name] = ns

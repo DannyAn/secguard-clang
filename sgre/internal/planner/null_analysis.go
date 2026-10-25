@@ -215,6 +215,22 @@ func (m *nullModel) hasExternalCallSource(variable string) bool {
 	return false
 }
 
+// hasDefiniteCallerNullSource reports whether the variable has a caller_null
+// source with a literal-NULL witness (a caller actually passes NULL/0). That
+// is the one case that violates the void* non-null contract; an unproven
+// forwarding caller still honours the convention.
+func (m *nullModel) hasDefiniteCallerNullSource(variable string) bool {
+	if m == nil {
+		return false
+	}
+	for _, s := range m.sources {
+		if s.variable == variable && s.origin == "caller_null" && s.definite {
+			return true
+		}
+	}
+	return false
+}
+
 // hasOpaqueSource reports whether the variable has an opaque null source: an
 // opaque_param source (a pointer parameter of a function whose callers are
 // all outside the scan tree) or an opaque_field_read source (a field value of

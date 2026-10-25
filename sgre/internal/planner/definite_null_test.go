@@ -83,8 +83,8 @@ int external_null_deref(void) {
 			if c.HasDefiniteNull {
 				t.Errorf("allocator_null_deref must NOT carry has_definite_null (it is only possibly-null)")
 			}
-			if c.SuspicionLevel != "confirmed" {
-				t.Errorf("allocator_null_deref (malloc without a null check) must be confirmed, got %q", c.SuspicionLevel)
+			if c.SuspicionLevel != "suspected" {
+				t.Errorf("allocator_null_deref (malloc without a null check) must be suspected (may-null, AI-judged), got %q", c.SuspicionLevel)
 			}
 		}
 		if c.Target.Function == "external_null_deref" {

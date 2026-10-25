@@ -101,7 +101,7 @@ func buildNullDerefVerdictFacts(c Candidate) []VerdictFact {
 		}
 		facts = append(facts, VerdictFact{
 			Token:  "null@malloc-fail",
-			Detail: fmt.Sprintf("the null source is `%s`%s — a proven-nullable call result (allocator / known libc / return-NULL callee); dereferencing it without a null check is a textbook CWE-476", name, derivedSuffix(c)),
+			Detail: fmt.Sprintf("the null source is `%s`%s — a MAY-null call result (allocator / known maybe-null libc / return-NULL callee); judge whether it can actually return NULL here and whether the deref is guarded, then confirm or dismiss", name, derivedSuffix(c)),
 		})
 	case "assumed-return":
 		name := c.NullableOriginName

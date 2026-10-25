@@ -189,8 +189,8 @@ void wrapper(void) {
 	if c == nil {
 		t.Fatalf("wrapper p->x must STAY flagged (in-scan xmalloc returns the malloc result)")
 	}
-	if c.SuspicionLevel != "confirmed" {
-		t.Errorf("wrapper p->x must stay confirmed (in-scan wrapper is proven-nullable), got %q", c.SuspicionLevel)
+	if c.SuspicionLevel != "suspected" {
+		t.Errorf("wrapper p->x must stay suspected (in-scan wrapper is proven-nullable = may-null), got %q", c.SuspicionLevel)
 	}
 }
 
@@ -513,8 +513,13 @@ void caller(void) {
 	if c == nil {
 		t.Fatalf("process(NULL) must surface as a null-deref")
 	}
-	if !c.HasDefiniteNull {
-		t.Errorf("process(NULL) should be a definite (confirmed) null-deref, got has_definite_null=%v level=%s", c.HasDefiniteNull, c.SuspicionLevel)
+	// A caller passing NULL is a caller-contract (may-null) fact, not a
+	// must-null proof — the AI judges whether that caller path is real.
+	if c.HasDefiniteNull {
+		t.Errorf("process(NULL) must NOT be definite (caller-null is may, not must), got has_definite_null=%v level=%s", c.HasDefiniteNull, c.SuspicionLevel)
+	}
+	if c.SuspicionLevel != "suspected" {
+		t.Errorf("process(NULL) must be suspected (caller-arg), got %q", c.SuspicionLevel)
 	}
 }
 

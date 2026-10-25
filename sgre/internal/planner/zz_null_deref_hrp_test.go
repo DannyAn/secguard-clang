@@ -63,8 +63,8 @@ func hrpFixture(t *testing.T, name string) string {
 // the `ctx == NULL` guard branch and then dereferenced with no re-check. The
 // entry null guard does NOT protect the dereference (the branch BODY is
 // where the null value lived; the reassignment brings in a fresh
-// maybe-NULL), so the candidate is machine-proved (confirmed tier — the
-// same proven retNullable channel as ND-16).
+// maybe-NULL), so the candidate is suspected (a proven-nullable wrapper is
+// may-null, not must-null — the AI judges the unchecked dereference).
 func TestNullDeref_HRPActivateSession_ReassignFromProvenNullable(t *testing.T) {
 	res := planHrpSrc(t, map[string]string{
 		"hrp_session.c": hrpFixture(t, "tc164_hrp_session_null_deref.c"),
@@ -78,8 +78,8 @@ func TestNullDeref_HRPActivateSession_ReassignFromProvenNullable(t *testing.T) {
 			continue
 		}
 		found = true
-		if c.SuspicionLevel != "confirmed" {
-			t.Errorf("reassignment from a tree-internal malloc wrapper (literal return NULL path) is proven-nullable; the unchecked dereference must be confirmed, got %q", c.SuspicionLevel)
+		if c.SuspicionLevel != "suspected" {
+			t.Errorf("reassignment from a tree-internal malloc wrapper (literal return NULL path) is may-null; the unchecked dereference must be suspected, got %q", c.SuspicionLevel)
 		}
 	}
 	if !found {
