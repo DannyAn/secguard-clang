@@ -1816,50 +1816,73 @@ func collectNoreturnCalls(cache *fileParseCache, funcs []*db.Function, fileByID 
 	for name := range apikb.NoReturnCalls {
 		noreturn[name] = true
 	}
+	// Single-pass fact collection + in-memory monotone fixpoint. The previous
+	// form re-walked every function's body AND the whole file root (the
+	// declarations FindAll) on every fixpoint iteration — O(iterations x funcs
+	// x AST). noReturnFuncs: funcs with no return statement; callsOf: name ->
+	// callee names (merged across same-name overloads); fpGlobals: function-
+	// pointer var -> init target (collected once per file).
+	noReturnFuncs := make(map[string]bool)
+	callsOf := make(map[string]map[string]bool)
+	var fpGlobals []struct{ name, init string }
+	seenFiles := make(map[int64]bool)
+
+	for _, fn := range funcs {
+		file := fileByID[fn.FileID]
+		if file == nil {
+			continue
+		}
+		body, root := cache.get(file, fn)
+		if callsOf[fn.Name] == nil {
+			callsOf[fn.Name] = make(map[string]bool)
+		}
+		if body.Kind() == "compound_statement" && len(body.FindAll("return_statement")) == 0 {
+			// A function with no return statement that calls a noreturn target
+			// never returns (its only exits are noreturn calls).
+			noReturnFuncs[fn.Name] = true
+			for _, call := range body.FindAll("call_expression") {
+				callsOf[fn.Name][callName(call)] = true
+			}
+		}
+		// Function-pointer globals: `static void (*X)(...) = Y;` where Y is
+		// noreturn makes X() noreturn. File-scoped: collect once per file.
+		if !seenFiles[file.ID] && root.Kind() != "" {
+			seenFiles[file.ID] = true
+			for _, decl := range root.FindAll("declaration") {
+				for _, init := range decl.FindAll("init_declarator") {
+					lhs := init.ChildByFieldName("declarator")
+					rhs := init.ChildByFieldName("value")
+					if lhs == nil || rhs == nil || rhs.Kind() != "identifier" {
+						continue
+					}
+					name := functionPointerVarName(lhs.Text())
+					if name == "" {
+						continue
+					}
+					fpGlobals = append(fpGlobals, struct{ name, init string }{name, rhs.Text()})
+				}
+			}
+		}
+	}
+
 	for changed := true; changed; {
 		changed = false
-		for _, fn := range funcs {
-			if noreturn[fn.Name] {
+		for name := range noReturnFuncs {
+			if noreturn[name] {
 				continue
 			}
-			file := fileByID[fn.FileID]
-			if file == nil {
-				continue
-			}
-			body, root := cache.get(file, fn)
-			if body.Kind() == "compound_statement" {
-				// A function with no return statement that calls a noreturn
-				// target never returns (its only exits are noreturn calls).
-				if len(body.FindAll("return_statement")) == 0 {
-					for _, call := range body.FindAll("call_expression") {
-						if noreturn[callName(call)] {
-							noreturn[fn.Name] = true
-							changed = true
-							break
-						}
-					}
+			for callee := range callsOf[name] {
+				if noreturn[callee] {
+					noreturn[name] = true
+					changed = true
+					break
 				}
 			}
-			// Function-pointer globals: `static void (*X)(...) = Y;` where Y is
-			// noreturn makes X() noreturn.
-			if root.Kind() != "" {
-				for _, decl := range root.FindAll("declaration") {
-					for _, init := range decl.FindAll("init_declarator") {
-						lhs := init.ChildByFieldName("declarator")
-						rhs := init.ChildByFieldName("value")
-						if lhs == nil || rhs == nil || rhs.Kind() != "identifier" {
-							continue
-						}
-						name := functionPointerVarName(lhs.Text())
-						if name == "" || noreturn[name] {
-							continue
-						}
-						if noreturn[rhs.Text()] {
-							noreturn[name] = true
-							changed = true
-						}
-					}
-				}
+		}
+		for _, g := range fpGlobals {
+			if !noreturn[g.name] && noreturn[g.init] {
+				noreturn[g.name] = true
+				changed = true
 			}
 		}
 	}
