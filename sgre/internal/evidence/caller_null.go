@@ -143,6 +143,10 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 		assigns := root.FindAll("assignment_expression")
 		calls := root.FindAll("call_expression")
 		fnDefs := root.FindAll("function_definition")
+		// Hoisted once per file: collectNonNullableArrays re-walks the AST per
+		// function (O(functions x AST)); see the dereference detector fix.
+		paramDecls := root.FindAll("parameter_declaration")
+		decls := root.FindAll("declaration")
 
 		// A call argument that names an array (global or caller-local) can never
 		// be NULL, so it must not seed a caller_null source. Precompute per caller
@@ -151,7 +155,7 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 		callerParams := make(map[int64]map[string]int, len(funcs))
 
 		for _, fn := range funcs {
-			nonNullArrays[fn.ID] = collectNonNullableArrays(root, fn)
+			nonNullArrays[fn.ID] = collectNonNullableArraysFast(fn, paramDecls, decls)
 			fnDef := findFnDefByName(fnDefs, fn.Name)
 			if fnDef.Kind() == "" {
 				continue
