@@ -114,3 +114,53 @@ unsigned int unchecked_callee(unsigned int idx)
 		}
 	}
 }
+
+// Evidence embedding for the "branch premise excludes the callee's NULL
+// condition" class (NAT #8): the candidate must carry the callee's NULL-return
+// condition as a retnull-cond@ fact, so the AI compares it against the
+// enclosing branch instead of re-deriving the state machine.
+func TestNullDeref_CalleeNullConditionEmbedded(t *testing.T) {
+	src := `#define POOL_SECT_NODE_INVALID 0xFFFFu
+
+typedef struct { unsigned int head_next; } pool_sect_t;
+typedef struct { unsigned int sect_head; } pool_group_t;
+
+extern pool_sect_t *pool_sect_by_id(unsigned int id);
+extern pool_sect_t *find_insert_sect(pool_group_t *group, unsigned int insertid);
+
+static pool_sect_t *pool_last_sect(const pool_group_t *group)
+{
+    if (group->sect_head == POOL_SECT_NODE_INVALID) {
+        return NULL;
+    }
+    return pool_sect_by_id(group->sect_head);
+}
+
+void insert_sect(pool_group_t *group, unsigned int node_id)
+{
+    if (group->sect_head == POOL_SECT_NODE_INVALID) {
+        group->sect_head = node_id;
+    } else {
+        pool_sect_t *node = find_insert_sect(group, node_id);
+        if (node == NULL) {
+            node = pool_last_sect(group);
+            group->sect_head = node_id;
+        }
+        pool_sect_by_id(node->head_next)->head_next = node_id;
+    }
+}
+`
+	res := planNullDerefFullSrc(t, src)
+	found := false
+	for _, c := range res.Candidates {
+		if c.Target.Variable == "node" {
+			found = true
+			if c.CalleeNullCondition != "group->sect_head==POOL_SECT_NODE_INVALID" {
+				t.Errorf("node: CalleeNullCondition = %q, want group->sect_head==POOL_SECT_NODE_INVALID", c.CalleeNullCondition)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected a candidate for `node` (pool_last_sect result), got %v", candidateNames(res))
+	}
+}

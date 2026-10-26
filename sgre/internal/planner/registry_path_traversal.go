@@ -1,6 +1,10 @@
 package planner
 
-import "fmt"
+import (
+	"fmt"
+	"path/filepath"
+	"strings"
+)
 
 func init() {
 	RegisterVulnType(&VulnTypeSpec{
@@ -10,7 +14,7 @@ func init() {
 		EvidenceType:      "PATH_TRAVERSAL",
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "path-traversal",
-		FilterFactories:    chainTaint(),
+		FilterFactories:   chainTaint(),
 		BuildVerdictFacts: buildPathTraversalVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{
@@ -22,6 +26,9 @@ func init() {
 			}
 			if c.CallsiteSummary != "" {
 				frags = append(frags, EvidenceFragment{Type: "callsite_census", Role: "caller", Detail: fmt.Sprintf("in-tree call sites for the path parameter: %s — all-literal means every caller passes a compile-time constant; the var/tainted entries are the callers where attacker input could enter", expandCallsiteFact(c.CallsiteSummary))})
+			}
+			if len(c.CallsiteSites) > 0 {
+				frags = append(frags, EvidenceFragment{Type: "callsite_list", Role: "caller", Detail: "concrete in-tree call sites (file:line — class): " + renderCallSiteList(c.CallsiteSites)})
 			}
 			if c.HasTaintSource {
 				frags = append(frags, EvidenceFragment{Type: "taint_source", Role: "source", Detail: taintSourceDetail(c, "the path argument")})
@@ -46,4 +53,14 @@ func buildPathTraversalVerdictFacts(c Candidate) []VerdictFact {
 		})
 	}
 	return facts
+}
+
+// renderCallSiteList renders the bounded per-site breakdown as a single-line,
+// grep-free caller list: "literal@fc_fwd.c:108, variable@carnat_fc_fwd.c:272".
+func renderCallSiteList(sites []CallSiteInfo) string {
+	parts := make([]string, 0, len(sites))
+	for _, s := range sites {
+		parts = append(parts, fmt.Sprintf("%s@%s:%d", s.Class, filepath.Base(s.File), s.Line))
+	}
+	return strings.Join(parts, ", ")
 }

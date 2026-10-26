@@ -168,12 +168,19 @@ type Candidate struct {
 	// retNullable set (which callee can return NULL) rather than the
 	// intra-procedural per-variable reaching analysis, because no assignment
 	// `p = f()` exists to give the call result a tracked variable name.
-	IsCallResultDeref bool    `json:"is_call_result_deref,omitempty"`
-	CalleeName        string  `json:"callee_name,omitempty"`
-	QualityScore      float64 `json:"quality_score"`
-	SourceLine        int     `json:"source_line,omitempty"`
-	DeclLine          int     `json:"decl_line,omitempty"`
-	Origin            string  `json:"origin,omitempty"`
+	IsCallResultDeref bool   `json:"is_call_result_deref,omitempty"`
+	CalleeName        string `json:"callee_name,omitempty"`
+	// CalleeNullCondition is the normalized condition under which an in-scan
+	// nullable callee returns NULL (`group->sect_head == POOL_SECT_NODE_INVALID`,
+	// `!group`), computed only when EVERY definition's null path is guarded by
+	// one and the same condition. Embedded as a retnull-cond@ hint so the
+	// classifier can compare it with the enclosing branch in the Code Context
+	// (the #8 pool_last_sect class) instead of re-deriving the state machine.
+	CalleeNullCondition string  `json:"callee_null_condition,omitempty"`
+	QualityScore        float64 `json:"quality_score"`
+	SourceLine          int     `json:"source_line,omitempty"`
+	DeclLine            int     `json:"decl_line,omitempty"`
+	Origin              string  `json:"origin,omitempty"`
 	// FieldPath is the full member/element access text of an uninit read
 	// (`p->f`, `p[i]`, `s.f`); empty for whole/scalar reads.
 	FieldPath string `json:"field_path,omitempty"`
@@ -386,7 +393,23 @@ type Candidate struct {
 	// the classifier weighs caller provenance instead of assuming every
 	// parameter is attacker-reachable.
 	CallsiteSummary string `json:"callsite_summary,omitempty"`
+	// CallsiteSites is the BOUNDED per-site breakdown behind CallsiteSummary
+	// (up to the first N in-tree call sites, file:line + literal/var/tainted
+	// class). The summary is a count; this list is what lets the classifier see
+	// WHICH callers are non-constant without grepping the tree — the
+	// evidence-embedding counterpart of the census. Truncated at the cap; the
+	// summary's total still names the true count.
+	CallsiteSites []CallSiteInfo `json:"callsite_sites,omitempty"`
 	// SubLHSInfluenced is true when an integer-overflow candidate's LHS
 	// operand is caller/attacker-controlled (mirror of SubRHSInfluenced).
 	SubLHSInfluenced bool `json:"sub_lhs_influenced,omitempty"`
+}
+
+// CallSiteInfo is one in-tree call site of a parameter, as the callsite census
+// records it for evidence embedding: the caller file:line and the argument's
+// shape class ("literal" / "variable" / "tainted").
+type CallSiteInfo struct {
+	File  string `json:"file"`
+	Line  int    `json:"line"`
+	Class string `json:"class"`
 }

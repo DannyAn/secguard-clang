@@ -125,6 +125,14 @@ type EvidenceItem struct {
 	// engine had no fact worth reporting.
 	DivisorInterval string `json:"divisor_interval,omitempty"`
 	DivisorCallers  string `json:"divisor_callers,omitempty"`
+	// CallsiteSites is the bounded per-site breakdown backing CallsiteSummary
+	// (file:line + literal/var/tainted class), rendered as a callsite_list
+	// evidence fragment so the classifier sees the non-constant callers without
+	// grepping the tree.
+	CallsiteSites []CallSiteInfo `json:"callsite_sites,omitempty"`
+	// CalleeNullCondition is the normalized condition under which an in-scan
+	// nullable callee returns NULL (rendered as the retnull-cond@ hint).
+	CalleeNullCondition string `json:"callee_null_condition,omitempty"`
 	// Expression is the detector's full statement text (multi-line calls keep
 	// their wrapped arguments), rendered in the evidence file's Location
 	// section so a wrapped statement is not reduced to its first line.
@@ -738,6 +746,9 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 
 		DivisorInterval: c.DivisorInterval,
 		DivisorCallers:  c.DivisorCallers,
+
+		CallsiteSites:       c.CallsiteSites,
+		CalleeNullCondition: c.CalleeNullCondition,
 
 		Expression: c.Expression,
 		CWEChain:   candidateCWEChain(c, spec),

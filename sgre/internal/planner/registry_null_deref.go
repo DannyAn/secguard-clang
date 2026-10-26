@@ -148,6 +148,12 @@ func buildNullDerefVerdictFacts(c Candidate) []VerdictFact {
 			Detail: "the ONLY null source is an unproven external call — an analyzer fail-open assumption, NOT evidence: verify the callee can return NULL, otherwise dismiss",
 		})
 	}
+	if c.CalleeNullCondition != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "retnull-cond@" + c.CalleeNullCondition,
+			Detail: fmt.Sprintf("the callee returns NULL only when `%s` holds (its body is under ## Callee Definition) — a call inside the branch that EXCLUDES this condition cannot yield NULL; compare it with the enclosing branch in the Code Context", c.CalleeNullCondition),
+		})
+	}
 	if c.SourceLine > 0 && c.NullOriginTier != "cfg-proof" {
 		facts = append(facts, VerdictFact{
 			Token:  fmt.Sprintf("src@%d", c.SourceLine),

@@ -75,7 +75,16 @@ func (a *argShapeCounts) fact() string {
 type callsiteCensus struct {
 	params    map[int64]map[int]*argShapeCounts
 	addrTaken map[string]bool
+	// sites is the bounded per-site breakdown backing the evidence list: keyed
+	// by (callee funcID, param index), each entry one call site's file:line +
+	// class. Bounded by callsiteEvidenceCap per key so a header-only wrapper
+	// with hundreds of callers does not balloon the candidate file.
+	sites map[int64]map[int][]CallSiteInfo
 }
+
+// callsiteEvidenceCap bounds how many concrete call sites the census retains
+// for evidence embedding; the SUMMARY still counts all of them.
+const callsiteEvidenceCap = 10
 
 // shapes returns the census of one (function, parameter), nil when no in-tree
 // call site binds it.
@@ -108,6 +117,24 @@ func (cs *callsiteCensus) factFor(funcID int64, paramIdx int) string {
 	return cs.shapes(funcID, paramIdx).fact()
 }
 
+// siteList returns the bounded per-site breakdown backing the evidence list.
+func (cs *callsiteCensus) siteList(funcID int64, paramIdx int) []CallSiteInfo {
+	if cs == nil || cs.sites == nil {
+		return nil
+	}
+	return cs.sites[funcID][paramIdx]
+}
+
+func classForKind(kind int) string {
+	switch kind {
+	case 0:
+		return "literal"
+	case 1:
+		return "tainted"
+	}
+	return "variable"
+}
+
 // computeCallsiteSummary walks every function body's call expressions and
 // every file's address-of expressions, producing the call-site census. It is
 // a single AST pass (no fixpoint): shapes are syntactic, so callee summaries
@@ -116,6 +143,7 @@ func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context) (*callsi
 	census := &callsiteCensus{
 		params:    make(map[int64]map[int]*argShapeCounts),
 		addrTaken: make(map[string]bool),
+		sites:     make(map[int64]map[int][]CallSiteInfo),
 	}
 	// Object-like macros that expand to a string literal are compile-time
 	// constants: a caller spelled `log_msg(MSG_FMT)` must count as LITERAL, not
@@ -210,6 +238,7 @@ func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context) (*callsi
 				default:
 					kind = 2
 				}
+				class := classForKind(kind)
 				for _, calleeID := range calleeIDs {
 					if census.params[calleeID] == nil {
 						census.params[calleeID] = make(map[int]*argShapeCounts)
@@ -226,6 +255,16 @@ func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context) (*callsi
 						shapes.tainted++
 					default:
 						shapes.variable++
+					}
+					if census.sites[calleeID] == nil {
+						census.sites[calleeID] = make(map[int][]CallSiteInfo)
+					}
+					if len(census.sites[calleeID][i]) < callsiteEvidenceCap {
+						census.sites[calleeID][i] = append(census.sites[calleeID][i], CallSiteInfo{
+							File:  file.Path,
+							Line:  call.StartLine(),
+							Class: class,
+						})
 					}
 				}
 			}

@@ -261,6 +261,7 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 		//     as suspected, now with the callsites@ census attached.
 		if idx, isParam := paramsByFunc[c.FunctionID][sink]; isParam {
 			c.CallsiteSummary = summaries.callsites.factFor(c.FunctionID, idx)
+			c.CallsiteSites = summaries.callsites.siteList(c.FunctionID, idx)
 			if paramTainted[c.FunctionID][idx] {
 				c.HasTaintSource = true
 				// A pure passthrough SQL wrapper (`return sqlite3_exec(db, sql, ...)`)

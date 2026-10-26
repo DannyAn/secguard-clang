@@ -4,6 +4,14 @@
 
 ## [未发布]
 
+### 证据内嵌补齐：调用点清单 + callee 空值条件（研判性能突破口）
+
+现网复盘把"证据内嵌（callee 体、调用点清单、状态转移结论写进候选文件）"列为下一阶段性能突破口。本轮补上其中两块，把 AI 二次研判从"grep 调用方 / 重建状态机"降为"读候选文件一次"：
+
+- **`callsite_list` 证据片段（format-string / path-traversal）**：`callsites@` 只是计数（`2:1-literal,1-var`），AI 仍要 grep 出那个 `var` 调用者。现在普查把每个调用点的 `file:line + literal/variable/tainted` 类目（有界，≤10 条）随候选一起落盘，Evidence 里直接列出 `literal@fc_fwd.c:108, variable@carnat_fc_fwd.c:272`。
+- **`retnull-cond@<expr>` 事实（null-deref）**：对"callee 返回 NULL 的唯一条件"做归一化提取（`group->sect_head==POOL_SECT_NODE_INVALID`、`!group`），当所有定义的 NULL 路径都被同一条件守卫时写进候选。AI 一眼就能把它和 Code Context 里的分支前提做互斥比较（#8 `pool_last_sect` 那类），无需重建状态机；`||` 守卫取判空子句，else 分支里的 NULL 返回因需取反、不提取（保守）。
+- 两个新增 token/片段都进 `hint_tokens.go` 与 SKILL 的 Evidence Pattern（`TestSkillFragmentsMatchBuildEvidence` 锁定），并有回归测试：`TestFormatString_CallsiteSitesEmbedded`、`TestNullDeref_CalleeNullConditionEmbedded`。
+
 ### null-deref 跨函数"校验函数 + 返回值门控"识别（NAT #6/#7/#9 真实片段复核）
 
 拿到真实代码后确认：`helper-guard` 契约（"参数为 NULL ⟹ 函数返回非零"）本身已存在，但只认**字面量 `!= 0` + 直接调用**这一种写法，真实工程里的三种常见写法全部漏掉，于是 3 条误报流到 AI：

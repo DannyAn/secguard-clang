@@ -134,3 +134,48 @@ void caller_intervening_call(void)
 		t.Errorf("unexpected suspicion level %q", c.SuspicionLevel)
 	}
 }
+
+// The census summary is a count; the evidence needs the WHICH. CallsiteSites
+// carries the bounded per-site breakdown (file:line + class) so the classifier
+// can see the non-constant callers without a grep round.
+func TestFormatString_CallsiteSitesEmbedded(t *testing.T) {
+	src := `#include <stdio.h>
+
+void log_msg(const char *fmt)
+{
+    printf(fmt);
+}
+
+void caller_literal(void)
+{
+    log_msg("hello %s");
+}
+
+void caller_buf(void)
+{
+    char buf[64];
+    buf[0] = 'x';
+    buf[1] = 0;
+    log_msg(buf);
+}
+`
+	// planType returns one EvidenceItem per function; log_msg is the sink.
+	res := planType(t, src, "format-string")
+	c, ok := res["log_msg"]
+	if !ok {
+		t.Fatalf("log_msg must stay a suspected candidate (mixed literal/var callers)")
+	}
+	if len(c.CallsiteSites) != 2 {
+		t.Fatalf("CallsiteSites = %+v, want the 2 concrete call sites", c.CallsiteSites)
+	}
+	classes := map[string]bool{}
+	for _, s := range c.CallsiteSites {
+		classes[s.Class] = true
+		if s.Line <= 0 || s.File == "" {
+			t.Errorf("site %+v must carry a file and a line", s)
+		}
+	}
+	if !classes["literal"] || !classes["variable"] {
+		t.Errorf("expected one literal and one variable site, got %+v", c.CallsiteSites)
+	}
+}

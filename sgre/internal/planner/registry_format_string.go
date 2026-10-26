@@ -10,7 +10,7 @@ func init() {
 		EvidenceType:      "FORMAT_STRING_VULN",
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "format-string",
-		FilterFactories:    chainTaint(),
+		FilterFactories:   chainTaint(),
 		BuildVerdictFacts: buildFormatStringVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{
@@ -24,6 +24,9 @@ func init() {
 			}
 			if c.CallsiteSummary != "" {
 				frags = append(frags, EvidenceFragment{Type: "callsite_census", Role: "caller", Detail: fmt.Sprintf("in-tree call sites for the format parameter: %s — all-literal means every caller passes a compile-time constant; the var/tainted entries are the callers where attacker input could enter", expandCallsiteFact(c.CallsiteSummary))})
+			}
+			if len(c.CallsiteSites) > 0 {
+				frags = append(frags, EvidenceFragment{Type: "callsite_list", Role: "caller", Detail: "concrete in-tree call sites (file:line — class): " + renderCallSiteList(c.CallsiteSites)})
 			}
 			frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
 			if c.HasTaintSource {

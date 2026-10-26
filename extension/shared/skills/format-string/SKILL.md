@@ -18,6 +18,7 @@ A format-string candidate has:
 - **format_arg**: the non-literal format argument expression
 - **taint_source**: where the user-controlled value behind the format argument originates (when the taint filter proved one)
 - **callsite_census** (when the format argument is a function parameter): the in-tree call-site argument census for that parameter — `all-literal` means every caller passes a compile-time constant
+- **callsite_list** (when the argument is a function parameter): the concrete in-tree call sites (`literal`/`variable`/`tainted` @ file:line, bounded) — the non-constant callers to inspect, no grep needed
 - **call_path**: The function is reachable from an entry point
 
 ### Hint Tokens (Verdict Basis)

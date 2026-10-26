@@ -137,9 +137,14 @@ from the embedded callee body + the Code Context window:
    (`NAT_OK`, `STMP_OK`). What does NOT prove anything: ignoring the result
    (`(void)check(p);`), gating on a NON-zero/other constant, or a callee that
    returns `0` on the null path.
-2. **A branch premise that excludes the callee's NULL condition.** If the callee
-   returns NULL only when `obj->field == C`, and the call sits in the `else` of
-   `if (obj->field == C)`, that NULL path is excluded. The premise survives only
+2. **A branch premise that excludes the callee's NULL condition.** When the
+   Hint carries `retnull-cond@<expr>`, the pipeline already extracted the ONE
+   condition under which the callee returns NULL (its body is under `## Callee
+   Definition`). Compare `<expr>` with the enclosing branch shown in the Code
+   Context: if the call sits in the branch that EXCLUDES that condition (the
+   `else` of `if (<expr>)`, or after an early-return on `<expr>`), the NULL path
+   is unreachable here. If the callee returns NULL only when `obj->field == C`
+   and the call is in the `else` of `if (obj->field == C)`, dismiss. The premise survives only
    while nothing rewrites `obj->field` between the branch entry and the call —
    judge the interval from the Code Context: a read-only statement, or an
    intervening call that takes the object as `const` / is a pure lookup

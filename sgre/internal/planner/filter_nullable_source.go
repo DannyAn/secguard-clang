@@ -70,7 +70,7 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 		byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
 	}
 
-	flowResults, retNullable, definedNames, synthByFunc, retGuards, loopBoundByFunc, err := f.buildFlowResults(ctx, byFunc, models)
+	flowResults, retNullable, definedNames, synthByFunc, retGuards, retNullCond, loopBoundByFunc, err := f.buildFlowResults(ctx, byFunc, models)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -114,6 +114,7 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				c.SuspicionLevel = "suspected"
 				c.NullOriginTier = "malloc-fail"
 				c.NullableOriginName = c.CalleeName
+				c.CalleeNullCondition = retNullCond[c.CalleeName]
 			} else if retNullable[c.CalleeName] == retNullAssumed {
 				// The callee's nullability is a FAIL-OPEN assumption (it
 				// returns a parameter, a field, or an unknown call): keep it
@@ -123,6 +124,7 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				c.SuspicionLevel = "suspected"
 				c.NullOriginTier = "assumed-return"
 				c.NullableOriginName = c.CalleeName
+				c.CalleeNullCondition = retNullCond[c.CalleeName]
 			} else if !definedNames[c.CalleeName] {
 				c.HasNullableSource = true
 				c.SuspicionLevel = "suspected"
@@ -276,6 +278,7 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 					// opens the source to see why it can return NULL.
 					c.CalleeName = synthCallee
 					c.NullableOriginName = synthCallee
+					c.CalleeNullCondition = retNullCond[synthCallee]
 					if synthProven {
 						c.NullOriginTier = "malloc-fail"
 					} else {
@@ -344,9 +347,9 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 // `p = f()` null sources whose callee the fixpoint proved nullable — Apply
 // reads them back to classify such variables as malloc-fail (proven-nullable
 // in-scan callee) instead of external-unknown (fail-open assumption).
-func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[int64][]Candidate, models map[int64]*nullModel) (map[int64]*flowResult, map[string]retNullability, map[string]bool, map[int64][]nullSource, map[string]*retNullGuard, map[int64][]ternaryGuardEntry, error) {
+func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[int64][]Candidate, models map[int64]*nullModel) (map[int64]*flowResult, map[string]retNullability, map[string]bool, map[int64][]nullSource, map[string]*retNullGuard, map[string]string, map[int64][]ternaryGuardEntry, error) {
 	if f.parser == nil {
-		return nil, nil, nil, nil, nil, nil, nil
+		return nil, nil, nil, nil, nil, nil, nil, nil
 	}
 
 	funcIDs := make([]int64, 0, len(byFunc))
@@ -361,7 +364,7 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 	// and the analyze loop below do not each issue N+1 point queries.
 	fnByID, err := f.store.ListFunctionsByIDs(ctx, funcIDs)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("nullable source: list functions: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("nullable source: list functions: %w", err)
 	}
 	fileByID := map[int64]*db.File{}
 	if files, ferr := f.store.ListFiles(ctx); ferr == nil {
@@ -435,13 +438,15 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 	retNullable := map[string]retNullability{}
 	definedNames := map[string]bool{}
 	retGuards := map[string]*retNullGuard{}
+	retNullCond := map[string]string{}
 	if len(assignedCallees) > 0 {
 		var err error
-		retNullable, definedNames, retGuards, err = f.computeRetNullable(ctx, models, assignedCallees)
+		retNullable, definedNames, retGuards, retNullCond, err = f.computeRetNullable(ctx, models, assignedCallees)
 		if err != nil {
 			retNullable = map[string]retNullability{}
 			definedNames = map[string]bool{}
 			retGuards = map[string]*retNullGuard{}
+			retNullCond = map[string]string{}
 		}
 	}
 
@@ -512,7 +517,7 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 			loopBoundByFunc[fid] = guard
 		}
 	}
-	return results, retNullable, definedNames, synthByFunc, retGuards, loopBoundByFunc, nil
+	return results, retNullable, definedNames, synthByFunc, retGuards, retNullCond, loopBoundByFunc, nil
 }
 
 // synthSourceAt returns the planner-synthesized `p = f()` null source whose
@@ -1022,14 +1027,14 @@ func synthCalleeAt(synth []nullSource, variable string, line int) string {
 // `return NULL`), then extended to functions returning an allocator, a pointer
 // parameter, a variable with a reaching may-null source, or a call to another
 // nullable-returning function.
-func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models map[int64]*nullModel, seedNames map[string]bool) (map[string]retNullability, map[string]bool, map[string]*retNullGuard, error) {
+func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models map[int64]*nullModel, seedNames map[string]bool) (map[string]retNullability, map[string]bool, map[string]*retNullGuard, map[string]string, error) {
 	// The fixpoint runs on a graded map: any non-notNull value means
 	// "nullable" for the iteration; the final collapse below re-grades each
 	// nullable name from the per-definition assumed evidence.
 	retNullable := make(map[string]retNullability)
 	funcs, err := f.store.ListFunctions(ctx)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("ret nullable summary: list functions: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("ret nullable summary: list functions: %w", err)
 	}
 
 	// name -> functions (same-name overloads are merged conservatively: if any
@@ -1055,7 +1060,7 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 	}
 	summariesByID, err := f.store.ListSummariesByFunctionIDs(ctx, allFnIDs)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("ret nullable summary: list summaries: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("ret nullable summary: list summaries: %w", err)
 	}
 	fileByID := make(map[int64]*db.File)
 	if files, ferr := f.store.ListFiles(ctx); ferr == nil {
@@ -1346,7 +1351,41 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 			retGuards[name] = merged
 		}
 	}
-	return retGrade, definedNames, retGuards, nil
+	// The NULL-return CONDITION of a nullable callee, embedded as a hint so the
+	// classifier can compare "returns NULL iff <cond>" against the enclosing
+	// branch in the Code Context instead of re-deriving the state machine (the
+	// #8 pool_last_sect class). Conservative like retGuards: a name qualifies
+	// only when EVERY definition's null path is guarded by one and the same
+	// condition; a divergent or unguarded definition keeps the name off the map.
+	retNullCond := make(map[string]string)
+	for name, grade := range retGrade {
+		if grade == retNotNull {
+			continue
+		}
+		cond := ""
+		seen := false
+		for _, fn := range funcsByName[name] {
+			info := infoByID[fn.ID]
+			if info == nil {
+				cond = ""
+				break
+			}
+			c := nullReturnCondition(info.body)
+			if c == "" {
+				cond = ""
+				break
+			}
+			if seen && cond != c {
+				cond = ""
+				break
+			}
+			cond, seen = c, true
+		}
+		if seen && cond != "" {
+			retNullCond[name] = cond
+		}
+	}
+	return retGrade, definedNames, retGuards, retNullCond, nil
 }
 
 // nullGenByLine folds a slice of null sources into the per-line gen map the
@@ -1479,4 +1518,110 @@ func (f *NullableSourceFilter) DeclaredProofs() []Proof {
 			TestRef:  "TestNullableSourceFilter",
 		},
 	}
+}
+
+// nullReturnCondition returns the ONE normalized condition under which body
+// returns NULL, when every NULL return is guarded by the same condition; "" when
+// there is no NULL return, or the null paths are unguarded/divergent. It is the
+// "state transition conclusion" the classifier otherwise re-derives: a nullable
+// getter like `pool_last_sect` returns NULL iff `group->sect_head == INVALID`,
+// so a call inside the else of `if (sect_head == INVALID)` cannot yield NULL.
+func nullReturnCondition(body parser.Node) string {
+	var conds []string
+	for _, ret := range body.FindAll("return_statement") {
+		if !isNullLiteralReturn(ret) {
+			continue
+		}
+		c := nullGuardConditionFor(ret)
+		if c == "" {
+			return ""
+		}
+		conds = append(conds, c)
+	}
+	if len(conds) == 0 {
+		return ""
+	}
+	for _, c := range conds {
+		if c != conds[0] {
+			return ""
+		}
+	}
+	return conds[0]
+}
+
+// isNullLiteralReturn reports whether a return statement returns the NULL/null
+// pointer literal (a `return NULL`, `return 0`, `(T *)0` cast) — the concrete
+// null witness.
+func isNullLiteralReturn(ret parser.Node) bool {
+	children := ret.NamedChildren()
+	if len(children) == 0 {
+		return false
+	}
+	return parser.IsNullOperand(children[0])
+}
+
+// nullGuardConditionFor returns the normalized condition of the innermost
+// enclosing if-statement whose CONSEQUENCE contains the null return — the guard
+// that establishes "this NULL path is taken only when <cond>". A null return in
+// an ELSE branch is ambiguous (it needs the condition's negation) and yields "".
+// A disjunctive guard (`if (a == NULL || b) return NULL;`) returns the
+// null-checking disjunct (`a == NULL`), which is the clause whose negation
+// excludes NULL.
+func nullGuardConditionFor(ret parser.Node) string {
+	var ifStmt parser.Node
+	for n := &ret; n != nil && n.Kind() != ""; n = n.Parent() {
+		if n.Kind() == "if_statement" {
+			ifStmt = *n
+			break
+		}
+	}
+	if ifStmt.Kind() != "if_statement" {
+		return ""
+	}
+	cond := ifStmt.ChildByFieldName("condition")
+	if cond == nil {
+		return ""
+	}
+	cons := ifStmt.ChildByFieldName("consequence")
+	if cons == nil || ret.StartLine() < cons.StartLine() || ret.StartLine() > cons.EndLine() {
+		return ""
+	}
+	return normalizedNullCondText(*cond)
+}
+
+// normalizedNullCondText compacts a guard condition for cross-function textual
+// comparison: strip parens/branch hints, and for a top-level `||` keep only the
+// disjunct that null-checks a subject (`a == NULL` / `!a`).
+func normalizedNullCondText(cond parser.Node) string {
+	inner := cond
+	for inner.Kind() == "parenthesized_expression" || inner.Kind() == "cast_expression" {
+		kids := inner.NamedChildren()
+		if len(kids) == 0 {
+			break
+		}
+		inner = kids[0]
+	}
+	if unwrapped, ok := parser.UnwrapBranchHint(inner); ok {
+		inner = unwrapped
+	}
+	if inner.Kind() == "binary_expression" && parser.BinaryOperator(inner) == "||" {
+		for _, disj := range inner.NamedChildren() {
+			if parser.NullCheckedVariable(disj) != "" || parser.GuardedNonnullVars(disj) != nil {
+				return compactNullText(disj.Text())
+			}
+		}
+	}
+	return compactNullText(inner.Text())
+}
+
+// compactNullText strips all whitespace so `group->sect_head == INVALID` in the
+// callee compares equal to the same spelling in the caller.
+func compactNullText(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\t', '\n', '\r':
+			return -1
+		}
+		return r
+	}, s)
 }

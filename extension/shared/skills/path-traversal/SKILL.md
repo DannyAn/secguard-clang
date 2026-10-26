@@ -26,6 +26,9 @@ A path-traversal candidate has:
 - **callsite_census** (when the path argument is a function parameter): the
   in-tree call-site argument census for that parameter — `all-literal` means
   every caller passes a compile-time constant
+- **callsite_list** (when the argument is a function parameter): the concrete
+  in-tree call sites (`literal`/`variable`/`tainted` @ file:line, bounded) — the
+  non-constant callers to inspect, no grep needed
 
 ### Hint Tokens (Verdict Basis)
 

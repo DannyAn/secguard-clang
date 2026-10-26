@@ -63,6 +63,7 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "null@caller-arg", Description: "the null source is an inter-procedural caller argument (not proven non-null) — judge whether that caller can pass NULL"},
 	{Key: "null@opaque-origin", Description: "the null source is a contract the scan tree cannot see (an external caller's argument / a field value of an externally-defined type) — the pipeline only ASSUMES it may be NULL; judge whether that external contract can actually yield NULL"},
 	{Key: "null@assumed-return", Description: "the callee's nullability is a FAIL-OPEN assumption (it returns a parameter, a field, or an unknown call) — its body is embedded; judge whether that value can actually be NULL rather than treating the tier as proof"},
+	{Key: "retnull-cond@", Display: "retnull-cond@<expr>", Description: "the callee returns NULL ONLY when this condition holds (its body is under ## Callee Definition) — a call inside the branch that excludes the condition cannot yield NULL; compare it with the enclosing branch in the Code Context and dismiss when they are mutually exclusive"},
 	{Key: "null@external-unknown", Description: "the ONLY null source is an unproven external call — an analyzer fail-open ASSUMPTION, not evidence: verify the callee can return NULL or dismiss"},
 
 	// ---- crypto-misuse ----
