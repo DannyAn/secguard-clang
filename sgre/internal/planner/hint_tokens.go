@@ -80,7 +80,7 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "cwe-chain@", Display: "cwe-chain@CWE-125→CWE-476", Description: "the machine-readable root-cause chain exported with this ONE finding: {value} — the first CWE is the fixable root cause (missing bounds check), the second is the consequence the verdict must state; do not open a second finding for the consequence"},
 
 	// ---- divide-by-zero ----
-	{Key: "divisor@", Display: "divisor@<shape>", Description: "the divisor's shape: {value} (`bare` = plain identifier, `call` = call result, `compound` = complex expression; `field`/`global` are auto-confirmed and never reach you)"},
+	{Key: "divisor@", Display: "divisor@<shape>", Description: "the divisor's shape: {value} (`bare` = plain identifier, `call` = call result, `compound` = complex expression, `field`/`global` = struct member / module global). EVERY shape — including `bare` and `field` — requires the ±8-line Code Context before confirming: the pipeline already dropped the divisors it could prove non-zero, so a guard the model cannot see (a disjunctive `if (x == 0 || y == 0) return;`, a helper predicate) is exactly what the window shows"},
 	{Key: "range@", Display: "range@[lo,hi]", Description: "the range engine's provable interval for the divisor: {value} — it contains 0 (else the filter would have dropped the row); judge whether the 0 endpoint is reachable"},
 	{Key: "callers@", Display: "callers@<summary>", Description: "the direct call-site census for a parameter divisor: {value} — judge the callers that pass non-constants"},
 
@@ -94,7 +94,7 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "rhs-influenced", Description: "the subtracted amount is caller/attacker-controlled"},
 	{Key: "lhs-influenced", Description: "the left operand is caller/attacker-controlled"},
 	{Key: "sink@", Display: "sink@<kind>", Description: "where the subtraction result flows: {value} (call_arg/assign)"},
-	{Key: "guard@none", Description: "no same-function guard survived the filters (ordering guard for integer-overflow, null guard for null-deref) — machine-verified absence, do not spend a read looking for one"},
+	{Key: "guard@none", Description: "no same-function guard survived the filters (ordering guard for integer-overflow, null guard for null-deref) — machine-verified absence of a MODELLED guard, do not spend a read looking for one; a guard the model cannot see is still possible. divide-by-zero never carries this token: its zero guard is judged from the Code Context"},
 
 	// ---- deadlock ----
 	{Key: "locks@", Display: "locks@A|B", Description: "deadlock: this function locks {value} in that order; match the inversion pair across functions"},

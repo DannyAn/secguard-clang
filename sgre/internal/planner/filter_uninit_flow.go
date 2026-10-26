@@ -189,8 +189,21 @@ func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]
 	files := make(map[int64]*hoistedUninitFile)
 	scopes := make(map[int64]func(string) bool, len(byFunc))
 	hsFlows := make(map[int64]*heapStructFlow, len(byFunc))
-	macroWritesByFile := make(map[int64]map[string]macros.WriteSummary)
 	cache := newFileParseCache(f.parser)
+	// The macro write-summaries must be WHOLE-TREE: a loop macro defined in a
+	// .h header (POOL_FOR_ALL, POOL_FOR, SLL_Scan…) is invisible to the
+	// per-file WriteSummaries of the .c that calls it, so the macro's
+	// for-init write never killed the uninit source and the iterator read as
+	// `init@none` (auto-confirmed CWE-457 in production). Same merge
+	// collectMacroWrites performs for the null-deref flow.
+	macroWrites := map[string]macros.WriteSummary{}
+	if allFiles, err := f.store.ListFiles(ctx); err == nil {
+		allByID := make(map[int64]*db.File, len(allFiles))
+		for _, file := range allFiles {
+			allByID[file.ID] = file
+		}
+		macroWrites = collectMacroWrites(cache, allByID)
+	}
 	for fid := range byFunc {
 		fn := fnByID[fid]
 		if fn == nil {
@@ -203,11 +216,6 @@ func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]
 		body, root := cache.get(file, fn)
 		if body.Kind() != "compound_statement" {
 			continue
-		}
-		macroWrites := macroWritesByFile[file.ID]
-		if macroWrites == nil {
-			macroWrites = macros.WriteSummaries(root)
-			macroWritesByFile[file.ID] = macroWrites
 		}
 		flows[fid] = buildDefiniteInitFlow(f.cfgCache, fn, body, macroWrites)
 		hsFlows[fid] = buildHeapStructFlow(f.cfgCache, fn, body)
@@ -279,6 +287,17 @@ func buildDefiniteInitFlow(cfgCache *graph.CFGCache, fn *db.Function, body parse
 		for _, call := range n.Stmt.FindAll("call_expression") {
 			for name := range macros.WrittenArgs(call, macroWrites) {
 				e.kill[name] = true
+			}
+		}
+		// A loop macro whose expansion opens a block (`POOL_FOR_ALL(pool_id) {
+		// ... }`) parses as a function_definition, so it has no call_expression
+		// and the kill above misses it. The macro writes its iterator in the
+		// for-init, so the declared-local source must be killed at this node
+		// BEFORE the body's read — otherwise the variable reads as `init@none`
+		// even though the loop head assigns it.
+		if name, args := macroBlockCall(n.Stmt); name != "" {
+			for _, v := range macros.WrittenArgsInError(name, args, macroWrites) {
+				e.kill[v] = true
 			}
 		}
 		effects[n.ID] = e
@@ -443,7 +462,10 @@ func isUninitDecl(decl parser.Node) bool {
 		if child.Kind() == "init_declarator" {
 			hasInit = true
 		}
-		if child.Kind() == "storage_class_specifier" && child.Text() == "static" {
+		// `static` denotes static storage duration (zero-initialized); `extern`
+		// is a reference to storage defined elsewhere. Neither is an uninitialized
+		// local, so neither may seed a stack-uninit source.
+		if child.Kind() == "storage_class_specifier" && (child.Text() == "static" || child.Text() == "extern") {
 			isStatic = true
 		}
 	}

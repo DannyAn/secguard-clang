@@ -52,7 +52,7 @@ A format-string candidate has:
 - `printf("%s\n", msg)` — format is a string literal (safe)
 - `snprintf(buf, sizeof(buf), "%d", val)` — bounded write with literal format (safe)
 - `printf(const_format_string)` — format is a compile-time constant (safe, but detector can't verify)
-- A log/format wrapper whose every in-tree call site passes a string literal (`callsites@N:all-literal`) — the pipeline drops these before they reach you; if one slips through with the census, dismiss it
+- A log/format wrapper whose every in-tree call site passes a string literal (`callsites@N:all-literal`) — the pipeline drops these before they reach you; if one slips through WITH the census token, **dismiss it from that token** (no source read, no `grep`). A vprintf-style wrapper (`vsnprintf(buf, n, fmt, args)` with `fmt` a parameter) is exactly this shape: the parameter being non-literal is NOT the defect when every caller binds it to a literal, and an object-like macro whose body is a string literal (`#define MSG_FMT "%d"`) counts as a literal caller
 
 ### Fix Suggestions
 - Always use string literal as format: `printf("%s", user_input)` instead of `printf(user_input)`

@@ -216,10 +216,15 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		if !funcLineRange(f, decl.StartLine()) {
 			continue
 		}
+		// A block-scope `extern` declaration is a REFERENCE to a global defined
+		// elsewhere, not a definition with indeterminate storage: it can never be
+		// an uninitialized local. (`extern int g_total;` inside a function was
+		// reported as a certain stack-uninit read of g_total — an auto-confirmed
+		// CWE-457 false positive in production.)
 		isStatic := false
 		hasInit := false
 		for _, child := range decl.NamedChildren() {
-			if child.Kind() == "storage_class_specifier" && child.Text() == "static" {
+			if child.Kind() == "storage_class_specifier" && (child.Text() == "static" || child.Text() == "extern") {
 				isStatic = true
 			}
 			if child.Kind() == "init_declarator" {

@@ -117,6 +117,17 @@ func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context) (*callsi
 		params:    make(map[int64]map[int]*argShapeCounts),
 		addrTaken: make(map[string]bool),
 	}
+	// Object-like macros that expand to a string literal are compile-time
+	// constants: a caller spelled `log_msg(MSG_FMT)` must count as LITERAL, not
+	// as a variable. Counting it as `2-var` kept a wrapper whose every caller
+	// passes a constant format in front of the classifier, which then confirmed
+	// a format-string defect that does not exist. A name defined BOTH ways
+	// somewhere in the tree stays non-literal (conservative).
+	stringMacro := map[string]bool{}
+	nonStringMacro := map[string]bool{}
+	isStringMacro := func(name string) bool {
+		return stringMacro[name] && !nonStringMacro[name]
+	}
 	funcs, err := f.store.ListFunctions(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("callsite census: list functions: %w", err)
@@ -131,6 +142,30 @@ func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context) (*callsi
 
 	cache := newFileParseCache(f.parser)
 	fileByID := listFilesByID(ctx, f.store)
+	// A macro constant is usually defined in a header that holds no function, so
+	// the string-macro table must be built from EVERY indexed file, not only the
+	// callers' files.
+	for _, file := range fileByID {
+		root := cache.rootForFile(file)
+		if root.Kind() == "" {
+			continue
+		}
+		fileMacros := parser.CollectStringMacros(root)
+		for name := range fileMacros {
+			stringMacro[name] = true
+		}
+		for _, def := range root.FindAll("preproc_def") {
+			name := ""
+			for _, child := range def.NamedChildren() {
+				if child.Kind() == "identifier" && name == "" {
+					name = child.Text()
+				}
+			}
+			if name != "" && !fileMacros[name] {
+				nonStringMacro[name] = true
+			}
+		}
+	}
 	scannedRoot := make(map[int64]bool)
 	for _, fn := range funcs {
 		file := fileByID[fn.FileID]
@@ -155,6 +190,8 @@ func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context) (*callsi
 				var kind int // 0 literal, 1 tainted, 2 variable
 				switch {
 				case isDefinitelyUnTainted(arg):
+					kind = 0
+				case arg.Kind() == "identifier" && isStringMacro(arg.Text()):
 					kind = 0
 				case isTaintSourceExpr(arg):
 					kind = 1

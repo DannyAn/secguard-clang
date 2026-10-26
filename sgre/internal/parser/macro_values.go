@@ -77,3 +77,77 @@ func parseIntLiteral(text string) int {
 	}
 	return v
 }
+
+// CollectStringMacros reports object-like macros whose expansion is a C string
+// literal (`#define MSG_FMT "%d"`, `#define HELLO L"hi"`, adjacent literals
+// included). A call-site argument spelled with one of these names is a
+// COMPILE-TIME CONSTANT, so the format/path call-site census must count it as
+// literal, not as a variable: two callers passing `MSG_FMT` were counted
+// `2-var`, the all-literal gate never fired, and a wrapper whose every caller
+// passes a constant format was reported as a format-string defect.
+// Function-like macros are ignored (their expansion may depend on the argument).
+func CollectStringMacros(root Node) map[string]bool {
+	out := map[string]bool{}
+	for _, def := range root.FindAll("preproc_def") {
+		name, body := "", ""
+		for _, child := range def.NamedChildren() {
+			switch child.Kind() {
+			case "identifier":
+				if name == "" {
+					name = child.Text()
+				}
+			case "preproc_arg":
+				body = strings.TrimSpace(child.Text())
+			}
+		}
+		if name == "" || body == "" {
+			continue
+		}
+		if isCStringLiteralText(body) {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+// isCStringLiteralText reports whether s is one or more concatenated C string
+// literals (with an optional L/u8/u/U prefix). Anything else — an expression, a
+// function call, a bare identifier — is not a compile-time string constant.
+func isCStringLiteralText(s string) bool {
+	s = strings.TrimSpace(s)
+	for _, prefix := range []string{"u8", "u", "U", "L"} {
+		if strings.HasPrefix(s, prefix) {
+			s = strings.TrimSpace(s[len(prefix):])
+			break
+		}
+	}
+	for s != "" {
+		if strings.HasPrefix(s, "/*") || strings.HasPrefix(s, "//") {
+			return true
+		}
+		if !strings.HasPrefix(s, `"`) {
+			return false
+		}
+		i := 1
+		closed := false
+		for i < len(s) {
+			switch s[i] {
+			case '\\':
+				i += 2
+				continue
+			case '"':
+				i++
+				closed = true
+			}
+			if closed {
+				break
+			}
+			i++
+		}
+		if !closed {
+			return false
+		}
+		s = strings.TrimSpace(s[i:])
+	}
+	return true
+}

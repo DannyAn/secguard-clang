@@ -4,6 +4,18 @@
 
 ## [未发布]
 
+### 最终结果保障：机器判定误报治理 + 终审复核关口（NAT 同批 63 confirmed / 26 误报复核）
+
+生产对 `result.sarif` 的 63 条 confirmed 逐条人工复核，实际 37 真 + 26 误报（41%），其中 21 条来自**机器 auto-confirm**（uninit 20/21 = 95%）。逐条复现后确认是机器证明的**前提**不成立，而不是"该交给 AI"：
+
+- **宏块写入（最大一类，uninit 8 条）**：`POOL_FOR_ALL(pool_id) { … }` 这类"展开成大括号 for 循环"的宏，tree-sitter 解析成 `function_definition`（返回类型=宏名、declarator=`parenthesized_declarator`），既不是 `call_expression` 也不是 `ERROR`；于是 uninit 的宏写入 kill 从未命中，迭代变量被判成 `init@none`（"从未赋值"）并 auto-confirm。新增 `macroBlockCall` 识别该形态，并将宏写入摘要改为**全树合并**（宏定义在 .h 头文件、调用在 .c，此前 per-file 摘要看不到）；null-deref 的 kill 路径同步补齐。
+- **块作用域 `extern` 声明（uninit 2 条）**：函数体内 `extern unsigned int g_total;` 是对别处定义的全局的**引用**，不是无初值的局部定义，此前被判成 certain-uninit。检测器与 planner 流分析现同时跳过 `extern`/`static` 声明。
+- **分隔符守卫（divide-by-zero 2 条）**：`if (port_width == 0 || port_index >= n) return …;`、`if ((num == 0) || (size == 0)) { …; return; }` 是"提前退出"形态，按 De Morgan，落到后续路径时每个 `x == 0` 子句都证明 `x != 0`。`AnalyzeBounds` / planner 全局不变量扫描均补上该展开；`&&` 形态与"正向 or 分支"明确不展开（不成立）。
+- **`certain-uninit` 遇 macro-context 降级**：机器证明的前提依赖"该变量无写入"，而 CFG 不展开宏。现在 `Planner.Plan` 对所有类型统一执行：`confirmed` + 宏**在参数列表里点名**该变量 → 降级 `suspected`（宏名与实参解析到具体 token，`return a + 1 + MYMACRO(0)` 这类"同一行但宏不接触 a"的形态不受影响，已有回归测试）。
+- **技能文档纠错（AI 侧 5 条误报的根因）**：divide-by-zero SKILL 的 `divisor@bare` 一行原写"只看 Source 列即可判定"，与实际（守卫可能就在 ±8 行窗口内）矛盾，且把 `divisor@field/global` 说成"auto-confirm、不会到你手上"（实际是 suspected，实测确认）。两处均改正为"每种 shape 都必须读 Code Context 窗口"；format-string SKILL 中"pipeline 会先替你丢掉全字面量调用点"的不实说法改正为"`callsites@N:all-literal` 本身就是判定依据"。`hint_tokens.go` 的 `divisor@`/`guard@none` 描述同步修正。
+- **调用点普查把"字符串字面量宏"当变量（format-string 误报）**：`#define MSG_FMT "%d"` 这类**对象式宏**展开就是字符串字面量，但普查把 `log_msg(MSG_FMT)` 记成 `2-var`，all-literal 门永不触发，包装函数带着"变量 format"进入研判并被确认。新增 `parser.CollectStringMacros`（同名宏若有一处非字符串体则仍按变量，保守），普查把这类实参记为 literal；path-traversal 共用同一普查，一并受益。
+- **Step 5.5 终审复核关口（`result.sarif` 直接可提单）**：机器判定不再"无人复核地"进入最终产物。新增**有界**复核步骤：只针对 `status='auto-confirmed'` 行（`secguard db` 查询，不依赖 `--list-auto-confirmed`），按类型校验其证明前提（uninit 的宏/extern/output-param/逐字段、null-deref 的宏迭代器、format-string 的 callsite 普查、divide-by-zero 的零守卫），批量经 `--review-json` 落 dismiss 并重跑 `report --audit`；每类前提可从行内 `properties` 自证，故不要求逐条读源码，且 >40 条时优先 assignment 类前提并记录未复核余量。文档改动带 Go 守则（`TestMachineVerifyStepDocumented`：步骤、命令与 `auto_confirm_*` 证据键必须同时在位）。
+
 ### null-deref 生产噪声治理（NAT sc_2026-10-26_094012_1b2a50 复核）
 
 针对"null-deref 占全部候选 71%（1576/2219）、其中 99% 来自 fail-open 层级"的生产反馈，逐条复核后修复三类**已验证**的检测器/流分析缺陷（不动 fail-open 边界策略、不降 recall）：

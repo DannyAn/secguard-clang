@@ -218,6 +218,20 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 
 	for _, c := range candidates {
 		c.MacroContext = p.macro.macroContextAt(ctx, p.store, c.FunctionID, filePathByID[c.FileID], c.Line)
+		// A machine proof (`confirmed`) whose premise depends on the tracked
+		// variable's assignments is INVALID when a function-like macro that
+		// names that variable sits in the same statement region: the CFG does
+		// not expand macros, so the macro may assign it (an iteration macro's
+		// for-init, an init helper). The proof is not withdrawn — the null
+		// assignment / uninitialized declaration is real — but the tier must not
+		// claim certainty, because `result.sarif` is meant to be filed as-is.
+		// Type-inherent proofs (dangerous-function, signal-handler) are
+		// unaffected: their candidate's variable is the API name, which a macro
+		// call does not name.
+		if c.MacroContext && c.SuspicionLevel == "confirmed" &&
+			p.macro.macroContextMentions(ctx, p.store, c.FunctionID, filePathByID[c.FileID], c.Line, c.VariableName) {
+			c.SuspicionLevel = "suspected"
+		}
 		result.Candidates = append(result.Candidates, newEvidenceItem(c, spec, filePathByID[c.FileID]))
 	}
 

@@ -637,12 +637,19 @@ straight to the structured report (`written: 0`).
     type the subagent reported ABANDONED (`failed_types`) is NOT marked complete
     — it goes through the F5 FAILED/PARTIAL branch instead.
 
-    **Auto-confirmed findings are machine verdicts (no re-review):** the scan
-    marks them `review_status='confirmed'` at write time, so there is no
-    re-review loop and no `--list-auto-confirmed` completeness gate. The final
-    free-form judgment is done by the SAME AI agent (the security-auditor
-    subagent's own LLM) as it classifies candidates — there is NO separate or
-    customer-configured LLM anywhere in the pipeline.
+    **Auto-confirmed findings are machine verdicts — verified ONCE, never
+    re-classified in a loop:** the scan writes them `status='auto-confirmed'`
+    (with `review_status='confirmed'`) straight into `findings`, so they are NOT
+    in `candidates/_index.md` and the audit would ship them unexamined. A
+    machine proof is only as good as its premise, and production measured a 75%
+    false-positive rate on the `uninit` tier (macro for-init writes, block-scope
+    `extern` declarations, output-parameter fills). Step 5.5 below is the
+    bounded verification pass for exactly those rows; it is NOT the removed
+    per-candidate re-review loop (no `--list-auto-confirmed`, no completeness
+    gate, no re-derivation of every proof). The final free-form judgment is
+    still done by the SAME AI agent (the security-auditor subagent's own LLM) as
+    it classifies candidates — there is NO separate or customer-configured LLM
+    anywhere in the pipeline.
 
     After ALL subagents (or your sequential loop) are done, run `secguard report --audit --scan-id <scan_id> --output-dir <output_dir> --ai-duration-ms <ms>`
    ONCE to regenerate `report.md` (verdict-stage, confirmed only) + `result.sarif`
@@ -652,6 +659,39 @@ straight to the structured report (`written: 0`).
    can report pipeline-vs-AI timing. Verify `<output_dir>/result.sarif` is
    non-empty and `findings/` has files; if not, a write did not land — find the
    `per_finding_warning` and fix it.
+
+   **Step 5.5 — 机器判定终审复核（让 `result.sarif` 直接可提单）:** run ONCE per
+   scan, AFTER the audit above. Scope = ONLY the rows the pipeline proved by itself
+   (`status='auto-confirmed'`); candidates the AI already classified are done.
+
+   a. List them (absolute DB path; the `findings` table is the documented query
+      surface): `secguard db "SELECT id, rule_id, file_path, line_number,
+      function_name, variable, properties FROM findings WHERE
+      scan_id='<scan_id>' AND status='auto-confirmed' ORDER BY id" --db <abs db>`.
+      `properties` already carries the proof basis
+      (`auto_confirm_evidence` / `auto_confirm_hint_tokens` /
+      `auto_confirm_verdict_facts`).
+   b. Judge each row against its type's machine-proof PREMISE. Settle it from the
+      row whenever possible and open the source only when the row cannot:
+
+      | CWE | premise the machine proof assumes | dismiss when |
+      |---|---|---|
+      | CWE-457 uninit | `certain-uninit` / `init@none` = "never written" | the variable is written by a macro (`macro-context` in its hints, or its name appears in a macro invocation in the window), is a block-scope `extern`/`static`, is passed as `&var` to a callee (`init@unseen`), or the struct is written field-by-field before the read |
+      | CWE-476 null-deref | `null@cfg-proof` = "NULL reaches on every path" | the dereference sits in a macro that may assign the pointer (an iteration macro's loop header) |
+      | CWE-134 format-string | a non-literal format reaches a sink | every in-tree caller of the format parameter passes a literal (`callsites@N:all-literal`) |
+      | CWE-369 divide-by-zero | a proved-zero / non-zero-constant divisor | a zero guard sits in the ±8-line window before the division |
+      | other | the proof class named in the row's facts | a concrete `file:line` in the source contradicts the premise |
+
+   c. Write the dismissals in ONE batch (no per-row subprocess), every reason citing
+      a `file:line` fact: `secguard report --review-json <file.json> --db <abs db>`
+      with `[{"id":<id>,"review_status":"dismissed","review_reasoning":"<file:line +
+      why-safe>"}]`. A row you keep needs NO write.
+   d. Re-run the audit ONCE so `result.sarif` / `report.md` / `findings/` reflect the
+      dismissals — the regenerated `result.sarif` is the deliverable.
+   e. Budget: bounded. With more than ~40 machine findings, verify the
+      assignment-based premises first (CWE-457 / CWE-476) and record the remainder as
+      "machine verdicts unverified" in the report's limitations. Never read source for
+      a row the checklist above settles from the row itself.
 
    **`summary` — 全轮汇总的唯一权威（控制台/最终报告不要自己相加 `audits`）:** the
    audit response carries `summary`, the scan-wide aggregate that the per-type

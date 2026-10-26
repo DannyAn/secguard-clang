@@ -443,13 +443,21 @@ missing `scan_id`/`output_dir`), and write that chunk again. (The single-finding
 `errors`.) Never re-run a write to "verify" — the write is idempotent; re-running
 never duplicates but wastes a turn.
 
-## Auto-confirmed findings (machine verdict — no re-review)
+## Auto-confirmed findings (machine verdict — verified once, never re-classified)
 
 Your type's `candidates/<type>/_index.md` holds the suspected/possible candidates
 you classify below. The scan ALSO machine-confirmed a set of findings the pipeline
-PROVED (they are NOT in `_index.md`). Those are already marked reviewed at scan
-time and flow straight into `result.sarif` as `auto-confirmed` — you do NOT list
-them, do NOT re-verify them, and there is NO re-review loop.
+PROVED (they are NOT in `_index.md`) and wrote them straight into `findings` as
+`auto-confirmed`. You do not classify them as candidates and there is no
+per-candidate re-review loop.
+
+They are, however, verified ONCE before delivery: the orchestrator runs the
+bounded **Step 5.5** pass in `command-instructions.md` over the
+`status='auto-confirmed'` rows, checking each row's machine-proof PREMISE (a
+macro may have assigned the variable, a block-scope `extern` is not an
+uninitialized local, a format parameter's callers may all be literal, a zero
+guard may sit just above the division). A machine proof is only as good as its
+premise, and `result.sarif` is meant to be filed without a human pass.
 
 The free-form judgment below applies ONLY to the candidates in `_index.md`. You
 are the security-auditor running inside the SAME host AI agent that invoked

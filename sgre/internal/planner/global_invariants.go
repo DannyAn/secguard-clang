@@ -282,11 +282,19 @@ func scanZeroGuardedAssignments(body parser.Node, globals, locals map[string]boo
 			continue
 		}
 		guarded := zeroGuardedVarAST(*cond)
-		if len(guarded) == 0 {
-			continue
-		}
 		consequence := ifStmt.ChildByFieldName("consequence")
 		if consequence == nil {
+			continue
+		}
+		// De Morgan for a DISJUNCTIVE exit guard: the fall-through of
+		// `if (a == 0 || b == 0) return;` satisfies both negations, so each
+		// zero-test disjunct proves its variable non-zero there. Only the
+		// exiting (or no-return) form qualifies — a positive branch proves
+		// neither side.
+		if len(guarded) == 0 && (exitsEarly(*consequence) || callsNoReturn(*consequence, noReturnMacros)) {
+			guarded = orExitGuardedVars(*cond)
+		}
+		if len(guarded) == 0 {
 			continue
 		}
 		if !exitsEarly(*consequence) && !callsNoReturn(*consequence, noReturnMacros) && !backfillsToNonZero(*consequence, guarded) {
@@ -571,4 +579,33 @@ func isZeroLiteralNode(n parser.Node) bool {
 	}
 	v, err := strconv.ParseInt(strings.TrimSpace(n.Text()), 0, 64)
 	return err == nil && v == 0
+}
+
+// orExitGuardedVars returns the variables a DISJUNCTIVE exit guard proves
+// non-zero on the surviving path: the fall-through of
+// `if (a == 0 || b == NULL) return;` satisfies both negations, so every
+// zero-test disjunct (`x == 0`, `x == NULL`, `!x`) establishes x != 0.
+// Parentheses are transparent. Bound disjuncts (`x <= N`, `x >= N`) are
+// deliberately not expanded: under negation they do imply a strict bound, but
+// that is a different fact and this helper only feeds the non-zero invariant.
+func orExitGuardedVars(cond parser.Node) []string {
+	for cond.Kind() == "parenthesized_expression" {
+		ch := cond.NamedChildren()
+		if len(ch) != 1 {
+			return nil
+		}
+		cond = ch[0]
+	}
+	if cond.Kind() != "binary_expression" || parser.BinaryOperator(cond) != "||" {
+		return nil
+	}
+	kids := cond.NamedChildren()
+	if len(kids) != 2 {
+		return nil
+	}
+	var out []string
+	for _, disj := range kids {
+		out = append(out, zeroGuardedVarAST(disj)...)
+	}
+	return out
 }

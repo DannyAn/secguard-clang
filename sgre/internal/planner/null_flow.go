@@ -634,6 +634,24 @@ func addOutputParamKills(stmt parser.Node, e *nodeEffects, derefArgs bool, macro
 				}
 			}
 		}
+		// `MACRO(args) { body }` — the same macro call, but with a braced body
+		// (no type-cast argument), parses as a function_definition and so has
+		// neither a call_expression nor an ERROR node. Same kill.
+		if name, args := macroBlockCall(stmt); name != "" {
+			for _, v := range macros.WrittenArgsInError(name, args, macroWrites) {
+				e.kill[v] = true
+			}
+			if iterIdxs, ok := iterMacros[name]; ok {
+				for _, i := range iterIdxs {
+					if i >= len(args) {
+						continue
+					}
+					if v := rhsVarName(args[i]); v != "" {
+						e.kill[v] = true
+					}
+				}
+			}
+		}
 	}
 }
 
@@ -660,6 +678,50 @@ func macroCallFromError(stmt parser.Node) (string, []parser.Node) {
 			break
 		}
 		args = append(args, c)
+	}
+	if len(args) == 0 {
+		return "", nil
+	}
+	return name, args
+}
+
+// macroBlockCall recovers the OTHER macro-invocation spelling that is not a
+// call_expression: a function-like macro whose expansion opens a block,
+// `MACRO(arg0, arg1) { body }`. tree-sitter has no macro expansion, so it
+// models that as a FUNCTION DEFINITION (return type = the macro name,
+// declarator = parenthesized_declarator, body = the trailing compound
+// statement) — see the CFG builder's "function_definition" case, which already
+// models it as a loop. Every collector that only walked call_expression/ERROR
+// therefore MISSED the macro's argument writes: `POOL_FOR_ALL(pool_id) {
+// total += pool_id; }` left pool_id "never assigned" (init@none /
+// certain-uninit, auto-confirmed CWE-457 in production).
+//
+// A REAL nested function has a function_declarator (not parenthesized), so it
+// is excluded; the caller still gates on the name being a known macro summary.
+func macroBlockCall(stmt parser.Node) (string, []parser.Node) {
+	if stmt.Kind() != "function_definition" {
+		return "", nil
+	}
+	name := ""
+	var decl parser.Node
+	for _, c := range stmt.NamedChildren() {
+		switch c.Kind() {
+		case "type_identifier", "identifier":
+			if name == "" {
+				name = c.Text()
+			}
+		case "parenthesized_declarator":
+			decl = c
+		}
+	}
+	if name == "" || decl.Kind() == "" {
+		return "", nil
+	}
+	var args []parser.Node
+	for _, c := range decl.NamedChildren() {
+		if c.Kind() == "identifier" {
+			args = append(args, c)
+		}
 	}
 	if len(args) == 0 {
 		return "", nil

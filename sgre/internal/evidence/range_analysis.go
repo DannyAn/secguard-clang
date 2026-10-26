@@ -149,6 +149,33 @@ func AnalyzeBounds(ifs, assigns []parser.Node) *RangeFacts {
 		// nested in a conditional does not leak its fact past that branch.
 		scopeEnd := enclosingBlockEnd(ifStmt)
 
+		// De Morgan for a DISJUNCTIVE exit guard: the fall-through of
+		// `if (a == 0 || b == 0) return ...;` satisfies BOTH negations, so each
+		// `x == 0` / `x == NULL` / `!x` disjunct establishes x non-zero there.
+		// This shape is common in real code (`if (width == 0 || index >= n)
+		// return; size / width`) and was previously invisible, so the division
+		// below surfaced as a possibly-zero divisor and production classified it
+		// as a real defect. Only the EXIT form is expanded — a positive
+		// `if (a || b) { ... }` establishes neither side — and only the
+		// zero-establishing spellings (an OR'd `x <= 0` says nothing about x
+		// being zero on the fall-through for unsigned arithmetic).
+		if exits {
+			for _, disj := range orDisjuncts(*cond) {
+				dt := stripParens(strings.TrimSpace(disj.Text()))
+				if m := reEqZero.FindStringSubmatch(dt); m != nil {
+					r.nonZeroAfter[m[1]] = append(r.nonZeroAfter[m[1]], [2]int{end, scopeEnd})
+					continue
+				}
+				if m := reEqNull.FindStringSubmatch(dt); m != nil {
+					r.nonZeroAfter[m[1]] = append(r.nonZeroAfter[m[1]], [2]int{end, scopeEnd})
+					continue
+				}
+				if m := reNot.FindStringSubmatch(dt); m != nil {
+					r.nonZeroAfter[m[1]] = append(r.nonZeroAfter[m[1]], [2]int{end, scopeEnd})
+				}
+			}
+		}
+
 		if m := reLt.FindStringSubmatch(ct); m != nil {
 			if n, err := strconv.Atoi(m[2]); err == nil {
 				r.hiInside[m[1]] = append(r.hiInside[m[1]], hiRange{start, bodyEnd, n - 1})
@@ -446,4 +473,29 @@ func balanced(s string) bool {
 		}
 	}
 	return depth == 0
+}
+
+// orDisjuncts returns the top-level `||` operands of a condition, or nil when
+// the condition is not a disjunction. Parentheses around the whole condition
+// (and around an operand) are transparent: `(a == 0) || (b == 0)` yields both
+// operands. Only the top level is split — a nested `&&` inside a disjunct stays
+// one operand, so `if (a == 0 || (b == 0 && c))` still establishes a non-zero
+// (false OR = both false) but not b.
+func orDisjuncts(cond parser.Node) []parser.Node {
+	inner := cond
+	for inner.Kind() == "parenthesized_expression" {
+		kids := inner.NamedChildren()
+		if len(kids) != 1 {
+			break
+		}
+		inner = kids[0]
+	}
+	if inner.Kind() != "binary_expression" || parser.BinaryOperator(inner) != "||" {
+		return nil
+	}
+	kids := inner.NamedChildren()
+	if len(kids) != 2 {
+		return nil
+	}
+	return kids
 }

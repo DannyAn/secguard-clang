@@ -196,7 +196,7 @@ func variableRoot(name string) string {
 // scanWindow walks the context window and reports (a) whether it contains a
 // function-like macro CALLS (not a #define), and (b) whether any such call site
 // mentions the identifier name.
-func (d *macroContextDetector) scanWindow(path string, line, lo, hi int, name string) (context, mentions bool) {
+func (d *macroContextDetector) scanWindow(path string, line, lo, hi int, name string) (bool, bool) {
 	if path == "" || line <= 0 {
 		return false, false
 	}
@@ -228,6 +228,7 @@ func (d *macroContextDetector) scanWindow(path string, line, lo, hi int, name st
 	if start > end {
 		return false, false
 	}
+	context := false
 	for i, l := range all[start-1 : end] {
 		// A preprocessor line (#define FOO(x) ...) DECLARES a macro, it does
 		// not CALL one: the dereference does not involve FOO just because
@@ -235,8 +236,8 @@ func (d *macroContextDetector) scanWindow(path string, line, lo, hi int, name st
 		if strings.HasPrefix(strings.TrimSpace(l), "#") {
 			continue
 		}
-		for _, m := range macroCallRe.FindAllStringSubmatch(l, -1) {
-			macroName := m[1]
+		for _, m := range macroCallRe.FindAllStringSubmatchIndex(l, -1) {
+			macroName := l[m[2]:m[3]]
 			isMacro := d.known[macroName]
 			if !isMacro {
 				// An ALL_CAPS name that the function index knows as a scanned
@@ -251,22 +252,52 @@ func (d *macroContextDetector) scanWindow(path string, line, lo, hi int, name st
 			if name == "" {
 				continue
 			}
-			if mentionsIdentifier(l, name) {
+			// Only the macro's ARGUMENT LIST can pass the variable into the
+			// macro. Testing the whole line would match the variable's own use
+			// site (`return a + 1 + MYMACRO(0)`) and demote a proof the macro
+			// cannot touch.
+			if mentionsIdentifier(macroArgsText(all, start-1+i, m[1]-1), name) {
 				return context, true
-			}
-			// A macro invocation may continue on the next line(s) with a
-			// backslash continuation; its argument (and thus the variable) can
-			// live there.
-			idx := start - 1 + i
-			for strings.HasSuffix(strings.TrimSpace(all[idx]), "\\") && idx+1 < len(all) {
-				idx++
-				if mentionsIdentifier(all[idx], name) {
-					return context, true
-				}
 			}
 		}
 	}
-	return context, mentions
+	return context, false
+}
+
+// macroArgsText returns the text of the argument list starting at the "(" in
+// line lines[idx][openCol], following backslash continuations. It stops at the
+// matching ")" (balanced) or at the end of the continued lines. A truncated
+// result is harmless for its only consumer: a missed argument match can only
+// keep a machine verdict that a full read would have demoted, never demote one
+// a macro cannot touch.
+func macroArgsText(lines []string, idx, openCol int) string {
+	if idx < 0 || idx >= len(lines) || openCol < 0 || openCol >= len(lines[idx]) {
+		return ""
+	}
+	var b strings.Builder
+	depth := 0
+	for ; idx < len(lines); idx++ {
+		line := lines[idx]
+		for i := openCol; i < len(line); i++ {
+			ch := line[i]
+			b.WriteByte(ch)
+			switch ch {
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 {
+					return b.String()
+				}
+			}
+		}
+		openCol = 0
+		// A macro invocation spans lines only via a trailing backslash.
+		if !strings.HasSuffix(strings.TrimSpace(line), "\\") {
+			break
+		}
+	}
+	return b.String()
 }
 
 func mentionsIdentifier(line, name string) bool {
