@@ -269,3 +269,31 @@ func TestLoad_LogsOnUnreadableConfig(t *testing.T) {
 		t.Fatalf("expected stderr warning about config load failure, got: %q", string(out))
 	}
 }
+
+// [nullability.non_null_params] is the no-code-change lever for a BOUNDARY
+// scan's largest null-deref bucket (framework-supplied pointer parameters).
+func TestLoad_NonNullParams(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nnp.toml")
+	content := `[nullability.non_null_params]
+names = ["user_data", "reply_msg", "out_msg"]
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	SetExplicitPath(path)
+	cfg := Load()
+	got := cfg.NonNullParamNames()
+	want := []string{"user_data", "reply_msg", "out_msg"}
+	if len(got) != len(want) {
+		t.Fatalf("NonNullParamNames() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("NonNullParamNames()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	if n := len(cfg.NonNullReturnNames()); n != 0 {
+		t.Errorf("non_null_params must not leak into non_null_returns, got %d names", n)
+	}
+}

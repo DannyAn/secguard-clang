@@ -444,3 +444,61 @@ func TestBuildStmtCFG_IterMacroErrorNode(t *testing.T) {
 		t.Errorf("macro-call header should have 2 successors (body + join), got %v", header.Succs)
 	}
 }
+
+// A for header puts the header, the initializer, the condition and the update
+// on ONE line, each as its own zero-length statement node. NodeAt alone cannot
+// tell them apart; NodeAtColumn uses the token column so a dereference in the
+// update clause resolves to the UPDATE node (whose incoming facts differ from
+// the initializer's), instead of the first node it happens to see.
+func TestNodeAtColumn_ForHeaderMembers(t *testing.T) {
+	body := parseBody(t, `typedef struct node { int id; struct node *next; } node_t;
+void walk(node_t *pool) {
+    node_t *node = NULL;
+    for (node = pool; node != NULL; node = node->next) {
+        node->id = 0;
+    }
+}`)
+	cfg := BuildStmtCFG(body, 8)
+
+	var header, init, update *StmtNode
+	for _, n := range cfg.Nodes {
+		if n.Kind != "stmt" || n.StartLine != 4 {
+			continue
+		}
+		switch n.Stmt.Kind() {
+		case "for_statement":
+			header = n
+		case "assignment_expression":
+			if n.Stmt.Text() == "node = pool" {
+				init = n
+			} else if n.Stmt.Text() == "node = node->next" {
+				update = n
+			}
+		}
+	}
+	if header == nil || init == nil || update == nil {
+		t.Fatalf("expected header/init/update nodes on line 4, got %v", stmtLines(cfg))
+	}
+	if !(init.StartColumn < update.StartColumn) {
+		t.Fatalf("init column %d must precede update column %d", init.StartColumn, update.StartColumn)
+	}
+
+	// The dereference `node->next` sits after the update clause begins.
+	derefCol := update.StartColumn + 7
+	if got := cfg.NodeAtColumn(4, derefCol); got != update {
+		t.Errorf("NodeAtColumn(4,%d) = %v, want the update node", derefCol, got)
+	}
+	// A position inside the initializer resolves to the initializer.
+	if got := cfg.NodeAtColumn(4, init.StartColumn+2); got != init {
+		t.Errorf("NodeAtColumn(4,%d) = %v, want the initializer node", init.StartColumn+2, got)
+	}
+	// Without a column the old line-only resolution applies (the ambiguity this
+	// API exists to remove) — it must not be the update node.
+	if got := cfg.NodeAt(4); got == update {
+		t.Errorf("NodeAt(4) unexpectedly resolved to the update node; the line-only ambiguity is gone and this test no longer describes the bug")
+	}
+	// An unknown column falls back instead of returning nil.
+	if got := cfg.NodeAtColumn(4, 0); got == nil {
+		t.Error("NodeAtColumn with column 0 must fall back to NodeAt")
+	}
+}

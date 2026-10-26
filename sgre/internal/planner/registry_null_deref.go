@@ -90,9 +90,18 @@ func buildNullDerefVerdictFacts(c Candidate) []VerdictFact {
 	facts := make([]VerdictFact, 0, 4)
 	switch c.NullOriginTier {
 	case "cfg-proof":
+		detail := fmt.Sprintf("the CFG proves a NULL assignment to %s reaches the dereference at line %d on every path — machine-proved CWE-476", c.VariableName, c.Line)
+		if c.MacroContext {
+			// The CFG does not expand function-like macros, so the "no
+			// intervening reassignment" premise is unverified here: an
+			// iteration macro assigns its iterator in the loop header. Keep the
+			// fact (the null assignment is real) but never tell the classifier
+			// to confirm without checking the macro.
+			detail = fmt.Sprintf("the CFG finds a NULL assignment to %s with no in-function reassignment before the dereference at line %d, BUT a function-like macro is in scope and CFG analysis does not expand macros — verify the macro does not assign %s (a list-iteration macro like SLL_Scan/list_for_each_* assigns its iterator in the loop header, which makes this proof FALSE) before confirming", c.VariableName, c.Line, c.VariableName)
+		}
 		facts = append(facts, VerdictFact{
 			Token:  "null@cfg-proof",
-			Detail: fmt.Sprintf("the CFG proves a NULL assignment to %s reaches the dereference at line %d on every path — machine-proved CWE-476", c.VariableName, c.Line),
+			Detail: detail,
 		})
 	case "malloc-fail":
 		name := c.NullableOriginName

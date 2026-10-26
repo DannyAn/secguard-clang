@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BurntSushi/toml"
+
 	"github.com/DannyAn/secguard-clang/internal/config"
 )
 
@@ -41,6 +43,21 @@ func TestConfigCmd_ExampleIsCopyPaste(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "[iterator_macros.macros]") {
 		t.Errorf("config --example: missing [iterator_macros.macros], got:\n%s", stdout)
+	}
+	// The template is meant to be copy-pasted verbatim: it must stay valid TOML
+	// and every documented section must decode into the Config struct.
+	var parsed config.Config
+	if _, err := toml.Decode(stdout, &parsed); err != nil {
+		t.Fatalf("config --example is not valid TOML: %v\n%s", err, stdout)
+	}
+	for _, marker := range []string{
+		"[nullability.non_null_returns]",
+		"[nullability.non_null_params]",
+		"[scan]",
+	} {
+		if !strings.Contains(stdout, marker) {
+			t.Errorf("config --example: missing %s, got:\n%s", marker, stdout)
+		}
 	}
 }
 

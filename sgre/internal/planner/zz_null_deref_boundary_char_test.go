@@ -112,10 +112,18 @@ int maf_rate_exceeded_query(int profile_id, int *key) { return *key; }
 				t.Errorf("field-chain candidate %s: suspicion = %q, want suspected", c.Target.Variable, c.SuspicionLevel)
 			}
 		}
-		for _, want := range []string{"proc", "proc->base", "proc->base.msg", "proc->base.msg->ctx", "proc->base.msg->ctx->conn"} {
+		// One candidate per POINTER dereference in the chain. `proc->base` is a
+		// `.` step selecting a struct VALUE member (`struct base base`), not a
+		// pointer dereference — it can never be NULL and its fix suggestion
+		// (`if (proc->base == NULL)`) would not even compile, so it must not be
+		// a candidate. Every `->` step still gets one.
+		for _, want := range []string{"proc", "proc->base.msg", "proc->base.msg->ctx", "proc->base.msg->ctx->conn"} {
 			if !vars[want] {
-				t.Errorf("field chain a->b->c->d: missing per-prefix candidate %q (got %v)", want, vars)
+				t.Errorf("field chain a->b->c->d: missing per-deref candidate %q (got %v)", want, vars)
 			}
+		}
+		if vars["proc->base"] {
+			t.Errorf("proc->base selects a struct value member, not a pointer: it must not be a candidate (got %v)", vars)
 		}
 	})
 }

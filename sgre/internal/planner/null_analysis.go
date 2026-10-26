@@ -23,7 +23,12 @@ import (
 type nullSource struct {
 	variable string
 	line     int
-	origin   string
+	// column is the source statement's column when the emitting detector
+	// recorded one (currently the self-referential field-read update). It lets
+	// the flow analysis resolve the source to the exact statement on its line —
+	// a `for (init; cond; update)` header has three statements on one line.
+	column int
+	origin string
 	// definite marks an EXPLICIT null assignment (`p = NULL`), as opposed to a
 	// possible-null source (malloc/fopen/function-return). A definite source
 	// reaching a dereference is a certain null-deref, not a maybe.
@@ -92,12 +97,15 @@ func buildNullModel(ctx context.Context, store db.Store) (map[int64]*nullModel, 
 			models[e.EntityID] = m
 		}
 		line := 0
+		column := 0
 		if loc := locsByID[e.LocationID]; loc != nil {
 			line = loc.Line
+			column = loc.Column
 		}
 		m.sources = append(m.sources, nullSource{
 			variable:  props.Variable,
 			line:      line,
+			column:    column,
 			origin:    props.Origin,
 			definite:  props.Definite == "true",
 			chainOpen: props.Chain == "open",

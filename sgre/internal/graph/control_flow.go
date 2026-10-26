@@ -18,8 +18,15 @@ type StmtNode struct {
 	Kind      string // "entry", "exit", "join", or "stmt"
 	StartLine int
 	EndLine   int
-	Stmt      parser.Node // source statement for "stmt" nodes; zero otherwise
-	Succs     []int
+	// StartColumn is the 1-based column of the statement's first token, from
+	// the parser. It is what disambiguates two statements that share ONE line —
+	// the `for (p = head; p; p = p->next)` header, its initializer and its
+	// update all live on the header's line, yet a dereference in the update
+	// belongs to the UPDATE node, not to the initializer (whose incoming
+	// definite-null fact is a different program point). 0 for synthetic nodes.
+	StartColumn int
+	Stmt        parser.Node // source statement for "stmt" nodes; zero otherwise
+	Succs       []int
 	// TrueSuccs / FalseSuccs split the successors of a CONDITION node (an
 	// if/while/for header, Kind == "stmt" and Stmt.Kind() a condition kind) into
 	// the branch taken when the condition is true vs false. They are what a
@@ -68,6 +75,53 @@ func (cfg *StmtCFG) NodeAt(line int) *StmtNode {
 		}
 	}
 	return best
+}
+
+// NodeAtColumn resolves a source position to the statement node that owns it,
+// using the COLUMN to break same-line ties. NodeAt alone cannot: the header of
+// `for (p = head; p; p = p->next)`, its initializer and its update are three
+// distinct statements on ONE line, and every one of them has a zero-length
+// range, so NodeAt returns whichever sits first in the node list — the
+// INITIALIZER, whose incoming definite-null fact describes a different program
+// point than a dereference in the update clause. Resolving `p->next` to the
+// initializer made `p = NULL; for (p = &x; p; p = p->next)` a "certain
+// null-deref" (an auto-confirmed false positive on the commonest C list walk).
+//
+// The rule: among the statement nodes containing the line, prefer the one that
+// starts at or before the column and starts LATEST (the innermost statement
+// whose first token precedes the dereference). Fall back to NodeAt when the
+// position is unknown (column <= 0) or no node starts before it.
+func (cfg *StmtCFG) NodeAtColumn(line, column int) *StmtNode {
+	if column <= 0 {
+		return cfg.NodeAt(line)
+	}
+	var best *StmtNode
+	for _, n := range cfg.Nodes {
+		if n.Kind != "stmt" {
+			continue
+		}
+		if line < n.StartLine || line > n.EndLine {
+			continue
+		}
+		if n.StartColumn <= 0 || n.StartColumn > column {
+			continue
+		}
+		if best == nil || n.StartColumn > best.StartColumn {
+			best = n
+			continue
+		}
+		if n.StartColumn == best.StartColumn {
+			// Same start column: prefer the tighter range (the leaf), which is
+			// the existing NodeAt convention.
+			if n.EndLine-n.StartLine < best.EndLine-best.StartLine {
+				best = n
+			}
+		}
+	}
+	if best != nil {
+		return best
+	}
+	return cfg.NodeAt(line)
 }
 
 // isControlFlowHeader reports whether a statement node wraps control flow (an
@@ -223,12 +277,17 @@ func linkGotoLabels(cfg *StmtCFG, body parser.Node) {
 
 func (b *cfgBuilder) newNode(kind string, start, end int, stmt parser.Node) int {
 	id := len(b.cfg.Nodes)
+	startCol := 0
+	if stmt.Kind() != "" {
+		startCol = stmt.StartColumn()
+	}
 	b.cfg.Nodes = append(b.cfg.Nodes, &StmtNode{
-		ID:        id,
-		Kind:      kind,
-		StartLine: start,
-		EndLine:   end,
-		Stmt:      stmt,
+		ID:          id,
+		Kind:        kind,
+		StartLine:   start,
+		EndLine:     end,
+		StartColumn: startCol,
+		Stmt:        stmt,
 	})
 	return id
 }

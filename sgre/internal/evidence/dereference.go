@@ -68,13 +68,38 @@ func (d *DereferenceDetector) detectMemberAccess(ctx context.Context, f *db.Func
 		if !funcLineRange(f, node.StartLine()) {
 			continue
 		}
-		text := node.Text()
-		if !isArrowAccess(text) {
+		// Only a `->` step dereferences a pointer. Testing the statement TEXT
+		// for "->" made every `.` step of a chain whose root used `->` look
+		// like a dereference: `user_data->fc.fullcone_flag.is_fullcone` emitted
+		// THREE sinks (`user_data`, `user_data->fc`,
+		// `user_data->fc.fullcone_flag`), two of them selecting a struct VALUE
+		// member that can never be NULL — the reported variable was not even a
+		// pointer. The node's own operator token is the precise test.
+		if !isArrowOperator(node) {
 			continue
 		}
+		text := node.Text()
 		varName := extractPointerFromField(node)
 		d.insertDerefEvent(ctx, f, file, node, varName, text, nonNullable, result)
 	}
+}
+
+// isArrowOperator reports whether a field_expression's OWN operator is `->`
+// (as opposed to `.`). tree-sitter-c keeps the operator as an anonymous child,
+// so this is a structural test rather than a text search. Chained `a->b->c`
+// yields one field_expression per `->`, each of which dereferences a distinct
+// pointer, so every step still emits its own sink; only the value-member `.`
+// steps stop emitting one.
+func isArrowOperator(node parser.Node) bool {
+	for _, c := range node.Children() {
+		switch c.Kind() {
+		case "->":
+			return true
+		case ".":
+			return false
+		}
+	}
+	return false
 }
 
 // detectMemberAccessInErrors recovers `->` dereferences that a macro call site

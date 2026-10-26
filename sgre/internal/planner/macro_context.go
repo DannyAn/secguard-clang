@@ -41,6 +41,13 @@ type macroContextDetector struct {
 	// sets keep priority — user intent beats the index.
 	funcsLoaded  bool
 	definedFuncs map[string]bool
+	// funcSpans bounds each function's body (ID -> [start, end]) from the same
+	// index load. The context window must never leak across a function
+	// boundary: an ALL_CAPS macro call in a NEIGHBOURING function 8 lines away
+	// is not part of this dereference's context, and treating it as such both
+	// demoted honestly confirmed candidates and fed the "no concrete source
+	// line" dismissal an unrelated macro.
+	funcSpans map[int64][2]int
 }
 
 func newMacroContextDetector() *macroContextDetector {
@@ -105,27 +112,97 @@ func (d *macroContextDetector) ensureDefinedFuncs(ctx context.Context, store db.
 		return
 	}
 	names := make(map[string]bool, len(funcs))
+	spans := make(map[int64][2]int, len(funcs))
 	for _, fn := range funcs {
 		names[fn.Name] = true
+		spans[fn.ID] = [2]int{fn.StartLine, fn.EndLine}
 	}
 
 	d.mu.Lock()
 	if !d.funcsLoaded {
 		d.definedFuncs = names
+		d.funcSpans = spans
 		d.funcsLoaded = true
 	}
 	d.mu.Unlock()
 }
 
+// macroContextAt is the function-scoped entry point: the context window is
+// clamped to the candidate function's own body (from the function index) so a
+// macro call in a NEIGHBOURING function can never be mistaken for this
+// dereference's macro context. When the span is unknown (a function missing
+// from the index) it falls back to the file-wide window.
+func (d *macroContextDetector) macroContextAt(ctx context.Context, store db.Store, funcID int64, path string, line int) bool {
+	d.ensureDefinedFuncs(ctx, store)
+	d.mu.Lock()
+	span, ok := d.funcSpans[funcID]
+	d.mu.Unlock()
+	if !ok || span[0] <= 0 || span[1] < span[0] {
+		return d.hasMacroContext(path, line)
+	}
+	return d.hasMacroContextIn(path, line, span[0], span[1])
+}
+
 // hasMacroContext reports whether the source region around line (the statement
 // at line plus ±macroContextWindow) contains a function-like macro call.
 func (d *macroContextDetector) hasMacroContext(path string, line int) bool {
-	if path == "" || line <= 0 {
+	return d.hasMacroContextIn(path, line, 0, 0)
+}
+
+// hasMacroContextIn is hasMacroContext with the scan window clamped to
+// [lo, hi] (inclusive); 0/0 means "no clamp" (the whole file).
+func (d *macroContextDetector) hasMacroContextIn(path string, line, lo, hi int) bool {
+	context, _ := d.scanWindow(path, line, lo, hi, "")
+	return context
+}
+
+// macroContextMentions reports whether a function-like macro call in the
+// context window of line mentions variable (as a whole identifier, in its own
+// text or its argument text). This is the narrow signal behind the cfg-proof
+// demotion: a macro that does not even name the variable cannot have reassigned
+// it, so the CFG proof still stands; a macro that receives it (`SLL_Scan(sll,
+// car_policy, ...)`, `LOG_PTR(p)`) may assign it, and without expansion the
+// proof is unverifiable.
+func (d *macroContextDetector) macroContextMentions(ctx context.Context, store db.Store, funcID int64, path string, line int, variable string) bool {
+	name := variableRoot(variable)
+	if name == "" {
 		return false
+	}
+	d.ensureDefinedFuncs(ctx, store)
+	d.mu.Lock()
+	span, ok := d.funcSpans[funcID]
+	d.mu.Unlock()
+	lo, hi := 0, 0
+	if ok && span[0] > 0 && span[1] >= span[0] {
+		lo, hi = span[0], span[1]
+	}
+	_, mentions := d.scanWindow(path, line, lo, hi, name)
+	return mentions
+}
+
+// variableRoot strips a member/subscript chain to the pointer variable that owns
+// it: `p->a.b` -> "p", `arr[i]` -> "arr". A macro can only reassign the root
+// pointer, so that is the name worth looking for.
+func variableRoot(name string) string {
+	for i := 0; i < len(name); i++ {
+		switch name[i] {
+		case '-', '.', '[', ' ', '(', ')':
+			return strings.TrimSpace(name[:i])
+		}
+	}
+	return strings.TrimSpace(name)
+}
+
+// scanWindow walks the context window and reports (a) whether it contains a
+// function-like macro CALLS (not a #define), and (b) whether any such call site
+// mentions the identifier name.
+func (d *macroContextDetector) scanWindow(path string, line, lo, hi int, name string) (context, mentions bool) {
+	if path == "" || line <= 0 {
+		return false, false
 	}
 	all := d.fileLines(path)
 	if all == nil || line > len(all) {
-		return false
+		return false, false
 	}
 	// Snapshot the defined-name set: the writer replaces the map wholesale
 	// (never mutates a published one), so the reference is stable for the
@@ -135,14 +212,23 @@ func (d *macroContextDetector) hasMacroContext(path string, line int) bool {
 	d.mu.Unlock()
 
 	start := line - macroContextWindow
+	end := line + macroContextWindow
+	if lo > 0 && lo > start {
+		start = lo
+	}
+	if hi > 0 && hi < end {
+		end = hi
+	}
 	if start < 1 {
 		start = 1
 	}
-	end := line + macroContextWindow
 	if end > len(all) {
 		end = len(all)
 	}
-	for _, l := range all[start-1 : end] {
+	if start > end {
+		return false, false
+	}
+	for i, l := range all[start-1 : end] {
 		// A preprocessor line (#define FOO(x) ...) DECLARES a macro, it does
 		// not CALL one: the dereference does not involve FOO just because
 		// its definition sits in the window.
@@ -150,19 +236,62 @@ func (d *macroContextDetector) hasMacroContext(path string, line int) bool {
 			continue
 		}
 		for _, m := range macroCallRe.FindAllStringSubmatch(l, -1) {
-			name := m[1]
-			if d.known[name] {
-				return true
+			macroName := m[1]
+			isMacro := d.known[macroName]
+			if !isMacro {
+				// An ALL_CAPS name that the function index knows as a scanned
+				// DEFINITION is a function, not a #define: the convention
+				// heuristic yields to the index.
+				isMacro = isAllCapsMacroName(macroName) && (defined == nil || !defined[macroName])
 			}
-			// An ALL_CAPS name that the function index knows as a scanned
-			// DEFINITION is a function, not a #define: the convention
-			// heuristic yields to the index.
-			if isAllCapsMacroName(name) && (defined == nil || !defined[name]) {
-				return true
+			if !isMacro {
+				continue
+			}
+			context = true
+			if name == "" {
+				continue
+			}
+			if mentionsIdentifier(l, name) {
+				return context, true
+			}
+			// A macro invocation may continue on the next line(s) with a
+			// backslash continuation; its argument (and thus the variable) can
+			// live there.
+			idx := start - 1 + i
+			for strings.HasSuffix(strings.TrimSpace(all[idx]), "\\") && idx+1 < len(all) {
+				idx++
+				if mentionsIdentifier(all[idx], name) {
+					return context, true
+				}
 			}
 		}
 	}
-	return false
+	return context, mentions
+}
+
+func mentionsIdentifier(line, name string) bool {
+	if name == "" {
+		return false
+	}
+	for idx := 0; ; {
+		j := strings.Index(line[idx:], name)
+		if j < 0 {
+			return false
+		}
+		pos := idx + j
+		before := byte(' ')
+		if pos > 0 {
+			before = line[pos-1]
+		}
+		after := byte(' ')
+		if pos+len(name) < len(line) {
+			after = line[pos+len(name)]
+		}
+		if !isIdentByte(before) && !isIdentByte(after) {
+			return true
+		}
+		idx = pos + len(name)
+	}
 }
 
 // isAllCapsMacroName reports whether name follows the C convention for a

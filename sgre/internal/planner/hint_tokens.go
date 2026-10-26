@@ -58,7 +58,7 @@ var hintTokenRegistry = []HintTokenSpec{
 	// The nullable-origin tier replaces the flat certain-null/maybe-null pair
 	// for this type: what the classifier must DO differs by tier, so the tier
 	// is the first thing it reads.
-	{Key: "null@cfg-proof", Description: "the CFG proves a NULL definite assignment reaches this dereference — machine-proved CWE-476, verify nothing"},
+	{Key: "null@cfg-proof", Description: "the CFG proves a NULL definite assignment reaches this dereference — machine-proved CWE-476, verify nothing. EXCEPTION: when `macro-context` is also present the CFG did not expand the function-like macro, so an iteration/accessor macro may have assigned the variable; the suspicion level is demoted to suspected and the macro's contract decides it"},
 	{Key: "null@malloc-fail", Description: "the null source is a PROVEN-nullable call result (allocator / known maybe-null libc / a callee whose body provably returns NULL): an unchecked dereference is a textbook CWE-476"},
 	{Key: "null@caller-arg", Description: "the null source is an inter-procedural caller argument (not proven non-null) — judge whether that caller can pass NULL"},
 	{Key: "null@opaque-origin", Description: "the null source is a contract the scan tree cannot see (an external caller's argument / a field value of an externally-defined type) — the pipeline only ASSUMES it may be NULL; judge whether that external contract can actually yield NULL"},

@@ -2,6 +2,22 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [未发布]
+
+### null-deref 生产噪声治理（NAT sc_2026-10-26_094012_1b2a50 复核）
+
+针对"null-deref 占全部候选 71%（1576/2219）、其中 99% 来自 fail-open 层级"的生产反馈，逐条复核后修复三类**已验证**的检测器/流分析缺陷（不动 fail-open 边界策略、不降 recall）：
+
+- **值成员链不再被当成指针解引用**：`p->a.b.c` 里只有 `->` 步解引用指针，`.` 步选中的是 struct **值**成员。此前按语句文本含 `->` 判定，一条语句出 3 条候选（`user_data`、`user_data->fc`、`user_data->fc.fullcone_flag`），其中 2 条的"变量"根本不是指针，fix 建议 `if (p->fc == NULL)` 无法编译。改为按 `field_expression` **自身的运算符 token** 判定；真实指针链 `p->a->b` 仍逐跳各一条。
+- **自指更新不再算作"到达"同语句的解引用**：`node = node->next` 的右侧读的是旧值，新生成的 null 源只能向后流。此前被计入同语句 sink，每个 `while (node) { …; node = node->next; }` 都自报一条（NAT 实测 171 条"链表迭代器"形态）。推进后的真实缺陷（`node = node->next; node->x`）仍照报，已有回归测试双向锁定。
+- **cfg-proof 遇 macro-context 降级为 suspected**：CFG 不展开函数宏，`SLL_Scan(sll, p, T*)` 会在循环头给迭代变量赋值，"p = NULL 后无重新赋值"在该场景是**伪证明**。此前候选文件仍标 `confirmed` + `null@cfg-proof`（"verify nothing"），把矛盾推给 AI。现在：宏**点名**了该变量时自动降级并把该事实改写为"需校验宏契约"；宏在邻接函数里（窗口跨函数泄漏）不再误降级——macro-context 窗口已按函数体边界收敛。
+- **同一条语句里多个语句的归因修复（auto-confirm 误报）**：`for (init; cond; update)` 头把三个语句放在**同一行**，每个都是零长度节点的语句；`NodeAt(line)` 只能按行取第一个，导致 update 里的 `node->next` 被归因到 init 节点——而 init 节点的**入边**事实是"node 为 NULL"。于是 `node_t *node = NULL; for (node = pool->first; node != NULL; node = node->next)`（最常见的 C 链表遍历）被 **auto-confirmed** 成 `null@cfg-proof`，`for (node = &local; ...)` 这种地址初始化同样中招。新增 `StmtCFG.NodeAtColumn`，用 token 列号在同行的多个语句间消歧；null-deref 的 reaching / must-null / source-line 查询改为带列号（源事件也带列号）。修复后该形态不再产生任何候选，推进后解引用（`node = node->next; node->x`）仍照报。
+
+### 新增契约声明机制（不改代码关闭 boundary fail-open）
+
+- **`[nullability.non_null_params]`**：声明"由外部框架保证非空"的指针**形参名**（数据面回调的 `user_data`、IPC/CLI 分发层的 `reply_msg`/`out_msg` 输出槽）。boundary 扫描（树内无入口点）中每个零调用方形参本会 fail-open 成候选，这是该报告最大的单一来源；声明后只抑制**假设**，而调用点**确实传 NULL**（witness）仍然照报——证据优先于声明，二者冲突本身就是缺陷。实测同类 fixture：12 候选 → 6。
+- boundary 扫描的 `report.md` 提示现在直接点名可用的声明开关（`[scan] entry_points`、`[nullability.non_null_*]`、`[iterator_macros.macros]`、`[trusted_macros]`），并进 `secguard config --help/--example`；`--example` 输出由测试保证是合法 TOML。
+
 ## [0.11.0] - 2026-10-25
 
 ### 判定可信度重构：auto-confirm 只认"每条路径成立"的真证明

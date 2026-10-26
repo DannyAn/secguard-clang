@@ -107,12 +107,17 @@ type Candidate struct {
 	// (call.OriginalText()), carried through so the report can render the
 	// complete statement when the single reported line is a wrapped fragment
 	// (`memcpy(dst,\n  src,\n  n)` shows only `memcpy(dst,` otherwise).
-	Expression        string `json:"expression,omitempty"`
-	APIName           string `json:"api_name,omitempty"`
-	Category          string `json:"category,omitempty"`
-	LocationID        int64  `json:"location_id"`
-	FileID            int64  `json:"file_id"`
-	Line              int    `json:"line"`
+	Expression string `json:"expression,omitempty"`
+	APIName    string `json:"api_name,omitempty"`
+	Category   string `json:"category,omitempty"`
+	LocationID int64  `json:"location_id"`
+	FileID     int64  `json:"file_id"`
+	Line       int    `json:"line"`
+	// Column is the sink's column, used to disambiguate several statements on
+	// one line (the members of a `for (init; cond; update)` header). 0 when the
+	// event carried no column; flow queries then fall back to line-only
+	// resolution.
+	Column            int    `json:"column,omitempty"`
 	HasNullableSource bool   `json:"has_nullable_source"`
 	HasDefiniteNull   bool   `json:"has_definite_null"`
 	IsReachable       bool   `json:"is_reachable"`

@@ -217,7 +217,7 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 	}
 
 	for _, c := range candidates {
-		c.MacroContext = p.macro.hasMacroContext(filePathByID[c.FileID], c.Line)
+		c.MacroContext = p.macro.macroContextAt(ctx, p.store, c.FunctionID, filePathByID[c.FileID], c.Line)
 		result.Candidates = append(result.Candidates, newEvidenceItem(c, spec, filePathByID[c.FileID]))
 	}
 
@@ -360,8 +360,10 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 		}
 
 		line := 0
+		column := 0
 		if loc := locsByID[e.LocationID]; loc != nil {
 			line = loc.Line
+			column = loc.Column
 			// A file-scope event (e.g. a hardcoded-secret global with no
 			// enclosing function, so EntityID == 0) has no function to supply
 			// the file, but its location does. Fall back to the location's file
@@ -420,6 +422,7 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			LocationID:              e.LocationID,
 			FileID:                  fileID,
 			Line:                    line,
+			Column:                  column,
 			NonNullable:             props.NonNullable == "true",
 			IsTypeExpr:              props.IsTypeExpr == "true",
 			IsCallResultDeref:       props.IsCallResultDeref == "true",

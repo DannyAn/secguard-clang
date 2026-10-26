@@ -126,14 +126,35 @@ type OwnershipTransferCalls struct {
 //
 //	[nullability.non_null_returns]
 //	names = ["xmalloc", "g_malloc", "g_new", "sdsnew"]
+//
+// NonNullParams is the PARAMETER-side equivalent: names of pointer parameters
+// whose value is guaranteed non-null by an out-of-tree framework contract (a
+// data-plane callback's user_data, an IPC/CLI dispatcher's msg/reply_msg
+// output slots). In a BOUNDARY scan (a subtree with no entry point) every
+// zero-in-caller pointer parameter is otherwise treated as an external
+// caller's argument (fail-open), which is the single largest source of
+// null-deref contract candidates. Declaring the name here suppresses only that
+// ASSUMPTION; a call site that demonstrably passes a literal NULL still
+// surfaces (evidence beats the declaration — and contradicts it).
+//
+//	[nullability.non_null_params]
+//	names = ["user_data", "sync_data", "reply_msg", "out_msg"]
 type Nullability struct {
 	NonNullReturns NonNullReturns `toml:"non_null_returns"`
+	NonNullParams  NonNullParams  `toml:"non_null_params"`
 }
 
 // NonNullReturns declares function names whose return value is guaranteed
 // non-null. The null source detector skips these instead of seeding a false
 // null source.
 type NonNullReturns struct {
+	Names []string `toml:"names"`
+}
+
+// NonNullParams declares pointer PARAMETER names that are non-null by an
+// external framework contract. The caller-null detector does not seed the
+// boundary fail-open assumption for them.
+type NonNullParams struct {
 	Names []string `toml:"names"`
 }
 
@@ -326,6 +347,17 @@ func (c *Config) NonNullReturnNames() []string {
 		return nil
 	}
 	return c.Nullability.NonNullReturns.Names
+}
+
+// NonNullParamNames returns the project-specific pointer-parameter names that
+// are non-null by an external framework contract. Registered into apikb at CLI
+// startup so the caller-null detector does not seed the boundary fail-open
+// assumption for them.
+func (c *Config) NonNullParamNames() []string {
+	if c == nil {
+		return nil
+	}
+	return c.Nullability.NonNullParams.Names
 }
 
 // OwnershipTransferCallNames returns the project-specific ownership-transfer

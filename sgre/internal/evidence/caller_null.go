@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
@@ -272,6 +273,17 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 		}
 		for i, t := range info.types {
 			if t == "..." || !strings.HasSuffix(strings.TrimSpace(t), "*") {
+				continue
+			}
+			// PROJECT-DECLARED NON-NULL PARAMETER ([nullability.non_null_params]):
+			// the project asserts an external framework contract (a data-plane
+			// callback's user_data, an IPC dispatcher's reply_msg/output slot).
+			// This suppresses ONLY the zero-call-site fail-open ASSUMPTION
+			// below; a call site that demonstrably passes literal NULL still
+			// opens the parameter through the witness seeding above — a
+			// witness is evidence, and evidence contradicting the declaration
+			// is exactly the defect worth reporting.
+			if i < len(info.names) && apikb.IsNonNullParam(info.names[i]) {
 				continue
 			}
 			// IN-TREE-INVARIANT POLICY (formerly named the "v0.9.4

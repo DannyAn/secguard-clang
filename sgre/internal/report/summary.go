@@ -73,6 +73,18 @@ func BuildScanSummary(data SummaryData) string {
 			b.WriteString("> caller's argument (fail-open); judge those tiers as one boundary\n")
 			b.WriteString("> contract per function, not per row.\n")
 		}
+		// The declaration mechanism is the only way to close a boundary scan
+		// WITHOUT editing code: declaring the program's entry point flips the
+		// scan to complete-program mode, and the other sections declare the
+		// framework contracts the tree cannot see. Name them here — a reader of
+		// "N null-deref candidates in boundary mode" is exactly the reader who
+		// needs the knob.
+		b.WriteString("> To close this boundary without editing code, declare the program entry\n")
+		b.WriteString("> in `[scan] entry_points` of `secguard.toml` (a firmware task/thread\n")
+		b.WriteString("> body, an SDK callback entry), and declare the framework contracts the\n")
+		b.WriteString("> tree cannot see: `[nullability.non_null_params]` (framework-guaranteed\n")
+		b.WriteString("> pointer parameters), `[iterator_macros.macros]`, `[trusted_macros]`,\n")
+		b.WriteString("> `[nullability.non_null_returns]`.\n")
 		if n := typeCount(data.TypeBreakdown, "null-deref"); n > 0 {
 			fmt.Fprintf(&b, "> This scan has **%d** null-deref candidates in boundary mode.\n\n", n)
 		} else {

@@ -231,7 +231,8 @@ What it is:
   it. It exists for the trusted-macro allowlist, project iterator macros, the
   banned-function extension, directory exclusions, the vulnerability-type
   switch, project allocator/deallocator/ownership-transfer names, return
-  nullability, and integer-overflow truncating wrappers.
+  nullability, framework-guaranteed pointer parameters, the scan entry-point
+  boundary policy, and integer-overflow truncating wrappers.
 
   Config file locations, in priority order (first existing wins):
     1. --config <path>                     explicit flag
@@ -306,6 +307,23 @@ What it is:
     names = ["..."]
     Functions with an abort-on-failure contract (xmalloc, g_malloc, sdsnew)
     whose result is never NULL, so a dereference of it is not a null-deref.
+
+  [nullability.non_null_params] — framework-guaranteed pointer parameters
+    names = ["..."]
+    Pointer PARAMETER names whose value an out-of-tree framework guarantees
+    non-null (a data-plane callback's user_data, an IPC/CLI dispatcher's
+    reply_msg or output slot). In a BOUNDARY scan (a subtree with no entry
+    point) every zero-caller pointer parameter is otherwise treated as an
+    external caller's argument (fail-open), the largest single source of
+    null-deref candidates. This suppresses only that ASSUMPTION: a call site
+    that demonstrably passes literal NULL still surfaces.
+
+  [scan] — scan boundary policy
+    entry_points = ["..."]
+    Program entry points that live IN the scanned tree but are not main (a
+    firmware task body, an RTOS thread entry). A tree containing one is scanned
+    in COMPLETE-PROGRAM mode, which closes the boundary fail-open for
+    parameters whose type layout is visible in-tree.
 
   [integer_overflow.truncating_wrappers] — bounded-return wrappers
     wrapper_name = <size_arg_index>
@@ -398,7 +416,30 @@ names = [
 # from their returns cannot exceed the buffer and a later 'size - total'
 # subtraction cannot underflow.
 [integer_overflow.truncating_wrappers]
-# nlog_syslog_add_pri = 1`)
+# nlog_syslog_add_pri = 1
+
+# Pointer PARAMETER names that an out-of-tree framework guarantees non-null
+# (a data-plane callback's user_data, an IPC/CLI dispatcher's reply_msg or
+# output slot). In a BOUNDARY scan (a subtree with no entry point) every
+# zero-caller pointer parameter is otherwise treated as an external caller's
+# argument (fail-open) — the largest single source of null-deref candidates.
+# This suppresses only that ASSUMPTION: a call site that demonstrably passes
+# literal NULL still surfaces (evidence beats the declaration).
+[nullability.non_null_params]
+names = [
+    # "user_data",
+    # "reply_msg",
+    # "out_msg",
+]
+
+# Program entry points that live IN the scanned tree but are not main (a
+# firmware task body, an RTOS thread entry). A tree containing one is scanned in
+# COMPLETE-PROGRAM mode, which closes the boundary fail-open for parameters whose
+# type layout is visible in-tree.
+[scan]
+entry_points = [
+    # "thread_entry",
+]`)
 }
 
 // subcommandUsage maps a subcommand name to its usage printer. Execute uses this

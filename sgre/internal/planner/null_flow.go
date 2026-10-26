@@ -124,6 +124,16 @@ type flowResult struct {
 	// genAt records which variables gain a source at each node, so a source on
 	// the same statement as the queried point still counts.
 	genAt map[int]map[string]bool
+	// selfReadGenAt marks, per node, the variables whose source at that node is
+	// a SELF-referential field-read update (`node = node->next`, origin
+	// "field_read"). Such a statement reads the pointer's OLD value on its
+	// right side and only then overwrites it, so the new source cannot reach a
+	// dereference inside that same statement — it reaches only the statements
+	// after it (the post-advance use the loop condition no longer guards, which
+	// is the real defect this source exists to model). Without the exclusion,
+	// every `while (node) { ...; node = node->next; }` walk reported its own
+	// guard-protected update as a null-deref.
+	selfReadGenAt map[int]map[string]bool
 	// must is a boolean must-analysis (the fact holds on EVERY path) over the
 	// same effects as nodeIn. It is computed on demand for the freed-state and
 	// uninit filters, where a "confirmed" upgrade requires the fact to reach the
@@ -156,17 +166,36 @@ type flowResult struct {
 	contract *contractCtx
 }
 
+// nodeAt resolves a source position to its CFG statement node, using the column
+// when it is known so several statements on ONE line (a `for` header's
+// initializer / condition / update) are not conflated.
+func (m *flowResult) nodeAt(line, column int) *graph.StmtNode {
+	if m == nil || m.cfg == nil {
+		return nil
+	}
+	if column > 0 {
+		return m.cfg.NodeAtColumn(line, column)
+	}
+	return m.cfg.NodeAt(line)
+}
+
 // reaching reports whether variable has a reaching source at line.
 func (m *flowResult) reaching(variable string, line int) bool {
-	if m == nil || m.cfg == nil {
-		return false
-	}
-	n := m.cfg.NodeAt(line)
+	return m.reachingAt(variable, line, 0)
+}
+
+// reachingAt is reaching with the sink's COLUMN, which disambiguates statements
+// that share a line (see graph.StmtCFG.NodeAtColumn).
+func (m *flowResult) reachingAt(variable string, line, column int) bool {
+	n := m.nodeAt(line, column)
 	if n == nil {
 		return false
 	}
 	if len(m.nodeIn[n.ID][variable]) > 0 {
 		return true
+	}
+	if m.selfReadGenAt[n.ID][variable] {
+		return false
 	}
 	return m.genAt[n.ID][variable]
 }
@@ -176,10 +205,19 @@ func (m *flowResult) reaching(variable string, line int) bool {
 // pointer is certainly null. This is the must-null tier the AI does not need to
 // re-derive.
 func (m *flowResult) reachingDefinite(variable string, line int) bool {
+	return m.reachingDefiniteAt(variable, line, 0)
+}
+
+// reachingDefiniteAt is reachingDefinite with the sink's COLUMN (see
+// graph.StmtCFG.NodeAtColumn). Without it, `p = NULL;` followed by
+// `for (p = &x; p != NULL; p = p->next)` resolved the update's `p->next`
+// dereference to the INITIALIZER node, whose incoming definite-null fact is
+// "p is NULL" — an auto-confirmed false positive on the commonest C list walk.
+func (m *flowResult) reachingDefiniteAt(variable string, line, column int) bool {
 	if m == nil || m.definite == nil {
 		return false
 	}
-	n := m.cfg.NodeAt(line)
+	n := m.nodeAt(line, column)
 	if n == nil {
 		return false
 	}
@@ -244,16 +282,19 @@ func (m *flowResult) mustReaching(variable string, line int) bool {
 // line, or 0 if none. It picks the minimum source line so the codeFlow step
 // is deterministic across runs.
 func (m *flowResult) sourceLine(variable string, line int) int {
-	if m == nil || m.cfg == nil {
-		return 0
-	}
-	n := m.cfg.NodeAt(line)
+	return m.sourceLineAt(variable, line, 0)
+}
+
+// sourceLineAt is sourceLine with the sink's COLUMN (see
+// graph.StmtCFG.NodeAtColumn).
+func (m *flowResult) sourceLineAt(variable string, line, column int) int {
+	n := m.nodeAt(line, column)
 	if n == nil {
 		return 0
 	}
 	srcs := m.nodeIn[n.ID][variable]
 	if len(srcs) == 0 {
-		if m.genAt[n.ID][variable] {
+		if m.genAt[n.ID][variable] && !m.selfReadGenAt[n.ID][variable] {
 			return n.StartLine
 		}
 		return 0
@@ -302,6 +343,29 @@ func (a *flowAnalyzer) analyzeFunction(ctx context.Context, fn *db.Function, bod
 		}
 	}
 	res := a.analyzeFlow(ctx, fn, body, fileRoot, genByLine, nil, true, false)
+	if res != nil && res.cfg != nil {
+		// A self-referential field-read update (`node = node->next`) generates a
+		// may-null source for the SAME variable on the line it also dereferences
+		// that variable. The assignment's right-hand side reads the old value,
+		// so the new source only flows forward — exclude it from the
+		// same-statement sink (see flowResult.selfReadGenAt).
+		for _, s := range sources {
+			if s.origin != "field_read" || s.line <= 0 {
+				continue
+			}
+			n := res.cfg.NodeAtColumn(s.line, s.column)
+			if n == nil {
+				continue
+			}
+			if res.selfReadGenAt == nil {
+				res.selfReadGenAt = make(map[int]map[string]bool, len(sources))
+			}
+			if res.selfReadGenAt[n.ID] == nil {
+				res.selfReadGenAt[n.ID] = map[string]bool{}
+			}
+			res.selfReadGenAt[n.ID][s.variable] = true
+		}
+	}
 	if res != nil && (len(definiteGenByLine) > 0 || len(a.definiteEntrySeeds) > 0) {
 		res.definite, res.definiteGenAt = a.analyzeDefiniteNull(res.cfg, fileRoot, a.scopeOracle(body), a.definiteEntrySeeds)
 	}

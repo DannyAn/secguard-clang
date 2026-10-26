@@ -227,7 +227,11 @@ func (d *NullSourceDetector) detectFieldReadSelfAssign(ctx context.Context, f *d
 		if fieldBaseName(inner) != name {
 			continue
 		}
-		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: node.StartLine()}, map[string]string{"variable": name, "origin": "field_read", "definite": "false"}) {
+		// The COLUMN is carried so the planner can resolve this source to the
+		// exact statement on its line: a `for (init; cond; update)` header puts
+		// three statements on ONE line, and the update's self-read source must
+		// not be attributed to the initializer.
+		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: node.StartLine(), Column: node.StartColumn()}, map[string]string{"variable": name, "origin": "field_read", "definite": "false"}) {
 			result.EventsCreated++
 		}
 	}

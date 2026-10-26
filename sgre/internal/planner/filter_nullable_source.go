@@ -138,10 +138,10 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 
 		fm := flowResults[c.FunctionID]
 		if fm != nil {
-			if fm.reaching(c.VariableName, c.Line) {
+			if fm.reachingAt(c.VariableName, c.Line, c.Column) {
 				c.HasNullableSource = true
-				c.HasDefiniteNull = fm.reachingDefinite(c.VariableName, c.Line)
-				c.SourceLine = fm.sourceLine(c.VariableName, c.Line)
+				c.HasDefiniteNull = fm.reachingDefiniteAt(c.VariableName, c.Line, c.Column)
+				c.SourceLine = fm.sourceLineAt(c.VariableName, c.Line, c.Column)
 				c.CallerNullDetail = callerNullDetail(models[c.FunctionID], c.VariableName)
 				if models[c.FunctionID].onlyUnprovenCallerNullSources(c.VariableName) ||
 					(!c.HasDefiniteNull && fm.contract.paramAliasUnproven(c.VariableName, c.Line, models[c.FunctionID])) {

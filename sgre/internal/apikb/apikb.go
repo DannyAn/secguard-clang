@@ -988,6 +988,28 @@ func IsNonNullReturning(name string) bool {
 	return BuiltinNonNullReturning[name] || extraNonNullReturning[name]
 }
 
+// extraNonNullParams holds project-declared pointer-parameter names that are
+// non-null by an external framework contract, registered at CLI startup from
+// secguard.toml [nullability.non_null_params]. It is deliberately name-keyed
+// and opt-in: only a project that OWNS the framework contract can assert it.
+var extraNonNullParams = map[string]bool{}
+
+// RegisterNonNullParam declares a pointer-parameter name whose value an
+// external framework guarantees non-null (a data-plane callback's user_data, an
+// IPC dispatcher's reply_msg / output slot). The caller-null detector does not
+// seed its boundary fail-open assumption for such a parameter.
+func RegisterNonNullParam(name string) {
+	if name != "" {
+		extraNonNullParams[name] = true
+	}
+}
+
+// IsNonNullParam reports whether name was declared non-null by the project via
+// [nullability.non_null_params].
+func IsNonNullParam(name string) bool {
+	return extraNonNullParams[name]
+}
+
 // BuiltinNullableReturning are libc/POSIX functions that return a pointer and
 // MAY return NULL on failure/not-found. These are the "maybe-null libc" tier:
 // a dereference of their result with no null guard is a textbook CWE-476
