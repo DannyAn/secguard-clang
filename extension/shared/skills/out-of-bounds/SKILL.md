@@ -68,6 +68,17 @@ A constant `idx@` past `cap@` settles the row from the Hint alone — no
 evidence-file open needed. An `idx-src@` row needs the field's contract: read
 `## Code Context` for the function's entry guard (or its absence).
 
+**A guard bound that is not a literal is not a capacity proof.** When `cap@N` is
+a literal but the loop/entry guard compares the index against a SYMBOL
+(`if (section_cnt >= DNAT_POOL_SECTION_NUM) return;`), the two numbers are
+independent: the static array is `64`, while the guard bound comes from a
+capability/config value (`nat_cap_query_def("dnat_sect_per_pool", 64)`) that a
+profile or the Lua/XML spec can raise. Compare the *configured maximum* against
+`cap@` — not the default — and state which of the two you used in `reasoning`.
+If the symbol's value is not visible in the scan tree, treat the guard as
+unproven for capacity purposes and say so (the reviewer then checks the
+capability file); do not dismiss on "there is a bounds check".
+
 ### Typical Example
 ```c
 int arr[10];

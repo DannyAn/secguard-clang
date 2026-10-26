@@ -88,6 +88,12 @@ func TestWriteXlsxFromFindings_ExcludesDismissed(t *testing.T) {
 	if got, _ := f.GetCellValue("Findings", "G2"); got != "未确认" {
 		t.Errorf("G2 确认状态 = %q, want 未确认", got)
 	}
+	// 确认者 names the stage that confirmed the finding: `结论` is "confirmed"
+	// for a pipeline proof AND an AI classification, so the ticket would
+	// otherwise not distinguish them.
+	if got, _ := f.GetCellValue("Findings", "H2"); got != "AI判定 (ai-confirmed)" {
+		t.Errorf("H2 确认者 = %q, want AI判定 (ai-confirmed)", got)
+	}
 	// Data rows must be collapsed to 25pt by default.
 	if h, err := f.GetRowHeight("Findings", 2); err != nil || h != 25 {
 		t.Errorf("row 2 height = %v (err=%v), want 25", h, err)
@@ -172,5 +178,23 @@ func TestWriteXlsxFromFindings_EmbedsCodeContext(t *testing.T) {
 	}
 	if !strings.Contains(snippet, "int line_5") || !strings.Contains(snippet, "int line_35") {
 		t.Errorf("Q2 snippet should carry ±%d context, got:\n%s", ContextLines, snippet)
+	}
+}
+
+// A pipeline-proof finding renders its source in 确认者 so a reviewer (and the
+// ticket) can tell a machine verdict from an AI classification.
+func TestXlsxAutoConfirmedSource(t *testing.T) {
+	findings := []*db.Finding{{
+		RuleID: "CWE-676", Severity: "high", Confidence: 1.0,
+		Status: db.StatusAutoConfirmed, FilePath: "src/a.c", LineNumber: 9, FunctionName: "f",
+		Summary: "call to banned sprintf()", Reasoning: "policy rule: unsafe_format",
+	}}
+	f, err := writeXlsxFixture(t, t.TempDir(), findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if got, _ := f.GetCellValue("Findings", "H2"); got != "机器判定 (auto-confirmed)" {
+		t.Errorf("H2 确认者 = %q, want 机器判定 (auto-confirmed)", got)
 	}
 }

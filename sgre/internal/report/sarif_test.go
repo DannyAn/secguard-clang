@@ -90,6 +90,11 @@ func TestWriteSarifFromFindings(t *testing.T) {
 	if results[0].Properties["vuln_type"] != "unchecked-return" {
 		t.Errorf("properties.vuln_type = %q, want unchecked-return", results[0].Properties["vuln_type"])
 	}
+	// `status` is "confirmed" for a pipeline proof AND an AI classification; the
+	// source pin lets a ticket/CI policy tell them apart.
+	if results[0].Properties["confirmation_source"] != "ai" {
+		t.Errorf("properties.confirmation_source = %q, want ai (this finding is AI-classified)", results[0].Properties["confirmation_source"])
+	}
 	if !strings.Contains(results[0].Message.Text, "on 'p'") || !strings.Contains(results[0].Message.Text, "[high · confirmed]") {
 		t.Errorf("message should name the variable and severity/status, got %q", results[0].Message.Text)
 	}
@@ -110,7 +115,7 @@ func sarifVerdictFindings() []*db.Finding {
 			FilePath: "src/a.c", LineNumber: 13, FunctionName: "f",
 			Variable: "p",
 			Summary:  "malloc 未判空即解引用", Reasoning: "分配后立即解引用",
-			Evidence: "分配器可能返回 NULL",
+			Evidence:       "分配器可能返回 NULL",
 			ExceptionCheck: "无 safe wrapper", FixStrategy: "if (p == NULL) return -1;",
 		},
 		{
@@ -377,5 +382,34 @@ func TestWriteSarifFromFindings_ReviewStatusMarker(t *testing.T) {
 	// review_error is not a persisted verdict, so it must never reach result.sarif.
 	if _, ok := byStatus["review_error"]; ok {
 		t.Error("review_error must not appear in result.sarif")
+	}
+}
+
+// A pipeline-proved finding carries confirmation_source=auto in result.sarif.
+func TestSarifConfirmationSourceAuto(t *testing.T) {
+	dir := t.TempDir()
+	sarifPath := filepath.Join(dir, "result.sarif")
+	findings := []*db.Finding{{
+		RuleID: "CWE-676", Severity: "high", Confidence: 1.0,
+		Status: db.StatusAutoConfirmed, FilePath: "src/a.c", LineNumber: 9, FunctionName: "f",
+		Summary: "call to banned sprintf()", Reasoning: "policy rule: unsafe_format",
+	}}
+	if err := WriteSarifFromFindings(sarifPath, "", findings); err != nil {
+		t.Fatalf("WriteSarifFromFindings: %v", err)
+	}
+	data, err := os.ReadFile(sarifPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rep sarifReport
+	if err := json.Unmarshal(data, &rep); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	results := rep.Runs[0].Results
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if got := results[0].Properties["confirmation_source"]; got != "auto" {
+		t.Errorf("properties.confirmation_source = %q, want auto", got)
 	}
 }

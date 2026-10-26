@@ -177,7 +177,16 @@ func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context) (*callsi
 			continue
 		}
 
-		for _, call := range body.FindAll("call_expression") {
+		calls := body.FindAll("call_expression")
+		// Local/field string constants: an argument spelled with a variable whose
+		// EVERY write in this function is a compile-time string (a literal or a
+		// string macro) is a constant too — the census previously classified by
+		// argument SYNTAX only, so `const char *fmt = "x"; log_msg(fmt)` counted
+		// as a VARIABLE, the all-literal gate never fired, and a wrapper whose
+		// callers all pass constants still reached the classifier (production:
+		// format-string false positives whose callers pass a local template).
+		locals := collectLocalStringConsts(body, isStringMacro)
+		for _, call := range calls {
 			name := callName(call)
 			if name == "" {
 				continue
@@ -192,6 +201,9 @@ func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context) (*callsi
 				case isDefinitelyUnTainted(arg):
 					kind = 0
 				case arg.Kind() == "identifier" && isStringMacro(arg.Text()):
+					kind = 0
+				case (arg.Kind() == "identifier" || arg.Kind() == "field_expression") &&
+					localConstAt(locals, compactIdentText(arg.Text()), call.StartLine(), calls):
 					kind = 0
 				case isTaintSourceExpr(arg):
 					kind = 1
@@ -318,4 +330,94 @@ func expandCallsiteFact(fact string) string {
 		return fmt.Sprintf("%s call sites (all literal)", parts[0])
 	}
 	return fmt.Sprintf("%s call sites (%s)", parts[0], parts[1])
+}
+
+// localConst describes a variable (or field chain) in ONE function whose writes
+// are all compile-time strings: `literalOnly` is false as soon as any write
+// assigns a non-literal, and `lastLiteralLine` is the last write's line.
+type localConst struct {
+	literalOnly     bool
+	lastLiteralLine int
+}
+
+// collectLocalStringConsts builds the per-function constant table the call-site
+// census consults. isStringMacro reports object-like macros that expand to a
+// string literal.
+func collectLocalStringConsts(body parser.Node, isStringMacro func(string) bool) map[string]localConst {
+	out := make(map[string]localConst)
+	record := func(node parser.Node) {
+		lhs, rhs, ok := node.AssignParts()
+		if !ok {
+			return
+		}
+		key := compactIdentText(lhs.Text())
+		// `const char *fmt = "x"` wraps the target in a pointer_declarator, so the
+		// lhs text is `*fmt`; the census argument is spelled `fmt`.
+		if lhs.Kind() != "identifier" && lhs.Kind() != "field_expression" {
+			if name := declaratorName(lhs); name != "" {
+				key = name
+			}
+		}
+		if key == "" {
+			return
+		}
+		cur, seen := out[key]
+		if !seen {
+			cur = localConst{literalOnly: true}
+		}
+		if isStringConstText(rhs.Text(), isStringMacro) {
+			cur.lastLiteralLine = node.StartLine()
+		} else {
+			cur.literalOnly = false
+		}
+		out[key] = cur
+	}
+	for _, assign := range body.FindAll("assignment_expression") {
+		record(assign)
+	}
+	for _, init := range body.FindAll("init_declarator") {
+		record(init)
+	}
+	return out
+}
+
+// localConstAt reports whether the lvalue is a constant at this call site: every
+// write in the function assigned a compile-time string, the last one sits before
+// the call, and no CALL happens in between (an intervening call could mutate the
+// value through an escaped pointer, which this syntactic analysis cannot see).
+func localConstAt(locals map[string]localConst, key string, callLine int, calls []parser.Node) bool {
+	lc, ok := locals[key]
+	if !ok || !lc.literalOnly || lc.lastLiteralLine <= 0 || lc.lastLiteralLine >= callLine {
+		return false
+	}
+	for _, call := range calls {
+		line := call.StartLine()
+		if line > lc.lastLiteralLine && line < callLine {
+			return false
+		}
+	}
+	return true
+}
+
+// isStringConstText reports whether an initializer expression is a compile-time
+// string: a C string literal (adjacent literals included) or an object-like
+// macro that expands to one.
+func isStringConstText(text string, isStringMacro func(string) bool) bool {
+	t := strings.TrimSpace(text)
+	if parser.IsCStringLiteralText(t) {
+		return true
+	}
+	return isStringMacro(compactIdentText(t))
+}
+
+// compactIdentText strips whitespace from an lvalue/argument spelling so two
+// spellings of one expression compare equal.
+func compactIdentText(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\t', '\n', '\r':
+			return -1
+		}
+		return r
+	}, s)
 }

@@ -53,7 +53,7 @@ Evidence file fragments:
 | Token | Meaning | Your action |
 |-------|---------|-------------|
 | `buf@<name>` | the buffer being written | the object of the overflow |
-| `cap@N` | the buffer's detector-resolved capacity in elements (array declaration or allocation size) | compare `idx@` against this |
+| `cap@N` | the buffer's detector-resolved capacity in elements (array declaration or allocation size) | compare `idx@` against this; a guard bound that is a SYMBOL (a config/capability value) does not prove `idx@ < cap@` — compare the configured maximum, and say so if it is not visible in the tree |
 | `idx@<expr>` | the access index / copy size / declared size argument (the `_s` capacity or required size) | CONSTANT: the detector already proved it reaches past `cap@` (machine-proved, confirm) — VARIABLE (`n`, a parameter): judge its reachable range against `cap@`; a caller-influenced parameter with no clamp is the dangerous case |
 | `idx-src@<field>` | the write index is the struct field `<field>`, with no bounds check against `cap@` dominating the write | unvalidated config/input index -> **confirm**; a bounded field or a caller-validated contract -> **dismiss** |
 | `elem-field@<member>` / `oob-escape@<callee>` | the written element's pointer member / the callee the element escapes to | secondary chain facts — the root cause stays the missing bounds check |

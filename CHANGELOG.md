@@ -4,6 +4,12 @@
 
 ## [未发布]
 
+### 第二轮现网复核：format-string 调用点常数传播 + 机器/AI 判定来源标注
+
+- **调用点普查补上"局部/字段常量"传播**（NAT #3/#4/#5 的根因）：普查原本只按实参**语法**分类，`const char *fmt = "x"; log_msg(fmt);`、`fmt = POOL_INFO_DEF;`、`ui->fmt_ipv4 = "ip %s"; log_msg(ui->fmt_ipv4);` 全被记成 `var`，于是 `callsites@3:3-var`，all-literal 门永不触发，包装函数带着"变量 format"进研判并被确认。现在：某变量/字段在本函数内**每次**赋值都是编译期字符串（字面量或字符串宏）、最后一次赋值在调用点之前、且两者之间没有其它调用（可能通过逃逸指针改写），该实参即计为 `literal`。实测同一 fixture：`3:3-var` → 全部 literal（候选消失）；反例（重赋非字面量、中间有调用）仍为变量、仍产出候选。
+- **`result.sarif` / `result.xlsx` 标注判定来源**（#F1）：`status` 对"机器证明"与"AI 研判"都是 `confirmed`，提单时无法区分。SARIF 每条 result 增加 `properties.confirmation_source`（`auto`/`ai`）；`result.xlsx` 的「确认者」列预填 `机器判定 (auto-confirmed)` / `AI判定 (ai-confirmed)`（仍可被人工覆盖）。
+- **能力集边界提示（out-of-bounds / buffer-overflow SKILL）**：当 `cap@` 是字面量而守卫上限是**符号**（能力集/配置值，如 `DNAT_POOL_SECTION_NUM`）时，二者是不同维度，守卫默认值不构成容量证明；要求按"配置上限"比较并在 reasoning 里说明取值来源，符号不可见时按未证明处理。
+
 ### dangerous-function 策略范围纠正（bzero 等 BSD 兼容 API 不再默认禁用）
 
 现网反馈：`bzero` 被报为 CWE-676，但公司白盒安全验证指导书的禁用函数清单里没有它，AI 研判结论是"可修改可不修改、非误报"——即这是我们自己**超出标准**的默认策略，不是缺陷。

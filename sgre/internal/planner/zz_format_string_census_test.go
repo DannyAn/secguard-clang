@@ -45,21 +45,92 @@ void log_mixed(const char *fmt)
     printf(fmt);
 }
 
-void literal_caller(void)
-{
-    log_macro_placeholder();
-}
-
 void variable_caller(const char *msg)
 {
     log_mixed(msg);
 }
-
-void log_macro_placeholder(void) { }
 `
 		result := planType(t, src, "format-string")
 		if _, ok := result["log_mixed"]; !ok {
 			t.Errorf("log_mixed: a caller passes a variable format, the wrapper must stay a candidate")
 		}
 	})
+}
+
+// The census classified call-site arguments by SYNTAX only, so a caller that
+// binds the format to a local (or a struct field) holding a compile-time string
+// was counted as `var`. Those are constants: the wrapper's in-tree callers all
+// pass literal templates, which makes the format parameter non-attacker-
+// controlled and the finding a false positive (production reported exactly this
+// for a vprintf wrapper whose callers pass local/field templates).
+func TestFormatString_LocalAndFieldConstantsCountAsLiteral(t *testing.T) {
+	src := `#include <stdio.h>
+
+#define POOL_INFO_DEF "%s %u"
+
+void log_msg(const char *fmt)
+{
+    printf(fmt);
+}
+
+typedef struct { const char *fmt_ipv4; } ui_t;
+
+void caller_local(void)
+{
+    const char *fmt = "hello %s";
+    log_msg(fmt);
+}
+
+void caller_local_macro(void)
+{
+    const char *fmt = POOL_INFO_DEF;
+    log_msg(fmt);
+}
+
+void caller_field(ui_t *ui)
+{
+    ui->fmt_ipv4 = "ip %s";
+    log_msg(ui->fmt_ipv4);
+}
+`
+	result := planType(t, src, "format-string")
+	if c, ok := result["log_msg"]; ok {
+		t.Fatalf("log_msg: all three callers bind a compile-time string (local, macro, field); must not be a candidate (hint=%v)", c.Hint)
+	}
+}
+
+// Precision control: a local reassigned to a non-constant (or left possibly
+// mutated by an intervening call) must NOT be promoted to literal.
+func TestFormatString_LocalNotConstantStaysVariable(t *testing.T) {
+	src := `#include <stdio.h>
+
+extern void refresh(void);
+
+void log_msg2(const char *fmt)
+{
+    printf(fmt);
+}
+
+void caller_reassigned(const char *user_fmt)
+{
+    const char *fmt = "template";
+    fmt = user_fmt;
+    log_msg2(fmt);
+}
+
+void caller_intervening_call(void)
+{
+    const char *fmt = "template";
+    refresh();
+    log_msg2(fmt);
+}
+`
+	result := planType(t, src, "format-string")
+	c, ok := result["log_msg2"]
+	if !ok {
+		t.Fatalf("log_msg2: call sites are not provable constants, the wrapper must stay a candidate")
+	}
+	if c.SuspicionLevel != "suspected" && c.SuspicionLevel != "confirmed" {
+		t.Errorf("unexpected suspicion level %q", c.SuspicionLevel)
+	}
 }

@@ -479,6 +479,11 @@ func writeSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding, k
 			"status":     status,
 			"confidence": fmt.Sprintf("%.0f%%", f.Confidence*100),
 			"vuln_type":  vulnType,
+			// WHICH stage produced the verdict. `status` is "confirmed" for both
+			// a pipeline proof and an AI classification, so a ticket filed from
+			// result.sarif could not tell them apart; the machine tier is the one
+			// whose premise the reviewer may still want to check.
+			"confirmation_source": confirmationSource(f),
 		}
 		if f.Variable != "" {
 			result.Properties["variable"] = f.Variable
@@ -532,4 +537,14 @@ func writeSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding, k
 		return err
 	}
 	return os.WriteFile(sarifPath, data, 0644)
+}
+
+// confirmationSource names the stage that confirmed the finding: "auto" for a
+// pipeline proof (written by autoConfirmFindings with status auto-confirmed),
+// "ai" for a classification the security-auditor wrote.
+func confirmationSource(f *db.Finding) string {
+	if f != nil && f.Status == db.StatusAutoConfirmed {
+		return "auto"
+	}
+	return "ai"
 }

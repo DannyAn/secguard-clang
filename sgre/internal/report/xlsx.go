@@ -170,6 +170,14 @@ func WriteXlsxFromFindings(xlsxPath, rootDir string, findings []*db.Finding) err
 		// the reviewer's manual fields: 确认状态 seeds "未确认"; 确认者/确认备注/
 		// 确认时间 are left blank for the reviewer to fill (ticket number, reason
 		// for a non-issue, or reviewer/time of confirmation).
+		// 确认者 seeds WHICH stage produced the verdict (机器判定 / AI判定) and
+		// stays editable for the reviewer's manual confirmation. `结论` alone is
+		// "confirmed" for both, so a ticket could not tell a pipeline proof from
+		// an AI classification.
+		confirmer := "AI判定 (ai-confirmed)"
+		if finding.Status == db.StatusAutoConfirmed {
+			confirmer = "机器判定 (auto-confirmed)"
+		}
 		cells := map[string]interface{}{
 			"A": i + 1,
 			"B": r.vulnType,
@@ -177,6 +185,7 @@ func WriteXlsxFromFindings(xlsxPath, rootDir string, findings []*db.Finding) err
 			"D": severity,
 			"E": finding.FinalStatus(),
 			"G": "未确认",
+			"H": confirmer,
 			"K": displayPath(finding.FilePath, sourceRoot),
 			"M": finding.FunctionName,
 			"N": summary,
