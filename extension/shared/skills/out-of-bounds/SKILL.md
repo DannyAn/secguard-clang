@@ -28,6 +28,12 @@ An out-of-bounds candidate has:
   `array_oob_read_unchecked` tier)
 - **element_field**: the pointer-typed member read out of the indexed element
 - **escape**: the callee the out-of-bounds element (or its address) reaches
+- **flow_step**: the CSA-style ordered diagnostic path — `[1] buffer … declared
+  at line N (capacity M)` → `[2] the index … originates at line K` → `[3] no
+  bounds check dominates …` → `[N] the access at line L reads past the end`.
+  Read top-to-bottom as the trace from definition to sink; the missing guard step
+  is the defect, the rest is the evidence. The `call_path` fragment carries the
+  concrete cross-function chain (see below).
 - **call_path**: the function is reachable from an entry point
 
 The two tiers are distinct:

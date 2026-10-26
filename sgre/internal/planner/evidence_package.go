@@ -125,6 +125,10 @@ type EvidenceItem struct {
 	// engine had no fact worth reporting.
 	DivisorInterval string `json:"divisor_interval,omitempty"`
 	DivisorCallers  string `json:"divisor_callers,omitempty"`
+	// CallChain is the concrete entry → … → this function call path (caller /
+	// callee per hop + call site line), rendered as the call_path fragment when
+	// present.
+	CallChain []CallChainHop `json:"call_chain,omitempty"`
 	// CallsiteSites is the bounded per-site breakdown backing CallsiteSummary
 	// (file:line + literal/var/tainted class), rendered as a callsite_list
 	// evidence fragment so the classifier sees the non-constant callers without
@@ -749,6 +753,7 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 
 		CallsiteSites:       c.CallsiteSites,
 		CalleeNullCondition: c.CalleeNullCondition,
+		CallChain:           c.CallChain,
 
 		Expression: c.Expression,
 		CWEChain:   candidateCWEChain(c, spec),
@@ -779,5 +784,37 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 			Detail: "guard exists but is insufficient (partial protection, needs AI review)",
 		})
 	}
+	// A concrete cross-function chain replaces the "reachable from entry"
+	// one-liner: the reviewer sees WHICH callers led here, hop by hop, instead
+	// of re-deriving the flow from the call graph.
+	if len(c.CallChain) > 0 {
+		for i := range item.Evidence {
+			if item.Evidence[i].Type == "call_path" {
+				item.Evidence[i].Detail = renderCallChain(c.CallChain)
+				break
+			}
+		}
+	}
 	return item
+}
+
+// renderCallChain renders the concrete cross-function call path as a compact
+// hop list: "main → init (pool.c:42) → load_pool (pool.c:88) → pool_cmd_stat".
+// The entry hop (a program entry / an exported function / an address-taken
+// callback) carries no call-site line, so it renders as a bare name.
+func renderCallChain(chain []CallChainHop) string {
+	if len(chain) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("call chain: ")
+	b.WriteString(chain[0].Caller)
+	for _, h := range chain {
+		if h.Line > 0 {
+			fmt.Fprintf(&b, " → %s (%s:%d)", h.Callee, filepath.Base(h.File), h.Line)
+		} else {
+			fmt.Fprintf(&b, " → %s", h.Callee)
+		}
+	}
+	return b.String()
 }

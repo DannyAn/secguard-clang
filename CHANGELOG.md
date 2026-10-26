@@ -4,6 +4,23 @@
 
 ## [未发布]
 
+### buffer-overflow / out-of-bounds 诊断路径证据链（CSA 风格"小标记"）
+
+研发反馈这两类告警"只报一句有 OOB，看不出从哪条路径过来、缺什么看护"。现在候选文件里多了一条**自上而下的路径证据链**，把"定义 → 来源 → 缺的看护 → 汇点"逐个标出来，跨函数时再附一条**具体调用链**：
+
+- **`flow_step` 证据片段（buffer-overflow / out-of-bounds）**：`BufferFlowFilter` 为每个带解析缓冲区的候选补齐三块证据 —— 缓冲区在哪声明/分配（`[1] buffer s->items declared as a struct field at line 1 (capacity 8 elements)`）、越界下标/拷贝长度从哪来（`[2] the index … originates at line K`，字段下标则注明 `[2] the index is the struct field idx`）、缺哪个看护（`[3] no bounds check dominates …`）、以及汇点（`[N] the access at line L reads/writes past the end`）。只注解证据、永不丢弃/改级。
+- **具体跨函数调用链（全类型）**：`call_reach` 原来只算"能否从入口到达"（布尔）。现在额外记录入口→…→sink 的**首条前驱链** + 每跳调用点行号，`call_path` 片段从 `function X is reachable from entry` 升级为 `call chain: main → load_config (pool.c:42) → apply_setting (pool.c:14)`。非静态函数若存在树内调用者，优先走具体链而非"入口"；无树内调用者仍按外部入口保底（不丢候选）。修复了"非静态函数被当作入口后，其静态被调函数不再可达"的回归（`TestDivideByZero_ParamZeroPropagation` 锁住）。
+- 字段数组声明行补齐 `field_identifier` 识别（tree-sitter 结构体成员是 `field_identifier` 而非 `identifier`，此前 `declaratorName` 静默漏掉）。
+- 两个 SKILL 的 Evidence Pattern、`TestFilterChainMigration` 期望链、`TestSkillFragmentsMatchBuildEvidence` 共享片段表同步更新；新增 `TestBufferFlow_FieldArrayPath`、`TestCallChain_Concrete`。
+
+### 证据内嵌补齐：调用点清单 + callee 空值条件（研判性能突破口）
+
+现网复盘把"证据内嵌（callee 体、调用点清单、状态转移结论写进候选文件）"列为下一阶段性能突破口。本轮补上其中两块，把 AI 二次研判从"grep 调用方 / 重建状态机"降为"读候选文件一次"：
+
+- **`callsite_list` 证据片段（format-string / path-traversal）**：`callsites@` 只是计数（`2:1-literal,1-var`），AI 仍要 grep 出那个 `var` 调用者。现在普查把每个调用点的 `file:line + literal/variable/tainted` 类目（有界，≤10 条）随候选一起落盘，Evidence 里直接列出 `literal@fc_fwd.c:108, variable@carnat_fc_fwd.c:272`。
+- **`retnull-cond@<expr>` 事实（null-deref）**：对"callee 返回 NULL 的唯一条件"做归一化提取（`group->sect_head==POOL_SECT_NODE_INVALID`、`!group`），当所有定义的 NULL 路径都被同一条件守卫时写进候选。AI 一眼就能把它和 Code Context 里的分支前提做互斥比较（#8 `pool_last_sect` 那类），无需重建状态机；`||` 守卫取判空子句，else 分支里的 NULL 返回因需取反、不提取（保守）。
+- 两个新增 token/片段都进 `hint_tokens.go` 与 SKILL 的 Evidence Pattern（`TestSkillFragmentsMatchBuildEvidence` 锁定），并有回归测试：`TestFormatString_CallsiteSitesEmbedded`、`TestNullDeref_CalleeNullConditionEmbedded`。
+
 ### 证据内嵌补齐：调用点清单 + callee 空值条件（研判性能突破口）
 
 现网复盘把"证据内嵌（callee 体、调用点清单、状态转移结论写进候选文件）"列为下一阶段性能突破口。本轮补上其中两块，把 AI 二次研判从"grep 调用方 / 重建状态机"降为"读候选文件一次"：

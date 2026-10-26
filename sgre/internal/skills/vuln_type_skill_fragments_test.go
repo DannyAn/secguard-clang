@@ -35,6 +35,10 @@ var exemptBold = map[string]bool{
 // newEvidenceItem), so no registry block contains them.
 var sharedFragments = map[string]bool{
 	"weak_guard": true,
+	// flow_step is emitted by the shared bufferFlowSteps helper (called from the
+	// buffer-overflow AND out-of-bounds BuildEvidence blocks), so its `Type:`
+	// literal lives in a top-level function, not in either registry block.
+	"flow_step": true,
 }
 
 // TestSkillFragmentsMatchBuildEvidence guards the evidence contract between

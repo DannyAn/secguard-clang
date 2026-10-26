@@ -88,6 +88,10 @@ func chainBufferOverflow() []FilterFactory {
 		// categories RangeOOBFilter does not (they carry CopySize + DstCapacity,
 		// not Index + Size).
 		func(d FilterDeps) Filter { return NewBufferRangeFilter(d.Store, d.Parser, d.Logger) },
+		// BufferFlowFilter fills the diagnostic path (buffer definition line +
+		// index origin line) for every candidate with a resolved buffer; it never
+		// drops or re-tiers, only annotates evidence.
+		func(d FilterDeps) Filter { return NewBufferFlowFilter(d.Store, d.Parser, d.Logger) },
 	}
 }
 

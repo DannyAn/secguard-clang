@@ -13,7 +13,7 @@ func init() {
 		EvidenceType:      "OUT_OF_BOUNDS",
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "buffer-overflow",
-		FilterFactories:    chainBufferOverflow(),
+		FilterFactories:   chainBufferOverflow(),
 		BuildVerdictFacts: buildBufferVerdictFacts,
 		Categories:        []string{"array_oob_read", "heap_oob_read", "array_oob_read_unchecked"},
 		// A read-flavored OOB is only emitted when the detector proved the
@@ -51,6 +51,7 @@ func init() {
 				frags = append(frags, EvidenceFragment{Type: "escape", Role: "sink", Detail: fmt.Sprintf("the element (or its address) escapes to %s, which dereferences it%s — the OOB element feeds a null-deref sink", c.Escape, deref)})
 			}
 			frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
+			frags = append(frags, bufferFlowSteps(c)...)
 			return frags
 		},
 	})

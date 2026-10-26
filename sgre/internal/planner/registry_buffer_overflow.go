@@ -10,7 +10,7 @@ func init() {
 		EvidenceType:      "BUFFER_OVERFLOW",
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "buffer-overflow",
-		FilterFactories:    chainBufferOverflow(),
+		FilterFactories:   chainBufferOverflow(),
 		BuildVerdictFacts: buildBufferVerdictFacts,
 		Categories:        []string{"buffer_overflow", "array_oob_write", "heap_oob_write", "array_oob_write_unchecked", "format_overflow", "format_overflow_var", "bounded_copy_overflow", "bounded_copy_var_size", "secure_copy_overflow", "secure_copy_var_size", "secure_constraint_violation", "secure_scanf_overflow", "secure_scanf_var_size"},
 		// Provable out-of-bounds writes (a constant index past a known array or
@@ -67,6 +67,7 @@ func init() {
 				frags = append(frags, EvidenceFragment{Type: "size_argument", Role: "condition", Detail: fmt.Sprintf("_s size argument: %s", c.SizeArgument)})
 			}
 			frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
+			frags = append(frags, bufferFlowSteps(c)...)
 			return frags
 		},
 		ReviewAssumptions: []string{
@@ -79,4 +80,95 @@ func init() {
 			"Byte vs element unit confusion may cause false positives",
 		},
 	})
+}
+
+// bufferFlowSteps renders the CSA-style ordered diagnostic path for a
+// buffer-overflow / out-of-bounds candidate: where the buffer is defined, where
+// the index/copy-size comes from, the missing guard, and the sink. Each step is
+// a flow_step evidence fragment, numbered so the reviewer reads top-to-bottom.
+func bufferFlowSteps(c Candidate) []EvidenceFragment {
+	if c.Array == "" {
+		return nil
+	}
+	steps := make([]EvidenceFragment, 0, 4)
+	n := 1
+	if c.BufferDefLine > 0 {
+		what := "declared"
+		if c.BufferDefKind == "alloc" {
+			what = "allocated"
+		} else if c.BufferDefKind == "field" {
+			what = "declared as a struct field"
+		}
+		cap := "capacity unknown"
+		if c.Size > 0 {
+			cap = fmt.Sprintf("capacity %d elements", c.Size)
+		}
+		steps = append(steps, EvidenceFragment{
+			Type: "flow_step",
+			Role: "path",
+			Detail: fmt.Sprintf("[%d] buffer `%s` %s at line %d (%s)",
+				n, c.Array, what, c.BufferDefLine, cap),
+		})
+		n++
+	}
+	idx := c.Index
+	if idx == "" {
+		idx = c.CopySize
+	}
+	if idx == "" {
+		idx = c.SizeArgument
+	}
+	if idx != "" {
+		switch {
+		case c.IndexOriginLine > 0:
+			steps = append(steps, EvidenceFragment{
+				Type: "flow_step",
+				Role: "path",
+				Detail: fmt.Sprintf("[%d] the index/copy size `%s` originates at line %d (its value is set here)",
+					n, idx, c.IndexOriginLine),
+			})
+			n++
+		case c.IndexSource != "":
+			steps = append(steps, EvidenceFragment{
+				Type: "flow_step",
+				Role: "path",
+				Detail: fmt.Sprintf("[%d] the index is the struct field `%s` (external/config-supplied, not set in this function)",
+					n, c.IndexSource),
+			})
+			n++
+		default:
+			steps = append(steps, EvidenceFragment{
+				Type: "flow_step",
+				Role: "path",
+				Detail: fmt.Sprintf("[%d] the index/copy size is `%s` (a parameter or a compound expression — its value enters this function; see the call chain)",
+					n, idx),
+			})
+			n++
+		}
+	}
+	// The missing-guard step: a confirmed candidate's interval already proved
+	// overflow; otherwise the dominating guard is absent.
+	if c.SuspicionLevel == "confirmed" {
+		steps = append(steps, EvidenceFragment{
+			Type: "flow_step",
+			Role: "path",
+			Detail: fmt.Sprintf("[%d] no bounds check constrains `%s` by capacity %d before this access (machine-proved: the index interval reaches past the capacity)",
+				n, idx, c.Size),
+		})
+	} else if c.Size > 0 {
+		steps = append(steps, EvidenceFragment{
+			Type: "flow_step",
+			Role: "path",
+			Detail: fmt.Sprintf("[%d] no bounds check dominates this access — the guard that would keep `%s` within [0, %d) is missing (or compares against a different bound)",
+				n, idx, c.Size),
+		})
+		n++
+	}
+	steps = append(steps, EvidenceFragment{
+		Type: "flow_step",
+		Role: "path",
+		Detail: fmt.Sprintf("[%d] the access at line %d writes/reads past the end of `%s`",
+			n, c.Line, c.Array),
+	})
+	return steps
 }

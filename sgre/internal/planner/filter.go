@@ -117,15 +117,20 @@ type Candidate struct {
 	// one line (the members of a `for (init; cond; update)` header). 0 when the
 	// event carried no column; flow queries then fall back to line-only
 	// resolution.
-	Column            int    `json:"column,omitempty"`
-	HasNullableSource bool   `json:"has_nullable_source"`
-	HasDefiniteNull   bool   `json:"has_definite_null"`
-	IsReachable       bool   `json:"is_reachable"`
-	HasDataFlow       bool   `json:"has_data_flow"`
-	HasTaintSource    bool   `json:"has_taint_source"`
-	IsGuarded         bool   `json:"is_guarded"`
-	GuardStrength     string `json:"guard_strength"`
-	SuspicionLevel    string `json:"suspicion_level"`
+	Column            int  `json:"column,omitempty"`
+	HasNullableSource bool `json:"has_nullable_source"`
+	HasDefiniteNull   bool `json:"has_definite_null"`
+	IsReachable       bool `json:"is_reachable"`
+	// CallChain is the concrete cross-function call path entry → … → this
+	// function (caller/callee name per hop, plus the call site line), set by the
+	// call-reach filter. It turns the boolean "reachable from entry" into the
+	// diagnosable chain the reviewer needs to trace a multi-hop flow.
+	CallChain      []CallChainHop `json:"call_chain,omitempty"`
+	HasDataFlow    bool           `json:"has_data_flow"`
+	HasTaintSource bool           `json:"has_taint_source"`
+	IsGuarded      bool           `json:"is_guarded"`
+	GuardStrength  string         `json:"guard_strength"`
+	SuspicionLevel string         `json:"suspicion_level"`
 	// MacroContext is true when the candidate's reported statement or its
 	// surrounding context involves a function-like macro call. Macro semantics
 	// (guard macros, iterator macros, accessor macros, alloc/free wrappers) are
@@ -210,6 +215,17 @@ type Candidate struct {
 	// downstream null-deref sink of the OOB chain.
 	Escape      string `json:"escape,omitempty"`
 	EscapeDeref string `json:"escape_deref,omitempty"`
+	// BufferDefLine/BufferDefKind locate the buffer's definition for the
+	// buffer-overflow / out-of-bounds diagnostic path: where the array is
+	// declared, the heap buffer allocated, or the struct field declared
+	// ("array" / "alloc" / "field"). 0 = not resolved.
+	BufferDefLine int    `json:"buffer_def_line,omitempty"`
+	BufferDefKind string `json:"buffer_def_kind,omitempty"`
+	// IndexOriginLine locates where the offending index / copy-size value
+	// originates (its declaration or last assignment before the sink), so the
+	// flow path can say "the index comes from here" instead of only "it is a
+	// variable". 0 = compound expression / parameter / not a single site.
+	IndexOriginLine int `json:"index_origin_line,omitempty"`
 	// SrcCapacity is the resolved element count of the SOURCE buffer of an
 	// unbounded copy (strcpy/strcat/memcpy/…). A known source capacity lets the
 	// classifier judge "the source is itself a bounded fixed-size global" (the

@@ -16,6 +16,12 @@ A buffer-overflow candidate has:
 - **BUFFER_ACCESS event**: An unsafe function call (memcpy, strcpy, sprintf, strcat, gets)
 - **No bounds check**: No guard checking buffer capacity before the unsafe call
 - **Reachable**: The function is reachable from an entry point
+- **flow_step**: the CSA-style ordered diagnostic path — `[1] buffer … declared
+  at line N (capacity M)` → `[2] the index/copy size … originates at line K` →
+  `[3] no bounds check dominates …` → `[N] the access at line L writes past the
+  end`. Read top-to-bottom as the trace from definition to sink; the missing
+  guard step is the defect, the rest is the evidence. The `call_path` fragment
+  carries the concrete cross-function chain (see below).
 
 Detector categories that route to this type:
 - `buffer_overflow` — unsafe copy API call (memcpy/strcpy/strcat/gets/...)
