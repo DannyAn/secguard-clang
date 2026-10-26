@@ -69,6 +69,13 @@ func NewDangerousFunctionDetector(store db.Store, p *parser.Parser, logger *log.
 			rules[name] = dangerRule{category: "config_banned"}
 		}
 	}
+	// [banned_functions] exclude: the built-in table is a DEFAULT policy, not the
+	// project's authoritative banned-function list. A project whose guideline
+	// does not ban a built-in name (its own standard is the authority) removes it
+	// here instead of living with a finding it must dismiss on every scan.
+	for _, name := range config.Load().BannedFunctionExcludeNames() {
+		delete(rules, name)
+	}
 	return &DangerousFunctionDetector{store: store, parser: p, logger: logger, rules: rules}
 }
 
@@ -101,13 +108,18 @@ var builtinDangerRules = map[string]dangerRule{
 	"longjmp": {category: "nonlocal_jump", replacement: "return-value error propagation"},
 
 	// --- memory copy / init (内存复制/初始化 → _s) ---
+	// Scope: the C11 Annex K `_s` family and its unchecked predecessors. The
+	// deprecated BSD compatibility trio (bzero/bcopy/bcmp) is deliberately NOT
+	// here: it has no `_s` counterpart, and a project's own banned-function
+	// guideline routinely does not list it, so a default ban asserted a policy
+	// the standard does not contain (production reported `bzero` as an
+	// out-of-scope CWE-676 finding). A project that DOES ban them adds the names
+	// via [banned_functions] names, or trims any built-in via `exclude`.
 	"memcpy":   {category: "unsafe_memory", replacement: "memcpy_s"},
 	"wmemcpy":  {category: "unsafe_memory", replacement: "wmemcpy_s"},
 	"memmove":  {category: "unsafe_memory", replacement: "memmove_s"},
 	"wmemmove": {category: "unsafe_memory", replacement: "wmemmove_s"},
 	"memset":   {category: "unsafe_memory", replacement: "memset_s"},
-	"bcopy":    {category: "unsafe_memory", replacement: "memmove_s"},
-	"bzero":    {category: "unsafe_memory", replacement: "memset_s"},
 
 	// --- string copy (字符串复制 → _s) ---
 	"strcpy":  {category: "unsafe_string", replacement: "strcpy_s"},
@@ -120,7 +132,6 @@ var builtinDangerRules = map[string]dangerRule{
 	"wcscat":  {category: "unsafe_string", replacement: "wcscat_s"},
 	"strncat": {category: "unsafe_string", replacement: "strncat_s"},
 	"wcsncat": {category: "unsafe_string", replacement: "wcsncat_s"},
-	"bcmp":    {category: "unsafe_string", replacement: "memcmp"},
 
 	// --- formatted output (格式化输出 → _s) ---
 	"sprintf":   {category: "unsafe_format", replacement: "sprintf_s"},

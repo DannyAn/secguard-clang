@@ -53,17 +53,22 @@ type TrustedMacros struct {
 	Names []string `toml:"names"`
 }
 
-// BannedFunctions extends the built-in banned-function policy table (CWE-676)
-// with project-specific bans. The built-in table (process/thread exit, alloca,
-// setjmp/longjmp, the non-`_s` mem/str/format/scan families, atoi-family,
-// realloc, assert, and the obsolete/insecure APIs) is always active; this
-// section only ADDS names (category "config_banned"), so an enterprise can ban
-// a function the default table does not (e.g. a wrapper it has deprecated).
+// BannedFunctions tunes the built-in dangerous-function policy table (CWE-676).
+// The built-in table (process/thread exit, alloca, setjmp/longjmp, the non-`_s`
+// mem/str/format/scan families, atoi-family, realloc, assert, and the
+// obsolete/insecure APIs) is a DEFAULT policy, not the project's authoritative
+// list. `names` ADDS project-specific bans (category "config_banned", e.g. a
+// wrapper the project deprecated); `exclude` REMOVES named built-ins so a
+// project whose own security guideline does not ban a function never sees the
+// finding (e.g. the deprecated BSD bzero/bcopy/bcmp trio once the project's
+// guideline omits it). `exclude` wins when a name appears in both lists.
 //
 //	[banned_functions]
-//	names = ["my_legacy_alloc"]
+//	names   = ["my_legacy_alloc"]
+//	exclude = ["realloc", "mktemp"]
 type BannedFunctions struct {
-	Names []string `toml:"names"`
+	Names   []string `toml:"names"`
+	Exclude []string `toml:"exclude"`
 }
 
 // Allocators declares project-specific allocation functions so the memory
@@ -289,13 +294,22 @@ func (c *Config) TrustedMacroNames() []string {
 }
 
 // BannedFunctionNames returns the project-specific banned-function list to merge
-// with the built-in dangerous/obsolete set (CWE-676). The built-in list is
-// always active; these names only extend it.
+// with the built-in dangerous/obsolete set (CWE-676).
 func (c *Config) BannedFunctionNames() []string {
 	if c == nil {
 		return nil
 	}
 	return c.BannedFunctions.Names
+}
+
+// BannedFunctionExcludeNames returns the built-in policy names the project
+// removes: its own security guideline is the authority on which functions are
+// banned, so a built-in the guideline does not list must not be reported.
+func (c *Config) BannedFunctionExcludeNames() []string {
+	if c == nil {
+		return nil
+	}
+	return c.BannedFunctions.Exclude
 }
 
 // AllocatorNames returns the project-specific allocation-function names.

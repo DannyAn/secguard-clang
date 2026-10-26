@@ -42,7 +42,7 @@ func TestDangerousFunction_BannedCalls(t *testing.T) {
 		}
 	}
 
-	for _, banned := range []string{"gets", "mktemp", "gethostbyname", "bcopy", "memcpy", "strcpy", "sprintf", "atoi"} {
+	for _, banned := range []string{"gets", "mktemp", "gethostbyname", "memmove", "memcpy", "strcpy", "sprintf", "atoi"} {
 		if !flagged[banned] {
 			t.Errorf("%s should be flagged as banned, got %v", banned, flagged)
 		}
@@ -50,6 +50,16 @@ func TestDangerousFunction_BannedCalls(t *testing.T) {
 	for _, safe := range []string{"memcpy_s", "strcpy_s", "sprintf_s", "strtol"} {
 		if flagged[safe] {
 			t.Errorf("%s is a safe/replacement API and must NOT be flagged, got %v", safe, flagged)
+		}
+	}
+	// The deprecated BSD trio has no `_s` counterpart and is routinely absent
+	// from a project's own banned-function guideline, so the DEFAULT policy must
+	// not assert it (production reported `bzero` as an out-of-scope CWE-676
+	// finding whose verdict read "可修改可不修改"). A project that bans them
+	// adds [banned_functions] names.
+	for _, deprecated := range []string{"bzero", "bcopy", "bcmp"} {
+		if flagged[deprecated] {
+			t.Errorf("%s is deprecated but not memory-unsafe and is not in the default ban table; it must NOT be flagged, got %v", deprecated, flagged)
 		}
 	}
 }
@@ -232,5 +242,63 @@ int use_legacy(void) {
 	}
 	if !found {
 		t.Errorf("config-banned my_legacy_alloc should be flagged, got %d events", len(events))
+	}
+}
+
+// [banned_functions] exclude lets a project remove a BUILT-IN name its own
+// security guideline does not ban. The built-in table is a default policy, not
+// the project's authoritative list: production flagged `bzero`, whose verdict
+// was "not a false positive, but not in our guideline either" — with no way to
+// trim the table the finding had to be dismissed on every scan.
+func TestDangerousFunction_ConfigExcludeRemovesBuiltin(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "secguard.toml")
+	if err := os.WriteFile(cfgPath, []byte(`[banned_functions]
+exclude = ["memset"]
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	config.SetExplicitPath(cfgPath)
+	t.Cleanup(func() { config.SetExplicitPath("") })
+
+	src := filepath.Join(dir, "ex.c")
+	if err := os.WriteFile(src, []byte(`#include <string.h>
+void f(char *dst, const char *src) {
+    memset(dst, 0, 16);
+    strcpy(dst, src);
+}
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, src); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	if _, err := NewDangerousFunctionDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	events, err := store.ListEventsByType(ctx, "DANGEROUS_FUNCTION")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	flagged := map[string]bool{}
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		if json.Unmarshal([]byte(e.Properties), &props) == nil {
+			flagged[props.Variable] = true
+		}
+	}
+	if flagged["memset"] {
+		t.Errorf("memset is excluded by [banned_functions] exclude and must not be flagged, got %v", flagged)
+	}
+	if !flagged["strcpy"] {
+		t.Errorf("excluding one built-in must not disable the rest (strcpy), got %v", flagged)
 	}
 }

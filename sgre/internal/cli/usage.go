@@ -263,16 +263,18 @@ What it is:
     Standard Linux list-traversal macros (list_for_each_entry & friends) are
     built-in and do NOT need to be declared here.
 
-  [banned_functions] — banned-function extension (CWE-676)
-    names = ["..."]
-    Adds to the built-in banned-function policy table (CWE-676). The built-in
-    table (process/thread exit, alloca, setjmp/longjmp, the non-_s
+  [banned_functions] — dangerous-function policy (CWE-676)
+    names   = ["..."]   # ADD project bans (category "config_banned")
+    exclude = ["..."]   # REMOVE built-ins your guideline does not list
+    The built-in table (process/thread exit, alloca, setjmp/longjmp, the non-_s
     mem/str/format/scan families, atoi/atol/atoll/atof, realloc, assert, and
-    the obsolete/insecure APIs) is always active; these names only EXTEND it
-    (as category "config_banned"). It is a policy check: a call is flagged
-    regardless of surrounding bounds checks, because the enterprise bans the
-    function itself. Every category is auto-confirmed except assert usage
-    (handed to the AI agent).
+    the obsolete/insecure APIs) is a DEFAULT policy, not your guideline's
+    authoritative list: "names" extends it, "exclude" trims it (a name in both
+    is excluded). It is a policy check: a call is flagged regardless of
+    surrounding bounds checks, because the enterprise bans the function itself.
+    Every category is auto-confirmed except assert usage (handed to the AI
+    agent). The deprecated BSD trio (bzero/bcopy/bcmp) is NOT in the default
+    table; add those names if your standard bans them.
 
   [exclude] — directory trees to skip at index time
     paths = ["..."]
@@ -355,12 +357,17 @@ names = [
 # SAMPLE_Scan = [1]
 # POOL_FOR = [1]
 
-# Enterprise-specific banned functions: ADD to the built-in banned-function
-# policy table (CWE-676). The built-in table is always active; these only
-# extend it (category "config_banned").
+# Dangerous-function policy (CWE-676). The built-in table is a DEFAULT policy,
+# not your guideline: "names" ADDS project bans (category "config_banned"),
+# "exclude" REMOVES a built-in your own security guideline does not list (e.g.
+# the deprecated BSD bzero/bcopy/bcmp trio, or a function your standard allows).
+# A name in both lists is excluded.
 [banned_functions]
 names = [
     # "my_legacy_alloc",
+]
+exclude = [
+    # "realloc",
 ]
 
 # Directory trees to skip at index time. Each path is resolved against the SCAN

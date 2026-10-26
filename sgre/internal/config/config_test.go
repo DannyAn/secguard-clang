@@ -297,3 +297,33 @@ names = ["user_data", "reply_msg", "out_msg"]
 		t.Errorf("non_null_params must not leak into non_null_returns, got %d names", n)
 	}
 }
+
+// [banned_functions] exclude trims the DEFAULT policy: a project's own security
+// guideline is the authority on which functions are banned, so a built-in it
+// does not list must be removable without editing the tool.
+func TestLoad_BannedFunctionExclude(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "banned.toml")
+	content := `[banned_functions]
+names   = ["my_legacy_alloc"]
+exclude = ["bzero", "realloc"]
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	SetExplicitPath(path)
+	cfg := Load()
+	if got := cfg.BannedFunctionNames(); len(got) != 1 || got[0] != "my_legacy_alloc" {
+		t.Errorf("BannedFunctionNames() = %v, want [my_legacy_alloc]", got)
+	}
+	got := cfg.BannedFunctionExcludeNames()
+	want := []string{"bzero", "realloc"}
+	if len(got) != len(want) {
+		t.Fatalf("BannedFunctionExcludeNames() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("BannedFunctionExcludeNames()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}

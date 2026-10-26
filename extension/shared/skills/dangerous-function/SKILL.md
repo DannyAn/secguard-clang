@@ -35,8 +35,8 @@ A dangerous-function candidate has:
 | `process_exit` | `exit`, `ExitProcess` (non-entry only); `pthread_exit`, `ExitThread` (non-entry only); `atexit`, `abort` | return / graceful shutdown / explicit release |
 | `stack_allocation` | `alloca` | `malloc`/`free` or a fixed-size buffer |
 | `nonlocal_jump` | `setjmp`, `longjmp` | return-value error propagation |
-| `unsafe_memory` | `memcpy`, `wmemcpy`, `memmove`, `wmemmove`, `memset`, `bcopy`, `bzero` | `memcpy_s`, `memmove_s`, `memset_s`, ... |
-| `unsafe_string` | `strcpy`, `wcscpy`, `strncpy`, `wcsncpy`, `strcat`, `wcscat`, `strncat`, `wcsncat`, `bcmp` | `strcpy_s`, `strncpy_s`, `strcat_s`, ... / `memcmp` |
+| `unsafe_memory` | `memcpy`, `wmemcpy`, `memmove`, `wmemmove`, `memset` | `memcpy_s`, `memmove_s`, `memset_s`, ... |
+| `unsafe_string` | `strcpy`, `wcscpy`, `strncpy`, `wcsncpy`, `strcat`, `wcscat`, `strncat`, `wcsncat` | `strcpy_s`, `strncpy_s`, `strcat_s`, ... |
 | `unsafe_format` | `sprintf`, `swprintf`, `vsprintf`, `vswprintf`, `snprintf`, `vsnprintf` | `sprintf_s`, `snprintf_s`, `vsnprintf_s`, ... |
 | `unsafe_scan` | `scanf`, `wscanf`, `vscanf`, `vwscanf`, `fscanf`, `fwscanf`, `vfscanf`, `vfwscanf`, `sscanf`, `swscanf`, `vsscanf`, `vswscanf`, `gets` | the `_s` variants (`scanf_s`, `sscanf_s`, ...) / `fgets` |
 | `unchecked_conversion` | `atoi`, `atol`, `atoll`, `atof` | `strtol`, `strtoll`, `strtod` (check errno + endptr) |
@@ -69,8 +69,14 @@ intentionally OVERLAP the context-sensitive `buffer-overflow` / `injection` /
 while this type answers "is a non-`_s` API used at all". Both are reported.
 
 ### Common False Positives
-- A codebase that deliberately vendors a banned function (e.g. a compatibility
-  `bzero`) is an intentional policy exception to review.
+- A codebase that deliberately vendors a banned function (a compatibility
+  `free`-wrapper, a project-local `memcpy`) is an intentional policy exception
+  to review.
+- The deprecated BSD trio (`bzero`, `bcopy`, `bcmp`) is **not** in the default
+  table: it has no `_s` counterpart and a project's own banned-function guideline
+  routinely omits it, so the tool must not assert that policy. A project that
+  bans them adds `[banned_functions] names`, and any project can drop a built-in
+  its guideline does not list via `[banned_functions] exclude`.
 - `assert` guarding a TRUE internal invariant (`assert(state == RUNNING)`) is
   not a defect — only asserts on caller input / runtime-fallible results are.
 - A project that standardizes on the plain functions and provides no `_s` runtime

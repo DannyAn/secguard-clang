@@ -2,6 +2,16 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [未发布]
+
+### dangerous-function 策略范围纠正（bzero 等 BSD 兼容 API 不再默认禁用）
+
+现网反馈：`bzero` 被报为 CWE-676，但公司白盒安全验证指导书的禁用函数清单里没有它，AI 研判结论是"可修改可不修改、非误报"——即这是我们自己**超出标准**的默认策略，不是缺陷。
+
+- **默认表移除 `bzero` / `bcopy` / `bcmp`**（deprecated BSD 兼容 API，没有对应的 `_s` 替代族，且常见企业禁用清单并不包含）。默认表只保留 C11 Annex K `_s` 族及其无长度界定的前身（`memcpy`/`strcpy`/`sprintf`/…）。仍需要它们的项目用 `[banned_functions] names` 自行加入。
+- **新增 `[banned_functions] exclude`**：从内置策略表中**移除**指定名字。内置表是"默认策略"，项目自己的安全指导书才是权威——不在指导书里的内置项应当可以被项目关掉，而不是每次扫描都要 dismiss。`names` 与 `exclude` 同名时以 `exclude` 为准。
+- `secguard config --help/--example`、`secguard config` 输出、SKILL.md 分类表同步；测试覆盖"三件套不再报"与"exclude 只影响指定名字"（`strcpy` 仍报）。
+
 ## [0.11.1] - 2026-10-26
 
 ### 最终结果保障：机器判定误报治理 + 终审复核关口（NAT 同批 63 confirmed / 26 误报复核）

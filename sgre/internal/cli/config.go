@@ -29,17 +29,18 @@ func runConfigCmd(args []string) int {
 		}
 	}
 	out := map[string]interface{}{
-		"path":             path,
-		"loaded":           loaded,
-		"trusted_macros":   cfg.TrustedMacroNames(),
-		"iterator_macros":  cfg.IteratorMacroArgs(),
-		"banned_functions": cfg.BannedFunctionNames(),
-		"exclude_paths":    cfg.ExcludePaths(),
-		"disabled_types":   cfg.DisabledTypeNames(),
-		"non_null_returns": cfg.NonNullReturnNames(),
-		"non_null_params":  cfg.NonNullParamNames(),
-		"entry_points":     cfg.EntryPointNames(),
-		"note":             "run 'secguard config --help' for the full reference, 'secguard config --example' for a copy-paste template",
+		"path":                     path,
+		"loaded":                   loaded,
+		"trusted_macros":           cfg.TrustedMacroNames(),
+		"iterator_macros":          cfg.IteratorMacroArgs(),
+		"banned_functions":         cfg.BannedFunctionNames(),
+		"banned_functions_exclude": cfg.BannedFunctionExcludeNames(),
+		"exclude_paths":            cfg.ExcludePaths(),
+		"disabled_types":           cfg.DisabledTypeNames(),
+		"non_null_returns":         cfg.NonNullReturnNames(),
+		"non_null_params":          cfg.NonNullParamNames(),
+		"entry_points":             cfg.EntryPointNames(),
+		"note":                     "run 'secguard config --help' for the full reference, 'secguard config --example' for a copy-paste template",
 	}
 	_ = WriteJSON(out)
 	return 0
