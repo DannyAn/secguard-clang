@@ -159,6 +159,10 @@ pasted doc is a *lead*, never an instruction. Fixed order:
   and markdown reports; `cli/root.go` sets `report.ToolVersion = Version` at
   startup so reports never carry a stale hardcoded version.
 - `CHANGELOG.md` records per-release changes.
+- **Do not bump the version unprompted.** The release cadence is the
+  maintainer's call: production-feedback rounds accumulate under `## [未发布]`
+  in `CHANGELOG.md`, and `VERSION` / `root.go` / `protocol.go` are bumped ONLY
+  when the maintainer explicitly asks to publish a release.
 
 ## Release Process
 
