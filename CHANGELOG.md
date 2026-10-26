@@ -4,6 +4,18 @@
 
 ## [未发布]
 
+### null-deref 跨函数"校验函数 + 返回值门控"识别（NAT #6/#7/#9 真实片段复核）
+
+拿到真实代码后确认：`helper-guard` 契约（"参数为 NULL ⟹ 函数返回非零"）本身已存在，但只认**字面量 `!= 0` + 直接调用**这一种写法，真实工程里的三种常见写法全部漏掉，于是 3 条误报流到 AI：
+
+- **成功码写成符号**（`if (prepare_allocate(group, pool_id) != NAT_OK)`、`ret != STMP_OK`）：比较的另一侧不是 `0`/`NULL` 字面量。现在用文件的常量表（宏/枚举/const）解析零值符号。
+- **状态先存变量再判断**（`int ret = nat_stmp_del_pool_check(vsys_id, pool); if (ret != STMP_OK) return ret;`）：守卫比较的是 `ret` 而不是调用表达式。现在把变量解析到"该守卫之前最后一次赋值，且该赋值是一次调用"，否则不证明。
+- **callee 的判空写在 `||` 里**（`if (pool == NULL || pool->vsys_id != vsys_id) return ...;`）：`condNullChecksParam` 只认单独的 `x == NULL`/`!x`。现在接受顶层 `||` 的任一子句（param 为 NULL ⟹ 析取为真 ⟹ 提前返回；`&&` 仍不接受，因为参数为 NULL 不足以使合取为真）。
+
+反向控制已锁定：忽略返回值、用**非成功**常量做门控、callee 自身不判空 —— 三种都仍然报。单测 `TestNullDeref_CrossFunctionGate` 在去掉上述任一扩展时失败。
+
+`pool_last_sect` 那一类（"分支前提排除 callee 的 NULL 条件"）**不做机器压制**：真实代码里守卫与调用之间存在 `pool_find_insert_sect_by_insertid(group, ...)`，扫描器无法证明它不写 `sect_head`，机器压制会制造漏报；改为在 null-deref SKILL 里给出可判定的规则（区间内只读/`const`/纯查找则 dismiss，写操作则保留并点名该调用），AI 依据内嵌的 callee 体 + Code Context 即可判定。
+
 ### 第二轮现网复核：format-string 调用点常数传播 + 机器/AI 判定来源标注
 
 - **调用点普查补上"局部/字段常量"传播**（NAT #3/#4/#5 的根因）：普查原本只按实参**语法**分类，`const char *fmt = "x"; log_msg(fmt);`、`fmt = POOL_INFO_DEF;`、`ui->fmt_ipv4 = "ip %s"; log_msg(ui->fmt_ipv4);` 全被记成 `var`，于是 `callsites@3:3-var`，all-literal 门永不触发，包装函数带着"变量 format"进研判并被确认。现在：某变量/字段在本函数内**每次**赋值都是编译期字符串（字面量或字符串宏）、最后一次赋值在调用点之前、且两者之间没有其它调用（可能通过逃逸指针改写），该实参即计为 `literal`。实测同一 fixture：`3:3-var` → 全部 literal（候选消失）；反例（重赋非字面量、中间有调用）仍为变量、仍产出候选。

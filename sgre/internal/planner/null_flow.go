@@ -388,7 +388,7 @@ func (a *flowAnalyzer) analyzeFlow(ctx context.Context, fn *db.Function, body pa
 	// may-analysis (nonNullKills), never to taint/freed-state/uninit flows.
 	var guard *guardModel
 	if nonNullKills {
-		guard = buildGuardModel(cfg, a.helperParams, a.macroGuards)
+		guard = buildGuardModel(cfg, a.helperParams, a.macroGuards, buildGuardCtx(body, fileRoot))
 	}
 	nodeIn := runDataflow(cfg, effects, a.entrySeeds, guard)
 	return &flowResult{cfg: cfg, nodeIn: nodeIn, genAt: genAt(cfg, effects), weakGuard: buildWeakGuardMap(cfg), ternaryGuard: buildTernaryGuardMap(body)}
@@ -2715,4 +2715,68 @@ func functionBodiesForFile(p *parser.Parser, file *db.File) (parser.Node, map[in
 		}
 	}
 	return root, bodies
+}
+
+// buildGuardCtx supplies the guard comparison with the two facts the AST alone
+// does not carry: which identifiers are compile-time zero (the file's constant
+// table: `NAT_OK` / `STMP_OK` / an enum's success value), and which variables
+// hold a helper call before a given line (`ret = check(p); if (ret != OK) ...`).
+//
+// The variable map is "last assignment wins, and only when that assignment is a
+// call": if `ret` is reassigned to anything else before the guard, the guard no
+// longer tests the helper's result and nothing is proven.
+func buildGuardCtx(body, fileRoot parser.Node) guardCtx {
+	var zero *parser.ConstantEnv
+	if fileRoot.Kind() != "" {
+		zero = parser.CollectConstantSymbols(fileRoot)
+	}
+	type callAssign struct {
+		line int
+		call parser.Node
+	}
+	byVar := map[string][]callAssign{}
+	record := func(node parser.Node) {
+		lhs, rhs, ok := node.AssignParts()
+		if !ok || lhs.Kind() != "identifier" {
+			return
+		}
+		var call parser.Node
+		inner := rhs
+		for inner.Kind() == "cast_expression" || inner.Kind() == "parenthesized_expression" {
+			kids := inner.NamedChildren()
+			if len(kids) == 0 {
+				break
+			}
+			inner = kids[len(kids)-1]
+		}
+		if inner.Kind() == "call_expression" {
+			call = inner
+		}
+		name := strings.TrimSpace(lhs.Text())
+		byVar[name] = append(byVar[name], callAssign{line: node.StartLine(), call: call})
+	}
+	for _, assign := range body.FindAll("assignment_expression") {
+		record(assign)
+	}
+	for _, init := range body.FindAll("init_declarator") {
+		record(init)
+	}
+	return guardCtx{
+		isZero: func(name string) bool {
+			return zero != nil && zero.IsZero(name)
+		},
+		callOf: func(name string, line int) parser.Node {
+			best := -1
+			bestLine := 0
+			for i, a := range byVar[name] {
+				if a.line < line && a.line >= bestLine {
+					best, bestLine = i, a.line
+				}
+			}
+			if best < 0 {
+				return parser.Node{}
+			}
+			return byVar[name][best].call
+		},
+	}
 }

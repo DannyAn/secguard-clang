@@ -117,7 +117,38 @@ your job differs per tier, so read it before anything else:
 | `null@external-unknown` | the ONLY null source is an unproven external call — a fail-open analyzer ASSUMPTION, not evidence | verify the callee can return NULL (API knowledge), otherwise dismiss |
 
 `guard@none` in the same Hint means no same-function null guard precedes the
-deref (machine-verified) — do not spend a read looking for one.
+deref (machine-verified) — do not spend a read looking for one. It says nothing
+about guards OUTSIDE the dereference's function, which is where most of these
+false positives live:
+
+### Cross-function guards and branch premises (stdlib `guard@none` traps)
+
+The pipeline already models the two patterns below when the error constants are
+literal `0`/`NULL`; it cannot model every project's spelling, so judge these
+from the embedded callee body + the Code Context window:
+
+1. **A check/validation callee that gates the dereference.** If `p` is passed to
+   `check(p)` / `prepare(p)` and the caller bails on the callee's failure
+   (`if (check(p) != OK) return;`), and that callee's entry does
+   `if (p == NULL) return <error>`, then the surviving path has `p != NULL` —
+   **dismiss**, citing the callee's guard line and the caller's gate line.
+   The same holds when the status is first stored (`int ret = check(p); if (ret
+   != OK) return;`) and when the constant is a symbol whose success value is 0
+   (`NAT_OK`, `STMP_OK`). What does NOT prove anything: ignoring the result
+   (`(void)check(p);`), gating on a NON-zero/other constant, or a callee that
+   returns `0` on the null path.
+2. **A branch premise that excludes the callee's NULL condition.** If the callee
+   returns NULL only when `obj->field == C`, and the call sits in the `else` of
+   `if (obj->field == C)`, that NULL path is excluded. The premise survives only
+   while nothing rewrites `obj->field` between the branch entry and the call —
+   judge the interval from the Code Context: a read-only statement, or an
+   intervening call that takes the object as `const` / is a pure lookup
+   (a `find_*`/`get_*` whose body shows no write to the field) keeps it.
+   A call that mutates the object (`*_set_*`, `*_update_*`, a body that assigns
+   the field) defeats it: keep the finding and name the call.
+
+Never dismiss on "there is some null check somewhere": the check must dominate
+the dereference on the surviving path.
 
 ### Macro Context (Hint `macro-context`)
 When the Hint carries `macro-context`, a function-like macro is in play and the

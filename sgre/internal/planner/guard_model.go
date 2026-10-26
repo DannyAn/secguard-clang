@@ -25,7 +25,18 @@ type guardModel struct {
 // guard statements establish. helperParams is the cross-file predicate-helper
 // summary (helper name -> null-checked parameter indices); macroGuards is the
 // cross-file guard-macro summary.
-func buildGuardModel(cfg *graph.StmtCFG, helperParams map[string][]int, macroGuards map[string]macros.GuardSummary) *guardModel {
+// guardCtx carries the two facts a guard comparison needs beyond the AST: which
+// identifiers are compile-time ZERO (`NAT_OK`, `STMP_OK`, an error-code enum
+// whose success value is 0) and which VARIABLES hold a helper call at a given
+// line (`ret = check(p); if (ret != OK) return;`). Both are how real projects
+// spell "the helper's failure test", and without them the helper-guard contract
+// only matched the literal `!= 0` spelling of a direct call.
+type guardCtx struct {
+	isZero func(name string) bool
+	callOf func(name string, line int) parser.Node
+}
+
+func buildGuardModel(cfg *graph.StmtCFG, helperParams map[string][]int, macroGuards map[string]macros.GuardSummary, gctx guardCtx) *guardModel {
 	gm := &guardModel{edgeKills: make(map[[2]int]map[string]bool)}
 	for _, n := range cfg.Nodes {
 		if n.Kind != "stmt" {
@@ -52,7 +63,7 @@ func buildGuardModel(cfg *graph.StmtCFG, helperParams map[string][]int, macroGua
 			if cond == nil {
 				continue
 			}
-			trueVars, falseVars := conditionGuardVars(*cond, helperParams)
+			trueVars, falseVars := conditionGuardVars(*cond, helperParams, gctx)
 			for _, t := range n.TrueSuccs {
 				gm.addKills(n.ID, t, trueVars)
 			}
@@ -165,8 +176,8 @@ func successorInCases(s *graph.StmtNode, cases map[int]bool) bool {
 // truthy/non-zero ⟺ p NULL", so `if (is_empty(p))` / `if (check(p) != 0)`
 // proves the checked argument non-null on the FALSE branch, while
 // `if (check(p) == 0)` / `if (!check(p))` proves it on the TRUE branch.
-func conditionGuardVars(cond parser.Node, helperParams map[string][]int) (trueVars, falseVars []string) {
-	if name, args, guardTrue := helperGuard(cond, helperParams); name != "" {
+func conditionGuardVars(cond parser.Node, helperParams map[string][]int, gctx guardCtx) (trueVars, falseVars []string) {
+	if name, args, guardTrue := helperGuard(cond, helperParams, gctx); name != "" {
 		for _, idx := range helperParams[name] {
 			if idx >= len(args) {
 				continue
@@ -238,7 +249,7 @@ func isAssertLikeName(name string) bool {
 //
 // A compound condition (`f(p) && x`, `f(p) || x`) is NOT matched: only a lone
 // helper call gives the clean "helper non-zero ⟹ param NULL" implication.
-func helperGuard(cond parser.Node, helperParams map[string][]int) (string, []parser.Node, bool) {
+func helperGuard(cond parser.Node, helperParams map[string][]int, gctx guardCtx) (string, []parser.Node, bool) {
 	inner := cond
 	for {
 		if inner.Kind() == "parenthesized_expression" || inner.Kind() == "cast_expression" {
@@ -292,7 +303,7 @@ func helperGuard(cond parser.Node, helperParams map[string][]int) (string, []par
 		return "", nil, false
 	}
 	for i, c := range children {
-		if !parser.IsNullOperand(c) {
+		if !zeroOperand(c, gctx) {
 			continue
 		}
 		callNode := children[1-i]
@@ -310,6 +321,14 @@ func helperGuard(cond parser.Node, helperParams map[string][]int) (string, []par
 				continue
 			}
 			break
+		}
+		// The helper result may be held in a variable first:
+		// `int ret = check(p); if (ret != OK) return;` — resolve the variable to
+		// its last assigned helper call in this function.
+		if callNode.Kind() == "identifier" && gctx.callOf != nil {
+			if call := gctx.callOf(callNode.Text(), inner.StartLine()); call.Kind() != "" {
+				callNode = call
+			}
 		}
 		if callNode.Kind() != "call_expression" {
 			return "", nil, false
@@ -395,6 +414,21 @@ func condNullChecksParam(cond parser.Node, param string) bool {
 			return false
 		}
 		inner = kids[0]
+	}
+	// `param == NULL || other` still guarantees "param NULL ⟹ the guard fires":
+	// the disjunction is TRUE whenever param is NULL, so the early return happens
+	// on exactly the path this contract needs. (An `&&` does NOT: param NULL
+	// alone does not make the conjunction true.) This is the shape real check
+	// functions use — `if (pool == NULL || pool->vsys_id != vsys_id) return
+	// STMP_CFG_INFO_CFG_NOT_EXIST;` — and missing it kept the whole helper out of
+	// the null-check-helper table.
+	if inner.Kind() == "binary_expression" && parser.BinaryOperator(inner) == "||" {
+		for _, op := range inner.NamedChildren() {
+			if condNullChecksParam(op, param) {
+				return true
+			}
+		}
+		return false
 	}
 	if inner.Kind() == "binary_expression" && parser.BinaryOperator(inner) == "==" {
 		var hasParam, hasNull bool
@@ -503,4 +537,27 @@ func isConditionKind(kind string) bool {
 		return true
 	}
 	return false
+}
+
+// zeroOperand reports whether a comparison operand is a compile-time ZERO:
+// the literal 0 / NULL, or a symbol the file's constant table resolves to zero
+// (`NAT_OK`, `STMP_OK`, an error-code enum's success value). Without the symbol
+// case, `if (helper(p) != NAT_OK) return;` — the dominant spelling in real
+// projects — never matched the helper-guard contract.
+func zeroOperand(op parser.Node, gctx guardCtx) bool {
+	if parser.IsNullOperand(op) {
+		return true
+	}
+	inner := op
+	for inner.Kind() == "parenthesized_expression" || inner.Kind() == "cast_expression" {
+		kids := inner.NamedChildren()
+		if len(kids) == 0 {
+			return false
+		}
+		inner = kids[0]
+	}
+	if inner.Kind() != "identifier" || gctx.isZero == nil {
+		return false
+	}
+	return gctx.isZero(strings.TrimSpace(inner.Text()))
 }
