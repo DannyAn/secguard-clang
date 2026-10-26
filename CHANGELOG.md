@@ -2,7 +2,7 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [未发布]
+## [0.11.2] - 2026-10-26
 
 ### buffer-overflow / out-of-bounds 诊断路径证据链（CSA 风格"小标记"）
 
