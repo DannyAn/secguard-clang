@@ -12,6 +12,18 @@
 - **新增 `[banned_functions] exclude`**：从内置策略表中**移除**指定名字。内置表是"默认策略"，项目自己的安全指导书才是权威——不在指导书里的内置项应当可以被项目关掉，而不是每次扫描都要 dismiss。`names` 与 `exclude` 同名时以 `exclude` 为准。
 - `secguard config --help/--example`、`secguard config` 输出、SKILL.md 分类表同步；测试覆盖"三件套不再报"与"exclude 只影响指定名字"（`strcpy` 仍报）。
 
+### dangerous-function 例外条款（白盒安全验证指导书的 5 种允许场景）
+
+指导书明确：未涉及外部数据处理、内存操作完全在本函数内完成时，可保留使用不安全函数。这属于**策略本身的一部分**，因此落到检测器（不再产出候选/确认项）：
+
+1. 定长数组 / 定长结构体的内存初始化（`memset(buf, 0, sizeof(buf))`、`memset(&s, 0, sizeof(s))`）；
+2. 形参同时带"内存指针 + 对应大小"时对该内存初始化（`void init(void *p, size_t n) { memset(p, 0, n); }`）；
+3. 堆分配后立即赋初值（`p = malloc(n); memset(p, 0, n)` —— 要求大小是 pointee 的 `sizeof` 或与分配大小表达式一致，且该分配是调用前对该变量的最后一次写入）；
+4. 按源内存大小做等长复制（`memcpy(dst, src, sizeof(*src))`、`strlen(src)`/`strlen(src)+1`）；
+5. 源内存全部是静态字符串常量（`strcpy(dst, "abc")`、字符串宏、`memcpy(dst, "abc", sizeof("abc"))`）。
+
+形状之外仍照报（`memset(buf, 0, 64)` 配 `char buf[16]`、复制大小取自无关参数、源非静态数据）。第 5 条里"目标是否够大"仍由编码者负责，越界由 buffer-overflow / out-of-bounds 独立报告。测试：5 个例外 + 4 个反例（含 `sprintf` 不适用例外）。
+
 ## [0.11.1] - 2026-10-26
 
 ### 最终结果保障：机器判定误报治理 + 终审复核关口（NAT 同批 63 confirmed / 26 误报复核）

@@ -103,17 +103,17 @@ func CollectStringMacros(root Node) map[string]bool {
 		if name == "" || body == "" {
 			continue
 		}
-		if isCStringLiteralText(body) {
+		if IsCStringLiteralText(body) {
 			out[name] = true
 		}
 	}
 	return out
 }
 
-// isCStringLiteralText reports whether s is one or more concatenated C string
+// IsCStringLiteralText reports whether s is one or more concatenated C string
 // literals (with an optional L/u8/u/U prefix). Anything else — an expression, a
 // function call, a bare identifier — is not a compile-time string constant.
-func isCStringLiteralText(s string) bool {
+func IsCStringLiteralText(s string) bool {
 	s = strings.TrimSpace(s)
 	for _, prefix := range []string{"u8", "u", "U", "L"} {
 		if strings.HasPrefix(s, prefix) {

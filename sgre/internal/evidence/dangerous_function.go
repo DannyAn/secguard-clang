@@ -201,6 +201,10 @@ func (d *DangerousFunctionDetector) Detect(ctx context.Context) (DetectResult, e
 				paramsByLine[fnNode.StartLine()][p] = true
 			}
 		}
+		// Per-function shapes for the guideline's memory-operation exception
+		// clauses (fixed-size init, caller-pointer+size init, post-allocation
+		// init, source-sized copy, static-string-source copy).
+		fnShapes := buildFnShapes(root)
 		for _, call := range root.FindAll("call_expression") {
 			name := extractCallName(call)
 			rule, ok := d.rules[name]
@@ -231,6 +235,12 @@ func (d *DangerousFunctionDetector) Detect(ctx context.Context) (DetectResult, e
 				}
 			}
 			fnID := enclosingFuncID(call, funcs)
+			// The project security guideline's exception clauses: a banned
+			// memory call whose shape is provably local (no externally controlled
+			// data) is allowed, so it is not a policy finding.
+			if fs := fnShapes[functionStartLine(fnID, funcs)]; guidelineExempt(call, name, fs, stringMacros) {
+				continue
+			}
 			props := map[string]string{
 				"variable":   name,
 				"category":   rule.category,
@@ -449,4 +459,17 @@ func hasConstantArg(call parser.Node, consts *parser.ConstantEnv, stringMacros m
 		return true
 	}
 	return false
+}
+
+// functionStartLine resolves a function ID to its start line in the per-file
+// function list (the key buildFnShapes uses). A function outside the list (a
+// macro block that tree-sitter parsed as a definition) yields 0, which no shape
+// is keyed by, so its calls are never exempted.
+func functionStartLine(fnID int64, funcs []*db.Function) int {
+	for _, fn := range funcs {
+		if fn.ID == fnID {
+			return fn.StartLine
+		}
+	}
+	return 0
 }

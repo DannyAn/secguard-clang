@@ -58,6 +58,35 @@ A dangerous-function candidate has:
 | `inet_addr(<constant>)` | **false-positive** (the detector never emits it) |
 | A call to a function NOT in the ban table | **false-positive** (the detector never emits it) |
 
+The banned MEMORY functions (clauses below) are the exception: the project
+security guideline allows them when no externally controlled data is involved
+and the operation is provably local, so the DETECTOR does not emit them at all —
+
+1. initializing a fixed-length array or struct (`memset(buf, 0, sizeof(buf))`,
+   `memset(&s, 0, sizeof(s))`);
+2. initializing caller memory when the function takes the pointer AND its size
+   (`void init(void *p, size_t n) { memset(p, 0, n); }`);
+3. initializing right after a heap allocation (`p = malloc(n); memset(p, 0, n)`
+   — the size must be the pointee's `sizeof` or the allocation's own size
+   expression, and the allocation must be the variable's last write before the
+   call);
+4. a copy sized from the SOURCE (`memcpy(dst, src, sizeof(*src))`,
+   `memcpy(dst, src, strlen(src))` / `strlen(src) + 1`);
+5. a copy whose source is static string data (`strcpy(dst, "abc")`,
+   `strcat(dst, SOME_STRING_MACRO)`, `memcpy(dst, "abc", sizeof("abc"))`).
+
+Clause 5's destination must still have room — that is the programmer's check,
+and the buffer-overflow / out-of-bounds detectors independently report a
+destination that is too small. Anything OUTSIDE these shapes (a literal size
+that is not the object's `sizeof`, a copy size taken from an unrelated
+parameter, a non-static source) stays a policy finding:
+
+| Shape | Verdict |
+|---|---|
+| `memset(buf, 0, 64)` on `char buf[16]` | **confirmed** (size is not the object's extent; the overflow is reported separately) |
+| `memcpy(dst, src, n)` with an unrelated `n` | **confirmed** |
+| `strcpy(dst, src)` with a non-static source | **confirmed** |
+
 The table is a fixed policy: the functions are banned or obsolete by name,
 regardless of surrounding code, so the pipeline auto-confirms every category
 except `assert_usage` and `obsolete_api_conditional` — both are name matches
