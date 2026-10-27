@@ -50,3 +50,53 @@ void caller(uint32_t n) {
 		t.Errorf("pool_create: the caller passes a parameter, the product can overflow — must stay a candidate")
 	}
 }
+
+// NLOG TC-6a side finding: `void *p = f(); (void)p;` deliberately discards the
+// result, so the "unchecked return" is NOT a defect (the failure is unobservable).
+// The candidate's own verdict fact says "dismiss", and command-instructions.md
+// lists `discard` as a DISMISS hint — yet ReturnCheckFilter promoted it to
+// confirmed (a machine-confirmed CWE-252 false positive). A discard must stay a
+// suspected lead, never auto-confirm.
+func TestUncheckedReturn_DiscardNotAutoConfirmed(t *testing.T) {
+	src := `#include <stdlib.h>
+#include <stdint.h>
+typedef struct { int data[16]; } PoolEntry;
+void *pool_create(uint32_t num) {
+    size_t total = (sizeof(PoolEntry) + sizeof(int)) * num;
+    return malloc(total);
+}
+void caller(void) {
+    void *p = pool_create(64);
+    (void)p;
+}
+`
+	res := planType(t, src, "unchecked-return")
+	c, ok := res["caller"]
+	if !ok {
+		t.Fatalf("the discard lead should still be a candidate")
+	}
+	if c.SuspicionLevel == "confirmed" {
+		t.Errorf("a (void)-discarded return must not be auto-confirmed (hint=%v)", c.Hint)
+	}
+}
+
+// Control: an allocator result that is stored and then USED without a NULL check
+// is a genuine CWE-252 defect and must still be promoted to confirmed.
+func TestUncheckedReturn_UsedWithoutCheckStillConfirmed(t *testing.T) {
+	src := `#include <stdlib.h>
+#include <string.h>
+void copy_it(const char *s) {
+    char *dst = malloc(64);
+    strcpy(dst, s);
+    free(dst);
+}
+`
+	res := planType(t, src, "unchecked-return")
+	c, ok := res["copy_it"]
+	if !ok {
+		t.Fatalf("expected an unchecked-return candidate for copy_it")
+	}
+	if c.SuspicionLevel != "confirmed" {
+		t.Errorf("a used-but-unchecked malloc must be confirmed, got %q", c.SuspicionLevel)
+	}
+}

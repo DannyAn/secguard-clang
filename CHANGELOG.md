@@ -2,6 +2,24 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [未发布]
+
+### 机器确认误报修复：`(void)` 丢弃的返回值不再 auto-confirm（CWE-252）
+
+NLOG 回归用例 TC-6a（`void *p = pool_create(64); (void)p;`）在 0.11.3 上仍产出**机器确认**的 CWE-252，而该候选自身的 verdict fact（`discard`）与 `command-instructions.md` 的分类规则都写"discard → dismiss"——自相矛盾，属机器确认误报。
+
+- **根因**：`ReturnCheckFilter` 只要 `result=="unchecked" && contract@known` 就把候选提升为 `confirmed`，未排除 `Consumed=="discard"`（`(void)` 显式丢弃 = 失败不可观测，不构成缺陷）。
+- **修复**：`consume=="discard"` 的候选保留为 `suspected` 线索（真 unusual 形态仍可交 AI），**永不自动确认**。对照：`malloc` 结果被使用但未判空（真 CWE-252）仍照常 confirmed。
+- 新增回归 `TestUncheckedReturn_DiscardNotAutoConfirmed` + 对照 `TestUncheckedReturn_UsedWithoutCheckStillConfirmed`。
+
+### NLOG 6 类误报模式复核（0.11.3 实测，逐条最小用例）
+
+用文档的 12 个最小用例在 0.11.3 上实测：
+
+- **已闭环**：模式 1（`BASE_DIR "/x"` 字面量拼接 → 不再报 CWE-22）、模式 6 类型 A（`pool_create(64)` → 不再报 CWE-190）、模式 2a/2c（MIN 钳制 + 函数内入口守卫 → 无候选）、模式 4（`lock()!=0 → return` 不误报）、模式 5（out-param 成功路径必写 → 无候选）；模式 6 类型 B 的 CWE-134 已不报。
+- **无法复现/用例本身有误**：模式 3a 的所有权用例在成功路径不释放也不转移 `root`（按用例字面就是真实泄漏，非误报）；模式 2b/3b 产出的是 null-deref 线索（与文档声称的 CWE-787/404 不是同一 CWE），需真实代码才能确认。
+- **未动 policy**：`vsnprintf` 等 `unsafe_format` 禁用属企业编码规范策略（替换为 `_s`），文档真实代码用 `_s` 变体，不据此改禁用表。
+
 ## [0.11.3] - 2026-10-27
 
 ### command-instructions.md 检视修复（文档一致性，无流程改动）

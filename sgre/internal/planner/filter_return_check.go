@@ -72,7 +72,15 @@ func (f *ReturnCheckFilter) Apply(ctx context.Context, candidates []Candidate) (
 			// test. It never dismisses: a candidate the detector emitted is
 			// real enough that the AI agent, not this filter, should weigh any
 			// residual "is it checked?" ambiguity.
-			if result == "unchecked" && c.ContractKnown {
+			//
+			// A `(void)`-discarded result is NOT a defect: the value is thrown
+			// away, so the failure is unobservable. Its own verdict fact says
+			// "dismiss", and command-instructions.md lists `discard` as a
+			// DISMISS hint — promoting it to confirmed produced a machine-
+			// confirmed CWE-252 false positive on `void *p = f(); (void)p;`.
+			// Keep it a suspected lead (so an unusual shape can still be judged)
+			// but never auto-confirm it.
+			if result == "unchecked" && c.ContractKnown && c.Consumed != "discard" {
 				c.SuspicionLevel = "confirmed"
 			}
 			kept = append(kept, c)
