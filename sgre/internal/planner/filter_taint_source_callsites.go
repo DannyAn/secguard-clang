@@ -80,6 +80,12 @@ type callsiteCensus struct {
 	// class. Bounded by callsiteEvidenceCap per key so a header-only wrapper
 	// with hundreds of callers does not balloon the candidate file.
 	sites map[int64]map[int][]CallSiteInfo
+	// constVals records, per (callee funcID, param index), the integer-literal
+	// value of every call site classified literal with a determinable constant.
+	// It backs callerConstBound: an integer parameter whose EVERY caller passes
+	// a compile-time integer constant is bounded by the largest such constant
+	// (NLOG pattern 6: `pool_create(64)` where the only caller passes 64).
+	constVals map[int64]map[int][]int64
 }
 
 // callsiteEvidenceCap bounds how many concrete call sites the census retains
@@ -110,6 +116,36 @@ func (cs *callsiteCensus) gateDrop(funcID int64, funcName string, paramIdx int) 
 		return nil, false
 	}
 	return shapes, true
+}
+
+// callerConstBound returns the largest compile-time integer constant every
+// in-tree caller binds to a parameter, when ALL callers bind one and the
+// function is never address-taken. (max, true) means the parameter is provably
+// bounded by max across the whole tree; (0, false) otherwise — a missing,
+// non-literal, or non-integer argument keeps the bound unknown, which is the
+// conservative outcome.
+func (cs *callsiteCensus) callerConstBound(funcID int64, funcName string, paramIdx int) (int64, bool) {
+	if cs == nil || cs.constVals == nil || cs.addrTaken[funcName] {
+		return 0, false
+	}
+	shapes := cs.shapes(funcID, paramIdx)
+	vals := cs.constVals[funcID][paramIdx]
+	if shapes == nil || shapes.literal == 0 || shapes.tainted != 0 || shapes.variable != 0 {
+		return 0, false
+	}
+	// Every literal must be an integer literal with a determinable value; a
+	// string/address-of literal (or a constant expression the parser could not
+	// fold) leaves the bound unknown.
+	if len(vals) != shapes.literal {
+		return 0, false
+	}
+	var max int64 = -1
+	for _, v := range vals {
+		if v > max {
+			max = v
+		}
+	}
+	return max, true
 }
 
 // factFor renders the callsites@ token value for one (function, parameter).
@@ -144,6 +180,7 @@ func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context) (*callsi
 		params:    make(map[int64]map[int]*argShapeCounts),
 		addrTaken: make(map[string]bool),
 		sites:     make(map[int64]map[int][]CallSiteInfo),
+		constVals: make(map[int64]map[int][]int64),
 	}
 	// Object-like macros that expand to a string literal are compile-time
 	// constants: a caller spelled `log_msg(MSG_FMT)` must count as LITERAL, not
@@ -265,6 +302,14 @@ func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context) (*callsi
 							Line:  call.StartLine(),
 							Class: class,
 						})
+					}
+					if kind == 0 {
+						if v, ok := parseOOBConst(strings.TrimSpace(arg.Text())); ok {
+							if census.constVals[calleeID] == nil {
+								census.constVals[calleeID] = make(map[int][]int64)
+							}
+							census.constVals[calleeID][i] = append(census.constVals[calleeID][i], v)
+						}
 					}
 				}
 			}
@@ -439,14 +484,63 @@ func localConstAt(locals map[string]localConst, key string, callLine int, calls 
 }
 
 // isStringConstText reports whether an initializer expression is a compile-time
-// string: a C string literal (adjacent literals included) or an object-like
-// macro that expands to one.
+// string: a C string literal (adjacent literals included), an object-like macro
+// that expands to one, or a CONCATENATION of the two (`BASE_DIR "/report.csv"`,
+// `"a" MACRO "b"`) — the shape real code uses to build a fixed path from a
+// compile-time prefix. The previous version only matched a pure literal or a
+// pure single macro, so a caller binding `const char *p = BASE_DIR "/x";` was
+// classified as a VARIABLE and the all-literal gate never fired (NLOG pattern 1:
+// a single-literal-caller path-traversal false positive).
 func isStringConstText(text string, isStringMacro func(string) bool) bool {
-	t := strings.TrimSpace(text)
-	if parser.IsCStringLiteralText(t) {
-		return true
+	s := strings.TrimSpace(text)
+	for s != "" {
+		if strings.HasPrefix(s, "/*") || strings.HasPrefix(s, "//") {
+			return true
+		}
+		if rest, ok := consumeStringLiteral(s); ok {
+			s = strings.TrimSpace(rest)
+			continue
+		}
+		i := 0
+		for i < len(s) && isIdentByte(s[i]) {
+			i++
+		}
+		if i == 0 {
+			return false
+		}
+		if !isStringMacro(s[:i]) {
+			return false
+		}
+		s = strings.TrimSpace(s[i:])
 	}
-	return isStringMacro(compactIdentText(t))
+	return true
+}
+
+// consumeStringLiteral consumes ONE C string literal (with an optional u8/u/U/L
+// encoding prefix) from the front of s, returning the unconsumed tail and true
+// on success.
+func consumeStringLiteral(s string) (string, bool) {
+	for _, prefix := range []string{"u8", "u", "U", "L"} {
+		if strings.HasPrefix(s, prefix) && len(s) > len(prefix) && s[len(prefix)] == '"' {
+			s = s[len(prefix):]
+			break
+		}
+	}
+	if !strings.HasPrefix(s, `"`) {
+		return "", false
+	}
+	i := 1
+	for i < len(s) {
+		switch s[i] {
+		case '\\':
+			i += 2
+			continue
+		case '"':
+			return s[i+1:], true
+		}
+		i++
+	}
+	return "", false
 }
 
 // compactIdentText strips whitespace from an lvalue/argument spelling so two

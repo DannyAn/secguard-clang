@@ -179,3 +179,45 @@ void caller_buf(void)
 		t.Errorf("expected one literal and one variable site, got %+v", c.CallsiteSites)
 	}
 }
+
+// A caller binding the argument to `MACRO "/literal"` (a string-macro + literal
+// CONCATENATION, the shape real code uses for a fixed path prefix like
+// `BASE_DIR "/report.csv"`) must classify as literal too, so a single-caller
+// wrapper is dropped by the all-literal gate. NLOG pattern 1 (path-traversal
+// FP): the previous census only recognised a pure literal or a pure single
+// macro, so `const char *p = BASE_DIR "/x";` counted as a variable.
+func TestFormatString_MacroLiteralConcatCountsAsLiteral(t *testing.T) {
+	src := `#include <stdio.h>
+#define BASE_DIR "/var/log/nlog/export"
+void sink_func(const char *path);
+void caller(void) {
+    const char *fixed_path = BASE_DIR "/report.csv";
+    sink_func(fixed_path);
+}
+void sink_func(const char *path) {
+    printf(path);
+}
+`
+	res := planType(t, src, "format-string")
+	if c, ok := res["sink_func"]; ok {
+		t.Errorf("sink_func: the sole caller binds a compile-time string (macro + literal), must not be a candidate (hint=%v)", c.Hint)
+	}
+}
+
+// A tainted caller (external parameter) must still keep the wrapper alive.
+func TestFormatString_MacroLiteralConcatControl(t *testing.T) {
+	src := `#include <stdio.h>
+#define BASE_DIR "/var/log/nlog/export"
+void sink_func(const char *path);
+void caller(const char *user) {
+    sink_func(user);
+}
+void sink_func(const char *path) {
+    printf(path);
+}
+`
+	res := planType(t, src, "format-string")
+	if _, ok := res["sink_func"]; !ok {
+		t.Errorf("sink_func: the caller passes a parameter (attacker-reachable), must stay a candidate")
+	}
+}

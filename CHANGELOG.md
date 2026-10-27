@@ -2,6 +2,28 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [未发布]
+
+### 降低误报率（NLOG 33 条 confirmed 复核：模式 1、6 根因修复）
+
+NLOG 一轮全量扫描 33 条 confirmed 经逐条源码核验 23 条为假阳性，归纳 6 类根因。逐类用最小用例复现后，**两类确认为当前真实缺口并修复，四类实测已被既有机制覆盖**：
+
+- **模式 1（R1，CWE-22 路径穿越，3 条）**：调用点普查只把"纯字面量 / 单个字符串宏"当作编译期常量，`const char *p = BASE_DIR "/report.csv"; sink(p)` 这种**字符串宏 + 字面量拼接**被记成 `var`，`callsites@1:1-var` 导致 all-literal 门不触发、唯一字面量调用方的包装函数仍进研判。现在 `isStringConstText` 按"字符串字面量 / 字符串宏"逐段拼接识别，`BASE_DIR "/report.csv"`、`"a" MACRO "b"` 均判为常量 → 候选被 drop。对照（调用方传参数）仍保留。
+- **模式 6 类型 A（CWE-190 整数溢出，4 条）**：`(sizeof(T) + sizeof(int)) * num` 中 `num` 的唯一调用方传编译期常量 `64`，但整数溢出没有"调用方常量上界"这一层。修了两个根因：① `identifiersInExpr` 把 `sizeof(T)` 的**类型名**（typedef）当成"变量操作数"，任何上界都套不上 → 现在剥离 `sizeof(...)` 类型操作数；② 普查新增 `callerConstBound`——某参数所有树内调用方都传整型字面量、且函数未被取地址时，取最大常量为上界；`IntOverflowGuardFilter` 对参数操作数套用该上界（< 32768 才 drop，保守）。
+
+**实测已覆盖、无需改动**（用文档最小用例复现，当前均不产生 confirmed）：
+
+- 模式 2（CWE-190/787，9 条）：`MIN` 钳制 + `begin<=end` 入口守卫、函数内 `if (cnt >= MAX) return` 前置守卫 → 均无候选（区间引擎已建模）。
+- 模式 4/5（CWE-404/457）：`lock()!=0 → return` 锁失败路径不计持锁、out-param 成功路径必写（`hasOutputParamWrite`）→ 均无候选。
+- 模式 6 类型 B（CWE-134，1 条）：所有调用方传静态格式串 → format-string all-literal 门已 drop。
+
+**暂不采纳、需真实代码**：
+
+- 模式 3（R4 跨过程所有权/释放职责转移）：文档用例本身含歧义（被调函数失败路径已 free，调用方 cleanup 再 free 实为双重释放，而非纯泄漏），当前产出 `suspected`（交 AI 判断，非机器 confirmed）；引入"callee 失败即释放、caller 不再释放"的所有权模型风险高于收益。
+- 跨过程前置不变量（TC-2b：调用方 `cur_num>=2` 保证 `head->next!=NULL`）：需建模 list 不变量，当前产出 `suspected` 交 AI；配 `callsite_list` + 具体调用链证据，AI 可据调用方上下文判定。
+
+新增回归：`TestFormatString_MacroLiteralConcatCountsAsLiteral`、`TestIntOverflow_CallerConstantDropsSizeCalc`（+ 各自对照）。CHANGELOG 记于 `[未发布]`，未升版本。
+
 ## [0.11.2] - 2026-10-26
 
 ### buffer-overflow / out-of-bounds 诊断路径证据链（CSA 风格"小标记"）

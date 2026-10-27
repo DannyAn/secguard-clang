@@ -143,7 +143,7 @@ func chainIntegerOverflow() []FilterFactory {
 	return []FilterFactory{
 		func(d FilterDeps) Filter { return NewCallReachFilter(d.Store, d.CallReachCache) },
 		func(d FilterDeps) Filter { return NewSafeFunctionFilter(d.Store) },
-		func(d FilterDeps) Filter { return NewIntOverflowGuardFilter(d.Store, d.Parser, d.Logger) },
+		func(d FilterDeps) Filter { return NewIntOverflowGuardFilter(d.Store, d.Parser, d.Logger, d.TaintCache) },
 		func(d FilterDeps) Filter { return NewUnsignedSubGuardFilter(d.Store, d.Parser, d.Logger) },
 	}
 }

@@ -26,13 +26,16 @@ type IntOverflowGuardFilter struct {
 	parser   *parser.Parser
 	logger   *log.Logger
 	cfgCache *graph.CFGCache
+	// cache is the shared taint-summary cache; its callsite census supplies the
+	// caller-constant bound for a parameter operand (NLOG pattern 6).
+	cache *taintSummaryCache
 }
 
 // SetCFGCache is the uniform-injection entrypoint used by Planner.Plan.
 func (f *IntOverflowGuardFilter) SetCFGCache(c *graph.CFGCache) { f.cfgCache = c }
 
-func NewIntOverflowGuardFilter(store db.Store, p *parser.Parser, logger *log.Logger) *IntOverflowGuardFilter {
-	return &IntOverflowGuardFilter{store: store, parser: p, logger: logger}
+func NewIntOverflowGuardFilter(store db.Store, p *parser.Parser, logger *log.Logger, cache *taintSummaryCache) *IntOverflowGuardFilter {
+	return &IntOverflowGuardFilter{store: store, parser: p, logger: logger, cache: cache}
 }
 
 func (f *IntOverflowGuardFilter) Name() string { return "int_overflow_guard" }
@@ -57,6 +60,7 @@ func (f *IntOverflowGuardFilter) Apply(ctx context.Context, candidates []Candida
 	// the same file once per candidate (an O(candidates × parse) cost).
 	cache := newFileParseCache(f.parser)
 	bodies := make(map[int64]parser.Node, len(byFunc))
+	paramsByFunc := make(map[int64]map[string]int, len(byFunc))
 	for fid := range byFunc {
 		fn := fnByID[fid]
 		if fn == nil {
@@ -66,12 +70,22 @@ func (f *IntOverflowGuardFilter) Apply(ctx context.Context, candidates []Candida
 		if file == nil {
 			continue
 		}
-		body, _ := cache.get(file, fn)
+		body, root := cache.get(file, fn)
 		if body.Kind() == "compound_statement" {
 			bodies[fid] = body
+			paramsByFunc[fid] = paramsOf(fn, root)
 		}
 	}
 	rangeFlows := f.buildRangeFlows(byFunc, fnByID, bodies)
+
+	// The shared callsite census supplies caller-constant bounds for parameter
+	// operands; absent a cache (unit-test construction) the bound is skipped.
+	var census *callsiteCensus
+	if f.cache != nil {
+		if sum, err := f.cache.get(ctx); err == nil {
+			census = sum.callsites
+		}
+	}
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -104,6 +118,16 @@ func (f *IntOverflowGuardFilter) Apply(ctx context.Context, candidates []Candida
 			if flow != nil {
 				if r := flow.at(op, c.Line); r.lo >= 0 && r.hi < guardMaxBound {
 					continue
+				}
+			}
+			// A parameter operand whose EVERY in-tree caller passes a
+			// compile-time integer constant is bounded by that constant (NLOG
+			// pattern 6: `pool_create(64)` with a single constant caller).
+			if census != nil {
+				if idx, isParam := paramsByFunc[c.FunctionID][op]; isParam {
+					if bound, ok := census.callerConstBound(c.FunctionID, c.FunctionName, idx); ok && bound < guardMaxBound {
+						continue
+					}
 				}
 			}
 			if hasOverflowCheckGuard(c, bodies, operands) {
@@ -336,7 +360,53 @@ func parseIntLiteral(s string) (int64, error) {
 // operand. Numeric literals, `sizeof`, and C type keywords are dropped, and `->`/
 // `.`/`[`/`]` are kept as part of the operand so a field guard (`s->len < 100`)
 // matches the operand the detector recorded.
+// stripSizeofTypes replaces every parenthesized sizeof(...) TYPE operand with
+// the constant `1`, so `(sizeof(PoolEntry) + sizeof(int)) * num` yields only the
+// variable operand `num`. Without it the type name (a typedef like PoolEntry)
+// was collected as a "variable operand" that no bound could ever satisfy, so a
+// sizeof term silently defeated the guard/constant-bound convergence (NLOG
+// pattern 6: `pool_create(64)` kept alive by `sizeof(PoolEntry)`).
+func stripSizeofTypes(s string) string {
+	var b strings.Builder
+	i := 0
+	for i < len(s) {
+		if strings.HasPrefix(s[i:], "sizeof") &&
+			(i == 0 || !isIdentByte(s[i-1])) &&
+			(i+6 == len(s) || !isIdentByte(s[i+6])) {
+			j := i + 6
+			for j < len(s) && (s[j] == ' ' || s[j] == '\t' || s[j] == '\n') {
+				j++
+			}
+			if j < len(s) && s[j] == '(' {
+				depth := 0
+				k := j
+				for k < len(s) {
+					switch s[k] {
+					case '(':
+						depth++
+					case ')':
+						depth--
+						if depth == 0 {
+							k++
+							goto done
+						}
+					}
+					k++
+				}
+			done:
+				b.WriteString("1")
+				i = k
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
 func identifiersInExpr(text string) []string {
+	text = stripSizeofTypes(text)
 	var ids []string
 	var cur strings.Builder
 	flush := func() {
