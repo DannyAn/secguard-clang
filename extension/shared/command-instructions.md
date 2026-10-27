@@ -639,6 +639,15 @@ straight to the structured report (`written: 0`).
     Do not re-dispatch a whole type for a handful of `needs_context` entries and
     do not silently drop them — a dropped entry is an unclassified candidate.
 
+    **`needs_context` / dismissed 外显 (R1) — 人工复核召回台账:** 二次下发完成后，
+    把每个子代理落盘的 `.tmp/<subagent_id>-report.json`（O2 已要求写入）里的
+    `needs_context`（candidate `#` + 一行理由）与 `dismissed` 计数按类型聚合，写一份
+    `<scan_dir>/ai-dismissed.json`（每类型：`dismissed` 计数 + 仍悬而未决的
+    `needs_context` 条目）。二次下发后仍悬置的 `needs_context` 条目**必须**在最终报告
+    观察项表里占一行 `| <type> | 待人工复核 N 条：<candidate#s> |`，不得静默吞掉。
+    这份台账是给客户的人工复核召回面——被驳回 / 未判定的候选绝不能只存在于子代理的
+    聊天消息里。
+
     After you have verified the subagent writes against the DB and before the
     final audit, run `secguard report --complete-type <type> --scan-id <scan_id>
     --db <db_path>` for every type the subagent reported FINISHED
