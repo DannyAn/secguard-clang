@@ -19,6 +19,8 @@
 
 未采纳的检视项（已核验不成立或风险高于收益）：`findings` 无 `variable`/`properties` 列（实际存在）、OpenCode 无 review 模式（`secguard_review` 存在）、summary 未应用 EffectiveStatus（`report --audit` 全程用 `FinalStatus()`，`review_status='dismissed'` 已从 `auto_confirmed`/`confirmed_total` 排除）、Filtered 流程的 plan/complete-type 分歧（Full Scan 与 Filtered 是不同入口，无矛盾）。
 
+- **`secguard_review` 工具描述对齐 Step 5.5**（消除"旧设计"残留）：原描述仍写"`list_auto_confirmed` 返回待复核行 + 逐条写回 + count=0 完整性门控"——那是已被 Step 5.5 移除的 per-candidate re-review loop。现改为：`reviews=[...]` 等价 `--review-json`（一次幂等批量，无完整性门控、无逐候选循环）；`list_auto_confirmed` 标注 DEPRECATED（auto-confirmed 行在 scan 阶段已写 `review_status='confirmed'`，故返回 count 0，用 `secguard_db` 裸 SQL 列出）。
+
 ## [0.11.2] - 2026-10-26
 
 ### 降低误报率（NLOG 33 条 confirmed 复核：模式 1、6 根因修复）

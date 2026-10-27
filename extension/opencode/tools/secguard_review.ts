@@ -33,7 +33,7 @@ function findSecguard(context: { worktree?: string; directory?: string }): strin
 
 export default tool({
   description:
-    "Re-review the machine auto-confirmed findings (the pipeline-proved tier the candidate index does NOT show). Two operations: (1) list_auto_confirmed=true returns them for your type as JSON (id / rule_id / file / line / function / variable / reasoning / snippet / context — a gutter-numbered ±8-line source window) so you can apply the skill's false-positive rules; (2) reviews=[...] writes your verdicts back — review_status 'confirmed' (agree) or 'dismissed' (the machine verdict is a false positive → suppressed from result.sarif). Write a verdict for EVERY entry (do NOT omit the ones you agree with): the orchestrator verifies the re-review by checking that a later list_auto_confirmed returns count 0, which only holds when every entry got a review_status. This is the agent-native second-round review (no external AI provider).",
+    "Write re-review verdicts for the machine auto-confirmed findings (Step 5.5 of command-instructions.md): reviews=[...] maps to `report --review-json` in ONE idempotent batch. review_status 'dismissed' suppresses a machine false positive from result.sarif; 'confirmed' agrees and is a no-op write. There is NO completeness gate and NO per-candidate loop — Step 5.5 is bounded and optional. The list_auto_confirmed operation is DEPRECATED: it returns count 0 because the scan already writes auto-confirmed rows with review_status='confirmed'; list them for re-review with secguard_db raw SQL (SELECT id, rule_id, file_path, line_number, function_name, variable, properties FROM findings WHERE scan_id='<id>' AND status='auto-confirmed').",
   args: {
     scan_id: tool.schema
       .string()
@@ -42,19 +42,19 @@ export default tool({
     type: tool.schema
       .string()
       .optional()
-      .describe("Vulnerability type (kebab-case, e.g. memory-leak). Scopes list_auto_confirmed to one type's CWE set — pass your assigned type."),
+      .describe("Vulnerability type (kebab-case, e.g. memory-leak). Only meaningful for the deprecated list operation."),
     limit: tool.schema
       .number()
       .optional()
-      .describe("When list_auto_confirmed is true, cap the batch size (e.g. 50) so a large set is pulled in pages instead of overflowing context. Re-list until the returned count is 0."),
+      .describe("Paging cap for the DEPRECATED list operation (returns count 0). Ignore."),
     list_auto_confirmed: tool.schema
       .boolean()
       .optional()
-      .describe("When true, list the machine auto-confirmed findings for re-review."),
+      .describe("DEPRECATED: returns count 0 — auto-confirmed rows are marked review_status='confirmed' at scan time. List them with secguard_db raw SQL instead."),
     reviews: tool.schema
       .array(
         tool.schema.object({
-          id: tool.schema.number().describe("Finding id from list_auto_confirmed"),
+          id: tool.schema.number().describe("Finding id from the Step 5.5 listing (secguard_db raw SQL: SELECT id ... WHERE status='auto-confirmed')"),
           review_status: tool.schema
             .string()
             .describe("confirmed (agree) | dismissed (machine false positive)"),
