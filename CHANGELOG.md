@@ -4,6 +4,23 @@
 
 ## [未发布]
 
+### command-instructions.md 检视修复（文档一致性，无流程改动）
+
+基于第三方对 `command-instructions.md` 的检视，逐条对照实现侧事实核验后，只采纳"文档与实现不一致、会误导执行"的部分（均为局部增补/措辞修正，未改动 Full Scan 步骤顺序、Batch Capacity 数值、Step 5.5 范围）：
+
+- **工具名列表补 `secguard_review`**（OpenCode 确实有该 MCP 工具，原列表漏列）。
+- **Step 5 的 `findings` schema 速查补 `variable` / `properties`**（两列在 schema 中真实存在，原速查漏列；5.5 的 SQL 正查这两列）。
+- **Hint 词汇表补 `callsites@<census>`**（format-string/path-traversal 的真实 token，5.5 b 表引用它但词汇表未定义）。
+- **Step 5.5 补 OpenCode 写法**：`secguard_review` 工具的 `reviews` 参数等价 `--review-json`；不要用其 `list_auto_confirmed`（auto-confirmed 行在 scan 阶段已写 `review_status='confirmed'`，故返回 `count: 0`，应走 `secguard_db` 裸 SQL）。
+- **Auto-confirmed 两分澄清**："不派发给子代理" ≠ "orchestrator 不跑 5.5"，跳过 5.5 视为流程未完成。
+- **baseline audit / final audit 命名** + 5.5 d 明确第二次 audit 传更新后的 `--ai-duration-ms`（含 5.5）或注明计入编排开销。
+- **5.5 b 表 CWE-457 行拆分**：`init@unseen`（前提已被违反）与"传 `&var` 给 scan 内 callee 且其 body 写 `*var`"分开判定，scan 外 callee 保留 `unverified`。
+- **5.5 f 失败降级**：5.5 任一子步失败不阻断第 6 步，观察项表记一行。
+
+未采纳的检视项（已核验不成立或风险高于收益）：`findings` 无 `variable`/`properties` 列（实际存在）、OpenCode 无 review 模式（`secguard_review` 存在）、summary 未应用 EffectiveStatus（`report --audit` 全程用 `FinalStatus()`，`review_status='dismissed'` 已从 `auto_confirmed`/`confirmed_total` 排除）、Filtered 流程的 plan/complete-type 分歧（Full Scan 与 Filtered 是不同入口，无矛盾）。
+
+## [0.11.2] - 2026-10-26
+
 ### 降低误报率（NLOG 33 条 confirmed 复核：模式 1、6 根因修复）
 
 NLOG 一轮全量扫描 33 条 confirmed 经逐条源码核验 23 条为假阳性，归纳 6 类根因。逐类用最小用例复现后，**两类确认为当前真实缺口并修复，四类实测已被既有机制覆盖**：

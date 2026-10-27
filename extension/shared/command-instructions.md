@@ -5,9 +5,9 @@ Scan the codebase for security vulnerabilities using the SecGuard analysis pipel
 **Which platform am I on?** Two invocation styles exist, and they do NOT mix:
 
 - **OpenCode** — you have MCP tools with underscore names: `secguard_scan`,
-  `secguard_plan`, `secguard_report`, `secguard_types`, `secguard_status`,
-  `secguard_index`, `secguard_schema`, `secguard_db`, `secguard_metrics`. Use
-  those TOOLS, never shell commands.
+  `secguard_plan`, `secguard_report`, `secguard_review`, `secguard_types`,
+  `secguard_status`, `secguard_index`, `secguard_schema`, `secguard_db`,
+  `secguard_metrics`. Use those TOOLS, never shell commands.
 - **Claude Code (and any shell-only host)** — there are NO `secguard_*` tools.
   Run the `secguard` binary via Bash with a space: `secguard scan`, `secguard
   plan`, `secguard report`, `secguard types`, `secguard status`, `secguard
@@ -355,7 +355,7 @@ straight to the structured report (`written: 0`).
      (matches the evidence) or dismiss (guarded/different) from the table itself.
      Do NOT read source or the candidate file. Batch all confirmed verdicts into
      one write call.
-   - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null` (non-null-deref types)/`null@cfg-proof`/`null@malloc-fail`/`null@caller-arg`/`null@opaque-origin`/`null@assumed-return`/`null@external-unknown` (null-deref origin tier)/`tainted`/`taint@none`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`threads@<fn>`/`instances@N`/`write@N`/`mutex@<name>`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`arg@<expr>`/`may-free`/`reason@<text>`/`key-size@N` (crypto-misuse)/`buf@<name>`/`cap@N`/`idx@<expr>`/`src-cap@N` (buffer-overflow/out-of-bounds)/`alloc@N`/`acquire@N`/`leak@definite`/`leak@conditional`/`escape@none|store|return`/`free@N,M` (leaks)/`range@<interval>`/`callers@<census>` (divide-by-zero)/`origin@<kind>`/`decl@N`/`field@<path>`/`init@none`/`init@unseen`/`init@N`+`may-skip` (uninit; `init@none` = machine-proved never-written stack scalar, `init@unseen` = heap/struct storage a callee/memset/output-param may have initialized — verify the init path, `may-skip` = the only writes are loop-body-only — judge the loop condition)/`expected@<type>`/`actual@<type>`/`cast@<type>` (argument-type/data-representation)/`fmt-arg@<expr>` (format-string)/`path-arg@<expr>` (path-traversal)/`value-shape@<masked>` (hardcoded-secret)/`async-unsafe@<fn>` (signal-handler)/`subject@<name>`/`count-field@<field>`/`evidence-kind@<kind>` (implicit-contract/sizeof-misuse)/`cond@<callee>` (double-free)); for divide-by-zero a `divisor@bare` row is settled from `Source` alone (no evidence open). When the hint is insufficient, open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source, a `contract@unknown` unchecked-return candidate embeds its callee body under `## Callee Definition`, and a null-deref `callee@` candidate embeds the dereferenced callee's body there too) and, if STILL insufficient, a raw source read within the ≤5-read budget — then classify. Only after spending that budget may you write `dismissed` (with a cited reason); never write `dismissed` without reading when the hint was insufficient. A `macro-context` hint means a macro is in play — open the `## Code Context` and verify the macro before `confirmed`.
+   - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null` (non-null-deref types)/`null@cfg-proof`/`null@malloc-fail`/`null@caller-arg`/`null@opaque-origin`/`null@assumed-return`/`null@external-unknown` (null-deref origin tier)/`tainted`/`taint@none`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`threads@<fn>`/`instances@N`/`write@N`/`mutex@<name>`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`arg@<expr>`/`may-free`/`reason@<text>`/`key-size@N` (crypto-misuse)/`buf@<name>`/`cap@N`/`idx@<expr>`/`src-cap@N` (buffer-overflow/out-of-bounds)/`alloc@N`/`acquire@N`/`leak@definite`/`leak@conditional`/`escape@none|store|return`/`free@N,M` (leaks)/`range@<interval>`/`callers@<census>` (divide-by-zero)/`callsites@<census>` (format-string/path-traversal; `N:all-literal` = every in-tree caller passes a compile-time constant)/`origin@<kind>`/`decl@N`/`field@<path>`/`init@none`/`init@unseen`/`init@N`+`may-skip` (uninit; `init@none` = machine-proved never-written stack scalar, `init@unseen` = heap/struct storage a callee/memset/output-param may have initialized — verify the init path, `may-skip` = the only writes are loop-body-only — judge the loop condition)/`expected@<type>`/`actual@<type>`/`cast@<type>` (argument-type/data-representation)/`fmt-arg@<expr>` (format-string)/`path-arg@<expr>` (path-traversal)/`value-shape@<masked>` (hardcoded-secret)/`async-unsafe@<fn>` (signal-handler)/`subject@<name>`/`count-field@<field>`/`evidence-kind@<kind>` (implicit-contract/sizeof-misuse)/`cond@<callee>` (double-free)); for divide-by-zero a `divisor@bare` row is settled from `Source` alone (no evidence open). When the hint is insufficient, open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source, a `contract@unknown` unchecked-return candidate embeds its callee body under `## Callee Definition`, and a null-deref `callee@` candidate embeds the dereferenced callee's body there too) and, if STILL insufficient, a raw source read within the ≤5-read budget — then classify. Only after spending that budget may you write `dismissed` (with a cited reason); never write `dismissed` without reading when the hint was insufficient. A `macro-context` hint means a macro is in play — open the `## Code Context` and verify the macro before `confirmed`.
     Write **confirmed** findings in ONE batch: write `<tmpdir>/<type>.json`
     containing only confirmed findings with the Write tool, then
     `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
@@ -414,7 +414,7 @@ straight to the structured report (`written: 0`).
    `_index.md` has a `Source` column per candidate (the exact statement), a `Hint`
    column (the pipeline's precomputed verdict facts: `src@N`/`certain-null`/
    `maybe-null` (non-null-deref types)/`null@cfg-proof`/`null@malloc-fail`/
-   `null@caller-arg`/`null@opaque-origin`/`null@assumed-return`/`null@external-unknown` (null-deref origin tier)/`tainted`/`taint@none`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`threads@<fn>`/`write@N`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`reason@<text>`/`key-size@N`/`buf@<name>`/`cap@N`/`idx@<expr>`/`src-cap@N`/`alloc@N`/`acquire@N`/`leak@definite`/`leak@conditional`/`escape@none|store|return`/`range@<interval>`/`callers@<census>`/`origin@<kind>`/`decl@N`/`field@<path>`/`init@none`/`init@unseen`/`init@N`+`may-skip`/`expected@<type>`/`actual@<type>`/`cast@<type>`/`fmt-arg@<expr>`/`path-arg@<expr>`/`value-shape@<masked>`/`async-unsafe@<fn>`/`subject@<name>`/`count-field@<field>`/`evidence-kind@<kind>`/`cond@<callee>`), plus an `Evidence` column naming the exact
+   `null@caller-arg`/`null@opaque-origin`/`null@assumed-return`/`null@external-unknown` (null-deref origin tier)/`tainted`/`taint@none`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`threads@<fn>`/`write@N`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`reason@<text>`/`key-size@N`/`buf@<name>`/`cap@N`/`idx@<expr>`/`src-cap@N`/`alloc@N`/`acquire@N`/`leak@definite`/`leak@conditional`/`escape@none|store|return`/`range@<interval>`/`callers@<census>`/`callsites@<census>`/`origin@<kind>`/`decl@N`/`field@<path>`/`init@none`/`init@unseen`/`init@N`+`may-skip`/`expected@<type>`/`actual@<type>`/`cast@<type>`/`fmt-arg@<expr>`/`path-arg@<expr>`/`value-shape@<masked>`/`async-unsafe@<fn>`/`subject@<name>`/`count-field@<field>`/`evidence-kind@<kind>`/`cond@<callee>`), plus an `Evidence` column naming the exact
    candidate file, and each candidate file has a `## Code Context` block — do NOT
    issue per-candidate source READs (that is the tens-of-minutes cost). Read ONLY
    your type's `_index.md`, never the whole report.md.
@@ -549,7 +549,7 @@ straight to the structured report (`written: 0`).
    **DB 路径（绝对路径，否则 Exit code 1）:** every `secguard db` / `secguard schema` / `secguard report` call that takes `--db` MUST pass the ABSOLUTE path `<scan_dir>/../../.sgre/sgre.db`. A relative `.sgre/sgre.db` fails with `Error: Exit code 1` whenever your cwd is not the project root — do NOT retry it as-is; re-run with the ABSOLUTE path. **Do NOT `cd` into the scan dir to "fix" it:** commands run WITHOUT `--db` (`secguard plan`/`status`/`metrics`/`query` and `report --audit`) resolve the DB relative to cwd, so cd'ing into the scan dir would mint a second, empty `sgre.db` under the scan dir (doubling build time and splitting findings across two databases). Keep cwd at the project root for the whole run.
     **dismissed 不持久化，`final_count − confirmed` 不是漏写:** dismissed candidates are intentionally NOT persisted (no finding row, no count). When `ai_stage_status='done'` for a type, the AI has processed all candidates — the `final_count − confirmed` gap is the dismissed count, which is normal, not a missing write. When `ai_stage_status='pending'` the type is in-progress (reported by `status --per-type`, not as unclassified). Because `--write-json` UPSERTs keyed on `(scan_id, rule_id, file, line, function, variable)`, candidates for the SAME variable at the SAME file:line:function collapse into ONE finding. Do NOT inspect the schema or raw-query `findings` to "persist" dismissed; trust `secguard status --per-type --scan-id <id>` (`written_count`/`terminal_state`/`ai_stage_status`) instead.
    If you MUST raw-query, run `secguard schema <table>` first, or use these exact names — never guess:
-    - `findings`: `id, rule_id (CWE, e.g. CWE-476 — there is NO type/vuln_type column), severity, status (confirmed|auto-confirmed for new scans; legacy dismissed/suspected rows tolerated but ignored), file_path (NOT file), line_number (NOT line), function_name, scan_id, review_status`
+    - `findings`: `id, rule_id (CWE, e.g. CWE-476 — there is NO type/vuln_type column), severity, status (confirmed|auto-confirmed for new scans; legacy dismissed/suspected rows tolerated but ignored), file_path (NOT file), line_number (NOT line), function_name, variable, properties (JSON: the machine-proof basis `auto_confirm_evidence` / `auto_confirm_hint_tokens` / `auto_confirm_verdict_facts`), scan_id, review_status`
        **终报/问题表查询必须过滤 `review_status`:** an auto-confirmed finding
        carries `review_status='confirmed'` (machine verdict, no re-review). If a
        later pass ever downgrades one to `dismissed`, a raw `SELECT ... FROM
@@ -640,7 +640,12 @@ straight to the structured report (`written: 0`).
     **Auto-confirmed findings are machine verdicts — verified ONCE, never
     re-classified in a loop:** the scan writes them `status='auto-confirmed'`
     (with `review_status='confirmed'`) straight into `findings`, so they are NOT
-    in `candidates/_index.md` and the audit would ship them unexamined. A
+    in `candidates/_index.md` and the audit would ship them unexamined. Do NOT conflate two
+    different things: (1) auto-confirmed rows are **not dispatched** to any
+    security-auditor subagent and add nothing to the batch budget; (2) the
+    **orchestrator still runs Step 5.5 on them itself** — a bounded, ONCE pass,
+    not a per-candidate re-review. Skipping 5.5 is a process-completion failure,
+    not a valid "already reviewed" shortcut. A
     machine proof is only as good as its premise, and production measured a 75%
     false-positive rate on the `uninit` tier (macro for-init writes, block-scope
     `extern` declarations, output-parameter fills). Step 5.5 below is the
@@ -651,7 +656,7 @@ straight to the structured report (`written: 0`).
     it classifies candidates — there is NO separate or customer-configured LLM
     anywhere in the pipeline.
 
-    After ALL subagents (or your sequential loop) are done, run `secguard report --audit --scan-id <scan_id> --output-dir <output_dir> --ai-duration-ms <ms>`
+    After ALL subagents (or your sequential loop) are done, run the **baseline audit**: `secguard report --audit --scan-id <scan_id> --output-dir <output_dir> --ai-duration-ms <ms>`
    ONCE to regenerate `report.md` (verdict-stage, confirmed only) + `result.sarif`
    + `findings/`. `<ms>` is the MEASURED AI-classification wall-clock (from
    `secguard_scan` returning / entering the Scale gate, to this finalize step) in
@@ -676,7 +681,7 @@ straight to the structured report (`written: 0`).
 
       | CWE | premise the machine proof assumes | dismiss when |
       |---|---|---|
-      | CWE-457 uninit | `certain-uninit` / `init@none` = "never written" | the variable is written by a macro (`macro-context` in its hints, or its name appears in a macro invocation in the window), is a block-scope `extern`/`static`, is passed as `&var` to a callee (`init@unseen`), or the struct is written field-by-field before the read |
+      | CWE-457 uninit | `certain-uninit` / `init@none` = "never written" | the variable is written by a macro (`macro-context` in its hints, or its name appears in a macro invocation in the window), is a block-scope `extern`/`static`, the struct is written field-by-field before the read. A row whose hints already carry `init@unseen` contradicts the `init@none` premise → dismiss citing the token. A row passed as `&var` to an IN-SCAN callee is dismissed only when that callee's body writes `*var` (cite file:line); a callee outside the scan stays `unverified` |
       | CWE-476 null-deref | `null@cfg-proof` = "NULL reaches on every path" | the dereference sits in a macro that may assign the pointer (an iteration macro's loop header) |
       | CWE-134 format-string | a non-literal format reaches a sink | every in-tree caller of the format parameter passes a literal (`callsites@N:all-literal`) |
       | CWE-369 divide-by-zero | a proved-zero / non-zero-constant divisor | a zero guard sits in the ±8-line window before the division |
@@ -685,13 +690,24 @@ straight to the structured report (`written: 0`).
    c. Write the dismissals in ONE batch (no per-row subprocess), every reason citing
       a `file:line` fact: `secguard report --review-json <file.json> --db <abs db>`
       with `[{"id":<id>,"review_status":"dismissed","review_reasoning":"<file:line +
-      why-safe>"}]`. A row you keep needs NO write.
-   d. Re-run the audit ONCE so `result.sarif` / `report.md` / `findings/` reflect the
-      dismissals — the regenerated `result.sarif` is the deliverable.
+      why-safe>"}]`. A row you keep needs NO write. On OpenCode, write the same
+      batch through the `secguard_review` tool's `reviews` param (it wraps
+      `--review-json`); do NOT use its `list_auto_confirmed` param — that returns
+      `count: 0` because auto-confirmed rows are written `review_status='confirmed'`
+      at scan time, so list them with the `secguard_db` raw SQL of step a.
+   d. Run the **final audit** ONCE so `result.sarif` / `report.md` / `findings/` reflect the
+      dismissals — the regenerated `result.sarif` is the deliverable. Pass the UPDATED
+       `--ai-duration-ms` (scan return → now, including 5.5) when the host can
+       measure it; otherwise keep the baseline value and note "5.5 耗时计入编排
+       开销" in the observations table.
    e. Budget: bounded. With more than ~40 machine findings, verify the
       assignment-based premises first (CWE-457 / CWE-476) and record the remainder as
       "machine verdicts unverified" in the report's limitations. Never read source for
       a row the checklist above settles from the row itself.
+   f. **Failure downgrade:** a 5.5 sub-step failure (SQL error, `--review-json`
+       reject, audit failure) does NOT block Step 6 — add one observations-table
+       row `| 5.5 | 机器判定终审未完成：<failed sub-step/reason>；result.sarif 含未复核 auto-confirmed |`
+       and continue. Omit the row when 5.5 completes.
 
    **`summary` — 全轮汇总的唯一权威（控制台/最终报告不要自己相加 `audits`）:** the
    audit response carries `summary`, the scan-wide aggregate that the per-type
