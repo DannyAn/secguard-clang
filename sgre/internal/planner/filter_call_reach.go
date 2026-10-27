@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -33,6 +34,12 @@ type callReachResult struct {
 	// annotation "called at <file>:<line>". 0 = unknown (e.g. an external CALL
 	// edge, which carries the callee name but no site).
 	callLine map[[2]int64]int
+	// callers maps a callee node to ALL its in-tree direct callers. A function
+	// can be reached through several independent caller chains (a direct call
+	// AND a function-pointer/callback registration), and a guard on one caller
+	// does NOT protect the others — the candidate must show every caller so the
+	// classifier cannot apply one chain's guard to another chain's sink.
+	callers map[int64][]int64
 }
 
 // CallChainHop is one hop of the concrete cross-function call chain.
@@ -283,7 +290,34 @@ func computeCallReach(ctx context.Context, store db.Store) (*callReachResult, er
 		nodeFile:     nodeFile,
 		parent:       parent,
 		callLine:     callLine,
+		callers:      rev,
 	}, nil
+}
+
+// callersOf returns the names of every in-tree direct caller of funcID, sorted
+// for stable output. An empty slice means the function is itself an entry (or
+// only called through a function pointer, which the direct CALL graph cannot
+// express — `callChain` reports the truncated chain in that case).
+func (r *callReachResult) callersOf(funcID int64) []string {
+	if r == nil || r.callers == nil {
+		return nil
+	}
+	nodeID, ok := r.funcNodeMap[funcID]
+	if !ok {
+		return nil
+	}
+	seen := make(map[string]bool, len(r.callers[nodeID]))
+	out := make([]string, 0, len(r.callers[nodeID]))
+	for _, caller := range r.callers[nodeID] {
+		name := r.nodeName[caller]
+		if name == "" || name == r.nodeName[nodeID] || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // edgeCallLine extracts the CALL edge's call-site line from its JSON properties
@@ -345,6 +379,7 @@ func (f *CallReachFilter) Apply(ctx context.Context, candidates []Candidate) ([]
 		if res.reachable[nodeID] {
 			c.IsReachable = true
 			c.CallChain = res.callChain(c.FunctionID)
+			c.Callers = res.callersOf(c.FunctionID)
 			kept = append(kept, c)
 			continue
 		}

@@ -125,12 +125,18 @@ type Candidate struct {
 	// function (caller/callee name per hop, plus the call site line), set by the
 	// call-reach filter. It turns the boolean "reachable from entry" into the
 	// diagnosable chain the reviewer needs to trace a multi-hop flow.
-	CallChain      []CallChainHop `json:"call_chain,omitempty"`
-	HasDataFlow    bool           `json:"has_data_flow"`
-	HasTaintSource bool           `json:"has_taint_source"`
-	IsGuarded      bool           `json:"is_guarded"`
-	GuardStrength  string         `json:"guard_strength"`
-	SuspicionLevel string         `json:"suspicion_level"`
+	CallChain []CallChainHop `json:"call_chain,omitempty"`
+	// Callers is every in-tree direct caller of the candidate's function (sorted).
+	// A function may be reached through several independent chains — a direct
+	// call AND a function-pointer/callback registration — and a guard on one
+	// caller does NOT protect the others. Rendered as the `callers@` hint so the
+	// classifier cannot apply one chain's guard to another chain's sink.
+	Callers        []string `json:"callers,omitempty"`
+	HasDataFlow    bool     `json:"has_data_flow"`
+	HasTaintSource bool     `json:"has_taint_source"`
+	IsGuarded      bool     `json:"is_guarded"`
+	GuardStrength  string   `json:"guard_strength"`
+	SuspicionLevel string   `json:"suspicion_level"`
 	// MacroContext is true when the candidate's reported statement or its
 	// surrounding context involves a function-like macro call. Macro semantics
 	// (guard macros, iterator macros, accessor macros, alloc/free wrappers) are

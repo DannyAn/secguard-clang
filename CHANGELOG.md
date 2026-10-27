@@ -4,6 +4,20 @@
 
 ## [未发布]
 
+### null-deref 跨调用链防护误套用：暴露多入口链（`chain-root@` / `sibling-callers@`）
+
+客户反馈一个真实空指针解引用被 AI 误 dismiss：候选证据本身正确（`null@opaque-origin src@N guard@none`、多 sink 聚合、真实调用链），但分类子代理引用**另一条入口链**（`proc_entry` 的 `count==0` 防护）给这条链（回调入口 `list_proc_callback`，无防护）的候选脱罪。根因是候选只显示**一条** `call chain`，未暴露"同一函数还有别的调用者链"。
+
+- **`call_reach` 记录全部直接调用者**（此前只记 BFS 首条前驱链）：`Candidate.Callers` 保存每个函数的所有树内直接调用者。
+- **新 token `chain-root@<fn>` + `sibling-callers@<fn1,fn2>`**：候选所在链的入口 + 还会调用同一函数的**其它独立链**。只在函数有多个调用链时出现（单链不产生噪声）。
+- **Evidence 新增明确警告**：`this function is ALSO called from proc_entry — a SEPARATE caller chain; a guard on that chain's path does NOT protect the sinks reached here`。
+- **null-deref SKILL 新增两条判定规则**：① 多调用链时逐链独立判定，任何一条未受防护即 confirm；② `count/data` 部分契约（"data valid when count>0"）是**定罪**证据而非脱罪——`count==0 ⇒ data 无效`，同一链上未检查 `count` 就解引用即真实缺陷。
+- 新增回归 `TestNullDeref_SiblingChainCallers`（复刻客户的双链+回调分叉抽象用例）+ `TestNullDeref_SingleChainNoTokens`（单链不加 token）。
+
+**暂不实现**：报告 S2 的 `count-guard@missing` 启发式（需跨函数扫描各调用链的 count 检查，误报风险高，且 `sibling-callers@` + SKILL 规则已能覆盖本案例的判定）；S1 的"结构化 dismiss schema + 支配校验"属于分类工作流改动，需另立需求。
+
+## [0.11.3] - 2026-10-27
+
 ### 机器确认误报修复：`(void)` 丢弃的返回值不再 auto-confirm（CWE-252）
 
 NLOG 回归用例 TC-6a（`void *p = pool_create(64); (void)p;`）在 0.11.3 上仍产出**机器确认**的 CWE-252，而该候选自身的 verdict fact（`discard`）与 `command-instructions.md` 的分类规则都写"discard → dismiss"——自相矛盾，属机器确认误报。

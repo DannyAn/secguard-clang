@@ -129,6 +129,11 @@ type EvidenceItem struct {
 	// callee per hop + call site line), rendered as the call_path fragment when
 	// present.
 	CallChain []CallChainHop `json:"call_chain,omitempty"`
+	// Callers is every in-tree direct caller of the candidate's function. A
+	// function reached through several independent chains (a direct call AND a
+	// callback registration) needs every caller shown, so a guard on one chain
+	// is not applied to another chain's sink.
+	Callers []string `json:"callers,omitempty"`
 	// CallsiteSites is the bounded per-site breakdown backing CallsiteSummary
 	// (file:line + literal/var/tainted class), rendered as a callsite_list
 	// evidence fragment so the classifier sees the non-constant callers without
@@ -654,6 +659,25 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 	if c.SourceLine > 0 {
 		parts = append(parts, fmt.Sprintf("src@%d", c.SourceLine))
 	}
+	// A function reached through MORE THAN ONE caller chain needs every chain
+	// visible: a guard on one chain (e.g. a count check in a direct caller) does
+	// NOT protect the sinks reached through another (a callback target that
+	// calls the same function with no check). Without this the classifier saw a
+	// single `call chain:` hop and applied a sibling chain's guard — the
+	// reported real null-deref that got dismissed.
+	if len(c.CallChain) > 0 && len(c.Callers) > 1 {
+		root := c.CallChain[0].Caller
+		parts = append(parts, "chain-root@"+root)
+		var siblings []string
+		for _, fn := range c.Callers {
+			if fn != root {
+				siblings = append(siblings, fn)
+			}
+		}
+		if len(siblings) > 0 {
+			parts = append(parts, "sibling-callers@"+strings.Join(siblings, ","))
+		}
+	}
 	// null-deref states its certainty through the null@<tier> token instead;
 	// every other type keeps the shared certainty pair.
 	if spec == nil || spec.Name != "null-deref" {
@@ -754,6 +778,7 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 		CallsiteSites:       c.CallsiteSites,
 		CalleeNullCondition: c.CalleeNullCondition,
 		CallChain:           c.CallChain,
+		Callers:             c.Callers,
 
 		Expression: c.Expression,
 		CWEChain:   candidateCWEChain(c, spec),
@@ -791,6 +816,27 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 		for i := range item.Evidence {
 			if item.Evidence[i].Type == "call_path" {
 				item.Evidence[i].Detail = renderCallChain(c.CallChain)
+				// A function reached through SEVERAL independent chains must say
+				// so: a guard on one chain does not protect the sinks reached
+				// through another. The classifier previously saw one chain hop
+				// and applied a sibling chain's guard (a real null-deref that
+				// got dismissed). Reuse the call_path type so the evidence
+				// contract needs no new fragment vocabulary.
+				if len(c.Callers) > 1 {
+					var siblings []string
+					for _, fn := range c.Callers {
+						if fn != c.CallChain[0].Caller {
+							siblings = append(siblings, fn)
+						}
+					}
+					if len(siblings) > 0 {
+						item.Evidence = append(item.Evidence, EvidenceFragment{
+							Type:   "call_path",
+							Role:   "path",
+							Detail: fmt.Sprintf("this function is ALSO called from %s — a SEPARATE caller chain; a guard on that chain's path does NOT protect the sinks reached here. Judge EVERY caller chain independently: confirm when any chain reaches the sink unguarded", strings.Join(siblings, ", ")),
+						})
+					}
+				}
 				break
 			}
 		}

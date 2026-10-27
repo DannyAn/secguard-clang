@@ -44,6 +44,8 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "taint@none", Description: "the pipeline's taint analysis did NOT connect a user source (argv/getenv/network/…) to this sink — judge from the ## Location signature whether the sink argument is a public entry-point parameter (attacker-reachable → confirm) or an internal/trusted value (dismiss); NOT 'proven safe'"},
 	{Key: "weak-guard", Description: "a guard exists but only partially protects (scope misses the deref); verify its scope before dismissing"},
 	{Key: "macro-context", Description: "a function-like macro is in play — verify the macro's contract before confirming; never confirm from the Source column alone"},
+	{Key: "chain-root@", Display: "chain-root@<fn>", Description: "the entry function of the caller chain this candidate was found on: {value} — the sinks are reached from THIS chain"},
+	{Key: "sibling-callers@", Display: "sibling-callers@<fn1,fn2>", Description: "the candidate's function is ALSO called from these independent chains: {value} — a guard on a sibling chain's path does NOT protect this candidate's sinks; judge EVERY caller chain separately and confirm when any chain reaches the sink unguarded"},
 	{Key: "api@", Display: "api@<name>", Description: "the callee/API in play: {value}"},
 	{Key: "cat@", Display: "cat@<name>", Description: "the detector's sub-category: {value}"},
 

@@ -155,6 +155,37 @@ from the embedded callee body + the Code Context window:
 Never dismiss on "there is some null check somewhere": the check must dominate
 the dereference on the surviving path.
 
+### Multiple caller chains (Hint `chain-root@` / `sibling-callers@`)
+
+A function can be reached through SEVERAL independent chains — a direct call AND
+a function-pointer / callback registration that invokes the same function. When
+the Hint carries `chain-root@<fn>` and `sibling-callers@<fn1,fn2>`, the candidate
+was found on `<fn>`'s chain and the function is ALSO called from the siblings.
+
+**A guard on a sibling chain's path does NOT dismiss this candidate.** Judge
+EVERY caller chain independently and confirm when ANY chain reaches the sink
+without a dominating guard. The classic failure: the Evidence shows
+`call chain: a → f` (no guard) while a sibling caller `b` checks a field before
+calling `f`; citing `b`'s guard is not evidence, because `a`'s path never passes
+through `b`. When `sibling-callers@` is present, say which chain is guarded and
+which is not; confirm if any is unguarded.
+
+### count/data field pairs (partial-contract traps)
+
+An external message struct often pairs a `count` field with a `data` pointer:
+`data` is valid only while `count > 0`. That contract is **convicting, not
+exculpating** — it means `count == 0 ⇒ data` is NULL/invalid, so any path that
+dereferences `data[...]` without checking `count` is a real NULL dereference.
+
+- Dismiss only when the SAME chain (the candidate's `chain-root@` path) checks
+  `count` (a `count == 0` / `count > 0` guard, or a `count*sizeof(T) == len`
+  validation) BEFORE the dereference.
+- A quote like "data valid whenever count>0" must be read as "count==0 ⇒ data
+  invalid": if the candidate's chain never tests `count`, confirm and cite the
+  unchecked dereference.
+- Do NOT dismiss with "framework contract" alone — the contract is exactly what
+  makes the unchecked dereference a defect.
+
 ### Macro Context (Hint `macro-context`)
 When the Hint carries `macro-context`, a function-like macro is in play and the
 pipeline's null-flow proof may be wrong. Verify the macro before confirming:
