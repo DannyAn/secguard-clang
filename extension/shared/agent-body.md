@@ -579,3 +579,11 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
   `reason: "maxturns-exceeded"`.
 - Keep the block as your LAST message — nothing after it. The orchestrator does
   not read your transcript; this block is your only channel home.
+- **Also persist the block to disk BEFORE the final message** (O2 recovery): write
+  the SAME fenced JSON to `<tmpdir>/<subagent_id>-report.json` (the `.sgre/.tmp/`
+  dir the orchestrator passed you; one file per subagent). The orchestrator reads
+  this file FIRST and falls back to your message only when the file is missing —
+  a lost/`No task found` handle must not lose your `needs_context`/`dismissed`
+  accounting (those are NOT in the DB, unlike `written`). Use the Write tool; a
+  "must read before overwriting" is a stale file, so use a fresh
+  `<subagent_id>-report-2.json` name.

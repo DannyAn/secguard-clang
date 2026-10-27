@@ -142,6 +142,11 @@ func buildNullDerefVerdictFacts(c Candidate) []VerdictFact {
 			Token:  "null@opaque-origin",
 			Detail: fmt.Sprintf("the null source of `%s`%s is a value the scan tree cannot see (an external caller's argument, a field value whose definition is out of tree, or an open-world value read through an opaque field/dereference) — the pipeline only ASSUMES it may be NULL; judge whether that source can actually yield NULL", c.VariableName, derivedSuffix(c)),
 		})
+	case "array-buffer":
+		facts = append(facts, VerdictFact{
+			Token:  "array-buffer@" + c.CountField,
+			Detail: fmt.Sprintf("`%s` is a count-gated array buffer: it is valid only while the paired count field `%s` is > 0, so `%s == 0` ⇒ the buffer is NULL/empty. Confirm when the candidate's chain dereferences the buffer without checking `%s`; dismiss only when the SAME chain checks `%s` first. The count/data name pairing is a heuristic SIGNAL — verify `%s` actually gates this buffer before confirming", c.VariableName, c.CountField, c.CountField, c.CountField, c.CountField, c.CountField),
+		})
 	case "external-unknown":
 		facts = append(facts, VerdictFact{
 			Token:  "null@external-unknown",

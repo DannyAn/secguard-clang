@@ -61,14 +61,25 @@ below rules them.
 
 ### Group verdict (large candidate sets)
 
-Rows that share `Function` + the same origin tier (caller-arg / opaque-origin / external-unknown / assumed-return) + `guard@none` answer ONE
-question: "can this function's parameter / this object graph be NULL?" Decide
-the group once from the highest-signal row (or the `## Location` signature),
-then reuse that reasoning for the siblings with `group:<fn>:<tier>: <why>` in
-each reason. A `proc->profile` judged non-null by the function's entry contract
-also dismisses `proc->ctx` for the same reason — re-deriving it per row is the
-dominant cost of a 100+ candidate null-deref type, and it is what a 201-candidate
-zero-confirmed review looks like when it is done row by row.
+Rows may share ONE verdict **only when `Function` + origin tier + `chain-root`
+are all identical** (caller-arg / opaque-origin / array-buffer / external-unknown /
+assumed-return + `guard@none`). They then answer ONE question: "can this
+function's parameter / this object graph be NULL?" Decide the group once from
+the highest-signal row (or the `## Location` signature), then reuse that
+reasoning for the siblings with `group:<fn>:<tier>:<chain-root>: <why>` in each
+reason. A `proc->profile` judged non-null by the function's entry contract also
+dismisses `proc->ctx` for the same reason — re-deriving it per row is the
+dominant cost of a 100+ candidate null-deref type, and it is what a
+201-candidate zero-confirmed review looks like when it is done row by row.
+
+**The `chain-root` dimension is NOT optional.** Two rows in the same function
+with DIFFERENT `chain-root@` values (or one that carries `sibling-callers@`) are
+NOT one group: a guard on one entry chain does not protect the sinks reached
+through another. Grouping them together and reusing one chain's guard as the
+whole group's dismissal is exactly the cross-chain misuse that dismissed a real
+null-deref (a `count == 0` guard on the `proc_entry` chain was applied to the
+`list_proc_callback` chain, which has no guard). Judge every distinct chain
+independently and confirm when ANY chain reaches the sink unguarded.
 
 ### Common False Positives
 - `if (ptr == NULL) return;` before `ptr->field` → guard eliminates risk
@@ -113,6 +124,7 @@ your job differs per tier, so read it before anything else:
 | `null@malloc-fail` | the null source is a **may-null** call result (allocator / known maybe-null libc / a callee whose body has a NULL-return path: a literal NULL or an allocator result) — NOT a must-null proof | judge reachability, not just the shape: (1) does the callee actually return NULL, or does it abort-on-OOM (`zmalloc`/`xmalloc`/`oom()` never returns) making its `return NULL` dead code? (2) is the deref loop-guarded (`while(p)`) or otherwise checked? (3) can the NULL case actually occur for this call's arguments? Confirm only when the callee can really return NULL AND the deref is unguarded; otherwise dismiss. When the Hint carries `callee@file:line`, the callee body is embedded under `## Callee Definition`, judge it there instead of reading source |
 | `null@caller-arg` | an inter-procedural caller passes the parameter unproven non-null | judge the caller contract — confirm only if a caller can actually pass NULL |
 | `null@opaque-origin` | the null source is a contract the scan tree cannot see: a pointer parameter of a function with zero in-tree callers (an exported API / registered callback), or a field value of an externally-defined type (`tree = (T *)(resp->group_data)`, `para->orig->base_dn`) | a fail-open ASSUMPTION, not evidence — confirm when the external contract can plausibly yield NULL (an entry point that parses external input, a lookup that can miss), dismiss when the non-null precondition is an established project convention (an internal API whose other callers all pass non-null) |
+| `array-buffer@<count-field>` | the null source is a count-gated array buffer: `tree = (T *)(resp->group_data)` whose validity is gated by the paired count field `resp->group_num` — `count == 0 ⇒ buffer is NULL/empty` | **convicting, not exculpating.** Confirm when the candidate's chain dereferences the buffer (`tree[0]`) without checking the count field; dismiss only when the SAME chain (`chain-root@`) checks the count (`count == 0` / `count > 0`) before the dereference. The count/data NAME pairing is a heuristic SIGNAL, not a proof — verify from the Code Context that the count field actually gates this buffer (same struct, matching stem) before confirming |
 | `null@assumed-return` | an IN-SCAN callee graded maybe-null only by fail-open (it returns a parameter, a struct field, or an unknown call) — its body is embedded under `## Callee Definition` | judge the assumption from the embedded body — confirm only if the returned value can actually be NULL (a zero-initialized field, a nullable forward), otherwise dismiss |
 | `null@external-unknown` | the ONLY null source is an unproven external call — a fail-open analyzer ASSUMPTION, not evidence | verify the callee can return NULL (API knowledge), otherwise dismiss |
 
@@ -185,6 +197,13 @@ dereferences `data[...]` without checking `count` is a real NULL dereference.
   unchecked dereference.
 - Do NOT dismiss with "framework contract" alone — the contract is exactly what
   makes the unchecked dereference a defect.
+- **A dispatch/framework non-null contract marks the parameter ITSELF, never its
+  fields.** "`resp` is non-null by the NAC msg dispatch contract" can only
+  dismiss a dereference of `resp` itself; it says NOTHING about `resp->group_data`
+  (a count-gated array buffer whose validity depends on `group_num`) or
+  `resp->hdr->data` (an internal pointer field). For a `resp->field` candidate,
+  the dismissal must cite the FIELD's own assignment/validation point; citing the
+  callback parameter's dispatch contract is an over-reach and is not accepted.
 
 ### Macro Context (Hint `macro-context`)
 When the Hint carries `macro-context`, a function-like macro is in play and the

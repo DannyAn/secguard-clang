@@ -60,13 +60,19 @@ func (d *OpaqueNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 
 	hasEntryPoint := scanHasEntryPoint(ctx, d.store)
 	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		// Per-file field-reference census: the count field of a count-gated
+		// array buffer is usually referenced in the SAME file as the pointer
+		// field (the candidate function and its guarded sibling both read
+		// `resp->group_num`), so a file-local census is precise enough and
+		// avoids cross-file base-name collisions.
+		fieldRefs := collectFieldRefs(root)
 		fnDefs := root.FindAll("function_definition")
 		for _, f := range funcs {
 			fnDef := findFnDefByName(fnDefs, f.Name)
 			if fnDef.Kind() == "" {
 				continue
 			}
-			d.seedOpaqueFieldRead(ctx, f, file, fnDef, definedTypes, hasEntryPoint, &result)
+			d.seedOpaqueFieldRead(ctx, f, file, fnDef, definedTypes, fieldRefs, hasEntryPoint, &result)
 		}
 	})
 	if err != nil {
@@ -182,7 +188,7 @@ func collectDefinedTypes(root parser.Node, definedTypes map[string]bool) {
 // is assumed to carry the project's field invariants); in a BOUNDARY scan (no
 // entry point) that assumption is dropped and every base pointer parameter is
 // fail-open, because the field VALUE comes from an out-of-tree caller.
-func (d *OpaqueNullDetector) seedOpaqueFieldRead(ctx context.Context, f *db.Function, file *db.File, fnDef parser.Node, definedTypes map[string]bool, hasEntryPoint bool, result *DetectResult) {
+func (d *OpaqueNullDetector) seedOpaqueFieldRead(ctx context.Context, f *db.Function, file *db.File, fnDef parser.Node, definedTypes map[string]bool, fieldRefs map[string]map[string]bool, hasEntryPoint bool, result *DetectResult) {
 	_, names, types := functionParamNames(fnDef)
 	opaqueParams := map[string]bool{}
 	for i, pname := range names {
@@ -206,16 +212,20 @@ func (d *OpaqueNullDetector) seedOpaqueFieldRead(ctx context.Context, f *db.Func
 	}
 
 	emitted := map[string]bool{}
-	emit := func(variable string, line int) {
+	emit := func(variable string, line int, countField string) {
 		if variable == "" || emitted[variable] {
 			return
 		}
 		emitted[variable] = true
-		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: line, Column: 1}, map[string]string{
+		props := map[string]string{
 			"variable": variable,
 			"origin":   "opaque_field_read",
 			"definite": "false",
-		}) {
+		}
+		if countField != "" {
+			props["count_field"] = countField
+		}
+		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: line, Column: 1}, props) {
 			result.EventsCreated++
 		}
 	}
@@ -236,7 +246,13 @@ func (d *OpaqueNullDetector) seedOpaqueFieldRead(ctx context.Context, f *db.Func
 			return
 		}
 		if base := leftmostIdentifier(inner); base != "" && opaqueParams[base] {
-			emit(varName, node.StartLine())
+			// A count-gated array buffer: `tree = (T *)(resp->group_data)`
+			// where `resp->group_num` (or a same-stem count field) is referenced
+			// in this file. Record the pairing so the null-deref filter can
+			// label the source array-buffer@<count-field> instead of the flat
+			// opaque-origin tier.
+			countField := countFieldFor(fieldRefs, base, fieldNameOf(inner))
+			emit(varName, node.StartLine(), countField)
 		}
 	}
 	for _, assign := range fnDef.FindAll("assignment_expression") {
@@ -258,7 +274,7 @@ func (d *OpaqueNullDetector) seedOpaqueFieldRead(ctx context.Context, f *db.Func
 			continue
 		}
 		if root := leftmostIdentifier(base); root != "" && opaqueParams[root] {
-			emit(base.Text(), f.StartLine)
+			emit(base.Text(), f.StartLine, "")
 		}
 	}
 }
@@ -383,4 +399,89 @@ func findFnDefByName(fnDefs []parser.Node, name string) parser.Node {
 		}
 	}
 	return none
+}
+
+// collectFieldRefs builds a base-identifier → field-name set from every
+// field access in a file (`resp->group_num`, `msg.hdr->data`). The census is
+// file-local by design: the count field of a count-gated array buffer is
+// usually referenced in the SAME file as the pointer field, and a file-local
+// key keeps the base name from colliding across files with unrelated types.
+func collectFieldRefs(root parser.Node) map[string]map[string]bool {
+	refs := map[string]map[string]bool{}
+	for _, fe := range root.FindAll("field_expression") {
+		base := leftmostIdentifier(fe)
+		field := fieldNameOf(fe)
+		if base == "" || field == "" {
+			continue
+		}
+		if refs[base] == nil {
+			refs[base] = map[string]bool{}
+		}
+		refs[base][field] = true
+	}
+	return refs
+}
+
+// fieldNameOf returns the terminal field name of a field/subscript expression
+// (`resp->group_data` → "group_data", `resp->group_data[0]` → "group_data"),
+// or "" for anything else.
+func fieldNameOf(n parser.Node) string {
+	if n.Kind() != "field_expression" {
+		return ""
+	}
+	kids := n.NamedChildren()
+	if len(kids) == 0 {
+		return ""
+	}
+	last := kids[len(kids)-1]
+	if last.Kind() == "field_identifier" {
+		return strings.TrimSpace(last.Text())
+	}
+	return ""
+}
+
+// dataFieldSuffixes are the pointer/array-buffer field suffixes the count/data
+// pairing strips to find the shared stem (`group_data` → stem `group`).
+var dataFieldSuffixes = []string{
+	"_data", "_list", "_array", "_buffer", "_buf", "_items", "_entries",
+	"_table", "_nodes", "_objs", "_objects", "_elements", "_records",
+	"_ptr", "_mem", "_pool", "_info", "_msg", "_pkt", "_head", "_node",
+	"_slots", "_cache", "_set", "_vlan", "_rule", "_entry",
+}
+
+// countFieldSuffixes are the count/length suffixes that pair with a data
+// field's stem (`group_num`, `group_count`, `group_size`, ...).
+var countFieldSuffixes = []string{
+	"_num", "_count", "_size", "_len", "_cnt", "_total", "_number", "_n",
+}
+
+// countFieldFor returns the paired count field spelling (`resp->group_num`)
+// when the file references a count field whose stem matches the data field's
+// stem, or "". It is the count-gated-array-buffer signal behind the
+// array-buffer@<count-field> null-deref tier. The pairing is a NAME heuristic,
+// deliberately a label-only refinement (the source stays suspected) — the AI
+// verifies the count field actually gates the buffer.
+func countFieldFor(fieldRefs map[string]map[string]bool, base, dataField string) string {
+	fields := fieldRefs[base]
+	if len(fields) == 0 {
+		return ""
+	}
+	stem := ""
+	for _, suf := range dataFieldSuffixes {
+		if strings.HasSuffix(dataField, suf) {
+			if s := strings.TrimSuffix(dataField, suf); s != "" {
+				stem = s
+				break
+			}
+		}
+	}
+	if stem == "" {
+		return ""
+	}
+	for _, suf := range countFieldSuffixes {
+		if fields[stem+suf] {
+			return base + "->" + stem + suf
+		}
+	}
+	return ""
 }

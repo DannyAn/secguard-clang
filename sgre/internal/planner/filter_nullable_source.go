@@ -261,6 +261,17 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 					c.NullableOriginName = models[c.FunctionID].certainNullableOrigin(c.VariableName)
 				case c.CallerNullDetail != "":
 					c.NullOriginTier = "caller-arg"
+				case models[c.FunctionID].arrayBufferCountField(c.VariableName) != "":
+					// A count-gated array buffer (`tree = (T *)(resp->group_data)`
+					// where `resp->group_num` counts the entries) is a sharper
+					// fact than the flat opaque-origin tier: count == 0 ⇒ the
+					// buffer is NULL/empty, so an unguarded `tree[0]` is a real
+					// NULL dereference on any chain that never checks the count.
+					// Still a MAY-fact (the name pairing is a heuristic), so it
+					// stays suspected and the classifier verifies the pairing —
+					// never auto-confirmed.
+					c.NullOriginTier = "array-buffer"
+					c.CountField = models[c.FunctionID].arrayBufferCountField(c.VariableName)
 				case models[c.FunctionID].hasOpaqueSource(c.VariableName):
 					// An opaque_param / opaque_field_read source: the value's
 					// nullability comes from a contract the scan tree cannot

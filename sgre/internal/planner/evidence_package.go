@@ -297,7 +297,13 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			// cfg-proof / malloc-fail are machine-proved textbook CWE-476;
 			// caller-arg needs the caller's contract; external-unknown is a
 			// fail-open ASSUMPTION the AI must verify or dismiss.
-			if c.NullOriginTier != "" {
+			// array-buffer is a count-gated array buffer (`tree = (T *)
+			// (resp->group_data)` gated by `resp->group_num`): it renders as
+			// `array-buffer@<count-field>`, NOT `null@array-buffer`, so the
+			// count field — the decisive fact — is the token's value.
+			if c.NullOriginTier == "array-buffer" {
+				parts = append(parts, "array-buffer@"+c.CountField)
+			} else if c.NullOriginTier != "" {
 				parts = append(parts, "null@"+c.NullOriginTier)
 			}
 			// A call-result dereference (`f()->field`) whose callee is

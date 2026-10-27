@@ -57,6 +57,11 @@ type nullSource struct {
 	// length argument is positive (a sizeof expression or a positive
 	// literal). argVarNames alone drops the position information.
 	argInfo []synthArgInfo
+	// countField names the paired count/length field when this opaque
+	// field-read source is a count-gated array buffer (`tree =
+	// (T *)(resp->group_data)` gated by `resp->group_num`). It upgrades the
+	// candidate's tier from the flat opaque-origin to array-buffer@<field>.
+	countField string
 }
 
 // nullModel is the L1 null model for a single function.
@@ -103,14 +108,15 @@ func buildNullModel(ctx context.Context, store db.Store) (map[int64]*nullModel, 
 			column = loc.Column
 		}
 		m.sources = append(m.sources, nullSource{
-			variable:  props.Variable,
-			line:      line,
-			column:    column,
-			origin:    props.Origin,
-			definite:  props.Definite == "true",
-			chainOpen: props.Chain == "open",
-			caller:    props.Function,
-			argText:   props.Expression,
+			variable:   props.Variable,
+			line:       line,
+			column:     column,
+			origin:     props.Origin,
+			definite:   props.Definite == "true",
+			chainOpen:  props.Chain == "open",
+			caller:     props.Function,
+			argText:    props.Expression,
+			countField: props.ArrayBufferCountField,
 		})
 	}
 
@@ -265,6 +271,25 @@ func (m *nullModel) hasOpaqueSource(variable string) bool {
 		}
 	}
 	return false
+}
+
+// arrayBufferCountField returns the count/length field name when the variable's
+// opaque field-read source is a count-gated array buffer (`tree =
+// (T *)(resp->group_data)` gated by `resp->group_num`). Empty = no pairing. It
+// powers the array-buffer@<field> origin tier: a count-gated buffer is a
+// SHARPER fact than the flat opaque-origin tier (count == 0 ⇒ buffer NULL/empty),
+// but it stays suspected — the count/data name pairing is a signal the classifier
+// verifies, never an auto-confirm.
+func (m *nullModel) arrayBufferCountField(variable string) string {
+	if m == nil {
+		return ""
+	}
+	for _, s := range m.sources {
+		if s.variable == variable && s.origin == "opaque_field_read" && s.countField != "" {
+			return s.countField
+		}
+	}
+	return ""
 }
 
 // onlyExternalCallSources reports whether EVERY null source for variable is an

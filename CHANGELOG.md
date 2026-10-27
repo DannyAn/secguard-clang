@@ -2,6 +2,18 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [未发布]
+
+### null-deref 漏报复核收尾：`array-buffer@<count-field>` 空源 tier + 组裁决/回调契约规则收紧（P0）
+
+承接上一轮扫描自检报告（§1.2/§1.3）的遗留项，在 `chain-root@`/`sibling-callers@`（0.11.4）之外补齐三条：
+
+- **`array-buffer@<count-field>` 空源 tier（§1.3-2）**：`tree = (T *)(resp->group_data)` 这类"长度由伴随计数字段（`resp->group_num`）决定的内嵌数组缓冲"此前被归入笼统的 `null@opaque-origin`。现在 `opaque_null` 检测器按 count/data 名称配对（`group_data`↔`group_num`、`_list`↔`_count` 等，文件内 base 名配对）识别该形状，把伴随计数字段写进 `count_field`；`NullableSourceFilter` 将此类源升级为 `array-buffer@<field>` tier（仍是 may-fact、suspected，**不自动确认**——名称配对是信号不是证明，AI 需核验计数字段确为该缓冲的门控）。null-deref SKILL 明确 `count == 0 ⇒ buffer NULL/empty` 是**定罪**证据：候选所在链未检查计数字段即 confirm，仅当同一链先检查计数才 dismiss。
+- **组裁决同构性（§1.3-3）**：null-deref SKILL 与 command-instructions 的 Group verdict 现在要求 `Function + origin tier + chain-root` 三者一致才可共享裁决理由；不同 `chain-root@`（或带 `sibling-callers@`）的行不是一组，须逐链独立判定——防止孪生链守卫被误套到无守卫链（上一轮漏报的直接根因）。
+- **回调契约理由禁越界（§1.3-4）**：SKILL 明确"dispatch/framework 非空契约只标记参数本身，不标记其内部字段"——`resp non-null by dispatch contract` 只能给 `resp` 本身脱罪，对 `resp->group_data`/`resp->hdr->data` 必须引用字段自身的赋值/校验点。
+
+新增回归：`TestOpaqueNullDetectorArrayBufferCountField`（配对命中 + 无计数字段的负向对照）。`go build`/`go test ./...`、扩展一致性检查均通过。
+
 ## [0.11.4] - 2026-10-27
 
 ### null-deref 跨调用链防护误套用：暴露多入口链（`chain-root@` / `sibling-callers@`）

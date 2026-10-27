@@ -54,6 +54,15 @@ type eventProps struct {
 	FreeLine          int    `json:"free_line"`
 	UseLine           int    `json:"use_line"`
 	Origin            string `json:"origin"`
+	// ArrayBufferCountField is the paired count/length field an opaque
+	// array-buffer null source is gated by (`tree = (T *)(resp->group_data)`
+	// where `resp->group_num` counts the entries). It is emitted by the
+	// opaque_null detector when the count/data name pairing is visible in the
+	// scan tree; the null-deref filter labels such a source
+	// array-buffer@<count-field> instead of the flat opaque-origin tier.
+	// Empty = no count pairing detected. (Distinct from the implicit-contract
+	// CountField, whose JSON key is "count".)
+	ArrayBufferCountField string `json:"count_field"`
 	// Chain is "open" on a caller_null NULL_VALUE whose value the open-chain
 	// fixpoint graded OPEN (reachable from an unguarded entry), which keeps it
 	// out of the onlyUnprovenCallerNullSources dismissal. Empty otherwise.

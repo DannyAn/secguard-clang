@@ -144,9 +144,10 @@ int main(int argc, char **argv)
 `
 
 type opaqueSourceRecord struct {
-	variable string
-	origin   string
-	line     int
+	variable   string
+	origin     string
+	line       int
+	countField string
 }
 
 func runOpaqueNullDetect(t *testing.T, fixtures map[string]string) []opaqueSourceRecord {
@@ -196,8 +197,9 @@ func runOpaqueNullDetect(t *testing.T, fixtures map[string]string) []opaqueSourc
 	var out []opaqueSourceRecord
 	for _, e := range events {
 		var props struct {
-			Variable string `json:"variable"`
-			Origin   string `json:"origin"`
+			Variable   string `json:"variable"`
+			Origin     string `json:"origin"`
+			CountField string `json:"count_field"`
 		}
 		if err := json.Unmarshal([]byte(e.Properties), &props); err != nil {
 			continue
@@ -209,7 +211,7 @@ func runOpaqueNullDetect(t *testing.T, fixtures map[string]string) []opaqueSourc
 		if loc := locs[e.LocationID]; loc != nil {
 			line = loc.Line
 		}
-		out = append(out, opaqueSourceRecord{variable: props.Variable, origin: props.Origin, line: line})
+		out = append(out, opaqueSourceRecord{variable: props.Variable, origin: props.Origin, line: line, countField: props.CountField})
 	}
 	return out
 }
@@ -485,5 +487,57 @@ int api_tree(ApiCtx_t *at_ctx)
 	}
 	if !has("at_tree", "opaque_field_read") {
 		t.Errorf("boundary scan: the field value read off an exported API parameter must seed; got %v", records)
+	}
+}
+
+// A count-gated array buffer: `tree = (T *)(resp->group_data)` where a same-file
+// sibling reads `resp->group_num` (the count/length field the buffer's validity
+// depends on). The detector must label the source with the paired count field so
+// the null-deref filter can emit the array-buffer@<count-field> tier instead of
+// the flat opaque-origin tier — the reported real null-deref's exact shape.
+func TestOpaqueNullDetectorArrayBufferCountField(t *testing.T) {
+	paired := runOpaqueNullDetect(t, map[string]string{"paired.c": `int import_dn_group_tree_refresh(
+    Nac_LdapSearchAckMsg_t *resp, import_para_ext_t *para)
+{
+    ldap_usrgroup_node_t *tree =
+        (ldap_usrgroup_node_t *)(resp->group_data);
+    return tree[0].group_name[0];
+}
+
+int import_usrgroup_proc(Nac_LdapSearchAckMsg_t *resp, import_para_ext_t *para)
+{
+    if (resp->group_num == 0) {
+        return 0;
+    }
+    return import_dn_group_tree_refresh(resp, para);
+}
+`})
+	found := false
+	for _, r := range paired {
+		if r.variable != "tree" {
+			continue
+		}
+		found = true
+		if r.countField != "resp->group_num" {
+			t.Errorf("tree source count_field = %q, want resp->group_num; records %+v", r.countField, paired)
+		}
+	}
+	if !found {
+		t.Errorf("tree = (T *)(resp->group_data) must seed an opaque_field_read source; got %+v", paired)
+	}
+
+	// Negative control: the same pointer field with NO count field in scope must
+	// carry no count_field (the name pairing must not fire on a bare data field).
+	unpaired := runOpaqueNullDetect(t, map[string]string{"unpaired.c": `int solo_refresh(Nac_LdapSearchAckMsg_t *resp)
+{
+    ldap_usrgroup_node_t *tree =
+        (ldap_usrgroup_node_t *)(resp->group_data);
+    return tree[0].group_name[0];
+}
+`})
+	for _, r := range unpaired {
+		if r.variable == "tree" && r.countField != "" {
+			t.Errorf("no count field in scope: tree count_field must be empty, got %q", r.countField)
+		}
 	}
 }
