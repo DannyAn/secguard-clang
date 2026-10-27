@@ -2,7 +2,7 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [未发布]
+## [0.11.4] - 2026-10-27
 
 ### null-deref 跨调用链防护误套用：暴露多入口链（`chain-root@` / `sibling-callers@`）
 
@@ -15,8 +15,6 @@
 - 新增回归 `TestNullDeref_SiblingChainCallers`（复刻客户的双链+回调分叉抽象用例）+ `TestNullDeref_SingleChainNoTokens`（单链不加 token）。
 
 **暂不实现**：报告 S2 的 `count-guard@missing` 启发式（需跨函数扫描各调用链的 count 检查，误报风险高，且 `sibling-callers@` + SKILL 规则已能覆盖本案例的判定）；S1 的"结构化 dismiss schema + 支配校验"属于分类工作流改动，需另立需求。
-
-## [0.11.3] - 2026-10-27
 
 ### 机器确认误报修复：`(void)` 丢弃的返回值不再 auto-confirm（CWE-252）
 
