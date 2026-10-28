@@ -209,6 +209,7 @@ func (o *ScanOutput) writeReport(packages []*planner.PlanResult, indexSummary In
 
 	b.WriteString("## Output Files\n\n")
 	b.WriteString(fmt.Sprintf("- SARIF (candidate stage, level `note` — unclassified leads): `%s`\n", CandidatesSarifFile))
+	b.WriteString(fmt.Sprintf("- SARIF (auto-confirmed verdicts, written by scan): `%s`\n", FindingsSarifFile))
 	b.WriteString(fmt.Sprintf("- SARIF (verdict stage, written by `report --audit`): `%s`\n", SarifFile))
 	b.WriteString(fmt.Sprintf("- Candidate evidence (pipeline output, NOT verdicts): `%s/<vuln-type>/<NNN>_<file>_<line>.md`\n", CandidatesDir))
 	b.WriteString(fmt.Sprintf("- Findings to review (AI verdicts): `%s/<vuln-type>/<NNN>_<file>_<line>_confirmed.md`\n", FindingsDir))
