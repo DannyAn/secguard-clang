@@ -197,6 +197,22 @@ def discover_sarif(root):
     return max(hits, key=os.path.getmtime)
 
 
+def discover_findings_sarif(root):
+    """Newest `findings.sarif` (scan-stage auto-confirmed verdicts) under the
+    project's scan output, if any. The scan writes this alongside
+    candidates.sarif; it carries the pipeline-proved (auto-confirmed) findings
+    that candidates.sarif excludes. A benchmark validator needs both to score
+    recall against the full detection set without a separate `report --audit`."""
+    pats = [
+        os.path.join(root, ".codeagent/secguard-clang/scans/*/findings.sarif"),
+        os.path.join(root, ".codeagent/secguard-clang/reviews/*/findings.sarif"),
+    ]
+    hits = [p for pat in pats for p in glob.glob(pat)]
+    if not hits:
+        return None
+    return max(hits, key=os.path.getmtime)
+
+
 def discover_candidates_sarif(root):
     """Newest `candidates.sarif` (every converged candidate, any suspicion
     tier) under the project's scan output, if any. It backs recall: a `finding`
@@ -455,9 +471,9 @@ def main():
         with open(args.expected, encoding="utf-8") as f:
             return report_coverage(json.load(f)["test_cases"])
 
-    sarif = args.sarif or discover_sarif(args.root)
+    sarif = args.sarif or discover_findings_sarif(args.root) or discover_sarif(args.root)
     if not sarif:
-        print("no result.sarif found — run the scan and `secguard report --audit` first",
+        print("no findings.sarif or result.sarif found — run the scan first",
               file=sys.stderr)
         return 2
     if not os.path.exists(sarif):

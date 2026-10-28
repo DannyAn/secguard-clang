@@ -416,7 +416,8 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		"target_path":       absPath,
 		"scan_dir":          scanDir,
 		"candidates_sarif":  filepath.Join(scanDir, report.CandidatesSarifFile),
-		"result_sarif_note": fmt.Sprintf("%s is written by `report --audit` after classification; the scan writes %s (unclassified leads at level \"note\")", report.SarifFile, report.CandidatesSarifFile),
+		"findings_sarif":    filepath.Join(scanDir, report.FindingsSarifFile),
+		"result_sarif_note": fmt.Sprintf("%s is written by `report --audit` after classification; the scan writes %s (unclassified leads at level \"note\") and %s (auto-confirmed verdicts)", report.SarifFile, report.CandidatesSarifFile, report.FindingsSarifFile),
 		"_summary":          summaryStr,
 	}
 	if findingsError != "" {
@@ -464,14 +465,38 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		fmt.Fprintln(os.Stdout, string(jsonBytes))
 		return 1
 	} else {
+		// Write the auto-confirmed (pipeline-proved) findings to a dedicated
+		// SARIF so a benchmark validator can score recall against the FULL
+		// detection set (candidates + auto-confirmed) without a separate
+		// `report --audit` pass. candidates.sarif carries only unclassified
+		// leads; findings.sarif carries the machine verdicts the pipeline
+		// proved. result.sarif (the verdict stage) is not produced until the
+		// AI classification is persisted, so without findings.sarif the
+		// validator sees auto-confirmed detections as phantom false negatives.
+		findingsSarifPath := filepath.Join(scanDir, report.FindingsSarifFile)
+		findingsSarifWritten := false
+		if werr := report.WriteSarifFromFindings(findingsSarifPath, scanOutput.RootDir, findings); werr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to write findings sarif: %v\n", werr)
+			output["findings_sarif_error"] = werr.Error()
+		} else {
+			output["findings_sarif"] = findingsSarifPath
+			findingsSarifWritten = true
+		}
 		// 强制落盘验证：Write() 返回 nil 不代表文件实际存在（磁盘满、NFS 延迟、
 		// 权限问题在写入过程中发生等）。逐个检查输出契约文件存在且非空，
 		// 任一缺失则视为致命错误——不再静默返回 0 让 agent 误读"成功"。
 		// Verify what the SCAN is contracted to produce. result.sarif is not in
 		// that list: it is the verdict-stage artifact and does not exist until
 		// the AI classification is persisted via `report --audit`.
+		// findings.sarif is verified only when it was written without error:
+		// a write failure is already a warning (it is an auxiliary file), but
+		// a silent post-write disappearance (NFS/disk-full) is a FATAL.
 		var reportBytes int64
-		for _, f := range []string{scanOutput.ReportPath, scanOutput.CandidatesSarifPath} {
+		verifyFiles := []string{scanOutput.ReportPath, scanOutput.CandidatesSarifPath}
+		if findingsSarifWritten {
+			verifyFiles = append(verifyFiles, findingsSarifPath)
+		}
+		for _, f := range verifyFiles {
 			info, statErr := os.Stat(f)
 			if statErr != nil {
 				output["report_error"] = fmt.Sprintf("output file not persisted: %s: %v", f, statErr)
