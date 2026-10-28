@@ -2,7 +2,48 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.11.5] - 2026-10-27
+## [0.11.6] - 2026-10-28
+
+### 判定技能补充：第三方库所有权转移 / 孤儿对象 / 统一清理契约（AI 侧误判收敛）
+
+三份 SKILL.md 补齐了第三方库生命周期语义的**判定规则**（与 `apikb` 的 cJSON/libxml2 所有权模型对齐，避免 AI 在 `## Callee Definition` 已给出契约时仍按"裸 free"直觉误判）：
+
+- **`double-free` / `use-after-free` 新增 "Ownership-transfer APIs" 段**：`xmlDocSetRootElement` / `xmlAddChild` / `cJSON_AddItemToArray` / `cJSON_AddItemToObject` 之后对象归父容器所有，`xmlFreeDoc(doc)` / `cJSON_Delete(root)` 即释放；此后对同一对象的 `xmlFreeNode(root)` / `free(item)` 是二次释放，`root->ns` / `item->value` 是 UAF。明确 `cJSON_AddItemReferenceToArray/Object` **不转移**所有权（调用方仍须自行释放）。
+- **`memory-leak` 新增 "Third-party orphan objects"**：`cJSON_Create*` / `xmlNewNode` / `xmlNewDoc` 创建后、attach 之前经 `return`/`break`/`goto` 提前退出即泄漏——attach 是"释放通道"，绕过它的路径就是泄漏点。
+- **`memory-leak` 新增"统一清理契约（调用方侧）"例外**：被调函数写满 caller-owned 结构体（`parse(msg, &ctx)`）且失败路径不释放自己填的字段，当调用方零初始化（`ctx = {0}`）并把所有失败出口收敛到同一 reset/destroy 时，这是设计而非泄漏；只有调用方清理未覆盖该字段才确认。
+
+全套改动仅文档/规则，不改检测器与收敛管道；`check-extension-consistency.py`、`TestVulnTypeSkillConsistency`、`go test ./internal/skills/` 均通过。
+
+### 扫描速度：消除 null-deref 收敛阶段的 O(函数数 × 文件 AST) 重复遍历（端到端 4.2×）
+
+对 95k LOC / 100 文件 / 15000 函数的合成代码库做基线剖析，定位出收敛（plan）阶段占端到端 **77%**（152.8s），其中 `null-deref` 一个类型独占 152.8s（其余 24 个类型合计 <0.6s）。用 macOS `sample` 抓 CPU 栈确认热点不是数据流本身，而是**同一份文件 AST 被逐函数反复整树重走**——树解析（`ParseCached`）早已按文件缓存，但"按函数起始行定位函数定义"这一步仍每次 `root.FindAll("function_definition")` 全文件走一遍。
+
+- **`fileParseCache` 缓存函数定义节点**（`defs`/`defFor`）：`functionBodiesForFile` 现在在单次文件遍历里同时产出 `bodies`（起始行→compound_statement）与 `defs`（起始行→function_definition）。`get`/`rootForFile`/`defFor` 统一走 `prime`，一个文件每个 cache 只解析+遍历一次。
+- **`paramsOf` / `paramListOf` / `voidPtrParamsOf` 三处逐函数整树查找全部改为缓存查找**（新增 `paramsFor`/`paramListFor`/`voidPtrParamsFor`，按起始行 O(1) 取定义节点后再局部取参）。覆盖 null-deref 主链（`collectCountOutputFuncs`、`collectNullCheckHelpers`、`computeRetNullable` 的 seeded/infos 两处）以及 int-overflow / divide-by-zero / taint 的同型调用点，删除已死的 `paramsOf`/`paramListOf`/`voidPtrParamsOf`。
+- **`buildGuardCtx` 的 `CollectConstantSymbols` 按文件缓存**（`flowAnalyzer.constants`）：该函数对整文件做 `preproc_def`/`preproc_function_def`/`enumerator` 三轮查找，此前每个候选函数调用一次；现在同一 analyzer 内每文件只算一次。
+- **`buildContractCtx` 的 void* 形参识别按文件缓存**：`voidPtrParamsOf` 的整树查找并入 `defFor` 局部遍历。
+
+实测（同一 95k LOC 合成库，同机）：
+
+| 阶段 | 基线 | 本轮 | 变化 |
+|---|---|---|---|
+| 收敛 plan | 152.8s | 5.4s | **-96.5%（28×）** |
+| 端到端 | 198.6s | 47.1s | **-76.3%（4.2×）** |
+
+瓶颈从 plan（77%）转移到 detectors（约 59%）；detectors 已 8 路并行，剩余成本是 tree-sitter cgo 边界开销，属独立课题。
+
+### 树遍历原语微优化（`FindAll`/`FindFirst` 免空判 + 免闭包）
+
+`parser.Node.FindAll`/`FindFirst` 改为内联栈式遍历，用 `node.node.Kind()` 直读 C 节点（跳过每次 `isNull()` 的 `ts_node_id` cgo 调用），并消除闭包间接层；删除仅被这两者使用的 `walkNode`。纯 CPU 收益、语义不变。
+
+### 正确性保障（零行为变化 + 机器强制等价回归）
+
+本轮全部为"缓存等价重写"，不改变任何检测语义：
+
+- **benchmark 红线保持**：227 用例 `recall 114/114`、`FP 0/113`、`FN 0`（`validate-benchmark.py`）。
+- **新增 `TestFileParseCacheParamsEquivalence`**：用普通 / 指针返回 / 嵌套指针 / `void*`+`const void*` / 变参 / 函数指针形参六种声明形状，逐一对 `paramsFor`/`paramListFor`/`voidPtrParamsFor`/`defFor` 断言，把"缓存查找 ≡ 旧的整树查找"从口头承诺固化为构建守卫。
+- `go test ./...`（含 nosqlite 子集）全绿。
+
 
 ### null-deref 漏报复核收尾：`array-buffer@<count-field>` 空源 tier + 组裁决/回调契约规则收紧（P0）
 
