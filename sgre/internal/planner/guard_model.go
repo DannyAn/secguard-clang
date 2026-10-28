@@ -361,11 +361,11 @@ func collectNullCheckHelpers(cache *fileParseCache, funcs []*db.Function, fileBy
 		if file == nil {
 			continue
 		}
-		body, root := cache.get(file, fn)
+		body, _ := cache.get(file, fn)
 		if body.Kind() != "compound_statement" {
 			continue
 		}
-		params := paramListOf(fn, root)
+		params := cache.paramListFor(file, fn)
 		if len(params) == 0 {
 			continue
 		}
@@ -496,18 +496,6 @@ func returnNullChecksParam(body parser.Node, param string) bool {
 		}
 	}
 	return false
-}
-
-// paramListOf returns the ordered parameter names of the function whose
-// definition starts at fn.StartLine.
-func paramListOf(fn *db.Function, root parser.Node) []string {
-	for _, def := range root.FindAll("function_definition") {
-		if def.StartLine() != fn.StartLine {
-			continue
-		}
-		return paramNamesOfDef(def)
-	}
-	return nil
 }
 
 // collectMacroGuards merges per-file guard-macro summaries across the whole scan

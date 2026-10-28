@@ -161,13 +161,12 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 			finalKept = append(finalKept, c)
 			continue
 		}
-		root := cache.rootForFile(file)
 		divisor := f.divisor(eventsByID, c)
 		if divisor == "" {
 			finalKept = append(finalKept, c)
 			continue
 		}
-		idx, ok := paramsOf(fn, root)[divisor]
+		idx, ok := cache.paramsFor(file, fn)[divisor]
 		if !ok {
 			finalKept = append(finalKept, c)
 			continue

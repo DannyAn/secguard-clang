@@ -70,10 +70,10 @@ func (f *IntOverflowGuardFilter) Apply(ctx context.Context, candidates []Candida
 		if file == nil {
 			continue
 		}
-		body, root := cache.get(file, fn)
+		body, _ := cache.get(file, fn)
 		if body.Kind() == "compound_statement" {
 			bodies[fid] = body
-			paramsByFunc[fid] = paramsOf(fn, root)
+			paramsByFunc[fid] = cache.paramsFor(file, fn)
 		}
 	}
 	rangeFlows := f.buildRangeFlows(byFunc, fnByID, bodies)

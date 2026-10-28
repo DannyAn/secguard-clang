@@ -85,6 +85,9 @@ type flowAnalyzer struct {
 	// function once per filter application, and a nil oracle falls back to the
 	// permissive recognition.
 	scopeNames map[int]func(string) bool
+	// constants caches the file-level ConstantEnv (macro/enum zero symbols) by
+	// file ID so buildGuardCtx does not re-walk the whole file per function.
+	constants map[int64]*parser.ConstantEnv
 }
 
 // scopeOracle returns the `(A) & x` disambiguation oracle for a function body:
@@ -388,7 +391,7 @@ func (a *flowAnalyzer) analyzeFlow(ctx context.Context, fn *db.Function, body pa
 	// may-analysis (nonNullKills), never to taint/freed-state/uninit flows.
 	var guard *guardModel
 	if nonNullKills {
-		guard = buildGuardModel(cfg, a.helperParams, a.macroGuards, buildGuardCtx(body, fileRoot))
+		guard = buildGuardModel(cfg, a.helperParams, a.macroGuards, buildGuardCtx(body, a.constantEnvFor(fn, fileRoot)))
 	}
 	nodeIn := runDataflow(cfg, effects, a.entrySeeds, guard)
 	return &flowResult{cfg: cfg, nodeIn: nodeIn, genAt: genAt(cfg, effects), weakGuard: buildWeakGuardMap(cfg), ternaryGuard: buildTernaryGuardMap(body)}
@@ -743,6 +746,26 @@ func (a *flowAnalyzer) macroWritesFor(root parser.Node, nonNullKills bool) map[s
 		return a.macroWrites
 	}
 	return macros.WriteSummaries(root)
+}
+
+// constantEnvFor returns the file-level ConstantEnv for fn's file, computing it
+// once per file per analyzer. CollectConstantSymbols walks the whole file root
+// (preproc_def / preproc_function_def / enumerator), and buildGuardCtx used to
+// issue that walk once per function — an O(functions × file) cost that dominated
+// the remaining null-deref plan time after paramsOf was cached.
+func (a *flowAnalyzer) constantEnvFor(fn *db.Function, fileRoot parser.Node) *parser.ConstantEnv {
+	if a.constants == nil {
+		a.constants = make(map[int64]*parser.ConstantEnv)
+	}
+	if env, ok := a.constants[fn.FileID]; ok {
+		return env
+	}
+	var env *parser.ConstantEnv
+	if fileRoot.Kind() != "" {
+		env = parser.CollectConstantSymbols(fileRoot)
+	}
+	a.constants[fn.FileID] = env
+	return env
 }
 
 // intIn reports whether v is an element of xs.
@@ -1212,11 +1235,11 @@ func collectCountOutputFuncs(cache *fileParseCache, funcs []*db.Function, fileBy
 		if file == nil {
 			continue
 		}
-		body, root := cache.get(file, fn)
+		body, _ := cache.get(file, fn)
 		if body.Kind() != "compound_statement" {
 			continue
 		}
-		params := paramsOf(fn, root)
+		params := cache.paramsFor(file, fn)
 		if len(params) == 0 {
 			continue
 		}
@@ -2664,57 +2687,132 @@ type fileParseCache struct {
 	parser *parser.Parser
 	roots  map[int64]parser.Node
 	bodies map[int64]map[int]parser.Node
+	defs   map[int64]map[int]parser.Node
 }
 
 func newFileParseCache(p *parser.Parser) *fileParseCache {
-	return &fileParseCache{parser: p, roots: make(map[int64]parser.Node), bodies: make(map[int64]map[int]parser.Node)}
+	return &fileParseCache{
+		parser: p,
+		roots:  make(map[int64]parser.Node),
+		bodies: make(map[int64]map[int]parser.Node),
+		defs:   make(map[int64]map[int]parser.Node),
+	}
 }
 
 // get returns fn's compound_statement body and the file root, parsing the file
 // at most once. The (body, root) order matches the old readFunctionBody.
 func (fc *fileParseCache) get(file *db.File, fn *db.Function) (parser.Node, parser.Node) {
-	bodies, ok := fc.bodies[file.ID]
-	if !ok {
-		root, m := functionBodiesForFile(fc.parser, file)
-		fc.roots[file.ID] = root
-		fc.bodies[file.ID] = m
-		bodies = m
+	if _, ok := fc.bodies[file.ID]; !ok {
+		fc.prime(file)
 	}
-	return bodies[fn.StartLine], fc.roots[file.ID]
+	return fc.bodies[file.ID][fn.StartLine], fc.roots[file.ID]
 }
 
 // rootForFile returns the parsed file root, parsing at most once. It is the
 // file-level analogue of get, for callers that need the whole tree (e.g. to
 // collect macro definitions) without a specific function.
 func (fc *fileParseCache) rootForFile(file *db.File) parser.Node {
-	if root, ok := fc.roots[file.ID]; ok {
-		return root
+	if _, ok := fc.roots[file.ID]; !ok {
+		fc.prime(file)
 	}
-	root, m := functionBodiesForFile(fc.parser, file)
-	fc.roots[file.ID] = root
-	fc.bodies[file.ID] = m
-	return root
+	return fc.roots[file.ID]
 }
 
-// functionBodiesForFile parses file and returns its root plus a map from each
-// function definition's start line to its compound_statement body.
-func functionBodiesForFile(p *parser.Parser, file *db.File) (parser.Node, map[int]parser.Node) {
+// prime parses file once and populates roots, bodies and defs. It is the single
+// parse site shared by get/rootForFile/defFor so a file is parsed at most once
+// per cache.
+func (fc *fileParseCache) prime(file *db.File) {
+	root, bodies, defs := functionBodiesForFile(fc.parser, file)
+	fc.roots[file.ID] = root
+	fc.bodies[file.ID] = bodies
+	fc.defs[file.ID] = defs
+}
+
+// defFor returns the function_definition node of fn, parsed at most once per
+// file. It removes the per-function whole-file FindAll("function_definition")
+// that paramsOf/paramListOf used to issue — over a large codebase that was an
+// O(functions × file) re-walk of the same AST and the dominant remaining cost of
+// the null-deref plan phase.
+func (fc *fileParseCache) defFor(file *db.File, fn *db.Function) parser.Node {
+	if _, ok := fc.defs[file.ID]; !ok {
+		fc.prime(file)
+	}
+	return fc.defs[file.ID][fn.StartLine]
+}
+
+// paramsFor returns fn's parameter names keyed by name with their ordinal index,
+// derived from the cached function_definition node.
+func (fc *fileParseCache) paramsFor(file *db.File, fn *db.Function) map[string]int {
+	def := fc.defFor(file, fn)
+	if def.Kind() == "" {
+		return nil
+	}
+	out := make(map[string]int)
+	for i, p := range paramNamesOfDef(def) {
+		if p != "" {
+			out[p] = i
+		}
+	}
+	return out
+}
+
+// paramListFor returns fn's ordered parameter names from the cached
+// function_definition node.
+func (fc *fileParseCache) paramListFor(file *db.File, fn *db.Function) []string {
+	def := fc.defFor(file, fn)
+	if def.Kind() == "" {
+		return nil
+	}
+	return paramNamesOfDef(def)
+}
+
+// voidPtrParamsFor returns fn's void*/const void* parameter names from the
+// cached function_definition node (no whole-file re-walk per function).
+func (fc *fileParseCache) voidPtrParamsFor(file *db.File, fn *db.Function) map[string]bool {
+	def := fc.defFor(file, fn)
+	if def.Kind() == "" {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, pd := range def.FindAll("parameter_declaration") {
+		if !isVoidPointerDecl(pd) {
+			continue
+		}
+		if n := declaratorName(pd); n != "" {
+			out[n] = true
+		}
+	}
+	return out
+}
+
+// functionBodiesForFile parses file and returns its root, a map from each
+// function definition's start line to its compound_statement body, and a map
+// from start line to the function_definition node itself.
+func functionBodiesForFile(p *parser.Parser, file *db.File) (parser.Node, map[int]parser.Node, map[int]parser.Node) {
 	source, err := os.ReadFile(file.Path)
 	if err != nil {
-		return parser.Node{}, nil
+		return parser.Node{}, nil, nil
 	}
 	tree, err := p.ParseCached(source, file.Path)
 	if err != nil {
-		return parser.Node{}, nil
+		return parser.Node{}, nil, nil
 	}
 	root := tree.RootNode()
 	bodies := make(map[int]parser.Node)
+	defs := make(map[int]parser.Node)
 	for _, def := range root.FindAll("function_definition") {
+		// First-wins matches the historical paramsOf semantics (break on the
+		// first definition whose start line matches). Function-per-line is
+		// near-universal; the guard just keeps a same-line collision from
+		// silently swapping which definition a candidate resolves to.
+		if _, seen := defs[def.StartLine()]; !seen {
+			defs[def.StartLine()] = def
+		}
 		if body := def.FindFirst("compound_statement"); body != nil {
 			bodies[def.StartLine()] = *body
 		}
 	}
-	return root, bodies
+	return root, bodies, defs
 }
 
 // buildGuardCtx supplies the guard comparison with the two facts the AST alone
@@ -2725,11 +2823,7 @@ func functionBodiesForFile(p *parser.Parser, file *db.File) (parser.Node, map[in
 // The variable map is "last assignment wins, and only when that assignment is a
 // call": if `ret` is reassigned to anything else before the guard, the guard no
 // longer tests the helper's result and nothing is proven.
-func buildGuardCtx(body, fileRoot parser.Node) guardCtx {
-	var zero *parser.ConstantEnv
-	if fileRoot.Kind() != "" {
-		zero = parser.CollectConstantSymbols(fileRoot)
-	}
+func buildGuardCtx(body parser.Node, zero *parser.ConstantEnv) guardCtx {
 	type callAssign struct {
 		line int
 		call parser.Node

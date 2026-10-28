@@ -521,7 +521,7 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 		analyzer.entrySeeds = entrySeeds
 		res := analyzer.analyzeFunction(ctx, fn, body, root, lineSources)
 		if res != nil {
-			res.contract = buildContractCtx(fn, root, body)
+			res.contract = buildContractCtx(cache.voidPtrParamsFor(file, fn), body)
 		}
 		results[fid] = res
 		if guard := buildLoopBoundGuardMap(body, countOutputFuncs); len(guard) > 0 {
@@ -1213,7 +1213,7 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 				// so the definition is recorded for that pass — the fixpoint
 				// itself is skipped via the seeded grade.
 				retNullable[fn.Name] = retNullProven
-				seededDefs = append(seededDefs, funcInfo{fn: fn, body: body, root: root, params: paramsOf(fn, root)})
+				seededDefs = append(seededDefs, funcInfo{fn: fn, body: body, root: root, params: cache.paramsFor(file, fn)})
 				continue
 			}
 
@@ -1227,7 +1227,7 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 			if models != nil && models[fn.ID] != nil {
 				srcs = models[fn.ID].sources
 			}
-			params := paramsOf(fn, root)
+			params := cache.paramsFor(file, fn)
 			infos = append(infos, funcInfo{fn: fn, body: body, root: root, params: params, arrs: collectArrayBaseInfo(root, body, params, repoFacts), srcs: srcs})
 		}
 	}

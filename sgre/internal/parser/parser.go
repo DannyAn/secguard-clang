@@ -296,23 +296,57 @@ func (n Node) Parent() *Node {
 }
 
 func (n Node) FindAll(kind string) []Node {
+	if n.isNull() {
+		return nil
+	}
 	var results []Node
-	walkNode(n, func(node Node) {
-		if node.Kind() == kind {
+	stack := make([]Node, 0, 64)
+	stack = append(stack, n)
+	for len(stack) > 0 {
+		node := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		// node.node.Kind() skips the isNull guard on every accessor: every node
+		// on the stack is a NamedChild result we already nil-checked (or the
+		// entry node, null-checked above), so the guard would only re-issue the
+		// same cgo Id() call per node. FindAll is the dominant tree-walk path of
+		// the whole scan, so the guard is measurable overhead here.
+		if node.node.Kind() == kind {
 			results = append(results, node)
 		}
-	})
+		count := int(node.node.NamedChildCount())
+		for i := count - 1; i >= 0; i-- {
+			child := node.node.NamedChild(uint(i))
+			if child == nil {
+				continue
+			}
+			stack = append(stack, Node{node: *child, src: node.src})
+		}
+	}
 	return results
 }
 
 func (n Node) FindFirst(kind string) *Node {
-	var found *Node
-	walkNode(n, func(node Node) {
-		if found == nil && node.Kind() == kind {
-			found = &node
+	if n.isNull() {
+		return nil
+	}
+	stack := make([]Node, 0, 64)
+	stack = append(stack, n)
+	for len(stack) > 0 {
+		node := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if node.node.Kind() == kind {
+			return &node
 		}
-	})
-	return found
+		count := int(node.node.NamedChildCount())
+		for i := count - 1; i >= 0; i-- {
+			child := node.node.NamedChild(uint(i))
+			if child == nil {
+				continue
+			}
+			stack = append(stack, Node{node: *child, src: node.src})
+		}
+	}
+	return nil
 }
 
 func (n Node) TypeName() string {
@@ -324,35 +358,4 @@ func (n Node) TypeName() string {
 
 func (n Node) String() string {
 	return fmt.Sprintf("%s at line %d", n.Kind(), n.StartLine())
-}
-
-// walkNode visits n and every named descendant in pre-order. It deliberately
-// avoids n.NamedChildren(), which allocates a fresh []Node on every node — with
-// ~50K nodes per file re-walked once per function across ~15 detectors, that
-// per-node allocation adds up to hundreds of millions of allocations and is the
-// dominant cost of the whole scan. An explicit stack with NamedChildCount/
-// NamedChild keeps the traversal allocation-light (one amortized slice).
-func walkNode(n Node, visit func(Node)) {
-	// A null node (the zero sitter.Node, e.g. a fileParseCache miss in the flow
-	// filters) dereferences a nil C pointer on NamedChildCount and segfaults the
-	// process unrecoverable (see isNull). Every other wrapper guards isNull;
-	// walkNode is the raw traversal entry, so it must too.
-	if n.isNull() {
-		return
-	}
-	stack := make([]Node, 0, 64)
-	stack = append(stack, n)
-	for len(stack) > 0 {
-		node := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		visit(node)
-		count := int(node.node.NamedChildCount())
-		for i := count - 1; i >= 0; i-- {
-			child := node.node.NamedChild(uint(i))
-			if child == nil {
-				continue
-			}
-			stack = append(stack, Node{node: *child, src: node.src})
-		}
-	}
 }

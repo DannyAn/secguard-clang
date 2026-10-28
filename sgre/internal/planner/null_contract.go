@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
-	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
@@ -55,13 +54,13 @@ type contractAssign struct {
 const contractDepth = 4
 
 // buildContractCtx resolves the contract facts for one function.
-func buildContractCtx(fn *db.Function, root, body parser.Node) *contractCtx {
+func buildContractCtx(voidParams map[string]bool, body parser.Node) *contractCtx {
 	cc := &contractCtx{
 		voidParams: map[string]bool{},
 		assigns:    collectContractAssigns(body),
 		body:       body,
 	}
-	for p := range voidPtrParamsOf(fn, root) {
+	for p := range voidParams {
 		if bodyNullChecksVar(body, p) || bodyReturnsVar(body, p) {
 			continue
 		}
@@ -322,26 +321,6 @@ func aliasOperand(expr parser.Node) (parser.Node, bool) {
 		return c, true
 	}
 	return parser.Node{}, false
-}
-
-// voidPtrParamsOf returns the void*/const void* parameters of fn.
-func voidPtrParamsOf(fn *db.Function, root parser.Node) map[string]bool {
-	out := map[string]bool{}
-	for _, def := range root.FindAll("function_definition") {
-		if def.StartLine() != fn.StartLine {
-			continue
-		}
-		for _, pd := range def.FindAll("parameter_declaration") {
-			if !isVoidPointerDecl(pd) {
-				continue
-			}
-			if n := declaratorName(pd); n != "" {
-				out[n] = true
-			}
-		}
-		break
-	}
-	return out
 }
 
 // isVoidPointerDecl reports whether a parameter_declaration is an opaque

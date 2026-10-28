@@ -416,9 +416,9 @@ func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]C
 		genByLine, killByLine := taintEffectsWithCallees(body, retTainted, returnsParam)
 		analyzer := newFlowAnalyzer(f.store, f.parser, f.cfgCache)
 		analyzer.dfgCopies = map[int64]map[int][]copyPair{fid: taintCopiesFor(body, returnsParam)}
-		analyzer.entrySeeds = taintedParamsFor(fn, root, paramTainted[fid])
+		analyzer.entrySeeds = taintedParamsFor(cache, file, fn, paramTainted[fid])
 		flows[fid] = analyzer.analyzeFlow(ctx, fn, body, root, genByLine, killByLine, false, false)
-		paramsByFunc[fid] = paramsOf(fn, root)
+		paramsByFunc[fid] = cache.paramsFor(file, fn)
 		staticByFunc[fid] = fn.IsStatic
 
 		// The sanitize kill (basename / strrchr(x,'/')) is path-traversal-only
@@ -467,8 +467,8 @@ func funcCandidateCategories(cs []Candidate) (hasPath, hasOther bool) {
 // when the function is externally callable (non-static): an external caller can
 // supply attacker-controlled input, so its parameters are conservatively tainted
 // even when the local index has no caller.
-func taintedParamsFor(fn *db.Function, root parser.Node, taintedIdx map[int]bool) map[string]bool {
-	params := paramsOf(fn, root)
+func taintedParamsFor(cache *fileParseCache, file *db.File, fn *db.Function, taintedIdx map[int]bool) map[string]bool {
+	params := cache.paramsFor(file, fn)
 	if len(params) == 0 {
 		return nil
 	}
@@ -583,11 +583,11 @@ func (f *TaintSourceFilter) computeReturnsParam(ctx context.Context) (map[string
 		if file == nil {
 			continue
 		}
-		body, root := cache.get(file, fn)
+		body, _ := cache.get(file, fn)
 		if body.Kind() != "compound_statement" {
 			continue
 		}
-		infos = append(infos, funcInfo{name: fn.Name, body: body, params: paramsOf(fn, root)})
+		infos = append(infos, funcInfo{name: fn.Name, body: body, params: cache.paramsFor(file, fn)})
 	}
 
 	mark := func(name string, idx int) bool {
@@ -883,6 +883,7 @@ func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted 
 	// re-walked every caller file on each fixpoint iteration.
 	type callerInfo struct {
 		fn     *db.Function
+		file   *db.File
 		body   parser.Node
 		root   parser.Node
 		gen    map[int][]string
@@ -890,30 +891,29 @@ func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted 
 		copies map[int][]copyPair
 	}
 	callers := make(map[int64]*callerInfo, len(callerIDs))
-	{
-		cache := newFileParseCache(f.parser)
-		for fid := range callerIDs {
-			fn := callerFnByID[fid]
-			if fn == nil {
-				continue
-			}
-			file := callerFileByID[fn.FileID]
-			if file == nil {
-				continue
-			}
-			body, root := cache.get(file, fn)
-			if body.Kind() != "compound_statement" {
-				continue
-			}
-			genByLine, killByLine := taintEffectsWithCallees(body, retTainted, returnsParam)
-			callers[fid] = &callerInfo{
-				fn:     fn,
-				body:   body,
-				root:   root,
-				gen:    genByLine,
-				kill:   killByLine,
-				copies: taintCopiesFor(body, returnsParam),
-			}
+	cache := newFileParseCache(f.parser)
+	for fid := range callerIDs {
+		fn := callerFnByID[fid]
+		if fn == nil {
+			continue
+		}
+		file := callerFileByID[fn.FileID]
+		if file == nil {
+			continue
+		}
+		body, root := cache.get(file, fn)
+		if body.Kind() != "compound_statement" {
+			continue
+		}
+		genByLine, killByLine := taintEffectsWithCallees(body, retTainted, returnsParam)
+		callers[fid] = &callerInfo{
+			fn:     fn,
+			file:   file,
+			body:   body,
+			root:   root,
+			gen:    genByLine,
+			kill:   killByLine,
+			copies: taintCopiesFor(body, returnsParam),
 		}
 	}
 
@@ -925,7 +925,7 @@ func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted 
 			analyzer.dfgCopies = map[int64]map[int][]copyPair{fid: info.copies}
 			// Seed this caller's already-proven tainted parameters so its own
 			// parameter arguments (which may be its params) carry taint forward.
-			analyzer.entrySeeds = taintedParamsFor(info.fn, info.root, result[fid])
+			analyzer.entrySeeds = taintedParamsFor(cache, info.file, info.fn, result[fid])
 			callerFlows[fid] = analyzer.analyzeFlow(ctx, info.fn, info.body, info.root, info.gen, info.kill, false, false)
 		}
 
@@ -1350,24 +1350,6 @@ func rhsCallName(expr parser.Node) string {
 		}
 	}
 	return ""
-}
-
-// paramsOf returns the positional parameter index of each parameter name of the
-// function whose definition starts at fn.StartLine.
-func paramsOf(fn *db.Function, root parser.Node) map[string]int {
-	out := make(map[string]int)
-	for _, def := range root.FindAll("function_definition") {
-		if def.StartLine() != fn.StartLine {
-			continue
-		}
-		for i, p := range paramNamesOfDef(def) {
-			if p != "" {
-				out[p] = i
-			}
-		}
-		break
-	}
-	return out
 }
 
 func paramNamesOfDef(def parser.Node) []string {
