@@ -4,11 +4,15 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
+	"sync"
 
+	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
+	"github.com/DannyAn/secguard-clang/internal/symbols"
 )
 
 type Planner struct {
@@ -38,6 +42,18 @@ type Planner struct {
 	// rebuilding a flow engine; the querier reuses the same cfgCache so the
 	// per-function CFG is still built at most once.
 	querier graph.Querier
+	// macroIndexOnce builds the project #define census once per scan; every
+	// Plan() call reuses it, and a macro referenced by a candidate or its
+	// embedded callee is resolved from it rather than from a repo-wide grep.
+	macroIndexOnce sync.Once
+	macroIndex     *symbols.MacroIndex
+	boundaryOnce   sync.Once
+	boundary       bool
+	// calleeMacroRefs caches the macro refs extracted from a callee body,
+	// keyed by file:start:end. The same helper is the embedded callee of many
+	// candidates; re-reading its file per candidate would reintroduce the
+	// per-candidate I/O the macro closure exists to remove.
+	calleeMacroRefs sync.Map
 }
 
 func NewPlanner(store db.Store, p *parser.Parser, logger *log.Logger) *Planner {
@@ -102,7 +118,7 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 		SeedRoutedByCategory: routedAway,
 	}
 
-	filters, err := p.buildFilters(spec)
+	filters, err := p.buildFilters(ctx, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -216,8 +232,13 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 		return nil, fmt.Errorf("planner: resolve callee definitions: %w", err)
 	}
 
+	var macroIdx *symbols.MacroIndex
+	if len(candidates) > 0 {
+		macroIdx = p.macroIndexFor(files)
+	}
 	for _, c := range candidates {
 		c.MacroContext = p.macro.macroContextAt(ctx, p.store, c.FunctionID, filePathByID[c.FileID], c.Line)
+		c.MacroDefs = p.macroDefsFor(c, macroIdx)
 		// A machine proof (`confirmed`) whose premise depends on the tracked
 		// variable's assignments is INVALID when a function-like macro that
 		// names that variable sits in the same statement region: the CFG does
@@ -236,6 +257,83 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 	}
 
 	return result, nil
+}
+
+// isBoundary reports whether the scan tree has no entry point (a library or a
+// partial subtree). It mirrors evidence.scanHasEntryPoint: the built-in entry
+// names plus [scan].entry_points. A store error defaults to complete-program
+// (no auto-dismiss), the recall-safe direction.
+func (p *Planner) isBoundary(ctx context.Context) bool {
+	p.boundaryOnce.Do(func() {
+		if p.store == nil {
+			p.boundary = false
+			return
+		}
+		funcs, err := p.store.ListFunctions(ctx)
+		if err != nil {
+			p.boundary = false
+			return
+		}
+		entries := map[string]bool{}
+		for _, n := range config.Load().EntryPointNames() {
+			entries[n] = true
+		}
+		for _, f := range funcs {
+			if entries[f.Name] {
+				p.boundary = false
+				return
+			}
+		}
+		p.boundary = true
+	})
+	return p.boundary
+}
+
+const (
+	macroClosureCalleeMaxLines = 200
+	macroClosureMaxDefs        = 3
+)
+
+// macroIndexFor builds the header #define census once per scan. The completed
+// map is published through sync.Once, so concurrent Plan() calls share it.
+func (p *Planner) macroIndexFor(files []*db.File) *symbols.MacroIndex {
+	p.macroIndexOnce.Do(func() {
+		paths := make([]string, 0, len(files))
+		for _, f := range files {
+			paths = append(paths, f.Path)
+		}
+		p.macroIndex = symbols.BuildMacroIndex(symbols.RootFor(paths), nil)
+	})
+	return p.macroIndex
+}
+
+// macroDefsFor closes the candidate over its project macros: the statement
+// itself (the expression the detector captured) plus the embedded callee body,
+// because the decisive expansion is often one hop into the callee
+// (`sa_print_ipv4_string` -> `GET_STR_LEN`). Resolution is by project #define,
+// so standard names that are not defined in the tree simply miss.
+func (p *Planner) macroDefsFor(c Candidate, idx *symbols.MacroIndex) []symbols.MacroDef {
+	if idx == nil {
+		return nil
+	}
+	refs := symbols.ExtractMacroRefs(c.Expression)
+	if c.CalleeDefFile != "" && c.CalleeDefLine > 0 {
+		refs = append(refs, p.calleeMacroRefsFor(c.CalleeDefFile, c.CalleeDefLine, c.CalleeDefEndLine)...)
+	}
+	return idx.Resolve(refs, macroClosureMaxDefs)
+}
+
+func (p *Planner) calleeMacroRefsFor(file string, start, end int) []string {
+	key := file + ":" + strconv.Itoa(start) + ":" + strconv.Itoa(end)
+	if v, ok := p.calleeMacroRefs.Load(key); ok {
+		return v.([]string)
+	}
+	var refs []string
+	if body, _, err := symbols.ReadLines(file, start, end, macroClosureCalleeMaxLines); err == nil {
+		refs = symbols.ExtractMacroRefs(body)
+	}
+	p.calleeMacroRefs.Store(key, refs)
+	return refs
 }
 
 // resolveCalleeDefs fills CalleeDefFile/CalleeDefLine/CalleeDefEndLine/

@@ -25,6 +25,17 @@ A use-after-free candidate has:
 3. If use line > free line and the fields match, emit USE_AFTER_FREE.
 4. A macro that ALSO nulls its argument (`#define SAFE_FREE(p) do { free(p); p = NULL; } while(0)`) is NOT a UAF source — after it the pointer is NULL, so a later use is a null-deref (see null-deref), not a use-after-free.
 
+### Evidence closure (read before any source read)
+
+The candidate file already embeds the decisive cross-file facts the pipeline
+resolved: an in-scan callee body under `## Callee Definition` (Hint
+`callee@<file>:<line>`) and project macro bodies under `## Macro Definition`
+(Hint `macro@<name>`). Read those sections first — they are in-file and cost no
+lookup. Only a fact that is NOT embedded may be resolved with `secguard_def` /
+`secguard def <symbol>` (batch related symbols); never grep the repository for a
+definition, and never dismiss a macro/callee as "out of scan" before checking
+the embedded section and the indexed lookup.
+
 ### Classification Rules
 
 | Condition | Classification |

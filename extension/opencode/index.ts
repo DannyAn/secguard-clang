@@ -10,6 +10,7 @@ import secguard_report from "./tools/secguard_report"
 import secguard_review from "./tools/secguard_review"
 import secguard_status from "./tools/secguard_status"
 import secguard_db from "./tools/secguard_db"
+import secguard_def from "./tools/secguard_def"
 import secguard_schema from "./tools/secguard_schema"
 import secguard_types from "./tools/secguard_types"
 import secguard_metrics from "./tools/secguard_metrics"
@@ -24,6 +25,7 @@ const SECGUARD_TOOLS = [
   "secguard_review",
   "secguard_status",
   "secguard_db",
+  "secguard_def",
   "secguard_schema",
   "secguard_types",
   "secguard_metrics",
@@ -159,6 +161,7 @@ export default {
         secguard_review,
         secguard_status,
         secguard_db,
+        secguard_def,
         secguard_schema,
         secguard_types,
         secguard_metrics,

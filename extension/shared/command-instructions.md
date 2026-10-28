@@ -182,21 +182,34 @@ security scan and reading them makes the verdicts worthless. The scan dir
 | `LARGE_CANDIDATE_THRESHOLD` | 100 | Types with > this many candidates get a dedicated subagent |
 | `SPLIT_CANDIDATE_THRESHOLD` | 100 | A type with > this many candidates is SPLIT across multiple subagents, each handling ≤ this many candidates |
 | `MAX_EVIDENCE_OPENS_PER_TYPE` | 12 | Evidence-file-open budget per subagent; beyond it the subagent reports `needs_context` instead of opening everything |
+| `HOST_AGENT_TIMEOUT` | 660 | claude-cac synchronous `Agent` hard ceiling (seconds). A batch must finish comfortably under it; a batch that runs ~10min is already at the wall and a force-reject + re-dispatch costs more than a smaller batch |
+| `SMALL_TYPE_SEQUENTIAL_THRESHOLD` | 3 | A type with ≤3 candidates is cheaper for the orchestrator to classify directly than to dispatch (no skill-load/spawn fixed cost) |
 
-`MAX_TYPES_PER_BATCH` / `MAX_CANDIDATES_PER_BATCH` are the ONLY two batch-capacity
-knobs — the orchestrator counts types and candidates, no budget formula. A batch
-that fits both ceilings is dispatchable; a batch that exceeds either one is split
-(split off the heaviest type first, then re-check). `MAXTURNS` remains the
+`MAX_TYPES_PER_BATCH` / `MAX_CANDIDATES_PER_BATCH` are the two **per-dispatch**
+ceilings — the orchestrator counts types and candidates, no budget formula. A
+batch that fits both is dispatchable; a batch that exceeds either is split (split
+off the heaviest type first, then re-check). `SPLIT_CANDIDATE_THRESHOLD=100` is a
+**context** ceiling, NOT a licence to dispatch 100 candidates to one subagent:
+a type over 100 is split into ≤100-candidate ranges for context, and EACH range
+is then dispatched in ≤20-candidate batches. The production 69-candidate ranges
+violated the 20 cap and hit the host's 660s wall; a 20-candidate null-deref batch
+is ~2 min, so more, smaller concurrent batches are faster than one 10-minute batch
+that gets force-rejected. `MAXTURNS` remains the
 reference value every platform's agent turn cap must match
 (`release/check-extension-consistency.py` enforces this), but it is NOT part of the
 batch-capacity decision — the count-based ceilings above already keep a batch well
 under any platform's turn cap. Auto-confirmed findings are machine verdicts (marked
 reviewed at scan time), so they are NOT budgeted or dispatched at all.
 
+`SMALL_TYPE_SEQUENTIAL_THRESHOLD` = **3**: a type with ≤3 candidates is cheaper for
+the orchestrator to classify directly (no skill-load / subagent-spawn fixed cost)
+than to dispatch; only dispatch it when the orchestrator is already saturated or
+the type needs a source read it cannot afford.
+
 **Pre-dispatch validation (EARS):**
 - If a batch has > `MAX_TYPES_PER_BATCH` (4) types, the orchestrator SHALL split it before dispatching.
-- Where a single type has > `LARGE_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL assign that type its own dedicated subagent.
-- Where a single type has > `SPLIT_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL split it into MULTIPLE subagents, each handling a ≤100-candidate RANGE of that type (pass the candidate # range, e.g. "candidates #1–100 of null-deref"), so no single subagent's context window is exceeded. Balance the ranges: split into AT LEAST `n = ceil(count / 100)` ranges of `ceil(count / n)` candidates (201 → at least 3 × 67). Smaller ranges are allowed ONLY when the type's per-candidate cost is demonstrably low — a group-verdict-friendly type like null-deref settles most candidates from the `Source`+`Hint` row plus one group judgment per function, without an Evidence open per candidate. Never a sliver tail (100 + 100 + 1): a tiny final range still costs a whole subagent, and every extra range re-reads the `_index.md` and the skill once, so over-splitting burns the same turns it saves. The 100-candidate cap is a CONTEXT ceiling (not a turn ceiling): before the Hint column + Code Context compression, a suspected-heavy range opened an `Evidence` file per suspected candidate and a 100-candidate range could exhaust a 200K context before the tail; with `Source`+`Hint` classification and a ±8 Code Context window the same budget now carries ~2× more, so 100 is the test point — if a super-large function still overflows, the tail is surfaced via the partial-count path, never silently buried.
+- Where a single type has > `LARGE_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL give that type dedicated subagent(s) — never share it with another type — and split those subagents by the next rule (≤20 candidates each).
+- Where a single type has > `SPLIT_CANDIDATE_THRESHOLD` (100) candidates, split it into ≤100-candidate RANGES for context (pass the candidate # range, e.g. "candidates #1–100 of null-deref"). Then dispatch **each range in ≤`MAX_CANDIDATES_PER_BATCH` (20)-candidate subagent batches**: the 20 cap is the host-timeout cap, the 100 range is only the context ceiling. A 100-candidate range is therefore ~5 subagents of 20, not one 100-candidate subagent. Balance ranges so there is no sliver tail (100 + 100 + 1): merge a final range smaller than 5 into its predecessor and re-split evenly. Smaller batches are allowed (and preferred for expensive types: leak/uninit/null-deref group) when the per-candidate cost is high; a 20-candidate null-deref batch is ~2 min, so more, smaller concurrent batches beat one 10-minute batch that hits the 660s wall. If a super-large function still overflows a 20-candidate batch, surface the tail via the partial-count path, never silently bury it.
 - The orchestrator SHALL validate a batch against the two capacity ceilings (types,
   candidates) — no budget formula, just counts. A batch that fits both is
   dispatchable; a batch that exceeds either one is split (split off the heaviest
@@ -361,7 +374,7 @@ straight to the structured report (`written: 0`).
      (matches the evidence) or dismiss (guarded/different) from the table itself.
      Do NOT read source or the candidate file. Batch all confirmed verdicts into
      one write call.
-   - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null` (non-null-deref types)/`null@cfg-proof`/`null@malloc-fail`/`null@caller-arg`/`null@opaque-origin`/`null@assumed-return`/`null@external-unknown`/`array-buffer@<count-field>` (null-deref origin tier; `array-buffer@` = a count-gated array buffer — `count == 0 ⇒ buffer NULL/empty`, confirm when the chain dereferences it without checking the count field)/`chain-root@<fn>`+`sibling-callers@<fn1,fn2>` (the candidate's caller chain + the OTHER chains that also call the same function — a guard on a sibling chain does NOT protect this candidate)/`tainted`/`taint@none`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`threads@<fn>`/`instances@N`/`write@N`/`mutex@<name>`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`arg@<expr>`/`may-free`/`reason@<text>`/`key-size@N` (crypto-misuse)/`buf@<name>`/`cap@N`/`idx@<expr>`/`src-cap@N` (buffer-overflow/out-of-bounds)/`alloc@N`/`acquire@N`/`leak@definite`/`leak@conditional`/`escape@none|store|return`/`free@N,M` (leaks)/`range@<interval>`/`callers@<census>` (divide-by-zero)/`callsites@<census>` (format-string/path-traversal; `N:all-literal` = every in-tree caller passes a compile-time constant)/`origin@<kind>`/`decl@N`/`field@<path>`/`init@none`/`init@unseen`/`init@N`+`may-skip` (uninit; `init@none` = machine-proved never-written stack scalar, `init@unseen` = heap/struct storage a callee/memset/output-param may have initialized — verify the init path, `may-skip` = the only writes are loop-body-only — judge the loop condition)/`expected@<type>`/`actual@<type>`/`cast@<type>` (argument-type/data-representation)/`fmt-arg@<expr>` (format-string)/`path-arg@<expr>` (path-traversal)/`value-shape@<masked>` (hardcoded-secret)/`async-unsafe@<fn>` (signal-handler)/`subject@<name>`/`count-field@<field>`/`evidence-kind@<kind>` (implicit-contract/sizeof-misuse)/`cond@<callee>` (double-free)); for divide-by-zero a `divisor@bare` row is settled from `Source` alone (no evidence open). When the hint is insufficient, open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source, a `contract@unknown` unchecked-return candidate embeds its callee body under `## Callee Definition`, and a null-deref `callee@` candidate embeds the dereferenced callee's body there too) and, if STILL insufficient, a raw source read within the ≤5-read budget — then classify. Only after spending that budget may you write `dismissed` (with a cited reason); never write `dismissed` without reading when the hint was insufficient. A `macro-context` hint means a macro is in play — open the `## Code Context` and verify the macro before `confirmed`.
+   - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null` (non-null-deref types)/`null@cfg-proof`/`null@malloc-fail`/`null@caller-arg`/`null@opaque-origin`/`null@assumed-return`/`null@external-unknown`/`array-buffer@<count-field>` (null-deref origin tier; `array-buffer@` = a count-gated array buffer — `count == 0 ⇒ buffer NULL/empty`, confirm when the chain dereferences it without checking the count field)/`chain-root@<fn>`+`sibling-callers@<fn1,fn2>` (the candidate's caller chain + the OTHER chains that also call the same function — a guard on a sibling chain does NOT protect this candidate)/`tainted`/`taint@none`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`macro@<name>`/`threads@<fn>`/`instances@N`/`write@N`/`mutex@<name>`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`arg@<expr>`/`may-free`/`reason@<text>`/`key-size@N` (crypto-misuse)/`buf@<name>`/`cap@N`/`idx@<expr>`/`src-cap@N` (buffer-overflow/out-of-bounds)/`alloc@N`/`acquire@N`/`leak@definite`/`leak@conditional`/`escape@none|store|return`/`free@N,M` (leaks)/`range@<interval>`/`callers@<census>` (divide-by-zero)/`callsites@<census>` (format-string/path-traversal; `N:all-literal` = every in-tree caller passes a compile-time constant)/`origin@<kind>`/`decl@N`/`field@<path>`/`init@none`/`init@unseen`/`init@N`+`may-skip` (uninit; `init@none` = machine-proved never-written stack scalar, `init@unseen` = heap/struct storage a callee/memset/output-param may have initialized — verify the init path, `may-skip` = the only writes are loop-body-only — judge the loop condition)/`expected@<type>`/`actual@<type>`/`cast@<type>` (argument-type/data-representation)/`fmt-arg@<expr>` (format-string)/`path-arg@<expr>` (path-traversal)/`value-shape@<masked>` (hardcoded-secret)/`async-unsafe@<fn>` (signal-handler)/`subject@<name>`/`count-field@<field>`/`evidence-kind@<kind>` (implicit-contract/sizeof-misuse)/`cond@<callee>` (double-free)); for divide-by-zero a `divisor@bare` row is settled from `Source` alone (no evidence open). When the hint is insufficient, open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source, a `contract@unknown` unchecked-return candidate embeds its callee body under `## Callee Definition`, and a null-deref `callee@` candidate embeds the dereferenced callee's body there too) and, if STILL insufficient, a raw source read within the ≤5-read budget — then classify. Only after spending that budget may you write `dismissed` (with a cited reason); never write `dismissed` without reading when the hint was insufficient. A `macro-context` or `macro@<name>` hint means a macro is in play — read the embedded `## Macro Definition` (or `secguard_def` when it is not embedded) and verify the macro before `confirmed`; never grep the repo for it.
     Write **confirmed** findings in ONE batch: write `<tmpdir>/<type>.json`
     containing only confirmed findings with the Write tool, then
     `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
@@ -381,11 +394,19 @@ straight to the structured report (`written: 0`).
 - **Claude Code（官方）的 `Agent`/`Task` 工具是异步的**：子代理在后台运行，通过 `task_notification` 事件回报终态。orchestrator 等待这些事件，直到每个子代理都到达 terminal state，再进入第 5 步。
 - **DeepSeek Harness（DSH）的 `subagent` 工具是异步的（continuable）**：一次 `subagent` 调用后台启动一个持久子代理并返回子代理 id（默认 `run_in_background: true`，无需显式传），子代理跑完后 runtime 推送 settlement 通知（含结果 + 最终 assistant 消息）。orchestrator 等这些通知，用 `list_agents` 回忆、`send_message` 追问，直到每个子代理都落地，再进第 5 步；**绝不能**在发出 subagent 后结束回合去"空等"（通知会来，但和官方 Claude Code 一样，拿到全部结果后必须在同一回合内 Collect+finalize）。
 
-**完成契约 (F8) — orchestrator 回合何时结束：** orchestrator 的回合**只有**在发出第 6 步的最终 Markdown 报告之后才允许结束。发出子代理 task 之后：**同步平台（OpenCode / opencode-nga / claude-cac）直接读工具返回值**，**异步平台（官方 Claude Code / DSH）等 `task_notification` / settlement 事件**。拿到所有结果后**必须**在**同一回合**内完成 Collect+finalize（第 5 步）并输出最终报告（第 6 步），然后停止。**禁止**出现"子任务都跑完了、分析也结束了、但没有 finalize、没有最终报告、任务还挂着"的中间态——那等于把已落盘的结果丢弃在后台。
+**完成契约 (F8) — orchestrator 回合何时结束：** orchestrator 的回合**只有**在发出第 6 步的最终 Markdown 报告之后才允许结束。发出子代理 task 之后：**同步平台（OpenCode / opencode-nga / claude-cac）在调用正常返回时直接读工具返回值**；**若调用被宿主超时 force-reject，则改走 F11 的落盘报告恢复，不得据此重派**；**异步平台（官方 Claude Code / DSH）等 `task_notification` / settlement 事件**。拿到所有结果后**必须**在**同一回合**内完成 Collect+finalize（第 5 步）并输出最终报告（第 6 步），然后停止。**禁止**出现"子任务都跑完了、分析也结束了、但没有 finalize、没有最终报告、任务还挂着"的中间态——那等于把已落盘的结果丢弃在后台。
 
 **子代理句柄失效 (F9) — `No task found with ID <id>` 的恢复：** 异步宿主的后台任务句柄偶发被回收，返回 `No task found with ID <id>`。这是宿主侧竞态，**不是扫描失败，也绝不等于该子代理没跑**。遇到时**禁止**反复用同一 ID 重试、禁止死等、禁止把该类型当 `failed` 丢弃。正确动作：先读该子代理落盘的结构化报告 `<tmpdir>/<subagent_id>-report.json`（子代理按 O2 在最终消息前写入，承载消息里没有的 `needs_context`/`dismissed` 明细），再 `secguard status --per-type --scan-id <scan_id>`，以 DB 的 `terminal_state` 为唯一权威（`done`=成功；`in-progress`/`pending`=未写完；`unknown`=未下发）。对非 `done` 的类型**只重下发缺失部分**（带上候选范围），`done` 的绝不下发。重下发后照常进第 5 步 Collect+finalize，第 6 步出报告。
 
-4. **Parallel dispatch** (ONLY when step 2 says so): validate every batch against the Batch Capacity Configuration above, then spawn one subagent PER BATCH
+**Agent 调用超时 (F11) — `Tool call hung for 660000ms` / force-reject：** 同步宿主（claude-cac / OpenCode / opencode-nga）的 `Agent`/`task` 调用是同步的，单调用有硬上限（claude-cac 约 660s）。security-auditor 的一个批次（skill 加载 + `_index.md` + Evidence 打开 + JSON 写入）可能超过它；宿主会 force-reject 该调用，但**子代理仍在后台继续跑，并会按 O2 把 `<tmpdir>/<subagent_id>-report.json` 落盘**。因此超时是**宿主超时，不是批次失败**，**禁止**仅凭超时就重派。恢复顺序：
+1. `secguard status --reports --scan-id <scan_id>`（OpenCode 用 `secguard_status` 的 `reports: true`）——列出已落盘报告的 `subagent_id` / `scan_id` / `processed_types`（含 `range`）/ `needs_context` / `valid`。
+2. 若有 `valid:true` 的报告覆盖该批次（scan_id 相同 + type/range 匹配）：吸收其 `written`/`dismissed`/`needs_context`，对 `processed_types` 调 `report --complete-type`，**绝不重派**。
+3. 若暂无 `valid` 报告：`secguard status --per-type --scan-id <scan_id>`；若 `written_count` 有增长或 `terminal_state=done`，先做别的批次/等待一回合，再查一次 `--reports`；`valid:false`（部分写入）表示子代理还在写，**等待，不重派**。
+4. 只有在**一次复核后仍无 valid 报告且无进展**时，才重派，且只重派缺失的 type/range，绝不整批重来。
+
+**派发前落点检查 (F11a)：** 任何派发之前先跑 `secguard status --reports --scan-id <scan_id>`，跳过已被 `valid:true` 报告覆盖的 type/range。这样超时后的 re-plan 是幂等的，重复派发一个已完成的批次是纯重复劳动。
+
+4. **Parallel dispatch** (ONLY when step 2 says so): first run `secguard status --reports --scan-id <scan_id>` and drop every batch already covered by a `valid:true` report (F11a). Then validate every batch against the Batch Capacity Configuration above, and spawn one subagent PER BATCH
    of types that need AI work (`candidates_by_type > 0`), ALL IN THE SAME TURN so
    they run concurrently:
    - Claude Code (official): the `Agent` tool (the subagent-dispatch tool; older
@@ -413,17 +434,27 @@ straight to the structured report (`written: 0`).
    Process type(s) <t1, t2, ...> ONLY. scan_id=<scan_id>, scan_dir=<output_dir>.
    (If a type is split by candidate RANGE, e.g. "null-deref #1-100", classify ONLY
    those candidates — the # column in <scan_dir>/candidates/<type>/_index.md — and
-   leave the rest to sibling subagents.)
+   leave the rest to sibling subagents. Echo that range as `range: "1-100"` in
+   your `processed_types` block so a force-rejected call can be matched to the
+   exact batch from its settlement file.)
    The scan already ran: your type's candidates are in
    <scan_dir>/candidates/<type>/_index.md and <scan_dir>/candidates/<type>/NNN_*.md
    — do NOT re-run secguard_scan or secguard_plan. The source is already embedded:
    `_index.md` has a `Source` column per candidate (the exact statement), a `Hint`
    column (the pipeline's precomputed verdict facts: `src@N`/`certain-null`/
    `maybe-null` (non-null-deref types)/`null@cfg-proof`/`null@malloc-fail`/
-   `null@caller-arg`/`null@opaque-origin`/`null@assumed-return`/`null@external-unknown`/`array-buffer@<count-field>` (null-deref origin tier; `array-buffer@` = a count-gated array buffer — `count == 0 ⇒ buffer NULL/empty`, confirm when the chain dereferences it without checking the count field)/`chain-root@<fn>`+`sibling-callers@<fn1,fn2>` (the candidate's caller chain + the OTHER chains that also call the same function — a guard on a sibling chain does NOT protect this candidate)/`tainted`/`taint@none`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`threads@<fn>`/`write@N`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`reason@<text>`/`key-size@N`/`buf@<name>`/`cap@N`/`idx@<expr>`/`src-cap@N`/`alloc@N`/`acquire@N`/`leak@definite`/`leak@conditional`/`escape@none|store|return`/`range@<interval>`/`callers@<census>`/`callsites@<census>`/`origin@<kind>`/`decl@N`/`field@<path>`/`init@none`/`init@unseen`/`init@N`+`may-skip`/`expected@<type>`/`actual@<type>`/`cast@<type>`/`fmt-arg@<expr>`/`path-arg@<expr>`/`value-shape@<masked>`/`async-unsafe@<fn>`/`subject@<name>`/`count-field@<field>`/`evidence-kind@<kind>`/`cond@<callee>`), plus an `Evidence` column naming the exact
+   `null@caller-arg`/`null@opaque-origin`/`null@assumed-return`/`null@external-unknown`/`array-buffer@<count-field>` (null-deref origin tier; `array-buffer@` = a count-gated array buffer — `count == 0 ⇒ buffer NULL/empty`, confirm when the chain dereferences it without checking the count field)/`chain-root@<fn>`+`sibling-callers@<fn1,fn2>` (the candidate's caller chain + the OTHER chains that also call the same function — a guard on a sibling chain does NOT protect this candidate)/`tainted`/`taint@none`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`macro@<name>`/`threads@<fn>`/`write@N`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`reason@<text>`/`key-size@N`/`buf@<name>`/`cap@N`/`idx@<expr>`/`src-cap@N`/`alloc@N`/`acquire@N`/`leak@definite`/`leak@conditional`/`escape@none|store|return`/`range@<interval>`/`callers@<census>`/`callsites@<census>`/`origin@<kind>`/`decl@N`/`field@<path>`/`init@none`/`init@unseen`/`init@N`+`may-skip`/`expected@<type>`/`actual@<type>`/`cast@<type>`/`fmt-arg@<expr>`/`path-arg@<expr>`/`value-shape@<masked>`/`async-unsafe@<fn>`/`subject@<name>`/`count-field@<field>`/`evidence-kind@<kind>`/`cond@<callee>`), plus an `Evidence` column naming the exact
    candidate file, and each candidate file has a `## Code Context` block — do NOT
    issue per-candidate source READs (that is the tens-of-minutes cost). Read ONLY
-   your type's `_index.md`, never the whole report.md.
+   your type's `_index.md`, never the whole report.md. For a ranged batch
+   (#A–#B), read the table header once and only rows #A–#B (the `#` column is
+   sequential; use Read offset/limit); do NOT re-read the full table for a
+   sibling range — each full read costs the same again.
+   When a verdict needs a callee/macro/type contract that the embedded
+   `## Callee Definition` / `## Macro Definition` sections do not show, use
+   `secguard_def` (MCP) or `secguard def <symbol>` (Bash) — one indexed lookup,
+   batch related symbols (`secguard def a b`). NEVER run a whole-repo Grep for a
+   definition: it is the dominant wall-clock cost and counts as a source read.
     For each type: load the <type> skill, then classify by suspicion_level:
     - confirmed → read the `Source` column in <scan_dir>/candidates/<type>/_index.md
       (do NOT read the candidate files and do NOT open source), confirm/dismiss from
@@ -620,6 +651,14 @@ straight to the structured report (`written: 0`).
       then the ≤5 source reads, before you may write dismissed" prompt. The reason
       contract (agent-body) makes this checkable: a valid dismissed reason always
       cites the file:line-range or Evidence file it read.
+    - Repo-wide Grep (wall-clock): a whole-tree `Grep` for a definition
+      (`**/*.{c,h}` or an absolute source root) is the dominant production
+      wall-clock cost. It is NOT a legitimate substitute for `secguard def`: the
+      transcript should show `secguard def <symbol>` (or an embedded
+      `## Callee Definition`), not repeated whole-repo
+      greps. Surface a type with >1 repo-wide Grep as "全仓 grep 违规（应改用
+      secguard def）" in the 观察项表; re-dispatch that type ONCE with the def
+      instruction rather than letting it grep again.
     If the transcript/`scan.log` is unavailable, log warning and skip (do not block finalize).
     On OpenCode the orchestrator cannot see a subagent's INTERNAL tool calls (the
     `task` return is only the subagent's final message), so F6 there degrades to
@@ -630,7 +669,11 @@ straight to the structured report (`written: 0`).
     transcript）" rather than claiming a verified audit. Do not treat the missing
     transcript as proof of compliance. An over-budget `evidence_opens` is a
     TRIAGE-STRATEGY signal (the Hint was under-used), not a recall failure — do
-    not re-dispatch for it; note it and move on.
+    not re-dispatch for it; note it and move on. The structured report also carries
+    `repo_greps`: a type with `repo_greps > 1` is a 读源违规 even when
+    `source_reads` is within budget (a whole-repo Grep is not an Evidence open).
+    On a transcript-less host, trust `repo_greps` over the absence of a visible
+    Grep call; re-dispatch that type ONCE with the `secguard_def` instruction.
 
     **`needs_context` 二次下发:** if a subagent reports `needs_context`, the
     orchestrator re-dispatches EXACTLY those candidate `#`s ONCE (one subagent,

@@ -156,3 +156,49 @@ func TestIntegerOverflow_MixedAccumulatorBoundedReturn(t *testing.T) {
 		t.Errorf("bad_sub: plain unsigned subtraction must still be flagged, got %v", byFunction["bad_sub"])
 	}
 }
+
+// TestIntegerOverflow_UnsignedSubProducerCallee pins the cross-function fact
+// that decides the accumulator verdict: `bound - len` where len is fed by
+// `len += ase_sa_str_connect(...)` carries that callee, so the planner can embed
+// its body instead of the classifier grepping the repo for it.
+func TestIntegerOverflow_UnsignedSubProducerCallee(t *testing.T) {
+	store, p := setupDetector(t, "tc129_int_overflow_producer.c")
+	logger := log.New(io.Discard, log.LevelWarn)
+	if _, err := NewIntegerOverflowDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+
+	events, err := store.ListEventsByType(context.Background(), "INTEGER_OVERFLOW")
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+
+	var producer, plain string
+	for _, e := range events {
+		fn, err := store.GetFunctionByID(context.Background(), e.EntityID)
+		if err != nil || fn == nil {
+			continue
+		}
+		var props struct {
+			Category string `json:"category"`
+			Callee   string `json:"callee"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Category != "unsigned_sub_underflow" {
+			continue
+		}
+		switch fn.Name {
+		case "unsigned_sub_producer":
+			producer = props.Callee
+		case "unsigned_sub_no_producer":
+			plain = props.Callee
+		}
+	}
+
+	if producer != "ase_sa_str_connect" {
+		t.Errorf("unsigned_sub_producer callee = %q, want ase_sa_str_connect", producer)
+	}
+	if plain != "" {
+		t.Errorf("unsigned_sub_no_producer must not invent a producer callee, got %q", plain)
+	}
+}

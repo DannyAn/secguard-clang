@@ -18,6 +18,7 @@ permission:
   secguard_report: allow
   secguard_review: allow
   secguard_db: allow
+  secguard_def: allow
   secguard_schema: allow
 ---
 {{include shared/agent-body.md}}

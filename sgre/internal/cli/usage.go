@@ -54,7 +54,12 @@ Arguments:
 
 Flags:
   --exclude <dirs>  Comma-separated directory basenames to skip
-  --fail-on <level> Exit code 2 when any finding is confirmed (only "confirmed" is supported)`+commonFlagsDoc+`
+  --fail-on <level> Exit code 2 when any finding is confirmed (only "confirmed" is supported)
+  --boundary-auto-dismiss <mode>
+                    Boundary scans only: pre-dismiss fail-open null-deref rows
+                    (off default | external | all). "external" drops opaque/
+                    external null origins; "all" also drops caller-arg/assumed-
+                    return rows without an in-tree chain.`+commonFlagsDoc+`
 
 Examples:
   secguard scan ./src
@@ -70,13 +75,15 @@ Usage:
 
 Flags:
   --per-type           Show per-vuln-type status (candidate/written/terminal) as JSON
-  --scan-id <id>       Scan ID to query (default: latest)
+  --reports            List settled subagent reports from .sgre/.tmp/*-report*.json
+  --scan-id <id>       Scan ID to query (default: latest / all reports)
   --db <path>          Path to sgre.db
   --help, -h           Show this usage
 
 Examples:
   secguard status
   secguard status --per-type
+  secguard status --reports --scan-id sc_2026-08-23_130813_395bcb
   secguard status --per-type --scan-id sc_2026-08-23_130813_395bcb`)
 }
 
@@ -196,6 +203,38 @@ Flags:
 
 Example:
   secguard db "SELECT rule_id, COUNT(*) FROM findings GROUP BY rule_id"`)
+}
+
+func printDefUsage() {
+	fmt.Fprintln(os.Stdout, `secguard def - Resolve a symbol definition from the index (no repo-wide grep)
+
+Usage:
+  secguard def <symbol> [<symbol> ...] [flags]
+
+Arguments:
+  <symbol>   One or more C identifiers to locate (function, declaration, macro,
+             type, variable); up to 16 per call
+
+Flags:
+  --kind <k>    Restrict the lookup: auto (default) | function | declaration |
+                macro | type | variable
+  --in <file>   Also scan this file for a #define of <symbol> (a macro local to
+                the candidate's own .c); relative paths resolve against --root
+  --root <dir>  Project root for the header scan (default: the indexed files'
+                common root, or its nearest include/inc ancestor)
+  --db <path>   Path to sgre.db
+  --help, -h    Show this usage
+
+Output (JSON):
+  single: {symbol, found, external, definitions:[{kind,file,line,end_line,signature,body}]}
+  batch:  {symbols, results:[...], found}
+
+Examples:
+  secguard def ase_sa_str_connect
+  secguard def sa_print_ipv4_string sa_print_ipv6_string
+  secguard def GET_STR_LEN
+  secguard def TICKS_IN_SECOND --kind macro
+  secguard def LOCAL_MACRO --in src/service/ase_sa_dfx.c`)
 }
 
 func printSchemaUsage() {
@@ -446,7 +485,12 @@ names = [
 [scan]
 entry_points = [
     # "thread_entry",
-]`)
+]
+# Boundary scan (no entry point in the tree) fail-open null-deref pre-dismissal:
+# "off" (default) keeps every candidate for AI judgment; "external" drops
+# opaque/external null origins; "all" also drops caller-arg/assumed-return rows
+# with no in-tree chain. Every dropped row is counted as boundary_fail_open.
+# boundary_auto_dismiss = "external"`)
 }
 
 // subcommandUsage maps a subcommand name to its usage printer. Execute uses this
@@ -460,6 +504,8 @@ var subcommandUsage = map[string]func(){
 	"plan":   printPlanUsage,
 	"report": printReportUsage,
 	"db":     printDbUsage,
+	"def":    printDefUsage,
+	"symbol": printDefUsage,
 	"schema": printSchemaUsage,
 	"config": printConfigUsage,
 }

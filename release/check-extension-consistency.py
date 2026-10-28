@@ -22,15 +22,15 @@ Two drift classes are checked:
 
 3. Subagent persistence — the security-auditor worker has NO Bash on OpenCode-NGA,
    so it persists via the `secguard_report` MCP tool (granted `secguard_report` +
-   `secguard_db` + `secguard_schema`). And the fork must register the 8 `secguard_*`
-   tools via its `index.ts` entry point (`package.json` `main: index.ts` → `server.tool`)
+   `secguard_db` + `secguard_schema` + `secguard_def`). And the fork must register
+   every `secguard_*` tool via its `index.ts` entry point (`package.json` `main: index.ts` → `server.tool`)
    — the fork's extensions/ loader does NOT auto-discover tools/*.ts; without
    index.ts + package.json the tools are never exposed (the v0.5.4 "no secguard_*
    tools" smoke failure). Guarded:
      - opencode-nga/package.json `main` = index.ts, and opencode-nga/index.ts
-       `tool: { ... }` registers all 8 tools
+       `tool: { ... }` registers all secguard_* tools
      - opencode/agents/security-auditor.md + opencode-nga agent permission allow
-       `secguard_report`/`secguard_db`/`secguard_schema`
+       `secguard_report`/`secguard_db`/`secguard_schema`/`secguard_def`
      - claude-code + claude-cac `tools:` must include `Bash(secguard *)` + `Write`
        (the shell-only persistence surface); missing either = silent data loss
 
@@ -146,6 +146,9 @@ SHELL_TOOLS_REQUIRED = {"Bash(secguard *)", "Read", "Write", "Glob", "Grep", "Sk
 # The subagent persists via MCP on OpenCode hosts (no Bash there); these are the
 # tools the agent-body.md write/review/id-lookup flow actually calls.
 SUBAGENT_PERSIST_TOOLS = {"secguard_report", "secguard_db", "secguard_schema"}
+# The definition lookup is not a persistence tool, but both OpenCode hosts must
+# expose it to the subagent: without it the fallback is a whole-repo grep.
+SUBAGENT_LOOKUP_TOOLS = {"secguard_def"}
 
 
 def _secguard_tool_names():
@@ -190,6 +193,8 @@ def check_agent_permissions():
     oc_granted = {m.group(1) for m in re.finditer(r"^\s*(secguard_\w+):\s*allow", oc_agent, re.M)}
     if SUBAGENT_PERSIST_TOOLS - oc_granted:
         fail(f"opencode agents/security-auditor.md: subagent missing {sorted(SUBAGENT_PERSIST_TOOLS - oc_granted)}")
+    if SUBAGENT_LOOKUP_TOOLS - oc_granted:
+        fail(f"opencode agents/security-auditor.md: subagent missing {sorted(SUBAGENT_LOOKUP_TOOLS - oc_granted)}")
 
     try:
         nga = json.loads(read("opencode-nga/opencode.json"))
@@ -199,6 +204,8 @@ def check_agent_permissions():
     nga_granted = {k for k, v in nga_perm.items() if k.startswith("secguard_") and v == "allow"}
     if SUBAGENT_PERSIST_TOOLS - nga_granted:
         fail(f"opencode-nga agent.security-auditor.permission: subagent missing {sorted(SUBAGENT_PERSIST_TOOLS - nga_granted)}")
+    if SUBAGENT_LOOKUP_TOOLS - nga_granted:
+        fail(f"opencode-nga agent.security-auditor.permission: subagent missing {sorted(SUBAGENT_LOOKUP_TOOLS - nga_granted)}")
 
     for name, rel in [
         ("claude-code", "claude-code/.claude/agents/security-auditor.md"),
@@ -262,7 +269,20 @@ def check_skills():
             if verdict not in body:
                 fail(f"{where}: `### Classification Rules` never names `{verdict}`")
 
-    print(f"  skills: {len(names)} SKILL.md conform to the load contract + shared template")
+        # Every skill must state the evidence-closure rule: the candidate already
+        # embeds the in-scan callee body (`## Callee Definition`) and project
+        # macro bodies (`## Macro Definition`); a fact that is not embedded is
+        # resolved with `secguard def`, never a repo-wide grep. A skill that
+        # omits this lets the per-type prompt contradict the global agent-body
+        # rule (the integer-overflow/log-grep regression).
+        if not re.search(r"^### Evidence closure\b", text, re.M):
+            fail(f"{where}: missing `### Evidence closure` — every skill must state the embedded callee/macro + def/no-grep rule")
+        em = re.search(r"^### Evidence closure\b(.*?)(?=^### |\Z)", text, re.M | re.S)
+        for needle in ("## Callee Definition", "## Macro Definition", "secguard def"):
+            if not em or needle not in em.group(1):
+                fail(f"{where}: `### Evidence closure` missing `{needle}`")
+
+    print(f"  skills: {len(names)} SKILL.md conform to the load contract + shared template + evidence closure")
 
 
 def check_dsh_preset():

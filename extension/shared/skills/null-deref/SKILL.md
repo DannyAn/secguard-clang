@@ -39,6 +39,17 @@ A null-deref candidate has:
 - **weak_guard**: A NULL guard exists but is insufficient (scope misses the deref, or only partially protects) — the pipeline kept the candidate because the guard does NOT dominate the dereference; verify the guard's scope before dismissing
 - **dereference**: Bare fallback fragment — only the deref itself is known (no null source, no flow proof). Judge reachability and nullability yourself from the source
 
+### Evidence closure (read before any source read)
+
+The candidate file already embeds the decisive cross-file facts the pipeline
+resolved: an in-scan callee body under `## Callee Definition` (Hint
+`callee@<file>:<line>`) and project macro bodies under `## Macro Definition`
+(Hint `macro@<name>`). Read those sections first — they are in-file and cost no
+lookup. Only a fact that is NOT embedded may be resolved with `secguard_def` /
+`secguard def <symbol>` (batch related symbols); never grep the repository for a
+definition, and never dismiss a macro/callee as "out of scan" before checking
+the embedded section and the indexed lookup.
+
 ### Classification Rules
 
 The confirmed/false-positive rows below apply ONLY to the one proven tier
@@ -213,8 +224,10 @@ pipeline's null-flow proof may be wrong. Verify the macro before confirming:
   argument is non-null on the fall-through → **false-positive (dismissed)**.
 - An iterator/accessor macro (`DBM_TAILQ_FIRST(...)`, `list_for_each_entry`,
   `rte_pktmbuf_mtod`) yields non-null by contract → **false-positive**.
-- The macro definition is out of scan range and its contract is unclear →
-  **dismissed** (never confirmed).
+- The macro is not embedded under `## Macro Definition` and `secguard def
+  <MACRO>` returns no in-tree definition, so its contract is genuinely unknown →
+  **dismissed** (never confirmed). If the body IS embedded, judge the expansion
+  — do not dismiss merely because the call site looks opaque.
 
 ### Fix Suggestions
 - Add NULL check before dereference: `if (ptr == NULL) { return -1; }`

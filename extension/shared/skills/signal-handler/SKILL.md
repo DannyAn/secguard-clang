@@ -32,6 +32,17 @@ being in the handler.
 2. Find the handler's function definition
 3. Emit `SIGNAL_HANDLER` for each DIRECT call to a known non-async-signal-safe libc function in its body
 
+### Evidence closure (read before any source read)
+
+The candidate file already embeds the decisive cross-file facts the pipeline
+resolved: an in-scan callee body under `## Callee Definition` (Hint
+`callee@<file>:<line>`) and project macro bodies under `## Macro Definition`
+(Hint `macro@<name>`). Read those sections first — they are in-file and cost no
+lookup. Only a fact that is NOT embedded may be resolved with `secguard_def` /
+`secguard def <symbol>` (batch related symbols); never grep the repository for a
+definition, and never dismiss a macro/callee as "out of scan" before checking
+the embedded section and the indexed lookup.
+
 ### Classification Rules
 
 | Condition | Classification |

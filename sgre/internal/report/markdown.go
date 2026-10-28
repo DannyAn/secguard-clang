@@ -350,6 +350,11 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 			if c.SecondCalleeDefFile != "" {
 				writeSecondCalleeDefinition(&b, c, o, "the second (unconditional cleanup) release helper. Judge whether it frees the slot again; no source read is needed.")
 			}
+			// Project macro bodies referenced by the candidate or its embedded
+			// callee. A macro contract is decisive evidence (GET_STR_LEN decides
+			// a truncation-return accumulator), so it is embedded here rather than
+			// left to a repo-wide grep.
+			writeMacroDefinitions(&b, c, o)
 
 			// The pipeline's verdict tokens with their registry descriptions, so
 			// the candidate file is self-contained for RE-REVIEW and deep-dive:
@@ -576,6 +581,39 @@ func calleeDefIntro(vulnType string) string {
 		return "the conditional first-release helper. Judge whether it frees only on some paths; no source read is needed."
 	default:
 		return "the callee whose body decides this candidate. Judge the decisive fact from this body; no source read is needed."
+	}
+}
+
+// writeMacroDefinitions renders the project #define bodies referenced by the
+// candidate statement and its embedded callee body. It is the macro half of
+// evidence closure: a classifier that would otherwise grep the tree for
+// GET_STR_LEN reads the expansion in-file instead.
+func writeMacroDefinitions(b *strings.Builder, c planner.EvidenceItem, o *ScanOutput) {
+	if len(c.MacroDefs) == 0 {
+		return
+	}
+	b.WriteString("## Macro Definition\n\n")
+	for _, m := range c.MacroDefs {
+		loc := m.File
+		if o != nil && o.RootDir != "" {
+			if rel, err := filepath.Rel(o.RootDir, m.File); err == nil && !strings.HasPrefix(rel, "..") {
+				loc = rel
+			}
+		}
+		if m.Line > 0 {
+			loc = fmt.Sprintf("%s:%d", loc, m.Line)
+		}
+		sig := m.Signature
+		if sig == "" {
+			sig = "#define " + m.Name
+		}
+		fmt.Fprintf(b, "`%s` — `%s`\n\n", loc, sig)
+		b.WriteString("```c\n")
+		b.WriteString(m.Body)
+		b.WriteString("\n```\n\n")
+		if m.Truncated {
+			b.WriteString("_The macro body is truncated at the embedding limit; the prefix above is the decisive text._\n\n")
+		}
 	}
 }
 

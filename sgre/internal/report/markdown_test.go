@@ -10,6 +10,7 @@ import (
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/planner"
+	"github.com/DannyAn/secguard-clang/internal/symbols"
 )
 
 func candidatePackages() []*planner.PlanResult {
@@ -959,5 +960,46 @@ func TestSourceWindowText(t *testing.T) {
 	}
 	if missing := SourceWindowText(filepath.Join(dir, "nope.c"), 4, 2, dir); missing != "" {
 		t.Errorf("unreadable file must degrade to the empty string, got: %q", missing)
+	}
+}
+
+// A project macro referenced by a candidate must be embedded, so a macro
+// contract (GET_STR_LEN decides a truncation-return accumulator) never costs a
+// repo-wide grep.
+func TestWriteCandidates_MacroDefinition(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "buf.c")
+	body := "void f(char *buf, unsigned n) {\n    consume(MAX_LEN - n);\n}\n"
+	if err := os.WriteFile(src, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	o := &ScanOutput{ScanDir: dir, ScanID: "sc_test", RootDir: dir}
+	pkgs := []*planner.PlanResult{{
+		VulnerabilityType: "integer-overflow",
+		Candidates: []planner.EvidenceItem{{
+			SuspicionLevel: "suspected",
+			Category:       "unsigned_sub_underflow",
+			Hint:           "rhs@param guard@none macro@MAX_LEN",
+			HintTokens:     []string{"rhs@param", "guard@none", "macro@MAX_LEN"},
+			Target: planner.TargetInfo{
+				File: "buf.c", Function: "f", Line: 2, Variable: "MAX_LEN - n",
+			},
+			MacroDefs: []symbols.MacroDef{{
+				Name: "MAX_LEN", Signature: "#define MAX_LEN 16",
+				Body: "#define MAX_LEN 16", File: "include/defs.h", Line: 1, EndLine: 1,
+			}},
+			Evidence: []planner.EvidenceFragment{{Role: "sink", Detail: "unsigned subtraction can underflow"}},
+		}},
+	}}
+	if err := o.writeCandidates(pkgs); err != nil {
+		t.Fatal(err)
+	}
+
+	content := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "integer-overflow", "001_buf_c_2.md")))
+	for _, want := range []string{"## Macro Definition", "`include/defs.h:1`", "#define MAX_LEN 16"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("candidate file missing %q:\n%s", want, content)
+		}
 	}
 }

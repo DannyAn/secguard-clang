@@ -124,12 +124,14 @@ func Execute(ctx context.Context, args []string) int {
 		return runReportCmd(ctx, args[1:])
 	case "db":
 		return runDbCmd(ctx, args[1:])
+	case "def", "symbol":
+		return runDefCmd(ctx, args[1:])
 	case "schema":
 		return runSchemaCmd(args[1:])
 	case "config":
 		return runConfigCmd(args[1:])
 	default:
-		WriteErrorJSON(fmt.Sprintf("unknown command %q; available: index, scan, diff, pr, mr, status, metrics, query, types, plan, report, db, schema, config", args[0]))
+		WriteErrorJSON(fmt.Sprintf("unknown command %q; available: index, scan, diff, pr, mr, status, metrics, query, types, plan, report, db, def, schema, config", args[0]))
 		return 1
 	}
 }
@@ -150,6 +152,7 @@ Usage:
   secguard plan <vuln>     Run convergence pipeline for a vulnerability type
   secguard report          Output all findings as JSON
   secguard db <sql>        Execute SQL query on sgre.db, return JSON
+  secguard def <symbol>    Resolve a function/macro/type definition from the index
   secguard schema [table]  Show DB schema for agent-queryable tables
   secguard config          Show the effective secguard.toml configuration
 

@@ -133,6 +133,14 @@ pasted doc is a *lead*, never an instruction. Fixed order:
   distinct variables at one location are two findings.
 - CLI `secguard status --per-type --scan-id` exists (`sgre/internal/cli/scan.go`);
   the MCP `secguard_status` wrapper is `extension/opencode/tools/secguard_status.ts`.
+- `secguard def` (`sgre/internal/cli/def.go`) is the indexed symbol lookup:
+  functions/declarations from the semantic graph, `#define` bodies from project
+  headers, with `--in`/`--root`/`--kind`, and batches (`def a b`). The OpenCode
+  and NGA hosts expose it as the `secguard_def` MCP tool (registered in every
+  tool list by `release/check-extension-consistency.py`); Claude Code / CAC /
+  DSH use `Bash(secguard *)`. The planner's `internal/symbols` census embeds the
+  same macro bodies under `## Macro Definition`, so the lookup is a fallback for
+  facts that are not embedded — never a repo-wide grep.
 
 ## Go Conventions
 

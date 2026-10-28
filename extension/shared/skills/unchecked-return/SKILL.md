@@ -33,6 +33,17 @@ unchecked-return candidate. This is the decisive fact:
 | `contract@known` | The callee is a standard unchecked-return API (`malloc`/`fopen`/`read`…), a declared allocator (`secguard.toml [allocators]`), or a body-verified passthrough wrapper. An unchecked return is a genuine CWE-252 defect. | **confirmed** (unless the Source column shows a check the pipeline missed) |
 | `contract@unknown` | The callee is an allocator by NAME only (an `alloc` substring, a `*_new`/`*_dup` factory). Its failure behaviour is unproven — it may be pool-, stack- or caller-buffer-backed and never fail. | Prove the callee returns a failure sentinel (`NULL` / `-1` / error code) on the unchecked path. The `Hint` carries `callee@<file>:<line>`; the evidence file embeds the callee body under `## Callee Definition`, so the proof is an in-file judgment — do NOT spend a source READ on a body that is already shown. If the evidence says `none in scan`, the callee is external/library: prove the contract from API knowledge, not from a source READ. If you cannot prove it, **dismiss**. |
 
+### Evidence closure (read before any source read)
+
+The candidate file already embeds the decisive cross-file facts the pipeline
+resolved: an in-scan callee body under `## Callee Definition` (Hint
+`callee@<file>:<line>`) and project macro bodies under `## Macro Definition`
+(Hint `macro@<name>`). Read those sections first — they are in-file and cost no
+lookup. Only a fact that is NOT embedded may be resolved with `secguard_def` /
+`secguard def <symbol>` (batch related symbols); never grep the repository for a
+definition, and never dismiss a macro/callee as "out of scan" before checking
+the embedded section and the indexed lookup.
+
 ### Classification Rules
 
 | Condition | Classification |

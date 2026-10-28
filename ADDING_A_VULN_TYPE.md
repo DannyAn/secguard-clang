@@ -79,6 +79,11 @@ Copy `extension/shared/skills/SKILL_TEMPLATE.md`, fill it in. Hard rules
   token table for what `buildHintParts` emits for this type. Tokens in
   backticks must be full registry forms (value-bearing like `free@N,M`,
   enumerated like `leak@definite`) — the Go guard rejects shorthand.
+- `### Evidence closure` is required by the same checker: it must state that
+  `## Callee Definition` / `## Macro Definition` are read first and that
+  `secguard def` is the only lookup fallback (never a repo-wide grep). Copy the
+  exact block from `SKILL_TEMPLATE.md`; a skill that omits it lets the per-type
+  prompt contradict the global agent-body rule.
 
 ## 6. Tests + guard
 

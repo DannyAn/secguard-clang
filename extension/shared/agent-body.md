@@ -47,7 +47,10 @@ into `<tmpdir>` and pass the same absolute path to `--write-json`, so the file
 you wrote and the file the CLI reads are the SAME file.
 
 **`candidates/<type>/_index.md` is your INDEX.** Its table lists every candidate's
-`# | Function | File:Line | Variable | Suspicion | Hint | Source | Evidence`. The
+`# | Function | File:Line | Variable | Suspicion | Hint | Source | Evidence`.
+For a ranged batch, read the header once and only the rows in your assigned `#`
+range (the `#` column is sequential; use Read offset/limit); do not re-read the
+full table for a sibling range. The
 `Evidence` column is the EXACT candidate filename (`NNN_<file>_<line>.md`) — use it
 verbatim, never guess or reconstruct it. Read ONLY your type's `_index.md` (never
 another type's, never the whole `report.md`). Do NOT read the whole
@@ -70,6 +73,39 @@ orchestrator re-dispatches that range ONCE with an explicit open-the-evidence
 instruction. **Opening all N evidence files of a type is a budget violation, not
 thoroughness.**
 
+**Definition lookup — `secguard_def` / `secguard def`, never a whole-repo Grep.**
+The scan already embeds the decisive cross-function facts it can resolve:
+`## Callee Definition` (the `callee@` token) and `## Macro Definition` (the
+`macro@<name>` token). Read those sections FIRST — they are in-file and cost no
+lookup.
+
+When a verdict still needs a callee/macro/type contract those sections do not
+cover, use ONE indexed lookup (prefer the `secguard_def` MCP tool when it is in
+your toolset; otherwise `secguard def` via Bash):
+
+- `secguard_def` with `symbol="<name>"` (or `secguard def <symbol>` via Bash) →
+  `{found, definitions:[{kind,file,line,end_line,signature,body}]}`. Functions and
+  declarations come from the semantic graph; `#define` bodies come from project
+  headers; the body is returned inline.
+- **Batch related symbols in one call.** `secguard_def` with
+  `symbols=["<a>","<b>"]` (or `secguard def a b`) returns `{results:[...]}` —
+  this replaces the old `A|B` regex grep for a callee pair (ipv4/ipv6) or a
+  macro pair.
+- `secguard def <MACRO> --in <candidate file>` for a macro defined in the
+  candidate's own `.c`; `--kind macro` / `--kind function` forces one class.
+- `"found": false` means external/unindexed (a system header macro, a library
+  API): cite `def:<symbol>:not-in-scan` and judge from API knowledge.
+- On OpenCode, `secguard_def` defaults to `<workdir>/.codeagent/.../sgre.db`;
+  pass `db_path` (derived from `scan_dir`) when your working directory is not the
+  project root.
+
+Do NOT run `Grep` over the repository (a whole-tree path or `**/*.{c,h}`) to find
+a definition. That re-reads every source file per symbol and is the single largest
+wall-clock cost in production scans; it is NOT bounded by the ≤5-source-read
+budget. A repo-wide Grep counts as ONE source read, and you may use at most ONE
+per type (report it in `repo_greps`). If you already grepped for a symbol, use
+`secguard def` for its siblings rather than grepping again.
+
 **RED LINE — never call `secguard report --complete-type` or
 `secguard report --audit`.** You are a subagent: the orchestrator is the SINGLE
 writer of `ai_stage_status`, and a subagent call can race it and flip the
@@ -86,7 +122,8 @@ not the driver).
 `secguard_scan`→`secguard scan`, `secguard_plan`→`secguard plan <type>`,
 `secguard_types`→`secguard types`, `secguard_report --write`→
 `secguard report --write-json <file> --scan-id <id>`,
-`secguard_report` (read)→`secguard report`.
+`secguard_report` (read)→`secguard report`, and the definition lookup is
+`secguard_def` (MCP) → `secguard def <symbol>` (Bash fallback) on every host.
 
 ## Your job (per type, one at a time)
 
@@ -124,8 +161,10 @@ scan pre-embeds, for every candidate: the exact statement (`_index.md` `Source`
 column), the pipeline's verdict facts (`Hint` column + the candidate file's
 `## Pipeline Tokens` / `## Verdict Facts`), the `## Code Context` window (±8 for
 most types; the WHOLE function span for `integer-overflow`), the enclosing
-function's `## Location` signature, and — for unchecked-return / null-deref /
-double-free — the referenced callee/helper's `## Callee Definition` body. All of
+function's `## Location` signature, the referenced callee/helper's `## Callee
+Definition` body (unchecked-return / null-deref / double-free / integer-overflow,
+or any type whose candidate carries an in-scan callee), and every project macro
+the statement or callee references under `## Macro Definition`. All of
 these are pre-read for you.
 
 Two kinds of hint — do NOT conflate them:
@@ -153,10 +192,12 @@ the embedded context cannot settle it:**
 Only a candidate whose defining evidence lives in an UN-indexed location (a
 macro/callee in a header the scan did not index, so its body is NOT embedded) is
 what the ≤5 source-read budget exists for — but a heuristic hint that the
-embedded context cannot settle is ALSO a legitimate use of that budget. Never use
-it to re-read what the Code Context/`## Callee Definition` already shows. Do NOT
-read source for types you weren't assigned, and never turn the budget into "read
-the whole repo".
+embedded context cannot settle is ALSO a legitimate use of that budget. For such
+a symbol, use `secguard def` FIRST (it returns the body inline and is not a
+source read); a raw read is the last resort after `def` returns `found: false`.
+Never use the budget to re-read what the Code Context/`## Callee Definition`
+already shows. Do NOT read source for types you weren't assigned, and never turn
+the budget into "read the whole repo".
 
 Classify ONLY from the candidates + the scan target's own sources. Never go
 looking for external labels or ground truth that happens to sit near the target
@@ -513,12 +554,14 @@ whose body is NOT embedded) may trigger the ≤5-read budget, and then write the
 verdict with the cited read. Do NOT confirm a candidate merely because its
 `suspicion_level` is `confirmed` — that is a prior, not a verdict.
 
-**Macro-context candidates (Hint contains `macro-context`).** These are the
-highest false-positive risk: the pipeline could not see a macro's true semantics
-(a guard macro like `DBM_CHECK_RET(ctrl == NULL, FALSE)`, an iterator macro, an
-accessor macro, a free wrapper). For EVERY macro-context candidate you MUST open
-the `## Code Context` and understand what the macro does before you may write
-`confirmed`:
+**Macro-context candidates (Hint contains `macro-context` or `macro@`).** These
+are the highest false-positive risk: a macro's semantics can hide a guard, an
+iterator, an accessor, or a free wrapper. The pipeline embeds every project
+`#define` it resolved under `## Macro Definition`; read that first, then the
+`## Code Context`. Only when the macro is not embedded (external/unindexed) may
+you use `secguard def <MACRO>` — never a repo-wide grep. For EVERY
+macro-context candidate you MUST understand what the macro does before you may
+write `confirmed`:
 - The macro is a NULL/error guard (`*CHECK*`, `*ASSERT*`, `*RET*`, early-return)
   → the guarded variable is non-null after it → `dismissed`.
 - The macro is an iterator/accessor that yields non-null by contract → `dismissed`.
@@ -539,7 +582,7 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
   "subagent_id": "<your id>",
   "scan_id": "<scan_id>",
   "processed_types": [
-    {"type": "null-deref", "cwe": "CWE-476", "written": 3, "dismissed": 1146, "source_reads": 1, "evidence_opens": 2}
+    {"type": "null-deref", "range": "1-69", "cwe": "CWE-476", "written": 3, "dismissed": 1146, "source_reads": 1, "evidence_opens": 2, "repo_greps": 0}
   ],
   "failed_types": [
     {"type": "buffer-overflow", "reason": "api-quota-exhausted"}
@@ -553,6 +596,11 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
   `reason: "empty-output"` for every assigned type.
 - `reason` enum: `api-quota-exhausted` | `maxturns-exceeded` | `context-overflow` |
   `write-busy` | `empty-output` | `unknown`.
+- `range` (optional but REQUIRED for a split batch) = the candidate `#` range you
+  were assigned, e.g. `"1-69"`; use `"all"` when you were given the whole type.
+  The orchestrator matches a settled report back to the exact batch by
+  `type` + `range` after an Agent-call timeout; a report without the range can
+  only be matched by type, which may skip a sibling range.
 - `written` = the number of CONFIRMED findings you PERSISTED (dismissed
   candidates are NOT persisted, so they are NOT part of `written`).
 - `dismissed` = the number of candidates you judged dismissed (NOT persisted,
@@ -560,10 +608,15 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
   orchestrator reconciles `written` against the DB's per-type `written_count`,
   and a conflated number forces it to re-derive your real progress.
 - `source_reads` / `evidence_opens` = the counts of raw source reads and
-  `Evidence` file opens you actually performed for the type. These are the
+  `Evidence` file opens you actually performed for the type. `source_reads` also
+  counts every repo-wide `Grep` (one Grep = one read; per-definition `secguard
+  def` calls do NOT count — they are index queries). These are the
   orchestrator's only F6 read-source audit signal on hosts without subagent
   transcripts — report them honestly (budgets: ≤5 source reads, ≤12 evidence
-  opens per type/range).
+  opens, ≤1 repo-wide Grep per type/range).
+- `repo_greps` = repo-wide `Grep` calls for the type (a whole-tree path or a
+  `**/*.{c,h}` glob). `> 1` is a read-source violation; `secguard def` /
+  `secguard_def` calls do NOT count. Always include this field (0 when none).
 - `needs_context` (optional, additive) = the candidate `#`s you could NOT settle
   after the ≤5-read / ≤12-open budgets, each with a one-line reason
   (`[{"candidate": 57, "reason": "leak@conditional, free@N outside the window"}]`).

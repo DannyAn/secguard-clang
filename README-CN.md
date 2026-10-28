@@ -177,10 +177,11 @@ secguard types             # 权威漏洞类型 + CWE
 secguard status            # 索引状态
 secguard metrics           # 扫描性能与收敛指标
 secguard schema findings   # 写 SQL 前先看表结构
+secguard def GET_STR_LEN   # 索引符号查询（不跑全仓 grep）
 secguard db "SELECT ..."   # 对 sgre.db 执行只读 SQL
 ```
 
-`secguard types` / `schema` / `db` 只有 CLI（与 MCP）形态；Agent 侧的斜杠命令只有
+`secguard types` / `schema` / `db` / `def` 只有 CLI（与 MCP）形态；Agent 侧的斜杠命令只有
 `secguard`、`pr`、`mr`、`diff`、`metrics` 五个。
 
 ## 输出
@@ -223,7 +224,7 @@ extension/
 │   ├── agent-body.md            # 子代理角色 + 分类契约
 │   ├── command-instructions.md  # /secguard 工作流
 │   └── skills/                  # 24 个漏洞类型技能
-├── opencode/                    # OpenCode 封装 + 9 个 MCP 工具
+├── opencode/                    # OpenCode 封装 + 11 个 MCP 工具
 ├── opencode-nga/                # OpenCode-NGA 封装（复用同一套工具）
 ├── claude-code/                 # Claude Code 封装
 ├── claude-cac/                  # Claude CAC 封装
@@ -240,7 +241,7 @@ extension/
 | 数据库 | SQLite（`modernc.org/sqlite`） | 纯 Go，无 CGo 依赖 |
 | 解析器 | Tree-sitter + tree-sitter-c | 增量 C 解析 |
 | 交叉编译 | zig（musl/mingw） | 静态 Linux/Windows 二进制 |
-| AI 扩展 | TypeScript/Bun | 9 个 OpenCode MCP 工具 |
+| AI 扩展 | TypeScript/Bun | 11 个 OpenCode MCP 工具 |
 | Agent 环境 | OpenCode、OpenCode-NGA、Claude Code、Claude CAC、DeepSeek Harness | 共享核心 + 薄封装 |
 
 ## 项目结构

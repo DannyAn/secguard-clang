@@ -1,6 +1,9 @@
 package planner
 
 import (
+	"context"
+
+	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -19,6 +22,11 @@ type FilterDeps struct {
 	TaintCache     *taintSummaryCache
 	Macro          *macroContextDetector
 	CFGCache       *graph.CFGCache
+	// Boundary is true when the scan tree has no entry point (a library / a
+	// subtree), so zero-caller pointer parameters are fail-open. BoundaryMode
+	// is the configured auto-dismiss mode ("off"/"external"/"all").
+	Boundary     bool
+	BoundaryMode string
 }
 
 // FilterFactory constructs one Filter given the Planner's shared deps.
@@ -32,7 +40,7 @@ type FilterFactory func(deps FilterDeps) Filter
 // registered type declared its chain explicitly (Phase 7 follow-up); a
 // missing FilterFactories fails at RegisterVulnType, so it cannot reach
 // this point.
-func (p *Planner) buildFilters(spec *VulnTypeSpec) ([]Filter, error) {
+func (p *Planner) buildFilters(ctx context.Context, spec *VulnTypeSpec) ([]Filter, error) {
 	deps := FilterDeps{
 		Store:          p.store,
 		Parser:         p.parser,
@@ -41,10 +49,19 @@ func (p *Planner) buildFilters(spec *VulnTypeSpec) ([]Filter, error) {
 		TaintCache:     p.taintCache,
 		Macro:          p.macro,
 		CFGCache:       p.cfgCache,
+		Boundary:       p.isBoundary(ctx),
+		BoundaryMode:   config.Load().BoundaryAutoDismissMode(),
 	}
 	out := make([]Filter, 0, len(spec.FilterFactories))
 	for _, f := range spec.FilterFactories {
-		out = append(out, f(deps))
+		filter := f(deps)
+		// Keep the default chain shape unchanged when the boundary layer is
+		// off: a no-op filter in the stats list would make every plan/report
+		// diff look like a new stage for every scan.
+		if _, isBoundary := filter.(*BoundaryFailOpenFilter); isBoundary && (!deps.Boundary || deps.BoundaryMode == "off") {
+			continue
+		}
+		out = append(out, filter)
 	}
 	return out, nil
 }
@@ -65,6 +82,7 @@ func chainNullDeref() []FilterFactory {
 		func(d FilterDeps) Filter { return NewNullableSourceFilter(d.Store).WithParser(d.Parser, d.Logger) },
 		func(d FilterDeps) Filter { return NewMacroUncertainFilter(d.Store, d.Macro) },
 		func(d FilterDeps) Filter { return NewCallReachFilter(d.Store, d.CallReachCache) },
+		func(d FilterDeps) Filter { return NewBoundaryFailOpenFilter(d.Boundary, d.BoundaryMode) },
 		func(d FilterDeps) Filter { return NewSafeFunctionFilter(d.Store) },
 	}
 }

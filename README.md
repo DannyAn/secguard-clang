@@ -178,10 +178,11 @@ secguard types             # authoritative vulnerability types + CWE
 secguard status            # index status
 secguard metrics           # scan performance and convergence metrics
 secguard schema findings   # table schema before raw SQL
+secguard def GET_STR_LEN   # indexed symbol lookup (no repo-wide grep)
 secguard db "SELECT ..."   # read-only SQL against sgre.db
 ```
 
-`secguard types` / `schema` / `db` are CLI (and MCP) surfaces only; the agent slash
+`secguard types` / `schema` / `db` / `def` are CLI (and MCP) surfaces only; the agent slash
 commands are exactly `secguard`, `pr`, `mr`, `diff`, and `metrics`.
 
 ## Output
@@ -224,7 +225,7 @@ extension/
 │   ├── agent-body.md            # subagent role + classification contract
 │   ├── command-instructions.md  # /secguard workflow
 │   └── skills/                  # 24 vulnerability-type skills
-├── opencode/                    # OpenCode wrapper + 9 MCP tools
+├── opencode/                    # OpenCode wrapper + 11 MCP tools
 ├── opencode-nga/                # OpenCode-NGA wrapper (shares the same tools)
 ├── claude-code/                 # Claude Code wrapper
 ├── claude-cac/                  # Claude CAC wrapper
@@ -241,7 +242,7 @@ extension/
 | Database | SQLite (`modernc.org/sqlite`) | pure Go, no CGo dependency |
 | Parser | Tree-sitter + tree-sitter-c | incremental C parsing |
 | Cross-compilation | zig (musl/mingw) | static Linux/Windows binaries |
-| AI extension | TypeScript/Bun | 9 OpenCode MCP tools |
+| AI extension | TypeScript/Bun | 11 OpenCode MCP tools |
 | Agent surfaces | OpenCode, OpenCode-NGA, Claude Code, Claude CAC, DeepSeek Harness | shared core + thin wrappers |
 
 ## Project structure

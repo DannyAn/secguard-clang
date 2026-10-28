@@ -3,6 +3,8 @@
 package planner
 
 import (
+	"context"
+
 	"testing"
 )
 
@@ -47,7 +49,7 @@ func TestFilterChainMigration(t *testing.T) {
 		// Build the filters and verify names match the expected order (when
 		// the type has an explicit expectation registered).
 		pl := &Planner{}
-		filters, err := pl.buildFilters(spec)
+		filters, err := pl.buildFilters(context.Background(), spec)
 		if err != nil {
 			t.Errorf("type %s: buildFilters error: %v", typeName, err)
 			continue

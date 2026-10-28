@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/symbols"
 )
 
 // Dismissed records a candidate removed by a filter, with the reason it was
@@ -144,6 +145,10 @@ type Candidate struct {
 	// macro-context candidate is never auto-confirmed: it is routed to the AI
 	// agent for judgment.
 	MacroContext bool `json:"macro_context,omitempty"`
+	// MacroDefs carries the project #define bodies referenced by the candidate
+	// statement (and by its embedded callee body). The report renders them under
+	// ## Macro Definition so a macro contract never costs a repo-wide grep.
+	MacroDefs []symbols.MacroDef `json:"-"`
 	// ContractKnown marks an unchecked-return candidate whose callee's failure
 	// contract is known (built-in API table / declared allocator / inspected
 	// wrapper body) rather than inferred from the allocator name heuristic.

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/DannyAn/secguard-clang/internal/symbols"
 )
 
 type EvidenceItem struct {
@@ -14,11 +16,12 @@ type EvidenceItem struct {
 	// MayFree marks a double-free candidate whose first release is conditional
 	// (a release helper that frees only on some paths). The candidate is a
 	// possible double free; the report and the Hint say so explicitly.
-	MayFree         bool       `json:"may_free,omitempty"`
-	HasDefiniteNull bool       `json:"has_definite_null,omitempty"`
-	MacroContext    bool       `json:"macro_context,omitempty"`
-	Target          TargetInfo `json:"target"`
-	SourceLine      int        `json:"source_line,omitempty"`
+	MayFree         bool               `json:"may_free,omitempty"`
+	HasDefiniteNull bool               `json:"has_definite_null,omitempty"`
+	MacroContext    bool               `json:"macro_context,omitempty"`
+	MacroDefs       []symbols.MacroDef `json:"-"`
+	Target          TargetInfo         `json:"target"`
+	SourceLine      int                `json:"source_line,omitempty"`
 	// SourceLines collects every pipeline-proven decisive source line for the
 	// candidate — the free-site of a use-after-free, the two frees of a
 	// double-free, the declaration of an uninit read, the origin of a null or
@@ -560,6 +563,14 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 				if c.SubSink != "" {
 					parts = append(parts, "sink@"+c.SubSink)
 				}
+				// The callee that produced the accumulator (`len +=
+				// ase_sa_str_connect(...)`): its body decides whether the
+				// subtraction can underflow, and it is often in another file.
+				// resolveCalleeDefs embeds it; naming it here keeps the row
+				// self-contained.
+				if c.CalleeDefFile != "" {
+					parts = append(parts, fmt.Sprintf("callee@%s:%d", filepath.Base(c.CalleeDefFile), c.CalleeDefLine))
+				}
 				parts = append(parts, "guard@none")
 			}
 		case "deadlock":
@@ -714,6 +725,9 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 	if spec != nil && spec.Name == "null-deref" {
 		parts = append(parts, "guard@none")
 	}
+	for _, m := range c.MacroDefs {
+		parts = append(parts, "macro@"+m.Name)
+	}
 	if c.MacroContext {
 		parts = append(parts, "macro-context")
 	}
@@ -748,6 +762,7 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 		HasDefiniteNull:   c.HasDefiniteNull,
 		MayFree:           c.MayFree,
 		MacroContext:      c.MacroContext,
+		MacroDefs:         c.MacroDefs,
 		Target: TargetInfo{
 			File:     fileName,
 			Function: c.FunctionName,

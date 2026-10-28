@@ -76,6 +76,7 @@ Schema is in `internal/db/schema.go` (`SchemaDDL`). CRUD is split per entity in 
 - Tables are organized by **program fact type**, not by vulnerability type.
 - Skills are **query consumers only** — they never create tables.
 - The AI agent (via `security-auditor`) receives **converged evidence packages only**. It must not query `security_events` to recover filtered-out raw candidates — that defeats the pipeline. (Enforced by the agent prompt in `extension/shared/agent-body.md`.)
+- **Evidence closure**: a candidate file embeds the decisive cross-file facts the pipeline can resolve — the in-scan callee body (`## Callee Definition`) and project macro bodies (`## Macro Definition`, from `internal/symbols`) — so the classifier never needs a whole-repo grep. `secguard def` (MCP `secguard_def`) is the same lookup for a fact that is not embedded.
 - Layer stability: Program Facts are stable; Findings vary per scan.
 
 ### AI 研判边界 (AI judgment boundary)
@@ -103,6 +104,7 @@ secguard report          Output all findings as JSON
 secguard types           List all vulnerability types + CWE (JSON)
 secguard schema [table]  Show a table's schema (columns/types)
 secguard db <sql>        Execute a SQL query, return JSON
+secguard def <symbol>    Resolve a function/macro/type definition from the index
 ```
 
 `--db <path>` overrides the DB (default `./sgre.db`). All output is JSON on stdout (machine-consumed by the agent).

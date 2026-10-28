@@ -37,6 +37,17 @@ condition — reachable-both-times means confirmed.
 4. **Interprocedural global slot**: a function that frees a global array element (`free(g_items[i])`) has a release-effect summary for that global; a caller that stored an object into the slot and already released it via a release helper gets a second-free event at the cleanup CALL SITE. When the release helper frees the object only on some paths, the event carries `may_free`.
 4. A macro that also nulls its argument (`SAFE_FREE(p)`) is NOT a double-free source — after it the pointer is NULL, so a later `free(p)` is `free(NULL)`, a no-op.
 
+### Evidence closure (read before any source read)
+
+The candidate file already embeds the decisive cross-file facts the pipeline
+resolved: an in-scan callee body under `## Callee Definition` (Hint
+`callee@<file>:<line>`) and project macro bodies under `## Macro Definition`
+(Hint `macro@<name>`). Read those sections first — they are in-file and cost no
+lookup. Only a fact that is NOT embedded may be resolved with `secguard_def` /
+`secguard def <symbol>` (batch related symbols); never grep the repository for a
+definition, and never dismiss a macro/callee as "out of scan" before checking
+the embedded section and the indexed lookup.
+
 ### Classification Rules
 
 | Condition | Classification |

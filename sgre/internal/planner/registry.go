@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strconv"
@@ -209,7 +210,7 @@ func ValidateRegistry() error {
 		if err != nil {
 			return err
 		}
-		if _, err := p.buildFilters(spec); err != nil {
+		if _, err := p.buildFilters(context.Background(), spec); err != nil {
 			return fmt.Errorf("planner: vuln type %s: %w", name, err)
 		}
 	}

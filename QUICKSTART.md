@@ -116,6 +116,7 @@ cd secguard-clang
 | `secguard types` | 列出全部 24 种漏洞类型 + CWE |
 | `secguard metrics` | 扫描性能与收敛指标 |
 | `secguard schema [table]` | 查询表 schema（写 SQL 前用） |
+| `secguard def <symbol>` | 按索引解析函数/宏/类型定义（替代全仓 grep） |
 | `secguard report` | 输出全部 findings（JSON） |
 | `secguard db <sql>` | 在 sgre.db 上执行 SQL（只读） |
 

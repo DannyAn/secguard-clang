@@ -294,7 +294,7 @@ func TestPlan_UncheckedReturn_UsesReturnCheckFilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetVulnTypeSpec: %v", err)
 	}
-	filters, err := pl.buildFilters(spec)
+	filters, err := pl.buildFilters(context.Background(), spec)
 	if err != nil {
 		t.Fatalf("buildFilters(unchecked-return) failed: %v", err)
 	}

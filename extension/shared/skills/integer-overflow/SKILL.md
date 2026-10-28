@@ -48,6 +48,15 @@ the row alone (no evidence-file open):
   internal accumulator → usually false-positive.
 - `sink@call_arg` / `sink@assign` — the subtraction flows into a call argument or
   is stored into a local.
+- `callee@<file>:<line>` — the callee that PRODUCED the accumulator
+  (`len += ase_sa_str_connect(...)`) is in-scan, and its body is embedded under
+  `## Callee Definition`. Judge `total - len` from that body: does the callee cap
+  its return / truncate its write, or can `len` grow past `total`? This is the
+  decisive cross-function fact — **do not grep the repo for the callee**.
+- `macro@<name>` — a project macro referenced by the candidate or its callee has
+  its `#define` body embedded under `## Macro Definition` (e.g. `GET_STR_LEN`
+  decides whether a `sprintf_s` return is a bounded length). Read the expansion;
+  when the macro is external/unindexed, use `secguard def <NAME>` — never grep.
 - `guard@none` — the pipeline found no same-function ordering guard (the tight
   `if (consumed <= total)` body guard and the `if (consumed > total) return;`
   entry guard are already suppressed). **Stop hunting for a guard.**
@@ -56,9 +65,13 @@ the row alone (no evidence-file open):
 shape: confirm unless a cross-function invariant bounds `consumed <= total`.
 `guard@none` + `rhs@local` (no `rhs-influenced`) → the `buf_len - length` accumulator
 shape: the verdict rests on whether the accumulator is bounded by the callee's
-truncation contract — the candidate file's `## Code Context` (the WHOLE function
-span, signature → candidate, up to ~200 lines) + the `Signature`/`Source` columns
-are your inputs before any raw source READ.
+truncation contract — read the embedded `## Callee Definition` (or, when the
+producer is external, `secguard def <callee>`; batch a callee pair with
+`secguard def A B`), plus the candidate file's
+`## Code Context` (the WHOLE function span, signature → candidate, up to ~200
+lines) and the `Signature`/`Source` columns. **Never run a whole-repo grep to find
+the callee**: use `secguard def <name>`, which is an index lookup and returns the
+body in one call.
 
 ### Dangerous Patterns
 
@@ -79,6 +92,17 @@ are your inputs before any raw source READ.
 | `__builtin_add_overflow(a, b, &result)` | Compiler-checked overflow |
 | `if (consumed <= total) use(total - consumed);` | Explicit subtraction invariant |
 | `if (total >= consumed) use(total - consumed);` | Mirrored safe subtraction guard |
+
+### Evidence closure (read before any source read)
+
+The candidate file already embeds the decisive cross-file facts the pipeline
+resolved: an in-scan callee body under `## Callee Definition` (Hint
+`callee@<file>:<line>`) and project macro bodies under `## Macro Definition`
+(Hint `macro@<name>`). Read those sections first — they are in-file and cost no
+lookup. Only a fact that is NOT embedded may be resolved with `secguard_def` /
+`secguard def <symbol>` (batch related symbols); never grep the repository for a
+definition, and never dismiss a macro/callee as "out of scan" before checking
+the embedded section and the indexed lookup.
 
 ### Classification Rules
 

@@ -50,6 +50,15 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	remaining = removeFlag(remaining, "baseline")
 	timeoutSec := parseIntFlag(remaining, "timeout")
 	remaining = removeFlag(remaining, "timeout")
+	boundaryMode := parseStringFlag(remaining, "boundary-auto-dismiss")
+	remaining = removeFlag(remaining, "boundary-auto-dismiss")
+	switch boundaryMode {
+	case "", "off", "external", "all":
+	default:
+		WriteErrorJSON(fmt.Sprintf("invalid --boundary-auto-dismiss %q (expected off|external|all)", boundaryMode))
+		return 1
+	}
+	config.SetBoundaryAutoDismissOverride(boundaryMode)
 	if len(remaining) == 0 {
 		remaining = []string{"."}
 	}
@@ -343,6 +352,10 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		logger.Warn("list functions failed", "error", err)
 	}
 	functionsInIndex := len(funcs)
+	scope := scanScope(absPath, funcs)
+	if scopeMode(scope) == "boundary" {
+		writeBoundaryConfigHint(scanDir, absPath, scopeWorktree(scope))
+	}
 	summaryData := report.SummaryData{
 		ScanID:            scanID,
 		TargetPath:        absPath,
@@ -354,8 +367,8 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		FunctionsInIndex:  functionsInIndex,
 		LinesOfCode:       indexResult.LinesOfCode,
 		TypeBreakdown:     typeBreakdown,
-		ScanMode:          scopeMode(scanScope(absPath, funcs)),
-		EnclosingWorktree: scopeWorktree(scanScope(absPath, funcs)),
+		ScanMode:          scopeMode(scope),
+		EnclosingWorktree: scopeWorktree(scope),
 		ReportPath:        filepath.Join(scanDir, report.ReportFile),
 		SarifPath:         filepath.Join(scanDir, report.CandidatesSarifFile),
 		LatestPath:        filepath.Join(scansDir, report.LatestName),
@@ -412,13 +425,16 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 			// scan" is answered identically wherever it is read.
 			"lines_of_code": indexResult.LinesOfCode,
 		},
-		"scan_scope":        scanScope(absPath, funcs),
+		"scan_scope":        scope,
 		"target_path":       absPath,
 		"scan_dir":          scanDir,
 		"candidates_sarif":  filepath.Join(scanDir, report.CandidatesSarifFile),
 		"findings_sarif":    filepath.Join(scanDir, report.FindingsSarifFile),
 		"result_sarif_note": fmt.Sprintf("%s is written by `report --audit` after classification; the scan writes %s (unclassified leads at level \"note\") and %s (auto-confirmed verdicts)", report.SarifFile, report.CandidatesSarifFile, report.FindingsSarifFile),
 		"_summary":          summaryStr,
+	}
+	if scopeMode(scope) == "boundary" {
+		output["suggested_config"] = filepath.Join(scanDir, "secguard.toml.suggested")
 	}
 	if findingsError != "" {
 		output["findings_error"] = findingsError
@@ -844,6 +860,11 @@ func runStatusCmd(ctx context.Context, args []string) int {
 		return 1
 	}
 	defer store.Close()
+
+	if hasFlag(args, "reports") {
+		WriteJSON(listSubagentReports(dbPath, parseStringFlag(args, "scan-id")))
+		return 0
+	}
 
 	if hasFlag(args, "per-type") {
 		scanID := parseStringFlag(args, "scan-id")

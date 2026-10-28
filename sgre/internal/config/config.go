@@ -43,6 +43,56 @@ type Scan struct {
 	//	[scan]
 	//	entry_points = ["thread_entry"]
 	EntryPoints []string `toml:"entry_points"`
+	// BoundaryAutoDismiss controls the boundary-scan fail-open null-deref
+	// pre-dismissal layer. A boundary scan (no entry point in the tree) seeds
+	// every zero-caller pointer parameter fail-open; those candidates have no
+	// in-tree proof and the AI dismisses them. Modes:
+	//   "" / "off" (default): no auto-dismiss — a library scan must not
+	//     silently drop a possible bug; the boundary report recommends the
+	//     explicit `external`/`all` setting below.
+	//   "external": auto-dismiss opaque-origin / external-unknown only (the
+	//     contract is outside the scan tree); caller-arg / assumed-return keep
+	//     an in-tree caller/callee body for the AI.
+	//   "all": also auto-dismiss caller-arg / assumed-return (aggressive; only
+	//     for a project that accepts the boundary contract as non-null).
+	//   "off": no auto-dismiss (pre-0.11.6 behaviour).
+	// Every auto-dismissed candidate is still counted in the dismissed ledger
+	// under reason `boundary_fail_open`, never silently dropped.
+	BoundaryAutoDismiss string `toml:"boundary_auto_dismiss"`
+}
+
+// boundaryAutoDismissOverride is the one-shot CLI override
+// (`secguard scan --boundary-auto-dismiss external`). It wins over the file so a
+// production run can enable the layer without editing secguard.toml.
+var boundaryAutoDismissOverride string
+
+// SetBoundaryAutoDismissOverride sets the process-wide CLI override. An empty
+// string clears it.
+func SetBoundaryAutoDismissOverride(mode string) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "external", "all", "off":
+		boundaryAutoDismissOverride = strings.ToLower(strings.TrimSpace(mode))
+	default:
+		boundaryAutoDismissOverride = ""
+	}
+}
+
+// BoundaryAutoDismissMode normalizes the configured mode.
+func (c *Config) BoundaryAutoDismissMode() string {
+	if boundaryAutoDismissOverride != "" {
+		return boundaryAutoDismissOverride
+	}
+	if c == nil {
+		return "off"
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Scan.BoundaryAutoDismiss)) {
+	case "external":
+		return "external"
+	case "all":
+		return "all"
+	default:
+		return "off"
+	}
 }
 
 type TrustedMacros struct {

@@ -163,7 +163,7 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 			}
 
 			d.detectSizeCalcOverflow(ctx, calls, f, file, influenced, wideVars, narrowVars, assigned, globalConsts, &result)
-			d.detectUnsignedSubUnderflow(ctx, calls, assigns, f, file, scopes[f.StartLine], globals, typedefs, influenced, boundedReturns, &result)
+			d.detectUnsignedSubUnderflow(ctx, calls, assigns, inits, f, file, scopes[f.StartLine], globals, typedefs, influenced, boundedReturns, &result)
 		}
 	})
 	return result, err
@@ -644,7 +644,7 @@ func (d *IntegerOverflowDetector) emitIntegerOverflowProps(ctx context.Context, 
 // allocator/copy arguments and intentionally skip subtraction; this check uses
 // type information to handle the common `count - consumed` shape without
 // treating every C subtraction as an integer-overflow candidate.
-func (d *IntegerOverflowDetector) detectUnsignedSubUnderflow(ctx context.Context, calls, assigns []parser.Node, f *db.Function, file *db.File, scope integerOverflowTypeScope, globals map[string]string, typedefs *typedefs, influenced map[string]bool, boundedReturns boundedReturnSummary, result *DetectResult) {
+func (d *IntegerOverflowDetector) detectUnsignedSubUnderflow(ctx context.Context, calls, assigns, inits []parser.Node, f *db.Function, file *db.File, scope integerOverflowTypeScope, globals map[string]string, typedefs *typedefs, influenced map[string]bool, boundedReturns boundedReturnSummary, result *DetectResult) {
 	if scope.locals == nil {
 		return
 	}
@@ -677,15 +677,33 @@ func (d *IntegerOverflowDetector) detectUnsignedSubUnderflow(ctx context.Context
 		if total := boundedAccums[bareIdentText(rhs)]; total != "" && total == exprTextKey(lhs) {
 			return
 		}
+		// The accumulator's producer callee decides the verdict: `len` fed by
+		// `ase_sa_str_connect(...)` is bounded only if THAT callee caps its
+		// return, and its body is in another file. Naming the producer lets the
+		// planner embed the body (## Callee Definition) instead of sending the
+		// classifier on a repo-wide grep.
+		producer := ""
+		for _, operand := range []parser.Node{rhs, lhs} {
+			if name := bareIdentText(operand); name != "" {
+				if callees := producerCallees(name, expr.StartLine(), inits, assigns, f); len(callees) > 0 {
+					producer = callees[0]
+					break
+				}
+			}
+		}
 		// Carry the operand provenance so the planner can emit a dense Hint
 		// (lhs@/rhs@ + rhs-influenced + sink@) instead of a bare cat@ label.
-		d.emitIntegerOverflowProps(ctx, file, f, expr, expr.Text(), "unsigned_sub_underflow", map[string]string{
+		props := map[string]string{
 			"lhs_kind":       subOperandKind(lhs, scope, globals),
 			"rhs_kind":       subOperandKind(rhs, scope, globals),
 			"lhs_influenced": strconv.FormatBool(lhsInfl),
 			"rhs_influenced": strconv.FormatBool(rhsInfl),
 			"sink":           sink,
-		}, result)
+		}
+		if producer != "" {
+			props["callee"] = producer
+		}
+		d.emitIntegerOverflowProps(ctx, file, f, expr, expr.Text(), "unsigned_sub_underflow", props, result)
 	}
 	for _, call := range calls {
 		if !funcLineRange(f, call.StartLine()) {
@@ -719,6 +737,59 @@ func (d *IntegerOverflowDetector) detectUnsignedSubUnderflow(ctx context.Context
 		}
 		check(children[1], "assign")
 	}
+}
+
+// producerCallees returns the distinct callees whose return value is assigned to
+// name before line inside f. An unsigned subtraction `bound - name` is only
+// decidable from the callee that produced name (`len += wrapper(...)`), and that
+// callee usually lives in another file; naming it lets the planner embed the
+// body as ## Callee Definition so the classifier never greps the tree for it.
+func producerCallees(name string, line int, inits, assigns []parser.Node, f *db.Function) []string {
+	if name == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	add := func(expr parser.Node) {
+		expr = unwrapExprNode(expr)
+		if expr.Kind() != "call_expression" {
+			return
+		}
+		callee := extractCallName(expr)
+		if callee == "" || seen[callee] {
+			return
+		}
+		seen[callee] = true
+		out = append(out, callee)
+	}
+	for _, init := range inits {
+		if !funcLineRange(f, init.StartLine()) || init.StartLine() > line {
+			continue
+		}
+		if n, expr := declaratorAssignment(init); n == name && expr != nil {
+			add(*expr)
+		}
+	}
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) || assign.StartLine() > line {
+			continue
+		}
+		children := assign.NamedChildren()
+		if len(children) < 2 || children[0].Kind() != "identifier" || children[0].Text() != name {
+			continue
+		}
+		rhs := unwrapExprNode(children[1])
+		if rhs.Kind() == "binary_expression" && arithOperator(rhs) == "+" {
+			for _, c := range rhs.NamedChildren() {
+				if c.Kind() == "call_expression" {
+					add(c)
+				}
+			}
+			continue
+		}
+		add(rhs)
+	}
+	return out
 }
 
 // subOperandKind classifies a subtraction operand's origin so the Hint can say
