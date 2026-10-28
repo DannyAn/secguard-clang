@@ -48,6 +48,15 @@ condition — reachable-both-times means confirmed.
 | Same as above but `may_free` is set (the helper frees only on some paths) | **confirmed only if the two releases can both run on one path; otherwise dismissed** — the candidate is a possible, not a proved, double free |
 | Two independent frees of a variable in DIFFERENT functions with no shared owner/slot | **dismissed** (interprocedural, different objects) |
 
+### Ownership-transfer APIs
+
+A pointer passed to an ownership-transfer call (`xmlDocSetRootElement`,
+`xmlAddChild`, `cJSON_AddItemToArray`, `cJSON_AddItemToObject`) is owned by the
+parent container afterward — `xmlFreeDoc(doc)` / `cJSON_Delete(root)` releases
+it. A later `xmlFreeNode(root)` / `free(item)` on the same object is a
+double-free. `cJSON_AddItemReferenceToArray` / `cJSON_AddItemReferenceToObject`
+do NOT transfer ownership — the caller still owns the item and must free it.
+
 ### Common False Positives
 - `if (a) free(ptr); ... if (!a) free(ptr);` — mutually exclusive conditions
 - `free(ptr); ptr = malloc(...); ... free(ptr);` — re-allocated between frees

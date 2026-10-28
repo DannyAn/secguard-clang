@@ -54,6 +54,14 @@ cases, and list anything still unsettled in `needs_context`.
 4. Per allocation, use the statement CFG to decide whether a leak path exists — a path to exit or to a later overwrite with no intervening release/transfer/escape.
 5. If no release/transfer/escape is reachable on any path, mark `definite` (→ confirmed). If release is reachable only on some paths, leave the candidate for the AI as `suspected`.
 
+### Third-party orphan objects
+
+A cJSON / libxml2 object created but never attached to a parent before an early
+exit leaks: `item = cJSON_CreateObject(); if (cond) return; cJSON_AddItemToArray(arr, item);` — the `return` drops `item`. Audit every
+`cJSON_Create*` / `xmlNewNode` / `xmlNewDoc` site for a `break`/`return`/`goto`
+between creation and the attach call; the attach is the release channel, so a
+path that bypasses it is the leak.
+
 ### Classification Rules
 
 | Condition | Classification |
@@ -95,6 +103,12 @@ An **error-path leak is confirmed, not suspected**: if the function demonstrably
 - `realloc` into a different target: `int *tmp = realloc(p, n);` consumes p's block, so p is not lost
 - A freed implicit allocator: `p = strdup(s); free(p);`
 - Error-handling ownership transfer (framework `fail` family): `asprintf(&err_msg, ...); return fail(error, err_msg, EXIT_FAILURE);` — the external callee takes ownership of the message/path argument and releases it (`fail` → `free(msg)`, `fail_nc_err` → `free(msg)` + `free(path)`, `*_transapi_comm_with_vrp` → `free(path)`). The shape is "directly returned + the argument is never used afterward", so the caller must NOT free it again — a second `free` would be a double-free. The detector already suppresses this shape; when a case reaches you anyway (a differently-named wrapper, e.g. `report_error`), judge the callee's contract from `## Callee Definition` / API knowledge before confirming a leak.
+- Unified-cleanup contract (caller-side): a callee writes into a caller-owned
+  struct (`parse(msg, &ctx)`) and on its own failure path does NOT free the
+  fields it filled — this is legal when the caller zero-initializes the struct
+  (`ctx = {0}`) and routes every failure through one reset/destroy that frees
+  every field. The callee's "missing free" is the design, not a leak; confirm
+  only when the caller's cleanup does not cover the field.
 
 ### Fix Suggestions
 - Release on every relevant error path, or route every exit through one `goto cleanup`

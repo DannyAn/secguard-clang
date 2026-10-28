@@ -34,6 +34,14 @@ A use-after-free candidate has:
 | free in one branch, use in another mutually exclusive branch | **false-positive** |
 | free + use in different functions (interprocedural) | **dismissed** (needs data flow) |
 
+### Ownership-transfer APIs
+
+When a pointer was transferred to a parent (`xmlDocSetRootElement(doc, root)`,
+`xmlAddChild`, `cJSON_AddItemToArray`), `xmlFreeDoc(doc)` / `cJSON_Delete(root)`
+releases it — any later `root->ns` / `item->value` access is a use-after-free.
+The `## Code Context` window shows the transfer and the parent release; confirm
+when the use is after that release.
+
 ### Common False Positives
 - `free(ptr); ptr = NULL; ptr->field;` — crash, not UAF (NULL deref instead)
 - `free(ptr); ptr = malloc(...); ptr->field;` — re-allocation before use
