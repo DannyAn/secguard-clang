@@ -1003,3 +1003,90 @@ func TestWriteCandidates_MacroDefinition(t *testing.T) {
 		}
 	}
 }
+
+// When a type's _index.md exceeds typeIndexSplitBytes, it must shard into
+// _index_1.md, _index_2.md, … (each self-contained and under the byte ceiling),
+// with _index.md becoming a directory page. This prevents a subagent's single
+// Read from exceeding the host's 25000-token Read cap — the production witness
+// was a 43918-token null-deref _index.md that crashed every null-deref subagent.
+func TestWriteTypeIndex_ShardsWhenOverByteCeiling(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "big.c")
+	if err := os.WriteFile(src, []byte("void f(void){}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	o := &ScanOutput{ScanDir: dir, ScanID: "sc_test", RootDir: dir}
+	const nCands = 1200
+	cands := make([]planner.EvidenceItem, nCands)
+	for i := range cands {
+		cands[i] = planner.EvidenceItem{
+			SuspicionLevel: "suspected",
+			Hint:           "maybe-null null@malloc-fail",
+			Target: planner.TargetInfo{
+				File: "big.c", Function: "f", Line: i + 1, Variable: "p",
+			},
+			Evidence: []planner.EvidenceFragment{{Role: "source", Detail: "p maybe null"}},
+		}
+	}
+	pkg := &planner.PlanResult{VulnerabilityType: "null-deref", Candidates: cands}
+	idxDir := filepath.Join(dir, CandidatesDir, "null-deref")
+	if err := os.MkdirAll(idxDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.writeTypeIndex(idxDir, pkg); err != nil {
+		t.Fatal(err)
+	}
+
+	idxContent := string(mustReadFile(t, filepath.Join(idxDir, TypeIndexFile)))
+	if !strings.Contains(idxContent, "split into") {
+		t.Fatalf("_index.md should be a directory page when over the ceiling:\n%s", idxContent)
+	}
+	if strings.Contains(idxContent, "| 1 | f |") {
+		t.Errorf("directory page _index.md should not contain candidate rows:\n%s", idxContent)
+	}
+
+	shard1 := string(mustReadFile(t, filepath.Join(idxDir, "_index_1.md")))
+	if len(shard1) > typeIndexSplitBytes {
+		t.Errorf("shard 1 exceeds byte ceiling: %d > %d", len(shard1), typeIndexSplitBytes)
+	}
+	for _, want := range []string{"| # | Function", "> Classify each candidate", "| 1 |"} {
+		if !strings.Contains(shard1, want) {
+			t.Errorf("shard 1 missing %q (must be self-contained):\n%s", want, shard1)
+		}
+	}
+
+	shard2 := string(mustReadFile(t, filepath.Join(idxDir, "_index_2.md")))
+	if len(shard2) > typeIndexSplitBytes {
+		t.Errorf("shard 2 exceeds byte ceiling: %d > %d", len(shard2), typeIndexSplitBytes)
+	}
+
+	totalRows := 0
+	for i := 1; ; i++ {
+		path := filepath.Join(idxDir, fmt.Sprintf("_index_%d.md", i))
+		data, err := os.ReadFile(path)
+		if err != nil {
+			break
+		}
+		totalRows += strings.Count(string(data), "| f |")
+	}
+	if totalRows != nCands {
+		t.Errorf("shards lost candidates: got %d rows, want %d", totalRows, nCands)
+	}
+}
+
+// Below the ceiling, _index.md stays a single file (backward-compatible).
+func TestWriteTypeIndex_SingleFileUnderCeiling(t *testing.T) {
+	dir := t.TempDir()
+	o := &ScanOutput{ScanDir: dir, ScanID: "sc_test", RootDir: "/repo"}
+	if err := o.writeCandidates(candidatePackages()); err != nil {
+		t.Fatal(err)
+	}
+	idxDir := filepath.Join(dir, CandidatesDir, "null-deref")
+	idxContent := string(mustReadFile(t, filepath.Join(idxDir, TypeIndexFile)))
+	if !strings.Contains(idxContent, "| 1 |") {
+		t.Errorf("small _index.md should contain candidate rows (no sharding):\n%s", idxContent)
+	}
+	if _, err := os.Stat(filepath.Join(idxDir, "_index_1.md")); !os.IsNotExist(err) {
+		t.Errorf("small _index.md should not produce shards")
+	}
+}

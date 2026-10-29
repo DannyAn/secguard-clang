@@ -716,18 +716,34 @@ func typeIndexLegend(tokens []string) string {
 	return b.String()
 }
 
+// typeIndexSplitBytes is the per-shard byte ceiling for _index.md. A subagent's
+// single Read call is capped at 25000 tokens (≈100000 bytes at 4 bytes/token);
+// we split at 90000 bytes (22500 tokens) to leave headroom for the shard header
+// + legend that each shard carries. When the full _index.md exceeds this, the
+// candidates are written to _index_1.md, _index_2.md, … and _index.md becomes a
+// directory page listing the shards + their candidate # ranges, so a subagent
+// never hits the Read token limit. Below the ceiling, _index.md stays a single
+// file (backward-compatible: the orchestrator's "read _index.md" instruction
+// works unchanged for small types).
+const typeIndexSplitBytes = 90000
+
 // writeTypeIndex writes candidates/<vuln-type>/_index.md — the single table a
 // subagent reads to classify ONE type (the # column matches the NNN candidate
 // filenames, and the Source column carries the exact statement so the classifier
 // never issues a per-candidate source READ). Splitting the index per type means
 // a subagent assigned `null-deref` reads only its own slice, not every type's
 // table in one monolithic report.md.
+//
+// When the full table exceeds typeIndexSplitBytes, it is sharded into
+// _index_1.md, _index_2.md, … (each self-contained: title + legend + header +
+// its candidate rows), and _index.md becomes a directory page listing the
+// shards and their # ranges. This prevents a subagent's single Read from
+// exceeding the host's 25000-token Read cap (production witness: a 43918-token
+// null-deref _index.md crashed every null-deref subagent with "exceeds maximum
+// allowed tokens").
 func (o *ScanOutput) writeTypeIndex(dir string, pkg *planner.PlanResult) error {
 	cwe := VulnToCWE(pkg.VulnerabilityType)
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("# %s (%s) — Candidates\n\n", pkg.VulnerabilityType, cwe))
-	// The legend is scoped to the tokens this type actually emitted (the union
-	// across its candidates), so a subagent reads only its type's vocabulary.
+	title := fmt.Sprintf("# %s (%s) — Candidates\n\n", pkg.VulnerabilityType, cwe)
 	seen := make(map[string]bool)
 	var legendTokens []string
 	for _, c := range pkg.Candidates {
@@ -738,18 +754,82 @@ func (o *ScanOutput) writeTypeIndex(dir string, pkg *planner.PlanResult) error {
 			}
 		}
 	}
-	b.WriteString(typeIndexLegend(legendTokens))
-	b.WriteString("| # | Function | File:Line | Variable | Suspicion | Hint | Source | Evidence |\n")
-	b.WriteString("|---|----------|-----------|----------|-----------|------|--------|----------|\n")
+	legend := typeIndexLegend(legendTokens)
+	header := "| # | Function | File:Line | Variable | Suspicion | Hint | Source | Evidence |\n" +
+		"|---|----------|-----------|----------|-----------|------|--------|----------|\n"
+
+	var rows []string
 	for i, c := range pkg.Candidates {
 		fileShort := displayPath(c.Target.File, o.RootDir)
-		b.WriteString(fmt.Sprintf("| %d | %s | %s:%d | %s | %s | %s | %s | `%s` |\n",
+		rows = append(rows, fmt.Sprintf("| %d | %s | %s:%d | %s | %s | %s | %s | `%s` |\n",
 			i+1, markdownCell(c.Target.Function), fileShort, c.Target.Line, markdownCell(c.Target.Variable), c.SuspicionLevel,
 			markdownCell(c.Hint),
 			markdownCell(sourceLineText(c.Target.File, c.Target.Line, o.RootDir)),
 			candidateFilename(i+1, c.Target.File, c.Target.Line)))
 	}
-	return os.WriteFile(filepath.Join(dir, TypeIndexFile), []byte(b.String()), 0644)
+
+	full := title + legend + header
+	for _, r := range rows {
+		full += r
+	}
+	if len(full) <= typeIndexSplitBytes {
+		return os.WriteFile(filepath.Join(dir, TypeIndexFile), []byte(full), 0644)
+	}
+
+	shardFixed := title + legend + header
+	shardBudget := typeIndexSplitBytes - len(shardFixed)
+	if shardBudget < 1 {
+		shardBudget = 1
+	}
+	var shards []struct {
+		content     string
+		first, last int
+	}
+	var cur strings.Builder
+	curStart := 1
+	for i, r := range rows {
+		if cur.Len() > 0 && cur.Len()+len(r) > shardBudget {
+			shards = append(shards, struct {
+				content     string
+				first, last int
+			}{cur.String(), curStart, i})
+			cur.Reset()
+			curStart = i + 1
+		}
+		cur.WriteString(r)
+	}
+	if cur.Len() > 0 {
+		shards = append(shards, struct {
+			content     string
+			first, last int
+		}{cur.String(), curStart, len(rows)})
+	}
+
+	var dirPage strings.Builder
+	dirPage.WriteString(title)
+	dirPage.WriteString(legend)
+	dirPage.WriteString(fmt.Sprintf("> %d candidates split into %d shards (each < %d bytes / ~25000 tokens).\n",
+		len(rows), len(shards), typeIndexSplitBytes))
+	dirPage.WriteString("> Read the shard for your assigned # range: a ranged batch (#A–#B) reads the\n")
+	dirPage.WriteString("> shard whose range covers A–B, NOT this directory page. Each shard is\n")
+	dirPage.WriteString("> self-contained (title + legend + header + its rows).\n\n")
+	dirPage.WriteString("| Shard | Candidates | File |\n")
+	dirPage.WriteString("|-------|-----------|------|\n")
+	for i, s := range shards {
+		dirPage.WriteString(fmt.Sprintf("| %d | #%d–#%d | `_index_%d.md` |\n", i+1, s.first, s.last, i+1))
+	}
+	dirPage.WriteString("\n")
+	dirPage.WriteString(header)
+	if err := os.WriteFile(filepath.Join(dir, TypeIndexFile), []byte(dirPage.String()), 0644); err != nil {
+		return err
+	}
+	for i, s := range shards {
+		shardContent := shardFixed + s.content
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("_index_%d.md", i+1)), []byte(shardContent), 0644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // candidateFilename returns the on-disk candidate evidence filename for one
