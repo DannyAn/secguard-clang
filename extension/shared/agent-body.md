@@ -59,6 +59,15 @@ candidate and, for a high-volume type like `null-deref`, wastes hundreds of call
 Classify from the `Source` + `Hint` columns FIRST; open the `Evidence` candidate
 file (full `## Code Context`) ONLY when the hint is insufficient to decide.
 
+**`_index.md` sharding:** when a type's candidate table exceeds ~22500 tokens
+(90000 bytes), the scan writes it as shards `_index_1.md`, `_index_2.md`, …
+(each self-contained: title + legend + header + its candidate rows, each under
+the host's 25000-token Read cap), and `_index.md` becomes a directory page
+listing the shards + their `#` ranges. A subagent assigned range #A–#B SHALL
+read the shard(s) covering A–B (per the directory page's shard table), NOT the
+directory page and NOT all shards. A non-sharded `_index.md` (small type) is
+read as a single file — the directory page is only present when sharding fired.
+
 **Evidence-open budget (a budgeted resource, not a default step).** A DECISIVE
 hint settles a row with NO open: `certain-null` / `null@cfg-proof` /
 `null@malloc-fail` / `leak@definite` + `escape@none` / a constant `idx@` past
@@ -85,13 +94,13 @@ your toolset; otherwise `secguard def` via Bash):
 
 - `secguard_def` with `symbol="<name>"` (or `secguard def <symbol>` via Bash) →
   `{found, definitions:[{kind,file,line,end_line,signature,body}]}`. The `kind`
-  field is one of `function` / `declaration` / `typedef` / `variable` / `macro`
+  field is one of `function` / `declaration` / `type` / `variable` / `macro`
   — ALL five are indexed. Functions and declarations come from the semantic
   graph; `#define` bodies come from project headers; the body is returned inline.
   This covers every definition-lookup need a verdict can have:
-  - **struct/union member** (`p->field`, `sizeof(struct X)`) → `secguard def <StructTag> --kind typedef`
+  - **struct/union member** (`p->field`, `sizeof(struct X)`) → `secguard def <StructTag> --kind type`
   - **enum constant value** → `secguard def <ENUM_CONST> --kind declaration`
-  - **typedef width chain** (`typedef int myint_t` → resolve `myint_t`) → `secguard def <myint_t> --kind typedef`
+  - **typedef width chain** (`typedef int myint_t` → resolve `myint_t`) → `secguard def <myint_t> --kind type`
   - **function signature / parameter types** → `secguard def <func> --kind function`
   - **global variable definition** → `secguard def <var> --kind variable`
   - **macro expansion chain** → `secguard def <MACRO> --kind macro` (or `--in <file>`)
