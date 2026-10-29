@@ -84,9 +84,17 @@ cover, use ONE indexed lookup (prefer the `secguard_def` MCP tool when it is in
 your toolset; otherwise `secguard def` via Bash):
 
 - `secguard_def` with `symbol="<name>"` (or `secguard def <symbol>` via Bash) →
-  `{found, definitions:[{kind,file,line,end_line,signature,body}]}`. Functions and
-  declarations come from the semantic graph; `#define` bodies come from project
-  headers; the body is returned inline.
+  `{found, definitions:[{kind,file,line,end_line,signature,body}]}`. The `kind`
+  field is one of `function` / `declaration` / `typedef` / `variable` / `macro`
+  — ALL five are indexed. Functions and declarations come from the semantic
+  graph; `#define` bodies come from project headers; the body is returned inline.
+  This covers every definition-lookup need a verdict can have:
+  - **struct/union member** (`p->field`, `sizeof(struct X)`) → `secguard def <StructTag> --kind typedef`
+  - **enum constant value** → `secguard def <ENUM_CONST> --kind declaration`
+  - **typedef width chain** (`typedef int myint_t` → resolve `myint_t`) → `secguard def <myint_t> --kind typedef`
+  - **function signature / parameter types** → `secguard def <func> --kind function`
+  - **global variable definition** → `secguard def <var> --kind variable`
+  - **macro expansion chain** → `secguard def <MACRO> --kind macro` (or `--in <file>`)
 - **Batch related symbols in one call.** `secguard_def` with
   `symbols=["<a>","<b>"]` (or `secguard def a b`) returns `{results:[...]}` —
   this replaces the old `A|B` regex grep for a callee pair (ipv4/ipv6) or a
@@ -105,6 +113,15 @@ wall-clock cost in production scans; it is NOT bounded by the ≤5-source-read
 budget. A repo-wide Grep counts as ONE source read, and you may use at most ONE
 per type (report it in `repo_greps`). If you already grepped for a symbol, use
 `secguard def` for its siblings rather than grepping again.
+
+**Call-site census — already in the Hint, never grep for callers.** The `callers@<census>`
+(divide-by-zero) and `callsites@<census>` (format-string/path-traversal, `N:all-literal`
+= every in-tree caller passes a compile-time constant) Hint tokens are a FULL
+in-tree census the scan already performed. Do NOT grep for call sites to verify
+them — the census IS the verification. If the census says `all-literal`, every
+caller was checked; if it lists specific callers, those are ALL of them. A grep
+for callers re-derives a result the scan already computed and is the same
+wall-clock tax as a definition grep.
 
 **RED LINE — never call `secguard report --complete-type` or
 `secguard report --audit`.** You are a subagent: the orchestrator is the SINGLE
