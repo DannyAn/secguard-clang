@@ -177,24 +177,40 @@ security scan and reading them makes the verdicts worthless. The scan dir
 | Parameter | Value | Meaning |
 |---|---|---|
 | `MAX_TYPES_PER_BATCH` | 4 | Hard ceiling on types assigned to one subagent |
-| `MAX_CANDIDATES_PER_BATCH` | 20 | Hard ceiling on candidates assigned to one subagent (most settle from `Source`+`Hint`; ~20% need one `Evidence` open) |
+| `MAX_CANDIDATES_PER_BATCH` | adaptive (see below) | Per-type candidate ceiling: `min(⌊MAX_EVIDENCE_OPENS_PER_TYPE / r_type⌋, ⌊(CONTEXT_BUDGET − skill − legend) / per_candidate_index_token⌋)`, never a hardcoded constant |
 | `MAXTURNS` | 60 | security-auditor.md maxTurns (reference value — each platform's agent turn cap must still match; NOT used for batch-capacity math, which is count-based) |
 | `LARGE_CANDIDATE_THRESHOLD` | 100 | Types with > this many candidates get a dedicated subagent |
 | `SPLIT_CANDIDATE_THRESHOLD` | 100 | A type with > this many candidates is SPLIT across multiple subagents, each handling ≤ this many candidates |
-| `MAX_EVIDENCE_OPENS_PER_TYPE` | 12 | Evidence-file-open budget per subagent; beyond it the subagent reports `needs_context` instead of opening everything |
-| `HOST_AGENT_TIMEOUT` | 660 | claude-cac synchronous `Agent` hard ceiling (seconds). A batch must finish comfortably under it; a batch that runs ~10min is already at the wall and a force-reject + re-dispatch costs more than a smaller batch |
+| `MAX_EVIDENCE_OPENS_PER_TYPE` | 12 | Evidence-file-open budget per subagent; beyond it the subagent reports `needs_context` instead of opening everything (hard constraint, `agent-body.md`) |
+| `CONTEXT_BUDGET` | 98000 | Subagent context window reserved for data (conservative 128K window − 30K reasoning/write reserve). Covers Claude Code (200K), OpenCode, DSH with margin. The only external input; lower it if a host has a smaller window. |
+| `HOST_AGENT_TIMEOUT` | 660 | claude-cac synchronous `Agent` hard ceiling (seconds). A force-rejected batch feeds back into r_type (raise r → smaller next batch), NOT a hard pre-dispatch cap. |
 | `SMALL_TYPE_SEQUENTIAL_THRESHOLD` | 3 | A type with ≤3 candidates is cheaper for the orchestrator to classify directly than to dispatch (no skill-load/spawn fixed cost) |
 
-`MAX_TYPES_PER_BATCH` / `MAX_CANDIDATES_PER_BATCH` are the two **per-dispatch**
-ceilings — the orchestrator counts types and candidates, no budget formula. A
-batch that fits both is dispatchable; a batch that exceeds either is split (split
-off the heaviest type first, then re-check). `SPLIT_CANDIDATE_THRESHOLD=100` is a
-**context** ceiling, NOT a licence to dispatch 100 candidates to one subagent:
-a type over 100 is split into ≤100-candidate ranges for context, and EACH range
-is then dispatched in ≤20-candidate batches. The production 69-candidate ranges
-violated the 20 cap and hit the host's 660s wall; a 20-candidate null-deref batch
-is ~2 min, so more, smaller concurrent batches are faster than one 10-minute batch
-that gets force-rejected. `MAXTURNS` remains the
+`MAX_CANDIDATES_PER_BATCH` is **adaptive, per-type, and dual-constrained** — it is
+NOT a hardcoded 20. The two constraints, both measurable at scan time:
+
+1. **Evidence-open budget** (`agent-body.md` hard value 12): a batch of N candidates
+   opens `N × r_type` Evidence files in expectation, so `N ≤ ⌊12 / r_type⌋`.
+   `r_type` = `sum(evidence_opens) / sum(range_candidates)` from prior settlement
+   reports (`agent-body.md` `evidence_opens` field). First run with no history:
+   `r_type = 0.30` (conservative default for heavy types; lighter types self-correct
+   after one scan).
+2. **Context-token budget**: the subagent reads `skill + legend + N × per_candidate_index_token`,
+   so `N ≤ ⌊(CONTEXT_BUDGET − skill − legend) / per_candidate_index_token⌋`.
+   `per_candidate_index_token` = `_index.md` shard byte size / candidate count / 4
+   (scan-time measurable: `writeTypeIndex` knows both). `skill` + `legend` are the
+   type's SKILL.md + the `_index.md` legend, both known at scan time.
+
+`N_type = min(constraint1, constraint2)`. Constraint 1 binds for heavy types
+(null-deref/memory-leak: high r → small N); constraint 2 binds for light types
+(divide-by-zero `divisor@bare`: low r → large N would overflow context via the
+index read itself). The prior hardcoded 20 violated neither proof nor measurement
+— it was an unvalidated constant that caused 1980 candidates → 98 batches →
+10 serial waves on a 10-wide host (production: "scanned for a day").
+
+`SPLIT_CANDIDATE_THRESHOLD=100` remains a **context** ceiling for ranging: a type
+over 100 is split into ≤100-candidate ranges for context, and EACH range is then
+dispatched in ≤`N_type`-candidate batches. `MAXTURNS` remains the
 reference value every platform's agent turn cap must match
 (`release/check-extension-consistency.py` enforces this), but it is NOT part of the
 batch-capacity decision — the count-based ceilings above already keep a batch well
@@ -208,14 +224,19 @@ the type needs a source read it cannot afford.
 
 **Pre-dispatch validation (EARS):**
 - If a batch has > `MAX_TYPES_PER_BATCH` (4) types, the orchestrator SHALL split it before dispatching.
-- Where a single type has > `LARGE_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL give that type dedicated subagent(s) — never share it with another type — and split those subagents by the next rule (≤20 candidates each).
-- Where a single type has > `SPLIT_CANDIDATE_THRESHOLD` (100) candidates, split it into ≤100-candidate RANGES for context (pass the candidate # range, e.g. "candidates #1–100 of null-deref"). Then dispatch **each range in ≤`MAX_CANDIDATES_PER_BATCH` (20)-candidate subagent batches**: the 20 cap is the host-timeout cap, the 100 range is only the context ceiling. A 100-candidate range is therefore ~5 subagents of 20, not one 100-candidate subagent. Balance ranges so there is no sliver tail (100 + 100 + 1): merge a final range smaller than 5 into its predecessor and re-split evenly. Smaller batches are allowed (and preferred for expensive types: leak/uninit/null-deref group) when the per-candidate cost is high; a 20-candidate null-deref batch is ~2 min, so more, smaller concurrent batches beat one 10-minute batch that hits the 660s wall. If a super-large function still overflows a 20-candidate batch, surface the tail via the partial-count path, never silently bury it.
+- Where a single type has > `LARGE_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL give that type dedicated subagent(s) — never share it with another type — and split those subagents by the next rule.
+- Where a single type has > `SPLIT_CANDIDATE_THRESHOLD` (100) candidates, split it into ≤100-candidate RANGES for context (pass the candidate # range, e.g. "candidates #1–100 of null-deref"). Then dispatch **each range in ≤`N_type`-candidate subagent batches** where `N_type` is the adaptive per-type ceiling above. Balance ranges so there is no sliver tail (100 + 100 + 1): merge a final range smaller than 5 into its predecessor and re-split evenly. If a super-large function still overflows a batch, surface the tail via the partial-count path, never silently bury it.
 - The orchestrator SHALL validate a batch against the two capacity ceilings (types,
   candidates) — no budget formula, just counts. A batch that fits both is
   dispatchable; a batch that exceeds either one is split (split off the heaviest
   type first, then re-check). `batch_candidate_count` is the SUM of the batch's
   per-type candidate counts. Auto-confirmed findings carry no unreviewed entries
   (machine verdicts, marked reviewed at scan), so they add nothing to the budget.
+- **Feedback (F11 → r_type):** when a batch is force-rejected by `HOST_AGENT_TIMEOUT`,
+  the orchestrator SHALL raise `r_type` for that type (the batch was more expensive
+  than the historical rate predicted) and re-dispatch a smaller batch. This is
+  feedback control, not a pre-dispatch hard cap — the 660s wall depends on code
+  shape (super-large functions), not a static per-candidate cost.
 
 ## Full Scan Workflow
 
@@ -450,6 +471,14 @@ straight to the structured report (`written: 0`).
    (#A–#B), read the table header once and only rows #A–#B (the `#` column is
    sequential; use Read offset/limit); do NOT re-read the full table for a
    sibling range — each full read costs the same again.
+   **`_index.md` sharding:** when a type's candidate table exceeds ~22500 tokens
+   (90000 bytes), the scan writes it as shards `_index_1.md`, `_index_2.md`, …
+   (each self-contained: title + legend + header + its candidate rows, each under
+   the host's 25000-token Read cap), and `_index.md` becomes a directory page
+   listing the shards + their # ranges. A subagent assigned range #A–#B SHALL
+   read the shard(s) covering A–B (per the directory page's shard table), NOT the
+   directory page and NOT all shards. A non-sharded `_index.md` (small type) is
+   read as a single file — the directory page is only present when sharding fired.
    When a verdict needs a callee/macro/type contract that the embedded
    `## Callee Definition` / `## Macro Definition` sections do not show, use
    `secguard_def` (MCP) or `secguard def <symbol>` (Bash) — one indexed lookup,
@@ -578,7 +607,8 @@ straight to the structured report (`written: 0`).
    For many types, batch them — but NEVER exceed `MAX_TYPES_PER_BATCH` (4) types
    per subagent, and validate the capacity ceilings before dispatching:
    `batch_type_count ≤ MAX_TYPES_PER_BATCH` (4) AND `batch_candidate_count ≤
-    MAX_CANDIDATES_PER_BATCH` (20). `batch_candidate_count` is the SUM of the
+    N_type` (the adaptive per-type ceiling from Batch Capacity Configuration).
+    `batch_candidate_count` is the SUM of the
    batch's per-type candidate counts. A batch that fails any ceiling SHALL be
    split (split off the heaviest type first). Do NOT read `report.md` or all
    source files yourself — each subagent reads only its own types' candidates.
