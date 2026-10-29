@@ -26,6 +26,18 @@ v0.11.6 的硬编码 `MAX_CANDIDATES_PER_BATCH=20` 是无量化证据的常量�
 
 - 证据：`agent-body.md:68` `evidence_opens ≤ 12` + `agent-body.md:585` `evidence_opens` 可测字段 + 用户日志 43918 tokens 实证。零估算：每个量都标注源码来源。
 
+### 子代理 grep 诱因消除
+
+子代理在 6 个场景默认 grep 全仓找定义（struct/typedef 成员、枚举值、typedef 宽度链、调用点验证、Callee Body unavailable、宏展开），是仅次于批次问题的 wall-clock 来源。
+
+- `markdown.go` "Body unavailable" 从"读那个位置"改为指向 `secguard def`（4e252b8）。
+- `agent-body.md` 补全 5 kind 覆盖（function/declaration/type/variable/macro）+ call-site census 段，明确 `callers@`/`callsites@` Hint 是全树普查结果、子代理不得再 grep 调用点（adae325）。
+
+### `secguard def` kind 值修正 + `_index.md` shard 指令同步
+
+- `agent-body.md` 写的 `--kind typedef` 与 `def.go:186` 实际 switch case `type` 不一致——子代理按指令用 `--kind typedef` 会得到空结果。修正 3 处 `typedef`→`type`（712edb5）。
+- `command-instructions.md` 已加 `_index.md` shard 读指令，但 `agent-body.md`（子代理实际读的文件）没同步。补全 shard 协议：子代理按目录页 shard 表读对应片，不读目录页也不读所有片（712edb5）。
+
 ## [0.11.7] - 2026-10-29
 
 ### 修复：回退 `findings.sarif` 对扫描输出契约的破坏
