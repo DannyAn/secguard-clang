@@ -2,6 +2,30 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.11.8] - 2026-10-30
+
+### 并发性能：`_index.md` 分页 + 批次大小双重约束自适应
+
+v0.11.6 的硬编码 `MAX_CANDIDATES_PER_BATCH=20` 是无量化证据的常量（`5edd750` 拍脑袋 + `25a3c9c` 单次事故事后合理化），导致 1980 候选 → 98 批次 → 10 轮串行（宿主并发 ~10），现网"扫了一天"。叠加 null-deref `_index.md` 43918 tokens 超过宿主 25000 token Read 限制，每个 null-deref 子代理一读就崩——两个问题叠加是现网崩溃的直接根因。
+
+**P0：`_index.md` 分页（`writeTypeIndex` 切片）**
+
+- 当某类型 `_index.md` 超过 90000 bytes（≈22500 tokens，留余量低于宿主 25000 token Read 限制），scan 自动切片写 `_index_1.md`/`_index_2.md`/…，每片自包含（标题 + legend + 表头 + 该片候选行），`_index.md` 变目录页列出各片 + 候选 # 范围。
+- 小于阈值时保持单文件（向后兼容：现有"读 `_index.md`"指令对小类型不变）。
+- 子代理按目录页的 shard 表读对应片，不再撞 25000 token 限制。
+- 证据：用户日志 `File content (43918 tokens) exceeds maximum allowed tokens (25000)` + 源码 `snippet.go:29` `candidateContextLines=8`。
+
+**P1：批次大小双重约束自适应（替代硬编码 20）**
+
+批次大小从硬 20 改为 per-type 自适应 `N_type = min(约束1, 约束2)`，两个约束均 scan 时可测：
+
+- **约束1（Evidence 打开预算）**：`N ≤ ⌊12 / r_type⌋`，`r_type` 从历史 settlement report 的 `evidence_opens / range_candidates` 实测（`agent-body.md` `evidence_opens` 字段），首次无历史取保守 0.30。12 是 `agent-body.md:68` 硬值 `MAX_EVIDENCE_OPENS_PER_TYPE`。
+- **约束2（context token 总量）**：`N ≤ ⌊(CONTEXT_BUDGET − skill − legend) / per_candidate_index_token⌋`，`per_candidate_index_token` = shard 字节/候选数/4（scan 时精确），`CONTEXT_BUDGET=98000`（保守 128K 窗 − 30K 推理预留）。
+
+约束1 管重类型（高 r → 小批），约束2 管轻类型（低 r → 大批会因 _index.md 读取本身溢出 context）。660s 撞墙改为事后反馈调 `r_type`（已有 F11 机制），不再当前置硬约束。
+
+- 证据：`agent-body.md:68` `evidence_opens ≤ 12` + `agent-body.md:585` `evidence_opens` 可测字段 + 用户日志 43918 tokens 实证。零估算：每个量都标注源码来源。
+
 ## [0.11.7] - 2026-10-29
 
 ### 修复：回退 `findings.sarif` 对扫描输出契约的破坏
