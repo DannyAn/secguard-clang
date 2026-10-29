@@ -2,7 +2,15 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.11.8] - 2026-10-30
+## [0.11.7] - 2026-10-30
+
+### 修复：回退 `findings.sarif` 对扫描输出契约的破坏
+
+v0.11.6 引入的 `findings.sarif`（commit 22ac277）违反了扫描输出契约：原本扫描阶段只产 `candidates.sarif`（未判定候选）+ `report.md`，verdict 阶段才产 `result.sarif`；该改动为让 `validate-benchmark.py` 不跑 `report --audit` 也能读 auto-confirmed，在**每个用户的扫描目录**多写了一个 `findings.sarif`，导致现网用户看到三个 sarif 文件、契约文档（README/CLAUDE.md/QUICKSTART/output-protocol）与实现脱节。
+
+- 撤销 `scan.go` 写 `findings.sarif`、`protocol.go` 删 `FindingsSarifFile` 常量、删 `zz_findings_sarif_test.go`、`scan_test.go` 去掉对 `findings.sarif` 的断言。
+- `validate-benchmark.py` 回退为只认 `result.sarif`（verdict 阶段产物），提示信息改回"run the scan and `secguard report --audit` first"。benchmark 流程本就该跑 audit——FP 判定需要完整 verdict（auto-confirmed + AI-confirmed），只看 auto-confirmed 会漏判 AI-confirmed 的 FP。
+- 输出契约恢复为 **two SARIF stages**：`candidates.sarif`（扫描阶段）+ `result.sarif`（verdict 阶段，`report --audit` 生成），与文档一致。
 
 ### 并发性能：`_index.md` 分页 + 批次大小双重约束自适应
 
@@ -37,16 +45,6 @@ v0.11.6 的硬编码 `MAX_CANDIDATES_PER_BATCH=20` 是无量化证据的常量�
 
 - `agent-body.md` 写的 `--kind typedef` 与 `def.go:186` 实际 switch case `type` 不一致——子代理按指令用 `--kind typedef` 会得到空结果。修正 3 处 `typedef`→`type`（712edb5）。
 - `command-instructions.md` 已加 `_index.md` shard 读指令，但 `agent-body.md`（子代理实际读的文件）没同步。补全 shard 协议：子代理按目录页 shard 表读对应片，不读目录页也不读所有片（712edb5）。
-
-## [0.11.7] - 2026-10-29
-
-### 修复：回退 `findings.sarif` 对扫描输出契约的破坏
-
-v0.11.6 引入的 `findings.sarif`（commit 22ac277）违反了扫描输出契约：原本扫描阶段只产 `candidates.sarif`（未判定候选）+ `report.md`，verdict 阶段才产 `result.sarif`；该改动为让 `validate-benchmark.py` 不跑 `report --audit` 也能读 auto-confirmed，在**每个用户的扫描目录**多写了一个 `findings.sarif`，导致现网用户看到三个 sarif 文件、契约文档（README/CLAUDE.md/QUICKSTART/output-protocol）与实现脱节。
-
-- 撤销 `scan.go` 写 `findings.sarif`、`protocol.go` 删 `FindingsSarifFile` 常量、删 `zz_findings_sarif_test.go`、`scan_test.go` 去掉对 `findings.sarif` 的断言。
-- `validate-benchmark.py` 回退为只认 `result.sarif`（verdict 阶段产物），提示信息改回"run the scan and `secguard report --audit` first"。benchmark 流程本就该跑 audit——FP 判定需要完整 verdict（auto-confirmed + AI-confirmed），只看 auto-confirmed 会漏判 AI-confirmed 的 FP。
-- 输出契约恢复为 **two SARIF stages**：`candidates.sarif`（扫描阶段）+ `result.sarif`（verdict 阶段，`report --audit` 生成），与文档一致。
 
 ## [0.11.6] - 2026-10-29 (re-cut)
 
