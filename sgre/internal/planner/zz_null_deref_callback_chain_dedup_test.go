@@ -43,10 +43,13 @@ void init(void)
 	res := planNullDerefFullSrc(t, src)
 	for _, c := range res.Candidates {
 		if c.Target.Variable == "w" && c.Target.Function == "send_widget" {
-			t.Errorf("callback-registered function send_widget: expected NO candidate for w (suppressed by ADDR_TAKEN), got tier=%s",
-				c.NullOriginTier)
+			if c.NullOriginTier != "callback-entry" {
+				t.Errorf("callback-registered function send_widget: tier=%q, want callback-entry (downgraded, not suppressed — the candidate is kept so a real null-deref is not missed)", c.NullOriginTier)
+			}
+			return
 		}
 	}
+	t.Errorf("callback-registered function: expected a callback-entry candidate for w (downgraded, not suppressed), got none")
 }
 
 // TestNullDeref_NonCallbackZeroCallSiteKeepsCandidate verifies that a

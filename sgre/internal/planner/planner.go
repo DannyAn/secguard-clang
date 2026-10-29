@@ -823,9 +823,13 @@ func chainDedupCandidates(candidates []Candidate, spec *VulnTypeSpec) []Candidat
 // shouldChainFold reports whether a candidate is an open-chain caller-arg
 // candidate eligible for cross-function folding.
 func shouldChainFold(c Candidate) bool {
-	if c.NullOriginTier != "caller-arg" || c.HasDefiniteNull {
+	if c.HasDefiniteNull {
+		return false
+	}
+	if c.NullOriginTier != "caller-arg" && c.NullOriginTier != "callback-entry" {
 		return false
 	}
 	return strings.Contains(c.CallerNullDetail, "unguarded external entry") ||
-		strings.Contains(c.CallerNullDetail, "unguarded entry chain")
+		strings.Contains(c.CallerNullDetail, "unguarded entry chain") ||
+		strings.Contains(c.CallerNullDetail, "ADDR_TAKEN")
 }

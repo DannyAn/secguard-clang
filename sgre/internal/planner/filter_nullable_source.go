@@ -153,11 +153,7 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 						fmt.Sprintf("parameter %s has no proven nullable caller argument", c.VariableName))
 					continue
 				}
-				if !c.HasDefiniteNull && addrTakenFuncs[c.FunctionID] && isUnguardedExternalEntryDetail(c.CallerNullDetail) {
-					dropped = dismiss(dropped, c, f.Name(),
-						fmt.Sprintf("function %s is registered via a function-pointer (ADDR_TAKEN edge); parameter %s nullability is bound to the registration-site context, not an unguarded external entry", c.FunctionName, c.VariableName))
-					continue
-				}
+
 				if c.SourceLine > 0 && !c.HasDefiniteNull && fm.weakGuardAt(c.VariableName, c.Line) {
 					dropped = dismiss(dropped, c, f.Name(),
 						fmt.Sprintf("dereference of %s is short-circuit null-guarded in its condition", c.VariableName))
@@ -266,6 +262,9 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				case models[c.FunctionID].onlyCertainNullableSources(c.VariableName):
 					c.NullOriginTier = "malloc-fail"
 					c.NullableOriginName = models[c.FunctionID].certainNullableOrigin(c.VariableName)
+				case !c.HasDefiniteNull && addrTakenFuncs[c.FunctionID] && isUnguardedExternalEntryDetail(c.CallerNullDetail):
+					c.NullOriginTier = "callback-entry"
+					c.CallerNullDetail = fmt.Sprintf("function %s is registered via a function-pointer (ADDR_TAKEN); parameter %s nullability is bound to the registration-site context — verify the registrar passes a non-null ctx", c.FunctionName, c.VariableName)
 				case c.CallerNullDetail != "":
 					c.NullOriginTier = "caller-arg"
 				case models[c.FunctionID].arrayBufferCountField(c.VariableName) != "":
