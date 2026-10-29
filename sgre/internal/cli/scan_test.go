@@ -57,10 +57,6 @@ func TestScanRetention_PriorScanDirsPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scan1 sarif not found: %v", err)
 	}
-	findingsSarif1, err := os.ReadFile(filepath.Join(scanDir1, "findings.sarif"))
-	if err != nil {
-		t.Fatalf("scan1 findings.sarif not found: %v", err)
-	}
 	report1, err := os.ReadFile(filepath.Join(scanDir1, "report.md"))
 	if err != nil {
 		t.Fatalf("scan1 report not found: %v", err)
@@ -74,10 +70,6 @@ func TestScanRetention_PriorScanDirsPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scan1 sarif not found after scan2: %v", err)
 	}
-	findingsSarif1After, err := os.ReadFile(filepath.Join(scanDir1, "findings.sarif"))
-	if err != nil {
-		t.Fatalf("scan1 findings.sarif not found after scan2: %v", err)
-	}
 	report1After, err := os.ReadFile(filepath.Join(scanDir1, "report.md"))
 	if err != nil {
 		t.Fatalf("scan1 report not found after scan2: %v", err)
@@ -86,18 +78,12 @@ func TestScanRetention_PriorScanDirsPreserved(t *testing.T) {
 	if string(sarif1) != string(sarif1After) {
 		t.Error("scan1 candidates.sarif was modified by scan2")
 	}
-	if string(findingsSarif1) != string(findingsSarif1After) {
-		t.Error("scan1 findings.sarif was modified by scan2")
-	}
 	if string(report1) != string(report1After) {
 		t.Error("scan1 report.md was modified by scan2")
 	}
 
 	if _, err := os.Stat(filepath.Join(scanDir2, "candidates.sarif")); err != nil {
 		t.Errorf("scan2 sarif not found: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(scanDir2, "findings.sarif")); err != nil {
-		t.Errorf("scan2 findings.sarif not found: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(scanDir2, "report.md")); err != nil {
 		t.Errorf("scan2 report not found: %v", err)

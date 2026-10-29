@@ -38,7 +38,13 @@ jobs:
           cp -r examples/c-vuln-benchmark/src /tmp/bench/
           cd /tmp/bench
           $GITHUB_WORKSPACE/bin/secguard scan . --db /tmp/bench/sgre.db > scan.log 2>&1
+          SCAN_ID=$(ls .codeagent/secguard-clang/scans | grep -v latest | head -1)
+          $GITHUB_WORKSPACE/bin/secguard report --audit \
+            --scan-id "$SCAN_ID" \
+            --output-dir "/tmp/bench/.codeagent/secguard-clang/scans/$SCAN_ID" \
+            --db /tmp/bench/sgre.db > audit.log 2>&1
           cat scan.log
+          cat audit.log
 
       - name: Validate benchmark (recall=100% FP=0 FN=0 red line)
         run: |

@@ -306,18 +306,7 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 		WriteErrorJSON(fmt.Sprintf("failed to write review output: %v", err))
 		return 1
 	}
-	// Write the auto-confirmed findings SARIF, mirroring scan.go: a review that
-	// auto-confirms findings must surface them in findings.sarif so a benchmark
-	// validator scores the full detection set (candidates + verdicts).
-	reviewFindings, ferr := store.ListFindingsByScanID(ctx, reviewID)
-	if ferr != nil {
-		logger.Warn("list review findings for findings.sarif failed", "error", ferr)
-	} else {
-		findingsSarifPath := filepath.Join(reviewDir, report.FindingsSarifFile)
-		if werr := report.WriteSarifFromFindings(findingsSarifPath, projectRoot, reviewFindings); werr != nil {
-			logger.Warn("write review findings sarif failed", "error", werr)
-		}
-	}
+
 	if logCloser != nil {
 		_ = logCloser.Close()
 		logCloser = nil
@@ -354,8 +343,7 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 		"target_path":       absPath,
 		"review_dir":        reviewDir,
 		"candidates_sarif":  filepath.Join(reviewDir, report.CandidatesSarifFile),
-		"findings_sarif":    filepath.Join(reviewDir, report.FindingsSarifFile),
-		"result_sarif_note": fmt.Sprintf("%s is written by `report --audit` after classification; the review writes %s (unclassified leads at level \"note\") and %s (auto-confirmed verdicts)", report.SarifFile, report.CandidatesSarifFile, report.FindingsSarifFile),
+		"result_sarif_note": fmt.Sprintf("%s is written by `report --audit` after classification; the review writes %s (unclassified leads at level \"note\")", report.SarifFile, report.CandidatesSarifFile),
 	}
 
 	WriteJSON(output)
