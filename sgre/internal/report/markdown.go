@@ -638,7 +638,7 @@ func writeCalleeDefinition(b *strings.Builder, c planner.EvidenceItem, o *ScanOu
 		b.WriteString("\n")
 	} else {
 		b.WriteString("## Callee Definition\n\n")
-		fmt.Fprintf(b, "- Body unavailable at report time: `%s:%d` could not be read (file changed or moved since the scan?).\n- The callee is in the scan; read that location only if the signature above is insufficient.\n\n", displayPath(c.CalleeDefFile, o.RootDir), c.CalleeDefLine)
+		fmt.Fprintf(b, "- Body unavailable at report time: `%s:%d` could not be read (file changed or moved since the scan?).\n- Use `secguard def <callee>` (or `secguard_def` MCP) to look up the callee body — do NOT grep the repo for it.\n\n", displayPath(c.CalleeDefFile, o.RootDir), c.CalleeDefLine)
 	}
 }
 
