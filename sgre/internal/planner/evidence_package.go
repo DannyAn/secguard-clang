@@ -77,6 +77,9 @@ type EvidenceItem struct {
 	// dereferenced (first = Target.Line). One candidate still means one finding;
 	// this is the sink blast radius the classifier and the fix suggestion need.
 	DerefLines []int `json:"deref_lines,omitempty"`
+	// ChainFunctions lists the other functions folded into this candidate by
+	// cross-function chain-dedup (same nullable root through a forwarding chain).
+	ChainFunctions []string `json:"chain_functions,omitempty"`
 	// IsCallResultDeref marks a dereference of a direct call result
 	// (`f()->field`, `*f()`, `f()[i]`): the callee's body (when defined in
 	// the scan) is embedded under ## Callee Definition.
@@ -780,6 +783,7 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 		IsCallResultDeref: c.IsCallResultDeref,
 		DerivedFrom:       c.DerivedFrom,
 		DerefLines:        c.DerefLines,
+		ChainFunctions:    c.ChainFunctions,
 
 		FunctionStartLine: c.FuncStartLine,
 		FunctionEndLine:   c.FuncEndLine,

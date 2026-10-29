@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/DannyAn/secguard-clang/internal/config"
@@ -190,6 +191,9 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 	}
 
 	candidates = deduplicateCandidates(candidates, spec)
+	if spec.ConvergeByVariable {
+		candidates = chainDedupCandidates(candidates, spec)
+	}
 	summary.DedupedCount = len(candidates)
 
 	result := &PlanResult{
@@ -751,4 +755,77 @@ func (spec *VulnTypeSpec) dedupKey(c Candidate) string {
 		return fmt.Sprintf("%d:%s:%s", c.FileID, c.FunctionName, c.VariableName)
 	}
 	return fmt.Sprintf("%d:%d:%s:%s", c.FileID, c.Line, c.FunctionName, c.VariableName)
+}
+
+// chainDedupCandidates folds cross-function candidates that share the same
+// nullable root into a single entry. In a forwarding chain like
+//
+//	send_ips(ips) → write_ips_body(df, ips) → write_ips_tail(df, ips)
+//
+// each intermediate function gets its own "caller-arg" candidate because the
+// per-function × per-variable dedup key cannot see across function boundaries.
+// They are all the SAME root cause (the top-level `ips` parameter is unguarded),
+// so the AI should judge one candidate listing every affected (function, line)
+// sink, not 5-8 near-duplicate candidates.
+//
+// Only open-chain "caller-arg" candidates are folded: their CallerNullDetail
+// contains "unguarded external entry" (zero-call-site root) or "forwards …
+// from an unguarded entry chain" (intermediate hop). cfg-proof (definite-null)
+// and malloc-fail candidates are never folded — they are independent proofs.
+// The fold key is (fileID, variableName): within one file, the same parameter
+// name forwarded through a chain is one root. Cross-file folds would risk
+// merging unrelated same-name parameters.
+func chainDedupCandidates(candidates []Candidate, spec *VulnTypeSpec) []Candidate {
+	if len(candidates) <= 1 {
+		return candidates
+	}
+	type foldSlot struct {
+		idx   int
+		funcs map[string]bool
+	}
+	folds := make(map[string]*foldSlot)
+	result := make([]Candidate, 0, len(candidates))
+	for _, c := range candidates {
+		if !shouldChainFold(c) {
+			result = append(result, c)
+			continue
+		}
+		key := fmt.Sprintf("%d:%s", c.FileID, c.VariableName)
+		slot, ok := folds[key]
+		if !ok {
+			slot = &foldSlot{idx: len(result), funcs: map[string]bool{c.FunctionName: true}}
+			folds[key] = slot
+			c.ChainFunctions = nil
+			result = append(result, c)
+			continue
+		}
+		keep := &result[slot.idx]
+		for _, l := range c.DerefLines {
+			keep.DerefLines = appendUniqueLine(keep.DerefLines, l)
+		}
+		keep.DerefLines = appendUniqueLine(keep.DerefLines, c.Line)
+		if !slot.funcs[c.FunctionName] {
+			slot.funcs[c.FunctionName] = true
+			keep.ChainFunctions = append(keep.ChainFunctions, c.FunctionName)
+		}
+		if c.Line < keep.Line {
+			keep.Line = c.Line
+		}
+	}
+	for i := range result {
+		if len(result[i].DerefLines) > 1 {
+			sort.Ints(result[i].DerefLines)
+		}
+	}
+	return result
+}
+
+// shouldChainFold reports whether a candidate is an open-chain caller-arg
+// candidate eligible for cross-function folding.
+func shouldChainFold(c Candidate) bool {
+	if c.NullOriginTier != "caller-arg" || c.HasDefiniteNull {
+		return false
+	}
+	return strings.Contains(c.CallerNullDetail, "unguarded external entry") ||
+		strings.Contains(c.CallerNullDetail, "unguarded entry chain")
 }

@@ -3,6 +3,7 @@ package planner
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 )
 
 func init() {
@@ -63,6 +64,13 @@ func init() {
 					Type:   "dereference",
 					Role:   "sink",
 					Detail: fmt.Sprintf("the same nullable %s is also dereferenced at line(s) %s — one candidate covers every sink because every one of them reads the same null source", c.VariableName, joinLines(extra)),
+				})
+			}
+			if len(c.ChainFunctions) > 0 {
+				fragments = append(fragments, EvidenceFragment{
+					Type:   "chain_fold",
+					Role:   "sink",
+					Detail: fmt.Sprintf("the same unguarded %s is also dereferenced in %s — folded into one candidate because they share the same nullable root through a forwarding chain", c.VariableName, strings.Join(c.ChainFunctions, ", ")),
 				})
 			}
 			if len(fragments) == 0 {

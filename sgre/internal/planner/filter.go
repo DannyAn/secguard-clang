@@ -276,6 +276,13 @@ type Candidate struct {
 	// suggestion must see the full set (`tree[0].group_name` inside and after a
 	// branch is one nullable `tree`, not two independent leads).
 	DerefLines []int `json:"deref_lines,omitempty"`
+	// ChainFunctions lists the OTHER functions whose dereference of the same
+	// nullable variable was folded into this candidate by cross-function
+	// chain-dedup. The candidate stays one entry — one nullable root is one
+	// finding — but the AI needs to know the full blast radius across the
+	// forwarding chain (send_ips → write_ips_body → write_ips_tail all
+	// dereference the same unguarded `ips`). Empty when no folding occurred.
+	ChainFunctions []string `json:"chain_functions,omitempty"`
 	// FunctionSignature is the enclosing function's declared signature (parameter
 	// names + types), propagated from the index so the AI classifier can read the
 	// operand types without opening the source file.

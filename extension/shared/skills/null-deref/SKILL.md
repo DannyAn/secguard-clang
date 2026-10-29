@@ -38,6 +38,7 @@ A null-deref candidate has:
 - **data_flow**: The NULL value propagates to the dereference location
 - **weak_guard**: A NULL guard exists but is insufficient (scope misses the deref, or only partially protects) — the pipeline kept the candidate because the guard does NOT dominate the dereference; verify the guard's scope before dismissing
 - **dereference**: Bare fallback fragment — only the deref itself is known (no null source, no flow proof). Judge reachability and nullability yourself from the source
+- **chain_fold**: The same unguarded variable is dereferenced in other functions folded into this candidate — they share the same nullable root through a forwarding chain. The fix must cover all folded functions, not just the reported one
 
 ### Evidence closure (read before any source read)
 
