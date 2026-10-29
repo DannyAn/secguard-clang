@@ -43,6 +43,10 @@ type nullSource struct {
 	// argument, and that argument's text (e.g. caller "c", argText "NULL").
 	caller  string
 	argText string
+	// root is the chain-root function name a chain-open caller_null source is
+	// rooted at (see caller_null.chainRootName). Empty for non-chain sources.
+	// It is the cross-function chain-dedup key, not a display string.
+	root string
 	// argVarNames / argUnsafe carry the call-site argument facts for a
 	// planner-synthesized `p = f(a, b)` source: which arguments are plain
 	// identifiers (their nullability is checked against the reaching analysis
@@ -116,6 +120,7 @@ func buildNullModel(ctx context.Context, store db.Store) (map[int64]*nullModel, 
 			chainOpen:  props.Chain == "open",
 			caller:     props.Function,
 			argText:    props.Expression,
+			root:       props.Root,
 			countField: props.ArrayBufferCountField,
 		})
 	}

@@ -2,189 +2,38 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.11.6] - 2026-10-28 (re-cut)
+## [0.11.6] - 2026-10-29 (re-cut)
 
-### 判定阶段性能：把跨文件符号事实闭合进证据包，并以索引查询替代全仓 grep
+### 证据自包含与符号索引
 
-现网扫描日志暴露了一个**证据边界缺陷**：AI 判定 integer-overflow 时反复对整仓
-`Grep`，只为找候选语句里 callee 的截断契约（`ase_sa_str_connect` /
-`sa_print_ipv4_string`）和宏定义（`GET_STR_LEN` / `TICKS_IN_SECOND`）。单次
-全仓 grep 的成本是 O(仓库文件数)，且每个符号重来一遍；它不属于"读源码"预算，
-所以既不受 ≤5 read 限制，也不进 `source_reads` 审计。
+候选文件内嵌 `## Callee Definition` / `## Macro Definition`；新增 `secguard def`（CLI）与
+`secguard_def`（MCP），按语义图与项目 header 索引解析函数/宏/类型定义，AI 判定不再全仓
+grep。读源与全仓 grep 纳入预算与审计（结构化报告新增 `repo_greps`），25 个 SKILL 补齐
+Evidence closure 规则。
 
-根因不是 AI 不守规矩，而是管线**没有把跨文件符号事实闭合进证据包，也没有提供
-可在各平台一致使用的符号查询原语**：
+### 生产 E2E 编排
 
-1. `## Callee Definition` 此前只对 unchecked-return / null-deref / double-free
-   手工接线；integer-overflow 的 accumulator producer（`len += wrapper(...)`）
-   不在其中，AI 只能自己去仓库里找。
-2. 宏只有 `macro-context` 布尔标记，没有宏体；DB 里也只有 functions，没有宏索引。
-3. 语义图里有 functions 表，但没有任何"按名字取定义"的查询接口——Grep 是唯一
-   跨文件查找手段。
-4. 读源预算只统计 `Read` / Evidence open，`Grep` 不计入，所以全仓检索无上限、
-   无审计；日志里 `source_reads: 4` 看起来完全合规，掩盖了真正的墙钟成本。
-5. Hint 只到 `rhs@local`，没有 `producer callee`，AI 必须自己反推赋值来源。
+- 660s 宿主超时恢复协议（F11）：子代理落盘报告 + 派发前落点检查（`status --reports`），
+  只重派缺失 range。
+- 批次上限澄清（20 候选/批为宿主超时上限）；`--boundary-auto-dismiss external|all` 预驳回
+  fail-open 候选（默认关；boundary 扫描写出 `secguard.toml.suggested` 配置模板）。
 
-修复分三层，全部落在"让证据自包含、让查询可索引、让越界可审计"：
+### null-deref 收敛
 
-- **共享符号层 `internal/symbols`**：一次性建立项目 header 的 `#define` 索引
-  （函数式/对象式、续行、60 行/8KB 上限），并提供 `ExtractMacroRefs` 与
-  `RootFor`。`RootFor` 从被索引文件推导公共根，再向上最多 3 层找 `include/`
-  或 `inc/`，**刻意不用 git worktree**——monorepo 里不能把兄弟项目的同名宏
-  拉进证据。
-- **宏证据闭合**：planner 对每个候选从 `Expression` 和已嵌入的 callee body
-  提取宏引用，解析后挂到 `MacroDefs`；报告渲染 `## Macro Definition`，Hint
-  增加 `macro@<name>`。日志里的 `GET_STR_LEN` 现在直接出现在
-  `sa_print_ipv4_string` 的候选文件里（`callee@` + `macro@` 同一屏），不需要
-  任何 grep。
-- **integer-overflow producer callee**：检测器从 `len += wrapper(...)` 提取
-  producer callee 写入事件 `callee` 属性；planner 的 `resolveCalleeDefs` 嵌入
-  `## Callee Definition`，Hint 增加 `callee@<file>:<line>`。新增 fixture
-  `tc129_int_overflow_producer.c` 与 detector/planner 两级回归。
-- **`secguard def`（CLI）+ `secguard_def`（MCP）**：functions/declarations 走
-  语义图（O(1) SQL），宏走项目 header；`--in <file>` 查候选文件内局部宏，
-  `--root` 覆盖根，`--kind` 限定类别；支持批量 `def a b`（返回
-  `{symbols,results,found}`），对应日志里 `A|B` 的正则 grep。`found:false`
-  明确表示外部/未索引符号。跨平台注册面：
-  - `extension/opencode/tools/secguard_def.ts` + `opencode/index.ts`
-    （`SECGUARD_TOOLS` + tool hook）+ `agents/security-auditor.md` 权限；
-  - `opencode-nga/index.ts` + `plugins/secguard-context.ts` +
-    `opencode.json`（agent/global 双层权限）；
-  - Claude Code / Claude CAC / DSH 走 `Bash(secguard *)`，无需 MCP；
-  - `release/check-extension-consistency.py` 新增 `secguard_def` 的
-    `SUBAGENT_LOOKUP_TOOLS` 强制校验，工具数 10 → 11。
-- **预算与审计**：agent-body 明确“先读 `## Callee Definition` /
-  `## Macro Definition`，再 `secguard_def`，最后才是 source read”；全仓 Grep
-  计 1 次 source read、每类型最多 1 次；结构化报告新增 `repo_greps` 字段，
-  F6 审计在 `source_reads` 合规但 `repo_greps > 1` 时也判“全仓 grep 违规”。
-  DSH preset、`integer-overflow` SKILL、dispatch prompt 同步该规则。
-- **技能面闭环（不只改日志里的类型）**：25 个 `SKILL.md` 全部加入
-  `### Evidence closure`（先读 `## Callee Definition` / `## Macro Definition`，
-  未嵌入的事实用 `secguard_def`/`secguard def` 批量解析，禁止全仓 grep，
-  禁止把未查证的宏/被调函数直接判“扫描范围外”）；`SKILL_TEMPLATE.md` 同步该块；
-  `release/check-extension-consistency.py` 新增硬校验（缺 `### Evidence closure`
-  或缺少三个关键引用即失败），新类型无法再绕开。修正 `null-deref` 的
-  “宏在扫描范围外 → 直接 dismissed”矛盾规则，改为先查嵌入体/`def` 再判。
-  `ADDING_A_VULN_TYPE.md` 的 skill 清单同步该要求。
-- 文档：`CLAUDE.md` 增加 Evidence closure 设计不变量与 CLI 列表；`AGENTS.md`
-  记录跨平台注册面；README / README-CN / QUICKSTART 增加 `secguard def`。
+- 新增 `array-buffer@<count-field>` 空源档位（计数门控缓冲）。
+- 回调注册函数（ADDR_TAKEN、零调用点）降级为 `callback-entry` 档位而非抑制，防漏报。
+- 跨函数转发链按**链根**去重：同一 nullable root 折叠为单条，独立同名参数/独立回调不合并。
 
-验证：`go build ./...`、`go test ./...` 全绿；`-tags nosqlite` 子集通过；
-`release/check-extension-consistency.py` 通过（11 个工具、25 个 SKILL、84 个
-hint token）；手工 demo 确认 integer-overflow 候选同时内嵌
-`## Callee Definition` 与 `## Macro Definition`，`secguard def a b` 批量返回
-两条定义。
+### 判定技能
 
-### 生产 E2E 编排优化：660s 超时落盘结算、boundary fail-open 预驳回、批次时间上限
+第三方库所有权转移 / 孤儿对象 / 统一清理契约判定规则（double-free、use-after-free、
+memory-leak）。
 
-生产报告（93 文件 / 687 函数 / 291 候选，E2E 66 分钟，二进制仅 7.2s）定位到
-**99.8% 的时间在 AI 研判编排层**，两条主因是：
+### 性能
 
-1. claude-cac 的同步 `Agent` 调用有 ~660s 硬上限；子代理被 force-reject 后
-   仍在后台跑完并按 O2 写了 `<tmpdir>/<subagent_id>-report.json`，但编排方
-   只认 `Agent` 返回值 → 判失败 → 重派 → 同一批次完整重跑。本会话 6 次
-   force-reject、3 个批次重复执行、约 45 分钟（68% E2E）浪费。
-2. boundary 模式下 206/291（70.8%）是 fail-open null-deref（`null@caller-arg` /
-   `opaque-origin` / `assumed-return` / `external-unknown`，无 machine-proof），
-   最终全部 dismissed；这些候选本可在派发前按流水线规则预驳回。
+消除收敛阶段 O(函数 × AST) 重复遍历（`fileParseCache` 等），端到端 4.2×。
 
-修复：
-
-- **`secguard status --reports --scan-id <id>`**（`sgre/internal/cli/reports.go`）：
-  读取 `.sgre/.tmp/*-report*.json`，输出 `subagent_id` / `scan_id` /
-  `processed_types`（含 `range`，用于精确匹配拆分批次）/ `failed_types` /
-  `needs_context` / `valid` / `mtime`。
-  未解析完的 partial 写入以 `valid:false` 暴露（从文件名回填 subagent_id），
-  不再被误判为“没有报告”。OpenCode/NGA 的 `secguard_status` MCP 工具新增
-  `reports` 开关与 `db_path`。
-- **F11 超时恢复协议**（`extension/shared/command-instructions.md`）：
-  `Tool call hung for 660000ms` / force-reject 是宿主超时，不是批次失败；
-  恢复顺序为 `status --reports` → `status --per-type` → 一回合后复核 →
-  只重派缺失 range。新增 **F11a 派发前落点检查**：每次派发前先查
-  `status --reports`，已被 `valid:true` 报告覆盖的 type/range 直接跳过。
-  F8 同步注明“正常返回才读返回值；超时走 F11，不得据超时重派”。
-- **批次时间上限澄清**：`MAX_CANDIDATES_PER_BATCH=20` 是**宿主超时**上限；
-  `SPLIT_CANDIDATE_THRESHOLD=100` 只是**上下文**上限——100 的 range 还要再按
-  20 切分派发。生产里 69 候选/批的 null-deref 批次跑到 425~611s、两次撞 660s，
-  正是把 100 当成了派发上限；文档改为“100 的 range → 5 个 20 的子批次”。
-  新增 `HOST_AGENT_TIMEOUT=660` 与 `SMALL_TYPE_SEQUENTIAL_THRESHOLD=3`
-  （≤3 候选的类型由编排方直接研判，不承担 skill 加载/派发固定开销）；
-  子代理按 `#` 范围只读 `_index.md` 对应行，不再整表重读。
-- **boundary fail-open 预驳回层**（默认 **off**，显式开启）：
-  `BoundaryFailOpenFilter` 在 null-deref 链的 call-reach 之后运行，丢弃
-  `null@opaque-origin` / `external-unknown`（`external` 模式），或连同无
-  在树链的 `caller-arg` / `assumed-return`（`all` 模式）；带 `CallChain`/
-  `Callers`、`array-buffer`、`cfg-proof`、`malloc-fail` 的候选永不预驳回。
-  被驳回项以 `boundary_fail_open` 记入 `dismissed.json`，不静默丢弃。
-  开启方式：`secguard scan ... --boundary-auto-dismiss external|all`，或
-  `[scan] boundary_auto_dismiss = "external"|"all"`。默认 off 是刻意的：
-  边界扫描可能承载真实的外部契约缺陷，不能默认静默降召回；生产目标用
-  `all`（报告实测 206 个全 dismissed 的场景）即可获得削减。
-- **boundary 配置片段文件**：boundary 扫描在 `scan_dir` 写出
-  `secguard.toml.suggested`（entry_points / boundary_auto_dismiss /
-  non_null_params / trusted_macros 注释模板），并在 scan JSON 的
-  `suggested_config` 字段暴露路径；用户不再从 report 散文里手抄。
-- **未纳入本次**：同型函数体等价类去重（报告 P2）只影响报告噪音、不影响
-  E2E，且需要“主 finding + copies”产品契约，留作独立变更；`_index.md`
-  的 CLI 切片工具未加，先用 Read offset/limit 的范围读规则。
-
-验证：`go test ./...` 全绿（新增 `reports` / `BoundaryFailOpenFilter` /
-`writeBoundaryConfigHint` 测试）；`-tags nosqlite` 子集通过；
-`release/check-extension-consistency.py` 通过。
-
-### 上一版 0.11.6 内容（re-cut 前）
-
-### 判定技能补充：第三方库所有权转移 / 孤儿对象 / 统一清理契约（AI 侧误判收敛）
-
-三份 SKILL.md 补齐了第三方库生命周期语义的**判定规则**（与 `apikb` 的 cJSON/libxml2 所有权模型对齐，避免 AI 在 `## Callee Definition` 已给出契约时仍按"裸 free"直觉误判）：
-
-- **`double-free` / `use-after-free` 新增 "Ownership-transfer APIs" 段**：`xmlDocSetRootElement` / `xmlAddChild` / `cJSON_AddItemToArray` / `cJSON_AddItemToObject` 之后对象归父容器所有，`xmlFreeDoc(doc)` / `cJSON_Delete(root)` 即释放；此后对同一对象的 `xmlFreeNode(root)` / `free(item)` 是二次释放，`root->ns` / `item->value` 是 UAF。明确 `cJSON_AddItemReferenceToArray/Object` **不转移**所有权（调用方仍须自行释放）。
-- **`memory-leak` 新增 "Third-party orphan objects"**：`cJSON_Create*` / `xmlNewNode` / `xmlNewDoc` 创建后、attach 之前经 `return`/`break`/`goto` 提前退出即泄漏——attach 是"释放通道"，绕过它的路径就是泄漏点。
-- **`memory-leak` 新增"统一清理契约（调用方侧）"例外**：被调函数写满 caller-owned 结构体（`parse(msg, &ctx)`）且失败路径不释放自己填的字段，当调用方零初始化（`ctx = {0}`）并把所有失败出口收敛到同一 reset/destroy 时，这是设计而非泄漏；只有调用方清理未覆盖该字段才确认。
-
-全套改动仅文档/规则，不改检测器与收敛管道；`check-extension-consistency.py`、`TestVulnTypeSkillConsistency`、`go test ./internal/skills/` 均通过。
-
-### 扫描速度：消除 null-deref 收敛阶段的 O(函数数 × 文件 AST) 重复遍历（端到端 4.2×）
-
-对 95k LOC / 100 文件 / 15000 函数的合成代码库做基线剖析，定位出收敛（plan）阶段占端到端 **77%**（152.8s），其中 `null-deref` 一个类型独占 152.8s（其余 24 个类型合计 <0.6s）。用 macOS `sample` 抓 CPU 栈确认热点不是数据流本身，而是**同一份文件 AST 被逐函数反复整树重走**——树解析（`ParseCached`）早已按文件缓存，但"按函数起始行定位函数定义"这一步仍每次 `root.FindAll("function_definition")` 全文件走一遍。
-
-- **`fileParseCache` 缓存函数定义节点**（`defs`/`defFor`）：`functionBodiesForFile` 现在在单次文件遍历里同时产出 `bodies`（起始行→compound_statement）与 `defs`（起始行→function_definition）。`get`/`rootForFile`/`defFor` 统一走 `prime`，一个文件每个 cache 只解析+遍历一次。
-- **`paramsOf` / `paramListOf` / `voidPtrParamsOf` 三处逐函数整树查找全部改为缓存查找**（新增 `paramsFor`/`paramListFor`/`voidPtrParamsFor`，按起始行 O(1) 取定义节点后再局部取参）。覆盖 null-deref 主链（`collectCountOutputFuncs`、`collectNullCheckHelpers`、`computeRetNullable` 的 seeded/infos 两处）以及 int-overflow / divide-by-zero / taint 的同型调用点，删除已死的 `paramsOf`/`paramListOf`/`voidPtrParamsOf`。
-- **`buildGuardCtx` 的 `CollectConstantSymbols` 按文件缓存**（`flowAnalyzer.constants`）：该函数对整文件做 `preproc_def`/`preproc_function_def`/`enumerator` 三轮查找，此前每个候选函数调用一次；现在同一 analyzer 内每文件只算一次。
-- **`buildContractCtx` 的 void* 形参识别按文件缓存**：`voidPtrParamsOf` 的整树查找并入 `defFor` 局部遍历。
-
-实测（同一 95k LOC 合成库，同机）：
-
-| 阶段 | 基线 | 本轮 | 变化 |
-|---|---|---|---|
-| 收敛 plan | 152.8s | 5.4s | **-96.5%（28×）** |
-| 端到端 | 198.6s | 47.1s | **-76.3%（4.2×）** |
-
-瓶颈从 plan（77%）转移到 detectors（约 59%）；detectors 已 8 路并行，剩余成本是 tree-sitter cgo 边界开销，属独立课题。
-
-### 树遍历原语微优化（`FindAll`/`FindFirst` 免空判 + 免闭包）
-
-`parser.Node.FindAll`/`FindFirst` 改为内联栈式遍历，用 `node.node.Kind()` 直读 C 节点（跳过每次 `isNull()` 的 `ts_node_id` cgo 调用），并消除闭包间接层；删除仅被这两者使用的 `walkNode`。纯 CPU 收益、语义不变。
-
-### 正确性保障（零行为变化 + 机器强制等价回归）
-
-本轮全部为"缓存等价重写"，不改变任何检测语义：
-
-- **benchmark 红线保持**：227 用例 `recall 114/114`、`FP 0/113`、`FN 0`（`validate-benchmark.py`）。
-- **新增 `TestFileParseCacheParamsEquivalence`**：用普通 / 指针返回 / 嵌套指针 / `void*`+`const void*` / 变参 / 函数指针形参六种声明形状，逐一对 `paramsFor`/`paramListFor`/`voidPtrParamsFor`/`defFor` 断言，把"缓存查找 ≡ 旧的整树查找"从口头承诺固化为构建守卫。
-- `go test ./...`（含 nosqlite 子集）全绿。
-
-
-### null-deref 漏报复核收尾：`array-buffer@<count-field>` 空源 tier + 组裁决/回调契约规则收紧（P0）
-
-承接上一轮扫描自检报告（§1.2/§1.3）的遗留项，在 `chain-root@`/`sibling-callers@`（0.11.4）之外补齐三条：
-
-- **`array-buffer@<count-field>` 空源 tier（§1.3-2）**：`tree = (T *)(resp->group_data)` 这类"长度由伴随计数字段（`resp->group_num`）决定的内嵌数组缓冲"此前被归入笼统的 `null@opaque-origin`。现在 `opaque_null` 检测器按 count/data 名称配对（`group_data`↔`group_num`、`_list`↔`_count` 等，文件内 base 名配对）识别该形状，把伴随计数字段写进 `count_field`；`NullableSourceFilter` 将此类源升级为 `array-buffer@<field>` tier（仍是 may-fact、suspected，**不自动确认**——名称配对是信号不是证明，AI 需核验计数字段确为该缓冲的门控）。null-deref SKILL 明确 `count == 0 ⇒ buffer NULL/empty` 是**定罪**证据：候选所在链未检查计数字段即 confirm，仅当同一链先检查计数才 dismiss。
-- **组裁决同构性（§1.3-3）**：null-deref SKILL 与 command-instructions 的 Group verdict 现在要求 `Function + origin tier + chain-root` 三者一致才可共享裁决理由；不同 `chain-root@`（或带 `sibling-callers@`）的行不是一组，须逐链独立判定——防止孪生链守卫被误套到无守卫链（上一轮漏报的直接根因）。
-- **回调契约理由禁越界（§1.3-4）**：SKILL 明确"dispatch/framework 非空契约只标记参数本身，不标记其内部字段"——`resp non-null by dispatch contract` 只能给 `resp` 本身脱罪，对 `resp->group_data`/`resp->hdr->data` 必须引用字段自身的赋值/校验点。
-- **子代理结构化报告落盘 + 驳回/待人工外显（§3.1-O2 / §3.4-R1）**：子代理在最终消息外把结构化报告同步落盘到 `.sgre/.tmp/<subagent_id>-report.json`（承载消息里没有的 `needs_context`/`dismissed` 明细）；编排器在句柄失效（F9）时优先读该文件、DB 为权威兜底；二次下发后仍悬置的 `needs_context` 条目写 `<scan_dir>/ai-dismissed.json` 并在观察项表里以"待人工复核"列出——被驳回/未判定候选不再只存在于子代理聊天消息里。
-
-新增回归：`TestOpaqueNullDetectorArrayBufferCountField`（配对命中 + 无计数字段的负向对照）。`go build`/`go test ./...`、扩展一致性检查均通过。
+验证：`go build`、`go test ./...`、`-tags nosqlite` 子集、`release/check-extension-consistency.py` 全绿。
 
 ## [0.11.4] - 2026-10-27
 

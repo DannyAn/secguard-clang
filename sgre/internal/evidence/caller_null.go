@@ -64,6 +64,18 @@ type calleeParamInfo struct {
 	types []string
 }
 
+// fwdEdge is a parameter-FORWARDING call edge (caller passes its own unguarded
+// parameter j as callee's parameter i), which the open-chain fixpoint
+// propagates openness along. Package-level so chainRootName can walk it.
+type fwdEdge struct {
+	callerID    int64
+	callerParam int
+	calleeID    int64
+	calleeParam int
+	callerName  string
+	argText     string
+}
+
 func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 	callees := d.buildCalleeIndex(ctx)
@@ -86,14 +98,6 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 		hasCaller bool
 	}
 	sites := map[int64]map[int]*siteAgg{}
-	type fwdEdge struct {
-		callerID    int64
-		callerParam int
-		calleeID    int64
-		calleeParam int
-		callerName  string
-		argText     string
-	}
 	var fwds []fwdEdge
 	calledNames := map[string]bool{}
 	addrTaken := map[string]bool{}
@@ -378,6 +382,9 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 					props["function"] = e.callerName
 					props["expression"] = e.argText
 				}
+				if r := chainRootName(fnID, i, fwdBy, infoByFnID); r != "" {
+					props["root"] = r
+				}
 			}
 			if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", fnID, &db.Location{FileID: info.fn.FileID, Line: info.fn.StartLine}, props) {
 				result.EventsCreated++
@@ -385,6 +392,26 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 		}
 	}
 	return result, nil
+}
+
+// chainRootName resolves the ultimate open-entry root function NAME for a
+// chain-open (fnID, param): it walks fwdBy (first-forwarder edges) up to the
+// base, which is the zero-call-site entry the openness flowed from (for the
+// entry itself that is the function's own name). The planner uses it as the
+// cross-function chain-dedup key so only candidates sharing one root fold.
+func chainRootName(fnID int64, param int, fwdBy map[int64]map[int]fwdEdge, infoByFnID map[int64]calleeParamInfo) string {
+	cur, p := fnID, param
+	for {
+		e, ok := fwdBy[cur][p]
+		if !ok {
+			break
+		}
+		cur, p = e.callerID, e.callerParam
+	}
+	if info, ok := infoByFnID[cur]; ok {
+		return info.fn.Name
+	}
+	return ""
 }
 
 // buildCalleeIndex maps each uniquely-defined function name to its parameter

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 
 	"github.com/DannyAn/secguard-clang/internal/config"
@@ -191,8 +190,8 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 	}
 
 	candidates = deduplicateCandidates(candidates, spec)
-	if spec.ConvergeByVariable {
-		candidates = chainDedupCandidates(candidates, spec)
+	if spec.Name == "null-deref" {
+		candidates = chainDedupCandidates(candidates)
 	}
 	summary.DedupedCount = len(candidates)
 
@@ -758,7 +757,7 @@ func (spec *VulnTypeSpec) dedupKey(c Candidate) string {
 }
 
 // chainDedupCandidates folds cross-function candidates that share the same
-// nullable root into a single entry. In a forwarding chain like
+// nullable ROOT into a single entry. In a forwarding chain like
 //
 //	send_ips(ips) → write_ips_body(df, ips) → write_ips_tail(df, ips)
 //
@@ -768,14 +767,14 @@ func (spec *VulnTypeSpec) dedupKey(c Candidate) string {
 // so the AI should judge one candidate listing every affected (function, line)
 // sink, not 5-8 near-duplicate candidates.
 //
-// Only open-chain "caller-arg" candidates are folded: their CallerNullDetail
-// contains "unguarded external entry" (zero-call-site root) or "forwards …
-// from an unguarded entry chain" (intermediate hop). cfg-proof (definite-null)
-// and malloc-fail candidates are never folded — they are independent proofs.
-// The fold key is (fileID, variableName): within one file, the same parameter
-// name forwarded through a chain is one root. Cross-file folds would risk
-// merging unrelated same-name parameters.
-func chainDedupCandidates(candidates []Candidate, spec *VulnTypeSpec) []Candidate {
+// Only open-chain caller-arg/callback-entry candidates are folded, and the key
+// is (fileID, variableName, chainRoot) — the chain ROOT function name threaded
+// from the open-chain fixpoint (caller_null.chainRootName), NOT the bare
+// parameter name. Two independent same-name parameters (distinct roots), and
+// two distinct callback registrations (each its own root), therefore do NOT
+// merge. cfg-proof (definite-null) and malloc-fail candidates are never folded
+// — they are independent proofs.
+func chainDedupCandidates(candidates []Candidate) []Candidate {
 	if len(candidates) <= 1 {
 		return candidates
 	}
@@ -790,7 +789,7 @@ func chainDedupCandidates(candidates []Candidate, spec *VulnTypeSpec) []Candidat
 			result = append(result, c)
 			continue
 		}
-		key := fmt.Sprintf("%d:%s", c.FileID, c.VariableName)
+		key := fmt.Sprintf("%d:%s:%s", c.FileID, c.VariableName, c.ChainRoot)
 		slot, ok := folds[key]
 		if !ok {
 			slot = &foldSlot{idx: len(result), funcs: map[string]bool{c.FunctionName: true}}
@@ -820,8 +819,9 @@ func chainDedupCandidates(candidates []Candidate, spec *VulnTypeSpec) []Candidat
 	return result
 }
 
-// shouldChainFold reports whether a candidate is an open-chain caller-arg
-// candidate eligible for cross-function folding.
+// shouldChainFold reports whether a candidate is an open-chain caller-arg or
+// callback-entry candidate eligible for cross-function folding. Eligibility is
+// structural (tier + chain root), never a match against the display detail.
 func shouldChainFold(c Candidate) bool {
 	if c.HasDefiniteNull {
 		return false
@@ -829,7 +829,5 @@ func shouldChainFold(c Candidate) bool {
 	if c.NullOriginTier != "caller-arg" && c.NullOriginTier != "callback-entry" {
 		return false
 	}
-	return strings.Contains(c.CallerNullDetail, "unguarded external entry") ||
-		strings.Contains(c.CallerNullDetail, "unguarded entry chain") ||
-		strings.Contains(c.CallerNullDetail, "ADDR_TAKEN")
+	return c.ChainRoot != ""
 }

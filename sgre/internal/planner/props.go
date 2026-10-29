@@ -66,7 +66,14 @@ type eventProps struct {
 	// Chain is "open" on a caller_null NULL_VALUE whose value the open-chain
 	// fixpoint graded OPEN (reachable from an unguarded entry), which keeps it
 	// out of the onlyUnprovenCallerNullSources dismissal. Empty otherwise.
-	Chain    string `json:"chain"`
+	Chain string `json:"chain"`
+	// Root is the chain-root function NAME a chain-open caller_null source is
+	// rooted at (the zero-call-site entry the openness flowed from; for the
+	// entry itself it is its own name). It powers cross-function chain-dedup:
+	// only candidates sharing the same (file, variable, root) fold, so two
+	// independent same-name parameters do NOT merge. Empty for non-chain
+	// sources.
+	Root string `json:"root"`
 	DeclLine int    `json:"decl_line"`
 	// InitWrite is the machine-proven write-path fact of an uninit read:
 	// "none" = the read target is never written before the read,

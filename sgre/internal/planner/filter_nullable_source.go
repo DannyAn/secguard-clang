@@ -59,7 +59,13 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 		return nil, nil, fmt.Errorf("filter nullable source: %w", err)
 	}
 
-	addrTakenFuncs, _ := loadAddrTakenFuncs(ctx, f.store)
+	addrTakenFuncs, err := loadAddrTakenFuncs(ctx, f.store)
+	if err != nil && f.logger != nil {
+		// Fail-open: a read failure leaves callback-registered candidates at the
+		// caller-arg tier instead of downgrading them — recall-safe, but surfaced
+		// so a silent tier drift is not mistaken for a data fact.
+		f.logger.Warn("nullable_source: load ADDR_TAKEN census", "error", err)
+	}
 
 	// Bucket candidates by function so each function is parsed and analysed once.
 	byFunc := make(map[int64][]Candidate)
@@ -146,7 +152,7 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				c.HasNullableSource = true
 				c.HasDefiniteNull = fm.reachingDefiniteAt(c.VariableName, c.Line, c.Column)
 				c.SourceLine = fm.sourceLineAt(c.VariableName, c.Line, c.Column)
-				c.CallerNullDetail = callerNullDetail(models[c.FunctionID], c.VariableName)
+				c.CallerNullDetail, c.ChainKind, c.ChainRoot = callerNullOrigin(models[c.FunctionID], c.VariableName)
 				if models[c.FunctionID].onlyUnprovenCallerNullSources(c.VariableName) ||
 					(!c.HasDefiniteNull && fm.contract.paramAliasUnproven(c.VariableName, c.Line, models[c.FunctionID])) {
 					dropped = dismiss(dropped, c, f.Name(),
@@ -262,7 +268,7 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				case models[c.FunctionID].onlyCertainNullableSources(c.VariableName):
 					c.NullOriginTier = "malloc-fail"
 					c.NullableOriginName = models[c.FunctionID].certainNullableOrigin(c.VariableName)
-				case !c.HasDefiniteNull && addrTakenFuncs[c.FunctionID] && isUnguardedExternalEntryDetail(c.CallerNullDetail):
+				case !c.HasDefiniteNull && addrTakenFuncs[c.FunctionID] && c.ChainKind == "root":
 					c.NullOriginTier = "callback-entry"
 					c.CallerNullDetail = fmt.Sprintf("function %s is registered via a function-pointer (ADDR_TAKEN); parameter %s nullability is bound to the registration-site context — verify the registrar passes a non-null ctx", c.FunctionName, c.VariableName)
 				case c.CallerNullDetail != "":
@@ -317,6 +323,8 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 						c.NullOriginTier = derived.tier
 						c.DerivedFrom = derived.root
 						c.CallerNullDetail = derived.callerDetail
+						c.ChainKind = derived.chainKind
+						c.ChainRoot = derived.chainRoot
 						c.NullableOriginName = derived.originName
 					}
 					if c.NullOriginTier == "" {
@@ -1428,6 +1436,8 @@ type derivedOrigin struct {
 	tier         string
 	root         string
 	callerDetail string
+	chainKind    string
+	chainRoot    string
 	originName   string
 }
 
@@ -1451,7 +1461,8 @@ func derivedOriginTier(fm *flowResult, m *nullModel, variable string, line int) 
 	case m.onlyCertainNullableSources(root):
 		return derivedOrigin{tier: "malloc-fail", root: root, originName: m.certainNullableOrigin(root)}
 	case callerNullDetail(m, root) != "":
-		return derivedOrigin{tier: "caller-arg", root: root, callerDetail: callerNullDetail(m, root)}
+		detail, kind, chainRoot := callerNullOrigin(m, root)
+		return derivedOrigin{tier: "caller-arg", root: root, callerDetail: detail, chainKind: kind, chainRoot: chainRoot}
 	case m.hasOpaqueSource(root):
 		return derivedOrigin{tier: "opaque-origin", root: root}
 	case m.hasExternalCallSource(root):
@@ -1460,12 +1471,16 @@ func derivedOriginTier(fm *flowResult, m *nullModel, variable string, line int) 
 	return derivedOrigin{}
 }
 
-// callerNullDetail returns a human-readable origin for a parameter whose
-// nullability comes from a caller (origin "caller_null"), or "" for a
-// non-parameter source.
-func callerNullDetail(m *nullModel, variable string) string {
+// callerNullOrigin returns the inter-procedural caller_null origin of a
+// parameter whose nullability comes from a caller (origin "caller_null"): the
+// human-readable detail, the structural open-chain KIND ("root" = zero-call-site
+// entry, "hop" = forwarding hop, "" = not chain-open), and the chain-root
+// function name. All three are empty for a non-parameter source. Kind and root
+// are structural (not display) facts used by the callback downgrade and the
+// cross-function chain-dedup key.
+func callerNullOrigin(m *nullModel, variable string) (detail, kind, root string) {
 	if m == nil {
-		return ""
+		return "", "", ""
 	}
 	for _, s := range m.sources {
 		if s.variable != variable || s.origin != "caller_null" {
@@ -1476,19 +1491,24 @@ func callerNullDetail(m *nullModel, variable string) string {
 			// null value can actually reach it (a literal-NULL call site, or a
 			// forwarding chain rooted at an unguarded external entry).
 			if s.argText == "NULL" || s.argText == "0" {
-				return fmt.Sprintf("caller %s passes NULL", s.caller)
+				return fmt.Sprintf("caller %s passes NULL", s.caller), "", s.root
 			}
 			if s.caller == "" {
-				return "the value flows from an unguarded external entry (no in-tree call site guards this parameter)"
+				return "the value flows from an unguarded external entry (no in-tree call site guards this parameter)", "root", s.root
 			}
-			return fmt.Sprintf("caller %s forwards %s from an unguarded entry chain", s.caller, s.argText)
+			return fmt.Sprintf("caller %s forwards %s from an unguarded entry chain", s.caller, s.argText), "hop", s.root
 		}
 		if s.argText == "NULL" || s.argText == "0" {
-			return fmt.Sprintf("caller %s passes NULL", s.caller)
+			return fmt.Sprintf("caller %s passes NULL", s.caller), "", s.root
 		}
-		return fmt.Sprintf("caller %s passes %s (not proven non-null)", s.caller, s.argText)
+		return fmt.Sprintf("caller %s passes %s (not proven non-null)", s.caller, s.argText), "", s.root
 	}
-	return ""
+	return "", "", ""
+}
+
+func callerNullDetail(m *nullModel, variable string) string {
+	detail, _, _ := callerNullOrigin(m, variable)
+	return detail
 }
 
 // collectMacroWrites merges per-file macro write-summaries across the whole scan
@@ -1647,9 +1667,9 @@ func compactNullText(s string) string {
 // ADDR_TAKEN graph edge — i.e. the function is referenced through a function
 // pointer (callback registration, function-pointer table, pthread_create,
 // etc.) rather than only through direct calls. The NullableSourceFilter uses
-// this to suppress "unguarded external entry" candidates on callback-registered
-// functions: their parameter nullability is bound to the registration-site
-// context, not to an open direct-call chain.
+// this to DOWNGRADE (not suppress) an unguarded-entry candidate on a
+// callback-registered function: its parameter nullability is bound to the
+// registration-site context, not to an open direct-call chain.
 func loadAddrTakenFuncs(ctx context.Context, store db.Store) (map[int64]bool, error) {
 	addrEdges, err := store.ListGraphEdgesByType(ctx, "ADDR_TAKEN")
 	if err != nil {
@@ -1675,11 +1695,4 @@ func loadAddrTakenFuncs(ctx context.Context, store db.Store) (map[int64]bool, er
 		}
 	}
 	return out, nil
-}
-
-// isUnguardedExternalEntryDetail reports whether the caller-null detail string
-// describes the "zero in-tree call site" open-chain form (caller == ""), as
-// opposed to a concrete caller forwarding a possibly-null argument.
-func isUnguardedExternalEntryDetail(detail string) bool {
-	return strings.Contains(detail, "unguarded external entry")
 }

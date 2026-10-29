@@ -163,3 +163,56 @@ void dns_callback(void *p)
 		t.Errorf("definite-null true positive: expected a candidate for item, got none")
 	}
 }
+
+// TestNullDeref_ChainDedupKeepsIndependentRoots verifies the fold key is the
+// chain ROOT, not the bare parameter name: two INDEPENDENT zero-call-site
+// entries in one file that both forward a parameter named `p` are two separate
+// roots (each has its own registrar/ABI), so they must stay two candidates —
+// a fold keyed on (file, variable) would wrongly merge them and force one
+// binary verdict over two unrelated defects.
+func TestNullDeref_ChainDedupKeepsIndependentRoots(t *testing.T) {
+	src := `typedef struct { unsigned int a; } T;
+
+void chain1_root(T *p)
+{
+    unsigned int v = p->a;
+    (void)v;
+    chain1_body(p);
+}
+
+void chain1_body(T *p)
+{
+    unsigned int v = p->a;
+    (void)v;
+}
+
+void chain2_root(T *p)
+{
+    unsigned int v = p->a;
+    (void)v;
+    chain2_body(p);
+}
+
+void chain2_body(T *p)
+{
+    unsigned int v = p->a;
+    (void)v;
+}
+`
+	res := planNullDerefFullSrc(t, src)
+	var pCandidates []EvidenceItem
+	for _, c := range res.Candidates {
+		if c.Target.Variable == "p" {
+			pCandidates = append(pCandidates, c)
+		}
+	}
+	// chain1_root+chain1_body fold into one; chain2_root+chain2_body into
+	// another. Two independent roots must NOT collapse to one.
+	if len(pCandidates) != 2 {
+		var fns []string
+		for _, c := range pCandidates {
+			fns = append(fns, c.Target.Function)
+		}
+		t.Fatalf("independent same-name roots: want 2 folded candidates (chain1*, chain2*), got %d (%v)", len(pCandidates), fns)
+	}
+}

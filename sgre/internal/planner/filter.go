@@ -262,6 +262,17 @@ type Candidate struct {
 	// parameter's nullability (e.g. "caller c passes NULL"), surfaced in the
 	// evidence so the AI can judge the caller contract instead of a bare "line 0".
 	CallerNullDetail string `json:"caller_null_detail,omitempty"`
+	// ChainKind is the structural open-chain role of a caller-arg/callback-entry
+	// candidate: "root" = a zero-call-site open entry, "hop" = a forwarding hop
+	// whose openness came from an ancestor. Empty for every non-chain origin.
+	// It replaces string-matching against CallerNullDetail to decide the
+	// callback-entry downgrade.
+	ChainKind string `json:"chain_kind,omitempty"`
+	// ChainRoot is the chain-root function NAME a root/hop candidate is rooted
+	// at. It is the cross-function chain-dedup key: only candidates sharing
+	// (file, variable, chain-root) fold, so independent same-name parameters and
+	// distinct callback registrations never merge. Empty when not chain-open.
+	ChainRoot string `json:"chain_root,omitempty"`
 	// DerivedFrom names the variable that OWNS the null source when the
 	// candidate's own variable is only a value-preserving copy/cast of it
 	// (`q = (T *)param; q->f`, `q = t` where `t = (T *)base->field`). The tier
