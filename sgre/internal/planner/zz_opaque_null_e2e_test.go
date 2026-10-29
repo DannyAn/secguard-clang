@@ -475,10 +475,13 @@ int api_tree(ApiCtx_t *at_ctx)
 }
 
 // End to end for the address-taken census: a STATIC callback registered in a
-// generated #include fragment (the redis commands.def shape) must produce a
-// candidate. It is invoked by the framework, so it is not dead code — the old
-// `&f`-only census missed the bare-name registration and the handler read as
-// dead, leaving its opaque message parameter with no null source.
+// generated #include fragment (the redis commands.def shape) is invoked by the
+// framework, so it is not dead code — the old `&f`-only census missed the
+// bare-name registration and the handler read as dead. The handler's opaque
+// message parameter is now SUPPRESSED at the nullable-source stage: a
+// callback-registered function's parameter nullability is bound to the
+// registration-site context, not an unguarded external entry (the nlog
+// production P1 pattern — 88/206 candidates were this idiom, 0 true positives).
 func TestStaticCallbackRegisteredInFragmentSurfaces(t *testing.T) {
 	r := runOpaqueNullPlan(t, map[string]string{
 		"frag.c": `typedef struct {
@@ -502,11 +505,7 @@ int main(void) { return census_frag_table[0].fn != 0; }
 	})
 	for _, c := range r.Candidates {
 		if c.Target.Variable == "cf_m" {
-			if c.NullOriginTier != "caller-arg" {
-				t.Fatalf("cf_m tier = %q, want caller-arg", c.NullOriginTier)
-			}
-			return
+			t.Fatalf("callback-registered handler's parameter cf_m should be suppressed (ADDR_TAKEN + unguarded external entry), got tier=%q", c.NullOriginTier)
 		}
 	}
-	t.Fatalf("the registered static handler's parameter must surface; got %+v", r.Candidates)
 }

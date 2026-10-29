@@ -59,6 +59,8 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 		return nil, nil, fmt.Errorf("filter nullable source: %w", err)
 	}
 
+	addrTakenFuncs, _ := loadAddrTakenFuncs(ctx, f.store)
+
 	// Bucket candidates by function so each function is parsed and analysed once.
 	byFunc := make(map[int64][]Candidate)
 	for _, c := range candidates {
@@ -149,6 +151,11 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 					(!c.HasDefiniteNull && fm.contract.paramAliasUnproven(c.VariableName, c.Line, models[c.FunctionID])) {
 					dropped = dismiss(dropped, c, f.Name(),
 						fmt.Sprintf("parameter %s has no proven nullable caller argument", c.VariableName))
+					continue
+				}
+				if !c.HasDefiniteNull && addrTakenFuncs[c.FunctionID] && isUnguardedExternalEntryDetail(c.CallerNullDetail) {
+					dropped = dismiss(dropped, c, f.Name(),
+						fmt.Sprintf("function %s is registered via a function-pointer (ADDR_TAKEN edge); parameter %s nullability is bound to the registration-site context, not an unguarded external entry", c.FunctionName, c.VariableName))
 					continue
 				}
 				if c.SourceLine > 0 && !c.HasDefiniteNull && fm.weakGuardAt(c.VariableName, c.Line) {
@@ -1635,4 +1642,45 @@ func compactNullText(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// loadAddrTakenFuncs returns the set of function entity IDs that have an
+// ADDR_TAKEN graph edge — i.e. the function is referenced through a function
+// pointer (callback registration, function-pointer table, pthread_create,
+// etc.) rather than only through direct calls. The NullableSourceFilter uses
+// this to suppress "unguarded external entry" candidates on callback-registered
+// functions: their parameter nullability is bound to the registration-site
+// context, not to an open direct-call chain.
+func loadAddrTakenFuncs(ctx context.Context, store db.Store) (map[int64]bool, error) {
+	addrEdges, err := store.ListGraphEdgesByType(ctx, "ADDR_TAKEN")
+	if err != nil {
+		return nil, err
+	}
+	if len(addrEdges) == 0 {
+		return nil, nil
+	}
+	nodes, err := store.ListGraphNodesByEntityType(ctx, "function")
+	if err != nil {
+		return nil, err
+	}
+	nodeToFunc := make(map[int64]int64, len(nodes))
+	for _, n := range nodes {
+		if _, ok := nodeToFunc[n.ID]; !ok {
+			nodeToFunc[n.ID] = n.EntityID
+		}
+	}
+	out := make(map[int64]bool, len(addrEdges))
+	for _, e := range addrEdges {
+		if fnID, ok := nodeToFunc[e.SrcID]; ok {
+			out[fnID] = true
+		}
+	}
+	return out, nil
+}
+
+// isUnguardedExternalEntryDetail reports whether the caller-null detail string
+// describes the "zero in-tree call site" open-chain form (caller == ""), as
+// opposed to a concrete caller forwarding a possibly-null argument.
+func isUnguardedExternalEntryDetail(detail string) bool {
+	return strings.Contains(detail, "unguarded external entry")
 }
