@@ -328,3 +328,28 @@ type FunctionSummary struct {
 	SideEffect        string
 	SummaryJSON       string
 }
+
+// SettlementStat is one settled batch's self-reported accounting, persisted from
+// the security-auditor subagent's O2 settlement file when `status --reports`
+// parses it. It closes the r_type feedback loop (evidence_opens per classified
+// candidate) and powers the already_covered_ranges idempotency check — both
+// computed by the engine, never by the LLM orchestrator. wall_ms is the batch
+// wall-clock when known (0 = not recorded: the settlement file carries no
+// dispatch timestamp).
+type SettlementStat struct {
+	ID            int64
+	ScanID        string
+	VulnType      string
+	RangeStr      string
+	SubagentID    string
+	Written       int
+	Dismissed     int
+	EvidenceOpens int
+	SourceReads   int
+	RepoGreps     int
+	NeedsContext  int
+	Status        string
+	RetryCount    int
+	WallMS        int64
+	CreatedAt     int64
+}

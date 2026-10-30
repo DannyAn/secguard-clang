@@ -44,6 +44,9 @@ func TestSchemaDDL_ContainsFunctionSummaryTable(t *testing.T) {
 	if !schemaHasTable(SchemaDDL, "function_summary") {
 		t.Error("SchemaDDL missing function_summary table")
 	}
+	if !schemaHasTable(SchemaDDL, "settlement_stats") {
+		t.Error("SchemaDDL missing settlement_stats table")
+	}
 }
 
 func TestSchemaDDL_EdgeTypeCheckConstraint(t *testing.T) {

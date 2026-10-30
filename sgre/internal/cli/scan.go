@@ -837,7 +837,12 @@ func runStatusCmd(ctx context.Context, args []string) int {
 	defer store.Close()
 
 	if hasFlag(args, "reports") {
-		WriteJSON(listSubagentReports(dbPath, parseStringFlag(args, "scan-id")))
+		res := listSubagentReports(dbPath, parseStringFlag(args, "scan-id"))
+		if err := persistSettlementReports(ctx, store, res); err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to persist settlement reports: %v", err))
+			return 1
+		}
+		WriteJSON(res)
 		return 0
 	}
 
@@ -878,7 +883,12 @@ func runStatusCmd(ctx context.Context, args []string) int {
 				})
 			}
 		}
-		WriteJSON(statuses)
+		enriched, err := enrichPerTypeStatus(ctx, store, scanID, statuses)
+		if err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to enrich per-type status: %v", err))
+			return 1
+		}
+		WriteJSON(enriched)
 		return 0
 	}
 

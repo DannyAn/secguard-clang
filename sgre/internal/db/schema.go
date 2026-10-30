@@ -256,6 +256,38 @@ CREATE TABLE IF NOT EXISTS function_summary (
 );
 
 -- ============================================================
+-- Settlement Stats (AI-stage batch settlements, engine-side data closure)
+-- ============================================================
+
+-- One row per settled batch (per type/range/subagent) parsed from the
+-- security-auditor subagent's O2 settlement file. It is the data source that
+-- closes the r_type feedback loop (evidence_opens per classified candidate) and
+-- powers the already_covered_ranges idempotency check — both computed by the
+-- engine in 'status --per-type', never by the LLM orchestrator. Idempotent on
+-- the UNIQUE key so re-reading the same settlement file never duplicates a row.
+CREATE TABLE IF NOT EXISTS settlement_stats (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id         TEXT NOT NULL,
+    vuln_type       TEXT NOT NULL,
+    range_str       TEXT NOT NULL DEFAULT 'all',
+    subagent_id     TEXT NOT NULL,
+    written         INTEGER NOT NULL DEFAULT 0,
+    dismissed       INTEGER NOT NULL DEFAULT 0,
+    evidence_opens  INTEGER NOT NULL DEFAULT 0,
+    source_reads    INTEGER NOT NULL DEFAULT 0,
+    repo_greps      INTEGER NOT NULL DEFAULT 0,
+    needs_context   INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'done' CHECK (status IN ('dispatched', 'done', 'failed')),
+    retry_count     INTEGER NOT NULL DEFAULT 0,
+    wall_ms         INTEGER,
+    created_at      INTEGER,
+    UNIQUE(scan_id, vuln_type, range_str, subagent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_settlement_stats_scan_type ON settlement_stats(scan_id, vuln_type);
+CREATE INDEX IF NOT EXISTS idx_settlement_stats_type ON settlement_stats(vuln_type);
+
+-- ============================================================
 -- Performance Indexes
 -- ============================================================
 

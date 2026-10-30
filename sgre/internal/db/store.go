@@ -181,6 +181,21 @@ type FunctionSummaryStore interface {
 	UpdateReturnNullable(ctx context.Context, functionID int64, nullable bool) error
 }
 
+type SettlementStatStore interface {
+	UpsertSettlementStat(ctx context.Context, s *SettlementStat) error
+	// MarkSettlementStatus updates a settlement row's task status (the
+	// executor's dispatched → done/failed lifecycle).
+	MarkSettlementStatus(ctx context.Context, scanID, vulnType, rangeStr, subagentID, status string) error
+	// IncrementSettlementRetry bumps a settlement row's retry_count and re-marks
+	// it dispatched (the executor's retry state machine).
+	IncrementSettlementRetry(ctx context.Context, scanID, vulnType, rangeStr, subagentID string) error
+	ListSettlementStatsByScan(ctx context.Context, scanID string) ([]*SettlementStat, error)
+	// ListSettlementStatsByType returns the most recent settlements for a vuln
+	// type across scans (newest first), capped at limit (0 = all). It is the
+	// engine's r_type sample: sum(evidence_opens)/sum(written+dismissed).
+	ListSettlementStatsByType(ctx context.Context, vulnType string, limit int) ([]*SettlementStat, error)
+}
+
 type Store interface {
 	FileStore
 	FunctionStore
@@ -197,6 +212,7 @@ type Store interface {
 	ScanStatStore
 	ScanRunStore
 	FunctionSummaryStore
+	SettlementStatStore
 	ReviewSessionStore
 	Close() error
 	WithTx(ctx context.Context, fn func(Store) error) error

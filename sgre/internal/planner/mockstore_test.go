@@ -435,6 +435,22 @@ func (s *mockStore) UpdateReturnNullable(ctx context.Context, fid int64, nullabl
 	return nil
 }
 
+func (s *mockStore) UpsertSettlementStat(ctx context.Context, st *db.SettlementStat) error {
+	return nil
+}
+func (s *mockStore) MarkSettlementStatus(ctx context.Context, scanID, vulnType, rangeStr, subagentID, status string) error {
+	return nil
+}
+func (s *mockStore) IncrementSettlementRetry(ctx context.Context, scanID, vulnType, rangeStr, subagentID string) error {
+	return nil
+}
+func (s *mockStore) ListSettlementStatsByScan(ctx context.Context, scanID string) ([]*db.SettlementStat, error) {
+	return nil, nil
+}
+func (s *mockStore) ListSettlementStatsByType(ctx context.Context, vulnType string, limit int) ([]*db.SettlementStat, error) {
+	return nil, nil
+}
+
 func (s *mockStore) Close() error                                                       { return nil }
 func (s *mockStore) DB() *sql.DB                                                        { return nil }
 func (s *mockStore) WithTx(ctx context.Context, fn func(db.Store) error) error          { return fn(s) }
