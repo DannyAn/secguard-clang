@@ -2,6 +2,8 @@ package evidence
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
@@ -90,7 +92,75 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, l
 		}
 	})
 
+	// Persist the out-param write facts (function_summary.summary_json) so the
+	// computed cross-function contracts survive past this detector run instead of
+	// being recomputed-and-discarded every scan (P0-3 data closure). Idempotent;
+	// buildFuncSummaries is called by several detectors, so a repeat write is a
+	// no-op on the UNIQUE function_id key.
+	if err := persistFuncSummaries(ctx, store, summaries); err != nil && logger != nil {
+		logger.Warn("persist func summaries failed", "err", err)
+	}
+
 	return summaries
+}
+
+// persistFuncSummaries writes each function's out-param write state into
+// function_summary.summary_json, merged with existing keys. It records which
+// pointer parameters the function writes through on every path
+// (outparam_writes) and on some paths (outparam_conditional_writes) — the facts
+// behind the `outparam@definite` contract the uninit classifier consumes.
+func persistFuncSummaries(ctx context.Context, store db.Store, summaries summaryMap) error {
+	if len(summaries) == 0 {
+		return nil
+	}
+	funcs, err := store.ListFunctions(ctx)
+	if err != nil {
+		return fmt.Errorf("persist func summaries: list functions: %w", err)
+	}
+	byName := make(map[string][]*db.Function, len(funcs))
+	for _, fn := range funcs {
+		byName[fn.Name] = append(byName[fn.Name], fn)
+	}
+	for name, s := range summaries {
+		if len(s.ParamWrites) == 0 && len(s.ParamConditionalWrites) == 0 {
+			continue
+		}
+		for _, fn := range byName[name] {
+			existing, err := store.GetSummaryByFunction(ctx, fn.ID)
+			if err != nil {
+				return fmt.Errorf("persist func summaries: get summary %d: %w", fn.ID, err)
+			}
+			if existing == nil {
+				existing = &db.FunctionSummary{FunctionID: fn.ID}
+			}
+			merged, err := mergeSummaryJSON(existing.SummaryJSON, "outparam_writes", intKeys(s.ParamWrites))
+			if err != nil {
+				return fmt.Errorf("persist func summaries: merge writes %d: %w", fn.ID, err)
+			}
+			if len(s.ParamConditionalWrites) > 0 {
+				merged, err = mergeSummaryJSON(merged, "outparam_conditional_writes", intKeys(s.ParamConditionalWrites))
+				if err != nil {
+					return fmt.Errorf("persist func summaries: merge conditional %d: %w", fn.ID, err)
+				}
+			}
+			existing.SummaryJSON = merged
+			if err := store.UpsertSummary(ctx, existing); err != nil {
+				return fmt.Errorf("persist func summaries: upsert %d: %w", fn.ID, err)
+			}
+		}
+	}
+	return nil
+}
+
+// intKeys renders a map[int]bool as a sorted []int (a JSON list, not an
+// object with string keys).
+func intKeys(m map[int]bool) []int {
+	out := make([]int, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Ints(out)
+	return out
 }
 
 // computeParamWriteStates reports, per parameter index, two facts:

@@ -183,6 +183,17 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 		logger.Info("cfg cache stats after detectors", "builds", b, "hits", h)
 	}
 
+	// Backfill a function_summary row for every indexed function, so the
+	// coverage acceptance (≥90%) holds and richer per-function contract facts
+	// (outparam/release/return-semantics) have a row to layer onto. Runs once per
+	// scan, after the null-source detector has seeded its literal-`return NULL`
+	// witnesses, and before the plan stage consumes summaries.
+	if produced, serr := planner.EnsureFunctionSummaries(ctx, store); serr != nil {
+		return nil, fmt.Errorf("produce function summaries: %w", serr)
+	} else if produced > 0 && logger != nil {
+		logger.Info("function summary backfill", "produced", produced)
+	}
+
 	// Apply the type switch at the SOURCE: a disabled type is dropped from the
 	// plan loop, so it produces no candidates and the AI agent's skills never
 	// receive it. Unknown names are warned and dropped (a typo must not silently

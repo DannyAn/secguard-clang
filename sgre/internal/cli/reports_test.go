@@ -73,3 +73,47 @@ func TestListSubagentReportsMissingDir(t *testing.T) {
 		t.Fatalf("missing dir must be an empty non-nil result: %+v", res)
 	}
 }
+
+func TestListSubagentReports_ChunkFiles(t *testing.T) {
+	project := t.TempDir()
+	dbPath := filepath.Join(project, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
+	tmp := filepath.Join(filepath.Dir(dbPath), ".tmp")
+
+	writeReport(t, tmp, "sub-a-chunk-1.json", `{
+	  "format_version": 1, "subagent_id": "sub-a", "scan_id": "sc_test",
+	  "processed_types": [{"type":"null-deref","range":"1-100","cwe":"CWE-476","written":1,"dismissed":40,"evidence_opens":5}],
+	  "needs_context": [{"candidate": 7, "reason": "leak@conditional"}]
+	}`)
+	writeReport(t, tmp, "sub-a-report.json", `{
+	  "format_version": 1, "subagent_id": "sub-a", "scan_id": "sc_test",
+	  "processed_types": [{"type":"null-deref","range":"1-100","cwe":"CWE-476","written":2,"dismissed":98,"evidence_opens":12}]
+	}`)
+
+	res := listSubagentReports(dbPath, "sc_test")
+	byName := map[string]subagentReport{}
+	for _, r := range res.Reports {
+		byName[filepath.Base(r.File)] = r
+	}
+
+	chunk, ok := byName["sub-a-chunk-1.json"]
+	if !ok {
+		t.Fatalf("chunk file not listed: %+v", res.Reports)
+	}
+	if chunk.Valid {
+		t.Errorf("chunk must be valid:false (it is a partial snapshot, not a completion signal)")
+	}
+	if chunk.SubagentID != "sub-a" {
+		t.Errorf("chunk subagent_id = %q, want sub-a", chunk.SubagentID)
+	}
+	if len(chunk.Processed) != 1 || chunk.Processed[0].Dismissed != 40 {
+		t.Errorf("chunk processed accounting lost: %+v", chunk.Processed)
+	}
+	if len(chunk.NeedsContext) != 1 {
+		t.Errorf("chunk needs_context lost: %+v", chunk.NeedsContext)
+	}
+
+	final := byName["sub-a-report.json"]
+	if !final.Valid {
+		t.Errorf("final report must be valid:true")
+	}
+}

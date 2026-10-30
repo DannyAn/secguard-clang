@@ -1613,6 +1613,21 @@ func parseWriteJSONInput(data []byte) ([]findingInput, string, error) {
 	if len(trimmed) == 0 {
 		return nil, "", fmt.Errorf("input is empty")
 	}
+	inputs, scanID, err := parseWriteJSONStrict(trimmed)
+	if err == nil {
+		return inputs, scanID, nil
+	}
+	// Truncation salvage: a force-rejected / context-overflow write cuts the
+	// batch mid-array, so the strict parse fails even though the leading objects
+	// are complete. Recover every balanced {...} object and keep the ones that
+	// parse as findings — partial coverage beats discarding the whole batch.
+	if salvaged := salvageFindingObjects(trimmed); len(salvaged) > 0 {
+		return salvaged, "", nil
+	}
+	return nil, "", err
+}
+
+func parseWriteJSONStrict(trimmed []byte) ([]findingInput, string, error) {
 	switch trimmed[0] {
 	case '[':
 		var inputs []findingInput
@@ -1648,4 +1663,59 @@ func parseWriteJSONInput(data []byte) ([]findingInput, string, error) {
 	default:
 		return nil, "", fmt.Errorf("input is neither a JSON array nor an object (starts with %q)", string(trimmed[:1]))
 	}
+}
+
+// salvageFindingObjects is the truncation-salvage fallback for a batch whose
+// JSON was cut mid-write. It recovers every balanced {...} object (tracking JSON
+// string boundaries so braces inside a string are ignored) and keeps the ones
+// that parse as findings, so the complete leading findings survive.
+func salvageFindingObjects(data []byte) []findingInput {
+	var out []findingInput
+	for _, span := range balancedObjects(data) {
+		var in findingInput
+		if err := json.Unmarshal(span, &in); err != nil {
+			continue
+		}
+		if strings.TrimSpace(in.RuleID) == "" || strings.TrimSpace(in.Status) == "" {
+			continue
+		}
+		out = append(out, in)
+	}
+	return out
+}
+
+// balancedObjects extracts every balanced {...} object span from data, ignoring
+// braces inside JSON strings (and escaped quotes). Nested objects are emitted as
+// their own spans (innermost first); callers filter by shape.
+func balancedObjects(data []byte) [][]byte {
+	var spans [][]byte
+	var stack []int
+	inString := false
+	escaped := false
+	for i := 0; i < len(data); i++ {
+		c := data[i]
+		if inString {
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{':
+			stack = append(stack, i)
+		case '}':
+			if len(stack) > 0 {
+				start := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				spans = append(spans, data[start:i+1])
+			}
+		}
+	}
+	return spans
 }

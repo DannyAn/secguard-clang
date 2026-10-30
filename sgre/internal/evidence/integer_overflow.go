@@ -89,6 +89,12 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 	// wrappers that forward to them). It lets the unsigned-subtraction check drop
 	// the `length += add_*(buf, buf_len - length)` accumulator false positive.
 	boundedReturns := buildBoundedReturnSummary(ctx, d.store, d.parser, d.logger)
+	// Persist the computed bounded-return contract (function_summary.summary_json)
+	// so it survives past this detector run instead of being recomputed-and-
+	// discarded every scan (P0-3 data closure).
+	if err := persistBoundedReturnSummary(ctx, d.store, boundedReturns); err != nil && d.logger != nil {
+		d.logger.Warn("persist bounded return summary failed", "err", err)
+	}
 
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		typedefs := globalTypedefs.clone()

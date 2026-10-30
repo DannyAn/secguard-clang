@@ -64,9 +64,10 @@ func listSubagentReports(dbPath, scanID string) reportsResult {
 			continue
 		}
 		name := entry.Name()
-		if !strings.HasSuffix(name, ".json") || !strings.Contains(name, "-report") {
+		if !strings.HasSuffix(name, ".json") || !(strings.Contains(name, "-report") || strings.Contains(name, "-chunk-")) {
 			continue
 		}
+		isChunk := strings.Contains(name, "-chunk-")
 		path := filepath.Join(dir, name)
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -99,6 +100,14 @@ func listSubagentReports(dbPath, scanID string) reportsResult {
 				rep.Error = "report is valid JSON but incomplete (no processed_types/failed_types yet)"
 			}
 		}
+		// A chunk file is a partial settlement snapshot: it carries the
+		// dismissed/needs_context accounting so far but is NOT a completion
+		// signal. Downgrade it to valid:false so the orchestrator reads its
+		// partial accounting without treating the range as fully covered.
+		if isChunk && rep.Valid {
+			rep.Valid = false
+			rep.Error = "chunk (partial settlement snapshot, not a completion signal)"
+		}
 		// A partial/unparseable write often lacks scan_id; keep it visible
 		// (valid:false) so the orchestrator can see "still writing" instead of
 		// mistaking it for "no report". A parseable report for a different scan
@@ -120,8 +129,10 @@ func listSubagentReports(dbPath, scanID string) reportsResult {
 
 func subagentIDFromFile(name string) string {
 	base := strings.TrimSuffix(name, ".json")
-	if i := strings.Index(base, "-report"); i > 0 {
-		return base[:i]
+	for _, sep := range []string{"-report", "-chunk-"} {
+		if i := strings.Index(base, sep); i > 0 {
+			return base[:i]
+		}
 	}
 	return base
 }

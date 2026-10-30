@@ -2,6 +2,8 @@ package evidence
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
@@ -345,4 +347,62 @@ func capacityTotal(cap parser.Node, name string) (total string, full bool, ok bo
 		return "", false, false
 	}
 	return exprTextKey(cap), true, true
+}
+
+// persistBoundedReturnSummary writes each in-scan bounded-return wrapper's
+// capacity-argument index into function_summary.summary_json, merged with any
+// existing keys so multiple fact producers never clobber one another. The
+// summary is already consumed in-memory to drop the `length += add_*(...)`
+// accumulator false positive; persisting it turns a compute-and-discard fact
+// into a durable contract the route-B assembler and cross-scan reuse can read.
+func persistBoundedReturnSummary(ctx context.Context, store db.Store, summary boundedReturnSummary) error {
+	if len(summary) == 0 {
+		return nil
+	}
+	funcs, err := store.ListFunctions(ctx)
+	if err != nil {
+		return fmt.Errorf("persist bounded return: list functions: %w", err)
+	}
+	byName := make(map[string][]*db.Function, len(funcs))
+	for _, fn := range funcs {
+		byName[fn.Name] = append(byName[fn.Name], fn)
+	}
+	for name, idx := range summary {
+		for _, fn := range byName[name] {
+			existing, err := store.GetSummaryByFunction(ctx, fn.ID)
+			if err != nil {
+				return fmt.Errorf("persist bounded return: get summary %d: %w", fn.ID, err)
+			}
+			if existing == nil {
+				existing = &db.FunctionSummary{FunctionID: fn.ID}
+			}
+			merged, err := mergeSummaryJSON(existing.SummaryJSON, "bounded_return_cap_arg", idx)
+			if err != nil {
+				return fmt.Errorf("persist bounded return: merge summary %d: %w", fn.ID, err)
+			}
+			existing.SummaryJSON = merged
+			if err := store.UpsertSummary(ctx, existing); err != nil {
+				return fmt.Errorf("persist bounded return: upsert summary %d: %w", fn.ID, err)
+			}
+		}
+	}
+	return nil
+}
+
+// mergeSummaryJSON sets key=val in a summary_json object without clobbering the
+// other keys. A non-object existing blob is discarded (unexpected) rather than
+// merged into.
+func mergeSummaryJSON(existing, key string, val interface{}) (string, error) {
+	m := map[string]interface{}{}
+	if strings.TrimSpace(existing) != "" {
+		if err := json.Unmarshal([]byte(existing), &m); err != nil {
+			m = map[string]interface{}{}
+		}
+	}
+	m[key] = val
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }

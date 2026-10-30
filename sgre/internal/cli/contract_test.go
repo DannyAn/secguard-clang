@@ -780,6 +780,49 @@ func TestParseWriteJSONInput_Shapes(t *testing.T) {
 	}
 }
 
+func TestParseWriteJSONInput_SalvageTruncated(t *testing.T) {
+	one := `{"rule_id":"CWE-476","status":"confirmed","file":"a.c","line":1,"function":"f"}`
+	two := `{"rule_id":"CWE-457","status":"dismissed","file":"b.c","line":2,"function":"g"}`
+
+	cases := []struct {
+		name      string
+		payload   string
+		wantCount int
+	}{
+		{name: "truncated bare array keeps complete leading objects", payload: "[" + one + "," + two + `,{"rule_id":"CWE-190","statu`, wantCount: 2},
+		{name: "truncated envelope keeps its findings", payload: `{"scan_id":"sc_x","findings":[` + one + "," + two + `]`, wantCount: 2},
+		{name: "fully truncated object salvages nothing", payload: `{"rule_id":"CWE-476","status":"confirmed","file":"a.c","line":1`, wantCount: 0},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			inputs, _, err := parseWriteJSONInput([]byte(c.payload))
+			if c.wantCount == 0 {
+				if err == nil {
+					t.Fatalf("expected an error for unsalvageable input")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(inputs) != c.wantCount {
+				t.Errorf("got %d salvaged inputs, want %d", len(inputs), c.wantCount)
+			}
+		})
+	}
+}
+
+func TestBalancedObjects_StringBraces(t *testing.T) {
+	spans := balancedObjects([]byte(`{"a":"}","b":{"c":"{"}}`))
+	if len(spans) != 2 {
+		t.Fatalf("got %d spans, want 2 (braces inside strings must not split)", len(spans))
+	}
+	if string(spans[0]) != `{"c":"{"}` {
+		t.Errorf("innermost span = %q", spans[0])
+	}
+}
+
 // envelopeFixtureDB creates a store containing one known scan and returns its
 // db path and scan id.
 func envelopeFixtureDB(t *testing.T, ctx context.Context) (string, string) {

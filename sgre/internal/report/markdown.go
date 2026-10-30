@@ -228,6 +228,13 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 		if len(pkg.Candidates) == 0 {
 			continue
 		}
+		// Cluster candidates by Function so same-function rows land adjacent (and
+		// in the same _index shard). The group-verdict rule reuses one verdict for
+		// Function + origin token + chain-root identical rows; scattering them
+		// across shards made each batch re-derive the same guard. The sort runs
+		// BEFORE writeTypeIndex and the file loop so the # column, the Evidence
+		// column, and the NNN_*.md filenames all share one order.
+		sortCandidatesByFunction(pkg.Candidates)
 
 		dir := filepath.Join(o.ScanDir, CandidatesDir, pkg.VulnerabilityType)
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -726,6 +733,28 @@ func typeIndexLegend(tokens []string) string {
 // file (backward-compatible: the orchestrator's "read _index.md" instruction
 // works unchanged for small types).
 const typeIndexSplitBytes = 90000
+
+// sortCandidatesByFunction clusters candidates so same-function rows land
+// adjacent in _index.md (and in the same shard). The group-verdict rule reuses
+// one verdict for Function + origin token + chain-root identical rows; a stable
+// sort keeps equal keys in their original order so the ordering stays
+// deterministic. The # column, the Evidence column, and the NNN_*.md filenames
+// are all derived from this one order.
+func sortCandidatesByFunction(cands []planner.EvidenceItem) {
+	sort.SliceStable(cands, func(i, j int) bool {
+		a, b := cands[i].Target, cands[j].Target
+		if a.Function != b.Function {
+			return a.Function < b.Function
+		}
+		if a.Variable != b.Variable {
+			return a.Variable < b.Variable
+		}
+		if a.File != b.File {
+			return a.File < b.File
+		}
+		return a.Line < b.Line
+	})
+}
 
 // writeTypeIndex writes candidates/<vuln-type>/_index.md — the single table a
 // subagent reads to classify ONE type (the # column matches the NNN candidate
