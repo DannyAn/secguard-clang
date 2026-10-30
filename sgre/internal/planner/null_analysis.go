@@ -43,6 +43,10 @@ type nullSource struct {
 	// argument, and that argument's text (e.g. caller "c", argText "NULL").
 	caller  string
 	argText string
+	// condition is the enclosing branch (switch case / if) of the caller's
+	// literal-NULL call site, so the classifier can compare the NULL branch
+	// against the dereference's branch without grepping for the case label.
+	condition string
 	// root is the chain-root function name a chain-open caller_null source is
 	// rooted at (see caller_null.chainRootName). Empty for non-chain sources.
 	// It is the cross-function chain-dedup key, not a display string.
@@ -120,6 +124,7 @@ func buildNullModel(ctx context.Context, store db.Store) (map[int64]*nullModel, 
 			chainOpen:  props.Chain == "open",
 			caller:     props.Function,
 			argText:    props.Expression,
+			condition:  props.NullCondition,
 			root:       props.Root,
 			countField: props.ArrayBufferCountField,
 		})

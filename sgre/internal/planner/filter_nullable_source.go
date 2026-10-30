@@ -1482,6 +1482,16 @@ func callerNullOrigin(m *nullModel, variable string) (detail, kind, root string)
 	if m == nil {
 		return "", "", ""
 	}
+	// cond suffixes the detail with the caller's enclosing branch when known:
+	// "caller c passes NULL (switch(type) case ASM_EVENT_DONE)" lets the
+	// classifier compare the NULL branch against the dereference's branch
+	// (Code Context) and dismiss without grepping for the case label.
+	cond := func(s nullSource) string {
+		if s.condition != "" {
+			return " (" + s.condition + ")"
+		}
+		return ""
+	}
 	for _, s := range m.sources {
 		if s.variable != variable || s.origin != "caller_null" {
 			continue
@@ -1491,7 +1501,7 @@ func callerNullOrigin(m *nullModel, variable string) (detail, kind, root string)
 			// null value can actually reach it (a literal-NULL call site, or a
 			// forwarding chain rooted at an unguarded external entry).
 			if s.argText == "NULL" || s.argText == "0" {
-				return fmt.Sprintf("caller %s passes NULL", s.caller), "", s.root
+				return fmt.Sprintf("caller %s passes NULL%s", s.caller, cond(s)), "", s.root
 			}
 			if s.caller == "" {
 				return "the value flows from an unguarded external entry (no in-tree call site guards this parameter)", "root", s.root
@@ -1499,7 +1509,7 @@ func callerNullOrigin(m *nullModel, variable string) (detail, kind, root string)
 			return fmt.Sprintf("caller %s forwards %s from an unguarded entry chain", s.caller, s.argText), "hop", s.root
 		}
 		if s.argText == "NULL" || s.argText == "0" {
-			return fmt.Sprintf("caller %s passes NULL", s.caller), "", s.root
+			return fmt.Sprintf("caller %s passes NULL%s", s.caller, cond(s)), "", s.root
 		}
 		return fmt.Sprintf("caller %s passes %s (not proven non-null)", s.caller, s.argText), "", s.root
 	}

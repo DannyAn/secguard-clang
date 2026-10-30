@@ -95,6 +95,7 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 		caller    string
 		line      int
 		argText   string
+		condition string
 		hasCaller bool
 	}
 	sites := map[int64]map[int]*siteAgg{}
@@ -220,6 +221,7 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 					agg.caller = caller.Name
 					agg.line = call.StartLine()
 					agg.argText = arg.Text()
+					agg.condition = enclosingNullCondition(call)
 				}
 				if kind == "fwd" {
 					fwds = append(fwds, fwdEdge{callerID: caller.ID, callerParam: fwdIdx, calleeID: info.fn.ID, calleeParam: i, callerName: caller.Name, argText: arg.Text()})
@@ -367,6 +369,9 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 				if agg != nil {
 					props["function"] = agg.caller
 					props["expression"] = agg.argText
+					if agg.condition != "" {
+						props["null_condition"] = agg.condition
+					}
 				}
 			} else {
 				// An open chain without a literal-NULL witness: the value CAN be
@@ -807,4 +812,43 @@ func (d *CallerNullDetector) collectIncludedFragmentCensus(ctx context.Context, 
 		}
 	})
 	return err
+}
+
+// enclosingNullCondition returns a human-readable summary of the branch that
+// encloses a literal-NULL call site: `switch(<cond>) case <label>` for a call
+// inside a switch case, or `if <cond>` for a call inside an if. It lets the
+// classifier compare the caller's NULL branch against the dereference's branch
+// (from the Code Context) to prove the NULL never reaches that dereference —
+// without grepping for the case label.
+func enclosingNullCondition(call parser.Node) string {
+	var caseVal, switchCond, ifCond string
+	for n := call.Parent(); n != nil; n = n.Parent() {
+		switch n.Kind() {
+		case "case_statement":
+			if v := n.ChildByFieldName("value"); v != nil && caseVal == "" {
+				caseVal = strings.TrimSpace(v.Text())
+			}
+		case "switch_statement":
+			if c := n.ChildByFieldName("condition"); c != nil && switchCond == "" {
+				switchCond = strings.TrimSpace(c.Text())
+			}
+		case "if_statement":
+			if c := n.ChildByFieldName("condition"); c != nil && ifCond == "" {
+				ifCond = strings.TrimSpace(c.Text())
+			}
+		}
+	}
+	if caseVal != "" || switchCond != "" {
+		if switchCond == "" {
+			switchCond = "?"
+		}
+		if caseVal != "" {
+			return "switch(" + switchCond + ") case " + caseVal
+		}
+		return "switch(" + switchCond + ")"
+	}
+	if ifCond != "" {
+		return "if " + ifCond
+	}
+	return ""
 }

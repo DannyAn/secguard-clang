@@ -2,7 +2,12 @@
 
 package evidence
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/DannyAn/secguard-clang/internal/parser"
+)
 
 // The address-taken census decides whether a STATIC function may be dismissed as
 // dead code. C registers callbacks by decaying a bare function name to a pointer
@@ -123,5 +128,60 @@ int main(void) { return census_names[0] != 0; }
 		if r.variable == "fd_m" && r.origin == "caller_null" {
 			t.Errorf("a dead static helper must stay closed even when an included fragment is parsed; got %v", records)
 		}
+	}
+}
+
+func TestEnclosingNullCondition(t *testing.T) {
+	p := parser.NewParser()
+	src := []byte(`void f(int type) {
+    switch (type) {
+    case ASM_EVENT_DONE:
+        process(NULL);
+    case ASM_EVENT_IMPORT_START:
+        if (type > 0) process2(NULL);
+    }
+}
+`)
+	tree, err := p.Parse(src, "t.c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotSwitch, gotIf string
+	for _, c := range tree.RootNode().FindAll("call_expression") {
+		switch extractCallName(c) {
+		case "process":
+			gotSwitch = enclosingNullCondition(c)
+		case "process2":
+			gotIf = enclosingNullCondition(c)
+		}
+	}
+	if !strings.Contains(gotSwitch, "switch(") || !strings.Contains(gotSwitch, "ASM_EVENT_DONE") {
+		t.Errorf("switch-case condition = %q, want switch(...) case ASM_EVENT_DONE", gotSwitch)
+	}
+	// process2 sits inside if(type>0) inside case ASM_EVENT_IMPORT_START: the
+	// switch-case is the decisive branch, so it wins over the nested if.
+	if !strings.Contains(gotIf, "ASM_EVENT_IMPORT_START") {
+		t.Errorf("nested-if-in-case condition = %q, want the enclosing case ASM_EVENT_IMPORT_START", gotIf)
+	}
+}
+
+func TestEnclosingNullCondition_PureIf(t *testing.T) {
+	p := parser.NewParser()
+	src := []byte(`void f(int type) {
+    if (type > 0) process(NULL);
+}
+`)
+	tree, err := p.Parse(src, "t.c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	for _, c := range tree.RootNode().FindAll("call_expression") {
+		if extractCallName(c) == "process" {
+			got = enclosingNullCondition(c)
+		}
+	}
+	if !strings.Contains(got, "if") || !strings.Contains(got, "type > 0") {
+		t.Errorf("pure-if condition = %q, want if (type > 0)", got)
 	}
 }

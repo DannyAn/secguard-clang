@@ -38,6 +38,9 @@ type eventProps struct {
 	Expression  string `json:"expression"`
 	Function    string `json:"function"`
 	Category    string `json:"category"`
+	// NullCondition is the enclosing branch (switch case / if) of a caller-null
+	// literal-NULL call site, emitted by the CallerNullDetector.
+	NullCondition string `json:"null_condition"`
 	// SizeArg/SizeArgKind carry the bounded-memory size argument of a
 	// dangerous-function candidate and its const/var kind (see Candidate).
 	SizeArg     string `json:"size_arg"`
