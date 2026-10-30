@@ -46,3 +46,21 @@ func TestContractsEmpty(t *testing.T) {
 		t.Errorf("nil config must yield an empty map, got %+v", got)
 	}
 }
+
+func TestAIStageMode(t *testing.T) {
+	var cfg Config
+	if cfg.AIStageMode() != "agent" {
+		t.Errorf("zero config must default to agent, got %q", cfg.AIStageMode())
+	}
+	cfg.AIMode = "executor"
+	if cfg.AIStageMode() != "executor" {
+		t.Errorf("executor not honored: %q", cfg.AIStageMode())
+	}
+	cfg.AIMode = "Executor"
+	if cfg.AIStageMode() != "executor" {
+		t.Errorf("mode must be case-insensitive: %q", cfg.AIStageMode())
+	}
+	if (*Config)(nil).AIStageMode() != "agent" {
+		t.Errorf("nil config must default to agent")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/planner"
@@ -31,7 +32,10 @@ func runClassifyCmd(ctx context.Context, args []string) int {
 		batchSize = 20
 	}
 
-	if mode == "" || mode == "agent" {
+	if mode == "" {
+		mode = config.Load().AIStageMode()
+	}
+	if mode == "agent" {
 		WriteJSON(map[string]string{"mode": "agent", "note": "agent mode is the LLM-orchestrator classification path; nothing to run here"})
 		return 0
 	}

@@ -429,6 +429,8 @@ straight to the structured report (`written: 0`).
 
 **派发前落点检查 (F11a)：** 任何派发之前先跑 `secguard status --reports --scan-id <scan_id>`，跳过已被 `valid:true` 报告覆盖的 type/range。这样超时后的 re-plan 是幂等的，重复派发一个已完成的批次是纯重复劳动。
 
+**确定性执行器开关 (F12)：** 若 `secguard config` 显示 `ai_stage_mode = "executor"`，PHASE_2 分类改由确定性进程执行——跑 `secguard classify <target> --mode executor`（灰度期先 `--dry-run` 验证接线，不开 LLM 子进程），无需本步骤的子代理派发。`ai_stage_mode` 缺省为 `agent`（本步骤的现状路径）；executor 模式的判定结果与 agent 模式同库同 `--write-json` UPSERT 路径，判定质量对齐前不得用于生产。
+
 4. **Parallel dispatch** (ONLY when step 2 says so): first run `secguard status --reports --scan-id <scan_id>` and drop every batch already covered by a `valid:true` report (F11a). Then validate every batch against the Batch Capacity Configuration above, and spawn one subagent PER BATCH
    of types that need AI work (`candidates_by_type > 0`), the FIRST WAVE all in
    the same turn so they run concurrently (F3), then backfill the queue per F3a

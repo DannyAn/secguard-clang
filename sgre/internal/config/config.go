@@ -31,6 +31,10 @@ type Config struct {
 	IntegerOverflow        IntegerOverflow        `toml:"integer_overflow"`
 	Contracts              Contracts              `toml:"contracts"`
 	Scan                   Scan                   `toml:"scan"`
+	// AIMode is the AI-classification stage switch: "agent" (default) keeps the
+	// LLM-orchestrator fan-out; "executor" routes PHASE_2 through the
+	// deterministic `secguard classify --mode executor` process.
+	AIMode string `toml:"ai_stage_mode"`
 }
 
 // Scan tunes whole-scan boundary policy.
@@ -521,6 +525,20 @@ func (c *Config) ContractBySymbol() map[string]Contract {
 		return map[string]Contract{}
 	}
 	return c.Contracts.BySymbol
+}
+
+// AIStageMode returns the normalized AI-classification stage mode ("agent"
+// default, or "executor").
+func (c *Config) AIStageMode() string {
+	if c == nil {
+		return "agent"
+	}
+	switch strings.ToLower(strings.TrimSpace(c.AIMode)) {
+	case "executor":
+		return "executor"
+	default:
+		return "agent"
+	}
 }
 
 // ExcludePaths returns the configured directory paths to prune during indexing.
