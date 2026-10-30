@@ -1207,6 +1207,129 @@ func FixSuggestion(vulnType, cwe string, c planner.EvidenceItem) string {
 				"realpath, and confirm the result still lives inside the allowed base dir.\n",
 			funcName)
 
+	case "out-of-bounds":
+		return fmt.Sprintf(
+			"Add a bounds check before the array access in `%s`:\n\n"+
+				"```c\n"+
+				"if (idx < 0 || idx >= ARRAY_LEN) {\n"+
+				"    return -1;  // reject an out-of-range index\n"+
+				"}\n"+
+				"// safe: idx is in [0, ARRAY_LEN)\n"+
+				"elem = arr[idx];\n"+
+				"```\n\n"+
+				"Validate the index against the array's declared length before every\n"+
+				"subscript, or use a checked accessor / a fixed loop bound.\n",
+			funcName)
+
+	case "divide-by-zero":
+		return fmt.Sprintf(
+			"Guard the divisor against zero in `%s`:\n\n"+
+				"```c\n"+
+				"if (divisor == 0) {\n"+
+				"    return -1;  // or handle the zero case explicitly\n"+
+				"}\n"+
+				"result = dividend / divisor;\n"+
+				"```\n\n"+
+				"Prove the divisor is non-zero on every path (entry check, invariant,\n"+
+				"or a caller-guaranteed range) before the division.\n",
+			funcName)
+
+	case "unchecked-return":
+		return fmt.Sprintf(
+			"Check the return value of the call in `%s`:\n\n"+
+				"```c\n"+
+				"if (callee(...) < 0) {\n"+
+				"    // handle failure: log, cleanup, propagate the error\n"+
+				"    return -1;\n"+
+				"}\n"+
+				"```\n\n"+
+				"Treat the callee's failure sentinel (NULL / -1 / error code) as a real\n"+
+				"error path and propagate it instead of discarding the result.\n",
+			funcName)
+
+	case "signed-compare":
+		return fmt.Sprintf(
+			"Match the signedness of the comparison operands in `%s`:\n\n"+
+				"```c\n"+
+				"// BAD:  if ((int)len > n) ...   // sign extension / wrap\n"+
+				"// GOOD: compare like types\n"+
+				"if ((size_t)len > n) { ... }\n"+
+				"```\n\n"+
+				"Cast both operands to the same type (prefer size_t for lengths and\n"+
+				"sizes) so signed/unsigned conversion cannot distort the comparison.\n",
+			funcName)
+
+	case "sizeof-misuse":
+		return fmt.Sprintf(
+			"Take the size of the pointed-to OBJECT, not the pointer, in `%s`:\n\n"+
+				"```c\n"+
+				"// BAD:  memset(p, 0, sizeof(p));    // size of the pointer\n"+
+				"// GOOD: memset(p, 0, sizeof(*p));   // size of the pointee\n"+
+				"```\n\n"+
+				"Use `sizeof(*ptr)` (or the struct type name) so the size matches the\n"+
+				"object actually read/written.\n",
+			funcName)
+
+	case "argument-type":
+		return fmt.Sprintf(
+			"Pass an argument of the callee's expected type in `%s`:\n\n"+
+				"```c\n"+
+				"// BAD:  f((int)user_controlled);    // truncates / reinterprets\n"+
+				"// GOOD: match the declared parameter type\n"+
+				"f((long)user_controlled);\n"+
+				"```\n\n"+
+				"Match the argument to the callee's prototype; an explicit cast must not\n"+
+				"hide a width or sign mismatch.\n",
+			funcName)
+
+	case "data-representation":
+		return fmt.Sprintf(
+			"Correct the type representation in `%s` so the value is not\n"+
+				"reinterpreted across incompatible types:\n\n"+
+				"```c\n"+
+				"// pointer <-> int and different-width signed/unsigned casts are unsafe\n"+
+				"uintptr_t v = (uintptr_t)ptr;   // use uintptr_t for pointer->int\n"+
+				"```\n\n"+
+				"Use the dedicated type (uintptr_t/intptr_t) and keep the width\n"+
+				"consistent with the target platform.\n",
+			funcName)
+
+	case "dangerous-function":
+		return fmt.Sprintf(
+			"Replace the dangerous API call in `%s` with a bounds-checked\n"+
+				"alternative:\n\n"+
+				"```c\n"+
+				"// BAD:  strcpy(dst, src);\n"+
+				"// GOOD: strncpy_s(dst, sizeof(dst), src, _TRUNCATE);\n"+
+				"```\n\n"+
+				"Use the Annex-K `_s` variants (memcpy_s/strcpy_s/sprintf_s) or the\n"+
+				"`n`-bounded family with an explicit size, validated first.\n",
+			funcName)
+
+	case "signal-handler":
+		return fmt.Sprintf(
+			"Use only async-signal-safe operations inside the handler in `%s`:\n\n"+
+				"```c\n"+
+				"// BAD:  printf/ malloc/ lock inside a signal handler\n"+
+				"// GOOD: only set a volatile sig_atomic_t flag\n"+
+				"static volatile sig_atomic_t got_signal = 0;\n"+
+				"void handler(int s) { got_signal = 1; }\n"+
+				"```\n\n"+
+				"Restrict the handler to setting a `volatile sig_atomic_t` flag and let\n"+
+				"the main loop do the real work; never call malloc/printf/lock there.\n",
+			funcName)
+
+	case "implicit-contract":
+		return fmt.Sprintf(
+			"Validate the implicit count/pointer contract in `%s`:\n\n"+
+				"```c\n"+
+				"if (count == 0) { data = NULL; }   // count==0 => buffer empty\n"+
+				"if (data == NULL || count == 0) { return -1; }\n"+
+				"```\n\n"+
+				"Make the count/pointer invariant explicit and check it at every\n"+
+				"boundary so a NULL buffer with a zero count is never dereferenced.\n",
+			funcName)
+
 	default:
 		return "Review the evidence above and apply the appropriate mitigation for this\n" +
 			"vulnerability class. Consult the CWE documentation for detailed guidance.\n"
