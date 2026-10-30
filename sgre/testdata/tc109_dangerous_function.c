@@ -35,6 +35,12 @@ int tc109_dangerous_function(char *dst, const char *src) {
     sprintf_s(dst, 16, "%s", src);   /* safe _s variant - NOT banned */
     n = (int)strtol(src, NULL, 10);  /* recommended replacement - NOT banned */
 
+    /* Bounded n-family: acceptable, NOT banned (only the unbounded forms are). */
+    snprintf(dst, 16, "%s", src);    /* bounded format - NOT banned */
+    vsnprintf(dst, 16, "%s", src);   /* bounded format - NOT banned */
+    strncpy(dst, src, 16);           /* bounded copy - NOT banned */
+    strncat(dst, src, 16);           /* bounded concat - NOT banned */
+
     /* Deprecated BSD trio: NOT in the default ban table. */
     bzero(buf, sizeof(buf));
     bcopy(src, dst, 16);

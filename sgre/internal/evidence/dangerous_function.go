@@ -124,22 +124,22 @@ var builtinDangerRules = map[string]dangerRule{
 	// --- string copy (字符串复制 → _s) ---
 	"strcpy":  {category: "unsafe_string", replacement: "strcpy_s"},
 	"wcscpy":  {category: "unsafe_string", replacement: "wcscpy_s"},
-	"strncpy": {category: "unsafe_string", replacement: "strncpy_s"},
-	"wcsncpy": {category: "unsafe_string", replacement: "wcsncpy_s"},
+	// strncpy/wcsncpy are the BOUNDED (acceptable) replacements for strcpy/wcscpy
+	// — they are NOT banned, only the unbounded strcpy/wcscpy are (see the
+	// FixSuggestion "prefer snprintf/strncpy_s" wording). Flagging them here
+	// contradicts that guidance and produced false positives on safe functions.
 
 	// --- string concat (字符串连接 → _s) ---
 	"strcat":  {category: "unsafe_string", replacement: "strcat_s"},
 	"wcscat":  {category: "unsafe_string", replacement: "wcscat_s"},
-	"strncat": {category: "unsafe_string", replacement: "strncat_s"},
-	"wcsncat": {category: "unsafe_string", replacement: "wcsncat_s"},
+	// strncat/wcsncat are the bounded concat variants — not banned.
 
 	// --- formatted output (格式化输出 → _s) ---
 	"sprintf":   {category: "unsafe_format", replacement: "sprintf_s"},
 	"swprintf":  {category: "unsafe_format", replacement: "swprintf_s"},
 	"vsprintf":  {category: "unsafe_format", replacement: "vsprintf_s"},
 	"vswprintf": {category: "unsafe_format", replacement: "vswprintf_s"},
-	"snprintf":  {category: "unsafe_format", replacement: "snprintf_s"},
-	"vsnprintf": {category: "unsafe_format", replacement: "vsnprintf_s"},
+	// snprintf/vsnprintf are the bounded (acceptable) format variants — not banned.
 
 	// --- formatted input (格式化输入 → _s) ---
 	"scanf":    {category: "unsafe_scan", replacement: "scanf_s"},

@@ -47,9 +47,9 @@ func TestDangerousFunction_BannedCalls(t *testing.T) {
 			t.Errorf("%s should be flagged as banned, got %v", banned, flagged)
 		}
 	}
-	for _, safe := range []string{"memcpy_s", "strcpy_s", "sprintf_s", "strtol"} {
+	for _, safe := range []string{"memcpy_s", "strcpy_s", "sprintf_s", "strtol", "snprintf", "vsnprintf", "strncpy", "strncat"} {
 		if flagged[safe] {
-			t.Errorf("%s is a safe/replacement API and must NOT be flagged, got %v", safe, flagged)
+			t.Errorf("%s is a bounded/replacement API and must NOT be flagged as banned, got %v", safe, flagged)
 		}
 	}
 	// The deprecated BSD trio has no `_s` counterpart and is routinely absent
