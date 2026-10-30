@@ -154,14 +154,15 @@ func TestCryptoMisuse_CategoryConfidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cases := map[string]string{
-		"weak_algorithm": "confirmed",
-		"undersized_key": "confirmed",
-		"weak_random":    "confirmed",
+	// weak_algorithm / weak_random / undersized_key name a primitive that IS
+	// weak, but whether that is a SECURITY defect depends on context, so there
+	// is no confirmed override — everything falls back to the suspected default.
+	if spec.DefaultSuspicion != "suspected" {
+		t.Errorf("crypto-misuse default suspicion = %q, want suspected", spec.DefaultSuspicion)
 	}
-	for category, want := range cases {
-		if got := spec.CategoryConfidence[category]; got != want {
-			t.Errorf("crypto-misuse category %q confidence = %q, want %q", category, got, want)
+	for _, category := range []string{"weak_algorithm", "undersized_key", "weak_random"} {
+		if got := spec.CategoryConfidence[category]; got != "" {
+			t.Errorf("crypto-misuse category %q confidence = %q, want empty (no confirmed override)", category, got)
 		}
 	}
 }

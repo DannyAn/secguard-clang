@@ -96,7 +96,7 @@ void copy_it(const char *s) {
 	if !ok {
 		t.Fatalf("expected an unchecked-return candidate for copy_it")
 	}
-	if c.SuspicionLevel != "confirmed" {
-		t.Errorf("a used-but-unchecked malloc must be confirmed, got %q", c.SuspicionLevel)
+	if c.SuspicionLevel != "suspected" {
+		t.Errorf("a used-but-unchecked malloc must stay suspected, got %q", c.SuspicionLevel)
 	}
 }

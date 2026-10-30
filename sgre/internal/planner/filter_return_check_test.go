@@ -162,11 +162,11 @@ func TestReturnCheckFilter_Convergence(t *testing.T) {
 		suspicions[c.Target.Function] = c.SuspicionLevel
 	}
 
-	if s := suspicions["tp_bare_call"]; s != "confirmed" {
-		t.Errorf("tp_bare_call: expected confirmed (bare call), got %s", s)
+	if s := suspicions["tp_bare_call"]; s != "suspected" {
+		t.Errorf("tp_bare_call: expected suspected (bare call), got %s", s)
 	}
-	if s := suspicions["tp_assigned_not_checked"]; s != "confirmed" {
-		t.Errorf("tp_assigned_not_checked: expected confirmed (assigned but never checked), got %s", s)
+	if s := suspicions["tp_assigned_not_checked"]; s != "suspected" {
+		t.Errorf("tp_assigned_not_checked: expected suspected (assigned but never checked), got %s", s)
 	}
 	if _, ok := suspicions["fp_assigned_and_checked"]; ok {
 		t.Errorf("fp_assigned_and_checked: expected dismissed, got candidate")
@@ -174,21 +174,21 @@ func TestReturnCheckFilter_Convergence(t *testing.T) {
 	if _, ok := suspicions["fp_decl_and_checked"]; ok {
 		t.Errorf("fp_decl_and_checked: expected dismissed, got candidate")
 	}
-	if s := suspicions["tp_outer_unchecked_inner_member_checked"]; s != "confirmed" {
+	if s := suspicions["tp_outer_unchecked_inner_member_checked"]; s != "suspected" {
 		// The INNER `e->buffer = malloc` is checked (`if (!e->buffer)`), but the
 		// OUTER `Entry *e = malloc` is never null-checked before `e->buffer` is
-		// dereferenced — a genuine CWE-252 defect the detector no longer
-		// suppresses, so it must stay confirmed (not be dismissed).
-		t.Errorf("tp_outer_unchecked_inner_member_checked: expected confirmed (outer allocation unchecked, only e->buffer is checked), got %q", s)
+		// dereferenced — a genuine CWE-252 lead the detector keeps; the AI
+		// judges whether the outer allocation's failure is actionable here.
+		t.Errorf("tp_outer_unchecked_inner_member_checked: expected suspected (outer allocation unchecked, only e->buffer is checked), got %q", s)
 	}
-	if s := suspicions["tp_field_use_not_nullcheck"]; s != "confirmed" {
-		t.Errorf("tp_field_use_not_nullcheck: expected confirmed (condition dereferences e->size, does not check e), got %s", s)
+	if s := suspicions["tp_field_use_not_nullcheck"]; s != "suspected" {
+		t.Errorf("tp_field_use_not_nullcheck: expected suspected (condition dereferences e->size, does not check e), got %s", s)
 	}
 	if _, ok := suspicions["fp_passthrough_allocator"]; ok {
 		t.Errorf("fp_passthrough_allocator: expected dismissed (return malloc passthrough, caller checks), got candidate")
 	}
-	if s := suspicions["tp_caller_unchecked"]; s != "confirmed" {
-		t.Errorf("tp_caller_unchecked: expected confirmed (calls passthrough allocator, never checks result), got %s", s)
+	if s := suspicions["tp_caller_unchecked"]; s != "suspected" {
+		t.Errorf("tp_caller_unchecked: expected suspected (calls passthrough allocator, never checks result), got %s", s)
 	}
 	if _, ok := suspicions["fp_caller_checked"]; ok {
 		t.Errorf("fp_caller_checked: expected dismissed (calls passthrough allocator but checks result), got candidate")
@@ -196,14 +196,14 @@ func TestReturnCheckFilter_Convergence(t *testing.T) {
 	if _, ok := suspicions["fp_passthrough_allocator_var"]; ok {
 		t.Errorf("fp_passthrough_allocator_var: expected dismissed (p = malloc; return p passthrough), got candidate")
 	}
-	if s := suspicions["tp_caller_var_unchecked"]; s != "confirmed" {
-		t.Errorf("tp_caller_var_unchecked: expected confirmed (calls var passthrough allocator, never checks), got %s", s)
+	if s := suspicions["tp_caller_var_unchecked"]; s != "suspected" {
+		t.Errorf("tp_caller_var_unchecked: expected suspected (calls var passthrough allocator, never checks), got %s", s)
 	}
 	if _, ok := suspicions["fp_caller_var_checked"]; ok {
 		t.Errorf("fp_caller_var_checked: expected dismissed (calls var passthrough allocator but checks), got candidate")
 	}
-	if s := suspicions["tp_use_then_return"]; s != "confirmed" {
-		t.Errorf("tp_use_then_return: expected confirmed (uses p before return, not a passthrough), got %s", s)
+	if s := suspicions["tp_use_then_return"]; s != "suspected" {
+		t.Errorf("tp_use_then_return: expected suspected (uses p before return, not a passthrough), got %s", s)
 	}
 	if _, ok := suspicions["fp_ternary_checked"]; ok {
 		t.Errorf("fp_ternary_checked: expected dismissed (ternary condition checks p), got candidate")
@@ -271,8 +271,8 @@ void name_heuristic_unchecked(const rec_t *rec) {
 	}
 	if c, ok := byFunc["known_contract_unchecked"]; !ok {
 		t.Errorf("expected the unchecked malloc() to be kept, got %v", candidateNames(result))
-	} else if c.SuspicionLevel != "confirmed" {
-		t.Errorf("malloc() has a known contract: expected confirmed, got %q", c.SuspicionLevel)
+	} else if c.SuspicionLevel != "suspected" {
+		t.Errorf("malloc() unchecked must stay suspected (AI judges whether the failure is actionable), got %q", c.SuspicionLevel)
 	}
 	if c, ok := byFunc["name_heuristic_unchecked"]; !ok {
 		t.Errorf("expected the _dup call to be kept as a lead, got %v", candidateNames(result))

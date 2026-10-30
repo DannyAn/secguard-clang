@@ -14,15 +14,11 @@ func init() {
 		FilterFactories:    chainDefault(),
 		BuildVerdictFacts: buildCryptoMisuseVerdictFacts,
 		// weak_algorithm (DES/MD5/SHA1/RC4), weak_random (rand/srand) and
-		// undersized_key are deterministic defects — the primitive itself is
-		// provably broken regardless of call context, so the detector's verdict is
-		// final and these are confirmed, not suspected. This matches the agent
-		// prompt's "weak crypto is confirmed, period" rule (agent-body.md).
-		CategoryConfidence: map[string]string{
-			"weak_algorithm": "confirmed",
-			"weak_random":    "confirmed",
-			"undersized_key": "confirmed",
-		},
+		// undersized_key name a primitive that IS weak, but whether that is a
+		// SECURITY defect depends on context (MD5 for a checksum is fine, MD5
+		// for a password hash is broken). Hand every candidate to the AI, which
+		// judges the use from the reason@ hint; the primitive weakness is not
+		// itself proof of a defect.
 		ConvergeKey: func(c Candidate) string {
 			return fmt.Sprintf("crypto-misuse:%d:%s:%s", c.FileID, c.FunctionName, c.Category)
 		},

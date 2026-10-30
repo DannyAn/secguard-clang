@@ -485,8 +485,8 @@ func TestUncheckedReturn_DerefCheck(t *testing.T) {
 	if _, present := suspicion["testcase"]; present {
 		t.Errorf("testcase (*retMsg checked via deref) should NOT be flagged, got %q", suspicion["testcase"])
 	}
-	if suspicion["g"] != "confirmed" {
-		t.Errorf("g (unchecked malloc use) should stay confirmed, got %q", suspicion["g"])
+	if suspicion["g"] != "suspected" {
+		t.Errorf("g (unchecked malloc use) should stay suspected, got %q", suspicion["g"])
 	}
 }
 

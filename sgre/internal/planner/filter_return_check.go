@@ -66,23 +66,14 @@ func (f *ReturnCheckFilter) Apply(ctx context.Context, candidates []Candidate) (
 		for _, c := range funcCandidates {
 			result, _ := f.analyzeCandidate(c, callExprs, ifStmts, condExprs)
 			// The detector already suppresses genuinely-checked returns at
-			// emission (checkedVars). This filter only upgrades the two shapes
-			// whose "unchecked" nature it can prove deterministically — a bare
-			// call, or an assignment/declaration with no subsequent sentinel
-			// test. It never dismisses: a candidate the detector emitted is
-			// real enough that the AI agent, not this filter, should weigh any
-			// residual "is it checked?" ambiguity.
-			//
-			// A `(void)`-discarded result is NOT a defect: the value is thrown
-			// away, so the failure is unobservable. Its own verdict fact says
-			// "dismiss", and command-instructions.md lists `discard` as a
-			// DISMISS hint — promoting it to confirmed produced a machine-
-			// confirmed CWE-252 false positive on `void *p = f(); (void)p;`.
-			// Keep it a suspected lead (so an unusual shape can still be judged)
-			// but never auto-confirm it.
-			if result == "unchecked" && c.ContractKnown && c.Consumed != "discard" {
-				c.SuspicionLevel = "confirmed"
-			}
+			// emission (checkedVars). Whether an "unchecked" return is a real
+			// defect is contextual — a mature codebase's zmalloc-style wrapper
+			// aborts on failure so the caller is correct to skip the check, a
+			// malloc in a can-fail path is a genuine CWE-252. That intent
+			// judgment belongs to the AI, so every candidate stays suspected
+			// (the verdict fact still names the "unchecked" shape; nothing is
+			// dismissed here).
+			_ = result
 			kept = append(kept, c)
 		}
 	}

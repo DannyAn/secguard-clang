@@ -22,9 +22,8 @@ func TestConfirmedTierPolicy(t *testing.T) {
 
 	// Golden lists — the reviewed deterministic tier (v0.8.0).
 	defaultConfirmed := map[string]string{
-		"null-deref":         "flow filter upgrades to confirmed only on must-null (has_definite_null)",
-		"signal-handler":     "type-inherent: POSIX async-signal-safe list is fixed and authoritative",
-		"dangerous-function": "type-inherent: a banned call is a policy defect by name (assert_usage excluded → suspected)",
+		"null-deref":     "flow filter upgrades to confirmed only on must-null (has_definite_null)",
+		"signal-handler": "type-inherent: POSIX async-signal-safe list is fixed and authoritative",
 	}
 	confirmedCategories := map[string]map[string]string{
 		"buffer-overflow": {
@@ -41,11 +40,6 @@ func TestConfirmedTierPolicy(t *testing.T) {
 		"out-of-bounds": {
 			"array_oob_read": "constant index past a known array size (read)",
 			"heap_oob_read":  "constant index past a known allocation size (read)",
-		},
-		"crypto-misuse": {
-			"weak_algorithm": "literal: DES/3DES/MD5/SHA-1/RC4/rand() are weak by CWE-327 definition",
-			"weak_random":    "literal: rand()/srand() are weak PRNGs by CWE-338 definition",
-			"undersized_key": "literal: key size below the algorithm's minimum",
 		},
 		"signed-compare": {
 			"signed_compare": "literal: signed/unsigned comparison with a provable sign",

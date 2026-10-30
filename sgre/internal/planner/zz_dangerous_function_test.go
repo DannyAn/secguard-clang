@@ -17,10 +17,11 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
-// TestDangerousFunction_Confirmed pins the planner tier: a call to a banned
-// function is a POLICY finding (sound name match), so it must be confirmed,
-// not suspected.
-func TestDangerousFunction_Confirmed(t *testing.T) {
+// TestDangerousFunction_Suspected pins the planner tier: a call to a banned
+// function is a POLICY finding, not a machine-proved defect, so it is handed
+// to the AI as suspected — the AI judges whether the banned function is unsafe
+// in context (an unbounded strcpy on caller input) or safe (a bounded memcpy).
+func TestDangerousFunction_Suspected(t *testing.T) {
 	ctx := context.Background()
 	store := db.NewTestStore(t)
 	logger := log.New(io.Discard, log.LevelWarn)
@@ -43,15 +44,16 @@ func TestDangerousFunction_Confirmed(t *testing.T) {
 		t.Fatalf("expected dangerous-function candidates, got none")
 	}
 	for _, c := range res.Candidates {
-		if c.SuspicionLevel != "confirmed" {
-			t.Errorf("candidate %s (banned %s) = %q, want confirmed", c.Target.Function, c.Target.Variable, c.SuspicionLevel)
+		if c.SuspicionLevel != "suspected" {
+			t.Errorf("candidate %s (banned %s) = %q, want suspected", c.Target.Function, c.Target.Variable, c.SuspicionLevel)
 		}
 	}
 }
 
-// TestDangerousFunction_AssertSuspected pins the one non-confirmed category:
-// whether an assert() guards caller input (a defect) or an internal invariant
-// (fine) needs intent, so `assert_usage` is handed to the AI as suspected.
+// TestDangerousFunction_AssertSuspected pins that assert_usage is also
+// suspected (handed to the AI) — consistent with the whole type now being
+// suspected: whether an assert() guards caller input (a defect) or an internal
+// invariant (fine) needs intent.
 func TestDangerousFunction_AssertSuspected(t *testing.T) {
 	ctx := context.Background()
 	store := db.NewTestStore(t)
