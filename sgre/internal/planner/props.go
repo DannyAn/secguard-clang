@@ -38,6 +38,10 @@ type eventProps struct {
 	Expression  string `json:"expression"`
 	Function    string `json:"function"`
 	Category    string `json:"category"`
+	// SizeArg/SizeArgKind carry the bounded-memory size argument of a
+	// dangerous-function candidate and its const/var kind (see Candidate).
+	SizeArg     string `json:"size_arg"`
+	SizeArgKind string `json:"size_arg_kind"`
 	NonNullable string `json:"non_nullable"`
 	IsTypeExpr  string `json:"is_type_expr"`
 	// IsCallResultDeref is "true" when the dereferenced operand is the direct

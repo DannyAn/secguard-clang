@@ -111,6 +111,12 @@ type Candidate struct {
 	Expression string `json:"expression,omitempty"`
 	APIName    string `json:"api_name,omitempty"`
 	Category   string `json:"category,omitempty"`
+	// SizeHint/SizeKind carry the bounded-memory size argument of a
+	// dangerous-function candidate (memcpy's third arg) and whether it is a
+	// compile-time constant or a variable — the decisive context for judging
+	// "is this banned call actually unsafe?" without reading source.
+	SizeHint string `json:"size_arg,omitempty"`
+	SizeKind string `json:"size_arg_kind,omitempty"`
 	LocationID int64  `json:"location_id"`
 	FileID     int64  `json:"file_id"`
 	Line       int    `json:"line"`

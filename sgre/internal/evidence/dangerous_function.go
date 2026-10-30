@@ -249,6 +249,15 @@ func (d *DangerousFunctionDetector) Detect(ctx context.Context) (DetectResult, e
 			if rule.replacement != "" {
 				props["replacement"] = rule.replacement
 			}
+			// The size argument of a bounded memory function (memcpy/memmove/
+			// memset) is the decisive context for "is this banned call actually
+			// unsafe?" — a compile-time-constant size is bounded and usually
+			// safe; a variable size needs the surrounding bound check. Surfacing
+			// it lets the AI judge from the hint instead of reading source.
+			if sizeText, sizeKind := dangerousSizeHint(rule.category, call); sizeText != "" {
+				props["size_arg"] = sizeText
+				props["size_arg_kind"] = sizeKind
+			}
 			if emitEvent(ctx, d.store, d.logger, "DANGEROUS_FUNCTION", fnID, &db.Location{FileID: file.ID, Line: call.StartLine()}, props) {
 				result.EventsCreated++
 			}
@@ -472,4 +481,25 @@ func functionStartLine(fnID int64, funcs []*db.Function) int {
 		}
 	}
 	return 0
+}
+
+// dangerousSizeHint returns the size argument and its kind (const/var) for a
+// banned bounded-memory call (unsafe_memory: memcpy/memmove/memset). The size
+// is the third argument; the kind is "const" for a compile-time literal and
+// "var" otherwise. Unbounded categories (strcpy/sprintf/gets) return "" — the
+// function itself is the defect, no size to judge.
+func dangerousSizeHint(category string, call parser.Node) (sizeText, sizeKind string) {
+	if category != "unsafe_memory" {
+		return "", ""
+	}
+	args := getCallArgs(call)
+	if len(args) < 3 {
+		return "", ""
+	}
+	sizeText = strings.TrimSpace(args[2].Text())
+	sizeKind = "var"
+	if args[2].Kind() == "number_literal" {
+		sizeKind = "const"
+	}
+	return sizeText, sizeKind
 }

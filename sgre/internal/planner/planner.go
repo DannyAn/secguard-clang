@@ -537,6 +537,8 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			Expression:              props.Expression,
 			APIName:                 apiName,
 			Category:                props.Category,
+			SizeHint:                props.SizeArg,
+			SizeKind:                props.SizeArgKind,
 			LocationID:              e.LocationID,
 			FileID:                  fileID,
 			Line:                    line,

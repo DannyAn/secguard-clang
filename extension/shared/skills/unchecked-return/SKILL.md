@@ -30,7 +30,7 @@ unchecked-return candidate. This is the decisive fact:
 
 | Hint | Meaning | Action |
 |------|---------|--------|
-| `contract@known` | The callee is a standard unchecked-return API (`malloc`/`fopen`/`read`…), a declared allocator (`secguard.toml [allocators]`), or a body-verified passthrough wrapper. An unchecked return is a genuine CWE-252 defect. | **confirmed** (unless the Source column shows a check the pipeline missed) |
+| `contract@known` | The callee is a standard unchecked-return API (`malloc`/`fopen`/`read`…), a declared allocator (`secguard.toml [allocators]`), or a body-verified passthrough wrapper. | **suspected** — the return IS unchecked (machine-proved), but whether the failure is actionable depends on context: a `malloc` in a can-fail path is a genuine CWE-252; a `zmalloc`-style wrapper that aborts on OOM makes the check pointless. Confirm when the caller MUST handle the failure, dismiss when the failure is unobservable/unhandled-by-design or the Source shows a check the pipeline missed |
 | `contract@unknown` | The callee is an allocator by NAME only (an `alloc` substring, a `*_new`/`*_dup` factory). Its failure behaviour is unproven — it may be pool-, stack- or caller-buffer-backed and never fail. | Prove the callee returns a failure sentinel (`NULL` / `-1` / error code) on the unchecked path. The `Hint` carries `callee@<file>:<line>`; the evidence file embeds the callee body under `## Callee Definition`, so the proof is an in-file judgment — do NOT spend a source READ on a body that is already shown. If the evidence says `none in scan`, the callee is external/library: prove the contract from API knowledge, not from a source READ. If you cannot prove it, **dismiss**. |
 
 ### Evidence closure (read before any source read)

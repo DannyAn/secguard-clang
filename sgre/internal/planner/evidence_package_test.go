@@ -15,6 +15,7 @@ func TestBuildHint(t *testing.T) {
 	oob := &VulnTypeSpec{Name: "out-of-bounds"}
 	ml := &VulnTypeSpec{Name: "memory-leak"}
 	rl := &VulnTypeSpec{Name: "resource-leak"}
+	dangerous := &VulnTypeSpec{Name: "dangerous-function"}
 	cases := []struct {
 		name string
 		c    Candidate
@@ -33,6 +34,8 @@ func TestBuildHint(t *testing.T) {
 		{"divide-by-zero field divisor", Candidate{VariableName: "graph->gran_time"}, dbz, "divisor@field"},
 		{"divide-by-zero global divisor", Candidate{VariableName: "g_count"}, dbz, "divisor@global"},
 		{"api and category", Candidate{APIName: "memcpy", Category: "buffer_overflow"}, nil, "api@memcpy cat@buffer_overflow"},
+		{"dangerous-function bounded const size", Candidate{APIName: "memcpy", Category: "unsafe_memory", SizeHint: "16", SizeKind: "const"}, dangerous, "size@16 size-kind@const api@memcpy cat@unsafe_memory"},
+		{"dangerous-function variable size", Candidate{APIName: "memcpy", Category: "unsafe_memory", SizeHint: "n", SizeKind: "var"}, dangerous, "size@n size-kind@var api@memcpy cat@unsafe_memory"},
 		{"uninit certain", Candidate{SuspicionLevel: "confirmed"}, uninit, "certain-uninit"},
 		// null-deref states certainty through the null@<tier> token instead of
 		// the shared certain-null/maybe-null pair, plus guard@none at the tail.

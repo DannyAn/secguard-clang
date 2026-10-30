@@ -296,6 +296,15 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			if c.Consumed == "discard" {
 				parts = append(parts, "discard")
 			}
+		case "dangerous-function":
+			// The size of a bounded memory function (memcpy/memmove/memset) is
+			// the decisive context: a compile-time-constant size is bounded
+			// (usually safe → dismiss from the row); a variable size needs the
+			// surrounding bound check (the Code Context ±8 lines shows it).
+			if c.SizeHint != "" {
+				parts = append(parts, "size@"+c.SizeHint)
+				parts = append(parts, "size-kind@"+c.SizeKind)
+			}
 		case "null-deref":
 			// The nullable-origin tier replaces this type's flat
 			// certain-null/maybe-null pair (other types keep the shared

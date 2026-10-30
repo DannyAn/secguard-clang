@@ -258,7 +258,7 @@ maintains the directory.
 
 ## Classification Rules
 - **Safe functions** (`memcpy_s`, `strcpy_s`, `execve`, `sqlite3_prepare_v2`) are normally *false-positive* — a guard that eliminates the risk. That is the default, not a blank cheque: if the call site violates the safety contract (dest size still overflows, the size argument is wrong, the return value must be checked and is not), classify **confirmed**. "The function is safe" ≠ "this call is safe".
-- **Weak crypto is confirmed, period.** DES, 3DES, MD5, SHA-1, RC4, `rand()` are weak by CWE-327 definition regardless of intent. Do not soften them to "borderline" or "maybe legacy by design" — that is **confirmed**, with a fix_strategy naming the strong replacement (AES-256, SHA-256/SHA-3, a CSPRNG).
+- **Weak crypto is context-dependent, not "confirmed, period".** DES, 3DES, MD5, SHA-1, RC4, `rand()` are weak PRIMITIVES, but the DEFECT depends on the use: MD5 for a password hash / signature is **confirmed** (name the strong replacement — AES-256, SHA-256/SHA-3, a CSPRNG); MD5 for a checksum, a non-security hash, or `rand()` for UI/test/tie-break is **dismissed**. Judge the use from the `reason@` hint + Code Context, not the primitive name alone.
 - Safe wrappers (SafeCopy, SafeQuery, ResourceHandle, LockGuard) → false-positive
 - RAII patterns (create+destroy pairs) → false-positive for leak
 - Bounds checks before unsafe call → false-positive for buffer-overflow

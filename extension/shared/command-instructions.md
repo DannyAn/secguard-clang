@@ -126,11 +126,11 @@ hardcode names or counts.
   (dest size still overflows, size argument lies, return value unchecked when it
   must be), classify **confirmed**. "The function is safe" is not the same as
   "this call is safe".
-- **Weak crypto is confirmed, period.** CWE-327 is defined by the algorithm, not
-  by intent: DES, 3DES, MD5, SHA-1, RC4, `rand()` are weak. Do NOT excuse them as
-  "legacy compatibility" or "maybe by design" — those are **confirmed**, with a
-  fix_strategy pointing at AES-256 / SHA-256 / a CSPRNG. "Borderline" is not a
-  verdict.
+- **Weak crypto is context-dependent, not "confirmed, period".** CWE-327 is
+  defined by the USE, not the algorithm alone: DES/3DES/RC4/MD5/SHA-1/`rand()`
+  are weak primitives, but a password hash / signature is **confirmed** (fix =
+  AES-256 / SHA-256 / a CSPRNG) while MD5-for-checksum or `rand()`-for-UI/test
+  is **dismissed**. Judge the use from the `reason@` hint + Code Context.
 - Safe wrappers (SafeCopy, SafeQuery, ResourceHandle, LockGuard) → false-positive.
 - RAII (create+destroy pairs) → false-positive for leak.
 - Bounds check before an unsafe call → false-positive for buffer-overflow.

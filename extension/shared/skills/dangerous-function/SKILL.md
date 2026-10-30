@@ -62,7 +62,10 @@ the embedded section and the indexed lookup.
 
 | Condition | Classification |
 |-----------|---------------|
-| A call to a banned function (any category except the two below) | **confirmed** |
+| A call to a banned function (any category) | **suspected** — the pipeline no longer auto-confirms; you judge the CONTEXT from the hint + Code Context (see below) |
+| `api@<fn>` where the function is UNBOUNDED (`strcpy`/`strcat`/`sprintf`/`vsprintf`/`gets`/`scanf`) | **confirmed** — no size argument, the function is dangerous by construction (unless the Source/Code Context shows a fixed, safe destination) |
+| `api@memcpy`/`memmove`/`memset` + `size-kind@const` | **dismiss** — a compile-time-constant size is bounded; only confirm when the constant provably exceeds the destination |
+| `api@memcpy`/`memmove`/`memset` + `size-kind@var` | **suspected** — judge the bound: read the embedded Code Context ±8 lines for the guard (`if (n > cap) return;`); confirm when the size is caller-controlled and unguarded, dismiss when guarded or the destination is clearly larger |
 | A call to `assert` (`assert_usage`) | **suspected** — the AI decides whether it guards caller input (defect) vs an internal invariant (fine) |
 | A call to `inet_addr` (`obsolete_api_conditional`) | **suspected** — its risk is conditional on the argument's provenance and the `INADDR_NONE` check, so you must decide: `dismiss` when the argument is not caller-controlled (an internal config field, an already-parsed protocol value, a constant) or when the result is tested against `INADDR_NONE` / `(in_addr_t)-1`; `confirm` when a caller-supplied string is converted and the sentinel is not checked |
 | `exit`/`ExitProcess`/`pthread_exit`/`ExitThread` inside the entry point | **false-positive** (the detector never emits it) |
@@ -95,16 +98,17 @@ parameter, a non-static source) stays a policy finding:
 | Shape | Verdict |
 |---|---|
 | `memset(buf, 0, 64)` on `char buf[16]` | **confirmed** (size is not the object's extent; the overflow is reported separately) |
-| `memcpy(dst, src, n)` with an unrelated `n` | **confirmed** |
+| `memcpy(dst, src, n)` with an unrelated, caller-controlled `n` | **confirmed** (size-kind@var + unguarded) |
+| `memcpy(dst, src, n)` with `n` guarded (`if (n <= sizeof dst)`) | **dismiss** (the Code Context shows the guard) |
 | `strcpy(dst, src)` with a non-static source | **confirmed** |
 
-The table is a fixed policy: the functions are banned or obsolete by name,
-regardless of surrounding code, so the pipeline auto-confirms every category
-except `assert_usage` and `obsolete_api_conditional` — both are name matches
-whose defect needs intent the rule cannot see (`assert` guards caller input vs
-an internal invariant; `inet_addr` needs a runtime-controlled string AND an
-unchecked sentinel). These policy findings
-intentionally OVERLAP the context-sensitive `buffer-overflow` / `injection` /
+The table is a context policy, not a blind name ban: the pipeline emits every
+non-exempt call as **suspected** and the hint (`api@` + `size@` + `size-kind@`)
+carries the decisive context, so you judge from the row + embedded Code Context
+instead of reading the whole file. UNBOUNDED functions are dangerous by
+construction; BOUNDED ones are safe when their size is a constant or guarded.
+These policy findings intentionally OVERLAP the context-sensitive
+`buffer-overflow` / `injection` /
 `format-string` detectors: those answer "does THIS call overflow / inject",
 while this type answers "is a non-`_s` API used at all". Both are reported.
 
