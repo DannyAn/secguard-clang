@@ -117,6 +117,23 @@ Example:
   secguard types`)
 }
 
+func printClassifyUsage() {
+	fmt.Fprintln(os.Stdout, `secguard classify - Deterministically classify candidates (route-B executor)
+
+Usage:
+  secguard classify <path> [flags]
+
+Arguments:
+  <path>   C target path (the pipeline re-plans it and classifies the result)
+
+Flags:
+  --mode <m>        agent (default, LLM-orchestrator path) | executor (deterministic)
+  --dry-run         With --mode executor: use DismissAllRunner (no LLM) to prove the wiring
+  --batch-size <n>  Candidates per worker batch (default 20)
+  --db <path>       Path to sgre.db
+  --help, -h        Show this usage`)
+}
+
 func printPlanUsage() {
 	fmt.Fprintln(os.Stdout, `secguard plan - Run the convergence pipeline for a single vulnerability type
 
@@ -503,6 +520,7 @@ var subcommandUsage = map[string]func(){
 	"types":  printTypesUsage,
 	"plan":   printPlanUsage,
 	"report": printReportUsage,
+	"classify": printClassifyUsage,
 	"db":     printDbUsage,
 	"def":    printDefUsage,
 	"symbol": printDefUsage,
