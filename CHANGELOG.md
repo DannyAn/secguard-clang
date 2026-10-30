@@ -2,6 +2,41 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.11.8] - 2026-10-30
+
+### 性能：AI 分类编排层 + hint 预计算层系统改进
+
+针对现网"自动分析 110s / AI 分类 6h"的性能画像，落地一轮数据闭环 + 调度自由度 + hint 预计算改进。核心交付：
+
+**数据闭环（引擎代算，不再靠 LLM 自律）**
+
+- 新增 `settlement_stats` 表：`status --reports` 解析子代理 settlement 后落库（幂等 UNIQUE），`status --per-type` 由引擎返回 `r_type` / `r_sample` / `suggested_batch_size` / `already_covered_ranges`，编排器只消费数字、不再做统计聚合。
+- 表带 `status`/`retry_count` 任务生命周期列 + `wall_ms` 度量（settlement mtime − 扫描起始），为 F11 straggler 反馈与确定性执行器铺好地基。
+
+**调度自由度（滑动窗口）**
+
+- 协议 F3a：首波 ≤10s 发出后，每收到一个批次完成信号就立即吸收 settlement + 补派积压队列下一个批次（豁免 ≤10s），并发顶满宿主上限、消除整波 barrier（同步宿主无后台模式时退化为现状）。
+
+**hint 预计算 + 报告**
+
+- `_index.md` 按 Function 稳定聚簇（编号自洽），配合 Group-verdict 让同函数候选同批裁决。
+- 10 个漏洞类型补具体修复建议（原 67 条通用占位"Review the evidence"）。
+- `function_summary` 覆盖生产者（覆盖率 4.3%→100%）+ bounded-return / out-param 契约持久化（算完即弃→落库）。
+- `[contracts]` 树外符号契约通道：`secguard.toml [contracts]` 声明外部 SDK/框架契约，注入 `user-contract@` / `takes-ownership@` / `outparam@` / `release@` hint，消除树外深挖。
+- uninit 候选携带分配器名 `api@<allocator>`（`secguard def` 替代源码读取）。
+
+**确定性执行器（路线 B，灰度）**
+
+- `sgre/internal/worker`：零工具 prompt 组装器 + 确定性执行器（滑动窗口调度 + 覆盖缺口审计 + inconclusive escalation）。
+- `secguard classify --mode executor|agent [--dry-run]` + `ai_stage_mode` 配置开关（默认 agent，executor 需灰度验证）。
+
+**误报修复**
+
+- 危险函数检测器不再 ban 有界字符串族（`snprintf`/`vsnprintf`/`strncpy`/`strncat`）——与自身"优先用 snprintf"修复建议自相矛盾，产生 safe-functions 误报。
+- 截断抢救：`--write-json` 对截断 JSON 抢救已完整的前置 finding（部分覆盖 > 整批拒收）+ 分块 settlement 快照（valid:false 不污染已覆盖范围）。
+- `found:false` 符号 cite `def:<sym>:external` 并禁止创建后台搜索任务（5.2h 级失控根因）。
+- `report --list` 携带 `vuln_type`（消除编排器硬编码 CWE 映射）。
+
 ## [0.11.7] - 2026-10-30
 
 ### 修复：回退 `findings.sarif` 对扫描输出契约的破坏
