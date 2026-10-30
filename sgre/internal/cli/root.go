@@ -122,6 +122,8 @@ func Execute(ctx context.Context, args []string) int {
 		return runPlanCmd(ctx, args[1:])
 	case "report":
 		return runReportCmd(ctx, args[1:])
+	case "classify":
+		return runClassifyCmd(ctx, args[1:])
 	case "db":
 		return runDbCmd(ctx, args[1:])
 	case "def", "symbol":
