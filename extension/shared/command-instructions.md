@@ -522,6 +522,10 @@ straight to the structured report (`written: 0`).
        gates the buffer,
       `api@<name>` = the API in play, `cat@<name>` = the detector category,
       `contract@known`/`contract@unknown` = unchecked-return callee contract,
+      `user-contract@<symbol>` = a user-declared contract for an EXTERNAL symbol
+      (secguard.toml `[contracts]`), with `takes-ownership@<param>` /
+      `outparam@<param>` / `release@<mode>` carrying the declared semantics —
+      judge from them, never deep-dive the unseen body,
       `discard` = the return value is stored then `(void)`-cast away (a
       deliberate discard — the failure is unobservable, dismiss from the row),
       `threads@<fn>`/`write@N` = shared-data race, `lock@<lo>-<hi>` = TOCTOU

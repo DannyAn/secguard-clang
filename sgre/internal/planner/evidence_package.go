@@ -673,6 +673,7 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 	if c.APIName != "" {
 		parts = append(parts, "api@"+c.APIName)
 	}
+	parts = appendContractHints(parts, c, userContracts())
 	if c.Category != "" {
 		parts = append(parts, "cat@"+c.Category)
 	}

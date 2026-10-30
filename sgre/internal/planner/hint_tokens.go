@@ -53,6 +53,10 @@ var hintTokenRegistry = []HintTokenSpec{
 	// ---- unchecked-return ----
 	{Key: "contract@known", Description: "the callee's failure contract is proven (standard unchecked-return API / declared allocator / body-verified wrapper): an unchecked return is a genuine CWE-252 defect"},
 	{Key: "contract@unknown", Description: "the callee is an allocator by NAME only (`alloc` substring, `*_new`/`*_dup` factory): prove it returns a failure sentinel (NULL/-1/error code) or dismiss"},
+	{Key: "user-contract@", Display: "user-contract@<symbol>", Description: "the user declared a contract for the external symbol {value} in secguard.toml [contracts] — judge from the declared semantics (takes-ownership@ / outparam@ / release@ below), do NOT deep-dive a body the scan cannot see"},
+	{Key: "takes-ownership@", Display: "takes-ownership@<param>", Description: "the callee takes ownership of parameter {value}: the caller must NOT release that object afterward (a leak/double-free candidate on it is dismissed)"},
+	{Key: "outparam@", Display: "outparam@<param>", Description: "the callee writes through parameter {value} (an output parameter): a caller passing &var to it treats var as initialized (an uninit candidate on it is dismissed)"},
+	{Key: "release@", Display: "release@<mode>", Description: "the callee releases an owned resource per {value} (on-success / on-error / always) — judge the caller's release duty from this contract, not from a body read"},
 	{Key: "discard", Description: "the return value is stored then explicitly `(void)`-cast away — the programmer deliberately discards it, so the ignored failure is unobservable: dismiss from the row, no source read"},
 	{Key: "callee@", Display: "callee@<file>:<line>", Description: "the callee's definition location in the scan ({value}); its body is embedded in the candidate file's `## Callee Definition`"},
 	{Key: "second-callee@", Display: "second-callee@<file>:<line>", Description: "double-free: the SECOND release helper's definition ({value}) — its body is embedded in the candidate file's `## Second Callee Definition`; judge whether both frees can execute on one path from these two bodies"},

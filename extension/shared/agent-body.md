@@ -207,6 +207,12 @@ Two kinds of hint — do NOT conflate them:
   crypto)/`async-unsafe@`/`cast@`(incompatible types).
 - dismiss: `contract@unknown`/`macro-context`(unproven macro)/`discard`/
   `src-cap@ ≤ cap@`/`value-shape@`(placeholder/test).
+- user-declared contract: `user-contract@<symbol>` (+ `takes-ownership@<param>` /
+  `outparam@<param>` / `release@<mode>`) — the user declared this EXTERNAL
+  symbol's contract in secguard.toml `[contracts]`; judge from the declared
+  semantics with no read. `takes-ownership@` dismisses a leak/double-free on that
+  object (the callee owns it); `outparam@` dismisses an uninit on that output
+  (the callee writes it); `release@` states the callee's release duty.
 
 **Heuristic observations → keep your judgment, and use the ≤5-read budget when
 the embedded context cannot settle it:**

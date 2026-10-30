@@ -29,6 +29,7 @@ type Config struct {
 	OwnershipTransferCalls OwnershipTransferCalls `toml:"ownership_transfer_calls"`
 	Nullability            Nullability            `toml:"nullability"`
 	IntegerOverflow        IntegerOverflow        `toml:"integer_overflow"`
+	Contracts              Contracts              `toml:"contracts"`
 	Scan                   Scan                   `toml:"scan"`
 }
 
@@ -224,6 +225,73 @@ type NonNullParams struct {
 //	nlog_syslog_add_hostname = 1
 type IntegerOverflow struct {
 	TruncatingWrappers map[string]int `toml:"truncating_wrappers"`
+}
+
+// Contracts declares contracts for tree-EXTERNAL symbols (framework/SDK
+// functions or macros whose definitions live outside the scan tree), so the AI
+// classifier judges a call to them from the declared contract instead of
+// deep-diving a body the scan cannot see. Each entry maps a symbol name to its
+// contract; the symbol is matched against a candidate's callee (api@), and the
+// contract is injected into the candidate Hint as decisive, no-open facts.
+//
+//	[contracts]
+//	"framework_send_data" = { takes_ownership = "param-1", releases = "on-success" }
+//	"vendor_hton_buf"     = { out_params = ["param-4"] }
+type Contracts struct {
+	BySymbol map[string]Contract `toml:"-"`
+}
+
+// UnmarshalTOML lets `[contracts]` be a bare map of symbol -> inline contract,
+// so users write the compact `[contracts]` table above rather than a nested
+// `[contracts.by_symbol.<name>]` form.
+func (c *Contracts) UnmarshalTOML(v interface{}) error {
+	raw, ok := v.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	c.BySymbol = make(map[string]Contract, len(raw))
+	for sym, val := range raw {
+		// Accept either a string (a marker with no semantics yet) or an inline
+		// table carrying the contract fields.
+		switch t := val.(type) {
+		case string:
+			c.BySymbol[sym] = Contract{Note: t}
+		case map[string]interface{}:
+			var ct Contract
+			if s, ok := t["takes_ownership"].(string); ok {
+				ct.TakesOwnership = s
+			}
+			if s, ok := t["releases"].(string); ok {
+				ct.Releases = s
+			}
+			if arr, ok := t["out_params"].([]interface{}); ok {
+				for _, e := range arr {
+					if s, ok := e.(string); ok {
+						ct.OutParams = append(ct.OutParams, s)
+					}
+				}
+			}
+			c.BySymbol[sym] = ct
+		}
+	}
+	return nil
+}
+
+// Contract is one tree-external symbol's declared semantics. Field values use
+// the parameter spelling the user writes (`param-1`, `param-4`) — they are
+// rendered verbatim into the candidate Hint, not normalized to indices.
+type Contract struct {
+	// TakesOwnership names the parameter the callee takes ownership of (the
+	// caller must NOT release it afterward).
+	TakesOwnership string `toml:"takes_ownership"`
+	// Releases describes when the callee releases an owned resource
+	// (on-success / on-error / always).
+	Releases string `toml:"releases"`
+	// OutParams lists the parameters the callee writes through (output params).
+	OutParams []string `toml:"out_params"`
+	// Note is a free-form annotation accepted when the user writes a bare string
+	// instead of an inline table.
+	Note string `toml:"note"`
 }
 
 // DisabledTypes declares vulnerability types to turn OFF for the whole scan. A
@@ -444,6 +512,15 @@ func (c *Config) IntegerOverflowTruncatingWrappers() map[string]int {
 		return nil
 	}
 	return c.IntegerOverflow.TruncatingWrappers
+}
+
+// ContractBySymbol returns the user-declared tree-external contracts (symbol ->
+// contract). A nil config or an empty [contracts] table returns an empty map.
+func (c *Config) ContractBySymbol() map[string]Contract {
+	if c == nil || c.Contracts.BySymbol == nil {
+		return map[string]Contract{}
+	}
+	return c.Contracts.BySymbol
 }
 
 // ExcludePaths returns the configured directory paths to prune during indexing.
