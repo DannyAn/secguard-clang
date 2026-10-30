@@ -39,6 +39,7 @@ func TestBuildHint(t *testing.T) {
 		{"null-deref cfg-proof", Candidate{SourceLine: 5, NullOriginTier: "cfg-proof"}, nil2, "null@cfg-proof src@5 guard@none"},
 		{"null-deref malloc-fail with callee", Candidate{SourceLine: 5, NullOriginTier: "malloc-fail", IsCallResultDeref: true, CalleeDefFile: "src/util.c", CalleeDefLine: 42}, nil2, "null@malloc-fail callee@util.c:42 src@5 guard@none"},
 		{"null-deref caller-arg", Candidate{NullOriginTier: "caller-arg"}, nil2, "null@caller-arg guard@none"},
+		{"null-deref caller-arg with witness", Candidate{NullOriginTier: "caller-arg", CallerNullDetail: "caller foo passes NULL"}, nil2, "null@caller-arg caller-null@caller foo passes NULL guard@none"},
 		{"null-deref external-unknown", Candidate{NullOriginTier: "external-unknown"}, nil2, "null@external-unknown guard@none"},
 		{"uninit maybe", Candidate{SuspicionLevel: "suspected"}, uninit, "maybe-uninit"},
 		{"integer-overflow unsigned sub unguarded", Candidate{Category: "unsigned_sub_underflow"}, iof, "guard@none cat@unsigned_sub_underflow"},

@@ -312,6 +312,12 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			} else if c.NullOriginTier != "" {
 				parts = append(parts, "null@"+c.NullOriginTier)
 			}
+			// The caller-null WITNESS (which caller passes NULL / forwards an
+			// open parameter) is decisive — it lets the classifier check the
+			// NAMED caller instead of reading source to trace the argument.
+			if c.CallerNullDetail != "" {
+				parts = append(parts, "caller-null@"+c.CallerNullDetail)
+			}
 			// A call-result dereference (`f()->field`) whose callee is
 			// defined in the scan: the callee body decides whether its
 			// return can be NULL, and it is embedded in the candidate file.

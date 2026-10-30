@@ -523,6 +523,9 @@ straight to the structured report (`written: 0`).
        checks the count first, and verify the count/data name pairing actually
        gates the buffer,
       `api@<name>` = the API in play, `cat@<name>` = the detector category,
+      `caller-null@<why>` = the caller-null witness for a null@caller-arg row
+      (names the specific caller that passes NULL / forwards an open parameter —
+      check only that caller, no source read),
       `contract@known`/`contract@unknown` = unchecked-return callee contract,
       `user-contract@<symbol>` = a user-declared contract for an EXTERNAL symbol
       (secguard.toml `[contracts]`), with `takes-ownership@<param>` /

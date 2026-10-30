@@ -226,6 +226,10 @@ the embedded context cannot settle it:**
   is attacker-reachable, an internal/trusted value or literal is not),
 - `sanitizer@` (a validator guards the sink — judge whether it is a complete
   whitelist or a partial blacklist).
+- `caller-null@<why>` (the inter-procedural caller-null WITNESS: it names the
+  specific caller that passes NULL / forwards an open parameter) — check ONLY
+  that named caller (via the embedded Code Context / `secguard def`), do not
+  read the whole function or trace the argument yourself.
 
 Only a candidate whose defining evidence lives in an UN-indexed location (a
 macro/callee in a header the scan did not index, so its body is NOT embedded) is

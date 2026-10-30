@@ -316,8 +316,8 @@ int derived_external(void)
 	if cast.DerivedFrom != "dc_src" {
 		t.Fatalf("derived_cast dc_q: derived_from = %q, want dc_src", cast.DerivedFrom)
 	}
-	if cast.Hint != "null@caller-arg guard@none" {
-		t.Fatalf("derived_cast dc_q: hint = %q, want null@caller-arg guard@none", cast.Hint)
+	if !strings.Contains(cast.Hint, "null@caller-arg") || !strings.Contains(cast.Hint, "caller-null@") {
+		t.Fatalf("derived_cast dc_q: hint = %q, want null@caller-arg + caller-null@ witness", cast.Hint)
 	}
 	for _, f := range cast.VerdictFacts {
 		if f.Token != "null@caller-arg" {
