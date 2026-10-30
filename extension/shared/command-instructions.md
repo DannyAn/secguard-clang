@@ -408,6 +408,8 @@ straight to the structured report (`written: 0`).
     Never skip a type. Obey the context budget (no per-candidate source reads).
 **调度时序合规规则 (F3):** All subagent dispatches SHALL occur in a single assistant turn — N `Agent`/`task` calls issued consecutively with the first-to-last timestamp span ≤ 10s. (Claude Code's subagent-dispatch tool is `Agent`; older Claude Code versions name it `Task`.) The orchestrator SHALL NOT split dispatches across turns. After dispatch, while subagents run, the orchestrator SHALL NOT poll their transcripts or issue `sleep`.
 
+**滑动窗口补位 (F3a) — 消灭整波 barrier（P0-1）：** F3 的"所有派发 ≤10s"只约束**首波**。首波发出后，每收到**一个**批次的完成信号（官方 Claude Code 的 `task_notification`、DSH 的 settlement 通知；或同步宿主若其 `Agent`/`task` 工具支持 `run_in_background` 时的完成通知），编排器**立即**吸收该批次 settlement 并**立即**补派积压队列中的下一个批次——不等其他在跑批次，并发数始终顶满宿主上限，波间空档与 straggler 尾部空转消失。补位派发按通知逐个发，**显式豁免 F3 的 ≤10s 限制**。吸收顺序与 F11 一致：`secguard status --reports`（有 `valid:true` 覆盖则吸收 `written`/`dismissed`/`needs_context` 并 `report --complete-type`）→ `secguard status --per-type`（读引擎预计算的 `already_covered_ranges`，只补派缺失 range）。同步宿主若其 `Agent`/`task` 无后台模式（OpenCode / claude-cac 按 F7 的同步返回），则首波仍按 F3 一次性发出、超时走 F11——退化为现状，无回归。
+
 **子代理返回模型 (F7) — 这是"任务卡住不结束/结果丢失/重复下发"的根因，必读：** 三个平台的返回模型不同，绝不可混用：
 
 - **OpenCode（含 opencode-nga）的 `task` 工具是同步的**：一次 `task` 调用的返回值就是该子代理的最终消息（即 `Structured Report Protocol` 的 JSON 块）。**没有**独立的 "task-notification" 事件可等。因此 orchestrator 在同一个回合里连续发出 N 个 `task` 调用后，这些调用会逐一带回结果；拿到结果后 orchestrator 必须**立刻**进入第 5 步 Collect+finalize，**绝不能**在发出 task 后结束回合去"等通知"——那样这个回合就永远停在原地，任务计时一直走。
@@ -428,8 +430,9 @@ straight to the structured report (`written: 0`).
 **派发前落点检查 (F11a)：** 任何派发之前先跑 `secguard status --reports --scan-id <scan_id>`，跳过已被 `valid:true` 报告覆盖的 type/range。这样超时后的 re-plan 是幂等的，重复派发一个已完成的批次是纯重复劳动。
 
 4. **Parallel dispatch** (ONLY when step 2 says so): first run `secguard status --reports --scan-id <scan_id>` and drop every batch already covered by a `valid:true` report (F11a). Then validate every batch against the Batch Capacity Configuration above, and spawn one subagent PER BATCH
-   of types that need AI work (`candidates_by_type > 0`), ALL IN THE SAME TURN so
-   they run concurrently:
+   of types that need AI work (`candidates_by_type > 0`), the FIRST WAVE all in
+   the same turn so they run concurrently (F3), then backfill the queue per F3a
+   as each completion arrives:
    - Claude Code (official): the `Agent` tool (the subagent-dispatch tool; older
      versions name it `Task`) with `subagent_type: "security-auditor"` (bare name).
    - CodeAgentCLI (claude-cac): the same `Agent`/`Task` tool, but this host

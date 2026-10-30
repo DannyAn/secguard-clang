@@ -110,17 +110,23 @@ your toolset; otherwise `secguard def` via Bash):
   macro pair.
 - `secguard def <MACRO> --in <candidate file>` for a macro defined in the
   candidate's own `.c`; `--kind macro` / `--kind function` forces one class.
-- `"found": false` means external/unindexed (a system header macro, a library
-  API): cite `def:<symbol>:not-in-scan` and judge from API knowledge.
+- `"found": false` (the result also carries `external: true`) means the symbol is
+  external/unindexed (a system header macro, a library API): cite
+  `def:<symbol>:external` and judge from API knowledge. Do NOT search further to
+  verify an external symbol — no whole-tree Grep AND no background search task.
 - On OpenCode, `secguard_def` defaults to `<workdir>/.codeagent/.../sgre.db`;
   pass `db_path` (derived from `scan_dir`) when your working directory is not the
   project root.
 
 Do NOT run `Grep` over the repository (a whole-tree path or `**/*.{c,h}`) to find
-a definition. That re-reads every source file per symbol and is the single largest
-wall-clock cost in production scans; it is NOT bounded by the ≤5-source-read
-budget. A repo-wide Grep counts as ONE source read, and you may use at most ONE
-per type (report it in `repo_greps`). If you already grepped for a symbol, use
+a definition, and do NOT create a background/parallel search task to do it
+asynchronously — the ban covers BOTH the foreground `Grep` tool call AND any
+background search task. (The 5.2h-class production runaway was a background
+whole-tree search, which the earlier Grep-only ban did not catch.) A whole-repo
+search re-reads every source file per symbol and is the single largest wall-clock
+cost in production scans; it is NOT bounded by the ≤5-source-read budget. A
+repo-wide Grep counts as ONE source read, and you may use at most ONE per type
+(report it in `repo_greps`). If you already grepped for a symbol, use
 `secguard def` for its siblings rather than grepping again.
 
 **Call-site census — already in the Hint, never grep for callers.** The `callers@<census>`
@@ -666,3 +672,14 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
   accounting (those are NOT in the DB, unlike `written`). Use the Write tool; a
   "must read before overwriting" is a stale file, so use a fresh
   `<subagent_id>-report-2.json` name.
+- **Chunked settlement (P2-1 — 分块落盘, survives a mid-batch kill).** For a batch
+  you process over many candidates, also write a partial snapshot every ~10
+  candidates to `<tmpdir>/<subagent_id>-chunk-<k>.json` (k increasing): the same
+  fenced JSON shape, `format_version: 1`, with the `processed_types` counts
+  (`written`/`dismissed`/`evidence_opens`/…) and `needs_context` accumulated SO
+  FAR. A chunk is a snapshot, NOT a completion signal — it reads `valid: false`
+  in `status --reports` (the orchestrator absorbs its accounting but does not mark
+  the range covered). The final `<subagent_id>-report.json` (`valid: true`) stays
+  the authoritative completion record. This way a host force-reject that kills you
+  mid-batch does not lose the `needs_context`/`dismissed` accounting you had
+  already accumulated.
