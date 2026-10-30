@@ -6,6 +6,7 @@ import (
 	"context"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 )
@@ -138,5 +139,25 @@ func TestPersistSettlementReports(t *testing.T) {
 	rows, _ = store.ListSettlementStatsByScan(ctx, "sc_test")
 	if len(rows) != 1 {
 		t.Fatalf("re-persist must not duplicate, got %d", len(rows))
+	}
+}
+
+func TestSettlementWallMS(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	scanStart := time.Now().Add(-10 * time.Minute).Unix()
+	if err := store.UpsertScanRun(ctx, &db.ScanRun{ScanID: "sc_test", CreatedAt: scanStart}); err != nil {
+		t.Fatal(err)
+	}
+	rep := subagentReport{ScanID: "sc_test", ModTime: time.Now().Format(time.RFC3339)}
+	wall := settlementWallMS(ctx, store, rep)
+	if wall < 500000 || wall > 700000 {
+		t.Errorf("wall_ms = %d, want ~600000", wall)
+	}
+	if got := settlementWallMS(ctx, db.NewTestStore(t), rep); got != 0 {
+		t.Errorf("no scan_run must yield 0, got %d", got)
+	}
+	if got := settlementWallMS(ctx, store, subagentReport{ScanID: "sc_test"}); got != 0 {
+		t.Errorf("no mtime must yield 0, got %d", got)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 )
@@ -45,6 +46,7 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 		if len(rep.Processed) == 1 {
 			needsContext = len(rep.NeedsContext)
 		}
+		wallMS := settlementWallMS(ctx, store, rep)
 		for _, pt := range rep.Processed {
 			if err := store.UpsertSettlementStat(ctx, &db.SettlementStat{
 				ScanID:        rep.ScanID,
@@ -57,12 +59,36 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 				SourceReads:   pt.SourceReads,
 				RepoGreps:     pt.RepoGreps,
 				NeedsContext:  needsContext,
+				WallMS:        wallMS,
 			}); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// settlementWallMS estimates a settlement's wall-clock as the settlement file's
+// mtime minus the scan's start time. It over-counts by the pipeline + dispatch
+// delay (constant per scan), so a straggler still stands out relative to its
+// siblings — enough for the F11 wall_ms feedback to flag a force-rejected batch.
+func settlementWallMS(ctx context.Context, store db.Store, rep subagentReport) int64 {
+	if rep.ModTime == "" {
+		return 0
+	}
+	mtime, err := time.Parse(time.RFC3339, rep.ModTime)
+	if err != nil {
+		return 0
+	}
+	run, err := store.GetScanRun(ctx, rep.ScanID)
+	if err != nil || run == nil || run.CreatedAt == 0 {
+		return 0
+	}
+	delta := mtime.Unix() - run.CreatedAt
+	if delta <= 0 {
+		return 0
+	}
+	return delta * 1000
 }
 
 // settlementEnriched is the `status --per-type` record with the engine-computed
