@@ -75,6 +75,11 @@ type eventProps struct {
 	// sources.
 	Root string `json:"root"`
 	DeclLine int    `json:"decl_line"`
+	// Allocator is the heap allocator callee name for a heap_uninit seed
+	// (`malloc`/`calloc`/a project wrapper): the classifier looks up that
+	// allocator's init contract via `secguard def` instead of reading source at
+	// decl_line to identify it.
+	Allocator string `json:"allocator"`
 	// InitWrite is the machine-proven write-path fact of an uninit read:
 	// "none" = the read target is never written before the read,
 	// "loop" = the only writes sit inside a loop body the condition may skip

@@ -512,6 +512,9 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 		if apiName == "" {
 			apiName = props.API
 		}
+		if apiName == "" {
+			apiName = props.Allocator
+		}
 
 		// Default the suspicion to the type-level tier, then let a per-category
 		// override (detector-proved categories) or a later flow filter (which

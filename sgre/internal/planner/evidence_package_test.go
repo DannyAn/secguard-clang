@@ -78,6 +78,7 @@ func TestBuildHint(t *testing.T) {
 		// F4: the machine-proven write-path facts close the "trace the write
 		// paths" burden from the row.
 		{"uninit heap no in-function write", Candidate{SuspicionLevel: "suspected", Origin: "heap_uninit", DeclLine: 18, InitWrite: "none"}, uninit, "maybe-uninit origin@heap_uninit decl@18 init@unseen"},
+		{"uninit heap with allocator name", Candidate{SuspicionLevel: "suspected", Origin: "heap_uninit", DeclLine: 18, InitWrite: "none", APIName: "listCreate"}, uninit, "maybe-uninit origin@heap_uninit decl@18 init@unseen api@listCreate"},
 		{"uninit stack never-written", Candidate{SuspicionLevel: "suspected", Origin: "stack_uninit", DeclLine: 18, InitWrite: "none"}, uninit, "maybe-uninit origin@stack_uninit decl@18 init@none"},
 		{"uninit loop-only write", Candidate{SuspicionLevel: "suspected", Origin: "stack_uninit", DeclLine: 32, InitWrite: "loop", InitWriteLine: 33}, uninit, "maybe-uninit origin@stack_uninit decl@32 init@33 may-skip"},
 		{"uninit loop fact without line is dropped", Candidate{SuspicionLevel: "suspected", Origin: "stack_uninit", DeclLine: 32, InitWrite: "loop"}, uninit, "maybe-uninit origin@stack_uninit decl@32"},

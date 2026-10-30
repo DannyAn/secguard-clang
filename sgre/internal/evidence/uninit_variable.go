@@ -520,7 +520,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		if len(sites) == 0 {
 			// No write site at all: the read target is provably never
 			// written before the read.
-			d.insertValueUseEvent(ctx, f, file, useLine, declLine, name, "stack_uninit", "none", 0, result)
+			d.insertValueUseEvent(ctx, f, file, useLine, declLine, name, "", "stack_uninit", "none", 0, result)
 			return
 		}
 		if cfgValid && hasUnassignedPath(cfg, name, useLine, sites) {
@@ -531,7 +531,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 			if allSitesInLoops(sites, whiles, fors, f) {
 				initWrite, initLine = "loop", firstSite(sites)
 			}
-			d.insertValueUseEvent(ctx, f, file, useLine, declLine, name, "stack_uninit", initWrite, initLine, result)
+			d.insertValueUseEvent(ctx, f, file, useLine, declLine, name, "", "stack_uninit", initWrite, initLine, result)
 			return
 		}
 		if !cfgValid {
@@ -543,7 +543,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 				}
 			}
 			if allInIf {
-				d.insertValueUseEvent(ctx, f, file, useLine, declLine, name, "stack_uninit", "", 0, result)
+				d.insertValueUseEvent(ctx, f, file, useLine, declLine, name, "", "stack_uninit", "", 0, result)
 			}
 		}
 	}
@@ -1228,7 +1228,8 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 	// other scope's genuinely-uninitialized block. A `p = malloc()` ASSIGNMENT
 	// adopts the DECLARATION's scope, so a conditional malloc (`if (c) p = ...`)
 	// still reaches a use after the branch.
-	mallocVars := make(map[string]int) // varKey -> line of the malloc assignment
+	mallocVars := make(map[string]int)        // varKey -> line of the malloc assignment
+	mallocAllocator := make(map[string]string) // varKey -> allocator callee name
 	mallocDeclsByName := make(map[string][]varDecl)
 	declByName := localVarDecls(decls)
 
@@ -1278,6 +1279,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 					key = varKey(varName, f.StartLine)
 				}
 				mallocVars[key] = node.StartLine()
+				mallocAllocator[key] = callName
 				mallocDeclsByName[varName] = append(mallocDeclsByName[varName], decl)
 			}
 		}
@@ -1333,6 +1335,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		if rhs.Kind() == "call_expression" {
 			if n := extractCallName(rhs); apikb.IsAllocator(n) {
 				mallocVars[key] = assign.StartLine()
+				mallocAllocator[key] = n
 				continue
 			}
 		}
@@ -1505,7 +1508,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 			// wholeInit/heapFieldWritten are the write scan: reaching this
 			// emit proves the pointed-to storage was never written since the
 			// allocation.
-			d.insertValueUseEvent(ctx, f, file, unary.StartLine(), mallocVars[key], name, "heap_uninit", "none", 0, result)
+			d.insertValueUseEvent(ctx, f, file, unary.StartLine(), mallocVars[key], name, mallocAllocator[key], "heap_uninit", "none", 0, result)
 		}
 	}
 
@@ -1526,7 +1529,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 			continue
 		}
 		if isHeapVar(mallocVars, key) && !wholeInit[key] && !heapFieldWritten[key] {
-			d.insertValueUseEvent(ctx, f, file, ptr.StartLine(), mallocVars[key], name, "heap_uninit", "none", 0, result)
+			d.insertValueUseEvent(ctx, f, file, ptr.StartLine(), mallocVars[key], name, mallocAllocator[key], "heap_uninit", "none", 0, result)
 		}
 	}
 
@@ -1554,7 +1557,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 			continue
 		}
 		if !initializedFields[path] {
-			d.insertValueUseEventAt(ctx, f, file, field.StartLine(), mallocVars[key], base, fieldPath(field), "heap_uninit", "none", 0, result)
+			d.insertValueUseEventAt(ctx, f, file, field.StartLine(), mallocVars[key], base, fieldPath(field), mallocAllocator[key], "heap_uninit", "none", 0, result)
 		}
 	}
 
@@ -1592,7 +1595,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		if initializedFields[path] || contentInitFields[scopedPath(key, base, fieldPath(sub))] {
 			continue
 		}
-		d.insertValueUseEventAt(ctx, f, file, sub.StartLine(), mallocVars[key], base, sub.Text(), "heap_uninit", "none", 0, result)
+		d.insertValueUseEventAt(ctx, f, file, sub.StartLine(), mallocVars[key], base, sub.Text(), mallocAllocator[key], "heap_uninit", "none", 0, result)
 	}
 }
 
@@ -1826,7 +1829,7 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 			continue
 		}
 		if !initializedFields[scopedPath(key, base, fieldPath(field))] {
-			d.insertValueUseEventAt(ctx, f, file, field.StartLine(), structVars[key], base, fieldPath(field), "struct_partial_uninit", "", 0, result)
+			d.insertValueUseEventAt(ctx, f, file, field.StartLine(), structVars[key], base, fieldPath(field), "", "struct_partial_uninit", "", 0, result)
 		}
 	}
 }
@@ -2026,8 +2029,8 @@ func destWriteTarget(arg parser.Node) (base, path string, whole bool) {
 // insertValueUseEvent is insertValueUseEventAt without a field path and
 // without an init-write fact (write-path facts only attach where the detector
 // proved them: stack no-write / loop-only-write, heap never-written).
-func (d *UninitVariableDetector) insertValueUseEvent(ctx context.Context, f *db.Function, file *db.File, line, declLine int, varName, origin, initWrite string, initWriteLine int, result *DetectResult) {
-	d.insertValueUseEventAt(ctx, f, file, line, declLine, varName, "", origin, initWrite, initWriteLine, result)
+func (d *UninitVariableDetector) insertValueUseEvent(ctx context.Context, f *db.Function, file *db.File, line, declLine int, varName, allocator, origin, initWrite string, initWriteLine int, result *DetectResult) {
+	d.insertValueUseEventAt(ctx, f, file, line, declLine, varName, "", allocator, origin, initWrite, initWriteLine, result)
 }
 
 // insertValueUseEventAt is insertValueUseEvent with an optional field path: for a
@@ -2038,10 +2041,13 @@ func (d *UninitVariableDetector) insertValueUseEvent(ctx context.Context, f *db.
 // (heap block after malloc, bare scalar with no assignment site), "loop" = the
 // only writes sit inside a loop body (initWriteLine = the first such write),
 // "" = no proven fact (mixed/branch writes stay for the AI to trace).
-func (d *UninitVariableDetector) insertValueUseEventAt(ctx context.Context, f *db.Function, file *db.File, line, declLine int, varName, path, origin, initWrite string, initWriteLine int, result *DetectResult) {
+func (d *UninitVariableDetector) insertValueUseEventAt(ctx context.Context, f *db.Function, file *db.File, line, declLine int, varName, path, allocator, origin, initWrite string, initWriteLine int, result *DetectResult) {
 	props := map[string]any{
 		"variable": varName,
 		"origin":   origin,
+	}
+	if allocator != "" {
+		props["allocator"] = allocator
 	}
 	if path != "" {
 		props["field_path"] = path
