@@ -1244,7 +1244,15 @@ func runReportCmd(ctx context.Context, args []string) int {
 		})
 		return 0
 	}
-	WriteJSON(findings)
+	type listItem struct {
+		*db.Finding
+		VulnType string `json:"vuln_type"`
+	}
+	items := make([]listItem, 0, len(findings))
+	for _, f := range findings {
+		items = append(items, listItem{Finding: f, VulnType: planner.TypeForCWE(f.RuleID)})
+	}
+	WriteJSON(items)
 	return 0
 }
 
