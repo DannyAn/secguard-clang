@@ -10,8 +10,8 @@
 
 **boundary fail-open 默认预驳回（最大杠杆）**
 
-- `boundary_auto_dismiss` 默认值 `off → external`：边界扫描（子树无 `main`）默认把无 in-tree 证据的 fail-open 假设 tier（`external-unknown` / `opaque-origin` / `callback-entry` / 无 witness 的 `caller-arg` 根链）预 dismiss 进台账（仍可见、非静默丢弃），只把有 witness 的 caller-arg / assumed-return / malloc-fail / cfg-proof 送 AI。`off` 保留为召回最大化逃生阀。
-- 补全 `BoundaryFailOpenFilter`：新增 `callback-entry` tier 与 `caller-arg`+`ChainKind=="root"` 判定（此前 `external` 模式只 dismiss 2 类，漏掉 callback-entry 73 条 + unguarded-external-entry 9 条）。
+- `boundary_auto_dismiss` 默认值 `off → external`：边界扫描（子树无 `main`）默认把**可证外部契约**的 fail-open 假设 tier（`external-unknown` / `opaque-origin` / 无 witness 的 `caller-arg` 根链）预 dismiss 进台账（仍可见、非静默丢弃），只把有 witness 的 caller-arg / callback-entry / assumed-return / malloc-fail / cfg-proof 送 AI。`off` 保留为召回最大化逃生阀。
+- 补全 `BoundaryFailOpenFilter`：新增 `caller-arg`+`ChainKind=="root"` 判定（此前 `external` 模式只 dismiss 2 类，漏掉 unguarded-external-entry 9 条）。**`callback-entry` 刻意保留**：ADDR_TAKEN 自环只证明"树内被取址"，图不记录函数指针调用点，无法证明注册点传非空实参——注册点真传 NULL 是真实缺陷，按假设预驳回是召回漏洞（报告 #3 的注册点解析留作后续特性）。
 - 量化建议：`secguard.toml.suggested` 写出精确可驳回数（"本扫描产生 N 条 fail-open 候选…"），`EvidenceItem` 导出 `chain_kind` 供报告层判定。
 
 **AI 预算机器化（#5/#6）**

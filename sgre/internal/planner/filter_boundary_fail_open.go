@@ -56,11 +56,11 @@ func (f *BoundaryFailOpenFilter) keep(c Candidate) bool {
 		return true
 	}
 	switch c.NullOriginTier {
-	case "opaque-origin", "external-unknown", "callback-entry":
-		// No in-tree caller/callee proof. callback-entry is the ADDR_TAKEN
-		// zero-direct-call-site registration: the parameter nullability is an
-		// external registration contract the scan tree cannot see — the same
-		// fail-open class as opaque-origin / external-unknown.
+	case "opaque-origin", "external-unknown":
+		// No in-tree caller/callee proof: the null source is an out-of-tree
+		// contract (an external caller's argument, a field of an externally
+		// defined type, an unproven external call). Fail-open assumption, not
+		// evidence — pre-dismiss it into the ledger.
 		return false
 	case "caller-arg", "assumed-return":
 		// A caller-arg candidate whose open chain is rooted at an UNGUARDED
@@ -77,8 +77,15 @@ func (f *BoundaryFailOpenFilter) keep(c Candidate) bool {
 		}
 		return f.mode != "all"
 	default:
-		// cfg-proof / malloc-fail / array-buffer are machine-proven or need a
-		// chain judgment — never pre-dismiss them.
+		// cfg-proof / malloc-fail / array-buffer / callback-entry. The first
+		// three are machine-proven or need a chain judgment — never pre-dismiss.
+		// callback-entry (ADDR_TAKEN, zero direct call sites) is DELIBERATELY
+		// kept too: the function IS registered in-tree (that is what the
+		// ADDR_TAKEN self-loop proves), but the graph does NOT record the
+		// function-pointer invocation site, so the pipeline cannot prove the
+		// registrar/invoker passes a non-null argument. A registrar that passes
+		// NULL is a real defect, so dismissing it here would be a recall hole.
+		// It stays suspected for the AI (and `off` mode surfaces it verbatim).
 		return true
 	}
 }

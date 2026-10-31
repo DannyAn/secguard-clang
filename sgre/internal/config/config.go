@@ -54,8 +54,13 @@ type Scan struct {
 	// in-tree proof and the AI dismisses them (production: 0 confirmed out of
 	// 262 fail-open rows, ~99% of the AI wall-clock). Modes:
 	//   "" / "external" (default): auto-dismiss the fail-open ASSUMPTION tiers
-	//     with no in-tree null proof — opaque-origin, external-unknown,
-	//     callback-entry, and caller-arg rooted at an unguarded external entry.
+	//     with a provably-external null source — opaque-origin, external-unknown,
+	//     and caller-arg rooted at an unguarded external entry (zero in-tree
+	//     call sites, no in-tree address-taking). callback-entry is NOT
+	//     dismissed: its ADDR_TAKEN self-loop proves an in-tree registration, but
+	//     the graph does not record the function-pointer invocation, so the
+	//     registrar could pass NULL — a recall hole the pipeline must not close
+	//     on an assumption.
 	//     Every dismissal is ledgered under `boundary_fail_open` (visible, never
 	//     silently dropped), and the boundary report recommends scanning the
 	//     worktree root for a complete-program judgment.

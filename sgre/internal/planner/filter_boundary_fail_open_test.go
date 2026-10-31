@@ -24,12 +24,32 @@ func TestBoundaryFailOpenFilterExternalMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(dropped) != 3 || len(kept) != 5 {
-		t.Fatalf("external mode kept=%d dropped=%d, want 5/3", len(kept), len(dropped))
+	if len(dropped) != 2 || len(kept) != 6 {
+		t.Fatalf("external mode kept=%d dropped=%d, want 6/2 (callback-entry kept, recall-safe)", len(kept), len(dropped))
 	}
 	for _, d := range dropped {
 		if d.Filter != "boundary_fail_open" || d.Reason == "" {
 			t.Errorf("dropped entry lacks provenance: %+v", d)
+		}
+	}
+}
+
+// TestBoundaryFailOpenFilterKeepsCallbackEntry pins the recall boundary: a
+// callback-entry candidate (ADDR_TAKEN, zero direct call sites) is NOT
+// pre-dismissed in ANY mode, because the graph does not record the
+// function-pointer invocation site, so the pipeline cannot prove the registrar
+// passes a non-null argument. A registrar that passes NULL is a real defect.
+func TestBoundaryFailOpenFilterKeepsCallbackEntry(t *testing.T) {
+	for _, mode := range []string{"external", "all"} {
+		f := NewBoundaryFailOpenFilter(true, mode)
+		c := boundaryCandidate("callback-entry")
+		c.ChainKind = "root"
+		kept, dropped, err := f.Apply(context.Background(), []Candidate{c})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(dropped) != 0 || len(kept) != 1 {
+			t.Errorf("%s mode: callback-entry must be kept (recall), kept=%d dropped=%d", mode, len(kept), len(dropped))
 		}
 	}
 }

@@ -348,7 +348,7 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		if vt == "null-deref" {
 			for _, c := range cands {
 				switch c.NullOriginTier {
-				case "opaque-origin", "external-unknown", "callback-entry":
+				case "opaque-origin", "external-unknown":
 					boundaryDismissible++
 				case "caller-arg":
 					if c.ChainKind == "root" {
