@@ -14,6 +14,7 @@ func TestBoundaryFailOpenFilterExternalMode(t *testing.T) {
 	kept, dropped, err := f.Apply(context.Background(), []Candidate{
 		boundaryCandidate("opaque-origin"),
 		boundaryCandidate("external-unknown"),
+		boundaryCandidate("callback-entry"),
 		boundaryCandidate("caller-arg"),
 		boundaryCandidate("assumed-return"),
 		boundaryCandidate("array-buffer"),
@@ -23,13 +24,36 @@ func TestBoundaryFailOpenFilterExternalMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(dropped) != 2 || len(kept) != 5 {
-		t.Fatalf("external mode kept=%d dropped=%d, want 5/2", len(kept), len(dropped))
+	if len(dropped) != 3 || len(kept) != 5 {
+		t.Fatalf("external mode kept=%d dropped=%d, want 5/3", len(kept), len(dropped))
 	}
 	for _, d := range dropped {
 		if d.Filter != "boundary_fail_open" || d.Reason == "" {
 			t.Errorf("dropped entry lacks provenance: %+v", d)
 		}
+	}
+}
+
+// TestBoundaryFailOpenFilterCallerArgRoot pins the "unguarded external entry"
+// split: a caller-arg candidate rooted at an unguarded external entry (no
+// concrete NULL witness) is the same fail-open assumption as opaque-origin, so
+// it is dismissed in "external" mode; a forwarding hop keeps a concrete caller
+// and stays for the AI unless "all" drops it.
+func TestBoundaryFailOpenFilterCallerArgRoot(t *testing.T) {
+	root := boundaryCandidate("caller-arg")
+	root.ChainKind = "root"
+	hop := boundaryCandidate("caller-arg")
+	hop.ChainKind = "hop"
+
+	kept, dropped, err := NewBoundaryFailOpenFilter(true, "external").Apply(context.Background(), []Candidate{root, hop})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dropped) != 1 || len(kept) != 1 {
+		t.Fatalf("external mode root/hop: kept=%d dropped=%d, want 1/1", len(kept), len(dropped))
+	}
+	if dropped[0].Reason == "" || kept[0].ChainKind != "hop" {
+		t.Errorf("root must be dismissed, hop kept: dropped=%+v kept=%+v", dropped, kept)
 	}
 }
 

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,7 +54,11 @@ func scanScope(targetPath string, funcs []*db.Function) map[string]interface{} {
 // for a boundary scan. The scan cannot infer the project's entry points or
 // non-null framework parameters, so the file is a commented template: the user
 // fills in the names instead of copying them out of the report prose.
-func writeBoundaryConfigHint(scanDir, target, worktree string) {
+// dismissible is the number of fail-open null-deref candidates this scan would
+// have pre-dismissed under boundary_auto_dismiss="external" — the quantified
+// cost of the default-off choice, so the user sees it on the FIRST scan instead
+// of discovering it after the AI stage burns hours on 0-precision rows.
+func writeBoundaryConfigHint(scanDir, target, worktree string, dismissible int) {
 	if scanDir == "" {
 		return
 	}
@@ -73,7 +78,14 @@ func writeBoundaryConfigHint(scanDir, target, worktree string) {
 	}
 	b.WriteString("# 2) Declare the project's real entry points (a firmware task / RTOS thread):\n")
 	b.WriteString("[scan]\nentry_points = []\n")
-	b.WriteString("# Optionally pre-dismiss fail-open null-deref rows instead of sending them to AI:\n")
+	b.WriteString("# Pre-dismiss the fail-open null-deref rows instead of sending them to AI:\n")
+	if dismissible > 0 {
+		b.WriteString(fmt.Sprintf("#    This scan produced %d fail-open null-deref candidates that carry no in-tree\n", dismissible))
+		b.WriteString("#    null proof (external-unknown / opaque-origin / callback-entry / unguarded\n")
+		b.WriteString("#    external entry). boundary_auto_dismiss=\"external\" pre-dismisses them into the\n")
+		b.WriteString("#    dismissed ledger (still visible, never silently dropped) and keeps only the\n")
+		b.WriteString("#    caller-arg-with-witness / assumed-return / malloc-fail / cfg-proof rows for AI.\n")
+	}
 	b.WriteString("# boundary_auto_dismiss = \"external\"  # or \"all\"\n\n")
 	b.WriteString("# Framework-guaranteed non-null pointer parameters (dispatch user_data, reply_msg, ...):\n")
 	b.WriteString("[nullability.non_null_params]\nnames = []\n\n")

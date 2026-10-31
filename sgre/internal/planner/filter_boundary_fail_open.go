@@ -56,12 +56,25 @@ func (f *BoundaryFailOpenFilter) keep(c Candidate) bool {
 		return true
 	}
 	switch c.NullOriginTier {
-	case "opaque-origin", "external-unknown":
+	case "opaque-origin", "external-unknown", "callback-entry":
+		// No in-tree caller/callee proof. callback-entry is the ADDR_TAKEN
+		// zero-direct-call-site registration: the parameter nullability is an
+		// external registration contract the scan tree cannot see — the same
+		// fail-open class as opaque-origin / external-unknown.
 		return false
 	case "caller-arg", "assumed-return":
-		// These tiers retain an in-tree caller detail or an embedded callee
-		// body. The default ("external") keeps them for the AI; "all" drops
-		// the ones with no chain either.
+		// A caller-arg candidate whose open chain is rooted at an UNGUARDED
+		// external entry (ChainKind "root", witness "the value flows from an
+		// unguarded external entry") carries no concrete NULL witness — it is
+		// the same fail-open assumption as opaque-origin, so it is dismissed
+		// here too. A concrete caller ("caller X passes NULL") or a forwarding
+		// hop ("caller X forwards Y") retains an in-tree caller detail the AI
+		// can judge, so the default ("external") keeps it and only "all" drops
+		// it. assumed-return never carries ChainKind, so it stays on the
+		// default/"all" split unchanged.
+		if c.ChainKind == "root" {
+			return false
+		}
 		return f.mode != "all"
 	default:
 		// cfg-proof / malloc-fail / array-buffer are machine-proven or need a

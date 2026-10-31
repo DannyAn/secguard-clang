@@ -332,12 +332,30 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	sort.Strings(filesList)
 
 	typeBreakdown := make([]report.TypeBreakdownEntry, 0, len(evidencePackages))
+	// boundaryDismissible counts the null-deref candidates a boundary scan would
+	// auto-dismiss under boundary_auto_dismiss="external" (the fail-open
+	// ASSUMPTION tiers with no in-tree null proof). It feeds the quantified
+	// recommendation so a default-off boundary scan surfaces its own cost instead
+	// of silently flooding the AI stage.
+	boundaryDismissible := 0
 	for _, ep := range evidencePackages {
 		vt, _ := ep["vulnerability_type"].(string)
 		cands, _ := ep["candidates"].([]planner.EvidenceItem)
 		count := len(cands)
 		if count == 0 {
 			continue
+		}
+		if vt == "null-deref" {
+			for _, c := range cands {
+				switch c.NullOriginTier {
+				case "opaque-origin", "external-unknown", "callback-entry":
+					boundaryDismissible++
+				case "caller-arg":
+					if c.ChainKind == "root" {
+						boundaryDismissible++
+					}
+				}
+			}
 		}
 		typeBreakdown = append(typeBreakdown, report.TypeBreakdownEntry{
 			Type:  vt,
@@ -354,7 +372,7 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	functionsInIndex := len(funcs)
 	scope := scanScope(absPath, funcs)
 	if scopeMode(scope) == "boundary" {
-		writeBoundaryConfigHint(scanDir, absPath, scopeWorktree(scope))
+		writeBoundaryConfigHint(scanDir, absPath, scopeWorktree(scope), boundaryDismissible)
 	}
 	summaryData := report.SummaryData{
 		ScanID:            scanID,

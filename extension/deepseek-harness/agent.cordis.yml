@@ -23,7 +23,7 @@
          - `type_count ≤ 3 且 total_candidates ≤ 200` → **串行**：自己按下面第 4-6 步逐类型分类落库，**不派子代理**。
          - 否则（`type_count ≥ 4` 或 `total_candidates > 200`）→ **并行**：按第 3a 步派子代理。
          为什么按类型数：串行路径的墙钟成本主要是每类型固定开销（skill 加载 + 索引读 + 写 + --write-json ≈ 4 次往返 × 20+ 类型 ≈ 90+ 次串行往返），跟候选数无关——一个小项目若有 20+ 个类型，串行会拖到 30 分钟以上，而并行几分钟就完。所以 type_count ≥ 4 必须并行，禁止降级串行。
-      3a. **并行派发**：把有候选的类型按 ≤4 个一批打包，且每个子代理 ≤20 个候选（大类型先按 ≤20 切候选范围再打包），每批派一个 `subagent` 子代理（DSH 的 `subagent` 默认后台执行、返回子代理 id，跑完推 settlement 通知），**同一轮全部发出、并发跑**。每个子代理 prompt 必须自包含（子代理看不到本轮对话）：
+      3a. **并行派发**：把有候选的类型按 ≤4 个一批打包，且每个子代理候选数按 `secguard status --per-type --scan-id <id>` 的 `suggested_batch_size` 切分（自适应 `min(⌊12/r_type⌋, ⌊(CONTEXT_BUDGET−skill−legend)/per_candidate_index_token⌋)`，禁止写死常数；大类型先按 ≤100 切候选范围再打包，每批派一个 `subagent` 子代理（DSH 的 `subagent` 默认后台执行、返回子代理 id，跑完推 settlement 通知），**同一轮全部发出、并发跑**。每个子代理 prompt 必须自包含（子代理看不到本轮对话）：
           「你是 SecGuard 批处理 worker，**不是**扫描编排者：只处理类型 <t1,t2,...>，scan_id=<id>，scan_dir=<dir>。扫描已跑完，候选在 <dir>/candidates/<type>/_index.md（Source 列=原始语句、Hint 列=预计算判定事实、Evidence 列=候选文件精确名）与 NNN_*.md（内嵌 ## Code Context）。**禁止**重跑 secguard scan/plan/index、禁止读 report.md、禁止再派子代理。对每个类型：加载该类型 skill → 读 _index.md → 按第 4 步分类 → 按第 5 步 `secguard report --write-json` 落库。回报每类型 confirmed/dismissed 计数 + 候选范围（range）+ source_reads/evidence_opens/repo_greps + 写入 finding id。」
          派完后**不要轮询/不要 sleep**；等 settlement 通知逐个到达，用 `list_agents` 回忆、`send_message` 追问（若需要）。若通知丢失或子代理 id 失效，先跑 `secguard status --reports --scan-id <id>` 核对落盘报告，再决定是否补派。全部落地后用 `secguard status --per-type --scan-id <id>` 以 DB 为唯一权威核对每个类型 `written_count >= candidate_count`（`candidate_count==0` 的类型算 done，非漏写）。
       3b. 单类型（filtered 场景）：先 `secguard status` 确认有索引（没有就先 `secguard scan`），再 `secguard plan <type>`。

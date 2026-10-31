@@ -40,13 +40,13 @@ func TestScanScopeCompleteProgram(t *testing.T) {
 
 func TestWriteBoundaryConfigHint(t *testing.T) {
 	dir := t.TempDir()
-	writeBoundaryConfigHint(dir, "/repo/src", "/repo")
+	writeBoundaryConfigHint(dir, "/repo/src", "/repo", 182)
 	data, err := os.ReadFile(filepath.Join(dir, "secguard.toml.suggested"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{"boundary_auto_dismiss", "entry_points", "non_null_params", "secguard scan /repo"} {
+	for _, want := range []string{"boundary_auto_dismiss", "entry_points", "non_null_params", "secguard scan /repo", "182 fail-open null-deref"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("boundary config hint missing %q:\n%s", want, text)
 		}

@@ -21,6 +21,14 @@ const (
 	// maxEvidenceOpensPerType mirrors agent-body.md's evidence-open budget.
 	// Keep it in lockstep with MAX_EVIDENCE_OPENS_PER_TYPE.
 	maxEvidenceOpensPerType = 12
+	// maxSourceReadsPerType mirrors agent-body.md's source-read budget
+	// (≤5 source reads per type/range). Keep it in lockstep with
+	// MAX_SOURCE_READS_PER_TYPE.
+	maxSourceReadsPerType = 5
+	// maxRepoGrepsPerType mirrors agent-body.md's repo-wide grep budget
+	// (≤1 per type/range; `secguard def` does not count). A batch above it is a
+	// read-source violation the orchestrator must surface, not silently absorb.
+	maxRepoGrepsPerType = 1
 )
 
 func normalizeSettlementRange(r string) string {
@@ -102,6 +110,39 @@ type settlementEnriched struct {
 	SuggestedBatches     int      `json:"suggested_batches"`
 	AvgWallMS            int64    `json:"avg_wall_ms,omitempty"`
 	AlreadyCoveredRanges []string `json:"already_covered_ranges"`
+	// BudgetViolations lists the settled batches whose self-reported
+	// source_reads / evidence_opens / repo_greps exceeded the agent-body.md
+	// budgets. It is engine-computed so the orchestrator surfaces read-source
+	// violations from one field instead of hand-aggregating every settlement
+	// JSON (the F6 audit path).
+	BudgetViolations []settlementBudgetViolation `json:"budget_violations,omitempty"`
+}
+
+// settlementBudgetViolation is one settled batch that exceeded an agent-body.md
+// budget. Over names the exceeded budgets ("source_reads" / "evidence_opens" /
+// "repo_greps").
+type settlementBudgetViolation struct {
+	VulnType      string   `json:"vuln_type"`
+	Range         string   `json:"range"`
+	SubagentID    string   `json:"subagent_id,omitempty"`
+	SourceReads   int      `json:"source_reads"`
+	EvidenceOpens int      `json:"evidence_opens"`
+	RepoGreps     int      `json:"repo_greps"`
+	Over          []string `json:"over"`
+}
+
+func (v settlementBudgetViolation) exceeds() []string {
+	var over []string
+	if v.SourceReads > maxSourceReadsPerType {
+		over = append(over, "source_reads")
+	}
+	if v.EvidenceOpens > maxEvidenceOpensPerType {
+		over = append(over, "evidence_opens")
+	}
+	if v.RepoGreps > maxRepoGrepsPerType {
+		over = append(over, "repo_greps")
+	}
+	return over
 }
 
 func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, statuses []*db.PerTypeStatus) ([]*settlementEnriched, error) {
@@ -133,6 +174,23 @@ func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, sta
 		if s.CandidateCount > 0 {
 			e.SuggestedBatchSize = suggestedBatchSize(agg.rType)
 			e.SuggestedBatches = suggestedBatches(s.CandidateCount, e.SuggestedBatchSize)
+		}
+		for _, st := range byScan {
+			if st.VulnType != s.VulnType {
+				continue
+			}
+			v := settlementBudgetViolation{
+				VulnType:      st.VulnType,
+				Range:         normalizeSettlementRange(st.RangeStr),
+				SubagentID:    st.SubagentID,
+				SourceReads:   st.SourceReads,
+				EvidenceOpens: st.EvidenceOpens,
+				RepoGreps:     st.RepoGreps,
+			}
+			if over := v.exceeds(); len(over) > 0 {
+				v.Over = over
+				e.BudgetViolations = append(e.BudgetViolations, v)
+			}
 		}
 		out = append(out, e)
 	}

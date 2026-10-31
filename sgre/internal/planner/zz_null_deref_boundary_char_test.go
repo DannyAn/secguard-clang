@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/evidence"
 	"github.com/DannyAn/secguard-clang/internal/graph"
@@ -49,16 +50,17 @@ func planNullDerefFullSrc(t *testing.T, src string) *PlanResult {
 	return result
 }
 
-// TestNullDeref_BoundaryFailOpenCharacterization pins the boundary-mode
-// fail-open contract with the production shapes a MAF scan reported: with no
-// `main` in the scan tree, a zero-call-site externally-callable function's
+// TestNullDeref_BoundaryFailOpenCharacterization pins the "off" mode of the
+// boundary fail-open contract (the recall-maximal escape hatch, set by this
+// package's TestMain): with no `main` in the scan tree and
+// boundary_auto_dismiss="off", a zero-call-site externally-callable function's
 // parameter dereference surfaces as a suspected `null@caller-arg` candidate,
 // and a field read of that parameter surfaces as a suspected
 // `null@opaque-origin` candidate — both fail-open ASSUMPTIONS that stay
-// suspected (never auto-confirmed) for the AI to judge. These rows ARE the
-// boundary scan's product decision (see TestBoundaryScanExportedAPI): any
-// future tier-level suppression must flip this characterization deliberately,
-// not drift past it.
+// suspected (never auto-confirmed) for the AI to judge. The NEW production
+// default ("external") pre-dismisses these rows; see
+// TestNullDeref_BoundaryFailOpenDefaultDismisses. Any future tier-level
+// suppression must flip that test deliberately, not drift past it.
 func TestNullDeref_BoundaryFailOpenCharacterization(t *testing.T) {
 	t.Run("boundary-param-failopen", func(t *testing.T) {
 		src := `struct ase_hash_key { const char *data; unsigned len; };
@@ -126,4 +128,39 @@ int maf_rate_exceeded_query(int profile_id, int *key) { return *key; }
 			t.Errorf("proc->base selects a struct value member, not a pointer: it must not be a candidate (got %v)", vars)
 		}
 	})
+}
+
+// TestNullDeref_BoundaryFailOpenDefaultDismisses pins the NEW production default
+// ("external"): a boundary scan with no `main` pre-dismisses the fail-open
+// ASSUMPTION tiers (caller-arg rooted at an unguarded external entry, and the
+// opaque field read) into the boundary_fail_open ledger instead of surfacing
+// them as suspected candidates for the AI. This is the recall-safe-by-ledger
+// counterpart of TestNullDeref_BoundaryFailOpenCharacterization (which pins the
+// "off" escape hatch).
+func TestNullDeref_BoundaryFailOpenDefaultDismisses(t *testing.T) {
+	t.Cleanup(func() { config.SetBoundaryAutoDismissOverride("off") })
+	config.SetBoundaryAutoDismissOverride("") // fall back to the production default ("external")
+
+	src := `struct ase_hash_key { const char *data; unsigned len; };
+
+unsigned int maf_address_hash_func(const struct ase_hash_key *key)
+{
+    char *address = key->data;
+    unsigned ret = 1;
+    for (unsigned i = 0; i != key->len; ++i) {
+        ret *= address[i];
+    }
+    return ret;
+}
+`
+	res := planNullDerefFullSrc(t, src)
+	if len(res.Candidates) != 0 {
+		t.Fatalf("default boundary scan must pre-dismiss fail-open assumptions, got candidates %+v", res.Candidates)
+	}
+	// Three fail-open rows pre-convergence: `key` is dereferenced at key->data
+	// and key->len (two caller-arg root candidates) and `address` is the opaque
+	// field read. All three are pre-dismissed into the ledger.
+	if n := res.Summary.DroppedByReason["boundary_fail_open"]; n != 3 {
+		t.Fatalf("boundary_fail_open dismissed = %d, want 3 (key@5 + key@7 caller-arg root + address@8 opaque-origin); dropped = %+v", n, res.Summary.Dropped)
+	}
 }

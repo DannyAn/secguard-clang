@@ -184,7 +184,7 @@ security scan and reading them makes the verdicts worthless. The scan dir
 | `MAX_EVIDENCE_OPENS_PER_TYPE` | 12 | Evidence-file-open budget per subagent; beyond it the subagent reports `needs_context` instead of opening everything (hard constraint, `agent-body.md`) |
 | `CONTEXT_BUDGET` | 98000 | Subagent context window reserved for data (conservative 128K window − 30K reasoning/write reserve). Covers Claude Code (200K), OpenCode, DSH with margin. The only external input; lower it if a host has a smaller window. |
 | `HOST_AGENT_TIMEOUT` | 660 | claude-cac synchronous `Agent` hard ceiling (seconds). A force-rejected batch feeds back into r_type (raise r → smaller next batch), NOT a hard pre-dispatch cap. |
-| `SMALL_TYPE_SEQUENTIAL_THRESHOLD` | 3 | A type with ≤3 candidates is cheaper for the orchestrator to classify directly than to dispatch (no skill-load/spawn fixed cost) |
+| `SMALL_TYPE_SEQUENTIAL_THRESHOLD` | ≤15 candidates | A type with ≤15 candidates AND no whole-function-embedding member is cheaper for the orchestrator to classify directly than to dispatch (no skill-load/spawn fixed cost) |
 
 `MAX_CANDIDATES_PER_BATCH` is **adaptive, per-type, and dual-constrained** — it is
 NOT a hardcoded 20. The two constraints, both measurable at scan time:
@@ -217,13 +217,30 @@ batch-capacity decision — the count-based ceilings above already keep a batch 
 under any platform's turn cap. Auto-confirmed findings are machine verdicts (marked
 reviewed at scan time), so they are NOT budgeted or dispatched at all.
 
-`SMALL_TYPE_SEQUENTIAL_THRESHOLD` = **3**: a type with ≤3 candidates is cheaper for
+`SMALL_TYPE_SEQUENTIAL_THRESHOLD` = **≤15 candidates**: a type with ≤15 candidates and
+NO whole-function-embedding member (integer-overflow embeds the whole function span
+up to ~200 lines — 10–25× the evidence volume of line-level types) is cheaper for
 the orchestrator to classify directly (no skill-load / subagent-spawn fixed cost)
-than to dispatch; only dispatch it when the orchestrator is already saturated or
-the type needs a source read it cannot afford.
+than to dispatch. Production: the orchestrator classified 9 small-type candidates
+in ~5 minutes while a 12-candidate two-heavy-skill subagent batch ran 36 minutes —
+the subagent's fixed cost (two skills + whole-function evidence) exceeded the
+classification itself. Only dispatch such a type when the orchestrator is already
+saturated or the type needs a source read it cannot afford; never fold a
+whole-function-embedding type into a "small" batch to dodge the threshold.
+
+**Whole-function-embedding (heavy) types — grouping rule:** `integer-overflow` (and
+`argument-type` if it ever embeds whole spans) is a HEAVY skill: its per-candidate
+Evidence is the whole function, and its verdict needs parameter types + entry guard
++ accumulation chain. A batch containing a heavy type SHALL NOT share with a light
+type AND SHALL NOT share with another heavy type: `MAX_TYPES_PER_BATCH` drops to 2
+when a heavy type is in the batch (one heavy type + at most one light type), and a
+heavy type's candidate ceiling is the context-budget constraint, not the
+evidence-open constraint — its `r_type` understates cost because the index row is a
+single line while the Evidence file is the whole function.
 
 **Pre-dispatch validation (EARS):**
 - If a batch has > `MAX_TYPES_PER_BATCH` (4) types, the orchestrator SHALL split it before dispatching.
+- A batch containing a whole-function-embedding (heavy) type (`integer-overflow`) SHALL NOT share with another heavy type, and its type ceiling drops to 2 (one heavy + at most one light type) — its per-candidate evidence is the whole function, so counting it like a line-level type under-budgets the batch.
 - Where a single type has > `LARGE_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL give that type dedicated subagent(s) — never share it with another type — and split those subagents by the next rule.
 - Where a single type has > `SPLIT_CANDIDATE_THRESHOLD` (100) candidates, split it into ≤100-candidate RANGES for context (pass the candidate # range, e.g. "candidates #1–100 of null-deref"). Then dispatch **each range in ≤`N_type`-candidate subagent batches** where `N_type` is the adaptive per-type ceiling above. Balance ranges so there is no sliver tail (100 + 100 + 1): merge a final range smaller than 5 into its predecessor and re-split evenly. If a super-large function still overflows a batch, surface the tail via the partial-count path, never silently bury it.
 - The orchestrator SHALL validate a batch against the two capacity ceilings (types,
@@ -409,6 +426,12 @@ straight to the structured report (`written: 0`).
 **调度时序合规规则 (F3):** All subagent dispatches SHALL occur in a single assistant turn — N `Agent`/`task` calls issued consecutively with the first-to-last timestamp span ≤ 10s. (Claude Code's subagent-dispatch tool is `Agent`; older Claude Code versions name it `Task`.) The orchestrator SHALL NOT split dispatches across turns. After dispatch, while subagents run, the orchestrator SHALL NOT poll their transcripts or issue `sleep`.
 
 **滑动窗口补位 (F3a) — 消灭整波 barrier（P0-1）：** F3 的"所有派发 ≤10s"只约束**首波**。首波发出后，每收到**一个**批次的完成信号（官方 Claude Code 的 `task_notification`、DSH 的 settlement 通知；或同步宿主若其 `Agent`/`task` 工具支持 `run_in_background` 时的完成通知），编排器**立即**吸收该批次 settlement 并**立即**补派积压队列中的下一个批次——不等其他在跑批次，并发数始终顶满宿主上限，波间空档与 straggler 尾部空转消失。补位派发按通知逐个发，**显式豁免 F3 的 ≤10s 限制**。吸收顺序与 F11 一致：`secguard status --reports`（有 `valid:true` 覆盖则吸收 `written`/`dismissed`/`needs_context` 并 `report --complete-type`）→ `secguard status --per-type`（读引擎预计算的 `already_covered_ranges`，只补派缺失 range）。同步宿主若其 `Agent`/`task` 无后台模式（OpenCode / claude-cac 按 F7 的同步返回），则首波仍按 F3 一次性发出、超时走 F11——退化为现状，无回归。
+
+**F3a 的可执行实现（in-flight 计数器 + 宿主并发上限探测）：** F3a 不是"应当"级建议，是必须执行的状态机。编排器在本轮开始时**显式**维护两个量：(1) `host_max` = 宿主允许的最大并发子代理数；(2) `in_flight` = 当前已发出但未收到完成信号的批次计数。
+
+- **`host_max` 探测（禁止试探）**：不要"先派 10 个、被拒 4 个、再补 4 个"。首波发出后，若任一 `Agent`/`task`/`subagent` 调用返回 `Cannot spawn subagent: session already has N running subagent(s) ... reaching the maximum allowed N`（或等价错误），立刻把 `host_max` 置为该错误消息里的 `N`，并把被拒的批次放回队列头；未再遇到拒绝则以 `host_max=10` 作为首波上限。**一旦 `host_max` 确定，后续所有补位都以 `in_flight < host_max` 为准，绝不再试探。**
+- **`in_flight` 维护**：首波一次性发出 `min(积压批次总数, host_max)` 个批次，`in_flight` 置为该数。此后**每收到一个完成信号**：先按 F11 吸收该批 settlement（`--reports` 有 `valid:true` 覆盖 → `--complete-type`）→ `in_flight -= 1` → 若积压队列非空，**在同一响应轮内**立即发出下一个批次并 `in_flight += 1`。**禁止**"收完一整波再派下一波"——那正是整波 barrier 的成因。
+- **判定完成的标准**：一个批次"完成"= 收到宿主通知（异步宿主）/ `Agent` 调用正常返回（同步宿主）/ 落盘报告 `valid:true` 覆盖（通知丢失时按 F9）。三种信号等价，任一到达即触发补位，不要只等一种。
 
 **子代理返回模型 (F7) — 这是"任务卡住不结束/结果丢失/重复下发"的根因，必读：** 三个平台的返回模型不同，绝不可混用：
 

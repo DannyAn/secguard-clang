@@ -103,6 +103,51 @@ func TestEnrichPerTypeStatusAlreadyCovered(t *testing.T) {
 	}
 }
 
+func TestEnrichPerTypeStatusBudgetViolations(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+
+	if _, err := store.InsertScanStat(ctx, &db.ScanStat{ScanID: "sc_test", VulnType: "null-deref", SeedCount: 264, FinalCount: 264}); err != nil {
+		t.Fatal(err)
+	}
+	// A batch that blew every budget.
+	if err := store.UpsertSettlementStat(ctx, &db.SettlementStat{
+		ScanID: "sc_test", VulnType: "null-deref", RangeStr: "121-160", SubagentID: "p4",
+		Written: 0, Dismissed: 40, EvidenceOpens: 25, SourceReads: 6, RepoGreps: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A batch that stayed within budget must not surface.
+	if err := store.UpsertSettlementStat(ctx, &db.SettlementStat{
+		ScanID: "sc_test", VulnType: "null-deref", RangeStr: "1-40", SubagentID: "p1",
+		Written: 0, Dismissed: 40, EvidenceOpens: 11, SourceReads: 3, RepoGreps: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	statuses, err := store.ListPerTypeStatus(ctx, "sc_test", func(string) []string { return []string{"CWE-476"} })
+	if err != nil {
+		t.Fatal(err)
+	}
+	enriched, err := enrichPerTypeStatus(ctx, store, "sc_test", statuses)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(enriched) != 1 {
+		t.Fatalf("expected 1 enriched, got %d", len(enriched))
+	}
+	v := enriched[0].BudgetViolations
+	if len(v) != 1 {
+		t.Fatalf("budget_violations = %+v, want exactly 1 (range 121-160)", v)
+	}
+	if v[0].Range != "121-160" || v[0].EvidenceOpens != 25 {
+		t.Errorf("violation record mismatch: %+v", v[0])
+	}
+	if len(v[0].Over) != 3 {
+		t.Errorf("over = %v, want all three budgets [source_reads evidence_opens repo_greps]", v[0].Over)
+	}
+}
+
 func TestPersistSettlementReports(t *testing.T) {
 	ctx := context.Background()
 	store := db.NewTestStore(t)

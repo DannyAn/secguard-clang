@@ -51,18 +51,19 @@ type Scan struct {
 	// BoundaryAutoDismiss controls the boundary-scan fail-open null-deref
 	// pre-dismissal layer. A boundary scan (no entry point in the tree) seeds
 	// every zero-caller pointer parameter fail-open; those candidates have no
-	// in-tree proof and the AI dismisses them. Modes:
-	//   "" / "off" (default): no auto-dismiss — a library scan must not
-	//     silently drop a possible bug; the boundary report recommends the
-	//     explicit `external`/`all` setting below.
-	//   "external": auto-dismiss opaque-origin / external-unknown only (the
-	//     contract is outside the scan tree); caller-arg / assumed-return keep
-	//     an in-tree caller/callee body for the AI.
-	//   "all": also auto-dismiss caller-arg / assumed-return (aggressive; only
-	//     for a project that accepts the boundary contract as non-null).
-	//   "off": no auto-dismiss (pre-0.11.6 behaviour).
-	// Every auto-dismissed candidate is still counted in the dismissed ledger
-	// under reason `boundary_fail_open`, never silently dropped.
+	// in-tree proof and the AI dismisses them (production: 0 confirmed out of
+	// 262 fail-open rows, ~99% of the AI wall-clock). Modes:
+	//   "" / "external" (default): auto-dismiss the fail-open ASSUMPTION tiers
+	//     with no in-tree null proof — opaque-origin, external-unknown,
+	//     callback-entry, and caller-arg rooted at an unguarded external entry.
+	//     Every dismissal is ledgered under `boundary_fail_open` (visible, never
+	//     silently dropped), and the boundary report recommends scanning the
+	//     worktree root for a complete-program judgment.
+	//   "all": also auto-dismiss caller-arg (forwarding hop) and assumed-return
+	//     (aggressive; only for a project that accepts the boundary contract as
+	//     non-null).
+	//   "off": no auto-dismiss (pre-0.11.6 behaviour) — every fail-open row goes
+	//     to the AI. This is the recall-maximal escape hatch.
 	BoundaryAutoDismiss string `toml:"boundary_auto_dismiss"`
 }
 
@@ -82,21 +83,25 @@ func SetBoundaryAutoDismissOverride(mode string) {
 	}
 }
 
-// BoundaryAutoDismissMode normalizes the configured mode.
+// BoundaryAutoDismissMode normalizes the configured mode. The default is
+// "external" (pre-dismiss the fail-open ASSUMPTION tiers); "off" is an explicit
+// recall-maximal opt-out, and "all" is the aggressive opt-in.
 func (c *Config) BoundaryAutoDismissMode() string {
 	if boundaryAutoDismissOverride != "" {
 		return boundaryAutoDismissOverride
 	}
 	if c == nil {
-		return "off"
+		return "external"
 	}
 	switch strings.ToLower(strings.TrimSpace(c.Scan.BoundaryAutoDismiss)) {
-	case "external":
+	case "external", "":
 		return "external"
 	case "all":
 		return "all"
-	default:
+	case "off":
 		return "off"
+	default:
+		return "external"
 	}
 }
 

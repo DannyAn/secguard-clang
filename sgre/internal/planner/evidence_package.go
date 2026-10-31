@@ -68,6 +68,11 @@ type EvidenceItem struct {
 	// carried so the report layer can embed the callee definition for the
 	// malloc-fail call-result tier without re-deriving it.
 	NullOriginTier string `json:"null_origin_tier,omitempty"`
+	// ChainKind mirrors Candidate.ChainKind ("root" / "hop" / "") so the report
+	// layer can tell a caller-arg candidate rooted at an UNGUARDED external
+	// entry (no concrete NULL witness) from a forwarding hop — the split the
+	// boundary pre-dismissal and its quantified recommendation both key on.
+	ChainKind string `json:"chain_kind,omitempty"`
 	// DerivedFrom names the variable that owns the null source when the
 	// candidate variable is only a value-preserving copy/cast of it
 	// (`q = (T *)param`), so the classifier attributes the contract to the
@@ -796,6 +801,7 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 		Signature:  c.FunctionSignature,
 
 		NullOriginTier:    c.NullOriginTier,
+		ChainKind:         c.ChainKind,
 		IsCallResultDeref: c.IsCallResultDeref,
 		DerivedFrom:       c.DerivedFrom,
 		DerefLines:        c.DerefLines,
