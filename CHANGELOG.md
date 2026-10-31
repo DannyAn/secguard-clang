@@ -2,6 +2,24 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [0.11.9] - 2026-10-31
+
+### 性能：boundary 扫描 fail-open 假设默认预驳回 + AI 预算机器化
+
+针对现网"自动分析 27s / AI 研判 4494s、候选通过率 0.9%"的画像（扫描 ID `sc_2026-10-31_103944_c40a33`），落地三项修复。核心结论：慢不在分析，在把 262 条"fail-open ASSUMPTION, not evidence"的 null-deref 候选逐条喂给 AI（0 命中）。
+
+**boundary fail-open 默认预驳回（最大杠杆）**
+
+- `boundary_auto_dismiss` 默认值 `off → external`：边界扫描（子树无 `main`）默认把无 in-tree 证据的 fail-open 假设 tier（`external-unknown` / `opaque-origin` / `callback-entry` / 无 witness 的 `caller-arg` 根链）预 dismiss 进台账（仍可见、非静默丢弃），只把有 witness 的 caller-arg / assumed-return / malloc-fail / cfg-proof 送 AI。`off` 保留为召回最大化逃生阀。
+- 补全 `BoundaryFailOpenFilter`：新增 `callback-entry` tier 与 `caller-arg`+`ChainKind=="root"` 判定（此前 `external` 模式只 dismiss 2 类，漏掉 callback-entry 73 条 + unguarded-external-entry 9 条）。
+- 量化建议：`secguard.toml.suggested` 写出精确可驳回数（"本扫描产生 N 条 fail-open 候选…"），`EvidenceItem` 导出 `chain_kind` 供报告层判定。
+
+**AI 预算机器化（#5/#6）**
+
+- `status --per-type` 新增 `budget_violations` 一等字段：引擎按 `source_reads>5` / `evidence_opens>12` / `repo_greps>1` 计算超支批次并列出（此前需编排器手读 13 份 JSON 汇总）。
+- DSH preset 修正过时"≤20 候选"硬编码 → 引用 `suggested_batch_size` 自适应公式（与 command-instructions.md 漂移）。
+- 编排协议：F3a 升级为可执行状态机（`host_max` 探测 + `in_flight` 计数，禁止"派 10 被拒 4 再补 4"试探）；重 skill（integer-overflow 整函数内嵌）不合批、`MAX_TYPES_PER_BATCH` 降 2；`SMALL_TYPE_SEQUENTIAL_THRESHOLD` 3→≤15。
+
 ## [0.11.8] - 2026-10-30
 
 ### 性能：AI 分类编排层 + hint 预计算层系统改进
