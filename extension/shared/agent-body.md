@@ -448,15 +448,21 @@ The `<type>.json` file MUST be a JSON array of objects with EXACTLY these keys
 
 ```json
 [
-  {"rule_id":"CWE-476","severity":"high","confidence":90,"status":"confirmed",
-   "file":"src/a.c","line":42,"function":"f","variable":"p","summary":"...",
-   "reasoning":"...","exception_check":"...","fix_strategy":"..."},
-  {"rule_id":"CWE-476","severity":"low","confidence":10,"status":"dismissed",
-   "file":"src/b.c","line":7,"function":"g","variable":"p","reasoning":"guarded"}
+  {"rule_id":"CWE-476","vuln_type":"null-deref","severity":"high","confidence":90,
+   "status":"confirmed","file":"src/a.c","line":42,"function":"f","variable":"p",
+   "summary":"...","reasoning":"...","exception_check":"...","fix_strategy":"..."},
+  {"rule_id":"CWE-476","vuln_type":"null-deref","severity":"low","confidence":10,
+   "status":"dismissed","file":"src/b.c","line":7,"function":"g","variable":"p",
+   "reasoning":"guarded"}
 ]
 ```
 
-`rule_id` is the CWE (e.g. CWE-476); `status` is `confirmed` OR `dismissed`.
+`rule_id` is the CWE (e.g. CWE-476); **`vuln_type` is YOUR dispatch type name**
+(the kebab-case type from the dispatch prompt — `null-deref`, `divide-by-zero`, …)
+and MUST be written on every row so multi-CWE subclasses stay attributed to their
+own type (a `divide-by-zero` `INT_MIN/-1` finding carries `rule_id` CWE-190 but
+`vuln_type` `divide-by-zero`, never `integer-overflow`). `status` is `confirmed`
+OR `dismissed`.
 A `confirmed` row reaches the `findings` table; a `dismissed` row reaches the
 `candidate_verdicts` ledger (so breakpoint recovery can tell "classified and
 dismissed" from "never classified") and is NOT a finding. Write BOTH in the same

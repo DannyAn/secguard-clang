@@ -108,6 +108,7 @@ DETECTOR_TO_TYPE = {
 CWE_TO_TYPE = {
     "CWE-476": "null-deref",
     "CWE-787": "buffer-overflow",
+    "CWE-754": "buffer-overflow",
     "CWE-190": "integer-overflow",
     "CWE-327": "crypto-misuse",
     "CWE-326": "crypto-misuse",

@@ -64,7 +64,14 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding,
 		if cwe == "" {
 			cwe = "CWE-Other"
 		}
-		vulnType := planner.TypeForCWE(cwe)
+		// The finding's OWN type (vuln_type) is the aggregation key — never
+		// re-derive it from rule_id, which misattributes multi-CWE subclasses
+		// (int_min_div → CWE-190 would drift to integer-overflow). Fall back to
+		// TypeForCWE only for legacy rows written before the column existed.
+		vulnType := f.VulnType
+		if vulnType == "" {
+			vulnType = planner.TypeForCWE(cwe)
+		}
 		if vulnType == "" {
 			vulnType = f.RuleID
 		}

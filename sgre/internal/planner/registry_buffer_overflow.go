@@ -13,6 +13,13 @@ func init() {
 		FilterFactories:   chainBufferOverflow(),
 		BuildVerdictFacts: buildBufferVerdictFacts,
 		Categories:        []string{"buffer_overflow", "array_oob_write", "heap_oob_write", "array_oob_write_unchecked", "format_overflow", "format_overflow_var", "bounded_copy_overflow", "bounded_copy_var_size", "secure_copy_overflow", "secure_copy_var_size", "secure_constraint_violation", "secure_scanf_overflow", "secure_scanf_var_size"},
+		// A `_s` constraint violation (required size > declared capacity) does NOT
+		// write past the buffer — Annex K truncates / zeroes and returns an error,
+		// so CWE-787 (out-of-bounds write) is the WRONG rule and made the 5.5
+		// review dismiss a real `_s`-misuse positive (P0-2). CWE-754 (improper
+		// check for an exceptional condition) matches the actual defect: the
+		// caller is not handling the constraint-hit.
+		CategoryCWEs: map[string]string{"secure_constraint_violation": "CWE-754"},
 		// Provable out-of-bounds writes (a constant index past a known array or
 		// allocation size, a constant copy size exceeding a known capacity, or
 		// an Annex K `_s` function given a lying destination-capacity argument)
@@ -167,8 +174,20 @@ func bufferFlowSteps(c Candidate) []EvidenceFragment {
 	steps = append(steps, EvidenceFragment{
 		Type: "flow_step",
 		Role: "path",
-		Detail: fmt.Sprintf("[%d] the access at line %d writes/reads past the end of `%s`",
-			n, c.Line, c.Array),
+		Detail: finalFlowStepDetail(c),
 	})
 	return steps
+}
+
+// finalFlowStepDetail returns the closing flow-step wording. A `_s` constraint
+// violation does NOT write past the buffer (Annex K truncates/zeroes and returns
+// an error), so it must never reuse the "writes/reads past the end" template —
+// that mislabeled a real `_s`-misuse positive as CWE-787 and made the 5.5 review
+// dismiss it (P0-2).
+func finalFlowStepDetail(c Candidate) string {
+	if c.Category == "secure_constraint_violation" {
+		return fmt.Sprintf("the `_s` call at line %d needs %s but the declared capacity is %s — Annex K truncates/zeroes `%s` and returns an error (no overflow): an unhandled constraint violation",
+			c.Line, c.SizeArgument, c.DstCapacity, c.Array)
+	}
+	return fmt.Sprintf("the access at line %d writes/reads past the end of `%s`", c.Line, c.Array)
 }

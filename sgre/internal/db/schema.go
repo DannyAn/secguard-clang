@@ -155,6 +155,7 @@ CREATE TABLE IF NOT EXISTS security_events (
 CREATE TABLE IF NOT EXISTS findings (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     rule_id         TEXT NOT NULL,
+    vuln_type       TEXT,
     severity        TEXT CHECK (severity IN ('critical', 'high', 'medium', 'low', 'info')),
     confidence      REAL CHECK (confidence >= 0.0 AND confidence <= 1.0),
     evidence        TEXT,
@@ -390,6 +391,13 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 	// SARIF/markdown exports read as "dereference of 'p'", not "something in f".
 	if err := ensureColumn(ctx, db, "findings", "variable", "TEXT"); err != nil {
 		return fmt.Errorf("db: init schema: ensure findings.variable: %w", err)
+	}
+	// findings.vuln_type is the single type-attribution key (P0-1): scan/status/
+	// audit all aggregate by it, while rule_id stays the SARIF rule mapping. A
+	// multi-CWE type (divide-by-zero's int_min_div → CWE-190) must not drift to
+	// the type that owns that CWE (integer-overflow) when grouped by rule_id.
+	if err := ensureColumn(ctx, db, "findings", "vuln_type", "TEXT"); err != nil {
+		return fmt.Errorf("db: init schema: ensure findings.vuln_type: %w", err)
 	}
 	// scan_runs.ai_duration_ms is additive (the AI-classification wall-clock the
 	// orchestrator reports at audit time, after the pipeline phase).

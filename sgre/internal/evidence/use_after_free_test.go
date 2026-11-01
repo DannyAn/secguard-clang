@@ -378,3 +378,43 @@ func TestUseAfterFree_ReassignKillsUse(t *testing.T) {
 		t.Errorf("expected no-reassign / self-RHS / branch-local-reassign uses of p to stay flagged, got %v", flagged)
 	}
 }
+
+// TestUseAfterFree_ReturnPointerNotUse pins P1-5: `free(q); return q;` reads the
+// pointer VALUE and hands it out — it does not dereference the freed object, so
+// it must NOT be flagged (it was a false positive that duplicated the caller's
+// double-free). A real `return p->v` dereference stays flagged.
+func TestUseAfterFree_ReturnPointerNotUse(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.New(io.Discard, log.LevelWarn)
+	p := parser.NewParser()
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, fixturePath("tc181_uaf_return_pointer.c")); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	NewUseAfterFreeDetector(store, p, logger).Detect(ctx)
+
+	events, err := store.ListEventsByType(ctx, "USE_AFTER_FREE")
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	flagged := map[string]bool{}
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Variable != "" {
+			flagged[props.Variable] = true
+		}
+	}
+	if flagged["q"] {
+		t.Errorf("expected free(q); return q; NOT to be flagged (return reads the pointer value, not the freed object), got %v", flagged)
+	}
+	if !flagged["p"] {
+		t.Errorf("expected free(p); return p->v; to stay flagged (real dereference), got %v", flagged)
+	}
+}

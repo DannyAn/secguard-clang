@@ -701,6 +701,7 @@ func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType s
 		}
 		f := &db.Finding{
 			RuleID:       cwe,
+			VulnType:     vulnType,
 			Severity:     planner.SeverityFor(vulnType, c.Category),
 			Confidence:   1.0,
 			Status:       db.StatusAutoConfirmed,

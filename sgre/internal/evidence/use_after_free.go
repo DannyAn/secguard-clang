@@ -482,18 +482,13 @@ func (d *UseAfterFreeDetector) findUseSites(f *db.Function, ptrs, fields, calls,
 		addUse(base, fld, field.StartLine(), field.StartColumn())
 	}
 
-	// A bare identifier (or cast) in a return hands the dangling pointer out —
-	// `free(p); return p;` is the classic use-after-free (UF-05).
-	for _, ret := range returns {
-		if !funcLineRange(f, ret.StartLine()) {
-			continue
-		}
-		for _, child := range ret.NamedChildren() {
-			if name := argIdentifier(child); name != "" {
-				addUse(name, "", ret.StartLine(), ret.StartColumn())
-			}
-		}
-	}
+	// NOTE: a bare identifier in a return (`free(p); return p;`) is deliberately
+	// NOT a use here. It only reads the pointer VALUE and hands it out — it does
+	// not dereference the freed object. That shape is a dangling-pointer escape
+	// (the caller dereferences the dangling value), not a use-after-free, and
+	// counting it here made `make_ptr` a false positive that also duplicated the
+	// caller's double-free (P1-5). A genuine dereference is caught below (ptrs /
+	// fields / subs / a dereferencing callee arg).
 
 	// A bare identifier (or cast) on an assignment RHS reads the pointer —
 	// `free(p); q = p;` / `free(p); q = (T*)p;` (UF-05).

@@ -400,6 +400,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 
 		finding := &db.Finding{
 			RuleID:         parseStringFlag(remaining, "rule-id"),
+			VulnType:       parseStringFlag(remaining, "vuln-type"),
 			Severity:       parseStringFlag(remaining, "severity"),
 			Confidence:     confidence,
 			Evidence:       parseStringFlag(remaining, "evidence"),
@@ -664,10 +665,14 @@ func runReportCmd(ctx context.Context, args []string) int {
 				// the candidate never lingers as "unclassified", AND in the
 				// candidate_verdicts ledger (P0-1) so breakpoint recovery can tell
 				// "classified and dismissed" from "never classified".
-				if vulnType := planner.TypeForCWE(in.RuleID); vulnType != "" {
+				dismissedType := in.VulnType
+				if dismissedType == "" {
+					dismissedType = planner.TypeForCWE(in.RuleID)
+				}
+				if dismissedType != "" {
 					if _, uerr := store.UpsertCandidateVerdict(ctx, &db.CandidateVerdict{
 						ScanID:       scanID,
-						VulnType:     vulnType,
+						VulnType:     dismissedType,
 						FilePath:     resolveFindingFilePath(ctx, store, in.File, allFiles),
 						LineNumber:   in.Line,
 						FunctionName: in.Function,
@@ -679,8 +684,8 @@ func runReportCmd(ctx context.Context, args []string) int {
 					}
 				}
 				if scanDir := resolveScanDir(remaining, scanID); scanDir != "" {
-					if vulnType := planner.TypeForCWE(in.RuleID); vulnType != "" {
-						if _, serr := report.SyncPerFinding(scanDir, vulnType, in.File, in.Line, report.PerFindingUpdate{
+					if dismissedType != "" {
+						if _, serr := report.SyncPerFinding(scanDir, dismissedType, in.File, in.Line, report.PerFindingUpdate{
 							Status:    "dismissed",
 							Reasoning: in.Reasoning,
 							CWE:       in.RuleID,
@@ -702,8 +707,13 @@ func runReportCmd(ctx context.Context, args []string) int {
 				continue
 			}
 
+			vt := in.VulnType
+			if vt == "" {
+				vt = planner.TypeForCWE(in.RuleID)
+			}
 			f := &db.Finding{
 				RuleID:         in.RuleID,
+				VulnType:       vt,
 				Severity:       severity,
 				Confidence:     confidence,
 				Status:         status,
@@ -1578,6 +1588,7 @@ func unclassifiedCandidates(audits []vulnAuditEntry) int {
 // of them silently producing a location-less finding.
 type findingInput struct {
 	RuleID         string        `json:"rule_id"`
+	VulnType       string        `json:"vuln_type"`
 	Severity       string        `json:"severity"`
 	Confidence     flexibleFloat `json:"confidence"`
 	Status         string        `json:"status"`

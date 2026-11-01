@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 )
 
 func (s *store) InsertScanStat(ctx context.Context, stat *ScanStat) (int64, error) {
@@ -75,7 +74,7 @@ func (s *store) CountFindingsByScanAndStatus(ctx context.Context, scanID, status
 
 func (s *store) ListFindingsByScanID(ctx context.Context, scanID string) ([]*Finding, error) {
 	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, rule_id, severity, confidence, evidence, status, file_path, line_number, function_name, variable, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at FROM findings WHERE scan_id = ? ORDER BY id`, scanID)
+		`SELECT id, rule_id, vuln_type, severity, confidence, evidence, status, file_path, line_number, function_name, variable, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at FROM findings WHERE scan_id = ? ORDER BY id`, scanID)
 	if err != nil {
 		return nil, fmt.Errorf("db: list findings by scan_id: %w", err)
 	}
@@ -100,29 +99,29 @@ func (s *store) ListPerTypeStatus(ctx context.Context, scanID string, cwesForTyp
 		return nil, fmt.Errorf("db: list per-type status: %w", err)
 	}
 
-	// countByRule tallies findings per rule_id (CWE) under an extra WHERE
-	// fragment. written_count uses status='confirmed' (AI verdicts only, so a
+	// countByType tallies findings per vuln_type (the finding's OWN type column,
+	// P0-1). written_count uses status='confirmed' (AI verdicts only, so a
 	// machine auto-confirmed chunk never inflates the resume comparison);
 	// auto_confirmed / unreviewed_auto_confirmed expose the machine tier and its
-	// re-review progress so the orchestrator can see, in ONE status call, whether
-	// a 0-candidate type still has machine findings awaiting re-review.
-	countByRule := func(whereFragment string) (map[string]int, error) {
+	// re-review progress. Grouping by vuln_type (not rule_id) is what removes
+	// the three-way scan/status/audit drift: a multi-CWE subclass (int_min_div →
+	// CWE-190) belongs to its detector's type (divide-by-zero), never to the type
+	// that owns that CWE (integer-overflow).
+	countByType := func(whereFragment string) (map[string]int, error) {
 		counts := make(map[string]int)
 		rows, err := s.exec.QueryContext(ctx,
-			`SELECT rule_id, COUNT(*) FROM findings WHERE scan_id = ? `+whereFragment+` GROUP BY rule_id`, scanID)
+			`SELECT COALESCE(vuln_type, ''), COUNT(*) FROM findings WHERE scan_id = ? `+whereFragment+` GROUP BY vuln_type`, scanID)
 		if err != nil {
 			return nil, fmt.Errorf("db: list per-type status: count findings: %w", err)
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var cwe string
+			var vt string
 			var cnt int
-			if err := rows.Scan(&cwe, &cnt); err != nil {
+			if err := rows.Scan(&vt, &cnt); err != nil {
 				return nil, fmt.Errorf("db: list per-type status: scan: %w", err)
 			}
-			// Normalize the stored rule_id so a hand-written lowercase finding
-			// still matches the registry-derived uppercase CWE set.
-			counts[strings.ToUpper(strings.TrimSpace(cwe))] += cnt
+			counts[vt] += cnt
 		}
 		if err := rows.Err(); err != nil {
 			return nil, fmt.Errorf("db: list per-type status: rows: %w", err)
@@ -130,15 +129,15 @@ func (s *store) ListPerTypeStatus(ctx context.Context, scanID string, cwesForTyp
 		return counts, nil
 	}
 
-	cweCounts, err := countByRule(`AND status = 'confirmed'`)
+	confirmedCounts, err := countByType(`AND status = 'confirmed'`)
 	if err != nil {
 		return nil, err
 	}
-	autoCweCounts, err := countByRule(`AND status = 'auto-confirmed'`)
+	autoCounts, err := countByType(`AND status = 'auto-confirmed'`)
 	if err != nil {
 		return nil, err
 	}
-	unreviewedCweCounts, err := countByRule(`AND status = 'auto-confirmed' AND (review_status IS NULL OR review_status = '')`)
+	unreviewedCounts, err := countByType(`AND status = 'auto-confirmed' AND (review_status IS NULL OR review_status = '')`)
 	if err != nil {
 		return nil, err
 	}
@@ -146,17 +145,11 @@ func (s *store) ListPerTypeStatus(ctx context.Context, scanID string, cwesForTyp
 	result := make([]*PerTypeStatus, 0, len(stats))
 	for _, st := range stats {
 		cwe := ""
-		written := 0
-		autoConfirmed := 0
-		unreviewed := 0
+		written := confirmedCounts[st.VulnType]
+		autoConfirmed := autoCounts[st.VulnType]
+		unreviewed := unreviewedCounts[st.VulnType]
 		if cwesForType != nil {
-			cwes := cwesForType(st.VulnType)
-			for _, id := range cwes {
-				written += cweCounts[id]
-				autoConfirmed += autoCweCounts[id]
-				unreviewed += unreviewedCweCounts[id]
-			}
-			if len(cwes) > 0 {
+			if cwes := cwesForType(st.VulnType); len(cwes) > 0 {
 				cwe = cwes[0]
 			}
 		}

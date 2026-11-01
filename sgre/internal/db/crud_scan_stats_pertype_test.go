@@ -36,7 +36,7 @@ func TestListPerTypeStatus_TerminalStates(t *testing.T) {
 	}
 
 	for i := 0; i < 5; i++ {
-		if _, err := s.UpsertFinding(ctx, &Finding{RuleID: "CWE-787", Severity: "high", Status: "confirmed", FilePath: "b.c", LineNumber: i + 1, FunctionName: "g", ScanID: scanID}); err != nil {
+		if _, err := s.UpsertFinding(ctx, &Finding{RuleID: "CWE-787", VulnType: "buffer-overflow", Severity: "high", Status: "confirmed", FilePath: "b.c", LineNumber: i + 1, FunctionName: "g", ScanID: scanID}); err != nil {
 			t.Fatalf("insert finding %d: %v", i, err)
 		}
 	}
@@ -111,11 +111,12 @@ func TestListPerTypeStatus_MultiCWE(t *testing.T) {
 	if _, err := s.InsertScanStat(ctx, &ScanStat{ScanID: scanID, VulnType: "crypto-misuse", FinalCount: 3}); err != nil {
 		t.Fatalf("insert scanstat crypto-misuse: %v", err)
 	}
-	// One canonical (CWE-327) + one legacy (CWE-326) finding.
-	if _, err := s.UpsertFinding(ctx, &Finding{RuleID: "CWE-327", Severity: "high", Status: "confirmed", FilePath: "a.c", LineNumber: 1, FunctionName: "f", ScanID: scanID}); err != nil {
+	// One canonical (CWE-327) + one legacy (CWE-326) finding, both owned by
+	// crypto-misuse — the vuln_type column is the aggregation key, not rule_id.
+	if _, err := s.UpsertFinding(ctx, &Finding{RuleID: "CWE-327", VulnType: "crypto-misuse", Severity: "high", Status: "confirmed", FilePath: "a.c", LineNumber: 1, FunctionName: "f", ScanID: scanID}); err != nil {
 		t.Fatalf("insert CWE-327 finding: %v", err)
 	}
-	if _, err := s.UpsertFinding(ctx, &Finding{RuleID: "CWE-326", Severity: "medium", Status: "confirmed", FilePath: "a.c", LineNumber: 2, FunctionName: "g", ScanID: scanID}); err != nil {
+	if _, err := s.UpsertFinding(ctx, &Finding{RuleID: "CWE-326", VulnType: "crypto-misuse", Severity: "medium", Status: "confirmed", FilePath: "a.c", LineNumber: 2, FunctionName: "g", ScanID: scanID}); err != nil {
 		t.Fatalf("insert CWE-326 finding: %v", err)
 	}
 
@@ -155,9 +156,9 @@ func TestListPerTypeStatus_AutoConfirmedCounts(t *testing.T) {
 		t.Fatalf("insert scanstat: %v", err)
 	}
 	for _, f := range []*Finding{
-		{RuleID: "CWE-327", Severity: "high", Status: StatusAutoConfirmed, ReviewStatus: "confirmed", FilePath: "a.c", LineNumber: 1, FunctionName: "f", ScanID: scanID},
-		{RuleID: "CWE-327", Severity: "high", Status: StatusAutoConfirmed, ReviewStatus: "dismissed", FilePath: "a.c", LineNumber: 2, FunctionName: "f", ScanID: scanID},
-		{RuleID: "CWE-326", Severity: "high", Status: StatusAutoConfirmed, ReviewStatus: "", FilePath: "a.c", LineNumber: 3, FunctionName: "g", ScanID: scanID},
+		{RuleID: "CWE-327", VulnType: "crypto-misuse", Severity: "high", Status: StatusAutoConfirmed, ReviewStatus: "confirmed", FilePath: "a.c", LineNumber: 1, FunctionName: "f", ScanID: scanID},
+		{RuleID: "CWE-327", VulnType: "crypto-misuse", Severity: "high", Status: StatusAutoConfirmed, ReviewStatus: "dismissed", FilePath: "a.c", LineNumber: 2, FunctionName: "f", ScanID: scanID},
+		{RuleID: "CWE-326", VulnType: "crypto-misuse", Severity: "high", Status: StatusAutoConfirmed, ReviewStatus: "", FilePath: "a.c", LineNumber: 3, FunctionName: "g", ScanID: scanID},
 	} {
 		if _, err := s.UpsertFinding(ctx, f); err != nil {
 			t.Fatalf("insert auto-confirmed finding: %v", err)

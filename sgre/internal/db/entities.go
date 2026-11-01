@@ -256,6 +256,10 @@ type BatchEvent struct {
 type Finding struct {
 	ID           int64   `json:"id"`
 	RuleID       string  `json:"rule_id"`
+	// VulnType is the owning vulnerability type (kebab-case), the single
+	// aggregation key for scan/status/audit. It is empty for legacy rows written
+	// before the column existed; consumers fall back to TypeForCWE(RuleID).
+	VulnType     string  `json:"vuln_type,omitempty"`
 	Severity     string  `json:"severity"`
 	Confidence   float64 `json:"confidence"`
 	Evidence     string  `json:"evidence"`

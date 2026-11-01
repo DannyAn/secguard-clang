@@ -4,6 +4,17 @@
 
 ## [未发布]
 
+### round3 类型归属与召回修复（样例项目第三轮分析）
+
+依据 `examples/c-vuln-benchmark/扫描会话问题分析与扫描性能改进建议-round3.md` 核实后修复 4 个真问题，核心是「类型归属单一化」：
+
+- **P0-1/P0-3 `findings.vuln_type` 单一归属键**：`findings` 新增 `vuln_type` 列，scan/status/audit 一律按该列聚合（`rule_id` 仅用于 SARIF 规则映射）。根因：多 CWE 类型的子类（`int_min_div`→CWE-190、`world_writable_file`→CWE-732、移位 UB→CWE-758）此前被 audit 按 `TypeForCWE(rule_id)` 归到错误类型（divide-by-zero 的 auto 归零、integer-overflow 虚增）。`ListPerTypeStatus` 改为按 `vuln_type` 分组，三处口径漂移消除。
+- **P0-2 `_s` 约束违约子类化（召回 +2）**：`secure_constraint_violation`（`strcpy_s`/`memcpy_s` 的 required>declared，Annex K 只截断/置零不越界）此前被写成 CWE-787「越界写」，5.5 按 CWE-787 前提驳回 2 条真阳性。修复：该子类改用 **CWE-754**（未处理异常条件），`bufferFlowSteps` 末句按 category 分支——不再输出「writes past the end」，改输出「constraint violation（无越界）」。
+- **P1-5 UAF「return p」收紧**：`free(p); return p;` 只读指针值、不解引用，此前被当作「use」产出 CWE-416 误报（与调用方 double-free 重复）。修复：从 `findUseSites` 移除 return 段，真实解引用（`*p`/`p->f`/`p[i]`）仍检出。
+- **P1-6 SARIF 类型前缀**：子类 CWE 的 SARIF message 前缀由属主类型名改为 CWE 本身（`world_writable_file` 不再输出「path-traversal in …」，改输出「CWE-732 in …」）。
+
+## [未发布]
+
 ### round2 扫描问题修复（样例项目第二轮分析）
 
 依据 `examples/c-vuln-benchmark/扫描会话问题分析与扫描性能改进建议-round2.md` 核实后修复 3 个真问题：

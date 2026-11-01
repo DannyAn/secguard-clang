@@ -392,9 +392,19 @@ func writeSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding, k
 		if vulnType == "" {
 			vulnType = f.RuleID
 		}
+		// displayType is the label used in the SARIF message prefix and rule
+		// name. When the finding's rule_id is NOT the type's canonical CWE (a
+		// subclass: world_writable_file → CWE-732 under path-traversal), the
+		// label must be the CWE, not the owning type name — writing
+		// "path-traversal in chmod_literal" for a CWE-732 permission-setting is
+		// the round3 P1-6 contradiction.
+		displayType := vulnType
+		if canonical := planner.CWEForType(vulnType); canonical != "" && strings.ToUpper(canonical) != cwe {
+			displayType = cwe
+		}
 		if !rulesSeen[cwe] {
 			rulesSeen[cwe] = true
-			rules = append(rules, sarifRule{ID: cwe, Name: vulnType})
+			rules = append(rules, sarifRule{ID: cwe, Name: displayType})
 		}
 
 		level := sarifLevel(f.Severity, status)
@@ -459,7 +469,7 @@ func writeSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding, k
 			RuleID: cwe,
 			Level:  level,
 			Message: sarifMessage{
-				Text:     verdictMessageText(vulnType, f.FunctionName, f.FilePath, f.LineNumber, f.Variable, sev, status, msg),
+				Text:     verdictMessageText(displayType, f.FunctionName, f.FilePath, f.LineNumber, f.Variable, sev, status, msg),
 				Markdown: strings.TrimSpace(md.String()),
 			},
 			Locations: []sarifLocation{{PhysicalLocation: physical}},
