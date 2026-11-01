@@ -4,6 +4,15 @@
 
 ## [未发布]
 
+### 修复：invalid-free 误报 + switch-fallthrough 扫描变慢（benchmark round1 回归）
+
+benchmark 首轮扫描（`session-ses_e6ad-20261101-round1.md`）发现并修复两处缺陷：
+
+- **invalid-free 3 例 auto-confirmed 误报**：`ur_para_free(&para)`（项目字段释放 helper，只 free `p->user_filter`/`p->dst_name`，非整个对象）与 `regfree(&regex)`（POSIX 正则释放内部状态，非对象）被 `*_free` 后缀启发式误判为「栈对象 free」。根因：invalid-free 是 **confirmed 层**，却复用了 AI 研判层（double-free/UAF）的宽后缀 deallocator 集。修复：invalid-free 的 deallocator 集收紧为 **`free` + `realloc` + config 声明的 `IsDeclaredDeallocator`**（零误报优先，confirmed 层必须精确）。
+- **switch-fallthrough 扫描变慢**：`SwitchFlowDetector.Detect` 把 `buildGlobalTypedefs`（跨文件 typedef 全表重读+重解析）误放在 `forEachFile` 回调内，造成 O(文件数²) 的全库重解析——benchmark 上该检测器独占 584ms（检测阶段 768ms 的 76%）。修复：提升到 `forEachFile` 外层只建一次（对齐 divide-by-zero 模式），584ms → 67ms，automated analysis 1524ms → 1439ms。
+
+## [未发布]
+
 ### 新增：3 个漏洞类型（GLM5.3 能力缺口 B1 批）
 
 依据 `docs/GLM5.3能力缺口落地实施设计20261101.md` 落地 GAP-01/04/05，零误报优先、全部确认形态走 AST/别名确定性判据。

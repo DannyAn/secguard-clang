@@ -62,3 +62,25 @@ func TestInvalidFree_Detect(t *testing.T) {
 		}
 	}
 }
+
+// TestInvalidFree_PreciseDeallocatorSet pins the zero-FP deallocator scope: a
+// project field-freeing helper (`ur_para_free(&para)`) and POSIX `regfree` must
+// NOT be treated as whole-object deallocators (they were 3 auto-confirmed false
+// positives in the benchmark round).
+func TestInvalidFree_PreciseDeallocatorSet(t *testing.T) {
+	store, p := setupDetector(t, "tc179_invalid_free_fp.c")
+	logger := log.New(io.Discard, log.LevelWarn)
+	if _, err := NewInvalidFreeDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	events, err := store.ListEventsByType(context.Background(), "INVALID_FREE")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(events) != 0 {
+		for _, e := range events {
+			fn, _ := store.GetFunctionByID(context.Background(), e.EntityID)
+			t.Errorf("unexpected INVALID_FREE in %v", fn)
+		}
+	}
+}

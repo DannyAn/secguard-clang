@@ -63,10 +63,17 @@ func (d *InvalidFreeDetector) Detect(ctx context.Context) (DetectResult, error) 
 					continue
 				}
 				callee := extractCallName(call)
-				// realloc is not in the deallocator set (it ends in "alloc"), but
-				// it frees the old block, so `realloc(stack_array, n)` is the F5
-				// invalid-free shape.
-				if !apikb.IsDeallocator(callee) && callee != "realloc" {
+				// invalid-free is a CONFIRMED tier, so the deallocator set must be
+				// PRECISE: the broad `*_free`/`_destroy`/`_delete`/`_cleanup`/
+				// `_recycle` suffix heuristic (used by the AI-judged double-free /
+				// use-after-free types) also matches project helpers that free an
+				// object's FIELDS (`ur_para_free(&para)`) and POSIX `regfree` (which
+				// releases regex internals, not the object). Flagging those as a
+				// machine-proved invalid free is a confirmed false positive — the
+				// one error the auto-ticket path must never produce. So only the C
+				// standard `free`, `realloc` (the F5 shape), and config-DECLARED
+				// deallocators count here.
+				if !isInvalidFreeDeallocator(callee) {
 					continue
 				}
 				args := getCallArgs(call)
@@ -93,6 +100,17 @@ func (d *InvalidFreeDetector) Detect(ctx context.Context) (DetectResult, error) 
 		}
 	})
 	return result, err
+}
+
+// isInvalidFreeDeallocator reports whether name is a deallocator the invalid-free
+// detector may PROVE a non-heap argument against: the C standard free, realloc
+// (which frees the old block), and config-declared whole-object deallocators.
+// The broad suffix heuristic is deliberately excluded — see Detect.
+func isInvalidFreeDeallocator(name string) bool {
+	if name == "free" || name == "realloc" {
+		return true
+	}
+	return apikb.IsDeclaredDeallocator(name)
 }
 
 // functionDefAt returns the function_definition node whose start line matches.

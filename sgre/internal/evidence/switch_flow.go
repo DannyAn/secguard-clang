@@ -45,8 +45,14 @@ var fallthroughMarkers = []string{
 func (d *SwitchFlowDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
+	// The cross-file typedef table is built ONCE outside the per-file loop; the
+	// previous code called buildGlobalTypedefs INSIDE forEachFile, re-reading +
+	// re-parsing every indexed file once per file (O(F²)) — the dominant
+	// detector-phase cost on the benchmark (584ms).
+	globalTypedefs := buildGlobalTypedefs(ctx, d.store, d.parser)
+
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
-		typedefs := buildGlobalTypedefs(ctx, d.store, d.parser).clone()
+		typedefs := globalTypedefs.clone()
 		typedefs.addRoot(root)
 		enums := collectEnums(root)
 		globals, scopes := buildIntegerOverflowTypeScopes(root, funcs, typedefs)
