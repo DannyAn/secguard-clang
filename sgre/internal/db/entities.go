@@ -153,6 +153,21 @@ type FuncPtrWrite struct {
 	Line       int
 }
 
+// CandidateVerdict is one AI DISMISSED candidate (P0-1): the dismissed-only
+// ledger that lets the orchestrator recover a breakpoint without re-reading
+// every candidate index.
+type CandidateVerdict struct {
+	ID           int64
+	ScanID       string
+	VulnType     string
+	FilePath     string
+	LineNumber   int
+	FunctionName string
+	Variable     string
+	Verdict      string
+	Reason       string
+}
+
 type Variable struct {
 	ID              int64
 	FunctionID      int64

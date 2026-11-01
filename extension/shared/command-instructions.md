@@ -259,6 +259,21 @@ new capacity class for an unfamiliar name.
   than the historical rate predicted) and re-dispatch a smaller batch. This is
   feedback control, not a pre-dispatch hard cap — the 660s wall depends on code
   shape (super-large functions), not a static per-candidate cost.
+- **Large-light + tiny packing (P1-5):** a LIGHT type with > 30 candidates (e.g.
+  `dangerous-function`) MAY share a batch with up to 3 TINY light types (≤ 3
+  candidates each) to fill `MAX_TYPES_PER_BATCH` instead of occupying a batch
+  alone. The large type's candidates dominate the budget, but the tiny types add
+  negligible evidence volume (their ≤ 3 candidates each cost one `_index.md` +
+  a handful of Evidence files). This is a packing optimization, never a reason to
+  exceed the type/candidate ceilings.
+- **Sync-host small-type strategy (P1-6):** `SMALL_TYPE_SEQUENTIAL_THRESHOLD`
+  (≤ 15 candidates → orchestrator classifies directly) applies ONLY on hosts
+  where the orchestrator can classify WHILE subagents run (asynchronous: official
+  Claude Code / DSH). On a SYNCHRONOUS host (OpenCode / opencode-nga / claude-cac)
+  the orchestrator is BLOCKED inside each `Agent`/`task` call and cannot do its own
+  classification concurrently, so the threshold is DISABLED there: pack the small
+  types into parallel batches per the packing rule above instead of dispatching
+  them as separate subagents or classifying them serially.
 
 ## Full Scan Workflow
 
@@ -479,7 +494,16 @@ straight to the structured report (`written: 0`).
    `security-auditor` 结尾的条目（裸名或 `<plugin>:security-auditor` 形态），**同一回合**
    用该精确名重发全部失败的批次，然后照常进第 5 步 Collect+finalize。
    Each subagent prompt must be self-contained (the subagent cannot see this
-   conversation):
+   conversation). **Dispatch-prompt budget (P0-4): keep it ≤ 400 tokens** —
+   pass ONLY the incremental facts the subagent cannot derive from its own
+   `agent-body.md` + the type's `SKILL.md` (both loaded by the
+   `security-auditor` agent): the type name(s), per-type candidate counts, the
+   candidate RANGE when split, `scan_id`, `scan_dir`, and the ABSOLUTE db + tmp
+   paths. Do NOT repeat the classification rules, hint-token semantics, or the
+   write contract — they live in `agent-body.md` and the skills; restating them
+   per dispatch is the largest orchestrator-output cost (~25k tokens over 19
+   dispatches). The template below is a reference for the RED-LINE invariants,
+   not text to copy verbatim.
    ```
    RED LINE: you are a SUBAGENT. Never call `secguard report --complete-type`
    or `secguard report --audit` (the orchestrator is the single writer of
@@ -581,15 +605,19 @@ straight to the structured report (`written: 0`).
       that exist but do not cover the leak path. For
       divide-by-zero, `Hint` is `divisor@<shape>`
       (`bare` = a plain identifier, `call` = a call result, `compound` = a complex
-      expression; `field`/`global` are already auto-confirmed and never reach you):
-      a `divisor@bare` row is settled from the `Source` column alone (an unguarded
-      plain divisor → `dismissed`) with NO evidence-file open. Open that candidate's
+      expression, `field`/`global` = struct member / module global): **EVERY
+      shape — including `bare` and `field` — requires the ±8-line Code Context
+      before confirming**; the shape says where the divisor comes from, NOT
+      whether it is guarded (the pipeline already dropped every divisor it could
+      prove non-zero, so a row that reaches you means no modelled guard exists —
+      and the unmodelled ones are exactly what the window shows, e.g.
+      `if (n == 0) return;`). Confirming from the `Source` column alone is how
+      guarded divisions get filed as real defects. Open that candidate's
       `Evidence` file (filename in the `Evidence` column, verbatim; its
-      `## Code Context` embeds the source) ONLY when the hint is insufficient to
+      `## Code Context` embeds the source) when the hint is insufficient to
       decide — a `certain-null` + `src@N` hint (or null-deref's `null@cfg-proof`)
       usually settles the verdict with no
-      file open, and a `divisor@call`/`divisor@compound` hint is the only
-      divide-by-zero shape that needs the open. A decisive hint is a verdict:
+      file open. A decisive hint is a verdict:
       `contract@unknown` / `macro-context` / `maybe-null` (no provable source)
       → `dismissed` from the row, citing the token; `init@unseen` and
       `taint@none` narrow the question to "was the field initialized by a

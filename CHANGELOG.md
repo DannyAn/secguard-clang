@@ -4,6 +4,19 @@
 
 ## [未发布]
 
+### round1 扫描问题与性能建议落地（样例项目 opencode 分析建议）
+
+依据 `examples/c-vuln-benchmark/样例项目扫描问题与性能提升改进建议-round1.md` 逐条核实后落地 7 项（P0-1/P0-2/P0-4/P1-5/P1-6/P1-7/P1-9）：
+
+- **P0-1 dismissed 落库**：新增 `candidate_verdicts` 表（dismissed-only 台账，按 finding 位置幂等）；`report --write-json` 的 `dismissed` 判定除标注候选文件外同时写入台账；`status --per-type` 新增 `dismissed_count`/`remaining`，断点恢复从「读索引逐条对账」变为一条命令得出剩余。
+- **P0-2 类型级结算**：agent-body 增「每完成一个类型立即写 `<subagent_id>-<type>-report.json` 检查点」，中断损失从整批降到当前 1 个类型。
+- **P0-4 派发瘦身**：command-instructions 增「派发提示词 ≤400 tokens，只传增量（类型/候选数/范围/路径），规则留在 agent-body+SKILL」。
+- **P1-5/P1-6 批次打包**：Batch Capacity 增「大 light 类型(>30) + ≤3 tiny 类型(≤3) 合批」「同步宿主禁用 SMALL_TYPE_SEQUENTIAL_THRESHOLD，改用打包」。
+- **P1-7 report CWE 错标**：audit 报告「Findings by Skill」的 CWE 从行级 `rule_id` 改为类型 canonical `planner.CWEForType`（`path-traversal` 不再被标成 CWE-732）。
+- **P1-9 图例一致**：command-instructions/agent-body 中 divide-by-zero `divisor@bare` 与 hint_tokens 图例对齐为「EVERY shape 需 ±8 行 Code Context 再确认」。
+
+## [未发布]
+
 ### 修复：invalid-free 误报 + switch-fallthrough 扫描变慢（benchmark round1 回归）
 
 benchmark 首轮扫描（`session-ses_e6ad-20261101-round1.md`）发现并修复两处缺陷：

@@ -110,6 +110,12 @@ type settlementEnriched struct {
 	SuggestedBatches     int      `json:"suggested_batches"`
 	AvgWallMS            int64    `json:"avg_wall_ms,omitempty"`
 	AlreadyCoveredRanges []string `json:"already_covered_ranges"`
+	// DismissedCount is the AI-dismissed candidate count for this type (from the
+	// candidate_verdicts ledger, P0-1). Remaining = candidates not yet classified
+	// (candidate_count - written_count - dismissed_count), the breakpoint-recovery
+	// number the orchestrator needs without re-reading every candidate index.
+	DismissedCount int `json:"dismissed_count"`
+	Remaining      int `json:"remaining"`
 	// BudgetViolations lists the settled batches whose self-reported
 	// source_reads / evidence_opens / repo_greps exceeded the agent-body.md
 	// budgets. It is engine-computed so the orchestrator surfaces read-source
@@ -150,6 +156,10 @@ func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, sta
 	if err != nil {
 		return nil, err
 	}
+	dismissedByType, err := store.CountCandidateVerdictsByType(ctx, scanID)
+	if err != nil {
+		dismissedByType = map[string]int{}
+	}
 	covered := map[string]map[string]bool{}
 	for _, st := range byScan {
 		if covered[st.VulnType] == nil {
@@ -161,6 +171,10 @@ func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, sta
 	out := make([]*settlementEnriched, 0, len(statuses))
 	for _, s := range statuses {
 		e := &settlementEnriched{PerTypeStatus: s, AlreadyCoveredRanges: []string{}}
+		e.DismissedCount = dismissedByType[s.VulnType]
+		if rem := s.CandidateCount - s.WrittenCount - e.DismissedCount; rem > 0 {
+			e.Remaining = rem
+		}
 		if ranges := covered[s.VulnType]; len(ranges) > 0 {
 			for r := range ranges {
 				e.AlreadyCoveredRanges = append(e.AlreadyCoveredRanges, r)

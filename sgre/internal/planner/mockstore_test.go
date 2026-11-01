@@ -20,6 +20,7 @@ type mockStore struct {
 	summaries map[int64]*db.FunctionSummary
 	suppressions []db.InlineSuppression
 	funcPtrWrites []db.FuncPtrWrite
+	candidateVerdicts []db.CandidateVerdict
 	nextID    int64
 }
 
@@ -472,6 +473,20 @@ func (s *mockStore) ReplaceFuncPtrWrites(ctx context.Context, writes []db.FuncPt
 }
 func (s *mockStore) ListFuncPtrWrites(ctx context.Context) ([]db.FuncPtrWrite, error) {
 	return s.funcPtrWrites, nil
+}
+
+func (s *mockStore) UpsertCandidateVerdict(ctx context.Context, v *db.CandidateVerdict) (int64, error) {
+	s.candidateVerdicts = append(s.candidateVerdicts, *v)
+	return int64(len(s.candidateVerdicts)), nil
+}
+func (s *mockStore) CountCandidateVerdictsByType(ctx context.Context, scanID string) (map[string]int, error) {
+	out := map[string]int{}
+	for _, v := range s.candidateVerdicts {
+		if v.ScanID == scanID {
+			out[v.VulnType]++
+		}
+	}
+	return out, nil
 }
 
 func (s *mockStore) InsertScanStat(ctx context.Context, stat *db.ScanStat) (int64, error) {

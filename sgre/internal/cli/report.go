@@ -661,7 +661,23 @@ func runReportCmd(ctx context.Context, args []string) int {
 				skippedDismissed++
 				// Dismissed candidates are not persisted (no finding row), but the
 				// verdict must still be recorded on the candidate evidence file so
-				// the candidate never lingers as "unclassified".
+				// the candidate never lingers as "unclassified", AND in the
+				// candidate_verdicts ledger (P0-1) so breakpoint recovery can tell
+				// "classified and dismissed" from "never classified".
+				if vulnType := planner.TypeForCWE(in.RuleID); vulnType != "" {
+					if _, uerr := store.UpsertCandidateVerdict(ctx, &db.CandidateVerdict{
+						ScanID:       scanID,
+						VulnType:     vulnType,
+						FilePath:     resolveFindingFilePath(ctx, store, in.File, allFiles),
+						LineNumber:   in.Line,
+						FunctionName: in.Function,
+						Variable:     in.Variable,
+						Verdict:      "dismissed",
+						Reason:       in.Reasoning,
+					}); uerr != nil {
+						fmt.Fprintf(os.Stderr, "warning: record dismissed verdict %s:%d: %v\n", in.File, in.Line, uerr)
+					}
+				}
 				if scanDir := resolveScanDir(remaining, scanID); scanDir != "" {
 					if vulnType := planner.TypeForCWE(in.RuleID); vulnType != "" {
 						if _, serr := report.SyncPerFinding(scanDir, vulnType, in.File, in.Line, report.PerFindingUpdate{

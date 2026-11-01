@@ -398,13 +398,13 @@ budget your effort, not to pre-judge the answer:
   the verdict, and a `null@external-unknown` row is the opposite — an unproven
   fail-open assumption you verify or dismiss. For divide-by-zero, the
   `Hint` is `divisor@<shape>` (`bare` = plain identifier, `call` = call result,
-  `compound` = complex expression): a `divisor@bare` row is settled from the
-  `Source` column alone (unguarded plain divisor → `suspected`), with no
-  evidence-file open. Open the candidate's `Evidence` file (the filename is in
-  `_index.md`'s `Evidence` column — use it verbatim) and read its `## Code Context`
-  (source already embedded) ONLY when the hint is insufficient — for
-  divide-by-zero that is the `divisor@call` / `divisor@compound` shapes. Do NOT
-  open the raw source file unless that embedded window is genuinely too small.
+  `compound` = complex expression, `field`/`global` = struct member / module
+  global): **EVERY shape — including `bare` and `field` — requires the ±8-line
+  Code Context before confirming**; the shape says where the divisor comes from,
+  NOT whether it is guarded. Open the candidate's `Evidence` file (the filename
+  is in `_index.md`'s `Evidence` column — use it verbatim) and read its
+  `## Code Context` (source already embedded) when the hint is insufficient. Do
+  NOT open the raw source file unless that embedded window is genuinely too small.
 - **possible** — the pattern is only theoretical (e.g. unsigned wraparound inside
   a bounds check, which would require an operand to reach SIZE_MAX). Triage these
   last and promote one only when you can show a reachable, realistic overflow.
@@ -682,6 +682,15 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
   accounting (those are NOT in the DB, unlike `written`). Use the Write tool; a
   "must read before overwriting" is a stale file, so use a fresh
   `<subagent_id>-report-2.json` name.
+- **Per-type checkpoint (P0-2 — 每完成一个类型立即落盘).** When a batch contains
+  MORE than one type, do NOT wait until the end to persist. Immediately after you
+  finish EACH type (its `--write-json` returns), write a per-type checkpoint file
+  `<tmpdir>/<subagent_id>-<type>-report.json` carrying that ONE type's
+  `format_version`/`processed_types` (single-entry) + `needs_context` + `dismissed`
+  accounting. The final `<subagent_id>-report.json` remains the authoritative
+  whole-batch record. This bounds an interrupt's loss to the CURRENT type instead
+  of the whole batch — the orchestrator's `--reports` absorption matches per type
+  and can reuse the completed-type checkpoints.
 - **Chunked settlement (P2-1 — 分块落盘, survives a mid-batch kill).** For a batch
   you process over many candidates, also write a partial snapshot every ~10
   candidates to `<tmpdir>/<subagent_id>-chunk-<k>.json` (k increasing): the same

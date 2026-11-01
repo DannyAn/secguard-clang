@@ -279,6 +279,26 @@ CREATE TABLE IF NOT EXISTS func_ptr_writes (
 
 CREATE INDEX IF NOT EXISTS idx_func_ptr_writes_slot ON func_ptr_writes(slot_name);
 
+-- Candidate verdicts (P0-1): one row per AI DISMISSED candidate so the
+-- orchestrator can distinguish "classified and dismissed" from "never
+-- classified" on breakpoint recovery. Confirmed verdicts live in findings (the
+-- existing UPSERT path); this table is the dismissed-only ledger. Keyed by the
+-- same finding-location identity, so a re-write is idempotent.
+CREATE TABLE IF NOT EXISTS candidate_verdicts (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id       TEXT NOT NULL,
+    vuln_type     TEXT NOT NULL,
+    file_path     TEXT NOT NULL,
+    line_number   INTEGER NOT NULL,
+    function_name TEXT,
+    variable      TEXT,
+    verdict       TEXT NOT NULL CHECK (verdict IN ('dismissed')),
+    reason        TEXT,
+    UNIQUE(scan_id, vuln_type, file_path, line_number, function_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_candidate_verdicts_scan_type ON candidate_verdicts(scan_id, vuln_type);
+
 CREATE TABLE IF NOT EXISTS function_summary (
     function_id        INTEGER PRIMARY KEY,
     return_nullable    BOOLEAN,

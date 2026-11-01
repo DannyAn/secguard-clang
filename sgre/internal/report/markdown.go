@@ -68,6 +68,12 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding,
 		if vulnType == "" {
 			vulnType = f.RuleID
 		}
+		// The group CWE is the TYPE's canonical CWE (the single source of truth,
+		// AGENTS.md), never the row's rule_id: a permission_setting finding is
+		// CWE-732 at the row level but its type path-traversal is CWE-22 (GAP-08).
+		if canonical := planner.CWEForType(vulnType); canonical != "" {
+			cwe = canonical
+		}
 		if idx, ok := groupIdx[vulnType]; ok {
 			groups[idx].items = append(groups[idx].items, f)
 		} else {

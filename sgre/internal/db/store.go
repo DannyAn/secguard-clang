@@ -185,6 +185,13 @@ type FuncPtrWriteStore interface {
 	ListFuncPtrWrites(ctx context.Context) ([]FuncPtrWrite, error)
 }
 
+type CandidateVerdictStore interface {
+	// UpsertCandidateVerdict idempotently records an AI verdict (dismissed).
+	UpsertCandidateVerdict(ctx context.Context, v *CandidateVerdict) (int64, error)
+	// CountCandidateVerdictsByType returns the dismissed count per vuln type.
+	CountCandidateVerdictsByType(ctx context.Context, scanID string) (map[string]int, error)
+}
+
 type FunctionSummaryStore interface {
 	UpsertSummary(ctx context.Context, s *FunctionSummary) error
 	GetSummaryByFunction(ctx context.Context, functionID int64) (*FunctionSummary, error)
@@ -230,6 +237,7 @@ type Store interface {
 	ReviewSessionStore
 	InlineSuppressionStore
 	FuncPtrWriteStore
+	CandidateVerdictStore
 	Close() error
 	WithTx(ctx context.Context, fn func(Store) error) error
 	// WithImmediateTx runs fn in a transaction that acquires the SQLite write

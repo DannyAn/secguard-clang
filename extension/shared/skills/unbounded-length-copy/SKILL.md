@@ -58,7 +58,7 @@ the embedded section and the indexed lookup.
 | Condition | Classification |
 |-----------|---------------|
 | `len-taint@recv` + `guard@none-upper` + the sink is an allocation/copy length | **confirmed** (attacker-controlled network length) |
-| `len-taint@read`/`fread` on a trusted local file descriptor whose size is bounded by the file | **dismissed** |
+| `len-taint@read`/`fread` on a trusted local file descriptor whose size is bounded by the file | **false-positive** (the source is not attacker-controlled) |
 | A downstream clamp/truncation not in the ±8-line window | **dismissed** |
 | `len < 0` check only (not an upper bound) | **confirmed** (a negative check does not bound a large value) |
 
