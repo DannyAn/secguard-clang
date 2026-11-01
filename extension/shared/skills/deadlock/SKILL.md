@@ -5,7 +5,7 @@ license: MIT
 compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-667
-  severity: HIGH
+  severity: MEDIUM
   domain: concurrency
 ---
 
@@ -78,6 +78,6 @@ the embedded section and the indexed lookup.
 
 | Shape | Severity |
 |-------|----------|
-| Lock-order inversion cycle (confirmed) | HIGH |
-| Self-deadlock (non-recursive re-lock) | HIGH |
+| Lock-order inversion cycle (confirmed) | MEDIUM |
+| Self-deadlock (non-recursive re-lock) | MEDIUM |
 | Cycle that includes a `pthread_mutex_timedlock` acquisition | MEDIUM (dismissed — timeout allows recovery) |

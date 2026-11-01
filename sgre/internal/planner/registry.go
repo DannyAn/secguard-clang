@@ -75,6 +75,13 @@ type VulnTypeSpec struct {
 	// which a single injection vuln_type + single injection/SKILL.md covers
 	// six CWEs without splitting into separate vuln_types.
 	CategoryCWEs      map[string]string
+	// DefaultSeverity is the type's default severity for a typical confirmed
+	// finding (critical/high/medium/low). It is the single source of truth for
+	// the type→severity scale (GAP-10); SKILL frontmatter `metadata.severity`
+	// is the derived, guard-checked mirror. CategorySeverity overrides it per
+	// event category where the category's impact differs from the type default.
+	DefaultSeverity   string
+	CategorySeverity  map[string]string
 	ReviewAssumptions []string
 	RequiredEvidence  []string
 	KnownLimitations  []string
@@ -89,6 +96,19 @@ func RegisterVulnType(spec *VulnTypeSpec) {
 	// was removed once every type was migrated.
 	if len(spec.FilterFactories) == 0 {
 		panic("RegisterVulnType: " + spec.Name + " has no FilterFactories (declare them explicitly in registry_<type>.go)")
+	}
+	// The severity scale (GAP-10) is a single centralized table; a spec that
+	// does not set DefaultSeverity/CategorySeverity falls back to it here so
+	// every type carries its severity without 28 per-file edits.
+	if spec.DefaultSeverity == "" {
+		if d := defaultSeverityByType[spec.Name]; d != "" {
+			spec.DefaultSeverity = d
+		}
+	}
+	if spec.CategorySeverity == nil {
+		if cs := categorySeverityByType[spec.Name]; cs != nil {
+			spec.CategorySeverity = cs
+		}
 	}
 	vulnTypeRegistry[spec.Name] = spec
 }
@@ -250,6 +270,29 @@ func CWEForType(vulnType string) string {
 		return spec.CWE
 	}
 	return ""
+}
+
+// SeverityFor returns the severity for a (vulnType, category) pair, applying
+// the per-category override when the category carries one, else the type's
+// default, else the [severity] config override (a user's explicit decision that
+// overrides the registry scale — the SKILL-frontmatter guard only asserts the
+// registry DEFAULT, never a config override). Unknown type/category falls back
+// to the type default or "high".
+func SeverityFor(vulnType, category string) string {
+	spec, ok := vulnTypeRegistry[vulnType]
+	if !ok {
+		return "high"
+	}
+	if o := severityOverride(vulnType, category); o != "" {
+		return o
+	}
+	if s := spec.CategorySeverity[category]; s != "" {
+		return s
+	}
+	if spec.DefaultSeverity != "" {
+		return spec.DefaultSeverity
+	}
+	return "high"
 }
 
 // CWEForCategory returns the CWE identifier for a specific category within a

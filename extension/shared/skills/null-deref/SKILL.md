@@ -5,7 +5,7 @@ license: MIT
 compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-476
-  severity: HIGH
+  severity: MEDIUM
   domain: memory
 ---
 
@@ -246,7 +246,7 @@ pipeline's null-flow proof may be wrong. Verify the macro before confirming:
 
 | Source | Guard | Severity |
 |--------|-------|----------|
-| malloc return | none, deref reachable | HIGH |
-| function return NULL | none, deref reachable | HIGH |
+| malloc return | none, deref reachable | MEDIUM |
+| function return NULL | none, deref reachable | MEDIUM |
 | external call return | none (may never be NULL) | MEDIUM (dismissed) |
 | any | partial guard (misses the deref) | MEDIUM (dismissed) |

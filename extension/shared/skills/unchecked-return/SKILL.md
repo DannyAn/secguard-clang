@@ -5,7 +5,7 @@ license: MIT
 compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-252
-  severity: HIGH
+  severity: LOW
   domain: semantic
 ---
 
@@ -73,6 +73,6 @@ the embedded section and the indexed lookup.
 
 | Shape | Severity |
 |-------|----------|
-| `malloc`/`calloc` result dereferenced with no NULL check | HIGH |
+| `malloc`/`calloc` result dereferenced with no NULL check | MEDIUM |
 | `read`/`recv`/`fread` return ignored AND the buffer is used (uninit/partial) | MEDIUM |
 | Return ignored but result never used / short read acceptable | LOW |

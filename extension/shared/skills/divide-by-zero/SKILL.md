@@ -5,7 +5,7 @@ license: MIT
 compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-369
-  severity: HIGH
+  severity: MEDIUM
   domain: semantic
 ---
 
@@ -90,7 +90,7 @@ the embedded section and the indexed lookup.
 
 | Shape | Severity |
 |-------|----------|
-| Divisor attacker-controlled (argv/getenv/recv) and unguarded → reachable crash | HIGH |
-| Provable certain divide-by-zero (`d = 0; x / d`) | HIGH |
+| Divisor attacker-controlled (argv/getenv/recv) and unguarded → reachable crash | MEDIUM |
+| Provable certain divide-by-zero (`d = 0; x / d`) | MEDIUM |
 | Auto-confirmed struct-field / global divisor (defensive-check gap) | MEDIUM |
 | Divisor origin unsettled | MEDIUM (dismissed) |

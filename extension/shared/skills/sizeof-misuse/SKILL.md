@@ -5,7 +5,7 @@ license: MIT
 compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-467
-  severity: HIGH
+  severity: MEDIUM
   domain: memory
 ---
 
@@ -68,6 +68,6 @@ the embedded section and the indexed lookup.
 
 | Shape | Severity |
 |-------|----------|
-| `sizeof_pointer` feeding malloc/memset/memcpy (pointer width where object width meant) | HIGH |
-| `memset(p, 0, sizeof(p))` — zeroes only a pointer width | HIGH |
+| `sizeof_pointer` feeding malloc/memset/memcpy (pointer width where object width meant) | MEDIUM |
+| `memset(p, 0, sizeof(p))` — zeroes only a pointer width | MEDIUM |
 | `sizeof_pointer_ambig` (pointer-to-pointer / pointer typedef) | MEDIUM (dismissed) |

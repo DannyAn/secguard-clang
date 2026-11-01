@@ -5,7 +5,7 @@ license: MIT
 compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-190
-  severity: HIGH
+  severity: MEDIUM
   domain: semantic
 ---
 
@@ -157,6 +157,6 @@ which is implausible, so the detector no longer surfaces them.
 |-------|----------|
 | Overflow feeds an allocation/copy size with an attacker-controlled operand → undersized alloc → later heap overflow | CRITICAL |
 | Overflow feeds malloc/memcpy size, bounded operand, no check | HIGH |
-| Unsigned subtraction underflows and the wrapped value controls a call argument | HIGH |
+| Unsigned subtraction underflows and the wrapped value controls a call argument | MEDIUM |
 | `possible` tier (unsigned wraparound inside a bounds check, not proven reachable) | MEDIUM (possible) |
 | Signed `int` arithmetic feeding malloc (sign-conversion risk) | MEDIUM (dismissed) |

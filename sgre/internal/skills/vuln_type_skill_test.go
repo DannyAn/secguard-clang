@@ -68,6 +68,43 @@ func TestVulnTypeSkillConsistency(t *testing.T) {
 		t.Errorf("allSkillSpecs (%d) != planner.AllVulnTypes() (%d)\n  registry: %v\n  planner:  %v",
 			len(regNames), len(types), regNames, types)
 	}
+
+	// 3. SKILL frontmatter severity == registry DefaultSeverity (lowercased).
+	// The scale is single-sourced in the registry (GAP-10); the frontmatter
+	// `metadata.severity` is the derived mirror and must not drift.
+	for name := range typeSet {
+		spec, err := planner.GetVulnTypeSpec(name)
+		if err != nil || spec.DefaultSeverity == "" {
+			continue
+		}
+		fm := skillFrontmatterSeverity(t, name)
+		if fm != "" && strings.ToLower(fm) != spec.DefaultSeverity {
+			t.Errorf("type %q: SKILL frontmatter severity %q != registry DefaultSeverity %q", name, fm, spec.DefaultSeverity)
+		}
+	}
+}
+
+// skillFrontmatterSeverity returns the SKILL.md frontmatter `severity:` value
+// (raw spelling), or "" when the skill has no such field.
+func skillFrontmatterSeverity(t *testing.T, typeName string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "extension", "shared", "skills", typeName, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read SKILL.md for %s: %v", typeName, err)
+	}
+	text := string(data)
+	// The frontmatter is the block between the first two `---` fences.
+	parts := strings.SplitN(text, "---", 3)
+	if len(parts) < 3 {
+		return ""
+	}
+	for _, line := range strings.Split(parts[1], "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "severity:") {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, "severity:"))
+		}
+	}
+	return ""
 }
 
 func equalStrings(a, b []string) bool {

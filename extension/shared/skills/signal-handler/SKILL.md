@@ -5,7 +5,7 @@ license: MIT
 compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-479
-  severity: HIGH
+  severity: MEDIUM
   domain: security
 ---
 
@@ -74,4 +74,4 @@ it. `read`/`write`/`open`/`close`/`socket`/`send`/`recv`/`connect`/`fcntl`/`fork
 
 | Shape | Severity |
 |-------|----------|
-| Direct call to a non-async-signal-safe function in a registered handler | HIGH |
+| Direct call to a non-async-signal-safe function in a registered handler | MEDIUM |

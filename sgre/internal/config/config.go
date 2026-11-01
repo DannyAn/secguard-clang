@@ -31,10 +31,31 @@ type Config struct {
 	IntegerOverflow        IntegerOverflow        `toml:"integer_overflow"`
 	Contracts              Contracts              `toml:"contracts"`
 	Scan                   Scan                   `toml:"scan"`
+	Severity               Severity               `toml:"severity"`
 	// AIMode is the AI-classification stage switch: "agent" (default) keeps the
 	// LLM-orchestrator fan-out; "executor" routes PHASE_2 through the
 	// deterministic `secguard classify --mode executor` process.
 	AIMode string `toml:"ai_stage_mode"`
+}
+
+// Severity carries the user's explicit severity-scale overrides. A user who
+// disagrees with a type's default (e.g. null-deref as MEDIUM) pins it here; the
+// override is a documented decision and is NOT asserted by the SKILL-frontmatter
+// guard (which checks only the registry default).
+type Severity struct {
+	// Overrides maps a vuln type (or "type.category" / "category") to a severity.
+	//	[severity.overrides]
+	//	"null-deref" = "high"
+	Overrides map[string]string `toml:"overrides"`
+}
+
+// SeverityOverrides returns the configured severity overrides (empty map when
+// none are set).
+func (c *Config) SeverityOverrides() map[string]string {
+	if c.Severity.Overrides == nil {
+		return map[string]string{}
+	}
+	return c.Severity.Overrides
 }
 
 // Scan tunes whole-scan boundary policy.

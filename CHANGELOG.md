@@ -25,6 +25,18 @@
 
 > **勘误记录**：① 设计 §5.4 的 `divisor@-1` hint token 与既有 divide-by-zero 的 `divisor@<shape>` 前缀冲突（机器守卫拒绝），改为仅用 `dividend@INT_MIN` 表达 int_min_div 判据。② CWE-190 同时是 integer-overflow 的 canonical 与 divide-by-zero `int_min_div` 的 category CWE，`TypeForCWE` 逆映射改为「canonical/legacy 优先于 category」以保持确定性；benchmark 的 CWE_TO_TYPE 平铺映射无法区分双类型同 CWE，故 int_min_div 不纳入 benchmark（由 `TestIntMinDiv_Tiers` 单测覆盖），记作已知限制。③ 设计 §6.3 的「Categories 增 permission_setting」为特征名而非事件 category 名，实作 category 为 `world_writable_file`/`world_writable_var`。
 
+### severity 刻度原地修复 + 双轨统一（GLM5.3 能力缺口 B3-a 批，GAP-10）
+
+这是本设计最重要的产品缺陷修复：静态轨（auto-confirm/classify）此前硬编码 `"high"`，与 AI 轨的 SKILL Severity Matrix 双轨割裂，且 HIGH 通胀（13/28 定 HIGH、LOW 空档）使 `### Findings by Severity` 区分度失效。
+
+- **单一真源**：`VulnTypeSpec` 增 `DefaultSeverity` + `CategorySeverity`，集中落位于 `registry_severity.go`（影响面 × 可利用性判据），暴露 `planner.SeverityFor(vulnType, category)`（category 覆盖 > 默认 > `[severity]` config 覆盖）。
+- **双轨统一**：`cli/scan.go` 与 `cli/classify.go` 的硬编码 `"high"` 替换为 `planner.SeverityFor(...)`；SARIF level 映射（已按 severity 驱动）零改动自动传导。
+- **刻度金字塔（28 type：6/6/15/1）**：CRITICAL ×6（double-free/use-after-free/injection/hardcoded-secret/stack-address-escape/invalid-free）；HIGH ×6（buffer-overflow/out-of-bounds/format-string/path-traversal/race-condition/crypto-misuse）；MEDIUM ×15（null-deref↓/divide-by-zero↓/integer-overflow↓/deadlock↓/signal-handler↓/sizeof-misuse↓ 六项自 HIGH 降级 + memory-leak/resource-leak/uninit/argument-type/dangerous-function/data-representation/implicit-contract/signed-compare/switch-fallthrough）；LOW ×1（unchecked-return↓ 自 HIGH 两级降级——健壮性问题业界最低档）。B5 的 unbounded-length-copy 将补第 7 个 HIGH（29 type 6/7/15/1）。
+- **CategorySeverity**：injection（command→CRITICAL、sql→HIGH、argument/xml_xpath→MEDIUM、xml/log→LOW）；buffer-overflow（heap_oob_write/format_overflow→CRITICAL）；race-condition（shared_data_race→MEDIUM）；integer-overflow（size_calc 链→HIGH）；crypto-misuse（weak_algorithm/weak_random→MEDIUM）；path-traversal（world_writable_*→MEDIUM）。
+- **机器守卫**：`TestVulnTypeSkillConsistency` 扩展断言 SKILL frontmatter `severity`（小写化）== registry `DefaultSeverity`；`TestSeverityScaleDistribution` / `TestSeverityFor_CategoryOverride` / `TestSeverityFor_ConfigOverride` 锁分布与覆盖优先级。7 个降级 SKILL 的 frontmatter + Severity Matrix 锚点同步重校。
+
+> **公告义务**：SARIF level 分布变化（null-deref 等 confirmed 从 error→warning）；report.md 分布从 HIGH 通胀变金字塔。**这是 severity 刻度修正，不是问题减少**——历史 finding 无包袱（DB 即建即用），CI 门禁尚未发布零既有用户影响。
+
 ## [0.11.9] - 2026-10-31
 
 ### 性能：boundary 扫描 fail-open 假设默认预驳回 + AI 预算机器化
