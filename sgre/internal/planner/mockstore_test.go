@@ -18,6 +18,7 @@ type mockStore struct {
 	locs      []*db.Location
 	findings  []*db.Finding
 	summaries map[int64]*db.FunctionSummary
+	suppressions []db.InlineSuppression
 	nextID    int64
 }
 
@@ -455,6 +456,14 @@ func (s *mockStore) Close() error                                               
 func (s *mockStore) DB() *sql.DB                                                        { return nil }
 func (s *mockStore) WithTx(ctx context.Context, fn func(db.Store) error) error          { return fn(s) }
 func (s *mockStore) WithImmediateTx(ctx context.Context, fn func(db.Store) error) error { return fn(s) }
+
+func (s *mockStore) ReplaceInlineSuppressions(ctx context.Context, fileID int64, suppressions []db.InlineSuppression) error {
+	s.suppressions = append(s.suppressions[:0], suppressions...)
+	return nil
+}
+func (s *mockStore) ListInlineSuppressions(ctx context.Context) ([]db.InlineSuppression, error) {
+	return s.suppressions, nil
+}
 
 func (s *mockStore) InsertScanStat(ctx context.Context, stat *db.ScanStat) (int64, error) {
 	return 0, nil

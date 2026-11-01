@@ -171,6 +171,13 @@ type ScanRunStore interface {
 	SetScanRunAIDuration(ctx context.Context, scanID string, ms int64) error
 }
 
+type InlineSuppressionStore interface {
+	// ReplaceInlineSuppressions atomically replaces a file's suppression rows.
+	ReplaceInlineSuppressions(ctx context.Context, fileID int64, suppressions []InlineSuppression) error
+	// ListInlineSuppressions returns every collected suppression directive.
+	ListInlineSuppressions(ctx context.Context) ([]InlineSuppression, error)
+}
+
 type FunctionSummaryStore interface {
 	UpsertSummary(ctx context.Context, s *FunctionSummary) error
 	GetSummaryByFunction(ctx context.Context, functionID int64) (*FunctionSummary, error)
@@ -214,6 +221,7 @@ type Store interface {
 	FunctionSummaryStore
 	SettlementStatStore
 	ReviewSessionStore
+	InlineSuppressionStore
 	Close() error
 	WithTx(ctx context.Context, fn func(Store) error) error
 	// WithImmediateTx runs fn in a transaction that acquires the SQLite write

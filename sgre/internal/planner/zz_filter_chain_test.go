@@ -55,20 +55,23 @@ func TestFilterChainMigration(t *testing.T) {
 			continue
 		}
 		want, ok := expectedOrder[typeName]
+		// The in-source suppression filter is prepended to EVERY chain (GAP-11),
+		// so it is the first filter for both explicit and default chains.
 		if !ok {
 			// Types on the default chain (crypto-misuse, signed-compare,
 			// sizeof-misuse, signal-handler, dangerous-function, argument-type,
 			// data-representation) just need call_reach + safe_function_exclude.
-			if len(filters) != 2 || filters[0].Name() != "call_reach" || filters[1].Name() != "safe_function_exclude" {
-				t.Errorf("type %s (default chain): got %d filters [%v], want [call_reach safe_function_exclude]", typeName, len(filters), filterNames(filters))
+			if len(filters) != 3 || filters[0].Name() != "inline_suppression" || filters[1].Name() != "call_reach" || filters[2].Name() != "safe_function_exclude" {
+				t.Errorf("type %s (default chain): got %d filters [%v], want [inline_suppression call_reach safe_function_exclude]", typeName, len(filters), filterNames(filters))
 			}
 			continue
 		}
-		if len(filters) != len(want) {
-			t.Errorf("type %s: got %d filters, want %d %v", typeName, len(filters), len(want), want)
+		wantFull := append([]string{"inline_suppression"}, want...)
+		if len(filters) != len(wantFull) {
+			t.Errorf("type %s: got %d filters, want %d %v", typeName, len(filters), len(wantFull), wantFull)
 			continue
 		}
-		for i, w := range want {
+		for i, w := range wantFull {
 			if filters[i].Name() != w {
 				t.Errorf("type %s filter[%d]: got %q, want %q", typeName, i, filters[i].Name(), w)
 			}

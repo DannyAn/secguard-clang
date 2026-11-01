@@ -131,6 +131,17 @@ type FunctionDeclaration struct {
 	StartLine  int
 }
 
+// InlineSuppression is one in-source suppression directive resolved to its
+// target line (GAP-11). Line is the SUPPRESSED line; VulnType is a kebab-case
+// type or "all".
+type InlineSuppression struct {
+	ID       int64
+	FileID   int64
+	Line     int
+	VulnType string
+	Reason   string
+}
+
 type Variable struct {
 	ID              int64
 	FunctionID      int64

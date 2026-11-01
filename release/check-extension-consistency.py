@@ -408,6 +408,18 @@ def check_hint_tokens():
     print(f"  hint tokens: registry present with {count} entries (vocabulary guarded by Go tests)")
 
 
+def check_ci_templates():
+    """Guard the delivered CI template trio (GAP-12). They ship with the release
+    package (build-packages.sh) and are NOT auto-installed, so a missing file
+    means the package silently lost a deliverable (the v0.5.4 tools-not-registered
+    accident class)."""
+    ci = os.path.join(EXT, "shared", "ci")
+    for name in ("github-pr.yml", "gitlab-mr.yml", "README.md"):
+        if not os.path.isfile(os.path.join(ci, name)):
+            fail(f"extension/shared/ci/{name} missing — the CI template trio must ship with the release package")
+    print("  ci templates: github-pr.yml + gitlab-mr.yml + README.md present")
+
+
 def main():
     check_turn_budget()
     check_tools()
@@ -417,6 +429,7 @@ def main():
     check_dsh_preset()
     check_plugin_packaging()
     check_hint_tokens()
+    check_ci_templates()
     print("Extension consistency check passed.")
 
 

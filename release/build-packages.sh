@@ -208,6 +208,9 @@ build_master() {
     cp "$EXTENSION_DIR/shared/agent-body.md" "$root/shared/"
     cp "$EXTENSION_DIR/shared/command-instructions.md" "$root/shared/"
     cp -r "$EXTENSION_DIR/shared/skills"/* "$root/shared/skills/"
+    # CI templates (GAP-12): delivered with the package, not auto-installed.
+    mkdir -p "$root/shared/ci"
+    cp "$EXTENSION_DIR/shared/ci"/* "$root/shared/ci/"
 
     # opencode（插件机制：package.json + index.ts，展开模板）
     mkdir -p "$root/opencode"/{commands,agents,tools}

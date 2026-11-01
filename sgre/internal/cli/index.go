@@ -11,6 +11,7 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/indexer"
 	"github.com/DannyAn/secguard-clang/internal/parser"
+	"github.com/DannyAn/secguard-clang/internal/planner"
 )
 
 func runIndexCmd(ctx context.Context, args []string) int {
@@ -62,6 +63,7 @@ func runIndexCmd(ctx context.Context, args []string) int {
 		idx.SetExcludeDirs(excludeDirs)
 	}
 	idx.SetExcludePaths(config.Load().ExcludePaths())
+	idx.SetValidVulnTypes(planner.AllVulnTypes())
 	result, err := idx.Index(ctx, absPath)
 	if err != nil {
 		WriteErrorJSON(fmt.Sprintf("index failed: %v", err))

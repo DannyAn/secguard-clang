@@ -91,6 +91,20 @@ SecGuard 内置 24 类漏洞类型，CWE 映射有单一事实源：
 
 每种类型都有对应的 Agent 技能，位于 `extension/shared/skills/<type>/SKILL.md`，包含分类规则与误报识别指南。
 
+## 行内豁免（In-source suppression）
+
+在目标行的上一行写 `// secguard-disable-next-line: <type>`（或同行的 `// secguard-disable-line:`、块注释 `/* ... */`）即可永久豁免该行，不产生 candidate、不进入 AI 研判：
+
+```c
+// secguard-disable-next-line: null-deref reason=外部契约保证非空
+*p = value;
+
+code(); // secguard-disable-line: buffer-overflow
+```
+
+- `type` 精确匹配 registry 名（kebab-case），支持 `all` 通配；拼写错误的 type 会在索引期告警并忽略（不会静默失效）。
+- 豁免是用户明示"永不报"，与 `dismissed`（AI 判定非缺陷）语义不同；审计入口为 `inline_suppressions` 表与 scan 日志的 `inline_suppressions` 过滤统计。
+
 ## 快速开始
 
 ### 从发布包安装

@@ -311,3 +311,14 @@ secguard scan ./src 1>results.json 2>logs.ndjson   # 分别保存
 
 每种类型有对应的 AI Agent skill（`extension/shared/skills/<type>/SKILL.md`），提供
 分类规则与误报识别指南。
+
+## 9. 行内豁免（In-source suppression）
+
+在目标行的上一行写 `// secguard-disable-next-line: <type>` 即可永久豁免该行；支持 `all` 通配与 `reason=` 注释，也支持同行 `// secguard-disable-line:` 与块注释形式：
+
+```c
+// secguard-disable-next-line: null-deref reason=外部契约保证非空
+*p = value;
+
+code(); // secguard-disable-line: buffer-overflow
+```

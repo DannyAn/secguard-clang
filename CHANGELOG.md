@@ -37,6 +37,11 @@
 
 > **公告义务**：SARIF level 分布变化（null-deref 等 confirmed 从 error→warning）；report.md 分布从 HIGH 通胀变金字塔。**这是 severity 刻度修正，不是问题减少**——历史 finding 无包袱（DB 即建即用），CI 门禁尚未发布零既有用户影响。
 
+### 行内豁免（GAP-11）+ PR/MR CI 模板（GAP-12）（GLM5.3 能力缺口 B3-b 批）
+
+- **in-source suppression（GAP-11）**：`// secguard-disable-next-line: <type>` / 同行 `// secguard-disable-line:` / 块注释 `/* ... */` 三段式落地。索引期 `FindAll("comment")` 正则收集 → 新表 `inline_suppressions(file_id, line, vuln_type, reason)`（DB 即建即用无 migration）；planner `InlineSuppressionFilter` 挂在**所有 filter chain 最前**（先于 call_reach/safe_function 与一切 auto-confirm），候选 `(file, line)` 命中即 drop——纯减法理论零 FP，disable 优先于一切判定。type 名精确匹配 registry 名（kebab-case），支持 `all` 通配，拼写错误索引期 Warn 并忽略；`secguard status`/scan 日志的收敛摘要展示 inline_suppression 过滤统计。README/README-CN/QUICKSTART 新增章节。
+- **PR/MR CI 模板（GAP-12，纯交付物）**：`extension/shared/ci/`（`github-pr.yml` → `secguard pr --sarif` → `codeql-action/upload-sarif`；`gitlab-mr.yml` → `secguard mr` → artifact；`README.md` 放置/`secguard.toml` 联动/门槛策略）。`build-packages.sh` 打包收录，`check-extension-consistency.py` 增 ci/ 三件套存在性校验。
+
 ## [0.11.9] - 2026-10-31
 
 ### 性能：boundary 扫描 fail-open 假设默认预驳回 + AI 预算机器化

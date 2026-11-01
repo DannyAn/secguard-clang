@@ -60,11 +60,11 @@ func TestPlan_EndToEnd_ConvergencePipeline(t *testing.T) {
 		t.Errorf("expected seed count 3 (3 dereferences), got %d", result.Summary.SeedCount)
 	}
 
-	if len(result.Summary.Filters) != 7 {
-		t.Errorf("expected 7 filter stats, got %d", len(result.Summary.Filters))
+	if len(result.Summary.Filters) != 8 {
+		t.Errorf("expected 8 filter stats, got %d", len(result.Summary.Filters))
 	}
 
-	expectedFilters := []string{"sizeof_pseudo_deref", "non_nullable_array_suppress", "array_oob_precedence", "nullable_source", "macro_uncertain", "call_reach", "safe_function_exclude"}
+	expectedFilters := []string{"inline_suppression", "sizeof_pseudo_deref", "non_nullable_array_suppress", "array_oob_precedence", "nullable_source", "macro_uncertain", "call_reach", "safe_function_exclude"}
 	for i, name := range expectedFilters {
 		if i >= len(result.Summary.Filters) {
 			t.Errorf("missing filter %s", name)
@@ -79,10 +79,13 @@ func TestPlan_EndToEnd_ConvergencePipeline(t *testing.T) {
 		t.Errorf("Filter 0 input: expected 3, got %d", result.Summary.Filters[0].InputCount)
 	}
 	if result.Summary.Filters[0].OutputCount != 3 {
-		t.Errorf("Filter 0 output: expected 3 (no sizeof pseudo-derefs in mock data), got %d", result.Summary.Filters[0].OutputCount)
+		t.Errorf("Filter 0 output: expected 3 (no suppressions in mock data), got %d", result.Summary.Filters[0].OutputCount)
 	}
-	if result.Summary.Filters[3].OutputCount != 2 {
-		t.Errorf("Filter 3 output: expected 2 (funcA and funcB have NULL_VALUE, funcC does not), got %d", result.Summary.Filters[3].OutputCount)
+	if result.Summary.Filters[1].OutputCount != 3 {
+		t.Errorf("Filter 1 output: expected 3 (no sizeof pseudo-derefs in mock data), got %d", result.Summary.Filters[1].OutputCount)
+	}
+	if result.Summary.Filters[4].OutputCount != 2 {
+		t.Errorf("Filter 4 output: expected 2 (funcA and funcB have NULL_VALUE, funcC does not), got %d", result.Summary.Filters[4].OutputCount)
 	}
 }
 

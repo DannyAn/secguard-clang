@@ -77,6 +77,7 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 		idx.SetExcludeDirs(excludeDirs)
 	}
 	idx.SetExcludePaths(excludePaths)
+	idx.SetValidVulnTypes(planner.AllVulnTypes())
 
 	idxStart := time.Now()
 	indexResult, err := idx.Index(ctx, absPath)

@@ -52,7 +52,11 @@ func (p *Planner) buildFilters(ctx context.Context, spec *VulnTypeSpec) ([]Filte
 		Boundary:       p.isBoundary(ctx),
 		BoundaryMode:   config.Load().BoundaryAutoDismissMode(),
 	}
-	out := make([]Filter, 0, len(spec.FilterFactories))
+	out := make([]Filter, 0, len(spec.FilterFactories)+1)
+	// The in-source suppression filter runs FIRST, before every type's chain:
+	// a user's explicit disable directive wins over call-reach, safe-function,
+	// and even auto-confirm (GAP-11).
+	out = append(out, NewInlineSuppressionFilter(deps.Store, spec.Name))
 	for _, f := range spec.FilterFactories {
 		filter := f(deps)
 		// Keep the default chain shape unchanged when the boundary layer is

@@ -247,6 +247,22 @@ CREATE TABLE IF NOT EXISTS review_sessions (
 -- Function Summary (AI Agent key input)
 -- ============================================================
 
+-- In-source suppressions (GAP-11): a "secguard-disable-next-line: <type>"
+-- comment (or its "-line:" same-line / block-comment form) suppresses the
+-- candidate on the target line. "line" is the SUPPRESSED (target) line; a
+-- vuln_type of "all" is the wildcard. Rebuilt per index (DB is ephemeral, no
+-- migration), so line drift is the user's maintenance responsibility.
+CREATE TABLE IF NOT EXISTS inline_suppressions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id    INTEGER NOT NULL,
+    line       INTEGER NOT NULL,
+    vuln_type  TEXT NOT NULL,
+    reason     TEXT,
+    FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_inline_suppressions_file_line ON inline_suppressions(file_id, line);
+
 CREATE TABLE IF NOT EXISTS function_summary (
     function_id        INTEGER PRIMARY KEY,
     return_nullable    BOOLEAN,

@@ -1,0 +1,19 @@
+secguard:
+  image: ubuntu:latest
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl unzip ca-certificates
+    - VERSION="0.11.9"
+    - curl -sSL "https://github.com/DannyAn/secguard-clang/releases/download/v${VERSION}/secguard-${VERSION}-linux-amd64.zip" -o secguard.zip
+    - unzip -o secguard.zip secguard && chmod +x secguard && mv secguard /usr/local/bin/secguard
+  script:
+    # base..head are the MR target and source SHAs; secguard mr derives the
+    # anchor deterministically, so re-runs are idempotent.
+    - secguard mr --output-dir .codeagent/secguard-clang/reviews/mr \
+        --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA" \
+        --head "$CI_COMMIT_SHA"
+  artifacts:
+    paths:
+      - .codeagent/secguard-clang/reviews/mr
+    when: always

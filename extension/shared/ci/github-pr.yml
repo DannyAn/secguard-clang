@@ -1,0 +1,45 @@
+name: secguard
+
+on:
+  pull_request:
+
+jobs:
+  secguard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so `secguard pr` can resolve base..head
+
+      # Install the SecGuard release binary (pin the version you validate).
+      - name: Install secguard
+        run: |
+          set -euo pipefail
+          VERSION="0.11.9"
+          curl -sSL "https://github.com/DannyAn/secguard-clang/releases/download/v${VERSION}/secguard-${VERSION}-linux-amd64.zip" -o secguard.zip
+          unzip -o secguard.zip secguard
+          chmod +x secguard
+          sudo mv secguard /usr/local/bin/secguard
+
+      - name: Run incremental review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # base..head are the PR merge-base and head; secguard pr derives the
+          # anchor deterministically, so re-runs are idempotent.
+          secguard pr --sarif --output-dir .codeagent/secguard-clang/reviews/pr \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head "${{ github.event.pull_request.head.sha }}"
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: .codeagent/secguard-clang/reviews/pr/result.sarif
+
+      # Gate (optional): fail the PR on new critical/high findings. Start with
+      # this off and enable after triaging the backlog.
+      # - name: Gate
+      #   run: |
+      #     count=$(secguard report --list --scan-id <scan-id> | jq '[.[] | select(.severity=="critical" or .severity=="high")] | length')
+      #     if [ "$count" -gt 0 ]; then echo "blocking findings: $count"; exit 1; fi

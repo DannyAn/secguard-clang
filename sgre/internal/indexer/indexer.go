@@ -16,11 +16,12 @@ import (
 )
 
 type Indexer struct {
-	store        db.Store
-	parser       *parser.Parser
-	logger       *log.Logger
-	excludeDirs  []string
-	excludePaths []string
+	store          db.Store
+	parser         *parser.Parser
+	logger         *log.Logger
+	excludeDirs    []string
+	excludePaths   []string
+	validVulnTypes map[string]bool
 }
 
 type IndexResult struct {
@@ -58,6 +59,18 @@ func (idx *Indexer) SetExcludeDirs(dirs []string) {
 // by path; it never affects the basename exclusions.
 func (idx *Indexer) SetExcludePaths(paths []string) {
 	idx.excludePaths = paths
+}
+
+// SetValidVulnTypes sets the kebab-case vuln-type names accepted by in-source
+// suppression directives (GAP-11). An unknown type in a directive is Warn-logged
+// and dropped, so a typo never silently suppresses; "all" is always accepted.
+// The set is supplied by the CLI (planner.AllVulnTypes()) to avoid an
+// indexer→planner import cycle.
+func (idx *Indexer) SetValidVulnTypes(types []string) {
+	idx.validVulnTypes = make(map[string]bool, len(types))
+	for _, t := range types {
+		idx.validVulnTypes[t] = true
+	}
 }
 
 func (idx *Indexer) Index(ctx context.Context, targetPath string) (*IndexResult, error) {
@@ -140,6 +153,7 @@ func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *Inde
 	funcNodes := root.FindAll("function_definition")
 	declNodes := root.FindAll("declaration")
 	fileScopeVars := extractFileScopeVariables(root)
+	suppressions := collectInlineSuppressions(root, filePath, idx.logger, idx.validVulnTypes)
 
 	// Rebuild the file's rows atomically. The checksum update (or insert) plus
 	// the stale-function delete plus the function inserts must commit together:
@@ -219,6 +233,12 @@ func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *Inde
 			if _, err := tx.InsertFileScopeVariable(ctx, v); err != nil {
 				return fmt.Errorf("insert file-scope variable %s: %w", v.Name, err)
 			}
+		}
+		for i := range suppressions {
+			suppressions[i].FileID = fileID
+		}
+		if err := tx.ReplaceInlineSuppressions(ctx, fileID, suppressions); err != nil {
+			return fmt.Errorf("replace inline suppressions: %w", err)
 		}
 		return nil
 	})
@@ -419,4 +439,38 @@ func computeChecksum(data []byte) string {
 
 func countLines(data []byte) int {
 	return bytes.Count(data, []byte{'\n'}) + 1
+}
+
+// collectInlineSuppressions parses a file's comments for in-source suppression
+// directives (GAP-11) and resolves each to its suppressed (target) line. An
+// unknown vuln type is Warn-logged and dropped (a typo must not silently
+// suppress everything); "all" is the wildcard and is always accepted.
+func collectInlineSuppressions(root parser.Node, filePath string, logger *log.Logger, valid map[string]bool) []db.InlineSuppression {
+	// A nil valid set (indexer not wired to the CLI's type list) accepts every
+	// non-empty type; the CLI always sets it from planner.AllVulnTypes().
+	var out []db.InlineSuppression
+	for _, comment := range root.FindAll("comment") {
+		dir, ok := parser.ParseSuppressionComment(comment.Text())
+		if !ok {
+			continue
+		}
+		target := comment.StartLine()
+		if dir.NextLine {
+			target = comment.EndLine() + 1
+		}
+		for _, t := range dir.Types {
+			t = strings.TrimSpace(t)
+			if t == "" {
+				continue
+			}
+			if t != "all" && valid != nil && !valid[t] {
+				if logger != nil {
+					logger.Warn("unknown suppression type (ignored)", "file", filePath, "line", comment.StartLine(), "type", t)
+				}
+				continue
+			}
+			out = append(out, db.InlineSuppression{Line: target, VulnType: t, Reason: dir.Reason})
+		}
+	}
+	return out
 }
