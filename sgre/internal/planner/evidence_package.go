@@ -594,6 +594,17 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 					parts = append(parts, "case_end@"+c.CaseEnd)
 				}
 			}
+		case "unbounded-length-copy":
+			if c.Origin != "" {
+				parts = append(parts, "len-taint@"+c.Origin)
+			}
+			if c.APIName != "" {
+				parts = append(parts, fmt.Sprintf("len-sink@%s:%d", c.APIName, c.Line))
+			}
+			if c.VariableName != "" {
+				parts = append(parts, "alloc_size@"+c.VariableName)
+			}
+			parts = append(parts, "guard@none-upper")
 		case "implicit-contract":
 			if c.Subject != "" {
 				parts = append(parts, "subject@"+c.Subject)

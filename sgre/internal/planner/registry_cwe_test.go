@@ -134,7 +134,7 @@ func TestAllCWEs_ContainsAll20CanonicalCWEs(t *testing.T) {
 		"CWE-369", "CWE-252", "CWE-22", "CWE-681", "CWE-467", "CWE-686", "CWE-843",
 		"CWE-88", "CWE-91", "CWE-93", "CWE-117",
 		"CWE-562", "CWE-761", "CWE-484", "CWE-478", "CWE-762",
-		"CWE-758", "CWE-732",
+		"CWE-758", "CWE-732", "CWE-1284",
 	}
 	for _, cwe := range expected {
 		if !cwes[cwe] {
@@ -145,14 +145,12 @@ func TestAllCWEs_ContainsAll20CanonicalCWEs(t *testing.T) {
 
 func TestAllCWEs_CountIs25CanonicalPlus3LegacyPlus4CategoryCWEs(t *testing.T) {
 	cwes := AllCWEs()
-	// 29 canonical + 4 legacy (CWE-89, CWE-326, CWE-338, CWE-762) + 8 category
+	// 30 canonical + 4 legacy (CWE-89, CWE-326, CWE-338, CWE-762) + 8 category
 	// CWEs (CWE-88, CWE-91, CWE-93, CWE-117, CWE-478, CWE-758, CWE-732, and
-	// CWE-484 deduped with switch-fallthrough's canonical) = 39. B1 adds
-	// stack-address-escape / invalid-free / switch-fallthrough; B2 adds
-	// CWE-758 (integer-overflow shift_count_ub) and CWE-732 (path-traversal
-	// world_writable).
-	if len(cwes) != 39 {
-		t.Errorf("AllCWEs() has %d entries, want 39 (29 canonical + 4 legacy + 8 category CWEs)", len(cwes))
+	// CWE-484 deduped with switch-fallthrough's canonical) = 40. B5 adds
+	// unbounded-length-copy (CWE-1284).
+	if len(cwes) != 40 {
+		t.Errorf("AllCWEs() has %d entries, want 40 (30 canonical + 4 legacy + 8 category CWEs)", len(cwes))
 	}
 }
 

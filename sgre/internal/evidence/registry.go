@@ -187,4 +187,5 @@ func init() {
 	RegisterDetector(func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewStackEscapeDetector(s, p, l) })
 	RegisterDetector(func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewInvalidFreeDetector(s, p, l) })
 	RegisterDetector(func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewSwitchFlowDetector(s, p, l) })
+	RegisterDetector(func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewUnboundedLengthDetector(s, p, l) })
 }

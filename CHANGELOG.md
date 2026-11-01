@@ -49,6 +49,14 @@
 
 > **勘误记录**：设计 §9.2 的「index.go:78 builder 序列首位」已过时——builder 序列实际在 `cli/pipeline.go` 且并行执行；实作将 `FuncPtrWriteBuilder` 作为并行 builder 之前的顺序前置步。设计 §9.2 的 slot key「双档（type_name, field_name）→（field_name）」本次只落地 field_name 档（档 2 退化），typed 档与 `[graph] indirect_call_resolution` 总开关、`[switch] fallthrough_markers`/`noreturn_functions` 升级通道留作后续（均已由 A/B 阈值兜底）。InterprocBuilder 消费点与 `-I` include 搜索链本轮未接（`-I` 解析已就绪，消费方待接），记作已知缺口。
 
+### 新类型 unbounded-length-copy（GLM5.3 能力缺口 B5 批，GAP-09）
+
+FP 风险最高的最后一型，v1 最小面 + 全 suspected + guard 豁免：
+
+- **unbounded-length-copy（CWE-1284，HIGH）**：外部长度（recv/recvfrom/recvmsg/read/pread/fread 返回值）经单次赋值流入 malloc/calloc/memcpy/memmove/strncpy/alloca 的长度实参。上界 guard（`if (len <= MAX)` / `if (len > MAX) return` 早退 / `min(len, cap)` clamp）豁免；**`n < 0` 检查不算上界**。二跳传播/出参长度/struct 字段长度 v1 不做。全部 suspected（协议信任边界是语义判断，机器证不了）。至此 29 type 金字塔 6/7/15/1 完整。
+
+> **勘误记录**：设计 §11.3 的 `taint@`/`sink@` hint token 与既有 injection `taint@none`、integer-overflow `sink@<kind>` 冲突（机器守卫拒绝），改为 `len-taint@`/`len-sink@` 表达判据。
+
 ## [0.11.9] - 2026-10-31
 
 ### 性能：boundary 扫描 fail-open 假设默认预驳回 + AI 预算机器化

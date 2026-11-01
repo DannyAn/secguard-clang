@@ -180,6 +180,12 @@ var hintTokenRegistry = []HintTokenSpec{
 	// ---- signal-handler ----
 	{Key: "async-unsafe@", Display: "async-unsafe@<fn>", Description: "the non-async-signal-safe call inside the handler: {value} (off the POSIX async-signal-safe list) — a certain CWE-479"},
 
+	// ---- unbounded-length-copy ----
+	{Key: "len-taint@", Display: "len-taint@<source-fn>:<line>", Description: "unbounded-length-copy: the length originates at {value} — a network/file read return value (the external trust boundary)"},
+	{Key: "guard@none-upper", Description: "unbounded-length-copy: no upper-bound check dominates the sink (CFG proof) — the length is not clamped or range-checked before use; a `n < 0` check is NOT an upper bound"},
+	{Key: "len-sink@", Display: "len-sink@<fn>:<line>", Description: "unbounded-length-copy: the length reaches {value} as an allocation/copy size argument"},
+	{Key: "alloc_size@", Display: "alloc_size@<var>", Description: "unbounded-length-copy: the variable carrying the externally-sourced length: {value}"},
+
 	// ---- stack-address-escape ----
 	{Key: "object@", Display: "object@<name>", Description: "the non-static local whose address escapes: {value} — the pipeline already ruled out static storage, so a non-static local's frame dies at return"},
 	{Key: "static@", Display: "static@<no|yes>", Description: "the local's storage class: {value} — `no` (auto) is the only shape the pipeline reports (a static local's storage outlives the frame, so it is exempted at the detector); the fact is surfaced so the classifier does not re-derive it"},

@@ -2649,6 +2649,26 @@
       "cwe": "CWE-732",
       "detector": "path_traversal",
       "expect": "no_finding"
+    },
+    {
+      "id": "UL-01",
+      "category": "b5_unbounded_length",
+      "file": "src/ul_unbounded_length.c",
+      "line": 5,
+      "code": "recv length flows into malloc(len) with no upper guard",
+      "cwe": "CWE-1284",
+      "detector": "unbounded_length_copy",
+      "expect": "finding"
+    },
+    {
+      "id": "UL-10",
+      "category": "b5_unbounded_length",
+      "file": "src/ul_unbounded_length.c",
+      "line": 12,
+      "code": "recv length guarded by if (len > 4096) return — upper bound, must not report",
+      "cwe": "CWE-1284",
+      "detector": "unbounded_length_copy",
+      "expect": "no_finding"
     }
   ]
 }

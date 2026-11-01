@@ -83,6 +83,7 @@ var allSkillSpecs = []skillSpec{
 	{"stack-address-escape", "memory", "Detects a function returning or leaking the address of a non-static local (CWE-562)"},
 	{"invalid-free", "memory", "Detects deallocator calls on non-heap objects: stack/global arrays, mid-array and offset pointers (CWE-761)"},
 	{"switch-fallthrough", "control", "Detects switch fallthrough and missing enum default (CWE-484/478)"},
+	{"unbounded-length-copy", "boundary", "Detects an externally-sourced length flowing into an allocation/copy size with no upper-bound guard (CWE-1284)"},
 }
 
 func DefaultRegistry(store db.Store, logger *log.Logger) *Registry {

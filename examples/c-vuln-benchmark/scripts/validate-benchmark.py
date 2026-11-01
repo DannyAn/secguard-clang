@@ -92,6 +92,7 @@ DETECTOR_TO_TYPE = {
     "stack_address_escape": "stack-address-escape",
     "invalid_free": "invalid-free",
     "switch_fallthrough": "switch-fallthrough",
+    "unbounded_length_copy": "unbounded-length-copy",
 }
 
 # Every registered vuln type must appear here, and so must every CWE a type can
@@ -144,6 +145,7 @@ CWE_TO_TYPE = {
     "CWE-478": "switch-fallthrough",
     "CWE-758": "integer-overflow",
     "CWE-732": "path-traversal",
+    "CWE-1284": "unbounded-length-copy",
 }
 
 

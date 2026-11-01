@@ -10,9 +10,8 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/config"
 )
 
-// TestSeverityScaleDistribution pins the GAP-10 severity scale: the 28 types
-// fall into the pyramid 6 critical / 6 high / 15 medium / 1 low (B5's
-// unbounded-length-copy will add the 7th high, for 29 total). DoS classes sit
+// TestSeverityScaleDistribution pins the GAP-10 severity scale: the 29 types
+// fall into the pyramid 6 critical / 7 high / 15 medium / 1 low. DoS classes sit
 // in medium; write-primitive classes in critical; unchecked-return is the only
 // low (robustness).
 func TestSeverityScaleDistribution(t *testing.T) {
@@ -24,14 +23,14 @@ func TestSeverityScaleDistribution(t *testing.T) {
 		}
 		counts[spec.DefaultSeverity]++
 	}
-	want := map[string]int{"critical": 6, "high": 6, "medium": 15, "low": 1}
+	want := map[string]int{"critical": 6, "high": 7, "medium": 15, "low": 1}
 	for sev, n := range want {
 		if counts[sev] != n {
 			t.Errorf("severity %q = %d types, want %d (full: %v)", sev, counts[sev], n, counts)
 		}
 	}
-	if total := len(AllVulnTypes()); total != 28 {
-		t.Errorf("expected 28 registered types, got %d", total)
+	if total := len(AllVulnTypes()); total != 29 {
+		t.Errorf("expected 29 registered types, got %d", total)
 	}
 }
 

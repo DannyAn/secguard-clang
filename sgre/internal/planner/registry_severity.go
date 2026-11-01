@@ -23,12 +23,13 @@ var defaultSeverityByType = map[string]string{
 	"invalid-free":         "critical",
 
 	// HIGH — local integrity/confidentiality loss / privilege escalation.
-	"buffer-overflow": "high",
-	"out-of-bounds":   "high",
-	"format-string":   "high",
-	"path-traversal":  "high",
-	"race-condition":  "high",
-	"crypto-misuse":   "high",
+	"buffer-overflow":        "high",
+	"out-of-bounds":          "high",
+	"format-string":          "high",
+	"path-traversal":         "high",
+	"race-condition":         "high",
+	"crypto-misuse":          "high",
+	"unbounded-length-copy":  "high",
 
 	// MEDIUM — DoS / chain precondition / scenario-dependent.
 	"null-deref":         "medium",
