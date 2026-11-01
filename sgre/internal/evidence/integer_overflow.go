@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"math"
 	"strconv"
 	"strings"
 
@@ -104,6 +105,9 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 		calls := root.FindAll("call_expression")
 		assigns := root.FindAll("assignment_expression")
 		inits := root.FindAll("init_declarator")
+		// Object-like macro values for the shift-count resolution (`#define
+		// SHIFT 40`).
+		macros := parser.CollectMacroValues(root)
 		// Parameter names per function, used to recognize "caller-influenced"
 		// operands: arithmetic on a function parameter (vs. a bounded local) is
 		// the signal that a variable-bounded size expression may overflow.
@@ -170,6 +174,7 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 
 			d.detectSizeCalcOverflow(ctx, calls, f, file, influenced, wideVars, narrowVars, assigned, globalConsts, &result)
 			d.detectUnsignedSubUnderflow(ctx, calls, assigns, inits, f, file, scopes[f.StartLine], globals, typedefs, influenced, boundedReturns, &result)
+			d.detectShiftUB(ctx, binaryExprs, assigns, inits, f, file, scopes[f.StartLine], globals, typedefs, globalConsts, macros, &result)
 		}
 	})
 	return result, err
@@ -1010,6 +1015,104 @@ func isSizeofPlusLen(expr parser.Node, consts *parser.ConstantEnv) bool {
 		}
 	}
 	return false
+}
+
+// detectShiftUB catches GAP-06 shift undefined behavior: a shift count at/above
+// the operand's bit width (or negative) is CWE-758, and a signed-literal left
+// shift past the signed range (`1 << 31`) is CWE-190. Both need a PROVABLE
+// count and a PROVABLE operand width — a variable count with no single-point
+// proof or an unknown width is deliberately not reported (fail-closed).
+func (d *IntegerOverflowDetector) detectShiftUB(ctx context.Context, binaryExprs, assigns, inits []parser.Node, f *db.Function, file *db.File, scope integerOverflowTypeScope, globals map[string]string, typedefs *typedefs, consts *parser.ConstantEnv, macros map[string]int, result *DetectResult) {
+	for _, expr := range binaryExprs {
+		if !funcLineRange(f, expr.StartLine()) {
+			continue
+		}
+		op := parser.BinaryOperator(expr)
+		if op != "<<" && op != ">>" {
+			continue
+		}
+		named := expr.NamedChildren()
+		if len(named) < 2 {
+			continue
+		}
+		left := strings.TrimSpace(named[0].Text())
+		right := strings.TrimSpace(named[1].Text())
+
+		count, countOK := DefiniteValueAt(right, expr.StartLine(), assigns, inits, consts, macros)
+		if !countOK {
+			continue
+		}
+		width, widthOK := shiftOperandWidth(left, expr.StartLine(), globals, scope, typedefs)
+		if !widthOK {
+			continue
+		}
+
+		if count < 0 || count >= int64(width) {
+			d.emitIntegerOverflowProps(ctx, file, f, expr, expr.OriginalText(), "shift_count_ub", map[string]string{
+				"shift_count": shiftCountLabel(count, width),
+				"shift_width": strconv.Itoa(width),
+			}, result)
+			continue
+		}
+		if op == "<<" && signedLiteralShiftOverflow(left, count, width) {
+			d.emitIntegerOverflowProps(ctx, file, f, expr, expr.OriginalText(), "shift_signed_overflow", map[string]string{
+				"shift_base":  "signed-literal",
+				"shift_width": strconv.Itoa(width),
+				"shift_count": strconv.FormatInt(count, 10),
+			}, result)
+		}
+	}
+}
+
+// shiftOperandWidth returns the bit width of a shift's left operand: a literal
+// (int 32 / long 64 by suffix) or a variable/typedef-resolved type. Returns
+// (0, false) for an unknown width.
+func shiftOperandWidth(left string, line int, globals map[string]string, scope integerOverflowTypeScope, typedefs *typedefs) (int, bool) {
+	t := strings.TrimSpace(left)
+	if _, err := strconv.ParseInt(strings.TrimRight(t, "uUlL"), 0, 64); err == nil {
+		if strings.ContainsAny(t, "lL") {
+			return 64, true
+		}
+		return 32, true
+	}
+	typ := resolveScopedVar(t, line, globals, scope.locals)
+	if typ == "" {
+		return 0, false
+	}
+	return typedefs.widthOf(typ)
+}
+
+// shiftCountLabel renders the shift-count hint value: "-1" for a negative
+// count, "N>=width" for a count at/above the operand width.
+func shiftCountLabel(count int64, width int) string {
+	if count < 0 {
+		return strconv.FormatInt(count, 10)
+	}
+	return strconv.FormatInt(count, 10) + ">=" + strconv.Itoa(width)
+}
+
+// signedLiteralShiftOverflow reports whether a positive signed literal shifted
+// left by count overflows its signed width (`1 << 31`). An unsigned literal
+// (`1u << 31`) is well-defined and never flagged.
+func signedLiteralShiftOverflow(left string, count int64, width int) bool {
+	t := strings.TrimSpace(left)
+	if strings.ContainsAny(t, "uU") {
+		return false
+	}
+	lv, err := strconv.ParseInt(strings.TrimRight(t, "lL"), 0, 64)
+	if err != nil || lv <= 0 {
+		return false
+	}
+	if count >= 63 {
+		return true
+	}
+	var maxSigned int64
+	if width >= 63 {
+		maxSigned = math.MaxInt64
+	} else {
+		maxSigned = int64(1)<<uint(width-1) - 1
+	}
+	return lv<<uint(count) > maxSigned
 }
 
 // sizeCalcExprs returns the argument's binary expressions that qualify as a

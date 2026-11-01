@@ -96,12 +96,16 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "divisor@", Display: "divisor@<shape>", Description: "the divisor's shape: {value} (`bare` = plain identifier, `call` = call result, `compound` = complex expression, `field`/`global` = struct member / module global). EVERY shape — including `bare` and `field` — requires the ±8-line Code Context before confirming: the pipeline already dropped the divisors it could prove non-zero, so a guard the model cannot see (a disjunctive `if (x == 0 || y == 0) return;`, a helper predicate) is exactly what the window shows"},
 	{Key: "range@", Display: "range@[lo,hi]", Description: "the range engine's provable interval for the divisor: {value} — it contains 0 (else the filter would have dropped the row); judge whether the 0 endpoint is reachable"},
 	{Key: "callers@", Display: "callers@<summary>", Description: "the direct call-site census for a parameter divisor: {value} — judge the callers that pass non-constants"},
+	{Key: "dividend@", Display: "dividend@INT_MIN", Description: "int_min_div: the dividend is provably INT_MIN ({value}) — a 32-bit signed INT_MIN divided by -1 is a certain CWE-190 signed overflow (INT_MIN / -1 overflows to INT_MIN)"},
 
 	// ---- uninit ----
 	{Key: "certain-uninit", Description: "the read is provably uninitialized (three-layer converged)"},
 	{Key: "maybe-uninit", Description: "the read may be uninitialized — weaker tier; trace the write paths"},
 
 	// ---- integer-overflow ----
+	{Key: "shift_count@", Display: "shift_count@<N>=width", Description: "shift UB: the shift count is {value} — a count at/above the type width or negative is a certain CWE-758 undefined behavior"},
+	{Key: "shift_base@", Display: "shift_base@<kind>", Description: "shift UB: the shifted operand's kind: {value} — `signed-literal` means a signed integer literal left-shifted past its signed range (CWE-190)"},
+	{Key: "width@", Display: "width@N", Description: "shift UB: the shifted operand's bit width: {value} (LP64) — the count is compared against this width"},
 	{Key: "lhs@", Display: "lhs@<kind>", Description: "integer-overflow left operand provenance: {value} (param/local/global/deref/subscript/const/expr)"},
 	{Key: "rhs@", Display: "rhs@<kind>", Description: "subtrahend provenance: {value} — `rhs@param`/`rhs-influenced` means externally supplied (real underflow risk)"},
 	{Key: "rhs-influenced", Description: "the subtracted amount is caller/attacker-controlled"},
@@ -164,6 +168,8 @@ var hintTokenRegistry = []HintTokenSpec{
 
 	// ---- path-traversal ----
 	{Key: "path-arg@", Display: "path-arg@<expr>", Description: "the path argument expression: {value} — judge whether a caller can inject `../`: a tainted source (paired with `tainted`) or a non-constant call-site argument (see callsites@) → confirmed; an internal/trusted path or an O_NOFOLLOW/dir_fd-anchored sink → dismissed"},
+	{Key: "mode@", Display: "mode@<octal>", Description: "permission_setting: the chmod/fchmod mode argument {value} — the pipeline proved its other-write bit (0o002) is set"},
+	{Key: "path@", Display: "path@<literal|var>", Description: "permission_setting: the chmod path shape {value} — `literal` (a non-temp fixed path) is a certain world-writable file (confirm); `var` (a variable path or fd) is suspected (umask filtering cannot be proven)"},
 
 	// ---- format-string / path-traversal (caller-side census) ----
 	{Key: "callsites@", Display: "callsites@<census>", Description: "the in-tree call-site census for the sink parameter: {value} — `N:all-literal` means every in-tree caller passes a compile-time constant → dismiss; `N:K-literal,J-var` means the var/tainted callers are where attacker input could enter → inspect those callers before confirming; absent means no in-tree call site binds the parameter (an external TU may call it)"},

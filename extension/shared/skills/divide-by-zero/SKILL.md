@@ -25,6 +25,7 @@ A divide-by-zero candidate has:
 | `divisor@<shape>` | the divisor's syntactic shape (`bare`/`field`/`global`/`call`/`compound`) | **read the ±8-line Code Context before confirming, for EVERY shape.** The shape says where the value comes from, NOT whether it is guarded: the pipeline already dropped every divisor it could prove non-zero (constant symbol, interval, same-function guard), so a row that reached you means no modelled guard exists — and the unmodelled ones are exactly what the window shows (`if (n == 0) return;`, `if (n == 0 \|\| idx >= count) return;`, `if (!n) goto out;`, `if (n == 0) n = DEFAULT;`). Confirming from the `Source` column alone is how guarded divisions were filed as real defects |
 | `range@[lo,hi]` | the range engine's proved interval for the divisor — it contains 0 (else the filter would have dropped the row) | judge whether the 0 endpoint is actually reachable |
 | `callers@<summary>` | the direct call-site census for a parameter divisor | check the callers passing non-constants for a 0 argument |
+| `dividend@INT_MIN` | int_min_div (CWE-190): the dividend is provably INT_MIN and the divisor is provably -1 | a certain signed overflow — the pipeline auto-confirms it, so it never reaches you |
 
 The verdict basis is the shape + `range@` + the Code Context window: a zero
 guard in the window (any spelling, including a disjunctive
@@ -36,6 +37,11 @@ caller-counted non-constant flow toward 0 with no guard → **confirmed**.
 2. Take the right operand as the divisor
 3. Skip a non-zero numeric literal or any `sizeof(...)` (compile-time constant)
 4. Emit `DIVIDE_BY_ZERO` otherwise
+5. **int_min_div (CWE-190)** is a separate category: a 32-bit signed `INT_MIN`
+   dividend divided by a provable `-1` divisor overflows to INT_MIN (certain
+   CWE-190). The variable-dividend form (`x = INT_MIN; x / -1`) is resolved by
+   the same single-point value proof; an unsigned or 64-bit dividend is
+   deliberately out of scope (no overflow).
 
 ### Evidence closure (read before any source read)
 
@@ -62,6 +68,8 @@ the embedded section and the indexed lookup.
 > - `x / d` where the interval analysis proves `d == 0` (`d = 0; x / d`) — a
 >   certain divide-by-zero, auto-confirmed.
 > - `x / <non-zero constant symbol>` — folded like a literal.
+> - `INT_MIN / -1` (or `x = INT_MIN; x / -1`) — a certain CWE-190 signed
+>   overflow, auto-confirmed as category `int_min_div`.
 >
 > **`divisor@field` / `divisor@global` rows DO reach you as `suspected`:** a
 > struct/object field or a module global is only "non-zero by construction" if

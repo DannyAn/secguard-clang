@@ -71,7 +71,7 @@ func TestSeedPropsFlowToCandidate(t *testing.T) {
 		{
 			name:     "path-traversal path expression",
 			vulnType: "path-traversal",
-			props:    `{"path":"user_path","function":"fopen"}`,
+			props:    `{"path":"user_path","function":"fopen","category":"path_traversal"}`,
 			check: func(t *testing.T, c Candidate) {
 				if c.PathExpr != "user_path" {
 					t.Errorf("path expression lost: %q", c.PathExpr)

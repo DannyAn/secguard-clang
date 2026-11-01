@@ -621,6 +621,10 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			BaseOrigin:              props.BaseOrigin,
 			CaseEnd:                 props.CaseEnd,
 			EnumCoverage:            props.EnumCoverage,
+			ShiftCount:              props.ShiftCount,
+			ShiftWidth:              props.ShiftWidth,
+			ShiftBase:               props.ShiftBase,
+			Mode:                    props.Mode,
 		})
 	}
 

@@ -15,7 +15,13 @@ func init() {
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "path-traversal",
 		FilterFactories:   chainTaint(),
-		BuildVerdictFacts: buildPathTraversalVerdictFacts,
+		Categories:        []string{"path_traversal", "world_writable_file", "world_writable_var"},
+		CategoryCWEs:      map[string]string{"world_writable_file": "CWE-732", "world_writable_var": "CWE-732"},
+		// A chmod with a provable other-write mode on a non-temp literal path
+		// is a certain world-writable-file defect (CWE-732); a variable path or
+		// an fd is only suspected (umask filtering cannot be proven statically).
+		CategoryConfidence: map[string]string{"world_writable_file": "confirmed"},
+		BuildVerdictFacts:  buildPathTraversalVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{
 				{Type: "path_traversal", Role: "sink", Detail: fmt.Sprintf("filesystem call %s receives a path that is not a fixed string literal — an attacker-controlled value could use ../ to escape the intended directory and read/overwrite/delete an arbitrary file", c.APIName)},
@@ -39,6 +45,24 @@ func init() {
 }
 
 func buildPathTraversalVerdictFacts(c Candidate) []VerdictFact {
+	if c.Category == "world_writable_file" || c.Category == "world_writable_var" {
+		facts := make([]VerdictFact, 0, 2)
+		if c.Mode != "" {
+			facts = append(facts, VerdictFact{
+				Token:  "mode@" + c.Mode,
+				Detail: fmt.Sprintf("the chmod/fchmod mode argument is %s — the pipeline proved its other-write bit (0o002) is set", c.Mode),
+			})
+		}
+		pathKind := "literal"
+		if c.Category == "world_writable_var" {
+			pathKind = "var"
+		}
+		facts = append(facts, VerdictFact{
+			Token:  "path@" + pathKind,
+			Detail: "the path is " + pathKind + " — a literal non-temp path is a certain world-writable file (confirm); a variable path/fd is suspected (umask filtering cannot be proven)",
+		})
+		return facts
+	}
 	if c.PathExpr == "" {
 		return nil
 	}

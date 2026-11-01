@@ -11,7 +11,13 @@ func init() {
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "divide-by-zero",
 		FilterFactories:    chainDivideByZero(),
-		BuildVerdictFacts: buildDivideByZeroVerdictFacts,
+		Categories:        []string{"divide_by_zero", "int_min_div"},
+		CategoryCWEs:      map[string]string{"int_min_div": "CWE-190"},
+		// int_min_div is a certain CWE-190 signed overflow: a 32-bit INT_MIN
+		// dividend divided by -1 overflows to INT_MIN (the detector proved the
+		// operand pair, and widthOf restricted it to the 32-bit int family).
+		CategoryConfidence: map[string]string{"int_min_div": "confirmed"},
+		BuildVerdictFacts:  buildDivideByZeroVerdictFacts,
 		// Dedup the SAME divisor divided at many sites into one finding, but keep a
 		// confirmed and a suspected division of that divisor distinct: the
 		// higher-rank "confirmed" must not mask a suspected site (DBZ-18). The key
@@ -43,6 +49,11 @@ func init() {
 }
 
 func buildDivideByZeroVerdictFacts(c Candidate) []VerdictFact {
+	if c.Category == "int_min_div" {
+		return []VerdictFact{
+			{Token: "dividend@INT_MIN", Detail: "the dividend is provably INT_MIN, divided by a provable -1 divisor — a 32-bit signed INT_MIN / -1 overflows to INT_MIN (CWE-190)"},
+		}
+	}
 	facts := make([]VerdictFact, 0, 3)
 	if shape := divisorShape(c.VariableName); shape != "" {
 		facts = append(facts, VerdictFact{

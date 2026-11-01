@@ -142,6 +142,8 @@ CWE_TO_TYPE = {
     "CWE-762": "invalid-free",
     "CWE-484": "switch-fallthrough",
     "CWE-478": "switch-fallthrough",
+    "CWE-758": "integer-overflow",
+    "CWE-732": "path-traversal",
 }
 
 

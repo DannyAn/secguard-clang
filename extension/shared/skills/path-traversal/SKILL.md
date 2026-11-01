@@ -36,10 +36,13 @@ A path-traversal candidate has:
 |-------|---------|-------------|
 | `path-arg@<expr>` | the path argument expression — the traversal root | judge whether a caller can inject `../` segments; pair with `callsites@` when the argument is a parameter |
 | `callsites@<census>` | the in-tree call-site census for the path parameter | `N:all-literal` = every in-tree caller passes a compile-time constant → **dismissed**; `N:K-literal,J-var` = the var/tainted callers are where attacker input could enter → inspect those callers before confirming; token absent = no in-tree call site binds the parameter (an external TU may call it) |
+| `mode@<octal>` | permission_setting (CWE-732): the chmod/fchmod mode argument | the pipeline proved its other-write bit (0o002) is set |
+| `path@<literal\|var>` | permission_setting: the chmod path shape | `literal` (non-temp fixed path) → **confirmed**; `var` (variable path/fd) → suspected (umask filtering cannot be proven) |
 
 `path-arg@` names the argument the traversal rides on; `tainted` alongside
 it means the segments come from outside — confirm unless a sanitizer is
-visible in the Code Context.
+visible in the Code Context. The `mode@`+`path@` pair is the separate
+`permission_setting` category (CWE-732), judged independently of `path-arg@`.
 
 ### Evidence closure (read before any source read)
 
@@ -61,6 +64,9 @@ the embedded section and the indexed lookup.
 | `fopen(path, ...)` — path is a parameter, `callsites@N:all-literal` | **dismissed** (every in-tree caller passes a compile-time constant) |
 | `fopen(path, ...)` — path is a parameter with no provable tainted caller and no census | **dismissed** |
 | `fopen("/etc/config", "r")` — literal or compile-time-constant path | **false-positive** (safe) |
+| `chmod("/etc/app.conf", 0666)` — `mode@` other-write on a non-temp `path@literal` | **confirmed** (CWE-732 world-writable file) |
+| `chmod(path_var, 0666)` / `fchmod(fd, 0666)` — `mode@` other-write on `path@var` | **dismissed** unless you can prove the path is a non-temp fixed location (umask filtering is unprovable) |
+| `chmod("/tmp/x", 0666)` — a temp-prefixed literal path | **false-positive** (the detector never emits it) |
 
 The **confirmed** verdict only applies when the pipeline proved a taint source
 (`taint_source` evidence fragment) or `callsites@` names a non-constant caller.
@@ -71,6 +77,8 @@ tracing a caller that passes attacker-controlled data.
 - Literal or compile-time-constant paths (config file paths, fixed install locations)
 - A path parameter that is always called with a trusted constant — the `callsites@N:all-literal` census settles this from the row (the pipeline drops these before they reach you; if one slips through with the census, dismiss it)
 - A path segment derived from `basename(p)` / `strrchr(p, '/')` — the result cannot contain a directory component, so it cannot carry `../`
+- A `chmod` on a `/tmp`/`/var/tmp`/`/dev/shm` path — a temp file's permissions are not a meaningful privilege-setting defect (the detector suppresses it)
+- A `chmod` mode that is not other-writable (`0644`, `0600`) — the detector only reports the other-write bit (0o002), never world-readable (0o004)
 
 ### Fix Suggestions
 

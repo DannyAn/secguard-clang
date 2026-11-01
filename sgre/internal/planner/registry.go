@@ -280,6 +280,10 @@ func CWEForCategory(vulnType, category string) string {
 // per-finding markdown rewrite.
 func TypeForCWE(cwe string) string {
 	cweNorm := strings.ToUpper(strings.TrimSpace(cwe))
+	// Canonical + legacy matches win over per-category matches: a CWE that is
+	// both one type's canonical and another type's category (CWE-190 is
+	// integer-overflow's canonical AND divide-by-zero's int_min_div category)
+	// must reverse-map to the canonical owner deterministically.
 	for _, name := range AllVulnTypes() {
 		spec := vulnTypeRegistry[name]
 		if strings.ToUpper(spec.CWE) == cweNorm {
@@ -290,7 +294,9 @@ func TypeForCWE(cwe string) string {
 				return name
 			}
 		}
-		for _, catCWE := range spec.CategoryCWEs {
+	}
+	for _, name := range AllVulnTypes() {
+		for _, catCWE := range vulnTypeRegistry[name].CategoryCWEs {
 			if strings.ToUpper(catCWE) == cweNorm {
 				return name
 			}

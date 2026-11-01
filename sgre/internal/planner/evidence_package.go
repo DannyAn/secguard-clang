@@ -437,6 +437,10 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 				parts = append(parts, "free-on-borrow@"+c.LeakFreeOnBorrow)
 			}
 		case "divide-by-zero":
+			if c.Category == "int_min_div" {
+				parts = append(parts, "dividend@INT_MIN")
+				break
+			}
 			if shape := divisorShape(c.VariableName); shape != "" {
 				parts = append(parts, "divisor@"+shape)
 			}
@@ -517,6 +521,17 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 				parts = append(parts, "callsites@"+c.CallsiteSummary)
 			}
 		case "path-traversal":
+			if c.Category == "world_writable_file" || c.Category == "world_writable_var" {
+				if c.Mode != "" {
+					parts = append(parts, "mode@"+c.Mode)
+				}
+				if c.Category == "world_writable_file" {
+					parts = append(parts, "path@literal")
+				} else {
+					parts = append(parts, "path@var")
+				}
+				break
+			}
 			if c.PathExpr != "" {
 				parts = append(parts, "path-arg@"+c.PathExpr)
 			}
@@ -635,6 +650,25 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 					parts = append(parts, fmt.Sprintf("callee@%s:%d", filepath.Base(c.CalleeDefFile), c.CalleeDefLine))
 				}
 				parts = append(parts, "guard@none")
+			}
+			// GAP-06 shift UB: the count-vs-width fact (shift_count@) and the
+			// operand width (width@) settle a shift_count_ub row; the operand
+			// kind (shift_base@signed-literal) + width settle a
+			// shift_signed_overflow row.
+			if c.Category == "shift_count_ub" {
+				if c.ShiftCount != "" {
+					parts = append(parts, "shift_count@"+c.ShiftCount)
+				}
+				if c.ShiftWidth != "" {
+					parts = append(parts, "width@"+c.ShiftWidth)
+				}
+			} else if c.Category == "shift_signed_overflow" {
+				if c.ShiftBase != "" {
+					parts = append(parts, "shift_base@"+c.ShiftBase)
+				}
+				if c.ShiftWidth != "" {
+					parts = append(parts, "width@"+c.ShiftWidth)
+				}
 			}
 		case "deadlock":
 			// The inversion pair and its reverse acquirer are the whole defect:

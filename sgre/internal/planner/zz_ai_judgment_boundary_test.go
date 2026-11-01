@@ -36,7 +36,9 @@ func TestConfirmedTierPolicy(t *testing.T) {
 			"format_overflow":       "format literal + argument output provably >= capacity (constant fold)",
 		},
 		"integer-overflow": {
-			"definite_overflow": "literal-constant arithmetic provably overflows the type (constant fold)",
+			"definite_overflow":       "literal-constant arithmetic provably overflows the type (constant fold)",
+			"shift_count_ub":          "constant-proved: a shift count at/above the operand width or negative is certain CWE-758",
+			"shift_signed_overflow":   "constant-proved: a signed literal left-shifted past its signed range is certain CWE-190",
 		},
 		"out-of-bounds": {
 			"array_oob_read": "constant index past a known array size (read)",
@@ -47,6 +49,12 @@ func TestConfirmedTierPolicy(t *testing.T) {
 		},
 		"stack-address-escape": {
 			"return_stack_address": "AST-deterministic: returning the address of (or a decayed local array) a non-static local is a certain CWE-562",
+		},
+		"divide-by-zero": {
+			"int_min_div": "constant-proved: a 32-bit INT_MIN dividend divided by -1 is a certain CWE-190 signed overflow",
+		},
+		"path-traversal": {
+			"world_writable_file": "constant-proved: chmod with an other-write mode on a non-temp literal path is a certain CWE-732",
 		},
 	}
 

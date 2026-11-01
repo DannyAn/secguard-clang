@@ -19,12 +19,23 @@ func init() {
 		// on size operands (n + 1 / n - 1) is not emitted — null-terminator /
 		// off-by-one noise. An unsigned subtraction passed to an ordinary call is
 		// kept as suspected: it has a concrete underflow path unless guarded.
+		//
+		// shift_count_ub (CWE-758) and shift_signed_overflow (CWE-190) are the
+		// GAP-06 additions: a shift count >= the type width (or negative) and a
+		// signed-literal left shift past the type's signed range are both
+		// constant-proved, so they are confirmed.
 		CategoryConfidence: map[string]string{
 			"definite_overflow":       "confirmed",
 			"size_calc_overflow":      "suspected",
 			"size_mul_const_overflow": "suspected",
 			"unsigned_sub_underflow":  "suspected",
 			"integer_overflow":        "possible",
+			"shift_count_ub":          "confirmed",
+			"shift_signed_overflow":   "confirmed",
+		},
+		CategoryCWEs: map[string]string{
+			"shift_count_ub":        "CWE-758",
+			"shift_signed_overflow": "CWE-190",
 		},
 		ConvergeKey: func(c Candidate) string {
 			return fmt.Sprintf("integer-overflow:%d:%s:%d", c.FileID, c.FunctionName, c.Line)
@@ -48,6 +59,34 @@ func init() {
 }
 
 func buildIntegerOverflowVerdictFacts(c Candidate) []VerdictFact {
+	if c.Category == "shift_count_ub" {
+		facts := make([]VerdictFact, 0, 2)
+		facts = append(facts, VerdictFact{
+			Token:  "shift_count@" + c.ShiftCount,
+			Detail: "the shift count is provably " + c.ShiftCount + " — a count at/above the operand width or negative is certain CWE-758 undefined behavior",
+		})
+		if c.ShiftWidth != "" {
+			facts = append(facts, VerdictFact{
+				Token:  "width@" + c.ShiftWidth,
+				Detail: "the shifted operand's LP64 bit width is " + c.ShiftWidth,
+			})
+		}
+		return facts
+	}
+	if c.Category == "shift_signed_overflow" {
+		facts := make([]VerdictFact, 0, 2)
+		facts = append(facts, VerdictFact{
+			Token:  "shift_base@signed-literal",
+			Detail: "a signed integer literal left-shifted past its signed range — a certain CWE-190 signed overflow",
+		})
+		if c.ShiftWidth != "" {
+			facts = append(facts, VerdictFact{
+				Token:  "width@" + c.ShiftWidth,
+				Detail: "the shifted operand's LP64 bit width is " + c.ShiftWidth,
+			})
+		}
+		return facts
+	}
 	facts := make([]VerdictFact, 0, 5)
 	if c.Category != "" {
 		facts = append(facts, VerdictFact{

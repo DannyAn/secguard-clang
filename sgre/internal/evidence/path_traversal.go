@@ -54,6 +54,7 @@ func (d *PathTraversalDetector) Detect(ctx context.Context) (DetectResult, error
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		calls := root.FindAll("call_expression")
 		fileConsts := buildFileStringConstants(root)
+		macros := parser.CollectMacroValues(root)
 		// Build a set of function start lines that are pure passthrough
 		// wrappers — their body is just `return sink(param);` or
 		// `sink(param);` with the path argument forwarded from a function
@@ -107,9 +108,71 @@ func (d *PathTraversalDetector) Detect(ctx context.Context) (DetectResult, error
 					result.EventsCreated++
 				}
 			}
+
+			// GAP-08 permission_setting (CWE-732): chmod/fchmod with an
+			// other-writable mode. A literal non-temp path is a certain defect
+			// (world_writable_file, confirmed); a variable path or an fd is
+			// suspected (umask filtering cannot be proven statically).
+			for _, call := range calls {
+				if !funcLineRange(f, call.StartLine()) {
+					continue
+				}
+				name := extractCallName(call)
+				if name != "chmod" && name != "fchmod" {
+					continue
+				}
+				args := getCallArgs(call)
+				if len(args) < 2 {
+					continue
+				}
+				modeText := strings.TrimSpace(args[len(args)-1].Text())
+				worldWritable, isLiteral := chmodWorldWritable(modeText, macros)
+				if !isLiteral || !worldWritable {
+					continue
+				}
+				pathText := strings.TrimSpace(args[0].Text())
+				category := "world_writable_var"
+				if name == "chmod" && isStringLiteralText(pathText) && !isTempPath(pathText) {
+					category = "world_writable_file"
+				} else if name == "chmod" && isStringLiteralText(pathText) {
+					continue // a /tmp-prefixed literal path is deliberately skipped
+				}
+				if emitEvent(ctx, d.store, d.logger, "PATH_TRAVERSAL", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, map[string]string{
+					"function": name,
+					"path":     pathText,
+					"mode":     modeText,
+					"category": category,
+				}) {
+					result.EventsCreated++
+				}
+			}
 		}
 	})
 	return result, err
+}
+
+// chmodWorldWritable reports whether a chmod mode argument is a provable
+// literal whose other-write bit (0o002) is set. A variable/compound mode is
+// not provable, so it returns isLiteral=false and the shape is not reported.
+func chmodWorldWritable(modeText string, macros map[string]int) (worldWritable, isLiteral bool) {
+	v, ok := constantIntValue(modeText, macros)
+	if !ok {
+		return false, false
+	}
+	return (v & 0o002) != 0, true
+}
+
+// isTempPath reports whether a string literal path is a temporary directory
+// (a chmod on /tmp is not a meaningful privilege setting defect). The leading
+// string-literal quote is stripped so `/tmp/x` and `"/tmp/x"` both match.
+func isTempPath(path string) bool {
+	p := strings.Trim(strings.TrimSpace(path), `"`)
+	for _, prefix := range []string{"/tmp/", "/var/tmp/", "/dev/shm"} {
+		if strings.HasPrefix(p, prefix) {
+			return true
+		}
+	}
+	return p == "/tmp" || p == "/var/tmp" || p == "/dev/shm"
 }
 
 // isPassthroughPathWrapper reports whether a function body is a pure

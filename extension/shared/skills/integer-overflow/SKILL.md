@@ -27,6 +27,8 @@ The `category` field encodes the confidence tier the pipeline already computed:
 | `size_mul_const_overflow` | `malloc(n * K)`, n is a function parameter and `K >= 256` | suspected |
 | `unsigned_sub_underflow` | unsigned `total - consumed` passed to an ordinary call | suspected |
 | `integer_overflow` | wraparound inside a bounds check | possible |
+| `shift_count_ub` | `x << 40` (count >= width) / `x << -1` (negative count) | confirmed |
+| `shift_signed_overflow` | `1 << 31` (signed literal past its signed range) | confirmed |
 
 Evidence file fragments:
 - **integer_overflow**: the site, with a category-shaped description (size calculation / unsigned subtraction underflow)
@@ -72,6 +74,18 @@ producer is external, `secguard def <callee>`; batch a callee pair with
 lines) and the `Signature`/`Source` columns. **Never run a whole-repo grep to find
 the callee**: use `secguard def <name>`, which is an index lookup and returns the
 body in one call.
+
+The two GAP-06 shift categories carry their own dense facts (both are
+**auto-confirmed**, so they never reach you for classification):
+
+- `shift_count@<N>=width` — the shift count is provably at/above the operand
+  width (or negative) → certain CWE-758 undefined behavior.
+- `shift_base@signed-literal` — a signed integer literal left-shifted past its
+  signed range (`1 << 31`) → certain CWE-190 signed overflow.
+- `width@N` — the shifted operand's LP64 bit width, against which the count was
+  compared. An unsigned shift (`1u << 31`) or a wide type (`uint64_t x; x << 40`)
+  is well-defined and never reported; a variable count with no single-point
+  proof is also never reported.
 
 ### Dangerous Patterns
 

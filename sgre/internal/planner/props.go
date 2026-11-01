@@ -280,6 +280,14 @@ type eventProps struct {
 	// EnumCoverage is the enum name + coverage summary for a switch-fallthrough
 	// missing_default candidate (e.g. "Color (covered 2/3)").
 	EnumCoverage string `json:"enum_coverage"`
+	// ShiftCount/ShiftWidth/ShiftBase carry the integer-overflow shift-UB
+	// evidence: the shift count label (e.g. "40>=32" or "-1"), the operand bit
+	// width, and the shifted operand's kind ("signed-literal").
+	ShiftCount string `json:"shift_count"`
+	ShiftWidth string `json:"shift_width"`
+	ShiftBase  string `json:"shift_base"`
+	// Mode is the chmod/fchmod permission_setting mode argument (e.g. "0666").
+	Mode string `json:"mode"`
 }
 
 func parseEventProps(raw string) eventProps {

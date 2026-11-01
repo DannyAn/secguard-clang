@@ -294,3 +294,27 @@ func (t *typedefs) resolvesToUnsigned(typeSpelling string) bool {
 	t.isUnsigned[name] = res
 	return res
 }
+
+// widthOf returns the bit width of a type spelling on LP64, resolving typedefs
+// transitively. It is the shared width oracle for the shift-UB (GAP-06) and
+// INT_MIN/-1 (GAP-07) checks. It returns (0, false) for an unknown width — an
+// unknown width must never trigger a detection (fail-closed, prefer a miss).
+// The LP64 base table is authoritative for the current build; the GAP-03
+// `-m32`/`-m64` compile_commands consumption is the future width-basis switch.
+func (t *typedefs) widthOf(typeSpelling string) (int, bool) {
+	resolved := resolveType(strings.TrimSpace(typeSpelling), t)
+	switch resolved {
+	case "char", "signed char", "unsigned char", "_Bool", "bool", "int8_t", "uint8_t":
+		return 8, true
+	case "short", "signed short", "unsigned short", "short int", "int16_t", "uint16_t":
+		return 16, true
+	case "int", "signed int", "unsigned int", "unsigned", "signed", "int32_t", "uint32_t":
+		return 32, true
+	case "long", "signed long", "unsigned long", "long int", "unsigned long int",
+		"long long", "signed long long", "unsigned long long",
+		"int64_t", "uint64_t", "intptr_t", "uintptr_t", "size_t", "ssize_t",
+		"ptrdiff_t", "intmax_t", "uintmax_t":
+		return 64, true
+	}
+	return 0, false
+}

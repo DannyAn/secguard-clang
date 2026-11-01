@@ -14,6 +14,17 @@
 
 四平行清单（detector / planner registry / allSkillSpecs / schema event_type enum）与 hint token 协议、`TestVulnTypeSkillConsistency` / `TestSeedEventTypesInSchema` / `TestConfirmedTierPolicy` / `TestSkillFragmentsMatchBuildEvidence` / `TestBenchmarkValidatorCWEMap` 五道 guard 全绿；benchmark 新增 23 用例（3 类型各有 finding/no_finding 对照）。
 
+### 引擎能力 + 3 个既有类型扩展（GLM5.3 能力缺口 B2 批）
+
+落地 GAP-06/07/08，全部确认形态走「常量可证」判据，零误报优先。
+
+- **引擎：`typedefs.widthOf` + `DefiniteValueAt` 单点区间证明**。`widthOf(typeSpelling)` 提供 LP64 类型位宽（typedef 传递解析，未知宽度 fail-closed 返回 false）；`DefiniteValueAt(v, line)` 证明变量在函数内「唯一常量赋值且无重写」的定值，**函数作用域隔离**（同名局部不跨函数借值）。两者供 GAP-06/07 复用。
+- **integer-overflow 扩展 2 category（GAP-06）**：`shift_count_ub`（CWE-758）——移位计数 ≥ 位宽或为负（`x << 40` / `x << -1`）；`shift_signed_overflow`（CWE-190）——有符号字面量左移越界（`1 << 31`）。均 confirmed。无符号移位 / 宽类型 / 无单点证明的变量计数不触发。
+- **divide-by-zero 扩展 `int_min_div`（GAP-07，CWE-190）**：32 位有符号 `INT_MIN / -1`（含 `x = INT_MIN; x / -1` 变量形态）——确定性 signed overflow，confirmed。无符号 / 64 位 / 无单点证明的被除数不触发。
+- **path-traversal 扩展 `permission_setting`（GAP-08，CWE-732）**：`chmod`/`fchmod` other-writable（mode & 0o002）模式。非临时字面量路径 `world_writable_file` confirmed；变量路径/fd `world_writable_var` suspected。`/tmp` 系路径、变量/不可解宏 mode、world-readable（0o004）不触发。
+
+> **勘误记录**：① 设计 §5.4 的 `divisor@-1` hint token 与既有 divide-by-zero 的 `divisor@<shape>` 前缀冲突（机器守卫拒绝），改为仅用 `dividend@INT_MIN` 表达 int_min_div 判据。② CWE-190 同时是 integer-overflow 的 canonical 与 divide-by-zero `int_min_div` 的 category CWE，`TypeForCWE` 逆映射改为「canonical/legacy 优先于 category」以保持确定性；benchmark 的 CWE_TO_TYPE 平铺映射无法区分双类型同 CWE，故 int_min_div 不纳入 benchmark（由 `TestIntMinDiv_Tiers` 单测覆盖），记作已知限制。③ 设计 §6.3 的「Categories 增 permission_setting」为特征名而非事件 category 名，实作 category 为 `world_writable_file`/`world_writable_var`。
+
 ## [0.11.9] - 2026-10-31
 
 ### 性能：boundary 扫描 fail-open 假设默认预驳回 + AI 预算机器化

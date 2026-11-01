@@ -50,11 +50,35 @@ func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error)
 		binaryExprs := root.FindAll("binary_expression")
 		allIfs := root.FindAll("if_statement")
 		allAssigns := root.FindAll("assignment_expression")
+		allInits := root.FindAll("init_declarator")
 		constants := globalConsts
+		// Object-like macro values (`#define MAX 4096`) for the INT_MIN/-1
+		// operand resolution; INT_MIN itself is resolved by name (limits.h
+		// spells it as an expression CollectMacroValues cannot fold).
+		macros := parser.CollectMacroValues(root)
 		for _, f := range funcs {
 			scope := scopes[f.StartLine]
-			bounds := AnalyzeBounds(IfsInFunc(allIfs, f.StartLine, f.EndLine), assignsInFunc(allAssigns, f.StartLine, f.EndLine))
-			check := func(expr parser.Node, divisor string) {
+			fnAssigns := assignsInFunc(allAssigns, f.StartLine, f.EndLine)
+			fnInits := assignsInFunc(allInits, f.StartLine, f.EndLine)
+			bounds := AnalyzeBounds(IfsInFunc(allIfs, f.StartLine, f.EndLine), fnAssigns)
+			check := func(expr parser.Node, dividend, divisor string) {
+				// GAP-07 int_min_div (CWE-190): a 32-bit INT_MIN divided by -1
+				// overflows to INT_MIN — a certain signed overflow, distinct from
+				// the divide-by-zero (CWE-369) shape below. The value proof is
+				// FUNCTION-scoped: a same-name local in a sibling function must
+				// not lend its constant assignment.
+				if isIntMinDivision(dividend, divisor, expr.StartLine(), globals, scope, typedefs, fnAssigns, fnInits, constants, macros) {
+					props := map[string]string{
+						"expression": expr.OriginalText(),
+						"variable":   dividend,
+						"divisor":    divisor,
+						"category":   "int_min_div",
+					}
+					if emitEvent(ctx, d.store, d.logger, "DIVIDE_BY_ZERO", f.ID, &db.Location{FileID: file.ID, Line: expr.StartLine(), Column: expr.StartColumn()}, props) {
+						result.EventsCreated++
+					}
+					return
+				}
 				if !possiblyZeroDivisor(divisor) {
 					return
 				}
@@ -115,8 +139,8 @@ func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error)
 				if !funcLineRange(f, expr.StartLine()) {
 					continue
 				}
-				if divisor, ok := divOrModDivisor(expr); ok {
-					check(expr, divisor)
+				if dividend, divisor, ok := divOperands(expr); ok {
+					check(expr, dividend, divisor)
 				}
 			}
 			// Compound assignment `a /= b` / `a %= b` is the same division, just
@@ -127,7 +151,7 @@ func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error)
 					continue
 				}
 				if divisor, ok := compoundDivModDivisor(assign); ok {
-					check(assign, divisor)
+					check(assign, "", divisor)
 				}
 			}
 		}
@@ -153,6 +177,70 @@ func divOrModDivisor(expr parser.Node) (string, bool) {
 		return "", false
 	}
 	return unwrapDivisorNode(named[len(named)-1]).Text(), true
+}
+
+// divOperands returns the dividend and divisor of a `/` or `%` binary
+// expression. It is the operand-pair form of divOrModDivisor, added so the
+// INT_MIN/-1 check can read the dividend without a second traversal.
+func divOperands(expr parser.Node) (dividend, divisor string, ok bool) {
+	op := ""
+	for _, child := range expr.Children() {
+		switch child.Kind() {
+		case "/", "%":
+			op = child.Kind()
+		}
+	}
+	if op == "" {
+		return "", "", false
+	}
+	named := expr.NamedChildren()
+	if len(named) < 2 {
+		return "", "", false
+	}
+	return unwrapDivisorNode(named[0]).Text(), unwrapDivisorNode(named[len(named)-1]).Text(), true
+}
+
+// isIntMinDivision reports whether a `/` or `%` is a 32-bit INT_MIN dividend by
+// -1 (CWE-190 signed overflow). Both operands must be provably constant (via
+// DefiniteValueAt), and the dividend must be the 32-bit int family — a 64-bit
+// (long/unsigned/wide) dividend does NOT overflow on INT_MIN/-1, so it is
+// deliberately out of scope (fail-closed, prefer a miss).
+func isIntMinDivision(dividend, divisor string, line int, globals map[string]string, scope integerOverflowTypeScope, typedefs *typedefs, assigns, inits []parser.Node, constants *parser.ConstantEnv, macros map[string]int) bool {
+	dv, ok := DefiniteValueAt(divisor, line, assigns, inits, constants, macros)
+	if !ok || dv != -1 {
+		return false
+	}
+	dd, ok := DefiniteValueAt(dividend, line, assigns, inits, constants, macros)
+	if !ok || dd != -2147483648 {
+		return false
+	}
+	return isIntMinWidth32(dividend, line, globals, scope, typedefs)
+}
+
+// isIntMinWidth32 reports whether the dividend is the 32-bit int family. A
+// long-suffixed literal (`-2147483648L`) or a wide variable (int64_t etc.) is
+// 64-bit and its INT_MIN/-1 does NOT overflow.
+func isIntMinWidth32(dividend string, line int, globals map[string]string, scope integerOverflowTypeScope, typedefs *typedefs) bool {
+	t := strings.TrimSpace(dividend)
+	if strings.ContainsAny(t, "lL") {
+		return false
+	}
+	switch t {
+	case "INT_MIN", "INT32_MIN", "INT_MIN32":
+		return true
+	}
+	if _, err := strconv.ParseInt(strings.TrimRight(t, "uUlL"), 0, 64); err == nil {
+		return true
+	}
+	typ := resolveScopedVar(t, line, globals, scope.locals)
+	if typ == "" {
+		return false
+	}
+	if typedefs.resolvesToUnsigned(typ) {
+		return false
+	}
+	w, ok := typedefs.widthOf(typ)
+	return ok && w == 32
 }
 
 // unwrapDivisorNode unwraps a parenthesized/cast divisor (`(size_t)d` → `d`,

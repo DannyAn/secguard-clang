@@ -2539,6 +2539,116 @@
       "cwe": "CWE-478",
       "detector": "switch_fallthrough",
       "expect": "no_finding"
+    },
+    {
+      "id": "SH-01",
+      "category": "b2_shift_ub",
+      "file": "src/sh_shift_ub.c",
+      "line": 2,
+      "code": "x << 40 on a 32-bit int — count >= width",
+      "cwe": "CWE-758",
+      "detector": "integer_overflow",
+      "expect": "finding"
+    },
+    {
+      "id": "SH-02",
+      "category": "b2_shift_ub",
+      "file": "src/sh_shift_ub.c",
+      "line": 6,
+      "code": "x << -1 — negative shift count",
+      "cwe": "CWE-758",
+      "detector": "integer_overflow",
+      "expect": "finding"
+    },
+    {
+      "id": "SH-03",
+      "category": "b2_shift_ub",
+      "file": "src/sh_shift_ub.c",
+      "line": 10,
+      "code": "1 << 31 — signed literal past its signed range",
+      "cwe": "CWE-190",
+      "detector": "integer_overflow",
+      "expect": "finding"
+    },
+    {
+      "id": "SH-10",
+      "category": "b2_shift_ub",
+      "file": "src/sh_shift_ub.c",
+      "line": 14,
+      "code": "u << 31 on unsigned — well-defined, must not report",
+      "cwe": "CWE-758",
+      "detector": "integer_overflow",
+      "expect": "no_finding"
+    },
+    {
+      "id": "SH-11",
+      "category": "b2_shift_ub",
+      "file": "src/sh_shift_ub.c",
+      "line": 18,
+      "code": "x << 40 on a 64-bit long — count < width, must not report",
+      "cwe": "CWE-758",
+      "detector": "integer_overflow",
+      "expect": "no_finding"
+    },
+    {
+      "id": "SH-12",
+      "category": "b2_shift_ub",
+      "file": "src/sh_shift_ub.c",
+      "line": 22,
+      "code": "x << n — variable count with no single-point proof, must not report",
+      "cwe": "CWE-758",
+      "detector": "integer_overflow",
+      "expect": "no_finding"
+    },
+    {
+      "id": "PM-01",
+      "category": "b2_permission_setting",
+      "file": "src/pm_permission.c",
+      "line": 2,
+      "code": "chmod('/etc/app.conf', 0666) — other-write on a non-temp literal path",
+      "cwe": "CWE-732",
+      "detector": "path_traversal",
+      "expect": "finding"
+    },
+    {
+      "id": "PM-02",
+      "category": "b2_permission_setting",
+      "file": "src/pm_permission.c",
+      "line": 6,
+      "code": "chmod(p, 0666) — other-write on a variable path (suspected)",
+      "cwe": "CWE-732",
+      "detector": "path_traversal",
+      "expect": "finding"
+    },
+    {
+      "id": "PM-10",
+      "category": "b2_permission_setting",
+      "file": "src/pm_permission.c",
+      "line": 10,
+      "code": "chmod('/tmp/app.conf', 0666) — temp path, must not report",
+      "cwe": "CWE-732",
+      "detector": "path_traversal",
+      "expect": "no_finding"
+    },
+    {
+      "id": "PM-11",
+      "category": "b2_permission_setting",
+      "file": "src/pm_permission.c",
+      "line": 14,
+      "code": "chmod(p, m) — variable mode, must not report",
+      "cwe": "CWE-732",
+      "detector": "path_traversal",
+      "expect": "no_finding"
+    },
+    {
+      "id": "PM-12",
+      "category": "b2_permission_setting",
+      "file": "src/pm_permission.c",
+      "line": 18,
+      "code": "chmod(..., 0644) — not other-writable, must not report",
+      "cwe": "CWE-732",
+      "detector": "path_traversal",
+      "expect": "no_finding"
     }
   ]
 }

@@ -499,3 +499,81 @@ func orDisjuncts(cond parser.Node) []parser.Node {
 	}
 	return kids
 }
+
+// constantIntValue resolves a text to a definite int64 value: a C integer
+// literal (decimal/hex/octal, negative, suffixed), a bare INT_MIN/INT32_MIN
+// spelling (limits.h defines it as an expression CollectMacroValues cannot
+// fold, so it is resolved by name), or an object-like macro via the macro-value
+// table. Returns (0, false) when the text is not a provable constant.
+func constantIntValue(text string, macros map[string]int) (int64, bool) {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return 0, false
+	}
+	switch t {
+	case "INT_MIN", "INT32_MIN", "INT_MIN32":
+		return -2147483648, true
+	}
+	if v, ok := macros[t]; ok && v >= 0 {
+		return int64(v), true
+	}
+	trimmed := strings.TrimRight(t, "uUlL")
+	if trimmed == "" {
+		return 0, false
+	}
+	if v, err := strconv.ParseInt(trimmed, 0, 64); err == nil {
+		return v, true
+	}
+	return 0, false
+}
+
+// DefiniteValueAt reports the provably-definite integer value of variable v at
+// line: a C integer literal, a zero-valued constant symbol, a macro value, or a
+// variable whose ONLY whole-variable write before line is a constant
+// assignment. It returns (0, false) when the value is not provable at that
+// point — the engine never guesses a value it cannot prove.
+//
+// The signature is the engine form of the single-point interval proof: it does
+// NOT run a full dataflow, it only accepts the "one constant write, no rewrite
+// before line" must-condition, so it can never fabricate a value on a path that
+// reassigns the variable.
+func DefiniteValueAt(v string, line int, assigns, inits []parser.Node, constants *parser.ConstantEnv, macros map[string]int) (int64, bool) {
+	name := normalizeGuardText(v)
+	// A constant symbol the environment marks exactly zero.
+	if constants != nil && constants.IsZero(name) {
+		return 0, true
+	}
+	// A literal / macro value spelled directly.
+	if val, ok := constantIntValue(name, macros); ok {
+		return val, true
+	}
+	// A variable whose only whole-variable write before line is a constant.
+	type write struct {
+		line int
+		rhs  string
+	}
+	var writes []write
+	consider := func(node parser.Node) {
+		lhs, rhs, ok := node.AssignParts()
+		if !ok {
+			return
+		}
+		if normalizeGuardText(lhs.Text()) != name {
+			return
+		}
+		if node.StartLine() >= line {
+			return
+		}
+		writes = append(writes, write{line: node.StartLine(), rhs: rhs.Text()})
+	}
+	for _, a := range assigns {
+		consider(a)
+	}
+	for _, i := range inits {
+		consider(i)
+	}
+	if len(writes) != 1 {
+		return 0, false
+	}
+	return constantIntValue(writes[0].rhs, macros)
+}
