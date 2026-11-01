@@ -454,6 +454,23 @@ type Candidate struct {
 	// SubLHSInfluenced is true when an integer-overflow candidate's LHS
 	// operand is caller/attacker-controlled (mirror of SubRHSInfluenced).
 	SubLHSInfluenced bool `json:"sub_lhs_influenced,omitempty"`
+	// Storage is the stack-address-escape local's storage class ("auto" /
+	// "static"). The detector exempts static locals, so the emitted value is
+	// "auto"; it backs the static@ hint so the classifier sees the pipeline
+	// already ruled out static storage rather than re-deriving it.
+	Storage string `json:"storage,omitempty"`
+	// PointeeKind is the invalid-free object kind the detector proved the
+	// deallocator argument points at: "stack" / "global-array" / "heap-offset".
+	PointeeKind string `json:"pointee_kind,omitempty"`
+	// BaseOrigin is the heap base allocation site ("file:line") for an
+	// invalid-free heap-offset (F4) candidate, empty otherwise.
+	BaseOrigin string `json:"base_origin,omitempty"`
+	// CaseEnd is the switch case's last statement kind for a switch-fallthrough
+	// candidate (the statement that does not terminate the case).
+	CaseEnd string `json:"case_end,omitempty"`
+	// EnumCoverage is the enum name + coverage summary for a switch-fallthrough
+	// missing_default candidate (e.g. "Color (covered 2/3)").
+	EnumCoverage string `json:"enum_coverage,omitempty"`
 }
 
 // CallSiteInfo is one in-tree call site of a parameter, as the callsite census

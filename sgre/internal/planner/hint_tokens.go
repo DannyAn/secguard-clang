@@ -174,6 +174,19 @@ var hintTokenRegistry = []HintTokenSpec{
 	// ---- signal-handler ----
 	{Key: "async-unsafe@", Display: "async-unsafe@<fn>", Description: "the non-async-signal-safe call inside the handler: {value} (off the POSIX async-signal-safe list) — a certain CWE-479"},
 
+	// ---- stack-address-escape ----
+	{Key: "object@", Display: "object@<name>", Description: "the non-static local whose address escapes: {value} — the pipeline already ruled out static storage, so a non-static local's frame dies at return"},
+	{Key: "static@", Display: "static@<no|yes>", Description: "the local's storage class: {value} — `no` (auto) is the only shape the pipeline reports (a static local's storage outlives the frame, so it is exempted at the detector); the fact is surfaced so the classifier does not re-derive it"},
+	{Key: "escape-kind@", Display: "escape-kind@<return|store|async-arg>", Description: "how the address escapes: {value} — `return` = a certain dangling pointer (confirm); `store`/`async-arg` = the address reaches a live location, so judge whether that location outlives the frame"},
+	{Key: "pointee@", Display: "pointee@<stack|global-array|heap-offset>", Description: "invalid-free: the kind of object the deallocator is called on: {value} — the pipeline proved the argument is NOT a heap base pointer (confirm); read the pointee provenance before confirming the macro case"},
+	{Key: "base@", Display: "base@<file>:<line>", Description: "invalid-free: the heap base allocation site of an offset pointer: {value} — the free releases an interior pointer, not the base the allocator returned"},
+
+	// ---- switch-fallthrough ----
+	{Key: "fall@yes", Description: "the switch case body is non-empty and its last statement does not terminate — control falls into the next case"},
+	{Key: "comment@none", Description: "no exemption comment (`fall through` / `fallthrough`) sits between this case and the next — the pipeline already suppressed the documented-intent cases"},
+	{Key: "case_end@", Display: "case_end@<kind>", Description: "the switch case's last statement kind: {value} — it does not break/return/goto, so the fallthrough is structural"},
+	{Key: "enum@", Display: "enum@<name>(covered N/M)", Description: "the switch condition's enum type and coverage: {value} — not every enumerator is covered and there is no default; judge whether the uncovered members are unreachable (dismiss) or a real missing handler (confirm)"},
+
 	// ---- implicit-contract / sizeof-misuse ----
 	{Key: "subject@", Display: "subject@<name>", Description: "the entity the contract/judgment is about: {value} (the struct-pointer parameter for implicit-contract, the sizeof operand for sizeof-misuse)"},
 	{Key: "self-guard@", Display: "self-guard@N", Description: "implicit-contract: the field IS null-checked at line {value}, but the reported deref sits outside that guard's scope — that scope gap is the defect; verify from the Code Context, no source read"},

@@ -616,6 +616,11 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			FormatArg:               props.FormatArg,
 			PathExpr:                props.Path,
 			SubLHSInfluenced:        props.LHSInfluenced == "true",
+			Storage:                 props.Storage,
+			PointeeKind:             props.PointeeKind,
+			BaseOrigin:              props.BaseOrigin,
+			CaseEnd:                 props.CaseEnd,
+			EnumCoverage:            props.EnumCoverage,
 		})
 	}
 

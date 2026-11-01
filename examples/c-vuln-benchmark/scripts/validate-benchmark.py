@@ -88,6 +88,10 @@ DETECTOR_TO_TYPE = {
     "argument_type": "argument-type",
     "data_representation": "data-representation",
     "contract_gap": "implicit-contract",
+    "stack_escape": "stack-address-escape",
+    "stack_address_escape": "stack-address-escape",
+    "invalid_free": "invalid-free",
+    "switch_fallthrough": "switch-fallthrough",
 }
 
 # Every registered vuln type must appear here, and so must every CWE a type can
@@ -133,6 +137,11 @@ CWE_TO_TYPE = {
     "CWE-676": "dangerous-function",
     "CWE-686": "argument-type",
     "CWE-843": "data-representation",
+    "CWE-562": "stack-address-escape",
+    "CWE-761": "invalid-free",
+    "CWE-762": "invalid-free",
+    "CWE-484": "switch-fallthrough",
+    "CWE-478": "switch-fallthrough",
 }
 
 

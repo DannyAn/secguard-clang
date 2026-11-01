@@ -2,6 +2,18 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [未发布]
+
+### 新增：3 个漏洞类型（GLM5.3 能力缺口 B1 批）
+
+依据 `docs/GLM5.3能力缺口落地实施设计20261101.md` 落地 GAP-01/04/05，零误报优先、全部确认形态走 AST/别名确定性判据。
+
+- **stack-address-escape（CWE-562）**：函数返回/泄漏非 static 局部对象的地址。`return &local` / `return arr`（局部数组退化）/ `return &local.f` 为 AST 确定性 confirmed；`g = &local` / `pthread_create(..., &local)` 为 suspected。static 局部、返回全局、字符串字面量、普通同步调用 `helper(&local)` 均不触发。
+- **invalid-free（CWE-761，Legacy CWE-762）**：deallocator 作用于非堆对象。栈对象 `free(a)` / `free(&local)`、数组中段 `free(&arr[5])`、全局数组 `free(g_arr)`、堆基址偏移 `free(p+4)`（复用 findAliases）、`realloc(a,n)` 同族——全部 AST/别名确定性 confirmed。`free(ptr)`（合法主流形态）与 `free(NULL)` 刻意不报。
+- **switch-fallthrough（CWE-484/478 双 category）**：case 体非空、末语句无终结（break/return/goto/noreturn 调用）、无 `fall through` 豁免注释；枚举 switch 未穷举且无 default。全部 suspected（fallthrough 阶梯与 enum 开放是常见惯用法，仅 AI 按"两 case 是否独立语义动作"研判）。
+
+四平行清单（detector / planner registry / allSkillSpecs / schema event_type enum）与 hint token 协议、`TestVulnTypeSkillConsistency` / `TestSeedEventTypesInSchema` / `TestConfirmedTierPolicy` / `TestSkillFragmentsMatchBuildEvidence` / `TestBenchmarkValidatorCWEMap` 五道 guard 全绿；benchmark 新增 23 用例（3 类型各有 finding/no_finding 对照）。
+
 ## [0.11.9] - 2026-10-31
 
 ### 性能：boundary 扫描 fail-open 假设默认预驳回 + AI 预算机器化

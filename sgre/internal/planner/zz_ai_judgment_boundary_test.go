@@ -24,6 +24,7 @@ func TestConfirmedTierPolicy(t *testing.T) {
 	defaultConfirmed := map[string]string{
 		"null-deref":     "flow filter upgrades to confirmed only on must-null (has_definite_null)",
 		"signal-handler": "type-inherent: POSIX async-signal-safe list is fixed and authoritative",
+		"invalid-free":   "AST/alias-deterministic: the deallocator argument is a stack object, a global array, or an interior pointer whose base is proven non-heap",
 	}
 	confirmedCategories := map[string]map[string]string{
 		"buffer-overflow": {
@@ -43,6 +44,9 @@ func TestConfirmedTierPolicy(t *testing.T) {
 		},
 		"signed-compare": {
 			"signed_compare": "literal: signed/unsigned comparison with a provable sign",
+		},
+		"stack-address-escape": {
+			"return_stack_address": "AST-deterministic: returning the address of (or a decayed local array) a non-static local is a certain CWE-562",
 		},
 	}
 

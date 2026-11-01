@@ -38,6 +38,11 @@ type eventProps struct {
 	Expression  string `json:"expression"`
 	Function    string `json:"function"`
 	Category    string `json:"category"`
+	// Storage is the stack-address-escape local's storage class ("auto" /
+	// "static"). A static local is exempted at the detector, so the value is
+	// "auto" in practice; it is carried so the verdict fact can state the
+	// exclusion explicitly instead of leaving the classifier to re-derive it.
+	Storage string `json:"storage"`
 	// NullCondition is the enclosing branch (switch case / if) of a caller-null
 	// literal-NULL call site, emitted by the CallerNullDetector.
 	NullCondition string `json:"null_condition"`
@@ -263,6 +268,18 @@ type eventProps struct {
 	// (origin=free-borrow): the variable came from a borrow-return API and
 	// the call releases an object the caller does not own.
 	BorrowFree string `json:"borrow_free"`
+	// PointeeKind is the invalid-free object kind the detector proved the
+	// deallocator argument points at: "stack" / "global-array" / "heap-offset".
+	PointeeKind string `json:"pointee_kind"`
+	// BaseOrigin is the heap base allocation site ("file:line") for an
+	// invalid-free heap-offset (F4) candidate, empty otherwise.
+	BaseOrigin string `json:"base_origin"`
+	// CaseEnd is the switch case's last statement kind for a switch-fallthrough
+	// candidate (the statement that does not terminate the case).
+	CaseEnd string `json:"case_end"`
+	// EnumCoverage is the enum name + coverage summary for a switch-fallthrough
+	// missing_default candidate (e.g. "Color (covered 2/3)").
+	EnumCoverage string `json:"enum_coverage"`
 }
 
 func parseEventProps(raw string) eventProps {

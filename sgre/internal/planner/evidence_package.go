@@ -539,6 +539,46 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			if c.VariableName != "" {
 				parts = append(parts, "async-unsafe@"+c.VariableName)
 			}
+		case "stack-address-escape":
+			// The verdict basis: which local escapes (object@), that it is
+			// non-static (static@no — a static local is exempted at the detector
+			// so it never reaches the AI), and the channel (escape-kind@return is
+			// a certain dangling pointer; store/async-arg needs a lifetime judge).
+			if c.VariableName != "" {
+				parts = append(parts, "object@"+c.VariableName)
+			}
+			if c.Storage != "" {
+				parts = append(parts, "static@"+staticHintValue(c.Storage))
+			} else {
+				parts = append(parts, "static@no")
+			}
+			if c.Category != "" {
+				parts = append(parts, "escape-kind@"+escapeKindLabel(c.Category))
+			}
+		case "invalid-free":
+			// The verdict basis: what kind of non-heap object the deallocator
+			// argument is (pointee@), and — for an interior pointer — the heap
+			// base allocation site (base@). Every shape is machine-proved, so
+			// the classifier only verifies the statement matches.
+			if c.PointeeKind != "" {
+				parts = append(parts, "pointee@"+c.PointeeKind)
+			}
+			if c.BaseOrigin != "" {
+				parts = append(parts, "base@"+c.BaseOrigin)
+			}
+			parts = append(parts, fmt.Sprintf("free@%d", c.Line))
+		case "switch-fallthrough":
+			if c.Category == "missing_default" {
+				if c.EnumCoverage != "" {
+					parts = append(parts, "enum@"+c.EnumCoverage)
+				}
+			} else {
+				parts = append(parts, "fall@yes")
+				parts = append(parts, "comment@none")
+				if c.CaseEnd != "" {
+					parts = append(parts, "case_end@"+c.CaseEnd)
+				}
+			}
 		case "implicit-contract":
 			if c.Subject != "" {
 				parts = append(parts, "subject@"+c.Subject)

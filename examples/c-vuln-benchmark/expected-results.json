@@ -2309,6 +2309,236 @@
       "cwe": "CWE-415",
       "detector": "double_free",
       "expect": "finding"
+    },
+    {
+      "id": "SE-01",
+      "category": "b1_stack_address_escape",
+      "file": "src/se_stack_escape.c",
+      "line": 12,
+      "code": "return &local — address of a non-static local escapes (certain CWE-562)",
+      "cwe": "CWE-562",
+      "detector": "stack_escape",
+      "expect": "finding"
+    },
+    {
+      "id": "SE-02",
+      "category": "b1_stack_address_escape",
+      "file": "src/se_stack_escape.c",
+      "line": 17,
+      "code": "return arr — local array decay escapes (certain CWE-562)",
+      "cwe": "CWE-562",
+      "detector": "stack_escape",
+      "expect": "finding"
+    },
+    {
+      "id": "SE-03",
+      "category": "b1_stack_address_escape",
+      "file": "src/se_stack_escape.c",
+      "line": 22,
+      "code": "return &p.x — address of a local field escapes (certain CWE-562)",
+      "cwe": "CWE-562",
+      "detector": "stack_escape",
+      "expect": "finding"
+    },
+    {
+      "id": "SE-04",
+      "category": "b1_stack_address_escape",
+      "file": "src/se_stack_escape.c",
+      "line": 27,
+      "code": "g_ptr = &local — address stored into a global (suspected)",
+      "cwe": "CWE-562",
+      "detector": "stack_escape",
+      "expect": "finding"
+    },
+    {
+      "id": "SE-05",
+      "category": "b1_stack_address_escape",
+      "file": "src/se_stack_escape.c",
+      "line": 35,
+      "code": "pthread_create(...,&local) — address passed as async body arg (suspected)",
+      "cwe": "CWE-562",
+      "detector": "stack_escape",
+      "expect": "finding"
+    },
+    {
+      "id": "SE-10",
+      "category": "b1_stack_address_escape",
+      "file": "src/se_stack_escape.c",
+      "line": 40,
+      "code": "static local — storage outlives the frame, must not be reported",
+      "cwe": "CWE-562",
+      "detector": "stack_escape",
+      "expect": "no_finding"
+    },
+    {
+      "id": "SE-11",
+      "category": "b1_stack_address_escape",
+      "file": "src/se_stack_escape.c",
+      "line": 44,
+      "code": "return g_ptr — returning a global pointer value, not an address-of-local",
+      "cwe": "CWE-562",
+      "detector": "stack_escape",
+      "expect": "no_finding"
+    },
+    {
+      "id": "SE-12",
+      "category": "b1_stack_address_escape",
+      "file": "src/se_stack_escape.c",
+      "line": 48,
+      "code": "return a string literal — not a stack address",
+      "cwe": "CWE-562",
+      "detector": "stack_escape",
+      "expect": "no_finding"
+    },
+    {
+      "id": "SE-13",
+      "category": "b1_stack_address_escape",
+      "file": "src/se_stack_escape.c",
+      "line": 53,
+      "code": "return helper(&local) — an ordinary synchronous call result, v1 not tracked",
+      "cwe": "CWE-562",
+      "detector": "stack_escape",
+      "expect": "no_finding"
+    },
+    {
+      "id": "IF-01",
+      "category": "b1_invalid_free",
+      "file": "src/if_invalid_free.c",
+      "line": 8,
+      "code": "free(a) on a stack array (certain CWE-761)",
+      "cwe": "CWE-761",
+      "detector": "invalid_free",
+      "expect": "finding"
+    },
+    {
+      "id": "IF-02",
+      "category": "b1_invalid_free",
+      "file": "src/if_invalid_free.c",
+      "line": 13,
+      "code": "free(&local) — address of a local (certain CWE-761)",
+      "cwe": "CWE-761",
+      "detector": "invalid_free",
+      "expect": "finding"
+    },
+    {
+      "id": "IF-03",
+      "category": "b1_invalid_free",
+      "file": "src/if_invalid_free.c",
+      "line": 18,
+      "code": "free(&arr[5]) — mid-array interior pointer (certain CWE-761)",
+      "cwe": "CWE-761",
+      "detector": "invalid_free",
+      "expect": "finding"
+    },
+    {
+      "id": "IF-04",
+      "category": "b1_invalid_free",
+      "file": "src/if_invalid_free.c",
+      "line": 22,
+      "code": "free(g_arr) on a global array (certain CWE-761)",
+      "cwe": "CWE-761",
+      "detector": "invalid_free",
+      "expect": "finding"
+    },
+    {
+      "id": "IF-05",
+      "category": "b1_invalid_free",
+      "file": "src/if_invalid_free.c",
+      "line": 27,
+      "code": "free(p + 4) on a malloc base offset (certain CWE-761)",
+      "cwe": "CWE-761",
+      "detector": "invalid_free",
+      "expect": "finding"
+    },
+    {
+      "id": "IF-10",
+      "category": "b1_invalid_free",
+      "file": "src/if_invalid_free.c",
+      "line": 32,
+      "code": "free(p) on a pointer variable — the legal idiom, must not be reported",
+      "cwe": "CWE-761",
+      "detector": "invalid_free",
+      "expect": "no_finding"
+    },
+    {
+      "id": "IF-11",
+      "category": "b1_invalid_free",
+      "file": "src/if_invalid_free.c",
+      "line": 36,
+      "code": "free(NULL) — explicitly skipped",
+      "cwe": "CWE-761",
+      "detector": "invalid_free",
+      "expect": "no_finding"
+    },
+    {
+      "id": "IF-12",
+      "category": "b1_invalid_free",
+      "file": "src/if_invalid_free.c",
+      "line": 41,
+      "code": "free(p+4) with an unknown base (not a malloc alias) — not proven, must not report",
+      "cwe": "CWE-761",
+      "detector": "invalid_free",
+      "expect": "no_finding"
+    },
+    {
+      "id": "SF-01",
+      "category": "b1_switch_fallthrough",
+      "file": "src/sf_switch_flow.c",
+      "line": 11,
+      "code": "case RED falls through into case GREEN (no terminator, no comment)",
+      "cwe": "CWE-484",
+      "detector": "switch_fallthrough",
+      "expect": "finding"
+    },
+    {
+      "id": "SF-02",
+      "category": "b1_switch_fallthrough",
+      "file": "src/sf_switch_flow.c",
+      "line": 24,
+      "code": "case RED ends with a call and falls through (a call is not a terminator)",
+      "cwe": "CWE-484",
+      "detector": "switch_fallthrough",
+      "expect": "finding"
+    },
+    {
+      "id": "SF-03",
+      "category": "b1_switch_fallthrough",
+      "file": "src/sf_switch_flow.c",
+      "line": 34,
+      "code": "switch on enum Color missing BLUE with no default",
+      "cwe": "CWE-478",
+      "detector": "switch_fallthrough",
+      "expect": "finding"
+    },
+    {
+      "id": "SF-10",
+      "category": "b1_switch_fallthrough",
+      "file": "src/sf_switch_flow.c",
+      "line": 47,
+      "code": "/* fall through */ comment exempts the fallthrough",
+      "cwe": "CWE-484",
+      "detector": "switch_fallthrough",
+      "expect": "no_finding"
+    },
+    {
+      "id": "SF-11",
+      "category": "b1_switch_fallthrough",
+      "file": "src/sf_switch_flow.c",
+      "line": 59,
+      "code": "empty case-label chain (case RED: case GREEN:) must not report",
+      "cwe": "CWE-484",
+      "detector": "switch_fallthrough",
+      "expect": "no_finding"
+    },
+    {
+      "id": "SF-12",
+      "category": "b1_switch_fallthrough",
+      "file": "src/sf_switch_flow.c",
+      "line": 69,
+      "code": "int switch without default — not an enum, must not report missing_default",
+      "cwe": "CWE-478",
+      "detector": "switch_fallthrough",
+      "expect": "no_finding"
     }
   ]
 }

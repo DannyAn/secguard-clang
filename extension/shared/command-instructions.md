@@ -238,6 +238,11 @@ heavy type's candidate ceiling is the context-budget constraint, not the
 evidence-open constraint — its `r_type` understates cost because the index row is a
 single line while the Evidence file is the whole function.
 
+The B1 types `stack-address-escape` / `invalid-free` / `switch-fallthrough` are
+LIGHT (line-level ±8-line evidence) and participate in the existing grouping
+rules as light types — treat them like any other light type, do not re-derive a
+new capacity class for an unfamiliar name.
+
 **Pre-dispatch validation (EARS):**
 - If a batch has > `MAX_TYPES_PER_BATCH` (4) types, the orchestrator SHALL split it before dispatching.
 - A batch containing a whole-function-embedding (heavy) type (`integer-overflow`) SHALL NOT share with another heavy type, and its type ceiling drops to 2 (one heavy + at most one light type) — its per-candidate evidence is the whole function, so counting it like a line-level type under-budgets the batch.

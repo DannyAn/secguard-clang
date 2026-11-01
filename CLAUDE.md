@@ -40,7 +40,7 @@ The pipeline is a chain of packages, each writing to the next layer of the DB:
 
 1. **`internal/indexer`** — walks `*.c` files, parses with tree-sitter, and writes Layer-1 facts. Incremental: files unchanged by checksum are skipped.
 2. **`internal/graph`** — builds the semantic graph (call graph, data flow, reachability, CFG) on top of the indexed facts.
-3. **`internal/evidence`** — 32 detectors (`null_source.go`, `dereference.go`, `buffer_overflow.go`, ...). Each detector implements the `Detector` interface and writes `security_events`. **Detectors self-register in `registry.go` via `init()`** — adding a detector means a new `RegisterDetector` line, nothing else.
+3. **`internal/evidence`** — 35 detectors (`null_source.go`, `dereference.go`, `buffer_overflow.go`, ...). Each detector implements the `Detector` interface and writes `security_events`. **Detectors self-register in `registry.go` via `init()`** — adding a detector means a new `RegisterDetector` line, nothing else. The B1 batch added `stack_escape.go` (CWE-562), `invalid_free.go` (CWE-761), and `switch_flow.go` (CWE-484/478).
 4. **`internal/planner`** — the convergence pipeline. `Planner.Plan()` seeds candidates by event type, runs a per-vuln-type filter chain, dedups, and ranks — it returns **all** deduped candidates (no cap/truncation; the AI agent reviews every one in batches). Filters implement the `Filter` interface (`Apply(ctx, []Candidate) ([]Candidate, error)`).
 5. **`internal/agent`** — formats converged evidence for the AI agent consumer.
 6. **`internal/report`** — writes SARIF 2.1, a markdown summary, and per-finding markdown files.
@@ -150,7 +150,7 @@ suffix could silently go missing.
 - `sgre/testdata/phase1`–`phase7` — staged fixtures for the pipeline phases.
 - `sgre/testdata/perf/gen_codebase.go` — generates large synthetic codebases for perf testing: `go run testdata/perf/gen_codebase.go testdata/perf/large_codebase 100 50`.
 
-## Supported Vulnerability Types (24)
+## Supported Vulnerability Types (28)
 
 Each is registered as a `VulnTypeSpec` in `internal/planner/registry.go` and has a
 corresponding agent skill under `extension/shared/skills/`. The authoritative runtime list
@@ -165,7 +165,8 @@ at CLI startup (`cli/root.go`), and the TS tool wrappers never hardcode CWE list
 `race-condition`, `hardcoded-secret`, `deadlock`, `crypto-misuse`,
 `out-of-bounds`, `divide-by-zero`, `unchecked-return`, `path-traversal`,
 `sizeof-misuse`, `signed-compare`, `signal-handler`, `dangerous-function`,
-`argument-type`, `data-representation`.
+`argument-type`, `data-representation`, `implicit-contract`,
+`stack-address-escape`, `invalid-free`, `switch-fallthrough`.
 
 `out-of-bounds` (CWE-125) shares the
 `BUFFER_ACCESS` seed event with `buffer-overflow`: read-flavored categories

@@ -80,6 +80,9 @@ var allSkillSpecs = []skillSpec{
 	{"argument-type", "contract", "Detects incompatible pointer-cast function arguments (CWE-686)"},
 	{"data-representation", "contract", "Detects callback/generic-pointer representation mismatches (CWE-843)"},
 	{"implicit-contract", "contract", "Detects missing entry validation of a caller/framework-supplied struct field dereferenced without a null guard (CWE-20)"},
+	{"stack-address-escape", "memory", "Detects a function returning or leaking the address of a non-static local (CWE-562)"},
+	{"invalid-free", "memory", "Detects deallocator calls on non-heap objects: stack/global arrays, mid-array and offset pointers (CWE-761)"},
+	{"switch-fallthrough", "control", "Detects switch fallthrough and missing enum default (CWE-484/478)"},
 }
 
 func DefaultRegistry(store db.Store, logger *log.Logger) *Registry {

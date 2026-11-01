@@ -126,6 +126,8 @@ filter 在 `Apply` 中把候选升级为 `confirmed` 同样受机器守卫约束
 | signed-compare | 静态 `signed_compare` | 字面量 |
 | signal-handler | 静态 default | 类型固有 |
 | dangerous-function | 静态 default（`assert_usage` / `obsolete_api_conditional` 除外 → suspected） | 类型固有 |
+| stack-address-escape | 静态 `return_stack_address` | AST 确定性（返回非 static 局部地址 / 局部数组退化） |
+| invalid-free | 静态 default | AST/别名确定性（deallocator 实参是栈对象/全局数组/已证非堆的内部指针） |
 
 **故意留在 `suspected` 的类型 / 类别（需要「意图/语义」研判，无法确定性证明）：**
 

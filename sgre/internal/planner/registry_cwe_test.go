@@ -133,6 +133,7 @@ func TestAllCWEs_ContainsAll20CanonicalCWEs(t *testing.T) {
 		"CWE-190", "CWE-362", "CWE-798", "CWE-667", "CWE-327",
 		"CWE-369", "CWE-252", "CWE-22", "CWE-681", "CWE-467", "CWE-686", "CWE-843",
 		"CWE-88", "CWE-91", "CWE-93", "CWE-117",
+		"CWE-562", "CWE-761", "CWE-484", "CWE-478", "CWE-762",
 	}
 	for _, cwe := range expected {
 		if !cwes[cwe] {
@@ -143,9 +144,13 @@ func TestAllCWEs_ContainsAll20CanonicalCWEs(t *testing.T) {
 
 func TestAllCWEs_CountIs25CanonicalPlus3LegacyPlus4CategoryCWEs(t *testing.T) {
 	cwes := AllCWEs()
-	// 25 canonical + 3 legacy (CWE-89, CWE-326, CWE-338) + 4 category CWEs (CWE-88, CWE-91, CWE-93, CWE-117) = 32
-	if len(cwes) != 32 {
-		t.Errorf("AllCWEs() has %d entries, want 32 (25 canonical + 3 legacy + 4 injection category CWEs)", len(cwes))
+	// 29 canonical + 4 legacy (CWE-89, CWE-326, CWE-338, CWE-762) + 6 category
+	// CWEs (CWE-88, CWE-91, CWE-93, CWE-117, CWE-478, and CWE-484 deduped with
+	// switch-fallthrough's canonical) = 37. The B1 batch adds stack-address-
+	// escape (CWE-562), invalid-free (CWE-761 + legacy CWE-762) and
+	// switch-fallthrough (CWE-484 canonical, CWE-478 missing_default category).
+	if len(cwes) != 37 {
+		t.Errorf("AllCWEs() has %d entries, want 37 (29 canonical + 4 legacy + 6 category CWEs)", len(cwes))
 	}
 }
 
