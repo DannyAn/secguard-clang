@@ -33,6 +33,9 @@ The detector marks the seed event `definite=true` when the CFG proves no free/es
 | `escape@return` | the value is returned to the caller somewhere | the leak path must be a NON-returning path — find it |
 | `escape@store` | the value is stored into a non-local (global/parameter/container) somewhere | the leak path must bypass that store — find it |
 | `free@N,M` | the release sites that exist but do not cover the leak path | the ## Code Context window covers them |
+| `free-mismatch@<api>` | a release exists but frees the WRONG allocator family (`free()` on an XPath context, `cJSON_Delete` on a `strdup` block) | the call does NOT release this object — it is a leak (and a latent invalid-free); confirm the leak |
+| `transfer-cond@<guard>` | an ownership transfer is CONDITIONAL (only on some branch) | the branch that skips the transfer is the leak path — judge whether that branch is reachable |
+| `free-on-borrow@<api>` | the release targets a BORROWED pointer (`cJSON_Delete` on `cJSON_GetObjectItem`'s result, `free` on `strstr`'s) | an invalid free of an object owned elsewhere, NOT a leak — dismiss the leak |
 
 The decisive split is the escape token plus the leak token:
 `escape@none` + `leak@definite` settles the row from the Hint; any channel
@@ -79,10 +82,11 @@ the embedded section and the indexed lookup.
 |-----------|---------------|
 | `definite`: no free, escape, or transfer is reachable on any path (or all such lines are dead code) | **confirmed** |
 | Leaked on a concrete error path even though other paths release | **confirmed** |
-| Freed/escaped/returned on some paths but leaked on others (conditional ownership) | **suspected** (route to AI; the verdict stays binary) |
+| `p = realloc(p, n)` where the failure path (`if (!p) return;`) loses the original block | **confirmed** — the old block is overwritten before the check; preserve it in a temp first (`tmp = realloc(p, n); if (tmp) p = tmp;`) |
+| Freed/escaped/returned on some paths but leaked on others (conditional ownership) | judge the leak path; the verdict stays binary — **confirmed** when a reachable path loses the block without release, **false-positive** when every path releases/escapes |
 | A matching release or ownership transfer for the same object exists on all relevant paths | **false-positive** |
 | The candidate is an alias release, cast release, escape-to-owner, returned pointer, guarded free, or `goto cleanup` | **false-positive** |
-| Whether a release/owner exists cannot be settled from this function (unknown callee semantics) | **dismissed** |
+| Whether a release/owner exists cannot be settled from this function (unknown callee semantics) | **dismissed** only when a callee provably releases it (embedded `## Callee Definition` or a declared `[contracts]` takes-ownership); otherwise list it in `needs_context` — do not dismiss blind |
 
 An **error-path leak is confirmed, not suspected**: if the function demonstrably returns on a reachable error path with the block still owned and unreleased, that is the same proved shape as a never-freed allocation. `memory-leak` and `resource-leak` must never disagree on this shape.
 

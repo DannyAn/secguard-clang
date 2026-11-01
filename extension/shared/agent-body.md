@@ -203,10 +203,18 @@ Two kinds of hint — do NOT conflate them:
 
 **Machine-proved facts → decisive, classify from the row with no read:**
 - confirm: `certain-null`/`null@cfg-proof`/`null@malloc-fail`/`tainted`/
-  constant-`idx@`-past-`cap@`/`contract@known`/`leak@definite`/`reason@`(weak
-  crypto)/`async-unsafe@`/`cast@`(incompatible types).
+  constant-`idx@`-past-`cap@`/`leak@definite`/`async-unsafe@`/
+  `cast@`(incompatible types).
 - dismiss: `contract@unknown`/`macro-context`(unproven macro)/`discard`/
   `src-cap@ ≤ cap@`/`value-shape@`(placeholder/test).
+- **Two tokens settle the FACT, not the VERDICT — judge the use before
+  confirming:**
+  - `contract@known` proves the return value is UNCHECKED (machine-proved);
+    whether the failure is *actionable* still needs the call-site context (a
+    `zmalloc`-style abort-on-OOM wrapper makes the check pointless → dismiss).
+  - `reason@` (weak crypto) names the weak primitive; the *use* decides — a
+    password hash / signature / key is confirmed, MD5-for-checksum / `rand()`-for-UI
+    is dismissed.
 - user-declared contract: `user-contract@<symbol>` (+ `takes-ownership@<param>` /
   `outparam@<param>` / `release@<mode>`) — the user declared this EXTERNAL
   symbol's contract in secguard.toml `[contracts]`; judge from the declared

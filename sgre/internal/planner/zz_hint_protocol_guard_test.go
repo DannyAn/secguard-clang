@@ -53,7 +53,7 @@ func TestExtensionDocsHintTokensRegistered(t *testing.T) {
 	}
 
 	backtick := regexp.MustCompile("`([^`\n]+)`")
-	tokenKey := regexp.MustCompile(`^([a-z][a-z0-9-]*)@`)
+	tokenKey := regexp.MustCompile(`^([a-z][a-z0-9_-]*)@`)
 	var offenders []string
 	for _, rel := range docs {
 		data, err := os.ReadFile(filepath.Join(repoRoot, rel))

@@ -2,7 +2,7 @@
 name: invalid-free
 description: Classify invalid-free evidence — a deallocator called on a non-heap object or an interior pointer. Maps to CWE-761.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-761
   severity: CRITICAL
@@ -33,7 +33,13 @@ analysis), so the pipeline auto-confirms it. Your role is to verify the
 statement matches — in particular, a macro-wrapped argument (a `FREE(p)` whose
 `#define` expands to `free(p)` but where `p` is actually a cast of a heap
 pointer) is the one shape to check against `## Macro Definition` before
-confirming.
+confirming. `base@` names the heap base of an offset pointer: it confirms the
+`free` releases an interior pointer, not the base — read it, don't re-derive it.
+
+> **Only a PROVEN non-heap argument is reported.** `free(ptr)` (a plain pointer
+> variable) and `free(p + 4)` where `p`'s pointee is UNKNOWN (not a malloc base,
+> not a local array, not a global array) are deliberately NOT reported — the
+> detector prefers a miss over a false positive on this confirmed tier.
 
 ### Detection Logic
 1. For each deallocator call (free / realloc / project deallocator set), peel
@@ -42,7 +48,9 @@ confirming.
    NOT reported (it is the dominant legal idiom)
 3. A stack object (`free(a)` local array, `free(&local)`, `free(&local.f)`), a
    global array (`free(g_arr)`), or an interior pointer (`free(&arr[5])`,
-   `free(arr+2)`, `free(p+4)` for a malloc base) is emitted
+   `free(arr+2)`, `free(p+4)` for a malloc base) is emitted. A pointer-arithmetic
+   interior pointer whose base is UNKNOWN (`int *p = get_ptr(); free(p + 4)`) is
+   NOT emitted — the pointee is not provably non-heap
 4. Emit `INVALID_FREE` with the pointee kind; every shape is auto-confirmed
 
 ### Evidence closure (read before any source read)
@@ -79,6 +87,16 @@ confirming such a case.
 - Release the object with the correct base pointer, not an interior pointer
 - Remove the deallocator call on stack/global storage entirely
 - Allocate the object on the heap if ownership is genuinely transferred
+
+### Examples
+
+```c
+// CONFIRMED — free on a stack array (never heap-allocated)
+int a[8]; free(a);
+
+// DISMISSED — free(NULL) is a legal no-op, and free(ptr) on a plain variable is skipped
+free(NULL);
+```
 
 ### Severity Matrix
 

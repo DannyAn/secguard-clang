@@ -1467,10 +1467,10 @@
       "category": "phase12_v071_fixes",
       "file": "src/p11_signal_handler.c",
       "line": 62,
-      "code": "信号处理器内 strncpy —— strncpy 命中 SafeFunctions，SafeFunctionFilter 曾按变量名巧合误杀（P3 回归）",
+      "code": "信号处理器内 strncpy —— strncpy 是 POSIX.1-2008 TC2 的 async-signal-safe 函数，不得报 CWE-479（v0.12.0 从 asyncSignalUnsafe 移除，防止 confirmed FP）",
       "cwe": "CWE-479",
       "detector": "concurrency.signal_handler",
-      "expect": "finding"
+      "expect": "no_finding"
     },
     {
       "id": "UAF-02",

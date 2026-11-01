@@ -67,7 +67,7 @@ below rules them.
 | `null@cfg-proof` + guard AFTER deref (scope misses) | **confirmed** |
 | Nullable source + NOT reachable | **false-positive** (dead code) |
 | `null@malloc-fail` / `null@caller-arg` / `null@opaque-origin` / `null@assumed-return` / `null@external-unknown` (any guard state) | **suspected** — a may-null tier is NEVER confirmed from this table; judge it by the Nullable-Origin Tier table below |
-| External call return + no guard + deref | **dismissed** (external may never return NULL) |
+| External call return + no guard + deref | **judge the callee's NULL contract** — a known-nullable external (`getenv`/`strchr`/`fopen`/`malloc`) that can return NULL is **confirmed**; a callee whose contract guarantees non-null (abort-on-OOM, a lookup that never misses by construction) is **false-positive**. Do not dismiss merely because the callee is external |
 | `caller_null` (parameter) + no guard + deref | **suspected** — the caller contract is unproven; confirm only if a caller actually passes NULL/unproven value |
 | `caller_null` (parameter) + every caller proves non-null (`if (v == NULL) return;` dominates the call) | **false-positive** — the pipeline filters these before they surface |
 
@@ -135,6 +135,7 @@ your job differs per tier, so read it before anything else:
 | `null@cfg-proof` | CFG proves a NULL assignment reaches the dereference on every path | machine-proved CWE-476 — verify the statement matches, then confirm |
 | `null@malloc-fail` | the null source is a **may-null** call result (allocator / known maybe-null libc / a callee whose body has a NULL-return path: a literal NULL or an allocator result) — NOT a must-null proof | judge reachability, not just the shape: (1) does the callee actually return NULL, or does it abort-on-OOM (`zmalloc`/`xmalloc`/`oom()` never returns) making its `return NULL` dead code? (2) is the deref loop-guarded (`while(p)`) or otherwise checked? (3) can the NULL case actually occur for this call's arguments? Confirm only when the callee can really return NULL AND the deref is unguarded; otherwise dismiss. When the Hint carries `callee@file:line`, the callee body is embedded under `## Callee Definition`, judge it there instead of reading source |
 | `null@caller-arg` | an inter-procedural caller passes the parameter unproven non-null | judge the caller contract — confirm only if a caller can actually pass NULL |
+| `caller-null@<why>` | the inter-procedural caller-null WITNESS: it names the specific caller that passes NULL / forwards an open parameter, and (when present) the caller's enclosing branch | check ONLY that named caller (via the embedded Code Context / `secguard def`); compare its branch against the dereference's branch — confirm when the NULL can reach the deref, dismiss when they are mutually exclusive |
 | `null@opaque-origin` | the null source is a contract the scan tree cannot see: a pointer parameter of a function with zero in-tree callers (an exported API / registered callback), or a field value of an externally-defined type (`tree = (T *)(resp->group_data)`, `para->orig->base_dn`) | a fail-open ASSUMPTION, not evidence — confirm when the external contract can plausibly yield NULL (an entry point that parses external input, a lookup that can miss), dismiss when the non-null precondition is an established project convention (an internal API whose other callers all pass non-null) |
 | `array-buffer@<count-field>` | the null source is a count-gated array buffer: `tree = (T *)(resp->group_data)` whose validity is gated by the paired count field `resp->group_num` — `count == 0 ⇒ buffer is NULL/empty` | **convicting, not exculpating.** Confirm when the candidate's chain dereferences the buffer (`tree[0]`) without checking the count field; dismiss only when the SAME chain (`chain-root@`) checks the count (`count == 0` / `count > 0`) before the dereference. The count/data NAME pairing is a heuristic SIGNAL, not a proof — verify from the Code Context that the count field actually gates this buffer (same struct, matching stem) before confirming |
 | `null@assumed-return` | an IN-SCAN callee graded maybe-null only by fail-open (it returns a parameter, a struct field, or an unknown call) — its body is embedded under `## Callee Definition` | judge the assumption from the embedded body — confirm only if the returned value can actually be NULL (a zero-initialized field, a nullable forward), otherwise dismiss |
@@ -237,6 +238,16 @@ pipeline's null-flow proof may be wrong. Verify the macro before confirming:
 - For malloc: always check return before use
 - For function returns: check API contract — does it document NULL return?
 - When the Evidence section notes `the same nullable X is also dereferenced at line(s) N, M`, the candidate covers EVERY sink of that variable — the fix must guard all of them, not just the reported line.
+
+### Examples
+
+```c
+// CONFIRMED — getenv can return NULL and p->f is unguarded
+char *p = getenv("HOME"); use(p->f);
+
+// DISMISSED — the malloc result is checked before the dereference
+char *p = malloc(n); if (!p) return; use(p->f);
+```
 
 ### Severity Matrix
 

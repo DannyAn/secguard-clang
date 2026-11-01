@@ -65,10 +65,11 @@ the same pattern.
 
 | Token | Meaning | Your action |
 |-------|---------|-------------|
-| `cast@<type>` | the value is explicitly cast to this type at the candidate line | judge the truncation/reinterpretation intent |
+| `cast@<type>` | the comparator casts its `void *` element to this type | judge that interpretation against the sort base's TRUE element type (from `expected@` / the call-site `Source`), never against the cast in isolation |
 
-The cast token names the reinterpretation; the surrounding statement
-(from the `Source` column) states whether width or representation is lost.
+The pair (call-site base element type, comparator cast) is the whole verdict;
+`cast@` names the comparator's interpretation, and the `Source` column shows the
+`qsort`/`bsearch` base + size argument that established the real representation.
 
 ### Detection Logic
 1. For each function, record how it casts its `void *` parameters

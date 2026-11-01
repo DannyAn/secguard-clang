@@ -40,6 +40,11 @@ void fp2_free_null(void) {
     free(NULL);
 }
 
+void fp3_free_unknown_offset(void) {
+    int *p = get_ptr();   /* pointee unknown — not a proven non-heap interior */
+    free(p + 4);
+}
+
 int main(void) {
     f1_stack_array();
     f1b_addr_local();
@@ -49,5 +54,6 @@ int main(void) {
     f5_realloc_stack();
     fp1_free_ptr_var();
     fp2_free_null();
+    fp3_free_unknown_offset();
     return 0;
 }

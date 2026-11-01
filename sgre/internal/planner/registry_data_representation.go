@@ -31,6 +31,6 @@ func buildDataRepVerdictFacts(c Candidate) []VerdictFact {
 	}
 	return []VerdictFact{{
 		Token:  "cast@" + c.CastType,
-		Detail: fmt.Sprintf("the value is explicitly cast to %s at line %d — judge the truncation/reinterpretation intent", c.CastType, c.Line),
+		Detail: fmt.Sprintf("the comparator casts its void* element to %s — judge that interpretation against the sort base's true element type (%s), never against the cast in isolation", c.CastType, c.ExpectedType),
 	}}
 }

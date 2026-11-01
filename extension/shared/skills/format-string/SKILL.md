@@ -35,7 +35,6 @@ A format-string candidate has:
 1. Find all calls to printf-family functions
 2. Extract the format argument (first argument for printf/sprintf, second for fprintf)
 3. If the format argument is NOT a string literal (doesn't start with `"` or `L"`), emit FORMAT_STRING event
-4. Skip calls that use `sizeof` in the expression (likely safe bounded writes)
 
 ### Evidence closure (read before any source read)
 
@@ -56,9 +55,9 @@ the embedded section and the indexed lookup.
 | printf(log_msg) — format is a function parameter, `callsites@` shows a non-constant caller | **confirmed** (attacker-reachable via that caller) |
 | printf(log_msg) — format is a function parameter, `callsites@N:all-literal` | **dismissed** (every in-tree caller passes a compile-time constant) |
 | printf(log_msg) — format is a function parameter, no `callsites@` token | **judge** (no in-tree call site: an external TU may call it) |
-| printf(local_buf) — format is a local, never externally controlled | **dismissed** |
+| printf(local_buf) — format is a local: judge how it is filled | **confirmed** when it is filled from `recv`/`getenv`/`argv`/file input; **dismissed** only when every write is a literal/bounded constant |
 | printf("%s", user_input) — format is literal | **false-positive** (safe) |
-| snprintf(buf, sizeof(buf), fmt, ...) — bounded with sizeof | **false-positive** (safe) |
+| snprintf(buf, sizeof(buf), fmt, ...) — non-literal `fmt` | **confirmed** — `sizeof` bounds only the OUTPUT length, not the format itself; `%s`/`%n` still read/write attacker-controlled memory. Only a literal format (or an all-literal census) is safe |
 
 ### Common False Positives
 - `printf("%s\n", msg)` — format is a string literal (safe)
@@ -71,6 +70,16 @@ the embedded section and the indexed lookup.
 - Use `fputs()` instead of `printf()` when no formatting is needed
 - Use `snprintf()` with bounded buffer size to prevent overflow
 - Never pass user-controlled data as the format argument
+
+### Examples
+
+```c
+// CONFIRMED — user input used directly as the format (%n/%s read-write)
+printf(user_input);
+
+// DISMISSED — literal format, the input is an argument
+printf("%s", user_input);
+```
 
 ### Severity Matrix
 

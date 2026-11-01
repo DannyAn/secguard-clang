@@ -35,7 +35,7 @@ Evidence file fragments:
 - **operand_influenced**: the left operand is caller/attacker-controlled (when proved)
 - **call_path**: the function is reachable from an entry point
 
-### Hint column
+### Hint Tokens (Verdict Basis)
 
 The `_index.md` `Hint` column for `unsigned_sub_underflow` carries the operand
 provenance and guard fact the pipeline computed, so you can usually classify from
@@ -129,7 +129,7 @@ the embedded section and the indexed lookup.
 | `count * elem_size` with user-controlled `count`, no check | **confirmed** |
 | Constant expression (no variables) | **false-positive** |
 | A size variable assigned a single small constant (`size_t n = 10; malloc(n * n)`) — the convergence range flow proves it bounded and suppresses it | **false-positive** |
-| Arithmetic on `int` (signed) feeding malloc | **dismissed** (sign issues) |
+| Arithmetic on `int` (signed) feeding malloc | **confirmed when it can wrap or go negative** — signed overflow is UB, and a negative `int` widened to `size_t` at the `malloc` call is the classic CWE-195 shape; **dismissed** only when the operands are provably bounded so the result cannot wrap or go negative |
 | `size_mul_const_overflow` where the parameter is raw user input and `K >= 256` | **confirmed** |
 | `size_mul_const_overflow` where the parameter is provably bounded to `< SIZE_MAX / K` by a guard | **false-positive** |
 
@@ -146,6 +146,16 @@ which is implausible, so the detector no longer surfaces them.
 - Use compiler builtins: `__builtin_mul_overflow(count, elem_size, &total)`
 - Use checked-allocation wrappers that validate internally
 - Clamp `count` to a reasonable maximum before arithmetic
+
+### Examples
+
+```c
+// CONFIRMED — n is attacker-controlled and the multiply is not guarded
+size_t n = len_from_net(); char *p = malloc(n * sizeof(T));
+
+// DISMISSED — the overflow check dominates the multiply
+if (n > SIZE_MAX / sizeof(T)) return; char *p = malloc(n * sizeof(T));
+```
 
 ### Severity Matrix
 

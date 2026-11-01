@@ -36,6 +36,7 @@ func TestDataRepresentationDetector_Properties(t *testing.T) {
 		Variable string `json:"variable"`
 		Expected string `json:"expected"`
 		Actual   string `json:"actual"`
+		Cast     string `json:"cast"`
 	}
 	if err := json.Unmarshal([]byte(events[0].Properties), &props); err != nil {
 		t.Fatalf("unmarshal props: %v", err)
@@ -51,5 +52,8 @@ func TestDataRepresentationDetector_Properties(t *testing.T) {
 	}
 	if props.Actual != "char **" {
 		t.Errorf("actual (comparator cast) = %q, want char **", props.Actual)
+	}
+	if props.Cast != "char **" {
+		t.Errorf("cast = %q, want char ** (the comparator cast must be exported so buildDataRepVerdictFacts can emit cast@)", props.Cast)
 	}
 }

@@ -35,6 +35,17 @@ Evidence file fragments (per category):
 - `shared_data_race` — **data_race**: the access; **thread_functions** / **thread_instances** / **write_line**: the racing threads and the conflicting write
 - all — **call_path**: the function is reachable from an entry point
 
+### Hint Tokens (Verdict Basis)
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `threads@<fn>` | the thread function(s) accessing the shared data | confirm only when ≥ 2 live instances reach the data (the SAME function started twice counts) |
+| `instances@N` | the number of distinct thread instances | `< 2` means no concurrency — false-positive |
+| `write@N` | the conflicting write line | ≥ 1 write is required for a data race |
+| `mutex@<name>` / `lock@<lo>-<hi>` | the guarding mutex and its critical-section span (toctou_shared_state) | the candidate's write sits OUTSIDE the span — that gap is the defect |
+| `check@<fn>→use@<fn>` | the check-then-use pair (filesystem TOCTOU) | confirm when the path can change between check and use; `O_NOFOLLOW`/`fstat(fd)`/a held lock dismisses |
+| `arg@<expr>` | the argument checked then used | the value whose change between check and use is the race |
+
 ### Safe Patterns (P0 Exclusion)
 
 | Safe Pattern | Why Safe |
@@ -61,13 +72,14 @@ the embedded section and the indexed lookup.
 |-----------|---------------|
 | `access()` + `fopen()` on same path, no atomicity | **confirmed** |
 | `access()` + `open()` with `O_NOFOLLOW` | **false-positive** |
-| Mutate a shared/global variable after releasing a lock | **dismissed** (a TOCTOU only if the same variable was READ inside the lock — verify the check-then-act pair) |
+| Mutate a shared/global variable after releasing a lock | **confirmed** only when the same variable was READ inside the lock and the post-unlock write re-acts on that read (a real check-then-act); **dismissed** when the post-unlock write is unrelated to the locked read |
 | Lock held through check + mutate | **false-positive** |
 | `access()` + `fopen()` in same function, path is local | **dismissed** (may be safe if path not attacker-controlled) |
 | Check-then-act with no shared state | **false-positive** |
 | Shared variable, >= 2 pthread threads, >= 1 write, no lock | **confirmed** |
 | Shared variable, all accesses inside lock scope | **false-positive** |
-| Shared variable accessed by only one thread function | **false-positive** (no concurrent access) |
+| Shared variable accessed by a single thread INSTANCE (one thread function started once, no second live thread reaches it) | **false-positive** (no concurrent access) |
+| Shared variable reached by ≥ 2 live thread instances — including the SAME thread function started twice via `pthread_create` | **confirmed** when ≥1 write and no common lock/atomic guards every access |
 
 ### Fix Suggestions
 - Replace `access()` + `fopen()` with direct `fopen()` and error check
@@ -76,6 +88,17 @@ the embedded section and the indexed lookup.
 - Use `fstat()` on the fd instead of `stat()` on the path
 - For file locking, use `flock()` or `fcntl(F_SETLK)` for atomic lock+check
 - Consider single-threaded design for simple cases
+
+### Examples
+
+```c
+// CONFIRMED — two live threads write the same global with no common lock
+void t1(void *a) { (void)a; g_counter++; }
+void t2(void *a) { (void)a; g_counter++; }
+
+// DISMISSED — the write is inside a critical section
+pthread_mutex_lock(&m); g_counter++; pthread_mutex_unlock(&m);
+```
 
 ### Severity Matrix
 

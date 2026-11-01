@@ -26,6 +26,8 @@ An uninit candidate has:
 | `origin@<kind>` | the uninitialized storage's kind (`stack_uninit`/`heap_uninit`/`struct_partial_uninit`) | where the missing write must be |
 | `decl@N` | the declaration line of the uninitialized storage | the ## Code Context window covers it |
 | `init@none` | the detector PROVED the read target is never written between declaration/allocation and this read | confirm from the row — no write-path trace needed |
+| `init@unseen` | heap/struct storage with no in-function write found, but a cross-function factory / `memset` / output-param may have written it | do NOT confirm from the row — check the base object's factory / callee body before confirming; if the write path cannot be found, keep it unresolved (dismiss only with a cited reason) |
+| `field@<path>` | the read target is that member/element, NOT the base pointer | check the base object's initialization before confirming the field is uninitialized |
 | `init@N` + `may-skip` | the ONLY writes sit inside the loop body starting at line N, and the loop condition may skip them on the first pass | judge the loop condition (covered by the ## Code Context window); nothing else is in scope |
 
 `certain-uninit` settles the row from the Hint; for `maybe-uninit`,
@@ -55,9 +57,9 @@ the embedded section and the indexed lookup.
 | Condition | Classification |
 |-----------|---------------|
 | Variable read before any assignment on ALL paths | **confirmed** |
-| Variable may be initialized on some paths but not all (conditional init) | **dismissed** |
+| Variable may be initialized on some paths but not all (conditional init) | **confirmed** when the read is reached on a path that skipped the write; **dismissed** only when every path to the read passes through a write |
 | Variable initialized before use on all paths | **false-positive** |
-| Compiler enforces initialization | **false-positive** |
+| Block-scope `static` / `extern` (zero-initialized by the C standard) | **false-positive** |
 
 ### Common False Positives
 - Variable initialized via pointer (out-parameter): `init(&x)`
@@ -70,6 +72,16 @@ the embedded section and the indexed lookup.
 - Initialize on every branch: `if (c) { x = a; } else { x = b; }`
 - Zero a struct before use: `memset(&s, 0, sizeof(s));`
 - Prefer `calloc` over `malloc` for a buffer that is read before a full write
+
+### Examples
+
+```c
+// CONFIRMED — n is read on the path that skipped the write
+int n; if (c) n = 1; return n;
+
+// DISMISSED — every path writes before the read
+int n = 0; if (c) n = 1; return n;
+```
 
 ### Severity Matrix
 

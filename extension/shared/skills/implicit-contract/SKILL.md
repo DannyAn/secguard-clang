@@ -47,7 +47,8 @@ An implicit-contract candidate has:
 | `subject@<name>` | the struct-pointer parameter the contract is about | the entity to validate |
 | `count-field@<name>` | the count/length field gating the pointer use | the contract the function actually enforces |
 | `evidence-kind@self` | the nullable treatment is proven in the function body itself | judge whether the missing precondition is a real contract gap |
-| `evidence-kind@caller` | the nullable treatment is proven at an inter-procedural call site | check that caller's handling |
+| `evidence-kind@sibling` | another function with the SAME parameter struct type null-checks the field (type-anchored) | weak name/type-based evidence — it says the field MAY be nullable, not that NULL reaches THIS deref; treat it as a hint, not proof |
+| `self-guard@N` | the field IS null-checked at line N, but the reported deref sits OUTSIDE that guard's scope | the scope gap is the defect — confirm only if the deref is genuinely reachable outside the guard; a deref inside the same if-body / `&&` chain as the test is **false-positive** |
 
 `subject@` + `count-field@` name the enforced contract; the verdict is
 whether relying on it (without asserting the precondition) is a real gap.
@@ -84,6 +85,7 @@ the embedded section and the indexed lookup.
 | The count field `obj->N` is guaranteed positive when the field is used, or the dereference is inside a loop that no-ops on count==0 and the field is only touched when count>0 | **false-positive** (empty state is handled) |
 | The caller already validates `obj->P != NULL` before every call, and the function is only called from those sites | **false-positive** (validated at the call boundary) |
 | The field is a fixed array / interior pointer that can never be NULL (`&x`, string literal, offsetof-style accessor) | **false-positive** (non-nullable by construction) |
+| The deref sits INSIDE the same guard that tests the field (`if (obj->P != NULL) { use(obj->P); }`, or the right side of `obj->P && ...`) | **false-positive** — the pipeline's guard filter only models early-exit guards, so this shape can still reach you; verify the scope before confirming |
 | The evidence is name-based only (fields merely share a `data`/`num` prefix with no usage coupling), or the source is unreadable | **dismissed** (insufficient evidence) |
 
 ### Common False Positives
@@ -102,6 +104,16 @@ the embedded section and the indexed lookup.
 - If an empty result is legal, handle it explicitly (early return / skip) rather
   than dereferencing; do not invent a return code — match the function's existing
   error/empty conventions.
+
+### Examples
+
+```c
+// CONFIRMED — obj->p is null-checked elsewhere, but this deref is unguarded
+void g(obj_t *obj) { if (obj->p == NULL) log("null"); use(obj->p); }
+
+// DISMISSED — the deref sits inside the guard that tests it
+void g(obj_t *obj) { if (obj->p != NULL) { use(obj->p); } }
+```
 
 ### Severity Matrix
 

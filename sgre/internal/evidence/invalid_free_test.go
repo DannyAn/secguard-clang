@@ -56,7 +56,7 @@ func TestInvalidFree_Detect(t *testing.T) {
 			t.Errorf("%s: got (%s,%s), want (%s,%s)", fn, g.Category, g.PointeeKind, w.Category, w.PointeeKind)
 		}
 	}
-	for _, fn := range []string{"fp1_free_ptr_var", "fp2_free_null"} {
+	for _, fn := range []string{"fp1_free_ptr_var", "fp2_free_null", "fp3_free_unknown_offset"} {
 		if _, ok := byFunc[fn]; ok {
 			t.Errorf("%s: must NOT trigger, got %+v", fn, byFunc[fn])
 		}

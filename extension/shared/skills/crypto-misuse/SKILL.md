@@ -41,9 +41,11 @@ Evidence file fragments:
 | `reason@<text>` | the detector's observed weakness (e.g. "DES is weak (56-bit key)", "MD5 is cryptographically broken", "weak PRNG for security context") | judge from THIS text, not from the API name alone — it is the detector's rationale, already category-specific |
 | `key-size@N` | the declared key size in bytes | N < 16 (128 bits) is below the modern-cipher minimum — confirm as undersized |
 
-A `reason@` token alone (no `key-size@`) is the weak_algorithm / weak_random
-shape: the primitive itself is broken regardless of call context, so the row is
-settled from the Hint — no evidence-file open needed.
+A `reason@` token (no `key-size@`) names the weak primitive but NOT the use:
+the verdict requires the **use context** — MD5/DES/RC4/`rand()` for a password
+hash, signature, encryption key, or nonce is **confirmed** (read the ±8 Code
+Context); MD5 for a checksum / non-security hash, or `rand()` for UI/test/tie-break,
+is **dismissed**. Do not confirm from the `reason@` token alone.
 
 ### Safe Patterns (P0 Exclusion)
 
@@ -91,6 +93,16 @@ the embedded section and the indexed lookup.
 - RSA keys: minimum 2048 bits (3072 recommended for 2030+)
 - Use vetted crypto libraries (OpenSSL, libsodium, BoringSSL) — never roll your own
 - For hashing passwords: use bcrypt, scrypt, or Argon2 (not raw SHA-256)
+
+### Examples
+
+```c
+// CONFIRMED — MD5 used to store/verify a password (security role)
+MD5(pwd, strlen(pwd), digest);
+
+// DISMISSED — MD5 used as a non-security checksum
+MD5(blob, n, checksum);
+```
 
 ### Severity Matrix
 

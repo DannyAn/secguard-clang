@@ -2,7 +2,7 @@
 name: stack-address-escape
 description: Classify stack-address-escape evidence — a function returns or leaks the address of a non-static local. Maps to CWE-562.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-562
   severity: CRITICAL
@@ -61,7 +61,7 @@ the embedded section and the indexed lookup.
 |-----------|---------------|
 | `escape-kind@return` + `static@no` (address of an auto local returned) | **confirmed** |
 | `escape-kind@async-arg` and the registered body is readable and does not copy the argument before the frame dies | **confirmed** |
-| `escape-kind@store` into a global whose lifetime ≤ the local's, or into a `static` target | **dismissed** |
+| `escape-kind@store` into a non-local (global / `static` / heap pointee) | **confirmed** — the address of an auto local outlives the frame it points into, so a later read through that non-local is a dangling pointer. Only `*p = local` (copying the VALUE, not the address) or a store the pipeline proves is never read after the frame dies is safe |
 | `escape-kind@async-arg` where the thread is `join`ed before the frame dies (synchronous use) | **dismissed** |
 | returning the address of a global / parameter, or a string literal | **false-positive** (the detector never emits it) |
 
@@ -82,6 +82,16 @@ outlives the frame.
 - Return an out-parameter (`int f(int *out)`) instead of the address of a local
 - `static`-qualify the object when a single shared instance is intended
 - Allocate on the heap and document the ownership transfer
+
+### Examples
+
+```c
+// CONFIRMED — the address of an auto local escapes the frame
+int *f(void) { int x; return &x; }
+
+// DISMISSED — a static local's storage outlives the frame
+int *f(void) { static int x; return &x; }
+```
 
 ### Severity Matrix
 

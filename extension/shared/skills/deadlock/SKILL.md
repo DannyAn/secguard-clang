@@ -20,6 +20,13 @@ A deadlock candidate has:
 - **lock_pair**: this function locks A then B
 - **reverse_order**: the function that acquires the same locks in the opposite order
 
+### Hint Tokens (Verdict Basis)
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `locks@A\|B` | this function acquires lock A then lock B (a LOCK_ORDER edge) | match the inversion pair across functions |
+| `reverse@<fn>` | function `<fn>` acquires the same locks in the opposite order | the cycle is real — but confirm only when BOTH orders are reachable AND the two inversion sites can run concurrently |
+
 ### Dangerous Patterns
 
 | Pattern | Risk | Why |
@@ -54,9 +61,10 @@ the embedded section and the indexed lookup.
 
 | Condition | Classification |
 |-----------|---------------|
-| Lock-order inversion detected (cycle in lock graph) | **confirmed** |
+| Lock-order inversion (cycle in lock graph) whose two orders are BOTH reachable and can run concurrently | **confirmed** |
+| A cycle whose two inversion sites cannot run concurrently (a single-threaded init path, mutually exclusive branches) | **false-positive** |
 | All lock acquisitions follow consistent global order | **false-positive** |
-| A lock-order cycle that includes a `pthread_mutex_timedlock` acquisition | **dismissed** (the timeout allows recovery) |
+| A lock-order cycle that includes a `pthread_mutex_timedlock` acquisition | **confirmed** — ETIMEDOUT recovery does NOT remove the inversion; it only lowers severity. Do not dismiss on "timeout allows recovery" |
 | Single lock, no nesting | **false-positive** |
 | Lock-free implementation (atomics only) | **false-positive** |
 | Same lock acquired twice (non-recursive mutex) | **confirmed** |
@@ -69,6 +77,17 @@ the embedded section and the indexed lookup.
 - Use lock-free data structures where possible (atomics, RCU)
 - Run with ThreadSanitizer (TSan) to detect lock-order issues at runtime
 - Use lock-ordering linters or static analysis to enforce the hierarchy
+
+### Examples
+
+```c
+// CONFIRMED — A then B in one path, B then A in another (both reachable & concurrent)
+void f(void) { lock(A); lock(B); ... }
+void g(void) { lock(B); lock(A); ... }
+
+// DISMISSED — both paths acquire in the same order
+void h(void) { lock(A); lock(B); ... }
+```
 
 ### Severity Matrix
 

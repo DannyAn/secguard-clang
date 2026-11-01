@@ -37,6 +37,9 @@ path, and the leak-proof filter promotes a `definite` candidate to `confirmed`.
 | `escape@return` | the handle is returned to the caller somewhere | the leak path must be a NON-returning path — find it |
 | `escape@store` | the handle is stored into a non-local somewhere | the leak path must bypass that store — find it |
 | `free@N,M` | the close/release sites that exist but do not cover the leak path | the ## Code Context window covers them |
+| `free-mismatch@<api>` | a release exists but releases the WRONG family/object | the call does NOT release this handle — confirm the leak |
+| `transfer-cond@<guard>` | an ownership transfer is CONDITIONAL (only on some branch) | the branch that skips the transfer is the leak path — judge whether that branch is reachable |
+| `free-on-borrow@<api>` | the release targets a BORROWED/aliased handle | an invalid release of a handle owned elsewhere, NOT a leak — dismiss the leak |
 
 The decisive split is the escape token plus the leak token:
 `escape@none` + `leak@definite` settles the row from the Hint; any channel

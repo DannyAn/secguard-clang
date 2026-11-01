@@ -50,10 +50,14 @@ the embedded section and the indexed lookup.
 | A registered handler calls `malloc`/`free`/`printf`/`pthread_mutex_lock`/`syslog`/... | **confirmed** |
 | The handler calls only async-signal-safe functions (`write`, `close`, `fork`, `_exit`, ...) | **false-positive** (the detector never emits it) |
 
-The unsafe list is the POSIX async-signal-safe list inverted: a direct call to a
-function absent from that list is a certain defect, so the pipeline auto-confirms
-it. `read`/`write`/`open`/`close`/`socket`/`send`/`recv`/`connect`/`fcntl`/`fork`/
-`exec*`/`_exit`/`abort` are async-signal-safe and are never reported.
+The detector's unsafe list is a **curated subset** of the POSIX
+async-signal-safe list's complement, not the whole list inverted: it flags only
+functions whose unsafety is unambiguous (allocation, stdio, locking, non-reentrant
+time/name-service, `syslog`, `getenv`, ...). `read`/`write`/`open`/`close`/
+`socket`/`send`/`recv`/`connect`/`fcntl`/`fork`/`exec*`/`_exit`/`abort` **and the
+`strlen`/`strcpy`/`strncpy`/`strcat`/`strncat`/`strcmp`/`strncmp`/`strchr`/
+`strstr` string functions** are async-signal-safe per POSIX.1-2008 TC2 and are
+never reported — do not re-flag a handler because it calls one of them.
 
 ### Common False Positives
 - The detector only reports DIRECT calls in the handler body; it never flags a
@@ -65,6 +69,16 @@ it. `read`/`write`/`open`/`close`/`socket`/`send`/`recv`/`connect`/`fcntl`/`fork
   flag and return; let the main loop do the heavy lifting
 - If logging is required, use `write(fd, ...)` to a pre-opened fd, not `printf`/`syslog`
 - Never allocate or take a lock in a signal handler
+
+### Examples
+
+```c
+// CONFIRMED — malloc inside a signal handler is not async-signal-safe
+void h(int s) { (void)s; malloc(1); }
+
+// DISMISSED — only a volatile flag write (async-signal-safe)
+void h(int s) { (void)s; g_flag = 1; }
+```
 
 ### Severity Matrix
 

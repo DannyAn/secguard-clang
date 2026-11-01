@@ -13,12 +13,19 @@ metadata:
 
 ### Evidence Pattern
 A signed-compare candidate has:
-- **signed_compare**: An ordering comparison between an `unsigned` variable and `0`/a negative literal whose result is a tautology because an unsigned value is never negative:
-  - `u < 0`, `u <= -1`, `0 > u` → always false
-  - `u >= 0`, `u > -1`, `0 <= u` → always true
+- **signed_compare**: An ordering comparison between an `unsigned` variable and `0`/a negative literal whose result is a tautology:
+  - `u < 0`, `0 > u` → always **false** (an unsigned value is never negative)
+  - `u >= 0`, `0 <= u` → always **true**
+  - `u <= -1`, `u > -1` depend on the operand's **rank**: for `unsigned`/`size_t`/`uint32_t` (rank ≥ `int`) the `-1` converts to `UINT_MAX`/`SIZE_MAX`, so `u <= -1` is always **true** and `u > -1` is always **false**; only a narrow unsigned (`unsigned char`/`unsigned short`, promoted to `int`) matches the "never negative" reading (`u <= -1` false, `u > -1` true). Dead-guard vs dead-body is the wrong way round unless you get the rank right.
 - **call_path**: The function is reachable from an entry point
 
-Note `u > 0` (`u != 0`) and `u <= 0` (`u == 0`) are **legitimate** checks and are not emitted.
+Note `u > 0` (`u != 0`) and `u <= 0` (`u == 0`) are **legitimate** checks and are not emitted. A tautology is only a defect when the dead/always-taken branch gates a security-relevant bound (length, size, count); a harmless dead comparison is dismissed.
+
+### Hint Tokens (Verdict Basis)
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `sign@<a>-vs-<b>` | the compared operand types the type-width model proved mismatched | apply the integer-promotion rule (rank vs `int`) to decide dead-guard vs dead-body before confirming |
 
 ### Detection Logic
 1. Collect variable names declared with an `unsigned` type (`unsigned`, `size_t`, `uint*_t`, `uintptr_t`, ...) — including typedefs that resolve to unsigned (`typedef unsigned int my_uint; my_uint m`), resolved cross-file so a header typedef counts
@@ -43,6 +50,7 @@ the embedded section and the indexed lookup.
 |-----------|---------------|
 | `size_t i = n; while (i >= 0) i--;` — never terminates | **confirmed** |
 | `unsigned len; if (len < 0) ...` — dead guard, bounds check silently passes | **confirmed** |
+| `unsigned u; if (u <= -1)` — always-taken branch (rank ≥ `int`), e.g. a bounds check that never rejects | **confirmed** when the branch is security-relevant, else **false-positive** |
 | `if (x < 0)` where `x` is genuinely `int` | **false-positive** (not unsigned) |
 | `unsigned ref_cnt; if (ref_cnt > 0)` — a non-zero check, not dead logic | **false-positive** |
 | `unsigned x; if (x <= 0)` — a zero check, not dead logic | **false-positive** |
@@ -51,6 +59,16 @@ the embedded section and the indexed lookup.
 ### Common False Positives
 - Variables mis-detected as `unsigned` (e.g. a macro type position)
 - Comparisons that are intentional dead-code sentinels
+
+### Examples
+
+```c
+// CONFIRMED — unsigned len < 0 is always false; the bounds guard silently passes
+unsigned len; if (len < 0) return; use(len);
+
+// DISMISSED — both operands are signed; the check is meaningful
+int len; if (len < 0) return; use(len);
+```
 
 ### Severity Matrix
 

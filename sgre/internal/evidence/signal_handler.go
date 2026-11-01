@@ -42,10 +42,12 @@ var asyncSignalUnsafe = map[string]bool{
 	"fopen": true, "fclose": true, "fread": true, "fwrite": true, "fgets": true,
 	"fputs": true, "puts": true, "gets": true, "scanf": true, "fscanf": true,
 	"sscanf": true, "fflush": true, "perror": true,
-	// strings (none of these are async-signal-safe)
-	"strlen": true, "strcpy": true, "strncpy": true, "strcat": true, "strncat": true,
-	"strcmp": true, "strncmp": true, "strdup": true, "strtok": true, "strchr": true,
-	"strstr": true, "strcasecmp": true, "strncasecmp": true,
+	// strings — only the genuinely non-async-signal-safe ones. strlen/strcpy/
+	// strncpy/strcat/strncat/strcmp/strncmp/strchr/strrchr/strstr (and the wide
+	// and stpncpy family) ARE async-signal-safe per POSIX.1-2008 TC2 and are
+	// deliberately absent; strdup/strtok/strcasecmp/strncasecmp are not on that
+	// list and stay flagged.
+	"strdup": true, "strtok": true, "strcasecmp": true, "strncasecmp": true,
 	// threading / synchronization
 	"pthread_mutex_lock": true, "pthread_mutex_unlock": true, "pthread_mutex_trylock": true,
 	"pthread_rwlock_rdlock": true, "pthread_rwlock_wrlock": true,

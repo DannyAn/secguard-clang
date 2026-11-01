@@ -43,7 +43,13 @@ func TestSignalHandler_UnsafeCall(t *testing.T) {
 	if got["logger_handler"] != "printf" {
 		t.Errorf("logger_handler should be flagged for printf, got %v", got)
 	}
+	if got["strdup_handler"] != "strdup" {
+		t.Errorf("strdup_handler should be flagged for strdup (not async-signal-safe), got %v", got)
+	}
 	if _, ok := got["safe_handler"]; ok {
 		t.Errorf("safe_handler (only a volatile write) must NOT be flagged, got %v", got)
+	}
+	if _, ok := got["strsafe_handler"]; ok {
+		t.Errorf("strsafe_handler (strlen/strchr are async-signal-safe per POSIX.1-2008 TC2) must NOT be flagged, got %v", got)
 	}
 }

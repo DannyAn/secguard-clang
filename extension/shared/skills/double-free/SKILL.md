@@ -25,17 +25,21 @@ A double-free candidate has:
 | `free@N,M` | the two free-site lines | the ## Code Context window covers both |
 | `may-free` | the first release is conditional (a helper frees only on some paths) | the double free is possible, not must-proven |
 | `cond@<helper>` | the helper performing the conditional first release | its body decides the verdict |
+| `second-callee@<file>:<line>` | the SECOND release helper's definition — its body is embedded under `## Second Callee Definition` | judge whether BOTH frees can execute on one path from the two bodies |
 
 Two unconditional `free@N,M` sites on the same object are confirmed from
-the Hint; `may-free` + `cond@<helper>` shifts the proof to the helper's
-condition — reachable-both-times means confirmed.
+the Hint **only when no reassignment / null-out sits between them** — the Hint
+carries the two lines but NOT the statements between them, so open the Code
+Context to rule out `p = malloc(...)` / `p = NULL` before confirming.
+`may-free` + `cond@<helper>` shifts the proof to the helper's condition —
+reachable-both-times means confirmed.
 
 ### Detection Logic
 1. Find all frees in a function — `free(ptr)`, `free(p->field)` (field free), `free(arr[0])` / `free(arr[i])` (subscript free), and a freeing function-like macro (`#define my_free(p) free(p)`).
 2. Group by variable name, and by field for field frees (so `free(p->msg)` twice is a double-free of `p->msg`, but `free(p->msg)` then `free(p->mode)` is two different objects).
 3. If a variable (or field) appears in 2+ frees, emit DOUBLE_FREE for each subsequent free.
 4. **Interprocedural global slot**: a function that frees a global array element (`free(g_items[i])`) has a release-effect summary for that global; a caller that stored an object into the slot and already released it via a release helper gets a second-free event at the cleanup CALL SITE. When the release helper frees the object only on some paths, the event carries `may_free`.
-4. A macro that also nulls its argument (`SAFE_FREE(p)`) is NOT a double-free source — after it the pointer is NULL, so a later `free(p)` is `free(NULL)`, a no-op.
+5. A macro that also nulls its argument (`SAFE_FREE(p)`) is NOT a double-free source — after it the pointer is NULL, so a later `free(p)` is `free(NULL)`, a no-op.
 
 ### Evidence closure (read before any source read)
 
@@ -80,6 +84,16 @@ do NOT transfer ownership — the caller still owns the item and must free it.
 - Use a safe free macro: `#define SAFE_FREE(p) do { free(p); p = NULL; } while(0)`
 - Track ownership explicitly — only one code path should own the free
 - Use RAII patterns where available
+
+### Examples
+
+```c
+// CONFIRMED — same object freed twice with no intervening reassignment
+free(p); free(p);
+
+// DISMISSED — the pointer is nulled between the frees (free(NULL) is a no-op)
+free(p); p = NULL; free(p);
+```
 
 ### Severity Matrix
 

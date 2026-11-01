@@ -129,6 +129,12 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "arg@", Display: "arg@<expr>", Description: "the argument checked then used: {value}"},
 
 	// ---- use-after-free / double-free / leaks ----
+	// The `free-mismatch@` / `transfer-cond@` / `free-on-borrow@` keys MUST
+	// precede `free@`: matchHintToken resolves by first-prefix-in-registry-order,
+	// so a later `free-mismatch@` would otherwise be shadowed by `free@`.
+	{Key: "free-mismatch@", Display: "free-mismatch@<api>", Description: "a release exists but frees the WRONG allocator family ({value}) — e.g. free() on an XPath context or cJSON_Delete on a strdup block; the call does not release this object"},
+	{Key: "transfer-cond@", Display: "transfer-cond@<guard>", Description: "an ownership transfer is CONDITIONAL ({value}) — the branch that skips the transfer is the leak path; judge whether that branch is reachable"},
+	{Key: "free-on-borrow@", Display: "free-on-borrow@<api>", Description: "the release targets a BORROWED pointer ({value}) — e.g. cJSON_Delete on cJSON_GetObjectItem's result or free on strstr's; an invalid free of an object owned elsewhere, not a leak"},
 	{Key: "free@", Display: "free@N / free@N,M", Description: "the free site line(s): {value} (one for use-after-free, two for double-free; on a leak candidate they are the release sites that exist but do not cover the leak path)"},
 	{Key: "may-free", Description: "the release is conditional (a release helper frees only on some paths) — the verdict is possible, not proved"},
 	{Key: "cond@", Display: "cond@<helper>", Description: "the conditional release helper: {value} frees only when its own condition holds — the verdict is possible, not must-proven"},
@@ -163,6 +169,12 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "expected@", Display: "expected@<type>", Description: "the callee's declared parameter type: {value}"},
 	{Key: "actual@", Display: "actual@<type>", Description: "the argument's actual pointer type before any cast: {value}"},
 	{Key: "cast@", Display: "cast@<type>", Description: "the explicit cast target type: {value} — a reinterpretation between incompatible pointer types"},
+
+	// ---- signed-compare ----
+	{Key: "sign@", Display: "sign@<a>-vs-<b>", Description: "the compared operand types: {value} — the type-width model proved a sign mismatch; apply the integer-promotion rule (rank vs int) to decide dead-guard vs dead-body"},
+
+	// ---- dangerous-function ----
+	{Key: "policy@", Display: "policy@<category>", Description: "the banned-function policy category: {value} (banned_function/obsolete_api are POLICY violations — the call itself is the finding; assert_usage still needs intent judgment)"},
 
 	// ---- format-string ----
 	{Key: "fmt-arg@", Display: "fmt-arg@<expr>", Description: "the format argument expression: {value} — a non-literal (variable) format is the CWE-134 signal; a function PARAMETER is attacker-reachable only when callsites@ shows a non-constant argument or no in-tree call site — pair with callsites@ before confirming; a constant string literal → dismissed"},
@@ -204,7 +216,7 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "subject@", Display: "subject@<name>", Description: "the entity the contract/judgment is about: {value} (the struct-pointer parameter for implicit-contract, the sizeof operand for sizeof-misuse)"},
 	{Key: "self-guard@", Display: "self-guard@N", Description: "implicit-contract: the field IS null-checked at line {value}, but the reported deref sits outside that guard's scope — that scope gap is the defect; verify from the Code Context, no source read"},
 	{Key: "count-field@", Display: "count-field@<name>", Description: "the count/length field gating the pointer use: {value} — the contract the function actually enforces"},
-	{Key: "evidence-kind@", Display: "evidence-kind@self|caller", Description: "where the field's nullable treatment is proven: {value} (self = the function body, caller = an inter-procedural call site)"},
+	{Key: "evidence-kind@", Display: "evidence-kind@self|sibling", Description: "where the field's nullable treatment is proven: {value} (self = the function body null-checks the field on another path, sibling = another function with the SAME parameter struct type null-checks it — name/type-anchored, weaker evidence)"},
 }
 
 // matchHintToken resolves one emitted token against the registry: an exact

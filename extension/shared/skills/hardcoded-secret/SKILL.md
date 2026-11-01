@@ -59,9 +59,9 @@ the embedded section and the indexed lookup.
 |-----------|---------------|
 | Value has a known secret prefix, high entropy, or URL-embedded credentials | **confirmed** |
 | `RegSetValueExA` persisting a secret-shaped value to a secret-named registry key | **confirmed** |
-| Only the variable/field NAME matched the secret pattern (low-entropy value) | **dismissed** — may be a real weak password, a placeholder, or a test value |
+| Only the variable/field NAME matched the secret pattern (low-entropy value) | **judge the value, not the name** — a placeholder (`REPLACE…`) is **false-positive**; a short non-credential-like value is **false-positive**; a real-looking credential (`password = "hunter2"`, `"admin123"`) is a **confirmed** weak credential even though its entropy is low |
 | Placeholder value (`"REPLACE_ME"`, `"YOUR_KEY_HERE"`, `"CHANGEME"`, `"xxx"`, empty) | **false-positive** |
-| Test credential (`test_password = "test123"`, a `test/` path) | **dismissed** (verify it is not used in production) |
+| Test credential (`test_password = "test123"`, a `test/` path) | **dismissed** — but a leaked test key is still a leaked key; dismiss only when the Code Context proves it cannot reach production |
 | Short value that is not credential-like | **false-positive** |
 
 ### Fix Suggestions
@@ -72,6 +72,16 @@ the embedded section and the indexed lookup.
 - Add `.gitignore` entries for secret files
 - Rotate any credentials that were previously hardcoded
 - Use `git-secrets` or `trufflehog` to scan for leaked credentials in git history
+
+### Examples
+
+```c
+// CONFIRMED — a real weak credential embedded as a literal
+char *pwd = "admin123";
+
+// DISMISSED — a placeholder, not a live credential
+char *pwd = "REPLACE_ME";
+```
 
 ### Severity Matrix
 

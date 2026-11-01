@@ -50,6 +50,15 @@ Evidence file fragments:
 - **taint_source**: where the user-controlled value originates (when the taint filter proved one)
 - **call_path**: the function is reachable from an entry point
 
+### Hint Tokens (Verdict Basis)
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `tainted` | a taint chain from an untrusted source reaches the sink | the strongest signal — confirm unless a complete whitelist/parameterization is visible |
+| `taint@none` | the pipeline found NO taint chain — NOT "proven safe" | judge the sink argument's origin from the `## Location` signature: a public entry-point parameter / external input is still attacker-reachable → confirm; an internal/trusted value → dismiss |
+| `sanitizer@<fn>` | a caller-defined validator `<fn>` guards the sink argument | judge whether `<fn>` is a complete whitelist (dismiss) or a partial blacklist that misses `|`/`$()`/backticks/quotes (confirm); its body is in the scan |
+| `cat@<name>` | the detector sub-category (`command_injection`/`sql_injection`/…) | selects which sink/taint rule applies |
+
 ### Safe Alternatives (P0 Exclusion)
 
 | Unsafe | Safe Alternative | Why Safe |
@@ -62,6 +71,11 @@ Evidence file fragments:
 | `syslog(LOG_INFO, "%s", input)` | `escape_newlines(input)` + `syslog` | Newlines stripped |
 
 ### Safe Wrappers (P1 Exemption)
+
+> **These are project-specific NAMES, not a blanket guarantee.** A wrapper only
+> exempts a sink when its BODY (embedded under `## Callee Definition`) or a
+> declared `[contracts]` entry actually performs the validation. A function that
+> merely SHARES one of these names without validating is NOT safe — confirm it.
 
 | Wrapper | Guarantee |
 |---------|-----------|
@@ -99,18 +113,18 @@ the embedded section and the indexed lookup.
 | `sql_injection`: `sqlite3_exec` with concatenated query | **confirmed** |
 | `argument_injection`: `execve(path, argv)` with non-constant argv element, no sanitization | **confirmed** |
 | `argument_injection`: `execve(path, argv)` with all-constant argv | **false-positive** |
-| `argument_injection`: `SafeExecArg` wrapper used | **false-positive** |
+| `argument_injection`: `SafeExecArg` wrapper used AND its body/contract proves the validation | **false-positive** (verified wrapper) — a same-named function that does NOT validate is **confirmed** |
 | `xml_xpath_injection`: `xmlXPathEvalExpression(ctx, expr)` with user input | **confirmed** |
 | `xml_xpath_injection`: `xmlXPathCompiledEval` with precompiled expression | **false-positive** |
 | `xml_injection`: `xmlSAXParseDoc(NULL, doc, 0)` with user input | **confirmed** |
 | `xml_injection`: `xmlSAXParseDoc` with constant document | **false-positive** |
 | `crlf_injection`: `fprintf(sock, "Header: %s\r\n", input)` with user input | **confirmed** |
 | `crlf_injection`: `fprintf(sock, "Header: const\r\n")` constant header | **false-positive** |
-| `crlf_injection`: `validate_header(input)` used | **false-positive** |
+| `crlf_injection`: `validate_header(input)` used AND its body strips `\r\n` | **false-positive** (verified) |
 | `log_injection`: `syslog(LOG_INFO, "%s", input)` with user input | **confirmed** |
 | `log_injection`: `syslog(LOG_INFO, "const")` constant message | **false-positive** |
-| `log_injection`: `escape_newlines(input)` used | **false-positive** |
-| `log_injection`: Structured logging API (`log_structured`) | **false-positive** |
+| `log_injection`: `escape_newlines(input)` used AND its body escapes newlines | **false-positive** (verified) |
+| `log_injection`: Structured logging API (`log_structured`) whose body escapes/structures the message | **false-positive** (verified) |
 
 ### CWE Boundary Disambiguation
 
@@ -127,8 +141,8 @@ the embedded section and the indexed lookup.
 
 ### Common Edge Cases (P3)
 - **Partial blacklist**: `is_safe_input()` filtering `;` but not `&&`, `||`, `$()` → **confirmed** (incomplete sanitization is still injectable)
-- **TOCTOU**: Check then use with race window → **dismissed**
-- **Format string**: `printf(user_input)` without format → **confirmed** (CWE-134)
+- **TOCTOU**: Check then use with race window → **not an injection** (route to race-condition, do not confirm as injection)
+- **Format string**: `printf(user_input)` without format → **confirmed** (CWE-134, route to format-string if it surfaces there)
 - **Precompiled XPath**: `compiled = xmlXPathCompileExpr("//const"); xmlXPathCompiledEval(compiled, ctx)` → **false-positive** (parameterized)
 
 ### Fix Suggestions
@@ -139,6 +153,16 @@ the embedded section and the indexed lookup.
 - CRLF: Strip/escape `\r\n` in header values with `validate_header`
 - Log: Strip/escape newlines in log messages with `escape_newlines`
 - Input validation: Use whitelist, not blacklist
+
+### Examples
+
+```c
+// CONFIRMED — attacker-controlled argument reaches a shell sink, no whitelist
+char cmd[256]; snprintf(cmd, sizeof cmd, "ls %s", argv[1]); system(cmd);
+
+// DISMISSED — a constant command (no attacker-controlled component)
+system("ls -l");
+```
 
 ### Severity Matrix
 

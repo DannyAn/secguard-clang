@@ -444,17 +444,19 @@ v0.7.0 打磨时发现一批**逻辑上可证明会漏报**的缺陷（Issue #95
 | ML-04 | memory_extra.c | 129 | `p=malloc(); p=malloc(); free(p)` 第一块覆盖指针泄漏，被 ReleaseFilter 按 (函数,变量) 粗粒度吞掉 | release 事件带 `alloc_line`，ReleaseFilter 按 alloc site 关联 |
 | RL-15 | rl_resource_leak.c | 177 | 括号错误返回 `return (fd)` 不被 `isErrorReturn` 识别，误判所有权转移 | `isErrorReturn` / `returnReturnsVar` 解一层括号 |
 | RL-16 | rl_resource_leak.c | 188 | `mmap` 是映射工厂但不在 acquirer 白名单（"open"/"create" 子串不命中） | `isResourceAcquirer` 补 `mmap`、`isResourceReleaser` 补 `munmap` |
-| SH-06 | p11_signal_handler.c | 62 | 处理器内 `strncpy`：`strncpy` 同时命中 SafeFunctions，SafeFunctionFilter 曾按 VariableName 巧合误杀 | SafeFunctionFilter 不再用 `IsSafeFunction(c.VariableName)` |
+| SH-06 | p11_signal_handler.c | 62 | 处理器内 `strncpy`：`strncpy`/`strlen`/`strcpy`/`strcmp`/`strchr`/`strstr` 是 POSIX.1-2008 TC2 的 async-signal-safe 函数，曾被 `asyncSignalUnsafe` 误列并 auto-confirmed | v0.12.0 从 `asyncSignalUnsafe` 移除这些字符串函数（`strdup`/`strtok`/`strcasecmp`/`strncasecmp` 仍保留），防止 confirmed FP |
 | ND-07 | p5_null_flow.c | 80 | getter 返回全局结构体字段（`return g_space.shell_conf`，NULL 初始化），调用方未判空即解引用 | `exprReturnsNullable` 把 field_expression 判为可能为空（fail-open） |
 | ND-08 | p5_null_flow.c | 97 | getter 返回外部函数（声明未定义）的调用结果，调用方未判空即解引用 | `exprReturnsNullable` 对 `return 外部调用` 按开放世界 fail-open |
 
-七条均为 `expect: finding`。ML-03/ML-04 同时锁定 planner 层的
+除 SH-06 外，其余六条均为 `expect: finding`（SH-06 于 v0.12.0 反转为
+`expect: no_finding`：`asyncSignalUnsafe` 修正后 `strncpy` 不再报）。ML-03/ML-04
+同时锁定 planner 层的
 `OwnershipTransferFilter`（C2b）与 `ReleaseFilter`（C3）——detector 侧修好后，这两层
 粗粒度 filter 仍会二次吞掉候选，因此这两例必须在 **verdict 阶段 result.sarif** 出现才算过。
 
 **顺带补的确定性单测**（不进基准，`go test` 直接跑）：
 - `TestResourceLeak_ParenthesizedErrorReturnIsLeak`（fixture `tc92_resleak_defects.c` 增 `rl_paren_return`）—— RL-15 的 detector 级回归。
-- `TestSafeFunctionFilter_VariableNameNotDropped`（planner）—— SH-06 的 P3 回归。
+- `TestSafeFunctionFilter_VariableNameNotDropped`（planner）—— SafeFunctionFilter 不按变量名误杀安全函数（P3 回归，与 SH-06 的 no_finding 反转解耦）。
 - `TestNullDeref_GlobalFieldReturnIsNullable`（planner，inline 源）—— ND-07 的 null-deref 回归。
 
 ## Phase 15 — memory-leak 容器逃逸误报修复（2026-10 新增）

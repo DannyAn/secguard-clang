@@ -81,8 +81,8 @@ func TestBuildVerdictFacts_B4Types(t *testing.T) {
 		if len(facts) != 1 || facts[0].Token != "cast@unsigned int" {
 			t.Fatalf("tokens = %q", tokens(facts))
 		}
-		if !strings.Contains(facts[0].Detail, "truncation") {
-			t.Errorf("cast fact must name the truncation/reinterpretation:\n%s", facts[0].Detail)
+		if !strings.Contains(facts[0].Detail, "comparator") {
+			t.Errorf("cast fact must frame the call-site pair (comparator cast vs base element type):\n%s", facts[0].Detail)
 		}
 	})
 

@@ -2,7 +2,32 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [0.12.0] - 2026-11-01
+## [0.12.0] - 2026-11-02
+
+### skills 决策质量 + hint 契约收口（误报消减）
+
+依据 `docs/skills-design-review-20261101.md` 的全面审视，对 29 个 SKILL 与 hint 词汇契约做一轮“把证据说明升级为可证伪决策过程”的收口。只改 skill 规则与 hint 生成/注册，不新增类型、不改 dismissed 落盘行为（保持现网性能取舍不变）。
+
+- **signal-handler**：detector 的 `asyncSignalUnsafe` 移除 POSIX.1-2008 TC2 起即 async-signal-safe 的 `strlen/strcpy/strncpy/strcat/strncat/strcmp/strncmp/strchr/strstr`（此前被 auto-confirmed，造成 confirmed FP）；`strdup/strtok/strcasecmp/strncasecmp` 仍保留。skill 同步说明“curated subset，非 POSIX 列表反集”，并补 `tc108` 正反例回归。
+- **format-string**：删除 `snprintf(buf, sizeof(buf), fmt, ...)` 的“bounded ⇒ safe”误判（`sizeof` 只约束输出不约束 format，`%s`/`%n` 仍可读写），删除“含 sizeof 就跳过”的不实 detector 描述，`local_buf` 改为按来源判断而非默认 dismiss。
+- **signed-compare**：修正 `u <= -1` / `u > -1` 的整数提升方向（rank ≥ `int` 时 `-1` 转 `UINT_MAX`，恒真/恒假与“unsigned 永不为负”相反），并加 rank 分支说明。
+- **stack-address-escape**：`&local` 存入 global/`static` 从 dismissed 改为 confirmed（返回后即悬垂）；只有 `*p = local`（拷贝值）才是安全形态。
+- **uninit**：条件初始化从 dismissed 改为“未初始化路径可达 read ⇒ confirmed”；补 `init@unseen` / `field@` hint 行；删除不可执行的“Compiler enforces initialization”行。
+- **hardcoded-secret**：name-only 低熵匹配从直接 dismissed 改为按“值”三向判定（placeholder/test ⇒ dismiss；真实弱口令 ⇒ confirmed）。
+- **crypto-misuse**：`reason@` 不再“单独即 settle”，改回“用途决定 verdict”（密码/签名/KDF ⇒ confirm；checksum/UI ⇒ dismiss），与 agent-body 一致。
+- **path-traversal**：无 in-tree caller 的参数不再默认 dismissed（库/partial scan 视为外部 ABI 边界）；修复 fix 建议里的 `strncmp` 前缀绕过（`/srv/baseevil` vs `/srv/base`），并补 `openat`+`O_NOFOLLOW` 说明。
+- **unchecked-return**：`contract@known` 统一为“证明的是 unchecked，不是 actionable”，消除 skill/agent-body/hint_tokens 三处口径冲突。
+- **buffer-overflow**：`format_overflow_var` / `secure_constraint_violation` 顶部 bullet 与规则表对齐（后者标 CWE-754，非 CWE-787）；补 `cap@`（元素）vs `idx@`（字节）单位换算告警；补 `src-cap@` 行。
+- **sizeof-misuse**：`sizeof_pointer` 从 skill 声称的 confirmed 改为与 registry 一致的 suspected（judge 元素用途）；补 `sizeof(char*)` 指针类型缺陷。
+- **data-representation**：detector 补发 `cast` property，`buildDataRepVerdictFacts` 的 `cast@` 现在真正可达（此前每行 Hint 为空）；detail 改为“call-site pair”语义。
+- **implicit-contract**：补 `self-guard@N` hint 行；补“deref 就在测试它的 if 里”的 FP 行；`evidence-kind@` 图例从 `self|caller` 改为 `self|sibling`（caller 从未被发出）。
+- **race-condition / deadlock / switch-fallthrough / integer-overflow / use-after-free / memory-leak / argument-type**：修正单 thread function、timedlock、comment 豁免、signed int、跨函数 UAF、unknown-owner、4/7 不可达规则等错判行。
+- **hint 契约（双向收口）**：注册 `sign@` / `policy@` / `free-mismatch@` / `transfer-cond@` / `free-on-borrow@`；`free-mismatch@` 等置于 `free@` 之前避免 prefix 遮蔽；deadlock VerdictFact 从 `lock@A-B` 改为 `locks@A|B`（消除与 race `lock@<lo>-<hi>` 的 key 冲突）；token 守卫正则补 `_`（`case_end@`/`shift_count@`/`alloc_size@` 不再绕过协议守卫）。
+- **dismissed 不落盘保持不变**：这是现网最耗时项的主动取舍，本轮不反向引入；`command-instructions.md` 的“dismissed 不持久化”口径保留为权威。
+- **invalid-free**：修复 `int *p = get_ptr(); free(p + 4)`（未知 base 的指针算术偏移）被误判为栈偏移 free 的 confirmed FP——pointer-arithmetic 基址只接受堆块/全局数组/局部**数组**，标量/指针局部不证明非堆；补 `tc171` `fp3_free_unknown_offset` 反例（benchmark `IF-12`）。
+- **benchmark ground truth 修正**：`SH-06`（信号处理器内 `strncpy`）由 `expect: finding` 翻转为 `no_finding`——`strncpy` 是 POSIX.1-2008 TC2 的 async-signal-safe 函数，修正 `asyncSignalUnsafe` 后不再报；`IF-12` 由上述 invalid-free 修复转为通过。
+- **补齐首轮未动的 8 个 skill**：`null-deref`（external-return 过度 dismiss 改判、补 `caller-null@` 见证行）、`injection`（补 `tainted`/`taint@none`/`sanitizer@` hint 表、safe-wrapper 改为“读 body/contract 才豁免”、TOCTOU 改为 route 到 race）、`dangerous-function`（补 hint 表、suspected 统一为 judge、`snprintf` 标注“policy 非漏洞”）、`divide-by-zero`（`INT_MIN/-1` 改为 UB 而非“溢出为 INT_MIN”、unsettled 不再直接 dismiss）、`double-free`（补 `second-callee@`、修 hint 与 reassignment 矛盾、修重复编号）、`invalid-free`（补 `base@`/unknown-offset 说明）、`out-of-bounds`（补 struct-hack/one-past-end/元素字节单位告警）、`unbounded-length-copy`（修 clamp 矛盾、`compatibility` 补全）。
+- **29/29 skill 全量补正反例 + 结构收口**：每个 skill 增加 `### Examples`（1 confirmed + 1 dismissed 代码片段）；补齐 injection / dangerous-function / unchecked-return 缺失的 Hint Tokens 小节、integer-overflow 小节重命名；5 个 `compatibility: opencode` 统一为 `opencode,claude code,DSH`。
 
 ### 补齐 round3 全部遗留项 + 引擎/配置通道收口（零遗留）
 

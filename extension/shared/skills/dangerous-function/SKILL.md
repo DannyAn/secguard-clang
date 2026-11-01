@@ -18,6 +18,15 @@ A dangerous-function candidate has:
 - The event's `replacement` is the mandated safer API (best-effort)
 - **call_path**: The containing function is reachable from an entry point
 
+### Hint Tokens (Verdict Basis)
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `api@<fn>` | the banned function actually called | verify the Source really calls `<fn>`; a declaration/comment/`#define`/safe replacement is dismissed |
+| `size@<expr>` | the size argument of a bounded-memory call (`memcpy`/`memmove`/`memset`) | judge bounded vs the destination capacity |
+| `size-kind@<const\|var>` | const = compile-time size (usually safe, dismiss unless it provably exceeds the destination); var = the size must be checked against capacity | read the ±8 Code Context for the guard; do not read the whole file |
+| `policy@<category>` | the banned-function policy category (`banned_function`/`obsolete_api` are POLICY violations — the call itself is the finding; `assert_usage` still needs intent judgment) | the verdict is policy-driven, not a memory-safety proof |
+
 ### Detection Logic
 1. Find every call to a function in the ban table
 2. The table = a built-in layered set (below), PLUS the project's
@@ -47,6 +56,15 @@ A dangerous-function candidate has:
 | `obsolete_api_conditional` | `inet_addr` | `inet_pton` |
 | `config_banned` | project names from `[banned_functions]` | project-defined |
 
+> **Policy vs vulnerability.** `unsafe_format` bans `snprintf`/`vsnprintf` by
+> POLICY (the project mandates the `_s` twin), not because `snprintf` is a
+> memory-safety defect — a bounded `snprintf(buf, sizeof(buf), ...)` is SAFE for
+> buffer-overflow. These policy findings intentionally OVERLAP buffer-overflow /
+> injection / format-string: those answer "does THIS call overflow/inject", this
+> type answers "is a non-`_s` API used at all". Do not report a policy ban as a
+> memory-corruption defect, and do not use it to contradict a format-string
+> dismissal (a literal format is still safe from CWE-134).
+
 ### Evidence closure (read before any source read)
 
 The candidate file already embeds the decisive cross-file facts the pipeline
@@ -60,14 +78,17 @@ the embedded section and the indexed lookup.
 
 ### Classification Rules
 
+The pipeline emits every non-exempt call as `suspected` (a policy prior, NOT a
+final verdict); you judge each row to a binary confirmed/dismissed verdict.
+
 | Condition | Classification |
 |-----------|---------------|
-| A call to a banned function (any category) | **suspected** — the pipeline no longer auto-confirms; you judge the CONTEXT from the hint + Code Context (see below) |
+| A call to a banned function (any category) | **judge** — the pipeline no longer auto-confirms; you judge the CONTEXT from the hint + Code Context (see below) |
 | `api@<fn>` where the function is UNBOUNDED (`strcpy`/`strcat`/`sprintf`/`vsprintf`/`gets`/`scanf`) | **confirmed** — no size argument, the function is dangerous by construction (unless the Source/Code Context shows a fixed, safe destination) |
 | `api@memcpy`/`memmove`/`memset` + `size-kind@const` | **dismiss** — a compile-time-constant size is bounded; only confirm when the constant provably exceeds the destination |
-| `api@memcpy`/`memmove`/`memset` + `size-kind@var` | **suspected** — judge the bound: read the embedded Code Context ±8 lines for the guard (`if (n > cap) return;`); confirm when the size is caller-controlled and unguarded, dismiss when guarded or the destination is clearly larger |
-| A call to `assert` (`assert_usage`) | **suspected** — the AI decides whether it guards caller input (defect) vs an internal invariant (fine) |
-| A call to `inet_addr` (`obsolete_api_conditional`) | **suspected** — its risk is conditional on the argument's provenance and the `INADDR_NONE` check, so you must decide: `dismiss` when the argument is not caller-controlled (an internal config field, an already-parsed protocol value, a constant) or when the result is tested against `INADDR_NONE` / `(in_addr_t)-1`; `confirm` when a caller-supplied string is converted and the sentinel is not checked |
+| `api@memcpy`/`memmove`/`memset` + `size-kind@var` | **judge** the bound: read the embedded Code Context ±8 lines for the guard (`if (n > cap) return;`); confirm when the size is caller-controlled and unguarded, dismiss when guarded or the destination is clearly larger |
+| A call to `assert` (`assert_usage`) | **judge** — whether it guards caller input (defect) vs an internal invariant (fine) |
+| A call to `inet_addr` (`obsolete_api_conditional`) | **judge** — its risk is conditional on the argument's provenance and the `INADDR_NONE` check: `dismiss` when the argument is not caller-controlled (an internal config field, an already-parsed protocol value, a constant) or when the result is tested against `INADDR_NONE` / `(in_addr_t)-1`; `confirm` when a caller-supplied string is converted and the sentinel is not checked |
 | `exit`/`ExitProcess`/`pthread_exit`/`ExitThread` inside the entry point | **false-positive** (the detector never emits it) |
 | `inet_addr(<constant>)` | **false-positive** (the detector never emits it) |
 | A call to a function NOT in the ban table | **false-positive** (the detector never emits it) |
@@ -141,6 +162,16 @@ while this type answers "is a non-`_s` API used at all". Both are reported.
 - `alloca` → `malloc`/`free`
 - `setjmp`/`longjmp` → return-value error propagation
 - `realloc` → `malloc` + copy + `free`
+
+### Examples
+
+```c
+// CONFIRMED — unbounded strcpy: dangerous by construction (policy finding)
+strcpy(dst, user);
+
+// DISMISSED — bounded memcpy with a compile-time size
+memcpy(dst, src, sizeof dst);
+```
 
 ### Severity Matrix
 

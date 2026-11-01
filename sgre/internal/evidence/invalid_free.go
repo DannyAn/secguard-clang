@@ -237,7 +237,18 @@ func classifyFreeArg(arg parser.Node, locals map[string]stackLocal, globalArrays
 		if !ok {
 			return "", "", "", ""
 		}
-		if k := kindOf(name); k != "" {
+		k := kindOf(name)
+		// A pointer-arithmetic interior pointer is only PROVEN non-heap when the
+		// base is a heap block, a global array, or a local ARRAY. A scalar or
+		// pointer local (`int *p = get_ptr(); free(p + 4)`) has an unknown pointee
+		// — kindOf() would call it "stack", but the pointee is not provably stack,
+		// so it must NOT be reported (confirmed tier: prefer a miss over a FP).
+		if k == "stack" {
+			if l, isLocal := locals[name]; !isLocal || !l.isArray {
+				k = ""
+			}
+		}
+		if k != "" {
 			return "free_offset_pointer", k, name, heapBaseOrigin(name, aliases, heapVars, file)
 		}
 	}

@@ -31,8 +31,8 @@ ambiguous pointer-to-pointer case stays your judgment.
 2. Find `sizeof_expression` whose operand is a bare identifier that is a pointer variable
 3. Require the sizeof to be consumed by a malloc-family / memset / memcpy-family call
 4. Resolve the base type through typedefs (cross-file: `typedef char *cstr_t` in a header counts) to decide the category:
-   - `sizeof_pointer` — **confirmed**: `sizeof(p)` on a single-level pointer `T *p` where `T` resolves to a non-pointer (`char *q`, `my_uint *p`). `sizeof(p)` is the pointer width while the call intends `sizeof(*p)` — the classic CWE-467 defect.
-   - `sizeof_pointer_ambig` — **suspected** (pipeline prior → AI decides): `sizeof(p)` on a pointer-to-pointer (`T **p`) or a `T *p` whose `T` resolves to a pointer typedef (`cstr_t *s`). Allocating an array of pointers legitimately uses `sizeof(p)`, so the pipeline only tiers it `suspected` and the AI settles confirmed/dismissed.
+   - `sizeof_pointer` — **suspected**: `sizeof(p)` on a single-level pointer `T *p` where `T` resolves to a non-pointer (`char *q`, `my_uint *p`). `sizeof(p)` is the pointer width; whether the object width was meant is a context question the pipeline does NOT auto-confirm (a Redis scan dismissed 11/11 of these).
+   - `sizeof_pointer_ambig` — **suspected**: `sizeof(p)` on a pointer-to-pointer (`T **p`) or a `T *p` whose `T` resolves to a pointer typedef (`cstr_t *s`). Allocating an array of pointers legitimately uses `sizeof(p)`, so the pipeline only tiers it `suspected` and you settle confirmed/dismissed.
 5. Emit `SIZEOF_MISUSE` otherwise
 
 ### Evidence closure (read before any source read)
@@ -50,15 +50,25 @@ the embedded section and the indexed lookup.
 
 | Condition | Classification |
 |-----------|---------------|
-| `sizeof_pointer` (`char *q; malloc(n * sizeof(q))`) — pointer width where `sizeof(*q)` is meant | **confirmed** |
-| `sizeof_pointer_ambig` (`char **p; malloc(n * sizeof(p))`) — may allocate pointer slots, or the base is a pointer typedef | **dismissed** — reason over the actual intent |
+| `sizeof_pointer` (`char *q; malloc(n * sizeof(q))`) — pointer width | **confirmed only when the allocated object is used as its pointee** (`q[i] = ...` / `q->x`): the object width was meant, so the pointer width under-allocates. An allocation whose elements are only used as pointers is **dismissed** |
+| `sizeof_pointer_ambig` (`char **p; malloc(n * sizeof(p))`) — may allocate pointer slots, or the base is a pointer typedef | **confirmed** when the elements are used as values (not pointer slots); **dismissed** when pointer slots are intended |
 | `memset(p, 0, sizeof(p))` where `p` is a pointer | **confirmed** (zeroes only a pointer width) |
 | `malloc(n * sizeof(*p))` | **false-positive** (correct deref) |
-| `malloc(n * sizeof(struct foo))` | **false-positive** (type, not pointer) |
+| `malloc(n * sizeof(struct foo))` | **false-positive** (a non-pointer type) — EXCEPT `sizeof(char*)` / a pointer TYPE in a char-buffer context, which is the same CWE-467 defect |
 
 ### Common False Positives
 - `sizeof(char*)` used intentionally (array of pointers)
 - A macro that expands `sizeof(*p)` but is text-matched as `sizeof(p)`
+
+### Examples
+
+```c
+// CONFIRMED — sizeof(q) is the pointer width, not the pointee size
+char *q; malloc(n * sizeof(q));
+
+// DISMISSED — sizeof(*q) dereferences to the pointee size
+char *q; malloc(n * sizeof(*q));
+```
 
 ### Severity Matrix
 

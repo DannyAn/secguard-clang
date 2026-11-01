@@ -31,7 +31,7 @@ func buildDeadlockVerdictFacts(c Candidate) []VerdictFact {
 	facts := make([]VerdictFact, 0, 4)
 	if c.MutexA != "" && c.MutexB != "" {
 		facts = append(facts, VerdictFact{
-			Token:  fmt.Sprintf("lock@%s-%s", c.MutexA, c.MutexB),
+			Token:  fmt.Sprintf("locks@%s|%s", c.MutexA, c.MutexB),
 			Detail: fmt.Sprintf("lock-order cycle between %s and %s (LOCK_ORDER graph edge)", c.MutexA, c.MutexB),
 		})
 	}

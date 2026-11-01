@@ -115,6 +115,14 @@ the embedded section and the indexed lookup.
 | Access guarded by a bounds check covering the read | **false-positive** |
 | `sizeof(arr)` usage (not an element access) | **false-positive** |
 
+**Constant-index caveats before confirming** (the pipeline's constant `idx@` past
+`cap@` is strong but not infallible): (a) a struct-hack trailing array
+(`struct s { int n; char d[1]; }` where `d[5]` still sits inside one allocation)
+is NOT out of bounds — check the allocation, not the declared member size;
+(b) `&arr[n]` (one-past-end address formation) is legal C and NOT a read past the
+end unless the address is dereferenced; (c) `cap@` is in ELEMENTS — convert a
+byte size before comparing.
+
 An index that cannot be proven out-of-bounds AND is not field-derived
 (`buf[i]` with an ordinary parameter/local `i`) is **not emitted** — the
 unchecked channel is deliberately restricted to external field indices so that

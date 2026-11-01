@@ -63,16 +63,17 @@ the embedded section and the indexed lookup.
 | `fopen(user_input, "r")` where a taint source reaches the path | **confirmed** |
 | `fopen(path, ...)` — path is a parameter, `callsites@` shows a non-constant caller | **confirmed** (attacker-reachable via that caller) |
 | `fopen(path, ...)` — path is a parameter, `callsites@N:all-literal` | **dismissed** (every in-tree caller passes a compile-time constant) |
-| `fopen(path, ...)` — path is a parameter with no provable tainted caller and no census | **dismissed** |
+| `fopen(path, ...)` — path is a parameter with no provable tainted caller and no census | **judge the function's exposure** — if it is a library / partial-scan export (zero in-tree callers, address-taken, an entry-point API), treat the parameter as an external ABI boundary and **confirm** the traversal risk; only an internal, provably-trusted parameter is **dismissed** |
 | `fopen("/etc/config", "r")` — literal or compile-time-constant path | **false-positive** (safe) |
 | `chmod("/etc/app.conf", 0666)` — `mode@` other-write on a non-temp `path@literal` | **confirmed** (CWE-732 world-writable file) |
 | `chmod(path_var, 0666)` / `fchmod(fd, 0666)` — `mode@` other-write on `path@var` | **dismissed** unless you can prove the path is a non-temp fixed location (umask filtering is unprovable) |
 | `chmod("/tmp/x", 0666)` — a temp-prefixed literal path | **false-positive** (the detector never emits it) |
 
-The **confirmed** verdict only applies when the pipeline proved a taint source
-(`taint_source` evidence fragment) or `callsites@` names a non-constant caller.
-A parameter of unknown origin stays **dismissed** — do not promote it without
-tracing a caller that passes attacker-controlled data.
+The **confirmed** verdict applies when the pipeline proved a taint source
+(`taint_source` evidence fragment), when `callsites@` names a non-constant
+caller, or when the parameter is an external/exported ABI boundary with no
+in-tree caller. Do NOT dismiss a parameter merely because the census is absent —
+the census measures who passes what, never whether the value is trusted.
 
 ### Common False Positives
 - Literal or compile-time-constant paths (config file paths, fixed install locations)
@@ -93,12 +94,21 @@ if (path[0] == '/' || strstr(path, "..") != NULL) return -1;
 // 2. Build under a fixed base directory
 char safe[PATH_MAX];
 snprintf(safe, sizeof(safe), "%s/%s", BASE_DIR, path);
-// 3. Canonicalize and confirm it stays inside BASE_DIR
+// 3. Canonicalize and confirm it stays inside BASE_DIR (note the '/' boundary:
+//    a bare prefix compare would accept /srv/baseevil for BASE_DIR=/srv/base)
 char resolved[PATH_MAX];
 if (realpath(safe, resolved) == NULL) return -1;
-if (strncmp(resolved, BASE_DIR, strlen(BASE_DIR)) != 0) return -1;
+size_t base_len = strlen(BASE_DIR);
+if (strncmp(resolved, BASE_DIR, base_len) != 0 ||
+    (resolved[base_len] != '\0' && resolved[base_len] != '/')) return -1;
 // 4. Only now touch the filesystem
 FILE *f = fopen(resolved, "r");
+```
+
+For write/delete sinks (`unlink`/`rename`/`chmod`), `realpath` fails on a
+not-yet-created target, so anchor the directory instead and use
+`openat(dfd, path, O_NOFOLLOW)` with the `dfd` from `open(BASE_DIR, O_DIRECTORY)`
+— that removes the TOCTOU window and the prefix-bypass at once.
 ```
 
 ### Severity Matrix

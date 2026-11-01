@@ -61,15 +61,17 @@ the embedded section and the indexed lookup.
 | `x / (a - b)` where `a == b` is reachable | **confirmed** |
 | `x / n` where `n` is attacker-controlled (argv / getenv / recv length) and unguarded | **confirmed** (the attacker can make n == 0) |
 | `x / n` where `n` is a bounded local, a loop counter, or a checked length | **false-positive** (n cannot be zero on any reachable path) |
-| `x / n` where `n`'s origin cannot be settled from the context | **dismissed** |
+| `x / n` where `n`'s origin cannot be settled from the context | **judge the divisor's provenance** — name the unresolved caller/source and confirm if it can be zero, dismiss only when you can cite a non-zero contract; do not dismiss merely because the origin is unclear |
 | `x / 2`, `x / sizeof(T)` | **false-positive** (constant, safe) |
 
 > **Pipeline pre-confirms, so these never reach this classification step:**
 > - `x / d` where the interval analysis proves `d == 0` (`d = 0; x / d`) — a
 >   certain divide-by-zero, auto-confirmed.
 > - `x / <non-zero constant symbol>` — folded like a literal.
-> - `INT_MIN / -1` (or `x = INT_MIN; x / -1`) — a certain CWE-190 signed
->   overflow, auto-confirmed as category `int_min_div`.
+> - `INT_MIN / -1` (or `x = INT_MIN; x / -1`) — a certain signed-overflow defect,
+>   auto-confirmed as category `int_min_div`. In C this division is UNDEFINED
+>   behavior (on x86 it traps with SIGFPE), so the finding is the UB itself, not
+>   "overflows to INT_MIN" — write the reasoning as undefined behavior.
 >
 > **`divisor@field` / `divisor@global` rows DO reach you as `suspected`:** a
 > struct/object field or a module global is only "non-zero by construction" if
@@ -81,6 +83,16 @@ the embedded section and the indexed lookup.
 - `x % sizeof(int)` — compile-time constant (safe)
 - A divisor that is checked before the division — `if (n == 0) return;`, `if (!n) goto out;`, `if (n == 0 || i >= count) return INVALID;`, `if (n == 0) n = DEFAULT;` — the guard is in the ±8-line window; when the pipeline does not model it (disjunctive forms, helper predicates), the row still reaches you as `suspected` and the window settles it
 - A divisor reassigned to a provably non-zero constant before the division (`d = 0; d = 1; x / d`) — the convergence range flow proves it non-zero and suppresses it
+
+### Examples
+
+```c
+// CONFIRMED — n can be zero on a reachable path (attacker can make argc == 1)
+int n = argc - 1; return 100 / n;
+
+// DISMISSED — the zero guard dominates the division
+if (n == 0) return; return 100 / n;
+```
 
 ### Severity Matrix
 

@@ -2,7 +2,7 @@
 name: unbounded-length-copy
 description: Classify unbounded-length-copy evidence — an externally-sourced length flowing into an allocation/copy size with no upper-bound guard. Maps to CWE-1284.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-1284
   severity: HIGH
@@ -59,7 +59,7 @@ the embedded section and the indexed lookup.
 |-----------|---------------|
 | `len-taint@recv` + `guard@none-upper` + the sink is an allocation/copy length | **confirmed** (attacker-controlled network length) |
 | `len-taint@read`/`fread` on a trusted local file descriptor whose size is bounded by the file | **false-positive** (the source is not attacker-controlled) |
-| A downstream clamp/truncation not in the ±8-line window | **dismissed** |
+| A clamp/truncation that provably bounds the length BEFORE the sink | **false-positive** — the detector already skips these; do not dismiss on a clamp you cannot see, and never invent one |
 | `len < 0` check only (not an upper bound) | **confirmed** (a negative check does not bound a large value) |
 
 The `guard@none-upper` fact is a CFG proof of ABSENCE: the pipeline already
@@ -78,6 +78,16 @@ trust boundary.
 - Range-check before use: `if (len > MAX_LEN) return -1;`
 - Clamp the length: `len = min(len, sizeof(buf));`
 - Use a bounded copy: `memcpy(dst, src, min(len, sizeof(dst)))`
+
+### Examples
+
+```c
+// CONFIRMED — a network length flows into an allocation with no upper-bound clamp
+ssize_t n = recv(fd, buf, sizeof buf, 0); char *p = malloc((size_t)n);
+
+// DISMISSED — the length is clamped before the sink
+if (n < 0 || n > MAX) return; char *p = malloc((size_t)n);
+```
 
 ### Severity Matrix
 

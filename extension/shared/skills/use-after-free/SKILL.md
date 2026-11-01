@@ -2,7 +2,7 @@
 name: use-after-free
 description: Classify use-after-free evidence — free() followed by dereference or use. Maps to CWE-416.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-416
   severity: CRITICAL
@@ -18,6 +18,14 @@ A use-after-free candidate has:
 - **may_free**: the release is CONDITIONAL — the release helper frees only when its own condition holds (`if (p != NULL) free(p)`). The candidate is a possible use-after-free, never a must-proof; it stays suspected and is never auto-confirmed.
 - **use_site**: the use line
 - **call_path**: The function is reachable from an entry point
+
+### Hint Tokens (Verdict Basis)
+
+| Token | Meaning | Your action |
+|-------|---------|-------------|
+| `free@N` | the free-site line | the use must be after this line AND on a path that actually reaches the free |
+| `may-free` | the release is CONDITIONAL | the candidate is possible, not must-proved — confirm only when the freed state can reach the use on a real path |
+| `cond@<helper>` | the conditional release helper | its body (embedded under `## Callee Definition`) decides whether the free runs on this path |
 
 ### Detection Logic
 1. Find all frees in a function — `free(ptr)` (whole variable), `free(p->field)` (field free: dangles only that field), `free(arr[0])` / `free(arr[i])` (subscript free: a constant index keeps slots distinct, a variable index is merged to `arr[]`), and a freeing function-like macro (`#define my_free(p) free(p)`). Record variable (+field) and line.
@@ -40,10 +48,10 @@ the embedded section and the indexed lookup.
 
 | Condition | Classification |
 |-----------|---------------|
-| free + use after free in same function, no re-alloc | **confirmed** |
-| free + use, but variable reassigned between free and use | **false-positive** |
+| free + use after free in same function, no re-alloc and no `p = NULL` between | **confirmed** |
+| free + use, but the variable is reassigned OR nulled (`free(p); p = NULL;`) between free and use | **false-positive** for UAF — a reassignment means a fresh object; a null-out means the later use is a NULL deref (route to null-deref, do not confirm here) |
 | free in one branch, use in another mutually exclusive branch | **false-positive** |
-| free + use in different functions (interprocedural) | **dismissed** (needs data flow) |
+| free + use in different functions (interprocedural, e.g. an ownership-transfer API released an object a caller still uses) | **confirmed** when the embedded `## Callee Definition` / ownership-transfer API proves the same object is freed then used; **dismissed** only when the cross-function link is genuinely unprovable |
 
 ### Ownership-transfer APIs
 
@@ -54,7 +62,7 @@ The `## Code Context` window shows the transfer and the parent release; confirm
 when the use is after that release.
 
 ### Common False Positives
-- `free(ptr); ptr = NULL; ptr->field;` — crash, not UAF (NULL deref instead)
+- `free(ptr); ptr = NULL; ptr->field;` — not a UAF (the pointer is nulled); it is a NULL deref — route to null-deref, do not confirm as CWE-416
 - `free(ptr); ptr = malloc(...); ptr->field;` — re-allocation before use
 - `if (cond) { free(ptr); } ... if (!cond) { ptr->field; }` — mutually exclusive branches
 
@@ -63,6 +71,16 @@ when the use is after that release.
 - Use a wrapper that nulls the pointer: `#define SAFE_FREE(p) do { free(p); p = NULL; } while(0)`
 - Avoid using the freed pointer — restructure code to move use before free
 - Consider using use-after-free sanitizers (ASan) during testing
+
+### Examples
+
+```c
+// CONFIRMED — the freed pointer is dereferenced with no reassignment
+free(p); *p = 1;
+
+// DISMISSED — the pointer is nulled, so the later use is a NULL deref, not UAF
+free(p); p = NULL; *p = 1;
+```
 
 ### Severity Matrix
 

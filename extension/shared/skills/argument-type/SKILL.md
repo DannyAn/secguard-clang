@@ -38,9 +38,11 @@ types, or same-size integer reinterpretation — those are legal C boundaries.
 | `actual@<type>` | the argument's actual pointer type before any cast | the fact being judged |
 | `cast@<type>` | an explicit cast bridges the mismatch | judge whether it is an intentional ABI/opaque boundary or a papered-over reinterpretation |
 
-The type triple is the whole verdict: an intentional
-`expected@void *` + `cast@void *` boundary is dismissed; a
-`cast@<unrelated>` that only silences the warning is confirmed.
+The detector has already filtered `void *`/byte targets, identical/same-size
+integer types, and unresolved/aggregate casts, so a row that reaches you is a
+genuine over-read or representation-kind change. The type triple is the verdict
+basis: `expected@` (the declared contract), `actual@` (the object actually
+passed), and `cast@` (the bridging cast).
 
 ### Detection Logic
 1. Resolve the callee of a direct call and its parameter type spellings
@@ -69,9 +71,9 @@ the embedded section and the indexed lookup.
 
 | Condition | Classification |
 |-----------|---------------|
-| `f((uint *)&bool_flag)` — the callee writes/reads a `bool` object through a `uint *`; object size 1 vs 4, overrun or type-pun | **confirmed** |
-| `f((uint64_t *)&uint32_val)` — reads 8 bytes from a 4-byte object | **confirmed** |
-| `f((float *)&int_val)` / `f((int *)&float_val)` — representation kind differs | **confirmed** |
+| `f((uint *)&bool_flag)` — the callee can read/write a `bool` object through a `uint *`; object size 1 vs 4 | **confirmed** when the callee actually accesses through the pointer AND the reachable extent exceeds the source object; a bool field inside a larger struct whose padding absorbs the extra bytes is **false-positive** |
+| `f((uint64_t *)&uint32_val)` — reads 8 bytes from a 4-byte object | **confirmed** (over-read) |
+| `f((float *)&int_val)` / `f((int *)&float_val)` — representation kind differs | **confirmed** when the pun'd value feeds a bounds check / size (so the corruption is security-relevant); a local/defensive path is **false-positive** |
 | The cast target is `void *` or a byte type (`char *`, `unsigned char *`) | **false-positive** (legal boundary) |
 | The pointed-to types are identical, or same-size integers (`int`↔`unsigned`) | **false-positive** (benign reinterpretation) |
 | The cast is part of a documented ABI/opaque-handle pattern (`(T*)&payload`, serializer) | **false-positive** (intentional boundary) |
@@ -91,6 +93,16 @@ the embedded section and the indexed lookup.
 - Change the parameter to `void *` (or a byte type) when the callee is a generic
   consumer that should not assume the object type.
 - Remove the cast and fix the object's declared type so no reinterpretation occurs.
+
+### Examples
+
+```c
+// CONFIRMED — bool (1 byte) read/written through uint* (4 bytes) over-reads the object
+bool flag; f((unsigned int *)&flag);
+
+// DISMISSED — same-size int<->unsigned reinterpretation, no width change
+int x; f((unsigned int *)&x);
+```
 
 ### Severity Matrix
 

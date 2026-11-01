@@ -2,7 +2,7 @@
 name: switch-fallthrough
 description: Classify switch control-flow evidence — a case that falls through or an enum switch missing its default. Maps to CWE-484/478.
 license: MIT
-compatibility: opencode
+compatibility: opencode,claude code,DSH
 metadata:
   cwe: CWE-484
   severity: MEDIUM
@@ -63,7 +63,8 @@ the embedded section and the indexed lookup.
 | `enum@<name>(covered N/M)` and the uncovered members are externally-controllable with no handler | **confirmed** |
 | a same-semantic ladder (e.g. accumulating bits through consecutive cases) | **dismissed** |
 | the enum switch's input is normalized/validated upstream, or the uncovered members are unreachable | **dismissed** |
-| a `fall through` comment or an int (non-enum) switch without default | **false-positive** (the detector never emits it) |
+| an EXEMPTION MARKER the detector recognises — an exact-prefix comment (`/* fall through */`, `// fallthrough`), or an int (non-enum) switch without default | **false-positive** (the detector never emits it) |
+| a comment the detector does NOT recognise as an exemption (a non-prefix phrase like `/* deliberately fall through to default */`) or an attribute/macro idiom (`[[fallthrough]]`, `__attribute__((fallthrough))`, bare `fallthrough;`) | still reaches you as **suspected** — judge intent, do NOT assume it was exempted |
 
 The pipeline has already applied the comment exemption and the int-switch
 suppression, so what remains is still frequently an intentional fallthrough —
@@ -80,6 +81,16 @@ the deciding question is whether the two cases are independent semantic actions.
 - Terminate each case with `break` (or `return`)
 - Add an explicit `/* fall through */` comment where the fallthrough is intended
 - Add a `default` that handles or rejects unknown enum values
+
+### Examples
+
+```c
+// CONFIRMED — two independent semantic actions fall together with no exemption
+case CMD_A: x = 1; case CMD_B: use(x);
+
+// DISMISSED — a documented fallthrough ladder (the marker suppresses it)
+case CMD_A: x |= 1; /* fall through */ case CMD_B: x |= 2;
+```
 
 ### Severity Matrix
 

@@ -140,6 +140,7 @@ func (d *DataRepresentationDetector) Detect(ctx context.Context) (DetectResult, 
 				"category":   "data_representation_mismatch",
 				"expected":   baseElementType(baseArg, call.StartLine(), globals, locals[f.StartLine], typedefs),
 				"actual":     ci.castType,
+				"cast":       ci.castType,
 			}) {
 				result.EventsCreated++
 			}
