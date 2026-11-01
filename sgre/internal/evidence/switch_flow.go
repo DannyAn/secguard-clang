@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
+	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
@@ -35,12 +36,6 @@ func NewSwitchFlowDetector(store db.Store, p *parser.Parser, logger *log.Logger)
 }
 
 func (d *SwitchFlowDetector) Name() string { return "switch_flow" }
-
-// fallthroughMarkers is the case-insensitive comment set that exempts an
-// intentional fallthrough (the GCC-recognized spellings).
-var fallthroughMarkers = []string{
-	"fall through", "fallthrough", "falls through", "fallthru", "fall-through",
-}
 
 func (d *SwitchFlowDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
@@ -207,7 +202,7 @@ func isFallthroughComment(text string) bool {
 	t = strings.TrimSuffix(t, "*/")
 	t = strings.TrimPrefix(t, "//")
 	t = strings.ToLower(strings.TrimSpace(t))
-	for _, m := range fallthroughMarkers {
+	for _, m := range config.Load().MergedFallthroughMarkers() {
 		if t == m || strings.HasPrefix(t, m+" ") || strings.HasPrefix(t, m+":") {
 			return true
 		}
@@ -227,17 +222,11 @@ func isCaseTerminator(stmt parser.Node) bool {
 	}
 	for _, call := range stmt.FindAll("call_expression") {
 		name := extractCallName(call)
-		if apikb.IsNoReturnCall(name) || noreturnSwitchCalls[name] {
+		if apikb.IsNoReturnCall(name) || config.Load().MergedNoreturnFunctions()[name] {
 			return true
 		}
 	}
 	return false
-}
-
-var noreturnSwitchCalls = map[string]bool{
-	"longjmp":           true,
-	"__builtin_trap":    true,
-	"__builtin_unreachable": true,
 }
 
 // collectEnums maps an enum type name to its enumerator member set.

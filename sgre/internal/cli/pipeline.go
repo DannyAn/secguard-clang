@@ -97,9 +97,13 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 
 	// Function-pointer slot -> target writes run SEQUENTIALLY before the parallel
 	// builders: CallGraphBuilder and InterprocBuilder both consume the resolved
-	// slots for indirect-call resolution (GAP-02).
-	if err := graph.NewFuncPtrWriteBuilder(store, p, logger).Build(ctx); err != nil {
-		return nil, fmt.Errorf("func ptr writes: %w", err)
+	// slots for indirect-call resolution (GAP-02). `[graph] indirect_call_resolution
+	// = false` disables the pass (a deployment that proves the ops table is never
+	// indirect can skip the traversal).
+	if config.Load().IndirectCallResolutionEnabled() {
+		if err := graph.NewFuncPtrWriteBuilder(store, p, logger).Build(ctx); err != nil {
+			return nil, fmt.Errorf("func ptr writes: %w", err)
+		}
 	}
 
 	type builderTask struct {

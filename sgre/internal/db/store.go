@@ -168,7 +168,7 @@ type ScanRunStore interface {
 	ListScanRuns(ctx context.Context, limit int) ([]*ScanRun, error)
 	// SetScanRunAIDuration records the AI-classification wall-clock written by
 	// `report --audit --ai-duration-ms` at the end of the AI stage.
-	SetScanRunAIDuration(ctx context.Context, scanID string, ms int64) error
+	SetScanRunAIDuration(ctx context.Context, scanID string, ms int64, source string) error
 }
 
 type InlineSuppressionStore interface {
@@ -188,6 +188,8 @@ type FuncPtrWriteStore interface {
 type CandidateVerdictStore interface {
 	// UpsertCandidateVerdict idempotently records an AI verdict (dismissed).
 	UpsertCandidateVerdict(ctx context.Context, v *CandidateVerdict) (int64, error)
+	// ListCandidateVerdicts returns every AI verdict row for a scan.
+	ListCandidateVerdicts(ctx context.Context, scanID string) ([]CandidateVerdict, error)
 	// CountCandidateVerdictsByType returns the dismissed count per vuln type.
 	CountCandidateVerdictsByType(ctx context.Context, scanID string) (map[string]int, error)
 }

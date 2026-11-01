@@ -32,10 +32,53 @@ type Config struct {
 	Contracts              Contracts              `toml:"contracts"`
 	Scan                   Scan                   `toml:"scan"`
 	Severity               Severity               `toml:"severity"`
+	Switch                 Switch                 `toml:"switch"`
+	Graph                  Graph                  `toml:"graph"`
 	// AIMode is the AI-classification stage switch: "agent" (default) keeps the
 	// LLM-orchestrator fan-out; "executor" routes PHASE_2 through the
 	// deterministic `secguard classify --mode executor` process.
 	AIMode string `toml:"ai_stage_mode"`
+}
+
+// Switch tunes the switch-fallthrough detector's vocabulary. A deployment that
+// uses a non-GCC fallthrough marker (e.g. a project `FALLTHRU` macro) or a
+// custom noreturn helper extends the built-ins here instead of editing source.
+type Switch struct {
+	// FallthroughMarkers extends the GCC-recognized intentional-fallthrough
+	// comment spellings (case-insensitive).
+	FallthroughMarkers []string `toml:"fallthrough_markers"`
+	// NoreturnFunctions extends the built-in noreturn call set that terminates a
+	// case body (longjmp / __builtin_trap / __builtin_unreachable).
+	NoreturnFunctions []string `toml:"noreturn_functions"`
+}
+
+// MergedFallthroughMarkers returns the built-in fallthrough spellings plus the
+// configured additions.
+func (c *Config) MergedFallthroughMarkers() []string {
+	return append([]string{"fall through", "fallthrough", "falls through", "fallthru", "fall-through"}, c.Switch.FallthroughMarkers...)
+}
+
+// MergedNoreturnFunctions returns the built-in noreturn call names plus the
+// configured additions.
+func (c *Config) MergedNoreturnFunctions() map[string]bool {
+	out := map[string]bool{"longjmp": true, "__builtin_trap": true, "__builtin_unreachable": true}
+	for _, name := range c.Switch.NoreturnFunctions {
+		out[name] = true
+	}
+	return out
+}
+
+// Graph tunes the semantic-graph builders.
+type Graph struct {
+	// IndirectCallResolution enables the function-pointer / ops-table indirect
+	// CALL edge resolution (FuncPtrWriteBuilder). Default true.
+	IndirectCallResolution *bool `toml:"indirect_call_resolution"`
+}
+
+// IndirectCallResolutionEnabled reports whether func-ptr indirect CALL edges are
+// built (default true).
+func (c *Config) IndirectCallResolutionEnabled() bool {
+	return c.Graph.IndirectCallResolution == nil || *c.Graph.IndirectCallResolution
 }
 
 // Severity carries the user's explicit severity-scale overrides. A user who

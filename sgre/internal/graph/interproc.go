@@ -41,8 +41,22 @@ func (b *InterprocBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	}
 
 	funcByName := make(map[string][]int64)
+	nameByID := make(map[int64]string)
 	for _, f := range funcs {
 		funcByName[f.Name] = append(funcByName[f.Name], f.ID)
+		nameByID[f.ID] = f.Name
+	}
+
+	// Function-pointer slot -> target wirings (GAP-02), loaded once so an
+	// indirect call `ops->open(p)` binds its positional args to the RESOLVED
+	// target's parameters (mirrors CallGraphBuilder's CALL-edge resolution).
+	slotTargets := make(map[string][]string)
+	if fpWrites, ferr := b.store.ListFuncPtrWrites(ctx); ferr == nil {
+		for _, w := range fpWrites {
+			slotTargets[w.SlotName] = append(slotTargets[w.SlotName], w.TargetName)
+		}
+	} else if b.logger != nil {
+		b.logger.Warn("interproc: func ptr writes load failed (indirect PARAM_BINDING unresolved)", "error", ferr)
 	}
 
 	// paramsByFunc maps function ID -> positional parameter names. It is built in
@@ -79,12 +93,28 @@ func (b *InterprocBuilder) Build(ctx context.Context) (*BuildResult, error) {
 			for _, call := range nodesInRange(calls, f.StartLine, f.EndLine) {
 				calleeName := extractCallName(call)
 				calleeIDs := funcByName[calleeName]
+				// An unresolved direct name is an indirect call through a
+				// function-pointer slot (GAP-02): `ops->open(p)` / `(*fp)(p)`.
+				// Resolve the slot to its target(s) so the positional args bind
+				// to the REAL callee's parameters (a missed binding was a silent
+				// null/ownership-flow false negative for slot-registered calls).
+				if len(calleeIDs) == 0 {
+					if slot := indirectSlotName(call); slot != "" {
+						for _, target := range slotTargets[slot] {
+							calleeIDs = append(calleeIDs, funcByName[target]...)
+						}
+					}
+				}
 				if len(calleeIDs) == 0 {
 					continue
 				}
 				args := callArgs(call)
 				for _, calleeID := range calleeIDs {
 					params := paramsByFunc[calleeID]
+					resolvedName := nameByID[calleeID]
+					if resolvedName == "" {
+						resolvedName = calleeName
+					}
 					for i, arg := range args {
 						if i >= len(params) {
 							break
@@ -100,7 +130,7 @@ func (b *InterprocBuilder) Build(ctx context.Context) (*BuildResult, error) {
 						if arg.Kind() != "identifier" {
 							continue
 						}
-						if b.persistParamBinding(ctx, f, calleeID, calleeName, params[i], i, arg.Text(), call.StartLine()) {
+						if b.persistParamBinding(ctx, f, calleeID, resolvedName, params[i], i, arg.Text(), call.StartLine()) {
 							result.EdgesCreated++
 						}
 					}

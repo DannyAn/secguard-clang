@@ -325,6 +325,7 @@ type ScanRun struct {
 	SourceRevision   string `json:"source_revision,omitempty"`
 	DurationMs       int64  `json:"duration_ms"`
 	AIDurationMs     int64  `json:"ai_duration_ms"`
+	AIDurationSource string `json:"ai_duration_source,omitempty"`
 	IndexMs          int64  `json:"index_ms"`
 	GraphMs          int64  `json:"graph_ms"`
 	DetectorsMs      int64  `json:"detectors_ms"`

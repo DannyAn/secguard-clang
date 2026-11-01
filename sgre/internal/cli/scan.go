@@ -850,6 +850,7 @@ func runStatusCmd(ctx context.Context, args []string) int {
 	if !found {
 		WriteJSON(map[string]interface{}{
 			"indexed": false,
+			"state":   "empty",
 			"message": "No sgre.db found. Run 'secguard scan <path>' to create an index.",
 			"db_path": dbPath,
 		})
@@ -956,6 +957,7 @@ func runStatusCmd(ctx context.Context, args []string) int {
 
 	output := map[string]interface{}{
 		"indexed":           true,
+		"state":             indexState(files, dbPath),
 		"db_path":           dbPath,
 		"files_indexed":     len(files),
 		"functions_indexed": len(funcs),
@@ -970,6 +972,32 @@ func runStatusCmd(ctx context.Context, args []string) int {
 	}
 	fmt.Fprintln(os.Stdout, string(jsonBytes))
 	return 0
+}
+
+// indexState reports the index's freshness: empty (no files), stale (any indexed
+// source file is newer than the DB), or ready. It early-exits on the first stale
+// file so a large codebase does not stat every source on every `secguard status`.
+func indexState(files []*db.File, dbPath string) string {
+	if len(files) == 0 {
+		return "empty"
+	}
+	if dbPath == "" {
+		return "ready"
+	}
+	dbInfo, err := os.Stat(dbPath)
+	if err != nil {
+		return "ready"
+	}
+	for _, f := range files {
+		info, err := os.Stat(f.Path)
+		if err != nil {
+			continue // deleted/moved file cannot be re-stat'd; not a stale signal
+		}
+		if info.ModTime().After(dbInfo.ModTime()) {
+			return "stale"
+		}
+	}
+	return "ready"
 }
 
 // resolveAndLoadCompileCommands resolves the compile_commands.json path in

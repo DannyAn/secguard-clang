@@ -23,6 +23,27 @@ func (s *store) UpsertCandidateVerdict(ctx context.Context, v *CandidateVerdict)
 	return id, nil
 }
 
+// ListCandidateVerdicts returns every AI verdict row (dismissed) for a scan, in
+// id order. It is the source of the ai-dismissed.json ledger.
+func (s *store) ListCandidateVerdicts(ctx context.Context, scanID string) ([]CandidateVerdict, error) {
+	rows, err := s.exec.QueryContext(ctx,
+		`SELECT id, scan_id, vuln_type, file_path, line_number, function_name, variable, verdict, reason
+		 FROM candidate_verdicts WHERE scan_id = ? ORDER BY id`, scanID)
+	if err != nil {
+		return nil, fmt.Errorf("db: list candidate verdicts: %w", err)
+	}
+	defer rows.Close()
+	var out []CandidateVerdict
+	for rows.Next() {
+		v := CandidateVerdict{}
+		if err := rows.Scan(&v.ID, &v.ScanID, &v.VulnType, &v.FilePath, &v.LineNumber, &v.FunctionName, &v.Variable, &v.Verdict, &v.Reason); err != nil {
+			return nil, fmt.Errorf("db: scan candidate verdict: %w", err)
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 // CountCandidateVerdictsByType returns the dismissed count per vuln type for a
 // scan, keyed by vuln type. It is the dismissed half of the recovery ledger.
 func (s *store) CountCandidateVerdictsByType(ctx context.Context, scanID string) (map[string]int, error) {

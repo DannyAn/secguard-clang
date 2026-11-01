@@ -479,6 +479,15 @@ func (s *mockStore) UpsertCandidateVerdict(ctx context.Context, v *db.CandidateV
 	s.candidateVerdicts = append(s.candidateVerdicts, *v)
 	return int64(len(s.candidateVerdicts)), nil
 }
+func (s *mockStore) ListCandidateVerdicts(ctx context.Context, scanID string) ([]db.CandidateVerdict, error) {
+	var out []db.CandidateVerdict
+	for _, v := range s.candidateVerdicts {
+		if v.ScanID == scanID {
+			out = append(out, v)
+		}
+	}
+	return out, nil
+}
 func (s *mockStore) CountCandidateVerdictsByType(ctx context.Context, scanID string) (map[string]int, error) {
 	out := map[string]int{}
 	for _, v := range s.candidateVerdicts {
@@ -518,7 +527,7 @@ func (s *mockStore) GetScanRun(ctx context.Context, scanID string) (*db.ScanRun,
 func (s *mockStore) ListScanRuns(ctx context.Context, limit int) ([]*db.ScanRun, error) {
 	return nil, nil
 }
-func (s *mockStore) SetScanRunAIDuration(ctx context.Context, scanID string, ms int64) error {
+func (s *mockStore) SetScanRunAIDuration(ctx context.Context, scanID string, ms int64, source string) error {
 	return nil
 }
 

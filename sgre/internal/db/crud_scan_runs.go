@@ -32,8 +32,8 @@ func (s *store) UpsertScanRun(ctx context.Context, r *ScanRun) error {
 // written by `report --audit --ai-duration-ms <ms>` at the end of the AI stage, so
 // the two-phase pipeline-vs-AI timing is queryable across scans. It is a targeted
 // UPDATE (not an upsert) so it never clobbers the pipeline timings the scan wrote.
-func (s *store) SetScanRunAIDuration(ctx context.Context, scanID string, ms int64) error {
-	res, err := s.exec.ExecContext(ctx, `UPDATE scan_runs SET ai_duration_ms = ? WHERE scan_id = ?`, ms, scanID)
+func (s *store) SetScanRunAIDuration(ctx context.Context, scanID string, ms int64, source string) error {
+	res, err := s.exec.ExecContext(ctx, `UPDATE scan_runs SET ai_duration_ms = ?, ai_duration_source = ? WHERE scan_id = ?`, ms, source, scanID)
 	if err != nil {
 		return fmt.Errorf("db: set scan_run ai_duration_ms: %w", err)
 	}
@@ -49,10 +49,11 @@ func (s *store) SetScanRunAIDuration(ctx context.Context, scanID string, ms int6
 
 func (s *store) GetScanRun(ctx context.Context, scanID string) (*ScanRun, error) {
 	r := &ScanRun{}
+	var aiSource sql.NullString
 	err := s.exec.QueryRowContext(ctx,
-		`SELECT id, scan_id, source_revision, duration_ms, ai_duration_ms, index_ms, graph_ms, detectors_ms, plan_ms, report_ms, files_indexed, functions_indexed, seed_count, final_count, report_bytes, evidence_bytes, created_at
+		`SELECT id, scan_id, source_revision, duration_ms, ai_duration_ms, ai_duration_source, index_ms, graph_ms, detectors_ms, plan_ms, report_ms, files_indexed, functions_indexed, seed_count, final_count, report_bytes, evidence_bytes, created_at
 		 FROM scan_runs WHERE scan_id = ?`, scanID).
-		Scan(&r.ID, &r.ScanID, &r.SourceRevision, &r.DurationMs, &r.AIDurationMs, &r.IndexMs, &r.GraphMs, &r.DetectorsMs, &r.PlanMs, &r.ReportMs,
+		Scan(&r.ID, &r.ScanID, &r.SourceRevision, &r.DurationMs, &r.AIDurationMs, &aiSource, &r.IndexMs, &r.GraphMs, &r.DetectorsMs, &r.PlanMs, &r.ReportMs,
 			&r.FilesIndexed, &r.FunctionsIndexed, &r.SeedCount, &r.FinalCount, &r.ReportBytes, &r.EvidenceBytes, &r.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -60,11 +61,12 @@ func (s *store) GetScanRun(ctx context.Context, scanID string) (*ScanRun, error)
 	if err != nil {
 		return nil, fmt.Errorf("db: get scan_run: %w", err)
 	}
+	r.AIDurationSource = aiSource.String
 	return r, nil
 }
 
 func (s *store) ListScanRuns(ctx context.Context, limit int) ([]*ScanRun, error) {
-	query := `SELECT id, scan_id, source_revision, duration_ms, ai_duration_ms, index_ms, graph_ms, detectors_ms, plan_ms, report_ms, files_indexed, functions_indexed, seed_count, final_count, report_bytes, evidence_bytes, created_at
+	query := `SELECT id, scan_id, source_revision, duration_ms, ai_duration_ms, ai_duration_source, index_ms, graph_ms, detectors_ms, plan_ms, report_ms, files_indexed, functions_indexed, seed_count, final_count, report_bytes, evidence_bytes, created_at
 		 FROM scan_runs ORDER BY created_at DESC, id DESC`
 	if limit > 0 {
 		query += fmt.Sprintf(" LIMIT %d", limit)
@@ -77,10 +79,12 @@ func (s *store) ListScanRuns(ctx context.Context, limit int) ([]*ScanRun, error)
 	var runs []*ScanRun
 	for rows.Next() {
 		r := &ScanRun{}
-		if err := rows.Scan(&r.ID, &r.ScanID, &r.SourceRevision, &r.DurationMs, &r.AIDurationMs, &r.IndexMs, &r.GraphMs, &r.DetectorsMs, &r.PlanMs, &r.ReportMs,
+		var aiSource sql.NullString
+		if err := rows.Scan(&r.ID, &r.ScanID, &r.SourceRevision, &r.DurationMs, &r.AIDurationMs, &aiSource, &r.IndexMs, &r.GraphMs, &r.DetectorsMs, &r.PlanMs, &r.ReportMs,
 			&r.FilesIndexed, &r.FunctionsIndexed, &r.SeedCount, &r.FinalCount, &r.ReportBytes, &r.EvidenceBytes, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("db: scan scan_run: %w", err)
 		}
+		r.AIDurationSource = aiSource.String
 		runs = append(runs, r)
 	}
 	return runs, rows.Err()

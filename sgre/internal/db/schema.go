@@ -404,6 +404,9 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 	if err := ensureColumn(ctx, db, "scan_runs", "ai_duration_ms", "INTEGER"); err != nil {
 		return fmt.Errorf("db: init schema: ensure scan_runs.ai_duration_ms: %w", err)
 	}
+	if err := ensureColumn(ctx, db, "scan_runs", "ai_duration_source", "TEXT"); err != nil {
+		return fmt.Errorf("db: init schema: ensure scan_runs.ai_duration_source: %w", err)
+	}
 	if err := ensureColumn(ctx, db, "scan_runs", "source_revision", "TEXT"); err != nil {
 		return fmt.Errorf("db: init schema: ensure scan_runs.source_revision: %w", err)
 	}

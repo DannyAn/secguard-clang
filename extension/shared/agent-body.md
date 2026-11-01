@@ -698,6 +698,12 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
   accounting (those are NOT in the DB, unlike `written`). Use the Write tool; a
   "must read before overwriting" is a stale file, so use a fresh
   `<subagent_id>-report-2.json` name.
+  **The three settlement filenames are FIXED — never invent a different one**
+  (P2-11): the batch summary is `<subagent_id>-report.json`, a per-type
+  checkpoint is `<subagent_id>-<type>-report.json`, a mid-batch chunk is
+  `<subagent_id>-chunk-<k>.json`. Do NOT write `<type>-sub-report.json`,
+  `<type>-report.json`, or any `<type>-<type>`-joined name — `status --reports`
+  dedups by `subagent_id`, and an ad-hoc name breaks that.
 - **Per-type checkpoint (P0-2 — 每完成一个类型立即落盘).** When a batch contains
   MORE than one type, do NOT wait until the end to persist. Immediately after you
   finish EACH type (its `--write-json` returns), write a per-type checkpoint file

@@ -327,3 +327,36 @@ exclude = ["bzero", "realloc"]
 		}
 	}
 }
+
+func TestLoad_SwitchAndGraphSections(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secguard.toml")
+	content := `
+[switch]
+fallthrough_markers = ["FALLTHRU", "intentional"]
+noreturn_functions = ["my_abort"]
+
+[graph]
+indirect_call_resolution = false
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SECGUARD_CONFIG", path)
+	SetExplicitPath("") // clear any explicit path set by a prior test
+	cfg := Load()
+	markers := cfg.MergedFallthroughMarkers()
+	joined := strings.Join(markers, "|")
+	for _, want := range []string{"fallthrough", "FALLTHRU", "intentional"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("MergedFallthroughMarkers missing %q: %s", want, joined)
+		}
+	}
+	noreturn := cfg.MergedNoreturnFunctions()
+	if !noreturn["my_abort"] || !noreturn["longjmp"] {
+		t.Errorf("MergedNoreturnFunctions should include my_abort + built-in longjmp, got %v", noreturn)
+	}
+	if cfg.IndirectCallResolutionEnabled() {
+		t.Errorf("IndirectCallResolutionEnabled should be false when configured false")
+	}
+}

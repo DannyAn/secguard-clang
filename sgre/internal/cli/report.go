@@ -1027,6 +1027,84 @@ func runReportCmd(ctx context.Context, args []string) int {
 		return 0
 	}
 
+	// --stats is the READ-ONLY per-type verdict census: confirmed / auto_confirmed
+	// / dismissed / remaining in one query, with NO findings/ + SARIF + xlsx
+	// re-render (P1-9). The orchestrator reads this instead of a second --audit.
+	if hasFlag(remaining, "stats") {
+		scanID := parseStringFlag(remaining, "scan-id")
+		if scanID == "" {
+			scanID, err = store.GetLatestScanID(ctx)
+			if err != nil {
+				WriteErrorJSON(fmt.Sprintf("failed to get latest scan_id: %v", err))
+				return 1
+			}
+		}
+		if scanID == "" {
+			WriteErrorJSON("no scan stats found; run 'secguard scan' first")
+			return 1
+		}
+		stats, err := store.ListScanStats(ctx, scanID)
+		if err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to list scan stats: %v", err))
+			return 1
+		}
+		scanFindings, err := store.ListFindingsByScanID(ctx, scanID)
+		if err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to list findings: %v", err))
+			return 1
+		}
+		dismissedByType, err := store.CountCandidateVerdictsByType(ctx, scanID)
+		if err != nil {
+			dismissedByType = map[string]int{}
+		}
+		type tally struct{ confirmed, auto int }
+		byType := map[string]*tally{}
+		for _, f := range scanFindings {
+			vt := f.VulnType
+			if vt == "" {
+				vt = planner.TypeForCWE(f.RuleID)
+			}
+			if vt == "" {
+				continue
+			}
+			if byType[vt] == nil {
+				byType[vt] = &tally{}
+			}
+			switch f.FinalStatus() {
+			case "confirmed":
+				if f.Status == db.StatusAutoConfirmed {
+					byType[vt].auto++
+				} else {
+					byType[vt].confirmed++
+				}
+			}
+		}
+		rows := make([]map[string]interface{}, 0, len(stats))
+		for _, st := range stats {
+			t := byType[st.VulnType]
+			confirmed, auto := 0, 0
+			if t != nil {
+				confirmed, auto = t.confirmed, t.auto
+			}
+			dismissed := dismissedByType[st.VulnType]
+			remaining := st.FinalCount - confirmed - auto - dismissed
+			if remaining < 0 {
+				remaining = 0
+			}
+			rows = append(rows, map[string]interface{}{
+				"vuln_type":       st.VulnType,
+				"cwe":             planner.CWEForType(st.VulnType),
+				"candidate_count": st.FinalCount,
+				"confirmed":       confirmed,
+				"auto_confirmed":  auto,
+				"dismissed":       dismissed,
+				"remaining":       remaining,
+			})
+		}
+		WriteJSON(map[string]interface{}{"scan_id": scanID, "types": rows})
+		return 0
+	}
+
 	if hasFlag(remaining, "audit") {
 		scanID := parseStringFlag(remaining, "scan-id")
 		if scanID == "" {
@@ -1049,7 +1127,14 @@ func runReportCmd(ctx context.Context, args []string) int {
 				WriteErrorJSON(fmt.Sprintf("invalid --ai-duration-ms %q (expected a non-negative integer of milliseconds)", raw))
 				return 1
 			}
-			if serr := store.SetScanRunAIDuration(ctx, scanID, ms); serr != nil {
+			// measured = wall-clock from a nanosecond timer; estimated = a
+			// seconds-resolution approximation (P2-14). The source is persisted
+			// so a production A/B never compares a measured number to a guess.
+			source := parseStringFlag(remaining, "ai-duration-source")
+			if source == "" {
+				source = "measured"
+			}
+			if serr := store.SetScanRunAIDuration(ctx, scanID, ms, source); serr != nil {
 				WriteErrorJSON(fmt.Sprintf("failed to record ai_duration_ms: %v", serr))
 				return 1
 			}
@@ -1077,7 +1162,10 @@ func runReportCmd(ctx context.Context, args []string) int {
 		}
 		countsByVuln := make(map[string]*vulnCounts)
 		for _, f := range scanFindings {
-			vt := planner.TypeForCWE(f.RuleID)
+			vt := f.VulnType
+			if vt == "" {
+				vt = planner.TypeForCWE(f.RuleID)
+			}
 			if vt == "" {
 				continue
 			}
@@ -1182,6 +1270,27 @@ func runReportCmd(ctx context.Context, args []string) int {
 				WriteErrorJSON(fmt.Sprintf("failed to write result.xlsx: %v", err))
 				return 1
 			}
+			// ai-dismissed.json is the AI-dismissal ledger (P1-8): the 58
+			// dismissed verdicts that live only in subagent chat messages are
+			// persisted here from the candidate_verdicts table so the customer
+			// can see what the AI rejected and why.
+			if verdicts, verr := store.ListCandidateVerdicts(ctx, scanID); verr == nil {
+				type dismissedRow struct {
+					VulnType     string `json:"vuln_type"`
+					File         string `json:"file"`
+					Line         int    `json:"line"`
+					Function     string `json:"function,omitempty"`
+					Variable     string `json:"variable,omitempty"`
+					Reason       string `json:"reason,omitempty"`
+				}
+				rows := make([]dismissedRow, 0, len(verdicts))
+				for _, v := range verdicts {
+					rows = append(rows, dismissedRow{VulnType: v.VulnType, File: v.FilePath, Line: v.LineNumber, Function: v.FunctionName, Variable: v.Variable, Reason: v.Reason})
+				}
+				if data, merr := json.MarshalIndent(map[string]interface{}{"scan_id": scanID, "total_dismissed": len(rows), "dismissed": rows}, "", "  "); merr == nil {
+					_ = os.WriteFile(filepath.Join(outputDir, "ai-dismissed.json"), append(data, '\n'), 0644)
+				}
+			}
 			// Rebuild findings/ from the DB so the review surface holds exactly
 			// the actionable verdicts: dismissed entries and never-classified
 			// leftovers are swept out instead of being handed to a reviewer.
@@ -1238,7 +1347,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 	// degrade into silently dumping the whole findings table. Fail loud instead.
 	if !hasFlag(remaining, "list") {
 		printReportUsage()
-		WriteErrorJSON("no action flag: pass --list (read all findings), --write-json (persist), --list-auto-confirmed (re-review), --review-json, --complete-type, or --audit")
+		WriteErrorJSON("no action flag: pass --list (read all findings), --stats (read-only per-type verdicts), --write-json (persist), --list-auto-confirmed (re-review), --review-json, --complete-type, or --audit")
 		return 1
 	}
 
@@ -1272,11 +1381,20 @@ func runReportCmd(ctx context.Context, args []string) int {
 	}
 	type listItem struct {
 		*db.Finding
+		// VulnType and Variable shadow the embedded Finding fields so the output
+		// schema is FIXED: vuln_type comes from the finding's own attribution
+		// (not re-derived from rule_id), and variable is always present ("" when
+		// absent) so a consumer never hits a KeyError (P2-12).
 		VulnType string `json:"vuln_type"`
+		Variable string `json:"variable"`
 	}
 	items := make([]listItem, 0, len(findings))
 	for _, f := range findings {
-		items = append(items, listItem{Finding: f, VulnType: planner.TypeForCWE(f.RuleID)})
+		vt := f.VulnType
+		if vt == "" {
+			vt = planner.TypeForCWE(f.RuleID)
+		}
+		items = append(items, listItem{Finding: f, VulnType: vt, Variable: f.Variable})
 	}
 	WriteJSON(items)
 	return 0

@@ -2,6 +2,7 @@ package planner
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -267,22 +268,44 @@ func HintLegendLines() []string {
 // registry spec; a token the registry does not carry is skipped (the guard
 // test fails the build before that can happen in a shipped build).
 func HintLegendForTokens(tokens []string) []string {
-	used := make(map[string]bool, len(hintTokenRegistry))
+	// used maps each value-bearing key to the DISTINCT values the type actually
+	// emitted, so the legend renders `cat@` as `cat@<name>` — the detector's
+	// sub-category: `secure_constraint_violation` | `secure_copy_overflow`
+	// instead of a dead `<value>` placeholder (P1-4). Bare tokens have no value.
+	used := make(map[string]map[string]bool, len(hintTokenRegistry))
 	for _, tok := range tokens {
-		if spec, _, ok := matchHintToken(tok); ok {
-			used[spec.Key] = true
+		spec, value, ok := matchHintToken(tok)
+		if !ok {
+			continue
+		}
+		if used[spec.Key] == nil {
+			used[spec.Key] = map[string]bool{}
+		}
+		if value != "" {
+			used[spec.Key][value] = true
 		}
 	}
 	lines := make([]string, 0, len(used))
 	for _, spec := range hintTokenRegistry {
-		if !used[spec.Key] {
+		values, ok := used[spec.Key]
+		if !ok {
 			continue
 		}
 		display := spec.Display
 		if display == "" {
 			display = spec.Key
 		}
-		desc := strings.ReplaceAll(spec.Description, "{value}", "<value>")
+		desc := spec.Description
+		rendered := make([]string, 0, len(values))
+		for v := range values {
+			rendered = append(rendered, v)
+		}
+		sort.Strings(rendered)
+		if len(rendered) > 0 {
+			desc = strings.ReplaceAll(desc, "{value}", "`"+strings.Join(rendered, "` | `")+"`")
+		} else {
+			desc = strings.ReplaceAll(desc, "{value}", "<value>")
+		}
 		lines = append(lines, fmt.Sprintf("- `%s` — %s", display, desc))
 	}
 	return lines
