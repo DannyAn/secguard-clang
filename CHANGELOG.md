@@ -4,11 +4,9 @@
 
 ## [未发布]
 
-## [0.12.1] - 2026-11-01
-
 ### 补齐 round3 全部遗留项 + 引擎/配置通道收口（零遗留）
 
-在 0.12.0 之上补齐最后一批遗留，达到「无已知遗留」：
+在 round3 修复之上补齐最后一批遗留，达到「无已知遗留」：
 
 - **`report --stats` 只读接口（P1-9）**：一次调用返回 per-type confirmed / auto_confirmed / dismissed / remaining，不再为读一个汇总数触发全量 `--audit`（重渲染 findings/ + SARIF + xlsx）。
 - **`ai-dismissed.json` 自动产出（P1-8）**：`report --audit` 从 `candidate_verdicts` 台账渲染 `ai-dismissed.json`（scan_id + 逐条 vuln_type/file/line/function/reason），AI 驳回不再只存在于子代理聊天消息。
@@ -21,8 +19,6 @@
 - **InterprocBuilder 消费函数指针写**：间接调用 `ops->open(p)` / `(*fp)(p)` 的 PARAM_BINDING 现在解析到真实目标函数的形参（此前只 CallGraphBuilder 建了 CALL 边，参数绑定缺失是 null/ownership 流的静默漏报）。
 
 > `-I` include 搜索链：compile_commands 的 `-I` 目录解析已就绪，但消费方是「索引项目树之外的系统/SDK 头文件」——这是跨树头文件索引的架构级功能，非 GAP-03 范围（GAP-03 交付的是 `-D` 宏并入常量环境，已落地）。当前索引器只索引项目树内 `.c/.h`，`-I` 无消费点，记为**明确的非目标**而非遗留。
-
-## [0.12.0] - 2026-11-01
 
 ### round3 类型归属与召回修复（样例项目第三轮分析）
 
