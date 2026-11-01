@@ -23,6 +23,20 @@ func init() {
 		CategoryConfidence: map[string]string{"world_writable_file": "confirmed"},
 		BuildVerdictFacts:  buildPathTraversalVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
+			if c.Category == "world_writable_file" || c.Category == "world_writable_var" {
+				// A permission-setting finding is NOT a path-traversal: its summary
+				// must describe the world-writable mode, never the `../` traversal.
+				frags := []EvidenceFragment{{
+					Type:   "permission_setting",
+					Role:   "sink",
+					Detail: fmt.Sprintf("chmod/fchmod call %s sets an other-writable mode (0o002) — a world-writable file/dir that any local user can modify", c.APIName),
+				}}
+				if c.PathExpr != "" {
+					frags = append(frags, EvidenceFragment{Type: "path_arg", Role: "condition", Detail: fmt.Sprintf("path argument: %s", c.PathExpr)})
+				}
+				frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
+				return frags
+			}
 			frags := []EvidenceFragment{
 				{Type: "path_traversal", Role: "sink", Detail: fmt.Sprintf("filesystem call %s receives a path that is not a fixed string literal — an attacker-controlled value could use ../ to escape the intended directory and read/overwrite/delete an arbitrary file", c.APIName)},
 				{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)},

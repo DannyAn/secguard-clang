@@ -19,6 +19,7 @@ the intended directory and read / overwrite / delete an arbitrary file.
 ### Evidence Pattern
 A path-traversal candidate has:
 - **path_traversal**: a filesystem sink whose path argument is not a string literal
+- **permission_setting**: a chmod/fchmod whose mode is other-writable (world_writable_file / world_writable_var — CWE-732, NOT a `../` traversal)
 - **path_arg**: the path argument expression of the sink call
 - **call_path**: the function is reachable from an entry point
 - **taint_source** (when the pipeline proved it): a user-controlled value

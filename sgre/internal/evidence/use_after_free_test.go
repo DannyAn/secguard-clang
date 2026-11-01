@@ -364,6 +364,14 @@ func TestUseAfterFree_ReassignKillsUse(t *testing.T) {
 	if flagged["a"] {
 		t.Errorf("expected free(a); a = fallback; a[0] NOT to be flagged (reassignment kills the dangling state), got %v", flagged)
 	}
+	// The post-free alias expansion bug (P1-5) also made `free(a)` look like a
+	// free of `fallback` (a = fallback at line 20 created the alias AFTER the
+	// free), so `a = fallback` (which reads fallback on the RHS) was flagged as
+	// use(fallback) after free(fallback). The line-aware terminalBaseVarAsOf
+	// must stop the expansion at the free line.
+	if flagged["fallback"] {
+		t.Errorf("expected the post-free alias 'fallback' NOT to be flagged (free(a) does not free fallback), got %v", flagged)
+	}
 	// p covers the three keep-flagged shapes: no reassignment, self-RHS
 	// (`p = p->next`), and a branch-local reassignment.
 	if !flagged["p"] {

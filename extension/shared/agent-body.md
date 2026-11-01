@@ -409,11 +409,14 @@ budget your effort, not to pre-judge the answer:
   a bounds check, which would require an operand to reach SIZE_MAX). Triage these
   last and promote one only when you can show a reachable, realistic overflow.
 
-Your persisted classification is `confirmed` only — dismissed candidates are NOT
-persisted (no finding, no count, no report). `suspicion_level` only tells you how
-hard to look. A skill's `false-positive` verdict means dismissed: do NOT write a
-finding for it. Never write the literal string `false-positive` into the `status`
-field (it is not a valid status and rejects the whole batch).
+Your persisted classification is BINARY, and BOTH halves are persisted: a
+`confirmed` verdict is written as a finding row (the `findings` table); a
+`dismissed` verdict is written to the `candidate_verdicts` ledger (the
+recovery/audit record — it is NOT a finding, NOT in SARIF, NOT in `findings/`).
+`suspicion_level` only tells you how hard to look. A skill's `false-positive`
+verdict means dismissed. Never write the literal string `false-positive` into
+the `status` field — write `dismissed` (it is not a valid status and rejects
+the whole batch).
 
 ## Write discipline
 
@@ -447,13 +450,17 @@ The `<type>.json` file MUST be a JSON array of objects with EXACTLY these keys
 [
   {"rule_id":"CWE-476","severity":"high","confidence":90,"status":"confirmed",
    "file":"src/a.c","line":42,"function":"f","variable":"p","summary":"...",
-   "reasoning":"...","exception_check":"...","fix_strategy":"..."}
+   "reasoning":"...","exception_check":"...","fix_strategy":"..."},
+  {"rule_id":"CWE-476","severity":"low","confidence":10,"status":"dismissed",
+   "file":"src/b.c","line":7,"function":"g","variable":"p","reasoning":"guarded"}
 ]
 ```
 
-`rule_id` is the CWE (e.g. CWE-476); `status` is `confirmed` — the only value
-that reaches the DB. `dismissed` candidates are not written: do not include them
-in the array. `file` is
+`rule_id` is the CWE (e.g. CWE-476); `status` is `confirmed` OR `dismissed`.
+A `confirmed` row reaches the `findings` table; a `dismissed` row reaches the
+`candidate_verdicts` ledger (so breakpoint recovery can tell "classified and
+dismissed" from "never classified") and is NOT a finding. Write BOTH in the same
+array — do not omit the dismissed rows. `file` is
 the source path, `line` the line number, `function` the
 function name. `variable` is the sink/source variable the finding is about (the
 dereferenced pointer, the leaked allocation, the divisor, …) — copy it from the
@@ -461,22 +468,25 @@ candidate `_index.md` **Variable** column when present; leave it out when the ty
 has no single variable (hardcoded-secret, dangerous-function, deadlock, …). It is
 what makes `result.sarif` read as "dereference of 'p'" instead of "something in f".
 `reasoning`/`exception_check`/`fix_strategy` are optional strings (required for
-confirmed). Write a bare array with these exact key names. Do NOT rename the keys. If you do write a `{"scan_id": ..., "findings": [...]}` wrapper
-or a single finding object, the write still succeeds (the CLI accepts all three
-shapes and validates an embedded `scan_id` like `--scan-id`) — but the bare array
-is the contract; do not mix shapes in one file.
+confirmed; for dismissed only `reasoning` is needed). Write a bare array with
+these exact key names. Do NOT rename the keys. If you do write a
+`{"scan_id": ..., "findings": [...]}` wrapper or a single finding object, the
+write still succeeds (the CLI accepts all three shapes and validates an embedded
+`scan_id` like `--scan-id`) — but the bare array is the contract; do not mix
+shapes in one file.
 
 Every **confirmed** candidate must get a finding persisted via `--write-json` —
-never skip writing a confirmed finding. **Dismissed** candidates are NOT written,
-NOT counted, NOT reported: do not create a finding object for them. For every
-confirmed finding fill `reasoning`, `exception_check`, and `fix_strategy`. The
-dismissed reasoning stays in your transcript (the conversation record) — it is not
-persisted to the DB.
+never skip writing a confirmed finding. Every **dismissed** candidate must ALSO be
+written in the same array with `status: "dismissed"` (so it lands in
+`candidate_verdicts` and the recovery ledger stays complete) — do NOT omit it.
+For every confirmed finding fill `reasoning`, `exception_check`, and
+`fix_strategy`; for a dismissed row `reasoning` alone suffices.
 
-**Large types: split confirmed findings into ≤200-finding batches, persist
-EACH batch immediately.** Dismissed candidates are not written in any batch (not
-counted, not batched). This is a HARD rule, not a suggestion. You SHALL NOT build
-one giant JSON array for a type with many confirmed findings — the array plus your
+**Large types: split findings into ≤200-finding batches, persist EACH batch
+immediately.** Dismissed rows are written in the same batch as confirmed rows (they
+are rows in the same array, not a separate batch). This is a HARD rule, not a
+suggestion. You SHALL NOT build
+one giant JSON array for a type with many findings — the array plus your
 classification notes overflow the context window and the tail findings get silently
 dropped (the "200 landed, 4 missing" failure). For any type with more than ~200
 confirmed findings, you SHALL write and persist in chunks, and you SHALL NOT start

@@ -4,6 +4,16 @@
 
 ## [未发布]
 
+### round2 扫描问题修复（样例项目第二轮分析）
+
+依据 `examples/c-vuln-benchmark/扫描会话问题分析与扫描性能改进建议-round2.md` 核实后修复 3 个真问题：
+
+- **P0-1 dismissed 仍未落库（round1 修复不完整）**：round1 建了 `candidate_verdicts` 表 + `--write-json` 的 dismissed 路由，但 agent-body 的写契约仍只写 confirmed、子代理从不写 dismissed 行，导致台账空、`remaining` 恒等于 dismissed 数。修复：写契约改为**同一数组里写 confirmed + dismissed 两种状态**（dismissed → `candidate_verdicts`），`status --per-type` 的 `remaining` 因此归零。
+- **P1-5 UAF 误报（指针赋值当使用）**：`free(a); a = b; use(b)` 的 FP 根因是 `findAllFreeSites` 的别名展开**不按行序**——`a = b` 在 free **之后**建立别名，却让 `free(a)` 误判为「也释放了 b」。修复：`terminalBaseVar` 增加按行界定的 `terminalBaseVarAsOf`（只沿 free 行**之前**建立的别名链），`free(a)` 不再展开成 `free(b)`。`fp_copy_nonnull` 类 FP 消除，真实 UAF 保留。
+- **P1-6 CWE-732 摘要文案错乱**：`world_writable_file/var`（permission_setting）finding 复用了 path-traversal 的「attacker-controlled path … ../」摘要，与自身证据（`path@literal` + `mode@0666`）矛盾。修复：`registry_path_traversal.go` 按 category 分支——permission_setting 用「world-writable mode」摘要，并补 `permission_setting` Evidence fragment 到 SKILL。
+
+## [未发布]
+
 ### round1 扫描问题与性能建议落地（样例项目 opencode 分析建议）
 
 依据 `examples/c-vuln-benchmark/样例项目扫描问题与性能提升改进建议-round1.md` 逐条核实后落地 7 项（P0-1/P0-2/P0-4/P1-5/P1-6/P1-7/P1-9）：

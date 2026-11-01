@@ -755,6 +755,7 @@ func contains(slice []string, s string) bool {
 type aliasInfo struct {
 	baseVar string
 	field   string
+	line    int // the source line where this alias was established
 }
 
 func findAliases(f *db.Function, inits, assigns []parser.Node) map[string]aliasInfo {
@@ -774,7 +775,7 @@ func findAliases(f *db.Function, inits, assigns []parser.Node) map[string]aliasI
 		if aliasVar == "" {
 			continue
 		}
-		recordAlias(aliases, aliasVar, rhs)
+		recordAlias(aliases, aliasVar, rhs, decl.StartLine())
 	}
 
 	// Plain assignments: `q = p;` / `q = p->f;`. The previous version only
@@ -792,7 +793,7 @@ func findAliases(f *db.Function, inits, assigns []parser.Node) map[string]aliasI
 		if lhs.Kind() != "identifier" {
 			continue
 		}
-		recordAlias(aliases, lhs.Text(), children[1])
+		recordAlias(aliases, lhs.Text(), children[1], assign.StartLine())
 	}
 
 	return aliases
@@ -801,7 +802,7 @@ func findAliases(f *db.Function, inits, assigns []parser.Node) map[string]aliasI
 // recordAlias records that aliasVar aliases the object denoted by rhs (a bare
 // identifier, a field access base.field, or a cast/parenthesized spelling of
 // either: `q = (T *)p`, `q = (p->f)`).
-func recordAlias(aliases map[string]aliasInfo, aliasVar string, rhs parser.Node) {
+func recordAlias(aliases map[string]aliasInfo, aliasVar string, rhs parser.Node, line int) {
 	for rhs.Kind() == "cast_expression" || rhs.Kind() == "parenthesized_expression" {
 		children := rhs.NamedChildren()
 		if len(children) == 0 {
@@ -810,13 +811,13 @@ func recordAlias(aliases map[string]aliasInfo, aliasVar string, rhs parser.Node)
 		rhs = children[0]
 	}
 	if rhs.Kind() == "identifier" {
-		aliases[aliasVar] = aliasInfo{baseVar: rhs.Text(), field: ""}
+		aliases[aliasVar] = aliasInfo{baseVar: rhs.Text(), field: "", line: line}
 		return
 	}
 	if rhs.Kind() == "field_expression" {
 		baseVar, fieldName := extractFieldAccess(rhs)
 		if baseVar != "" {
-			aliases[aliasVar] = aliasInfo{baseVar: baseVar, field: fieldName}
+			aliases[aliasVar] = aliasInfo{baseVar: baseVar, field: fieldName, line: line}
 		}
 	}
 }

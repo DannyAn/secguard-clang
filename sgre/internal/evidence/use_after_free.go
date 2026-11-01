@@ -182,11 +182,20 @@ func reassignKilled(kills map[string][]reassignKill, aliases map[string]aliasInf
 // alias with a field selector (q = p->f) is not a whole-variable alias, so the
 // walk stops there. A visited set guards against alias cycles.
 func terminalBaseVar(aliases map[string]aliasInfo, baseVar string) string {
+	return terminalBaseVarAsOf(aliases, baseVar, int(^uint(0)>>1))
+}
+
+// terminalBaseVarAsOf is terminalBaseVar restricted to aliases established
+// BEFORE the given source line. A free at line L must not follow an alias
+// created at or after L: `free(a); a = b; use(b)` frees a's block, NOT b —
+// without the line bound, the post-free `a = b` made `free(a)` look like a
+// free of b (the P1-5 UAF false positive).
+func terminalBaseVarAsOf(aliases map[string]aliasInfo, baseVar string, line int) string {
 	visited := make(map[string]bool)
 	for baseVar != "" && !visited[baseVar] {
 		visited[baseVar] = true
 		ai, ok := aliases[baseVar]
-		if !ok || ai.field != "" {
+		if !ok || ai.field != "" || ai.line >= line {
 			return baseVar
 		}
 		baseVar = ai.baseVar
@@ -240,7 +249,7 @@ func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.N
 					// when p itself is an alias (p = q; free(p); use(q)) — UF-04/08.
 					// Whole-variable alias chains resolve to their terminal base, which
 					// is the canonical freed object.
-					base := terminalBaseVar(aliases, name)
+					base := terminalBaseVarAsOf(aliases, name, callLine)
 					seen := map[string]bool{name: true}
 					sites = append(sites, freeSite{varName: name, column: call.StartColumn(), line: callLine})
 					if base != name {
@@ -248,7 +257,7 @@ func (d *UseAfterFreeDetector) findAllFreeSites(f *db.Function, calls []parser.N
 						sites = append(sites, freeSite{varName: base, column: call.StartColumn(), line: callLine})
 					}
 					for aliasVar := range aliases {
-						if !seen[aliasVar] && terminalBaseVar(aliases, aliasVar) == base {
+						if !seen[aliasVar] && terminalBaseVarAsOf(aliases, aliasVar, callLine) == base {
 							seen[aliasVar] = true
 							sites = append(sites, freeSite{varName: aliasVar, column: call.StartColumn(), line: callLine})
 						}
