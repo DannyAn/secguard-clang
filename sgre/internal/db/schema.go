@@ -263,6 +263,22 @@ CREATE TABLE IF NOT EXISTS inline_suppressions (
 
 CREATE INDEX IF NOT EXISTS idx_inline_suppressions_file_line ON inline_suppressions(file_id, line);
 
+-- Function-pointer slot -> target writes (GAP-02): "ops->open = my_open" and
+-- ".open = my_open" record which function a slot (a struct field or a function
+-- pointer variable) is wired to, so an indirect call "ops->open(p)" can resolve
+-- to a real CALL edge. slot_name is the field name (or variable name); type_name
+-- is the host type when resolvable (empty = opaque fallback).
+CREATE TABLE IF NOT EXISTS func_ptr_writes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    slot_name   TEXT NOT NULL,
+    type_name   TEXT,
+    target_name TEXT NOT NULL,
+    file        TEXT,
+    line        INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_func_ptr_writes_slot ON func_ptr_writes(slot_name);
+
 CREATE TABLE IF NOT EXISTS function_summary (
     function_id        INTEGER PRIMARY KEY,
     return_nullable    BOOLEAN,

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DannyAn/secguard-clang/internal/build"
 	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/git"
@@ -59,6 +60,8 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		return 1
 	}
 	config.SetBoundaryAutoDismissOverride(boundaryMode)
+	compileCommands := parseStringFlag(remaining, "compile-commands")
+	remaining = removeFlag(remaining, "compile-commands")
 	if len(remaining) == 0 {
 		remaining = []string{"."}
 	}
@@ -79,6 +82,11 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		WriteErrorJSON(fmt.Sprintf("target path does not exist: %v", err))
 		return 1
 	}
+
+	// GAP-03: resolve compile_commands.json (flag > config > auto-detect). A
+	// parse failure Warn-degrades (half-usable beats unusable) and continues the
+	// scan with the zero-config constant environment.
+	resolveAndLoadCompileCommands(absPath, compileCommands, defaultLogger())
 
 	// .codeagent lives at the PROJECT ROOT — the directory the scan was launched
 	// from (cwd) — never under the scan target. Auditing a subdir like `./src`
@@ -961,4 +969,40 @@ func runStatusCmd(ctx context.Context, args []string) int {
 	}
 	fmt.Fprintln(os.Stdout, string(jsonBytes))
 	return 0
+}
+
+// resolveAndLoadCompileCommands resolves the compile_commands.json path in
+// priority order (flag > config > auto-detect under the target), loads it, and
+// stores it process-wide for the constant-environment builder (GAP-03). A parse
+// failure Warn-degrades and continues the scan (half-usable beats unusable).
+func resolveAndLoadCompileCommands(target, flagPath string, logger *log.Logger) {
+	path := flagPath
+	if path == "" {
+		path = config.Load().Scan.CompileCommands
+	}
+	if path == "" {
+		for _, candidate := range []string{
+			filepath.Join(target, "compile_commands.json"),
+			filepath.Join(target, "build", "compile_commands.json"),
+		} {
+			if _, err := os.Stat(candidate); err == nil {
+				path = candidate
+				break
+			}
+		}
+	}
+	if path == "" {
+		return
+	}
+	cc, err := build.LoadCompileCommands(path)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("compile_commands load failed (continuing without -D/-I)", "path", path, "error", err)
+		}
+		return
+	}
+	build.SetCompileCommands(cc)
+	if logger != nil {
+		logger.Info("compile_commands loaded", "path", path, "defines", len(cc.Defines), "include_dirs", len(cc.IncludeDirs))
+	}
 }

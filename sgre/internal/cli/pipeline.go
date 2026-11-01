@@ -94,6 +94,14 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 
 	graphStart := time.Now()
+
+	// Function-pointer slot -> target writes run SEQUENTIALLY before the parallel
+	// builders: CallGraphBuilder and InterprocBuilder both consume the resolved
+	// slots for indirect-call resolution (GAP-02).
+	if err := graph.NewFuncPtrWriteBuilder(store, p, logger).Build(ctx); err != nil {
+		return nil, fmt.Errorf("func ptr writes: %w", err)
+	}
+
 	type builderTask struct {
 		name string
 		fn   func(context.Context) error

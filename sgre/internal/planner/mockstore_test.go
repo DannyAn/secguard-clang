@@ -19,6 +19,7 @@ type mockStore struct {
 	findings  []*db.Finding
 	summaries map[int64]*db.FunctionSummary
 	suppressions []db.InlineSuppression
+	funcPtrWrites []db.FuncPtrWrite
 	nextID    int64
 }
 
@@ -463,6 +464,14 @@ func (s *mockStore) ReplaceInlineSuppressions(ctx context.Context, fileID int64,
 }
 func (s *mockStore) ListInlineSuppressions(ctx context.Context) ([]db.InlineSuppression, error) {
 	return s.suppressions, nil
+}
+
+func (s *mockStore) ReplaceFuncPtrWrites(ctx context.Context, writes []db.FuncPtrWrite) error {
+	s.funcPtrWrites = append(s.funcPtrWrites[:0], writes...)
+	return nil
+}
+func (s *mockStore) ListFuncPtrWrites(ctx context.Context) ([]db.FuncPtrWrite, error) {
+	return s.funcPtrWrites, nil
 }
 
 func (s *mockStore) InsertScanStat(ctx context.Context, stat *db.ScanStat) (int64, error) {

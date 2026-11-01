@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/build"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -100,6 +101,11 @@ func buildGlobalConstants(ctx context.Context, store db.Store, p *parser.Parser)
 			continue
 		}
 		env.Merge(parser.CollectConstantSymbols(tree.RootNode()))
+	}
+	// GAP-03: numeric -D defines from compile_commands.json fold like source
+	// #defines (a `-D MAX_LEN=4096` is a non-zero constant; `-D ZERO=0` a zero).
+	if cc := build.CurrentCompileCommands(); cc != nil {
+		env.MergeDefines(cc.Defines)
 	}
 	return env
 }

@@ -44,6 +44,17 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 		funcMap[f.Name] = append(funcMap[f.Name], f.ID)
 	}
 
+	// Function-pointer slot -> target wirings (GAP-02), loaded once so an
+	// indirect call `ops->open(p)` resolves to a real CALL edge.
+	slotTargets := make(map[string][]string)
+	if fpWrites, ferr := b.store.ListFuncPtrWrites(ctx); ferr == nil {
+		for _, w := range fpWrites {
+			slotTargets[w.SlotName] = append(slotTargets[w.SlotName], w.TargetName)
+		}
+	} else if b.logger != nil {
+		b.logger.Warn("func ptr writes load failed (indirect calls unresolved)", "error", ferr)
+	}
+
 	// Functions whose address is referenced outside a direct call (function
 	// pointer tables, pthread_create thread fn, callback registration) are
 	// invoked indirectly, so the direct CALL graph has no edge into them. Mark
@@ -72,6 +83,27 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 
 				calleeIDs := funcMap[callName]
 				if len(calleeIDs) == 0 {
+					// Indirect call through a function-pointer slot (GAP-02):
+					// `ops->open(p)` / `(*fp)(p)` resolve the slot from the
+					// func-ptr writes table and emit one real CALL edge per
+					// target. An unresolved slot falls back to the external edge
+					// below (preserving the pre-GAP-02 behavior).
+					if slot := indirectSlotName(callNode); slot != "" {
+						targets := slotTargets[slot]
+						if len(targets) > 0 {
+							for _, target := range targets {
+								for _, calleeID := range funcMap[target] {
+									calleeNodeID, err := b.store.GetOrCreateGraphNode(ctx, "function", calleeID, "")
+									if err != nil {
+										warnEdge(b.logger, "CALL", f.Name, err)
+										continue
+									}
+									b.insertCallEdgeIndirect(ctx, f, callerNodeID, calleeNodeID, callNode.StartLine(), slot, result)
+								}
+							}
+							continue
+						}
+					}
 					props := marshalProps(b.logger, "CALL", map[string]string{"name": callName, "external": "true"})
 					calleeNodeID, err := b.store.GetOrCreateGraphNode(ctx, "external_function", 0, props)
 					if err != nil {
@@ -195,6 +227,49 @@ func (b *CallGraphBuilder) insertCallEdge(ctx context.Context, f *db.Function, c
 		return
 	}
 	result.EdgesCreated++
+}
+
+// insertCallEdgeIndirect persists a resolved indirect CALL edge with the
+// `indirect`/`via` props so downstream consumers can distinguish a slot-resolved
+// edge from a direct call (GAP-02).
+func (b *CallGraphBuilder) insertCallEdgeIndirect(ctx context.Context, f *db.Function, callerNodeID, calleeNodeID int64, callLine int, slot string, result *BuildResult) {
+	props := marshalProps(b.logger, "CALL", map[string]any{"call_line": callLine, "indirect": "true", "via": slot})
+	_, err := b.store.InsertGraphEdge(ctx, &db.GraphEdge{
+		SrcID:      callerNodeID,
+		DstID:      calleeNodeID,
+		EdgeType:   "CALL",
+		Properties: props,
+	})
+	if err != nil {
+		warnEdge(b.logger, "CALL", f.Name, err)
+		return
+	}
+	result.EdgesCreated++
+}
+
+// indirectSlotName returns the function-pointer slot name of an indirect call's
+// callee: the field name for `ops->open(p)`, or the variable name for
+// `(*fp)(p)` / `fp(p)` (a function-pointer variable). Empty for a direct call or
+// an unresolvable callee.
+func indirectSlotName(callNode parser.Node) string {
+	named := callNode.NamedChildren()
+	if len(named) == 0 {
+		return ""
+	}
+	callee := stripParenNode(named[0])
+	switch callee.Kind() {
+	case "field_expression":
+		return fieldNameOf(callee)
+	case "identifier":
+		return callee.Text()
+	case "pointer_expression":
+		for _, c := range callee.NamedChildren() {
+			if c.Kind() == "identifier" {
+				return c.Text()
+			}
+		}
+	}
+	return ""
 }
 
 func extractCallName(node parser.Node) string {

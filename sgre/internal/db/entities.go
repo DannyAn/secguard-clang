@@ -142,6 +142,17 @@ type InlineSuppression struct {
 	Reason   string
 }
 
+// FuncPtrWrite is one function-pointer slot -> target wiring (GAP-02): a slot
+// (struct field or function-pointer variable) assigned a function name.
+type FuncPtrWrite struct {
+	ID         int64
+	SlotName   string
+	TypeName   string
+	TargetName string
+	File       string
+	Line       int
+}
+
 type Variable struct {
 	ID              int64
 	FunctionID      int64

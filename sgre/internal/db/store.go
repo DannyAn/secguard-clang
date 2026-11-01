@@ -178,6 +178,13 @@ type InlineSuppressionStore interface {
 	ListInlineSuppressions(ctx context.Context) ([]InlineSuppression, error)
 }
 
+type FuncPtrWriteStore interface {
+	// ReplaceFuncPtrWrites atomically replaces the whole func_ptr_writes table.
+	ReplaceFuncPtrWrites(ctx context.Context, writes []FuncPtrWrite) error
+	// ListFuncPtrWrites returns every function-pointer slot -> target wiring.
+	ListFuncPtrWrites(ctx context.Context) ([]FuncPtrWrite, error)
+}
+
 type FunctionSummaryStore interface {
 	UpsertSummary(ctx context.Context, s *FunctionSummary) error
 	GetSummaryByFunction(ctx context.Context, functionID int64) (*FunctionSummary, error)
@@ -222,6 +229,7 @@ type Store interface {
 	SettlementStatStore
 	ReviewSessionStore
 	InlineSuppressionStore
+	FuncPtrWriteStore
 	Close() error
 	WithTx(ctx context.Context, fn func(Store) error) error
 	// WithImmediateTx runs fn in a transaction that acquires the SQLite write

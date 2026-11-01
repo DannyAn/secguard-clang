@@ -69,6 +69,29 @@ func (e *ConstantEnv) Merge(other *ConstantEnv) {
 	}
 }
 
+// MergeDefines merges numeric -D defines (from compile_commands.json, GAP-03)
+// into the environment: a zero value marks the name zero, a non-zero value marks
+// it non-zero. A conflict with an existing entry is dropped (conservative).
+func (e *ConstantEnv) MergeDefines(defines map[string]int) {
+	for name, v := range defines {
+		if v == 0 {
+			if e.nonZero[name] {
+				delete(e.nonZero, name)
+				delete(e.zero, name)
+				continue
+			}
+			e.zero[name] = true
+		} else {
+			if e.zero[name] {
+				delete(e.nonZero, name)
+				delete(e.zero, name)
+				continue
+			}
+			e.nonZero[name] = true
+		}
+	}
+}
+
 // CollectConstantSymbols scans a translation unit for compile-time integer
 // constants with a determinable value: object-like AND constant-bodied
 // function-like macros (`#define X 20`, `#define WORKERS() 8`), enumerators

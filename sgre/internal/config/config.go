@@ -91,6 +91,11 @@ type Scan struct {
 	//   "off": no auto-dismiss (pre-0.11.6 behaviour) — every fail-open row goes
 	//     to the AI. This is the recall-maximal escape hatch.
 	BoundaryAutoDismiss string `toml:"boundary_auto_dismiss"`
+	// CompileCommands is the compile_commands.json path (GAP-03). When empty, the
+	// pipeline auto-detects <target>/compile_commands.json then
+	// <target>/build/compile_commands.json; the --compile-commands flag wins over
+	// this config.
+	CompileCommands string `toml:"compile_commands"`
 }
 
 // boundaryAutoDismissOverride is the one-shot CLI override

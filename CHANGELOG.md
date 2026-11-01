@@ -42,6 +42,13 @@
 - **in-source suppression（GAP-11）**：`// secguard-disable-next-line: <type>` / 同行 `// secguard-disable-line:` / 块注释 `/* ... */` 三段式落地。索引期 `FindAll("comment")` 正则收集 → 新表 `inline_suppressions(file_id, line, vuln_type, reason)`（DB 即建即用无 migration）；planner `InlineSuppressionFilter` 挂在**所有 filter chain 最前**（先于 call_reach/safe_function 与一切 auto-confirm），候选 `(file, line)` 命中即 drop——纯减法理论零 FP，disable 优先于一切判定。type 名精确匹配 registry 名（kebab-case），支持 `all` 通配，拼写错误索引期 Warn 并忽略；`secguard status`/scan 日志的收敛摘要展示 inline_suppression 过滤统计。README/README-CN/QUICKSTART 新增章节。
 - **PR/MR CI 模板（GAP-12，纯交付物）**：`extension/shared/ci/`（`github-pr.yml` → `secguard pr --sarif` → `codeql-action/upload-sarif`；`gitlab-mr.yml` → `secguard mr` → artifact；`README.md` 放置/`secguard.toml` 联动/门槛策略）。`build-packages.sh` 打包收录，`check-extension-consistency.py` 增 ci/ 三件套存在性校验。
 
+### 函数指针/ops-table 间接调用解析 + compile_commands（GLM5.3 能力缺口 B4 批）
+
+- **函数指针 slot→target 解析（GAP-02）**：`FuncPtrWriteBuilder`（索引期，先于 CallGraphBuilder 顺序执行）持久化 `func_ptr_writes(slot_name, type_name, target_name, file, line)`，从 `o->open = my_open`、`.open = my_open`、`fp = my_fn` 三种形态提取；`CallGraphBuilder` 消费：`ops->open(p)` / `(*fp)(p)` / `fp(p)`（函数指针变量）命中 slot 即建真实 CALL 边（`indirect`/`via` props），未命中维持 external 边。误连（同名字段）只让 summary 更保守、不产 FP。
+- **compile_commands.json 消费（GAP-03，C1 档）**：`internal/build` 解析 `arguments`/`command` 两种形态，提取数值 `-D`（并入 `parser.ConstantEnv`）与 `-I`（预留）；CLI `--compile-commands` flag > `[scan] compile_commands` config > 自动探测（`<target>/compile_commands.json` → `<target>/build/`）；解析失败 Warn 降级继续扫。
+
+> **勘误记录**：设计 §9.2 的「index.go:78 builder 序列首位」已过时——builder 序列实际在 `cli/pipeline.go` 且并行执行；实作将 `FuncPtrWriteBuilder` 作为并行 builder 之前的顺序前置步。设计 §9.2 的 slot key「双档（type_name, field_name）→（field_name）」本次只落地 field_name 档（档 2 退化），typed 档与 `[graph] indirect_call_resolution` 总开关、`[switch] fallthrough_markers`/`noreturn_functions` 升级通道留作后续（均已由 A/B 阈值兜底）。InterprocBuilder 消费点与 `-I` include 搜索链本轮未接（`-I` 解析已就绪，消费方待接），记作已知缺口。
+
 ## [0.11.9] - 2026-10-31
 
 ### 性能：boundary 扫描 fail-open 假设默认预驳回 + AI 预算机器化
