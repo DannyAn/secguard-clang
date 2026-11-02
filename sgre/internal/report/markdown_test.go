@@ -238,6 +238,36 @@ func TestWriteReportFromFindings_EmptyFindings(t *testing.T) {
 	}
 }
 
+func TestWriteReportFromFindings_OutputFiles(t *testing.T) {
+	dir := t.TempDir()
+	reportPath := filepath.Join(dir, ReportFile)
+
+	// 0 confirmed: candidates.sarif is referenced, and findings/ is noted empty
+	// rather than pointing at a directory that does not exist.
+	if err := WriteReportFromFindings(reportPath, "", nil, ScanOverview{}); err != nil {
+		t.Fatalf("WriteReportFromFindings with nil findings: %v", err)
+	}
+	content := string(mustReadFile(t, reportPath))
+	if !strings.Contains(content, CandidatesSarifFile) {
+		t.Errorf("Output Files must reference %s:\n%s", CandidatesSarifFile, content)
+	}
+	if !strings.Contains(content, "none — 0 confirmed") {
+		t.Errorf("0-confirmed report must note findings/ is empty:\n%s", content)
+	}
+	if strings.Contains(content, FindingsDir+"/<vuln-type>/") {
+		t.Errorf("0-confirmed report must not list a findings/ path:\n%s", content)
+	}
+
+	// With confirmed findings, the findings/ path is listed again.
+	if err := WriteReportFromFindings(reportPath, "", verdictFindings(), ScanOverview{}); err != nil {
+		t.Fatalf("WriteReportFromFindings with findings: %v", err)
+	}
+	content = string(mustReadFile(t, reportPath))
+	if !strings.Contains(content, FindingsDir+"/<vuln-type>/") {
+		t.Errorf("confirmed report must list findings/:\n%s", content)
+	}
+}
+
 func TestWriteReportFromFindings_RespectsReviewStatus(t *testing.T) {
 	dir := t.TempDir()
 	reportPath := filepath.Join(dir, ReportFile)
@@ -821,7 +851,10 @@ func TestWriteCandidates_SourceSinkSpanWindow(t *testing.T) {
 	}
 
 	widened := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "use-after-free", "001_uaf_c_"+strconv.Itoa(useLine)+".md")))
-	wantLo, wantHi := freeLine-3, useLine+3
+	// Symmetric around the sink: the standard ±8 window is the floor, so the
+	// end is useLine+8 (not the pre-B5 useLine+3 which truncated the sink's
+	// post-context).
+	wantLo, wantHi := freeLine-3, useLine+8
 	if wantLo < 1 {
 		wantLo = 1
 	}

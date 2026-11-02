@@ -53,7 +53,7 @@ func TestStackEscape_Detect(t *testing.T) {
 	if !byFunc["m3_async_arg"]["escape_via_async_arg"] {
 		t.Errorf("m3_async_arg: expected escape_via_async_arg, got %v", byFunc["m3_async_arg"])
 	}
-	for _, fn := range []string{"fp_static_local", "fp_global", "fp_sync_helper", "fp_string"} {
+	for _, fn := range []string{"fp_static_local", "fp_global", "fp_sync_helper", "fp_string", "fp_pointer_subscript"} {
 		if len(byFunc[fn]) > 0 {
 			t.Errorf("%s: must NOT trigger, got %v", fn, byFunc[fn])
 		}

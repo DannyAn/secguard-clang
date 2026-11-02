@@ -154,7 +154,12 @@ func WriteReportFromFindings(reportPath, rootDir string, findings []*db.Finding,
 
 	b.WriteString("## Output Files\n\n")
 	b.WriteString(fmt.Sprintf("- SARIF (verdict stage, confirmed only): `%s`\n", SarifFile))
-	b.WriteString(fmt.Sprintf("- Findings to review (confirmed: pipeline auto-confirmed + AI-classified): `%s/<vuln-type>/<NNN>_<file>_<line>_confirmed.md`\n", FindingsDir))
+	b.WriteString(fmt.Sprintf("- SARIF (candidate stage, level `note` — unclassified leads): `%s`\n", CandidatesSarifFile))
+	if confirmed > 0 {
+		b.WriteString(fmt.Sprintf("- Findings to review (confirmed: pipeline auto-confirmed + AI-classified): `%s/<vuln-type>/<NNN>_<file>_<line>_confirmed.md`\n", FindingsDir))
+	} else {
+		b.WriteString("- Findings to review: (none — 0 confirmed)\n")
+	}
 	b.WriteString(fmt.Sprintf("- Candidate evidence (pipeline output, pre-classification): `%s/<vuln-type>/`\n", CandidatesDir))
 	b.WriteString("- Audit report (pipeline statistics): `audit-report.md`\n")
 	b.WriteString("- Database: `.sgre/sgre.db`\n")
@@ -376,20 +381,15 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 			// left to a repo-wide grep.
 			writeMacroDefinitions(&b, c, o)
 
-			// The pipeline's verdict tokens with their registry descriptions, so
-			// the candidate file is self-contained for RE-REVIEW and deep-dive:
-			// the classifier that opens this file sees the same machine facts
-			// the _index.md Hint column carried (previously the only place they
-			// existed), each annotated with what it means — no legend lookup and
-			// no re-derivation from the narrative fragments below.
+			// The pipeline's verdict tokens, one line of the actual hit tokens.
+			// Their meanings live in the _index.md legend (or _legend.md when a
+			// type is sharded), which the classifier already read before opening
+			// this file — re-rendering a per-token description in every one of
+			// the hundreds of candidate files duplicated ~27% of their bytes.
 			if len(c.HintTokens) > 0 {
 				b.WriteString("## Pipeline Tokens\n\n")
 				fmt.Fprintf(&b, "`%s`\n\n", strings.Join(c.HintTokens, " "))
-				for _, tok := range c.HintTokens {
-					b.WriteString(planner.DescribeHintToken(tok))
-					b.WriteString("\n")
-				}
-				b.WriteString("\n")
+				b.WriteString("> Token meanings: see the type `_index.md` legend (`_legend.md` when sharded).\n\n")
 			}
 
 			// The type's decisive facts (Evidence Contract v2): each line is a
@@ -567,6 +567,21 @@ func sourceSinkSpan(c planner.EvidenceItem) (int, int, bool) {
 		lo = 1
 	}
 	hi += 3
+	// Symmetric around the SINK, not around the source: the standard ±8 window
+	// is the floor, so the sink's post-context (a guard/free/return AFTER the
+	// dereference) is never truncated to +3 when a source sits far before it.
+	// The pre-B5 shape [min(src)-3, max(src)+3] left 42 lines before the sink
+	// but only 3 after, forcing a source re-read for exactly the lines the
+	// window should already show.
+	if floor := c.Target.Line - candidateContextLines; lo > floor {
+		lo = floor
+	}
+	if lo < 1 {
+		lo = 1
+	}
+	if ceiling := c.Target.Line + candidateContextLines; hi < ceiling {
+		hi = ceiling
+	}
 	if hi-lo+1 > maxContextLines {
 		return 0, 0, false
 	}
@@ -849,12 +864,12 @@ func (o *ScanOutput) writeTypeIndex(dir string, pkg *planner.PlanResult) error {
 
 	var dirPage strings.Builder
 	dirPage.WriteString(title)
-	dirPage.WriteString(legend)
 	dirPage.WriteString(fmt.Sprintf("> %d candidates split into %d shards (each < %d bytes / ~25000 tokens).\n",
 		len(rows), len(shards), typeIndexSplitBytes))
 	dirPage.WriteString("> Read the shard for your assigned # range: a ranged batch (#A–#B) reads the\n")
 	dirPage.WriteString("> shard whose range covers A–B, NOT this directory page. Each shard is\n")
-	dirPage.WriteString("> self-contained (title + legend + header + its rows).\n\n")
+	dirPage.WriteString("> self-contained (title + legend + header + its rows) — the token legend\n")
+	dirPage.WriteString("> is inline in every shard, not duplicated on this directory page.\n\n")
 	dirPage.WriteString("| Shard | Candidates | File |\n")
 	dirPage.WriteString("|-------|-----------|------|\n")
 	for i, s := range shards {

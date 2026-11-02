@@ -4,6 +4,21 @@
 
 ## [0.12.0] - 2026-11-02
 
+### 生产冒烟反馈闭环（`docs/生产0.12.0版本冒烟反馈.md`）
+
+依据生产环境 v0.12.0 全量扫描冒烟反馈逐条核对源码后修复的已验证问题；对已在本版本修复/误诊的条目（`boundary_auto_dismiss="external"` 默认放行、macro-context 下 `null@cfg-proof` 降级、format-string `callsites@` 全字面量 census）不做重复改动。
+
+- **switch-fallthrough（A-3 / A-11）**：`case X: { ...; break; }` 花括号 case 块此前只看复合块节点、不下钻内部 `break`/`return`，34/34 全部误报。`isCaseTerminator` 下钻 `compound_statement` 尾部语句，`tc172` 增 `sf14_compound_case` 反例。
+- **stack-address-escape（A-4 / A-11）**：`&h[i]`（`h` 为指针）等价 `h + i`，指向调用方缓冲区而非当前栈帧，此前被 auto-confirm 进 SARIF。`stackLocal` 增 `isPointer`，地址取址操作数落 `subscript_expression`（指针基址）或 `field_expression`（`->`）时不再判为栈逃逸，`tc170` 增 `fp_pointer_subscript` 反例。
+- **uninit（A-10 / A-11）**：同一 `va_list` 两次 `va_start` 的两轮遍历写法，第二次 `va_start` 用覆盖式写 `outputParamInitLines` 把 init line 推到更后面，导致第一轮 `va_arg`/`va_end` 被误判 `certain-uninit` auto-confirm。改为取最早 init line，`tc71` 增 `va_double_start` 反例。
+- **索引图例去重（B1）**：`HintLegendForTokens` 对开放取值集（`src@N`/`chain-root@`/`sibling-callers@` 等）不再把本次扫描全部实际值平铺进图例（>5 个取值回退 `<value>` 占位），小封闭集（`cat@` 等）仍枚举；分片目录页不再复制图例。图例体积从约 26 KB 收敛到个位数 KB，分片不再因图例吃预算而 215:15 失衡。
+- **候选文件图例去重（B2）**：`## Pipeline Tokens` 只保留实际命中 token 列表 + 指向 `_index.md` 图例的一行指针，逐 token 描述不再在每个候选文件重复（约占候选字节 27%）。
+- **上下文窗口对称（B5）**：source→sink 跨度扩展窗口时以 sink 为中心对称（下限 `sink±8`），不再把 sink 后文截断到 +3；sink 之后的 guard/free/return 收尾可见。
+- **CLI/报告一致性（A1/A2/A3/A7/A8/A9/A10）**：`report --audit` 的工具内 AI 驳回台账改名为 `pipeline-dismissed.json`（`ai-dismissed.json` 留给编排器的人工复核台账，不再互相覆盖）；`report --list` 支持 `--scan-id` 过滤并统一 `{"count":N,"findings":[...]}` 信封形状（空/非空一致）；`status --per-type` 对 `terminal_state=done` 的类型 `remaining` 置 0（不再把未落盘的 dismissed 差额当未处理）；零候选类型扫描结束即 `ai_stage_status=done`（免逐个 `--complete-type`）；`status --reports` 按 `(subagent_id,type,range)` 去重保留 mtime 最新一份；`report.md` 增 `candidates.sarif` 引用、0 confirmed 时 `findings/` 写 `(none — 0 confirmed)`；`--list` 输出增 `effective_status`（`--status dismissed` 命中的 auto-confirmed 行不再裸显 `status:"auto-confirmed"`）。
+- **auto-confirmed 溯源（A5）**：`report --audit` 对「机器判定后被终审驳回」的 auto-confirmed 行新增 `auto_confirmed_reviewed_out` 计数，`audit-report.md` 的 AI Value Summary 与逐类型 Filter Chain Details 显式给出「N 条 machine verdict 被 review-out」，不再让整表静默归 0。
+- **`--list-auto-confirmed` 复核入口恢复（A6）**：写路径此前在扫描时就把 auto-confirmed 行的 `review_status` 置为 `'confirmed'`，与三处读路径（`ListAutoConfirmedForReview`、`status --per-type` unreviewed、`report --audit` unreviewed_auto_confirmed）一致期望的「未复核 = `review_status NULL/''`」相矛盾，导致复核清单恒为 0、Step 5.5 机器判定验证无入口。改为扫描时留 `review_status` 为空，Step 5.5 复核后经 `--review-json` 写回 `confirmed|dismissed`；`--list-auto-confirmed`/复核完成度检查/audit 未复核告警三条路全部恢复可用。
+- **文档（C1/C2）**：`command-instructions.md` F7/F8/F11 修正 claude-cac（CodeAgentCLI）`Agent` 为**异步**返回模型（实测返回 `agentId` 后台运行）并补「先探测返回形状」防御写法；补 `ai_dismissed`（不落库）与 `review_dismissed`（落库 `review_status='dismissed'`）两种语义区分。
+
 ### skills 决策质量 + hint 契约收口（误报消减）
 
 依据 `docs/skills-design-review-20261101.md` 的全面审视，对 29 个 SKILL 与 hint 词汇契约做一轮“把证据说明升级为可证伪决策过程”的收口。只改 skill 规则与 hint 生成/注册，不新增类型、不改 dismissed 落盘行为（保持现网性能取舍不变）。

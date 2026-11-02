@@ -172,7 +172,14 @@ func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, sta
 	for _, s := range statuses {
 		e := &settlementEnriched{PerTypeStatus: s, AlreadyCoveredRanges: []string{}}
 		e.DismissedCount = dismissedByType[s.VulnType]
-		if rem := s.CandidateCount - s.WrittenCount - e.DismissedCount; rem > 0 {
+		// A done type has every candidate settled (confirmed + auto-confirmed +
+		// dismissed). Dismissed verdicts are only persisted when the subagent wrote
+		// them via --write-json, so the candidate_count - written_count gap is the
+		// un-persisted dismissed residue — remaining must read 0, never that gap,
+		// or the orchestrator re-dispatches an already-settled type.
+		if s.TerminalState == "done" {
+			e.Remaining = 0
+		} else if rem := s.CandidateCount - s.WrittenCount - e.DismissedCount; rem > 0 {
 			e.Remaining = rem
 		}
 		if ranges := covered[s.VulnType]; len(ranges) > 0 {

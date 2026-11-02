@@ -187,6 +187,39 @@ func TestPersistSettlementReports(t *testing.T) {
 	}
 }
 
+func TestEnrichPerTypeStatusRemainingWhenDone(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+
+	if _, err := store.InsertScanStat(ctx, &db.ScanStat{ScanID: "sc_test", VulnType: "uninit", SeedCount: 90, FinalCount: 90}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkAIStageDone(ctx, "sc_test", "uninit"); err != nil {
+		t.Fatal(err)
+	}
+
+	statuses, err := store.ListPerTypeStatus(ctx, "sc_test", func(string) []string { return []string{"CWE-457"} })
+	if err != nil {
+		t.Fatal(err)
+	}
+	enriched, err := enrichPerTypeStatus(ctx, store, "sc_test", statuses)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(enriched) != 1 {
+		t.Fatalf("expected 1 enriched, got %d", len(enriched))
+	}
+	e := enriched[0]
+	if e.TerminalState != "done" {
+		t.Fatalf("terminal_state = %q, want done", e.TerminalState)
+	}
+	// All 90 candidates were dismissed (not persisted to candidate_verdicts), so
+	// remaining must read 0, never the candidate_count residue.
+	if e.Remaining != 0 {
+		t.Errorf("remaining = %d, want 0 (done type has no unclassified candidates)", e.Remaining)
+	}
+}
+
 func TestSettlementWallMS(t *testing.T) {
 	ctx := context.Background()
 	store := db.NewTestStore(t)

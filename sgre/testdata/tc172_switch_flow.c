@@ -92,8 +92,27 @@ void sf13_break_nested(enum Color c, int x) {
     }
 }
 
+/* A brace-wrapped case body whose terminator (break/return) sits inside the
+   compound block is NOT a fallthrough. */
+void sf14_compound_case(enum Color c, int *out) {
+    switch (c) {
+    case RED: {
+        *out = 1;
+        break;
+    }
+    case GREEN: {
+        *out = 2;
+        return;
+    }
+    default:
+        *out = 0;
+        break;
+    }
+}
+
 int main(void) {
     enum Color c = RED;
+    int out = 0;
     sf01_fallthrough(c);
     sf02_fallthrough_call(c);
     sf03_missing_default(c);
@@ -101,5 +120,6 @@ int main(void) {
     sf11_empty_case_chain(c);
     sf12_int_switch_no_default(1);
     sf13_break_nested(c, 1);
+    sf14_compound_case(c, &out);
     return 0;
 }

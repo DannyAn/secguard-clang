@@ -213,6 +213,17 @@ func isFallthroughComment(text string) bool {
 // isCaseTerminator reports whether a case body's last statement provably ends
 // the case (break/continue/return/goto, or a noreturn call).
 func isCaseTerminator(stmt parser.Node) bool {
+	// A `case X: { ...; break; }` puts the terminator inside a compound
+	// statement; drill into it so the inner break/return is recognized. Only
+	// the trailing statement matters — a leading block that ends in a
+	// non-terminator still falls through.
+	for stmt.Kind() == "compound_statement" {
+		children := stmt.NamedChildren()
+		if len(children) == 0 {
+			return false
+		}
+		stmt = children[len(children)-1]
+	}
 	switch stmt.Kind() {
 	case "break_statement", "continue_statement", "return_statement", "goto_statement":
 		return true

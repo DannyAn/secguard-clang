@@ -52,6 +52,32 @@ func TestWriteAuditReport_IncludesAIValueSummary(t *testing.T) {
 	}
 }
 
+// A machine verdict the final review dismissed must stay traceable in the audit
+// report (A5): the Auto-confirmed column reads 0 after EffectiveStatus applies,
+// but the reviewed-out count must not silently vanish.
+func TestWriteAuditReport_ReviewedOutAutoConfirmed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit-report.md")
+	audits := []vulnAuditEntry{
+		{VulnType: "stack-address-escape", SeedCount: 28, FinalCount: 27, AutoConfirmed: 0, AutoReviewedOut: 2, Confirmed: 0, Suspected: 0, AIStageStatus: "done"},
+	}
+	overview := report.ScanOverview{ScanID: "test-scan", RawSeeds: 28, Candidates: 27, AutoConfirmed: 0, AIConfirmed: 0, AIDismissed: 25}
+	if err := writeAuditReport(path, "test-scan", audits, overview); err != nil {
+		t.Fatalf("writeAuditReport failed: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(data)
+	if !strings.Contains(out, "| Auto-confirmed reviewed-out by final review | 2 |") {
+		t.Errorf("audit report must surface reviewed-out machine verdicts:\n%s", out)
+	}
+	if !strings.Contains(out, "auto-confirmed reviewed-out=2") {
+		t.Errorf("per-type filter detail must name the reviewed-out count:\n%s", out)
+	}
+}
+
 // A scan's report header must name the directory that was actually scanned.
 // scan_runs stores no target path, and the project root the DB lives in is
 // often a PARENT of the scanned subtree (`secguard scan src/`), so the indexed

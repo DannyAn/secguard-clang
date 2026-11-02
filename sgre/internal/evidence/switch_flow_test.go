@@ -49,7 +49,7 @@ func TestSwitchFlow_Detect(t *testing.T) {
 	if !byFunc["sf03_missing_default"]["missing_default"] {
 		t.Errorf("sf03_missing_default: expected missing_default, got %v", byFunc["sf03_missing_default"])
 	}
-	for _, fn := range []string{"sf10_comment_exempt", "sf11_empty_case_chain", "sf12_int_switch_no_default"} {
+	for _, fn := range []string{"sf10_comment_exempt", "sf11_empty_case_chain", "sf12_int_switch_no_default", "sf14_compound_case"} {
 		if len(byFunc[fn]) > 0 {
 			t.Errorf("%s: must NOT trigger, got %v", fn, byFunc[fn])
 		}

@@ -1158,7 +1158,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 		// every downstream report resolves source + embeds code context.
 		scanFindings = dedupeAndNormalizeFindings(ctx, store, scanFindings)
 		type vulnCounts struct {
-			confirmed, suspected, autoConfirmed int
+			confirmed, suspected, autoConfirmed, reviewedOut int
 		}
 		countsByVuln := make(map[string]*vulnCounts)
 		for _, f := range scanFindings {
@@ -1185,7 +1185,15 @@ func runReportCmd(ctx context.Context, args []string) int {
 				}
 			case "suspected":
 				countsByVuln[vt].suspected++
-
+			case "dismissed":
+				// A machine (auto-confirmed) verdict the final review dismissed
+				// is traceability the audit must not silently drop to 0 (A5):
+				// count it apart so the report can say "N machine verdicts were
+				// reviewed-out" instead of leaving the Auto-confirmed column at
+				// 0 with no explanation.
+				if f.Status == db.StatusAutoConfirmed {
+					countsByVuln[vt].reviewedOut++
+				}
 			}
 		}
 
@@ -1196,14 +1204,15 @@ func runReportCmd(ctx context.Context, args []string) int {
 				vc = &vulnCounts{}
 			}
 			audits = append(audits, vulnAuditEntry{
-				VulnType:      st.VulnType,
-				SeedCount:     st.SeedCount,
-				FinalCount:    st.FinalCount,
-				Filters:       st.FilterChain,
-				Confirmed:     vc.confirmed,
-				Suspected:     vc.suspected,
-				AutoConfirmed: vc.autoConfirmed,
-				AIStageStatus: st.AIStageStatus,
+				VulnType:        st.VulnType,
+				SeedCount:       st.SeedCount,
+				FinalCount:      st.FinalCount,
+				Filters:         st.FilterChain,
+				Confirmed:       vc.confirmed,
+				Suspected:       vc.suspected,
+				AutoConfirmed:   vc.autoConfirmed,
+				AutoReviewedOut: vc.reviewedOut,
+				AIStageStatus:   st.AIStageStatus,
 			})
 		}
 
@@ -1270,10 +1279,13 @@ func runReportCmd(ctx context.Context, args []string) int {
 				WriteErrorJSON(fmt.Sprintf("failed to write result.xlsx: %v", err))
 				return 1
 			}
-			// ai-dismissed.json is the AI-dismissal ledger (P1-8): the 58
-			// dismissed verdicts that live only in subagent chat messages are
-			// persisted here from the candidate_verdicts table so the customer
-			// can see what the AI rejected and why.
+			// pipeline-dismissed.json is the tool's AI-dismissal ledger (P1-8):
+			// the dismissed verdicts persisted in candidate_verdicts are rendered
+			// here so the customer can see what the AI rejected and why. It is
+			// deliberately NOT named ai-dismissed.json — that filename belongs to
+			// the orchestrator's own human-review recall ledger (needs_context +
+			// per-type dismissed counts), and overwriting it here would wipe the
+			// entries that live only in the orchestrator's aggregation.
 			if verdicts, verr := store.ListCandidateVerdicts(ctx, scanID); verr == nil {
 				type dismissedRow struct {
 					VulnType     string `json:"vuln_type"`
@@ -1288,7 +1300,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 					rows = append(rows, dismissedRow{VulnType: v.VulnType, File: v.FilePath, Line: v.LineNumber, Function: v.FunctionName, Variable: v.Variable, Reason: v.Reason})
 				}
 				if data, merr := json.MarshalIndent(map[string]interface{}{"scan_id": scanID, "total_dismissed": len(rows), "dismissed": rows}, "", "  "); merr == nil {
-					_ = os.WriteFile(filepath.Join(outputDir, "ai-dismissed.json"), append(data, '\n'), 0644)
+					_ = os.WriteFile(filepath.Join(outputDir, "pipeline-dismissed.json"), append(data, '\n'), 0644)
 				}
 			}
 			// Rebuild findings/ from the DB so the review surface holds exactly
@@ -1352,8 +1364,14 @@ func runReportCmd(ctx context.Context, args []string) int {
 	}
 
 	statusFilter := parseStringFlag(remaining, "status")
+	scanID := parseStringFlag(remaining, "scan-id")
 
-	findings, err := store.ListFindings(ctx)
+	var findings []*db.Finding
+	if scanID != "" {
+		findings, err = store.ListFindingsByScanID(ctx, scanID)
+	} else {
+		findings, err = store.ListFindings(ctx)
+	}
 	if err != nil {
 		WriteErrorJSON(fmt.Sprintf("failed to list findings: %v", err))
 		return 1
@@ -1371,14 +1389,6 @@ func runReportCmd(ctx context.Context, args []string) int {
 		findings = filtered
 	}
 
-	if len(findings) == 0 {
-		WriteJSON(map[string]interface{}{
-			"findings": []interface{}{},
-			"count":    0,
-			"message":  "no findings in database; run 'secguard report --write ...' to persist findings after classifying candidates",
-		})
-		return 0
-	}
 	type listItem struct {
 		*db.Finding
 		// VulnType and Variable shadow the embedded Finding fields so the output
@@ -1387,6 +1397,11 @@ func runReportCmd(ctx context.Context, args []string) int {
 		// absent) so a consumer never hits a KeyError (P2-12).
 		VulnType string `json:"vuln_type"`
 		Variable string `json:"variable"`
+		// EffectiveStatus is the post-review binary verdict the --status filter
+		// matched on, so a row whose raw status is still auto-confirmed but whose
+		// review_status=dismissed does not mislead a consumer into reading it as a
+		// machine-confirmed defect.
+		EffectiveStatus string `json:"effective_status"`
 	}
 	items := make([]listItem, 0, len(findings))
 	for _, f := range findings {
@@ -1394,9 +1409,19 @@ func runReportCmd(ctx context.Context, args []string) int {
 		if vt == "" {
 			vt = planner.TypeForCWE(f.RuleID)
 		}
-		items = append(items, listItem{Finding: f, VulnType: vt, Variable: f.Variable})
+		items = append(items, listItem{Finding: f, VulnType: vt, Variable: f.Variable, EffectiveStatus: f.EffectiveStatus()})
 	}
-	WriteJSON(items)
+	// Stable envelope regardless of whether the list is empty: the bare-array
+	// shape a non-empty result used to emit broke consumers that read
+	// {"count":N,"findings":[...]} when empty (and vice-versa).
+	out := map[string]interface{}{
+		"count":    len(items),
+		"findings": items,
+	}
+	if len(items) == 0 {
+		out["message"] = "no findings in database; run 'secguard report --write ...' to persist findings after classifying candidates"
+	}
+	WriteJSON(out)
 	return 0
 }
 
@@ -1487,14 +1512,15 @@ func indexPathRoot(files []*db.File) string {
 }
 
 type vulnAuditEntry struct {
-	VulnType      string `json:"vuln_type"`
-	SeedCount     int    `json:"seed_count"`
-	FinalCount    int    `json:"final_count"`
-	Filters       string `json:"filter_chain"`
-	Confirmed     int    `json:"confirmed"`
-	Suspected     int    `json:"suspected"`
-	AutoConfirmed int    `json:"auto_confirmed"`
-	AIStageStatus string `json:"ai_stage_status"`
+	VulnType        string `json:"vuln_type"`
+	SeedCount       int    `json:"seed_count"`
+	FinalCount      int    `json:"final_count"`
+	Filters         string `json:"filter_chain"`
+	Confirmed       int    `json:"confirmed"`
+	Suspected       int    `json:"suspected"`
+	AutoConfirmed   int    `json:"auto_confirmed"`
+	AutoReviewedOut int    `json:"auto_confirmed_reviewed_out"`
+	AIStageStatus   string `json:"ai_stage_status"`
 }
 
 func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overview report.ScanOverview) error {
@@ -1548,6 +1574,9 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overvie
 	b.WriteString("|--------|-------|\n")
 	fmt.Fprintf(&b, "| Raw evidence seeds | %d |\n", totalSeed)
 	fmt.Fprintf(&b, "| Auto-confirmed by pipeline | %d |\n", totalAutoConfirmed)
+	if totalReviewedOut := auditReviewedOutTotal(audits); totalReviewedOut > 0 {
+		fmt.Fprintf(&b, "| Auto-confirmed reviewed-out by final review | %d |\n", totalReviewedOut)
+	}
 	fmt.Fprintf(&b, "| Candidates needing AI review (suspected/possible) | %d |\n", totalFinal)
 	fmt.Fprintf(&b, "| AI confirmed (actionable, with fix suggestion) | %d |\n", totalConfirmed)
 	fmt.Fprintf(&b, "| Actionable findings for human review (confirmed) | %d |\n", totalAutoConfirmed+totalConfirmed)
@@ -1565,10 +1594,24 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overvie
 		if a.Filters != "" {
 			b.WriteString(fmt.Sprintf("- **Filter chain:** `%s`\n", a.Filters))
 		}
-		b.WriteString(fmt.Sprintf("- **AI classification:** auto-confirmed=%d, confirmed=%d, ai_stage_status=%s\n\n", a.AutoConfirmed, a.Confirmed, a.AIStageStatus))
+		b.WriteString(fmt.Sprintf("- **AI classification:** auto-confirmed=%d, confirmed=%d, ai_stage_status=%s", a.AutoConfirmed, a.Confirmed, a.AIStageStatus))
+		if a.AutoReviewedOut > 0 {
+			b.WriteString(fmt.Sprintf(", auto-confirmed reviewed-out=%d", a.AutoReviewedOut))
+		}
+		b.WriteString("\n\n")
 	}
 
 	return os.WriteFile(auditPath, []byte(b.String()), 0644)
+}
+
+// auditReviewedOutTotal sums the auto-confirmed findings the final review
+// dismissed, for the AI Value Summary aggregate line.
+func auditReviewedOutTotal(audits []vulnAuditEntry) int {
+	total := 0
+	for _, a := range audits {
+		total += a.AutoReviewedOut
+	}
+	return total
 }
 
 func resolveScanDir(args []string, scanID string) string {

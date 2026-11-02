@@ -54,11 +54,11 @@ func TestWriteCandidates_PipelineTokensSection(t *testing.T) {
 	if !strings.Contains(content, "`src@119 maybe-null`") {
 		t.Errorf("Pipeline Tokens must open with the full joined sequence:\n%s", content)
 	}
-	if !strings.Contains(content, "- `src@119` — the null/taint source is assigned at line 119") {
-		t.Errorf("each token must be annotated with its registry description:\n%s", content)
+	if !strings.Contains(content, "Token meanings: see the type `_index.md` legend") {
+		t.Errorf("Pipeline Tokens must point to the shared legend instead of re-rendering per-token descriptions:\n%s", content)
 	}
-	if !strings.Contains(content, "- `maybe-null` — the source is possibly null") {
-		t.Errorf("bare tokens must be annotated too:\n%s", content)
+	if strings.Contains(content, "- `src@119` — the null/taint source is assigned at line 119") {
+		t.Errorf("per-token descriptions must NOT be duplicated into every candidate file:\n%s", content)
 	}
 }
 

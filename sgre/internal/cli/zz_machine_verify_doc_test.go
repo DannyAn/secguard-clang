@@ -15,8 +15,8 @@ import (
 // referenced surfaces real:
 //
 //   - the listing goes through the `findings` table with `status='auto-confirmed'`
-//     (NOT --list-auto-confirmed, which is 0 by design since the machine verdict
-//     is written pre-reviewed);
+//     (machine verdicts are written review_status NULL, so they ARE the re-review
+//     selection set — `--list-auto-confirmed` lists them);
 //   - the row's `properties` really carry the proof basis under the names the doc
 //     tells the agent to read;
 //   - dismissals are written with `--review-json` and the audit is re-run.

@@ -342,12 +342,19 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 			}
 		}
 		// va_start/va_copy initialize the va_list (an array type that decays to
-		// a pointer, so it is passed as an identifier, not `&ap`).
+		// a pointer, so it is passed as an identifier, not `&ap`). Record the
+		// EARLIEST initializer: a later use is initialized once any va_start has
+		// run, and re-starting the same va_list (`va_end` then a second
+		// `va_start`) must not move the init line past the uses in the first
+		// round — that overwrite is what produced the two-round-traversal
+		// certain-uninit false positives.
 		if callName == "va_start" || callName == "va_copy" {
 			if args := getCallArgs(call); len(args) > 0 {
 				if name := extractVarName(args[0]); name != "" {
 					if key := resolveVarKey(declsByName, name, call.StartLine()); key != "" {
-						outputParamInitLines[key] = call.StartLine()
+						if cur, ok := outputParamInitLines[key]; !ok || call.StartLine() < cur {
+							outputParamInitLines[key] = call.StartLine()
+						}
 					}
 				}
 			}

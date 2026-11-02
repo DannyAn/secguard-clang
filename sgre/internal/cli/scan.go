@@ -289,6 +289,17 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 			WriteErrorJSON(fmt.Sprintf("failed to insert scan stat for %s: %v", vulnType, err))
 			return 1
 		}
+		// A type that converged to zero AI-review candidates has nothing for a
+		// subagent to classify (any machine verdicts were already written as
+		// auto-confirmed, awaiting Step 5.5 review). Mark it done here so the
+		// orchestrator never has to run `report --complete-type` per empty type
+		// and audit-report.md shows done instead of a misleading pending.
+		if finalLocations == 0 {
+			if err := store.MarkAIStageDone(ctx, scanID, vulnType); err != nil {
+				WriteErrorJSON(fmt.Sprintf("failed to mark zero-candidate type %s done: %v", vulnType, err))
+				return 1
+			}
+		}
 
 		for _, c := range needsReview {
 			if c.Target.File != "" {
@@ -717,13 +728,18 @@ func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType s
 			ScanID:       scanID,
 			Fingerprint:  computeFingerprint(cwe, c.Target.File, c.Target.Function, c.Target.Line),
 		}
-		// The auto-confirmed finding is a machine verdict, not an open lead: the
-		// dedicated re-review loop is removed. The final AI pass is a FREE-FORM
-		// judgment over the whole result set (candidates + these findings), and it
-		// may downgrade one only with a concrete code reason. Marking it reviewed
-		// here is what keeps `report --audit` from treating it as still-pending.
-		f.ReviewStatus = "confirmed"
-		f.ReviewReasoning = "auto-confirmed (deterministic proof); final judgment is the free-form AI pass"
+		// An auto-confirmed finding is a machine verdict, not an open lead. Its
+		// `status='auto-confirmed'` is the first-pass verdict; `review_status` is
+		// deliberately LEFT NULL so it stays in the re-review selection set
+		// (`report --list-auto-confirmed`, `status --per-type` unreviewed, and
+		// `report --audit`'s unreviewed_auto_confirmed completeness gate) until
+		// Step 5.5 (the bounded machine-verdict verification pass) writes
+		// `review_status='confirmed'|'dismissed'` via `--review-json`. Marking it
+		// reviewed here would make every re-review listing return 0 — the machine
+		// proof is only as good as its premise (production measured a 75% FP rate
+		// on the uninit tier), so a machine verdict must NOT self-mark reviewed.
+		f.ReviewStatus = ""
+		f.ReviewReasoning = ""
 		if _, err := store.UpsertFinding(ctx, f); err != nil {
 			return written, append(unwritten, candidates[i:]...), fmt.Errorf("upsert auto-confirmed %s:%d: %w", c.Target.File, c.Target.Line, err)
 		}

@@ -160,7 +160,7 @@ Usage:
 Flags:
   --write-json <file>      Persist findings from a JSON array file (see below)
   --scan-id <id>           Scan ID to attach findings to
-  --list                   Read all findings from the DB (optional --status filter)
+  --list                   Read findings from the DB (optional --scan-id and --status filters)
   --status <s>             With --list: filter by effective verdict (confirmed | dismissed)
   --audit                  Regenerate report.md + result.sarif + result.xlsx + findings/ from DB
   --output-dir <dir>       Output directory for audit artifacts

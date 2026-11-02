@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeReport(t *testing.T, dir, name, body string) {
@@ -79,26 +80,19 @@ func TestListSubagentReports_ChunkFiles(t *testing.T) {
 	dbPath := filepath.Join(project, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
 	tmp := filepath.Join(filepath.Dir(dbPath), ".tmp")
 
+	// A chunk with no final report is a partial settlement snapshot: it stays
+	// visible (valid:false) so the orchestrator sees "still writing".
 	writeReport(t, tmp, "sub-a-chunk-1.json", `{
 	  "format_version": 1, "subagent_id": "sub-a", "scan_id": "sc_test",
 	  "processed_types": [{"type":"null-deref","range":"1-100","cwe":"CWE-476","written":1,"dismissed":40,"evidence_opens":5}],
 	  "needs_context": [{"candidate": 7, "reason": "leak@conditional"}]
 	}`)
-	writeReport(t, tmp, "sub-a-report.json", `{
-	  "format_version": 1, "subagent_id": "sub-a", "scan_id": "sc_test",
-	  "processed_types": [{"type":"null-deref","range":"1-100","cwe":"CWE-476","written":2,"dismissed":98,"evidence_opens":12}]
-	}`)
 
 	res := listSubagentReports(dbPath, "sc_test")
-	byName := map[string]subagentReport{}
-	for _, r := range res.Reports {
-		byName[filepath.Base(r.File)] = r
+	if res.Count != 1 {
+		t.Fatalf("count = %d, want 1 (chunk listed): %+v", res.Count, res.Reports)
 	}
-
-	chunk, ok := byName["sub-a-chunk-1.json"]
-	if !ok {
-		t.Fatalf("chunk file not listed: %+v", res.Reports)
-	}
+	chunk := res.Reports[0]
 	if chunk.Valid {
 		t.Errorf("chunk must be valid:false (it is a partial snapshot, not a completion signal)")
 	}
@@ -111,9 +105,39 @@ func TestListSubagentReports_ChunkFiles(t *testing.T) {
 	if len(chunk.NeedsContext) != 1 {
 		t.Errorf("chunk needs_context lost: %+v", chunk.NeedsContext)
 	}
+}
 
-	final := byName["sub-a-report.json"]
-	if !final.Valid {
-		t.Errorf("final report must be valid:true")
+func TestListSubagentReports_DedupRetries(t *testing.T) {
+	project := t.TempDir()
+	dbPath := filepath.Join(project, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
+	tmp := filepath.Join(filepath.Dir(dbPath), ".tmp")
+
+	writeReport(t, tmp, "sub-a-report.json", `{
+	  "format_version": 1, "subagent_id": "sub-a", "scan_id": "sc_test",
+	  "processed_types": [{"type":"null-deref","range":"1-100","cwe":"CWE-476","written":2,"dismissed":98,"evidence_opens":12}]
+	}`)
+	writeReport(t, tmp, "sub-a-report-2.json", `{
+	  "format_version": 1, "subagent_id": "sub-a", "scan_id": "sc_test",
+	  "processed_types": [{"type":"null-deref","range":"1-100","cwe":"CWE-476","written":3,"dismissed":99,"evidence_opens":13}]
+	}`)
+	// The retry (-report-2) is newer and must supersede the first write.
+	older := filepath.Join(tmp, "sub-a-report.json")
+	newer := filepath.Join(tmp, "sub-a-report-2.json")
+	if err := os.Chtimes(older, time.Now().Add(-time.Minute), time.Now().Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(newer, time.Now(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	res := listSubagentReports(dbPath, "sc_test")
+	if res.Count != 1 {
+		t.Fatalf("count = %d, want 1 (retry supersedes the first report): %+v", res.Count, res.Reports)
+	}
+	if got := filepath.Base(res.Reports[0].File); got != "sub-a-report-2.json" {
+		t.Errorf("kept report = %q, want the newest (sub-a-report-2.json)", got)
+	}
+	if !res.Reports[0].Valid || res.Reports[0].Processed[0].Dismissed != 99 {
+		t.Errorf("newest report accounting lost: %+v", res.Reports[0])
 	}
 }

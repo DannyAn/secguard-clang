@@ -183,7 +183,7 @@ security scan and reading them makes the verdicts worthless. The scan dir
 | `SPLIT_CANDIDATE_THRESHOLD` | 100 | A type with > this many candidates is SPLIT across multiple subagents, each handling ≤ this many candidates |
 | `MAX_EVIDENCE_OPENS_PER_TYPE` | 12 | Evidence-file-open budget per subagent; beyond it the subagent reports `needs_context` instead of opening everything (hard constraint, `agent-body.md`) |
 | `CONTEXT_BUDGET` | 98000 | Subagent context window reserved for data (conservative 128K window − 30K reasoning/write reserve). Covers Claude Code (200K), OpenCode, DSH with margin. The only external input; lower it if a host has a smaller window. |
-| `HOST_AGENT_TIMEOUT` | 660 | claude-cac synchronous `Agent` hard ceiling (seconds). A force-rejected batch feeds back into r_type (raise r → smaller next batch), NOT a hard pre-dispatch cap. |
+| `HOST_AGENT_TIMEOUT` | 660 | synchronous-host `Agent`/`task` hard ceiling (seconds; OpenCode / opencode-nga). A force-rejected batch feeds back into r_type (raise r → smaller next batch), NOT a hard pre-dispatch cap. |
 | `SMALL_TYPE_SEQUENTIAL_THRESHOLD` | ≤15 candidates | A type with ≤15 candidates AND no whole-function-embedding member is cheaper for the orchestrator to classify directly than to dispatch (no skill-load/spawn fixed cost) |
 
 `MAX_CANDIDATES_PER_BATCH` is **adaptive, per-type, and dual-constrained** — it is
@@ -269,7 +269,7 @@ new capacity class for an unfamiliar name.
 - **Sync-host small-type strategy (P1-6):** `SMALL_TYPE_SEQUENTIAL_THRESHOLD`
   (≤ 15 candidates → orchestrator classifies directly) applies ONLY on hosts
   where the orchestrator can classify WHILE subagents run (asynchronous: official
-  Claude Code / DSH). On a SYNCHRONOUS host (OpenCode / opencode-nga / claude-cac)
+  Claude Code / claude-cac / DSH). On a SYNCHRONOUS host (OpenCode / opencode-nga)
   the orchestrator is BLOCKED inside each `Agent`/`task` call and cannot do its own
   classification concurrently, so the threshold is DISABLED there: pack the small
   types into parallel batches per the packing rule above instead of dispatching
@@ -405,8 +405,9 @@ straight to the structured report (`written: 0`).
     that need an AI subagent — i.e. `candidates_by_type > 0` in the scan summary.
     `total_candidates` counts only suspected/possible candidates awaiting
     classification. A type with `candidates_by_type == 0` needs NO AI subagent:
-    its `auto_confirmed_by_type` findings are machine verdicts already marked
-    reviewed at scan time (there is no re-review loop).
+    its `auto_confirmed_by_type` findings are machine verdicts written with
+    `review_status` NULL — they await Step 5.5's review, not a per-candidate
+    subagent loop.
    - **`type_count ≤ 3 AND total_candidates ≤ 200` → SEQUENTIAL (step 3).** The
      whole scan is at most one subagent-batch's worth of work; one context avoids
      the dispatch overhead. Do NOT spawn subagents.
@@ -445,7 +446,7 @@ straight to the structured report (`written: 0`).
     Never skip a type. Obey the context budget (no per-candidate source reads).
 **调度时序合规规则 (F3):** All subagent dispatches SHALL occur in a single assistant turn — N `Agent`/`task` calls issued consecutively with the first-to-last timestamp span ≤ 10s. (Claude Code's subagent-dispatch tool is `Agent`; older Claude Code versions name it `Task`.) The orchestrator SHALL NOT split dispatches across turns. After dispatch, while subagents run, the orchestrator SHALL NOT poll their transcripts or issue `sleep`.
 
-**滑动窗口补位 (F3a) — 消灭整波 barrier（P0-1）：** F3 的"所有派发 ≤10s"只约束**首波**。首波发出后，每收到**一个**批次的完成信号（官方 Claude Code 的 `task_notification`、DSH 的 settlement 通知；或同步宿主若其 `Agent`/`task` 工具支持 `run_in_background` 时的完成通知），编排器**立即**吸收该批次 settlement 并**立即**补派积压队列中的下一个批次——不等其他在跑批次，并发数始终顶满宿主上限，波间空档与 straggler 尾部空转消失。补位派发按通知逐个发，**显式豁免 F3 的 ≤10s 限制**。吸收顺序与 F11 一致：`secguard status --reports`（有 `valid:true` 覆盖则吸收 `written`/`dismissed`/`needs_context` 并 `report --complete-type`）→ `secguard status --per-type`（读引擎预计算的 `already_covered_ranges`，只补派缺失 range）。同步宿主若其 `Agent`/`task` 无后台模式（OpenCode / claude-cac 按 F7 的同步返回），则首波仍按 F3 一次性发出、超时走 F11——退化为现状，无回归。
+**滑动窗口补位 (F3a) — 消灭整波 barrier（P0-1）：** F3 的"所有派发 ≤10s"只约束**首波**。首波发出后，每收到**一个**批次的完成信号（官方 Claude Code 的 `task_notification`、DSH 的 settlement 通知；或同步宿主若其 `Agent`/`task` 工具支持 `run_in_background` 时的完成通知），编排器**立即**吸收该批次 settlement 并**立即**补派积压队列中的下一个批次——不等其他在跑批次，并发数始终顶满宿主上限，波间空档与 straggler 尾部空转消失。补位派发按通知逐个发，**显式豁免 F3 的 ≤10s 限制**。吸收顺序与 F11 一致：`secguard status --reports`（有 `valid:true` 覆盖则吸收 `written`/`dismissed`/`needs_context` 并 `report --complete-type`）→ `secguard status --per-type`（读引擎预计算的 `already_covered_ranges`，只补派缺失 range）。同步宿主若其 `Agent`/`task` 无后台模式（OpenCode / opencode-nga 按 F7 的同步返回），则首波仍按 F3 一次性发出、超时走 F11——退化为现状，无回归。
 
 **F3a 的可执行实现（in-flight 计数器 + 宿主并发上限探测）：** F3a 不是"应当"级建议，是必须执行的状态机。编排器在本轮开始时**显式**维护两个量：(1) `host_max` = 宿主允许的最大并发子代理数；(2) `in_flight` = 当前已发出但未收到完成信号的批次计数。
 
@@ -456,15 +457,15 @@ straight to the structured report (`written: 0`).
 **子代理返回模型 (F7) — 这是"任务卡住不结束/结果丢失/重复下发"的根因，必读：** 三个平台的返回模型不同，绝不可混用：
 
 - **OpenCode（含 opencode-nga）的 `task` 工具是同步的**：一次 `task` 调用的返回值就是该子代理的最终消息（即 `Structured Report Protocol` 的 JSON 块）。**没有**独立的 "task-notification" 事件可等。因此 orchestrator 在同一个回合里连续发出 N 个 `task` 调用后，这些调用会逐一带回结果；拿到结果后 orchestrator 必须**立刻**进入第 5 步 Collect+finalize，**绝不能**在发出 task 后结束回合去"等通知"——那样这个回合就永远停在原地，任务计时一直走。
-- **claude-cac（CodeAgentCLI）的 `Agent` 工具同样是同步的**：一次 `Agent` 调用的返回值就是子代理的最终消息，**没有** `task_notification` 事件。跟 OpenCode 完全一样：N 个 `Agent` 调用逐一带回结果，拿到即进第 5 步；**绝不能**结束回合去"等异步通知"（通知根本不会来，结果就在返回值里，去等会把已落盘的结果丢弃、还误判子代理没跑而重复下发）。
+- **claude-cac（CodeAgentCLI）的 `Agent` 工具是异步的**：一次 `Agent` 调用返回 `Async agent launched successfully` + `agentId`，子代理在后台运行、完成后才推送通知（生产冒烟实测：返回的是 agentId 而非最终消息）。因此发出 N 个 `Agent` 调用后**不能**按同步假设直接进 Collect——拿不到结果；必须像官方 Claude Code 一样等每个子代理的完成通知（或读 `<tmpdir>/<subagent_id>-report.json` 落盘报告），再进第 5 步。**防御性写法（F7a）**：不同宿主版本/配置下返回形状可能漂移，发出第一个 `Agent`/`task` 后先探测其返回——含 `agentId` 且带 "background/async" 字样即为异步宿主（等通知/落盘），直接返回最终消息 JSON 即为同步宿主（读返回值）；把探测结果记在心里，后续 N−1 个调用与 Collect 阶段照此办理，不要先验地假定同步或异步。
 - **Claude Code（官方）的 `Agent`/`Task` 工具是异步的**：子代理在后台运行，通过 `task_notification` 事件回报终态。orchestrator 等待这些事件，直到每个子代理都到达 terminal state，再进入第 5 步。
 - **DeepSeek Harness（DSH）的 `subagent` 工具是异步的（continuable）**：一次 `subagent` 调用后台启动一个持久子代理并返回子代理 id（默认 `run_in_background: true`，无需显式传），子代理跑完后 runtime 推送 settlement 通知（含结果 + 最终 assistant 消息）。orchestrator 等这些通知，用 `list_agents` 回忆、`send_message` 追问，直到每个子代理都落地，再进第 5 步；**绝不能**在发出 subagent 后结束回合去"空等"（通知会来，但和官方 Claude Code 一样，拿到全部结果后必须在同一回合内 Collect+finalize）。
 
-**完成契约 (F8) — orchestrator 回合何时结束：** orchestrator 的回合**只有**在发出第 6 步的最终 Markdown 报告之后才允许结束。发出子代理 task 之后：**同步平台（OpenCode / opencode-nga / claude-cac）在调用正常返回时直接读工具返回值**；**若调用被宿主超时 force-reject，则改走 F11 的落盘报告恢复，不得据此重派**；**异步平台（官方 Claude Code / DSH）等 `task_notification` / settlement 事件**。拿到所有结果后**必须**在**同一回合**内完成 Collect+finalize（第 5 步）并输出最终报告（第 6 步），然后停止。**禁止**出现"子任务都跑完了、分析也结束了、但没有 finalize、没有最终报告、任务还挂着"的中间态——那等于把已落盘的结果丢弃在后台。
+**完成契约 (F8) — orchestrator 回合何时结束：** orchestrator 的回合**只有**在发出第 6 步的最终 Markdown 报告之后才允许结束。发出子代理 task 之后：**同步平台（OpenCode / opencode-nga）在调用正常返回时直接读工具返回值**；**若调用被宿主超时 force-reject，则改走 F11 的落盘报告恢复，不得据此重派**；**异步平台（官方 Claude Code / claude-cac / DSH）等 `task_notification` / settlement / 完成通知事件（或读落盘报告）**。拿到所有结果后**必须**在**同一回合**内完成 Collect+finalize（第 5 步）并输出最终报告（第 6 步），然后停止。**禁止**出现"子任务都跑完了、分析也结束了、但没有 finalize、没有最终报告、任务还挂着"的中间态——那等于把已落盘的结果丢弃在后台。
 
 **子代理句柄失效 (F9) — `No task found with ID <id>` 的恢复：** 异步宿主的后台任务句柄偶发被回收，返回 `No task found with ID <id>`。这是宿主侧竞态，**不是扫描失败，也绝不等于该子代理没跑**。遇到时**禁止**反复用同一 ID 重试、禁止死等、禁止把该类型当 `failed` 丢弃。正确动作：先读该子代理落盘的结构化报告 `<tmpdir>/<subagent_id>-report.json`（子代理按 O2 在最终消息前写入，承载消息里没有的 `needs_context`/`dismissed` 明细），再 `secguard status --per-type --scan-id <scan_id>`，以 DB 的 `terminal_state` 为唯一权威（`done`=成功；`in-progress`/`pending`=未写完；`unknown`=未下发）。对非 `done` 的类型**只重下发缺失部分**（带上候选范围），`done` 的绝不下发。重下发后照常进第 5 步 Collect+finalize，第 6 步出报告。
 
-**Agent 调用超时 (F11) — `Tool call hung for 660000ms` / force-reject：** 同步宿主（claude-cac / OpenCode / opencode-nga）的 `Agent`/`task` 调用是同步的，单调用有硬上限（claude-cac 约 660s）。security-auditor 的一个批次（skill 加载 + `_index.md` + Evidence 打开 + JSON 写入）可能超过它；宿主会 force-reject 该调用，但**子代理仍在后台继续跑，并会按 O2 把 `<tmpdir>/<subagent_id>-report.json` 落盘**。因此超时是**宿主超时，不是批次失败**，**禁止**仅凭超时就重派。恢复顺序：
+**Agent 调用超时 (F11) — `Tool call hung for 660000ms` / force-reject：** 同步宿主（OpenCode / opencode-nga）的 `Agent`/`task` 调用是同步的，单调用有硬上限（约 660s）。security-auditor 的一个批次（skill 加载 + `_index.md` + Evidence 打开 + JSON 写入）可能超过它；宿主会 force-reject 该调用，但**子代理仍在后台继续跑，并会按 O2 把 `<tmpdir>/<subagent_id>-report.json` 落盘**。因此超时是**宿主超时，不是批次失败**，**禁止**仅凭超时就重派。恢复顺序：
 1. `secguard status --reports --scan-id <scan_id>`（OpenCode 用 `secguard_status` 的 `reports: true`）——列出已落盘报告的 `subagent_id` / `scan_id` / `processed_types`（含 `range`）/ `needs_context` / `valid`。
 2. 若有 `valid:true` 的报告覆盖该批次（scan_id 相同 + type/range 匹配）：吸收其 `written`/`dismissed`/`needs_context`，对 `processed_types` 调 `report --complete-type`，**绝不重派**。
 3. 若暂无 `valid` 报告：`secguard status --per-type --scan-id <scan_id>`；若 `written_count` 有增长或 `terminal_state=done`，先做别的批次/等待一回合，再查一次 `--reports`；`valid:false`（部分写入）表示子代理还在写，**等待，不重派**。
@@ -688,11 +689,11 @@ straight to the structured report (`written: 0`).
     - per-type verdict split → `secguard report --audit --scan-id <id> --output-dir <dir>` returns an `audits` array (`vuln_type`/`confirmed`/`auto_confirmed`/`ai_stage_status`; `dismissed` and `suspected` are not present — dismissed candidates are not persisted). `ai_stage_status` values: `pending` (AI stage not done), `done` (AI stage complete), `failed` (AI stage failed, reserved). Sum that array for the report — do NOT raw-query `findings` to recompute it.
     **findings/ 里的 confirmed 文件 ≠ 子代理报告的 confirmed（auto-confirmed 已落库）:** `findings/<type>/NNN_*_confirmed.md` 是两类之和——(a) `auto-confirmed`：pipeline 在 scan 阶段直接机器确认的确定性发现（divide-by-zero 的 `divisor@field`/`global`、null-deref 的 `null@cfg-proof`/`null@malloc-fail`、uninit 的 certain-uninit 等），它们**不在** `candidates/_index.md` 里、子代理从来看不到；(b) 子代理写的 `confirmed`。所以 findings/ 的 confirmed 文件数可以明显大于子代理报告的数，多出的就是 auto-confirmed，**不是漏报也不是子代理说错**。最终计数一律以 `report --audit` 的 `audits` 数组（含 `auto_confirmed` 字段）为准，不要 `ls findings/` 反推、不要为这个对账。
    **DB 路径（绝对路径，否则 Exit code 1）:** every `secguard db` / `secguard schema` / `secguard report` call that takes `--db` MUST pass the ABSOLUTE path `<scan_dir>/../../.sgre/sgre.db`. A relative `.sgre/sgre.db` fails with `Error: Exit code 1` whenever your cwd is not the project root — do NOT retry it as-is; re-run with the ABSOLUTE path. **Do NOT `cd` into the scan dir to "fix" it:** commands run WITHOUT `--db` (`secguard plan`/`status`/`metrics`/`query` and `report --audit`) resolve the DB relative to cwd, so cd'ing into the scan dir would mint a second, empty `sgre.db` under the scan dir (doubling build time and splitting findings across two databases). Keep cwd at the project root for the whole run.
-    **dismissed 不持久化，`final_count − confirmed` 不是漏写:** dismissed candidates are intentionally NOT persisted (no finding row, no count). When `ai_stage_status='done'` for a type, the AI has processed all candidates — the `final_count − confirmed` gap is the dismissed count, which is normal, not a missing write. When `ai_stage_status='pending'` the type is in-progress (reported by `status --per-type`, not as unclassified). Because `--write-json` UPSERTs keyed on `(scan_id, rule_id, file, line, function, variable)`, candidates for the SAME variable at the SAME file:line:function collapse into ONE finding. Do NOT inspect the schema or raw-query `findings` to "persist" dismissed; trust `secguard status --per-type --scan-id <id>` (`written_count`/`terminal_state`/`ai_stage_status`) instead.
+    **dismissed 不持久化，`final_count − confirmed` 不是漏写:** dismissed candidates are intentionally NOT persisted (no finding row, no count). When `ai_stage_status='done'` for a type, the AI has processed all candidates — the `final_count − confirmed` gap is the dismissed count, which is normal, not a missing write. **两种 dismissed 语义必须分清（C2）**：`ai_dismissed` = 子代理在分类阶段判驳的候选，**不落库**（无 finding 行、无计数，`written_count < candidate_count` 的差额就是它）；`review_dismissed` = 一条 `auto-confirmed` 行在终审复核被驳回，**落库**为 `review_status='dismissed'`（`report --list --status dismissed` 能查出，`EffectiveStatus` 生效后从 confirmed 计数中剔除）。两者同名不同层，不要混用：`status --per-type` 的 `dismissed_count`（若有）只可能反映 `review_dismissed`，不可能反映 `ai_dismissed`——后者按设计不落库。When `ai_stage_status='pending'` the type is in-progress (reported by `status --per-type`, not as unclassified). Because `--write-json` UPSERTs keyed on `(scan_id, rule_id, file, line, function, variable)`, candidates for the SAME variable at the SAME file:line:function collapse into ONE finding. Do NOT inspect the schema or raw-query `findings` to "persist" dismissed; trust `secguard status --per-type --scan-id <id>` (`written_count`/`terminal_state`/`ai_stage_status`) instead.
    If you MUST raw-query, run `secguard schema <table>` first, or use these exact names — never guess:
     - `findings`: `id, rule_id (CWE, e.g. CWE-476 — there is NO type/vuln_type column), severity, status (confirmed|auto-confirmed for new scans; legacy dismissed/suspected rows tolerated but ignored), file_path (NOT file), line_number (NOT line), function_name, variable, properties (JSON: the machine-proof basis `auto_confirm_evidence` / `auto_confirm_hint_tokens` / `auto_confirm_verdict_facts`), scan_id, review_status`
        **终报/问题表查询必须过滤 `review_status`:** an auto-confirmed finding
-       carries `review_status='confirmed'` (machine verdict, no re-review). If a
+       carries `review_status` NULL at scan (first-pass verdict only) and awaits Step 5.5's review. If a
        later pass ever downgrades one to `dismissed`, a raw `SELECT ... FROM
        findings` would still count it as present, so any final-total query must
        add `AND (review_status IS NULL OR review_status NOT IN ('dismissed'))` —
@@ -801,7 +802,7 @@ straight to the structured report (`written: 0`).
 
     **Auto-confirmed findings are machine verdicts — verified ONCE, never
     re-classified in a loop:** the scan writes them `status='auto-confirmed'`
-    (with `review_status='confirmed'`) straight into `findings`, so they are NOT
+    (with `review_status` NULL) straight into `findings`, so they are NOT
     in `candidates/_index.md` and the audit would ship them unexamined. Do NOT conflate two
     different things: (1) auto-confirmed rows are **not dispatched** to any
     security-auditor subagent and add nothing to the batch budget; (2) the
@@ -811,9 +812,10 @@ straight to the structured report (`written: 0`).
     machine proof is only as good as its premise, and production measured a 75%
     false-positive rate on the `uninit` tier (macro for-init writes, block-scope
     `extern` declarations, output-parameter fills). Step 5.5 below is the
-    bounded verification pass for exactly those rows; it is NOT the removed
-    per-candidate re-review loop (no `--list-auto-confirmed`, no completeness
-    gate, no re-derivation of every proof). The final free-form judgment is
+    bounded verification pass for exactly those rows; it lists them via
+    `report --list-auto-confirmed` (or `status --per-type` unreviewed) and writes
+    verdicts with `--review-json` — NOT the removed
+    per-candidate re-review loop (no re-derivation of every proof). The final free-form judgment is
     still done by the SAME AI agent (the security-auditor subagent's own LLM) as
     it classifies candidates — there is NO separate or customer-configured LLM
     anywhere in the pipeline.

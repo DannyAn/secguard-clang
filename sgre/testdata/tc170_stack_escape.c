@@ -58,6 +58,17 @@ int *fp_string(void) {
     return (int *)"literal";
 }
 
+/* &h[i] on a local POINTER equals h + i (points into the pointee, not the
+   frame); it is not an escape of a stack address. */
+const void *fp_pointer_subscript(const void *haystack, unsigned len) {
+    if (!haystack || !len) return 0;
+    const unsigned char *h = (const unsigned char *)haystack;
+    for (unsigned i = 0; i < len; i++) {
+        if (h[i] == 'x') return &h[i];
+    }
+    return 0;
+}
+
 int main(void) {
     struct ctx c;
     m2_store(&c);

@@ -32,3 +32,20 @@ char *va_copy_ok(const char *fmt, ...) {
     va_end(args);
     return g_va_buf;
 }
+
+/* 两轮遍历：同一个 va_list 被 va_start 初始化两次。第一次 va_start 之后的
+   va_arg/va_end（第二次 va_start 之前）也必须不报——第二次 va_start 不得把
+   init line 覆盖到更后面。 */
+int va_double_start(const char *first, ...) {
+    va_list args;
+    int n = 0;
+    va_start(args, first);
+    const char *a;
+    while ((a = va_arg(args, const char *)) != NULL) { n++; }
+    va_end(args);
+
+    va_start(args, first);
+    while ((a = va_arg(args, const char *)) != NULL) { n++; }
+    va_end(args);
+    return n;
+}

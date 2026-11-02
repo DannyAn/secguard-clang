@@ -611,12 +611,12 @@ func TestAutoConfirmFindings_WritesMachineVerdict(t *testing.T) {
 	}
 }
 
-// TestAutoConfirmedReReviewLoop pins the agent-native second-round review: a
-// machine auto-confirmed finding is listed for re-review, the agent dismisses it
-// via the --review-json write path, and it is then suppressed (FinalStatus
-// dismissed) and no longer pending review. This is the loop wired into
-// agent-body.md ("Re-review auto-confirmed findings").
-func TestAutoConfirmedNoReReview(t *testing.T) {
+// TestAutoConfirmedPendingReview pins the machine-verdict re-review model: a
+// machine auto-confirmed finding is written with review_status NULL (first-pass
+// verdict only), so it IS listed for re-review by Step 5.5, the agent dismisses
+// it via --review-json, and it is then suppressed (FinalStatus dismissed) and no
+// longer pending review. This is the loop wired into agent-body.md.
+func TestAutoConfirmedPendingReview(t *testing.T) {
 	ctx := context.Background()
 	d, err := db.OpenInMemory(ctx)
 	if err != nil {
@@ -638,19 +638,19 @@ func TestAutoConfirmedNoReReview(t *testing.T) {
 		t.Fatalf("autoConfirmFindings: n=%d err=%v", n, err)
 	}
 
-	// Machine verdict is marked reviewed at write time, so it is NOT in the
-	// re-review set and stands as confirmed (no re-review loop).
+	// A machine verdict is written with review_status NULL, so it IS in the
+	// re-review set until Step 5.5 writes a verdict.
 	pending, err := s.ListAutoConfirmedForReview(ctx, scanID, nil, 0)
-	if err != nil || len(pending) != 0 {
-		t.Fatalf("pending review = %d, err=%v; want 0 (no re-review loop)", len(pending), err)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending review = %d, err=%v; want 1 (machine verdict awaits Step 5.5 review)", len(pending), err)
 	}
 
 	findings, err := s.ListFindingsByScanID(ctx, scanID)
 	if err != nil || len(findings) != 1 {
 		t.Fatalf("findings = %d, err=%v; want 1", len(findings), err)
 	}
-	if findings[0].ReviewStatus != "confirmed" {
-		t.Errorf("auto-confirmed finding must carry review_status=confirmed at scan, got %q", findings[0].ReviewStatus)
+	if findings[0].ReviewStatus != "" {
+		t.Errorf("auto-confirmed finding must carry review_status empty at scan (first-pass only), got %q", findings[0].ReviewStatus)
 	}
 	if findings[0].FinalStatus() != "confirmed" {
 		t.Errorf("FinalStatus = %q, want confirmed", findings[0].FinalStatus())
@@ -684,12 +684,12 @@ func TestAutoConfirmedCLIFlow(t *testing.T) {
 		t.Fatalf("autoConfirmFindings: n=%d err=%v", n, err)
 	}
 	all, err := s.ListAutoConfirmedForReview(ctx, scanID, nil, 0)
-	if err != nil || len(all) != 0 {
-		t.Fatalf("auto-confirmed findings must need no review, got %d err=%v", len(all), err)
+	if err != nil || len(all) != 1 {
+		t.Fatalf("auto-confirmed findings must await review, got %d err=%v", len(all), err)
 	}
 	s.Close()
 
-	// 1. --list-auto-confirmed returns count 0 (machine verdict, no re-review).
+	// 1. --list-auto-confirmed returns count 1 (machine verdict awaiting review).
 	stdout, _, exitCode := captureOutput(func() int {
 		return runReportCmd(ctx, []string{"--db", dbPath, "--list-auto-confirmed", "--scan-id", scanID})
 	})
@@ -702,8 +702,8 @@ func TestAutoConfirmedCLIFlow(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &listed); err != nil {
 		t.Fatalf("unmarshal --list-auto-confirmed: %v", err)
 	}
-	if listed.Count != 0 {
-		t.Fatalf("--list-auto-confirmed returned count=%d, want 0 (machine verdict, no re-review)", listed.Count)
+	if listed.Count != 1 {
+		t.Fatalf("--list-auto-confirmed returned count=%d, want 1 (machine verdict awaiting review)", listed.Count)
 	}
 
 	// 2. Audit: the auto-confirmed finding reaches result.sarif as confirmed.

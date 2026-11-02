@@ -23,6 +23,11 @@ type subagentReport struct {
 	Processed    []reportTypeCount `json:"processed_types,omitempty"`
 	Failed       []reportFailed    `json:"failed_types,omitempty"`
 	NeedsContext []json.RawMessage `json:"needs_context,omitempty"`
+	// mtime is the raw (nanosecond-resolution) file modification time used to
+	// pick the newest report for dedup; ModTime above is only its RFC3339
+	// rendering for the JSON consumer (second resolution, too coarse to order
+	// reports written in the same second).
+	mtime time.Time
 }
 
 type reportTypeCount struct {
@@ -83,6 +88,7 @@ func listSubagentReports(dbPath, scanID string) reportsResult {
 		}
 		rep := subagentReport{File: path, SubagentID: subagentIDFromFile(name)}
 		if info, ierr := entry.Info(); ierr == nil {
+			rep.mtime = info.ModTime()
 			rep.ModTime = info.ModTime().Format(time.RFC3339)
 		}
 		if err := json.Unmarshal(data, &raw); err != nil {
@@ -118,13 +124,49 @@ func listSubagentReports(dbPath, scanID string) reportsResult {
 		res.Reports = append(res.Reports, rep)
 	}
 	sort.Slice(res.Reports, func(i, j int) bool {
-		if res.Reports[i].ModTime != res.Reports[j].ModTime {
-			return res.Reports[i].ModTime > res.Reports[j].ModTime
+		if !res.Reports[i].mtime.Equal(res.Reports[j].mtime) {
+			return res.Reports[i].mtime.After(res.Reports[j].mtime)
 		}
 		return res.Reports[i].File < res.Reports[j].File
 	})
+	// A retry / supplement writes another report for the SAME (subagent, type,
+	// range); list only the newest (highest mtime) so the orchestrator sees one
+	// authoritative record per batch instead of N competing snapshots.
+	seen := make(map[string]bool, len(res.Reports))
+	deduped := res.Reports[:0]
+	for _, rep := range res.Reports {
+		keys := settlementReportKeys(rep)
+		fresh := false
+		for _, k := range keys {
+			if !seen[k] {
+				fresh = true
+			}
+		}
+		if !fresh {
+			continue
+		}
+		for _, k := range keys {
+			seen[k] = true
+		}
+		deduped = append(deduped, rep)
+	}
+	res.Reports = deduped
 	res.Count = len(res.Reports)
 	return res
+}
+
+// settlementReportKeys returns the dedup identity keys for a report: one
+// (subagent_id, type, range) tuple per processed type. A report with no
+// processed_types (failed-only or partial) dedups by subagent_id alone.
+func settlementReportKeys(rep subagentReport) []string {
+	if len(rep.Processed) == 0 {
+		return []string{rep.SubagentID + "\x00\x00"}
+	}
+	keys := make([]string, 0, len(rep.Processed))
+	for _, pt := range rep.Processed {
+		keys = append(keys, rep.SubagentID+"\x00"+pt.Type+"\x00"+normalizeSettlementRange(pt.Range))
+	}
+	return keys
 }
 
 func subagentIDFromFile(name string) string {

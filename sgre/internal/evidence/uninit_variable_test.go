@@ -421,6 +421,9 @@ func TestUninit_VaListVaStartNotUninit(t *testing.T) {
 	if stackUninit["va_copy_ok"]["copy"] {
 		t.Errorf("va_copy_ok's copy must not be reported as stack_uninit (va_copy initializes it), got %v", stackUninit)
 	}
+	if stackUninit["va_double_start"]["args"] {
+		t.Errorf("va_double_start's args must not be reported as stack_uninit (both va_start calls initialize it), got %v", stackUninit)
+	}
 	if !stackUninit["va_use_before_start"]["args"] {
 		t.Errorf("va_use_before_start's args (used before va_start) should be reported as stack_uninit, got %v", stackUninit)
 	}

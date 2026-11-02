@@ -313,7 +313,16 @@ func HintLegendForTokens(tokens []string) []string {
 			rendered = append(rendered, v)
 		}
 		sort.Strings(rendered)
-		if len(rendered) > 0 {
+		// Enumerate the actual values ONLY for small fixed sets (cat@<name>,
+		// escape-kind@<return|store|async-arg>) where the closed set is itself
+		// the decision vocabulary. For open sets — src@N (every source line),
+		// chain-root@<fn>, sibling-callers@<…> — enumerating the scan's actual
+		// values flattens hundreds of lines into a single legend line (the
+		// 26 KB legend bloat that made shard 2 ~14% payload); those render as
+		// the fixed <value> form and the candidate rows carry the real value.
+		if len(rendered) > hintLegendMaxEnum {
+			desc = strings.ReplaceAll(desc, "{value}", "<value>")
+		} else if len(rendered) > 0 {
 			desc = strings.ReplaceAll(desc, "{value}", "`"+strings.Join(rendered, "` | `")+"`")
 		} else {
 			desc = strings.ReplaceAll(desc, "{value}", "<value>")
@@ -332,3 +341,10 @@ func RegisteredHintKeys() []string {
 	}
 	return keys
 }
+
+// hintLegendMaxEnum caps how many distinct values a value-bearing legend line
+// enumerates before falling back to the <value> placeholder. Small closed sets
+// (cat@<name>) stay enumerated so the classifier sees the decision vocabulary;
+// open sets (src@N over every source line) render as the fixed form so the
+// legend does not balloon with per-scan values.
+const hintLegendMaxEnum = 5

@@ -38,9 +38,10 @@ func (d *StackEscapeDetector) Name() string { return "stack_escape" }
 
 // stackLocal is a function-local object's escape-relevant shape.
 type stackLocal struct {
-	declLine int
-	isArray  bool
-	isStatic bool
+	declLine  int
+	isArray   bool
+	isPointer bool
+	isStatic  bool
 }
 
 func (d *StackEscapeDetector) Detect(ctx context.Context) (DetectResult, error) {
@@ -164,7 +165,7 @@ func collectStackLocals(decls []parser.Node, body parser.Node, fnStart, fnEnd in
 			if _, seen := locals[name]; seen {
 				continue
 			}
-			locals[name] = stackLocal{declLine: decl.StartLine(), isArray: declaratorIsArray(child), isStatic: static}
+			locals[name] = stackLocal{declLine: decl.StartLine(), isArray: declaratorIsArray(child), isPointer: declaratorIsPointer(child), isStatic: static}
 		}
 	}
 	return locals
@@ -176,6 +177,22 @@ func declaratorIsArray(node parser.Node) bool {
 	}
 	for _, c := range node.NamedChildren() {
 		if declaratorIsArray(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// declaratorIsPointer reports whether a declaration child binds a POINTER
+// (`char *p`, `char **pp`, `void (*fp)(void)`). It descends the same wrappers
+// declaredIdentifier does so `const unsigned char *h = ...` resolves h's
+// declarator to a pointer.
+func declaratorIsPointer(node parser.Node) bool {
+	if node.Kind() == "pointer_declarator" {
+		return true
+	}
+	for _, c := range node.NamedChildren() {
+		if declaratorIsPointer(c) {
 			return true
 		}
 	}
@@ -195,6 +212,9 @@ func stackEscapeSource(expr parser.Node, locals map[string]stackLocal) (name, ki
 		}
 		op := addressOfOperand(e)
 		if op == nil {
+			return "", "", false
+		}
+		if pointerArithmeticAddressOf(*op, locals) {
 			return "", "", false
 		}
 		base := baseIdentifierNode(*op)
@@ -289,6 +309,35 @@ func addressOfOperand(n parser.Node) *parser.Node {
 	}
 	c := children[len(children)-1]
 	return &c
+}
+
+// pointerArithmeticAddressOf reports whether an address-of operand (`&p[i]`,
+// `&p->f`) is pointer arithmetic on a local POINTER rather than the address of
+// a local object. `&p[i]` equals `p + i` and `&p->f` equals `p + offsetof(f)`;
+// both point into the pointee (a heap block or the caller's buffer), not into
+// the current frame, so returning/storing them does NOT escape the frame. The
+// operand's base must be a local pointer — `&arr[i]` on a local ARRAY is still
+// an in-frame address and stays reported.
+func pointerArithmeticAddressOf(op parser.Node, locals map[string]stackLocal) bool {
+	op = stripCastParenNode(op)
+	switch op.Kind() {
+	case "subscript_expression":
+		base, _, ok := subscriptBaseIndex(op)
+		if !ok {
+			return false
+		}
+		if l, found := locals[base]; found && l.isPointer {
+			return true
+		}
+	case "field_expression":
+		if isArrowOperator(op) {
+			base, _ := extractFieldAccess(op)
+			if l, found := locals[base]; found && l.isPointer {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // baseIdentifierNode returns the base identifier of an address-of operand

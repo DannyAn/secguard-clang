@@ -180,6 +180,45 @@ func splitLines(s string) []string {
 	return lines
 }
 
+func TestScanZeroCandidateTypesMarkedDone(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	cPath := writeTestCFile(t, root)
+
+	scansRoot := filepath.Join(root, ".codeagent", "secguard-clang", "scans")
+	scanDir := filepath.Join(scansRoot, "sc_2026-08-11_140000_ffffff")
+	os.MkdirAll(scanDir, 0755)
+	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
+	os.MkdirAll(filepath.Dir(dbPath), 0755)
+
+	if code := runScan(t, ctx, dbPath, scanDir, cPath); code != 0 {
+		t.Fatalf("scan failed with code %d", code)
+	}
+
+	store, err := openStore(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	stats, err := store.ListScanStats(ctx, filepath.Base(scanDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero := 0
+	for _, st := range stats {
+		if st.FinalCount == 0 {
+			zero++
+			if st.AIStageStatus != "done" {
+				t.Errorf("zero-candidate type %q ai_stage_status=%q, want done", st.VulnType, st.AIStageStatus)
+			}
+		}
+	}
+	if zero == 0 {
+		t.Fatalf("expected some zero-candidate types, got none")
+	}
+}
+
 func captureOutput(fn func() int) (stdout, stderr string, exitCode int) {
 	oldStdout := os.Stdout
 	oldStderr := os.Stderr
