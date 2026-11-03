@@ -60,17 +60,17 @@ func TestContractGap_ProductionCase(t *testing.T) {
 		suspicion[c.Target.Function] = c.SuspicionLevel
 	}
 
-	if suspicion["import_dn_group_tree_refresh"] != "suspected" {
-		t.Errorf("PRODUCTION CASE import_dn_group_tree_refresh: expected suspected (E-a sibling evidence), got %q", suspicion["import_dn_group_tree_refresh"])
+	if suspicion["import_dn_group_tree_refresh"] == "suspected" {
+		t.Errorf("PRODUCTION CASE import_dn_group_tree_refresh (sibling-only, no self-guard) should be auto-dismissed per issue #206 A.6, got %q", suspicion["import_dn_group_tree_refresh"])
 	}
 	if _, present := suspicion["sibling_import_handler"]; present {
 		t.Errorf("sibling_import_handler (guarded evidence provider) should NOT be a finding, got %q", suspicion["sibling_import_handler"])
 	}
 	if suspicion["import_partial_branch"] != "suspected" {
-		t.Errorf("import_partial_branch (check in one branch) should stay suspected, got %q", suspicion["import_partial_branch"])
+		t.Errorf("import_partial_branch (self-guard + sibling) should stay suspected, got %q", suspicion["import_partial_branch"])
 	}
-	if suspicion["import_empty_unhandled"] != "suspected" {
-		t.Errorf("import_empty_unhandled (count==0 handled but group_data NULL not) should stay suspected, got %q", suspicion["import_empty_unhandled"])
+	if suspicion["import_empty_unhandled"] == "suspected" {
+		t.Errorf("import_empty_unhandled (sibling-only, no group_data self-guard) should be auto-dismissed per issue #206 A.6, got %q", suspicion["import_empty_unhandled"])
 	}
 	if _, present := suspicion["import_no_deref"]; present {
 		t.Errorf("import_no_deref (field read but not dereferenced) should NOT be a candidate, got %q", suspicion["import_no_deref"])
@@ -104,10 +104,15 @@ func TestContractGap_Planner(t *testing.T) {
 		suspicion[c.Target.Function] = c.SuspicionLevel
 	}
 
-	for _, fn := range []string{"partial_guard", "direct_counted", "ptr_only_partial", "ptr_only_compound", "never_checked"} {
+	for _, fn := range []string{"partial_guard", "direct_counted", "ptr_only_partial", "ptr_only_compound"} {
 		if suspicion[fn] != "suspected" {
 			t.Errorf("%s: expected suspected, got %q", fn, suspicion[fn])
 		}
+	}
+	// never_checked has no self-guard (only a same-file sibling null-checks the
+	// field), so it is auto-dismissed per issue #206 A.6 (sibling-only evidence).
+	if suspicion["never_checked"] == "suspected" {
+		t.Errorf("never_checked (sibling-only, no self-guard) should be auto-dismissed, got %q", suspicion["never_checked"])
 	}
 	// The guarded first deref of partial_guard / ptr_only_partial is dropped by
 	// guard dominance, so only the unguarded site survives as one candidate.

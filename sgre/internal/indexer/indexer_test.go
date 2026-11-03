@@ -32,6 +32,39 @@ func TestCountLines(t *testing.T) {
 	}
 }
 
+func TestIndexer_DuplicateTentativeDefinitionIsUPSERTed(t *testing.T) {
+	s := db.NewTestStore(t)
+	idx := NewIndexer(s, testLogger())
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dup.c")
+	src := "/* tentative definition + definition: ONE file-scope object */\nint g_tbl[4];\nint g_tbl[4] = { 0 };\n"
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := idx.Index(ctx, path)
+	if err != nil {
+		t.Fatalf("Index failed: %v", err)
+	}
+	if result.FilesIndexed != 1 || result.FilesSkipped != 0 {
+		t.Fatalf("files indexed=%d skipped=%d, want 1/0 (the duplicate declaration must not drop the file)", result.FilesIndexed, result.FilesSkipped)
+	}
+	vars, err := s.ListFileScopeVariables(ctx)
+	if err != nil {
+		t.Fatalf("ListFileScopeVariables: %v", err)
+	}
+	gTable := 0
+	for _, v := range vars {
+		if v.Name == "g_tbl" {
+			gTable++
+		}
+	}
+	if gTable != 1 {
+		t.Errorf("expected exactly 1 file-scope variable g_tbl, got %d", gTable)
+	}
+}
+
 func TestIndexer_ExtractsAllFunctions(t *testing.T) {
 	s := db.NewTestStore(t)
 	idx := NewIndexer(s, testLogger())

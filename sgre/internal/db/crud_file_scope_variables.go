@@ -9,8 +9,18 @@ func (s *store) InsertFileScopeVariable(ctx context.Context, v *FileScopeVariabl
 	if v.StorageClass == "" {
 		v.StorageClass = "extern"
 	}
+	// UPSERT keyed on (file_id, name): a C tentative definition
+	// (`int g_tbl[4];`) followed by its real definition (`int g_tbl[4] = {0};`)
+	// is ONE file-scope object, so the second declaration updates the first
+	// instead of violating the UNIQUE constraint and aborting the whole file's
+	// index (issue #206 A.8 — the previous plain INSERT dropped the file).
 	res, err := s.exec.ExecContext(ctx,
-		`INSERT INTO file_scope_variables (file_id, name, type, storage_class, declaration_line, is_pointer) VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO file_scope_variables (file_id, name, type, storage_class, declaration_line, is_pointer) VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(file_id, name) DO UPDATE SET
+		   type = excluded.type,
+		   storage_class = excluded.storage_class,
+		   declaration_line = excluded.declaration_line,
+		   is_pointer = excluded.is_pointer`,
 		v.FileID, v.Name, v.Type, v.StorageClass, v.DeclarationLine, v.IsPointer)
 	if err != nil {
 		return 0, fmt.Errorf("db: insert file scope variable: %w", err)

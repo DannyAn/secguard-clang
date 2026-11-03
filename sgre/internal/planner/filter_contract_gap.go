@@ -68,6 +68,20 @@ func (f *ContractGapFilter) Apply(ctx context.Context, candidates []Candidate) (
 		case "self":
 			dropped = dismiss(dropped, c, f.Name(),
 				"self-guard-only evidence: the function's own null check does not dominate this deref and no same-file sibling proves the field is nullable (non-proving tier; auto-dismissed)")
+		case "sibling":
+			// Issue #206 (A.6): a type-anchored sibling null-check is weak
+			// name/type evidence — it says the field MAY be nullable, not that
+			// NULL reaches THIS deref. Production measured 459 sibling-only
+			// candidates at 0 confirmed, so a sibling reference WITHOUT the
+			// function's own null check (self-guard) is auto-dismissed. A
+			// candidate that ALSO self-guards the field (GuardLine > 0) is the
+			// kept residual: the function itself treats the field as nullable.
+			if c.GuardLine == 0 {
+				dropped = dismiss(dropped, c, f.Name(),
+					"sibling-only evidence (no self-guard in this function): a type-anchored sibling null-check is weak evidence the field MAY be nullable, not that NULL reaches this deref (issue #206; auto-dismissed)")
+			} else {
+				remaining = append(remaining, c)
+			}
 		case "sibling-weak":
 			dropped = dismiss(dropped, c, f.Name(),
 				"cross-file type-anchored sibling guard only: no same-file sibling shows the field is nullable (weak evidence; auto-dismissed)")

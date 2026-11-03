@@ -5,18 +5,23 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"strconv"
 	"strings"
 )
 
 // computeFingerprint returns the content-addressed, scan-independent identity of
-// a finding. It hashes rule_id + file + function + the trimmed source statement
-// at file:line, so a finding survives line-number drift (the same statement
-// moved by unrelated insertions keeps the same fingerprint) but changes when the
-// sink statement itself is edited. This is the incremental-review dedup key.
+// a finding. It hashes rule_id + file + function + line + the trimmed source
+// statement at file:line. The LINE is part of the identity: two findings on the
+// same function at DIFFERENT lines are distinct defects, and the previous
+// line-free key let them share a fingerprint and be cross-line dedup-merged
+// (issue #206 A.9). The statement text still survives an unrelated-insertion
+// line drift when the statement itself is unchanged, but two statements that are
+// textually identical at different lines stay distinct.
 func computeFingerprint(ruleID, filePath, functionName string, line int) string {
 	payload := strings.ToUpper(strings.TrimSpace(ruleID)) + "\x00" +
 		filePath + "\x00" +
 		functionName + "\x00" +
+		strconv.Itoa(line) + "\x00" +
 		readStatement(filePath, line)
 	sum := sha256.Sum256([]byte(payload))
 	return hex.EncodeToString(sum[:])

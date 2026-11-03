@@ -50,6 +50,12 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 	// a macro-initialized iterator would be misreported as uninitialized. The
 	// parser cache makes the second pass cheap.
 	macroWrites := d.collectMacroWrites(ctx)
+	// Object-like macro write-summaries (MSG_INIT do { a = 0; b = 0; } while
+	// (0)) are the command-initialization idiom: the macro takes no parameters
+	// and assigns local variables, so WrittenArgs never sees it. Collecting the
+	// assigned-variable sets across the tree makes the `MSG_INIT;` call a write
+	// to those locals instead of a certain-uninit false positive.
+	objectMacroWrites := d.collectObjectMacroWrites(ctx)
 
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		// The three sub-detectors plus BuildCFG used to issue ~21 whole-tree
@@ -60,6 +66,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 		decls := root.FindAll("declaration")
 		assigns := root.FindAll("assignment_expression")
 		calls := root.FindAll("call_expression")
+		exprStmts := root.FindAll("expression_statement")
 		inits := root.FindAll("init_declarator")
 		returns := root.FindAll("return_statement")
 		unarys := root.FindAll("unary_expression")
@@ -78,7 +85,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 			// parameter names plus its local declarator names. A type name must
 			// never be in this set (see parser.FunctionBoundNames).
 			bound := parser.FunctionBoundNames(funcDefsByLine[f.StartLine])
-			d.detectStackUninit(ctx, f, file, bound, decls, assigns, calls, returns, inits, ifs, whiles, fors, bodies, summaries, macroWrites, &result)
+			d.detectStackUninit(ctx, f, file, bound, decls, assigns, calls, exprStmts, returns, inits, ifs, whiles, fors, bodies, summaries, macroWrites, objectMacroWrites, &result)
 			d.detectHeapUninit(ctx, f, file, decls, inits, assigns, calls, unarys, ptrs, fields, subscripts, ifs, summaries, &result)
 			d.detectStructPartialUninit(ctx, f, file, bound, decls, assigns, calls, ifs, fields, summaries, macroWrites, &result)
 		}
@@ -103,6 +110,29 @@ func (d *UninitVariableDetector) collectMacroWrites(ctx context.Context) map[str
 		}
 	}
 	return macros.MergeWriteSummaries(perFile...)
+}
+
+// collectObjectMacroWrites merges the per-file object-like macro write-sets
+// across the whole scan tree, mirroring collectMacroWrites so a
+// command-initialization macro defined in a .h header is visible at every
+// `MSG_INIT;` call site in every .c source.
+func (d *UninitVariableDetector) collectObjectMacroWrites(ctx context.Context) map[string]map[string]bool {
+	merged := make(map[string]map[string]bool)
+	if err := forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node) {
+		for name, writes := range macros.ObjectLikeWrites(root) {
+			if merged[name] == nil {
+				merged[name] = make(map[string]bool)
+			}
+			for v := range writes {
+				merged[name][v] = true
+			}
+		}
+	}); err != nil {
+		if d.logger != nil {
+			d.logger.Warn("collect_object_macro_writes: top-level traversal failed; object-like macro initialization whitelist is incomplete", "error", err)
+		}
+	}
+	return merged
 }
 
 // varDecl describes one declaration of a local variable for scope-aware uninit
@@ -200,7 +230,7 @@ func localVarDecls(decls []parser.Node) map[string][]varDecl {
 	return m
 }
 
-func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, bound map[string]bool, decls, assigns, calls, returns, inits, ifs, whiles, fors []parser.Node, bodies map[int]parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, result *DetectResult) {
+func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, bound map[string]bool, decls, assigns, calls, exprStmts, returns, inits, ifs, whiles, fors []parser.Node, bodies map[int]parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, objectMacroWrites map[string]map[string]bool, result *DetectResult) {
 	uninitVars := make(map[string]bool)
 	assignSites := make(map[string][]int)
 	declsByName := make(map[string][]varDecl)
@@ -454,6 +484,37 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 							assignSites[key] = append(assignSites[key], call.StartLine())
 						}
 					}
+				}
+			}
+		}
+	}
+
+	// Object-like macro invocation (`MSG_INIT;` right after the declarations):
+	// the macro body assigns specific local variables, so the invocation writes
+	// them. Record the invocation line as an output-param init line so a later
+	// read of those variables is treated as initialized, not use-before-init.
+	for _, es := range exprStmts {
+		if !funcLineRange(f, es.StartLine()) {
+			continue
+		}
+		name := ""
+		for _, child := range es.NamedChildren() {
+			if child.Kind() == "identifier" {
+				name = child.Text()
+				break
+			}
+		}
+		if name == "" {
+			continue
+		}
+		writes, ok := objectMacroWrites[name]
+		if !ok {
+			continue
+		}
+		for v := range writes {
+			if key := resolveVarKey(declsByName, v, es.StartLine()); key != "" {
+				if es.StartLine() > outputParamInitLines[key] {
+					outputParamInitLines[key] = es.StartLine()
 				}
 			}
 		}

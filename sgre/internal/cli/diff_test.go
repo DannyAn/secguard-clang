@@ -86,24 +86,21 @@ func TestFilterByBaselineFingerprint(t *testing.T) {
 	}
 }
 
-func TestComputeFingerprintStableAcrossLineDrift(t *testing.T) {
+func TestComputeFingerprintDistinguishesLines(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "a.c")
 
-	// v1: statement at line 2.
-	if err := os.WriteFile(file, []byte("int x;\np[0] = 1;\n"), 0644); err != nil {
+	// Two IDENTICAL statements at different lines are two distinct defects, so
+	// their fingerprints must differ (issue #206 A.9: the line-free key let two
+	// independent same-text findings cross-line dedup-merge).
+	if err := os.WriteFile(file, []byte("p[0] = 1;\np[0] = 1;\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	fp1 := computeFingerprint("CWE-476", file, "f", 2)
+	fp1 := computeFingerprint("CWE-476", file, "f", 1)
+	fp2 := computeFingerprint("CWE-476", file, "f", 2)
 
-	// v2: an insertion above moves the SAME statement to line 3.
-	if err := os.WriteFile(file, []byte("int x;\nint y;\np[0] = 1;\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	fp2 := computeFingerprint("CWE-476", file, "f", 3)
-
-	if fp1 != fp2 {
-		t.Errorf("fingerprint should survive line drift: %q != %q", fp1, fp2)
+	if fp1 == fp2 {
+		t.Errorf("fingerprint should distinguish two same-text statements on different lines: %q", fp1)
 	}
 }
 
