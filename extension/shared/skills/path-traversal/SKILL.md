@@ -31,6 +31,17 @@ A path-traversal candidate has:
   in-tree call sites (`literal`/`variable`/`tainted` @ file:line, bounded) — the
   non-constant callers to inspect, no grep needed
 
+The **`constant_path_proof`** pipeline stage drops a path-traversal candidate
+whose path argument resolves to a compile-time constant on EVERY in-tree call
+path — even when the call-site census reports `N:M-var` because every caller
+passes a local buffer: the buffer is traced through its writes (including a
+path-building helper's output parameter and a local pointer alias) and, if every
+write is a literal / string macro / constant-returning helper result / numeric
+internal value (`time()`, a counter formatted with `%u`), the candidate never
+reaches you. A candidate you receive therefore has at least one
+provably-unresolved component (user input, an unknown external call, an
+out-of-tree writer, or an external-ABI parameter with no in-tree caller).
+
 ### Hint Tokens (Verdict Basis)
 
 | Token | Meaning | Your action |
@@ -65,6 +76,8 @@ the embedded section and the indexed lookup.
 | `fopen(path, ...)` — path is a parameter, `callsites@N:all-literal` | **dismissed** (every in-tree caller passes a compile-time constant) |
 | `fopen(path, ...)` — path is a parameter with no provable tainted caller and no census | **judge the function's exposure** — if it is a library / partial-scan export (zero in-tree callers, address-taken, an entry-point API), treat the parameter as an external ABI boundary and **confirm** the traversal risk; only an internal, provably-trusted parameter is **dismissed** |
 | `fopen("/etc/config", "r")` — literal or compile-time-constant path | **false-positive** (safe) |
+| `fopen(path, ...)` — parameter whose in-tree callers pass a one-off buffer built from a fixed directory + constant name | **false-positive** (the `constant_path_proof` stage drops these; a survivor has a non-constant component) |
+| `fopen(path, ...)` — the caller validates only a suffix/extension (`.pdf`, `.csv`) without rejecting `..` or a leading `/` | **not sanitized** — `<dir>/../../etc/passwd.pdf` still escapes, so treat an attacker-reachable path as **confirmed** |
 | `chmod("/etc/app.conf", 0666)` — `mode@` other-write on a non-temp `path@literal` | **confirmed** (CWE-732 world-writable file) |
 | `chmod(path_var, 0666)` / `fchmod(fd, 0666)` — `mode@` other-write on `path@var` | **dismissed** unless you can prove the path is a non-temp fixed location (umask filtering is unprovable) |
 | `chmod("/tmp/x", 0666)` — a temp-prefixed literal path | **false-positive** (the detector never emits it) |
@@ -75,9 +88,22 @@ caller, or when the parameter is an external/exported ABI boundary with no
 in-tree caller. Do NOT dismiss a parameter merely because the census is absent —
 the census measures who passes what, never whether the value is trusted.
 
+A **weak filter does not make a candidate safe**. A suffix/extension check
+(`strstr(file_name, ".pdf")`, `strcmp(ext, ".csv") == 0`) or a bare
+`strstr(path, "..") == NULL` test that is not paired with a `realpath`/prefix
+containment check is frequently the only guard before the sink: an
+attacker-controlled `<fixed_dir>/../../etc/target.pdf` still passes it, so such
+a chain is a real finding, not a false positive.
+
+The census `var` class does not mean "attacker reachable": the pipeline's
+`constant_path_proof` stage removes the callers whose `var` is a buffer built
+only from compile-time constants, so a survivor's non-constant component is the
+one to inspect.
+
 ### Common False Positives
 - Literal or compile-time-constant paths (config file paths, fixed install locations)
 - A path parameter that is always called with a trusted constant — the `callsites@N:all-literal` census settles this from the row (the pipeline drops these before they reach you; if one slips through with the census, dismiss it)
+- A path parameter whose every in-tree caller passes a local buffer assembled from a fixed directory and a constant name (often via a path-building helper) — the `constant_path_proof` stage drops these before they reach you
 - A path segment derived from `basename(p)` / `strrchr(p, '/')` — the result cannot contain a directory component, so it cannot carry `../`
 - A `chmod` on a `/tmp`/`/var/tmp`/`/dev/shm` path — a temp file's permissions are not a meaningful privilege-setting defect (the detector suppresses it)
 - A `chmod` mode that is not other-writable (`0644`, `0600`) — the detector only reports the other-write bit (0o002), never world-readable (0o004)
