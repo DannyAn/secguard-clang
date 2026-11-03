@@ -139,6 +139,67 @@ type Scan struct {
 	// <target>/build/compile_commands.json; the --compile-commands flag wins over
 	// this config.
 	CompileCommands string `toml:"compile_commands"`
+	// SkipDetectors names evidence detectors to turn OFF for the whole scan. It
+	// is the detector-stage twin of [disabled_types]: some detectors cost a lot
+	// and contribute nothing on a given codebase (production: unchecked_return
+	// burned 20s for 0 candidates), so a repo opts out of that stage without
+	// editing source. A skipped detector emits no events, so its downstream
+	// vulnerability types converge to 0 candidates — the skipped set is recorded
+	// in the scan result so "0" is never mistaken for "clean".
+	//
+	//	[scan]
+	//	skip_detectors = ["unchecked_return", "memory_leak"]
+	SkipDetectors []string `toml:"skip_detectors"`
+}
+
+// skipDetectorsOverride is the one-shot CLI override
+// (`secguard scan --skip-detectors unchecked_return,memory_leak`). A non-nil
+// slice replaces the config value entirely; nil leaves the file in charge.
+var skipDetectorsOverride []string
+
+// SetSkipDetectorsOverride records the --skip-detectors CLI flag. An empty
+// string clears the override.
+func SetSkipDetectorsOverride(csv string) {
+	skipDetectorsOverride = nil
+	for _, part := range strings.Split(csv, ",") {
+		if n := strings.TrimSpace(part); n != "" {
+			skipDetectorsOverride = append(skipDetectorsOverride, n)
+		}
+	}
+}
+
+// SkipDetectorNames returns the detector-skip names actually in effect: the CLI
+// flag when supplied, else the [scan] skip_detectors config, trimmed and
+// de-duplicated in declaration order. Unknown names are the caller's to warn
+// about — config cannot know the detector registry.
+func (c *Config) SkipDetectorNames() []string {
+	names := c.Scan.SkipDetectors
+	if skipDetectorsOverride != nil {
+		names = skipDetectorsOverride
+	}
+	seen := make(map[string]bool, len(names))
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if t := strings.TrimSpace(n); t != "" && !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// SkipDetectorSet returns SkipDetectorNames as a set, for O(1) lookups in the
+// detector runner. A nil/empty set means "nothing skipped".
+func (c *Config) SkipDetectorSet() map[string]bool {
+	names := c.SkipDetectorNames()
+	if len(names) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(names))
+	for _, n := range names {
+		out[n] = true
+	}
+	return out
 }
 
 // boundaryAutoDismissOverride is the one-shot CLI override

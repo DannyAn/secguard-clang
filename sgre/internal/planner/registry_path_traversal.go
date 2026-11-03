@@ -15,6 +15,8 @@ func init() {
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "path-traversal",
 		FilterFactories:   chainTaint(),
+		// The taint-source filter reads the scan-shared interprocedural summary.
+		SharedTaintSummary: true,
 		Categories:        []string{"path_traversal", "world_writable_file", "world_writable_var"},
 		CategoryCWEs:      map[string]string{"world_writable_file": "CWE-732", "world_writable_var": "CWE-732"},
 		// A chmod with a provable other-write mode on a non-temp literal path

@@ -162,6 +162,7 @@ Usage:
 Flags:
   --db <path>         Path to sgre.db (default: .codeagent/secguard-clang/.sgre/sgre.db)
   --exclude <dirs>    Comma-separated directory basenames to skip (default: deps,third_party,vendor,external,node_modules,tests,test,fuzzing,contrib,examples)
+  --skip-detectors <names> Comma-separated evidence detectors to skip for this scan (e.g. unchecked_return,memory_leak); their vuln types report 0
   --context-lines <n> Source lines embedded on each side of a finding in findings/ and SARIF (default 15, 0 disables)
   --help              Show usage
   --version           Show version`)

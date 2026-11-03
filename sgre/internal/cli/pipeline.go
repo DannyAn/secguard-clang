@@ -35,6 +35,12 @@ type pipelineOutcome struct {
 	// secguard.toml [disabled_types], validated against the registry). These
 	// types produced no candidates and must not be reported as "unknown".
 	DisabledTypes []string
+	// SkippedDetectors is the detector switch actually applied this run (from
+	// secguard.toml [scan] skip_detectors / --skip-detectors, validated against
+	// the registered detectors). A skipped detector emitted no events, so the
+	// types it feeds read as 0 candidates — this list is how that reads as a
+	// switch, never as clean code.
+	SkippedDetectors []string
 	// Timings are the per-phase wall-clock durations (milliseconds) captured
 	// across the shared engine. They feed the scan-level scan_runs metrics so
 	// performance is queryable over time instead of only in the scan log.
@@ -188,10 +194,34 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 	ctx = graph.WithAliasGraph(ctx, aliasGraph)
 
+	// Validate the detector skip switch against the registry BEFORE running: an
+	// unknown name is warned and dropped (a typo must not silently skip nothing
+	// while the user believes a slow stage is off).
+	skipSet := config.Load().SkipDetectorSet()
+	knownDetectors := map[string]bool{}
+	for _, name := range evidence.DetectorNames() {
+		knownDetectors[name] = true
+	}
+	var skippedDetectors []string
+	for name := range skipSet {
+		if !knownDetectors[name] {
+			logger.Warn("skip-detectors name is not a registered detector, ignoring", "detector", name)
+			delete(skipSet, name)
+			continue
+		}
+		skippedDetectors = append(skippedDetectors, name)
+	}
+	sort.Strings(skippedDetectors)
+
 	detStart := time.Now()
-	detectorErrors := evidence.RunAllDetectorsWithCache(ctx, store, p, logger, sharedCFGCache)
+	detectorErrors := evidence.RunAllDetectorsWithSkip(ctx, store, p, logger, sharedCFGCache, skipSet)
 	timings.DetectorsMs = time.Since(detStart).Milliseconds()
-	logger.Info("phase timing", "phase", "detectors_total", "elapsed_ms", timings.DetectorsMs)
+	if len(skippedDetectors) > 0 {
+		logger.Info("phase timing", "phase", "detectors_total", "elapsed_ms", timings.DetectorsMs,
+			"skipped", skippedDetectors)
+	} else {
+		logger.Info("phase timing", "phase", "detectors_total", "elapsed_ms", timings.DetectorsMs)
+	}
 	if b, h := sharedCFGCache.Stats(); b+h > 0 {
 		logger.Info("cfg cache stats after detectors", "builds", b, "hits", h)
 	}
@@ -243,6 +273,54 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	// shared CFG cache so plan-stage filters hit the detector-stage builds.
 	pl := planner.NewPlannerWithCache(store, p, logger, sharedCFGCache)
 
+	// The interprocedural taint summary is candidate-set-independent and shared by
+	// injection / path-traversal / format-string / integer-overflow. Compute it
+	// once, in the background, while the per-type goroutines start: the types that
+	// do not consume it run immediately, and only the four taint consumers wait for
+	// it (they would have blocked on the same cache mutex anyway). This is what
+	// gives the summary its OWN timing line instead of being reported four times
+	// as "the plan time" of whichever type reached the cache first — while still
+	// overlapping its cost with the other types' work, so the plan phase cannot get
+	// slower than before.
+	//
+	// The prewarm is skipped when no taint type has a seed event: those types never
+	// run their filter chain, so they would pay the whole-tree fixpoints and use
+	// none of the result.
+	var taintTypeSet map[string]bool
+	summaryReady := make(chan struct{})
+	if taintTypes := planner.TaintSummaryTypes(vulnTypes); len(taintTypes) > 0 {
+		taintTypeSet = make(map[string]bool, len(taintTypes))
+		for _, name := range taintTypes {
+			taintTypeSet[name] = true
+		}
+		seeded, serr := pl.AnySeedCandidate(ctx, taintTypes)
+		if serr != nil {
+			logger.Warn("plan shared taint summary prewarm probe failed", "err", serr)
+		}
+		if seeded {
+			go func() {
+				// Close LAST (LIFO): the waiting taint types must be released even
+				// if the summary computation panics.
+				defer close(summaryReady)
+				defer func() {
+					if r := recover(); r != nil {
+						logger.Warn("plan shared taint summary prewarm panicked", "panic", r)
+					}
+				}()
+				summaryStart := time.Now()
+				if err := pl.PrewarmTaintSummary(ctx); err != nil {
+					// Fail-open: the filter recomputes and keeps candidates on error.
+					logger.Warn("plan shared taint summary prewarm failed", "err", err)
+				}
+				logger.Info("phase timing", "phase", "plan_shared_taint_summary", "elapsed_ms", time.Since(summaryStart).Milliseconds())
+			}()
+		} else {
+			close(summaryReady)
+		}
+	} else {
+		close(summaryReady)
+	}
+
 	const planConcurrency = 8
 	planSem := make(chan struct{}, planConcurrency)
 	var pwg sync.WaitGroup
@@ -258,6 +336,12 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 					planErrMu.Unlock()
 				}
 			}()
+			// A taint-consuming type waits for the shared summary BEFORE taking a
+			// concurrency slot, so queued non-taint types are never starved by
+			// goroutines that would only block on the summary.
+			if taintTypeSet[vt] {
+				<-summaryReady
+			}
 			planSem <- struct{}{}
 			defer func() { <-planSem }()
 			planStart := time.Now()
@@ -284,8 +368,9 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 		Index:          indexResult,
 		Plans:          plans,
 		PlanErrors:     planErrors,
-		DetectorErrors: detectorErrors,
-		DisabledTypes:  disabledTypes,
-		Timings:        timings,
+		DetectorErrors:   detectorErrors,
+		DisabledTypes:    disabledTypes,
+		SkippedDetectors: skippedDetectors,
+		Timings:          timings,
 	}, nil
 }

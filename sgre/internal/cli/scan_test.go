@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/DannyAn/secguard-clang/internal/config"
 )
 
 func writeTestCFile(t *testing.T, dir string) string {
@@ -409,5 +411,47 @@ func TestScanOutput_CodeagentAtProjectRoot(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(srcDir, ".codeagent")); err == nil {
 		t.Fatal(".codeagent leaked into scan target src/ — should be at project root")
+	}
+}
+
+// TestScanCmd_SkipDetectorsEnvelope verifies the detector switch reaches the
+// scan envelope: the applied names are echoed (sorted) and an unknown name is
+// dropped instead of silently doing nothing.
+func TestScanCmd_SkipDetectorsEnvelope(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	cPath := writeTestCFile(t, root)
+
+	scansRoot := filepath.Join(root, ".codeagent", "secguard-clang", "scans")
+	scanDir := filepath.Join(scansRoot, "sc_2026-08-11", "sc_2026-08-11_150001_yyyyyy")
+	os.MkdirAll(scanDir, 0755)
+	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
+	os.MkdirAll(filepath.Dir(dbPath), 0755)
+
+	config.SetSkipDetectorsOverride("memory_leak, unchecked_return, not_a_detector")
+	defer config.SetSkipDetectorsOverride("")
+
+	stdout, _, exitCode := captureOutput(func() int {
+		return runScanCmd(ctx, []string{"--db", dbPath, "--output-dir", scanDir, "--skip-detectors", "memory_leak, unchecked_return, not_a_detector", cPath})
+	})
+	if exitCode != 0 {
+		t.Fatalf("scan failed with code %d", exitCode)
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v", err)
+	}
+	got, ok := result["detectors_skipped"].([]interface{})
+	if !ok {
+		t.Fatalf("detectors_skipped missing or not a list: %#v", result["detectors_skipped"])
+	}
+	want := []string{"memory_leak", "unchecked_return"}
+	if len(got) != len(want) {
+		t.Fatalf("detectors_skipped = %v, want %v", got, want)
+	}
+	for i, name := range want {
+		if got[i] != name {
+			t.Fatalf("detectors_skipped = %v, want %v (sorted, unknown dropped)", got, want)
+		}
 	}
 }

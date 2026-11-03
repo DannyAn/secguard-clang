@@ -67,6 +67,7 @@ func NewPlanner(store db.Store, p *parser.Parser, logger *log.Logger) *Planner {
 		cfgCache:       graph.NewCFGCache(),
 	}
 	pl.querier = NewQuerier(store, p, pl.cfgCache)
+	pl.taintCache.setCFGCache(pl.cfgCache)
 	return pl
 }
 
@@ -77,6 +78,7 @@ func NewPlannerWithCache(store db.Store, p *parser.Parser, logger *log.Logger, c
 	if cfgCache != nil {
 		pl.cfgCache = cfgCache
 		pl.querier = NewQuerier(store, p, cfgCache)
+		pl.taintCache.setCFGCache(cfgCache)
 	}
 	return pl
 }
@@ -84,6 +86,42 @@ func NewPlannerWithCache(store db.Store, p *parser.Parser, logger *log.Logger, c
 // Querier returns the per-scan semantic-query facade. The instance is
 // shareable across goroutines (its state is read-only after construction).
 func (p *Planner) Querier() graph.Querier { return p.querier }
+
+// PrewarmTaintSummary computes the scan-shared interprocedural taint summary
+// once, before the per-type Plan goroutines run. The summary is
+// candidate-set-independent, so without this the four taint-consuming types all
+// queue behind the same cache mutex: the first one pays the whole fixpoint cost
+// and every other one reports that same wall as its own plan time. Prewarming
+// both pays it exactly once and gives it its own honest timing line.
+// AnySeedCandidate reports whether at least one of the given types has any seed
+// event. It is the cheap pre-check that keeps the pipeline from prewarming the
+// whole-tree taint summary for a scan whose taint types seed nothing: those
+// types never run their filter chain, so they would pay the fixpoints and use
+// none of the result.
+func (p *Planner) AnySeedCandidate(ctx context.Context, vulnTypes []string) (bool, error) {
+	for _, name := range vulnTypes {
+		spec, err := GetVulnTypeSpec(name)
+		if err != nil {
+			continue
+		}
+		n, err := p.store.CountEventsByType(ctx, spec.SeedEventType)
+		if err != nil {
+			return false, err
+		}
+		if n > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (p *Planner) PrewarmTaintSummary(ctx context.Context) error {
+	if p.taintCache == nil {
+		return nil
+	}
+	_, err := p.taintCache.get(ctx)
+	return err
+}
 
 func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error) {
 	spec, err := GetVulnTypeSpec(vulnType)

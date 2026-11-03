@@ -97,7 +97,7 @@ function printScanSummary(
 
 export default tool({
   description:
-    "Run full SecGuard security scan: index codebase, run all registered detectors, apply the convergence pipeline for every registered vulnerability type. Writes report.md (summary + per-type counts) + candidates.sarif (unclassified leads at SARIF level note) + per-type candidate indexes (candidates/<vuln-type>/_index.md, the Source/Hint/Evidence table the AI classifies from) + candidate evidence Markdown to .codeagent/secguard-clang/scans/<scan_id>/; findings/<vuln-type>/ and result.sarif are produced later from the AI verdicts via secguard_report, stores DB at .codeagent/secguard-clang/.sgre/sgre.db. Returns JSON with scan_id, output_dir, total_candidates, auto_confirmed_count, auto_confirmed_by_type (per-type machine-confirmed counts — a type with 0 candidates but auto_confirmed_by_type > 0 still needs an AI re-review subagent), candidates_by_type, seeds_by_type, plan_errors, detector_errors, files_indexed/functions_indexed/lines_of_code (scan scale). The Go binary generates scan_id, creates the scan directory, and updates the latest symlink — this wrapper only invokes the binary and parses its JSON output.",
+    "Run full SecGuard security scan: index codebase, run all registered detectors, apply the convergence pipeline for every registered vulnerability type. Writes report.md (summary + per-type counts) + candidates.sarif (unclassified leads at SARIF level note) + per-type candidate indexes (candidates/<vuln-type>/_index.md, the Source/Hint/Evidence table the AI classifies from) + candidate evidence Markdown to .codeagent/secguard-clang/scans/<scan_id>/; findings/<vuln-type>/ and result.sarif are produced later from the AI verdicts via secguard_report, stores DB at .codeagent/secguard-clang/.sgre/sgre.db. Returns JSON with scan_id, output_dir, total_candidates, auto_confirmed_count, auto_confirmed_by_type (per-type machine-confirmed counts — a type with 0 candidates but auto_confirmed_by_type > 0 still needs an AI re-review subagent), candidates_by_type, seeds_by_type, plan_errors, detector_errors, detectors_skipped (the detector switch actually applied from [scan] skip_detectors / --skip-detectors — a skipped detector's vuln types read 0 candidates by switch, not by clean code), files_indexed/functions_indexed/lines_of_code (scan scale). The Go binary generates scan_id, creates the scan directory, and updates the latest symlink — this wrapper only invokes the binary and parses its JSON output.",
   args: {
     path: tool.schema
       .string()
@@ -138,6 +138,7 @@ export default tool({
         const seedsByType = goJson?.seeds_by_type ?? {}
         const planErrors = goJson?.plan_errors ?? {}
         const detectorErrors = goJson?.detector_errors ?? {}
+        const detectorsSkipped = goJson?.detectors_skipped ?? []
         printScanSummary(process.stderr, goJson, targetPath, workDir)
 
         const reportError = goJson?.report_error ?? ""
@@ -170,6 +171,7 @@ export default tool({
           seeds_by_type: seedsByType,
           plan_errors: planErrors,
           detector_errors: detectorErrors,
+          detectors_skipped: detectorsSkipped,
           target_path: targetPath,
         }
         // 强制落盘验证：检查 report.md 实际存在且非空。如果不存在或为空，

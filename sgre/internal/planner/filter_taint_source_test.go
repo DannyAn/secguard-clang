@@ -1435,3 +1435,64 @@ int distant_source(void) {
 		t.Errorf("taint_source fragment must state the origin line, got %+v", hit.Evidence)
 	}
 }
+
+// TestTaintSourceFilter_WorklistMultiHop covers the multi-round propagation the
+// taint fixpoints must perform after the switch from a full-rescan fixpoint to a
+// worklist: a taint fact has to travel three hops, both through the
+// return-value relation (lv3 -> lv2 -> lv1) and through the parameter-passing
+// relation (outer -> middle -> inner -> sink). A regression that only re-analysed
+// direct dependents, or that stopped the worklist after the first round, would
+// leave the sink untainted.
+func TestTaintSourceFilter_WorklistMultiHop(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	logger := log.Default()
+	p := parser.NewParser()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hops.c")
+	src := `#include <stdlib.h>
+
+char *lv3(void) { return getenv("CMD"); }
+char *lv2(void) { return lv3(); }
+char *lv1(void) { return lv2(); }
+
+void inner(char *c) { system(c); }
+void middle(char *c) { inner(c); }
+void outer(void) {
+    char *cmd = lv1();
+    middle(cmd);
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	idx := indexer.NewIndexer(store, logger)
+	if _, err := idx.Index(ctx, path); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	graph.NewInterprocBuilder(store, p, logger).Build(ctx)
+	evidence.NewInjectionDetector(store, p, logger).Detect(ctx)
+
+	pl := NewPlanner(store, p, logger)
+	result, err := pl.Plan(ctx, "injection")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	found := false
+	for _, c := range result.Candidates {
+		if c.Target.Function == "inner" {
+			found = true
+			if !hasTaintEvidence(c) {
+				t.Errorf("expected the three-hop param sink system(c) in inner() to carry taint, got %+v", c.Evidence)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected a candidate in inner(), got %v", candidateNames(result))
+	}
+}

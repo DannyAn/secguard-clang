@@ -40,6 +40,8 @@ func NewIntOverflowGuardFilter(store db.Store, p *parser.Parser, logger *log.Log
 
 func (f *IntOverflowGuardFilter) Name() string { return "int_overflow_guard" }
 
+func (f *IntOverflowGuardFilter) usesTaintSummary() {}
+
 // guardMaxBound is the largest constant a guard may bound an operand to for the
 // product to still provably avoid overflow: 32768² = 2^30 < 2^31.
 const guardMaxBound = 32768

@@ -2,6 +2,39 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [未发布]
+
+### 扫描速度：planning 阶段共享 taint 摘要墙 + 检测器开关（Issue #201 / C-1..C-4）
+
+依据生产 v0.12.0 全量扫描 Issue C 逐条核对源码：**检测器并行（C-2）在 v0.12.0 已存在**
+（`detectors_total` 41.0s 是 8 路并行的墙钟，日志里逐检测器耗时之和 ~108s），因此只对
+真实存在的问题动手。
+
+- **四类型同耗时墙（C-1 / C-4）**：`format-string / injection / path-traversal /
+  integer-overflow` 四个类型的 plan 耗时几乎相同，根因不是四次独立计算，而是四者共享
+  同一份「扫描级 taint 摘要」而该摘要由最先到达的类型在持锁状态下计算——其余三个类型
+  阻塞在同一把 mutex 上，于是各自把同一段共享墙钟记成自己的 plan 耗时。修复：
+  - 摘要改为在 per-type 规划协程启动**之前**预热一次，并单独输出
+    `phase=plan_shared_taint_summary`；per-type 的 `plan_<type>` 从此只反映该类型
+    自身的过滤耗时（摘要是否值得预热由 `VulnTypeSpec.SharedTaintSummary` +
+    该类型的 seed 事件数决定，无 seed 的仓库零额外开销）。
+  - 四个摘要 fixpoint（`returnsParam` / `retTainted` / `paramTainted` / call-site census）
+    共享一份解析上下文（函数体、参数、call/return 节点、taint effects、DFG copies 各算一次），
+    不再各自读盘解析整棵树。
+  - `retTainted` / `paramTainted` / `returnsParam` 由「每轮全量重扫」改为**工作集
+    （worklist）不动点**：只有自己的被调方/入参污染集发生变化时才重新分析；并跳过
+    无任何 taint 源的函数体（`gen` 为空且无 `return <taint source>`）。
+  - taint 摘要的 flow 分析接入扫描级 CFG cache（此前用 nil cache，整棵树的 CFG 全量重建），
+    并改用无锁的 per-file body 复用。
+  - 实测（sgre/testdata 规模 300 文件、30000 函数的合成语料，`secguard plan injection`）：
+    16.2s → 10.6s；同一语料全量扫描的 plan 阶段：4 个类型各 14.6s（并行）→ 共享摘要
+    6.5s + 各类型 2.8s 自身耗时；候选输出逐字节一致。
+- **检测器开关（C-3）**：新增 `[scan] skip_detectors = [...]` 与
+  `secguard scan --skip-detectors=a,b`，按仓库跳过指定证据检测器（例如 `unchecked_return`
+  空转 20s 产出 0 候选）。生效名单回写扫描 JSON `detectors_skipped` 与 `scan.log`，
+  未知名字 warning 后忽略——被跳过检测器供给的类型显示 0 candidate，但可区分「开关关闭」
+  与「真的干净」。文档见 `docs/config.md`。
+
 ## [0.12.0] - 2026-11-02
 
 ### 生产冒烟反馈闭环（`docs/生产0.12.0版本冒烟反馈.md`）

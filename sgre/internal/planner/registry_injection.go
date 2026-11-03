@@ -21,6 +21,8 @@ func init() {
 		DefaultSuspicion: "suspected",
 		FilterChain:      "injection",
 		FilterFactories:    chainTaint(),
+		// The taint-source filter reads the scan-shared interprocedural summary.
+		SharedTaintSummary: true,
 		ConvergeKey: func(c Candidate) string {
 			// Key on (function, category, variable) so sprintf(source) +
 			// sqlite3_exec(sink) sharing one buffer merge into one finding — the

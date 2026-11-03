@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"sort"
 	"sync"
 	"time"
 
@@ -54,6 +55,26 @@ func RunAllDetectors(ctx context.Context, store db.Store, p *parser.Parser, logg
 // detector. A nil cache preserves the legacy behavior (each detector builds
 // its own CFGs).
 func RunAllDetectorsWithCache(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, cfgCache *graph.CFGCache) []DetectorError {
+	return RunAllDetectorsWithSkip(ctx, store, p, logger, cfgCache, nil)
+}
+
+// DetectorNames returns every registered detector's Name(), sorted. It is the
+// registry's public vocabulary: the CLI validates a configured skip list against
+// it so a typo is reported instead of silently skipping nothing.
+func DetectorNames() []string {
+	names := make([]string, 0, len(detectorFactories))
+	for _, factory := range detectorFactories {
+		names = append(names, factory(nil, nil, nil).Name())
+	}
+	sort.Strings(names)
+	return names
+}
+
+// RunAllDetectorsWithSkip is RunAllDetectorsWithCache with a detector skip set.
+// A skipped detector is never constructed or run, so its stage cost and its
+// events are both removed; callers must surface the applied set so a downstream
+// "0 candidates" is attributable to the switch rather than to clean code.
+func RunAllDetectorsWithSkip(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, cfgCache *graph.CFGCache, skip map[string]bool) []DetectorError {
 	if cfgCache != nil {
 		ctx = withCFGCache(ctx, cfgCache)
 	}
@@ -64,6 +85,19 @@ func RunAllDetectorsWithCache(ctx context.Context, store db.Store, p *parser.Par
 	batchMode.Store(true)
 	defer batchMode.Store(false)
 	all := AllDetectors(store, p, logger)
+	if len(skip) > 0 {
+		kept := make([]Detector, 0, len(all))
+		for _, det := range all {
+			if skip[det.Name()] {
+				if logger != nil {
+					logger.Info("detector skipped by configuration", "detector", det.Name())
+				}
+				continue
+			}
+			kept = append(kept, det)
+		}
+		all = kept
+	}
 
 	var deferred []Detector
 	var independent []Detector
