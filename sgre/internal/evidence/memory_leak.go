@@ -35,6 +35,13 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 	if err != nil {
 		return result, err
 	}
+	// Bump/arena allocators (`pool_alloc` → `g_pool + g_off`) hand back interior
+	// pointers into a pool released wholesale by its owner, so an individual
+	// result is never a per-object leak (issue #206 A.3).
+	bumpAllocators, err := bumpAllocatorFuncs(ctx, d.store, d.parser, d.logger)
+	if err != nil {
+		return result, err
+	}
 	// Cross-file typedef resolution: a `typedef int Status; Status st = ...` must
 	// count as a scalar status code, not an allocation (EL-06).
 	globalTypedefs := buildGlobalTypedefs(ctx, d.store, d.parser)
@@ -56,7 +63,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 		for _, f := range fileFuncs {
 			localVars := findLocalVarsFrom(decls, f)
 			scalarVars := findScalarVarsFrom(decls, f, typedefs)
-			allocs := d.findAllocations(ctx, f, file, assigns, inits, calls, allocReturns, borrowFuncs, scalarVars)
+			allocs := d.findAllocations(ctx, f, file, assigns, inits, calls, allocReturns, borrowFuncs, scalarVars, bumpAllocators)
 			frees := d.findFrees(ctx, f, file, calls, macros, inits, assigns)
 			returnLines := findReturnLinesFrom(returns, f)
 
@@ -260,7 +267,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 	return result, err
 }
 
-func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function, file *db.File, assigns, inits, calls []parser.Node, allocReturns, borrowFuncs map[string]bool, scalarVars map[string]bool) map[string][]int {
+func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function, file *db.File, assigns, inits, calls []parser.Node, allocReturns, borrowFuncs map[string]bool, scalarVars map[string]bool, bumpAllocators map[string]bool) map[string][]int {
 	allocs := make(map[string][]int)
 
 	checkNode := func(node parser.Node) {
@@ -291,6 +298,11 @@ func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function
 		// (assigning an allocator function pointer) as an allocation because
 		// "zcalloc" contains "calloc".
 		if !isMallocExpr(rhs, allocReturns) {
+			return
+		}
+		// A bump/arena allocator's result is an interior pointer into a pool the
+		// arena owner releases wholesale, so it never leaks per-object.
+		if callee := callCalleeName(rhs); callee != "" && bumpAllocators[callee] {
 			return
 		}
 		varName := ""
@@ -1704,6 +1716,175 @@ func passesToGlobalStoreFunc(calls []parser.Node, f *db.Function, varName string
 //     (the caller must NOT free it). This second set is what suppresses the
 //     name-heuristic false positive for `nlog_db_create_new_ctrl_item` (its
 //     `_new` substring matches apikb.IsAllocator even though it caches).
+// bumpAllocatorFuncs returns the names of in-tree bump/arena allocators: a
+// function whose every return is pointer arithmetic on two file-scope variables
+// (`g_pool + g_off`) and whose body never calls malloc/calloc/realloc. Such an
+// allocator hands back interior pointers into a pre-allocated arena; the arena
+// owner releases the whole pool, so an individual result is never a per-object
+// leak (issue #206 A.3).
+func bumpAllocatorFuncs(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) (map[string]bool, error) {
+	out := map[string]bool{}
+	err := forEachFile(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		funcDefs := root.FindAll("function_definition")
+		bodies := functionBodyMap(funcDefs)
+		decls := root.FindAll("declaration")
+		inits := root.FindAll("init_declarator")
+		assigns := root.FindAll("assignment_expression")
+		for _, f := range funcs {
+			body := bodies[f.StartLine]
+			if body.Kind() != "compound_statement" {
+				continue
+			}
+			if isBumpAllocatorBody(body, extractFunctionParamsFrom(funcDefs, f.StartLine), findLocalVarsFrom(decls, f), bumpLocalAssignments(f, inits, assigns)) {
+				out[f.Name] = true
+			}
+		}
+	})
+	return out, err
+}
+
+// isBumpAllocatorBody reports whether a function body is a bump allocator: no
+// heap-allocation call, and every return resolves (through a single-assignment
+// local) to `a + b` where both operands are non-local (file-scope) identifiers —
+// pointer arithmetic into a global arena.
+func isBumpAllocatorBody(body parser.Node, params []string, localVars map[string]bool, assigned map[string]parser.Node) bool {
+	for _, call := range body.FindAll("call_expression") {
+		switch extractCallName(call) {
+		case "malloc", "calloc", "realloc", "strdup", "strndup", "getline", "getdelim":
+			return false
+		}
+	}
+	returns := body.FindAll("return_statement")
+	if len(returns) == 0 {
+		return false
+	}
+	for _, ret := range returns {
+		expr := returnExprNode(ret)
+		if expr == nil || !isGlobalPointerArith(resolveAssigned(*expr, assigned), params, localVars) {
+			return false
+		}
+	}
+	return true
+}
+
+// resolveAssigned follows a single-assignment local to its RHS, so `return p`
+// with `void *p = g_pool + g_off;` resolves to the pointer arithmetic.
+func resolveAssigned(expr parser.Node, assigned map[string]parser.Node) parser.Node {
+	expr = unwrapExprNode(expr)
+	for expr.Kind() == "identifier" {
+		rhs, ok := assigned[expr.Text()]
+		if !ok {
+			return expr
+		}
+		expr = unwrapExprNode(rhs)
+	}
+	return expr
+}
+
+// bumpLocalAssignments records single assignments of locals, including pointer
+// declarators (`void *p = g_pool + g_off;`), so a bump allocator's `return p`
+// resolves to the global pointer arithmetic it was assigned.
+func bumpLocalAssignments(f *db.Function, inits, assigns []parser.Node) map[string]parser.Node {
+	out := make(map[string]parser.Node)
+	for _, init := range inits {
+		if !funcLineRange(f, init.StartLine()) {
+			continue
+		}
+		if name, rhs := declaratorInitParts(init); name != "" && rhs != nil {
+			out[name] = *rhs
+		}
+	}
+	for _, assign := range assigns {
+		if !funcLineRange(f, assign.StartLine()) {
+			continue
+		}
+		children := assign.NamedChildren()
+		if len(children) < 2 || children[0].Kind() != "identifier" {
+			continue
+		}
+		out[children[0].Text()] = unwrapExprNode(children[1])
+	}
+	return out
+}
+
+// declaratorInitParts returns the declared name and initializer value of an
+// init_declarator, resolving a pointer/array/function declarator to its name.
+func declaratorInitParts(init parser.Node) (string, *parser.Node) {
+	var name string
+	var rhs *parser.Node
+	for _, child := range init.NamedChildren() {
+		switch child.Kind() {
+		case "pointer_declarator", "array_declarator", "function_declarator", "parenthesized_declarator":
+			if name == "" {
+				name = declaratorName(child)
+			}
+		case "identifier":
+			if name == "" {
+				name = child.Text()
+			}
+		case "binary_expression", "call_expression", "pointer_expression", "field_expression", "subscript_expression":
+			if rhs == nil {
+				v := child
+				rhs = &v
+			}
+		}
+	}
+	return name, rhs
+}
+
+// isGlobalPointerArith reports whether expr is `a + b` where both operands are
+// non-local identifiers (pointer arithmetic into a global arena).
+func isGlobalPointerArith(expr parser.Node, params []string, localVars map[string]bool) bool {
+	expr = unwrapExprNode(expr)
+	if expr.Kind() != "binary_expression" || parser.BinaryOperator(expr) != "+" {
+		return false
+	}
+	kids := expr.NamedChildren()
+	if len(kids) != 2 {
+		return false
+	}
+	return isGlobalIdent(kids[0], params, localVars) && isGlobalIdent(kids[1], params, localVars)
+}
+
+// isGlobalIdent reports whether n is a bare identifier that is neither a
+// parameter nor a local (i.e. a file-scope/global variable).
+func isGlobalIdent(n parser.Node, params []string, localVars map[string]bool) bool {
+	n = unwrapExprNode(n)
+	if n.Kind() != "identifier" {
+		return false
+	}
+	name := n.Text()
+	for _, pp := range params {
+		if pp == name {
+			return false
+		}
+	}
+	return !localVars[name]
+}
+
+// callCalleeName returns the callee name of a (possibly cast-wrapped) call
+// expression, or "".
+func callCalleeName(expr parser.Node) string {
+	for expr.Kind() == "cast_expression" {
+		next := parser.Node{}
+		for _, c := range expr.NamedChildren() {
+			if c.Kind() == "type_descriptor" {
+				continue
+			}
+			next = c
+			break
+		}
+		if next.Kind() == "" {
+			return ""
+		}
+		expr = next
+	}
+	if expr.Kind() != "call_expression" {
+		return ""
+	}
+	return extractCallName(expr)
+}
+
 func allocatorReturnFuncs(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) (allocReturns map[string]bool, borrowFuncs map[string]bool, err error) {
 	// Precise cross-function "callee takes ownership of an argument" summary.
 	// Computed before the borrow check so every wrapper can see helper functions
