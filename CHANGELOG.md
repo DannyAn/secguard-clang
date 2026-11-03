@@ -26,9 +26,10 @@
     无任何 taint 源的函数体（`gen` 为空且无 `return <taint source>`）。
   - taint 摘要的 flow 分析接入扫描级 CFG cache（此前用 nil cache，整棵树的 CFG 全量重建），
     并改用无锁的 per-file body 复用。
-  - 实测（sgre/testdata 规模 300 文件、30000 函数的合成语料，`secguard plan injection`）：
-    16.2s → 10.6s；同一语料全量扫描的 plan 阶段：4 个类型各 14.6s（并行）→ 共享摘要
-    6.5s + 各类型 2.8s 自身耗时；候选输出逐字节一致。
+  - 实测（300 文件 / 30000 函数的合成语料，同机连续 A/B）：`secguard plan injection`
+    16.2s → 10.6s；全量扫描 plan 阶段 14.55s → 11.09s，其中有种子的 injection /
+    format-string 各 14.4s → 2.5s，共享摘要 6.1s 单独成一行；候选目录 24053 个文件、
+    candidates.sarif 与扫描 JSON 计数全部逐字节一致。
 - **检测器开关（C-3）**：新增 `[scan] skip_detectors = [...]` 与
   `secguard scan --skip-detectors=a,b`，按仓库跳过指定证据检测器（例如 `unchecked_return`
   空转 20s 产出 0 候选）。生效名单回写扫描 JSON `detectors_skipped` 与 `scan.log`，
