@@ -2,6 +2,15 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
+## [未发布]
+
+### path-traversal 误报抑制：编译期常量路径链（Issue #199）
+
+- **新增 `constant_path_proof` 过滤器**（`sgre/internal/planner/filter_constant_path.go`，接在 path-traversal 链的 `taint_source` 之后）：对 sink 路径参数做跨过程常量证明。参数未被本函数覆写时，要求所有 in-tree 调用点的实参可证明为编译期常量；调用点传局部缓冲区时，沿该缓冲区的每一处写入递归（含传给 in-tree 路径拼装 helper 的输出参数）。`snprintf`/`sprintf`/`strcat`/`memcpy` 等拼装调用按格式串逐参判定：`%u`/`%d`/`%x`/浮点等数值转换的实参豁免（其文本不可能含 `/`，`"%s/%u.json"` + `time(NULL)` 这类内部生成值因此算常量），`%s`/`%c` 等可输出任意字节的实参仍须常量。任一步不可证（未知外部函数、out-of-tree 写、无 in-tree 调用点、address-taken、递归超深）一律保留候选，宁漏勿误。
+- **真实 CWE-22 不丢**：用户输入经弱校验（仅后缀 `.pdf` 检查）进入 `<固定目录>/<字段>` 的链，因 `json_get_string_by_key` / `custom_pdf_path()` 不是常量而保留，照常交 AI 研判。
+- **skill / 边界文档同步**：path-traversal SKILL 增「弱过滤不算净化：后缀/扩展名检查不拦 `../`」及常量链抑制说明；`AI_JUDGMENT_BOUNDARY.md` 的 path-traversal 行补 planner 级收敛抑制；`zz_filter_chain_test.go` 的 path-traversal 期望链加入 `constant_path_proof`。
+- **回归**：新增 `filter_constant_path_test.go`（helper 拼装固定路径 drop、内部数值计数 drop、参数覆写 drop，真实输入链 / 未知运行期分量 / 无调用点 / 外部写 keep，all-literal census 回归）与 `filter_constant_path_unit_test.go`（格式串转换判定、只读实参表）。
+
 ## [0.12.0] - 2026-11-02
 
 ### 生产冒烟反馈闭环（`docs/生产0.12.0版本冒烟反馈.md`）

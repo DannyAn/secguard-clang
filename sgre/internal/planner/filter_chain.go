@@ -152,13 +152,29 @@ func chainDoubleFree() []FilterFactory {
 	}
 }
 
-// chainTaint covers injection / path-traversal / format-string, which share
-// the taint-source filter.
+// chainTaint covers injection / format-string, which share the taint-source
+// filter.
 func chainTaint() []FilterFactory {
 	return []FilterFactory{
 		func(d FilterDeps) Filter { return NewCallReachFilter(d.Store, d.CallReachCache) },
 		func(d FilterDeps) Filter { return NewSafeFunctionFilter(d.Store) },
 		func(d FilterDeps) Filter { return NewTaintSourceFilter(d.Store, d.Parser, d.Logger, d.TaintCache) },
+	}
+}
+
+// chainPathTraversal is chainTaint plus the interprocedural constant-path
+// proof: a path parameter whose every in-tree call site resolves to a
+// compile-time constant (a buffer built from a fixed directory plus a constant
+// name, possibly through a path-building helper) is not attacker-reachable and
+// is dropped instead of being handed to the AI as suspected.
+func chainPathTraversal() []FilterFactory {
+	return []FilterFactory{
+		func(d FilterDeps) Filter { return NewCallReachFilter(d.Store, d.CallReachCache) },
+		func(d FilterDeps) Filter { return NewSafeFunctionFilter(d.Store) },
+		func(d FilterDeps) Filter { return NewTaintSourceFilter(d.Store, d.Parser, d.Logger, d.TaintCache) },
+		func(d FilterDeps) Filter {
+			return NewConstantPathFilter(d.Store, d.Parser, d.Logger, d.CallReachCache, d.TaintCache)
+		},
 	}
 }
 

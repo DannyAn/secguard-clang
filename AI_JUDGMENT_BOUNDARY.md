@@ -133,7 +133,7 @@ filter 在 `Apply` 中把候选升级为 `confirmed` 同样受机器守卫约束
 
 | 类型 | 为什么不能 auto-confirm |
 |---|---|
-| path-traversal（CWE-22） | 「外部数据到达路径参数」只证明调用方能**影响**这个字符串，不证明字符串里能出现目录逃逸分量（`../`）——内容未知，且调用方可能已做校验。确定性层要求缺陷在**每条路径**上成立，因此 `TaintSourceFilter` 不再为它升级 `confirmed`，一律 `suspected` 交 AI 研判。（编译期常量路径——字面量 / 字符串宏 / `static const char` / 仅由常量拼装的缓冲区——在检测器层直接抑制，不产候选，见 `path_traversal.go` 的 `buildStringConstants`。） |
+| path-traversal（CWE-22） | 「外部数据到达路径参数」只证明调用方能**影响**这个字符串，不证明字符串里能出现目录逃逸分量（`../`）——内容未知，且调用方可能已做校验。确定性层要求缺陷在**每条路径**上成立，因此 `TaintSourceFilter` 不再为它升级 `confirmed`，一律 `suspected` 交 AI 研判。（编译期常量路径——字面量 / 字符串宏 / `static const char` / 仅由常量拼装的缓冲区——在检测器层直接抑制，不产候选，见 `path_traversal.go` 的 `buildStringConstants`；跨函数的常量链——路径参数的所有 in-tree 调用点都解析为常量缓冲区，含路径拼装 helper 的输出参数与 `%u`/`%d` 等整型格式化的内部生成值——由 planner 的 `constant_path_proof` 过滤器在收敛阶段 dismissed，同样不产候选，见 `filter_constant_path.go`。） |
 | `dangerous-function` 的 `obsolete_api_conditional`（`inet_addr`） | 规则自身写明其风险是「运行期可控字符串 + 未检查 `INADDR_NONE`」的**条件**风险，不是「调用即缺陷」；名字匹配证明不了这个条件，故降为 suspected 交 AI 按实参来源与返回值检查研判 |
 | argument-type（CWE-686） | 显式指针 cast 可能是**有意的** ABI/opaque 边界——「不兼容」≠「缺陷」，需 AI 判意图 |
 | data-representation（CWE-843） | base 元素类型靠「数 `*`」解析，typedef/数组退化会数错——类型错配的「证明」不够可靠，需 AI 判实际表示 |
