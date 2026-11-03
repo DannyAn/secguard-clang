@@ -195,6 +195,32 @@ skill 拿不到它，也就自动被过滤掉；同时省下该类型收敛/研�
 >   本次扫描是否产出候选。
 > - 未知类型名会被忽略并打印一条 warning（拼写错误不会静默关错类型）。
 
+### `[scan] skip_detectors` — 检测器开关（跳过指定证据检测阶段）
+
+```toml
+[scan]
+skip_detectors = ["unchecked_return", "memory_leak"]
+```
+
+`skip_detectors` 里列出的**证据检测器**（`secguard scan` 日志里 `detector timing`
+的 `detector` 名称）本次扫描整个不运行：既不产出 `security_events`，也不消耗该阶段
+耗时。它是 `[disabled_types]` 在检测阶段的对应物——`[disabled_types]` 关掉的是
+「收敛规划」，检测器本身仍会跑；`skip_detectors` 关掉的是「证据检测」，连事件都不再
+产生。
+
+适用场景：某些检测器在特定仓库上耗时高但产出为零（例如生产环境实测
+`unchecked_return` 空转 20s 产出 0 候选），按仓库关掉它，端到端扫描即可省下这段时间。
+
+> 说明：
+> - 被跳过检测器所供给的漏洞类型会得到 **0 candidate**：这是**开关**，不是「干净」。
+>   实际生效的名单回写到扫描 JSON 的 `detectors_skipped` 字段（以及 `scan.log` 的
+>   `detectors_total` 行），供编排器区分「关掉了」与「没找到」。
+> - 未知名字会被忽略并打印一条 warning（拼写错误不会静默关错检测器）。
+> - CLI 也有一次性覆盖开关：`secguard scan <path> --skip-detectors=a,b`（逗号分隔，
+>   覆盖配置文件里的列表）。
+> - 与 `[disabled_types]` 一样，这是**扫描级**配置：`scan` / `diff` / `pr` / `mr`
+>   共用同一套流水线，因此都生效。
+
 ### `[allocators]` / `[deallocators]` — 项目分配/释放函数（v0.7.4）
 
 ```toml

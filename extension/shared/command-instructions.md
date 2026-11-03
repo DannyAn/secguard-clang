@@ -378,7 +378,7 @@ straight to the structured report (`written: 0`).
 
 1. **Scan**: call the `secguard_scan` tool with the target path. It returns a
    summary (`scan_id`, `output_dir`, `candidates_by_type`, `auto_confirmed_by_type`,
-   `seeds_by_type`, `plan_errors`, `detector_errors`, `total_candidates`, and
+   `seeds_by_type`, `plan_errors`, `detector_errors`, `detectors_skipped`, `total_candidates`, and
    `index_summary` with `files_indexed` / `functions_indexed`). Record `scan_id`,
    `output_dir`, and
    the codebase scale (`files_indexed` files / `functions_indexed` functions) —
@@ -393,6 +393,9 @@ straight to the structured report (`written: 0`).
    种子事件都没发出**（该代码库真的没有这类模式，或检测器过窄）；`seeds_by_type > 0` 但
    收敛后为 0 是**过滤链把种子全部淘汰**（可能是过严）。在最终报告的观察项表里，对每个
    0 候选类型按此二分标注，不要含糊地写成"无候选"。
+   **`detectors_skipped`（非空必须说明）:** 某仓库通过 `[scan] skip_detectors` /
+   `--skip-detectors` 关掉检测器时，这些检测器供给的类型会显示 0 候选——这是**开关**，
+   不是"干净"；在观察项表里按该字段标注，不要当成"该类型没有这类模式"。
    `secguard_scan` already ran the convergence for EVERY type and wrote
    `report.md` + `candidates/` — do NOT re-run `secguard_plan` or
    `secguard_index` afterward.

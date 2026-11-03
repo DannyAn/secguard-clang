@@ -327,6 +327,7 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 		"candidates_by_type":          candidatesByType,
 		"auto_confirmed_by_type":      autoConfirmedByType,
 		"plan_errors":                 planErrors,
+		"detectors_skipped":           skippedDetectorNames(outcome.SkippedDetectors),
 		"baseline_error":              baselineError,
 		"review_session_status_error": statusUpdateError,
 		"total_candidates":            totalCandidates,

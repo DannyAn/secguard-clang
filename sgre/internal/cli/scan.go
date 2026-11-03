@@ -62,6 +62,10 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	config.SetBoundaryAutoDismissOverride(boundaryMode)
 	compileCommands := parseStringFlag(remaining, "compile-commands")
 	remaining = removeFlag(remaining, "compile-commands")
+	if skipped := parseStringFlag(remaining, "skip-detectors"); skipped != "" {
+		config.SetSkipDetectorsOverride(skipped)
+	}
+	remaining = removeFlag(remaining, "skip-detectors")
 	if len(remaining) == 0 {
 		remaining = []string{"."}
 	}
@@ -443,6 +447,7 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		"plan_errors":             planErrors,
 		"detector_errors":         detectorErrors,
 		"disabled_types":          disabledTypeNames(outcome.DisabledTypes),
+		"detectors_skipped":       skippedDetectorNames(outcome.SkippedDetectors),
 		"total_candidates":        totalCandidates,
 		"auto_confirmed_count":    totalAutoConfirmed,
 		"suppressed_count":        totalSuppressed,
@@ -617,6 +622,15 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 // disabledTypeNames renders the applied type-switch list for the scan JSON
 // envelope: an empty slice (not nil) so the field reads `[]` rather than `null`.
 func disabledTypeNames(names []string) []string {
+	if names == nil {
+		return []string{}
+	}
+	return names
+}
+
+// skippedDetectorNames renders the applied detector-switch list for the scan JSON
+// envelope, with the same empty-slice-not-null rule as disabledTypeNames.
+func skippedDetectorNames(names []string) []string {
 	if names == nil {
 		return []string{}
 	}

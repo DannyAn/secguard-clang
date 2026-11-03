@@ -360,3 +360,37 @@ indirect_call_resolution = false
 		t.Errorf("IndirectCallResolutionEnabled should be false when configured false")
 	}
 }
+
+func TestLoad_SkipDetectors(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secguard.toml")
+	content := `[scan]
+skip_detectors = ["unchecked_return", " memory_leak ", "unchecked_return"]
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	SetExplicitPath(path)
+	SetSkipDetectorsOverride("")
+	cfg := Load()
+
+	names := cfg.SkipDetectorNames()
+	if len(names) != 2 || names[0] != "unchecked_return" || names[1] != "memory_leak" {
+		t.Fatalf("SkipDetectorNames = %v, want [unchecked_return memory_leak]", names)
+	}
+	set := cfg.SkipDetectorSet()
+	if len(set) != 2 || !set["unchecked_return"] || !set["memory_leak"] {
+		t.Fatalf("SkipDetectorSet = %v", set)
+	}
+
+	// The CLI override REPLACES the configured list (a flag names exactly what
+	// this run should skip), and an empty override restores the file.
+	SetSkipDetectorsOverride("signed_compare, ,uninit")
+	if got := cfg.SkipDetectorNames(); len(got) != 2 || got[0] != "signed_compare" || got[1] != "uninit" {
+		t.Fatalf("SkipDetectorNames with override = %v, want [signed_compare uninit]", got)
+	}
+	SetSkipDetectorsOverride("")
+	if got := cfg.SkipDetectorNames(); len(got) != 2 || got[0] != "unchecked_return" {
+		t.Fatalf("SkipDetectorNames after clearing override = %v", got)
+	}
+}

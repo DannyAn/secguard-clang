@@ -57,6 +57,15 @@ type VulnTypeSpec struct {
 	// recognized a heuristic pattern (e.g. an unguarded strcpy). The AI agent
 	// then spends its depth only on the suspected tier.
 	CategoryConfidence map[string]string
+	// SharedTaintSummary declares that this type's filter chain consumes the
+	// scan-shared interprocedural taint summary (TaintSourceFilter /
+	// IntOverflowGuardFilter). It is what lets the pipeline compute that summary
+	// ONCE, before the per-type plan goroutines start, and log it as its own
+	// phase: without it, the first type to reach the cache paid the whole cost
+	// while every other taint type blocked on the same mutex, so the per-type
+	// timing log reported the same shared wall several times over (the
+	// "four types finish at the same instant" anomaly).
+	SharedTaintSummary bool
 	// CWE is the canonical CWE identifier for this vulnerability type (e.g.
 	// "CWE-476"). It is the single source of truth for the CWE↔vuln-type
 	// mapping — every consumer (report, db, cli, extension) must derive from
@@ -215,6 +224,26 @@ func ActiveVulnTypes(disabled map[string]bool) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// TaintSummaryTypes filters the given vulnerability types down to those that
+// declare the scan-shared taint summary as a filter input. It gates the
+// pipeline's prewarm so a scan whose active types do not taint-analyze pays
+// nothing, and narrows the seed-presence probe to exactly those types.
+func TaintSummaryTypes(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if spec, ok := vulnTypeRegistry[name]; ok && spec.SharedTaintSummary {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// AnyTypeUsesTaintSummary reports whether at least one of the given vulnerability
+// types declares the scan-shared taint summary as a filter input.
+func AnyTypeUsesTaintSummary(names []string) bool {
+	return len(TaintSummaryTypes(names)) > 0
 }
 
 // ValidateRegistry checks every registered vulnerability type's spec has a

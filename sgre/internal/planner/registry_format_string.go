@@ -11,6 +11,8 @@ func init() {
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "format-string",
 		FilterFactories:   chainTaint(),
+		// The taint-source filter reads the scan-shared interprocedural summary.
+		SharedTaintSummary: true,
 		BuildVerdictFacts: buildFormatStringVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{

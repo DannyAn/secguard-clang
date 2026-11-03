@@ -36,6 +36,11 @@ type taintSummary struct {
 type taintSummaryCache struct {
 	store  db.Store
 	parser *parser.Parser
+	// cfgCache is the scan-shared statement-CFG cache. The summary fixpoints run
+	// whole-body dataflow over most of the tree, so sharing the CFGs the
+	// detector stage already built removes a full rebuild of every function CFG
+	// (the fixpoints had been using a nil cache).
+	cfgCache *graph.CFGCache
 
 	mu   sync.Mutex
 	done bool
@@ -45,6 +50,13 @@ type taintSummaryCache struct {
 
 func newTaintSummaryCache(store db.Store, p *parser.Parser) *taintSummaryCache {
 	return &taintSummaryCache{store: store, parser: p}
+}
+
+// setCFGCache wires the planner's per-scan CFG cache into the summary fixpoints.
+func (c *taintSummaryCache) setCFGCache(g *graph.CFGCache) {
+	if g != nil {
+		c.cfgCache = g
+	}
 }
 
 func (c *taintSummaryCache) get(ctx context.Context) (*taintSummary, error) {
@@ -64,20 +76,24 @@ func (c *taintSummaryCache) get(ctx context.Context) (*taintSummary, error) {
 // existing methods through a throwaway receiver — those methods only touch
 // store + parser, never the candidate set or the logger.
 func (c *taintSummaryCache) compute(ctx context.Context) (*taintSummary, error) {
-	f := &TaintSourceFilter{store: c.store, parser: c.parser}
-	returnsParam, err := f.computeReturnsParam(ctx)
+	f := &TaintSourceFilter{store: c.store, parser: c.parser, cfgCache: c.cfgCache}
+	tc, err := newTaintPlanCtx(ctx, c.store, c.parser)
 	if err != nil {
 		return nil, err
 	}
-	retTainted, err := f.computeRetTainted(ctx, returnsParam)
+	returnsParam, err := f.computeReturnsParam(ctx, tc)
 	if err != nil {
 		return nil, err
 	}
-	paramTainted, err := f.computeParamTainted(ctx, retTainted, returnsParam)
+	retTainted, err := f.computeRetTainted(ctx, tc, returnsParam)
 	if err != nil {
 		return nil, err
 	}
-	callsites, err := f.computeCallsiteSummary(ctx)
+	paramTainted, err := f.computeParamTainted(ctx, tc, retTainted, returnsParam)
+	if err != nil {
+		return nil, err
+	}
+	callsites, err := f.computeCallsiteSummary(ctx, tc)
 	if err != nil {
 		return nil, err
 	}
@@ -88,6 +104,139 @@ func (c *taintSummaryCache) compute(ctx context.Context) (*taintSummary, error) 
 		callsites:    callsites,
 	}, nil
 }
+
+// taintBaseEffects is one function's intra-procedural taint effect: the gen/kill
+// facts derived from its body alone, before any callee summary is folded in.
+type taintBaseEffects struct {
+	gen  map[int][]string
+	kill map[int][]string
+}
+
+// taintPlanCtx is the per-scan input the four taint summaries share. Each
+// summary used to build its own fileParseCache — re-reading and re-walking every
+// indexed file — and re-derived taintEffects/taintCopiesFor for the same body in
+// every fixpoint iteration. The plan stage paid that cost four times per scan
+// (returnsParam, retTainted, paramTainted, the call-site census), which is the
+// shared ~21s wall the per-type plan timings were each reporting.
+//
+// A taintPlanCtx is built ONCE inside taintSummaryCache.compute and is used by a
+// single goroutine (the cache's compute), so its maps need no locking.
+type taintPlanCtx struct {
+	funcs    []*db.Function
+	fileByID map[int64]*db.File
+	cache    *fileParseCache
+	// bodies/roots are the parsed compound statement and file root per function
+	// ID; absent when the file could not be read or the function has no body.
+	bodies map[int64]parser.Node
+	roots  map[int64]parser.Node
+	// params memoizes paramsFor per function ID (a function_definition walk).
+	params map[int64]map[string]int
+	// calls and returns memoize each body's call_expression / return_statement
+	// nodes. Every summary walks them (call-graph relation, direct taint args,
+	// the call-site census, verbatim-param returns), so collecting them ONCE
+	// here removes a full AST traversal per summary per function.
+	calls   map[int64][]parser.Node
+	returns map[int64][]parser.Node
+
+	effects     map[int64]taintBaseEffects
+	copiedDFG   map[int64]map[int][]copyPair
+	withCallees map[int64]taintBaseEffects
+}
+
+func newTaintPlanCtx(ctx context.Context, store db.Store, p *parser.Parser) (*taintPlanCtx, error) {
+	funcs, err := store.ListFunctions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("taint plan: list functions: %w", err)
+	}
+	tc := &taintPlanCtx{
+		funcs:       funcs,
+		fileByID:    listFilesByID(ctx, store),
+		cache:       newFileParseCache(p),
+		bodies:      make(map[int64]parser.Node, len(funcs)),
+		roots:       make(map[int64]parser.Node, len(funcs)),
+		params:      make(map[int64]map[string]int, len(funcs)),
+		calls:       make(map[int64][]parser.Node, len(funcs)),
+		returns:     make(map[int64][]parser.Node, len(funcs)),
+		effects:     make(map[int64]taintBaseEffects, len(funcs)),
+		copiedDFG:   make(map[int64]map[int][]copyPair, len(funcs)),
+		withCallees: make(map[int64]taintBaseEffects, len(funcs)),
+	}
+	for _, fn := range funcs {
+		file := tc.fileByID[fn.FileID]
+		if file == nil {
+			continue
+		}
+		body, root := tc.cache.get(file, fn)
+		if body.Kind() != "compound_statement" {
+			continue
+		}
+		tc.bodies[fn.ID] = body
+		tc.roots[fn.ID] = root
+		tc.calls[fn.ID] = body.FindAll("call_expression")
+		tc.returns[fn.ID] = body.FindAll("return_statement")
+	}
+	return tc, nil
+}
+
+// body returns fn's parsed body, or a zero Node when it was not parseable.
+func (tc *taintPlanCtx) body(fn *db.Function) parser.Node { return tc.bodies[fn.ID] }
+
+// root returns the file root the function was parsed from.
+func (tc *taintPlanCtx) root(fn *db.Function) parser.Node { return tc.roots[fn.ID] }
+
+// paramsFor returns fn's parameter name → index map, computed at most once.
+func (tc *taintPlanCtx) paramsFor(fn *db.Function) map[string]int {
+	if p, ok := tc.params[fn.ID]; ok {
+		return p
+	}
+	p := tc.cache.paramsFor(tc.fileByID[fn.FileID], fn)
+	tc.params[fn.ID] = p
+	return p
+}
+
+// effectsFor returns fn's callee-independent taint effects, computed at most once.
+func (tc *taintPlanCtx) effectsFor(fn *db.Function) taintBaseEffects {
+	if e, ok := tc.effects[fn.ID]; ok {
+		return e
+	}
+	gen, kill := taintEffects(tc.bodies[fn.ID])
+	e := taintBaseEffects{gen: gen, kill: kill}
+	tc.effects[fn.ID] = e
+	return e
+}
+
+// dfgCopiesFor returns fn's copy pairs (passthrough/format/copy-function
+// assignments), computed at most once for a fixed returnsParam summary.
+func (tc *taintPlanCtx) dfgCopiesFor(fn *db.Function, returnsParam map[string]map[int]bool) map[int][]copyPair {
+	if c, ok := tc.copiedDFG[fn.ID]; ok {
+		return c
+	}
+	c := taintCopiesFor(tc.bodies[fn.ID], returnsParam)
+	tc.copiedDFG[fn.ID] = c
+	return c
+}
+
+// effectsWithCalleesFor returns fn's taint effects folded with the callee taint
+// summary, computed at most once for a fixed retTainted/returnsParam pair.
+func (tc *taintPlanCtx) effectsWithCalleesFor(fn *db.Function, retTainted map[string]bool, returnsParam map[string]map[int]bool) taintBaseEffects {
+	if e, ok := tc.withCallees[fn.ID]; ok {
+		return e
+	}
+	gen, kill := taintEffectsWithCallees(tc.bodies[fn.ID], retTainted, returnsParam)
+	e := taintBaseEffects{gen: gen, kill: kill}
+	tc.withCallees[fn.ID] = e
+	return e
+}
+
+// taintSummaryConsumer marks a Filter whose Apply reads the scan-shared
+// interprocedural taint summary. It is what VulnTypeSpec.SharedTaintSummary
+// asserts, and TestSharedTaintSummaryMatchesFilterChain keeps the flag and the
+// actual filter chain from drifting apart.
+type taintSummaryConsumer interface {
+	usesTaintSummary()
+}
+
+func (f *TaintSourceFilter) usesTaintSummary() {}
 
 // TaintSourceFilter converges the injection / path-traversal / format-string
 // candidate streams with the same reaching-sources flow engine as null-deref,
@@ -129,19 +278,23 @@ func (f *TaintSourceFilter) taintSummaries(ctx context.Context) (*taintSummary, 
 	if f.cache != nil {
 		return f.cache.get(ctx)
 	}
-	returnsParam, err := f.computeReturnsParam(ctx)
+	tc, err := newTaintPlanCtx(ctx, f.store, f.parser)
 	if err != nil {
 		return nil, err
 	}
-	retTainted, err := f.computeRetTainted(ctx, returnsParam)
+	returnsParam, err := f.computeReturnsParam(ctx, tc)
 	if err != nil {
 		return nil, err
 	}
-	paramTainted, err := f.computeParamTainted(ctx, retTainted, returnsParam)
+	retTainted, err := f.computeRetTainted(ctx, tc, returnsParam)
 	if err != nil {
 		return nil, err
 	}
-	callsites, err := f.computeCallsiteSummary(ctx)
+	paramTainted, err := f.computeParamTainted(ctx, tc, retTainted, returnsParam)
+	if err != nil {
+		return nil, err
+	}
+	callsites, err := f.computeCallsiteSummary(ctx, tc)
 	if err != nil {
 		return nil, err
 	}
@@ -496,62 +649,78 @@ func taintedParamsFor(cache *fileParseCache, file *db.File, fn *db.Function, tai
 // returnsParam carries the context-sensitive half: `x = g(v)` where g returns
 // its parameter verbatim is tainted iff v is tainted, so the fixpoint also
 // injects those as dataflow copies and taint-source gens.
-func (f *TaintSourceFilter) computeRetTainted(ctx context.Context, returnsParam map[string]map[int]bool) (map[string]bool, error) {
+func (f *TaintSourceFilter) computeRetTainted(ctx context.Context, tc *taintPlanCtx, returnsParam map[string]map[int]bool) (map[string]bool, error) {
 	retTainted := make(map[string]bool)
-	funcs, err := f.store.ListFunctions(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("taint ret summary: list functions: %w", err)
-	}
-
-	type funcInfo struct {
-		fn   *db.Function
-		body parser.Node
-		root parser.Node
-	}
-	infos := make([]funcInfo, 0, len(funcs))
-	cache := newFileParseCache(f.parser)
-	fileByID := listFilesByID(ctx, f.store)
-	for _, fn := range funcs {
-		file := fileByID[fn.FileID]
-		if file == nil {
-			continue
-		}
-		body, root := cache.get(file, fn)
+	infos := make([]*db.Function, 0, len(tc.funcs))
+	// callersOf indexes the functions whose body calls a given callee NAME. A
+	// function only needs re-analysis when one of its callees becomes tainted,
+	// so the fixpoint is a worklist over that relation instead of a full rescan
+	// of every function per round (the previous shape: iterations × functions
+	// whole-body flow analyses — the dominant plan-stage cost).
+	callersOf := make(map[string][]int, len(tc.funcs))
+	// directTaintReturn marks a function whose `return` directly returns a taint
+	// source (`return getenv("HOME")`). Such a body can produce taint with no
+	// assignment gen at all, so the gen-empty fast path below must not skip it.
+	directTaintReturn := make([]bool, 0, len(tc.funcs))
+	for _, fn := range tc.funcs {
+		body := tc.body(fn)
 		if body.Kind() != "compound_statement" {
 			continue
 		}
-		infos = append(infos, funcInfo{fn: fn, body: body, root: root})
-	}
-
-	// Base taint effects (independent of the callee summary) are computed once.
-	type baseEffects struct {
-		gen  map[int][]string
-		kill map[int][]string
-	}
-	base := make(map[int64]baseEffects, len(infos))
-	for _, info := range infos {
-		gen, kill := taintEffects(info.body)
-		base[info.fn.ID] = baseEffects{gen: gen, kill: kill}
-	}
-
-	for {
-		changed := false
-		for _, info := range infos {
-			if retTainted[info.fn.Name] {
-				continue // monotone: already proven to return taint
-			}
-			b := base[info.fn.ID]
-			gen := addCalleeTaintGen(info.body, b.gen, retTainted, returnsParam)
-			analyzer := newFlowAnalyzer(f.store, f.parser, f.cfgCache)
-			analyzer.dfgCopies = map[int64]map[int][]copyPair{info.fn.ID: taintCopiesFor(info.body, returnsParam)}
-			flow := analyzer.analyzeFlow(ctx, info.fn, info.body, info.root, gen, b.kill, false, false)
-			if returnsTaint(info.body, flow) {
-				retTainted[info.fn.Name] = true
-				changed = true
+		idx := len(infos)
+		infos = append(infos, fn)
+		direct := false
+		for _, ret := range tc.returns[fn.ID] {
+			for _, child := range ret.NamedChildren() {
+				if isTaintSourceExpr(child) {
+					direct = true
+				}
 			}
 		}
-		if !changed {
-			break
+		directTaintReturn = append(directTaintReturn, direct)
+		for _, call := range tc.calls[fn.ID] {
+			if name := callName(call); name != "" {
+				callersOf[name] = append(callersOf[name], idx)
+			}
+		}
+	}
+
+	queue := make([]int, len(infos))
+	inQueue := make([]bool, len(infos))
+	for i := range infos {
+		queue[i] = i
+		inQueue[i] = true
+	}
+	enqueueCallers := func(name string) {
+		for _, idx := range callersOf[name] {
+			if !inQueue[idx] {
+				inQueue[idx] = true
+				queue = append(queue, idx)
+			}
+		}
+	}
+
+	for head := 0; head < len(queue); head++ {
+		info := infos[queue[head]]
+		inQueue[queue[head]] = false
+		if retTainted[info.Name] {
+			continue // monotone: already proven to return taint
+		}
+		body := tc.body(info)
+		b := tc.effectsFor(info)
+		gen := addCalleeTaintGen(body, b.gen, retTainted, returnsParam)
+		if len(gen) == 0 && !directTaintReturn[queue[head]] {
+			// No taint source can be generated in this body with the current
+			// callee summary, so no return can carry taint. The function is
+			// re-queued if a callee it calls becomes tainted later.
+			continue
+		}
+		analyzer := newFlowAnalyzer(f.store, f.parser, f.cfgCache)
+		analyzer.dfgCopies = map[int64]map[int][]copyPair{info.ID: tc.dfgCopiesFor(info, returnsParam)}
+		flow := analyzer.analyzeFlow(ctx, info, body, tc.root(info), gen, b.kill, false, false)
+		if returnsTaint(body, flow) {
+			retTainted[info.Name] = true
+			enqueueCallers(info.Name)
 		}
 	}
 	return retTainted, nil
@@ -563,31 +732,40 @@ func (f *TaintSourceFilter) computeRetTainted(ctx context.Context, returnsParam 
 // which is a call-site (context-sensitive) property the flat retTainted summary
 // cannot express. This is the concrete 1-CFA-style step: it lets `x = id(v)`
 // propagate v's taint to x instead of being treated as an opaque call.
-func (f *TaintSourceFilter) computeReturnsParam(ctx context.Context) (map[string]map[int]bool, error) {
+func (f *TaintSourceFilter) computeReturnsParam(ctx context.Context, tc *taintPlanCtx) (map[string]map[int]bool, error) {
 	result := make(map[string]map[int]bool)
-	funcs, err := f.store.ListFunctions(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("taint returnsParam summary: list functions: %w", err)
-	}
-
+	// The two per-function facts the fixpoint re-derived on every round — the
+	// return statements' bare identifiers and their callee calls — are extracted
+	// ONCE here. A function is re-examined only when a callee it returns from
+	// gains a new parameter index (worklist), not on every round.
 	type funcInfo struct {
 		name   string
-		body   parser.Node
 		params map[string]int
+		idents []string
+		calls  []parser.Node
 	}
-	infos := make([]funcInfo, 0, len(funcs))
-	cache := newFileParseCache(f.parser)
-	fileByID := listFilesByID(ctx, f.store)
-	for _, fn := range funcs {
-		file := fileByID[fn.FileID]
-		if file == nil {
-			continue
-		}
-		body, _ := cache.get(file, fn)
+	infos := make([]funcInfo, 0, len(tc.funcs))
+	calleeCallers := make(map[string][]int, len(tc.funcs))
+	for _, fn := range tc.funcs {
+		body := tc.body(fn)
 		if body.Kind() != "compound_statement" {
 			continue
 		}
-		infos = append(infos, funcInfo{name: fn.Name, body: body, params: cache.paramsFor(file, fn)})
+		info := funcInfo{name: fn.Name, params: tc.paramsFor(fn)}
+		for _, ret := range tc.returns[fn.ID] {
+			for _, child := range ret.NamedChildren() {
+				switch child.Kind() {
+				case "identifier":
+					info.idents = append(info.idents, child.Text())
+				case "call_expression":
+					info.calls = append(info.calls, child)
+					if callee := callName(child); callee != "" {
+						calleeCallers[callee] = append(calleeCallers[callee], len(infos))
+					}
+				}
+			}
+		}
+		infos = append(infos, info)
 	}
 
 	mark := func(name string, idx int) bool {
@@ -603,14 +781,9 @@ func (f *TaintSourceFilter) computeReturnsParam(ctx context.Context) (map[string
 
 	// Base case: `return <param>` verbatim.
 	for _, info := range infos {
-		for _, ret := range info.body.FindAll("return_statement") {
-			for _, child := range ret.NamedChildren() {
-				if child.Kind() != "identifier" {
-					continue
-				}
-				if idx, ok := info.params[child.Text()]; ok {
-					mark(info.name, idx)
-				}
+		for _, ident := range info.idents {
+			if idx, ok := info.params[ident]; ok {
+				mark(info.name, idx)
 			}
 		}
 	}
@@ -620,32 +793,39 @@ func (f *TaintSourceFilter) computeReturnsParam(ctx context.Context) (map[string
 	// parameter is tainted (wrap2(s) { return id(s); }). Sets only grow, so the
 	// fixpoint terminates; it handles the multi-level passthrough the flat
 	// retTainted summary cannot.
-	for {
-		changed := false
-		for _, info := range infos {
-			for _, ret := range info.body.FindAll("return_statement") {
-				for _, child := range ret.NamedChildren() {
-					if child.Kind() != "call_expression" {
-						continue
-					}
-					callee := callName(child)
-					if callee == "" {
-						continue
-					}
-					args := callArgs(child)
-					for j := range result[callee] {
-						if j >= len(args) || args[j].Kind() != "identifier" {
-							continue
-						}
-						if idx, ok := info.params[args[j].Text()]; ok && mark(info.name, idx) {
-							changed = true
-						}
-					}
+	queue := make([]int, len(infos))
+	inQueue := make([]bool, len(infos))
+	for i := range infos {
+		queue[i] = i
+		inQueue[i] = true
+	}
+	for head := 0; head < len(queue); head++ {
+		idx := queue[head]
+		inQueue[idx] = false
+		info := infos[idx]
+		grew := false
+		for _, call := range info.calls {
+			callee := callName(call)
+			if callee == "" {
+				continue
+			}
+			args := callArgs(call)
+			for j := range result[callee] {
+				if j >= len(args) || args[j].Kind() != "identifier" {
+					continue
+				}
+				if pidx, ok := info.params[args[j].Text()]; ok && mark(info.name, pidx) {
+					grew = true
 				}
 			}
 		}
-		if !changed {
-			break
+		if grew {
+			for _, ci := range calleeCallers[info.name] {
+				if !inQueue[ci] {
+					inQueue[ci] = true
+					queue = append(queue, ci)
+				}
+			}
 		}
 	}
 
@@ -804,12 +984,12 @@ func callArgs(call parser.Node) []parser.Node {
 // iteration rebuilds every caller's flow with its already-proven tainted
 // parameters seeded at entry, so a transitive param→param chain (main → A → B)
 // propagates taint across any number of hops instead of stopping after one.
-func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted map[string]bool, returnsParam map[string]map[int]bool) (map[int64]map[int]bool, error) {
+func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, tc *taintPlanCtx, retTainted map[string]bool, returnsParam map[string]map[int]bool) (map[int64]map[int]bool, error) {
 	result := make(map[int64]map[int]bool)
 
 	// Direct taint-source arguments (f(getenv("HOME"))) produce no PARAM_BINDING
 	// variable_ref, so they are captured independently and merged first.
-	direct, err := f.computeDirectTaintParams(ctx)
+	direct, err := f.computeDirectTaintParams(ctx, tc)
 	if err != nil {
 		return nil, fmt.Errorf("taint param summary: direct taint params: %w", err)
 	}
@@ -864,93 +1044,103 @@ func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted 
 		}
 	}
 
-	// Callers that appear in a PARAM_BINDING edge, resolved once.
+	// Group the PARAM_BINDING edges by CALLER once. A caller's flow analysis is
+	// the expensive part, and it only needs re-running when the caller's own
+	// tainted-parameter set grows, so the fixpoint walks a worklist instead of
+	// re-analyzing every caller on every round.
+	type paramEdge struct {
+		calleeID int64
+		idx      int
+		name     string
+		line     int
+	}
+	edgesByCaller := make(map[int64][]paramEdge)
 	callerIDs := make(map[int64]bool)
 	for _, e := range edges {
-		if fid := argFunc[e.SrcID]; fid != 0 {
-			callerIDs[fid] = true
+		callerID := argFunc[e.SrcID]
+		if callerID == 0 {
+			continue
+		}
+		callerIDs[callerID] = true
+		edgesByCaller[callerID] = append(edgesByCaller[callerID], paramEdge{
+			calleeID: paramFunc[e.DstID],
+			idx:      paramIndex[e.DstID],
+			name:     argName[e.SrcID],
+			line:     argLine[e.SrcID],
+		})
+	}
+
+	// The per-caller body and its gen/kill/copies are re-derived from the shared
+	// taintPlanCtx (parsed once per scan) rather than re-read per caller.
+	callers := make(map[int64]*db.Function, len(callerIDs))
+	for _, fn := range tc.funcs {
+		if callerIDs[fn.ID] && tc.body(fn).Kind() == "compound_statement" {
+			callers[fn.ID] = fn
 		}
 	}
-	callerIDList := make([]int64, 0, len(callerIDs))
-	for fid := range callerIDs {
-		callerIDList = append(callerIDList, fid)
-	}
-	callerFnByID, callerFileByID := loadFuncFiles(ctx, f.store, callerIDList)
 
-	// Precompute the loop-invariant per-caller state once, outside the fixpoint:
-	// the parsed body and its taint gen/kill/copies depend only on the (fixed)
-	// summaries, not on result[fid], yet the previous version re-read and
-	// re-walked every caller file on each fixpoint iteration.
-	type callerInfo struct {
-		fn     *db.Function
-		file   *db.File
-		body   parser.Node
-		root   parser.Node
-		gen    map[int][]string
-		kill   map[int][]string
-		copies map[int][]copyPair
+	queue := make([]int64, 0, len(callers))
+	inQueue := make(map[int64]bool, len(callers))
+	for fid := range callers {
+		queue = append(queue, fid)
+		inQueue[fid] = true
 	}
-	callers := make(map[int64]*callerInfo, len(callerIDs))
-	cache := newFileParseCache(f.parser)
-	for fid := range callerIDs {
-		fn := callerFnByID[fid]
+	enqueue := func(fid int64) {
+		if _, ok := callers[fid]; !ok {
+			return
+		}
+		if !inQueue[fid] {
+			inQueue[fid] = true
+			queue = append(queue, fid)
+		}
+	}
+
+	for head := 0; head < len(queue); head++ {
+		fid := queue[head]
+		inQueue[fid] = false
+		fn := callers[fid]
 		if fn == nil {
 			continue
 		}
-		file := callerFileByID[fn.FileID]
-		if file == nil {
+		b := tc.effectsWithCalleesFor(fn, retTainted, returnsParam)
+		copies := tc.dfgCopiesFor(fn, returnsParam)
+		// Seed this caller's already-proven tainted parameters so its own
+		// parameter arguments (which may be its params) carry taint forward.
+		var seeds map[string]bool
+		if params := tc.paramsFor(fn); len(params) > 0 {
+			seeds = make(map[string]bool, len(params))
+			for name, idx := range params {
+				if result[fid][idx] || !fn.IsStatic {
+					seeds[name] = true
+				}
+			}
+			if len(seeds) == 0 {
+				seeds = nil
+			}
+		}
+		if len(b.gen) == 0 && len(copies) == 0 && len(seeds) == 0 {
+			// No taint can be generated in this body, so no argument can receive
+			// any: skip the whole CFG dataflow. Re-queued if its seed set grows.
 			continue
 		}
-		body, root := cache.get(file, fn)
-		if body.Kind() != "compound_statement" {
+		analyzer := newFlowAnalyzer(f.store, f.parser, f.cfgCache)
+		analyzer.dfgCopies = map[int64]map[int][]copyPair{fid: copies}
+		analyzer.entrySeeds = seeds
+		flow := analyzer.analyzeFlow(ctx, fn, tc.body(fn), tc.root(fn), b.gen, b.kill, false, false)
+		if flow == nil {
 			continue
 		}
-		genByLine, killByLine := taintEffectsWithCallees(body, retTainted, returnsParam)
-		callers[fid] = &callerInfo{
-			fn:     fn,
-			file:   file,
-			body:   body,
-			root:   root,
-			gen:    genByLine,
-			kill:   killByLine,
-			copies: taintCopiesFor(body, returnsParam),
-		}
-	}
-
-	for {
-		changed := false
-		callerFlows := make(map[int64]*flowResult)
-		for fid, info := range callers {
-			analyzer := newFlowAnalyzer(f.store, f.parser, f.cfgCache)
-			analyzer.dfgCopies = map[int64]map[int][]copyPair{fid: info.copies}
-			// Seed this caller's already-proven tainted parameters so its own
-			// parameter arguments (which may be its params) carry taint forward.
-			analyzer.entrySeeds = taintedParamsFor(cache, info.file, info.fn, result[fid])
-			callerFlows[fid] = analyzer.analyzeFlow(ctx, info.fn, info.body, info.root, info.gen, info.kill, false, false)
-		}
-
-		for _, e := range edges {
-			callerID := argFunc[e.SrcID]
-			calleeID := paramFunc[e.DstID]
-			idx := paramIndex[e.DstID]
-			name := argName[e.SrcID]
-			line := argLine[e.SrcID]
-			flow := callerFlows[callerID]
-			if flow == nil || name == "" {
+		for _, e := range edgesByCaller[fid] {
+			if e.name == "" || !flow.reaching(e.name, e.line) {
 				continue
 			}
-			if flow.reaching(name, line) {
-				if result[calleeID] == nil {
-					result[calleeID] = make(map[int]bool)
-				}
-				if !result[calleeID][idx] {
-					result[calleeID][idx] = true
-					changed = true
-				}
+			if result[e.calleeID] == nil {
+				result[e.calleeID] = make(map[int]bool)
 			}
-		}
-		if !changed {
-			break
+			if !result[e.calleeID][e.idx] {
+				result[e.calleeID][e.idx] = true
+				enqueue(e.calleeID)
+			}
 		}
 	}
 	return result, nil
@@ -960,28 +1150,18 @@ func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, retTainted 
 // indices that are passed a taint-source expression directly at some call site
 // (e.g. `f(getenv("HOME"))`). These arguments are call_expression / argv nodes,
 // not bare identifiers, so they are invisible to the PARAM_BINDING fixpoint.
-func (f *TaintSourceFilter) computeDirectTaintParams(ctx context.Context) (map[int64]map[int]bool, error) {
+func (f *TaintSourceFilter) computeDirectTaintParams(ctx context.Context, tc *taintPlanCtx) (map[int64]map[int]bool, error) {
 	result := make(map[int64]map[int]bool)
-	funcs, err := f.store.ListFunctions(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("direct taint params: list functions: %w", err)
-	}
-	funcByName := make(map[string][]int64, len(funcs))
-	for _, fn := range funcs {
+	funcByName := make(map[string][]int64, len(tc.funcs))
+	for _, fn := range tc.funcs {
 		funcByName[fn.Name] = append(funcByName[fn.Name], fn.ID)
 	}
-	cache := newFileParseCache(f.parser)
-	fileByID := listFilesByID(ctx, f.store)
-	for _, fn := range funcs {
-		file := fileByID[fn.FileID]
-		if file == nil {
-			continue
-		}
-		body, _ := cache.get(file, fn)
+	for _, fn := range tc.funcs {
+		body := tc.body(fn)
 		if body.Kind() != "compound_statement" {
 			continue
 		}
-		for _, call := range body.FindAll("call_expression") {
+		for _, call := range tc.calls[fn.ID] {
 			calleeIDs := funcByName[callName(call)]
 			if len(calleeIDs) == 0 {
 				continue

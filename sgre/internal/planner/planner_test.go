@@ -394,3 +394,36 @@ func TestTaintSummaryCache_ComputedOnce(t *testing.T) {
 		t.Errorf("taint summary should compute once, but ListFunctions went %d -> %d", firstCalls, cs.funcsCalls)
 	}
 }
+
+// TestSharedTaintSummaryMatchesFilterChain is the machine guard for
+// VulnTypeSpec.SharedTaintSummary: the flag asserts that the type's declared
+// filter chain reads the scan-shared interprocedural taint summary, which is
+// what gates the pipeline's one-time prewarm (and therefore the honest
+// "plan_shared_taint_summary" phase timing). A type that gains or loses a
+// taint-consuming filter must flip the flag in the same change, or the prewarm
+// silently runs for the wrong set of types.
+func TestSharedTaintSummaryMatchesFilterChain(t *testing.T) {
+	for _, name := range AllVulnTypes() {
+		spec, err := GetVulnTypeSpec(name)
+		if err != nil {
+			t.Fatalf("GetVulnTypeSpec(%q): %v", name, err)
+		}
+		uses := false
+		for _, factory := range spec.FilterFactories {
+			// Constructors only store their deps, so an empty FilterDeps is
+			// enough to ask what filter type the chain declares.
+			if _, ok := factory(FilterDeps{}).(taintSummaryConsumer); ok {
+				uses = true
+			}
+		}
+		if uses != spec.SharedTaintSummary {
+			t.Errorf("%s: SharedTaintSummary=%v but filter chain taint-summary use=%v", name, spec.SharedTaintSummary, uses)
+		}
+	}
+	if !AnyTypeUsesTaintSummary([]string{"injection", "path-traversal", "format-string", "integer-overflow"}) {
+		t.Error("AnyTypeUsesTaintSummary must report true for the four taint-consuming types")
+	}
+	if AnyTypeUsesTaintSummary([]string{"uninit", "divide-by-zero"}) {
+		t.Error("AnyTypeUsesTaintSummary must report false for types without a taint-consuming filter")
+	}
+}

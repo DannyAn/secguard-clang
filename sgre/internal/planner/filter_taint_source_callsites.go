@@ -180,7 +180,7 @@ func classForKind(kind int) string {
 // every file's address-of expressions, producing the call-site census. It is
 // a single AST pass (no fixpoint): shapes are syntactic, so callee summaries
 // cannot change them.
-func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context) (*callsiteCensus, error) {
+func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context, tc *taintPlanCtx) (*callsiteCensus, error) {
 	census := &callsiteCensus{
 		params:    make(map[int64]map[int]*argShapeCounts),
 		addrTaken: make(map[string]bool),
@@ -198,20 +198,16 @@ func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context) (*callsi
 	isStringMacro := func(name string) bool {
 		return stringMacro[name] && !nonStringMacro[name]
 	}
-	funcs, err := f.store.ListFunctions(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("callsite census: list functions: %w", err)
-	}
-	funcByName := make(map[string][]int64, len(funcs))
-	for _, fn := range funcs {
+	funcByName := make(map[string][]int64, len(tc.funcs))
+	for _, fn := range tc.funcs {
 		funcByName[fn.Name] = append(funcByName[fn.Name], fn.ID)
 	}
 	if len(funcByName) == 0 {
 		return census, nil
 	}
 
-	cache := newFileParseCache(f.parser)
-	fileByID := listFilesByID(ctx, f.store)
+	cache := tc.cache
+	fileByID := tc.fileByID
 	// A macro constant is usually defined in a header that holds no function, so
 	// the string-macro table must be built from EVERY indexed file, not only the
 	// callers' files.
@@ -240,17 +236,17 @@ func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context) (*callsi
 	// The string-macro table is complete here; publish it for the constant-path
 	// prover (a no-op for the census's own classification).
 	census.stringMacros = stringMacro
-	for _, fn := range funcs {
+	for _, fn := range tc.funcs {
 		file := fileByID[fn.FileID]
 		if file == nil {
 			continue
 		}
-		body, root := cache.get(file, fn)
+		body, root := tc.body(fn), tc.root(fn)
 		if body.Kind() != "compound_statement" {
 			continue
 		}
 
-		calls := body.FindAll("call_expression")
+		calls := tc.calls[fn.ID]
 		// Local/field string constants: an argument spelled with a variable whose
 		// EVERY write in this function is a compile-time string (a literal or a
 		// string macro) is a constant too — the census previously classified by
