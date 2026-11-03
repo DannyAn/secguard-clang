@@ -239,3 +239,29 @@ func TestSettlementWallMS(t *testing.T) {
 		t.Errorf("no mtime must yield 0, got %d", got)
 	}
 }
+
+func TestSettlementQueueWorkMS(t *testing.T) {
+	rep := subagentReport{
+		DispatchedAt: "2026-11-03T10:00:00Z",
+		StartedAt:    "2026-11-03T10:00:03Z",
+		ModTime:      "2026-11-03T10:00:08Z",
+	}
+	q, w := settlementQueueWorkMS(rep)
+	if q != 3000 || w != 5000 {
+		t.Errorf("queue/work = %d/%d, want 3000/5000", q, w)
+	}
+
+	if q, w := settlementQueueWorkMS(subagentReport{ModTime: "2026-11-03T10:00:08Z"}); q != 0 || w != 0 {
+		t.Errorf("missing timestamps must yield 0/0, got %d/%d", q, w)
+	}
+	if q, w := settlementQueueWorkMS(subagentReport{DispatchedAt: "nope", StartedAt: "also-nope"}); q != 0 || w != 0 {
+		t.Errorf("malformed timestamps must yield 0/0, got %d/%d", q, w)
+	}
+	// Negative queue (clock skew) must clamp to 0 while work stays positive.
+	q2, w2 := settlementQueueWorkMS(subagentReport{
+		DispatchedAt: "2026-11-03T10:00:05Z", StartedAt: "2026-11-03T10:00:03Z", ModTime: "2026-11-03T10:00:08Z",
+	})
+	if q2 != 0 || w2 != 5000 {
+		t.Errorf("negative queue must clamp to 0: queue=%d work=%d, want 0/5000", q2, w2)
+	}
+}

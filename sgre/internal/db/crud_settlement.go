@@ -13,14 +13,21 @@ func (s *store) UpsertSettlementStat(ctx context.Context, st *SettlementStat) er
 	if st.Status == "" {
 		st.Status = "done"
 	}
-	var wallMS interface{}
+	var wallMS, queueMS, workMS interface{}
 	if st.WallMS > 0 {
 		wallMS = st.WallMS
 	}
+	if st.QueueMS > 0 {
+		queueMS = st.QueueMS
+	}
+	if st.WorkMS > 0 {
+		workMS = st.WorkMS
+	}
 	_, err := s.exec.ExecContext(ctx,
-		`INSERT INTO settlement_stats (scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(scan_id, vuln_type, range_str, subagent_id) DO UPDATE SET
+		`INSERT INTO settlement_stats (scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(scan_id, vuln_type, range_str) DO UPDATE SET
+		   subagent_id = excluded.subagent_id,
 		   written = excluded.written,
 		   dismissed = excluded.dismissed,
 		   evidence_opens = excluded.evidence_opens,
@@ -30,10 +37,12 @@ func (s *store) UpsertSettlementStat(ctx context.Context, st *SettlementStat) er
 		   status = excluded.status,
 		   retry_count = excluded.retry_count,
 		   wall_ms = excluded.wall_ms,
+		   queue_ms = excluded.queue_ms,
+		   work_ms = excluded.work_ms,
 		   created_at = excluded.created_at`,
 		st.ScanID, st.VulnType, st.RangeStr, st.SubagentID,
 		st.Written, st.Dismissed, st.EvidenceOpens, st.SourceReads, st.RepoGreps, st.NeedsContext,
-		st.Status, st.RetryCount, wallMS, st.CreatedAt)
+		st.Status, st.RetryCount, wallMS, queueMS, workMS, st.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("db: upsert settlement stat: %w", err)
 	}
@@ -68,7 +77,7 @@ func (s *store) IncrementSettlementRetry(ctx context.Context, scanID, vulnType, 
 
 func (s *store) ListSettlementStatsByScan(ctx context.Context, scanID string) ([]*SettlementStat, error) {
 	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, created_at
+		`SELECT id, scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, created_at
 		 FROM settlement_stats WHERE scan_id = ? ORDER BY vuln_type, range_str, subagent_id`, scanID)
 	if err != nil {
 		return nil, fmt.Errorf("db: list settlement stats by scan: %w", err)
@@ -78,7 +87,7 @@ func (s *store) ListSettlementStatsByScan(ctx context.Context, scanID string) ([
 }
 
 func (s *store) ListSettlementStatsByType(ctx context.Context, vulnType string, limit int) ([]*SettlementStat, error) {
-	query := `SELECT id, scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, created_at
+	query := `SELECT id, scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, created_at
 		 FROM settlement_stats WHERE vuln_type = ? ORDER BY created_at DESC, id DESC`
 	args := []interface{}{vulnType}
 	if limit > 0 {
@@ -97,13 +106,15 @@ func scanSettlementStats(rows *sql.Rows) ([]*SettlementStat, error) {
 	var out []*SettlementStat
 	for rows.Next() {
 		st := &SettlementStat{}
-		var wallMS sql.NullInt64
+		var wallMS, queueMS, workMS sql.NullInt64
 		if err := rows.Scan(&st.ID, &st.ScanID, &st.VulnType, &st.RangeStr, &st.SubagentID,
 			&st.Written, &st.Dismissed, &st.EvidenceOpens, &st.SourceReads, &st.RepoGreps,
-			&st.NeedsContext, &st.Status, &st.RetryCount, &wallMS, &st.CreatedAt); err != nil {
+			&st.NeedsContext, &st.Status, &st.RetryCount, &wallMS, &queueMS, &workMS, &st.CreatedAt); err != nil {
 			return nil, fmt.Errorf("db: scan settlement stat: %w", err)
 		}
 		st.WallMS = wallMS.Int64
+		st.QueueMS = queueMS.Int64
+		st.WorkMS = workMS.Int64
 		out = append(out, st)
 	}
 	return out, rows.Err()

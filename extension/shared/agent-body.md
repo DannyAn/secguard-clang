@@ -655,6 +655,8 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
   "format_version": 1,
   "subagent_id": "<your id>",
   "scan_id": "<scan_id>",
+  "dispatched_at": "2026-11-03T08:49:00Z",
+  "started_at": "2026-11-03T08:49:02Z",
   "processed_types": [
     {"type": "null-deref", "range": "1-69", "cwe": "CWE-476", "written": 3, "dismissed": 1146, "source_reads": 1, "evidence_opens": 2, "repo_greps": 0}
   ],
@@ -665,6 +667,14 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
 ```
 
 **Rules:**
+- `dispatched_at` / `started_at` (optional, RFC3339): the orchestrator records when
+  it dispatched your batch (`dispatched_at`) and passes it in your dispatch prompt;
+  echo it verbatim. Record `started_at` as your own clock when you begin
+  classifying (before loading skills/evidence). Together they let the engine split
+  your settlement's wall clock into `queue_ms` (dispatch→start) and `work_ms`
+  (start→finish) so `secguard metrics` can report real per-batch work time instead
+  of the queue-inflated `wall_ms`. Omit them when the prompt did not carry a
+  dispatch timestamp — `wall_ms` remains the fallback.
 - `processed_types` and `failed_types` SHALL NOT both be empty. If you wrote
   nothing and failed nothing, you did not run — emit `failed_types` with
   `reason: "empty-output"` for every assigned type.

@@ -18,6 +18,8 @@ type subagentReport struct {
 	ScanID       string            `json:"scan_id"`
 	File         string            `json:"file"`
 	ModTime      string            `json:"mtime"`
+	DispatchedAt string            `json:"dispatched_at,omitempty"`
+	StartedAt    string            `json:"started_at,omitempty"`
 	Valid        bool              `json:"valid"`
 	Error        string            `json:"error,omitempty"`
 	Processed    []reportTypeCount `json:"processed_types,omitempty"`
@@ -82,6 +84,8 @@ func listSubagentReports(dbPath, scanID string) reportsResult {
 			FormatVersion int               `json:"format_version"`
 			SubagentID    string            `json:"subagent_id"`
 			ScanID        string            `json:"scan_id"`
+			DispatchedAt  string            `json:"dispatched_at"`
+			StartedAt     string            `json:"started_at"`
 			Processed     []reportTypeCount `json:"processed_types"`
 			Failed        []reportFailed    `json:"failed_types"`
 			NeedsContext  []json.RawMessage `json:"needs_context"`
@@ -98,6 +102,8 @@ func listSubagentReports(dbPath, scanID string) reportsResult {
 				rep.SubagentID = raw.SubagentID
 			}
 			rep.ScanID = raw.ScanID
+			rep.DispatchedAt = raw.DispatchedAt
+			rep.StartedAt = raw.StartedAt
 			rep.Processed = raw.Processed
 			rep.Failed = raw.Failed
 			rep.NeedsContext = raw.NeedsContext

@@ -377,7 +377,8 @@ type FunctionSummary struct {
 // candidate) and powers the already_covered_ranges idempotency check — both
 // computed by the engine, never by the LLM orchestrator. wall_ms is the batch
 // wall-clock when known (0 = not recorded: the settlement file carries no
-// dispatch timestamp).
+// dispatch timestamp). queue_ms/work_ms are the dispatch→start and start→finish
+// split when the report carries dispatched_at/started_at timestamps.
 type SettlementStat struct {
 	ID            int64
 	ScanID        string
@@ -393,5 +394,7 @@ type SettlementStat struct {
 	Status        string
 	RetryCount    int
 	WallMS        int64
+	QueueMS       int64
+	WorkMS        int64
 	CreatedAt     int64
 }

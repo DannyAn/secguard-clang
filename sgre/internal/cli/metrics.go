@@ -97,7 +97,11 @@ func runMetricsCmd(ctx context.Context, args []string) int {
 		WriteErrorJSON(fmt.Sprintf("scan %q has no metrics row (it may predate scan metrics, or be a diff/pr review); run 'secguard scan <path>' to record one", scanID))
 		return 1
 	}
-	_ = WriteJSON(metricsView(run))
+	view := metricsView(run)
+	if stats, err := store.ListSettlementStatsByScan(ctx, scanID); err == nil && len(stats) > 0 {
+		view["ai_stage"] = settlementAIStageMetrics(stats, run.AIDurationMs)
+	}
+	_ = WriteJSON(view)
 	return 0
 }
 

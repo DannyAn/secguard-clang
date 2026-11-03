@@ -81,7 +81,8 @@ func buildBoundedReturnSummary(ctx context.Context, store db.Store, p *parser.Pa
 // summarizeWrapper reports whether fn is a truncating wrapper and, if so, the
 // 0-based index of the parameter every return is bounded by. A candidate index
 // must agree across ALL returns: if one return is bounded by arg 1 and another by
-// arg 2, the function is left unsummarized.
+// arg 2, the function is left unsummarized. A `return 0` is neutral (bounded by
+// any non-negative capacity parameter) and does not pin the index.
 func summarizeWrapper(f *db.Function, body parser.Node, params []string, inits, assigns []parser.Node, summary boundedReturnSummary) (int, bool) {
 	if len(params) == 0 {
 		return 0, false
@@ -97,14 +98,16 @@ func summarizeWrapper(f *db.Function, body parser.Node, params []string, inits, 
 		if expr == nil {
 			return 0, false
 		}
-		pi := boundedByParam(*expr, params, assigned, summary)
-		if pi < 0 {
+		pi, ok := boundedByParam(*expr, params, assigned, summary)
+		if !ok {
 			return 0, false
 		}
-		if candidate < 0 {
-			candidate = pi
-		} else if candidate != pi {
-			return 0, false
+		if pi >= 0 {
+			if candidate < 0 {
+				candidate = pi
+			} else if candidate != pi {
+				return 0, false
+			}
 		}
 	}
 	if candidate < 0 {
@@ -113,24 +116,111 @@ func summarizeWrapper(f *db.Function, body parser.Node, params []string, inits, 
 	return candidate, true
 }
 
-// boundedByParam reports which parameter index bounds the return expression, or
-// -1. It recognizes two provable shapes:
+// boundedByParam reports which parameter index bounds the return expression. It
+// returns ok=false when the return is not provably bounded, and a negative index
+// with ok=true when the return is trivially bounded by any non-negative capacity
+// parameter (`return 0`). It recognizes the provable shapes:
 //
 //  1. `return <bounded-return-call>(..., param, ...)` — the callee's capacity
 //     argument is exactly one of f's parameters (the forwarding wrapper).
 //  2. `return local` where local is assigned once from such a call
 //     (`uint32_t n = snprintf_truncated_s(buf, size, ...); return n;`).
-func boundedByParam(expr parser.Node, params []string, assigned map[string]parser.Node, summary boundedReturnSummary) int {
+//  3. `return (x < param) ? x : param` — a min-clamp whose result is provably
+//     <= param (the manual `snprintf`-clamp wrapper).
+func boundedByParam(expr parser.Node, params []string, assigned map[string]parser.Node, summary boundedReturnSummary) (int, bool) {
 	expr = unwrapExprNode(expr)
 	switch expr.Kind() {
 	case "call_expression":
-		return forwardBoundedBy(expr, params, summary)
+		if idx := forwardBoundedBy(expr, params, summary); idx >= 0 {
+			return idx, true
+		}
+		return 0, false
 	case "identifier":
 		if v, ok := assigned[expr.Text()]; ok {
 			return boundedByParam(v, params, assigned, summary)
 		}
+	case "conditional_expression":
+		if idx := minClampParam(expr, params); idx >= 0 {
+			return idx, true
+		}
+		return 0, false
 	}
-	return -1
+	if isConstantZero(expr) {
+		return -1, true
+	}
+	return 0, false
+}
+
+// minClampParam reports whether a conditional_expression is a min-clamp bounded
+// by one of fn's parameters — `(x < p) ? x : p` (equivalently `(x <= p)`, or the
+// mirrored `(p < x) ? p : x`) — and returns that parameter's index. It returns
+// -1 for anything else (including a max-clamp, whose result can exceed p).
+func minClampParam(t parser.Node, params []string) int {
+	cond := t.ChildByFieldName("condition")
+	cons := t.ChildByFieldName("consequence")
+	alt := t.ChildByFieldName("alternative")
+	if cond == nil || cons == nil || alt == nil {
+		return -1
+	}
+	consIdx := paramIndex(*cons, params)
+	altIdx := paramIndex(*alt, params)
+	if (consIdx < 0) == (altIdx < 0) {
+		return -1 // need exactly one bare-parameter branch
+	}
+	pIdx := consIdx
+	pInConsequence := true
+	var other parser.Node
+	if consIdx < 0 {
+		pIdx = altIdx
+		pInConsequence = false
+		other = *cons
+	} else {
+		other = *alt
+	}
+	condNode := unwrapExprNode(*cond)
+	if condNode.Kind() != "binary_expression" {
+		return -1
+	}
+	op := relationalOperator(condNode)
+	if op == "" {
+		return -1
+	}
+	operands := condNode.NamedChildren()
+	if len(operands) != 2 {
+		return -1
+	}
+	pText := params[pIdx]
+	otherText := exprTextKey(other)
+	left := exprTextKey(operands[0])
+	right := exprTextKey(operands[1])
+	var pIsLeft bool
+	switch {
+	case left == pText && right == otherText:
+		pIsLeft = true
+	case left == otherText && right == pText:
+		pIsLeft = false
+	default:
+		return -1
+	}
+	// The ternary is a min-clamp only when the parameter branch is taken exactly
+	// when p is the smaller of the two operands.
+	smallOp := op == "<" || op == "<="
+	bigOp := op == ">" || op == ">="
+	var isMin bool
+	switch {
+	case pInConsequence && pIsLeft:
+		isMin = smallOp // `p < x ? p : x`
+	case pInConsequence && !pIsLeft:
+		isMin = bigOp // `x > p ? p : x`
+	case !pInConsequence && pIsLeft:
+		isMin = bigOp // `p > x ? x : p`
+	case !pInConsequence && !pIsLeft:
+		isMin = smallOp // `x < p ? x : p`
+	}
+	if !isMin {
+		return -1
+	}
+	return pIdx
 }
 
 // forwardBoundedBy resolves the parameter index a call forwards as its capacity
@@ -188,7 +278,7 @@ func singleAssignments(f *db.Function, inits, assigns []parser.Node) map[string]
 		}
 		rhs := unwrapExprNode(children[1])
 		switch rhs.Kind() {
-		case "binary_expression", "identifier", "call_expression":
+		case "binary_expression", "identifier", "call_expression", "conditional_expression":
 			out[children[0].Text()] = rhs
 		}
 	}
