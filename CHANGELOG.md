@@ -2,17 +2,6 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。所有显著变更记录于此。
 
-## [未发布]
-
-### 非证明性 hint 默认 dismissed（issue #200）
-
-生产全量扫描 null-deref 203 条 → 1 条真实、implicit-contract 184 条 → 4 条真实、uninit 140 条 → 5 条真实，低产出集中在「分析器未证明、仅 fail-open 假设」的 hint tier。本轮把这三类非证明性 tier 的默认判定收敛到收敛管道（均写入 dismissed 台账，仍可追溯；`off` 与文档保留召回最大化入口），不再让它们消耗 AI 批量：
-
-- **null-deref（boundary 扫描）**：`BoundaryFailOpenFilter` 的默认 `external` 模式在原有 `opaque-origin` / `external-unknown` / 无 witness 的 `caller-arg` 根链之外，新增预驳回 `callback-entry` 与 `assumed-return`。判定依据从「tier 白名单」改为「是否存在树内具体证据」：只有 `caller-null@` witness（真实调用点传 NULL / 转发开放参数 / 树内调用链）才保留；`cfg-proof`、`malloc-fail`、`array-buffer` 与有 witness 的 `caller-arg` 不变。`boundary_auto_dismiss="all"` 仍可再激进驳回 forwarding hop，`"off"` 仍是召回最大化逃生阀。
-- **uninit**：新增 `uninit_weak_tier` 过滤器，`init@unseen`（heap/struct 无函数内写、只靠「可能有工厂/memset/出参初始化」的弱假设）默认 dismissed；仅当检测器拿到「树内 callee 只在部分路径写该存储、调用方丢弃返回值」的跨函数条件未初始化证据时保留，并新增 `init@error-path` + `init-writer@<callee>:<line>` hint。为拿到该证据，函数摘要新增「转发写入」不动点传播（wrapper 把指针形参转发给树内 writer 时，wrapper 也按 writer 的 every/conditional 语义归类），并把 `ParamConditionalWrites` 修正为文档语义的「some 且非 every」。函数内条件写（`if (c) p->len = 1;` 后读）新增 `init@branch`，不会被误当成 `init@unseen` 驳回。
-- **implicit-contract**：E-a sibling 证据按强度分层——同文件（same-TU）sibling 对同字段的判空（含对派生局部 `tree = resp->group_data` 的判空）保留为 `evidence-kind@sibling` 并新增 `sibling-guard@<fn>:<line>`；仅本函数自判空的 `self` 与仅跨文件类型锚定的 `sibling-weak` 由 `ContractGapFilter` 默认 dismissed。这样 production 的 4 条真实（same-file sibling 判空）形状保留，而 25 条 self 与大部分跨文件类型锚定候选不再进入 AI。
-- **文档/守卫**：同步更新 null-deref / uninit / implicit-contract SKILL、agent-body、command-instructions、pr-review-instructions、hint registry 图例与 config/usage 注释；新增/更新单元测试覆盖 witness 升级、转发写入证据、same-file/self/cross-file 分层与过滤器链。
-
 ## [0.12.0] - 2026-11-02
 
 ### 生产冒烟反馈闭环（`docs/生产0.12.0版本冒烟反馈.md`）
