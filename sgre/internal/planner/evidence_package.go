@@ -479,6 +479,10 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			// allocating callee / memset / an output parameter the write-path
 			// analysis cannot see, so it gets the honest init@unseen tier.
 			// init@N + may-skip reduces the verdict to judging the loop condition.
+			// init@error-path is the stronger interprocedural conditional-uninit
+			// tier: an in-tree callee writes the storage only on some paths and
+			// the caller discards its return, so the read can see unwritten
+			// storage on the error path.
 			switch c.InitWrite {
 			case "none":
 				if c.Origin == "heap_uninit" || c.Origin == "struct_partial_uninit" {
@@ -490,6 +494,17 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 				if c.InitWriteLine > 0 {
 					parts = append(parts, fmt.Sprintf("init@%d", c.InitWriteLine))
 					parts = append(parts, "may-skip")
+				}
+			case "branch":
+				parts = append(parts, "init@branch")
+			case "cond":
+				parts = append(parts, "init@error-path")
+				if c.InitWriter != "" {
+					if c.InitWriteLine > 0 {
+						parts = append(parts, fmt.Sprintf("init-writer@%s:%d", c.InitWriter, c.InitWriteLine))
+					} else {
+						parts = append(parts, "init-writer@"+c.InitWriter)
+					}
 				}
 			}
 		case "argument-type":
@@ -620,6 +635,15 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			// structure from the row + Code Context instead of reading source.
 			if c.GuardLine > 0 {
 				parts = append(parts, fmt.Sprintf("self-guard@%d", c.GuardLine))
+			}
+			// The same-file sibling that null-checks the same field: the
+			// same-TU comparison that turns the missing guard into an omission.
+			if c.SiblingGuardFunc != "" {
+				if c.SiblingGuardLine > 0 {
+					parts = append(parts, fmt.Sprintf("sibling-guard@%s:%d", c.SiblingGuardFunc, c.SiblingGuardLine))
+				} else {
+					parts = append(parts, "sibling-guard@"+c.SiblingGuardFunc)
+				}
 			}
 		case "sizeof-misuse":
 			if c.VariableName != "" {

@@ -504,9 +504,11 @@ entry_points = [
     # "thread_entry",
 ]
 # Boundary scan (no entry point in the tree) fail-open null-deref pre-dismissal:
-# "off" (default) keeps every candidate for AI judgment; "external" drops
-# opaque/external null origins; "all" also drops caller-arg/assumed-return rows
-# with no in-tree chain. Every dropped row is counted as boundary_fail_open.
+# "off" keeps every candidate for AI judgment; "external" (default) drops the
+# non-proving tiers (opaque-origin / external-unknown / callback-entry /
+# assumed-return / unguarded caller-arg root) unless a concrete caller-null
+# witness exists; "all" also drops caller-arg forwarding hops. Every dropped row
+# is counted as boundary_fail_open.
 # boundary_auto_dismiss = "external"`)
 }
 

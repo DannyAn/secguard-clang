@@ -73,7 +73,7 @@ hint settles a row with NO open: `certain-null` / `null@cfg-proof` /
 `null@malloc-fail` / `leak@definite` + `escape@none` / a constant `idx@` past
 `cap@` / `contract@known` / `async-unsafe@` / `cast@`. Open the `Evidence` file
 ONLY for a HEURISTIC token the row cannot settle (`maybe-null` / `maybe-uninit` /
-`init@unseen` / `taint@none` / `leak@conditional` / `escape@return|store` /
+`init@error-path` / `taint@none` / `leak@conditional` / `escape@return|store` /
 non-literal `fmt-arg@` / `path-arg@`). The budget is `evidence_opens ≤ 12` per
 subagent (whole type or range). When a type genuinely needs more, STOP opening:
 settle the rest from `Source` + `Hint` with a cited token, and list the
@@ -225,9 +225,12 @@ Two kinds of hint — do NOT conflate them:
 **Heuristic observations → keep your judgment, and use the ≤5-read budget when
 the embedded context cannot settle it:**
 - `maybe-null`/`maybe-uninit` (a suspicion, not a proof),
-- `init@unseen` (no in-function write, but a cross-function factory/memset may
-  have initialized the field — the Code Context does NOT show cross-function
-  writes; check the base object's factory before confirming),
+- `init@error-path` (an in-tree callee writes the storage only on some paths
+  and the caller discards its return — `init-writer@` names the callee; read
+  the embedded body / branch and confirm when the read is reachable on the
+  skipped-write path),
+- `init@branch` (a write exists only inside a conditional branch — judge that
+  branch from the Code Context),
 - `taint@none` (no taint chain proven — judge from the `## Location` signature
   whether the argument is a public entry-point parameter or internal/trusted),
 - non-literal `fmt-arg@`/`path-arg@` (judge the argument's origin: a parameter
@@ -341,10 +344,13 @@ budget your effort, not to pre-judge the answer:
   `null@cfg-proof`/`null@malloc-fail`/`null@caller-arg`/`null@callback-entry`/`null@opaque-origin`/
   `null@assumed-return`/`null@external-unknown`
   = null-deref nullable-origin tier (CFG-proved / proven-nullable call result /
-  unproven caller argument / opaque external contract — external caller argument or
-  externally-defined field value, fail-open assumption / fail-open callee-return
+  unproven caller argument / registration-site contract / opaque external
+  contract — external caller argument or
+  externally-defined field value / fail-open callee-return
   assumption — body embedded under `## Callee Definition` / fail-open external
-  assumption), `tainted` = injection
+  assumption; a boundary scan pre-dismisses these non-proving tiers unless a
+  `caller-null@` witness exists, so a row that reaches you has either a witness
+  or a complete-program/`boundary_auto_dismiss="off"` origin), `tainted` = injection
   source, `taint@none` = the pipeline found NO taint chain reaching the sink —
   this is NOT 'proven safe': a bare parameter/global or chained call may still be
   caller-controlled, so judge the argument's origin from the signature,
@@ -376,10 +382,11 @@ budget your effort, not to pre-judge the answer:
   (the Code Context window covers it), `field@<path>` = the uninit read target
   is that member/element, NOT the base pointer, `init@none` = the detector
   PROVED a stack scalar is never written before the read (confirm from the row),
-  `init@unseen` = heap/struct storage a callee/memset/output-param may have
-  initialized (verify the init path, do NOT confirm from it alone),
-  `init@N`+`may-skip` = the only writes are loop-body-only — judge the loop
-  condition, nothing else, `expected@<type>`/`actual@<type>` =
+  `init@error-path` = an in-tree callee writes the storage only on some paths
+  and the caller discards the return (`init-writer@<callee>:<line>` names it) —
+  judge that error path, `init@branch` = a write exists only inside a
+  conditional branch — judge that branch, `init@N`+`may-skip` = the only writes
+  are loop-body-only — judge the loop condition, nothing else, `expected@<type>`/`actual@<type>` =
   the argument-type mismatch (callee-declared vs actually passed),
   `cast@<type>` = an explicit cast bridges the mismatch — judge whether it
   is an intentional ABI/opaque boundary or a papered-over reinterpretation,
@@ -612,8 +619,9 @@ positive is the worst outcome, but a `dismissed` written without a decisive fact
 real bug. Before `confirmed` you MUST have settled it from embedded evidence: a
 proved hint (`certain-null`/`null@cfg-proof`/`tainted`/constant-OOB/non-literal
 `fmt-arg@`/`cast@`) → `confirmed`; a guard / `_s` safe call / checked allocation
-/ call contract / `discard` / `src-cap@ ≤ cap@` / `init@unseen`-with-a-factory-
-or-free-in-the-Code-Context → `dismissed`. A bare parameter/global is
+/ call contract / `discard` / `src-cap@ ≤ cap@` / an `init@error-path` whose
+skipped-write path the Code Context shows unreachable / a free in the Code
+Context → `dismissed`. A bare parameter/global is
 caller-supplied by the embedded `## Location` signature — confirm from that, no
 read. Only a fact that lives in an UN-indexed location (a header macro/callee
 whose body is NOT embedded) may trigger the ≤5-read budget, and then write the

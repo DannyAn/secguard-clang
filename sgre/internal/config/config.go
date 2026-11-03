@@ -115,22 +115,20 @@ type Scan struct {
 	// BoundaryAutoDismiss controls the boundary-scan fail-open null-deref
 	// pre-dismissal layer. A boundary scan (no entry point in the tree) seeds
 	// every zero-caller pointer parameter fail-open; those candidates have no
-	// in-tree proof and the AI dismisses them (production: 0 confirmed out of
-	// 262 fail-open rows, ~99% of the AI wall-clock). Modes:
-	//   "" / "external" (default): auto-dismiss the fail-open ASSUMPTION tiers
-	//     with a provably-external null source — opaque-origin, external-unknown,
-	//     and caller-arg rooted at an unguarded external entry (zero in-tree
-	//     call sites, no in-tree address-taking). callback-entry is NOT
-	//     dismissed: its ADDR_TAKEN self-loop proves an in-tree registration, but
-	//     the graph does not record the function-pointer invocation, so the
-	//     registrar could pass NULL — a recall hole the pipeline must not close
-	//     on an assumption.
+	// in-tree proof and production triage dismisses almost all of them
+	// (0 confirmed out of 262 fail-open rows, ~99% of the AI wall-clock).
+	// Modes:
+	//   "" / "external" (default): auto-dismiss every NON-PROVING origin tier —
+	//     opaque-origin, external-unknown, callback-entry, assumed-return, and
+	//     caller-arg rooted at an unguarded external entry (zero in-tree call
+	//     sites). These are fail-open ASSUMPTIONS, not evidence. A candidate
+	//     with a concrete in-tree caller-null witness (a caller that passes
+	//     NULL or forwards an open parameter) is kept for the AI.
 	//     Every dismissal is ledgered under `boundary_fail_open` (visible, never
 	//     silently dropped), and the boundary report recommends scanning the
 	//     worktree root for a complete-program judgment.
-	//   "all": also auto-dismiss caller-arg (forwarding hop) and assumed-return
-	//     (aggressive; only for a project that accepts the boundary contract as
-	//     non-null).
+	//   "all": also auto-dismiss caller-arg forwarding hops (aggressive; only for
+	//     a project that accepts the boundary contract as non-null).
 	//   "off": no auto-dismiss (pre-0.11.6 behaviour) — every fail-open row goes
 	//     to the AI. This is the recall-maximal escape hatch.
 	BoundaryAutoDismiss string `toml:"boundary_auto_dismiss"`

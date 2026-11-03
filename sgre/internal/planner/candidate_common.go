@@ -276,22 +276,26 @@ func (c Candidate) Divisor() DivisorPayload {
 
 // ContractPayload is the typed view of the implicit-contract fields.
 type ContractPayload struct {
-	Subject      string
-	CountField   string
-	UseLine      int
-	Missing      string
-	EvidenceKind string
-	GuardLine    int
+	Subject          string
+	CountField       string
+	UseLine          int
+	Missing          string
+	EvidenceKind     string
+	GuardLine        int
+	SiblingGuardFunc string
+	SiblingGuardLine int
 }
 
 // Contract returns the implicit-contract-specific view of c.
 func (c Candidate) Contract() ContractPayload {
 	return ContractPayload{
-		Subject:      c.Subject,
-		CountField:   c.CountField,
-		UseLine:      c.UseLine,
-		Missing:      c.Missing,
-		EvidenceKind: c.EvidenceKind,
-		GuardLine:    c.GuardLine,
+		Subject:          c.Subject,
+		CountField:       c.CountField,
+		UseLine:          c.UseLine,
+		Missing:          c.Missing,
+		EvidenceKind:     c.EvidenceKind,
+		GuardLine:        c.GuardLine,
+		SiblingGuardFunc: c.SiblingGuardFunc,
+		SiblingGuardLine: c.SiblingGuardLine,
 	}
 }

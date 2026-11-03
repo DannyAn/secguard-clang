@@ -115,8 +115,8 @@ type Candidate struct {
 	// dangerous-function candidate (memcpy's third arg) and whether it is a
 	// compile-time constant or a variable — the decisive context for judging
 	// "is this banned call actually unsafe?" without reading source.
-	SizeHint string `json:"size_arg,omitempty"`
-	SizeKind string `json:"size_arg_kind,omitempty"`
+	SizeHint   string `json:"size_arg,omitempty"`
+	SizeKind   string `json:"size_arg_kind,omitempty"`
 	LocationID int64  `json:"location_id"`
 	FileID     int64  `json:"file_id"`
 	Line       int    `json:"line"`
@@ -208,10 +208,18 @@ type Candidate struct {
 	FieldPath string `json:"field_path,omitempty"`
 	// InitWrite/InitWriteLine carry the uninit detector's machine-proven
 	// write-path fact: "none" (the read target is never written before the
-	// read) or "loop" (the only writes sit inside a skippable loop body,
-	// InitWriteLine = the first write). Empty = no proven fact.
+	// read), "loop" (the only writes sit inside a skippable loop body,
+	// InitWriteLine = the first write), or "cond" (an in-tree callee writes the
+	// storage only on some paths and the caller discards its return,
+	// InitWriteLine = the call site, InitWriter = the callee). Empty = no
+	// proven fact.
 	InitWrite     string `json:"init_write,omitempty"`
 	InitWriteLine int    `json:"init_write_line,omitempty"`
+	// InitWriter names the conditional out-parameter writer that leaves the
+	// uninit storage unwritten on its error path (InitWrite "cond"). It is the
+	// interprocedural conditional-uninit evidence: the read can run on the
+	// callee's error path, where the block was never written.
+	InitWriter string `json:"init_writer,omitempty"`
 	// Array/Index/Size carry the buffer-overflow detector's resolved access
 	// (array name, index expression, element count) for the range-oob filter.
 	Array string `json:"array,omitempty"`
@@ -348,12 +356,21 @@ type Candidate struct {
 	UseLine int `json:"use_line,omitempty"`
 	// Missing names the precondition that is absent ("ptr-null").
 	Missing string `json:"missing,omitempty"`
-	// EvidenceKind is the nullable-field evidence source ("self" / "caller").
+	// EvidenceKind is the nullable-field evidence source: "sibling" (a SAME-FILE
+	// function with the same parameter struct type null-checks the field — the
+	// only tier the planner keeps), "self" (only this function checks it
+	// somewhere; non-proving, pre-dismissed), or "sibling-weak" (a type-anchored
+	// guard in ANOTHER file only; non-proving, pre-dismissed).
 	EvidenceKind string `json:"evidence_kind,omitempty"`
 	// GuardLine is the line of the same-function NULL check guarding the field
 	// (implicit-contract, "self" evidence); the deref at UseLine sits outside
 	// it. Surfaced so the classifier sees the guard structure without a read.
 	GuardLine int `json:"guard_line,omitempty"`
+	// SiblingGuardFunc/SiblingGuardLine name the same-file sibling function and
+	// the line where it null-checks the same field — the same-TU comparison that
+	// makes the missing guard an omission rather than the project's design.
+	SiblingGuardFunc string `json:"sibling_guard_func,omitempty"`
+	SiblingGuardLine int    `json:"sibling_guard_line,omitempty"`
 	// FreeLine is the free-site line for a use-after-free candidate (where the
 	// variable was freed before the use at Line).
 	FreeLine int `json:"free_line,omitempty"`

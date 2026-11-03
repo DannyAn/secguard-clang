@@ -44,6 +44,18 @@ type summaryMap map[string]*FuncSummary
 
 func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) summaryMap {
 	summaries := make(summaryMap)
+	// Per-function direct write analyses are retained so forwarded writes (a
+	// wrapper that passes its pointer parameter to an in-scan writer) can be
+	// propagated after every direct summary exists. Without that second pass a
+	// wrapper like `if (!ready) return; write_sql(sql, ...);` is graded "never
+	// writes the parameter" and the caller's conditional-uninit evidence
+	// (the real production shape) is lost.
+	type funcWriteState struct {
+		f     *db.Function
+		body  parser.Node
+		state *paramWriteState
+	}
+	var states []funcWriteState
 
 	forEachFile(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		funcDefs := root.FindAll("function_definition")
@@ -56,7 +68,12 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, l
 			params := extractFunctionParamsFrom(funcDefs, f.StartLine)
 			pointerParams := extractPointerParamsFrom(funcDefs, f.StartLine)
 
-			paramWrites, paramCondWrites := computeParamWriteStates(ctx, bodies, f, params)
+			state := computeParamWriteState(ctx, bodies, f, params)
+			paramWrites, paramCondWrites := map[int]bool{}, map[int]bool{}
+			if state != nil {
+				every, some := state.states(nil, nil)
+				paramWrites, paramCondWrites = every, conditionalOnly(every, some)
+			}
 			s := &FuncSummary{
 				ParamDirectFrees:       make(map[int]bool),
 				ParamFieldFrees:        make(map[int][]string),
@@ -89,8 +106,52 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, l
 			if len(s.ParamDirectFrees) > 0 || len(s.ParamFieldFrees) > 0 || len(s.ParamMayDirectFrees) > 0 || len(s.GlobalFrees) > 0 || len(s.ReturnStores) > 0 || len(s.ParamWrites) > 0 || len(s.ParamConditionalWrites) > 0 {
 				summaries[f.Name] = s
 			}
+			if state != nil {
+				states = append(states, funcWriteState{f: f, body: bodies[f.StartLine], state: state})
+			}
 		}
 	})
+
+	// Propagate writes through forwarded pointer parameters: a wrapper that
+	// passes its pointer parameter to an in-scan callee that writes through it
+	// also writes the caller's output on that path. The fixpoint matters for
+	// the interprocedural conditional-uninit evidence: `merge_get_sql(sql)`
+	// forwards `sql` to a writer only on the normal-data branch and returns
+	// early otherwise, so the wrapper is a CONDITIONAL writer — the shape the
+	// caller's uninit read needs. Cap the iterations: summary facts only grow,
+	// so a handful settles any realistic call depth.
+	nameCount := make(map[string]int, len(states))
+	for _, st := range states {
+		nameCount[st.f.Name]++
+	}
+	for iter := 0; iter < 5; iter++ {
+		changed := false
+		for _, st := range states {
+			if nameCount[st.f.Name] != 1 {
+				continue
+			}
+			forwardEvery, forwardSome := st.state.forwardedWriteNodes(st.body, summaries)
+			every, some := st.state.states(forwardEvery, forwardSome)
+			cond := conditionalOnly(every, some)
+			cur := summaries[st.f.Name]
+			if cur == nil {
+				if len(every) == 0 && len(cond) == 0 {
+					continue
+				}
+				summaries[st.f.Name] = &FuncSummary{ParamWrites: every, ParamConditionalWrites: cond}
+				changed = true
+				continue
+			}
+			if !boolMapsEqual(cur.ParamWrites, every) || !boolMapsEqual(cur.ParamConditionalWrites, cond) {
+				cur.ParamWrites = every
+				cur.ParamConditionalWrites = cond
+				changed = true
+			}
+		}
+		if !changed {
+			break
+		}
+	}
 
 	// Persist the out-param write facts (function_summary.summary_json) so the
 	// computed cross-function contracts survive past this detector run instead of
@@ -163,60 +224,187 @@ func intKeys(m map[int]bool) []int {
 	return out
 }
 
-// computeParamWriteStates reports, per parameter index, two facts:
-//
-//   - every: the function writes through the pointer parameter on EVERY path to
-//     exit (`*p = ...` on all paths). A caller's `&x` is always initialized.
-//   - some:  the function writes through it on at least one path. When some is
-//     true but every is false, the write is conditional (a failure path skips
-//     it), and a caller must guard the error return before using the output.
-//
-// It builds the function CFG and checks whether the exit is reachable from the
-// entry without passing a write-through statement; if it is reachable, some
-// path skips the write.
-func computeParamWriteStates(ctx context.Context, bodies map[int]parser.Node, f *db.Function, params []string) (map[int]bool, map[int]bool) {
-	every := make(map[int]bool)
-	some := make(map[int]bool)
+// paramWriteState is one function's per-parameter write-through analysis: the
+// direct (`*p = ...`) and return-forwarded (`return hook(p)`) write statements,
+// keyed by parameter index, plus the statement CFG used for the all-path check.
+// Forwarded non-return writes are supplied separately during the summary
+// fixpoint (a wrapper that hands the pointer to another in-scan writer).
+type paramWriteState struct {
+	cfg           *graph.StmtCFG
+	params        []string
+	direct        map[int]map[int]bool
+	forwardReturn map[int]map[int]bool
+	writeStmts    map[int][]parser.Node
+	// bound is the function's parameter + local declarator name set, used as
+	// the scope oracle for `(A) & x` vs `&x` disambiguation (a plain bit-and
+	// argument must not be read as a forwarded parameter pointer).
+	bound map[string]bool
+}
+
+// computeParamWriteState builds the direct write analysis for one function.
+func computeParamWriteState(ctx context.Context, bodies map[int]parser.Node, f *db.Function, params []string) *paramWriteState {
 	body := bodies[f.StartLine]
 	if body.Kind() != "compound_statement" {
-		return every, some
+		return nil
 	}
 	cfg := buildStmtCFGFromCtx(ctx, f, body)
-
+	st := &paramWriteState{
+		cfg:           cfg,
+		params:        params,
+		direct:        make(map[int]map[int]bool),
+		forwardReturn: make(map[int]map[int]bool),
+		writeStmts:    make(map[int][]parser.Node),
+		bound:         parser.FunctionBoundNamesByBody(body),
+	}
 	for idx, p := range params {
 		if p == "" {
 			continue
 		}
-		writeNodes := make(map[int]bool)
-		var writeStmts []parser.Node
 		for _, n := range cfg.Nodes {
 			if n.Kind != "stmt" {
 				continue
 			}
 			if directWritesParam(n.Stmt, p) {
-				writeNodes[n.ID] = true
-				writeStmts = append(writeStmts, n.Stmt)
+				if st.direct[idx] == nil {
+					st.direct[idx] = map[int]bool{}
+				}
+				st.direct[idx][n.ID] = true
+				st.writeStmts[idx] = append(st.writeStmts[idx], n.Stmt)
 			} else if forwardsParam(n.Stmt, p) {
-				// A forwarded pointer may be written by the delegate; count it
+				// A `return hook(p)` path writes p through the hook; it counts
 				// toward the every-path reachability (so a dispatch wrapper is
-				// not downgraded to a conditional writer), but not toward the
-				// NULL-guard check (a forward has no direct `*p` write to guard).
-				writeNodes[n.ID] = true
+				// not downgraded to a conditional writer) but has no direct
+				// `*p` write for the NULL-guard check.
+				if st.forwardReturn[idx] == nil {
+					st.forwardReturn[idx] = map[int]bool{}
+				}
+				st.forwardReturn[idx][n.ID] = true
 			}
 		}
-		if len(writeNodes) == 0 {
-			continue // never writes the param
+	}
+	return st
+}
+
+// states derives the every/some write facts from the direct analysis plus the
+// optional forwarded non-return write nodes (param index -> CFG node IDs).
+// A forwarded node is split by the callee's own reliability: a callee that
+// writes on every path makes the call an every-path write for the caller; a
+// callee that writes only on some paths makes it a may-write only.
+func (st *paramWriteState) states(forwardEvery, forwardSome map[int]map[int]bool) (every, some map[int]bool) {
+	every = make(map[int]bool)
+	some = make(map[int]bool)
+	for idx, p := range st.params {
+		if p == "" {
+			continue
+		}
+		someNodes := unionNodeIDs(st.direct[idx], st.forwardReturn[idx], forwardSome[idx])
+		if len(someNodes) == 0 {
+			continue
 		}
 		some[idx] = true
-		// "writes on all paths" iff there is NO path from entry to exit that
-		// avoids every write node. A write guarded only by a NULL-check on the
-		// pointer itself (`if (p) *p = ...`) still counts as every-path: a
-		// caller passing `&x` guarantees p is non-NULL, so the write happens.
-		if !cfg.ReachesAvoiding(cfg.Entry, writeNodes, cfg.Exit) || allNullGuardedWrites(writeStmts, p) {
+		everyNodes := unionNodeIDs(st.direct[idx], st.forwardReturn[idx], forwardEvery[idx])
+		if len(everyNodes) > 0 &&
+			(!st.cfg.ReachesAvoiding(st.cfg.Entry, everyNodes, st.cfg.Exit) || allNullGuardedWrites(st.writeStmts[idx], p)) {
 			every[idx] = true
 		}
 	}
 	return every, some
+}
+
+// forwardedWriteNodes finds calls in body that hand one of this function's
+// pointer parameters to an in-scan callee, using that callee's already-computed
+// summary to decide whether the call writes the parameter. `&p` and a bare `p`
+// both forward the parameter (the callee writes through it or into it).
+func (st *paramWriteState) forwardedWriteNodes(body parser.Node, summaries summaryMap) (every, some map[int]map[int]bool) {
+	every = make(map[int]map[int]bool)
+	some = make(map[int]map[int]bool)
+	idxByName := make(map[string]int, len(st.params))
+	for i, p := range st.params {
+		if p != "" {
+			idxByName[p] = i
+		}
+	}
+	for _, call := range body.FindAll("call_expression") {
+		cs := summaries[extractCallName(call)]
+		if cs == nil {
+			continue
+		}
+		node := st.cfg.NodeAt(call.StartLine())
+		if node == nil || node.Kind != "stmt" {
+			continue
+		}
+		for argIdx, arg := range getCallArgs(call) {
+			name := forwardedArgParam(arg, st.bound)
+			idx, ok := idxByName[name]
+			if name == "" || !ok {
+				continue
+			}
+			if cs.ParamWrites[argIdx] {
+				if every[idx] == nil {
+					every[idx] = map[int]bool{}
+				}
+				every[idx][node.ID] = true
+			}
+			if cs.ParamWrites[argIdx] || cs.ParamConditionalWrites[argIdx] {
+				if some[idx] == nil {
+					some[idx] = map[int]bool{}
+				}
+				some[idx][node.ID] = true
+			}
+		}
+	}
+	return every, some
+}
+
+// forwardedArgParam returns the parameter name an argument forwards, or "".
+// A bare identifier forwards the pointer value; `&p` forwards the variable
+// itself (a callee writing through the parameter writes p). bound is the
+// scope oracle that keeps `f((flags) & x)` from reading as an address-of.
+func forwardedArgParam(arg parser.Node, bound map[string]bool) string {
+	if arg.Kind() == "identifier" {
+		return arg.Text()
+	}
+	if target, ok := arg.AddressTakenTargetScoped(func(name string) bool { return bound[name] }); ok && target.Kind() == "identifier" {
+		return target.Text()
+	}
+	return ""
+}
+
+func unionNodeIDs(sets ...map[int]bool) map[int]bool {
+	out := make(map[int]bool)
+	for _, s := range sets {
+		for id := range s {
+			out[id] = true
+		}
+	}
+	return out
+}
+
+// conditionalOnly keeps the "some but not every" parameters: the documented
+// meaning of ParamConditionalWrites (a write on at least one path, skipped on
+// another). Keeping the every-path rows out of it is what lets a caller treat
+// a ParamWrites hit as unconditional initialization instead of also seeing the
+// same parameter as conditional.
+func conditionalOnly(every, some map[int]bool) map[int]bool {
+	out := make(map[int]bool)
+	for idx := range some {
+		if !every[idx] {
+			out[idx] = true
+		}
+	}
+	return out
+}
+
+func boolMapsEqual(a, b map[int]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 // allNullGuardedWrites reports whether every write-through statement for param

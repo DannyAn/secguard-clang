@@ -53,8 +53,32 @@ type contractCallSite struct {
 }
 
 func (f *ContractGapFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, []Dismissed, error) {
+	// Issue #200 tier policy (runs before the parser-dependent cuts so it also
+	// applies when a fixture has no parseable body): only a SAME-FILE sibling
+	// guard is strong enough to hand the classifier. A self-only scope gap has
+	// no sibling reference (production: 25/25 dismissed), and a cross-file
+	// type-anchored sibling guard is unrelated-TU evidence (the production
+	// count dominated by it was ~2% precise). Both are pre-dismissed into the
+	// ledger; the same-file `sibling` tier stays suspected for the AI.
+	kept := make([]Candidate, 0, len(candidates))
+	var dropped []Dismissed
+	remaining := make([]Candidate, 0, len(candidates))
+	for _, c := range candidates {
+		switch c.EvidenceKind {
+		case "self":
+			dropped = dismiss(dropped, c, f.Name(),
+				"self-guard-only evidence: the function's own null check does not dominate this deref and no same-file sibling proves the field is nullable (non-proving tier; auto-dismissed)")
+		case "sibling-weak":
+			dropped = dismiss(dropped, c, f.Name(),
+				"cross-file type-anchored sibling guard only: no same-file sibling shows the field is nullable (weak evidence; auto-dismissed)")
+		default:
+			remaining = append(remaining, c)
+		}
+	}
+	candidates = remaining
+
 	if f.parser == nil {
-		return candidates, nil, nil
+		return candidates, dropped, nil
 	}
 
 	byFunc := make(map[int64][]Candidate)
@@ -65,8 +89,6 @@ func (f *ContractGapFilter) Apply(ctx context.Context, candidates []Candidate) (
 	cache := newFileParseCache(f.parser)
 	callees, sites := f.buildCallerIndex(ctx, fileByID, cache)
 
-	kept := make([]Candidate, 0, len(candidates))
-	var dropped []Dismissed
 	for _, c := range candidates {
 		fn := fnByID[c.FunctionID]
 		file := fileByID[fn.FileID]

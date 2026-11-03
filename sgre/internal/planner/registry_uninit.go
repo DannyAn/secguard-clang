@@ -13,7 +13,7 @@ func init() {
 		EvidenceType:      "UNINIT_USE",
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "uninit",
-		FilterFactories:    chainUninit(),
+		FilterFactories:   chainUninit(),
 		BuildVerdictFacts: buildUninitVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{
@@ -94,6 +94,24 @@ func buildUninitVerdictFacts(c Candidate) []VerdictFact {
 			facts = append(facts, VerdictFact{
 				Token:  "may-skip",
 				Detail: "the initialization writes are loop-body-only: judge whether the loop condition can be false at entry (the Code Context window covers it); nothing else is in scope",
+			})
+		}
+	case "branch":
+		facts = append(facts, VerdictFact{
+			Token:  "init@branch",
+			Detail: "a write to the read target exists, but only inside a conditional branch (or loop body) — the read can be reached on the path that skipped it; judge that path from the Code Context",
+		})
+	case "cond":
+		detail := "the only in-tree write to the read target is a conditional out-parameter write: the callee returns on an error path without writing the storage, and the caller discards the return — the read can see unwritten storage on that path"
+		facts = append(facts, VerdictFact{Token: "init@error-path", Detail: detail})
+		if c.InitWriter != "" {
+			token := "init-writer@" + c.InitWriter
+			if c.InitWriteLine > 0 {
+				token = fmt.Sprintf("init-writer@%s:%d", c.InitWriter, c.InitWriteLine)
+			}
+			facts = append(facts, VerdictFact{
+				Token:  token,
+				Detail: "the conditional writer's call site — its body is embedded when in-scan; verify the early-return path that skips the write and whether the read is reachable on it",
 			})
 		}
 	}

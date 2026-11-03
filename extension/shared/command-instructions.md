@@ -313,12 +313,13 @@ NOT conflate them:
   placeholder/test.
 - **Heuristic observations → keep your judgment** (the ≤5-read budget is the
   backstop when the embedded context cannot settle them): `maybe-null`/
-  `maybe-uninit`, `init@unseen` (a cross-function factory/memset may have
-  initialized the field — the Code Context does NOT show cross-function writes),
-  `taint@none` (judge from the signature whether the argument is a public
-  entry-point parameter or internal/trusted), non-literal `fmt-arg@`/`path-arg@`
-  (judge the argument's origin), `sanitizer@` (complete whitelist → dismiss,
-  partial blacklist → confirm).
+  `maybe-uninit`, `init@error-path` (an in-tree callee writes the storage only
+  on some paths and the caller discards its return — `init-writer@` names the
+  callee; judge that skipped-write path), `init@branch` (a write exists only
+  inside a conditional branch), `taint@none` (judge from the signature whether
+  the argument is a public entry-point parameter or internal/trusted),
+  non-literal `fmt-arg@`/`path-arg@` (judge the argument's origin), `sanitizer@`
+  (complete whitelist → dismiss, partial blacklist → confirm).
 
 A heuristic hint that the embedded context cannot settle is a legitimate use of
 the ≤5-turn source-read budget (the WHOLE type's budget, no second round); then
@@ -433,7 +434,7 @@ straight to the structured report (`written: 0`).
      (matches the evidence) or dismiss (guarded/different) from the table itself.
      Do NOT read source or the candidate file. Batch all confirmed verdicts into
      one write call.
-   - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null` (non-null-deref types)/`null@cfg-proof`/`null@malloc-fail`/`null@caller-arg`/`null@callback-entry`/`null@opaque-origin`/`null@assumed-return`/`null@external-unknown`/`array-buffer@<count-field>` (null-deref origin tier; `null@callback-entry` = function registered via function-pointer (ADDR_TAKEN) with zero direct call sites — parameter nullability bound to registration-site context, verify the registrar passes non-null (dismiss) or can pass NULL (confirm); `array-buffer@` = a count-gated array buffer — `count == 0 ⇒ buffer NULL/empty`, confirm when the chain dereferences it without checking the count field)/`chain-root@<fn>`+`sibling-callers@<fn1,fn2>` (the candidate's caller chain + the OTHER chains that also call the same function — a guard on a sibling chain does NOT protect this candidate)/`tainted`/`taint@none`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`macro@<name>`/`threads@<fn>`/`instances@N`/`write@N`/`mutex@<name>`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`arg@<expr>`/`may-free`/`reason@<text>`/`key-size@N` (crypto-misuse)/`buf@<name>`/`cap@N`/`idx@<expr>`/`src-cap@N` (buffer-overflow/out-of-bounds)/`alloc@N`/`acquire@N`/`leak@definite`/`leak@conditional`/`escape@none|store|return`/`free@N,M` (leaks)/`range@<interval>`/`callers@<census>` (divide-by-zero)/`callsites@<census>` (format-string/path-traversal; `N:all-literal` = every in-tree caller passes a compile-time constant)/`origin@<kind>`/`decl@N`/`field@<path>`/`init@none`/`init@unseen`/`init@N`+`may-skip` (uninit; `init@none` = machine-proved never-written stack scalar, `init@unseen` = heap/struct storage a callee/memset/output-param may have initialized — verify the init path, `may-skip` = the only writes are loop-body-only — judge the loop condition)/`expected@<type>`/`actual@<type>`/`cast@<type>` (argument-type/data-representation)/`fmt-arg@<expr>` (format-string)/`path-arg@<expr>` (path-traversal)/`value-shape@<masked>` (hardcoded-secret)/`async-unsafe@<fn>` (signal-handler)/`subject@<name>`/`count-field@<field>`/`evidence-kind@<kind>` (implicit-contract/sizeof-misuse)/`cond@<callee>` (double-free)); for divide-by-zero a `divisor@bare` row is settled from `Source` alone (no evidence open). When the hint is insufficient, open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source, a `contract@unknown` unchecked-return candidate embeds its callee body under `## Callee Definition`, and a null-deref `callee@` candidate embeds the dereferenced callee's body there too) and, if STILL insufficient, a raw source read within the ≤5-read budget — then classify. Only after spending that budget may you write `dismissed` (with a cited reason); never write `dismissed` without reading when the hint was insufficient. A `macro-context` or `macro@<name>` hint means a macro is in play — read the embedded `## Macro Definition` (or `secguard_def` when it is not embedded) and verify the macro before `confirmed`; never grep the repo for it.
+   - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null` (non-null-deref types)/`null@cfg-proof`/`null@malloc-fail`/`null@caller-arg`/`null@callback-entry`/`null@opaque-origin`/`null@assumed-return`/`null@external-unknown`/`array-buffer@<count-field>` (null-deref origin tier; `null@callback-entry` = function registered via function-pointer (ADDR_TAKEN) with zero direct call sites — parameter nullability bound to the registration-site context; a boundary scan pre-dismisses it unless a `caller-null@` witness exists; `array-buffer@` = a count-gated array buffer — `count == 0 ⇒ buffer NULL/empty`, confirm when the chain dereferences it without checking the count field)/`chain-root@<fn>`+`sibling-callers@<fn1,fn2>` (the candidate's caller chain + the OTHER chains that also call the same function — a guard on a sibling chain does NOT protect this candidate)/`tainted`/`taint@none`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`macro@<name>`/`threads@<fn>`/`instances@N`/`write@N`/`mutex@<name>`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`arg@<expr>`/`may-free`/`reason@<text>`/`key-size@N` (crypto-misuse)/`buf@<name>`/`cap@N`/`idx@<expr>`/`src-cap@N` (buffer-overflow/out-of-bounds)/`alloc@N`/`acquire@N`/`leak@definite`/`leak@conditional`/`escape@none|store|return`/`free@N,M` (leaks)/`range@<interval>`/`callers@<census>` (divide-by-zero)/`callsites@<census>` (format-string/path-traversal; `N:all-literal` = every in-tree caller passes a compile-time constant)/`origin@<kind>`/`decl@N`/`field@<path>`/`init@none`/`init@error-path`/`init-writer@<callee>:<line>`/`init@branch`/`init@N`+`may-skip` (uninit; `init@none` = machine-proved never-written stack scalar, `init@error-path` = an in-tree callee's early return skips the write and the caller discards the return — judge that path, `may-skip` = the only writes are loop-body-only — judge the loop condition)/`expected@<type>`/`actual@<type>`/`cast@<type>` (argument-type/data-representation)/`fmt-arg@<expr>` (format-string)/`path-arg@<expr>` (path-traversal)/`value-shape@<masked>` (hardcoded-secret)/`async-unsafe@<fn>` (signal-handler)/`subject@<name>`/`count-field@<field>`/`evidence-kind@<kind>`/`sibling-guard@<fn>:<line>` (implicit-contract/sizeof-misuse; only `evidence-kind@sibling` — a same-file sibling — is kept, `self`/`sibling-weak` are pre-dismissed)/`cond@<callee>` (double-free)); for divide-by-zero a `divisor@bare` row is settled from `Source` alone (no evidence open). When the hint is insufficient, open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source, a `contract@unknown` unchecked-return candidate embeds its callee body under `## Callee Definition`, and a null-deref `callee@` candidate embeds the dereferenced callee's body there too) and, if STILL insufficient, a raw source read within the ≤5-read budget — then classify. Only after spending that budget may you write `dismissed` (with a cited reason); never write `dismissed` without reading when the hint was insufficient. A `macro-context` or `macro@<name>` hint means a macro is in play — read the embedded `## Macro Definition` (or `secguard_def` when it is not embedded) and verify the macro before `confirmed`; never grep the repo for it.
     Write **confirmed** findings in ONE batch: write `<tmpdir>/<type>.json`
     containing only confirmed findings with the Write tool, then
     `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
@@ -522,7 +523,7 @@ straight to the structured report (`written: 0`).
    `_index.md` has a `Source` column per candidate (the exact statement), a `Hint`
    column (the pipeline's precomputed verdict facts: `src@N`/`certain-null`/
    `maybe-null` (non-null-deref types)/`null@cfg-proof`/`null@malloc-fail`/
-   `null@caller-arg`/`null@callback-entry`/`null@opaque-origin`/`null@assumed-return`/`null@external-unknown`/`array-buffer@<count-field>` (null-deref origin tier; `null@callback-entry` = function registered via function-pointer (ADDR_TAKEN) — parameter nullability bound to registration-site context; `array-buffer@` = a count-gated array buffer — `count == 0 ⇒ buffer NULL/empty`, confirm when the chain dereferences it without checking the count field)/`chain-root@<fn>`+`sibling-callers@<fn1,fn2>` (the candidate's caller chain + the OTHER chains that also call the same function — a guard on a sibling chain does NOT protect this candidate)/`tainted`/`taint@none`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`macro@<name>`/`threads@<fn>`/`write@N`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`reason@<text>`/`key-size@N`/`buf@<name>`/`cap@N`/`idx@<expr>`/`src-cap@N`/`alloc@N`/`acquire@N`/`leak@definite`/`leak@conditional`/`escape@none|store|return`/`range@<interval>`/`callers@<census>`/`callsites@<census>`/`origin@<kind>`/`decl@N`/`field@<path>`/`init@none`/`init@unseen`/`init@N`+`may-skip`/`expected@<type>`/`actual@<type>`/`cast@<type>`/`fmt-arg@<expr>`/`path-arg@<expr>`/`value-shape@<masked>`/`async-unsafe@<fn>`/`subject@<name>`/`count-field@<field>`/`evidence-kind@<kind>`/`cond@<callee>`), plus an `Evidence` column naming the exact
+   `null@caller-arg`/`null@callback-entry`/`null@opaque-origin`/`null@assumed-return`/`null@external-unknown`/`array-buffer@<count-field>` (null-deref origin tier; `null@callback-entry` = function registered via function-pointer (ADDR_TAKEN) — parameter nullability bound to the registration-site context (pre-dismissed unless a `caller-null@` witness exists); `array-buffer@` = a count-gated array buffer — `count == 0 ⇒ buffer NULL/empty`, confirm when the chain dereferences it without checking the count field)/`chain-root@<fn>`+`sibling-callers@<fn1,fn2>` (the candidate's caller chain + the OTHER chains that also call the same function — a guard on a sibling chain does NOT protect this candidate)/`tainted`/`taint@none`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`macro@<name>`/`threads@<fn>`/`write@N`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`reason@<text>`/`key-size@N`/`buf@<name>`/`cap@N`/`idx@<expr>`/`src-cap@N`/`alloc@N`/`acquire@N`/`leak@definite`/`leak@conditional`/`escape@none|store|return`/`range@<interval>`/`callers@<census>`/`callsites@<census>`/`origin@<kind>`/`decl@N`/`field@<path>`/`init@none`/`init@error-path`/`init@branch`/`init@N`+`may-skip`/`expected@<type>`/`actual@<type>`/`cast@<type>`/`fmt-arg@<expr>`/`path-arg@<expr>`/`value-shape@<masked>`/`async-unsafe@<fn>`/`subject@<name>`/`count-field@<field>`/`evidence-kind@<kind>`/`sibling-guard@<fn>:<line>`/`cond@<callee>`), plus an `Evidence` column naming the exact
    candidate file, and each candidate file has a `## Code Context` block — do NOT
    issue per-candidate source READs (that is the tens-of-minutes cost). Read ONLY
    your type's `_index.md`, never the whole report.md. For a ranged batch
@@ -555,20 +556,26 @@ straight to the structured report (`written: 0`).
        `weak-guard` = partial guard, `certain-uninit`/`maybe-uninit` = uninit tier,
        `field@<path>` = the uninit read target is that member/element, NOT the base
        pointer, `init@none` = the detector PROVED a stack scalar is never written
-       before the read (confirm from the row), `init@unseen` = heap/struct storage a
-       callee/memset/output-param may have initialized (verify the init path, do NOT
-       confirm from it alone), `init@N`+`may-skip` = the only writes are
+       before the read (confirm from the row), `init@error-path` =
+       interprocedural conditional uninit: an in-tree callee writes the storage
+       only on some paths (its early return skips the write) and the caller
+       discards the return — `init-writer@<callee>:<line>` names it; judge that
+       error path, `init@branch` = a write exists only inside a conditional
+       branch — judge that branch, `init@N`+`may-skip` = the only writes are
        loop-body-only — judge the loop condition, nothing else,
       `null@cfg-proof` = CFG-proved NULL reaches the deref (machine-proved),
       `null@malloc-fail` = proven-nullable call result (allocator / libc /
       return-NULL callee; `callee@` names an embedded body when defined in scan),
        `null@caller-arg` = unproven caller argument, `null@opaque-origin` =
        opaque external contract (an external caller's argument / a field value of
-       an externally-defined type — fail-open assumption, judge the external
-       contract), `null@assumed-return` = fail-open callee-return assumption (the
-       callee returns a parameter / field / unknown call; its body is embedded
-       under `## Callee Definition` — judge it there), `null@external-unknown` =
-       fail-open external assumption — verify or dismiss,
+       an externally-defined type — fail-open assumption; a boundary scan
+       pre-dismisses it unless a `caller-null@` witness exists), `null@assumed-return`
+       = fail-open callee-return assumption (the callee returns a parameter /
+       field / unknown call; pre-dismissed unless a `caller-null@` witness
+       exists, and if it reaches you its body is embedded under
+       `## Callee Definition` — judge it there), `null@external-unknown` =
+       fail-open external assumption — pre-dismissed unless witnessed; otherwise
+       verify or dismiss,
        `array-buffer@<count-field>` = a count-gated array buffer (`tree =
        (T *)(resp->group_data)` gated by `resp->group_num`) — `count == 0 ⇒ buffer
        NULL/empty`, so a dereference on a chain that never checks the count field
@@ -620,10 +627,10 @@ straight to the structured report (`written: 0`).
       usually settles the verdict with no
       file open. A decisive hint is a verdict:
       `contract@unknown` / `macro-context` / `maybe-null` (no provable source)
-      → `dismissed` from the row, citing the token; `init@unseen` and
-      `taint@none` narrow the question to "was the field initialized by a
-      callee?" / "is the argument caller-supplied?" — judge that from the
-      embedded signature/context. Only when the row has NO decisive or narrowing
+      → `dismissed` from the row, citing the token; `init@error-path` and
+      `taint@none` narrow the question to "is the read reachable on the
+      callee's skipped-write path?" / "is the argument caller-supplied?" —
+      judge that from the embedded signature/context. Only when the row has NO decisive or narrowing
       fact do you open the source (within the ≤5 source-read budget) to settle
       it, then write the verdict with a cited reason — never write `dismissed`
       without a decisive/narrowing fact AND without reading.
@@ -845,7 +852,7 @@ straight to the structured report (`written: 0`).
 
       | CWE | premise the machine proof assumes | dismiss when |
       |---|---|---|
-      | CWE-457 uninit | `certain-uninit` / `init@none` = "never written" | the variable is written by a macro (`macro-context` in its hints, or its name appears in a macro invocation in the window), is a block-scope `extern`/`static`, the struct is written field-by-field before the read. A row whose hints already carry `init@unseen` contradicts the `init@none` premise → dismiss citing the token. A row passed as `&var` to an IN-SCAN callee is dismissed only when that callee's body writes `*var` (cite file:line); a callee outside the scan stays `unverified` |
+      | CWE-457 uninit | `certain-uninit` / `init@none` = "never written" | the variable is written by a macro (`macro-context` in its hints, or its name appears in a macro invocation in the window), is a block-scope `extern`/`static`, the struct is written field-by-field before the read. A row whose hints carry `init@branch`/`init@error-path` contradicts the `init@none` premise → dismiss citing the token. A row passed as `&var` to an IN-SCAN callee is dismissed only when that callee's body writes `*var` (cite file:line); a callee outside the scan stays `unverified` |
       | CWE-476 null-deref | `null@cfg-proof` = "NULL reaches on every path" | the dereference sits in a macro that may assign the pointer (an iteration macro's loop header) |
       | CWE-134 format-string | a non-literal format reaches a sink | every in-tree caller of the format parameter passes a literal (`callsites@N:all-literal`) |
       | CWE-369 divide-by-zero | a proved-zero / non-zero-constant divisor | a zero guard sits in the ±8-line window before the division |

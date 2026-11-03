@@ -3,6 +3,7 @@ package planner
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // BoundaryFailOpenFilter pre-dismisses the boundary-scan null-deref flood: in a
@@ -11,8 +12,15 @@ import (
 // Those rows carry no in-tree caller/callee proof; the AI can only re-derive the
 // same "external contract" judgment for each one. They are dropped here (and
 // counted in the dismissed ledger as boundary_fail_open) instead of consuming an
-// AI batch. A row with an in-tree caller chain, a machine-proven tier, or an
-// array-buffer count field is left for the AI.
+// AI batch.
+//
+// The dismissal is tier-sensitive: a NON-PROVING origin tier (`opaque-origin`,
+// `external-unknown`, `callback-entry`, `assumed-return`, an unguarded open
+// caller-arg root) is a fail-open ASSUMPTION, not evidence, and is dismissed
+// unless the candidate carries a concrete in-tree caller-null witness (a caller
+// that passes NULL / forwards an open parameter, or an in-tree caller chain).
+// Machine-proven tiers (`cfg-proof`, `malloc-fail`), a count-gated
+// `array-buffer`, and a witnessed caller-arg stay for the AI.
 type BoundaryFailOpenFilter struct {
 	mode string
 }
@@ -42,7 +50,7 @@ func (f *BoundaryFailOpenFilter) Apply(ctx context.Context, candidates []Candida
 			VariableName: c.VariableName,
 			Line:         c.Line,
 			Filter:       f.Name(),
-			Reason:       fmt.Sprintf("boundary scan: fail-open null origin %q has no in-tree caller/callee proof (auto-dismissed; scan the worktree root or set [scan].boundary_auto_dismiss=\"off\" to judge it)", c.NullOriginTier),
+			Reason:       fmt.Sprintf("boundary scan: non-proving null origin %q has no concrete in-tree caller-null witness (auto-dismissed; scan the worktree root or set [scan].boundary_auto_dismiss=\"off\" to judge it)", c.NullOriginTier),
 		})
 	}
 	return kept, dropped, nil
@@ -56,36 +64,52 @@ func (f *BoundaryFailOpenFilter) keep(c Candidate) bool {
 		return true
 	}
 	switch c.NullOriginTier {
-	case "opaque-origin", "external-unknown":
-		// No in-tree caller/callee proof: the null source is an out-of-tree
-		// contract (an external caller's argument, a field of an externally
-		// defined type, an unproven external call). Fail-open assumption, not
-		// evidence — pre-dismiss it into the ledger.
-		return false
-	case "caller-arg", "assumed-return":
-		// A caller-arg candidate whose open chain is rooted at an UNGUARDED
-		// external entry (ChainKind "root", witness "the value flows from an
-		// unguarded external entry") carries no concrete NULL witness — it is
-		// the same fail-open assumption as opaque-origin, so it is dismissed
-		// here too. A concrete caller ("caller X passes NULL") or a forwarding
-		// hop ("caller X forwards Y") retains an in-tree caller detail the AI
-		// can judge, so the default ("external") keeps it and only "all" drops
-		// it. assumed-return never carries ChainKind, so it stays on the
-		// default/"all" split unchanged.
-		if c.ChainKind == "root" {
+	case "opaque-origin", "external-unknown", "callback-entry", "assumed-return":
+		// A fail-open ASSUMPTION, not evidence:
+		//   - opaque-origin / external-unknown: the null source is an out-of-tree
+		//     contract (an external caller's argument, a field of an externally
+		//     defined type, an unproven external call);
+		//   - callback-entry: the function is registered via a function pointer
+		//     (ADDR_TAKEN) with zero direct call sites, so the pipeline cannot
+		//     bind the registrar's ctx argument — the parameter nullability is an
+		//     external registration contract the tree cannot see;
+		//   - assumed-return: an in-scan callee graded maybe-null only by the
+		//     fail-open inter-procedural assumption.
+		// Production triage: these tiers dominate the candidate count and are
+		// almost always negated by the framework contract. A row that DOES have
+		// concrete evidence (an actual caller-null witness) was reclassified to
+		// caller-arg by NullableSourceFilter; keep it if a detail slipped through
+		// with this tier.
+		return hasConcreteCallerNullWitness(c)
+	case "caller-arg":
+		// A caller-arg candidate is only evidence when a caller-null witness
+		// exists: a literal NULL argument ("caller X passes NULL"), a forwarding
+		// hop ("caller X forwards Y from an unguarded entry chain"), or the
+		// caller chain itself. An open chain rooted at a zero-call-site external
+		// entry ("the value flows from an unguarded external entry") is the same
+		// fail-open assumption as opaque-origin, so it is dismissed. "all" mode
+		// also drops the forwarding-hop rows (a project that accepts the boundary
+		// contract as non-null).
+		if c.ChainKind == "root" || !hasConcreteCallerNullWitness(c) {
 			return false
 		}
 		return f.mode != "all"
 	default:
-		// cfg-proof / malloc-fail / array-buffer / callback-entry. The first
-		// three are machine-proven or need a chain judgment — never pre-dismiss.
-		// callback-entry (ADDR_TAKEN, zero direct call sites) is DELIBERATELY
-		// kept too: the function IS registered in-tree (that is what the
-		// ADDR_TAKEN self-loop proves), but the graph does NOT record the
-		// function-pointer invocation site, so the pipeline cannot prove the
-		// registrar/invoker passes a non-null argument. A registrar that passes
-		// NULL is a real defect, so dismissing it here would be a recall hole.
-		// It stays suspected for the AI (and `off` mode surfaces it verbatim).
+		// cfg-proof / malloc-fail / array-buffer: machine-proven, or a structural
+		// chain fact the AI must judge — never pre-dismiss.
 		return true
 	}
+}
+
+// hasConcreteCallerNullWitness reports whether a candidate carries a real
+// in-tree caller fact rather than a zero-call-site/registration-site
+// assumption. A forwarding hop (ChainKind "hop") and a "caller <name> ..."
+// detail both name an actual call site; the fail-open root detail ("the value
+// flows from an unguarded external entry") and the callback registration detail
+// ("function ... is registered via a function-pointer") do not.
+func hasConcreteCallerNullWitness(c Candidate) bool {
+	if c.ChainKind == "hop" {
+		return true
+	}
+	return strings.HasPrefix(c.CallerNullDetail, "caller ")
 }

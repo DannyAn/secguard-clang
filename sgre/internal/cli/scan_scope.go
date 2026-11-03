@@ -40,12 +40,13 @@ func scanScope(targetPath string, funcs []*db.Function) map[string]interface{} {
 		scope["mode"] = "boundary"
 		scope["hint"] = "no entry point (main) in the scanned tree and it is a subtree of the git worktree " +
 			worktree + " — every boundary pointer parameter is treated as an external caller's argument (fail-open). " +
-			"Scan the worktree root for a complete-program result, or set [scan] boundary_auto_dismiss = \"external\" " +
-			"(or \"all\") in secguard.toml to pre-dismiss the fail-open null-deref rows instead of spending AI budget on them."
+			"Scan the worktree root for a complete-program result; non-proving fail-open null-deref rows are " +
+			"pre-dismissed by default (boundary_auto_dismiss=\"external\"), and \"off\" restores the recall-maximal behaviour."
 	default:
 		scope["mode"] = "boundary"
 		scope["hint"] = "no entry point (main) in the scanned tree — every boundary pointer parameter is treated as an external caller's argument (fail-open). " +
-			"Scan the enclosing worktree root, or set [scan] boundary_auto_dismiss = \"external\" (or \"all\") in secguard.toml to pre-dismiss the fail-open null-deref rows."
+			"Scan the enclosing worktree root for a complete-program result; non-proving fail-open null-deref rows are " +
+			"pre-dismissed by default (boundary_auto_dismiss=\"external\"), and \"off\" restores the recall-maximal behaviour."
 	}
 	return scope
 }
@@ -81,10 +82,11 @@ func writeBoundaryConfigHint(scanDir, target, worktree string, dismissible int) 
 	b.WriteString("# Pre-dismiss the fail-open null-deref rows instead of sending them to AI:\n")
 	if dismissible > 0 {
 		b.WriteString(fmt.Sprintf("#    This scan produced %d fail-open null-deref candidates that carry no in-tree\n", dismissible))
-		b.WriteString("#    null proof (external-unknown / opaque-origin / unguarded external entry).\n")
+		b.WriteString("#    caller-null witness (external-unknown / opaque-origin / callback-entry /\n")
+		b.WriteString("#    assumed-return / unguarded external entry).\n")
 		b.WriteString("#    boundary_auto_dismiss=\"external\" pre-dismisses them into the dismissed ledger\n")
-		b.WriteString("#    (still visible, never silently dropped) and keeps callback-entry / caller-arg-\n")
-		b.WriteString("#    with-witness / assumed-return / malloc-fail / cfg-proof rows for AI.\n")
+		b.WriteString("#    (still visible, never silently dropped) and keeps caller-arg-with-witness /\n")
+		b.WriteString("#    array-buffer / malloc-fail / cfg-proof rows for AI.\n")
 	}
 	b.WriteString("# boundary_auto_dismiss = \"external\"  # or \"all\"\n\n")
 	b.WriteString("# Framework-guaranteed non-null pointer parameters (dispatch user_data, reply_msg, ...):\n")

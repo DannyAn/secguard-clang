@@ -11,11 +11,13 @@ func boundaryCandidate(tier string) Candidate {
 
 func TestBoundaryFailOpenFilterExternalMode(t *testing.T) {
 	f := NewBoundaryFailOpenFilter(true, "external")
+	witness := boundaryCandidate("caller-arg")
+	witness.CallerNullDetail = "caller caller_of_f passes NULL"
 	kept, dropped, err := f.Apply(context.Background(), []Candidate{
 		boundaryCandidate("opaque-origin"),
 		boundaryCandidate("external-unknown"),
 		boundaryCandidate("callback-entry"),
-		boundaryCandidate("caller-arg"),
+		witness,
 		boundaryCandidate("assumed-return"),
 		boundaryCandidate("array-buffer"),
 		boundaryCandidate("cfg-proof"),
@@ -24,8 +26,8 @@ func TestBoundaryFailOpenFilterExternalMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(dropped) != 2 || len(kept) != 6 {
-		t.Fatalf("external mode kept=%d dropped=%d, want 6/2 (callback-entry kept, recall-safe)", len(kept), len(dropped))
+	if len(dropped) != 4 || len(kept) != 4 {
+		t.Fatalf("external mode kept=%d dropped=%d, want 4/4 (all non-proving tiers dismissed)", len(kept), len(dropped))
 	}
 	for _, d := range dropped {
 		if d.Filter != "boundary_fail_open" || d.Reason == "" {
@@ -34,23 +36,57 @@ func TestBoundaryFailOpenFilterExternalMode(t *testing.T) {
 	}
 }
 
-// TestBoundaryFailOpenFilterKeepsCallbackEntry pins the recall boundary: a
-// callback-entry candidate (ADDR_TAKEN, zero direct call sites) is NOT
-// pre-dismissed in ANY mode, because the graph does not record the
-// function-pointer invocation site, so the pipeline cannot prove the registrar
-// passes a non-null argument. A registrar that passes NULL is a real defect.
-func TestBoundaryFailOpenFilterKeepsCallbackEntry(t *testing.T) {
+// TestBoundaryFailOpenFilterDismissesNonProvingTiers pins the issue #200 policy:
+// callback-entry and assumed-return are fail-open assumptions too and are
+// pre-dismissed in the default mode, while a machine-proven tier survives.
+func TestBoundaryFailOpenFilterDismissesNonProvingTiers(t *testing.T) {
 	for _, mode := range []string{"external", "all"} {
 		f := NewBoundaryFailOpenFilter(true, mode)
-		c := boundaryCandidate("callback-entry")
-		c.ChainKind = "root"
-		kept, dropped, err := f.Apply(context.Background(), []Candidate{c})
+		kept, dropped, err := f.Apply(context.Background(), []Candidate{
+			boundaryCandidate("callback-entry"),
+			boundaryCandidate("assumed-return"),
+			boundaryCandidate("opaque-origin"),
+			boundaryCandidate("external-unknown"),
+			boundaryCandidate("malloc-fail"),
+			boundaryCandidate("cfg-proof"),
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(dropped) != 0 || len(kept) != 1 {
-			t.Errorf("%s mode: callback-entry must be kept (recall), kept=%d dropped=%d", mode, len(kept), len(dropped))
+		if len(dropped) != 4 || len(kept) != 2 {
+			t.Errorf("%s mode: kept=%d dropped=%d, want 2/4 (non-proving dismissed, proven kept)", mode, len(kept), len(dropped))
 		}
+	}
+}
+
+// TestBoundaryFailOpenFilterKeepsWitness pins the escalation rule: a concrete
+// in-tree caller-null witness overrides the tier policy. A forwarding hop
+// (ChainKind "hop") and a named caller detail are the evidence the issue asks
+// to escalate on; a zero-call-site root and a callback registration detail are
+// not.
+func TestBoundaryFailOpenFilterKeepsWitness(t *testing.T) {
+	hop := boundaryCandidate("caller-arg")
+	hop.ChainKind = "hop"
+
+	named := boundaryCandidate("callback-entry")
+	named.CallerNullDetail = "caller register_sender passes NULL"
+
+	root := boundaryCandidate("caller-arg")
+	root.ChainKind = "root"
+	root.CallerNullDetail = "the value flows from an unguarded external entry (no in-tree call site guards this parameter)"
+
+	callback := boundaryCandidate("callback-entry")
+	callback.CallerNullDetail = "function send_ips is registered via a function-pointer (ADDR_TAKEN); parameter ips nullability is bound to the registration-site context — verify the registrar passes a non-null ctx"
+
+	kept, dropped, err := NewBoundaryFailOpenFilter(true, "external").Apply(context.Background(), []Candidate{hop, named, root, callback})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept) != 2 || len(dropped) != 2 {
+		t.Fatalf("external mode witness split: kept=%d dropped=%d, want 2/2", len(kept), len(dropped))
+	}
+	if kept[0].ChainKind != "hop" || kept[1].CallerNullDetail != named.CallerNullDetail {
+		t.Errorf("witness rows must be kept: %+v", kept)
 	}
 }
 
@@ -79,8 +115,10 @@ func TestBoundaryFailOpenFilterCallerArgRoot(t *testing.T) {
 
 func TestBoundaryFailOpenFilterAllMode(t *testing.T) {
 	f := NewBoundaryFailOpenFilter(true, "all")
+	hop := boundaryCandidate("caller-arg")
+	hop.ChainKind = "hop"
 	kept, dropped, err := f.Apply(context.Background(), []Candidate{
-		boundaryCandidate("caller-arg"),
+		hop,
 		boundaryCandidate("assumed-return"),
 		boundaryCandidate("array-buffer"),
 	})

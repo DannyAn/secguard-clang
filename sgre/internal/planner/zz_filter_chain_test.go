@@ -23,7 +23,7 @@ func TestFilterChainMigration(t *testing.T) {
 		"out-of-bounds":     {"call_reach", "safe_function_exclude", "range_oob", "buffer_range", "buffer_flow"},
 		"resource-leak":     {"call_reach", "safe_function_exclude", "has_release", "ownership_transfer", "leak_proof"},
 		"use-after-free":    {"call_reach", "safe_function_exclude", "lifetime"},
-		"uninit":            {"call_reach", "definite_init", "safe_function_exclude"},
+		"uninit":            {"call_reach", "definite_init", "uninit_weak_tier", "safe_function_exclude"},
 		"double-free":       {"call_reach", "safe_function_exclude", "double_free_flow"},
 		"injection":         {"call_reach", "safe_function_exclude", "taint_source"},
 		"path-traversal":    {"call_reach", "safe_function_exclude", "taint_source", "constant_path_proof"},

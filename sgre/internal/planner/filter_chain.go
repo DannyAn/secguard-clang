@@ -139,6 +139,7 @@ func chainUninit() []FilterFactory {
 	return []FilterFactory{
 		func(d FilterDeps) Filter { return NewCallReachFilter(d.Store, d.CallReachCache) },
 		func(d FilterDeps) Filter { return NewDefiniteInitFilter(d.Store, d.Parser, d.Logger) },
+		func(d FilterDeps) Filter { return NewUninitWeakTierFilter() },
 		func(d FilterDeps) Filter { return NewSafeFunctionFilter(d.Store) },
 	}
 }

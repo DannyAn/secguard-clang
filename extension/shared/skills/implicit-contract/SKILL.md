@@ -29,9 +29,15 @@ An implicit-contract candidate has:
   dereferenced at `use_line` with no dominating null guard.
 - **missing**: the absent precondition (`obj->P != NULL`).
 - **contract_evidence** (one of):
-  - `self` — the function null-checks `obj->P` on another path;
-  - `sibling` — another function with the SAME parameter struct type
-    null-checks the field (type-anchored cross-function contract);
+  - `sibling` — another function in the SAME FILE with the SAME parameter struct
+    type null-checks the field (including a null check on a local derived from
+    it, `tree = resp->group_data; if (tree == NULL)`). This is the only kept
+    tier: the same-TU comparison makes the missing guard an omission;
+  - `self` — only this function null-checks `obj->P` somewhere and the guard
+    does not dominate the deref. This is a scope-gap hypothesis with no sibling
+    reference and is pre-dismissed by the planner;
+  - `sibling-weak` — a type-anchored guard in ANOTHER file only. Unrelated-TU
+    evidence; pre-dismissed by the planner.
   - (caller validation is a *suppression*: if every caller null-checks the field
     before the call, the candidate is dropped, not surfaced).
 - **count_field** (optional): when a count/length field `obj->N` gates the use
@@ -46,8 +52,10 @@ An implicit-contract candidate has:
 |-------|---------|-------------|
 | `subject@<name>` | the struct-pointer parameter the contract is about | the entity to validate |
 | `count-field@<name>` | the count/length field gating the pointer use | the contract the function actually enforces |
-| `evidence-kind@self` | the nullable treatment is proven in the function body itself | judge whether the missing precondition is a real contract gap |
-| `evidence-kind@sibling` | another function with the SAME parameter struct type null-checks the field (type-anchored) | weak name/type-based evidence — it says the field MAY be nullable, not that NULL reaches THIS deref; treat it as a hint, not proof |
+| `evidence-kind@sibling` | a SAME-FILE function with the same parameter struct type null-checks the field (the kept tier) | the same-TU comparison says the field MAY be nullable; judge whether NULL can reach THIS deref — a deref inside the same if-body / `&&` chain as the sibling's test is still a false-positive |
+| `evidence-kind@self` | only this function checks the field, and its guard does not dominate the deref | non-proving scope-gap hypothesis — pre-dismissed by the planner; if it reaches you, confirm only from a cited reachable path |
+| `evidence-kind@sibling-weak` | only ANOTHER file's function with the same parameter struct type null-checks the field | unrelated-TU evidence — pre-dismissed; never confirm on this alone |
+| `sibling-guard@<fn>:<line>` | the same-file sibling `fn` null-checks the same field at that line | read that guard and compare its condition with this deref's Code Context |
 | `self-guard@N` | the field IS null-checked at line N, but the reported deref sits OUTSIDE that guard's scope | the scope gap is the defect — confirm only if the deref is genuinely reachable outside the guard; a deref inside the same if-body / `&&` chain as the test is **false-positive** |
 
 `subject@` + `count-field@` name the enforced contract; the verdict is
@@ -58,9 +66,11 @@ whether relying on it (without asserting the precondition) is a real gap.
    in the function (a field written in-scope belongs to null-deref, not here).
 2. Find a pointer field `obj->P` that is dereferenced (directly or via a local
    `p = obj->P`).
-3. Require **E-b self-guard evidence**: the field (or its derived local) is
-   null-checked somewhere in the function — without this, the field is treated
-   non-null by convention and no candidate is emitted.
+3. Require nullable-field evidence: a null check of the field (or a local
+   derived from it) in a same-file sibling function (kept), only in this
+   function (self, pre-dismissed), or only in another file (sibling-weak,
+   pre-dismissed). Without any evidence, the field is treated non-null by
+   convention and no candidate is emitted.
 4. Emit one `CONTRACT_GAP` (`category: ptr_guard`) per dereference site. The
    planner filter drops a site when that null-check **dominates** it on the CFG
    (properly guarded), so only the unguarded sites survive as `suspected`.
