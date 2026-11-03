@@ -141,6 +141,63 @@ func WrittenArgsInError(name string, args []parser.Node, summaries map[string]Wr
 	return out
 }
 
+// ObjectLikeWrites returns, per object-like macro name, the set of bare
+// identifiers its body assigns to as a whole. The command-initialization idiom
+// `#define MSG_INIT do { paraNum = 0; execId = 0; errCode = 0; } while (0)`
+// followed by `MSG_INIT;` right after the declarations writes those local
+// variables, so the uninit detector treats them as initialized instead of
+// auto-confirming a use-before-init. Only a plain `x = <rhs>` counts: `==` is a
+// comparison and `x += v` / `x++` read the old value first.
+func ObjectLikeWrites(root parser.Node) map[string]map[string]bool {
+	out := make(map[string]map[string]bool)
+	for _, def := range root.FindAll("preproc_def") {
+		name, body := "", ""
+		for _, child := range def.NamedChildren() {
+			switch child.Kind() {
+			case "identifier":
+				if name == "" {
+					name = child.Text()
+				}
+			case "preproc_arg":
+				body = child.Text()
+			}
+		}
+		if name == "" || body == "" {
+			continue
+		}
+		if writes := assignedIdentifiers(body); len(writes) > 0 {
+			out[name] = writes
+		}
+	}
+	return out
+}
+
+// assignedIdentifiers extracts the bare identifiers a macro body assigns to as
+// a whole (`x = <rhs>`, not `==`). Compound assignments (`x += v`) and
+// dereference writes (`*p = v`) never reach the `=` directly after the token, so
+// a plain `=` is the only shape that proves a whole-variable write.
+func assignedIdentifiers(body string) map[string]bool {
+	compact := compactBody(stripLiteralsAndComments(body))
+	out := make(map[string]bool)
+	i := 0
+	for i < len(compact) {
+		c := compact[i]
+		if !(c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+			i++
+			continue
+		}
+		j := i + 1
+		for j < len(compact) && isIdentChar(compact[j]) {
+			j++
+		}
+		if j < len(compact) && compact[j] == '=' && !(j+1 < len(compact) && compact[j+1] == '=') {
+			out[compact[i:j]] = true
+		}
+		i = j
+	}
+	return out
+}
+
 // MergeWriteSummaries combines per-file write-summary maps into one. A macro
 // defined in one file (typically a .h header) and called in another (.c source)
 // is invisible to the per-file WriteSummaries of the source file; merging across

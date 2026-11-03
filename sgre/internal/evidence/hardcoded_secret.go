@@ -144,7 +144,20 @@ func looksHighEntropy(value string) bool {
 	if strings.Contains(value, "://") {
 		return false
 	}
+	if looksLikePathTemplate(value) {
+		return false
+	}
 	return shannonEntropy(value) >= secretEntropyThreshold
+}
+
+// looksLikePathTemplate reports whether a literal is an XPath / data-model path
+// template (`/example-model:cfg/cfg-zone[zone-name="%s"]/...`): it starts with a
+// slash and carries a namespace colon (`ns:element`). Such a string is
+// high-entropy (many distinct punctuation symbols) but is a query template, not
+// a credential — the CLI / OML / YANG config layer's most common hardcoded-
+// secret false positive.
+func looksLikePathTemplate(value string) bool {
+	return strings.HasPrefix(value, "/") && strings.Contains(value, ":")
 }
 
 // shannonEntropy returns the per-character Shannon entropy (bits) of s.

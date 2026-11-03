@@ -106,16 +106,34 @@ func (cfg *StmtCFG) NodeAtColumn(line, column int) *StmtNode {
 		if n.StartColumn <= 0 || n.StartColumn > column {
 			continue
 		}
-		if best == nil || n.StartColumn > best.StartColumn {
+		if best == nil {
 			best = n
 			continue
 		}
-		if n.StartColumn == best.StartColumn {
-			// Same start column: prefer the tighter range (the leaf), which is
-			// the existing NodeAt convention.
-			if n.EndLine-n.StartLine < best.EndLine-best.StartLine {
-				best = n
-			}
+		// Prefer the innermost statement: the tightest line range first. The
+		// column only breaks a tie between statements of the SAME range — a
+		// one-line `for (init; cond; update)` header and its zero-length
+		// clauses. Making the range the primary key matters for an `else if`
+		// chain: the else-if header's `if` keyword starts at a LATER column
+		// than a nested body statement's, so column-first would attribute a
+		// dereference inside the nested body to the outer header and read the
+		// wrong incoming dataflow facts from it.
+		nRange := n.EndLine - n.StartLine
+		bestRange := best.EndLine - best.StartLine
+		if nRange < bestRange {
+			best = n
+			continue
+		}
+		if nRange > bestRange {
+			continue
+		}
+		// Same range: the later start column is the innermost same-line clause.
+		if n.StartColumn > best.StartColumn {
+			best = n
+			continue
+		}
+		if n.StartColumn == best.StartColumn && isControlFlowHeader(best) && !isControlFlowHeader(n) {
+			best = n
 		}
 	}
 	if best != nil {
