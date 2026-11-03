@@ -154,13 +154,24 @@ int plain_uninit(int fail) {
 // anchor. A pointer declared on one line and malloc'd on another reports the
 // malloc line as decl_line; calling that line "declared at" would mislabel the
 // allocation site as the declaration, so the evidence says "allocated at line N".
+// The fixture carries the interprocedural conditional-writer evidence: the
+// planner pre-dismisses a bare `init@unseen` heap read (issue #200), so the
+// allocation anchor is only observable on an evidenced heap candidate.
 func TestUninit_EvidenceHeapUninitCarriesAllocLine(t *testing.T) {
 	src := `#include <stdlib.h>
+
+void heap_fill_cond(int *p, int fail, int v) {
+    if (fail) {
+        return;          /* error path leaves *p unwritten */
+    }
+    *p = v;
+}
 
 int heap_uninit(void) {
     int *p;
     p = (int *)malloc(sizeof(int));
-    return *p; /* heap-uninit: allocated, never written through */
+    heap_fill_cond(p, 1, 7);   /* return discarded: conditional writer evidence */
+    return *p;
 }
 `
 	result := planUninitOutputParam(t, src)
@@ -174,4 +185,71 @@ int heap_uninit(void) {
 		}
 	}
 	t.Errorf("heap_uninit evidence should carry an 'allocated at line N' allocation anchor, got %+v", c.Evidence)
+}
+
+// TestUninit_ForwardedConditionalWriterKeepsHeapRead pins the issue #200
+// escalation for the real interprocedural shape: a wrapper forwards the heap
+// buffer to an in-scan writer only on the normal-data path and returns early
+// otherwise, so the wrapper is a CONDITIONAL writer (summary propagation through
+// forwarded calls). The caller discards the return and reads the buffer, which
+// the weak-tier filter must keep with init@error-path/init-writer@ evidence
+// instead of dismissing it as a bare init@unseen row.
+func TestUninit_ForwardedConditionalWriterKeepsHeapRead(t *testing.T) {
+	src := `#include <stdlib.h>
+
+static void heap_write_all(int *p, int v) {
+    *p = v;
+}
+
+static void heap_fill_forward(int *p, int kind, int v) {
+    if (kind == 0) {
+        return;             /* error path: the forwarded write never runs */
+    }
+    heap_write_all(p, v);   /* forwarded to an every-path writer */
+}
+
+int heap_forwarded(void) {
+    int *p = (int *)malloc(sizeof(int));
+    heap_fill_forward(p, 0, 7);   /* return discarded */
+    return *p;
+}
+`
+	result := planUninitOutputParam(t, src)
+	c := candidateForFunc(t, result, "heap_forwarded")
+	if c == nil {
+		t.Fatalf("heap_forwarded (conditional forwarded writer, discarded return) must be flagged, got: %s", candidateNames(result))
+	}
+	if !strings.Contains(c.Hint, "init@error-path") || !strings.Contains(c.Hint, "init-writer@heap_fill_forward") {
+		t.Errorf("heap_forwarded hint must carry init@error-path + init-writer@heap_fill_forward, got %q", c.Hint)
+	}
+}
+
+// TestUninit_WeakTierDismissesHeapReads pins the default-dismiss half: a heap
+// read with no conditional writer evidence (a bare allocator read, or a call to
+// a writer that writes on every path) is the fail-open init@unseen tier and does
+// not reach the AI.
+func TestUninit_WeakTierDismissesHeapReads(t *testing.T) {
+	src := `#include <stdlib.h>
+
+static void heap_write_all(int *p, int v) {
+    *p = v;
+}
+
+int heap_bare(void) {
+    int *p = (int *)malloc(sizeof(int));
+    return *p;
+}
+
+int heap_every_path_writer(void) {
+    int *p = (int *)malloc(sizeof(int));
+    heap_write_all(p, 7);
+    return *p;
+}
+`
+	result := planUninitOutputParam(t, src)
+	for _, fn := range []string{"heap_bare", "heap_every_path_writer"} {
+		if c := candidateForFunc(t, result, fn); c != nil {
+			t.Errorf("%s: a heap read without conditional-writer evidence must be auto-dismissed, got hint %q", fn, c.Hint)
+		}
+	}
 }

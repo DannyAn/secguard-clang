@@ -26,15 +26,18 @@ An uninit candidate has:
 | `origin@<kind>` | the uninitialized storage's kind (`stack_uninit`/`heap_uninit`/`struct_partial_uninit`) | where the missing write must be |
 | `decl@N` | the declaration line of the uninitialized storage | the ## Code Context window covers it |
 | `init@none` | the detector PROVED the read target is never written between declaration/allocation and this read | confirm from the row — no write-path trace needed |
-| `init@unseen` | heap/struct storage with no in-function write found, but a cross-function factory / `memset` / output-param may have written it | do NOT confirm from the row — check the base object's factory / callee body before confirming; if the write path cannot be found, keep it unresolved (dismiss only with a cited reason) |
+| `init@unseen` | heap/struct storage with no in-function write found, but a cross-function factory / `memset` / output-param may have written it | the pipeline's non-proving weak tier — pre-dismissed by the planner (`uninit_weak_tier`) into the ledger, so it normally does not reach you; if it does (a scan built before this policy), do NOT confirm from the row |
+| `init@error-path` + `init-writer@<callee>:<line>` | the interprocedural conditional-uninit evidence: an in-tree callee writes the storage only on some paths (its early return skips the write) and the caller discards the return — the read can see unwritten storage on that error path | the strongest heap/struct uninit tier after `init@none`: read the callee's embedded body / the guard structure in the Code Context, confirm when the read is reachable on the skipped-write path |
+| `init@branch` | a write to the read target exists, but only inside a conditional branch (or a conditional dest-writer call) — the read can be reached on the path that skipped it | judge the branch from the Code Context; confirm when the read path does not pass through the write |
 | `field@<path>` | the read target is that member/element, NOT the base pointer | check the base object's initialization before confirming the field is uninitialized |
 | `init@N` + `may-skip` | the ONLY writes sit inside the loop body starting at line N, and the loop condition may skip them on the first pass | judge the loop condition (covered by the ## Code Context window); nothing else is in scope |
 
 `certain-uninit` settles the row from the Hint; for `maybe-uninit`,
 `origin@` + `decl@N` name the storage whose write paths you trace —
-and when `init@none` or `init@N` + `may-skip` is present, the write-path
-answer is already machine-proven: `init@none` closes the case, `may-skip`
-reduces it to the loop condition.
+and when `init@none`, `init@error-path`, or `init@N` + `may-skip` is present, the
+write-path answer is already machine-proven: `init@none` closes the case,
+`init@error-path` names the callee's skipped-write path, and `may-skip` reduces
+it to the loop condition.
 
 ### Detection Signals
 - Local variable declared without initializer: `int x;`

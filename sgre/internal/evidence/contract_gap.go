@@ -102,13 +102,29 @@ func (d *ContractGapDetector) Detect(ctx context.Context) (DetectResult, error) 
 	// Cross-function contract evidence.
 	sibling := d.collectSiblingContracts(ctx)
 
-	// Pass 2: emit when E-b (self) or E-a (sibling) evidence is present.
+	// Pass 2: emit when E-b (self) or E-a (sibling) evidence is present. The
+	// evidence is tiered by strength because the planner pre-dismisses the weak
+	// tiers (issue #200):
+	//   - "sibling": another function in the SAME FILE with the same parameter
+	//     struct type null-checks the field — the same-TU comparison that proves
+	//     the missing guard is an omission, not the project's design;
+	//   - "self": only this function checks the field somewhere (its own guard
+	//     does not dominate the deref) — a scope-gap hypothesis, not a sibling
+	//     reference, and the production-scan weak tier;
+	//   - "sibling-weak": a type-anchored guard in ANOTHER FILE only — the
+	//     unrelated-TU evidence that dominated the production candidate count
+	//     with ~2% precision.
+	// All three are emitted so the planner's dismissal is ledgered instead of a
+	// silent seed-time drop.
 	for _, cand := range cands {
 		evidence := ""
-		if cand.selfGuard {
+		var sib siblingGuard
+		if g := firstForeignGuard(sibling.sameFile[cand.file.ID][cand.objType][cand.field], cand.fn.Name); g.fnName != "" {
+			evidence, sib = "sibling", g
+		} else if cand.selfGuard {
 			evidence = "self"
-		} else if sibling[cand.objType][cand.field] {
-			evidence = "sibling"
+		} else if g := firstForeignGuard(sibling.crossFile[cand.objType][cand.field], cand.fn.Name); g.fnName != "" {
+			evidence, sib = "sibling-weak", g
 		}
 		if evidence == "" {
 			continue
@@ -128,6 +144,10 @@ func (d *ContractGapDetector) Detect(ctx context.Context) (DetectResult, error) 
 			// deref site sits outside that guard's scope — the contract gap.
 			if cand.selfGuard && cand.guardLine > 0 {
 				props["guard_line"] = cand.guardLine
+			}
+			if sib.fnName != "" {
+				props["sibling_function"] = sib.fnName
+				props["sibling_guard_line"] = sib.line
 			}
 			if emitEvent(ctx, d.store, d.logger, "CONTRACT_GAP", cand.fn.ID, &db.Location{FileID: cand.file.ID, Line: site.line, Column: 1}, props) {
 				result.EventsCreated++
@@ -198,15 +218,50 @@ func (d *ContractGapDetector) collectFunctionCandidates(f *db.Function, file *db
 	return out
 }
 
+// siblingGuard names the function whose null check proves the field is treated
+// as nullable, and the guard line.
+type siblingGuard struct {
+	fnName string
+	line   int
+}
+
+// siblingContracts is the tiered E-a cross-function evidence index: the guard
+// in the SAME translation unit (strong: the same file's functions share the
+// project/struct convention, so an unguarded sibling is an omission) and the
+// guard found only in another file (weak type-anchored evidence). Production
+// triage showed the same-file split is the real discriminator: the four real
+// implicit-contract findings all live beside a same-file guarded sibling.
+type siblingContracts struct {
+	sameFile  map[int64]map[string]map[string][]siblingGuard
+	crossFile map[string]map[string][]siblingGuard
+}
+
+// firstForeignGuard returns the first guard whose function is not fnName: the
+// candidate's own check is the "self" tier, not sibling evidence.
+func firstForeignGuard(guards []siblingGuard, fnName string) siblingGuard {
+	for _, g := range guards {
+		if g.fnName != "" && g.fnName != fnName {
+			return g
+		}
+	}
+	return siblingGuard{}
+}
+
 // collectSiblingContracts builds the E-a cross-function contract index:
 // parameter struct type (normalized type spelling, e.g. "Nac_LdapSearchAckMsg_t *")
-// -> field name -> some function with that parameter type null-checks the field.
-// It is type-anchored, never name-guessed across unrelated structs.
-func (d *ContractGapDetector) collectSiblingContracts(ctx context.Context) map[string]map[string]bool {
-	out := map[string]map[string]bool{}
+// -> field name -> a function with that parameter type null-checks the field.
+// It is type-anchored, never name-guessed across unrelated structs, and keeps
+// the same-file and cross-file tiers separate.
+func (d *ContractGapDetector) collectSiblingContracts(ctx context.Context) siblingContracts {
+	out := siblingContracts{
+		sameFile:  map[int64]map[string]map[string][]siblingGuard{},
+		crossFile: map[string]map[string][]siblingGuard{},
+	}
 	_ = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		funcDefs := root.FindAll("function_definition")
 		comparisons := root.FindAll("binary_expression")
+		assigns := root.FindAll("assignment_expression")
+		inits := root.FindAll("init_declarator")
 		for _, f := range funcs {
 			names, types := functionParamNamesFor(funcDefs, f.StartLine)
 			typeByName := make(map[string]string, len(names))
@@ -220,6 +275,12 @@ func (d *ContractGapDetector) collectSiblingContracts(ctx context.Context) map[s
 					typeByName[n] = types[i]
 				}
 			}
+			// A guard on a LOCAL derived from the field (`tree = resp->group_data;
+			// if (tree == NULL)`) is a guard of the same field's nullability. Follow
+			// those aliases so the sibling proof is not limited to direct
+			// `obj->field == NULL` checks — the same resolution the self-guard
+			// evidence already uses.
+			localOrigins := functionLocalFieldOrigins(f, paramSet, assigns, inits)
 			for _, be := range comparisons {
 				if !funcLineRange(f, be.StartLine()) {
 					continue
@@ -239,26 +300,110 @@ func (d *ContractGapDetector) collectSiblingContracts(ctx context.Context) map[s
 					continue
 				}
 				for _, opNode := range be.NamedChildren() {
-					if opNode.Kind() != "field_expression" {
+					if parser.IsNullOperand(opNode) {
 						continue
 					}
-					base, field := directFieldAccess(opNode)
-					if !paramSet[base] || field == "" {
+					base, field := "", ""
+					switch opNode.Kind() {
+					case "field_expression":
+						base, field = directFieldAccess(opNode)
+						if base == "" || !paramSet[base] {
+							base = ""
+						}
+					case "identifier":
+						if o, ok := localOrigins[opNode.Text()]; ok {
+							base, field = o.base, o.field
+						}
+					}
+					if base == "" || field == "" {
 						continue
 					}
 					t := typeByName[base]
 					if t == "" {
 						continue
 					}
-					if out[t] == nil {
-						out[t] = map[string]bool{}
+					guard := siblingGuard{fnName: f.Name, line: be.StartLine()}
+					if out.sameFile[file.ID] == nil {
+						out.sameFile[file.ID] = map[string]map[string][]siblingGuard{}
 					}
-					out[t][field] = true
+					if out.sameFile[file.ID][t] == nil {
+						out.sameFile[file.ID][t] = map[string][]siblingGuard{}
+					}
+					out.sameFile[file.ID][t][field] = append(out.sameFile[file.ID][t][field], guard)
+					if out.crossFile[t] == nil {
+						out.crossFile[t] = map[string][]siblingGuard{}
+					}
+					out.crossFile[t][field] = append(out.crossFile[t][field], guard)
 				}
 			}
 		}
 	})
 	return out
+}
+
+// fieldOrigin is the (parameter, field) a local was derived from.
+type fieldOrigin struct {
+	base  string
+	field string
+}
+
+// functionLocalFieldOrigins maps each local identifier in f assigned a
+// parameter field's value (`tree = resp->group_data`, `tree = (T
+// *)(resp->group_data)`) to that origin, so a NULL check on the local counts as
+// a check of the field.
+func functionLocalFieldOrigins(f *db.Function, paramSet map[string]bool, assigns, inits []parser.Node) map[string]fieldOrigin {
+	out := map[string]fieldOrigin{}
+	record := func(lhs, rhs parser.Node) {
+		// The declarator may be a pointer declarator (`p17_node_t *tree = ...`),
+		// so extractVarName (not lhs.Kind()=="identifier") resolves the local.
+		name := extractVarName(lhs)
+		if name == "" {
+			return
+		}
+		base, field := derivedFieldOrigin(rhs)
+		if base == "" || field == "" || !paramSet[base] {
+			return
+		}
+		if _, seen := out[name]; !seen {
+			out[name] = fieldOrigin{base: base, field: field}
+		}
+	}
+	for _, a := range assigns {
+		if !funcLineRange(f, a.StartLine()) {
+			continue
+		}
+		if lhs, rhs, ok := a.AssignParts(); ok {
+			record(lhs, rhs)
+		}
+	}
+	for _, d := range inits {
+		if !funcLineRange(f, d.StartLine()) {
+			continue
+		}
+		if lhs, rhs, ok := d.AssignParts(); ok {
+			record(lhs, rhs)
+		}
+	}
+	return out
+}
+
+// derivedFieldOrigin extracts (base, field) from an expression that is a field
+// read, optionally wrapped in parentheses or a cast (`(T *)(base->field)`).
+func derivedFieldOrigin(n parser.Node) (string, string) {
+	switch n.Kind() {
+	case "field_expression":
+		return directFieldAccess(n)
+	case "parenthesized_expression", "cast_expression":
+		for _, c := range n.NamedChildren() {
+			if c.Kind() == "type_descriptor" {
+				continue
+			}
+			if base, field := derivedFieldOrigin(c); base != "" {
+				return base, field
+			}
+		}
+	}
+	return "", ""
 }
 
 // functionParamNamesFor returns the (names, types) of the function whose

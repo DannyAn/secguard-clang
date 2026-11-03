@@ -34,10 +34,10 @@ func (n *flexInt) UnmarshalJSON(b []byte) error {
 // the planner reads them through this single struct so the field names live
 // in one place instead of being re-declared per filter.
 type eventProps struct {
-	Variable    string `json:"variable"`
-	Expression  string `json:"expression"`
-	Function    string `json:"function"`
-	Category    string `json:"category"`
+	Variable   string `json:"variable"`
+	Expression string `json:"expression"`
+	Function   string `json:"function"`
+	Category   string `json:"category"`
 	// Storage is the stack-address-escape local's storage class ("auto" /
 	// "static"). A static local is exempted at the detector, so the value is
 	// "auto" in practice; it is carried so the verdict fact can state the
@@ -85,7 +85,7 @@ type eventProps struct {
 	// only candidates sharing the same (file, variable, root) fold, so two
 	// independent same-name parameters do NOT merge. Empty for non-chain
 	// sources.
-	Root string `json:"root"`
+	Root     string `json:"root"`
 	DeclLine int    `json:"decl_line"`
 	// Allocator is the heap allocator callee name for a heap_uninit seed
 	// (`malloc`/`calloc`/a project wrapper): the classifier looks up that
@@ -95,9 +95,12 @@ type eventProps struct {
 	// InitWrite is the machine-proven write-path fact of an uninit read:
 	// "none" = the read target is never written before the read,
 	// "loop" = the only writes sit inside a loop body the condition may skip
-	// (InitWriteLine = the first such write). Empty = no proven fact.
+	// (InitWriteLine = the first such write), "cond" = an in-tree callee writes
+	// only on some paths and its return is discarded (InitWriter names it).
+	// Empty = no proven fact.
 	InitWrite     string  `json:"init_write"`
 	InitWriteLine flexInt `json:"init_write_line"`
+	InitWriter    string  `json:"init_writer"`
 	// FieldPath is the full member/element access text of an uninit read
 	// (`p->f`, `p[i]`, `s.f`), empty for whole/scalar reads. The definite-init
 	// filter uses it to refine heap/struct candidates at field granularity.
@@ -249,6 +252,11 @@ type eventProps struct {
 	// guard's scope (the contract gap). Surfacing it lets the classifier see
 	// the guard structure without a source read.
 	GuardLine flexInt `json:"guard_line"`
+	// SiblingFunction/SiblingGuardLine name the SAME-FILE sibling function and
+	// the line where it null-checks the same field (the strong "sibling" tier).
+	// A cross-file guard is "sibling-weak" and is pre-dismissed.
+	SiblingFunction  string  `json:"sibling_function"`
+	SiblingGuardLine flexInt `json:"sibling_guard_line"`
 	// EscapeKind is the ownership-release channel summary a leak event carries
 	// ("return"/"store"/"none", from leakEscapeKind); FreeLines is the comma-
 	// separated release-line list. Together they let the classifier tell a
