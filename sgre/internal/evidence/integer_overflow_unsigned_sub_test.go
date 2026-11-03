@@ -157,6 +157,53 @@ func TestIntegerOverflow_MixedAccumulatorBoundedReturn(t *testing.T) {
 	}
 }
 
+// TestIntegerOverflow_ManualClampAccumulator pins the Issue #207 B.3 repro: a
+// `len - offset` subtraction where offset accumulates a MANUAL min-clamp wrapper
+// (`return (n < len) ? n : len;` with a `return 0` error path) cannot underflow,
+// so it must NOT emit unsigned_sub_underflow. A max-clamp wrapper and a plain
+// subtraction are the controls that must still be flagged.
+func TestIntegerOverflow_ManualClampAccumulator(t *testing.T) {
+	store, p := setupDetector(t, "tc133_int_overflow_manual_clamp.c")
+	logger := log.New(io.Discard, log.LevelWarn)
+	if _, err := NewIntegerOverflowDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+
+	events, err := store.ListEventsByType(context.Background(), "INTEGER_OVERFLOW")
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	byFunction := make(map[string][]string)
+	for _, e := range events {
+		fn, err := store.GetFunctionByID(context.Background(), e.EntityID)
+		if err != nil || fn == nil {
+			continue
+		}
+		var props struct {
+			Category string `json:"category"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		byFunction[fn.Name] = append(byFunction[fn.Name], props.Category)
+	}
+
+	for _, cat := range byFunction["build"] {
+		if cat == "unsigned_sub_underflow" {
+			t.Errorf("build: manual min-clamp accumulator must not be flagged, got %v", byFunction["build"])
+		}
+	}
+	for _, fn := range []string{"build_max", "bad_sub"} {
+		found := false
+		for _, cat := range byFunction[fn] {
+			if cat == "unsigned_sub_underflow" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s: must still be flagged, got %v", fn, byFunction[fn])
+		}
+	}
+}
+
 // TestIntegerOverflow_UnsignedSubProducerCallee pins the cross-function fact
 // that decides the accumulator verdict: `bound - len` where len is fed by
 // `len += ase_sa_str_connect(...)` carries that callee, so the planner can embed

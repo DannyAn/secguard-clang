@@ -55,6 +55,7 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 			needsContext = len(rep.NeedsContext)
 		}
 		wallMS := settlementWallMS(ctx, store, rep)
+		queueMS, workMS := settlementQueueWorkMS(rep)
 		for _, pt := range rep.Processed {
 			if err := store.UpsertSettlementStat(ctx, &db.SettlementStat{
 				ScanID:        rep.ScanID,
@@ -68,12 +69,43 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 				RepoGreps:     pt.RepoGreps,
 				NeedsContext:  needsContext,
 				WallMS:        wallMS,
+				QueueMS:       queueMS,
+				WorkMS:        workMS,
 			}); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// settlementQueueWorkMS splits a settlement's wall clock into queue_ms
+// (dispatched_at → started_at) and work_ms (started_at → finish mtime) when the
+// report carries those RFC3339 timestamps. Reports written before those fields
+// existed (or a partial write) return (0, 0), leaving wall_ms as the fallback.
+func settlementQueueWorkMS(rep subagentReport) (queueMS, workMS int64) {
+	if rep.DispatchedAt == "" || rep.StartedAt == "" {
+		return 0, 0
+	}
+	dispatched, err := time.Parse(time.RFC3339Nano, rep.DispatchedAt)
+	if err != nil {
+		return 0, 0
+	}
+	started, err := time.Parse(time.RFC3339Nano, rep.StartedAt)
+	if err != nil {
+		return 0, 0
+	}
+	if q := started.UnixMilli() - dispatched.UnixMilli(); q >= 0 {
+		queueMS = q
+	}
+	if rep.ModTime != "" {
+		if mtime, err := time.Parse(time.RFC3339Nano, rep.ModTime); err == nil {
+			if w := mtime.UnixMilli() - started.UnixMilli(); w >= 0 {
+				workMS = w
+			}
+		}
+	}
+	return queueMS, workMS
 }
 
 // settlementWallMS estimates a settlement's wall-clock as the settlement file's
@@ -265,4 +297,41 @@ func suggestedBatches(candidates, batchSize int) int {
 		return 0
 	}
 	return (candidates + batchSize - 1) / batchSize
+}
+
+// settlementAIStageMetrics computes the AI-stage batch concurrency and
+// zero-output ratios from the persisted settlement rows, so `secguard metrics`
+// surfaces the two diagnostics that let a user spot a queue-dominated or
+// zero-yield AI stage without hand-summing settlement files. work_ms is the true
+// agent work when the report carried timestamps; wall_ms (which over-counts the
+// queue wait) is the fallback.
+func settlementAIStageMetrics(rows []*db.SettlementStat, aiDurationMS int64) map[string]interface{} {
+	total := len(rows)
+	zeroOutput := 0
+	var workSum int64
+	var workN int64
+	for _, st := range rows {
+		if st.Written == 0 {
+			zeroOutput++
+		}
+		w := st.WorkMS
+		if w <= 0 {
+			w = st.WallMS
+		}
+		if w > 0 {
+			workSum += w
+			workN++
+		}
+	}
+	out := map[string]interface{}{
+		"total_batches":       total,
+		"zero_output_batches": zeroOutput,
+	}
+	if total > 0 {
+		out["zero_output_ratio"] = round1(float64(zeroOutput) / float64(total) * 100)
+	}
+	if workN > 0 && aiDurationMS > 0 {
+		out["effective_concurrency"] = round1(float64(workSum) / float64(aiDurationMS))
+	}
+	return out
 }

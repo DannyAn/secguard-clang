@@ -85,6 +85,53 @@ func TestSettlementStatWallMSNullable(t *testing.T) {
 	}
 }
 
+// TestSettlementStatLastWriteWins pins the one-row-per-(scan_id, vuln_type,
+// range_str) invariant (Issue #207 B.5): a duplicate dispatch of the same range
+// by two subagents previously wrote two rows with conflicting counts; now the
+// newer settlement overwrites.
+func TestSettlementStatLastWriteWins(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	first := &SettlementStat{ScanID: "sc_d", VulnType: "null-deref", RangeStr: "1-100", SubagentID: "sub-1", Written: 3, Dismissed: 97, CreatedAt: 1}
+	if err := s.UpsertSettlementStat(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	second := &SettlementStat{ScanID: "sc_d", VulnType: "null-deref", RangeStr: "1-100", SubagentID: "sub-2", Written: 8, Dismissed: 92, CreatedAt: 2}
+	if err := s.UpsertSettlementStat(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.ListSettlementStatsByScan(ctx, "sc_d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row after same-range duplicate dispatch, got %d", len(rows))
+	}
+	if rows[0].SubagentID != "sub-2" || rows[0].Written != 8 || rows[0].Dismissed != 92 {
+		t.Errorf("later write must overwrite: %+v", rows[0])
+	}
+}
+
+// TestSettlementStatQueueWorkMS pins the queue_ms/work_ms persistence split from
+// wall_ms (Issue #207 B.5).
+func TestSettlementStatQueueWorkMS(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	if err := s.UpsertSettlementStat(ctx, &SettlementStat{
+		ScanID: "s", VulnType: "t", RangeStr: "all", SubagentID: "x",
+		WallMS: 9000, QueueMS: 3000, WorkMS: 6000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := s.ListSettlementStatsByScan(ctx, "s")
+	if len(rows) != 1 || rows[0].QueueMS != 3000 || rows[0].WorkMS != 6000 {
+		t.Fatalf("queue_ms/work_ms must persist: %+v", rows[0])
+	}
+}
+
 func TestSettlementTaskStatusLifecycle(t *testing.T) {
 	ctx := context.Background()
 	s := NewTestStore(t)

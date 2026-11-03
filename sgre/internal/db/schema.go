@@ -313,12 +313,14 @@ CREATE TABLE IF NOT EXISTS function_summary (
 -- Settlement Stats (AI-stage batch settlements, engine-side data closure)
 -- ============================================================
 
--- One row per settled batch (per type/range/subagent) parsed from the
+-- One row per settled batch (per type/range) parsed from the
 -- security-auditor subagent's O2 settlement file. It is the data source that
 -- closes the r_type feedback loop (evidence_opens per classified candidate) and
 -- powers the already_covered_ranges idempotency check — both computed by the
--- engine in 'status --per-type', never by the LLM orchestrator. Idempotent on
--- the UNIQUE key so re-reading the same settlement file never duplicates a row.
+-- engine in 'status --per-type', never by the LLM orchestrator. One row per
+-- (scan_id, vuln_type, range_str): a duplicate dispatch of the same range is
+-- last-write-wins (the newer subagent's accounting overwrites), enforced by the
+-- uq_settlement_stat_scan_type_range unique index created in InitSchema.
 CREATE TABLE IF NOT EXISTS settlement_stats (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     scan_id         TEXT NOT NULL,
@@ -334,8 +336,9 @@ CREATE TABLE IF NOT EXISTS settlement_stats (
     status          TEXT NOT NULL DEFAULT 'done' CHECK (status IN ('dispatched', 'done', 'failed')),
     retry_count     INTEGER NOT NULL DEFAULT 0,
     wall_ms         INTEGER,
-    created_at      INTEGER,
-    UNIQUE(scan_id, vuln_type, range_str, subagent_id)
+    queue_ms        INTEGER,
+    work_ms         INTEGER,
+    created_at      INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_settlement_stats_scan_type ON settlement_stats(scan_id, vuln_type);
@@ -421,6 +424,17 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 	if err := ensureScanStatUnique(ctx, db); err != nil {
 		return fmt.Errorf("db: init schema: ensure scan_stats uniqueness: %w", err)
 	}
+	// settlement_stats.queue_ms / work_ms are additive: the settlement report
+	// began carrying dispatched_at/started_at to split wall_ms into queue+work.
+	if err := ensureColumn(ctx, db, "settlement_stats", "queue_ms", "INTEGER"); err != nil {
+		return fmt.Errorf("db: init schema: ensure settlement_stats.queue_ms: %w", err)
+	}
+	if err := ensureColumn(ctx, db, "settlement_stats", "work_ms", "INTEGER"); err != nil {
+		return fmt.Errorf("db: init schema: ensure settlement_stats.work_ms: %w", err)
+	}
+	if err := ensureSettlementStatUnique(ctx, db); err != nil {
+		return fmt.Errorf("db: init schema: ensure settlement_stats uniqueness: %w", err)
+	}
 	// Secondary indexes must run after ensureColumn (idx_findings_fingerprint
 	// references the back-filled fingerprint column).
 	if _, err := db.ExecContext(ctx, secondaryIndexesDDL); err != nil {
@@ -456,6 +470,33 @@ func ensureScanStatUnique(ctx context.Context, db *sql.DB) error {
 	}
 	if _, cerr := db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS uq_scan_stat_scan_type ON scan_stats(scan_id, vuln_type)`); cerr != nil {
 		return fmt.Errorf("db: init schema: create scan_stats unique index: %w", cerr)
+	}
+	return nil
+}
+
+// ensureSettlementStatUnique enforces the one-row-per-(scan_id, vuln_type,
+// range_str) invariant that UpsertSettlementStat's ON CONFLICT depends on. A
+// duplicate dispatch of the same range (two subagents settling the same
+// type/range) previously wrote two rows under the (…, subagent_id) key with
+// conflicting counts; the newer settlement now overwrites. Duplicates are
+// collapsed before the unique index is created (keeping the highest id, i.e. the
+// latest-written row). The old per-subagent table autoindex is left in place — it
+// is satisfied by the stricter new key.
+func ensureSettlementStatUnique(ctx context.Context, db *sql.DB) error {
+	var name string
+	err := db.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'uq_settlement_stat_scan_type_range'`).Scan(&name)
+	if err == nil && name != "" {
+		return nil
+	}
+	if _, derr := db.ExecContext(ctx, `
+		DELETE FROM settlement_stats
+		WHERE id NOT IN (
+			SELECT MAX(id) FROM settlement_stats GROUP BY scan_id, vuln_type, range_str
+		)`); derr != nil {
+		return fmt.Errorf("db: init schema: dedupe settlement_stats: %w", derr)
+	}
+	if _, cerr := db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS uq_settlement_stat_scan_type_range ON settlement_stats(scan_id, vuln_type, range_str)`); cerr != nil {
+		return fmt.Errorf("db: init schema: create settlement_stats unique index: %w", cerr)
 	}
 	return nil
 }
