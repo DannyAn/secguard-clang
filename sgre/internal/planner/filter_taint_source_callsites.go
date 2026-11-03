@@ -86,6 +86,11 @@ type callsiteCensus struct {
 	// a compile-time integer constant is bounded by the largest such constant
 	// (NLOG pattern 6: `pool_create(64)` where the only caller passes 64).
 	constVals map[int64]map[int][]int64
+	// stringMacros is the tree-wide set of object-like macros that expand to a
+	// string literal. It is shared with the constant-path prover so a call-site
+	// argument spelled `EXPORT_DIR` / a format spelled `FMT` is a compile-time
+	// constant there too.
+	stringMacros map[string]bool
 }
 
 // callsiteEvidenceCap bounds how many concrete call sites the census retains
@@ -228,12 +233,18 @@ func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context, tc *tain
 		}
 	}
 	scannedRoot := make(map[int64]bool)
+	// The string-macro table is complete here; publish it for the constant-path
+	// prover (a no-op for the census's own classification).
+	census.stringMacros = stringMacro
 	for _, fn := range tc.funcs {
+		file := fileByID[fn.FileID]
+		if file == nil {
+			continue
+		}
 		body, root := tc.body(fn), tc.root(fn)
 		if body.Kind() != "compound_statement" {
 			continue
 		}
-		file := fileByID[fn.FileID]
 
 		calls := tc.calls[fn.ID]
 		// Local/field string constants: an argument spelled with a variable whose

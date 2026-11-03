@@ -14,7 +14,7 @@ func init() {
 		EvidenceType:      "PATH_TRAVERSAL",
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "path-traversal",
-		FilterFactories:   chainTaint(),
+		FilterFactories:   chainPathTraversal(),
 		// The taint-source filter reads the scan-shared interprocedural summary.
 		SharedTaintSummary: true,
 		Categories:        []string{"path_traversal", "world_writable_file", "world_writable_var"},

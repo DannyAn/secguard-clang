@@ -4,37 +4,12 @@
 
 ## [未发布]
 
-### 扫描速度：planning 阶段共享 taint 摘要墙 + 检测器开关（Issue #201 / C-1..C-4）
+### path-traversal 误报抑制：编译期常量路径链（Issue #199）
 
-依据生产 v0.12.0 全量扫描 Issue C 逐条核对源码：**检测器并行（C-2）在 v0.12.0 已存在**
-（`detectors_total` 41.0s 是 8 路并行的墙钟，日志里逐检测器耗时之和 ~108s），因此只对
-真实存在的问题动手。
-
-- **四类型同耗时墙（C-1 / C-4）**：`format-string / injection / path-traversal /
-  integer-overflow` 四个类型的 plan 耗时几乎相同，根因不是四次独立计算，而是四者共享
-  同一份「扫描级 taint 摘要」而该摘要由最先到达的类型在持锁状态下计算——其余三个类型
-  阻塞在同一把 mutex 上，于是各自把同一段共享墙钟记成自己的 plan 耗时。修复：
-  - 摘要改为在 per-type 规划协程启动**之前**预热一次，并单独输出
-    `phase=plan_shared_taint_summary`；per-type 的 `plan_<type>` 从此只反映该类型
-    自身的过滤耗时（摘要是否值得预热由 `VulnTypeSpec.SharedTaintSummary` +
-    该类型的 seed 事件数决定，无 seed 的仓库零额外开销）。
-  - 四个摘要 fixpoint（`returnsParam` / `retTainted` / `paramTainted` / call-site census）
-    共享一份解析上下文（函数体、参数、call/return 节点、taint effects、DFG copies 各算一次），
-    不再各自读盘解析整棵树。
-  - `retTainted` / `paramTainted` / `returnsParam` 由「每轮全量重扫」改为**工作集
-    （worklist）不动点**：只有自己的被调方/入参污染集发生变化时才重新分析；并跳过
-    无任何 taint 源的函数体（`gen` 为空且无 `return <taint source>`）。
-  - taint 摘要的 flow 分析接入扫描级 CFG cache（此前用 nil cache，整棵树的 CFG 全量重建），
-    并改用无锁的 per-file body 复用。
-  - 实测（300 文件 / 30000 函数的合成语料，同机连续 A/B）：`secguard plan injection`
-    16.2s → 10.6s；全量扫描 plan 阶段 14.55s → 11.09s，其中有种子的 injection /
-    format-string 各 14.4s → 2.5s，共享摘要 6.1s 单独成一行；候选目录 24053 个文件、
-    candidates.sarif 与扫描 JSON 计数全部逐字节一致。
-- **检测器开关（C-3）**：新增 `[scan] skip_detectors = [...]` 与
-  `secguard scan --skip-detectors=a,b`，按仓库跳过指定证据检测器（例如 `unchecked_return`
-  空转 20s 产出 0 候选）。生效名单回写扫描 JSON `detectors_skipped` 与 `scan.log`，
-  未知名字 warning 后忽略——被跳过检测器供给的类型显示 0 candidate，但可区分「开关关闭」
-  与「真的干净」。文档见 `docs/config.md`。
+- **新增 `constant_path_proof` 过滤器**（`sgre/internal/planner/filter_constant_path.go`，接在 path-traversal 链的 `taint_source` 之后）：对 sink 路径参数做跨过程常量证明。参数未被本函数覆写时，要求所有 in-tree 调用点的实参可证明为编译期常量；调用点传局部缓冲区时，沿该缓冲区的每一处写入递归（含传给 in-tree 路径拼装 helper 的输出参数）。`snprintf`/`sprintf`/`strcat`/`memcpy` 等拼装调用按格式串逐参判定：`%u`/`%d`/`%x`/浮点等数值转换的实参豁免（其文本不可能含 `/`，`"%s/%u.json"` + `time(NULL)` 这类内部生成值因此算常量），`%s`/`%c` 等可输出任意字节的实参仍须常量。任一步不可证（未知外部函数、out-of-tree 写、无 in-tree 调用点、address-taken、递归超深）一律保留候选，宁漏勿误。
+- **真实 CWE-22 不丢**：用户输入经弱校验（仅后缀 `.pdf` 检查）进入 `<固定目录>/<字段>` 的链，因 `json_get_string_by_key` / `custom_pdf_path()` 不是常量而保留，照常交 AI 研判。
+- **skill / 边界文档同步**：path-traversal SKILL 增「弱过滤不算净化：后缀/扩展名检查不拦 `../`」及常量链抑制说明；`AI_JUDGMENT_BOUNDARY.md` 的 path-traversal 行补 planner 级收敛抑制；`zz_filter_chain_test.go` 的 path-traversal 期望链加入 `constant_path_proof`。
+- **回归**：新增 `filter_constant_path_test.go`（helper 拼装固定路径 drop、内部数值计数 drop、参数覆写 drop，真实输入链 / 未知运行期分量 / 无调用点 / 外部写 keep，all-literal census 回归）与 `filter_constant_path_unit_test.go`（格式串转换判定、只读实参表）。
 
 ## [0.12.0] - 2026-11-02
 
