@@ -99,6 +99,20 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 		return nil, fmt.Errorf("clear graph: %w", err)
 	}
 
+	// Build a shared read-only snapshot of all indexed functions and files once,
+	// and inject it into ctx so every graph builder and detector reads from one
+	// snapshot instead of each re-querying ListFunctions + ListFiles +
+	// per-file GetFileByID (70+ redundant full-table scans on large repos).
+	repoFuncs, err := store.ListFunctions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list functions for repo index: %w", err)
+	}
+	repoFiles, err := store.ListFiles(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list files for repo index: %w", err)
+	}
+	ctx = graph.WithRepoIndex(ctx, graph.NewRepoIndex(repoFuncs, repoFiles))
+
 	graphStart := time.Now()
 
 	// Function-pointer slot -> target writes run SEQUENTIALLY before the parallel
@@ -365,9 +379,9 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 
 	return &pipelineOutcome{
-		Index:          indexResult,
-		Plans:          plans,
-		PlanErrors:     planErrors,
+		Index:            indexResult,
+		Plans:            plans,
+		PlanErrors:       planErrors,
 		DetectorErrors:   detectorErrors,
 		DisabledTypes:    disabledTypes,
 		SkippedDetectors: skippedDetectors,

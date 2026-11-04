@@ -10,6 +10,7 @@ import (
 
 	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -39,22 +40,40 @@ type DomainAware interface {
 // On redis (11225 functions over 786 files) the dereference detector alone went
 // from ~9 minutes of FindAll traversals to a single traversal per file.
 //
+// When a *graph.RepoIndex is attached to ctx (by the pipeline), functions and
+// files are read from that immutable snapshot instead of re-querying the DB —
+// eliminating the 30+ redundant ListFunctions + per-file GetFileByID calls
+// across detectors.
+//
 // A file that cannot be read or parsed is SKIPPED (its functions emit no events
 // for any detector). For a security tool that is a silent false-negative, so
 // each skip is logged as a warning rather than dropped without a trace.
 func forEachFile(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, fn func(file *db.File, root parser.Node, funcs []*db.Function)) error {
-	funcs, err := store.ListFunctions(ctx)
-	if err != nil {
-		return err
-	}
-
-	byFile := make(map[int64][]*db.Function, 128)
+	ri := graph.RepoIndexFromCtx(ctx)
 	var order []int64
-	for _, f := range funcs {
-		if _, seen := byFile[f.FileID]; !seen {
-			order = append(order, f.FileID)
+	var byFile func(int64) []*db.Function
+	var fileByID func(int64) *db.File
+	if ri != nil {
+		order = ri.FileOrder()
+		byFile = ri.FuncsByFile
+		fileByID = ri.FileByID
+	} else {
+		funcs, err := store.ListFunctions(ctx)
+		if err != nil {
+			return err
 		}
-		byFile[f.FileID] = append(byFile[f.FileID], f)
+		grouped := make(map[int64][]*db.Function, 128)
+		for _, f := range funcs {
+			if _, seen := grouped[f.FileID]; !seen {
+				order = append(order, f.FileID)
+			}
+			grouped[f.FileID] = append(grouped[f.FileID], f)
+		}
+		byFile = func(fid int64) []*db.Function { return grouped[fid] }
+		fileByID = func(fid int64) *db.File {
+			f, _ := store.GetFileByID(ctx, fid)
+			return f
+		}
 	}
 
 	for _, fid := range order {
@@ -63,13 +82,7 @@ func forEachFile(ctx context.Context, store db.Store, p *parser.Parser, logger *
 			return ctx.Err()
 		default:
 		}
-		file, err := store.GetFileByID(ctx, fid)
-		if err != nil {
-			if logger != nil {
-				logger.Warn("evidence: get file by id failed, skipping", "file_id", fid, "error", err)
-			}
-			continue
-		}
+		file := fileByID(fid)
 		if file == nil {
 			continue
 		}
@@ -87,7 +100,7 @@ func forEachFile(ctx context.Context, store db.Store, p *parser.Parser, logger *
 			}
 			continue
 		}
-		fn(file, tree.RootNode(), byFile[fid])
+		fn(file, tree.RootNode(), byFile(fid))
 	}
 	return nil
 }
@@ -98,9 +111,16 @@ func forEachFile(ctx context.Context, store db.Store, p *parser.Parser, logger *
 // holds only macros / extern declarations is still scanned (e.g. for macro
 // write-summaries a call site in another file depends on).
 func forEachIndexedFile(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, fn func(file *db.File, root parser.Node)) error {
-	files, err := store.ListFiles(ctx)
-	if err != nil {
-		return err
+	ri := graph.RepoIndexFromCtx(ctx)
+	var files []*db.File
+	if ri != nil {
+		files = ri.Files()
+	} else {
+		var err error
+		files, err = store.ListFiles(ctx)
+		if err != nil {
+			return err
+		}
 	}
 	for _, file := range files {
 		select {
@@ -132,17 +152,26 @@ func forEachIndexedFile(ctx context.Context, store db.Store, p *parser.Parser, l
 // detector that scans file-scope declarations (hardcoded secrets) needs this so
 // a global secret in a functionless file is not silently skipped.
 func forEachFileIncludingEmpty(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, fn func(file *db.File, root parser.Node, funcs []*db.Function)) error {
-	funcs, err := store.ListFunctions(ctx)
-	if err != nil {
-		return err
-	}
-	byFile := make(map[int64][]*db.Function, 128)
-	for _, f := range funcs {
-		byFile[f.FileID] = append(byFile[f.FileID], f)
-	}
-	files, err := store.ListFiles(ctx)
-	if err != nil {
-		return err
+	ri := graph.RepoIndexFromCtx(ctx)
+	var files []*db.File
+	var byFile func(int64) []*db.Function
+	if ri != nil {
+		files = ri.Files()
+		byFile = ri.FuncsByFile
+	} else {
+		funcs, err := store.ListFunctions(ctx)
+		if err != nil {
+			return err
+		}
+		grouped := make(map[int64][]*db.Function, 128)
+		for _, f := range funcs {
+			grouped[f.FileID] = append(grouped[f.FileID], f)
+		}
+		byFile = func(fid int64) []*db.Function { return grouped[fid] }
+		files, err = store.ListFiles(ctx)
+		if err != nil {
+			return err
+		}
 	}
 	for _, file := range files {
 		select {
@@ -164,7 +193,7 @@ func forEachFileIncludingEmpty(ctx context.Context, store db.Store, p *parser.Pa
 			}
 			continue
 		}
-		fn(file, tree.RootNode(), byFile[file.ID])
+		fn(file, tree.RootNode(), byFile(file.ID))
 	}
 	return nil
 }
@@ -305,13 +334,16 @@ func flushEventBatch(ctx context.Context, store db.Store, logger *log.Logger) {
 // indexer sees declarations, not a link line; a partial scan therefore lands on
 // the fail-open side, which is the direction that avoids false negatives.
 func scanHasEntryPoint(ctx context.Context, store db.Store) bool {
-	funcs, err := store.ListFunctions(ctx)
-	if err != nil {
-		// A store error must not silently switch the pipeline into the
-		// fail-open mode (candidate volume is the expensive direction); keep
-		// the precision policy, and let the caller's own error handling surface
-		// real failures.
-		return true
+	ri := graph.RepoIndexFromCtx(ctx)
+	var funcs []*db.Function
+	if ri != nil {
+		funcs = ri.Functions()
+	} else {
+		var err error
+		funcs, err = store.ListFunctions(ctx)
+		if err != nil {
+			return true
+		}
 	}
 	entries := map[string]bool{}
 	for _, name := range config.Load().EntryPointNames() {
