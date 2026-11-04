@@ -279,7 +279,14 @@ func openStore(ctx context.Context, dbPath string) (db.Store, error) {
 			return nil, err
 		}
 	}
-	d, err := db.Open(ctx, dbPath)
+	opts := db.OpenOptions{}
+	if mb := config.Load().Scan.SQLiteCacheMB; mb > 0 {
+		opts.CacheSizeKB = mb * 1024
+	}
+	if mb := config.Load().Scan.SQLiteMmapMB; mb > 0 {
+		opts.MmapSizeBytes = int64(mb) * 1024 * 1024
+	}
+	d, err := db.OpenWithOptions(ctx, dbPath, opts)
 	if err != nil {
 		return nil, err
 	}

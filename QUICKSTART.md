@@ -314,6 +314,10 @@ cfg_cache_max_total_nodes = 200000
 
 go_mem_limit_mb = 24000
 go_gc_percent = 50
+
+# SQLite page cache / mmap（计入 cgroup，不受 go_mem_limit_mb 约束）
+sqlite_cache_mb = 64
+sqlite_mmap_mb = 256
 ```
 
 - `max_cached_trees` 与 `cfg_cache_*` 必须一起调：CFG 条目会持有 AST 引用，只压 AST 会被 CFG 钉住。

@@ -211,6 +211,19 @@ type Scan struct {
 	//	[scan]
 	//	go_gc_percent = 50
 	GoGCPercent int `toml:"go_gc_percent"`
+	// SQLiteCacheMB bounds SQLite's page cache per connection (PRAGMA
+	// cache_size). 0 = leave SQLite's default. SQLite page cache and WAL both
+	// count toward cgroup memory, so a large repo should set this explicitly;
+	// it is NOT covered by go_mem_limit_mb.
+	//	[scan]
+	//	sqlite_cache_mb = 64
+	SQLiteCacheMB int `toml:"sqlite_cache_mb"`
+	// SQLiteMmapMB sets SQLite's mmap_size (memory-mapped I/O). 0 = leave the
+	// default; positive values map that many MB per connection. mmap pages are
+	// counted in the process RSS on Linux.
+	//	[scan]
+	//	sqlite_mmap_mb = 256
+	SQLiteMmapMB int `toml:"sqlite_mmap_mb"`
 	// EventBatchSize caps the detector event buffer. When the buffer reaches
 	// this count, emitEvent auto-flushes in one transaction instead of waiting
 	// for the phase end, keeping the write-lock duration bounded on large repos.

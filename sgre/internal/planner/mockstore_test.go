@@ -253,9 +253,10 @@ func (s *mockStore) InsertGraphEdge(ctx context.Context, e *db.GraphEdge) (int64
 func (s *mockStore) InsertGraphEdgeBatch(ctx context.Context, edges []db.GraphEdge) (int, error) {
 	inserted := 0
 	for i := range edges {
-		edges[i].ID = s.nextID
+		edge := edges[i]
+		edge.ID = s.nextID
 		s.nextID++
-		s.edges = append(s.edges, &edges[i])
+		s.edges = append(s.edges, &edge)
 		inserted++
 	}
 	return inserted, nil

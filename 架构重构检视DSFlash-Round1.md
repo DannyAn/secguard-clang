@@ -595,7 +595,7 @@ sqlite3 /tmp/mig.db "SELECT scan_id, completion_state FROM scan_runs;"  # 历史
 2. **背压降并发（已修复）**：新增 `internal/concurrency.Gate`，graph/detector/plan 三阶段改为可缩容准入：超过 high 后 inflight 上限变 1（不是暂停准入），降回 low 恢复；检测器延迟阶段同样过 gate；`memory_pressure_enabled=true` + 1MB high 的 6 文件端到端扫描 exit 0。
 3. **RepoIndex 剩余调用点（已修复）**：`argument_type`/`interprocedural`/`race_condition`/`free_summary` 改用 `RepoIndex`；`fileScopeByFile` 与 func-ptr slot→targets 进入 `RepoIndexWithFacts`，alias/call_graph/interproc 共享快照（加载失败自动回退逐 stage 查询）；`secguard plan` 独立命令也继承 CFG 上限与 RepoIndex。
 4. **`estASTBytes`/`pinnedTrees` 校准与更大规模实测**：本轮已做 1700 文件 / 1.02 万与 5.1 万函数的 RSS 实测（见 §10.5）；`estASTBytes` 校准、40K+ 重文件形态与 cgroup 观测仍未做。
-5. **设计文档修订**：DD-2（Node 借用无强制 API）、DD-3（Acquire bool）、DD-7（timeout 来源）、DD-8（scan owner）、DD-10（singleflight 失败状态）、DD-13（SQLite page cache 预算）仍需在设计中定稿；本轮实现用“不缓存/直接降级/WithoutCancel”等保守手段规避，未改变设计文本。
+5. **设计文档修订（部分）**：DD-13（SQLite page cache 预算）已通过 `sqlite_cache_mb` / `sqlite_mmap_mb` 落地并有 PRAGMA 测试；DD-2（Node 借用无强制 API）、DD-3（Acquire bool）、DD-7（timeout 来源）、DD-8（scan owner）、DD-10（singleflight 失败状态）仍需在设计中定稿。
 6. **P2 细节（部分）**：`secguard plan` 已继承 CFG 上限与 RepoIndex；`GetOrBuild` 仍为 test-only 的旧 API，mockStore 的 `InsertGraphEdgeBatch` 指针复用、`agentSchemaTables` 一致性测试仍待补。
 
 ### 10.4 Round 2 验证命令
@@ -683,7 +683,7 @@ memory_low_watermark_mb = 20000
 
 补充注意：
 
-- `go_mem_limit_mb` 只约束 Go heap，**不约束 tree-sitter C 内存、SQLite page cache/WAL**；后者仍计入 cgroup，设计文档尚未给它们预算（DD-13）。
+- `go_mem_limit_mb` 只约束 Go heap，**不约束 tree-sitter C 内存、SQLite page cache/WAL**；后者计入 cgroup，已提供 `sqlite_cache_mb`/`sqlite_mmap_mb` 显式预算（DD-13），但不会自动从 `go_mem_limit_mb` 推导。
 - `max_cached_trees` 与 `cfg_cache_max_entries` 必须一起调：CFG 条目持有 AST 引用，只压 AST 会被 CFG 钉住（见 §10.5.2 第 2 条）。
 - `max_cached_trees=1000` 在 1700 文件仓会导致重解析，墙钟可能上升；如果实测 Go heap 是主因，优先用 `go_mem_limit_mb`/`go_gc_percent`，不要把 AST 压得过低。
 - 需要一份脱敏的现网样本（或按真实平均 LOC/宏/结构体密度生成的“重文件”fixture）才能复现 34GB；本轮 1700 文件合成仓只有 536MB（1.02 万函数）/3.72GB（5.1 万函数），不足以证明 34GB 已被解决。

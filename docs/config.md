@@ -239,6 +239,10 @@ cfg_cache_max_total_nodes = 200000
 go_mem_limit_mb = 24000
 go_gc_percent = 50
 
+# SQLite page cache / mmap（计入 cgroup，但不被 go_mem_limit_mb 约束）
+sqlite_cache_mb = 64
+sqlite_mmap_mb = 256
+
 # 阶段并发（默认 8 / 7 / 8）；大仓可先降到 4 观察峰值。
 graph_builders_concurrency = 4
 detector_concurrency = 4
@@ -255,6 +259,8 @@ plan_concurrency = 4
 | `cfg_cache_max_total_nodes` | `400000` | CFG 缓存总节点上限，防止单个巨型函数吃满预算 |
 | `go_mem_limit_mb` | `0` | Go 运行时软内存上限（GOMEMLIMIT）；`0` = 不设 |
 | `go_gc_percent` | `0` | 覆盖 GOGC；`0` = 运行时默认 |
+| `sqlite_cache_mb` | `0` | 每个 SQLite 连接的 page cache 上限（MB）；`0` = SQLite 默认 |
+| `sqlite_mmap_mb` | `0` | SQLite mmap_size（MB）；`0` = 默认；mmap 页计入进程 RSS |
 | `graph_builders_concurrency` | `7` | 并行图构建器数量 |
 | `detector_concurrency` | `8` | 并行检测器数量 |
 | `plan_concurrency` | `8` | 并行漏洞类型收敛数量 |
