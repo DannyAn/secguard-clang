@@ -87,6 +87,10 @@ type GraphNodeStore interface {
 
 type GraphEdgeStore interface {
 	InsertGraphEdge(ctx context.Context, e *GraphEdge) (int64, error)
+	// InsertGraphEdgeBatch inserts all edges in one BEGIN IMMEDIATE transaction,
+	// a single write-lock acquisition + fsync instead of one autocommit per edge.
+	// A mid-batch error rolls the whole batch back. Returns the number inserted.
+	InsertGraphEdgeBatch(ctx context.Context, edges []GraphEdge) (int, error)
 	ListGraphEdgesByType(ctx context.Context, edgeType string) ([]*GraphEdge, error)
 	ListGraphEdgesFromNode(ctx context.Context, srcID int64, edgeType string) ([]*GraphEdge, error)
 	ListGraphEdgesToNode(ctx context.Context, dstID int64, edgeType string) ([]*GraphEdge, error)
@@ -163,12 +167,25 @@ type ScanRunStore interface {
 	// UpsertScanRun inserts or replaces the scan-level metrics row for a scan_id.
 	// Re-running a scan into the same --output-dir overwrites the prior row.
 	UpsertScanRun(ctx context.Context, r *ScanRun) error
+	// BeginScanRun inserts a 'running' row at scan start (resetting a prior row
+	// for the same scan_id), so an OOM-killed scan is visible as interrupted
+	// instead of absent.
+	BeginScanRun(ctx context.Context, scanID string) error
 	GetScanRun(ctx context.Context, scanID string) (*ScanRun, error)
 	// ListScanRuns returns the most recent runs first, capped at limit (0 = all).
 	ListScanRuns(ctx context.Context, limit int) ([]*ScanRun, error)
 	// SetScanRunAIDuration records the AI-classification wall-clock written by
 	// `report --audit --ai-duration-ms` at the end of the AI stage.
 	SetScanRunAIDuration(ctx context.Context, scanID string, ms int64, source string) error
+	// SetScanRunCompletionState updates the scan's completion state (running,
+	// complete, incomplete, limited, failed) — the unified checkpoint semantics.
+	SetScanRunCompletionState(ctx context.Context, scanID, state string) error
+	// MarkStaleRunningAsFailed flips leftover 'running' scans to 'failed',
+	// excluding the scan that is starting now. Called at scan start to clean up
+	// records from crashed/interrupted scans without touching a live one.
+	MarkStaleRunningAsFailed(ctx context.Context, excludeScanID string) (int, error)
+	InsertIncompleteTask(ctx context.Context, task *ScanIncompleteTask) error
+	ListIncompleteTasks(ctx context.Context, scanID string) ([]*ScanIncompleteTask, error)
 }
 
 type InlineSuppressionStore interface {

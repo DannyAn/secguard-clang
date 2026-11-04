@@ -68,7 +68,11 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 	}
 
 	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
-	flows, files, scopes, hsFlows := f.buildFlows(ctx, byFunc, fnByID, fileByID)
+	// The hoisted nodes returned by buildFlows are used throughout Apply, so
+	// the per-Apply parse cache must outlive buildFlows and close here.
+	cache := newFileParseCache(f.parser)
+	defer cache.Close()
+	flows, files, scopes, hsFlows := f.buildFlows(ctx, cache, byFunc, fnByID, fileByID)
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -184,12 +188,11 @@ func (f *DefiniteInitFilter) candidateOrigin(eventsByID map[int64]*db.SecurityEv
 	return props.Origin
 }
 
-func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, fnByID map[int64]*db.Function, fileByID map[int64]*db.File) (map[int64]*flowResult, map[int64]*hoistedUninitFile, map[int64]func(string) bool, map[int64]*heapStructFlow) {
+func (f *DefiniteInitFilter) buildFlows(ctx context.Context, cache *fileParseCache, byFunc map[int64][]Candidate, fnByID map[int64]*db.Function, fileByID map[int64]*db.File) (map[int64]*flowResult, map[int64]*hoistedUninitFile, map[int64]func(string) bool, map[int64]*heapStructFlow) {
 	flows := make(map[int64]*flowResult, len(byFunc))
 	files := make(map[int64]*hoistedUninitFile)
 	scopes := make(map[int64]func(string) bool, len(byFunc))
 	hsFlows := make(map[int64]*heapStructFlow, len(byFunc))
-	cache := newFileParseCache(f.parser)
 	// The macro write-summaries must be WHOLE-TREE: a loop macro defined in a
 	// .h header (POOL_FOR_ALL, POOL_FOR, SLL_Scan…) is invisible to the
 	// per-file WriteSummaries of the .c that calls it, so the macro's
@@ -217,8 +220,9 @@ func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]
 		if body.Kind() != "compound_statement" {
 			continue
 		}
-		flows[fid] = buildDefiniteInitFlow(f.cfgCache, fn, body, macroWrites)
-		hsFlows[fid] = buildHeapStructFlow(f.cfgCache, fn, body)
+		tree := cache.treeFor(file)
+		flows[fid] = buildDefiniteInitFlow(ctx, f.cfgCache, fn, body, tree, macroWrites)
+		hsFlows[fid] = buildHeapStructFlow(ctx, f.cfgCache, fn, body, tree)
 		scopes[fid] = scopeOracleOf(parser.FunctionBoundNamesByBody(body))
 		if _, ok := files[file.ID]; !ok {
 			files[file.ID] = hoistUninitFile(root)
@@ -231,8 +235,8 @@ func (f *DefiniteInitFilter) buildFlows(ctx context.Context, byFunc map[int64][]
 // stack variables: gen = a local declaration without initializer, kill = any
 // subsequent write to the variable (full or field/subscript, plus a
 // function-like macro output argument), copy = `v = w`.
-func buildDefiniteInitFlow(cfgCache *graph.CFGCache, fn *db.Function, body parser.Node, macroWrites map[string]macros.WriteSummary) *flowResult {
-	cfg := graph.BuildStmtCFGWithCache(cfgCache, fn.ID, body, fn.EndLine)
+func buildDefiniteInitFlow(ctx context.Context, cfgCache *graph.CFGCache, fn *db.Function, body parser.Node, tree *parser.Tree, macroWrites map[string]macros.WriteSummary) *flowResult {
+	cfg, lease := acquirePlannerCFG(ctx, cfgCache, tree, fn, body)
 	aliases := pointerAliases(body)
 
 	// Effects are computed per CFG node from that node's OWN statement — never
@@ -306,6 +310,11 @@ func buildDefiniteInitFlow(cfgCache *graph.CFGCache, fn *db.Function, body parse
 	nodeIn := runDataflow(cfg, effects, nil, nil)
 	res := &flowResult{cfg: cfg, nodeIn: nodeIn, genAt: genAt(cfg, effects)}
 	res.must, res.mustGenAt = runMustDataflow(cfg, effects, nil)
+	res.snapshotFlow(cfg)
+	if lease != nil {
+		lease.Release()
+	}
+	res.cfg = nil
 	return res
 }
 

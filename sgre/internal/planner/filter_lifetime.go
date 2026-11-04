@@ -50,6 +50,7 @@ func (f *LifetimeFilter) Apply(ctx context.Context, candidates []Candidate) ([]C
 	if err != nil {
 		return nil, nil, err
 	}
+	defer releaseFlowResults(flows)
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -81,6 +82,7 @@ func (f *LifetimeFilter) Apply(ctx context.Context, candidates []Candidate) ([]C
 func (f *LifetimeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate) (map[int64]*flowResult, error) {
 	flows := make(map[int64]*flowResult, len(byFunc))
 	cache := newFileParseCache(f.parser)
+	defer cache.Close()
 	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
 	// Batch-load every candidate's event once: the per-candidate GetEventByID
 	// below was an N+1 query storm.
@@ -154,6 +156,7 @@ func (f *LifetimeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Cand
 		// free(p) dangles every alias of p, so propagate the freed source through
 		// the ALIAS edges the graph layer persists (q = p; free(p); *q).
 		expandGenToAliases(genByLine, aliases[fid])
+		analyzer.tree = cache.treeFor(file)
 		flows[fid] = analyzer.analyzeFlowMust(ctx, fn, body, root, genByLine, killByLine, false, false)
 	}
 	return flows, nil

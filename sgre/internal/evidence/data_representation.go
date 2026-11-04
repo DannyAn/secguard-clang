@@ -67,7 +67,7 @@ func (d *DataRepresentationDetector) Detect(ctx context.Context) (DetectResult, 
 	typedefs := buildGlobalTypedefs(ctx, d.store, d.parser)
 	interpret := buildComparatorInterpretation(ctx, d.store, d.parser)
 
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		globals := map[string]string{}
 		locals := map[int][]scopedVarDecl{}
 		for _, decl := range root.FindAll("declaration") {
@@ -164,22 +164,22 @@ func buildComparatorInterpretation(ctx context.Context, store db.Store, p *parse
 		if err != nil {
 			continue
 		}
-		tree, err := p.ParseCached(source, file.Path)
-		if err != nil {
+		if err := p.WithParseCached(source, file.Path, func(tree *parser.Tree) {
+			for _, fn := range tree.RootNode().FindAll("function_definition") {
+				name, _ := functionParamsFrom(fn)
+				if name == "" {
+					continue
+				}
+				voidParams := voidParamNames(fn)
+				if len(voidParams) == 0 {
+					continue
+				}
+				if ci, ok := interpretInfo(fn, voidParams); ok {
+					m[name] = ci
+				}
+			}
+		}); err != nil {
 			continue
-		}
-		for _, fn := range tree.RootNode().FindAll("function_definition") {
-			name, _ := functionParamsFrom(fn)
-			if name == "" {
-				continue
-			}
-			voidParams := voidParamNames(fn)
-			if len(voidParams) == 0 {
-				continue
-			}
-			if ci, ok := interpretInfo(fn, voidParams); ok {
-				m[name] = ci
-			}
 		}
 	}
 	return m

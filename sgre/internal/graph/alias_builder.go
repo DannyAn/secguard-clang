@@ -23,13 +23,33 @@ func BuildInterproceduralAlias(ctx context.Context, store db.Store, p *parser.Pa
 	if store == nil || p == nil {
 		return g, nil
 	}
-	fns, err := store.ListFunctions(ctx)
-	if err != nil {
-		return g, err
-	}
-	files, err := store.ListFiles(ctx)
-	if err != nil {
-		return g, err
+	// The alias builder needs each file's local facts and bodies in a second
+	// cross-file pass, so it owns one ParseCached borrow per file until both
+	// passes finish.
+	var heldTrees []*parser.Tree
+	defer func() {
+		for _, t := range heldTrees {
+			if t != nil {
+				t.Release()
+			}
+		}
+	}()
+	ri := RepoIndexFromCtx(ctx)
+	var fns []*db.Function
+	var files []*db.File
+	if ri != nil {
+		fns = ri.Functions()
+		files = ri.Files()
+	} else {
+		var err error
+		fns, err = store.ListFunctions(ctx)
+		if err != nil {
+			return g, err
+		}
+		files, err = store.ListFiles(ctx)
+		if err != nil {
+			return g, err
+		}
 	}
 	fileByID := make(map[int64]*db.File, len(files))
 	for _, f := range files {
@@ -44,7 +64,9 @@ func BuildInterproceduralAlias(ctx context.Context, store db.Store, p *parser.Pa
 	// `static` g (one object per file) is keyed apart from an `extern` g (one
 	// object program-wide).
 	fileScopeByFile := make(map[int64]map[string]string)
-	if fsv, err := store.ListFileScopeVariables(ctx); err == nil {
+	if ri != nil && ri.HasFileScope() {
+		fileScopeByFile = ri.FileScopeByFile()
+	} else if fsv, err := store.ListFileScopeVariables(ctx); err == nil {
 		for _, v := range fsv {
 			m := fileScopeByFile[v.FileID]
 			if m == nil {
@@ -80,7 +102,10 @@ func BuildInterproceduralAlias(ctx context.Context, store db.Store, p *parser.Pa
 		if file == nil {
 			continue
 		}
-		root, bodies := parseFileBodies(p, file)
+		root, bodies, tree := parseFileBodies(p, file)
+		if tree != nil {
+			heldTrees = append(heldTrees, tree)
+		}
 		fw.root = root
 		fw.bodies = bodies
 		for _, fn := range fw.funcs {
@@ -178,15 +203,17 @@ func paramNamesOf(body parser.Node) []string {
 }
 
 // parseFileBodies parses file once and returns the root + per-function
-// compound_statement bodies keyed by start line.
-func parseFileBodies(p *parser.Parser, file *db.File) (parser.Node, map[int]parser.Node) {
+// compound_statement bodies keyed by start line. The returned tree carries the
+// ParseCached borrow; the caller owns it and must Release it once both alias
+// passes are done.
+func parseFileBodies(p *parser.Parser, file *db.File) (parser.Node, map[int]parser.Node, *parser.Tree) {
 	src, err := readFile(file.Path)
 	if err != nil {
-		return parser.Node{}, nil
+		return parser.Node{}, nil, nil
 	}
 	tree, err := p.ParseCached(src, file.Path)
 	if err != nil {
-		return parser.Node{}, nil
+		return parser.Node{}, nil, nil
 	}
 	root := tree.RootNode()
 	bodies := make(map[int]parser.Node)
@@ -195,7 +222,7 @@ func parseFileBodies(p *parser.Parser, file *db.File) (parser.Node, map[int]pars
 			bodies[def.StartLine()] = *body
 		}
 	}
-	return root, bodies
+	return root, bodies, tree
 }
 
 // extractFunctionAliases walks fn's body and records the function-local

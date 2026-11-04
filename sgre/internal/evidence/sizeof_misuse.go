@@ -49,7 +49,7 @@ func (d *SizeofMisuseDetector) Detect(ctx context.Context) (DetectResult, error)
 	// per function below (a translation unit's local typedef shadows a header's).
 	global := buildGlobalTypedefs(ctx, d.store, d.parser)
 
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		sizeExprs := root.FindAll("sizeof_expression")
 		ptrDecls := root.FindAll("pointer_declarator")
 		paramDecls := root.FindAll("parameter_declaration")
@@ -123,7 +123,7 @@ type pointerDecl struct {
 // full detector still runs rather than risking a silent false-negative.
 func (d *SizeofMisuseDetector) hasSizeofPointerCandidate(ctx context.Context) bool {
 	found := false
-	err := forEachFileIncludingEmpty(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFileIncludingEmpty(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		if found {
 			return
 		}

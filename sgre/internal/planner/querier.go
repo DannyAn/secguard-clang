@@ -36,6 +36,7 @@ func (q *querier) nullFlowFor(ctx context.Context, fn *db.Function) *flowResult 
 		return nil
 	}
 	cache := newFileParseCache(q.parser)
+	defer cache.Close()
 	file, err := q.store.GetFileByID(ctx, fn.FileID)
 	if err != nil || file == nil {
 		return nil
@@ -98,6 +99,7 @@ func (q *querier) IntervalAt(ctx context.Context, fn *db.Function, v string, lin
 		return graph.Interval{Top: true}, false
 	}
 	cache := newFileParseCache(q.parser)
+	defer cache.Close()
 	file, err := q.store.GetFileByID(ctx, fn.FileID)
 	if err != nil || file == nil {
 		return graph.Interval{Top: true}, false
@@ -106,10 +108,11 @@ func (q *querier) IntervalAt(ctx context.Context, fn *db.Function, v string, lin
 	if body.Kind() != "compound_statement" {
 		return graph.Interval{Top: true}, false
 	}
-	flow := analyzeRangesWithCalls(q.cfgCache, fn, body, nil)
+	flow := analyzeRangesWithCalls(ctx, q.cfgCache, cache.treeFor(file), fn, body, nil)
 	if flow == nil {
 		return graph.Interval{Top: true}, false
 	}
+	defer flow.release()
 	iv := flow.at(v, line)
 	if iv.isTop() {
 		return graph.Interval{Top: true}, false
@@ -129,6 +132,7 @@ func (q *querier) TypeOf(ctx context.Context, fn *db.Function, v string) (graph.
 		return graph.Type{}, false
 	}
 	cache := newFileParseCache(q.parser)
+	defer cache.Close()
 	file, err := q.store.GetFileByID(ctx, fn.FileID)
 	if err != nil || file == nil {
 		return graph.Type{}, false

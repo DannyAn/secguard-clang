@@ -61,6 +61,7 @@ func (f *IntOverflowGuardFilter) Apply(ctx context.Context, candidates []Candida
 	// created a fresh fileParseCache per candidate, re-reading and re-parsing
 	// the same file once per candidate (an O(candidates × parse) cost).
 	cache := newFileParseCache(f.parser)
+	defer cache.Close()
 	bodies := make(map[int64]parser.Node, len(byFunc))
 	paramsByFunc := make(map[int64]map[string]int, len(byFunc))
 	for fid := range byFunc {
@@ -78,7 +79,8 @@ func (f *IntOverflowGuardFilter) Apply(ctx context.Context, candidates []Candida
 			paramsByFunc[fid] = cache.paramsFor(file, fn)
 		}
 	}
-	rangeFlows := f.buildRangeFlows(byFunc, fnByID, bodies)
+	rangeFlows := f.buildRangeFlows(ctx, cache, fileByID, byFunc, fnByID, bodies)
+	defer releaseRangeFlows(rangeFlows)
 
 	// The shared callsite census supplies caller-constant bounds for parameter
 	// operands; absent a cache (unit-test construction) the bound is skipped.
@@ -151,7 +153,7 @@ func (f *IntOverflowGuardFilter) Apply(ctx context.Context, candidates []Candida
 
 // buildRangeFlows runs the interval analysis once per candidate function,
 // reusing the already-parsed bodies.
-func (f *IntOverflowGuardFilter) buildRangeFlows(byFunc map[int64][]Candidate, fnByID map[int64]*db.Function, bodies map[int64]parser.Node) map[int64]*rangeFlow {
+func (f *IntOverflowGuardFilter) buildRangeFlows(ctx context.Context, cache *fileParseCache, fileByID map[int64]*db.File, byFunc map[int64][]Candidate, fnByID map[int64]*db.Function, bodies map[int64]parser.Node) map[int64]*rangeFlow {
 	flows := make(map[int64]*rangeFlow, len(byFunc))
 	for fid := range byFunc {
 		fn := fnByID[fid]
@@ -162,7 +164,7 @@ func (f *IntOverflowGuardFilter) buildRangeFlows(byFunc map[int64][]Candidate, f
 		if !ok {
 			continue
 		}
-		flows[fid] = analyzeRangesWithCalls(f.cfgCache, fn, body, nil)
+		flows[fid] = analyzeRangesWithCalls(ctx, f.cfgCache, cache.treeFor(fileByID[fn.FileID]), fn, body, nil)
 	}
 	return flows
 }

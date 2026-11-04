@@ -52,6 +52,7 @@ func (f *DoubleFreeFilter) Apply(ctx context.Context, candidates []Candidate) ([
 	if err != nil {
 		return nil, nil, err
 	}
+	defer releaseFlowResults(flows)
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -101,6 +102,7 @@ func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Ca
 	flows := make(map[int64]*flowResult, len(byFunc))
 	exclusive := make(map[int64]bool)
 	cache := newFileParseCache(f.parser)
+	defer cache.Close()
 	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
 	// Batch-load every candidate's event once: the per-candidate GetEventByID
 	// below was an N+1 query storm.
@@ -174,6 +176,7 @@ func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Ca
 		// free(p) dangles every alias of p, so the first-free source also reaches
 		// a later free(q) where q aliases p (q = p; free(p); free(q)).
 		expandGenToAliases(genByLine, aliases[fid])
+		analyzer.tree = cache.treeFor(file)
 		flows[fid] = analyzer.analyzeFlowMust(ctx, fn, body, root, genByLine, killByLine, false, false)
 	}
 	return flows, exclusive, nil

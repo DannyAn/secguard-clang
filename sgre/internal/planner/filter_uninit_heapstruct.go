@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"context"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
@@ -24,6 +25,8 @@ import (
 //     initialized", used to drop).
 type heapStructFlow struct {
 	cfg         *graph.StmtCFG
+	spans       []flowSpan
+	startLines  []int
 	mustSrc     map[int]map[string]bool
 	mustSrcGen  map[int]map[string]bool
 	mayInit     map[int]map[string]map[int]bool
@@ -33,7 +36,7 @@ type heapStructFlow struct {
 }
 
 func (h *heapStructFlow) sourceOnEveryPath(v string, line int) bool {
-	n := h.cfg.NodeAt(line)
+	n := nodeAtSpans(h.spans, line, 0)
 	if n == nil {
 		return false
 	}
@@ -44,7 +47,7 @@ func (h *heapStructFlow) sourceOnEveryPath(v string, line int) bool {
 }
 
 func (h *heapStructFlow) initOnAnyPath(v string, line int) bool {
-	n := h.cfg.NodeAt(line)
+	n := nodeAtSpans(h.spans, line, 0)
 	if n == nil {
 		return false
 	}
@@ -55,7 +58,7 @@ func (h *heapStructFlow) initOnAnyPath(v string, line int) bool {
 }
 
 func (h *heapStructFlow) initOnEveryPath(v string, line int) bool {
-	n := h.cfg.NodeAt(line)
+	n := nodeAtSpans(h.spans, line, 0)
 	if n == nil {
 		return false
 	}
@@ -66,8 +69,8 @@ func (h *heapStructFlow) initOnEveryPath(v string, line int) bool {
 }
 
 // buildHeapStructFlow runs the source and init lattices over fn's statement CFG.
-func buildHeapStructFlow(cfgCache *graph.CFGCache, fn *db.Function, body parser.Node) *heapStructFlow {
-	cfg := graph.BuildStmtCFGWithCache(cfgCache, fn.ID, body, fn.EndLine)
+func buildHeapStructFlow(ctx context.Context, cfgCache *graph.CFGCache, fn *db.Function, body parser.Node, tree *parser.Tree) *heapStructFlow {
+	cfg, lease := acquirePlannerCFG(ctx, cfgCache, tree, fn, body)
 	srcEff := make(map[int]*nodeEffects, len(cfg.Nodes))
 	initEff := make(map[int]*nodeEffects, len(cfg.Nodes))
 	for _, n := range cfg.Nodes {
@@ -94,7 +97,7 @@ func buildHeapStructFlow(cfgCache *graph.CFGCache, fn *db.Function, body parser.
 	mayInit := runDataflow(cfg, initEff, nil, nil)
 	mayInitGen := genAt(cfg, initEff)
 	mustInit, mustInitGen := runMustDataflow(cfg, initEff, nil)
-	return &heapStructFlow{
+	res := &heapStructFlow{
 		cfg:         cfg,
 		mustSrc:     mustSrc,
 		mustSrcGen:  mustSrcGen,
@@ -103,6 +106,12 @@ func buildHeapStructFlow(cfgCache *graph.CFGCache, fn *db.Function, body parser.
 		mustInit:    mustInit,
 		mustInitGen: mustInitGen,
 	}
+	res.spans, res.startLines = snapshotSpans(cfg)
+	if lease != nil {
+		lease.Release()
+	}
+	res.cfg = nil
+	return res
 }
 
 func newEffects() *nodeEffects {

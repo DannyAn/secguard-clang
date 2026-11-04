@@ -51,7 +51,7 @@ func (d *PathTraversalDetector) Detect(ctx context.Context) (DetectResult, error
 	globalConsts := buildGlobalConstants(ctx, d.store, d.parser)
 	stringMacros := buildGlobalStringMacros(ctx, d.store, d.parser)
 
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		calls := root.FindAll("call_expression")
 		fileConsts := buildFileStringConstants(root)
 		macros := parser.CollectMacroValues(root)

@@ -43,7 +43,7 @@ func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error)
 	// header-defined non-zero constant resolves exactly like a literal.
 	globalConsts := buildGlobalConstants(ctx, d.store, d.parser)
 
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		typedefs := globalTypedefs.clone()
 		typedefs.addRoot(root)
 		globals, scopes := buildIntegerOverflowTypeScopes(root, funcs, typedefs)

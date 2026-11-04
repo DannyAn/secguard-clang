@@ -221,6 +221,55 @@ skip_detectors = ["unchecked_return", "memory_leak"]
 > - 与 `[disabled_types]` 一样，这是**扫描级**配置：`scan` / `diff` / `pr` / `mr`
 >   共用同一套流水线，因此都生效。
 
+### `[scan]` 大仓内存 / 并发预算（v0.12.1+）
+
+```toml
+[scan]
+# 进程内存超过 high 后，新任务最多只准入 1 个；降到 low 后恢复。
+memory_pressure_enabled = true
+memory_high_watermark_mb = 26000
+memory_low_watermark_mb = 20000
+
+# AST / CFG 预算：两者要一起调（CFG 条目会持有 AST 引用）。
+max_cached_trees = 1000
+cfg_cache_max_entries = 1000
+cfg_cache_max_total_nodes = 200000
+
+# Go heap 预算：只约束 Go 侧（事件/候选/临时结构），不约束 tree-sitter/SQLite。
+go_mem_limit_mb = 24000
+go_gc_percent = 50
+
+# SQLite page cache / mmap（计入 cgroup，但不被 go_mem_limit_mb 约束）
+sqlite_cache_mb = 64
+sqlite_mmap_mb = 256
+
+# 阶段并发（默认 8 / 7 / 8）；大仓可先降到 4 观察峰值。
+graph_builders_concurrency = 4
+detector_concurrency = 4
+plan_concurrency = 4
+```
+
+| 配置 | 默认 | 作用 |
+|---|---|---|
+| `memory_pressure_enabled` | `false` | 开启 cgroup/RSS 回压；超过 high 后并发降到 1（不是只暂停准入），低于 low 恢复 |
+| `memory_high_watermark_mb` | `0` | 回压触发阈值；`0` = 关闭 |
+| `memory_low_watermark_mb` | `0` | 恢复阈值；`0`/非法值归一化为 high 的 75% |
+| `max_cached_trees` | `4000` | parser AST 缓存条目上限；负数保留无界旧行为 |
+| `cfg_cache_max_entries` | `4000` | 语句级 CFG 缓存条目上限；只淘汰无 lease 的条目 |
+| `cfg_cache_max_total_nodes` | `400000` | CFG 缓存总节点上限，防止单个巨型函数吃满预算 |
+| `go_mem_limit_mb` | `0` | Go 运行时软内存上限（GOMEMLIMIT）；`0` = 不设 |
+| `go_gc_percent` | `0` | 覆盖 GOGC；`0` = 运行时默认 |
+| `sqlite_cache_mb` | `0` | 每个 SQLite 连接的 page cache 上限（MB）；`0` = SQLite 默认 |
+| `sqlite_mmap_mb` | `0` | SQLite mmap_size（MB）；`0` = 默认；mmap 页计入进程 RSS |
+| `graph_builders_concurrency` | `7` | 并行图构建器数量 |
+| `detector_concurrency` | `8` | 并行检测器数量 |
+| `plan_concurrency` | `8` | 并行漏洞类型收敛数量 |
+
+> 注意：
+> - `go_mem_limit_mb` **不约束** tree-sitter 的 C AST 和 SQLite page cache；这两部分仍计入 cgroup。要压 C 侧请调 `max_cached_trees` / `cfg_cache_*`。
+> - 只压 `max_cached_trees` 可能因 CFG 条目仍持有 AST 而无效，甚至因重解析抬高 RSS；必须同时压 CFG 预算。
+> - 1700 文件仓建议先 `max_cached_trees=1000`、`cfg_cache_max_entries=1000`；如果实测 Go heap 是主因，优先用 `go_mem_limit_mb`/`go_gc_percent`，不要把 AST 压得过低。
+
 ### `[allocators]` / `[deallocators]` — 项目分配/释放函数（v0.7.4）
 
 ```toml

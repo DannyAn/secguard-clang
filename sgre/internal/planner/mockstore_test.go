@@ -9,19 +9,19 @@ import (
 )
 
 type mockStore struct {
-	files     []*db.File
-	funcs     []*db.Function
-	funcDecls []*db.FunctionDeclaration
-	events    []*db.SecurityEvent
-	edges     []*db.GraphEdge
-	nodes     []*db.GraphNode
-	locs      []*db.Location
-	findings  []*db.Finding
-	summaries map[int64]*db.FunctionSummary
-	suppressions []db.InlineSuppression
-	funcPtrWrites []db.FuncPtrWrite
+	files             []*db.File
+	funcs             []*db.Function
+	funcDecls         []*db.FunctionDeclaration
+	events            []*db.SecurityEvent
+	edges             []*db.GraphEdge
+	nodes             []*db.GraphNode
+	locs              []*db.Location
+	findings          []*db.Finding
+	summaries         map[int64]*db.FunctionSummary
+	suppressions      []db.InlineSuppression
+	funcPtrWrites     []db.FuncPtrWrite
 	candidateVerdicts []db.CandidateVerdict
-	nextID    int64
+	nextID            int64
 }
 
 func newMockStore() *mockStore {
@@ -249,6 +249,17 @@ func (s *mockStore) InsertGraphEdge(ctx context.Context, e *db.GraphEdge) (int64
 	s.nextID++
 	s.edges = append(s.edges, e)
 	return e.ID, nil
+}
+func (s *mockStore) InsertGraphEdgeBatch(ctx context.Context, edges []db.GraphEdge) (int, error) {
+	inserted := 0
+	for i := range edges {
+		edge := edges[i]
+		edge.ID = s.nextID
+		s.nextID++
+		s.edges = append(s.edges, &edge)
+		inserted++
+	}
+	return inserted, nil
 }
 func (s *mockStore) ListGraphEdgesByType(ctx context.Context, et string) ([]*db.GraphEdge, error) {
 	var result []*db.GraphEdge
@@ -521,6 +532,7 @@ func (s *mockStore) MarkAIStageDone(ctx context.Context, scanID, vulnType string
 }
 
 func (s *mockStore) UpsertScanRun(ctx context.Context, r *db.ScanRun) error { return nil }
+func (s *mockStore) BeginScanRun(ctx context.Context, scanID string) error  { return nil }
 func (s *mockStore) GetScanRun(ctx context.Context, scanID string) (*db.ScanRun, error) {
 	return nil, nil
 }
@@ -529,6 +541,18 @@ func (s *mockStore) ListScanRuns(ctx context.Context, limit int) ([]*db.ScanRun,
 }
 func (s *mockStore) SetScanRunAIDuration(ctx context.Context, scanID string, ms int64, source string) error {
 	return nil
+}
+func (s *mockStore) SetScanRunCompletionState(ctx context.Context, scanID, state string) error {
+	return nil
+}
+func (s *mockStore) MarkStaleRunningAsFailed(ctx context.Context, excludeScanID string) (int, error) {
+	return 0, nil
+}
+func (s *mockStore) InsertIncompleteTask(ctx context.Context, task *db.ScanIncompleteTask) error {
+	return nil
+}
+func (s *mockStore) ListIncompleteTasks(ctx context.Context, scanID string) ([]*db.ScanIncompleteTask, error) {
+	return nil, nil
 }
 
 var _ = fmt.Sprintf

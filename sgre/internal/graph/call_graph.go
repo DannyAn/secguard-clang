@@ -16,6 +16,7 @@ type CallGraphBuilder struct {
 	store  db.Store
 	parser *parser.Parser
 	logger *log.Logger
+	edges  *edgeBatchWriter
 }
 
 type BuildResult struct {
@@ -29,10 +30,18 @@ func NewCallGraphBuilder(store db.Store, p *parser.Parser, logger *log.Logger) *
 
 func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	result := &BuildResult{}
+	b.edges = newEdgeBatchWriter(b.store, b.logger, 0)
 
-	funcs, err := b.store.ListFunctions(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("call graph: list functions: %w", err)
+	ri := RepoIndexFromCtx(ctx)
+	var funcs []*db.Function
+	if ri != nil {
+		funcs = ri.Functions()
+	} else {
+		var err error
+		funcs, err = b.store.ListFunctions(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("call graph: list functions: %w", err)
+		}
 	}
 
 	// C allows distinct static functions with the same name across files; a
@@ -47,7 +56,9 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	// Function-pointer slot -> target wirings (GAP-02), loaded once so an
 	// indirect call `ops->open(p)` resolves to a real CALL edge.
 	slotTargets := make(map[string][]string)
-	if fpWrites, ferr := b.store.ListFuncPtrWrites(ctx); ferr == nil {
+	if ri != nil && ri.HasFuncPtrTargets() {
+		slotTargets = ri.FuncPtrTargets()
+	} else if fpWrites, ferr := b.store.ListFuncPtrWrites(ctx); ferr == nil {
 		for _, w := range fpWrites {
 			slotTargets[w.SlotName] = append(slotTargets[w.SlotName], w.TargetName)
 		}
@@ -63,6 +74,7 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	// "unreachable" (a systematic false negative across every vuln type).
 	addrRefs := make(map[string]bool)
 
+	var err error
 	err = forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
 		callNodes := root.FindAll("call_expression")
 
@@ -154,6 +166,7 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 		}
 	}
 
+	b.edges.flush(ctx)
 	return result, nil
 }
 
@@ -162,13 +175,8 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 // source node as an entry point.
 func (b *CallGraphBuilder) insertSelfEdge(ctx context.Context, nodeID int64) error {
 	props := marshalProps(b.logger, "ADDR_TAKEN", map[string]string{"indirect": "true"})
-	_, err := b.store.InsertGraphEdge(ctx, &db.GraphEdge{
-		SrcID:      nodeID,
-		DstID:      nodeID,
-		EdgeType:   "ADDR_TAKEN",
-		Properties: props,
-	})
-	return err
+	b.edges.add(ctx, nodeID, nodeID, "ADDR_TAKEN", props)
+	return nil
 }
 
 // collectAddrRefNames returns the names of functions whose address is referenced
@@ -216,16 +224,7 @@ func isDirectCallee(call parser.Node, id parser.Node) bool {
 // line (previously it stamped the callee function's start line, a latent bug).
 func (b *CallGraphBuilder) insertCallEdge(ctx context.Context, f *db.Function, callerNodeID, calleeNodeID int64, callLine int, result *BuildResult) {
 	props := marshalProps(b.logger, "CALL", map[string]int{"call_line": callLine})
-	_, err := b.store.InsertGraphEdge(ctx, &db.GraphEdge{
-		SrcID:      callerNodeID,
-		DstID:      calleeNodeID,
-		EdgeType:   "CALL",
-		Properties: props,
-	})
-	if err != nil {
-		warnEdge(b.logger, "CALL", f.Name, err)
-		return
-	}
+	b.edges.add(ctx, callerNodeID, calleeNodeID, "CALL", props)
 	result.EdgesCreated++
 }
 
@@ -234,16 +233,7 @@ func (b *CallGraphBuilder) insertCallEdge(ctx context.Context, f *db.Function, c
 // edge from a direct call (GAP-02).
 func (b *CallGraphBuilder) insertCallEdgeIndirect(ctx context.Context, f *db.Function, callerNodeID, calleeNodeID int64, callLine int, slot string, result *BuildResult) {
 	props := marshalProps(b.logger, "CALL", map[string]any{"call_line": callLine, "indirect": "true", "via": slot})
-	_, err := b.store.InsertGraphEdge(ctx, &db.GraphEdge{
-		SrcID:      callerNodeID,
-		DstID:      calleeNodeID,
-		EdgeType:   "CALL",
-		Properties: props,
-	})
-	if err != nil {
-		warnEdge(b.logger, "CALL", f.Name, err)
-		return
-	}
+	b.edges.add(ctx, callerNodeID, calleeNodeID, "CALL", props)
 	result.EdgesCreated++
 }
 
@@ -292,9 +282,15 @@ const maxAddrRefFragmentBytes = 4 << 20
 // enters a normal build; the walker never indexes the fragment, but the
 // address-taken fact depends on the text, not the extension.
 func (b *CallGraphBuilder) collectAddrRefs(ctx context.Context, funcMap map[string][]int64, addrRefs map[string]bool) error {
-	files, err := b.store.ListFiles(ctx)
-	if err != nil {
-		return fmt.Errorf("call graph: list files: %w", err)
+	var files []*db.File
+	if ri := RepoIndexFromCtx(ctx); ri != nil {
+		files = ri.Files()
+	} else {
+		var err error
+		files, err = b.store.ListFiles(ctx)
+		if err != nil {
+			return fmt.Errorf("call graph: list files: %w", err)
+		}
 	}
 	visited := make(map[string]bool, len(files))
 	for _, file := range files {
@@ -305,29 +301,29 @@ func (b *CallGraphBuilder) collectAddrRefs(ctx context.Context, funcMap map[stri
 		if err != nil {
 			continue
 		}
-		tree, err := b.parser.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-		for name := range collectAddrRefNames(tree.RootNode(), funcMap) {
-			addrRefs[name] = true
-		}
-		for _, fragment := range parser.QuotedIncludePaths(file.Path, tree.RootNode()) {
-			if visited[fragment] {
-				continue
-			}
-			visited[fragment] = true
-			src, err := os.ReadFile(fragment)
-			if err != nil || len(src) == 0 || len(src) > maxAddrRefFragmentBytes {
-				continue
-			}
-			ftree, err := b.parser.ParseCached(src, fragment)
-			if err != nil {
-				continue
-			}
-			for name := range collectAddrRefNames(ftree.RootNode(), funcMap) {
+		if err := b.parser.WithParseCached(source, file.Path, func(tree *parser.Tree) {
+			for name := range collectAddrRefNames(tree.RootNode(), funcMap) {
 				addrRefs[name] = true
 			}
+			for _, fragment := range parser.QuotedIncludePaths(file.Path, tree.RootNode()) {
+				if visited[fragment] {
+					continue
+				}
+				visited[fragment] = true
+				src, err := os.ReadFile(fragment)
+				if err != nil || len(src) == 0 || len(src) > maxAddrRefFragmentBytes {
+					continue
+				}
+				if err := b.parser.WithParseCached(src, fragment, func(ftree *parser.Tree) {
+					for name := range collectAddrRefNames(ftree.RootNode(), funcMap) {
+						addrRefs[name] = true
+					}
+				}); err != nil {
+					continue
+				}
+			}
+		}); err != nil {
+			continue
 		}
 	}
 	return nil

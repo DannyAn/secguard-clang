@@ -97,7 +97,7 @@ func (d *IntegerOverflowDetector) Detect(ctx context.Context) (DetectResult, err
 		d.logger.Warn("persist bounded return summary failed", "err", err)
 	}
 
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		typedefs := globalTypedefs.clone()
 		typedefs.addRoot(root)
 		globals, scopes := buildIntegerOverflowTypeScopes(root, funcs, typedefs)

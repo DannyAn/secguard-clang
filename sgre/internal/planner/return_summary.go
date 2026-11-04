@@ -68,6 +68,13 @@ func newReturnSummaryResolver(ctx context.Context, store db.Store, p *parser.Par
 	return r
 }
 
+// Close releases the parse-cache borrows held by this resolver.
+func (r *returnSummaryResolver) Close() {
+	if r != nil && r.cache != nil {
+		r.cache.Close()
+	}
+}
+
 // buildGlobalConstants parses every file in the scan tree and merges their
 // compile-time constant environments into one. A symbol defined identically
 // across files (the common case — a shared header) survives the merge; a
@@ -142,7 +149,8 @@ func (r *returnSummaryResolver) funcNonZero(fnID int64) bool {
 		return false
 	}
 
-	flow := analyzeRangesWithCalls(r.cfgCache, fn, body, nil)
+	flow := analyzeRangesWithCalls(context.Background(), r.cfgCache, r.cache.treeFor(file), fn, body, nil)
+	defer flow.release()
 	consts := r.globalConsts
 	if consts == nil {
 		consts = parser.CollectConstantSymbols(root)

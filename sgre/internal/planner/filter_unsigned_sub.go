@@ -50,6 +50,7 @@ func (f *UnsignedSubGuardFilter) Apply(ctx context.Context, candidates []Candida
 
 	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
 	cache := newFileParseCache(f.parser)
+	defer cache.Close()
 	bodies := make(map[int64]parser.Node, len(byFunc))
 	for fid := range byFunc {
 		fn := fnByID[fid]

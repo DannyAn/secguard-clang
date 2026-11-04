@@ -36,21 +36,21 @@ func newCallSiteResolver(ctx context.Context, store db.Store, p *parser.Parser) 
 		if err != nil {
 			continue
 		}
-		tree, err := p.ParseCached(source, file.Path)
-		if err != nil {
+		if err := p.WithParseCached(source, file.Path, func(tree *parser.Tree) {
+			for _, call := range tree.RootNode().FindAll("call_expression") {
+				name := callName(call)
+				if name == "" {
+					continue
+				}
+				args := callArgs(call)
+				texts := make([]string, 0, len(args))
+				for _, a := range args {
+					texts = append(texts, a.Text())
+				}
+				r.callsByName[name] = append(r.callsByName[name], callSite{fileID: file.ID, args: texts})
+			}
+		}); err != nil {
 			continue
-		}
-		for _, call := range tree.RootNode().FindAll("call_expression") {
-			name := callName(call)
-			if name == "" {
-				continue
-			}
-			args := callArgs(call)
-			texts := make([]string, 0, len(args))
-			for _, a := range args {
-				texts = append(texts, a.Text())
-			}
-			r.callsByName[name] = append(r.callsByName[name], callSite{fileID: file.ID, args: texts})
 		}
 	}
 	return r

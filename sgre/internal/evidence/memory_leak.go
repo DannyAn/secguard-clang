@@ -46,7 +46,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 	// count as a scalar status code, not an allocation (EL-06).
 	globalTypedefs := buildGlobalTypedefs(ctx, d.store, d.parser)
 
-	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
+	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function, tree *parser.Tree) {
 		funcDefs := root.FindAll("function_definition")
 		bodies := functionBodyMap(funcDefs)
 		calls := root.FindAll("call_expression")
@@ -68,7 +68,10 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 			returnLines := findReturnLinesFrom(returns, f)
 
 			body := bodies[f.StartLine]
-			cfg := buildStmtCFGFromCtx(ctx, f, body)
+			cfg, lease := buildStmtCFGFromCtx(ctx, f, body, tree)
+			if lease != nil {
+				defer lease.Release()
+			}
 			cfgValid := body.Kind() == "compound_statement"
 			// The set of variables this function allocates. A pointer stored
 			// through one of them (`*container = buf`) points INTO the heap, not
@@ -1648,7 +1651,7 @@ func storesParamToGlobal(assigns []parser.Node, f *db.Function, param string, lo
 // body `g_mon_disk_head = entry` proves it takes ownership of its argument.
 func globalStoreFuncs(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) (map[string]map[int]bool, error) {
 	out := make(map[string]map[int]bool)
-	err := forEachFile(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		funcDefs := root.FindAll("function_definition")
 		assigns := root.FindAll("assignment_expression")
 		decls := root.FindAll("declaration")
@@ -1716,6 +1719,7 @@ func passesToGlobalStoreFunc(calls []parser.Node, f *db.Function, varName string
 //     (the caller must NOT free it). This second set is what suppresses the
 //     name-heuristic false positive for `nlog_db_create_new_ctrl_item` (its
 //     `_new` substring matches apikb.IsAllocator even though it caches).
+//
 // bumpAllocatorFuncs returns the names of in-tree bump/arena allocators: a
 // function whose every return is pointer arithmetic on two file-scope variables
 // (`g_pool + g_off`) and whose body never calls malloc/calloc/realloc. Such an
@@ -1724,7 +1728,7 @@ func passesToGlobalStoreFunc(calls []parser.Node, f *db.Function, varName string
 // leak (issue #206 A.3).
 func bumpAllocatorFuncs(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) (map[string]bool, error) {
 	out := map[string]bool{}
-	err := forEachFile(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		funcDefs := root.FindAll("function_definition")
 		bodies := functionBodyMap(funcDefs)
 		decls := root.FindAll("declaration")
@@ -1906,7 +1910,7 @@ func allocatorReturnFuncs(ctx context.Context, store db.Store, p *parser.Parser,
 		returnedSource[name][callee] = true
 	}
 
-	err = forEachFile(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err = forEachFile(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		returns := root.FindAll("return_statement")
 		assigns := root.FindAll("assignment_expression")
 		inits := root.FindAll("init_declarator")

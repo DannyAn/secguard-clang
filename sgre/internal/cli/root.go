@@ -19,7 +19,7 @@ import (
 // Version is the release version. It is a var (not const) so `go build
 // -ldflags "-X github.com/DannyAn/secguard-clang/internal/cli.Version=<v>"`
 // can inject the release version at build time; the fallback matches VERSION.
-var Version = "0.12.0"
+var Version = "0.12.1"
 
 func Execute(ctx context.Context, args []string) int {
 	// Sync the db layer's supported-CWE set from the planner registry so the
@@ -279,7 +279,14 @@ func openStore(ctx context.Context, dbPath string) (db.Store, error) {
 			return nil, err
 		}
 	}
-	d, err := db.Open(ctx, dbPath)
+	opts := db.OpenOptions{}
+	if mb := config.Load().Scan.SQLiteCacheMB; mb > 0 {
+		opts.CacheSizeKB = mb * 1024
+	}
+	if mb := config.Load().Scan.SQLiteMmapMB; mb > 0 {
+		opts.MmapSizeBytes = int64(mb) * 1024 * 1024
+	}
+	d, err := db.OpenWithOptions(ctx, dbPath, opts)
 	if err != nil {
 		return nil, err
 	}

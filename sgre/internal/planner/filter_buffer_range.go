@@ -64,6 +64,7 @@ func (f *BufferRangeFilter) Apply(ctx context.Context, candidates []Candidate) (
 
 	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
 	cache := newFileParseCache(f.parser)
+	defer cache.Close()
 	flows := make(map[int64]*rangeFlow, len(byFunc))
 	for fid := range byFunc {
 		fn := fnByID[fid]
@@ -75,8 +76,9 @@ func (f *BufferRangeFilter) Apply(ctx context.Context, candidates []Candidate) (
 			continue
 		}
 		body, _ := cache.get(file, fn)
-		flows[fid] = analyzeRangesWithCalls(f.cfgCache, fn, body, nil)
+		flows[fid] = analyzeRangesWithCalls(ctx, f.cfgCache, cache.treeFor(file), fn, body, nil)
 	}
+	defer releaseRangeFlows(flows)
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed

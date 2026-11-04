@@ -26,6 +26,7 @@ type InterprocBuilder struct {
 	store  db.Store
 	parser *parser.Parser
 	logger *log.Logger
+	edges  *edgeBatchWriter
 }
 
 func NewInterprocBuilder(store db.Store, p *parser.Parser, logger *log.Logger) *InterprocBuilder {
@@ -34,10 +35,18 @@ func NewInterprocBuilder(store db.Store, p *parser.Parser, logger *log.Logger) *
 
 func (b *InterprocBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	result := &BuildResult{}
+	b.edges = newEdgeBatchWriter(b.store, b.logger, 0)
 
-	funcs, err := b.store.ListFunctions(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("interproc: list functions: %w", err)
+	ri := RepoIndexFromCtx(ctx)
+	var funcs []*db.Function
+	if ri != nil {
+		funcs = ri.Functions()
+	} else {
+		var err error
+		funcs, err = b.store.ListFunctions(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("interproc: list functions: %w", err)
+		}
 	}
 
 	funcByName := make(map[string][]int64)
@@ -51,7 +60,9 @@ func (b *InterprocBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	// indirect call `ops->open(p)` binds its positional args to the RESOLVED
 	// target's parameters (mirrors CallGraphBuilder's CALL-edge resolution).
 	slotTargets := make(map[string][]string)
-	if fpWrites, ferr := b.store.ListFuncPtrWrites(ctx); ferr == nil {
+	if ri != nil && ri.HasFuncPtrTargets() {
+		slotTargets = ri.FuncPtrTargets()
+	} else if fpWrites, ferr := b.store.ListFuncPtrWrites(ctx); ferr == nil {
 		for _, w := range fpWrites {
 			slotTargets[w.SlotName] = append(slotTargets[w.SlotName], w.TargetName)
 		}
@@ -67,6 +78,7 @@ func (b *InterprocBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	// paramsByFunc[calleeID] and silently dropped the PARAM_BINDING edge.
 	paramsByFunc := make(map[int64][]string)
 
+	var err error
 	err = forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
 		paramsByLine := make(map[int][]string)
 		for _, def := range root.FindAll("function_definition") {
@@ -159,6 +171,7 @@ func (b *InterprocBuilder) Build(ctx context.Context) (*BuildResult, error) {
 			}
 		}
 	})
+	b.edges.flush(ctx)
 	return result, err
 }
 
@@ -175,16 +188,7 @@ func (b *InterprocBuilder) persistParamBinding(ctx context.Context, caller *db.F
 		return false
 	}
 	props := marshalProps(b.logger, "PARAM_BINDING", map[string]interface{}{"callee": calleeName, "index": index, "param": paramName})
-	_, err = b.store.InsertGraphEdge(ctx, &db.GraphEdge{
-		SrcID:      actualNode,
-		DstID:      formalNode,
-		EdgeType:   "PARAM_BINDING",
-		Properties: props,
-	})
-	if err != nil {
-		warnEdge(b.logger, "PARAM_BINDING", caller.Name, err)
-		return false
-	}
+	b.edges.add(ctx, actualNode, formalNode, "PARAM_BINDING", props)
 	return true
 }
 
@@ -200,16 +204,7 @@ func (b *InterprocBuilder) persistReturn(ctx context.Context, caller *db.Functio
 		return false
 	}
 	props := marshalProps(b.logger, "RETURN", map[string]string{"callee": calleeName, "variable": lhsName})
-	_, err = b.store.InsertGraphEdge(ctx, &db.GraphEdge{
-		SrcID:      retNode,
-		DstID:      dstNode,
-		EdgeType:   "RETURN",
-		Properties: props,
-	})
-	if err != nil {
-		warnEdge(b.logger, "RETURN", caller.Name, err)
-		return false
-	}
+	b.edges.add(ctx, retNode, dstNode, "RETURN", props)
 	return true
 }
 

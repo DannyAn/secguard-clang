@@ -36,9 +36,9 @@ func cfgCacheFromCtx(ctx context.Context) *graph.CFGCache {
 // body must be fn's function body (its Kind() == "compound_statement");
 // callers that pass a nil / non-body node get BuildStmtCFG's legacy
 // degenerate behavior unchanged.
-func buildStmtCFGFromCtx(ctx context.Context, fn *db.Function, body parser.Node) *graph.StmtCFG {
+func buildStmtCFGFromCtx(ctx context.Context, fn *db.Function, body parser.Node, tree *parser.Tree) *graph.StmtCFG {
 	if fn == nil {
 		return graph.BuildStmtCFG(body, 0)
 	}
-	return graph.BuildStmtCFGWithCache(cfgCacheFromCtx(ctx), fn.ID, body, fn.EndLine)
+	return graph.BuildStmtCFGWithTree(cfgCacheFromCtx(ctx), fn.ID, tree, body, fn.EndLine)
 }

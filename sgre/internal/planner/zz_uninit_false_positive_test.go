@@ -3,6 +3,7 @@
 package planner
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -271,7 +272,7 @@ uint32_t macro_out(void) {
 		if useLine < 0 {
 			t.Fatalf("%s: use not found (%s in %s)", tc.fn, tc.useSub, tc.useKind)
 		}
-		flow := buildDefiniteInitFlow(nil, &db.Function{Name: tc.fn, EndLine: info.endLine}, info.body, macroWrites)
+		flow := buildDefiniteInitFlow(context.Background(), nil, &db.Function{Name: tc.fn, EndLine: info.endLine}, info.body, nil, macroWrites)
 		if flow.reaching(tc.variable, useLine) {
 			t.Errorf("%s: %s should be killed before line %d, but its uninit source still reaches it", tc.fn, tc.variable, useLine)
 		}

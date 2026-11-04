@@ -122,16 +122,16 @@ var builtinDangerRules = map[string]dangerRule{
 	"memset":   {category: "unsafe_memory", replacement: "memset_s"},
 
 	// --- string copy (字符串复制 → _s) ---
-	"strcpy":  {category: "unsafe_string", replacement: "strcpy_s"},
-	"wcscpy":  {category: "unsafe_string", replacement: "wcscpy_s"},
+	"strcpy": {category: "unsafe_string", replacement: "strcpy_s"},
+	"wcscpy": {category: "unsafe_string", replacement: "wcscpy_s"},
 	// strncpy/wcsncpy are the BOUNDED (acceptable) replacements for strcpy/wcscpy
 	// — they are NOT banned, only the unbounded strcpy/wcscpy are (see the
 	// FixSuggestion "prefer snprintf/strncpy_s" wording). Flagging them here
 	// contradicts that guidance and produced false positives on safe functions.
 
 	// --- string concat (字符串连接 → _s) ---
-	"strcat":  {category: "unsafe_string", replacement: "strcat_s"},
-	"wcscat":  {category: "unsafe_string", replacement: "wcscat_s"},
+	"strcat": {category: "unsafe_string", replacement: "strcat_s"},
+	"wcscat": {category: "unsafe_string", replacement: "wcscat_s"},
 	// strncat/wcsncat are the bounded concat variants — not banned.
 
 	// --- formatted output (格式化输出 → _s) ---
@@ -187,7 +187,7 @@ func (d *DangerousFunctionDetector) Detect(ctx context.Context) (DetectResult, e
 	globalConsts := buildGlobalConstants(ctx, d.store, d.parser)
 	stringMacros := buildGlobalStringMacros(ctx, d.store, d.parser)
 
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		byID := make(map[int64]*db.Function, len(funcs))
 		for _, f := range funcs {
 			byID[f.ID] = f
@@ -355,26 +355,26 @@ func buildGlobalStringMacros(ctx context.Context, store db.Store, p *parser.Pars
 		if err != nil {
 			continue
 		}
-		tree, err := p.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-		for _, def := range tree.RootNode().FindAll("preproc_def") {
-			name, value := "", ""
-			for _, child := range def.NamedChildren() {
-				switch child.Kind() {
-				case "identifier":
-					if name == "" {
-						name = child.Text()
+		if err := p.WithParseCached(source, file.Path, func(tree *parser.Tree) {
+			for _, def := range tree.RootNode().FindAll("preproc_def") {
+				name, value := "", ""
+				for _, child := range def.NamedChildren() {
+					switch child.Kind() {
+					case "identifier":
+						if name == "" {
+							name = child.Text()
+						}
+					case "preproc_arg":
+						value = child.Text()
 					}
-				case "preproc_arg":
-					value = child.Text()
 				}
+				if name == "" || value == "" {
+					continue
+				}
+				defs[name] = value
 			}
-			if name == "" || value == "" {
-				continue
-			}
-			defs[name] = value
+		}); err != nil {
+			continue
 		}
 	}
 	// Fixpoint over macro references so `#define LOG DIR "/log"` counts once DIR

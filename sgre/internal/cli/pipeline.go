@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/DannyAn/secguard-clang/internal/concurrency"
 	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/evidence"
@@ -72,9 +74,27 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	if err := planner.ValidateRegistry(); err != nil {
 		return nil, fmt.Errorf("planner registry: %w", err)
 	}
+	if cfg := config.Load(); cfg.Scan.GoMemLimitMB > 0 {
+		debug.SetMemoryLimit(int64(cfg.Scan.GoMemLimitMB) * 1024 * 1024)
+	}
+	if cfg := config.Load(); cfg.Scan.GoGCPercent > 0 {
+		debug.SetGCPercent(cfg.Scan.GoGCPercent)
+	}
 
 	p := parser.NewParser()
-	defer p.CloseAll()
+	defer func() {
+		p.CloseAll()
+		if leaks := p.LeakedTrees(); len(leaks) > 0 {
+			logger.Warn("parser: trees still borrowed at scan end", "count", len(leaks), "details", leaks)
+		}
+		if live := planner.LiveFileParseCaches(); len(live) > 0 {
+			logger.Warn("planner: fileParseCache(s) not closed", "count", len(live), "creators", live)
+		}
+	}()
+	p.SetMaxCachedTrees(config.Load().Scan.MaxCachedTrees)
+	if cfg := config.Load(); cfg.Scan.MaxCachedTrees <= 0 {
+		logger.Warn("AST cache is unbounded (max_cached_trees=0); set [scan] max_cached_trees to bound peak RSS on large repos")
+	}
 
 	var timings pipelineTimings
 
@@ -92,12 +112,40 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 	timings.IndexMs = time.Since(idxStart).Milliseconds()
 	logger.Info("phase timing", "phase", "index", "elapsed_ms", timings.IndexMs)
+	logPhaseResources(logger, "index", p, nil)
 
 	// The semantic graph is rebuilt from scratch every run (there is no
 	// incremental graph update), so clear the previous run's nodes/edges first.
 	if err := store.ClearGraph(ctx); err != nil {
 		return nil, fmt.Errorf("clear graph: %w", err)
 	}
+
+	// Build a shared read-only snapshot of all indexed functions and files once,
+	// and inject it into ctx so every graph builder and detector reads from one
+	// snapshot instead of each re-querying ListFunctions + ListFiles +
+	// per-file GetFileByID (70+ redundant full-table scans on large repos).
+	repoFuncs, err := store.ListFunctions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list functions for repo index: %w", err)
+	}
+	repoFiles, err := store.ListFiles(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list files for repo index: %w", err)
+	}
+	repoFacts := graph.RepoFacts{}
+	if vars, verr := store.ListFileScopeVariables(ctx); verr == nil {
+		repoFacts.FileScope = vars
+		repoFacts.FileScopeOK = true
+	} else {
+		logger.Warn("repo index: file-scope facts load failed; builders will query per stage", "err", verr)
+	}
+	if writes, werr := store.ListFuncPtrWrites(ctx); werr == nil {
+		repoFacts.FuncPtrWrites = writes
+		repoFacts.FuncPtrWritesOK = true
+	} else {
+		logger.Warn("repo index: func-ptr facts load failed; builders will query per stage", "err", werr)
+	}
+	ctx = graph.WithRepoIndex(ctx, graph.NewRepoIndexWithFacts(repoFuncs, repoFiles, repoFacts))
 
 	graphStart := time.Now()
 
@@ -148,6 +196,17 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 	var bwg sync.WaitGroup
 	bErrCh := make(chan error, len(builders))
+
+	var memMon *MemoryMonitor
+	if cfg := config.Load(); cfg.Scan.MemoryPressureEnabled && cfg.Scan.MemoryHighWatermarkMB > 0 {
+		memMon = NewMemoryMonitor(int64(cfg.Scan.MemoryHighWatermarkMB)*1024*1024,
+			int64(cfg.Scan.MemoryLowWatermarkMB)*1024*1024)
+		memMon.Start(2*time.Second, logger)
+		defer memMon.Stop()
+	}
+	builderGate := concurrency.NewGate(config.Load().GraphBuildersConcurrencyOr(len(builders)),
+		func() bool { return memMon != nil && memMon.Pressured() })
+
 	for _, b := range builders {
 		bwg.Add(1)
 		go func(b builderTask) {
@@ -157,6 +216,11 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 					bErrCh <- fmt.Errorf("%s panicked: %v", b.name, r)
 				}
 			}()
+			if !builderGate.Acquire(ctx) {
+				bErrCh <- fmt.Errorf("%s: canceled while waiting for memory capacity", b.name)
+				return
+			}
+			defer builderGate.Release()
 			if err := b.fn(ctx); err != nil {
 				bErrCh <- fmt.Errorf("%s: %w", b.name, err)
 			}
@@ -173,6 +237,7 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 	timings.GraphMs = time.Since(graphStart).Milliseconds()
 	logger.Info("phase timing", "phase", "graph_builders_parallel", "elapsed_ms", timings.GraphMs)
+	logPhaseResources(logger, "graph", p, nil)
 
 	if err := store.ClearSecurityEvents(ctx); err != nil {
 		return nil, fmt.Errorf("clear security events: %w", err)
@@ -183,6 +248,12 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	// consuming detector plus once per consuming filter (the 8-12x rebuild
 	// overhead this Phase removes).
 	sharedCFGCache := graph.NewCFGCache()
+	sharedCFGCache.MaxEntries = config.Load().Scan.CFGCacheMaxEntries
+	sharedCFGCache.MaxTotalCFGNodes = config.Load().Scan.CFGCacheMaxTotalNodes
+	// Release every CFG entry's AST borrow before the parser's CloseAll runs;
+	// otherwise the CFG cache itself looks like a leaked borrow at scan end.
+	// Registered after the parser defer, so LIFO runs this first.
+	defer sharedCFGCache.Reset()
 
 	// Build the per-scan interprocedural alias graph once and share it via
 	// ctx with both stages. The current skeleton covers function-local
@@ -214,7 +285,16 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	sort.Strings(skippedDetectors)
 
 	detStart := time.Now()
+	evidence.SetEventBatchSize(config.Load().Scan.EventBatchSize)
+	evidence.SetDetectorConcurrency(config.Load().DetectorConcurrencyOr(8))
+	evidence.SetDetectorThrottle(func() bool { return memMon != nil && memMon.Pressured() })
 	detectorErrors := evidence.RunAllDetectorsWithSkip(ctx, store, p, logger, sharedCFGCache, skipSet)
+	if n := evidence.EventFlushFailures(); n > 0 {
+		detectorErrors = append(detectorErrors, evidence.DetectorError{
+			Detector: "event_batch",
+			Err:      fmt.Errorf("%d event batch flush(es) failed; those events were lost", n),
+		})
+	}
 	timings.DetectorsMs = time.Since(detStart).Milliseconds()
 	if len(skippedDetectors) > 0 {
 		logger.Info("phase timing", "phase", "detectors_total", "elapsed_ms", timings.DetectorsMs,
@@ -222,9 +302,7 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	} else {
 		logger.Info("phase timing", "phase", "detectors_total", "elapsed_ms", timings.DetectorsMs)
 	}
-	if b, h := sharedCFGCache.Stats(); b+h > 0 {
-		logger.Info("cfg cache stats after detectors", "builds", b, "hits", h)
-	}
+	logPhaseResources(logger, "detectors", p, sharedCFGCache)
 
 	// Backfill a function_summary row for every indexed function, so the
 	// coverage acceptance (≥90%) holds and richer per-function contract facts
@@ -321,8 +399,9 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 		close(summaryReady)
 	}
 
-	const planConcurrency = 8
-	planSem := make(chan struct{}, planConcurrency)
+	planConcurrency := config.Load().PlanConcurrencyOr(8)
+	planGate := concurrency.NewGate(planConcurrency,
+		func() bool { return memMon != nil && memMon.Pressured() })
 	var pwg sync.WaitGroup
 	planStart := time.Now()
 	for i, vulnType := range vulnTypes {
@@ -342,8 +421,13 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 			if taintTypeSet[vt] {
 				<-summaryReady
 			}
-			planSem <- struct{}{}
-			defer func() { <-planSem }()
+			if !planGate.Acquire(ctx) {
+				planErrMu.Lock()
+				planErrors[vt] = "canceled while waiting for memory capacity"
+				planErrMu.Unlock()
+				return
+			}
+			defer planGate.Release()
 			planStart := time.Now()
 			result, err := pl.Plan(ctx, vt)
 			if logger != nil {
@@ -360,14 +444,12 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 	pwg.Wait()
 	timings.PlanMs = time.Since(planStart).Milliseconds()
-	if b, h := sharedCFGCache.Stats(); b+h > 0 {
-		logger.Info("cfg cache stats after plan", "builds", b, "hits", h)
-	}
+	logPhaseResources(logger, "plan", p, sharedCFGCache)
 
 	return &pipelineOutcome{
-		Index:          indexResult,
-		Plans:          plans,
-		PlanErrors:     planErrors,
+		Index:            indexResult,
+		Plans:            plans,
+		PlanErrors:       planErrors,
 		DetectorErrors:   detectorErrors,
 		DisabledTypes:    disabledTypes,
 		SkippedDetectors: skippedDetectors,

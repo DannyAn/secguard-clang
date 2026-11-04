@@ -28,7 +28,7 @@ func (d *ResourceLeakDetector) Name() string { return "resource_leak" }
 func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		assigns := root.FindAll("assignment_expression")
 		inits := root.FindAll("init_declarator")
 		calls := root.FindAll("call_expression")
@@ -47,7 +47,10 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 
 			returnLines := findReturnLinesFrom(returns, f)
 			body := bodies[f.StartLine]
-			cfg := buildStmtCFGFromCtx(ctx, f, body)
+			cfg, lease := buildStmtCFGFromCtx(ctx, f, body, tree)
+			if lease != nil {
+				defer lease.Release()
+			}
 			cfgValid := body.Kind() == "compound_statement"
 
 			for varName, acquireLines := range acquires {

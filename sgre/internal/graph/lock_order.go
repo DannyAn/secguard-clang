@@ -19,6 +19,7 @@ type LockOrderBuilder struct {
 	store  db.Store
 	parser *parser.Parser
 	logger *log.Logger
+	edges  *edgeBatchWriter
 }
 
 func NewLockOrderBuilder(store db.Store, p *parser.Parser, logger *log.Logger) *LockOrderBuilder {
@@ -42,6 +43,7 @@ var unlockCalls = map[string]bool{
 
 func (b *LockOrderBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	result := &BuildResult{}
+	b.edges = newEdgeBatchWriter(b.store, b.logger, 0)
 
 	err := forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		calls := root.FindAll("call_expression")
@@ -73,6 +75,7 @@ func (b *LockOrderBuilder) Build(ctx context.Context) (*BuildResult, error) {
 			}
 		}
 	})
+	b.edges.flush(ctx)
 	return result, err
 }
 
@@ -88,16 +91,7 @@ func (b *LockOrderBuilder) persistEdge(ctx context.Context, f *db.Function, from
 		return false
 	}
 	props := marshalProps(b.logger, "LOCK_ORDER", map[string]interface{}{"function": f.Name, "line": line})
-	_, err = b.store.InsertGraphEdge(ctx, &db.GraphEdge{
-		SrcID:      fromNode,
-		DstID:      toNode,
-		EdgeType:   "LOCK_ORDER",
-		Properties: props,
-	})
-	if err != nil {
-		warnEdge(b.logger, "LOCK_ORDER", f.Name, err)
-		return false
-	}
+	b.edges.add(ctx, fromNode, toNode, "LOCK_ORDER", props)
 	return true
 }
 

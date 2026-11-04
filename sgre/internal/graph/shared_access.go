@@ -17,6 +17,7 @@ type SharedAccessBuilder struct {
 	store  db.Store
 	parser *parser.Parser
 	logger *log.Logger
+	edges  *edgeBatchWriter
 }
 
 func NewSharedAccessBuilder(store db.Store, p *parser.Parser, logger *log.Logger) *SharedAccessBuilder {
@@ -25,6 +26,7 @@ func NewSharedAccessBuilder(store db.Store, p *parser.Parser, logger *log.Logger
 
 func (b *SharedAccessBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	result := &BuildResult{}
+	b.edges = newEdgeBatchWriter(b.store, b.logger, 0)
 
 	err := forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		globals := collectGlobalNames(root, funcs)
@@ -81,6 +83,7 @@ func (b *SharedAccessBuilder) Build(ctx context.Context) (*BuildResult, error) {
 			}
 		}
 	})
+	b.edges.flush(ctx)
 	return result, err
 }
 
@@ -96,16 +99,7 @@ func (b *SharedAccessBuilder) persistAccess(ctx context.Context, f *db.Function,
 		return false
 	}
 	props := marshalProps(b.logger, "GLOBAL_ACCESS", map[string]string{"function": f.Name, "variable": global, "access": access})
-	_, err = b.store.InsertGraphEdge(ctx, &db.GraphEdge{
-		SrcID:      fnNode,
-		DstID:      gNode,
-		EdgeType:   "GLOBAL_ACCESS",
-		Properties: props,
-	})
-	if err != nil {
-		warnEdge(b.logger, "GLOBAL_ACCESS", f.Name, err)
-		return false
-	}
+	b.edges.add(ctx, fnNode, gNode, "GLOBAL_ACCESS", props)
 	return true
 }
 

@@ -80,7 +80,7 @@ func (d *ContractGapDetector) Detect(ctx context.Context) (DetectResult, error) 
 
 	// Pass 1: intra-procedural candidate collection (deref + E-b + not-written).
 	var cands []candidateField
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		funcDefs := root.FindAll("function_definition")
 		fieldExprs := root.FindAll("field_expression")
 		subs := root.FindAll("subscript_expression")
@@ -257,7 +257,7 @@ func (d *ContractGapDetector) collectSiblingContracts(ctx context.Context) sibli
 		sameFile:  map[int64]map[string]map[string][]siblingGuard{},
 		crossFile: map[string]map[string][]siblingGuard{},
 	}
-	_ = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	_ = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		funcDefs := root.FindAll("function_definition")
 		comparisons := root.FindAll("binary_expression")
 		assigns := root.FindAll("assignment_expression")

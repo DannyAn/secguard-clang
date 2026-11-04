@@ -13,6 +13,7 @@ type DataFlowBuilder struct {
 	store  db.Store
 	parser *parser.Parser
 	logger *log.Logger
+	edges  *edgeBatchWriter
 }
 
 func NewDataFlowBuilder(store db.Store, p *parser.Parser, logger *log.Logger) *DataFlowBuilder {
@@ -21,6 +22,7 @@ func NewDataFlowBuilder(store db.Store, p *parser.Parser, logger *log.Logger) *D
 
 func (b *DataFlowBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	result := &BuildResult{}
+	b.edges = newEdgeBatchWriter(b.store, b.logger, 0)
 
 	err := forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		assigns := root.FindAll("assignment_expression")
@@ -34,6 +36,7 @@ func (b *DataFlowBuilder) Build(ctx context.Context) (*BuildResult, error) {
 			b.detectPointerReturns(ctx, f, nodesInRange(returns, f.StartLine, f.EndLine), result)
 		}
 	})
+	b.edges.flush(ctx)
 	return result, err
 }
 
@@ -69,16 +72,7 @@ func (b *DataFlowBuilder) detectPointerAssignments(ctx context.Context, f *db.Fu
 			continue
 		}
 		props := marshalProps(b.logger, "DATA_FLOW", map[string]string{"variable": lhs.Text()})
-		_, err = b.store.InsertGraphEdge(ctx, &db.GraphEdge{
-			SrcID:      rhsNodeID,
-			DstID:      lhsNodeID,
-			EdgeType:   "DATA_FLOW",
-			Properties: props,
-		})
-		if err != nil {
-			warnEdge(b.logger, "DATA_FLOW", f.Name, err)
-			continue
-		}
+		b.edges.add(ctx, rhsNodeID, lhsNodeID, "DATA_FLOW", props)
 		result.EdgesCreated++
 	}
 }
@@ -98,16 +92,7 @@ func (b *DataFlowBuilder) detectPointerReturns(ctx context.Context, f *db.Functi
 					continue
 				}
 				props := marshalProps(b.logger, "DATA_FLOW", map[string]string{"variable": child.Text()})
-				_, err = b.store.InsertGraphEdge(ctx, &db.GraphEdge{
-					SrcID:      varNodeID,
-					DstID:      retNodeID,
-					EdgeType:   "DATA_FLOW",
-					Properties: props,
-				})
-				if err != nil {
-					warnEdge(b.logger, "DATA_FLOW", f.Name, err)
-					continue
-				}
+				b.edges.add(ctx, varNodeID, retNodeID, "DATA_FLOW", props)
 				result.EdgesCreated++
 			}
 		}

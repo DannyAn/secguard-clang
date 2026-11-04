@@ -61,20 +61,15 @@ func Build(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Lo
 		fields:  map[string][]FieldFact{},
 		globals: map[string][]GlobalArray{},
 	}
-	type fileNode struct {
-		path string
-		root parser.Node
-	}
-	var trees []fileNode
 	var indexedPaths []string
+	var headerPaths []string
 
 	// Macros are merged from every parsed file (indexed files AND worktree
 	// headers) into one tree-wide map; a name with two different values is
 	// dropped (a guessed value is worse than an unknown one).
 	conflict := map[string]bool{}
-	addTree := func(tn fileNode) {
-		trees = append(trees, tn)
-		for name, v := range parser.CollectMacroValues(tn.root) {
+	collectMacros := func(root parser.Node) {
+		for name, v := range parser.CollectMacroValues(root) {
 			if prev, ok := f.Macros[name]; ok && prev != v {
 				conflict[name] = true
 				continue
@@ -83,10 +78,13 @@ func Build(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Lo
 		}
 	}
 
-	// Pass 1: collect every indexed parse tree and the tree-wide macro values.
-	err := eachIndexedFile(ctx, store, p, logger, func(file *db.File, root parser.Node) {
+	// Pass 1: collect the tree-wide macro values one file at a time. Trees are
+	// NOT retained: the old `trees []fileNode` pinned every root and defeated
+	// the parser cache bound. Pass 2 re-parses each file (ParseCached hits when
+	// the tree is still cached) and only the finished facts survive.
+	err := eachIndexedFile(ctx, store, p, logger, func(file *db.File, root parser.Node, tree *parser.Tree) {
 		indexedPaths = append(indexedPaths, file.Path)
-		addTree(fileNode{path: file.Path, root: root})
+		collectMacros(root)
 	})
 	if err != nil {
 		return nil, err
@@ -105,14 +103,14 @@ func Build(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Lo
 			}
 			continue
 		}
-		tree, err := p.ParseCached(source, path)
-		if err != nil {
+		if err := p.WithParseCached(source, path, func(tree *parser.Tree) {
+			headerPaths = append(headerPaths, path)
+			collectMacros(tree.RootNode())
+		}); err != nil {
 			if logger != nil {
 				logger.Debug("repofacts: parse worktree header failed, skipping", "file", path, "error", err)
 			}
-			continue
 		}
-		addTree(fileNode{path: path, root: tree.RootNode()})
 	}
 	for name := range conflict {
 		delete(f.Macros, name)
@@ -125,9 +123,9 @@ func Build(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Lo
 	globalCounts := map[string]map[int]bool{}
 	globalSymbols := map[string]string{}
 	globalTypes := map[string]string{}
-	for _, tn := range trees {
+	processTree := func(root parser.Node) {
 		for _, kind := range []string{"struct_specifier", "union_specifier"} {
-			for _, ss := range tn.root.FindAll(kind) {
+			for _, ss := range root.FindAll(kind) {
 				if ss.FindFirst("field_declaration_list") == nil {
 					continue
 				}
@@ -160,7 +158,7 @@ func Build(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Lo
 				}
 			}
 		}
-		for _, decl := range tn.root.FindAll("declaration") {
+		for _, decl := range root.FindAll("declaration") {
 			if insideFunction(decl) {
 				continue
 			}
@@ -183,6 +181,25 @@ func Build(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Lo
 					globalSymbols[name] = symbol
 				}
 			}
+		}
+	}
+
+	// Pass 2: layouts and file-scope arrays, with macro counts resolved. Each
+	// file is re-parsed and released inside the callback; no root is retained.
+	if err := eachIndexedFile(ctx, store, p, logger, func(file *db.File, root parser.Node, tree *parser.Tree) {
+		processTree(root)
+	}); err != nil {
+		return nil, err
+	}
+	for _, path := range headerPaths {
+		source, err := readFile(path)
+		if err != nil {
+			continue
+		}
+		if err := p.WithParseCached(source, path, func(tree *parser.Tree) {
+			processTree(tree.RootNode())
+		}); err != nil && logger != nil {
+			logger.Debug("repofacts: re-parse worktree header failed, skipping", "file", path, "error", err)
 		}
 	}
 
@@ -359,7 +376,7 @@ func (f *Facts) GlobalArray(name string) (GlobalArray, bool) {
 
 // eachIndexedFile visits every indexed file with its parsed root, logging and
 // skipping unreadable/unparsable files instead of aborting the whole census.
-func eachIndexedFile(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, fn func(*db.File, parser.Node)) error {
+func eachIndexedFile(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, fn func(*db.File, parser.Node, *parser.Tree)) error {
 	files, err := store.ListFiles(ctx)
 	if err != nil {
 		return fmt.Errorf("repofacts: list files: %w", err)
@@ -384,7 +401,10 @@ func eachIndexedFile(ctx context.Context, store db.Store, p *parser.Parser, logg
 			}
 			continue
 		}
-		fn(file, tree.RootNode())
+		func() {
+			defer tree.Release()
+			fn(file, tree.RootNode(), tree)
+		}()
 	}
 	return nil
 }

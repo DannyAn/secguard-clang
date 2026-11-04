@@ -254,8 +254,8 @@ type BatchEvent struct {
 }
 
 type Finding struct {
-	ID           int64   `json:"id"`
-	RuleID       string  `json:"rule_id"`
+	ID     int64  `json:"id"`
+	RuleID string `json:"rule_id"`
 	// VulnType is the owning vulnerability type (kebab-case), the single
 	// aggregation key for scan/status/audit. It is empty for legacy rows written
 	// before the column existed; consumers fall back to TypeForCWE(RuleID).
@@ -338,6 +338,24 @@ type ScanRun struct {
 	ReportBytes      int64  `json:"report_bytes"`
 	EvidenceBytes    int64  `json:"evidence_bytes"`
 	CreatedAt        int64  `json:"created_at"`
+	CompletionState  string `json:"completion_state,omitempty"`
+}
+
+// ScanIncompleteTask is one task that could not complete during a scan — a
+// planner type that crashed, a detector that errored, a function that timed
+// out. It is the checkpoint ledger for the unified completion_state semantics:
+// a scan marked 'incomplete' or 'failed' carries the set of phases that did not
+// finish, so a resume re-runs only those instead of the whole pipeline.
+type ScanIncompleteTask struct {
+	ID         int64  `json:"id"`
+	ScanID     string `json:"scan_id"`
+	Phase      string `json:"phase"`
+	FunctionID int64  `json:"function_id,omitempty"`
+	FilePath   string `json:"file_path,omitempty"`
+	Scale      int    `json:"scale,omitempty"`
+	Reason     string `json:"reason"`
+	Detail     string `json:"detail,omitempty"`
+	CreatedAt  int64  `json:"created_at"`
 }
 
 // PerTypeStatus is the per-vulnerability-type progress record for the

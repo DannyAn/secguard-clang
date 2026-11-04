@@ -57,7 +57,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 	// to those locals instead of a certain-uninit false positive.
 	objectMacroWrites := d.collectObjectMacroWrites(ctx)
 
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		// The three sub-detectors plus BuildCFG used to issue ~21 whole-tree
 		// FindAll walks per function when handed the file root (and one
 		// full-file walk per function just to locate the function subtree);
@@ -85,7 +85,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 			// parameter names plus its local declarator names. A type name must
 			// never be in this set (see parser.FunctionBoundNames).
 			bound := parser.FunctionBoundNames(funcDefsByLine[f.StartLine])
-			d.detectStackUninit(ctx, f, file, bound, decls, assigns, calls, exprStmts, returns, inits, ifs, whiles, fors, bodies, summaries, macroWrites, objectMacroWrites, &result)
+			d.detectStackUninit(ctx, f, file, bound, decls, assigns, calls, exprStmts, returns, inits, ifs, whiles, fors, bodies, summaries, macroWrites, objectMacroWrites, &result, tree)
 			d.detectHeapUninit(ctx, f, file, decls, inits, assigns, calls, unarys, ptrs, fields, subscripts, ifs, summaries, &result)
 			d.detectStructPartialUninit(ctx, f, file, bound, decls, assigns, calls, ifs, fields, summaries, macroWrites, &result)
 		}
@@ -98,7 +98,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 // sites in every other file.
 func (d *UninitVariableDetector) collectMacroWrites(ctx context.Context) map[string]macros.WriteSummary {
 	var perFile []map[string]macros.WriteSummary
-	if err := forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node) {
+	if err := forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, tree *parser.Tree) {
 		perFile = append(perFile, macros.WriteSummaries(root))
 	}); err != nil {
 		// A top-level traversal failure leaves the whole whitelist empty, which
@@ -118,7 +118,7 @@ func (d *UninitVariableDetector) collectMacroWrites(ctx context.Context) map[str
 // `MSG_INIT;` call site in every .c source.
 func (d *UninitVariableDetector) collectObjectMacroWrites(ctx context.Context) map[string]map[string]bool {
 	merged := make(map[string]map[string]bool)
-	if err := forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node) {
+	if err := forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, tree *parser.Tree) {
 		for name, writes := range macros.ObjectLikeWrites(root) {
 			if merged[name] == nil {
 				merged[name] = make(map[string]bool)
@@ -230,7 +230,7 @@ func localVarDecls(decls []parser.Node) map[string][]varDecl {
 	return m
 }
 
-func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, bound map[string]bool, decls, assigns, calls, exprStmts, returns, inits, ifs, whiles, fors []parser.Node, bodies map[int]parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, objectMacroWrites map[string]map[string]bool, result *DetectResult) {
+func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, bound map[string]bool, decls, assigns, calls, exprStmts, returns, inits, ifs, whiles, fors []parser.Node, bodies map[int]parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, objectMacroWrites map[string]map[string]bool, result *DetectResult, tree *parser.Tree) {
 	uninitVars := make(map[string]bool)
 	assignSites := make(map[string][]int)
 	declsByName := make(map[string][]varDecl)
@@ -521,7 +521,10 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 	}
 
 	body := bodies[f.StartLine]
-	cfg := buildStmtCFGFromCtx(ctx, f, body)
+	cfg, lease := buildStmtCFGFromCtx(ctx, f, body, tree)
+	if lease != nil {
+		defer lease.Release()
+	}
 	cfgValid := body.Kind() == "compound_statement"
 	if !cfgValid && d.logger != nil {
 		d.logger.Debug("uninit: CFG construction degenerate, using conservative fallback",

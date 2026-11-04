@@ -25,17 +25,31 @@ func readFile(path string) ([]byte, error) {
 // graph edges). For a security tool that is a silent false-negative, so each
 // skip is logged as a warning rather than dropped without a trace.
 func forEachFile(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, fn func(file *db.File, root parser.Node, funcs []*db.Function)) error {
-	funcs, err := store.ListFunctions(ctx)
-	if err != nil {
-		return err
-	}
-	byFile := make(map[int64][]*db.Function, 128)
+	ri := RepoIndexFromCtx(ctx)
 	var order []int64
-	for _, f := range funcs {
-		if _, seen := byFile[f.FileID]; !seen {
-			order = append(order, f.FileID)
+	var byFile func(int64) []*db.Function
+	var fileByID func(int64) *db.File
+	if ri != nil {
+		order = ri.FileOrder()
+		byFile = ri.FuncsByFile
+		fileByID = ri.FileByID
+	} else {
+		funcs, err := store.ListFunctions(ctx)
+		if err != nil {
+			return err
 		}
-		byFile[f.FileID] = append(byFile[f.FileID], f)
+		grouped := make(map[int64][]*db.Function, 128)
+		for _, f := range funcs {
+			if _, seen := grouped[f.FileID]; !seen {
+				order = append(order, f.FileID)
+			}
+			grouped[f.FileID] = append(grouped[f.FileID], f)
+		}
+		byFile = func(fid int64) []*db.Function { return grouped[fid] }
+		fileByID = func(fid int64) *db.File {
+			f, _ := store.GetFileByID(ctx, fid)
+			return f
+		}
 	}
 	for _, fid := range order {
 		select {
@@ -43,13 +57,7 @@ func forEachFile(ctx context.Context, store db.Store, p *parser.Parser, logger *
 			return ctx.Err()
 		default:
 		}
-		file, err := store.GetFileByID(ctx, fid)
-		if err != nil {
-			if logger != nil {
-				logger.Warn("graph: get file by id failed, skipping", "file_id", fid, "error", err)
-			}
-			continue
-		}
+		file := fileByID(fid)
 		if file == nil {
 			continue
 		}
@@ -67,7 +75,10 @@ func forEachFile(ctx context.Context, store db.Store, p *parser.Parser, logger *
 			}
 			continue
 		}
-		fn(file, tree.RootNode(), byFile[fid])
+		func() {
+			defer tree.Release()
+			fn(file, tree.RootNode(), byFile(fid))
+		}()
 	}
 	return nil
 }

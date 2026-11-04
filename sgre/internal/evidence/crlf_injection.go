@@ -24,7 +24,7 @@ func (d *CRLFInjectionDetector) Name() string { return "crlf_injection" }
 
 func (d *CRLFInjectionDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		calls := root.FindAll("call_expression")
 		for _, f := range funcs {
 			d.detectCRLFInjection(ctx, f, file, calls, root, &result)

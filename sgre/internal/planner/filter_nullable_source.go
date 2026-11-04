@@ -78,10 +78,16 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 		byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
 	}
 
-	flowResults, retNullable, definedNames, synthByFunc, retGuards, retNullCond, loopBoundByFunc, err := f.buildFlowResults(ctx, byFunc, models)
+	// The flow models returned by buildFlowResults carry contractCtx bodies
+	// (parser.Nodes) that the classification loop below still uses, so the
+	// per-Apply parse cache must outlive buildFlowResults and close here.
+	cache := newFileParseCache(f.parser)
+	defer cache.Close()
+	flowResults, retNullable, definedNames, synthByFunc, retGuards, retNullCond, loopBoundByFunc, err := f.buildFlowResults(ctx, cache, byFunc, models)
 	if err != nil {
 		return nil, nil, err
 	}
+	defer releaseFlowResults(flowResults)
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -372,7 +378,7 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 // `p = f()` null sources whose callee the fixpoint proved nullable — Apply
 // reads them back to classify such variables as malloc-fail (proven-nullable
 // in-scan callee) instead of external-unknown (fail-open assumption).
-func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[int64][]Candidate, models map[int64]*nullModel) (map[int64]*flowResult, map[string]retNullability, map[string]bool, map[int64][]nullSource, map[string]*retNullGuard, map[string]string, map[int64][]ternaryGuardEntry, error) {
+func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, cache *fileParseCache, byFunc map[int64][]Candidate, models map[int64]*nullModel) (map[int64]*flowResult, map[string]retNullability, map[string]bool, map[int64][]nullSource, map[string]*retNullGuard, map[string]string, map[int64][]ternaryGuardEntry, error) {
 	if f.parser == nil {
 		return nil, nil, nil, nil, nil, nil, nil, nil
 	}
@@ -398,7 +404,6 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, byFunc map[
 		}
 	}
 
-	cache := newFileParseCache(f.parser)
 	analyzer.macroWrites = collectMacroWrites(cache, fileByID)
 	analyzer.iterMacros = mergedIterMacros()
 	// The guard model needs the whole-tree predicate-helper and guard-macro
@@ -1095,6 +1100,7 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 	}
 
 	cache := newFileParseCache(f.parser)
+	defer cache.Close()
 	noreturnCalls := collectNoreturnCalls(cache, funcs, fileByID)
 	// Abort-on-OOM closure: functions that never return NULL, from the LOCAL
 	// abort-guard seed (zmalloc) through wrappers whose `return NULL` is guarded
@@ -1184,6 +1190,7 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 		fn     *db.Function
 		body   parser.Node
 		root   parser.Node
+		tree   *parser.Tree
 		params map[string]int
 		arrs   *arrayBaseInfo
 		srcs   []nullSource
@@ -1227,7 +1234,7 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 				// so the definition is recorded for that pass — the fixpoint
 				// itself is skipped via the seeded grade.
 				retNullable[fn.Name] = retNullProven
-				seededDefs = append(seededDefs, funcInfo{fn: fn, body: body, root: root, params: cache.paramsFor(file, fn)})
+				seededDefs = append(seededDefs, funcInfo{fn: fn, body: body, root: root, tree: cache.treeFor(file), params: cache.paramsFor(file, fn)})
 				continue
 			}
 
@@ -1242,7 +1249,7 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 				srcs = models[fn.ID].sources
 			}
 			params := cache.paramsFor(file, fn)
-			infos = append(infos, funcInfo{fn: fn, body: body, root: root, params: params, arrs: collectArrayBaseInfo(root, body, params, repoFacts), srcs: srcs})
+			infos = append(infos, funcInfo{fn: fn, body: body, root: root, tree: cache.treeFor(file), params: params, arrs: collectArrayBaseInfo(root, body, params, repoFacts), srcs: srcs})
 		}
 	}
 
@@ -1301,6 +1308,7 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 				}
 			}
 			analyzer.entrySeeds = entrySeeds
+			analyzer.tree = info.tree
 			flow := analyzer.analyzeFlow(ctx, info.fn, info.body, info.root, nullGenByLine(lineSources), nil, true, false)
 			if ns := returnsNullability(info.body, flow, info.params, retNullable, analyzed, info.arrs, srcs, strings.TrimSpace(info.fn.ReturnType), noreturnCalls, neverNull); ns != retNotNull {
 				retNullable[info.fn.Name] = ns

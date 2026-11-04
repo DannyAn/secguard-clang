@@ -30,9 +30,15 @@ func NewFuncPtrWriteBuilder(store db.Store, p *parser.Parser, logger *log.Logger
 }
 
 func (b *FuncPtrWriteBuilder) Build(ctx context.Context) error {
-	funcs, err := b.store.ListFunctions(ctx)
-	if err != nil {
-		return fmt.Errorf("func ptr writes: list functions: %w", err)
+	var funcs []*db.Function
+	if ri := RepoIndexFromCtx(ctx); ri != nil {
+		funcs = ri.Functions()
+	} else {
+		var err error
+		funcs, err = b.store.ListFunctions(ctx)
+		if err != nil {
+			return fmt.Errorf("func ptr writes: list functions: %w", err)
+		}
 	}
 	funcMap := make(map[string]bool, len(funcs))
 	for _, f := range funcs {
@@ -40,6 +46,7 @@ func (b *FuncPtrWriteBuilder) Build(ctx context.Context) error {
 	}
 
 	var writes []db.FuncPtrWrite
+	var err error
 	err = forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, _ []*db.Function) {
 		for _, assign := range root.FindAll("assignment_expression") {
 			named := assign.NamedChildren()

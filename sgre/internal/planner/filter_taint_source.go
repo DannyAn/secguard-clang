@@ -81,6 +81,7 @@ func (c *taintSummaryCache) compute(ctx context.Context) (*taintSummary, error) 
 	if err != nil {
 		return nil, err
 	}
+	defer tc.Close()
 	returnsParam, err := f.computeReturnsParam(ctx, tc)
 	if err != nil {
 		return nil, err
@@ -141,6 +142,13 @@ type taintPlanCtx struct {
 	effects     map[int64]taintBaseEffects
 	copiedDFG   map[int64]map[int][]copyPair
 	withCallees map[int64]taintBaseEffects
+}
+
+// Close releases the parse-cache borrows held by this per-scan taint context.
+func (tc *taintPlanCtx) Close() {
+	if tc != nil && tc.cache != nil {
+		tc.cache.Close()
+	}
 }
 
 func newTaintPlanCtx(ctx context.Context, store db.Store, p *parser.Parser) (*taintPlanCtx, error) {
@@ -282,6 +290,7 @@ func (f *TaintSourceFilter) taintSummaries(ctx context.Context) (*taintSummary, 
 	if err != nil {
 		return nil, err
 	}
+	defer tc.Close()
 	returnsParam, err := f.computeReturnsParam(ctx, tc)
 	if err != nil {
 		return nil, err
@@ -550,6 +559,7 @@ func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]C
 	staticByFunc := make(map[int64]bool, len(byFunc))
 	bodies := make(map[int64]parser.Node, len(byFunc))
 	cache := newFileParseCache(f.parser)
+	defer cache.Close()
 	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
 	for fid := range byFunc {
 		fn := fnByID[fid]
@@ -570,6 +580,7 @@ func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]C
 		analyzer := newFlowAnalyzer(f.store, f.parser, f.cfgCache)
 		analyzer.dfgCopies = map[int64]map[int][]copyPair{fid: taintCopiesFor(body, returnsParam)}
 		analyzer.entrySeeds = taintedParamsFor(cache, file, fn, paramTainted[fid])
+		analyzer.tree = cache.treeFor(file)
 		flows[fid] = analyzer.analyzeFlow(ctx, fn, body, root, genByLine, killByLine, false, false)
 		paramsByFunc[fid] = cache.paramsFor(file, fn)
 		staticByFunc[fid] = fn.IsStatic
@@ -591,11 +602,13 @@ func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]C
 			a2 := newFlowAnalyzer(f.store, f.parser, f.cfgCache)
 			a2.dfgCopies = analyzer.dfgCopies
 			a2.entrySeeds = analyzer.entrySeeds
+			a2.tree = cache.treeFor(file)
 			pathFlows[fid] = a2.analyzeFlow(ctx, fn, body, root, genByLine, mergeKills(killByLine, sk), false, false)
 		} else {
 			a2 := newFlowAnalyzer(f.store, f.parser, f.cfgCache)
 			a2.dfgCopies = analyzer.dfgCopies
 			a2.entrySeeds = analyzer.entrySeeds
+			a2.tree = cache.treeFor(file)
 			flows[fid] = a2.analyzeFlow(ctx, fn, body, root, genByLine, mergeKills(killByLine, sk), false, false)
 		}
 	}
@@ -717,6 +730,7 @@ func (f *TaintSourceFilter) computeRetTainted(ctx context.Context, tc *taintPlan
 		}
 		analyzer := newFlowAnalyzer(f.store, f.parser, f.cfgCache)
 		analyzer.dfgCopies = map[int64]map[int][]copyPair{info.ID: tc.dfgCopiesFor(info, returnsParam)}
+		analyzer.tree = tc.cache.treeFor(tc.fileByID[info.FileID])
 		flow := analyzer.analyzeFlow(ctx, info, body, tc.root(info), gen, b.kill, false, false)
 		if returnsTaint(body, flow) {
 			retTainted[info.Name] = true
@@ -1126,6 +1140,7 @@ func (f *TaintSourceFilter) computeParamTainted(ctx context.Context, tc *taintPl
 		analyzer := newFlowAnalyzer(f.store, f.parser, f.cfgCache)
 		analyzer.dfgCopies = map[int64]map[int][]copyPair{fid: copies}
 		analyzer.entrySeeds = seeds
+		analyzer.tree = tc.cache.treeFor(tc.fileByID[fn.FileID])
 		flow := analyzer.analyzeFlow(ctx, fn, tc.body(fn), tc.root(fn), b.gen, b.kill, false, false)
 		if flow == nil {
 			continue

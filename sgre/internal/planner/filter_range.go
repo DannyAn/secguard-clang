@@ -68,8 +68,10 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 	}
 
 	resolver := newReturnSummaryResolver(ctx, f.store, f.parser)
+	defer resolver.Close()
 	invariants := buildGlobalInvariants(ctx, f.store, f.parser, resolver)
 	flows := f.buildFlows(ctx, byFunc, resolver)
+	defer releaseRangeFlows(flows)
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -144,6 +146,7 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 	// makes it safe (dismiss); otherwise it stays suspected.
 	sites := newCallSiteResolver(ctx, f.store, f.parser)
 	cache := newFileParseCache(f.parser)
+	defer cache.Close()
 	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
 	finalKept := make([]Candidate, 0, len(kept))
 	for _, c := range kept {
@@ -257,6 +260,7 @@ func callNameFromDivisorText(text string) string {
 func (f *RangeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, resolver *returnSummaryResolver) map[int64]*rangeFlow {
 	flows := make(map[int64]*rangeFlow, len(byFunc))
 	cache := newFileParseCache(f.parser)
+	defer cache.Close()
 	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
 	for fid := range byFunc {
 		fn := fnByID[fid]
@@ -271,7 +275,7 @@ func (f *RangeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candida
 		if body.Kind() != "compound_statement" {
 			continue
 		}
-		flows[fid] = analyzeRangesWithCalls(f.cfgCache, fn, body, resolver.callResult)
+		flows[fid] = analyzeRangesWithCalls(ctx, f.cfgCache, cache.treeFor(file), fn, body, resolver.callResult)
 	}
 	return flows
 }

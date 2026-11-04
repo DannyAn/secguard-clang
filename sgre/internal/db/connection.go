@@ -12,7 +12,19 @@ import (
 
 var ErrDatabaseLocked = fmt.Errorf("db: database is locked")
 
+// OpenOptions are optional SQLite connection budgets. Zero leaves the SQLite
+// default; positive values apply to every pooled connection through the DSN so
+// a connection opened later does not silently revert to the default.
+type OpenOptions struct {
+	CacheSizeKB   int
+	MmapSizeBytes int64
+}
+
 func Open(ctx context.Context, dbPath string) (*sql.DB, error) {
+	return OpenWithOptions(ctx, dbPath, OpenOptions{})
+}
+
+func OpenWithOptions(ctx context.Context, dbPath string, opts OpenOptions) (*sql.DB, error) {
 	absPath, err := filepath.Abs(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("db: open: resolve path: %w", err)
@@ -29,6 +41,12 @@ func Open(ctx context.Context, dbPath string) (*sql.DB, error) {
 	// one WAL database) has a wider window before the application-layer retry in
 	// InsertEvent/InsertFinding/UpsertFinding engages.
 	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)", absPath)
+	if opts.CacheSizeKB > 0 {
+		dsn += fmt.Sprintf("&_pragma=cache_size(-%d)", opts.CacheSizeKB)
+	}
+	if opts.MmapSizeBytes > 0 {
+		dsn += fmt.Sprintf("&_pragma=mmap_size(%d)", opts.MmapSizeBytes)
+	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("db: open: %w", err)

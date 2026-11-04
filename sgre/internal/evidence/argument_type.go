@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -47,7 +48,7 @@ func (d *ArgumentTypeDetector) Detect(ctx context.Context) (DetectResult, error)
 	typedefs := buildGlobalTypedefs(ctx, d.store, d.parser)
 	globalParams := buildGlobalFunctionParams(ctx, d.store, d.parser)
 
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		// File-scope declarations (globals) are visible in every function;
 		// locals are bucketed per function (by start line) and carry their line
 		// so same-named variables in disjoint scopes resolve to the nearest
@@ -437,21 +438,27 @@ func intSize(t string) int {
 // all indexed files so a callee declared in another file still resolves.
 func buildGlobalFunctionParams(ctx context.Context, store db.Store, p *parser.Parser) map[string][]string {
 	m := make(map[string][]string)
-	files, err := store.ListFiles(ctx)
-	if err != nil {
-		return m
+	var files []*db.File
+	if ri := graph.RepoIndexFromCtx(ctx); ri != nil {
+		files = ri.Files()
+	} else {
+		var err error
+		files, err = store.ListFiles(ctx)
+		if err != nil {
+			return m
+		}
 	}
 	for _, file := range files {
 		source, err := os.ReadFile(file.Path)
 		if err != nil {
 			continue
 		}
-		tree, err := p.ParseCached(source, file.Path)
-		if err != nil {
+		if err := p.WithParseCached(source, file.Path, func(tree *parser.Tree) {
+			for name, params := range collectFunctionParams(tree.RootNode()) {
+				m[name] = params
+			}
+		}); err != nil {
 			continue
-		}
-		for name, params := range collectFunctionParams(tree.RootNode()) {
-			m[name] = params
 		}
 	}
 	return m

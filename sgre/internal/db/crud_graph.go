@@ -104,6 +104,32 @@ func (s *store) InsertGraphEdge(ctx context.Context, e *GraphEdge) (int64, error
 	return id, nil
 }
 
+// InsertGraphEdgeBatch inserts all edges in one BEGIN IMMEDIATE transaction.
+// Each edge would otherwise be its own autocommit (write-lock + fsync); on a
+// large repo with thousands of CALL/DATA_FLOW/ALIAS edges this is the dominant
+// graph-build cost. A mid-batch error rolls the whole batch back.
+func (s *store) InsertGraphEdgeBatch(ctx context.Context, edges []GraphEdge) (int, error) {
+	if len(edges) == 0 {
+		return 0, nil
+	}
+	inserted := 0
+	err := s.WithImmediateTx(ctx, func(tx Store) error {
+		for i := range edges {
+			if _, err := tx.InsertGraphEdge(ctx, &edges[i]); err != nil {
+				return err
+			}
+			inserted++
+		}
+		return nil
+	})
+	if err != nil {
+		// The transaction rolled back: none of the rows exist. Returning the
+		// partial counter would make callers report writes that never happened.
+		return 0, err
+	}
+	return inserted, nil
+}
+
 func (s *store) ClearGraph(ctx context.Context) error {
 	// Delete edges before nodes: graph_edges carries an FK to graph_nodes, and
 	// PRAGMA foreign_keys is enforced per-connection (it is not guaranteed to be
