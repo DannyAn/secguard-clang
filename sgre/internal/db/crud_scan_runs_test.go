@@ -103,3 +103,134 @@ func TestStore_ScanRunListNewestFirst(t *testing.T) {
 		t.Errorf("ListScanRuns must return newest first, got [%s, %s]", runs[0].ScanID, runs[1].ScanID)
 	}
 }
+func TestStore_ScanRunCompletionStateDefault(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	scanID := "sc_2026-11-04_200000_aaaaaa"
+	if err := s.UpsertScanRun(ctx, &ScanRun{ScanID: scanID, FinalCount: 3}); err != nil {
+		t.Fatalf("UpsertScanRun: %v", err)
+	}
+
+	got, err := s.GetScanRun(ctx, scanID)
+	if err != nil {
+		t.Fatalf("GetScanRun: %v", err)
+	}
+	if got.CompletionState != "running" {
+		t.Errorf("new scan_run must default to completion_state='running', got %q", got.CompletionState)
+	}
+}
+
+func TestStore_SetScanRunCompletionState(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	scanID := "sc_2026-11-04_200000_bbbbbb"
+	if err := s.UpsertScanRun(ctx, &ScanRun{ScanID: scanID}); err != nil {
+		t.Fatalf("UpsertScanRun: %v", err)
+	}
+
+	for _, state := range []string{"complete", "failed", "incomplete", "limited"} {
+		if err := s.SetScanRunCompletionState(ctx, scanID, state); err != nil {
+			t.Fatalf("SetScanRunCompletionState(%q): %v", state, err)
+		}
+		got, err := s.GetScanRun(ctx, scanID)
+		if err != nil {
+			t.Fatalf("GetScanRun: %v", err)
+		}
+		if got.CompletionState != state {
+			t.Errorf("after SetScanRunCompletionState(%q): got %q", state, got.CompletionState)
+		}
+	}
+}
+
+func TestStore_MarkStaleRunningAsFailed(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	running1 := &ScanRun{ScanID: "sc_2026-11-04_200000_cccccc"}
+	running2 := &ScanRun{ScanID: "sc_2026-11-04_200100_dddddd"}
+	complete := &ScanRun{ScanID: "sc_2026-11-04_200200_eeeeee", CompletionState: "complete"}
+	for _, r := range []*ScanRun{running1, running2, complete} {
+		if err := s.UpsertScanRun(ctx, r); err != nil {
+			t.Fatalf("UpsertScanRun %s: %v", r.ScanID, err)
+		}
+	}
+
+	n, err := s.MarkStaleRunningAsFailed(ctx)
+	if err != nil {
+		t.Fatalf("MarkStaleRunningAsFailed: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("expected 2 stale running scans marked failed, got %d", n)
+	}
+
+	for _, scanID := range []string{running1.ScanID, running2.ScanID} {
+		got, err := s.GetScanRun(ctx, scanID)
+		if err != nil {
+			t.Fatalf("GetScanRun: %v", err)
+		}
+		if got.CompletionState != "failed" {
+			t.Errorf("scan %s must be 'failed' after mark-stale, got %q", scanID, got.CompletionState)
+		}
+	}
+
+	got, err := s.GetScanRun(ctx, complete.ScanID)
+	if err != nil {
+		t.Fatalf("GetScanRun: %v", err)
+	}
+	if got.CompletionState != "complete" {
+		t.Errorf("already-complete scan must be untouched, got %q", got.CompletionState)
+	}
+
+	n2, err := s.MarkStaleRunningAsFailed(ctx)
+	if err != nil {
+		t.Fatalf("second MarkStaleRunningAsFailed: %v", err)
+	}
+	if n2 != 0 {
+		t.Errorf("no running scans left, expected 0, got %d", n2)
+	}
+}
+
+func TestStore_IncompleteTasksCRUD(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	scanID := "sc_2026-11-04_200300_ffffff"
+	tasks := []*ScanIncompleteTask{
+		{ScanID: scanID, Phase: "planner", FunctionID: 42, FilePath: "src/foo.c", Scale: 100, Reason: "timeout", Detail: "plan stage exceeded 30s"},
+		{ScanID: scanID, Phase: "detector", FunctionID: 7, FilePath: "src/bar.c", Reason: "panic"},
+		{ScanID: scanID, Phase: "graph", Reason: "oom", Detail: "CFG cache full"},
+	}
+	for _, task := range tasks {
+		if err := s.InsertIncompleteTask(ctx, task); err != nil {
+			t.Fatalf("InsertIncompleteTask: %v", err)
+		}
+	}
+
+	got, err := s.ListIncompleteTasks(ctx, scanID)
+	if err != nil {
+		t.Fatalf("ListIncompleteTasks: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 incomplete tasks, got %d", len(got))
+	}
+
+	if got[0].Phase != "planner" || got[0].FunctionID != 42 || got[0].FilePath != "src/foo.c" || got[0].Reason != "timeout" {
+		t.Errorf("task 0 round-trip mismatch: %+v", got[0])
+	}
+	if got[1].Phase != "detector" || got[1].FunctionID != 7 || got[1].Reason != "panic" {
+		t.Errorf("task 1 round-trip mismatch: %+v", got[1])
+	}
+	if got[2].Phase != "graph" || got[2].Reason != "oom" || got[2].Detail != "CFG cache full" {
+		t.Errorf("task 2 round-trip mismatch: %+v", got[2])
+	}
+
+	other, err := s.ListIncompleteTasks(ctx, "sc_nonexistent")
+	if err != nil {
+		t.Fatalf("ListIncompleteTasks for nonexistent scan: %v", err)
+	}
+	if len(other) != 0 {
+		t.Errorf("expected 0 tasks for nonexistent scan, got %d", len(other))
+	}
+}
