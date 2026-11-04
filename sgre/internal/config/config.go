@@ -148,6 +148,42 @@ type Scan struct {
 	//	[scan]
 	//	skip_detectors = ["unchecked_return", "memory_leak"]
 	SkipDetectors []string `toml:"skip_detectors"`
+	// GraphBuildersConcurrency caps the number of graph builders that run in
+	// parallel. Default 7 (one per builder). Lowering it trades wall-clock for
+	// peak memory on large repos where 7 parallel tree walks compete for RSS.
+	//	[scan]
+	//	graph_builders_concurrency = 4
+	GraphBuildersConcurrency int `toml:"graph_builders_concurrency"`
+	// PlanConcurrency caps the number of vuln-type plan goroutines. Default 8.
+	//	[scan]
+	//	plan_concurrency = 4
+	PlanConcurrency int `toml:"plan_concurrency"`
+}
+
+// GraphBuildersConcurrencyOr returns the configured graph-builder parallelism,
+// defaulting to 7 when unset (≤0 or >64 sanity-clamped).
+func (c *Config) GraphBuildersConcurrencyOr(def int) int {
+	n := c.Scan.GraphBuildersConcurrency
+	if n <= 0 {
+		n = def
+	}
+	if n > 64 {
+		n = 64
+	}
+	return n
+}
+
+// PlanConcurrencyOr returns the configured plan-stage parallelism, defaulting
+// to the given value when unset (≤0 or >64 sanity-clamped).
+func (c *Config) PlanConcurrencyOr(def int) int {
+	n := c.Scan.PlanConcurrency
+	if n <= 0 {
+		n = def
+	}
+	if n > 64 {
+		n = 64
+	}
+	return n
 }
 
 // skipDetectorsOverride is the one-shot CLI override

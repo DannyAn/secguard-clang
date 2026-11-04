@@ -162,6 +162,7 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 	var bwg sync.WaitGroup
 	bErrCh := make(chan error, len(builders))
+	builderSem := make(chan struct{}, config.Load().GraphBuildersConcurrencyOr(len(builders)))
 	for _, b := range builders {
 		bwg.Add(1)
 		go func(b builderTask) {
@@ -171,6 +172,8 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 					bErrCh <- fmt.Errorf("%s panicked: %v", b.name, r)
 				}
 			}()
+			builderSem <- struct{}{}
+			defer func() { <-builderSem }()
 			if err := b.fn(ctx); err != nil {
 				bErrCh <- fmt.Errorf("%s: %w", b.name, err)
 			}
@@ -335,7 +338,7 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 		close(summaryReady)
 	}
 
-	const planConcurrency = 8
+	planConcurrency := config.Load().PlanConcurrencyOr(8)
 	planSem := make(chan struct{}, planConcurrency)
 	var pwg sync.WaitGroup
 	planStart := time.Now()
