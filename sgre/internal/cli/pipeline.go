@@ -164,6 +164,15 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	var bwg sync.WaitGroup
 	bErrCh := make(chan error, len(builders))
 	builderSem := make(chan struct{}, config.Load().GraphBuildersConcurrencyOr(len(builders)))
+
+	var memMon *MemoryMonitor
+	if cfg := config.Load(); cfg.Scan.MemoryPressureEnabled && cfg.Scan.MemoryHighWatermarkMB > 0 {
+		memMon = NewMemoryMonitor(int64(cfg.Scan.MemoryHighWatermarkMB)*1024*1024,
+			int64(cfg.Scan.MemoryLowWatermarkMB)*1024*1024)
+		memMon.Start(2*time.Second, logger)
+		defer memMon.Stop()
+	}
+
 	for _, b := range builders {
 		bwg.Add(1)
 		go func(b builderTask) {
@@ -173,6 +182,9 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 					bErrCh <- fmt.Errorf("%s panicked: %v", b.name, r)
 				}
 			}()
+			for memMon != nil && memMon.Pressured() {
+				time.Sleep(100 * time.Millisecond)
+			}
 			builderSem <- struct{}{}
 			defer func() { <-builderSem }()
 			if err := b.fn(ctx); err != nil {
@@ -361,6 +373,9 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 			// goroutines that would only block on the summary.
 			if taintTypeSet[vt] {
 				<-summaryReady
+			}
+			for memMon != nil && memMon.Pressured() {
+				time.Sleep(100 * time.Millisecond)
 			}
 			planSem <- struct{}{}
 			defer func() { <-planSem }()

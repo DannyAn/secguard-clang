@@ -176,6 +176,23 @@ type Scan struct {
 	//	[scan]
 	//	max_cached_trees = 2000
 	MaxCachedTrees int `toml:"max_cached_trees"`
+	// MemoryPressureEnabled toggles cgroup/RSS-driven backpressure scheduling.
+	// When true, the pipeline monitors process memory and reduces concurrency
+	// to 1 when usage exceeds MemoryHighWatermarkMB, restoring when it drops
+	// below MemoryLowWatermarkMB. Default false (no backpressure).
+	//	[scan]
+	//	memory_pressure_enabled = true
+	MemoryPressureEnabled bool `toml:"memory_pressure_enabled"`
+	// MemoryHighWatermarkMB is the RSS/cgroup threshold (in MB) above which
+	// the pipeline enters backpressure (stops admitting new concurrent tasks).
+	//	[scan]
+	//	memory_high_watermark_mb = 28000
+	MemoryHighWatermarkMB int `toml:"memory_high_watermark_mb"`
+	// MemoryLowWatermarkMB is the threshold below which backpressure is lifted.
+	// Must be < MemoryHighWatermarkMB to provide hysteresis.
+	//	[scan]
+	//	memory_low_watermark_mb = 20000
+	MemoryLowWatermarkMB int `toml:"memory_low_watermark_mb"`
 }
 
 // GraphBuildersConcurrencyOr returns the configured graph-builder parallelism,
