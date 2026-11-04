@@ -540,5 +540,17 @@ func (s *mockStore) ListScanRuns(ctx context.Context, limit int) ([]*db.ScanRun,
 func (s *mockStore) SetScanRunAIDuration(ctx context.Context, scanID string, ms int64, source string) error {
 	return nil
 }
+func (s *mockStore) SetScanRunCompletionState(ctx context.Context, scanID, state string) error {
+	return nil
+}
+func (s *mockStore) MarkStaleRunningAsFailed(ctx context.Context) (int, error) {
+	return 0, nil
+}
+func (s *mockStore) InsertIncompleteTask(ctx context.Context, task *db.ScanIncompleteTask) error {
+	return nil
+}
+func (s *mockStore) ListIncompleteTasks(ctx context.Context, scanID string) ([]*db.ScanIncompleteTask, error) {
+	return nil, nil
+}
 
 var _ = fmt.Sprintf

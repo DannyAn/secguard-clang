@@ -141,6 +141,12 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	}
 	defer store.Close()
 
+	if n, err := store.MarkStaleRunningAsFailed(ctx); err != nil {
+		defaultLogger().Warn("mark stale running scans as failed", "error", err)
+	} else if n > 0 {
+		defaultLogger().Info("marked stale running scans as failed", "count", n)
+	}
+
 	logger, logCloser := newScanLogger(scanDir)
 	defer func() {
 		if logCloser == nil {
@@ -155,6 +161,17 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 			fmt.Fprintf(os.Stderr, "warning: failed to close scan log: %v\n", cerr)
 		}
 		logCloser = nil
+	}()
+
+	scanSucceeded := false
+	defer func() {
+		state := "failed"
+		if scanSucceeded {
+			state = "complete"
+		}
+		if err := store.SetScanRunCompletionState(ctx, scanID, state); err != nil {
+			logger.Warn("set scan completion state failed", "state", state, "error", err)
+		}
 	}()
 
 	sup, err := loadSuppressions(ctx, store)
@@ -602,6 +619,8 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	fmt.Fprintln(os.Stdout, string(jsonBytes))
 
 	report.PrintScanSummary(os.Stderr, summaryData)
+
+	scanSucceeded = true
 
 	if failOn != "" {
 		confirmedCount := 0

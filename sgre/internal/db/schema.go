@@ -218,8 +218,32 @@ CREATE TABLE IF NOT EXISTS scan_runs (
     final_count       INTEGER,
     report_bytes      INTEGER,
     evidence_bytes    INTEGER,
-    created_at        INTEGER
+    created_at        INTEGER,
+    completion_state  TEXT NOT NULL DEFAULT 'running' CHECK (completion_state IN ('running','complete','incomplete','limited','failed'))
 );
+
+-- ============================================================
+-- Scan Incomplete Tasks (checkpoint ledger for interrupted scans)
+-- ============================================================
+
+-- One row per task that could not complete during a scan (a planner type that
+-- crashed, a detector that errored, a function that timed out). It is the
+-- checkpoint ledger that lets the orchestrator distinguish "scan finished
+-- cleanly" from "scan was interrupted and these phases are missing", so a resume
+-- re-runs only the incomplete work instead of the whole pipeline.
+CREATE TABLE IF NOT EXISTS scan_incomplete_tasks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id     TEXT NOT NULL,
+    phase       TEXT NOT NULL,
+    function_id INTEGER,
+    file_path   TEXT,
+    scale       INTEGER,
+    reason      TEXT NOT NULL,
+    detail      TEXT,
+    created_at  INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_incomplete_scan ON scan_incomplete_tasks(scan_id);
 
 -- ============================================================
 -- Review Sessions (incremental PR/MR review anchor)
@@ -412,6 +436,9 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 	}
 	if err := ensureColumn(ctx, db, "scan_runs", "source_revision", "TEXT"); err != nil {
 		return fmt.Errorf("db: init schema: ensure scan_runs.source_revision: %w", err)
+	}
+	if err := ensureColumn(ctx, db, "scan_runs", "completion_state", "TEXT NOT NULL DEFAULT 'running' CHECK (completion_state IN ('running','complete','incomplete','limited','failed'))"); err != nil {
+		return fmt.Errorf("db: init schema: ensure scan_runs.completion_state: %w", err)
 	}
 	// scan_stats.ai_stage_status is additive (the AI-classification completion
 	// marker set by `report --complete-type`). A pre-v0.7.4 database lacks the

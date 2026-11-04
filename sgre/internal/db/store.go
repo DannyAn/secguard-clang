@@ -173,6 +173,14 @@ type ScanRunStore interface {
 	// SetScanRunAIDuration records the AI-classification wall-clock written by
 	// `report --audit --ai-duration-ms` at the end of the AI stage.
 	SetScanRunAIDuration(ctx context.Context, scanID string, ms int64, source string) error
+	// SetScanRunCompletionState updates the scan's completion state (running,
+	// complete, incomplete, limited, failed) — the unified checkpoint semantics.
+	SetScanRunCompletionState(ctx context.Context, scanID, state string) error
+	// MarkStaleRunningAsFailed flips every leftover 'running' scan to 'failed'.
+	// Called at scan start to clean up records from crashed/interrupted scans.
+	MarkStaleRunningAsFailed(ctx context.Context) (int, error)
+	InsertIncompleteTask(ctx context.Context, task *ScanIncompleteTask) error
+	ListIncompleteTasks(ctx context.Context, scanID string) ([]*ScanIncompleteTask, error)
 }
 
 type InlineSuppressionStore interface {

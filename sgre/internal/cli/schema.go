@@ -72,6 +72,18 @@ var agentSchemaTables = map[string][]columnDef{
 		{Name: "report_bytes", Type: "INTEGER"},
 		{Name: "evidence_bytes", Type: "INTEGER"},
 		{Name: "created_at", Type: "INTEGER"},
+		{Name: "completion_state", Type: "TEXT", NotNull: true, Default: "running"},
+	},
+	"scan_incomplete_tasks": {
+		{Name: "id", Type: "INTEGER", PrimaryKey: true},
+		{Name: "scan_id", Type: "TEXT", NotNull: true},
+		{Name: "phase", Type: "TEXT", NotNull: true},
+		{Name: "function_id", Type: "INTEGER"},
+		{Name: "file_path", Type: "TEXT"},
+		{Name: "scale", Type: "INTEGER"},
+		{Name: "reason", Type: "TEXT", NotNull: true},
+		{Name: "detail", Type: "TEXT"},
+		{Name: "created_at", Type: "INTEGER"},
 	},
 	"files": {
 		{Name: "id", Type: "INTEGER", PrimaryKey: true},
@@ -101,12 +113,13 @@ var agentSchemaTables = map[string][]columnDef{
 }
 
 var agentSchemaNotes = map[string]string{
-	"findings":        "AI agent output. Query by file_path and line_number (NOT file/line). rule_id is CWE (e.g. CWE-476). status: open/confirmed/dismissed/auto-confirmed (binary verdict; legacy 'suspected' rows tolerated but read as dismissed).",
-	"scan_stats":      "Pipeline metrics per scan per vuln type. vuln_type is the kebab-case type name (NOT a column called vulnerability_type).",
-	"scan_runs":       "Scan-level performance/convergence summary (one row per scan). *_ms are millisecond phase durations; seed_count/final_count are raw candidates before/after convergence; report_bytes/evidence_bytes are the report + candidate-evidence sizes the AI consumes.",
-	"files":           "Layer 1 program facts. Query by path.",
-	"functions":       "Layer 1 program facts. Join to files via file_id.",
-	"security_events": "Layer 3 raw evidence. DO NOT query this table — it contains pre-convergence candidates that bypass the pipeline.",
+	"findings":              "AI agent output. Query by file_path and line_number (NOT file/line). rule_id is CWE (e.g. CWE-476). status: open/confirmed/dismissed/auto-confirmed (binary verdict; legacy 'suspected' rows tolerated but read as dismissed).",
+	"scan_stats":            "Pipeline metrics per scan per vuln type. vuln_type is the kebab-case type name (NOT a column called vulnerability_type).",
+	"scan_runs":             "Scan-level performance/convergence summary (one row per scan). *_ms are millisecond phase durations; seed_count/final_count are raw candidates before/after convergence; report_bytes/evidence_bytes are the report + candidate-evidence sizes the AI consumes. completion_state: running/complete/incomplete/limited/failed (unified checkpoint semantics).",
+	"scan_incomplete_tasks": "Tasks that could not complete during a scan (checkpoint ledger). phase is the pipeline stage that failed; reason is the failure category. Query by scan_id to find what a resume needs to re-run.",
+	"files":                 "Layer 1 program facts. Query by path.",
+	"functions":             "Layer 1 program facts. Join to files via file_id.",
+	"security_events":       "Layer 3 raw evidence. DO NOT query this table — it contains pre-convergence candidates that bypass the pipeline.",
 }
 
 func runSchemaCmd(args []string) int {
