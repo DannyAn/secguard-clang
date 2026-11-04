@@ -200,6 +200,8 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	// consuming detector plus once per consuming filter (the 8-12x rebuild
 	// overhead this Phase removes).
 	sharedCFGCache := graph.NewCFGCache()
+	sharedCFGCache.MaxEntries = config.Load().Scan.CFGCacheMaxEntries
+	sharedCFGCache.MaxTotalCFGNodes = config.Load().Scan.CFGCacheMaxTotalNodes
 
 	// Build the per-scan interprocedural alias graph once and share it via
 	// ctx with both stages. The current skeleton covers function-local
@@ -239,8 +241,8 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	} else {
 		logger.Info("phase timing", "phase", "detectors_total", "elapsed_ms", timings.DetectorsMs)
 	}
-	if b, h := sharedCFGCache.Stats(); b+h > 0 {
-		logger.Info("cfg cache stats after detectors", "builds", b, "hits", h)
+	if b, h, e, n, tn := sharedCFGCache.StatsFull(); b+h > 0 {
+		logger.Info("cfg cache stats after detectors", "builds", b, "hits", h, "evictions", e, "entries", n, "total_nodes", tn)
 	}
 
 	// Backfill a function_summary row for every indexed function, so the
@@ -377,8 +379,8 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 	pwg.Wait()
 	timings.PlanMs = time.Since(planStart).Milliseconds()
-	if b, h := sharedCFGCache.Stats(); b+h > 0 {
-		logger.Info("cfg cache stats after plan", "builds", b, "hits", h)
+	if b, h, e, n, tn := sharedCFGCache.StatsFull(); b+h > 0 {
+		logger.Info("cfg cache stats after plan", "builds", b, "hits", h, "evictions", e, "entries", n, "total_nodes", tn)
 	}
 
 	return &pipelineOutcome{

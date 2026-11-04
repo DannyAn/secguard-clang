@@ -137,3 +137,106 @@ func TestBuildStmtCFGWithCache_NilCache(t *testing.T) {
 	}
 	_ = context.Background()
 }
+func TestCFGCache_LRUMaxEntries(t *testing.T) {
+	c := NewCFGCache()
+	c.MaxEntries = 3
+	for i := int64(1); i <= 5; i++ {
+		c.GetOrBuild(i, func() *StmtCFG {
+			return &StmtCFG{Nodes: []*StmtNode{{ID: int(i)}}}
+		})
+	}
+	_, _, _, entries, _ := c.StatsFull()
+	if entries > 3 {
+		t.Fatalf("entries=%d, want <= 3", entries)
+	}
+	if c.Evictions != 2 {
+		t.Fatalf("evictions=%d, want 2", c.Evictions)
+	}
+	for k := int64(1); k <= 2; k++ {
+		if _, ok := c.byFn[k]; ok {
+			t.Fatalf("fn %d should have been evicted", k)
+		}
+	}
+	for k := int64(3); k <= 5; k++ {
+		if _, ok := c.byFn[k]; !ok {
+			t.Fatalf("fn %d should still be cached", k)
+		}
+	}
+}
+
+func TestCFGCache_LRUMaxTotalNodes(t *testing.T) {
+	c := NewCFGCache()
+	c.MaxTotalCFGNodes = 10
+	sizes := []int{3, 4, 5}
+	for i, sz := range sizes {
+		id := int64(i + 1)
+		nodes := make([]*StmtNode, sz)
+		for j := range nodes {
+			nodes[j] = &StmtNode{ID: j}
+		}
+		c.GetOrBuild(id, func() *StmtCFG { return &StmtCFG{Nodes: nodes} })
+	}
+	_, _, _, _, tn := c.StatsFull()
+	if tn > 10 {
+		t.Fatalf("totalNodes=%d, want <= 10", tn)
+	}
+	if c.Evictions == 0 {
+		t.Fatal("expected at least 1 eviction")
+	}
+}
+
+func TestCFGCache_LRUAccessRefreshesTimestamp(t *testing.T) {
+	c := NewCFGCache()
+	c.MaxEntries = 2
+	c.GetOrBuild(1, func() *StmtCFG { return &StmtCFG{} })
+	c.GetOrBuild(2, func() *StmtCFG { return &StmtCFG{} })
+	c.GetOrBuild(1, func() *StmtCFG { return &StmtCFG{} })
+	c.GetOrBuild(3, func() *StmtCFG { return &StmtCFG{} })
+	if _, ok := c.byFn[1]; !ok {
+		t.Fatal("fn 1 should still be cached (accessed most recently)")
+	}
+	if _, ok := c.byFn[2]; ok {
+		t.Fatal("fn 2 should have been evicted (oldest)")
+	}
+	if _, ok := c.byFn[3]; !ok {
+		t.Fatal("fn 3 should be cached (just inserted)")
+	}
+}
+
+func TestCFGCache_UnboundedByDefault(t *testing.T) {
+	c := NewCFGCache()
+	for i := int64(1); i <= 100; i++ {
+		c.GetOrBuild(i, func() *StmtCFG { return &StmtCFG{} })
+	}
+	_, _, _, entries, _ := c.StatsFull()
+	if entries != 100 {
+		t.Fatalf("unbounded cache entries=%d, want 100", entries)
+	}
+	if c.Evictions != 0 {
+		t.Fatalf("unbounded cache evictions=%d, want 0", c.Evictions)
+	}
+}
+
+func TestCFGCache_StatsFull(t *testing.T) {
+	c := NewCFGCache()
+	c.MaxEntries = 2
+	c.GetOrBuild(1, func() *StmtCFG { return &StmtCFG{Nodes: []*StmtNode{{ID: 1}, {ID: 2}}} })
+	c.GetOrBuild(2, func() *StmtCFG { return &StmtCFG{Nodes: []*StmtNode{{ID: 1}}} })
+	c.GetOrBuild(3, func() *StmtCFG { return &StmtCFG{Nodes: []*StmtNode{{ID: 1}, {ID: 2}, {ID: 3}}} })
+	b, h, e, n, tn := c.StatsFull()
+	if b != 3 {
+		t.Fatalf("builds=%d, want 3", b)
+	}
+	if h != 0 {
+		t.Fatalf("hits=%d, want 0", h)
+	}
+	if e != 1 {
+		t.Fatalf("evictions=%d, want 1", e)
+	}
+	if n != 2 {
+		t.Fatalf("entries=%d, want 2", n)
+	}
+	if tn <= 0 {
+		t.Fatalf("totalNodes=%d, want > 0", tn)
+	}
+}

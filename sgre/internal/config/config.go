@@ -158,6 +158,18 @@ type Scan struct {
 	//	[scan]
 	//	plan_concurrency = 4
 	PlanConcurrency int `toml:"plan_concurrency"`
+	// CFGCacheMaxEntries bounds the per-scan statement-CFG cache by entry
+	// count. 0 (default) = unbounded (legacy behavior). When the cache exceeds
+	// this limit, the least-recently-used entry is evicted.
+	//	[scan]
+	//	cfg_cache_max_entries = 1000
+	CFGCacheMaxEntries int `toml:"cfg_cache_max_entries"`
+	// CFGCacheMaxTotalNodes bounds the CFG cache by total node count across
+	// all cached CFGs, preventing a single giant function from dominating
+	// memory. 0 (default) = unbounded.
+	//	[scan]
+	//	cfg_cache_max_total_nodes = 50000
+	CFGCacheMaxTotalNodes int `toml:"cfg_cache_max_total_nodes"`
 }
 
 // GraphBuildersConcurrencyOr returns the configured graph-builder parallelism,
