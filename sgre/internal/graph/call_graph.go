@@ -16,6 +16,7 @@ type CallGraphBuilder struct {
 	store  db.Store
 	parser *parser.Parser
 	logger *log.Logger
+	edges  *edgeBatchWriter
 }
 
 type BuildResult struct {
@@ -29,6 +30,7 @@ func NewCallGraphBuilder(store db.Store, p *parser.Parser, logger *log.Logger) *
 
 func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	result := &BuildResult{}
+	b.edges = newEdgeBatchWriter(b.store, b.logger, 0)
 
 	funcs, err := b.store.ListFunctions(ctx)
 	if err != nil {
@@ -154,6 +156,7 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 		}
 	}
 
+	b.edges.flush(ctx)
 	return result, nil
 }
 
@@ -162,13 +165,8 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 // source node as an entry point.
 func (b *CallGraphBuilder) insertSelfEdge(ctx context.Context, nodeID int64) error {
 	props := marshalProps(b.logger, "ADDR_TAKEN", map[string]string{"indirect": "true"})
-	_, err := b.store.InsertGraphEdge(ctx, &db.GraphEdge{
-		SrcID:      nodeID,
-		DstID:      nodeID,
-		EdgeType:   "ADDR_TAKEN",
-		Properties: props,
-	})
-	return err
+	b.edges.add(ctx, nodeID, nodeID, "ADDR_TAKEN", props)
+	return nil
 }
 
 // collectAddrRefNames returns the names of functions whose address is referenced
@@ -216,16 +214,7 @@ func isDirectCallee(call parser.Node, id parser.Node) bool {
 // line (previously it stamped the callee function's start line, a latent bug).
 func (b *CallGraphBuilder) insertCallEdge(ctx context.Context, f *db.Function, callerNodeID, calleeNodeID int64, callLine int, result *BuildResult) {
 	props := marshalProps(b.logger, "CALL", map[string]int{"call_line": callLine})
-	_, err := b.store.InsertGraphEdge(ctx, &db.GraphEdge{
-		SrcID:      callerNodeID,
-		DstID:      calleeNodeID,
-		EdgeType:   "CALL",
-		Properties: props,
-	})
-	if err != nil {
-		warnEdge(b.logger, "CALL", f.Name, err)
-		return
-	}
+	b.edges.add(ctx, callerNodeID, calleeNodeID, "CALL", props)
 	result.EdgesCreated++
 }
 
@@ -234,16 +223,7 @@ func (b *CallGraphBuilder) insertCallEdge(ctx context.Context, f *db.Function, c
 // edge from a direct call (GAP-02).
 func (b *CallGraphBuilder) insertCallEdgeIndirect(ctx context.Context, f *db.Function, callerNodeID, calleeNodeID int64, callLine int, slot string, result *BuildResult) {
 	props := marshalProps(b.logger, "CALL", map[string]any{"call_line": callLine, "indirect": "true", "via": slot})
-	_, err := b.store.InsertGraphEdge(ctx, &db.GraphEdge{
-		SrcID:      callerNodeID,
-		DstID:      calleeNodeID,
-		EdgeType:   "CALL",
-		Properties: props,
-	})
-	if err != nil {
-		warnEdge(b.logger, "CALL", f.Name, err)
-		return
-	}
+	b.edges.add(ctx, callerNodeID, calleeNodeID, "CALL", props)
 	result.EdgesCreated++
 }
 

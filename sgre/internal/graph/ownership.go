@@ -36,6 +36,7 @@ type OwnershipBuilder struct {
 	store  db.Store
 	parser *parser.Parser
 	logger *log.Logger
+	edges  *edgeBatchWriter
 }
 
 func NewOwnershipBuilder(store db.Store, p *parser.Parser, logger *log.Logger) *OwnershipBuilder {
@@ -54,6 +55,7 @@ var releaseFunctions = map[string]bool{
 
 func (b *OwnershipBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	result := &BuildResult{}
+	b.edges = newEdgeBatchWriter(b.store, b.logger, 0)
 
 	err := forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		returns := root.FindAll("return_statement")
@@ -105,6 +107,7 @@ func (b *OwnershipBuilder) Build(ctx context.Context) (*BuildResult, error) {
 			}
 		}
 	})
+	b.edges.flush(ctx)
 	return result, err
 }
 
@@ -130,16 +133,7 @@ func (b *OwnershipBuilder) persistTransfer(ctx context.Context, f *db.Function, 
 	}
 
 	props := marshalProps(b.logger, "OWNERSHIP_TRANSFER", map[string]string{"kind": kind, "variable": variable, "global": globalName})
-	_, err = b.store.InsertGraphEdge(ctx, &db.GraphEdge{
-		SrcID:      srcNode,
-		DstID:      dstNode,
-		EdgeType:   "OWNERSHIP_TRANSFER",
-		Properties: props,
-	})
-	if err != nil {
-		warnEdge(b.logger, "OWNERSHIP_TRANSFER", f.Name, err)
-		return false
-	}
+	b.edges.add(ctx, srcNode, dstNode, "OWNERSHIP_TRANSFER", props)
 	return true
 }
 
@@ -161,16 +155,7 @@ func (b *OwnershipBuilder) persistRelease(ctx context.Context, f *db.Function, v
 	}
 
 	edgeProps := marshalProps(b.logger, "RELEASE", map[string]string{"variable": variable, "release_fn": callName})
-	_, err = b.store.InsertGraphEdge(ctx, &db.GraphEdge{
-		SrcID:      srcNode,
-		DstID:      dstNode,
-		EdgeType:   "RELEASE",
-		Properties: edgeProps,
-	})
-	if err != nil {
-		warnEdge(b.logger, "RELEASE", f.Name, err)
-		return false
-	}
+	b.edges.add(ctx, srcNode, dstNode, "RELEASE", edgeProps)
 	return true
 }
 

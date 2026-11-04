@@ -9,19 +9,19 @@ import (
 )
 
 type mockStore struct {
-	files     []*db.File
-	funcs     []*db.Function
-	funcDecls []*db.FunctionDeclaration
-	events    []*db.SecurityEvent
-	edges     []*db.GraphEdge
-	nodes     []*db.GraphNode
-	locs      []*db.Location
-	findings  []*db.Finding
-	summaries map[int64]*db.FunctionSummary
-	suppressions []db.InlineSuppression
-	funcPtrWrites []db.FuncPtrWrite
+	files             []*db.File
+	funcs             []*db.Function
+	funcDecls         []*db.FunctionDeclaration
+	events            []*db.SecurityEvent
+	edges             []*db.GraphEdge
+	nodes             []*db.GraphNode
+	locs              []*db.Location
+	findings          []*db.Finding
+	summaries         map[int64]*db.FunctionSummary
+	suppressions      []db.InlineSuppression
+	funcPtrWrites     []db.FuncPtrWrite
 	candidateVerdicts []db.CandidateVerdict
-	nextID    int64
+	nextID            int64
 }
 
 func newMockStore() *mockStore {
@@ -249,6 +249,16 @@ func (s *mockStore) InsertGraphEdge(ctx context.Context, e *db.GraphEdge) (int64
 	s.nextID++
 	s.edges = append(s.edges, e)
 	return e.ID, nil
+}
+func (s *mockStore) InsertGraphEdgeBatch(ctx context.Context, edges []db.GraphEdge) (int, error) {
+	inserted := 0
+	for i := range edges {
+		edges[i].ID = s.nextID
+		s.nextID++
+		s.edges = append(s.edges, &edges[i])
+		inserted++
+	}
+	return inserted, nil
 }
 func (s *mockStore) ListGraphEdgesByType(ctx context.Context, et string) ([]*db.GraphEdge, error) {
 	var result []*db.GraphEdge

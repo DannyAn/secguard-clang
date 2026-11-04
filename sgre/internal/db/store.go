@@ -87,6 +87,10 @@ type GraphNodeStore interface {
 
 type GraphEdgeStore interface {
 	InsertGraphEdge(ctx context.Context, e *GraphEdge) (int64, error)
+	// InsertGraphEdgeBatch inserts all edges in one BEGIN IMMEDIATE transaction,
+	// a single write-lock acquisition + fsync instead of one autocommit per edge.
+	// A mid-batch error rolls the whole batch back. Returns the number inserted.
+	InsertGraphEdgeBatch(ctx context.Context, edges []GraphEdge) (int, error)
 	ListGraphEdgesByType(ctx context.Context, edgeType string) ([]*GraphEdge, error)
 	ListGraphEdgesFromNode(ctx context.Context, srcID int64, edgeType string) ([]*GraphEdge, error)
 	ListGraphEdgesToNode(ctx context.Context, dstID int64, edgeType string) ([]*GraphEdge, error)

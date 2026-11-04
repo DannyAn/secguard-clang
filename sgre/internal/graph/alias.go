@@ -23,6 +23,7 @@ type AliasBuilder struct {
 	store  db.Store
 	parser *parser.Parser
 	logger *log.Logger
+	edges  *edgeBatchWriter
 }
 
 func NewAliasBuilder(store db.Store, p *parser.Parser, logger *log.Logger) *AliasBuilder {
@@ -39,6 +40,7 @@ type aliasRecord struct {
 
 func (b *AliasBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	result := &BuildResult{}
+	b.edges = newEdgeBatchWriter(b.store, b.logger, 0)
 
 	err := forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
 		assigns := root.FindAll("assignment_expression")
@@ -57,6 +59,7 @@ func (b *AliasBuilder) Build(ctx context.Context) (*BuildResult, error) {
 			}
 		}
 	})
+	b.edges.flush(ctx)
 	return result, err
 }
 
@@ -72,16 +75,7 @@ func (b *AliasBuilder) persistAlias(ctx context.Context, f *db.Function, rec ali
 		return false
 	}
 	props := marshalProps(b.logger, "ALIAS", map[string]string{"field": rec.field, "variable": rec.alias})
-	_, err = b.store.InsertGraphEdge(ctx, &db.GraphEdge{
-		SrcID:      aliasNode,
-		DstID:      baseNode,
-		EdgeType:   "ALIAS",
-		Properties: props,
-	})
-	if err != nil {
-		warnEdge(b.logger, "ALIAS", f.Name, err)
-		return false
-	}
+	b.edges.add(ctx, aliasNode, baseNode, "ALIAS", props)
 	return true
 }
 

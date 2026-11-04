@@ -26,6 +26,7 @@ type InterprocBuilder struct {
 	store  db.Store
 	parser *parser.Parser
 	logger *log.Logger
+	edges  *edgeBatchWriter
 }
 
 func NewInterprocBuilder(store db.Store, p *parser.Parser, logger *log.Logger) *InterprocBuilder {
@@ -34,6 +35,7 @@ func NewInterprocBuilder(store db.Store, p *parser.Parser, logger *log.Logger) *
 
 func (b *InterprocBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	result := &BuildResult{}
+	b.edges = newEdgeBatchWriter(b.store, b.logger, 0)
 
 	funcs, err := b.store.ListFunctions(ctx)
 	if err != nil {
@@ -159,6 +161,7 @@ func (b *InterprocBuilder) Build(ctx context.Context) (*BuildResult, error) {
 			}
 		}
 	})
+	b.edges.flush(ctx)
 	return result, err
 }
 
@@ -175,16 +178,7 @@ func (b *InterprocBuilder) persistParamBinding(ctx context.Context, caller *db.F
 		return false
 	}
 	props := marshalProps(b.logger, "PARAM_BINDING", map[string]interface{}{"callee": calleeName, "index": index, "param": paramName})
-	_, err = b.store.InsertGraphEdge(ctx, &db.GraphEdge{
-		SrcID:      actualNode,
-		DstID:      formalNode,
-		EdgeType:   "PARAM_BINDING",
-		Properties: props,
-	})
-	if err != nil {
-		warnEdge(b.logger, "PARAM_BINDING", caller.Name, err)
-		return false
-	}
+	b.edges.add(ctx, actualNode, formalNode, "PARAM_BINDING", props)
 	return true
 }
 
@@ -200,16 +194,7 @@ func (b *InterprocBuilder) persistReturn(ctx context.Context, caller *db.Functio
 		return false
 	}
 	props := marshalProps(b.logger, "RETURN", map[string]string{"callee": calleeName, "variable": lhsName})
-	_, err = b.store.InsertGraphEdge(ctx, &db.GraphEdge{
-		SrcID:      retNode,
-		DstID:      dstNode,
-		EdgeType:   "RETURN",
-		Properties: props,
-	})
-	if err != nil {
-		warnEdge(b.logger, "RETURN", caller.Name, err)
-		return false
-	}
+	b.edges.add(ctx, retNode, dstNode, "RETURN", props)
 	return true
 }
 
