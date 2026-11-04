@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 
@@ -32,54 +33,130 @@ func IsCTypeKeyword(name string) bool {
 type Parser struct {
 	lang   *sitter.Language
 	parser *sitter.Parser
-	// mu guards cache and parsers: the parallel graph builders, detectors and
-	// planners all share one Parser and call ParseCached concurrently, so map
-	// reads/writes and the tree-sitter Language refcount (SetLanguage) must be
-	// serialized. The returned *Tree is immutable after parse and safe to read
-	// concurrently once the lock is released.
-	mu      sync.Mutex
-	cache   map[string]*Tree
-	parsers map[string]*sitter.Parser
+	// mu guards cache and lifecycle state: the parallel graph builders,
+	// detectors and planners all share one Parser and call ParseCached
+	// concurrently, so map reads/writes and the refcount transitions that
+	// decide eviction/close must be serialized.
+	mu    sync.Mutex
+	cache map[string]*Tree
 	// maxCachedTrees bounds the number of cached parse trees. 0 = unbounded
 	// (legacy default). When >0, ParseCached evicts the least-recently-used
-	// tree with refs==0 to make room; if all entries are referenced, the new
-	// tree is added to transient (owned by the Parser, cleaned in CloseAll).
-	maxCachedTrees   int
-	clock            uint64
-	transientTrees   []*Tree
-	transientParsers []*sitter.Parser
+	// tree with refs==0 to make room. If every entry is borrowed, the parse
+	// still succeeds: the new tree is returned as a transient borrow that owns
+	// its own parser and is closed by the caller's Release.
+	maxCachedTrees int
+	clock          uint64
+	// transientActive counts out-of-cache trees whose borrow has not been
+	// released yet. They are not tracked individually: each closes itself on
+	// the final Release, so CloseAll only reports the count for diagnostics.
+	transientActive atomic.Int64
+	// closed is set by CloseAll; ParseCached after it returns an error instead
+	// of building a tree on a closed parser.
+	closed bool
+	// leakedTrees records cached trees that still had borrows when CloseAll
+	// ran. Their close is deferred to the final Release; this is the leak
+	// diagnostic CloseAll surfaces.
+	leakedTrees []string
+}
+
+// transientOrigins records still-borrowed transient trees and the ParseCached
+// call site that created them. It exists so CloseAll can name the consumer that
+// forgot a Release instead of only reporting a count.
+var transientOrigins sync.Map // *Tree -> string
+
+func callerSite() string {
+	if _, file, line, ok := runtime.Caller(2); ok {
+		return fmt.Sprintf("%s:%d", file, line)
+	}
+	return "unknown"
 }
 
 type Tree struct {
-	tree   *sitter.Tree
-	src    []byte
+	// tree is nil after Close/close; use Load/Swap so RootNode never observes
+	// a torn pointer.
+	tree atomic.Pointer[sitter.Tree]
+	src  []byte
+	// cached is true for a tree owned by the parser cache. Such trees are
+	// closed by eviction/CloseAll (only at refs==0), never by Tree.Close.
 	cached bool
-	// refs counts long-term consumers (CFG cache, fileParseCache) that hold
-	// nodes pointing into this Tree. The parser cache will not evict a Tree
-	// with refs > 0. Acquire/Release must be paired.
+	// ownsParser is true when the tree was parsed by a dedicated parser that
+	// must be closed together with the tree.
+	ownsParser bool
+	parser     *sitter.Parser
+	owner      *Parser
+	name       string
+	transient  bool
+	// refs counts borrows, including the borrow ParseCached returns to its
+	// caller. A tree is evicted and closed only while refs==0. Every
+	// ParseCached/Acquire must be paired with exactly one Release.
 	refs atomic.Int64
+	// retired marks a tree no longer owned by the cache (evicted, transient,
+	// or CloseAll); the last Release closes it.
+	retired   atomic.Bool
+	closeOnce sync.Once
 	// last is the LRU timestamp; updated on cache hit and insert.
 	last uint64
 }
 
-// Acquire increments the long-term reference count. Callers that store nodes
-// pointing into this Tree (CFG cache, fileParseCache) must Acquire to prevent
-// the parser cache from evicting and closing the Tree while their nodes are
-// still in use.
+// Acquire adds a borrow. ParseCached already returns one borrow; Acquire is for
+// ownership transfer (a helper hands a tree to a long-lived cache) or a
+// consumer that keeps nodes across calls. Every Acquire needs a Release.
 func (t *Tree) Acquire() {
+	if t == nil {
+		return
+	}
 	t.refs.Add(1)
 }
 
-// Release decrements the long-term reference count. Must be called once for
-// each Acquire. When refs drops to 0 the Tree becomes eligible for eviction
-// from the parser cache.
+// Release drops one borrow. The ParseCached borrow MUST be released by the
+// caller; on the final Release of a retired/transient tree the underlying C
+// tree and its dedicated parser are closed exactly once.
 func (t *Tree) Release() {
-	t.refs.Add(-1)
+	if t == nil {
+		return
+	}
+	if t.refs.Add(-1) == 0 && t.retired.Load() {
+		t.close()
+	}
 }
 
-// Refs returns the current long-term reference count (for diagnostics).
+// Refs returns the current borrow count (diagnostics/tests).
 func (t *Tree) Refs() int64 {
+	if t == nil {
+		return 0
+	}
 	return t.refs.Load()
+}
+
+// retire makes the tree non-cache-owned; the last Release closes it. Called
+// by the evictor and by CloseAll.
+func (t *Tree) retire() {
+	if t == nil {
+		return
+	}
+	t.retired.Store(true)
+	if t.refs.Load() == 0 {
+		t.close()
+	}
+}
+
+func (t *Tree) close() {
+	if t == nil {
+		return
+	}
+	t.closeOnce.Do(func() {
+		if tr := t.tree.Swap(nil); tr != nil {
+			tr.Close()
+		}
+		if t.ownsParser && t.parser != nil {
+			t.parser.Close()
+			t.parser = nil
+		}
+		if t.transient && t.owner != nil {
+			t.owner.transientActive.Add(-1)
+		}
+		transientOrigins.Delete(t)
+	})
 }
 
 func NewParser() *Parser {
@@ -87,19 +164,21 @@ func NewParser() *Parser {
 	p := sitter.NewParser()
 	p.SetLanguage(lang)
 	return &Parser{
-		lang:    lang,
-		parser:  p,
-		cache:   make(map[string]*Tree),
-		parsers: make(map[string]*sitter.Parser),
+		lang:   lang,
+		parser: p,
+		cache:  make(map[string]*Tree),
 	}
 }
 
-// SetMaxCachedTrees sets the AST cache bound. 0 = unbounded (legacy default).
-// Must be called before the first ParseCached. The bound is advisory: when the
-// cache is full and every entry has long-term refs (Acquire'd by a CFG or
-// fileParseCache), the new tree is parsed and returned but placed in a
-// transient list cleaned by CloseAll rather than entering the LRU cache.
+// SetMaxCachedTrees sets the AST cache bound. 0 = unbounded (legacy default);
+// a negative value is treated as 0. Must be called before the first
+// ParseCached. When the cache is full and every entry is borrowed, ParseCached
+// still succeeds by returning a transient borrow that owns its own parser and
+// is closed by the caller's Release.
 func (p *Parser) SetMaxCachedTrees(n int) {
+	if n < 0 {
+		n = 0
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.maxCachedTrees = n
@@ -110,8 +189,20 @@ func (p *Parser) SetMaxCachedTrees(n int) {
 // next Parse on this parser — the indexer follows that pattern (the planner
 // filters use ParseCached, which is internally synchronized).
 func (p *Parser) Parse(source []byte, filename string) (*Tree, error) {
-	tree := p.parser.Parse(source, nil)
-	return &Tree{tree: tree, src: source}, nil
+	p.mu.Lock()
+	ps := p.parser
+	closed := p.closed
+	p.mu.Unlock()
+	if closed || ps == nil {
+		return nil, fmt.Errorf("parser: closed")
+	}
+	tree := ps.Parse(source, nil)
+	if tree == nil {
+		return nil, fmt.Errorf("parser: parse %s failed", filename)
+	}
+	t := &Tree{src: source, owner: p, name: filename}
+	t.tree.Store(tree)
+	return t, nil
 }
 
 // ParseCached is Parse with a per-file cache keyed by filename. The scan runs
@@ -123,37 +214,55 @@ func (p *Parser) Parse(source []byte, filename string) (*Tree, error) {
 // tree-sitter reuses the memory of trees a parser returns on its *next* parse,
 // so a cached tree would be invalidated the moment another file was parsed on
 // the same parser. Each file therefore gets its own dedicated parser, used
-// exactly once; the parser is kept alive alongside the tree and released in
-// CloseAll. The returned tree is owned by this Parser (Close is a no-op).
+// exactly once.
+//
+// Ownership: ParseCached returns a tree with ONE borrow already held for the
+// caller. Every call MUST be paired with exactly one tree.Release() when the
+// caller stops using the tree's nodes. The cache will not evict a tree while
+// its borrow count is non-zero, so holding the borrow across a callback is what
+// keeps the C nodes alive.
 //
 // When maxCachedTrees > 0 and the cache is full, the least-recently-used entry
-// with refs==0 is evicted (its tree and parser are closed). If no entry is
-// evictable (all have long-term refs), the new tree is added to a transient
-// list and still returned as cached (Close is a no-op); CloseAll cleans it up.
+// with refs==0 is evicted (its tree and parser are closed). If every entry is
+// borrowed, the new tree is parsed on its own parser and returned as a
+// transient borrow (not cached); Release closes the tree and parser
+// immediately, so a transient tree never accumulates in a list.
 func (p *Parser) ParseCached(source []byte, filename string) (*Tree, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.closed {
+		return nil, fmt.Errorf("parser: closed")
+	}
 	if t, ok := p.cache[filename]; ok {
 		p.clock++
 		t.last = p.clock
+		t.refs.Add(1)
 		return t, nil
 	}
 	ps := sitter.NewParser()
 	ps.SetLanguage(p.lang)
 	tree := ps.Parse(source, nil)
-	t := &Tree{tree: tree, src: source, cached: true}
+	if tree == nil {
+		ps.Close()
+		return nil, fmt.Errorf("parser: parse %s failed", filename)
+	}
 	p.clock++
-	t.last = p.clock
+	t := &Tree{src: source, cached: true, ownsParser: true, parser: ps, owner: p, name: filename, last: p.clock}
+	t.tree.Store(tree)
 
 	if p.maxCachedTrees > 0 && len(p.cache) >= p.maxCachedTrees {
 		if !p.evictOldestUnreferencedLocked() {
-			p.transientTrees = append(p.transientTrees, t)
-			p.transientParsers = append(p.transientParsers, ps)
+			t.cached = false
+			t.transient = true
+			t.retired.Store(true)
+			p.transientActive.Add(1)
+			transientOrigins.Store(t, callerSite())
+			t.refs.Add(1)
 			return t, nil
 		}
 	}
 	p.cache[filename] = t
-	p.parsers[filename] = ps
+	t.refs.Add(1)
 	return t, nil
 }
 
@@ -178,83 +287,129 @@ func (p *Parser) evictOldestUnreferencedLocked() bool {
 		return false
 	}
 	t := p.cache[oldestKey]
-	if t.tree != nil {
-		t.tree.Close()
-	}
-	if ps := p.parsers[oldestKey]; ps != nil {
-		ps.Close()
-	}
 	delete(p.cache, oldestKey)
-	delete(p.parsers, oldestKey)
+	t.retire()
 	return true
 }
 
-// CloseAll releases every cached and transient tree and its dedicated parser.
-// Call it once, after the scan, instead of relying on per-detector Close (which
-// is a no-op for cached trees).
+// CloseAll retires every cached tree and closes the shared parser. Cached trees
+// with an outstanding borrow are not force-closed (that would reintroduce the
+// use-after-free this lifecycle exists to prevent); their close is deferred to
+// the final Release and recorded in LeakedTrees for diagnostics. Call it once,
+// after the scan.
 func (p *Parser) CloseAll() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for _, t := range p.cache {
-		if t != nil && t.tree != nil {
-			t.tree.Close()
-		}
+	if p.closed {
+		return
 	}
-	for _, ps := range p.parsers {
-		if ps != nil {
-			ps.Close()
+	p.closed = true
+	for name, t := range p.cache {
+		if t == nil {
+			continue
 		}
-	}
-	for _, t := range p.transientTrees {
-		if t != nil && t.tree != nil {
-			t.tree.Close()
-		}
-	}
-	for _, ps := range p.transientParsers {
-		if ps != nil {
-			ps.Close()
+		t.retired.Store(true)
+		if t.refs.Load() == 0 {
+			t.close()
+		} else {
+			p.leakedTrees = append(p.leakedTrees, fmt.Sprintf("%s(refs=%d)", name, t.refs.Load()))
 		}
 	}
 	p.cache = make(map[string]*Tree)
-	p.parsers = make(map[string]*sitter.Parser)
-	p.transientTrees = nil
-	p.transientParsers = nil
+	if n := p.transientActive.Load(); n > 0 {
+		p.leakedTrees = append(p.leakedTrees, fmt.Sprintf("%d transient tree(s) still borrowed", n))
+		transientOrigins.Range(func(k, v any) bool {
+			if t, ok := k.(*Tree); ok {
+				p.leakedTrees = append(p.leakedTrees, fmt.Sprintf("transient %s @ %v", t.name, v))
+			}
+			return true
+		})
+	}
 	if p.parser != nil {
 		p.parser.Close()
+		p.parser = nil
 	}
 }
 
-// CacheStats returns (cachedEntries, transientEntries) for diagnostics.
+// LeakedTrees lists the trees that still had borrows when CloseAll ran. An
+// empty result means every ParseCached borrow was released.
+func (p *Parser) LeakedTrees() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.leakedTrees...)
+}
+
+// CacheStats returns (cachedEntries, transientBorrows) for diagnostics.
 func (p *Parser) CacheStats() (cached, transient int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return len(p.cache), len(p.transientTrees)
+	return len(p.cache), int(p.transientActive.Load())
+}
+
+// PinnedTrees counts cached trees that currently have an outstanding borrow.
+// They are protected from LRU eviction; a persistently non-zero value at a
+// phase boundary is the signal that a consumer forgot a Release.
+func (p *Parser) PinnedTrees() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := 0
+	for _, t := range p.cache {
+		if t != nil && t.refs.Load() > 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// ActiveTreeHandles counts cached trees plus still-borrowed transient trees.
+func (p *Parser) ActiveTreeHandles() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.cache) + int(p.transientActive.Load())
+}
+
+// WithParseCached parses filename, lends the tree to fn, and releases the
+// caller borrow when fn returns (including on panic). Use it for short-lived
+// consumers that do not retain parser.Nodes; consumers that keep nodes across
+// calls must call ParseCached and Release at the end of their own lifetime.
+func (p *Parser) WithParseCached(source []byte, filename string, fn func(*Tree)) error {
+	t, err := p.ParseCached(source, filename)
+	if err != nil {
+		return err
+	}
+	defer t.Release()
+	fn(t)
+	return nil
 }
 
 func (t *Tree) RootNode() Node {
-	if t.tree == nil {
+	tr := t.tree.Load()
+	if tr == nil {
 		return Node{}
 	}
-	return Node{node: *t.tree.RootNode(), src: t.src}
+	return Node{node: *tr.RootNode(), src: t.src}
 }
 
 func (t *Tree) HasError() bool {
-	if t.tree == nil {
+	tr := t.tree.Load()
+	if tr == nil {
 		return false
 	}
-	return t.tree.RootNode().HasError()
+	return tr.RootNode().HasError()
 }
 
 func (t *Tree) Source() []byte {
 	return t.src
 }
 
+// Close closes a non-cached tree (the parser.Parse path used by the indexer).
+// Trees returned by ParseCached are owned by the cache/borrow lifecycle and
+// must be released with Release; Close is a no-op for them.
 func (t *Tree) Close() {
-	if t.cached {
-		return // owned by the Parser cache; released in CloseAll
+	if t == nil || t.cached {
+		return
 	}
-	t.tree.Close()
-	t.tree = nil
+	t.close()
 }
 
 type Node struct {

@@ -32,9 +32,15 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	result := &BuildResult{}
 	b.edges = newEdgeBatchWriter(b.store, b.logger, 0)
 
-	funcs, err := b.store.ListFunctions(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("call graph: list functions: %w", err)
+	var funcs []*db.Function
+	if ri := RepoIndexFromCtx(ctx); ri != nil {
+		funcs = ri.Functions()
+	} else {
+		var err error
+		funcs, err = b.store.ListFunctions(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("call graph: list functions: %w", err)
+		}
 	}
 
 	// C allows distinct static functions with the same name across files; a
@@ -65,6 +71,7 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	// "unreachable" (a systematic false negative across every vuln type).
 	addrRefs := make(map[string]bool)
 
+	var err error
 	err = forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
 		callNodes := root.FindAll("call_expression")
 
@@ -272,9 +279,15 @@ const maxAddrRefFragmentBytes = 4 << 20
 // enters a normal build; the walker never indexes the fragment, but the
 // address-taken fact depends on the text, not the extension.
 func (b *CallGraphBuilder) collectAddrRefs(ctx context.Context, funcMap map[string][]int64, addrRefs map[string]bool) error {
-	files, err := b.store.ListFiles(ctx)
-	if err != nil {
-		return fmt.Errorf("call graph: list files: %w", err)
+	var files []*db.File
+	if ri := RepoIndexFromCtx(ctx); ri != nil {
+		files = ri.Files()
+	} else {
+		var err error
+		files, err = b.store.ListFiles(ctx)
+		if err != nil {
+			return fmt.Errorf("call graph: list files: %w", err)
+		}
 	}
 	visited := make(map[string]bool, len(files))
 	for _, file := range files {
@@ -285,29 +298,29 @@ func (b *CallGraphBuilder) collectAddrRefs(ctx context.Context, funcMap map[stri
 		if err != nil {
 			continue
 		}
-		tree, err := b.parser.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-		for name := range collectAddrRefNames(tree.RootNode(), funcMap) {
-			addrRefs[name] = true
-		}
-		for _, fragment := range parser.QuotedIncludePaths(file.Path, tree.RootNode()) {
-			if visited[fragment] {
-				continue
-			}
-			visited[fragment] = true
-			src, err := os.ReadFile(fragment)
-			if err != nil || len(src) == 0 || len(src) > maxAddrRefFragmentBytes {
-				continue
-			}
-			ftree, err := b.parser.ParseCached(src, fragment)
-			if err != nil {
-				continue
-			}
-			for name := range collectAddrRefNames(ftree.RootNode(), funcMap) {
+		if err := b.parser.WithParseCached(source, file.Path, func(tree *parser.Tree) {
+			for name := range collectAddrRefNames(tree.RootNode(), funcMap) {
 				addrRefs[name] = true
 			}
+			for _, fragment := range parser.QuotedIncludePaths(file.Path, tree.RootNode()) {
+				if visited[fragment] {
+					continue
+				}
+				visited[fragment] = true
+				src, err := os.ReadFile(fragment)
+				if err != nil || len(src) == 0 || len(src) > maxAddrRefFragmentBytes {
+					continue
+				}
+				if err := b.parser.WithParseCached(src, fragment, func(ftree *parser.Tree) {
+					for name := range collectAddrRefNames(ftree.RootNode(), funcMap) {
+						addrRefs[name] = true
+					}
+				}); err != nil {
+					continue
+				}
+			}
+		}); err != nil {
+			continue
 		}
 	}
 	return nil

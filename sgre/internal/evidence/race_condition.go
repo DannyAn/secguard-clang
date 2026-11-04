@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
-	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -151,7 +150,7 @@ func (d *RaceConditionDetector) Detect(ctx context.Context) (DetectResult, error
 		// to each global and intersect their locksets, so a race between two
 		// DIFFERENT thread functions (t1 under m1, t2 under m2) is caught — the
 		// per-function pass only saw a single function's own accesses.
-		d.detectCrossFunctionDataRace(ctx, file, funcs, funcDefs, fileInfos[file.ID], threadCounts, assigns, updates, ids, calls, lockWrappers, unlockWrappers, &result)
+		d.detectCrossFunctionDataRace(ctx, file, funcs, funcDefs, fileInfos[file.ID], threadCounts, assigns, updates, ids, calls, lockWrappers, unlockWrappers, &result, tree)
 	})
 	return result, err
 }
@@ -391,7 +390,7 @@ func threadFnName(arg string) string {
 // mutex. Unlike the previous per-function pass, this intersects the locksets of
 // DIFFERENT thread functions, so `t1` writing g under m1 while `t2` writes g
 // under m2 is caught even though each function is created only once.
-func (d *RaceConditionDetector) detectCrossFunctionDataRace(ctx context.Context, file *db.File, funcs []*db.Function, funcDefs []parser.Node, info *fileInfo, threadCounts map[string]int, assigns, updates, ids, calls []parser.Node, lockWrappers, unlockWrappers map[string]string, result *DetectResult) {
+func (d *RaceConditionDetector) detectCrossFunctionDataRace(ctx context.Context, file *db.File, funcs []*db.Function, funcDefs []parser.Node, info *fileInfo, threadCounts map[string]int, assigns, updates, ids, calls []parser.Node, lockWrappers, unlockWrappers map[string]string, result *DetectResult, tree *parser.Tree) {
 	if info == nil {
 		return
 	}
@@ -409,7 +408,7 @@ func (d *RaceConditionDetector) detectCrossFunctionDataRace(ctx context.Context,
 			continue
 		}
 		body := bodies[f.StartLine]
-		heldByLine := d.mustHoldByLine(ctx, body, f.EndLine, calls, f, lockWrappers, unlockWrappers)
+		heldByLine := d.mustHoldByLine(ctx, body, f.EndLine, calls, f, lockWrappers, unlockWrappers, tree)
 		accesses := d.functionGlobalAccesses(f, info, assigns, updates, ids, heldByLine)
 		for name, acc := range accesses {
 			if len(acc.writes) == 0 {
@@ -574,8 +573,11 @@ func (d *RaceConditionDetector) functionGlobalAccesses(f *db.Function, info *fil
 // It is computed per mutex via a two-state reachability (held / not-held): a
 // node is "not held" iff it is reachable from the entry without holding the
 // mutex, and "held" otherwise.
-func (d *RaceConditionDetector) mustHoldByLine(ctx context.Context, body parser.Node, funcEnd int, calls []parser.Node, f *db.Function, lockWrappers, unlockWrappers map[string]string) map[int]map[string]bool {
-	cfg := graph.BuildStmtCFGWithCache(cfgCacheFromCtx(ctx), f.ID, body, funcEnd)
+func (d *RaceConditionDetector) mustHoldByLine(ctx context.Context, body parser.Node, funcEnd int, calls []parser.Node, f *db.Function, lockWrappers, unlockWrappers map[string]string, tree *parser.Tree) map[int]map[string]bool {
+	cfg, lease := buildStmtCFGFromCtx(ctx, f, body, tree)
+	if lease != nil {
+		defer lease.Release()
+	}
 
 	mutexSet := make(map[string]bool)
 	lockAt := make(map[int]string)

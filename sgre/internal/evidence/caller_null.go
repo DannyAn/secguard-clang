@@ -446,21 +446,21 @@ func (d *CallerNullDetector) buildCalleeIndex(ctx context.Context) map[string]ca
 		if err != nil {
 			continue
 		}
-		tree, err := d.parser.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-		for _, fnDef := range tree.RootNode().FindAll("function_definition") {
-			name, names, types := functionParamNames(fnDef)
+		if err := d.parser.WithParseCached(source, file.Path, func(tree *parser.Tree) {
+			for _, fnDef := range tree.RootNode().FindAll("function_definition") {
+				name, names, types := functionParamNames(fnDef)
 
-			if name == "" || dup[name] {
-				continue
+				if name == "" || dup[name] {
+					continue
+				}
+				fn := byName[name]
+				if fn == nil {
+					continue
+				}
+				out[name] = calleeParamInfo{fn: fn, names: names, types: types}
 			}
-			fn := byName[name]
-			if fn == nil {
-				continue
-			}
-			out[name] = calleeParamInfo{fn: fn, names: names, types: types}
+		}); err != nil {
+			continue
 		}
 	}
 	return out
@@ -802,12 +802,12 @@ func (d *CallerNullDetector) collectIncludedFragmentCensus(ctx context.Context, 
 			if err != nil || len(src) == 0 || len(src) > maxCensusFragmentBytes {
 				continue
 			}
-			tree, err := d.parser.ParseCached(src, path)
-			if err != nil {
+			if err := d.parser.WithParseCached(src, path, func(tree *parser.Tree) {
+				for name := range parser.ValueReferencedNames(tree.RootNode()) {
+					valueUsed[name] = true
+				}
+			}); err != nil {
 				continue
-			}
-			for name := range parser.ValueReferencedNames(tree.RootNode()) {
-				valueUsed[name] = true
 			}
 		}
 	})

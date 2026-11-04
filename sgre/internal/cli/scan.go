@@ -141,10 +141,17 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	}
 	defer store.Close()
 
-	if n, err := store.MarkStaleRunningAsFailed(ctx); err != nil {
+	if n, err := store.MarkStaleRunningAsFailed(ctx, scanID); err != nil {
 		defaultLogger().Warn("mark stale running scans as failed", "error", err)
 	} else if n > 0 {
 		defaultLogger().Info("marked stale running scans as failed", "count", n)
+	}
+	// Create the lifecycle row before any expensive work: if this process is
+	// OOM-killed, the row stays 'running' and the next scan's stale sweep marks
+	// it failed. An absent row would make the interrupted scan invisible.
+	if err := store.BeginScanRun(ctx, scanID); err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to begin scan run: %v", err))
+		return 1
 	}
 
 	logger, logCloser := newScanLogger(scanDir)
@@ -163,14 +170,18 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		logCloser = nil
 	}()
 
-	scanSucceeded := false
+	// scanFinalState is committed by the defer. It starts 'failed' so any early
+	// return (including a panic unwinding through it) leaves an honest record;
+	// the success path sets the computed complete/incomplete state just before
+	// returning.
+	scanFinalState := "failed"
 	defer func() {
-		state := "failed"
-		if scanSucceeded {
-			state = "complete"
-		}
-		if err := store.SetScanRunCompletionState(ctx, scanID, state); err != nil {
-			logger.Warn("set scan completion state failed", "state", state, "error", err)
+		// The scan context may already be canceled by --timeout or Ctrl-C;
+		// recording the failure must not be skipped because of that. Without
+		// WithoutCancel the row would stay 'running' until the next scan's
+		// stale sweep, which is exactly the window we are trying to close.
+		if err := store.SetScanRunCompletionState(context.WithoutCancel(ctx), scanID, scanFinalState); err != nil {
+			logger.Warn("set scan completion state failed", "state", scanFinalState, "error", err)
 		}
 	}()
 
@@ -234,6 +245,9 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	// AI second-round review entirely (the global auto_confirmed_count cannot
 	// name WHICH types have them).
 	autoConfirmedByType := map[string]int{}
+	// degraded records a non-fatal stage failure (auto-confirm write, findings
+	// read) that must still make the scan 'incomplete' rather than 'complete'.
+	degraded := false
 
 	vulnTypes := planner.ActiveVulnTypes(config.Load().DisabledTypeSet())
 
@@ -288,6 +302,7 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		autoWritten, autoUnwritten, autoErr := autoConfirmFindings(ctx, store, scanID, vulnType, autoConfirmed, logger)
 		if autoErr != nil {
 			logger.Warn("auto-confirm findings failed", "vuln_type", vulnType, "error", autoErr)
+			degraded = true
 		}
 		// 降级回流：写失败的、以及无坐标（无法落库）的 confirmed 候选回流
 		// needsReview 交由 AI 复核，绝不静默丢失（否则这批既不在 findings、也不在
@@ -353,6 +368,7 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		// the read failure in the JSON and at Error level.
 		logger.Error("list findings by scan failed", "error", err)
 		findingsError = err.Error()
+		degraded = true
 	}
 	findingsList := make([]map[string]interface{}, 0, len(findings))
 	for _, f := range findings {
@@ -414,6 +430,36 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	if scopeMode(scope) == "boundary" {
 		writeBoundaryConfigHint(scanDir, absPath, scopeWorktree(scope), boundaryDismissible)
 	}
+
+	// Persist the incomplete ledger and derive the scan's completion state
+	// before the report header is rendered, so report.md and the JSON cannot
+	// claim 'complete' while a detector or plan type failed.
+	incompleteCount := 0
+	recordIncomplete := func(phase, reason, detail string) {
+		task := &db.ScanIncompleteTask{ScanID: scanID, Phase: phase, Reason: reason, Detail: detail}
+		// A canceled scan context (timeout/Ctrl-C) must still leave the ledger
+		// row; otherwise the incompleteness is invisible exactly when it matters.
+		if err := store.InsertIncompleteTask(context.WithoutCancel(ctx), task); err != nil {
+			logger.Warn("insert incomplete task failed", "phase", phase, "error", err)
+		}
+		// Count it even if the ledger write failed: the in-memory error still
+		// means this scan is not complete, and claiming complete would be worse.
+		incompleteCount++
+	}
+	for _, de := range outcome.DetectorErrors {
+		recordIncomplete("detector", "failed", de.Detector+": "+de.Err.Error())
+	}
+	for vt, msg := range planErrors {
+		recordIncomplete("plan", "failed", vt+": "+msg)
+	}
+	if degraded {
+		recordIncomplete("report", "degraded", "auto-confirm write or findings read failed")
+	}
+	plannedState := "complete"
+	if incompleteCount > 0 {
+		plannedState = "incomplete"
+	}
+
 	summaryData := report.SummaryData{
 		ScanID:            scanID,
 		TargetPath:        absPath,
@@ -427,6 +473,8 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		TypeBreakdown:     typeBreakdown,
 		ScanMode:          scopeMode(scope),
 		EnclosingWorktree: scopeWorktree(scope),
+		CompletionState:   plannedState,
+		IncompleteTasks:   incompleteCount,
 		ReportPath:        filepath.Join(scanDir, report.ReportFile),
 		SarifPath:         filepath.Join(scanDir, report.CandidatesSarifFile),
 		LatestPath:        filepath.Join(scansDir, report.LatestName),
@@ -458,6 +506,8 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 
 	output := map[string]interface{}{
 		"scan_id":                 scanID,
+		"completion_state":        plannedState,
+		"incomplete_task_count":   incompleteCount,
 		"candidates_by_type":      candidatesByType,
 		"auto_confirmed_by_type":  autoConfirmedByType,
 		"seeds_by_type":           seedsByType,
@@ -591,6 +641,7 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 			FinalCount:       totalFinalCount,
 			ReportBytes:      reportBytes,
 			EvidenceBytes:    evidenceBytes,
+			CompletionState:  plannedState,
 		}
 		if err := store.UpsertScanRun(ctx, run); err != nil {
 			logger.Warn("insert scan run metrics failed", "error", err)
@@ -620,7 +671,7 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 
 	report.PrintScanSummary(os.Stderr, summaryData)
 
-	scanSucceeded = true
+	scanFinalState = plannedState
 
 	if failOn != "" {
 		confirmedCount := 0

@@ -60,7 +60,10 @@ func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error)
 			// The statement CFG decides free→use reachability: a loop-carried
 			// `for(...) { use(p); free(p); }` has the use AFTER the free in source
 			// order on the second iteration, so line order alone missed it (UF-01/06).
-			cfg := buildStmtCFGFromCtx(ctx, f, bodies[f.StartLine], tree)
+			cfg, lease := buildStmtCFGFromCtx(ctx, f, bodies[f.StartLine], tree)
+			if lease != nil {
+				defer lease.Release()
+			}
 
 			for _, fs := range freeSites {
 				fsNode := cfg.NodeAt(fs.line)

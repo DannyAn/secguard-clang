@@ -437,8 +437,16 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 	if err := ensureColumn(ctx, db, "scan_runs", "source_revision", "TEXT"); err != nil {
 		return fmt.Errorf("db: init schema: ensure scan_runs.source_revision: %w", err)
 	}
-	if err := ensureColumn(ctx, db, "scan_runs", "completion_state", "TEXT NOT NULL DEFAULT 'running' CHECK (completion_state IN ('running','complete','incomplete','limited','failed'))"); err != nil {
+	// A pre-completion_state database must NOT get DEFAULT 'running': SQLite
+	// backfills every existing row with the column default, and the next scan's
+	// stale-running sweep would then mark all historical scans failed. Add the
+	// column nullable, backfill old rows as complete (they finished before the
+	// column existed), and let new scans write running/complete explicitly.
+	if err := ensureColumn(ctx, db, "scan_runs", "completion_state", "TEXT CHECK (completion_state IN ('running','complete','incomplete','limited','failed'))"); err != nil {
 		return fmt.Errorf("db: init schema: ensure scan_runs.completion_state: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE scan_runs SET completion_state='complete' WHERE completion_state IS NULL`); err != nil {
+		return fmt.Errorf("db: init schema: backfill scan_runs.completion_state: %w", err)
 	}
 	// scan_stats.ai_stage_status is additive (the AI-classification completion
 	// marker set by `report --complete-type`). A pre-v0.7.4 database lacks the

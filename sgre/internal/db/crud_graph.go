@@ -122,7 +122,12 @@ func (s *store) InsertGraphEdgeBatch(ctx context.Context, edges []GraphEdge) (in
 		}
 		return nil
 	})
-	return inserted, err
+	if err != nil {
+		// The transaction rolled back: none of the rows exist. Returning the
+		// partial counter would make callers report writes that never happened.
+		return 0, err
+	}
+	return inserted, nil
 }
 
 func (s *store) ClearGraph(ctx context.Context) error {

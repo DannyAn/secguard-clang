@@ -167,6 +167,10 @@ type ScanRunStore interface {
 	// UpsertScanRun inserts or replaces the scan-level metrics row for a scan_id.
 	// Re-running a scan into the same --output-dir overwrites the prior row.
 	UpsertScanRun(ctx context.Context, r *ScanRun) error
+	// BeginScanRun inserts a 'running' row at scan start (resetting a prior row
+	// for the same scan_id), so an OOM-killed scan is visible as interrupted
+	// instead of absent.
+	BeginScanRun(ctx context.Context, scanID string) error
 	GetScanRun(ctx context.Context, scanID string) (*ScanRun, error)
 	// ListScanRuns returns the most recent runs first, capped at limit (0 = all).
 	ListScanRuns(ctx context.Context, limit int) ([]*ScanRun, error)
@@ -176,9 +180,10 @@ type ScanRunStore interface {
 	// SetScanRunCompletionState updates the scan's completion state (running,
 	// complete, incomplete, limited, failed) — the unified checkpoint semantics.
 	SetScanRunCompletionState(ctx context.Context, scanID, state string) error
-	// MarkStaleRunningAsFailed flips every leftover 'running' scan to 'failed'.
-	// Called at scan start to clean up records from crashed/interrupted scans.
-	MarkStaleRunningAsFailed(ctx context.Context) (int, error)
+	// MarkStaleRunningAsFailed flips leftover 'running' scans to 'failed',
+	// excluding the scan that is starting now. Called at scan start to clean up
+	// records from crashed/interrupted scans without touching a live one.
+	MarkStaleRunningAsFailed(ctx context.Context, excludeScanID string) (int, error)
 	InsertIncompleteTask(ctx context.Context, task *ScanIncompleteTask) error
 	ListIncompleteTasks(ctx context.Context, scanID string) ([]*ScanIncompleteTask, error)
 }

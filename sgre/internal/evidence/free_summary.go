@@ -3,6 +3,7 @@ package evidence
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -44,18 +45,19 @@ type summaryMap map[string]*FuncSummary
 
 func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) summaryMap {
 	summaries := make(summaryMap)
-	// Per-function direct write analyses are retained so forwarded writes (a
-	// wrapper that passes its pointer parameter to an in-scan writer) can be
-	// propagated after every direct summary exists. Without that second pass a
-	// wrapper like `if (!ready) return; write_sql(sql, ...);` is graded "never
-	// writes the parameter" and the caller's conditional-uninit evidence
-	// (the real production shape) is lost.
-	type funcWriteState struct {
-		f     *db.Function
-		body  parser.Node
-		state *paramWriteState
+
+	// Phase 1 computes the DIRECT facts only and retains no CFG lease. The
+	// earlier implementation kept one state (and one CFG lease) per function
+	// until the forwarded-write fixpoint finished; at 10K–51K functions that
+	// pinned every CFG (refs>0 entries are not evictable) and was the dominant
+	// memory peak, defeating the CFG cache budget.
+	type funcMeta struct {
+		file          *db.File
+		fn            *db.Function
+		params        []string
+		pointerParams map[string]bool
 	}
-	var states []funcWriteState
+	var metas []funcMeta
 
 	forEachFile(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		funcDefs := root.FindAll("function_definition")
@@ -68,11 +70,14 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, l
 			params := extractFunctionParamsFrom(funcDefs, f.StartLine)
 			pointerParams := extractPointerParamsFrom(funcDefs, f.StartLine)
 
-			state := computeParamWriteState(ctx, bodies, f, params)
+			state := computeParamWriteState(ctx, bodies, f, params, tree)
 			paramWrites, paramCondWrites := map[int]bool{}, map[int]bool{}
 			if state != nil {
 				every, some := state.states(nil, nil)
 				paramWrites, paramCondWrites = every, conditionalOnly(every, some)
+				if state.lease != nil {
+					state.lease.Release()
+				}
 			}
 			s := &FuncSummary{
 				ParamDirectFrees:       make(map[int]bool),
@@ -82,7 +87,7 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, l
 				ParamConditionalWrites: paramCondWrites,
 			}
 
-			s.ParamDirectFrees, s.ParamFieldFrees, s.ParamMayDirectFrees = computeParamFrees(ctx, bodies, f, params, pointerParams)
+			s.ParamDirectFrees, s.ParamFieldFrees, s.ParamMayDirectFrees = computeParamFrees(ctx, bodies, f, params, pointerParams, tree)
 
 			for _, call := range calls {
 				if !funcLineRange(f, call.StartLine()) {
@@ -106,46 +111,81 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, l
 			if len(s.ParamDirectFrees) > 0 || len(s.ParamFieldFrees) > 0 || len(s.ParamMayDirectFrees) > 0 || len(s.GlobalFrees) > 0 || len(s.ReturnStores) > 0 || len(s.ParamWrites) > 0 || len(s.ParamConditionalWrites) > 0 {
 				summaries[f.Name] = s
 			}
-			if state != nil {
-				states = append(states, funcWriteState{f: f, body: bodies[f.StartLine], state: state})
-			}
+			metas = append(metas, funcMeta{file: file, fn: f, params: params, pointerParams: pointerParams})
 		}
 	})
 
-	// Propagate writes through forwarded pointer parameters: a wrapper that
-	// passes its pointer parameter to an in-scan callee that writes through it
-	// also writes the caller's output on that path. The fixpoint matters for
-	// the interprocedural conditional-uninit evidence: `merge_get_sql(sql)`
-	// forwards `sql` to a writer only on the normal-data branch and returns
-	// early otherwise, so the wrapper is a CONDITIONAL writer — the shape the
-	// caller's uninit read needs. Cap the iterations: summary facts only grow,
-	// so a handful settles any realistic call depth.
-	nameCount := make(map[string]int, len(states))
-	for _, st := range states {
-		nameCount[st.f.Name]++
+	// Group by file so phase 2 parses one file at a time and releases its AST
+	// and CFG leases before moving on.
+	byFile := make(map[int64][]funcMeta)
+	var fileOrder []int64
+	for _, m := range metas {
+		if m.file == nil {
+			continue
+		}
+		if _, seen := byFile[m.file.ID]; !seen {
+			fileOrder = append(fileOrder, m.file.ID)
+		}
+		byFile[m.file.ID] = append(byFile[m.file.ID], m)
 	}
+	nameCount := make(map[string]int, len(metas))
+	for _, m := range metas {
+		nameCount[m.fn.Name]++
+	}
+
+	// Phase 2: propagate writes through forwarded pointer parameters
+	// (`wrapper(p)` -> callee writes p). Each iteration processes one file at a
+	// time; the per-function CFG lease is released immediately after the
+	// reachability check. Summary facts only grow, so a handful of iterations
+	// settles any realistic call depth.
 	for iter := 0; iter < 5; iter++ {
 		changed := false
-		for _, st := range states {
-			if nameCount[st.f.Name] != 1 {
+		for _, fileID := range fileOrder {
+			file := byFile[fileID][0].file
+			source, err := os.ReadFile(file.Path)
+			if err != nil {
 				continue
 			}
-			forwardEvery, forwardSome := st.state.forwardedWriteNodes(st.body, summaries)
-			every, some := st.state.states(forwardEvery, forwardSome)
-			cond := conditionalOnly(every, some)
-			cur := summaries[st.f.Name]
-			if cur == nil {
-				if len(every) == 0 && len(cond) == 0 {
-					continue
+			if err := p.WithParseCached(source, file.Path, func(tree *parser.Tree) {
+				bodies := functionBodyMap(tree.RootNode().FindAll("function_definition"))
+				for _, m := range byFile[fileID] {
+					if nameCount[m.fn.Name] != 1 {
+						continue
+					}
+					body := bodies[m.fn.StartLine]
+					if body.Kind() != "compound_statement" {
+						continue
+					}
+					state := computeParamWriteState(ctx, bodies, m.fn, m.params, tree)
+					if state == nil {
+						continue
+					}
+					forwardEvery, forwardSome := state.forwardedWriteNodes(body, summaries)
+					every, some := state.states(forwardEvery, forwardSome)
+					if state.lease != nil {
+						state.lease.Release()
+					}
+					cond := conditionalOnly(every, some)
+					cur := summaries[m.fn.Name]
+					if cur == nil {
+						if len(every) == 0 && len(cond) == 0 {
+							continue
+						}
+						summaries[m.fn.Name] = &FuncSummary{ParamWrites: every, ParamConditionalWrites: cond}
+						changed = true
+						continue
+					}
+					if !boolMapsEqual(cur.ParamWrites, every) || !boolMapsEqual(cur.ParamConditionalWrites, cond) {
+						cur.ParamWrites = every
+						cur.ParamConditionalWrites = cond
+						changed = true
+					}
 				}
-				summaries[st.f.Name] = &FuncSummary{ParamWrites: every, ParamConditionalWrites: cond}
-				changed = true
+			}); err != nil {
+				if logger != nil {
+					logger.Debug("func summaries: re-parse file failed, skipping", "file", file.Path, "error", err)
+				}
 				continue
-			}
-			if !boolMapsEqual(cur.ParamWrites, every) || !boolMapsEqual(cur.ParamConditionalWrites, cond) {
-				cur.ParamWrites = every
-				cur.ParamConditionalWrites = cond
-				changed = true
 			}
 		}
 		if !changed {
@@ -231,6 +271,7 @@ func intKeys(m map[int]bool) []int {
 // fixpoint (a wrapper that hands the pointer to another in-scan writer).
 type paramWriteState struct {
 	cfg           *graph.StmtCFG
+	lease         *graph.CFGLease
 	params        []string
 	direct        map[int]map[int]bool
 	forwardReturn map[int]map[int]bool
@@ -242,14 +283,18 @@ type paramWriteState struct {
 }
 
 // computeParamWriteState builds the direct write analysis for one function.
-func computeParamWriteState(ctx context.Context, bodies map[int]parser.Node, f *db.Function, params []string) *paramWriteState {
+// tree is the ParseCached borrow the body came from; it is passed to the CFG
+// cache so the cached CFG pins the AST while its StmtNode.Stmt nodes point
+// into it.
+func computeParamWriteState(ctx context.Context, bodies map[int]parser.Node, f *db.Function, params []string, tree *parser.Tree) *paramWriteState {
 	body := bodies[f.StartLine]
 	if body.Kind() != "compound_statement" {
 		return nil
 	}
-	cfg := buildStmtCFGFromCtx(ctx, f, body, nil)
+	cfg, lease := buildStmtCFGFromCtx(ctx, f, body, tree)
 	st := &paramWriteState{
 		cfg:           cfg,
+		lease:         lease,
 		params:        params,
 		direct:        make(map[int]map[int]bool),
 		forwardReturn: make(map[int]map[int]bool),
@@ -455,7 +500,7 @@ func nullGuardedWrite(stmt parser.Node, p string) bool {
 // so propagating it into a must-set would be a false positive (cf. gz_look
 // freeing state->out on a malloc-failure path). A NULL-guard
 // `if (p != NULL) free(p)` falls through, so it is unconditional.
-func computeParamFrees(ctx context.Context, bodies map[int]parser.Node, f *db.Function, params []string, pointerParams map[string]bool) (direct map[int]bool, field map[int][]string, mayDirect map[int]bool) {
+func computeParamFrees(ctx context.Context, bodies map[int]parser.Node, f *db.Function, params []string, pointerParams map[string]bool, tree *parser.Tree) (direct map[int]bool, field map[int][]string, mayDirect map[int]bool) {
 	direct = make(map[int]bool)
 	field = make(map[int][]string)
 	mayDirect = make(map[int]bool)
@@ -463,7 +508,10 @@ func computeParamFrees(ctx context.Context, bodies map[int]parser.Node, f *db.Fu
 	if body.Kind() != "compound_statement" {
 		return direct, field, mayDirect
 	}
-	cfg := buildStmtCFGFromCtx(ctx, f, body, nil)
+	cfg, lease := buildStmtCFGFromCtx(ctx, f, body, tree)
+	if lease != nil {
+		defer lease.Release()
+	}
 
 	// Terminator nodes dead-end a path (they do not fall through to the next
 	// statement), so a free reached only via a terminator is conditional.

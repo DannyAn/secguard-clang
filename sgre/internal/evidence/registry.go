@@ -6,6 +6,7 @@ import (
 	"runtime/debug"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -21,6 +22,37 @@ type DetectorFactory func(store db.Store, p *parser.Parser, logger *log.Logger) 
 type DetectorError struct {
 	Detector string
 	Err      error
+}
+
+// detectorConcurrency is the detector-stage parallelism (0 = legacy default 8).
+// detectorThrottle is checked before each detector acquires a slot; the pipeline
+// installs a closure backed by the memory monitor so the detector stage
+// participates in backpressure (it used to be completely ungated).
+var (
+	detectorConcurrency atomic.Int64
+	detectorThrottle    atomic.Value // func() bool
+)
+
+func init() {
+	detectorThrottle.Store(func() bool { return false })
+}
+
+// SetDetectorConcurrency configures the detector-stage parallelism. Values
+// outside 1..64 fall back to 8.
+func SetDetectorConcurrency(n int) {
+	if n <= 0 || n > 64 {
+		n = 8
+	}
+	detectorConcurrency.Store(int64(n))
+}
+
+// SetDetectorThrottle installs the backpressure predicate the detector stage
+// waits on before admitting a new detector. A nil function disables throttling.
+func SetDetectorThrottle(fn func() bool) {
+	if fn == nil {
+		fn = func() bool { return false }
+	}
+	detectorThrottle.Store(fn)
 }
 
 var detectorFactories []DetectorFactory
@@ -84,6 +116,7 @@ func RunAllDetectorsWithSkip(ctx context.Context, store db.Store, p *parser.Pars
 	// (tests) stays write-through.
 	batchMode.Store(true)
 	defer batchMode.Store(false)
+	eventFlushFailures.Store(0)
 	all := AllDetectors(store, p, logger)
 	if len(skip) > 0 {
 		kept := make([]Detector, 0, len(all))
@@ -113,8 +146,22 @@ func RunAllDetectorsWithSkip(ctx context.Context, store db.Store, p *parser.Pars
 		independent = append(independent, det)
 	}
 
-	const maxConcurrent = 8
+	maxConcurrent := int(detectorConcurrency.Load())
+	if maxConcurrent <= 0 {
+		maxConcurrent = 8
+	}
 	sem := make(chan struct{}, maxConcurrent)
+	gate, _ := detectorThrottle.Load().(func() bool)
+	waitForCapacity := func() bool {
+		for gate != nil && gate() {
+			select {
+			case <-ctx.Done():
+				return false
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+		return true
+	}
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var errs []DetectorError
@@ -149,7 +196,20 @@ func RunAllDetectorsWithSkip(ctx context.Context, store db.Store, p *parser.Pars
 		wg.Add(1)
 		go func(d Detector) {
 			defer wg.Done()
-			sem <- struct{}{}
+			if !waitForCapacity() {
+				mu.Lock()
+				errs = append(errs, DetectorError{Detector: d.Name(), Err: fmt.Errorf("canceled while waiting for memory capacity")})
+				mu.Unlock()
+				return
+			}
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				mu.Lock()
+				errs = append(errs, DetectorError{Detector: d.Name(), Err: fmt.Errorf("canceled while waiting for a detector slot")})
+				mu.Unlock()
+				return
+			}
 			defer func() { <-sem }()
 			start := time.Now()
 			run(d)

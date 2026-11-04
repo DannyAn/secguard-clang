@@ -49,16 +49,29 @@ func (w *edgeBatchWriter) add(ctx context.Context, srcID, dstID int64, edgeType,
 }
 
 // flush writes all buffered edges in one transaction and clears the buffer.
-// A failure is logged as a warning (graph writes are best-effort: a failed
-// write must not abort the whole scan, but a silently swallowed write is an
-// untraceable false-negative). Returns the number of edges written.
+// On a batch failure it falls back to per-edge writes: the old semantics were
+// per-edge best-effort, and dropping an entire 500-edge batch because one edge
+// failed would silently remove graph facts the filters consume (lock-order /
+// shared-access). Returns the number of edges actually written.
 func (w *edgeBatchWriter) flush(ctx context.Context) int {
 	if len(w.edges) == 0 {
 		return 0
 	}
 	n, err := w.store.InsertGraphEdgeBatch(ctx, w.edges)
-	if err != nil && w.logger != nil {
-		w.logger.Warn("graph: edge batch flush failed", "buffered", len(w.edges), "inserted", n, "error", err)
+	if err != nil {
+		if w.logger != nil {
+			w.logger.Warn("graph: edge batch flush failed, retrying per edge", "buffered", len(w.edges), "error", err)
+		}
+		n = 0
+		for i := range w.edges {
+			if _, eerr := w.store.InsertGraphEdge(ctx, &w.edges[i]); eerr != nil {
+				if w.logger != nil {
+					w.logger.Warn("graph: edge insert failed", "edge_type", w.edges[i].EdgeType, "error", eerr)
+				}
+				continue
+			}
+			n++
+		}
 	}
 	w.edges = w.edges[:0]
 	w.flushed += n

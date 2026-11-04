@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"runtime"
 	"strconv"
@@ -25,12 +26,31 @@ type MemoryMonitor struct {
 
 // NewMemoryMonitor creates a monitor with the given high/low watermarks in
 // bytes. A zero high watermark means backpressure is disabled (the monitor
-// never signals pressure).
+// never signals pressure). An invalid low watermark (<=0 or >=high) is pinned
+// to 75% of high: leaving low at 0 would make Pressured() impossible to clear
+// (memory.current/VmRSS/HeapAlloc are never 0), hanging every waiting task.
 func NewMemoryMonitor(highBytes, lowBytes int64) *MemoryMonitor {
+	if highBytes > 0 && (lowBytes <= 0 || lowBytes >= highBytes) {
+		lowBytes = highBytes * 3 / 4
+	}
 	return &MemoryMonitor{
 		highBytes: highBytes,
 		lowBytes:  lowBytes,
 		stop:      make(chan struct{}),
+	}
+}
+
+// Wait blocks while the process is under memory pressure, returning early on
+// ctx cancellation. It replaces a bare `for Pressured() { sleep }` loop, which
+// could not be interrupted by Ctrl-C and could hang forever if the flag never
+// cleared.
+func (m *MemoryMonitor) Wait(ctx context.Context) {
+	for m.Pressured() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
 }
 
@@ -52,11 +72,36 @@ func (m *MemoryMonitor) Current() int64 {
 	return m.current.Load()
 }
 
-// Start launches the monitor goroutine. It samples every interval until Stop.
+// Start launches the monitor goroutine. It samples immediately (so the graph
+// gate sees the real state before admitting the first builder) and then every
+// interval until Stop.
 func (m *MemoryMonitor) Start(interval time.Duration, logger *log.Logger) {
 	if m == nil || m.highBytes == 0 {
 		return
 	}
+	sample := func() {
+		cur := readMemoryBytes()
+		m.current.Store(cur)
+		if !m.pressured.Load() && cur >= m.highBytes {
+			m.pressured.Store(true)
+			if logger != nil {
+				logger.Warn("memory pressure: high watermark reached",
+					"current_mb", cur/1024/1024,
+					"high_mb", m.highBytes/1024/1024,
+					"action", "pause_new_tasks")
+			}
+		} else if m.pressured.Load() && cur <= m.lowBytes {
+			m.pressured.Store(false)
+			if logger != nil {
+				logger.Info("memory pressure: low watermark reached, restoring concurrency",
+					"current_mb", cur/1024/1024,
+					"low_mb", m.lowBytes/1024/1024)
+			}
+		}
+	}
+	// Sample synchronously before returning so the first admission check sees
+	// the real state rather than the zero value.
+	sample()
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -65,24 +110,7 @@ func (m *MemoryMonitor) Start(interval time.Duration, logger *log.Logger) {
 			case <-m.stop:
 				return
 			case <-ticker.C:
-				cur := readMemoryBytes()
-				m.current.Store(cur)
-				if !m.pressured.Load() && cur >= m.highBytes {
-					m.pressured.Store(true)
-					if logger != nil {
-						logger.Warn("memory pressure: high watermark reached",
-							"current_mb", cur/1024/1024,
-							"high_mb", m.highBytes/1024/1024,
-							"action", "reduce_concurrency")
-					}
-				} else if m.pressured.Load() && cur <= m.lowBytes {
-					m.pressured.Store(false)
-					if logger != nil {
-						logger.Info("memory pressure: low watermark reached, restoring concurrency",
-							"current_mb", cur/1024/1024,
-							"low_mb", m.lowBytes/1024/1024)
-					}
-				}
+				sample()
 			}
 		}
 	}()

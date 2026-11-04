@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"context"
 	"sync"
 
 	"github.com/DannyAn/secguard-clang/internal/parser"
@@ -43,16 +44,138 @@ type cfgEntry struct {
 	tree      *parser.Tree // Tree whose C nodes the CFG references; Acquire'd on insert, Release'd on evict
 	last      uint64       // LRU timestamp (higher = more recent)
 	nodeCount int          // len(cfg.Nodes), for MaxTotalCFGNodes tracking
+	// refs is the number of live CFGLease holders. An entry is evictable only
+	// while refs == 0: a lease holder may still dereference n.Stmt on this CFG,
+	// so evicting it would Release the tree under it (the P0 lifecycle bug).
+	refs int
+	// done is non-nil while a builder goroutine is constructing this entry
+	// (cfg == nil). Waiters block on it and retry; a failed build closes it and
+	// removes the placeholder.
+	done chan struct{}
 }
 
 func NewCFGCache() *CFGCache {
 	return &CFGCache{byFn: make(map[int64]*cfgEntry)}
 }
 
-// GetOrBuild returns the cached CFG for fnID, building it via builder at most
-// once per fnID per cache lifetime. A builder that returns nil is NOT cached
-// (nil means "no function body", a legitimate result that must not be sticky
-// in case the caller later supplies a real body).
+// CFGLease pins one cached CFG for the duration of a caller's use. Release is
+// idempotent; the entry becomes evictable again when the last lease is released.
+type CFGLease struct {
+	c     *CFGCache
+	fnID  int64
+	cfg   *StmtCFG
+	entry *cfgEntry
+	once  sync.Once
+}
+
+// CFG returns the leased CFG. It is nil only when the input was nil/invalid.
+func (l *CFGLease) CFG() *StmtCFG {
+	if l == nil {
+		return nil
+	}
+	return l.cfg
+}
+
+// Release drops the lease. Repeated calls are a no-op.
+func (l *CFGLease) Release() {
+	if l == nil || l.c == nil || l.entry == nil {
+		return
+	}
+	l.once.Do(func() {
+		l.c.mu.Lock()
+		if l.entry.refs > 0 {
+			l.entry.refs--
+		}
+		l.c.evictIfNeededLocked()
+		l.c.mu.Unlock()
+	})
+}
+
+// Acquire returns a lease for fnID's CFG, building it once at most. A nil tree
+// (or nil cache / non-positive fnID) builds directly and returns a lease with a
+// nil cache, so callers can always defer Release.
+//
+// The lease MUST be held until the caller stops dereferencing cfg.Nodes; a
+// cached entry is evicted only at refs==0 and its tree is released only then.
+func (c *CFGCache) Acquire(ctx context.Context, fnID int64, tree *parser.Tree, builder func() *StmtCFG) *CFGLease {
+	if c == nil || fnID <= 0 || tree == nil {
+		return &CFGLease{cfg: builder()}
+	}
+	for {
+		c.mu.Lock()
+		if e, ok := c.byFn[fnID]; ok {
+			if e.cfg == nil {
+				// Another goroutine is building this key. Wait outside the
+				// cache lock so different fnIDs build in parallel.
+				done := e.done
+				c.mu.Unlock()
+				select {
+				case <-done:
+					continue
+				case <-ctx.Done():
+					// The caller still needs a CFG; build it directly rather
+					// than returning a nil lease body.
+					return &CFGLease{cfg: builder()}
+				}
+			}
+			e.refs++
+			c.clock++
+			e.last = c.clock
+			c.Hits++
+			c.mu.Unlock()
+			return &CFGLease{c: c, fnID: fnID, cfg: e.cfg, entry: e}
+		}
+		// Claim the key with a building placeholder, then build OUTSIDE the
+		// lock. This is the design invariant: build() is never serialized by
+		// the global cache mutex.
+		e := &cfgEntry{done: make(chan struct{})}
+		c.byFn[fnID] = e
+		c.Builds++
+		c.mu.Unlock()
+
+		var cfg *StmtCFG
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					c.mu.Lock()
+					if c.byFn[fnID] == e {
+						delete(c.byFn, fnID)
+					}
+					close(e.done)
+					c.mu.Unlock()
+					panic(r)
+				}
+			}()
+			cfg = builder()
+		}()
+
+		c.mu.Lock()
+		if cfg == nil {
+			if c.byFn[fnID] == e {
+				delete(c.byFn, fnID)
+			}
+			close(e.done)
+			c.mu.Unlock()
+			return &CFGLease{}
+		}
+		e.cfg = cfg
+		e.tree = tree
+		e.nodeCount = len(cfg.Nodes)
+		e.refs = 1
+		c.clock++
+		e.last = c.clock
+		c.totalCFGNodes += e.nodeCount
+		tree.Acquire()
+		close(e.done)
+		c.evictIfNeededLocked()
+		c.mu.Unlock()
+		return &CFGLease{c: c, fnID: fnID, cfg: cfg, entry: e}
+	}
+}
+
+// GetOrBuild is the legacy non-AST-aware API, retained for unit tests with
+// synthetic CFGs. Production callers must use Acquire: an entry cached here has
+// no tree reference, so the parser can evict the AST under it.
 func (c *CFGCache) GetOrBuild(fnID int64, builder func() *StmtCFG) *StmtCFG {
 	if c == nil || fnID <= 0 {
 		return builder()
@@ -93,12 +216,17 @@ func (c *CFGCache) evictIfNeededLocked() {
 	}
 }
 
-// evictOldestLocked finds and removes the entry with the smallest LRU
-// timestamp. Returns false if the cache is empty. Caller must hold c.mu.
+// evictOldestLocked finds and removes the least-recently-used entry with
+// refs==0. Returns false when every entry is leased (the budget temporarily
+// overflows; callers' Release calls will make it evictable again). Caller must
+// hold c.mu.
 func (c *CFGCache) evictOldestLocked() bool {
 	var oldestKey int64 = -1
 	var oldestLast uint64 = ^uint64(0)
 	for k, e := range c.byFn {
+		if e.refs > 0 || e.cfg == nil {
+			continue
+		}
 		if e.last < oldestLast {
 			oldestLast = e.last
 			oldestKey = k
@@ -163,62 +291,27 @@ func (c *CFGCache) StatsFull() (builds, hits, evictions, entries, totalNodes int
 	return c.Builds, c.Hits, c.Evictions, len(c.byFn), c.totalCFGNodes
 }
 
-// BuildStmtCFGWithCache is BuildStmtCFG with a cache key. Callers that know
-// the db.Function.ID should prefer this form so repeated builds for the same
-// function hit the cache.
+// BuildStmtCFGWithCache builds a CFG directly. It deliberately does NOT cache:
+// a cached CFG holds parser.Nodes pointing into a parse tree, so an entry that
+// is not tied to a *parser.Tree borrow can outlive its AST and crash on the
+// first n.Stmt.Kind(). Callers that have the tree should use
+// BuildStmtCFGWithTree; callers that do not keep the historical (uncached)
+// behavior rather than poisoning the shared cache.
 func BuildStmtCFGWithCache(cache *CFGCache, fnID int64, body parser.Node, funcEnd int) *StmtCFG {
-	if cache == nil {
-		return BuildStmtCFG(body, funcEnd)
-	}
-	return cache.GetOrBuild(fnID, func() *StmtCFG {
-		return BuildStmtCFG(body, funcEnd)
-	})
+	return BuildStmtCFG(body, funcEnd)
 }
 
-// GetOrBuildWithTree is GetOrBuild with an associated *parser.Tree. When the
-// CFG is newly built and cached, the tree is Acquire'd so the parser cache
-// cannot evict (and Close) it while the CFG's StmtNode.Stmt nodes still
-// reference its C memory. When the CFG is evicted from this cache, the tree
-// is Release'd, making it eligible for parser-cache eviction.
-//
-// If tree is nil, the behavior is identical to GetOrBuild (no tree ref held).
+// GetOrBuildWithTree is retained for callers that only need a CFG value. It
+// does not cache: caching now requires a CFGLease (see Acquire), because an
+// entry can only be evicted safely at refs==0.
 func (c *CFGCache) GetOrBuildWithTree(fnID int64, tree *parser.Tree, builder func() *StmtCFG) *StmtCFG {
-	if c == nil || fnID <= 0 {
-		return builder()
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if e, ok := c.byFn[fnID]; ok {
-		c.clock++
-		e.last = c.clock
-		c.Hits++
-		return e.cfg
-	}
-	cfg := builder()
-	c.Builds++
-	if cfg == nil {
-		return nil
-	}
-	nc := len(cfg.Nodes)
-	c.clock++
-	c.byFn[fnID] = &cfgEntry{cfg: cfg, tree: tree, last: c.clock, nodeCount: nc}
-	c.totalCFGNodes += nc
-	if tree != nil {
-		tree.Acquire()
-	}
-	c.evictIfNeededLocked()
-	return cfg
+	return builder()
 }
 
-// BuildStmtCFGWithTree is BuildStmtCFGWithCache with an associated *parser.Tree
-// for AST↔CFG lifecycle coordination. Callers that have the *parser.Tree from
-// which body was derived should prefer this form so the parser cache cannot
-// evict the tree while the cached CFG still references its C nodes.
+// BuildStmtCFGWithTree builds a CFG directly. Caching with the AST pinned is
+// done through CFGCache.Acquire by the evidence choke point; keeping this
+// wrapper uncached is deliberate so a caller cannot create an entry it cannot
+// lease.
 func BuildStmtCFGWithTree(cache *CFGCache, fnID int64, tree *parser.Tree, body parser.Node, funcEnd int) *StmtCFG {
-	if cache == nil {
-		return BuildStmtCFG(body, funcEnd)
-	}
-	return cache.GetOrBuildWithTree(fnID, tree, func() *StmtCFG {
-		return BuildStmtCFG(body, funcEnd)
-	})
+	return BuildStmtCFG(body, funcEnd)
 }

@@ -158,21 +158,26 @@ type Scan struct {
 	//	[scan]
 	//	plan_concurrency = 4
 	PlanConcurrency int `toml:"plan_concurrency"`
+	// DetectorConcurrency caps the number of detectors that run in parallel.
+	// Default 8.
+	//	[scan]
+	//	detector_concurrency = 4
+	DetectorConcurrency int `toml:"detector_concurrency"`
 	// CFGCacheMaxEntries bounds the per-scan statement-CFG cache by entry
-	// count. 0 (default) = unbounded (legacy behavior). When the cache exceeds
-	// this limit, the least-recently-used entry is evicted.
+	// count. 0 = default 4000; a negative value keeps the legacy unbounded
+	// mode. The LRU evicts only entries with no live CFGLease.
 	//	[scan]
 	//	cfg_cache_max_entries = 1000
 	CFGCacheMaxEntries int `toml:"cfg_cache_max_entries"`
 	// CFGCacheMaxTotalNodes bounds the CFG cache by total node count across
 	// all cached CFGs, preventing a single giant function from dominating
-	// memory. 0 (default) = unbounded.
+	// memory. 0 = default 400000; negative = unbounded.
 	//	[scan]
 	//	cfg_cache_max_total_nodes = 50000
 	CFGCacheMaxTotalNodes int `toml:"cfg_cache_max_total_nodes"`
-	// MaxCachedTrees bounds the parser's AST cache by tree count. 0 (default) =
-	// unbounded (legacy behavior). When the cache exceeds this limit, the
-	// least-recently-used tree with no long-term references is evicted.
+	// MaxCachedTrees bounds the parser's AST cache by tree count. 0 = default
+	// 4000; a negative value keeps the legacy unbounded mode. Only trees with
+	// no outstanding borrow are evicted.
 	//	[scan]
 	//	max_cached_trees = 2000
 	MaxCachedTrees int `toml:"max_cached_trees"`
@@ -189,14 +194,27 @@ type Scan struct {
 	//	memory_high_watermark_mb = 28000
 	MemoryHighWatermarkMB int `toml:"memory_high_watermark_mb"`
 	// MemoryLowWatermarkMB is the threshold below which backpressure is lifted.
-	// Must be < MemoryHighWatermarkMB to provide hysteresis.
+	// 0 is normalized to 75% of the high watermark (a zero low would never be
+	// reached and would hang every waiting task).
 	//	[scan]
 	// memory_low_watermark_mb = 20000
 	MemoryLowWatermarkMB int `toml:"memory_low_watermark_mb"`
+	// GoMemLimitMB sets the Go runtime soft memory limit (GOMEMLIMIT) for the
+	// scan process. 0 = leave the runtime default. This is the knob that caps
+	// the Go heap (candidates/event maps/detector temporaries), which is often
+	// the largest resident component once the AST/CFG caches are bounded.
+	//	[scan]
+	//	go_mem_limit_mb = 24000
+	GoMemLimitMB int `toml:"go_mem_limit_mb"`
+	// GoGCPercent overrides GOGC for the scan process. 0 = leave the runtime
+	// default. A lower value trades CPU for a lower heap peak.
+	//	[scan]
+	//	go_gc_percent = 50
+	GoGCPercent int `toml:"go_gc_percent"`
 	// EventBatchSize caps the detector event buffer. When the buffer reaches
 	// this count, emitEvent auto-flushes in one transaction instead of waiting
 	// for the phase end, keeping the write-lock duration bounded on large repos.
-	// 0 (default) = phase-end-only flush (legacy behavior).
+	// 0 = default 2000; negative = phase-end-only flush (legacy behavior).
 	//	[scan]
 	//	event_batch_size = 2000
 	EventBatchSize int `toml:"event_batch_size"`
@@ -219,6 +237,19 @@ func (c *Config) GraphBuildersConcurrencyOr(def int) int {
 // to the given value when unset (≤0 or >64 sanity-clamped).
 func (c *Config) PlanConcurrencyOr(def int) int {
 	n := c.Scan.PlanConcurrency
+	if n <= 0 {
+		n = def
+	}
+	if n > 64 {
+		n = 64
+	}
+	return n
+}
+
+// DetectorConcurrencyOr returns the configured detector-stage parallelism,
+// defaulting to the given value when unset (≤0 or >64 sanity-clamped).
+func (c *Config) DetectorConcurrencyOr(def int) int {
+	n := c.Scan.DetectorConcurrency
 	if n <= 0 {
 		n = def
 	}
@@ -599,6 +630,7 @@ func Load() *Config {
 // an error; a resolved path that cannot be read or parsed is.
 func LoadE() (*Config, error) {
 	cfg := &Config{}
+	applyScanDefaults(cfg)
 	path := resolvePath(explicitPath)
 	if path == "" {
 		return cfg, nil
@@ -620,7 +652,28 @@ func LoadE() (*Config, error) {
 	if err := toml.Unmarshal(data, cfg); err != nil {
 		return &Config{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
+	applyScanDefaults(cfg)
 	return cfg, nil
+}
+
+// applyScanDefaults bounds the per-scan caches unless the user explicitly
+// opted out with a negative value. The parser/CFG/event buffers were unbounded
+// by default before the lifecycle fix, which is the OOM configuration this
+// change exists to remove; a negative value keeps the legacy unbounded mode for
+// a deployment that has measured its own headroom.
+func applyScanDefaults(c *Config) {
+	if c.Scan.MaxCachedTrees == 0 {
+		c.Scan.MaxCachedTrees = 4000
+	}
+	if c.Scan.CFGCacheMaxEntries == 0 {
+		c.Scan.CFGCacheMaxEntries = 4000
+	}
+	if c.Scan.CFGCacheMaxTotalNodes == 0 {
+		c.Scan.CFGCacheMaxTotalNodes = 400000
+	}
+	if c.Scan.EventBatchSize == 0 {
+		c.Scan.EventBatchSize = 2000
+	}
 }
 
 // TrustedMacroNames returns the configured trusted-macro allowlist.

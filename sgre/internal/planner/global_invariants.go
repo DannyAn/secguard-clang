@@ -51,6 +51,7 @@ func buildGlobalInvariants(ctx context.Context, store db.Store, p *parser.Parser
 		return inv
 	}
 	cache := newFileParseCache(p)
+	defer cache.Close()
 	// Collect the whole-tree no-return closure (standard functions + macro
 	// definitions whose body calls one) BEFORE scanning guards: an assert
 	// macro defined in one header must be recognizable in every file.

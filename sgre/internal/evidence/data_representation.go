@@ -164,22 +164,22 @@ func buildComparatorInterpretation(ctx context.Context, store db.Store, p *parse
 		if err != nil {
 			continue
 		}
-		tree, err := p.ParseCached(source, file.Path)
-		if err != nil {
+		if err := p.WithParseCached(source, file.Path, func(tree *parser.Tree) {
+			for _, fn := range tree.RootNode().FindAll("function_definition") {
+				name, _ := functionParamsFrom(fn)
+				if name == "" {
+					continue
+				}
+				voidParams := voidParamNames(fn)
+				if len(voidParams) == 0 {
+					continue
+				}
+				if ci, ok := interpretInfo(fn, voidParams); ok {
+					m[name] = ci
+				}
+			}
+		}); err != nil {
 			continue
-		}
-		for _, fn := range tree.RootNode().FindAll("function_definition") {
-			name, _ := functionParamsFrom(fn)
-			if name == "" {
-				continue
-			}
-			voidParams := voidParamNames(fn)
-			if len(voidParams) == 0 {
-				continue
-			}
-			if ci, ok := interpretInfo(fn, voidParams); ok {
-				m[name] = ci
-			}
 		}
 	}
 	return m

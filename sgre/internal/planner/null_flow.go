@@ -3,9 +3,12 @@ package planner
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -54,6 +57,10 @@ type flowAnalyzer struct {
 	// analyzeFlowMust and across the filters that share this analyzer's
 	// callsite. nil falls back to uncached BuildStmtCFG.
 	cfgCache *graph.CFGCache
+	// tree is the ParseCached borrow for the body currently being analyzed.
+	// When set (with cfgCache), analyzeFlow/analyzeFlowMust lease the CFG with
+	// this tree so the shared cache can reuse it across filters safely.
+	tree *parser.Tree
 
 	// dfgEdges caches all DATA_FLOW edges, resolved to (function, lhs, rhs, line)
 	// copies, keyed by function ID then line.
@@ -117,7 +124,14 @@ func newFlowAnalyzer(store db.Store, p *parser.Parser, cfgCache *graph.CFGCache)
 
 // flowResult is the per-function dataflow result.
 type flowResult struct {
-	cfg *graph.StmtCFG
+	cfg   *graph.StmtCFG
+	lease *graph.CFGLease
+	// spans/startLines are a compact geometry snapshot of cfg. The CFG itself
+	// (and its parser.Nodes) is released as soon as the analysis is built, so a
+	// flowResult can be cached across filters without pinning the AST.
+	// NodeAt/NodeAtColumn are reimplemented over these spans below.
+	spans      []flowSpan
+	startLines []int
 	// nodeIn maps node ID -> variable -> set of source node IDs that may reach
 	// this node. This is a reaching-definitions lattice (not a plain boolean)
 	// so that a kill (a definite non-null reassignment, a release, ...) clears
@@ -173,13 +187,51 @@ type flowResult struct {
 // when it is known so several statements on ONE line (a `for` header's
 // initializer / condition / update) are not conflated.
 func (m *flowResult) nodeAt(line, column int) *graph.StmtNode {
-	if m == nil || m.cfg == nil {
+	if m == nil {
 		return nil
 	}
-	if column > 0 {
-		return m.cfg.NodeAtColumn(line, column)
+	return nodeAtSpans(m.spans, line, column)
+}
+
+// nodeAtSpans resolves a source position over geometry snapshots. It mirrors
+// graph.StmtCFG.NodeAt/NodeAtColumn without touching parser.Nodes.
+func nodeAtSpans(spans []flowSpan, line, column int) *graph.StmtNode {
+	if len(spans) == 0 {
+		return nil
 	}
-	return m.cfg.NodeAt(line)
+	best := -1
+	for i := range spans {
+		sp := &spans[i]
+		if line < sp.start || line > sp.end {
+			continue
+		}
+		if column > 0 && (sp.column <= 0 || sp.column > column) {
+			continue
+		}
+		if best < 0 {
+			best = i
+			continue
+		}
+		b := &spans[best]
+		br, nr := b.end-b.start, sp.end-sp.start
+		if column > 0 {
+			if nr < br || (nr == br && sp.column > b.column) {
+				best = i
+			} else if nr == br && sp.column == b.column && b.control && !sp.control {
+				best = i
+			}
+		} else if nr < br || (nr == br && b.control && !sp.control) {
+			best = i
+		}
+	}
+	if best < 0 {
+		if column > 0 {
+			return nodeAtSpans(spans, line, 0)
+		}
+		return nil
+	}
+	sp := &spans[best]
+	return &graph.StmtNode{ID: sp.id, StartLine: sp.start, EndLine: sp.end, StartColumn: sp.column, IsControl: sp.control}
 }
 
 // reaching reports whether variable has a reaching source at line.
@@ -234,7 +286,7 @@ func (m *flowResult) weakGuardAt(variable string, line int) bool {
 	if m == nil || m.weakGuard == nil {
 		return false
 	}
-	n := m.cfg.NodeAt(line)
+	n := m.nodeAt(line, 0)
 	return n != nil && m.weakGuard[n.ID][variable]
 }
 
@@ -271,7 +323,7 @@ func (m *flowResult) mustReaching(variable string, line int) bool {
 	if m == nil || m.must == nil {
 		return false
 	}
-	n := m.cfg.NodeAt(line)
+	n := m.nodeAt(line, 0)
 	if n == nil {
 		return false
 	}
@@ -304,10 +356,10 @@ func (m *flowResult) sourceLineAt(variable string, line, column int) int {
 	}
 	best := 0
 	for sid := range srcs {
-		if sid < 0 || sid >= len(m.cfg.Nodes) {
+		if sid < 0 || sid >= len(m.startLines) {
 			continue
 		}
-		sl := m.cfg.Nodes[sid].StartLine
+		sl := m.startLines[sid]
 		if sl > 0 && (best == 0 || sl < best) {
 			best = sl
 		}
@@ -346,7 +398,7 @@ func (a *flowAnalyzer) analyzeFunction(ctx context.Context, fn *db.Function, bod
 		}
 	}
 	res := a.analyzeFlow(ctx, fn, body, fileRoot, genByLine, nil, true, false)
-	if res != nil && res.cfg != nil {
+	if res != nil {
 		// A self-referential field-read update (`node = node->next`) generates a
 		// may-null source for the SAME variable on the line it also dereferences
 		// that variable. The assignment's right-hand side reads the old value,
@@ -356,7 +408,7 @@ func (a *flowAnalyzer) analyzeFunction(ctx context.Context, fn *db.Function, bod
 			if s.origin != "field_read" || s.line <= 0 {
 				continue
 			}
-			n := res.cfg.NodeAtColumn(s.line, s.column)
+			n := res.nodeAt(s.line, s.column)
 			if n == nil {
 				continue
 			}
@@ -369,10 +421,70 @@ func (a *flowAnalyzer) analyzeFunction(ctx context.Context, fn *db.Function, bod
 			res.selfReadGenAt[n.ID][s.variable] = true
 		}
 	}
-	if res != nil && (len(definiteGenByLine) > 0 || len(a.definiteEntrySeeds) > 0) {
-		res.definite, res.definiteGenAt = a.analyzeDefiniteNull(res.cfg, fileRoot, a.scopeOracle(body), a.definiteEntrySeeds)
-	}
 	return res
+}
+
+type flowSpan struct {
+	id      int
+	start   int
+	end     int
+	column  int
+	control bool
+}
+
+// snapshotFlow replaces the live cfg dependency with geometry-only spans so the
+// CFG lease can be released immediately.
+func (r *flowResult) snapshotFlow(cfg *graph.StmtCFG) {
+	if r == nil {
+		return
+	}
+	r.spans, r.startLines = snapshotSpans(cfg)
+}
+
+func snapshotSpans(cfg *graph.StmtCFG) ([]flowSpan, []int) {
+	if cfg == nil {
+		return nil, nil
+	}
+	spans := make([]flowSpan, 0, len(cfg.Nodes))
+	startLines := make([]int, len(cfg.Nodes))
+	for i, n := range cfg.Nodes {
+		startLines[i] = n.StartLine
+		if n.Kind == "stmt" {
+			spans = append(spans, flowSpan{id: n.ID, start: n.StartLine, end: n.EndLine, column: n.StartColumn, control: n.IsControl})
+		}
+	}
+	return spans, startLines
+}
+
+// acquireCFG leases the shared CFG when the analyzer has an AST borrow,
+// otherwise builds directly. The lease is carried by flowResult and released
+// by the consuming filter when it stops using the flow.
+func (a *flowAnalyzer) acquireCFG(ctx context.Context, fn *db.Function, body parser.Node) (*graph.StmtCFG, *graph.CFGLease) {
+	return acquirePlannerCFG(ctx, a.cfgCache, a.tree, fn, body)
+}
+
+func acquirePlannerCFG(ctx context.Context, cache *graph.CFGCache, tree *parser.Tree, fn *db.Function, body parser.Node) (*graph.StmtCFG, *graph.CFGLease) {
+	if cache != nil && tree != nil && fn != nil && fn.ID > 0 {
+		lease := cache.Acquire(ctx, fn.ID, tree, func() *graph.StmtCFG {
+			return graph.BuildStmtCFG(body, fn.EndLine)
+		})
+		return lease.CFG(), lease
+	}
+	return graph.BuildStmtCFG(body, fn.EndLine), nil
+}
+
+// release drops the CFG lease held by the flow (if any).
+func (r *flowResult) release() {
+	if r != nil && r.lease != nil {
+		r.lease.Release()
+		r.lease = nil
+	}
+}
+
+func releaseFlowResults(flows map[int64]*flowResult) {
+	for _, f := range flows {
+		f.release()
+	}
 }
 
 // analyzeFlow builds and runs the reaching-sources dataflow for one function.
@@ -385,7 +497,10 @@ func (a *flowAnalyzer) analyzeFlow(ctx context.Context, fn *db.Function, body pa
 		return nil
 	}
 
-	cfg := graph.BuildStmtCFGWithCache(a.cfgCache, fn.ID, body, fn.EndLine)
+	cfg, lease := a.acquireCFG(ctx, fn, body)
+	if cfg == nil {
+		return nil
+	}
 	effects := a.buildEffects(cfg, genByLine, killByLine, a.dfgCopies[fn.ID], nonNullKills, definiteKills, a.macroWritesFor(fileRoot, nonNullKills), a.scopeOracle(body))
 	// Null guards are path-sensitive kills; they apply only to the null-deref
 	// may-analysis (nonNullKills), never to taint/freed-state/uninit flows.
@@ -394,7 +509,17 @@ func (a *flowAnalyzer) analyzeFlow(ctx context.Context, fn *db.Function, body pa
 		guard = buildGuardModel(cfg, a.helperParams, a.macroGuards, buildGuardCtx(body, a.constantEnvFor(fn, fileRoot)))
 	}
 	nodeIn := runDataflow(cfg, effects, a.entrySeeds, guard)
-	return &flowResult{cfg: cfg, nodeIn: nodeIn, genAt: genAt(cfg, effects), weakGuard: buildWeakGuardMap(cfg), ternaryGuard: buildTernaryGuardMap(body)}
+	res := &flowResult{cfg: cfg, lease: lease, nodeIn: nodeIn, genAt: genAt(cfg, effects), weakGuard: buildWeakGuardMap(cfg), ternaryGuard: buildTernaryGuardMap(body)}
+	res.snapshotFlow(cfg)
+	if nonNullKills {
+		res.definite, res.definiteGenAt = a.analyzeDefiniteNull(cfg, fileRoot, a.scopeOracle(body), a.definiteEntrySeeds)
+	}
+	if res.lease != nil {
+		res.lease.Release()
+		res.lease = nil
+	}
+	res.cfg = nil
+	return res
 }
 
 // analyzeFlowMust runs the may reaching-sources dataflow and, over the SAME
@@ -406,10 +531,19 @@ func (a *flowAnalyzer) analyzeFlowMust(ctx context.Context, fn *db.Function, bod
 		return nil
 	}
 
-	cfg := graph.BuildStmtCFGWithCache(a.cfgCache, fn.ID, body, fn.EndLine)
+	cfg, lease := a.acquireCFG(ctx, fn, body)
+	if cfg == nil {
+		return nil
+	}
 	effects := a.buildEffects(cfg, genByLine, killByLine, a.dfgCopies[fn.ID], nonNullKills, definiteKills, a.macroWritesFor(fileRoot, nonNullKills), a.scopeOracle(body))
-	res := &flowResult{cfg: cfg, nodeIn: runDataflow(cfg, effects, a.entrySeeds, nil), genAt: genAt(cfg, effects)}
+	res := &flowResult{cfg: cfg, lease: lease, nodeIn: runDataflow(cfg, effects, a.entrySeeds, nil), genAt: genAt(cfg, effects)}
 	res.must, res.mustGenAt = runMustDataflow(cfg, effects, nil)
+	res.snapshotFlow(cfg)
+	if res.lease != nil {
+		res.lease.Release()
+		res.lease = nil
+	}
+	res.cfg = nil
 	return res
 }
 
@@ -2691,14 +2825,31 @@ type fileParseCache struct {
 	trees  map[int64]*parser.Tree
 }
 
+var liveFileParseCaches sync.Map // *fileParseCache -> creator file:line
+
 func newFileParseCache(p *parser.Parser) *fileParseCache {
-	return &fileParseCache{
+	fc := &fileParseCache{
 		parser: p,
 		roots:  make(map[int64]parser.Node),
 		bodies: make(map[int64]map[int]parser.Node),
 		defs:   make(map[int64]map[int]parser.Node),
 		trees:  make(map[int64]*parser.Tree),
 	}
+	if _, file, line, ok := runtime.Caller(1); ok {
+		liveFileParseCaches.Store(fc, fmt.Sprintf("%s:%d", file, line))
+	}
+	return fc
+}
+
+// LiveFileParseCaches lists parse caches that have not been Close()d. A
+// non-empty result at scan end is a leaked AST borrow (and names the creator).
+func LiveFileParseCaches() []string {
+	var out []string
+	liveFileParseCaches.Range(func(_, v any) bool {
+		out = append(out, fmt.Sprint(v))
+		return true
+	})
+	return out
 }
 
 // get returns fn's compound_statement body and the file root, parsing the file
@@ -2729,7 +2880,8 @@ func (fc *fileParseCache) prime(file *db.File) {
 	fc.bodies[file.ID] = bodies
 	fc.defs[file.ID] = defs
 	if tree != nil {
-		tree.Acquire()
+		// ParseCached already returned the borrow this cache owns; Close
+		// releases it. Do not Acquire a second time.
 		fc.trees[file.ID] = tree
 	}
 }
@@ -2748,6 +2900,7 @@ func (fc *fileParseCache) Close() {
 		}
 	}
 	fc.trees = make(map[int64]*parser.Tree)
+	liveFileParseCaches.Delete(fc)
 }
 
 // defFor returns the function_definition node of fn, parsed at most once per

@@ -521,7 +521,10 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 	}
 
 	body := bodies[f.StartLine]
-	cfg := buildStmtCFGFromCtx(ctx, f, body, tree)
+	cfg, lease := buildStmtCFGFromCtx(ctx, f, body, tree)
+	if lease != nil {
+		defer lease.Release()
+	}
 	cfgValid := body.Kind() == "compound_statement"
 	if !cfgValid && d.logger != nil {
 		d.logger.Debug("uninit: CFG construction degenerate, using conservative fallback",

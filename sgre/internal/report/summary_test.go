@@ -175,3 +175,25 @@ func TestVulnToCWE(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildScanSummary_IncompleteWarning(t *testing.T) {
+	out := BuildScanSummary(SummaryData{
+		ScanID:          "sc_incomplete",
+		CompletionState: "incomplete",
+		IncompleteTasks: 3,
+	})
+	if !strings.Contains(out, "Scan incomplete") {
+		t.Fatalf("missing incomplete warning:\n%s", out)
+	}
+	if !strings.Contains(out, "3 task(s)") {
+		t.Fatalf("missing incomplete task count:\n%s", out)
+	}
+	if !strings.Contains(out, "| Completion State | incomplete |") {
+		t.Fatalf("missing completion state row:\n%s", out)
+	}
+
+	complete := BuildScanSummary(SummaryData{ScanID: "sc_ok", CompletionState: "complete"})
+	if strings.Contains(complete, "Scan incomplete") {
+		t.Fatalf("complete scan must not render the incomplete warning:\n%s", complete)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sort"
 	"sync"
 	"time"
@@ -72,10 +73,27 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	if err := planner.ValidateRegistry(); err != nil {
 		return nil, fmt.Errorf("planner registry: %w", err)
 	}
+	if cfg := config.Load(); cfg.Scan.GoMemLimitMB > 0 {
+		debug.SetMemoryLimit(int64(cfg.Scan.GoMemLimitMB) * 1024 * 1024)
+	}
+	if cfg := config.Load(); cfg.Scan.GoGCPercent > 0 {
+		debug.SetGCPercent(cfg.Scan.GoGCPercent)
+	}
 
 	p := parser.NewParser()
-	defer p.CloseAll()
+	defer func() {
+		p.CloseAll()
+		if leaks := p.LeakedTrees(); len(leaks) > 0 {
+			logger.Warn("parser: trees still borrowed at scan end", "count", len(leaks), "details", leaks)
+		}
+		if live := planner.LiveFileParseCaches(); len(live) > 0 {
+			logger.Warn("planner: fileParseCache(s) not closed", "count", len(live), "creators", live)
+		}
+	}()
 	p.SetMaxCachedTrees(config.Load().Scan.MaxCachedTrees)
+	if cfg := config.Load(); cfg.Scan.MaxCachedTrees <= 0 {
+		logger.Warn("AST cache is unbounded (max_cached_trees=0); set [scan] max_cached_trees to bound peak RSS on large repos")
+	}
 
 	var timings pipelineTimings
 
@@ -182,8 +200,8 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 					bErrCh <- fmt.Errorf("%s panicked: %v", b.name, r)
 				}
 			}()
-			for memMon != nil && memMon.Pressured() {
-				time.Sleep(100 * time.Millisecond)
+			if memMon != nil {
+				memMon.Wait(ctx)
 			}
 			builderSem <- struct{}{}
 			defer func() { <-builderSem }()
@@ -215,6 +233,10 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	sharedCFGCache := graph.NewCFGCache()
 	sharedCFGCache.MaxEntries = config.Load().Scan.CFGCacheMaxEntries
 	sharedCFGCache.MaxTotalCFGNodes = config.Load().Scan.CFGCacheMaxTotalNodes
+	// Release every CFG entry's AST borrow before the parser's CloseAll runs;
+	// otherwise the CFG cache itself looks like a leaked borrow at scan end.
+	// Registered after the parser defer, so LIFO runs this first.
+	defer sharedCFGCache.Reset()
 
 	// Build the per-scan interprocedural alias graph once and share it via
 	// ctx with both stages. The current skeleton covers function-local
@@ -247,7 +269,15 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 
 	detStart := time.Now()
 	evidence.SetEventBatchSize(config.Load().Scan.EventBatchSize)
+	evidence.SetDetectorConcurrency(config.Load().DetectorConcurrencyOr(8))
+	evidence.SetDetectorThrottle(func() bool { return memMon != nil && memMon.Pressured() })
 	detectorErrors := evidence.RunAllDetectorsWithSkip(ctx, store, p, logger, sharedCFGCache, skipSet)
+	if n := evidence.EventFlushFailures(); n > 0 {
+		detectorErrors = append(detectorErrors, evidence.DetectorError{
+			Detector: "event_batch",
+			Err:      fmt.Errorf("%d event batch flush(es) failed; those events were lost", n),
+		})
+	}
 	timings.DetectorsMs = time.Since(detStart).Milliseconds()
 	if len(skippedDetectors) > 0 {
 		logger.Info("phase timing", "phase", "detectors_total", "elapsed_ms", timings.DetectorsMs,
@@ -257,6 +287,12 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 	if b, h, e, n, tn := sharedCFGCache.StatsFull(); b+h > 0 {
 		logger.Info("cfg cache stats after detectors", "builds", b, "hits", h, "evictions", e, "entries", n, "total_nodes", tn)
+	}
+	if cached, transient := p.CacheStats(); cached+transient > 0 {
+		logger.Info("parser cache stats after detectors",
+			"cached", cached, "transient", transient,
+			"pinned", p.PinnedTrees(), "active_handles", p.ActiveTreeHandles(),
+			"max_cached_trees", config.Load().Scan.MaxCachedTrees)
 	}
 
 	// Backfill a function_summary row for every indexed function, so the
@@ -375,8 +411,8 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 			if taintTypeSet[vt] {
 				<-summaryReady
 			}
-			for memMon != nil && memMon.Pressured() {
-				time.Sleep(100 * time.Millisecond)
+			if memMon != nil {
+				memMon.Wait(ctx)
 			}
 			planSem <- struct{}{}
 			defer func() { <-planSem }()
@@ -398,6 +434,11 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	timings.PlanMs = time.Since(planStart).Milliseconds()
 	if b, h, e, n, tn := sharedCFGCache.StatsFull(); b+h > 0 {
 		logger.Info("cfg cache stats after plan", "builds", b, "hits", h, "evictions", e, "entries", n, "total_nodes", tn)
+	}
+	if cached, transient := p.CacheStats(); cached+transient > 0 {
+		logger.Info("parser cache stats after plan",
+			"cached", cached, "transient", transient,
+			"pinned", p.PinnedTrees(), "active_handles", p.ActiveTreeHandles())
 	}
 
 	return &pipelineOutcome{

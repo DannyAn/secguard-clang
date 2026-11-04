@@ -47,7 +47,10 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 
 			returnLines := findReturnLinesFrom(returns, f)
 			body := bodies[f.StartLine]
-			cfg := buildStmtCFGFromCtx(ctx, f, body, tree)
+			cfg, lease := buildStmtCFGFromCtx(ctx, f, body, tree)
+			if lease != nil {
+				defer lease.Release()
+			}
 			cfgValid := body.Kind() == "compound_statement"
 
 			for varName, acquireLines := range acquires {

@@ -31,11 +31,20 @@ func cfgCacheFromCtx(ctx context.Context) *graph.CFGCache {
 }
 
 // buildStmtCFGFromCtx is the single choke point for statement-CFG construction
-// inside the evidence stage. With a cache attached it returns the cached CFG
-// for fn; otherwise it falls back to the legacy uncached path.
-func buildStmtCFGFromCtx(ctx context.Context, fn *db.Function, body parser.Node, tree *parser.Tree) *graph.StmtCFG {
+// inside the evidence stage. With a cache attached it returns a leased cached
+// CFG for fn; the caller MUST hold the lease until it stops dereferencing
+// cfg.Nodes and then Release it. Without a cache/tree it falls back to the
+// uncached path and returns a nil lease.
+func buildStmtCFGFromCtx(ctx context.Context, fn *db.Function, body parser.Node, tree *parser.Tree) (*graph.StmtCFG, *graph.CFGLease) {
 	if fn == nil {
-		return graph.BuildStmtCFG(body, 0)
+		return graph.BuildStmtCFG(body, 0), nil
 	}
-	return graph.BuildStmtCFGWithTree(cfgCacheFromCtx(ctx), fn.ID, tree, body, fn.EndLine)
+	c := cfgCacheFromCtx(ctx)
+	if c == nil {
+		return graph.BuildStmtCFG(body, fn.EndLine), nil
+	}
+	lease := c.Acquire(ctx, fn.ID, tree, func() *graph.StmtCFG {
+		return graph.BuildStmtCFG(body, fn.EndLine)
+	})
+	return lease.CFG(), lease
 }

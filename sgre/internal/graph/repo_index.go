@@ -18,6 +18,7 @@ type RepoIndex struct {
 	files     []*db.File
 
 	funcsByID   map[int64]*db.Function
+	funcsByName map[string][]*db.Function
 	filesByID   map[int64]*db.File
 	funcsByFile map[int64][]*db.Function
 	fileOrder   []int64
@@ -31,6 +32,7 @@ func NewRepoIndex(functions []*db.Function, files []*db.File) *RepoIndex {
 		functions:   functions,
 		files:       files,
 		funcsByID:   make(map[int64]*db.Function, len(functions)),
+		funcsByName: make(map[string][]*db.Function, len(functions)),
 		filesByID:   make(map[int64]*db.File, len(files)),
 		funcsByFile: make(map[int64][]*db.Function, len(files)),
 	}
@@ -39,6 +41,7 @@ func NewRepoIndex(functions []*db.Function, files []*db.File) *RepoIndex {
 			continue
 		}
 		ri.funcsByID[f.ID] = f
+		ri.funcsByName[f.Name] = append(ri.funcsByName[f.Name], f)
 		if _, seen := ri.funcsByFile[f.FileID]; !seen {
 			ri.fileOrder = append(ri.fileOrder, f.FileID)
 		}
@@ -64,6 +67,10 @@ func (ri *RepoIndex) Files() []*db.File { return ri.files }
 
 // FuncByID returns the function with the given ID, or nil.
 func (ri *RepoIndex) FuncByID(id int64) *db.Function { return ri.funcsByID[id] }
+
+// FuncsByName returns every indexed function with the given name. The returned
+// slice aliases the internal storage; callers must not mutate it.
+func (ri *RepoIndex) FuncsByName(name string) []*db.Function { return ri.funcsByName[name] }
 
 // FileByID returns the file with the given ID, or nil.
 func (ri *RepoIndex) FileByID(id int64) *db.File { return ri.filesByID[id] }

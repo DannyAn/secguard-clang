@@ -18,7 +18,7 @@ type SummaryData struct {
 	FunctionsInIndex int
 	// LinesOfCode completes the scan-scale trio (files / functions / lines)
 	// reported alongside report.md's `## Scan Overview`.
-	LinesOfCode   int
+	LinesOfCode int
 	// ScanMode / EnclosingWorktree come from the scan-scope diagnostic
 	// ("complete-program" when the tree defines main, "boundary" when it does
 	// not). A boundary scan inside a git worktree is very likely a subtree scan,
@@ -28,9 +28,14 @@ type SummaryData struct {
 	ScanMode          string
 	EnclosingWorktree string
 	TypeBreakdown     []TypeBreakdownEntry
-	ReportPath    string
-	SarifPath     string
-	LatestPath    string
+	// CompletionState is the scan_runs lifecycle value (complete / incomplete /
+	// limited / failed). A non-complete value renders a warning at the top of
+	// the report so a reader never mistakes a partial scan for a full one.
+	CompletionState string
+	IncompleteTasks int
+	ReportPath      string
+	SarifPath       string
+	LatestPath      string
 }
 
 type TypeBreakdownEntry struct {
@@ -43,10 +48,17 @@ func BuildScanSummary(data SummaryData) string {
 	var b strings.Builder
 
 	b.WriteString("## SecGuard Scan Summary\n\n")
+	if data.CompletionState != "" && data.CompletionState != "complete" {
+		fmt.Fprintf(&b, "> **⚠️ Scan incomplete (%s): %d task(s) did not finish. This report is NOT a complete result.**\n\n",
+			data.CompletionState, data.IncompleteTasks)
+	}
 
 	b.WriteString("| Field | Value |\n")
 	b.WriteString("|-------|-------|\n")
 	fmt.Fprintf(&b, "| Scan ID | %s |\n", data.ScanID)
+	if data.CompletionState != "" {
+		fmt.Fprintf(&b, "| Completion State | %s |\n", data.CompletionState)
+	}
 	fmt.Fprintf(&b, "| Target | %s |\n", data.TargetPath)
 	fmt.Fprintf(&b, "| Scan Dir | %s |\n", data.ScanDir)
 	fmt.Fprintf(&b, "| Total Candidates | %d |\n", data.TotalCandidates)

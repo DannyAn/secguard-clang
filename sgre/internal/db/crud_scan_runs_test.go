@@ -157,7 +157,7 @@ func TestStore_MarkStaleRunningAsFailed(t *testing.T) {
 		}
 	}
 
-	n, err := s.MarkStaleRunningAsFailed(ctx)
+	n, err := s.MarkStaleRunningAsFailed(ctx, "")
 	if err != nil {
 		t.Fatalf("MarkStaleRunningAsFailed: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestStore_MarkStaleRunningAsFailed(t *testing.T) {
 		t.Errorf("already-complete scan must be untouched, got %q", got.CompletionState)
 	}
 
-	n2, err := s.MarkStaleRunningAsFailed(ctx)
+	n2, err := s.MarkStaleRunningAsFailed(ctx, "")
 	if err != nil {
 		t.Fatalf("second MarkStaleRunningAsFailed: %v", err)
 	}
@@ -232,5 +232,70 @@ func TestStore_IncompleteTasksCRUD(t *testing.T) {
 	}
 	if len(other) != 0 {
 		t.Errorf("expected 0 tasks for nonexistent scan, got %d", len(other))
+	}
+}
+
+func TestStore_BeginScanRunAndStaleExclusion(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	if err := s.BeginScanRun(ctx, "sc_2026-11-04_210000_aaaaaa"); err != nil {
+		t.Fatalf("BeginScanRun a: %v", err)
+	}
+	if err := s.BeginScanRun(ctx, "sc_2026-11-04_210000_bbbbbb"); err != nil {
+		t.Fatalf("BeginScanRun b: %v", err)
+	}
+	got, err := s.GetScanRun(ctx, "sc_2026-11-04_210000_aaaaaa")
+	if err != nil || got == nil {
+		t.Fatalf("GetScanRun after begin: %v / %v", got, err)
+	}
+	if got.CompletionState != "running" {
+		t.Fatalf("after BeginScanRun state=%q, want running", got.CompletionState)
+	}
+
+	// A scan starting now must not mark itself failed.
+	n, err := s.MarkStaleRunningAsFailed(ctx, "sc_2026-11-04_210000_bbbbbb")
+	if err != nil {
+		t.Fatalf("MarkStaleRunningAsFailed: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("marked %d rows, want 1 (only the other scan)", n)
+	}
+	a, _ := s.GetScanRun(ctx, "sc_2026-11-04_210000_aaaaaa")
+	b, _ := s.GetScanRun(ctx, "sc_2026-11-04_210000_bbbbbb")
+	if a.CompletionState != "failed" {
+		t.Errorf("stale scan state=%q, want failed", a.CompletionState)
+	}
+	if b.CompletionState != "running" {
+		t.Errorf("excluded scan state=%q, want running", b.CompletionState)
+	}
+}
+
+func TestStore_CompletionStateMigrationBackfillsComplete(t *testing.T) {
+	ctx := context.Background()
+	raw, err := OpenInMemory(ctx)
+	if err != nil {
+		t.Fatalf("OpenInMemory: %v", err)
+	}
+	defer raw.Close()
+	s := NewStore(raw)
+	if err := s.BeginScanRun(ctx, "sc_legacy"); err != nil {
+		t.Fatalf("BeginScanRun: %v", err)
+	}
+
+	// Simulate a database created before completion_state existed.
+	if _, err := raw.ExecContext(ctx, `ALTER TABLE scan_runs DROP COLUMN completion_state`); err != nil {
+		t.Fatalf("drop column: %v", err)
+	}
+	if err := InitSchema(ctx, raw); err != nil {
+		t.Fatalf("InitSchema after drop: %v", err)
+	}
+
+	got, err := s.GetScanRun(ctx, "sc_legacy")
+	if err != nil || got == nil {
+		t.Fatalf("GetScanRun after migration: %v / %v", got, err)
+	}
+	if got.CompletionState != "complete" {
+		t.Fatalf("legacy row state=%q, want complete (must not be running/failed)", got.CompletionState)
 	}
 }

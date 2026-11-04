@@ -71,11 +71,11 @@ func buildGlobalTypedefs(ctx context.Context, store db.Store, p *parser.Parser) 
 		if err != nil {
 			continue
 		}
-		tree, err := p.ParseCached(source, file.Path)
-		if err != nil {
+		if err := p.WithParseCached(source, file.Path, func(tree *parser.Tree) {
+			t.addRoot(tree.RootNode())
+		}); err != nil {
 			continue
 		}
-		t.addRoot(tree.RootNode())
 	}
 	return t
 }
@@ -96,11 +96,11 @@ func buildGlobalConstants(ctx context.Context, store db.Store, p *parser.Parser)
 		if err != nil {
 			continue
 		}
-		tree, err := p.ParseCached(source, file.Path)
-		if err != nil {
+		if err := p.WithParseCached(source, file.Path, func(tree *parser.Tree) {
+			env.Merge(parser.CollectConstantSymbols(tree.RootNode()))
+		}); err != nil {
 			continue
 		}
-		env.Merge(parser.CollectConstantSymbols(tree.RootNode()))
 	}
 	// GAP-03: numeric -D defines from compile_commands.json fold like source
 	// #defines (a `-D MAX_LEN=4096` is a non-zero constant; `-D ZERO=0` a zero).

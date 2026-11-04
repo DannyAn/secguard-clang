@@ -25,8 +25,12 @@ type StmtNode struct {
 	// belongs to the UPDATE node, not to the initializer (whose incoming
 	// definite-null fact is a different program point). 0 for synthetic nodes.
 	StartColumn int
-	Stmt        parser.Node // source statement for "stmt" nodes; zero otherwise
-	Succs       []int
+	// IsControl marks an if/while/do/for/switch/preproc header. It is recorded
+	// at construction so a consumer can snapshot the node's geometry without
+	// retaining Stmt (which points into the AST).
+	IsControl bool
+	Stmt      parser.Node // source statement for "stmt" nodes; zero otherwise
+	Succs     []int
 	// TrueSuccs / FalseSuccs split the successors of a CONDITION node (an
 	// if/while/for header, Kind == "stmt" and Stmt.Kind() a condition kind) into
 	// the branch taken when the condition is true vs false. They are what a
@@ -147,7 +151,14 @@ func (cfg *StmtCFG) NodeAtColumn(line, column int) *StmtNode {
 // (assignment, declaration, return, call, ...). It is used by NodeAt to resolve
 // a same-line header+body to the leaf statement.
 func isControlFlowHeader(n *StmtNode) bool {
-	switch n.Stmt.Kind() {
+	if n.IsControl {
+		return true
+	}
+	return isControlKind(n.Stmt.Kind())
+}
+
+func isControlKind(kind string) bool {
+	switch kind {
 	case "if_statement", "while_statement", "do_statement", "for_statement",
 		"switch_statement", "preproc_ifdef", "preproc_ifndef", "preproc_if":
 		return true
@@ -305,6 +316,7 @@ func (b *cfgBuilder) newNode(kind string, start, end int, stmt parser.Node) int 
 		StartLine:   start,
 		EndLine:     end,
 		StartColumn: startCol,
+		IsControl:   isControlKind(stmt.Kind()),
 		Stmt:        stmt,
 	})
 	return id

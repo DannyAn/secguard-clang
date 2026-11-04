@@ -3,7 +3,9 @@ package graph
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -239,4 +241,109 @@ func TestCFGCache_StatsFull(t *testing.T) {
 	if tn <= 0 {
 		t.Fatalf("totalNodes=%d, want > 0", tn)
 	}
+}
+
+func newTestASTTree(t *testing.T) *parser.Tree {
+	t.Helper()
+	p := parser.NewParser()
+	t.Cleanup(p.CloseAll)
+	tree, err := p.Parse([]byte("int f(void){return 0;}"), "t.c")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	t.Cleanup(tree.Close)
+	return tree
+}
+
+func TestCFGCacheAcquireSingleflight(t *testing.T) {
+	c := NewCFGCache()
+	tree := newTestASTTree(t)
+	var calls atomic.Int64
+	start := make(chan struct{})
+	builder := func() *StmtCFG {
+		calls.Add(1)
+		<-start
+		return &StmtCFG{Nodes: []*StmtNode{{ID: 1}}}
+	}
+	const n = 8
+	leases := make([]*CFGLease, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			leases[i] = c.Acquire(context.Background(), 42, tree, builder)
+		}(i)
+	}
+	time.Sleep(20 * time.Millisecond)
+	close(start)
+	wg.Wait()
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("builder called %d times, want 1 (singleflight)", got)
+	}
+	for i := 1; i < n; i++ {
+		if leases[i].CFG() != leases[0].CFG() {
+			t.Fatalf("lease %d got a different CFG", i)
+		}
+	}
+	for _, l := range leases {
+		l.Release()
+	}
+}
+
+func TestCFGCacheAcquireBuildsOutsideLock(t *testing.T) {
+	c := NewCFGCache()
+	tree := newTestASTTree(t)
+	aStarted := make(chan struct{})
+	bStarted := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			lease := c.Acquire(context.Background(), 1, tree, func() *StmtCFG {
+				close(aStarted)
+				<-bStarted
+				return &StmtCFG{Nodes: []*StmtNode{{ID: 1}}}
+			})
+			lease.Release()
+		}()
+		go func() {
+			defer wg.Done()
+			lease := c.Acquire(context.Background(), 2, tree, func() *StmtCFG {
+				close(bStarted)
+				<-aStarted
+				return &StmtCFG{Nodes: []*StmtNode{{ID: 2}}}
+			})
+			lease.Release()
+		}()
+		wg.Wait()
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("different fnIDs did not build concurrently (build() appears to run under c.mu)")
+	}
+}
+
+func TestCFGCacheAcquireRefsPreventEviction(t *testing.T) {
+	c := NewCFGCache()
+	c.MaxEntries = 1
+	tree := newTestASTTree(t)
+	leaseA := c.Acquire(context.Background(), 1, tree, func() *StmtCFG {
+		return &StmtCFG{Nodes: []*StmtNode{{ID: 1}}}
+	})
+	leaseB := c.Acquire(context.Background(), 2, tree, func() *StmtCFG {
+		return &StmtCFG{Nodes: []*StmtNode{{ID: 2}}}
+	})
+	if _, _, _, entries, _ := c.StatsFull(); entries != 2 {
+		t.Fatalf("entries=%d, want 2 (both entries are leased, so neither is evictable)", entries)
+	}
+	leaseA.Release()
+	if _, _, _, entries, _ := c.StatsFull(); entries != 1 {
+		t.Fatalf("entries=%d after releasing A, want 1 (A becomes evictable)", entries)
+	}
+	leaseB.Release()
 }

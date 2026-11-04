@@ -43,6 +43,7 @@ int target(int *p) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
+	defer tree.Close()
 	root := tree.RootNode()
 	var body parser.Node
 	var found bool
@@ -79,9 +80,15 @@ int target(int *p) {
 	fn := &db.Function{ID: fid, Name: "target", FileID: 1, StartLine: 3, EndLine: 7}
 
 	// Simulate two filter-style consumers hitting the same function through
-	// the same cache.
-	cfgA := graph.BuildStmtCFGWithCache(cache, fn.ID, body, fn.EndLine)
-	cfgB := graph.BuildStmtCFGWithCache(cache, fn.ID, body, fn.EndLine)
+	// the same cache with the same AST borrow. Acquire returns a lease that
+	// pins the entry (and the tree) until released.
+	leaseA := cache.Acquire(context.Background(), fn.ID, tree, func() *graph.StmtCFG {
+		return graph.BuildStmtCFG(body, fn.EndLine)
+	})
+	leaseB := cache.Acquire(context.Background(), fn.ID, tree, func() *graph.StmtCFG {
+		return graph.BuildStmtCFG(body, fn.EndLine)
+	})
+	cfgA, cfgB := leaseA.CFG(), leaseB.CFG()
 	if cfgA != cfgB {
 		t.Fatalf("cache did not share CFG: cfgA=%p cfgB=%p", cfgA, cfgB)
 	}
@@ -89,6 +96,8 @@ int target(int *p) {
 	if builds != 1 || hits != 1 {
 		t.Fatalf("stats: builds=%d hits=%d, want 1/1", builds, hits)
 	}
+	leaseA.Release()
+	leaseB.Release()
 
 	// A null cache reproduces the legacy behavior (every call rebuilds).
 	cfgC := graph.BuildStmtCFGWithCache(nil, fn.ID, body, fn.EndLine)

@@ -31,6 +31,27 @@ func (s *store) UpsertScanRun(ctx context.Context, r *ScanRun) error {
 	return nil
 }
 
+// BeginScanRun inserts the scan's lifecycle row before the pipeline starts.
+// It is a no-op row on a new scan and resets a re-scan of the same scan_id to
+// running; the final UpsertScanRun fills in the metrics and the completion
+// state is committed only at the end of the scan.
+func (s *store) BeginScanRun(ctx context.Context, scanID string) error {
+	if scanID == "" {
+		return fmt.Errorf("db: begin scan_run: empty scan_id")
+	}
+	_, err := s.exec.ExecContext(ctx,
+		`INSERT INTO scan_runs (scan_id, source_revision, duration_ms, ai_duration_ms, index_ms, graph_ms, detectors_ms, plan_ms, report_ms, files_indexed, functions_indexed, seed_count, final_count, report_bytes, evidence_bytes, created_at, completion_state)
+		 VALUES (?, '', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?, 'running')
+		 ON CONFLICT(scan_id) DO UPDATE SET
+		   created_at=excluded.created_at,
+		   completion_state='running'`,
+		scanID, now())
+	if err != nil {
+		return fmt.Errorf("db: begin scan_run: %w", err)
+	}
+	return nil
+}
+
 // SetScanRunAIDuration records the AI-classification wall-clock for a scan. It is
 // written by `report --audit --ai-duration-ms <ms>` at the end of the AI stage, so
 // the two-phase pipeline-vs-AI timing is queryable across scans. It is a targeted
@@ -54,7 +75,7 @@ func (s *store) GetScanRun(ctx context.Context, scanID string) (*ScanRun, error)
 	r := &ScanRun{}
 	var aiSource sql.NullString
 	err := s.exec.QueryRowContext(ctx,
-		`SELECT id, scan_id, source_revision, duration_ms, ai_duration_ms, ai_duration_source, index_ms, graph_ms, detectors_ms, plan_ms, report_ms, files_indexed, functions_indexed, seed_count, final_count, report_bytes, evidence_bytes, created_at, completion_state
+		`SELECT id, scan_id, source_revision, duration_ms, ai_duration_ms, ai_duration_source, index_ms, graph_ms, detectors_ms, plan_ms, report_ms, files_indexed, functions_indexed, seed_count, final_count, report_bytes, evidence_bytes, created_at, COALESCE(completion_state,'complete')
 		 FROM scan_runs WHERE scan_id = ?`, scanID).
 		Scan(&r.ID, &r.ScanID, &r.SourceRevision, &r.DurationMs, &r.AIDurationMs, &aiSource, &r.IndexMs, &r.GraphMs, &r.DetectorsMs, &r.PlanMs, &r.ReportMs,
 			&r.FilesIndexed, &r.FunctionsIndexed, &r.SeedCount, &r.FinalCount, &r.ReportBytes, &r.EvidenceBytes, &r.CreatedAt, &r.CompletionState)
@@ -69,7 +90,7 @@ func (s *store) GetScanRun(ctx context.Context, scanID string) (*ScanRun, error)
 }
 
 func (s *store) ListScanRuns(ctx context.Context, limit int) ([]*ScanRun, error) {
-	query := `SELECT id, scan_id, source_revision, duration_ms, ai_duration_ms, ai_duration_source, index_ms, graph_ms, detectors_ms, plan_ms, report_ms, files_indexed, functions_indexed, seed_count, final_count, report_bytes, evidence_bytes, created_at, completion_state
+	query := `SELECT id, scan_id, source_revision, duration_ms, ai_duration_ms, ai_duration_source, index_ms, graph_ms, detectors_ms, plan_ms, report_ms, files_indexed, functions_indexed, seed_count, final_count, report_bytes, evidence_bytes, created_at, COALESCE(completion_state,'complete')
 		 FROM scan_runs ORDER BY created_at DESC, id DESC`
 	if limit > 0 {
 		query += fmt.Sprintf(" LIMIT %d", limit)
@@ -100,8 +121,13 @@ func (s *store) SetScanRunCompletionState(ctx context.Context, scanID, state str
 	return nil
 }
 
-func (s *store) MarkStaleRunningAsFailed(ctx context.Context) (int, error) {
-	res, err := s.exec.ExecContext(ctx, `UPDATE scan_runs SET completion_state = 'failed' WHERE completion_state = 'running'`)
+// MarkStaleRunningAsFailed flips leftover 'running' rows to 'failed', excluding
+// the scan that is starting now. Without the exclusion a concurrent scan (or a
+// re-scan of the same id) would clobber another live run's lifecycle row.
+func (s *store) MarkStaleRunningAsFailed(ctx context.Context, excludeScanID string) (int, error) {
+	res, err := s.exec.ExecContext(ctx,
+		`UPDATE scan_runs SET completion_state = 'failed'
+		 WHERE completion_state = 'running' AND scan_id <> ?`, excludeScanID)
 	if err != nil {
 		return 0, fmt.Errorf("db: mark stale running as failed: %w", err)
 	}

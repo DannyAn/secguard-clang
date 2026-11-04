@@ -75,7 +75,10 @@ func forEachFile(ctx context.Context, store db.Store, p *parser.Parser, logger *
 			}
 			continue
 		}
-		fn(file, tree.RootNode(), byFile(fid))
+		func() {
+			defer tree.Release()
+			fn(file, tree.RootNode(), byFile(fid))
+		}()
 	}
 	return nil
 }

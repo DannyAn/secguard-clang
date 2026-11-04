@@ -101,6 +101,7 @@ func (f *ContractGapFilter) Apply(ctx context.Context, candidates []Candidate) (
 	}
 	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
 	cache := newFileParseCache(f.parser)
+	defer cache.Close()
 	callees, sites := f.buildCallerIndex(ctx, fileByID, cache)
 
 	for _, c := range candidates {
@@ -132,7 +133,7 @@ func (f *ContractGapFilter) Apply(ctx context.Context, candidates []Candidate) (
 				}
 			}
 		})
-		if targetsGuardDominates(f.cfgCache, fn.ID, body, fn.EndLine, targets, c.UseLine) {
+		if targetsGuardDominates(ctx, f.cfgCache, cache.treeFor(file), fn.ID, body, fn.EndLine, targets, c.UseLine) {
 			dropped = dismiss(dropped, c, f.Name(),
 				fmt.Sprintf("field %s is null-guarded on every path before its use at line %d", c.VariableName, c.UseLine))
 			continue
@@ -155,11 +156,18 @@ func (f *ContractGapFilter) Apply(ctx context.Context, candidates []Candidate) (
 // loop whose condition establishes a target non-null on the body (the loop
 // condition is re-checked each iteration, so every path into the body has the
 // target non-null).
-func targetsGuardDominates(cfgCache *graph.CFGCache, fnID int64, body parser.Node, funcEnd int, targets map[string]bool, line int) bool {
+func targetsGuardDominates(ctx context.Context, cfgCache *graph.CFGCache, tree *parser.Tree, fnID int64, body parser.Node, funcEnd int, targets map[string]bool, line int) bool {
 	if loopGuardsTarget(body, targets, line) {
 		return true
 	}
-	cfg := graph.BuildStmtCFGWithCache(cfgCache, fnID, body, funcEnd)
+	var cfg *graph.StmtCFG
+	if cfgCache != nil && tree != nil && fnID > 0 {
+		lease := cfgCache.Acquire(ctx, fnID, tree, func() *graph.StmtCFG { return graph.BuildStmtCFG(body, funcEnd) })
+		defer lease.Release()
+		cfg = lease.CFG()
+	} else {
+		cfg = graph.BuildStmtCFG(body, funcEnd)
+	}
 	var guardIDs map[int]bool
 	for _, n := range cfg.Nodes {
 		if n.Kind != "stmt" || n.Stmt.Kind() != "if_statement" {
@@ -242,7 +250,7 @@ func (f *ContractGapFilter) allCallersValidate(ctx context.Context, c Candidate,
 			return false
 		}
 		arg := normalizeCallArg(s.args[idx])
-		if arg == "" || !f.callerGuardsField(s, arg, field, fileByID, cache) {
+		if arg == "" || !f.callerGuardsField(ctx, s, arg, field, fileByID, cache) {
 			return false
 		}
 	}
@@ -251,7 +259,7 @@ func (f *ContractGapFilter) allCallersValidate(ctx context.Context, c Candidate,
 
 // callerGuardsField reports whether the caller of one call site null-checks
 // `arg->field` (or `arg.field` for a `&arg` argument) before the call.
-func (f *ContractGapFilter) callerGuardsField(s contractCallSite, arg, field string, fileByID map[int64]*db.File, cache *fileParseCache) bool {
+func (f *ContractGapFilter) callerGuardsField(ctx context.Context, s contractCallSite, arg, field string, fileByID map[int64]*db.File, cache *fileParseCache) bool {
 	target := arg + "->" + field
 	if strings.HasPrefix(arg, "&") {
 		target = strings.TrimPrefix(arg, "&") + "." + field
@@ -268,7 +276,7 @@ func (f *ContractGapFilter) callerGuardsField(s contractCallSite, arg, field str
 	if body.Kind() != "compound_statement" {
 		return false
 	}
-	return targetsGuardDominates(f.cfgCache, 0, body, s.callerEnd, map[string]bool{target: true}, s.callLine)
+	return targetsGuardDominates(ctx, f.cfgCache, cache.treeFor(file), 0, body, s.callerEnd, map[string]bool{target: true}, s.callLine)
 }
 
 // normalizeCallArg trims a call argument to a bare lvalue path, or "" for a
@@ -345,38 +353,38 @@ func (f *ContractGapFilter) buildCallerIndex(ctx context.Context, fileByID map[i
 		if err != nil {
 			continue
 		}
-		tree, err := f.parser.ParseCached(source, file.Path)
-		if err != nil {
-			continue
-		}
-		root := tree.RootNode()
-		for _, call := range root.FindAll("call_expression") {
-			callee := callName(call)
-			if callee == "" || dup[callee] {
-				continue
-			}
-			var caller *db.Function
-			for _, cf := range funcsByFile[file.ID] {
-				if call.StartLine() >= cf.StartLine && call.StartLine() <= cf.EndLine {
-					caller = cf
-					break
+		if err := f.parser.WithParseCached(source, file.Path, func(tree *parser.Tree) {
+			root := tree.RootNode()
+			for _, call := range root.FindAll("call_expression") {
+				callee := callName(call)
+				if callee == "" || dup[callee] {
+					continue
 				}
+				var caller *db.Function
+				for _, cf := range funcsByFile[file.ID] {
+					if call.StartLine() >= cf.StartLine && call.StartLine() <= cf.EndLine {
+						caller = cf
+						break
+					}
+				}
+				if caller == nil {
+					continue
+				}
+				args := callArgs(call)
+				texts := make([]string, 0, len(args))
+				for _, a := range args {
+					texts = append(texts, a.Text())
+				}
+				sites[callee] = append(sites[callee], contractCallSite{
+					fileID:      file.ID,
+					callerStart: caller.StartLine,
+					callerEnd:   caller.EndLine,
+					callLine:    call.StartLine(),
+					args:        texts,
+				})
 			}
-			if caller == nil {
-				continue
-			}
-			args := callArgs(call)
-			texts := make([]string, 0, len(args))
-			for _, a := range args {
-				texts = append(texts, a.Text())
-			}
-			sites[callee] = append(sites[callee], contractCallSite{
-				fileID:      file.ID,
-				callerStart: caller.StartLine,
-				callerEnd:   caller.EndLine,
-				callLine:    call.StartLine(),
-				args:        texts,
-			})
+		}); err != nil {
+			continue
 		}
 	}
 	return callees, sites

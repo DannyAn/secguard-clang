@@ -446,12 +446,12 @@ func buildGlobalFunctionParams(ctx context.Context, store db.Store, p *parser.Pa
 		if err != nil {
 			continue
 		}
-		tree, err := p.ParseCached(source, file.Path)
-		if err != nil {
+		if err := p.WithParseCached(source, file.Path, func(tree *parser.Tree) {
+			for name, params := range collectFunctionParams(tree.RootNode()) {
+				m[name] = params
+			}
+		}); err != nil {
 			continue
-		}
-		for name, params := range collectFunctionParams(tree.RootNode()) {
-			m[name] = params
 		}
 	}
 	return m

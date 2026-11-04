@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -125,7 +126,24 @@ type rangeEffects struct {
 // (variable, line).
 type rangeFlow struct {
 	cfg    *graph.StmtCFG
+	lease  *graph.CFGLease
 	nodeIn map[int]map[string]interval
+}
+
+// release drops the CFG lease this flow holds. Callers that keep a flow beyond
+// the call must release it when done; flows built from an uncached path carry
+// a nil lease.
+func (f *rangeFlow) release() {
+	if f != nil && f.lease != nil {
+		f.lease.Release()
+		f.lease = nil
+	}
+}
+
+func releaseRangeFlows(flows map[int64]*rangeFlow) {
+	for _, flow := range flows {
+		flow.release()
+	}
 }
 
 // at returns the interval for variable at line, or the full range when unknown.
@@ -146,7 +164,7 @@ func (f *rangeFlow) at(variable string, line int) interval {
 // analyzeRanges builds and runs the interval analysis for one function body
 // without cross-function call-result resolution (the function-local behavior).
 func analyzeRanges(fn *db.Function, body parser.Node) *rangeFlow {
-	return analyzeRangesWithCalls(nil, fn, body, nil)
+	return analyzeRangesWithCalls(context.Background(), nil, nil, fn, body, nil)
 }
 
 // analyzeRangesWithCalls is analyzeRanges with an optional callResult resolver,
@@ -154,12 +172,27 @@ func analyzeRanges(fn *db.Function, body parser.Node) *rangeFlow {
 // is provably non-zero. A nil resolver keeps the function-local behavior (a call
 // RHS is a kill). cfgCache, when non-nil, memoizes the per-function statement
 // CFG so repeated calls across filters do not rebuild it.
-func analyzeRangesWithCalls(cfgCache *graph.CFGCache, fn *db.Function, body parser.Node, callResult func(string) (interval, bool)) *rangeFlow {
+func analyzeRangesWithCalls(ctx context.Context, cfgCache *graph.CFGCache, tree *parser.Tree, fn *db.Function, body parser.Node, callResult func(string) (interval, bool)) *rangeFlow {
 	if body.Kind() != "compound_statement" {
 		return nil
 	}
-	cfg := graph.BuildStmtCFGWithCache(cfgCache, fn.ID, body, fn.EndLine)
-	return &rangeFlow{cfg: cfg, nodeIn: runRangeDataflow(cfg, buildRangeEffects(cfg, callResult))}
+	var cfg *graph.StmtCFG
+	var lease *graph.CFGLease
+	if cfgCache != nil && tree != nil && fn.ID > 0 {
+		lease = cfgCache.Acquire(ctx, fn.ID, tree, func() *graph.StmtCFG {
+			return graph.BuildStmtCFG(body, fn.EndLine)
+		})
+		cfg = lease.CFG()
+	} else {
+		cfg = graph.BuildStmtCFG(body, fn.EndLine)
+	}
+	if cfg == nil {
+		if lease != nil {
+			lease.Release()
+		}
+		return nil
+	}
+	return &rangeFlow{cfg: cfg, lease: lease, nodeIn: runRangeDataflow(cfg, buildRangeEffects(cfg, callResult))}
 }
 
 // buildRangeEffects extracts the per-node assignment/update transfer effects.

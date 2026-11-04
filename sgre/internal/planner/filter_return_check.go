@@ -31,6 +31,7 @@ func (f *ReturnCheckFilter) Apply(ctx context.Context, candidates []Candidate) (
 	}
 
 	cache := newFileParseCache(f.parser)
+	defer cache.Close()
 
 	byFunc := make(map[int64][]Candidate)
 	for _, c := range candidates {

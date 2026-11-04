@@ -75,12 +75,14 @@ func (d *InterproceduralDetector) Detect(ctx context.Context) (DetectResult, err
 	}
 
 	// Parse each source file exactly once and reuse the tree for both parameter
-	// extraction and call-site scanning.
+	// extraction and call-site scanning. Each entry carries the borrow returned
+	// by ParseCached; the deferred Release is what lets the AST cache evict
+	// these files again.
 	treeCache := make(map[int64]*parser.Tree)
 	defer func() {
 		for _, t := range treeCache {
 			if t != nil {
-				t.Close()
+				t.Release()
 			}
 		}
 	}()

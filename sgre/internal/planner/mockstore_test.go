@@ -531,6 +531,7 @@ func (s *mockStore) MarkAIStageDone(ctx context.Context, scanID, vulnType string
 }
 
 func (s *mockStore) UpsertScanRun(ctx context.Context, r *db.ScanRun) error { return nil }
+func (s *mockStore) BeginScanRun(ctx context.Context, scanID string) error  { return nil }
 func (s *mockStore) GetScanRun(ctx context.Context, scanID string) (*db.ScanRun, error) {
 	return nil, nil
 }
@@ -543,7 +544,7 @@ func (s *mockStore) SetScanRunAIDuration(ctx context.Context, scanID string, ms 
 func (s *mockStore) SetScanRunCompletionState(ctx context.Context, scanID, state string) error {
 	return nil
 }
-func (s *mockStore) MarkStaleRunningAsFailed(ctx context.Context) (int, error) {
+func (s *mockStore) MarkStaleRunningAsFailed(ctx context.Context, excludeScanID string) (int, error) {
 	return 0, nil
 }
 func (s *mockStore) InsertIncompleteTask(ctx context.Context, task *db.ScanIncompleteTask) error {

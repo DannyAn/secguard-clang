@@ -68,7 +68,10 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 			returnLines := findReturnLinesFrom(returns, f)
 
 			body := bodies[f.StartLine]
-			cfg := buildStmtCFGFromCtx(ctx, f, body, tree)
+			cfg, lease := buildStmtCFGFromCtx(ctx, f, body, tree)
+			if lease != nil {
+				defer lease.Release()
+			}
 			cfgValid := body.Kind() == "compound_statement"
 			// The set of variables this function allocates. A pointer stored
 			// through one of them (`*container = buf`) points INTO the heap, not
@@ -1716,6 +1719,7 @@ func passesToGlobalStoreFunc(calls []parser.Node, f *db.Function, varName string
 //     (the caller must NOT free it). This second set is what suppresses the
 //     name-heuristic false positive for `nlog_db_create_new_ctrl_item` (its
 //     `_new` substring matches apikb.IsAllocator even though it caches).
+//
 // bumpAllocatorFuncs returns the names of in-tree bump/arena allocators: a
 // function whose every return is pointer arithmetic on two file-scope variables
 // (`g_pool + g_off`) and whose body never calls malloc/calloc/realloc. Such an

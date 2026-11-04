@@ -95,6 +95,7 @@ func (q *summaryQuerier) nullOf(ctx context.Context, funcName string) graph.Tri 
 		return graph.TriUnknown
 	}
 	cache := newFileParseCache(q.parser)
+	defer cache.Close()
 	file, err := q.store.GetFileByID(ctx, fn.FileID)
 	if err != nil || file == nil {
 		return graph.TriUnknown
@@ -158,6 +159,7 @@ func (q *summaryQuerier) intervalOf(ctx context.Context, funcName string) graph.
 		return graph.Interval{Top: true}
 	}
 	cache := newFileParseCache(q.parser)
+	defer cache.Close()
 	file, err := q.store.GetFileByID(ctx, fn.FileID)
 	if err != nil || file == nil {
 		return graph.Interval{Top: true}
@@ -166,10 +168,11 @@ func (q *summaryQuerier) intervalOf(ctx context.Context, funcName string) graph.
 	if body.Kind() != "compound_statement" {
 		return graph.Interval{Top: true}
 	}
-	flow := analyzeRangesWithCalls(q.cfgCache, fn, body, nil)
+	flow := analyzeRangesWithCalls(ctx, q.cfgCache, cache.treeFor(file), fn, body, nil)
 	if flow == nil {
 		return graph.Interval{Top: true}
 	}
+	defer flow.release()
 	var joined graph.Interval
 	sawAny := false
 	for _, ret := range body.FindAll("return_statement") {
@@ -247,6 +250,7 @@ func (q *summaryQuerier) capacityOf(ctx context.Context, funcName string) int64 
 		return -1
 	}
 	cache := newFileParseCache(q.parser)
+	defer cache.Close()
 	file, err := q.store.GetFileByID(ctx, fn.FileID)
 	if err != nil || file == nil {
 		return -1

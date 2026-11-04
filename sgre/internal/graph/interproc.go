@@ -37,9 +37,15 @@ func (b *InterprocBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	result := &BuildResult{}
 	b.edges = newEdgeBatchWriter(b.store, b.logger, 0)
 
-	funcs, err := b.store.ListFunctions(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("interproc: list functions: %w", err)
+	var funcs []*db.Function
+	if ri := RepoIndexFromCtx(ctx); ri != nil {
+		funcs = ri.Functions()
+	} else {
+		var err error
+		funcs, err = b.store.ListFunctions(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("interproc: list functions: %w", err)
+		}
 	}
 
 	funcByName := make(map[string][]int64)
@@ -69,6 +75,7 @@ func (b *InterprocBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	// paramsByFunc[calleeID] and silently dropped the PARAM_BINDING edge.
 	paramsByFunc := make(map[int64][]string)
 
+	var err error
 	err = forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
 		paramsByLine := make(map[int][]string)
 		for _, def := range root.FindAll("function_definition") {

@@ -82,6 +82,7 @@ func (f *ConstantPathFilter) Apply(ctx context.Context, candidates []Candidate) 
 	if err != nil {
 		return nil, nil, err
 	}
+	defer prover.Close()
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -243,6 +244,13 @@ func newPathProver(ctx context.Context, store db.Store, p *parser.Parser, reach 
 		memoWrite:    make(map[proofKey]wroteResult),
 		visiting:     make(map[proofKey]bool),
 	}, nil
+}
+
+// Close releases the parse-cache borrows held by this per-Apply prover.
+func (p *pathProof) Close() {
+	if p != nil && p.cache != nil {
+		p.cache.Close()
+	}
 }
 
 // proveCandidate decides whether c's path argument is a compile-time constant.
