@@ -1,6 +1,6 @@
-# SGRE 全仓扫描架构设计提案 — 第二轮审查记录
+# SGRE 全仓扫描架构设计提案 — 审查记录（第二轮 + 第三轮最终修订）
 
-> 本轮范围：仅修订设计文档，不实施代码。逐项分析独立审查的 11 条意见（P0×3、P1×5、P2×3）。
+> 本轮范围：仅修订设计文档，不实施代码。第二轮逐项分析 11 条意见（P0×3、P1×5、P2×3）；第三轮（v3）解决三个遗留问题。
 > 每条结论标注：原设计是否正确 / 风险 / 修改建议 / 源码依据；无法从源码证实的标「待验证」。
 
 ---
@@ -199,3 +199,61 @@ ref==0                            → tree.Close() + parser.Close()  ← 唯一�
 2. AST 缓存 `maxCachedTrees` 与 CFG 缓存 `MaxEntries` 的初始默认值。
 3. 内存上限（cgroup 内工作上限）取 34GB 的多少比例留 headroom。
 4. 是否把 `graph_edges` 唯一索引 + 幂等写入纳入本轮，还是推迟到 checkpoint/重试需求出现时。
+
+---
+
+## 第三轮（v3 最终）审查结论
+
+> 操作者对 v2 整体认可，本轮只解决三个遗留问题。以下为每项的源码依据、设计决策、测试方案、剩余风险。
+
+### P0-1：CFG Lease 并发生命周期
+
+**源码依据**：
+- CFG 消费 choke point 已收敛为两处 `buildStmtCFGFromCtx`（`planner/cfg_cache_ctx.go:39-44`、`evidence/cfg_cache_ctx.go:36-41`）+ 直调 `graph.BuildStmtCFGWithCache` 的 6 处（`race_condition.go:578`、`range_flow.go:161`、`filter_contract_gap.go:162`、`filter_uninit_heapstruct.go:70`、`filter_uninit_flow.go:235`、`null_flow.go:388,409`）——迁移面比「20 处」更集中。
+- 现有 `CFGCache` 已用 `sync.RWMutex`（`cfg_cache.go:18-58`），可原地扩展为 entry+refs+state。
+
+**设计决策**：
+- 新增 `CFGCache.Acquire(ctx, fnID, tree, build) (*CFGLease, bool)`、`CFGLease.CFG()`、`CFGLease.Release()`。
+- 条目 `cfgEntry{cfg, tree *parser.TreeHandle, refs, state live|retiring, last}`；`Acquire` 对 entry `refs++` 并持有 Tree 引用；`Release` 用 `sync.Once` 幂等 `refs--`。
+- LRU 只淘汰 `refs==0 && live`；`retiring` 拒绝新借用、refs 归零即回收；`TreeHandle` 用 `sync.Once` 保证 `Close` 只一次；`CloseAll` 遇活跃租约只记泄漏诊断、不强制关闭。
+
+**测试方案**：Acquire/Release 幂等；活跃租约不被淘汰/不关 Tree；retiring 拒新借用；`Close` 只一次；`-race` 并发；迁移前后候选集一致。
+
+**剩余风险**：`fileParseCache`（`null_flow.go:2686-2729`）同样持 C 节点指向缓存 Tree，必须一并持 `TreeHandle` 引用；漏改则淘汰后悬空。
+
+### P0-2：AST/CFG 总驻留预算
+
+**源码依据**：非缓存回退路径已存在（`parser.Parse`，`parser.go:66-69`，indexer 已在用）；CFG 大小代理可用 `len(cfg.Nodes)`（`control_flow.go:41-51`）。
+
+**设计决策**：
+- 区分「缓存条目上限」（`maxCachedTrees`/`MaxEntries`/`maxTotalCFGNodes`）与「进程总驻留对象上限」（cgroup/RSS 高水位）。
+- 缓存满且全被钉住时 `ParseCached` **绕过缓存**（回退非缓存 `Parse`，瞬态解析用后即关），不等待/不拒绝/不阻塞。
+- 活跃 TreeHandle 受 `maxCachedTrees + 并发度` 约束；CFG 不均衡用 `maxTotalCFGNodes` 兜底。
+- 统计 `activeLeaseCount`/`activeTreeHandles`/`pinnedTrees`。
+
+**测试方案**：满缓存 bypass；`maxTotalCFGNodes` LRU 淘汰与计数；巨型函数不撑爆总驻留。
+
+**剩余风险**：`maxTotalCFGNodes` 是字节代理，巨型函数的单节点大源文本需 RSS 校准精度。
+
+### P0-3：统一 checkpoint 与 incomplete 语义
+
+**源码依据**：`scan_runs` 无状态列（`schema.go:204-222`）；`InitSchema` 已有 `ALTER TABLE` 迁移原语（`schema.go:505` 附近）；`crud_*.go` 模式可扩展新表。
+
+**设计决策**：
+- 本期**不实现 checkpoint（断点恢复）**；超预算/超时/降级 = 持久化 `incomplete` 状态。
+- `scan_runs` 加 `completion_state ∈ {complete,incomplete,limited}`；新增 `scan_incomplete_tasks` 表（scan_id、phase、function_id、file_path、scale、reason、detail）。
+- 报告头显式渲染「扫描不完整」；不承诺自动恢复。
+- 删除「单函数超 34GB 几乎不存在」臆断，改为**成本预估（LOC/CFG 节点/AST 估算）+ 任务准入保护**（预估超预算→串行重试→仍超→记 incomplete）。
+
+**测试方案**：`completion_state` 默认/降级落库；`scan_incomplete_tasks` 记录与报告渲染；不完整任务不影响已完成任务结果。
+
+**剩余风险**：无。该口径与「不静默漏检」原则一致，且不与任何未实现能力冲突。
+
+## 待验证清单（不变，需运行数据）
+
+1. 三个热点真实内存占比；2. 40K 档 `repoIndex` 签名总量与 AST 峰值；3. `ReachableFromEntries` 递归 CTE 20K/40K 规模；4. LRU 命中率与重建墙钟权衡；5. `estBytesPerTree` 校准值。
+
+## v3 最终待确认
+
+1. `maxCachedTrees`/`MaxEntries`/`maxTotalCFGNodes`/内存高水位 四个默认值。
+2. `graph_edges` 唯一索引 + 幂等（与 checkpoint 解耦后）是否独立纳入本轮。
