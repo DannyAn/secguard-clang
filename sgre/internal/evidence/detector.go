@@ -48,7 +48,7 @@ type DomainAware interface {
 // A file that cannot be read or parsed is SKIPPED (its functions emit no events
 // for any detector). For a security tool that is a silent false-negative, so
 // each skip is logged as a warning rather than dropped without a trace.
-func forEachFile(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, fn func(file *db.File, root parser.Node, funcs []*db.Function)) error {
+func forEachFile(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, fn func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree)) error {
 	ri := graph.RepoIndexFromCtx(ctx)
 	var order []int64
 	var byFile func(int64) []*db.Function
@@ -100,7 +100,7 @@ func forEachFile(ctx context.Context, store db.Store, p *parser.Parser, logger *
 			}
 			continue
 		}
-		fn(file, tree.RootNode(), byFile(fid))
+		fn(file, tree.RootNode(), byFile(fid), tree)
 	}
 	return nil
 }
@@ -110,7 +110,7 @@ func forEachFile(ctx context.Context, store db.Store, p *parser.Parser, logger *
 // least one indexed function — this visits EVERY indexed file, so a header that
 // holds only macros / extern declarations is still scanned (e.g. for macro
 // write-summaries a call site in another file depends on).
-func forEachIndexedFile(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, fn func(file *db.File, root parser.Node)) error {
+func forEachIndexedFile(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, fn func(file *db.File, root parser.Node, tree *parser.Tree)) error {
 	ri := graph.RepoIndexFromCtx(ctx)
 	var files []*db.File
 	if ri != nil {
@@ -142,7 +142,7 @@ func forEachIndexedFile(ctx context.Context, store db.Store, p *parser.Parser, l
 			}
 			continue
 		}
-		fn(file, tree.RootNode())
+		fn(file, tree.RootNode(), tree)
 	}
 	return nil
 }
@@ -151,7 +151,7 @@ func forEachIndexedFile(ctx context.Context, store db.Store, p *parser.Parser, l
 // indexed function (data-only .c files), passing an empty funcs slice. A
 // detector that scans file-scope declarations (hardcoded secrets) needs this so
 // a global secret in a functionless file is not silently skipped.
-func forEachFileIncludingEmpty(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, fn func(file *db.File, root parser.Node, funcs []*db.Function)) error {
+func forEachFileIncludingEmpty(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, fn func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree)) error {
 	ri := graph.RepoIndexFromCtx(ctx)
 	var files []*db.File
 	var byFile func(int64) []*db.Function
@@ -193,7 +193,7 @@ func forEachFileIncludingEmpty(ctx context.Context, store db.Store, p *parser.Pa
 			}
 			continue
 		}
-		fn(file, tree.RootNode(), byFile(file.ID))
+		fn(file, tree.RootNode(), byFile(file.ID), tree)
 	}
 	return nil
 }

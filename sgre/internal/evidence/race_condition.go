@@ -76,7 +76,7 @@ func (d *RaceConditionDetector) Detect(ctx context.Context) (DetectResult, error
 	// whole project (headers carry most `extern` declarations), so a thread fn
 	// accessing a global declared `extern` in a header is still seen.
 	externGlobals := d.collectExternGlobals(ctx)
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		calls := root.FindAll("call_expression")
 		globals := d.collectGlobalVars(root, file.ID, funcs)
 		for g := range externGlobals {
@@ -95,7 +95,7 @@ func (d *RaceConditionDetector) Detect(ctx context.Context) (DetectResult, error
 		return result, err
 	}
 
-	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		ifs := root.FindAll("if_statement")
 		calls := root.FindAll("call_expression")
 		assigns := root.FindAll("assignment_expression")
@@ -233,7 +233,7 @@ func (d *RaceConditionDetector) collectExternGlobals(ctx context.Context) map[st
 	for _, f := range funcs {
 		byFile[f.FileID] = append(byFile[f.FileID], f)
 	}
-	forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node) {
+	forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, tree *parser.Tree) {
 		fileGlobals := d.collectGlobalVars(root, file.ID, byFile[file.ID])
 		// Re-filter to non-static: collectGlobalVars includes static, but a
 		// static variable must not leak into other files.

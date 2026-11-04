@@ -75,6 +75,7 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 
 	p := parser.NewParser()
 	defer p.CloseAll()
+	p.SetMaxCachedTrees(config.Load().Scan.MaxCachedTrees)
 
 	var timings pipelineTimings
 

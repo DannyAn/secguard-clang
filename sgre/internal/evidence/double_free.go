@@ -72,7 +72,7 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 	// see).
 	var allFrees []dfFreeWithFn
 
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		inits := root.FindAll("init_declarator")
 		assigns := root.FindAll("assignment_expression")
 		calls := root.FindAll("call_expression")

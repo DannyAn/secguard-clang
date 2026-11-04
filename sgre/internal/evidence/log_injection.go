@@ -24,7 +24,7 @@ func (d *LogInjectionDetector) Name() string { return "log_injection" }
 
 func (d *LogInjectionDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		calls := root.FindAll("call_expression")
 		for _, f := range funcs {
 			d.detectLogInjection(ctx, f, file, calls, &result)

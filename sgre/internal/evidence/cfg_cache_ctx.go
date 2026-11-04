@@ -33,9 +33,9 @@ func cfgCacheFromCtx(ctx context.Context) *graph.CFGCache {
 // buildStmtCFGFromCtx is the single choke point for statement-CFG construction
 // inside the evidence stage. With a cache attached it returns the cached CFG
 // for fn; otherwise it falls back to the legacy uncached path.
-func buildStmtCFGFromCtx(ctx context.Context, fn *db.Function, body parser.Node) *graph.StmtCFG {
+func buildStmtCFGFromCtx(ctx context.Context, fn *db.Function, body parser.Node, tree *parser.Tree) *graph.StmtCFG {
 	if fn == nil {
 		return graph.BuildStmtCFG(body, 0)
 	}
-	return graph.BuildStmtCFGWithCache(cfgCacheFromCtx(ctx), fn.ID, body, fn.EndLine)
+	return graph.BuildStmtCFGWithTree(cfgCacheFromCtx(ctx), fn.ID, tree, body, fn.EndLine)
 }

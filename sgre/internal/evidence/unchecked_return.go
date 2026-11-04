@@ -74,7 +74,7 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 		return result, err
 	}
 
-	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		calls := root.FindAll("call_expression")
 		returns := root.FindAll("return_statement")
 		ids := root.FindAll("identifier")
@@ -1375,7 +1375,7 @@ type funcSummaries struct {
 // open (returns true) so the full detector still runs.
 func (d *UncheckedReturnDetector) hasUncheckedReturnCandidate(ctx context.Context) bool {
 	found := false
-	err := forEachFileIncludingEmpty(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFileIncludingEmpty(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		if found {
 			return
 		}
@@ -1411,7 +1411,7 @@ func (d *UncheckedReturnDetector) funcSummaries(ctx context.Context) (*funcSumma
 		returnedSource[name][callee] = true
 	}
 
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		returns := root.FindAll("return_statement")
 		ids := root.FindAll("identifier")
 		assigns := root.FindAll("assignment_expression")
@@ -1542,7 +1542,7 @@ func collectNoreturnFuncs(ctx context.Context, store db.Store, p *parser.Parser,
 	callsOf := make(map[string]map[string]bool)
 	var fpGlobals []struct{ name, init string }
 
-	_ = forEachFileIncludingEmpty(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	_ = forEachFileIncludingEmpty(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		returns := root.FindAll("return_statement")
 		calls := root.FindAll("call_expression")
 		for _, fn := range funcs {
@@ -1611,7 +1611,7 @@ func collectNoreturnFuncs(ctx context.Context, store db.Store, p *parser.Parser,
 // never-returning consequence (`p = alloc(); if (!p) oom_handler(); return p;`).
 func collectNonNullReturns(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, noreturn map[string]bool) map[string]bool {
 	out := make(map[string]bool)
-	_ = forEachFileIncludingEmpty(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	_ = forEachFileIncludingEmpty(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		// Hoisted once per file: the previous form re-walked the whole file AST
 		// (return_statement + if_statement FindAll) per function.
 		returns := root.FindAll("return_statement")

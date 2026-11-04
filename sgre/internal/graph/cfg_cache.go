@@ -40,8 +40,9 @@ type CFGCache struct {
 
 type cfgEntry struct {
 	cfg       *StmtCFG
-	last      uint64 // LRU timestamp (higher = more recent)
-	nodeCount int    // len(cfg.Nodes), for MaxTotalCFGNodes tracking
+	tree      *parser.Tree // Tree whose C nodes the CFG references; Acquire'd on insert, Release'd on evict
+	last      uint64       // LRU timestamp (higher = more recent)
+	nodeCount int          // len(cfg.Nodes), for MaxTotalCFGNodes tracking
 }
 
 func NewCFGCache() *CFGCache {
@@ -110,6 +111,9 @@ func (c *CFGCache) evictOldestLocked() bool {
 	delete(c.byFn, oldestKey)
 	c.totalCFGNodes -= e.nodeCount
 	c.Evictions++
+	if e.tree != nil {
+		e.tree.Release()
+	}
 	return true
 }
 
@@ -120,6 +124,9 @@ func (c *CFGCache) Invalidate(fnID int64) {
 	if e, ok := c.byFn[fnID]; ok {
 		delete(c.byFn, fnID)
 		c.totalCFGNodes -= e.nodeCount
+		if e.tree != nil {
+			e.tree.Release()
+		}
 	}
 }
 
@@ -127,6 +134,11 @@ func (c *CFGCache) Invalidate(fnID int64) {
 func (c *CFGCache) Reset() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	for _, e := range c.byFn {
+		if e.tree != nil {
+			e.tree.Release()
+		}
+	}
 	c.byFn = make(map[int64]*cfgEntry)
 	c.totalCFGNodes = 0
 	c.clock = 0
@@ -159,6 +171,54 @@ func BuildStmtCFGWithCache(cache *CFGCache, fnID int64, body parser.Node, funcEn
 		return BuildStmtCFG(body, funcEnd)
 	}
 	return cache.GetOrBuild(fnID, func() *StmtCFG {
+		return BuildStmtCFG(body, funcEnd)
+	})
+}
+
+// GetOrBuildWithTree is GetOrBuild with an associated *parser.Tree. When the
+// CFG is newly built and cached, the tree is Acquire'd so the parser cache
+// cannot evict (and Close) it while the CFG's StmtNode.Stmt nodes still
+// reference its C memory. When the CFG is evicted from this cache, the tree
+// is Release'd, making it eligible for parser-cache eviction.
+//
+// If tree is nil, the behavior is identical to GetOrBuild (no tree ref held).
+func (c *CFGCache) GetOrBuildWithTree(fnID int64, tree *parser.Tree, builder func() *StmtCFG) *StmtCFG {
+	if c == nil || fnID <= 0 {
+		return builder()
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.byFn[fnID]; ok {
+		c.clock++
+		e.last = c.clock
+		c.Hits++
+		return e.cfg
+	}
+	cfg := builder()
+	c.Builds++
+	if cfg == nil {
+		return nil
+	}
+	nc := len(cfg.Nodes)
+	c.clock++
+	c.byFn[fnID] = &cfgEntry{cfg: cfg, tree: tree, last: c.clock, nodeCount: nc}
+	c.totalCFGNodes += nc
+	if tree != nil {
+		tree.Acquire()
+	}
+	c.evictIfNeededLocked()
+	return cfg
+}
+
+// BuildStmtCFGWithTree is BuildStmtCFGWithCache with an associated *parser.Tree
+// for AST↔CFG lifecycle coordination. Callers that have the *parser.Tree from
+// which body was derived should prefer this form so the parser cache cannot
+// evict the tree while the cached CFG still references its C nodes.
+func BuildStmtCFGWithTree(cache *CFGCache, fnID int64, tree *parser.Tree, body parser.Node, funcEnd int) *StmtCFG {
+	if cache == nil {
+		return BuildStmtCFG(body, funcEnd)
+	}
+	return cache.GetOrBuildWithTree(fnID, tree, func() *StmtCFG {
 		return BuildStmtCFG(body, funcEnd)
 	})
 }

@@ -61,6 +61,14 @@ func Build(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Lo
 		fields:  map[string][]FieldFact{},
 		globals: map[string][]GlobalArray{},
 	}
+	var acquiredTrees []*parser.Tree
+	defer func() {
+		for _, t := range acquiredTrees {
+			if t != nil {
+				t.Release()
+			}
+		}
+	}()
 	type fileNode struct {
 		path string
 		root parser.Node
@@ -84,9 +92,13 @@ func Build(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Lo
 	}
 
 	// Pass 1: collect every indexed parse tree and the tree-wide macro values.
-	err := eachIndexedFile(ctx, store, p, logger, func(file *db.File, root parser.Node) {
+	err := eachIndexedFile(ctx, store, p, logger, func(file *db.File, root parser.Node, tree *parser.Tree) {
 		indexedPaths = append(indexedPaths, file.Path)
 		addTree(fileNode{path: file.Path, root: root})
+		if tree != nil {
+			tree.Acquire()
+			acquiredTrees = append(acquiredTrees, tree)
+		}
 	})
 	if err != nil {
 		return nil, err
@@ -112,6 +124,8 @@ func Build(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Lo
 			}
 			continue
 		}
+		tree.Acquire()
+		acquiredTrees = append(acquiredTrees, tree)
 		addTree(fileNode{path: path, root: tree.RootNode()})
 	}
 	for name := range conflict {
@@ -359,7 +373,7 @@ func (f *Facts) GlobalArray(name string) (GlobalArray, bool) {
 
 // eachIndexedFile visits every indexed file with its parsed root, logging and
 // skipping unreadable/unparsable files instead of aborting the whole census.
-func eachIndexedFile(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, fn func(*db.File, parser.Node)) error {
+func eachIndexedFile(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, fn func(*db.File, parser.Node, *parser.Tree)) error {
 	files, err := store.ListFiles(ctx)
 	if err != nil {
 		return fmt.Errorf("repofacts: list files: %w", err)
@@ -384,7 +398,7 @@ func eachIndexedFile(ctx context.Context, store db.Store, p *parser.Parser, logg
 			}
 			continue
 		}
-		fn(file, tree.RootNode())
+		fn(file, tree.RootNode(), tree)
 	}
 	return nil
 }

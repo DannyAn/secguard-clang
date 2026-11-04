@@ -40,7 +40,7 @@ func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error)
 
 	summaries := buildFuncSummaries(ctx, d.store, d.parser, d.logger)
 
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		calls := root.FindAll("call_expression")
 		inits := root.FindAll("init_declarator")
 		assigns := root.FindAll("assignment_expression")
@@ -60,7 +60,7 @@ func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error)
 			// The statement CFG decides free→use reachability: a loop-carried
 			// `for(...) { use(p); free(p); }` has the use AFTER the free in source
 			// order on the second iteration, so line order alone missed it (UF-01/06).
-			cfg := buildStmtCFGFromCtx(ctx, f, bodies[f.StartLine])
+			cfg := buildStmtCFGFromCtx(ctx, f, bodies[f.StartLine], tree)
 
 			for _, fs := range freeSites {
 				fsNode := cfg.NodeAt(fs.line)

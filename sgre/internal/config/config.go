@@ -170,6 +170,12 @@ type Scan struct {
 	//	[scan]
 	//	cfg_cache_max_total_nodes = 50000
 	CFGCacheMaxTotalNodes int `toml:"cfg_cache_max_total_nodes"`
+	// MaxCachedTrees bounds the parser's AST cache by tree count. 0 (default) =
+	// unbounded (legacy behavior). When the cache exceeds this limit, the
+	// least-recently-used tree with no long-term references is evicted.
+	//	[scan]
+	//	max_cached_trees = 2000
+	MaxCachedTrees int `toml:"max_cached_trees"`
 }
 
 // GraphBuildersConcurrencyOr returns the configured graph-builder parallelism,

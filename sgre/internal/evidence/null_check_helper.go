@@ -18,7 +18,7 @@ import (
 // Returns map[function name] -> 0-based parameter indices the function null-checks.
 func (d *NullGuardDetector) collectNullCheckHelpers(ctx context.Context, result *DetectResult) (map[string][]int, error) {
 	out := make(map[string][]int)
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		funcDefs := root.FindAll("function_definition")
 		returns := root.FindAll("return_statement")
 		for _, f := range funcs {

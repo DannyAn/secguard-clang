@@ -187,7 +187,7 @@ func (d *DangerousFunctionDetector) Detect(ctx context.Context) (DetectResult, e
 	globalConsts := buildGlobalConstants(ctx, d.store, d.parser)
 	stringMacros := buildGlobalStringMacros(ctx, d.store, d.parser)
 
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		byID := make(map[int64]*db.Function, len(funcs))
 		for _, f := range funcs {
 			byID[f.ID] = f

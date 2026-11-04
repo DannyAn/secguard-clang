@@ -40,7 +40,7 @@ func (d *NullSourceDetector) Detect(ctx context.Context) (DetectResult, error) {
 	// function_summary return-nullability that detectExternalCall consults, so it
 	// must complete for every function before the external-call pass builds its
 	// nullable-function map.
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		returns := root.FindAll("return_statement")
 		assigns := root.FindAll("assignment_expression")
 		inits := root.FindAll("init_declarator")
@@ -69,7 +69,7 @@ func (d *NullSourceDetector) Detect(ctx context.Context) (DetectResult, error) {
 	}
 
 	// Pass 2: external-call sources, now that nullableFuncs is complete.
-	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		assigns := root.FindAll("assignment_expression")
 		inits := root.FindAll("init_declarator")
 		trusted := trustedMacros(root)

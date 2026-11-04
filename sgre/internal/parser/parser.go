@@ -3,6 +3,7 @@ package parser
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	tree_sitter_c "github.com/tree-sitter/tree-sitter-c/bindings/go"
@@ -39,12 +40,46 @@ type Parser struct {
 	mu      sync.Mutex
 	cache   map[string]*Tree
 	parsers map[string]*sitter.Parser
+	// maxCachedTrees bounds the number of cached parse trees. 0 = unbounded
+	// (legacy default). When >0, ParseCached evicts the least-recently-used
+	// tree with refs==0 to make room; if all entries are referenced, the new
+	// tree is added to transient (owned by the Parser, cleaned in CloseAll).
+	maxCachedTrees   int
+	clock            uint64
+	transientTrees   []*Tree
+	transientParsers []*sitter.Parser
 }
 
 type Tree struct {
 	tree   *sitter.Tree
 	src    []byte
 	cached bool
+	// refs counts long-term consumers (CFG cache, fileParseCache) that hold
+	// nodes pointing into this Tree. The parser cache will not evict a Tree
+	// with refs > 0. Acquire/Release must be paired.
+	refs atomic.Int64
+	// last is the LRU timestamp; updated on cache hit and insert.
+	last uint64
+}
+
+// Acquire increments the long-term reference count. Callers that store nodes
+// pointing into this Tree (CFG cache, fileParseCache) must Acquire to prevent
+// the parser cache from evicting and closing the Tree while their nodes are
+// still in use.
+func (t *Tree) Acquire() {
+	t.refs.Add(1)
+}
+
+// Release decrements the long-term reference count. Must be called once for
+// each Acquire. When refs drops to 0 the Tree becomes eligible for eviction
+// from the parser cache.
+func (t *Tree) Release() {
+	t.refs.Add(-1)
+}
+
+// Refs returns the current long-term reference count (for diagnostics).
+func (t *Tree) Refs() int64 {
+	return t.refs.Load()
 }
 
 func NewParser() *Parser {
@@ -57,6 +92,17 @@ func NewParser() *Parser {
 		cache:   make(map[string]*Tree),
 		parsers: make(map[string]*sitter.Parser),
 	}
+}
+
+// SetMaxCachedTrees sets the AST cache bound. 0 = unbounded (legacy default).
+// Must be called before the first ParseCached. The bound is advisory: when the
+// cache is full and every entry has long-term refs (Acquire'd by a CFG or
+// fileParseCache), the new tree is parsed and returned but placed in a
+// transient list cleaned by CloseAll rather than entering the LRU cache.
+func (p *Parser) SetMaxCachedTrees(n int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.maxCachedTrees = n
 }
 
 // Parse parses source with the parser's shared instance. This is only safe for
@@ -79,24 +125,73 @@ func (p *Parser) Parse(source []byte, filename string) (*Tree, error) {
 // the same parser. Each file therefore gets its own dedicated parser, used
 // exactly once; the parser is kept alive alongside the tree and released in
 // CloseAll. The returned tree is owned by this Parser (Close is a no-op).
+//
+// When maxCachedTrees > 0 and the cache is full, the least-recently-used entry
+// with refs==0 is evicted (its tree and parser are closed). If no entry is
+// evictable (all have long-term refs), the new tree is added to a transient
+// list and still returned as cached (Close is a no-op); CloseAll cleans it up.
 func (p *Parser) ParseCached(source []byte, filename string) (*Tree, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if t, ok := p.cache[filename]; ok {
+		p.clock++
+		t.last = p.clock
 		return t, nil
 	}
 	ps := sitter.NewParser()
 	ps.SetLanguage(p.lang)
 	tree := ps.Parse(source, nil)
 	t := &Tree{tree: tree, src: source, cached: true}
+	p.clock++
+	t.last = p.clock
+
+	if p.maxCachedTrees > 0 && len(p.cache) >= p.maxCachedTrees {
+		if !p.evictOldestUnreferencedLocked() {
+			p.transientTrees = append(p.transientTrees, t)
+			p.transientParsers = append(p.transientParsers, ps)
+			return t, nil
+		}
+	}
 	p.cache[filename] = t
 	p.parsers[filename] = ps
 	return t, nil
 }
 
-// CloseAll releases every cached tree and its dedicated parser. Call it once,
-// after the scan, instead of relying on per-detector Close (which is a no-op for
-// cached trees).
+// evictOldestUnreferencedLocked finds and removes the cache entry with the
+// smallest LRU timestamp among entries with refs==0. Returns false if no
+// entry is evictable. Caller must hold p.mu.
+func (p *Parser) evictOldestUnreferencedLocked() bool {
+	var oldestKey string
+	var oldestLast uint64 = ^uint64(0)
+	found := false
+	for k, t := range p.cache {
+		if t.refs.Load() > 0 {
+			continue
+		}
+		if t.last < oldestLast {
+			oldestLast = t.last
+			oldestKey = k
+			found = true
+		}
+	}
+	if !found {
+		return false
+	}
+	t := p.cache[oldestKey]
+	if t.tree != nil {
+		t.tree.Close()
+	}
+	if ps := p.parsers[oldestKey]; ps != nil {
+		ps.Close()
+	}
+	delete(p.cache, oldestKey)
+	delete(p.parsers, oldestKey)
+	return true
+}
+
+// CloseAll releases every cached and transient tree and its dedicated parser.
+// Call it once, after the scan, instead of relying on per-detector Close (which
+// is a no-op for cached trees).
 func (p *Parser) CloseAll() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -110,11 +205,30 @@ func (p *Parser) CloseAll() {
 			ps.Close()
 		}
 	}
+	for _, t := range p.transientTrees {
+		if t != nil && t.tree != nil {
+			t.tree.Close()
+		}
+	}
+	for _, ps := range p.transientParsers {
+		if ps != nil {
+			ps.Close()
+		}
+	}
 	p.cache = make(map[string]*Tree)
 	p.parsers = make(map[string]*sitter.Parser)
+	p.transientTrees = nil
+	p.transientParsers = nil
 	if p.parser != nil {
 		p.parser.Close()
 	}
+}
+
+// CacheStats returns (cachedEntries, transientEntries) for diagnostics.
+func (p *Parser) CacheStats() (cached, transient int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.cache), len(p.transientTrees)
 }
 
 func (t *Tree) RootNode() Node {

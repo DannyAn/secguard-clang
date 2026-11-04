@@ -47,7 +47,7 @@ func (d *ArgumentTypeDetector) Detect(ctx context.Context) (DetectResult, error)
 	typedefs := buildGlobalTypedefs(ctx, d.store, d.parser)
 	globalParams := buildGlobalFunctionParams(ctx, d.store, d.parser)
 
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		// File-scope declarations (globals) are visible in every function;
 		// locals are bucketed per function (by start line) and carry their line
 		// so same-named variables in disjoint scopes resolve to the nearest

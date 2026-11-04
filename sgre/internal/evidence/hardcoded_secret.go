@@ -44,7 +44,7 @@ var highEntropyHints = []string{
 func (d *HardcodedSecretDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	err := forEachFileIncludingEmpty(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFileIncludingEmpty(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		// Scan every init_declarator (file-scope globals AND function locals).
 		// A file-scope initializer runs at load time regardless of the call
 		// graph, so it is attributed to enclosingFuncID == 0 (see call_reach,

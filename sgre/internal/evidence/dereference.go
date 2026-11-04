@@ -24,7 +24,7 @@ func (d *DereferenceDetector) Name() string { return "dereference" }
 func (d *DereferenceDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		memberNodes := root.FindAll("field_expression")
 		// `*p` parses as a pointer_expression, not a unary_expression — the
 		// previous FindAll("unary_expression") never matched a dereference and

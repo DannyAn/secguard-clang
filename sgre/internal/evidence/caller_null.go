@@ -123,7 +123,7 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 	definedTypes := map[string]bool{}
 	valueUsed := map[string]bool{}
 	visited := map[string]bool{}
-	if err := forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node) {
+	if err := forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, tree *parser.Tree) {
 		visited[filepath.Clean(file.Path)] = true
 		collectDefinedTypes(root, definedTypes)
 		for name := range parser.ValueReferencedNames(root) {
@@ -144,7 +144,7 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 		}
 	}
 
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		ifs := root.FindAll("if_statement")
 		assigns := root.FindAll("assignment_expression")
 		calls := root.FindAll("call_expression")
@@ -792,7 +792,7 @@ const maxCensusFragmentBytes = 4 << 20
 // the address-taken fact depends on the TEXT, not on the file's extension. One
 // level is enough for generated tables; fragments are visited once and bounded.
 func (d *CallerNullDetector) collectIncludedFragmentCensus(ctx context.Context, visited, valueUsed map[string]bool) error {
-	err := forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node) {
+	err := forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, tree *parser.Tree) {
 		for _, path := range parser.QuotedIncludePaths(file.Path, root) {
 			if visited[path] {
 				continue

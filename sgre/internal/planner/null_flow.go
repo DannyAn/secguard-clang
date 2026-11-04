@@ -2688,6 +2688,7 @@ type fileParseCache struct {
 	roots  map[int64]parser.Node
 	bodies map[int64]map[int]parser.Node
 	defs   map[int64]map[int]parser.Node
+	trees  map[int64]*parser.Tree
 }
 
 func newFileParseCache(p *parser.Parser) *fileParseCache {
@@ -2696,6 +2697,7 @@ func newFileParseCache(p *parser.Parser) *fileParseCache {
 		roots:  make(map[int64]parser.Node),
 		bodies: make(map[int64]map[int]parser.Node),
 		defs:   make(map[int64]map[int]parser.Node),
+		trees:  make(map[int64]*parser.Tree),
 	}
 }
 
@@ -2722,10 +2724,30 @@ func (fc *fileParseCache) rootForFile(file *db.File) parser.Node {
 // parse site shared by get/rootForFile/defFor so a file is parsed at most once
 // per cache.
 func (fc *fileParseCache) prime(file *db.File) {
-	root, bodies, defs := functionBodiesForFile(fc.parser, file)
+	root, bodies, defs, tree := functionBodiesForFile(fc.parser, file)
 	fc.roots[file.ID] = root
 	fc.bodies[file.ID] = bodies
 	fc.defs[file.ID] = defs
+	if tree != nil {
+		tree.Acquire()
+		fc.trees[file.ID] = tree
+	}
+}
+
+func (fc *fileParseCache) treeFor(file *db.File) *parser.Tree {
+	if _, ok := fc.trees[file.ID]; !ok {
+		fc.prime(file)
+	}
+	return fc.trees[file.ID]
+}
+
+func (fc *fileParseCache) Close() {
+	for _, t := range fc.trees {
+		if t != nil {
+			t.Release()
+		}
+	}
+	fc.trees = make(map[int64]*parser.Tree)
 }
 
 // defFor returns the function_definition node of fn, parsed at most once per
@@ -2788,23 +2810,19 @@ func (fc *fileParseCache) voidPtrParamsFor(file *db.File, fn *db.Function) map[s
 // functionBodiesForFile parses file and returns its root, a map from each
 // function definition's start line to its compound_statement body, and a map
 // from start line to the function_definition node itself.
-func functionBodiesForFile(p *parser.Parser, file *db.File) (parser.Node, map[int]parser.Node, map[int]parser.Node) {
+func functionBodiesForFile(p *parser.Parser, file *db.File) (parser.Node, map[int]parser.Node, map[int]parser.Node, *parser.Tree) {
 	source, err := os.ReadFile(file.Path)
 	if err != nil {
-		return parser.Node{}, nil, nil
+		return parser.Node{}, nil, nil, nil
 	}
 	tree, err := p.ParseCached(source, file.Path)
 	if err != nil {
-		return parser.Node{}, nil, nil
+		return parser.Node{}, nil, nil, nil
 	}
 	root := tree.RootNode()
 	bodies := make(map[int]parser.Node)
 	defs := make(map[int]parser.Node)
 	for _, def := range root.FindAll("function_definition") {
-		// First-wins matches the historical paramsOf semantics (break on the
-		// first definition whose start line matches). Function-per-line is
-		// near-universal; the guard just keeps a same-line collision from
-		// silently swapping which definition a candidate resolves to.
 		if _, seen := defs[def.StartLine()]; !seen {
 			defs[def.StartLine()] = def
 		}
@@ -2812,7 +2830,7 @@ func functionBodiesForFile(p *parser.Parser, file *db.File) (parser.Node, map[in
 			bodies[def.StartLine()] = *body
 		}
 	}
-	return root, bodies, defs
+	return root, bodies, defs, tree
 }
 
 // buildGuardCtx supplies the guard comparison with the two facts the AST alone

@@ -57,7 +57,7 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, l
 	}
 	var states []funcWriteState
 
-	forEachFile(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	forEachFile(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		funcDefs := root.FindAll("function_definition")
 		bodies := functionBodyMap(funcDefs)
 		calls := root.FindAll("call_expression")
@@ -247,7 +247,7 @@ func computeParamWriteState(ctx context.Context, bodies map[int]parser.Node, f *
 	if body.Kind() != "compound_statement" {
 		return nil
 	}
-	cfg := buildStmtCFGFromCtx(ctx, f, body)
+	cfg := buildStmtCFGFromCtx(ctx, f, body, nil)
 	st := &paramWriteState{
 		cfg:           cfg,
 		params:        params,
@@ -463,7 +463,7 @@ func computeParamFrees(ctx context.Context, bodies map[int]parser.Node, f *db.Fu
 	if body.Kind() != "compound_statement" {
 		return direct, field, mayDirect
 	}
-	cfg := buildStmtCFGFromCtx(ctx, f, body)
+	cfg := buildStmtCFGFromCtx(ctx, f, body, nil)
 
 	// Terminator nodes dead-end a path (they do not fall through to the next
 	// statement), so a free reached only via a terminator is conditional.

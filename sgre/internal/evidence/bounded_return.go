@@ -51,7 +51,7 @@ func buildBoundedReturnSummary(ctx context.Context, store db.Store, p *parser.Pa
 	summary := boundedReturnSummary{}
 	for pass := 0; pass < 16; pass++ {
 		changed := false
-		err := forEachFile(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+		err := forEachFile(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 			funcDefs := root.FindAll("function_definition")
 			bodies := functionBodyMap(funcDefs)
 			inits := root.FindAll("init_declarator")

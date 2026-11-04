@@ -59,7 +59,7 @@ func (d *OpaqueNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 	}
 
 	hasEntryPoint := scanHasEntryPoint(ctx, d.store)
-	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function) {
+	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		// Per-file field-reference census: the count field of a count-gated
 		// array buffer is usually referenced in the SAME file as the pointer
 		// field (the candidate function and its guarded sibling both read
@@ -93,7 +93,7 @@ func (d *OpaqueNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 // channel must never introduce).
 func (d *OpaqueNullDetector) collectGlobalFacts(ctx context.Context) (map[string]bool, error) {
 	definedTypes := map[string]bool{}
-	err := forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node) {
+	err := forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, tree *parser.Tree) {
 		collectDefinedTypes(root, definedTypes)
 	})
 	return definedTypes, err
