@@ -4,7 +4,26 @@
 
 ## [未发布]
 
-### path-traversal 误报抑制：编译期常量路径链（Issue #199）
+## [0.12.1] - 2026-11-04
+
+### 全仓扫描内存/生命周期重构收口（P0/P1）
+
+依据 `SGRE_FULL_REPO_SCAN_ARCH_DESIGN.md`（v4）与 `架构重构检视DSFlash-Round1.md` 的 P0/P1 检视结果，修复 1700 文件级仓库暴露的 AST/CFG 生命周期、OOM 与 incomplete 语义问题。**默认配置下的 AST/CFG/事件预算、Go heap 预算、planner CFG 缓存均已在 1700 文件 / 5.1 万函数合成仓验证。**
+
+- **AST 生命周期（P0-1/3/4）**：`ParseCached` 返回即持有借用，`forEachFile`/`forEachIndexedFile`/`graph.forEachFile` 在回调前后 Acquire/Release；缓存满且全被借用时返回 transient 借用，`Release` 归零即关闭树 + 专用 parser（不再保留只增不减的 transient 列表）；26 处 `fileParseCache` 构造全部接入 `Close`，`prime` 不再二次 Acquire；新增 `transientOrigins`/`liveFileParseCaches` 泄漏诊断。`max_cached_trees>0` 不再触发 AST 淘汰 SIGSEGV。
+- **CFG 生命周期与 planner 缓存（P0-2/P1-2）**：新增 `CFGCache.Acquire` + `CFGLease` + `refs`，build 在锁外、per-key 单飞，LRU 只淘汰 `refs==0`；`flowResult` 用 `spans/startLines` 几何快照替代持有 cfg/AST，`heapStructFlow` 同样快照化；range/interval/int-overflow、null-deref、lifetime、double-free、taint、uninit、contract-gap、race 全部接回共享 CFG 缓存并即时释放。51K 函数合成仓扫描从 415s 降到 156s，候选数保持 34,000 不变。
+- **`free_summary` 预算击穿（P0 内存峰值）**：旧实现第二遍 fixpoint 前为每个函数持有一个 CFG lease，实测 `cfg_cache_max_entries=500` 时日志仍为 `entries=10200`。改为 phase 1 只算直接事实、phase 2 逐文件重解析并在函数级释放 lease，不再持有全量 state。
+- **incomplete 语义（P0-5）**：扫描启动 `BeginScanRun` 建 running 行；失败/超时用 `context.WithoutCancel` 写 `failed`；Detector/Plan 错误、event flush 失败、auto-confirm/findings 读取降级写 `scan_incomplete_tasks` 并置 `incomplete`；`report.md` 头、`metrics`、scan JSON 渲染 completion_state/未完成数；`complete` 只在无错误时写。`scan_runs.completion_state` 迁移改为可空列 + 回填 `complete`（不再把历史行回填 running），`MarkStaleRunningAsFailed` 排除当前 scan_id。
+- **回压/批写/事件（P1-3/4/7）**：`MemoryLowWatermarkMB` 为 0/非法时归一化到 75% high，`Wait(ctx)` 可取消并在启动时同步采样；新增 `[scan] detector_concurrency` 与 detector throttle；图边批失败逐边重试、`InsertGraphEdgeBatch` 失败返回 0；事件批默认 2000，flush 失败计数并转 `DetectorError`/incomplete。
+- **默认预算与 Go heap（P1-1/8）**：`[scan]` 默认 `max_cached_trees=4000`、`cfg_cache_max_entries=4000`、`cfg_cache_max_total_nodes=400000`、`event_batch_size=2000`（负值保留 unbounded legacy）；新增 `go_mem_limit_mb`（debug.SetMemoryLimit）与 `go_gc_percent`（debug.SetGCPercent），用于约束 Go heap（事件/候选/临时结构），与 C AST/CFG 预算分开调。
+- **RepoIndex/repofacts（P1-5/6）**：RepoIndex 增 `FuncsByName`，alias/call_graph/interproc/funcptr builders 改用快照；`repofacts.Build` 改为两遍逐文件流式（pass1 只收宏/路径，pass2 重新 ParseCached 后处理布局/全局数组），不再钉住所有 root。
+- **测试**：新增 parser 借用/transient/CloseAll、CFG 租约/单飞/锁外构建/refs 防淘汰、DB BeginScanRun/迁移回填/stale 排除、report 不完整 warning、mempressure 等回归；`go test ./...`、`go vet`、`go test -race`（graph/planner/evidence）与 `release/check-extension-consistency.py` 全绿。
+- **1700 文件规模实测（合成仓）**：1700 文件 / 10,200 函数峰值 536MB、26.5s；1700 文件 / 51,000 函数峰值 3.72GB、156s；均 `complete`、无 AST/CFG 借用泄漏，候选数与优化前一致。`GOGC=50 GOMEMLIMIT=6GiB` 对照峰值 3.35GB（说明 5.1 万档峰值已转向 Go heap；34GB 现网需用真实重文件样本继续校准）。
+- **已知边界**：`go_mem_limit_mb` 不约束 tree-sitter/SQLite C 内存；`max_cached_trees` 与 `cfg_cache_max_entries` 必须一起调（CFG 条目会钉住 AST）；单压 `max_cached_trees` 可能因重解析抬高 RSS。详见 `架构重构检视DSFlash-Round1.md` §10.5。
+
+### 并入本版本的其他变更（原未发布）
+
+#### path-traversal 误报抑制：编译期常量路径链（Issue #199）
 
 - **新增 `constant_path_proof` 过滤器**（`sgre/internal/planner/filter_constant_path.go`，接在 path-traversal 链的 `taint_source` 之后）：对 sink 路径参数做跨过程常量证明。参数未被本函数覆写时，要求所有 in-tree 调用点的实参可证明为编译期常量；调用点传局部缓冲区时，沿该缓冲区的每一处写入递归（含传给 in-tree 路径拼装 helper 的输出参数）。`snprintf`/`sprintf`/`strcat`/`memcpy` 等拼装调用按格式串逐参判定：`%u`/`%d`/`%x`/浮点等数值转换的实参豁免（其文本不可能含 `/`，`"%s/%u.json"` + `time(NULL)` 这类内部生成值因此算常量），`%s`/`%c` 等可输出任意字节的实参仍须常量。任一步不可证（未知外部函数、out-of-tree 写、无 in-tree 调用点、address-taken、递归超深）一律保留候选，宁漏勿误。
 - **真实 CWE-22 不丢**：用户输入经弱校验（仅后缀 `.pdf` 检查）进入 `<固定目录>/<字段>` 的链，因 `json_get_string_by_key` / `custom_pdf_path()` 不是常量而保留，照常交 AI 研判。
