@@ -298,6 +298,30 @@ secguard scan ./src 2>/dev/null          # 仅 JSON
 secguard scan ./src 1>results.json 2>logs.ndjson   # 分别保存
 ```
 
+### 7.8 大仓库（1500+ 文件）OOM / 扫描很慢
+
+先在项目 `.codeagent/secguard.toml` 中加一组保守预算，再按实测调整：
+
+```toml
+[scan]
+memory_pressure_enabled = true
+memory_high_watermark_mb = 26000
+memory_low_watermark_mb = 20000
+
+max_cached_trees = 1000
+cfg_cache_max_entries = 1000
+cfg_cache_max_total_nodes = 200000
+
+go_mem_limit_mb = 24000
+go_gc_percent = 50
+```
+
+- `max_cached_trees` 与 `cfg_cache_*` 必须一起调：CFG 条目会持有 AST 引用，只压 AST 会被 CFG 钉住。
+- `go_mem_limit_mb` 只约束 Go heap，不约束 tree-sitter/SQLite 的 C 内存。
+- 用 `GODEBUG=gctrace=1` 或 `secguard metrics` 判断峰值是 Go heap 还是 C 侧，再决定压哪组预算。
+
+完整配置说明见 [docs/config.md](docs/config.md)。
+
 ## 8. 支持的漏洞类型（24 种）
 
 完整列表见 [README-CN.md](README-CN.md) 或 `secguard types`：

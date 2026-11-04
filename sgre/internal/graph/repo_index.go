@@ -22,12 +22,34 @@ type RepoIndex struct {
 	filesByID   map[int64]*db.File
 	funcsByFile map[int64][]*db.Function
 	fileOrder   []int64
+
+	fileScopeByFile map[int64]map[string]string
+	slotTargets     map[string][]string
+	fileScopeOK     bool
+	funcPtrOK       bool
+}
+
+// RepoFacts are the optional declaration facts shared by graph builders. The
+// OK flags distinguish "loaded and empty" from "query failed": a false flag
+// makes consumers fall back to their own DB query instead of silently treating
+// every file/slot as empty.
+type RepoFacts struct {
+	FileScope       []*db.FileScopeVariable
+	FuncPtrWrites   []db.FuncPtrWrite
+	FileScopeOK     bool
+	FuncPtrWritesOK bool
 }
 
 // NewRepoIndex builds an immutable index from the full function and file lists.
 // Either slice may be nil (the resulting index is empty but valid), so callers
 // that only need the function view can pass nil files.
 func NewRepoIndex(functions []*db.Function, files []*db.File) *RepoIndex {
+	return NewRepoIndexWithFacts(functions, files, RepoFacts{})
+}
+
+// NewRepoIndexWithFacts builds the index plus the optional file-scope and
+// function-pointer facts loaded once by the pipeline.
+func NewRepoIndexWithFacts(functions []*db.Function, files []*db.File, facts RepoFacts) *RepoIndex {
 	ri := &RepoIndex{
 		functions:   functions,
 		files:       files,
@@ -54,6 +76,28 @@ func NewRepoIndex(functions []*db.Function, files []*db.File) *RepoIndex {
 		}
 		ri.filesByID[fl.ID] = fl
 	}
+	ri.fileScopeOK = facts.FileScopeOK
+	if facts.FileScopeOK {
+		ri.fileScopeByFile = make(map[int64]map[string]string)
+		for _, v := range facts.FileScope {
+			if v == nil {
+				continue
+			}
+			m := ri.fileScopeByFile[v.FileID]
+			if m == nil {
+				m = make(map[string]string)
+				ri.fileScopeByFile[v.FileID] = m
+			}
+			m[v.Name] = v.StorageClass
+		}
+	}
+	ri.funcPtrOK = facts.FuncPtrWritesOK
+	if facts.FuncPtrWritesOK {
+		ri.slotTargets = make(map[string][]string)
+		for _, w := range facts.FuncPtrWrites {
+			ri.slotTargets[w.SlotName] = append(ri.slotTargets[w.SlotName], w.TargetName)
+		}
+	}
 	return ri
 }
 
@@ -77,6 +121,30 @@ func (ri *RepoIndex) FileByID(id int64) *db.File { return ri.filesByID[id] }
 
 // FuncsByFile returns the functions in the given file (possibly empty/nil).
 func (ri *RepoIndex) FuncsByFile(fileID int64) []*db.Function { return ri.funcsByFile[fileID] }
+
+// FileScopeByFile returns file ID → (name → storage class), or nil when the
+// facts were not loaded. Callers must not mutate the maps.
+func (ri *RepoIndex) FileScopeByFile() map[int64]map[string]string {
+	if ri == nil || !ri.fileScopeOK {
+		return nil
+	}
+	return ri.fileScopeByFile
+}
+
+// HasFileScope reports whether the file-scope facts were loaded successfully.
+func (ri *RepoIndex) HasFileScope() bool { return ri != nil && ri.fileScopeOK }
+
+// FuncPtrTargets returns slot name → target function names, or nil when the
+// facts were not loaded. Callers must not mutate the slices.
+func (ri *RepoIndex) FuncPtrTargets() map[string][]string {
+	if ri == nil || !ri.funcPtrOK {
+		return nil
+	}
+	return ri.slotTargets
+}
+
+// HasFuncPtrTargets reports whether the function-pointer facts were loaded.
+func (ri *RepoIndex) HasFuncPtrTargets() bool { return ri != nil && ri.funcPtrOK }
 
 // FileOrder returns the IDs of files that contain at least one indexed
 // function, in ascending order. Iterating this and calling FuncsByFile

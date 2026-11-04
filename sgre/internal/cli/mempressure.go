@@ -88,12 +88,12 @@ func (m *MemoryMonitor) Start(interval time.Duration, logger *log.Logger) {
 				logger.Warn("memory pressure: high watermark reached",
 					"current_mb", cur/1024/1024,
 					"high_mb", m.highBytes/1024/1024,
-					"action", "pause_new_tasks")
+					"action", "concurrency -> 1")
 			}
 		} else if m.pressured.Load() && cur <= m.lowBytes {
 			m.pressured.Store(false)
 			if logger != nil {
-				logger.Info("memory pressure: low watermark reached, restoring concurrency",
+				logger.Info("memory pressure: low watermark reached, restoring concurrency limit",
 					"current_mb", cur/1024/1024,
 					"low_mb", m.lowBytes/1024/1024)
 			}

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/DannyAn/secguard-clang/internal/concurrency"
 	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/evidence"
@@ -111,6 +112,7 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 	timings.IndexMs = time.Since(idxStart).Milliseconds()
 	logger.Info("phase timing", "phase", "index", "elapsed_ms", timings.IndexMs)
+	logPhaseResources(logger, "index", p, nil)
 
 	// The semantic graph is rebuilt from scratch every run (there is no
 	// incremental graph update), so clear the previous run's nodes/edges first.
@@ -130,7 +132,20 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	if err != nil {
 		return nil, fmt.Errorf("list files for repo index: %w", err)
 	}
-	ctx = graph.WithRepoIndex(ctx, graph.NewRepoIndex(repoFuncs, repoFiles))
+	repoFacts := graph.RepoFacts{}
+	if vars, verr := store.ListFileScopeVariables(ctx); verr == nil {
+		repoFacts.FileScope = vars
+		repoFacts.FileScopeOK = true
+	} else {
+		logger.Warn("repo index: file-scope facts load failed; builders will query per stage", "err", verr)
+	}
+	if writes, werr := store.ListFuncPtrWrites(ctx); werr == nil {
+		repoFacts.FuncPtrWrites = writes
+		repoFacts.FuncPtrWritesOK = true
+	} else {
+		logger.Warn("repo index: func-ptr facts load failed; builders will query per stage", "err", werr)
+	}
+	ctx = graph.WithRepoIndex(ctx, graph.NewRepoIndexWithFacts(repoFuncs, repoFiles, repoFacts))
 
 	graphStart := time.Now()
 
@@ -181,7 +196,6 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 	var bwg sync.WaitGroup
 	bErrCh := make(chan error, len(builders))
-	builderSem := make(chan struct{}, config.Load().GraphBuildersConcurrencyOr(len(builders)))
 
 	var memMon *MemoryMonitor
 	if cfg := config.Load(); cfg.Scan.MemoryPressureEnabled && cfg.Scan.MemoryHighWatermarkMB > 0 {
@@ -190,6 +204,8 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 		memMon.Start(2*time.Second, logger)
 		defer memMon.Stop()
 	}
+	builderGate := concurrency.NewGate(config.Load().GraphBuildersConcurrencyOr(len(builders)),
+		func() bool { return memMon != nil && memMon.Pressured() })
 
 	for _, b := range builders {
 		bwg.Add(1)
@@ -200,11 +216,11 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 					bErrCh <- fmt.Errorf("%s panicked: %v", b.name, r)
 				}
 			}()
-			if memMon != nil {
-				memMon.Wait(ctx)
+			if !builderGate.Acquire(ctx) {
+				bErrCh <- fmt.Errorf("%s: canceled while waiting for memory capacity", b.name)
+				return
 			}
-			builderSem <- struct{}{}
-			defer func() { <-builderSem }()
+			defer builderGate.Release()
 			if err := b.fn(ctx); err != nil {
 				bErrCh <- fmt.Errorf("%s: %w", b.name, err)
 			}
@@ -221,6 +237,7 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 	timings.GraphMs = time.Since(graphStart).Milliseconds()
 	logger.Info("phase timing", "phase", "graph_builders_parallel", "elapsed_ms", timings.GraphMs)
+	logPhaseResources(logger, "graph", p, nil)
 
 	if err := store.ClearSecurityEvents(ctx); err != nil {
 		return nil, fmt.Errorf("clear security events: %w", err)
@@ -285,15 +302,7 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	} else {
 		logger.Info("phase timing", "phase", "detectors_total", "elapsed_ms", timings.DetectorsMs)
 	}
-	if b, h, e, n, tn := sharedCFGCache.StatsFull(); b+h > 0 {
-		logger.Info("cfg cache stats after detectors", "builds", b, "hits", h, "evictions", e, "entries", n, "total_nodes", tn)
-	}
-	if cached, transient := p.CacheStats(); cached+transient > 0 {
-		logger.Info("parser cache stats after detectors",
-			"cached", cached, "transient", transient,
-			"pinned", p.PinnedTrees(), "active_handles", p.ActiveTreeHandles(),
-			"max_cached_trees", config.Load().Scan.MaxCachedTrees)
-	}
+	logPhaseResources(logger, "detectors", p, sharedCFGCache)
 
 	// Backfill a function_summary row for every indexed function, so the
 	// coverage acceptance (≥90%) holds and richer per-function contract facts
@@ -391,7 +400,8 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 
 	planConcurrency := config.Load().PlanConcurrencyOr(8)
-	planSem := make(chan struct{}, planConcurrency)
+	planGate := concurrency.NewGate(planConcurrency,
+		func() bool { return memMon != nil && memMon.Pressured() })
 	var pwg sync.WaitGroup
 	planStart := time.Now()
 	for i, vulnType := range vulnTypes {
@@ -411,11 +421,13 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 			if taintTypeSet[vt] {
 				<-summaryReady
 			}
-			if memMon != nil {
-				memMon.Wait(ctx)
+			if !planGate.Acquire(ctx) {
+				planErrMu.Lock()
+				planErrors[vt] = "canceled while waiting for memory capacity"
+				planErrMu.Unlock()
+				return
 			}
-			planSem <- struct{}{}
-			defer func() { <-planSem }()
+			defer planGate.Release()
 			planStart := time.Now()
 			result, err := pl.Plan(ctx, vt)
 			if logger != nil {
@@ -432,14 +444,7 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 	pwg.Wait()
 	timings.PlanMs = time.Since(planStart).Milliseconds()
-	if b, h, e, n, tn := sharedCFGCache.StatsFull(); b+h > 0 {
-		logger.Info("cfg cache stats after plan", "builds", b, "hits", h, "evictions", e, "entries", n, "total_nodes", tn)
-	}
-	if cached, transient := p.CacheStats(); cached+transient > 0 {
-		logger.Info("parser cache stats after plan",
-			"cached", cached, "transient", transient,
-			"pinned", p.PinnedTrees(), "active_handles", p.ActiveTreeHandles())
-	}
+	logPhaseResources(logger, "plan", p, sharedCFGCache)
 
 	return &pipelineOutcome{
 		Index:            indexResult,

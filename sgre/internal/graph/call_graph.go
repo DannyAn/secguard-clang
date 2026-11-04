@@ -32,8 +32,9 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	result := &BuildResult{}
 	b.edges = newEdgeBatchWriter(b.store, b.logger, 0)
 
+	ri := RepoIndexFromCtx(ctx)
 	var funcs []*db.Function
-	if ri := RepoIndexFromCtx(ctx); ri != nil {
+	if ri != nil {
 		funcs = ri.Functions()
 	} else {
 		var err error
@@ -55,7 +56,9 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	// Function-pointer slot -> target wirings (GAP-02), loaded once so an
 	// indirect call `ops->open(p)` resolves to a real CALL edge.
 	slotTargets := make(map[string][]string)
-	if fpWrites, ferr := b.store.ListFuncPtrWrites(ctx); ferr == nil {
+	if ri != nil && ri.HasFuncPtrTargets() {
+		slotTargets = ri.FuncPtrTargets()
+	} else if fpWrites, ferr := b.store.ListFuncPtrWrites(ctx); ferr == nil {
 		for _, w := range fpWrites {
 			slotTargets[w.SlotName] = append(slotTargets[w.SlotName], w.TargetName)
 		}

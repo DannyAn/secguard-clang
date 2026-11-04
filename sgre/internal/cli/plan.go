@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/DannyAn/secguard-clang/internal/config"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 	"github.com/DannyAn/secguard-clang/internal/planner"
 	"github.com/DannyAn/secguard-clang/internal/report"
@@ -45,10 +47,21 @@ func runPlanCmd(ctx context.Context, args []string) int {
 		return 1
 	}
 
+	files, err := store.ListFiles(ctx)
+	if err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to list files: %v", err))
+		return 1
+	}
+	ctx = graph.WithRepoIndex(ctx, graph.NewRepoIndex(funcs, files))
+
 	logger := defaultLogger()
 	p := parser.NewParser()
 	defer p.CloseAll()
-	pl := planner.NewPlanner(store, p, logger)
+	cfgCache := graph.NewCFGCache()
+	cfgCache.MaxEntries = config.Load().Scan.CFGCacheMaxEntries
+	cfgCache.MaxTotalCFGNodes = config.Load().Scan.CFGCacheMaxTotalNodes
+	defer cfgCache.Reset()
+	pl := planner.NewPlannerWithCache(store, p, logger, cfgCache)
 
 	result, err := pl.Plan(ctx, vulnType)
 	if err != nil {

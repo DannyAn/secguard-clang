@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -42,9 +43,15 @@ func (d *InterproceduralDetector) Name() string { return "interprocedural" }
 func (d *InterproceduralDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	funcs, err := d.store.ListFunctions(ctx)
-	if err != nil {
-		return result, fmt.Errorf("interprocedural: list functions: %w", err)
+	var funcs []*db.Function
+	if ri := graph.RepoIndexFromCtx(ctx); ri != nil {
+		funcs = ri.Functions()
+	} else {
+		var err error
+		funcs, err = d.store.ListFunctions(ctx)
+		if err != nil {
+			return result, fmt.Errorf("interprocedural: list functions: %w", err)
+		}
 	}
 
 	funcByName := make(map[string][]*db.Function)
@@ -449,12 +456,18 @@ func (d *InterproceduralDetector) treeFor(ctx context.Context, cache map[int64]*
 	if t, ok := cache[fileID]; ok {
 		return t
 	}
-	file, err := d.store.GetFileByID(ctx, fileID)
-	if err != nil {
-		if d.logger != nil {
-			d.logger.Warn("interprocedural: get file by id failed", "file_id", fileID, "error", err)
+	var file *db.File
+	if ri := graph.RepoIndexFromCtx(ctx); ri != nil {
+		file = ri.FileByID(fileID)
+	} else {
+		var err error
+		file, err = d.store.GetFileByID(ctx, fileID)
+		if err != nil {
+			if d.logger != nil {
+				d.logger.Warn("interprocedural: get file by id failed", "file_id", fileID, "error", err)
+			}
+			return nil
 		}
-		return nil
 	}
 	if file == nil {
 		return nil

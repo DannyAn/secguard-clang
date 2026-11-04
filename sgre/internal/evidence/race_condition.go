@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -224,9 +225,15 @@ func (d *RaceConditionDetector) collectGlobalVars(root parser.Node, fileID int64
 // variables are excluded — their linkage is file-private.
 func (d *RaceConditionDetector) collectExternGlobals(ctx context.Context) map[string]bool {
 	globals := make(map[string]bool)
-	funcs, err := d.store.ListFunctions(ctx)
-	if err != nil {
-		return globals
+	var funcs []*db.Function
+	if ri := graph.RepoIndexFromCtx(ctx); ri != nil {
+		funcs = ri.Functions()
+	} else {
+		var err error
+		funcs, err = d.store.ListFunctions(ctx)
+		if err != nil {
+			return globals
+		}
 	}
 	byFile := make(map[int64][]*db.Function, 128)
 	for _, f := range funcs {

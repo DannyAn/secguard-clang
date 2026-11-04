@@ -34,9 +34,10 @@ func BuildInterproceduralAlias(ctx context.Context, store db.Store, p *parser.Pa
 			}
 		}
 	}()
+	ri := RepoIndexFromCtx(ctx)
 	var fns []*db.Function
 	var files []*db.File
-	if ri := RepoIndexFromCtx(ctx); ri != nil {
+	if ri != nil {
 		fns = ri.Functions()
 		files = ri.Files()
 	} else {
@@ -63,7 +64,9 @@ func BuildInterproceduralAlias(ctx context.Context, store db.Store, p *parser.Pa
 	// `static` g (one object per file) is keyed apart from an `extern` g (one
 	// object program-wide).
 	fileScopeByFile := make(map[int64]map[string]string)
-	if fsv, err := store.ListFileScopeVariables(ctx); err == nil {
+	if ri != nil && ri.HasFileScope() {
+		fileScopeByFile = ri.FileScopeByFile()
+	} else if fsv, err := store.ListFileScopeVariables(ctx); err == nil {
 		for _, v := range fsv {
 			m := fileScopeByFile[v.FileID]
 			if m == nil {

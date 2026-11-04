@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/DannyAn/secguard-clang/internal/concurrency"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -150,18 +151,11 @@ func RunAllDetectorsWithSkip(ctx context.Context, store db.Store, p *parser.Pars
 	if maxConcurrent <= 0 {
 		maxConcurrent = 8
 	}
-	sem := make(chan struct{}, maxConcurrent)
 	gate, _ := detectorThrottle.Load().(func() bool)
-	waitForCapacity := func() bool {
-		for gate != nil && gate() {
-			select {
-			case <-ctx.Done():
-				return false
-			case <-time.After(50 * time.Millisecond):
-			}
-		}
-		return true
+	if gate == nil {
+		gate = func() bool { return false }
 	}
+	slots := concurrency.NewGate(maxConcurrent, gate)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var errs []DetectorError
@@ -196,21 +190,13 @@ func RunAllDetectorsWithSkip(ctx context.Context, store db.Store, p *parser.Pars
 		wg.Add(1)
 		go func(d Detector) {
 			defer wg.Done()
-			if !waitForCapacity() {
-				mu.Lock()
-				errs = append(errs, DetectorError{Detector: d.Name(), Err: fmt.Errorf("canceled while waiting for memory capacity")})
-				mu.Unlock()
-				return
-			}
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
+			if !slots.Acquire(ctx) {
 				mu.Lock()
 				errs = append(errs, DetectorError{Detector: d.Name(), Err: fmt.Errorf("canceled while waiting for a detector slot")})
 				mu.Unlock()
 				return
 			}
-			defer func() { <-sem }()
+			defer slots.Release()
 			start := time.Now()
 			run(d)
 			if logger != nil {
@@ -225,8 +211,15 @@ func RunAllDetectorsWithSkip(ctx context.Context, store db.Store, p *parser.Pars
 	flushEventBatch(ctx, store, logger)
 
 	for _, det := range deferred {
+		if !slots.Acquire(ctx) {
+			mu.Lock()
+			errs = append(errs, DetectorError{Detector: det.Name(), Err: fmt.Errorf("canceled while waiting for a detector slot")})
+			mu.Unlock()
+			continue
+		}
 		start := time.Now()
 		run(det)
+		slots.Release()
 		if logger != nil {
 			logger.Info("detector timing", "detector", det.Name(), "elapsed_ms", time.Since(start).Milliseconds())
 		}

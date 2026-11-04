@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
@@ -437,9 +438,15 @@ func intSize(t string) int {
 // all indexed files so a callee declared in another file still resolves.
 func buildGlobalFunctionParams(ctx context.Context, store db.Store, p *parser.Parser) map[string][]string {
 	m := make(map[string][]string)
-	files, err := store.ListFiles(ctx)
-	if err != nil {
-		return m
+	var files []*db.File
+	if ri := graph.RepoIndexFromCtx(ctx); ri != nil {
+		files = ri.Files()
+	} else {
+		var err error
+		files, err = store.ListFiles(ctx)
+		if err != nil {
+			return m
+		}
 	}
 	for _, file := range files {
 		source, err := os.ReadFile(file.Path)

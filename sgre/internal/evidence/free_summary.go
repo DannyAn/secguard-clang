@@ -214,9 +214,15 @@ func persistFuncSummaries(ctx context.Context, store db.Store, summaries summary
 	if len(summaries) == 0 {
 		return nil
 	}
-	funcs, err := store.ListFunctions(ctx)
-	if err != nil {
-		return fmt.Errorf("persist func summaries: list functions: %w", err)
+	var funcs []*db.Function
+	if ri := graph.RepoIndexFromCtx(ctx); ri != nil {
+		funcs = ri.Functions()
+	} else {
+		var err error
+		funcs, err = store.ListFunctions(ctx)
+		if err != nil {
+			return fmt.Errorf("persist func summaries: list functions: %w", err)
+		}
 	}
 	byName := make(map[string][]*db.Function, len(funcs))
 	for _, fn := range funcs {
