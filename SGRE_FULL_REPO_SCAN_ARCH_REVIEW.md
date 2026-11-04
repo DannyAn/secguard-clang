@@ -1,6 +1,6 @@
-# SGRE 全仓扫描架构设计提案 — 审查记录（第二轮 + 第三轮最终修订）
+# SGRE 全仓扫描架构设计提案 — 审查记录（第二轮 · 第三轮 · 第四轮最终修订）
 
-> 本轮范围：仅修订设计文档，不实施代码。第二轮逐项分析 11 条意见（P0×3、P1×5、P2×3）；第三轮（v3）解决三个遗留问题。
+> 本轮范围：仅修订设计文档，不实施代码。第二轮逐项分析 11 条意见；第三轮（v3）解决三个遗留问题；第四轮（v4）小范围修正 Acquire 锁粒度、淘汰状态机、completion_state 默认值、非缓存 Parse 生命周期。
 > 每条结论标注：原设计是否正确 / 风险 / 修改建议 / 源码依据；无法从源码证实的标「待验证」。
 
 ---
@@ -254,6 +254,46 @@ ref==0                            → tree.Close() + parser.Close()  ← 唯一�
 1. 三个热点真实内存占比；2. 40K 档 `repoIndex` 签名总量与 AST 峰值；3. `ReachableFromEntries` 递归 CTE 20K/40K 规模；4. LRU 命中率与重建墙钟权衡；5. `estBytesPerTree` 校准值。
 
 ## v3 最终待确认
+
+1. `maxCachedTrees`/`MaxEntries`/`maxTotalCFGNodes`/内存高水位 四个默认值。
+2. `graph_edges` 唯一索引 + 幂等（与 checkpoint 解耦后）是否独立纳入本轮。
+
+---
+
+## 第四轮（v4 最终）审查结论
+
+> 操作者对 v3 认可后，再指出 3 个 P0 + 1 个 P1。本轮做小范围修订，不重做整体权衡。逐项结论：
+
+### P0-1：Acquire 不得在锁内执行 build() —— 采纳，已修正
+
+- **源码依据**：CFG 构建是重操作；8 detector / 8 plan 并发构建不同函数 CFG，若 build 在全局 `c.mu` 内，会退化为串行（`pipeline.go` 的并发度被锁抵消）。
+- **设计决策**：锁只保护缓存元数据，采用 per-key singleflight——(1) 锁内查缓存命中即 refs++ 返回；(2) 命中 `building` 占位则等待 `done`；(3) 未命中插入 `building` 占位后**释放锁**；(4) 锁外 build；(5) 加锁双重检查回填、`close(done)` 唤醒等待者。`cfgEntry` 增加 `building` 占位态 + `done chan`。
+- **测试方案**：singleflight 只 build 一次；不同 fnID 构建在锁外并行（build 内埋点）；builder panic 时 `defer close(done)` 防等待者死锁。
+- **剩余风险**：builder 协程 panic 若未约定「失败也提交 entry」会死锁等待者——已列为风险并写进测试。
+
+### P0-2：retiring 状态机逻辑矛盾 —— 采纳，删除 retiring
+
+- **源码依据**：v3 同时写「LRU 只选 refs==0 且 live」与「refs>0 置 retiring」——按前者 LRU 根本选不中 refs>0 条目，后者无触发条件，自相矛盾。
+- **设计决策**：删除 `retiring`。状态机简化为 `building → live → removed`；淘汰只回收 `refs==0 && live`。同一 fnID 至多一个条目（singleflight 保证），不存在「新旧双 entry」问题。
+- **测试方案**：并发 Acquire 同一 fnID 只一个 entry；`refs>0` 不被淘汰；`Close` 只一次。
+
+### P0-3：completion_state 默认 complete 有严重风险 —— 采纳，改 running
+
+- **源码依据**：进程可能被 cgroup OOM Killer 杀死，无机会执行清理；默认 `complete` 会让未完成扫描在库中留「完整」记录，比失败更危险。
+- **设计决策**：默认改 `running`，状态集扩为 `running/complete/incomplete/limited/failed`；`complete` 只在扫描成功收尾显式 UPDATE；启动时把遗留 `running` 置 `failed(interrupted)`，不作为完整结果。
+- **测试方案**：默认 `running`；重启清理遗留 running；报告对非 complete 渲染「未完成」。
+
+### P1：非缓存 Parse 生命周期 —— 采纳，定为硬性不变式
+
+- **源码依据**：`fileParseCache`（`null_flow.go:2686-2729`）持 `roots/bodies/defs` 的 `parser.Node` 指向缓存 Tree；bypass 的瞬态树若被它持有，就不是「同步消费用完即关」。
+- **设计决策**：**任何 `parser.Node` 不得逃逸其 `TreeHandle` 有效生命周期**（代码级保证，非调用者纪律）。bypass 瞬态树**不注册进 `fileParseCache`/`CFGCache`**；`fileParseCache` 存 `*TreeHandle` + 行号区间，在借用作用域内派生 Node。
+- **测试方案**：bypass 树不被 fileParseCache 持有；Node 不逃逸借用作用域（用 `-race` + 生命周期断言）。
+
+### 最终判断（操作者强调，已采纳为设计边界）
+
+本设计是架构提案，**不是正确性证明**。Tree-sitter 的 C 指针生命周期必须在 Phase 3 用真实并发测试、`go test -race`、压力测试、RSS/cgroup 观测验证，不能靠文档自证。已写入 `SGRE_FULL_REPO_SCAN_ARCH_DESIGN.md` §8.4。
+
+## v4 最终待确认
 
 1. `maxCachedTrees`/`MaxEntries`/`maxTotalCFGNodes`/内存高水位 四个默认值。
 2. `graph_edges` 唯一索引 + 幂等（与 checkpoint 解耦后）是否独立纳入本轮。

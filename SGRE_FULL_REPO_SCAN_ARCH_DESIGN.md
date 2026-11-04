@@ -1,9 +1,9 @@
-# SGRE 万级函数仓库全仓扫描架构设计提案（Phase 2 · 最终修订版 v3）
+# SGRE 万级函数仓库全仓扫描架构设计提案（Phase 2 · 最终修订版 v4）
 
-> 状态：**设计提案，待确认后实施**。v2 经操作者整体认可后，本轮（v3）只解决三个遗留问题：CFG Lease 并发 API、AST/CFG 总驻留预算、checkpoint 与 incomplete 语义统一。
+> 状态：**设计提案，待确认后实施**。v2 经操作者整体认可，v3 解决三个遗留问题，v4 做小范围修正：Acquire 锁粒度（build 移出锁）、CFG 淘汰状态机去矛盾、`completion_state` 默认改 `running`、非缓存 Parse 生命周期不变式。
 > 逐项审查结论见 `SGRE_FULL_REPO_SCAN_ARCH_REVIEW.md`；本文不含代码改动。
 > 前提：跳过现场 profile，采信 Phase 0/1 报告（`SGRE_FULL_REPO_SCAN_OOM_ANALYSIS.md`）对三个强怀疑热点的源码定位。
-> **§8 为 v3 最终修订，对 §2.1/§2.3b/§6 的相关段落起覆盖作用；冲突处以 §8 为准。**
+> **§8 为 v3/v4 最终修订，对 §2.1/§2.3b/§6 的相关段落起覆盖作用；冲突处以 §8 为准。**
 
 ---
 
@@ -168,23 +168,46 @@ func (c *CFGCache) Acquire(ctx context.Context, fnID int64,
 ```
 
 - `Acquire` 的 `tree *parser.TreeHandle` 是**必须**参数：CFG 的 `StmtNode.Stmt` 是 Tree 内的 C 节点，因此每个缓存条目都必须持有对应 Tree 的引用（见 §8.1.2）。
-- 内部结构（在现有 `byFn map[int64]*StmtCFG` 上扩展为 entry）：
+- **锁只保护缓存元数据，不保护 build()**：`build()`（CFG 构建）在锁外执行，用 per-key singleflight 去重（见 §8.1.2 第 1、8 点）。
+- 内部结构（在现有 `byFn map[int64]*StmtCFG` 上扩展为 entry，新增 `building` 占位态）：
 
 ```go
+type entryState uint8
+const (
+    stateBuilding entryState = iota // 单飞构建中：done 未关闭，cfg==nil
+    stateLive                        // 正常缓存条目
+    // 无 retiring 态：淘汰只选 refs==0 的 live 条目（见 §8.1.2 第 3 点）
+)
+
 type cfgEntry struct {
     cfg   *StmtCFG
     tree  *parser.TreeHandle // 该 CFG 引用的 Tree 的句柄（ref 由本条目持有）
     refs  int                // 活跃租约数（借用计数）
-    state entryState         // live | retiring
+    state entryState         // building | live
+    done  chan struct{}      // building 态：构建完成后 close，唤醒等待者
     last  uint64             // LRU 时间戳
 }
 ```
 
 #### 8.1.2 七个问题的结论
 
-1. **Acquire 成功后如何保证 CFG 与 Tree 存活**：`Acquire` 持 `c.mu`：若条目存在且 `state==live`，`refs++` 并返回 lease；若缺失，调用 `build()` 构建 CFG，并让 `entry.tree = tree`（`tree` 是调用方从 `ParseCached`/`fileParseCache` 得到的句柄，`entry` 对其 `ref++`）。之后只要 `entry.refs > 0`，该 entry 不被淘汰、其 `tree` 引用不掉，parser 缓存就不会 `Close` 该 Tree（parser 缓存只在 Tree 的 refcount==0 时关闭）。
-2. **LRU 淘汰遇到活跃租约**：LRU 只选 `refs==0 && state==live` 的条目淘汰。若预算已满且所有条目 `refs>0`（全部被借用），**不淘汰**——预算暂时溢出，由 §8.2 的总驻留预算兜底；lease 释放后下一轮 LRU 再回收。
-3. **Retiring 是否禁止新借用**：**是**。当条目因超预算被选中淘汰但 `refs>0` 时置 `state=retiring`；`retiring` 条目**不接受新 `Acquire`**（新 `Acquire` 走 rebuild 新建条目），避免被源源不断的新借用者无限续命。当 `refs` 降到 0 时立即删除并 drop Tree 引用。
+1. **Acquire 成功后如何保证 CFG 与 Tree 存活（锁粒度修正）**：`Acquire` **不在锁内执行 build()**，分五步：
+   (1) 加锁查缓存：命中 `state==live` → `refs++` 并立即返回 lease（锁内只做计数）；
+   (2) 命中 `state==building` → 记入等待者，释放锁，`<-done` 等待构建完成，再回到 (1)；
+   (3) 未命中 → 插入 `building` 占位（`done` 通道），释放锁；
+   (4) **锁外** `build()` 构建 CFG；
+   (5) 加锁回填：若期间无他人提交（仍为 building 占位），把 `cfg`/`tree` 写入 entry、`tree.ref++`、`state=live`、`close(done)` 唤醒等待者；若他人已提交（双重检查），丢弃本次构建结果、改用已提交的 entry。
+   之后只要 `entry.refs > 0`，该 entry 不被淘汰、其 `tree` 引用不掉，parser 缓存不会 `Close` 该 Tree。**8 个 detector 各自构建 8 个不同函数的 CFG 时，build() 在锁外并行执行，互不阻塞。**
+2. **LRU 淘汰遇到活跃租约**：LRU 只选 `refs==0 && state==live` 的条目淘汰。若预算已满且所有条目 `refs>0`（全部被借用），**不淘汰**——预算暂时溢出，由 §8.2 的总驻留预算 + §2.3b 的背压（停止准入新任务→新 lease 停止产生→既有 lease 释放）兜底回收。
+3. **淘汰状态机（去掉 retiring 的矛盾）**：不再设计 `refs>0` 的 `retiring` 路径（按规则 LRU 本就选不中 refs>0 条目，该转换无触发条件）。状态机简化为：
+
+   | 状态 | 接受新 Lease | 允许回收 | 说明 |
+   |---|---|---|---|
+   | `building` | 否（等待者挂起在 `done`） | 否 | 单飞构建中 |
+   | `live` | 是 | 仅 `refs==0` 且被 LRU 选中 | 正常缓存条目 |
+   | （removed） | 否 | 已从 map 删除 | 终结态 |
+
+   同一 fnID **不会同时存在两个条目**：单飞保证「未命中→占位→构建→回填」是唯一的；旧条目释放前若再次 Acquire 同一 fnID，要么命中 `live`（refs++），要么命中 `building`（等待），不存在「新旧双 entry」。
 4. **Release 防重复释放**：`CFGLease.Release()` 用 `sync.Once` 包裹 `refs--`，第二次调用 no-op；保证引用计数只减一次。
 5. **Tree.Close() 只执行一次**：`parser.TreeHandle` 内部用 `sync.Once` 包 `tree.Close()+parser.Close()`；refcount 归零触发 `once.Do`。parser 缓存对 Tree 持有「缓存所有权 +1」，条目/借用各持 +1，Close 只在所有引用释放后执行一次。
 6. **Parser.CloseAll() 遇到活跃租约**：`CloseAll()` 在 pipeline 的 `pwg.Wait()` 之后调用，正常应无活跃租约。防御性处理：`CloseAll` 先置「closing」禁止新 `ParseCached`，再 drop 每个 Tree 的缓存所有权；仍有 `refs>0` 的 Tree **不强制 Close**，记录为泄漏诊断（函数/文件 + 剩余引用数），延迟到 refcount 归零再关，绝不产生悬空 C 节点。
@@ -204,37 +227,41 @@ type cfgEntry struct {
 #### 8.1.3 并发时序图（goroutine 级）
 
 ```
-G1(detector)          CFGCache(c.mu)                Parser.cache / TreeHandle
-   |  Acquire(fn, tree, build)                         |
-   |------ lock ---------->|                            |
-   |                        |  entry 缺失 → build()      |
-   |                        |  entry.tree = tree (ref++) |-----> tree.ref=2 (cache=1 + entry=1)
-   |                        |  entry.refs = 1            |
-   |                        |  state = live              |
-   |<-- lease (refs=1) -----|                            |
-   |  cfg := lease.CFG() 使用 ...（Tree 存活）            |
-G2(plan)  Acquire(fn, tree, build)                       |
-   |------ lock ---------->|  entry 存在且 live → refs=2  |
-   |<-- lease (refs=2) -----|
-G1  lease.Release() --lock--> refs=1                     |
-G2  lease.Release() --lock--> refs=0                     |
-   (预算超限，LRU 选中该 entry)
-   |------ lock ---------->|  refs==0 → state=retiring    |
-   |                        |  删除 entry、drop tree 引用  |-----> tree.ref=1
-   |                        |  (refs==0 立即回收)          |
-   |                        |  若此时 tree.ref 由 entry 降为 0 → TreeHandle.once.Do(Close)
+G1(detector)          CFGCache(c.mu)                    Parser.cache / TreeHandle
+   |  Acquire(fnA, treeA, build)                          |
+   |-- lock -->| 未命中 → 插入 building 占位(doneA)        |
+   |<-- unlock (锁外) |                                    |
+   |  build() 构建 CFG-A（锁外，不阻塞他人）              |
+G2(plan)  Acquire(fnB, treeB, build)                       |
+   |-- lock -->| 未命中 → 插入 building 占位(doneB)        |
+   |<-- unlock | build() 构建 CFG-B（与 G1 并行）          |
+G3(detector) Acquire(fnA, treeA, build)                    |
+   |-- lock -->| 命中 building → 记等待者，unlock          |
+   |<-- 等待 doneA --------------------------------------->|
+G1  build() 完成 → -- lock -->| 回填 cfgA/treeA、tree.ref++  |
+   |                          | state=live、close(doneA)   |
+   |<-- lease(fnA, refs=1) --|                            |
+G3  被 doneA 唤醒 → -- lock -->| state==live → refs=2      |
+   |<-- lease(fnA, refs=2) --|（同一 CFG，无重复构建）      |
+G2  build() 完成 → -- lock -->| 回填 cfgB/treeB、close(doneB)|
+G1  lease.Release() --lock--> refsA=1                       |
+G3  lease.Release() --lock--> refsA=0                       |
+   (预算超限，LRU 选中 fnA) -- lock -->| refsA==0 && live → 删 entry |
+   |                          |  drop treeA 引用 --> treeA.ref=1（cache 仍持有）|
+   |                          |  若 treeA.ref==0 → TreeHandle.once.Do(Close)
 ```
 
-关键不变式：**`entry.refs==0` 是淘汰的必要条件；`TreeHandle.ref==0` 是 `Close` 的充要条件**。
+关键不变式：**`build()` 永不在锁内执行；`entry.refs==0` 是淘汰的必要条件；`TreeHandle.ref==0` 是 `Close` 的充要条件；同一 fnID 至多一个条目（单飞保证）。**
 
 #### 8.1.4 测试方案
 
 1. 单测：`Acquire`/`Release` 幂等（两次 `Release` 后 `refs` 只减一次）。
 2. 单测：`Acquire` 后立刻并发 `evict`，断言 `refs>0` 的 entry 不被淘汰、Tree 不被 Close。
-3. 单测：`retiring` 状态拒绝新 `Acquire`（新借用得到新 entry，旧 entry 在 refs 归零后被回收）。
-4. 单测：`Tree.Close()` 只执行一次（并发多路 `Release` + parser 淘汰，断言 `close` 计数 ==1）。
-5. 竞态测试：`go test -race` 覆盖并发 Acquire/Release/evict。
-6. 一致性测试：lease 迁移前后，固定回归集 candidate 集（文件/行/变量/CWE/来源）逐项一致。
+3. 单测（singleflight）：同一 fnID 并发 `Acquire`，断言 `build()` 只执行一次、所有等待者拿到同一 `*StmtCFG`。
+4. 单测（锁外构建）：不同 fnID 并发 `Acquire`，用 build 内埋点断言构建在锁外并行（无全局锁串行化）。
+5. 单测：`Tree.Close()` 只执行一次（并发多路 `Release` + parser 淘汰，断言 `close` 计数 ==1）。
+6. 竞态测试：`go test -race` 覆盖并发 Acquire/Release/evict。
+7. 一致性测试：lease 迁移前后，固定回归集 candidate 集（文件/行/变量/CWE/来源）逐项一致。
 
 ### 8.2 P0-2：AST/CFG 总驻留预算
 
@@ -257,6 +284,10 @@ G2  lease.Release() --lock--> refs=0                     |
   - `activeTreeHandles` = `len(parser.cache)` + 瞬态树计数。
   - `pinnedTrees` = Tree 引用计数 > 缓存所有权(1) 的树数（即被 CFG/`fileParseCache` 钉住的树）。
   - 阶段边界打印以上三项 + `estASTBytes` + 图规模。
+- **P1 硬性不变式（代码级保证，非调用者纪律）**：**任何 `parser.Node` 都不得逃逸其所属 `TreeHandle` 的有效生命周期。**
+  - **bypass 的瞬态树绝不能被 `fileParseCache` 持有**：bypass 走 `parser.Parse`（非缓存），其 Tree 严格「解析 → 同步消费 → 立即 `Close`」，**不注册进 `fileParseCache` 的 `roots/bodies/defs`**，也不注册进 `CFGCache`。
+  - 若某个消费者需要跨调用保留 body/def 节点，它必须走 `ParseCached` 得到 `TreeHandle` 并持有引用；`fileParseCache` 存储的是 `*TreeHandle`（+ 函数体行号区间），在**借用作用域内**按需派生 `parser.Node`，派生出的 Node 不逃逸借用作用域。
+  - API 层面用「Node 只经由 TreeHandle 的 borrow 返回」来强制，而不是靠注释提醒调用者。
 
 #### 8.2.3 源码依据
 
@@ -282,8 +313,18 @@ G2  lease.Release() --lock--> refs=0                     |
 
 #### 8.3.2 数据模型（沿用现有 CRUD/迁移机制，不引入新框架）
 
+- **`complete` 不能是 DB 默认值**：进程可能被 cgroup OOM Killer 直接杀死，没有机会执行清理/更新逻辑；若默认 `complete`，中断的扫描会在库中留下「完整」记录，比扫描失败更危险。默认必须是 `running`。
 - `scan_runs` 增加一列（沿用 `InitSchema` 的 `ALTER TABLE` 迁移原语，见 `schema.go:505` 附近）：
-  `completion_state TEXT NOT NULL DEFAULT 'complete' CHECK (completion_state IN ('complete','incomplete','limited'))`。
+  `completion_state TEXT NOT NULL DEFAULT 'running' CHECK (completion_state IN ('running','complete','incomplete','limited','failed'))`。
+- **扫描终态生命周期**：
+  ```
+  创建扫描记录 → running
+      ├─ 正常完成 → complete        （扫描成功后显式提交，绝不靠默认值）
+      ├─ 捕获部分任务失败 → incomplete
+      ├─ 主动限制范围 → limited
+      └─ 不可恢复错误 → failed
+  ```
+- **启动清理**：扫描启动时检查上一次遗留的 `running` 记录（上一进程 OOM 被杀留下的），将其置为 `failed`（原因 `interrupted`）；**不得把遗留 running 当作完整结果使用**。`complete` 只在扫描成功收尾时显式 UPDATE。
 - 新增表 `scan_incomplete_tasks`（走现有 `crud_*.go` 模式）：
 
 ```sql
@@ -301,7 +342,7 @@ CREATE TABLE IF NOT EXISTS scan_incomplete_tasks (
 CREATE INDEX IF NOT EXISTS idx_incomplete_scan ON scan_incomplete_tasks(scan_id);
 ```
 
-- 报告渲染读取 `scan_runs.completion_state` + `scan_incomplete_tasks`，在报告头渲染「⚠️ 扫描不完整（N 项未完成）」。
+- 报告渲染读取 `scan_runs.completion_state` + `scan_incomplete_tasks`；`completion_state != complete` 时在报告头渲染「⚠️ 扫描不完整（N 项未完成）」，`running/failed` 则渲染「扫描未完成/失败」，绝不声称完成。
 
 #### 8.3.3 替换「单函数超 34GB 几乎不存在」的臆断
 
@@ -313,13 +354,16 @@ CREATE INDEX IF NOT EXISTS idx_incomplete_scan ON scan_incomplete_tasks(scan_id)
 
 #### 8.3.4 测试方案
 
-1. 单测：`completion_state` 默认 `complete`；触发降级后 `incomplete`/`limited` 落库。
-2. 单测：`scan_incomplete_tasks` 记录函数 ID/文件/规模/阶段/原因，报告头正确渲染不完整清单。
-3. 一致性测试：不完整任务不影响已完成任务的结果（candidate 集不因另一任务失败而丢失）。
+1. 单测：`completion_state` 默认 `running`；正常收尾显式置 `complete`；触发降级后 `incomplete`/`limited` 落库。
+2. 单测：插入一条遗留 `running` 记录后重启，断言被置 `failed`（原因 `interrupted`），且不会被当作完整结果读取。
+3. 单测：`scan_incomplete_tasks` 记录函数 ID/文件/规模/阶段/原因，报告头正确渲染不完整清单。
+4. 一致性测试：不完整任务不影响已完成任务的结果（candidate 集不因另一任务失败而丢失）。
 
-### 8.4 v3 剩余风险与待确认
+### 8.4 v4 剩余风险与待确认
 
 - **风险**：`TreeHandle` 需同时被 `CFGCache` 条目与 `fileParseCache`（`null_flow.go:2686`）持引用，两处都要改；漏改任一处会在淘汰后产生悬空 C 节点。
 - **风险**：`maxTotalCFGNodes` 用节点数作字节代理，巨型函数仍可能单节点携带大源文本（`parser.Node.src` 引用）；需在规模测试中用 RSS 校准代理精度。
+- **风险**：singleflight 的 `building` 占位若 builder 协程 panic/退出，等待者会永久阻塞——必须 `defer close(done)` 并约定「构建失败也提交一个空/错误 entry」唤醒等待者。
+- **验证边界（操作者提醒）**：本文档是设计，不是正确性证明。Tree-sitter 的 C 指针生命周期必须在 Phase 3 用真实并发测试、`go test -race`、压力测试与 RSS/cgroup 观测验证，不能靠文档自证。
 - **待确认**：`maxCachedTrees`/`MaxEntries`/`maxTotalCFGNodes`/内存高水位 四个默认值。
 - **待确认**：`graph_edges` 唯一索引 + 幂等（与 checkpoint 解耦后，可独立决定是否纳入本轮）。
