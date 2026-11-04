@@ -262,7 +262,11 @@ func emitEvent(ctx context.Context, store db.Store, logger *log.Logger, eventTyp
 		Column:     loc.Column,
 		Properties: string(data),
 	})
+	needFlush := eventBatch.maxBatch > 0 && len(eventBatch.events) >= eventBatch.maxBatch
 	eventBatch.mu.Unlock()
+	if needFlush {
+		flushEventBatch(ctx, store, logger)
+	}
 	return true
 }
 
@@ -295,10 +299,22 @@ func insertEventDirect(ctx context.Context, store db.Store, logger *log.Logger, 
 var batchMode atomic.Bool
 
 // eventBatch collects emitted events across concurrent detectors; flushEventBatch
-// drains it into one BEGIN IMMEDIATE transaction.
+// drains it into one BEGIN IMMEDIATE transaction. When maxBatch > 0, emitEvent
+// auto-flushes once the buffer reaches that size, so a large repo does not hold
+// the write lock for too long on a single giant phase-end transaction.
 var eventBatch struct {
-	mu     sync.Mutex
-	events []db.BatchEvent
+	mu       sync.Mutex
+	events   []db.BatchEvent
+	maxBatch int
+}
+
+// SetEventBatchSize caps the shared event buffer. When the buffer reaches n
+// events, emitEvent auto-flushes in one transaction. 0 = phase-end-only flush
+// (legacy behavior). It must be called before RunAllDetectorsWithSkip.
+func SetEventBatchSize(n int) {
+	eventBatch.mu.Lock()
+	eventBatch.maxBatch = n
+	eventBatch.mu.Unlock()
 }
 
 // flushEventBatch drains the shared event batch and inserts it in one

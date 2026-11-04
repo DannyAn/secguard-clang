@@ -246,6 +246,7 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	sort.Strings(skippedDetectors)
 
 	detStart := time.Now()
+	evidence.SetEventBatchSize(config.Load().Scan.EventBatchSize)
 	detectorErrors := evidence.RunAllDetectorsWithSkip(ctx, store, p, logger, sharedCFGCache, skipSet)
 	timings.DetectorsMs = time.Since(detStart).Milliseconds()
 	if len(skippedDetectors) > 0 {

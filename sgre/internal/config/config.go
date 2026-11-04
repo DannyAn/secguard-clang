@@ -191,8 +191,15 @@ type Scan struct {
 	// MemoryLowWatermarkMB is the threshold below which backpressure is lifted.
 	// Must be < MemoryHighWatermarkMB to provide hysteresis.
 	//	[scan]
-	//	memory_low_watermark_mb = 20000
+	// memory_low_watermark_mb = 20000
 	MemoryLowWatermarkMB int `toml:"memory_low_watermark_mb"`
+	// EventBatchSize caps the detector event buffer. When the buffer reaches
+	// this count, emitEvent auto-flushes in one transaction instead of waiting
+	// for the phase end, keeping the write-lock duration bounded on large repos.
+	// 0 (default) = phase-end-only flush (legacy behavior).
+	//	[scan]
+	//	event_batch_size = 2000
+	EventBatchSize int `toml:"event_batch_size"`
 }
 
 // GraphBuildersConcurrencyOr returns the configured graph-builder parallelism,
