@@ -291,6 +291,13 @@ Written at scan time, one file per converged candidate:
 - A banner stating this is candidate evidence, not a defect or a verdict
 - **Location**: file:line, function, variable
 - **Evidence**: the source → sink → path fragments the detectors and filters produced
+- **Clustered Sites** (only when shape-level clustering folded other sites): the
+  same-file occurrences of one defect shape this candidate represents, as
+  `function:line`. The shape is type-declared: implicit-contract folds on field +
+  access form + evidence tier + guard structure; buffer-overflow/out-of-bounds
+  fold the unchecked-external-index family on index-source field + array
+  capacity + access flavor. The verdict covers every listed site (Hint
+  `shape-cluster@N`); the sites are not separate candidate files.
 - **Pipeline Tokens**: the compact hint tokens with their registry descriptions
 - **Verdict Facts**: the type's distilled decisive facts (Evidence Contract v2)
 - **Vulnerability Chain** (only for types that declare one, e.g. an OOB access whose

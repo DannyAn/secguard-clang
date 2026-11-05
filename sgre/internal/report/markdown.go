@@ -428,6 +428,18 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 			}
 			b.WriteString("\n")
 
+			// Shape-level clustering folded the same defect shape repeated in this
+			// file into this candidate: the verdict covers all of these sites, so
+			// the classifier must see them in-file instead of opening each.
+			if len(c.ClusterSites) > 0 {
+				b.WriteString("## Clustered Sites\n\n")
+				b.WriteString("> Same file, same field, same evidence tier and guard structure — folded into this one candidate (shape-cluster). The verdict covers every site below.\n\n")
+				for _, site := range c.ClusterSites {
+					b.WriteString(fmt.Sprintf("- `%s`\n", site))
+				}
+				b.WriteString("\n")
+			}
+
 			b.WriteString("## Pipeline Assessment\n\n")
 			b.WriteString(fmt.Sprintf("- **Suspicion Level (pipeline prior, not a verdict):** %s\n", c.SuspicionLevel))
 			b.WriteString(fmt.Sprintf("- **AI Verdict:** _unclassified_\n"))

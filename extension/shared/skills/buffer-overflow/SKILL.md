@@ -49,6 +49,14 @@ Evidence file fragments:
 - **index**: the access index / copy size expression
 - **index_source**: the struct field an unchecked write index was read from
   (`array_oob_write_unchecked`)
+- **external_bound**: the index's upper bound is NOT provable in code — when an
+  external model (config schema / CLI range / protocol contract) guarantees the
+  field's range, the disposition is "pending external constraint", not a proven
+  overflow
+- **shape_cluster** (only when shape-level clustering ran): the same unchecked
+  external-index shape (index-source field + capacity) repeats at other sites in
+  this file; one verdict covers every listed `function:line`, see
+  `## Clustered Sites`
 - **element_field**: the pointer-typed member read out of the written element
 - **escape**: the callee the out-of-bounds element (or its address) reaches
 - **copy_size** / **dst_capacity** / **size_argument**: the copy size, destination capacity, and `_s` size argument for the bounded/secure-copy categories
@@ -63,6 +71,8 @@ Evidence file fragments:
 | `src-cap@N` | the SOURCE buffer's known capacity in elements | a copy from a bounded fixed-size source into a destination with `cap@ ≥ src-cap@` is bounded — dismiss from the row (`strcpy(g_dst, g_src)` with two fixed arrays of matching or larger destination) |
 | `idx@<expr>` | the access index / copy size / declared size argument (the `_s` capacity or required size) | CONSTANT: the detector already proved it reaches past `cap@` (machine-proved, confirm) — VARIABLE (`n`, a parameter): judge its reachable range against `cap@`; a caller-influenced parameter with no clamp is the dangerous case |
 | `idx-src@<field>` | the write index is the struct field `<field>`, with no bounds check against `cap@` dominating the write | unvalidated config/input index -> **confirm**; a bounded field or a caller-validated contract -> **dismiss** |
+| `external-bound@unverified` | the write index's upper bound is not provable in code | if a named external model (YANG leaf range, CLI value table, bounded nesting template / protocol contract) guarantees the field's range -> **dismissed** (`pending external constraint: <model>`); otherwise -> **confirmed** |
+| `shape-cluster@N` | N other sites in the same file share this index-source field and capacity (the same external-bound judgment) | judge ONCE; the verdict covers every site under `## Clustered Sites` |
 | `elem-field@<member>` / `oob-escape@<callee>` | the written element's pointer member / the callee the element escapes to | secondary chain facts — the root cause stays the missing bounds check |
 | `cwe-chain@CWE-787→CWE-476` | the root-cause chain exported with this candidate: this finding's CWE, then the consequence CWE | state both in `reasoning`; ONE finding — never a second CWE-476 finding for the same defect |
 
@@ -110,7 +120,8 @@ the embedded section and the indexed lookup.
 | `memcpy` with `sizeof(dst)` as size | **false-positive** |
 | `strncpy` with `sizeof(dst) - 1` + null terminate | **false-positive** |
 | Array write with constant index >= array size | **confirmed** |
-| `array_oob_write_unchecked`: struct-field index, no check against `cap@`/its macro on the path to the write | **confirmed** |
+| `array_oob_write_unchecked` + `external-bound@unverified`: the field's range is guaranteed by a named external model (config schema / CLI value table / bounded template) whose maximum fits `cap@` | **dismissed** — `pending external constraint: <model>`; state the model; one verdict covers the `shape-cluster` sites |
+| `array_oob_write_unchecked`: struct-field index, no check against `cap@`/its macro on the path to the write, and nothing outside the code bounds it | **confirmed** |
 | `array_oob_write_unchecked`: the field is validated (exit on `>= CAPACITY`, positive branch `< CAPACITY`) or provably bounded below capacity | **false-positive** |
 | Loop bound provably exceeds array/heap allocation size (write) | **confirmed** |
 | `sprintf(dst, ..., var)` into known-capacity `dst`, no size arg | **confirmed** |

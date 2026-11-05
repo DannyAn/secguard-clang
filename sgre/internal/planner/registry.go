@@ -39,6 +39,15 @@ type VulnTypeSpec struct {
 	// one line.
 	ConvergeKey   func(c Candidate) string
 	BuildEvidence func(c Candidate) []EvidenceFragment
+	// ShapeKey, when set, declares this type's candidate SHAPE: after the
+	// per-site dedup, candidates whose ShapeKey is equal are folded into one
+	// representative (Planner.clusterShapeCandidates) that keeps the merged sink
+	// lines and the folded (function:line) sites. It is for a rule whose
+	// occurrences repeat structurally across a file — the same field, the same
+	// guard structure, one contract question — where one AI review per site
+	// burns the review budget without adding information. Returning "" opts a
+	// candidate out of clustering.
+	ShapeKey func(c Candidate) string
 	// BuildVerdictFacts, when set, renders the type's decisive facts as
 	// short structured lines (VerdictFact: token + one sentence + provenance
 	// line numbers) for the candidate file's "## Verdict Facts" section and

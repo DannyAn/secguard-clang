@@ -1123,3 +1123,38 @@ func TestWriteTypeIndex_SingleFileUnderCeiling(t *testing.T) {
 		t.Errorf("small _index.md should not produce shards")
 	}
 }
+
+// TestWriteCandidates_ClusteredSites pins the shape-cluster rendering (issue
+// #216): a candidate that folds a same-file family must name every folded
+// function:line in-file, because the verdict covers all of them and the AI must
+// not have to open each site's evidence file.
+func TestWriteCandidates_ClusteredSites(t *testing.T) {
+	dir := t.TempDir()
+	o := &ScanOutput{ScanDir: dir, ScanID: "sc_test"}
+	pkg := &planner.PlanResult{
+		VulnerabilityType: "implicit-contract",
+		Candidates: []planner.EvidenceItem{{
+			SuspicionLevel: "suspected",
+			Target: planner.TargetInfo{
+				File: "/repo/src/cfg.c", Function: "fill_leaf_1", Line: 47, Variable: "n->child",
+			},
+			DerefLines:   []int{47, 54, 61},
+			ClusterSites: []string{"fill_leaf_2:54", "fill_leaf_3:61"},
+			Evidence: []planner.EvidenceFragment{
+				{Type: "shape_cluster", Role: "scope", Detail: "the same unguarded field shape repeats at 2 other site(s)"},
+			},
+		}},
+	}
+	if err := o.writeCandidates([]*planner.PlanResult{pkg}); err != nil {
+		t.Fatal(err)
+	}
+	content := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "implicit-contract", "001_src_cfg_c_47.md")))
+	for _, want := range []string{"## Clustered Sites", "`fill_leaf_2:54`", "`fill_leaf_3:61`", "the same unguarded field shape repeats"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("clustered candidate file missing %q:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "fill_leaf_4") {
+		t.Errorf("clustered candidate file invented a site that was not folded:\n%s", content)
+	}
+}

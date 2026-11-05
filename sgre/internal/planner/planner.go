@@ -231,6 +231,13 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 	if spec.Name == "null-deref" {
 		candidates = chainDedupCandidates(candidates)
 	}
+	// Shape-level clustering (issue #216): a type that declares a ShapeKey folds
+	// the same defect shape repeated across a file's function family into one
+	// representative, so the classifier judges the shape once instead of once
+	// per site.
+	if spec.ShapeKey != nil {
+		candidates, summary.ShapeFolded = clusterShapeCandidates(candidates, spec)
+	}
 	summary.DedupedCount = len(candidates)
 
 	result := &PlanResult{
@@ -625,6 +632,8 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			SubRHSInfluenced:        props.RHSInfluenced == "true",
 			SubSink:                 props.Sink,
 			Subject:                 props.Subject,
+			SubjectType:             props.SubjectType,
+			DerefForm:               props.DerefForm,
 			Sanitizer:               props.Sanitizer,
 			CountField:              props.CountField,
 			UseLine:                 props.UseLine,
@@ -897,4 +906,91 @@ func shouldChainFold(c Candidate) bool {
 		return false
 	}
 	return c.ChainRoot != ""
+}
+
+// clusterShapeCandidates folds candidates that share a type-declared SHAPE into
+// one representative (VulnTypeSpec.ShapeKey; issue #216). A rule family — the
+// same field dereferenced with the same guard structure across the functions of
+// one file — is one contract question for the classifier, so the group becomes
+// ONE row carrying every folded sink line (DerefLines) and site (ClusterSites).
+//
+// Clustering runs AFTER the filter chain, so only sites that survived as real
+// gaps are folded; it is not a way to hide filtered-out candidates. The
+// representative is the highest-confidence member, then the earliest line —
+// the same tie-break the per-site dedup uses. It returns the folded-away count
+// so the pipeline summary can report the reduction.
+func clusterShapeCandidates(candidates []Candidate, spec *VulnTypeSpec) ([]Candidate, int) {
+	if spec.ShapeKey == nil || len(candidates) <= 1 {
+		return candidates, 0
+	}
+	type shapeGroup struct {
+		key     string
+		members []int
+	}
+	byKey := make(map[string]int, len(candidates))
+	groups := make([]shapeGroup, 0, len(candidates))
+	for i, c := range candidates {
+		key := spec.ShapeKey(c)
+		if key == "" {
+			groups = append(groups, shapeGroup{members: []int{i}})
+			continue
+		}
+		if gi, ok := byKey[key]; ok {
+			groups[gi].members = append(groups[gi].members, i)
+			continue
+		}
+		byKey[key] = len(groups)
+		groups = append(groups, shapeGroup{key: key, members: []int{i}})
+	}
+
+	result := make([]Candidate, 0, len(groups))
+	folded := 0
+	for _, g := range groups {
+		best := g.members[0]
+		for _, m := range g.members[1:] {
+			if preferShapeRepresentative(candidates[m], candidates[best]) {
+				best = m
+			}
+		}
+		rep := candidates[best]
+		if g.key == "" || len(g.members) == 1 {
+			result = append(result, rep)
+			continue
+		}
+		rep.ClusterSites = nil
+		for _, m := range g.members {
+			c := candidates[m]
+			if c.FunctionName == rep.FunctionName && c.Line == rep.Line {
+				continue
+			}
+			rep.ClusterSites = append(rep.ClusterSites, fmt.Sprintf("%s:%d", c.FunctionName, c.Line))
+		}
+		rep.DerefLines = appendUniqueLine(rep.DerefLines, rep.Line)
+		for _, m := range g.members {
+			c := candidates[m]
+			for _, l := range c.DerefLines {
+				rep.DerefLines = appendUniqueLine(rep.DerefLines, l)
+			}
+			rep.DerefLines = appendUniqueLine(rep.DerefLines, c.Line)
+		}
+		sort.Ints(rep.DerefLines)
+		sort.Strings(rep.ClusterSites)
+		folded += len(g.members) - 1
+		result = append(result, rep)
+	}
+	return result, folded
+}
+
+// preferShapeRepresentative orders two members of one shape group: the
+// higher-confidence tier wins, then the earlier line (anchor at the source), then
+// the function name so the choice is deterministic.
+func preferShapeRepresentative(c, best Candidate) bool {
+	rc, rb := suspicionRank(c.SuspicionLevel), suspicionRank(best.SuspicionLevel)
+	if rc != rb {
+		return rc > rb
+	}
+	if c.Line != best.Line {
+		return c.Line < best.Line
+	}
+	return c.FunctionName < best.FunctionName
 }
