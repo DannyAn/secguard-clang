@@ -122,6 +122,7 @@ Phase 1-4 的 PR 不合并到同一个 PR；Phase 5 可以在最后一个功能 
   - 如果是 filter 内升级，还必须实现 `ProofRegistrar` 并登记到 `TestDynamicConfirmedUpgradesRegistered`；
 - 所有新增事实在 `unknown` / `assumed` 时 fail-open：不确认，必要时 `suspected`；
 - **must vs may**：`confirmed` 必须是 must 证明；may 证据只能 `suspected`/`AI_REQUIRED`；
+- `AI_REQUIRED` 不新增 suspicion tier；在本仓库映射为 `suspected`/`possible` 并交 AI；
 - **Layout**：`assumed_default_abi` / `unknown` 禁止 confirmed；只有 `compiler_proven` / `derived_from_complete_config` 且证据完整才可讨论 confirmed（Phase 1 默认只 suspected，除非评审批准 proof class）；
 - **Guard**：只有 `proof_status=must` 的结构化 Guard Witness 才能 dismiss；CFG 支配不是充分条件；
 - **Global Write**：may-write 不得当作 Consumer 当前状态；Phase 3 不承诺 confirmed；

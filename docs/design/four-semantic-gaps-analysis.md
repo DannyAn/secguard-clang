@@ -237,6 +237,7 @@ type FactMeta struct {
 - 证据不完整时，**可以保留候选并交给 AI**（`suspected` / `AI_REQUIRED`），但不能仅凭函数名、变量名、注释或模式相似度升级为 `confirmed`。
 - finding 必须保留 **evidence provenance**：每项关键事实来自源码 / 编译配置 / Repository Facts / CFG 推导 / 项目 contract / heuristic。不要把 heuristic 与 compiler-proven fact 混在一起。
 - 每个 Phase 的验收表必须引用本表；实现计划中给出对应测试与验收方式。
+- `AI_REQUIRED` 是交付语义，不是新的 `suspicion_level`；在本仓库映射为 `suspected`/`possible` 并交给 AI，不新增第四层。
 
 ---
 

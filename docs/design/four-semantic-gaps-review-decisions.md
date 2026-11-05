@@ -184,6 +184,7 @@
 |---|---|
 | 事实名称 | 两文档统一使用 `TypeLayout`/`LayoutKey`/`Provenance`、`CallSiteBinding`、`GuardWitness`、`GlobalWriteFact`/`GlobalWriteIndex`、`ReturnContract`/`ParamReturnCoverage` |
 | Confirmed 语义 | 两文档统一为 must；may 只能 suspected/AI_REQUIRED |
+| Suspicion tier | `AI_REQUIRED` 是交付语义，映射为 `suspected`/`possible`；不新增第四层 |
 | Layout 判定 | 两文档统一：`compiler_proven`/`derived_from_complete_config` 才可讨论 confirmed；`assumed_default_abi`/`unknown` 不 confirmed |
 | Guard 判定 | 两文档统一：只有 `proof_status=must` 才 dismiss；CFG 支配只是必要条件 |
 | Global Write | 两文档统一：来源摘要、may-only、Phase 3 不承诺 confirmed |
