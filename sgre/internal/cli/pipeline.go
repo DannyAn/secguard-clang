@@ -18,6 +18,7 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 	"github.com/DannyAn/secguard-clang/internal/planner"
+	"github.com/DannyAn/secguard-clang/internal/repofacts"
 )
 
 // pipelineOutcome is the raw converged-candidate output of the analysis
@@ -264,6 +265,18 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 		aliasGraph = graph.NewAliasGraph()
 	}
 	ctx = graph.WithAliasGraph(ctx, aliasGraph)
+
+	// Build the per-scan tree-wide repository facts (struct layouts, global
+	// arrays, capacity macros) once and share via ctx with both the detector
+	// and planner stages. Layout census uses default ABI (LP64) +
+	// assumed_default_abi provenance; per-TU compile_commands wiring is a
+	// follow-up. A build failure is non-fatal: consumers fall back to nil.
+	facts, factsErr := repofacts.Build(ctx, store, p, logger)
+	if factsErr != nil {
+		logger.Warn("repofacts build degraded", "err", factsErr)
+		facts = nil
+	}
+	ctx = repofacts.WithFacts(ctx, facts)
 
 	// Validate the detector skip switch against the registry BEFORE running: an
 	// unknown name is warned and dropped (a typo must not silently skip nothing

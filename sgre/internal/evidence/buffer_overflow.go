@@ -29,16 +29,22 @@ func (d *BufferOverflowDetector) Detect(ctx context.Context) (DetectResult, erro
 	result := DetectResult{}
 
 	// Struct layouts, global arrays and capacity macros usually live in headers,
-	// i.e. in another file. Build the tree-wide census once for this scan.
-	facts, err := repofacts.Build(ctx, d.store, d.parser, d.logger)
-	if err != nil {
-		if d.logger != nil {
-			d.logger.Warn("buffer overflow: repository facts unavailable", "error", err)
+	// i.e. in another file. Prefer the tree-wide census built once by the
+	// pipeline (shared with the planner); fall back to building it here when the
+	// pipeline did not inject one (unit tests, ad-hoc detector invocation).
+	facts := repofacts.FactsFromCtx(ctx)
+	if facts == nil {
+		var err error
+		facts, err = repofacts.Build(ctx, d.store, d.parser, d.logger)
+		if err != nil {
+			if d.logger != nil {
+				d.logger.Warn("buffer overflow: repository facts unavailable", "error", err)
+			}
+			facts = nil
 		}
-		facts = nil
 	}
 
-	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		bc := &bufCtx{
 			root:    root,
 			calls:   root.FindAll("call_expression"),
@@ -105,7 +111,6 @@ type bufCtx struct {
 func buildMacroValues(root parser.Node) map[string]int {
 	return parser.CollectMacroValues(root)
 }
-
 
 func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, params map[string]bool, result *DetectResult) {
 	bounds := AnalyzeBounds(IfsInFunc(bc.ifs, f.StartLine, f.EndLine), assignsInFunc(bc.assigns, f.StartLine, f.EndLine))
