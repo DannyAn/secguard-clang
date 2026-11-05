@@ -26,6 +26,14 @@ An out-of-bounds candidate has:
 - **index**: the access index expression
 - **index_source**: the struct field an unchecked index was read from (the
   `array_oob_read_unchecked` tier)
+- **external_bound**: the index's upper bound is NOT provable in code — when an
+  external model (config schema / CLI range / protocol contract) guarantees the
+  field's range, the disposition is "pending external constraint", not a proven
+  out-of-bounds read
+- **shape_cluster** (only when shape-level clustering ran): the same unchecked
+  external-index shape (index-source field + array capacity) repeats at other
+  sites in this file; one verdict covers every listed `function:line`, see
+  `## Clustered Sites`
 - **element_field**: the pointer-typed member read out of the indexed element
 - **escape**: the callee the out-of-bounds element (or its address) reaches
 - **flow_step**: the CSA-style ordered diagnostic path — `[1] buffer … declared
@@ -66,6 +74,8 @@ cause. The candidate file's `## Vulnerability Chain` section and the SARIF
 | `cap@N` | the array's declared size in elements | compare `idx@` against this |
 | `idx@<expr>` | the access index expression | CONSTANT: the detector already proved it reaches past `cap@` (machine-proved, confirm); variable: judge its reachable range |
 | `idx-src@<field>` | the index is the struct field `<field>`, with no bounds check against `cap@` dominating the access | unvalidated config/input index -> **confirm**; a bounded field or a validated caller contract -> **dismiss** |
+| `external-bound@unverified` | the index's upper bound is not provable in code | if a named external model (YANG leaf range, CLI value table, bounded nesting template / protocol contract) guarantees the field's range -> **dismissed** (`pending external constraint: <model>`); otherwise -> **confirmed** |
+| `shape-cluster@N` | N other sites in the same file share this index-source field and capacity (the same external-bound judgment) | judge ONCE; the verdict covers every site under `## Clustered Sites` |
 | `elem-field@<member>` | the indexed element's pointer member read at the access site | when the index is out of range this pointer comes from out-of-range memory (indeterminate) — the null-deref leg of the chain |
 | `oob-escape@<callee>` | the out-of-bounds element (or its address) is passed to `<callee>` | if that callee dereferences a pointer member of the element, the OOB element feeds a null-deref sink — state the CWE-125 -> CWE-476 chain |
 | `cwe-chain@CWE-125→CWE-476` | the root-cause chain exported with this candidate: this finding's CWE, then the consequence CWE | state both in `reasoning` (`out-of-bounds ... → null-pointer dereference ...`); it is ONE finding — never write a second CWE-476 finding for the same defect |
@@ -109,7 +119,8 @@ the embedded section and the indexed lookup.
 | Condition | Classification |
 |-----------|---------------|
 | Constant index (or a constant-valued variable `int n = 12; arr[n]`) >= array size, or loop bound provably overruns size | **confirmed** |
-| `idx-src@` index: the field is external/config-supplied and NO bounds check against `cap@` (or its macro, e.g. `NAME_COUNT`) exists on the path to the access | **confirmed** — the unvalidated index can exceed the array; the capacity symbol is in the Hint |
+| `idx-src@` + `external-bound@unverified`: the field's range is guaranteed by a named external model (config schema / CLI value table / bounded template) whose maximum fits `cap@` | **dismissed** — `pending external constraint: <model>`; state the model; one verdict covers the `shape-cluster` sites |
+| `idx-src@` index: the field is external/config-supplied and NO bounds check against `cap@` (or its macro, e.g. `NAME_COUNT`) exists on the path to the access, and nothing outside the code bounds it | **confirmed** — the unvalidated index can exceed the array; the capacity symbol is in the Hint |
 | `idx-src@` index: a check `field >= CAPACITY` (macro or literal equal to `cap@`) exits before the access, or `field < CAPACITY` wraps the access | **false-positive** — the entry validates the index |
 | `idx-src@` index: the field is provably bounded below the capacity (written only from a small enum/constant, or clamped by every writer) | **false-positive** |
 | Access guarded by a bounds check covering the read | **false-positive** |

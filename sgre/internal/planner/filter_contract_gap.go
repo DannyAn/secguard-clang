@@ -50,6 +50,7 @@ type contractCallSite struct {
 	callerEnd   int
 	callLine    int
 	args        []string
+	text        string
 }
 
 func (f *ContractGapFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, []Dismissed, error) {
@@ -133,7 +134,7 @@ func (f *ContractGapFilter) Apply(ctx context.Context, candidates []Candidate) (
 				}
 			}
 		})
-		if targetsGuardDominates(ctx, f.cfgCache, cache.treeFor(file), fn.ID, body, fn.EndLine, targets, c.UseLine) {
+		if targetsGuardDominates(ctx, f.cfgCache, cache.treeFor(file), fn.ID, body, fn.EndLine, targets, c.UseLine, c.Expression) {
 			dropped = dismiss(dropped, c, f.Name(),
 				fmt.Sprintf("field %s is null-guarded on every path before its use at line %d", c.VariableName, c.UseLine))
 			continue
@@ -152,12 +153,18 @@ func (f *ContractGapFilter) Apply(ctx context.Context, candidates []Candidate) (
 }
 
 // targetsGuardDominates reports whether every CFG path from entry to line passes
-// through an early-exit null guard of one of targets, or the line sits inside a
-// loop whose condition establishes a target non-null on the body (the loop
-// condition is re-checked each iteration, so every path into the body has the
-// target non-null).
-func targetsGuardDominates(ctx context.Context, cfgCache *graph.CFGCache, tree *parser.Tree, fnID int64, body parser.Node, funcEnd int, targets map[string]bool, line int) bool {
+// through a null guard of one of targets — either an early-exit guard
+// (`if (p == NULL) return;`), a same-block guard (the deref sits inside the
+// `if (p != NULL)` body, the `else` of `if (p == NULL)`, or the right operand of
+// a short-circuited `&&`), or a loop condition re-checked on every iteration.
+// expr is the reported statement's text; it disambiguates a one-line branch from
+// a following statement that shares the line, where the line number alone
+// cannot (fail-open when it does not).
+func targetsGuardDominates(ctx context.Context, cfgCache *graph.CFGCache, tree *parser.Tree, fnID int64, body parser.Node, funcEnd int, targets map[string]bool, line int, expr string) bool {
 	if loopGuardsTarget(body, targets, line) {
+		return true
+	}
+	if branchGuardsTarget(body, targets, line, expr) {
 		return true
 	}
 	var cfg *graph.StmtCFG
@@ -196,6 +203,122 @@ func targetsGuardDominates(ctx context.Context, cfgCache *graph.CFGCache, tree *
 		return false
 	}
 	return !cfg.ReachesAvoiding(cfg.Entry, guardIDs, deref.ID)
+}
+
+// branchGuardsTarget reports whether line sits inside a branch whose condition
+// establishes one of targets non-null: the consequence of `if (p != NULL)`
+// (also `if (p)`), the alternative of `if (p == NULL)`, or an operand to the
+// right of a short-circuiting `&&` whose earlier operand null-tests the target.
+// Issue #216: these same-block guards were not modelled (only the early-exit
+// form was), so a dereference guarded by the very `if` it sits in was reported
+// as an unguarded contract gap.
+func branchGuardsTarget(body parser.Node, targets map[string]bool, line int, expr string) bool {
+	for _, ifStmt := range body.FindAll("if_statement") {
+		cond := ifStmt.ChildByFieldName("condition")
+		if cond == nil {
+			continue
+		}
+		if cons := ifStmt.ChildByFieldName("consequence"); cons != nil && branchCoversLine(*cons, *cond, line, expr) {
+			if matched := guardedLvalues(parser.GuardedNonnullVars(*cond), targets); len(matched) > 0 &&
+				!targetReassigned(body, matched, ifStmt.StartLine(), line) {
+				return true
+			}
+		}
+		if alt := ifStmt.ChildByFieldName("alternative"); alt != nil && branchCoversLine(*alt, *cond, line, expr) {
+			if matched := guardedLvalues(parser.NullCheckedVars(*cond), targets); len(matched) > 0 &&
+				!targetReassigned(body, matched, ifStmt.StartLine(), line) {
+				return true
+			}
+		}
+	}
+	return shortCircuitGuardsTarget(body, targets, line)
+}
+
+// branchCoversLine reports whether the reported statement lies inside branch.
+// A multi-line branch is resolved by line range. When the reported line is the
+// line the condition itself sits on, the statement may equally be one of the
+// condition's operands — which run BEFORE the branch is entered — so a reported
+// expression that appears in the condition fails open. A branch that starts and
+// ends on the reported line cannot be told apart from a following statement on
+// the same line (`if (p == NULL) log(); p->field->x;`), so the reported
+// expression must occur inside the branch text.
+func branchCoversLine(branch, cond parser.Node, line int, expr string) bool {
+	if line < branch.StartLine() || line > branch.EndLine() {
+		return false
+	}
+	if line == branch.StartLine() && expr != "" && strings.Contains(cond.Text(), expr) {
+		return false
+	}
+	if branch.StartLine() < line || line < branch.EndLine() {
+		return true
+	}
+	return expr != "" && strings.Contains(branch.Text(), expr)
+}
+
+// shortCircuitGuardsTarget reports whether line sits in an operand of a `&&`
+// chain that a preceding operand's null test already proves non-null
+// (`if (p != NULL && p->field)`, `if (p->field && p->field->sub)`). C evaluates
+// the operands left to right and skips the rest once one is false, so a later
+// operand runs only when every earlier one held.
+func shortCircuitGuardsTarget(body parser.Node, targets map[string]bool, line int) bool {
+	for _, and := range body.FindAll("binary_expression") {
+		if parser.BinaryOperator(and) != "&&" {
+			continue
+		}
+		operands := and.NamedChildren()
+		for i := 1; i < len(operands); i++ {
+			if !nodeContainsLine(operands[i], line) {
+				continue
+			}
+			for _, prev := range operands[:i] {
+				if len(guardedLvalues(parser.GuardedNonnullVars(prev), targets)) > 0 {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// guardedLvalues returns the subset of vars that names one of the guarded
+// locations (the field and every local derived from it).
+func guardedLvalues(vars []string, targets map[string]bool) []string {
+	var matched []string
+	for _, v := range vars {
+		if targets[v] {
+			matched = append(matched, v)
+		}
+	}
+	return matched
+}
+
+// targetReassigned reports whether one of the guarded locations — or the
+// variable the location hangs off — is written between the guard and the use.
+// A guard proves non-nullness only until the next write: in
+// `if (p != NULL) { p = f(); p->field->x }` the reassignment reopens the gap,
+// so the guard must not drop the candidate (fail-open).
+func targetReassigned(body parser.Node, targets []string, fromLine, toLine int) bool {
+	killed := false
+	forEachAssignment(body, func(lhs, _ parser.Node) {
+		if killed {
+			return
+		}
+		l := lhs.StartLine()
+		if l < fromLine || l > toLine {
+			return
+		}
+		name := assignTargetName(lhs)
+		if name == "" {
+			return
+		}
+		for _, t := range targets {
+			if name == t || name == fieldBaseName(t) {
+				killed = true
+				return
+			}
+		}
+	})
+	return killed
 }
 
 // loopGuardsTarget reports whether line sits inside the body of a for/while loop
@@ -276,7 +399,7 @@ func (f *ContractGapFilter) callerGuardsField(ctx context.Context, s contractCal
 	if body.Kind() != "compound_statement" {
 		return false
 	}
-	return targetsGuardDominates(ctx, f.cfgCache, cache.treeFor(file), 0, body, s.callerEnd, map[string]bool{target: true}, s.callLine)
+	return targetsGuardDominates(ctx, f.cfgCache, cache.treeFor(file), 0, body, s.callerEnd, map[string]bool{target: true}, s.callLine, s.text)
 }
 
 // normalizeCallArg trims a call argument to a bare lvalue path, or "" for a
@@ -381,6 +504,7 @@ func (f *ContractGapFilter) buildCallerIndex(ctx context.Context, fileByID map[i
 					callerEnd:   caller.EndLine,
 					callLine:    call.StartLine(),
 					args:        texts,
+					text:        call.Text(),
 				})
 			}
 		}); err != nil {

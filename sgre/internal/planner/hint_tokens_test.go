@@ -69,6 +69,9 @@ func TestBuildHintPartsTokensRegistered(t *testing.T) {
 		{"shared data race", "race-condition", Candidate{Category: "shared_data_race", ThreadFunctions: "a,b", ThreadInstances: 2, WriteLine: 15}},
 		{"toctou shared state", "race-condition", Candidate{Category: "toctou_shared_state", Mutex: "g_lock", LockLine: 3, UnlockLine: 7}},
 		{"toctou pair", "race-condition", Candidate{Category: "toctou", CheckFunction: "access", UseFunction: "fopen", CheckPathArg: "path"}},
+		{"implicit-contract shape cluster", "implicit-contract", Candidate{Subject: "resp", CountField: "resp->num", EvidenceKind: "sibling", GuardLine: 12, SiblingGuardFunc: "sib", SiblingGuardLine: 3, ClusterSites: []string{"other_fn:40", "third_fn:77"}}},
+		{"unchecked external index", "out-of-bounds", Candidate{Array: "p->svr", Size: 4, IndexSource: "actived_index", Category: "array_oob_read_unchecked", SuspicionLevel: "suspected", ClusterSites: []string{"other_fn:40"}}},
+		{"unchecked external index write", "buffer-overflow", Candidate{Array: "p->svr", Size: 4, IndexSource: "actived_index", Category: "array_oob_write_unchecked", SuspicionLevel: "suspected", ClusterSites: []string{"other_fn:40"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

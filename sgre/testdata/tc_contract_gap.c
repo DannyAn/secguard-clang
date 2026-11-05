@@ -104,6 +104,57 @@ int ptr_only_compound(resp_t *resp) {
     return tree->value;
 }
 
+/* NEGATIVE (issue #216): same-block guard — the deref sits inside the
+ * `if (resp->group_data != NULL)` body, so entering the branch proves the field
+ * non-null. The filter used to model only early-exit guards. */
+int block_guarded(resp_t *resp) {
+    if (resp->group_data != NULL) {
+        return resp->group_data->value;
+    }
+    return 0;
+}
+
+/* NEGATIVE (issue #216): same-block guard on a local derived (cast) from the
+ * field — the guard tests `tree`, the deref sits in its true branch. */
+int block_guarded_local(resp_t *resp) {
+    node_t *tree = (node_t *)resp->group_data;
+    if (tree != NULL) {
+        return tree->value;
+    }
+    return 0;
+}
+
+/* NEGATIVE (issue #216): the FALSE branch of the null test — the `else` of
+ * `if (resp->group_data == NULL)` proves the field non-null. The consequence
+ * does NOT exit, so only the else-branch model can drop this. */
+int block_guarded_else(resp_t *resp) {
+    int empty = 0;
+    if (resp->group_data == NULL) {
+        empty = 1;
+    } else {
+        return resp->group_data->value;
+    }
+    return empty;
+}
+
+/* NEGATIVE (issue #216): short-circuit `&&` — the deref is the right operand of
+ * a condition whose left operand proves the field non-null. */
+int short_circuit_guarded(resp_t *resp) {
+    if (resp->group_data != NULL && resp->group_data->value > 0) {
+        return 1;
+    }
+    return 0;
+}
+
+/* POSITIVE: the guard DOES NOT dominate — the deref runs after the guard block,
+ * so it must stay a candidate (the same-block model must not over-drop). */
+int guard_then_deref(resp_t *resp) {
+    if (resp->group_data != NULL) {
+        consume(resp->group_data);
+    }
+    return resp->group_data->value;
+}
+
 /* A struct with ONLY a pointer field (no count/length at all) — the pure
  * pointer-null shape with zero count interference. */
 typedef struct payload {
@@ -121,6 +172,15 @@ int payload_partial(payload_t *p) {
         return it->value;
     }
     return it->value;
+}
+
+/* NEGATIVE: the payload_t sibling that makes payload_t.items a nullable
+ * contract for payload_partial; its own deref is guarded (early exit). */
+int payload_sibling(payload_t *p) {
+    if (p->items == NULL) {
+        return -1;
+    }
+    return p->items->value;
 }
 
 /* ---- E-c: caller-side validation ---- */

@@ -73,7 +73,23 @@ type derefSite struct {
 	line  int
 	text  string
 	count string
+	// form is the site's access shape: how the field is reached and dereferenced.
+	// It is part of the implicit-contract "shape" (with the field, evidence tier
+	// and guard structure): a direct `resp->group_data[i]` subscript and a
+	// derived-local `tree[i]` subscript are structurally different defect shapes
+	// (the benchmark's Phase 17 keeps them as separate findings), so they must not
+	// be folded into one review row.
+	form string
 }
+
+const (
+	derefFormDirectMember    = "direct-member"    // obj->field->x
+	derefFormDirectSubscript = "direct-subscript" // obj->field[i]
+	derefFormDirectDeref     = "direct-deref"     // *obj->field
+	derefFormAliasMember     = "alias-member"     // p->x where p = obj->field
+	derefFormAliasSubscript  = "alias-subscript"  // p[i] where p = obj->field
+	derefFormAliasDeref      = "alias-deref"      // *p where p = obj->field
+)
 
 func (d *ContractGapDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
@@ -131,14 +147,16 @@ func (d *ContractGapDetector) Detect(ctx context.Context) (DetectResult, error) 
 		}
 		for _, site := range cand.sites {
 			props := map[string]interface{}{
-				"category":   "ptr_guard",
-				"variable":   cand.obj + "->" + cand.field,
-				"subject":    cand.obj,
-				"count":      site.count,
-				"use_line":   site.line,
-				"missing":    "ptr-null",
-				"evidence":   evidence,
-				"expression": site.text,
+				"category":     "ptr_guard",
+				"variable":     cand.obj + "->" + cand.field,
+				"subject":      cand.obj,
+				"subject_type": cand.objType,
+				"count":        site.count,
+				"use_line":     site.line,
+				"missing":      "ptr-null",
+				"evidence":     evidence,
+				"expression":   site.text,
+				"deref_form":   site.form,
 			}
 			// The self-guard's line: the field IS null-checked there, but this
 			// deref site sits outside that guard's scope — the contract gap.
@@ -538,9 +556,11 @@ func rhsDerivesFromField(rhs parser.Node, obj, field string) bool {
 
 // fieldDerefSites returns every line where `obj->field` (or a derived local) is
 // dereferenced: `obj->P->x`, `obj->P[i]`, `*obj->P`, or `p->x` / `p[i]` / `*p`.
+// Each site records its access form (direct field vs derived local, member vs
+// subscript vs unary deref) — the structural half of the implicit-contract shape.
 func fieldDerefSites(f *db.Function, obj, field string, derived map[string]bool, fieldExprs, subs, ptrExprs []parser.Node) []derefSite {
 	var out []derefSite
-	add := func(line int, text string) {
+	add := func(line int, text, form string) {
 		if line == 0 {
 			return
 		}
@@ -549,7 +569,7 @@ func fieldDerefSites(f *db.Function, obj, field string, derived map[string]bool,
 				return
 			}
 		}
-		out = append(out, derefSite{line: line, text: text})
+		out = append(out, derefSite{line: line, text: text, form: form})
 	}
 	for _, fe := range fieldExprs {
 		if !funcLineRange(f, fe.StartLine()) {
@@ -561,10 +581,10 @@ func fieldDerefSites(f *db.Function, obj, field string, derived map[string]bool,
 		}
 		// `obj->field->x`, `(T*)obj->field->x`, `((T*)obj->field)->x`.
 		if rhsDerivesFromField(kids[0], obj, field) {
-			add(fe.StartLine(), fe.Text())
+			add(fe.StartLine(), fe.Text(), derefFormDirectMember)
 		}
 		if kids[0].Kind() == "identifier" && derived[kids[0].Text()] {
-			add(fe.StartLine(), fe.Text())
+			add(fe.StartLine(), fe.Text(), derefFormAliasMember)
 		}
 	}
 	for _, s := range subs {
@@ -576,10 +596,10 @@ func fieldDerefSites(f *db.Function, obj, field string, derived map[string]bool,
 			continue
 		}
 		if rhsDerivesFromField(kids[0], obj, field) {
-			add(s.StartLine(), s.Text())
+			add(s.StartLine(), s.Text(), derefFormDirectSubscript)
 		}
 		if kids[0].Kind() == "identifier" && derived[kids[0].Text()] {
-			add(s.StartLine(), s.Text())
+			add(s.StartLine(), s.Text(), derefFormAliasSubscript)
 		}
 	}
 	for _, pe := range ptrExprs {
@@ -588,10 +608,10 @@ func fieldDerefSites(f *db.Function, obj, field string, derived map[string]bool,
 		}
 		for _, c := range pe.NamedChildren() {
 			if rhsDerivesFromField(c, obj, field) {
-				add(pe.StartLine(), pe.Text())
+				add(pe.StartLine(), pe.Text(), derefFormDirectDeref)
 			}
 			if c.Kind() == "identifier" && derived[c.Text()] {
-				add(pe.StartLine(), pe.Text())
+				add(pe.StartLine(), pe.Text(), derefFormAliasDeref)
 			}
 		}
 	}

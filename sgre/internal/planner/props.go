@@ -252,6 +252,13 @@ type eventProps struct {
 	CountField   string `json:"count"`
 	Missing      string `json:"missing"`
 	EvidenceKind string `json:"evidence"`
+	// SubjectType is the declared type of the implicit-contract Subject (the
+	// normalized parameter type spelling); the shape-cluster key anchors on it.
+	SubjectType string `json:"subject_type"`
+	// DerefForm is the site's access shape ("direct-member", "alias-subscript",
+	// ...): how the field is reached and dereferenced. Together with the field,
+	// evidence tier and guard structure it defines the implicit-contract shape.
+	DerefForm string `json:"deref_form"`
 	// GuardLine is the line of the same-function NULL check that guards the
 	// field for the "self" evidence kind; the deref site sits OUTSIDE that
 	// guard's scope (the contract gap). Surfacing it lets the classifier see

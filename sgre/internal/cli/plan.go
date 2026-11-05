@@ -121,6 +121,7 @@ func runPlanCmd(ctx context.Context, args []string) int {
 		"vulnerability_type": result.VulnerabilityType,
 		"cwe":                report.VulnToCWE(result.VulnerabilityType),
 		"deduped_count":      result.Summary.DedupedCount,
+		"shape_folded":       result.Summary.ShapeFolded,
 		"seed_count":         result.Summary.SeedCount,
 		"final_count":        result.Summary.FinalCount,
 		"candidate_count":    len(result.Candidates),

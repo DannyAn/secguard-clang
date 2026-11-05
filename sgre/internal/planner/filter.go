@@ -331,6 +331,16 @@ type Candidate struct {
 	// Subject is the struct-pointer parameter the implicit-contract candidate
 	// is about (e.g. "resp" for resp->group_data).
 	Subject string `json:"subject,omitempty"`
+	// SubjectType is the declared type of Subject (normalized spelling). The
+	// implicit-contract shape key anchors on it so two unrelated structs that
+	// happen to share a field name are never clustered into one contract
+	// question.
+	SubjectType string `json:"subject_type,omitempty"`
+	// DerefForm is the implicit-contract site's access shape ("direct-member",
+	// "direct-subscript", "alias-member", ...): how the field is reached and
+	// dereferenced. It is the structural half of the shape key, so a direct field
+	// subscript and a derived-local subscript stay separate defect shapes.
+	DerefForm string `json:"deref_form,omitempty"`
 	// Sanitizer names a caller-defined sanitizer/validator guarding the
 	// injection sink's argument (partial validation, not a proof of safety).
 	Sanitizer string `json:"sanitizer,omitempty"`
@@ -371,6 +381,12 @@ type Candidate struct {
 	// makes the missing guard an omission rather than the project's design.
 	SiblingGuardFunc string `json:"sibling_guard_func,omitempty"`
 	SiblingGuardLine int    `json:"sibling_guard_line,omitempty"`
+	// ClusterSites lists the other (function:line) occurrences folded into this
+	// candidate by shape-level clustering (see VulnTypeSpec.ShapeKey): the same
+	// field, in the same file, with the same guard structure, is ONE contract
+	// question for the classifier, not one row per function. Empty when no
+	// clustering occurred.
+	ClusterSites []string `json:"cluster_sites,omitempty"`
 	// FreeLine is the free-site line for a use-after-free candidate (where the
 	// variable was freed before the use at Line).
 	FreeLine int `json:"free_line,omitempty"`

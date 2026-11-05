@@ -44,6 +44,10 @@ An implicit-contract candidate has:
   (loop bound / subscript index), it is recorded as extra context — the pointer
   is a counted collection. It is NOT required: the pointer-null condition is
   caught independently of any count relationship.
+- **shape_cluster** (only when shape-level clustering ran): the same unguarded
+  field shape (field + access form + evidence tier + guard structure) repeats at
+  other sites in the same file; this one candidate covers all of them, and
+  `## Clustered Sites` lists them as `function:line`.
 - **call_path**: the function is reachable from an entry point.
 
 ### Hint Tokens (Verdict Basis)
@@ -57,6 +61,7 @@ An implicit-contract candidate has:
 | `evidence-kind@sibling-weak` | only ANOTHER file's function with the same parameter struct type null-checks the field | unrelated-TU evidence — pre-dismissed; never confirm on this alone |
 | `sibling-guard@<fn>:<line>` | the same-file sibling `fn` null-checks the same field at that line | read that guard and compare its condition with this deref's Code Context |
 | `self-guard@N` | the field IS null-checked at line N, but the reported deref sits OUTSIDE that guard's scope | the scope gap is the defect — confirm only if the deref is genuinely reachable outside the guard; a deref inside the same if-body / `&&` chain as the test is **false-positive** |
+| `shape-cluster@N` | N other sites in the same file repeat this exact defect shape (same field, same access form, same evidence tier, same guard structure); they are listed under `## Clustered Sites` | judge the shape ONCE — the verdict covers every listed `function:line`; do not ask for a per-site verdict |
 
 `subject@` + `count-field@` name the enforced contract; the verdict is
 whether relying on it (without asserting the precondition) is a real gap.
@@ -73,7 +78,14 @@ whether relying on it (without asserting the precondition) is a real gap.
    convention and no candidate is emitted.
 4. Emit one `CONTRACT_GAP` (`category: ptr_guard`) per dereference site. The
    planner filter drops a site when that null-check **dominates** it on the CFG
-   (properly guarded), so only the unguarded sites survive as `suspected`.
+   (properly guarded): an early-exit guard (`if (obj->P == NULL) return;`), a
+   **same-block guard** (the deref sits inside the `if (obj->P != NULL)` body or
+   the `else` of `if (obj->P == NULL)`), a short-circuited `&&` operand, or a
+   loop condition. Only the unguarded sites survive as `suspected`.
+5. Shape-level clustering folds the surviving sites that share a file, field,
+   access form, evidence tier and guard structure into ONE representative (Hint
+   `shape-cluster@N`, sites under `## Clustered Sites`), so the family is judged
+   once instead of once per function.
 
 ### Evidence closure (read before any source read)
 
@@ -95,7 +107,7 @@ the embedded section and the indexed lookup.
 | The count field `obj->N` is guaranteed positive when the field is used, or the dereference is inside a loop that no-ops on count==0 and the field is only touched when count>0 | **false-positive** (empty state is handled) |
 | The caller already validates `obj->P != NULL` before every call, and the function is only called from those sites | **false-positive** (validated at the call boundary) |
 | The field is a fixed array / interior pointer that can never be NULL (`&x`, string literal, offsetof-style accessor) | **false-positive** (non-nullable by construction) |
-| The deref sits INSIDE the same guard that tests the field (`if (obj->P != NULL) { use(obj->P); }`, or the right side of `obj->P && ...`) | **false-positive** — the pipeline's guard filter only models early-exit guards, so this shape can still reach you; verify the scope before confirming |
+| The deref sits INSIDE the same guard that tests the field (`if (obj->P != NULL) { use(obj->P); }`, the `else` of `if (obj->P == NULL)`, or the right side of `obj->P && ...`) | **false-positive** — the pipeline models these same-block guards and drops the site; if such a shape still reaches you, the reported `use_line`/`self-guard@N` says it is a different scope (the guard does not cover it) |
 | The evidence is name-based only (fields merely share a `data`/`num` prefix with no usage coupling), or the source is unreadable | **dismissed** (insufficient evidence) |
 
 ### Common False Positives

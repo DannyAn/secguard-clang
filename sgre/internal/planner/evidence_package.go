@@ -85,6 +85,10 @@ type EvidenceItem struct {
 	// ChainFunctions lists the other functions folded into this candidate by
 	// cross-function chain-dedup (same nullable root through a forwarding chain).
 	ChainFunctions []string `json:"chain_functions,omitempty"`
+	// ClusterSites lists the other (function:line) occurrences folded into this
+	// candidate by shape-level clustering (VulnTypeSpec.ShapeKey): one row now
+	// stands for the whole same-file family of the same defect shape.
+	ClusterSites []string `json:"cluster_sites,omitempty"`
 	// IsCallResultDeref marks a dereference of a direct call result
 	// (`f()->field`, `*f()`, `f()[i]`): the callee's body (when defined in
 	// the scan) is embedded under ## Callee Definition.
@@ -207,6 +211,11 @@ type PipelineSummary struct {
 	// raw-event reduction auditable: a type with seed_count==0 but a non-empty
 	// SeedRoutedByCategory did receive events, it just routed them away.
 	SeedRoutedByCategory map[string]int `json:"seed_routed_by_category,omitempty"`
+	// ShapeFolded counts the candidates absorbed by shape-level clustering
+	// (VulnTypeSpec.ShapeKey) after the filter chain: same-file occurrences of
+	// one defect shape become one representative, so this number is the
+	// review-budget saving, not a drop in evidence.
+	ShapeFolded int `json:"shape_folded,omitempty"`
 }
 
 type FilterStats struct {
@@ -385,12 +394,20 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			// CWE-125 → CWE-476 link the classifier states in its verdict.
 			if c.IndexSource != "" {
 				parts = append(parts, "idx-src@"+compactHintValue(c.IndexSource))
+				// The upper bound is not provable in code. The disposition is
+				// either "pending external constraint" (a config model / CLI
+				// range / protocol guarantees the field's range — the model is
+				// the evidence) or a real OOB; the AI names which.
+				parts = append(parts, "external-bound@unverified")
 			}
 			if c.ElemField != "" {
 				parts = append(parts, "elem-field@"+compactHintValue(c.ElemField))
 			}
 			if c.Escape != "" {
 				parts = append(parts, "oob-escape@"+compactHintValue(c.Escape))
+			}
+			if n := len(c.ClusterSites); n > 0 {
+				parts = append(parts, fmt.Sprintf("shape-cluster@%d", n))
 			}
 			if chain := candidateCWEChain(c, spec); chain != "" {
 				parts = append(parts, "cwe-chain@"+strings.ReplaceAll(chain, " ", ""))
@@ -644,6 +661,11 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 				} else {
 					parts = append(parts, "sibling-guard@"+c.SiblingGuardFunc)
 				}
+			}
+			// Shape-level clustering folded the same defect shape repeated in this
+			// file into one row: N is how many other sites the one verdict covers.
+			if n := len(c.ClusterSites); n > 0 {
+				parts = append(parts, fmt.Sprintf("shape-cluster@%d", n))
 			}
 		case "sizeof-misuse":
 			if c.VariableName != "" {
@@ -915,6 +937,7 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 		DerivedFrom:       c.DerivedFrom,
 		DerefLines:        c.DerefLines,
 		ChainFunctions:    c.ChainFunctions,
+		ClusterSites:      c.ClusterSites,
 
 		FunctionStartLine: c.FuncStartLine,
 		FunctionEndLine:   c.FuncEndLine,

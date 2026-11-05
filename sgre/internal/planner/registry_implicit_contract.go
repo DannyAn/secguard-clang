@@ -1,6 +1,9 @@
 package planner
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 func init() {
 	RegisterVulnType(&VulnTypeSpec{
@@ -21,6 +24,33 @@ func init() {
 		ConvergeKey: func(c Candidate) string {
 			return fmt.Sprintf("implicit-contract:%d:%s:%s:%d", c.FileID, c.FunctionName, c.VariableName, c.UseLine)
 		},
+		// Shape-level clustering (issue #216): the same field, in the same file,
+		// reached and dereferenced the same way (direct vs derived local, member
+		// vs subscript vs unary deref), proven by the same evidence tier and
+		// carrying the same guard structure (self-guard present/absent,
+		// count-gated or not) is ONE contract question. A config/log-family file
+		// repeats that shape once per function, so per-site rows spent one AI
+		// review each on the same judgment. Keyed on the FIELD, not on
+		// `subject->field`: the parameter is spelled differently per function, and
+		// clustering across the family is the point. The access form is part of
+		// the shape — a direct field subscript and a derived-local subscript are
+		// structurally different sites and stay separate findings.
+		ShapeKey: func(c Candidate) string {
+			field := strings.TrimPrefix(c.VariableName, c.Subject+"->")
+			if field == "" || field == c.VariableName {
+				return ""
+			}
+			// The anchor is the declared TYPE: two unrelated structs may share a
+			// field name. An event without it (a database written by an older
+			// detector) opts out rather than risk merging different contracts
+			// across the file — fail open, one row per site.
+			if c.SubjectType == "" {
+				return ""
+			}
+			countField := strings.TrimPrefix(c.CountField, c.Subject+"->")
+			return fmt.Sprintf("implicit-contract-shape:%d:%s:%s:%s:%s:%t:%t",
+				c.FileID, c.SubjectType, field, c.DerefForm, c.EvidenceKind, c.GuardLine > 0, countField != "")
+		},
 		// This type is the OPEN-WORLD half of the entry-validation gap: a
 		// caller/framework-supplied struct field is dereferenced without a null
 		// guard, and the code itself treats the field as nullable somewhere
@@ -35,6 +65,9 @@ func init() {
 			}
 			if c.CountField != "" {
 				frags = append(frags, EvidenceFragment{Type: "count_field", Role: "condition", Detail: fmt.Sprintf("the use is gated by count/length field %s", c.CountField)})
+			}
+			if len(c.ClusterSites) > 0 {
+				frags = append(frags, EvidenceFragment{Type: "shape_cluster", Role: "scope", Detail: fmt.Sprintf("the same unguarded field shape repeats at %d other site(s) in this file — one contract question, folded into this row; the sites are listed under `## Clustered Sites`", len(c.ClusterSites))})
 			}
 			frags = append(frags, EvidenceFragment{Type: "missing", Role: "condition", Detail: fmt.Sprintf("missing precondition: %s != NULL", c.VariableName)})
 			switch c.EvidenceKind {
