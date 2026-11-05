@@ -1337,12 +1337,12 @@ func runReportCmd(ctx context.Context, args []string) int {
 			// entries that live only in the orchestrator's aggregation.
 			if verdicts, verr := store.ListCandidateVerdicts(ctx, scanID); verr == nil {
 				type dismissedRow struct {
-					VulnType     string `json:"vuln_type"`
-					File         string `json:"file"`
-					Line         int    `json:"line"`
-					Function     string `json:"function,omitempty"`
-					Variable     string `json:"variable,omitempty"`
-					Reason       string `json:"reason,omitempty"`
+					VulnType string `json:"vuln_type"`
+					File     string `json:"file"`
+					Line     int    `json:"line"`
+					Function string `json:"function,omitempty"`
+					Variable string `json:"variable,omitempty"`
+					Reason   string `json:"reason,omitempty"`
 				}
 				rows := make([]dismissedRow, 0, len(verdicts))
 				for _, v := range verdicts {
@@ -1383,9 +1383,12 @@ func runReportCmd(ctx context.Context, args []string) int {
 				// add up `audits` itself (the console used to show per-type
 				// counts with no total at all).
 				"summary": overview.SummaryFields(),
-				// The engine-measured AI stage (total + per type) so the
-				// orchestrator can report it without hand-estimating a wall clock.
-				"ai_stage": aiTiming,
+			}
+			// The engine-measured AI stage (total + per type) so the orchestrator
+			// can report it without hand-estimating a wall clock. Omitted when the
+			// scan has no settlement timing at all.
+			if aiTiming.TotalMS > 0 {
+				out["ai_stage"] = aiTiming
 			}
 
 			// A finding with no scan_id has no scan directory, so its verdict
@@ -1413,10 +1416,12 @@ func runReportCmd(ctx context.Context, args []string) int {
 			WriteJSON(out)
 		} else {
 			out := map[string]interface{}{
-				"scan_id":  scanID,
-				"audits":   audits,
-				"summary":  overview.SummaryFields(),
-				"ai_stage": aiTiming,
+				"scan_id": scanID,
+				"audits":  audits,
+				"summary": overview.SummaryFields(),
+			}
+			if aiTiming.TotalMS > 0 {
+				out["ai_stage"] = aiTiming
 			}
 			auditNoticeFields(out, orphans, unreviewed)
 			WriteJSON(out)
