@@ -98,6 +98,21 @@ func TestExecute_UnknownSubcommandHelp(t *testing.T) {
 	}
 }
 
+func TestExecute_UnknownCommandReportsCommandMissing(t *testing.T) {
+	ctx := context.Background()
+	stdout, _, code := captureOutput(func() int {
+		return Execute(ctx, []string{"settle"})
+	})
+	if code != 1 {
+		t.Fatalf("unknown command: exit code = %d, want 1", code)
+	}
+	for _, want := range []string{"unknown command", `\"settle\"`, "available:"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("unknown command output missing %q: %s", want, stdout)
+		}
+	}
+}
+
 func TestHasHelpFlag(t *testing.T) {
 	cases := []struct {
 		args []string

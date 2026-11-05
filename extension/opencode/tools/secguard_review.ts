@@ -33,7 +33,7 @@ function findSecguard(context: { worktree?: string; directory?: string }): strin
 
 export default tool({
   description:
-    "Write re-review verdicts for the machine auto-confirmed findings (Step 5.5 of command-instructions.md): reviews=[...] maps to `report --review-json` in ONE idempotent batch. review_status 'dismissed' suppresses a machine false positive from result.sarif; 'confirmed' agrees and is a no-op write. There is NO completeness gate and NO per-candidate loop — Step 5.5 is bounded and optional. The list_auto_confirmed operation is DEPRECATED: it returns count 0 because the scan already writes auto-confirmed rows with review_status='confirmed'; list them for re-review with secguard_db raw SQL (SELECT id, rule_id, file_path, line_number, function_name, variable, properties FROM findings WHERE scan_id='<id>' AND status='auto-confirmed').",
+    "Write re-review verdicts for the machine auto-confirmed findings (Step 5.5 of command-instructions.md): reviews=[...] maps to `report --review-json` in ONE idempotent batch. review_status 'dismissed' suppresses a machine false positive from result.sarif; 'confirmed' agrees. There is NO completeness gate and NO per-candidate loop — Step 5.5 is bounded and optional. With no reviews, the tool lists the unreviewed machine findings (status='auto-confirmed' with review_status NULL, i.e. exactly the rows Step 5.5 must judge) via `report --list-auto-confirmed`.",
   args: {
     scan_id: tool.schema
       .string()
@@ -42,15 +42,15 @@ export default tool({
     type: tool.schema
       .string()
       .optional()
-      .describe("Vulnerability type (kebab-case, e.g. memory-leak). Only meaningful for the deprecated list operation."),
+      .describe("Vulnerability type (kebab-case, e.g. memory-leak) for the list operation."),
     limit: tool.schema
       .number()
       .optional()
-      .describe("Paging cap for the DEPRECATED list operation (returns count 0). Ignore."),
+      .describe("Paging cap for the list operation."),
     list_auto_confirmed: tool.schema
       .boolean()
       .optional()
-      .describe("DEPRECATED: returns count 0 — auto-confirmed rows are marked review_status='confirmed' at scan time. List them with secguard_db raw SQL instead."),
+      .describe("List the unreviewed machine findings (status='auto-confirmed', review_status NULL) instead of writing verdicts."),
     reviews: tool.schema
       .array(
         tool.schema.object({
