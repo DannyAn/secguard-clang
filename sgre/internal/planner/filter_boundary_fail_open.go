@@ -14,13 +14,15 @@ import (
 // counted in the dismissed ledger as boundary_fail_open) instead of consuming an
 // AI batch.
 //
-// The dismissal is tier-sensitive: a NON-PROVING origin tier (`opaque-origin`,
+// The dismissal is tier-sensitive. A NON-PROVING origin tier (`opaque-origin`,
 // `external-unknown`, `callback-entry`, `assumed-return`, an unguarded open
-// caller-arg root) is a fail-open ASSUMPTION, not evidence, and is dismissed
-// unless the candidate carries a concrete in-tree caller-null witness (a caller
-// that passes NULL / forwards an open parameter, or an in-tree caller chain).
-// Machine-proven tiers (`cfg-proof`, `malloc-fail`), a count-gated
-// `array-buffer`, and a witnessed caller-arg stay for the AI.
+// caller-arg root) is a fail-open ASSUMPTION about a source the tree cannot see;
+// an in-tree caller of the candidate function does NOT discharge it (the caller's
+// own value may come from the same open entry), so those rows are dismissed even
+// when the function has in-tree callers. Only the `caller-arg` tier — where the
+// null source IS an in-tree call-site argument — is kept when the caller chain is
+// concrete, because that call site is what the AI can judge. Machine-proven tiers
+// (`cfg-proof`, `malloc-fail`) and a count-gated `array-buffer` stay for the AI.
 type BoundaryFailOpenFilter struct {
 	mode string
 }
@@ -50,50 +52,50 @@ func (f *BoundaryFailOpenFilter) Apply(ctx context.Context, candidates []Candida
 			VariableName: c.VariableName,
 			Line:         c.Line,
 			Filter:       f.Name(),
-			Reason:       fmt.Sprintf("boundary scan: non-proving null origin %q has no concrete in-tree caller-null witness (auto-dismissed; scan the worktree root or set [scan].boundary_auto_dismiss=\"off\" to judge it)", c.NullOriginTier),
+			Reason:       fmt.Sprintf("boundary scan: non-proving null origin %q with no concrete in-tree NULL witness (auto-dismissed; scan the worktree root or set [scan].boundary_auto_dismiss=\"off\" to judge it)", c.NullOriginTier),
 		})
 	}
 	return kept, dropped, nil
 }
 
 func (f *BoundaryFailOpenFilter) keep(c Candidate) bool {
-	// An in-tree chain/caller is a concrete contract the AI can judge; never
-	// pre-dismiss it. Only a pure zero-caller boundary symbol is a fail-open
-	// external contract.
-	if len(c.CallChain) > 0 || len(c.Callers) > 0 {
-		return true
-	}
 	switch c.NullOriginTier {
 	case "opaque-origin", "external-unknown", "callback-entry", "assumed-return":
 		// A fail-open ASSUMPTION, not evidence:
 		//   - opaque-origin / external-unknown: the null source is an out-of-tree
-		//     contract (an external caller's argument, a field of an externally
-		//     defined type, an unproven external call);
-		//   - callback-entry: the function is registered via a function pointer
-		//     (ADDR_TAKEN) with zero direct call sites, so the pipeline cannot
-		//     bind the registrar's ctx argument — the parameter nullability is an
-		//     external registration contract the tree cannot see;
+		//     contract (an externally defined type's field value, an unproven
+		//     external call), not a caller argument;
+		//   - callback-entry: the value is bound at a registration site the tree
+		//     cannot bind (a function pointer's ctx), including a forwarding
+		//     chain rooted at such a registration;
 		//   - assumed-return: an in-scan callee graded maybe-null only by the
 		//     fail-open inter-procedural assumption.
-		// Production triage: these tiers dominate the candidate count and are
-		// almost always negated by the framework contract. A row that DOES have
-		// concrete evidence (an actual caller-null witness) was reclassified to
-		// caller-arg by NullableSourceFilter; keep it if a detail slipped through
-		// with this tier.
-		return hasConcreteCallerNullWitness(c)
+		// Production triage: these tiers dominated the boundary candidate count
+		// at ~0.2% precision. An in-tree caller of the CANDIDATE function does
+		// not prove any of them non-null — the caller's own argument can flow
+		// from the same external entry — so it must not rescue the row. A row
+		// with a real caller-null witness was reclassified to caller-arg by
+		// NullableSourceFilter; nothing with these tiers carries one.
+		return false
 	case "caller-arg":
-		// A caller-arg candidate is only evidence when a caller-null witness
-		// exists: a literal NULL argument ("caller X passes NULL"), a forwarding
-		// hop ("caller X forwards Y from an unguarded entry chain"), or the
-		// caller chain itself. An open chain rooted at a zero-call-site external
-		// entry ("the value flows from an unguarded external entry") is the same
-		// fail-open assumption as opaque-origin, so it is dismissed. "all" mode
-		// also drops the forwarding-hop rows (a project that accepts the boundary
-		// contract as non-null).
-		if c.ChainKind == "root" || !hasConcreteCallerNullWitness(c) {
+		// The null source is an in-tree call-site argument. A zero-call-site
+		// root ("the value flows from an unguarded external entry") is the same
+		// fail-open assumption as opaque-origin, so it is dismissed. A
+		// forwarding hop or a function with in-tree callers names concrete call
+		// sites the AI can judge, so it stays; "all" mode also drops the
+		// forwarding-hop rows (a project that accepts the boundary contract as
+		// non-null). A literal-NULL witness ("caller X passes NULL") is a
+		// concrete defect and stays.
+		if c.ChainKind == "root" {
 			return false
 		}
-		return f.mode != "all"
+		if len(c.CallChain) > 0 || len(c.Callers) > 0 {
+			return true
+		}
+		if c.ChainKind == "hop" {
+			return f.mode != "all"
+		}
+		return f.mode != "all" && hasCallerNullLiteralWitness(c)
 	default:
 		// cfg-proof / malloc-fail / array-buffer: machine-proven, or a structural
 		// chain fact the AI must judge — never pre-dismiss.
@@ -101,15 +103,10 @@ func (f *BoundaryFailOpenFilter) keep(c Candidate) bool {
 	}
 }
 
-// hasConcreteCallerNullWitness reports whether a candidate carries a real
-// in-tree caller fact rather than a zero-call-site/registration-site
-// assumption. A forwarding hop (ChainKind "hop") and a "caller <name> ..."
-// detail both name an actual call site; the fail-open root detail ("the value
-// flows from an unguarded external entry") and the callback registration detail
-// ("function ... is registered via a function-pointer") do not.
-func hasConcreteCallerNullWitness(c Candidate) bool {
-	if c.ChainKind == "hop" {
-		return true
-	}
-	return strings.HasPrefix(c.CallerNullDetail, "caller ")
+// hasCallerNullLiteralWitness reports whether the candidate carries a literal
+// NULL call-site witness ("caller X passes NULL"). A forwarding hop is NOT a
+// NULL witness — it passes the caller's own unguarded parameter on — and a
+// fail-open root/registration detail is an assumption, so neither counts here.
+func hasCallerNullLiteralWitness(c Candidate) bool {
+	return strings.Contains(c.CallerNullDetail, "passes NULL")
 }

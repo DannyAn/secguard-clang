@@ -158,7 +158,8 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				c.HasNullableSource = true
 				c.HasDefiniteNull = fm.reachingDefiniteAt(c.VariableName, c.Line, c.Column)
 				c.SourceLine = fm.sourceLineAt(c.VariableName, c.Line, c.Column)
-				c.CallerNullDetail, c.ChainKind, c.ChainRoot = callerNullOrigin(models[c.FunctionID], c.VariableName)
+				var rootCallback bool
+				c.CallerNullDetail, c.ChainKind, c.ChainRoot, rootCallback = callerNullOrigin(models[c.FunctionID], c.VariableName)
 				if models[c.FunctionID].onlyUnprovenCallerNullSources(c.VariableName) ||
 					(!c.HasDefiniteNull && fm.contract.paramAliasUnproven(c.VariableName, c.Line, models[c.FunctionID])) {
 					dropped = dismiss(dropped, c, f.Name(),
@@ -277,6 +278,18 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 				case !c.HasDefiniteNull && addrTakenFuncs[c.FunctionID] && c.ChainKind == "root":
 					c.NullOriginTier = "callback-entry"
 					c.CallerNullDetail = fmt.Sprintf("function %s is registered via a function-pointer (ADDR_TAKEN); parameter %s nullability is bound to the registration-site context — verify the registrar passes a non-null ctx", c.FunctionName, c.VariableName)
+				case !c.HasDefiniteNull && rootCallback && c.ChainKind == "hop":
+					// A forwarding hop whose CHAIN ROOT is a registered
+					// function pointer is the framework callback contract, not
+					// an in-tree caller argument: the registrar (out of tree)
+					// decides what it passes. Grade the hop callback-entry so
+					// the boundary pre-dismissal handles the whole chain the
+					// same way as the root instead of keeping every forwarding
+					// level as a judgeable caller-arg row. A literal-NULL
+					// witness has ChainKind "" (not "hop"), so this case never
+					// hides one.
+					c.NullOriginTier = "callback-entry"
+					c.CallerNullDetail = fmt.Sprintf("%s; the chain root %s is registered via a function-pointer (ADDR_TAKEN) — a registration contract, not an in-tree NULL witness", c.CallerNullDetail, c.ChainRoot)
 				case c.CallerNullDetail != "":
 					c.NullOriginTier = "caller-arg"
 				case models[c.FunctionID].arrayBufferCountField(c.VariableName) != "":
@@ -332,6 +345,10 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 						c.ChainKind = derived.chainKind
 						c.ChainRoot = derived.chainRoot
 						c.NullableOriginName = derived.originName
+						if derived.rootCallback && derived.chainKind == "hop" {
+							c.NullOriginTier = "callback-entry"
+							c.CallerNullDetail = fmt.Sprintf("%s; the chain root %s is registered via a function-pointer (ADDR_TAKEN) — a registration contract, not an in-tree NULL witness", c.CallerNullDetail, c.ChainRoot)
+						}
 					}
 					if c.NullOriginTier == "" {
 						c.NullOriginTier = "external-unknown"
@@ -1446,6 +1463,7 @@ type derivedOrigin struct {
 	callerDetail string
 	chainKind    string
 	chainRoot    string
+	rootCallback bool
 	originName   string
 }
 
@@ -1469,8 +1487,8 @@ func derivedOriginTier(fm *flowResult, m *nullModel, variable string, line int) 
 	case m.onlyCertainNullableSources(root):
 		return derivedOrigin{tier: "malloc-fail", root: root, originName: m.certainNullableOrigin(root)}
 	case callerNullDetail(m, root) != "":
-		detail, kind, chainRoot := callerNullOrigin(m, root)
-		return derivedOrigin{tier: "caller-arg", root: root, callerDetail: detail, chainKind: kind, chainRoot: chainRoot}
+		detail, kind, chainRoot, rootCallback := callerNullOrigin(m, root)
+		return derivedOrigin{tier: "caller-arg", root: root, callerDetail: detail, chainKind: kind, chainRoot: chainRoot, rootCallback: rootCallback}
 	case m.hasOpaqueSource(root):
 		return derivedOrigin{tier: "opaque-origin", root: root}
 	case m.hasExternalCallSource(root):
@@ -1482,13 +1500,14 @@ func derivedOriginTier(fm *flowResult, m *nullModel, variable string, line int) 
 // callerNullOrigin returns the inter-procedural caller_null origin of a
 // parameter whose nullability comes from a caller (origin "caller_null"): the
 // human-readable detail, the structural open-chain KIND ("root" = zero-call-site
-// entry, "hop" = forwarding hop, "" = not chain-open), and the chain-root
-// function name. All three are empty for a non-parameter source. Kind and root
-// are structural (not display) facts used by the callback downgrade and the
-// cross-function chain-dedup key.
-func callerNullOrigin(m *nullModel, variable string) (detail, kind, root string) {
+// entry, "hop" = forwarding hop, "" = not chain-open), the chain-root function
+// name, and whether that root is a registered function pointer (a callback
+// REGISTRATION contract). All are empty for a non-parameter source. Kind, root
+// and rootCallback are structural (not display) facts used by the callback
+// downgrade and the cross-function chain-dedup key.
+func callerNullOrigin(m *nullModel, variable string) (detail, kind, root string, rootCallback bool) {
 	if m == nil {
-		return "", "", ""
+		return "", "", "", false
 	}
 	// cond suffixes the detail with the caller's enclosing branch when known:
 	// "caller c passes NULL (switch(type) case ASM_EVENT_DONE)" lets the
@@ -1509,23 +1528,23 @@ func callerNullOrigin(m *nullModel, variable string) (detail, kind, root string)
 			// null value can actually reach it (a literal-NULL call site, or a
 			// forwarding chain rooted at an unguarded external entry).
 			if s.argText == "NULL" || s.argText == "0" {
-				return fmt.Sprintf("caller %s passes NULL%s", s.caller, cond(s)), "", s.root
+				return fmt.Sprintf("caller %s passes NULL%s", s.caller, cond(s)), "", s.root, s.rootCallback
 			}
 			if s.caller == "" {
-				return "the value flows from an unguarded external entry (no in-tree call site guards this parameter)", "root", s.root
+				return "the value flows from an unguarded external entry (no in-tree call site guards this parameter)", "root", s.root, s.rootCallback
 			}
-			return fmt.Sprintf("caller %s forwards %s from an unguarded entry chain", s.caller, s.argText), "hop", s.root
+			return fmt.Sprintf("caller %s forwards %s from an unguarded entry chain", s.caller, s.argText), "hop", s.root, s.rootCallback
 		}
 		if s.argText == "NULL" || s.argText == "0" {
-			return fmt.Sprintf("caller %s passes NULL%s", s.caller, cond(s)), "", s.root
+			return fmt.Sprintf("caller %s passes NULL%s", s.caller, cond(s)), "", s.root, s.rootCallback
 		}
-		return fmt.Sprintf("caller %s passes %s (not proven non-null)", s.caller, s.argText), "", s.root
+		return fmt.Sprintf("caller %s passes %s (not proven non-null)", s.caller, s.argText), "", s.root, s.rootCallback
 	}
-	return "", "", ""
+	return "", "", "", false
 }
 
 func callerNullDetail(m *nullModel, variable string) string {
-	detail, _, _ := callerNullOrigin(m, variable)
+	detail, _, _, _ := callerNullOrigin(m, variable)
 	return detail
 }
 

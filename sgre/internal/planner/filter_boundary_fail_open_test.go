@@ -61,14 +61,16 @@ func TestBoundaryFailOpenFilterDismissesNonProvingTiers(t *testing.T) {
 
 // TestBoundaryFailOpenFilterKeepsWitness pins the escalation rule: a concrete
 // in-tree caller-null witness overrides the tier policy. A forwarding hop
-// (ChainKind "hop") and a named caller detail are the evidence the issue asks
-// to escalate on; a zero-call-site root and a callback registration detail are
-// not.
+// (ChainKind "hop") and a literal-NULL caller argument are the evidence the
+// issue asks to escalate on; a zero-call-site root and a callback registration
+// contract are not.
 func TestBoundaryFailOpenFilterKeepsWitness(t *testing.T) {
 	hop := boundaryCandidate("caller-arg")
 	hop.ChainKind = "hop"
 
-	named := boundaryCandidate("callback-entry")
+	// A literal-NULL call site reclassifies the tier to caller-arg; it is the
+	// one caller-null WITNESS (as opposed to a fail-open registration detail).
+	named := boundaryCandidate("caller-arg")
 	named.CallerNullDetail = "caller register_sender passes NULL"
 
 	root := boundaryCandidate("caller-arg")
@@ -130,16 +132,42 @@ func TestBoundaryFailOpenFilterAllMode(t *testing.T) {
 	}
 }
 
-func TestBoundaryFailOpenFilterKeepsInTreeChain(t *testing.T) {
-	f := NewBoundaryFailOpenFilter(true, "all")
-	c := boundaryCandidate("opaque-origin")
-	c.Callers = []string{"caller"}
-	kept, dropped, err := f.Apply(context.Background(), []Candidate{c})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(kept) != 1 || len(dropped) != 0 {
-		t.Fatalf("in-tree caller must be kept: kept=%d dropped=%d", len(kept), len(dropped))
+// TestBoundaryFailOpenFilterSourceTierVsInTreeCaller pins the source-tier rule
+// (issue #215): an in-tree caller of the candidate function discharges only a
+// caller-argument source. A non-proving SOURCE tier (opaque-origin /
+// external-unknown / assumed-return) is an external contract the caller does not
+// prove — the caller's own value can flow from the same open entry — so it stays
+// dismissed even with an in-tree caller chain, in every mode.
+func TestBoundaryFailOpenFilterSourceTierVsInTreeCaller(t *testing.T) {
+	for _, mode := range []string{"external", "all"} {
+		f := NewBoundaryFailOpenFilter(true, mode)
+		for _, tier := range []string{"opaque-origin", "external-unknown", "assumed-return"} {
+			withCallers := boundaryCandidate(tier)
+			withCallers.Callers = []string{"caller"}
+			withChain := boundaryCandidate(tier)
+			withChain.CallChain = []CallChainHop{{Caller: "caller", Callee: "f"}}
+
+			kept, dropped, err := f.Apply(context.Background(), []Candidate{withCallers, withChain})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(kept) != 0 || len(dropped) != 2 {
+				t.Errorf("%s mode: %s with an in-tree caller must stay dismissed (an in-tree caller does not prove the source non-null): kept=%d dropped=%d",
+					mode, tier, len(kept), len(dropped))
+			}
+		}
+
+		// Control: the caller-argument source IS the in-tree caller's
+		// argument, so the same caller chain keeps it judgeable.
+		callerArg := boundaryCandidate("caller-arg")
+		callerArg.Callers = []string{"caller"}
+		kept, dropped, err := f.Apply(context.Background(), []Candidate{callerArg})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(kept) != 1 || len(dropped) != 0 {
+			t.Errorf("%s mode: caller-arg with an in-tree caller must be kept: kept=%d dropped=%d", mode, len(kept), len(dropped))
+		}
 	}
 }
 

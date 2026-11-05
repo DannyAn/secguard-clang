@@ -128,15 +128,18 @@ one of these reaches you anyway (e.g. under the `assumed-return` or
 ### Nullable-Origin Tier (Hint null@ tokens)
 
 **Default-dismiss policy.** A BOUNDARY scan (no in-tree entry point)
-pre-dismisses the non-proving tiers — `null@opaque-origin`,
-`null@external-unknown`, `null@callback-entry`, `null@assumed-return`, and an
-unguarded open `null@caller-arg` root — into the dismissed ledger unless the row
-carries a concrete in-tree `caller-null@` witness (a caller that passes NULL /
-forwards an open parameter). Those rows do not reach you in the default mode; a
-row that does reach you came from a complete-program scan or
-`boundary_auto_dismiss="off"`, and the action column below still applies.
-`null@malloc-fail`, `null@cfg-proof`, `array-buffer@`, and a witnessed
-`null@caller-arg` are never pre-dismissed.
+pre-dismisses the non-proving source tiers — `null@opaque-origin`,
+`null@external-unknown`, `null@callback-entry` (including a forwarding chain
+rooted at a callback registration), `null@assumed-return`, and an unguarded open
+`null@caller-arg` root — into the dismissed ledger. Those are fail-open
+ASSUMPTIONS about a source the tree cannot see; an in-tree caller of the
+candidate function does NOT prove them non-null, so it does not rescue them.
+A `null@caller-arg` row IS an in-tree call-site argument: one with an in-tree
+caller chain, or any literal-NULL `caller-null@` witness, is kept. Dismissed
+rows do not reach you in the default mode; a row that does reach you came from a
+complete-program scan or `boundary_auto_dismiss="off"`, and the action column
+below still applies. `null@malloc-fail`, `null@cfg-proof`, `array-buffer@`, and
+a witnessed `null@caller-arg` are never pre-dismissed.
 
 The Hint's first null token states HOW the pipeline knows the value can be null —
 your job differs per tier, so read it before anything else:

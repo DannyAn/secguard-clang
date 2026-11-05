@@ -85,8 +85,13 @@ type eventProps struct {
 	// only candidates sharing the same (file, variable, root) fold, so two
 	// independent same-name parameters do NOT merge. Empty for non-chain
 	// sources.
-	Root     string `json:"root"`
-	DeclLine int    `json:"decl_line"`
+	// Root implies the chain root is a zero-call-site entry. RootCallback is
+	// "true" when that root is registered through a function pointer
+	// (ADDR_TAKEN), so the chain carries a callback REGISTRATION contract
+	// rather than an external caller's argument.
+	Root         string `json:"root"`
+	RootCallback string `json:"root_callback"`
+	DeclLine     int    `json:"decl_line"`
 	// Allocator is the heap allocator callee name for a heap_uninit seed
 	// (`malloc`/`calloc`/a project wrapper): the classifier looks up that
 	// allocator's init contract via `secguard def` instead of reading source at

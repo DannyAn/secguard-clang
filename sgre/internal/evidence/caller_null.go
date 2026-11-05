@@ -389,6 +389,15 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 				}
 				if r := chainRootName(fnID, i, fwdBy, infoByFnID); r != "" {
 					props["root"] = r
+					// A chain whose root is registered through a function
+					// pointer is a callback REGISTRATION contract, not an
+					// external caller's argument. The planner labels every
+					// forwarded hop on that chain `callback-entry` (non-proving)
+					// instead of `caller-arg`, so the boundary pre-dismissal
+					// treats the whole framework callback chain consistently.
+					if addrTaken[r] {
+						props["root_callback"] = "true"
+					}
 				}
 			}
 			if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", fnID, &db.Location{FileID: info.fn.FileID, Line: info.fn.StartLine}, props) {

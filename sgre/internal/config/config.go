@@ -120,11 +120,15 @@ type Scan struct {
 	// (0 confirmed out of 262 fail-open rows, ~99% of the AI wall-clock).
 	// Modes:
 	//   "" / "external" (default): auto-dismiss every NON-PROVING origin tier —
-	//     opaque-origin, external-unknown, callback-entry, assumed-return, and
-	//     caller-arg rooted at an unguarded external entry (zero in-tree call
-	//     sites). These are fail-open ASSUMPTIONS, not evidence. A candidate
-	//     with a concrete in-tree caller-null witness (a caller that passes
-	//     NULL or forwards an open parameter) is kept for the AI.
+	//     opaque-origin, external-unknown, callback-entry (including a
+	//     forwarding chain rooted at a callback registration), assumed-return,
+	//     and caller-arg rooted at an unguarded external entry (zero in-tree
+	//     call sites). These are fail-open ASSUMPTIONS, not evidence; an in-tree
+	//     caller of the candidate function does NOT prove an external-contract
+	//     source non-null, so it does not rescue those tiers. A caller-arg row
+	//     (the null source IS an in-tree call-site argument) is kept when the
+	//     function has an in-tree caller chain, and a literal-NULL caller
+	//     witness is always kept for the AI.
 	//     Every dismissal is ledgered under `boundary_fail_open` (visible, never
 	//     silently dropped), and the boundary report recommends scanning the
 	//     worktree root for a complete-program judgment.
