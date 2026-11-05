@@ -125,6 +125,10 @@ type SecurityEventStore interface {
 type FindingStore interface {
 	InsertFinding(ctx context.Context, f *Finding) (int64, error)
 	UpsertFinding(ctx context.Context, f *Finding) (int64, error)
+	// FindingIDByLocationKey returns the id of the finding with the same
+	// (scan_id, rule_id, file_path, line_number, variable) identity, so a write
+	// can report a duplicate update instead of silently adding a second row.
+	FindingIDByLocationKey(ctx context.Context, scanID, ruleID, filePath string, line int, variable string) (int64, bool, error)
 	ListFindings(ctx context.Context) ([]*Finding, error)
 	ListFindingsByStatus(ctx context.Context, status string) ([]*Finding, error)
 	GetFindingByID(ctx context.Context, id int64) (*Finding, error)
@@ -223,6 +227,15 @@ type FunctionSummaryStore interface {
 
 type SettlementStatStore interface {
 	UpsertSettlementStat(ctx context.Context, s *SettlementStat) error
+	// GetSettlementStat returns the row for one (scan, type, range), or nil when
+	// the batch has never been claimed/settled.
+	GetSettlementStat(ctx context.Context, scanID, vulnType, rangeStr string) (*SettlementStat, error)
+	// ClaimSettlementRange atomically reserves (scan_id, vuln_type, range_str)
+	// for one worker before dispatch. A fresh 'dispatched' row held by another
+	// holder loses the claim; a done row is only taken over when reclaim is true
+	// (a deliberate needs_context re-review); a 'failed' or stale 'dispatched'
+	// row (created_at < staleBefore) is taken over and retry_count bumped.
+	ClaimSettlementRange(ctx context.Context, scanID, vulnType, rangeStr, holder string, staleBefore int64, reclaim bool) (*SettlementClaim, error)
 	// MarkSettlementStatus updates a settlement row's task status (the
 	// executor's dispatched → done/failed lifecycle).
 	MarkSettlementStatus(ctx context.Context, scanID, vulnType, rangeStr, subagentID, status string) error

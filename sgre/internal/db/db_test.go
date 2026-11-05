@@ -208,6 +208,80 @@ func TestStore_UpsertFinding_Idempotent(t *testing.T) {
 	}
 }
 
+// TestStore_UpsertFinding_FunctionDriftCollapses pins the #217 identity key:
+// function_name is not part of the finding key, so a retry that reports the same
+// file:line:variable with a missing/different function updates the existing row
+// instead of minting a second one with the same fingerprint.
+func TestStore_UpsertFinding_FunctionDriftCollapses(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	first := &Finding{
+		RuleID: "CWE-476", VulnType: "null-deref", Severity: "high", Status: "confirmed",
+		FilePath: "src/a.c", LineNumber: 42, FunctionName: "f", Variable: "p", ScanID: "sc_test",
+	}
+	id1, err := s.UpsertFinding(ctx, first)
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	retry := *first
+	retry.FunctionName = "" // the observed duplicate class: a retry omitted the function
+	id2, err := s.UpsertFinding(ctx, &retry)
+	if err != nil {
+		t.Fatalf("retry upsert: %v", err)
+	}
+	if id1 != id2 {
+		t.Errorf("function drift must update the same row, got ids %d and %d", id1, id2)
+	}
+	all, err := s.ListFindings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("expected exactly 1 finding, got %d", len(all))
+	}
+	if all[0].FunctionName != "" {
+		t.Errorf("the conflict update must refresh function_name, got %q", all[0].FunctionName)
+	}
+
+	// Two distinct variables at one location remain two findings.
+	other := *first
+	other.Variable = "q"
+	if _, err := s.UpsertFinding(ctx, &other); err != nil {
+		t.Fatal(err)
+	}
+	if all, _ = s.ListFindings(ctx); len(all) != 2 {
+		t.Errorf("distinct variables must stay distinct findings, got %d", len(all))
+	}
+}
+
+func TestStore_FindingIDByLocationKey(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	if _, found, err := s.FindingIDByLocationKey(ctx, "sc_test", "CWE-476", "src/a.c", 42, "p"); err != nil || found {
+		t.Fatalf("empty table: found=%v err=%v, want false/nil", found, err)
+	}
+	f := &Finding{
+		RuleID: "CWE-476", Severity: "high", Status: "confirmed",
+		FilePath: "src/a.c", LineNumber: 42, FunctionName: "f", Variable: "p", ScanID: "sc_test",
+	}
+	id, err := s.UpsertFinding(ctx, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := s.FindingIDByLocationKey(ctx, "sc_test", "CWE-476", "src/a.c", 42, "p")
+	if err != nil || !found {
+		t.Fatalf("existing row: found=%v err=%v", found, err)
+	}
+	if got != id {
+		t.Errorf("id = %d, want %d", got, id)
+	}
+	if _, found, _ := s.FindingIDByLocationKey(ctx, "sc_other", "CWE-476", "src/a.c", 42, "p"); found {
+		t.Error("a different scan must not match")
+	}
+}
+
 func TestStore_UpsertFinding_DistinctVariables(t *testing.T) {
 	ctx := context.Background()
 	s := NewTestStore(t)

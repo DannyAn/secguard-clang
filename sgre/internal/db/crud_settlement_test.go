@@ -5,6 +5,7 @@ package db
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestSettlementStatUpsertIdempotent(t *testing.T) {
@@ -174,5 +175,101 @@ func TestSettlementTaskStatusLifecycle(t *testing.T) {
 	rows, _ = s.ListSettlementStatsByScan(ctx, "sc_x")
 	if rows[0].Status != "dispatched" || rows[0].RetryCount != 1 {
 		t.Fatalf("retry not applied: %+v", rows[0])
+	}
+}
+
+// TestSettlementClaim_AtomicPlaceholder pins the pre-dispatch reservation
+// (#217): the first claim wins, a second concurrent claim on the same
+// type+range loses with the holder surfaced, and a stale claim is taken over.
+func TestSettlementClaim_AtomicPlaceholder(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+	nowSec := time.Now().Unix()
+
+	first, err := s.ClaimSettlementRange(ctx, "sc_c", "buffer-overflow", "1-20", "holder-a", nowSec-60, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Claimed || first.Reason != "new" {
+		t.Fatalf("first claim = %+v, want claimed/new", first)
+	}
+	row, err := s.GetSettlementStat(ctx, "sc_c", "buffer-overflow", "1-20")
+	if err != nil || row == nil {
+		t.Fatalf("claim row missing: %v", err)
+	}
+	if row.Status != "dispatched" || row.SubagentID != "holder-a" {
+		t.Errorf("claim row = %+v, want dispatched/holder-a", row)
+	}
+
+	second, err := s.ClaimSettlementRange(ctx, "sc_c", "buffer-overflow", "1-20", "holder-b", nowSec-60, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Claimed {
+		t.Fatalf("a fresh claim must not be stolen: %+v", second)
+	}
+	if second.Reason != "held" || second.Holder != "holder-a" {
+		t.Errorf("held claim = %+v, want held/holder-a", second)
+	}
+
+	// staleBefore in the future makes the stored claim stale: takeover + retry.
+	stale, err := s.ClaimSettlementRange(ctx, "sc_c", "buffer-overflow", "1-20", "holder-c", nowSec+3600, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stale.Claimed || stale.Reason != "stale" {
+		t.Fatalf("stale claim = %+v, want claimed/stale", stale)
+	}
+	if stale.RetryCount != 1 {
+		t.Errorf("retry_count = %d, want 1", stale.RetryCount)
+	}
+	row, _ = s.GetSettlementStat(ctx, "sc_c", "buffer-overflow", "1-20")
+	if row.SubagentID != "holder-c" || row.RetryCount != 1 {
+		t.Errorf("takeover row = %+v", row)
+	}
+}
+
+func TestSettlementClaim_DoneHeldUnlessReclaim(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	if err := s.UpsertSettlementStat(ctx, &SettlementStat{
+		ScanID: "sc_d", VulnType: "uninit", RangeStr: "1-50", SubagentID: "w1",
+		Written: 1, Dismissed: 49,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	held, err := s.ClaimSettlementRange(ctx, "sc_d", "uninit", "1-50", "holder", time.Now().Unix(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held.Claimed || held.Reason != "done" {
+		t.Fatalf("done range claim = %+v, want held/done", held)
+	}
+
+	reclaimed, err := s.ClaimSettlementRange(ctx, "sc_d", "uninit", "1-50", "holder", time.Now().Unix(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reclaimed.Claimed || reclaimed.Reason != "reclaim" {
+		t.Fatalf("reclaim = %+v, want claimed/reclaim", reclaimed)
+	}
+}
+
+func TestSettlementClaim_FailedRowRetried(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	if err := s.UpsertSettlementStat(ctx, &SettlementStat{
+		ScanID: "sc_f", VulnType: "uninit", RangeStr: "1-50", SubagentID: "w1", Status: "failed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := s.ClaimSettlementRange(ctx, "sc_f", "uninit", "1-50", "w2", time.Now().Unix(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !claim.Claimed || claim.Reason != "retry" {
+		t.Fatalf("failed row claim = %+v, want claimed/retry", claim)
 	}
 }

@@ -129,15 +129,22 @@ func listSubagentReports(dbPath, scanID string) reportsResult {
 		}
 		res.Reports = append(res.Reports, rep)
 	}
-	sort.Slice(res.Reports, func(i, j int) bool {
+	// A retry / supplement writes another report for the SAME (subagent, type,
+	// range); list one authoritative record per batch instead of N competing
+	// snapshots. A VALID report always beats a newer invalid one: a mid-batch
+	// chunk is written after a per-type checkpoint but is only a partial
+	// snapshot, so letting it win by mtime would hide the completed checkpoint
+	// and make the orchestrator re-dispatch an already-settled range. Among
+	// reports of the same validity the newest (highest nanosecond mtime) wins.
+	sort.SliceStable(res.Reports, func(i, j int) bool {
+		if res.Reports[i].Valid != res.Reports[j].Valid {
+			return res.Reports[i].Valid
+		}
 		if !res.Reports[i].mtime.Equal(res.Reports[j].mtime) {
 			return res.Reports[i].mtime.After(res.Reports[j].mtime)
 		}
 		return res.Reports[i].File < res.Reports[j].File
 	})
-	// A retry / supplement writes another report for the SAME (subagent, type,
-	// range); list only the newest (highest mtime) so the orchestrator sees one
-	// authoritative record per batch instead of N competing snapshots.
 	seen := make(map[string]bool, len(res.Reports))
 	deduped := res.Reports[:0]
 	for _, rep := range res.Reports {
@@ -157,6 +164,14 @@ func listSubagentReports(dbPath, scanID string) reportsResult {
 		deduped = append(deduped, rep)
 	}
 	res.Reports = deduped
+	// Presentation order is newest first; the selection above used validity
+	// priority only to decide which snapshot is authoritative.
+	sort.SliceStable(res.Reports, func(i, j int) bool {
+		if !res.Reports[i].mtime.Equal(res.Reports[j].mtime) {
+			return res.Reports[i].mtime.After(res.Reports[j].mtime)
+		}
+		return res.Reports[i].File < res.Reports[j].File
+	})
 	res.Count = len(res.Reports)
 	return res
 }

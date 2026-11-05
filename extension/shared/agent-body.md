@@ -546,10 +546,13 @@ whose detector already proved it (constant OOB, weak crypto, unchecked malloc
 deref) needs ONE sentence of reasoning, not three.
 
 Check the write response — the batch `--write-json` path returns `status`
-(`ok`/`partial`), `findings_written` (count), `skipped_dismissed` (count of
+(`ok`/`partial`), `findings_written` (count), `duplicates` (count of rows that
+already existed and were updated in place), `skipped_dismissed` (count of
 dismissed rows skipped, if any were sent for backward compatibility), `written`
-(array of `{file, line, id}`), `failed_count`, and, on failure,
-`failed_details` + `errors`. A `failed_count > 0` / `status: "partial"` means some
+(array of `{file, line, id, duplicate}`), `failed_count`, and, on failure,
+`failed_details` + `errors`. A `duplicates > 0` is NOT a failure: it means that
+finding was already persisted (e.g. this chunk is a retry) and was updated, not
+that a second finding exists. A `failed_count > 0` / `status: "partial"` means some
 findings did NOT land: read `failed_details`/`errors`, fix the call (usually a
 missing `scan_id`/`output_dir`), and write that chunk again. (The single-finding
 `--write` mode and the MCP `secguard_report` tool use `per_finding_action` /
@@ -721,9 +724,13 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
   dir the orchestrator passed you; one file per subagent). The orchestrator reads
   this file FIRST and falls back to your message only when the file is missing —
   a lost/`No task found` handle must not lose your `needs_context`/`dismissed`
-  accounting (those are NOT in the DB, unlike `written`). Use the Write tool; a
-  "must read before overwriting" is a stale file, so use a fresh
-  `<subagent_id>-report-2.json` name.
+  accounting (those are NOT in the DB, unlike `written`).
+  **Rewriting your own report is an idempotent OVERWRITE of that one path.** If
+  the Write tool rejects the overwrite with a "must read before overwriting"
+  error, Read the stale file once and then Write the SAME
+  `<subagent_id>-report.json` again. NEVER create a versioned copy
+  (`<subagent_id>-report-2.json`, `-settle.json`, ...): each extra file is a
+  competing snapshot that makes a raw `*.json` glob double-count the same batch.
   **The three settlement filenames are FIXED — never invent a different one**
   (P2-11): the batch summary is `<subagent_id>-report.json`, a per-type
   checkpoint is `<subagent_id>-<type>-report.json`, a mid-batch chunk is

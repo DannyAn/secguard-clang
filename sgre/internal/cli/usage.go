@@ -78,6 +78,13 @@ Usage:
 Flags:
   --per-type           Show per-vuln-type status (candidate/written/terminal) as JSON
   --reports            List settled subagent reports from .sgre/.tmp/*-report*.json
+  --claim-type <t>     Atomically reserve a dispatch batch for vulnerability type <t>
+                       (requires --claim-range and --claim-holder; use BEFORE spawning)
+  --claim-range <r>    Candidate range of the batch (required; use "all" for the whole type)
+  --claim-holder <id>  Unique holder token recorded on the claim (a random id/token,
+                       not necessarily the host's subagent id)
+  --reclaim            With --claim-*: take over a done/held range (deliberate
+                       re-review, e.g. needs_context; never for "no report yet")
   --scan-id <id>       Scan ID to query (default: latest / all reports)
   --db <path>          Path to sgre.db
   --help, -h           Show this usage
@@ -86,7 +93,9 @@ Examples:
   secguard status
   secguard status --per-type
   secguard status --reports --scan-id sc_2026-08-23_130813_395bcb
-  secguard status --per-type --scan-id sc_2026-08-23_130813_395bcb`)
+  secguard status --per-type --scan-id sc_2026-08-23_130813_395bcb
+  secguard status --claim-type null-deref --claim-range 1-100 --claim-holder batch-7f3a
+  secguard status --claim-type null-deref --claim-range 1-100 --claim-holder batch-7f3a --reclaim`)
 }
 
 func printQueryUsage() {
@@ -186,7 +195,11 @@ Flags:
     "exception_check":"...","fix_strategy":"..."}]
   rule_id is the CWE; status is confirmed (dismissed candidates are not written — skipped). A single
   finding object, or an object {"scan_id":"...","findings":[...]}, is also
-  accepted. The write is idempotent (UPSERT on scan_id+rule_id+file+line+function).
+  accepted. The write is idempotent (UPSERT on scan_id+rule_id+file+line+variable);
+  function is NOT part of the key, so a retry that omits it updates the existing
+  finding. Re-writing an existing finding returns it in "written" with
+  "duplicate": true, counts it under the top-level "duplicates", and prints a
+  stderr notice — it never creates a second finding.
   "file"/"line"/"function" are required for a confirmed finding; the DB-column
   spellings "file_path"/"line_number"/"function_name" are accepted as aliases.
 

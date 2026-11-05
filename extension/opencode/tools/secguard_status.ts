@@ -22,7 +22,7 @@ function findSecguard(context: { worktree?: string, directory?: string }): strin
 
 export default tool({
   description:
-    "Check SecGuard index status, per-type classification progress for a scan, or settled subagent reports (reports=true). By default returns the index summary (whether sgre.db exists, last updated, files/functions indexed, staleness). When per_type is true, returns the per-vulnerability-type progress array (candidate_count / written_count / terminal_state) for the scan identified by scan_id (defaults to the latest scan) — this is the DB-authoritative verification the orchestrator uses to judge success/partial/failed per type, so prefer it over any subagent self-report.",
+    "Check SecGuard index status, per-type classification progress for a scan, or settled subagent reports (reports=true), and atomically claim a dispatch batch before spawning a worker (claim_type/claim_range/claim_holder). By default returns the index summary (whether sgre.db exists, last updated, files/functions indexed, staleness). When per_type is true, returns the per-vulnerability-type progress array (candidate_count / written_count / terminal_state / already_covered_ranges / in_flight_ranges) for the scan identified by scan_id (defaults to the latest scan) — this is the DB-authoritative verification the orchestrator uses to judge success/partial/failed per type, so prefer it over any subagent self-report. When claim_type is set, atomically reserves that type+range: spawn the batch ONLY when the result has claimed=true; claimed=false means another worker holds it (reason held) or it is already settled (reason done — pass reclaim only for a deliberate needs_context re-review).",
   args: {
     per_type: tool.schema
       .boolean()
@@ -32,6 +32,22 @@ export default tool({
       .boolean()
       .optional()
       .describe("When true, list settled subagent reports from .sgre/.tmp/*-report*.json (subagent_id / scan_id / processed_types / failed_types / needs_context / valid). Use this after an Agent-call timeout to decide whether a batch already finished before re-dispatching."),
+    claim_type: tool.schema
+      .string()
+      .optional()
+      .describe("Vulnerability type to atomically reserve before dispatching its batch (requires claim_range and claim_holder). Spawn only when the result says claimed=true."),
+    claim_range: tool.schema
+      .string()
+      .optional()
+      .describe("Candidate range of the batch being reserved (required; use \"all\" for the whole type)."),
+    claim_holder: tool.schema
+      .string()
+      .optional()
+      .describe("Unique holder token for this dispatch (e.g. batch-<type>-<range>-<epoch-ms>); not necessarily the host's subagent id."),
+    reclaim: tool.schema
+      .boolean()
+      .optional()
+      .describe("With claim_type: take over a done/held range for a deliberate re-review (e.g. needs_context). Never use it to recover from a missing report."),
     scan_id: tool.schema
       .string()
       .optional()
@@ -49,7 +65,20 @@ export default tool({
 
     try {
       let result: string
-      if (args.reports) {
+      if (args.claim_type) {
+        if (!args.claim_range || !args.claim_holder) {
+          return JSON.stringify({ claimed: false, error: "claim_type requires claim_range and claim_holder" })
+        }
+        const cmd = [
+          secguardBin, "status", "--db", dbPath,
+          "--claim-type", args.claim_type,
+          "--claim-range", args.claim_range,
+          "--claim-holder", args.claim_holder,
+        ]
+        if (args.reclaim) cmd.push("--reclaim")
+        if (args.scan_id) cmd.push("--scan-id", args.scan_id)
+        result = await Bun.$`${cmd}`.cwd(workDir).quiet().text()
+      } else if (args.reports) {
         const scanId = args.scan_id || ""
         if (scanId) {
           result = await Bun.$`${secguardBin} status --db ${dbPath} --reports --scan-id=${scanId}`
