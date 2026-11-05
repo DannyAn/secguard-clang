@@ -176,6 +176,53 @@ names = ["VOS_FREE", "VOS_FREE_F"]
 		t.Errorf("deallocators = %v, want [VOS_FREE VOS_FREE_F]", got)
 	}
 }
+
+// TestResolvePath_SuggestedConfigLocation pins the rename-in-place adoption flow:
+// the index stage writes .codeagent/secguard-clang/secguard.toml.suggested, and
+// dropping the suffix lands a config the loader probes.
+func TestResolvePath_SuggestedConfigLocation(t *testing.T) {
+	dir := t.TempDir()
+	sug := filepath.Join(dir, ".codeagent", "secguard-clang", "secguard.toml")
+	if err := os.MkdirAll(filepath.Dir(sug), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sug, []byte(`[allocators]
+names = ["my_malloc"]
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	SetExplicitPath("")
+	t.Setenv("SECGUARD_CONFIG", "")
+	t.Chdir(dir)
+
+	if got := ResolvedPath(); got != sug {
+		t.Errorf("ResolvedPath = %q, want adopted-suggestion %q", got, sug)
+	}
+	cfg := Load()
+	if got := cfg.AllocatorNames(); len(got) != 1 || got[0] != "my_malloc" {
+		t.Errorf("AllocatorNames = %v, want [my_malloc] (rename-in-place must be adoptable)", got)
+	}
+}
+
+func TestResolvePath_DocumentedProjectWinsOverSuggestion(t *testing.T) {
+	dir := t.TempDir()
+	doc := filepath.Join(dir, ".codeagent", "secguard.toml")
+	sug := filepath.Join(dir, ".codeagent", "secguard-clang", "secguard.toml")
+	for _, p := range []string{doc, sug} {
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(""), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	SetExplicitPath("")
+	t.Setenv("SECGUARD_CONFIG", "")
+	t.Chdir(dir)
+	if got := ResolvedPath(); got != doc {
+		t.Errorf("ResolvedPath = %q, want documented project-level %q", got, doc)
+	}
+}
 func TestLoad_OwnershipTransferCalls(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secguard.toml")

@@ -41,6 +41,10 @@ const (
 	LatestTxtName  = "latest.txt"
 	ScanLogFile    = "scan.log"
 	DismissedFile  = "dismissed.json"
+	// SuggestedConfigName is the advisory allocator/deallocator suggestion the
+	// index stage writes under the project runtime dir. A user renames it
+	// (dropping the ".suggested" suffix) to adopt the entries as secguard.toml.
+	SuggestedConfigName = "secguard.toml.suggested"
 	// FindingsDir holds the AI's classified verdicts — the human review
 	// surface. Only CONFIRMED verdicts ever get a file here; a dismissed
 	// (including undecidable) verdict is recorded in the DB only, never on the
@@ -103,6 +107,14 @@ func NewScanOutput(projectRoot string) *ScanOutput {
 
 func GetDbPath(projectRoot string) string {
 	return filepath.Join(projectRoot, CodeagentDir, ProductDir, SgreDir, DbName)
+}
+
+// SuggestedConfigPath returns where the index stage writes the advisory
+// allocator/deallocator suggestion for a project root. Dropping the
+// ".suggested" suffix makes it a secguard.toml at a project-level config
+// location the config loader probes.
+func SuggestedConfigPath(projectRoot string) string {
+	return filepath.Join(projectRoot, CodeagentDir, ProductDir, SuggestedConfigName)
 }
 
 // ScansRoot returns the canonical scans directory for a project root, the

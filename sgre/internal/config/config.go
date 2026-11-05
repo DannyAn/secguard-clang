@@ -674,8 +674,9 @@ func SetExplicitPath(path string) {
 //
 //  1. --config flag (via SetExplicitPath)
 //  2. SECGUARD_CONFIG env var
-//  3. project-level  <cwd>/.codeagent/secguard.toml   (per-repo exceptions)
-//  4. user-level     ~/.codeagent/secguard.toml       (personal default)
+//  3. project-level  <cwd>/.codeagent/secguard.toml                (per-repo exceptions)
+//  4. project-level  <cwd>/.codeagent/secguard-clang/secguard.toml (adopted suggestion)
+//  5. user-level     ~/.codeagent/secguard.toml                    (personal default)
 //
 // A missing file is not an error: the caller falls back to built-in behavior.
 // Both default locations share the .codeagent naming, consistent with the
@@ -980,6 +981,11 @@ func resolvePath(explicit string) string {
 	// Project-level (per-repo exceptions) wins over user-level.
 	if cwd, err := os.Getwd(); err == nil && cwd != "" {
 		if p := filepath.Join(cwd, ".codeagent", "secguard.toml"); fileExists(p) {
+			return p
+		}
+		// The adopted-suggestion location: renaming the index-stage
+		// secguard.toml.suggested in place lands the config here.
+		if p := filepath.Join(cwd, ".codeagent", "secguard-clang", "secguard.toml"); fileExists(p) {
 			return p
 		}
 	}

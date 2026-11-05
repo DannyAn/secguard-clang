@@ -315,10 +315,11 @@ What it is:
   boundary policy, and integer-overflow truncating wrappers.
 
   Config file locations, in priority order (first existing wins):
-    1. --config <path>                     explicit flag
+    1. --config <path>                                  explicit flag
     2. SECGUARD_CONFIG env var
-    3. <cwd>/.codeagent/secguard.toml      per-repository (commit it)
-    4. ~/.codeagent/secguard.toml          personal default (generated on install)
+    3. <cwd>/.codeagent/secguard.toml                   per-repository (commit it)
+    4. <cwd>/.codeagent/secguard-clang/secguard.toml    adopted index suggestion
+    5. ~/.codeagent/secguard.toml                       personal default (generated on install)
 
   With no file present, secguard uses built-in defaults (an empty config).
 
