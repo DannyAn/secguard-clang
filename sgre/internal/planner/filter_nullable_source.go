@@ -310,6 +310,13 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 					// struct's field value). Fail-open: suspected, the AI
 					// judges the contract.
 					c.NullOriginTier = "opaque-origin"
+				case models[c.FunctionID].hasSourceOrigin(c.VariableName, "global_null"):
+					// A file-scope `static T *g = NULL;` that is never reassigned
+					// is null for the whole translation unit: the dereference is a
+					// real CWE-476 sink. Kept suspected (not auto-confirmed)
+					// because "no in-tree write" is a closed-world census — a
+					// macro the parser cannot summarize could still write it.
+					c.NullOriginTier = "global-null"
 				case synthCallee != "":
 					// An in-scan callee the inter-procedural fixpoint graded:
 					// proven (a concrete NULL witness in the body) keeps the
@@ -536,7 +543,7 @@ func (f *NullableSourceFilter) buildFlowResults(ctx context.Context, cache *file
 				continue
 			}
 			birthField := s.origin == "opaque_field_read" && s.line <= fn.StartLine
-			if s.origin == "caller_null" || s.origin == "opaque_param" || birthField {
+			if s.origin == "caller_null" || s.origin == "opaque_param" || s.origin == "global_null" || birthField {
 				if entrySeeds == nil {
 					entrySeeds = map[string]bool{}
 				}

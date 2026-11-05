@@ -34,6 +34,7 @@ A null-deref candidate has:
 - **definite_null**: The variable is provably NULL — assigned NULL (or a null constant) and dereferenced with no intervening reassignment. The strongest evidence tier; the pipeline has already auto-confirmed these, so a candidate reaching you with this fragment needs verification, not re-derivation
 - **nullable_source**: Variable has a NULL_VALUE origin (malloc return, function return NULL, external call, or a free+null macro `SAFE_FREE(p)` that sets `p = NULL`)
 - **caller_null**: A `void *`/`T *` parameter is nullable because a caller passes it a value it has not proven non-null (`caller c passes NULL`, `caller c passes x (not proven non-null)`)
+- **global_null**: A file-scope `static` pointer is initialized to NULL (explicitly or by C static zero-initialization) and is never reassigned in its translation unit, so a dereference of it in any function of that file is a real CWE-476 sink
 - **call_path**: The function is reachable from an entry point
 - **data_flow**: The NULL value propagates to the dereference location
 - **weak_guard**: A NULL guard exists but is insufficient (scope misses the deref, or only partially protects) — the pipeline kept the candidate because the guard does NOT dominate the dereference; verify the guard's scope before dismissing
@@ -56,7 +57,8 @@ the embedded section and the indexed lookup.
 The confirmed/false-positive rows below apply ONLY to the one proven tier
 (`null@cfg-proof` — a definite NULL assignment reaching the deref on every
 path). Every other tier (`null@malloc-fail`, `null@caller-arg`,
-`null@opaque-origin`, `null@assumed-return`, `null@external-unknown`) is a
+`null@global-null`, `null@opaque-origin`, `null@assumed-return`,
+`null@external-unknown`) is a
 **may-null heuristic**, never auto-confirmed — the Nullable-Origin Tier table
 below rules them.
 
@@ -66,7 +68,7 @@ below rules them.
 | `null@cfg-proof` + guard BEFORE deref (scope covers) | **false-positive** |
 | `null@cfg-proof` + guard AFTER deref (scope misses) | **confirmed** |
 | Nullable source + NOT reachable | **false-positive** (dead code) |
-| `null@malloc-fail` / `null@caller-arg` / `null@opaque-origin` / `null@assumed-return` / `null@external-unknown` (any guard state) | **suspected** — a may-null tier is NEVER confirmed from this table; judge it by the Nullable-Origin Tier table below |
+| `null@malloc-fail` / `null@caller-arg` / `null@global-null` / `null@opaque-origin` / `null@assumed-return` / `null@external-unknown` (any guard state) | **suspected** — a may-null tier is NEVER confirmed from this table; judge it by the Nullable-Origin Tier table below |
 | External call return + no guard + deref | **judge the callee's NULL contract** — a known-nullable external (`getenv`/`strchr`/`fopen`/`malloc`) that can return NULL is **confirmed**; a callee whose contract guarantees non-null (abort-on-OOM, a lookup that never misses by construction) is **false-positive**. Do not dismiss merely because the callee is external |
 | `caller_null` (parameter) + no guard + deref | **suspected** — the caller contract is unproven; confirm only if a caller actually passes NULL/unproven value |
 | `caller_null` (parameter) + every caller proves non-null (`if (v == NULL) return;` dominates the call) | **false-positive** — the pipeline filters these before they surface |
@@ -149,6 +151,7 @@ your job differs per tier, so read it before anything else:
 | `null@cfg-proof` | CFG proves a NULL assignment reaches the dereference on every path | machine-proved CWE-476 — verify the statement matches, then confirm |
 | `null@malloc-fail` | the null source is a **may-null** call result (allocator / known maybe-null libc / a callee whose body has a NULL-return path: a literal NULL or an allocator result) — NOT a must-null proof | judge reachability, not just the shape: (1) does the callee actually return NULL, or does it abort-on-OOM (`zmalloc`/`xmalloc`/`oom()` never returns) making its `return NULL` dead code? (2) is the deref loop-guarded (`while(p)`) or otherwise checked? (3) can the NULL case actually occur for this call's arguments? Confirm only when the callee can really return NULL AND the deref is unguarded; otherwise dismiss. When the Hint carries `callee@file:line`, the callee body is embedded under `## Callee Definition`, judge it there instead of reading source |
 | `null@caller-arg` | an inter-procedural caller passes the parameter unproven non-null | judge the caller contract — confirm only if a caller can actually pass NULL. A row carrying `caller-null@<why>` names that caller; a row without a witness was pre-dismissed |
+| `null@global-null` | a file-scope `static` pointer initialized to NULL (or zero-initialized) and never reassigned in its translation unit | the static linkage rules out a writer in another file, but a function-like macro whose body the parser cannot see may still write it — judge the embedded Code Context, then confirm unless such a macro is in play |
 | `caller-null@<why>` | the inter-procedural caller-null WITNESS: it names the specific caller that passes NULL / forwards an open parameter, and (when present) the caller's enclosing branch | check ONLY that named caller (via the embedded Code Context / `secguard def`); compare its branch against the dereference's branch — confirm when the NULL can reach the deref, dismiss when they are mutually exclusive |
 | `null@opaque-origin` | the null source is a contract the scan tree cannot see: a pointer parameter of a function with zero in-tree callers (an exported API / registered callback), or a field value of an externally-defined type (`tree = (T *)(resp->group_data)`, `para->orig->base_dn`) | a fail-open ASSUMPTION, not evidence — pre-dismissed unless a `caller-null@` witness exists. If it reaches you, confirm only when the external contract can plausibly yield NULL (an entry point that parses external input, a lookup that can miss); dismiss when the non-null precondition is an established project convention |
 | `array-buffer@<count-field>` | the null source is a count-gated array buffer: `tree = (T *)(resp->group_data)` whose validity is gated by the paired count field `resp->group_num` — `count == 0 ⇒ buffer is NULL/empty` | **convicting, not exculpating.** Confirm when the candidate's chain dereferences the buffer (`tree[0]`) without checking the count field; dismiss only when the SAME chain (`chain-root@`) checks the count (`count == 0` / `count > 0`) before the dereference. The count/data NAME pairing is a heuristic SIGNAL, not a proof — verify from the Code Context that the count field actually gates this buffer (same struct, matching stem) before confirming |

@@ -80,7 +80,163 @@ func (d *NullSourceDetector) Detect(ctx context.Context) (DetectResult, error) {
 			d.detectExternalCall(ctx, f, file, assigns, inits, &result, knownFuncs, retTypes, nullableFuncs, trusted)
 		}
 	})
+	if err != nil {
+		return result, err
+	}
+
+	// Pass 3: file-scope static pointers that can only ever hold NULL. A
+	// `static T *g = NULL;` (or a zero-initialized `static T *g;`) that is never
+	// reassigned anywhere in its translation unit is a null source for every
+	// function in that file that dereferences it, so `g->f` is a CWE-476 defect
+	// even though the NULL never appears in the dereferencing function's body
+	// (Issue #226, CWD-SUB-1031 sample A).
+	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
+		d.detectStaticNullGlobals(ctx, file, root, funcs, &result)
+	})
 	return result, err
+}
+
+// detectStaticNullGlobals seeds a NULL_VALUE source for each file-scope static
+// pointer whose declared/only value is NULL, attached to every function that
+// dereferences it. Restricting the census to `static` linkage makes the "never
+// reassigned" fact sound: no other translation unit can write the object, so
+// the same-file write census is exhaustive.
+func (d *NullSourceDetector) detectStaticNullGlobals(ctx context.Context, file *db.File, root parser.Node, funcs []*db.Function, result *DetectResult) {
+	decls := root.NamedChildren()
+	for _, decl := range decls {
+		if decl.Kind() != "declaration" || !hasStaticStorage(decl) {
+			continue
+		}
+		for _, name := range staticPointerDeclNames(decl) {
+			if !pointerDeclaredNull(decl, name) || !staticGlobalNeverReassigned(root, name) {
+				continue
+			}
+			for _, f := range funcs {
+				if !functionDereferencesGlobal(root, f, name) {
+					continue
+				}
+				props := map[string]string{
+					"variable": name,
+					"origin":   "global_null",
+				}
+				if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: decl.StartLine()}, props) {
+					result.EventsCreated++
+				}
+			}
+		}
+	}
+}
+
+func hasStaticStorage(decl parser.Node) bool {
+	for _, child := range decl.NamedChildren() {
+		if child.Kind() == "storage_class_specifier" && strings.TrimSpace(child.Text()) == "static" {
+			return true
+		}
+	}
+	return false
+}
+
+// staticPointerDeclNames returns the pointer declarators declared by a
+// file-scope declaration (`static T *a, *b;` → a, b). A non-pointer declarator
+// is skipped: an uninitialized static scalar is zero-initialized by the language
+// and is never a null-deref source.
+func staticPointerDeclNames(decl parser.Node) []string {
+	var names []string
+	for _, child := range decl.NamedChildren() {
+		switch child.Kind() {
+		case "pointer_declarator":
+			if name, _ := argDeclaratorVar(child); name != "" {
+				names = append(names, name)
+			}
+		case "init_declarator":
+			dc := child.NamedChildren()
+			if len(dc) == 0 || dc[0].Kind() != "pointer_declarator" {
+				continue
+			}
+			if name, _ := argDeclaratorVar(dc[0]); name != "" {
+				names = append(names, name)
+			}
+		}
+	}
+	return names
+}
+
+// pointerDeclaredNull reports whether the named pointer declarator is explicitly
+// initialized to NULL/0. A pointer with no initializer has static storage and is
+// therefore zero-initialized (C11 6.7.9 p10), which is also NULL.
+func pointerDeclaredNull(decl parser.Node, name string) bool {
+	for _, child := range decl.NamedChildren() {
+		if child.Kind() != "init_declarator" {
+			continue
+		}
+		dc := child.NamedChildren()
+		if len(dc) < 2 {
+			continue
+		}
+		declared, _ := argDeclaratorVar(dc[0])
+		if declared != name {
+			continue
+		}
+		return isNullLiteral(dc[len(dc)-1])
+	}
+	return true
+}
+
+// staticGlobalNeverReassigned reports whether a file-scope static is only ever
+// assigned NULL (or never at all) in its translation unit. Any non-null
+// assignment, update, address escape or call argument makes the fact
+// unprovable — fail-open so a value the analyzer cannot see (a macro write, an
+// external writer via `&g`) never becomes a false "certainly null".
+func staticGlobalNeverReassigned(root parser.Node, name string) bool {
+	for _, assign := range root.FindAll("assignment_expression") {
+		if assignmentLHSName(assign) != name {
+			continue
+		}
+		children := assign.NamedChildren()
+		rhsStart := assignmentRHSStart(assign)
+		if len(children) <= rhsStart || !isNullLiteral(children[rhsStart]) {
+			return false
+		}
+	}
+	for _, update := range root.FindAll("update_expression") {
+		if strings.Contains(update.Text(), name) {
+			return false
+		}
+	}
+	for _, ptr := range root.FindAll("pointer_expression") {
+		text := strings.TrimSpace(ptr.Text())
+		if strings.HasPrefix(text, "&") && strings.TrimSpace(text[1:]) == name {
+			return false
+		}
+	}
+	for _, call := range root.FindAll("call_expression") {
+		for _, arg := range getCallArgs(call) {
+			if strings.TrimSpace(arg.Text()) == name {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func functionDereferencesGlobal(root parser.Node, f *db.Function, name string) bool {
+	for _, field := range root.FindAll("field_expression") {
+		if !funcLineRange(f, field.StartLine()) || !isArrowOperator(field) {
+			continue
+		}
+		if extractPointerFromField(field) == name {
+			return true
+		}
+	}
+	for _, ptr := range root.FindAll("pointer_expression") {
+		if !funcLineRange(f, ptr.StartLine()) || !strings.HasPrefix(strings.TrimSpace(ptr.Text()), "*") {
+			continue
+		}
+		if explicitDerefVar(ptr) == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *NullSourceDetector) detectReturnNull(ctx context.Context, f *db.Function, file *db.File, returns []parser.Node, result *DetectResult) {
