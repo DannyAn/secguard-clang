@@ -53,7 +53,8 @@ The value is the boundary between the two layers. Traditional scanners emit ever
 │  Planner        │   dataflow, dedup + risk ranking
 └───────┬────────┘
         │
-        ├── provable defects ──────────────► auto-confirmed (no AI review)
+        ├── provable defects ──────────────► auto-confirmed (machine verdict,
+        │                                     verified once before delivery)
         │
         └── remaining leads ──► evidence packages ──► AI agent
                                   │

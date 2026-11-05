@@ -253,7 +253,7 @@ new capacity class for an unfamiliar name.
   dispatchable; a batch that exceeds either one is split (split off the heaviest
   type first, then re-check). `batch_candidate_count` is the SUM of the batch's
   per-type candidate counts. Auto-confirmed findings carry no unreviewed entries
-  (machine verdicts, marked reviewed at scan), so they add nothing to the budget.
+  (machine verdicts, reviewed once in Step 5.5), so they add nothing to the budget.
 - **Feedback (F11 → r_type):** when a batch is force-rejected by `HOST_AGENT_TIMEOUT`,
   the orchestrator SHALL raise `r_type` for that type (the batch was more expensive
   than the historical rate predicted) and re-dispatch a smaller batch. This is
@@ -708,7 +708,7 @@ claim 行只是 `settlement_stats` 里的 `status='dispatched'` 占位，**不�
 
    **DB schema 速查 (列名别猜 — 猜一个不存在的列如 `f.type` 会白费 1~2 轮 `secguard schema` 往返):**
    Prefer structured tools over raw SQL — every count you need already has one:
-    - per-type candidate/written → `secguard status --per-type --scan-id <id>` (`candidate_count`/`written_count`/`auto_confirmed`/`terminal_state`, no SQL). `auto_confirmed` findings are machine verdicts (marked reviewed at scan time) — they need no AI review.
+    - per-type candidate/written → `secguard status --per-type --scan-id <id>` (`candidate_count`/`written_count`/`auto_confirmed`/`terminal_state`, no SQL). `auto_confirmed` findings are machine verdicts with `review_status` NULL until Step 5.5 reviews them; they are never dispatched to a per-candidate subagent.
     - per-type verdict split → `secguard report --audit --scan-id <id> --output-dir <dir>` returns an `audits` array (`vuln_type`/`confirmed`/`auto_confirmed`/`ai_stage_status`; `dismissed` and `suspected` are not present — dismissed candidates are not persisted). `ai_stage_status` values: `pending` (AI stage not done), `done` (AI stage complete), `failed` (AI stage failed, reserved). Sum that array for the report — do NOT raw-query `findings` to recompute it.
     **findings/ 里的 confirmed 文件 ≠ 子代理报告的 confirmed（auto-confirmed 已落库）:** `findings/<type>/NNN_*_confirmed.md` 是两类之和——(a) `auto-confirmed`：pipeline 在 scan 阶段直接机器确认的确定性发现（divide-by-zero 的 `divisor@field`/`global`、null-deref 的 `null@cfg-proof`/`null@malloc-fail`、uninit 的 certain-uninit 等），它们**不在** `candidates/_index.md` 里、子代理从来看不到；(b) 子代理写的 `confirmed`。所以 findings/ 的 confirmed 文件数可以明显大于子代理报告的数，多出的就是 auto-confirmed，**不是漏报也不是子代理说错**。最终计数一律以 `report --audit` 的 `audits` 数组（含 `auto_confirmed` 字段）为准，不要 `ls findings/` 反推、不要为这个对账。
    **DB 路径（绝对路径，否则 Exit code 1）:** every `secguard db` / `secguard schema` / `secguard report` call that takes `--db` MUST pass the ABSOLUTE path `<scan_dir>/../../.sgre/sgre.db`. A relative `.sgre/sgre.db` fails with `Error: Exit code 1` whenever your cwd is not the project root — do NOT retry it as-is; re-run with the ABSOLUTE path. **Do NOT `cd` into the scan dir to "fix" it:** commands run WITHOUT `--db` (`secguard plan`/`status`/`metrics`/`query` and `report --audit`) resolve the DB relative to cwd, so cd'ing into the scan dir would mint a second, empty `sgre.db` under the scan dir (doubling build time and splitting findings across two databases). Keep cwd at the project root for the whole run.
@@ -888,9 +888,10 @@ claim 行只是 `settlement_stats` 里的 `status='dispatched'` 占位，**不�
       with `[{"id":<id>,"review_status":"dismissed","review_reasoning":"<file:line +
       why-safe>"}]`. A row you keep needs NO write. On OpenCode, write the same
       batch through the `secguard_review` tool's `reviews` param (it wraps
-      `--review-json`); do NOT use its `list_auto_confirmed` param — that returns
-      `count: 0` because auto-confirmed rows are written `review_status='confirmed'`
-      at scan time, so list them with the `secguard_db` raw SQL of step a.
+      `--review-json`); list the rows through its `list_auto_confirmed` param (the
+      auto-confirmed rows carry `review_status` NULL until this step, so the
+      listing returns exactly the unreviewed set) or with the `secguard_db` raw
+      SQL of step a.
    d. Run the **final audit** ONCE so `result.sarif` / `report.md` / `findings/` reflect the
       dismissals — the regenerated `result.sarif` is the deliverable. Pass the UPDATED
        `--ai-duration-ms` (scan return → now, including 5.5) when the host can

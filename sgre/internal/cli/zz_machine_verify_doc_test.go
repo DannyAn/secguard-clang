@@ -51,6 +51,25 @@ func TestMachineVerifyStepDocumented(t *testing.T) {
 		t.Errorf("agent-body.md must state that machine verdicts are verified once before delivery")
 	}
 
+	// The listing surface must match the implementation: the scan writes
+	// auto-confirmed rows with review_status NULL (see autoConfirmFindings), so
+	// `report --list-auto-confirmed` IS the Step 5.5 selection set. A doc that
+	// claims the list returns 0 (or that scan marks the rows reviewed) sends the
+	// agent to raw SQL and conflates a machine verdict with a reviewed one.
+	for _, stale := range []string{
+		"returns `count: 0`",
+		"恒返回",
+		"`review_status='confirmed'` at scan time",
+		"marked reviewed at scan",
+	} {
+		if strings.Contains(instructions, stale) {
+			t.Errorf("command-instructions.md still claims %q — auto-confirmed rows are written review_status NULL", stale)
+		}
+	}
+	if !strings.Contains(instructions, "--list-auto-confirmed") {
+		t.Errorf("command-instructions.md Step 5.5 must name the listing command that selects the unreviewed rows")
+	}
+
 	// The proof basis the doc tells the agent to read must actually be persisted
 	// by autoConfirmFindings; a rename here would make Step 5.5 unactionable.
 	sources, err := filepath.Glob("*.go")

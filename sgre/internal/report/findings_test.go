@@ -460,6 +460,164 @@ func TestReconcileFindings_LatestVerdictWins(t *testing.T) {
 	}
 }
 
+// One file:line can carry two confirmed findings (the DB identity includes the
+// variable). Each must get its own verdict file: findings/ must never hold fewer
+// files than the DB/SARIF have confirmed results for that location.
+func TestReconcileFindings_OneFilePerConfirmedFindingAtOneLocation(t *testing.T) {
+	for _, withCandidates := range []bool{false, true} {
+		name := "no_candidates"
+		if withCandidates {
+			name = "candidates"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if withCandidates {
+				// Two candidate evidence files at the same line, one per variable.
+				for _, c := range []struct{ file, variable string }{
+					{"001_src_a_c_13.md", "p"},
+					{"002_src_a_c_13.md", "q"},
+				} {
+					candDir := filepath.Join(dir, CandidatesDir, "null-deref")
+					if err := os.MkdirAll(candDir, 0755); err != nil {
+						t.Fatal(err)
+					}
+					content := "# Null Deref in f\n\n**CWE:** CWE-476\n\n## Location\n\n" +
+						"- **File:** `/repo/src/a.c:13`\n- **Function:** `f`\n- **Variable:** `" + c.variable + "`\n\n" +
+						"## Evidence\n\n- **source:** possibly-null\n"
+					if err := os.WriteFile(filepath.Join(candDir, c.file), []byte(content), 0644); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+
+			findings := []*db.Finding{
+				{ID: 1, RuleID: "CWE-476", VulnType: "null-deref", Severity: "high", Status: db.StatusAutoConfirmed,
+					FilePath: "/repo/src/a.c", LineNumber: 13, FunctionName: "f", Variable: "p", Summary: "p is null"},
+				{ID: 2, RuleID: "CWE-476", VulnType: "null-deref", Severity: "high", Status: db.StatusAutoConfirmed,
+					FilePath: "/repo/src/a.c", LineNumber: 13, FunctionName: "f", Variable: "q", Summary: "q is null"},
+			}
+			res, err := ReconcileFindings(dir, findings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Written != 2 {
+				t.Errorf("written = %d, want 2", res.Written)
+			}
+			if names := lsFindings(t, dir, "null-deref"); len(names) != 2 {
+				t.Fatalf("findings files = %v, want one per confirmed finding", names)
+			}
+
+			// A re-run must rewrite the same two files, not mint a third.
+			if res, err = ReconcileFindings(dir, findings); err != nil {
+				t.Fatal(err)
+			}
+			if res.Written != 2 {
+				t.Errorf("second reconcile written = %d, want 2", res.Written)
+			}
+			if names := lsFindings(t, dir, "null-deref"); len(names) != 2 {
+				t.Fatalf("findings files after re-run = %v, want 2", names)
+			}
+
+			// Dismissing p must remove only p's file and leave q's in place.
+			findings[0].ReviewStatus = "dismissed"
+			findings[0].ReviewReasoning = "p is guarded"
+			if res, err = ReconcileFindings(dir, findings); err != nil {
+				t.Fatal(err)
+			}
+			names := lsFindings(t, dir, "null-deref")
+			if len(names) != 1 {
+				t.Fatalf("findings files after dismissing p = %v, want only q", names)
+			}
+			data, err := os.ReadFile(filepath.Join(dir, FindingsDir, "null-deref", names[0]))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), "- **Variable:** `q`") {
+				t.Errorf("surviving file is not q's finding:\n%s", data)
+			}
+		})
+	}
+}
+
+// The type directory is removed when its last file is dismissed, and a later
+// confirmed verdict for the same type must recreate it — otherwise the review
+// surface silently loses a type the DB/SARIF still report.
+func TestReconcileFindings_RebuildsTypeDirAfterAllDismissed(t *testing.T) {
+	dir := t.TempDir()
+	typeDir := filepath.Join(dir, FindingsDir, "null-deref")
+	findings := []*db.Finding{
+		{RuleID: "CWE-476", VulnType: "null-deref", FilePath: "/repo/src/a.c", LineNumber: 13,
+			FunctionName: "f", Variable: "p", Status: "confirmed", Severity: "high"},
+	}
+	if _, err := ReconcileFindings(dir, findings); err != nil {
+		t.Fatal(err)
+	}
+	if names := lsFindings(t, dir, "null-deref"); len(names) != 1 {
+		t.Fatalf("initial reconcile files = %v, want 1", names)
+	}
+
+	dismissed := []*db.Finding{
+		{RuleID: "CWE-476", VulnType: "null-deref", FilePath: "/repo/src/a.c", LineNumber: 13,
+			FunctionName: "f", Variable: "p", Status: "dismissed", ReviewReasoning: "guarded"},
+	}
+	if _, err := ReconcileFindings(dir, dismissed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(typeDir); !os.IsNotExist(err) {
+		t.Fatalf("empty type dir should be removed, stat err = %v", err)
+	}
+
+	if _, err := ReconcileFindings(dir, findings); err != nil {
+		t.Fatal(err)
+	}
+	if names := lsFindings(t, dir, "null-deref"); len(names) != 1 {
+		t.Fatalf("reconcile must recreate the removed type dir, files = %v", names)
+	}
+}
+
+// Two sub-category CWEs of one vuln type at the same location/variable are two
+// findings in the DB and result.sarif, so findings/ must hold two files too.
+func TestReconcileFindings_MultiCWESameLocation(t *testing.T) {
+	dir := t.TempDir()
+	findings := []*db.Finding{
+		{ID: 1, RuleID: "CWE-78", VulnType: "injection", Severity: "high", Status: "confirmed",
+			FilePath: "/repo/src/a.c", LineNumber: 7, FunctionName: "f", Variable: "cmd", Summary: "shell"},
+		{ID: 2, RuleID: "CWE-89", VulnType: "injection", Severity: "high", Status: "confirmed",
+			FilePath: "/repo/src/a.c", LineNumber: 7, FunctionName: "f", Variable: "cmd", Summary: "sql"},
+	}
+	res, err := ReconcileFindings(dir, findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Written != 2 {
+		t.Errorf("written = %d, want 2", res.Written)
+	}
+	if names := lsFindings(t, dir, "injection"); len(names) != 2 {
+		t.Fatalf("findings files = %v, want one per rule_id", names)
+	}
+}
+
+// A row whose rule_id is outside the registry but whose vuln_type is known still
+// gets a verdict file instead of being silently dropped from the review surface.
+func TestReconcileFindings_FallsBackToVulnTypeForUnknownRule(t *testing.T) {
+	dir := t.TempDir()
+	findings := []*db.Finding{
+		{RuleID: "CWE-9999", VulnType: "null-deref", Severity: "high", Status: "confirmed",
+			FilePath: "/repo/src/a.c", LineNumber: 13, FunctionName: "f", Variable: "p"},
+	}
+	res, err := ReconcileFindings(dir, findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Written != 1 || len(res.Errors) != 0 {
+		t.Fatalf("reconcile = %+v, want one written file", res)
+	}
+	names := lsFindings(t, dir, "null-deref")
+	if len(names) != 1 {
+		t.Fatalf("findings files = %v, want the unknown-rule finding placed by vuln_type", names)
+	}
+}
+
 // A re-scan into the same directory must not leave a previous run's candidate
 // or verdict files behind.
 func TestScanOutputWrite_ResetsDerivedTrees(t *testing.T) {

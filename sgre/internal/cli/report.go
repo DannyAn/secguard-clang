@@ -703,9 +703,11 @@ func runReportCmd(ctx context.Context, args []string) int {
 				if scanDir := resolveScanDir(remaining, scanID); scanDir != "" {
 					if dismissedType != "" {
 						if _, serr := report.SyncPerFinding(scanDir, dismissedType, in.File, in.Line, report.PerFindingUpdate{
-							Status:    "dismissed",
-							Reasoning: in.Reasoning,
-							CWE:       in.RuleID,
+							Status:       "dismissed",
+							Reasoning:    in.Reasoning,
+							FunctionName: in.Function,
+							Variable:     in.Variable,
+							CWE:          in.RuleID,
 						}); serr != nil {
 							fmt.Fprintf(os.Stderr, "warning: annotate dismissed candidate %s:%d: %v\n", in.File, in.Line, serr)
 						}
@@ -1373,6 +1375,24 @@ func runReportCmd(ctx context.Context, args []string) int {
 			// file cannot be placed or reconciled. Surface it instead of
 			// letting the review surface be quietly incomplete.
 			auditNoticeFields(out, orphans, unreviewed)
+			// findings/ is a projection of the DB, so its file count must equal
+			// the number of confirmed results the same invocation just wrote to
+			// result.sarif. If a confirmed row could not be placed (an unmapped
+			// rule_id with no known vuln_type, a write error), say so instead of
+			// shipping a review surface that is silently short.
+			confirmedResults := 0
+			for _, f := range scanFindings {
+				if f.FinalStatus() == "confirmed" {
+					confirmedResults++
+				}
+			}
+			if rec.Written != confirmedResults {
+				msg := fmt.Sprintf("%s/ holds %d file(s) for %d confirmed finding(s) — the review surface does not match the DB/result.sarif", report.FindingsDir, rec.Written, confirmedResults)
+				if prev, ok := out["warning"].(string); ok && prev != "" {
+					msg = prev + "; " + msg
+				}
+				out["warning"] = msg
+			}
 			WriteJSON(out)
 		} else {
 			out := map[string]interface{}{
@@ -1699,6 +1719,7 @@ func syncPerFindingAfterWrite(args []string, finding *db.Finding) perFindingOutc
 		Severity:       finding.Severity,
 		Confidence:     finding.Confidence,
 		FunctionName:   finding.FunctionName,
+		Variable:       finding.Variable,
 		Evidence:       finding.Evidence,
 		CWE:            finding.RuleID,
 	})

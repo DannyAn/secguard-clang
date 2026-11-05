@@ -214,6 +214,55 @@ func TestReportAudit_ReconcilesFindingsDir(t *testing.T) {
 	}
 }
 
+// findings/ must equal the confirmed set in the DB/result.sarif. A confirmed
+// row that cannot be placed (an unknown rule_id with no vuln_type) used to make
+// the review surface quietly short; the audit now says so.
+func TestReportAudit_WarnsWhenFindingsDirFallsShort(t *testing.T) {
+	ctx := context.Background()
+	_, dbPath, scanDir := findingsFixture(t, "null-deref", "001_src_a_c_13.md")
+
+	d, err := db.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Bypass the store's rule_id validation to model a legacy/out-of-registry
+	// confirmed row (the only way findings/ can legitimately fall short).
+	if _, err := d.ExecContext(ctx,
+		`INSERT INTO findings (rule_id, vuln_type, severity, confidence, evidence, status, file_path, line_number,
+		   function_name, variable, properties, summary, reasoning, fix_strategy, exception_check,
+		   review_status, review_reasoning, scan_id, fingerprint, created_at)
+		 VALUES ('CWE-9999', '', 'high', 1.0, '', 'confirmed', 'src/a.c', 13, 'f', '', '', '', '', '', '',
+		   '', '', ?, '', 0)`, fixtureScanID); err != nil {
+		d.Close()
+		t.Fatal(err)
+	}
+	d.Close()
+
+	stdout, _, exitCode := captureOutput(func() int {
+		return runReportCmd(ctx, []string{
+			"--db", dbPath, "--audit", "--scan-id", fixtureScanID, "--output-dir", scanDir,
+		})
+	})
+	if exitCode != 0 {
+		t.Fatalf("audit failed: %s", stdout)
+	}
+	var out struct {
+		FindingsSynced struct {
+			Written int `json:"written"`
+		} `json:"findings_synced"`
+		Warning string `json:"warning"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("audit response is not JSON: %s", stdout)
+	}
+	if out.FindingsSynced.Written != 0 {
+		t.Errorf("written = %d, want 0 (the row maps to no type dir)", out.FindingsSynced.Written)
+	}
+	if !strings.Contains(out.Warning, "does not match the DB/result.sarif") {
+		t.Errorf("audit must flag an incomplete findings/ dir, got warning %q", out.Warning)
+	}
+}
+
 // "Every candidate must get a finding" becomes machine-checkable: a bulk
 // exclusion the agent only narrated leaves candidates with no persisted verdict,
 // and the audit response says so.

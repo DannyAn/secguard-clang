@@ -39,7 +39,11 @@ type PerFindingUpdate struct {
 	Severity       string
 	Confidence     float64
 	FunctionName   string
-	Evidence       string
+	// Variable is the finding's variable (part of the DB identity). Two
+	// confirmed findings can share one file:line — different variables at the
+	// same statement — so the verdict-file lookup uses it to tell them apart.
+	Variable string
+	Evidence string
 	// CWE is the exact rule_id the verdict file should render. When empty,
 	// buildFindingDoc falls back to the vuln_type's canonical CWE.
 	CWE string
@@ -119,9 +123,92 @@ func findingBase(filePath string, line int) string {
 	return fmt.Sprintf("_%s_%d", sanitizeFilename(shortFile(filePath)), line)
 }
 
-// locateByBase finds the file in dir named <NNN><base>[_<verdict>].md. When
-// several files share a location, the one whose title names functionName wins.
-func locateByBase(dir, base, functionName string) string {
+// findingIdentity is the part of a finding's DB identity that can share one
+// file:line: the function, variable, and exact CWE. Two confirmed findings may
+// legitimately share a location (two variables dereferenced on one statement,
+// or two sub-category CWEs of one vuln type), and each must get its own verdict
+// file — otherwise findings/ holds fewer files than the DB/SARIF have results.
+type findingIdentity struct {
+	function string
+	variable string
+	cwe      string
+}
+
+// normalizeIdentityText collapses whitespace so a multi-line detector variable
+// (types without a variable key use the raw expression as Variable) compares
+// equal to the single-line form the evidence file renders.
+func normalizeIdentityText(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// docVariable returns the variable recorded in an evidence/verdict file.
+func docVariable(content string) (string, bool) {
+	const prefix = "- **Variable:** `"
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, prefix) && strings.HasSuffix(line, "`") {
+			return line[len(prefix) : len(line)-1], true
+		}
+	}
+	return "", false
+}
+
+// docCWE returns the CWE recorded in an evidence/verdict file.
+func docCWE(content string) (string, bool) {
+	const prefix = "**CWE:** "
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(line[len(prefix):]), true
+		}
+	}
+	return "", false
+}
+
+// docMatchesIdentity reports whether the file records exactly this finding.
+func docMatchesIdentity(content string, id findingIdentity) bool {
+	if id.function != "" && !strings.Contains(content, " in "+id.function+"\n") {
+		return false
+	}
+	if id.variable != "" {
+		got, ok := docVariable(content)
+		if !ok || normalizeIdentityText(got) != normalizeIdentityText(id.variable) {
+			return false
+		}
+	}
+	if id.cwe != "" {
+		got, ok := docCWE(content)
+		if !ok || !strings.EqualFold(got, id.cwe) {
+			return false
+		}
+	}
+	return true
+}
+
+// docMatchesLegacyLocation matches a file written before identity fields were
+// recorded (no Variable line) so an upgrade updates the old file in place
+// instead of minting a duplicate. A file that already records a different
+// variable is never a fallback match.
+func docMatchesLegacyLocation(content string, id findingIdentity) bool {
+	if id.function != "" && !strings.Contains(content, " in "+id.function+"\n") {
+		return false
+	}
+	if id.variable != "" {
+		if _, ok := docVariable(content); ok {
+			return false
+		}
+	}
+	if id.cwe != "" {
+		if got, ok := docCWE(content); ok && !strings.EqualFold(got, id.cwe) {
+			return false
+		}
+	}
+	return true
+}
+
+// locateByBase finds the file in dir named <NNN><base>[_<verdict>].md that
+// belongs to the finding described by id. When several files share a location,
+// the identity match wins; a pre-identity file is a fallback only for a finding
+// whose variable is not recorded there.
+func locateByBase(dir, base string, id findingIdentity) string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return ""
@@ -136,18 +223,30 @@ func locateByBase(dir, base, functionName string) string {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
-		if functionName == "" {
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			continue
+		}
+		content := string(data)
+		if docMatchesIdentity(content, id) {
 			return path
 		}
-		if data, err := os.ReadFile(path); err == nil &&
-			strings.Contains(string(data), " in "+functionName+"\n") {
-			return path
-		}
-		if fallback == "" {
+		if fallback == "" && docMatchesLegacyLocation(content, id) {
 			fallback = path
 		}
 	}
 	return fallback
+}
+
+// fileRecordsIdentity reports whether path already holds this finding (so a
+// rewrite is an update, not an overwrite of a different finding at the same
+// location).
+func fileRecordsIdentity(path string, id findingIdentity) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return docMatchesIdentity(string(data), id)
 }
 
 func seqPrefix(name string) string {
@@ -293,6 +392,9 @@ func buildFindingDoc(vulnType, filePath string, line int, verdict string, u PerF
 		if u.FunctionName != "" {
 			b.WriteString(fmt.Sprintf("- **Function:** `%s`\n", u.FunctionName))
 		}
+		if u.Variable != "" {
+			b.WriteString(fmt.Sprintf("- **Variable:** `%s`\n", normalizeIdentityText(u.Variable)))
+		}
 		b.WriteString("\n")
 	}
 
@@ -406,7 +508,10 @@ func SyncPerFinding(scanDir, vulnType, filePath string, line int, u PerFindingUp
 	findingsDir := filepath.Join(scanDir, FindingsDir, vulnType)
 	candDir := filepath.Join(scanDir, CandidatesDir, vulnType)
 
-	candPath := locateByBase(candDir, base, u.FunctionName)
+	// Candidate evidence files render the type's canonical CWE, not the exact
+	// per-category rule id, so the candidate lookup matches on function+variable
+	// only; the verdict lookup matches the exact CWE as well.
+	candPath := locateByBase(candDir, base, findingIdentity{function: u.FunctionName, variable: u.Variable})
 	candidate := ""
 	if candPath != "" {
 		data, err := os.ReadFile(candPath)
@@ -415,7 +520,8 @@ func SyncPerFinding(scanDir, vulnType, filePath string, line int, u PerFindingUp
 		}
 		candidate = string(data)
 	}
-	existing := locateByBase(findingsDir, base, u.FunctionName)
+	id := findingIdentity{function: u.FunctionName, variable: u.Variable, cwe: u.CWE}
+	existing := locateByBase(findingsDir, base, id)
 
 	if !actionable(res.Verdict) {
 		switch res.Verdict {
@@ -441,9 +547,12 @@ func SyncPerFinding(scanDir, vulnType, filePath string, line int, u PerFindingUp
 		return res, nil
 	}
 
-	seq := seqPrefix(filepath.Base(candPath))
+	// Keep an existing verdict file's sequence prefix so an update rewrites the
+	// file in place; fall back to the candidate's prefix (the normal first
+	// write), then to a fresh number for a finding with no evidence file.
+	seq := seqPrefix(filepath.Base(existing))
 	if seq == "" {
-		seq = seqPrefix(filepath.Base(existing))
+		seq = seqPrefix(filepath.Base(candPath))
 	}
 	if seq == "" {
 		seq = nextSeq(findingsDir)
@@ -454,6 +563,16 @@ func SyncPerFinding(scanDir, vulnType, filePath string, line int, u PerFindingUp
 	}
 	name := seq + base + statusSuffix(res.Verdict) + ".md"
 	newPath := filepath.Join(findingsDir, name)
+	// A second confirmed finding at the same file:line (another variable, or
+	// another sub-category CWE of the same type) shares the location-derived
+	// base but is a separate finding: never overwrite the first one's file.
+	if newPath != existing {
+		if _, statErr := os.Stat(newPath); statErr == nil && !fileRecordsIdentity(newPath, id) {
+			seq = nextSeq(findingsDir)
+			name = seq + base + statusSuffix(res.Verdict) + ".md"
+			newPath = filepath.Join(findingsDir, name)
+		}
+	}
 	doc := buildFindingDoc(vulnType, filePath, line, res.Verdict, u, candidate, projectRootFromScanDir(scanDir))
 	if err := os.WriteFile(newPath, []byte(doc), 0644); err != nil {
 		return res, fmt.Errorf("write finding file %s: %w", newPath, err)
@@ -489,6 +608,22 @@ func SyncPerFinding(scanDir, vulnType, filePath string, line int, u PerFindingUp
 	return res, nil
 }
 
+// findingVulnType resolves the directory a finding belongs in. The rule_id is
+// the normal source; legacy/edge rows that carry a known vuln_type with a
+// rule_id outside the registry still get a verdict file instead of being
+// silently dropped from the review surface.
+func findingVulnType(f *db.Finding) string {
+	if vt := planner.TypeForCWE(f.RuleID); vt != "" {
+		return vt
+	}
+	if f.VulnType != "" {
+		if _, err := planner.GetVulnTypeSpec(f.VulnType); err == nil {
+			return f.VulnType
+		}
+	}
+	return ""
+}
+
 // ReconcileFindings rebuilds findings/ from the database, which is the single
 // source of truth for verdicts. It is the backstop for the failure mode that
 // silently polluted findings/ before: a classification pass that wrote verdicts
@@ -506,7 +641,7 @@ func ReconcileFindings(scanDir string, findings []*db.Finding) (ReconcileResult,
 
 	keep := map[string]bool{}
 	for _, f := range latestPerLocation(findings, &res) {
-		vulnType := planner.TypeForCWE(f.RuleID)
+		vulnType := findingVulnType(f)
 		r, err := SyncPerFinding(scanDir, vulnType, f.FilePath, f.LineNumber, PerFindingUpdate{
 			Summary:        f.Summary,
 			Reasoning:      f.Reasoning,
@@ -516,6 +651,7 @@ func ReconcileFindings(scanDir string, findings []*db.Finding) (ReconcileResult,
 			Severity:       f.Severity,
 			Confidence:     f.Confidence,
 			FunctionName:   f.FunctionName,
+			Variable:       f.Variable,
 			Evidence:       f.Evidence,
 			CWE:            f.RuleID,
 		})
@@ -569,14 +705,18 @@ func ReconcileFindings(scanDir string, findings []*db.Finding) (ReconcileResult,
 	return res, nil
 }
 
-// latestPerLocation collapses the finding list to one verdict per location.
-// The same location can be written more than once (a re-run of a type batch, a
-// corrected verdict), and findings/ is a projection of the CURRENT verdict — so
-// the newest row (highest id, matching the ORDER BY id of the DB queries) wins
-// instead of whichever row happens to be rendered last.
+// latestPerLocation collapses the finding list to one verdict per finding
+// identity. The same finding can be written more than once (a re-run of a type
+// batch, a corrected verdict), and findings/ is a projection of the CURRENT
+// verdict — so the newest row (highest id, matching the ORDER BY id of the DB
+// queries) wins instead of whichever row happens to be rendered last. The
+// identity includes the rule_id: two sub-category CWEs of one type at the same
+// location/variable are two findings in the DB and in result.sarif, so they must
+// stay two entries here too.
 func latestPerLocation(findings []*db.Finding, res *ReconcileResult) []*db.Finding {
 	type key struct {
 		vulnType string
+		cwe      string
 		file     string
 		line     int
 		function string
@@ -588,12 +728,12 @@ func latestPerLocation(findings []*db.Finding, res *ReconcileResult) []*db.Findi
 		if f == nil {
 			continue
 		}
-		vulnType := planner.TypeForCWE(f.RuleID)
+		vulnType := findingVulnType(f)
 		if vulnType == "" {
 			res.SkippedNoCWE++
 			continue
 		}
-		k := key{vulnType, sanitizeFilename(shortFile(f.FilePath)), f.LineNumber, f.FunctionName, f.Variable}
+		k := key{vulnType, strings.ToUpper(strings.TrimSpace(f.RuleID)), sanitizeFilename(shortFile(f.FilePath)), f.LineNumber, f.FunctionName, f.Variable}
 		prev, seen := latest[k]
 		if !seen {
 			order = append(order, k)

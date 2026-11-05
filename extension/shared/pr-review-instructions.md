@@ -22,7 +22,7 @@ Review only the incremental changes of a PR/MR (or an arbitrary git diff) with t
 4. 所有类型写完（含 --complete-type）跑一次：
    `secguard report --audit --scan-id <review_id> --output-dir <review_dir> --ai-duration-ms <ms>`
    再读 `<review_dir>/result.sarif` 确认非空、`ls <review_dir>/findings/` 确认判定落盘。`<ms>` 是本轮 AI 研判实测墙钟（从拿到 review 结果进入分类，到本次收尾 audit 的毫秒数）。
-    审计前无需复核 auto-confirmed：它们是机器判定的确定性发现（scan 阶段已标记 `review_status='confirmed'`），无二次复核环节；`secguard report --list-auto-confirmed --scan-id <review_id> --db <db_path>` 恒返回 `count: 0`。
+    审计前本增量流程不跑 Step 5.5 的机器判定复核：auto-confirmed 是机器判定的确定性发现（DB `status='auto-confirmed'`、`review_status` 为 NULL），直接进入 result.sarif；如需复核，`secguard report --list-auto-confirmed --scan-id <review_id> --db <db_path>` 会列出这些未复核行（不是 `count: 0`），再用 `--review-json` 回写。
 
 ## 与全仓 scan 的关键区别（agent 只需记住这些）
 
