@@ -10,7 +10,7 @@ func init() {
 		EvidenceType:     "INTEGER_OVERFLOW",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "integer-overflow",
-		FilterFactories:    chainIntegerOverflow(),
+		FilterFactories:  chainIntegerOverflow(),
 		// IntOverflowGuardFilter reads the scan-shared interprocedural summary.
 		SharedTaintSummary: true,
 		// Value-analysis tiers. size_calc_overflow (malloc(a * b) / malloc(n *
@@ -70,7 +70,7 @@ func buildIntegerOverflowVerdictFacts(c Candidate) []VerdictFact {
 		if c.ShiftWidth != "" {
 			facts = append(facts, VerdictFact{
 				Token:  "width@" + c.ShiftWidth,
-				Detail: "the shifted operand's LP64 bit width is " + c.ShiftWidth,
+				Detail: "the shifted operand's bit width after C integer promotion is " + c.ShiftWidth,
 			})
 		}
 		return facts
@@ -84,7 +84,7 @@ func buildIntegerOverflowVerdictFacts(c Candidate) []VerdictFact {
 		if c.ShiftWidth != "" {
 			facts = append(facts, VerdictFact{
 				Token:  "width@" + c.ShiftWidth,
-				Detail: "the shifted operand's LP64 bit width is " + c.ShiftWidth,
+				Detail: "the shifted operand's bit width after C integer promotion is " + c.ShiftWidth,
 			})
 		}
 		return facts

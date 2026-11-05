@@ -17,9 +17,86 @@ import (
 // passes its argument by NAME but the macro assigns to it, so the argument is an
 // output, not a read of an uninitialized value. writesParam[i] is true when the
 // i-th parameter is written.
+//
+// writesFree holds the bare identifiers an initialization macro assigns OUTSIDE
+// its parameter list: the command-message idiom
+//
+//	#define CMD_MSG_INIT(recv) do { execId = get_exec_id(recv); paraNum = 0; } while (0)
+//
+// writes caller locals that are not arguments at all. Without this, the uninit
+// detector sees only the declaration and auto-confirms a use-before-init false
+// positive.
 type WriteSummary struct {
-	writesParam map[int]bool   // param position i is assigned as a whole / address-taken
-	writesField map[int]string // param position i has member <suffix> assigned (".field" / "->field")
+	writesParam map[int]bool    // param position i is assigned as a whole / address-taken
+	writesField map[int]string  // param position i has member <suffix> assigned (".field" / "->field")
+	writesFree  map[string]bool // non-parameter identifiers an initialization macro assigns
+}
+
+// extraInitMacros holds project-declared initialization-macro names registered
+// at CLI startup from secguard.toml [uninit] initialization_macros. A project
+// whose command-init macro does not follow the *_INIT naming convention declares
+// it here so the macro-body assignments still count as initialization.
+var extraInitMacros = map[string]bool{}
+
+// RegisterInitializationMacros adds project-declared initialization-macro names.
+// names are matched verbatim (C is case-sensitive).
+func RegisterInitializationMacros(names []string) {
+	for _, n := range names {
+		if n != "" {
+			extraInitMacros[n] = true
+		}
+	}
+}
+
+// IsConfiguredInitializationMacro reports whether name was declared in
+// secguard.toml (explicit user contract), as opposed to merely following the
+// naming convention. Only the explicit contract may initialize variables whose
+// names the macro body cannot reveal (an out-of-tree definition).
+func IsConfiguredInitializationMacro(name string) bool {
+	return name != "" && extraInitMacros[name]
+}
+
+// IsInitializationMacro reports whether name is an initialization macro as seen
+// in RAW source text (a call site): either declared in secguard.toml (explicit
+// contract) or following the ALL_CAPS command-init naming convention
+// (`CMD_MSG_INIT`, `MSG_INIT`, `INIT_CTX`). A lowercase C function can end in
+// `_init` too (`conn_init(...)`), so the convention requires the macro spelling
+// to be all uppercase; a project with a lowercase macro declares it in config.
+func IsInitializationMacro(name string) bool {
+	if name == "" {
+		return false
+	}
+	if extraInitMacros[name] {
+		return true
+	}
+	return isAllCapsName(name) && initShapedName(name)
+}
+
+// initShapedName recognizes the initialization spelling in a name that is
+// already known to be a macro (a preproc_function_def node), where the
+// uppercase convention is not required.
+func initShapedName(name string) bool {
+	upper := strings.ToUpper(name)
+	// A getter spelled with INIT in its name (`INIT_GET_STATE`) reads state; it
+	// does not initialize its caller's locals.
+	if strings.Contains(upper, "GET_") || strings.HasSuffix(upper, "_GET") {
+		return false
+	}
+	return strings.Contains(upper, "_INIT") || strings.Contains(upper, "INIT_")
+}
+
+// isAllCapsName reports whether name is the ALL_CAPS spelling of a C macro.
+func isAllCapsName(name string) bool {
+	hasLetter := false
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return false
+		case r >= 'A' && r <= 'Z':
+			hasLetter = true
+		}
+	}
+	return hasLetter
 }
 
 // WriteSummaries returns, per macro name, which parameter positions its body
@@ -58,7 +135,16 @@ func WriteSummaries(root parser.Node) map[string]WriteSummary {
 				summary.writesField[i] = field
 			}
 		}
-		if len(summary.writesParam) > 0 || len(summary.writesField) > 0 {
+		// A command-init macro writes caller locals that never appear in its
+		// parameter list. Only initialization-shaped names are considered so an
+		// ordinary helper macro that happens to assign a caller symbol is not
+		// mistaken for an initializer.
+		if extraInitMacros[name] || initShapedName(name) {
+			if free := assignedFreeIdentifiers(body, params); len(free) > 0 {
+				summary.writesFree = free
+			}
+		}
+		if len(summary.writesParam) > 0 || len(summary.writesField) > 0 || len(summary.writesFree) > 0 {
 			out[name] = summary
 		}
 	}
@@ -117,6 +203,37 @@ func WrittenFieldArgs(call parser.Node, summaries map[string]WriteSummary) map[s
 				out[arg.Text()] = suffix
 			}
 		}
+	}
+	return out
+}
+
+// WrittenFree returns the non-parameter identifiers an initialization macro
+// assigns at its call site. They are caller locals the macro initializes
+// implicitly (`CMD_MSG_INIT(recv)` writing execId/paraNum), so a use after the
+// call is initialized and a call line naming them is not a read.
+func WrittenFree(call parser.Node, summaries map[string]WriteSummary) map[string]bool {
+	out := make(map[string]bool)
+	summary, ok := summaries[callName(call)]
+	if !ok || len(summary.writesFree) == 0 {
+		return out
+	}
+	for name := range summary.writesFree {
+		out[name] = true
+	}
+	return out
+}
+
+// WrittenFreeByName is WrittenFree for a macro call tree-sitter parsed as an
+// ERROR node (a TYPE-cast argument makes the call unparsable), where only the
+// macro name is recoverable (see macroBlockCall).
+func WrittenFreeByName(name string, summaries map[string]WriteSummary) []string {
+	summary, ok := summaries[name]
+	if !ok || len(summary.writesFree) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(summary.writesFree))
+	for v := range summary.writesFree {
+		out = append(out, v)
 	}
 	return out
 }
@@ -198,6 +315,47 @@ func assignedIdentifiers(body string) map[string]bool {
 	return out
 }
 
+// assignedFreeIdentifiers extracts the bare identifiers a macro body assigns as
+// a whole, excluding the macro's own parameters (those are handled by
+// writesParam) and member/subscript/dereference targets (`s.field = v`,
+// `arr[i] = v`, `*p = v` write storage the caller names indirectly, not a caller
+// local by that spelling). A plain `=` is the only accepted assignment operator:
+// `==` is a comparison and `x += v` / `x++` read the old value first.
+func assignedFreeIdentifiers(body string, params []string) map[string]bool {
+	compact := compactBody(stripLiteralsAndComments(body))
+	isParam := make(map[string]bool, len(params))
+	for _, p := range params {
+		isParam[p] = true
+	}
+	out := make(map[string]bool)
+	i := 0
+	for i < len(compact) {
+		c := compact[i]
+		if !(c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+			i++
+			continue
+		}
+		j := i + 1
+		for j < len(compact) && isIdentChar(compact[j]) {
+			j++
+		}
+		if j < len(compact) && compact[j] == '=' && !(j+1 < len(compact) && compact[j+1] == '=') {
+			name := compact[i:j]
+			// A member / subscript / dereference target is not a whole-variable
+			// write of a caller local spelled like the field/element name.
+			prev := byte(0)
+			if i > 0 {
+				prev = compact[i-1]
+			}
+			if !isParam[name] && prev != '.' && prev != '>' && prev != ']' && prev != '[' && prev != '*' {
+				out[name] = true
+			}
+		}
+		i = j
+	}
+	return out
+}
+
 // MergeWriteSummaries combines per-file write-summary maps into one. A macro
 // defined in one file (typically a .h header) and called in another (.c source)
 // is invisible to the per-file WriteSummaries of the source file; merging across
@@ -216,6 +374,9 @@ func MergeWriteSummaries(maps ...map[string]WriteSummary) map[string]WriteSummar
 				if existing.writesField == nil {
 					existing.writesField = make(map[int]string)
 				}
+				if existing.writesFree == nil && len(s.writesFree) > 0 {
+					existing.writesFree = make(map[string]bool, len(s.writesFree))
+				}
 				for i := range s.writesParam {
 					existing.writesParam[i] = true
 				}
@@ -223,6 +384,9 @@ func MergeWriteSummaries(maps ...map[string]WriteSummary) map[string]WriteSummar
 					if _, ok := existing.writesField[i]; !ok {
 						existing.writesField[i] = suffix
 					}
+				}
+				for v := range s.writesFree {
+					existing.writesFree[v] = true
 				}
 				out[name] = existing
 				continue
@@ -236,6 +400,12 @@ func MergeWriteSummaries(maps ...map[string]WriteSummary) map[string]WriteSummar
 			}
 			for i, suffix := range s.writesField {
 				cp.writesField[i] = suffix
+			}
+			if len(s.writesFree) > 0 {
+				cp.writesFree = make(map[string]bool, len(s.writesFree))
+				for v := range s.writesFree {
+					cp.writesFree[v] = true
+				}
 			}
 			out[name] = cp
 		}

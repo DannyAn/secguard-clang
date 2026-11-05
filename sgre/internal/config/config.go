@@ -29,6 +29,7 @@ type Config struct {
 	OwnershipTransferCalls OwnershipTransferCalls `toml:"ownership_transfer_calls"`
 	Nullability            Nullability            `toml:"nullability"`
 	IntegerOverflow        IntegerOverflow        `toml:"integer_overflow"`
+	Uninit                 Uninit                 `toml:"uninit"`
 	Contracts              Contracts              `toml:"contracts"`
 	Scan                   Scan                   `toml:"scan"`
 	Severity               Severity               `toml:"severity"`
@@ -491,6 +492,20 @@ type IntegerOverflow struct {
 	TruncatingWrappers map[string]int `toml:"truncating_wrappers"`
 }
 
+// Uninit declares project-specific uninitialized-read facts. InitializationMacros
+// lists function-like macros that initialize caller locals implicitly (the
+// command-message idiom: `CMD_MSG_INIT(recv)` whose body assigns execId/paraNum).
+// A macro whose definition is in the scan tree is recognized from its body; a
+// declaration here is the contract for a macro defined in an excluded/out-of-tree
+// header, where the body is invisible: the call initializes the locals declared
+// before it.
+//
+//	[uninit]
+//	initialization_macros = ["CMD_MSG_INIT", "MSG_CTX_INIT"]
+type Uninit struct {
+	InitializationMacros []string `toml:"initialization_macros"`
+}
+
 // Contracts declares contracts for tree-EXTERNAL symbols (framework/SDK
 // functions or macros whose definitions live outside the scan tree), so the AI
 // classifier judges a call to them from the declared contract instead of
@@ -798,6 +813,18 @@ func (c *Config) IntegerOverflowTruncatingWrappers() map[string]int {
 		return nil
 	}
 	return c.IntegerOverflow.TruncatingWrappers
+}
+
+// UninitInitializationMacros returns the project-declared initialization macros
+// (secguard.toml [uninit] initialization_macros). They are registered into
+// internal/macros at CLI startup so the uninit detector and planner treat their
+// body assignments as initialization even when the definition is outside the
+// scan tree.
+func (c *Config) UninitInitializationMacros() []string {
+	if c == nil {
+		return nil
+	}
+	return c.Uninit.InitializationMacros
 }
 
 // ContractBySymbol returns the user-declared tree-external contracts (symbol ->

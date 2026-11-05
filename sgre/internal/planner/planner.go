@@ -290,9 +290,21 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 		// Type-inherent proofs (dangerous-function, signal-handler) are
 		// unaffected: their candidate's variable is the API name, which a macro
 		// call does not name.
-		if c.MacroContext && c.SuspicionLevel == "confirmed" &&
-			p.macro.macroContextMentions(ctx, p.store, c.FunctionID, filePathByID[c.FileID], c.Line, c.VariableName) {
-			c.SuspicionLevel = "suspected"
+		//
+		// The same applies, without the name match, to an uninit `init@none`
+		// read next to an initialization macro: command-init macros
+		// (`CMD_MSG_INIT(recv)` → `execId = ...`) assign caller locals that never
+		// appear in their argument list, so "no write in the function" cannot be
+		// verified while the macro body is not modelled.
+		if c.MacroContext && c.SuspicionLevel == "confirmed" {
+			path := filePathByID[c.FileID]
+			demote := p.macro.macroContextMentions(ctx, p.store, c.FunctionID, path, c.Line, c.VariableName)
+			if !demote && spec.Name == "uninit" && c.Origin == "stack_uninit" && c.InitWrite == "none" {
+				demote = p.macro.macroContextInitMacro(ctx, p.store, c.FunctionID, path, c.Line)
+			}
+			if demote {
+				c.SuspicionLevel = "suspected"
+			}
 		}
 		result.Candidates = append(result.Candidates, newEvidenceItem(c, spec, filePathByID[c.FileID]))
 	}

@@ -82,10 +82,12 @@ The two GAP-06 shift categories carry their own dense facts (both are
   width (or negative) → certain CWE-758 undefined behavior.
 - `shift_base@signed-literal` — a signed integer literal left-shifted past its
   signed range (`1 << 31`) → certain CWE-190 signed overflow.
-- `width@N` — the shifted operand's LP64 bit width, against which the count was
-  compared. An unsigned shift (`1u << 31`) or a wide type (`uint64_t x; x << 40`)
-  is well-defined and never reported; a variable count with no single-point
-  proof is also never reported.
+- `width@N` — the shifted operand's bit width AFTER C integer promotion, against
+  which the count was compared. A narrow operand promotes to 32-bit `int`
+  (`uint8_t x; x << 8` / `uint16_t x; x << 15` are well-defined widenings and are
+  never reported; only a count at/above 32 is UB for them). An unsigned shift
+  (`1u << 31`) or a wide type (`uint64_t x; x << 40`) is also well-defined; a
+  variable count with no single-point proof is never reported.
 
 ### Dangerous Patterns
 

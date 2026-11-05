@@ -239,6 +239,21 @@ func buildDefiniteInitFlow(ctx context.Context, cfgCache *graph.CFGCache, fn *db
 	cfg, lease := acquirePlannerCFG(ctx, cfgCache, tree, fn, body)
 	aliases := pointerAliases(body)
 
+	// localDeclLines records where each uninitialized local is declared, so a
+	// project-whitelisted init macro (whose body is outside the scan tree) can
+	// initialize the locals that precede it.
+	localDeclLines := make(map[string]int)
+	for _, decl := range body.FindAll("declaration") {
+		if !isUninitDecl(decl) {
+			continue
+		}
+		for _, name := range declaredNames(decl) {
+			if cur, ok := localDeclLines[name]; !ok || decl.StartLine() < cur {
+				localDeclLines[name] = decl.StartLine()
+			}
+		}
+	}
+
 	// Effects are computed per CFG node from that node's OWN statement — never
 	// from a line-keyed map. Line-keyed maps collide when several statements
 	// share one line (`while (c) { x = n; n--; }` puts the while header, x=n
@@ -292,6 +307,23 @@ func buildDefiniteInitFlow(ctx context.Context, cfgCache *graph.CFGCache, fn *db
 			for name := range macros.WrittenArgs(call, macroWrites) {
 				e.kill[name] = true
 			}
+			// A command-init macro writes caller locals that are not arguments
+			// (`CMD_MSG_INIT(recv)` → `execId = ...`); the body assignment makes
+			// them initialized at this node too.
+			for name := range macros.WrittenFree(call, macroWrites) {
+				e.kill[name] = true
+			}
+			// An explicitly whitelisted init macro whose body is outside the scan
+			// tree initializes the locals declared before the call (the
+			// "declarations followed by the command-init macro" idiom). This is a
+			// user-declared contract, never inferred from the name alone.
+			if name := callName(call); macros.IsConfiguredInitializationMacro(name) {
+				for local, declLine := range localDeclLines {
+					if declLine <= call.StartLine() {
+						e.kill[local] = true
+					}
+				}
+			}
 		}
 		// A loop macro whose expansion opens a block (`POOL_FOR_ALL(pool_id) {
 		// ... }`) parses as a function_definition, so it has no call_expression
@@ -301,6 +333,9 @@ func buildDefiniteInitFlow(ctx context.Context, cfgCache *graph.CFGCache, fn *db
 		// even though the loop head assigns it.
 		if name, args := macroBlockCall(n.Stmt); name != "" {
 			for _, v := range macros.WrittenArgsInError(name, args, macroWrites) {
+				e.kill[v] = true
+			}
+			for _, v := range macros.WrittenFreeByName(name, macroWrites) {
 				e.kill[v] = true
 			}
 		}
