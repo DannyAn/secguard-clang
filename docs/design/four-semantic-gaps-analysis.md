@@ -447,7 +447,7 @@ OOB if access_start < 0 || access_end > allocated_object_size
 
 推荐新增 `layout_oob_read` / `layout_oob_write`（而不是复用 `heap_oob_read/write`），因为：
 
-- 现有 `heap_oob_*` 的 confirmed 证明是“常量索引 > 分配大小”；
+- 现有 `heap_oob_*` 的 confirmed 证明是“常量/区间索引超出已知分配大小”；
 - 字段偏移证明是“类型布局 + ABI”；
 - 复用会导致 `TestConfirmedTierPolicy` 的 golden 清单无法表达证明类别，且 AI 边界文档会失真。
 
@@ -813,7 +813,7 @@ Issue 明确要求保留该测试，但需要区分它锁定的是“不产生 C
 | pipeline 重建/注入 | `sgre/internal/cli/pipeline.go:119`（`ClearGraph`）、`:242`（`ClearSecurityEvents`）、`:266`（`WithAliasGraph`）、`:312`（`EnsureFunctionSummaries`） |
 | AI 边界守卫 | `sgre/internal/planner/zz_ai_judgment_boundary_test.go:20`（`TestConfirmedTierPolicy`） |
 | 声明事实不变性 | `sgre/internal/planner/zz_declaration_invariance_test.go:30` |
-| 能力夹具 | `sgre/testdata/feedback_watch/README.md`；`sgre/internal/planner/feedback_watch_test.go:40` |
+| 能力夹具 | `sgre/testdata/feedback_watch/README.md`；`sgre/internal/planner/feedback_watch_test.go:36` |
 | 基准 | `examples/c-vuln-benchmark/benchmark.md`；`examples/c-vuln-benchmark/scripts/validate-benchmark.py` |
 
 ---

@@ -74,6 +74,7 @@ Phase 1-4 的 PR 不合并到同一个 PR；Phase 5 可以在最后一个功能 
 - 构建位置：`cli/pipeline.go` 的 `ClearSecurityEvents` 之后、`RunAllDetectorsWithSkip` 之前，与 `AliasGraph` 相邻（`cli/pipeline.go:266`）；
 - ctx 注入（`WithTypeLayout` / `WithCallSiteBinding` / `WithGlobalWriteIndex`），检测器与 planner filter 共享同一实例；
 - 每次 scan 重建，不跨扫描缓存；
+- pre-detector 阶段内部顺序：`repofacts`（含 Type Layout）→ `CallSiteBinding`（消费 layout 的元素大小）→ `GlobalWriteIndex`（可复用 file_scope / AliasGraph）；
 - 不在 `buildFuncSummaries`（被 3 个检测器各调用一次）里追加跨检测器事实；1140 的摘要扩展在 Phase 4 先把 `buildFuncSummaries` 缓存成 scan-scoped 单次构建（首次调用构建、其余检测器复用 ctx 结果）。
 
 ### 3.2 持久化与失效
