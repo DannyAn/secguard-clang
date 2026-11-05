@@ -21,6 +21,7 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
+	"github.com/DannyAn/secguard-clang/internal/typeinfo"
 )
 
 // FieldFact is one struct/union member.
@@ -49,6 +50,25 @@ type Facts struct {
 	structs map[string]map[string]FieldFact
 	fields  map[string][]FieldFact
 	globals map[string][]GlobalArray
+	layouts map[typeinfo.LayoutKey]typeinfo.TypeLayout
+}
+
+// LayoutOf 返回给定 LayoutKey 的 TypeLayout。ok=false 表示该类型布局未知。
+// TU/Config 为空时按默认 ABI（LP64）计算，provenance=assumed_default_abi。
+func (f *Facts) LayoutOf(key typeinfo.LayoutKey) (typeinfo.TypeLayout, bool) {
+	if f == nil {
+		return typeinfo.TypeLayout{}, false
+	}
+	tl, ok := f.layouts[key]
+	return tl, ok
+}
+
+// Layouts 返回所有已计算的类型布局（用于调试/测试）。
+func (f *Facts) Layouts() map[typeinfo.LayoutKey]typeinfo.TypeLayout {
+	if f == nil {
+		return nil
+	}
+	return f.layouts
 }
 
 // Build walks every indexed file once and returns the aggregated facts.
@@ -60,6 +80,7 @@ func Build(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Lo
 		structs: map[string]map[string]FieldFact{},
 		fields:  map[string][]FieldFact{},
 		globals: map[string][]GlobalArray{},
+		layouts: map[typeinfo.LayoutKey]typeinfo.TypeLayout{},
 	}
 	var indexedPaths []string
 	var headerPaths []string
@@ -123,6 +144,7 @@ func Build(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Lo
 	globalCounts := map[string]map[int]bool{}
 	globalSymbols := map[string]string{}
 	globalTypes := map[string]string{}
+	var allLayoutDecls []structDecl
 	processTree := func(root parser.Node) {
 		for _, kind := range []string{"struct_specifier", "union_specifier"} {
 			for _, ss := range root.FindAll(kind) {
@@ -188,6 +210,7 @@ func Build(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Lo
 	// file is re-parsed and released inside the callback; no root is retained.
 	if err := eachIndexedFile(ctx, store, p, logger, func(file *db.File, root parser.Node, tree *parser.Tree) {
 		processTree(root)
+		allLayoutDecls = append(allLayoutDecls, collectStructDecls(root, f.Macros)...)
 	}); err != nil {
 		return nil, err
 	}
@@ -198,6 +221,7 @@ func Build(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Lo
 		}
 		if err := p.WithParseCached(source, path, func(tree *parser.Tree) {
 			processTree(tree.RootNode())
+			allLayoutDecls = append(allLayoutDecls, collectStructDecls(tree.RootNode(), f.Macros)...)
 		}); err != nil && logger != nil {
 			logger.Debug("repofacts: re-parse worktree header failed, skipping", "file", path, "error", err)
 		}
@@ -247,6 +271,11 @@ func Build(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Lo
 		}
 		f.globals[name] = []GlobalArray{g}
 	}
+
+	// Pass 3: Type Layout census. 用默认 ABI（LP64）+ pack=0 + assumed_default_abi
+	// provenance 计算所有 struct/union 布局。compile_commands 的 per-TU 配置接入
+	// 在 Phase 1b-2；此处是"无 compile_commands"降级路径（禁止 confirmed）。
+	f.layouts = buildLayouts(allLayoutDecls, typeinfo.ABILP64, 0, layoutProvenance(false))
 	return f, nil
 }
 
