@@ -10,6 +10,7 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/macros"
 )
 
 // macroCallRe matches a function-like call identifier immediately followed by
@@ -17,6 +18,18 @@ import (
 // macro-name set; C keywords (if/for/while/return/sizeof, all lowercase) are
 // never flagged because they are neither ALL_CAPS nor a known macro name.
 var macroCallRe = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
+
+// macroWindowScan is the result of scanning a candidate's macro context window.
+type macroWindowScan struct {
+	// context is true when the window contains a function-like macro call.
+	context bool
+	// mentions is true when such a call names the tracked variable.
+	mentions bool
+	// initMacro is true when such a call is an initialization macro (a body
+	// assignment or a secguard.toml [uninit] declaration may initialize caller
+	// locals implicitly).
+	initMacro bool
+}
 
 // macroContextWindow is how many source lines on each side of the reported
 // statement are scanned for a macro call. It matches candidateContextLines so a
@@ -152,8 +165,31 @@ func (d *macroContextDetector) hasMacroContext(path string, line int) bool {
 // hasMacroContextIn is hasMacroContext with the scan window clamped to
 // [lo, hi] (inclusive); 0/0 means "no clamp" (the whole file).
 func (d *macroContextDetector) hasMacroContextIn(path string, line, lo, hi int) bool {
-	context, _ := d.scanWindow(path, line, lo, hi, "")
-	return context
+	scan := d.scanWindow(path, line, lo, hi, "")
+	return scan.context
+}
+
+// macroContextInitMacro reports whether a function-like macro call in the
+// context window of line is an initialization macro. The CFG never expands it,
+// so an `init@none` machine verdict inside that region rests on a premise the
+// pipeline cannot verify — the macro may assign the variable implicitly.
+func (d *macroContextDetector) macroContextInitMacro(ctx context.Context, store db.Store, funcID int64, path string, line int) bool {
+	d.ensureDefinedFuncs(ctx, store)
+	lo, hi := d.functionSpan(funcID)
+	scan := d.scanWindow(path, line, lo, hi, "")
+	return scan.initMacro
+}
+
+// functionSpan returns the candidate function's body bounds, or 0/0 when the
+// index has none.
+func (d *macroContextDetector) functionSpan(funcID int64) (int, int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	span, ok := d.funcSpans[funcID]
+	if !ok || span[0] <= 0 || span[1] < span[0] {
+		return 0, 0
+	}
+	return span[0], span[1]
 }
 
 // macroContextMentions reports whether a function-like macro call in the
@@ -169,15 +205,9 @@ func (d *macroContextDetector) macroContextMentions(ctx context.Context, store d
 		return false
 	}
 	d.ensureDefinedFuncs(ctx, store)
-	d.mu.Lock()
-	span, ok := d.funcSpans[funcID]
-	d.mu.Unlock()
-	lo, hi := 0, 0
-	if ok && span[0] > 0 && span[1] >= span[0] {
-		lo, hi = span[0], span[1]
-	}
-	_, mentions := d.scanWindow(path, line, lo, hi, name)
-	return mentions
+	lo, hi := d.functionSpan(funcID)
+	scan := d.scanWindow(path, line, lo, hi, name)
+	return scan.mentions
 }
 
 // variableRoot strips a member/subscript chain to the pointer variable that owns
@@ -193,16 +223,17 @@ func variableRoot(name string) string {
 	return strings.TrimSpace(name)
 }
 
-// scanWindow walks the context window and reports (a) whether it contains a
-// function-like macro CALLS (not a #define), and (b) whether any such call site
-// mentions the identifier name.
-func (d *macroContextDetector) scanWindow(path string, line, lo, hi int, name string) (bool, bool) {
+// scanWindow walks the context window and reports whether it contains
+// function-like macro CALLS (not a #define), whether any such call site mentions
+// the identifier name, and whether any of them is an initialization macro.
+func (d *macroContextDetector) scanWindow(path string, line, lo, hi int, name string) macroWindowScan {
+	var out macroWindowScan
 	if path == "" || line <= 0 {
-		return false, false
+		return out
 	}
 	all := d.fileLines(path)
 	if all == nil || line > len(all) {
-		return false, false
+		return out
 	}
 	// Snapshot the defined-name set: the writer replaces the map wholesale
 	// (never mutates a published one), so the reference is stable for the
@@ -226,9 +257,8 @@ func (d *macroContextDetector) scanWindow(path string, line, lo, hi int, name st
 		end = len(all)
 	}
 	if start > end {
-		return false, false
+		return out
 	}
-	context := false
 	for i, l := range all[start-1 : end] {
 		// A preprocessor line (#define FOO(x) ...) DECLARES a macro, it does
 		// not CALL one: the dereference does not involve FOO just because
@@ -238,7 +268,16 @@ func (d *macroContextDetector) scanWindow(path string, line, lo, hi int, name st
 		}
 		for _, m := range macroCallRe.FindAllStringSubmatchIndex(l, -1) {
 			macroName := l[m[2]:m[3]]
-			isMacro := d.known[macroName]
+			// A raw-source line cannot distinguish a macro call from a FUNCTION
+			// call spelled like one (`conn_init(...)`), so the name convention
+			// requires the ALL_CAPS macro spelling and an explicit config
+			// declaration bypasses it. A name the index knows as a scanned
+			// function definition is never a macro here.
+			isInit := macros.IsInitializationMacro(macroName)
+			if defined != nil && defined[macroName] {
+				isInit = false
+			}
+			isMacro := d.known[macroName] || isInit
 			if !isMacro {
 				// An ALL_CAPS name that the function index knows as a scanned
 				// DEFINITION is a function, not a #define: the convention
@@ -248,7 +287,10 @@ func (d *macroContextDetector) scanWindow(path string, line, lo, hi int, name st
 			if !isMacro {
 				continue
 			}
-			context = true
+			out.context = true
+			if isInit {
+				out.initMacro = true
+			}
 			if name == "" {
 				continue
 			}
@@ -257,11 +299,11 @@ func (d *macroContextDetector) scanWindow(path string, line, lo, hi int, name st
 			// site (`return a + 1 + MYMACRO(0)`) and demote a proof the macro
 			// cannot touch.
 			if mentionsIdentifier(macroArgsText(all, start-1+i, m[1]-1), name) {
-				return context, true
+				out.mentions = true
 			}
 		}
 	}
-	return context, false
+	return out
 }
 
 // macroArgsText returns the text of the argument list starting at the "(" in

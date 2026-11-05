@@ -65,6 +65,10 @@ the embedded section and the indexed lookup.
 | Block-scope `static` / `extern` (zero-initialized by the C standard) | **false-positive** |
 
 ### Common False Positives
+- Variable initialized implicitly by a command-init macro that does not receive it
+  as an argument (`#define CMD_MSG_INIT(recv) do { execId = ...; } while (0)`):
+  read the embedded `## Macro Definition`; if the body assigns the variable, dismiss.
+  A demoted `init@none` row carrying `macro-context` is exactly this shape.
 - Variable initialized via pointer (out-parameter): `init(&x)`
 - Variable initialized via `memset(&x, 0, sizeof(x))`
 - Variable is a struct with default-zero semantics

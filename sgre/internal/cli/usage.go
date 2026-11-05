@@ -390,6 +390,14 @@ What it is:
     from their returns cannot exceed the buffer and a later 'size - total'
     subtraction cannot underflow.
 
+  [uninit] — uninitialized-read facts
+    initialization_macros = ["..."]
+    Function-like macros that initialize caller locals implicitly (the
+    command-message idiom: CMD_MSG_INIT(recv) whose body assigns execId/paraNum).
+    Declare a macro here when its definition is outside the scan tree; the call
+    then initializes the locals declared before it, so no CWE-457 candidate is
+    produced.
+
 Examples:
   secguard config
   secguard config --example`)
@@ -480,6 +488,17 @@ names = [
 # subtraction cannot underflow.
 [integer_overflow.truncating_wrappers]
 # nlog_syslog_add_pri = 1
+
+# Function-like macros that initialize caller locals implicitly (the
+# command-message idiom: CMD_MSG_INIT(recv) whose body assigns execId/paraNum).
+# A macro whose definition is in the scan tree is recognized from its body;
+# declare it here when the definition is outside the scan tree.
+# The call then initializes the locals declared before it, so the uninit
+# detector no longer reports an auto-confirmed CWE-457 false positive.
+[uninit]
+initialization_macros = [
+    # "CMD_MSG_INIT",
+]
 
 # Pointer PARAMETER names that an out-of-tree framework guarantees non-null
 # (a data-plane callback's user_data, an IPC/CLI dispatcher's reply_msg or

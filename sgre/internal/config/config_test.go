@@ -394,3 +394,20 @@ skip_detectors = ["unchecked_return", " memory_leak ", "unchecked_return"]
 		t.Fatalf("SkipDetectorNames after clearing override = %v", got)
 	}
 }
+
+func TestLoad_UninitInitializationMacros(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secguard.toml")
+	content := `[uninit]
+initialization_macros = ["CMD_MSG_INIT", "msg_ctx_fill"]
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	SetExplicitPath(path)
+	cfg := Load()
+	got := cfg.UninitInitializationMacros()
+	if len(got) != 2 || got[0] != "CMD_MSG_INIT" || got[1] != "msg_ctx_fill" {
+		t.Errorf("[uninit] initialization_macros = %v, want [CMD_MSG_INIT msg_ctx_fill]", got)
+	}
+}

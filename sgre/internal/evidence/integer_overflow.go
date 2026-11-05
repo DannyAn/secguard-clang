@@ -1064,9 +1064,15 @@ func (d *IntegerOverflowDetector) detectShiftUB(ctx context.Context, binaryExprs
 	}
 }
 
-// shiftOperandWidth returns the bit width of a shift's left operand: a literal
-// (int 32 / long 64 by suffix) or a variable/typedef-resolved type. Returns
-// (0, false) for an unknown width.
+// shiftOperandWidth returns the bit width of a shift's left operand AFTER C
+// integer promotion: a literal (int 32 / long 64 by suffix) or a
+// variable/typedef-resolved type whose rank is below int, promoted according to
+// the usual arithmetic conversions. Returns (0, false) for an unknown width.
+//
+// The promotion is what makes `uint8_t x; x << 8` legal: x is promoted to int
+// (32 bits) before the shift, so a count of 8 is well below the width. Comparing
+// the declared 8-bit width flagged every narrow widen (`(uint8_t)x << 8`,
+// `(uint16_t)x << 15`) as a certain CWE-758 false positive.
 func shiftOperandWidth(left string, line int, globals map[string]string, scope integerOverflowTypeScope, typedefs *typedefs) (int, bool) {
 	t := strings.TrimSpace(left)
 	if _, err := strconv.ParseInt(strings.TrimRight(t, "uUlL"), 0, 64); err == nil {
@@ -1079,7 +1085,23 @@ func shiftOperandWidth(left string, line int, globals map[string]string, scope i
 	if typ == "" {
 		return 0, false
 	}
-	return typedefs.widthOf(typ)
+	width, ok := typedefs.widthOf(typ)
+	if !ok {
+		return 0, false
+	}
+	return promotedShiftWidth(width), true
+}
+
+// promotedShiftWidth applies C's integer promotion to a shift operand's declared
+// width. Any integer type of rank lower than int promotes to int when int can
+// represent all of its values — true for every type narrower than 32 bits on
+// LP64, where int is 32-bit signed. Types of width >= 32 keep their width
+// (uint32_t promotes to unsigned int, still 32 bits).
+func promotedShiftWidth(width int) int {
+	if width > 0 && width < 32 {
+		return 32
+	}
+	return width
 }
 
 // shiftCountLabel renders the shift-count hint value: "-1" for a negative

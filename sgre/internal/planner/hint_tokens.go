@@ -106,7 +106,7 @@ var hintTokenRegistry = []HintTokenSpec{
 	// ---- integer-overflow ----
 	{Key: "shift_count@", Display: "shift_count@<N>=width", Description: "shift UB: the shift count is {value} — a count at/above the type width or negative is a certain CWE-758 undefined behavior"},
 	{Key: "shift_base@", Display: "shift_base@<kind>", Description: "shift UB: the shifted operand's kind: {value} — `signed-literal` means a signed integer literal left-shifted past its signed range (CWE-190)"},
-	{Key: "width@", Display: "width@N", Description: "shift UB: the shifted operand's bit width: {value} (LP64) — the count is compared against this width"},
+	{Key: "width@", Display: "width@N", Description: "shift UB: the shifted operand's bit width after C integer promotion: {value} — the count is compared against this width"},
 	{Key: "lhs@", Display: "lhs@<kind>", Description: "integer-overflow left operand provenance: {value} (param/local/global/deref/subscript/const/expr)"},
 	{Key: "rhs@", Display: "rhs@<kind>", Description: "subtrahend provenance: {value} — `rhs@param`/`rhs-influenced` means externally supplied (real underflow risk)"},
 	{Key: "rhs-influenced", Description: "the subtracted amount is caller/attacker-controlled"},

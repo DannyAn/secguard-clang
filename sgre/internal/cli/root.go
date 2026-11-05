@@ -12,6 +12,7 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
+	"github.com/DannyAn/secguard-clang/internal/macros"
 	"github.com/DannyAn/secguard-clang/internal/planner"
 	"github.com/DannyAn/secguard-clang/internal/report"
 )
@@ -80,6 +81,7 @@ func Execute(ctx context.Context, args []string) int {
 	for name, idx := range cfg.IntegerOverflowTruncatingWrappers() {
 		apikb.RegisterTruncatingWrapper(name, idx)
 	}
+	macros.RegisterInitializationMacros(cfg.UninitInitializationMacros())
 
 	if len(args) == 0 {
 		printUsage()

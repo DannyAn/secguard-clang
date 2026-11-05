@@ -323,6 +323,19 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 				}
 			}
 		}
+		// A command-init macro initializes caller locals it does not receive as
+		// arguments (`#define CMD_MSG_INIT(recv) do { execId = ...; } while (0)`
+		// followed by `CMD_MSG_INIT(msgRcv);`). Its body assigns those locals, so
+		// they are initialized from the call line on.
+		if free := macros.WrittenFree(call, macroWrites); len(free) > 0 {
+			for name := range free {
+				if key := resolveVarKey(declsByName, name, call.StartLine()); key != "" {
+					if call.StartLine() > outputParamInitLines[key] {
+						outputParamInitLines[key] = call.StartLine()
+					}
+				}
+			}
+		}
 		// A setter macro (`SET(x, v)` → `(x) = (v)`) whose body lives in an
 		// excluded third-party header writes its first bare-identifier argument;
 		// WriteSummaries cannot see the body, so the name is the only signal.
@@ -654,6 +667,14 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		}
 		callName := extractCallName(call)
 		extra := macros.WrittenArgs(call, macroWrites)
+		if free := macros.WrittenFree(call, macroWrites); len(free) > 0 {
+			if extra == nil {
+				extra = map[string]bool{}
+			}
+			for name := range free {
+				extra[name] = true
+			}
+		}
 		// A setter macro (`SET(x, v)` → `(x) = (v)`) whose body lives in an
 		// A setter macro's first bare-identifier argument is an output, not a read
 		// (the init line is recorded in the output-param pass above), so skip it
@@ -1962,6 +1983,9 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 			continue
 		}
 		for name := range macros.WrittenArgs(call, macroWrites) {
+			initializedVars[name] = true
+		}
+		for name := range macros.WrittenFree(call, macroWrites) {
 			initializedVars[name] = true
 		}
 		for name, suffix := range macros.WrittenFieldArgs(call, macroWrites) {

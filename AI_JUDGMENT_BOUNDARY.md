@@ -26,7 +26,10 @@
    must freed（全路径 free 后再 use）、must double-free、must uninit、
    确定性泄漏（无 free / escape / transfer 任一节点）。
 2. **区间 / 常量折叠**：除数恒为 0（`x/0`、常量符号 0）、字面量整数溢出
-   （`definite_overflow`）、常量索引越界 / 索引区间 `lo >= 容量`。
+   （`definite_overflow`）、常量索引越界 / 索引区间 `lo >= 容量`。移位越界只
+   按 **C 整型提升后**的位宽比较（`uint8_t x << 8` 中 `x` 提升为 32 位 `int`，
+   合法；`uint32_t x << 32` 才是 UB）——按声明位宽比较会把所有窄类型拓宽误判成
+   CWE-758。
 3. **字面量本身命中**：弱加密算法（DES/3DES/MD5/SHA-1/RC4/`rand()`）、
    hardcoded-secret 的**值本身** secret-shaped、`_s` 函数给出撒谎容量、
    `sizeof(pointer)` 这类无条件成立。
@@ -41,6 +44,10 @@
 2. **名字 / 启发式**：函数名含 `alloc`/`open`/`join` 等、taint 未证明、格式串非字面量但未到 sink。
    unchecked-return 的 `contract@unknown` 属于此类：callee 仅凭名字匹配，失败契约未证明。
 3. **参数 / 跨函数 / 宏**：外部函数契约未知、macro-context（宏语义不可见）、参数驱动的值。
+   uninit 的 `init@none` 候选若落在初始化宏（`CMD_MSG_INIT` 形态，或
+   `[uninit] initialization_macros` 声明）的上下文窗口内，宏体会隐式写调用方局部变量，
+   「函数内无写入」这一前提无法验证，因此一律降为 `suspected` 交 AI；
+   宏体在扫描树内且可证写过该变量时，由数据流直接判为已初始化（不产候选）。
 4. **未校验的外部索引**：固定长度数组成员以**结构体字段**为下标、且函数内没有与容量
    相等的边界检查（`array_oob_read_unchecked` / `array_oob_write_unchecked`）。
    字段的真实取值范围是运行期契约（配置/输入侧可能校验过，也可能没有），管线证明不了；

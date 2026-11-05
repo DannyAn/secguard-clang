@@ -53,6 +53,7 @@ func TestConfigCmd_ExampleIsCopyPaste(t *testing.T) {
 	for _, marker := range []string{
 		"[nullability.non_null_returns]",
 		"[nullability.non_null_params]",
+		"[uninit]",
 		"[scan]",
 	} {
 		if !strings.Contains(stdout, marker) {
