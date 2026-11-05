@@ -39,6 +39,7 @@ func runConfigCmd(args []string) int {
 		"disabled_types":           cfg.DisabledTypeNames(),
 		"non_null_returns":         cfg.NonNullReturnNames(),
 		"non_null_params":          cfg.NonNullParamNames(),
+		"initialization_macros":    cfg.UninitInitializationMacros(),
 		"entry_points":             cfg.EntryPointNames(),
 		"note":                     "run 'secguard config --help' for the full reference, 'secguard config --example' for a copy-paste template",
 	}

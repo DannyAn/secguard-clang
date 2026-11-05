@@ -27,6 +27,8 @@ SecGuard 已经**不再依赖「配例外 → 重扫」的循环**来消宏误�
   `[nullability.non_null_returns]`**：项目自有的分配/释放/所有权转移/永不返回 NULL
   的函数契约（定义落在扫描范围之外）。
 - **`[integer_overflow.truncating_wrappers]`**：项目声明的返回值上界契约。
+- **`[uninit] initialization_macros`**：树外初始化宏白名单（宏体不可见时按契约初始化
+  调用前声明的局部变量）。
 - **`[banned_functions]` / `[exclude]` / `[disabled_types]`**：策略与扫描范围开关。
 
 一句话：**本文件的配置现在是「确定性前置优化」，不是「误报兜底」**。兜底由
@@ -328,6 +330,24 @@ nlog_syslog_add_hostname = 1
 `integer-overflow` 不再报。
 
 适用场景：定义在扫描范围之外、契约已知的截断式追加函数。
+
+### `[uninit]` — 初始化宏白名单（Issue #214）
+
+```toml
+[uninit]
+initialization_macros = ["CMD_MSG_INIT", "msg_ctx_fill"]
+```
+
+命令处理器常见「声明后紧跟命令消息初始化宏」的写法，宏体给**不以实参传入**的调用方
+局部变量赋值（`#define CMD_MSG_INIT(recv) do { execId = get(recv); paraNum = 0; }
+while (0)`）。宏体在扫描树内时，uninit 检测器/planner 会读到这些自由标识符赋值，
+把变量视为已初始化；宏体在扫描树之外（排除头文件、第三方 SDK）时，在此声明宏名，
+该调用即按契约初始化**调用前已声明**的局部变量，不再产生 `init@none` 的 auto-confirm
+误报。
+
+未声明的树外初始化宏：候选会降级为 `suspected` 交 AI 复核（不直接标 confirmed）。
+
+适用场景：命令/消息处理器初始化宏、协议上下文填充宏。
 
 ## 完整示例
 
