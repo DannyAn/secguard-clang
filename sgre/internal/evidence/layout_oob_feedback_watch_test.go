@@ -98,6 +98,8 @@ func TestLayoutOOB_CastSufficientSize(t *testing.T) {
 func TestLayoutOOB_NoFalsePositiveOnExistingFixtures(t *testing.T) {
 	positives := map[string]bool{
 		filepath.Join("feedback_watch", "CWD-SUB-1038-invalid-pointer-cast", "01_cast_insufficient_size.c"): true,
+		filepath.Join("feedback_watch", "CWD-SUB-1038-invalid-pointer-cast", "09_typedef_cast.c"):           true,
+		filepath.Join("feedback_watch", "CWD-SUB-1038-invalid-pointer-cast", "10_layout_oob_write.c"):       true,
 	}
 	matches, err := filepath.Glob(filepath.Join("..", "..", "testdata", "feedback_watch", "*", "*.c"))
 	if err != nil {
@@ -122,5 +124,86 @@ func TestLayoutOOB_NoFalsePositiveOnExistingFixtures(t *testing.T) {
 				t.Errorf("false positive: layout_oob event on %s (category=%s)", rel, cat)
 			}
 		}
+	}
+}
+
+// hasLayoutOOBEvent reports whether the store has a BUFFER_ACCESS event with
+// the given category (layout_oob_read or layout_oob_write).
+func hasLayoutOOBEvent(t *testing.T, store db.Store, category string) bool {
+	t.Helper()
+	events, err := store.ListEventsByType(context.Background(), "BUFFER_ACCESS")
+	if err != nil {
+		t.Fatalf("list BUFFER_ACCESS: %v", err)
+	}
+	for _, e := range events {
+		if eventCategory(e) == category {
+			return true
+		}
+	}
+	return false
+}
+
+// TestLayoutOOB_PackedStructNoFalsePositive verifies that a packed struct
+// produces NO layout_oob event — the layout is unknown (P0-3), so the
+// detector must not guess the field offsets.
+func TestLayoutOOB_PackedStructNoFalsePositive(t *testing.T) {
+	store := indexAndDetectBufferOverflow(t,
+		feedbackWatchPath("CWD-SUB-1038-invalid-pointer-cast", "05_packed_struct.c"))
+	if hasLayoutOOBEvent(t, store, "layout_oob_read") {
+		t.Errorf("false positive: layout_oob_read on packed struct (layout should be unknown)")
+	}
+}
+
+// TestLayoutOOB_BitfieldNoFalsePositive verifies that a struct with bitfields
+// produces NO layout_oob event — the layout is unknown (P0-4), so the
+// detector must not guess the field offsets.
+func TestLayoutOOB_BitfieldNoFalsePositive(t *testing.T) {
+	store := indexAndDetectBufferOverflow(t,
+		feedbackWatchPath("CWD-SUB-1038-invalid-pointer-cast", "06_bitfield_struct.c"))
+	if hasLayoutOOBEvent(t, store, "layout_oob_read") {
+		t.Errorf("false positive: layout_oob_read on bitfield struct (layout should be unknown)")
+	}
+}
+
+// TestLayoutOOB_ReassignInvalidates verifies that re-assigning a cast pointer
+// to a sufficient allocation invalidates the original insufficient cast
+// (P0-5): no layout_oob event after the reassignment.
+func TestLayoutOOB_ReassignInvalidates(t *testing.T) {
+	store := indexAndDetectBufferOverflow(t,
+		feedbackWatchPath("CWD-SUB-1038-invalid-pointer-cast", "07_reassign_invalidates.c"))
+	if hasLayoutOOBEvent(t, store, "layout_oob_read") {
+		t.Errorf("false positive: layout_oob_read after reassignment to sufficient allocation")
+	}
+}
+
+// TestLayoutOOB_ArrayFieldSkip verifies that accessing an array field member
+// (p->buf[0]) produces NO layout_oob event — array fields are skipped in MVP
+// (P0-6) because the access end is the element, not the whole array.
+func TestLayoutOOB_ArrayFieldSkip(t *testing.T) {
+	store := indexAndDetectBufferOverflow(t,
+		feedbackWatchPath("CWD-SUB-1038-invalid-pointer-cast", "08_array_field_skip.c"))
+	if hasLayoutOOBEvent(t, store, "layout_oob_read") {
+		t.Errorf("false positive: layout_oob_read on array field (should be skipped in MVP)")
+	}
+}
+
+// TestLayoutOOB_TypedefCast verifies that a cast using a typedef name
+// (MyRecord instead of struct LargeRecord) is detected — the layout census
+// registers typedef names, and extractStructTagFromType accepts bare names.
+func TestLayoutOOB_TypedefCast(t *testing.T) {
+	store := indexAndDetectBufferOverflow(t,
+		feedbackWatchPath("CWD-SUB-1038-invalid-pointer-cast", "09_typedef_cast.c"))
+	if !hasLayoutOOBEvent(t, store, "layout_oob_read") {
+		t.Errorf("expected layout_oob_read for typedef cast with insufficient allocation")
+	}
+}
+
+// TestLayoutOOB_WriteCategory verifies that a write through a cast pointer
+// (record->value = 42) produces a layout_oob_write event, not layout_oob_read.
+func TestLayoutOOB_WriteCategory(t *testing.T) {
+	store := indexAndDetectBufferOverflow(t,
+		feedbackWatchPath("CWD-SUB-1038-invalid-pointer-cast", "10_layout_oob_write.c"))
+	if !hasLayoutOOBEvent(t, store, "layout_oob_write") {
+		t.Errorf("expected layout_oob_write for write through cast pointer with insufficient allocation")
 	}
 }

@@ -35,6 +35,15 @@ func init() {
 			"layout_oob_read":          "suspected",
 		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
+			if c.Category == "layout_oob_read" {
+				frags := []EvidenceFragment{
+					{Type: "out_of_bounds", Role: "sink", Detail: fmt.Sprintf("layout out-of-bounds read in function %s at line %d", c.FunctionName, c.Line)},
+					{Type: "struct_layout", Role: "sink", Detail: fmt.Sprintf("cast target: struct %s, allocation %d bytes", c.StructType, c.AllocSize)},
+					{Type: "field_access", Role: "sink", Detail: fmt.Sprintf("field %s at offset %d (size %d) — access end %d exceeds the allocation", c.Index, c.FieldOffset, c.FieldSize, c.FieldOffset+c.FieldSize)},
+				}
+				frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
+				return frags
+			}
 			frags := []EvidenceFragment{
 				{Type: "out_of_bounds", Role: "sink", Detail: fmt.Sprintf("out-of-bounds access in function %s at line %d", c.FunctionName, c.Line)},
 			}

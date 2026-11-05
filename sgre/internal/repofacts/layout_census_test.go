@@ -211,11 +211,14 @@ func TestBuildLayouts_ProvenanceWithCompileCommands(t *testing.T) {
 	layouts := buildLayouts(decls, typeinfo.ABILP64, 0, layoutProvenance(true))
 
 	tl, _ := layouts[typeinfo.LayoutKey{Type: "S"}]
-	if tl.Provenance != typeinfo.ProvenanceDerivedFromFullConfig {
-		t.Errorf("want derived_from_complete_config, got %q", tl.Provenance)
+	// Phase 1 MVP: layoutProvenance 始终返回 assumed_default_abi，
+	// 因为"有 compile_commands"不等于"配置完整"（P0-2）。
+	// Phase 2 接线完整配置检查后才升级为 derived_from_complete_config。
+	if tl.Provenance != typeinfo.ProvenanceAssumedDefaultABI {
+		t.Errorf("want assumed_default_abi (MVP: config completeness not checked), got %q", tl.Provenance)
 	}
-	if !tl.CanConfirm() {
-		t.Errorf("derived_from_complete_config with valid layout should allow confirmed")
+	if tl.CanConfirm() {
+		t.Errorf("assumed_default_abi must not allow confirmed")
 	}
 }
 

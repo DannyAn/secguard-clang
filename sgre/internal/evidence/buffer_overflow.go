@@ -3,6 +3,7 @@ package evidence
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -2194,6 +2195,7 @@ func mergeMacros(tree, local map[string]int) map[string]int {
 type castTarget struct {
 	structType string
 	allocSize  int
+	castLine   int // 赋值行号；只检查此行之后的 field 访问（P0-5）
 }
 
 // detectCastObjectOOB detects layout out-of-bounds accesses through a pointer
@@ -2205,6 +2207,9 @@ type castTarget struct {
 // Phase 1 emits only suspected: the Type Layout census uses
 // assumed_default_abi provenance (no compile_commands wiring), so the
 // computed sizes are not ABI-proven and must not be confirmed.
+//
+// P0-5: 只检查 cast 赋值行之后的 field 访问；任何重赋值使记录失效。
+// P0-6: 数组字段（ArrayCount > 0）跳过——MVP 不支持数组下标越界判断。
 func (d *BufferOverflowDetector) detectCastObjectOOB(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, result *DetectResult) {
 	if bc.facts == nil {
 		return
@@ -2242,25 +2247,16 @@ func (d *BufferOverflowDetector) detectCastObjectOOB(ctx context.Context, f *db.
 	}
 
 	// Pass 2: find cast-to-struct assignments and resolve their allocation size.
+	// 按行号顺序处理；重赋值（非 cast-to-struct）使已有记录失效（P0-5）。
 	castVars := map[string]castTarget{}
-	collectCast := func(varName string, rhs parser.Node) {
-		if varName == "" {
-			return
-		}
-		structType, sourceVar, directSize, isDirect := parseCastToStruct(rhs)
-		if structType == "" {
-			return
-		}
-		target := castTarget{structType: structType}
-		if isDirect && directSize > 0 {
-			target.allocSize = directSize
-		} else if sourceVar != "" {
-			target.allocSize = allocSizes[sourceVar]
-		}
-		if target.allocSize > 0 {
-			castVars[varName] = target
-		}
+	type assignEvent struct {
+		line    int
+		varName string
+		rhs     parser.Node
+		isInit  bool
+		lhs     parser.Node
 	}
+	var events []assignEvent
 	for _, init := range bc.inits {
 		if !funcLineRange(f, init.StartLine()) {
 			continue
@@ -2269,7 +2265,7 @@ func (d *BufferOverflowDetector) detectCastObjectOOB(ctx context.Context, f *db.
 		if !ok {
 			continue
 		}
-		collectCast(extractVarFromDeclarator(lhs), rhs)
+		events = append(events, assignEvent{line: init.StartLine(), varName: extractVarFromDeclarator(lhs), rhs: rhs, isInit: true, lhs: lhs})
 	}
 	for _, assign := range bc.assigns {
 		if !funcLineRange(f, assign.StartLine()) {
@@ -2279,13 +2275,35 @@ func (d *BufferOverflowDetector) detectCastObjectOOB(ctx context.Context, f *db.
 		if len(children) < 2 {
 			continue
 		}
-		collectCast(strings.TrimSpace(children[0].Text()), children[1])
+		events = append(events, assignEvent{line: assign.StartLine(), varName: strings.TrimSpace(children[0].Text()), rhs: children[1]})
+	}
+	sort.Slice(events, func(i, j int) bool { return events[i].line < events[j].line })
+
+	for _, ev := range events {
+		structType, sourceVar, directSize, isDirect := parseCastToStruct(ev.rhs)
+		if structType != "" {
+			target := castTarget{structType: structType, castLine: ev.line}
+			if isDirect && directSize > 0 {
+				target.allocSize = directSize
+			} else if sourceVar != "" {
+				target.allocSize = allocSizes[sourceVar]
+			}
+			if target.allocSize > 0 {
+				castVars[ev.varName] = target
+			} else {
+				delete(castVars, ev.varName)
+			}
+			continue
+		}
+		// P0-5: 重赋值（非 cast-to-struct）使已有 cast 记录失效。
+		delete(castVars, ev.varName)
 	}
 	if len(castVars) == 0 {
 		return
 	}
 
 	// Pass 3: check each field expression through a casted pointer.
+	// 只检查 castLine 之后的访问（P0-5）；数组字段跳过（P0-6）。
 	for _, fe := range bc.root.FindAll("field_expression") {
 		if !funcLineRange(f, fe.StartLine()) {
 			continue
@@ -2298,12 +2316,18 @@ func (d *BufferOverflowDetector) detectCastObjectOOB(ctx context.Context, f *db.
 		if !found {
 			continue
 		}
+		if fe.StartLine() <= info.castLine {
+			continue
+		}
 		layout, ok := bc.facts.LayoutOf(typeinfo.LayoutKey{Type: info.structType})
 		if !ok || layout.IsUnknown() {
 			continue
 		}
 		field, ok := layout.FieldByName(fieldName)
 		if !ok {
+			continue
+		}
+		if field.ArrayCount > 0 {
 			continue
 		}
 		accessEnd := field.Offset + field.Size
@@ -2409,22 +2433,33 @@ func parseCastToStruct(node parser.Node) (structType, sourceVar string, directSi
 }
 
 // extractStructTagFromType extracts the struct tag from a type spelling like
-// "struct LargeRecord *" → "LargeRecord". Returns "" for non-struct types.
+// "struct LargeRecord *" → "LargeRecord", or a typedef name "MyRecord *" →
+// "MyRecord". Returns "" for multi-word primitive spellings or inline definitions.
+// A bare typedef name that is not a registered struct layout is harmless:
+// LayoutOf will not find it and produce no false positive.
 func extractStructTagFromType(spelling string) string {
 	spelling = strings.TrimSpace(spelling)
-	if !strings.HasPrefix(spelling, "struct ") && !strings.HasPrefix(spelling, "union ") {
-		return ""
+	if strings.HasPrefix(spelling, "struct ") || strings.HasPrefix(spelling, "union ") {
+		rest := spelling
+		if strings.HasPrefix(rest, "struct ") {
+			rest = strings.TrimPrefix(rest, "struct ")
+		} else {
+			rest = strings.TrimPrefix(rest, "union ")
+		}
+		rest = strings.TrimSpace(rest)
+		rest = strings.TrimRight(rest, "*")
+		rest = strings.TrimSpace(rest)
+		if rest == "" || strings.ContainsAny(rest, " {}") {
+			return ""
+		}
+		return rest
 	}
-	rest := spelling
-	if strings.HasPrefix(rest, "struct ") {
-		rest = strings.TrimPrefix(rest, "struct ")
-	} else {
-		rest = strings.TrimPrefix(rest, "union ")
-	}
-	rest = strings.TrimSpace(rest)
-	rest = strings.TrimRight(rest, "*")
+	rest := strings.TrimRight(spelling, "*")
 	rest = strings.TrimSpace(rest)
 	if rest == "" || strings.ContainsAny(rest, " {}") {
+		return ""
+	}
+	if strings.ContainsAny(rest, " ") {
 		return ""
 	}
 	return rest

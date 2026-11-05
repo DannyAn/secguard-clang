@@ -219,6 +219,15 @@ type eventProps struct {
 	// reading the source file — the round3 `dgf_string`/`dgf_format` dismissal
 	// (both operands are 128-byte globals) needed exactly this fact.
 	SrcCapacity flexInt `json:"src_capacity"`
+	// StructType/AllocSize/FieldOffset/FieldSize carry the layout-OOB evidence
+	// (CWD-SUB-1038): the cast target struct type, the malloc byte size, and
+	// the accessed field's offset/size within that struct — so the planner
+	// can render "field at offset N of size M exceeds allocation A" from the
+	// index row without a source read.
+	StructType  string  `json:"struct_type"`
+	AllocSize   flexInt `json:"alloc_size"`
+	FieldOffset flexInt `json:"field_offset"`
+	FieldSize   flexInt `json:"field_size"`
 	// Expected/Actual/Cast are the argument-type mismatch evidence: the callee's
 	// declared parameter type (e.g. "uint *"), the argument's actual pointer type
 	// before the cast (e.g. "bool *"), and the explicit cast target type.

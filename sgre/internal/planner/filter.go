@@ -257,6 +257,14 @@ type Candidate struct {
 	// round3 `strcpy(g_dst, g_src)` dismissal) from the hint, without a source
 	// read. 0 = unknown / not a fixed-size source.
 	SrcCapacity int `json:"src_capacity,omitempty"`
+	// StructType/AllocSize/FieldOffset/FieldSize carry the layout-OOB evidence
+	// (CWD-SUB-1038): the cast target struct type, the allocation byte size,
+	// and the accessed field's offset/size — the machine-proven facts that
+	// make a layout_oob_{read,write} finding self-evident from the index row.
+	StructType  string `json:"struct_type,omitempty"`
+	AllocSize   int    `json:"alloc_size,omitempty"`
+	FieldOffset int    `json:"field_offset,omitempty"`
+	FieldSize   int    `json:"field_size,omitempty"`
 	// ExpectedType/ActualType/CastType are the argument-type mismatch evidence
 	// (parameter type, pre-cast argument type, explicit cast target type).
 	ExpectedType string `json:"expected_type,omitempty"`
