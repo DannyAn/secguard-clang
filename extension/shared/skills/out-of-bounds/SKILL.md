@@ -42,6 +42,8 @@ An out-of-bounds candidate has:
   Read top-to-bottom as the trace from definition to sink; the missing guard step
   is the defect, the rest is the evidence. The `call_path` fragment carries the
   concrete cross-function chain (see below).
+- **struct_layout**: the cast target struct type and allocation size (layout_oob_read — CWD-SUB-1038)
+- **field_access**: the accessed field's offset and size, showing the access end exceeds the allocation
 - **call_path**: the function is reachable from an entry point
 
 The two tiers are distinct:

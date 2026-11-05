@@ -18,7 +18,7 @@ func init() {
 		// AI decides once whether the field's range is externally guaranteed
 		// (config model / CLI range) and the folded sites stay listed.
 		ShapeKey:   externalIndexShapeKey,
-		Categories: []string{"buffer_overflow", "array_oob_write", "heap_oob_write", "array_oob_write_unchecked", "format_overflow", "format_overflow_var", "bounded_copy_overflow", "bounded_copy_var_size", "secure_copy_overflow", "secure_copy_var_size", "secure_constraint_violation", "secure_scanf_overflow", "secure_scanf_var_size"},
+		Categories: []string{"buffer_overflow", "array_oob_write", "heap_oob_write", "array_oob_write_unchecked", "format_overflow", "format_overflow_var", "bounded_copy_overflow", "bounded_copy_var_size", "secure_copy_overflow", "secure_copy_var_size", "secure_constraint_violation", "secure_scanf_overflow", "secure_scanf_var_size", "layout_oob_write"},
 		// A `_s` constraint violation (required size > declared capacity) does NOT
 		// write past the buffer — Annex K truncates / zeroes and returns an error,
 		// so CWE-787 (out-of-bounds write) is the WRONG rule and made the 5.5
@@ -47,8 +47,18 @@ func init() {
 			"secure_scanf_var_size":       "possible",
 			"format_overflow":             "confirmed",
 			"format_overflow_var":         "suspected",
+			"layout_oob_write":            "suspected",
 		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
+			if c.Category == "layout_oob_write" {
+				frags := []EvidenceFragment{
+					{Type: "buffer_access", Role: "sink", Detail: fmt.Sprintf("layout out-of-bounds write in function %s at line %d", c.FunctionName, c.Line)},
+					{Type: "struct_layout", Role: "sink", Detail: fmt.Sprintf("cast target: struct %s, allocation %d bytes", c.StructType, c.AllocSize)},
+					{Type: "field_access", Role: "sink", Detail: fmt.Sprintf("field %s at offset %d (size %d) — access end %d exceeds the allocation", c.Index, c.FieldOffset, c.FieldSize, c.FieldOffset+c.FieldSize)},
+				}
+				frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
+				return frags
+			}
 			frags := []EvidenceFragment{
 				{Type: "buffer_access", Role: "sink", Detail: fmt.Sprintf("buffer access in function %s at line %d", c.FunctionName, c.Line)},
 			}
@@ -182,8 +192,8 @@ func bufferFlowSteps(c Candidate) []EvidenceFragment {
 		n++
 	}
 	steps = append(steps, EvidenceFragment{
-		Type: "flow_step",
-		Role: "path",
+		Type:   "flow_step",
+		Role:   "path",
 		Detail: finalFlowStepDetail(c),
 	})
 	return steps

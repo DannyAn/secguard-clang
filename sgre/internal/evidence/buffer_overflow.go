@@ -3,6 +3,7 @@ package evidence
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 	"github.com/DannyAn/secguard-clang/internal/repofacts"
+	"github.com/DannyAn/secguard-clang/internal/typeinfo"
 )
 
 type BufferOverflowDetector struct {
@@ -29,16 +31,22 @@ func (d *BufferOverflowDetector) Detect(ctx context.Context) (DetectResult, erro
 	result := DetectResult{}
 
 	// Struct layouts, global arrays and capacity macros usually live in headers,
-	// i.e. in another file. Build the tree-wide census once for this scan.
-	facts, err := repofacts.Build(ctx, d.store, d.parser, d.logger)
-	if err != nil {
-		if d.logger != nil {
-			d.logger.Warn("buffer overflow: repository facts unavailable", "error", err)
+	// i.e. in another file. Prefer the tree-wide census built once by the
+	// pipeline (shared with the planner); fall back to building it here when the
+	// pipeline did not inject one (unit tests, ad-hoc detector invocation).
+	facts := repofacts.FactsFromCtx(ctx)
+	if facts == nil {
+		var err error
+		facts, err = repofacts.Build(ctx, d.store, d.parser, d.logger)
+		if err != nil {
+			if d.logger != nil {
+				d.logger.Warn("buffer overflow: repository facts unavailable", "error", err)
+			}
+			facts = nil
 		}
-		facts = nil
 	}
 
-	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
+	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		bc := &bufCtx{
 			root:    root,
 			calls:   root.FindAll("call_expression"),
@@ -73,6 +81,7 @@ func (d *BufferOverflowDetector) Detect(ctx context.Context) (DetectResult, erro
 			d.detectArrayOOB(ctx, f, file, bc, &result)
 			d.detectUncheckedIndex(ctx, f, file, bc, fnDefs, &result)
 			d.detectFormatOverflow(ctx, f, file, bc, &result)
+			d.detectCastObjectOOB(ctx, f, file, bc, &result)
 		}
 	})
 	return result, err
@@ -105,7 +114,6 @@ type bufCtx struct {
 func buildMacroValues(root parser.Node) map[string]int {
 	return parser.CollectMacroValues(root)
 }
-
 
 func (d *BufferOverflowDetector) detectUnsafeCalls(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, params map[string]bool, result *DetectResult) {
 	bounds := AnalyzeBounds(IfsInFunc(bc.ifs, f.StartLine, f.EndLine), assignsInFunc(bc.assigns, f.StartLine, f.EndLine))
@@ -2181,4 +2189,312 @@ func mergeMacros(tree, local map[string]int) map[string]int {
 		out[k] = v
 	}
 	return out
+}
+
+// castTarget tracks a pointer that was cast to a struct type from an allocation.
+type castTarget struct {
+	structType string
+	allocSize  int
+	castLine   int // 赋值行号；只检查此行之后的 field 访问（P0-5）
+}
+
+// detectCastObjectOOB detects layout out-of-bounds accesses through a pointer
+// cast to a struct type from an undersized allocation (CWD-SUB-1038).
+//
+// Pattern: `T *p = (T *)malloc(N)` or `raw = malloc(N); T *p = (T *)raw;`
+// followed by `p->field` where field.Offset + field.Size > N.
+//
+// Phase 1 emits only suspected: the Type Layout census uses
+// assumed_default_abi provenance (no compile_commands wiring), so the
+// computed sizes are not ABI-proven and must not be confirmed.
+//
+// P0-5: 只检查 cast 赋值行之后的 field 访问；任何重赋值使记录失效。
+// P0-6: 数组字段（ArrayCount > 0）跳过——MVP 不支持数组下标越界判断。
+func (d *BufferOverflowDetector) detectCastObjectOOB(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, result *DetectResult) {
+	if bc.facts == nil {
+		return
+	}
+
+	// Pass 1: map variables assigned from malloc with a constant byte size.
+	allocSizes := map[string]int{}
+	collectAlloc := func(varName string, rhs parser.Node) {
+		if varName == "" {
+			return
+		}
+		if size, ok := constantMallocByteSize(rhs); ok {
+			allocSizes[varName] = size
+		}
+	}
+	for _, init := range bc.inits {
+		if !funcLineRange(f, init.StartLine()) {
+			continue
+		}
+		lhs, rhs, ok := init.AssignParts()
+		if !ok {
+			continue
+		}
+		collectAlloc(extractVarFromDeclarator(lhs), rhs)
+	}
+	for _, assign := range bc.assigns {
+		if !funcLineRange(f, assign.StartLine()) {
+			continue
+		}
+		children := assign.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		collectAlloc(strings.TrimSpace(children[0].Text()), children[1])
+	}
+
+	// Pass 2: find cast-to-struct assignments and resolve their allocation size.
+	// 按行号顺序处理；重赋值（非 cast-to-struct）使已有记录失效（P0-5）。
+	castVars := map[string]castTarget{}
+	type assignEvent struct {
+		line    int
+		varName string
+		rhs     parser.Node
+		isInit  bool
+		lhs     parser.Node
+	}
+	var events []assignEvent
+	for _, init := range bc.inits {
+		if !funcLineRange(f, init.StartLine()) {
+			continue
+		}
+		lhs, rhs, ok := init.AssignParts()
+		if !ok {
+			continue
+		}
+		events = append(events, assignEvent{line: init.StartLine(), varName: extractVarFromDeclarator(lhs), rhs: rhs, isInit: true, lhs: lhs})
+	}
+	for _, assign := range bc.assigns {
+		if !funcLineRange(f, assign.StartLine()) {
+			continue
+		}
+		children := assign.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		events = append(events, assignEvent{line: assign.StartLine(), varName: strings.TrimSpace(children[0].Text()), rhs: children[1]})
+	}
+	sort.Slice(events, func(i, j int) bool { return events[i].line < events[j].line })
+
+	for _, ev := range events {
+		structType, sourceVar, directSize, isDirect := parseCastToStruct(ev.rhs)
+		if structType != "" {
+			target := castTarget{structType: structType, castLine: ev.line}
+			if isDirect && directSize > 0 {
+				target.allocSize = directSize
+			} else if sourceVar != "" {
+				target.allocSize = allocSizes[sourceVar]
+			}
+			if target.allocSize > 0 {
+				castVars[ev.varName] = target
+			} else {
+				delete(castVars, ev.varName)
+			}
+			continue
+		}
+		// P0-5: 重赋值（非 cast-to-struct）使已有 cast 记录失效。
+		delete(castVars, ev.varName)
+	}
+	if len(castVars) == 0 {
+		return
+	}
+
+	// Pass 3: check each field expression through a casted pointer.
+	// 只检查 castLine 之后的访问（P0-5）；数组字段跳过（P0-6）。
+	for _, fe := range bc.root.FindAll("field_expression") {
+		if !funcLineRange(f, fe.StartLine()) {
+			continue
+		}
+		ptrVar, fieldName, ok := fieldExprParts(fe)
+		if !ok {
+			continue
+		}
+		info, found := castVars[ptrVar]
+		if !found {
+			continue
+		}
+		if fe.StartLine() <= info.castLine {
+			continue
+		}
+		layout, ok := bc.facts.LayoutOf(typeinfo.LayoutKey{Type: info.structType})
+		if !ok || layout.IsUnknown() {
+			continue
+		}
+		field, ok := layout.FieldByName(fieldName)
+		if !ok {
+			continue
+		}
+		if field.ArrayCount > 0 {
+			continue
+		}
+		accessEnd := field.Offset + field.Size
+		if accessEnd > info.allocSize {
+			category := "layout_oob_read"
+			if isAssignTarget(fe) {
+				category = "layout_oob_write"
+			}
+			d.emitLayoutOOB(ctx, f, file, fe.StartLine(), ptrVar, fieldName, category, fe.Text(), info, field, result)
+		}
+	}
+}
+
+// emitLayoutOOB emits a layout out-of-bounds event.
+func (d *BufferOverflowDetector) emitLayoutOOB(ctx context.Context, f *db.Function, file *db.File, line int, ptrVar, fieldName, category, text string, info castTarget, field typeinfo.FieldLayout, result *DetectResult) {
+	props := map[string]string{
+		"array":        ptrVar,
+		"index":        fieldName,
+		"category":     category,
+		"expression":   text,
+		"struct_type":  info.structType,
+		"alloc_size":   strconv.Itoa(info.allocSize),
+		"field_offset": strconv.Itoa(field.Offset),
+		"field_size":   strconv.Itoa(field.Size),
+	}
+	if emitEvent(ctx, d.store, d.logger, "BUFFER_ACCESS", f.ID, &db.Location{FileID: file.ID, Line: line}, props) {
+		result.EventsCreated++
+	}
+}
+
+// constantMallocByteSize extracts the constant byte size from a malloc/calloc
+// call expression, unwrapping any cast. Returns ok=false for variable sizes
+// or sizeof expressions (those need the layout to compare).
+func constantMallocByteSize(node parser.Node) (int, bool) {
+	operand := node
+	for operand.Kind() == "cast_expression" || operand.Kind() == "parenthesized_expression" {
+		kids := operand.NamedChildren()
+		if len(kids) == 0 {
+			return 0, false
+		}
+		operand = kids[len(kids)-1]
+	}
+	call := unwrapAllocationCall(operand)
+	if call == nil {
+		return 0, false
+	}
+	name := extractCallName(*call)
+	if !apikb.IsAllocator(name) {
+		return 0, false
+	}
+	args := callNamedArguments(*call)
+	if len(args) == 0 {
+		return 0, false
+	}
+	sizeExpr := strings.TrimSpace(args[0].Text())
+	if name == "calloc" && len(args) >= 2 {
+		n, ok1 := strconv.Atoi(strings.TrimSpace(args[0].Text()))
+		m, ok2 := strconv.Atoi(strings.TrimSpace(args[1].Text()))
+		if ok1 == nil && ok2 == nil && n > 0 && m > 0 {
+			return n * m, true
+		}
+		return 0, false
+	}
+	n, err := strconv.Atoi(sizeExpr)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// parseCastToStruct parses a cast-to-struct expression, returning:
+//   - structType: the struct tag name (e.g., "LargeRecord" from `(struct LargeRecord *)raw`)
+//   - sourceVar: the source variable name if the cast operand is a variable
+//   - directSize: the constant malloc size if the cast operand is a direct malloc call
+//   - isDirect: true if the operand is a direct malloc call
+func parseCastToStruct(node parser.Node) (structType, sourceVar string, directSize int, isDirect bool) {
+	if node.Kind() != "cast_expression" {
+		return "", "", 0, false
+	}
+	kids := node.NamedChildren()
+	if len(kids) < 2 {
+		return "", "", 0, false
+	}
+	typeNode := kids[0]
+	operand := kids[1]
+
+	structType = extractStructTagFromType(typeNode.Text())
+	if structType == "" {
+		return "", "", 0, false
+	}
+
+	operand = unwrapParens(operand)
+	if operand.Kind() == "call_expression" {
+		if size, ok := constantMallocByteSize(operand); ok {
+			return structType, "", size, true
+		}
+		return structType, "", 0, true
+	}
+	if operand.Kind() == "identifier" {
+		return structType, strings.TrimSpace(operand.Text()), 0, false
+	}
+	return structType, "", 0, false
+}
+
+// extractStructTagFromType extracts the struct tag from a type spelling like
+// "struct LargeRecord *" → "LargeRecord", or a typedef name "MyRecord *" →
+// "MyRecord". Returns "" for multi-word primitive spellings or inline definitions.
+// A bare typedef name that is not a registered struct layout is harmless:
+// LayoutOf will not find it and produce no false positive.
+func extractStructTagFromType(spelling string) string {
+	spelling = strings.TrimSpace(spelling)
+	if strings.HasPrefix(spelling, "struct ") || strings.HasPrefix(spelling, "union ") {
+		rest := spelling
+		if strings.HasPrefix(rest, "struct ") {
+			rest = strings.TrimPrefix(rest, "struct ")
+		} else {
+			rest = strings.TrimPrefix(rest, "union ")
+		}
+		rest = strings.TrimSpace(rest)
+		rest = strings.TrimRight(rest, "*")
+		rest = strings.TrimSpace(rest)
+		if rest == "" || strings.ContainsAny(rest, " {}") {
+			return ""
+		}
+		return rest
+	}
+	rest := strings.TrimRight(spelling, "*")
+	rest = strings.TrimSpace(rest)
+	if rest == "" || strings.ContainsAny(rest, " {}") {
+		return ""
+	}
+	if strings.ContainsAny(rest, " ") {
+		return ""
+	}
+	return rest
+}
+
+// fieldExprParts extracts the pointer variable name and field name from a
+// field_expression like `record->value` or `record.value`.
+func fieldExprParts(node parser.Node) (ptrVar, fieldName string, ok bool) {
+	if node.Kind() != "field_expression" {
+		return "", "", false
+	}
+	kids := node.NamedChildren()
+	if len(kids) < 2 {
+		return "", "", false
+	}
+	obj := kids[0]
+	field := kids[len(kids)-1]
+	if field.Kind() != "field_identifier" {
+		return "", "", false
+	}
+	ptrVar = strings.TrimSpace(obj.Text())
+	if ptrVar == "" || strings.ContainsAny(ptrVar, " ()&*[],") {
+		return "", "", false
+	}
+	return ptrVar, strings.TrimSpace(field.Text()), true
+}
+
+// unwrapParens unwraps parenthesized_expression nodes.
+func unwrapParens(node parser.Node) parser.Node {
+	for node.Kind() == "parenthesized_expression" {
+		kids := node.NamedChildren()
+		if len(kids) == 0 {
+			return node
+		}
+		node = kids[0]
+	}
+	return node
 }

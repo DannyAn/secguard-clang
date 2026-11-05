@@ -60,6 +60,8 @@ Evidence file fragments:
 - **element_field**: the pointer-typed member read out of the written element
 - **escape**: the callee the out-of-bounds element (or its address) reaches
 - **copy_size** / **dst_capacity** / **size_argument**: the copy size, destination capacity, and `_s` size argument for the bounded/secure-copy categories
+- **struct_layout**: the cast target struct type and allocation size (layout_oob_write — CWD-SUB-1038)
+- **field_access**: the accessed field's offset and size, showing the access end exceeds the allocation
 - **call_path**: the function is reachable from an entry point
 
 ### Hint Tokens (Verdict Basis)

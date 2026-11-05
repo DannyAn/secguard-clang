@@ -1219,9 +1219,13 @@ func (f *NullableSourceFilter) computeRetNullable(ctx context.Context, models ma
 		arrs   *arrayBaseInfo
 		srcs   []nullSource
 	}
-	repoFacts, err := repofacts.Build(ctx, f.store, f.parser, nil)
-	if err != nil {
-		repoFacts = nil
+	repoFacts := repofacts.FactsFromCtx(ctx)
+	if repoFacts == nil {
+		var err error
+		repoFacts, err = repofacts.Build(ctx, f.store, f.parser, nil)
+		if err != nil {
+			repoFacts = nil
+		}
 	}
 	infos := make([]funcInfo, 0, len(needNames))
 	seededDefs := make([]funcInfo, 0)
