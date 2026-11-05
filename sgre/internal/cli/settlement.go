@@ -2,11 +2,15 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"math"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 )
 
@@ -34,6 +38,18 @@ const (
 	// 660s while the subagent keeps running), so 30 minutes leaves ample room
 	// while still letting the next planning pass recover a dead worker's claim.
 	settlementClaimTTL = 30 * time.Minute
+	// settlementHeartbeatStall is how long a settlement snapshot may go without
+	// an mtime update before `status --reports` flags the batch as stalled. The
+	// heartbeat contract asks for a chunk snapshot every ~10 candidates; a raw
+	// source read or a large candidate index can take minutes, so 15 minutes
+	// avoids a false "dead worker" verdict while still surfacing a stuck batch.
+	settlementHeartbeatStall = 15 * time.Minute
+	// aiHostMaxConcurrencyDefault is the documented default cap on concurrent
+	// AI subagents per host (Claude Code / DSH). It is what F3a uses for the
+	// first wave instead of probing the cap by hitting an error; a deployment
+	// with a different host limit overrides it with
+	// SECGUARD_AI_HOST_MAX_CONCURRENCY (see `status --show-limits`).
+	aiHostMaxConcurrencyDefault = 10
 )
 
 func normalizeSettlementRange(r string) string {
@@ -52,41 +68,180 @@ func normalizeSettlementRange(r string) string {
 // subagent ids (a retry, or the duplicate dispatch this ticket prevents), and
 // the row is last-write-wins, so applying the newest settlement last makes it
 // the authoritative one instead of letting the older snapshot overwrite it.
+//
+// The whole absorption is ONE immediate transaction, and a valid report's
+// processed types are marked ai_stage_status='done' in the same transaction.
+// The settlement landing and the completion marker are therefore atomic: a
+// worker that dies between writing its settlement file and its separate
+// `report --complete-type` call can no longer leave a settled type reading
+// pending and re-dispatchable. A report carrying needs_context is skipped
+// deliberately — that type is NOT complete, its residual range is re-dispatched.
 func persistSettlementReports(ctx context.Context, store db.Store, res reportsResult) error {
-	for i := len(res.Reports) - 1; i >= 0; i-- {
-		rep := res.Reports[i]
-		if !rep.Valid || rep.ScanID == "" {
-			continue
-		}
-		// needs_context is a report-level array without a per-type key; attribute
-		// it only to single-type reports so multi-type batches never over-count.
-		needsContext := 0
-		if len(rep.Processed) == 1 {
-			needsContext = len(rep.NeedsContext)
-		}
-		wallMS := settlementWallMS(ctx, store, rep)
-		queueMS, workMS := settlementQueueWorkMS(rep)
-		for _, pt := range rep.Processed {
-			if err := store.UpsertSettlementStat(ctx, &db.SettlementStat{
-				ScanID:        rep.ScanID,
-				VulnType:      pt.Type,
-				RangeStr:      normalizeSettlementRange(pt.Range),
-				SubagentID:    rep.SubagentID,
-				Written:       pt.Written,
-				Dismissed:     pt.Dismissed,
-				EvidenceOpens: pt.EvidenceOpens,
-				SourceReads:   pt.SourceReads,
-				RepoGreps:     pt.RepoGreps,
-				NeedsContext:  needsContext,
-				WallMS:        wallMS,
-				QueueMS:       queueMS,
-				WorkMS:        workMS,
-			}); err != nil {
-				return err
-			}
+	// A `status --reports` poll usually carries nothing new to absorb; avoid
+	// taking the write lock for a pure read.
+	hasValid := false
+	for _, rep := range res.Reports {
+		if rep.Valid && rep.ScanID != "" {
+			hasValid = true
+			break
 		}
 	}
-	return nil
+	if !hasValid {
+		return nil
+	}
+	return store.WithImmediateTx(ctx, func(tx db.Store) error {
+		knownByScan := map[string]map[string]bool{}
+		for i := len(res.Reports) - 1; i >= 0; i-- {
+			rep := res.Reports[i]
+			if !rep.Valid || rep.ScanID == "" {
+				continue
+			}
+			known, ok := knownByScan[rep.ScanID]
+			if !ok {
+				known = map[string]bool{}
+				stats, err := tx.ListScanStats(ctx, rep.ScanID)
+				if err != nil {
+					return err
+				}
+				for _, st := range stats {
+					known[st.VulnType] = true
+				}
+				knownByScan[rep.ScanID] = known
+			}
+			// needs_context is a report-level array without a per-type key; attribute
+			// it only to single-type reports so multi-type batches never over-count.
+			needsContext := 0
+			if len(rep.Processed) == 1 {
+				needsContext = len(rep.NeedsContext)
+			}
+			wallMS := settlementWallMS(ctx, tx, rep)
+			queueMS, workMS := settlementQueueWorkMS(rep)
+			var finishedAt int64
+			if !rep.mtime.IsZero() {
+				finishedAt = rep.mtime.UnixMilli()
+			}
+			for _, pt := range rep.Processed {
+				if err := tx.UpsertSettlementStat(ctx, &db.SettlementStat{
+					ScanID:        rep.ScanID,
+					VulnType:      pt.Type,
+					RangeStr:      normalizeSettlementRange(pt.Range),
+					SubagentID:    rep.SubagentID,
+					Written:       pt.Written,
+					Dismissed:     pt.Dismissed,
+					EvidenceOpens: pt.EvidenceOpens,
+					SourceReads:   pt.SourceReads,
+					RepoGreps:     pt.RepoGreps,
+					NeedsContext:  needsContext,
+					WallMS:        wallMS,
+					QueueMS:       queueMS,
+					WorkMS:        workMS,
+					FinishedAt:    finishedAt,
+				}); err != nil {
+					return err
+				}
+			}
+			if len(rep.NeedsContext) > 0 {
+				continue
+			}
+			for _, pt := range rep.Processed {
+				if !known[pt.Type] {
+					continue
+				}
+				if err := tx.MarkAIStageDone(ctx, rep.ScanID, pt.Type); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
+// aiStageTiming is the AI-classification stage as the ENGINE measured it, from
+// the settlement rows `status --reports` persisted: each settled row carries the
+// settlement file's finish time (finished_at) and its own queue/work split, so
+// the stage spans the earliest reconstructed dispatch to the latest finish, and
+// each type's span is derived the same way. This replaces the human-supplied
+// `--ai-duration-ms` estimate; that flag remains only as an override for a host
+// that cannot write settlement files.
+type aiStageTiming struct {
+	TotalMS   int64            `json:"total_ms"`
+	PerTypeMS map[string]int64 `json:"per_type_ms,omitempty"`
+	// PerTypeBatches is the number of settled batches behind each type's span;
+	// a type split across ranges adds batches without necessarily widening its
+	// span, so the count keeps the timing auditable.
+	PerTypeBatches map[string]int `json:"per_type_batches,omitempty"`
+	Batches        int            `json:"batches"`
+	Source         string         `json:"source,omitempty"`
+}
+
+func measureAIStageTiming(rows []*db.SettlementStat) aiStageTiming {
+	out := aiStageTiming{PerTypeMS: map[string]int64{}, PerTypeBatches: map[string]int{}}
+	type span struct{ start, end int64 }
+	spans := map[string]*span{}
+	var first, last int64
+	for _, st := range rows {
+		// Only a settled row is a measurement: a pre-dispatch claim is a
+		// reservation (created_at is when it was claimed, not finished), and a
+		// failed row recorded no completed work.
+		if st.Status != "done" {
+			continue
+		}
+		end := st.FinishedAt
+		if end <= 0 {
+			// Older rows predate finished_at; the absorption time is the only
+			// timestamp they carry, so it is the honest fallback.
+			end = st.CreatedAt * 1000
+		}
+		if end <= 0 {
+			continue
+		}
+		start := end - st.QueueMS - st.WorkMS
+		if start <= 0 || start > end {
+			start = end
+		}
+		s := spans[st.VulnType]
+		if s == nil {
+			s = &span{start: start, end: end}
+			spans[st.VulnType] = s
+		}
+		if start < s.start {
+			s.start = start
+		}
+		if end > s.end {
+			s.end = end
+		}
+		out.PerTypeBatches[st.VulnType]++
+		out.Batches++
+		if first == 0 || start < first {
+			first = start
+		}
+		if end > last {
+			last = end
+		}
+	}
+	if last > first {
+		out.TotalMS = last - first
+	}
+	for vt, s := range spans {
+		if d := s.end - s.start; d > 0 {
+			out.PerTypeMS[vt] = d
+		}
+	}
+	if out.TotalMS > 0 {
+		out.Source = "self-measured"
+	}
+	return out
+}
+
+// sortedAITypes returns the per-type timing keys in a stable order for Markdown
+// rendering.
+func (t aiStageTiming) sortedAITypes() []string {
+	out := make([]string, 0, len(t.PerTypeMS))
+	for vt := range t.PerTypeMS {
+		out = append(out, vt)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // settlementQueueWorkMS splits a settlement's wall clock into queue_ms
@@ -365,12 +520,18 @@ func suggestedBatches(candidates, batchSize int) int {
 // zero-yield AI stage without hand-summing settlement files. work_ms is the true
 // agent work when the report carried timestamps; wall_ms (which over-counts the
 // queue wait) is the fallback.
-func settlementAIStageMetrics(rows []*db.SettlementStat, aiDurationMS int64) map[string]interface{} {
-	total := len(rows)
+func settlementAIStageMetrics(rows []*db.SettlementStat, aiDurationMS int64, aiDurationSource string) map[string]interface{} {
+	total := 0
 	zeroOutput := 0
 	var workSum int64
 	var workN int64
 	for _, st := range rows {
+		if st.Status != "done" {
+			// A claim has no accounting and a failed row has no completed work;
+			// counting either would read as a zero-output batch and skew the ratio.
+			continue
+		}
+		total++
 		if st.Written == 0 {
 			zeroOutput++
 		}
@@ -383,6 +544,7 @@ func settlementAIStageMetrics(rows []*db.SettlementStat, aiDurationMS int64) map
 			workN++
 		}
 	}
+	timing := measureAIStageTiming(rows)
 	out := map[string]interface{}{
 		"total_batches":       total,
 		"zero_output_batches": zeroOutput,
@@ -390,8 +552,86 @@ func settlementAIStageMetrics(rows []*db.SettlementStat, aiDurationMS int64) map
 	if total > 0 {
 		out["zero_output_ratio"] = round1(float64(zeroOutput) / float64(total) * 100)
 	}
-	if workN > 0 && aiDurationMS > 0 {
-		out["effective_concurrency"] = round1(float64(workSum) / float64(aiDurationMS))
+	// The stage duration is the self-measured one when the persisted run row has
+	// none: the engine reads its own settlement timestamps instead of requiring
+	// the orchestrator to hand in a wall clock.
+	if timing.TotalMS > 0 {
+		out["measured_total_ms"] = timing.TotalMS
+		out["per_type_ms"] = timing.PerTypeMS
+	}
+	duration := aiDurationMS
+	if duration <= 0 {
+		duration = timing.TotalMS
+	}
+	if duration > 0 {
+		out["ai_duration_ms"] = duration
+		src := aiDurationSource
+		if aiDurationMS <= 0 {
+			src = "self-measured (settlement timestamps)"
+		}
+		if src == "" {
+			src = "unknown"
+		}
+		out["ai_duration_source"] = src
+	}
+	if workN > 0 && duration > 0 {
+		out["effective_concurrency"] = round1(float64(workSum) / float64(duration))
 	}
 	return out
+}
+
+// formatMS renders a millisecond duration the way a report reader expects:
+// sub-second, seconds with one decimal, then m/s and h/m.
+func formatMS(ms int64) string {
+	if ms < 0 {
+		ms = 0
+	}
+	if ms < 1000 {
+		return fmt.Sprintf("%d ms", ms)
+	}
+	if ms < 60000 {
+		return fmt.Sprintf("%.1f s", float64(ms)/1000)
+	}
+	totalSec := ms / 1000
+	m := totalSec / 60
+	s := totalSec % 60
+	if m < 60 {
+		return fmt.Sprintf("%d m %d s", m, s)
+	}
+	return fmt.Sprintf("%d h %d m", m/60, m%60)
+}
+
+// scanLimits is the `status --show-limits` payload: the caps the engine enforces
+// plus the AI-stage budgets and host concurrency cap the orchestrator must
+// respect. Surfacing them here lets the orchestrator read its concurrency
+// ceiling instead of probing it by hitting a "maximum allowed N" spawn error.
+func scanLimits() map[string]interface{} {
+	cfg := config.Load()
+	hostMax := aiHostMaxConcurrencyDefault
+	hostSource := "documented default (Claude Code / DSH: 10 concurrent subagents)"
+	if raw := strings.TrimSpace(os.Getenv("SECGUARD_AI_HOST_MAX_CONCURRENCY")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			hostMax = n
+			hostSource = "SECGUARD_AI_HOST_MAX_CONCURRENCY"
+		}
+	}
+	return map[string]interface{}{
+		"ai_stage": map[string]interface{}{
+			"host_max_concurrency":        hostMax,
+			"host_max_concurrency_source": hostSource,
+			"claim_ttl_ms":                int64(settlementClaimTTL / time.Millisecond),
+			"heartbeat_stall_ms":          int64(settlementHeartbeatStall / time.Millisecond),
+			"evidence_opens_per_type":     maxEvidenceOpensPerType,
+			"source_reads_per_type":       maxSourceReadsPerType,
+			"repo_greps_per_type":         maxRepoGrepsPerType,
+			"r_type_fallback":             settlementRTypeFallback,
+		},
+		"pipeline": map[string]interface{}{
+			"graph_builders_concurrency": cfg.GraphBuildersConcurrencyOr(7),
+			"plan_concurrency":           cfg.PlanConcurrencyOr(8),
+			"detector_concurrency":       cfg.DetectorConcurrencyOr(8),
+			"memory_pressure_enabled":    cfg.Scan.MemoryPressureEnabled,
+		},
+		"backoff": "When a spawn is rejected with 'maximum allowed N', use N for the rest of the run and keep in_flight below it; never probe the cap again. Backfill one batch per completion while in_flight < host_max.",
+	}
 }

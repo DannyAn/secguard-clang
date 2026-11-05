@@ -943,6 +943,12 @@ func isUnder(dir, path string) bool {
 
 func runStatusCmd(ctx context.Context, args []string) int {
 	dbPath, dbExplicit, _ := parseDBFlag(args)
+	// Limits are a property of the installed engine, not of a scan, so they are
+	// answered without requiring an sgre.db.
+	if hasFlag(args, "show-limits") {
+		WriteJSON(scanLimits())
+		return 0
+	}
 	var found bool
 	dbPath, found = resolveExistingDBPath(dbExplicit, dbPath)
 
@@ -1004,6 +1010,25 @@ func runStatusCmd(ctx context.Context, args []string) int {
 			WriteErrorJSON(fmt.Sprintf("failed to persist settlement reports: %v", err))
 			return 1
 		}
+		// Attach the classified/total heartbeat so the orchestrator reads a
+		// machine progress signal instead of inferring liveness from file mtime.
+		totalsByScan := map[string]map[string]int{}
+		for _, rep := range res.Reports {
+			if rep.ScanID == "" {
+				continue
+			}
+			if _, ok := totalsByScan[rep.ScanID]; ok {
+				continue
+			}
+			totals := map[string]int{}
+			if stats, serr := store.ListScanStats(ctx, rep.ScanID); serr == nil {
+				for _, st := range stats {
+					totals[st.VulnType] = st.FinalCount
+				}
+			}
+			totalsByScan[rep.ScanID] = totals
+		}
+		enrichReportProgress(&res, totalsByScan)
 		WriteJSON(res)
 		return 0
 	}

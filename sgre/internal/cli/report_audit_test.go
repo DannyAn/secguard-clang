@@ -24,7 +24,7 @@ func TestWriteAuditReport_IncludesAIValueSummary(t *testing.T) {
 		AIConfirmed: 8, AISuspected: 1, AIDismissed: 0, TypesScanned: 20, TypesWithFindings: 1,
 	}
 
-	if err := writeAuditReport(path, "test-scan", audits, overview); err != nil {
+	if err := writeAuditReport(path, "test-scan", audits, overview, aiStageTiming{}); err != nil {
 		t.Fatalf("writeAuditReport failed: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -62,7 +62,7 @@ func TestWriteAuditReport_ReviewedOutAutoConfirmed(t *testing.T) {
 		{VulnType: "stack-address-escape", SeedCount: 28, FinalCount: 27, AutoConfirmed: 0, AutoReviewedOut: 2, Confirmed: 0, Suspected: 0, AIStageStatus: "done"},
 	}
 	overview := report.ScanOverview{ScanID: "test-scan", RawSeeds: 28, Candidates: 27, AutoConfirmed: 0, AIConfirmed: 0, AIDismissed: 25}
-	if err := writeAuditReport(path, "test-scan", audits, overview); err != nil {
+	if err := writeAuditReport(path, "test-scan", audits, overview, aiStageTiming{}); err != nil {
 		t.Fatalf("writeAuditReport failed: %v", err)
 	}
 	data, err := os.ReadFile(path)

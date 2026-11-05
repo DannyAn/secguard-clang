@@ -77,7 +77,11 @@ Usage:
 
 Flags:
   --per-type           Show per-vuln-type status (candidate/written/terminal) as JSON
-  --reports            List settled subagent reports from .sgre/.tmp/*-report*.json
+  --reports            List settled subagent reports from .sgre/.tmp/*-report*.json,
+                       including heartbeat_age_ms / stalled / progress
+                       (classified/total) for liveness and resume decisions
+  --show-limits        Print the engine's concurrency caps, the AI host concurrency
+                       cap and the AI-stage budgets (no sgre.db needed)
   --claim-type <t>     Atomically reserve a dispatch batch for vulnerability type <t>
                        (requires --claim-range and --claim-holder; use BEFORE spawning)
   --claim-range <r>    Candidate range of the batch (required; use "all" for the whole type)
@@ -91,6 +95,7 @@ Flags:
 
 Examples:
   secguard status
+  secguard status --show-limits
   secguard status --per-type
   secguard status --reports --scan-id sc_2026-08-23_130813_395bcb
   secguard status --per-type --scan-id sc_2026-08-23_130813_395bcb

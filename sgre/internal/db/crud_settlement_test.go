@@ -133,6 +133,36 @@ func TestSettlementStatQueueWorkMS(t *testing.T) {
 	}
 }
 
+// TestSettlementStatFinishedAt pins the settlement file's mtime persistence that
+// lets the engine self-measure the AI stage (Issue #219), and that a later
+// settlement upsert without it (a claim reservation) cannot erase it.
+func TestSettlementStatFinishedAt(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	if err := s.UpsertSettlementStat(ctx, &SettlementStat{
+		ScanID: "s", VulnType: "t", RangeStr: "all", SubagentID: "x",
+		FinishedAt: 1_700_000_000_000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := s.ListSettlementStatsByScan(ctx, "s")
+	if len(rows) != 1 || rows[0].FinishedAt != 1_700_000_000_000 {
+		t.Fatalf("finished_at must persist: %+v", rows)
+	}
+
+	// A claim-style upsert carries no finish time; the already-recorded one wins.
+	if err := s.UpsertSettlementStat(ctx, &SettlementStat{
+		ScanID: "s", VulnType: "t", RangeStr: "all", SubagentID: "x", Status: "dispatched",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ = s.ListSettlementStatsByScan(ctx, "s")
+	if rows[0].FinishedAt != 1_700_000_000_000 {
+		t.Errorf("finished_at erased by a claim upsert: %+v", rows[0])
+	}
+}
+
 func TestSettlementTaskStatusLifecycle(t *testing.T) {
 	ctx := context.Background()
 	s := NewTestStore(t)

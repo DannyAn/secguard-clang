@@ -1154,8 +1154,14 @@ func runReportCmd(ctx context.Context, args []string) int {
 			return 1
 		}
 
-		// The orchestrator records the AI-classification wall-clock at finalize so
-		// pipeline-vs-AI timing is persisted (and queryable via `secguard metrics`).
+		// AI-stage timing is now MEASURED by the engine from the settlement
+		// reports' timestamps (`status --reports` persists each batch's finish
+		// time). `--ai-duration-ms` is only an override for a host that cannot
+		// write settlement files; supplying it wins over the self-measurement.
+		var aiTiming aiStageTiming
+		if settlements, lerr := store.ListSettlementStatsByScan(ctx, scanID); lerr == nil {
+			aiTiming = measureAIStageTiming(settlements)
+		}
 		if raw := parseStringFlag(remaining, "ai-duration-ms"); raw != "" {
 			ms, perr := strconv.ParseInt(raw, 10, 64)
 			if perr != nil || ms < 0 {
@@ -1172,6 +1178,14 @@ func runReportCmd(ctx context.Context, args []string) int {
 			if serr := store.SetScanRunAIDuration(ctx, scanID, ms, source); serr != nil {
 				WriteErrorJSON(fmt.Sprintf("failed to record ai_duration_ms: %v", serr))
 				return 1
+			}
+			aiTiming.TotalMS = ms
+			aiTiming.Source = "override"
+		} else if aiTiming.TotalMS > 0 {
+			// Best-effort: a review/diff scan has no scan_runs row, and a missing
+			// metrics row must not fail the audit. The timing is still rendered.
+			if serr := store.SetScanRunAIDuration(ctx, scanID, aiTiming.TotalMS, "self-measured"); serr != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not record self-measured ai_duration_ms: %v\n", serr)
 			}
 		}
 
@@ -1285,7 +1299,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 
 		if outputDir != "" {
 			auditPath := filepath.Join(outputDir, "audit-report.md")
-			if err := writeAuditReport(auditPath, scanID, audits, overview); err != nil {
+			if err := writeAuditReport(auditPath, scanID, audits, overview, aiTiming); err != nil {
 				WriteErrorJSON(fmt.Sprintf("failed to write audit report: %v", err))
 				return 1
 			}
@@ -1323,12 +1337,12 @@ func runReportCmd(ctx context.Context, args []string) int {
 			// entries that live only in the orchestrator's aggregation.
 			if verdicts, verr := store.ListCandidateVerdicts(ctx, scanID); verr == nil {
 				type dismissedRow struct {
-					VulnType     string `json:"vuln_type"`
-					File         string `json:"file"`
-					Line         int    `json:"line"`
-					Function     string `json:"function,omitempty"`
-					Variable     string `json:"variable,omitempty"`
-					Reason       string `json:"reason,omitempty"`
+					VulnType string `json:"vuln_type"`
+					File     string `json:"file"`
+					Line     int    `json:"line"`
+					Function string `json:"function,omitempty"`
+					Variable string `json:"variable,omitempty"`
+					Reason   string `json:"reason,omitempty"`
 				}
 				rows := make([]dismissedRow, 0, len(verdicts))
 				for _, v := range verdicts {
@@ -1370,6 +1384,12 @@ func runReportCmd(ctx context.Context, args []string) int {
 				// counts with no total at all).
 				"summary": overview.SummaryFields(),
 			}
+			// The engine-measured AI stage (total + per type) so the orchestrator
+			// can report it without hand-estimating a wall clock. Omitted when the
+			// scan has no settlement timing at all.
+			if aiTiming.TotalMS > 0 {
+				out["ai_stage"] = aiTiming
+			}
 
 			// A finding with no scan_id has no scan directory, so its verdict
 			// file cannot be placed or reconciled. Surface it instead of
@@ -1399,6 +1419,9 @@ func runReportCmd(ctx context.Context, args []string) int {
 				"scan_id": scanID,
 				"audits":  audits,
 				"summary": overview.SummaryFields(),
+			}
+			if aiTiming.TotalMS > 0 {
+				out["ai_stage"] = aiTiming
 			}
 			auditNoticeFields(out, orphans, unreviewed)
 			WriteJSON(out)
@@ -1497,6 +1520,9 @@ func buildScanOverview(ctx context.Context, store db.Store, scanID string, stats
 	for _, a := range audits {
 		ov.RawSeeds += a.SeedCount
 		ov.Candidates += a.FinalCount
+		if a.FinalCount > 0 {
+			ov.TypesWithCandidates++
+		}
 		ov.AutoConfirmed += a.AutoConfirmed
 		ov.AIConfirmed += a.Confirmed
 		ov.AISuspected += a.Suspected
@@ -1576,7 +1602,7 @@ type vulnAuditEntry struct {
 	AIStageStatus   string `json:"ai_stage_status"`
 }
 
-func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overview report.ScanOverview) error {
+func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overview report.ScanOverview, timing aiStageTiming) error {
 	if err := os.MkdirAll(filepath.Dir(auditPath), 0755); err != nil {
 		return err
 	}
@@ -1584,6 +1610,19 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overvie
 	// so the header can never render without one.
 	if overview.ScanID == "" {
 		overview.ScanID = scanID
+	}
+
+	// A type with no converged candidate has nothing to show in the per-skill
+	// table; listing 15 of them as zero rows buries the types that do. They are
+	// folded into one collapsible section and labelled "no evidence" (or "all
+	// filtered out" when the pipeline did receive raw seeds for them).
+	var withCandidates, noCandidates []vulnAuditEntry
+	for _, a := range audits {
+		if a.FinalCount > 0 {
+			withCandidates = append(withCandidates, a)
+		} else {
+			noCandidates = append(noCandidates, a)
+		}
 	}
 
 	var b strings.Builder
@@ -1599,16 +1638,18 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overvie
 
 	totalSeed, totalFinal, totalAutoConfirmed, totalConfirmed := 0, 0, 0, 0
 	for _, a := range audits {
+		totalSeed += a.SeedCount
+		totalFinal += a.FinalCount
+		totalAutoConfirmed += a.AutoConfirmed
+		totalConfirmed += a.Confirmed
+	}
+	for _, a := range withCandidates {
 		filterEff := "n/a"
 		if a.SeedCount > 0 {
 			filterEff = fmt.Sprintf("%.0f%%", float64(a.SeedCount-a.FinalCount)/float64(a.SeedCount)*100)
 		}
 		b.WriteString(fmt.Sprintf("| %s | %d | %d | %d | %d | %s | %s |\n",
 			a.VulnType, a.SeedCount, a.FinalCount, a.AutoConfirmed, a.Confirmed, a.AIStageStatus, filterEff))
-		totalSeed += a.SeedCount
-		totalFinal += a.FinalCount
-		totalAutoConfirmed += a.AutoConfirmed
-		totalConfirmed += a.Confirmed
 	}
 
 	b.WriteString(fmt.Sprintf("| **TOTAL** | **%d** | **%d** | **%d** | **%d** | — |", totalSeed, totalFinal, totalAutoConfirmed, totalConfirmed))
@@ -1616,6 +1657,21 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overvie
 		b.WriteString(fmt.Sprintf(" **%.0f%%** |\n\n", float64(totalSeed-totalFinal)/float64(totalSeed)*100))
 	} else {
 		b.WriteString(" n/a |\n\n")
+	}
+	if len(noCandidates) > 0 {
+		fmt.Fprintf(&b, "_%d type(s) produced no converged candidate and are folded below; their seed counts are included in the TOTAL row._\n\n", len(noCandidates))
+		b.WriteString(fmt.Sprintf("<details>\n<summary>Types with no converged candidates (%d) — no evidence</summary>\n\n", len(noCandidates)))
+		b.WriteString("| Vulnerability Type | Raw seeds | Final | AI Stage | Status |\n")
+		b.WriteString("|---|---|---|---|---|\n")
+		for _, a := range noCandidates {
+			status := "no evidence (0 raw seeds)"
+			if a.SeedCount > 0 {
+				status = fmt.Sprintf("all filtered out (%d raw seeds)", a.SeedCount)
+			}
+			b.WriteString(fmt.Sprintf("| %s | %d | %d | %s | %s |\n",
+				a.VulnType, a.SeedCount, a.FinalCount, a.AIStageStatus, status))
+		}
+		b.WriteString("\n</details>\n\n")
 	}
 
 	// AI Value Summary: make the human impact of the AI classification layer
@@ -1639,22 +1695,103 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overvie
 		b.WriteString("| Pipeline filter efficiency | n/a |\n\n")
 	}
 
+	b.WriteString(renderAITimingMarkdown(timing))
+
 	b.WriteString("## Filter Chain Details\n\n")
-	for _, a := range audits {
+	if len(withCandidates) == 0 {
+		b.WriteString("No converged candidate reached the filter detail stage.\n\n")
+	}
+	for _, a := range withCandidates {
 		b.WriteString(fmt.Sprintf("### %s\n\n", a.VulnType))
 		b.WriteString(fmt.Sprintf("- **Seed count:** %d\n", a.SeedCount))
 		b.WriteString(fmt.Sprintf("- **Final count:** %d\n", a.FinalCount))
-		if a.Filters != "" {
-			b.WriteString(fmt.Sprintf("- **Filter chain:** `%s`\n", a.Filters))
-		}
 		b.WriteString(fmt.Sprintf("- **AI classification:** auto-confirmed=%d, confirmed=%d, ai_stage_status=%s", a.AutoConfirmed, a.Confirmed, a.AIStageStatus))
 		if a.AutoReviewedOut > 0 {
 			b.WriteString(fmt.Sprintf(", auto-confirmed reviewed-out=%d", a.AutoReviewedOut))
 		}
 		b.WriteString("\n\n")
+		if chain := renderFilterChainMarkdown(a.Filters); chain != "" {
+			b.WriteString(chain)
+			b.WriteString("\n")
+		}
 	}
 
 	return os.WriteFile(auditPath, []byte(b.String()), 0644)
+}
+
+// renderAITimingMarkdown renders the engine-measured AI stage. It is empty when
+// the scan has no settlement timing at all (e.g. a pipeline-only run), so the
+// report never claims a duration it did not measure.
+func renderAITimingMarkdown(timing aiStageTiming) string {
+	if timing.TotalMS <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## AI Classification Timing\n\n")
+	switch timing.Source {
+	case "override":
+		b.WriteString("_Total supplied by the `--ai-duration-ms` override; per-type spans are self-measured from settlement report timestamps._\n\n")
+	case "self-measured", "":
+		b.WriteString("_Self-measured by the engine from settlement report timestamps — no manual estimate._\n\n")
+	default:
+		fmt.Fprintf(&b, "_Source: %s._\n\n", timing.Source)
+	}
+	b.WriteString("| Scope | Batches | Elapsed |\n")
+	b.WriteString("|---|---|---|\n")
+	fmt.Fprintf(&b, "| **TOTAL AI stage** | %d | %s |\n", timing.Batches, formatMS(timing.TotalMS))
+	for _, vt := range timing.sortedAITypes() {
+		fmt.Fprintf(&b, "| %s | %d | %s |\n", vt, timing.PerTypeBatches[vt], formatMS(timing.PerTypeMS[vt]))
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+// renderFilterChainMarkdown turns the planner's stored filter-chain JSON into a
+// table a reader can scan: each filter's input → output, its shrink ratio, and
+// how many candidates it removed, with the largest bottleneck highlighted. The
+// raw JSON it replaces was one several-hundred-character line in which the 80%
+// filter was indistinguishable from a no-op.
+func renderFilterChainMarkdown(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	var filters []planner.FilterStats
+	if err := json.Unmarshal([]byte(raw), &filters); err != nil || len(filters) == 0 {
+		// A chain written by an older/corrupt build is still shown, just not
+		// tabulated: never hide the fact that a filter chain exists.
+		return fmt.Sprintf("- **Filter chain (raw):** `%s`\n", raw)
+	}
+	topIdx, topRemoved := -1, 0
+	for i, f := range filters {
+		if removed := f.InputCount - f.OutputCount; removed > topRemoved {
+			topIdx, topRemoved = i, removed
+		}
+	}
+	var b strings.Builder
+	b.WriteString("| Filter | Input | Output | Shrink | Removed |\n")
+	b.WriteString("|---|---|---|---|---|\n")
+	for i, f := range filters {
+		shrink := "—"
+		if f.InputCount > 0 {
+			shrink = fmt.Sprintf("%.0f%%", float64(f.InputCount-f.OutputCount)/float64(f.InputCount)*100)
+		}
+		name := f.Name
+		if i == topIdx {
+			name = "**" + name + "**"
+		}
+		b.WriteString(fmt.Sprintf("| %s | %d | %d | %s | %d |\n",
+			name, f.InputCount, f.OutputCount, shrink, f.InputCount-f.OutputCount))
+	}
+	if topIdx >= 0 {
+		f := filters[topIdx]
+		ratio := 0.0
+		if f.InputCount > 0 {
+			ratio = float64(f.InputCount-f.OutputCount) / float64(f.InputCount) * 100
+		}
+		fmt.Fprintf(&b, "\n**Top shrink:** `%s` — removed %d candidates (%.0f%% of its input).\n",
+			f.Name, topRemoved, ratio)
+	}
+	return b.String()
 }
 
 // auditReviewedOutTotal sums the auto-confirmed findings the final review

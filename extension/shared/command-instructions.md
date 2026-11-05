@@ -67,12 +67,15 @@ do NOT stop to inspect the directory — just pick the next fresh filename.
 
 Write one `--write-json` per type (all of that type's findings in one array).
 The FINAL audit (`report.md` verdict-stage + `result.sarif` + `findings/`) is the
-**orchestrator's** single `secguard report --audit --scan-id <scan_id> --output-dir <scan_dir> --ai-duration-ms <ms>`
-at the very end (see step 5) — never per chunk, never by a subagent. On OpenCode
-the subagents write via the `secguard_report` tool with `finalize: false` (and the
-orchestrator's final audit is still that same shell `report --audit --ai-duration-ms`
-command; the `secguard_report` tool also accepts `ai_duration_ms` if you finalize
-through it).
+**orchestrator's** single `secguard report --audit --scan-id <scan_id> --output-dir <scan_dir>`
+at the very end (see step 5) — never per chunk, never by a subagent. The engine
+**self-measures** the AI stage from the settlement reports' timestamps (total +
+per type), so do NOT hand-estimate a wall clock: `--ai-duration-ms <ms>` is ONLY
+an override for a host that cannot write settlement files. On OpenCode the
+subagents write via the `secguard_report` tool with `finalize: false` (and the
+orchestrator's final audit is still that same shell `report --audit` command; the
+`secguard_report` tool also accepts `ai_duration_ms` if you finalize through it,
+with the same override-only meaning).
 
 **Never** re-run a write to "verify" it — the write is idempotent, and `secguard
 db` is read-only, so a stray duplicate would force you to edit SQLite by hand.
@@ -452,10 +455,11 @@ straight to the structured report (`written: 0`).
 
 **滑动窗口补位 (F3a) — 消灭整波 barrier（P0-1）：** F3 的"所有派发 ≤10s"只约束**首波**。首波发出后，每收到**一个**批次的完成信号（官方 Claude Code 的 `task_notification`、DSH 的 settlement 通知；或同步宿主若其 `Agent`/`task` 工具支持 `run_in_background` 时的完成通知），编排器**立即**吸收该批次 settlement 并**立即**补派积压队列中的下一个批次——不等其他在跑批次，并发数始终顶满宿主上限，波间空档与 straggler 尾部空转消失。补位派发按通知逐个发，**显式豁免 F3 的 ≤10s 限制**。吸收顺序与 F11 一致：`secguard status --reports`（有 `valid:true` 覆盖则吸收 `written`/`dismissed`/`needs_context` 并 `report --complete-type`）→ `secguard status --per-type`（读引擎预计算的 `already_covered_ranges` 与 `in_flight_ranges`，只补派真正缺失且无人占位的 range；补派前先按 F13 claim）。同步宿主若其 `Agent`/`task` 无后台模式（OpenCode / opencode-nga 按 F7 的同步返回），则首波仍按 F3 一次性发出、超时走 F11——退化为现状，无回归。
 
-**F3a 的可执行实现（in-flight 计数器 + 宿主并发上限探测）：** F3a 不是"应当"级建议，是必须执行的状态机。编排器在本轮开始时**显式**维护两个量：(1) `host_max` = 宿主允许的最大并发子代理数；(2) `in_flight` = 当前已发出但未收到完成信号的批次计数。
+**F3a 的可执行实现（in-flight 计数器 + 宿主并发上限查询）：** F3a 不是"应当"级建议，是必须执行的状态机。编排器在本轮开始时**显式**维护两个量：(1) `host_max` = 宿主允许的最大并发子代理数；(2) `in_flight` = 当前已发出但未收到完成信号的批次计数。
 
-- **`host_max` 探测（禁止试探）**：不要"先派 10 个、被拒 4 个、再补 4 个"。首波发出后，若任一 `Agent`/`task`/`subagent` 调用返回 `Cannot spawn subagent: session already has N running subagent(s) ... reaching the maximum allowed N`（或等价错误），立刻把 `host_max` 置为该错误消息里的 `N`，并把被拒的批次放回队列头；未再遇到拒绝则以 `host_max=10` 作为首波上限。**一旦 `host_max` 确定，后续所有补位都以 `in_flight < host_max` 为准，绝不再试探。**
-- **`in_flight` 维护**：首波一次性发出 `min(积压批次总数, host_max)` 个批次，`in_flight` 置为该数。此后**每收到一个完成信号**：先按 F11 吸收该批 settlement（`--reports` 有 `valid:true` 覆盖 → `--complete-type`）→ `in_flight -= 1` → 若积压队列非空，**在同一响应轮内**立即发出下一个批次并 `in_flight += 1`。**禁止**"收完一整波再派下一波"——那正是整波 barrier 的成因。
+- **`host_max` 取值（禁止试探）**：本轮开始先读引擎给出的上限——`secguard status --show-limits`（OpenCode：`secguard_status {show_limits:true}`）的 `ai_stage.host_max_concurrency`，默认 10（Claude Code / DSH），部署可设 `SECGUARD_AI_HOST_MAX_CONCURRENCY` 覆盖；首波直接按该值发出。不要"先派 10 个、被拒 4 个、再补 4 个"。仅当宿主**仍然**拒绝并返回 `Cannot spawn subagent: session already has N running subagent(s) ... reaching the maximum allowed N`（或等价错误）时，才把 `host_max` 置为该错误里的 `N`、把被拒批次放回队列头——这是兜底，不是首选探测。**一旦 `host_max` 确定，后续所有补位都以 `in_flight < host_max` 为准，绝不再试探。**
+- **`in_flight` 维护**：首波一次性发出 `min(积压批次总数, host_max)` 个批次，`in_flight` 置为该数。此后**每收到一个完成信号**：先按 F11 吸收该批 settlement（`status --reports` 的 `valid:true` 覆盖；吸收时引擎已在同一事务里把该 type 的 `ai_stage_status` 标为 `done`，`--complete-type` 只是通知丢失或旧库的修复路径）→ `in_flight -= 1` → 若积压队列非空，**在同一响应轮内**立即发出下一个批次并 `in_flight += 1`。**禁止**"收完一整波再派下一波"——那正是整波 barrier 的成因。
+- **worker 心跳/进度（替代 mtime 猜测）**：worker 按 agent-body 的 heartbeat 契约每 ~10 个候选就刷新一次 `<subagent_id>-chunk-<k>.json`；`status --reports` 对每条报告返回 `heartbeat_age_ms`、`stalled`（超过 `ai_stage.heartbeat_stall_ms`，默认 15 分钟未再落盘）和 `progress`（`classified` / `total` / `percent`）。`stalled=false` 或 `progress.classified` 仍在增长就是「慢但在跑」，**不得**据此判死或重派；只有 `stalled=true` **且** `status --per-type` 的 `written_count` 无增长（F11 的一次复核）才允许按缺失 range 重派。
 - **判定完成的标准**：一个批次"完成"= 收到宿主通知（异步宿主）/ `Agent` 调用正常返回（同步宿主）/ 落盘报告 `valid:true` 覆盖（通知丢失时按 F9）。三种信号等价，任一到达即触发补位，不要只等一种。
 
 **子代理返回模型 (F7) — 这是"任务卡住不结束/结果丢失/重复下发"的根因，必读：** 三个平台的返回模型不同，绝不可混用：
@@ -470,7 +474,7 @@ straight to the structured report (`written: 0`).
 **子代理句柄失效 (F9) — `No task found with ID <id>` 的恢复：** 异步宿主的后台任务句柄偶发被回收，返回 `No task found with ID <id>`。这是宿主侧竞态，**不是扫描失败，也绝不等于该子代理没跑**。遇到时**禁止**反复用同一 ID 重试、禁止死等、禁止把该类型当 `failed` 丢弃。正确动作：先读该子代理落盘的结构化报告 `<tmpdir>/<subagent_id>-report.json`（子代理按 O2 在最终消息前写入，承载消息里没有的 `needs_context`/`dismissed` 明细），再 `secguard status --per-type --scan-id <scan_id>`，以 DB 的 `terminal_state` 为唯一权威（`done`=成功；`in-progress`/`pending`=未写完；`unknown`=未下发）。对非 `done` 的类型**只重下发缺失部分**（带上候选范围，先按 F13 claim；`claimed:false` 则不重发），`done` 的绝不下发。重下发后照常进第 5 步 Collect+finalize，第 6 步出报告。
 
 **Agent 调用超时 (F11) — `Tool call hung for 660000ms` / force-reject：** 同步宿主（OpenCode / opencode-nga）的 `Agent`/`task` 调用是同步的，单调用有硬上限（约 660s）。security-auditor 的一个批次（skill 加载 + `_index.md` + Evidence 打开 + JSON 写入）可能超过它；宿主会 force-reject 该调用，但**子代理仍在后台继续跑，并会按 O2 把 `<tmpdir>/<subagent_id>-report.json` 落盘**。因此超时是**宿主超时，不是批次失败**，**禁止**仅凭超时就重派。恢复顺序：
-1. `secguard status --reports --scan-id <scan_id>`（OpenCode 用 `secguard_status` 的 `reports: true`）——列出已落盘报告的 `subagent_id` / `scan_id` / `processed_types`（含 `range`）/ `needs_context` / `valid`。
+1. `secguard status --reports --scan-id <scan_id>`（OpenCode 用 `secguard_status` 的 `reports: true`）——列出已落盘报告的 `subagent_id` / `scan_id` / `processed_types`（含 `range`）/ `needs_context` / `valid`，以及存活信号 `heartbeat_age_ms` / `stalled` / `progress`。
 2. 若有 `valid:true` 的报告覆盖该批次（scan_id 相同 + type/range 匹配）：吸收其 `written`/`dismissed`/`needs_context`，对 `processed_types` 调 `report --complete-type`，**绝不重派**。
 3. 若暂无 `valid` 报告：`secguard status --per-type --scan-id <scan_id>`；若 `written_count` 有增长或 `terminal_state=done`，先做别的批次/等待一回合，再查一次 `--reports`；`valid:false`（部分写入）表示子代理还在写，**等待，不重派**。
 4. 只有在**一次复核后仍无 valid 报告且无进展**时，才重派，且只重派缺失的 type/range（先按 F13 claim，`claimed:false` 则不重发），绝不整批重来。
@@ -852,14 +856,15 @@ claim 行只是 `settlement_stats` 里的 `status='dispatched'` 占位，**不�
     it classifies candidates — there is NO separate or customer-configured LLM
     anywhere in the pipeline.
 
-    After ALL subagents (or your sequential loop) are done, run the **baseline audit**: `secguard report --audit --scan-id <scan_id> --output-dir <output_dir> --ai-duration-ms <ms>`
+    After ALL subagents (or your sequential loop) are done, run the **baseline audit**: `secguard report --audit --scan-id <scan_id> --output-dir <output_dir>`
    ONCE to regenerate `report.md` (verdict-stage, confirmed only) + `result.sarif`
-   + `findings/`. `<ms>` is the MEASURED AI-classification wall-clock (from
-   `secguard_scan` returning / entering the Scale gate, to this finalize step) in
-   milliseconds — it is persisted to `scan_runs.ai_duration_ms` so production runs
-   can report pipeline-vs-AI timing. Verify `<output_dir>/result.sarif` is
-   non-empty and `findings/` has files; if not, a write did not land — find the
-   `per_finding_warning` and fix it.
+   + `findings/`. The engine self-measures the AI-classification wall-clock from
+   the settlement reports' timestamps, persists it to `scan_runs.ai_duration_ms`
+   (source `self-measured`) and renders total + per-type timing in
+   `audit-report.md`; do NOT pass `--ai-duration-ms` unless the host cannot write
+   settlement files (it is an override, not a required input). Verify
+   `<output_dir>/result.sarif` is non-empty and `findings/` has files; if not, a
+   write did not land — find the `per_finding_warning` and fix it.
 
    **Step 5.5 — 机器判定终审复核（让 `result.sarif` 直接可提单）:** run ONCE per
    scan, AFTER the audit above. Scope = ONLY the rows the pipeline proved by itself
@@ -893,10 +898,11 @@ claim 行只是 `settlement_stats` 里的 `status='dispatched'` 占位，**不�
       listing returns exactly the unreviewed set) or with the `secguard_db` raw
       SQL of step a.
    d. Run the **final audit** ONCE so `result.sarif` / `report.md` / `findings/` reflect the
-      dismissals — the regenerated `result.sarif` is the deliverable. Pass the UPDATED
-       `--ai-duration-ms` (scan return → now, including 5.5) when the host can
-       measure it; otherwise keep the baseline value and note "5.5 耗时计入编排
-       开销" in the observations table.
+      dismissals — the regenerated `result.sarif` is the deliverable. Do not pass
+       `--ai-duration-ms`: the self-measured AI stage comes from the settlement
+       files, and Step 5.5 runs after them, so its time is orchestrator overhead —
+       note "5.5 耗时计入编排开销" in the observations table. Pass the flag ONLY
+       as an override on a host that cannot write settlement files.
    e. Budget: bounded. With more than ~40 machine findings, verify the
       assignment-based premises first (CWE-457 / CWE-476) and record the remainder as
       "machine verdicts unverified" in the report's limitations. Never read source for

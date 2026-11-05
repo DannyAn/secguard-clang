@@ -100,7 +100,7 @@ export default tool({
     ai_duration_ms: tool.schema
       .number()
       .optional()
-      .describe("The MEASURED AI-classification wall-clock in milliseconds, recorded only by the orchestrator's single final `report --audit` (from scan return to finalize). Persisted to scan_runs.ai_duration_ms for production timing analysis. Omit on per-chunk writes."),
+      .describe("OPTIONAL override for the AI-classification wall-clock in milliseconds. The engine already self-measures the AI stage from settlement report timestamps (audit-report.md AI Classification Timing / JSON ai_stage), so omit this on every normal run and pass it ONLY when the host cannot write settlement files."),
   },
   async execute(args, context) {
     let workDir = context.directory || context.worktree || "."

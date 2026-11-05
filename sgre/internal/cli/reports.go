@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -25,11 +26,29 @@ type subagentReport struct {
 	Processed    []reportTypeCount `json:"processed_types,omitempty"`
 	Failed       []reportFailed    `json:"failed_types,omitempty"`
 	NeedsContext []json.RawMessage `json:"needs_context,omitempty"`
+	// HeartbeatAgeMS is how long the settlement file has gone without an mtime
+	// update; Stalled turns true past settlementHeartbeatStall. A running worker
+	// refreshes its chunk file every ~10 candidates, so this is the liveness
+	// signal that replaces guessing from an output file's mtime by hand.
+	HeartbeatAgeMS int64 `json:"heartbeat_age_ms"`
+	Stalled        bool  `json:"stalled"`
+	// Progress is the batch's classified/total snapshot: written+dismissed
+	// against the assigned candidate range (or the type's candidate_count when
+	// the range is "all"). A chunk snapshot shows partial progress; the final
+	// report shows it at 100%.
+	Progress *reportProgress `json:"progress,omitempty"`
 	// mtime is the raw (nanosecond-resolution) file modification time used to
 	// pick the newest report for dedup; ModTime above is only its RFC3339
 	// rendering for the JSON consumer (second resolution, too coarse to order
 	// reports written in the same second).
 	mtime time.Time
+}
+
+// reportProgress is the machine-readable classified/total heartbeat.
+type reportProgress struct {
+	Classified int     `json:"classified"`
+	Total      int     `json:"total"`
+	Percent    float64 `json:"percent"`
 }
 
 type reportTypeCount struct {
@@ -94,6 +113,10 @@ func listSubagentReports(dbPath, scanID string) reportsResult {
 		if info, ierr := entry.Info(); ierr == nil {
 			rep.mtime = info.ModTime()
 			rep.ModTime = info.ModTime().Format(time.RFC3339)
+			rep.HeartbeatAgeMS = time.Since(rep.mtime).Milliseconds()
+			if rep.HeartbeatAgeMS < 0 {
+				rep.HeartbeatAgeMS = 0
+			}
 		}
 		if err := json.Unmarshal(data, &raw); err != nil {
 			rep.Error = "unparseable report (partial write or truncated JSON)"
@@ -126,6 +149,12 @@ func listSubagentReports(dbPath, scanID string) reportsResult {
 		// is excluded.
 		if scanID != "" && rep.ScanID != "" && rep.ScanID != scanID {
 			continue
+		}
+		// A settled report is done, not stalled; an unfinished snapshot whose
+		// mtime stopped advancing past the heartbeat window is the "worker looks
+		// dead" signal the orchestrator used to infer from file timestamps.
+		if !rep.Valid && rep.HeartbeatAgeMS >= int64(settlementHeartbeatStall/time.Millisecond) {
+			rep.Stalled = true
 		}
 		res.Reports = append(res.Reports, rep)
 	}
@@ -198,4 +227,50 @@ func subagentIDFromFile(name string) string {
 		}
 	}
 	return base
+}
+
+// enrichReportProgress attaches the classified/total heartbeat to every listed
+// report. totalsByScan maps a scan id to its per-type candidate_count; a report
+// whose `range` is a concrete candidate range ("1-69") derives its total from
+// the range itself, so a split batch's progress is measured against its own
+// slice instead of the whole type.
+func enrichReportProgress(res *reportsResult, totalsByScan map[string]map[string]int) {
+	for i := range res.Reports {
+		rep := &res.Reports[i]
+		totals := totalsByScan[rep.ScanID]
+		classified, total := 0, 0
+		for _, pt := range rep.Processed {
+			classified += pt.Written + pt.Dismissed
+			total += rangeCandidateTotal(pt.Range, totals[pt.Type])
+		}
+		if total <= 0 {
+			continue
+		}
+		pct := float64(classified) / float64(total) * 100
+		if pct > 100 {
+			pct = 100
+		}
+		rep.Progress = &reportProgress{Classified: classified, Total: total, Percent: round1(pct)}
+	}
+}
+
+// rangeCandidateTotal returns the number of candidates a settlement report's
+// range covers. A numeric "first-last" range (the form the orchestrator assigns,
+// e.g. "1-69") is self-describing; "all" (or an unparseable range) falls back to
+// the type's candidate_count.
+func rangeCandidateTotal(r string, typeTotal int) int {
+	r = normalizeSettlementRange(r)
+	if r == "all" || r == "" {
+		return typeTotal
+	}
+	loStr, hiStr, ok := strings.Cut(r, "-")
+	if !ok {
+		return typeTotal
+	}
+	lo, lerr := strconv.Atoi(strings.TrimSpace(loStr))
+	hi, herr := strconv.Atoi(strings.TrimSpace(hiStr))
+	if lerr != nil || herr != nil || lo < 1 || hi < lo {
+		return typeTotal
+	}
+	return hi - lo + 1
 }

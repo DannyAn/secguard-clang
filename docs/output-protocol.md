@@ -184,18 +184,29 @@ opens with the same `## Scan Overview` block and one-line headline as
 `report.md`, then carries:
 
 - `## Per-Skill Pipeline Statistics` — Seed / Final / Auto-confirmed /
-  AI Confirmed / AI Suspected / AI Dismissed / Filter Efficiency / AI Accuracy
-  per vulnerability type, plus a `TOTAL` row
+  AI Confirmed / AI Stage / Filter Efficiency per vulnerability type that
+  produced a converged candidate, plus a `TOTAL` row. Types with no converged
+  candidate are folded into a collapsible `no evidence` section (annotated
+  `all filtered out (N raw seeds)` when the pipeline did receive raw seeds)
+  instead of occupying a zero row each; their seeds still count in `TOTAL`.
 - `## AI Value Summary` — raw seeds, auto-confirmed, candidates needing AI
-  review, classified by AI, without AI classification, verdict counts, filter
-  efficiency, AI accuracy
-- `## Filter Chain Details` — the per-type filter chain and its drop counts
+  review, classified by AI, verdict counts, filter efficiency
+- `## AI Classification Timing` — the engine-measured AI stage: total elapsed
+  plus per-type spans, derived from settlement report timestamps (omitted when
+  no settlement timing exists)
+- `## Filter Chain Details` — per type, a Markdown table of each filter's
+  input → output / shrink / removed counts, with the largest bottleneck
+  highlighted as `Top shrink`. The raw `filter_chain` JSON stays in the JSON
+  envelope for machine consumers.
 
 ### `report --audit` JSON envelope (`summary`)
 
 `secguard report --audit` returns `{scan_id, audit_path, sarif_path, report_path,
-xlsx_path, vuln_count, findings_synced, status, audits, summary}` (`summary` is
-also present on the no-`--output-dir` form). `audits` is the per-vulnerability-type
+xlsx_path, vuln_count, findings_synced, status, audits, summary, ai_stage}`
+(`summary` and `ai_stage` are also present on the no-`--output-dir` form, and
+`ai_stage` is omitted when no settlement timing exists). `ai_stage` carries
+`total_ms`, `per_type_ms` (map), `per_type_batches` (map), `batches` and
+`source` (`self-measured` or `override`). `audits` is the per-vulnerability-type
 verdict breakdown; `summary` is the **scan-wide aggregate** rendered from the same
 `report.ScanOverview` that wrote `report.md` and `audit-report.md`:
 
@@ -212,8 +223,8 @@ verdict breakdown; `summary` is the **scan-wide aggregate** rendered from the sa
 | `dismissed_total` | the dropped verdict count (false positives + undecidable) |
 | `actionable_total` | `confirmed_total` — the number a user report leads with (binary verdict) |
 | `unclassified_candidates` | converged candidates with no persisted verdict (> 0 is a process gap) |
-| `types_scanned` / `types_with_findings` | how many vulnerability types converged / produced actionable findings |
-| `automated_analysis_ms` / `ai_classification_ms` | the two duration figures for the report header |
+| `types_scanned` / `types_with_candidates` / `types_with_findings` | how many vulnerability types were planned / converged at least one candidate / produced actionable findings |
+| `automated_analysis_ms` / `ai_classification_ms` | the two duration figures for the report header; `ai_classification_ms` is self-measured from settlement timestamps unless `--ai-duration-ms` overrides it |
 | `severity_breakdown` | `{severity: {confirmed, total}}` over confirmed findings |
 
 Consumers (including the agent console) must read these instead of summing

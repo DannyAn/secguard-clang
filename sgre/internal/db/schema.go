@@ -362,6 +362,7 @@ CREATE TABLE IF NOT EXISTS settlement_stats (
     wall_ms         INTEGER,
     queue_ms        INTEGER,
     work_ms         INTEGER,
+    finished_at     INTEGER,
     created_at      INTEGER
 );
 
@@ -466,6 +467,13 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 	}
 	if err := ensureColumn(ctx, db, "settlement_stats", "work_ms", "INTEGER"); err != nil {
 		return fmt.Errorf("db: init schema: ensure settlement_stats.work_ms: %w", err)
+	}
+	// settlement_stats.finished_at is additive: the settlement report file's
+	// mtime (unix ms) is when the batch actually finished. Persisting it lets the
+	// engine self-measure the AI stage from settlement timestamps instead of a
+	// human-supplied --ai-duration-ms estimate.
+	if err := ensureColumn(ctx, db, "settlement_stats", "finished_at", "INTEGER"); err != nil {
+		return fmt.Errorf("db: init schema: ensure settlement_stats.finished_at: %w", err)
 	}
 	if err := ensureSettlementStatUnique(ctx, db); err != nil {
 		return fmt.Errorf("db: init schema: ensure settlement_stats uniqueness: %w", err)

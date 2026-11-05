@@ -54,9 +54,10 @@ type ScanOverview struct {
 	AIDismissed   int
 	Unclassified  int
 
-	TypesScanned      int
-	TypesWithFindings int
-	SeverityCounts    map[string]SeverityCount
+	TypesScanned        int
+	TypesWithCandidates int
+	TypesWithFindings   int
+	SeverityCounts      map[string]SeverityCount
 }
 
 // SeverityCount is the actionable (confirmed) breakdown per severity. Dismissed
@@ -283,6 +284,7 @@ func (o ScanOverview) SummaryFields() map[string]interface{} {
 		"actionable_total":        o.ActionableTotal(),
 		"unclassified_candidates": o.Unclassified,
 		"types_scanned":           o.TypesScanned,
+		"types_with_candidates":   o.TypesWithCandidates,
 		"types_with_findings":     o.TypesWithFindings,
 	}
 	if o.DurationMs > 0 {
