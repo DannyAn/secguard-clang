@@ -99,7 +99,7 @@ func runMetricsCmd(ctx context.Context, args []string) int {
 	}
 	view := metricsView(run)
 	if stats, err := store.ListSettlementStatsByScan(ctx, scanID); err == nil && len(stats) > 0 {
-		view["ai_stage"] = settlementAIStageMetrics(stats, run.AIDurationMs)
+		view["ai_stage"] = settlementAIStageMetrics(stats, run.AIDurationMs, run.AIDurationSource)
 	}
 	_ = WriteJSON(view)
 	return 0

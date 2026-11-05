@@ -524,8 +524,10 @@ current chunk, never the whole type.
 **Do not finalize per chunk — not even on the last one.** On the MCP host pass
 `finalize: false` on EVERY write chunk, including the final chunk: the render is
 the orchestrator's single `secguard report --audit --scan-id <id> --output-dir
-<scan_dir> --ai-duration-ms <ms>` at the end of the run, exactly as on the
-shell-only host (where `--write-json` never renders at all). Rendering `report.md`
+<scan_dir>` at the end of the run, exactly as on the shell-only host (where
+`--write-json` never renders at all). The engine self-measures the AI stage from
+your settlement timestamps; `--ai-duration-ms` is an override, never a required
+hand-estimated input. Rendering `report.md`
 + `result.sarif` + `result.xlsx` + `findings/` after EVERY 200-finding chunk
 re-reads and re-writes the whole report each time, which is exactly the redundant
 backfill that stretches a large type's wall-clock time — and a `finalize: true` on
@@ -533,10 +535,12 @@ the last chunk only duplicates the orchestrator's audit.
 
 **After the final chunk of a type** (or immediately if the type has zero confirmed
 findings), call `secguard report --complete-type <type> --scan-id <scan_id>` to
-mark the type's AI stage done (sets `ai_stage_status='done'`). This is REQUIRED
-for the orchestrator's resume logic (`status --per-type` terminal_state) to
-correctly report `done` — without it the type reads as `in-progress`/`pending`
-and may be re-dispatched.
+mark the type's AI stage done (sets `ai_stage_status='done'`). The orchestrator's
+`status --reports` absorption also marks the type done atomically with its
+settlement write, so this call is the fast path / repair for a host whose report
+file lands late — but call it anyway: it makes `status --per-type` report `done`
+without waiting for the orchestrator's next absorption, and the engine's resume
+logic treats anything else as `in-progress`/`pending`.
 
 **Keep each field SHORT — your verdicts are JSON that must fit in context, not an
 essay.** `summary` ≤ one line. `reasoning` ≤ 2 short sentences (source → sink →
@@ -753,7 +757,12 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
   (`written`/`dismissed`/`evidence_opens`/…) and `needs_context` accumulated SO
   FAR. A chunk is a snapshot, NOT a completion signal — it reads `valid: false`
   in `status --reports` (the orchestrator absorbs its accounting but does not mark
-  the range covered). The final `<subagent_id>-report.json` (`valid: true`) stays
-  the authoritative completion record. This way a host force-reject that kills you
+  the range covered). It is also the **heartbeat**: `status --reports` returns
+  `heartbeat_age_ms` / `stalled` and `progress` (`classified` / `total` /
+  `percent`) for each report, so the orchestrator can tell "slow but alive" from
+  "dead" without reading your transcript. Keep the ~10-candidate cadence even
+  during a long single-candidate investigation. The final
+  `<subagent_id>-report.json` (`valid: true`) stays the authoritative completion
+  record. This way a host force-reject that kills you
   mid-batch does not lose the `needs_context`/`dismissed` accounting you had
   already accumulated.

@@ -397,6 +397,9 @@ type FunctionSummary struct {
 // wall-clock when known (0 = not recorded: the settlement file carries no
 // dispatch timestamp). queue_ms/work_ms are the dispatch→start and start→finish
 // split when the report carries dispatched_at/started_at timestamps.
+// finished_at is the settlement file's mtime (unix ms), the batch completion
+// time the engine uses to self-measure the AI stage; 0 = not recorded (an older
+// scan, or a claim row that has not settled).
 type SettlementStat struct {
 	ID            int64
 	ScanID        string
@@ -414,6 +417,7 @@ type SettlementStat struct {
 	WallMS        int64
 	QueueMS       int64
 	WorkMS        int64
+	FinishedAt    int64
 	CreatedAt     int64
 }
 

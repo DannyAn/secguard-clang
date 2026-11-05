@@ -22,7 +22,7 @@ function findSecguard(context: { worktree?: string, directory?: string }): strin
 
 export default tool({
   description:
-    "Check SecGuard index status, per-type classification progress for a scan, or settled subagent reports (reports=true), and atomically claim a dispatch batch before spawning a worker (claim_type/claim_range/claim_holder). By default returns the index summary (whether sgre.db exists, last updated, files/functions indexed, staleness). When per_type is true, returns the per-vulnerability-type progress array (candidate_count / written_count / terminal_state / already_covered_ranges / in_flight_ranges) for the scan identified by scan_id (defaults to the latest scan) — this is the DB-authoritative verification the orchestrator uses to judge success/partial/failed per type, so prefer it over any subagent self-report. When claim_type is set, atomically reserves that type+range: spawn the batch ONLY when the result has claimed=true; claimed=false means another worker holds it (reason held) or it is already settled (reason done — pass reclaim only for a deliberate needs_context re-review).",
+    "Check SecGuard index status, per-type classification progress for a scan, or settled subagent reports (reports=true), and atomically claim a dispatch batch before spawning a worker (claim_type/claim_range/claim_holder). By default returns the index summary (whether sgre.db exists, last updated, files/functions indexed, staleness). show_limits=true returns the engine/host concurrency caps and AI-stage budgets instead — read host_max_concurrency there rather than probing the host by hitting a spawn error. When per_type is true, returns the per-vulnerability-type progress array (candidate_count / written_count / terminal_state / already_covered_ranges / in_flight_ranges) for the scan identified by scan_id (defaults to the latest scan) — this is the DB-authoritative verification the orchestrator uses to judge success/partial/failed per type, so prefer it over any subagent self-report. When claim_type is set, atomically reserves that type+range: spawn the batch ONLY when the result has claimed=true; claimed=false means another worker holds it (reason held) or it is already settled (reason done — pass reclaim only for a deliberate needs_context re-review).",
   args: {
     per_type: tool.schema
       .boolean()
@@ -31,7 +31,11 @@ export default tool({
     reports: tool.schema
       .boolean()
       .optional()
-      .describe("When true, list settled subagent reports from .sgre/.tmp/*-report*.json (subagent_id / scan_id / processed_types / failed_types / needs_context / valid). Use this after an Agent-call timeout to decide whether a batch already finished before re-dispatching."),
+      .describe("When true, list settled subagent reports from .sgre/.tmp/*-report*.json (subagent_id / scan_id / processed_types / failed_types / needs_context / valid) plus heartbeat_age_ms / stalled / progress (classified vs total). Use this after an Agent-call timeout to decide whether a batch already finished before re-dispatching, and to tell a live-but-slow worker from a dead one."),
+    show_limits: tool.schema
+      .boolean()
+      .optional()
+      .describe("When true, return the engine concurrency caps, the AI host concurrency cap and the AI-stage budgets instead of index status. Read host_max_concurrency here instead of probing the host's spawn limit."),
     claim_type: tool.schema
       .string()
       .optional()
@@ -78,6 +82,8 @@ export default tool({
         if (args.reclaim) cmd.push("--reclaim")
         if (args.scan_id) cmd.push("--scan-id", args.scan_id)
         result = await Bun.$`${cmd}`.cwd(workDir).quiet().text()
+      } else if (args.show_limits) {
+        result = await Bun.$`${secguardBin} status --db ${dbPath} --show-limits`.cwd(workDir).quiet().text()
       } else if (args.reports) {
         const scanId = args.scan_id || ""
         if (scanId) {

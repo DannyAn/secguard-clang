@@ -11,13 +11,13 @@ import (
 // batch was never claimed or settled.
 func (s *store) GetSettlementStat(ctx context.Context, scanID, vulnType, rangeStr string) (*SettlementStat, error) {
 	st := &SettlementStat{}
-	var wallMS, queueMS, workMS sql.NullInt64
+	var wallMS, queueMS, workMS, finishedAt sql.NullInt64
 	err := s.exec.QueryRowContext(ctx,
-		`SELECT id, scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, created_at
+		`SELECT id, scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, finished_at, created_at
 		 FROM settlement_stats WHERE scan_id = ? AND vuln_type = ? AND range_str = ?`,
 		scanID, vulnType, rangeStr).Scan(&st.ID, &st.ScanID, &st.VulnType, &st.RangeStr, &st.SubagentID,
 		&st.Written, &st.Dismissed, &st.EvidenceOpens, &st.SourceReads, &st.RepoGreps,
-		&st.NeedsContext, &st.Status, &st.RetryCount, &wallMS, &queueMS, &workMS, &st.CreatedAt)
+		&st.NeedsContext, &st.Status, &st.RetryCount, &wallMS, &queueMS, &workMS, &finishedAt, &st.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -27,6 +27,7 @@ func (s *store) GetSettlementStat(ctx context.Context, scanID, vulnType, rangeSt
 	st.WallMS = wallMS.Int64
 	st.QueueMS = queueMS.Int64
 	st.WorkMS = workMS.Int64
+	st.FinishedAt = finishedAt.Int64
 	return st, nil
 }
 
@@ -117,7 +118,7 @@ func (s *store) UpsertSettlementStat(ctx context.Context, st *SettlementStat) er
 	if st.Status == "" {
 		st.Status = "done"
 	}
-	var wallMS, queueMS, workMS interface{}
+	var wallMS, queueMS, workMS, finishedAt interface{}
 	if st.WallMS > 0 {
 		wallMS = st.WallMS
 	}
@@ -127,9 +128,12 @@ func (s *store) UpsertSettlementStat(ctx context.Context, st *SettlementStat) er
 	if st.WorkMS > 0 {
 		workMS = st.WorkMS
 	}
+	if st.FinishedAt > 0 {
+		finishedAt = st.FinishedAt
+	}
 	_, err := s.exec.ExecContext(ctx,
-		`INSERT INTO settlement_stats (scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO settlement_stats (scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, finished_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(scan_id, vuln_type, range_str) DO UPDATE SET
 		   subagent_id = excluded.subagent_id,
 		   written = excluded.written,
@@ -143,10 +147,11 @@ func (s *store) UpsertSettlementStat(ctx context.Context, st *SettlementStat) er
 		   wall_ms = excluded.wall_ms,
 		   queue_ms = excluded.queue_ms,
 		   work_ms = excluded.work_ms,
+		   finished_at = COALESCE(excluded.finished_at, settlement_stats.finished_at),
 		   created_at = excluded.created_at`,
 		st.ScanID, st.VulnType, st.RangeStr, st.SubagentID,
 		st.Written, st.Dismissed, st.EvidenceOpens, st.SourceReads, st.RepoGreps, st.NeedsContext,
-		st.Status, st.RetryCount, wallMS, queueMS, workMS, st.CreatedAt)
+		st.Status, st.RetryCount, wallMS, queueMS, workMS, finishedAt, st.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("db: upsert settlement stat: %w", err)
 	}
@@ -181,7 +186,7 @@ func (s *store) IncrementSettlementRetry(ctx context.Context, scanID, vulnType, 
 
 func (s *store) ListSettlementStatsByScan(ctx context.Context, scanID string) ([]*SettlementStat, error) {
 	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, created_at
+		`SELECT id, scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, finished_at, created_at
 		 FROM settlement_stats WHERE scan_id = ? ORDER BY vuln_type, range_str, subagent_id`, scanID)
 	if err != nil {
 		return nil, fmt.Errorf("db: list settlement stats by scan: %w", err)
@@ -191,7 +196,7 @@ func (s *store) ListSettlementStatsByScan(ctx context.Context, scanID string) ([
 }
 
 func (s *store) ListSettlementStatsByType(ctx context.Context, vulnType string, limit int) ([]*SettlementStat, error) {
-	query := `SELECT id, scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, created_at
+	query := `SELECT id, scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, finished_at, created_at
 		 FROM settlement_stats WHERE vuln_type = ? ORDER BY created_at DESC, id DESC`
 	args := []interface{}{vulnType}
 	if limit > 0 {
@@ -210,15 +215,16 @@ func scanSettlementStats(rows *sql.Rows) ([]*SettlementStat, error) {
 	var out []*SettlementStat
 	for rows.Next() {
 		st := &SettlementStat{}
-		var wallMS, queueMS, workMS sql.NullInt64
+		var wallMS, queueMS, workMS, finishedAt sql.NullInt64
 		if err := rows.Scan(&st.ID, &st.ScanID, &st.VulnType, &st.RangeStr, &st.SubagentID,
 			&st.Written, &st.Dismissed, &st.EvidenceOpens, &st.SourceReads, &st.RepoGreps,
-			&st.NeedsContext, &st.Status, &st.RetryCount, &wallMS, &queueMS, &workMS, &st.CreatedAt); err != nil {
+			&st.NeedsContext, &st.Status, &st.RetryCount, &wallMS, &queueMS, &workMS, &finishedAt, &st.CreatedAt); err != nil {
 			return nil, fmt.Errorf("db: scan settlement stat: %w", err)
 		}
 		st.WallMS = wallMS.Int64
 		st.QueueMS = queueMS.Int64
 		st.WorkMS = workMS.Int64
+		st.FinishedAt = finishedAt.Int64
 		out = append(out, st)
 	}
 	return out, rows.Err()
