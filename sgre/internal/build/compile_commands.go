@@ -14,10 +14,12 @@ import (
 
 // CompileCommands is the extracted global-union view of a compile_commands.json:
 // numeric -D defines (name -> value) and -I include directories.
+// TUs holds per-translation-unit configs for Type Layout (GAP-1038 Phase 1a).
 type CompileCommands struct {
-	Defines    map[string]int
+	Defines     map[string]int
 	IncludeDirs []string
-	Path       string
+	TUs         []TUConfig
+	Path        string
 }
 
 // LoadCompileCommands parses a compile_commands.json file. It accepts both the
@@ -31,6 +33,8 @@ func LoadCompileCommands(path string) (*CompileCommands, error) {
 		return nil, fmt.Errorf("read compile_commands: %w", err)
 	}
 	var entries []struct {
+		File      string   `json:"file"`
+		Directory string   `json:"directory"`
 		Arguments []string `json:"arguments"`
 		Command   string   `json:"command"`
 	}
@@ -74,6 +78,7 @@ func LoadCompileCommands(path string) (*CompileCommands, error) {
 					return ""
 				})
 			}
+			cc.TUs = append(cc.TUs, parseTUConfig(e.File, e.Directory, args))
 			continue
 		}
 		// shell-rough-tokenize the command string (no new dependency).
@@ -86,6 +91,7 @@ func LoadCompileCommands(path string) (*CompileCommands, error) {
 				return ""
 			})
 		}
+		cc.TUs = append(cc.TUs, parseTUConfig(e.File, e.Directory, toks))
 	}
 	return cc, nil
 }
