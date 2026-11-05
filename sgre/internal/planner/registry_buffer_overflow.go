@@ -18,7 +18,7 @@ func init() {
 		// AI decides once whether the field's range is externally guaranteed
 		// (config model / CLI range) and the folded sites stay listed.
 		ShapeKey:   externalIndexShapeKey,
-		Categories: []string{"buffer_overflow", "array_oob_write", "heap_oob_write", "array_oob_write_unchecked", "format_overflow", "format_overflow_var", "bounded_copy_overflow", "bounded_copy_var_size", "secure_copy_overflow", "secure_copy_var_size", "secure_constraint_violation", "secure_scanf_overflow", "secure_scanf_var_size"},
+		Categories: []string{"buffer_overflow", "array_oob_write", "heap_oob_write", "array_oob_write_unchecked", "format_overflow", "format_overflow_var", "bounded_copy_overflow", "bounded_copy_var_size", "secure_copy_overflow", "secure_copy_var_size", "secure_constraint_violation", "secure_scanf_overflow", "secure_scanf_var_size", "layout_oob_write"},
 		// A `_s` constraint violation (required size > declared capacity) does NOT
 		// write past the buffer — Annex K truncates / zeroes and returns an error,
 		// so CWE-787 (out-of-bounds write) is the WRONG rule and made the 5.5
@@ -47,6 +47,7 @@ func init() {
 			"secure_scanf_var_size":       "possible",
 			"format_overflow":             "confirmed",
 			"format_overflow_var":         "suspected",
+			"layout_oob_write":            "suspected",
 		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{
@@ -182,8 +183,8 @@ func bufferFlowSteps(c Candidate) []EvidenceFragment {
 		n++
 	}
 	steps = append(steps, EvidenceFragment{
-		Type: "flow_step",
-		Role: "path",
+		Type:   "flow_step",
+		Role:   "path",
 		Detail: finalFlowStepDetail(c),
 	})
 	return steps

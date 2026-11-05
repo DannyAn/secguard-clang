@@ -11,6 +11,7 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 	"github.com/DannyAn/secguard-clang/internal/repofacts"
+	"github.com/DannyAn/secguard-clang/internal/typeinfo"
 )
 
 type BufferOverflowDetector struct {
@@ -79,6 +80,7 @@ func (d *BufferOverflowDetector) Detect(ctx context.Context) (DetectResult, erro
 			d.detectArrayOOB(ctx, f, file, bc, &result)
 			d.detectUncheckedIndex(ctx, f, file, bc, fnDefs, &result)
 			d.detectFormatOverflow(ctx, f, file, bc, &result)
+			d.detectCastObjectOOB(ctx, f, file, bc, &result)
 		}
 	})
 	return result, err
@@ -2186,4 +2188,278 @@ func mergeMacros(tree, local map[string]int) map[string]int {
 		out[k] = v
 	}
 	return out
+}
+
+// castTarget tracks a pointer that was cast to a struct type from an allocation.
+type castTarget struct {
+	structType string
+	allocSize  int
+}
+
+// detectCastObjectOOB detects layout out-of-bounds accesses through a pointer
+// cast to a struct type from an undersized allocation (CWD-SUB-1038).
+//
+// Pattern: `T *p = (T *)malloc(N)` or `raw = malloc(N); T *p = (T *)raw;`
+// followed by `p->field` where field.Offset + field.Size > N.
+//
+// Phase 1 emits only suspected: the Type Layout census uses
+// assumed_default_abi provenance (no compile_commands wiring), so the
+// computed sizes are not ABI-proven and must not be confirmed.
+func (d *BufferOverflowDetector) detectCastObjectOOB(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, result *DetectResult) {
+	if bc.facts == nil {
+		return
+	}
+
+	// Pass 1: map variables assigned from malloc with a constant byte size.
+	allocSizes := map[string]int{}
+	collectAlloc := func(varName string, rhs parser.Node) {
+		if varName == "" {
+			return
+		}
+		if size, ok := constantMallocByteSize(rhs); ok {
+			allocSizes[varName] = size
+		}
+	}
+	for _, init := range bc.inits {
+		if !funcLineRange(f, init.StartLine()) {
+			continue
+		}
+		lhs, rhs, ok := init.AssignParts()
+		if !ok {
+			continue
+		}
+		collectAlloc(extractVarFromDeclarator(lhs), rhs)
+	}
+	for _, assign := range bc.assigns {
+		if !funcLineRange(f, assign.StartLine()) {
+			continue
+		}
+		children := assign.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		collectAlloc(strings.TrimSpace(children[0].Text()), children[1])
+	}
+
+	// Pass 2: find cast-to-struct assignments and resolve their allocation size.
+	castVars := map[string]castTarget{}
+	collectCast := func(varName string, rhs parser.Node) {
+		if varName == "" {
+			return
+		}
+		structType, sourceVar, directSize, isDirect := parseCastToStruct(rhs)
+		if structType == "" {
+			return
+		}
+		target := castTarget{structType: structType}
+		if isDirect && directSize > 0 {
+			target.allocSize = directSize
+		} else if sourceVar != "" {
+			target.allocSize = allocSizes[sourceVar]
+		}
+		if target.allocSize > 0 {
+			castVars[varName] = target
+		}
+	}
+	for _, init := range bc.inits {
+		if !funcLineRange(f, init.StartLine()) {
+			continue
+		}
+		lhs, rhs, ok := init.AssignParts()
+		if !ok {
+			continue
+		}
+		collectCast(extractVarFromDeclarator(lhs), rhs)
+	}
+	for _, assign := range bc.assigns {
+		if !funcLineRange(f, assign.StartLine()) {
+			continue
+		}
+		children := assign.NamedChildren()
+		if len(children) < 2 {
+			continue
+		}
+		collectCast(strings.TrimSpace(children[0].Text()), children[1])
+	}
+	if len(castVars) == 0 {
+		return
+	}
+
+	// Pass 3: check each field expression through a casted pointer.
+	for _, fe := range bc.root.FindAll("field_expression") {
+		if !funcLineRange(f, fe.StartLine()) {
+			continue
+		}
+		ptrVar, fieldName, ok := fieldExprParts(fe)
+		if !ok {
+			continue
+		}
+		info, found := castVars[ptrVar]
+		if !found {
+			continue
+		}
+		layout, ok := bc.facts.LayoutOf(typeinfo.LayoutKey{Type: info.structType})
+		if !ok || layout.IsUnknown() {
+			continue
+		}
+		field, ok := layout.FieldByName(fieldName)
+		if !ok {
+			continue
+		}
+		accessEnd := field.Offset + field.Size
+		if accessEnd > info.allocSize {
+			category := "layout_oob_read"
+			if isAssignTarget(fe) {
+				category = "layout_oob_write"
+			}
+			d.emitLayoutOOB(ctx, f, file, fe.StartLine(), ptrVar, fieldName, category, fe.Text(), info, field, result)
+		}
+	}
+}
+
+// emitLayoutOOB emits a layout out-of-bounds event.
+func (d *BufferOverflowDetector) emitLayoutOOB(ctx context.Context, f *db.Function, file *db.File, line int, ptrVar, fieldName, category, text string, info castTarget, field typeinfo.FieldLayout, result *DetectResult) {
+	props := map[string]string{
+		"array":        ptrVar,
+		"index":        fieldName,
+		"category":     category,
+		"expression":   text,
+		"struct_type":  info.structType,
+		"alloc_size":   strconv.Itoa(info.allocSize),
+		"field_offset": strconv.Itoa(field.Offset),
+		"field_size":   strconv.Itoa(field.Size),
+	}
+	if emitEvent(ctx, d.store, d.logger, "BUFFER_ACCESS", f.ID, &db.Location{FileID: file.ID, Line: line}, props) {
+		result.EventsCreated++
+	}
+}
+
+// constantMallocByteSize extracts the constant byte size from a malloc/calloc
+// call expression, unwrapping any cast. Returns ok=false for variable sizes
+// or sizeof expressions (those need the layout to compare).
+func constantMallocByteSize(node parser.Node) (int, bool) {
+	operand := node
+	for operand.Kind() == "cast_expression" || operand.Kind() == "parenthesized_expression" {
+		kids := operand.NamedChildren()
+		if len(kids) == 0 {
+			return 0, false
+		}
+		operand = kids[len(kids)-1]
+	}
+	call := unwrapAllocationCall(operand)
+	if call == nil {
+		return 0, false
+	}
+	name := extractCallName(*call)
+	if !apikb.IsAllocator(name) {
+		return 0, false
+	}
+	args := callNamedArguments(*call)
+	if len(args) == 0 {
+		return 0, false
+	}
+	sizeExpr := strings.TrimSpace(args[0].Text())
+	if name == "calloc" && len(args) >= 2 {
+		n, ok1 := strconv.Atoi(strings.TrimSpace(args[0].Text()))
+		m, ok2 := strconv.Atoi(strings.TrimSpace(args[1].Text()))
+		if ok1 == nil && ok2 == nil && n > 0 && m > 0 {
+			return n * m, true
+		}
+		return 0, false
+	}
+	n, err := strconv.Atoi(sizeExpr)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// parseCastToStruct parses a cast-to-struct expression, returning:
+//   - structType: the struct tag name (e.g., "LargeRecord" from `(struct LargeRecord *)raw`)
+//   - sourceVar: the source variable name if the cast operand is a variable
+//   - directSize: the constant malloc size if the cast operand is a direct malloc call
+//   - isDirect: true if the operand is a direct malloc call
+func parseCastToStruct(node parser.Node) (structType, sourceVar string, directSize int, isDirect bool) {
+	if node.Kind() != "cast_expression" {
+		return "", "", 0, false
+	}
+	kids := node.NamedChildren()
+	if len(kids) < 2 {
+		return "", "", 0, false
+	}
+	typeNode := kids[0]
+	operand := kids[1]
+
+	structType = extractStructTagFromType(typeNode.Text())
+	if structType == "" {
+		return "", "", 0, false
+	}
+
+	operand = unwrapParens(operand)
+	if operand.Kind() == "call_expression" {
+		if size, ok := constantMallocByteSize(operand); ok {
+			return structType, "", size, true
+		}
+		return structType, "", 0, true
+	}
+	if operand.Kind() == "identifier" {
+		return structType, strings.TrimSpace(operand.Text()), 0, false
+	}
+	return structType, "", 0, false
+}
+
+// extractStructTagFromType extracts the struct tag from a type spelling like
+// "struct LargeRecord *" → "LargeRecord". Returns "" for non-struct types.
+func extractStructTagFromType(spelling string) string {
+	spelling = strings.TrimSpace(spelling)
+	if !strings.HasPrefix(spelling, "struct ") && !strings.HasPrefix(spelling, "union ") {
+		return ""
+	}
+	rest := spelling
+	if strings.HasPrefix(rest, "struct ") {
+		rest = strings.TrimPrefix(rest, "struct ")
+	} else {
+		rest = strings.TrimPrefix(rest, "union ")
+	}
+	rest = strings.TrimSpace(rest)
+	rest = strings.TrimRight(rest, "*")
+	rest = strings.TrimSpace(rest)
+	if rest == "" || strings.ContainsAny(rest, " {}") {
+		return ""
+	}
+	return rest
+}
+
+// fieldExprParts extracts the pointer variable name and field name from a
+// field_expression like `record->value` or `record.value`.
+func fieldExprParts(node parser.Node) (ptrVar, fieldName string, ok bool) {
+	if node.Kind() != "field_expression" {
+		return "", "", false
+	}
+	kids := node.NamedChildren()
+	if len(kids) < 2 {
+		return "", "", false
+	}
+	obj := kids[0]
+	field := kids[len(kids)-1]
+	if field.Kind() != "field_identifier" {
+		return "", "", false
+	}
+	ptrVar = strings.TrimSpace(obj.Text())
+	if ptrVar == "" || strings.ContainsAny(ptrVar, " ()&*[],") {
+		return "", "", false
+	}
+	return ptrVar, strings.TrimSpace(field.Text()), true
+}
+
+// unwrapParens unwraps parenthesized_expression nodes.
+func unwrapParens(node parser.Node) parser.Node {
+	for node.Kind() == "parenthesized_expression" {
+		kids := node.NamedChildren()
+		if len(kids) == 0 {
+			return node
+		}
+		node = kids[0]
+	}
+	return node
 }
