@@ -77,6 +77,18 @@ func normalizeSettlementRange(r string) string {
 // pending and re-dispatchable. A report carrying needs_context is skipped
 // deliberately — that type is NOT complete, its residual range is re-dispatched.
 func persistSettlementReports(ctx context.Context, store db.Store, res reportsResult) error {
+	// A `status --reports` poll usually carries nothing new to absorb; avoid
+	// taking the write lock for a pure read.
+	hasValid := false
+	for _, rep := range res.Reports {
+		if rep.Valid && rep.ScanID != "" {
+			hasValid = true
+			break
+		}
+	}
+	if !hasValid {
+		return nil
+	}
 	return store.WithImmediateTx(ctx, func(tx db.Store) error {
 		knownByScan := map[string]map[string]bool{}
 		for i := len(res.Reports) - 1; i >= 0; i-- {
