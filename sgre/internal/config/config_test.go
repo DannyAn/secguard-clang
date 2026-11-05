@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -456,7 +457,7 @@ func TestReadCgroupLimit(t *testing.T) {
 		t.Errorf("max sentinel = (%d, %v), want (0, false)", v, ok)
 	}
 
-	if v, ok := readCgroupLimit(write("unlimited", "9223372036854771712\n")); ok || v != 0 {
+	if v, ok := readCgroupLimit(write("unlimited", strconv.FormatInt(cgroupV1UnlimitedSentinel, 10)+"\n")); ok || v != 0 {
 		t.Errorf("v1 unlimited sentinel = (%d, %v), want (0, false)", v, ok)
 	}
 

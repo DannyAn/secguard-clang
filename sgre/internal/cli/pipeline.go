@@ -214,7 +214,10 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 			// the threshold. 70% high / 52.5% low leaves headroom for the other
 			// resident processes sharing the cgroup.
 			if limit := config.DetectCgroupMemoryLimit(); limit > 0 {
-				highMB = int(limit / 1024 / 1024 * 70 / 100)
+				// Apply the 70% in bytes before the MB conversion so a small
+				// ceiling still yields a non-zero watermark instead of truncating
+				// to zero on the MB division first.
+				highMB = int(limit * 7 / 10 / (1024 * 1024))
 				lowMB = highMB * 3 / 4
 			}
 		}
@@ -369,13 +372,14 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	// narrows the plan stage to an allow-list. It is validated the same way as
 	// disabled_types: a typo must not silently plan nothing nor crash the run.
 	typeFilter := config.Load().TypeFilterSet()
+	hasFilter := typeFilter != nil
 	for name := range typeFilter {
 		if _, err := planner.GetVulnTypeSpec(name); err != nil {
 			logger.Warn("type-filter names an unknown vulnerability type, ignoring", "type", name)
 			delete(typeFilter, name)
 		}
 	}
-	if len(typeFilter) == 0 && config.Load().TypeFilterSet() != nil {
+	if hasFilter && len(typeFilter) == 0 {
 		// Every name in the filter was unknown: planning zero types would make
 		// the scan look "clean" while producing no candidates. Surface it as an
 		// error instead of a silent empty result.

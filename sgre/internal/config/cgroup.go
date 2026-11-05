@@ -13,6 +13,10 @@ const (
 	cgroupV1MemoryLimit = "/sys/fs/cgroup/memory/memory.limit_in_bytes"
 )
 
+// cgroupV1UnlimitedSentinel is the byte value cgroup v1 reports as "unlimited"
+// (~2^63-1). A value at or above it means "no limit", not a real ceiling.
+const cgroupV1UnlimitedSentinel = (1 << 63) - 4096
+
 // DetectCgroupMemoryLimit returns the cgroup memory ceiling in bytes, or 0 when
 // no finite limit is set (a missing file, the "max" sentinel, an unreadable
 // path, or a non-Linux host). cgroup v2 is checked first, then v1.
@@ -49,7 +53,7 @@ func readCgroupLimit(path string) (int64, bool) {
 	}
 	// cgroup v1 reports the unlimited ceiling as ~2^63-1 bytes. Treat that as
 	// "no limit", not as an absurd soft cap that would force constant GC.
-	if v >= (1<<63)-4096 {
+	if v >= cgroupV1UnlimitedSentinel {
 		return 0, false
 	}
 	return v, true

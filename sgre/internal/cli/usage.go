@@ -50,10 +50,11 @@ Usage:
 
 Arguments:
   <path>        Root directory of the C codebase to scan
-  [type-filter] Optional: a single type, comma list, or "all" (default: all).
-                Narrowing the types reduces plan-stage memory (the OOM-sensitive
-                stage). The index/graph/detector stages still run for every type;
-                to also skip those, configure [scan] skip_detectors.
+  [type-filter] Optional: a single type, a comma/space-separated list, or "all"
+                (default: all). Narrowing the types reduces plan-stage memory (the
+                OOM-sensitive stage). The index/graph/detector stages still run
+                for every type; to also skip those, configure
+                [scan] skip_detectors.
 
 Flags:
   --exclude <dirs>  Comma-separated directory basenames to skip

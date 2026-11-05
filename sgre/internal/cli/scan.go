@@ -924,6 +924,12 @@ func (nopCloser) Close() error { return nil }
 // one (its "latest" symlink was never updated, so without the marker the
 // directory looks identical to a success). A missing directory is a no-op: a
 // scan that died before creating its directory has nothing to mark.
+//
+// The directory is resolved under the canonical scans root, which matches every
+// default scan. A scan started with an explicit --output-dir lives elsewhere,
+// so its leftover directory is not marked here — a documented limitation (such
+// runs also typically pair --output-dir with a fresh --db, so this sweep never
+// sees their scan_runs rows anyway).
 func markScanDirFailed(scansRoot, scanID string) {
 	scanDir := filepath.Join(scansRoot, scanID)
 	if _, err := os.Stat(scanDir); err != nil {
@@ -932,7 +938,7 @@ func markScanDirFailed(scansRoot, scanID string) {
 	marker := filepath.Join(scanDir, ".failed")
 	body := fmt.Sprintf("scan %s did not complete (OOM or crash); marked by a later scan's stale sweep\n", scanID)
 	if err := os.WriteFile(marker, []byte(body), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: cannot write failed-scan marker %s: %v\n", marker, err)
+		defaultLogger().Warn("write failed-scan marker failed", "path", marker, "error", err)
 	}
 }
 
