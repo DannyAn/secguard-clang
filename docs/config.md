@@ -42,6 +42,7 @@ SecGuard 已经**不再依赖「配例外 → 重扫」的循环**来消宏误�
 | 层级 | 路径 | 用途 |
 |------|------|------|
 | 项目级 | `<cwd>/.codeagent/secguard.toml` | 团队/仓库的例外配置（随 git 走） |
+| 项目级 | `<cwd>/.codeagent/secguard-clang/secguard.toml` | index 生成建议配置 `secguard.toml.suggested` 后，去掉 `.suggested` 后缀原地采纳 |
 | 用户级 | `~/.codeagent/secguard.toml` | 个人默认配置（全局生效） |
 
 安装时会自动在 `~/.codeagent/secguard.toml` 生成一个带注释的模板（若文件不存在）。
@@ -54,12 +55,21 @@ SecGuard 已经**不再依赖「配例外 → 重扫」的循环**来消宏误�
 1. `--config <path>` 显式参数（最高优先级）
 2. `SECGUARD_CONFIG` 环境变量
 3. 项目级 `<cwd>/.codeagent/secguard.toml`
-4. 用户级 `~/.codeagent/secguard.toml`
+4. 项目级 `<cwd>/.codeagent/secguard-clang/secguard.toml`
+5. 用户级 `~/.codeagent/secguard.toml`
 
 均未命中时，使用内置默认行为（无配置文件）。
 
 > 说明：项目级优先于用户级，且是**整文件覆盖**语义——项目级存在时完全使用
 > 它，不合并用户级。
+
+### 建议配置自动生成（`secguard.toml.suggested`）
+
+`secguard index` 建库收尾阶段会自动发现项目自定义的分配/释放函数，并把建议写进
+`<cwd>/.codeagent/secguard-clang/secguard.toml.suggested`。文件结构与本配置兼容，
+条目带 `confidence`/`reason` 注释，低置信度候选标注 `needs review`。审视确认后把
+`.suggested` 后缀去掉（原地改名成 `secguard.toml`）即可生效。该建议文件**不覆盖**
+已存在的同名文件，也**从不修改** `secguard.toml` 本体。
 
 ## 配置项
 
