@@ -50,7 +50,10 @@ Usage:
 
 Arguments:
   <path>        Root directory of the C codebase to scan
-  [type-filter] Optional: a single type, comma list, or "all" (default: all)
+  [type-filter] Optional: a single type, comma list, or "all" (default: all).
+                Narrowing the types reduces plan-stage memory (the OOM-sensitive
+                stage). The index/graph/detector stages still run for every type;
+                to also skip those, configure [scan] skip_detectors.
 
 Flags:
   --exclude <dirs>  Comma-separated directory basenames to skip
@@ -557,19 +560,19 @@ entry_points = [
 // subcommandUsage maps a subcommand name to its usage printer. Execute uses this
 // to dispatch `secguard <cmd> --help` without falling through into the command.
 var subcommandUsage = map[string]func(){
-	"index":  printIndexUsage,
-	"scan":   printScanUsage,
-	"status": printStatusUsage,
-	"query":  printQueryUsage,
-	"types":  printTypesUsage,
-	"plan":   printPlanUsage,
-	"report": printReportUsage,
+	"index":    printIndexUsage,
+	"scan":     printScanUsage,
+	"status":   printStatusUsage,
+	"query":    printQueryUsage,
+	"types":    printTypesUsage,
+	"plan":     printPlanUsage,
+	"report":   printReportUsage,
 	"classify": printClassifyUsage,
-	"db":     printDbUsage,
-	"def":    printDefUsage,
-	"symbol": printDefUsage,
-	"schema": printSchemaUsage,
-	"config": printConfigUsage,
+	"db":       printDbUsage,
+	"def":      printDefUsage,
+	"symbol":   printDefUsage,
+	"schema":   printSchemaUsage,
+	"config":   printConfigUsage,
 }
 
 // dispatchHelp returns true if args[0] is a known subcommand and args[1:] contain

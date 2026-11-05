@@ -105,6 +105,14 @@ func GetDbPath(projectRoot string) string {
 	return filepath.Join(projectRoot, CodeagentDir, ProductDir, SgreDir, DbName)
 }
 
+// ScansRoot returns the canonical scans directory for a project root, the
+// parent every per-scan directory (sc_<timestamp>_<suffix>) lives in and where
+// the "latest" symlink points. It is the location the scan command uses to mark
+// stale/failed scan directories, independent of any explicit --output-dir.
+func ScansRoot(projectRoot string) string {
+	return filepath.Join(projectRoot, CodeagentDir, ProductDir, ScansDir)
+}
+
 func EnsureSgreDir(projectRoot string) error {
 	dir := filepath.Join(projectRoot, CodeagentDir, ProductDir, SgreDir)
 	return os.MkdirAll(dir, 0755)

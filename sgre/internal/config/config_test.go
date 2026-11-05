@@ -411,3 +411,56 @@ initialization_macros = ["CMD_MSG_INIT", "msg_ctx_fill"]
 		t.Errorf("[uninit] initialization_macros = %v, want [CMD_MSG_INIT msg_ctx_fill]", got)
 	}
 }
+
+func TestTypeFilterOverride(t *testing.T) {
+	SetTypeFilterOverride("")
+	if got := (&Config{}).TypeFilterSet(); got != nil {
+		t.Fatalf("empty override must yield a nil set, got %v", got)
+	}
+
+	SetTypeFilterOverride("format-string, ,injection,format-string")
+	set := (&Config{}).TypeFilterSet()
+	if len(set) != 2 || !set["format-string"] || !set["injection"] {
+		t.Fatalf("TypeFilterSet = %v, want {format-string, injection}", set)
+	}
+
+	// "all" is the documented "no filter" sentinel.
+	SetTypeFilterOverride("all")
+	if got := (&Config{}).TypeFilterSet(); got != nil {
+		t.Fatalf("override \"all\" must yield a nil set, got %v", got)
+	}
+
+	SetTypeFilterOverride("")
+	if got := (&Config{}).TypeFilterSet(); got != nil {
+		t.Fatalf("cleared override must yield a nil set, got %v", got)
+	}
+}
+
+func TestReadCgroupLimit(t *testing.T) {
+	dir := t.TempDir()
+
+	write := func(name, content string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	finite := write("finite", "34359738368\n")
+	if v, ok := readCgroupLimit(finite); !ok || v != 34359738368 {
+		t.Errorf("finite limit = (%d, %v), want (34359738368, true)", v, ok)
+	}
+
+	if v, ok := readCgroupLimit(write("max", "max\n")); ok || v != 0 {
+		t.Errorf("max sentinel = (%d, %v), want (0, false)", v, ok)
+	}
+
+	if v, ok := readCgroupLimit(write("unlimited", "9223372036854771712\n")); ok || v != 0 {
+		t.Errorf("v1 unlimited sentinel = (%d, %v), want (0, false)", v, ok)
+	}
+
+	if v, ok := readCgroupLimit(filepath.Join(dir, "missing")); ok || v != 0 {
+		t.Errorf("missing file = (%d, %v), want (0, false)", v, ok)
+	}
+}

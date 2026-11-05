@@ -299,3 +299,41 @@ func TestStore_CompletionStateMigrationBackfillsComplete(t *testing.T) {
 		t.Fatalf("legacy row state=%q, want complete (must not be running/failed)", got.CompletionState)
 	}
 }
+
+func TestStore_StaleRunningScanIDs(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	running1 := &ScanRun{ScanID: "sc_2026-11-04_200000_cccccc"}
+	running2 := &ScanRun{ScanID: "sc_2026-11-04_200100_dddddd"}
+	complete := &ScanRun{ScanID: "sc_2026-11-04_200200_eeeeee", CompletionState: "complete"}
+	for _, r := range []*ScanRun{running1, running2, complete} {
+		if err := s.UpsertScanRun(ctx, r); err != nil {
+			t.Fatalf("UpsertScanRun %s: %v", r.ScanID, err)
+		}
+	}
+
+	ids, err := s.StaleRunningScanIDs(ctx, "")
+	if err != nil {
+		t.Fatalf("StaleRunningScanIDs: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("expected 2 stale running scan ids, got %v", ids)
+	}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		seen[id] = true
+	}
+	if !seen[running1.ScanID] || !seen[running2.ScanID] {
+		t.Errorf("StaleRunningScanIDs = %v, want the two running ids", ids)
+	}
+
+	// The exclusion must not hide the other running scan.
+	excluded, err := s.StaleRunningScanIDs(ctx, running1.ScanID)
+	if err != nil {
+		t.Fatalf("StaleRunningScanIDs with exclusion: %v", err)
+	}
+	if len(excluded) != 1 || excluded[0] != running2.ScanID {
+		t.Errorf("excluded result = %v, want [%s]", excluded, running2.ScanID)
+	}
+}

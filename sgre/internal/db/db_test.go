@@ -591,3 +591,38 @@ func TestStore_UpsertFinding_PreservesReview(t *testing.T) {
 		t.Errorf("expected 1 row after re-write, got %d", len(all))
 	}
 }
+
+func TestStore_ListEventLocationIDsByType(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	fileID, err := s.InsertFile(ctx, &File{Path: "a.c", Language: "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loc1, _ := s.InsertLocation(ctx, &Location{FileID: fileID, Line: 1})
+	loc2, _ := s.InsertLocation(ctx, &Location{FileID: fileID, Line: 2})
+	loc3, _ := s.InsertLocation(ctx, &Location{FileID: fileID, Line: 3})
+
+	if _, err := s.InsertEvent(ctx, &SecurityEvent{EventType: "BUFFER_ACCESS", LocationID: loc1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertEvent(ctx, &SecurityEvent{EventType: "DEREFERENCE", LocationID: loc2}); err != nil {
+		t.Fatal(err)
+	}
+	// loc3 has no event at all.
+
+	got, err := s.ListEventLocationIDsByType(ctx, "BUFFER_ACCESS", []int64{loc1, loc2, loc3})
+	if err != nil {
+		t.Fatalf("ListEventLocationIDsByType: %v", err)
+	}
+	if len(got) != 1 || !got[loc1] {
+		t.Errorf("BUFFER_ACCESS locations = %v, want {loc1}", got)
+	}
+
+	// An empty id list must not error and must return an empty set.
+	got, err = s.ListEventLocationIDsByType(ctx, "BUFFER_ACCESS", nil)
+	if err != nil || len(got) != 0 {
+		t.Errorf("empty ids = (%v, %v), want (map[], nil)", got, err)
+	}
+}

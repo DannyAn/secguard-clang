@@ -70,6 +70,13 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		remaining = []string{"."}
 	}
 	targetPath := remaining[0]
+	// The [type-filter] positional argument was historically declared in the
+	// usage text but never consumed, so `scan <path> <type>` silently ran every
+	// type (the most expensive memory-failure footgun on large repos). Consume
+	// it now: remaining[1:] is a single type, a comma list, or "all".
+	if len(remaining) > 1 {
+		config.SetTypeFilterOverride(strings.Join(remaining[1:], ","))
+	}
 
 	if timeoutSec > 0 {
 		var cancel context.CancelFunc
@@ -141,6 +148,20 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	}
 	defer store.Close()
 
+	// The stale sweep first collects the interrupted scan IDs, writes a .failed
+	// marker into each leftover scan directory (an OOM-killed process never runs
+	// its own failure finalizer, so without this the directory is an unmarked
+	// remnant the user cannot tell apart from a successful scan), then flips the
+	// rows. The scans root is the canonical location, not the parent of an
+	// explicit --output-dir.
+	if staleIDs, err := store.StaleRunningScanIDs(ctx, scanID); err != nil {
+		defaultLogger().Warn("list stale running scans failed", "error", err)
+	} else {
+		scansRoot := report.ScansRoot(projectRoot)
+		for _, id := range staleIDs {
+			markScanDirFailed(scansRoot, id)
+		}
+	}
 	if n, err := store.MarkStaleRunningAsFailed(ctx, scanID); err != nil {
 		defaultLogger().Warn("mark stale running scans as failed", "error", err)
 	} else if n > 0 {
@@ -249,7 +270,7 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	// read) that must still make the scan 'incomplete' rather than 'complete'.
 	degraded := false
 
-	vulnTypes := planner.ActiveVulnTypes(config.Load().DisabledTypeSet())
+	vulnTypes := planner.TypeFilteredActiveVulnTypes(config.Load().DisabledTypeSet(), config.Load().TypeFilterSet())
 
 	for i, vulnType := range vulnTypes {
 		if errMsg, failed := planErrors[vulnType]; failed {
@@ -897,6 +918,23 @@ func newScanLogger(scanDir string) (*log.Logger, io.Closer) {
 type nopCloser struct{}
 
 func (nopCloser) Close() error { return nil }
+
+// markScanDirFailed writes a .failed marker into a leftover scan directory, so
+// an OOM-killed / interrupted scan is visibly distinguishable from a successful
+// one (its "latest" symlink was never updated, so without the marker the
+// directory looks identical to a success). A missing directory is a no-op: a
+// scan that died before creating its directory has nothing to mark.
+func markScanDirFailed(scansRoot, scanID string) {
+	scanDir := filepath.Join(scansRoot, scanID)
+	if _, err := os.Stat(scanDir); err != nil {
+		return
+	}
+	marker := filepath.Join(scanDir, ".failed")
+	body := fmt.Sprintf("scan %s did not complete (OOM or crash); marked by a later scan's stale sweep\n", scanID)
+	if err := os.WriteFile(marker, []byte(body), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot write failed-scan marker %s: %v\n", marker, err)
+	}
+}
 
 // dirTreeBytes sums the size of every regular file under dir. It is used once
 // per scan to record the candidate-evidence volume the AI will read; a missing
