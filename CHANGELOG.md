@@ -4,6 +4,35 @@
 
 ## [未发布]
 
+## [0.12.2] - 2026-11-05
+
+### auto-confirm 误报收敛与边界 fail-open 分层
+
+- **初始化宏与移位位宽 auto-confirm 误报消除（Issue #214）**：`macros` 层识别 `INIT_*`/`DEFINE_*` 类初始化宏展开为常量赋值，uninit 候选不再对经初始化宏写入的变量 auto-confirm；integer-overflow 对移位左操作数做位宽提升判定（`x << n` 中 `x` 的窄类型提升后不溢出则不 auto-confirm）。新增 `[uninit] initialization_macros` 配置公开宏名单。新增 `tc182_shift_integer_promotion.c` 等回归用例。
+- **边界 fail-open 按源层级收敛（Issue #215）**：`BoundaryFailOpenFilter` 不再用「有 in-tree caller 即保留」放行所有非证明 tier。`opaque-origin`/`external-unknown`/`callback-entry`/`assumed-return` 一律 dismiss（in-tree caller 不能证明外部入口非空）；`caller-arg` 仅在 call-site 为 hop 或有 literal NULL witness 时保留，`root` 链 dismiss。回调链统一降级，避免边界候选洪泛。
+- **null-deref 边界 fail-open（#221）**：`NullableSourceFilter` 对边界 char 与裸参数根的 fail-open 语义对齐，回调链统一降级；新增 `zz_null_deref_boundary_char_test.go` 回归。
+
+### implicit-contract 同块守卫与形状聚类（Issue #216）
+
+- **同块守卫识别**：`ContractGapFilter.targetsGuardDominates` 新增 `branchGuardsTarget`，识别 `if (p != NULL) { p->field }`、`if (p == NULL) ...; else { p->field }`、`if (p != NULL && p->field)` 三类同块守卫（此前只建模 early-exit 形式）。`branchCoversLine` 用表达式文本消歧同行语句与条件操作数；`targetReassigned` 检测 guard 与 use 之间的再赋值（fail-open）。
+- **形状聚类**：`shape_keys.go` 对 unchecked-index 候选按索引形状（常量/变量/算术/循环归纳）聚类，同形状只保留代表候选交 AI，避免同类重复研判。新增 `shape_cluster_test.go` 与 `tc_unchecked_index_cluster.c`。
+
+### verdict 文件一致性与写可靠性
+
+- **一个 confirmed finding 一个 verdict 文件（Issue #218）**：`SyncPerFinding` 用 `(function, variable, cwe)` 三元组作为 finding identity，同一 file:line 的不同变量/子类 CWE 各得独立 verdict 文件；`locateByBase` 改为 identity 匹配 + legacy fallback；`latestPerLocation` key 加入 cwe；`findingVulnType` 对 rule_id 不在 registry 的行回退到 vuln_type，避免从 review surface 静默丢失。`report/findings_test.go` 新增多变量/多 CWE 同行用例。
+- **settlement/findings/dispatch 写可靠性（Issue #217, #222）**：`ClaimSettlementRange` 原子 upsert 预留 (scan,type,range)，stale/failed/reclaim 才接管，fresh dispatched/done 让位；`settlement_stats` 增 `finished_at` 列（COALESCE 保留旧值）；`crud_settlement_test.go` 新增 claim 竞态/接管/让位用例。findings 与 dispatch 批写失败显式返回错误而非静默吞。
+
+### AI-stage 可观测性与自度量（#219）
+
+- **self-measure**：settlement_stats 增 `evidence_opens`/`source_reads`/`repo_greps`/`needs_context`/`wall_ms`/`queue_ms`/`work_ms` 计数，worker 上报；`status --per-type` 暴露 live claims 的 `in_flight_ranges` 与计时。
+- **queryable limits**：`status --limits`（F3a）查询配额余量；`--reports` 在无新报告时跳过 absorption 写锁（`perf` 4274d98）。
+- **filter tables / worker heartbeat**：新增 filter 命中表与 worker 心跳，`ai_stage` 仅在实测时输出（`omit ai_stage when unmeasured`，94b91dc）。
+- **report consistency（#223）**：verdict 文件与 DB/SARIF 对齐；`review_status` 文档同步。
+
+### 测试
+
+- 新增 `crud_settlement_test.go`、`schema_migration_test.go`、`contract_gap_test.go`（同块守卫）、`shape_cluster_test.go`、`integer_overflow_shift_promotion_test.go`、`unchecked_index_shape_cluster_test.go`、`zz_null_deref_boundary_char_test.go`、`zz_uninit_init_macro_test.go`、`findings_test.go`（多变量同行）、`markdown_test.go` 等；`go test ./...` 与 `go test -tags nosqlite` 全绿。
+
 ## [0.12.1] - 2026-11-04
 
 ### 全仓扫描内存/生命周期重构收口（P0/P1）
