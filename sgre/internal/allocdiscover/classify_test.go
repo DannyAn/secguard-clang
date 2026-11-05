@@ -145,6 +145,72 @@ func TestSplitParams(t *testing.T) {
 	}
 }
 
+func TestClassifyMacro(t *testing.T) {
+	cases := []struct {
+		name       string
+		m          macroEntry
+		wantKind   string
+		wantConf   string
+		wantReason []string
+	}{
+		{
+			name:     "function-like allocator macro expanding to malloc",
+			m:        macroEntry{name: "NAT_MALLOC", bodies: []string{"malloc(n)"}},
+			wantKind: "allocator", wantConf: ConfHigh,
+			wantReason: []string{"macro name pattern *_malloc", "expands to malloc"},
+		},
+		{
+			name:     "object-like allocator macro aliasing malloc",
+			m:        macroEntry{name: "NLOG_MALLOC", bodies: []string{"malloc"}},
+			wantKind: "allocator", wantConf: ConfHigh,
+			wantReason: []string{"macro name pattern *_malloc", "expands to malloc"},
+		},
+		{
+			name:     "deallocator macro expanding to free",
+			m:        macroEntry{name: "NLOG_FREE", bodies: []string{"free(p)"}},
+			wantKind: "deallocator", wantConf: ConfHigh,
+			wantReason: []string{"macro name pattern *_free", "expands to free"},
+		},
+		{
+			name:     "weak deallocator macro without free in body",
+			m:        macroEntry{name: "POOL_DESTROY", bodies: []string{"pool_release(p)"}},
+			wantKind: "deallocator", wantConf: ConfMedium,
+			wantReason: []string{"macro name pattern *_destroy"},
+		},
+		{
+			name:     "non-allocator macro",
+			m:        macroEntry{name: "MAX_BUF", bodies: []string{"256"}},
+			wantKind: "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e, kind, ok := classifyMacro(c.m)
+			if c.wantKind == "" {
+				if ok {
+					t.Fatalf("classifyMacro(%s) = %q (unexpected candidate %+v)", c.m.name, kind, e)
+				}
+				return
+			}
+			if !ok {
+				t.Fatalf("classifyMacro(%s) not a candidate, want %s", c.m.name, c.wantKind)
+			}
+			if kind != c.wantKind {
+				t.Errorf("kind = %q, want %q", kind, c.wantKind)
+			}
+			if e.Confidence != c.wantConf {
+				t.Errorf("confidence = %q, want %q (reasons=%v)", e.Confidence, c.wantConf, e.Reasons)
+			}
+			joined := strings.Join(e.Reasons, "; ")
+			for _, want := range c.wantReason {
+				if !strings.Contains(joined, want) {
+					t.Errorf("reasons %v missing %q", e.Reasons, want)
+				}
+			}
+		})
+	}
+}
+
 func TestRender(t *testing.T) {
 	r := &Result{
 		Allocators: []Entry{

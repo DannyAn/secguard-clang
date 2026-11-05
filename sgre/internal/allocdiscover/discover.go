@@ -7,11 +7,13 @@ package allocdiscover
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/symbols"
 )
 
 const (
@@ -46,6 +48,13 @@ type calleeInfo struct {
 	alloc   bool
 	dealloc bool
 }
+
+type macroEntry struct {
+	name   string
+	bodies []string
+}
+
+var identRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
 
 // Discover scans the indexed functions, declarations and CALL edges and returns
 // the suggested allocator/deallocator lists. A symbol already known to apikb
@@ -98,24 +107,114 @@ func Discover(ctx context.Context, store db.Store) (*Result, error) {
 	}
 
 	res := &Result{}
+	emitted := map[string]bool{}
 	for name, s := range syms {
 		if apikb.IsDeclaredAllocator(name) || apikb.IsDeclaredDeallocator(name) {
 			continue
 		}
-		e, kind, ok := classify(*s)
-		if !ok {
+		if e, kind, ok := classify(*s); ok {
+			appendEntry(res, e, kind)
+			emitted[name] = true
+		}
+	}
+	for _, m := range discoverMacros(ctx, store) {
+		if emitted[m.name] || apikb.IsDeclaredAllocator(m.name) || apikb.IsDeclaredDeallocator(m.name) {
 			continue
 		}
-		switch kind {
-		case "allocator":
-			res.Allocators = append(res.Allocators, e)
-		case "deallocator":
-			res.Deallocators = append(res.Deallocators, e)
+		if e, kind, ok := classifyMacro(m); ok {
+			appendEntry(res, e, kind)
+			emitted[m.name] = true
 		}
 	}
 	sortEntries(res.Allocators)
 	sortEntries(res.Deallocators)
 	return res, nil
+}
+
+func appendEntry(res *Result, e Entry, kind string) {
+	switch kind {
+	case "allocator":
+		res.Allocators = append(res.Allocators, e)
+	case "deallocator":
+		res.Deallocators = append(res.Deallocators, e)
+	}
+}
+
+// discoverMacros builds the project header #define census and returns one entry
+// per macro name (merging the bodies of every definition of the name). It is a
+// best-effort census: an unreadable file is skipped by BuildMacroIndex, and no
+// error aborts the discovery.
+func discoverMacros(ctx context.Context, store db.Store) []macroEntry {
+	files, err := store.ListFiles(ctx)
+	if err != nil {
+		return nil
+	}
+	paths := make([]string, 0, len(files))
+	for _, f := range files {
+		paths = append(paths, f.Path)
+	}
+	idx := symbols.BuildMacroIndex(symbols.RootFor(paths), nil)
+	out := make([]macroEntry, 0, len(idx.Names()))
+	for _, name := range idx.Names() {
+		var bodies []string
+		for _, d := range idx.Lookup(name) {
+			bodies = append(bodies, d.Body)
+		}
+		out = append(out, macroEntry{name: name, bodies: bodies})
+	}
+	return out
+}
+
+// classifyMacro classifies a #define by its name pattern and the allocator/
+// deallocator names its replacement text expands to. Macros have no C return
+// type or parameter signature, so only the name and body signals apply.
+func classifyMacro(m macroEntry) (Entry, string, bool) {
+	allocPattern, allocStrong := allocatorNamePattern(m.name)
+	deallocPattern, deallocStrong := deallocatorNamePattern(m.name)
+
+	callsAlloc, callsDealloc := macroBodyCallees(m.bodies)
+
+	if deallocPattern != "" {
+		e := Entry{Name: m.name, Confidence: ConfHigh}
+		e.Reasons = append(e.Reasons, "macro name pattern "+deallocPattern)
+		if len(callsDealloc) > 0 {
+			e.Reasons = append(e.Reasons, "expands to "+joinCallees(callsDealloc))
+		} else if !deallocStrong {
+			e.Confidence = ConfMedium
+			e.Reasons = append(e.Reasons, "no direct free in body")
+		}
+		return e, "deallocator", true
+	}
+
+	if allocPattern != "" {
+		e := Entry{Name: m.name, Confidence: ConfHigh}
+		e.Reasons = append(e.Reasons, "macro name pattern "+allocPattern)
+		if len(callsAlloc) > 0 {
+			e.Reasons = append(e.Reasons, "expands to "+joinCallees(callsAlloc))
+		} else if !allocStrong {
+			e.Confidence = ConfMedium
+			e.Reasons = append(e.Reasons, "no direct allocator in body")
+		}
+		return e, "allocator", true
+	}
+
+	return Entry{}, "", false
+}
+
+// macroBodyCallees returns the known allocator and deallocator names a macro
+// replacement text references (e.g. "malloc(n)" -> malloc, "free(p)" -> free).
+func macroBodyCallees(bodies []string) (alloc []string, dealloc []string) {
+	for _, body := range bodies {
+		for _, id := range identRe.FindAllString(body, -1) {
+			if apikb.IsDeclaredAllocator(id) {
+				alloc = append(alloc, id)
+			}
+			if apikb.IsDeclaredDeallocator(id) {
+				dealloc = append(dealloc, id)
+			}
+		}
+	}
+	return alloc, dealloc
 }
 
 // allocDeallocCalls maps a function ID to the built-in/declared allocator and
