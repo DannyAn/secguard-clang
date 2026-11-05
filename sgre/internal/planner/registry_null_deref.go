@@ -26,7 +26,13 @@ func init() {
 					Detail: fmt.Sprintf("variable %s is assigned NULL at line %d and dereferenced at line %d with no intervening reassignment (certain null-deref)", c.VariableName, c.SourceLine, c.Line),
 				})
 			} else if c.HasNullableSource {
-				if c.CallerNullDetail != "" {
+				if c.NullOriginTier == "global-null" {
+					fragments = append(fragments, EvidenceFragment{
+						Type:   "global_null",
+						Role:   "source",
+						Detail: globalNullDetail(c),
+					})
+				} else if c.CallerNullDetail != "" {
 					fragments = append(fragments, EvidenceFragment{
 						Type:   "caller_null",
 						Role:   "source",
@@ -155,6 +161,11 @@ func buildNullDerefVerdictFacts(c Candidate) []VerdictFact {
 			Token:  "array-buffer@" + c.CountField,
 			Detail: fmt.Sprintf("`%s` is a count-gated array buffer: it is valid only while the paired count field `%s` is > 0, so `%s == 0` ⇒ the buffer is NULL/empty. Confirm when the candidate's chain dereferences the buffer without checking `%s`; dismiss only when the SAME chain checks `%s` first. The count/data name pairing is a heuristic SIGNAL — verify `%s` actually gates this buffer before confirming", c.VariableName, c.CountField, c.CountField, c.CountField, c.CountField, c.CountField),
 		})
+	case "global-null":
+		facts = append(facts, VerdictFact{
+			Token:  "null@global-null",
+			Detail: globalNullDetail(c) + " — the dereference is unguarded, so this is a real CWE-476. The only uncertainty is a writer the parser cannot see (a function-like macro body); the static linkage rules out another translation unit",
+		})
 	case "external-unknown":
 		facts = append(facts, VerdictFact{
 			Token:  "null@external-unknown",
@@ -191,4 +202,14 @@ func buildNullDerefVerdictFacts(c Candidate) []VerdictFact {
 		})
 	}
 	return facts
+}
+
+// globalNullDetail describes a file-scope static pointer that only ever holds
+// NULL. The source line is optional: an entry-seeded global source has no
+// in-function assignment line to report.
+func globalNullDetail(c Candidate) string {
+	if c.SourceLine > 0 {
+		return fmt.Sprintf("file-scope static pointer %s is initialized to NULL at line %d and never reassigned in its translation unit", c.VariableName, c.SourceLine)
+	}
+	return fmt.Sprintf("file-scope static pointer %s is initialized to NULL and never reassigned in its translation unit", c.VariableName)
 }

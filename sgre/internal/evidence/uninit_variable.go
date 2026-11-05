@@ -276,9 +276,24 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		}
 		scopeEnd := enclosingScopeEnd(decl)
 		for _, child := range decl.NamedChildren() {
-			if child.Kind() == "identifier" && !parser.IsCTypeKeyword(child.Text()) {
-				uninitVars[varKey(child.Text(), decl.StartLine())] = true
-				declsByName[child.Text()] = append(declsByName[child.Text()], varDecl{name: child.Text(), declLine: decl.StartLine(), scopeEnd: scopeEnd})
+			// A pointer declarator wraps the variable name (`struct Node *node;`
+			// parses as pointer_declarator[identifier]). Registering only the
+			// direct `identifier` child left every pointer local invisible to the
+			// uninit analysis, so `struct Node *node; if (node != 0) ...` — a read
+			// of an indeterminate pointer VALUE in the condition — was never
+			// reported (Issue #226, CWD-SUB-1140 sample B).
+			name := ""
+			switch child.Kind() {
+			case "identifier":
+				name = child.Text()
+			case "pointer_declarator":
+				if n, _ := argDeclaratorVar(child); n != "" {
+					name = n
+				}
+			}
+			if name != "" && !parser.IsCTypeKeyword(name) {
+				uninitVars[varKey(name, decl.StartLine())] = true
+				declsByName[name] = append(declsByName[name], varDecl{name: name, declLine: decl.StartLine(), scopeEnd: scopeEnd})
 			}
 		}
 	}

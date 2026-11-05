@@ -228,6 +228,21 @@ func (m *nullModel) onlyUnprovenCallerNullSources(variable string) bool {
 	return seen
 }
 
+// hasSourceOrigin reports whether the variable has a null source with the given
+// origin (e.g. "global_null": a file-scope static pointer whose only value is
+// NULL).
+func (m *nullModel) hasSourceOrigin(variable, origin string) bool {
+	if m == nil {
+		return false
+	}
+	for _, s := range m.sources {
+		if s.variable == variable && s.origin == origin {
+			return true
+		}
+	}
+	return false
+}
+
 // hasExternalCallSource reports whether the variable has an external_call null
 // source — a value produced by an unknown external function that the analyzer
 // cannot prove non-null. Such a value might genuinely be NULL, so the void*

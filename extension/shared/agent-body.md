@@ -342,7 +342,7 @@ budget your effort, not to pre-judge the answer:
   file:line and its `Hint` column carries the flow facts (`src@N` = null-source
   line, `certain-null`/`maybe-null` = null certainty for non-null-deref types,
   `null@cfg-proof`/`null@malloc-fail`/`null@caller-arg`/`null@callback-entry`/`null@opaque-origin`/
-  `null@assumed-return`/`null@external-unknown`
+  `null@global-null`/`null@assumed-return`/`null@external-unknown`
   = null-deref nullable-origin tier (CFG-proved / proven-nullable call result /
   unproven caller argument / registration-site contract / opaque external
   contract — external caller argument or
