@@ -57,9 +57,11 @@ Flags:
   --fail-on <level> Exit code 2 when any finding is confirmed (only "confirmed" is supported)
   --boundary-auto-dismiss <mode>
                     Boundary scans only: pre-dismiss fail-open null-deref rows
-                    (off default | external | all). "external" drops opaque/
-                    external null origins; "all" also drops caller-arg/assumed-
-                    return rows without an in-tree chain.`+commonFlagsDoc+`
+                    (external default | all | off). "external" drops the
+                    non-proving null origins (opaque / external / callback-entry
+                    incl. callback-rooted chains / assumed-return / unguarded
+                    caller-arg root); "all" also drops caller-arg forwarding
+                    hops; "off" keeps every row for the AI.`+commonFlagsDoc+`
 
 Examples:
   secguard scan ./src
@@ -505,10 +507,13 @@ entry_points = [
 ]
 # Boundary scan (no entry point in the tree) fail-open null-deref pre-dismissal:
 # "off" keeps every candidate for AI judgment; "external" (default) drops the
-# non-proving tiers (opaque-origin / external-unknown / callback-entry /
-# assumed-return / unguarded caller-arg root) unless a concrete caller-null
-# witness exists; "all" also drops caller-arg forwarding hops. Every dropped row
-# is counted as boundary_fail_open.
+# non-proving source tiers (opaque-origin / external-unknown / callback-entry,
+# including a forwarding chain rooted at a callback registration, / assumed-
+# return / unguarded caller-arg root) even when the function has an in-tree
+# caller — an in-tree caller does not prove an external-contract source
+# non-null. A caller-arg row with an in-tree caller chain, and any literal-NULL
+# caller witness, is kept. "all" also drops caller-arg forwarding hops. Every
+# dropped row is counted as boundary_fail_open.
 # boundary_auto_dismiss = "external"`)
 }
 

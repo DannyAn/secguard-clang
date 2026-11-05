@@ -164,3 +164,79 @@ unsigned int maf_address_hash_func(const struct ase_hash_key *key)
 		t.Fatalf("boundary_fail_open dismissed = %d, want 3 (key@5 + key@7 caller-arg root + address@8 opaque-origin); dropped = %+v", n, res.Summary.Dropped)
 	}
 }
+
+// TestNullDeref_BoundaryCallbackChainDismisses pins the issue #215 framework
+// callback-contract cut: a static function registered through a function pointer
+// (ADDR_TAKEN) is a registration contract, and every forwarding hop whose chain
+// ROOT is such a registration is graded callback-entry (not caller-arg), so the
+// default boundary scan dismisses the whole chain instead of keeping one
+// "judgeable" caller-arg row per forwarding level. The control keeps the
+// deliberate recall trade-off: a forwarding chain rooted at a plain zero-call-site
+// external entry is still caller-arg and reaches the AI in "external" mode.
+func TestNullDeref_BoundaryCallbackChainDismisses(t *testing.T) {
+	t.Cleanup(func() { config.SetBoundaryAutoDismissOverride("off") })
+	config.SetBoundaryAutoDismissOverride("") // production default ("external")
+
+	t.Run("callback-rooted chain dismissed", func(t *testing.T) {
+		src := `struct cb_ctx { int n; };
+typedef int (*cb_t)(struct cb_ctx *);
+static int cb_leaf(struct cb_ctx *ctx) { return ctx->n; }
+static int cb_dispatch(struct cb_ctx *ctx) { return cb_leaf(ctx); }
+static cb_t g_cb = cb_dispatch;
+void cb_install(void) { g_cb = cb_dispatch; }
+`
+		res := planNullDerefFullSrc(t, src)
+		if len(res.Candidates) != 0 {
+			t.Fatalf("callback-rooted forwarding chain must be pre-dismissed, got %+v", res.Candidates)
+		}
+		if n := res.Summary.DroppedByReason["boundary_fail_open"]; n == 0 {
+			t.Fatalf("callback chain dismissal must be ledgered, dropped = %+v", res.Summary.Dropped)
+		}
+	})
+
+	t.Run("plain external-entry chain kept", func(t *testing.T) {
+		src := `struct api_ctx { int n; };
+static int api_leaf(struct api_ctx *ctx) { return ctx->n; }
+int api_entry(struct api_ctx *ctx) { return api_leaf(ctx); }
+`
+		res := planNullDerefFullSrc(t, src)
+		if len(res.Candidates) != 1 {
+			t.Fatalf("plain external-entry forwarding chain must stay for AI judgment, got %+v", res.Candidates)
+		}
+		c := res.Candidates[0]
+		if c.NullOriginTier != "caller-arg" || c.ChainKind != "hop" {
+			t.Errorf("external-entry chain tier = %q/%q, want caller-arg/hop", c.NullOriginTier, c.ChainKind)
+		}
+	})
+}
+
+// TestNullDeref_BoundaryOpaqueSourceWithInTreeCallerDismissed pins the issue
+// #215 source-tier rule: an in-tree caller of the candidate function does not
+// discharge a non-proving SOURCE tier. An opaque field read (`o->p` of an
+// externally-defined struct) stays dismissed even though the function has an
+// in-tree caller, while the caller-argument row for the same dereference chain
+// remains the judgeable one.
+func TestNullDeref_BoundaryOpaqueSourceWithInTreeCallerDismissed(t *testing.T) {
+	t.Cleanup(func() { config.SetBoundaryAutoDismissOverride("off") })
+	config.SetBoundaryAutoDismissOverride("")
+
+	src := `struct opaque_s;
+int opaque_use(struct opaque_s *o) { return o->p->n; }
+int opaque_caller(struct opaque_s *o) { return opaque_use(o); }
+`
+	res := planNullDerefFullSrc(t, src)
+	for _, c := range res.Candidates {
+		if c.NullOriginTier == "opaque-origin" {
+			t.Fatalf("opaque-origin source with an in-tree caller must be dismissed (an in-tree caller does not prove the field non-null), got %+v", c)
+		}
+	}
+	var ledgered bool
+	for _, d := range res.Summary.Dropped {
+		if d.Filter == "boundary_fail_open" && d.VariableName == "o->p" {
+			ledgered = true
+		}
+	}
+	if !ledgered {
+		t.Errorf("opaque-origin dismissal must stay visible in the boundary_fail_open ledger, dropped = %+v", res.Summary.Dropped)
+	}
+}

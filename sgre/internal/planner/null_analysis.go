@@ -51,6 +51,11 @@ type nullSource struct {
 	// rooted at (see caller_null.chainRootName). Empty for non-chain sources.
 	// It is the cross-function chain-dedup key, not a display string.
 	root string
+	// rootCallback marks a chain whose root is registered through a function
+	// pointer (ADDR_TAKEN): the openness is a callback registration contract,
+	// so every forwarded hop on the chain is graded callback-entry rather than
+	// caller-arg.
+	rootCallback bool
 	// argVarNames / argUnsafe carry the call-site argument facts for a
 	// planner-synthesized `p = f(a, b)` source: which arguments are plain
 	// identifiers (their nullability is checked against the reaching analysis
@@ -116,17 +121,18 @@ func buildNullModel(ctx context.Context, store db.Store) (map[int64]*nullModel, 
 			column = loc.Column
 		}
 		m.sources = append(m.sources, nullSource{
-			variable:   props.Variable,
-			line:       line,
-			column:     column,
-			origin:     props.Origin,
-			definite:   props.Definite == "true",
-			chainOpen:  props.Chain == "open",
-			caller:     props.Function,
-			argText:    props.Expression,
-			condition:  props.NullCondition,
-			root:       props.Root,
-			countField: props.ArrayBufferCountField,
+			variable:     props.Variable,
+			line:         line,
+			column:       column,
+			origin:       props.Origin,
+			definite:     props.Definite == "true",
+			chainOpen:    props.Chain == "open",
+			caller:       props.Function,
+			argText:      props.Expression,
+			condition:    props.NullCondition,
+			root:         props.Root,
+			rootCallback: props.RootCallback == "true",
+			countField:   props.ArrayBufferCountField,
 		})
 	}
 
