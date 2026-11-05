@@ -139,6 +139,40 @@ func (s *store) ClearSecurityEvents(ctx context.Context) error {
 	return nil
 }
 
+// ListEventLocationIDsByType returns the subset of locationIDs that carry at
+// least one event of eventType. Only the caller's locations are consulted (via
+// chunked IN queries keyed on the location_id index), so the peak memory is
+// bounded by the matching-location set, not by the type's full event table.
+func (s *store) ListEventLocationIDsByType(ctx context.Context, eventType string, locationIDs []int64) (map[int64]bool, error) {
+	result := make(map[int64]bool)
+	for _, chunk := range chunkIDs(locationIDs, 500) {
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]interface{}, 0, len(chunk)+1)
+		args = append(args, eventType)
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+		rows, err := s.exec.QueryContext(ctx,
+			`SELECT DISTINCT location_id FROM security_events WHERE event_type = ? AND location_id IN (`+placeholders+`)`, args...)
+		if err != nil {
+			return nil, fmt.Errorf("db: list event location ids by type: %w", err)
+		}
+		for rows.Next() {
+			var id int64
+			if scanErr := rows.Scan(&id); scanErr != nil {
+				rows.Close()
+				return nil, fmt.Errorf("db: scan event location id: %w", scanErr)
+			}
+			result[id] = true
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("db: list event location ids by type: %w", err)
+		}
+	}
+	return result, nil
+}
+
 func scanEvents(rows *sql.Rows) ([]*SecurityEvent, error) {
 	var events []*SecurityEvent
 	for rows.Next() {

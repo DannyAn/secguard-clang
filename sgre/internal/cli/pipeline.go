@@ -77,6 +77,12 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 	if cfg := config.Load(); cfg.Scan.GoMemLimitMB > 0 {
 		debug.SetMemoryLimit(int64(cfg.Scan.GoMemLimitMB) * 1024 * 1024)
+	} else if limit := config.DetectCgroupMemoryLimit(); limit > 0 {
+		// No explicit go_mem_limit_mb: derive the Go soft memory limit from the
+		// cgroup ceiling (85% leaves GC headroom). This turns "OOM-killed at the
+		// cgroup limit" into "GC reclaims before SIGKILL", the production-safety
+		// default that used to require a hand-written secguard.toml.
+		debug.SetMemoryLimit(limit * 85 / 100)
 	}
 	if cfg := config.Load(); cfg.Scan.GoGCPercent > 0 {
 		debug.SetGCPercent(cfg.Scan.GoGCPercent)
@@ -199,11 +205,28 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	bErrCh := make(chan error, len(builders))
 
 	var memMon *MemoryMonitor
-	if cfg := config.Load(); cfg.Scan.MemoryPressureEnabled && cfg.Scan.MemoryHighWatermarkMB > 0 {
-		memMon = NewMemoryMonitor(int64(cfg.Scan.MemoryHighWatermarkMB)*1024*1024,
-			int64(cfg.Scan.MemoryLowWatermarkMB)*1024*1024)
-		memMon.Start(2*time.Second, logger)
-		defer memMon.Stop()
+	if cfg := config.Load(); cfg.Scan.MemoryPressureEnabled {
+		highMB := cfg.Scan.MemoryHighWatermarkMB
+		lowMB := cfg.Scan.MemoryLowWatermarkMB
+		if highMB == 0 {
+			// Backpressure opted in without a watermark: derive it from the
+			// cgroup ceiling so a containerized scan does not have to hand-compute
+			// the threshold. 70% high / 52.5% low leaves headroom for the other
+			// resident processes sharing the cgroup.
+			if limit := config.DetectCgroupMemoryLimit(); limit > 0 {
+				// Apply the 70% in bytes before the MB conversion so a small
+				// ceiling still yields a non-zero watermark instead of truncating
+				// to zero on the MB division first.
+				highMB = int(limit * 7 / 10 / (1024 * 1024))
+				lowMB = highMB * 3 / 4
+			}
+		}
+		if highMB > 0 {
+			memMon = NewMemoryMonitor(int64(highMB)*1024*1024,
+				int64(lowMB)*1024*1024)
+			memMon.Start(2*time.Second, logger)
+			defer memMon.Stop()
+		}
 	}
 	builderGate := concurrency.NewGate(config.Load().GraphBuildersConcurrencyOr(len(builders)),
 		func() bool { return memMon != nil && memMon.Pressured() })
@@ -345,7 +368,25 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 	sort.Strings(disabledTypes)
 
-	vulnTypes := planner.ActiveVulnTypes(disabledSet)
+	// The [type-filter] positional argument (`scan <path> <type>[,<type>...]`)
+	// narrows the plan stage to an allow-list. It is validated the same way as
+	// disabled_types: a typo must not silently plan nothing nor crash the run.
+	typeFilter := config.Load().TypeFilterSet()
+	hasFilter := typeFilter != nil
+	for name := range typeFilter {
+		if _, err := planner.GetVulnTypeSpec(name); err != nil {
+			logger.Warn("type-filter names an unknown vulnerability type, ignoring", "type", name)
+			delete(typeFilter, name)
+		}
+	}
+	if hasFilter && len(typeFilter) == 0 {
+		// Every name in the filter was unknown: planning zero types would make
+		// the scan look "clean" while producing no candidates. Surface it as an
+		// error instead of a silent empty result.
+		return nil, fmt.Errorf("type-filter matched no registered vulnerability type")
+	}
+
+	vulnTypes := planner.TypeFilteredActiveVulnTypes(disabledSet, typeFilter)
 	plans := make([]*planner.PlanResult, len(vulnTypes))
 	planErrors := map[string]string{}
 	// planErrors is written from up to planConcurrency goroutines. Go maps have

@@ -92,7 +92,7 @@ type VulnTypeSpec struct {
 	// listed, CWEForCategory falls back to spec.CWE. This is the mechanism by
 	// which a single injection vuln_type + single injection/SKILL.md covers
 	// six CWEs without splitting into separate vuln_types.
-	CategoryCWEs      map[string]string
+	CategoryCWEs map[string]string
 	// DefaultSeverity is the type's default severity for a typical confirmed
 	// finding (critical/high/medium/low). It is the single source of truth for
 	// the type→severity scale (GAP-10); SKILL frontmatter `metadata.severity`
@@ -233,6 +233,26 @@ func ActiveVulnTypes(disabled map[string]bool) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// TypeFilteredActiveVulnTypes returns ActiveVulnTypes(disabled) further
+// restricted to the given allow-list (the `scan <path> [type-filter]`
+// positional argument). A nil/empty filter returns the unfiltered active list.
+// Both the pipeline (which builds the Plans slice) and the scan command (which
+// consumes that slice) MUST derive their list from this function so the two
+// never drift apart in ordering or length.
+func TypeFilteredActiveVulnTypes(disabled, filter map[string]bool) []string {
+	active := ActiveVulnTypes(disabled)
+	if len(filter) == 0 {
+		return active
+	}
+	out := make([]string, 0, len(active))
+	for _, name := range active {
+		if filter[name] {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // TaintSummaryTypes filters the given vulnerability types down to those that
