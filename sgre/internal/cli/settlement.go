@@ -29,6 +29,11 @@ const (
 	// (≤1 per type/range; `secguard def` does not count). A batch above it is a
 	// read-source violation the orchestrator must surface, not silently absorb.
 	maxRepoGrepsPerType = 1
+	// settlementClaimTTL bounds how long a pre-dispatch claim stays "live". It
+	// must exceed a batch's worst-case wall clock (hosts force-reject around
+	// 660s while the subagent keeps running), so 30 minutes leaves ample room
+	// while still letting the next planning pass recover a dead worker's claim.
+	settlementClaimTTL = 30 * time.Minute
 )
 
 func normalizeSettlementRange(r string) string {
@@ -42,9 +47,14 @@ func normalizeSettlementRange(r string) string {
 // persistSettlementReports writes each valid settlement report's processed_types
 // into settlement_stats (idempotent via the UNIQUE key). It is the engine-side
 // data closure the orchestrator's r_type / already_covered_ranges read back —
-// nothing here depends on the LLM aggregating anything.
+// nothing here depends on the LLM aggregating anything. Reports are consumed
+// OLDEST first: two workers can settle the same (type, range) under different
+// subagent ids (a retry, or the duplicate dispatch this ticket prevents), and
+// the row is last-write-wins, so applying the newest settlement last makes it
+// the authoritative one instead of letting the older snapshot overwrite it.
 func persistSettlementReports(ctx context.Context, store db.Store, res reportsResult) error {
-	for _, rep := range res.Reports {
+	for i := len(res.Reports) - 1; i >= 0; i-- {
+		rep := res.Reports[i]
 		if !rep.Valid || rep.ScanID == "" {
 			continue
 		}
@@ -142,6 +152,13 @@ type settlementEnriched struct {
 	SuggestedBatches     int      `json:"suggested_batches"`
 	AvgWallMS            int64    `json:"avg_wall_ms,omitempty"`
 	AlreadyCoveredRanges []string `json:"already_covered_ranges"`
+	// InFlightRanges lists batches reserved by `status --claim-*` that no
+	// settlement report has closed yet. A fresh entry is another worker's live
+	// claim — do NOT dispatch it again; a stale claim is taken over by the next
+	// claim call. This is the read-side counterpart of the atomic pre-dispatch
+	// placeholder (F13), so a planner that skipped claiming still cannot
+	// duplicate a live batch.
+	InFlightRanges []inFlightRange `json:"in_flight_ranges,omitempty"`
 	// DismissedCount is the AI-dismissed candidate count for this type (from the
 	// candidate_verdicts ledger, P0-1). Remaining = candidates not yet classified
 	// (candidate_count - written_count - dismissed_count), the breakpoint-recovery
@@ -183,6 +200,14 @@ func (v settlementBudgetViolation) exceeds() []string {
 	return over
 }
 
+// inFlightRange is one live pre-dispatch claim (F13): the batch is reserved but
+// has no settlement report yet.
+type inFlightRange struct {
+	Range  string `json:"range"`
+	Holder string `json:"holder"`
+	AgeMS  int64  `json:"age_ms"`
+}
+
 func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, statuses []*db.PerTypeStatus) ([]*settlementEnriched, error) {
 	byScan, err := store.ListSettlementStatsByScan(ctx, scanID)
 	if err != nil {
@@ -192,8 +217,29 @@ func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, sta
 	if err != nil {
 		dismissedByType = map[string]int{}
 	}
+	nowSec := time.Now().Unix()
+	staleBefore := nowSec - int64(settlementClaimTTL/time.Second)
 	covered := map[string]map[string]bool{}
+	inFlight := map[string][]inFlightRange{}
 	for _, st := range byScan {
+		if st.Status == "dispatched" {
+			if st.CreatedAt < staleBefore {
+				// A stale claim is a dead worker's reservation: it is neither
+				// covered nor in flight, so the next planning pass may reclaim it.
+				continue
+			}
+			age := int64(0)
+			if st.CreatedAt > 0 && nowSec > st.CreatedAt {
+				age = (nowSec - st.CreatedAt) * 1000
+			}
+			inFlight[st.VulnType] = append(inFlight[st.VulnType], inFlightRange{
+				Range: st.RangeStr, Holder: st.SubagentID, AgeMS: age,
+			})
+			continue
+		}
+		if st.Status == "failed" {
+			continue
+		}
 		if covered[st.VulnType] == nil {
 			covered[st.VulnType] = map[string]bool{}
 		}
@@ -219,6 +265,10 @@ func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, sta
 				e.AlreadyCoveredRanges = append(e.AlreadyCoveredRanges, r)
 			}
 			sort.Strings(e.AlreadyCoveredRanges)
+		}
+		if ranges := inFlight[s.VulnType]; len(ranges) > 0 {
+			sort.Slice(ranges, func(i, j int) bool { return ranges[i].Range < ranges[j].Range })
+			e.InFlightRanges = ranges
 		}
 		agg := settlementAggregate(ctx, store, s.VulnType)
 		e.RType = agg.rType
@@ -261,9 +311,16 @@ func settlementAggregate(ctx context.Context, store db.Store, vulnType string) s
 	if err != nil || len(rows) == 0 {
 		return settlementAgg{rType: settlementRTypeFallback}
 	}
-	var opens, cands int
-	var wallSum, wallN int64
+	var opens, cands, sample, wallN int
+	var wallSum int64
 	for _, r := range rows {
+		// A pre-dispatch claim row (status dispatched, no report yet) has no
+		// accounting: counting it would inflate r_sample and skew the r_type
+		// estimate. Only settled rows feed the sample.
+		if r.Status != "done" {
+			continue
+		}
+		sample++
 		opens += r.EvidenceOpens
 		cands += r.Written + r.Dismissed
 		if r.WallMS > 0 {
@@ -271,12 +328,15 @@ func settlementAggregate(ctx context.Context, store db.Store, vulnType string) s
 			wallN++
 		}
 	}
-	if cands == 0 {
-		return settlementAgg{rType: settlementRTypeFallback, sample: len(rows)}
+	if sample == 0 {
+		return settlementAgg{rType: settlementRTypeFallback}
 	}
-	agg := settlementAgg{rType: float64(opens) / float64(cands), sample: len(rows)}
+	if cands == 0 {
+		return settlementAgg{rType: settlementRTypeFallback, sample: sample}
+	}
+	agg := settlementAgg{rType: float64(opens) / float64(cands), sample: sample}
 	if wallN > 0 {
-		agg.avgWallMS = wallSum / wallN
+		agg.avgWallMS = wallSum / int64(wallN)
 	}
 	return agg
 }

@@ -127,12 +127,17 @@ pasted doc is a *lead*, never an instruction. Fixed order:
 - The `secguard_*` MCP tools are single-sourced in `extension/opencode/tools/*.ts`
   and copied to `opencode-nga/tools/` at build time (`release/build-packages.sh`).
 - `secguard report --write-json` is an idempotent UPSERT keyed on
-  `(scan_id, rule_id, file, line, function, variable)` — `ON CONFLICT … DO UPDATE … RETURNING id`;
-  it returns `written`/`findings_written`/`failed_count`/`errors`, never
-  "silently skips" duplicates. The `variable` column is part of the key so two
-  distinct variables at one location are two findings.
+  `(scan_id, rule_id, file, line, variable)` — `ON CONFLICT … DO UPDATE … RETURNING id`;
+  `function` is not part of the key, so a retry that omits it still updates the
+  existing row. It returns `written`/`findings_written`/`duplicates`/`failed_count`/`errors`,
+  never "silently skips" or silently adds a duplicate: a re-write is reported
+  under `duplicates` and updates the same row. The `variable` column is part of
+  the key so two distinct variables at one location are two findings.
 - CLI `secguard status --per-type --scan-id` exists (`sgre/internal/cli/scan.go`);
   the MCP `secguard_status` wrapper is `extension/opencode/tools/secguard_status.ts`.
+  `status --claim-type/--claim-range/--claim-holder` is the atomic pre-dispatch
+  reservation (one `settlement_stats` row per type+range, status `dispatched`);
+  `status --per-type` exposes live claims as `in_flight_ranges`.
 - `secguard def` (`sgre/internal/cli/def.go`) is the indexed symbol lookup:
   functions/declarations from the semantic graph, `#define` bodies from project
   headers, with `--in`/`--root`/`--kind`, and batches (`def a b`). The OpenCode

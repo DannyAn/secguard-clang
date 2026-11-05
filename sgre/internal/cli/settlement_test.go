@@ -4,7 +4,10 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"math"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -103,6 +106,132 @@ func TestEnrichPerTypeStatusAlreadyCovered(t *testing.T) {
 	}
 }
 
+// TestEnrichPerTypeStatusClaimInFlight pins the pre-dispatch placeholder's
+// read side (#217): a fresh `dispatched` claim is reported under
+// in_flight_ranges (not already_covered_ranges), so a second planner skips it;
+// a stale claim is omitted from both, so the next planning pass may reclaim it.
+func TestEnrichPerTypeStatusClaimInFlight(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+
+	if _, err := store.InsertScanStat(ctx, &db.ScanStat{ScanID: "sc_test", VulnType: "buffer-overflow", SeedCount: 120, FinalCount: 120}); err != nil {
+		t.Fatal(err)
+	}
+	nowSec := time.Now().Unix()
+	if err := store.UpsertSettlementStat(ctx, &db.SettlementStat{
+		ScanID: "sc_test", VulnType: "buffer-overflow", RangeStr: "1-20", SubagentID: "live-holder",
+		Status: "dispatched", CreatedAt: nowSec,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertSettlementStat(ctx, &db.SettlementStat{
+		ScanID: "sc_test", VulnType: "buffer-overflow", RangeStr: "21-40", SubagentID: "dead-holder",
+		Status: "dispatched", CreatedAt: nowSec - int64(settlementClaimTTL/time.Second) - 60,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	statuses, err := store.ListPerTypeStatus(ctx, "sc_test", func(string) []string { return []string{"CWE-787"} })
+	if err != nil {
+		t.Fatal(err)
+	}
+	enriched, err := enrichPerTypeStatus(ctx, store, "sc_test", statuses)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := enriched[0]
+	if len(e.AlreadyCoveredRanges) != 0 {
+		t.Errorf("a claim is not coverage: already_covered_ranges = %v", e.AlreadyCoveredRanges)
+	}
+	if len(e.InFlightRanges) != 1 || e.InFlightRanges[0].Range != "1-20" || e.InFlightRanges[0].Holder != "live-holder" {
+		t.Errorf("in_flight_ranges = %+v, want only the fresh 1-20 claim", e.InFlightRanges)
+	}
+}
+
+func TestStatusCmdClaim(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "test.db")
+	d, err := db.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := db.NewStore(d)
+	scanID := "sc_2026-01-01_000000_abcdef"
+	if _, err := s.InsertScanStat(ctx, &db.ScanStat{ScanID: scanID, VulnType: "null-deref", SeedCount: 40, FinalCount: 40}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	claim := func(holder string, extra ...string) map[string]any {
+		args := append([]string{"--db", dbPath, "--scan-id", scanID, "--claim-type", "null-deref", "--claim-range", "1-20", "--claim-holder", holder}, extra...)
+		stdout, _, code := captureOutput(func() int { return runStatusCmd(ctx, args) })
+		if code != 0 {
+			t.Fatalf("claim %s failed: %s", holder, stdout)
+		}
+		var out map[string]any
+		if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+			t.Fatalf("claim output is not JSON: %s", stdout)
+		}
+		return out
+	}
+
+	first := claim("holder-a")
+	if first["claimed"] != true || first["reason"] != "new" {
+		t.Fatalf("first claim = %+v, want claimed/new", first)
+	}
+	second := claim("holder-b")
+	if second["claimed"] != false || second["reason"] != "held" || second["holder"] != "holder-a" {
+		t.Fatalf("second claim = %+v, want held/holder-a", second)
+	}
+	reclaimed := claim("holder-c", "--reclaim")
+	if reclaimed["claimed"] != true || reclaimed["reason"] != "reclaim" {
+		t.Fatalf("reclaim = %+v, want claimed/reclaim", reclaimed)
+	}
+
+	// The live claim must be visible to the next planning pass.
+	stdout, _, code := captureOutput(func() int {
+		return runStatusCmd(ctx, []string{"--db", dbPath, "--per-type", "--scan-id", scanID})
+	})
+	if code != 0 {
+		t.Fatalf("--per-type failed: %s", stdout)
+	}
+	var perType []struct {
+		VulnType       string `json:"vuln_type"`
+		InFlightRanges []struct {
+			Range  string `json:"range"`
+			Holder string `json:"holder"`
+		} `json:"in_flight_ranges"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &perType); err != nil {
+		t.Fatalf("--per-type output is not JSON: %s", stdout)
+	}
+	var found bool
+	for _, pt := range perType {
+		if pt.VulnType != "null-deref" {
+			if len(pt.InFlightRanges) != 0 {
+				t.Errorf("unexpected in_flight_ranges on %s: %+v", pt.VulnType, pt.InFlightRanges)
+			}
+			continue
+		}
+		found = true
+		if len(pt.InFlightRanges) != 1 || pt.InFlightRanges[0].Range != "1-20" || pt.InFlightRanges[0].Holder != "holder-c" {
+			t.Fatalf("in_flight_ranges not exposed: %+v", pt.InFlightRanges)
+		}
+	}
+	if !found {
+		t.Fatal("null-deref missing from --per-type output")
+	}
+
+	// An unknown type is rejected instead of reserving an unusable batch.
+	stdout, _, code = captureOutput(func() int {
+		return runStatusCmd(ctx, []string{"--db", dbPath, "--scan-id", scanID, "--claim-type", "not-a-type", "--claim-range", "1-20", "--claim-holder", "x"})
+	})
+	if code == 0 {
+		t.Fatalf("unknown claim type must fail, got: %s", stdout)
+	}
+}
+
 func TestEnrichPerTypeStatusBudgetViolations(t *testing.T) {
 	ctx := context.Background()
 	store := db.NewTestStore(t)
@@ -184,6 +313,49 @@ func TestPersistSettlementReports(t *testing.T) {
 	rows, _ = store.ListSettlementStatsByScan(ctx, "sc_test")
 	if len(rows) != 1 {
 		t.Fatalf("re-persist must not duplicate, got %d", len(rows))
+	}
+}
+
+// TestPersistSettlementReportsNewestWins pins the last-write-wins direction:
+// two workers settling the same (type, range) under different subagent ids must
+// end with the NEWEST report's accounting, not the older snapshot that happens
+// to be applied last.
+func TestPersistSettlementReportsNewestWins(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+
+	project := t.TempDir()
+	dbPath := project + "/.codeagent/secguard-clang/.sgre/sgre.db"
+	tmp := project + "/.codeagent/secguard-clang/.sgre/.tmp"
+	writeReport(t, tmp, "sub-old-report.json", `{
+	  "format_version": 1, "subagent_id": "sub-old", "scan_id": "sc_test",
+	  "processed_types": [{"type":"null-deref","range":"1-100","cwe":"CWE-476","written":1,"dismissed":99,"evidence_opens":2}]
+	}`)
+	writeReport(t, tmp, "sub-new-report.json", `{
+	  "format_version": 1, "subagent_id": "sub-new", "scan_id": "sc_test",
+	  "processed_types": [{"type":"null-deref","range":"1-100","cwe":"CWE-476","written":8,"dismissed":92,"evidence_opens":9}]
+	}`)
+	oldPath := filepath.Join(tmp, "sub-old-report.json")
+	newPath := filepath.Join(tmp, "sub-new-report.json")
+	if err := os.Chtimes(oldPath, time.Now().Add(-2*time.Minute), time.Now().Add(-2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(newPath, time.Now().Add(-time.Minute), time.Now().Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := persistSettlementReports(ctx, store, listSubagentReports(dbPath, "sc_test")); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.ListSettlementStatsByScan(ctx, "sc_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row for the shared type+range, got %d", len(rows))
+	}
+	if rows[0].SubagentID != "sub-new" || rows[0].Written != 8 || rows[0].Dismissed != 92 || rows[0].EvidenceOpens != 9 {
+		t.Errorf("newest settlement must win: %+v", rows[0])
 	}
 }
 

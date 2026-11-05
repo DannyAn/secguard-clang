@@ -378,12 +378,20 @@ func (s *mockStore) InsertFinding(ctx context.Context, f *db.Finding) (int64, er
 }
 func (s *mockStore) UpsertFinding(ctx context.Context, f *db.Finding) (int64, error) {
 	for _, existing := range s.findings {
-		if existing.ScanID == f.ScanID && existing.RuleID == f.RuleID && existing.FilePath == f.FilePath && existing.LineNumber == f.LineNumber && existing.FunctionName == f.FunctionName {
+		if existing.ScanID == f.ScanID && existing.RuleID == f.RuleID && existing.FilePath == f.FilePath && existing.LineNumber == f.LineNumber && existing.Variable == f.Variable {
 			*existing = *f
 			return existing.ID, nil
 		}
 	}
 	return s.InsertFinding(ctx, f)
+}
+func (s *mockStore) FindingIDByLocationKey(ctx context.Context, scanID, ruleID, filePath string, line int, variable string) (int64, bool, error) {
+	for _, existing := range s.findings {
+		if existing.ScanID == scanID && existing.RuleID == ruleID && existing.FilePath == filePath && existing.LineNumber == line && existing.Variable == variable {
+			return existing.ID, true, nil
+		}
+	}
+	return 0, false, nil
 }
 func (s *mockStore) ListFindings(ctx context.Context) ([]*db.Finding, error) { return s.findings, nil }
 func (s *mockStore) ListFindingsByStatus(ctx context.Context, status string) ([]*db.Finding, error) {
@@ -451,6 +459,12 @@ func (s *mockStore) UpdateReturnNullable(ctx context.Context, fid int64, nullabl
 
 func (s *mockStore) UpsertSettlementStat(ctx context.Context, st *db.SettlementStat) error {
 	return nil
+}
+func (s *mockStore) GetSettlementStat(ctx context.Context, scanID, vulnType, rangeStr string) (*db.SettlementStat, error) {
+	return nil, nil
+}
+func (s *mockStore) ClaimSettlementRange(ctx context.Context, scanID, vulnType, rangeStr, holder string, staleBefore int64, reclaim bool) (*db.SettlementClaim, error) {
+	return &db.SettlementClaim{Claimed: true, Reason: "new", ScanID: scanID, VulnType: vulnType, Range: rangeStr, Holder: holder}, nil
 }
 func (s *mockStore) MarkSettlementStatus(ctx context.Context, scanID, vulnType, rangeStr, subagentID, status string) error {
 	return nil

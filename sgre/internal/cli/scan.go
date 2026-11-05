@@ -707,19 +707,18 @@ func skippedDetectorNames(names []string) []string {
 	return names
 }
 
-// distinctFindingLocations counts the distinct (file, line, function, variable)
-// locations among candidates. `report --write-json` UPSERTs findings keyed on
-// (scan_id, rule_id, file, line, function, variable), so only candidates at the
-// SAME location AND SAME variable collapse into ONE finding; two different
-// variables on one line (e.g. two resource variables) are two findings. final_count
-// must use this location count — not the variable-level candidate count —
-// otherwise `status --per-type` and `report --audit` see a phantom
-// "written < candidate" gap and the orchestrator re-dispatches or raw-queries the
-// schema in a loop.
+// distinctFindingLocations counts the distinct (file, line, variable) locations
+// among candidates. `report --write-json` UPSERTs findings keyed on
+// (scan_id, rule_id, file, line, variable), so only candidates at the SAME
+// location AND SAME variable collapse into ONE finding; two different variables
+// on one line (e.g. two resource variables) are two findings. final_count must
+// use this location count — not the variable-level candidate count — otherwise
+// `status --per-type` and `report --audit` see a phantom "written < candidate"
+// gap and the orchestrator re-dispatches or raw-queries the schema in a loop.
 func distinctFindingLocations(items []planner.EvidenceItem) int {
 	seen := make(map[string]struct{}, len(items))
 	for _, c := range items {
-		key := c.Target.File + "\x00" + strconv.Itoa(c.Target.Line) + "\x00" + c.Target.Function + "\x00" + c.Target.Variable
+		key := c.Target.File + "\x00" + strconv.Itoa(c.Target.Line) + "\x00" + c.Target.Variable
 		seen[key] = struct{}{}
 	}
 	return len(seen)
@@ -963,6 +962,41 @@ func runStatusCmd(ctx context.Context, args []string) int {
 		return 1
 	}
 	defer store.Close()
+
+	claimType := parseStringFlag(args, "claim-type")
+	claimRange := parseStringFlag(args, "claim-range")
+	claimHolder := parseStringFlag(args, "claim-holder")
+	if claimType != "" || claimRange != "" || claimHolder != "" {
+		if claimType == "" || claimRange == "" || claimHolder == "" {
+			WriteErrorJSON("--claim-type, --claim-range and --claim-holder must be passed together")
+			return 1
+		}
+		if planner.CWEForType(claimType) == "" {
+			WriteErrorJSON(fmt.Sprintf("unknown vulnerability type %q; run 'secguard types' for the authoritative list", claimType))
+			return 1
+		}
+		scanID := parseStringFlag(args, "scan-id")
+		if scanID == "" {
+			latest, lerr := store.GetLatestScanID(ctx)
+			if lerr != nil {
+				WriteErrorJSON(fmt.Sprintf("failed to get latest scan_id: %v", lerr))
+				return 1
+			}
+			scanID = latest
+		}
+		if scanID == "" {
+			WriteErrorJSON("no scan found; run 'secguard scan <path>' first or pass --scan-id")
+			return 1
+		}
+		staleBefore := time.Now().Add(-settlementClaimTTL).Unix()
+		claim, cerr := store.ClaimSettlementRange(ctx, scanID, claimType, normalizeSettlementRange(claimRange), claimHolder, staleBefore, hasFlag(args, "reclaim"))
+		if cerr != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to claim settlement range: %v", cerr))
+			return 1
+		}
+		WriteJSON(claim)
+		return 0
+	}
 
 	if hasFlag(args, "reports") {
 		res := listSubagentReports(dbPath, parseStringFlag(args, "scan-id"))

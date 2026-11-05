@@ -141,3 +141,42 @@ func TestListSubagentReports_DedupRetries(t *testing.T) {
 		t.Errorf("newest report accounting lost: %+v", res.Reports[0])
 	}
 }
+
+// TestListSubagentReports_ValidCheckpointBeatsNewerChunk pins the #217 dedup
+// rule: a mid-batch chunk is a partial snapshot (valid:false) and may be newer
+// than the per-type checkpoint for the same type/range, but it must not
+// supersede that completed checkpoint — otherwise the orchestrator re-dispatches
+// a range that already finished.
+func TestListSubagentReports_ValidCheckpointBeatsNewerChunk(t *testing.T) {
+	project := t.TempDir()
+	dbPath := filepath.Join(project, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
+	tmp := filepath.Join(filepath.Dir(dbPath), ".tmp")
+
+	writeReport(t, tmp, "sub-a-null-deref-report.json", `{
+	  "format_version": 1, "subagent_id": "sub-a", "scan_id": "sc_test",
+	  "processed_types": [{"type":"null-deref","range":"1-100","cwe":"CWE-476","written":2,"dismissed":98,"evidence_opens":12}]
+	}`)
+	writeReport(t, tmp, "sub-a-chunk-9.json", `{
+	  "format_version": 1, "subagent_id": "sub-a", "scan_id": "sc_test",
+	  "processed_types": [{"type":"null-deref","range":"1-100","cwe":"CWE-476","written":1,"dismissed":40,"evidence_opens":5}]
+	}`)
+	checkpoint := filepath.Join(tmp, "sub-a-null-deref-report.json")
+	chunk := filepath.Join(tmp, "sub-a-chunk-9.json")
+	if err := os.Chtimes(checkpoint, time.Now().Add(-time.Minute), time.Now().Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(chunk, time.Now(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	res := listSubagentReports(dbPath, "sc_test")
+	if res.Count != 1 {
+		t.Fatalf("count = %d, want 1 (one authoritative record): %+v", res.Count, res.Reports)
+	}
+	if got := filepath.Base(res.Reports[0].File); got != "sub-a-null-deref-report.json" {
+		t.Errorf("kept report = %q, want the valid checkpoint (not the newer chunk)", got)
+	}
+	if !res.Reports[0].Valid {
+		t.Error("the kept checkpoint must stay valid so the range counts as covered")
+	}
+}

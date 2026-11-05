@@ -160,10 +160,11 @@ export default tool({
       }))
       fs.writeFileSync(tmpFile, JSON.stringify(inputs))
 
-      const written: { file: string; line: number; id: number }[] = []
+      const written: { file: string; line: number; id: number; duplicate?: boolean }[] = []
       const errors: string[] = []
       const perFindingWarnings: string[] = []
       let skipped = 0
+      let duplicates = 0
       try {
         const out = (await withTimeout(Bun.$`${secguardBin} report --db ${dbPath} --write-json ${tmpFile} --scan-id=${scanId}`
           .cwd(workDir)
@@ -172,9 +173,10 @@ export default tool({
         ).trim()
         try {
           const parsed = JSON.parse(out)
+          duplicates = typeof parsed.duplicates === "number" ? parsed.duplicates : 0
           for (const w of parsed.written ?? []) {
             if (typeof w.id === "number") {
-              written.push({ file: w.file, line: w.line, id: w.id })
+              written.push({ file: w.file, line: w.line, id: w.id, ...(w.duplicate ? { duplicate: true } : {}) })
             }
           }
           // Per-item failures (unsupported rule_id, empty rule_id, DB error)
@@ -216,6 +218,7 @@ export default tool({
         {
           status: errors.length === 0 ? "ok" : "partial",
           findings_written: written.length,
+          duplicates,
           skipped,
           written,
           audit_path: auditPath,

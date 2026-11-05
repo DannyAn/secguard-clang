@@ -416,3 +416,20 @@ type SettlementStat struct {
 	WorkMS        int64
 	CreatedAt     int64
 }
+
+// SettlementClaim is the result of the pre-dispatch placeholder:
+// ClaimSettlementRange atomically reserves one (scan_id, vuln_type, range_str)
+// batch so two orchestrators racing on the same range cannot both spawn a
+// worker. Claimed=false carries the current holder/status so the caller can
+// report the reason without a second query.
+type SettlementClaim struct {
+	Claimed    bool   `json:"claimed"`
+	Reason     string `json:"reason"`
+	ScanID     string `json:"scan_id"`
+	VulnType   string `json:"vuln_type"`
+	Range      string `json:"range"`
+	Holder     string `json:"holder"`
+	Status     string `json:"status"`
+	RetryCount int    `json:"retry_count"`
+	AgeMS      int64  `json:"age_ms,omitempty"`
+}

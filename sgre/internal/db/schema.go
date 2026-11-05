@@ -475,11 +475,12 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, secondaryIndexesDDL); err != nil {
 		return fmt.Errorf("db: init schema: create secondary indexes: %w", err)
 	}
-	// The finding-location uniqueness key gained the `variable` column so two
-	// distinct variables at one (scan, rule, file, line, function) are two
-	// findings. Only recreate the index when it is missing or still the old
-	// 5-column form — the previous unconditional DROP+CREATE on every Open wasted
-	// a full index rebuild per scan and raced concurrent writers.
+	// The finding-location uniqueness key is (scan, rule, file, line, variable):
+	// two distinct variables at one location are two findings, while
+	// function_name is not part of the identity (a retry that omits it updates
+	// the existing row). Only recreate the index when it is missing or stale —
+	// the previous unconditional DROP+CREATE on every Open wasted a full index
+	// rebuild per scan and raced concurrent writers.
 	if err := ensureFindingLocIndex(ctx, db); err != nil {
 		return err
 	}
@@ -588,20 +589,38 @@ CREATE INDEX IF NOT EXISTS idx_findings_scan_id ON findings(scan_id);
 CREATE INDEX IF NOT EXISTS idx_findings_fingerprint ON findings(fingerprint);
 `
 
-// ensureFindingLocIndex recreates the findings location-uniqueness index only when
-// it is missing or still the pre-variable 5-column form. This replaces the old
-// unconditional DROP+CREATE that rebuilt the index on every Open and raced
-// concurrent writers.
+// ensureFindingLocIndex recreates the findings location-uniqueness index only
+// when it is missing or not the current form. The identity key is
+// (scan_id, rule_id, file_path, line_number, variable): function_name was part
+// of the pre-#217 key, so a retry that omitted it inserted a second row for the
+// same defect (same file/line/variable, same fingerprint) instead of updating
+// the existing one. Near-duplicates are collapsed before the index is rebuilt
+// (keeping the highest id, i.e. the latest-written row) and NULL variables are
+// normalized to the empty string so SQLite's "NULLs are distinct" rule cannot
+// defeat the key.
+// The index is only rebuilt when it is missing or stale — the previous
+// unconditional DROP+CREATE rebuilt it on every Open and raced concurrent
+// writers.
 func ensureFindingLocIndex(ctx context.Context, db *sql.DB) error {
 	var sqlText string
 	err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'uq_finding_loc'`).Scan(&sqlText)
-	if err == nil && strings.Contains(sqlText, "variable") {
+	if err == nil && strings.Contains(sqlText, "variable") && !strings.Contains(sqlText, "function_name") {
 		return nil
+	}
+	if _, derr := db.ExecContext(ctx, `UPDATE findings SET variable = '' WHERE variable IS NULL`); derr != nil {
+		return fmt.Errorf("db: init schema: normalize finding variable: %w", derr)
+	}
+	if _, derr := db.ExecContext(ctx, `
+		DELETE FROM findings
+		WHERE id NOT IN (
+			SELECT MAX(id) FROM findings GROUP BY scan_id, rule_id, file_path, line_number, variable
+		)`); derr != nil {
+		return fmt.Errorf("db: init schema: dedupe findings: %w", derr)
 	}
 	if _, derr := db.ExecContext(ctx, `DROP INDEX IF EXISTS uq_finding_loc`); derr != nil {
 		return fmt.Errorf("db: init schema: drop old finding-loc index: %w", derr)
 	}
-	if _, cerr := db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS uq_finding_loc ON findings(scan_id, rule_id, file_path, line_number, function_name, variable)`); cerr != nil {
+	if _, cerr := db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS uq_finding_loc ON findings(scan_id, rule_id, file_path, line_number, variable)`); cerr != nil {
 		return fmt.Errorf("db: init schema: recreate finding-loc index: %w", cerr)
 	}
 	return nil

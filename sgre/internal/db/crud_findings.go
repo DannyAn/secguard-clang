@@ -85,13 +85,34 @@ func (s *store) InsertFinding(ctx context.Context, f *Finding) (int64, error) {
 	})
 }
 
+// FindingIDByLocationKey returns the id of the finding with the same
+// (scan_id, rule_id, file_path, line_number, variable) identity, or found=false
+// when none exists. It is the CLI write path's duplicate probe: a re-write that
+// hits this key updates the existing row and is reported as a duplicate instead
+// of silently adding a second finding. function_name is deliberately NOT part of
+// the key — a file:line belongs to one function, and a retry that omits the name
+// must not mint a second row with the same fingerprint.
+func (s *store) FindingIDByLocationKey(ctx context.Context, scanID, ruleID, filePath string, line int, variable string) (int64, bool, error) {
+	var id int64
+	err := s.exec.QueryRowContext(ctx,
+		`SELECT id FROM findings WHERE scan_id = ? AND rule_id = ? AND file_path = ? AND line_number = ? AND variable = ? ORDER BY id LIMIT 1`,
+		scanID, ruleID, filePath, line, variable).Scan(&id)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("db: find finding by location key: %w", err)
+	}
+	return id, true, nil
+}
+
 // UpsertFinding writes a finding idempotently: if a finding with the same
-// (scan_id, rule_id, file_path, line_number, function_name, variable) already
-// exists, it is updated in place and its id returned; otherwise a new row is
-// inserted. This
-// makes re-running a write batch safe (the previous insert-only behavior created
-// duplicate findings when an agent re-ran its write script), while preserving the
-// second-round (A5) review fields, which only `--review` mutates.
+// (scan_id, rule_id, file_path, line_number, variable) already exists, it is
+// updated in place and its id returned; otherwise a new row is inserted. This
+// makes re-running a write batch safe, while preserving the second-round (A5)
+// review fields, which only `--review` mutates. function_name is updatable on the
+// conflict path (it is no longer part of the identity key), so a retry with the
+// correct function name repairs the row instead of creating another.
 func (s *store) UpsertFinding(ctx context.Context, f *Finding) (int64, error) {
 	cweNorm := strings.ToUpper(strings.TrimSpace(f.RuleID))
 	if cweNorm == "" || !SupportedFindingCWEs[cweNorm] {
@@ -106,7 +127,7 @@ func (s *store) UpsertFinding(ctx context.Context, f *Finding) (int64, error) {
 
 	// Single-statement upsert keyed on the uq_finding_loc unique index. It is
 	// atomic: concurrent writers of the same (scan_id, rule_id, file, line,
-	// function) converge on one row instead of racing the previous
+	// variable) converge on one row instead of racing the previous
 	// SELECT-then-INSERT (which had a TOCTOU window that could duplicate).
 	// review_status / review_reasoning are deliberately NOT in DO UPDATE SET —
 	// those only change via UpdateFindingReview, and a re-write must not wipe an
@@ -117,12 +138,13 @@ func (s *store) UpsertFinding(ctx context.Context, f *Finding) (int64, error) {
 		err := s.exec.QueryRowContext(ctx,
 			`INSERT INTO findings (rule_id, vuln_type, severity, confidence, evidence, status, file_path, line_number, function_name, variable, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			 ON CONFLICT(scan_id, rule_id, file_path, line_number, function_name, variable) DO UPDATE SET
+			 ON CONFLICT(scan_id, rule_id, file_path, line_number, variable) DO UPDATE SET
 			   vuln_type = excluded.vuln_type,
 			   severity = excluded.severity,
 			   confidence = excluded.confidence,
 			   evidence = excluded.evidence,
 			   status = excluded.status,
+			   function_name = excluded.function_name,
 			   variable = excluded.variable,
 			   summary = excluded.summary,
 			   reasoning = excluded.reasoning,

@@ -512,10 +512,26 @@ func runReportCmd(ctx context.Context, args []string) int {
 			return 0
 		}
 
-		id, err := store.UpsertFinding(ctx, finding)
-		if err != nil {
-			WriteErrorJSON(fmt.Sprintf("failed to write finding: %v", err))
+		var id int64
+		var duplicate bool
+		// Probe and upsert in one IMMEDIATE transaction so the duplicate flag is
+		// exact under concurrent writers: the second writer sees the first's row
+		// and reports an idempotent update, never a silent second finding.
+		if txErr := store.WithImmediateTx(ctx, func(tx db.Store) error {
+			_, found, derr := tx.FindingIDByLocationKey(ctx, finding.ScanID, finding.RuleID, finding.FilePath, finding.LineNumber, finding.Variable)
+			if derr != nil {
+				return derr
+			}
+			duplicate = found
+			var uerr error
+			id, uerr = tx.UpsertFinding(ctx, finding)
+			return uerr
+		}); txErr != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to write finding: %v", txErr))
 			return 1
+		}
+		if duplicate {
+			fmt.Fprintf(os.Stderr, "duplicate: finding already exists at %s:%d — updated in place (idempotent write, not a second finding)\n", finding.FilePath, finding.LineNumber)
 		}
 
 		oc := syncPerFindingAfterWrite(remaining, finding)
@@ -523,6 +539,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 		out := map[string]interface{}{
 			"id":                 id,
 			"status":             "ok",
+			"duplicate":          duplicate,
 			"scan_id":            finding.ScanID,
 			"scan_id_source":     scanIDSource,
 			"per_finding_path":   oc.Path,
@@ -742,8 +759,23 @@ func runReportCmd(ctx context.Context, args []string) int {
 		// and the app-layer retry per row (~40s × N rows), which is what turned a
 		// contended persist into a multi-minute/hang. BEGIN IMMEDIATE makes it
 		// serialize fast or fail after one busy_timeout with a clean error.
+		duplicates := 0
 		if txErr := store.WithImmediateTx(ctx, func(tx db.Store) error {
 			for _, p := range pending {
+				duplicate := false
+				if priorID, found, derr := tx.FindingIDByLocationKey(ctx, p.f.ScanID, p.f.RuleID, p.f.FilePath, p.f.LineNumber, p.f.Variable); derr != nil {
+					errClass := classifyWriteErr(derr)
+					errs = append(errs, fmt.Sprintf("%s:%d — duplicate probe: %v", p.in.File, p.in.Line, derr))
+					failedDetails = append(failedDetails, map[string]interface{}{
+						"file": p.in.File, "line": p.in.Line, "error_class": errClass, "message": derr.Error(),
+					})
+					fmt.Fprintf(os.Stderr, "FATAL: finding duplicate probe failed: %s:%d — [%s] %v\n", p.in.File, p.in.Line, errClass, derr)
+					continue
+				} else if found {
+					duplicate = true
+					duplicates++
+					fmt.Fprintf(os.Stderr, "duplicate: finding already exists at %s:%d (id %d) — updated in place (idempotent write, not a second finding)\n", p.in.File, p.in.Line, priorID)
+				}
 				id, uerr := tx.UpsertFinding(ctx, p.f)
 				if uerr != nil {
 					errClass := classifyWriteErr(uerr)
@@ -755,7 +787,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 					continue
 				}
 				written = append(written, map[string]interface{}{
-					"file": p.in.File, "line": p.in.Line, "id": id,
+					"file": p.in.File, "line": p.in.Line, "id": id, "duplicate": duplicate,
 				})
 				writtenFindings = append(writtenFindings, p.f)
 			}
@@ -781,6 +813,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 		out := map[string]interface{}{
 			"status":            "ok",
 			"findings_written":  len(written),
+			"duplicates":        duplicates,
 			"skipped_dismissed": skippedDismissed,
 			"written":           written,
 			"scan_id":           scanID,
