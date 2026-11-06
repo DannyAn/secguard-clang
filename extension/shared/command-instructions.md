@@ -890,15 +890,19 @@ claim 行只是 `settlement_stats` 里的 `status='dispatched'` 占位，**不�
       | CWE-369 divide-by-zero | a proved-zero / non-zero-constant divisor | a zero guard sits in the ±8-line window before the division |
       | other | the proof class named in the row's facts | a concrete `file:line` in the source contradicts the premise |
 
-   c. Write the dismissals in ONE batch (no per-row subprocess), every reason citing
-      a `file:line` fact: `secguard report --review-json <file.json> --db <abs db>`
-      with `[{"id":<id>,"review_status":"dismissed","review_reasoning":"<file:line +
-      why-safe>"}]`. A row you keep needs NO write. On OpenCode, write the same
-      batch through the `secguard_review` tool's `reviews` param (it wraps
-      `--review-json`); list the rows through its `list_auto_confirmed` param (the
-      auto-confirmed rows carry `review_status` NULL until this step, so the
-      listing returns exactly the unreviewed set) or with the `secguard_db` raw
-      SQL of step a.
+    c. Write the dismissals in ONE batch (no per-row subprocess), every reason citing
+       a `file:line` fact: `secguard report --review-json <file.json> --db <abs db>`
+       with `[{"id":<id>,"review_status":"dismissed","review_reasoning":"<file:line +
+       why-safe>"}]`. Rows you keep ALSO need a write — batch them as
+       `[{"id":<id>,"review_status":"confirmed","review_reasoning":"<premise holds>"}]`
+       in the same `--review-json` call (or a second one), so the
+       `unreviewed_auto_confirmed` warning clears and `result.sarif` is final.
+       On OpenCode, write the same
+       batch through the `secguard_review` tool's `reviews` param (it wraps
+       `--review-json`); list the rows through its `list_auto_confirmed` param (the
+       auto-confirmed rows carry `review_status` NULL until this step, so the
+       listing returns exactly the unreviewed set) or with the `secguard_db` raw
+       SQL of step a.
    d. Run the **final audit** ONCE so `result.sarif` / `report.md` / `findings/` reflect the
       dismissals — the regenerated `result.sarif` is the deliverable. Do not pass
        `--ai-duration-ms`: the self-measured AI stage comes from the settlement
