@@ -345,12 +345,15 @@ budget your effort, not to pre-judge the answer:
   `null@global-null`/`null@assumed-return`/`null@external-unknown`
   = null-deref nullable-origin tier (CFG-proved / proven-nullable call result /
   unproven caller argument / registration-site contract / opaque external
-  contract — external caller argument or
-  externally-defined field value / fail-open callee-return
-  assumption — body embedded under `## Callee Definition` / fail-open external
-  assumption; a boundary scan pre-dismisses these non-proving tiers unless a
-  `caller-null@` witness exists, so a row that reaches you has either a witness
-  or a complete-program/`boundary_auto_dismiss="off"` origin), `tainted` = injection
+  contract — external caller argument or externally-defined field value /
+  intra-TU `static` pointer initialized NULL and never reassigned (suspected;
+  a macro body may still write it; never pre-dismissed by a boundary scan) /
+  fail-open callee-return assumption — body embedded under `## Callee
+  Definition` / fail-open external assumption; a boundary scan pre-dismisses
+  only the non-proving tiers (`callback-entry`, `opaque-origin`,
+  `assumed-return`, `external-unknown`) unless a `caller-null@` witness exists,
+  so a global-null row or a row with a witness still reaches you, as does a
+  complete-program / `boundary_auto_dismiss="off"` row), `tainted` = injection
   source, `taint@none` = the pipeline found NO taint chain reaching the sink —
   this is NOT 'proven safe': a bare parameter/global or chained call may still be
   caller-controlled, so judge the argument's origin from the signature,

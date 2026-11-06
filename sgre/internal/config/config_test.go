@@ -484,6 +484,59 @@ func TestTypeFilterOverride(t *testing.T) {
 	}
 }
 
+func TestCgroupMemoryLimitPaths(t *testing.T) {
+	v2, v1 := cgroupMemoryLimitPaths("12:memory:/docker/abc\n0::/docker/abc\n1:name=systemd:/user.slice\n")
+	wantV2 := []string{
+		"/sys/fs/cgroup/memory.max",
+		"/sys/fs/cgroup/docker/abc/memory.max",
+		"/sys/fs/cgroup/docker/memory.max",
+		"/sys/fs/cgroup/memory.max",
+	}
+	for _, w := range wantV2 {
+		found := false
+		for _, p := range v2 {
+			if p == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("v2 candidates %v missing %q", v2, w)
+		}
+	}
+	wantV1 := "/sys/fs/cgroup/memory/docker/abc/memory.limit_in_bytes"
+	foundV1 := false
+	for _, p := range v1 {
+		if p == wantV1 {
+			foundV1 = true
+		}
+	}
+	if !foundV1 {
+		t.Errorf("v1 candidates %v missing %q", v1, wantV1)
+	}
+}
+
+func TestMinCgroupLimit(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	a := write("a", "100\n")
+	b := write("b", "50\n")
+	c := write("c", "max\n")
+	missing := filepath.Join(dir, "missing")
+	if got := minCgroupLimit([]string{a, b, c, missing}); got != 50 {
+		t.Errorf("minCgroupLimit = %d, want 50 (smallest finite ancestor limit)", got)
+	}
+	if got := minCgroupLimit([]string{c, missing}); got != 0 {
+		t.Errorf("minCgroupLimit with no finite limit = %d, want 0", got)
+	}
+}
+
 func TestReadCgroupLimit(t *testing.T) {
 	dir := t.TempDir()
 

@@ -15,9 +15,9 @@ fixtures can be scanned directly:
 ./bin/secguard scan sgre/testdata/feedback_watch --db /tmp/fw-all.db
 ```
 
-Measured with `secguard 0.12.2` at commit `0a86648`, single-file scans with
-`--context-lines 0`, `Completion State = complete` for every sample (each file
-was indexed: functions/lines match the source, no parse failures).
+Measured with `secguard 0.12.3`, single-file scans with `--context-lines 0`,
+`Completion State = complete` for every sample (each file was indexed:
+functions/lines match the source, no parse failures).
 
 ## Capability matrix
 
@@ -25,7 +25,7 @@ was indexed: functions/lines match the source, no parse failures).
 |---|---|---|---|---|---|---|
 | CWD-SUB-1029 | pointer offset out of range | **not supported** (target shape) | none | 01, 03, 04 | none | `evidence/buffer_overflow.go` (`detectArrayOOB`, `checkArrayOOB`, `detectUncheckedIndex`) |
 | CWD-SUB-1031 | global/shared pointer NULL deref | **partially supported** | 01 | 03 | none (02, 04 clean) | `evidence/null_source.go`, `evidence/dereference.go`, `planner/filter_nullable_source.go` |
-| CWD-SUB-1038 | invalid object-pointer cast before capacity check | **not supported** | none | 01, 03, 04 | none | none — no type-size/layout model exists |
+| CWD-SUB-1038 | invalid object-pointer cast before capacity check | **partially supported** | 01, 09, 10, 13 | 03, 04 | none (02, 05-08, 11, 12, 14-16 clean) | `evidence/buffer_overflow.go` (`detectCastObjectOOB`), `typeinfo`, `repofacts` type-layout census |
 | CWD-SUB-1140 | uninitialized read in a condition | **partially supported** | 01, 02, 03, 05 | 07 | none (04, 06 clean) | `evidence/uninit_variable.go`, `planner/filter_uninit_flow.go` |
 
 Statuses use the issue's definitions: *supported* = the core defect sample is
@@ -40,7 +40,7 @@ sample is missed while the scan is complete.
 |---|---|---|---|---|
 | CWD-SUB-1029 | CWE-125 / CWE-787 | CWE-125 (out-of-bounds read) / CWE-787 (out-of-bounds write) | `out-of-bounds`, `buffer-overflow` | not supported for the external-offset pointer shape; constant / loop-bound / struct-field index access is covered |
 | CWD-SUB-1031 | CWE-476 | CWE-476 | `null-deref` (`null_source` → `nullable_source`) | partially supported — file-scope static NULL pointer is detected; caller-argument → global → deref chain is not |
-| CWD-SUB-1038 | CWE-843 (+ CWE-125/787 for the capacity aspect) | CWE-843 is not registered; no type-confusion detector exists | none | not supported |
+| CWD-SUB-1038 | CWE-843 (+ CWE-125/787 for the capacity aspect) | CWE-125 / CWE-787 via `layout_oob_read` / `layout_oob_write`; CWE-843 is not registered | `out-of-bounds` / `buffer-overflow` (`detectCastObjectOOB` → layout census) | partially supported — a constant-size allocation cast to a struct and a one-level field access is detected (`suspected` tier); variable/`sizeof` allocations, guard-comparison analysis and nested member access are follow-ups |
 | CWD-SUB-1140 | CWE-457 | CWE-457 | `uninit` (`uninit_variable` → `definite_init`) | partially supported — scalar/pointer/struct-field/switch-join conditions are detected; output-parameter contracts are not modeled |
 
 ## Per-scenario evidence
@@ -95,6 +95,13 @@ remain fail-open) before it can avoid flooding normal `buf[i]` parameter code.
   another thread writing the global). No happens-before / race analysis is
   claimed: the global is written in the tree, so no `global-null` source is
   emitted.
+- `05_shadowed_global.c`: a function-local pointer shadows the static name →
+  0 candidates (the shadowing function's dereference is not the global; the
+  name-only binding was a false positive in the first cut). A same-function
+  alias copy (`struct S *s = g; s->state`) is also not seeded — only direct
+  `g->field` / `*g` / `g[i]` dereferences are (documented in the null-deref
+  `KnownLimitations`); a writer macro defined in an included header is likewise
+  outside the file-local macro census.
 
 Minimal fill proposal: extend the existing caller-null model with a
 global-state summary (function → global write, value nullability) and let
@@ -105,27 +112,37 @@ invalidate the summary.
 ### CWD-SUB-1038 — invalid object-pointer cast
 
 - `01_cast_insufficient_size.c`: `malloc(8)` cast to `struct LargeRecord *`,
-  then `record->value` → **0 candidates**.
-- `03_wrong_target_size_check.c`: `input_len < sizeof(struct SmallHeader)` guard
-  before a `struct LargeRecord` access → **0 candidates**.
-- `04_element_count_byte_size_confusion.c`: `malloc(count)` then
-  `records[count - 1].value` → **0 candidates**.
-- `02_cast_sufficient_size.c`: correctly sized allocation → 0 candidates (no
-  false positive, but there is also no capability to test).
+  then `record->value` (offset 16, size 8) → **1 layout_oob_read candidate**
+  (`suspected`, CWE-125). This is the capability added in 0.12.3: the type-layout
+  census computes field offsets/sizes, and `detectCastObjectOOB` compares the
+  accessed field's extent against the constant allocation size.
+- `09_typedef_cast.c`: the same shape through a typedef name → **1
+  layout_oob_read candidate**.
+- `10_layout_oob_write.c`: a write through the cast pointer → **1
+  layout_oob_write candidate** (CWE-787).
+- `13_multidim_array_field.c`: a 2x3 array member contributes 24 bytes, so the
+  following field at offset 28 in `malloc(28)` is an out-of-bounds write.
+- `02_cast_sufficient_size.c`, `05_packed_struct.c`, `06_bitfield_struct.c`,
+  `07_reassign_invalidates.c`, `08_array_field_skip.c`,
+  `11_flexible_array_skip.c`, `12_nested_struct_definition.c`,
+  `14_alloc_reassigned_after_cast.c`, `15_new_factory_not_byte_size.c`,
+  `16_nested_field_access.c`: safe controls → **0 layout_oob candidates**.
+  Packed/bitfield/anonymous-aggregate layouts are conservatively `unknown`;
+  array members (fixed, flexible and multi-dimensional access) are skipped;
+  a cast target keeps the allocation size live at its cast line; a factory
+  whose name merely contains `_new` is not treated as a byte-size allocator;
+  and `outer->inner.a` is not checked at the intermediate `outer->inner`.
+- `03_wrong_target_size_check.c` / `04_element_count_byte_size_confusion.c`:
+  the guard-comparison and element-count/byte-size-confusion shapes remain
+  **undetected** (they need a guard-vs-layout comparison and a count-vs-size
+  analysis, i.e. Phase 2). The scan is complete for these files.
 
-Why: the codebase has struct *layout* facts (member kinds, pointer/array shape)
-but no type-size model and no field-offset model, so "allocated 8 bytes, target
-field at offset 16" cannot be expressed. The `memcpy` shape of the same defect
-(`memcpy(raw, &tmp, 24)` into `malloc(8)`) **is** detected by
-`bounded_copy_overflow`, which shows the gap is type/offset knowledge, not the
-buffer-access channel.
-
-Minimal fill proposal: add a `type-size` fact layer (scalar/typedef sizes with
-natural alignment, struct field offsets, arrays) and a cast-census detector that
-compares allocation capacity to the accessed target field's extent, feeding the
-existing `heap_oob_read` / `heap_oob_write` categories. Keep unknown/typedef
-sizes fail-open; do not register a new CWE for the type-confusion aspect until
-the CWE mapping is agreed.
+Why: the 0.12.3 detector resolves a *constant* `malloc(n)` byte size and a
+one-level `p->field` extent. A pointer whose allocation is `sizeof(struct X)`
+or a variable, a guard that compares the allocation to a different size, and
+nested/chained member access are outside the MVP. The layout provenance is
+`assumed_default_abi` (no per-TU compile_commands wiring yet), so every
+layout_oob candidate is `suspected` and never auto-confirmed.
 
 ### CWD-SUB-1140 — uninitialized read in an `if` condition
 
@@ -163,10 +180,12 @@ plans the `null-deref` and `uninit` types, and asserts:
 - the guarded/initialized/static-zero controls produce no candidate;
 - the file-scope static NULL deref is reported, and the guarded alias control is
   not;
-- the two known gap scenarios (CWD-SUB-1029 / CWD-SUB-1038) are asserted to be
-  quiet today only through the no-false-positive controls; the gap itself is
-  recorded in this README rather than locked into the test, so a future detector
-  can start reporting without rewriting a test that encodes the absence.
+- the CWD-SUB-1029 external-offset shape remains a documented gap, asserted only
+  through its no-false-positive controls; a future detector can start reporting
+  it without rewriting a test that encodes the absence;
+- the CWD-SUB-1038 layout shapes are detected (`layout_oob_read` on 01/09/13,
+  `layout_oob_write` on 10) while the packed/bitfield/reassigned/array/nested
+  controls stay quiet (see `evidence/layout_oob_feedback_watch_test.go`).
 
 ## Limitations
 

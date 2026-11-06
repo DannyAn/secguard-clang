@@ -81,6 +81,29 @@ func TestClassify(t *testing.T) {
 			wantReason: []string{"void return, pointer parameter"},
 		},
 		{
+			name:     "call evidence allocator without a name/signature match",
+			sym:      symbol{name: "get_thing", returnType: "void*", signature: "get_thing(void)", callsAlloc: []string{"malloc"}},
+			wantKind: "allocator", wantConf: ConfHigh,
+			wantReason: []string{"calls malloc"},
+		},
+		{
+			name:     "call evidence deallocator without a name match",
+			sym:      symbol{name: "release_all", returnType: "void", signature: "release_all(int flags)", callsDealloc: []string{"free"}},
+			wantKind: "deallocator", wantConf: ConfHigh,
+			wantReason: []string{"calls free"},
+		},
+		{
+			name:     "non-void return is not a release by call evidence alone",
+			sym:      symbol{name: "drop_status", returnType: "int", signature: "drop_status(obj_t *o)", callsDealloc: []string{"free"}},
+			wantKind: "",
+		},
+		{
+			name:     "_F allocator variant",
+			sym:      symbol{name: "VOS_MALLOC_F", returnType: "void*", signature: "VOS_MALLOC_F(size_t n, int f)"},
+			wantKind: "allocator", wantConf: ConfHigh,
+			wantReason: []string{"name pattern *_malloc_f"},
+		},
+		{
 			name:     "not a candidate",
 			sym:      symbol{name: "compute_sum", returnType: "int", signature: "compute_sum(int a, int b)"},
 			wantKind: "",
@@ -155,25 +178,25 @@ func TestClassifyMacro(t *testing.T) {
 	}{
 		{
 			name:     "function-like allocator macro expanding to malloc",
-			m:        macroEntry{name: "NAT_MALLOC", bodies: []string{"malloc(n)"}},
+			m:        macroEntry{name: "NAT_MALLOC", bodies: []string{"malloc(n)"}, functionLike: true},
 			wantKind: "allocator", wantConf: ConfHigh,
 			wantReason: []string{"macro name pattern *_malloc", "expands to malloc"},
 		},
 		{
 			name:     "object-like allocator macro aliasing malloc",
-			m:        macroEntry{name: "NLOG_MALLOC", bodies: []string{"malloc"}},
+			m:        macroEntry{name: "NLOG_MALLOC", bodies: []string{"malloc"}, functionLike: true},
 			wantKind: "allocator", wantConf: ConfHigh,
 			wantReason: []string{"macro name pattern *_malloc", "expands to malloc"},
 		},
 		{
 			name:     "deallocator macro expanding to free",
-			m:        macroEntry{name: "NLOG_FREE", bodies: []string{"free(p)"}},
+			m:        macroEntry{name: "NLOG_FREE", bodies: []string{"free(p)"}, functionLike: true},
 			wantKind: "deallocator", wantConf: ConfHigh,
 			wantReason: []string{"macro name pattern *_free", "expands to free"},
 		},
 		{
 			name:     "weak deallocator macro without free in body",
-			m:        macroEntry{name: "POOL_DESTROY", bodies: []string{"pool_release(p)"}},
+			m:        macroEntry{name: "POOL_DESTROY", bodies: []string{"pool_release(p)"}, functionLike: true},
 			wantKind: "deallocator", wantConf: ConfMedium,
 			wantReason: []string{"macro name pattern *_destroy"},
 		},
@@ -229,6 +252,7 @@ func TestRender(t *testing.T) {
 		"# high: name pattern *_malloc; calls malloc",
 		"# needs review: pointer return, size_t parameter",
 		"# high: name pattern *_free; calls free",
+		"# \"buffer_create\",",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("render missing %q:\n%s", want, out)
@@ -243,5 +267,55 @@ func TestRenderEmpty(t *testing.T) {
 	}
 	if !strings.Contains(out, "names = []") {
 		t.Errorf("empty sections should emit empty names lists:\n%s", out)
+	}
+}
+
+func TestClassifyMacro_BodyEvidenceAndObjectLike(t *testing.T) {
+	cases := []struct {
+		name       string
+		m          macroEntry
+		wantKind   string
+		wantConf   string
+		wantAbsent bool
+	}{
+		{
+			name:     "body expands to free",
+			m:        macroEntry{name: "PUT_MEM", bodies: []string{"free(p)"}, functionLike: true},
+			wantKind: "deallocator", wantConf: ConfHigh,
+		},
+		{
+			name:     "body expands to malloc",
+			m:        macroEntry{name: "GET_MEM", bodies: []string{"malloc(n)"}, functionLike: true},
+			wantKind: "allocator", wantConf: ConfHigh,
+		},
+		{
+			name:     "object-like name-only is needs-review",
+			m:        macroEntry{name: "FREE", bodies: []string{"0"}},
+			wantKind: "deallocator", wantConf: ConfLow,
+		},
+		{
+			name:     "function-like predicate is not a release",
+			m:        macroEntry{name: "IS_FREE", bodies: []string{"((s)==FREE)"}, functionLike: true},
+			wantKind: "deallocator", wantConf: ConfLow,
+		},
+		{
+			name:       "unrelated macro",
+			m:          macroEntry{name: "MAX_BUF", bodies: []string{"256"}},
+			wantAbsent: true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e, kind, ok := classifyMacro(c.m)
+			if c.wantAbsent {
+				if ok {
+					t.Fatalf("unexpected candidate %+v", e)
+				}
+				return
+			}
+			if !ok || kind != c.wantKind || e.Confidence != c.wantConf {
+				t.Fatalf("classifyMacro = (%+v, %q, %v), want kind=%q conf=%q", e, kind, ok, c.wantKind, c.wantConf)
+			}
+		})
 	}
 }

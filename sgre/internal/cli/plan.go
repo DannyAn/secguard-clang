@@ -16,6 +16,7 @@ import (
 )
 
 func runPlanCmd(ctx context.Context, args []string) int {
+	applyScanMemoryLimits()
 	dbPath, dbExplicit, remaining := parseDBFlag(args)
 	if len(remaining) == 0 {
 		WriteErrorJSON("plan requires a vulnerability type argument")

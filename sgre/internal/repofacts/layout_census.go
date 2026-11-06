@@ -17,11 +17,22 @@ type structDecl struct {
 	unknownReason string
 }
 
-// extractFieldSpecs 从一个 field_declaration_list 提取字段规格。
+// extractFieldSpecs 从一个 struct/union 自身的 field_declaration_list 提取字段规格。
 // macros 用于解析数组容量宏。
+//
+// 只遍历该类型自己的直接 field_declaration 子节点：FindAll 是递归的，会把内联
+// 嵌套 struct/union 定义（struct Outer { struct Inner {...} n; }）的字段也收进
+// 外层，导致字段偏移整体错位（误报）。嵌套类型由 collectStructDecls 单独收集。
 func extractFieldSpecs(ss parser.Node, macros map[string]int) []typeinfo.FieldSpec {
+	list := ss.FindFirst("field_declaration_list")
+	if list == nil {
+		return nil
+	}
 	var out []typeinfo.FieldSpec
-	for _, fd := range ss.FindAll("field_declaration") {
+	for _, fd := range list.NamedChildren() {
+		if fd.Kind() != "field_declaration" {
+			continue
+		}
 		typ := fieldDeclTypeSpelling(fd)
 		isStruct, isUnion := fieldDeclIsAggregate(fd)
 		for _, spec := range fieldDeclarators(fd, typ, isStruct, isUnion, macros) {
@@ -64,6 +75,10 @@ func fieldDeclIsAggregate(fd parser.Node) (isStruct, isUnion bool) {
 }
 
 // fieldDeclarators 从一个 field_declaration 提取所有 declarator 的 FieldSpec。
+//
+// 只从声明自身的 declarator 直接子节点向下找：FindAll 是递归的，会钻进内联
+// struct/union 定义的字段列表（struct { int arr[4]; } n; 会把 arr 当成外层
+// 字段），导致外层布局错误。
 func fieldDeclarators(fd parser.Node, typ string, isStruct, isUnion bool, macros map[string]int) []typeinfo.FieldSpec {
 	var out []typeinfo.FieldSpec
 	seen := map[string]bool{}
@@ -77,35 +92,38 @@ func fieldDeclarators(fd parser.Node, typ string, isStruct, isUnion bool, macros
 		spec.IsUnion = isUnion
 		out = append(out, spec)
 	}
-	for _, ad := range fd.FindAll("array_declarator") {
-		name := declaratorName(ad)
-		if name == "" {
-			continue
-		}
-		spec := typeinfo.FieldSpec{Name: name, IsArray: true}
-		if n, _, ok := arrayCapacity(ad, macros); ok {
-			spec.ArrayCount = n
-		}
-		if hasPointerInArray(ad) {
-			spec.IsPointer = true
-		}
-		add(spec)
-	}
-	for _, pd := range fd.FindAll("pointer_declarator") {
-		if name := declaratorName(pd); name != "" {
-			if !isInsideArrayDeclarator(pd) {
+	for _, c := range fd.NamedChildren() {
+		switch c.Kind() {
+		case "array_declarator":
+			name := declaratorName(c)
+			if name == "" {
+				continue
+			}
+			spec := typeinfo.FieldSpec{Name: name, IsArray: true}
+			if n, ok := arrayTotalCount(c, macros); ok {
+				spec.ArrayCount = n
+			}
+			if hasPointerInArray(c) {
+				spec.IsPointer = true
+			}
+			add(spec)
+		case "pointer_declarator", "function_declarator":
+			if name := declaratorName(c); name != "" {
 				add(typeinfo.FieldSpec{Name: name, IsPointer: true})
 			}
-		}
-	}
-	for _, c := range fd.NamedChildren() {
-		if c.Kind() == "field_identifier" {
+		case "parenthesized_declarator":
+			if name := declaratorName(c); name != "" {
+				add(typeinfo.FieldSpec{Name: name, IsPointer: len(c.FindAll("pointer_declarator")) > 0})
+			}
+		case "field_identifier":
 			add(typeinfo.FieldSpec{Name: strings.TrimSpace(c.Text())})
 		}
 	}
-	// 位域检测：用索引写回（修复 P0-4 no-op），并标记整个 struct 为 unknown
-	for _, c := range fd.FindAll("bitfield_clause") {
-		_ = c
+	// 位域检测：用索引写回（修复 P0-4 no-op），并标记整个 struct 为 unknown。
+	for _, c := range fd.NamedChildren() {
+		if c.Kind() != "bitfield_clause" {
+			continue
+		}
 		if n := bitfieldWidth(c); n > 0 {
 			for i := range out {
 				out[i].BitWidth = n
@@ -113,6 +131,33 @@ func fieldDeclarators(fd parser.Node, typ string, isStruct, isUnion bool, macros
 		}
 	}
 	return out
+}
+
+// arrayTotalCount 返回多维数组声明的总元素数（int a[2][3] → 6）。任一维
+// 不是常量（含柔性数组 []）时返回 ok=false，由调用方把 ArrayCount 留 0。
+// typeinfo 的数组分支只在 count>0 时乘 count，因此未知长度数组仍按单元素
+// 计算；layout-OOB detector 已按 IsArray 跳过全部数组字段。
+func arrayTotalCount(ad parser.Node, macros map[string]int) (int, bool) {
+	total := 1
+	cur := ad
+	for {
+		n, _, ok := arrayCapacity(cur, macros)
+		if !ok {
+			return 0, false
+		}
+		total *= n
+		found := false
+		for _, c := range cur.NamedChildren() {
+			if c.Kind() == "array_declarator" {
+				cur = c
+				found = true
+				break
+			}
+		}
+		if !found {
+			return total, true
+		}
+	}
 }
 
 func hasPointerInArray(ad parser.Node) bool {
@@ -135,6 +180,18 @@ func bitfieldWidth(bc parser.Node) int {
 // collectStructDecls 遍历 AST 收集所有 struct/union 声明。
 func collectStructDecls(root parser.Node, macros map[string]int) []structDecl {
 	var decls []structDecl
+	// #pragma pack changes field alignment without an attribute on the struct
+	// text. Resolving its push/pop region is out of MVP scope, so any pack pragma
+	// in the TU conservatively makes every type in it unknown (never guess the
+	// natural layout).
+	packPragma := false
+	for _, pc := range root.FindAll("preproc_call") {
+		text := pc.Text()
+		if strings.Contains(text, "pragma") && strings.Contains(text, "pack") {
+			packPragma = true
+			break
+		}
+	}
 	for _, kind := range []string{"struct_specifier", "union_specifier"} {
 		for _, ss := range root.FindAll(kind) {
 			if ss.FindFirst("field_declaration_list") == nil {
@@ -146,6 +203,9 @@ func collectStructDecls(root parser.Node, macros map[string]int) []structDecl {
 			}
 			fields := extractFieldSpecs(ss, macros)
 			reason := layoutUnknownReason(ss, fields)
+			if reason == "" && packPragma {
+				reason = "#pragma pack in translation unit — MVP does not compute packed layout"
+			}
 			for _, key := range keys {
 				decls = append(decls, structDecl{
 					name:          key,
@@ -160,7 +220,8 @@ func collectStructDecls(root parser.Node, macros map[string]int) []structDecl {
 }
 
 // layoutUnknownReason 检测导致布局不可精确计算的语言特性。
-// MVP 策略：packed/aligned 属性、位域 → unknown，不按自然对齐猜（P0-3/P0-4）。
+// MVP 策略：packed/aligned 属性、位域（含匿名位域）、匿名 struct/union 成员 →
+// unknown，不按自然对齐猜（P0-3/P0-4 / nested-aggregate follow-up）。
 func layoutUnknownReason(ss parser.Node, fields []typeinfo.FieldSpec) string {
 	text := ss.Text()
 	if hasPackedAttribute(text) {
@@ -169,6 +230,44 @@ func layoutUnknownReason(ss parser.Node, fields []typeinfo.FieldSpec) string {
 	for _, f := range fields {
 		if f.BitWidth > 0 {
 			return "bitfield member — MVP does not compute bitfield layout"
+		}
+	}
+	// A flexible array member is legal only as the LAST member; an
+	// unknown-count array followed by another field would make every following
+	// offset a guess (its true size is unknowable from the declaration).
+	for i, f := range fields {
+		if f.IsArray && f.ArrayCount <= 0 && i != len(fields)-1 {
+			return "unknown-length array member before another field — MVP does not guess offsets"
+		}
+	}
+	// 直接子节点里检查：匿名位域（int :2; 没有 field_identifier）不会进入
+	// fields，但同样占位；匿名 struct/union 成员（无 declarator）的成员
+	// 与外层重叠/展开，扁平的顺序布局无法表达，必须整体降级为 unknown。
+	list := ss.FindFirst("field_declaration_list")
+	if list == nil {
+		return ""
+	}
+	for _, fd := range list.NamedChildren() {
+		if fd.Kind() != "field_declaration" {
+			continue
+		}
+		hasAnonymousAggregate := false
+		hasDeclarator := false
+		for _, c := range fd.NamedChildren() {
+			switch c.Kind() {
+			case "bitfield_clause":
+				return "bitfield member — MVP does not compute bitfield layout"
+			case "struct_specifier", "union_specifier":
+				if c.FindFirst("field_declaration_list") != nil {
+					hasAnonymousAggregate = true
+				}
+			case "field_identifier", "pointer_declarator", "array_declarator",
+				"function_declarator", "parenthesized_declarator", "init_declarator":
+				hasDeclarator = true
+			}
+		}
+		if hasAnonymousAggregate && !hasDeclarator {
+			return "anonymous aggregate member — MVP does not flatten it"
 		}
 	}
 	return ""

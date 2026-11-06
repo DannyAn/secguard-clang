@@ -143,6 +143,19 @@ func TestBuildVerdictFacts_B4Types(t *testing.T) {
 		}
 	})
 
+	t.Run("layout-oob", func(t *testing.T) {
+		facts := spec("out-of-bounds").BuildVerdictFacts(Candidate{
+			Category: "layout_oob_read", StructType: "LargeRecord", AllocSize: 8,
+			Index: "value", FieldOffset: 16, FieldSize: 8,
+		})
+		if got := tokens(facts); got != "struct@LargeRecord alloc-size@8 layout-field@value:16+8" {
+			t.Errorf("tokens = %q", got)
+		}
+		if !strings.Contains(facts[2].Detail, "offset 16") || !strings.Contains(facts[2].Detail, "24") {
+			t.Errorf("layout fact must state offset+size and the access end:\n%s", facts[2].Detail)
+		}
+	})
+
 	t.Run("double-free", func(t *testing.T) {
 		facts := spec("double-free").BuildVerdictFacts(Candidate{
 			FirstFree: 40, SecondFree: 52, MayFree: true, FirstCallee: "maybe_release",

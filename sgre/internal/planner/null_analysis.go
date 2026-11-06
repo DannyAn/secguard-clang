@@ -243,6 +243,23 @@ func (m *nullModel) hasSourceOrigin(variable, origin string) bool {
 	return false
 }
 
+// sourceLineOrigin returns the declaration/assignment line of the variable's
+// source with the given origin, or 0. A global_null source is emitted at the
+// file-scope declaration, which lies outside the dereferencing function; the
+// flow analysis seeds it at entry, so the candidate would otherwise lose the
+// line and render no `src@N`.
+func (m *nullModel) sourceLineOrigin(variable, origin string) int {
+	if m == nil {
+		return 0
+	}
+	for _, s := range m.sources {
+		if s.variable == variable && s.origin == origin && s.line > 0 {
+			return s.line
+		}
+	}
+	return 0
+}
+
 // hasExternalCallSource reports whether the variable has an external_call null
 // source — a value produced by an unknown external function that the analyzer
 // cannot prove non-null. Such a value might genuinely be NULL, so the void*

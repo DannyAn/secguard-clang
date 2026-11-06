@@ -100,6 +100,27 @@ func TestNullSource_StaticNullGlobal(t *testing.T) {
 			t.Errorf("g_session is reassigned from a parameter; global_null source is unsound")
 		}
 	}
+
+	// A function-local pointer that shadows the file-scope name must not be read
+	// as a dereference of the NULL static (soundness: the local's value is not
+	// the global's). This is a false-positive guard for the shadowing case.
+	store = indexAndDetect(t,
+		feedbackWatchPath("CWD-SUB-1031-global-null-deref", "05_shadowed_global.c"),
+		"null_source")
+	events, err = store.ListEventsByType(ctx, "NULL_VALUE")
+	if err != nil {
+		t.Fatalf("list NULL_VALUE: %v", err)
+	}
+	for _, e := range events {
+		var props struct {
+			Variable string `json:"variable"`
+			Origin   string `json:"origin"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Variable == "g_session" && props.Origin == "global_null" {
+			t.Errorf("a function-local g_session shadows the NULL static; global_null source is unsound")
+		}
+	}
 }
 
 // TestUninit_UninitializedPointerCondition pins the CWD-SUB-1140 sample B fix:

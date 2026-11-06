@@ -4,6 +4,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
 
@@ -592,7 +593,7 @@ func TestStore_UpsertFinding_PreservesReview(t *testing.T) {
 	}
 }
 
-func TestStore_ListEventLocationIDsByType(t *testing.T) {
+func TestStore_ListEventLocationKeysByType(t *testing.T) {
 	ctx := context.Background()
 	s := NewTestStore(t)
 
@@ -600,9 +601,11 @@ func TestStore_ListEventLocationIDsByType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Two locations on the same line: locations are per event, so both events
+	// contribute the same (file_id,line) key.
 	loc1, _ := s.InsertLocation(ctx, &Location{FileID: fileID, Line: 1})
-	loc2, _ := s.InsertLocation(ctx, &Location{FileID: fileID, Line: 2})
-	loc3, _ := s.InsertLocation(ctx, &Location{FileID: fileID, Line: 3})
+	loc2, _ := s.InsertLocation(ctx, &Location{FileID: fileID, Line: 1})
+	loc3, _ := s.InsertLocation(ctx, &Location{FileID: fileID, Line: 2})
 
 	if _, err := s.InsertEvent(ctx, &SecurityEvent{EventType: "BUFFER_ACCESS", LocationID: loc1}); err != nil {
 		t.Fatal(err)
@@ -610,19 +613,22 @@ func TestStore_ListEventLocationIDsByType(t *testing.T) {
 	if _, err := s.InsertEvent(ctx, &SecurityEvent{EventType: "DEREFERENCE", LocationID: loc2}); err != nil {
 		t.Fatal(err)
 	}
-	// loc3 has no event at all.
+	if _, err := s.InsertEvent(ctx, &SecurityEvent{EventType: "BUFFER_ACCESS", LocationID: loc3}); err != nil {
+		t.Fatal(err)
+	}
 
-	got, err := s.ListEventLocationIDsByType(ctx, "BUFFER_ACCESS", []int64{loc1, loc2, loc3})
+	got, err := s.ListEventLocationKeysByType(ctx, "BUFFER_ACCESS")
 	if err != nil {
-		t.Fatalf("ListEventLocationIDsByType: %v", err)
+		t.Fatalf("ListEventLocationKeysByType: %v", err)
 	}
-	if len(got) != 1 || !got[loc1] {
-		t.Errorf("BUFFER_ACCESS locations = %v, want {loc1}", got)
+	want := fmt.Sprintf("%d:1", fileID)
+	if len(got) != 2 || !got[want] {
+		t.Errorf("BUFFER_ACCESS location keys = %v, want {%q, %q}", got, want, fmt.Sprintf("%d:2", fileID))
 	}
 
-	// An empty id list must not error and must return an empty set.
-	got, err = s.ListEventLocationIDsByType(ctx, "BUFFER_ACCESS", nil)
+	// A type with no events must not error and must return an empty set.
+	got, err = s.ListEventLocationKeysByType(ctx, "NO_SUCH_EVENT")
 	if err != nil || len(got) != 0 {
-		t.Errorf("empty ids = (%v, %v), want (map[], nil)", got, err)
+		t.Errorf("no events = (%v, %v), want (map[], nil)", got, err)
 	}
 }

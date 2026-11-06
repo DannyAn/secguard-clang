@@ -50,8 +50,9 @@ type calleeInfo struct {
 }
 
 type macroEntry struct {
-	name   string
-	bodies []string
+	name         string
+	bodies       []string
+	functionLike bool
 }
 
 var identRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
@@ -160,7 +161,14 @@ func discoverMacros(ctx context.Context, store db.Store) []macroEntry {
 		for _, d := range idx.Lookup(name) {
 			bodies = append(bodies, d.Body)
 		}
-		out = append(out, macroEntry{name: name, bodies: bodies})
+		functionLike := false
+		for _, d := range idx.Lookup(name) {
+			if strings.TrimSpace(d.Params) != "" {
+				functionLike = true
+				break
+			}
+		}
+		out = append(out, macroEntry{name: name, bodies: bodies, functionLike: functionLike})
 	}
 	return out
 }
@@ -173,13 +181,40 @@ func classifyMacro(m macroEntry) (Entry, string, bool) {
 	deallocPattern, deallocStrong := deallocatorNamePattern(m.name)
 
 	callsAlloc, callsDealloc := macroBodyCallees(m.bodies)
+	allText := strings.Join(m.bodies, " ")
 
+	// Body evidence is authoritative: a macro that expands to a known
+	// allocator/release IS one regardless of its name.
+	if len(callsDealloc) > 0 && len(callsAlloc) == 0 {
+		e := Entry{Name: m.name, Confidence: ConfHigh, Reasons: []string{"expands to " + joinCallees(callsDealloc)}}
+		if deallocPattern != "" {
+			e.Reasons = append(e.Reasons, "macro name pattern "+deallocPattern)
+		}
+		return e, "deallocator", true
+	}
+	if len(callsAlloc) > 0 && len(callsDealloc) == 0 {
+		e := Entry{Name: m.name, Confidence: ConfHigh, Reasons: []string{"expands to " + joinCallees(callsAlloc)}}
+		if allocPattern != "" {
+			e.Reasons = append(e.Reasons, "macro name pattern "+allocPattern)
+		}
+		return e, "allocator", true
+	}
+	if len(callsAlloc) > 0 && len(callsDealloc) > 0 {
+		return Entry{Name: m.name, Confidence: ConfLow, Reasons: []string{"macro body contains both an allocation and a release — ambiguous"}}, "allocator", true
+	}
+
+	// Name-only evidence. An object-like macro with no body evidence is not a
+	// function call at all (`#define FREE 0`), and a function-like predicate
+	// (`#define IS_FREE(s) ((s)==FREE)`) is not a release either; both are
+	// downgraded to "needs review" instead of High.
+	predicate := strings.Contains(allText, "==") || strings.Contains(allText, "!=") ||
+		strings.Contains(allText, "&&") || strings.Contains(allText, "||")
 	if deallocPattern != "" {
-		e := Entry{Name: m.name, Confidence: ConfHigh}
-		e.Reasons = append(e.Reasons, "macro name pattern "+deallocPattern)
-		if len(callsDealloc) > 0 {
-			e.Reasons = append(e.Reasons, "expands to "+joinCallees(callsDealloc))
-		} else if !deallocStrong {
+		if !m.functionLike || predicate {
+			return Entry{Name: m.name, Confidence: ConfLow, Reasons: []string{"name pattern " + deallocPattern + "; no release call in body"}}, "deallocator", true
+		}
+		e := Entry{Name: m.name, Confidence: ConfHigh, Reasons: []string{"macro name pattern " + deallocPattern}}
+		if !deallocStrong {
 			e.Confidence = ConfMedium
 			e.Reasons = append(e.Reasons, "no direct free in body")
 		}
@@ -187,11 +222,11 @@ func classifyMacro(m macroEntry) (Entry, string, bool) {
 	}
 
 	if allocPattern != "" {
-		e := Entry{Name: m.name, Confidence: ConfHigh}
-		e.Reasons = append(e.Reasons, "macro name pattern "+allocPattern)
-		if len(callsAlloc) > 0 {
-			e.Reasons = append(e.Reasons, "expands to "+joinCallees(callsAlloc))
-		} else if !allocStrong {
+		if !m.functionLike || predicate {
+			return Entry{Name: m.name, Confidence: ConfLow, Reasons: []string{"name pattern " + allocPattern + "; no allocator call in body"}}, "allocator", true
+		}
+		e := Entry{Name: m.name, Confidence: ConfHigh, Reasons: []string{"macro name pattern " + allocPattern}}
+		if !allocStrong {
 			e.Confidence = ConfMedium
 			e.Reasons = append(e.Reasons, "no direct allocator in body")
 		}
@@ -322,6 +357,18 @@ func classify(s symbol) (Entry, string, bool) {
 		return e, "allocator", true
 	}
 
+	// Call-relation evidence is an independent trigger (Issue #230): a function
+	// that directly calls a known release/allocator is a high-confidence
+	// candidate even when its name/signature are unremarkable. Gate on the return
+	// shape so an unrelated `int f(...){free(x); return rc;}` is not registered as
+	// a release (the declared-deallocator path can auto-confirm release defects).
+	if len(s.callsDealloc) > 0 && strings.TrimSpace(s.returnType) == "void" {
+		return Entry{Name: s.name, Confidence: ConfHigh, Reasons: []string{"calls " + joinCallees(s.callsDealloc)}}, "deallocator", true
+	}
+	if len(s.callsAlloc) > 0 && strings.Contains(s.returnType, "*") {
+		return Entry{Name: s.name, Confidence: ConfHigh, Reasons: []string{"calls " + joinCallees(s.callsAlloc)}}, "allocator", true
+	}
+
 	return Entry{}, "", false
 }
 
@@ -331,6 +378,10 @@ func classify(s symbol) (Entry, string, bool) {
 func allocatorNamePattern(name string) (string, bool) {
 	lower := strings.ToLower(name)
 	for _, p := range []struct{ suffix, display string }{
+		{"_malloc_f", "*_malloc_f"},
+		{"_calloc_f", "*_calloc_f"},
+		{"_realloc_f", "*_realloc_f"},
+		{"_alloc_f", "*_alloc_f"},
 		{"_malloc", "*_malloc"},
 		{"_calloc", "*_calloc"},
 		{"_realloc", "*_realloc"},

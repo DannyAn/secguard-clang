@@ -47,20 +47,25 @@ func (d *BufferOverflowDetector) Detect(ctx context.Context) (DetectResult, erro
 	}
 
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
+		macros := buildMacroValues(root)
+		if facts != nil {
+			macros = mergeMacros(facts.Macros, macros)
+		}
 		bc := &bufCtx{
-			root:    root,
-			calls:   root.FindAll("call_expression"),
-			subs:    root.FindAll("subscript_expression"),
-			derefs:  root.FindAll("pointer_expression"),
-			ifs:     root.FindAll("if_statement"),
-			decls:   root.FindAll("declaration"),
-			assigns: root.FindAll("assignment_expression"),
-			updates: root.FindAll("update_expression"),
-			fors:    root.FindAll("for_statement"),
-			inits:   root.FindAll("init_declarator"),
-			fields:  root.FindAll("field_declaration"),
-			macros:  mergeMacros(facts.Macros, buildMacroValues(root)),
-			facts:   facts,
+			root:       root,
+			calls:      root.FindAll("call_expression"),
+			subs:       root.FindAll("subscript_expression"),
+			derefs:     root.FindAll("pointer_expression"),
+			fieldExprs: root.FindAll("field_expression"),
+			ifs:        root.FindAll("if_statement"),
+			decls:      root.FindAll("declaration"),
+			assigns:    root.FindAll("assignment_expression"),
+			updates:    root.FindAll("update_expression"),
+			fors:       root.FindAll("for_statement"),
+			inits:      root.FindAll("init_declarator"),
+			fields:     root.FindAll("field_declaration"),
+			macros:     macros,
+			facts:      facts,
 		}
 
 		// Parameter names per function: a variable copy size that is a function
@@ -91,18 +96,19 @@ func (d *BufferOverflowDetector) Detect(ctx context.Context) (DetectResult, erro
 // once per file instead of once per subscript/call (the previous behavior did a
 // whole-tree FindAll inside every per-node helper).
 type bufCtx struct {
-	root    parser.Node
-	calls   []parser.Node
-	subs    []parser.Node
-	derefs  []parser.Node
-	ifs     []parser.Node
-	decls   []parser.Node
-	assigns []parser.Node
-	updates []parser.Node
-	fors    []parser.Node
-	inits   []parser.Node
-	fields  []parser.Node
-	macros  map[string]int
+	root       parser.Node
+	calls      []parser.Node
+	subs       []parser.Node
+	derefs     []parser.Node
+	fieldExprs []parser.Node
+	ifs        []parser.Node
+	decls      []parser.Node
+	assigns    []parser.Node
+	updates    []parser.Node
+	fors       []parser.Node
+	inits      []parser.Node
+	fields     []parser.Node
+	macros     map[string]int
 	// facts is the tree-wide fallback census: a struct member array, a global
 	// array or a capacity macro declared in a header is invisible to the
 	// per-file fields slice above.
@@ -2215,48 +2221,13 @@ func (d *BufferOverflowDetector) detectCastObjectOOB(ctx context.Context, f *db.
 		return
 	}
 
-	// Pass 1: map variables assigned from malloc with a constant byte size.
-	allocSizes := map[string]int{}
-	collectAlloc := func(varName string, rhs parser.Node) {
-		if varName == "" {
-			return
-		}
-		if size, ok := constantMallocByteSize(rhs); ok {
-			allocSizes[varName] = size
-		}
-	}
-	for _, init := range bc.inits {
-		if !funcLineRange(f, init.StartLine()) {
-			continue
-		}
-		lhs, rhs, ok := init.AssignParts()
-		if !ok {
-			continue
-		}
-		collectAlloc(extractVarFromDeclarator(lhs), rhs)
-	}
-	for _, assign := range bc.assigns {
-		if !funcLineRange(f, assign.StartLine()) {
-			continue
-		}
-		children := assign.NamedChildren()
-		if len(children) < 2 {
-			continue
-		}
-		collectAlloc(strings.TrimSpace(children[0].Text()), children[1])
-	}
-
-	// Pass 2: find cast-to-struct assignments and resolve their allocation size.
-	// 按行号顺序处理；重赋值（非 cast-to-struct）使已有记录失效（P0-5）。
-	castVars := map[string]castTarget{}
-	type assignEvent struct {
+	type varEvent struct {
 		line    int
 		varName string
 		rhs     parser.Node
 		isInit  bool
-		lhs     parser.Node
 	}
-	var events []assignEvent
+	var events []varEvent
 	for _, init := range bc.inits {
 		if !funcLineRange(f, init.StartLine()) {
 			continue
@@ -2265,7 +2236,7 @@ func (d *BufferOverflowDetector) detectCastObjectOOB(ctx context.Context, f *db.
 		if !ok {
 			continue
 		}
-		events = append(events, assignEvent{line: init.StartLine(), varName: extractVarFromDeclarator(lhs), rhs: rhs, isInit: true, lhs: lhs})
+		events = append(events, varEvent{line: init.StartLine(), varName: extractVarFromDeclarator(lhs), rhs: rhs, isInit: true})
 	}
 	for _, assign := range bc.assigns {
 		if !funcLineRange(f, assign.StartLine()) {
@@ -2275,11 +2246,97 @@ func (d *BufferOverflowDetector) detectCastObjectOOB(ctx context.Context, f *db.
 		if len(children) < 2 {
 			continue
 		}
-		events = append(events, assignEvent{line: assign.StartLine(), varName: strings.TrimSpace(children[0].Text()), rhs: children[1]})
+		events = append(events, varEvent{line: assign.StartLine(), varName: strings.TrimSpace(children[0].Text()), rhs: children[1]})
 	}
-	sort.Slice(events, func(i, j int) bool { return events[i].line < events[j].line })
 
+	// P0-5 / flow-sensitivity: interleave assignments and field accesses in line
+	// order. A cast/alloc record is resolved against the allocation state at the
+	// cast line (not the function's final map), and an access before the cast or
+	// after a reassignment is not checked.
+	type accessAt struct {
+		line int
+		node parser.Node
+	}
+	var accesses []accessAt
+	for _, fe := range bc.fieldExprs {
+		if !funcLineRange(f, fe.StartLine()) {
+			continue
+		}
+		// Nested member access `o->inner.a`: the intermediate `o->inner` must not
+		// be checked against the whole nested-struct extent. MVP supports one-level
+		// fields only, so skip the intermediate expression (and the leaf, whose
+		// field lives in the nested struct).
+		if p := fe.Parent(); p != nil && p.Kind() == "field_expression" {
+			continue
+		}
+		accesses = append(accesses, accessAt{line: fe.StartLine(), node: fe})
+	}
+
+	type timelineItem struct {
+		line   int
+		access bool
+		ev     varEvent
+		fe     parser.Node
+	}
+	items := make([]timelineItem, 0, len(events)+len(accesses))
 	for _, ev := range events {
+		items = append(items, timelineItem{line: ev.line, ev: ev})
+	}
+	for _, a := range accesses {
+		items = append(items, timelineItem{line: a.line, access: true, fe: a.node})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].line != items[j].line {
+			return items[i].line < items[j].line
+		}
+		// Same line: apply the assignment before the access it produces.
+		return !items[i].access && items[j].access
+	})
+
+	allocSizes := map[string]int{}
+	castVars := map[string]castTarget{}
+	for _, it := range items {
+		if it.access {
+			ptrVar, fieldName, ok := fieldExprParts(it.fe)
+			if !ok {
+				continue
+			}
+			info, found := castVars[ptrVar]
+			if !found || it.line < info.castLine {
+				continue
+			}
+			layout, ok := bc.facts.LayoutOf(typeinfo.LayoutKey{Type: info.structType})
+			if !ok || layout.IsUnknown() {
+				continue
+			}
+			field, ok := layout.FieldByName(fieldName)
+			if !ok {
+				continue
+			}
+			// MVP 不支持数组下标越界判断：固定数组与柔性/未知长度数组都跳过。
+			// 必须用 IsArray 而不是 ArrayCount>0——柔性数组（int buf[]）的
+			// ArrayCount 合法地为 0，按 element size 比较会把 p->buf[i] 误报成
+			// 整个数组越界（P0-6 / flex-array follow-up）。
+			if field.IsArray {
+				continue
+			}
+			accessEnd := field.Offset + field.Size
+			if accessEnd > info.allocSize {
+				category := "layout_oob_read"
+				if isAssignTarget(it.fe) {
+					category = "layout_oob_write"
+				}
+				d.emitLayoutOOB(ctx, f, file, it.line, ptrVar, fieldName, category, it.fe.Text(), info, field, result)
+			}
+			continue
+		}
+
+		ev := it.ev
+		if ev.isInit {
+			// A declaration rebinds the name; drop any previous record.
+			delete(castVars, ev.varName)
+			delete(allocSizes, ev.varName)
+		}
 		structType, sourceVar, directSize, isDirect := parseCastToStruct(ev.rhs)
 		if structType != "" {
 			target := castTarget{structType: structType, castLine: ev.line}
@@ -2288,6 +2345,7 @@ func (d *BufferOverflowDetector) detectCastObjectOOB(ctx context.Context, f *db.
 			} else if sourceVar != "" {
 				target.allocSize = allocSizes[sourceVar]
 			}
+			delete(allocSizes, ev.varName)
 			if target.allocSize > 0 {
 				castVars[ev.varName] = target
 			} else {
@@ -2295,48 +2353,13 @@ func (d *BufferOverflowDetector) detectCastObjectOOB(ctx context.Context, f *db.
 			}
 			continue
 		}
-		// P0-5: 重赋值（非 cast-to-struct）使已有 cast 记录失效。
+		// A non-cast reassignment invalidates the cast record; track the new
+		// allocation size only when the RHS is a constant byte-size allocation.
 		delete(castVars, ev.varName)
-	}
-	if len(castVars) == 0 {
-		return
-	}
-
-	// Pass 3: check each field expression through a casted pointer.
-	// 只检查 castLine 之后的访问（P0-5）；数组字段跳过（P0-6）。
-	for _, fe := range bc.root.FindAll("field_expression") {
-		if !funcLineRange(f, fe.StartLine()) {
-			continue
-		}
-		ptrVar, fieldName, ok := fieldExprParts(fe)
-		if !ok {
-			continue
-		}
-		info, found := castVars[ptrVar]
-		if !found {
-			continue
-		}
-		if fe.StartLine() <= info.castLine {
-			continue
-		}
-		layout, ok := bc.facts.LayoutOf(typeinfo.LayoutKey{Type: info.structType})
-		if !ok || layout.IsUnknown() {
-			continue
-		}
-		field, ok := layout.FieldByName(fieldName)
-		if !ok {
-			continue
-		}
-		if field.ArrayCount > 0 {
-			continue
-		}
-		accessEnd := field.Offset + field.Size
-		if accessEnd > info.allocSize {
-			category := "layout_oob_read"
-			if isAssignTarget(fe) {
-				category = "layout_oob_write"
-			}
-			d.emitLayoutOOB(ctx, f, file, fe.StartLine(), ptrVar, fieldName, category, fe.Text(), info, field, result)
+		if size, ok := constantMallocByteSize(ev.rhs); ok {
+			allocSizes[ev.varName] = size
+		} else {
+			delete(allocSizes, ev.varName)
 		}
 	}
 }
@@ -2375,27 +2398,86 @@ func constantMallocByteSize(node parser.Node) (int, bool) {
 		return 0, false
 	}
 	name := extractCallName(*call)
-	if !apikb.IsAllocator(name) {
+	if !isByteSizeAllocator(name) {
 		return 0, false
 	}
 	args := callNamedArguments(*call)
 	if len(args) == 0 {
 		return 0, false
 	}
-	sizeExpr := strings.TrimSpace(args[0].Text())
-	if name == "calloc" && len(args) >= 2 {
-		n, ok1 := strconv.Atoi(strings.TrimSpace(args[0].Text()))
-		m, ok2 := strconv.Atoi(strings.TrimSpace(args[1].Text()))
-		if ok1 == nil && ok2 == nil && n > 0 && m > 0 {
-			return n * m, true
+	lower := strings.ToLower(name)
+	// `calloc(n, size)` and its wrappers: the byte count is the product of the
+	// two arguments, not the first alone.
+	if strings.Contains(lower, "calloc") {
+		if len(args) < 2 {
+			return 0, false
 		}
+		n, ok1 := parseSizeLiteral(args[0].Text())
+		m, ok2 := parseSizeLiteral(args[1].Text())
+		if !ok1 || !ok2 {
+			return 0, false
+		}
+		const maxInt = int(^uint(0) >> 1)
+		if n > maxInt/m {
+			return 0, false
+		}
+		return n * m, true
+	}
+	// `realloc(p, size)` and aligned-allocation forms put the byte count after a
+	// pointer/alignment argument.
+	idx := 0
+	switch {
+	case strings.Contains(lower, "realloc"):
+		idx = 1
+	case lower == "aligned_alloc" || strings.Contains(lower, "memalign"):
+		idx = 1
+	}
+	if idx >= len(args) {
 		return 0, false
 	}
-	n, err := strconv.Atoi(sizeExpr)
-	if err != nil || n <= 0 {
+	n, ok := parseSizeLiteral(args[idx].Text())
+	if !ok {
 		return 0, false
 	}
 	return n, true
+}
+
+// parseSizeLiteral parses a C integer literal size argument: decimal, hex/octal
+// (base prefix), and a trailing u/U/l/L integer suffix. Non-literal expressions
+// (sizeof, variables, arithmetic) return ok=false.
+func parseSizeLiteral(text string) (int, bool) {
+	t := strings.TrimSpace(text)
+	t = strings.TrimRight(t, "uUlL")
+	if t == "" {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(t, 0, 0)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return int(n), true
+}
+
+// isByteSizeAllocator reports whether the call's numeric argument denotes a byte
+// count. Only declared allocators (built-in + project-declared + externally
+// modeled) and the standard byte-size APIs qualify: apikb.IsAllocator is a
+// substring heuristic ("_new", "alloc", "_dup") that would read a proto version
+// (`conn_new(4)`) as a 4-byte allocation. String-copying allocators are excluded
+// because their argument is a source string, not a size.
+func isByteSizeAllocator(name string) bool {
+	if name == "" {
+		return false
+	}
+	lower := strings.ToLower(name)
+	if strings.Contains(lower, "strdup") || strings.Contains(lower, "wcsdup") ||
+		strings.Contains(lower, "strndup") || lower == "posix_memalign" {
+		return false
+	}
+	switch lower {
+	case "malloc", "calloc", "realloc", "aligned_alloc", "memalign", "valloc", "pvalloc":
+		return true
+	}
+	return apikb.IsDeclaredAllocator(name)
 }
 
 // parseCastToStruct parses a cast-to-struct expression, returning:

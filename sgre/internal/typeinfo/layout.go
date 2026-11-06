@@ -34,6 +34,11 @@ type FieldLayout struct {
 	ArrayCount int
 	BitWidth   int
 	IsPointer  bool
+	// IsArray marks a fixed-size OR flexible/unknown-count array member. The
+	// layout-OOB detector skips array members in MVP (an element access is not
+	// the whole array access), so it must not infer "not an array" from
+	// ArrayCount==0 (a flexible array member legitimately has count 0).
+	IsArray bool
 }
 
 // TypeLayout 是一个类型的完整布局。
@@ -71,6 +76,23 @@ func alignUp(offset, align int) int {
 func fieldSizeAlign(abi ABI, fs FieldSpec, resolve LayoutResolver) (size, align int, ok bool) {
 	if fs.BitWidth > 0 {
 		return 0, 0, false // MVP: 位域 → unknown
+	}
+	// A flexible/unknown-count array member contributes 0 bytes to sizeof (the
+	// C11 FAM rule), but its ELEMENT alignment still affects the following
+	// offset/struct alignment. Returning the element size here (the old
+	// behavior) made `struct F { int n; char data[]; }` one byte larger than its
+	// real sizeof and let the detector compare a `data[i]` access as a whole
+	// array. The layout-OOB detector skips array members entirely; a mid-struct
+	// unknown-count array is rejected as unknown by the census.
+	if fs.IsArray && fs.ArrayCount <= 0 {
+		elem := fs
+		elem.IsArray = false
+		elem.ArrayCount = 0
+		_, elemAlign, elemOK := fieldSizeAlign(abi, elem, resolve)
+		if !elemOK {
+			return 0, 0, false
+		}
+		return 0, elemAlign, true
 	}
 	if fs.IsPointer || IsPointerSpelling(fs.TypeSpelling) {
 		size = PointerBits(abi) / 8
@@ -177,6 +199,7 @@ func LayoutStruct(abi ABI, key LayoutKey, fields []FieldSpec, pack int, resolve 
 			ArrayCount: fs.ArrayCount,
 			BitWidth:   fs.BitWidth,
 			IsPointer:  fs.IsPointer || IsPointerSpelling(fs.TypeSpelling),
+			IsArray:    fs.IsArray,
 		})
 		offset += size
 		if effectiveAlign > structAlign {
@@ -218,9 +241,13 @@ func LayoutUnion(abi ABI, key LayoutKey, fields []FieldSpec, resolve LayoutResol
 			ArrayCount: fs.ArrayCount,
 			BitWidth:   fs.BitWidth,
 			IsPointer:  fs.IsPointer || IsPointerSpelling(fs.TypeSpelling),
+			IsArray:    fs.IsArray,
 		})
 	}
-	tl.Size = maxSize
+	// sizeof(union) rounds the largest member up to the union's alignment
+	// (`union { long long x; char b[9]; }` is 16, not 9); otherwise a containing
+	// struct's following offsets are undersized.
+	tl.Size = alignUp(maxSize, maxAlign)
 	tl.Align = maxAlign
 	return tl
 }

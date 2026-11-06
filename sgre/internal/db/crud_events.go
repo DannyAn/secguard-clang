@@ -139,36 +139,29 @@ func (s *store) ClearSecurityEvents(ctx context.Context) error {
 	return nil
 }
 
-// ListEventLocationIDsByType returns the subset of locationIDs that carry at
-// least one event of eventType. Only the caller's locations are consulted (via
-// chunked IN queries keyed on the location_id index), so the peak memory is
-// bounded by the matching-location set, not by the type's full event table.
-func (s *store) ListEventLocationIDsByType(ctx context.Context, eventType string, locationIDs []int64) (map[int64]bool, error) {
-	result := make(map[int64]bool)
-	for _, chunk := range chunkIDs(locationIDs, 500) {
-		placeholders := strings.TrimRight(strings.Repeat("?,", len(chunk)), ",")
-		args := make([]interface{}, 0, len(chunk)+1)
-		args = append(args, eventType)
-		for _, id := range chunk {
-			args = append(args, id)
+// ListEventLocationKeysByType returns the set of "fileID:line" location keys
+// carrying at least one event of eventType. It streams only the joined
+// (file_id, line) pairs, never the event rows, so the peak memory is bounded by
+// the distinct-location set instead of the type's full event table.
+func (s *store) ListEventLocationKeysByType(ctx context.Context, eventType string) (map[string]bool, error) {
+	rows, err := s.exec.QueryContext(ctx,
+		`SELECT DISTINCT l.file_id, COALESCE(l.line, 0)
+		   FROM security_events e JOIN locations l ON l.id = e.location_id
+		  WHERE e.event_type = ?`, eventType)
+	if err != nil {
+		return nil, fmt.Errorf("db: list event location keys by type: %w", err)
+	}
+	defer rows.Close()
+	result := make(map[string]bool)
+	for rows.Next() {
+		var fileID, line int64
+		if scanErr := rows.Scan(&fileID, &line); scanErr != nil {
+			return nil, fmt.Errorf("db: scan event location key: %w", scanErr)
 		}
-		rows, err := s.exec.QueryContext(ctx,
-			`SELECT DISTINCT location_id FROM security_events WHERE event_type = ? AND location_id IN (`+placeholders+`)`, args...)
-		if err != nil {
-			return nil, fmt.Errorf("db: list event location ids by type: %w", err)
-		}
-		for rows.Next() {
-			var id int64
-			if scanErr := rows.Scan(&id); scanErr != nil {
-				rows.Close()
-				return nil, fmt.Errorf("db: scan event location id: %w", scanErr)
-			}
-			result[id] = true
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("db: list event location ids by type: %w", err)
-		}
+		result[fmt.Sprintf("%d:%d", fileID, line)] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: list event location keys by type: %w", err)
 	}
 	return result, nil
 }

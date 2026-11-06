@@ -77,6 +77,25 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	if len(remaining) > 1 {
 		config.SetTypeFilterOverride(strings.Join(remaining[1:], ","))
 	}
+	// Validate the filter BEFORE the index/graph/detector phases. A typo or an
+	// all-disabled filter must fail immediately instead of paying a full scan and
+	// then reporting a silent zero-type "complete" run.
+	if requested := config.TypeFilterRequested(); len(requested) > 0 {
+		var unknown []string
+		for _, name := range requested {
+			if _, err := planner.GetVulnTypeSpec(name); err != nil {
+				unknown = append(unknown, name)
+			}
+		}
+		if len(unknown) > 0 {
+			WriteErrorJSON(fmt.Sprintf("unknown type-filter type(s): %s (run `secguard types` for the registered list)", strings.Join(unknown, ", ")))
+			return 1
+		}
+		if len(planner.TypeFilteredActiveVulnTypes(config.Load().DisabledTypeSet(), config.Load().TypeFilterSet())) == 0 {
+			WriteErrorJSON("type-filter matched no enabled vulnerability type: every requested type is disabled by [disabled_types]")
+			return 1
+		}
+	}
 
 	if timeoutSec > 0 {
 		var cancel context.CancelFunc
@@ -514,8 +533,7 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		"plan_errors":             planErrors,
 		"detector_errors":         detectorErrors,
 		"disabled_types":          disabledTypeNames(outcome.DisabledTypes),
-		"detectors_skipped":       skippedDetectorNames(outcome.SkippedDetectors),
-		"total_candidates":        totalCandidates,
+		"detectors_skipped":       skippedDetectorNames(outcome.SkippedDetectors),		"total_candidates":        totalCandidates,
 		"auto_confirmed_count":    totalAutoConfirmed,
 		"suppressed_count":        totalSuppressed,
 		"baseline_existing_count": totalBaselineExisting,
@@ -543,6 +561,12 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	}
 	if findingsError != "" {
 		output["findings_error"] = findingsError
+	}
+	if requested := config.TypeFilterRequested(); len(requested) > 0 {
+		// Make the narrowed scope recoverable from the artifact: a filtered scan
+		// that silently omits types is indistinguishable from a clean full scan.
+		output["type_filter"] = requested
+		output["applied_types"] = vulnTypes
 	}
 
 	planResults := make([]*planner.PlanResult, 0, len(evidencePackages))

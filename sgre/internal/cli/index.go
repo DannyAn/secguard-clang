@@ -171,9 +171,25 @@ func writeSuggestedConfig(ctx context.Context, store db.Store, projectRoot strin
 		}
 		return "error: " + err.Error()
 	}
-	defer f.Close()
+	// A partially written suggestion must not masquerade as a complete file: on
+	// any write/sync/close failure remove it so a later index can retry instead
+	// of reporting "skipped (already exists)" forever.
+	ok := false
+	defer func() {
+		if !ok {
+			_ = f.Close()
+			_ = os.Remove(path)
+		}
+	}()
 	if _, err := f.WriteString(res.Render()); err != nil {
 		return "error: " + err.Error()
 	}
+	if err := f.Sync(); err != nil {
+		return "error: " + err.Error()
+	}
+	if err := f.Close(); err != nil {
+		return "error: " + err.Error()
+	}
+	ok = true
 	return "written: " + path
 }
