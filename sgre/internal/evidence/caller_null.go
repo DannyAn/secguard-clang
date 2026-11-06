@@ -408,14 +408,35 @@ func (d *CallerNullDetector) Detect(ctx context.Context) (DetectResult, error) {
 	return result, nil
 }
 
+// maxParamFwdChainHops is the defensive depth cap for chainRootName. The
+// forwarding chain is a monotone fixpoint over (function, param) pairs, so a
+// real chain is bounded by the number of such pairs; any traversal past this
+// cap means fwdBy contains a cycle (mutual parameter forwarding between two
+// functions) and would otherwise loop forever. 64 is far above any realistic
+// forwarding depth while keeping the visited set small.
+const maxParamFwdChainHops = 64
+
 // chainRootName resolves the ultimate open-entry root function NAME for a
 // chain-open (fnID, param): it walks fwdBy (first-forwarder edges) up to the
 // base, which is the zero-call-site entry the openness flowed from (for the
 // entry itself that is the function's own name). The planner uses it as the
 // cross-function chain-dedup key so only candidates sharing one root fold.
+//
+// The traversal is guarded by a visited set and a depth cap so a cyclic fwdBy
+// (which mutual parameter forwarding between two functions produces) is
+// truncated instead of looping forever. See issue #238 (callChain had the same
+// shape).
 func chainRootName(fnID int64, param int, fwdBy map[int64]map[int]fwdEdge, infoByFnID map[int64]calleeParamInfo) string {
 	cur, p := fnID, param
-	for {
+	visited := make(map[int64]map[int]bool, 8)
+	for hops := 0; hops < maxParamFwdChainHops; hops++ {
+		if visited[cur] != nil && visited[cur][p] {
+			break
+		}
+		if visited[cur] == nil {
+			visited[cur] = make(map[int]bool, 4)
+		}
+		visited[cur][p] = true
 		e, ok := fwdBy[cur][p]
 		if !ok {
 			break
