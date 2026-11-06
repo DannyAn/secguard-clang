@@ -52,7 +52,14 @@ func (s *store) ListScanStats(ctx context.Context, scanID string) ([]*ScanStat, 
 
 func (s *store) GetLatestScanID(ctx context.Context) (string, error) {
 	var scanID string
-	err := s.exec.QueryRowContext(ctx, `SELECT scan_id FROM scan_stats ORDER BY created_at DESC, id DESC LIMIT 1`).Scan(&scanID)
+	// Query scan_runs (written by BeginScanRun BEFORE the pipeline starts), not
+	// scan_stats (written per-vuln-type AFTER plan completes). A scan that
+	// crashed in index/graph/detector has a scan_runs row but zero scan_stats
+	// rows, so the old query returned "" and every metrics/status/per-type
+	// command reported "no scan found" — even though the scan existed and its
+	// failure was recorded. scan_runs.created_at is set by BeginScanRun; the
+	// id DESC tiebreaker is stable within the same wall-clock second.
+	err := s.exec.QueryRowContext(ctx, `SELECT scan_id FROM scan_runs ORDER BY created_at DESC, id DESC LIMIT 1`).Scan(&scanID)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}

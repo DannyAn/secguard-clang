@@ -526,12 +526,13 @@ func TestStore_GetLatestScanID_Tiebreaker(t *testing.T) {
 	// Two scans in the same wall-clock second share created_at (second
 	// granularity). The id DESC tiebreaker must deterministically pick the
 	// later-inserted row; the old created_at-only ORDER BY was unstable here.
-	ts := now()
-	if _, err := s.InsertScanStat(ctx, &ScanStat{ScanID: "sc_first", VulnType: "null-deref", CreatedAt: ts}); err != nil {
-		t.Fatalf("insert first scan stat: %v", err)
+	// GetLatestScanID queries scan_runs (BeginScanRun), not scan_stats, so a
+	// scan that crashed before any plan completed is still discoverable.
+	if err := s.BeginScanRun(ctx, "sc_first"); err != nil {
+		t.Fatalf("begin first scan run: %v", err)
 	}
-	if _, err := s.InsertScanStat(ctx, &ScanStat{ScanID: "sc_second", VulnType: "null-deref", CreatedAt: ts}); err != nil {
-		t.Fatalf("insert second scan stat: %v", err)
+	if err := s.BeginScanRun(ctx, "sc_second"); err != nil {
+		t.Fatalf("begin second scan run: %v", err)
 	}
 
 	latest, err := s.GetLatestScanID(ctx)
@@ -540,6 +541,32 @@ func TestStore_GetLatestScanID_Tiebreaker(t *testing.T) {
 	}
 	if latest != "sc_second" {
 		t.Errorf("expected the later-inserted scan at the same timestamp, got %q", latest)
+	}
+}
+
+// TestStore_GetLatestScanID_FailedScanVisible pins the issue #238 §3.2 fix:
+// a scan that crashed in the index/graph/detector phase (before any scan_stats
+// row was written) must still be discoverable by GetLatestScanID, so
+// `secguard metrics` / `status --per-type` report the failed scan instead of
+// "no scan found". The old query against scan_stats returned "" here.
+func TestStore_GetLatestScanID_FailedScanVisible(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	// A scan that began but never wrote any scan_stats (crashed mid-pipeline).
+	if err := s.BeginScanRun(ctx, "sc_crashed_before_plan"); err != nil {
+		t.Fatalf("begin scan run: %v", err)
+	}
+	if err := s.SetScanRunCompletionState(ctx, "sc_crashed_before_plan", "failed"); err != nil {
+		t.Fatalf("set completion state: %v", err)
+	}
+
+	latest, err := s.GetLatestScanID(ctx)
+	if err != nil {
+		t.Fatalf("GetLatestScanID: %v", err)
+	}
+	if latest != "sc_crashed_before_plan" {
+		t.Errorf("expected the failed scan to be visible, got %q", latest)
 	}
 }
 
