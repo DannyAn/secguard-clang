@@ -42,3 +42,27 @@ func TestRenderRoundTripsThroughConfig(t *testing.T) {
 		t.Errorf("deallocators = %v, want [myapp_free]", got)
 	}
 }
+
+func TestRenderOnlyLowEntriesIsLoadableAndInactive(t *testing.T) {
+	r := &Result{
+		Allocators:   []Entry{{Name: "buffer_create", Confidence: ConfLow, Reasons: []string{"signature heuristic only"}}},
+		Deallocators: []Entry{{Name: "cleanup_buffer", Confidence: ConfLow, Reasons: []string{"signature heuristic only"}}},
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secguard.toml")
+	if err := os.WriteFile(path, []byte(r.Render()), 0644); err != nil {
+		t.Fatal(err)
+	}
+	config.SetExplicitPath(path)
+	t.Cleanup(func() { config.SetExplicitPath("") })
+	cfg, err := config.LoadE()
+	if err != nil {
+		t.Fatalf("a suggestion with only needs-review entries must still be valid TOML: %v", err)
+	}
+	if got := cfg.AllocatorNames(); len(got) != 0 {
+		t.Errorf("allocators = %v, want none (all needs-review entries are commented out)", got)
+	}
+	if got := cfg.DeallocatorNames(); len(got) != 0 {
+		t.Errorf("deallocators = %v, want none", got)
+	}
+}

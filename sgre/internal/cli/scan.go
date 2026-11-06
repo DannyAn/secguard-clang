@@ -76,6 +76,10 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	// it now: remaining[1:] is a single type, a comma list, or "all".
 	if len(remaining) > 1 {
 		config.SetTypeFilterOverride(strings.Join(remaining[1:], ","))
+	} else {
+		// Clear any prior in-process override so a repeated invocation cannot
+		// inherit another command's allow-list.
+		config.SetTypeFilterOverride("")
 	}
 	// Validate the filter BEFORE the index/graph/detector phases. A typo or an
 	// all-disabled filter must fail immediately instead of paying a full scan and
@@ -524,16 +528,16 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	}
 
 	output := map[string]interface{}{
-		"scan_id":                 scanID,
-		"completion_state":        plannedState,
-		"incomplete_task_count":   incompleteCount,
-		"candidates_by_type":      candidatesByType,
-		"auto_confirmed_by_type":  autoConfirmedByType,
-		"seeds_by_type":           seedsByType,
-		"plan_errors":             planErrors,
-		"detector_errors":         detectorErrors,
-		"disabled_types":          disabledTypeNames(outcome.DisabledTypes),
-		"detectors_skipped":       skippedDetectorNames(outcome.SkippedDetectors),		"total_candidates":        totalCandidates,
+		"scan_id":                scanID,
+		"completion_state":       plannedState,
+		"incomplete_task_count":  incompleteCount,
+		"candidates_by_type":     candidatesByType,
+		"auto_confirmed_by_type": autoConfirmedByType,
+		"seeds_by_type":          seedsByType,
+		"plan_errors":            planErrors,
+		"detector_errors":        detectorErrors,
+		"disabled_types":         disabledTypeNames(outcome.DisabledTypes),
+		"detectors_skipped":      skippedDetectorNames(outcome.SkippedDetectors), "total_candidates": totalCandidates,
 		"auto_confirmed_count":    totalAutoConfirmed,
 		"suppressed_count":        totalSuppressed,
 		"baseline_existing_count": totalBaselineExisting,
