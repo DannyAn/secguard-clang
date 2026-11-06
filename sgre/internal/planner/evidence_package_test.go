@@ -67,6 +67,8 @@ func TestBuildHint(t *testing.T) {
 		{"buffer-overflow copy size whitespace compacted", Candidate{Array: "dst", Size: 64, CopySize: "n + 1", Category: "bounded_copy_var_size"}, bo, "buf@dst cap@64 idx@n+1 cat@bounded_copy_var_size"},
 		{"buffer-overflow bounded source", Candidate{Array: "g_dst", Size: 128, SrcCapacity: 128, APIName: "strcpy", Category: "buffer_overflow"}, bo, "buf@g_dst cap@128 src-cap@128 api@strcpy cat@buffer_overflow"},
 		{"out-of-bounds constant read", Candidate{Array: "data", Size: 8, Index: "12", Category: "array_oob_read"}, oob, "buf@data cap@8 idx@12 cat@array_oob_read"},
+		{"out-of-bounds layout read", Candidate{Category: "layout_oob_read", StructType: "LargeRecord", AllocSize: 8, Index: "value", FieldOffset: 16, FieldSize: 8}, oob, "struct@LargeRecord alloc-size@8 layout-field@value:16+8 cat@layout_oob_read"},
+		{"buffer-overflow layout write", Candidate{Category: "layout_oob_write", StructType: "LargeRecord", AllocSize: 8, Index: "value", FieldOffset: 16, FieldSize: 8}, bo, "struct@LargeRecord alloc-size@8 layout-field@value:16+8 cat@layout_oob_write"},
 		{"memory-leak definite no channel", Candidate{Line: 12, DefiniteLeak: true, LeakEscapeKind: "none", APIName: "malloc"}, ml, "alloc@12 leak@definite escape@none api@malloc"},
 		{"memory-leak conditional store bypass", Candidate{Line: 12, LeakEscapeKind: "store", LeakFreeLines: "30,45"}, ml, "alloc@12 leak@conditional escape@store free@30,45"},
 		{"memory-leak external API family mismatch", Candidate{Line: 18, LeakEscapeKind: "none", LeakFreeMismatch: "xmlXPathFreeContext:24", APIName: "xmlXPathEvalExpression"}, ml, "alloc@18 leak@conditional escape@none free-mismatch@xmlXPathFreeContext:24 api@xmlXPathEvalExpression"},

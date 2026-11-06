@@ -1,6 +1,6 @@
 ---
 name: buffer-overflow
-description: Classify buffer overflow evidence — BUFFER_ACCESS events from unsafe memcpy/strcpy/sprintf/strcat calls, array/heap out-of-bounds writes, and format overflow. Maps to CWE-787.
+description: Classify buffer overflow evidence — BUFFER_ACCESS events from unsafe memcpy/strcpy/sprintf/strcat calls, array/heap/layout out-of-bounds writes, and format overflow. Maps to CWE-787.
 license: MIT
 compatibility: opencode,claude code,DSH
 metadata:
@@ -28,6 +28,7 @@ Detector categories that route to this type:
 - `array_oob_write` — constant index, a constant-valued variable index (`int n = 12; buf[n]`), or a loop bound past a fixed-size array, as a write
 - `array_oob_write_unchecked` — suspected tier: a fixed-size struct array member written through a struct-field index with no bounds check at the access (`p->svr[p->actived_index] = ...`); the external/config-index shape, handed to you because the field's range is unknown at the write
 - `heap_oob_write` — loop bound provably exceeds a `malloc`/`calloc` size (e.g. `malloc(user_len)` + `i < user_len + 10`)
+- `layout_oob_write` — suspected: a pointer cast from a constant-size allocation to a struct, then a field write whose computed `offset+size` exceeds the allocation (CWD-SUB-1038). The layout uses the default ABI in Phase 1 (`assumed_default_abi` provenance), so judge the embedded `struct_layout`/`field_access`; a packed/custom-ABI layout or typedef resolution can explain the discrepancy.
 - `format_overflow` — **confirmed**: `sprintf`/`wsprintf` into a known-capacity buffer whose constant (literal) output length is provably >= capacity
 - `format_overflow_var` — suspected: `sprintf`/`wsprintf` into a known-capacity buffer with a non-constant source. Delegate to you: `%d` of a fixed-width value cannot overflow a 64-byte buffer, but a `%s` of an attacker-controlled string can — judge the format specifier and the source's bound.
 - `bounded_copy_overflow` — **confirmed**: `strncpy(dst, src, n)` with a constant `n > sizeof(dst)` (provable overflow)

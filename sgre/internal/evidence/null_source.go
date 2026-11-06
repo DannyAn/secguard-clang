@@ -3,6 +3,7 @@ package evidence
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
@@ -101,30 +102,216 @@ func (d *NullSourceDetector) Detect(ctx context.Context) (DetectResult, error) {
 // dereferences it. Restricting the census to `static` linkage makes the "never
 // reassigned" fact sound: no other translation unit can write the object, so
 // the same-file write census is exhaustive.
+//
+// The pass is AST-linear: the earlier implementation walked the whole tree once
+// per (global, function) pair and turned a 70KB / 20-static-pointer / 100-function
+// file into a 30s detector. Now one dereference census and one write/escape
+// census are built per file, and the per-pair work is map lookups.
 func (d *NullSourceDetector) detectStaticNullGlobals(ctx context.Context, file *db.File, root parser.Node, funcs []*db.Function, result *DetectResult) {
-	decls := root.NamedChildren()
-	for _, decl := range decls {
+	globals := map[string]int{} // name -> declaration line
+	for _, decl := range root.NamedChildren() {
 		if decl.Kind() != "declaration" || !hasStaticStorage(decl) {
 			continue
 		}
 		for _, name := range staticPointerDeclNames(decl) {
-			if !pointerDeclaredNull(decl, name) || !staticGlobalNeverReassigned(root, name) {
+			if !pointerDeclaredNull(decl, name) {
 				continue
 			}
-			for _, f := range funcs {
-				if !functionDereferencesGlobal(root, f, name) {
-					continue
-				}
-				props := map[string]string{
-					"variable": name,
-					"origin":   "global_null",
-				}
-				if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: decl.StartLine()}, props) {
-					result.EventsCreated++
+			globals[name] = decl.StartLine()
+		}
+	}
+	if len(globals) == 0 {
+		return
+	}
+
+	sortedFuncs := append([]*db.Function(nil), funcs...)
+	sort.Slice(sortedFuncs, func(i, j int) bool { return sortedFuncs[i].StartLine < sortedFuncs[j].StartLine })
+	boundByFuncID := map[int64]map[string]bool{}
+	for _, fd := range root.FindAll("function_definition") {
+		body := fd.ChildByFieldName("body")
+		if body == nil {
+			continue
+		}
+		if fn := enclosingFunctionByLine(sortedFuncs, fd.StartLine()); fn != nil {
+			boundByFuncID[fn.ID] = parser.FunctionBoundNamesByBody(*body)
+		}
+	}
+	enclosing := func(line int) *db.Function {
+		return enclosingFunctionByLine(sortedFuncs, line)
+	}
+	// locallyBound reports whether the name is a local/parameter of the function
+	// containing line (a shadowed name is never the file-scope static).
+	locallyBound := func(f *db.Function, name string) bool {
+		if f == nil {
+			return false
+		}
+		return boundByFuncID[f.ID][name]
+	}
+
+	// One write/escape census. An assignment to the name inside a function that
+	// does NOT locally bind it writes the global; a null assignment keeps the
+	// fact. Address escape / call argument / macro body are fail-open writes.
+	written := map[string]bool{}
+	for _, assign := range root.FindAll("assignment_expression") {
+		name := assignmentLHSName(assign)
+		if _, ok := globals[name]; !ok {
+			continue
+		}
+		f := enclosing(assign.StartLine())
+		if locallyBound(f, name) {
+			continue
+		}
+		children := assign.NamedChildren()
+		rhsStart := assignmentRHSStart(assign)
+		if len(children) > rhsStart && isNullLiteral(children[rhsStart]) {
+			continue
+		}
+		written[name] = true
+	}
+	for _, update := range root.FindAll("update_expression") {
+		kids := update.NamedChildren()
+		if len(kids) == 0 {
+			continue
+		}
+		name := strings.TrimSpace(kids[0].Text())
+		if _, ok := globals[name]; !ok {
+			continue
+		}
+		if f := enclosing(update.StartLine()); locallyBound(f, name) {
+			continue
+		}
+		written[name] = true
+	}
+	for _, ptr := range root.FindAll("pointer_expression") {
+		text := strings.TrimSpace(ptr.Text())
+		if !strings.HasPrefix(text, "&") {
+			continue
+		}
+		name := strings.TrimSpace(text[1:])
+		if _, ok := globals[name]; !ok {
+			continue
+		}
+		if f := enclosing(ptr.StartLine()); locallyBound(f, name) {
+			continue
+		}
+		written[name] = true
+	}
+	for _, call := range root.FindAll("call_expression") {
+		for _, arg := range getCallArgs(call) {
+			name := strings.TrimSpace(arg.Text())
+			if _, ok := globals[name]; !ok {
+				continue
+			}
+			if f := enclosing(call.StartLine()); locallyBound(f, name) {
+				continue
+			}
+			written[name] = true
+		}
+	}
+	macroWrites := staticGlobalMacroWrites(root, globals)
+	for name := range macroWrites {
+		written[name] = true
+	}
+
+	// One dereference census: function -> set of dereferenced global names.
+	derefs := map[int64]map[string]bool{}
+	addDeref := func(line int, name string) {
+		if _, ok := globals[name]; !ok || name == "" {
+			return
+		}
+		f := enclosing(line)
+		if f == nil || locallyBound(f, name) {
+			return
+		}
+		if derefs[f.ID] == nil {
+			derefs[f.ID] = map[string]bool{}
+		}
+		derefs[f.ID][name] = true
+	}
+	for _, field := range root.FindAll("field_expression") {
+		if isArrowOperator(field) {
+			addDeref(field.StartLine(), extractPointerFromField(field))
+		}
+	}
+	for _, ptr := range root.FindAll("pointer_expression") {
+		if !strings.HasPrefix(strings.TrimSpace(ptr.Text()), "*") {
+			continue
+		}
+		addDeref(ptr.StartLine(), explicitDerefVar(ptr))
+	}
+	for _, sub := range root.FindAll("subscript_expression") {
+		kids := sub.NamedChildren()
+		if len(kids) > 0 {
+			addDeref(sub.StartLine(), strings.TrimSpace(kids[0].Text()))
+		}
+	}
+
+	for _, f := range funcs {
+		for name := range derefs[f.ID] {
+			if written[name] {
+				continue
+			}
+			props := map[string]string{
+				"variable": name,
+				"origin":   "global_null",
+			}
+			if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: globals[name]}, props) {
+				result.EventsCreated++
+			}
+		}
+	}
+}
+
+// staticGlobalMacroWrites reports names that a file-local macro body assigns.
+// A function-like macro may write a static without taking it as a call argument
+// (`#define INIT_G() (g = make_session())`), which the call-argument census
+// cannot see; treat any macro body assignment to the name as a write (fail-open).
+// Macros defined in an included header remain outside this file-local census.
+func staticGlobalMacroWrites(root parser.Node, globals map[string]int) map[string]bool {
+	out := map[string]bool{}
+	for _, kind := range []string{"preproc_def", "preproc_function_def"} {
+		for _, m := range root.FindAll(kind) {
+			text := m.Text()
+			for name := range globals {
+				if strings.Contains(text, name) && macroAssignsName(text, name) {
+					out[name] = true
 				}
 			}
 		}
 	}
+	return out
+}
+
+// macroAssignsName matches `name =` (but not `name ==`) in a macro body.
+func macroAssignsName(text, name string) bool {
+	idx := 0
+	for {
+		i := strings.Index(text[idx:], name)
+		if i < 0 {
+			return false
+		}
+		pos := idx + i
+		rest := text[pos+len(name):]
+		trimmed := strings.TrimLeft(rest, " \t")
+		if strings.HasPrefix(trimmed, "=") && !strings.HasPrefix(trimmed, "==") {
+			return true
+		}
+		idx = pos + len(name)
+	}
+}
+
+// enclosingFunctionByLine returns the function whose [StartLine,EndLine] range
+// contains line. funcs must be sorted by StartLine.
+func enclosingFunctionByLine(funcs []*db.Function, line int) *db.Function {
+	i := sort.Search(len(funcs), func(i int) bool { return funcs[i].StartLine > line }) - 1
+	if i < 0 {
+		return nil
+	}
+	f := funcs[i]
+	if line < f.StartLine || line > f.EndLine {
+		return nil
+	}
+	return f
 }
 
 func hasStaticStorage(decl parser.Node) bool {
@@ -180,63 +367,6 @@ func pointerDeclaredNull(decl parser.Node, name string) bool {
 		return isNullLiteral(dc[len(dc)-1])
 	}
 	return true
-}
-
-// staticGlobalNeverReassigned reports whether a file-scope static is only ever
-// assigned NULL (or never at all) in its translation unit. Any non-null
-// assignment, update, address escape or call argument makes the fact
-// unprovable — fail-open so a value the analyzer cannot see (a macro write, an
-// external writer via `&g`) never becomes a false "certainly null".
-func staticGlobalNeverReassigned(root parser.Node, name string) bool {
-	for _, assign := range root.FindAll("assignment_expression") {
-		if assignmentLHSName(assign) != name {
-			continue
-		}
-		children := assign.NamedChildren()
-		rhsStart := assignmentRHSStart(assign)
-		if len(children) <= rhsStart || !isNullLiteral(children[rhsStart]) {
-			return false
-		}
-	}
-	for _, update := range root.FindAll("update_expression") {
-		if strings.Contains(update.Text(), name) {
-			return false
-		}
-	}
-	for _, ptr := range root.FindAll("pointer_expression") {
-		text := strings.TrimSpace(ptr.Text())
-		if strings.HasPrefix(text, "&") && strings.TrimSpace(text[1:]) == name {
-			return false
-		}
-	}
-	for _, call := range root.FindAll("call_expression") {
-		for _, arg := range getCallArgs(call) {
-			if strings.TrimSpace(arg.Text()) == name {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func functionDereferencesGlobal(root parser.Node, f *db.Function, name string) bool {
-	for _, field := range root.FindAll("field_expression") {
-		if !funcLineRange(f, field.StartLine()) || !isArrowOperator(field) {
-			continue
-		}
-		if extractPointerFromField(field) == name {
-			return true
-		}
-	}
-	for _, ptr := range root.FindAll("pointer_expression") {
-		if !funcLineRange(f, ptr.StartLine()) || !strings.HasPrefix(strings.TrimSpace(ptr.Text()), "*") {
-			continue
-		}
-		if explicitDerefVar(ptr) == name {
-			return true
-		}
-	}
-	return false
 }
 
 func (d *NullSourceDetector) detectReturnNull(ctx context.Context, f *db.Function, file *db.File, returns []parser.Node, result *DetectResult) {

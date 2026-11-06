@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -27,8 +28,11 @@ var feedbackWatchFixture = filepath.Join("..", "..", "testdata", "feedback_watch
 //     null source for every function that dereferences it;
 //   - CWD-SUB-1140: scalar/pointer/struct-field/switch-join condition reads are
 //     reported, while initialized and static-zero controls are not;
-//   - CWD-SUB-1029 / CWD-SUB-1038: the required shapes are NOT detected today
-//     (documented gaps in the README); only their safe controls must stay quiet.
+//   - CWD-SUB-1038: a constant-size allocation cast to a struct with a one-level
+//     field access beyond the allocation is detected as layout_oob_read/write
+//     (suspected); packed/bitfield/array/nested/reassigned controls stay quiet;
+//   - CWD-SUB-1029: the external-offset shape is still NOT detected (documented
+//     gap in the README); only its safe controls must stay quiet.
 //
 // Deliberately absent: assertions that the known-gap positives stay quiet. A
 // future detector should start reporting them without a test that encodes the
@@ -114,6 +118,24 @@ func TestFeedbackWatchCapabilityMatrix(t *testing.T) {
 	// the guarded local alias is not.
 	assertCandidate(t, "null-deref", nullDeref.Candidates, "get_session_state", 11)
 	assertNoCandidateFor(t, "null-deref", nullDeref.Candidates, "get_session_state_safe")
+
+	// The central safety claim of the global-null tier: it is SUSPECTED, never
+	// auto-confirmed, and the index row names both the tier and the declaration
+	// line (src@) so the AI can judge the macro-write caveat.
+	for _, c := range nullDeref.Candidates {
+		if c.Target.Function != "get_session_state" {
+			continue
+		}
+		if c.SuspicionLevel != "suspected" {
+			t.Errorf("global-null candidate suspicion = %q, want suspected (never auto-confirm a closed-world census)", c.SuspicionLevel)
+		}
+		if !strings.Contains(c.Hint, "null@global-null") {
+			t.Errorf("global-null candidate hint = %q, want null@global-null", c.Hint)
+		}
+		if !strings.Contains(c.Hint, "src@") {
+			t.Errorf("global-null candidate hint = %q, want the declaration line as src@N", c.Hint)
+		}
+	}
 
 	// CWD-SUB-1029 / CWD-SUB-1038 safe controls must not be misreported by the
 	// buffer channels while the target shapes remain documented gaps.

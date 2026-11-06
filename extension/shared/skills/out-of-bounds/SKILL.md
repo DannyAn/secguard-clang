@@ -1,6 +1,6 @@
 ---
 name: out-of-bounds
-description: Classify out-of-bounds read evidence — BUFFER_ACCESS events with array_oob_read/heap_oob_read categories. Maps to CWE-125.
+description: Classify out-of-bounds read evidence — BUFFER_ACCESS events with array_oob_read/heap_oob_read/layout_oob_read categories. Maps to CWE-125.
 license: MIT
 compatibility: opencode,claude code,DSH
 metadata:
@@ -15,9 +15,12 @@ metadata:
 An out-of-bounds candidate has:
 - **BUFFER_ACCESS event** with category `array_oob_read` (fixed-size array read
   past its declared size), `heap_oob_read` (loop bound past a
-  `malloc`/`calloc` allocation), or `array_oob_read_unchecked` (a fixed-size
+  `malloc`/`calloc` allocation), `array_oob_read_unchecked` (a fixed-size
   array indexed by a struct field with NO bounds check at the access site — the
-  external/config-index shape; heuristic tier)
+  external/config-index shape; heuristic tier), or `layout_oob_read` (a pointer
+  cast from a constant-size allocation to a struct, then a field read whose
+  computed `offset+size` exceeds the allocation — CWD-SUB-1038; the layout uses
+  the default ABI in Phase 1, so it is suspected, not machine-proved)
 - The subscript appears on the read side of an expression, e.g.
   `secret = arr[i];` or `sum += buf[i];`
 - **out_of_bounds**: the access site (function and line)
@@ -52,6 +55,7 @@ The two tiers are distinct:
 |----------|--------------------------|----------|
 | `array_oob_read` / `heap_oob_read` | the index provably reaches past `cap@` (constant / interval `lo >= cap@`) — **machine-proved** | confirm from the row, no source read |
 | `array_oob_read_unchecked` | the index is read from a struct field and no bounds check against the capacity dominates the access — **heuristic** | judge the field's real range from the Hint / Code Context |
+| `layout_oob_read` | the pointer was cast from a constant-size allocation to a struct, and the read field's offset+size exceeds the allocation — **heuristic** (default-ABI layout, `assumed_default_abi` provenance in Phase 1) | judge the embedded `struct_layout`/`field_access`; confirm when the allocation is genuinely smaller than the field end, dismiss when packing/custom ABI/typedef resolution explains the discrepancy |
 
 **The unchecked-external-index chain (CWE-125 -> CWE-476).** A fixed-size array
 member indexed by an unvalidated external field is out-of-bounds only when that

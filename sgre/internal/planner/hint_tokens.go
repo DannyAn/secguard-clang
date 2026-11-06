@@ -85,6 +85,9 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "key-size@", Display: "key-size@N", Description: "the observed key size in bytes: {value} (below 16 bytes / 128 bits is under the modern-cipher minimum)"},
 
 	// ---- buffer-overflow / out-of-bounds ----
+	{Key: "struct@", Display: "struct@<name>", Description: "layout OOB (CWD-SUB-1038): the pointer was cast from a constant-size allocation to this struct type: {value} — the cast target whose computed field extent exceeds the allocation"},
+	{Key: "alloc-size@", Display: "alloc-size@N", Description: "layout OOB: the allocation size in bytes is {value} — compare it with the accessed field's offset+size (a larger allocation makes the access legal, dismiss)"},
+	{Key: "layout-field@", Display: "layout-field@<name>:<offset>+<size>", Description: "layout OOB: the accessed field and its computed byte offset/size ({value}) — the access end is offset+size; the layout uses the default ABI in Phase 1, so a packed/custom-ABI layout or a typedef-resolution difference can explain an apparent overflow"},
 	{Key: "buf@", Display: "buf@<name>", Description: "the buffer being written/read: {value} — the resolved array or allocation name"},
 	{Key: "cap@", Display: "cap@N", Description: "the buffer's known capacity in elements: {value} (from the array declaration or allocation size)"},
 	{Key: "idx@", Display: "idx@<expr>", Description: "the access index, copy size, or declared size argument: {value} — a constant past cap@ is detector-proved; a variable one needs your judgment of its reachable range"},

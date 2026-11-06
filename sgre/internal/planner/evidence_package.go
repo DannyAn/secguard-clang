@@ -363,6 +363,22 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 				parts = append(parts, fmt.Sprintf("key-size@%d", c.CryptoKeySize))
 			}
 		case "buffer-overflow", "out-of-bounds":
+			// A layout-OOB candidate's decisive facts are the cast target struct,
+			// the allocation size and the accessed field's offset+size — NOT the
+			// generic buf@/idx@ pair (there `Index` is the field NAME, and no cap@
+			// exists, so the generic wording would mislabel it as an index).
+			if c.Category == "layout_oob_read" || c.Category == "layout_oob_write" {
+				if c.StructType != "" {
+					parts = append(parts, "struct@"+compactHintValue(c.StructType))
+				}
+				if c.AllocSize > 0 {
+					parts = append(parts, fmt.Sprintf("alloc-size@%d", c.AllocSize))
+				}
+				if c.Index != "" {
+					parts = append(parts, fmt.Sprintf("layout-field@%s:%d+%d", compactHintValue(c.Index), c.FieldOffset, c.FieldSize))
+				}
+				break
+			}
 			// The buffer/capacity/index triple is the verdict basis: a constant
 			// index past cap@ is detector-proved; a variable index/copy size is
 			// what the classifier must range-judge.

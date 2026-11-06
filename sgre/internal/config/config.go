@@ -358,6 +358,25 @@ func (c *Config) TypeFilterSet() map[string]bool {
 	return out
 }
 
+// TypeFilterRequested returns the requested type names in declaration order
+// (deduplicated), for validation and for echoing the applied scope into the
+// scan JSON. A nil/empty slice means "no type filter".
+func TypeFilterRequested() []string {
+	if len(typeFilterOverride) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(typeFilterOverride))
+	out := make([]string, 0, len(typeFilterOverride))
+	for _, n := range typeFilterOverride {
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	return out
+}
+
 // boundaryAutoDismissOverride is the one-shot CLI override
 // (`secguard scan --boundary-auto-dismiss external`). It wins over the file so a
 // production run can enable the layer without editing secguard.toml.

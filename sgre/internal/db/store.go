@@ -119,13 +119,17 @@ type SecurityEventStore interface {
 	// ListEventsByIDs returns the events with the given IDs keyed by ID, in a
 	// single batched query (chunked) instead of one query per ID.
 	ListEventsByIDs(ctx context.Context, ids []int64) (map[int64]*SecurityEvent, error)
-	// ListEventLocationIDsByType returns the subset of locationIDs that carry at
-	// least one event of eventType, via chunked IN queries. It is the
-	// memory-bounded replacement for "load every event of a type, then filter
-	// by location": only the caller's locations are consulted, so a filter never
-	// materializes a type's full event set (BUFFER_ACCESS can hold tens of
-	// thousands of rows on a large tree).
-	ListEventLocationIDsByType(ctx context.Context, eventType string, locationIDs []int64) (map[int64]bool, error)
+	// ListEventLocationKeysByType returns the set of "fileID:line" location keys
+	// that carry at least one event of eventType. It streams only the joined
+	// (file_id, line) pairs instead of materializing the event rows, so a filter
+	// can match a candidate's location by file/line without loading the type's
+	// full event set (BUFFER_ACCESS can hold tens of thousands of large rows on a
+	// large tree; that materialization was the plan-stage OOM trigger).
+	//
+	// Location rows are per event (locations has no uniqueness constraint), so a
+	// candidate and an event at the same file:line have different location ids;
+	// the (file_id,line) key is the identity that must be compared.
+	ListEventLocationKeysByType(ctx context.Context, eventType string) (map[string]bool, error)
 	ClearSecurityEvents(ctx context.Context) error
 }
 

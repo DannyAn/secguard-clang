@@ -95,7 +95,8 @@ category/type requires registering its proof class in
 
 ```
 secguard index <path>    Index a C codebase
-secguard scan <path>     Full pipeline: index + plan all registered vuln types + report
+secguard scan <path> [type-filter]  Full pipeline: index + plan types (all by default; an
+                         optional comma/space list narrows the PLAN stage, not the detectors) + report
 secguard status          Index status (files, functions, staleness)
 secguard metrics         Show scan performance/convergence metrics (latest scan)
 secguard query <skill>   Run a skill query

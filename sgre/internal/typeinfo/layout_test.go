@@ -176,6 +176,40 @@ func TestLayoutUnion(t *testing.T) {
 	}
 }
 
+func TestLayoutUnion_TailPadding(t *testing.T) {
+	// C sizeof(union) rounds the largest member up to the union alignment:
+	// union { long long x; char buf[9]; } is 16, not 9.
+	tl := LayoutUnion(ABILP64, LayoutKey{Type: "U"}, []FieldSpec{
+		{Name: "x", TypeSpelling: "long long"},
+		{Name: "buf", TypeSpelling: "char", IsArray: true, ArrayCount: 9},
+	}, nil)
+	if tl.IsUnknown() {
+		t.Fatalf("unexpected unknown: %s", tl.Unknown)
+	}
+	if tl.Size != 16 || tl.Align != 8 {
+		t.Errorf("union size/align = %d/%d; want 16/8", tl.Size, tl.Align)
+	}
+}
+
+func TestLayoutStruct_FlexibleArrayMember(t *testing.T) {
+	// A flexible array member contributes 0 bytes to sizeof but keeps its
+	// element alignment; `struct F { int n; char data[]; }` is 4 bytes.
+	tl := LayoutStruct(ABILP64, LayoutKey{Type: "F"}, []FieldSpec{
+		{Name: "n", TypeSpelling: "int"},
+		{Name: "data", TypeSpelling: "char", IsArray: true, ArrayCount: 0},
+	}, 0, nil)
+	if tl.IsUnknown() {
+		t.Fatalf("unexpected unknown: %s", tl.Unknown)
+	}
+	if tl.Size != 4 {
+		t.Errorf("struct size = %d; want 4 (FAM contributes no bytes)", tl.Size)
+	}
+	f, _ := tl.FieldByName("data")
+	if f.Size != 0 || !f.IsArray || f.IsPointer {
+		t.Errorf("data field = %+v; want a zero-size IsArray field", f)
+	}
+}
+
 func TestLayoutPointer(t *testing.T) {
 	tl := LayoutPointer(ABILP64, LayoutKey{Type: "void *"})
 	if tl.Size != 8 || tl.Align != 8 {

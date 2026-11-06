@@ -20,7 +20,7 @@ import (
 // Version is the release version. It is a var (not const) so `go build
 // -ldflags "-X github.com/DannyAn/secguard-clang/internal/cli.Version=<v>"`
 // can inject the release version at build time; the fallback matches VERSION.
-var Version = "0.12.2"
+var Version = "0.12.3"
 
 func Execute(ctx context.Context, args []string) int {
 	// Sync the db layer's supported-CWE set from the planner registry so the
@@ -145,7 +145,8 @@ func printUsage() {
 
 Usage:
   secguard index <path>    Index a C codebase
-  secguard scan <path>     Full pipeline: index + plan all vuln types + report
+  secguard scan <path> [type-filter]  Full pipeline: index + plan (all types, or the
+                           given comma/space-separated allow-list) + report
   secguard diff [<base>]   Review only changes base..HEAD (base defaults to HEAD~1)
   secguard pr [--base <b>] Review a PR/MR diff (base defaults to merge-base with main/master)
   secguard mr [--base <b>] Alias of pr (GitLab)

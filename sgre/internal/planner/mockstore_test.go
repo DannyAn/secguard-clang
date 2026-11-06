@@ -365,15 +365,18 @@ func (s *mockStore) ListEventsByIDs(ctx context.Context, ids []int64) (map[int64
 	}
 	return out, nil
 }
-func (s *mockStore) ListEventLocationIDsByType(ctx context.Context, et string, ids []int64) (map[int64]bool, error) {
-	want := make(map[int64]bool, len(ids))
-	for _, id := range ids {
-		want[id] = true
+func (s *mockStore) ListEventLocationKeysByType(ctx context.Context, et string) (map[string]bool, error) {
+	locByID := make(map[int64]*db.Location, len(s.locs))
+	for _, l := range s.locs {
+		locByID[l.ID] = l
 	}
-	out := make(map[int64]bool)
+	out := make(map[string]bool)
 	for _, e := range s.events {
-		if e.EventType == et && want[e.LocationID] {
-			out[e.LocationID] = true
+		if e.EventType != et {
+			continue
+		}
+		if loc := locByID[e.LocationID]; loc != nil {
+			out[fmt.Sprintf("%d:%d", loc.FileID, loc.Line)] = true
 		}
 	}
 	return out, nil

@@ -100,6 +100,8 @@ func TestLayoutOOB_NoFalsePositiveOnExistingFixtures(t *testing.T) {
 		filepath.Join("feedback_watch", "CWD-SUB-1038-invalid-pointer-cast", "01_cast_insufficient_size.c"): true,
 		filepath.Join("feedback_watch", "CWD-SUB-1038-invalid-pointer-cast", "09_typedef_cast.c"):           true,
 		filepath.Join("feedback_watch", "CWD-SUB-1038-invalid-pointer-cast", "10_layout_oob_write.c"):       true,
+		filepath.Join("feedback_watch", "CWD-SUB-1038-invalid-pointer-cast", "13_multidim_array_field.c"):   true,
+		filepath.Join("feedback_watch", "CWD-SUB-1038-invalid-pointer-cast", "17_hex_size_literal.c"):       true,
 	}
 	matches, err := filepath.Glob(filepath.Join("..", "..", "testdata", "feedback_watch", "*", "*.c"))
 	if err != nil {
@@ -205,5 +207,84 @@ func TestLayoutOOB_WriteCategory(t *testing.T) {
 		feedbackWatchPath("CWD-SUB-1038-invalid-pointer-cast", "10_layout_oob_write.c"))
 	if !hasLayoutOOBEvent(t, store, "layout_oob_write") {
 		t.Errorf("expected layout_oob_write for write through cast pointer with insufficient allocation")
+	}
+}
+
+// TestLayoutOOB_FlexibleArraySkip verifies that an access through a flexible
+// array member (payload[]) is skipped: ArrayCount is legitimately 0 for a FAM,
+// so the detector must key the skip on IsArray, not on ArrayCount>0. Otherwise
+// element size makes `p->payload[0]` look like an out-of-bounds whole-array
+// access.
+func TestLayoutOOB_FlexibleArraySkip(t *testing.T) {
+	store := indexAndDetectBufferOverflow(t,
+		feedbackWatchPath("CWD-SUB-1038-invalid-pointer-cast", "11_flexible_array_skip.c"))
+	if hasLayoutOOBEvent(t, store, "layout_oob_read") {
+		t.Errorf("false positive: layout_oob_read on a flexible-array-member access")
+	}
+}
+
+// TestLayoutOOB_NestedStructDefinition verifies that an inline nested struct
+// definition does not leak its fields into the outer layout. The outer layout is
+// {Inner n; uint32_t c} = 12 bytes, so c at offset 8 in malloc(12) is legal. A
+// recursive field census would place c at 16 and report a false positive.
+func TestLayoutOOB_NestedStructDefinition(t *testing.T) {
+	store := indexAndDetectBufferOverflow(t,
+		feedbackWatchPath("CWD-SUB-1038-invalid-pointer-cast", "12_nested_struct_definition.c"))
+	if hasLayoutOOBEvent(t, store, "layout_oob_write") {
+		t.Errorf("false positive: nested struct fields corrupted the outer layout")
+	}
+}
+
+// TestLayoutOOB_MultidimensionalArrayField verifies that a multi-dimensional
+// array member contributes its full size (2*3*4=24) to the layout, so the field
+// after it at offset 28 in malloc(28) is a genuine out-of-bounds write.
+func TestLayoutOOB_MultidimensionalArrayField(t *testing.T) {
+	store := indexAndDetectBufferOverflow(t,
+		feedbackWatchPath("CWD-SUB-1038-invalid-pointer-cast", "13_multidim_array_field.c"))
+	if !hasLayoutOOBEvent(t, store, "layout_oob_write") {
+		t.Errorf("expected layout_oob_write past a 2x3 array member (multi-dim size must be the product of its dimensions)")
+	}
+}
+
+// TestLayoutOOB_AllocResolvedAtCastLine verifies that a later reassignment of the
+// SOURCE pointer does not retroactively shrink the cast target's allocation: the
+// cast record keeps the size that was live at the cast line.
+func TestLayoutOOB_AllocResolvedAtCastLine(t *testing.T) {
+	store := indexAndDetectBufferOverflow(t,
+		feedbackWatchPath("CWD-SUB-1038-invalid-pointer-cast", "14_alloc_reassigned_after_cast.c"))
+	if hasLayoutOOBEvent(t, store, "layout_oob_read") {
+		t.Errorf("false positive: record still points at the 64-byte allocation after raw was reassigned")
+	}
+}
+
+// TestLayoutOOB_NewFactoryIsNotAByteSize verifies that a factory whose name
+// contains "_new" is not treated as a byte-size allocator: `conn_new(4)` passes a
+// version, not a 4-byte allocation.
+func TestLayoutOOB_NewFactoryIsNotAByteSize(t *testing.T) {
+	store := indexAndDetectBufferOverflow(t,
+		feedbackWatchPath("CWD-SUB-1038-invalid-pointer-cast", "15_new_factory_not_byte_size.c"))
+	if hasLayoutOOBEvent(t, store, "layout_oob_read") {
+		t.Errorf("false positive: conn_new(4) is a factory call, not a 4-byte allocation")
+	}
+}
+
+// TestLayoutOOB_HexSizeLiteral verifies the C-literal byte-size parser: malloc(0x8U)
+// is an 8-byte allocation, not an unparseable expression.
+func TestLayoutOOB_HexSizeLiteral(t *testing.T) {
+	store := indexAndDetectBufferOverflow(t,
+		feedbackWatchPath("CWD-SUB-1038-invalid-pointer-cast", "17_hex_size_literal.c"))
+	if !hasLayoutOOBEvent(t, store, "layout_oob_read") {
+		t.Errorf("expected layout_oob_read for malloc(0x8U) cast to a 24-byte struct")
+	}
+}
+
+// TestLayoutOOB_NestedFieldAccess verifies that `outer->inner.a` is not checked
+// at the intermediate `outer->inner` (the whole nested-struct extent). MVP
+// supports one-level fields only.
+func TestLayoutOOB_NestedFieldAccess(t *testing.T) {
+	store := indexAndDetectBufferOverflow(t,
+		feedbackWatchPath("CWD-SUB-1038-invalid-pointer-cast", "16_nested_field_access.c"))
+	if hasLayoutOOBEvent(t, store, "layout_oob_read") || hasLayoutOOBEvent(t, store, "layout_oob_write") {
+		t.Errorf("false positive: leaf outer->inner.a is in bounds, the intermediate outer->inner must not be checked")
 	}
 }
