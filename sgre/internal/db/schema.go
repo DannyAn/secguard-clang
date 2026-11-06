@@ -247,6 +247,22 @@ CREATE TABLE IF NOT EXISTS scan_incomplete_tasks (
 CREATE INDEX IF NOT EXISTS idx_incomplete_scan ON scan_incomplete_tasks(scan_id);
 
 -- ============================================================
+-- Pipeline Meta (reuse gate for skipping graph+detectors rebuild)
+-- ============================================================
+
+-- Key-value store for pipeline-level metadata that gates the graph+detector
+-- reuse optimization. Keys:
+--   config_checksum   — SHA256 of the effective secguard.toml at last build
+--   graph_build_complete — "true" if graph+detectors finished without error
+-- A scan skips graph+detectors only when FilesChanged==0 AND the config
+-- checksum is unchanged AND graph_build_complete=="true" AND the DB has
+-- prior graph_edges + security_events.
+CREATE TABLE IF NOT EXISTS pipeline_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+-- ============================================================
 -- Review Sessions (incremental PR/MR review anchor)
 -- ============================================================
 

@@ -33,6 +33,10 @@ type IndexResult struct {
 	// scanned scale without a second pass over the files table.
 	LinesOfCode int   `json:"lines_of_code"`
 	DurationMs  int64 `json:"duration_ms"`
+	// FilesChanged is the count of files whose checksum differed from the
+	// previous index (new or modified). A zero value means every file was
+	// unchanged, so a downstream scan can skip the graph+detector rebuild.
+	FilesChanged int `json:"files_changed"`
 }
 
 func NewIndexer(store db.Store, logger *log.Logger) *Indexer {
@@ -104,7 +108,54 @@ func (idx *Indexer) Index(ctx context.Context, targetPath string) (*IndexResult,
 		}
 	}
 
+	idx.detectDeletedFiles(ctx, result)
+
 	return result, nil
+}
+
+// detectDeletedFiles removes DB rows for files that were indexed previously but
+// no longer exist on disk (deleted or moved out of the scan root). With
+// PRAGMA foreign_keys = ON the DELETE cascades to functions, declarations,
+// variables, expressions, file_scope_variables, inline_suppressions, and
+// locations. graph_nodes/graph_edges/security_events have no FK to files, so
+// their stale rows survive — but a deletion bumps FilesChanged, which forces
+// canReuse=false and a full ClearGraph + ClearSecurityEvents rebuild, so the
+// stale rows are purged before any plan consumes them.
+func (idx *Indexer) detectDeletedFiles(ctx context.Context, result *IndexResult) {
+	dbFiles, err := idx.store.ListFiles(ctx)
+	if err != nil {
+		if idx.logger != nil {
+			idx.logger.Warn("failed to list files for deletion check", "error", err)
+		}
+		return
+	}
+	for _, f := range dbFiles {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		info, statErr := os.Stat(f.Path)
+		// A file is stale when it no longer exists (deleted/moved) OR when its
+		// path was replaced by a directory (rm foo.c; mkdir foo.c). The latter
+		// leaves os.Stat succeeding but IsDir true, and WalkCFiles would never
+		// traverse it — so the DB row and its functions would survive as stale
+		// graph edges forever without this check.
+		stale := statErr != nil && os.IsNotExist(statErr) || (statErr == nil && info.IsDir())
+		if !stale {
+			continue
+		}
+		if err := idx.store.DeleteFile(ctx, f.ID); err != nil {
+			if idx.logger != nil {
+				idx.logger.Warn("failed to delete stale file", "file", f.Path, "error", err)
+			}
+			continue
+		}
+		if idx.logger != nil {
+			idx.logger.Info("deleted stale file from index", "file", f.Path)
+		}
+		result.FilesChanged++
+	}
 }
 
 func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *IndexResult) error {
@@ -248,6 +299,7 @@ func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *Inde
 
 	result.FilesIndexed++
 	result.FunctionsIndexed += inserted
+	result.FilesChanged++
 	return nil
 }
 

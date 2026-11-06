@@ -138,10 +138,23 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	logger.Info("phase timing", "phase", "index", "elapsed_ms", timings.IndexMs)
 	logPhaseResources(logger, "index", p, nil)
 
+	canReuse := indexResult.FilesChanged == 0 &&
+		graphExists(ctx, store) &&
+		eventsExist(ctx, store) &&
+		configChecksumUnchanged(ctx, store) &&
+		graphBuildComplete(ctx, store)
+	if canReuse {
+		logger.Info("phase skipped", "phase", "graph+detectors", "reason", "no file/config changed and DB has prior complete graph+events")
+	}
+	var memMon *MemoryMonitor
+	var detectorErrors []evidence.DetectorError
+
 	// The semantic graph is rebuilt from scratch every run (there is no
 	// incremental graph update), so clear the previous run's nodes/edges first.
-	if err := store.ClearGraph(ctx); err != nil {
-		return nil, fmt.Errorf("clear graph: %w", err)
+	if !canReuse {
+		if err := store.ClearGraph(ctx); err != nil {
+			return nil, fmt.Errorf("clear graph: %w", err)
+		}
 	}
 
 	// Build a shared read-only snapshot of all indexed functions and files once,
@@ -171,117 +184,118 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 	ctx = graph.WithRepoIndex(ctx, graph.NewRepoIndexWithFacts(repoFuncs, repoFiles, repoFacts))
 
-	graphStart := time.Now()
+	if !canReuse {
+		graphStart := time.Now()
 
-	// Function-pointer slot -> target writes run SEQUENTIALLY before the parallel
-	// builders: CallGraphBuilder and InterprocBuilder both consume the resolved
-	// slots for indirect-call resolution (GAP-02). `[graph] indirect_call_resolution
-	// = false` disables the pass (a deployment that proves the ops table is never
-	// indirect can skip the traversal).
-	if config.Load().IndirectCallResolutionEnabled() {
-		if err := graph.NewFuncPtrWriteBuilder(store, p, logger).Build(ctx); err != nil {
-			return nil, fmt.Errorf("func ptr writes: %w", err)
-		}
-	}
-
-	type builderTask struct {
-		name string
-		fn   func(context.Context) error
-	}
-	builders := []builderTask{
-		{"call_graph", func(ctx context.Context) error {
-			_, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-			return err
-		}},
-		{"data_flow", func(ctx context.Context) error {
-			_, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-			return err
-		}},
-		{"alias", func(ctx context.Context) error {
-			_, err := graph.NewAliasBuilder(store, p, logger).Build(ctx)
-			return err
-		}},
-		{"ownership", func(ctx context.Context) error {
-			_, err := graph.NewOwnershipBuilder(store, p, logger).Build(ctx)
-			return err
-		}},
-		{"interproc", func(ctx context.Context) error {
-			_, err := graph.NewInterprocBuilder(store, p, logger).Build(ctx)
-			return err
-		}},
-		{"lock_order", func(ctx context.Context) error {
-			_, err := graph.NewLockOrderBuilder(store, p, logger).Build(ctx)
-			return err
-		}},
-		{"shared_access", func(ctx context.Context) error {
-			_, err := graph.NewSharedAccessBuilder(store, p, logger).Build(ctx)
-			return err
-		}},
-	}
-	var bwg sync.WaitGroup
-	bErrCh := make(chan error, len(builders))
-
-	var memMon *MemoryMonitor
-	if cfg := config.Load(); cfg.Scan.MemoryPressureEnabled {
-		highMB := cfg.Scan.MemoryHighWatermarkMB
-		lowMB := cfg.Scan.MemoryLowWatermarkMB
-		if highMB == 0 {
-			// Backpressure opted in without a watermark: derive it from the
-			// cgroup ceiling so a containerized scan does not have to hand-compute
-			// the threshold. 70% high / 52.5% low leaves headroom for the other
-			// resident processes sharing the cgroup.
-			if limit := config.DetectCgroupMemoryLimit(); limit > 0 {
-				// Apply the 70% in bytes before the MB conversion so a small
-				// ceiling still yields a non-zero watermark instead of truncating
-				// to zero on the MB division first.
-				highMB = int(limit * 7 / 10 / (1024 * 1024))
-				lowMB = highMB * 3 / 4
+		// Function-pointer slot -> target writes run SEQUENTIALLY before the parallel
+		// builders: CallGraphBuilder and InterprocBuilder both consume the resolved
+		// slots for indirect-call resolution (GAP-02). `[graph] indirect_call_resolution
+		// = false` disables the pass (a deployment that proves the ops table is never
+		// indirect can skip the traversal).
+		if config.Load().IndirectCallResolutionEnabled() {
+			if err := graph.NewFuncPtrWriteBuilder(store, p, logger).Build(ctx); err != nil {
+				return nil, fmt.Errorf("func ptr writes: %w", err)
 			}
 		}
-		if highMB > 0 {
-			memMon = NewMemoryMonitor(int64(highMB)*1024*1024,
-				int64(lowMB)*1024*1024)
-			memMon.Start(2*time.Second, logger)
-			defer memMon.Stop()
-		}
-	}
-	builderGate := concurrency.NewGate(config.Load().GraphBuildersConcurrencyOr(len(builders)),
-		func() bool { return memMon != nil && memMon.Pressured() })
 
-	for _, b := range builders {
-		bwg.Add(1)
-		go func(b builderTask) {
-			defer bwg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					bErrCh <- fmt.Errorf("%s panicked: %v", b.name, r)
+		type builderTask struct {
+			name string
+			fn   func(context.Context) error
+		}
+		builders := []builderTask{
+			{"call_graph", func(ctx context.Context) error {
+				_, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+				return err
+			}},
+			{"data_flow", func(ctx context.Context) error {
+				_, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+				return err
+			}},
+			{"alias", func(ctx context.Context) error {
+				_, err := graph.NewAliasBuilder(store, p, logger).Build(ctx)
+				return err
+			}},
+			{"ownership", func(ctx context.Context) error {
+				_, err := graph.NewOwnershipBuilder(store, p, logger).Build(ctx)
+				return err
+			}},
+			{"interproc", func(ctx context.Context) error {
+				_, err := graph.NewInterprocBuilder(store, p, logger).Build(ctx)
+				return err
+			}},
+			{"lock_order", func(ctx context.Context) error {
+				_, err := graph.NewLockOrderBuilder(store, p, logger).Build(ctx)
+				return err
+			}},
+			{"shared_access", func(ctx context.Context) error {
+				_, err := graph.NewSharedAccessBuilder(store, p, logger).Build(ctx)
+				return err
+			}},
+		}
+		var bwg sync.WaitGroup
+		bErrCh := make(chan error, len(builders))
+
+		if cfg := config.Load(); cfg.Scan.MemoryPressureEnabled {
+			highMB := cfg.Scan.MemoryHighWatermarkMB
+			lowMB := cfg.Scan.MemoryLowWatermarkMB
+			if highMB == 0 {
+				// Backpressure opted in without a watermark: derive it from the
+				// cgroup ceiling so a containerized scan does not have to hand-compute
+				// the threshold. 70% high / 52.5% low leaves headroom for the other
+				// resident processes sharing the cgroup.
+				if limit := config.DetectCgroupMemoryLimit(); limit > 0 {
+					// Apply the 70% in bytes before the MB conversion so a small
+					// ceiling still yields a non-zero watermark instead of truncating
+					// to zero on the MB division first.
+					highMB = int(limit * 7 / 10 / (1024 * 1024))
+					lowMB = highMB * 3 / 4
 				}
-			}()
-			if !builderGate.Acquire(ctx) {
-				bErrCh <- fmt.Errorf("%s: canceled while waiting for memory capacity", b.name)
-				return
 			}
-			defer builderGate.Release()
-			if err := b.fn(ctx); err != nil {
-				bErrCh <- fmt.Errorf("%s: %w", b.name, err)
+			if highMB > 0 {
+				memMon = NewMemoryMonitor(int64(highMB)*1024*1024,
+					int64(lowMB)*1024*1024)
+				memMon.Start(2*time.Second, logger)
+				defer memMon.Stop()
 			}
-		}(b)
-	}
-	bwg.Wait()
-	close(bErrCh)
-	var errs []error
-	for err := range bErrCh {
-		errs = append(errs, err)
-	}
-	if len(errs) > 0 {
-		return nil, fmt.Errorf("graph build failed: %w", errors.Join(errs...))
-	}
-	timings.GraphMs = time.Since(graphStart).Milliseconds()
-	logger.Info("phase timing", "phase", "graph_builders_parallel", "elapsed_ms", timings.GraphMs)
-	logPhaseResources(logger, "graph", p, nil)
+		}
+		builderGate := concurrency.NewGate(config.Load().GraphBuildersConcurrencyOr(len(builders)),
+			func() bool { return memMon != nil && memMon.Pressured() })
 
-	if err := store.ClearSecurityEvents(ctx); err != nil {
-		return nil, fmt.Errorf("clear security events: %w", err)
+		for _, b := range builders {
+			bwg.Add(1)
+			go func(b builderTask) {
+				defer bwg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						bErrCh <- fmt.Errorf("%s panicked: %v", b.name, r)
+					}
+				}()
+				if !builderGate.Acquire(ctx) {
+					bErrCh <- fmt.Errorf("%s: canceled while waiting for memory capacity", b.name)
+					return
+				}
+				defer builderGate.Release()
+				if err := b.fn(ctx); err != nil {
+					bErrCh <- fmt.Errorf("%s: %w", b.name, err)
+				}
+			}(b)
+		}
+		bwg.Wait()
+		close(bErrCh)
+		var errs []error
+		for err := range bErrCh {
+			errs = append(errs, err)
+		}
+		if len(errs) > 0 {
+			return nil, fmt.Errorf("graph build failed: %w", errors.Join(errs...))
+		}
+		timings.GraphMs = time.Since(graphStart).Milliseconds()
+		logger.Info("phase timing", "phase", "graph_builders_parallel", "elapsed_ms", timings.GraphMs)
+		logPhaseResources(logger, "graph", p, nil)
+
+		if err := store.ClearSecurityEvents(ctx); err != nil {
+			return nil, fmt.Errorf("clear security events: %w", err)
+		}
 	}
 
 	// Share one statement-CFG cache across the detector and plan stages: a
@@ -337,25 +351,42 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 	sort.Strings(skippedDetectors)
 
-	detStart := time.Now()
-	evidence.SetEventBatchSize(config.Load().Scan.EventBatchSize)
-	evidence.SetDetectorConcurrency(config.Load().DetectorConcurrencyOr(8))
-	evidence.SetDetectorThrottle(func() bool { return memMon != nil && memMon.Pressured() })
-	detectorErrors := evidence.RunAllDetectorsWithSkip(ctx, store, p, logger, sharedCFGCache, skipSet)
-	if n := evidence.EventFlushFailures(); n > 0 {
-		detectorErrors = append(detectorErrors, evidence.DetectorError{
-			Detector: "event_batch",
-			Err:      fmt.Errorf("%d event batch flush(es) failed; those events were lost", n),
-		})
+	if !canReuse {
+		detStart := time.Now()
+		evidence.SetEventBatchSize(config.Load().Scan.EventBatchSize)
+		evidence.SetDetectorConcurrency(config.Load().DetectorConcurrencyOr(8))
+		evidence.SetDetectorThrottle(func() bool { return memMon != nil && memMon.Pressured() })
+		detectorErrors = evidence.RunAllDetectorsWithSkip(ctx, store, p, logger, sharedCFGCache, skipSet)
+		if n := evidence.EventFlushFailures(); n > 0 {
+			detectorErrors = append(detectorErrors, evidence.DetectorError{
+				Detector: "event_batch",
+				Err:      fmt.Errorf("%d event batch flush(es) failed; those events were lost", n),
+			})
+		}
+		timings.DetectorsMs = time.Since(detStart).Milliseconds()
+		if len(skippedDetectors) > 0 {
+			logger.Info("phase timing", "phase", "detectors_total", "elapsed_ms", timings.DetectorsMs,
+				"skipped", skippedDetectors)
+		} else {
+			logger.Info("phase timing", "phase", "detectors_total", "elapsed_ms", timings.DetectorsMs)
+		}
+		logPhaseResources(logger, "detectors", p, sharedCFGCache)
 	}
-	timings.DetectorsMs = time.Since(detStart).Milliseconds()
-	if len(skippedDetectors) > 0 {
-		logger.Info("phase timing", "phase", "detectors_total", "elapsed_ms", timings.DetectorsMs,
-			"skipped", skippedDetectors)
-	} else {
-		logger.Info("phase timing", "phase", "detectors_total", "elapsed_ms", timings.DetectorsMs)
+
+	// Record the pipeline meta that gates the next run's canReuse check.
+	// graph_build_complete is set only after graph+detectors finished without
+	// aborting the pipeline (a graph-builder error returns early above and
+	// never reaches here). Detector-level errors are recorded separately and
+	// do not mark the build incomplete — the graph itself is valid, the failed
+	// detector's types are just missing.
+	if !canReuse {
+		if err := store.SetMeta(ctx, "config_checksum", config.ConfigChecksum()); err != nil {
+			logger.Warn("failed to record config checksum", "error", err)
+		}
+		if err := store.SetMeta(ctx, "graph_build_complete", "true"); err != nil {
+			logger.Warn("failed to record graph build complete", "error", err)
+		}
 	}
-	logPhaseResources(logger, "detectors", p, sharedCFGCache)
 
 	// Backfill a function_summary row for every indexed function, so the
 	// coverage acceptance (≥90%) holds and richer per-function contract facts
@@ -522,4 +553,43 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 		SkippedDetectors: skippedDetectors,
 		Timings:          timings,
 	}, nil
+}
+
+// graphExists reports whether the DB has any graph edges from a prior run.
+// It is the reuse gate for skipping the graph+detector rebuild when no source
+// file changed since the last index/scan.
+func graphExists(ctx context.Context, store db.Store) bool {
+	var exists bool
+	err := store.DB().QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM graph_edges)").Scan(&exists)
+	return err == nil && exists
+}
+
+// eventsExist reports whether the DB has any security events from a prior run.
+func eventsExist(ctx context.Context, store db.Store) bool {
+	var exists bool
+	err := store.DB().QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM security_events)").Scan(&exists)
+	return err == nil && exists
+}
+
+// configChecksumUnchanged reports whether the current config file's checksum
+// matches the one recorded at the last graph+detector build. A missing meta
+// row (first run, or pre-this-feature DB) returns false so the build runs once
+// and records the checksum for future runs.
+func configChecksumUnchanged(ctx context.Context, store db.Store) bool {
+	stored, ok, err := store.GetMeta(ctx, "config_checksum")
+	if err != nil || !ok {
+		return false
+	}
+	return stored == config.ConfigChecksum()
+}
+
+// graphBuildComplete reports whether the last graph+detector build recorded
+// graph_build_complete="true". A missing meta row returns false so the build
+// runs once and records completion for future runs.
+func graphBuildComplete(ctx context.Context, store db.Store) bool {
+	val, ok, err := store.GetMeta(ctx, "graph_build_complete")
+	if err != nil || !ok {
+		return false
+	}
+	return val == "true"
 }

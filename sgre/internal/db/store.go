@@ -11,6 +11,12 @@ type FileStore interface {
 	GetFileByPath(ctx context.Context, path string) (*File, error)
 	ListFiles(ctx context.Context) ([]*File, error)
 	UpdateFileChecksum(ctx context.Context, id int64, checksum string, loc int) error
+	DeleteFile(ctx context.Context, id int64) error
+}
+
+type MetaStore interface {
+	GetMeta(ctx context.Context, key string) (value string, ok bool, err error)
+	SetMeta(ctx context.Context, key, value string) error
 }
 
 type FunctionStore interface {
@@ -287,6 +293,7 @@ type Store interface {
 	InlineSuppressionStore
 	FuncPtrWriteStore
 	CandidateVerdictStore
+	MetaStore
 	Close() error
 	WithTx(ctx context.Context, fn func(Store) error) error
 	// WithImmediateTx runs fn in a transaction that acquires the SQLite write

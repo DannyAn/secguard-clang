@@ -565,3 +565,115 @@ func TestReadCgroupLimit(t *testing.T) {
 		t.Errorf("missing file = (%d, %v), want (0, false)", v, ok)
 	}
 }
+func TestConfigChecksum_NoConfigReturnsDefault(t *testing.T) {
+	dir := t.TempDir()
+	SetExplicitPath("")
+	t.Setenv("SECGUARD_CONFIG", "")
+	t.Chdir(dir)
+
+	if got := ConfigChecksum(); got != "default" {
+		t.Errorf("ConfigChecksum with no config = %q, want %q", got, "default")
+	}
+}
+
+func TestConfigChecksum_ReflectsConfigContent(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".codeagent", "secguard.toml")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte(`[allocators]
+names = ["my_malloc"]
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	SetExplicitPath("")
+	t.Setenv("SECGUARD_CONFIG", "")
+	t.Chdir(dir)
+
+	cs1 := ConfigChecksum()
+	if cs1 == "default" {
+		t.Fatal("ConfigChecksum should not be default when config exists")
+	}
+
+	cs2 := ConfigChecksum()
+	if cs1 != cs2 {
+		t.Fatalf("ConfigChecksum not stable: %q vs %q", cs1, cs2)
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(`[allocators]
+names = ["my_other_malloc"]
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cs3 := ConfigChecksum()
+	if cs3 == cs1 {
+		t.Fatal("ConfigChecksum should change when config content changes")
+	}
+}
+func TestLoadE_ParseFailureReturnsDefaultsWithDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".codeagent", "secguard.toml")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte(`this is not valid TOML = = =`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	SetExplicitPath("")
+	t.Setenv("SECGUARD_CONFIG", "")
+	t.Chdir(dir)
+
+	cfg, err := LoadE()
+	if err == nil {
+		t.Fatal("LoadE should return error on parse failure")
+	}
+	if cfg == nil {
+		t.Fatal("LoadE should return non-nil cfg on parse failure")
+	}
+	if cfg.Scan.MaxCachedTrees != 4000 {
+		t.Fatalf("parse failure should return cfg with applyScanDefaults, MaxCachedTrees=%d want 4000", cfg.Scan.MaxCachedTrees)
+	}
+	if cfg.Scan.CFGCacheMaxEntries != 4000 {
+		t.Fatalf("parse failure should return cfg with applyScanDefaults, CFGCacheMaxEntries=%d want 4000", cfg.Scan.CFGCacheMaxEntries)
+	}
+	if cfg.Scan.EventBatchSize != 2000 {
+		t.Fatalf("parse failure should return cfg with applyScanDefaults, EventBatchSize=%d want 2000", cfg.Scan.EventBatchSize)
+	}
+}
+
+func TestConfigChecksum_ParseFailureReturnsDefault(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".codeagent", "secguard.toml")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte(`this is not valid TOML = = =`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	SetExplicitPath("")
+	t.Setenv("SECGUARD_CONFIG", "")
+	t.Chdir(dir)
+
+	if got := ConfigChecksum(); got != "default" {
+		t.Fatalf("ConfigChecksum on parse failure = %q, want %q (must match LoadE's effective zero-defaults config)", got, "default")
+	}
+}
+
+func TestConfigChecksum_SuggestedMissingScanStillWorks(t *testing.T) {
+	dir := t.TempDir()
+	SetExplicitPath("")
+	t.Setenv("SECGUARD_CONFIG", "")
+	t.Chdir(dir)
+
+	cfg := Load()
+	if cfg == nil {
+		t.Fatal("Load should return non-nil cfg even with no config")
+	}
+	if cfg.Scan.MaxCachedTrees != 4000 {
+		t.Fatalf("no-config Load MaxCachedTrees=%d want 4000", cfg.Scan.MaxCachedTrees)
+	}
+	if got := ConfigChecksum(); got != "default" {
+		t.Fatalf("no-config ConfigChecksum = %q, want %q", got, "default")
+	}
+}

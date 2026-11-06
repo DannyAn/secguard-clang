@@ -131,10 +131,11 @@ func (s *store) InsertGraphEdgeBatch(ctx context.Context, edges []GraphEdge) (in
 }
 
 func (s *store) ClearGraph(ctx context.Context) error {
-	// Delete edges before nodes: graph_edges carries an FK to graph_nodes, and
-	// PRAGMA foreign_keys is enforced per-connection (it is not guaranteed to be
-	// on for whatever connection executes this), so deleting nodes first could
-	// leave orphaned edges or error depending on the executing connection.
+	// Delete edges before nodes: graph_edges carries an FK to graph_nodes.
+	// The DSN sets _pragma=foreign_keys(1) on every connection (connection.go),
+	// so SQLite would cascade the edge delete — but the explicit order is kept
+	// as defense-in-depth: a future DSN change or a test store without the
+	// pragma would still produce a correct result instead of orphaned edges.
 	return s.WithImmediateTx(ctx, func(tx Store) error {
 		if _, err := tx.(*store).exec.ExecContext(ctx, `DELETE FROM graph_edges`); err != nil {
 			return fmt.Errorf("db: clear graph edges: %w", err)

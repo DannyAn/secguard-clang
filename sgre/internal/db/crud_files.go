@@ -87,3 +87,26 @@ func (s *store) UpdateFileChecksum(ctx context.Context, id int64, checksum strin
 	}
 	return nil
 }
+
+// DeleteFile removes a file row. With PRAGMA foreign_keys = ON the DELETE
+// cascades to functions, function_declarations, variables, expressions,
+// file_scope_variables, inline_suppressions, and locations. graph_nodes/
+// graph_edges/security_events have no FK to files (they reference functions/
+// locations by id polymorphically or with ON DELETE SET NULL), so their stale
+// rows survive — but a deletion bumps FilesChanged, which forces canReuse=false
+// and a full ClearGraph + ClearSecurityEvents rebuild, so the stale rows are
+// purged before any plan consumes them.
+func (s *store) DeleteFile(ctx context.Context, id int64) error {
+	res, err := s.exec.ExecContext(ctx, `DELETE FROM files WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("db: delete file: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("db: delete file: rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("db: delete file: no file with id %d", id)
+	}
+	return nil
+}

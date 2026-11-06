@@ -5,6 +5,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -693,9 +695,10 @@ func SetExplicitPath(path string) {
 //
 //  1. --config flag (via SetExplicitPath)
 //  2. SECGUARD_CONFIG env var
-//  3. project-level  <cwd>/.codeagent/secguard.toml                (per-repo exceptions)
-//  4. project-level  <cwd>/.codeagent/secguard-clang/secguard.toml (adopted suggestion)
-//  5. user-level     ~/.codeagent/secguard.toml                    (personal default)
+//  3. project-level  <cwd>/.codeagent/secguard.toml                     (per-repo exceptions)
+//  4. project-level  <cwd>/.codeagent/secguard-clang/secguard.toml      (adopted suggestion)
+//  5. project-level  <cwd>/.codeagent/secguard-clang/secguard.toml.suggested (index advisory, auto-fallback)
+//  6. user-level     ~/.codeagent/secguard.toml                         (personal default)
 //
 // A missing file is not an error: the caller falls back to built-in behavior.
 // Both default locations share the .codeagent naming, consistent with the
@@ -712,7 +715,7 @@ func SetExplicitPath(path string) {
 func Load() *Config {
 	cfg, err := LoadE()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "secguard: config load warning: %v (using zero config)\n", err)
+		fmt.Fprintf(os.Stderr, "secguard: config load warning: %v (using defaults)\n", err)
 	}
 	return cfg
 }
@@ -740,8 +743,13 @@ func LoadE() (*Config, error) {
 	// disappears. Load() has no error channel (the file is optional and a missing
 	// file is not an error), so surface parse failures on stderr and keep the
 	// zero config rather than a half-populated one.
+	//
+	// Return cfg (with applyScanDefaults already applied) — NOT &Config{} — so a
+	// parse failure still gets the bounded cache defaults (MaxCachedTrees=4000
+	// etc). Returning an unbounded &Config{} here would make a malformed config
+	// an OOM vector: the parser/CFG/event buffers would all be unbounded.
 	if err := toml.Unmarshal(data, cfg); err != nil {
-		return &Config{}, fmt.Errorf("parse config %s: %w", path, err)
+		return cfg, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	applyScanDefaults(cfg)
 	return cfg, nil
@@ -990,6 +998,38 @@ func ResolvedPath() string {
 	return resolvePath(explicitPath)
 }
 
+// ConfigChecksum returns the SHA256 of the effective config file content, or
+// "default" when no config file is active, it cannot be read, or it cannot be
+// parsed. It is the reuse gate for the graph+detector rebuild: a config change
+// (new deallocators, disabled types, exclude paths) alters what the graph
+// builders and detectors produce, so a stale graph from the old config would
+// yield false negatives.
+//
+// The checksum is of the raw file bytes, not the parsed struct, so a reformat
+// without a semantic change is a false-positive rebuild — acceptable for a
+// human-authored file that rarely changes. A parse failure returns "default"
+// (not the file bytes) so the checksum stays consistent with LoadE's effective
+// config: a malformed config means the zero defaults are in effect, and
+// "default" is their checksum. Without this, a persistently malformed config
+// would record a non-"default" checksum and a later repair would not trigger a
+// rebuild (same bytes → same checksum → canReuse=true → stale graph).
+func ConfigChecksum() string {
+	path := resolvePath(explicitPath)
+	if path == "" {
+		return "default"
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "default"
+	}
+	var probe Config
+	if err := toml.Unmarshal(data, &probe); err != nil {
+		return "default"
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
 func resolvePath(explicit string) string {
 	if explicit != "" {
 		return explicit
@@ -1005,6 +1045,15 @@ func resolvePath(explicit string) string {
 		// The adopted-suggestion location: renaming the index-stage
 		// secguard.toml.suggested in place lands the config here.
 		if p := filepath.Join(cwd, ".codeagent", "secguard-clang", "secguard.toml"); fileExists(p) {
+			return p
+		}
+		// Advisory fallback: the index stage wrote secguard.toml.suggested
+		// but the user has not adopted it yet. Load it as a fallback so a
+		// scan immediately benefits from the discovered allocators/
+		// deallocators/ownership-transfers/iterator-macros without a manual
+		// rename. The low-confidence entries are commented out in the file,
+		// so only high/medium entries activate.
+		if p := filepath.Join(cwd, ".codeagent", "secguard-clang", "secguard.toml.suggested"); fileExists(p) {
 			return p
 		}
 	}
