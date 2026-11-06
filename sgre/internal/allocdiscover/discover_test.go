@@ -131,3 +131,67 @@ func TestDiscoverMacros(t *testing.T) {
 		t.Errorf("MAX_BUF must not be suggested")
 	}
 }
+func TestDiscoverOwnershipTransfers(t *testing.T) {
+	s := db.NewTestStore(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	fileID, err := s.InsertFile(ctx, &db.File{Path: filepath.Join(dir, "app.c"), Language: "c", Checksum: "x", LOC: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.InsertFunction(ctx, &db.Function{FileID: fileID, Name: "list_push_back", Signature: "list_push_back(list_t *l, void *item)", ReturnType: "void"})
+	s.InsertFunction(ctx, &db.Function{FileID: fileID, Name: "dict_insert", Signature: "dict_insert(dict_t *d, void *key)", ReturnType: "void"})
+	s.InsertFunction(ctx, &db.Function{FileID: fileID, Name: "plain_fn", Signature: "plain_fn(int x)", ReturnType: "int"})
+
+	res, err := Discover(ctx, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otNames := map[string]bool{}
+	for _, e := range res.OwnershipTransfers {
+		otNames[e.Name] = true
+	}
+	if !otNames["list_push_back"] {
+		t.Errorf("list_push_back missing from ownership_transfers: %+v", res.OwnershipTransfers)
+	}
+	if !otNames["dict_insert"] {
+		t.Errorf("dict_insert missing from ownership_transfers: %+v", res.OwnershipTransfers)
+	}
+	if otNames["plain_fn"] {
+		t.Errorf("plain_fn must not be suggested as ownership transfer")
+	}
+}
+
+func TestDiscoverIteratorMacros(t *testing.T) {
+	s := db.NewTestStore(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	cPath := filepath.Join(dir, "app.c")
+	hPath := filepath.Join(dir, "list.h")
+	if err := os.WriteFile(cPath, []byte("#include \"list.h\"\nvoid f(void) { DLL_Scan(p); }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hPath, []byte("#define DLL_Scan(ptr) for (; (ptr) != NULL; (ptr) = (ptr)->next)\n#define MAX_BUF 256\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertFile(ctx, &db.File{Path: cPath, Language: "c", Checksum: "ghi", LOC: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Discover(ctx, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imNames := map[string]bool{}
+	for _, e := range res.IteratorMacros {
+		imNames[e.Name] = true
+	}
+	if !imNames["DLL_Scan"] {
+		t.Errorf("DLL_Scan missing from iterator_macros: %+v", res.IteratorMacros)
+	}
+	if imNames["MAX_BUF"] {
+		t.Errorf("MAX_BUF must not be suggested as iterator macro")
+	}
+}

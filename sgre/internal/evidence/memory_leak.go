@@ -439,6 +439,14 @@ func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file
 // cast and parenthesized expressions (`free((void *)p)` → "p", ML-06). A non-trivial
 // expression (`free(p + i)`) is NOT unwrapped and returns "", because it does not
 // release a single tracked variable.
+//
+// The `&` address-of operator is unwrapped (`cleanup(&s)` → "s") so a project
+// deallocator / ownership-transfer call that takes a struct by address and
+// releases its fields (the IPsec `IKE_ModeCfgExtFreeProductMemory(&st)` idiom)
+// matches a field-store allocation `st.field = malloc(...)`, whose tracked
+// varName is the struct base. Without this, the field store is not recognized
+// as released and every "alloc → store into local struct field → cleanup(&struct)"
+// site is a false-positive memory-leak (Issue #241 memory-leak mode C).
 func argIdentifier(arg parser.Node) string {
 	switch arg.Kind() {
 	case "identifier":
@@ -450,7 +458,8 @@ func argIdentifier(arg parser.Node) string {
 			}
 		}
 	case "pointer_expression":
-		if strings.HasPrefix(strings.TrimSpace(arg.Text()), "*") {
+		text := strings.TrimSpace(arg.Text())
+		if strings.HasPrefix(text, "*") || strings.HasPrefix(text, "&") {
 			for _, c := range arg.NamedChildren() {
 				if id := argIdentifier(c); id != "" {
 					return id
@@ -528,6 +537,18 @@ func isNullCheckCondition(cond *parser.Node, varName string) bool {
 		if v == varName {
 			return true
 		}
+		// Field-prefix match: when the tracked varName is a struct base ("s")
+		// because the allocation is stored into a field (`s.field = malloc(...)`),
+		// a null check on the field (`!s.field`, `s.field == NULL`) protects the
+		// allocation on that branch. Without this, `if (!s.field) return;` is not
+		// recognized as a null-guard return, so hasLostResource finds a path from
+		// the allocation through the early return to exit, avoiding the later
+		// cleanup call — every "alloc → store into local struct field →
+		// if(!field) return → cleanup(&struct)" site is a false-positive leak
+		// (Issue #241 memory-leak mode C).
+		if strings.HasPrefix(v, varName+".") || strings.HasPrefix(v, varName+"->") {
+			return true
+		}
 	}
 	return false
 }
@@ -563,6 +584,7 @@ func hasLostResource(cfg *graph.StmtCFG, allocLine int, freeLines []int, nullGua
 		return true // cannot prove non-leak; report conservatively
 	}
 	avoid := make(map[int]bool, len(freeLines)+len(nullGuardReturns)+len(escapeLines)+len(transferLines))
+
 	for _, l := range freeLines {
 		if n := cfg.NodeAt(l); n != nil {
 			avoid[n.ID] = true
@@ -576,6 +598,7 @@ func hasLostResource(cfg *graph.StmtCFG, allocLine int, freeLines []int, nullGua
 	for _, l := range escapeLines {
 		if n := cfg.NodeAt(l); n != nil {
 			avoid[n.ID] = true
+
 		}
 	}
 	for _, l := range transferLines {
