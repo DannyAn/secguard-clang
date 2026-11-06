@@ -116,7 +116,7 @@ var agentSchemaTables = map[string][]columnDef{
 var agentSchemaNotes = map[string]string{
 	"findings":              "AI agent output. Query by file_path and line_number (NOT file/line). rule_id is CWE (e.g. CWE-476). status: open/confirmed/dismissed/auto-confirmed (binary verdict; legacy 'suspected' rows tolerated but read as dismissed).",
 	"scan_stats":            "Pipeline metrics per scan per vuln type. vuln_type is the kebab-case type name (NOT a column called vulnerability_type).",
-	"scan_runs":             "Scan-level performance/convergence summary (one row per scan). *_ms are millisecond phase durations; seed_count/final_count are raw candidates before/after convergence; report_bytes/evidence_bytes are the report + candidate-evidence sizes the AI consumes. completion_state: running/complete/incomplete/limited/failed (unified checkpoint semantics).",
+	"scan_runs":             "Scan-level performance/convergence summary (one row per scan). *_ms are millisecond phase durations; seed_count/final_count are raw candidates before/after convergence; report_bytes/evidence_bytes are the report + candidate-evidence sizes the AI consumes. completion_state: running/complete/incomplete/limited/failed (unified checkpoint semantics); scan_mode: complete-program/boundary (the scan-scope mode that governs boundary fail-open and secguard.toml.suggested).",
 	"scan_incomplete_tasks": "Tasks that could not complete during a scan (checkpoint ledger). phase is the pipeline stage that failed; reason is the failure category. Query by scan_id to find what a resume needs to re-run.",
 	"files":                 "Layer 1 program facts. Query by path.",
 	"functions":             "Layer 1 program facts. Join to files via file_id.",
