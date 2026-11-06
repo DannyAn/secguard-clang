@@ -430,3 +430,97 @@ int use(int arg) {
 		}
 	}
 }
+func TestIndexer_DeletedFileRemovedFromIndex(t *testing.T) {
+	s := db.NewTestStore(t)
+	idx := NewIndexer(s, testLogger())
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tmp.c")
+	src := "void f(void) {}\n"
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := idx.Index(ctx, dir)
+	if err != nil {
+		t.Fatalf("first Index: %v", err)
+	}
+	if result.FilesChanged != 1 {
+		t.Fatalf("first Index FilesChanged = %d, want 1", result.FilesChanged)
+	}
+
+	result, err = idx.Index(ctx, dir)
+	if err != nil {
+		t.Fatalf("second Index: %v", err)
+	}
+	if result.FilesChanged != 0 {
+		t.Fatalf("second Index FilesChanged = %d, want 0", result.FilesChanged)
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err = idx.Index(ctx, dir)
+	if err != nil {
+		t.Fatalf("third Index after delete: %v", err)
+	}
+	if result.FilesChanged != 1 {
+		t.Fatalf("third Index FilesChanged = %d, want 1 (deleted file)", result.FilesChanged)
+	}
+
+	files, err := s.ListFiles(ctx)
+	if err != nil {
+		t.Fatalf("ListFiles: %v", err)
+	}
+	for _, f := range files {
+		if f.Path == path {
+			t.Fatalf("deleted file still in DB: %s", f.Path)
+		}
+	}
+}
+func TestIndexer_FileReplacedByDirectoryRemovedFromIndex(t *testing.T) {
+	s := db.NewTestStore(t)
+	idx := NewIndexer(s, testLogger())
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tmp.c")
+	if err := os.WriteFile(path, []byte("void f(void) {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := idx.Index(ctx, dir); err != nil {
+		t.Fatalf("first Index: %v", err)
+	}
+
+	if _, err := idx.Index(ctx, dir); err != nil {
+		t.Fatalf("second Index (no change): %v", err)
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := idx.Index(ctx, dir)
+	if err != nil {
+		t.Fatalf("third Index after dir replace: %v", err)
+	}
+	if result.FilesChanged != 1 {
+		t.Fatalf("third Index FilesChanged = %d, want 1 (file replaced by dir)", result.FilesChanged)
+	}
+
+	files, err := s.ListFiles(ctx)
+	if err != nil {
+		t.Fatalf("ListFiles: %v", err)
+	}
+	for _, f := range files {
+		if f.Path == path {
+			t.Fatalf("file replaced by dir still in DB: %s", f.Path)
+		}
+	}
+}

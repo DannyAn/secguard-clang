@@ -133,6 +133,17 @@ func runIndexCmd(ctx context.Context, args []string) int {
 		detErrMap[de.Detector] = de.Err.Error()
 	}
 
+	// Record the pipeline meta so a subsequent `secguard scan` can skip the
+	// graph+detector rebuild when no file/config changed. index always rebuilds
+	// (it is an explicit command), so graph_build_complete is always "true"
+	// here — a graph-builder error returns early above and never reaches this.
+	if err := store.SetMeta(ctx, "config_checksum", config.ConfigChecksum()); err != nil {
+		logger.Warn("failed to record config checksum", "error", err)
+	}
+	if err := store.SetMeta(ctx, "graph_build_complete", "true"); err != nil {
+		logger.Warn("failed to record graph build complete", "error", err)
+	}
+
 	funcs, err := store.ListFunctions(ctx)
 	if err != nil {
 		WriteErrorJSON(fmt.Sprintf("failed to list functions: %v", err))

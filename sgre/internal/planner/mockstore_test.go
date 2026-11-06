@@ -57,6 +57,7 @@ func (s *mockStore) ListFiles(ctx context.Context) ([]*db.File, error) { return 
 func (s *mockStore) UpdateFileChecksum(ctx context.Context, id int64, checksum string, loc int) error {
 	return nil
 }
+func (s *mockStore) DeleteFile(ctx context.Context, id int64) error { return nil }
 
 func (s *mockStore) InsertFunction(ctx context.Context, f *db.Function) (int64, error) {
 	f.ID = s.nextID
@@ -587,5 +588,9 @@ func (s *mockStore) InsertIncompleteTask(ctx context.Context, task *db.ScanIncom
 func (s *mockStore) ListIncompleteTasks(ctx context.Context, scanID string) ([]*db.ScanIncompleteTask, error) {
 	return nil, nil
 }
+func (s *mockStore) GetMeta(ctx context.Context, key string) (string, bool, error) {
+	return "", false, nil
+}
+func (s *mockStore) SetMeta(ctx context.Context, key, value string) error { return nil }
 
 var _ = fmt.Sprintf
