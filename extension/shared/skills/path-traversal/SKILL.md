@@ -74,7 +74,7 @@ the embedded section and the indexed lookup.
 | `fopen(user_input, "r")` where a taint source reaches the path | **confirmed** |
 | `fopen(path, ...)` — path is a parameter, `callsites@` shows a non-constant caller | **confirmed** (attacker-reachable via that caller) |
 | `fopen(path, ...)` — path is a parameter, `callsites@N:all-literal` | **dismissed** (every in-tree caller passes a compile-time constant) |
-| `fopen(path, ...)` — path is a parameter with no provable tainted caller and no census | **judge the function's exposure** — if it is a library / partial-scan export (zero in-tree callers, address-taken, an entry-point API), treat the parameter as an external ABI boundary and **confirm** the traversal risk; only an internal, provably-trusted parameter is **dismissed** |
+| `fopen(path, ...)` — path is a parameter with no provable tainted caller and no census | **dismissed** — reaching a path parameter does not prove the content can contain `../`; without a proven taint source (`taint_source` fragment) or a non-constant in-tree caller (`callsites@`), the traversal is unproven and the candidate is a precision false positive |
 | `fopen("/etc/config", "r")` — literal or compile-time-constant path | **false-positive** (safe) |
 | `fopen(path, ...)` — parameter whose in-tree callers pass a one-off buffer built from a fixed directory + constant name | **false-positive** (the `constant_path_proof` stage drops these; a survivor has a non-constant component) |
 | `fopen(path, ...)` — the caller validates only a suffix/extension (`.pdf`, `.csv`) without rejecting `..` or a leading `/` | **not sanitized** — `<dir>/../../etc/passwd.pdf` still escapes, so treat an attacker-reachable path as **confirmed** |
@@ -83,10 +83,10 @@ the embedded section and the indexed lookup.
 | `chmod("/tmp/x", 0666)` — a temp-prefixed literal path | **false-positive** (the detector never emits it) |
 
 The **confirmed** verdict applies when the pipeline proved a taint source
-(`taint_source` evidence fragment), when `callsites@` names a non-constant
-caller, or when the parameter is an external/exported ABI boundary with no
-in-tree caller. Do NOT dismiss a parameter merely because the census is absent —
-the census measures who passes what, never whether the value is trusted.
+(`taint_source` evidence fragment) or when `callsites@` names a non-constant
+caller. A parameter with no proven taint and no census is **dismissed** —
+the census measures who passes what, never whether the value is trusted,
+and an exported ABI boundary alone does not prove attacker-controlled content.
 
 A **weak filter does not make a candidate safe**. A suffix/extension check
 (`strstr(file_name, ".pdf")`, `strcmp(ext, ".csv") == 0`) or a bare
