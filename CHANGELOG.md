@@ -34,6 +34,13 @@
 - **识别质量**：命名（含 `_F` 变体）、签名、直接 CALL 证据（独立触发；非 void 返回不登记为释放器）、宏体展开（对象宏无体证据/谓词宏降级 needs review）三类线索；低置信度条目以注释形式给出，采纳时不会把未审视的猜测变成已声明释放器而自动确认误报。
 - **采纳语义文档化**：项目级 `.codeagent/secguard.toml` 优先于建议文件且为整文件覆盖，已存在时应合并而非原地改名。
 
+### 报告与研判可见性
+
+- **report.md 显示扫描模式**：`scan_runs` 新增 `scan_mode` 列（`complete-program`/`boundary`，`ensureColumn` 平滑迁移），候选阶段与 audit 阶段报告的 Scan Overview 均输出 `Scan mode` 行——读者能直接看出完整程序扫描为何没有生成 `secguard.toml.suggested`；旧扫描无该值时不渲染该行（`TestScanOverview_ScanModeRendered`）。
+- **Step 5.5 保留行也写复核结论**：原指令称「保留的行不需要写入」，导致会话中 43 条 auto-confirmed 全部保留时 `unreviewed_auto_confirmed` 告警无法清除、`result.sarif` 无法定稿；现要求保留行同样以 `review_status="confirmed"` 批量写入（同一 `--review-json` 批次），与驳回写入一并完成。
+- **path-traversal 未证明参数统一驳回（FP P6-05）**：SKILL 规则自相矛盾——一处称无 census 的导出函数参数应 confirm，另一处（及 ground truth P6-05）要求无 proven taint 时 dismiss。现统一为：既无 `taint_source` 又无非常量 in-tree caller（`callsites@`）的参数一律 dismissed，导出 ABI 边界本身不构成证明。
+- **文档整理**：三份 `SGRE_FULL_REPO_SCAN_*` 设计/评审文档移入 `docs/design/`；`examples/c-vuln-benchmark/` 下三份已由 `testdata/feedback_watch/` 夹具与本 CHANGELOG 结论取代的会话评审文档删除。
+
 ### 检视与协同
 
 - 对 0.12.3 全部需求（#226/#228/#230/#232）做源码检视并修正 P1/P2 问题：plan 允许名单零类型静默、事件匹配按 location-id 的空抑制回归、global-null 的 N×F 全树扫描与同名遮蔽、嵌套/数组布局误算、alloc 流不敏感与宽泛 allocator 判定、建议配置低置信度误激活、agent-body/skill/hint 词汇漂移。
@@ -72,7 +79,7 @@
 
 ### 全仓扫描内存/生命周期重构收口（P0/P1）
 
-依据 `SGRE_FULL_REPO_SCAN_ARCH_DESIGN.md`（v4）与 `架构重构检视DSFlash-Round1.md` 的 P0/P1 检视结果，修复 1700 文件级仓库暴露的 AST/CFG 生命周期、OOM 与 incomplete 语义问题。**默认配置下的 AST/CFG/事件预算、Go heap 预算、planner CFG 缓存均已在 1700 文件 / 5.1 万函数合成仓验证。**
+依据 `docs/design/SGRE_FULL_REPO_SCAN_ARCH_DESIGN.md`（v4）与 `架构重构检视DSFlash-Round1.md` 的 P0/P1 检视结果，修复 1700 文件级仓库暴露的 AST/CFG 生命周期、OOM 与 incomplete 语义问题。**默认配置下的 AST/CFG/事件预算、Go heap 预算、planner CFG 缓存均已在 1700 文件 / 5.1 万函数合成仓验证。**
 
 - **AST 生命周期（P0-1/3/4）**：`ParseCached` 返回即持有借用，`forEachFile`/`forEachIndexedFile`/`graph.forEachFile` 在回调前后 Acquire/Release；缓存满且全被借用时返回 transient 借用，`Release` 归零即关闭树 + 专用 parser（不再保留只增不减的 transient 列表）；26 处 `fileParseCache` 构造全部接入 `Close`，`prime` 不再二次 Acquire；新增 `transientOrigins`/`liveFileParseCaches` 泄漏诊断。`max_cached_trees>0` 不再触发 AST 淘汰 SIGSEGV。
 - **CFG 生命周期与 planner 缓存（P0-2/P1-2）**：新增 `CFGCache.Acquire` + `CFGLease` + `refs`，build 在锁外、per-key 单飞，LRU 只淘汰 `refs==0`；`flowResult` 用 `spans/startLines` 几何快照替代持有 cfg/AST，`heapStructFlow` 同样快照化；range/interval/int-overflow、null-deref、lifetime、double-free、taint、uninit、contract-gap、race 全部接回共享 CFG 缓存并即时释放。51K 函数合成仓扫描从 415s 降到 156s，候选数保持 34,000 不变。
