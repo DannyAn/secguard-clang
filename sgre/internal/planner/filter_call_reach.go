@@ -52,11 +52,24 @@ type CallChainHop struct {
 	File string `json:"file,omitempty"`
 }
 
+// maxCallChainHops is the defensive depth cap for callChain. A real call chain
+// from an entry to a sink is a BFS shortest path, so it is bounded by the number
+// of function nodes; any traversal past this cap means the parent map contains
+// a cycle (e.g. a mutual-recursion pair whose sentinel was rewritten by the
+// adopt loop) and would otherwise append forever until OOM. 64 is far above any
+// realistic chain depth in the analyzed repos while keeping the visited set
+// small.
+const maxCallChainHops = 64
+
 // callChain returns the concrete entry -> ... -> funcID call path (caller name
 // -> callee name with the call site line), or nil when the function has no
 // function node or is an entry itself. The first hop's caller is the entry
 // (main / an exported function / an address-taken function), whose "call site"
 // has no line.
+//
+// The traversal is guarded by a visited set and a depth cap so a cyclic parent
+// map (which the adopt loop can produce on a mutual-recursion + address-taken
+// graph) is truncated instead of looping forever. See issue #238.
 func (r *callReachResult) callChain(funcID int64) []CallChainHop {
 	if r == nil || r.parent == nil {
 		return nil
@@ -66,7 +79,15 @@ func (r *callReachResult) callChain(funcID int64) []CallChainHop {
 		return nil
 	}
 	var rev []CallChainHop
+	visited := make(map[int64]bool, 8)
 	for {
+		if visited[nodeID] {
+			break
+		}
+		visited[nodeID] = true
+		if len(rev) >= maxCallChainHops {
+			break
+		}
 		prev, hasParent := r.parent[nodeID]
 		if !hasParent || prev == nodeID {
 			break
@@ -266,7 +287,16 @@ func computeCallReach(ctx context.Context, store db.Store) (*callReachResult, er
 	// called in-tree by a reachable function gets linked to that caller, so
 	// `apply_setting` called only by `load_config` still reports
 	// `main → load_config → apply_setting` instead of "entry".
+	//
+	// True entries (main + address-taken functions) are the ROOTS of the chain
+	// and must NOT be re-parented: rewriting a true entry's sentinel parent to
+	// another node can form a cycle (e.g. mutual recursion a<->b with b
+	// address-taken: parent[a]=b and parent[b]=a), which callChain would then
+	// traverse forever. See issue #238.
 	for node := range reachable {
+		if entryIsTrue[node] {
+			continue
+		}
 		p, hasParent := parent[node]
 		if hasParent && p != node {
 			continue // already on a concrete chain
