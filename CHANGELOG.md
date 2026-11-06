@@ -4,6 +4,41 @@
 
 ## [未发布]
 
+## [0.12.3] - 2026-11-06
+
+### Issue #226 反馈看护场景与 global-null 收敛层
+
+- **文件级 static NULL 指针（CWD-SUB-1031）**：`null_source` 新增第三遍扫描，对 `static T *g = NULL;`（含零初始化）且在本 TU 内从未被改写的文件级指针，为每个解引用它的函数发出 `NULL_VALUE`（`origin=global_null`），planner 以 `null@global-null` tier（suspected，永不 auto-confirm）交给 AI。写入/取址/传参/文件内宏体赋值一律 fail-open；函数内同名局部/参数遮蔽不算作对全局的解引用。实现为每文件一次解引用普查 + 一次写入普查（不再按 global×function 反复全树 FindAll，69KB/20 全局/100 函数从约 30s 降到 0.15s 量级）。
+- **未初始化指针条件（CWD-SUB-1140）**：`uninit_variable` 的声明遍历识别 `pointer_declarator`，`struct Node *node; if (node != 0)` 重新可见；保持既有 `DefiniteInitFilter` 的 CFG-must 证明类，不新增 auto-confirm 类。
+- **反馈回归夹具**：新增 `testdata/feedback_watch/` 四类场景（CWD-SUB-1029/1031/1038/1140）及 1031 遮蔽负例、1038 packed/bitfield/重赋值/数组/typedef/多维/柔性数组/嵌套/工厂负例；README 能力矩阵同步为 0.12.3 实测。
+- **证据与文档**：global-null 候选保留声明行 `src@N`；`extension/shared/agent-body.md`、`command-instructions.md`、`null-deref/SKILL.md` 的 tier 描述与 boundary 预驳回说明对齐（global-null 不被 boundary 预驳回）。
+
+### Issue #228 Phase 1 — CWD-SUB-1038 Type Layout 检测
+
+- **`internal/typeinfo`**：LP64/ILP32/LLP64 ABI 表、struct/union/指针/数组布局算法与四档 provenance（纯函数 + 单测）；宽度表收敛到单一真源（`graph`/`evidence` 委托 typeinfo）。
+- **`internal/repofacts` layout census**：按 TU 内 struct/union 声明构建布局事实，`Facts.LayoutOf` 查询；pipeline 单次构建并经 ctx 共享给 detector 与 planner。
+- **`detectCastObjectOOB`**：常量 `malloc(n)` 强转到 struct 后，`offset+size > n` 的字段访问产出 `layout_oob_read`/`layout_oob_write`（buffer-overflow/out-of-bounds 的 suspected 子类，CWE-787/125）。候选补全 `struct_type/alloc_size/field_offset/field_size` 证据与 `struct@`/`alloc-size@`/`layout-field@` hint；`buffer-overflow`/`out-of-bounds` SKILL 增加类别规则。
+- **检视修正（零误报优先）**：嵌套内联 struct 定义不再把内层字段并入外层；字段按源码顺序、多维数组按维度乘积计算；内联 packed/位域/匿名聚合/`#pragma pack`/未知长度数组成员 → unknown；柔性数组按 C11 贡献 0 字节且 detector 跳过全部数组成员；union sizeof 向上取整到对齐；alloc 大小在 cast 行解析并随重赋值失效；`conn_new(4)` 这类工厂不再被当作字节分配器；嵌套成员访问不再按中间对象整体判断。
+- **Phase 1 边界（文档化）**：per-TU compile_commands/ABI 接线、`sizeof`/变量分配大小、guard-vs-layout 比较、嵌套成员访问仍是 Phase 2；当前一律 `assumed_default_abi` + suspected。
+
+### Issue #232 大仓 plan 阶段 OOM 收口
+
+- **内存有界的事件匹配**：`ArrayOOBPrecedenceFilter` 不再全量物化 `BUFFER_ACCESS` 事件，改为按 `(file_id,line)` 的 location-key 集合匹配（事件 location 行不唯一，必须按行比较）；DB 新增流式 `ListEventLocationKeysByType`。
+- **cgroup 感知默认值**：从 `/proc/self/cgroup` 的进程 cgroup 路径及其祖先解析最小有限内存上限（v2 优先、v1 回退，含 v1 unlimited sentinel）；未显式配置时 `go_mem_limit_mb` 取 85%、回压 high 水位取 70%，但**不放大**已有更小的显式 `GOMEMLIMIT`/配置。`secguard plan` 与 `scan` 共用同一套内存设置。
+- **`scan <path> [type-filter]` 真正生效**：位置参数按逗号/空格解析为 plan 允许名单；未知类型、或全部被 `[disabled_types]` 关闭时在 index 之前直接报错（不再静默产出 0 候选的 "complete" 扫描）；扫描 JSON 回显 `type_filter`/`applied_types`。文档明确 index/graph/detector 仍全量，要省检测器内存用 `skip_detectors`。
+- **stale scan 可见性**：启动扫描时把遗留 `running` 行对应的扫描目录写入 `.failed` 标记后再翻转 DB 状态；`--output-dir` 的 canonical 限制已文档化。
+
+### Issue #230 自定义分配/释放函数自动发现
+
+- **`internal/allocdiscover`**：`secguard index` 建库收尾阶段从已索引函数/声明、CALL 边和项目头文件宏中识别分配/释放候选，生成 `<cwd>/.codeagent/secguard-clang/secguard.toml.suggested`；配置加载新增该路径（去掉 `.suggested` 即生效）。不覆盖已有文件、从不修改 `secguard.toml`、失败为旁路；写入采用 O_EXCL + 失败清理，避免半截文件永久卡住重试。
+- **识别质量**：命名（含 `_F` 变体）、签名、直接 CALL 证据（独立触发；非 void 返回不登记为释放器）、宏体展开（对象宏无体证据/谓词宏降级 needs review）三类线索；低置信度条目以注释形式给出，采纳时不会把未审视的猜测变成已声明释放器而自动确认误报。
+- **采纳语义文档化**：项目级 `.codeagent/secguard.toml` 优先于建议文件且为整文件覆盖，已存在时应合并而非原地改名。
+
+### 检视与协同
+
+- 对 0.12.3 全部需求（#226/#228/#230/#232）做源码检视并修正 P1/P2 问题：plan 允许名单零类型静默、事件匹配按 location-id 的空抑制回归、global-null 的 N×F 全树扫描与同名遮蔽、嵌套/数组布局误算、alloc 流不敏感与宽泛 allocator 判定、建议配置低置信度误激活、agent-body/skill/hint 词汇漂移。
+- 基准（`examples/c-vuln-benchmark`）复跑：recall 132/132、FP 0、FN 0；`go test ./...`、`go test -tags nosqlite` 与 `release/check-extension-consistency.py` 通过。
+
 ## [0.12.2] - 2026-11-05
 
 ### auto-confirm 误报收敛与边界 fail-open 分层
