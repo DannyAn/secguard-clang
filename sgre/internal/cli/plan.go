@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/graph"
@@ -113,7 +112,10 @@ func runPlanCmd(ctx context.Context, args []string) int {
 
 	// 完整 candidates 写到文件，stdout 只返回摘要 + 文件路径。
 	// 避免大量 candidates（259+ 条）打印到 agent 上下文。
-	candidatesFile := filepath.Join(filepath.Dir(dbPath), fmt.Sprintf("plan-%s-%d.json", vulnType, time.Now().Unix()))
+	// The filename is stable (no epoch) so repeated `secguard plan <type>` calls
+	// overwrite the same file instead of accumulating orphan plan-<type>-<epoch>.json
+	// copies in .sgre/ (issue #238 §3.3).
+	candidatesFile := filepath.Join(filepath.Dir(dbPath), fmt.Sprintf("plan-%s.json", vulnType))
 	if werr := os.WriteFile(candidatesFile, data, 0644); werr != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to write candidates file: %v\n", werr)
 	}

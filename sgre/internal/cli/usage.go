@@ -51,10 +51,12 @@ Usage:
 Arguments:
   <path>        Root directory of the C codebase to scan
   [type-filter] Optional: a single type, a comma/space-separated list, or "all"
-                (default: all). Narrowing the types reduces plan-stage memory (the
-                OOM-sensitive stage). The index/graph/detector stages still run
-                for every type; to also skip those, configure
-                [scan] skip_detectors.
+                (default: all). Narrowing the types lowers peak memory by
+                reducing the number of concurrent Plan() goroutines (default 8),
+                NOT by shrinking per-type candidate volume — a single type with
+                24 candidates can still OOM if its call chain is deep. The
+                index/graph/detector stages run once for the whole tree; to also
+                skip those, configure [scan] skip_detectors.
 
 Flags:
   --exclude <dirs>  Comma-separated directory basenames to skip

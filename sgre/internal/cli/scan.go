@@ -157,11 +157,14 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	}
 
 	// The agent writes its intermediate --write-json payloads under the project's
-	// .sgre/.tmp (a runtime artifact, never os.TempDir), and we clear it at scan
-	// start so stale payloads from a previous session do not accumulate. It is
-	// re-created so the agent always finds a writable target.
+	// .sgre/.tmp (a runtime artifact, never os.TempDir). We NO LONGER wipe .tmp
+	// at scan start: a previous scan that crashed mid-AI-stage (OOM, SIGKILL)
+	// may have left settlement payloads the operator wants to inspect or replay,
+	// and wiping them on every retry (issue #238 §3.3) silently destroyed the
+	// only evidence of how far the AI got. The directory is created if absent so
+	// the agent always finds a writable target; stale accumulation is bounded by
+	// the operator clearing .tmp between unrelated scan campaigns.
 	agentTmpDir := filepath.Join(filepath.Dir(dbPath), ".tmp")
-	_ = os.RemoveAll(agentTmpDir)
 	_ = os.MkdirAll(agentTmpDir, 0755)
 
 	store, err := openStore(ctx, dbPath)
@@ -226,6 +229,22 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		// stale sweep, which is exactly the window we are trying to close.
 		if err := store.SetScanRunCompletionState(context.WithoutCancel(ctx), scanID, scanFinalState); err != nil {
 			logger.Warn("set scan completion state failed", "state", scanFinalState, "error", err)
+		}
+	}()
+
+	// A panic (e.g. a nil-deref in a detector, an unexpected filter state) used
+	// to unwind straight through the log closer without leaving a trace in
+	// scan.log — the last line was some plan timing and the operator had no
+	// "crash" marker. Recover here, write a FATAL line to scan.log and stderr,
+	// and set exitCode=1 so the named return carries the failure through the
+	// log/completion defers. A Go runtime `fatal error: out of memory` is NOT
+	// recoverable (the runtime aborts before defers run), so this is for panics
+	// only; the OOM path is handled by the P0 callChain/chainRootName fixes.
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("scan panicked", "scan_id", scanID, "panic", r)
+			fmt.Fprintf(os.Stderr, "FATAL: scan %s panicked: %v\n", scanID, r)
+			exitCode = 1
 		}
 	}()
 
