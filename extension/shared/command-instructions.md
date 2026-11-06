@@ -445,11 +445,11 @@ straight to the structured report (`written: 0`).
     containing only confirmed findings with the Write tool, then
     `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
     Dismissed candidates are not written in any batch. After classifying all
-    candidates of a type (confirmed written + dismissed not written), call
-    `secguard report --complete-type <type> --scan-id <scan_id> --db <db_path>`
-    to mark the type's AI stage done (sets ai_stage_status='done'). This is REQUIRED
-    for the orchestrator's resume logic (`status --per-type` terminal_state) to
-    correctly report `done`.
+    candidates of a type (confirmed written + dismissed not written), do NOT
+    call `secguard report --complete-type` — the orchestrator marks types done
+    in step 5 when absorbing reports. Report `processed_types` in your
+    Structured Report Protocol block instead; the orchestrator's resume logic
+    reads that.
     Never skip a type. Obey the context budget (no per-candidate source reads).
 **调度时序合规规则 (F3):** All subagent dispatches SHALL occur in a single assistant turn — N `Agent`/`task` calls issued consecutively with the first-to-last timestamp span ≤ 10s. (Claude Code's subagent-dispatch tool is `Agent`; older Claude Code versions name it `Task`.) The orchestrator SHALL NOT split dispatches across turns. After dispatch, while subagents run, the orchestrator SHALL NOT poll their transcripts or issue `sleep`.
 
@@ -476,7 +476,7 @@ straight to the structured report (`written: 0`).
 **Agent 调用超时 (F11) — `Tool call hung for 660000ms` / force-reject：** 同步宿主（OpenCode / opencode-nga）的 `Agent`/`task` 调用是同步的，单调用有硬上限（约 660s）。security-auditor 的一个批次（skill 加载 + `_index.md` + Evidence 打开 + JSON 写入）可能超过它；宿主会 force-reject 该调用，但**子代理仍在后台继续跑，并会按 O2 把 `<tmpdir>/<subagent_id>-report.json` 落盘**。因此超时是**宿主超时，不是批次失败**，**禁止**仅凭超时就重派。恢复顺序：
 1. `secguard status --reports --scan-id <scan_id>`（OpenCode 用 `secguard_status` 的 `reports: true`）——列出已落盘报告的 `subagent_id` / `scan_id` / `processed_types`（含 `range`）/ `needs_context` / `valid`，以及存活信号 `heartbeat_age_ms` / `stalled` / `progress`。
 2. 若有 `valid:true` 的报告覆盖该批次（scan_id 相同 + type/range 匹配）：吸收其 `written`/`dismissed`/`needs_context`，对 `processed_types` 调 `report --complete-type`，**绝不重派**。
-3. 若暂无 `valid` 报告：`secguard status --per-type --scan-id <scan_id>`；若 `written_count` 有增长或 `terminal_state=done`，先做别的批次/等待一回合，再查一次 `--reports`；`valid:false`（部分写入）表示子代理还在写，**等待，不重派**。
+3. 若暂无 `valid` 报告：`secguard status --per-type --scan-id <scan_id>`；若 `written_count` 有增长或 `terminal_state=done`，在同一回合内先吸收其他已完成批次/补派积压，再查一次 `--reports`；`valid:false`（部分写入）表示子代理还在写，**继续处理其他批次，不重派**。
 4. 只有在**一次复核后仍无 valid 报告且无进展**时，才重派，且只重派缺失的 type/range（先按 F13 claim，`claimed:false` 则不重发），绝不整批重来。
 
 **派发前落点检查 (F11a)：** 任何派发之前先跑 `secguard status --reports --scan-id <scan_id>`，跳过已被 `valid:true` 报告覆盖的 type/range；再跑 `secguard status --per-type --scan-id <scan_id>`，跳过 `already_covered_ranges`（已完成）与 `in_flight_ranges`（有活 claim）里的 range。然后对剩余每个批次按 F13 claim，只有 `claimed:true` 才派发。这样超时后的 re-plan 是幂等的，重复派发一个已完成或已在跑的批次是纯重复劳动。
@@ -492,7 +492,7 @@ secguard status --claim-type <type> --claim-range <range> --claim-holder <token>
 - `{"claimed": false, "reason": "done"}` → 该 range 已有结算报告（已覆盖）。跳过；只有 `needs_context` 二次下发这类**刻意重跑**才加 `--reclaim`（结果 `reason: "reclaim"`），普通恢复绝不用 `--reclaim`。
 - 一个 claim 超过 30 分钟未收到结算报告即视为陈旧（dead worker）：下一次 claim 会以 `reason: "stale"` 自动接管并把 `retry_count` +1。陈旧接管不是"再等一会"的替代——F11 的"一次复核后仍无 valid 报告且无进展"仍然是重派的前提。
 claim 行只是 `settlement_stats` 里的 `status='dispatched'` 占位，**不计入** `written_count`，也不进 `r_type` 样本；结算报告落盘后由 `status --reports` 吸收为 `status='done'`，该 range 随即出现在 `already_covered_ranges` 而不是 `in_flight_ranges`。**先 claim 后 spawn；claim 失败绝不 spawn。**
-**多 type 批次**：一个 batch 最多含 4 个 type，每个 type 有自己的 range，因此按 `(type, range)` 逐个 claim。只有 `claimed:true` 的条目进入该 subagent 的派发提示词；`claimed:false` 的条目跳过（held = 别人在跑、done = 已覆盖），**不要**因为一个条目失败就放弃整批，也**不要**把未 claim 的 type 塞给 worker。整批都 `claimed:false` 就本轮不 spawn。
+**多 type 批次**：一个 batch 最多含 4 个 type，每个 type 有自己的 range，因此按 `(type, range)` 逐个 claim。只有 `claimed:true` 的条目进入该 subagent 的派发提示词；`claimed:false` 的条目跳过（held = 别人在跑、done = 已覆盖），**不要**因为一个条目失败就放弃整批，也**不要**把未 claim 的 type 塞给 worker。整批都 `claimed:false` 就本轮不 spawn——但**不要结束回合**（F8）：在同一回合内继续按 F11 吸收已完成的批次（`status --reports` → `status --per-type`），然后再次尝试 claim；重复直到所有批次 done 或可 claim。
 
 **确定性执行器开关 (F12)：** 若 `secguard config` 显示 `ai_stage_mode = "executor"`，PHASE_2 分类改由确定性进程执行——跑 `secguard classify <target> --mode executor`（灰度期先 `--dry-run` 验证接线，不开 LLM 子进程），无需本步骤的子代理派发。`ai_stage_mode` 缺省为 `agent`（本步骤的现状路径）；executor 模式的判定结果与 agent 模式同库同 `--write-json` UPSERT 路径，判定质量对齐前不得用于生产。
 

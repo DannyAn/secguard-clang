@@ -536,14 +536,11 @@ re-reads and re-writes the whole report each time, which is exactly the redundan
 backfill that stretches a large type's wall-clock time — and a `finalize: true` on
 the last chunk only duplicates the orchestrator's audit.
 
-**After the final chunk of a type** (or immediately if the type has zero confirmed
-findings), call `secguard report --complete-type <type> --scan-id <scan_id>` to
-mark the type's AI stage done (sets `ai_stage_status='done'`). The orchestrator's
-`status --reports` absorption also marks the type done atomically with its
-settlement write, so this call is the fast path / repair for a host whose report
-file lands late — but call it anyway: it makes `status --per-type` report `done`
-without waiting for the orchestrator's next absorption, and the engine's resume
-logic treats anything else as `in-progress`/`pending`.
+**Do NOT call `secguard report --complete-type`** — the RED LINE above applies
+here too. The orchestrator's `status --reports` absorption in step 5 marks the
+type done atomically with its settlement write. Your `processed_types` in the
+Structured Report Protocol block is how you signal completion; the engine's
+resume logic reads that, not a subagent-side `--complete-type` call.
 
 **Keep each field SHORT — your verdicts are JSON that must fit in context, not an
 essay.** `summary` ≤ one line. `reasoning` ≤ 2 short sentences (source → sink →
