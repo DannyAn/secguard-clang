@@ -550,3 +550,47 @@ func TestMemoryLeak_ContainerEscape(t *testing.T) {
 		}
 	}
 }
+
+// TestMemoryLeak_StructFieldCleanupByAddress locks in the address-of unwrap
+// for the IPsec "alloc into local struct field → cleanup(&struct)" idiom
+// (Issue #241 memory-leak mode C). The tracked varName is the struct base "s";
+// the cleanup call's argument is &s, so argIdentifier must unwrap the & to
+// match "s" — otherwise every such site is a false-positive memory-leak.
+func TestMemoryLeak_StructFieldCleanupByAddress(t *testing.T) {
+	apikb.RegisterOwnershipTransfer("cleanup_s241")
+	store := runIndexAndDetect(t, "tc_ml_struct_field_cleanup.c")
+	ctx := context.Background()
+
+	releaseEvents, err := store.ListEventsByType(ctx, "MEMORY_RELEASE")
+	if err != nil {
+		t.Fatalf("list MEMORY_RELEASE: %v", err)
+	}
+	foundRelease := false
+	for _, e := range releaseEvents {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Variable == "s" {
+			foundRelease = true
+		}
+	}
+	if !foundRelease {
+		t.Errorf("s.field = malloc(...) + cleanup_s241(&s) should be released (ownership transfer via &s), not leaked")
+	}
+
+	allocEvents, err := store.ListEventsByType(ctx, "MEMORY_ALLOC")
+	if err != nil {
+		t.Fatalf("list MEMORY_ALLOC: %v", err)
+	}
+	for _, e := range allocEvents {
+		var props struct {
+			Variable string `json:"variable"`
+			Definite string `json:"definite"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Variable == "s" && props.Definite == "true" {
+			t.Errorf("s has cleanup_s241(&s) ownership transfer; must not be a definite leak, got definite=true")
+		}
+	}
+}

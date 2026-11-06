@@ -28,6 +28,8 @@ func (r *Result) Render() string {
 	b.WriteString("# releases its first pointer argument.\n")
 	writeSection(&b, "allocators", r.Allocators)
 	writeSection(&b, "deallocators", r.Deallocators)
+	writeSection(&b, "ownership_transfer_calls", r.OwnershipTransfers)
+	writeIteratorMacroSection(&b, r.IteratorMacros)
 	return b.String()
 }
 
@@ -48,4 +50,23 @@ func writeSection(b *strings.Builder, title string, entries []Entry) {
 		fmt.Fprintf(b, "    %q,\n", e.Name)
 	}
 	b.WriteString("]\n")
+}
+
+// writeIteratorMacroSection renders the [iterator_macros.macros] section. The
+// format is NAME = [index] (the 0-based parameter index the macro writes as
+// its iterator variable), NOT names = [...]. The index cannot be inferred from
+// the macro body alone, so EVERY entry is emitted commented out with a
+// placeholder [0] — the user fills in the correct index after reviewing the
+// macro signature. An incorrect index would cause uninit false positives, so
+// auto-activating a guess is unsafe.
+func writeIteratorMacroSection(b *strings.Builder, entries []Entry) {
+	b.WriteString("\n[iterator_macros.macros]\n")
+	if len(entries) == 0 {
+		b.WriteString("# (none found)\n")
+		return
+	}
+	for _, e := range entries {
+		fmt.Fprintf(b, "# %s: %s\n", e.Confidence, strings.Join(e.Reasons, "; "))
+		fmt.Fprintf(b, "# %s = [0]  # fill in the iterator parameter index\n", e.Name)
+	}
 }

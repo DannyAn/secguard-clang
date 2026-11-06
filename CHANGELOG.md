@@ -46,6 +46,19 @@
 - 对 0.12.3 全部需求（#226/#228/#230/#232）做源码检视并修正 P1/P2 问题：plan 允许名单零类型静默、事件匹配按 location-id 的空抑制回归、global-null 的 N×F 全树扫描与同名遮蔽、嵌套/数组布局误算、alloc 流不敏感与宽泛 allocator 判定、建议配置低置信度误激活、agent-body/skill/hint 词汇漂移。
 - 基准（`examples/c-vuln-benchmark`）复跑：recall 132/132、FP 0、FN 0；`go test ./...`、`go test -tags nosqlite` 与 `release/check-extension-consistency.py` 通过。
 
+### Issue #238 — 调用链成环致 OOM/挂死 + 扫描生命周期加固（重发修复）
+
+- **`callChain` 无限 append 致 OOM（P0）**：`filter_call_reach.go` 的 `callChain` 沿 `parent` map 反向遍历无 visited 集合、无深度上限；adopt 循环把 true entry 的哨兵父指针改写为另一节点，在互递归+取址的调用图上形成 2-环，`callChain` 无限 `append` 直至 `fatal error: out of memory`（8.5GB 单次分配）。修复：`callChain` 加 `visited` + `maxCallChainHops=64` 深度上限（防御性）；adopt 循环跳过 true entry（`entryIsTrue[node]`）从源头消除 2-环。
+- **`chainRootName` 死循环挂死（P0 同类）**：`evidence/caller_null.go` 的 `chainRootName` 沿 `fwdBy` 参数转发 map 反向遍历，同形缺陷——互参数转发（`a(p)→b(p)→a(p)`）成 2-环，CPU 100% 永不返回（不 OOM 但进程挂死）。修复：加 `visited` + `maxParamFwdChainHops=64` 深度上限。
+- **signal→cancel**：`main.go` 用 `signal.NotifyContext(SIGINT, SIGTERM)` 包裹 ctx，Ctrl-C/pod 终止取消扫描而非裸杀进程；`scanFinalState` defer 已用 `context.WithoutCancel` 记录 `failed`，scan_runs 行不再滞留为 ghost `running`。
+- **panic recover 写 scan.log**：`runScanCmd` 加 recover defer，panic 时写 FATAL 行到 scan.log + stderr 并 set exitCode=1（此前 panic 无痕穿过 log closer，最后一行是 plan timing）。
+- **.tmp 不再清空**：scan 启动不再 `RemoveAll(.sgre/.tmp)`，保留失败扫描的 agent settlement payload 供排查（此前每次重试静默销毁 AI 阶段中间态）。
+- **plan-*.json 不累积**：`secguard plan <type>` 写稳定 `plan-<type>.json`（不带 epoch），重复调用覆盖而非累积孤儿文件。
+- **scan --help 修正**：`type-filter` 说明从"减少 plan 阶段内存"改为准确描述——收窄降低并发 `Plan()` goroutine 数从而降峰值内存，而非缩小单类型候选量（issue §4 证明 24 候选仍可 OOM）。
+- **GetLatestScanID 查错表**：`GetLatestScanID` 原查 `scan_stats`（plan 完成后才写），index 阶段失败的 scan 一行都没有 → `secguard metrics`/`status --per-type` 报 "no scan found"。改为查 `scan_runs`（pipeline 前就写），失败扫描对 metrics/status 可见。
+- **测试**：新增 `filter_call_reach_cycle_test.go`（5 种环形态）、`zz_call_reach_cycle_e2e_test.go`（22 行 cycle.c 端到端回归）、`caller_null_chain_root_test.go`（2-环/线性/自转发）、`TestStore_GetLatestScanID_FailedScanVisible`（失败扫描可见性）。
+- **验证**：P0 修复后 issue 仓库（1747 文件/51098 null-deref seeds）总内存 ~1-2GB，远低于 GOMEMLIMIT 27.2GB，不会 OOM。
+
 ## [0.12.2] - 2026-11-05
 
 ### auto-confirm 误报收敛与边界 fail-open 分层

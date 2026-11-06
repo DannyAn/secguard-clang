@@ -31,8 +31,10 @@ type Entry struct {
 
 // Result is the discovered suggestion set.
 type Result struct {
-	Allocators   []Entry
-	Deallocators []Entry
+	Allocators         []Entry
+	Deallocators       []Entry
+	OwnershipTransfers []Entry
+	IteratorMacros     []Entry
 }
 
 type symbol struct {
@@ -113,8 +115,18 @@ func Discover(ctx context.Context, store db.Store) (*Result, error) {
 		if apikb.IsDeclaredAllocator(name) || apikb.IsDeclaredDeallocator(name) {
 			continue
 		}
+		if e, ok := classifyOwnershipTransfer(*s); ok && e.Confidence != ConfLow {
+			res.OwnershipTransfers = append(res.OwnershipTransfers, e)
+			emitted[name] = true
+			continue
+		}
 		if e, kind, ok := classify(*s); ok {
 			appendEntry(res, e, kind)
+			emitted[name] = true
+			continue
+		}
+		if e, ok := classifyOwnershipTransfer(*s); ok {
+			res.OwnershipTransfers = append(res.OwnershipTransfers, e)
 			emitted[name] = true
 		}
 	}
@@ -125,10 +137,17 @@ func Discover(ctx context.Context, store db.Store) (*Result, error) {
 		if e, kind, ok := classifyMacro(m); ok {
 			appendEntry(res, e, kind)
 			emitted[m.name] = true
+			continue
+		}
+		if e, ok := classifyIteratorMacro(m); ok {
+			res.IteratorMacros = append(res.IteratorMacros, e)
+			emitted[m.name] = true
 		}
 	}
 	sortEntries(res.Allocators)
 	sortEntries(res.Deallocators)
+	sortEntries(res.OwnershipTransfers)
+	sortEntries(res.IteratorMacros)
 	return res, nil
 }
 
@@ -524,4 +543,126 @@ func sortEntries(es []Entry) {
 		}
 		return strings.ToLower(es[i].Name) < strings.ToLower(es[j].Name)
 	})
+}
+
+// classifyOwnershipTransfer identifies functions that take ownership of a
+// pointer argument (container/queue/registry inserts, send paths). These are
+// the project-specific entries for secguard.toml [ownership_transfer_calls].
+// A pointer passed to such a function escapes rather than leaks.
+func classifyOwnershipTransfer(s symbol) (Entry, bool) {
+	pattern := ownershipTransferNamePattern(s.name)
+	if pattern == "" {
+		return Entry{}, false
+	}
+	hasPtr := hasPointerParameter(s.signature)
+	e := Entry{Name: s.name, Confidence: ConfHigh}
+	e.Reasons = append(e.Reasons, "name pattern "+pattern)
+	if hasPtr {
+		e.Reasons = append(e.Reasons, "pointer parameter")
+	} else {
+		e.Confidence = ConfMedium
+		e.Reasons = append(e.Reasons, "no pointer parameter detected from signature")
+	}
+	if len(s.callsDealloc) > 0 {
+		e.Confidence = ConfLow
+		e.Reasons = append(e.Reasons, "calls "+joinCallees(s.callsDealloc)+" — may release rather than transfer")
+	}
+	return e, true
+}
+
+// ownershipTransferNamePattern returns the display pattern for an ownership-
+// transfer name, or "" if the name does not match. The token set mirrors
+// apikb.IsEscapeFunction's naming heuristic so the suggestion captures exactly
+// the functions the leak detector already treats as escapes on a fail-open
+// basis — declaring them makes the behavior explicit and reviewable.
+func ownershipTransferNamePattern(name string) string {
+	lower := strings.ToLower(name)
+	for _, token := range []string{
+		"_put", "_push", "_queue", "_enqueue", "_register", "_insert", "_append", "_store", "_send", "_add",
+	} {
+		if strings.Contains(lower, token) {
+			return "*" + token
+		}
+	}
+	for _, word := range []string{"Add", "Insert", "Push", "Put", "Append", "Store", "Enqueue", "Register", "Send", "Queue"} {
+		if containsCamelWord(name, word) {
+			return "*" + word
+		}
+	}
+	return ""
+}
+
+// containsCamelWord mirrors apikb.containsCamelWord: a capitalized CamelCase
+// token matched at a boundary (followed by uppercase or end).
+func containsCamelWord(name, word string) bool {
+	idx := 0
+	for {
+		i := strings.Index(name[idx:], word)
+		if i < 0 {
+			return false
+		}
+		i += idx
+		after := i + len(word)
+		if after >= len(name) {
+			return true
+		}
+		if c := name[after]; c >= 'A' && c <= 'Z' {
+			return true
+		}
+		idx = after
+	}
+}
+
+// hasPointerParameter reports whether the function signature has a pointer
+// parameter, using the same splitParams heuristic as the allocator/deallocator
+// classifier.
+func hasPointerParameter(signature string) bool {
+	for _, p := range splitParams(signature) {
+		if strings.Contains(p, "*") {
+			return true
+		}
+	}
+	return false
+}
+
+// classifyIteratorMacro identifies function-like macros that implement iterator
+// loops (for_each, scan, walk, traverse). These are the project-specific entries
+// for secguard.toml [iterator_macros.macros]. The iterator parameter index
+// cannot be inferred from the macro body alone, so every entry is emitted
+// COMMENTED OUT with a placeholder index — the user fills in the correct index.
+func classifyIteratorMacro(m macroEntry) (Entry, bool) {
+	pattern := iteratorMacroNamePattern(m.name)
+	if pattern == "" {
+		return Entry{}, false
+	}
+	if !m.functionLike {
+		return Entry{}, false
+	}
+	allText := strings.Join(m.bodies, " ")
+	hasLoop := strings.Contains(allText, "for") || strings.Contains(allText, "while")
+	hasGuard := strings.Contains(allText, "NULL") || strings.Contains(allText, "!=") || strings.Contains(allText, "next")
+	e := Entry{Name: m.name, Confidence: ConfHigh}
+	e.Reasons = append(e.Reasons, "macro name pattern "+pattern)
+	if hasLoop {
+		e.Reasons = append(e.Reasons, "body contains loop construct")
+	} else if hasGuard {
+		e.Reasons = append(e.Reasons, "body contains NULL/next guard")
+	} else {
+		e.Confidence = ConfMedium
+	}
+	return e, true
+}
+
+// iteratorMacroNamePattern returns the display pattern for an iterator-macro
+// name, or "" if the name does not match.
+func iteratorMacroNamePattern(name string) string {
+	lower := strings.ToLower(name)
+	for _, token := range []string{
+		"_for_each", "_foreach", "_scan", "_iter", "_walk", "_traverse", "_next",
+	} {
+		if strings.Contains(lower, token) {
+			return "*" + token
+		}
+	}
+	return ""
 }

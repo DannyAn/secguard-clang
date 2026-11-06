@@ -319,3 +319,127 @@ func TestClassifyMacro_BodyEvidenceAndObjectLike(t *testing.T) {
 		})
 	}
 }
+func TestClassifyOwnershipTransfer(t *testing.T) {
+	cases := []struct {
+		name     string
+		sym      symbol
+		wantOK   bool
+		wantConf string
+	}{
+		{
+			name:   "push with pointer param",
+			sym:    symbol{name: "list_push_back", signature: "list_push_back(list_t *l, void *item)"},
+			wantOK: true, wantConf: ConfHigh,
+		},
+		{
+			name:   "insert with pointer param",
+			sym:    symbol{name: "dict_insert", signature: "dict_insert(dict_t *d, void *key, void *val)"},
+			wantOK: true, wantConf: ConfHigh,
+		},
+		{
+			name:   "CamelCase Add with pointer param",
+			sym:    symbol{name: "raxInsert", signature: "raxInsert(rax *r, void *data)"},
+			wantOK: true, wantConf: ConfHigh,
+		},
+		{
+			name:   "push without pointer param",
+			sym:    symbol{name: "queue_push_int", signature: "queue_push_int(queue_t *q, int val)"},
+			wantOK: true, wantConf: ConfHigh,
+		},
+		{
+			name:   "non-transfer name",
+			sym:    symbol{name: "compute_value", signature: "compute_value(int x)"},
+			wantOK: false,
+		},
+		{
+			name:   "transfer name but calls free — downgraded",
+			sym:    symbol{name: "list_push_and_free", signature: "list_push_and_free(list_t *l, void *item)", callsDealloc: []string{"free"}},
+			wantOK: true, wantConf: ConfLow,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e, ok := classifyOwnershipTransfer(c.sym)
+			if c.wantOK != ok {
+				t.Fatalf("classifyOwnershipTransfer(%s) ok=%v, want %v", c.sym.name, ok, c.wantOK)
+			}
+			if !c.wantOK {
+				return
+			}
+			if e.Confidence != c.wantConf {
+				t.Errorf("confidence = %q, want %q (reasons=%v)", e.Confidence, c.wantConf, e.Reasons)
+			}
+		})
+	}
+}
+
+func TestClassifyIteratorMacro(t *testing.T) {
+	cases := []struct {
+		name     string
+		m        macroEntry
+		wantOK   bool
+		wantConf string
+	}{
+		{
+			name:   "for_each with loop body",
+			m:      macroEntry{name: "list_for_each", bodies: []string{"for (pos = (head)->next; pos != (head); pos = pos->next)"}, functionLike: true},
+			wantOK: true, wantConf: ConfHigh,
+		},
+		{
+			name:   "scan with NULL guard",
+			m:      macroEntry{name: "DLL_Scan", bodies: []string{"(ptr) && (ptr)->next != NULL"}, functionLike: true},
+			wantOK: true, wantConf: ConfHigh,
+		},
+		{
+			name:   "walk name only",
+			m:      macroEntry{name: "tree_walk", bodies: []string{"traverse(node)"}, functionLike: true},
+			wantOK: true, wantConf: ConfMedium,
+		},
+		{
+			name:   "object-like macro — not iterator",
+			m:      macroEntry{name: "MAX_SCAN", bodies: []string{"256"}, functionLike: false},
+			wantOK: false,
+		},
+		{
+			name:   "non-iterator name",
+			m:      macroEntry{name: "COMPUTE", bodies: []string{"for (;;)"}, functionLike: true},
+			wantOK: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e, ok := classifyIteratorMacro(c.m)
+			if c.wantOK != ok {
+				t.Fatalf("classifyIteratorMacro(%s) ok=%v, want %v", c.m.name, ok, c.wantOK)
+			}
+			if !c.wantOK {
+				return
+			}
+			if e.Confidence != c.wantConf {
+				t.Errorf("confidence = %q, want %q (reasons=%v)", e.Confidence, c.wantConf, e.Reasons)
+			}
+		})
+	}
+}
+
+func TestRenderOwnershipAndIterator(t *testing.T) {
+	r := &Result{
+		OwnershipTransfers: []Entry{
+			{Name: "list_push_back", Confidence: ConfHigh, Reasons: []string{"name pattern *_push", "pointer parameter"}},
+		},
+		IteratorMacros: []Entry{
+			{Name: "DLL_Scan", Confidence: ConfHigh, Reasons: []string{"macro name pattern *_scan", "body contains NULL/next guard"}},
+		},
+	}
+	out := r.Render()
+	for _, want := range []string{
+		"[ownership_transfer_calls]",
+		"\"list_push_back\"",
+		"[iterator_macros.macros]",
+		"# DLL_Scan = [0]",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("render missing %q:\n%s", want, out)
+		}
+	}
+}
