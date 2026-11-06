@@ -339,6 +339,7 @@ type ScanRun struct {
 	EvidenceBytes    int64  `json:"evidence_bytes"`
 	CreatedAt        int64  `json:"created_at"`
 	CompletionState  string `json:"completion_state,omitempty"`
+	ScanMode         string `json:"scan_mode,omitempty"`
 }
 
 // ScanIncompleteTask is one task that could not complete during a scan — a

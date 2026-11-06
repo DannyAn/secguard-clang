@@ -565,6 +565,7 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		CandidatesSarifPath: filepath.Join(scanDir, report.CandidatesSarifFile),
 		ReportPath:          filepath.Join(scanDir, report.ReportFile),
 		ScanID:              scanID,
+		ScanMode:            scopeMode(scope),
 	}
 	reportStart := time.Now()
 	if err := scanOutput.Write(planResults, report.IndexSummary{
@@ -642,6 +643,7 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 			ReportBytes:      reportBytes,
 			EvidenceBytes:    evidenceBytes,
 			CompletionState:  plannedState,
+			ScanMode:         scopeMode(scope),
 		}
 		if err := store.UpsertScanRun(ctx, run); err != nil {
 			logger.Warn("insert scan run metrics failed", "error", err)

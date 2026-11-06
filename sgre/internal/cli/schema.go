@@ -73,6 +73,7 @@ var agentSchemaTables = map[string][]columnDef{
 		{Name: "evidence_bytes", Type: "INTEGER"},
 		{Name: "created_at", Type: "INTEGER"},
 		{Name: "completion_state", Type: "TEXT", NotNull: true, Default: "running"},
+		{Name: "scan_mode", Type: "TEXT"},
 	},
 	"scan_incomplete_tasks": {
 		{Name: "id", Type: "INTEGER", PrimaryKey: true},

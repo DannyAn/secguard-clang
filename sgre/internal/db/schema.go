@@ -219,7 +219,8 @@ CREATE TABLE IF NOT EXISTS scan_runs (
     report_bytes      INTEGER,
     evidence_bytes    INTEGER,
     created_at        INTEGER,
-    completion_state  TEXT NOT NULL DEFAULT 'running' CHECK (completion_state IN ('running','complete','incomplete','limited','failed'))
+    completion_state  TEXT NOT NULL DEFAULT 'running' CHECK (completion_state IN ('running','complete','incomplete','limited','failed')),
+    scan_mode         TEXT
 );
 
 -- ============================================================
@@ -437,6 +438,9 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 	}
 	if err := ensureColumn(ctx, db, "scan_runs", "source_revision", "TEXT"); err != nil {
 		return fmt.Errorf("db: init schema: ensure scan_runs.source_revision: %w", err)
+	}
+	if err := ensureColumn(ctx, db, "scan_runs", "scan_mode", "TEXT"); err != nil {
+		return fmt.Errorf("db: init schema: ensure scan_runs.scan_mode: %w", err)
 	}
 	// A pre-completion_state database must NOT get DEFAULT 'running': SQLite
 	// backfills every existing row with the column default, and the next scan's

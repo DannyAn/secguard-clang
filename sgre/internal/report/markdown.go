@@ -199,6 +199,7 @@ func (o *ScanOutput) writeReport(packages []*planner.PlanResult, indexSummary In
 		AutoConfirmed:     indexSummary.AutoConfirmed,
 		TypesScanned:      indexSummary.TypesScanned,
 		TypesWithFindings: typesWithCandidates,
+		ScanMode:          o.ScanMode,
 		// The scan's own walk figures are authoritative here (it just measured
 		// them), so the "scanned" pair is the one to render.
 		HasScanMetrics: true,

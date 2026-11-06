@@ -72,6 +72,7 @@ type ScanOutput struct {
 	CandidatesSarifPath string
 	ReportPath          string
 	ScanID              string
+	ScanMode            string
 }
 
 func generateScanID() string {

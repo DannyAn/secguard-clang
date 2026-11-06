@@ -58,6 +58,7 @@ type ScanOverview struct {
 	TypesWithCandidates int
 	TypesWithFindings   int
 	SeverityCounts      map[string]SeverityCount
+	ScanMode            string
 }
 
 // SeverityCount is the actionable (confirmed) breakdown per severity. Dismissed
@@ -193,6 +194,9 @@ func (o ScanOverview) MetadataMarkdown() string {
 	fmt.Fprintf(&b, "| Codebase scale | %s |\n", o.ScaleText())
 	if o.TypesScanned > 0 {
 		fmt.Fprintf(&b, "| Vulnerability types scanned | %d |\n", o.TypesScanned)
+	}
+	if o.ScanMode != "" {
+		fmt.Fprintf(&b, "| Scan mode | %s |\n", o.ScanMode)
 	}
 	b.WriteString("\n")
 	return b.String()

@@ -235,3 +235,22 @@ func TestScanOverview_NoFindingsHeadlineStatesSo(t *testing.T) {
 		t.Errorf("VerdictMarkdown must not render a Dismissed row (dismissed not persisted):\n%s", ov.VerdictMarkdown())
 	}
 }
+func TestScanOverview_ScanModeRendered(t *testing.T) {
+	for _, tc := range []struct {
+		mode string
+		want string
+	}{
+		{"complete-program", "| Scan mode | complete-program |"},
+		{"boundary", "| Scan mode | boundary |"},
+	} {
+		ov := ScanOverview{ScanID: "sc_x", ScanMode: tc.mode}
+		md := ov.MetadataMarkdown()
+		if !strings.Contains(md, tc.want) {
+			t.Errorf("mode %q: missing %q in:\n%s", tc.mode, tc.want, md)
+		}
+	}
+	ov := ScanOverview{ScanID: "sc_x"}
+	if strings.Contains(ov.MetadataMarkdown(), "| Scan mode |") {
+		t.Errorf("empty ScanMode must not render a Scan mode row:\n%s", ov.MetadataMarkdown())
+	}
+}

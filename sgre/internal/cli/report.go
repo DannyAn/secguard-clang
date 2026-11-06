@@ -1546,6 +1546,7 @@ func buildScanOverview(ctx context.Context, store db.Store, scanID string, stats
 		ov.FunctionsIndexed = run.FunctionsIndexed
 		ov.DurationMs = run.DurationMs
 		ov.AIDurationMs = run.AIDurationMs
+		ov.ScanMode = run.ScanMode
 		if run.CreatedAt > 0 {
 			ov.StartedAt = time.Unix(run.CreatedAt, 0)
 		}
