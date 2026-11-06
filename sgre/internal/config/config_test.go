@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -173,6 +174,53 @@ names = ["VOS_FREE", "VOS_FREE_F"]
 	}
 	if got := cfg.DeallocatorNames(); len(got) != 2 || got[0] != "VOS_FREE" || got[1] != "VOS_FREE_F" {
 		t.Errorf("deallocators = %v, want [VOS_FREE VOS_FREE_F]", got)
+	}
+}
+
+// TestResolvePath_SuggestedConfigLocation pins the rename-in-place adoption flow:
+// the index stage writes .codeagent/secguard-clang/secguard.toml.suggested, and
+// dropping the suffix lands a config the loader probes.
+func TestResolvePath_SuggestedConfigLocation(t *testing.T) {
+	dir := t.TempDir()
+	sug := filepath.Join(dir, ".codeagent", "secguard-clang", "secguard.toml")
+	if err := os.MkdirAll(filepath.Dir(sug), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sug, []byte(`[allocators]
+names = ["my_malloc"]
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	SetExplicitPath("")
+	t.Setenv("SECGUARD_CONFIG", "")
+	t.Chdir(dir)
+
+	if got := ResolvedPath(); got != sug {
+		t.Errorf("ResolvedPath = %q, want adopted-suggestion %q", got, sug)
+	}
+	cfg := Load()
+	if got := cfg.AllocatorNames(); len(got) != 1 || got[0] != "my_malloc" {
+		t.Errorf("AllocatorNames = %v, want [my_malloc] (rename-in-place must be adoptable)", got)
+	}
+}
+
+func TestResolvePath_DocumentedProjectWinsOverSuggestion(t *testing.T) {
+	dir := t.TempDir()
+	doc := filepath.Join(dir, ".codeagent", "secguard.toml")
+	sug := filepath.Join(dir, ".codeagent", "secguard-clang", "secguard.toml")
+	for _, p := range []string{doc, sug} {
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(""), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	SetExplicitPath("")
+	t.Setenv("SECGUARD_CONFIG", "")
+	t.Chdir(dir)
+	if got := ResolvedPath(); got != doc {
+		t.Errorf("ResolvedPath = %q, want documented project-level %q", got, doc)
 	}
 }
 func TestLoad_OwnershipTransferCalls(t *testing.T) {
@@ -409,5 +457,111 @@ initialization_macros = ["CMD_MSG_INIT", "msg_ctx_fill"]
 	got := cfg.UninitInitializationMacros()
 	if len(got) != 2 || got[0] != "CMD_MSG_INIT" || got[1] != "msg_ctx_fill" {
 		t.Errorf("[uninit] initialization_macros = %v, want [CMD_MSG_INIT msg_ctx_fill]", got)
+	}
+}
+
+func TestTypeFilterOverride(t *testing.T) {
+	SetTypeFilterOverride("")
+	if got := (&Config{}).TypeFilterSet(); got != nil {
+		t.Fatalf("empty override must yield a nil set, got %v", got)
+	}
+
+	SetTypeFilterOverride("format-string, ,injection,format-string")
+	set := (&Config{}).TypeFilterSet()
+	if len(set) != 2 || !set["format-string"] || !set["injection"] {
+		t.Fatalf("TypeFilterSet = %v, want {format-string, injection}", set)
+	}
+
+	// "all" is the documented "no filter" sentinel.
+	SetTypeFilterOverride("all")
+	if got := (&Config{}).TypeFilterSet(); got != nil {
+		t.Fatalf("override \"all\" must yield a nil set, got %v", got)
+	}
+
+	SetTypeFilterOverride("")
+	if got := (&Config{}).TypeFilterSet(); got != nil {
+		t.Fatalf("cleared override must yield a nil set, got %v", got)
+	}
+}
+
+func TestCgroupMemoryLimitPaths(t *testing.T) {
+	v2, v1 := cgroupMemoryLimitPaths("12:memory:/docker/abc\n0::/docker/abc\n1:name=systemd:/user.slice\n")
+	wantV2 := []string{
+		"/sys/fs/cgroup/memory.max",
+		"/sys/fs/cgroup/docker/abc/memory.max",
+		"/sys/fs/cgroup/docker/memory.max",
+		"/sys/fs/cgroup/memory.max",
+	}
+	for _, w := range wantV2 {
+		found := false
+		for _, p := range v2 {
+			if p == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("v2 candidates %v missing %q", v2, w)
+		}
+	}
+	wantV1 := "/sys/fs/cgroup/memory/docker/abc/memory.limit_in_bytes"
+	foundV1 := false
+	for _, p := range v1 {
+		if p == wantV1 {
+			foundV1 = true
+		}
+	}
+	if !foundV1 {
+		t.Errorf("v1 candidates %v missing %q", v1, wantV1)
+	}
+}
+
+func TestMinCgroupLimit(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	a := write("a", "100\n")
+	b := write("b", "50\n")
+	c := write("c", "max\n")
+	missing := filepath.Join(dir, "missing")
+	if got := minCgroupLimit([]string{a, b, c, missing}); got != 50 {
+		t.Errorf("minCgroupLimit = %d, want 50 (smallest finite ancestor limit)", got)
+	}
+	if got := minCgroupLimit([]string{c, missing}); got != 0 {
+		t.Errorf("minCgroupLimit with no finite limit = %d, want 0", got)
+	}
+}
+
+func TestReadCgroupLimit(t *testing.T) {
+	dir := t.TempDir()
+
+	write := func(name, content string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	finite := write("finite", "34359738368\n")
+	if v, ok := readCgroupLimit(finite); !ok || v != 34359738368 {
+		t.Errorf("finite limit = (%d, %v), want (34359738368, true)", v, ok)
+	}
+
+	if v, ok := readCgroupLimit(write("max", "max\n")); ok || v != 0 {
+		t.Errorf("max sentinel = (%d, %v), want (0, false)", v, ok)
+	}
+
+	if v, ok := readCgroupLimit(write("unlimited", strconv.FormatInt(cgroupV1UnlimitedSentinel, 10)+"\n")); ok || v != 0 {
+		t.Errorf("v1 unlimited sentinel = (%d, %v), want (0, false)", v, ok)
+	}
+
+	if v, ok := readCgroupLimit(filepath.Join(dir, "missing")); ok || v != 0 {
+		t.Errorf("missing file = (%d, %v), want (0, false)", v, ok)
 	}
 }

@@ -119,6 +119,17 @@ type SecurityEventStore interface {
 	// ListEventsByIDs returns the events with the given IDs keyed by ID, in a
 	// single batched query (chunked) instead of one query per ID.
 	ListEventsByIDs(ctx context.Context, ids []int64) (map[int64]*SecurityEvent, error)
+	// ListEventLocationKeysByType returns the set of "fileID:line" location keys
+	// that carry at least one event of eventType. It streams only the joined
+	// (file_id, line) pairs instead of materializing the event rows, so a filter
+	// can match a candidate's location by file/line without loading the type's
+	// full event set (BUFFER_ACCESS can hold tens of thousands of large rows on a
+	// large tree; that materialization was the plan-stage OOM trigger).
+	//
+	// Location rows are per event (locations has no uniqueness constraint), so a
+	// candidate and an event at the same file:line have different location ids;
+	// the (file_id,line) key is the identity that must be compared.
+	ListEventLocationKeysByType(ctx context.Context, eventType string) (map[string]bool, error)
 	ClearSecurityEvents(ctx context.Context) error
 }
 
@@ -188,6 +199,12 @@ type ScanRunStore interface {
 	// excluding the scan that is starting now. Called at scan start to clean up
 	// records from crashed/interrupted scans without touching a live one.
 	MarkStaleRunningAsFailed(ctx context.Context, excludeScanID string) (int, error)
+	// StaleRunningScanIDs returns the scan IDs currently in 'running' state,
+	// excluding the scan that is starting now. It is the read-half of the stale
+	// sweep: the scan command uses it to write a .failed marker into each
+	// leftover scan directory (an OOM-killed process never runs the normal
+	// failure finalizer, so the directory would otherwise stay unmarked).
+	StaleRunningScanIDs(ctx context.Context, excludeScanID string) ([]string, error)
 	InsertIncompleteTask(ctx context.Context, task *ScanIncompleteTask) error
 	ListIncompleteTasks(ctx context.Context, scanID string) ([]*ScanIncompleteTask, error)
 }

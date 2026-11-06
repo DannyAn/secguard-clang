@@ -96,6 +96,7 @@ func init() {
 		KnownLimitations: []string{
 			"Macro context candidates are not auto-confirmed and excluded from review",
 			"Pointer aliasing across function boundaries may not be fully tracked",
+			"global-null seeds direct dereferences (and `g[i]`) of a file-scope static NULL pointer; a same-function alias copy (`s = g`) and a writer macro defined in an included header are not modeled",
 		},
 	})
 }

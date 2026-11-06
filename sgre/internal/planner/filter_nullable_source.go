@@ -317,6 +317,9 @@ func (f *NullableSourceFilter) Apply(ctx context.Context, candidates []Candidate
 					// because "no in-tree write" is a closed-world census — a
 					// macro the parser cannot summarize could still write it.
 					c.NullOriginTier = "global-null"
+					if c.SourceLine == 0 {
+						c.SourceLine = models[c.FunctionID].sourceLineOrigin(c.VariableName, "global_null")
+					}
 				case synthCallee != "":
 					// An in-scan callee the inter-procedural fixpoint graded:
 					// proven (a concrete NULL witness in the body) keeps the

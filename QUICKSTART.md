@@ -322,6 +322,14 @@ sqlite_mmap_mb = 256
 
 - `max_cached_trees` 与 `cfg_cache_*` 必须一起调：CFG 条目会持有 AST 引用，只压 AST 会被 CFG 钉住。
 - `go_mem_limit_mb` 只约束 Go heap，不约束 tree-sitter/SQLite 的 C 内存。
+- 检测到 cgroup 内存上限时，`go_mem_limit_mb` 未设置会自动取上限的 85%，
+  `memory_pressure_enabled=true` 且未设 high 水位会自动取 70%；显式配置仍然优先
+  （更小的显式 `GOMEMLIMIT`/`go_mem_limit_mb` 不会被放大）。上限读取的是进程所在
+  cgroup 路径（`/proc/self/cgroup`）及其祖先，取最小有限值。
+- 先缩类型再排障：`secguard scan ./src <type>[,<type>...]` 只对给定类型跑 plan
+  （index/graph/detector 仍全量；要省检测器阶段内存用 `[scan] skip_detectors`）。
+  未知类型或全部被 `[disabled_types]` 关闭会直接报错，不会静默产出 0 候选的
+  "complete" 扫描。
 - 用 `GODEBUG=gctrace=1` 或 `secguard metrics` 判断峰值是 Go heap 还是 C 侧，再决定压哪组预算。
 
 完整配置说明见 [docs/config.md](docs/config.md)。

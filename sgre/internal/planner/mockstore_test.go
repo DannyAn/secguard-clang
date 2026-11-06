@@ -365,6 +365,22 @@ func (s *mockStore) ListEventsByIDs(ctx context.Context, ids []int64) (map[int64
 	}
 	return out, nil
 }
+func (s *mockStore) ListEventLocationKeysByType(ctx context.Context, et string) (map[string]bool, error) {
+	locByID := make(map[int64]*db.Location, len(s.locs))
+	for _, l := range s.locs {
+		locByID[l.ID] = l
+	}
+	out := make(map[string]bool)
+	for _, e := range s.events {
+		if e.EventType != et {
+			continue
+		}
+		if loc := locByID[e.LocationID]; loc != nil {
+			out[fmt.Sprintf("%d:%d", loc.FileID, loc.Line)] = true
+		}
+	}
+	return out, nil
+}
 func (s *mockStore) ClearSecurityEvents(ctx context.Context) error {
 	s.events = nil
 	return nil
@@ -561,6 +577,9 @@ func (s *mockStore) SetScanRunCompletionState(ctx context.Context, scanID, state
 }
 func (s *mockStore) MarkStaleRunningAsFailed(ctx context.Context, excludeScanID string) (int, error) {
 	return 0, nil
+}
+func (s *mockStore) StaleRunningScanIDs(ctx context.Context, excludeScanID string) ([]string, error) {
+	return nil, nil
 }
 func (s *mockStore) InsertIncompleteTask(ctx context.Context, task *db.ScanIncompleteTask) error {
 	return nil

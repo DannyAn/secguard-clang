@@ -139,6 +139,33 @@ func (s *store) ClearSecurityEvents(ctx context.Context) error {
 	return nil
 }
 
+// ListEventLocationKeysByType returns the set of "fileID:line" location keys
+// carrying at least one event of eventType. It streams only the joined
+// (file_id, line) pairs, never the event rows, so the peak memory is bounded by
+// the distinct-location set instead of the type's full event table.
+func (s *store) ListEventLocationKeysByType(ctx context.Context, eventType string) (map[string]bool, error) {
+	rows, err := s.exec.QueryContext(ctx,
+		`SELECT DISTINCT l.file_id, COALESCE(l.line, 0)
+		   FROM security_events e JOIN locations l ON l.id = e.location_id
+		  WHERE e.event_type = ?`, eventType)
+	if err != nil {
+		return nil, fmt.Errorf("db: list event location keys by type: %w", err)
+	}
+	defer rows.Close()
+	result := make(map[string]bool)
+	for rows.Next() {
+		var fileID, line int64
+		if scanErr := rows.Scan(&fileID, &line); scanErr != nil {
+			return nil, fmt.Errorf("db: scan event location key: %w", scanErr)
+		}
+		result[fmt.Sprintf("%d:%d", fileID, line)] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: list event location keys by type: %w", err)
+	}
+	return result, nil
+}
+
 func scanEvents(rows *sql.Rows) ([]*SecurityEvent, error) {
 	var events []*SecurityEvent
 	for rows.Next() {

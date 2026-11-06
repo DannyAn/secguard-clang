@@ -42,6 +42,7 @@ SecGuard 已经**不再依赖「配例外 → 重扫」的循环**来消宏误�
 | 层级 | 路径 | 用途 |
 |------|------|------|
 | 项目级 | `<cwd>/.codeagent/secguard.toml` | 团队/仓库的例外配置（随 git 走） |
+| 项目级 | `<cwd>/.codeagent/secguard-clang/secguard.toml` | index 生成建议配置 `secguard.toml.suggested` 后，去掉 `.suggested` 后缀原地采纳 |
 | 用户级 | `~/.codeagent/secguard.toml` | 个人默认配置（全局生效） |
 
 安装时会自动在 `~/.codeagent/secguard.toml` 生成一个带注释的模板（若文件不存在）。
@@ -54,12 +55,32 @@ SecGuard 已经**不再依赖「配例外 → 重扫」的循环**来消宏误�
 1. `--config <path>` 显式参数（最高优先级）
 2. `SECGUARD_CONFIG` 环境变量
 3. 项目级 `<cwd>/.codeagent/secguard.toml`
-4. 用户级 `~/.codeagent/secguard.toml`
+4. 项目级 `<cwd>/.codeagent/secguard-clang/secguard.toml`
+5. 用户级 `~/.codeagent/secguard.toml`
 
 均未命中时，使用内置默认行为（无配置文件）。
 
 > 说明：项目级优先于用户级，且是**整文件覆盖**语义——项目级存在时完全使用
 > 它，不合并用户级。
+
+### 建议配置自动生成（`secguard.toml.suggested`）
+
+`secguard index` 建库收尾阶段会自动发现项目自定义的分配/释放函数，并把建议写进
+`<cwd>/.codeagent/secguard-clang/secguard.toml.suggested`。文件结构与本配置兼容，
+条目带 `confidence`/`reason` 注释；低置信度候选标为 `needs review` 且**以注释形式
+给出**（不会进入生效的 `names` 列表，避免未审视的猜测被当作已声明的
+分配/释放函数而自动确认误报）。该建议文件**不覆盖**已存在的同名文件，也**从不修改**
+`secguard.toml` 本体。
+
+采纳方式：
+
+- 若项目级 `<cwd>/.codeagent/secguard.toml` **不存在**，去掉 `.suggested` 后缀原地
+  改名即可生效（`secguard.toml` 的整文件覆盖语义意味着它只提供建议文件里的
+  章节，其他章节使用内置默认值）。
+- 若 `<cwd>/.codeagent/secguard.toml` 已存在，它**优先于**本文件，原地改名不会生效；
+  且项目级配置是**整文件覆盖**，只含 `[allocators]`/`[deallocators]` 的建议文件会
+  让用户级配置里的 `[trusted_macros]`/`[scan]` 等设置失效。此时应把需要的条目
+  **合并进**已有的 `.codeagent/secguard.toml`，不要用建议文件整体替换它。
 
 ## 配置项
 
@@ -254,12 +275,12 @@ plan_concurrency = 4
 | 配置 | 默认 | 作用 |
 |---|---|---|
 | `memory_pressure_enabled` | `false` | 开启 cgroup/RSS 回压；超过 high 后并发降到 1（不是只暂停准入），低于 low 恢复 |
-| `memory_high_watermark_mb` | `0` | 回压触发阈值；`0` = 关闭 |
+| `memory_high_watermark_mb` | `0` | 回压触发阈值；`0` = 有 cgroup 内存上限时自动取上限的 70%，无上限时不启用 |
 | `memory_low_watermark_mb` | `0` | 恢复阈值；`0`/非法值归一化为 high 的 75% |
 | `max_cached_trees` | `4000` | parser AST 缓存条目上限；负数保留无界旧行为 |
 | `cfg_cache_max_entries` | `4000` | 语句级 CFG 缓存条目上限；只淘汰无 lease 的条目 |
 | `cfg_cache_max_total_nodes` | `400000` | CFG 缓存总节点上限，防止单个巨型函数吃满预算 |
-| `go_mem_limit_mb` | `0` | Go 运行时软内存上限（GOMEMLIMIT）；`0` = 不设 |
+| `go_mem_limit_mb` | `0` | Go 运行时软内存上限（GOMEMLIMIT）；`0` = 检测到 cgroup 内存上限时自动取上限的 85%，否则不设 |
 | `go_gc_percent` | `0` | 覆盖 GOGC；`0` = 运行时默认 |
 | `sqlite_cache_mb` | `0` | 每个 SQLite 连接的 page cache 上限（MB）；`0` = SQLite 默认 |
 | `sqlite_mmap_mb` | `0` | SQLite mmap_size（MB）；`0` = 默认；mmap 页计入进程 RSS |

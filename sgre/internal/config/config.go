@@ -327,6 +327,56 @@ func (c *Config) SkipDetectorSet() map[string]bool {
 	return out
 }
 
+// typeFilterOverride is the one-shot CLI override from the `scan <path>
+// [type-filter]` positional argument (`secguard scan src format-string`). A
+// non-nil slice narrows the plan stage to only those vulnerability types; nil
+// leaves the full registry active. It is distinct from disabled_types: a type
+// filter is an allow-list, while disabled_types is a deny-list.
+var typeFilterOverride []string
+
+// SetTypeFilterOverride records the [type-filter] positional argument. An empty
+// string clears the override. "all" is treated as "no filter".
+func SetTypeFilterOverride(csv string) {
+	typeFilterOverride = nil
+	for _, part := range strings.Split(csv, ",") {
+		if n := strings.TrimSpace(part); n != "" && n != "all" {
+			typeFilterOverride = append(typeFilterOverride, n)
+		}
+	}
+}
+
+// TypeFilterSet returns the [type-filter] positional argument as a set, for
+// O(1) lookups. A nil/empty set means "no type filter" (all types).
+func (c *Config) TypeFilterSet() map[string]bool {
+	if len(typeFilterOverride) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(typeFilterOverride))
+	for _, n := range typeFilterOverride {
+		out[n] = true
+	}
+	return out
+}
+
+// TypeFilterRequested returns the requested type names in declaration order
+// (deduplicated), for validation and for echoing the applied scope into the
+// scan JSON. A nil/empty slice means "no type filter".
+func TypeFilterRequested() []string {
+	if len(typeFilterOverride) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(typeFilterOverride))
+	out := make([]string, 0, len(typeFilterOverride))
+	for _, n := range typeFilterOverride {
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	return out
+}
+
 // boundaryAutoDismissOverride is the one-shot CLI override
 // (`secguard scan --boundary-auto-dismiss external`). It wins over the file so a
 // production run can enable the layer without editing secguard.toml.
@@ -584,6 +634,14 @@ type Contract struct {
 // the scan result AND from the end-to-end wall-clock, not merely from the final
 // report.
 //
+// NOTE: [disabled_types] only trims the PLAN stage. The index/graph/detector
+// stages still run for every type, so disabling a type does NOT reduce the
+// detector-stage memory peak (a BUFFER_ACCESS-heavy repo still materializes its
+// events during detection). To also skip the corresponding detector — the
+// memory-relevant half — configure [scan] skip_detectors with the detector name
+// (the two vocabularies differ: detector names like buffer_overflow come from
+// the detector registry, type names like buffer-overflow from `secguard types`).
+//
 //	[disabled_types]
 //	types = ["path-traversal", "divide-by-zero"]
 type DisabledTypes struct {
@@ -635,8 +693,9 @@ func SetExplicitPath(path string) {
 //
 //  1. --config flag (via SetExplicitPath)
 //  2. SECGUARD_CONFIG env var
-//  3. project-level  <cwd>/.codeagent/secguard.toml   (per-repo exceptions)
-//  4. user-level     ~/.codeagent/secguard.toml       (personal default)
+//  3. project-level  <cwd>/.codeagent/secguard.toml                (per-repo exceptions)
+//  4. project-level  <cwd>/.codeagent/secguard-clang/secguard.toml (adopted suggestion)
+//  5. user-level     ~/.codeagent/secguard.toml                    (personal default)
 //
 // A missing file is not an error: the caller falls back to built-in behavior.
 // Both default locations share the .codeagent naming, consistent with the
@@ -941,6 +1000,11 @@ func resolvePath(explicit string) string {
 	// Project-level (per-repo exceptions) wins over user-level.
 	if cwd, err := os.Getwd(); err == nil && cwd != "" {
 		if p := filepath.Join(cwd, ".codeagent", "secguard.toml"); fileExists(p) {
+			return p
+		}
+		// The adopted-suggestion location: renaming the index-stage
+		// secguard.toml.suggested in place lands the config here.
+		if p := filepath.Join(cwd, ".codeagent", "secguard-clang", "secguard.toml"); fileExists(p) {
 			return p
 		}
 	}

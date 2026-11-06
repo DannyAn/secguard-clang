@@ -1,6 +1,7 @@
 package build
 
 import (
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -82,15 +83,29 @@ func parseTUConfig(file, directory string, args []string) TUConfig {
 
 // abiFromTriple 从 target triple 推导 ABI。
 // windows-* → LLP64；其余 64-bit → LP64；显式 32-bit 后缀 → ILP32。
+// abiFromTriple 从 target triple 推导 ABI。
+// windows-* → 64-bit 为 LLP64、32-bit 为 ILP32；其余 64-bit → LP64、32-bit → ILP32。
+// 32/64 位按架构名判定（i686/armv7/riscv32/wasm32 等为 32 位；x86_64/aarch64/
+// arm64/riscv64/mips64/ppc64/s390x/wasm64 等为 64 位），不能只看 windows 前缀。
 func abiFromTriple(triple string) typeinfo.ABI {
-	t := strings.ToLower(triple)
-	if strings.Contains(t, "windows") {
-		return typeinfo.ABILLP64
+	t := strings.ToLower(strings.TrimSpace(triple))
+	bits64 := false
+	for _, arch := range []string{
+		"x86_64", "amd64", "aarch64", "arm64", "riscv64", "mips64", "mips64el",
+		"ppc64", "powerpc64", "s390x", "sparc64", "loongarch64", "wasm64",
+	} {
+		if strings.Contains(t, arch) {
+			bits64 = true
+			break
+		}
 	}
-	if strings.Contains(t, "i686") || strings.Contains(t, "i386") || strings.Contains(t, "armv7") {
-		return typeinfo.ABIILP32
+	if bits64 {
+		if strings.Contains(t, "windows") || strings.Contains(t, "mingw") {
+			return typeinfo.ABILLP64
+		}
+		return typeinfo.ABILP64
 	}
-	return typeinfo.ABILP64
+	return typeinfo.ABIILP32
 }
 
 func applyTUDefine(tc *TUConfig, def string) {
@@ -134,13 +149,29 @@ func deriveConfigKey(tc TUConfig) string {
 
 // TUForFile 返回该文件对应的 TUConfig。无匹配 entry 时返回 nil，
 // 调用方应据此将 layout provenance 降级为 assumed_default_abi。
+//
+// compile_commands 的 file 通常是相对 entry 的 directory 的路径，而调用方
+// （indexer）给的是绝对路径；两种形态都按 cleaner 绝对路径比较。
 func (c *CompileCommands) TUForFile(file string) *TUConfig {
 	if c == nil {
 		return nil
 	}
+	want := filepath.Clean(file)
 	for i := range c.TUs {
-		if c.TUs[i].File == file {
+		entry := c.TUs[i]
+		rel := filepath.Clean(entry.File)
+		if rel == want {
 			return &c.TUs[i]
+		}
+		if !filepath.IsAbs(rel) && entry.Directory != "" {
+			if filepath.Clean(filepath.Join(entry.Directory, rel)) == want {
+				return &c.TUs[i]
+			}
+		}
+		if !filepath.IsAbs(want) && entry.Directory != "" {
+			if filepath.Join(entry.Directory, want) == rel {
+				return &c.TUs[i]
+			}
 		}
 	}
 	return nil

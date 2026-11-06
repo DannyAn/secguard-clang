@@ -92,7 +92,7 @@ type VulnTypeSpec struct {
 	// listed, CWEForCategory falls back to spec.CWE. This is the mechanism by
 	// which a single injection vuln_type + single injection/SKILL.md covers
 	// six CWEs without splitting into separate vuln_types.
-	CategoryCWEs      map[string]string
+	CategoryCWEs map[string]string
 	// DefaultSeverity is the type's default severity for a typical confirmed
 	// finding (critical/high/medium/low). It is the single source of truth for
 	// the type→severity scale (GAP-10); SKILL frontmatter `metadata.severity`
@@ -233,6 +233,26 @@ func ActiveVulnTypes(disabled map[string]bool) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// TypeFilteredActiveVulnTypes returns ActiveVulnTypes(disabled) further
+// restricted to the given allow-list (the `scan <path> [type-filter]`
+// positional argument). A nil/empty filter returns the unfiltered active list.
+// Both the pipeline (which builds the Plans slice) and the scan command (which
+// consumes that slice) MUST derive their list from this function so the two
+// never drift apart in ordering or length.
+func TypeFilteredActiveVulnTypes(disabled, filter map[string]bool) []string {
+	active := ActiveVulnTypes(disabled)
+	if len(filter) == 0 {
+		return active
+	}
+	out := make([]string, 0, len(active))
+	for _, name := range active {
+		if filter[name] {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // TaintSummaryTypes filters the given vulnerability types down to those that
@@ -457,6 +477,17 @@ func joinLines(lines []int) string {
 // candidate is detector-proved out-of-bounds; a variable one is exactly what
 // the classifier must range-judge against cap@.
 func buildBufferVerdictFacts(c Candidate) []VerdictFact {
+	if c.Category == "layout_oob_read" || c.Category == "layout_oob_write" {
+		// Layout OOB: the cast target's computed field extent vs the allocation.
+		// The layout is default-ABI in Phase 1, so the tier is suspected; the
+		// classifier verifies these three concentrated facts and dismisses when
+		// packing/custom ABI/typedef resolution explains the discrepancy.
+		return []VerdictFact{
+			{Token: "struct@" + c.StructType, Detail: fmt.Sprintf("the pointer was cast to `struct %s` from a constant-size allocation", c.StructType)},
+			{Token: fmt.Sprintf("alloc-size@%d", c.AllocSize), Detail: fmt.Sprintf("the allocation provides %d bytes; compare it with the accessed field's end", c.AllocSize)},
+			{Token: fmt.Sprintf("layout-field@%s:%d+%d", compactHintValue(c.Index), c.FieldOffset, c.FieldSize), Detail: fmt.Sprintf("the accessed field `%s` starts at offset %d and is %d bytes, so the access ends at %d — when that exceeds the allocation the layout is out of bounds. The layout uses the default ABI (Phase 1): a packed/custom-ABI layout or a typedef-resolution difference can explain the discrepancy", c.Index, c.FieldOffset, c.FieldSize, c.FieldOffset+c.FieldSize)},
+		}
+	}
 	facts := make([]VerdictFact, 0, 3)
 	if c.Array != "" {
 		facts = append(facts, VerdictFact{

@@ -4,6 +4,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
 
@@ -589,5 +590,45 @@ func TestStore_UpsertFinding_PreservesReview(t *testing.T) {
 	}
 	if len(all) != 1 {
 		t.Errorf("expected 1 row after re-write, got %d", len(all))
+	}
+}
+
+func TestStore_ListEventLocationKeysByType(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	fileID, err := s.InsertFile(ctx, &File{Path: "a.c", Language: "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two locations on the same line: locations are per event, so both events
+	// contribute the same (file_id,line) key.
+	loc1, _ := s.InsertLocation(ctx, &Location{FileID: fileID, Line: 1})
+	loc2, _ := s.InsertLocation(ctx, &Location{FileID: fileID, Line: 1})
+	loc3, _ := s.InsertLocation(ctx, &Location{FileID: fileID, Line: 2})
+
+	if _, err := s.InsertEvent(ctx, &SecurityEvent{EventType: "BUFFER_ACCESS", LocationID: loc1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertEvent(ctx, &SecurityEvent{EventType: "DEREFERENCE", LocationID: loc2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertEvent(ctx, &SecurityEvent{EventType: "BUFFER_ACCESS", LocationID: loc3}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.ListEventLocationKeysByType(ctx, "BUFFER_ACCESS")
+	if err != nil {
+		t.Fatalf("ListEventLocationKeysByType: %v", err)
+	}
+	want := fmt.Sprintf("%d:1", fileID)
+	if len(got) != 2 || !got[want] {
+		t.Errorf("BUFFER_ACCESS location keys = %v, want {%q, %q}", got, want, fmt.Sprintf("%d:2", fileID))
+	}
+
+	// A type with no events must not error and must return an empty set.
+	got, err = s.ListEventLocationKeysByType(ctx, "NO_SUCH_EVENT")
+	if err != nil || len(got) != 0 {
+		t.Errorf("no events = (%v, %v), want (map[], nil)", got, err)
 	}
 }

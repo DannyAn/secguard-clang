@@ -63,6 +63,21 @@ func (idx *MacroIndex) Lookup(name string) []MacroDef {
 	return idx.byName[name]
 }
 
+// Names returns every macro name in the index, sorted. It is the census path
+// for a consumer that scans the whole macro set (e.g. allocator/deallocator
+// discovery) rather than resolving specific references.
+func (idx *MacroIndex) Names() []string {
+	if idx == nil {
+		return nil
+	}
+	names := make([]string, 0, len(idx.byName))
+	for n := range idx.byName {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // Resolve maps referenced names to definitions, preserving reference order and
 // de-duplicating by (file, line). limit <= 0 means no cap.
 func (idx *MacroIndex) Resolve(refs []string, limit int) []MacroDef {

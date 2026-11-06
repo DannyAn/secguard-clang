@@ -70,6 +70,36 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		remaining = []string{"."}
 	}
 	targetPath := remaining[0]
+	// The [type-filter] positional argument was historically declared in the
+	// usage text but never consumed, so `scan <path> <type>` silently ran every
+	// type (the most expensive memory-failure footgun on large repos). Consume
+	// it now: remaining[1:] is a single type, a comma list, or "all".
+	if len(remaining) > 1 {
+		config.SetTypeFilterOverride(strings.Join(remaining[1:], ","))
+	} else {
+		// Clear any prior in-process override so a repeated invocation cannot
+		// inherit another command's allow-list.
+		config.SetTypeFilterOverride("")
+	}
+	// Validate the filter BEFORE the index/graph/detector phases. A typo or an
+	// all-disabled filter must fail immediately instead of paying a full scan and
+	// then reporting a silent zero-type "complete" run.
+	if requested := config.TypeFilterRequested(); len(requested) > 0 {
+		var unknown []string
+		for _, name := range requested {
+			if _, err := planner.GetVulnTypeSpec(name); err != nil {
+				unknown = append(unknown, name)
+			}
+		}
+		if len(unknown) > 0 {
+			WriteErrorJSON(fmt.Sprintf("unknown type-filter type(s): %s (run `secguard types` for the registered list)", strings.Join(unknown, ", ")))
+			return 1
+		}
+		if len(planner.TypeFilteredActiveVulnTypes(config.Load().DisabledTypeSet(), config.Load().TypeFilterSet())) == 0 {
+			WriteErrorJSON("type-filter matched no enabled vulnerability type: every requested type is disabled by [disabled_types]")
+			return 1
+		}
+	}
 
 	if timeoutSec > 0 {
 		var cancel context.CancelFunc
@@ -141,6 +171,20 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	}
 	defer store.Close()
 
+	// The stale sweep first collects the interrupted scan IDs, writes a .failed
+	// marker into each leftover scan directory (an OOM-killed process never runs
+	// its own failure finalizer, so without this the directory is an unmarked
+	// remnant the user cannot tell apart from a successful scan), then flips the
+	// rows. The scans root is the canonical location, not the parent of an
+	// explicit --output-dir.
+	if staleIDs, err := store.StaleRunningScanIDs(ctx, scanID); err != nil {
+		defaultLogger().Warn("list stale running scans failed", "error", err)
+	} else {
+		scansRoot := report.ScansRoot(projectRoot)
+		for _, id := range staleIDs {
+			markScanDirFailed(scansRoot, id)
+		}
+	}
 	if n, err := store.MarkStaleRunningAsFailed(ctx, scanID); err != nil {
 		defaultLogger().Warn("mark stale running scans as failed", "error", err)
 	} else if n > 0 {
@@ -249,7 +293,7 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	// read) that must still make the scan 'incomplete' rather than 'complete'.
 	degraded := false
 
-	vulnTypes := planner.ActiveVulnTypes(config.Load().DisabledTypeSet())
+	vulnTypes := planner.TypeFilteredActiveVulnTypes(config.Load().DisabledTypeSet(), config.Load().TypeFilterSet())
 
 	for i, vulnType := range vulnTypes {
 		if errMsg, failed := planErrors[vulnType]; failed {
@@ -388,30 +432,12 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	sort.Strings(filesList)
 
 	typeBreakdown := make([]report.TypeBreakdownEntry, 0, len(evidencePackages))
-	// boundaryDismissible counts the null-deref candidates a boundary scan would
-	// auto-dismiss under boundary_auto_dismiss="external" (the fail-open
-	// ASSUMPTION tiers with no in-tree null proof). It feeds the quantified
-	// recommendation so a default-off boundary scan surfaces its own cost instead
-	// of silently flooding the AI stage.
-	boundaryDismissible := 0
 	for _, ep := range evidencePackages {
 		vt, _ := ep["vulnerability_type"].(string)
 		cands, _ := ep["candidates"].([]planner.EvidenceItem)
 		count := len(cands)
 		if count == 0 {
 			continue
-		}
-		if vt == "null-deref" {
-			for _, c := range cands {
-				switch c.NullOriginTier {
-				case "opaque-origin", "external-unknown", "callback-entry", "assumed-return":
-					boundaryDismissible++
-				case "caller-arg":
-					if c.ChainKind == "root" {
-						boundaryDismissible++
-					}
-				}
-			}
 		}
 		typeBreakdown = append(typeBreakdown, report.TypeBreakdownEntry{
 			Type:  vt,
@@ -427,9 +453,6 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	}
 	functionsInIndex := len(funcs)
 	scope := scanScope(absPath, funcs)
-	if scopeMode(scope) == "boundary" {
-		writeBoundaryConfigHint(scanDir, absPath, scopeWorktree(scope), boundaryDismissible)
-	}
 
 	// Persist the incomplete ledger and derive the scan's completion state
 	// before the report header is rendered, so report.md and the JSON cannot
@@ -505,17 +528,16 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	}
 
 	output := map[string]interface{}{
-		"scan_id":                 scanID,
-		"completion_state":        plannedState,
-		"incomplete_task_count":   incompleteCount,
-		"candidates_by_type":      candidatesByType,
-		"auto_confirmed_by_type":  autoConfirmedByType,
-		"seeds_by_type":           seedsByType,
-		"plan_errors":             planErrors,
-		"detector_errors":         detectorErrors,
-		"disabled_types":          disabledTypeNames(outcome.DisabledTypes),
-		"detectors_skipped":       skippedDetectorNames(outcome.SkippedDetectors),
-		"total_candidates":        totalCandidates,
+		"scan_id":                scanID,
+		"completion_state":       plannedState,
+		"incomplete_task_count":  incompleteCount,
+		"candidates_by_type":     candidatesByType,
+		"auto_confirmed_by_type": autoConfirmedByType,
+		"seeds_by_type":          seedsByType,
+		"plan_errors":            planErrors,
+		"detector_errors":        detectorErrors,
+		"disabled_types":         disabledTypeNames(outcome.DisabledTypes),
+		"detectors_skipped":      skippedDetectorNames(outcome.SkippedDetectors), "total_candidates": totalCandidates,
 		"auto_confirmed_count":    totalAutoConfirmed,
 		"suppressed_count":        totalSuppressed,
 		"baseline_existing_count": totalBaselineExisting,
@@ -541,11 +563,14 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		"result_sarif_note": fmt.Sprintf("%s is written by `report --audit` after classification; the scan writes %s (unclassified leads at level \"note\")", report.SarifFile, report.CandidatesSarifFile),
 		"_summary":          summaryStr,
 	}
-	if scopeMode(scope) == "boundary" {
-		output["suggested_config"] = filepath.Join(scanDir, "secguard.toml.suggested")
-	}
 	if findingsError != "" {
 		output["findings_error"] = findingsError
+	}
+	if requested := config.TypeFilterRequested(); len(requested) > 0 {
+		// Make the narrowed scope recoverable from the artifact: a filtered scan
+		// that silently omits types is indistinguishable from a clean full scan.
+		output["type_filter"] = requested
+		output["applied_types"] = vulnTypes
 	}
 
 	planResults := make([]*planner.PlanResult, 0, len(evidencePackages))
@@ -899,6 +924,29 @@ func newScanLogger(scanDir string) (*log.Logger, io.Closer) {
 type nopCloser struct{}
 
 func (nopCloser) Close() error { return nil }
+
+// markScanDirFailed writes a .failed marker into a leftover scan directory, so
+// an OOM-killed / interrupted scan is visibly distinguishable from a successful
+// one (its "latest" symlink was never updated, so without the marker the
+// directory looks identical to a success). A missing directory is a no-op: a
+// scan that died before creating its directory has nothing to mark.
+//
+// The directory is resolved under the canonical scans root, which matches every
+// default scan. A scan started with an explicit --output-dir lives elsewhere,
+// so its leftover directory is not marked here — a documented limitation (such
+// runs also typically pair --output-dir with a fresh --db, so this sweep never
+// sees their scan_runs rows anyway).
+func markScanDirFailed(scansRoot, scanID string) {
+	scanDir := filepath.Join(scansRoot, scanID)
+	if _, err := os.Stat(scanDir); err != nil {
+		return
+	}
+	marker := filepath.Join(scanDir, ".failed")
+	body := fmt.Sprintf("scan %s did not complete (OOM or crash); marked by a later scan's stale sweep\n", scanID)
+	if err := os.WriteFile(marker, []byte(body), 0644); err != nil {
+		defaultLogger().Warn("write failed-scan marker failed", "path", marker, "error", err)
+	}
+}
 
 // dirTreeBytes sums the size of every regular file under dir. It is used once
 // per scan to record the candidate-evidence volume the AI will read; a missing

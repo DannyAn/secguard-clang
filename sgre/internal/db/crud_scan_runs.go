@@ -142,6 +142,28 @@ func (s *store) MarkStaleRunningAsFailed(ctx context.Context, excludeScanID stri
 	return int(n), nil
 }
 
+// StaleRunningScanIDs returns the scan IDs currently in 'running' state,
+// excluding the scan that is starting now, in creation order. Callers use it to
+// mark the corresponding scan directories before MarkStaleRunningAsFailed flips
+// the rows (an OOM-killed process never runs its own failure finalizer).
+func (s *store) StaleRunningScanIDs(ctx context.Context, excludeScanID string) ([]string, error) {
+	rows, err := s.exec.QueryContext(ctx,
+		`SELECT scan_id FROM scan_runs WHERE completion_state = 'running' AND scan_id <> ? ORDER BY created_at`, excludeScanID)
+	if err != nil {
+		return nil, fmt.Errorf("db: list stale running scan ids: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("db: scan stale running id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (s *store) InsertIncompleteTask(ctx context.Context, task *ScanIncompleteTask) error {
 	if task.CreatedAt == 0 {
 		task.CreatedAt = now()

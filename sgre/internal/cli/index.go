@@ -6,12 +6,15 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/DannyAn/secguard-clang/internal/allocdiscover"
 	"github.com/DannyAn/secguard-clang/internal/config"
+	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/evidence"
 	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/indexer"
 	"github.com/DannyAn/secguard-clang/internal/parser"
 	"github.com/DannyAn/secguard-clang/internal/planner"
+	"github.com/DannyAn/secguard-clang/internal/report"
 )
 
 func runIndexCmd(ctx context.Context, args []string) int {
@@ -142,6 +145,51 @@ func runIndexCmd(ctx context.Context, args []string) int {
 		"functions_in_index": len(funcs),
 		"files_skipped":      result.FilesSkipped,
 		"detector_errors":    detErrMap,
+		"suggested_config":   writeSuggestedConfig(ctx, store, projectRoot),
 	})
 	return 0
+}
+
+// writeSuggestedConfig discovers project-specific allocator/deallocator names
+// and writes them to <projectRoot>/.codeagent/secguard-clang/secguard.toml.suggested.
+// It is best-effort and advisory: a failure or an existing file never fails the
+// index, and secguard.toml itself is never touched. The returned string is the
+// human-readable status surfaced in the index JSON.
+func writeSuggestedConfig(ctx context.Context, store db.Store, projectRoot string) string {
+	res, err := allocdiscover.Discover(ctx, store)
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	path := report.SuggestedConfigPath(projectRoot)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return "error: " + err.Error()
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		if os.IsExist(err) {
+			return "skipped (already exists): " + path
+		}
+		return "error: " + err.Error()
+	}
+	// A partially written suggestion must not masquerade as a complete file: on
+	// any write/sync/close failure remove it so a later index can retry instead
+	// of reporting "skipped (already exists)" forever.
+	ok := false
+	defer func() {
+		if !ok {
+			_ = f.Close()
+			_ = os.Remove(path)
+		}
+	}()
+	if _, err := f.WriteString(res.Render()); err != nil {
+		return "error: " + err.Error()
+	}
+	if err := f.Sync(); err != nil {
+		return "error: " + err.Error()
+	}
+	if err := f.Close(); err != nil {
+		return "error: " + err.Error()
+	}
+	ok = true
+	return "written: " + path
 }

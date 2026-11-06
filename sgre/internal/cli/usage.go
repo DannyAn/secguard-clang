@@ -50,7 +50,11 @@ Usage:
 
 Arguments:
   <path>        Root directory of the C codebase to scan
-  [type-filter] Optional: a single type, comma list, or "all" (default: all)
+  [type-filter] Optional: a single type, a comma/space-separated list, or "all"
+                (default: all). Narrowing the types reduces plan-stage memory (the
+                OOM-sensitive stage). The index/graph/detector stages still run
+                for every type; to also skip those, configure
+                [scan] skip_detectors.
 
 Flags:
   --exclude <dirs>  Comma-separated directory basenames to skip
@@ -311,10 +315,11 @@ What it is:
   boundary policy, and integer-overflow truncating wrappers.
 
   Config file locations, in priority order (first existing wins):
-    1. --config <path>                     explicit flag
+    1. --config <path>                                  explicit flag
     2. SECGUARD_CONFIG env var
-    3. <cwd>/.codeagent/secguard.toml      per-repository (commit it)
-    4. ~/.codeagent/secguard.toml          personal default (generated on install)
+    3. <cwd>/.codeagent/secguard.toml                   per-repository (commit it)
+    4. <cwd>/.codeagent/secguard-clang/secguard.toml    adopted index suggestion
+    5. ~/.codeagent/secguard.toml                       personal default (generated on install)
 
   With no file present, secguard uses built-in defaults (an empty config).
 
@@ -557,19 +562,19 @@ entry_points = [
 // subcommandUsage maps a subcommand name to its usage printer. Execute uses this
 // to dispatch `secguard <cmd> --help` without falling through into the command.
 var subcommandUsage = map[string]func(){
-	"index":  printIndexUsage,
-	"scan":   printScanUsage,
-	"status": printStatusUsage,
-	"query":  printQueryUsage,
-	"types":  printTypesUsage,
-	"plan":   printPlanUsage,
-	"report": printReportUsage,
+	"index":    printIndexUsage,
+	"scan":     printScanUsage,
+	"status":   printStatusUsage,
+	"query":    printQueryUsage,
+	"types":    printTypesUsage,
+	"plan":     printPlanUsage,
+	"report":   printReportUsage,
 	"classify": printClassifyUsage,
-	"db":     printDbUsage,
-	"def":    printDefUsage,
-	"symbol": printDefUsage,
-	"schema": printSchemaUsage,
-	"config": printConfigUsage,
+	"db":       printDbUsage,
+	"def":      printDefUsage,
+	"symbol":   printDefUsage,
+	"schema":   printSchemaUsage,
+	"config":   printConfigUsage,
 }
 
 // dispatchHelp returns true if args[0] is a known subcommand and args[1:] contain

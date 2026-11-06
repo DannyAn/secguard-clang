@@ -162,6 +162,90 @@ struct Outer { struct Inner a; long z; };
 	}
 }
 
+func TestBuildLayouts_NestedStructDefinition(t *testing.T) {
+	// An inline nested definition must not leak its fields into the outer layout:
+	// Outer is {Inner n; uint32_t c} = 12 bytes, c at offset 8 (a recursive field
+	// census historically produced 20 bytes with c at 16).
+	src := `
+struct Outer {
+    struct Inner { unsigned int a; unsigned int b; } n;
+    unsigned int c;
+};
+`
+	root := parseRoot(t, src)
+	decls := collectStructDecls(root, nil)
+	layouts := buildLayouts(decls, typeinfo.ABILP64, 0, typeinfo.ProvenanceAssumedDefaultABI)
+
+	outer, ok := layouts[typeinfo.LayoutKey{Type: "Outer"}]
+	if !ok || outer.IsUnknown() {
+		t.Fatalf("Outer should be resolvable: %+v", outer)
+	}
+	if outer.Size != 12 {
+		t.Errorf("Outer size: want 12, got %d", outer.Size)
+	}
+	if _, found := outer.FieldByName("a"); found {
+		t.Errorf("Outer must not contain the nested Inner field a: %+v", outer.Fields)
+	}
+	c, _ := outer.FieldByName("c")
+	if c.Offset != 8 {
+		t.Errorf("c offset: want 8, got %d", c.Offset)
+	}
+}
+
+func TestBuildLayouts_AnonymousAggregateUnknown(t *testing.T) {
+	// An anonymous union member overlaps its members at one offset; the flat
+	// sequential layout cannot express that, so the type must be unknown rather
+	// than mis-offset every field after it.
+	src := `
+struct Anon {
+    unsigned int a;
+    union { unsigned int b; float f; };
+    unsigned int d;
+};
+`
+	root := parseRoot(t, src)
+	decls := collectStructDecls(root, nil)
+	layouts := buildLayouts(decls, typeinfo.ABILP64, 0, typeinfo.ProvenanceAssumedDefaultABI)
+	tl, _ := layouts[typeinfo.LayoutKey{Type: "Anon"}]
+	if !tl.IsUnknown() {
+		t.Errorf("anonymous aggregate member should make the layout unknown, got %+v", tl)
+	}
+}
+
+func TestBuildLayouts_MultidimensionalArray(t *testing.T) {
+	src := `struct M { unsigned int a; unsigned int grid[2][3]; unsigned int z; };`
+	root := parseRoot(t, src)
+	decls := collectStructDecls(root, nil)
+	layouts := buildLayouts(decls, typeinfo.ABILP64, 0, typeinfo.ProvenanceAssumedDefaultABI)
+	tl, _ := layouts[typeinfo.LayoutKey{Type: "M"}]
+	if tl.IsUnknown() {
+		t.Fatalf("M should be resolvable: %q", tl.Unknown)
+	}
+	grid, _ := tl.FieldByName("grid")
+	if grid.Size != 24 || grid.ArrayCount != 6 {
+		t.Errorf("grid: want 24-byte (2*3) array[6], got %+v", grid)
+	}
+	z, _ := tl.FieldByName("z")
+	if z.Offset != 28 {
+		t.Errorf("z offset: want 28, got %d", z.Offset)
+	}
+}
+
+func TestBuildLayouts_FlexibleArrayIsArray(t *testing.T) {
+	src := `struct F { unsigned int kind; unsigned char payload[]; };`
+	root := parseRoot(t, src)
+	decls := collectStructDecls(root, nil)
+	layouts := buildLayouts(decls, typeinfo.ABILP64, 0, typeinfo.ProvenanceAssumedDefaultABI)
+	tl, _ := layouts[typeinfo.LayoutKey{Type: "F"}]
+	if tl.IsUnknown() {
+		t.Fatalf("F should be resolvable: %q", tl.Unknown)
+	}
+	payload, _ := tl.FieldByName("payload")
+	if !payload.IsArray || payload.ArrayCount != 0 {
+		t.Errorf("payload: want IsArray with ArrayCount 0, got %+v", payload)
+	}
+}
+
 func TestBuildLayouts_Union(t *testing.T) {
 	src := `union U { int x; long y; char buf[8]; };`
 	root := parseRoot(t, src)
@@ -237,6 +321,32 @@ struct S { char buf[BUF_SIZE]; };`
 	fl, _ := tl.FieldByName("buf")
 	if fl.Size != 64 || fl.ArrayCount != 64 {
 		t.Errorf("buf: want 64-byte array[64], got %+v", fl)
+	}
+}
+
+func TestBuildLayouts_PragmaPackUnknown(t *testing.T) {
+	src := `#pragma pack(push, 1)
+struct P { char tag; long long value; };
+#pragma pack(pop)`
+	root := parseRoot(t, src)
+	decls := collectStructDecls(root, nil)
+	layouts := buildLayouts(decls, typeinfo.ABILP64, 0, typeinfo.ProvenanceAssumedDefaultABI)
+	tl, _ := layouts[typeinfo.LayoutKey{Type: "P"}]
+	if !tl.IsUnknown() {
+		t.Errorf("#pragma pack must make the layout unknown, got %+v", tl)
+	}
+}
+
+func TestBuildLayouts_UnknownArrayBeforeFieldUnknown(t *testing.T) {
+	// An unknown-length array that is NOT the last member makes every following
+	// offset a guess (a flexible array is only legal as the last member).
+	src := `struct S { char buf[]; int x; };`
+	root := parseRoot(t, src)
+	decls := collectStructDecls(root, nil)
+	layouts := buildLayouts(decls, typeinfo.ABILP64, 0, typeinfo.ProvenanceAssumedDefaultABI)
+	tl, _ := layouts[typeinfo.LayoutKey{Type: "S"}]
+	if !tl.IsUnknown() {
+		t.Errorf("unknown-length array before another field must be unknown, got %+v", tl)
 	}
 }
 

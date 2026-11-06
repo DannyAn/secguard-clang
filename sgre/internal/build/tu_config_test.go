@@ -111,6 +111,52 @@ func TestLoadCompileCommands_PerTU(t *testing.T) {
 	}
 }
 
+func TestAbiFromTriple(t *testing.T) {
+	cases := []struct {
+		triple string
+		want   typeinfo.ABI
+	}{
+		{"x86_64-linux-gnu", typeinfo.ABILP64},
+		{"aarch64-linux-musl", typeinfo.ABILP64},
+		{"i686-linux-gnu", typeinfo.ABIILP32},
+		{"armv7-linux-gnueabihf", typeinfo.ABIILP32},
+		{"wasm32-unknown-unknown", typeinfo.ABIILP32},
+		{"riscv64-linux-gnu", typeinfo.ABILP64},
+		{"mips-linux-gnu", typeinfo.ABIILP32},
+		{"x86_64-pc-windows-msvc", typeinfo.ABILLP64},
+		{"x86_64-w64-mingw32", typeinfo.ABILLP64},
+		{"i686-w64-mingw32", typeinfo.ABIILP32},
+	}
+	for _, c := range cases {
+		if got := abiFromTriple(c.triple); got != c.want {
+			t.Errorf("abiFromTriple(%q) = %s, want %s", c.triple, got, c.want)
+		}
+	}
+}
+
+func TestTUForFile_RelativeToDirectory(t *testing.T) {
+	dir := t.TempDir()
+	ccPath := filepath.Join(dir, "compile_commands.json")
+	entries := []map[string]interface{}{
+		{"file": "src/a.c", "directory": dir, "arguments": []string{"clang", "-m32", "-c", "src/a.c"}},
+	}
+	data, _ := json.Marshal(entries)
+	if err := os.WriteFile(ccPath, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cc, err := LoadCompileCommands(ccPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	abs := filepath.Join(dir, "src", "a.c")
+	if tu := cc.TUForFile(abs); tu == nil || tu.ABI != typeinfo.ABIILP32 {
+		t.Errorf("TUForFile(%q) = %+v, want the directory-relative entry", abs, tu)
+	}
+	if tu := cc.TUForFile("src/a.c"); tu == nil {
+		t.Errorf("TUForFile(relative) = nil, want match")
+	}
+}
+
 func TestLoadCompileCommands_GlobalUnionPreserved(t *testing.T) {
 	dir := t.TempDir()
 	ccPath := filepath.Join(dir, "compile_commands.json")

@@ -41,6 +41,10 @@ const (
 	LatestTxtName  = "latest.txt"
 	ScanLogFile    = "scan.log"
 	DismissedFile  = "dismissed.json"
+	// SuggestedConfigName is the advisory allocator/deallocator suggestion the
+	// index stage writes under the project runtime dir. A user renames it
+	// (dropping the ".suggested" suffix) to adopt the entries as secguard.toml.
+	SuggestedConfigName = "secguard.toml.suggested"
 	// FindingsDir holds the AI's classified verdicts — the human review
 	// surface. Only CONFIRMED verdicts ever get a file here; a dismissed
 	// (including undecidable) verdict is recorded in the DB only, never on the
@@ -60,7 +64,7 @@ const (
 // ToolVersion is the version stamped into SARIF and markdown reports.
 // It is a var so cli/root.go can inject the release version at startup
 // (keeping report free of a cli import, which would be a cycle).
-var ToolVersion = "0.12.2"
+var ToolVersion = "0.12.3"
 
 type ScanOutput struct {
 	RootDir string
@@ -104,6 +108,22 @@ func NewScanOutput(projectRoot string) *ScanOutput {
 
 func GetDbPath(projectRoot string) string {
 	return filepath.Join(projectRoot, CodeagentDir, ProductDir, SgreDir, DbName)
+}
+
+// SuggestedConfigPath returns where the index stage writes the advisory
+// allocator/deallocator suggestion for a project root. Dropping the
+// ".suggested" suffix makes it a secguard.toml at a project-level config
+// location the config loader probes.
+func SuggestedConfigPath(projectRoot string) string {
+	return filepath.Join(projectRoot, CodeagentDir, ProductDir, SuggestedConfigName)
+}
+
+// ScansRoot returns the canonical scans directory for a project root, the
+// parent every per-scan directory (sc_<timestamp>_<suffix>) lives in and where
+// the "latest" symlink points. It is the location the scan command uses to mark
+// stale/failed scan directories, independent of any explicit --output-dir.
+func ScansRoot(projectRoot string) string {
+	return filepath.Join(projectRoot, CodeagentDir, ProductDir, ScansDir)
 }
 
 func EnsureSgreDir(projectRoot string) error {
