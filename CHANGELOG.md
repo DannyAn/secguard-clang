@@ -4,6 +4,38 @@
 
 ## [未发布]
 
+## [0.12.4] - 2026-11-07
+
+### Issue #241 — memory-leak 误报消除（地址解包 + 结构体字段清理识别）
+
+- **取址别名清理识别**：`memory_leak.go` 的 `argIdentifier` 解包 `&`（取址）运算符——`q = &p; free(q)` 这类经别名指针执行的清理不再被漏认成泄漏；配套回归测试 `TestMemoryLeak_StructFieldCleanupByAddress` 与 fixture `tc_ml_struct_field_cleanup.c`。
+- **字段级清理守卫识别**：`isNullCheckCondition` 匹配结构体字段前缀（`p->field == NULL`），字段级清空被认作有效守卫。
+- **allocdiscover 建议增强**：`secguard index` 的建议配置新增 `ownership_transfer_calls` 与 `iterator_macros` 两节推断，让大仓里非标准 free 函数与迭代器宏导致的 memory-leak 误报在采纳建议后即被抑制。
+
+### Issue #242 — 增量扫描 canReuse 三处漏洞（陈旧图复用致漏报）
+
+- **文件删除（CRITICAL）**：`indexer.WalkCFiles` 只遍历现存文件，已删除文件在 DB 中残留 functions/graph_edges/security_events，`FilesChanged=0 → canReuse=true`，plan 沿用陈旧边。新增 `detectDeletedFiles()` 将 DB 与文件系统做 diff，经 FK `ON DELETE` 级联清除；覆盖"文件被目录替换"（`IsDir` 检查）。
+- **配置漂移（CRITICAL）**：编辑 `secguard.toml` 不再复用缓存图——新增 `ConfigChecksum()`（解析后配置 TOML 的 SHA256，解析失败记 `default`）存入 `pipeline_meta`，`canReuse` 校验配置指纹不变。
+- **未完成图（HIGH）**：崩溃扫描可能留下 `graphExists=true` 的残缺图——新增 `graph_build_complete` meta 标志，仅在图+检测器全部完成后置位，`canReuse` 要求该标志。
+
+### Issue #243 — 并发调度指令冲突消除（AI Agent 反复纠结根因）
+
+- **`--complete-type` RED LINE 冲突（CRITICAL）**：agent-body.md 内部直接矛盾（一处"绝不调用"、一处"要求调用"），command-instructions.md 同样自相矛盾，agent 在两态间震荡空耗轮次。统一为：子代理**绝不**调用 `--complete-type`，编排器在吸收报告时标记类型完成，Structured Report Protocol 的 `processed_types` 是完成信号。
+- **"等一轮"与 F8 同轮冲突（MEDIUM）**：F11 超时恢复的"等一轮再查"与 F8"结束轮次前必须产出最终报告"冲突致 agent 停摆。改为"同轮继续处理其他批次，然后再查 `--reports`"。
+- **全占位空等冲突（MEDIUM）**：全部批次 `claimed:false` 时指令只说"不再派发"未说下一步，与 F8"无中间状态"冲突致挂起。改为"不得结束轮次——同轮持续吸收已完成批次（`status --reports` → `--per-type`）并重试认领"。
+- **文档配套（#247）**：批次预算收紧（`batch_candidate_count` 以批次最重类型的 `r_type` 计算单批上限）、宿主感知 liveness（同步/异步宿主的小类型策略分流）、F11b 中断恢复补充。
+
+### Claude Code marketplace 注册 + 并发结算生命周期 + 部署校验（#248 / #249）
+
+- **官方 Claude Code marketplace 注册**：`sg_register_marketplace` 参数化清单目录（官方 `.claude-plugin` / CodeAgent `.cac-plugin`）。缺这步时 `claude plugin list` 报 "Marketplace local-secguard not found"、注册了但目录缺载荷时报 "Plugin directory not found"——两种断点下 commands 都不加载（skills 仍被直接扫到，表现为"技能在、命令不在"）。install 与 uninstall 对称处理。
+- **结算认领生命周期修复**：happy path（`report --complete-type` + `report --audit`）从不调用 `status --reports`，类型级预派发认领占位（`status='dispatched'`）挂满整个 `claim_ttl`——类型持续读作 in-flight（re-plan 会跳过它）、新认领输给僵尸持有者。现 `--complete-type` 关闭该类型的 dispatched 认领行；`--audit` 在测量 AI 阶段前自行吸收 `.sgre/.tmp` 结算报告（幂等），ai_duration 自测量与认领关闭不再依赖编排器显式轮询；`status --per-type` 对 terminal-done 类型不再报 in-flight 区间。两个回归测试固定双侧行为。
+- **deploy.sh 部署校验**：dev 部署不再可能静默带出陈旧二进制——构建失败硬失败（旧版仅告警）、dev 构建戳入版本串（`--version` 可验证新鲜度）、全部安装面硬链接到规范二进制并逐一 sha256 校验、PATH 解析校验、写部署 manifest、校验失配硬失败；部署前清除上一次安装（陈旧裸名 agent 定义会遮蔽插件 agent）。
+- **扩展文档修正**：子代理必须调用 PATH 解析的裸 `secguard`（仓内旧构建会对编排器二进制建的 DB 报 schema 不匹配）；源内标注（`finding/no_finding` 注释、`expect=` 标签）不是裁决事实——基准夹具自带标注且经常过期或故意矛盾；`.sgre/.tmp` 不再在扫描开始时清空（#238 §3.3 保留崩溃扫描载荷），批次一律写 scan-unique 文件名；派发优先插件命名空间 agent 并在首批前 sanity-check（`maxTurns ≥ 60`、工具含 `Write`/`Skill`），防旧裸名 agent 文件静默封顶每批次。
+
+### 验证
+
+- `go build ./...`、`go test ./...` 全量、`go test -tags nosqlite`（log/planner/db）、`release/check-extension-consistency.py` 全部通过；deploy.sh/lib.sh/install.sh.tmpl `bash -n` 通过。
+
 ## [0.12.3] - 2026-11-06
 
 ### Issue #226 反馈看护场景与 global-null 收敛层
