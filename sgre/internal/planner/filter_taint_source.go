@@ -156,9 +156,13 @@ func newTaintPlanCtx(ctx context.Context, store db.Store, p *parser.Parser) (*ta
 	if err != nil {
 		return nil, fmt.Errorf("taint plan: list functions: %w", err)
 	}
+	fileByID, err := listFilesByID(ctx, store)
+	if err != nil {
+		return nil, fmt.Errorf("taint plan: %w", err)
+	}
 	tc := &taintPlanCtx{
 		funcs:       funcs,
-		fileByID:    listFilesByID(ctx, store),
+		fileByID:    fileByID,
 		cache:       newFileParseCache(p),
 		bodies:      make(map[int64]parser.Node, len(funcs)),
 		roots:       make(map[int64]parser.Node, len(funcs)),
@@ -400,7 +404,10 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 	retTainted := summaries.retTainted
 	paramTainted := summaries.paramTainted
 
-	flows, pathFlows, paramsByFunc, staticByFunc, bodies := f.buildFlows(ctx, byFunc, retTainted, returnsParam, paramTainted)
+	flows, pathFlows, paramsByFunc, staticByFunc, bodies, err := f.buildFlows(ctx, byFunc, retTainted, returnsParam, paramTainted)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -552,7 +559,7 @@ func (f *TaintSourceFilter) sinkVariable(eventsByID map[int64]*db.SecurityEvent,
 	}
 }
 
-func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, retTainted map[string]bool, returnsParam map[string]map[int]bool, paramTainted map[int64]map[int]bool) (map[int64]*flowResult, map[int64]*flowResult, map[int64]map[string]int, map[int64]bool, map[int64]parser.Node) {
+func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, retTainted map[string]bool, returnsParam map[string]map[int]bool, paramTainted map[int64]map[int]bool) (map[int64]*flowResult, map[int64]*flowResult, map[int64]map[string]int, map[int64]bool, map[int64]parser.Node, error) {
 	flows := make(map[int64]*flowResult, len(byFunc))
 	pathFlows := make(map[int64]*flowResult, len(byFunc))
 	paramsByFunc := make(map[int64]map[string]int, len(byFunc))
@@ -560,7 +567,10 @@ func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]C
 	bodies := make(map[int64]parser.Node, len(byFunc))
 	cache := newFileParseCache(f.parser)
 	defer cache.Close()
-	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	fnByID, fileByID, err := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
 	for fid := range byFunc {
 		fn := fnByID[fid]
 		if fn == nil {
@@ -612,7 +622,7 @@ func (f *TaintSourceFilter) buildFlows(ctx context.Context, byFunc map[int64][]C
 			flows[fid] = a2.analyzeFlow(ctx, fn, body, root, genByLine, mergeKills(killByLine, sk), false, false)
 		}
 	}
-	return flows, pathFlows, paramsByFunc, staticByFunc, bodies
+	return flows, pathFlows, paramsByFunc, staticByFunc, bodies, nil
 }
 
 // funcCandidateCategories reports whether a function's candidate set contains

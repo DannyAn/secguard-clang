@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -20,6 +21,7 @@ type edgeBatchWriter struct {
 	edges    []db.GraphEdge
 	maxBatch int
 	flushed  int
+	failed   int
 }
 
 // newEdgeBatchWriter creates a writer that flushes every maxBatch edges (and
@@ -65,6 +67,7 @@ func (w *edgeBatchWriter) flush(ctx context.Context) int {
 		n = 0
 		for i := range w.edges {
 			if _, eerr := w.store.InsertGraphEdge(ctx, &w.edges[i]); eerr != nil {
+				w.failed++
 				if w.logger != nil {
 					w.logger.Warn("graph: edge insert failed", "edge_type", w.edges[i].EdgeType, "error", eerr)
 				}
@@ -81,3 +84,21 @@ func (w *edgeBatchWriter) flush(ctx context.Context) int {
 // total returns the cumulative number of edges successfully written across all
 // flushes.
 func (w *edgeBatchWriter) total() int { return w.flushed }
+
+// failedTotal returns the cumulative number of edges that could NOT be written.
+// A graph with silently missing edges is worse than a failed build: lock-order /
+// shared-access gaps make the race/deadlock convergence filters drop real
+// candidates as "no shared access", so builders must surface this instead of
+// returning success.
+func (w *edgeBatchWriter) failedTotal() int { return w.failed }
+
+// flushErr flushes and returns an error when any edge could not be persisted,
+// so the owning builder's Build fails (and the pipeline's completion marker is
+// invalidated) instead of reporting a complete graph with missing edges.
+func (w *edgeBatchWriter) flushErr(ctx context.Context) error {
+	w.flush(ctx)
+	if w.failed > 0 {
+		return fmt.Errorf("%d graph edge(s) failed to persist", w.failed)
+	}
+	return nil
+}

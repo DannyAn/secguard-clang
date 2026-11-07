@@ -24,7 +24,10 @@ func NewMacroUncertainFilter(store db.Store, macro *macroContextDetector) *Macro
 func (f *MacroUncertainFilter) Name() string { return "macro_uncertain" }
 
 func (f *MacroUncertainFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, []Dismissed, error) {
-	files := listFilesByID(ctx, f.store)
+	files, err := listFilesByID(ctx, f.store)
+	if err != nil {
+		return nil, nil, err
+	}
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
 	for _, c := range candidates {

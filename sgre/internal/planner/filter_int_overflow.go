@@ -55,7 +55,10 @@ func (f *IntOverflowGuardFilter) Apply(ctx context.Context, candidates []Candida
 	for _, c := range candidates {
 		byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
 	}
-	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	fnByID, fileByID, err := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	if err != nil {
+		return nil, nil, err
+	}
 	// Parse each candidate function body once and reuse it for both the range
 	// analysis and the per-candidate guard bounds: operandBounds previously
 	// created a fresh fileParseCache per candidate, re-reading and re-parsing

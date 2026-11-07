@@ -494,6 +494,12 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	for vt, msg := range planErrors {
 		recordIncomplete("plan", "failed", vt+": "+msg)
 	}
+	// File-level read/parse failures are incomplete EVIDENCE, not a footnote:
+	// every function of a skipped file is absent from every vuln type, so the
+	// scan must not read complete while silently losing whole files.
+	if outcome.Index != nil && outcome.Index.FilesSkipped > 0 {
+		recordIncomplete("index", "files-skipped", fmt.Sprintf("%d file(s) could not be read/parsed; their functions are absent from every vuln type", outcome.Index.FilesSkipped))
+	}
 	if degraded {
 		recordIncomplete("report", "degraded", "auto-confirm write or findings read failed")
 	}

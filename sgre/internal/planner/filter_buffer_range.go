@@ -62,7 +62,10 @@ func (f *BufferRangeFilter) Apply(ctx context.Context, candidates []Candidate) (
 		return candidates, nil, nil
 	}
 
-	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	fnByID, fileByID, err := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	if err != nil {
+		return nil, nil, err
+	}
 	cache := newFileParseCache(f.parser)
 	defer cache.Close()
 	flows := make(map[int64]*rangeFlow, len(byFunc))

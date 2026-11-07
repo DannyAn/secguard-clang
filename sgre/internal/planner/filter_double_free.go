@@ -103,7 +103,10 @@ func (f *DoubleFreeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Ca
 	exclusive := make(map[int64]bool)
 	cache := newFileParseCache(f.parser)
 	defer cache.Close()
-	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	fnByID, fileByID, err := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	if err != nil {
+		return nil, nil, err
+	}
 	// Batch-load every candidate's event once: the per-candidate GetEventByID
 	// below was an N+1 query storm.
 	eventIDs := make([]int64, 0)

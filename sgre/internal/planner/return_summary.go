@@ -42,6 +42,9 @@ type returnSummaryResolver struct {
 	// misses #include'd headers.
 	globalConsts *parser.ConstantEnv
 
+	// loadErr records a failed file listing instead of silently degrading
+	// every path resolution to "unknown file".
+	loadErr  error
 	memo     map[int64]bool
 	visiting map[int64]bool
 }
@@ -63,7 +66,15 @@ func newReturnSummaryResolver(ctx context.Context, store db.Store, p *parser.Par
 			r.fnByID[fn.ID] = fn
 		}
 	}
-	r.fileByID = listFilesByID(ctx, store)
+	fileByID, err := listFilesByID(ctx, store)
+	if err != nil {
+		// A failed file listing must not degrade every path resolution to
+		// "unknown file" silently: keep the error visible on the resolver so
+		// callers can surface it instead of reasoning over empty facts.
+		r.loadErr = err
+	} else {
+		r.fileByID = fileByID
+	}
 	r.globalConsts = r.buildGlobalConstants()
 	return r
 }

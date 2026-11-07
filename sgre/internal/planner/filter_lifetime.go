@@ -83,7 +83,10 @@ func (f *LifetimeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Cand
 	flows := make(map[int64]*flowResult, len(byFunc))
 	cache := newFileParseCache(f.parser)
 	defer cache.Close()
-	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	fnByID, fileByID, err := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	if err != nil {
+		return nil, err
+	}
 	// Batch-load every candidate's event once: the per-candidate GetEventByID
 	// below was an N+1 query storm.
 	eventIDs := make([]int64, 0)

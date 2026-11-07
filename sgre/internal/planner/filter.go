@@ -2,6 +2,7 @@ package planner
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/symbols"
@@ -77,26 +78,34 @@ func candidateFuncIDs(byFunc map[int64][]Candidate) []int64 {
 // returning fnByID and fileByID maps. The flow filters iterate candidates by
 // function and previously issued one GetFunctionByID + GetFileByID point query
 // per function (an N+1 storm); this collapses the same work to one batched
-// function query plus one file listing.
-func loadFuncFiles(ctx context.Context, store db.Store, funcIDs []int64) (map[int64]*db.Function, map[int64]*db.File) {
+// function query plus one file listing. A load failure is returned as an error
+// — degrading to empty maps would run the flow filters on empty facts and
+// silently keep/drop candidates with no auditable reason.
+func loadFuncFiles(ctx context.Context, store db.Store, funcIDs []int64) (map[int64]*db.Function, map[int64]*db.File, error) {
 	fnByID, err := store.ListFunctionsByIDs(ctx, funcIDs)
 	if err != nil {
-		fnByID = map[int64]*db.Function{}
+		return nil, nil, fmt.Errorf("load functions by ids: %w", err)
 	}
-	return fnByID, listFilesByID(ctx, store)
+	fileByID, err := listFilesByID(ctx, store)
+	if err != nil {
+		return nil, nil, err
+	}
+	return fnByID, fileByID, nil
 }
 
-// listFilesByID returns every indexed file keyed by ID in one query, or an empty
-// map when the listing fails. It exists so a whole-program loop (`for _, fn :=
-// range ListFunctions`) does not issue one GetFileByID per function.
-func listFilesByID(ctx context.Context, store db.Store) map[int64]*db.File {
+// listFilesByID returns every indexed file keyed by ID in one query. It exists
+// so a whole-program loop (`for _, fn := range ListFunctions`) does not issue
+// one GetFileByID per function. The error is propagated, never swallowed.
+func listFilesByID(ctx context.Context, store db.Store) (map[int64]*db.File, error) {
 	fileByID := map[int64]*db.File{}
-	if files, err := store.ListFiles(ctx); err == nil {
-		for _, fl := range files {
-			fileByID[fl.ID] = fl
-		}
+	files, err := store.ListFiles(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list files: %w", err)
 	}
-	return fileByID
+	for _, fl := range files {
+		fileByID[fl.ID] = fl
+	}
+	return fileByID, nil
 }
 
 type Candidate struct {

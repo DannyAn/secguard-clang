@@ -179,7 +179,10 @@ func newPathProver(ctx context.Context, store db.Store, p *parser.Parser, reach 
 	if err != nil {
 		return nil, fmt.Errorf("constant path proof: list functions: %w", err)
 	}
-	fileByID := listFilesByID(ctx, store)
+	fileByID, err := listFilesByID(ctx, store)
+	if err != nil {
+		return nil, fmt.Errorf("constant path proof: %w", err)
+	}
 
 	nodeToFunc := make(map[int64]int64, len(res.funcNodeMap))
 	fnByID := make(map[int64]*db.Function, len(funcs))
