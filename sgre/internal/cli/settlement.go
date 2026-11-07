@@ -421,9 +421,15 @@ func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, sta
 			}
 			sort.Strings(e.AlreadyCoveredRanges)
 		}
-		if ranges := inFlight[s.VulnType]; len(ranges) > 0 {
-			sort.Slice(ranges, func(i, j int) bool { return ranges[i].Range < ranges[j].Range })
-			e.InFlightRanges = ranges
+		// A type the orchestrator already declared done is never "in flight": a
+		// lingering 'dispatched' placeholder (a claim the complete-type step did
+		// not settle, e.g. on an older build) must not make a re-plan skip a type
+		// that has nothing left to do.
+		if s.TerminalState != "done" {
+			if ranges := inFlight[s.VulnType]; len(ranges) > 0 {
+				sort.Slice(ranges, func(i, j int) bool { return ranges[i].Range < ranges[j].Range })
+				e.InFlightRanges = ranges
+			}
 		}
 		agg := settlementAggregate(ctx, store, s.VulnType)
 		e.RType = agg.rType

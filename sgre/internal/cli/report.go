@@ -886,6 +886,13 @@ func runReportCmd(ctx context.Context, args []string) int {
 			WriteErrorJSON(fmt.Sprintf("failed to mark ai_stage_done: %v", err))
 			return 1
 		}
+		// Close any leftover pre-dispatch claim for this type. Otherwise a
+		// 'dispatched' placeholder keeps the type reading as in-flight for the
+		// rest of claim_ttl, and a re-claim loses to a zombie holder — even though
+		// the type is now done. Best-effort: audit-time absorption settles it too.
+		if _, cerr := store.SettleDispatchedClaims(ctx, scanID, vulnType); cerr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to settle claim rows for %s: %v\n", vulnType, cerr)
+		}
 		WriteJSON(map[string]interface{}{
 			"scan_id":         scanID,
 			"vuln_type":       vulnType,
@@ -1152,6 +1159,20 @@ func runReportCmd(ctx context.Context, args []string) int {
 		if scanID == "" {
 			WriteErrorJSON("no scan stats found; run 'secguard scan' first")
 			return 1
+		}
+
+		// The AI-stage timing and the covered/in-flight ledger are derived from the
+		// settlement reports the subagents write into .sgre/.tmp. The command
+		// contract's happy path is `report --complete-type` + `report --audit`; it
+		// need not (and in practice often does not) call `status --reports`.
+		// Absorb the settlement files here too, so the audit self-measures the AI
+		// stage and closes the pre-dispatch claims even when the orchestrator
+		// skipped the explicit `status --reports` absorption step. Absorption is
+		// idempotent, so a prior poll being re-run here is harmless.
+		if res := listSubagentReports(dbPath, scanID); len(res.Reports) > 0 {
+			if aerr := persistSettlementReports(ctx, store, res); aerr != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to absorb settlement reports for audit: %v\n", aerr)
+			}
 		}
 
 		// AI-stage timing is now MEASURED by the engine from the settlement

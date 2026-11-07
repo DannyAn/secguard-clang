@@ -489,6 +489,9 @@ func (s *mockStore) MarkSettlementStatus(ctx context.Context, scanID, vulnType, 
 func (s *mockStore) IncrementSettlementRetry(ctx context.Context, scanID, vulnType, rangeStr, subagentID string) error {
 	return nil
 }
+func (s *mockStore) SettleDispatchedClaims(ctx context.Context, scanID, vulnType string) (int64, error) {
+	return 0, nil
+}
 func (s *mockStore) ListSettlementStatsByScan(ctx context.Context, scanID string) ([]*db.SettlementStat, error) {
 	return nil, nil
 }

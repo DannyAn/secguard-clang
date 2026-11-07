@@ -122,6 +122,125 @@ func TestReportAuditSelfMeasuresAIDuration(t *testing.T) {
 	}
 }
 
+// TestAuditAbsorbsSettlementFileWithoutStatusReports pins the fix for the
+// concurrency-scheduling gap this session exposed: the happy path is
+// `report --complete-type` + `report --audit`, and it does not call
+// `status --reports`. The audit itself must therefore absorb the .sgre/.tmp
+// settlement reports — otherwise it self-measures ai_duration=0 and the type's
+// pre-dispatch claim keeps reading as in-flight for the rest of claim_ttl.
+func TestAuditAbsorbsSettlementFileWithoutStatusReports(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "test.db")
+	d, err := db.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := db.NewStore(d)
+	scanID := "sc_2026-01-01_000000_abcdef"
+	if _, err := store.InsertScanStat(ctx, &db.ScanStat{ScanID: scanID, VulnType: "null-deref", SeedCount: 10, FinalCount: 100}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertScanRun(ctx, &db.ScanRun{ScanID: scanID}); err != nil {
+		t.Fatal(err)
+	}
+	// A pre-dispatch claim that the orchestrator never closed (the bug).
+	if _, err := store.ClaimSettlementRange(ctx, scanID, "null-deref", "all", "holder-x", 0, false); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	m := time.Now().Add(-time.Minute)
+	body := `{
+  "format_version": 1,
+  "subagent_id": "worker-x",
+  "scan_id": "` + scanID + `",
+  "dispatched_at": "` + m.Add(-5*time.Minute).Format(time.RFC3339Nano) + `",
+  "started_at": "` + m.Add(-4*time.Minute).Format(time.RFC3339Nano) + `",
+  "processed_types": [
+    {"type": "null-deref", "range": "all", "cwe": "CWE-476", "written": 2, "dismissed": 3, "source_reads": 0, "evidence_opens": 1, "repo_greps": 0}
+  ]
+}`
+	writeSettlementReport(t, root, "worker-x-report.json", body, m)
+
+	stdout, _, code := captureOutput(func() int {
+		return runReportCmd(ctx, []string{"--db", dbPath, "--audit", "--scan-id", scanID})
+	})
+	if code != 0 {
+		t.Fatalf("audit failed: %s", stdout)
+	}
+	var out struct {
+		AIStage aiStageTiming `json:"ai_stage"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("audit output is not JSON: %s", stdout)
+	}
+	if out.AIStage.TotalMS <= 0 || out.AIStage.Source != "self-measured" {
+		t.Fatalf("audit did not self-measure: %+v (it must absorb .tmp reports itself)", out.AIStage)
+	}
+
+	d2, err := db.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store2 := db.NewStore(d2)
+	defer store2.Close()
+	st, err := store2.GetSettlementStat(ctx, scanID, "null-deref", "all")
+	if err != nil || st == nil {
+		t.Fatalf("settlement row: %v", err)
+	}
+	if st.Status != "done" {
+		t.Errorf("claim status = %q, want done (audit must close the pre-dispatch claim)", st.Status)
+	}
+	if st.Written != 2 || st.Dismissed != 3 {
+		t.Errorf("accounting = %d/%d, want 2/3 (absorbed from the .tmp report)", st.Written, st.Dismissed)
+	}
+}
+
+// TestCompleteTypeSettlesDispatchedClaim pins the second half of the fix:
+// `report --complete-type` must close the type's pre-dispatch claim so it stops
+// reading as in-flight (and a re-claim cannot lose to a zombie holder).
+func TestCompleteTypeSettlesDispatchedClaim(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "test.db")
+	d, err := db.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := db.NewStore(d)
+	scanID := "sc_2026-01-01_000000_abcdef"
+	if _, err := store.InsertScanStat(ctx, &db.ScanStat{ScanID: scanID, VulnType: "null-deref", SeedCount: 10, FinalCount: 5}); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.ClaimSettlementRange(ctx, scanID, "null-deref", "all", "holder-x", 0, false)
+	if err != nil || claim == nil || !claim.Claimed {
+		t.Fatalf("claim: %+v err=%v", claim, err)
+	}
+	store.Close()
+
+	stdout, _, code := captureOutput(func() int {
+		return runReportCmd(ctx, []string{"--db", dbPath, "--complete-type", "null-deref", "--scan-id", scanID})
+	})
+	if code != 0 {
+		t.Fatalf("complete-type failed: %s", stdout)
+	}
+
+	d2, err := db.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store2 := db.NewStore(d2)
+	defer store2.Close()
+	st, err := store2.GetSettlementStat(ctx, scanID, "null-deref", "all")
+	if err != nil || st == nil {
+		t.Fatalf("settlement row: %v", err)
+	}
+	if st.Status != "done" {
+		t.Errorf("claim status after complete-type = %q, want done", st.Status)
+	}
+}
+
 // TestStatusShowLimits proves the concurrency caps are queryable without a DB,
 // and that a deployment can override the documented host cap.
 func TestStatusShowLimits(t *testing.T) {
