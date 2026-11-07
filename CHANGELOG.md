@@ -4,6 +4,23 @@
 
 ## [未发布]
 
+## [0.12.5] - 2026-11-07
+
+### Issue #250 — extensions+sgre 联动超大仓库扫描系统性修复（68 项检视）
+
+针对超大 C 仓库（1750+ 文件）扫描的结算状态机、写回契约、容量模型、续扫复用、MCP 契约、性能与内存的系统性断裂，共 10 个修复 commit，全部通过全量测试、生产冒烟（redis/src，218 文件/5823 函数）与两轮端到端样例项目验证（ground truth 263/263、recall 132/132）。
+
+- **完成判定与写回契约（结果正确性底线）**：类型完成改为 range 覆盖派生（不再单批结算即全类型 done）；`--complete-type` 先做覆盖校验，不再伪结算在途 claim；audit dismissed 改读 `candidate_verdicts` 台账（不再用 `Candidates−AIConfirmed` 残差冒充），`unclassified` 按类型真实计算并告警；audit 终态门禁（未完成类型默认拒绝，`--allow-partial` 输出 PARTIAL 标记产物）；截断 `--write-json` 显式 partial 并非零退出；dismissed 与 confirmed 同一事务写回，单条 `--write` dismissed 也写台账；settlement 落盘协议统一为裸 JSON（解析端兼容旧 fence），零 confirmed 批次也必须写 dismissed-only。
+- **身份与状态机**：claim 新增 `heartbeat_at` 心跳租约（新鲜 chunk/report 续租，慢活 worker 不再被 TTL 误接管），`status --release-claim/--fail-claim`（holder CAS）；range 解析为真实候选区间，claim 拒绝区间重叠与未知 scan_id/type（不再产生孤儿行）；`candidate_verdicts` 身份键统一为 `(scan_id,vuln_type,rule_id,file_path,line_number,variable)`（与 findings 一致）；rule_id 落库规范化，空 function 重试不再抹掉已有函数名；`candidate_count`/`remaining` 不再二次扣除 auto-confirmed；候选证据与 `_index.md` 显式输出每候选 Rule ID/Vuln Type（多 CWE 子类归属正确）。
+- **续扫正确性**：`graph_build_complete` 在重建开始即失效（不再复用半成品 graph+旧 events）；新增 `detectors_done` 完成位图，detector 失败/事件批丢失后强制重跑（不再永久假阴性）；reuse 指纹覆盖工具版本、detector 注册表、skip-detectors、exclude、compile_commands；文件级 index/parse 失败进 `scan_incomplete_tasks` 并置 incomplete；graph 边写失败使 builder Build 返回错误；planner 的 `loadFuncFiles`/`listFilesByID` 返回 error 并沿 filterErr 上抛（19 个调用点）。
+- **编排与 MCP 契约**：`suggested_batch_size` 上限 100、实测 r=0 不再回退 0.30；r_type 样本 SQL 先过滤 done；status 补全与 scan 同一 active-type 集合；MCP 增加 audit/complete_type/stats actions、vuln_type 透传、db_path、分页、错误分类（busy≠无索引）、withKill 超时杀进程（不再 outcome 分裂）、partial 写结果保留、scan 全 envelope 与 type filter；同步宿主唯一调度循环（超 host_max 队列不再提前 finalize）；强制证据类型容量下界、12 次预算为 batch 级、heavy 类型独占批次、group verdict 必含 chain-root、filtered 复用 range 调度、DSH 完成条件与生命周期对齐、临时文件名带 holder 维度；一致性脚本新增 MCP 契约断言与 withTimeout 禁词。
+- **性能与加固**：`ParseCached` singleflight 锁外 parse（冷缓存并发不再名存实亡）；`returnSummaryResolver` 流式常量提取（不再全仓 AST pin），fileParseCache/sourceLineCache LRU 上限；settlement 吸收 mtime 增量游标（未变轮询零写锁）；status/stats 计数 SQL 化（不再全表物化 findings）；16MiB 单文件上限；WithImmediateTx panic defer 回滚；indexer Close；runner 输出 4MiB 截断；review-json IMMEDIATE+预取；autoConfirm 单事务批量；事件批回滚返回 0。
+- **生产兼容性（根因修正）**：移除 `security_events.event_type` 与 `settlement_stats.status` 的 CHECK 枚举（词汇表由 detector registry 拥有，存储层只做存储），**无 migration、无 schema 版本适配、无新增外键**；一致性守卫反转为"CHECK 不得回归"。
+- **F13 claim ↔ complete-type 纠结彻底解决方案**：完成判定统一为 **`unclassified == 0`**（`candidate_count − AI confirmed − dismissed == 0`，与 audit 门禁同一身份），complete-type 通过时自动结算该类型 claim，**不再需要 settlement 文件或 release-claim**，orchestrator 不再纠结；附带修复跨连接查询死锁（verdict 计数改同一事务连接）。
+- **path-traversal 精度边界**：编排文档补充"unproven parameter with no tainted caller and no census → dismissed"（与 SKILL.md 一致），消除 Claude 轮次发现的 P6-05 误报。
+
+验证：全量 `go test ./...`（21 包）与 nosqlite 子集全绿；生产冒烟 `completion=complete`、`detector_errors={}`、候选 4789、复用 graph+detectors 全 phase skipped（约 54 秒 vs 首次 3.5 分钟）、内存峰值约 846MB 有界；OpenCode 轮次 ground truth 263/263、FP 0、FN 0；Claude Code 轮次 recall 132/132、FN 0、FP 1（已定位并修复指令边界），orchestrator 不再纠结 F13/complete-type。
+
 ## [0.12.4] - 2026-11-07
 
 ### Issue #241 — memory-leak 误报消除（地址解包 + 结构体字段清理识别）
