@@ -512,21 +512,24 @@ with open(os.path.join(target_dir, 'codeagent-extension.json'), 'w') as f:
 "
 }
 
-# 注册 CodeAgent marketplace（pluginLoader 加载 commands/agents/hooks 必需）。
-# 官方 Claude Code 仅靠 installed_plugins.json + enabledPlugins 发现插件；CodeAgent
-# （claude-cac）另有一条 pluginLoader 发现路径：known_marketplaces.json → marketplace
-# 目录 → marketplace.json。只注册 installed_plugins.json 时 pluginLoader 会报
-# plugin-not-found（skills 走 SkillsCollector 直接扫 installPath，不受影响）。
-# 用法：sg_register_marketplace <prefix> <plugin_name> <plugin_dir> <version>
+# 注册插件所属 marketplace（commands/agents/hooks 的加载入口）。
+# 官方 Claude Code 与 CodeAgent（claude-cac）都按 `插件名@marketplace` 解析插件：
+# 只写 installed_plugins.json + enabledPlugins 不够——marketplace 未注册时
+# `claude plugin list` 报 "Marketplace local-secguard not found"，插件的 commands
+# 全部不加载（skills 走 SkillsCollector 直接扫 installPath，所以表现为"技能在、
+# 命令不在"）。两家的 marketplace 清单目录名不同：CodeAgent 是 .cac-plugin，
+# 官方 Claude Code 是 .claude-plugin。
+# 用法：sg_register_marketplace <prefix> <plugin_name> <plugin_dir> <version> [manifest_dir]
 sg_register_marketplace() {
     local prefix="$1"
     local plugin_name="$2"
     local plugin_dir="$3"
     local version="$4"
+    local manifest_dir="${5:-.cac-plugin}"
     local mkt_dir="$prefix/plugins/marketplaces/local-secguard"
     local mkt_plugin_dir="$mkt_dir/$plugin_name"
 
-    mkdir -p "$mkt_dir/.cac-plugin" "$mkt_plugin_dir"
+    mkdir -p "$mkt_dir/$manifest_dir" "$mkt_plugin_dir"
 
     # 1. marketplace.json（市场级元数据；plugins[].source 相对 marketplace 根目录解析）
     python3 -c "
@@ -549,14 +552,15 @@ marketplace = {
     ],
     'version': version,
 }
-os.makedirs(os.path.join(mkt_dir, '.cac-plugin'), exist_ok=True)
-with open(os.path.join(mkt_dir, '.cac-plugin', 'marketplace.json'), 'w') as f:
+os.makedirs(os.path.join(mkt_dir, '''$manifest_dir'''), exist_ok=True)
+with open(os.path.join(mkt_dir, '''$manifest_dir''', 'marketplace.json'), 'w') as f:
     json.dump(marketplace, f, indent=2)
     f.write('\n')
 "
 
     # 2. 复制插件文件到 marketplace 目录（pluginLoader 从 source 解析此目录）。
-    # 用 `/.` 而非 `/*`：`*` 不匹配点文件，会漏掉 .cac-plugin/（插件清单）。
+    # 用 `/.` 而非 `/*`：`*` 不匹配点文件，会漏掉 marketplace 清单目录
+    # （CodeAgent 的 .cac-plugin/、官方 Claude Code 的 .claude-plugin/）。
     cp -r "$plugin_dir"/. "$mkt_plugin_dir/" 2>/dev/null || true
     sg_write_codeagent_extension "$mkt_plugin_dir" "$version"
 
@@ -761,6 +765,7 @@ sg_uninstall_platform() {
         sg_disable_plugin "$cc_prefix/settings.json" "secguard-clang" "local-secguard" 2>/dev/null || true
         sg_unregister_plugin "$cc_prefix/plugins/installed_plugins.json" "secguard-clang" "local-secguard" 2>/dev/null || true
         rm -rf "$cc_prefix/plugins/cache/local-secguard/secguard-clang" 2>/dev/null || true
+        sg_unregister_marketplace "$cc_prefix" 2>/dev/null || true
     fi
     if [ "$platform" = "all" ] || [ "$platform" = "claude-cac" ]; then
         sg_disable_plugin "$cac_prefix/settings.json" "secguard-clang" "local-secguard" 2>/dev/null || true
