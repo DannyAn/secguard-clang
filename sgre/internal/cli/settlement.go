@@ -204,14 +204,30 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 				}
 				rowsByScan[key.scanID] = rows
 			}
-			var typeRows []*db.SettlementStat
-			for _, st := range rows {
-				if st.VulnType == key.vulnType {
-					typeRows = append(typeRows, st)
+			// Type completion is derived from the VERDICT LEDGER (unclassified
+			// == 0), the same identity --complete-type and the audit gate use —
+			// never from settlement-range coverage alone. A subagent that writes
+			// verdicts via the MCP tool and never produces settlement files still
+			// completes its type; a range that never ran keeps unclassified > 0.
+			writtenCount := 0
+			// Query on the SAME transaction connection (tx, not tx.DB()): a
+			// second connection's read inside BEGIN IMMEDIATE can deadlock the
+			// absorption transaction on some driver/locking paths.
+			findings, err := tx.ListFindingsByScanID(ctx, key.scanID)
+			if err != nil {
+				return err
+			}
+			for _, f := range findings {
+				if f.VulnType == key.vulnType && f.Status == "confirmed" {
+					writtenCount++
 				}
 			}
-			cov := deriveTypeCoverage(typeRows, candidateCountByScan[key.scanID][key.vulnType], nowSec)
-			if cov.Done {
+			dismissedByType, err := tx.CountCandidateVerdictsByType(ctx, key.scanID)
+			if err != nil {
+				return err
+			}
+			unclassified := candidateCountByScan[key.scanID][key.vulnType] - writtenCount - dismissedByType[key.vulnType]
+			if unclassified == 0 {
 				if err := tx.MarkAIStageDone(ctx, key.scanID, key.vulnType); err != nil {
 					return err
 				}
@@ -510,22 +526,21 @@ func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, sta
 	for _, s := range statuses {
 		e := &settlementEnriched{PerTypeStatus: s, AlreadyCoveredRanges: []string{}}
 		e.DismissedCount = dismissedByType[s.VulnType]
-		// Remaining is derived from range coverage when any settlement row
-		// exists: a partially settled type shows its true uncovered count, never
-		// 0 just because one batch self-declared completion. Without any rows
-		// (sequential orchestrator path) the verdict-ledger formula is the
-		// fallback. A done type (derived in persistSettlementReports or
-		// validated by --complete-type) always reads 0.
+		// Remaining is the verdict-ledger gap (candidate_count − AI confirmed −
+		// dismissed), identical to the audit's unclassified: it is the ONLY
+		// number that can never be gamed by a self-declared settlement. A done
+		// type reads 0. uncovered_ranges (the scheduling view, from settlement
+		// ranges) is still reported for re-dispatch.
 		cov := deriveTypeCoverage(rowsByType[s.VulnType], s.CandidateCount, nowSec)
 		if s.TerminalState == "done" {
 			e.Remaining = 0
-		} else if cov.HasRows {
-			if rem := s.CandidateCount - cov.CoveredCount; rem > 0 {
+		} else {
+			if rem := s.CandidateCount - s.WrittenCount - e.DismissedCount; rem > 0 {
 				e.Remaining = rem
 			}
-			e.UncoveredRanges = cov.Uncovered
-		} else if rem := s.CandidateCount - s.WrittenCount - e.DismissedCount; rem > 0 {
-			e.Remaining = rem
+			if cov.HasRows {
+				e.UncoveredRanges = cov.Uncovered
+			}
 		}
 		if ranges := covered[s.VulnType]; len(ranges) > 0 {
 			for r := range ranges {

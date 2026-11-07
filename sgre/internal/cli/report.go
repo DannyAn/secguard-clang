@@ -941,51 +941,87 @@ func runReportCmd(ctx context.Context, args []string) int {
 			WriteErrorJSON(fmt.Sprintf("no scan_stats for (scan_id=%q, vuln_type=%q)", scanID, vulnType))
 			return 1
 		}
-		// Completion is PROVEN, not declared: when settlement rows exist for this
-		// type, the done-range union must cover every candidate with no live
-		// claim and no needs_context residue. One fast batch calling
-		// --complete-type can no longer flip the whole type to done while other
-		// ranges are still running, and this call never force-settles another
-		// holder's in-flight claim. With no settlement rows at all (the
-		// sequential orchestrator path writes no per-range settlements) the
-		// orchestrator's explicit declaration is accepted as before.
-		settlements, err := store.ListSettlementStatsByScan(ctx, scanID)
-		if err != nil {
-			WriteErrorJSON(fmt.Sprintf("failed to load settlement rows: %v", err))
-			return 1
-		}
-		var typeRows []*db.SettlementStat
+		// Completion is PROVEN by the verdict ledger, NOT by settlement files:
+		// a type is complete iff every candidate has a terminal verdict
+		// (unclassified == 0). This is the SAME identity the audit's
+		// unclassified metric uses, and it works on hosts whose subagents write
+		// verdicts via the MCP tool and never produce settlement files (the F13
+		// claim ↔ complete-type deadlock). An unfinished type (a live worker,
+		// a never-started range, needs_context residue) has unclassified > 0
+		// and is refused; a fully classified type settles its own claims below.
 		candidateCount := 0
 		for _, st := range stats {
 			if st.VulnType == vulnType {
 				candidateCount = st.FinalCount
 			}
 		}
-		for _, st := range settlements {
-			if st.VulnType == vulnType {
-				typeRows = append(typeRows, st)
+		writtenCount := 0
+		findings, err := store.ListFindingsByScanID(ctx, scanID)
+		if err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to load findings for verdict coverage: %v", err))
+			return 1
+		}
+		for _, f := range findings {
+			if f.VulnType == vulnType && f.Status == "confirmed" {
+				writtenCount++
 			}
 		}
-		if len(typeRows) > 0 && candidateCount > 0 {
-			cov := deriveTypeCoverage(typeRows, candidateCount, time.Now().Unix())
-			if !cov.Done {
-				WriteJSON(map[string]interface{}{
-					"status":           "incomplete",
-					"scan_id":          scanID,
-					"vuln_type":        vulnType,
-					"candidate_count":  candidateCount,
-					"covered":          cov.CoveredCount,
-					"uncovered_ranges": cov.Uncovered,
-					"active_claims":    cov.ActiveClaims,
-					"needs_context":    cov.HasNeedsContext,
-					"error":            "type is not fully settled: re-dispatch the uncovered ranges and close live claims before --complete-type",
-					"ai_stage_status":  "in-progress",
-				})
-				return 1
+		dismissedByType, err := store.CountCandidateVerdictsByType(ctx, scanID)
+		if err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to count dismissed verdicts: %v", err))
+			return 1
+		}
+		dismissedCount := dismissedByType[vulnType]
+		unclassified := candidateCount - writtenCount - dismissedCount
+		if unclassified > 0 {
+			uncovered := []string{}
+			if settlements, serr := store.ListSettlementStatsByScan(ctx, scanID); serr == nil {
+				var typeRows []*db.SettlementStat
+				for _, st := range settlements {
+					if st.VulnType == vulnType {
+						typeRows = append(typeRows, st)
+					}
+				}
+				cov := deriveTypeCoverage(typeRows, candidateCount, time.Now().Unix())
+				uncovered = cov.Uncovered
 			}
+			WriteJSON(map[string]interface{}{
+				"status":           "incomplete",
+				"scan_id":          scanID,
+				"vuln_type":        vulnType,
+				"candidate_count":  candidateCount,
+				"written_count":    writtenCount,
+				"dismissed_count":  dismissedCount,
+				"unclassified":     unclassified,
+				"uncovered_ranges": uncovered,
+				"error":            "type is not fully classified: every candidate needs a terminal verdict (confirmed or dismissed) before --complete-type; re-dispatch the uncovered ranges",
+				"ai_stage_status":  "in-progress",
+			})
+			return 1
 		}
 		if err := store.MarkAIStageDone(ctx, scanID, vulnType); err != nil {
 			WriteErrorJSON(fmt.Sprintf("failed to mark ai_stage_done: %v", err))
+			return 1
+		}
+		// The ledger proves the work is done, so the type's own dispatched
+		// claims are settled (NOT a blind pseudo-settlement: unclassified == 0
+		// means every range's candidates already carry a verdict, including any
+		// sibling range's). A range that never ran keeps unclassified > 0 above.
+		if err := store.WithImmediateTx(ctx, func(tx db.Store) error {
+			rows, err := tx.ListSettlementStatsByScan(ctx, scanID)
+			if err != nil {
+				return err
+			}
+			for _, st := range rows {
+				if st.VulnType == vulnType && st.Status == "dispatched" {
+					if err := tx.MarkSettlementStatus(ctx, st.ScanID, st.VulnType, st.RangeStr, st.SubagentID, "done"); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		}); err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to settle dispatched claims: %v", err))
 			return 1
 		}
 		WriteJSON(map[string]interface{}{

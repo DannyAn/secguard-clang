@@ -84,6 +84,25 @@ func TestPartialRangeSettlementDoesNotCompleteType(t *testing.T) {
   ]
 }`, time.Now())
 
+	// The settled range 1-40 carries 40 terminal verdicts (10 confirmed + 30
+	// dismissed), so remaining = 100 − 40 = 60 and uncovered = 41-100.
+	for i := 0; i < 10; i++ {
+		if _, err := store.UpsertFinding(ctx, &db.Finding{
+			RuleID: "CWE-476", VulnType: "null-deref", Status: "confirmed", Severity: "high", FilePath: "a.c",
+			LineNumber: 10 + i, Variable: "p", ScanID: scanID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 30; i++ {
+		if _, err := store.UpsertCandidateVerdict(ctx, &db.CandidateVerdict{
+			ScanID: scanID, VulnType: "null-deref", RuleID: "CWE-476", FilePath: "a.c",
+			LineNumber: 30 + i, Variable: "q", Verdict: "dismissed", Reason: "guarded",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	res := listSubagentReports(filepath.Join(root, "test.db"), scanID)
 	if err := persistSettlementReports(ctx, store, res); err != nil {
 		t.Fatalf("persist settlement reports: %v", err)
@@ -134,6 +153,23 @@ func TestFencedSettlementReportAbsorbs(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSettlementReport(t, root, "sub-a-report.json", "```json\n"+settlementReportBody+"\n```\n", time.Now())
+
+	for i := 0; i < 2; i++ {
+		if _, err := store.UpsertFinding(ctx, &db.Finding{
+			RuleID: "CWE-476", VulnType: "null-deref", Status: "confirmed", Severity: "high", FilePath: "a.c",
+			LineNumber: 10 + i, Variable: "p", ScanID: scanID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := store.UpsertCandidateVerdict(ctx, &db.CandidateVerdict{
+			ScanID: scanID, VulnType: "null-deref", RuleID: "CWE-476", FilePath: "a.c",
+			LineNumber: 20 + i, Variable: "q", Verdict: "dismissed", Reason: "guarded",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	res := listSubagentReports(filepath.Join(root, "test.db"), scanID)
 	if len(res.Reports) != 1 || !res.Reports[0].Valid {
