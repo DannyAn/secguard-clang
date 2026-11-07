@@ -52,6 +52,14 @@ export default tool({
       .boolean()
       .optional()
       .describe("With claim_type: take over a done/held range for a deliberate re-review (e.g. needs_context). Never use it to recover from a missing report."),
+    release_claim: tool.schema
+      .boolean()
+      .optional()
+      .describe("Release this holder's live claim (spawn failed / orchestrator cancelled — the range becomes claimable again). CAS on the current holder: released=false means the row was not this holder's live claim."),
+    fail_claim: tool.schema
+      .boolean()
+      .optional()
+      .describe("Mark this holder's live claim failed (the worker ran but failed — the row stays visible to audit and the retry path). Requires claim_type/claim_range/claim_holder."),
     scan_id: tool.schema
       .string()
       .optional()
@@ -69,7 +77,20 @@ export default tool({
 
     try {
       let result: string
-      if (args.claim_type) {
+      if (args.release_claim || args.fail_claim) {
+        if (!args.claim_type || !args.claim_range || !args.claim_holder) {
+          return JSON.stringify({ released: false, error: "release_claim/fail_claim requires claim_type, claim_range and claim_holder" })
+        }
+        const flag = args.fail_claim ? "--fail-claim" : "--release-claim"
+        const cmd = [
+          secguardBin, "status", "--db", dbPath, flag,
+          "--claim-type", args.claim_type,
+          "--claim-range", args.claim_range,
+          "--claim-holder", args.claim_holder,
+        ]
+        if (args.scan_id) cmd.push("--scan-id", args.scan_id)
+        result = await Bun.$`${cmd}`.cwd(workDir).quiet().text()
+      } else if (args.claim_type) {
         if (!args.claim_range || !args.claim_holder) {
           return JSON.stringify({ claimed: false, error: "claim_type requires claim_range and claim_holder" })
         }
@@ -119,16 +140,29 @@ export default tool({
       return result.trim()
     } catch (e: any) {
       const err = e?.stderr?.toString()?.trim() || e?.message || String(e)
-      return JSON.stringify(
-        {
-          indexed: false,
-          error: err,
-          message: "No sgre.db found or secguard not available. Run secguard_scan to create an index.",
-          db_path: dbPath,
-        },
-        null,
-        2
-      )
+      // Classify instead of collapsing every failure into "no index, rescan":
+      // a busy write lock or a bad claim argument must NEVER trigger a rescan.
+      const notFound = /no such file|unable to open|no database|not found/i.test(err)
+      const busy = /database is locked|SQLITE_BUSY/i.test(err)
+      if (args.claim_type || args.release_claim || args.fail_claim) {
+        return JSON.stringify({ claimed: false, released: false, status: busy ? "busy" : "error", error: err, db_path: dbPath }, null, 2)
+      }
+      if (busy) {
+        return JSON.stringify({ status: "busy", error: err, retry_after_ms: 2000, db_path: dbPath }, null, 2)
+      }
+      if (notFound) {
+        return JSON.stringify(
+          {
+            indexed: false,
+            error: err,
+            message: "No sgre.db found or secguard not available. Run secguard_scan to create an index.",
+            db_path: dbPath,
+          },
+          null,
+          2
+        )
+      }
+      return JSON.stringify({ status: "error", error: err, db_path: dbPath }, null, 2)
     }
   },
 })

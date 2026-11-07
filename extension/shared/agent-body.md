@@ -139,7 +139,7 @@ in-tree census the scan already performed. Do NOT grep for call sites to verify
 them — the census IS the verification. If the census says `all-literal`, every
 caller was checked; if it lists specific callers, those are ALL of them. A grep
 for callers re-derives a result the scan already computed and is the same
-wall-clock tax as a definition grep.
+wall-clock tax as a definition grep. **path-traversal 精度边界（与 SKILL.md 一致，orchestrator 给子代理的 prompt 必须包含）**：path 是函数参数且**既没有可证污点源（`taint_source` fragment）也没有非常量树内调用方（`callsites@`）时 → dismissed（unproven parameter——到达 path 参数并不能证明内容可含 `../`）；只有污点源可证或有非常量调用方才 confirmed**。
 
 **RED LINE — never call `secguard report --complete-type` or
 `secguard report --audit`.** You are a subagent: the orchestrator is the SINGLE
@@ -178,10 +178,12 @@ For each type you were assigned, in `_index.md` order:
    `scan_dir`/`output_dir`.
 4. Emit the Structured Report Protocol block (see "Structured Report Protocol" below).
 
-**Zero-confirmed shard: skip the write.** If nothing in your type/range is
-`confirmed`, do NOT create a findings file and do NOT call `--write-json` — an
-empty write costs a round-trip and a missing tmp file costs an error-retry. Go
-straight from the last verdict to the structured report (`written: 0`).
+**Zero-confirmed shard: write the dismissed rows, not nothing.** If nothing in
+your type/range is `confirmed`, you still MUST call `--write-json` with the
+array of `status: "dismissed"` rows (`findings_written: 0` is a normal, healthy
+response) — the `candidate_verdicts` ledger is the only way recovery can tell
+"all dismissed" from "never ran". Skip the write ONLY when the range had zero
+candidates.
 
 **Hard rule: a verdict only counts if you persist it.** "Analyze all types first
 and write at the end", or "dismiss a batch in prose", leaves `findings/` and
@@ -294,13 +296,18 @@ maintains the directory.
   contract for every field. If the caller lives in the named worktree root, say
   so and recommend a complete-program re-scan rather than dismissing blind.
 - **Group verdict (large suspected types: null-deref, uninit, leak).** Rows that
-  share `Function` + the same origin token + `guard@none` are ONE contract
-  question, and same-function rows are CONTIGUOUS in `_index.md` (sorted by
-  file:line), so one block read settles the group (`proc->profile`, `proc->ctx`, `msg->ctx` in the same handler all
-  stand or fall on "can this function's parameter be NULL?"). Decide the group
-  ONCE from the first row, then reuse that reasoning for the rest with the group
-  key in each reason (`group:<fn>:<tier>: <why>`). Do not re-derive the same
-  contract per row — that is the dominant null-deref triage cost.
+  share `Function` + the same origin token + the same `chain-root` + `guard@none`
+  are ONE contract question, and same-function rows are CONTIGUOUS in `_index.md`
+  (sorted by file:line), so one block read settles the group (`proc->profile`,
+  `proc->ctx`, `msg->ctx` in the same handler all stand or fall on "can this
+  function's parameter be NULL?"). The `chain-root` dimension is NOT optional:
+  rows with a different `chain-root@` (or carrying `sibling-callers@`) are NOT
+  one group — a guard on one entry chain does not protect the sinks reached
+  through another, and reusing one chain's guard to dismiss another chain is a
+  recall bug, not a valid group verdict. Decide the group ONCE from the first
+  row, then reuse that reasoning for the rest with the group key in each reason
+  (`group:<fn>:<tier>: <why>`). Do not re-derive the same contract per row —
+  that is the dominant null-deref triage cost.
 - **Cross-function pattern reuse (same tier, same file, same shape).** When
   several functions in the SAME file expose the identical contract shape — a
   callback quartet registered into one `ops` struct (`.hash_func =` /
@@ -467,10 +474,12 @@ MCP tool, fall back to Bash:
    ALREADY exists (a stale `.tmp` file from a prior run, or your own re-write of
    a failed chunk) — it does NOT mean the file is missing or that you must create
    a directory. These `.tmp` JSON files are disposable, so NEVER reuse a path:
-   write each batch to a NEW filename (`<type>.json`, then `<type>-2.json`,
-   `<type>-3.json`, …) and pass that exact path to `--write-json`. If a Write
-   still returns "must read before overwriting", do NOT stop to inspect the
-   directory — just pick the next fresh filename and write again.
+    write each batch to a NEW filename (`<scan_id>-<claim_holder>-<type>-<range>.json`,
+    then `…-2.json`, `…-3.json`, …) and pass that exact path to `--write-json`.
+    The name carries scan_id + claim_holder + type + range so two range workers
+    of the SAME type never fight over `<type>-part1.json`. If a Write
+    still returns "must read before overwriting", do NOT stop to inspect the
+    directory — just pick the next fresh filename and write again.
 
 The `<type>.json` file MUST be a JSON array of objects with EXACTLY these keys
 (the CLI lowercases `severity`/`status`; `confidence` is 0–100):
@@ -609,8 +618,10 @@ budget.
   user (`result.sarif`, `result.xlsx`, `report.md`, `findings/`).
 - `dismissed` → everything else: a false positive (a guard, a `_s` safe call, a
   checked allocation, a call contract that proves safety) OR a candidate you
-  could not settle after reading its source. NOT persisted — your reasoning stays
-  in your transcript (the conversation record), never shown to the user.
+  could not settle after reading its source. It is NOT a finding (never reaches
+  `result.sarif`/`report.md`), but the verdict IS persisted to the
+  `candidate_verdicts` ledger with your `reasoning` — that ledger row is what
+  breakpoint recovery and the audit's `dismissed` count read.
 
 **The skill is a FLOOR, not a ceiling.** The skill's false-positive rules are the
 minimum bar you MUST apply first, but you are not a rule executor — reason freely
@@ -703,12 +714,14 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
   The orchestrator matches a settled report back to the exact batch by
   `type` + `range` after an Agent-call timeout; a report without the range can
   only be matched by type, which may skip a sibling range.
-- `written` = the number of CONFIRMED findings you PERSISTED (dismissed
-  candidates are NOT persisted, so they are NOT part of `written`).
-- `dismissed` = the number of candidates you judged dismissed (NOT persisted,
-  NOT part of `written`). Never mix dismissed candidates into `written` — the
-  orchestrator reconciles `written` against the DB's per-type `written_count`,
-  and a conflated number forces it to re-derive your real progress.
+- `written` = the number of CONFIRMED findings you PERSISTED to `findings`
+  (dismissed verdicts live in `candidate_verdicts`, so they are NOT part of
+  `written`).
+- `dismissed` = the number of candidates you judged dismissed (persisted to
+  `candidate_verdicts`, NOT part of `written`). Never mix dismissed candidates
+  into `written` — the orchestrator reconciles `written` against the DB's
+  per-type `written_count`, and a conflated number forces it to re-derive your
+  real progress.
 - `source_reads` / `evidence_opens` = the counts of raw source reads and
   `Evidence` file opens you actually performed for the type. `source_reads` also
   counts every repo-wide `Grep` (one Grep = one read; per-definition `secguard
@@ -735,11 +748,16 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
 - Keep the block as your LAST message — nothing after it. The orchestrator does
   not read your transcript; this block is your only channel home.
 - **Also persist the block to disk BEFORE the final message** (O2 recovery): write
-  the SAME fenced JSON to `<tmpdir>/<subagent_id>-report.json` (the `.sgre/.tmp/`
-  dir the orchestrator passed you; one file per subagent). The orchestrator reads
-  this file FIRST and falls back to your message only when the file is missing —
-  a lost/`No task found` handle must not lose your `needs_context`/`dismissed`
-  accounting (those are NOT in the DB, unlike `written`).
+  the SAME object as **BARE JSON** (NO markdown fence — the settlement parser
+  reads the file with a strict JSON parser; the fenced form is for the chat
+  message ONLY) to `<tmpdir>/<subagent_id>-report.json` (the `.sgre/.tmp/` dir
+  the orchestrator passed you; one file per subagent). Write it atomically:
+  Write `<tmpdir>/<subagent_id>-report.json.tmp` first, then `mv` it to
+  `<tmpdir>/<subagent_id>-report.json`, so a mid-write kill never leaves a
+  truncated report. The orchestrator reads this file FIRST and falls back to
+  your message only when the file is missing — a lost/`No task found` handle
+  must not lose your `needs_context`/`dismissed` accounting (the `written`
+  count is in the DB, the needs_context detail is not).
   **Rewriting your own report is an idempotent OVERWRITE of that one path.** If
   the Write tool rejects the overwrite with a "must read before overwriting"
   error, Read the stale file once and then Write the SAME
@@ -764,7 +782,8 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
 - **Chunked settlement (P2-1 — 分块落盘, survives a mid-batch kill).** For a batch
   you process over many candidates, also write a partial snapshot every ~10
   candidates to `<tmpdir>/<subagent_id>-chunk-<k>.json` (k increasing): the same
-  fenced JSON shape, `format_version: 1`, with the `processed_types` counts
+  BARE-JSON shape (no markdown fence, same .tmp-then-rename atomic write),
+  `format_version: 1`, with the `processed_types` counts
   (`written`/`dismissed`/`evidence_opens`/…) and `needs_context` accumulated SO
   FAR. A chunk is a snapshot, NOT a completion signal — it reads `valid: false`
   in `status --reports` (the orchestrator absorbs its accounting but does not mark

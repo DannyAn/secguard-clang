@@ -420,6 +420,89 @@ def check_ci_templates():
     print("  ci templates: github-pr.yml + gitlab-mr.yml + README.md present")
 
 
+def check_writeback_contract():
+    """Guard the single write-back contract (the v0.12.x drift class):
+      - settlement files on disk are BARE JSON (the chat message may be fenced,
+        the file may not — the Go parser used to reject the documented shape)
+      - every dismissed verdict is persisted to candidate_verdicts (the old
+        "skip the write when zero confirmed" wording made an all-dismissed
+        range indistinguishable from a never-run range)
+      - the audit terminal gate and its --allow-partial escape hatch stay
+        documented, so an unfinished AI stage can never read as complete
+    """
+    agent = read("shared/agent-body.md")
+    ci = read("shared/command-instructions.md")
+    banned = [
+        ("agent-body.md", agent, "write the SAME fenced JSON"),
+        ("agent-body.md", agent, "Zero-confirmed shard: skip the write"),
+        ("agent-body.md", agent, "NOT persisted — your reasoning stays"),
+        ("command-instructions.md", ci, "Zero-confirmed shard: skip the write"),
+        ("command-instructions.md", ci, "Dismissed candidates are not written in any batch"),
+        ("command-instructions.md", ci, "skip the write entirely"),
+        ("command-instructions.md", ci, "Dismissed count is not persisted"),
+    ]
+    for name, text, phrase in banned:
+        if phrase in text:
+            fail(f"{name} reintroduces the retired write-back wording: {phrase!r} — see docs/kimi3.1方案检视与改建建议.md (C-01/C-02)")
+    required = [
+        ("agent-body.md", agent, "BARE JSON"),
+        ("agent-body.md", agent, "candidate_verdicts"),
+        ("command-instructions.md", ci, "candidate_verdicts"),
+        ("command-instructions.md", ci, "--allow-partial"),
+        ("command-instructions.md", ci, "uncovered_ranges"),
+    ]
+    for name, text, phrase in required:
+        if phrase not in text:
+            fail(f"{name} is missing the required contract marker {phrase!r} (bare-JSON settlements, dismissed ledger, audit gate)")
+    print("  write-back contract: bare-JSON settlements + dismissed ledger + audit gate documented")
+
+
+def check_mcp_contract():
+    """Guard the MCP<->CLI contract (the v0.12.x wrapper drift class):
+      - secguard_report: vuln_type passthrough (multi-CWE attribution), explicit
+        audit/complete_type/stats actions (the tool-only host can finalize),
+        dismissed_written/failed_details in the response, cliErrorJSON (partial
+        results survive a non-zero exit), db_path override
+      - secguard_scan: type filter, timeout with subprocess kill, full envelope
+        (index_summary/completion_state)
+      - secguard_status: release/fail-claim lifecycle + busy-vs-not-found error
+        classification (a busy lock must never read as 'rescan')
+      - no withTimeout( helper left: a bare Promise.race rejected the caller
+        while the CLI kept committing (outcome split); withKill is required
+    """
+    report = read("opencode/tools/secguard_report.ts")
+    scan = read("opencode/tools/secguard_scan.ts")
+    status = read("opencode/tools/secguard_status.ts")
+    review = read("opencode/tools/secguard_review.ts")
+    required = [
+        ("secguard_report.ts", report, "vuln_type"),
+        ("secguard_report.ts", report, "db_path"),
+        ("secguard_report.ts", report, "complete_type"),
+        ("secguard_report.ts", report, "dismissed_written"),
+        ("secguard_report.ts", report, "failed_details"),
+        ("secguard_report.ts", report, "cliErrorJSON"),
+        ("secguard_report.ts", report, "allow_partial"),
+        ("secguard_scan.ts", scan, "types"),
+        ("secguard_scan.ts", scan, "timeout_ms"),
+        ("secguard_scan.ts", scan, "index_summary"),
+        ("secguard_scan.ts", scan, "completion_state"),
+        ("secguard_status.ts", status, "release_claim"),
+        ("secguard_status.ts", status, "fail_claim"),
+        ("secguard_status.ts", status, "busy"),
+    ]
+    for name, text, marker in required:
+        if marker not in text:
+            fail(f"{name} is missing the MCP contract marker {marker!r} — see docs/kimi3.1方案检视与改建建议.md (M-01/M-02/M-05/M-06)")
+    for name, text in [("secguard_report.ts", report), ("secguard_scan.ts", scan), ("secguard_review.ts", review)]:
+        if "withTimeout(" in text:
+            fail(f"{name} still uses withTimeout( — a bare Promise.race leaves the CLI running after caller failure; use withKill (subprocess terminated on timeout)")
+        if "withKill(" not in text:
+            fail(f"{name} is missing withKill( — every long CLI call must be bounded AND terminated on timeout (M-04)")
+    if "summary: tool.schema\n            .string()\n            .describe(" in report:
+        fail("secguard_report.ts summary must be .optional() — a compliant dismissed row carries only reasoning (M-02)")
+    print("  mcp contract: vuln_type/db_path/audit actions/kill-on-timeout/error classification present")
+
+
 def main():
     check_turn_budget()
     check_tools()
@@ -430,6 +513,8 @@ def main():
     check_plugin_packaging()
     check_hint_tokens()
     check_ci_templates()
+    check_writeback_contract()
+    check_mcp_contract()
     print("Extension consistency check passed.")
 
 

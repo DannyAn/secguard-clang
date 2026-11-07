@@ -494,6 +494,12 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	for vt, msg := range planErrors {
 		recordIncomplete("plan", "failed", vt+": "+msg)
 	}
+	// File-level read/parse failures are incomplete EVIDENCE, not a footnote:
+	// every function of a skipped file is absent from every vuln type, so the
+	// scan must not read complete while silently losing whole files.
+	if outcome.Index != nil && outcome.Index.FilesSkipped > 0 {
+		recordIncomplete("index", "files-skipped", fmt.Sprintf("%d file(s) could not be read/parsed; their functions are absent from every vuln type", outcome.Index.FilesSkipped))
+	}
 	if degraded {
 		recordIncomplete("report", "degraded", "auto-confirm write or findings read failed")
 	}
@@ -798,7 +804,8 @@ func splitBySuspicion(candidates []planner.EvidenceItem) (confirmed, needsReview
 // aborts the batch (silent false-negatives are not acceptable here), so the
 // caller can fall the remainder back to AI review.
 func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType string, candidates []planner.EvidenceItem, logger *log.Logger) (written int, unwritten []planner.EvidenceItem, err error) {
-	for i, c := range candidates {
+	var pending []*db.Finding
+	for _, c := range candidates {
 		cwe := report.VulnToCWEForCategory(vulnType, c.Category)
 		if c.Target.File == "" || c.Target.Line <= 0 {
 			// A candidate with no location cannot be written to findings (the
@@ -869,11 +876,25 @@ func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType s
 		// on the uninit tier), so a machine verdict must NOT self-mark reviewed.
 		f.ReviewStatus = ""
 		f.ReviewReasoning = ""
-		if _, err := store.UpsertFinding(ctx, f); err != nil {
-			return written, append(unwritten, candidates[i:]...), fmt.Errorf("upsert auto-confirmed %s:%d: %w", c.Target.File, c.Target.Line, err)
-		}
-		written++
+		pending = append(pending, f)
 	}
+	// One immediate transaction for the whole auto-confirm set: the old
+	// per-finding autocommit paid one BEGIN/COMMIT + WAL record + write-lock
+	// round-trip per row, which dominated the scan tail on repos with tens of
+	// thousands of machine-proved candidates. A mid-batch failure rolls back
+	// everything and returns the FULL candidate list for AI review (the
+	// per-row error already carries its location).
+	if err := store.WithImmediateTx(ctx, func(tx db.Store) error {
+		for _, f := range pending {
+			if _, err := tx.UpsertFinding(ctx, f); err != nil {
+				return fmt.Errorf("upsert auto-confirmed %s:%d: %w", f.FilePath, f.LineNumber, err)
+			}
+		}
+		return nil
+	}); err != nil {
+		return 0, append(unwritten, candidates...), err
+	}
+	written = len(pending)
 	return written, unwritten, nil
 }
 
@@ -1073,6 +1094,45 @@ func runStatusCmd(ctx context.Context, args []string) int {
 		return 0
 	}
 
+	if hasFlag(args, "release-claim") || hasFlag(args, "fail-claim") {
+		if claimType == "" || claimRange == "" || claimHolder == "" {
+			WriteErrorJSON("--release-claim/--fail-claim require --claim-type, --claim-range and --claim-holder")
+			return 1
+		}
+		scanID := parseStringFlag(args, "scan-id")
+		if scanID == "" {
+			latest, lerr := store.GetLatestScanID(ctx)
+			if lerr != nil {
+				WriteErrorJSON(fmt.Sprintf("failed to get latest scan_id: %v", lerr))
+				return 1
+			}
+			scanID = latest
+		}
+		if scanID == "" {
+			WriteErrorJSON("no scan found; run 'secguard scan <path>' first or pass --scan-id")
+			return 1
+		}
+		status := "released"
+		if hasFlag(args, "fail-claim") {
+			status = "failed"
+		}
+		ok, rerr := store.ReleaseSettlementClaim(ctx, scanID, claimType, normalizeSettlementRange(claimRange), claimHolder, status)
+		if rerr != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to release claim: %v", rerr))
+			return 1
+		}
+		WriteJSON(map[string]interface{}{
+			"scan_id":    scanID,
+			"vuln_type":  claimType,
+			"range":      normalizeSettlementRange(claimRange),
+			"holder":     claimHolder,
+			"released":   ok,
+			"new_status": status,
+			"note":       "released=false means the row was not this holder's live claim (already settled, released, or taken over) — no state was changed",
+		})
+		return 0
+	}
+
 	if hasFlag(args, "reports") {
 		res := listSubagentReports(dbPath, parseStringFlag(args, "scan-id"))
 		if err := persistSettlementReports(ctx, store, res); err != nil {
@@ -1127,8 +1187,10 @@ func runStatusCmd(ctx context.Context, args []string) int {
 		}
 		// A disabled type (type switch) is intentionally absent from scan_stats —
 		// it must NOT be appended as "unknown" (that would read as a failed type
-		// and trigger a false resume/re-dispatch).
-		for _, vt := range planner.ActiveVulnTypes(config.Load().DisabledTypeSet()) {
+		// and trigger a false resume/re-dispatch). The active set is the SAME
+		// one the scan used (disabled AND --type-filter), or a filtered scan's
+		// unselected types would show up as unknown/missing-type.
+		for _, vt := range planner.TypeFilteredActiveVulnTypes(config.Load().DisabledTypeSet(), config.Load().TypeFilterSet()) {
 			if !seen[vt] {
 				statuses = append(statuses, &db.PerTypeStatus{
 					VulnType:       vt,
@@ -1177,9 +1239,9 @@ func runStatusCmd(ctx context.Context, args []string) int {
 		allEvents += n
 	}
 
-	findings, err := store.ListFindings(ctx)
-	if err != nil {
-		WriteErrorJSON(fmt.Sprintf("failed to list findings: %v", err))
+	var findingsCount int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM findings`).Scan(&findingsCount); err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to count findings: %v", err))
 		return 1
 	}
 
@@ -1190,7 +1252,7 @@ func runStatusCmd(ctx context.Context, args []string) int {
 		"files_indexed":     len(files),
 		"functions_indexed": len(funcs),
 		"security_events":   allEvents,
-		"findings_count":    len(findings),
+		"findings_count":    findingsCount,
 	}
 
 	jsonBytes, err := json.MarshalIndent(output, "", "  ")

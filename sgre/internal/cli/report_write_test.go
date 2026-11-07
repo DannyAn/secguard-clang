@@ -79,7 +79,20 @@ func TestReportWriteJSONReportsDuplicates(t *testing.T) {
 	if len(all) != 1 {
 		t.Fatalf("expected exactly 1 finding after the duplicate retry, got %d", len(all))
 	}
-	if all[0].FunctionName != "" {
-		t.Errorf("the retry must refresh function_name on the same row, got %q", all[0].FunctionName)
+	// An empty function on a retry must NOT erase the name already persisted
+	// (metadata regression); a non-empty correction still refreshes it.
+	if all[0].FunctionName != "f" {
+		t.Errorf("an empty retry function must preserve the persisted name, got %q", all[0].FunctionName)
+	}
+	corrected := write(`[{"rule_id":"CWE-404","severity":"high","confidence":90,"status":"confirmed","file":"a.c","line":10,"function":"f2","variable":"fd","summary":"leaked fd (corrected)"}]`)
+	if corrected["duplicates"] != float64(1) {
+		t.Fatalf("corrected write = %+v, want duplicates 1", corrected)
+	}
+	all, err = db.NewStore(d).ListFindings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].FunctionName != "f2" {
+		t.Errorf("a non-empty retry function must refresh the row, got %+v", all)
 	}
 }

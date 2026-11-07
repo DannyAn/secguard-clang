@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -69,19 +70,39 @@ func normalizeSettlementRange(r string) string {
 // the row is last-write-wins, so applying the newest settlement last makes it
 // the authoritative one instead of letting the older snapshot overwrite it.
 //
-// The whole absorption is ONE immediate transaction, and a valid report's
-// processed types are marked ai_stage_status='done' in the same transaction.
-// The settlement landing and the completion marker are therefore atomic: a
-// worker that dies between writing its settlement file and its separate
-// `report --complete-type` call can no longer leave a settled type reading
-// pending and re-dispatchable. A report carrying needs_context is skipped
-// deliberately — that type is NOT complete, its residual range is re-dispatched.
+// The whole absorption is ONE immediate transaction. A type's ai_stage_status
+// is DERIVED from range coverage (deriveTypeCoverage) after all reports land —
+// never self-declared by a single batch: a type is marked done only when its
+// settled ranges cover every candidate with no needs_context residue and no
+// live claim. A report carrying needs_context lands its ranges as 'partial'
+// (not 'done'), so an unfinished range never reads as covered.
 func persistSettlementReports(ctx context.Context, store db.Store, res reportsResult) error {
+	// Incremental absorption: the cursor records each file's absorbed mtime, so
+	// a poll whose files have not changed takes NO write lock and rewrites
+	// nothing. The old every-poll full re-UPSERT of all history turned a long
+	// scan's 30s liveness poll into a write storm against 8 concurrent
+	// --write-json workers. A file whose mtime moved is re-absorbed (its
+	// settlement is authoritative), an unchanged file is skipped entirely —
+	// including lease renewal, which must only happen on real new evidence.
+	cursor := readAbsorbCursor(ctx, store)
+	changed := make([]subagentReport, 0, len(res.Reports))
+	for _, rep := range res.Reports {
+		if rep.ScanID == "" {
+			continue
+		}
+		if rep.mtime.IsZero() || cursor[rep.File] != rep.mtime.UnixNano() {
+			changed = append(changed, rep)
+		}
+	}
+	if len(changed) == 0 {
+		return nil
+	}
+	res.Reports = changed
 	// A `status --reports` poll usually carries nothing new to absorb; avoid
 	// taking the write lock for a pure read.
 	hasValid := false
 	for _, rep := range res.Reports {
-		if rep.Valid && rep.ScanID != "" {
+		if rep.Valid || !rep.mtime.IsZero() {
 			hasValid = true
 			break
 		}
@@ -91,6 +112,24 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 	}
 	return store.WithImmediateTx(ctx, func(tx db.Store) error {
 		knownByScan := map[string]map[string]bool{}
+		candidateCountByScan := map[string]map[string]int{}
+		type scanType struct{ scanID, vulnType string }
+		touched := map[scanType]bool{}
+		nowSec := time.Now().Unix()
+		// Renew each holder's lease from FRESH report files only (a chunk counts
+		// as a heartbeat even though it is not a completion signal). A stale
+		// file does NOT renew: a dead worker's claim must still expire.
+		for _, rep := range res.Reports {
+			if rep.ScanID == "" || rep.SubagentID == "" || rep.mtime.IsZero() {
+				continue
+			}
+			if time.Since(rep.mtime) > settlementHeartbeatStall {
+				continue
+			}
+			if err := tx.RenewSettlementLease(ctx, rep.ScanID, rep.SubagentID, nowSec); err != nil {
+				return err
+			}
+		}
 		for i := len(res.Reports) - 1; i >= 0; i-- {
 			rep := res.Reports[i]
 			if !rep.Valid || rep.ScanID == "" {
@@ -99,14 +138,17 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 			known, ok := knownByScan[rep.ScanID]
 			if !ok {
 				known = map[string]bool{}
+				counts := map[string]int{}
 				stats, err := tx.ListScanStats(ctx, rep.ScanID)
 				if err != nil {
 					return err
 				}
 				for _, st := range stats {
 					known[st.VulnType] = true
+					counts[st.VulnType] = st.FinalCount
 				}
 				knownByScan[rep.ScanID] = known
+				candidateCountByScan[rep.ScanID] = counts
 			}
 			// needs_context is a report-level array without a per-type key; attribute
 			// it only to single-type reports so multi-type batches never over-count.
@@ -121,6 +163,10 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 				finishedAt = rep.mtime.UnixMilli()
 			}
 			for _, pt := range rep.Processed {
+				status := "done"
+				if len(rep.NeedsContext) > 0 {
+					status = "partial"
+				}
 				if err := tx.UpsertSettlementStat(ctx, &db.SettlementStat{
 					ScanID:        rep.ScanID,
 					VulnType:      pt.Type,
@@ -132,6 +178,7 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 					SourceReads:   pt.SourceReads,
 					RepoGreps:     pt.RepoGreps,
 					NeedsContext:  needsContext,
+					Status:        status,
 					WallMS:        wallMS,
 					QueueMS:       queueMS,
 					WorkMS:        workMS,
@@ -139,21 +186,80 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 				}); err != nil {
 					return err
 				}
+				touched[scanType{rep.ScanID, pt.Type}] = true
 			}
-			if len(rep.NeedsContext) > 0 {
+		}
+		rowsByScan := map[string][]*db.SettlementStat{}
+
+		for key := range touched {
+			if !knownByScan[key.scanID][key.vulnType] {
 				continue
 			}
-			for _, pt := range rep.Processed {
-				if !known[pt.Type] {
-					continue
+			rows, ok := rowsByScan[key.scanID]
+			if !ok {
+				var err error
+				rows, err = tx.ListSettlementStatsByScan(ctx, key.scanID)
+				if err != nil {
+					return err
 				}
-				if err := tx.MarkAIStageDone(ctx, rep.ScanID, pt.Type); err != nil {
+				rowsByScan[key.scanID] = rows
+			}
+			// Type completion is derived from the VERDICT LEDGER (unclassified
+			// == 0), the same identity --complete-type and the audit gate use —
+			// never from settlement-range coverage alone. A subagent that writes
+			// verdicts via the MCP tool and never produces settlement files still
+			// completes its type; a range that never ran keeps unclassified > 0.
+			writtenCount := 0
+			// Query on the SAME transaction connection (tx, not tx.DB()): a
+			// second connection's read inside BEGIN IMMEDIATE can deadlock the
+			// absorption transaction on some driver/locking paths.
+			findings, err := tx.ListFindingsByScanID(ctx, key.scanID)
+			if err != nil {
+				return err
+			}
+			for _, f := range findings {
+				if f.VulnType == key.vulnType && f.Status == "confirmed" {
+					writtenCount++
+				}
+			}
+			dismissedByType, err := tx.CountCandidateVerdictsByType(ctx, key.scanID)
+			if err != nil {
+				return err
+			}
+			unclassified := candidateCountByScan[key.scanID][key.vulnType] - writtenCount - dismissedByType[key.vulnType]
+			if unclassified == 0 {
+				if err := tx.MarkAIStageDone(ctx, key.scanID, key.vulnType); err != nil {
 					return err
 				}
 			}
 		}
-		return nil
+		for _, rep := range res.Reports {
+			if !rep.mtime.IsZero() {
+				cursor[rep.File] = rep.mtime.UnixNano()
+			}
+		}
+		return writeAbsorbCursor(ctx, tx, cursor)
 	})
+}
+
+// readAbsorbCursor loads the (path -> absorbed mtime unix-nano) cursor that
+// makes settlement absorption incremental (see persistSettlementReports).
+func readAbsorbCursor(ctx context.Context, store db.Store) map[string]int64 {
+	cursor := map[string]int64{}
+	raw, ok, err := store.GetMeta(ctx, "settlement_absorb_cursor")
+	if err != nil || !ok || raw == "" {
+		return cursor
+	}
+	_ = json.Unmarshal([]byte(raw), &cursor)
+	return cursor
+}
+
+func writeAbsorbCursor(ctx context.Context, store db.Store, cursor map[string]int64) error {
+	data, err := json.Marshal(cursor)
+	if err != nil {
+		return fmt.Errorf("marshal settlement absorb cursor: %w", err)
+	}
+	return store.SetMeta(ctx, "settlement_absorb_cursor", string(data))
 }
 
 // aiStageTiming is the AI-classification stage as the ENGINE measured it, from
@@ -320,6 +426,12 @@ type settlementEnriched struct {
 	// number the orchestrator needs without re-reading every candidate index.
 	DismissedCount int `json:"dismissed_count"`
 	Remaining      int `json:"remaining"`
+	// UncoveredRanges is the exact candidate-interval gap (e.g. ["41-80"]) the
+	// orchestrator re-dispatches on recovery — replacing the old "re-dispatch
+	// candidate_count-written-dismissed candidates" guess that could not name
+	// WHICH candidates were missing. Empty when nothing is settled or the type
+	// is fully covered.
+	UncoveredRanges []string `json:"uncovered_ranges,omitempty"`
 	// BudgetViolations lists the settled batches whose self-reported
 	// source_reads / evidence_opens / repo_greps exceeded the agent-body.md
 	// budgets. It is engine-computed so the orchestrator surfaces read-source
@@ -376,23 +488,32 @@ func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, sta
 	staleBefore := nowSec - int64(settlementClaimTTL/time.Second)
 	covered := map[string]map[string]bool{}
 	inFlight := map[string][]inFlightRange{}
+	rowsByType := map[string][]*db.SettlementStat{}
 	for _, st := range byScan {
+		rowsByType[st.VulnType] = append(rowsByType[st.VulnType], st)
 		if st.Status == "dispatched" {
-			if st.CreatedAt < staleBefore {
+			leaseAt := st.CreatedAt
+			if st.HeartbeatAt > 0 {
+				leaseAt = st.HeartbeatAt
+			}
+			if leaseAt < staleBefore {
 				// A stale claim is a dead worker's reservation: it is neither
 				// covered nor in flight, so the next planning pass may reclaim it.
 				continue
 			}
 			age := int64(0)
-			if st.CreatedAt > 0 && nowSec > st.CreatedAt {
-				age = (nowSec - st.CreatedAt) * 1000
+			if leaseAt > 0 && nowSec > leaseAt {
+				age = (nowSec - leaseAt) * 1000
 			}
 			inFlight[st.VulnType] = append(inFlight[st.VulnType], inFlightRange{
 				Range: st.RangeStr, Holder: st.SubagentID, AgeMS: age,
 			})
 			continue
 		}
-		if st.Status == "failed" {
+		// Only a fully settled range counts as covered: 'partial' (needs_context)
+		// and 'failed' rows must never read as coverage, or an unfinished batch
+		// would both block completion AND claim to be done.
+		if st.Status != "done" || st.NeedsContext > 0 {
 			continue
 		}
 		if covered[st.VulnType] == nil {
@@ -405,15 +526,21 @@ func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, sta
 	for _, s := range statuses {
 		e := &settlementEnriched{PerTypeStatus: s, AlreadyCoveredRanges: []string{}}
 		e.DismissedCount = dismissedByType[s.VulnType]
-		// A done type has every candidate settled (confirmed + auto-confirmed +
-		// dismissed). Dismissed verdicts are only persisted when the subagent wrote
-		// them via --write-json, so the candidate_count - written_count gap is the
-		// un-persisted dismissed residue — remaining must read 0, never that gap,
-		// or the orchestrator re-dispatches an already-settled type.
+		// Remaining is the verdict-ledger gap (candidate_count − AI confirmed −
+		// dismissed), identical to the audit's unclassified: it is the ONLY
+		// number that can never be gamed by a self-declared settlement. A done
+		// type reads 0. uncovered_ranges (the scheduling view, from settlement
+		// ranges) is still reported for re-dispatch.
+		cov := deriveTypeCoverage(rowsByType[s.VulnType], s.CandidateCount, nowSec)
 		if s.TerminalState == "done" {
 			e.Remaining = 0
-		} else if rem := s.CandidateCount - s.WrittenCount - e.DismissedCount; rem > 0 {
-			e.Remaining = rem
+		} else {
+			if rem := s.CandidateCount - s.WrittenCount - e.DismissedCount; rem > 0 {
+				e.Remaining = rem
+			}
+			if cov.HasRows {
+				e.UncoveredRanges = cov.Uncovered
+			}
 		}
 		if ranges := covered[s.VulnType]; len(ranges) > 0 {
 			for r := range ranges {
@@ -502,13 +629,28 @@ func settlementAggregate(ctx context.Context, store db.Store, vulnType string) s
 	return agg
 }
 
+// maxBatchCandidates is the hard per-range ceiling from the Batch Capacity
+// Configuration (SPLIT_CANDIDATE_THRESHOLD): no r_type estimate may ever
+// suggest a range larger than this, or a light type ends up with a batch whose
+// index/context no longer fits the subagent.
+const maxBatchCandidates = 100
+
 func suggestedBatchSize(rType float64) int {
-	if rType <= 0 {
+	if rType < 0 {
 		rType = settlementRTypeFallback
+	}
+	if rType == 0 {
+		// Measured zero Evidence opens: the evidence-open constraint is moot
+		// (NOT "no history", which is the 0.30 fallback). Only the hard range
+		// ceiling applies — light types finally get bigger batches.
+		return maxBatchCandidates
 	}
 	n := int(math.Floor(float64(maxEvidenceOpensPerType) / rType))
 	if n < 1 {
 		n = 1
+	}
+	if n > maxBatchCandidates {
+		n = maxBatchCandidates
 	}
 	return n
 }

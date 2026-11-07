@@ -40,20 +40,48 @@ func NewSubprocessRunner(command []string) *SubprocessRunner {
 	return &SubprocessRunner{Command: command}
 }
 
+// cappedBuffer caps captured subprocess output (4 MiB): an abnormal worker's
+// unbounded stdout/stderr used to grow without limit and could OOM the parent,
+// and its full stderr was interpolated into the error string. Beyond the cap,
+// output is discarded and truncation is recorded instead.
+type cappedBuffer struct {
+	buf       bytes.Buffer
+	max       int
+	truncated bool
+}
+
+func (w *cappedBuffer) Write(p []byte) (int, error) {
+	if w.buf.Len() >= w.max {
+		w.truncated = true
+		return len(p), nil
+	}
+	if w.buf.Len()+len(p) > w.max {
+		w.buf.Write(p[:w.max-w.buf.Len()])
+		w.truncated = true
+		return len(p), nil
+	}
+	return w.buf.Write(p)
+}
+
 func (r *SubprocessRunner) Run(ctx context.Context, p Prompt) ([]Verdict, error) {
 	cmd := exec.CommandContext(ctx, r.Command[0], r.Command[1:]...)
 	cmd.Stdin = bytes.NewReader([]byte(p.Text))
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := &cappedBuffer{max: 4 * 1024 * 1024}
+	stderr := &cappedBuffer{max: 4 * 1024 * 1024}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("worker subprocess: %w: %s", err, stderr.String())
+		msg := stderr.buf.String()
+		if stderr.truncated {
+			msg += " …[stderr truncated]"
+		}
+		return nil, fmt.Errorf("worker subprocess: %w: %s", err, msg)
 	}
 
 	var raw []json.RawMessage
 	// The forced contract is a JSON array of verdicts; accept a leading fenced
 	// block by trimming to the first '[' / last ']'.
-	out := bytes.TrimSpace(stdout.Bytes())
+	out := bytes.TrimSpace(stdout.buf.Bytes())
 	if i := bytes.IndexByte(out, '['); i >= 0 {
 		out = out[i:]
 	}
@@ -61,7 +89,7 @@ func (r *SubprocessRunner) Run(ctx context.Context, p Prompt) ([]Verdict, error)
 		out = out[:j+1]
 	}
 	if err := json.Unmarshal(out, &raw); err != nil {
-		return nil, fmt.Errorf("worker subprocess: parse verdicts: %w (stdout=%s)", err, stdout.String())
+		return nil, fmt.Errorf("worker subprocess: parse verdicts: %w (stdout=%s)", err, stdout.buf.String())
 	}
 
 	verdicts := make([]Verdict, 0, len(raw))

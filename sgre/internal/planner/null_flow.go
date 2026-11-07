@@ -2823,17 +2823,24 @@ type fileParseCache struct {
 	bodies map[int64]map[int]parser.Node
 	defs   map[int64]map[int]parser.Node
 	trees  map[int64]*parser.Tree
+	// order is the LRU list of cached file IDs (oldest first); maxEntries
+	// bounds how many files' ASTs this cache may pin at once. Without it,
+	// ParseCached's own max_cached_trees was decorative: every borrowed tree
+	// here was unevictable there, so a whole-repo filter could pin GBs.
+	order      []int64
+	maxEntries int
 }
 
 var liveFileParseCaches sync.Map // *fileParseCache -> creator file:line
 
 func newFileParseCache(p *parser.Parser) *fileParseCache {
 	fc := &fileParseCache{
-		parser: p,
-		roots:  make(map[int64]parser.Node),
-		bodies: make(map[int64]map[int]parser.Node),
-		defs:   make(map[int64]map[int]parser.Node),
-		trees:  make(map[int64]*parser.Tree),
+		parser:     p,
+		roots:      make(map[int64]parser.Node),
+		bodies:     make(map[int64]map[int]parser.Node),
+		defs:       make(map[int64]map[int]parser.Node),
+		trees:      make(map[int64]*parser.Tree),
+		maxEntries: 256,
 	}
 	if _, file, line, ok := runtime.Caller(1); ok {
 		liveFileParseCaches.Store(fc, fmt.Sprintf("%s:%d", file, line))
@@ -2858,6 +2865,7 @@ func (fc *fileParseCache) get(file *db.File, fn *db.Function) (parser.Node, pars
 	if _, ok := fc.bodies[file.ID]; !ok {
 		fc.prime(file)
 	}
+	fc.touch(file.ID)
 	return fc.bodies[file.ID][fn.StartLine], fc.roots[file.ID]
 }
 
@@ -2868,6 +2876,7 @@ func (fc *fileParseCache) rootForFile(file *db.File) parser.Node {
 	if _, ok := fc.roots[file.ID]; !ok {
 		fc.prime(file)
 	}
+	fc.touch(file.ID)
 	return fc.roots[file.ID]
 }
 
@@ -2884,12 +2893,44 @@ func (fc *fileParseCache) prime(file *db.File) {
 		// releases it. Do not Acquire a second time.
 		fc.trees[file.ID] = tree
 	}
+	fc.touch(file.ID)
+	fc.evictIfNeeded()
+}
+
+// touch moves id to the MRU end of the LRU list (deduplicated).
+func (fc *fileParseCache) touch(id int64) {
+	for i, v := range fc.order {
+		if v == id {
+			fc.order = append(fc.order[:i], fc.order[i+1:]...)
+			break
+		}
+	}
+	fc.order = append(fc.order, id)
+}
+
+// evictIfNeeded releases the oldest cached trees once maxEntries is exceeded.
+// Releasing a tree here also drops its roots/bodies/defs, so a later access
+// simply re-parses that file — memory stays bounded instead of the whole repo
+// being pinned for the filter's lifetime.
+func (fc *fileParseCache) evictIfNeeded() {
+	for fc.maxEntries > 0 && len(fc.trees) > fc.maxEntries && len(fc.order) > 0 {
+		oldest := fc.order[0]
+		fc.order = fc.order[1:]
+		if t := fc.trees[oldest]; t != nil {
+			t.Release()
+		}
+		delete(fc.trees, oldest)
+		delete(fc.roots, oldest)
+		delete(fc.bodies, oldest)
+		delete(fc.defs, oldest)
+	}
 }
 
 func (fc *fileParseCache) treeFor(file *db.File) *parser.Tree {
 	if _, ok := fc.trees[file.ID]; !ok {
 		fc.prime(file)
 	}
+	fc.touch(file.ID)
 	return fc.trees[file.ID]
 }
 

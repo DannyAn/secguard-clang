@@ -42,6 +42,9 @@ type returnSummaryResolver struct {
 	// misses #include'd headers.
 	globalConsts *parser.ConstantEnv
 
+	// loadErr records a failed file listing instead of silently degrading
+	// every path resolution to "unknown file".
+	loadErr  error
 	memo     map[int64]bool
 	visiting map[int64]bool
 }
@@ -63,7 +66,15 @@ func newReturnSummaryResolver(ctx context.Context, store db.Store, p *parser.Par
 			r.fnByID[fn.ID] = fn
 		}
 	}
-	r.fileByID = listFilesByID(ctx, store)
+	fileByID, err := listFilesByID(ctx, store)
+	if err != nil {
+		// A failed file listing must not degrade every path resolution to
+		// "unknown file" silently: keep the error visible on the resolver so
+		// callers can surface it instead of reasoning over empty facts.
+		r.loadErr = err
+	} else {
+		r.fileByID = fileByID
+	}
 	r.globalConsts = r.buildGlobalConstants()
 	return r
 }
@@ -80,14 +91,26 @@ func (r *returnSummaryResolver) Close() {
 // across files (the common case — a shared header) survives the merge; a
 // symbol with conflicting values (nonZero in one TU, zero in another) is
 // dropped so neither NonZero nor IsZero reports it.
+//
+// The parse is STREAMING: each file's tree is released right after its
+// constants are collected. The old rootForFile path pinned every file's AST
+// (and its source bytes) in the cache for the resolver's whole lifetime, so a
+// single RangeFilter.Apply pulled the ENTIRE repository into memory and kept
+// it there — the large-repo OOM this streaming pass removes.
 func (r *returnSummaryResolver) buildGlobalConstants() *parser.ConstantEnv {
 	env := parser.NewConstantEnv()
 	for _, file := range r.fileByID {
-		root := r.cache.rootForFile(file)
-		if root.Kind() == "" {
+		root, _, _, tree := functionBodiesForFile(r.cache.parser, file)
+		if tree != nil {
+			if root.Kind() != "" {
+				env.Merge(parser.CollectConstantSymbols(root))
+			}
+			tree.Release()
 			continue
 		}
-		env.Merge(parser.CollectConstantSymbols(root))
+		if root.Kind() != "" {
+			env.Merge(parser.CollectConstantSymbols(root))
+		}
 	}
 	return env
 }

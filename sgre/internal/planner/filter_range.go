@@ -70,7 +70,10 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 	resolver := newReturnSummaryResolver(ctx, f.store, f.parser)
 	defer resolver.Close()
 	invariants := buildGlobalInvariants(ctx, f.store, f.parser, resolver)
-	flows := f.buildFlows(ctx, byFunc, resolver)
+	flows, err := f.buildFlows(ctx, byFunc, resolver)
+	if err != nil {
+		return nil, nil, err
+	}
 	defer releaseRangeFlows(flows)
 
 	kept := make([]Candidate, 0, len(candidates))
@@ -147,7 +150,10 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 	sites := newCallSiteResolver(ctx, f.store, f.parser)
 	cache := newFileParseCache(f.parser)
 	defer cache.Close()
-	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	fnByID, fileByID, err := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	if err != nil {
+		return nil, nil, err
+	}
 	finalKept := make([]Candidate, 0, len(kept))
 	for _, c := range kept {
 		if c.SuspicionLevel == "confirmed" {
@@ -257,11 +263,14 @@ func callNameFromDivisorText(text string) string {
 	return m[1]
 }
 
-func (f *RangeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, resolver *returnSummaryResolver) map[int64]*rangeFlow {
+func (f *RangeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candidate, resolver *returnSummaryResolver) (map[int64]*rangeFlow, error) {
 	flows := make(map[int64]*rangeFlow, len(byFunc))
 	cache := newFileParseCache(f.parser)
 	defer cache.Close()
-	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	fnByID, fileByID, err := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	if err != nil {
+		return nil, err
+	}
 	for fid := range byFunc {
 		fn := fnByID[fid]
 		if fn == nil {
@@ -277,7 +286,7 @@ func (f *RangeFilter) buildFlows(ctx context.Context, byFunc map[int64][]Candida
 		}
 		flows[fid] = analyzeRangesWithCalls(ctx, f.cfgCache, cache.treeFor(file), fn, body, resolver.callResult)
 	}
-	return flows
+	return flows, nil
 }
 
 // reFieldChain matches a pure struct/object field-access chain (`graph->gran_time`,

@@ -59,6 +59,10 @@ type ScanOverview struct {
 	TypesWithFindings   int
 	SeverityCounts      map[string]SeverityCount
 	ScanMode            string
+	// Partial marks an artifact produced with `report --audit --allow-partial`:
+	// the AI classification stage is unfinished, so the verdict set is a
+	// partial projection, never a complete scan result.
+	Partial bool
 }
 
 // SeverityCount is the actionable (confirmed) breakdown per severity. Dismissed
@@ -174,6 +178,9 @@ func (o ScanOverview) MetadataMarkdown() string {
 	if o.ScanID != "" {
 		fmt.Fprintf(&b, "| Scan ID | `%s` |\n", o.ScanID)
 	}
+	if o.Partial {
+		b.WriteString("| Completeness | **PARTIAL** — AI classification unfinished; this is not a complete scan result |\n")
+	}
 	tool := o.Tool
 	if tool == "" {
 		tool = "secguard-clang v" + ToolVersion
@@ -241,7 +248,10 @@ func (o ScanOverview) VerdictMarkdown() string {
 func (o ScanOverview) CandidateMarkdown() string {
 	var b strings.Builder
 	b.WriteString("## Result Summary\n\n")
-	awaiting := o.Candidates - o.AutoConfirmed
+	// Candidates is ALREADY the needs-review count (auto-confirmed rows were
+	// excluded at plan time) — subtracting AutoConfirmed again here used to
+	// under-report the AI's actual workload.
+	awaiting := o.Candidates
 	if awaiting < 0 {
 		awaiting = 0
 	}

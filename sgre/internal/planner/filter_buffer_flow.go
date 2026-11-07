@@ -41,7 +41,10 @@ func (f *BufferFlowFilter) Apply(ctx context.Context, candidates []Candidate) ([
 			byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
 		}
 	}
-	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	fnByID, fileByID, err := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	if err != nil {
+		return nil, nil, err
+	}
 	cache := newFileParseCache(f.parser)
 	defer cache.Close()
 

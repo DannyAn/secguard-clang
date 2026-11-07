@@ -273,6 +273,15 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 			var b strings.Builder
 			b.WriteString(fmt.Sprintf("# %s in %s\n\n", title(pkg.VulnerabilityType), c.Target.Function))
 			b.WriteString(fmt.Sprintf("**CWE:** %s\n\n", cwe))
+			// The per-candidate identity, not just the type's canonical CWE: a
+			// multi-CWE subclass (int_min_div -> CWE-190) must be written back
+			// with ITS OWN rule_id and vuln_type, or the verdict is attributed
+			// to the canonical owner of that CWE.
+			b.WriteString(fmt.Sprintf("**Rule ID:** `%s`\n\n", VulnToCWEForCategory(pkg.VulnerabilityType, c.Category)))
+			b.WriteString(fmt.Sprintf("**Vuln Type:** `%s`\n\n", pkg.VulnerabilityType))
+			if c.Category != "" {
+				b.WriteString(fmt.Sprintf("**Category:** `%s`\n\n", c.Category))
+			}
 			b.WriteString(fmt.Sprintf("> Pipeline **candidate evidence** — not a defect and not a verdict.\n"+
 				"> Classified findings live in `%s/%s/`.\n\n", FindingsDir, pkg.VulnerabilityType))
 
@@ -825,14 +834,15 @@ func (o *ScanOutput) writeTypeIndex(dir string, pkg *planner.PlanResult) error {
 		}
 	}
 	legend := typeIndexLegend(legendTokens)
-	header := "| # | Function | File:Line | Variable | Suspicion | Hint | Source | Evidence |\n" +
-		"|---|----------|-----------|----------|-----------|------|--------|----------|\n"
+	header := "| # | Function | File:Line | Variable | Rule ID | Suspicion | Hint | Source | Evidence |\n" +
+		"|---|----------|-----------|----------|---------|-----------|------|--------|----------|\n"
 
 	var rows []string
 	for i, c := range pkg.Candidates {
 		fileShort := displayPath(c.Target.File, o.RootDir)
-		rows = append(rows, fmt.Sprintf("| %d | %s | %s:%d | %s | %s | %s | %s | `%s` |\n",
-			i+1, markdownCell(c.Target.Function), fileShort, c.Target.Line, markdownCell(c.Target.Variable), c.SuspicionLevel,
+		rows = append(rows, fmt.Sprintf("| %d | %s | %s:%d | %s | %s | %s | %s | %s | `%s` |\n",
+			i+1, markdownCell(c.Target.Function), fileShort, c.Target.Line, markdownCell(c.Target.Variable),
+			VulnToCWEForCategory(pkg.VulnerabilityType, c.Category), c.SuspicionLevel,
 			markdownCell(c.Hint),
 			markdownCell(sourceLineText(c.Target.File, c.Target.Line, o.RootDir)),
 			candidateFilename(i+1, c.Target.File, c.Target.Line)))

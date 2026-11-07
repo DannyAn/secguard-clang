@@ -115,7 +115,7 @@ func TestWriteReport_CandidateStageStatesScaleAndRemaining(t *testing.T) {
 		"| Raw evidence seeds | 2920 |",
 		"| Converged candidates | 1 |",
 		"| Auto-confirmed by pipeline | 3 |",
-		"**0 converged candidates are awaiting AI classification (3 already proved and auto-confirmed by the pipeline).**",
+		"**1 converged candidate is awaiting AI classification (3 already proved and auto-confirmed by the pipeline).**",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("candidate report.md missing %q\n---\n%s", want, content)

@@ -58,23 +58,26 @@ func TestSchemaDDL_EdgeTypeCheckConstraint(t *testing.T) {
 	}
 }
 
-func TestSchemaDDL_EventTypeCheckConstraint(t *testing.T) {
-	eventTypes := []string{
-		"NULL_VALUE", "DEREFERENCE", "NULL_GUARD",
-		"MEMORY_ALLOC", "MEMORY_RELEASE",
-		"RESOURCE_ACQUIRE", "RESOURCE_RELEASE",
-		"VARIABLE_DECLARE", "VALUE_USE", "VALUE_INIT",
-		"BUFFER_ACCESS", "INTEGER_OP", "INJECTION",
-		"USE_AFTER_FREE", "DOUBLE_FREE", "FORMAT_STRING",
-		"INTEGER_OVERFLOW", "RACE_CONDITION", "HARDCODED_SECRET",
-		"DEADLOCK", "CRYPTO_MISUSE",
-		"DIVIDE_BY_ZERO", "UNCHECKED_RETURN", "PATH_TRAVERSAL",
-		"SIZEOF_MISUSE", "SIGNED_COMPARE",
+// TestSchemaDDL_EventTypeHasNoCheckEnum pins the ROOT-CAUSE fix: event_type is
+// an internal vocabulary owned by the detector registry, and an enumerated
+// CHECK turned every newly registered event type into a hard write failure on
+// large repos. The constraint must NOT come back — storage holds vocabulary,
+// the registry validates semantics.
+func TestSchemaDDL_EventTypeHasNoCheckEnum(t *testing.T) {
+	ddl := SchemaDDL
+	start := strings.Index(ddl, "CREATE TABLE IF NOT EXISTS security_events")
+	if start < 0 {
+		t.Fatal("SchemaDDL must contain security_events")
 	}
-	for _, et := range eventTypes {
-		if !strings.Contains(SchemaDDL, et) {
-			t.Errorf("SchemaDDL missing event_type enum value: %s", et)
-		}
+	seg := ddl[start:]
+	if end := strings.Index(seg, ");"); end >= 0 {
+		seg = seg[:end]
+	}
+	if strings.Contains(seg, "CHECK (") || strings.Contains(seg, "CHECK(") {
+		t.Errorf("security_events.event_type must not carry a CHECK enum; the detector registry owns the vocabulary, not storage: %s", seg)
+	}
+	if !strings.Contains(seg, "event_type") {
+		t.Errorf("security_events must have an event_type column: %s", seg)
 	}
 }
 

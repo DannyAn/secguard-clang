@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -491,14 +492,38 @@ func runReportCmd(ctx context.Context, args []string) int {
 		// batch path) so the fingerprint is stable across path spellings.
 		finding.Fingerprint = computeFingerprint(finding.RuleID, finding.FilePath, finding.FunctionName, finding.LineNumber)
 
-		// A dismissed verdict is not persisted (mirroring the batch
-		// --write-json skipped_dismissed behavior): the candidate evidence file
-		// is annotated as a false positive and no findings row is written.
+		// A dismissed verdict writes no findings row, but it MUST land in the
+		// candidate_verdicts ledger exactly like the batch --write-json path:
+		// otherwise the sequential path's dismissals are invisible to recovery
+		// ("classified and dismissed" vs "never classified").
 		if finding.Status == "dismissed" {
+			dismissedType := finding.VulnType
+			if dismissedType == "" {
+				dismissedType = planner.TypeForCWE(finding.RuleID)
+			}
+			dismissedWritten := false
+			if dismissedType != "" && finding.ScanID != "" {
+				if _, verr := store.UpsertCandidateVerdict(ctx, &db.CandidateVerdict{
+					ScanID:       finding.ScanID,
+					VulnType:     dismissedType,
+					RuleID:       strings.ToUpper(strings.TrimSpace(finding.RuleID)),
+					FilePath:     finding.FilePath,
+					LineNumber:   finding.LineNumber,
+					FunctionName: finding.FunctionName,
+					Variable:     finding.Variable,
+					Verdict:      "dismissed",
+					Reason:       finding.Reasoning,
+				}); verr != nil {
+					WriteErrorJSON(fmt.Sprintf("failed to record dismissed verdict in candidate_verdicts: %v", verr))
+					return 1
+				}
+				dismissedWritten = true
+			}
 			oc := syncPerFindingAfterWrite(remaining, finding)
 			out := map[string]interface{}{
 				"status":             "ok",
 				"dismissed":          true,
+				"dismissed_written":  dismissedWritten,
 				"scan_id":            finding.ScanID,
 				"scan_id_source":     scanIDSource,
 				"per_finding_path":   oc.Path,
@@ -574,7 +599,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 			return 1
 		}
 
-		inputs, embeddedScanID, perr := parseWriteJSONInput(data)
+		inputs, embeddedScanID, salvaged, perr := parseWriteJSONInput(data)
 		if perr != nil {
 			WriteErrorJSON(fmt.Sprintf("failed to parse --write-json input: %v. %s", perr, writeJSONShapeHint))
 			return 1
@@ -639,6 +664,12 @@ func runReportCmd(ctx context.Context, args []string) int {
 		}
 		pending := make([]*pendingWrite, 0, len(inputs))
 		writtenFindings := []*db.Finding{}
+		type dismissedWrite struct {
+			verdict *db.CandidateVerdict
+			file    string
+			line    int
+		}
+		var dismissedPending []dismissedWrite
 		skippedDismissed := 0
 		for i := range inputs {
 			in := &inputs[i]
@@ -677,28 +708,32 @@ func runReportCmd(ctx context.Context, args []string) int {
 			}
 			if status == "dismissed" {
 				skippedDismissed++
-				// Dismissed candidates are not persisted (no finding row), but the
-				// verdict must still be recorded on the candidate evidence file so
-				// the candidate never lingers as "unclassified", AND in the
-				// candidate_verdicts ledger (P0-1) so breakpoint recovery can tell
-				// "classified and dismissed" from "never classified".
+				// Dismissed candidates are not persisted as findings, but the
+				// verdict MUST land in the candidate_verdicts ledger — in the SAME
+				// immediate transaction as the confirmed rows below, never as a
+				// best-effort autocommit whose failure still returned status:ok.
+				// Without that ledger row, recovery cannot tell "classified and
+				// dismissed" from "never classified".
 				dismissedType := in.VulnType
 				if dismissedType == "" {
 					dismissedType = planner.TypeForCWE(in.RuleID)
 				}
 				if dismissedType != "" {
-					if _, uerr := store.UpsertCandidateVerdict(ctx, &db.CandidateVerdict{
-						ScanID:       scanID,
-						VulnType:     dismissedType,
-						FilePath:     resolveFindingFilePath(ctx, store, in.File, allFiles),
-						LineNumber:   in.Line,
-						FunctionName: in.Function,
-						Variable:     in.Variable,
-						Verdict:      "dismissed",
-						Reason:       in.Reasoning,
-					}); uerr != nil {
-						fmt.Fprintf(os.Stderr, "warning: record dismissed verdict %s:%d: %v\n", in.File, in.Line, uerr)
-					}
+					dismissedPending = append(dismissedPending, dismissedWrite{
+						verdict: &db.CandidateVerdict{
+							ScanID:       scanID,
+							VulnType:     dismissedType,
+							RuleID:       strings.ToUpper(strings.TrimSpace(in.RuleID)),
+							FilePath:     resolveFindingFilePath(ctx, store, in.File, allFiles),
+							LineNumber:   in.Line,
+							FunctionName: in.Function,
+							Variable:     in.Variable,
+							Verdict:      "dismissed",
+							Reason:       in.Reasoning,
+						},
+						file: in.File,
+						line: in.Line,
+					})
 				}
 				if scanDir := resolveScanDir(remaining, scanID); scanDir != "" {
 					if dismissedType != "" {
@@ -731,7 +766,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 				vt = planner.TypeForCWE(in.RuleID)
 			}
 			f := &db.Finding{
-				RuleID:         in.RuleID,
+				RuleID:         cweNorm,
 				VulnType:       vt,
 				Severity:       severity,
 				Confidence:     confidence,
@@ -762,6 +797,8 @@ func runReportCmd(ctx context.Context, args []string) int {
 		// contended persist into a multi-minute/hang. BEGIN IMMEDIATE makes it
 		// serialize fast or fail after one busy_timeout with a clean error.
 		duplicates := 0
+		dismissedWritten := 0
+		dismissedFailed := 0
 		if txErr := store.WithImmediateTx(ctx, func(tx db.Store) error {
 			for _, p := range pending {
 				duplicate := false
@@ -793,6 +830,19 @@ func runReportCmd(ctx context.Context, args []string) int {
 				})
 				writtenFindings = append(writtenFindings, p.f)
 			}
+			for _, dw := range dismissedPending {
+				if _, uerr := tx.UpsertCandidateVerdict(ctx, dw.verdict); uerr != nil {
+					errClass := classifyWriteErr(uerr)
+					errs = append(errs, fmt.Sprintf("dismissed verdict %s:%d — %v", dw.file, dw.line, uerr))
+					failedDetails = append(failedDetails, map[string]interface{}{
+						"file": dw.file, "line": dw.line, "error_class": errClass, "message": uerr.Error(),
+					})
+					fmt.Fprintf(os.Stderr, "FATAL: dismissed verdict write failed: %s:%d — [%s] %v\n", dw.file, dw.line, errClass, uerr)
+					dismissedFailed++
+					continue
+				}
+				dismissedWritten++
+			}
 			return nil
 		}); txErr != nil {
 			errClass := classifyWriteErr(txErr)
@@ -817,12 +867,21 @@ func runReportCmd(ctx context.Context, args []string) int {
 			"findings_written":  len(written),
 			"duplicates":        duplicates,
 			"skipped_dismissed": skippedDismissed,
+			"dismissed_written": dismissedWritten,
+			"dismissed_failed":  dismissedFailed,
 			"written":           written,
 			"scan_id":           scanID,
 			"failed_count":      len(errs),
 		}
 		if len(failedDetails) > 0 {
 			out["failed_details"] = failedDetails
+		}
+		if salvaged {
+			out["salvaged"] = true
+			out["truncated"] = true
+			out["salvaged_count"] = len(inputs)
+			out["status"] = "partial"
+			out["warning"] = "input JSON was truncated/invalid; only the complete leading findings were persisted — this batch is NOT a completion proof, re-write the full batch"
 		}
 		if len(errs) > 0 {
 			out["status"] = "partial"
@@ -834,7 +893,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 		// failedDetails) is the full set of dropped rows — it also covers the
 		// validation skips (empty/unsupported rule_id) that `continue` before the
 		// write pass, which failedDetails alone would miss.
-		if len(errs) > 0 {
+		if len(errs) > 0 || salvaged {
 			return 1
 		}
 		return 0
@@ -882,16 +941,88 @@ func runReportCmd(ctx context.Context, args []string) int {
 			WriteErrorJSON(fmt.Sprintf("no scan_stats for (scan_id=%q, vuln_type=%q)", scanID, vulnType))
 			return 1
 		}
+		// Completion is PROVEN by the verdict ledger, NOT by settlement files:
+		// a type is complete iff every candidate has a terminal verdict
+		// (unclassified == 0). This is the SAME identity the audit's
+		// unclassified metric uses, and it works on hosts whose subagents write
+		// verdicts via the MCP tool and never produce settlement files (the F13
+		// claim ↔ complete-type deadlock). An unfinished type (a live worker,
+		// a never-started range, needs_context residue) has unclassified > 0
+		// and is refused; a fully classified type settles its own claims below.
+		candidateCount := 0
+		for _, st := range stats {
+			if st.VulnType == vulnType {
+				candidateCount = st.FinalCount
+			}
+		}
+		writtenCount := 0
+		findings, err := store.ListFindingsByScanID(ctx, scanID)
+		if err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to load findings for verdict coverage: %v", err))
+			return 1
+		}
+		for _, f := range findings {
+			if f.VulnType == vulnType && f.Status == "confirmed" {
+				writtenCount++
+			}
+		}
+		dismissedByType, err := store.CountCandidateVerdictsByType(ctx, scanID)
+		if err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to count dismissed verdicts: %v", err))
+			return 1
+		}
+		dismissedCount := dismissedByType[vulnType]
+		unclassified := candidateCount - writtenCount - dismissedCount
+		if unclassified > 0 {
+			uncovered := []string{}
+			if settlements, serr := store.ListSettlementStatsByScan(ctx, scanID); serr == nil {
+				var typeRows []*db.SettlementStat
+				for _, st := range settlements {
+					if st.VulnType == vulnType {
+						typeRows = append(typeRows, st)
+					}
+				}
+				cov := deriveTypeCoverage(typeRows, candidateCount, time.Now().Unix())
+				uncovered = cov.Uncovered
+			}
+			WriteJSON(map[string]interface{}{
+				"status":           "incomplete",
+				"scan_id":          scanID,
+				"vuln_type":        vulnType,
+				"candidate_count":  candidateCount,
+				"written_count":    writtenCount,
+				"dismissed_count":  dismissedCount,
+				"unclassified":     unclassified,
+				"uncovered_ranges": uncovered,
+				"error":            "type is not fully classified: every candidate needs a terminal verdict (confirmed or dismissed) before --complete-type; re-dispatch the uncovered ranges",
+				"ai_stage_status":  "in-progress",
+			})
+			return 1
+		}
 		if err := store.MarkAIStageDone(ctx, scanID, vulnType); err != nil {
 			WriteErrorJSON(fmt.Sprintf("failed to mark ai_stage_done: %v", err))
 			return 1
 		}
-		// Close any leftover pre-dispatch claim for this type. Otherwise a
-		// 'dispatched' placeholder keeps the type reading as in-flight for the
-		// rest of claim_ttl, and a re-claim loses to a zombie holder — even though
-		// the type is now done. Best-effort: audit-time absorption settles it too.
-		if _, cerr := store.SettleDispatchedClaims(ctx, scanID, vulnType); cerr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to settle claim rows for %s: %v\n", vulnType, cerr)
+		// The ledger proves the work is done, so the type's own dispatched
+		// claims are settled (NOT a blind pseudo-settlement: unclassified == 0
+		// means every range's candidates already carry a verdict, including any
+		// sibling range's). A range that never ran keeps unclassified > 0 above.
+		if err := store.WithImmediateTx(ctx, func(tx db.Store) error {
+			rows, err := tx.ListSettlementStatsByScan(ctx, scanID)
+			if err != nil {
+				return err
+			}
+			for _, st := range rows {
+				if st.VulnType == vulnType && st.Status == "dispatched" {
+					if err := tx.MarkSettlementStatus(ctx, st.ScanID, st.VulnType, st.RangeStr, st.SubagentID, "done"); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		}); err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to settle dispatched claims: %v", err))
+			return 1
 		}
 		WriteJSON(map[string]interface{}{
 			"scan_id":         scanID,
@@ -987,7 +1118,28 @@ func runReportCmd(ctx context.Context, args []string) int {
 		reviewed := make([]map[string]interface{}, 0, len(inputs))
 		reviewedForSync := []reviewInput{}
 		var errs []string
-		err = store.WithTx(ctx, func(tx db.Store) error {
+		// Pre-fetch the re-reviewable id set OUTSIDE the transaction: a deferred
+		// WithTx built a read snapshot first and then upgraded to writes, which
+		// returns SQLITE_BUSY_SNAPSHOT under concurrent writers (and the busy
+		// handler does not retry that class). BEGIN IMMEDIATE takes the write
+		// lock once, and the transaction body is now pure UPDATEs.
+		allowed := map[int64]bool{}
+		rows, qerr := store.DB().QueryContext(ctx, `SELECT id FROM findings WHERE status = 'auto-confirmed'`)
+		if qerr != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to load auto-confirmed ids: %v", qerr))
+			return 1
+		}
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				WriteErrorJSON(fmt.Sprintf("failed to scan auto-confirmed id: %v", err))
+				return 1
+			}
+			allowed[id] = true
+		}
+		rows.Close()
+		err = store.WithImmediateTx(ctx, func(tx db.Store) error {
 			for i, in := range inputs {
 				// A misspelled/omitted key decodes to the zero value, so name the
 				// offending entry position and the expected keys instead of
@@ -1009,13 +1161,8 @@ func runReportCmd(ctx context.Context, args []string) int {
 				}
 				// Only machine auto-confirmed findings are re-reviewable; a verdict
 				// for any other finding id must not overwrite its status (RV-04).
-				target, gerr := tx.GetFindingByID(ctx, in.ID)
-				if gerr != nil || target == nil || target.Status != db.StatusAutoConfirmed {
-					status := "<missing>"
-					if target != nil {
-						status = target.Status
-					}
-					errs = append(errs, fmt.Sprintf("finding %d — not an auto-confirmed finding (status=%q); re-review only applies to auto-confirmed findings", in.ID, status))
+				if !allowed[in.ID] {
+					errs = append(errs, fmt.Sprintf("finding %d — not an auto-confirmed finding; re-review only applies to auto-confirmed findings", in.ID))
 					continue
 				}
 				if uerr := tx.UpdateFindingReview(ctx, in.ID, in.ReviewStatus, in.ReviewReasoning); uerr != nil {
@@ -1090,9 +1237,11 @@ func runReportCmd(ctx context.Context, args []string) int {
 			WriteErrorJSON(fmt.Sprintf("failed to list scan stats: %v", err))
 			return 1
 		}
-		scanFindings, err := store.ListFindingsByScanID(ctx, scanID)
+		verdictRows, err := store.DB().QueryContext(ctx,
+			`SELECT vuln_type, status, COALESCE(review_status, ''), COUNT(*) FROM findings WHERE scan_id = ? GROUP BY vuln_type, status, review_status`,
+			scanID)
 		if err != nil {
-			WriteErrorJSON(fmt.Sprintf("failed to list findings: %v", err))
+			WriteErrorJSON(fmt.Sprintf("failed to count verdicts by type: %v", err))
 			return 1
 		}
 		dismissedByType, err := store.CountCandidateVerdictsByType(ctx, scanID)
@@ -1101,10 +1250,13 @@ func runReportCmd(ctx context.Context, args []string) int {
 		}
 		type tally struct{ confirmed, auto int }
 		byType := map[string]*tally{}
-		for _, f := range scanFindings {
-			vt := f.VulnType
-			if vt == "" {
-				vt = planner.TypeForCWE(f.RuleID)
+		for verdictRows.Next() {
+			var vt, status, reviewStatus string
+			var n int
+			if err := verdictRows.Scan(&vt, &status, &reviewStatus, &n); err != nil {
+				verdictRows.Close()
+				WriteErrorJSON(fmt.Sprintf("failed to scan verdict tally: %v", err))
+				return 1
 			}
 			if vt == "" {
 				continue
@@ -1112,15 +1264,18 @@ func runReportCmd(ctx context.Context, args []string) int {
 			if byType[vt] == nil {
 				byType[vt] = &tally{}
 			}
-			switch f.FinalStatus() {
-			case "confirmed":
-				if f.Status == db.StatusAutoConfirmed {
-					byType[vt].auto++
-				} else {
-					byType[vt].confirmed++
-				}
+			// Mirror Finding.FinalStatus(): a review dismissal drops the row
+			// from the confirmed set; an inconclusive review keeps first-pass.
+			if reviewStatus == "dismissed" || reviewStatus == "suspected-kept" || reviewStatus == "false_positive" {
+				continue
+			}
+			if status == db.StatusAutoConfirmed {
+				byType[vt].auto += n
+			} else if status == "confirmed" || reviewStatus == "confirmed" || reviewStatus == "ai_confirmed" {
+				byType[vt].confirmed += n
 			}
 		}
+		verdictRows.Close()
 		rows := make([]map[string]interface{}, 0, len(stats))
 		for _, st := range stats {
 			t := byType[st.VulnType]
@@ -1129,7 +1284,10 @@ func runReportCmd(ctx context.Context, args []string) int {
 				confirmed, auto = t.confirmed, t.auto
 			}
 			dismissed := dismissedByType[st.VulnType]
-			remaining := st.FinalCount - confirmed - auto - dismissed
+			// final_count counts needs-review candidates only (auto-confirmed
+			// rows were never part of it) — subtracting auto here double-counted
+			// the machine verdicts and could pin remaining at 0 prematurely.
+			remaining := st.FinalCount - confirmed - dismissed
 			if remaining < 0 {
 				remaining = 0
 			}
@@ -1216,6 +1374,29 @@ func runReportCmd(ctx context.Context, args []string) int {
 			return 1
 		}
 
+		// Final-artifact gate: an audit must not present an unfinished AI stage
+		// as a complete verdict set. Any type with candidates whose AI stage is
+		// not done blocks the terminal artifacts unless the caller explicitly
+		// asks for a partial report, in which case every artifact is labelled.
+		allowPartial := hasFlag(remaining, "allow-partial")
+		if !allowPartial {
+			var unfinished []string
+			for _, st := range stats {
+				if st.FinalCount > 0 && st.AIStageStatus != "done" {
+					unfinished = append(unfinished, fmt.Sprintf("%s(%s, candidates=%d)", st.VulnType, st.AIStageStatus, st.FinalCount))
+				}
+			}
+			if len(unfinished) > 0 {
+				WriteJSON(map[string]interface{}{
+					"status":           "incomplete",
+					"scan_id":          scanID,
+					"unfinished_types": unfinished,
+					"error":            "AI classification is not complete for these types; finish and settle them, or re-run with --allow-partial for an explicitly partial report",
+				})
+				return 1
+			}
+		}
+
 		scanFindings, err := store.ListFindingsByScanID(ctx, scanID)
 		if err != nil {
 			// The audit report and result.sarif/result.xlsx are derived from these
@@ -1267,11 +1448,20 @@ func runReportCmd(ctx context.Context, args []string) int {
 			}
 		}
 
+		dismissedByType, err := store.CountCandidateVerdictsByType(ctx, scanID)
+		if err != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to count dismissed verdicts: %v", err))
+			return 1
+		}
 		audits := make([]vulnAuditEntry, 0, len(stats))
 		for _, st := range stats {
 			vc := countsByVuln[st.VulnType]
 			if vc == nil {
 				vc = &vulnCounts{}
+			}
+			unclassified := st.FinalCount - vc.confirmed - dismissedByType[st.VulnType]
+			if unclassified < 0 {
+				unclassified = 0
 			}
 			audits = append(audits, vulnAuditEntry{
 				VulnType:        st.VulnType,
@@ -1283,6 +1473,8 @@ func runReportCmd(ctx context.Context, args []string) int {
 				AutoConfirmed:   vc.autoConfirmed,
 				AutoReviewedOut: vc.reviewedOut,
 				AIStageStatus:   st.AIStageStatus,
+				Dismissed:       dismissedByType[st.VulnType],
+				Unclassified:    unclassified,
 			})
 		}
 
@@ -1295,6 +1487,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 		// found. Verdict figures are re-derived from the findings table, never
 		// from a second source.
 		overview := buildScanOverview(ctx, store, scanID, stats, scanFindings, audits)
+		overview.Partial = allowPartial
 		// Completeness signals are computed regardless of --output-dir so a
 		// `report --audit` run without an output dir still surfaces them: a
 		// converged candidate with no persisted verdict is a silent false
@@ -1329,7 +1522,11 @@ func runReportCmd(ctx context.Context, args []string) int {
 			// fix, not just the candidate-stage evidence. Confirmed only — the AI
 			// verdict is binary, so there is no suspected stage to export.
 			sarifPath := filepath.Join(outputDir, report.SarifFile)
-			if err := report.WriteSarifFromFindings(sarifPath, "", scanFindings); err != nil {
+			writeSarif := report.WriteSarifFromFindings
+			if allowPartial {
+				writeSarif = report.WriteSarifFromFindingsPartial
+			}
+			if err := writeSarif(sarifPath, "", scanFindings); err != nil {
 				WriteErrorJSON(fmt.Sprintf("failed to write result.sarif: %v", err))
 				return 1
 			}
@@ -1405,6 +1602,9 @@ func runReportCmd(ctx context.Context, args []string) int {
 				// counts with no total at all).
 				"summary": overview.SummaryFields(),
 			}
+			if allowPartial {
+				out["partial"] = true
+			}
 			// The engine-measured AI stage (total + per type) so the orchestrator
 			// can report it without hand-estimating a wall clock. Omitted when the
 			// scan has no settlement timing at all.
@@ -1415,7 +1615,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 			// A finding with no scan_id has no scan directory, so its verdict
 			// file cannot be placed or reconciled. Surface it instead of
 			// letting the review surface be quietly incomplete.
-			auditNoticeFields(out, orphans, unreviewed)
+			auditNoticeFields(out, orphans, unreviewed, overview.Unclassified)
 			// findings/ is a projection of the DB, so its file count must equal
 			// the number of confirmed results the same invocation just wrote to
 			// result.sarif. If a confirmed row could not be placed (an unmapped
@@ -1441,10 +1641,13 @@ func runReportCmd(ctx context.Context, args []string) int {
 				"audits":  audits,
 				"summary": overview.SummaryFields(),
 			}
+			if allowPartial {
+				out["partial"] = true
+			}
 			if aiTiming.TotalMS > 0 {
 				out["ai_stage"] = aiTiming
 			}
-			auditNoticeFields(out, orphans, unreviewed)
+			auditNoticeFields(out, orphans, unreviewed, overview.Unclassified)
 			WriteJSON(out)
 		}
 		return 0
@@ -1552,14 +1755,14 @@ func buildScanOverview(ctx context.Context, store db.Store, scanID string, stats
 			ov.TypesWithFindings++
 		}
 	}
-	// Dismissed candidates are never persisted, so the count cannot be read
-	// back from findings. It is the residue of the AI classification pass:
-	// every converged candidate is either AI-confirmed or dismissed.
-	ov.AIDismissed = ov.Candidates - ov.AIConfirmed
-	if ov.AIDismissed < 0 {
-		ov.AIDismissed = 0
+	// Dismissed comes from the persisted candidate_verdicts ledger, and
+	// unclassified is the honest residue: a candidate nobody ever classified is
+	// NOT a dismissal. The old Candidates-AIConfirmed residue hid unfinished
+	// ranges behind a "dismissed, unclassified=0" summary.
+	for _, a := range audits {
+		ov.AIDismissed += a.Dismissed
+		ov.Unclassified += a.Unclassified
 	}
-	ov.Unclassified = unclassifiedCandidates(audits)
 
 	if run, err := store.GetScanRun(ctx, scanID); err == nil && run != nil {
 		ov.HasScanMetrics = true
@@ -1622,6 +1825,11 @@ type vulnAuditEntry struct {
 	AutoConfirmed   int    `json:"auto_confirmed"`
 	AutoReviewedOut int    `json:"auto_confirmed_reviewed_out"`
 	AIStageStatus   string `json:"ai_stage_status"`
+	// Dismissed is the persisted AI-dismissed verdict count (candidate_verdicts
+	// ledger), never a Candidates-Confirmed residue: an unclassified candidate
+	// must show up in Unclassified, not masquerade as reviewed-and-dismissed.
+	Dismissed    int `json:"dismissed"`
+	Unclassified int `json:"unclassified"`
 }
 
 func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overview report.ScanOverview, timing aiStageTiming) error {
@@ -1864,7 +2072,15 @@ func syncPerFindingAfterWrite(args []string, finding *db.Finding) perFindingOutc
 		return perFindingOutcome{Action: "skipped", Warning: fmt.Sprintf(
 			"per-finding markdown not written: scan dir %s is not readable (%v) — pass --output-dir pointing at the scan directory", scanDir, err)}
 	}
-	vulnType := planner.TypeForCWE(finding.RuleID)
+	vulnType := finding.VulnType
+	if vulnType != "" {
+		if _, err := planner.GetVulnTypeSpec(vulnType); err != nil {
+			vulnType = ""
+		}
+	}
+	if vulnType == "" {
+		vulnType = planner.TypeForCWE(finding.RuleID)
+	}
 	if vulnType == "" {
 		return perFindingOutcome{Action: "skipped", Warning: fmt.Sprintf(
 			"per-finding markdown not written: rule_id %q maps to no pipeline vulnerability type", finding.RuleID)}
@@ -1896,17 +2112,13 @@ func syncPerFindingAfterWrite(args []string, finding *db.Finding) perFindingOutc
 // countFindingsWithoutScanID reports how many findings cannot be placed in any
 // scan's findings/ directory because they carry no scan_id.
 func countFindingsWithoutScanID(ctx context.Context, store db.Store) (int, error) {
-	all, err := store.ListFindings(ctx)
-	if err != nil {
-		return 0, err
-	}
-	n := 0
-	for _, f := range all {
-		if f.ScanID == "" {
-			n++
-		}
-	}
-	return n, nil
+	// A COUNT must not materialize the whole findings table (21 columns incl.
+	// evidence/reasoning) just to be len()'d — on a large repo this single
+	// polling query allocated hundreds of MB and contended with 8 writers.
+	var n int
+	err := store.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM findings WHERE scan_id IS NULL OR scan_id = ''`).Scan(&n)
+	return n, err
 }
 
 // unreviewedAutoConfirmedCount returns how many findings for scanID carry a
@@ -1914,18 +2126,18 @@ func countFindingsWithoutScanID(ctx context.Context, store db.Store) (int, error
 // finalize step, so a non-zero count means the review pass has not covered every
 // machine verdict — a wrong auto-confirm would otherwise be reported as-is.
 func unreviewedAutoConfirmedCount(ctx context.Context, store db.Store, scanID string) (int, error) {
-	findings, err := store.ListAutoConfirmedForReview(ctx, scanID, nil, 0)
-	if err != nil {
-		return 0, err
-	}
-	return len(findings), nil
+	var n int
+	err := store.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM findings WHERE scan_id = ? AND status = 'auto-confirmed' AND (review_status IS NULL OR review_status = '')`,
+		scanID).Scan(&n)
+	return n, err
 }
 
 // auditNoticeFields adds the completeness notices shared by both `report --audit`
 // envelope shapes (with and without --output-dir) so the two can never drift:
 // findings that cannot be placed in findings/, and machine verdicts that were
 // never re-reviewed.
-func auditNoticeFields(out map[string]interface{}, orphans, unreviewed int) {
+func auditNoticeFields(out map[string]interface{}, orphans, unreviewed, unclassified int) {
 	var msgs []string
 	if orphans > 0 {
 		out["findings_without_scan_id"] = orphans
@@ -1935,18 +2147,13 @@ func auditNoticeFields(out map[string]interface{}, orphans, unreviewed int) {
 		out["unreviewed_auto_confirmed"] = unreviewed
 		msgs = append(msgs, fmt.Sprintf("%d auto-confirmed finding(s) have no review verdict — re-review them (`report --list-auto-confirmed`, then `report --review-json`) before treating this audit as final", unreviewed))
 	}
+	if unclassified > 0 {
+		out["unclassified_candidates"] = unclassified
+		msgs = append(msgs, fmt.Sprintf("%d candidate(s) have no persisted verdict (unclassified) — they were never classified (not dismissed); re-dispatch their ranges before treating this audit as complete", unclassified))
+	}
 	if len(msgs) > 0 {
 		out["warning"] = strings.Join(msgs, "; ")
 	}
-}
-
-// unclassifiedCandidates is retained for buildScanOverview's overview.Unclassified
-// field. Under the "dismissed not persisted" model a type's AI stage is either
-// done (ai_stage_status='done', every candidate settled) or in-progress (reported
-// by `status --per-type`), so there is no "prose-only exclusion" gap to flag —
-// the function returns 0.
-func unclassifiedCandidates(audits []vulnAuditEntry) int {
-	return 0
 }
 
 // findingInput is one row of a `--write-json` payload: the single-finding object
@@ -2017,23 +2224,38 @@ const writeJSONShapeHint = `Expected a JSON array of finding objects, e.g. ` +
 // finding of that type — observed in production. Accepting them is safe: the
 // rows go through exactly the same per-row validation below, and an embedded
 // scan_id is validated like the flag.
-func parseWriteJSONInput(data []byte) ([]findingInput, string, error) {
+func parseWriteJSONInput(data []byte) ([]findingInput, string, bool, error) {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 {
-		return nil, "", fmt.Errorf("input is empty")
+		return nil, "", false, fmt.Errorf("input is empty")
 	}
 	inputs, scanID, err := parseWriteJSONStrict(trimmed)
 	if err == nil {
-		return inputs, scanID, nil
+		return inputs, scanID, false, nil
 	}
 	// Truncation salvage: a force-rejected / context-overflow write cuts the
 	// batch mid-array, so the strict parse fails even though the leading objects
-	// are complete. Recover every balanced {...} object and keep the ones that
-	// parse as findings — partial coverage beats discarding the whole batch.
+	// are complete. Recover the complete leading objects — but the batch is
+	// explicitly PARTIAL (salvaged=true): the caller reports truncated:true and
+	// exits non-zero, so a silently dropped tail can never pass for a full
+	// settlement. An embedded scan_id survives via a loose extraction so the
+	// salvaged rows still attach to the intended scan.
 	if salvaged := salvageFindingObjects(trimmed); len(salvaged) > 0 {
-		return salvaged, "", nil
+		return salvaged, looseScanID(trimmed), true, nil
 	}
-	return nil, "", err
+	return nil, "", false, err
+}
+
+// looseScanID recovers an envelope's "scan_id" from a truncated payload whose
+// strict parse failed. Only a top-level-looking string field is accepted;
+// anything ambiguous yields "" and the caller falls back to --scan-id/latest.
+func looseScanID(data []byte) string {
+	re := regexp.MustCompile(`"scan_id"\s*:\s*"([^"]+)"`)
+	m := re.FindSubmatch(data)
+	if len(m) == 2 {
+		return strings.TrimSpace(string(m[1]))
+	}
+	return ""
 }
 
 func parseWriteJSONStrict(trimmed []byte) ([]findingInput, string, error) {
@@ -2093,11 +2315,16 @@ func salvageFindingObjects(data []byte) []findingInput {
 	return out
 }
 
-// balancedObjects extracts every balanced {...} object span from data, ignoring
-// braces inside JSON strings (and escaped quotes). Nested objects are emitted as
-// their own spans (innermost first); callers filter by shape.
+// balancedObjects extracts balanced {...} object spans at the SHALLOWEST depth
+// present in data (top-level array elements, or envelope members at that same
+// depth), ignoring braces inside JSON strings (and escaped quotes). Restricting
+// to the shallowest depth keeps a nested properties/evidence sub-object from
+// being salvaged as an independent finding.
 func balancedObjects(data []byte) [][]byte {
-	var spans [][]byte
+	type span struct {
+		start, end, depth int
+	}
+	var spans []span
 	var stack []int
 	inString := false
 	escaped := false
@@ -2121,10 +2348,23 @@ func balancedObjects(data []byte) [][]byte {
 		case '}':
 			if len(stack) > 0 {
 				start := stack[len(stack)-1]
+				depth := len(stack)
 				stack = stack[:len(stack)-1]
-				spans = append(spans, data[start:i+1])
+				spans = append(spans, span{start, i + 1, depth})
 			}
 		}
 	}
-	return spans
+	minDepth := 0
+	for _, sp := range spans {
+		if minDepth == 0 || sp.depth < minDepth {
+			minDepth = sp.depth
+		}
+	}
+	var out [][]byte
+	for _, sp := range spans {
+		if sp.depth == minDepth {
+			out = append(out, data[sp.start:sp.end])
+		}
+	}
+	return out
 }

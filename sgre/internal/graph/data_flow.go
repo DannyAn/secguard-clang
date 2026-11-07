@@ -36,7 +36,9 @@ func (b *DataFlowBuilder) Build(ctx context.Context) (*BuildResult, error) {
 			b.detectPointerReturns(ctx, f, nodesInRange(returns, f.StartLine, f.EndLine), result)
 		}
 	})
-	b.edges.flush(ctx)
+	if ferr := b.edges.flushErr(ctx); ferr != nil {
+		return result, ferr
+	}
 	return result, err
 }
 

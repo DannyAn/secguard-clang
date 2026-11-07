@@ -50,6 +50,11 @@ type Parser struct {
 	// released yet. They are not tracked individually: each closes itself on
 	// the final Release, so CloseAll only reports the count for diagnostics.
 	transientActive atomic.Int64
+	// inflight tracks per-file parses currently running OUTSIDE mu
+	// (singleflight): a cold cache must never serialize every goroutine behind
+	// one cgo parse. The first caller parses while the others wait on done;
+	// all of them share the resulting tree.
+	inflight map[string]*parseInflight
 	// closed is set by CloseAll; ParseCached after it returns an error instead
 	// of building a tree on a closed parser.
 	closed bool
@@ -164,10 +169,19 @@ func NewParser() *Parser {
 	p := sitter.NewParser()
 	p.SetLanguage(lang)
 	return &Parser{
-		lang:   lang,
-		parser: p,
-		cache:  make(map[string]*Tree),
+		lang:     lang,
+		parser:   p,
+		cache:    make(map[string]*Tree),
+		inflight: make(map[string]*parseInflight),
 	}
+}
+
+// parseInflight is one in-progress cold-cache parse. done is closed once the
+// tree (or the error) is published; tree/err are read after <-done only.
+type parseInflight struct {
+	done chan struct{}
+	tree *Tree
+	err  error
 }
 
 // SetMaxCachedTrees sets the AST cache bound. 0 = unbounded (legacy default);
@@ -229,26 +243,59 @@ func (p *Parser) Parse(source []byte, filename string) (*Tree, error) {
 // immediately, so a transient tree never accumulates in a list.
 func (p *Parser) ParseCached(source []byte, filename string) (*Tree, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.closed {
+		p.mu.Unlock()
 		return nil, fmt.Errorf("parser: closed")
 	}
 	if t, ok := p.cache[filename]; ok {
 		p.clock++
 		t.last = p.clock
 		t.refs.Add(1)
+		p.mu.Unlock()
 		return t, nil
 	}
+	if e, ok := p.inflight[filename]; ok {
+		// Another goroutine is parsing this file right now (singleflight):
+		// wait outside the lock and share its result instead of parsing twice.
+		p.mu.Unlock()
+		<-e.done
+		if e.err != nil {
+			return nil, e.err
+		}
+		t := e.tree
+		t.refs.Add(1)
+		return t, nil
+	}
+	e := &parseInflight{done: make(chan struct{})}
+	p.inflight[filename] = e
+	p.mu.Unlock()
+
+	// The cgo parse runs OUTSIDE mu: a cold cache used to serialize the whole
+	// process (7 graph builders + 8 detectors + 8 plan types) behind ONE
+	// parser, making the concurrency knobs decorative on a first scan.
 	ps := sitter.NewParser()
 	ps.SetLanguage(p.lang)
 	tree := ps.Parse(source, nil)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.inflight, filename)
+	defer close(e.done)
 	if tree == nil {
 		ps.Close()
-		return nil, fmt.Errorf("parser: parse %s failed", filename)
+		e.err = fmt.Errorf("parser: parse %s failed", filename)
+		return nil, e.err
+	}
+	if p.closed {
+		ps.Close()
+		tree.Close()
+		e.err = fmt.Errorf("parser: closed")
+		return nil, e.err
 	}
 	p.clock++
 	t := &Tree{src: source, cached: true, ownsParser: true, parser: ps, owner: p, name: filename, last: p.clock}
 	t.tree.Store(tree)
+	e.tree = t
 
 	if p.maxCachedTrees > 0 && len(p.cache) >= p.maxCachedTrees {
 		if !p.evictOldestUnreferencedLocked() {

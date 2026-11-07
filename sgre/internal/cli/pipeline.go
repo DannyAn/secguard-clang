@@ -2,11 +2,17 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"math"
+	"os"
+	"path/filepath"
 	"runtime/debug"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -123,6 +129,7 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	var timings pipelineTimings
 
 	idx := indexer.NewIndexer(store, logger)
+	defer idx.Close()
 	if excludeDirs != nil {
 		idx.SetExcludeDirs(excludeDirs)
 	}
@@ -138,20 +145,58 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	logger.Info("phase timing", "phase", "index", "elapsed_ms", timings.IndexMs)
 	logPhaseResources(logger, "index", p, nil)
 
-	canReuse := indexResult.FilesChanged == 0 &&
-		graphExists(ctx, store) &&
-		eventsExist(ctx, store) &&
-		configChecksumUnchanged(ctx, store) &&
+	// Validate the detector skip switch against the registry BEFORE the reuse
+	// decision: the reuse fingerprint covers the effective skip set, so it must
+	// be computed up front. An unknown name is warned and dropped (a typo must
+	// not silently skip nothing while the user believes a slow stage is off).
+	skipSet := config.Load().SkipDetectorSet()
+	knownDetectors := map[string]bool{}
+	for _, name := range evidence.DetectorNames() {
+		knownDetectors[name] = true
+	}
+	var skippedDetectors []string
+	for name := range skipSet {
+		if !knownDetectors[name] {
+			logger.Warn("skip-detectors name is not a registered detector, ignoring", "detector", name)
+			delete(skipSet, name)
+			continue
+		}
+		skippedDetectors = append(skippedDetectors, name)
+	}
+	sort.Strings(skippedDetectors)
+
+	// Reuse is split in two independent halves so a detector failure never
+	// forces a graph rebuild, and a graph inconsistency never reuses events:
+	//   graphReusable     — no file change, the reuse fingerprint matches, and
+	//                       the last graph build COMPLETED (invalidated at the
+	//                       START of every rebuild, not only set at the end).
+	//   detectorsReusable — graphReusable AND every detector required this run
+	//                       is in the last completed-detector set. A detector
+	//                       that failed last time is therefore always re-run;
+	//                       a --skip-detectors run can never masquerade as a
+	//                       full one (the fingerprint differs).
+	fingerprint := reuseFingerprint(absPath, skipSet, excludeDirs, excludePaths)
+	graphReusable := indexResult.FilesChanged == 0 &&
+		reuseFingerprintUnchanged(ctx, store, fingerprint) &&
 		graphBuildComplete(ctx, store)
-	if canReuse {
-		logger.Info("phase skipped", "phase", "graph+detectors", "reason", "no file/config changed and DB has prior complete graph+events")
+	detectorsReusable := graphReusable && detectorsComplete(ctx, store, skipSet)
+	if detectorsReusable {
+		logger.Info("phase skipped", "phase", "graph+detectors", "reason", "no file/config changed and prior graph+detectors completed")
+	} else if graphReusable {
+		logger.Info("phase skipped", "phase", "graph", "reason", "graph reusable; re-running detectors to close a prior incomplete detector set")
 	}
 	var memMon *MemoryMonitor
 	var detectorErrors []evidence.DetectorError
 
 	// The semantic graph is rebuilt from scratch every run (there is no
 	// incremental graph update), so clear the previous run's nodes/edges first.
-	if !canReuse {
+	// The completion flag is invalidated BEFORE the rebuild starts: a crash or
+	// builder failure mid-rebuild must never leave a half-built graph reading
+	// as complete on the next scan.
+	if !graphReusable {
+		if err := store.SetMeta(ctx, "graph_build_complete", "false"); err != nil {
+			return nil, fmt.Errorf("invalidate graph completion: %w", err)
+		}
 		if err := store.ClearGraph(ctx); err != nil {
 			return nil, fmt.Errorf("clear graph: %w", err)
 		}
@@ -184,7 +229,7 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 	ctx = graph.WithRepoIndex(ctx, graph.NewRepoIndexWithFacts(repoFuncs, repoFiles, repoFacts))
 
-	if !canReuse {
+	if !graphReusable {
 		graphStart := time.Now()
 
 		// Function-pointer slot -> target writes run SEQUENTIALLY before the parallel
@@ -293,9 +338,6 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 		logger.Info("phase timing", "phase", "graph_builders_parallel", "elapsed_ms", timings.GraphMs)
 		logPhaseResources(logger, "graph", p, nil)
 
-		if err := store.ClearSecurityEvents(ctx); err != nil {
-			return nil, fmt.Errorf("clear security events: %w", err)
-		}
 	}
 
 	// Share one statement-CFG cache across the detector and plan stages: a
@@ -332,26 +374,13 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 	ctx = repofacts.WithFacts(ctx, facts)
 
-	// Validate the detector skip switch against the registry BEFORE running: an
-	// unknown name is warned and dropped (a typo must not silently skip nothing
-	// while the user believes a slow stage is off).
-	skipSet := config.Load().SkipDetectorSet()
-	knownDetectors := map[string]bool{}
-	for _, name := range evidence.DetectorNames() {
-		knownDetectors[name] = true
-	}
-	var skippedDetectors []string
-	for name := range skipSet {
-		if !knownDetectors[name] {
-			logger.Warn("skip-detectors name is not a registered detector, ignoring", "detector", name)
-			delete(skipSet, name)
-			continue
+	// Events are cleared whenever detectors re-run — including the
+	// graph-reusable-but-detectors-incomplete path — so a re-run never mixes
+	// stale events with fresh ones (and never duplicates them).
+	if !detectorsReusable {
+		if err := store.ClearSecurityEvents(ctx); err != nil {
+			return nil, fmt.Errorf("clear security events: %w", err)
 		}
-		skippedDetectors = append(skippedDetectors, name)
-	}
-	sort.Strings(skippedDetectors)
-
-	if !canReuse {
 		detStart := time.Now()
 		evidence.SetEventBatchSize(config.Load().Scan.EventBatchSize)
 		evidence.SetDetectorConcurrency(config.Load().DetectorConcurrencyOr(8))
@@ -373,18 +402,30 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 		logPhaseResources(logger, "detectors", p, sharedCFGCache)
 	}
 
-	// Record the pipeline meta that gates the next run's canReuse check.
-	// graph_build_complete is set only after graph+detectors finished without
-	// aborting the pipeline (a graph-builder error returns early above and
-	// never reaches here). Detector-level errors are recorded separately and
-	// do not mark the build incomplete — the graph itself is valid, the failed
-	// detector's types are just missing.
-	if !canReuse {
-		if err := store.SetMeta(ctx, "config_checksum", config.ConfigChecksum()); err != nil {
-			logger.Warn("failed to record config checksum", "error", err)
-		}
-		if err := store.SetMeta(ctx, "graph_build_complete", "true"); err != nil {
-			logger.Warn("failed to record graph build complete", "error", err)
+	// Record the pipeline meta that gates the next run's reuse check.
+	// graph_build_complete=true means the graph itself is valid (a builder
+	// error returned early above and never reaches here). detectors_done is the
+	// set of detectors that COMPLETED this run: a failed detector is absent, so
+	// the next scan re-runs it instead of reading its types as "0 candidates".
+	// An event-batch flush failure invalidates the whole set (events were lost
+	// and there is no per-detector attribution for the loss).
+	if err := store.SetMeta(ctx, "config_checksum", config.ConfigChecksum()); err != nil {
+		logger.Warn("failed to record config checksum", "error", err)
+	}
+	if err := store.SetMeta(ctx, "reuse_fingerprint", fingerprint); err != nil {
+		logger.Warn("failed to record reuse fingerprint", "error", err)
+	}
+	if err := store.SetMeta(ctx, "graph_build_complete", "true"); err != nil {
+		logger.Warn("failed to record graph build complete", "error", err)
+	}
+	if !detectorsReusable {
+		if n := evidence.EventFlushFailures(); n == 0 {
+			done := detectorDoneSet(skipSet, detectorErrors)
+			if err := store.SetMeta(ctx, "detectors_done", strings.Join(done, ",")); err != nil {
+				logger.Warn("failed to record completed detectors", "error", err)
+			}
+		} else if err := store.SetMeta(ctx, "detectors_done", ""); err != nil {
+			logger.Warn("failed to invalidate completed detectors", "error", err)
 		}
 	}
 
@@ -569,6 +610,98 @@ func eventsExist(ctx context.Context, store db.Store) bool {
 	var exists bool
 	err := store.DB().QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM security_events)").Scan(&exists)
 	return err == nil && exists
+}
+
+// reuseFingerprint is the complete identity of the graph+detector inputs: the
+// config checksum PLUS everything that used to bypass it — the tool version,
+// the registered detector set, the effective skip-detectors set, the exclusion
+// lists, and compile_commands (its -D/-I flags change the AST the graph is
+// built from). Any change in any of these must invalidate the reuse, or a scan
+// keeps reporting verdicts derived from a different analyzer configuration.
+func reuseFingerprint(absPath string, skipSet map[string]bool, excludeDirs, excludePaths []string) string {
+	h := sha256.New()
+	io.WriteString(h, config.ConfigChecksum())
+	io.WriteString(h, "|v:"+Version)
+	io.WriteString(h, "|det:"+strings.Join(evidence.DetectorNames(), ","))
+	var skips []string
+	for name := range skipSet {
+		skips = append(skips, name)
+	}
+	sort.Strings(skips)
+	io.WriteString(h, "|skip:"+strings.Join(skips, ","))
+	io.WriteString(h, "|exd:"+strings.Join(excludeDirs, ","))
+	io.WriteString(h, "|exp:"+strings.Join(excludePaths, ","))
+	ccPath := filepath.Join(absPath, "compile_commands.json")
+	if data, err := os.ReadFile(ccPath); err == nil {
+		h.Write([]byte("|cc:"))
+		h.Write(data)
+	} else {
+		io.WriteString(h, "|cc:none")
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// reuseFingerprintUnchanged reports whether the recorded fingerprint equals
+// this run's. A missing meta row (first run, or a pre-fingerprint DB) returns
+// false so the build runs once and records it.
+func reuseFingerprintUnchanged(ctx context.Context, store db.Store, fingerprint string) bool {
+	stored, ok, err := store.GetMeta(ctx, "reuse_fingerprint")
+	if err != nil || !ok {
+		return false
+	}
+	return stored == fingerprint
+}
+
+// detectorsComplete reports whether every detector required this run is in the
+// completed-detector set recorded at the last detectors run. An empty recorded
+// set (event loss, or a run that pre-dates the marker) is incomplete, so the
+// detectors stage re-runs instead of reusing a partial event stream.
+func detectorsComplete(ctx context.Context, store db.Store, skipSet map[string]bool) bool {
+	required := requiredDetectors(skipSet)
+	if len(required) == 0 {
+		return true
+	}
+	stored, ok, err := store.GetMeta(ctx, "detectors_done")
+	if err != nil || !ok || stored == "" {
+		return false
+	}
+	done := map[string]bool{}
+	for _, name := range strings.Split(stored, ",") {
+		done[name] = true
+	}
+	for _, name := range required {
+		if !done[name] {
+			return false
+		}
+	}
+	return true
+}
+
+func requiredDetectors(skipSet map[string]bool) []string {
+	var out []string
+	for _, name := range evidence.DetectorNames() {
+		if !skipSet[name] {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// detectorDoneSet is the required set minus the detectors that failed this run
+// (the special "event_batch" entry is not a detector name and is excluded).
+func detectorDoneSet(skipSet map[string]bool, errs []evidence.DetectorError) []string {
+	failed := map[string]bool{}
+	for _, e := range errs {
+		failed[e.Detector] = true
+	}
+	var out []string
+	for _, name := range requiredDetectors(skipSet) {
+		if !failed[name] {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // configChecksumUnchanged reports whether the current config file's checksum

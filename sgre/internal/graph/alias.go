@@ -59,7 +59,9 @@ func (b *AliasBuilder) Build(ctx context.Context) (*BuildResult, error) {
 			}
 		}
 	})
-	b.edges.flush(ctx)
+	if ferr := b.edges.flushErr(ctx); ferr != nil {
+		return result, ferr
+	}
 	return result, err
 }
 

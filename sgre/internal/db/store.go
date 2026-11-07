@@ -259,16 +259,19 @@ type SettlementStatStore interface {
 	// (a deliberate needs_context re-review); a 'failed' or stale 'dispatched'
 	// row (created_at < staleBefore) is taken over and retry_count bumped.
 	ClaimSettlementRange(ctx context.Context, scanID, vulnType, rangeStr, holder string, staleBefore int64, reclaim bool) (*SettlementClaim, error)
+	// RenewSettlementLease refreshes a live holder's heartbeat when a fresh
+	// settlement chunk/report is absorbed (stale = no heartbeat, not old claim).
+	RenewSettlementLease(ctx context.Context, scanID, holder string, nowSec int64) error
+	// ReleaseSettlementClaim closes a live claim only for its current holder
+	// (CAS on holder + dispatched); status released|failed.
+	ReleaseSettlementClaim(ctx context.Context, scanID, vulnType, rangeStr, holder, status string) (bool, error)
 	// MarkSettlementStatus updates a settlement row's task status (the
 	// executor's dispatched → done/failed lifecycle).
 	MarkSettlementStatus(ctx context.Context, scanID, vulnType, rangeStr, subagentID, status string) error
 	// IncrementSettlementRetry bumps a settlement row's retry_count and re-marks
 	// it dispatched (the executor's retry state machine).
 	IncrementSettlementRetry(ctx context.Context, scanID, vulnType, rangeStr, subagentID string) error
-	// SettleDispatchedClaims closes every leftover 'dispatched' claim placeholder
-	// for one (scan, type) — the complete-type counterpart to
-	// ClaimSettlementRange. Rows already carrying a settled report are untouched.
-	SettleDispatchedClaims(ctx context.Context, scanID, vulnType string) (int64, error)
+
 	ListSettlementStatsByScan(ctx context.Context, scanID string) ([]*SettlementStat, error)
 	// ListSettlementStatsByType returns the most recent settlements for a vuln
 	// type across scans (newest first), capped at limit (0 = all). It is the

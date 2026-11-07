@@ -128,20 +128,12 @@ CREATE TABLE IF NOT EXISTS graph_edges (
 
 CREATE TABLE IF NOT EXISTS security_events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_type  TEXT NOT NULL CHECK (event_type IN (
-        'NULL_VALUE', 'DEREFERENCE', 'NULL_GUARD',
-        'MEMORY_ALLOC', 'MEMORY_RELEASE',
-        'RESOURCE_ACQUIRE', 'RESOURCE_RELEASE',
-        'VARIABLE_DECLARE', 'VALUE_USE', 'VALUE_INIT',
-        'BUFFER_ACCESS', 'INTEGER_OP', 'INJECTION',
-        'USE_AFTER_FREE', 'DOUBLE_FREE', 'FORMAT_STRING',
-        'INTEGER_OVERFLOW', 'RACE_CONDITION', 'HARDCODED_SECRET',
-        'DEADLOCK', 'CRYPTO_MISUSE',
-        'DIVIDE_BY_ZERO', 'UNCHECKED_RETURN', 'PATH_TRAVERSAL',
-        'SIZEOF_MISUSE', 'SIGNED_COMPARE', 'SIGNAL_HANDLER', 'DANGEROUS_FUNCTION',
-        'ARGUMENT_TYPE_MISMATCH', 'DATA_REPRESENTATION_MISMATCH', 'CONTRACT_GAP',
-        'STACK_ESCAPE', 'INVALID_FREE', 'SWITCH_FLOW', 'UNBOUNDED_LENGTH'
-    )),
+    -- No enumerated constraint on event_type: it is an internal vocabulary
+    -- owned by the detector registry, and an enumerated constraint turns every
+    -- newly registered event type into a hard write failure on large repos
+    -- with anything unusual in them. The registry validates semantics, not
+    -- the storage.
+    event_type  TEXT NOT NULL,
     entity_id   INTEGER,
     location_id INTEGER,
     properties  TEXT,
@@ -330,13 +322,14 @@ CREATE TABLE IF NOT EXISTS candidate_verdicts (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     scan_id       TEXT NOT NULL,
     vuln_type     TEXT NOT NULL,
+    rule_id       TEXT,
     file_path     TEXT NOT NULL,
     line_number   INTEGER NOT NULL,
     function_name TEXT,
     variable      TEXT,
     verdict       TEXT NOT NULL CHECK (verdict IN ('dismissed')),
     reason        TEXT,
-    UNIQUE(scan_id, vuln_type, file_path, line_number, function_name)
+    UNIQUE(scan_id, vuln_type, rule_id, file_path, line_number, variable)
 );
 
 CREATE INDEX IF NOT EXISTS idx_candidate_verdicts_scan_type ON candidate_verdicts(scan_id, vuln_type);
@@ -374,7 +367,8 @@ CREATE TABLE IF NOT EXISTS settlement_stats (
     source_reads    INTEGER NOT NULL DEFAULT 0,
     repo_greps      INTEGER NOT NULL DEFAULT 0,
     needs_context   INTEGER NOT NULL DEFAULT 0,
-    status          TEXT NOT NULL DEFAULT 'done' CHECK (status IN ('dispatched', 'done', 'failed')),
+    status          TEXT NOT NULL DEFAULT 'done',
+    heartbeat_at    INTEGER,
     retry_count     INTEGER NOT NULL DEFAULT 0,
     wall_ms         INTEGER,
     queue_ms        INTEGER,
@@ -421,6 +415,7 @@ CREATE INDEX IF NOT EXISTS idx_scan_runs_created_at ON scan_runs(created_at);
 `
 
 func InitSchema(ctx context.Context, db *sql.DB) error {
+
 	if _, err := db.ExecContext(ctx, SchemaDDL); err != nil {
 		return fmt.Errorf("db: init schema: exec ddl: %w", err)
 	}

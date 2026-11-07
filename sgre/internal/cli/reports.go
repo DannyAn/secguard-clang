@@ -73,6 +73,26 @@ type reportsResult struct {
 	Reports []subagentReport `json:"reports"`
 }
 
+// stripJSONFence tolerates a settlement file written as a markdown fenced code
+// block (```json ... ```) by an older worker build. The current contract is a
+// BARE JSON object on disk (fences belong to the chat message only); this shim
+// exists so an in-flight fenced report still absorbs instead of stalling its
+// claim until the claim TTL.
+func stripJSONFence(data []byte) []byte {
+	trimmed := []byte(strings.TrimSpace(string(data)))
+	if !strings.HasPrefix(string(trimmed), "```") {
+		return data
+	}
+	s := string(trimmed)
+	if nl := strings.Index(s, "\n"); nl >= 0 {
+		s = s[nl+1:]
+	}
+	if idx := strings.LastIndex(s, "```"); idx >= 0 {
+		s = s[:idx]
+	}
+	return []byte(strings.TrimSpace(s))
+}
+
 // listSubagentReports reads the `.sgre/.tmp/*-report*.json` settlement files.
 // The directory is derived from the DB path (`<project>/.codeagent/
 // secguard-clang/.sgre/sgre.db` -> `<...>/.sgre/.tmp`). A missing directory is
@@ -118,7 +138,7 @@ func listSubagentReports(dbPath, scanID string) reportsResult {
 				rep.HeartbeatAgeMS = 0
 			}
 		}
-		if err := json.Unmarshal(data, &raw); err != nil {
+		if err := json.Unmarshal(stripJSONFence(data), &raw); err != nil {
 			rep.Error = "unparseable report (partial write or truncated JSON)"
 		} else {
 			if raw.SubagentID != "" {

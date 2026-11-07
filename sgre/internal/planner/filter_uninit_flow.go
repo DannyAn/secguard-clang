@@ -67,7 +67,10 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 		byFunc[c.FunctionID] = append(byFunc[c.FunctionID], c)
 	}
 
-	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	fnByID, fileByID, err := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	if err != nil {
+		return nil, nil, err
+	}
 	// The hoisted nodes returned by buildFlows are used throughout Apply, so
 	// the per-Apply parse cache must outlive buildFlows and close here.
 	cache := newFileParseCache(f.parser)

@@ -72,6 +72,9 @@ func TestReportAuditSelfMeasuresAIDuration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := store.MarkAIStageDone(ctx, scanID, "null-deref"); err != nil {
+		t.Fatal(err)
+	}
 	store.Close()
 
 	stdout, _, code := captureOutput(func() int {
@@ -138,7 +141,7 @@ func TestAuditAbsorbsSettlementFileWithoutStatusReports(t *testing.T) {
 	}
 	store := db.NewStore(d)
 	scanID := "sc_2026-01-01_000000_abcdef"
-	if _, err := store.InsertScanStat(ctx, &db.ScanStat{ScanID: scanID, VulnType: "null-deref", SeedCount: 10, FinalCount: 100}); err != nil {
+	if _, err := store.InsertScanStat(ctx, &db.ScanStat{ScanID: scanID, VulnType: "null-deref", SeedCount: 10, FinalCount: 5}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.UpsertScanRun(ctx, &db.ScanRun{ScanID: scanID}); err != nil {
@@ -147,6 +150,24 @@ func TestAuditAbsorbsSettlementFileWithoutStatusReports(t *testing.T) {
 	// A pre-dispatch claim that the orchestrator never closed (the bug).
 	if _, err := store.ClaimSettlementRange(ctx, scanID, "null-deref", "all", "holder-x", 0, false); err != nil {
 		t.Fatal(err)
+	}
+	// Every candidate carries a terminal verdict (2 confirmed + 3 dismissed),
+	// so the ledger-derived completion lets the audit through.
+	for i := 0; i < 2; i++ {
+		if _, err := store.UpsertFinding(ctx, &db.Finding{
+			RuleID: "CWE-476", VulnType: "null-deref", Status: "confirmed", Severity: "high", FilePath: "a.c",
+			LineNumber: 10 + i, Variable: "p", ScanID: scanID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := store.UpsertCandidateVerdict(ctx, &db.CandidateVerdict{
+			ScanID: scanID, VulnType: "null-deref", RuleID: "CWE-476", FilePath: "a.c",
+			LineNumber: 20 + i, Variable: "q", Verdict: "dismissed", Reason: "guarded",
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	store.Close()
 
@@ -197,9 +218,11 @@ func TestAuditAbsorbsSettlementFileWithoutStatusReports(t *testing.T) {
 	}
 }
 
-// TestCompleteTypeSettlesDispatchedClaim pins the second half of the fix:
-// `report --complete-type` must close the type's pre-dispatch claim so it stops
-// reading as in-flight (and a re-claim cannot lose to a zombie holder).
+// TestCompleteTypeSettlesDispatchedClaim pins the VERDICT-LEDGER completion
+// rule: --complete-type refuses while any candidate lacks a terminal verdict
+// (unclassified > 0), and once every candidate carries one it succeeds AND
+// settles the type's own dispatched claims — even when the subagent never
+// wrote a settlement file (the F13 claim ↔ complete-type deadlock).
 func TestCompleteTypeSettlesDispatchedClaim(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -217,13 +240,52 @@ func TestCompleteTypeSettlesDispatchedClaim(t *testing.T) {
 	if err != nil || claim == nil || !claim.Claimed {
 		t.Fatalf("claim: %+v err=%v", claim, err)
 	}
-	store.Close()
 
+	// A live claim with zero settled candidates: complete-type must refuse
+	// (unclassified = 5 > 0) and must NOT flip the claim to done.
 	stdout, _, code := captureOutput(func() int {
 		return runReportCmd(ctx, []string{"--db", dbPath, "--complete-type", "null-deref", "--scan-id", scanID})
 	})
+	if code == 0 {
+		t.Fatalf("complete-type must refuse a live, uncovered claim: %s", stdout)
+	}
+	var refusal struct {
+		Status       string `json:"status"`
+		Unclassified int    `json:"unclassified"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &refusal); err != nil {
+		t.Fatalf("refusal output is not JSON: %s", stdout)
+	}
+	if refusal.Status != "incomplete" || refusal.Unclassified != 5 {
+		t.Errorf("refusal = %+v, want incomplete with unclassified 5", refusal)
+	}
+
+	// Every candidate now carries a terminal verdict (2 confirmed + 3
+	// dismissed) — complete-type succeeds and settles the claim even though
+	// no settlement file was ever written.
+	for i := 0; i < 2; i++ {
+		if _, err := store.UpsertFinding(ctx, &db.Finding{
+			RuleID: "CWE-476", VulnType: "null-deref", Status: "confirmed", Severity: "high", FilePath: "a.c",
+			LineNumber: 10 + i, Variable: "p", ScanID: scanID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := store.UpsertCandidateVerdict(ctx, &db.CandidateVerdict{
+			ScanID: scanID, VulnType: "null-deref", RuleID: "CWE-476", FilePath: "a.c",
+			LineNumber: 20 + i, Variable: "q", Verdict: "dismissed", Reason: "guarded",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store.Close()
+
+	stdout, _, code = captureOutput(func() int {
+		return runReportCmd(ctx, []string{"--db", dbPath, "--complete-type", "null-deref", "--scan-id", scanID})
+	})
 	if code != 0 {
-		t.Fatalf("complete-type failed: %s", stdout)
+		t.Fatalf("complete-type failed after full verdict coverage: %s", stdout)
 	}
 
 	d2, err := db.Open(ctx, dbPath)
@@ -238,6 +300,15 @@ func TestCompleteTypeSettlesDispatchedClaim(t *testing.T) {
 	}
 	if st.Status != "done" {
 		t.Errorf("claim status after complete-type = %q, want done", st.Status)
+	}
+	stats, err := store2.ListScanStats(ctx, scanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range stats {
+		if s.VulnType == "null-deref" && s.AIStageStatus != "done" {
+			t.Errorf("ai_stage_status = %q, want done", s.AIStageStatus)
+		}
 	}
 }
 
@@ -377,8 +448,36 @@ func TestPersistSettlementReportsMarksDoneAtomically(t *testing.T) {
 	root := t.TempDir()
 	store := db.NewTestStore(t)
 	scanID := "sc_2026-01-01_000000_abcdef"
-	for _, vt := range []string{"null-deref", "buffer-overflow"} {
-		if _, err := store.InsertScanStat(ctx, &db.ScanStat{ScanID: scanID, VulnType: vt, SeedCount: 10, FinalCount: 10}); err != nil {
+	if _, err := store.InsertScanStat(ctx, &db.ScanStat{ScanID: scanID, VulnType: "null-deref", SeedCount: 10, FinalCount: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.InsertScanStat(ctx, &db.ScanStat{ScanID: scanID, VulnType: "buffer-overflow", SeedCount: 10, FinalCount: 10}); err != nil {
+		t.Fatal(err)
+	}
+	// null-deref: every candidate carries a terminal verdict (2 confirmed + 3
+	// dismissed) → derived done. buffer-overflow: one candidate is needs_context
+	// (NO verdict) → unclassified = 1 > 0 → stays pending.
+	for i := 0; i < 2; i++ {
+		if _, err := store.UpsertFinding(ctx, &db.Finding{
+			RuleID: "CWE-476", VulnType: "null-deref", Status: "confirmed", Severity: "high", FilePath: "a.c",
+			LineNumber: 10 + i, Variable: "p", ScanID: scanID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := store.UpsertCandidateVerdict(ctx, &db.CandidateVerdict{
+			ScanID: scanID, VulnType: "null-deref", RuleID: "CWE-476", FilePath: "a.c",
+			LineNumber: 20 + i, Variable: "q", Verdict: "dismissed", Reason: "guarded",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 9; i++ {
+		if _, err := store.UpsertCandidateVerdict(ctx, &db.CandidateVerdict{
+			ScanID: scanID, VulnType: "buffer-overflow", RuleID: "CWE-787", FilePath: "b.c",
+			LineNumber: 30 + i, Variable: "buf", Verdict: "dismissed", Reason: "guarded",
+		}); err != nil {
 			t.Fatal(err)
 		}
 	}

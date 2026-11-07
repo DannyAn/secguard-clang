@@ -40,7 +40,10 @@ func (f *ReturnCheckFilter) Apply(ctx context.Context, candidates []Candidate) (
 
 	kept := make([]Candidate, 0, len(candidates))
 
-	fnByID, fileByID := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	fnByID, fileByID, err := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	if err != nil {
+		return nil, nil, err
+	}
 	for funcID, funcCandidates := range byFunc {
 		fn := fnByID[funcID]
 		if fn == nil {

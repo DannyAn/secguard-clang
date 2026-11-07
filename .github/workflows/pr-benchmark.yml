@@ -42,7 +42,8 @@ jobs:
           $GITHUB_WORKSPACE/bin/secguard report --audit \
             --scan-id "$SCAN_ID" \
             --output-dir "/tmp/bench/.codeagent/secguard-clang/scans/$SCAN_ID" \
-            --db /tmp/bench/sgre.db > audit.log 2>&1
+            --db /tmp/bench/sgre.db \
+            --allow-partial > audit.log 2>&1
           cat scan.log
           cat audit.log
 

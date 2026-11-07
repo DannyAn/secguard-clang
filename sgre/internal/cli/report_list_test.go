@@ -160,7 +160,7 @@ func TestReportAudit_WritesPipelineDismissedNotAIDismissed(t *testing.T) {
 		t.Fatal(err)
 	}
 	stdout, _, exitCode := captureOutput(func() int {
-		return runReportCmd(ctx, []string{"--db", dbPath, "--audit", "--scan-id", scanID, "--output-dir", outDir})
+		return runReportCmd(ctx, []string{"--db", dbPath, "--audit", "--scan-id", scanID, "--output-dir", outDir, "--allow-partial"})
 	})
 	if exitCode != 0 {
 		t.Fatalf("--audit failed: %s", stdout)

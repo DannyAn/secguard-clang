@@ -215,6 +215,9 @@ func TestSettlementClaim_AtomicPlaceholder(t *testing.T) {
 	ctx := context.Background()
 	s := NewTestStore(t)
 	nowSec := time.Now().Unix()
+	if _, err := s.InsertScanStat(ctx, &ScanStat{ScanID: "sc_c", VulnType: "buffer-overflow", SeedCount: 30, FinalCount: 20}); err != nil {
+		t.Fatal(err)
+	}
 
 	first, err := s.ClaimSettlementRange(ctx, "sc_c", "buffer-overflow", "1-20", "holder-a", nowSec-60, false)
 	if err != nil {
@@ -262,6 +265,9 @@ func TestSettlementClaim_AtomicPlaceholder(t *testing.T) {
 func TestSettlementClaim_DoneHeldUnlessReclaim(t *testing.T) {
 	ctx := context.Background()
 	s := NewTestStore(t)
+	if _, err := s.InsertScanStat(ctx, &ScanStat{ScanID: "sc_d", VulnType: "uninit", SeedCount: 60, FinalCount: 50}); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := s.UpsertSettlementStat(ctx, &SettlementStat{
 		ScanID: "sc_d", VulnType: "uninit", RangeStr: "1-50", SubagentID: "w1",
@@ -289,6 +295,9 @@ func TestSettlementClaim_DoneHeldUnlessReclaim(t *testing.T) {
 func TestSettlementClaim_FailedRowRetried(t *testing.T) {
 	ctx := context.Background()
 	s := NewTestStore(t)
+	if _, err := s.InsertScanStat(ctx, &ScanStat{ScanID: "sc_f", VulnType: "uninit", SeedCount: 60, FinalCount: 50}); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := s.UpsertSettlementStat(ctx, &SettlementStat{
 		ScanID: "sc_f", VulnType: "uninit", RangeStr: "1-50", SubagentID: "w1", Status: "failed",

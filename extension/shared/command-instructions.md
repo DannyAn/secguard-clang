@@ -208,12 +208,32 @@ NOT a hardcoded 20. The two constraints, both measurable at scan time:
    (scan-time measurable: `writeTypeIndex` knows both). `skill` + `legend` are the
    type's SKILL.md + the `_index.md` legend, both known at scan time.
 
-`N_type = min(constraint1, constraint2)`. Constraint 1 binds for heavy types
+`N_type = min(constraint1, constraint2, 100)`. Constraint 1 binds for heavy types
 (null-deref/memory-leak: high r → small N); constraint 2 binds for light types
 (divide-by-zero `divisor@bare`: low r → large N would overflow context via the
 index read itself). The prior hardcoded 20 violated neither proof nor measurement
 — it was an unvalidated constant that caused 1980 candidates → 98 batches →
 10 serial waves on a 10-wide host (production: "scanned for a day").
+
+**Evidence volume is part of constraint 2, not a footnote:** the context a batch
+actually consumes is `skill + legend + N × per_candidate_index_token +
+N × r_type × per_evidence_open_bytes`. For a line-level type the Evidence is a
+±8-line window (small); for a whole-function-embedding (heavy) type it is the
+whole function (~200 lines, 10–25× the window), so the heavy type's N must use
+that whole-function byte estimate, and heavy types always get dedicated batches.
+
+**The 12-open budget is per SUBAGENT (per batch), never per type:** a mixed batch
+of 4 types shares ONE pool of 12 Evidence opens (sum over its types), which is
+also what the settlement `evidence_opens` entries and the F6 audit sum over a
+batch's `processed_types` measure. Interpreting it as "12 per type" quadruples
+the intended I/O and wall clock.
+
+**Mandatory-evidence types have a hard capacity floor:** a type whose SKILL
+requires opening Code Context for EVERY candidate before confirming (e.g.
+divide-by-zero's divisor shapes) has effective `r_type = 1`, so its batch is
+capped at 12 from the FIRST run — the `r_type = 0.30` first-run default does not
+apply to it, and its needs_context second pass is re-split by the SAME capacity
+formula (never "one residual batch, once").
 
 `SPLIT_CANDIDATE_THRESHOLD=100` remains a **context** ceiling for ranging: a type
 over 100 is split into ≤100-candidate ranges for context, and EACH range is then
@@ -238,12 +258,12 @@ whole-function-embedding type into a "small" batch to dodge the threshold.
 **Whole-function-embedding (heavy) types — grouping rule:** `integer-overflow` (and
 `argument-type` if it ever embeds whole spans) is a HEAVY skill: its per-candidate
 Evidence is the whole function, and its verdict needs parameter types + entry guard
-+ accumulation chain. A batch containing a heavy type SHALL NOT share with a light
-type AND SHALL NOT share with another heavy type: `MAX_TYPES_PER_BATCH` drops to 2
-when a heavy type is in the batch (one heavy type + at most one light type), and a
-heavy type's candidate ceiling is the context-budget constraint, not the
-evidence-open constraint — its `r_type` understates cost because the index row is a
-single line while the Evidence file is the whole function.
++ accumulation chain. **A heavy type gets a DEDICATED batch: it SHALL NOT share a
+batch with ANY other type (light or heavy).** Its candidate ceiling is the
+context-budget constraint using the WHOLE-FUNCTION evidence volume (see the
+`evidence_bytes` term below), not the evidence-open constraint — its `r_type`
+understates cost because the index row is a single line while the Evidence file
+is the whole function.
 
 The B1 types `stack-address-escape` / `invalid-free` / `switch-fallthrough` are
 LIGHT (line-level ±8-line evidence) and participate in the existing grouping
@@ -252,7 +272,7 @@ new capacity class for an unfamiliar name.
 
 **Pre-dispatch validation (EARS):**
 - If a batch has > `MAX_TYPES_PER_BATCH` (4) types, the orchestrator SHALL split it before dispatching.
-- A batch containing a whole-function-embedding (heavy) type (`integer-overflow`) SHALL NOT share with another heavy type, and its type ceiling drops to 2 (one heavy + at most one light type) — its per-candidate evidence is the whole function, so counting it like a line-level type under-budgets the batch.
+- A batch containing a whole-function-embedding (heavy) type (`integer-overflow`) SHALL contain ONLY that type (a heavy type gets a dedicated batch, never shared with any light or heavy type) — its per-candidate evidence is the whole function, so counting it like a line-level type under-budgets the batch.
 - Where a single type has > `LARGE_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL give that type dedicated subagent(s) — never share it with another type — and split those subagents by the next rule.
 - Where a single type has > `SPLIT_CANDIDATE_THRESHOLD` (100) candidates, split it into ≤100-candidate RANGES for context (pass the candidate # range, e.g. "candidates #1–100 of null-deref"). Then dispatch **each range in ≤`N_type`-candidate subagent batches** where `N_type` is the adaptive per-type ceiling above. Balance ranges so there is no sliver tail (100 + 100 + 1): merge a final range smaller than 5 into its predecessor and re-split evenly. If a super-large function still overflows a batch, surface the tail via the partial-count path, never silently bury it.
 - The orchestrator SHALL validate a batch against the two capacity ceilings (types,
@@ -379,9 +399,11 @@ judge every distinct chain independently (see the `sibling-callers@` hint rule).
 Reusing one chain's guard to dismiss another chain is a recall bug, not a valid
 group verdict.
 
-**Zero-confirmed shard: skip the write.** If nothing in the type/range is
-confirmed, do NOT create a findings file and do NOT call `--write-json`; go
-straight to the structured report (`written: 0`).
+**Zero-confirmed shard: write the dismissed rows, not nothing.** If nothing in
+the type/range is confirmed, still call `--write-json` with the array of
+`status: "dismissed"` rows (`findings_written: 0` is a healthy response) — the
+`candidate_verdicts` ledger is the only way recovery tells "all dismissed" from
+"never ran". Skip the write ONLY when the range had zero candidates.
 
 **长扫描超时策略 (F4):** Before calling `secguard_scan`, estimate scan duration. If the project has > 100 C files OR the scan is expected to exceed 120s (the default Bash timeout), the orchestrator SHALL either (a) invoke the scan with an explicit timeout ≥ 600s, or (b) use the host's background-task + Monitor mechanism from the start. When a scan is moved to the background, the orchestrator SHALL switch to Monitor within 1 turn — it SHALL NOT use `sleep N; tail` (blocked by Bash safety policy) and SHALL NOT leave a backgrounded scan unmonitored. While the Monitor is pending, the orchestrator SHALL NOT issue parallel Bash commands (the host may buffer their results until the Monitor completes, wasting the parallel window); any preparation (type list, agent-definition read) MUST complete before the Monitor starts.
 
@@ -446,20 +468,23 @@ straight to the structured report (`written: 0`).
      (matches the evidence) or dismiss (guarded/different) from the table itself.
      Do NOT read source or the candidate file. Batch all confirmed verdicts into
      one write call.
-   - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null` (non-null-deref types)/`null@cfg-proof`/`null@malloc-fail`/`null@caller-arg`/`null@callback-entry`/`null@opaque-origin`/`null@global-null`/`null@assumed-return`/`null@external-unknown`/`array-buffer@<count-field>` (null-deref origin tier; `null@callback-entry` = function registered via function-pointer (ADDR_TAKEN) with zero direct call sites — parameter nullability bound to the registration-site context; a boundary scan pre-dismisses it unless a `caller-null@` witness exists; `array-buffer@` = a count-gated array buffer — `count == 0 ⇒ buffer NULL/empty`, confirm when the chain dereferences it without checking the count field)/`chain-root@<fn>`+`sibling-callers@<fn1,fn2>` (the candidate's caller chain + the OTHER chains that also call the same function — a guard on a sibling chain does NOT protect this candidate)/`tainted`/`taint@none`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`struct@<name>`/`alloc-size@<N>`/`layout-field@<name>:<off>+<size>` (layout_oob_read/write; default-ABI layout — verify packing/ABI before confirming)/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`macro@<name>`/`threads@<fn>`/`instances@N`/`write@N`/`mutex@<name>`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`arg@<expr>`/`may-free`/`reason@<text>`/`key-size@N` (crypto-misuse)/`buf@<name>`/`cap@N`/`idx@<expr>`/`src-cap@N` (buffer-overflow/out-of-bounds)/`alloc@N`/`acquire@N`/`leak@definite`/`leak@conditional`/`escape@none|store|return`/`free@N,M` (leaks)/`range@<interval>`/`callers@<census>` (divide-by-zero)/`callsites@<census>` (format-string/path-traversal; `N:all-literal` = every in-tree caller passes a compile-time constant)/`origin@<kind>`/`decl@N`/`field@<path>`/`init@none`/`init@error-path`/`init-writer@<callee>:<line>`/`init@branch`/`init@N`+`may-skip` (uninit; `init@none` = machine-proved never-written stack scalar, `init@error-path` = an in-tree callee's early return skips the write and the caller discards the return — judge that path, `may-skip` = the only writes are loop-body-only — judge the loop condition)/`expected@<type>`/`actual@<type>`/`cast@<type>` (argument-type/data-representation)/`fmt-arg@<expr>` (format-string)/`path-arg@<expr>` (path-traversal)/`value-shape@<masked>` (hardcoded-secret)/`async-unsafe@<fn>` (signal-handler)/`subject@<name>`/`count-field@<field>`/`evidence-kind@<kind>`/`sibling-guard@<fn>:<line>` (implicit-contract/sizeof-misuse; only `evidence-kind@sibling` — a same-file sibling — is kept, `self`/`sibling-weak` are pre-dismissed)/`cond@<callee>` (double-free)); for divide-by-zero a `divisor@bare` row is settled from `Source` alone (no evidence open). When the hint is insufficient, open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source, a `contract@unknown` unchecked-return candidate embeds its callee body under `## Callee Definition`, and a null-deref `callee@` candidate embeds the dereferenced callee's body there too) and, if STILL insufficient, a raw source read within the ≤5-read budget — then classify. Only after spending that budget may you write `dismissed` (with a cited reason); never write `dismissed` without reading when the hint was insufficient. A `macro-context` or `macro@<name>` hint means a macro is in play — read the embedded `## Macro Definition` (or `secguard_def` when it is not embedded) and verify the macro before `confirmed`; never grep the repo for it.
-    Write **confirmed** findings in ONE batch: write `<tmpdir>/<type>.json`
-    containing only confirmed findings with the Write tool, then
+   - **suspected/possible** → classify from the `_index.md` `Source` + `Hint` columns first (Hint: `src@N`/`certain-null`/`maybe-null` (non-null-deref types)/`null@cfg-proof`/`null@malloc-fail`/`null@caller-arg`/`null@callback-entry`/`null@opaque-origin`/`null@global-null`/`null@assumed-return`/`null@external-unknown`/`array-buffer@<count-field>` (null-deref origin tier; `null@callback-entry` = function registered via function-pointer (ADDR_TAKEN) with zero direct call sites — parameter nullability bound to the registration-site context; a boundary scan pre-dismisses it unless a `caller-null@` witness exists; `array-buffer@` = a count-gated array buffer — `count == 0 ⇒ buffer NULL/empty`, confirm when the chain dereferences it without checking the count field)/`chain-root@<fn>`+`sibling-callers@<fn1,fn2>` (the candidate's caller chain + the OTHER chains that also call the same function — a guard on a sibling chain does NOT protect this candidate)/`tainted`/`taint@none`/`weak-guard`/`divisor@<shape>`/`certain-uninit`/`maybe-uninit`/`api@`/`cat@`/`struct@<name>`/`alloc-size@<N>`/`layout-field@<name>:<off>+<size>` (layout_oob_read/write; default-ABI layout — verify packing/ABI before confirming)/`lhs@`/`rhs@`/`rhs-influenced`/`sink@`/`guard@none`/`macro-context`/`macro@<name>`/`threads@<fn>`/`instances@N`/`write@N`/`mutex@<name>`/`lock@<lo>-<hi>`/`check@<fn>→use@<fn>`/`arg@<expr>`/`may-free`/`reason@<text>`/`key-size@N` (crypto-misuse)/`buf@<name>`/`cap@N`/`idx@<expr>`/`src-cap@N` (buffer-overflow/out-of-bounds)/`alloc@N`/`acquire@N`/`leak@definite`/`leak@conditional`/`escape@none|store|return`/`free@N,M` (leaks)/`range@<interval>`/`callers@<census>` (divide-by-zero)/`callsites@<census>` (format-string/path-traversal; `N:all-literal` = every in-tree caller passes a compile-time constant. **path-traversal 精度边界（与 SKILL.md 一致，orchestrator 给子代理的 prompt 必须包含）**：path 是函数参数且**既没有可证污点源（`taint_source` fragment）也没有非常量树内调用方（`callsites@`）时 → dismissed（unproven parameter——到达 path 参数并不能证明内容可含 `../`）；只有污点源可证或有非常量调用方才 confirmed**/`origin@<kind>`/`decl@N`/`field@<path>`/`init@none`/`init@error-path`/`init-writer@<callee>:<line>`/`init@branch`/`init@N`+`may-skip` (uninit; `init@none` = machine-proved never-written stack scalar, `init@error-path` = an in-tree callee's early return skips the write and the caller discards the return — judge that path, `may-skip` = the only writes are loop-body-only — judge the loop condition)/`expected@<type>`/`actual@<type>`/`cast@<type>` (argument-type/data-representation)/`fmt-arg@<expr>` (format-string)/`path-arg@<expr>` (path-traversal)/`value-shape@<masked>` (hardcoded-secret)/`async-unsafe@<fn>` (signal-handler)/`subject@<name>`/`count-field@<field>`/`evidence-kind@<kind>`/`sibling-guard@<fn>:<line>` (implicit-contract/sizeof-misuse; only `evidence-kind@sibling` — a same-file sibling — is kept, `self`/`sibling-weak` are pre-dismissed)/`cond@<callee>` (double-free)); for divide-by-zero a `divisor@bare` row is settled from `Source` alone (no evidence open). When the hint is insufficient, open that candidate's `Evidence` file (filename in the `Evidence` column, verbatim; its `## Code Context` already embeds the source, a `contract@unknown` unchecked-return candidate embeds its callee body under `## Callee Definition`, and a null-deref `callee@` candidate embeds the dereferenced callee's body there too) and, if STILL insufficient, a raw source read within the ≤5-read budget — then classify. Only after spending that budget may you write `dismissed` (with a cited reason); never write `dismissed` without reading when the hint was insufficient. A `macro-context` or `macro@<name>` hint means a macro is in play — read the embedded `## Macro Definition` (or `secguard_def` when it is not embedded) and verify the macro before `confirmed`; never grep the repo for it.
+    Write **confirmed + dismissed** verdicts in ONE batch: write `<tmpdir>/<type>.json`
+    containing every classified candidate (confirmed rows AND `status:"dismissed"`
+    rows with `reasoning`) with the Write tool, then
     `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
-    Dismissed candidates are not written in any batch. After classifying all
-    candidates of a type (confirmed written + dismissed not written), do NOT
-    call `secguard report --complete-type` — the orchestrator marks types done
-    in step 5 when absorbing reports. Report `processed_types` in your
-    Structured Report Protocol block instead; the orchestrator's resume logic
-    reads that.
+    Confirmed rows land in `findings`; dismissed rows land in the
+    `candidate_verdicts` ledger so recovery can tell "classified and dismissed"
+    from "never classified" — omitting dismissed rows leaves the type's
+    `remaining` permanently > 0. After classifying all candidates of a type, do NOT
+    call `secguard report --complete-type` from the subagent — the orchestrator
+    marks types done in step 5 when absorbing reports. Report `processed_types`
+    in your Structured Report Protocol block instead; the orchestrator's resume
+    logic reads that.
     Never skip a type. Obey the context budget (no per-candidate source reads).
 **调度时序合规规则 (F3):** All subagent dispatches SHALL occur in a single assistant turn — N `Agent`/`task` calls issued consecutively with the first-to-last timestamp span ≤ 10s. (Claude Code's subagent-dispatch tool is `Agent`; older Claude Code versions name it `Task`.) The orchestrator SHALL NOT split dispatches across turns. After dispatch, while subagents run, the orchestrator SHALL NOT poll their transcripts or issue `sleep`.
 
-**滑动窗口补位 (F3a) — 消灭整波 barrier（P0-1）：** F3 的"所有派发 ≤10s"只约束**首波**。首波发出后，每收到**一个**批次的完成信号（官方 Claude Code 的 `task_notification`、DSH 的 settlement 通知；或同步宿主若其 `Agent`/`task` 工具支持 `run_in_background` 时的完成通知），编排器**立即**吸收该批次 settlement 并**立即**补派积压队列中的下一个批次——不等其他在跑批次，并发数始终顶满宿主上限，波间空档与 straggler 尾部空转消失。补位派发按通知逐个发，**显式豁免 F3 的 ≤10s 限制**。吸收顺序与 F11 一致：`secguard status --reports`（有 `valid:true` 覆盖则吸收 `written`/`dismissed`/`needs_context` 并 `report --complete-type`）→ `secguard status --per-type`（读引擎预计算的 `already_covered_ranges` 与 `in_flight_ranges`，只补派真正缺失且无人占位的 range；补派前先按 F13 claim）。同步宿主若其 `Agent`/`task` 无后台模式（OpenCode / opencode-nga 按 F7 的同步返回），则首波仍按 F3 一次性发出、超时走 F11——退化为现状，无回归。
+**滑动窗口补位 (F3a) — 消灭整波 barrier（P0-1）：** F3 的"所有派发 ≤10s"只约束**首波**。首波发出后，每收到**一个**批次的完成信号（官方 Claude Code 的 `task_notification`、DSH 的 settlement 通知；或同步宿主若其 `Agent`/`task` 工具支持 `run_in_background` 时的完成通知），编排器**立即**吸收该批次 settlement 并**立即**补派积压队列中的下一个批次——不等其他在跑批次，并发数始终顶满宿主上限，波间空档与 straggler 尾部空转消失。补位派发按通知逐个发，**显式豁免 F3 的 ≤10s 限制**。吸收顺序与 F11 一致：`secguard status --reports`（有 `valid:true` 覆盖则吸收 `written`/`dismissed`/`needs_context` 并 `report --complete-type`）→ `secguard status --per-type`（读引擎预计算的 `already_covered_ranges` 与 `in_flight_ranges`，只补派真正缺失且无人占位的 range；补派前先按 F13 claim）。同步宿主若其 `Agent`/`task` 无后台模式（OpenCode / opencode-nga 按 F7 的同步返回），则首波仍按 F3 一次性发出、超时走 F11——退化为现状，无回归。**complete-type 的调用时机（verdict 台账派生，F13 不再纠结）：** 类型完成统一按 **`unclassified == 0`**（`candidate_count − AI confirmed − dismissed == 0`，即每个候选都有终态）判定，**不再依赖 settlement 文件，也不再把"活跃 claim"作为拒绝条件**。orchestrator 按 F13 先 claim 后 spawn 即可：子代理用 `secguard_report`（MCP）或 `--write-json`（Bash）写回 confirmed + dismissed 后，`status --per-type` 显示该类型 `remaining:0`（= `unclassified == 0`）时，`report --complete-type` 就会通过并**自动把该类型的 dispatched claim 标为 done**（此时所有 range 的候选都已有 verdict，不存在"别人的在途 claim 被伪结算"）。`status --reports` 吸收 settlement 时也按同一口径自动派生 done。**orchestrator 不需要再纠结"子代理不写 settlement 文件时 complete-type 会不会卡死"——verdict 台账就是完成证明，claim 随 complete-type 自动结算。** `unclassified > 0` 时 complete-type 返回 `status:"incomplete"`（退出码 1），按返回的 `uncovered_ranges` 补派即可。
 
 **F3a 的可执行实现（in-flight 计数器 + 宿主并发上限查询）：** F3a 不是"应当"级建议，是必须执行的状态机。编排器在本轮开始时**显式**维护两个量：(1) `host_max` = 宿主允许的最大并发子代理数；(2) `in_flight` = 当前已发出但未收到完成信号的批次计数。
 
@@ -470,7 +495,7 @@ straight to the structured report (`written: 0`).
 
 **子代理返回模型 (F7) — 这是"任务卡住不结束/结果丢失/重复下发"的根因，必读：** 三个平台的返回模型不同，绝不可混用：
 
-- **OpenCode（含 opencode-nga）的 `task` 工具是同步的**：一次 `task` 调用的返回值就是该子代理的最终消息（即 `Structured Report Protocol` 的 JSON 块）。**没有**独立的 "task-notification" 事件可等。因此 orchestrator 在同一个回合里连续发出 N 个 `task` 调用后，这些调用会逐一带回结果；拿到结果后 orchestrator 必须**立刻**进入第 5 步 Collect+finalize，**绝不能**在发出 task 后结束回合去"等通知"——那样这个回合就永远停在原地，任务计时一直走。
+- **OpenCode（含 opencode-nga）的 `task` 工具是同步的**：一次 `task` 调用的返回值就是该子代理的最终消息（即 `Structured Report Protocol` 的 JSON 块）。**没有**独立的 "task-notification" 事件可等。因此 orchestrator 在同一个回合里连续发出 N 个 `task` 调用后，这些调用会逐一带回结果。**同步宿主的唯一调度状态机（超 host_max 队列的唯一合规路径）：每波返回后先按 F3a 吸收 settlement 并补派下一波（`in_flight < host_max` 就继续发），只有「积压队列为空 AND in_flight 为 0 AND `status --per-type` 的 `uncovered_ranges` 全空 AND 无 `in_flight_ranges`」全部成立时才进入第 5 步 Collect+finalize。严禁"首波 N 个返回就立刻 finalize"——那是把积压批次流程性放弃；也严禁在发出 task 后结束回合去"等通知"——那样这个回合就永远停在原地，任务计时一直走。**
 - **claude-cac（CodeAgentCLI）的 `Agent` 工具是异步的**：一次 `Agent` 调用返回 `Async agent launched successfully` + `agentId`，子代理在后台运行、完成后才推送通知（生产冒烟实测：返回的是 agentId 而非最终消息）。因此发出 N 个 `Agent` 调用后**不能**按同步假设直接进 Collect——拿不到结果；必须像官方 Claude Code 一样等每个子代理的完成通知（或读 `<tmpdir>/<subagent_id>-report.json` 落盘报告），再进第 5 步。**防御性写法（F7a）**：不同宿主版本/配置下返回形状可能漂移，发出第一个 `Agent`/`task` 后先探测其返回——含 `agentId` 且带 "background/async" 字样即为异步宿主（等通知/落盘），直接返回最终消息 JSON 即为同步宿主（读返回值）；把探测结果记在心里，后续 N−1 个调用与 Collect 阶段照此办理，不要先验地假定同步或异步。
 - **Claude Code（官方）的 `Agent`/`Task` 工具是异步的**：子代理在后台运行，通过 `task_notification` 事件回报终态。orchestrator 等待这些事件，直到每个子代理都到达 terminal state，再进入第 5 步。
 - **DeepSeek Harness（DSH）的 `subagent` 工具是异步的（continuable）**：一次 `subagent` 调用后台启动一个持久子代理并返回子代理 id（默认 `run_in_background: true`，无需显式传），子代理跑完后 runtime 推送 settlement 通知（含结果 + 最终 assistant 消息）。orchestrator 等这些通知，用 `list_agents` 回忆、`send_message` 追问，直到每个子代理都落地，再进第 5 步；**绝不能**在发出 subagent 后结束回合去"空等"（通知会来，但和官方 Claude Code 一样，拿到全部结果后必须在同一回合内 Collect+finalize）。
@@ -506,6 +531,7 @@ secguard status --claim-type <type> --claim-range <range> --claim-holder <token>
 - `{"claimed": false, "reason": "done"}` → 该 range 已有结算报告（已覆盖）。跳过；只有 `needs_context` 二次下发这类**刻意重跑**才加 `--reclaim`（结果 `reason: "reclaim"`），普通恢复绝不用 `--reclaim`。
 - 一个 claim 超过 30 分钟未收到结算报告即视为陈旧（dead worker）：下一次 claim 会以 `reason: "stale"` 自动接管并把 `retry_count` +1。陈旧接管不是"再等一会"的替代——F11 的"一次复核后仍无 valid 报告且无进展"仍然是重派的前提。
 claim 行只是 `settlement_stats` 里的 `status='dispatched'` 占位，**不计入** `written_count`，也不进 `r_type` 样本；结算报告落盘后由 `status --reports` 吸收为 `status='done'`，该 range 随即出现在 `already_covered_ranges` 而不是 `in_flight_ranges`。**先 claim 后 spawn；claim 失败绝不 spawn。**
+**claim 与 complete-type 的交互（不再纠结）：** claim 只是占位防重复分派；`report --complete-type` 的完成判定统一为 **`unclassified == 0`**（`candidate_count − AI confirmed − dismissed == 0`），**子代理用 `secguard_report`（MCP）或 `--write-json`（Bash）写回 verdicts 即构成完成证明**，complete-type 通过时自动把该类型的 dispatched claim 标为 done。**不需要子代理写 settlement 文件，也不需要 orchestrator 先 release-claim**——verdict 台账全覆盖时所有 range 的工作都已完成，claim 随 complete-type 自动结算。`unclassified > 0` 时 complete-type 返回 `status:"incomplete"`（退出码 1），按返回的 `uncovered_ranges` 补派即可。
 **多 type 批次**：一个 batch 最多含 4 个 type，每个 type 有自己的 range，因此按 `(type, range)` 逐个 claim。只有 `claimed:true` 的条目进入该 subagent 的派发提示词；`claimed:false` 的条目跳过（held = 别人在跑、done = 已覆盖），**不要**因为一个条目失败就放弃整批，也**不要**把未 claim 的 type 塞给 worker。整批都 `claimed:false` 就本轮不 spawn——但**不要结束回合**（F8）：在同一回合内继续按 F11 吸收已完成的批次（`status --reports` → `status --per-type`），然后再次尝试 claim；重复直到所有批次 done 或可 claim。
 
 **确定性执行器开关 (F12)：** 若 `secguard config` 显示 `ai_stage_mode = "executor"`，PHASE_2 分类改由确定性进程执行——跑 `secguard classify <target> --mode executor`（灰度期先 `--dry-run` 验证接线，不开 LLM 子进程），无需本步骤的子代理派发。`ai_stage_mode` 缺省为 `agent`（本步骤的现状路径）；executor 模式的判定结果与 agent 模式同库同 `--write-json` UPSERT 路径，判定质量对齐前不得用于生产。
@@ -702,8 +728,10 @@ claim 行只是 `settlement_stats` 里的 `status='dispatched'` 占位，**不�
     Write findings in ≤200-finding chunks (a ≤100-candidate range is exactly ONE
     chunk — never split a range into multiple files; a ≤200 array of compact
     Source+Hint verdicts stays well under context, so the tail is never dropped).
-    For each chunk: write a FRESH `<scan_dir>/../../.sgre/.tmp/<type>-partN.json`
-    with the Write tool (N increasing; if a Write returns "must read before
+    For each chunk: write a FRESH `<scan_dir>/../../.sgre/.tmp/<scan_id>-<claim_holder>-<type>-<range>-partN.json`
+    with the Write tool (N increasing; the name carries scan_id + claim_holder +
+    type + range, so two range workers of the SAME type can never collide on
+    `<type>-part1.json`; if a Write returns "must read before
     overwriting", do NOT stop to inspect the directory — just use the next fresh
     filename), then persist it immediately before starting the next chunk:
     - If the `secguard_report` MCP tool is in your toolset (OpenCode / OpenCode-NGA),
@@ -715,9 +743,12 @@ claim 行只是 `settlement_stats` 里的 `status='dispatched'` 占位，**不�
       with Bash. Do NOT call `--complete-type` — it is the orchestrator's
       single-writer step (step 5); a subagent call races it and can flip the
       terminal state under the orchestrator. Report `processed_types` instead.
-      If nothing in the range is confirmed, skip the write entirely.
+      If nothing in the range is confirmed, still write the dismissed-only
+      array (every dismissed row carries `reasoning`) so the verdict ledger
+      stays complete; skip the write only for a zero-candidate range.
     Report back, per type: confirmed count + the written finding ids. Dismissed
-    count is not persisted (not counted, not reported). Emit the Structured
+    verdicts are persisted to `candidate_verdicts` (report the dismissed count
+    in `processed_types`). Emit the Structured
     Report Protocol block; if the ≤12 Evidence-open / ≤5 source-read budget could
     not settle some candidates, list them in `needs_context` instead of opening
     the whole type.
@@ -739,10 +770,10 @@ claim 行只是 `settlement_stats` 里的 `status='dispatched'` 占位，**不�
    **DB schema 速查 (列名别猜 — 猜一个不存在的列如 `f.type` 会白费 1~2 轮 `secguard schema` 往返):**
    Prefer structured tools over raw SQL — every count you need already has one:
     - per-type candidate/written → `secguard status --per-type --scan-id <id>` (`candidate_count`/`written_count`/`auto_confirmed`/`terminal_state`, no SQL). `auto_confirmed` findings are machine verdicts with `review_status` NULL until Step 5.5 reviews them; they are never dispatched to a per-candidate subagent.
-    - per-type verdict split → `secguard report --audit --scan-id <id> --output-dir <dir>` returns an `audits` array (`vuln_type`/`confirmed`/`auto_confirmed`/`ai_stage_status`; `dismissed` and `suspected` are not present — dismissed candidates are not persisted). `ai_stage_status` values: `pending` (AI stage not done), `done` (AI stage complete), `failed` (AI stage failed, reserved). Sum that array for the report — do NOT raw-query `findings` to recompute it.
+    - per-type verdict split → `secguard report --audit --scan-id <id> --output-dir <dir>` returns an `audits` array (`vuln_type`/`confirmed`/`auto_confirmed`/`ai_stage_status`/`dismissed`/`unclassified`; `dismissed` = the persisted `candidate_verdicts` count, `unclassified` = `final_count − confirmed − dismissed`, the candidates nobody ever classified — it must be 0 in a complete scan). `ai_stage_status` values: `pending` (AI stage not done), `done` (AI stage complete), `failed` (AI stage failed, reserved). Sum that array for the report — do NOT raw-query `findings` to recompute it.
     **findings/ 里的 confirmed 文件 ≠ 子代理报告的 confirmed（auto-confirmed 已落库）:** `findings/<type>/NNN_*_confirmed.md` 是两类之和——(a) `auto-confirmed`：pipeline 在 scan 阶段直接机器确认的确定性发现（divide-by-zero 的 `divisor@field`/`global`、null-deref 的 `null@cfg-proof`/`null@malloc-fail`、uninit 的 certain-uninit 等），它们**不在** `candidates/_index.md` 里、子代理从来看不到；(b) 子代理写的 `confirmed`。所以 findings/ 的 confirmed 文件数可以明显大于子代理报告的数，多出的就是 auto-confirmed，**不是漏报也不是子代理说错**。最终计数一律以 `report --audit` 的 `audits` 数组（含 `auto_confirmed` 字段）为准，不要 `ls findings/` 反推、不要为这个对账。
    **DB 路径（绝对路径，否则 Exit code 1）:** every `secguard db` / `secguard schema` / `secguard report` call that takes `--db` MUST pass the ABSOLUTE path `<scan_dir>/../../.sgre/sgre.db`. A relative `.sgre/sgre.db` fails with `Error: Exit code 1` whenever your cwd is not the project root — do NOT retry it as-is; re-run with the ABSOLUTE path. **Do NOT `cd` into the scan dir to "fix" it:** commands run WITHOUT `--db` (`secguard plan`/`status`/`metrics`/`query` and `report --audit`) resolve the DB relative to cwd, so cd'ing into the scan dir would mint a second, empty `sgre.db` under the scan dir (doubling build time and splitting findings across two databases). Keep cwd at the project root for the whole run.
-    **dismissed 不持久化，`final_count − confirmed` 不是漏写:** dismissed candidates are intentionally NOT persisted (no finding row, no count). When `ai_stage_status='done'` for a type, the AI has processed all candidates — the `final_count − confirmed` gap is the dismissed count, which is normal, not a missing write. **两种 dismissed 语义必须分清（C2）**：`ai_dismissed` = 子代理在分类阶段判驳的候选，**不落 `findings` 表**（无 finding 行、不参与 confirmed 计数，`written_count < candidate_count` 的差额就是它，逐条记在 `candidate_verdicts` 台账里）；`review_dismissed` = 一条 `auto-confirmed` 行在终审复核被驳回，**落库**为 `review_status='dismissed'`（`report --list --status dismissed` 能查出，`EffectiveStatus` 生效后从 confirmed 计数中剔除）。两者同名不同层，不要混用：`status --per-type` 的 `dismissed_count` 来自 `candidate_verdicts` 台账（`report --write-json` 处理 `status=dismissed` 时按 `(scan_id,vuln_type,file,line,function)` upsert，`CountCandidateVerdictsByType` 按 `vuln_type` 聚合），**反映的是 `ai_dismissed`**——`ai_dismissed` 候选不落 `findings` 表，但每条判驳裁决都落 `candidate_verdicts` 一行；`review_dismissed` 则落 `findings` 表为 `review_status='dismissed'`。`remaining = candidate_count - written_count - dismissed_count`。When `ai_stage_status='pending'` the type is in-progress (reported by `status --per-type`, not as unclassified). Because `--write-json` UPSERTs keyed on `(scan_id, rule_id, file, line, variable)`, a re-write of the same finding updates it in place: the response's `duplicates` count (and each `written[].duplicate: true`) names every idempotent update — never a second row. `function` is NOT part of the key, so a retry that omits it still updates the existing finding. Do NOT inspect the schema or raw-query `findings` to "persist" dismissed; trust `secguard status --per-type --scan-id <id>` (`written_count`/`terminal_state`/`ai_stage_status`) instead.
+    **dismissed 不落 findings 表，但逐条落 candidate_verdicts 台账:** dismissed candidates write NO findings row (they never reach result.sarif/report.md), but EVERY dismissed verdict is upserted into the `candidate_verdicts` ledger — that is what `status --per-type`'s `dismissed_count` and the audit's `dismissed` column read. When `ai_stage_status='done'` for a type, the AI has processed all candidates — the `final_count − confirmed` gap is the dismissed count, which is normal, not a missing write; `unclassified = final_count − confirmed − dismissed` must be 0, and a non-zero value means candidates were never classified (a real gap, not a dismissal). **两种 dismissed 语义必须分清（C2）**：`ai_dismissed` = 子代理在分类阶段判驳的候选，**不落 `findings` 表**（无 finding 行、不参与 confirmed 计数，`written_count < candidate_count` 的差额就是它，逐条记在 `candidate_verdicts` 台账里）；`review_dismissed` = 一条 `auto-confirmed` 行在终审复核被驳回，**落库**为 `review_status='dismissed'`（`report --list --status dismissed` 能查出，`EffectiveStatus` 生效后从 confirmed 计数中剔除）。两者同名不同层，不要混用：`status --per-type` 的 `dismissed_count` 来自 `candidate_verdicts` 台账（`report --write-json` 处理 `status=dismissed` 时按 `(scan_id,vuln_type,file,line,function)` upsert，`CountCandidateVerdictsByType` 按 `vuln_type` 聚合），**反映的是 `ai_dismissed`**——`ai_dismissed` 候选不落 `findings` 表，但每条判驳裁决都落 `candidate_verdicts` 一行；`review_dismissed` 则落 `findings` 表为 `review_status='dismissed'`。`remaining = candidate_count - written_count - dismissed_count`。When `ai_stage_status='pending'` the type is in-progress (reported by `status --per-type`, not as unclassified). Because `--write-json` UPSERTs keyed on `(scan_id, rule_id, file, line, variable)`, a re-write of the same finding updates it in place: the response's `duplicates` count (and each `written[].duplicate: true`) names every idempotent update — never a second row. `function` is NOT part of the key, so a retry that omits it still updates the existing finding. Do NOT inspect the schema or raw-query `findings` to "persist" dismissed; trust `secguard status --per-type --scan-id <id>` (`written_count`/`terminal_state`/`ai_stage_status`) instead.
    If you MUST raw-query, run `secguard schema <table>` first, or use these exact names — never guess:
     - `findings`: `id, rule_id (CWE, e.g. CWE-476 — there is NO type/vuln_type column), severity, status (confirmed|auto-confirmed for new scans; legacy dismissed/suspected rows tolerated but ignored), file_path (NOT file), line_number (NOT line), function_name, variable, properties (JSON: the machine-proof basis `auto_confirm_evidence` / `auto_confirm_hint_tokens` / `auto_confirm_verdict_facts`), scan_id, review_status`
        **终报/问题表查询必须过滤 `review_status`:** an auto-confirmed finding
@@ -763,34 +794,44 @@ claim 行只是 `settlement_stats` 里的 `status='dispatched'` 占位，**不�
    **上报解析与 DB 二次校验 (F5):** For each subagent result, parse by `format_version`
    to know which types it was ASSIGNED, which it reports as FINISHED
    (`processed_types`), and which it reports as ABANDONED (`failed_types`, with a
-   `reason`). Do NOT trust the self-reported `reason` or counts — the LLM
-   misreports (e.g. a Bash-permission misjudgment reported as
-   `api-quota-exhausted`, or dismissed candidates counted into `written`). The DB
-   is the SOLE authority for "did data land"; the subagent's processed/failed
-   split is the only signal for "did it FINISH", because **dismissed candidates
-   are NOT persisted — `written_count < candidate_count` is NORMAL whenever
-   anything was dismissed, never a missing write by itself.** For EVERY assigned
+    `reason`). Do NOT trust the self-reported `reason` or counts — the LLM
+    misreports (e.g. a Bash-permission misjudgment reported as
+    `api-quota-exhausted`, or dismissed candidates counted into `written`). The DB
+    is the SOLE authority for "did data land"; the subagent's processed/failed
+    split is the only signal for "did it FINISH", because **dismissed verdicts
+    live in `candidate_verdicts`, not in `findings` — `written_count <
+    candidate_count` is NORMAL whenever anything was dismissed, never a missing
+    write by itself (check `dismissed_count` and `remaining`/`uncovered_ranges`
+    for the real gap).** For EVERY assigned
    type, run `secguard status --per-type --scan-id <scan_id>` and decide by
    `terminal_state` (the authoritative signal) + `candidate_count` + `written_count`
    (NOT the raw `findings` count, which cannot tell "no candidates" from
    "candidates but never written"):
    - `candidate_count == 0` → the type had nothing to classify → `done` (success), NEVER failed.
-   - Subagent reports the type FINISHED (`processed_types`) → run `--complete-type`
-     for it FIRST (the orchestrator's step, below), then re-read `terminal_state`:
-     `done` = full success — the `candidate_count − written_count` gap is the
-     DISMISSED count (normal, not persisted). NEVER judge this PARTIAL.
-   - Subagent reports the type ABANDONED (`failed_types`), or never reports it
-     finished → decide by DB `written_count`:
-       - `written_count == 0` → FAILED with `reason: "empty-output"` (data did NOT
-         land), regardless of the subagent's self-reported reason.
-       - `written_count > 0` → PARTIAL (context-overflow): `candidate_count −
-         written_count` candidates were never written. Surface the gap in the
-         观察项表 (`| <type> | context-overflow 未落库 N 条 |`), do NOT re-dispatch.
+    - Subagent reports the type FINISHED (`processed_types`) → run `--complete-type`
+      for it FIRST (the orchestrator's step, below), then re-read `terminal_state`:
+      `done` = full success — the `candidate_count − written_count` gap is the
+      DISMISSED count (normal, persisted to `candidate_verdicts`). NEVER judge
+      this PARTIAL. `--complete-type` 的完成判定是 **`unclassified == 0`**（`candidate_count − AI confirmed − dismissed == 0`），子代理写回 verdicts 即构成完成证明，通过时自动结算该类型 claim（不需要 settlement 文件，也不需要 release-claim）。If `--complete-type` returns `status:"incomplete"`, the type
+      is NOT actually finished: re-dispatch exactly the returned
+      `uncovered_ranges` (a sibling range is still running or was lost), then
+      retry after those settle — do NOT force it done.
+    - Subagent reports the type ABANDONED (`failed_types`), or never reports it
+      finished → decide by DB `written_count`:
+        - `written_count == 0` → FAILED with `reason: "empty-output"` (data did NOT
+          land), regardless of the subagent's self-reported reason.
+        - `written_count > 0` → PARTIAL (context-overflow): the uncovered
+          candidates were never written. Re-dispatch exactly the
+          `uncovered_ranges` from `status --per-type` as smaller batches (per
+          the adaptive capacity ceiling, NEVER a full-range retry) until
+          `uncovered_ranges` is empty or the retry budget (3 rounds) is
+          exhausted; only then mark `missing-type` and surface the residual gap
+          in the 观察项表.
 
    **失败降级决策 (F1):** For each FAILED type (`candidate_count > 0 && written_count == 0`):
    - **Recover by re-dispatch first, not by sequential self-classification.** A `written_count == 0` type was almost always NEVER STARTED (a sibling type overflowed the subagent's context before it was reached), so its candidates are untouched. Dispatch ONE fresh single-type subagent per leftover type (single type, FULL candidate range) in a single turn — claim each one first per F13 and spawn only on `claimed:true`; a fresh subagent has a full context window and will not overflow — then re-run the F5 DB check for that type before proceeding. **Do NOT fall back to classifying the leftover types yourself in sequence** — that serial loop is the 3–5-minute wall-clock cost this rule removes. (Guard: a type whose `terminal_state` is already `done` but `written_count == 0` means "all candidates dismissed", which is SUCCESS, not a leftover — do not re-dispatch it.)
-   - Only when a subagent is unavailable (parallel dispatch cannot run) OR the re-dispatched subagent AGAIN lands `written_count == 0`, mark the type `missing-type` with the DB-derived `reason` and CONTINUE. A `0 < written_count < candidate_count` type (mid-type `context-overflow`) is NOT re-dispatched — a re-run overflows again on the same super-large function; surface that gap in the 观察项表 instead.
-   - The orchestrator SHALL NOT run `report --audit` while ANY type still has `candidate_count > 0 && written_count == 0` and is not yet marked `missing-type` — auditing now silently drops those unclassified candidates from `report.md`/`result.sarif` and fakes a complete scan. Mark every such type `missing-type` (after the ONE re-dispatch attempt) BEFORE audit.
+    - Only when a subagent is unavailable (parallel dispatch cannot run) OR the re-dispatched subagent AGAIN lands `written_count == 0`, mark the type `missing-type` with the DB-derived `reason` and CONTINUE. A `0 < written_count < candidate_count` type (mid-type `context-overflow`) is re-dispatched by `uncovered_ranges` (see F5 above), never by FULL candidate range.
+    - The orchestrator SHALL NOT run `report --audit` while ANY type still has `candidate_count > 0 && written_count == 0` and is not yet marked `missing-type` — the engine now HARD-GATES this: `report --audit` refuses (exit 1, `status:"incomplete"`) whenever any type with candidates has `ai_stage_status != "done"`. After marking the residual types `missing-type` (post retry-budget), run the audit as `report --audit --allow-partial ...` so the partial artifacts are explicitly labelled PARTIAL, and list every missing-type in the 观察项表. Never present a --allow-partial report as a complete scan.
    - The orchestrator SHALL NOT finalize while any subagent terminal state is `unknown`.
 
     **Finalize 前置终态确认 (F1):** Before running audit, confirm every subagent terminal state ∈ {success, failed}. If any is `unknown`, run `secguard status --per-type --scan-id <scan_id>` and use the DB as the authority: types with `terminal_state: "done"` are success; `"in-progress"`/`"pending"` are failed (mark missing-type); `"unknown"` types were never dispatched — mark missing-type with `reason: "unknown"`.
@@ -972,11 +1013,11 @@ Selected types: <parsed type filter>
 2. **Per-type batch loop** for each SELECTED type:
    a. `secguard_plan` with `vuln_type=<type>`. On failure, record and continue.
    b. Load ONLY that type's skill (exact name, SecGuard namespace).
-   c. Classify every candidate.
+   c. Classify every candidate. **容量纪律（与 full scan 同一调度器）：该类型 `candidate_count > 20` 时禁止在主上下文逐候选串行分类——按 Batch Capacity Configuration 的 `N_type` 切 range、按 F13 claim、派子代理处理（filtered 与 full scan 共用同一 range 调度）；`candidate_count ≤ 20` 才允许本循环的顺序快路径。**
    d. Cross-reference: ≤5 source-read turns, absolute paths from the candidate
       Location block.
-   e. **WRITE now**: `secguard_report` with `findings` for THIS type, passing
-      `scan_id` + `output_dir`. Every candidate gets a verdict (confirmed /
+    e. **WRITE now**: `secguard_report` with `findings` for THIS type, passing
+      `scan_id` + `output_dir` AND `finalize: false`（每次写入都不得触发逐类型 full audit；终态渲染只在全部类型完成后统一一次 `report --audit`，含 Step 5.5 auto-confirmed review 与 complete-type 派生）。 Every candidate gets a verdict (confirmed /
       dismissed); a candidate you cannot settle from the embedded evidence is read
       first (≤5 source-read turns), then dismissed with a cited reason — never
       dismissed unread. Confirmed findings carry `reasoning` + `exception_check` +
