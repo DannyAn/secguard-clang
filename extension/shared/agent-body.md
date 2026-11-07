@@ -296,13 +296,18 @@ maintains the directory.
   contract for every field. If the caller lives in the named worktree root, say
   so and recommend a complete-program re-scan rather than dismissing blind.
 - **Group verdict (large suspected types: null-deref, uninit, leak).** Rows that
-  share `Function` + the same origin token + `guard@none` are ONE contract
-  question, and same-function rows are CONTIGUOUS in `_index.md` (sorted by
-  file:line), so one block read settles the group (`proc->profile`, `proc->ctx`, `msg->ctx` in the same handler all
-  stand or fall on "can this function's parameter be NULL?"). Decide the group
-  ONCE from the first row, then reuse that reasoning for the rest with the group
-  key in each reason (`group:<fn>:<tier>: <why>`). Do not re-derive the same
-  contract per row — that is the dominant null-deref triage cost.
+  share `Function` + the same origin token + the same `chain-root` + `guard@none`
+  are ONE contract question, and same-function rows are CONTIGUOUS in `_index.md`
+  (sorted by file:line), so one block read settles the group (`proc->profile`,
+  `proc->ctx`, `msg->ctx` in the same handler all stand or fall on "can this
+  function's parameter be NULL?"). The `chain-root` dimension is NOT optional:
+  rows with a different `chain-root@` (or carrying `sibling-callers@`) are NOT
+  one group — a guard on one entry chain does not protect the sinks reached
+  through another, and reusing one chain's guard to dismiss another chain is a
+  recall bug, not a valid group verdict. Decide the group ONCE from the first
+  row, then reuse that reasoning for the rest with the group key in each reason
+  (`group:<fn>:<tier>: <why>`). Do not re-derive the same contract per row —
+  that is the dominant null-deref triage cost.
 - **Cross-function pattern reuse (same tier, same file, same shape).** When
   several functions in the SAME file expose the identical contract shape — a
   callback quartet registered into one `ops` struct (`.hash_func =` /
@@ -469,10 +474,12 @@ MCP tool, fall back to Bash:
    ALREADY exists (a stale `.tmp` file from a prior run, or your own re-write of
    a failed chunk) — it does NOT mean the file is missing or that you must create
    a directory. These `.tmp` JSON files are disposable, so NEVER reuse a path:
-   write each batch to a NEW filename (`<type>.json`, then `<type>-2.json`,
-   `<type>-3.json`, …) and pass that exact path to `--write-json`. If a Write
-   still returns "must read before overwriting", do NOT stop to inspect the
-   directory — just pick the next fresh filename and write again.
+    write each batch to a NEW filename (`<scan_id>-<claim_holder>-<type>-<range>.json`,
+    then `…-2.json`, `…-3.json`, …) and pass that exact path to `--write-json`.
+    The name carries scan_id + claim_holder + type + range so two range workers
+    of the SAME type never fight over `<type>-part1.json`. If a Write
+    still returns "must read before overwriting", do NOT stop to inspect the
+    directory — just pick the next fresh filename and write again.
 
 The `<type>.json` file MUST be a JSON array of objects with EXACTLY these keys
 (the CLI lowercases `severity`/`status`; `confidence` is 0–100):

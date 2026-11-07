@@ -208,12 +208,32 @@ NOT a hardcoded 20. The two constraints, both measurable at scan time:
    (scan-time measurable: `writeTypeIndex` knows both). `skill` + `legend` are the
    type's SKILL.md + the `_index.md` legend, both known at scan time.
 
-`N_type = min(constraint1, constraint2)`. Constraint 1 binds for heavy types
+`N_type = min(constraint1, constraint2, 100)`. Constraint 1 binds for heavy types
 (null-deref/memory-leak: high r → small N); constraint 2 binds for light types
 (divide-by-zero `divisor@bare`: low r → large N would overflow context via the
 index read itself). The prior hardcoded 20 violated neither proof nor measurement
 — it was an unvalidated constant that caused 1980 candidates → 98 batches →
 10 serial waves on a 10-wide host (production: "scanned for a day").
+
+**Evidence volume is part of constraint 2, not a footnote:** the context a batch
+actually consumes is `skill + legend + N × per_candidate_index_token +
+N × r_type × per_evidence_open_bytes`. For a line-level type the Evidence is a
+±8-line window (small); for a whole-function-embedding (heavy) type it is the
+whole function (~200 lines, 10–25× the window), so the heavy type's N must use
+that whole-function byte estimate, and heavy types always get dedicated batches.
+
+**The 12-open budget is per SUBAGENT (per batch), never per type:** a mixed batch
+of 4 types shares ONE pool of 12 Evidence opens (sum over its types), which is
+also what the settlement `evidence_opens` entries and the F6 audit sum over a
+batch's `processed_types` measure. Interpreting it as "12 per type" quadruples
+the intended I/O and wall clock.
+
+**Mandatory-evidence types have a hard capacity floor:** a type whose SKILL
+requires opening Code Context for EVERY candidate before confirming (e.g.
+divide-by-zero's divisor shapes) has effective `r_type = 1`, so its batch is
+capped at 12 from the FIRST run — the `r_type = 0.30` first-run default does not
+apply to it, and its needs_context second pass is re-split by the SAME capacity
+formula (never "one residual batch, once").
 
 `SPLIT_CANDIDATE_THRESHOLD=100` remains a **context** ceiling for ranging: a type
 over 100 is split into ≤100-candidate ranges for context, and EACH range is then
@@ -238,12 +258,12 @@ whole-function-embedding type into a "small" batch to dodge the threshold.
 **Whole-function-embedding (heavy) types — grouping rule:** `integer-overflow` (and
 `argument-type` if it ever embeds whole spans) is a HEAVY skill: its per-candidate
 Evidence is the whole function, and its verdict needs parameter types + entry guard
-+ accumulation chain. A batch containing a heavy type SHALL NOT share with a light
-type AND SHALL NOT share with another heavy type: `MAX_TYPES_PER_BATCH` drops to 2
-when a heavy type is in the batch (one heavy type + at most one light type), and a
-heavy type's candidate ceiling is the context-budget constraint, not the
-evidence-open constraint — its `r_type` understates cost because the index row is a
-single line while the Evidence file is the whole function.
++ accumulation chain. **A heavy type gets a DEDICATED batch: it SHALL NOT share a
+batch with ANY other type (light or heavy).** Its candidate ceiling is the
+context-budget constraint using the WHOLE-FUNCTION evidence volume (see the
+`evidence_bytes` term below), not the evidence-open constraint — its `r_type`
+understates cost because the index row is a single line while the Evidence file
+is the whole function.
 
 The B1 types `stack-address-escape` / `invalid-free` / `switch-fallthrough` are
 LIGHT (line-level ±8-line evidence) and participate in the existing grouping
@@ -252,7 +272,7 @@ new capacity class for an unfamiliar name.
 
 **Pre-dispatch validation (EARS):**
 - If a batch has > `MAX_TYPES_PER_BATCH` (4) types, the orchestrator SHALL split it before dispatching.
-- A batch containing a whole-function-embedding (heavy) type (`integer-overflow`) SHALL NOT share with another heavy type, and its type ceiling drops to 2 (one heavy + at most one light type) — its per-candidate evidence is the whole function, so counting it like a line-level type under-budgets the batch.
+- A batch containing a whole-function-embedding (heavy) type (`integer-overflow`) SHALL contain ONLY that type (a heavy type gets a dedicated batch, never shared with any light or heavy type) — its per-candidate evidence is the whole function, so counting it like a line-level type under-budgets the batch.
 - Where a single type has > `LARGE_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL give that type dedicated subagent(s) — never share it with another type — and split those subagents by the next rule.
 - Where a single type has > `SPLIT_CANDIDATE_THRESHOLD` (100) candidates, split it into ≤100-candidate RANGES for context (pass the candidate # range, e.g. "candidates #1–100 of null-deref"). Then dispatch **each range in ≤`N_type`-candidate subagent batches** where `N_type` is the adaptive per-type ceiling above. Balance ranges so there is no sliver tail (100 + 100 + 1): merge a final range smaller than 5 into its predecessor and re-split evenly. If a super-large function still overflows a batch, surface the tail via the partial-count path, never silently bury it.
 - The orchestrator SHALL validate a batch against the two capacity ceilings (types,
@@ -475,7 +495,7 @@ the type/range is confirmed, still call `--write-json` with the array of
 
 **子代理返回模型 (F7) — 这是"任务卡住不结束/结果丢失/重复下发"的根因，必读：** 三个平台的返回模型不同，绝不可混用：
 
-- **OpenCode（含 opencode-nga）的 `task` 工具是同步的**：一次 `task` 调用的返回值就是该子代理的最终消息（即 `Structured Report Protocol` 的 JSON 块）。**没有**独立的 "task-notification" 事件可等。因此 orchestrator 在同一个回合里连续发出 N 个 `task` 调用后，这些调用会逐一带回结果；拿到结果后 orchestrator 必须**立刻**进入第 5 步 Collect+finalize，**绝不能**在发出 task 后结束回合去"等通知"——那样这个回合就永远停在原地，任务计时一直走。
+- **OpenCode（含 opencode-nga）的 `task` 工具是同步的**：一次 `task` 调用的返回值就是该子代理的最终消息（即 `Structured Report Protocol` 的 JSON 块）。**没有**独立的 "task-notification" 事件可等。因此 orchestrator 在同一个回合里连续发出 N 个 `task` 调用后，这些调用会逐一带回结果。**同步宿主的唯一调度状态机（超 host_max 队列的唯一合规路径）：每波返回后先按 F3a 吸收 settlement 并补派下一波（`in_flight < host_max` 就继续发），只有「积压队列为空 AND in_flight 为 0 AND `status --per-type` 的 `uncovered_ranges` 全空 AND 无 `in_flight_ranges`」全部成立时才进入第 5 步 Collect+finalize。严禁"首波 N 个返回就立刻 finalize"——那是把积压批次流程性放弃；也严禁在发出 task 后结束回合去"等通知"——那样这个回合就永远停在原地，任务计时一直走。**
 - **claude-cac（CodeAgentCLI）的 `Agent` 工具是异步的**：一次 `Agent` 调用返回 `Async agent launched successfully` + `agentId`，子代理在后台运行、完成后才推送通知（生产冒烟实测：返回的是 agentId 而非最终消息）。因此发出 N 个 `Agent` 调用后**不能**按同步假设直接进 Collect——拿不到结果；必须像官方 Claude Code 一样等每个子代理的完成通知（或读 `<tmpdir>/<subagent_id>-report.json` 落盘报告），再进第 5 步。**防御性写法（F7a）**：不同宿主版本/配置下返回形状可能漂移，发出第一个 `Agent`/`task` 后先探测其返回——含 `agentId` 且带 "background/async" 字样即为异步宿主（等通知/落盘），直接返回最终消息 JSON 即为同步宿主（读返回值）；把探测结果记在心里，后续 N−1 个调用与 Collect 阶段照此办理，不要先验地假定同步或异步。
 - **Claude Code（官方）的 `Agent`/`Task` 工具是异步的**：子代理在后台运行，通过 `task_notification` 事件回报终态。orchestrator 等待这些事件，直到每个子代理都到达 terminal state，再进入第 5 步。
 - **DeepSeek Harness（DSH）的 `subagent` 工具是异步的（continuable）**：一次 `subagent` 调用后台启动一个持久子代理并返回子代理 id（默认 `run_in_background: true`，无需显式传），子代理跑完后 runtime 推送 settlement 通知（含结果 + 最终 assistant 消息）。orchestrator 等这些通知，用 `list_agents` 回忆、`send_message` 追问，直到每个子代理都落地，再进第 5 步；**绝不能**在发出 subagent 后结束回合去"空等"（通知会来，但和官方 Claude Code 一样，拿到全部结果后必须在同一回合内 Collect+finalize）。
@@ -707,8 +727,10 @@ claim 行只是 `settlement_stats` 里的 `status='dispatched'` 占位，**不�
     Write findings in ≤200-finding chunks (a ≤100-candidate range is exactly ONE
     chunk — never split a range into multiple files; a ≤200 array of compact
     Source+Hint verdicts stays well under context, so the tail is never dropped).
-    For each chunk: write a FRESH `<scan_dir>/../../.sgre/.tmp/<type>-partN.json`
-    with the Write tool (N increasing; if a Write returns "must read before
+    For each chunk: write a FRESH `<scan_dir>/../../.sgre/.tmp/<scan_id>-<claim_holder>-<type>-<range>-partN.json`
+    with the Write tool (N increasing; the name carries scan_id + claim_holder +
+    type + range, so two range workers of the SAME type can never collide on
+    `<type>-part1.json`; if a Write returns "must read before
     overwriting", do NOT stop to inspect the directory — just use the next fresh
     filename), then persist it immediately before starting the next chunk:
     - If the `secguard_report` MCP tool is in your toolset (OpenCode / OpenCode-NGA),
@@ -990,11 +1012,11 @@ Selected types: <parsed type filter>
 2. **Per-type batch loop** for each SELECTED type:
    a. `secguard_plan` with `vuln_type=<type>`. On failure, record and continue.
    b. Load ONLY that type's skill (exact name, SecGuard namespace).
-   c. Classify every candidate.
+   c. Classify every candidate. **容量纪律（与 full scan 同一调度器）：该类型 `candidate_count > 20` 时禁止在主上下文逐候选串行分类——按 Batch Capacity Configuration 的 `N_type` 切 range、按 F13 claim、派子代理处理（filtered 与 full scan 共用同一 range 调度）；`candidate_count ≤ 20` 才允许本循环的顺序快路径。**
    d. Cross-reference: ≤5 source-read turns, absolute paths from the candidate
       Location block.
-   e. **WRITE now**: `secguard_report` with `findings` for THIS type, passing
-      `scan_id` + `output_dir`. Every candidate gets a verdict (confirmed /
+    e. **WRITE now**: `secguard_report` with `findings` for THIS type, passing
+      `scan_id` + `output_dir` AND `finalize: false`（每次写入都不得触发逐类型 full audit；终态渲染只在全部类型完成后统一一次 `report --audit`，含 Step 5.5 auto-confirmed review 与 complete-type 派生）。 Every candidate gets a verdict (confirmed /
       dismissed); a candidate you cannot settle from the embedded evidence is read
       first (≤5 source-read turns), then dismissed with a cited reason — never
       dismissed unread. Confirmed findings carry `reasoning` + `exception_check` +

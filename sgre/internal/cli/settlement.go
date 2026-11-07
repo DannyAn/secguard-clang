@@ -570,13 +570,28 @@ func settlementAggregate(ctx context.Context, store db.Store, vulnType string) s
 	return agg
 }
 
+// maxBatchCandidates is the hard per-range ceiling from the Batch Capacity
+// Configuration (SPLIT_CANDIDATE_THRESHOLD): no r_type estimate may ever
+// suggest a range larger than this, or a light type ends up with a batch whose
+// index/context no longer fits the subagent.
+const maxBatchCandidates = 100
+
 func suggestedBatchSize(rType float64) int {
-	if rType <= 0 {
+	if rType < 0 {
 		rType = settlementRTypeFallback
+	}
+	if rType == 0 {
+		// Measured zero Evidence opens: the evidence-open constraint is moot
+		// (NOT "no history", which is the 0.30 fallback). Only the hard range
+		// ceiling applies — light types finally get bigger batches.
+		return maxBatchCandidates
 	}
 	n := int(math.Floor(float64(maxEvidenceOpensPerType) / rType))
 	if n < 1 {
 		n = 1
+	}
+	if n > maxBatchCandidates {
+		n = maxBatchCandidates
 	}
 	return n
 }

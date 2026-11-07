@@ -297,7 +297,7 @@ func (s *store) ListSettlementStatsByScan(ctx context.Context, scanID string) ([
 
 func (s *store) ListSettlementStatsByType(ctx context.Context, vulnType string, limit int) ([]*SettlementStat, error) {
 	query := `SELECT id, scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, finished_at, created_at, heartbeat_at
-		 FROM settlement_stats WHERE vuln_type = ? ORDER BY created_at DESC, id DESC`
+		 FROM settlement_stats WHERE vuln_type = ? AND status = 'done' ORDER BY created_at DESC, id DESC`
 	args := []interface{}{vulnType}
 	if limit > 0 {
 		query += ` LIMIT ?`

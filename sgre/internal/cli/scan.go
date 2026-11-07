@@ -1172,8 +1172,10 @@ func runStatusCmd(ctx context.Context, args []string) int {
 		}
 		// A disabled type (type switch) is intentionally absent from scan_stats —
 		// it must NOT be appended as "unknown" (that would read as a failed type
-		// and trigger a false resume/re-dispatch).
-		for _, vt := range planner.ActiveVulnTypes(config.Load().DisabledTypeSet()) {
+		// and trigger a false resume/re-dispatch). The active set is the SAME
+		// one the scan used (disabled AND --type-filter), or a filtered scan's
+		// unselected types would show up as unknown/missing-type.
+		for _, vt := range planner.TypeFilteredActiveVulnTypes(config.Load().DisabledTypeSet(), config.Load().TypeFilterSet()) {
 			if !seen[vt] {
 				statuses = append(statuses, &db.PerTypeStatus{
 					VulnType:       vt,

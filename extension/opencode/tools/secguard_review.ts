@@ -4,16 +4,17 @@ import fs from "fs"
 import { fileURLToPath } from "url"
 import { randomUUID } from "crypto"
 
-// withTimeout bounds a subprocess wait so a stuck secguard CLI fails fast.
-async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
-  })
+// withKill bounds a subprocess wait AND terminates the child on expiry: a bare
+// Promise.race rejected the caller while the CLI kept running (and could still
+// commit), splitting "caller saw failure" from "DB says success".
+async function withKill(proc: { text(): Promise<string>, kill(): void }, ms: number, label: string): Promise<string> {
+  const timer = setTimeout(() => { try { proc.kill() } catch { /* already exited */ } }, ms)
   try {
-    return await Promise.race([p, timeout])
+    return await proc.text()
+  } catch (e: any) {
+    throw new Error(`${label} outcome_unknown after ${ms}ms (subprocess killed; query the DB before retrying): ${e?.message || e}`)
   } finally {
-    if (timer) clearTimeout(timer)
+    clearTimeout(timer)
   }
 }
 
@@ -72,7 +73,7 @@ export default tool({
     const secguardBin = findSecguard(context)
     const sgreDir = path.join(workDir, ".codeagent", "secguard-clang", ".sgre")
     if (!fs.existsSync(sgreDir)) fs.mkdirSync(sgreDir, { recursive: true })
-    const dbPath = path.join(sgreDir, "sgre.db")
+    const dbPath = (args as any).db_path || path.join(sgreDir, "sgre.db")
 
     // Write path: reviews -> --review-json (one batch subprocess).
     if (args.reviews && args.reviews.length > 0) {
@@ -91,11 +92,10 @@ export default tool({
       )
       try {
         const out = (
-          await withTimeout(
+          await withKill(
             Bun.$`${secguardBin} report --db ${dbPath} --review-json ${tmpFile}`
               .cwd(workDir)
-              .quiet()
-              .text(),
+              .quiet(),
             60_000,
             "secguard report --review-json"
           )
@@ -125,11 +125,10 @@ export default tool({
     if (args.limit && args.limit > 0) listCmd.push("--limit", String(args.limit))
     try {
       const out = (
-        await withTimeout(
+        await withKill(
           Bun.$`${listCmd}`
             .cwd(workDir)
-            .quiet()
-            .text(),
+            .quiet(),
           30_000,
           "secguard report --list-auto-confirmed"
         )
