@@ -77,6 +77,8 @@ echo ""
 
 # ── Build binary ──────────────────────────────────────────────
 BINARY_OK=false
+BINARY_FAILED=false
+VERIFY_FAILED=false
 
 build_binary() {
     if [ "$INSTALL_BINARY" = false ]; then
@@ -88,7 +90,8 @@ build_binary() {
     mkdir -p "$BIN_DIR"
 
     if ! command -v go 2>&1 | grep -q go; then
-        echo "[binary] WARNING: Go not found — skipping binary build"
+        echo "[binary] ERROR: Go not found — cannot build the binary"
+        BINARY_FAILED=true
         return
     fi
 
@@ -100,19 +103,51 @@ build_binary() {
     export TMPDIR="$SGRE_DIR/.gotmp"
     mkdir -p "$GOCACHE" "$TMPDIR"
 
+    # Dev build stamp. Plain `go build` leaves Version at its hardcoded fallback
+    # (the VERSION file value, e.g. 0.12.3), so a freshly rebuilt dev binary
+    # still PRINTS the same "0.12.3" — indistinguishable from a stale one by
+    # `secguard --version`. Stamp the build id (timestamp + short SHA) into
+    # Version so freshness is verifiable. The plugin dir/cache path keeps using
+    # $VERSION, so this does not accumulate versioned cache directories.
+    local build_ver="$VERSION"
+    if git -C "$SCRIPT_DIR" rev-parse --short HEAD >/dev/null 2>&1; then
+        build_ver="${VERSION}+dev.$(date +%Y%m%d.%H%M%S).$(git -C "$SCRIPT_DIR" rev-parse --short HEAD)"
+    fi
+
     (
         cd "$SGRE_DIR"
-        CGO_ENABLED=1 go build -o "$BIN_DIR/secguard" ./cmd/secguard 2>&1
+        CGO_ENABLED=1 go build \
+            -ldflags "-X github.com/DannyAn/secguard-clang/internal/cli.Version=${build_ver}" \
+            -o "$BIN_DIR/secguard" ./cmd/secguard 2>&1
     ) && {
         chmod +x "$BIN_DIR/secguard"
         BINARY_OK=true
-        echo "[binary] OK → $BIN_DIR/secguard"
+        echo "[binary] OK → $BIN_DIR/secguard ($build_ver)"
     } || {
-        echo "[binary] WARNING: Build failed (missing deps?)."
+        BINARY_FAILED=true
+        echo "[binary] ERROR: build failed — $BIN_DIR/secguard was NOT updated (still stale)."
         echo "         Install deps: go get modernc.org/sqlite@latest && go mod tidy"
-        echo "         Extension files will still be deployed."
     }
     echo ""
+}
+
+# Put the freshly built canonical binary at <dest>. Prefer a HARD LINK so every
+# install surface shares one inode (a copy upgraded in place then cannot drift);
+# fall back to cp only across filesystems. verify_deploy() later asserts the
+# sha256 of every copy equals the built binary, so any stray/old copy fails the
+# deploy instead of silently surviving on PATH.
+install_binary_copy() {
+    local dest="$1"
+    [ "$BINARY_OK" = true ] || return 0
+    mkdir -p "$(dirname "$dest")"
+    rm -f "$dest"
+    if ln "$BIN_DIR/secguard" "$dest" 2>/dev/null; then
+        echo "[binary] → $dest (hardlink)"
+    else
+        cp "$BIN_DIR/secguard" "$dest"
+        echo "[binary] → $dest (copy)"
+    fi
+    chmod +x "$dest"
 }
 
 # ── Template expansion (provided by lib.sh: expand_includes) ──
@@ -213,13 +248,14 @@ with open(dst, 'w') as f:
 }
 
 # ── Register a Claude Code / Claude CAC plugin (marketplace-style) ──
-# 官方 Claude Code 不会自动扫描 ~/.claude/plugins/<name>/，它按
-# `插件名@marketplace` 解析：plugins/installed_plugins.json（installPath 指向 cache
-# 目录）+ settings.json 的 enabledPlugins + **已注册的 marketplace** 三者缺一不可。
-# 缺 marketplace 时 `claude plugin list` 会报 "Marketplace local-secguard not found"，
-# commands 不加载（skills 仍被 SkillsCollector 直接扫到，所以表现为"技能在、命令不在"）。
-# 本函数补齐前两步，第 3 步（marketplace）由 install_claude_code / install_claude_cac
-# 各自调用 sg_register_marketplace 完成（清单目录名不同：.claude-plugin / .cac-plugin）。
+# 官方 Claude Code 与 claude-cac 都按 `插件名@marketplace` 解析插件，并从已注册的
+# marketplace 目录（marketplace.json 的 source）读取插件文件。installed_plugins.json
+# （installPath 指向 cache）+ settings.json 的 enabledPlugins 只是注册的一半：缺
+# marketplace 注册时报 "Marketplace local-secguard not found"，注册了但目录里缺
+# 插件载荷时报 "Plugin directory not found"——两种断点下 commands 都不加载（skills
+# 仍被直接扫到，所以表现为"技能在、命令不在"）。此函数补齐前两步，marketplace 由
+# install_claude_code / install_claude_cac 各自调用 sg_register_marketplace 完成
+# （清单目录名不同：.claude-plugin / .cac-plugin）。
 register_claude_plugin() {
     local prefix="$1"       # ~/.claude 或 ~/.cac
     local plugin_dir="$2"   # ~/.claude/plugins/secguard-clang
@@ -258,14 +294,15 @@ install_claude_code() {
     install_skills "$CLAUDE_PLUGIN_DIR/skills"
 
     if [ "$BINARY_OK" = true ]; then
-        cp "$BIN_DIR/secguard" "$CLAUDE_PLUGIN_DIR/bin/"
-        chmod +x "$CLAUDE_PLUGIN_DIR/bin/secguard"
+        install_binary_copy "$CLAUDE_PLUGIN_DIR/bin/secguard"
         echo "[claude-code] Binary → $CLAUDE_PLUGIN_DIR/bin/secguard"
     fi
 
     register_claude_plugin "$CLAUDE_BASE" "$CLAUDE_PLUGIN_DIR" "$VERSION"
 
-    # 官方 Claude Code 的 marketplace（清单目录 .claude-plugin）；缺这步 commands 不加载。
+    # 官方 Claude Code 的 marketplace（清单目录 .claude-plugin）——commands/agents
+    # 的实际加载入口，缺这步 commands 不加载；也是 clean_previous_install 删掉载荷
+    # 后必须重建的一步。
     sg_register_marketplace "$CLAUDE_BASE" "$PRODUCT" "$CLAUDE_PLUGIN_DIR" "$VERSION" ".claude-plugin"
 
     echo "[claude-code] Merging permissions into $CLAUDE_BASE/settings.json"
@@ -295,8 +332,7 @@ install_claude_cac() {
     install_skills "$CAC_PLUGIN_DIR/skills"
 
     if [ "$BINARY_OK" = true ]; then
-        cp "$BIN_DIR/secguard" "$CAC_PLUGIN_DIR/bin/"
-        chmod +x "$CAC_PLUGIN_DIR/bin/secguard"
+        install_binary_copy "$CAC_PLUGIN_DIR/bin/secguard"
         echo "[claude-cac] Binary → $CAC_PLUGIN_DIR/bin/secguard"
     fi
 
@@ -381,7 +417,149 @@ else:
 " 2>&1 || echo "  WARNING: Could not merge permissions (python3 failed)"
 }
 
+# ── Clean the previous install ────────────────────────────────
+# Dev/test deploy is a full replacement, not an upgrade. Wipe whatever a
+# previous deploy installed first, so a stale artifact — an old agent
+# definition that shadows the plugin agent, an old cache version, an old
+# extension manifest — cannot survive into the new environment.
+remove_if_present() {
+    if [ -e "$1" ] || [ -L "$1" ]; then
+        rm -rf "$1"
+        echo "  removed: $1"
+        CLEANED_ANY=true
+    fi
+}
+
+clean_previous_install() {
+    CLEANED_ANY=false
+    case "$PLATFORM" in
+        opencode|all)
+            remove_if_present "$OPENCODE_PLUGIN_DIR"
+            remove_if_present "$OPENCODE_EXT_DIR/extension.json"
+            ;;
+    esac
+    case "$PLATFORM" in
+        opencode-nga|all)
+            remove_if_present "$OPENCODE_EXT_DIR"
+            ;;
+    esac
+    case "$PLATFORM" in
+        claude-code|all)
+            remove_if_present "$CLAUDE_PLUGIN_DIR"
+            remove_if_present "$CLAUDE_BASE/plugins/cache/local-secguard/$PRODUCT"
+            # The marketplace tree IS the plugin load path Claude Code reads
+            # (source in marketplace.json), not a stale leftover. Wipe it so
+            # install_claude_code republishes a fresh copy via
+            # sg_register_marketplace — deleting without republishing leaves
+            # `claude plugin list` at "Plugin directory not found" and the
+            # slash commands disappear.
+            remove_if_present "$CLAUDE_BASE/plugins/marketplaces/local-secguard/$PRODUCT"
+            # Standalone copies from a pre-plugin install: the bare agent name
+            # resolves to $CLAUDE_BASE/agents/ ahead of the plugin agent.
+            remove_if_present "$CLAUDE_BASE/agents/security-auditor.md"
+            ;;
+    esac
+    case "$PLATFORM" in
+        claude-cac|all)
+            remove_if_present "$CAC_PLUGIN_DIR"
+            remove_if_present "$CAC_BASE/plugins/cache/local-secguard/$PRODUCT"
+            remove_if_present "$CAC_BASE/agents/security-auditor.md"
+            ;;
+    esac
+    case "$PLATFORM" in
+        dsh|all)
+            remove_if_present "$DSH_PRESET_DIR"
+            ;;
+    esac
+    [ "$CLEANED_ANY" = true ] || echo "  nothing to clean"
+    echo ""
+}
+
+# ── Verify the deployed binary + write a deploy manifest ─────
+# Deterministic, single-source check: every installed bin/secguard copy must be
+# byte-identical (same sha256) to the freshly built canonical binary, and
+# `secguard` must resolve on PATH to that canonical copy. A mismatch fails the
+# deploy — no "installed but stale / shadowed by an old copy" surprises.
+check_bin() {
+    local b="$1" want="$2" got
+    if [ ! -f "$b" ]; then
+        echo "[verify] ✗ MISSING: $b"
+        VERIFY_FAILED=true
+        return
+    fi
+    got=$(sha256_file "$b")
+    if [ "$got" = "$want" ]; then
+        echo "[verify] ✓ $b"
+    else
+        echo "[verify] ✗ DRIFT: $b  sha=${got:0:12} (expected ${want:0:12})"
+        VERIFY_FAILED=true
+    fi
+}
+
+write_deploy_manifest() {
+    local ver="$1" sha="$2" installed="$3"
+    local dir="${XDG_STATE_HOME:-$HOME/.local/state}/secguard"
+    mkdir -p "$dir"
+    python3 - "$dir/deploy.json" "$ver" "$sha" "$PLATFORM" "$BIN_DIR/secguard" "$installed" <<'PY' || true
+import sys, json, datetime
+path, ver, sha, platform, canonical, installed = sys.argv[1:7]
+out = {
+    "product": "secguard-clang",
+    "version": ver,
+    "sha256": sha,
+    "platform": platform,
+    "canonical_bin": canonical,
+    "installed_binaries": [p for p in installed.split() if p],
+    "deployed_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+}
+with open(path, "w") as f:
+    json.dump(out, f, indent=2)
+    f.write("\n")
+print(f"[verify] manifest → {path}")
+PY
+}
+
+verify_deploy() {
+    [ "$BINARY_OK" = true ] || return 0
+    local built_sha built_ver installed="" b resolved
+    built_sha=$(sha256_file "$BIN_DIR/secguard")
+    built_ver=$("$BIN_DIR/secguard" --version 2>/dev/null | head -1 | tr -d '[:space:]')
+    echo "[verify] canonical: $BIN_DIR/secguard  sha=${built_sha:0:12}  version=$built_ver"
+
+    case "$PLATFORM" in
+        claude-code|all)
+            installed="$installed $CLAUDE_PLUGIN_DIR/bin/secguard $CLAUDE_BASE/plugins/cache/local-secguard/$PRODUCT/$VERSION/bin/secguard $CLAUDE_BASE/plugins/marketplaces/local-secguard/$PRODUCT/bin/secguard"
+            ;;
+    esac
+    case "$PLATFORM" in
+        claude-cac|all)
+            installed="$installed $CAC_PLUGIN_DIR/bin/secguard $CAC_BASE/plugins/cache/local-secguard/$PRODUCT/$VERSION/bin/secguard"
+            ;;
+    esac
+
+    # Word-splitting is intentional: these are absolute paths with no spaces.
+    for b in $installed; do
+        check_bin "$b" "$built_sha"
+    done
+
+    resolved=$(command -v secguard 2>/dev/null || true)
+    if [ -z "$resolved" ]; then
+        echo "[verify] ⚠ 'secguard' not on PATH — the AI agent cannot find it"
+        sg_warn_if_not_on_path "$BIN_DIR"
+    elif [ "$resolved" != "$BIN_DIR/secguard" ]; then
+        echo "[verify] ✗ 'secguard' resolves to $resolved, not the canonical $BIN_DIR/secguard"
+        echo "[verify]   a stray copy shadows the fresh binary — remove it or fix PATH order"
+        VERIFY_FAILED=true
+    else
+        echo "[verify] ✓ PATH: secguard → $BIN_DIR/secguard"
+    fi
+
+    write_deploy_manifest "$built_ver" "$built_sha" "$installed"
+    echo ""
+}
+
 # ── Execute ───────────────────────────────────────────────────
+clean_previous_install
 build_binary
 
 case "$PLATFORM" in
@@ -408,6 +586,9 @@ case "$PLATFORM" in
         install_dsh || true
         ;;
 esac
+
+# Verify every install surface before claiming success.
+verify_deploy
 
 # ── Summary ───────────────────────────────────────────────────
 echo "╔══════════════════════════════════════════════════════════╗"
@@ -569,6 +750,8 @@ case "$PLATFORM" in
         check_file "$CLAUDE_PLUGIN_DIR/commands/secguard.md"
         check_file "$CLAUDE_PLUGIN_DIR/agents/security-auditor.md"
         check_file "$CLAUDE_PLUGIN_DIR/hooks/hooks.json"
+        check_file "$CLAUDE_BASE/plugins/marketplaces/local-secguard/.claude-plugin/marketplace.json"
+        check_file "$CLAUDE_BASE/plugins/marketplaces/local-secguard/$PRODUCT/commands/secguard.md"
         check_dir  "$CLAUDE_PLUGIN_DIR/skills/null-deref"
         check_dir  "$CLAUDE_PLUGIN_DIR/skills/buffer-overflow"
         check_dir  "$CLAUDE_PLUGIN_DIR/skills/memory-leak"
@@ -625,4 +808,23 @@ if [ "$all_ok" = true ]; then
     echo "All files deployed successfully."
 else
     echo "WARNING: Some files are missing — check output above."
+fi
+
+# A requested-but-failed binary build must fail the whole deploy: the point of a
+# dev deploy is the latest binary, and its version string alone cannot reveal
+# that it is stale (see the build-stamp note in build_binary).
+if [ "$BINARY_FAILED" = true ]; then
+    echo ""
+    echo "ERROR: binary build FAILED — $BIN_DIR/secguard still holds the PREVIOUS build."
+    exit 1
+fi
+
+# A verification mismatch means the deployed surfaces are not all the freshly
+# built binary (a missing copy, a drifted/old copy, or a shadowing PATH entry).
+# Fail loudly so a stale install is never reported as success.
+if [ "$VERIFY_FAILED" = true ]; then
+    echo ""
+    echo "ERROR: deployment verification FAILED — not every surface carries the freshly built binary."
+    echo "       Resolve the [verify] ✗ lines above, then re-run ./deploy.sh."
+    exit 1
 fi

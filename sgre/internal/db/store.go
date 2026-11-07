@@ -265,6 +265,10 @@ type SettlementStatStore interface {
 	// IncrementSettlementRetry bumps a settlement row's retry_count and re-marks
 	// it dispatched (the executor's retry state machine).
 	IncrementSettlementRetry(ctx context.Context, scanID, vulnType, rangeStr, subagentID string) error
+	// SettleDispatchedClaims closes every leftover 'dispatched' claim placeholder
+	// for one (scan, type) — the complete-type counterpart to
+	// ClaimSettlementRange. Rows already carrying a settled report are untouched.
+	SettleDispatchedClaims(ctx context.Context, scanID, vulnType string) (int64, error)
 	ListSettlementStatsByScan(ctx context.Context, scanID string) ([]*SettlementStat, error)
 	// ListSettlementStatsByType returns the most recent settlements for a vuln
 	// type across scans (newest first), capped at limit (0 = all). It is the

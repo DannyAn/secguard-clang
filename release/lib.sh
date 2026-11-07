@@ -513,12 +513,13 @@ with open(os.path.join(target_dir, 'codeagent-extension.json'), 'w') as f:
 }
 
 # 注册插件所属 marketplace（commands/agents/hooks 的加载入口）。
-# 官方 Claude Code 与 CodeAgent（claude-cac）都按 `插件名@marketplace` 解析插件：
-# 只写 installed_plugins.json + enabledPlugins 不够——marketplace 未注册时
-# `claude plugin list` 报 "Marketplace local-secguard not found"，插件的 commands
-# 全部不加载（skills 走 SkillsCollector 直接扫 installPath，所以表现为"技能在、
-# 命令不在"）。两家的 marketplace 清单目录名不同：CodeAgent 是 .cac-plugin，
-# 官方 Claude Code 是 .claude-plugin。
+# 官方 Claude Code 与 CodeAgent（claude-cac）都按 `插件名@marketplace` 解析插件，
+# 并从 marketplace 目录（source 字段）读取插件文件：只写 installed_plugins.json +
+# enabledPlugins 不够——marketplace 未注册时 `claude plugin list` 报 "Marketplace
+# local-secguard not found"，注册了但目录里没有插件载荷时报 "Plugin directory not
+# found"，两种断点下 commands 都不加载（skills 走 SkillsCollector 直接扫 installPath，
+# 所以表现为"技能在、命令不在"）。两家的 marketplace 清单目录名不同：CodeAgent 是
+# .cac-plugin，官方 Claude Code 是 .claude-plugin。
 # 用法：sg_register_marketplace <prefix> <plugin_name> <plugin_dir> <version> [manifest_dir]
 sg_register_marketplace() {
     local prefix="$1"

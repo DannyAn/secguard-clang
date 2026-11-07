@@ -24,9 +24,13 @@ secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_p
 ```
 
 `<tmpdir>` is `<project>/.codeagent/secguard-clang/.sgre/.tmp/` — the project's
-own runtime temp dir, NOT `/tmp`. The scan step creates it and clears it at the
-start of each run, so you can write one JSON file per type there and never worry
-about cleanup (stale files from a previous run are removed by the next scan).
+own runtime temp dir, NOT `/tmp`. The scan step creates it if absent but does
+**not** clear it at scan start (a crashed scan's settlement payloads are kept for
+inspection/replay — issue #238 §3.3). So never assume a `<type>.json` path is
+free: write every batch to a fresh, scan-unique filename
+(`<type>-<scan_suffix>.json`) and pass that exact path to `--write-json`. If a
+Write returns "must read before overwriting", just pick the next fresh filename —
+do not stop to inspect or delete the directory.
 This path is the same on Windows and macOS/Linux.
 
 `<db_path>` is `<project>/.codeagent/secguard-clang/.sgre/sgre.db` — the SAME
@@ -511,7 +515,17 @@ claim 行只是 `settlement_stats` 里的 `status='dispatched'` 占位，**不�
    the same turn so they run concurrently (F3), then backfill the queue per F3a
    as each completion arrives:
    - Claude Code (official): the `Agent` tool (the subagent-dispatch tool; older
-     versions name it `Task`) with `subagent_type: "security-auditor"` (bare name).
+     versions name it `Task`). Prefer the plugin-namespaced
+     `<plugin>:security-auditor` (e.g. `secguard-clang:security-auditor`) whenever
+     it appears in the available-agents list; fall back to the bare
+     `security-auditor` only when the namespaced one is absent. **Why:** a
+     pre-plugin install left a bare-name copy at `~/.claude/agents/security-auditor.md`,
+     and the bare name resolves to that copy ahead of the plugin agent — a stale
+     legacy file (old `maxTurns` 30, no `Write`/`Skill` tools, no settlement
+     contract) then silently caps every batch and loses the self-measured AI
+     duration. Before the first dispatch, sanity-check the resolved agent:
+     `maxTurns` must be ≥ 60 and its tools must include `Write` and `Skill`; if
+     not, switch to the namespaced agent and continue (F10).
    - CodeAgentCLI (claude-cac): the same `Agent`/`Task` tool, but this host
      registers plugin agents under their plugin namespace — dispatch with
      `subagent_type: "secguard-clang:security-auditor"`.
