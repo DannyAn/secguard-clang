@@ -48,6 +48,15 @@ func NewIndexer(store db.Store, logger *log.Logger) *Indexer {
 	}
 }
 
+// Close releases the indexer's own tree-sitter parser (a cgo object). It used
+// to have no close path at all — one TSParser leaked per scan, inconsistent
+// with the borrow/Release discipline every other consumer follows.
+func (idx *Indexer) Close() {
+	if idx != nil && idx.parser != nil {
+		idx.parser.CloseAll()
+	}
+}
+
 // SetExcludeDirs overrides the directory basenames skipped during the walk.
 // An empty slice means "exclude nothing"; a nil slice keeps the default set.
 func (idx *Indexer) SetExcludeDirs(dirs []string) {
@@ -158,7 +167,16 @@ func (idx *Indexer) detectDeletedFiles(ctx context.Context, result *IndexResult)
 	}
 }
 
+// maxIndexedFileBytes caps a single source file's read+parse. A machine-generated
+// multi-hundred-MB .c file used to be read whole and parsed with no size or time
+// budget, OOM-killing or stalling the entire scan; oversized files are skipped
+// (counted in files_skipped) instead of taking the repo down with them.
+const maxIndexedFileBytes = 16 * 1024 * 1024
+
 func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *IndexResult) error {
+	if info, err := os.Stat(filePath); err == nil && info.Size() > maxIndexedFileBytes {
+		return fmt.Errorf("file exceeds max size (%d > %d bytes)", info.Size(), maxIndexedFileBytes)
+	}
 	source, err := os.ReadFile(filePath)
 	if err != nil {
 		return fmt.Errorf("read file: %w", err)

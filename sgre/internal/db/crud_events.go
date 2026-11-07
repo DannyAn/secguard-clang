@@ -49,7 +49,13 @@ func (s *store) InsertEventBatch(ctx context.Context, events []BatchEvent) (int,
 		}
 		return nil
 	})
-	return inserted, err
+	if err != nil {
+		// The whole batch ROLLED BACK: reporting the pre-rollback counter here
+		// used to claim k-1 events landed when in fact 0 did, corrupting the
+		// event-loss accounting the detectors_done bitset relies on.
+		return 0, err
+	}
+	return inserted, nil
 }
 
 func (s *store) GetEventByID(ctx context.Context, id int64) (*SecurityEvent, error) {

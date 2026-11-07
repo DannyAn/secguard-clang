@@ -804,7 +804,8 @@ func splitBySuspicion(candidates []planner.EvidenceItem) (confirmed, needsReview
 // aborts the batch (silent false-negatives are not acceptable here), so the
 // caller can fall the remainder back to AI review.
 func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType string, candidates []planner.EvidenceItem, logger *log.Logger) (written int, unwritten []planner.EvidenceItem, err error) {
-	for i, c := range candidates {
+	var pending []*db.Finding
+	for _, c := range candidates {
 		cwe := report.VulnToCWEForCategory(vulnType, c.Category)
 		if c.Target.File == "" || c.Target.Line <= 0 {
 			// A candidate with no location cannot be written to findings (the
@@ -875,11 +876,25 @@ func autoConfirmFindings(ctx context.Context, store db.Store, scanID, vulnType s
 		// on the uninit tier), so a machine verdict must NOT self-mark reviewed.
 		f.ReviewStatus = ""
 		f.ReviewReasoning = ""
-		if _, err := store.UpsertFinding(ctx, f); err != nil {
-			return written, append(unwritten, candidates[i:]...), fmt.Errorf("upsert auto-confirmed %s:%d: %w", c.Target.File, c.Target.Line, err)
-		}
-		written++
+		pending = append(pending, f)
 	}
+	// One immediate transaction for the whole auto-confirm set: the old
+	// per-finding autocommit paid one BEGIN/COMMIT + WAL record + write-lock
+	// round-trip per row, which dominated the scan tail on repos with tens of
+	// thousands of machine-proved candidates. A mid-batch failure rolls back
+	// everything and returns the FULL candidate list for AI review (the
+	// per-row error already carries its location).
+	if err := store.WithImmediateTx(ctx, func(tx db.Store) error {
+		for _, f := range pending {
+			if _, err := tx.UpsertFinding(ctx, f); err != nil {
+				return fmt.Errorf("upsert auto-confirmed %s:%d: %w", f.FilePath, f.LineNumber, err)
+			}
+		}
+		return nil
+	}); err != nil {
+		return 0, append(unwritten, candidates...), err
+	}
+	written = len(pending)
 	return written, unwritten, nil
 }
 
@@ -1224,9 +1239,9 @@ func runStatusCmd(ctx context.Context, args []string) int {
 		allEvents += n
 	}
 
-	findings, err := store.ListFindings(ctx)
-	if err != nil {
-		WriteErrorJSON(fmt.Sprintf("failed to list findings: %v", err))
+	var findingsCount int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM findings`).Scan(&findingsCount); err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to count findings: %v", err))
 		return 1
 	}
 
@@ -1237,7 +1252,7 @@ func runStatusCmd(ctx context.Context, args []string) int {
 		"files_indexed":     len(files),
 		"functions_indexed": len(funcs),
 		"security_events":   allEvents,
-		"findings_count":    len(findings),
+		"findings_count":    findingsCount,
 	}
 
 	jsonBytes, err := json.MarshalIndent(output, "", "  ")

@@ -1082,7 +1082,28 @@ func runReportCmd(ctx context.Context, args []string) int {
 		reviewed := make([]map[string]interface{}, 0, len(inputs))
 		reviewedForSync := []reviewInput{}
 		var errs []string
-		err = store.WithTx(ctx, func(tx db.Store) error {
+		// Pre-fetch the re-reviewable id set OUTSIDE the transaction: a deferred
+		// WithTx built a read snapshot first and then upgraded to writes, which
+		// returns SQLITE_BUSY_SNAPSHOT under concurrent writers (and the busy
+		// handler does not retry that class). BEGIN IMMEDIATE takes the write
+		// lock once, and the transaction body is now pure UPDATEs.
+		allowed := map[int64]bool{}
+		rows, qerr := store.DB().QueryContext(ctx, `SELECT id FROM findings WHERE status = 'auto-confirmed'`)
+		if qerr != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to load auto-confirmed ids: %v", qerr))
+			return 1
+		}
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				WriteErrorJSON(fmt.Sprintf("failed to scan auto-confirmed id: %v", err))
+				return 1
+			}
+			allowed[id] = true
+		}
+		rows.Close()
+		err = store.WithImmediateTx(ctx, func(tx db.Store) error {
 			for i, in := range inputs {
 				// A misspelled/omitted key decodes to the zero value, so name the
 				// offending entry position and the expected keys instead of
@@ -1104,13 +1125,8 @@ func runReportCmd(ctx context.Context, args []string) int {
 				}
 				// Only machine auto-confirmed findings are re-reviewable; a verdict
 				// for any other finding id must not overwrite its status (RV-04).
-				target, gerr := tx.GetFindingByID(ctx, in.ID)
-				if gerr != nil || target == nil || target.Status != db.StatusAutoConfirmed {
-					status := "<missing>"
-					if target != nil {
-						status = target.Status
-					}
-					errs = append(errs, fmt.Sprintf("finding %d — not an auto-confirmed finding (status=%q); re-review only applies to auto-confirmed findings", in.ID, status))
+				if !allowed[in.ID] {
+					errs = append(errs, fmt.Sprintf("finding %d — not an auto-confirmed finding; re-review only applies to auto-confirmed findings", in.ID))
 					continue
 				}
 				if uerr := tx.UpdateFindingReview(ctx, in.ID, in.ReviewStatus, in.ReviewReasoning); uerr != nil {
@@ -1185,9 +1201,11 @@ func runReportCmd(ctx context.Context, args []string) int {
 			WriteErrorJSON(fmt.Sprintf("failed to list scan stats: %v", err))
 			return 1
 		}
-		scanFindings, err := store.ListFindingsByScanID(ctx, scanID)
+		verdictRows, err := store.DB().QueryContext(ctx,
+			`SELECT vuln_type, status, COALESCE(review_status, ''), COUNT(*) FROM findings WHERE scan_id = ? GROUP BY vuln_type, status, review_status`,
+			scanID)
 		if err != nil {
-			WriteErrorJSON(fmt.Sprintf("failed to list findings: %v", err))
+			WriteErrorJSON(fmt.Sprintf("failed to count verdicts by type: %v", err))
 			return 1
 		}
 		dismissedByType, err := store.CountCandidateVerdictsByType(ctx, scanID)
@@ -1196,10 +1214,13 @@ func runReportCmd(ctx context.Context, args []string) int {
 		}
 		type tally struct{ confirmed, auto int }
 		byType := map[string]*tally{}
-		for _, f := range scanFindings {
-			vt := f.VulnType
-			if vt == "" {
-				vt = planner.TypeForCWE(f.RuleID)
+		for verdictRows.Next() {
+			var vt, status, reviewStatus string
+			var n int
+			if err := verdictRows.Scan(&vt, &status, &reviewStatus, &n); err != nil {
+				verdictRows.Close()
+				WriteErrorJSON(fmt.Sprintf("failed to scan verdict tally: %v", err))
+				return 1
 			}
 			if vt == "" {
 				continue
@@ -1207,15 +1228,18 @@ func runReportCmd(ctx context.Context, args []string) int {
 			if byType[vt] == nil {
 				byType[vt] = &tally{}
 			}
-			switch f.FinalStatus() {
-			case "confirmed":
-				if f.Status == db.StatusAutoConfirmed {
-					byType[vt].auto++
-				} else {
-					byType[vt].confirmed++
-				}
+			// Mirror Finding.FinalStatus(): a review dismissal drops the row
+			// from the confirmed set; an inconclusive review keeps first-pass.
+			if reviewStatus == "dismissed" || reviewStatus == "suspected-kept" || reviewStatus == "false_positive" {
+				continue
+			}
+			if status == db.StatusAutoConfirmed {
+				byType[vt].auto += n
+			} else if status == "confirmed" || reviewStatus == "confirmed" || reviewStatus == "ai_confirmed" {
+				byType[vt].confirmed += n
 			}
 		}
+		verdictRows.Close()
 		rows := make([]map[string]interface{}, 0, len(stats))
 		for _, st := range stats {
 			t := byType[st.VulnType]
@@ -2052,17 +2076,13 @@ func syncPerFindingAfterWrite(args []string, finding *db.Finding) perFindingOutc
 // countFindingsWithoutScanID reports how many findings cannot be placed in any
 // scan's findings/ directory because they carry no scan_id.
 func countFindingsWithoutScanID(ctx context.Context, store db.Store) (int, error) {
-	all, err := store.ListFindings(ctx)
-	if err != nil {
-		return 0, err
-	}
-	n := 0
-	for _, f := range all {
-		if f.ScanID == "" {
-			n++
-		}
-	}
-	return n, nil
+	// A COUNT must not materialize the whole findings table (21 columns incl.
+	// evidence/reasoning) just to be len()'d — on a large repo this single
+	// polling query allocated hundreds of MB and contended with 8 writers.
+	var n int
+	err := store.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM findings WHERE scan_id IS NULL OR scan_id = ''`).Scan(&n)
+	return n, err
 }
 
 // unreviewedAutoConfirmedCount returns how many findings for scanID carry a
@@ -2070,11 +2090,11 @@ func countFindingsWithoutScanID(ctx context.Context, store db.Store) (int, error
 // finalize step, so a non-zero count means the review pass has not covered every
 // machine verdict — a wrong auto-confirm would otherwise be reported as-is.
 func unreviewedAutoConfirmedCount(ctx context.Context, store db.Store, scanID string) (int, error) {
-	findings, err := store.ListAutoConfirmedForReview(ctx, scanID, nil, 0)
-	if err != nil {
-		return 0, err
-	}
-	return len(findings), nil
+	var n int
+	err := store.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM findings WHERE scan_id = ? AND status = 'auto-confirmed' AND (review_status IS NULL OR review_status = '')`,
+		scanID).Scan(&n)
+	return n, err
 }
 
 // auditNoticeFields adds the completeness notices shared by both `report --audit`

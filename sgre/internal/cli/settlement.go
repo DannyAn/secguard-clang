@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -76,13 +77,31 @@ func normalizeSettlementRange(r string) string {
 // live claim. A report carrying needs_context lands its ranges as 'partial'
 // (not 'done'), so an unfinished range never reads as covered.
 func persistSettlementReports(ctx context.Context, store db.Store, res reportsResult) error {
-	// A `status --reports` poll usually carries nothing new to absorb; avoid
-	// taking the write lock for a pure read.
-	hasValid := false
+	// Incremental absorption: the cursor records each file's absorbed mtime, so
+	// a poll whose files have not changed takes NO write lock and rewrites
+	// nothing. The old every-poll full re-UPSERT of all history turned a long
+	// scan's 30s liveness poll into a write storm against 8 concurrent
+	// --write-json workers. A file whose mtime moved is re-absorbed (its
+	// settlement is authoritative), an unchanged file is skipped entirely —
+	// including lease renewal, which must only happen on real new evidence.
+	cursor := readAbsorbCursor(ctx, store)
+	changed := make([]subagentReport, 0, len(res.Reports))
 	for _, rep := range res.Reports {
 		if rep.ScanID == "" {
 			continue
 		}
+		if rep.mtime.IsZero() || cursor[rep.File] != rep.mtime.UnixNano() {
+			changed = append(changed, rep)
+		}
+	}
+	if len(changed) == 0 {
+		return nil
+	}
+	res.Reports = changed
+	// A `status --reports` poll usually carries nothing new to absorb; avoid
+	// taking the write lock for a pure read.
+	hasValid := false
+	for _, rep := range res.Reports {
 		if rep.Valid || !rep.mtime.IsZero() {
 			hasValid = true
 			break
@@ -198,8 +217,33 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 				}
 			}
 		}
-		return nil
+		for _, rep := range res.Reports {
+			if !rep.mtime.IsZero() {
+				cursor[rep.File] = rep.mtime.UnixNano()
+			}
+		}
+		return writeAbsorbCursor(ctx, tx, cursor)
 	})
+}
+
+// readAbsorbCursor loads the (path -> absorbed mtime unix-nano) cursor that
+// makes settlement absorption incremental (see persistSettlementReports).
+func readAbsorbCursor(ctx context.Context, store db.Store) map[string]int64 {
+	cursor := map[string]int64{}
+	raw, ok, err := store.GetMeta(ctx, "settlement_absorb_cursor")
+	if err != nil || !ok || raw == "" {
+		return cursor
+	}
+	_ = json.Unmarshal([]byte(raw), &cursor)
+	return cursor
+}
+
+func writeAbsorbCursor(ctx context.Context, store db.Store, cursor map[string]int64) error {
+	data, err := json.Marshal(cursor)
+	if err != nil {
+		return fmt.Errorf("marshal settlement absorb cursor: %w", err)
+	}
+	return store.SetMeta(ctx, "settlement_absorb_cursor", string(data))
 }
 
 // aiStageTiming is the AI-classification stage as the ENGINE measured it, from

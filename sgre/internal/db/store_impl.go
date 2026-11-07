@@ -70,14 +70,24 @@ func (s *store) WithImmediateTx(ctx context.Context, fn func(Store) error) error
 	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
 		return fmt.Errorf("db: with immediate tx: begin: %w", err)
 	}
+	// Any exit path — error, early return, or PANIC — must roll the transaction
+	// back. A bare manual BEGIN/COMMIT without this defer returned the still
+	// open write transaction to the pool on panic, and every later statement
+	// on that connection then failed with "database is locked", hiding the
+	// root cause behind a busy error.
+	done := false
+	defer func() {
+		if !done {
+			_, _ = conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
+		}
+	}()
 	txStore := &store{db: s.db, exec: conn}
 	if err := fn(txStore); err != nil {
-		_, _ = conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
 		return err
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		_, _ = conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
 		return fmt.Errorf("db: with immediate tx: commit: %w", err)
 	}
+	done = true
 	return nil
 }

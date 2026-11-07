@@ -129,6 +129,7 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	var timings pipelineTimings
 
 	idx := indexer.NewIndexer(store, logger)
+	defer idx.Close()
 	if excludeDirs != nil {
 		idx.SetExcludeDirs(excludeDirs)
 	}

@@ -96,9 +96,15 @@ func isRegularFile(path string) bool {
 type sourceLineCache struct {
 	mu    sync.Mutex
 	lines map[string][]string // resolved abs path -> all lines (nil = unreadable)
+	order []string            // LRU of cached paths (oldest first)
+	// maxEntries bounds how many whole files the cache may hold. The old
+	// unbounded map pinned the ENTIRE repo's source (as string + []string)
+	// alongside the parser's AST copy and the ReadFile temporary — three
+	// copies of every candidate file for the rest of the process.
+	maxEntries int
 }
 
-var globalSourceLineCache = &sourceLineCache{lines: map[string][]string{}}
+var globalSourceLineCache = &sourceLineCache{lines: map[string][]string{}, maxEntries: 512}
 
 // fileLines returns the whole file's lines, cached by resolved absolute path. A
 // nil result means the file could not be read (and that miss is cached too, so a
@@ -107,11 +113,14 @@ func (c *sourceLineCache) fileLines(path string) []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if l, ok := c.lines[path]; ok {
+		c.touchLocked(path)
 		return l
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		c.lines[path] = nil
+		c.touchLocked(path)
+		c.evictIfNeededLocked()
 		return nil
 	}
 	all := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
@@ -119,7 +128,27 @@ func (c *sourceLineCache) fileLines(path string) []string {
 		all = all[:n-1]
 	}
 	c.lines[path] = all
+	c.touchLocked(path)
+	c.evictIfNeededLocked()
 	return all
+}
+
+func (c *sourceLineCache) touchLocked(path string) {
+	for i, p := range c.order {
+		if p == path {
+			c.order = append(c.order[:i], c.order[i+1:]...)
+			break
+		}
+	}
+	c.order = append(c.order, path)
+}
+
+func (c *sourceLineCache) evictIfNeededLocked() {
+	for c.maxEntries > 0 && len(c.lines) > c.maxEntries && len(c.order) > 0 {
+		oldest := c.order[0]
+		c.order = c.order[1:]
+		delete(c.lines, oldest)
+	}
 }
 
 // readCodeContext reads the ±ctx line window around line. It returns nil when

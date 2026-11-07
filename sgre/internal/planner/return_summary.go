@@ -91,14 +91,26 @@ func (r *returnSummaryResolver) Close() {
 // across files (the common case — a shared header) survives the merge; a
 // symbol with conflicting values (nonZero in one TU, zero in another) is
 // dropped so neither NonZero nor IsZero reports it.
+//
+// The parse is STREAMING: each file's tree is released right after its
+// constants are collected. The old rootForFile path pinned every file's AST
+// (and its source bytes) in the cache for the resolver's whole lifetime, so a
+// single RangeFilter.Apply pulled the ENTIRE repository into memory and kept
+// it there — the large-repo OOM this streaming pass removes.
 func (r *returnSummaryResolver) buildGlobalConstants() *parser.ConstantEnv {
 	env := parser.NewConstantEnv()
 	for _, file := range r.fileByID {
-		root := r.cache.rootForFile(file)
-		if root.Kind() == "" {
+		root, _, _, tree := functionBodiesForFile(r.cache.parser, file)
+		if tree != nil {
+			if root.Kind() != "" {
+				env.Merge(parser.CollectConstantSymbols(root))
+			}
+			tree.Release()
 			continue
 		}
-		env.Merge(parser.CollectConstantSymbols(root))
+		if root.Kind() != "" {
+			env.Merge(parser.CollectConstantSymbols(root))
+		}
 	}
 	return env
 }
