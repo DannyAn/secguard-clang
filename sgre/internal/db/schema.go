@@ -128,20 +128,12 @@ CREATE TABLE IF NOT EXISTS graph_edges (
 
 CREATE TABLE IF NOT EXISTS security_events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_type  TEXT NOT NULL CHECK (event_type IN (
-        'NULL_VALUE', 'DEREFERENCE', 'NULL_GUARD',
-        'MEMORY_ALLOC', 'MEMORY_RELEASE',
-        'RESOURCE_ACQUIRE', 'RESOURCE_RELEASE',
-        'VARIABLE_DECLARE', 'VALUE_USE', 'VALUE_INIT',
-        'BUFFER_ACCESS', 'INTEGER_OP', 'INJECTION',
-        'USE_AFTER_FREE', 'DOUBLE_FREE', 'FORMAT_STRING',
-        'INTEGER_OVERFLOW', 'RACE_CONDITION', 'HARDCODED_SECRET',
-        'DEADLOCK', 'CRYPTO_MISUSE',
-        'DIVIDE_BY_ZERO', 'UNCHECKED_RETURN', 'PATH_TRAVERSAL',
-        'SIZEOF_MISUSE', 'SIGNED_COMPARE', 'SIGNAL_HANDLER', 'DANGEROUS_FUNCTION',
-        'ARGUMENT_TYPE_MISMATCH', 'DATA_REPRESENTATION_MISMATCH', 'CONTRACT_GAP',
-        'STACK_ESCAPE', 'INVALID_FREE', 'SWITCH_FLOW', 'UNBOUNDED_LENGTH'
-    )),
+    -- No enumerated constraint on event_type: it is an internal vocabulary
+    -- owned by the detector registry, and an enumerated constraint turns every
+    -- newly registered event type into a hard write failure on large repos
+    -- with anything unusual in them. The registry validates semantics, not
+    -- the storage.
+    event_type  TEXT NOT NULL,
     entity_id   INTEGER,
     location_id INTEGER,
     properties  TEXT,
@@ -375,7 +367,7 @@ CREATE TABLE IF NOT EXISTS settlement_stats (
     source_reads    INTEGER NOT NULL DEFAULT 0,
     repo_greps      INTEGER NOT NULL DEFAULT 0,
     needs_context   INTEGER NOT NULL DEFAULT 0,
-    status          TEXT NOT NULL DEFAULT 'done' CHECK (status IN ('dispatched', 'done', 'failed', 'partial', 'released')),
+    status          TEXT NOT NULL DEFAULT 'done',
     heartbeat_at    INTEGER,
     retry_count     INTEGER NOT NULL DEFAULT 0,
     wall_ms         INTEGER,
@@ -422,57 +414,8 @@ CREATE INDEX IF NOT EXISTS idx_scan_stats_vuln_type ON scan_stats(vuln_type);
 CREATE INDEX IF NOT EXISTS idx_scan_runs_created_at ON scan_runs(created_at);
 `
 
-// ensureUpgradableTables drops ONLY the tables whose CHECK constraints / columns
-// have drifted past what the current detectors and settlement lifecycle emit.
-// A missing table is a no-op (SchemaDDL creates it); an out-of-date one is
-// dropped and recreated by SchemaDDL, never silently blocking event writes.
-func ensureUpgradableTables(ctx context.Context, db *sql.DB) error {
-	checks := []struct {
-		table    string
-		required []string
-	}{
-		{"security_events", []string{"STACK_ESCAPE", "INVALID_FREE", "SWITCH_FLOW", "UNBOUNDED_LENGTH"}},
-		{"settlement_stats", []string{"'partial'", "'released'", "heartbeat_at"}},
-	}
-	for _, chk := range checks {
-		var ddl string
-		err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, chk.table).Scan(&ddl)
-		if err == sql.ErrNoRows {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		drifted := false
-		for _, want := range chk.required {
-			if !strings.Contains(ddl, want) {
-				drifted = true
-				break
-			}
-		}
-		if drifted {
-			if _, err := db.ExecContext(ctx, `DROP TABLE IF EXISTS `+chk.table); err != nil {
-				return fmt.Errorf("drop drifted table %s: %w", chk.table, err)
-			}
-		}
-	}
-	return nil
-}
-
 func InitSchema(ctx context.Context, db *sql.DB) error {
-	// CREATE TABLE IF NOT EXISTS never updates an EXISTING table's CHECK
-	// constraint, so an older sgre.db keeps the older enum forever: a detector
-	// emitting a newly registered event_type (STACK_ESCAPE / INVALID_FREE /
-	// SWITCH_FLOW / UNBOUNDED_LENGTH) then fails EVERY event batch with
-	// "CHECK constraint failed", and the settlement status enum
-	// (partial/released) plus heartbeat_at column has the same drift. Detect
-	// that drift up front and drop just those two tables so SchemaDDL recreates
-	// them with the current definition. Functions/files/graph/findings rows are
-	// untouched; detectors re-run and repopulate security_events, and the
-	// settlement ledger is rebuilt by the next orchestration round.
-	if err := ensureUpgradableTables(ctx, db); err != nil {
-		return fmt.Errorf("db: init schema: upgrade drifted tables: %w", err)
-	}
+
 	if _, err := db.ExecContext(ctx, SchemaDDL); err != nil {
 		return fmt.Errorf("db: init schema: exec ddl: %w", err)
 	}
