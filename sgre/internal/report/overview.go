@@ -248,7 +248,10 @@ func (o ScanOverview) VerdictMarkdown() string {
 func (o ScanOverview) CandidateMarkdown() string {
 	var b strings.Builder
 	b.WriteString("## Result Summary\n\n")
-	awaiting := o.Candidates - o.AutoConfirmed
+	// Candidates is ALREADY the needs-review count (auto-confirmed rows were
+	// excluded at plan time) — subtracting AutoConfirmed again here used to
+	// under-report the AI's actual workload.
+	awaiting := o.Candidates
 	if awaiting < 0 {
 		awaiting = 0
 	}

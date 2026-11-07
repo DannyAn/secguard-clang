@@ -506,6 +506,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 				if _, verr := store.UpsertCandidateVerdict(ctx, &db.CandidateVerdict{
 					ScanID:       finding.ScanID,
 					VulnType:     dismissedType,
+					RuleID:       strings.ToUpper(strings.TrimSpace(finding.RuleID)),
 					FilePath:     finding.FilePath,
 					LineNumber:   finding.LineNumber,
 					FunctionName: finding.FunctionName,
@@ -722,6 +723,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 						verdict: &db.CandidateVerdict{
 							ScanID:       scanID,
 							VulnType:     dismissedType,
+							RuleID:       strings.ToUpper(strings.TrimSpace(in.RuleID)),
 							FilePath:     resolveFindingFilePath(ctx, store, in.File, allFiles),
 							LineNumber:   in.Line,
 							FunctionName: in.Function,
@@ -764,7 +766,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 				vt = planner.TypeForCWE(in.RuleID)
 			}
 			f := &db.Finding{
-				RuleID:         in.RuleID,
+				RuleID:         cweNorm,
 				VulnType:       vt,
 				Severity:       severity,
 				Confidence:     confidence,
@@ -1222,7 +1224,10 @@ func runReportCmd(ctx context.Context, args []string) int {
 				confirmed, auto = t.confirmed, t.auto
 			}
 			dismissed := dismissedByType[st.VulnType]
-			remaining := st.FinalCount - confirmed - auto - dismissed
+			// final_count counts needs-review candidates only (auto-confirmed
+			// rows were never part of it) — subtracting auto here double-counted
+			// the machine verdicts and could pin remaining at 0 prematurely.
+			remaining := st.FinalCount - confirmed - dismissed
 			if remaining < 0 {
 				remaining = 0
 			}
@@ -2007,7 +2012,15 @@ func syncPerFindingAfterWrite(args []string, finding *db.Finding) perFindingOutc
 		return perFindingOutcome{Action: "skipped", Warning: fmt.Sprintf(
 			"per-finding markdown not written: scan dir %s is not readable (%v) — pass --output-dir pointing at the scan directory", scanDir, err)}
 	}
-	vulnType := planner.TypeForCWE(finding.RuleID)
+	vulnType := finding.VulnType
+	if vulnType != "" {
+		if _, err := planner.GetVulnTypeSpec(vulnType); err != nil {
+			vulnType = ""
+		}
+	}
+	if vulnType == "" {
+		vulnType = planner.TypeForCWE(finding.RuleID)
+	}
 	if vulnType == "" {
 		return perFindingOutcome{Action: "skipped", Warning: fmt.Sprintf(
 			"per-finding markdown not written: rule_id %q maps to no pipeline vulnerability type", finding.RuleID)}

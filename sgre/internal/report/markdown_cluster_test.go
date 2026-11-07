@@ -61,11 +61,11 @@ func TestWriteTypeIndexClustersByFunction(t *testing.T) {
 			continue
 		}
 		cells := strings.Split(line, "|")
-		if len(cells) < 9 {
+		if len(cells) < 10 {
 			continue
 		}
 		funcs = append(funcs, strings.TrimSpace(cells[2]))
-		evidence = append(evidence, strings.Trim(strings.TrimSpace(cells[8]), "`"))
+		evidence = append(evidence, strings.Trim(strings.TrimSpace(cells[9]), "`"))
 	}
 
 	want := []string{"funcA", "funcA", "funcB", "funcB"}

@@ -12,12 +12,14 @@ import (
 func (s *store) GetSettlementStat(ctx context.Context, scanID, vulnType, rangeStr string) (*SettlementStat, error) {
 	st := &SettlementStat{}
 	var wallMS, queueMS, workMS, finishedAt sql.NullInt64
+	var heartbeatAt sql.NullInt64
 	err := s.exec.QueryRowContext(ctx,
-		`SELECT id, scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, finished_at, created_at
+		`SELECT id, scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, finished_at, created_at, heartbeat_at
 		 FROM settlement_stats WHERE scan_id = ? AND vuln_type = ? AND range_str = ?`,
 		scanID, vulnType, rangeStr).Scan(&st.ID, &st.ScanID, &st.VulnType, &st.RangeStr, &st.SubagentID,
 		&st.Written, &st.Dismissed, &st.EvidenceOpens, &st.SourceReads, &st.RepoGreps,
-		&st.NeedsContext, &st.Status, &st.RetryCount, &wallMS, &queueMS, &workMS, &finishedAt, &st.CreatedAt)
+		&st.NeedsContext, &st.Status, &st.RetryCount, &wallMS, &queueMS, &workMS, &finishedAt, &st.CreatedAt, &heartbeatAt)
+	st.HeartbeatAt = heartbeatAt.Int64
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -42,6 +44,60 @@ func (s *store) GetSettlementStat(ctx context.Context, scanID, vulnType, rangeSt
 // batch with a reason.
 func (s *store) ClaimSettlementRange(ctx context.Context, scanID, vulnType, rangeStr, holder string, staleBefore int64, reclaim bool) (*SettlementClaim, error) {
 	claim := &SettlementClaim{ScanID: scanID, VulnType: vulnType, Range: rangeStr}
+	// A claim must attach to a real scan/type: a typo'd scan id used to mint
+	// permanent orphan rows that also polluted the cross-scan r_type sample.
+	stats, err := s.ListScanStats(ctx, scanID)
+	if err != nil {
+		return nil, fmt.Errorf("db: claim settlement range: validate scan: %w", err)
+	}
+	candidateCount := -1
+	for _, st := range stats {
+		if st.VulnType == vulnType {
+			candidateCount = st.FinalCount
+		}
+	}
+	if len(stats) == 0 {
+		return nil, fmt.Errorf("db: claim settlement range: unknown scan_id %q (no scan_stats)", scanID)
+	}
+	if candidateCount < 0 {
+		return nil, fmt.Errorf("db: claim settlement range: no scan_stats for (scan_id=%q, vuln_type=%q)", scanID, vulnType)
+	}
+	// Overlap fencing: a range is a real candidate interval, not an opaque
+	// label. Claiming "1-40" while "1-100" is dispatched or done would run the
+	// same candidates twice, so any overlap with a live or settled sibling
+	// range loses. The exact same range_str still goes through the atomic
+	// upsert below (stale/failed/reclaim takeover).
+	if candidateCount > 0 {
+		newLo, newHi, ok := ParseSettlementRange(rangeStr, candidateCount)
+		if ok {
+			existing, err := s.ListSettlementStatsByScan(ctx, scanID)
+			if err != nil {
+				return nil, err
+			}
+			for _, st := range existing {
+				if st.VulnType != vulnType || st.RangeStr == rangeStr {
+					continue
+				}
+				if st.Status != "dispatched" && st.Status != "done" {
+					continue
+				}
+				lo, hi, ok := ParseSettlementRange(st.RangeStr, candidateCount)
+				if !ok {
+					continue
+				}
+				if newLo <= hi && lo <= newHi {
+					claim.Claimed = false
+					claim.Holder = st.SubagentID
+					claim.Status = st.Status
+					claim.Reason = "overlap"
+					if st.Status == "done" {
+						claim.Reason = "overlap-done"
+					}
+					return claim, nil
+				}
+			}
+		}
+	}
 	prior, err := s.GetSettlementStat(ctx, scanID, vulnType, rangeStr)
 	if err != nil {
 		return nil, err
@@ -57,18 +113,20 @@ func (s *store) ClaimSettlementRange(ctx context.Context, scanID, vulnType, rang
 		gotRetry  int
 	)
 	err = s.exec.QueryRowContext(ctx,
-		`INSERT INTO settlement_stats (scan_id, vuln_type, range_str, subagent_id, status, retry_count, created_at)
-		 VALUES (?, ?, ?, ?, 'dispatched', 0, ?)
+		`INSERT INTO settlement_stats (scan_id, vuln_type, range_str, subagent_id, status, retry_count, created_at, heartbeat_at)
+		 VALUES (?, ?, ?, ?, 'dispatched', 0, ?, ?)
 		 ON CONFLICT(scan_id, vuln_type, range_str) DO UPDATE SET
 		   subagent_id = excluded.subagent_id,
 		   status = 'dispatched',
 		   retry_count = settlement_stats.retry_count + 1,
-		   created_at = excluded.created_at
+		   created_at = excluded.created_at,
+		   heartbeat_at = excluded.heartbeat_at
 		 WHERE ? = 1
 		    OR settlement_stats.status = 'failed'
-		    OR (settlement_stats.status = 'dispatched' AND settlement_stats.created_at < ?)
+		    OR settlement_stats.status = 'released'
+		    OR (settlement_stats.status = 'dispatched' AND COALESCE(settlement_stats.heartbeat_at, settlement_stats.created_at) < ?)
 		 RETURNING id, subagent_id, retry_count`,
-		scanID, vulnType, rangeStr, holder, nowSec, reclaimFlag, staleBefore).
+		scanID, vulnType, rangeStr, holder, nowSec, nowSec, reclaimFlag, staleBefore).
 		Scan(&gotID, &gotHolder, &gotRetry)
 	if errors.Is(err, sql.ErrNoRows) {
 		held, herr := s.GetSettlementStat(ctx, scanID, vulnType, rangeStr)
@@ -111,6 +169,45 @@ func (s *store) ClaimSettlementRange(ctx context.Context, scanID, vulnType, rang
 	return claim, nil
 }
 
+// RenewSettlementLease refreshes a live holder's heartbeat (unix seconds). It
+// is called when a FRESH settlement chunk/report from that holder is absorbed:
+// a slow-but-alive heavy batch must never look stale at the claim TTL. Only
+// 'dispatched' rows are touched — a settled or released claim has no lease to
+// renew, and a late report from a replaced holder must not resurrect it.
+func (s *store) RenewSettlementLease(ctx context.Context, scanID, holder string, nowSec int64) error {
+	_, err := s.exec.ExecContext(ctx,
+		`UPDATE settlement_stats SET heartbeat_at = ? WHERE scan_id = ? AND subagent_id = ? AND status = 'dispatched'`,
+		nowSec, scanID, holder)
+	if err != nil {
+		return fmt.Errorf("db: renew settlement lease: %w", err)
+	}
+	return nil
+}
+
+// ReleaseSettlementClaim closes a live claim ONLY for its current holder
+// (compare-and-swap on subagent_id + status='dispatched'). status is 'released'
+// (spawn failed / orchestrator cancelled — the range becomes claimable again)
+// or 'failed' (the worker ran but failed — the row stays visible to audit and
+// the retry path). Returns false when the row was not this holder's live claim
+// (already settled, released, or taken over), so a late release can never close
+// somebody else's batch.
+func (s *store) ReleaseSettlementClaim(ctx context.Context, scanID, vulnType, rangeStr, holder, status string) (bool, error) {
+	if status != "released" && status != "failed" {
+		return false, fmt.Errorf("db: release settlement claim: status must be released|failed, got %q", status)
+	}
+	res, err := s.exec.ExecContext(ctx,
+		`UPDATE settlement_stats SET status = ? WHERE scan_id = ? AND vuln_type = ? AND range_str = ? AND subagent_id = ? AND status = 'dispatched'`,
+		status, scanID, vulnType, rangeStr, holder)
+	if err != nil {
+		return false, fmt.Errorf("db: release settlement claim: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("db: release settlement claim: rows affected: %w", err)
+	}
+	return n > 0, nil
+}
+
 func (s *store) UpsertSettlementStat(ctx context.Context, st *SettlementStat) error {
 	if st.CreatedAt == 0 {
 		st.CreatedAt = now()
@@ -118,7 +215,10 @@ func (s *store) UpsertSettlementStat(ctx context.Context, st *SettlementStat) er
 	if st.Status == "" {
 		st.Status = "done"
 	}
-	var wallMS, queueMS, workMS, finishedAt interface{}
+	var wallMS, queueMS, workMS, finishedAt, heartbeatAt interface{}
+	if st.HeartbeatAt > 0 {
+		heartbeatAt = st.HeartbeatAt
+	}
 	if st.WallMS > 0 {
 		wallMS = st.WallMS
 	}
@@ -132,8 +232,8 @@ func (s *store) UpsertSettlementStat(ctx context.Context, st *SettlementStat) er
 		finishedAt = st.FinishedAt
 	}
 	_, err := s.exec.ExecContext(ctx,
-		`INSERT INTO settlement_stats (scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, finished_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO settlement_stats (scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, finished_at, created_at, heartbeat_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(scan_id, vuln_type, range_str) DO UPDATE SET
 		   subagent_id = excluded.subagent_id,
 		   written = excluded.written,
@@ -151,7 +251,7 @@ func (s *store) UpsertSettlementStat(ctx context.Context, st *SettlementStat) er
 		   created_at = excluded.created_at`,
 		st.ScanID, st.VulnType, st.RangeStr, st.SubagentID,
 		st.Written, st.Dismissed, st.EvidenceOpens, st.SourceReads, st.RepoGreps, st.NeedsContext,
-		st.Status, st.RetryCount, wallMS, queueMS, workMS, finishedAt, st.CreatedAt)
+		st.Status, st.RetryCount, wallMS, queueMS, workMS, finishedAt, st.CreatedAt, heartbeatAt)
 	if err != nil {
 		return fmt.Errorf("db: upsert settlement stat: %w", err)
 	}
@@ -186,7 +286,7 @@ func (s *store) IncrementSettlementRetry(ctx context.Context, scanID, vulnType, 
 
 func (s *store) ListSettlementStatsByScan(ctx context.Context, scanID string) ([]*SettlementStat, error) {
 	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, finished_at, created_at
+		`SELECT id, scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, finished_at, created_at, heartbeat_at
 		 FROM settlement_stats WHERE scan_id = ? ORDER BY vuln_type, range_str, subagent_id`, scanID)
 	if err != nil {
 		return nil, fmt.Errorf("db: list settlement stats by scan: %w", err)
@@ -196,7 +296,7 @@ func (s *store) ListSettlementStatsByScan(ctx context.Context, scanID string) ([
 }
 
 func (s *store) ListSettlementStatsByType(ctx context.Context, vulnType string, limit int) ([]*SettlementStat, error) {
-	query := `SELECT id, scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, finished_at, created_at
+	query := `SELECT id, scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, finished_at, created_at, heartbeat_at
 		 FROM settlement_stats WHERE vuln_type = ? ORDER BY created_at DESC, id DESC`
 	args := []interface{}{vulnType}
 	if limit > 0 {
@@ -215,16 +315,17 @@ func scanSettlementStats(rows *sql.Rows) ([]*SettlementStat, error) {
 	var out []*SettlementStat
 	for rows.Next() {
 		st := &SettlementStat{}
-		var wallMS, queueMS, workMS, finishedAt sql.NullInt64
+		var wallMS, queueMS, workMS, finishedAt, heartbeatAt sql.NullInt64
 		if err := rows.Scan(&st.ID, &st.ScanID, &st.VulnType, &st.RangeStr, &st.SubagentID,
 			&st.Written, &st.Dismissed, &st.EvidenceOpens, &st.SourceReads, &st.RepoGreps,
-			&st.NeedsContext, &st.Status, &st.RetryCount, &wallMS, &queueMS, &workMS, &finishedAt, &st.CreatedAt); err != nil {
+			&st.NeedsContext, &st.Status, &st.RetryCount, &wallMS, &queueMS, &workMS, &finishedAt, &st.CreatedAt, &heartbeatAt); err != nil {
 			return nil, fmt.Errorf("db: scan settlement stat: %w", err)
 		}
 		st.WallMS = wallMS.Int64
 		st.QueueMS = queueMS.Int64
 		st.WorkMS = workMS.Int64
 		st.FinishedAt = finishedAt.Int64
+		st.HeartbeatAt = heartbeatAt.Int64
 		out = append(out, st)
 	}
 	return out, rows.Err()

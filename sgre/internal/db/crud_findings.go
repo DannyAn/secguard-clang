@@ -118,6 +118,9 @@ func (s *store) UpsertFinding(ctx context.Context, f *Finding) (int64, error) {
 	if cweNorm == "" || !SupportedFindingCWEs[cweNorm] {
 		return 0, fmt.Errorf("db: upsert finding: empty or unsupported rule_id %q (not a pipeline-detected vulnerability type)", f.RuleID)
 	}
+	// The identity key uses the NORMALIZED rule id: persisting the raw spelling
+	// would mint a second row for "cwe-476" next to "CWE-476".
+	f.RuleID = cweNorm
 	if f.Status == "" {
 		f.Status = "open"
 	}
@@ -144,7 +147,7 @@ func (s *store) UpsertFinding(ctx context.Context, f *Finding) (int64, error) {
 			   confidence = excluded.confidence,
 			   evidence = excluded.evidence,
 			   status = excluded.status,
-			   function_name = excluded.function_name,
+			   function_name = CASE WHEN excluded.function_name = '' THEN findings.function_name ELSE excluded.function_name END,
 			   variable = excluded.variable,
 			   summary = excluded.summary,
 			   reasoning = excluded.reasoning,

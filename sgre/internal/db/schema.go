@@ -330,13 +330,14 @@ CREATE TABLE IF NOT EXISTS candidate_verdicts (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     scan_id       TEXT NOT NULL,
     vuln_type     TEXT NOT NULL,
+    rule_id       TEXT,
     file_path     TEXT NOT NULL,
     line_number   INTEGER NOT NULL,
     function_name TEXT,
     variable      TEXT,
     verdict       TEXT NOT NULL CHECK (verdict IN ('dismissed')),
     reason        TEXT,
-    UNIQUE(scan_id, vuln_type, file_path, line_number, function_name)
+    UNIQUE(scan_id, vuln_type, rule_id, file_path, line_number, variable)
 );
 
 CREATE INDEX IF NOT EXISTS idx_candidate_verdicts_scan_type ON candidate_verdicts(scan_id, vuln_type);
@@ -374,7 +375,8 @@ CREATE TABLE IF NOT EXISTS settlement_stats (
     source_reads    INTEGER NOT NULL DEFAULT 0,
     repo_greps      INTEGER NOT NULL DEFAULT 0,
     needs_context   INTEGER NOT NULL DEFAULT 0,
-    status          TEXT NOT NULL DEFAULT 'done' CHECK (status IN ('dispatched', 'done', 'failed', 'partial')),
+    status          TEXT NOT NULL DEFAULT 'done' CHECK (status IN ('dispatched', 'done', 'failed', 'partial', 'released')),
+    heartbeat_at    INTEGER,
     retry_count     INTEGER NOT NULL DEFAULT 0,
     wall_ms         INTEGER,
     queue_ms        INTEGER,

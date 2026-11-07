@@ -608,18 +608,19 @@ func SyncPerFinding(scanDir, vulnType, filePath string, line int, u PerFindingUp
 	return res, nil
 }
 
-// findingVulnType resolves the directory a finding belongs in. The rule_id is
-// the normal source; legacy/edge rows that carry a known vuln_type with a
-// rule_id outside the registry still get a verdict file instead of being
-// silently dropped from the review surface.
+// findingVulnType resolves the directory a finding belongs in. The finding's
+// own vuln_type (validated against the registry) wins: multi-CWE subclasses
+// (e.g. divide-by-zero's int_min_div carrying CWE-190) must stay attributed to
+// their dispatched type, not be re-mapped to the CWE's canonical owner. The
+// rule_id derivation is the fallback for legacy rows with an empty vuln_type.
 func findingVulnType(f *db.Finding) string {
-	if vt := planner.TypeForCWE(f.RuleID); vt != "" {
-		return vt
-	}
 	if f.VulnType != "" {
 		if _, err := planner.GetVulnTypeSpec(f.VulnType); err == nil {
 			return f.VulnType
 		}
+	}
+	if vt := planner.TypeForCWE(f.RuleID); vt != "" {
+		return vt
 	}
 	return ""
 }

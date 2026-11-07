@@ -80,7 +80,10 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 	// taking the write lock for a pure read.
 	hasValid := false
 	for _, rep := range res.Reports {
-		if rep.Valid && rep.ScanID != "" {
+		if rep.ScanID == "" {
+			continue
+		}
+		if rep.Valid || !rep.mtime.IsZero() {
 			hasValid = true
 			break
 		}
@@ -93,6 +96,21 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 		candidateCountByScan := map[string]map[string]int{}
 		type scanType struct{ scanID, vulnType string }
 		touched := map[scanType]bool{}
+		nowSec := time.Now().Unix()
+		// Renew each holder's lease from FRESH report files only (a chunk counts
+		// as a heartbeat even though it is not a completion signal). A stale
+		// file does NOT renew: a dead worker's claim must still expire.
+		for _, rep := range res.Reports {
+			if rep.ScanID == "" || rep.SubagentID == "" || rep.mtime.IsZero() {
+				continue
+			}
+			if time.Since(rep.mtime) > settlementHeartbeatStall {
+				continue
+			}
+			if err := tx.RenewSettlementLease(ctx, rep.ScanID, rep.SubagentID, nowSec); err != nil {
+				return err
+			}
+		}
 		for i := len(res.Reports) - 1; i >= 0; i-- {
 			rep := res.Reports[i]
 			if !rep.Valid || rep.ScanID == "" {
@@ -153,7 +171,7 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 			}
 		}
 		rowsByScan := map[string][]*db.SettlementStat{}
-		nowSec := time.Now().Unix()
+
 		for key := range touched {
 			if !knownByScan[key.scanID][key.vulnType] {
 				continue
@@ -414,14 +432,18 @@ func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, sta
 	for _, st := range byScan {
 		rowsByType[st.VulnType] = append(rowsByType[st.VulnType], st)
 		if st.Status == "dispatched" {
-			if st.CreatedAt < staleBefore {
+			leaseAt := st.CreatedAt
+			if st.HeartbeatAt > 0 {
+				leaseAt = st.HeartbeatAt
+			}
+			if leaseAt < staleBefore {
 				// A stale claim is a dead worker's reservation: it is neither
 				// covered nor in flight, so the next planning pass may reclaim it.
 				continue
 			}
 			age := int64(0)
-			if st.CreatedAt > 0 && nowSec > st.CreatedAt {
-				age = (nowSec - st.CreatedAt) * 1000
+			if leaseAt > 0 && nowSec > leaseAt {
+				age = (nowSec - leaseAt) * 1000
 			}
 			inFlight[st.VulnType] = append(inFlight[st.VulnType], inFlightRange{
 				Range: st.RangeStr, Holder: st.SubagentID, AgeMS: age,

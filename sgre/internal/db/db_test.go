@@ -241,8 +241,8 @@ func TestStore_UpsertFinding_FunctionDriftCollapses(t *testing.T) {
 	if len(all) != 1 {
 		t.Fatalf("expected exactly 1 finding, got %d", len(all))
 	}
-	if all[0].FunctionName != "" {
-		t.Errorf("the conflict update must refresh function_name, got %q", all[0].FunctionName)
+	if all[0].FunctionName != "f" {
+		t.Errorf("an omitted function on retry must preserve the persisted name (no metadata regression), got %q", all[0].FunctionName)
 	}
 
 	// Two distinct variables at one location remain two findings.

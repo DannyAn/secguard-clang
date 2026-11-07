@@ -1073,6 +1073,45 @@ func runStatusCmd(ctx context.Context, args []string) int {
 		return 0
 	}
 
+	if hasFlag(args, "release-claim") || hasFlag(args, "fail-claim") {
+		if claimType == "" || claimRange == "" || claimHolder == "" {
+			WriteErrorJSON("--release-claim/--fail-claim require --claim-type, --claim-range and --claim-holder")
+			return 1
+		}
+		scanID := parseStringFlag(args, "scan-id")
+		if scanID == "" {
+			latest, lerr := store.GetLatestScanID(ctx)
+			if lerr != nil {
+				WriteErrorJSON(fmt.Sprintf("failed to get latest scan_id: %v", lerr))
+				return 1
+			}
+			scanID = latest
+		}
+		if scanID == "" {
+			WriteErrorJSON("no scan found; run 'secguard scan <path>' first or pass --scan-id")
+			return 1
+		}
+		status := "released"
+		if hasFlag(args, "fail-claim") {
+			status = "failed"
+		}
+		ok, rerr := store.ReleaseSettlementClaim(ctx, scanID, claimType, normalizeSettlementRange(claimRange), claimHolder, status)
+		if rerr != nil {
+			WriteErrorJSON(fmt.Sprintf("failed to release claim: %v", rerr))
+			return 1
+		}
+		WriteJSON(map[string]interface{}{
+			"scan_id":    scanID,
+			"vuln_type":  claimType,
+			"range":      normalizeSettlementRange(claimRange),
+			"holder":     claimHolder,
+			"released":   ok,
+			"new_status": status,
+			"note":       "released=false means the row was not this holder's live claim (already settled, released, or taken over) — no state was changed",
+		})
+		return 0
+	}
+
 	if hasFlag(args, "reports") {
 		res := listSubagentReports(dbPath, parseStringFlag(args, "scan-id"))
 		if err := persistSettlementReports(ctx, store, res); err != nil {

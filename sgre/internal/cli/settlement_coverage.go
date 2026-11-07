@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -28,30 +27,7 @@ type settlementCoverage struct {
 }
 
 func parseSettlementInterval(rangeStr string, candidateCount int) (int, int, bool) {
-	r := normalizeSettlementRange(rangeStr)
-	if r == "all" {
-		if candidateCount <= 0 {
-			return 0, 0, false
-		}
-		return 1, candidateCount, true
-	}
-	r = strings.ReplaceAll(r, " ", "")
-	if lo, hi, found := strings.Cut(r, "-"); found {
-		start, err1 := strconv.Atoi(lo)
-		end, err2 := strconv.Atoi(hi)
-		if err1 != nil || err2 != nil || start <= 0 || end < start {
-			return 0, 0, false
-		}
-		if candidateCount > 0 && end > candidateCount {
-			end = candidateCount
-		}
-		return start, end, true
-	}
-	n, err := strconv.Atoi(r)
-	if err != nil || n <= 0 {
-		return 0, 0, false
-	}
-	return n, n, true
+	return db.ParseSettlementRange(rangeStr, candidateCount)
 }
 
 type interval struct{ lo, hi int }
@@ -97,7 +73,11 @@ func deriveTypeCoverage(rows []*db.SettlementStat, candidateCount int, nowSec in
 	for _, st := range rows {
 		switch {
 		case st.Status == "dispatched":
-			if st.CreatedAt >= staleBefore {
+			leaseAt := st.CreatedAt
+			if st.HeartbeatAt > 0 {
+				leaseAt = st.HeartbeatAt
+			}
+			if leaseAt >= staleBefore {
 				cov.ActiveClaims++
 				cov.LiveClaimHolders = append(cov.LiveClaimHolders, st.SubagentID)
 			}

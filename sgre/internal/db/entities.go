@@ -160,6 +160,7 @@ type CandidateVerdict struct {
 	ID           int64
 	ScanID       string
 	VulnType     string
+	RuleID       string
 	FilePath     string
 	LineNumber   int
 	FunctionName string
@@ -420,6 +421,11 @@ type SettlementStat struct {
 	WorkMS        int64
 	FinishedAt    int64
 	CreatedAt     int64
+	// HeartbeatAt is the lease's last proof of life (unix seconds): a fresh
+	// settlement chunk/report renews it, so a slow-but-alive heavy batch is
+	// never reclaimed at the claim TTL. Staleness is judged against
+	// COALESCE(heartbeat_at, created_at) — never against creation time alone.
+	HeartbeatAt int64
 }
 
 // SettlementClaim is the result of the pre-dispatch placeholder:
