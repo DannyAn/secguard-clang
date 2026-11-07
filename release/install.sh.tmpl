@@ -241,6 +241,11 @@ install_claude_code() {
     sg_register_plugin "$CC_PREFIX/plugins/installed_plugins.json" "secguard-clang" "local-secguard" "$cc_cache_dir" "$PKG_VERSION"
     sg_enable_plugin "$CC_PREFIX/settings.json" "secguard-clang" "local-secguard"
 
+    # 官方 Claude Code 的 marketplace 注册（清单目录 .claude-plugin）；缺这步
+    # `claude plugin list` 报 "Marketplace local-secguard not found"，commands 不加载。
+    sg_register_marketplace "$CC_PREFIX" "secguard-clang" "$cc_cache_dir" "$PKG_VERSION" ".claude-plugin"
+    sg_record_file "$CC_PREFIX/plugins/marketplaces/local-secguard/.claude-plugin/marketplace.json"
+
     # 写 manifest
     local files_csv
     files_csv=$(sg_files_csv)

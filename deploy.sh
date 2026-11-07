@@ -213,11 +213,13 @@ with open(dst, 'w') as f:
 }
 
 # ── Register a Claude Code / Claude CAC plugin (marketplace-style) ──
-# 官方 Claude Code 不会自动扫描 ~/.claude/plugins/<name>/，它靠
-# plugins/installed_plugins.json（installPath 指向 cache 目录）+ settings.json 的
-# enabledPlugins 来发现插件。仅把文件拷进 ~/.claude/plugins/ 是不会生效的（这正是
-# deploy.sh claude-code 之前"装了但 / 里找不到命令"的根因）。此函数补齐注册步骤，
-# 与 release/install.sh.tmpl 的 install_claude_code/install_claude_cac 保持一致。
+# 官方 Claude Code 不会自动扫描 ~/.claude/plugins/<name>/，它按
+# `插件名@marketplace` 解析：plugins/installed_plugins.json（installPath 指向 cache
+# 目录）+ settings.json 的 enabledPlugins + **已注册的 marketplace** 三者缺一不可。
+# 缺 marketplace 时 `claude plugin list` 会报 "Marketplace local-secguard not found"，
+# commands 不加载（skills 仍被 SkillsCollector 直接扫到，所以表现为"技能在、命令不在"）。
+# 本函数补齐前两步，第 3 步（marketplace）由 install_claude_code / install_claude_cac
+# 各自调用 sg_register_marketplace 完成（清单目录名不同：.claude-plugin / .cac-plugin）。
 register_claude_plugin() {
     local prefix="$1"       # ~/.claude 或 ~/.cac
     local plugin_dir="$2"   # ~/.claude/plugins/secguard-clang
@@ -262,6 +264,9 @@ install_claude_code() {
     fi
 
     register_claude_plugin "$CLAUDE_BASE" "$CLAUDE_PLUGIN_DIR" "$VERSION"
+
+    # 官方 Claude Code 的 marketplace（清单目录 .claude-plugin）；缺这步 commands 不加载。
+    sg_register_marketplace "$CLAUDE_BASE" "$PRODUCT" "$CLAUDE_PLUGIN_DIR" "$VERSION" ".claude-plugin"
 
     echo "[claude-code] Merging permissions into $CLAUDE_BASE/settings.json"
     merge_claude_permissions "$CLAUDE_BASE/settings.json"
