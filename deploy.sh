@@ -251,10 +251,11 @@ with open(dst, 'w') as f:
 # 官方 Claude Code 与 claude-cac 都按 `插件名@marketplace` 解析插件，并从已注册的
 # marketplace 目录（marketplace.json 的 source）读取插件文件。installed_plugins.json
 # （installPath 指向 cache）+ settings.json 的 enabledPlugins 只是注册的一半：缺
-# marketplace 目录里的载荷时 `claude plugin list` 报 "Plugin directory not found"，
-# commands 不加载（skills 仍被直接扫到，所以表现为"技能在、命令不在"）。此函数补齐
-# 前两步，marketplace 由 install_claude_code / install_claude_cac 各自调用
-# sg_register_marketplace 完成（清单目录名不同：.claude-plugin / .cac-plugin）。
+# marketplace 注册时报 "Marketplace local-secguard not found"，注册了但目录里缺
+# 插件载荷时报 "Plugin directory not found"——两种断点下 commands 都不加载（skills
+# 仍被直接扫到，所以表现为"技能在、命令不在"）。此函数补齐前两步，marketplace 由
+# install_claude_code / install_claude_cac 各自调用 sg_register_marketplace 完成
+# （清单目录名不同：.claude-plugin / .cac-plugin）。
 register_claude_plugin() {
     local prefix="$1"       # ~/.claude 或 ~/.cac
     local plugin_dir="$2"   # ~/.claude/plugins/secguard-clang
@@ -299,8 +300,9 @@ install_claude_code() {
 
     register_claude_plugin "$CLAUDE_BASE" "$CLAUDE_PLUGIN_DIR" "$VERSION"
 
-    # 官方 Claude Code 的 marketplace（清单目录 .claude-plugin）。这是 commands/agents
-    # 的实际加载入口，也是 clean_previous_install 删掉载荷后必须重建的一步。
+    # 官方 Claude Code 的 marketplace（清单目录 .claude-plugin）——commands/agents
+    # 的实际加载入口，缺这步 commands 不加载；也是 clean_previous_install 删掉载荷
+    # 后必须重建的一步。
     sg_register_marketplace "$CLAUDE_BASE" "$PRODUCT" "$CLAUDE_PLUGIN_DIR" "$VERSION" ".claude-plugin"
 
     echo "[claude-code] Merging permissions into $CLAUDE_BASE/settings.json"
