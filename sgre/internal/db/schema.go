@@ -374,7 +374,7 @@ CREATE TABLE IF NOT EXISTS settlement_stats (
     source_reads    INTEGER NOT NULL DEFAULT 0,
     repo_greps      INTEGER NOT NULL DEFAULT 0,
     needs_context   INTEGER NOT NULL DEFAULT 0,
-    status          TEXT NOT NULL DEFAULT 'done' CHECK (status IN ('dispatched', 'done', 'failed')),
+    status          TEXT NOT NULL DEFAULT 'done' CHECK (status IN ('dispatched', 'done', 'failed', 'partial')),
     retry_count     INTEGER NOT NULL DEFAULT 0,
     wall_ms         INTEGER,
     queue_ms        INTEGER,

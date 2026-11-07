@@ -184,28 +184,6 @@ func (s *store) IncrementSettlementRetry(ctx context.Context, scanID, vulnType, 
 	return nil
 }
 
-// SettleDispatchedClaims closes every leftover pre-dispatch claim placeholder
-// for one (scan, type) by marking it 'done'. It is the complete-type counterpart
-// to ClaimSettlementRange: once the orchestrator declares a type complete, a
-// lingering 'dispatched' row must not keep reading as an in-flight batch for the
-// rest of claim_ttl (a re-plan would treat the type as held and skip it, and a
-// fresh claim would lose to a zombie holder). Rows that already carry a settled
-// report are untouched — those are already 'done'. Returns the count closed.
-func (s *store) SettleDispatchedClaims(ctx context.Context, scanID, vulnType string) (int64, error) {
-	res, err := s.exec.ExecContext(ctx,
-		`UPDATE settlement_stats SET status = 'done'
-		 WHERE scan_id = ? AND vuln_type = ? AND status = 'dispatched'`,
-		scanID, vulnType)
-	if err != nil {
-		return 0, fmt.Errorf("db: settle dispatched claims: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("db: settle dispatched claims: rows affected: %w", err)
-	}
-	return n, nil
-}
-
 func (s *store) ListSettlementStatsByScan(ctx context.Context, scanID string) ([]*SettlementStat, error) {
 	rows, err := s.exec.QueryContext(ctx,
 		`SELECT id, scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, finished_at, created_at

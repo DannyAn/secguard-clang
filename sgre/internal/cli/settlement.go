@@ -69,13 +69,12 @@ func normalizeSettlementRange(r string) string {
 // the row is last-write-wins, so applying the newest settlement last makes it
 // the authoritative one instead of letting the older snapshot overwrite it.
 //
-// The whole absorption is ONE immediate transaction, and a valid report's
-// processed types are marked ai_stage_status='done' in the same transaction.
-// The settlement landing and the completion marker are therefore atomic: a
-// worker that dies between writing its settlement file and its separate
-// `report --complete-type` call can no longer leave a settled type reading
-// pending and re-dispatchable. A report carrying needs_context is skipped
-// deliberately — that type is NOT complete, its residual range is re-dispatched.
+// The whole absorption is ONE immediate transaction. A type's ai_stage_status
+// is DERIVED from range coverage (deriveTypeCoverage) after all reports land —
+// never self-declared by a single batch: a type is marked done only when its
+// settled ranges cover every candidate with no needs_context residue and no
+// live claim. A report carrying needs_context lands its ranges as 'partial'
+// (not 'done'), so an unfinished range never reads as covered.
 func persistSettlementReports(ctx context.Context, store db.Store, res reportsResult) error {
 	// A `status --reports` poll usually carries nothing new to absorb; avoid
 	// taking the write lock for a pure read.
@@ -91,6 +90,9 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 	}
 	return store.WithImmediateTx(ctx, func(tx db.Store) error {
 		knownByScan := map[string]map[string]bool{}
+		candidateCountByScan := map[string]map[string]int{}
+		type scanType struct{ scanID, vulnType string }
+		touched := map[scanType]bool{}
 		for i := len(res.Reports) - 1; i >= 0; i-- {
 			rep := res.Reports[i]
 			if !rep.Valid || rep.ScanID == "" {
@@ -99,14 +101,17 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 			known, ok := knownByScan[rep.ScanID]
 			if !ok {
 				known = map[string]bool{}
+				counts := map[string]int{}
 				stats, err := tx.ListScanStats(ctx, rep.ScanID)
 				if err != nil {
 					return err
 				}
 				for _, st := range stats {
 					known[st.VulnType] = true
+					counts[st.VulnType] = st.FinalCount
 				}
 				knownByScan[rep.ScanID] = known
+				candidateCountByScan[rep.ScanID] = counts
 			}
 			// needs_context is a report-level array without a per-type key; attribute
 			// it only to single-type reports so multi-type batches never over-count.
@@ -121,6 +126,10 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 				finishedAt = rep.mtime.UnixMilli()
 			}
 			for _, pt := range rep.Processed {
+				status := "done"
+				if len(rep.NeedsContext) > 0 {
+					status = "partial"
+				}
 				if err := tx.UpsertSettlementStat(ctx, &db.SettlementStat{
 					ScanID:        rep.ScanID,
 					VulnType:      pt.Type,
@@ -132,6 +141,7 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 					SourceReads:   pt.SourceReads,
 					RepoGreps:     pt.RepoGreps,
 					NeedsContext:  needsContext,
+					Status:        status,
 					WallMS:        wallMS,
 					QueueMS:       queueMS,
 					WorkMS:        workMS,
@@ -139,15 +149,33 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 				}); err != nil {
 					return err
 				}
+				touched[scanType{rep.ScanID, pt.Type}] = true
 			}
-			if len(rep.NeedsContext) > 0 {
+		}
+		rowsByScan := map[string][]*db.SettlementStat{}
+		nowSec := time.Now().Unix()
+		for key := range touched {
+			if !knownByScan[key.scanID][key.vulnType] {
 				continue
 			}
-			for _, pt := range rep.Processed {
-				if !known[pt.Type] {
-					continue
+			rows, ok := rowsByScan[key.scanID]
+			if !ok {
+				var err error
+				rows, err = tx.ListSettlementStatsByScan(ctx, key.scanID)
+				if err != nil {
+					return err
 				}
-				if err := tx.MarkAIStageDone(ctx, rep.ScanID, pt.Type); err != nil {
+				rowsByScan[key.scanID] = rows
+			}
+			var typeRows []*db.SettlementStat
+			for _, st := range rows {
+				if st.VulnType == key.vulnType {
+					typeRows = append(typeRows, st)
+				}
+			}
+			cov := deriveTypeCoverage(typeRows, candidateCountByScan[key.scanID][key.vulnType], nowSec)
+			if cov.Done {
+				if err := tx.MarkAIStageDone(ctx, key.scanID, key.vulnType); err != nil {
 					return err
 				}
 			}
@@ -320,6 +348,12 @@ type settlementEnriched struct {
 	// number the orchestrator needs without re-reading every candidate index.
 	DismissedCount int `json:"dismissed_count"`
 	Remaining      int `json:"remaining"`
+	// UncoveredRanges is the exact candidate-interval gap (e.g. ["41-80"]) the
+	// orchestrator re-dispatches on recovery — replacing the old "re-dispatch
+	// candidate_count-written-dismissed candidates" guess that could not name
+	// WHICH candidates were missing. Empty when nothing is settled or the type
+	// is fully covered.
+	UncoveredRanges []string `json:"uncovered_ranges,omitempty"`
 	// BudgetViolations lists the settled batches whose self-reported
 	// source_reads / evidence_opens / repo_greps exceeded the agent-body.md
 	// budgets. It is engine-computed so the orchestrator surfaces read-source
@@ -376,7 +410,9 @@ func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, sta
 	staleBefore := nowSec - int64(settlementClaimTTL/time.Second)
 	covered := map[string]map[string]bool{}
 	inFlight := map[string][]inFlightRange{}
+	rowsByType := map[string][]*db.SettlementStat{}
 	for _, st := range byScan {
+		rowsByType[st.VulnType] = append(rowsByType[st.VulnType], st)
 		if st.Status == "dispatched" {
 			if st.CreatedAt < staleBefore {
 				// A stale claim is a dead worker's reservation: it is neither
@@ -392,7 +428,10 @@ func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, sta
 			})
 			continue
 		}
-		if st.Status == "failed" {
+		// Only a fully settled range counts as covered: 'partial' (needs_context)
+		// and 'failed' rows must never read as coverage, or an unfinished batch
+		// would both block completion AND claim to be done.
+		if st.Status != "done" || st.NeedsContext > 0 {
 			continue
 		}
 		if covered[st.VulnType] == nil {
@@ -405,13 +444,20 @@ func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, sta
 	for _, s := range statuses {
 		e := &settlementEnriched{PerTypeStatus: s, AlreadyCoveredRanges: []string{}}
 		e.DismissedCount = dismissedByType[s.VulnType]
-		// A done type has every candidate settled (confirmed + auto-confirmed +
-		// dismissed). Dismissed verdicts are only persisted when the subagent wrote
-		// them via --write-json, so the candidate_count - written_count gap is the
-		// un-persisted dismissed residue — remaining must read 0, never that gap,
-		// or the orchestrator re-dispatches an already-settled type.
+		// Remaining is derived from range coverage when any settlement row
+		// exists: a partially settled type shows its true uncovered count, never
+		// 0 just because one batch self-declared completion. Without any rows
+		// (sequential orchestrator path) the verdict-ledger formula is the
+		// fallback. A done type (derived in persistSettlementReports or
+		// validated by --complete-type) always reads 0.
+		cov := deriveTypeCoverage(rowsByType[s.VulnType], s.CandidateCount, nowSec)
 		if s.TerminalState == "done" {
 			e.Remaining = 0
+		} else if cov.HasRows {
+			if rem := s.CandidateCount - cov.CoveredCount; rem > 0 {
+				e.Remaining = rem
+			}
+			e.UncoveredRanges = cov.Uncovered
 		} else if rem := s.CandidateCount - s.WrittenCount - e.DismissedCount; rem > 0 {
 			e.Remaining = rem
 		}

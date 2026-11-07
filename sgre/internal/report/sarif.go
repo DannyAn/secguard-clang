@@ -360,6 +360,15 @@ func WriteSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding) e
 	}, "findings", "AI-classified CONFIRMED findings; dismissed findings excluded")
 }
 
+// WriteSarifFromFindingsPartial is the --allow-partial counterpart: the run is
+// explicitly labelled so a CI gate or reviewer never mistakes an unfinished AI
+// stage for a complete verdict set.
+func WriteSarifFromFindingsPartial(sarifPath, rootDir string, findings []*db.Finding) error {
+	return writeSarifFromFindings(sarifPath, rootDir, findings, func(status string) bool {
+		return status == "confirmed"
+	}, "findings-partial", "PARTIAL report (--allow-partial): AI classification unfinished; CONFIRMED findings only, dismissed excluded")
+}
+
 func writeSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding, keep func(string) bool, stage, note string) error {
 	rules := []sarifRule{}
 	results := []sarifResult{}

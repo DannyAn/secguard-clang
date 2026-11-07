@@ -683,6 +683,9 @@ func TestAutoConfirmedCLIFlow(t *testing.T) {
 	if n, _, err := autoConfirmFindings(ctx, s, scanID, "memory-leak", confirmed, nil); err != nil || n != 1 {
 		t.Fatalf("autoConfirmFindings: n=%d err=%v", n, err)
 	}
+	if err := s.MarkAIStageDone(ctx, scanID, "memory-leak"); err != nil {
+		t.Fatal(err)
+	}
 	all, err := s.ListAutoConfirmedForReview(ctx, scanID, nil, 0)
 	if err != nil || len(all) != 1 {
 		t.Fatalf("auto-confirmed findings must await review, got %d err=%v", len(all), err)
@@ -757,7 +760,7 @@ func TestParseWriteJSONInput_Shapes(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			inputs, scanID, err := parseWriteJSONInput([]byte(c.payload))
+			inputs, scanID, _, err := parseWriteJSONInput([]byte(c.payload))
 			if c.wantErr {
 				if err == nil {
 					t.Fatalf("expected an error, got inputs=%d", len(inputs))
@@ -785,18 +788,20 @@ func TestParseWriteJSONInput_SalvageTruncated(t *testing.T) {
 	two := `{"rule_id":"CWE-457","status":"dismissed","file":"b.c","line":2,"function":"g"}`
 
 	cases := []struct {
-		name      string
-		payload   string
-		wantCount int
+		name       string
+		payload    string
+		wantCount  int
+		wantScanID string
 	}{
 		{name: "truncated bare array keeps complete leading objects", payload: "[" + one + "," + two + `,{"rule_id":"CWE-190","statu`, wantCount: 2},
-		{name: "truncated envelope keeps its findings", payload: `{"scan_id":"sc_x","findings":[` + one + "," + two + `]`, wantCount: 2},
+		{name: "truncated envelope keeps its findings and scan_id", payload: `{"scan_id":"sc_x","findings":[` + one + "," + two + `]`, wantCount: 2, wantScanID: "sc_x"},
+		{name: "nested properties object is not salvaged as a finding", payload: "[" + one + `,{"rule_id":"CWE-190","status":"confirmed","file":"c.c","line":3,"properties":{"rule_id":"CWE-476","status":"confirmed"}},`, wantCount: 2},
 		{name: "fully truncated object salvages nothing", payload: `{"rule_id":"CWE-476","status":"confirmed","file":"a.c","line":1`, wantCount: 0},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			inputs, _, err := parseWriteJSONInput([]byte(c.payload))
+			inputs, scanID, salvaged, err := parseWriteJSONInput([]byte(c.payload))
 			if c.wantCount == 0 {
 				if err == nil {
 					t.Fatalf("expected an error for unsalvageable input")
@@ -805,6 +810,12 @@ func TestParseWriteJSONInput_SalvageTruncated(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
+			}
+			if !salvaged {
+				t.Errorf("salvaged=false for a truncated payload; truncation must be flagged so the batch exits non-zero")
+			}
+			if scanID != c.wantScanID {
+				t.Errorf("got scan_id %q, want %q", scanID, c.wantScanID)
 			}
 			if len(inputs) != c.wantCount {
 				t.Errorf("got %d salvaged inputs, want %d", len(inputs), c.wantCount)
@@ -815,11 +826,11 @@ func TestParseWriteJSONInput_SalvageTruncated(t *testing.T) {
 
 func TestBalancedObjects_StringBraces(t *testing.T) {
 	spans := balancedObjects([]byte(`{"a":"}","b":{"c":"{"}}`))
-	if len(spans) != 2 {
-		t.Fatalf("got %d spans, want 2 (braces inside strings must not split)", len(spans))
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1 (only the shallowest object; braces inside strings must not split)", len(spans))
 	}
-	if string(spans[0]) != `{"c":"{"}` {
-		t.Errorf("innermost span = %q", spans[0])
+	if string(spans[0]) != `{"a":"}","b":{"c":"{"}}` {
+		t.Errorf("shallowest span = %q, want the whole top-level object (nested objects are not independent findings)", spans[0])
 	}
 }
 

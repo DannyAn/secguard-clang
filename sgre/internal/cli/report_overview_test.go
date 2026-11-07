@@ -23,8 +23,8 @@ func TestBuildScanOverview_ComputesDismissedTotal(t *testing.T) {
 	}
 
 	audits := []vulnAuditEntry{
-		{VulnType: "buffer-overflow", SeedCount: 10, FinalCount: 8, AutoConfirmed: 2, Confirmed: 5},
-		{VulnType: "null-deref", SeedCount: 10, FinalCount: 4, AutoConfirmed: 1, Confirmed: 2},
+		{VulnType: "buffer-overflow", SeedCount: 10, FinalCount: 8, AutoConfirmed: 2, Confirmed: 5, Dismissed: 3},
+		{VulnType: "null-deref", SeedCount: 10, FinalCount: 4, AutoConfirmed: 1, Confirmed: 2, Dismissed: 2},
 	}
 	ov := buildScanOverview(ctx, store, "sc_test", nil, nil, audits)
 
@@ -34,8 +34,14 @@ func TestBuildScanOverview_ComputesDismissedTotal(t *testing.T) {
 	if got, want := ov.AIConfirmed, 7; got != want {
 		t.Errorf("ai confirmed = %d, want %d", got, want)
 	}
+	// dismissed comes from the persisted candidate_verdicts ledger, never a
+	// Candidates-AIConfirmed residue (12-7=5 coincides here, so the per-type
+	// fields are what actually pins the source).
 	if got, want := ov.AIDismissed, 5; got != want {
 		t.Errorf("dismissed = %d, want %d", got, want)
+	}
+	if got, want := ov.Unclassified, 0; got != want {
+		t.Errorf("unclassified = %d, want %d", got, want)
 	}
 
 	fields := ov.SummaryFields()

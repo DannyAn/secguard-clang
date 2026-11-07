@@ -72,6 +72,9 @@ func TestReportAuditSelfMeasuresAIDuration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := store.MarkAIStageDone(ctx, scanID, "null-deref"); err != nil {
+		t.Fatal(err)
+	}
 	store.Close()
 
 	stdout, _, code := captureOutput(func() int {
@@ -197,9 +200,10 @@ func TestAuditAbsorbsSettlementFileWithoutStatusReports(t *testing.T) {
 	}
 }
 
-// TestCompleteTypeSettlesDispatchedClaim pins the second half of the fix:
-// `report --complete-type` must close the type's pre-dispatch claim so it stops
-// reading as in-flight (and a re-claim cannot lose to a zombie holder).
+// TestCompleteTypeSettlesDispatchedClaim pins the coverage-derived completion
+// rule: --complete-type must REFUSE while a claim is still in flight or ranges
+// are uncovered (no force-settling another holder's claim), and succeed only
+// once the done-range union covers every candidate.
 func TestCompleteTypeSettlesDispatchedClaim(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -217,13 +221,41 @@ func TestCompleteTypeSettlesDispatchedClaim(t *testing.T) {
 	if err != nil || claim == nil || !claim.Claimed {
 		t.Fatalf("claim: %+v err=%v", claim, err)
 	}
-	store.Close()
 
+	// A live claim with zero settled candidates: complete-type must refuse and
+	// must NOT flip the claim to done.
 	stdout, _, code := captureOutput(func() int {
 		return runReportCmd(ctx, []string{"--db", dbPath, "--complete-type", "null-deref", "--scan-id", scanID})
 	})
+	if code == 0 {
+		t.Fatalf("complete-type must refuse a live, uncovered claim: %s", stdout)
+	}
+	var refusal struct {
+		Status       string   `json:"status"`
+		ActiveClaims int      `json:"active_claims"`
+		Uncovered    []string `json:"uncovered_ranges"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &refusal); err != nil {
+		t.Fatalf("refusal output is not JSON: %s", stdout)
+	}
+	if refusal.Status != "incomplete" || refusal.ActiveClaims != 1 {
+		t.Errorf("refusal = %+v, want incomplete with 1 active claim", refusal)
+	}
+
+	// The holder settles its own range; complete-type now succeeds.
+	if err := store.UpsertSettlementStat(ctx, &db.SettlementStat{
+		ScanID: scanID, VulnType: "null-deref", RangeStr: "all", SubagentID: "holder-x",
+		Written: 2, Dismissed: 3, Status: "done",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	stdout, _, code = captureOutput(func() int {
+		return runReportCmd(ctx, []string{"--db", dbPath, "--complete-type", "null-deref", "--scan-id", scanID})
+	})
 	if code != 0 {
-		t.Fatalf("complete-type failed: %s", stdout)
+		t.Fatalf("complete-type failed after full coverage: %s", stdout)
 	}
 
 	d2, err := db.Open(ctx, dbPath)
@@ -238,6 +270,15 @@ func TestCompleteTypeSettlesDispatchedClaim(t *testing.T) {
 	}
 	if st.Status != "done" {
 		t.Errorf("claim status after complete-type = %q, want done", st.Status)
+	}
+	stats, err := store2.ListScanStats(ctx, scanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range stats {
+		if s.VulnType == "null-deref" && s.AIStageStatus != "done" {
+			t.Errorf("ai_stage_status = %q, want done", s.AIStageStatus)
+		}
 	}
 }
 

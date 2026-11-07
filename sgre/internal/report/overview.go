@@ -59,6 +59,10 @@ type ScanOverview struct {
 	TypesWithFindings   int
 	SeverityCounts      map[string]SeverityCount
 	ScanMode            string
+	// Partial marks an artifact produced with `report --audit --allow-partial`:
+	// the AI classification stage is unfinished, so the verdict set is a
+	// partial projection, never a complete scan result.
+	Partial bool
 }
 
 // SeverityCount is the actionable (confirmed) breakdown per severity. Dismissed
@@ -173,6 +177,9 @@ func (o ScanOverview) MetadataMarkdown() string {
 	b.WriteString("|-------|-------|\n")
 	if o.ScanID != "" {
 		fmt.Fprintf(&b, "| Scan ID | `%s` |\n", o.ScanID)
+	}
+	if o.Partial {
+		b.WriteString("| Completeness | **PARTIAL** — AI classification unfinished; this is not a complete scan result |\n")
 	}
 	tool := o.Tool
 	if tool == "" {

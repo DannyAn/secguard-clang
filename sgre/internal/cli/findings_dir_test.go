@@ -190,7 +190,7 @@ func TestReportAudit_ReconcilesFindingsDir(t *testing.T) {
 
 	stdout, _, exitCode := captureOutput(func() int {
 		return runReportCmd(context.Background(), []string{
-			"--db", dbPath, "--audit", "--scan-id", fixtureScanID, "--output-dir", scanDir,
+			"--db", dbPath, "--audit", "--scan-id", fixtureScanID, "--output-dir", scanDir, "--allow-partial",
 		})
 	})
 	if exitCode != 0 {
@@ -240,7 +240,7 @@ func TestReportAudit_WarnsWhenFindingsDirFallsShort(t *testing.T) {
 
 	stdout, _, exitCode := captureOutput(func() int {
 		return runReportCmd(ctx, []string{
-			"--db", dbPath, "--audit", "--scan-id", fixtureScanID, "--output-dir", scanDir,
+			"--db", dbPath, "--audit", "--scan-id", fixtureScanID, "--output-dir", scanDir, "--allow-partial",
 		})
 	})
 	if exitCode != 0 {
@@ -289,7 +289,7 @@ func TestReportAudit_WarnsOnUnclassifiedCandidates(t *testing.T) {
 	}
 	stdout, _, exitCode := captureOutput(func() int {
 		return runReportCmd(ctx, []string{
-			"--db", dbPath, "--audit", "--scan-id", fixtureScanID, "--output-dir", scanDir,
+			"--db", dbPath, "--audit", "--scan-id", fixtureScanID, "--output-dir", scanDir, "--allow-partial",
 		})
 	})
 	if exitCode != 0 {
@@ -302,10 +302,12 @@ func TestReportAudit_WarnsOnUnclassifiedCandidates(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
 		t.Fatalf("audit response is not JSON: %s", stdout)
 	}
-	if out.Unclassified != 0 {
-		t.Errorf("unclassified_candidates = %d, want 0 (dismissed not persisted is normal in the new model)", out.Unclassified)
+	// Nobody classified the 223 candidates: that is a REAL gap (not a
+	// dismissal), so the partial audit must surface it loudly.
+	if out.Unclassified != 223 {
+		t.Errorf("unclassified_candidates = %d, want 223 (never-classified is not a dismissal)", out.Unclassified)
 	}
-	if out.Warning != "" {
-		t.Errorf("no warning expected in the new model (dismissed not persisted is normal), got %q", out.Warning)
+	if !strings.Contains(out.Warning, "unclassified") {
+		t.Errorf("audit must warn about unclassified candidates, got %q", out.Warning)
 	}
 }
