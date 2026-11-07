@@ -178,10 +178,12 @@ For each type you were assigned, in `_index.md` order:
    `scan_dir`/`output_dir`.
 4. Emit the Structured Report Protocol block (see "Structured Report Protocol" below).
 
-**Zero-confirmed shard: skip the write.** If nothing in your type/range is
-`confirmed`, do NOT create a findings file and do NOT call `--write-json` — an
-empty write costs a round-trip and a missing tmp file costs an error-retry. Go
-straight from the last verdict to the structured report (`written: 0`).
+**Zero-confirmed shard: write the dismissed rows, not nothing.** If nothing in
+your type/range is `confirmed`, you still MUST call `--write-json` with the
+array of `status: "dismissed"` rows (`findings_written: 0` is a normal, healthy
+response) — the `candidate_verdicts` ledger is the only way recovery can tell
+"all dismissed" from "never ran". Skip the write ONLY when the range had zero
+candidates.
 
 **Hard rule: a verdict only counts if you persist it.** "Analyze all types first
 and write at the end", or "dismiss a batch in prose", leaves `findings/` and
@@ -609,8 +611,10 @@ budget.
   user (`result.sarif`, `result.xlsx`, `report.md`, `findings/`).
 - `dismissed` → everything else: a false positive (a guard, a `_s` safe call, a
   checked allocation, a call contract that proves safety) OR a candidate you
-  could not settle after reading its source. NOT persisted — your reasoning stays
-  in your transcript (the conversation record), never shown to the user.
+  could not settle after reading its source. It is NOT a finding (never reaches
+  `result.sarif`/`report.md`), but the verdict IS persisted to the
+  `candidate_verdicts` ledger with your `reasoning` — that ledger row is what
+  breakpoint recovery and the audit's `dismissed` count read.
 
 **The skill is a FLOOR, not a ceiling.** The skill's false-positive rules are the
 minimum bar you MUST apply first, but you are not a rule executor — reason freely
@@ -703,12 +707,14 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
   The orchestrator matches a settled report back to the exact batch by
   `type` + `range` after an Agent-call timeout; a report without the range can
   only be matched by type, which may skip a sibling range.
-- `written` = the number of CONFIRMED findings you PERSISTED (dismissed
-  candidates are NOT persisted, so they are NOT part of `written`).
-- `dismissed` = the number of candidates you judged dismissed (NOT persisted,
-  NOT part of `written`). Never mix dismissed candidates into `written` — the
-  orchestrator reconciles `written` against the DB's per-type `written_count`,
-  and a conflated number forces it to re-derive your real progress.
+- `written` = the number of CONFIRMED findings you PERSISTED to `findings`
+  (dismissed verdicts live in `candidate_verdicts`, so they are NOT part of
+  `written`).
+- `dismissed` = the number of candidates you judged dismissed (persisted to
+  `candidate_verdicts`, NOT part of `written`). Never mix dismissed candidates
+  into `written` — the orchestrator reconciles `written` against the DB's
+  per-type `written_count`, and a conflated number forces it to re-derive your
+  real progress.
 - `source_reads` / `evidence_opens` = the counts of raw source reads and
   `Evidence` file opens you actually performed for the type. `source_reads` also
   counts every repo-wide `Grep` (one Grep = one read; per-definition `secguard
@@ -735,11 +741,16 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
 - Keep the block as your LAST message — nothing after it. The orchestrator does
   not read your transcript; this block is your only channel home.
 - **Also persist the block to disk BEFORE the final message** (O2 recovery): write
-  the SAME fenced JSON to `<tmpdir>/<subagent_id>-report.json` (the `.sgre/.tmp/`
-  dir the orchestrator passed you; one file per subagent). The orchestrator reads
-  this file FIRST and falls back to your message only when the file is missing —
-  a lost/`No task found` handle must not lose your `needs_context`/`dismissed`
-  accounting (those are NOT in the DB, unlike `written`).
+  the SAME object as **BARE JSON** (NO markdown fence — the settlement parser
+  reads the file with a strict JSON parser; the fenced form is for the chat
+  message ONLY) to `<tmpdir>/<subagent_id>-report.json` (the `.sgre/.tmp/` dir
+  the orchestrator passed you; one file per subagent). Write it atomically:
+  Write `<tmpdir>/<subagent_id>-report.json.tmp` first, then `mv` it to
+  `<tmpdir>/<subagent_id>-report.json`, so a mid-write kill never leaves a
+  truncated report. The orchestrator reads this file FIRST and falls back to
+  your message only when the file is missing — a lost/`No task found` handle
+  must not lose your `needs_context`/`dismissed` accounting (the `written`
+  count is in the DB, the needs_context detail is not).
   **Rewriting your own report is an idempotent OVERWRITE of that one path.** If
   the Write tool rejects the overwrite with a "must read before overwriting"
   error, Read the stale file once and then Write the SAME
@@ -764,7 +775,8 @@ second-pass check (the orchestrator queries `findings` for your assigned CWEs).
 - **Chunked settlement (P2-1 — 分块落盘, survives a mid-batch kill).** For a batch
   you process over many candidates, also write a partial snapshot every ~10
   candidates to `<tmpdir>/<subagent_id>-chunk-<k>.json` (k increasing): the same
-  fenced JSON shape, `format_version: 1`, with the `processed_types` counts
+  BARE-JSON shape (no markdown fence, same .tmp-then-rename atomic write),
+  `format_version: 1`, with the `processed_types` counts
   (`written`/`dismissed`/`evidence_opens`/…) and `needs_context` accumulated SO
   FAR. A chunk is a snapshot, NOT a completion signal — it reads `valid: false`
   in `status --reports` (the orchestrator absorbs its accounting but does not mark

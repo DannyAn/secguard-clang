@@ -420,6 +420,43 @@ def check_ci_templates():
     print("  ci templates: github-pr.yml + gitlab-mr.yml + README.md present")
 
 
+def check_writeback_contract():
+    """Guard the single write-back contract (the v0.12.x drift class):
+      - settlement files on disk are BARE JSON (the chat message may be fenced,
+        the file may not — the Go parser used to reject the documented shape)
+      - every dismissed verdict is persisted to candidate_verdicts (the old
+        "skip the write when zero confirmed" wording made an all-dismissed
+        range indistinguishable from a never-run range)
+      - the audit terminal gate and its --allow-partial escape hatch stay
+        documented, so an unfinished AI stage can never read as complete
+    """
+    agent = read("shared/agent-body.md")
+    ci = read("shared/command-instructions.md")
+    banned = [
+        ("agent-body.md", agent, "write the SAME fenced JSON"),
+        ("agent-body.md", agent, "Zero-confirmed shard: skip the write"),
+        ("agent-body.md", agent, "NOT persisted — your reasoning stays"),
+        ("command-instructions.md", ci, "Zero-confirmed shard: skip the write"),
+        ("command-instructions.md", ci, "Dismissed candidates are not written in any batch"),
+        ("command-instructions.md", ci, "skip the write entirely"),
+        ("command-instructions.md", ci, "Dismissed count is not persisted"),
+    ]
+    for name, text, phrase in banned:
+        if phrase in text:
+            fail(f"{name} reintroduces the retired write-back wording: {phrase!r} — see docs/kimi3.1方案检视与改建建议.md (C-01/C-02)")
+    required = [
+        ("agent-body.md", agent, "BARE JSON"),
+        ("agent-body.md", agent, "candidate_verdicts"),
+        ("command-instructions.md", ci, "candidate_verdicts"),
+        ("command-instructions.md", ci, "--allow-partial"),
+        ("command-instructions.md", ci, "uncovered_ranges"),
+    ]
+    for name, text, phrase in required:
+        if phrase not in text:
+            fail(f"{name} is missing the required contract marker {phrase!r} (bare-JSON settlements, dismissed ledger, audit gate)")
+    print("  write-back contract: bare-JSON settlements + dismissed ledger + audit gate documented")
+
+
 def main():
     check_turn_budget()
     check_tools()
@@ -430,6 +467,7 @@ def main():
     check_plugin_packaging()
     check_hint_tokens()
     check_ci_templates()
+    check_writeback_contract()
     print("Extension consistency check passed.")
 
 
