@@ -139,7 +139,7 @@ in-tree census the scan already performed. Do NOT grep for call sites to verify
 them — the census IS the verification. If the census says `all-literal`, every
 caller was checked; if it lists specific callers, those are ALL of them. A grep
 for callers re-derives a result the scan already computed and is the same
-wall-clock tax as a definition grep.
+wall-clock tax as a definition grep. **path-traversal 精度边界（与 SKILL.md 一致，orchestrator 给子代理的 prompt 必须包含）**：path 是函数参数且**既没有可证污点源（`taint_source` fragment）也没有非常量树内调用方（`callsites@`）时 → dismissed（unproven parameter——到达 path 参数并不能证明内容可含 `../`）；只有污点源可证或有非常量调用方才 confirmed**。
 
 **RED LINE — never call `secguard report --complete-type` or
 `secguard report --audit`.** You are a subagent: the orchestrator is the SINGLE
