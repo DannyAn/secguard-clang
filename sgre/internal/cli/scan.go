@@ -244,6 +244,10 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		if r := recover(); r != nil {
 			logger.Error("scan panicked", "scan_id", scanID, "panic", r)
 			fmt.Fprintf(os.Stderr, "FATAL: scan %s panicked: %v\n", scanID, r)
+			// Mark the directory NOW (issue #253 P0-4): a recoverable crash must
+			// not wait for the next scan's stale sweep to become visible. The
+			// completion-state defer backfills duration_ms on the same path.
+			writeFailedMarker(scanDir, scanID, fmt.Sprintf("crash (panic: %v)", r))
 			exitCode = 1
 		}
 	}()
@@ -981,11 +985,51 @@ func markScanDirFailed(scansRoot, scanID string) {
 	if _, err := os.Stat(scanDir); err != nil {
 		return
 	}
+	// Classify the failure instead of lumping every cause into "OOM or crash"
+	// (issue #253 P0-4): a Go runtime `fatal error` (stack overflow, out of
+	// memory) in the scan log means the process CRASHED; anything else means
+	// the run was interrupted (SIGKILL, Ctrl-C, host reboot) and the log simply
+	// stops mid-phase.
+	reason := "interrupted (SIGKILL/OOM-kill/Ctrl-C); the scan log ends mid-phase"
+	if tail := tailFileLines(filepath.Join(scanDir, "scan.log"), 40); strings.Contains(tail, "fatal error") {
+		reason = "crash (Go runtime fatal error in scan.log)"
+	}
+	writeFailedMarker(scanDir, scanID, reason+"; marked by a later scan's stale sweep")
+}
+
+// writeFailedMarker writes the .failed marker with an explicit failure cause.
+func writeFailedMarker(scanDir, scanID, reason string) {
 	marker := filepath.Join(scanDir, ".failed")
-	body := fmt.Sprintf("scan %s did not complete (OOM or crash); marked by a later scan's stale sweep\n", scanID)
+	body := fmt.Sprintf("scan %s did not complete: %s\n", scanID, reason)
 	if err := os.WriteFile(marker, []byte(body), 0644); err != nil {
 		defaultLogger().Warn("write failed-scan marker failed", "path", marker, "error", err)
 	}
+}
+
+// tailFileLines returns the last n lines of a file (best effort, capped at 64 KB
+// of trailing content) for failure-cause classification. Any read failure
+// returns "".
+func tailFileLines(path string, n int) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	const maxTail = 64 * 1024
+	if info, err := f.Stat(); err == nil && info.Size() > maxTail {
+		if _, err := f.Seek(-maxTail, io.SeekEnd); err != nil {
+			return ""
+		}
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // dirTreeBytes sums the size of every regular file under dir. It is used once
