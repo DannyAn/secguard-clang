@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -223,6 +224,16 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	// returning.
 	scanFinalState := "failed"
 	defer func() {
+		// Any failed run leaves a `.failed` marker, not only a panic or an
+		// OOM-killed process (issue #253 P0-4): a normal error return used to
+		// leave a directory that looked like a success. Never overwrite a more
+		// precise marker the panic path already wrote.
+		if scanFinalState == "failed" {
+			marker := filepath.Join(scanDir, ".failed")
+			if _, statErr := os.Stat(marker); os.IsNotExist(statErr) {
+				writeFailedMarker(scanDir, scanID, "scan failed before completion; see scan.log and scan_runs.completion_state")
+			}
+		}
 		// The scan context may already be canceled by --timeout or Ctrl-C;
 		// recording the failure must not be skipped because of that. Without
 		// WithoutCancel the row would stay 'running' until the next scan's
@@ -962,7 +973,25 @@ func newScanLogger(scanDir string) (*log.Logger, io.Closer) {
 	}
 	// 全量 INFO 只进 scan.log（避免刷屏污染 agent 上下文）；WARN/ERROR 仍回显 stderr。
 	logger, closer := log.NewSplit(os.Stderr, f, log.LevelWarn, log.LevelInfo)
+	// A Go runtime fatal error (stack overflow, out of memory) bypasses the
+	// logger and writes to stderr only, so the stale sweep could never classify
+	// a crash from scan.log (issue #253 P0-4). `debug.SetCrashOutput` duplicates
+	// f's descriptor and mirrors the fatal output into scan.log. A recovered
+	// panic is not "unhandled", so this does not interfere with the explicit
+	// panic path.
+	if derr := debug.SetCrashOutput(f, debug.CrashOptions{}); derr == nil {
+		return logger, &crashOutputCloser{inner: closer}
+	}
 	return logger, closer
+}
+
+// crashOutputCloser clears the process-global crash-output sink before closing
+// the scan log, so a later panic never writes to a closed descriptor.
+type crashOutputCloser struct{ inner io.Closer }
+
+func (c *crashOutputCloser) Close() error {
+	_ = debug.SetCrashOutput(nil, debug.CrashOptions{})
+	return c.inner.Close()
 }
 
 type nopCloser struct{}
@@ -989,9 +1018,11 @@ func markScanDirFailed(scansRoot, scanID string) {
 	// (issue #253 P0-4): a Go runtime `fatal error` (stack overflow, out of
 	// memory) in the scan log means the process CRASHED; anything else means
 	// the run was interrupted (SIGKILL, Ctrl-C, host reboot) and the log simply
-	// stops mid-phase.
+	// stops mid-phase. `newScanLogger` mirrors runtime fatal output into
+	// scan.log via debug.SetCrashOutput, so this is a real signal (the runtime
+	// otherwise writes to stderr only).
 	reason := "interrupted (SIGKILL/OOM-kill/Ctrl-C); the scan log ends mid-phase"
-	if tail := tailFileLines(filepath.Join(scanDir, "scan.log"), 40); strings.Contains(tail, "fatal error") {
+	if fileContainsAny(filepath.Join(scanDir, "scan.log"), "fatal error", "goroutine stack exceeds") {
 		reason = "crash (Go runtime fatal error in scan.log)"
 	}
 	writeFailedMarker(scanDir, scanID, reason+"; marked by a later scan's stale sweep")
@@ -1006,30 +1037,27 @@ func writeFailedMarker(scanDir, scanID, reason string) {
 	}
 }
 
-// tailFileLines returns the last n lines of a file (best effort, capped at 64 KB
-// of trailing content) for failure-cause classification. Any read failure
-// returns "".
-func tailFileLines(path string, n int) string {
+// fileContainsAny reports whether the file contains one of the needles, reading
+// at most the first 8 MB (a crash traceback follows the fatal line, so the
+// interesting text is near the END of the crash segment, not within the last
+// 40 lines). Any read failure reports false.
+func fileContainsAny(path string, needles ...string) bool {
 	f, err := os.Open(path)
 	if err != nil {
-		return ""
+		return false
 	}
 	defer f.Close()
-	const maxTail = 64 * 1024
-	if info, err := f.Stat(); err == nil && info.Size() > maxTail {
-		if _, err := f.Seek(-maxTail, io.SeekEnd); err != nil {
-			return ""
+	data, err := io.ReadAll(io.LimitReader(f, 8<<20))
+	if err != nil && len(data) == 0 {
+		return false
+	}
+	s := string(data)
+	for _, n := range needles {
+		if n != "" && strings.Contains(s, n) {
+			return true
 		}
 	}
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return ""
-	}
-	lines := strings.Split(string(data), "\n")
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
-	}
-	return strings.Join(lines, "\n")
+	return false
 }
 
 // dirTreeBytes sums the size of every regular file under dir. It is used once
@@ -1283,29 +1311,52 @@ func runStatusCmd(ctx context.Context, args []string) int {
 		allEvents += n
 	}
 
-	var findingsCount int
-	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM findings`).Scan(&findingsCount); err != nil {
+	// Scope the verdict census to ONE scan (issue #253 P2-6). findings rows are
+	// UPSERTed per scan_id and never deleted, so an unscoped COUNT(*) mixes
+	// every historical scan and can never reconcile with `report --audit`,
+	// which reads exactly one scan. `--scan-id` selects it explicitly;
+	// otherwise the latest scan is used, matching the audit's default.
+	scanID := parseStringFlag(args, "scan-id")
+	if scanID == "" {
+		scanID, _ = store.GetLatestScanID(ctx)
+	}
+	scope := ""
+	var scopeArgs []interface{}
+	if scanID != "" {
+		scope = " AND scan_id = ?"
+		scopeArgs = append(scopeArgs, scanID)
+	}
+	countFindings := func(where string) (int, error) {
+		var n int
+		err := store.DB().QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM findings WHERE `+where+scope, scopeArgs...).Scan(&n)
+		return n, err
+	}
+	findingsCount, err := countFindings("1=1")
+	if err != nil {
 		WriteErrorJSON(fmt.Sprintf("failed to count findings: %v", err))
 		return 1
 	}
-	// Split the raw row count into the audit's verdict buckets (issue #253
-	// P2-6): findings_count used to mix AI-confirmed rows with auto-confirmed
-	// rows later dismissed on review (379 vs the audit's 286). The three new
-	// fields reconcile exactly with `report --audit`: AI-confirmed, machine
-	// verdicts still standing, and machine verdicts reviewed out.
+	// Split the raw row count into the audit's verdict buckets, mirroring
+	// db.Finding.FinalStatus(): a review dismissal (dismissed / suspected-kept /
+	// false_positive) drops the row from the actionable set, and an inconclusive
+	// review (needs_more_evidence) keeps its first-pass verdict. The old queries
+	// only counted status='auto-confirmed' + review_status='dismissed', so a
+	// status='confirmed' row later reviewed out (or !false_positive) still
+	// inflated the "confirmed" total.
 	var confirmedCount, autoConfirmedCount, reviewedOutCount int
-	if err := store.DB().QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM findings WHERE status = 'confirmed'`).Scan(&confirmedCount); err != nil {
+	confirmedCount, err = countFindings("status = 'confirmed' AND COALESCE(review_status,'') NOT IN ('dismissed','suspected-kept','false_positive')")
+	if err != nil {
 		WriteErrorJSON(fmt.Sprintf("failed to count confirmed findings: %v", err))
 		return 1
 	}
-	if err := store.DB().QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM findings WHERE status = 'auto-confirmed' AND (review_status IS NULL OR review_status = '' OR review_status = 'confirmed')`).Scan(&autoConfirmedCount); err != nil {
+	autoConfirmedCount, err = countFindings("status = 'auto-confirmed' AND COALESCE(review_status,'') NOT IN ('dismissed','suspected-kept','false_positive')")
+	if err != nil {
 		WriteErrorJSON(fmt.Sprintf("failed to count auto-confirmed findings: %v", err))
 		return 1
 	}
-	if err := store.DB().QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM findings WHERE status = 'auto-confirmed' AND review_status = 'dismissed'`).Scan(&reviewedOutCount); err != nil {
+	reviewedOutCount, err = countFindings("status IN ('confirmed','auto-confirmed') AND review_status IN ('dismissed','suspected-kept','false_positive')")
+	if err != nil {
 		WriteErrorJSON(fmt.Sprintf("failed to count reviewed-out findings: %v", err))
 		return 1
 	}
@@ -1314,6 +1365,7 @@ func runStatusCmd(ctx context.Context, args []string) int {
 		"indexed":                  true,
 		"state":                    indexState(files, dbPath),
 		"db_path":                  dbPath,
+		"scan_id":                  scanID,
 		"files_indexed":            len(files),
 		"functions_indexed":        len(funcs),
 		"security_events":          allEvents,
@@ -1321,7 +1373,6 @@ func runStatusCmd(ctx context.Context, args []string) int {
 		"confirmed_findings_count": confirmedCount,
 		"auto_confirmed_count":     autoConfirmedCount,
 		"reviewed_out_count":       reviewedOutCount,
-		"findings_count_note":      "findings_count is the raw row total (all statuses); confirmed_findings_count + auto_confirmed_count matches report --audit (reviewed_out rows are excluded from the actionable verdict)",
 	}
 
 	jsonBytes, err := json.MarshalIndent(output, "", "  ")

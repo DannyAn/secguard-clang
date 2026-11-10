@@ -24,16 +24,16 @@ func TestNormalizeSettlementRange(t *testing.T) {
 }
 
 func TestSuggestedBatchSizeAndBatches(t *testing.T) {
-	// The fixed subagent overhead is priced in (issue #253 P1-6):
-	// N = floor((12 + 24) / r_type), clamped to [8, 100].
-	if got := suggestedBatchSize(0.63); got != 57 {
-		t.Errorf("suggestedBatchSize(0.63) = %d, want 57 (floor(36/0.63))", got)
+	// N must stay within the documented per-subagent evidence-open budget:
+	// N = floor(12 / r_type), clamped to [1, 100].
+	if got := suggestedBatchSize(0.63); got != 19 {
+		t.Errorf("suggestedBatchSize(0.63) = %d, want 19 (floor(12/0.63))", got)
 	}
-	if got := suggestedBatchSize(1.0); got != 36 {
-		t.Errorf("suggestedBatchSize(1.0) = %d, want 36", got)
+	if got := suggestedBatchSize(1.0); got != 12 {
+		t.Errorf("suggestedBatchSize(1.0) = %d, want 12 (evidence-open budget)", got)
 	}
-	if got := suggestedBatchSize(20.0); got != 8 {
-		t.Errorf("suggestedBatchSize(20.0) = %d, want 8 (clamped to the minimum)", got)
+	if got := suggestedBatchSize(20.0); got != 1 {
+		t.Errorf("suggestedBatchSize(20.0) = %d, want 1 (clamped)", got)
 	}
 	if got := suggestedBatchSize(0); got != 100 {
 		t.Errorf("suggestedBatchSize(0) = %d, want 100 (hard ceiling)", got)

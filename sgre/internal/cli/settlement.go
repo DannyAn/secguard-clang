@@ -650,20 +650,6 @@ func settlementAggregate(ctx context.Context, store db.Store, vulnType string) s
 // index/context no longer fits the subagent.
 const maxBatchCandidates = 100
 
-// batchFixedEvidenceEquivalent is the per-SUBAGENT fixed cost (skill + agent
-// prompt + index shard loading) expressed in evidence-open equivalents
-// (issue #253 P1-6). The old formula N = floor(12 / r_type) priced only the
-// per-candidate evidence opens, so an r=1.0 type got N=12 and paid the same
-// ~20-100 KB fixed prompt cost 25 times over. The real per-candidate cost is
-// fixed/N + r_type, which strictly decreases with N, so the evidence budget
-// is raised by the fixed equivalent and a floor keeps high-r types from
-// splintering into one-candidate batches.
-const batchFixedEvidenceEquivalent = 24
-
-// minBatchCandidates keeps even the most evidence-hungry type from paying
-// the fixed subagent cost on a handful of candidates.
-const minBatchCandidates = 8
-
 func suggestedBatchSize(rType float64) int {
 	if rType < 0 {
 		rType = settlementRTypeFallback
@@ -674,9 +660,18 @@ func suggestedBatchSize(rType float64) int {
 		// ceiling applies — light types finally get bigger batches.
 		return maxBatchCandidates
 	}
-	n := int(math.Floor(float64(maxEvidenceOpensPerType+batchFixedEvidenceEquivalent) / rType))
-	if n < minBatchCandidates {
-		n = minBatchCandidates
+	// N <= evidence-open budget / expected opens per candidate. This is the
+	// hard per-subagent budget documented in
+	// extension/shared/command-instructions.md ("MAX_EVIDENCE_OPENS_PER_TYPE")
+	// and extension/shared/agent-body.md; the engine's budget_violations check
+	// uses the same constant. Do NOT add a fixed-cost term here without raising
+	// that per-batch budget in the authoritative docs: N x r_type is the batch's
+	// expected evidence opens, so a larger N would flag every batch as
+	// over-budget (or force the agent to stop early and leave candidates
+	// unclassified).
+	n := int(math.Floor(float64(maxEvidenceOpensPerType) / rType))
+	if n < 1 {
+		n = 1
 	}
 	if n > maxBatchCandidates {
 		n = maxBatchCandidates

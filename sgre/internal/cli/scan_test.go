@@ -485,4 +485,9 @@ func TestScanCmd_SkipDetectorsUnknownHardFails(t *testing.T) {
 	if !strings.Contains(stdout, "not_a_detector") || !strings.Contains(stdout, "integer_overflow") {
 		t.Fatalf("the error must name the unknown detector and list the registered ones: %s", stdout)
 	}
+	// A normal error return must leave the same visible failure marker as a
+	// panic/OOM (issue #253 P0-4); previously only the stale sweep wrote one.
+	if _, err := os.Stat(filepath.Join(scanDir, ".failed")); err != nil {
+		t.Errorf("a failed scan must leave a .failed marker in its scan dir: %v", err)
+	}
 }

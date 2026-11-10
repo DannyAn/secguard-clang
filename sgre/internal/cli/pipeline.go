@@ -366,6 +366,15 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 		if err := store.SetMeta(ctx, "graph_build_complete", "true"); err != nil {
 			logger.Warn("failed to record graph build complete", "error", err)
 		}
+		// The reuse fingerprint describes only the graph inputs, so it is valid
+		// as soon as the graph finishes. Recording it here (not after the
+		// detectors) is what lets a FIRST-EVER scan that dies in a detector
+		// reuse the graph on retry; the detector set has its own completeness
+		// marker (detectors_done), so this cannot make an incomplete detector
+		// run look complete.
+		if err := store.SetMeta(ctx, "reuse_fingerprint", fingerprint); err != nil {
+			logger.Warn("failed to record reuse fingerprint", "error", err)
+		}
 	}
 
 	// Share one statement-CFG cache across the detector and plan stages: a
@@ -431,12 +440,14 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}
 
 	// Record the pipeline meta that gates the next run's reuse check.
-	// graph_build_complete=true means the graph itself is valid (a builder
-	// error returned early above and never reaches here). detectors_done is the
-	// set of detectors that COMPLETED this run: a failed detector is absent, so
-	// the next scan re-runs it instead of reading its types as "0 candidates".
-	// An event-batch flush failure invalidates the whole set (events were lost
-	// and there is no per-detector attribution for the loss).
+	// graph_build_complete and reuse_fingerprint were already written right
+	// after the graph builders finished (see above); rewriting the fingerprint
+	// here is harmless and keeps a graph-reused run's meta consistent.
+	// detectors_done is the set of detectors that COMPLETED this run: a failed
+	// detector is absent, so the next scan re-runs it instead of reading its
+	// types as "0 candidates". An event-batch flush failure invalidates the
+	// whole set (events were lost and there is no per-detector attribution for
+	// the loss).
 	if err := store.SetMeta(ctx, "config_checksum", config.ConfigChecksum()); err != nil {
 		logger.Warn("failed to record config checksum", "error", err)
 	}

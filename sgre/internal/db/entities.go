@@ -421,7 +421,8 @@ type SettlementStat struct {
 	WorkMS        int64
 	FinishedAt    int64
 	CreatedAt     int64
-	// HeartbeatAt is the lease's last proof of life (unix seconds): a fresh
+	// HeartbeatAt is the lease's last proof of life (unix MILLISECONDS, the
+	// same epoch as created_at/finished_at, issue #253 P1-1): a fresh
 	// settlement chunk/report renews it, so a slow-but-alive heavy batch is
 	// never reclaimed at the claim TTL. Staleness is judged against
 	// COALESCE(heartbeat_at, created_at) — never against creation time alone.
