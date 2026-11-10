@@ -1128,7 +1128,7 @@ func runStatusCmd(ctx context.Context, args []string) int {
 			WriteErrorJSON("no scan found; run 'secguard scan <path>' first or pass --scan-id")
 			return 1
 		}
-		staleBefore := time.Now().Add(-settlementClaimTTL).Unix()
+		staleBefore := time.Now().Add(-settlementClaimTTL).UnixMilli()
 		claim, cerr := store.ClaimSettlementRange(ctx, scanID, claimType, normalizeSettlementRange(claimRange), claimHolder, staleBefore, hasFlag(args, "reclaim"))
 		if cerr != nil {
 			WriteErrorJSON(fmt.Sprintf("failed to claim settlement range: %v", cerr))

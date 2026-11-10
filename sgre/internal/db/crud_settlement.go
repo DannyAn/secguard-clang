@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // GetSettlementStat returns the row for one (scan, type, range), or nil when the
@@ -38,7 +39,8 @@ func (s *store) GetSettlementStat(ctx context.Context, scanID, vulnType, rangeSt
 // orchestrators racing on the same type+range converge on one worker instead of
 // running the same batch twice. The decision is ONE upsert statement (SQLite
 // executes it atomically): insert when free; take over only when the previous
-// claim is stale (created_at < staleBefore, seconds), failed, or reclaim is true
+// claim is stale (created_at < staleBefore, unix MILLISECONDS — the same epoch
+// as finished_at/heartbeat_at, issue #253 P1-1), failed, or reclaim is true
 // (a deliberate needs_context re-review). A fresh 'dispatched' claim or a 'done'
 // row loses, and the result carries the current holder so the caller can skip the
 // batch with a reason.
@@ -106,7 +108,7 @@ func (s *store) ClaimSettlementRange(ctx context.Context, scanID, vulnType, rang
 	if reclaim {
 		reclaimFlag = 1
 	}
-	nowSec := now()
+	nowMS := time.Now().UnixMilli()
 	var (
 		gotID     int64
 		gotHolder string
@@ -126,7 +128,7 @@ func (s *store) ClaimSettlementRange(ctx context.Context, scanID, vulnType, rang
 		    OR settlement_stats.status = 'released'
 		    OR (settlement_stats.status = 'dispatched' AND COALESCE(settlement_stats.heartbeat_at, settlement_stats.created_at) < ?)
 		 RETURNING id, subagent_id, retry_count`,
-		scanID, vulnType, rangeStr, holder, nowSec, nowSec, reclaimFlag, staleBefore).
+		scanID, vulnType, rangeStr, holder, nowMS, nowMS, reclaimFlag, staleBefore).
 		Scan(&gotID, &gotHolder, &gotRetry)
 	if errors.Is(err, sql.ErrNoRows) {
 		held, herr := s.GetSettlementStat(ctx, scanID, vulnType, rangeStr)
@@ -144,8 +146,8 @@ func (s *store) ClaimSettlementRange(ctx context.Context, scanID, vulnType, rang
 		claim.Holder = held.SubagentID
 		claim.Status = held.Status
 		claim.RetryCount = held.RetryCount
-		if held.CreatedAt > 0 && nowSec > held.CreatedAt {
-			claim.AgeMS = (nowSec - held.CreatedAt) * 1000
+		if held.CreatedAt > 0 && nowMS > held.CreatedAt {
+			claim.AgeMS = nowMS - held.CreatedAt
 		}
 		return claim, nil
 	}
@@ -169,15 +171,16 @@ func (s *store) ClaimSettlementRange(ctx context.Context, scanID, vulnType, rang
 	return claim, nil
 }
 
-// RenewSettlementLease refreshes a live holder's heartbeat (unix seconds). It
-// is called when a FRESH settlement chunk/report from that holder is absorbed:
-// a slow-but-alive heavy batch must never look stale at the claim TTL. Only
-// 'dispatched' rows are touched — a settled or released claim has no lease to
-// renew, and a late report from a replaced holder must not resurrect it.
-func (s *store) RenewSettlementLease(ctx context.Context, scanID, holder string, nowSec int64) error {
+// RenewSettlementLease refreshes a live holder's heartbeat (unix milliseconds,
+// the same epoch as created_at/finished_at). It is called when a FRESH
+// settlement chunk/report from that holder is absorbed: a slow-but-alive heavy
+// batch must never look stale at the claim TTL. Only 'dispatched' rows are
+// touched — a settled or released claim has no lease to renew, and a late
+// report from a replaced holder must not resurrect it.
+func (s *store) RenewSettlementLease(ctx context.Context, scanID, holder string, nowMS int64) error {
 	_, err := s.exec.ExecContext(ctx,
 		`UPDATE settlement_stats SET heartbeat_at = ? WHERE scan_id = ? AND subagent_id = ? AND status = 'dispatched'`,
-		nowSec, scanID, holder)
+		nowMS, scanID, holder)
 	if err != nil {
 		return fmt.Errorf("db: renew settlement lease: %w", err)
 	}
@@ -210,7 +213,7 @@ func (s *store) ReleaseSettlementClaim(ctx context.Context, scanID, vulnType, ra
 
 func (s *store) UpsertSettlementStat(ctx context.Context, st *SettlementStat) error {
 	if st.CreatedAt == 0 {
-		st.CreatedAt = now()
+		st.CreatedAt = time.Now().UnixMilli()
 	}
 	if st.Status == "" {
 		st.Status = "done"
@@ -248,7 +251,7 @@ func (s *store) UpsertSettlementStat(ctx context.Context, st *SettlementStat) er
 		   queue_ms = excluded.queue_ms,
 		   work_ms = excluded.work_ms,
 		   finished_at = COALESCE(excluded.finished_at, settlement_stats.finished_at),
-		   created_at = excluded.created_at`,
+		   created_at = COALESCE(settlement_stats.created_at, excluded.created_at)`,
 		st.ScanID, st.VulnType, st.RangeStr, st.SubagentID,
 		st.Written, st.Dismissed, st.EvidenceOpens, st.SourceReads, st.RepoGreps, st.NeedsContext,
 		st.Status, st.RetryCount, wallMS, queueMS, workMS, finishedAt, st.CreatedAt, heartbeatAt)

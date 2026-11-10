@@ -63,12 +63,12 @@ func formatInterval(iv interval) string {
 	return fmt.Sprintf("%d-%d", iv.lo, iv.hi)
 }
 
-func deriveTypeCoverage(rows []*db.SettlementStat, candidateCount int, nowSec int64) settlementCoverage {
+func deriveTypeCoverage(rows []*db.SettlementStat, candidateCount int, nowMS int64) settlementCoverage {
 	cov := settlementCoverage{HasRows: len(rows) > 0}
 	if candidateCount <= 0 {
 		return cov
 	}
-	staleBefore := nowSec - int64(settlementClaimTTL/time.Second)
+	staleBefore := nowMS - int64(settlementClaimTTL/time.Millisecond)
 	var done []interval
 	for _, st := range rows {
 		switch {

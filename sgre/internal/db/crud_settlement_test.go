@@ -214,12 +214,12 @@ func TestSettlementTaskStatusLifecycle(t *testing.T) {
 func TestSettlementClaim_AtomicPlaceholder(t *testing.T) {
 	ctx := context.Background()
 	s := NewTestStore(t)
-	nowSec := time.Now().Unix()
+	nowMS := time.Now().UnixMilli()
 	if _, err := s.InsertScanStat(ctx, &ScanStat{ScanID: "sc_c", VulnType: "buffer-overflow", SeedCount: 30, FinalCount: 20}); err != nil {
 		t.Fatal(err)
 	}
 
-	first, err := s.ClaimSettlementRange(ctx, "sc_c", "buffer-overflow", "1-20", "holder-a", nowSec-60, false)
+	first, err := s.ClaimSettlementRange(ctx, "sc_c", "buffer-overflow", "1-20", "holder-a", nowMS-60_000, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestSettlementClaim_AtomicPlaceholder(t *testing.T) {
 		t.Errorf("claim row = %+v, want dispatched/holder-a", row)
 	}
 
-	second, err := s.ClaimSettlementRange(ctx, "sc_c", "buffer-overflow", "1-20", "holder-b", nowSec-60, false)
+	second, err := s.ClaimSettlementRange(ctx, "sc_c", "buffer-overflow", "1-20", "holder-b", nowMS-60_000, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestSettlementClaim_AtomicPlaceholder(t *testing.T) {
 	}
 
 	// staleBefore in the future makes the stored claim stale: takeover + retry.
-	stale, err := s.ClaimSettlementRange(ctx, "sc_c", "buffer-overflow", "1-20", "holder-c", nowSec+3600, false)
+	stale, err := s.ClaimSettlementRange(ctx, "sc_c", "buffer-overflow", "1-20", "holder-c", nowMS+3_600_000, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +275,7 @@ func TestSettlementClaim_DoneHeldUnlessReclaim(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	held, err := s.ClaimSettlementRange(ctx, "sc_d", "uninit", "1-50", "holder", time.Now().Unix(), false)
+	held, err := s.ClaimSettlementRange(ctx, "sc_d", "uninit", "1-50", "holder", time.Now().UnixMilli(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func TestSettlementClaim_DoneHeldUnlessReclaim(t *testing.T) {
 		t.Fatalf("done range claim = %+v, want held/done", held)
 	}
 
-	reclaimed, err := s.ClaimSettlementRange(ctx, "sc_d", "uninit", "1-50", "holder", time.Now().Unix(), true)
+	reclaimed, err := s.ClaimSettlementRange(ctx, "sc_d", "uninit", "1-50", "holder", time.Now().UnixMilli(), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +304,7 @@ func TestSettlementClaim_FailedRowRetried(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	claim, err := s.ClaimSettlementRange(ctx, "sc_f", "uninit", "1-50", "w2", time.Now().Unix(), false)
+	claim, err := s.ClaimSettlementRange(ctx, "sc_f", "uninit", "1-50", "w2", time.Now().UnixMilli(), false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -117,16 +117,16 @@ func TestEnrichPerTypeStatusClaimInFlight(t *testing.T) {
 	if _, err := store.InsertScanStat(ctx, &db.ScanStat{ScanID: "sc_test", VulnType: "buffer-overflow", SeedCount: 120, FinalCount: 120}); err != nil {
 		t.Fatal(err)
 	}
-	nowSec := time.Now().Unix()
+	nowMS := time.Now().UnixMilli()
 	if err := store.UpsertSettlementStat(ctx, &db.SettlementStat{
 		ScanID: "sc_test", VulnType: "buffer-overflow", RangeStr: "1-20", SubagentID: "live-holder",
-		Status: "dispatched", CreatedAt: nowSec,
+		Status: "dispatched", CreatedAt: nowMS,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.UpsertSettlementStat(ctx, &db.SettlementStat{
 		ScanID: "sc_test", VulnType: "buffer-overflow", RangeStr: "21-40", SubagentID: "dead-holder",
-		Status: "dispatched", CreatedAt: nowSec - int64(settlementClaimTTL/time.Second) - 60,
+		Status: "dispatched", CreatedAt: nowMS - int64(settlementClaimTTL/time.Millisecond) - 60_000,
 	}); err != nil {
 		t.Fatal(err)
 	}
