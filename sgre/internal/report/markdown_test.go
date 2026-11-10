@@ -1180,3 +1180,75 @@ func TestFixSuggestion_GlobalContainerFieldLeak(t *testing.T) {
 		t.Errorf("fix suggestion fell back to the allocation-site template:\n%s", s)
 	}
 }
+
+// issue #257: the unchecked-return fix strategy was a one-size "check `< 0`"
+// template that misstates strdup (which fails with NULL, not a negative code).
+// The suggestion must name the callee, require a NULL check, and free the copy.
+func TestFixSuggestion_UncheckedReturnStrdup(t *testing.T) {
+	s := FixSuggestion("unchecked-return", "CWE-252", planner.EvidenceItem{
+		APIName: "strdup",
+		Target:  planner.TargetInfo{Function: "dns_rewrite_sect_cmd_convert", Variable: "strdup(cmd)", Line: 1},
+	})
+	for _, want := range []string{"strdup", "if (copy == NULL)", "free(copy)", "dns_rewrite_sect_cmd_convert"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("strdup fix suggestion missing %q:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "if (callee(...) < 0)") || strings.Contains(s, "result < 0") {
+		t.Errorf("strdup fix suggestion must not test a negative error code (strdup returns NULL):\n%s", s)
+	}
+}
+
+// issue #257 sibling: an I/O reader fails with -1 / a short count, so it needs
+// the error+short-read check, not the NULL check used for allocators.
+func TestFixSuggestion_UncheckedReturnRead(t *testing.T) {
+	s := FixSuggestion("unchecked-return", "CWE-252", planner.EvidenceItem{
+		APIName: "read",
+		Target:  planner.TargetInfo{Function: "load", Variable: "read(fd, buf, n)", Line: 1},
+	})
+	if !strings.Contains(s, "read") || !strings.Contains(s, "-1") {
+		t.Errorf("read fix suggestion should name the callee and its -1 error sentinel:\n%s", s)
+	}
+	if strings.Contains(s, "free(copy)") {
+		t.Errorf("read fix suggestion must not carry the allocator free template:\n%s", s)
+	}
+}
+
+// issue #257: dangerous-function (CWE-676) was a one-size "use strncpy_s"
+// template that misstates the unchecked string→number converters. atol needs a
+// strtol-family swap with endptr/errno validation, NOT an Annex-K `_s` swap.
+func TestFixSuggestion_DangerousFunctionUncheckedConversion(t *testing.T) {
+	s := FixSuggestion("dangerous-function", "CWE-676", planner.EvidenceItem{
+		APIName:  "atol",
+		Category: "unchecked_conversion",
+		Target:   planner.TargetInfo{Function: "dslite_get_intfid_by_path", Variable: "atol", Line: 119},
+	})
+	for _, want := range []string{"atol", "strtol", "endptr", "ERANGE", "dslite_get_intfid_by_path"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("atol fix suggestion missing %q:\n%s", want, s)
+		}
+	}
+	for _, bad := range []string{"strncpy_s", "strcpy_s", "memcpy_s"} {
+		if strings.Contains(s, bad) {
+			t.Errorf("atol fix suggestion must not suggest the Annex-K `_s` swap (%q):\n%s", bad, s)
+		}
+	}
+}
+
+// The unsafe_string category still needs the Annex-K swap — the category branch
+// must not regress the bounded-memory replacement for strcpy.
+func TestFixSuggestion_DangerousFunctionUnsafeString(t *testing.T) {
+	s := FixSuggestion("dangerous-function", "CWE-676", planner.EvidenceItem{
+		APIName:  "strcpy",
+		Category: "unsafe_string",
+		Target:   planner.TargetInfo{Function: "copy_name", Variable: "strcpy", Line: 3},
+	})
+	for _, want := range []string{"strcpy", "strcpy_s"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("strcpy fix suggestion missing %q:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "strtol") {
+		t.Errorf("strcpy fix suggestion must not carry the strtol template:\n%s", s)
+	}
+}
