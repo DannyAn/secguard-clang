@@ -1410,6 +1410,22 @@ func FixSuggestion(vulnType, cwe string, c planner.EvidenceItem) string {
 // error code) and "check NULL" misstates `read`. Branch on the API name.
 func uncheckedReturnFix(c planner.EvidenceItem, funcName string) string {
 	api := c.APIName
+	// No callee name captured (a hand-built fixture or a candidate whose event
+	// lacked the callee): fall back to the function-level generic advice rather
+	// than rendering an empty ``()`` sink.
+	if api == "" {
+		return fmt.Sprintf(
+			"Check the return value of the call in `%s`:\n\n"+
+				"```c\n"+
+				"if (callee(...) < 0) {\n"+
+				"    // handle failure: log, cleanup, propagate the error\n"+
+				"    return -1;\n"+
+				"}\n"+
+				"```\n\n"+
+				"Treat the callee's failure sentinel (NULL / -1 / error code) as a real\n"+
+				"error path and propagate it instead of discarding the result.\n",
+			funcName)
+	}
 	lower := strings.ToLower(api)
 
 	// strdup and the `*_dup` copy helpers are allocations: NULL is the only
