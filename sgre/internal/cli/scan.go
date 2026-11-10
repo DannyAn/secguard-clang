@@ -519,7 +519,7 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		TotalCandidates:   totalCandidates,
 		AutoConfirmed:     totalAutoConfirmed,
 		FilesIndexed:      indexResult.FilesIndexed,
-		FunctionsIndexed:  indexResult.FunctionsIndexed,
+		FunctionsIndexed:  indexResult.FunctionsScanned,
 		FunctionsInIndex:  functionsInIndex,
 		LinesOfCode:       indexResult.LinesOfCode,
 		TypeBreakdown:     typeBreakdown,
@@ -577,7 +577,7 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		"existing_findings_count":     len(findingsList),
 		"index_summary": map[string]interface{}{
 			"files_indexed":      indexResult.FilesIndexed,
-			"functions_indexed":  indexResult.FunctionsIndexed,
+			"functions_indexed":  indexResult.FunctionsScanned,
 			"functions_in_index": functionsInIndex,
 			"files_skipped":      indexResult.FilesSkipped,
 			// Scale figures for the report header / console summary. The same
@@ -624,7 +624,7 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	reportStart := time.Now()
 	if err := scanOutput.Write(planResults, report.IndexSummary{
 		FilesIndexed:        indexResult.FilesIndexed,
-		FunctionsIndexed:    indexResult.FunctionsIndexed,
+		FunctionsIndexed:    indexResult.FunctionsScanned,
 		FunctionsInIndex:    functionsInIndex,
 		FilesSkipped:        indexResult.FilesSkipped,
 		LinesOfCode:         indexResult.LinesOfCode,
@@ -691,7 +691,7 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 			PlanMs:           outcome.Timings.PlanMs,
 			ReportMs:         time.Since(reportStart).Milliseconds(),
 			FilesIndexed:     indexResult.FilesIndexed,
-			FunctionsIndexed: indexResult.FunctionsIndexed,
+			FunctionsIndexed: indexResult.FunctionsScanned,
 			SeedCount:        totalSeedCount,
 			FinalCount:       totalFinalCount,
 			ReportBytes:      reportBytes,
@@ -1288,15 +1288,40 @@ func runStatusCmd(ctx context.Context, args []string) int {
 		WriteErrorJSON(fmt.Sprintf("failed to count findings: %v", err))
 		return 1
 	}
+	// Split the raw row count into the audit's verdict buckets (issue #253
+	// P2-6): findings_count used to mix AI-confirmed rows with auto-confirmed
+	// rows later dismissed on review (379 vs the audit's 286). The three new
+	// fields reconcile exactly with `report --audit`: AI-confirmed, machine
+	// verdicts still standing, and machine verdicts reviewed out.
+	var confirmedCount, autoConfirmedCount, reviewedOutCount int
+	if err := store.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM findings WHERE status = 'confirmed'`).Scan(&confirmedCount); err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to count confirmed findings: %v", err))
+		return 1
+	}
+	if err := store.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM findings WHERE status = 'auto-confirmed' AND (review_status IS NULL OR review_status = '' OR review_status = 'confirmed')`).Scan(&autoConfirmedCount); err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to count auto-confirmed findings: %v", err))
+		return 1
+	}
+	if err := store.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM findings WHERE status = 'auto-confirmed' AND review_status = 'dismissed'`).Scan(&reviewedOutCount); err != nil {
+		WriteErrorJSON(fmt.Sprintf("failed to count reviewed-out findings: %v", err))
+		return 1
+	}
 
 	output := map[string]interface{}{
-		"indexed":           true,
-		"state":             indexState(files, dbPath),
-		"db_path":           dbPath,
-		"files_indexed":     len(files),
-		"functions_indexed": len(funcs),
-		"security_events":   allEvents,
-		"findings_count":    findingsCount,
+		"indexed":                  true,
+		"state":                    indexState(files, dbPath),
+		"db_path":                  dbPath,
+		"files_indexed":            len(files),
+		"functions_indexed":        len(funcs),
+		"security_events":          allEvents,
+		"findings_count":           findingsCount,
+		"confirmed_findings_count": confirmedCount,
+		"auto_confirmed_count":     autoConfirmedCount,
+		"reviewed_out_count":       reviewedOutCount,
+		"findings_count_note":      "findings_count is the raw row total (all statuses); confirmed_findings_count + auto_confirmed_count matches report --audit (reviewed_out rows are excluded from the actionable verdict)",
 	}
 
 	jsonBytes, err := json.MarshalIndent(output, "", "  ")
