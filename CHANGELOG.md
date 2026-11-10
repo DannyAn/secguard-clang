@@ -4,6 +4,20 @@
 
 ## [未发布]
 
+## [0.12.6] - 2026-11-10
+
+### Issue #253 — 超大仓库扫描性能、候选精度与失败可见性（P0/P1/P2 主体 + 检视修正）
+
+针对 3435 文件 / 812064 行生产仓库（端到端 4h56m，其中扫描器 502s、AI 编排 17259s、4523 候选仅 286 确认、93 条 auto-confirm 全部误报）的整改，覆盖 P0-1/3/4/5/6、P1-1、P2-1、P2-6/P3-3，并对实现做了两轮代码检视修正。
+
+- **崩溃与失败可见性（P0-1/P0-3/P0-4/P0-5）**：`boundedByParam` 增加 visited + 深度上限，赋值环/数千层深链不再把 goroutine 栈打爆；`--skip-detectors` kebab→snake 归一化，未知名称硬失败并列出合法列表；失败扫描回填 `duration_ms`，panic/普通失败即时写 `.failed`，runtime fatal 经 `debug.SetCrashOutput` 镜像进 `scan.log`，stale sweep 区分 crash/interrupted；`graph_build_complete` 与 `reuse_fingerprint` 在 detector 之前落库，skip 集合不再进图指纹，detector 崩溃后重试只重跑 detector、复用 graph。
+- **候选精度（P0-6/P2-1）**：新增 `[scan].precision_tier`（`balanced` 默认 / `strict` / `off`），complete-program 扫描按 non-proving 层策略预驳回（ledger `precision_fail_open`，literal-NULL 见证永远保留）；union 共享存储不再报 partial-init，并把 typedef union 收集扩展到 header（tree-wide）；`SLL_Scan` 等不透明遍历宏的长循环 sink 降为 suspected；区间引擎按 guard 边细化、剪除不可达分支；callee 对除数为零做 clamp 时不再自动确认；open-world taint 假设不再单独提升 confirmed；UAF/uninit 事件携带列号，`mustReachingAt` 只看 sink 前状态，修掉同线条件 free/init 被自动确认的误报；buffer-overflow 的 OOB 证明新增支配性边界 guard（`if (idx >= K) continue/return`、`if (idx < K) { access }`），不再穿过已消除的越界路径。
+- **状态与遥测（P1-1/P2-6/P3-3）**：settlement `created_at`/`heartbeat_at`/`finished_at` 统一 unix-ms，`wall_ms` 优先 queue+work，吸收报告不覆盖 claim 的派发时间；`status` 的 confirmed/auto/reviewed-out 按 scan 限定并镜像 `Finding.FinalStatus()`，与 `report --audit` 对账；`report.md` 的 Functions scanned 在热缓存重扫时不再为 0。
+- **批处理容量**：维持 `N = floor(12 / r_type)` 的 per-subagent evidence-open 预算，不引入会突破 12-open 上限的固定开销项；固定开销摊销需配合“单子代理多 range”的编排改动。
+- **基准门禁**：`examples/c-vuln-benchmark/benchmark-secguard.toml` 显式关闭上述生产精度预驳回，使 recall 门禁继续衡量 detector/planner 检出能力；CI 与 benchmark.md 同步，实测 recall 132/132、FP 0、FN 0。
+
+验证：`go build ./...`、`go test ./...`（21 包）、`go test -tags nosqlite`（log/planner/db）、`release/check-extension-consistency.py` 全通过；PR #254 的 pr-benchmark `pass`。
+
 ## [0.12.5] - 2026-11-07
 
 ### Issue #250 — extensions+sgre 联动超大仓库扫描系统性修复（68 项检视）
