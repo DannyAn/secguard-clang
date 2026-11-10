@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/indexer"
@@ -16,6 +17,11 @@ import (
 )
 
 func TestIntegration_FullScanPipeline(t *testing.T) {
+	// This test pins pipeline connectivity, not the complete-program precision
+	// tier (issue #253 P0-6): the tc* fixtures contain a main, so the default
+	// "balanced" tier would pre-dismiss their fail-open null-deref candidates.
+	config.SetPrecisionTierOverride("off")
+	t.Cleanup(func() { config.SetPrecisionTierOverride("") })
 	ctx := context.Background()
 	store := db.NewTestStore(t)
 	logger := log.New(io.Discard, log.LevelWarn)

@@ -558,7 +558,22 @@ entry_points = [
 # non-null. A caller-arg row with an in-tree caller chain, and any literal-NULL
 # caller witness, is kept. "all" also drops caller-arg forwarding hops. Every
 # dropped row is counted as boundary_fail_open.
-# boundary_auto_dismiss = "external"`)
+# boundary_auto_dismiss = "external"
+# Complete-program scan (an entry point IS in the tree) null-deref precision:
+# "balanced" (default) pre-dismisses the same non-proving origin tiers as
+# boundary_auto_dismiss="external" — external-unknown / callback-entry /
+# assumed-return / opaque-origin — ledgered as precision_fail_open. Production
+# triage of an 812k-line monorepo (issue #253) confirmed 1 of 2423 null-deref
+# candidates while those tiers were 90.8% of the queue with zero confirmations.
+# Machine-proven tiers (cfg-proof, malloc-fail), caller-arg rows with an in-tree
+# call chain, and literal-NULL caller witnesses always stay. "strict" also drops
+# caller-arg forwarding hops; "off" disables the layer (recall-maximal).
+# precision_tier = "balanced"
+# Evidence detectors to turn OFF for the whole scan (snake_case detector names;
+# kebab-case spellings are normalized, unknown names abort the scan with the
+# registered list). A skipped detector's downstream types read as 0 candidates
+# and the skip is recorded in the scan result — never mistaken for clean code.
+# skip_detectors = ["unchecked_return", "memory_leak"]`)
 }
 
 // subcommandUsage maps a subcommand name to its usage printer. Execute uses this

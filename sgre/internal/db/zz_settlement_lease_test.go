@@ -17,27 +17,27 @@ func TestClaimOverlapRejected(t *testing.T) {
 	if _, err := s.InsertScanStat(ctx, &ScanStat{ScanID: "sc_o", VulnType: "null-deref", SeedCount: 120, FinalCount: 100}); err != nil {
 		t.Fatal(err)
 	}
-	nowSec := time.Now().Unix()
-	first, err := s.ClaimSettlementRange(ctx, "sc_o", "null-deref", "1-100", "holder-a", nowSec, false)
+	nowMS := time.Now().UnixMilli()
+	first, err := s.ClaimSettlementRange(ctx, "sc_o", "null-deref", "1-100", "holder-a", nowMS, false)
 	if err != nil || !first.Claimed {
 		t.Fatalf("first claim = %+v err=%v", first, err)
 	}
 
-	overlap, err := s.ClaimSettlementRange(ctx, "sc_o", "null-deref", "1-40", "holder-b", nowSec, false)
+	overlap, err := s.ClaimSettlementRange(ctx, "sc_o", "null-deref", "1-40", "holder-b", nowMS, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if overlap.Claimed || overlap.Reason != "overlap" {
 		t.Fatalf("1-40 inside a live 1-100 must lose with overlap, got %+v", overlap)
 	}
-	all, err := s.ClaimSettlementRange(ctx, "sc_o", "null-deref", "all", "holder-b", nowSec, false)
+	all, err := s.ClaimSettlementRange(ctx, "sc_o", "null-deref", "all", "holder-b", nowMS, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if all.Claimed {
 		t.Fatalf("'all' overlaps every live range and must lose: %+v", all)
 	}
-	disjoint, err := s.ClaimSettlementRange(ctx, "sc_o", "null-deref", "1-100", "holder-b", nowSec, false)
+	disjoint, err := s.ClaimSettlementRange(ctx, "sc_o", "null-deref", "1-100", "holder-b", nowMS, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestClaimOverlapRejected(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	again, err := s.ClaimSettlementRange(ctx, "sc_o", "null-deref", "50-60", "holder-b", nowSec, false)
+	again, err := s.ClaimSettlementRange(ctx, "sc_o", "null-deref", "50-60", "holder-b", nowMS, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,10 +67,10 @@ func TestClaimRejectsUnknownScanAndType(t *testing.T) {
 	if _, err := s.InsertScanStat(ctx, &ScanStat{ScanID: "sc_k", VulnType: "null-deref", SeedCount: 10, FinalCount: 5}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ClaimSettlementRange(ctx, "sc_missing", "null-deref", "all", "h", time.Now().Unix(), false); err == nil {
+	if _, err := s.ClaimSettlementRange(ctx, "sc_missing", "null-deref", "all", "h", time.Now().UnixMilli(), false); err == nil {
 		t.Fatal("claim on an unknown scan_id must fail")
 	}
-	if _, err := s.ClaimSettlementRange(ctx, "sc_k", "buffer-overflow", "all", "h", time.Now().Unix(), false); err == nil {
+	if _, err := s.ClaimSettlementRange(ctx, "sc_k", "buffer-overflow", "all", "h", time.Now().UnixMilli(), false); err == nil {
 		t.Fatal("claim on a type with no scan_stats must fail")
 	}
 }
@@ -83,12 +83,12 @@ func TestLeaseRenewalPreventsStaleReclaim(t *testing.T) {
 	if _, err := s.InsertScanStat(ctx, &ScanStat{ScanID: "sc_l", VulnType: "null-deref", SeedCount: 10, FinalCount: 5}); err != nil {
 		t.Fatal(err)
 	}
-	nowSec := time.Now().Unix()
+	nowMS := time.Now().UnixMilli()
 	// A claim created an hour ago whose heartbeat was renewed just now:
 	// created_at alone would look stale, the fresh heartbeat must win.
 	if err := s.UpsertSettlementStat(ctx, &SettlementStat{
 		ScanID: "sc_l", VulnType: "null-deref", RangeStr: "all", SubagentID: "alive",
-		Status: "dispatched", CreatedAt: nowSec - 3600, HeartbeatAt: nowSec,
+		Status: "dispatched", CreatedAt: nowMS - 3_600_000, HeartbeatAt: nowMS,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -96,10 +96,10 @@ func TestLeaseRenewalPreventsStaleReclaim(t *testing.T) {
 	if err != nil || row == nil {
 		t.Fatalf("claim row: %v", err)
 	}
-	if row.HeartbeatAt != nowSec {
-		t.Fatalf("heartbeat_at = %d, want %d", row.HeartbeatAt, nowSec)
+	if row.HeartbeatAt != nowMS {
+		t.Fatalf("heartbeat_at = %d, want %d", row.HeartbeatAt, nowMS)
 	}
-	staleBefore := nowSec - 1800
+	staleBefore := nowMS - 1_800_000
 	claim, err := s.ClaimSettlementRange(ctx, "sc_l", "null-deref", "all", "thief", staleBefore, false)
 	if err != nil {
 		t.Fatal(err)
@@ -115,7 +115,7 @@ func TestLeaseRenewalPreventsStaleReclaim(t *testing.T) {
 	}
 	if err := s.UpsertSettlementStat(ctx, &SettlementStat{
 		ScanID: "sc_l", VulnType: "buffer-overflow", RangeStr: "1-2", SubagentID: "dead",
-		Status: "dispatched", CreatedAt: nowSec - 3600,
+		Status: "dispatched", CreatedAt: nowMS - 3_600_000,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -136,8 +136,8 @@ func TestReleaseSettlementClaimCAS(t *testing.T) {
 	if _, err := s.InsertScanStat(ctx, &ScanStat{ScanID: "sc_r", VulnType: "null-deref", SeedCount: 10, FinalCount: 5}); err != nil {
 		t.Fatal(err)
 	}
-	nowSec := time.Now().Unix()
-	if _, err := s.ClaimSettlementRange(ctx, "sc_r", "null-deref", "all", "holder-a", nowSec, false); err != nil {
+	nowMS := time.Now().UnixMilli()
+	if _, err := s.ClaimSettlementRange(ctx, "sc_r", "null-deref", "all", "holder-a", nowMS, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -162,7 +162,7 @@ func TestReleaseSettlementClaimCAS(t *testing.T) {
 		t.Fatalf("status = %q, want released", row.Status)
 	}
 
-	claim, err := s.ClaimSettlementRange(ctx, "sc_r", "null-deref", "all", "holder-c", nowSec, false)
+	claim, err := s.ClaimSettlementRange(ctx, "sc_r", "null-deref", "all", "holder-c", nowMS, false)
 	if err != nil || !claim.Claimed {
 		t.Fatalf("a released range must be claimable again: %+v err=%v", claim, err)
 	}

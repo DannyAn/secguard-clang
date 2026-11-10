@@ -153,6 +153,7 @@ func runIndexCmd(ctx context.Context, args []string) int {
 		"status":             "ok",
 		"files_indexed":      result.FilesIndexed,
 		"functions_indexed":  result.FunctionsIndexed,
+		"functions_scanned":  result.FunctionsScanned,
 		"functions_in_index": len(funcs),
 		"files_skipped":      result.FilesSkipped,
 		"detector_errors":    detErrMap,

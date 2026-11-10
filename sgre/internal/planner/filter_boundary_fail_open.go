@@ -24,17 +24,36 @@ import (
 // concrete, because that call site is what the AI can judge. Machine-proven tiers
 // (`cfg-proof`, `malloc-fail`) and a count-gated `array-buffer` stay for the AI.
 type BoundaryFailOpenFilter struct {
-	mode string
+	mode  string
+	scope string
 }
 
-func NewBoundaryFailOpenFilter(boundary bool, mode string) *BoundaryFailOpenFilter {
-	if !boundary {
-		mode = "off"
+// NewBoundaryFailOpenFilter builds the fail-open pre-dismissal for BOTH scan
+// scopes. A boundary scan uses boundaryMode ("off"/"external"/"all",
+// ledgered as boundary_fail_open). A complete-program scan maps the precision
+// tier (issue #253 P0-6): "balanced" behaves like "external", "strict" like
+// "all", and the dismissals are ledgered as precision_fail_open so the two
+// policies stay distinguishable in the report. "off" disables the layer.
+func NewBoundaryFailOpenFilter(boundary bool, boundaryMode, precisionTier string) *BoundaryFailOpenFilter {
+	if boundary {
+		return &BoundaryFailOpenFilter{mode: boundaryMode, scope: "boundary"}
 	}
-	return &BoundaryFailOpenFilter{mode: mode}
+	switch precisionTier {
+	case "balanced":
+		return &BoundaryFailOpenFilter{mode: "external", scope: "complete-program"}
+	case "strict":
+		return &BoundaryFailOpenFilter{mode: "all", scope: "complete-program"}
+	default:
+		return &BoundaryFailOpenFilter{mode: "off", scope: "complete-program"}
+	}
 }
 
-func (f *BoundaryFailOpenFilter) Name() string { return "boundary_fail_open" }
+func (f *BoundaryFailOpenFilter) Name() string {
+	if f.scope == "complete-program" {
+		return "precision_fail_open"
+	}
+	return "boundary_fail_open"
+}
 
 func (f *BoundaryFailOpenFilter) Apply(ctx context.Context, candidates []Candidate) ([]Candidate, []Dismissed, error) {
 	if f.mode == "off" || len(candidates) == 0 {
@@ -52,10 +71,17 @@ func (f *BoundaryFailOpenFilter) Apply(ctx context.Context, candidates []Candida
 			VariableName: c.VariableName,
 			Line:         c.Line,
 			Filter:       f.Name(),
-			Reason:       fmt.Sprintf("boundary scan: non-proving null origin %q with no concrete in-tree NULL witness (auto-dismissed; scan the worktree root or set [scan].boundary_auto_dismiss=\"off\" to judge it)", c.NullOriginTier),
+			Reason:       f.dismissReason(c),
 		})
 	}
 	return kept, dropped, nil
+}
+
+func (f *BoundaryFailOpenFilter) dismissReason(c Candidate) string {
+	if f.scope == "complete-program" {
+		return fmt.Sprintf("complete-program precision tier: non-proving null origin %q with no concrete in-tree NULL witness (auto-dismissed; set [scan].precision_tier=\"off\" to judge it)", c.NullOriginTier)
+	}
+	return fmt.Sprintf("boundary scan: non-proving null origin %q with no concrete in-tree NULL witness (auto-dismissed; scan the worktree root or set [scan].boundary_auto_dismiss=\"off\" to judge it)", c.NullOriginTier)
 }
 
 func (f *BoundaryFailOpenFilter) keep(c Candidate) bool {
@@ -78,14 +104,19 @@ func (f *BoundaryFailOpenFilter) keep(c Candidate) bool {
 		// NullableSourceFilter; nothing with these tiers carries one.
 		return false
 	case "caller-arg":
+		// A literal-NULL witness ("caller X passes NULL") is a concrete defect
+		// and stays in EVERY mode, including strict/"all" (the documented
+		// policy) — checked before the structural dismissals below.
+		if hasCallerNullLiteralWitness(c) {
+			return true
+		}
 		// The null source is an in-tree call-site argument. A zero-call-site
 		// root ("the value flows from an unguarded external entry") is the same
 		// fail-open assumption as opaque-origin, so it is dismissed. A
 		// forwarding hop or a function with in-tree callers names concrete call
 		// sites the AI can judge, so it stays; "all" mode also drops the
 		// forwarding-hop rows (a project that accepts the boundary contract as
-		// non-null). A literal-NULL witness ("caller X passes NULL") is a
-		// concrete defect and stays.
+		// non-null).
 		if c.ChainKind == "root" {
 			return false
 		}
@@ -95,7 +126,7 @@ func (f *BoundaryFailOpenFilter) keep(c Candidate) bool {
 		if c.ChainKind == "hop" {
 			return f.mode != "all"
 		}
-		return f.mode != "all" && hasCallerNullLiteralWitness(c)
+		return false
 	default:
 		// cfg-proof / malloc-fail / array-buffer: machine-proven, or a structural
 		// chain fact the AI must judge — never pre-dismiss.

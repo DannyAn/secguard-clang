@@ -82,6 +82,12 @@ func newMacroContextDetector() *macroContextDetector {
 	for n := range apikb.IteratorMacros {
 		known[n] = true
 	}
+	// Opaque traversal macros are macro context too (issue #253 P2-1): the
+	// deterministic proof may have mis-fired on an out-of-tree loop-header
+	// assignment, so the AI must see the candidate before any auto-confirm.
+	for n := range apikb.OpaqueIteratorMacros {
+		known[n] = true
+	}
 	return &macroContextDetector{lines: map[string][]string{}, known: known}
 }
 
@@ -300,6 +306,30 @@ func (d *macroContextDetector) scanWindow(path string, line, lo, hi int, name st
 			// cannot touch.
 			if mentionsIdentifier(macroArgsText(all, start-1+i, m[1]-1), name) {
 				out.mentions = true
+			}
+		}
+	}
+	// Opaque traversal macros (apikb.OpaqueIteratorMacros) write their iterator
+	// in the loop header, and a macro loop body can be arbitrarily long: the
+	// ±8-line window alone let a sink deep inside SLL_Scan / HPE_LIST_FOR_EACH_SAFE
+	// / LIST_FOR_EACH_ENTRY_RCU keep its cfg-proof auto-confirm (issue #253
+	// P2-1). Scan the function-body prefix above the window for such a macro
+	// mentioning the variable; the demotion stays suspected-for-AI, never a
+	// dropped candidate.
+	if name != "" && lo > 0 && start > lo {
+		for i, l := range all[lo-1 : start-1] {
+			if strings.HasPrefix(strings.TrimSpace(l), "#") {
+				continue
+			}
+			for _, m := range macroCallRe.FindAllStringSubmatchIndex(l, -1) {
+				macroName := l[m[2]:m[3]]
+				if !apikb.OpaqueIteratorMacro(macroName) {
+					continue
+				}
+				out.context = true
+				if mentionsIdentifier(macroArgsText(all, lo-1+i, m[1]-1), name) {
+					out.mentions = true
+				}
 			}
 		}
 	}

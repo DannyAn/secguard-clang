@@ -15,7 +15,7 @@ import (
 )
 
 func TestDeriveTypeCoverageIntervals(t *testing.T) {
-	now := time.Now().Unix()
+	now := time.Now().UnixMilli()
 	rows := []*db.SettlementStat{
 		{VulnType: "null-deref", RangeStr: "1-40", Status: "done"},
 		{VulnType: "null-deref", RangeStr: "41-80", Status: "done"},

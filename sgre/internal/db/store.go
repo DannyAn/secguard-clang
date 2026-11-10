@@ -261,7 +261,8 @@ type SettlementStatStore interface {
 	ClaimSettlementRange(ctx context.Context, scanID, vulnType, rangeStr, holder string, staleBefore int64, reclaim bool) (*SettlementClaim, error)
 	// RenewSettlementLease refreshes a live holder's heartbeat when a fresh
 	// settlement chunk/report is absorbed (stale = no heartbeat, not old claim).
-	RenewSettlementLease(ctx context.Context, scanID, holder string, nowSec int64) error
+	// nowMS is unix MILLISECONDS (issue #253 P1-1).
+	RenewSettlementLease(ctx context.Context, scanID, holder string, nowMS int64) error
 	// ReleaseSettlementClaim closes a live claim only for its current holder
 	// (CAS on holder + dispatched); status released|failed.
 	ReleaseSettlementClaim(ctx context.Context, scanID, vulnType, rangeStr, holder, status string) (bool, error)

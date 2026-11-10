@@ -27,6 +27,11 @@ type Indexer struct {
 type IndexResult struct {
 	FilesIndexed     int `json:"files_indexed"`
 	FunctionsIndexed int `json:"functions_indexed"`
+	// FunctionsScanned is the TOTAL function count in scope (unchanged files
+	// included), unlike FunctionsIndexed which counts only newly inserted
+	// rows. report.md's "Functions scanned" reads this: a fully cached re-scan
+	// must still report 26125, not 0 (issue #253 P3-3).
+	FunctionsScanned int `json:"functions_scanned"`
 	FilesSkipped     int `json:"files_skipped"`
 	// LinesOfCode is the summed line count of every file this run walked
 	// (skipped-but-unchanged files included), so a report header can state the
@@ -195,6 +200,10 @@ func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *Inde
 			idx.logger.Debug("file unchanged, skipping", "file", filePath)
 		}
 		result.FilesIndexed++
+		// An unchanged file still contributes its functions to the SCAN total.
+		if funcs, ferr := idx.store.ListFunctionsByFile(ctx, existing.ID); ferr == nil {
+			result.FunctionsScanned += len(funcs)
+		}
 		return nil
 	}
 
@@ -317,6 +326,7 @@ func (idx *Indexer) indexFile(ctx context.Context, filePath string, result *Inde
 
 	result.FilesIndexed++
 	result.FunctionsIndexed += inserted
+	result.FunctionsScanned += inserted
 	result.FilesChanged++
 	return nil
 }

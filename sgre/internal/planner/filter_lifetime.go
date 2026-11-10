@@ -71,7 +71,7 @@ func (f *LifetimeFilter) Apply(ctx context.Context, candidates []Candidate) ([]C
 		// several branches (may-only) stays a suspicion for the AI to confirm.
 		// A conditional release helper (may_free) is may-only by construction,
 		// so it never upgrades either — mirroring the double-free filter.
-		if !c.MayFree && flow.mustReaching(c.VariableName, useLine) {
+		if !c.MayFree && flow.mustReachingAt(c.VariableName, useLine, c.Column) {
 			c.SuspicionLevel = "confirmed"
 		}
 		kept = append(kept, c)

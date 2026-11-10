@@ -5,7 +5,8 @@
 > 门禁脚本 `scripts/validate-benchmark.py` 读 SARIF（v0.3.0 起），按 (文件, 行) 交叉比对并计算 precision/recall。
 >
 > ```bash
-> secguard scan --db /tmp/sgbench.db examples/c-vuln-benchmark/src
+> secguard --config examples/c-vuln-benchmark/benchmark-secguard.toml \
+>   scan --db /tmp/sgbench.db examples/c-vuln-benchmark/src
 > python3 scripts/validate-benchmark.py \
 >   --sarif .codeagent/secguard-clang/scans/latest/sarif.sarif \
 >   --expected examples/c-vuln-benchmark/expected-results.json
@@ -244,9 +245,17 @@ Scenario B — 三轮验证后 (目标):
 
 在 `examples/c-vuln-benchmark/` 目录下执行。
 
+> **基准是召回门禁，必须使用 `benchmark-secguard.toml`。** 生产默认的
+> `[scan].precision_tier="balanced"`（issue #253 P0-6）会在 complete-program
+> 扫描中预驳回 non-proving 的 null 来源层（`external-unknown` /
+> `assumed-return` / `callback-entry` / `opaque-origin`），这些候选不会进入
+> `candidates.sarif`；而本基准把 `candidates.sarif` 也计为「检出」，
+> 因此不关掉该策略会产生假阴性（ND-07/08/10/13、P23-02）。`benchmark-secguard.toml`
+> 只关闭这一个精度策略，其余检测/收敛行为与生产一致。
+
 ```bash
 # 1. 扫描（用独立 DB 避免历史索引污染；stdout 只打印摘要）
-secguard scan --db /tmp/sgbench.db src
+secguard --config benchmark-secguard.toml scan --db /tmp/sgbench.db src
 
 # 2. 收尾：写出 verdict 阶段的 result.sarif / report.md / findings/
 secguard report --audit --scan-id <scan_id> \

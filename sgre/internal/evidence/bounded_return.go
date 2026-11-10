@@ -128,6 +128,19 @@ func summarizeWrapper(f *db.Function, body parser.Node, params []string, inits, 
 //  3. `return (x < param) ? x : param` — a min-clamp whose result is provably
 //     <= param (the manual `snprintf`-clamp wrapper).
 func boundedByParam(expr parser.Node, params []string, assigned map[string]parser.Node, summary boundedReturnSummary) (int, bool) {
+	return boundedByParamGuarded(expr, params, assigned, summary, map[string]bool{}, 0)
+}
+
+// boundedByParamGuarded is the recursion-safe body of boundedByParam. The
+// identifier -> single-assignment edge can cycle (`a = b; b = a;`) or chain
+// thousands of locals deep in generated code; either used to blow the 1 GB
+// goroutine stack with an unrecoverable `fatal error: stack overflow`
+// (issue #253 P0-1). visited breaks assignment cycles and depth caps chain
+// length: past the limit the expression is simply not provably bounded.
+func boundedByParamGuarded(expr parser.Node, params []string, assigned map[string]parser.Node, summary boundedReturnSummary, visited map[string]bool, depth int) (int, bool) {
+	if depth > 64 {
+		return 0, false
+	}
 	expr = unwrapExprNode(expr)
 	switch expr.Kind() {
 	case "call_expression":
@@ -136,8 +149,10 @@ func boundedByParam(expr parser.Node, params []string, assigned map[string]parse
 		}
 		return 0, false
 	case "identifier":
-		if v, ok := assigned[expr.Text()]; ok {
-			return boundedByParam(v, params, assigned, summary)
+		name := expr.Text()
+		if v, ok := assigned[name]; ok && !visited[name] {
+			visited[name] = true
+			return boundedByParamGuarded(v, params, assigned, summary, visited, depth+1)
 		}
 	case "conditional_expression":
 		if idx := minClampParam(expr, params); idx >= 0 {

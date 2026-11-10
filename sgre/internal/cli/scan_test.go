@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/DannyAn/secguard-clang/internal/config"
@@ -415,8 +416,10 @@ func TestScanOutput_CodeagentAtProjectRoot(t *testing.T) {
 }
 
 // TestScanCmd_SkipDetectorsEnvelope verifies the detector switch reaches the
-// scan envelope: the applied names are echoed (sorted) and an unknown name is
-// dropped instead of silently doing nothing.
+// scan envelope: the applied names are echoed (sorted) and a kebab-case
+// spelling is normalized to its snake_case detector name (issue #253 P0-3:
+// `secguard types` prints kebab-case vuln types, so users naturally pass
+// kebab names to --skip-detectors).
 func TestScanCmd_SkipDetectorsEnvelope(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -428,11 +431,11 @@ func TestScanCmd_SkipDetectorsEnvelope(t *testing.T) {
 	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
 	os.MkdirAll(filepath.Dir(dbPath), 0755)
 
-	config.SetSkipDetectorsOverride("memory_leak, unchecked_return, not_a_detector")
+	config.SetSkipDetectorsOverride("memory-leak, unchecked_return")
 	defer config.SetSkipDetectorsOverride("")
 
 	stdout, _, exitCode := captureOutput(func() int {
-		return runScanCmd(ctx, []string{"--db", dbPath, "--output-dir", scanDir, "--skip-detectors", "memory_leak, unchecked_return, not_a_detector", cPath})
+		return runScanCmd(ctx, []string{"--db", dbPath, "--output-dir", scanDir, "--skip-detectors", "memory-leak, unchecked_return", cPath})
 	})
 	if exitCode != 0 {
 		t.Fatalf("scan failed with code %d", exitCode)
@@ -451,7 +454,40 @@ func TestScanCmd_SkipDetectorsEnvelope(t *testing.T) {
 	}
 	for i, name := range want {
 		if got[i] != name {
-			t.Fatalf("detectors_skipped = %v, want %v (sorted, unknown dropped)", got, want)
+			t.Fatalf("detectors_skipped = %v, want %v (sorted, kebab normalized to snake)", got, want)
 		}
+	}
+}
+
+// TestScanCmd_SkipDetectorsUnknownHardFails pins the issue #253 P0-3 contract:
+// an unknown detector name must abort the scan with a non-zero exit code and
+// list the legal names. Warn-and-continue left the user believing a crashing
+// detector was off while it ran again.
+func TestScanCmd_SkipDetectorsUnknownHardFails(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	cPath := writeTestCFile(t, root)
+
+	scanDir := filepath.Join(root, ".codeagent", "secguard-clang", "scans", "sc_2026-08-11", "sc_2026-08-11_150001_zzzzzz")
+	os.MkdirAll(scanDir, 0755)
+	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
+	os.MkdirAll(filepath.Dir(dbPath), 0755)
+
+	config.SetSkipDetectorsOverride("memory_leak, not_a_detector")
+	defer config.SetSkipDetectorsOverride("")
+
+	stdout, _, exitCode := captureOutput(func() int {
+		return runScanCmd(ctx, []string{"--db", dbPath, "--output-dir", scanDir, "--skip-detectors", "memory_leak, not_a_detector", cPath})
+	})
+	if exitCode == 0 {
+		t.Fatalf("an unknown skip-detectors name must fail the scan, got exit 0: %s", stdout)
+	}
+	if !strings.Contains(stdout, "not_a_detector") || !strings.Contains(stdout, "integer_overflow") {
+		t.Fatalf("the error must name the unknown detector and list the registered ones: %s", stdout)
+	}
+	// A normal error return must leave the same visible failure marker as a
+	// panic/OOM (issue #253 P0-4); previously only the stale sweep wrote one.
+	if _, err := os.Stat(filepath.Join(scanDir, ".failed")); err != nil {
+		t.Errorf("a failed scan must leave a .failed marker in its scan dir: %v", err)
 	}
 }

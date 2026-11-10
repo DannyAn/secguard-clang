@@ -115,7 +115,7 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 		candidateCountByScan := map[string]map[string]int{}
 		type scanType struct{ scanID, vulnType string }
 		touched := map[scanType]bool{}
-		nowSec := time.Now().Unix()
+		nowMS := time.Now().UnixMilli()
 		// Renew each holder's lease from FRESH report files only (a chunk counts
 		// as a heartbeat even though it is not a completion signal). A stale
 		// file does NOT renew: a dead worker's claim must still expire.
@@ -126,7 +126,7 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 			if time.Since(rep.mtime) > settlementHeartbeatStall {
 				continue
 			}
-			if err := tx.RenewSettlementLease(ctx, rep.ScanID, rep.SubagentID, nowSec); err != nil {
+			if err := tx.RenewSettlementLease(ctx, rep.ScanID, rep.SubagentID, nowMS); err != nil {
 				return err
 			}
 		}
@@ -156,8 +156,14 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 			if len(rep.Processed) == 1 {
 				needsContext = len(rep.NeedsContext)
 			}
-			wallMS := settlementWallMS(ctx, tx, rep)
 			queueMS, workMS := settlementQueueWorkMS(rep)
+			wallMS := settlementWallMS(ctx, tx, rep)
+			if queueMS+workMS > 0 {
+				// The report carried dispatch/start timestamps: wall_ms is the
+				// batch's OWN queue+work time, not the scan-anchored fallback
+				// (issue #253 P1-1 — the old epoch made avg_wall_ms useless).
+				wallMS = queueMS + workMS
+			}
 			var finishedAt int64
 			if !rep.mtime.IsZero() {
 				finishedAt = rep.mtime.UnixMilli()
@@ -379,10 +385,12 @@ func settlementQueueWorkMS(rep subagentReport) (queueMS, workMS int64) {
 	return queueMS, workMS
 }
 
-// settlementWallMS estimates a settlement's wall-clock as the settlement file's
-// mtime minus the scan's start time. It over-counts by the pipeline + dispatch
-// delay (constant per scan), so a straggler still stands out relative to its
-// siblings — enough for the F11 wall_ms feedback to flag a force-rejected batch.
+// settlementWallMS estimates a settlement's wall-clock when the report carries
+// no started_at split. The preferred anchor is the report's own dispatched_at
+// (dispatch → finish = the batch's real lifespan, issue #253 P1-1); the legacy
+// fallback is the settlement file's mtime minus the scan's start time, which
+// over-counts by the pipeline + dispatch delay (constant per scan), so a
+// straggler still stands out relative to its siblings.
 func settlementWallMS(ctx context.Context, store db.Store, rep subagentReport) int64 {
 	if rep.ModTime == "" {
 		return 0
@@ -390,6 +398,13 @@ func settlementWallMS(ctx context.Context, store db.Store, rep subagentReport) i
 	mtime, err := time.Parse(time.RFC3339, rep.ModTime)
 	if err != nil {
 		return 0
+	}
+	if rep.DispatchedAt != "" {
+		if dispatched, derr := time.Parse(time.RFC3339Nano, rep.DispatchedAt); derr == nil {
+			if w := mtime.UnixMilli() - dispatched.UnixMilli(); w > 0 {
+				return w
+			}
+		}
 	}
 	run, err := store.GetScanRun(ctx, rep.ScanID)
 	if err != nil || run == nil || run.CreatedAt == 0 {
@@ -484,8 +499,8 @@ func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, sta
 	if err != nil {
 		dismissedByType = map[string]int{}
 	}
-	nowSec := time.Now().Unix()
-	staleBefore := nowSec - int64(settlementClaimTTL/time.Second)
+	nowMS := time.Now().UnixMilli()
+	staleBefore := nowMS - int64(settlementClaimTTL/time.Millisecond)
 	covered := map[string]map[string]bool{}
 	inFlight := map[string][]inFlightRange{}
 	rowsByType := map[string][]*db.SettlementStat{}
@@ -502,8 +517,8 @@ func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, sta
 				continue
 			}
 			age := int64(0)
-			if leaseAt > 0 && nowSec > leaseAt {
-				age = (nowSec - leaseAt) * 1000
+			if leaseAt > 0 && nowMS > leaseAt {
+				age = nowMS - leaseAt
 			}
 			inFlight[st.VulnType] = append(inFlight[st.VulnType], inFlightRange{
 				Range: st.RangeStr, Holder: st.SubagentID, AgeMS: age,
@@ -531,7 +546,7 @@ func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, sta
 		// number that can never be gamed by a self-declared settlement. A done
 		// type reads 0. uncovered_ranges (the scheduling view, from settlement
 		// ranges) is still reported for re-dispatch.
-		cov := deriveTypeCoverage(rowsByType[s.VulnType], s.CandidateCount, nowSec)
+		cov := deriveTypeCoverage(rowsByType[s.VulnType], s.CandidateCount, nowMS)
 		if s.TerminalState == "done" {
 			e.Remaining = 0
 		} else {
@@ -645,6 +660,15 @@ func suggestedBatchSize(rType float64) int {
 		// ceiling applies — light types finally get bigger batches.
 		return maxBatchCandidates
 	}
+	// N <= evidence-open budget / expected opens per candidate. This is the
+	// hard per-subagent budget documented in
+	// extension/shared/command-instructions.md ("MAX_EVIDENCE_OPENS_PER_TYPE")
+	// and extension/shared/agent-body.md; the engine's budget_violations check
+	// uses the same constant. Do NOT add a fixed-cost term here without raising
+	// that per-batch budget in the authoritative docs: N x r_type is the batch's
+	// expected evidence opens, so a larger N would flag every batch as
+	// over-budget (or force the agent to stop early and leave candidates
+	// unclassified).
 	n := int(math.Floor(float64(maxEvidenceOpensPerType) / rType))
 	if n < 1 {
 		n = 1

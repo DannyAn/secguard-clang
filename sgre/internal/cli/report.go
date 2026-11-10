@@ -982,7 +982,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 						typeRows = append(typeRows, st)
 					}
 				}
-				cov := deriveTypeCoverage(typeRows, candidateCount, time.Now().Unix())
+				cov := deriveTypeCoverage(typeRows, candidateCount, time.Now().UnixMilli())
 				uncovered = cov.Uncovered
 			}
 			WriteJSON(map[string]interface{}{

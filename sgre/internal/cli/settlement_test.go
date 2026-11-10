@@ -24,14 +24,19 @@ func TestNormalizeSettlementRange(t *testing.T) {
 }
 
 func TestSuggestedBatchSizeAndBatches(t *testing.T) {
+	// N must stay within the documented per-subagent evidence-open budget:
+	// N = floor(12 / r_type), clamped to [1, 100].
 	if got := suggestedBatchSize(0.63); got != 19 {
 		t.Errorf("suggestedBatchSize(0.63) = %d, want 19 (floor(12/0.63))", got)
 	}
 	if got := suggestedBatchSize(1.0); got != 12 {
-		t.Errorf("suggestedBatchSize(1.0) = %d, want 12", got)
+		t.Errorf("suggestedBatchSize(1.0) = %d, want 12 (evidence-open budget)", got)
 	}
 	if got := suggestedBatchSize(20.0); got != 1 {
 		t.Errorf("suggestedBatchSize(20.0) = %d, want 1 (clamped)", got)
+	}
+	if got := suggestedBatchSize(0); got != 100 {
+		t.Errorf("suggestedBatchSize(0) = %d, want 100 (hard ceiling)", got)
 	}
 	if got := suggestedBatches(560, 19); got != 30 {
 		t.Errorf("suggestedBatches(560, 19) = %d, want 30", got)
@@ -117,16 +122,16 @@ func TestEnrichPerTypeStatusClaimInFlight(t *testing.T) {
 	if _, err := store.InsertScanStat(ctx, &db.ScanStat{ScanID: "sc_test", VulnType: "buffer-overflow", SeedCount: 120, FinalCount: 120}); err != nil {
 		t.Fatal(err)
 	}
-	nowSec := time.Now().Unix()
+	nowMS := time.Now().UnixMilli()
 	if err := store.UpsertSettlementStat(ctx, &db.SettlementStat{
 		ScanID: "sc_test", VulnType: "buffer-overflow", RangeStr: "1-20", SubagentID: "live-holder",
-		Status: "dispatched", CreatedAt: nowSec,
+		Status: "dispatched", CreatedAt: nowMS,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.UpsertSettlementStat(ctx, &db.SettlementStat{
 		ScanID: "sc_test", VulnType: "buffer-overflow", RangeStr: "21-40", SubagentID: "dead-holder",
-		Status: "dispatched", CreatedAt: nowSec - int64(settlementClaimTTL/time.Second) - 60,
+		Status: "dispatched", CreatedAt: nowMS - int64(settlementClaimTTL/time.Millisecond) - 60_000,
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -943,6 +943,234 @@ func isRelationalCondition(text string) bool {
 		strings.Contains(text, " >") || strings.Contains(text, " <")
 }
 
+// indexGuardedBelowCapacity reports whether a dominating guard proves
+// `index < arrSize` on every path that reaches the access (issue #253 P2-1:
+// `if (i >= MAX) continue;` before `arr[i]` was ignored and the loop-bound proof
+// auto-confirmed an OOB on a path the guard had already eliminated).
+//
+// Only a bare-identifier index is considered: `arr[i + 1]` is not bounded by a
+// guard on `i`. Two shapes are recognized, both requiring the guard to dominate
+// the access (same branch/loop body, not a sibling if/else):
+//
+//	A. `if (idx >= K) { return|break|continue; }` before the access → fall-through
+//	   implies `idx < K`.
+//	B. `if (idx < K) { ... access ... }`                → the true branch implies
+//	   `idx < K`.
+//
+// The bound is relative to the capacity (`K <= arrSize` for a strict fall-through,
+// `K < arrSize` when the guard uses `>`/`<=`). An unparseable condition, a guard
+// on another variable, or a bound larger than the capacity keeps the proof
+// (conservative: the detector is allowed to flag).
+func indexGuardedBelowCapacity(bc *bufCtx, f *db.Function, indexExpr string, accessLine, accessColumn, arrSize int) bool {
+	name := bareIdentifierText(indexExpr)
+	if name == "" || arrSize <= 0 {
+		return false
+	}
+	for _, ifNode := range bc.ifs {
+		if ifNode.StartLine() < f.StartLine || ifNode.StartLine() > accessLine {
+			continue
+		}
+		cond := ifNode.ChildByFieldName("condition")
+		cons := ifNode.ChildByFieldName("consequence")
+		if cond == nil || cons == nil || !guardDominates(ifNode, accessLine, accessColumn) {
+			continue
+		}
+		op, bound, ok := guardBoundForIndex(*cond, name, bc)
+		if !ok {
+			continue
+		}
+		if ifNode.StartLine() < accessLine && stmtAlwaysExits(*cons) {
+			switch op {
+			case ">=":
+				if bound <= arrSize {
+					return true
+				}
+			case ">":
+				if bound < arrSize {
+					return true
+				}
+			}
+		}
+		if nodeContainsPosition(*cons, accessLine, accessColumn) {
+			switch op {
+			case "<":
+				if bound <= arrSize {
+					return true
+				}
+			case "<=":
+				if bound < arrSize {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// bareIdentifierText returns expr when it is a single C identifier, else "".
+func bareIdentifierText(expr string) string {
+	s := strings.TrimSpace(expr)
+	if s == "" {
+		return ""
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (i > 0 && c >= '0' && c <= '9') {
+			continue
+		}
+		return ""
+	}
+	return s
+}
+
+// guardBoundForIndex extracts `name op K` (or the mirrored `K op name`) from a
+// comparison condition, resolving K through the per-file macro table and the
+// tree-wide header-macro census.
+func guardBoundForIndex(cond parser.Node, name string, bc *bufCtx) (string, int, bool) {
+	for cond.Kind() == "parenthesized_expression" {
+		kids := cond.NamedChildren()
+		if len(kids) == 0 {
+			return "", 0, false
+		}
+		cond = kids[0]
+	}
+	if cond.Kind() != "binary_expression" {
+		return "", 0, false
+	}
+	op := ""
+	for _, c := range cond.Children() {
+		switch c.Kind() {
+		case ">=", ">", "<=", "<":
+			op = c.Kind()
+		}
+	}
+	if op == "" {
+		return "", 0, false
+	}
+	kids := cond.NamedChildren()
+	if len(kids) != 2 {
+		return "", 0, false
+	}
+	if guardIdentNode(kids[0], name) {
+		if v, ok := constantNodeValue(bc, kids[1]); ok {
+			return op, v, true
+		}
+	}
+	if guardIdentNode(kids[1], name) {
+		if v, ok := constantNodeValue(bc, kids[0]); ok {
+			return mirrorRelationalOp(op), v, true
+		}
+	}
+	return "", 0, false
+}
+
+// guardIdentNode unwraps parentheses/casts and reports whether the node is the
+// bare identifier name.
+func guardIdentNode(n parser.Node, name string) bool {
+	for n.Kind() == "parenthesized_expression" || n.Kind() == "cast_expression" {
+		kids := n.NamedChildren()
+		if len(kids) == 0 {
+			return false
+		}
+		n = kids[0]
+	}
+	return n.Kind() == "identifier" && n.Text() == name
+}
+
+func mirrorRelationalOp(op string) string {
+	switch op {
+	case "<":
+		return ">"
+	case "<=":
+		return ">="
+	case ">":
+		return "<"
+	case ">=":
+		return "<="
+	}
+	return op
+}
+
+// guardDominates reports whether the guard's own branch/loop body also contains
+// the access line. A guard nested in a sibling if/else branch, or in a loop the
+// access is not inside, does not protect the access.
+func guardDominates(ifNode parser.Node, accessLine, accessColumn int) bool {
+	child := ifNode
+	for parent := ifNode.Parent(); parent != nil; parent = parent.Parent() {
+		switch parent.Kind() {
+		case "function_definition":
+			return true
+		case "if_statement", "for_statement", "while_statement", "do_statement", "switch_statement", "case_statement":
+			contained := false
+			for _, ch := range parent.NamedChildren() {
+				if ch.StartLine() <= child.StartLine() && ch.EndLine() >= child.EndLine() &&
+					nodeContainsPosition(ch, accessLine, accessColumn) {
+					contained = true
+					break
+				}
+			}
+			if !contained {
+				return false
+			}
+		}
+		child = *parent
+	}
+	return false
+}
+
+// nodeContainsPosition reports whether n covers the source position. Columns
+// break the tie on the boundary lines, so a one-line
+// `if (c) { if (idx >= 16) return; } arr[idx]` is not treated as if the access
+// were inside the guarded block.
+func nodeContainsPosition(n parser.Node, line, column int) bool {
+	if line < n.StartLine() || line > n.EndLine() {
+		return false
+	}
+	if column <= 0 {
+		return true
+	}
+	if line == n.StartLine() && n.StartColumn() > 0 && column < n.StartColumn() {
+		return false
+	}
+	if line == n.EndLine() && n.EndColumn() > 0 && column > n.EndColumn() {
+		return false
+	}
+	return true
+}
+
+// stmtAlwaysExits reports whether the statement unconditionally transfers
+// control out of its block. It is AST-based (unlike bodyExits' text search): a
+// conditional `if (c) return;` is NOT an unconditional exit, so it cannot turn
+// a guarded access into a safe one.
+func stmtAlwaysExits(n parser.Node) bool {
+	switch n.Kind() {
+	case "return_statement", "break_statement", "continue_statement":
+		return true
+	case "compound_statement":
+		for _, ch := range n.NamedChildren() {
+			if stmtAlwaysExits(ch) {
+				return true
+			}
+		}
+		return false
+	case "if_statement":
+		cons := n.ChildByFieldName("consequence")
+		alt := n.ChildByFieldName("alternative")
+		if cons == nil || alt == nil {
+			return false
+		}
+		return stmtAlwaysExits(*cons) && stmtAlwaysExits(*alt)
+	case "else_clause":
+		for _, ch := range n.NamedChildren() {
+			if stmtAlwaysExits(ch) {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
 func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Function, file *db.File, bc *bufCtx, result *DetectResult) {
 	for _, sub := range bc.subs {
 		if !funcLineRange(f, sub.StartLine()) {
@@ -960,7 +1188,7 @@ func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Funct
 			continue
 		}
 		kind := subscriptAccessKind(bc, f, sub)
-		if isOOB, category, arrSize := d.checkArrayOOB(bc, f, arrName, indexExpr, sub.StartLine(), kind); isOOB {
+		if isOOB, category, arrSize := d.checkArrayOOB(bc, f, arrName, indexExpr, sub.StartLine(), sub.StartColumn(), kind); isOOB {
 			d.emitOOB(ctx, f, file, sub.StartLine(), arrName, indexExpr, category, text, arrSize, result)
 		}
 	}
@@ -983,7 +1211,7 @@ func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Funct
 		if isAssignTarget(deref) {
 			kind = "write"
 		}
-		if isOOB, category, arrSize := d.checkArrayOOB(bc, f, arrName, indexExpr, deref.StartLine(), kind); isOOB {
+		if isOOB, category, arrSize := d.checkArrayOOB(bc, f, arrName, indexExpr, deref.StartLine(), deref.StartColumn(), kind); isOOB {
 			d.emitOOB(ctx, f, file, deref.StartLine(), arrName, indexExpr, category, deref.Text(), arrSize, result)
 		}
 	}
@@ -992,7 +1220,7 @@ func (d *BufferOverflowDetector) detectArrayOOB(ctx context.Context, f *db.Funct
 // checkArrayOOB runs the constant / loop-bound / heap-allocation OOB proof for a
 // base + index pair, returning the verdict and category (BO-10: shared by the
 // subscript and pointer-dereference scans).
-func (d *BufferOverflowDetector) checkArrayOOB(bc *bufCtx, f *db.Function, arrName, indexExpr string, line int, kind string) (bool, string, int) {
+func (d *BufferOverflowDetector) checkArrayOOB(bc *bufCtx, f *db.Function, arrName, indexExpr string, line, column int, kind string) (bool, string, int) {
 	arrSize := findArraySize(bc, f, arrName, line)
 	isOOB := false
 	category := "array_oob_read"
@@ -1018,6 +1246,13 @@ func (d *BufferOverflowDetector) checkArrayOOB(bc *bufCtx, f *db.Function, arrNa
 			}
 		}
 	} else if arrSize > 0 {
+		// A dominating explicit bounds guard (`if (idx >= arrSize) continue;`
+		// or `if (idx < arrSize) { access }`) proves the access on this path is
+		// in range; the loop-bound / single-constant proof must not override it
+		// (issue #253 P2-1).
+		if indexGuardedBelowCapacity(bc, f, indexExpr, line, column, arrSize) {
+			return false, category, arrSize
+		}
 		// A variable index assigned a single constant value before the
 		// subscript (`int n = 12; buf[n] = 0`) provably holds that constant,
 		// so it is OOB exactly when the constant is.
@@ -1458,8 +1693,11 @@ func isConstantIndex(expr string) bool {
 
 // constantNodeValue returns the compile-time value of a constant-valued AST node
 // — a numeric literal (any radix/suffix), an object-like macro identifier, or a
-// cast/parenthesized wrapper of either. It reports ok=false for anything else
-// (BO-07: a hex literal or `int n = SIZE; buf[n]` is a definite constant).
+// cast/parenthesized wrapper of either. A macro declared in an indexed HEADER is
+// resolved from the tree-wide repofacts census when the per-file map does not
+// know it (issue #253 P2-1: `if (idx >= MAX) continue;` with MAX in a header).
+// It reports ok=false for anything else (BO-07: a hex literal or
+// `int n = SIZE; buf[n]` is a definite constant).
 func constantNodeValue(bc *bufCtx, node parser.Node) (int, bool) {
 	switch node.Kind() {
 	case "number_literal":
@@ -1469,6 +1707,11 @@ func constantNodeValue(bc *bufCtx, node parser.Node) (int, bool) {
 	case "identifier":
 		if v, ok := bc.macros[node.Text()]; ok && v >= 0 {
 			return v, true
+		}
+		if bc.facts != nil {
+			if v, ok := bc.facts.Macros[node.Text()]; ok && v >= 0 {
+				return v, true
+			}
 		}
 	case "parenthesized_expression", "cast_expression":
 		for _, c := range node.NamedChildren() {

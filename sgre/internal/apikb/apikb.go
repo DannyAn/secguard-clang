@@ -375,7 +375,33 @@ var IteratorMacros = map[string][]int{
 	"list_for_each_entry_safe_reverse":  {0, 1},
 	"hlist_for_each_entry":              {0},
 	"hlist_for_each_entry_safe":         {0, 1},
+	// The RCU traversal variants share the same (pos, head, member) signature:
+	// the iterator is written in the for-init and null-guarded by the condition.
+	"list_for_each_entry_rcu":          {0},
+	"list_for_each_entry_continue_rcu": {0},
+	"hlist_for_each_entry_rcu":         {0},
 }
+
+// OpaqueIteratorMacros are project/vendor list-traversal macros whose iterator
+// is assigned in the loop header by a definition OUTSIDE the scan tree, with no
+// reliable positional signature (issue #253 P2-1: LIST_FOR_EACH_ENTRY_RCU /
+// SLL_Scan / HPE_LIST_FOR_EACH_SAFE produced null@cfg-proof auto-confirms on
+// iterators the macro itself had reassigned). They are deliberately NOT in
+// IteratorMacros: a guessed parameter index could kill the wrong variable.
+// Instead, the planner's macro-context gate treats a call that NAMES the
+// candidate variable as unverifiable and demotes a machine proof to suspected;
+// the candidate is never killed, because guessing the iterator position could
+// suppress a real defect.
+var OpaqueIteratorMacros = map[string]bool{
+	"SLL_Scan":                true,
+	"SINGLE_LINKEDLIST_Scan":  true,
+	"HPE_LIST_FOR_EACH_SAFE":  true,
+	"LIST_FOR_EACH_ENTRY_RCU": true,
+}
+
+// OpaqueIteratorMacro reports whether name is a traversal macro with an
+// out-of-tree definition and no reliable iterator parameter position.
+func OpaqueIteratorMacro(name string) bool { return OpaqueIteratorMacros[name] }
 
 // IteratorArgs returns the iterator parameter indices of a known list-traversal
 // macro, or (nil, false) when name is not one.

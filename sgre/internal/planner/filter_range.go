@@ -188,6 +188,16 @@ func (f *RangeFilter) Apply(ctx context.Context, candidates []Candidate) ([]Cand
 		if allNonZero && !fn.IsStatic {
 			allNonZero = false
 		}
+		if zero {
+			// A caller passing literal 0 does NOT prove divide-by-zero when the
+			// callee clamps the parameter away from zero first
+			// (`if (pageSize == 0) { pageSize = DEFAULT; }`, issue #253 P2-1).
+			// The proof is void — keep the row suspected for the AI instead of
+			// auto-confirming it.
+			if body, _ := cache.get(file, fn); body.Kind() == "compound_statement" && paramZeroClamp(body, divisor) {
+				zero = false
+			}
+		}
 		switch {
 		case zero:
 			c.SuspicionLevel = "confirmed"

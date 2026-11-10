@@ -47,8 +47,15 @@ func (f *MacroUncertainFilter) Apply(ctx context.Context, candidates []Candidate
 		// The demotion is gated on the macro actually naming the variable: a
 		// macro that never receives it (`LIST_FOR_EACH(iter, head)` around a `q`
 		// dereference) cannot have reassigned it, so that proof still stands.
-		if c.MacroContext && c.SuspicionLevel == "confirmed" && file != nil && f.macro != nil &&
+		//
+		// Do NOT gate the mention probe on c.MacroContext: the opaque-iterator
+		// scan covers the whole function-body prefix, and a sink deep inside a
+		// long macro loop (> the ±8-line window) has no window macro context.
+		// Gating on the window made the prefix scan unreachable for exactly the
+		// long-loop shape it was added for (issue #253 P2-1).
+		if c.SuspicionLevel == "confirmed" && file != nil && f.macro != nil &&
 			f.macro.macroContextMentions(ctx, f.store, c.FunctionID, file.Path, c.Line, c.VariableName) {
+			c.MacroContext = true
 			c.SuspicionLevel = "suspected"
 		}
 		if c.SuspicionLevel != "confirmed" && c.SourceLine == 0 && c.MacroContext {

@@ -27,6 +27,9 @@ type FilterDeps struct {
 	// is the configured auto-dismiss mode ("off"/"external"/"all").
 	Boundary     bool
 	BoundaryMode string
+	// PrecisionTier is the complete-program fail-open pre-dismissal policy
+	// ("balanced"/"strict"/"off", issue #253 P0-6).
+	PrecisionTier string
 }
 
 // FilterFactory constructs one Filter given the Planner's shared deps.
@@ -51,6 +54,7 @@ func (p *Planner) buildFilters(ctx context.Context, spec *VulnTypeSpec) ([]Filte
 		CFGCache:       p.cfgCache,
 		Boundary:       p.isBoundary(ctx),
 		BoundaryMode:   config.Load().BoundaryAutoDismissMode(),
+		PrecisionTier:  config.Load().PrecisionTierMode(),
 	}
 	out := make([]Filter, 0, len(spec.FilterFactories)+1)
 	// The in-source suppression filter runs FIRST, before every type's chain:
@@ -59,10 +63,11 @@ func (p *Planner) buildFilters(ctx context.Context, spec *VulnTypeSpec) ([]Filte
 	out = append(out, NewInlineSuppressionFilter(deps.Store, spec.Name))
 	for _, f := range spec.FilterFactories {
 		filter := f(deps)
-		// Keep the default chain shape unchanged when the boundary layer is
-		// off: a no-op filter in the stats list would make every plan/report
-		// diff look like a new stage for every scan.
-		if _, isBoundary := filter.(*BoundaryFailOpenFilter); isBoundary && (!deps.Boundary || deps.BoundaryMode == "off") {
+		// Keep the default chain shape unchanged when the fail-open layer is
+		// off (boundary layer off, or complete-program precision_tier="off"):
+		// a no-op filter in the stats list would make every plan/report diff
+		// look like a new stage for every scan.
+		if bf, isBoundary := filter.(*BoundaryFailOpenFilter); isBoundary && bf.mode == "off" {
 			continue
 		}
 		out = append(out, filter)
@@ -86,7 +91,9 @@ func chainNullDeref() []FilterFactory {
 		func(d FilterDeps) Filter { return NewNullableSourceFilter(d.Store).WithParser(d.Parser, d.Logger) },
 		func(d FilterDeps) Filter { return NewMacroUncertainFilter(d.Store, d.Macro) },
 		func(d FilterDeps) Filter { return NewCallReachFilter(d.Store, d.CallReachCache) },
-		func(d FilterDeps) Filter { return NewBoundaryFailOpenFilter(d.Boundary, d.BoundaryMode) },
+		func(d FilterDeps) Filter {
+			return NewBoundaryFailOpenFilter(d.Boundary, d.BoundaryMode, d.PrecisionTier)
+		},
 		func(d FilterDeps) Filter { return NewSafeFunctionFilter(d.Store) },
 	}
 }

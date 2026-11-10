@@ -10,7 +10,7 @@ func boundaryCandidate(tier string) Candidate {
 }
 
 func TestBoundaryFailOpenFilterExternalMode(t *testing.T) {
-	f := NewBoundaryFailOpenFilter(true, "external")
+	f := NewBoundaryFailOpenFilter(true, "external", "off")
 	witness := boundaryCandidate("caller-arg")
 	witness.CallerNullDetail = "caller caller_of_f passes NULL"
 	kept, dropped, err := f.Apply(context.Background(), []Candidate{
@@ -41,7 +41,7 @@ func TestBoundaryFailOpenFilterExternalMode(t *testing.T) {
 // pre-dismissed in the default mode, while a machine-proven tier survives.
 func TestBoundaryFailOpenFilterDismissesNonProvingTiers(t *testing.T) {
 	for _, mode := range []string{"external", "all"} {
-		f := NewBoundaryFailOpenFilter(true, mode)
+		f := NewBoundaryFailOpenFilter(true, mode, "off")
 		kept, dropped, err := f.Apply(context.Background(), []Candidate{
 			boundaryCandidate("callback-entry"),
 			boundaryCandidate("assumed-return"),
@@ -80,7 +80,7 @@ func TestBoundaryFailOpenFilterKeepsWitness(t *testing.T) {
 	callback := boundaryCandidate("callback-entry")
 	callback.CallerNullDetail = "function send_ips is registered via a function-pointer (ADDR_TAKEN); parameter ips nullability is bound to the registration-site context — verify the registrar passes a non-null ctx"
 
-	kept, dropped, err := NewBoundaryFailOpenFilter(true, "external").Apply(context.Background(), []Candidate{hop, named, root, callback})
+	kept, dropped, err := NewBoundaryFailOpenFilter(true, "external", "off").Apply(context.Background(), []Candidate{hop, named, root, callback})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestBoundaryFailOpenFilterCallerArgRoot(t *testing.T) {
 	hop := boundaryCandidate("caller-arg")
 	hop.ChainKind = "hop"
 
-	kept, dropped, err := NewBoundaryFailOpenFilter(true, "external").Apply(context.Background(), []Candidate{root, hop})
+	kept, dropped, err := NewBoundaryFailOpenFilter(true, "external", "off").Apply(context.Background(), []Candidate{root, hop})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestBoundaryFailOpenFilterCallerArgRoot(t *testing.T) {
 }
 
 func TestBoundaryFailOpenFilterAllMode(t *testing.T) {
-	f := NewBoundaryFailOpenFilter(true, "all")
+	f := NewBoundaryFailOpenFilter(true, "all", "off")
 	hop := boundaryCandidate("caller-arg")
 	hop.ChainKind = "hop"
 	kept, dropped, err := f.Apply(context.Background(), []Candidate{
@@ -140,7 +140,7 @@ func TestBoundaryFailOpenFilterAllMode(t *testing.T) {
 // dismissed even with an in-tree caller chain, in every mode.
 func TestBoundaryFailOpenFilterSourceTierVsInTreeCaller(t *testing.T) {
 	for _, mode := range []string{"external", "all"} {
-		f := NewBoundaryFailOpenFilter(true, mode)
+		f := NewBoundaryFailOpenFilter(true, mode, "off")
 		for _, tier := range []string{"opaque-origin", "external-unknown", "assumed-return"} {
 			withCallers := boundaryCandidate(tier)
 			withCallers.Callers = []string{"caller"}
@@ -171,10 +171,72 @@ func TestBoundaryFailOpenFilterSourceTierVsInTreeCaller(t *testing.T) {
 	}
 }
 
+// TestPrecisionTierCompleteProgram pins issue #253 P0-6: a COMPLETE-PROGRAM
+// scan pre-dismisses the same non-proving tiers under the "balanced" default,
+// ledgered as precision_fail_open (distinct from the boundary ledger);
+// "strict" additionally drops caller-arg forwarding hops, and "off" is the
+// recall-maximal escape hatch.
+func TestPrecisionTierCompleteProgram(t *testing.T) {
+	hop := boundaryCandidate("caller-arg")
+	hop.ChainKind = "hop"
+	witness := boundaryCandidate("caller-arg")
+	witness.CallerNullDetail = "caller entry passes NULL"
+	proven := []Candidate{boundaryCandidate("cfg-proof"), boundaryCandidate("malloc-fail")}
+	nonProving := []Candidate{
+		boundaryCandidate("opaque-origin"),
+		boundaryCandidate("external-unknown"),
+		boundaryCandidate("callback-entry"),
+		boundaryCandidate("assumed-return"),
+	}
+
+	balanced := NewBoundaryFailOpenFilter(false, "external", "balanced")
+	kept, dropped, err := balanced.Apply(context.Background(), append(append([]Candidate{hop, witness}, nonProving...), proven...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dropped) != 4 || len(kept) != 4 {
+		t.Fatalf("balanced: kept=%d dropped=%d, want 4 kept (hop + witness + 2 proven) / 4 dropped", len(kept), len(dropped))
+	}
+	for _, d := range dropped {
+		if d.Filter != "precision_fail_open" {
+			t.Errorf("complete-program dismissals must be ledgered as precision_fail_open: %+v", d)
+		}
+	}
+
+	strict := NewBoundaryFailOpenFilter(false, "external", "strict")
+	kept, dropped, err = strict.Apply(context.Background(), append(append([]Candidate{hop, witness}, nonProving...), proven...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// strict drops the forwarding hop but a literal-NULL call-site witness is a
+	// concrete defect and stays in EVERY mode (the documented policy).
+	if len(dropped) != 5 || len(kept) != 3 {
+		t.Fatalf("strict: kept=%d dropped=%d, want 3 kept (witness + 2 proven) / 5 dropped", len(kept), len(dropped))
+	}
+	foundWitness := false
+	for _, c := range kept {
+		if c.CallerNullDetail == witness.CallerNullDetail {
+			foundWitness = true
+		}
+	}
+	if !foundWitness {
+		t.Error("strict must keep a caller-arg row with a literal-NULL witness")
+	}
+
+	off := NewBoundaryFailOpenFilter(false, "external", "off")
+	kept, dropped, err = off.Apply(context.Background(), nonProving)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dropped) != 0 || len(kept) != 4 {
+		t.Fatalf("off: kept=%d dropped=%d, want everything kept", len(kept), len(dropped))
+	}
+}
+
 func TestBoundaryFailOpenFilterOff(t *testing.T) {
 	for _, f := range []*BoundaryFailOpenFilter{
-		NewBoundaryFailOpenFilter(false, "all"),
-		NewBoundaryFailOpenFilter(true, "off"),
+		NewBoundaryFailOpenFilter(false, "external", "off"),
+		NewBoundaryFailOpenFilter(true, "off", "off"),
 	} {
 		kept, dropped, err := f.Apply(context.Background(), []Candidate{
 			boundaryCandidate("opaque-origin"),

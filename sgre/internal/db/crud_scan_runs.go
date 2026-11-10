@@ -118,7 +118,16 @@ func (s *store) ListScanRuns(ctx context.Context, limit int) ([]*ScanRun, error)
 	return runs, rows.Err()
 }
 func (s *store) SetScanRunCompletionState(ctx context.Context, scanID, state string) error {
-	_, err := s.exec.ExecContext(ctx, `UPDATE scan_runs SET completion_state = ? WHERE scan_id = ?`, state, scanID)
+	// A failed scan never reaches the final UpsertScanRun, so duration_ms would
+	// stay 0 and the row would be indistinguishable from a zero-cost no-op
+	// (issue #253 P0-4). Backfill the wall clock from the lifecycle row's
+	// created_at (unix seconds) when a failure is committed without a duration.
+	_, err := s.exec.ExecContext(ctx,
+		`UPDATE scan_runs SET completion_state = ?,
+		   duration_ms = CASE WHEN ? = 'failed' AND duration_ms = 0
+		         THEN MAX(0, (CAST(strftime('%s','now') AS INTEGER) - created_at) * 1000)
+		         ELSE duration_ms END
+		 WHERE scan_id = ?`, state, state, scanID)
 	if err != nil {
 		return fmt.Errorf("db: set completion_state: %w", err)
 	}
@@ -130,7 +139,10 @@ func (s *store) SetScanRunCompletionState(ctx context.Context, scanID, state str
 // re-scan of the same id) would clobber another live run's lifecycle row.
 func (s *store) MarkStaleRunningAsFailed(ctx context.Context, excludeScanID string) (int, error) {
 	res, err := s.exec.ExecContext(ctx,
-		`UPDATE scan_runs SET completion_state = 'failed'
+		`UPDATE scan_runs SET completion_state = 'failed',
+		   duration_ms = CASE WHEN duration_ms = 0
+		         THEN MAX(0, (CAST(strftime('%s','now') AS INTEGER) - created_at) * 1000)
+		         ELSE duration_ms END
 		 WHERE completion_state = 'running' AND scan_id <> ?`, excludeScanID)
 	if err != nil {
 		return 0, fmt.Errorf("db: mark stale running as failed: %w", err)

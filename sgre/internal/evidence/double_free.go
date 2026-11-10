@@ -38,6 +38,7 @@ type dfFreeEvent struct {
 	varName  string
 	field    string
 	line     int
+	column   int
 	indirect bool
 	callee   string
 	global   string
@@ -52,6 +53,7 @@ type dfFreeEvent struct {
 type globalDFEntry struct {
 	slot         string
 	line         int
+	column       int
 	callee       string
 	secondCallee string
 	victims      []string
@@ -131,7 +133,7 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 					if firstCallee == "" {
 						firstCallee = second.callee
 					}
-					e = &globalDFEntry{slot: second.global, line: second.line, callee: firstCallee, secondCallee: second.callee}
+					e = &globalDFEntry{slot: second.global, line: second.line, column: second.column, callee: firstCallee, secondCallee: second.callee}
 					collective[key] = e
 				}
 				e.victims = append(e.victims, varName)
@@ -167,7 +169,7 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 				if e.mayFree {
 					props["may_free"] = "true"
 				}
-				if emitEvent(ctx, d.store, d.logger, "DOUBLE_FREE", f.ID, &db.Location{FileID: file.ID, Line: e.line}, props) {
+				if emitEvent(ctx, d.store, d.logger, "DOUBLE_FREE", f.ID, &db.Location{FileID: file.ID, Line: e.line, Column: e.column}, props) {
 					result.EventsCreated++
 				}
 			}
@@ -195,7 +197,7 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 					if events[i].callee != "" {
 						props["second_callee"] = events[i].callee
 					}
-					if emitEvent(ctx, d.store, d.logger, "DOUBLE_FREE", f.ID, &db.Location{FileID: file.ID, Line: events[i].line}, props) {
+					if emitEvent(ctx, d.store, d.logger, "DOUBLE_FREE", f.ID, &db.Location{FileID: file.ID, Line: events[i].line, Column: events[i].column}, props) {
 						result.EventsCreated++
 					}
 				}
@@ -349,6 +351,7 @@ func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.No
 		}
 		callName := extractCallName(call)
 		callLine := call.StartLine()
+		callColumn := call.StartColumn()
 
 		// A freeing function-like macro wraps a free the parser cannot see; a
 		// macro that also nulls the argument (SAFE_FREE) is excluded because the
@@ -357,7 +360,7 @@ func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.No
 			args := getCallArgs(call)
 			if len(args) > 0 {
 				if a0 := unwrapCastParen(args[0]); a0.Kind() == "identifier" {
-					events = append(events, dfFreeEvent{varName: a0.Text(), line: callLine})
+					events = append(events, dfFreeEvent{varName: a0.Text(), line: callLine, column: callColumn})
 				}
 			}
 			continue
@@ -377,14 +380,14 @@ func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.No
 				arg = unwrapCastParen(arg)
 				switch arg.Kind() {
 				case "identifier":
-					events = append(events, dfFreeEvent{varName: arg.Text(), line: callLine})
+					events = append(events, dfFreeEvent{varName: arg.Text(), line: callLine, column: callColumn})
 				case "field_expression":
 					if base, field := extractFieldAccess(arg); base != "" && field != "" {
-						events = append(events, dfFreeEvent{varName: base, field: field, line: callLine})
+						events = append(events, dfFreeEvent{varName: base, field: field, line: callLine, column: callColumn})
 					}
 				case "subscript_expression":
 					if base, field := subscriptAccess(arg); base != "" && field != "" {
-						events = append(events, dfFreeEvent{varName: base, field: field, line: callLine})
+						events = append(events, dfFreeEvent{varName: base, field: field, line: callLine, column: callColumn})
 					}
 				}
 			}
@@ -413,14 +416,14 @@ func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.No
 					arg = unwrapCastParen(arg)
 					switch arg.Kind() {
 					case "identifier":
-						events = append(events, dfFreeEvent{varName: arg.Text(), line: callLine})
+						events = append(events, dfFreeEvent{varName: arg.Text(), line: callLine, column: callColumn})
 					case "field_expression":
 						if base, field := extractFieldAccess(arg); base != "" && field != "" {
-							events = append(events, dfFreeEvent{varName: base, field: field, line: callLine})
+							events = append(events, dfFreeEvent{varName: base, field: field, line: callLine, column: callColumn})
 						}
 					case "subscript_expression":
 						if base, field := subscriptAccess(arg); base != "" && field != "" {
-							events = append(events, dfFreeEvent{varName: base, field: field, line: callLine})
+							events = append(events, dfFreeEvent{varName: base, field: field, line: callLine, column: callColumn})
 						}
 					}
 				}
@@ -434,6 +437,7 @@ func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.No
 					events = append(events, dfFreeEvent{
 						varName:  storedVar,
 						line:     callLine,
+						column:   callColumn,
 						indirect: true,
 						callee:   callName,
 						global:   globalName,
@@ -460,6 +464,7 @@ func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.No
 				events = append(events, dfFreeEvent{
 					varName:  argVar,
 					line:     callLine,
+					column:   callColumn,
 					indirect: true,
 					callee:   callName,
 				})
@@ -467,6 +472,7 @@ func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.No
 				events = append(events, dfFreeEvent{
 					varName:  argVar,
 					line:     callLine,
+					column:   callColumn,
 					indirect: true,
 					callee:   callName,
 					mayFree:  true,
@@ -479,6 +485,7 @@ func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.No
 				events = append(events, dfFreeEvent{
 					varName:  storedVar,
 					line:     callLine,
+					column:   callColumn,
 					indirect: true,
 					callee:   callName,
 					global:   globalName,
