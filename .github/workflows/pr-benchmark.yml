@@ -37,7 +37,13 @@ jobs:
           rm -rf /tmp/bench && mkdir -p /tmp/bench
           cp -r examples/c-vuln-benchmark/src /tmp/bench/
           cd /tmp/bench
-          $GITHUB_WORKSPACE/bin/secguard scan . --db /tmp/bench/sgre.db > scan.log 2>&1
+          # The benchmark is a recall gate: it counts candidates.sarif as
+          # detection, so disable the production complete-program precision
+          # pre-dismissal ([scan].precision_tier="balanced", issue #253 P0-6)
+          # that intentionally removes non-proving null tiers from the AI queue.
+          $GITHUB_WORKSPACE/bin/secguard \
+            --config "$GITHUB_WORKSPACE/examples/c-vuln-benchmark/benchmark-secguard.toml" \
+            scan . --db /tmp/bench/sgre.db > scan.log 2>&1
           SCAN_ID=$(ls .codeagent/secguard-clang/scans | grep -v latest | head -1)
           $GITHUB_WORKSPACE/bin/secguard report --audit \
             --scan-id "$SCAN_ID" \

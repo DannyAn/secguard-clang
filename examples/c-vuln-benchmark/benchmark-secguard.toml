@@ -1,0 +1,13 @@
+# Recall-gate configuration for examples/c-vuln-benchmark.
+#
+# The benchmark counts a `finding` case as detected when it appears in
+# candidates.sarif OR result.sarif. The production complete-program default
+# ([scan].precision_tier = "balanced", issue #253 P0-6) intentionally
+# pre-dismisses non-proving null-origin tiers (external-unknown /
+# assumed-return / callback-entry / opaque-origin) before the AI queue, which
+# removes those candidates from candidates.sarif.
+#
+# Disable that production precision policy here so the gate keeps measuring
+# detector/planner recall; the default in a real scan is unchanged.
+[scan]
+precision_tier = "off"
