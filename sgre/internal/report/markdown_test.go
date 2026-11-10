@@ -1158,3 +1158,25 @@ func TestWriteCandidates_ClusteredSites(t *testing.T) {
 		t.Errorf("clustered candidate file invented a site that was not folded:\n%s", content)
 	}
 }
+
+// TestFixSuggestion_GlobalContainerFieldLeak pins the issue #255 fix
+// suggestion: the leaked block is an object FIELD released (or not) on the
+// DELETION path, so the suggestion must name the delete function and the field
+// release, not the allocation-site "free it on all paths in create" template.
+func TestFixSuggestion_GlobalContainerFieldLeak(t *testing.T) {
+	s := FixSuggestion("memory-leak", "CWE-401", planner.EvidenceItem{
+		Target:          planner.TargetInfo{Function: "policy_delete", Variable: "cfg", Line: 58},
+		LeakChain:       "g_policy_table[idx] -> policy -> policy->cfg",
+		LeakShallowFree: "policy_free:57",
+		LeakFieldAlloc:  "policy_create:34",
+		LeakObject:      "policy",
+	})
+	for _, want := range []string{"free(policy->cfg)", "policy->cfg = NULL", "policy_free(policy)", "g_policy_table[idx] -> policy -> policy->cfg", "policy_delete"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("fix suggestion missing %q:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "char *cfg = malloc(size)") {
+		t.Errorf("fix suggestion fell back to the allocation-site template:\n%s", s)
+	}
+}

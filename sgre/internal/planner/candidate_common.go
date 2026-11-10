@@ -131,6 +131,13 @@ type LeakPayload struct {
 	LeakFreeMismatch        string
 	LeakTransferConditional string
 	LeakFreeOnBorrow        string
+	LeakContainer           string
+	LeakSlot                string
+	LeakObject              string
+	LeakChain               string
+	LeakShallowFree         string
+	LeakFieldAlloc          string
+	LeakFieldStore          string
 }
 
 // Leak returns the leak-specific view of c.
@@ -142,6 +149,13 @@ func (c Candidate) Leak() LeakPayload {
 		LeakFreeMismatch:        c.LeakFreeMismatch,
 		LeakTransferConditional: c.LeakTransferConditional,
 		LeakFreeOnBorrow:        c.LeakFreeOnBorrow,
+		LeakContainer:           c.LeakContainer,
+		LeakSlot:                c.LeakSlot,
+		LeakObject:              c.LeakObject,
+		LeakChain:               c.LeakChain,
+		LeakShallowFree:         c.LeakShallowFree,
+		LeakFieldAlloc:          c.LeakFieldAlloc,
+		LeakFieldStore:          c.LeakFieldStore,
 	}
 }
 

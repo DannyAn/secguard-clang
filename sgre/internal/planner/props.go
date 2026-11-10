@@ -297,6 +297,19 @@ type eventProps struct {
 	// (origin=free-borrow): the variable came from a borrow-return API and
 	// the call releases an object the caller does not own.
 	BorrowFree string `json:"borrow_free"`
+	// Container-field leak (issue #255): the leaked field is reachable only
+	// through a global container slot, the deletion path releases the outer
+	// object without releasing the field, and clearing the slot loses it.
+	// RefChain is the full reference chain; ShallowFree is the "api:line" of
+	// the outer release; FieldAlloc/FieldStore are the "function:line" of the
+	// field's allocation and of the store that attached it to the object.
+	LeakContainer string `json:"container"`
+	LeakSlot      string `json:"slot"`
+	LeakObject    string `json:"object"`
+	RefChain      string `json:"ref_chain"`
+	ShallowFree   string `json:"shallow_free"`
+	FieldAlloc    string `json:"field_alloc"`
+	FieldStore    string `json:"field_store"`
 	// PointeeKind is the invalid-free object kind the detector proved the
 	// deallocator argument points at: "stack" / "global-array" / "heap-offset".
 	PointeeKind string `json:"pointee_kind"`

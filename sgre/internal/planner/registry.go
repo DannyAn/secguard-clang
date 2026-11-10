@@ -563,6 +563,34 @@ func buildBufferVerdictFacts(c Candidate) []VerdictFact {
 // machine-proved loss, while a channel that exists alongside a surviving
 // leak candidate means the CFG proved a bypass path.
 func buildLeakVerdictFacts(c Candidate) []VerdictFact {
+	// Global-container shallow free (issue #255): the candidate line is the
+	// slot-clear (loss) line, not an allocation site, so the allocation-centric
+	// alloc@/leak@/escape@ facts would state the wrong thing. The chain, the
+	// shallow release and the field's allocation witness ARE the verdict basis.
+	if c.LeakChain != "" {
+		facts := make([]VerdictFact, 0, 3)
+		detail := fmt.Sprintf("`%s` is reachable only through %s", c.VariableName, c.LeakChain)
+		if c.LeakFieldStore != "" {
+			detail += fmt.Sprintf("; the object field is attached by the store at %s", c.LeakFieldStore)
+		}
+		facts = append(facts, VerdictFact{
+			Token:  "container-field@" + compactHintValue(c.LeakChain),
+			Detail: detail,
+		})
+		if c.LeakShallowFree != "" {
+			facts = append(facts, VerdictFact{
+				Token:  "shallow-free@" + compactHintValue(c.LeakShallowFree),
+				Detail: fmt.Sprintf("the release `%s` frees the OUTER object; no release of `%s` is on that path, and the slot is cleared at line %d", c.LeakShallowFree, c.VariableName, c.Line),
+			})
+		}
+		if c.LeakFieldAlloc != "" {
+			facts = append(facts, VerdictFact{
+				Token:  "field-alloc@" + compactHintValue(c.LeakFieldAlloc),
+				Detail: fmt.Sprintf("the leaked field's block is allocated at %s; the slot clear at line %d drops the last reference — release the field before (or as part of) the outer release", c.LeakFieldAlloc, c.Line),
+			})
+		}
+		return facts
+	}
 	facts := make([]VerdictFact, 0, 4)
 	acquire := "acquisition"
 	if c.APIName != "" {

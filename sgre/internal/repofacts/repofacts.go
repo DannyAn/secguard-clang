@@ -51,6 +51,20 @@ type Facts struct {
 	fields  map[string][]FieldFact
 	globals map[string][]GlobalArray
 	layouts map[typeinfo.LayoutKey]typeinfo.TypeLayout
+	// pointerFields records, per struct tag / typedef alias, the members
+	// DECLARED as pointers (`T *f`). It is collected independently of the
+	// layout census: a struct whose layout is unknown (bitfield, packed,
+	// unresolvable member type) still has usable pointer-member facts, and the
+	// ownership analysis (global-container shallow free) needs them. A field
+	// whose declarations disagree on pointer-ness is dropped, not guessed.
+	pointerFields map[string]map[string]bool
+}
+
+// ptrShape counts the declarations of one member so a conflict (one struct
+// definition says `T *f`, another says `T f`) is detectable.
+type ptrShape struct {
+	pointer bool
+	plain   bool
 }
 
 // LayoutOf 返回给定 LayoutKey 的 TypeLayout。ok=false 表示该类型布局未知。
@@ -76,11 +90,12 @@ func (f *Facts) Layouts() map[typeinfo.LayoutKey]typeinfo.TypeLayout {
 // than an unknown one).
 func Build(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) (*Facts, error) {
 	f := &Facts{
-		Macros:  map[string]int{},
-		structs: map[string]map[string]FieldFact{},
-		fields:  map[string][]FieldFact{},
-		globals: map[string][]GlobalArray{},
-		layouts: map[typeinfo.LayoutKey]typeinfo.TypeLayout{},
+		Macros:        map[string]int{},
+		structs:       map[string]map[string]FieldFact{},
+		fields:        map[string][]FieldFact{},
+		globals:       map[string][]GlobalArray{},
+		layouts:       map[typeinfo.LayoutKey]typeinfo.TypeLayout{},
+		pointerFields: map[string]map[string]bool{},
 	}
 	var indexedPaths []string
 	var headerPaths []string
@@ -144,6 +159,7 @@ func Build(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Lo
 	globalCounts := map[string]map[int]bool{}
 	globalSymbols := map[string]string{}
 	globalTypes := map[string]string{}
+	rawPointerFields := map[string]map[string]*ptrShape{}
 	var allLayoutDecls []structDecl
 	processTree := func(root parser.Node) {
 		for _, kind := range []string{"struct_specifier", "union_specifier"} {
@@ -154,6 +170,47 @@ func Build(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Lo
 				keys := typeKeys(ss)
 				if len(keys) == 0 {
 					continue
+				}
+				// Pointer-member census: only the type's OWN direct
+				// field_declaration children. FindAll would descend into an
+				// inline nested struct definition (`struct { int *x; } n;`)
+				// and wrongly attribute `x` to the outer type.
+				if list := ss.FindFirst("field_declaration_list"); list != nil {
+					for _, fd := range list.NamedChildren() {
+						if fd.Kind() != "field_declaration" {
+							continue
+						}
+						typ := typeSpelling(fd)
+						// An array member (including an array of pointers,
+						// `T *name[N]`) is not a single owning pointer; the
+						// census carries only scalar pointer members.
+						arrayNames := map[string]bool{}
+						for _, ad := range fd.FindAll("array_declarator") {
+							if name := declaratorName(ad); name != "" {
+								arrayNames[name] = true
+							}
+						}
+						for _, spec := range fieldDeclarators(fd, typ, false, false, f.Macros) {
+							if arrayNames[spec.Name] {
+								continue
+							}
+							for _, key := range keys {
+								shape := rawPointerFields[key]
+								if shape == nil {
+									shape = map[string]*ptrShape{}
+									rawPointerFields[key] = shape
+								}
+								if shape[spec.Name] == nil {
+									shape[spec.Name] = &ptrShape{}
+								}
+								if spec.IsPointer && !spec.IsArray {
+									shape[spec.Name].pointer = true
+								} else {
+									shape[spec.Name].plain = true
+								}
+							}
+						}
+					}
 				}
 				for _, fd := range ss.FindAll("field_declaration") {
 					typ := typeSpelling(fd)
@@ -270,6 +327,19 @@ func Build(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Lo
 			g.Count = n
 		}
 		f.globals[name] = []GlobalArray{g}
+	}
+	// A member declared pointer by one definition and plain by another is
+	// ambiguous; only members that are pointers in EVERY declaration survive.
+	for key, shape := range rawPointerFields {
+		for field, s := range shape {
+			if !s.pointer || s.plain {
+				continue
+			}
+			if f.pointerFields[key] == nil {
+				f.pointerFields[key] = map[string]bool{}
+			}
+			f.pointerFields[key][field] = true
+		}
 	}
 
 	// Pass 3: Type Layout census. 用默认 ABI（LP64）+ pack=0 + assumed_default_abi
@@ -401,6 +471,27 @@ func (f *Facts) GlobalArray(name string) (GlobalArray, bool) {
 		return GlobalArray{}, false
 	}
 	return list[0], true
+}
+
+// PointerFields returns the members of a struct tag / typedef alias that are
+// DECLARED as pointers (`T *f`), sorted, plus ok=false when the type carries no
+// unambiguous pointer-member facts (unknown type, or conflicting definitions).
+// It is the declaration-fact source the global-container shallow-free analysis
+// uses: which fields of a container element can own a separate heap block.
+func (f *Facts) PointerFields(typ string) ([]string, bool) {
+	if f == nil {
+		return nil, false
+	}
+	fields := f.pointerFields[strings.TrimSpace(typ)]
+	if len(fields) == 0 {
+		return nil, false
+	}
+	out := make([]string, 0, len(fields))
+	for name := range fields {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out, true
 }
 
 // eachIndexedFile visits every indexed file with its parsed root, logging and

@@ -958,6 +958,18 @@ func title(s string) string {
 	return strings.Join(words, " ")
 }
 
+// shallowFreeName renders the "api:line" shallow-release witness as the call
+// spelling a fix suggestion can use.
+func shallowFreeName(witness string) string {
+	if witness == "" {
+		return "the release helper"
+	}
+	if i := strings.LastIndex(witness, ":"); i > 0 {
+		return witness[:i] + "()"
+	}
+	return witness
+}
+
 // FixSuggestion returns a paste-ready remediation for a candidate, used both by
 // the candidate evidence files and by the scan's auto-confirm pass (which turns
 // a pipeline-proved candidate into an `auto-confirmed` finding, skipping the
@@ -1011,6 +1023,28 @@ func FixSuggestion(vulnType, cwe string, c planner.EvidenceItem) string {
 			varName, funcName)
 
 	case "memory-leak":
+		// Global-container shallow free (issue #255): the leaked block is an
+		// object FIELD, and the loss is on the deletion path — an
+		// allocation-site "free it on all paths" suggestion would point at the
+		// wrong function. Suggest the deep release on the delete path instead.
+		if c.LeakChain != "" {
+			obj := c.LeakObject
+			if obj == "" {
+				obj = "obj"
+			}
+			return fmt.Sprintf(
+				"The object in the global container is released without releasing its `%s` field, so the field's block is lost when the slot is cleared (`%s`):\n\n"+
+					"```c\n"+
+					"/* on the deletion path in %s, before (or inside) the outer release */\n"+
+					"free(%s->%s);\n"+
+					"%s->%s = NULL;\n"+
+					"%s(%s);%s\n"+
+					"```\n\n"+
+					"Release the field BEFORE the outer object is freed, or make the release helper deep-free its members so no caller can forget it. The full reference chain is `%s`.\n",
+				varName, funcName, funcName, obj, varName, obj, varName,
+				strings.TrimSuffix(shallowFreeName(c.LeakShallowFree), "()"), obj,
+				"   /* the existing release helper */", c.LeakChain)
+		}
 		return fmt.Sprintf(
 			"Ensure `%s` is freed on **all** code paths in `%s`, including error paths:\n\n"+
 				"```c\n"+

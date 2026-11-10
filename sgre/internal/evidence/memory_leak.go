@@ -46,6 +46,15 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 	// count as a scalar status code, not an allocation (EL-06).
 	globalTypedefs := buildGlobalTypedefs(ctx, d.store, d.parser)
 
+	// Global-container shallow-free analysis (issue #255): the deletion path
+	// releases an object owned by a global container but not the object's
+	// heap-owning fields. It runs before the allocation-centric loop because it
+	// also emits the ownership-transfer releases that re-home an allocation
+	// stored into a wrapper object.
+	if err := d.detectGlobalContainerFieldLeaks(ctx, globalTypedefs, allocReturns, &result); err != nil {
+		return result, err
+	}
+
 	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function, tree *parser.Tree) {
 		funcDefs := root.FindAll("function_definition")
 		bodies := functionBodyMap(funcDefs)

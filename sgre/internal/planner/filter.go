@@ -448,6 +448,20 @@ type Candidate struct {
 	// (cJSON_Delete on cJSON_GetObjectItem's result, free on strstr's) —
 	// an invalid free of an object owned elsewhere.
 	LeakFreeOnBorrow string `json:"leak_free_on_borrow,omitempty"`
+	// LeakContainer/LeakSlot/LeakObject/LeakChain carry the global-container
+	// shallow-free facts (issue #255): the leaked field is reachable only
+	// through <slot> -> <object> -> <object>-><field>, and the deletion path
+	// released the outer object without releasing the field.
+	LeakContainer string `json:"leak_container,omitempty"`
+	LeakSlot      string `json:"leak_slot,omitempty"`
+	LeakObject    string `json:"leak_object,omitempty"`
+	LeakChain     string `json:"leak_chain,omitempty"`
+	// LeakShallowFree is the "api:line" of the outer release that left the
+	// field unreleased; LeakFieldAlloc/LeakFieldStore are the "function:line"
+	// of the field's allocation and of the store that attached it.
+	LeakShallowFree string `json:"leak_shallow_free,omitempty"`
+	LeakFieldAlloc  string `json:"leak_field_alloc,omitempty"`
+	LeakFieldStore  string `json:"leak_field_store,omitempty"`
 	// ThreadFunctions is the comma-separated list of pthread thread function
 	// names for a shared_data_race candidate (race-condition).
 	ThreadFunctions string `json:"thread_functions,omitempty"`

@@ -89,6 +89,13 @@ type EvidenceItem struct {
 	// candidate by shape-level clustering (VulnTypeSpec.ShapeKey): one row now
 	// stands for the whole same-file family of the same defect shape.
 	ClusterSites []string `json:"cluster_sites,omitempty"`
+	// LeakChain/LeakShallowFree/LeakFieldAlloc/LeakObject carry the
+	// global-container shallow-free facts (issue #255) so the report can render
+	// a delete-path fix instead of an allocation-site leak suggestion.
+	LeakChain       string `json:"leak_chain,omitempty"`
+	LeakShallowFree string `json:"leak_shallow_free,omitempty"`
+	LeakFieldAlloc  string `json:"leak_field_alloc,omitempty"`
+	LeakObject      string `json:"leak_object,omitempty"`
 	// IsCallResultDeref marks a dereference of a direct call result
 	// (`f()->field`, `*f()`, `f()[i]`): the callee's body (when defined in
 	// the scan) is embedded under ## Callee Definition.
@@ -429,6 +436,21 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 				parts = append(parts, "cwe-chain@"+strings.ReplaceAll(chain, " ", ""))
 			}
 		case "memory-leak", "resource-leak":
+			// Global-container shallow free (issue #255): the candidate line is
+			// the slot-clear (loss) line, not an allocation site, so the
+			// allocation-centric alloc@/leak@/escape@ tokens would misstate it.
+			// The chain, the shallow release and the field's allocation witness
+			// are the verdict basis.
+			if c.LeakChain != "" {
+				parts = append(parts, "container-field@"+compactHintValue(c.LeakChain))
+				if c.LeakShallowFree != "" {
+					parts = append(parts, "shallow-free@"+compactHintValue(c.LeakShallowFree))
+				}
+				if c.LeakFieldAlloc != "" {
+					parts = append(parts, "field-alloc@"+compactHintValue(c.LeakFieldAlloc))
+				}
+				break
+			}
 			// The verdict basis: WHERE the resource is acquired, HOW certain
 			// the loss is (DefiniteLeak), and WHAT ownership-transfer channels
 			// exist. escape@none + leak@definite is machine-proved loss; a
@@ -948,6 +970,10 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 		Signature:  c.FunctionSignature,
 
 		NullOriginTier:    c.NullOriginTier,
+		LeakChain:         c.LeakChain,
+		LeakShallowFree:   c.LeakShallowFree,
+		LeakFieldAlloc:    c.LeakFieldAlloc,
+		LeakObject:        c.LeakObject,
 		ChainKind:         c.ChainKind,
 		IsCallResultDeref: c.IsCallResultDeref,
 		DerivedFrom:       c.DerivedFrom,
