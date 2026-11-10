@@ -1,8 +1,11 @@
 package report
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -51,16 +54,8 @@ type sarifResult struct {
 	CodeFlows           []sarifCodeFlow    `json:"codeFlows,omitempty"`
 	PartialFingerprints map[string]string  `json:"partialFingerprints,omitempty"`
 	Fingerprints        map[string]string  `json:"fingerprints,omitempty"`
-	Fixes               []sarifFix         `json:"fixes,omitempty"`
-	Properties          map[string]string  `json:"properties,omitempty"`
+	Properties          map[string]any     `json:"properties,omitempty"`
 	Suppressions        []sarifSuppression `json:"suppressions,omitempty"`
-}
-
-// sarifFix carries the AI's concrete fix strategy into the machine-readable
-// report. description.text holds the fix (often a code snippet), so an
-// IDE/CI consumer can surface "how to fix" alongside "what is wrong".
-type sarifFix struct {
-	Description sarifMessage `json:"description"`
 }
 
 type sarifCodeFlow struct {
@@ -184,27 +179,24 @@ func sarifLevel(severity, status string) string {
 	}
 }
 
-// verdictMessageText builds the self-describing headline for one classified
-// finding: severity, status, type, the variable in play, the function, and the
-// file:line, with the AI summary/reasoning as the explanation. A reviewer can
-// triage from this single line without opening the source — this replaces the
-// old "<type> in <function>: <summary>" which left severity/status implicit.
-func verdictMessageText(vulnType, function, file string, line int, variable, severity, status, summary string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "[%s · %s] %s", severity, status, vulnType)
+// verdictMessageText builds the concise one-line headline for one classified
+// finding. SARIF `message.text` is what a generic SARIF consumer shows first, so
+// it carries only the defect description — the AI's own one-sentence summary
+// when present, else a minimal "<type> on '<var>' in <function>" — and none of
+// the severity/status/reasoning that already live in `level`, `properties` and
+// the finding's own columns. The verbose reasoning/evidence stay in their
+// dedicated properties instead of being repeated here.
+func verdictMessageText(displayType, function, variable, summary string) string {
+	if summary != "" {
+		return summary
+	}
 	if variable != "" {
-		fmt.Fprintf(&b, " on '%s'", variable)
+		return fmt.Sprintf("%s on '%s' in %s", displayType, variable, function)
 	}
 	if function != "" {
-		fmt.Fprintf(&b, " in %s", function)
+		return fmt.Sprintf("%s in %s", displayType, function)
 	}
-	if file != "" {
-		fmt.Fprintf(&b, " at %s:%d", shortFile(file), line)
-	}
-	if summary != "" {
-		fmt.Fprintf(&b, " — %s", summary)
-	}
-	return b.String()
+	return displayType
 }
 
 // writeCandidatesSarif emits the candidate-stage machine-readable report.
@@ -274,7 +266,7 @@ func (o *ScanOutput) writeCandidatesSarif(packages []*planner.PlanResult) error 
 				Fingerprints: map[string]string{
 					"ruleId:location": fmt.Sprintf("%s:%s:%d:%s", cwe, c.Target.Function, c.Target.Line, c.Target.Variable),
 				},
-				Properties: map[string]string{
+				Properties: map[string]any{
 					"stage": "candidate",
 				},
 			}
@@ -432,12 +424,6 @@ func writeSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding, k
 		uri = sarifURI(uri)
 
 		msg := f.Summary
-		if msg == "" {
-			msg = f.Reasoning
-		}
-		if msg == "" {
-			msg = f.Evidence
-		}
 		sev := strings.ToLower(strings.TrimSpace(f.Severity))
 		if sev == "" {
 			sev = "info"
@@ -461,48 +447,49 @@ func writeSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding, k
 			}
 		}
 
-		// The reasoning + evidence are what a reviewer actually reads to decide
-		// "is this right", so they travel in the SARIF `message.markdown` (the
-		// third result field, right after ruleId/level) instead of being buried
-		// at the tail of the properties bag — reviewers previously had to scroll
-		// past locations/fingerprints/fixes to reach them.
-		var md strings.Builder
-		if f.Reasoning != "" {
-			fmt.Fprintf(&md, "**Reasoning:** %s\n\n", f.Reasoning)
+		// Fingerprints carry the project's real, stable identities instead of
+		// re-minting hashes from metadata strings. `secguard/v1` is the DB's
+		// content-addressed, scan-independent finding fingerprint (rule + file +
+		// function + line + sink-statement text); `primaryLocationLineHash` is a
+		// real SHA-256 of the sink line so a SARIF consumer can dedup across
+		// line drift without trusting a `function:line` concatenation that the
+		// old code passed off as a hash.
+		partialFingerprints := map[string]string{}
+		if sinkLine := sourceLineText(f.FilePath, f.LineNumber, sourceRoot); sinkLine != "" {
+			partialFingerprints["primaryLocationLineHash"] = sha256Hex(sinkLine)
 		}
-		if f.Evidence != "" {
-			fmt.Fprintf(&md, "**Evidence:**\n%s", f.Evidence)
+		fingerprints := map[string]string{}
+		if f.Fingerprint != "" {
+			fingerprints["secguard/v1"] = f.Fingerprint
 		}
 
 		result := sarifResult{
 			RuleID: cwe,
 			Level:  level,
 			Message: sarifMessage{
-				Text:     verdictMessageText(displayType, f.FunctionName, f.FilePath, f.LineNumber, f.Variable, sev, status, msg),
-				Markdown: strings.TrimSpace(md.String()),
+				Text: verdictMessageText(displayType, f.FunctionName, f.Variable, msg),
 			},
-			Locations: []sarifLocation{{PhysicalLocation: physical}},
-			PartialFingerprints: map[string]string{
-				"primaryLocationLineHash": fmt.Sprintf("%s:%d", f.FunctionName, f.LineNumber),
-			},
-			Fingerprints: map[string]string{
-				"ruleId:location": fmt.Sprintf("%s:%s:%d:%s", cwe, f.FunctionName, f.LineNumber, f.Variable),
-			},
+			Locations:           []sarifLocation{{PhysicalLocation: physical}},
+			PartialFingerprints: partialFingerprints,
+			Fingerprints:        fingerprints,
 		}
 
 		// Every result carries its severity, verdict, confidence, and type as a
 		// stable property bag so a SARIF viewer/CI policy can filter on them
 		// (the level alone is a 3-value summary of the same two axes).
-		result.Properties = map[string]string{
+		result.Properties = map[string]any{
 			"severity":   sev,
 			"status":     status,
-			"confidence": fmt.Sprintf("%.0f%%", f.Confidence*100),
+			"confidence": roundConfidence(f.Confidence),
 			"vuln_type":  vulnType,
 			// WHICH stage produced the verdict. `status` is "confirmed" for both
 			// a pipeline proof and an AI classification, so a ticket filed from
 			// result.sarif could not tell them apart; the machine tier is the one
 			// whose premise the reviewer may still want to check.
 			"confirmation_source": confirmationSource(f),
+		}
+		if f.FunctionName != "" {
+			result.Properties["function"] = f.FunctionName
 		}
 		if f.Variable != "" {
 			result.Properties["variable"] = f.Variable
@@ -528,8 +515,12 @@ func writeSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding, k
 		if f.ExceptionCheck != "" {
 			result.Properties["exception_check"] = f.ExceptionCheck
 		}
+		// The AI's fix strategy is a textual suggestion, not a structured SARIF
+		// patch (it has no artifactChanges/replacements). Presenting it in the
+		// SARIF `fixes` field would make a consumer believe a concrete patch
+		// exists, so it travels as a custom property instead.
 		if f.FixStrategy != "" {
-			result.Fixes = []sarifFix{{Description: sarifMessage{Text: f.FixStrategy}}}
+			result.Properties["fix_strategy"] = f.FixStrategy
 		}
 
 		results = append(results, result)
@@ -566,4 +557,17 @@ func confirmationSource(f *db.Finding) string {
 		return "auto"
 	}
 	return "ai"
+}
+
+// sha256Hex returns the lowercase hex SHA-256 of s, the content hash used for
+// SARIF partialFingerprints.primaryLocationLineHash.
+func sha256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+// roundConfidence clamps the DB's float64 confidence into a clean 0.0–1.0
+// number for SARIF (the old "90%" string could not be compared numerically).
+func roundConfidence(c float64) float64 {
+	return math.Round(c*10000) / 10000
 }
