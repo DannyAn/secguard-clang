@@ -55,7 +55,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 	// and assigns local variables, so WrittenArgs never sees it. Collecting the
 	// assigned-variable sets across the tree makes the `MSG_INIT;` call a write
 	// to those locals instead of a certain-uninit false positive.
-	objectMacroWrites := d.collectObjectMacroWrites(ctx)
+	objectMacroWrites, unionTypedefs := d.collectObjectMacroWrites(ctx)
 
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		// The three sub-detectors plus BuildCFG used to issue ~21 whole-tree
@@ -87,7 +87,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 			bound := parser.FunctionBoundNames(funcDefsByLine[f.StartLine])
 			d.detectStackUninit(ctx, f, file, bound, decls, assigns, calls, exprStmts, returns, inits, ifs, whiles, fors, bodies, summaries, macroWrites, objectMacroWrites, &result, tree)
 			d.detectHeapUninit(ctx, f, file, decls, inits, assigns, calls, unarys, ptrs, fields, subscripts, ifs, summaries, &result)
-			d.detectStructPartialUninit(ctx, f, file, bound, decls, assigns, calls, ifs, fields, summaries, macroWrites, unionTypedefNames(root), &result)
+			d.detectStructPartialUninit(ctx, f, file, bound, decls, assigns, calls, ifs, fields, summaries, macroWrites, unionTypedefs, &result)
 		}
 	})
 	return result, err
@@ -116,8 +116,17 @@ func (d *UninitVariableDetector) collectMacroWrites(ctx context.Context) map[str
 // across the whole scan tree, mirroring collectMacroWrites so a
 // command-initialization macro defined in a .h header is visible at every
 // `MSG_INIT;` call site in every .c source.
-func (d *UninitVariableDetector) collectObjectMacroWrites(ctx context.Context) map[string]map[string]bool {
+//
+// It also collects the TREE-WIDE set of typedef-aliased unions (issue #253
+// P2-1a). A union is normally declared in a header (`int.h`:
+// `typedef union { int vlan; int id; } vlan_u;`) and used in the matching .c;
+// tree-sitter parses the .c WITHOUT expanding the include, so a per-file
+// typedef map never sees the union and the shared-storage rule silently stops
+// firing. The pass is shared with the object-macro collection so this does not
+// add another full-tree traversal.
+func (d *UninitVariableDetector) collectObjectMacroWrites(ctx context.Context) (map[string]map[string]bool, map[string]bool) {
 	merged := make(map[string]map[string]bool)
+	unionTypedefs := make(map[string]bool)
 	if err := forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, tree *parser.Tree) {
 		for name, writes := range macros.ObjectLikeWrites(root) {
 			if merged[name] == nil {
@@ -127,12 +136,15 @@ func (d *UninitVariableDetector) collectObjectMacroWrites(ctx context.Context) m
 				merged[name][v] = true
 			}
 		}
+		for name := range unionTypedefNames(root) {
+			unionTypedefs[name] = true
+		}
 	}); err != nil {
 		if d.logger != nil {
-			d.logger.Warn("collect_object_macro_writes: top-level traversal failed; object-like macro initialization whitelist is incomplete", "error", err)
+			d.logger.Warn("collect_object_macro_writes: top-level traversal failed; object-like macro initialization whitelist and union typedefs are incomplete", "error", err)
 		}
 	}
-	return merged
+	return merged, unionTypedefs
 }
 
 // varDecl describes one declaration of a local variable for scope-aware uninit
@@ -595,7 +607,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		}
 	}
 
-	checkUse := func(useLine int, name string) {
+	checkUse := func(useLine, useColumn int, name string) {
 		if parser.IsCTypeKeyword(name) {
 			return
 		}
@@ -619,7 +631,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		if len(sites) == 0 {
 			// No write site at all: the read target is provably never
 			// written before the read.
-			d.insertValueUseEvent(ctx, f, file, useLine, declLine, name, "", "stack_uninit", "none", 0, "", result)
+			d.insertValueUseEvent(ctx, f, file, useLine, useColumn, declLine, name, "", "stack_uninit", "none", 0, "", result)
 			return
 		}
 		if cfgValid && hasUnassignedPath(cfg, name, useLine, sites) {
@@ -630,7 +642,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 			if allSitesInLoops(sites, whiles, fors, f) {
 				initWrite, initLine = "loop", firstSite(sites)
 			}
-			d.insertValueUseEvent(ctx, f, file, useLine, declLine, name, "", "stack_uninit", initWrite, initLine, "", result)
+			d.insertValueUseEvent(ctx, f, file, useLine, useColumn, declLine, name, "", "stack_uninit", initWrite, initLine, "", result)
 			return
 		}
 		if !cfgValid {
@@ -642,7 +654,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 				}
 			}
 			if allInIf {
-				d.insertValueUseEvent(ctx, f, file, useLine, declLine, name, "", "stack_uninit", "", 0, "", result)
+				d.insertValueUseEvent(ctx, f, file, useLine, useColumn, declLine, name, "", "stack_uninit", "", 0, "", result)
 			}
 		}
 	}
@@ -665,7 +677,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 			if name == skipName || addressed[name] || writes[name] || extraSkip[name] || isValueFieldBase(id) || isInsideTypeExpr(id) {
 				continue
 			}
-			checkUse(line, name)
+			checkUse(line, id.StartColumn(), name)
 		}
 	}
 
@@ -797,7 +809,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 			if addressed[name] || writes[name] || isValueFieldBase(id) || isInsideTypeExpr(id) {
 				continue
 			}
-			checkUse(assign.StartLine(), name)
+			checkUse(assign.StartLine(), id.StartColumn(), name)
 		}
 	}
 	for _, init := range inits {
@@ -854,7 +866,7 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 			if initWrites[id.Text()] || addressed[id.Text()] || condWrites[id.Text()] || isInsideTypeExpr(id) {
 				continue
 			}
-			checkUse(cond.StartLine(), id.Text())
+			checkUse(cond.StartLine(), id.StartColumn(), id.Text())
 		}
 	}
 }
@@ -1728,7 +1740,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 			// emit proves the pointed-to storage was never written since the
 			// allocation.
 			initWrite, initLine, initWriter := heapInit(key, unary.StartLine(), "", true)
-			d.insertValueUseEvent(ctx, f, file, unary.StartLine(), mallocVars[key], name, mallocAllocator[key], "heap_uninit", initWrite, initLine, initWriter, result)
+			d.insertValueUseEvent(ctx, f, file, unary.StartLine(), unary.StartColumn(), mallocVars[key], name, mallocAllocator[key], "heap_uninit", initWrite, initLine, initWriter, result)
 		}
 	}
 
@@ -1750,7 +1762,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		}
 		if isHeapVar(mallocVars, key) && !wholeInit[key] && !heapFieldWritten[key] {
 			initWrite, initLine, initWriter := heapInit(key, ptr.StartLine(), "", true)
-			d.insertValueUseEvent(ctx, f, file, ptr.StartLine(), mallocVars[key], name, mallocAllocator[key], "heap_uninit", initWrite, initLine, initWriter, result)
+			d.insertValueUseEvent(ctx, f, file, ptr.StartLine(), ptr.StartColumn(), mallocVars[key], name, mallocAllocator[key], "heap_uninit", initWrite, initLine, initWriter, result)
 		}
 	}
 
@@ -1779,7 +1791,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 		}
 		if !initializedFields[path] {
 			initWrite, initLine, initWriter := heapInit(key, field.StartLine(), scopedPath(key, base, fieldPath(field)), false)
-			d.insertValueUseEventAt(ctx, f, file, field.StartLine(), mallocVars[key], base, fieldPath(field), mallocAllocator[key], "heap_uninit", initWrite, initLine, initWriter, result)
+			d.insertValueUseEventAt(ctx, f, file, field.StartLine(), field.StartColumn(), mallocVars[key], base, fieldPath(field), mallocAllocator[key], "heap_uninit", initWrite, initLine, initWriter, result)
 		}
 	}
 
@@ -1818,7 +1830,7 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 			continue
 		}
 		initWrite, initLine, initWriter := heapInit(key, sub.StartLine(), scopedPath(key, base, sub.Text()), false)
-		d.insertValueUseEventAt(ctx, f, file, sub.StartLine(), mallocVars[key], base, sub.Text(), mallocAllocator[key], "heap_uninit", initWrite, initLine, initWriter, result)
+		d.insertValueUseEventAt(ctx, f, file, sub.StartLine(), sub.StartColumn(), mallocVars[key], base, sub.Text(), mallocAllocator[key], "heap_uninit", initWrite, initLine, initWriter, result)
 	}
 }
 
@@ -2110,7 +2122,7 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 			continue
 		}
 		if !initializedFields[scopedPath(key, base, fieldPath(field))] {
-			d.insertValueUseEventAt(ctx, f, file, field.StartLine(), structVars[key], base, fieldPath(field), "", "struct_partial_uninit", "", 0, "", result)
+			d.insertValueUseEventAt(ctx, f, file, field.StartLine(), field.StartColumn(), structVars[key], base, fieldPath(field), "", "struct_partial_uninit", "", 0, "", result)
 		}
 	}
 }
@@ -2311,8 +2323,8 @@ func destWriteTarget(arg parser.Node) (base, path string, whole bool) {
 // without an init-write fact (write-path facts only attach where the detector
 // proved them: stack no-write / loop-only-write / heap never-written-or-
 // conditional-writer).
-func (d *UninitVariableDetector) insertValueUseEvent(ctx context.Context, f *db.Function, file *db.File, line, declLine int, varName, allocator, origin, initWrite string, initWriteLine int, initWriter string, result *DetectResult) {
-	d.insertValueUseEventAt(ctx, f, file, line, declLine, varName, "", allocator, origin, initWrite, initWriteLine, initWriter, result)
+func (d *UninitVariableDetector) insertValueUseEvent(ctx context.Context, f *db.Function, file *db.File, line, column, declLine int, varName, allocator, origin, initWrite string, initWriteLine int, initWriter string, result *DetectResult) {
+	d.insertValueUseEventAt(ctx, f, file, line, column, declLine, varName, "", allocator, origin, initWrite, initWriteLine, initWriter, result)
 }
 
 // insertValueUseEventAt is insertValueUseEvent with an optional field path: for a
@@ -2325,7 +2337,7 @@ func (d *UninitVariableDetector) insertValueUseEvent(ctx context.Context, f *db.
 // "cond" = an in-tree callee writes the storage only on some paths and the
 // caller does not guard its return (initWriteLine = the call site, initWriter =
 // the callee), "" = no proven fact (mixed/branch writes stay for the AI).
-func (d *UninitVariableDetector) insertValueUseEventAt(ctx context.Context, f *db.Function, file *db.File, line, declLine int, varName, path, allocator, origin, initWrite string, initWriteLine int, initWriter string, result *DetectResult) {
+func (d *UninitVariableDetector) insertValueUseEventAt(ctx context.Context, f *db.Function, file *db.File, line, column, declLine int, varName, path, allocator, origin, initWrite string, initWriteLine int, initWriter string, result *DetectResult) {
 	props := map[string]any{
 		"variable": varName,
 		"origin":   origin,
@@ -2348,7 +2360,7 @@ func (d *UninitVariableDetector) insertValueUseEventAt(ctx context.Context, f *d
 	if initWriter != "" {
 		props["init_writer"] = initWriter
 	}
-	if emitEvent(ctx, d.store, d.logger, "VALUE_USE", f.ID, &db.Location{FileID: file.ID, Line: line}, props) {
+	if emitEvent(ctx, d.store, d.logger, "VALUE_USE", f.ID, &db.Location{FileID: file.ID, Line: line, Column: column}, props) {
 		result.EventsCreated++
 	}
 }

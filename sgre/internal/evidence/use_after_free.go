@@ -112,7 +112,7 @@ func (d *UseAfterFreeDetector) Detect(ctx context.Context) (DetectResult, error)
 					if fs.field != "" {
 						props["freed_field"] = fs.field
 					}
-					if emitEvent(ctx, d.store, d.logger, "USE_AFTER_FREE", f.ID, &db.Location{FileID: file.ID, Line: use.line}, props) {
+					if emitEvent(ctx, d.store, d.logger, "USE_AFTER_FREE", f.ID, &db.Location{FileID: file.ID, Line: use.line, Column: use.column}, props) {
 						result.EventsCreated++
 					}
 				}

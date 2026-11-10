@@ -28,12 +28,44 @@ void walk(void *list)
         p->id = 0;
     }
 }
+
+void walk_long(void *list)
+{
+    node_t *p = NULL;
+    SLL_Scan(list, p, node_t *) {
+        p->id = 1;
+        p->id = 2;
+        p->id = 3;
+        p->id = 4;
+        p->id = 5;
+        p->id = 6;
+        p->id = 7;
+        p->id = 8;
+        p->id = 9;
+        p->id = 10;
+        p->id = 11;
+        p->id = 12;
+    }
+}
 `
 	res := planNullDerefFullSrc(t, src)
 	for _, c := range res.Candidates {
-		if c.Target.Function == "walk" && c.Target.Variable == "p" && c.SuspicionLevel == "confirmed" {
-			t.Errorf("walk: SLL_Scan reassigns the iterator in the loop header; the pre-loop p = NULL must not auto-confirm (hint=%v)", c.Hint)
+		if (c.Target.Function == "walk" || c.Target.Function == "walk_long") &&
+			c.Target.Variable == "p" && c.SuspicionLevel == "confirmed" {
+			t.Errorf("%s: SLL_Scan reassigns the iterator in the loop header; the pre-loop p = NULL must not auto-confirm (hint=%v)", c.Target.Function, c.Hint)
 		}
+	}
+	// The long loop puts the sink OUTSIDE the ±8-line macro-context window, so
+	// the whole-body-prefix scan is what must find the macro; the short `walk`
+	// above does not exercise that path.
+	var longCandidate *EvidenceItem
+	for i := range res.Candidates {
+		if res.Candidates[i].Target.Function == "walk_long" {
+			longCandidate = &res.Candidates[i]
+		}
+	}
+	if longCandidate == nil || !longCandidate.MacroContext {
+		t.Errorf("walk_long: the prefix macro scan must mark a sink deep inside the macro loop as macro context, got %+v", longCandidate)
 	}
 	var control *EvidenceItem
 	for i := range res.Candidates {

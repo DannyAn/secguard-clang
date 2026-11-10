@@ -179,6 +179,8 @@ func TestBoundaryFailOpenFilterSourceTierVsInTreeCaller(t *testing.T) {
 func TestPrecisionTierCompleteProgram(t *testing.T) {
 	hop := boundaryCandidate("caller-arg")
 	hop.ChainKind = "hop"
+	witness := boundaryCandidate("caller-arg")
+	witness.CallerNullDetail = "caller entry passes NULL"
 	proven := []Candidate{boundaryCandidate("cfg-proof"), boundaryCandidate("malloc-fail")}
 	nonProving := []Candidate{
 		boundaryCandidate("opaque-origin"),
@@ -188,12 +190,12 @@ func TestPrecisionTierCompleteProgram(t *testing.T) {
 	}
 
 	balanced := NewBoundaryFailOpenFilter(false, "external", "balanced")
-	kept, dropped, err := balanced.Apply(context.Background(), append(append([]Candidate{hop}, nonProving...), proven...))
+	kept, dropped, err := balanced.Apply(context.Background(), append(append([]Candidate{hop, witness}, nonProving...), proven...))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(dropped) != 4 || len(kept) != 3 {
-		t.Fatalf("balanced: kept=%d dropped=%d, want 3 kept (hop + 2 proven) / 4 dropped", len(kept), len(dropped))
+	if len(dropped) != 4 || len(kept) != 4 {
+		t.Fatalf("balanced: kept=%d dropped=%d, want 4 kept (hop + witness + 2 proven) / 4 dropped", len(kept), len(dropped))
 	}
 	for _, d := range dropped {
 		if d.Filter != "precision_fail_open" {
@@ -202,12 +204,23 @@ func TestPrecisionTierCompleteProgram(t *testing.T) {
 	}
 
 	strict := NewBoundaryFailOpenFilter(false, "external", "strict")
-	kept, dropped, err = strict.Apply(context.Background(), append(append([]Candidate{hop}, nonProving...), proven...))
+	kept, dropped, err = strict.Apply(context.Background(), append(append([]Candidate{hop, witness}, nonProving...), proven...))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(dropped) != 5 || len(kept) != 2 {
-		t.Fatalf("strict: kept=%d dropped=%d, want 2 kept (proven only) / 5 dropped", len(kept), len(dropped))
+	// strict drops the forwarding hop but a literal-NULL call-site witness is a
+	// concrete defect and stays in EVERY mode (the documented policy).
+	if len(dropped) != 5 || len(kept) != 3 {
+		t.Fatalf("strict: kept=%d dropped=%d, want 3 kept (witness + 2 proven) / 5 dropped", len(kept), len(dropped))
+	}
+	foundWitness := false
+	for _, c := range kept {
+		if c.CallerNullDetail == witness.CallerNullDetail {
+			foundWitness = true
+		}
+	}
+	if !foundWitness {
+		t.Error("strict must keep a caller-arg row with a literal-NULL witness")
 	}
 
 	off := NewBoundaryFailOpenFilter(false, "external", "off")

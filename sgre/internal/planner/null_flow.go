@@ -327,6 +327,17 @@ func (m *flowResult) mustReaching(variable string, line int) bool {
 // graph.StmtCFG.NodeAtColumn): two statements sharing ONE line (a failure
 // return and a cleanup free) resolve to different CFG nodes, so the must-flow
 // verdict no longer rests on a line-level ambiguity (issue #253 P2-1).
+//
+// It deliberately does NOT count a gen that sits ON the sink node itself: the
+// fact must hold BEFORE the sink. A use-after-free sink is the use (the free is
+// an earlier node) and a double-free sink is the SECOND free (the first free is
+// an earlier node), so the sink's own gen is the event being judged, not a
+// premise. Counting it made a conditional free look unconditional whenever the
+// free and the sink shared a line (`if (c) { free(p); } p->v = 1;` or
+// `if (c) { free(p); } free(p);`), because collectNodeEffects applies the
+// line-keyed gen to every non-control node on that line. A genuine
+// unconditional free still reaches the sink through the in-state, so the
+// confirmed tier keeps its proof.
 func (m *flowResult) mustReachingAt(variable string, line, column int) bool {
 	if m == nil || m.must == nil {
 		return false
@@ -335,10 +346,7 @@ func (m *flowResult) mustReachingAt(variable string, line, column int) bool {
 	if n == nil {
 		return false
 	}
-	if m.must[n.ID][variable] {
-		return true
-	}
-	return m.mustGenAt[n.ID][variable]
+	return m.must[n.ID][variable]
 }
 
 // sourceLine returns the line of the first reaching source for variable at

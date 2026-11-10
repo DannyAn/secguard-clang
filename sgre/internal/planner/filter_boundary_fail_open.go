@@ -104,14 +104,19 @@ func (f *BoundaryFailOpenFilter) keep(c Candidate) bool {
 		// NullableSourceFilter; nothing with these tiers carries one.
 		return false
 	case "caller-arg":
+		// A literal-NULL witness ("caller X passes NULL") is a concrete defect
+		// and stays in EVERY mode, including strict/"all" (the documented
+		// policy) — checked before the structural dismissals below.
+		if hasCallerNullLiteralWitness(c) {
+			return true
+		}
 		// The null source is an in-tree call-site argument. A zero-call-site
 		// root ("the value flows from an unguarded external entry") is the same
 		// fail-open assumption as opaque-origin, so it is dismissed. A
 		// forwarding hop or a function with in-tree callers names concrete call
 		// sites the AI can judge, so it stays; "all" mode also drops the
 		// forwarding-hop rows (a project that accepts the boundary contract as
-		// non-null). A literal-NULL witness ("caller X passes NULL") is a
-		// concrete defect and stays.
+		// non-null).
 		if c.ChainKind == "root" {
 			return false
 		}
@@ -121,7 +126,7 @@ func (f *BoundaryFailOpenFilter) keep(c Candidate) bool {
 		if c.ChainKind == "hop" {
 			return f.mode != "all"
 		}
-		return f.mode != "all" && hasCallerNullLiteralWitness(c)
+		return false
 	default:
 		// cfg-proof / malloc-fail / array-buffer: machine-proven, or a structural
 		// chain fact the AI must judge — never pre-dismiss.

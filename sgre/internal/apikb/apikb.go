@@ -388,9 +388,10 @@ var IteratorMacros = map[string][]int{
 // SLL_Scan / HPE_LIST_FOR_EACH_SAFE produced null@cfg-proof auto-confirms on
 // iterators the macro itself had reassigned). They are deliberately NOT in
 // IteratorMacros: a guessed parameter index could kill the wrong variable.
-// Instead, a must-null proof treats EVERY identifier argument of such a call as
-// potentially rewritten (the standard "invisible callee may write its arguments"
-// kill), so the proof degrades to suspected instead of auto-confirming.
+// Instead, the planner's macro-context gate treats a call that NAMES the
+// candidate variable as unverifiable and demotes a machine proof to suspected;
+// the candidate is never killed, because guessing the iterator position could
+// suppress a real defect.
 var OpaqueIteratorMacros = map[string]bool{
 	"SLL_Scan":                true,
 	"SINGLE_LINKEDLIST_Scan":  true,

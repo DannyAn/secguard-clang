@@ -437,7 +437,7 @@ func (d *DoubleFreeDetector) findAllFreeEvents(f *db.Function, calls []parser.No
 					events = append(events, dfFreeEvent{
 						varName:  storedVar,
 						line:     callLine,
-					column:   callColumn,
+						column:   callColumn,
 						indirect: true,
 						callee:   callName,
 						global:   globalName,
