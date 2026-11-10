@@ -410,11 +410,32 @@ func runRangeDataflow(cfg *graph.StmtCFG, effects map[int]*rangeEffects) map[int
 		inQueue[id] = false
 
 		out := rangeTransfer(nodeIn[id], effects[id])
-		for _, succ := range cfg.Nodes[id].Succs {
-			if rangeMergeInto(nodeIn[succ], widenCount[succ], out) && !inQueue[succ] {
+		mergeSucc := func(succ int, facts map[string]interval) {
+			if rangeMergeInto(nodeIn[succ], widenCount[succ], facts) && !inQueue[succ] {
 				inQueue[succ] = true
 				worklist = append(worklist, succ)
 			}
+		}
+		n := cfg.Nodes[id]
+		if len(n.TrueSuccs)+len(n.FalseSuccs) > 0 {
+			if g := extractGuardCond(n, nodeIn[id]); g.ok {
+				// Guard refinement (range_guard.go): each branch gets its own
+				// tightened intervals, and an unreachable branch gets nothing.
+				if tOut, reachable := refineForGuard(out, g, true); reachable {
+					for _, succ := range n.TrueSuccs {
+						mergeSucc(succ, tOut)
+					}
+				}
+				if fOut, reachable := refineForGuard(out, g, false); reachable {
+					for _, succ := range n.FalseSuccs {
+						mergeSucc(succ, fOut)
+					}
+				}
+				continue
+			}
+		}
+		for _, succ := range n.Succs {
+			mergeSucc(succ, out)
 		}
 	}
 	return nodeIn
