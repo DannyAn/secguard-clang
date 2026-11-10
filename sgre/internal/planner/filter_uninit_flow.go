@@ -111,7 +111,7 @@ func (f *DefiniteInitFilter) Apply(ctx context.Context, candidates []Candidate) 
 				// The uninitialized declaration reaches the use. It is a CERTAIN
 				// uninitialized read only when it reaches on every path (must);
 				// otherwise it stays a suspicion for the AI to confirm.
-				if flow.mustReaching(c.VariableName, c.Line) {
+				if flow.mustReachingAt(c.VariableName, c.Line, c.Column) {
 					// An output-param / decayed write (`&x`, `&x.f`, `x.f`, `x[i]`
 					// passed to a callee) is invisible to the flow engine's
 					// gen/kill model, so "uninit on every path" is unproven there.

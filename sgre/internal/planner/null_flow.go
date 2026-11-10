@@ -320,10 +320,18 @@ func loopBoundGuardAt(entries []ternaryGuardEntry, variable string, line int) bo
 // to promote a may-reachable candidate to "confirmed" only when the fact is not
 // merely possible but provable on all paths.
 func (m *flowResult) mustReaching(variable string, line int) bool {
+	return m.mustReachingAt(variable, line, 0)
+}
+
+// mustReachingAt is mustReaching with the sink's COLUMN (see
+// graph.StmtCFG.NodeAtColumn): two statements sharing ONE line (a failure
+// return and a cleanup free) resolve to different CFG nodes, so the must-flow
+// verdict no longer rests on a line-level ambiguity (issue #253 P2-1).
+func (m *flowResult) mustReachingAt(variable string, line, column int) bool {
 	if m == nil || m.must == nil {
 		return false
 	}
-	n := m.nodeAt(line, 0)
+	n := m.nodeAt(line, column)
 	if n == nil {
 		return false
 	}

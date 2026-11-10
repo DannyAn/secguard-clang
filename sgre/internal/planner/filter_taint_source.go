@@ -408,6 +408,17 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 	if err != nil {
 		return nil, nil, err
 	}
+	// entryProven distinguishes a REAL call-graph taint witness (a PARAM_BINDING
+	// edge, or a static function whose only seeds are such edges) from the
+	// open-world assumption "a non-static function's parameters may be tainted
+	// by an external caller". The assumption is a fail-open hypothesis, not a
+	// machine proof, so it must never by itself promote a candidate to
+	// confirmed (issue #253 P2-1: format wrappers were auto-confirmed although
+	// every in-tree call site passed a literal).
+	entryProven := make(map[int64]bool, len(byFunc))
+	for fid := range byFunc {
+		entryProven[fid] = staticByFunc[fid] || len(paramTainted[fid]) > 0
+	}
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
@@ -494,7 +505,12 @@ func (f *TaintSourceFilter) Apply(ctx context.Context, candidates []Candidate) (
 			// window cannot contain it. Param-bound taint (the other HasTaintSource
 			// path above) has its origin at a CALLER and stays unnumbered.
 			c.SourceLine = flow.sourceLine(sink, c.Line)
-			promoteOnTaint(&c)
+			// An unnumbered source whose ONLY basis is the open-world entry
+			// assumption stays suspected; a real in-body source line or a
+			// proven caller witness still promotes (issue #253 P2-1).
+			if c.SourceLine > 0 || entryProven[c.FunctionID] {
+				promoteOnTaint(&c)
+			}
 			kept = append(kept, c)
 			continue
 		}

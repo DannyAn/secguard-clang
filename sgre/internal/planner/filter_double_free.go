@@ -90,7 +90,7 @@ func (f *DoubleFreeFilter) Apply(ctx context.Context, candidates []Candidate) ([
 		// never a must-proof by construction, even though the intra-procedural
 		// flow in THIS function sees the call as an unconditional gen — the
 		// detector's may_free flag carries that qualification.
-		if !c.MayFree && flow.mustReaching(c.VariableName, c.Line) {
+		if !c.MayFree && flow.mustReachingAt(c.VariableName, c.Line, c.Column) {
 			c.SuspicionLevel = "confirmed"
 		}
 		kept = append(kept, c)
