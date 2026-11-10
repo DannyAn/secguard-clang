@@ -1320,17 +1320,7 @@ func FixSuggestion(vulnType, cwe string, c planner.EvidenceItem) string {
 			funcName)
 
 	case "unchecked-return":
-		return fmt.Sprintf(
-			"Check the return value of the call in `%s`:\n\n"+
-				"```c\n"+
-				"if (callee(...) < 0) {\n"+
-				"    // handle failure: log, cleanup, propagate the error\n"+
-				"    return -1;\n"+
-				"}\n"+
-				"```\n\n"+
-				"Treat the callee's failure sentinel (NULL / -1 / error code) as a real\n"+
-				"error path and propagate it instead of discarding the result.\n",
-			funcName)
+		return uncheckedReturnFix(c, funcName)
 
 	case "signed-compare":
 		return fmt.Sprintf(
@@ -1380,16 +1370,7 @@ func FixSuggestion(vulnType, cwe string, c planner.EvidenceItem) string {
 			funcName)
 
 	case "dangerous-function":
-		return fmt.Sprintf(
-			"Replace the dangerous API call in `%s` with a bounds-checked\n"+
-				"alternative:\n\n"+
-				"```c\n"+
-				"// BAD:  strcpy(dst, src);\n"+
-				"// GOOD: strncpy_s(dst, sizeof(dst), src, _TRUNCATE);\n"+
-				"```\n\n"+
-				"Use the Annex-K `_s` variants (memcpy_s/strcpy_s/sprintf_s) or the\n"+
-				"`n`-bounded family with an explicit size, validated first.\n",
-			funcName)
+		return dangerousFunctionFix(c, funcName)
 
 	case "signal-handler":
 		return fmt.Sprintf(
@@ -1418,5 +1399,281 @@ func FixSuggestion(vulnType, cwe string, c planner.EvidenceItem) string {
 	default:
 		return "Review the evidence above and apply the appropriate mitigation for this\n" +
 			"vulnerability class. Consult the CWE documentation for detailed guidance.\n"
+	}
+}
+
+// uncheckedReturnFix renders a context-aware fix for an unchecked-return
+// candidate. The decisive context is the CALLEE's failure contract: an
+// allocator (`strdup`/`malloc`) fails with NULL, an I/O reader
+// (`read`/`fread`/`recv`) fails with -1 (and a short count on success), so a
+// single "check `< 0`" template misstates `strdup` (which has no negative
+// error code) and "check NULL" misstates `read`. Branch on the API name.
+func uncheckedReturnFix(c planner.EvidenceItem, funcName string) string {
+	api := c.APIName
+	// No callee name captured (a hand-built fixture or a candidate whose event
+	// lacked the callee): fall back to the function-level generic advice rather
+	// than rendering an empty ``()`` sink.
+	if api == "" {
+		return fmt.Sprintf(
+			"Check the return value of the call in `%s`:\n\n"+
+				"```c\n"+
+				"if (callee(...) < 0) {\n"+
+				"    // handle failure: log, cleanup, propagate the error\n"+
+				"    return -1;\n"+
+				"}\n"+
+				"```\n\n"+
+				"Treat the callee's failure sentinel (NULL / -1 / error code) as a real\n"+
+				"error path and propagate it instead of discarding the result.\n",
+			funcName)
+	}
+	lower := strings.ToLower(api)
+
+	// strdup and the `*_dup` copy helpers are allocations: NULL is the only
+	// failure sentinel, and the success path must free the copy exactly once.
+	if lower == "strdup" || lower == "strndup" || lower == "wcsdup" ||
+		lower == "_strdup" || lower == "_wcsdup" || strings.HasSuffix(lower, "dup") {
+		return fmt.Sprintf(
+			"Check the result of `%s()` in `%s` — it returns NULL on failure:\n\n"+
+				"```c\n"+
+				"char *copy = %s(src);\n"+
+				"if (copy == NULL) {\n"+
+				"    return false;  // or -1 / NULL, matching the function's convention\n"+
+				"}\n"+
+				"// ... use copy ...\n"+
+				"free(copy);       // free once on every success path\n"+
+				"```\n\n"+
+				"`%s` is an allocation: a NULL result is an out-of-memory error to\n"+
+				"propagate on the failure path (free nothing — the copy was never\n"+
+				"made), and the success path must release the copy. Do not test `< 0`:\n"+
+				"`%s` has no negative error code.\n",
+			api, funcName, api, api, api)
+	}
+
+	// malloc/calloc/realloc fail with NULL.
+	if lower == "malloc" || lower == "calloc" || lower == "realloc" {
+		return fmt.Sprintf(
+			"Check the result of `%s()` in `%s` — it returns NULL on failure:\n\n"+
+				"```c\n"+
+				"void *p = %s(n);\n"+
+				"if (p == NULL) {\n"+
+				"    return -1;  // or free already-acquired resources, then return\n"+
+				"}\n"+
+				"```\n\n"+
+				"Propagate the allocation failure (return / cleanup + return) instead of\n"+
+				"dereferencing a possibly-NULL pointer.\n",
+			api, funcName, api)
+	}
+
+	// I/O readers return a count or -1: the check is for an error OR a short
+	// read, not for NULL.
+	if lower == "read" || lower == "fread" || lower == "recv" || lower == "recvfrom" ||
+		lower == "write" || lower == "send" || lower == "sendto" ||
+		lower == "getline" || lower == "getdelim" || lower == "fgets" ||
+		lower == "asprintf" || lower == "vasprintf" {
+		return fmt.Sprintf(
+			"Check the result of `%s()` in `%s` — it returns -1 on error and may\n"+
+				"return a short count on success:\n\n"+
+				"```c\n"+
+				"ssize_t n = %s(...);\n"+
+				"if (n < 0) {\n"+
+				"    return -1;  // handle the I/O error\n"+
+				"}\n"+
+				"// n bytes were read/written; handle n == 0 (EOF) or a short result\n"+
+				"```\n\n"+
+				"Treat the error sentinel AND a short result as real paths: a partially\n"+
+				"filled buffer must not be consumed as if it were complete.\n",
+			api, funcName, api)
+	}
+
+	// Generic fallback covers every other callee (fopen/opendir return NULL,
+	// and unknown wrappers may use NULL or -1): state both sentinels.
+	return fmt.Sprintf(
+		"Check the return value of `%s()` in `%s`:\n\n"+
+			"```c\n"+
+			"result = %s(...);\n"+
+			"if (result == NULL || result < 0) {\n"+
+			"    // handle failure: log, cleanup, propagate the error\n"+
+			"    return -1;\n"+
+			"}\n"+
+			"```\n\n"+
+			"Treat the callee's failure sentinel (NULL / -1 / error code) as a real\n"+
+			"error path and propagate it instead of discarding the result.\n",
+		api, funcName, api)
+}
+
+// dangerousFunctionFix renders a context-aware fix for a dangerous-function
+// candidate. The banned call's POLICY CATEGORY decides the replacement: the
+// unchecked string→number converters (atoi/atol/atoll/atof) need strtol-family
+// validation, NOT an Annex-K `_s` swap — suggesting `strncpy_s` for `atol` is
+// wrong. Each category maps to the replacement the detector's rule table and
+// the dangerous-function SKILL already mandate.
+func dangerousFunctionFix(c planner.EvidenceItem, funcName string) string {
+	api := c.APIName
+	if api == "" {
+		api = c.Target.Variable
+	}
+	if api == "" {
+		api = "the banned function"
+	}
+
+	switch c.Category {
+	case "unchecked_conversion":
+		return fmt.Sprintf(
+			"Replace `%s()` in `%s` with the checked strtol/strtoll/strtod family\n"+
+				"and validate the conversion:\n\n"+
+				"```c\n"+
+				"// BAD:  long v = %s(s);            // no error detection\n"+
+				"// GOOD: check endptr and errno\n"+
+				"char *end = NULL;\n"+
+				"errno = 0;\n"+
+				"long v = strtol(s, &end, 10);\n"+
+				"if (end == s || errno == ERANGE) {\n"+
+				"    return -1;  // no digits parsed, or the value is out of range\n"+
+				"}\n"+
+				"```\n\n"+
+				"Use `strtol`/`strtoll`/`strtod` and reject an empty conversion\n"+
+				"(`end == s`) or an out-of-range value (`errno == ERANGE`).\n",
+			api, funcName, api)
+
+	case "unsafe_memory", "unsafe_string", "unsafe_format", "unsafe_scan":
+		return fmt.Sprintf(
+			"Replace `%s()` in `%s` with its bounds-checked Annex-K counterpart:\n\n"+
+				"```c\n"+
+				"// BAD:  strcpy(dst, src);\n"+
+				"// GOOD: strcpy_s(dst, sizeof(dst), src);\n"+
+				"```\n\n"+
+				"Use the `_s` variant (`memcpy_s`/`strcpy_s`/`sprintf_s`/`scanf_s`) or the\n"+
+				"`n`-bounded family with an explicit size, validated first.\n",
+			api, funcName)
+
+	case "process_exit":
+		return fmt.Sprintf(
+			"Replace `%s()` in `%s` with normal control flow:\n\n"+
+				"```c\n"+
+				"// BAD:  exit(1);  /  abort();  /  pthread_exit(NULL);\n"+
+				"// GOOD: return the error to the caller\n"+
+				"return -1;\n"+
+				"```\n\n"+
+				"Propagate the error with a return value (and release resources on the\n"+
+				"way out) instead of tearing down the process/thread from a callee.\n",
+			api, funcName)
+
+	case "nonlocal_jump":
+		return fmt.Sprintf(
+			"Replace `%s()` in `%s` with return-value error propagation:\n\n"+
+				"```c\n"+
+				"// BAD:  longjmp(env, 1);\n"+
+				"// GOOD: return an error code up the call stack\n"+
+				"return -1;\n"+
+				"```\n\n"+
+				"`setjmp`/`longjmp` skip destructors and cleanup; propagate the error with\n"+
+				"a return value instead.\n",
+			api, funcName)
+
+	case "unsafe_alloc":
+		return fmt.Sprintf(
+			"Replace `%s()` in `%s` with `malloc` + copy + `free`:\n\n"+
+				"```c\n"+
+				"// BAD:  void *p2 = realloc(p, new_size);   // leaks p on failure\n"+
+				"// GOOD: allocate a new block, copy, then free the old one\n"+
+				"void *p2 = malloc(new_size);\n"+
+				"if (p2 == NULL) {\n"+
+				"    return -1;  // p is still valid\n"+
+				"}\n"+
+				"memcpy(p2, p, old_size);\n"+
+				"free(p);\n"+
+				"p = p2;\n"+
+				"```\n\n"+
+				"Keep the original block valid until the new allocation succeeds, so a\n"+
+				"failed grow never leaks the old pointer.\n",
+			api, funcName)
+
+	case "insecure_temp":
+		return fmt.Sprintf(
+			"Replace `%s()` in `%s` with `mkstemp`:\n\n"+
+				"```c\n"+
+				"// BAD:  char *t = tmpnam(NULL);   /  mktemp(t);\n"+
+				"// GOOD: mkstemp creates a unique file atomically\n"+
+				"char tpl[] = \"/tmp/nameXXXXXX\";\n"+
+				"int fd = mkstemp(tpl);\n"+
+				"if (fd < 0) { return -1; }\n"+
+				"```\n\n"+
+				"`mkstemp` reserves the name atomically and returns an open fd, avoiding\n"+
+				"the predictable-name race of `mktemp`/`tmpnam`.\n",
+			api, funcName)
+
+	case "obsolete_api":
+		return fmt.Sprintf(
+			"Replace `%s()` in `%s` with a modern resolver:\n\n"+
+				"```c\n"+
+				"// BAD:  struct hostent *h = gethostbyname(name);\n"+
+				"// GOOD: getaddrinfo / getnameinfo\n"+
+				"struct addrinfo hints = { .ai_family = AF_UNSPEC };\n"+
+				"struct addrinfo *res = NULL;\n"+
+				"int rc = getaddrinfo(name, NULL, &hints, &res);\n"+
+				"if (rc != 0) { return -1; }\n"+
+				"```\n\n"+
+				"`gethostbyname`/`gethostbyaddr` are non-reentrant and IPv4-only; use\n"+
+				"`getaddrinfo`/`getnameinfo`.\n",
+			api, funcName)
+
+	case "obsolete_api_conditional":
+		return fmt.Sprintf(
+			"Replace `%s()` in `%s` with `inet_pton`:\n\n"+
+				"```c\n"+
+				"// BAD:  addr.s_addr = inet_addr(s);   // INADDR_NONE is ambiguous\n"+
+				"// GOOD: inet_pton returns a clear error\n"+
+				"struct in_addr addr;\n"+
+				"if (inet_pton(AF_INET, s, &addr) != 1) {\n"+
+				"    return -1;  // not a valid dotted-quad address\n"+
+				"}\n"+
+				"```\n\n"+
+				"`inet_addr` cannot distinguish `INADDR_NONE` from the address\n"+
+				"255.255.255.255; `inet_pton` returns an explicit 0 on malformed input.\n",
+			api, funcName)
+
+	case "stack_allocation":
+		return fmt.Sprintf(
+			"Replace `%s()` in `%s` with a fixed-size buffer or `malloc`:\n\n"+
+				"```c\n"+
+				"// BAD:  char *buf = alloca(n);   // unbounded stack growth\n"+
+				"// GOOD: char buf[FIXED];  or  char *buf = malloc(n);\n"+
+				"char buf[FIXED];\n"+
+				"```\n\n"+
+				"`alloca` grows the stack by a runtime amount and cannot be freed; use a\n"+
+				"fixed-size buffer or heap allocation (`malloc`/`free`) instead.\n",
+			api, funcName)
+
+	case "assert_usage":
+		return fmt.Sprintf(
+			"Replace `%s()` in `%s` with an explicit caller-input check:\n\n"+
+				"```c\n"+
+				"// BAD:  assert(p != NULL);   // compiled out under NDEBUG\n"+
+				"// GOOD: validate and return an error\n"+
+				"if (p == NULL) {\n"+
+				"    return -1;\n"+
+				"}\n"+
+				"```\n\n"+
+				"Validate caller input with a real check that survives release builds\n"+
+				"(NDEBUG strips `assert`); keep `assert` for internal invariants only.\n",
+			api, funcName)
+
+	case "config_banned":
+		return fmt.Sprintf(
+			"Replace `%s()` in `%s` with the project's mandated alternative:\n\n"+
+				"```c\n"+
+				"// %s is banned by this project's [banned_functions] config\n"+
+				"// use the safer API the project guideline prescribes\n"+
+				"```\n\n"+
+				"The replacement is project-defined (`secguard.toml` `[banned_functions]`);\n"+
+				"apply the guideline's mandated substitute.\n",
+			api, funcName, api)
+
+	default:
+		return fmt.Sprintf(
+			"Replace the banned call `%s()` in `%s` with the safer API mandated by\n"+
+				"the project policy (see the dangerous-function SKILL category table for\n"+
+				"the per-category replacement).\n",
+			api, funcName)
 	}
 }

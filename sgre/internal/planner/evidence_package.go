@@ -21,7 +21,12 @@ type EvidenceItem struct {
 	MacroContext    bool               `json:"macro_context,omitempty"`
 	MacroDefs       []symbols.MacroDef `json:"-"`
 	Target          TargetInfo         `json:"target"`
-	SourceLine      int                `json:"source_line,omitempty"`
+	// APIName is the called function (the unchecked-return callee, the banned
+	// dangerous-function name when it is not carried by the variable) so the
+	// report layer can render a fix strategy that names the exact API instead
+	// of a generic "check the callee's return" / "replace the banned call".
+	APIName    string `json:"api_name,omitempty"`
+	SourceLine int    `json:"source_line,omitempty"`
 	// SourceLines collects every pipeline-proven decisive source line for the
 	// candidate — the free-site of a use-after-free, the two frees of a
 	// double-free, the declaration of an uninit read, the origin of a null or
@@ -962,6 +967,7 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 			Line:     c.Line,
 			Variable: c.VariableName,
 		},
+		APIName:    c.APIName,
 		SourceLine: c.SourceLine,
 		Category:   c.Category,
 		Hint:       hint,
