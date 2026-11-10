@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -66,8 +65,11 @@ func TestWriteSarifFromFindings(t *testing.T) {
 	if results[0].Level != "error" {
 		t.Errorf("confirmed finding level = %q, want error", results[0].Level)
 	}
-	if len(results[0].Fixes) != 1 || results[0].Fixes[0].Description.Text != "if (p == NULL) return -1;" {
-		t.Errorf("confirmed finding should carry fix_strategy, got %+v", results[0].Fixes)
+	// A textual fix strategy is a suggestion, not a structured SARIF patch: it
+	// must not appear in `fixes` (which would promise a concrete patch), but in
+	// the secguard custom property.
+	if results[0].Properties["fix_strategy"] != "if (p == NULL) return -1;" {
+		t.Errorf("properties.fix_strategy not carried, got %+v", results[0].Properties)
 	}
 	if results[0].Properties["reasoning"] != "分配后立即解引用" {
 		t.Errorf("properties.reasoning not carried, got %+v", results[0].Properties)
@@ -75,11 +77,14 @@ func TestWriteSarifFromFindings(t *testing.T) {
 	if results[0].Properties["evidence"] != "分配器可能返回 NULL" {
 		t.Errorf("properties.evidence not carried, got %+v", results[0].Properties)
 	}
-	if !strings.Contains(results[0].Message.Markdown, "分配后立即解引用") || !strings.Contains(results[0].Message.Markdown, "分配器可能返回 NULL") {
-		t.Errorf("message.markdown must surface reasoning + evidence up front, got %q", results[0].Message.Markdown)
+	if results[0].Message.Markdown != "" {
+		t.Errorf("message.markdown must not duplicate properties.reasoning/evidence, got %q", results[0].Message.Markdown)
 	}
 	if results[0].Properties["variable"] != "p" {
 		t.Errorf("properties.variable = %q, want p", results[0].Properties["variable"])
+	}
+	if results[0].Properties["function"] != "f" {
+		t.Errorf("properties.function = %q, want f", results[0].Properties["function"])
 	}
 	if results[0].Properties["severity"] != "high" {
 		t.Errorf("properties.severity = %q, want high", results[0].Properties["severity"])
@@ -95,11 +100,17 @@ func TestWriteSarifFromFindings(t *testing.T) {
 	if results[0].Properties["confirmation_source"] != "ai" {
 		t.Errorf("properties.confirmation_source = %q, want ai (this finding is AI-classified)", results[0].Properties["confirmation_source"])
 	}
-	if !strings.Contains(results[0].Message.Text, "on 'p'") || !strings.Contains(results[0].Message.Text, "[high · confirmed]") {
-		t.Errorf("message should name the variable and severity/status, got %q", results[0].Message.Text)
+	// message.text is the concise one-line defect description (the AI summary),
+	// not a severity/status/reasoning dump.
+	if got := results[0].Message.Text; got != "malloc 未判空即解引用" {
+		t.Errorf("message.text = %q, want the concise AI summary", got)
 	}
-	if got := results[0].Fingerprints["ruleId:location"]; got != "CWE-252:f:13:p" {
-		t.Errorf("fingerprint = %q, want CWE-252:f:13:p (variable must be part of the identity so same-location distinct variables stay distinct)", got)
+	if results[0].Fingerprints["secguard/v1"] != "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" {
+		t.Errorf("fingerprints[secguard/v1] must carry the DB's content fingerprint, got %q", results[0].Fingerprints["secguard/v1"])
+	}
+	// confidence is a 0.0–1.0 number, not a "90%" string.
+	if got, ok := results[0].Properties["confidence"].(float64); !ok || got != 0.9 {
+		t.Errorf("properties.confidence = %v (%T), want numeric 0.9", results[0].Properties["confidence"], results[0].Properties["confidence"])
 	}
 }
 
@@ -117,6 +128,7 @@ func sarifVerdictFindings() []*db.Finding {
 			Summary:  "malloc 未判空即解引用", Reasoning: "分配后立即解引用",
 			Evidence:       "分配器可能返回 NULL",
 			ExceptionCheck: "无 safe wrapper", FixStrategy: "if (p == NULL) return -1;",
+			Fingerprint: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		},
 		{
 			RuleID: "CWE-190", Severity: "medium", Confidence: 0.6,
@@ -368,9 +380,10 @@ func TestWriteSarifFromFindings_ReviewStatusMarker(t *testing.T) {
 
 	byStatus := map[string]sarifResult{}
 	for _, r := range results {
-		byStatus[r.Properties["review_status"]] = r
+		rs, _ := r.Properties["review_status"].(string)
+		byStatus[rs] = r
 		if r.Properties["status"] != "confirmed" {
-			t.Errorf("tier %q: status = %q, want confirmed", r.Properties["review_status"], r.Properties["status"])
+			t.Errorf("tier %q: status = %v, want confirmed", r.Properties["review_status"], r.Properties["status"])
 		}
 	}
 	if _, ok := byStatus["ai_confirmed"]; !ok {
