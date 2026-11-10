@@ -139,6 +139,24 @@ type Scan struct {
 	//   "off": no auto-dismiss (pre-0.11.6 behaviour) — every fail-open row goes
 	//     to the AI. This is the recall-maximal escape hatch.
 	BoundaryAutoDismiss string `toml:"boundary_auto_dismiss"`
+	// PrecisionTier extends the fail-open null-deref pre-dismissal to
+	// COMPLETE-PROGRAM scans (issue #253 P0-6). In a complete-program run the
+	// non-proving origin tiers (external-unknown / callback-entry /
+	// assumed-return / opaque-origin) still carry no in-tree NULL witness:
+	// production triage of an 812k-line monorepo confirmed 1 out of 2423
+	// null-deref candidates while those four tiers alone were 90.8% of the
+	// queue with zero confirmations. Modes:
+	//   "" / "balanced" (default): pre-dismiss the non-proving tiers (same
+	//     tier set as boundary_auto_dismiss="external"), ledgered under
+	//     `precision_fail_open`. Machine-proven tiers (cfg-proof, malloc-fail),
+	//     caller-arg rows with a concrete in-tree call chain, and literal-NULL
+	//     caller witnesses always stay for the AI.
+	//   "strict": also pre-dismiss caller-arg forwarding hops (the complete-
+	//     program analogue of boundary_auto_dismiss="all").
+	//   "off": no complete-program pre-dismissal (pre-0.12.6 behaviour) — the
+	//     recall-maximal escape hatch. Boundary scans are governed by
+	//     boundary_auto_dismiss regardless of this key.
+	PrecisionTier string `toml:"precision_tier"`
 	// CompileCommands is the compile_commands.json path (GAP-03). When empty, the
 	// pipeline auto-detects <target>/compile_commands.json then
 	// <target>/build/compile_commands.json; the --compile-commands flag wins over
@@ -414,6 +432,45 @@ func (c *Config) BoundaryAutoDismissMode() string {
 		return "off"
 	default:
 		return "external"
+	}
+}
+
+// precisionTierOverride is the test/CLI hook for the complete-program
+// precision tier. An empty string leaves the config file in charge.
+var precisionTierOverride string
+
+// SetPrecisionTierOverride sets the process-wide override. An empty string
+// clears it.
+func SetPrecisionTierOverride(mode string) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "balanced", "strict", "off":
+		precisionTierOverride = strings.ToLower(strings.TrimSpace(mode))
+	default:
+		precisionTierOverride = ""
+	}
+}
+
+// PrecisionTierMode normalizes the configured complete-program precision tier.
+// The default is "balanced" (pre-dismiss the non-proving null-origin tiers);
+// "off" is the recall-maximal opt-out and "strict" additionally drops
+// caller-arg forwarding hops. An unrecognized value falls back to the safe
+// default rather than silently disabling the layer.
+func (c *Config) PrecisionTierMode() string {
+	if precisionTierOverride != "" {
+		return precisionTierOverride
+	}
+	if c == nil {
+		return "balanced"
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Scan.PrecisionTier)) {
+	case "balanced", "":
+		return "balanced"
+	case "strict":
+		return "strict"
+	case "off":
+		return "off"
+	default:
+		return "balanced"
 	}
 }
 
