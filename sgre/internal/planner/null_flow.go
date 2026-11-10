@@ -742,6 +742,7 @@ func addOutputParamKills(stmt parser.Node, e *nodeEffects, derefArgs bool, macro
 					}
 				}
 			}
+
 		}
 	}
 
@@ -770,6 +771,7 @@ func addOutputParamKills(stmt parser.Node, e *nodeEffects, derefArgs bool, macro
 					}
 				}
 			}
+
 		}
 		// `MACRO(args) { body }` — the same macro call, but with a braced body
 		// (no type-cast argument), parses as a function_definition and so has
@@ -788,6 +790,7 @@ func addOutputParamKills(stmt parser.Node, e *nodeEffects, derefArgs bool, macro
 					}
 				}
 			}
+
 		}
 	}
 }

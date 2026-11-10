@@ -87,7 +87,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 			bound := parser.FunctionBoundNames(funcDefsByLine[f.StartLine])
 			d.detectStackUninit(ctx, f, file, bound, decls, assigns, calls, exprStmts, returns, inits, ifs, whiles, fors, bodies, summaries, macroWrites, objectMacroWrites, &result, tree)
 			d.detectHeapUninit(ctx, f, file, decls, inits, assigns, calls, unarys, ptrs, fields, subscripts, ifs, summaries, &result)
-			d.detectStructPartialUninit(ctx, f, file, bound, decls, assigns, calls, ifs, fields, summaries, macroWrites, &result)
+			d.detectStructPartialUninit(ctx, f, file, bound, decls, assigns, calls, ifs, fields, summaries, macroWrites, unionTypedefNames(root), &result)
 		}
 	})
 	return result, err
@@ -1822,12 +1822,45 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 	}
 }
 
-func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, f *db.Function, file *db.File, bound map[string]bool, decls, assigns, calls, ifs, fields []parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, result *DetectResult) {
+// unionTypedefNames returns the typedef names whose definition aliases a union
+// (`typedef union { ... } vlan_u;`). Enterprise code declares unions almost
+// exclusively through typedefs, so the declaration site's type node is a
+// type_identifier, not a union_specifier — without this map the union
+// shared-storage rule never fires (issue #253 P2-1).
+func unionTypedefNames(root parser.Node) map[string]bool {
+	out := map[string]bool{}
+	for _, td := range root.FindAll("type_definition") {
+		isUnion := false
+		var name string
+		for _, child := range td.NamedChildren() {
+			switch child.Kind() {
+			case "union_specifier":
+				isUnion = true
+			case "type_identifier":
+				name = child.Text()
+			}
+		}
+		if isUnion && name != "" {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, f *db.Function, file *db.File, bound map[string]bool, decls, assigns, calls, ifs, fields []parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, unionTypedefs map[string]bool, result *DetectResult) {
 	// Scope-aware tracking (UN-04): structVars and every per-variable fact are
 	// keyed by varKey(name@declLine) so two `s` in nested blocks no longer collide.
 	structVars := make(map[string]int) // varKey -> decl line
 	structDeclsByName := make(map[string][]varDecl)
 	initializedFields := make(map[string]bool)
+	// unionVars marks declarations whose type is a union_specifier. A union's
+	// members SHARE storage, so writing any one member initializes that storage:
+	// a later read of a DIFFERENT member is implementation-defined, not a
+	// use-of-uninitialized-memory defect (issue #253 P2-1: `u.vlan = x` followed
+	// by a read of `u.id` was auto-confirmed CWE-457). This must NOT be applied
+	// to structs, where `s.a = 1; return s.b` is a genuine partial-init defect.
+	unionVars := make(map[string]bool)
+	unionInitialized := make(map[string]bool)
 	// isValue is the same `(A) & x` disambiguation the scalar path uses (see
 	// detectStackUninit): without it a genuine bit-and argument would be read as
 	// an address-of and mark a field as callee-initialized.
@@ -1856,12 +1889,26 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 		if hasInit {
 			continue
 		}
+		isUnion := false
+		for _, child := range decl.NamedChildren() {
+			switch child.Kind() {
+			case "union_specifier":
+				isUnion = true
+			case "type_identifier":
+				if unionTypedefs[child.Text()] {
+					isUnion = true
+				}
+			}
+		}
 		for _, child := range decl.NamedChildren() {
 
 			if child.Kind() == "identifier" && !parser.IsCTypeKeyword(child.Text()) {
 				key := varKey(child.Text(), decl.StartLine())
 				structVars[key] = decl.StartLine()
 				structDeclsByName[child.Text()] = append(structDeclsByName[child.Text()], varDecl{name: child.Text(), declLine: decl.StartLine(), scopeEnd: enclosingScopeEnd(decl)})
+				if isUnion {
+					unionVars[key] = true
+				}
 			}
 		}
 	}
@@ -1919,6 +1966,9 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 				continue
 			}
 			initializedFields[scopedPath(key, base, fieldPath(lhs))] = true
+			if unionVars[key] {
+				unionInitialized[key] = true
+			}
 			for _, p := range fieldWritePaths(lhs) {
 				writePaths[scopedPath(key, base, p)] = true
 			}
@@ -2042,6 +2092,11 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 			continue
 		}
 		if wholeAssigned[key] {
+			continue
+		}
+		// A union member write initializes the shared storage, so a read of any
+		// other member is not a partial-init defect (only structs are per-field).
+		if unionInitialized[key] {
 			continue
 		}
 		// A path that is a write target (or its base) is not a read.
