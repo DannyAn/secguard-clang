@@ -157,6 +157,12 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "escape@return", Description: "the value is returned to the caller somewhere (an ownership transfer exists) — the leak path must be a NON-returning path"},
 	{Key: "escape@store", Description: "the value is stored into a non-local (global/parameter/container) somewhere — the leak path must bypass that store"},
 	{Key: "escape@none", Description: "no ownership-transfer channel exists anywhere in the function"},
+	// Global-container shallow free (issue #255): the leak is not at the
+	// candidate line's allocation — it is the deletion path of an object the
+	// global container owns.
+	{Key: "container-field@", Display: "container-field@<slot>-><obj>-><obj>-><field>", Description: "the leaked block is reachable ONLY through this global-container reference chain ({value}): the deletion path released the outer object without releasing this field, then cleared the slot. Confirming: free the field BEFORE (or inside) the outer release, or make the release helper deep-free its members. Dismiss only when a destructor that releases the field is reachable on the same path — the deletion path shown in the Code Context is the fact to check"},
+	{Key: "shallow-free@", Display: "shallow-free@<api>:<line>", Description: "the outer object's release call ({value}) that freed the object but not the leaked field — compare it with the Code Context to confirm no field release sits on that path"},
+	{Key: "field-alloc@", Display: "field-alloc@<function>:<line>", Description: "where the leaked field's block is allocated ({value}); the slot-clear line in the Code Context is where its last reference is dropped, so the fix belongs on that release path"},
 
 	// ---- uninit (storage facts) ----
 	{Key: "origin@", Display: "origin@<kind>", Description: "the uninitialized storage's kind: {value} (stack/heap/struct)"},

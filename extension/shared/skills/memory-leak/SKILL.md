@@ -16,9 +16,19 @@ A memory-leak candidate has:
 - **memory_alloc**: an allocation at a source line — `malloc`/`calloc`/`realloc` (raw or cast), an implicit allocator (`strdup`, `asprintf`/`vasprintf`, `getline`/`getdelim`, `realpath(path, NULL)`), or a custom allocator from the project contract; carries the acquire API (`via malloc`)
 - **definite** / **conditional**: the CFG reachability verdict — `definite` = no free/escape/transfer is reachable on any path to function exit; `conditional` = released on some paths, trace each error/early-return path
 - **call_path**: the function is reachable from an entry point
+- **ref_chain** / **shallow_release** (global-container shallow free): the
+  leak is NOT the candidate line's allocation. The leaked block is a
+  heap-owning FIELD of an object a global container owns, and the deletion path
+  released the outer object without releasing the field, then cleared the slot
+  — the chain is `container slot -> object -> object->field`. `ref_chain` is
+  the full reachability chain; `shallow_release` names the outer release that
+  left the field unreleased; `memory_alloc` carries the field's allocation and
+  the store that attached it.
 
 Released sites never reach you: the pipeline's ReleaseFilter drops a proved-released
-allocation before a candidate is written.
+allocation before a candidate is written. An allocation stored into a wrapper
+object that escapes the caller is re-homed by a `container_transfer` release and
+is reported (if at all) at the object's deletion path, not at the allocation.
 
 The detector marks the seed event `definite=true` when the CFG proves no free/escape/transfer is reachable from the allocation; the planner's leak-proof filter promotes a `definite` candidate to `confirmed`.
 
@@ -36,6 +46,9 @@ The detector marks the seed event `definite=true` when the CFG proves no free/es
 | `free-mismatch@<api>` | a release exists but frees the WRONG allocator family (`free()` on an XPath context, `cJSON_Delete` on a `strdup` block) | the call does NOT release this object — it is a leak (and a latent invalid-free); confirm the leak |
 | `transfer-cond@<guard>` | an ownership transfer is CONDITIONAL (only on some branch) | the branch that skips the transfer is the leak path — judge whether that branch is reachable |
 | `free-on-borrow@<api>` | the release targets a BORROWED pointer (`cJSON_Delete` on `cJSON_GetObjectItem`'s result, `free` on `strstr`'s) | an invalid free of an object owned elsewhere, NOT a leak — dismiss the leak |
+| `container-field@<slot>-><obj>-><obj>-><field>` | the leaked block is reachable ONLY through this global-container chain; the deletion path freed the outer object without freeing this field and then cleared the slot | confirm when the Code Context shows the release path has no field release; dismiss only when a destructor that frees the field is reachable on that same path |
+| `shallow-free@<api>:<line>` | the outer object's release call that did NOT free the leaked field | check the Code Context + `## Callee Definition` — a helper that frees the field would have suppressed the candidate |
+| `field-alloc@<function>:<line>` | where the leaked field's block is allocated | the fix belongs on the deletion path shown in the Code Context, not at this allocation line |
 
 The decisive split is the escape token plus the leak token:
 `escape@none` + `leak@definite` settles the row from the Hint; any channel
@@ -56,6 +69,20 @@ cases, and list anything still unsettled in `needs_context`.
 3. Collect ownership transfer / escape: `return p` (including `return (T *)p`), a store to a non-local (`g = p`, `extern ... global_buf = p`, `state->field = malloc(...)` where the base is caller-owned), and escape-call arguments.
 4. Per allocation, use the statement CFG to decide whether a leak path exists — a path to exit or to a later overwrite with no intervening release/transfer/escape.
 5. If no release/transfer/escape is reachable on any path, mark `definite` (→ confirmed). If release is reachable only on some paths, leave the candidate for the AI as `suspected`.
+
+### Global-container shallow free
+
+`g_policy_table[idx] -> policy -> policy->cfg` is a complete defect shape when
+the create path allocates `cfg`, stores it into `policy->cfg`, and a wrapper
+(or a direct store) puts `policy` into the global container, while the deletion
+path frees the outer object and clears the slot. Two functions and an object
+graph separate the allocation from the loss, so the pipeline reports it at the
+SLOT-CLEAR line of the deleting function, with `container-field@` carrying the
+chain. Judge it from the row: a field release on that path (a direct
+`free(obj->field)`, a deep release helper, or an alias release) would have
+suppressed the candidate; the absence of such a release, plus the field's own
+allocation witness, is the defect. The `T *g[N]` array form, the `T **g` form
+and the single-pointer `T *g` form are all modelled.
 
 ### Third-party orphan objects
 
@@ -87,6 +114,7 @@ the embedded section and the indexed lookup.
 | A matching release or ownership transfer for the same object exists on all relevant paths | **false-positive** |
 | The candidate is an alias release, cast release, escape-to-owner, returned pointer, guarded free, or `goto cleanup` | **false-positive** |
 | Whether a release/owner exists cannot be settled from this function (unknown callee semantics) | **dismissed** only when a callee provably releases it (embedded `## Callee Definition` or a declared `[contracts]` takes-ownership); otherwise list it in `needs_context` — do not dismiss blind |
+| `container-field@` + `shallow-free@` + `field-alloc@`: a global-container object's heap field is not released on the deletion path that clears the slot | **confirmed** — the reference chain and the allocation witness prove the field was owned by the released object; the missing field release on that path loses it |
 
 An **error-path leak is confirmed, not suspected**: if the function demonstrably returns on a reachable error path with the block still owned and unreleased, that is the same proved shape as a never-freed allocation. `memory-leak` and `resource-leak` must never disagree on this shape.
 
