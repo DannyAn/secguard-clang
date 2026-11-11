@@ -27,7 +27,7 @@ func TestFilterChainMigration(t *testing.T) {
 		"double-free":       {"call_reach", "safe_function_exclude", "double_free_flow"},
 		"injection":         {"call_reach", "safe_function_exclude", "taint_source"},
 		"path-traversal":    {"call_reach", "safe_function_exclude", "taint_source", "constant_path_proof"},
-		"format-string":     {"call_reach", "safe_function_exclude", "taint_source"},
+		"format-string":     {"call_reach", "safe_function_exclude", "taint_source", "constant_path_proof"},
 		"integer-overflow":  {"call_reach", "safe_function_exclude", "int_overflow_guard", "unsigned_sub_guard"},
 		"divide-by-zero":    {"call_reach", "safe_function_exclude", "range"},
 		"deadlock":          {"call_reach", "safe_function_exclude", "lock_order"},

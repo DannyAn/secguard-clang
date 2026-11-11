@@ -159,13 +159,28 @@ func chainDoubleFree() []FilterFactory {
 	}
 }
 
-// chainTaint covers injection / format-string, which share the taint-source
-// filter.
+// chainTaint covers injection, which shares the taint-source filter.
 func chainTaint() []FilterFactory {
 	return []FilterFactory{
 		func(d FilterDeps) Filter { return NewCallReachFilter(d.Store, d.CallReachCache) },
 		func(d FilterDeps) Filter { return NewSafeFunctionFilter(d.Store) },
 		func(d FilterDeps) Filter { return NewTaintSourceFilter(d.Store, d.Parser, d.Logger, d.TaintCache) },
+	}
+}
+
+// chainFormatString is chainTaint plus the interprocedural constant-path proof
+// (issue #261 item 5): a format parameter whose every in-tree call site resolves
+// to a compile-time literal — possibly forwarded through a logging wrapper — is
+// not attacker-reachable and is dropped instead of being promoted to confirmed
+// on the open-world param taint.
+func chainFormatString() []FilterFactory {
+	return []FilterFactory{
+		func(d FilterDeps) Filter { return NewCallReachFilter(d.Store, d.CallReachCache) },
+		func(d FilterDeps) Filter { return NewSafeFunctionFilter(d.Store) },
+		func(d FilterDeps) Filter { return NewTaintSourceFilter(d.Store, d.Parser, d.Logger, d.TaintCache) },
+		func(d FilterDeps) Filter {
+			return NewConstantPathFilter(d.Store, d.Parser, d.Logger, d.CallReachCache, d.TaintCache)
+		},
 	}
 }
 

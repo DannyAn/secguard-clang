@@ -163,6 +163,7 @@ func (s *store) ListPerTypeStatus(ctx context.Context, scanID string, cwesForTyp
 		result = append(result, &PerTypeStatus{
 			VulnType:                st.VulnType,
 			CWE:                     cwe,
+			SeedCount:               st.SeedCount,
 			CandidateCount:          st.FinalCount,
 			WrittenCount:            written,
 			AutoConfirmed:           autoConfirmed,

@@ -96,3 +96,52 @@ func TestReportWriteJSONReportsDuplicates(t *testing.T) {
 		t.Errorf("a non-empty retry function must refresh the row, got %+v", all)
 	}
 }
+
+// TestReportWriteJSONDismissedPersisted pins issue #261 item 10: a dismissed
+// verdict is NOT written to the findings table (skipped_dismissed), but it IS
+// persisted to the candidate_verdicts ledger — reported under the unambiguous
+// `dismissed_persisted` field (an alias of dismissed_written) so a consumer
+// cannot misread "skipped" as "never persisted".
+func TestReportWriteJSONDismissedPersisted(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "test.db")
+	d, err := db.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := db.NewStore(d)
+	scanID := "sc_2026-01-01_000000_abc123"
+	if _, err := store.InsertScanStat(ctx, &db.ScanStat{ScanID: scanID, VulnType: "null-deref", SeedCount: 1, FinalCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	path := filepath.Join(root, "batch.json")
+	payload := `[{"rule_id":"CWE-476","status":"dismissed","file":"a.c","line":7,"function":"f","variable":"p","reasoning":"guarded"}]`
+	if err := os.WriteFile(path, []byte(payload), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, code := captureOutput(func() int {
+		return runReportCmd(ctx, []string{"--db", dbPath, "--write-json", path, "--scan-id", scanID})
+	})
+	if code != 0 {
+		t.Fatalf("write failed: %s", stdout)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("write output is not JSON: %s", stdout)
+	}
+	if out["skipped_dismissed"] != float64(1) {
+		t.Errorf("skipped_dismissed = %v, want 1", out["skipped_dismissed"])
+	}
+	if out["findings_written"] != float64(0) {
+		t.Errorf("findings_written = %v, want 0 (dismissed is not a finding)", out["findings_written"])
+	}
+	if out["dismissed_persisted"] != float64(1) {
+		t.Errorf("dismissed_persisted = %v, want 1 (verdict must land in candidate_verdicts)", out["dismissed_persisted"])
+	}
+	if out["dismissed_written"] != float64(1) {
+		t.Errorf("dismissed_written = %v, want 1", out["dismissed_written"])
+	}
+}

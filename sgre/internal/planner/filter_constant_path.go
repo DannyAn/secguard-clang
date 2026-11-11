@@ -87,10 +87,13 @@ func (f *ConstantPathFilter) Apply(ctx context.Context, candidates []Candidate) 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
 	for _, c := range candidates {
-		// Only the traversal category carries a `../` path; the
-		// permission_setting categories (world_writable_file/var) are a mode
-		// defect and are judged by the chmod rules, not by path provenance.
-		if c.Category != "path_traversal" || c.PathExpr == "" {
+		// The proof covers the path-traversal path argument and the
+		// format-string format argument: a parameter whose every in-tree call
+		// site resolves to a compile-time constant cannot carry attacker input.
+		// Other path-traversal categories (world_writable_file/var) are a mode
+		// defect judged by the chmod rules, not by path provenance, and other
+		// vuln types are left to their own chains.
+		if !constantPathCandidate(c) {
 			kept = append(kept, c)
 			continue
 		}
@@ -101,9 +104,22 @@ func (f *ConstantPathFilter) Apply(ctx context.Context, candidates []Candidate) 
 		kept = append(kept, c)
 	}
 	if f.logger != nil && len(dropped) > 0 {
-		f.logger.Info("constant-path proof dismissed path-traversal candidates", "count", len(dropped))
+		f.logger.Info("constant-path proof dismissed candidates", "count", len(dropped))
 	}
 	return kept, dropped, nil
+}
+
+// constantPathCandidate reports whether the filter owns this candidate: a
+// path-traversal candidate with a path argument, or a format-string candidate
+// with a format argument. Every other candidate is passed through untouched.
+func constantPathCandidate(c Candidate) bool {
+	switch c.Category {
+	case "path_traversal":
+		return c.PathExpr != ""
+	case "format_string":
+		return c.FormatArg != ""
+	}
+	return false
 }
 
 // proofKind names the memoized proof predicate.
@@ -256,13 +272,23 @@ func (p *pathProof) Close() {
 	}
 }
 
-// proveCandidate decides whether c's path argument is a compile-time constant.
+// proveCandidate decides whether c's sink argument (a traversal path or a
+// format-string format) is a compile-time constant.
 //
 // Order matters: a parameter the sink's own function OVERWRITES must be judged
 // by those writes (the caller's argument no longer reaches the sink), and only
 // an untouched parameter is judged by its in-tree call sites.
 func (p *pathProof) proveCandidate(c Candidate) (bool, string) {
-	key := compactIdentText(taintLocKey(c.PathExpr))
+	sinkExpr, label := "", "argument"
+	switch c.Category {
+	case "path_traversal":
+		sinkExpr, label = c.PathExpr, "path argument"
+	case "format_string":
+		sinkExpr, label = c.FormatArg, "format argument"
+	default:
+		return false, ""
+	}
+	key := compactIdentText(taintLocKey(sinkExpr))
 	if key == "" {
 		return false, ""
 	}
@@ -281,7 +307,7 @@ func (p *pathProof) proveCandidate(c Candidate) (bool, string) {
 		if !ok {
 			return false, ""
 		}
-		return true, fmt.Sprintf("path argument `%s` is assembled inside %s only from compile-time constants and internally generated numeric values", key, fctx.name)
+		return true, fmt.Sprintf("%s `%s` is assembled inside %s only from compile-time constants and internally generated numeric values", label, key, fctx.name)
 	}
 	idx, isParam := fctx.params[key]
 	if !isParam {
@@ -296,7 +322,7 @@ func (p *pathProof) proveCandidate(c Candidate) (bool, string) {
 	if sites == "" {
 		sites = "every in-tree call site resolves to a compile-time constant"
 	}
-	return true, fmt.Sprintf("path argument `%s` is a parameter of %s, and every in-tree call site resolves to a compile-time constant (%s)", key, fctx.name, sites)
+	return true, fmt.Sprintf("%s `%s` is a parameter of %s, and every in-tree call site resolves to a compile-time constant (%s)", label, key, fctx.name, sites)
 }
 
 // fnContext loads and memoizes the parsed state of one function.
@@ -940,8 +966,26 @@ var readOnlyArgIdx = map[string][]int{
 	"scandir": {0}, "glob": {0},
 }
 
+// readOnlyFormatArgIdx maps a printf-family function to its FORMAT argument
+// index: that slot is read by the callee (a format specifier), never written,
+// so a sink function that merely forwards its own format parameter to
+// `vsprintf_s(buf, n, fmt, ap)` does not "write" `fmt`. This is the same
+// read-only treatment the path proof already gives `fopen`'s path argument, and
+// it is what lets the format-string proof trace a literal through a logging
+// wrapper instead of treating the wrapper's own sink call as a write.
+var readOnlyFormatArgIdx = map[string]int{
+	"printf": 0, "vprintf": 0, "printf_s": 0, "vprintf_s": 0,
+	"fprintf": 1, "vfprintf": 1, "fprintf_s": 1, "vfprintf_s": 1,
+	"sprintf": 1, "vsprintf": 1, "sprintf_s": 2, "vsprintf_s": 2,
+	"snprintf": 2, "vsnprintf": 2,
+	"syslog": 1, "err": 1, "errx": 1, "warn": 0, "warnx": 0,
+}
+
 func argIsReadOnly(name string, idx int) bool {
 	if readOnlyAllArgs[name] {
+		return true
+	}
+	if fi, ok := readOnlyFormatArgIdx[name]; ok && fi == idx {
 		return true
 	}
 	for _, i := range readOnlyArgIdx[name] {

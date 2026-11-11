@@ -106,14 +106,15 @@ int main(void) {
 func TestCallsiteCensus_VarCallSiteKeptWithToken(t *testing.T) {
 	src := `#include <stdio.h>
 
+char g_fmt[32];
+
 void log_open(const char *fmt) {
     fprintf(stderr, fmt);
 }
 
 int main(void) {
-    char env[32] = "dyn";
     log_open("service started\n");
-    log_open(env);
+    log_open(g_fmt);
     return 0;
 }
 `

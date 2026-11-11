@@ -16,11 +16,13 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
-// Issue #253 P2-1: a non-static format wrapper whose only taint basis is the
-// open-world assumption ("an external caller may pass a tainted fmt") must NOT
-// be auto-confirmed when the sink is a LOCAL copy of the parameter (the flow
-// path). The open-world assumption is a fail-open hypothesis, not a machine
-// proof, so the candidate stays suspected for the AI.
+// Issue #253 P2-1 + issue #261 item 5: a non-static format wrapper whose sink
+// is a LOCAL copy of the parameter (`local = fmt`) is now dropped when every
+// in-tree caller passes a compile-time literal — the constant-path proof
+// resolves the local copy to the parameter and proves the parameter is never
+// attacker-controlled. The open-world promotion alone is not a machine proof,
+// but a positive all-literal-caller proof IS, so the candidate is dismissed
+// rather than handed to the AI as suspected.
 func TestTaintSourceFilter_OpenWorldEntryDoesNotConfirm(t *testing.T) {
 	ctx := context.Background()
 	store := db.NewTestStore(t)
@@ -60,16 +62,9 @@ void caller(void) { log_wrapper("%s", "x"); }
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
-	var wrapper *EvidenceItem
 	for i := range result.Candidates {
 		if result.Candidates[i].Target.Function == "log_wrapper" {
-			wrapper = &result.Candidates[i]
+			t.Fatalf("log_wrapper must be dropped when its local copy resolves to an all-literal parameter, got %+v", result.Candidates[i])
 		}
-	}
-	if wrapper == nil {
-		t.Fatalf("log_wrapper must stay a suspected candidate (the assertion would be vacuous otherwise), got %v", candidateNames(result))
-	}
-	if wrapper.SuspicionLevel == "confirmed" {
-		t.Errorf("an open-world entry assumption (no real caller taint witness) must not auto-confirm the format wrapper (variable=%s)", wrapper.Target.Variable)
 	}
 }
