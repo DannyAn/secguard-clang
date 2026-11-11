@@ -111,11 +111,11 @@ func TestEnrichPerTypeStatusAlreadyCovered(t *testing.T) {
 	}
 }
 
-// TestEnrichPerTypeStatusDedupCollapsed pins issue #261 item 11: the raw→final
-// reduction (seed_count − candidate_count) is surfaced as dedup_collapsed, so an
-// orchestrator can reconcile a positive remaining against how much already
-// collapsed by the filter chain + same-location dedup before AI review.
-func TestEnrichPerTypeStatusDedupCollapsed(t *testing.T) {
+// TestEnrichPerTypeStatusPreAICollapsed pins issue #261 item 11: the raw→final
+// reduction (seed_count − candidate_count) is surfaced as pre_ai_collapsed, so
+// an orchestrator can reconcile a positive remaining against how much was
+// already filtered out + same-location deduped before AI review.
+func TestEnrichPerTypeStatusPreAICollapsed(t *testing.T) {
 	ctx := context.Background()
 	store := db.NewTestStore(t)
 
@@ -137,8 +137,8 @@ func TestEnrichPerTypeStatusDedupCollapsed(t *testing.T) {
 	if e.SeedCount != 200 {
 		t.Errorf("seed_count = %d, want 200", e.SeedCount)
 	}
-	if e.DedupCollapsed != 160 {
-		t.Errorf("dedup_collapsed = %d, want 160 (200 seeds → 40 final)", e.DedupCollapsed)
+	if e.PreAICollapsed != 160 {
+		t.Errorf("pre_ai_collapsed = %d, want 160 (200 seeds → 40 final)", e.PreAICollapsed)
 	}
 	if e.Remaining != 40 {
 		t.Errorf("remaining = %d, want 40 (40 candidates, 0 classified)", e.Remaining)

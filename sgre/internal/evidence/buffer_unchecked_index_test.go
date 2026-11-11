@@ -133,6 +133,19 @@ void clear_slot(Wr_t *w)
 }
 `
 
+// Two subscripts inside a READ arithmetic expression must both stay reads; the
+// dest-writer write classification only fires for arg 0 of a writer call.
+const uncheckedIndexReadSumFixture = `typedef struct {
+    unsigned int slot;
+    int counters[4];
+} Wr_t;
+
+int read_sum(Wr_t *w)
+{
+    return w->counters[w->slot] + w->counters[w->slot];
+}
+`
+
 type uncheckedIndexEvent struct {
 	Category       string
 	Array          string
@@ -374,6 +387,19 @@ func TestUncheckedIndexMemsetWriteCategory(t *testing.T) {
 	}
 	if events[0].Category != "array_oob_write_unchecked" {
 		t.Errorf("category = %s, want array_oob_write_unchecked for memset(&array[i])", events[0].Category)
+	}
+}
+
+// Negative control for the write classifier: two subscripts inside a READ
+// arithmetic expression (`arr[i] + arr[j]`) must stay reads, never be promoted
+// to writes by the dest-writer arg-0 rule.
+func TestUncheckedIndexReadSumStaysRead(t *testing.T) {
+	events := runUncheckedIndexDetect(t, map[string]string{"sum.c": uncheckedIndexReadSumFixture})
+	if len(events) != 1 {
+		t.Fatalf("want 1 unchecked-index event, got %d: %+v", len(events), events)
+	}
+	if events[0].Category != "array_oob_read_unchecked" {
+		t.Errorf("category = %s, want array_oob_read_unchecked for a read-only arithmetic sum", events[0].Category)
 	}
 }
 

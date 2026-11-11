@@ -247,42 +247,6 @@ func SecureFunctionSpec(name string) (SecureFuncSpec, bool) {
 	return s, ok
 }
 
-// NonFailableSafeCopy reports whether a sized `_s` copy is provably non-failable
-// on its failure branch: the destination-capacity argument and the copy-count
-// argument are both `sizeof(<same object>)`, so the source and destination are
-// equal-sized and the runtime constraint handler cannot fire on a well-formed
-// call. `memcpy_s(dst, sizeof(dst), src, sizeof(dst)) != 0` is therefore an
-// unreachable branch (issue #261 item 8). Only the sized copies with an explicit
-// count (memcpy_s / memmove_s) qualify; strcpy_s/strcat_s carry no count to
-// compare against the capacity.
-func NonFailableSafeCopy(name, capArg, countArg string) bool {
-	if name != "memcpy_s" && name != "memmove_s" {
-		return false
-	}
-	capObj := sizeofOperand(capArg)
-	if capObj == "" {
-		return false
-	}
-	return capObj == sizeofOperand(countArg)
-}
-
-// sizeofOperand returns the operand name of a `sizeof(<operand>)` expression
-// (`sizeof(dst)`, `sizeof dst`, `sizeof(*dst)` → "dst"), or "" when the text is
-// not a sizeof over a single object.
-func sizeofOperand(text string) string {
-	t := strings.TrimSpace(text)
-	if !strings.HasPrefix(t, "sizeof") {
-		return ""
-	}
-	rest := strings.TrimSpace(t[len("sizeof"):])
-	rest = strings.Trim(rest, "()")
-	rest = strings.TrimSpace(strings.TrimPrefix(rest, "*"))
-	if rest == "" || strings.ContainsAny(rest, " ()[]") {
-		return ""
-	}
-	return rest
-}
-
 // ScanfSecureFunctions are the `_s` input functions (scanf_s / sscanf_s /
 // fscanf_s). Their "secure" contract differs from the copy `_s` functions:
 // instead of a single destination-capacity argument, EVERY %s / %c / %[
