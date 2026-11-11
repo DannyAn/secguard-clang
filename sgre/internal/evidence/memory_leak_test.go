@@ -594,3 +594,14 @@ func TestMemoryLeak_StructFieldCleanupByAddress(t *testing.T) {
 		}
 	}
 }
+
+// TestMemoryLeak_NonFailableSafeCopyGuard locks in issue #261 item 8: an early
+// return guarded by `memcpy_s(dst, sizeof(dst), src, sizeof(dst)) != 0` is an
+// UNREACHABLE branch (equal-sized objects cannot trip the `_s` constraint
+// handler), so it must not count as a leak path for the buffer.
+func TestMemoryLeak_NonFailableSafeCopyGuard(t *testing.T) {
+	store := runIndexAndDetect(t, "tc192_memcpy_s_nonfailable.c")
+	if hasLeakEvent(t, store, "buf") {
+		t.Error("memcpy_s(dst, sizeof(dst), src, sizeof(dst)) != 0 branch is unreachable; buf must not be reported as a leak")
+	}
+}

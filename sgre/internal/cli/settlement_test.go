@@ -111,6 +111,40 @@ func TestEnrichPerTypeStatusAlreadyCovered(t *testing.T) {
 	}
 }
 
+// TestEnrichPerTypeStatusDedupCollapsed pins issue #261 item 11: the raw→final
+// reduction (seed_count − candidate_count) is surfaced as dedup_collapsed, so an
+// orchestrator can reconcile a positive remaining against how much already
+// collapsed by the filter chain + same-location dedup before AI review.
+func TestEnrichPerTypeStatusDedupCollapsed(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+
+	if _, err := store.InsertScanStat(ctx, &db.ScanStat{ScanID: "sc_test", VulnType: "null-deref", SeedCount: 200, FinalCount: 40}); err != nil {
+		t.Fatal(err)
+	}
+	statuses, err := store.ListPerTypeStatus(ctx, "sc_test", func(string) []string { return []string{"CWE-476"} })
+	if err != nil {
+		t.Fatal(err)
+	}
+	enriched, err := enrichPerTypeStatus(ctx, store, "sc_test", statuses)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(enriched) != 1 {
+		t.Fatalf("expected 1 enriched, got %d", len(enriched))
+	}
+	e := enriched[0]
+	if e.SeedCount != 200 {
+		t.Errorf("seed_count = %d, want 200", e.SeedCount)
+	}
+	if e.DedupCollapsed != 160 {
+		t.Errorf("dedup_collapsed = %d, want 160 (200 seeds → 40 final)", e.DedupCollapsed)
+	}
+	if e.Remaining != 40 {
+		t.Errorf("remaining = %d, want 40 (40 candidates, 0 classified)", e.Remaining)
+	}
+}
+
 // TestEnrichPerTypeStatusClaimInFlight pins the pre-dispatch placeholder's
 // read side (#217): a fresh `dispatched` claim is reported under
 // in_flight_ranges (not already_covered_ranges), so a second planner skips it;

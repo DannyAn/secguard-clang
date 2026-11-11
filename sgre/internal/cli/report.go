@@ -521,13 +521,14 @@ func runReportCmd(ctx context.Context, args []string) int {
 			}
 			oc := syncPerFindingAfterWrite(remaining, finding)
 			out := map[string]interface{}{
-				"status":             "ok",
-				"dismissed":          true,
-				"dismissed_written":  dismissedWritten,
-				"scan_id":            finding.ScanID,
-				"scan_id_source":     scanIDSource,
-				"per_finding_path":   oc.Path,
-				"per_finding_action": oc.Action,
+				"status":              "ok",
+				"dismissed":           true,
+				"dismissed_written":   dismissedWritten,
+				"dismissed_persisted": dismissedWritten,
+				"scan_id":             finding.ScanID,
+				"scan_id_source":      scanIDSource,
+				"per_finding_path":    oc.Path,
+				"per_finding_action":  oc.Action,
 			}
 			if oc.Warning != "" {
 				out["per_finding_warning"] = oc.Warning
@@ -863,15 +864,16 @@ func runReportCmd(ctx context.Context, args []string) int {
 		}
 
 		out := map[string]interface{}{
-			"status":            "ok",
-			"findings_written":  len(written),
-			"duplicates":        duplicates,
-			"skipped_dismissed": skippedDismissed,
-			"dismissed_written": dismissedWritten,
-			"dismissed_failed":  dismissedFailed,
-			"written":           written,
-			"scan_id":           scanID,
-			"failed_count":      len(errs),
+			"status":              "ok",
+			"findings_written":    len(written),
+			"duplicates":          duplicates,
+			"skipped_dismissed":   skippedDismissed,
+			"dismissed_written":   dismissedWritten,
+			"dismissed_persisted": dismissedWritten,
+			"dismissed_failed":    dismissedFailed,
+			"written":             written,
+			"scan_id":             scanID,
+			"failed_count":        len(errs),
 		}
 		if len(failedDetails) > 0 {
 			out["failed_details"] = failedDetails

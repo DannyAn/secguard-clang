@@ -573,9 +573,14 @@ deref) needs ONE sentence of reasoning, not three.
 Check the write response — the batch `--write-json` path returns `status`
 (`ok`/`partial`), `findings_written` (count), `duplicates` (count of rows that
 already existed and were updated in place), `skipped_dismissed` (count of
-dismissed rows skipped, if any were sent for backward compatibility), `written`
+dismissed rows NOT written to the findings table), `dismissed_persisted`
+(count of dismissed verdicts persisted to the candidate_verdicts ledger; the
+legacy alias `dismissed_written` carries the same number), `written`
 (array of `{file, line, id, duplicate}`), `failed_count`, and, on failure,
-`failed_details` + `errors`. A `duplicates > 0` is NOT a failure: it means that
+`failed_details` + `errors`. A dismissed row being `skipped_dismissed` does NOT
+mean it was dropped: its verdict IS persisted under `dismissed_persisted`, which
+is what tells recovery "classified and dismissed" apart from "never classified".
+A `duplicates > 0` is NOT a failure: it means that
 finding was already persisted (e.g. this chunk is a retry) and was updated, not
 that a second finding exists. A `failed_count > 0` / `status: "partial"` means some
 findings did NOT land: read `failed_details`/`errors`, fix the call (usually a

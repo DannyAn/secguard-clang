@@ -441,6 +441,13 @@ type settlementEnriched struct {
 	// number the orchestrator needs without re-reading every candidate index.
 	DismissedCount int `json:"dismissed_count"`
 	Remaining      int `json:"remaining"`
+	// DedupCollapsed is the raw→final reduction for this type (seed_count −
+	// candidate_count): the candidates removed by the convergence filter chain and
+	// the same-location dedup before the AI ever sees them. It lets an orchestrator
+	// reconcile a positive remaining against how much already collapsed, instead of
+	// misreading "candidate_count − written − dismissed" as if the raw seed volume
+	// were still pending.
+	DedupCollapsed int `json:"dedup_collapsed"`
 	// UncoveredRanges is the exact candidate-interval gap (e.g. ["41-80"]) the
 	// orchestrator re-dispatches on recovery — replacing the old "re-dispatch
 	// candidate_count-written-dismissed candidates" guess that could not name
@@ -541,6 +548,9 @@ func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, sta
 	for _, s := range statuses {
 		e := &settlementEnriched{PerTypeStatus: s, AlreadyCoveredRanges: []string{}}
 		e.DismissedCount = dismissedByType[s.VulnType]
+		if s.SeedCount > s.CandidateCount {
+			e.DedupCollapsed = s.SeedCount - s.CandidateCount
+		}
 		// Remaining is the verdict-ledger gap (candidate_count − AI confirmed −
 		// dismissed), identical to the audit's unclassified: it is the ONLY
 		// number that can never be gamed by a self-declared settlement. A done

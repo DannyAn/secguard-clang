@@ -2053,8 +2053,20 @@ func subscriptAccessKind(bc *bufCtx, f *db.Function, sub parser.Node) string {
 			return "read"
 		case "update_expression":
 			return "write"
+		case "argument_list":
+			// A subscript under `&` passed as the DESTINATION of a writer call
+			// (`memset(&g_table->slot[i], 0, sizeof(item_t))`) is a WRITE to that
+			// element: the callee writes through the address, it does not read the
+			// element (issue #261 item 3). Without this, the address-of made the
+			// walk fall through to "read" and routed the sibling write to the
+			// out-of-bounds READ channel instead of the WRITE channel.
+			if argListParentWritesThrough(prev, *p) {
+				return "write"
+			}
+			prev = *p
+			continue
 		case "binary_expression", "parenthesized_expression", "cast_expression",
-			"subscript_expression", "argument_list", "call_expression",
+			"subscript_expression", "call_expression",
 			"field_expression", "pointer_expression", "unary_expression":
 			prev = *p
 			continue // nested inside a larger expression; keep walking up
@@ -2063,6 +2075,22 @@ func subscriptAccessKind(bc *bufCtx, f *db.Function, sub parser.Node) string {
 		}
 	}
 	return "read"
+}
+
+// argListParentWritesThrough reports whether the argument node `prev` is the
+// FIRST argument of `argList` and the enclosing call is a dest-writer
+// (memset/memcpy/strcpy/...): those write through arg 0, so a subscript (or an
+// `&subscript`) in that position is a write, not a read.
+func argListParentWritesThrough(prev, argList parser.Node) bool {
+	parent := argList.Parent()
+	if parent == nil || parent.Kind() != "call_expression" {
+		return false
+	}
+	if !isDestWriter(extractCallName(*parent)) {
+		return false
+	}
+	children := argList.NamedChildren()
+	return len(children) >= 1 && sameNode(children[0], prev)
 }
 
 // heapAllocationSize returns the size expression of a variable's

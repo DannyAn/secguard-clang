@@ -10,7 +10,7 @@ func init() {
 		EvidenceType:      "FORMAT_STRING_VULN",
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "format-string",
-		FilterFactories:   chainTaint(),
+		FilterFactories:   chainFormatString(),
 		// The taint-source filter reads the scan-shared interprocedural summary.
 		SharedTaintSummary: true,
 		BuildVerdictFacts: buildFormatStringVerdictFacts,

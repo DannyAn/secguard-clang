@@ -211,6 +211,11 @@ Flags:
   finding. Re-writing an existing finding returns it in "written" with
   "duplicate": true, counts it under the top-level "duplicates", and prints a
   stderr notice — it never creates a second finding.
+  A dismissed status is NOT persisted to the findings table (reported as
+  "skipped_dismissed"), but the verdict IS still recorded in the
+  candidate_verdicts ledger (reported as "dismissed_persisted" / its alias
+  "dismissed_written"), so recovery can tell "classified and dismissed" from
+  "never classified".
   "file"/"line"/"function" are required for a confirmed finding; the DB-column
   spellings "file_path"/"line_number"/"function_name" are accepted as aliases.
 

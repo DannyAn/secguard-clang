@@ -117,6 +117,11 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 				// the out-param variable: the allocation never happened on that
 				// branch (docs §5.3 success-branch binding).
 				nullGuardReturns = append(nullGuardReturns, findAllocGuardedReturns(ifs, returns, assigns, inits, f, varName)...)
+				// A return guarded by a NON-FAILABLE safe copy's failure test
+				// (`if (memcpy_s(dst, sizeof(dst), src, sizeof(dst)) != 0) return;`)
+				// is an unreachable branch — equal-sized source/destination cannot
+				// trip the `_s` constraint handler — so it is not leak evidence.
+				nullGuardReturns = append(nullGuardReturns, findNonFailableGuardedReturns(ifs, f)...)
 				escapeLinesAll := findEscapeLines(assigns, calls, returns, ids, f, varName, localVars, allocVarNames, allocReturns, true)
 				overwriteLines := writeLinesFor(assigns, inits, f, varName)
 
@@ -896,6 +901,75 @@ func isOutParamAllocFailureGuard(cond parser.Node, varName string, statusVars ma
 			continue
 		}
 		if !isFailureLiteral(otherSide, op) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// findNonFailableGuardedReturns returns the `return` lines guarded by a
+// NON-FAILABLE safe copy's failure test (`if (memcpy_s(dst, sizeof(dst), src,
+// sizeof(dst)) != 0) return;`). Equal-sized source/destination cannot trip the
+// `_s` constraint handler, so that branch is unreachable and must not count as a
+// leak path (issue #261 item 8).
+func findNonFailableGuardedReturns(ifs []parser.Node, f *db.Function) []int {
+	var lines []int
+	for _, ifStmt := range ifs {
+		if !funcLineRange(f, ifStmt.StartLine()) {
+			continue
+		}
+		cond := ifStmt.ChildByFieldName("condition")
+		if cond == nil || !isNonFailableSafeCopyFailureGuard(*cond) {
+			continue
+		}
+		consequence := ifStmt.ChildByFieldName("consequence")
+		if consequence == nil {
+			continue
+		}
+		for _, ret := range consequence.FindAll("return_statement") {
+			lines = append(lines, ret.StartLine())
+		}
+	}
+	return lines
+}
+
+// isNonFailableSafeCopyFailureGuard reports whether an if condition tests the
+// FAILURE (`!= 0`) of a non-failable `_s` copy: a call whose destination-capacity
+// and copy-count arguments are both `sizeof(<same object>)`.
+func isNonFailableSafeCopyFailureGuard(cond parser.Node) bool {
+	for _, bin := range cond.FindAll("binary_expression") {
+		lhs, rhs, op := binaryOperands(bin)
+		if op != "!=" {
+			continue
+		}
+		callSide, numSide := lhs, rhs
+		if callSide.Kind() != "call_expression" && rhs.Kind() == "call_expression" {
+			callSide, numSide = rhs, lhs
+		}
+		if callSide.Kind() != "call_expression" {
+			continue
+		}
+		name := extractCallName(callSide)
+		if name != "memcpy_s" && name != "memmove_s" {
+			continue
+		}
+		// The `_s` failure value is non-zero; `!= 0` is the failure test.
+		node := numSide
+		if node.Kind() == "parenthesized_expression" {
+			kids := node.NamedChildren()
+			if len(kids) == 1 {
+				node = kids[0]
+			}
+		}
+		if node.Kind() != "number_literal" || strings.TrimSpace(node.Text()) != "0" {
+			continue
+		}
+		args := getCallArgs(callSide)
+		if len(args) < 4 {
+			continue
+		}
+		if !apikb.NonFailableSafeCopy(name, args[1].Text(), args[3].Text()) {
 			continue
 		}
 		return true

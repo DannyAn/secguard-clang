@@ -151,12 +151,9 @@ void caller_literal(void)
     log_msg("hello %s");
 }
 
-void caller_buf(void)
+void caller_buf(const char *arg)
 {
-    char buf[64];
-    buf[0] = 'x';
-    buf[1] = 0;
-    log_msg(buf);
+    log_msg(arg);
 }
 `
 	// planType returns one EvidenceItem per function; log_msg is the sink.

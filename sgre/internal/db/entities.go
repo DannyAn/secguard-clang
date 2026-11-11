@@ -370,6 +370,10 @@ type ScanIncompleteTask struct {
 type PerTypeStatus struct {
 	VulnType       string `json:"vuln_type"`
 	CWE            string `json:"cwe"`
+	// SeedCount is the raw detector-seed count for this type (scan_stats.seed_count),
+	// before the convergence filter chain and location dedup. It is the raw
+	// denominator the orchestrator reconciles candidate_count against.
+	SeedCount      int    `json:"seed_count"`
 	CandidateCount int    `json:"candidate_count"`
 	WrittenCount   int    `json:"written_count"`
 	// AutoConfirmed is the count of findings the pipeline wrote straight to

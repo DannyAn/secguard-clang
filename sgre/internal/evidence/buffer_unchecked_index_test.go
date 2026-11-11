@@ -120,6 +120,19 @@ void store_slot(Wr_t *w)
 }
 `
 
+const uncheckedIndexMemsetWriteFixture = `#include <string.h>
+
+typedef struct {
+    unsigned int slot;
+    int counters[4];
+} Wr_t;
+
+void clear_slot(Wr_t *w)
+{
+    memset(&w->counters[w->slot], 0, sizeof(int));
+}
+`
+
 type uncheckedIndexEvent struct {
 	Category       string
 	Array          string
@@ -346,6 +359,21 @@ func TestUncheckedIndexWriteCategory(t *testing.T) {
 	}
 	if events[0].IndexSource != "slot" {
 		t.Errorf("index_source = %s, want slot (direct field index)", events[0].IndexSource)
+	}
+}
+
+// Issue #261 item 3: `memset(&w->counters[w->slot], 0, ...)` writes through an
+// address-of element, which the read/write classifier previously mislabeled as
+// a READ (the subscript sits under `&`, not a direct assignment target). It must
+// be classified as a WRITE so the sibling write routes to buffer-overflow/CWE-787
+// instead of out-of-bounds/CWE-125.
+func TestUncheckedIndexMemsetWriteCategory(t *testing.T) {
+	events := runUncheckedIndexDetect(t, map[string]string{"memset.c": uncheckedIndexMemsetWriteFixture})
+	if len(events) != 1 {
+		t.Fatalf("want 1 unchecked-index event, got %d: %+v", len(events), events)
+	}
+	if events[0].Category != "array_oob_write_unchecked" {
+		t.Errorf("category = %s, want array_oob_write_unchecked for memset(&array[i])", events[0].Category)
 	}
 }
 
