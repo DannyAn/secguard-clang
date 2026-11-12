@@ -275,6 +275,7 @@ new capacity class for an unfamiliar name.
 - A batch containing a whole-function-embedding (heavy) type (`integer-overflow`) SHALL contain ONLY that type (a heavy type gets a dedicated batch, never shared with any light or heavy type) — its per-candidate evidence is the whole function, so counting it like a line-level type under-budgets the batch.
 - Where a single type has > `LARGE_CANDIDATE_THRESHOLD` (100) candidates, the orchestrator SHALL give that type dedicated subagent(s) — never share it with another type — and split those subagents by the next rule.
 - Where a single type has > `SPLIT_CANDIDATE_THRESHOLD` (100) candidates, split it into ≤100-candidate RANGES for context (pass the candidate # range, e.g. "candidates #1–100 of null-deref"). Then dispatch **each range in ≤`N_type`-candidate subagent batches** where `N_type` is the adaptive per-type ceiling above. Balance ranges so there is no sliver tail (100 + 100 + 1): merge a final range smaller than 5 into its predecessor and re-split evenly. If a super-large function still overflows a batch, surface the tail via the partial-count path, never silently bury it.
+- **Range→shard resolution (issue #264 #9/#20):** a sharded type's `status --per-type` entry carries `index_shards` — the machine-readable `[{file, first, last}]` map of its `_index_N.md` shards. When dispatching a range `#A–#B`, the orchestrator SHALL resolve it against `index_shards` and name EVERY shard whose `[first, last]` intersects `[A, B]` in the subagent prompt (a range crossing a shard boundary gets BOTH shard files — reading only "the covering shard" silently half-reads the batch). An empty `index_shards` (a scan produced before the sidecar existed) falls back to the `_index.md` directory page as before. The orchestrator SHALL pass the shard file(s) directly instead of telling the subagent to read the directory page first — that saves one full read round-trip per batch.
 - The orchestrator SHALL validate a batch against the two capacity ceilings (types,
   candidates) — no budget formula, just counts. A batch that fits both is
   dispatchable; a batch that exceeds either one is split (split off the heaviest
@@ -355,7 +356,12 @@ the ≤5-turn source-read budget (the WHOLE type's budget, no second round); the
 write the verdict with a cited reason. Do NOT load a skill for a type that has 0
 candidates.
 `candidates/<type>/_index.md` is your primary candidate input (one compact read
-per type); the scan summary already gives you the per-type counts.
+per type); the scan summary already gives you the per-type counts. For a
+SHARDED type (index over ~90000 bytes) the orchestrator's prompt names the
+exact `_index_N.md` shard file(s) for your assigned # range (resolved from
+`status --per-type`'s `index_shards` map) — read those directly, never the
+`_index.md` directory page; a range crossing a shard boundary gets BOTH
+shards and you classify every row in both.
 
 **Candidate-file budget (the biggest time sink — READ THIS).** At this stage
 (before `report --audit`), the candidate index is **per type**: each

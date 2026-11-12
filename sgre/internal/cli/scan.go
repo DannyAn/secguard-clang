@@ -1273,7 +1273,12 @@ func runStatusCmd(ctx context.Context, args []string) int {
 				})
 			}
 		}
-		enriched, err := enrichPerTypeStatus(ctx, store, scanID, statuses)
+		// The scans root follows the resolved DB (ScansRootFromDBPath): for the
+		// canonical layout that is the launching cwd's .codeagent tree, and for
+		// an explicit --db it is the tree the DB lives in — the same rule the
+		// scan command writes artifacts under (issue #264 #14), so index_shards
+		// (issue #264 #9/#20) resolves against the artifacts of THIS database.
+		enriched, err := enrichPerTypeStatusFromRoot(ctx, store, scanID, statuses, report.ScansRootFromDBPath(dbPath))
 		if err != nil {
 			WriteErrorJSON(fmt.Sprintf("failed to enrich per-type status: %v", err))
 			return 1

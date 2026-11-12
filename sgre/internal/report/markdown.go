@@ -1,6 +1,7 @@
 package report
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -853,7 +854,10 @@ func (o *ScanOutput) writeTypeIndex(dir string, pkg *planner.PlanResult) error {
 		full += r
 	}
 	if len(full) <= typeIndexSplitBytes {
-		return os.WriteFile(filepath.Join(dir, TypeIndexFile), []byte(full), 0644)
+		if err := os.WriteFile(filepath.Join(dir, TypeIndexFile), []byte(full), 0644); err != nil {
+			return err
+		}
+		return writeTypeIndexShards(dir, []TypeIndexShard{{File: TypeIndexFile, First: 1, Last: len(rows)}})
 	}
 
 	shardFixed := title + legend + header
@@ -909,7 +913,31 @@ func (o *ScanOutput) writeTypeIndex(dir string, pkg *planner.PlanResult) error {
 			return err
 		}
 	}
-	return nil
+	shardFiles := make([]TypeIndexShard, 0, len(shards))
+	for i, s := range shards {
+		shardFiles = append(shardFiles, TypeIndexShard{
+			File:  fmt.Sprintf("_index_%d.md", i+1),
+			First: s.first,
+			Last:  s.last,
+		})
+	}
+	return writeTypeIndexShards(dir, shardFiles)
+}
+
+// writeTypeIndexShards persists the range→shard map as TypeIndexShardsFile so
+// `status --per-type` can hand the orchestrator the exact shard file(s) for a
+// dispatched range without the extra _index.md directory-page read, and a
+// range crossing a shard boundary resolves to every covering shard (issue
+// #264 #9/#20).
+func writeTypeIndexShards(dir string, shards []TypeIndexShard) error {
+	if len(shards) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(shards)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, TypeIndexShardsFile), b, 0644)
 }
 
 // candidateFilename returns the on-disk candidate evidence filename for one

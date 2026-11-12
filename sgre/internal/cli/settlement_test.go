@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/report"
 )
 
 func TestNormalizeSettlementRange(t *testing.T) {
@@ -108,6 +109,76 @@ func TestEnrichPerTypeStatusAlreadyCovered(t *testing.T) {
 	}
 	if e.VulnType != "uninit" || e.CandidateCount != 90 {
 		t.Errorf("base status fields lost: %+v", e.PerTypeStatus)
+	}
+}
+
+// TestEnrichPerTypeStatusIndexShards pins the issue #264 #9/#20 enrichment:
+// `status --per-type` attaches the type's persisted range→shard map so the
+// orchestrator resolves a dispatched range to the covering shard file(s)
+// without the extra _index.md directory-page read, and a range crossing a
+// shard boundary resolves to BOTH shards. A missing sidecar (a scan produced
+// before the map existed) or an empty scans root leaves index_shards unset —
+// the orchestrator falls back to the directory page exactly as before.
+func TestEnrichPerTypeStatusIndexShards(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+
+	if _, err := store.InsertScanStat(ctx, &db.ScanStat{ScanID: "sc_test", VulnType: "null-deref", SeedCount: 100, FinalCount: 100}); err != nil {
+		t.Fatal(err)
+	}
+	statuses, err := store.ListPerTypeStatus(ctx, "sc_test", func(string) []string { return []string{"CWE-476"} })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	scansRoot := t.TempDir()
+	idxDir := filepath.Join(scansRoot, "sc_test", "candidates", "null-deref")
+	if err := os.MkdirAll(idxDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	shards := []report.TypeIndexShard{
+		{File: "_index_1.md", First: 1, Last: 60},
+		{File: "_index_2.md", First: 61, Last: 100},
+	}
+	b, err := json.Marshal(shards)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(idxDir, report.TypeIndexShardsFile), b, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	enriched, err := enrichPerTypeStatusFromRoot(ctx, store, "sc_test", statuses, scansRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(enriched) != 1 {
+		t.Fatalf("expected 1 enriched, got %d", len(enriched))
+	}
+	got := enriched[0].IndexShards
+	if len(got) != 2 || got[0] != (report.TypeIndexShard{File: "_index_1.md", First: 1, Last: 60}) || got[1] != (report.TypeIndexShard{File: "_index_2.md", First: 61, Last: 100}) {
+		t.Errorf("index_shards = %+v, want the persisted two-shard map", got)
+	}
+
+	// A scans root without the sidecar (pre-sidecar artifacts) must not fail
+	// the enrichment: index_shards stays empty and the caller falls back to
+	// the _index.md directory page.
+	enriched, err = enrichPerTypeStatusFromRoot(ctx, store, "sc_test", statuses, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(enriched) != 1 || len(enriched[0].IndexShards) != 0 {
+		t.Errorf("missing sidecar must leave index_shards empty, got %+v", enriched[0].IndexShards)
+	}
+
+	// The legacy wrapper (no scans root) keeps pre-existing callers
+	// behavior-neutral.
+	enriched, err = enrichPerTypeStatus(ctx, store, "sc_test", statuses)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(enriched) != 1 || len(enriched[0].IndexShards) != 0 {
+		t.Errorf("empty scans root must leave index_shards empty, got %+v", enriched[0].IndexShards)
 	}
 }
 

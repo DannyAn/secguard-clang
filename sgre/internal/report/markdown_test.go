@@ -1,6 +1,7 @@
 package report
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1105,6 +1106,39 @@ func TestWriteTypeIndex_ShardsWhenOverByteCeiling(t *testing.T) {
 	if totalRows != nCands {
 		t.Errorf("shards lost candidates: got %d rows, want %d", totalRows, nCands)
 	}
+
+	// The range→shard map must mirror the shards exactly: same file names, and
+	// first/last covering 1..nCands contiguously with no gap and no overlap, so
+	// a dispatched range crossing a shard boundary resolves to BOTH shards
+	// (issue #264 #9/#20) instead of being silently half-read.
+	shardsRaw, err := os.ReadFile(filepath.Join(idxDir, TypeIndexShardsFile))
+	if err != nil {
+		t.Fatalf("sharded index must persist %s: %v", TypeIndexShardsFile, err)
+	}
+	var shards []TypeIndexShard
+	if err := json.Unmarshal(shardsRaw, &shards); err != nil {
+		t.Fatalf("unmarshal %s: %v\n%s", TypeIndexShardsFile, err, shardsRaw)
+	}
+	if len(shards) < 2 {
+		t.Fatalf("shard map should list every shard, got %d entries", len(shards))
+	}
+	wantFirst := 1
+	for i, s := range shards {
+		wantFile := fmt.Sprintf("_index_%d.md", i+1)
+		if s.File != wantFile {
+			t.Errorf("shard %d: file = %q, want %q", i+1, s.File, wantFile)
+		}
+		if s.First != wantFirst {
+			t.Errorf("shard %d: first = %d, want %d (contiguous, no overlap)", i+1, s.First, wantFirst)
+		}
+		if s.Last < s.First {
+			t.Errorf("shard %d: last %d < first %d", i+1, s.Last, s.First)
+		}
+		wantFirst = s.Last + 1
+	}
+	if wantFirst != nCands+1 {
+		t.Errorf("shard map covers up to #%d, want #%d (no gap)", wantFirst-1, nCands)
+	}
 }
 
 // Below the ceiling, _index.md stays a single file (backward-compatible).
@@ -1121,6 +1155,20 @@ func TestWriteTypeIndex_SingleFileUnderCeiling(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(idxDir, "_index_1.md")); !os.IsNotExist(err) {
 		t.Errorf("small _index.md should not produce shards")
+	}
+	// The un-split index persists the same range→shard map as a single entry,
+	// so the orchestrator resolves ranges uniformly whether or not the type
+	// was sharded (issue #264 #9/#20).
+	shardsRaw, err := os.ReadFile(filepath.Join(idxDir, TypeIndexShardsFile))
+	if err != nil {
+		t.Fatalf("un-split index must persist %s too: %v", TypeIndexShardsFile, err)
+	}
+	var shards []TypeIndexShard
+	if err := json.Unmarshal(shardsRaw, &shards); err != nil {
+		t.Fatalf("unmarshal %s: %v\n%s", TypeIndexShardsFile, err, shardsRaw)
+	}
+	if len(shards) != 1 || shards[0].File != TypeIndexFile || shards[0].First != 1 || shards[0].Last < 1 {
+		t.Errorf("un-split shard map = %+v, want one entry {file:%q first:1 last:>=1}", shards, TypeIndexFile)
 	}
 }
 
