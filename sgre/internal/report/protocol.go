@@ -59,7 +59,25 @@ const (
 	// single type (the Source column is embedded there), replacing the old
 	// monolithic report.md table that every subagent re-read in full.
 	TypeIndexFile = "_index.md"
+	// TypeIndexShardsFile is the machine-readable range→shard map written next
+	// to TypeIndexFile: one entry per shard (or the single un-split index),
+	// carrying the shard filename and its inclusive candidate-# range. The
+	// orchestrator reads it via `status --per-type` (index_shards) so a ranged
+	// batch never needs the extra round-trip of reading the _index.md
+	// directory page, and a range crossing a shard boundary resolves to BOTH
+	// shard files instead of silently reading half the batch (issue #264 #9).
+	TypeIndexShardsFile = "_index_shards.json"
 )
+
+// TypeIndexShard is one entry of the range→shard map persisted as
+// TypeIndexShardsFile. First/Last are the inclusive candidate-# bounds of
+// File, in the same # column the type index table and the NNN evidence
+// filenames use.
+type TypeIndexShard struct {
+	File  string `json:"file"`
+	First int    `json:"first"`
+	Last  int    `json:"last"`
+}
 
 // ToolVersion is the version stamped into SARIF and markdown reports.
 // It is a var so cli/root.go can inject the release version at startup
@@ -124,6 +142,21 @@ func SuggestedConfigPath(projectRoot string) string {
 // stale/failed scan directories, independent of any explicit --output-dir.
 func ScansRoot(projectRoot string) string {
 	return filepath.Join(projectRoot, CodeagentDir, ProductDir, ScansDir)
+}
+
+// ScansRootFromDBPath derives the scans root from a CANONICAL-layout database
+// path by treating the DB's directory as the SgreDir layer:
+// <root>/<CodeagentDir>/<ProductDir>/<SgreDir>/<DbName> maps back to
+// <root>/<CodeagentDir>/<ProductDir>/<ScansDir>. Consumer commands (status)
+// use it to locate the artifacts of whichever DB they resolved —
+// resolveExistingDBPath only ever returns canonical-layout paths, so the
+// derivation is exact there. It does NOT relocate scan artifacts: the scan
+// command keeps writing them under the launching directory's canonical scans
+// root regardless of --db (issue #264 #14 — relocating them with an explicit
+// --db broke the "DB in a temp dir, artifacts in the project tree" layout the
+// benchmark pipeline relies on; --output-dir is the explicit control).
+func ScansRootFromDBPath(dbPath string) string {
+	return filepath.Join(filepath.Dir(filepath.Dir(dbPath)), ScansDir)
 }
 
 func EnsureSgreDir(projectRoot string) error {

@@ -134,7 +134,11 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 
 	// Without an explicit --db, the database belongs under the project root's
 	// .codeagent dir (sibling of the scan output), never as a stray sgre.db in
-	// the source tree.
+	// the source tree. The scan artifacts stay under the launching directory's
+	// canonical scans root regardless of --db (issue #264 #14: relocating them
+	// with an explicit --db broke the "DB in a temp dir, artifacts in the
+	// project tree" layout real pipelines rely on); use --output-dir to place
+	// a scan's artifacts explicitly.
 	dbPath = resolveDBPath(dbExplicit, dbPath, projectRoot)
 
 	var scanID string
@@ -1273,7 +1277,12 @@ func runStatusCmd(ctx context.Context, args []string) int {
 				})
 			}
 		}
-		enriched, err := enrichPerTypeStatus(ctx, store, scanID, statuses)
+		// The scans root follows the resolved DB (ScansRootFromDBPath): for the
+		// canonical layout that is the launching cwd's .codeagent tree, and for
+		// an explicit --db it is the tree the DB lives in — the same rule the
+		// scan command writes artifacts under (issue #264 #14), so index_shards
+		// (issue #264 #9/#20) resolves against the artifacts of THIS database.
+		enriched, err := enrichPerTypeStatusFromRoot(ctx, store, scanID, statuses, report.ScansRootFromDBPath(dbPath))
 		if err != nil {
 			WriteErrorJSON(fmt.Sprintf("failed to enrich per-type status: %v", err))
 			return 1

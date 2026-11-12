@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/DannyAn/secguard-clang/internal/config"
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/report"
 )
 
 const (
@@ -461,6 +463,14 @@ type settlementEnriched struct {
 	// violations from one field instead of hand-aggregating every settlement
 	// JSON (the F6 audit path).
 	BudgetViolations []settlementBudgetViolation `json:"budget_violations,omitempty"`
+	// IndexShards is the type's range→shard map (from the scan artifacts'
+	// _index_shards.json): one entry per shard file with its inclusive
+	// candidate-# bounds. The orchestrator resolves a dispatched range against
+	// it directly — no extra _index.md directory-page read — and a range that
+	// crosses a shard boundary resolves to EVERY covering shard, so a batch is
+	// never silently half-read (issue #264 #9/#20). Empty for types whose scan
+	// predates the sidecar: fall back to the directory page as before.
+	IndexShards []report.TypeIndexShard `json:"index_shards,omitempty"`
 }
 
 // settlementBudgetViolation is one settled batch that exceeded an agent-body.md
@@ -499,6 +509,13 @@ type inFlightRange struct {
 }
 
 func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, statuses []*db.PerTypeStatus) ([]*settlementEnriched, error) {
+	return enrichPerTypeStatusFromRoot(ctx, store, scanID, statuses, "")
+}
+
+// enrichPerTypeStatusFromRoot is enrichPerTypeStatus with the scans root the
+// artifacts live under. An empty root skips the index_shards lookup (no
+// artifacts to read), which keeps every pre-existing caller behavior-neutral.
+func enrichPerTypeStatusFromRoot(ctx context.Context, store db.Store, scanID string, statuses []*db.PerTypeStatus, scansRoot string) ([]*settlementEnriched, error) {
 	byScan, err := store.ListSettlementStatsByScan(ctx, scanID)
 	if err != nil {
 		return nil, err
@@ -588,6 +605,9 @@ func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, sta
 		e.RType = agg.rType
 		e.RSample = agg.sample
 		e.AvgWallMS = agg.avgWallMS
+		if scansRoot != "" {
+			e.IndexShards = readTypeIndexShards(scansRoot, scanID, s.VulnType)
+		}
 		if s.CandidateCount > 0 {
 			e.SuggestedBatchSize = suggestedBatchSize(agg.rType)
 			e.SuggestedBatches = suggestedBatches(s.CandidateCount, e.SuggestedBatchSize)
@@ -612,6 +632,24 @@ func enrichPerTypeStatus(ctx context.Context, store db.Store, scanID string, sta
 		out = append(out, e)
 	}
 	return out, nil
+}
+
+// readTypeIndexShards loads a type's persisted range→shard map from the scan
+// artifacts. A missing or unreadable sidecar (a scan produced before the map
+// existed, a type with no candidates directory) returns nil — the orchestrator
+// falls back to reading the _index.md directory page exactly as before, so the
+// enrichment never turns a scheduling read into a hard failure.
+func readTypeIndexShards(scansRoot, scanID, vulnType string) []report.TypeIndexShard {
+	path := filepath.Join(scansRoot, scanID, report.CandidatesDir, vulnType, report.TypeIndexShardsFile)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var shards []report.TypeIndexShard
+	if err := json.Unmarshal(b, &shards); err != nil {
+		return nil
+	}
+	return shards
 }
 
 type settlementAgg struct {

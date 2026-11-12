@@ -64,3 +64,22 @@ func TestWriteDismissed_RoundTrip(t *testing.T) {
 		t.Fatalf("drop summary should be persisted, got %+v", got.ByVulnType[0])
 	}
 }
+
+// TestScansRootFromDBPath pins the consumer-side derivation: a canonical
+// layout DB path maps back to exactly ScansRoot(projectRoot) — the rule
+// `status` uses to locate a resolved DB's artifacts. The bare-path case
+// documents the derivation's limit: it is only exact for canonical-layout
+// paths, so callers resolving an explicit non-canonical --db must treat a
+// miss as "artifacts not found" (the index_shards lookup degrades to nil),
+// never as a location change — scan artifacts stay under the launching
+// directory regardless of --db (issue #264 #14).
+func TestScansRootFromDBPath(t *testing.T) {
+	root := t.TempDir()
+	canonical := GetDbPath(root)
+	if got, want := ScansRootFromDBPath(canonical), ScansRoot(root); got != want {
+		t.Errorf("canonical layout: ScansRootFromDBPath(%q) = %q, want %q", canonical, got, want)
+	}
+	if got, want := ScansRootFromDBPath("/tmp/x.db"), "/scans"; got != want {
+		t.Errorf("bare db path: ScansRootFromDBPath = %q, want %q", got, want)
+	}
+}

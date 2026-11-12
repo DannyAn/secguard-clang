@@ -21,7 +21,10 @@ func hasHelpFlag(args []string) bool {
 // commonFlagsDoc is the shared flag block appended to every subcommand usage.
 const commonFlagsDoc = `
 Common Flags:
-  --db <path>          Path to sgre.db (default: .codeagent/secguard-clang/.sgre/sgre.db)
+  --db <path>          Path to sgre.db (default: .codeagent/secguard-clang/.sgre/sgre.db).
+                       Only the database follows this flag: scan artifacts
+                       (scans/) stay under the launching directory's .codeagent
+                       tree; use --output-dir (scan) to place them explicitly
   --context-lines <n>  Source lines embedded on each side of a finding (default 15, 0 disables)
   --help, -h           Show this usage`
 
