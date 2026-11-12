@@ -53,6 +53,13 @@ type ScanOverview struct {
 	AISuspected   int
 	AIDismissed   int
 	Unclassified  int
+	// AutoReviewedOut is how many machine auto-confirm verdicts the final
+	// review (Step 5.5) overturned: status='auto-confirmed' rows whose
+	// review_status dismissed them. It is the health signal for the
+	// auto-confirm rules (issue #263): a persistently high overturn rate means
+	// a blind spot pattern keeps being auto-confirmed and must be fed back to
+	// the first-pass tier, not re-caught by review every scan.
+	AutoReviewedOut int
 
 	TypesScanned        int
 	TypesWithCandidates int
@@ -91,6 +98,20 @@ func (o ScanOverview) SuspectedTotal() int { return o.AISuspected }
 func (o ScanOverview) ActionableTotal() int { return o.ConfirmedTotal() }
 
 func (o ScanOverview) DismissedTotal() int { return o.AIDismissed }
+
+// AutoConfirmOverturnRate is the Step 5.5 health signal (issue #263): the
+// share of machine auto-confirm verdicts the final review overturned. The
+// denominator is the verdicts that were ever auto-confirmed (the survivors
+// plus the overturned); 0 when nothing was auto-confirmed. A rate that stays
+// high across scans means a blind-spot pattern keeps being auto-confirmed and
+// the first-pass evidence model needs the fix, not another round of review.
+func (o ScanOverview) AutoConfirmOverturnRate() float64 {
+	denom := o.AutoConfirmed + o.AutoReviewedOut
+	if denom == 0 {
+		return 0
+	}
+	return float64(o.AutoReviewedOut) / float64(denom)
+}
 
 // Headline is the one-sentence verdict a reader (or the console) leads with.
 func (o ScanOverview) Headline() string {
@@ -231,6 +252,10 @@ func (o ScanOverview) VerdictMarkdown() string {
 	fmt.Fprintf(&b, "| Confirmed findings | %d |\n", o.ConfirmedTotal())
 	fmt.Fprintf(&b, "| — proved by the pipeline (auto-confirmed) | %d |\n", o.AutoConfirmed)
 	fmt.Fprintf(&b, "| — classified by the AI | %d |\n", o.AIConfirmed)
+	if o.AutoReviewedOut > 0 {
+		fmt.Fprintf(&b, "| — auto-confirm verdicts overturned by final review | %d (%.1f%% overturn rate) |\n",
+			o.AutoReviewedOut, o.AutoConfirmOverturnRate()*100)
+	}
 
 	fmt.Fprintf(&b, "| Actionable findings (confirmed) | %d |\n", o.ActionableTotal())
 	if o.Unclassified > 0 {
@@ -300,6 +325,13 @@ func (o ScanOverview) SummaryFields() map[string]interface{} {
 		"types_scanned":           o.TypesScanned,
 		"types_with_candidates":   o.TypesWithCandidates,
 		"types_with_findings":     o.TypesWithFindings,
+	}
+	// Step 5.5 health signal (issue #263): only present when something was
+	// auto-confirmed, so a candidate-stage report does not carry a
+	// meaningless 0/0.
+	if o.AutoConfirmed+o.AutoReviewedOut > 0 {
+		m["auto_confirmed_reviewed_out"] = o.AutoReviewedOut
+		m["auto_confirm_overturn_rate"] = o.AutoConfirmOverturnRate()
 	}
 	if o.DurationMs > 0 {
 		m["automated_analysis_ms"] = o.DurationMs
