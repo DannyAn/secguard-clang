@@ -112,21 +112,10 @@ func generateScanID() string {
 }
 
 func NewScanOutput(projectRoot string) *ScanOutput {
-	return NewScanOutputIn(ScansRoot(projectRoot), projectRoot)
-}
-
-// NewScanOutputIn builds a ScanOutput whose per-scan directory lives under the
-// given scans root while RootDir (the display-path base for candidate paths)
-// stays the project root. The scan command passes
-// ScansRootFromDBPath(dbPath) so the artifacts follow the database (issue
-// #264 #14): an explicit --db relocates the scans root with the DB instead of
-// leaving artifacts in the launching cwd, and the canonical layout is
-// unchanged (ScansRootFromDBPath(GetDbPath(root)) == ScansRoot(root)).
-func NewScanOutputIn(scansRoot, rootDir string) *ScanOutput {
 	scanID := generateScanID()
-	scanDir := filepath.Join(scansRoot, scanID)
+	scanDir := filepath.Join(projectRoot, CodeagentDir, ProductDir, ScansDir, scanID)
 	return &ScanOutput{
-		RootDir:             rootDir,
+		RootDir:             projectRoot,
 		ScanDir:             scanDir,
 		SarifPath:           filepath.Join(scanDir, SarifFile),
 		CandidatesSarifPath: filepath.Join(scanDir, CandidatesSarifFile),
@@ -155,15 +144,17 @@ func ScansRoot(projectRoot string) string {
 	return filepath.Join(projectRoot, CodeagentDir, ProductDir, ScansDir)
 }
 
-// ScansRootFromDBPath derives the scans root from a database path by treating
-// the DB's directory as the SgreDir layer: <root>/<CodeagentDir>/<ProductDir>/
-// <SgreDir>/<DbName> maps back to <root>/<CodeagentDir>/<ProductDir>/<ScansDir>.
-// It is the single rule that keeps scan artifacts next to the database they
-// belong to, so an explicit --db (issue #264 #14) relocates the scans root with
-// the DB instead of leaving artifacts in the launching cwd, and consumer
-// commands (status/report) locate the artifacts of whichever DB they resolved
-// regardless of the cwd they were launched from. For the canonical layout the
-// result is identical to ScansRoot(projectRoot).
+// ScansRootFromDBPath derives the scans root from a CANONICAL-layout database
+// path by treating the DB's directory as the SgreDir layer:
+// <root>/<CodeagentDir>/<ProductDir>/<SgreDir>/<DbName> maps back to
+// <root>/<CodeagentDir>/<ProductDir>/<ScansDir>. Consumer commands (status)
+// use it to locate the artifacts of whichever DB they resolved —
+// resolveExistingDBPath only ever returns canonical-layout paths, so the
+// derivation is exact there. It does NOT relocate scan artifacts: the scan
+// command keeps writing them under the launching directory's canonical scans
+// root regardless of --db (issue #264 #14 — relocating them with an explicit
+// --db broke the "DB in a temp dir, artifacts in the project tree" layout the
+// benchmark pipeline relies on; --output-dir is the explicit control).
 func ScansRootFromDBPath(dbPath string) string {
 	return filepath.Join(filepath.Dir(filepath.Dir(dbPath)), ScansDir)
 }

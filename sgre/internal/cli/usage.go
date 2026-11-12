@@ -22,10 +22,9 @@ func hasHelpFlag(args []string) bool {
 const commonFlagsDoc = `
 Common Flags:
   --db <path>          Path to sgre.db (default: .codeagent/secguard-clang/.sgre/sgre.db).
-                       Scan artifacts (scans/) follow the DB: the scans root is
-                       derived from the DB path, so an explicit --db relocates
-                       the artifacts with the database instead of leaving them
-                       in the launching directory
+                       Only the database follows this flag: scan artifacts
+                       (scans/) stay under the launching directory's .codeagent
+                       tree; use --output-dir (scan) to place them explicitly
   --context-lines <n>  Source lines embedded on each side of a finding (default 15, 0 disables)
   --help, -h           Show this usage`
 

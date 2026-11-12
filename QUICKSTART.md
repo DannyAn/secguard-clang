@@ -141,7 +141,7 @@ secguard plan buffer-overflow
 secguard report
 ```
 
-默认数据库路径：`.codeagent/secguard-clang/.sgre/sgre.db`（相对启动目录）。显式传 `--db` 时，扫描产物（`scans/`）跟随数据库所在目录树，不会留在启动目录。
+默认数据库路径：`.codeagent/secguard-clang/.sgre/sgre.db`（相对启动目录）。`--db` 只决定数据库位置：扫描产物（`scans/`）始终留在启动目录的 `.codeagent` 树下；需要显式指定产物位置时用 `--output-dir`。
 
 ### 3.1 判断扫描成败（管道场景必读）
 
