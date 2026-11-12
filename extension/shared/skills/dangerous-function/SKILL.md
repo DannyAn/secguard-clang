@@ -41,7 +41,7 @@ A dangerous-function candidate has:
 
 | Category | Banned functions | Replacement |
 |----------|------------------|-------------|
-| `process_exit` | `exit`, `ExitProcess` (non-entry only); `pthread_exit`, `ExitThread` (non-entry only); `atexit`, `abort` | return / graceful shutdown / explicit release |
+| `process_exit` | `exit`, `_exit`, `ExitProcess` (non-entry only); `pthread_exit`, `ExitThread` (non-entry only); `atexit`, `abort` | return / graceful shutdown / explicit release |
 | `stack_allocation` | `alloca` | `malloc`/`free` or a fixed-size buffer |
 | `nonlocal_jump` | `setjmp`, `longjmp` | return-value error propagation |
 | `unsafe_memory` | `memcpy`, `wmemcpy`, `memmove`, `wmemmove`, `memset` | `memcpy_s`, `memmove_s`, `memset_s`, ... |
@@ -88,8 +88,9 @@ final verdict); you judge each row to a binary confirmed/dismissed verdict.
 | `api@memcpy`/`memmove`/`memset` + `size-kind@const` | **dismiss** — a compile-time-constant size is bounded; only confirm when the constant provably exceeds the destination |
 | `api@memcpy`/`memmove`/`memset` + `size-kind@var` | **judge** the bound: read the embedded Code Context ±8 lines for the guard (`if (n > cap) return;`); confirm when the size is caller-controlled and unguarded, dismiss when guarded or the destination is clearly larger |
 | A call to `assert` (`assert_usage`) | **judge** — whether it guards caller input (defect) vs an internal invariant (fine) |
+| `policy@process_exit` (`abort` / `exit` / `_exit` / thread exit, non-entry) | **judge** — a coding-policy violation, not an exploitable security defect (issue #263): confirm at LOW when the guideline genuinely bans the call, dismiss when the context is the intended control flow (a fail-stop invariant branch the detector could not name-match); never HIGH |
 | A call to `inet_addr` (`obsolete_api_conditional`) | **judge** — its risk is conditional on the argument's provenance and the `INADDR_NONE` check: `dismiss` when the argument is not caller-controlled (an internal config field, an already-parsed protocol value, a constant) or when the result is tested against `INADDR_NONE` / `(in_addr_t)-1`; `confirm` when a caller-supplied string is converted and the sentinel is not checked |
-| `exit`/`ExitProcess`/`pthread_exit`/`ExitThread` inside the entry point | **false-positive** (the detector never emits it) |
+| `exit`/`_exit`/`ExitProcess`/`pthread_exit`/`ExitThread` inside the entry point | **false-positive** (the detector never emits it) |
 | `inet_addr(<constant>)` | **false-positive** (the detector never emits it) |
 | A call to a function NOT in the ban table | **false-positive** (the detector never emits it) |
 
@@ -180,9 +181,15 @@ memcpy(dst, src, sizeof dst);
 `metadata.severity` is the type default, not a ceiling. The verdict is binary
 (confirmed/dismissed); dismissed → `low`.
 
+`process_exit` rows are POLICY findings (issue #263): the call is real but is
+a coding-guideline violation, not an exploitable security defect — a confirmed
+policy violation is LOW, never HIGH. Fail-stop aborts (an invariant-check
+branch in a `*_free`/`*_destroy`/... helper) are suppressed at the detector
+and never reach this matrix.
+
 | Category | Severity |
 |----------|----------|
-| `process_exit` (`abort` / non-entry `exit` / thread exit) | HIGH |
+| `process_exit` (`abort` / non-entry `exit` / `_exit` / thread exit) | LOW |
 | `stack_allocation` (`alloca`) | HIGH |
 | `insecure_temp` (`mktemp` / `tmpnam`) | HIGH |
 | `nonlocal_jump` (`setjmp` / `longjmp`) | MEDIUM |

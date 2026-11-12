@@ -84,6 +84,14 @@ var categorySeverityByType = map[string]map[string]string{
 		"world_writable_file": "medium",
 		"world_writable_var":  "medium",
 	},
+	// Process termination is a CODING-POLICY violation, not an exploitable
+	// defect (issue #263): 16 of 40 confirmed findings in the reported scan
+	// were intentional fail-stop abort() calls drowning the real defects at
+	// the HIGH tier. The machine-side scale mirrors the SKILL severity matrix
+	// so a policy finding never occupies the HIGH band.
+	"dangerous-function": {
+		"process_exit": "low",
+	},
 }
 
 // severityOverride returns the user's explicit [severity] config override for a
