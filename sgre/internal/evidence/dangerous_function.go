@@ -34,6 +34,20 @@ type DangerousFunctionDetector struct {
 	// project-specific [banned_functions] names from secguard.toml (which get
 	// the generic `config_banned` category).
 	rules map[string]dangerRule
+	// failStopPatterns is the glob list of function-name contexts in which an
+	// invariant-check abort() is the intended fail-stop design: the built-in
+	// list, or the project's [dangerous_function] fail_stop_contexts override.
+	failStopPatterns []string
+}
+
+// builtinFailStopContexts lists the function-name globs in which an abort()
+// inside an invariant-check branch is the defensive fail-stop design (issue
+// #263): free/destroy/delete/cleanup teardown helpers, assert wrappers, and
+// de-initialization routines. A project extends or replaces the list via
+// secguard.toml [dangerous_function] fail_stop_contexts.
+var builtinFailStopContexts = []string{
+	"*_free", "*_destroy", "*_del", "*_delete", "*_assert*",
+	"*_cleanup", "*_uninit", "*_fini", "*_deinit", "*_release",
 }
 
 // dangerRule describes one banned function's policy shape.
@@ -57,6 +71,19 @@ type dangerRule struct {
 	// injection / INADDR_NONE confusion via a runtime-controlled string, not
 	// the function itself.
 	constExempt bool
+	// policy marks a CODING-POLICY ban (process termination APIs) as opposed
+	// to a security-shaped ban (unsafe copies, format strings). A policy
+	// finding is real but is not an exploitable defect — abort() in a fail-stop
+	// design is intentional — so the event carries `policy: true` for the AI
+	// to judge at the LOW tier instead of HIGH (issue #263: 16 of 40 confirmed
+	// findings were abort() policy noise drowning the real defects).
+	policy bool
+	// failStopSuppress suppresses abort() findings inside an invariant-check
+	// branch of a fail-stop context function (obj_free, timer_del, ...): the
+	// abort IS the defensive design there — the process state is already
+	// untrustworthy and continuing is more dangerous than stopping. Issue
+	// #263: all 16 abort() findings sat in exactly this shape.
+	failStopSuppress bool
 }
 
 func NewDangerousFunctionDetector(store db.Store, p *parser.Parser, logger *log.Logger) *DangerousFunctionDetector {
@@ -76,7 +103,11 @@ func NewDangerousFunctionDetector(store db.Store, p *parser.Parser, logger *log.
 	for _, name := range config.Load().BannedFunctionExcludeNames() {
 		delete(rules, name)
 	}
-	return &DangerousFunctionDetector{store: store, parser: p, logger: logger, rules: rules}
+	failStopPatterns := builtinFailStopContexts
+	if custom := config.Load().FailStopContexts(); len(custom) > 0 {
+		failStopPatterns = custom
+	}
+	return &DangerousFunctionDetector{store: store, parser: p, logger: logger, rules: rules, failStopPatterns: failStopPatterns}
 }
 
 func (d *DangerousFunctionDetector) Name() string { return "dangerous_function" }
@@ -93,12 +124,19 @@ func (d *DangerousFunctionDetector) Name() string { return "dangerous_function" 
 // question "is a non-`_s` API used at all". Both dimensions are reported.
 var builtinDangerRules = map[string]dangerRule{
 	// --- process / thread termination (禁用退出与终止函数) ---
-	"exit":         {category: "process_exit", replacement: "return from the enclosing function", nonMainOnly: true},
-	"ExitProcess":  {category: "process_exit", replacement: "return from main", nonMainOnly: true},
-	"pthread_exit": {category: "process_exit", replacement: "return from the thread start routine"},
-	"ExitThread":   {category: "process_exit", replacement: "return from the thread start routine"},
-	"atexit":       {category: "process_exit", replacement: "release resources explicitly on each exit path"},
-	"abort":        {category: "process_exit", replacement: "return an error / graceful shutdown"},
+	// These are POLICY bans (issue #263): the calls are real but are coding-
+	// guideline violations, not exploitable security defects. The event
+	// carries policy: true so the AI judges them at the LOW tier.
+	"exit":         {category: "process_exit", replacement: "return from the enclosing function", nonMainOnly: true, policy: true},
+	"_exit":        {category: "process_exit", replacement: "return from the enclosing function", nonMainOnly: true, policy: true},
+	"ExitProcess":  {category: "process_exit", replacement: "return from main", nonMainOnly: true, policy: true},
+	"pthread_exit": {category: "process_exit", replacement: "return from the thread start routine", policy: true},
+	"ExitThread":   {category: "process_exit", replacement: "return from the thread start routine", policy: true},
+	"atexit":       {category: "process_exit", replacement: "release resources explicitly on each exit path", policy: true},
+	// abort() additionally gets the fail-stop exemption: inside an invariant-
+	// check branch of a *_free/*_destroy/... function it IS the defensive
+	// design and is suppressed outright (issue #263: 16/16 abort findings).
+	"abort": {category: "process_exit", replacement: "return an error / graceful shutdown", policy: true, failStopSuppress: true},
 
 	// --- stack allocation (禁止 alloca 申请栈上内存) ---
 	"alloca": {category: "stack_allocation", replacement: "malloc/free or a fixed-size buffer"},
@@ -241,10 +279,26 @@ func (d *DangerousFunctionDetector) Detect(ctx context.Context) (DetectResult, e
 			if fs := fnShapes[functionStartLine(fnID, funcs)]; guidelineExempt(call, name, fs, stringMacros) {
 				continue
 			}
+			// A fail-stop abort(): the call sits inside an invariant-check branch
+			// (if/switch) of a function whose name matches a fail-stop context
+			// (obj_free, timer_del, pool_destroy, ...). Reaching that branch means
+			// the process's internal state is already untrustworthy — the abort IS
+			// the defensive design, not a defect. Issue #263: all 16 abort()
+			// findings in the reported scan sat in exactly this shape and were all
+			// dismissed at final review; they are suppressed here so they neither
+			// flood the AI batches nor reach the report as HIGH findings.
+			if rule.failStopSuppress {
+				if fn := byID[fnID]; fn != nil && failStopContextName(fn.Name, d.failStopPatterns) && callInsideBranchBody(call) {
+					continue
+				}
+			}
 			props := map[string]string{
 				"variable":   name,
 				"category":   rule.category,
 				"expression": call.OriginalText(),
+			}
+			if rule.policy {
+				props["policy"] = "true"
 			}
 			if rule.replacement != "" {
 				props["replacement"] = rule.replacement
@@ -329,6 +383,68 @@ func isEntryPoint(name string) bool {
 	switch name {
 	case "main", "wmain", "WinMain", "wWinMain":
 		return true
+	}
+	return false
+}
+
+// failStopContextName reports whether fnName matches one of the fail-stop
+// context globs (`*_free`, `*_destroy`, ...). The glob language is `*` only:
+// a leading `*` matches any prefix, a trailing `*` any suffix, an inner `*`
+// any middle run; a bare pattern must match exactly.
+func failStopContextName(fnName string, patterns []string) bool {
+	for _, pat := range patterns {
+		if globMatchName(pat, fnName) {
+			return true
+		}
+	}
+	return false
+}
+
+func globMatchName(pattern, name string) bool {
+	star := strings.Index(pattern, "*")
+	if star < 0 {
+		return pattern == name
+	}
+	prefix := pattern[:star]
+	rest := pattern[star+1:]
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	name = name[len(prefix):]
+	next := strings.Index(rest, "*")
+	if next < 0 {
+		return strings.HasSuffix(name, rest)
+	}
+	mid := rest[:next]
+	idx := strings.Index(name, mid)
+	if idx < 0 {
+		return false
+	}
+	return globMatchName(rest[next:], name[idx+len(mid):])
+}
+
+// callInsideBranchBody reports whether call sits inside the consequence or
+// alternative branch of an if statement, or inside a switch body — the
+// invariant-check shape of a fail-stop abort
+// (`if (p->magic != OBJ_MAGIC) { abort(); }`). A call in a loop body or in
+// plain statement flow is NOT an invariant branch: an unconditional abort in
+// a free helper is a contract violation of a different kind and stays
+// reported for the AI to judge.
+func callInsideBranchBody(call parser.Node) bool {
+	for n := call.Parent(); n != nil; n = n.Parent() {
+		switch n.Kind() {
+		case "if_statement":
+			for _, field := range []string{"consequence", "alternative"} {
+				if branch := n.ChildByFieldName(field); branch != nil && nodeWithin(branch, &call) {
+					return true
+				}
+			}
+			return false
+		case "switch_statement":
+			return true
+		case "function_definition":
+			return false
+		}
 	}
 	return false
 }

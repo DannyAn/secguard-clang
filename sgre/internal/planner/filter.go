@@ -523,6 +523,13 @@ type Candidate struct {
 	// "auto"; it backs the static@ hint so the classifier sees the pipeline
 	// already ruled out static storage rather than re-deriving it.
 	Storage string `json:"storage,omitempty"`
+	// BaseKind is the stack-address-escape local's declared-type shape
+	// ("pointer" / "array" / "struct" / "union" / "scalar" /
+	// "typedef_pointer" / "opaque"). Whether `&q->f` addresses this frame or
+	// the pointee depends on it; an opaque base is downgraded to a suspected
+	// category at the detector (issue #263), and the fact lets the AI judge
+	// the typedef target from the index row.
+	BaseKind string `json:"base_kind,omitempty"`
 	// PointeeKind is the invalid-free object kind the detector proved the
 	// deallocator argument points at: "stack" / "global-array" / "heap-offset".
 	PointeeKind string `json:"pointee_kind,omitempty"`

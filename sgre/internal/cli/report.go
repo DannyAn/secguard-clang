@@ -1750,6 +1750,7 @@ func buildScanOverview(ctx context.Context, store db.Store, scanID string, stats
 			ov.TypesWithCandidates++
 		}
 		ov.AutoConfirmed += a.AutoConfirmed
+		ov.AutoReviewedOut += a.AutoReviewedOut
 		ov.AIConfirmed += a.Confirmed
 		ov.AISuspected += a.Suspected
 
@@ -1917,6 +1918,14 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overvie
 	fmt.Fprintf(&b, "| Auto-confirmed by pipeline | %d |\n", totalAutoConfirmed)
 	if totalReviewedOut := auditReviewedOutTotal(audits); totalReviewedOut > 0 {
 		fmt.Fprintf(&b, "| Auto-confirmed reviewed-out by final review | %d |\n", totalReviewedOut)
+		// Step 5.5 health signal (issue #263): the share of machine verdicts
+		// the final review overturned. A rate that stays high means a
+		// blind-spot pattern keeps being auto-confirmed — fix the first-pass
+		// evidence model instead of relying on review to catch it every scan.
+		if denom := totalAutoConfirmed + totalReviewedOut; denom > 0 {
+			fmt.Fprintf(&b, "| Auto-confirm overturn rate (Step 5.5 health signal) | %.1f%% |\n",
+				float64(totalReviewedOut)/float64(denom)*100)
+		}
 	}
 	fmt.Fprintf(&b, "| Candidates needing AI review (suspected/possible) | %d |\n", totalFinal)
 	fmt.Fprintf(&b, "| AI confirmed (actionable, with fix suggestion) | %d |\n", totalConfirmed)

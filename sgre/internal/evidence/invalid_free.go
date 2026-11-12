@@ -54,7 +54,7 @@ func (d *InvalidFreeDetector) Detect(ctx context.Context) (DetectResult, error) 
 			if body == nil {
 				continue
 			}
-			locals := collectStackLocals(decls, *body, f.StartLine, f.EndLine)
+			locals := collectStackLocals(decls, *body, f.StartLine, f.EndLine, nil)
 			aliases := findAliases(f, inits, assigns)
 			heapVars := collectHeapVars(f, assigns, inits)
 

@@ -39,6 +39,12 @@ type EvidenceItem struct {
 	// per-category CWE via CWEForCategory(vulnType, category) when a single
 	// vuln_type covers multiple CWEs.
 	Category string `json:"category,omitempty"`
+	// BaseKind is the stack-address-escape local's declared-type shape
+	// ("pointer" / "array" / "struct" / "union" / "scalar" /
+	// "typedef_pointer" / "opaque"): whether `&q->f` addresses this frame or
+	// the pointee depends on it, so the AI can judge the opaque-typedef
+	// downgrade from the index row (issue #263).
+	BaseKind string `json:"base_kind,omitempty"`
 	// CWEChain is the machine-readable root-cause chain when the candidate
 	// carries one: the finding's own CWE (the fixable root cause) followed by
 	// the consequence CWE, e.g. "CWE-125 → CWE-476" for an out-of-bounds access
@@ -632,8 +638,10 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 		case "stack-address-escape":
 			// The verdict basis: which local escapes (object@), that it is
 			// non-static (static@no — a static local is exempted at the detector
-			// so it never reaches the AI), and the channel (escape-kind@return is
-			// a certain dangling pointer; store/async-arg needs a lifetime judge).
+			// so it never reaches the AI), the channel (escape-kind@return is
+			// a certain dangling pointer; return-opaque needs the typedef
+			// target judged; store/async-arg needs a lifetime judge), and the
+			// base's declared-type shape (base-kind@ — issue #263).
 			if c.VariableName != "" {
 				parts = append(parts, "object@"+c.VariableName)
 			}
@@ -644,6 +652,9 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			}
 			if c.Category != "" {
 				parts = append(parts, "escape-kind@"+escapeKindLabel(c.Category))
+			}
+			if c.BaseKind != "" {
+				parts = append(parts, "base-kind@"+c.BaseKind)
 			}
 		case "invalid-free":
 			// The verdict basis: what kind of non-heap object the deallocator
@@ -970,6 +981,7 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 		APIName:    c.APIName,
 		SourceLine: c.SourceLine,
 		Category:   c.Category,
+		BaseKind:   c.BaseKind,
 		Hint:       hint,
 		HintTokens: hintTokens,
 		Evidence:   spec.BuildEvidence(c),

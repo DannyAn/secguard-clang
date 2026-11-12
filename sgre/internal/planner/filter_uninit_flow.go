@@ -302,6 +302,35 @@ func buildDefiniteInitFlow(ctx context.Context, cfgCache *graph.CFGCache, fn *db
 			}
 		}
 
+		// A GNU inline-asm OUTPUT operand (`__asm__("rdtsc" : "=a"(lo))`)
+		// writes its symbol variable, so it kills the uninit source at this
+		// node — the planner-side mirror of the detector's asm assign-site
+		// recording. Without this kill a conditional asm still left the
+		// declaration source must-reaching the use on the asm branch, and the
+		// use was auto-confirmed (issue #263). Only the node's OWN statement
+		// counts (direct children, never FindAll): an asm inside an if body
+		// belongs to its own CFG node, and hoisting its kill to the if header
+		// would kill on BOTH branches — collapsing the may-flow too and
+		// dismissing the genuine bypass-path candidate outright.
+		if n.Stmt.Kind() == "expression_statement" {
+			for _, child := range n.Stmt.NamedChildren() {
+				if child.Kind() != "gnu_asm_expression" {
+					continue
+				}
+				ops := child.ChildByFieldName("output_operands")
+				if ops == nil {
+					continue
+				}
+				for _, op := range ops.NamedChildren() {
+					for _, c := range op.NamedChildren() {
+						if c.Kind() == "identifier" {
+							e.kill[c.Text()] = true
+						}
+					}
+				}
+			}
+		}
+
 		// A function-like macro that writes one of its arguments (`#define
 		// OUT(x) (x) = ...` → `OUT(v)`) initializes it at this node, so it is a
 		// kill for the uninit source — the planner-side mirror of the detector's

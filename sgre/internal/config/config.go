@@ -23,6 +23,7 @@ type Config struct {
 	TrustedMacros          TrustedMacros          `toml:"trusted_macros"`
 	IteratorMacros         IteratorMacros         `toml:"iterator_macros"`
 	BannedFunctions        BannedFunctions        `toml:"banned_functions"`
+	DangerousFunction      DangerousFunction      `toml:"dangerous_function"`
 	Exclude                Exclude                `toml:"exclude"`
 	DisabledTypes          DisabledTypes          `toml:"disabled_types"`
 	Allocators             Allocators             `toml:"allocators"`
@@ -498,6 +499,24 @@ type TrustedMacros struct {
 type BannedFunctions struct {
 	Names   []string `toml:"names"`
 	Exclude []string `toml:"exclude"`
+}
+
+// DangerousFunction tunes the dangerous-function detector's policy-tier
+// handling. fail_stop_contexts overrides the built-in function-name globs in
+// which an invariant-check abort() is the intended fail-stop design and is
+// suppressed outright (issue #263: 16 abort() findings in free/destroy/del
+// helpers were all intentional defensive stops, 40% of the confirmed set).
+//
+//	[dangerous_function]
+//	fail_stop_contexts = ["*_free", "*_destroy", "my_assert_impl"]
+type DangerousFunction struct {
+	FailStopContexts []string `toml:"fail_stop_contexts"`
+}
+
+// FailStopContexts returns the project's fail-stop context globs (empty = use
+// the built-in list).
+func (c *Config) FailStopContexts() []string {
+	return c.DangerousFunction.FailStopContexts
 }
 
 // Allocators declares project-specific allocation functions so the memory

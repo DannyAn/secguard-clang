@@ -76,6 +76,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 		ifs := root.FindAll("if_statement")
 		whiles := root.FindAll("while_statement")
 		fors := root.FindAll("for_statement")
+		asms := root.FindAll("gnu_asm_expression")
 		funcDefs := root.FindAll("function_definition")
 		bodies := functionBodyMap(funcDefs)
 		funcDefsByLine := functionDefinitionMap(funcDefs)
@@ -85,7 +86,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 			// parameter names plus its local declarator names. A type name must
 			// never be in this set (see parser.FunctionBoundNames).
 			bound := parser.FunctionBoundNames(funcDefsByLine[f.StartLine])
-			d.detectStackUninit(ctx, f, file, bound, decls, assigns, calls, exprStmts, returns, inits, ifs, whiles, fors, bodies, summaries, macroWrites, objectMacroWrites, &result, tree)
+			d.detectStackUninit(ctx, f, file, bound, decls, assigns, calls, exprStmts, returns, inits, ifs, whiles, fors, asms, bodies, summaries, macroWrites, objectMacroWrites, &result, tree)
 			d.detectHeapUninit(ctx, f, file, decls, inits, assigns, calls, unarys, ptrs, fields, subscripts, ifs, summaries, &result)
 			d.detectStructPartialUninit(ctx, f, file, bound, decls, assigns, calls, ifs, fields, summaries, macroWrites, unionTypedefs, &result)
 		}
@@ -242,7 +243,7 @@ func localVarDecls(decls []parser.Node) map[string][]varDecl {
 	return m
 }
 
-func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, bound map[string]bool, decls, assigns, calls, exprStmts, returns, inits, ifs, whiles, fors []parser.Node, bodies map[int]parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, objectMacroWrites map[string]map[string]bool, result *DetectResult, tree *parser.Tree) {
+func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, bound map[string]bool, decls, assigns, calls, exprStmts, returns, inits, ifs, whiles, fors, asms []parser.Node, bodies map[int]parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, objectMacroWrites map[string]map[string]bool, result *DetectResult, tree *parser.Tree) {
 	uninitVars := make(map[string]bool)
 	assignSites := make(map[string][]int)
 	declsByName := make(map[string][]varDecl)
@@ -299,6 +300,17 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 			case "identifier":
 				name = child.Text()
 			case "pointer_declarator":
+				// `void *buf[16]` parses as pointer_declarator[array_declarator]:
+				// the variable is an ARRAY of pointers, not a scalar pointer.
+				// Registering it made the array's decay (`backtrace(buf, 16)`)
+				// and element reads (`buf[0]`) look like reads of an
+				// indeterminate pointer VALUE — an auto-confirmed CWE-457 false
+				// positive (issue #263). An array is not a scalar the stack
+				// path can reason about; its element initialization is not a
+				// stack-uninit fact.
+				if declaratorIsArray(child) {
+					continue
+				}
 				if n, _ := argDeclaratorVar(child); n != "" {
 					name = n
 				}
@@ -328,6 +340,43 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Fu
 		if name := assignmentLHSName(assign); name != "" {
 			if key := resolveVarKey(declsByName, name, assign.StartLine()); key != "" {
 				assignSites[key] = append(assignSites[key], assign.StartLine())
+			}
+		}
+	}
+
+	// A GNU inline-asm OUTPUT operand (`__asm__ __volatile__("rdtsc" :
+	// "=a"(lo), "=d"(hi));`) writes its symbol variable when the statement
+	// executes — the constraint string names a register the CPU fills. The
+	// write is invisible to the assignment scan (it is not an
+	// assignment_expression), so without this pass `lo`/`hi` read as never
+	// written, the candidate carried init@none, and the planner's must
+	// dataflow auto-confirmed a false CWE-457 (issue #263: 6 of 18
+	// auto-confirm false positives were rdtsc-style asm outputs). Recording
+	// the asm line as an assign site keeps the CFG path analysis honest: an
+	// asm inside an if still leaves an unassigned bypass path, so the use
+	// stays a suspected lead for the AI instead of being auto-confirmed.
+	for _, asm := range asms {
+		if !funcLineRange(f, asm.StartLine()) {
+			continue
+		}
+		ops := asm.ChildByFieldName("output_operands")
+		if ops == nil {
+			continue
+		}
+		for _, op := range ops.NamedChildren() {
+			if op.Kind() != "gnu_asm_output_operand" {
+				continue
+			}
+			// The operand's symbol is its identifier child (the constraint
+			// string is the other named child); the `symbol` FIELD binding is
+			// not exposed positionally by the grammar, so match by kind.
+			for _, c := range op.NamedChildren() {
+				if c.Kind() != "identifier" {
+					continue
+				}
+				if key := resolveVarKey(declsByName, c.Text(), asm.StartLine()); key != "" {
+					assignSites[key] = append(assignSites[key], asm.StartLine())
+				}
 			}
 		}
 	}
@@ -1067,6 +1116,20 @@ func assignsVar(stmt parser.Node, varName string) bool {
 			if child.Kind() == "assignment_expression" {
 				assigns = append(assigns, child)
 			}
+			// A GNU inline-asm statement writes each output operand's symbol
+			// (`__asm__("rdtsc" : "=a"(lo))` assigns lo), so it is an assign
+			// site for those variables on every path reaching it (issue #263).
+			if child.Kind() == "gnu_asm_expression" {
+				if ops := child.ChildByFieldName("output_operands"); ops != nil {
+					for _, op := range ops.NamedChildren() {
+						for _, c := range op.NamedChildren() {
+							if c.Kind() == "identifier" && c.Text() == varName {
+								return true
+							}
+						}
+					}
+				}
+			}
 		}
 	case "declaration":
 		for _, child := range stmt.NamedChildren() {
@@ -1664,15 +1727,17 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 			// A conditional dest-writer (memset/memcpy/strcpy_s) initializes
 			// the target only on its branch — same may-skip fact as a plain
 			// conditional assignment.
-			if isDestWriter(name) {
+			if isDestWriter(name) || destWriterArgs[name] != nil {
 				if args := getCallArgs(call); len(args) > 0 {
-					if base, path, whole := destWriteTarget(args[0]); base != "" {
-						if key := resolve(base, call.StartLine()); key != "" {
-							if _, ok := mallocVars[key]; ok {
-								if whole {
-									conditionalWhole[key] = true
-								} else {
-									conditionalFields[scopedPath(key, base, path)] = true
+					if target, ok := destWriterTargetArg(name, args); ok {
+						if base, path, whole := destWriteTarget(target); base != "" {
+							if key := resolve(base, call.StartLine()); key != "" {
+								if _, ok := mallocVars[key]; ok {
+									if whole {
+										conditionalWhole[key] = true
+									} else {
+										conditionalFields[scopedPath(key, base, path)] = true
+									}
 								}
 							}
 						}
@@ -1681,14 +1746,18 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 			}
 			continue
 		}
-		if !isDestWriter(name) {
+		if !isDestWriter(name) && destWriterArgs[name] == nil {
 			continue
 		}
 		args := getCallArgs(call)
 		if len(args) == 0 {
 			continue
 		}
-		base, path, whole := destWriteTarget(args[0])
+		target, ok := destWriterTargetArg(name, args)
+		if !ok {
+			continue
+		}
+		base, path, whole := destWriteTarget(target)
 		if base == "" {
 			continue
 		}
@@ -1706,6 +1775,12 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Fun
 				if len(args) >= 3 && sizeIsWholeObject(args[2]) {
 					wholeInit[key] = true
 				}
+			} else if destWriterArgs[name] != nil {
+				// An I/O writer from destWriterArgs (read/recv/fread/...)
+				// filling the whole buffer by its indexed argument initializes
+				// the block; without this the filled block kept producing
+				// heap_uninit candidates the AI had to dismiss (issue #263).
+				wholeInit[key] = true
 			}
 		} else {
 			// A copy/init call writes the member's CONTENT at field granularity
@@ -2028,7 +2103,8 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 		if !funcLineRange(f, call.StartLine()) {
 			continue
 		}
-		if !isDestWriter(extractCallName(call)) {
+		name := extractCallName(call)
+		if !isDestWriter(name) && destWriterArgs[name] == nil {
 			continue
 		}
 		args := getCallArgs(call)
@@ -2038,7 +2114,11 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 		if !uncond(call) {
 			continue
 		}
-		base, path, whole := destWriteTarget(args[0])
+		target, ok := destWriterTargetArg(name, args)
+		if !ok {
+			continue
+		}
+		base, path, whole := destWriteTarget(target)
 		if base == "" || whole {
 			continue
 		}
@@ -2535,6 +2615,59 @@ var destWriters = map[string]bool{
 
 func isDestWriter(name string) bool {
 	return destWriters[name]
+}
+
+// destWriterArgs lists I/O functions whose written buffer sits at a
+// NON-FIRST argument position (or whose first argument is a buffer rather
+// than a copy destination): `backtrace(buf, n)` fills the symbol array
+// (arg 0), `read(fd, buf, n)` / `recv(sock, buf, n)` / `fread(buf, sz, n, f)`
+// fill the data buffer (arg 1). Without this contract the decayed buffer
+// argument reads as a plain use, a struct member filled through
+// `backtrace(fr.bt, 8)` was auto-confirmed as partial-init (issue #263), and
+// a heap block filled through `read(fd, buf, n)` kept producing candidates
+// for the AI to dismiss.
+//
+// The table is consumed by the HEAP and STRUCT paths only. A bare scalar
+// POINTER passed by value (`char *p; read(fd, p, n)`) is a READ of the
+// indeterminate pointer itself — a genuine CWE-457 the stack path must keep
+// reporting — so the scalar stack path deliberately does not consult it.
+var destWriterArgs = map[string]map[int]bool{
+	"backtrace":         {0: true},
+	"backtrace_symbols": {0: true},
+	"read":              {1: true},
+	"pread":             {1: true},
+	"readv":             {1: true},
+	"fread":             {1: true},
+	"fread_unlocked":    {1: true},
+	"recv":              {1: true},
+	"recvfrom":          {1: true},
+	"recvmsg":           {1: true},
+	"fgets":             {0: true},
+	"getcwd":            {0: true},
+	"gethostname":       {0: true},
+	"inet_ntop":         {2: true},
+	"inet_pton":         {1: true},
+}
+
+// destWriterTargetArg returns the argument node that callName writes as its
+// destination buffer, if any: arg 0 for a destWriters entry, the indexed
+// argument for a destWriterArgs entry. It returns (zero, false) when the call
+// is not a known writer or the indexed argument is absent.
+func destWriterTargetArg(callName string, args []parser.Node) (parser.Node, bool) {
+	if isDestWriter(callName) {
+		if len(args) > 0 {
+			return args[0], true
+		}
+		return parser.Node{}, false
+	}
+	if idxs, ok := destWriterArgs[callName]; ok {
+		for idx := range idxs {
+			if idx < len(args) {
+				return args[idx], true
+			}
+		}
+	}
+	return parser.Node{}, false
 }
 
 // outputParamGuardLine reports the line after which a conditional output
