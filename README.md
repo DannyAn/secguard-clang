@@ -207,6 +207,16 @@ scans/<scan-id>/
 
 Each verdict file is self-contained — location, evidence chain, the surrounding source with the reported line marked, the AI reasoning and exception check, and a paste-ready fix. Use `--context-lines <n>` to tune the embedded source window, or `0` to omit it.
 
+## Exit codes and failure signals
+
+When `secguard scan` runs directly, the exit code tells the story: `0` is a completed scan, `1` is a failure (an error return or a recovered panic — the scan log ends with `scan finished ... exit_code=1`), and `2` is the `--fail-on confirmed` CI gate firing on an otherwise healthy scan.
+
+In a pipeline (`secguard scan ./src | tail -20`) the shell's `$?` is the LAST command's exit code, so it says nothing about the scan itself. Use these signals instead:
+
+- **`scans/<scan-id>/scan.log`** — the last line is `scan finished` carrying the real `exit_code`; a Go runtime `fatal error` (stack overflow, OOM) appears verbatim in this log because it kills the process before any handler can run.
+- **`scans/<scan-id>/.failed`** — written the moment a run fails. For a process killed by a runtime fatal error the marker is backfilled by the next scan's stale sweep, so an old orphan directory becomes visibly failed too.
+- **`scan_runs.completion_state`** — `complete` / `incomplete` / `limited` / `failed` in the database (readable via `secguard status`). Treat any non-`complete` state as "this scan's coverage is not trustworthy" rather than guessing from a pipeline exit code.
+
 ## Architecture
 
 ### 4-layer data model

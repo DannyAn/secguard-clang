@@ -141,7 +141,17 @@ secguard plan buffer-overflow
 secguard report
 ```
 
-默认数据库路径：`./sgre.db`。
+默认数据库路径：`.codeagent/secguard-clang/.sgre/sgre.db`（相对启动目录）。显式传 `--db` 时，扫描产物（`scans/`）跟随数据库所在目录树，不会留在启动目录。
+
+### 3.1 判断扫描成败（管道场景必读）
+
+直接运行时退出码即结论：`0` = 扫描完成；`1` = 失败（错误返回或已恢复的 panic，scan.log 末行为 `scan finished ... exit_code=1`）；`2` = `--fail-on confirmed` CI 门禁触发（扫描本身是健康的）。
+
+在管道里（`secguard scan ./src | tail -20`），shell 的 `$?` 是**最后一个命令**的退出码，不能反映扫描成败。请改用以下判据：
+
+- **`scans/<scan-id>/scan.log`**：末行 `scan finished` 携带真实 `exit_code`；Go 运行时 `fatal error`（栈溢出/OOM）会原样出现在该日志中——它在任何处理逻辑运行之前就杀死进程。
+- **`scans/<scan-id>/.failed`**：运行失败瞬间写入的标记文件；被运行时致命错误杀死的进程，其孤儿目录由下一次扫描的 stale sweep 补写该标记。
+- **`scan_runs.completion_state`**：数据库中的 `complete` / `incomplete` / `limited` / `failed`（`secguard status` 可读）。任何非 `complete` 状态都应视为"本次扫描覆盖不可信"，不要用管道退出码猜测。
 
 ## 4. 在 AI Agent 中使用
 
