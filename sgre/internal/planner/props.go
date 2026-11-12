@@ -43,6 +43,11 @@ type eventProps struct {
 	// "auto" in practice; it is carried so the verdict fact can state the
 	// exclusion explicitly instead of leaving the classifier to re-derive it.
 	Storage string `json:"storage"`
+	// BaseKind is the stack-address-escape local's declared-type shape
+	// ("pointer" / "array" / "struct" / "union" / "scalar" /
+	// "typedef_pointer" / "opaque"): whether `&q->f` addresses this frame or
+	// the pointee depends on it, so the verdict fact surfaces it for the AI.
+	BaseKind string `json:"base_kind"`
 	// NullCondition is the enclosing branch (switch case / if) of a caller-null
 	// literal-NULL call site, emitted by the CallerNullDetector.
 	NullCondition string `json:"null_condition"`

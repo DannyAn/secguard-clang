@@ -690,6 +690,7 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			PathExpr:                props.Path,
 			SubLHSInfluenced:        props.LHSInfluenced == "true",
 			Storage:                 props.Storage,
+			BaseKind:                props.BaseKind,
 			PointeeKind:             props.PointeeKind,
 			BaseOrigin:              props.BaseOrigin,
 			CaseEnd:                 props.CaseEnd,
