@@ -31,7 +31,7 @@ func TestBoundedByParamAssignmentCycleTerminates(t *testing.T) {
 func TestBoundedByParamDeepChainTerminates(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("unsigned f(char *buf, unsigned size) {\n")
-	const depth = 5000
+	const depth = 10000
 	for i := 0; i <= depth; i++ {
 		fmt.Fprintf(&b, "    unsigned v%d;\n", i)
 	}
@@ -39,6 +39,28 @@ func TestBoundedByParamDeepChainTerminates(t *testing.T) {
 		fmt.Fprintf(&b, "    v%d = v%d;\n", i, i+1)
 	}
 	b.WriteString("    return v0;\n}\n")
+	assertBoundedByParamTerminates(t, b.String())
+}
+
+// TestBoundedByParamNestedTernaryTerminates pins the field-report crash shape
+// (issue #264 #1): multi-level nested ternaries feeding a length/offset
+// computation. The conditional_expression branch must stay non-recursive — a
+// min-clamp probe that reads only the two branch tips — so arbitrary nesting
+// depth terminates as "not provably bounded" instead of exhausting the
+// goroutine stack.
+func TestBoundedByParamNestedTernaryTerminates(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("unsigned f(char *buf, unsigned size, unsigned a, unsigned c) {\n")
+	const depth = 10000
+	b.WriteString("    return ")
+	for i := 0; i < depth; i++ {
+		b.WriteString("c ? (")
+	}
+	b.WriteString("a + 1")
+	for i := 0; i < depth; i++ {
+		b.WriteString(") : (a - 1)")
+	}
+	b.WriteString(";\n}\n")
 	assertBoundedByParamTerminates(t, b.String())
 }
 
