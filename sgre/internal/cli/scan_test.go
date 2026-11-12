@@ -257,6 +257,42 @@ func captureOutput(fn func() int) (stdout, stderr string, exitCode int) {
 	return
 }
 
+// TestScanCmd_ExplicitDBRelocatesScansRoot pins issue #264 #14: with an
+// explicit --db and no --output-dir, the scan artifacts land under the scans
+// root derived from the DB path (the DB directory's parent + scans), not
+// under the launching cwd's .codeagent — the database and its artifacts
+// stay in one tree.
+func TestScanCmd_ExplicitDBRelocatesScansRoot(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	cPath := writeTestCFile(t, root)
+
+	dbTree := t.TempDir()
+	dbPath := filepath.Join(dbTree, "sgre.db")
+	scansRoot := filepath.Join(filepath.Dir(dbTree), "scans")
+
+	stdout, _, code := captureOutput(func() int {
+		return runScanCmd(ctx, []string{"--db", dbPath, cPath})
+	})
+	if code != 0 {
+		t.Fatalf("scan failed with code %d: %s", code, stdout)
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("scan output is not JSON: %v\n%s", err, stdout)
+	}
+	scanDir, _ := out["scan_dir"].(string)
+	if scanDir == "" {
+		t.Fatal("scan output missing scan_dir")
+	}
+	if filepath.Dir(scanDir) != scansRoot {
+		t.Errorf("scan_dir = %q, want under %q (the scans root derived from the DB path)", scanDir, scansRoot)
+	}
+	if _, err := os.Stat(filepath.Join(scanDir, "candidates.sarif")); err != nil {
+		t.Errorf("scan artifacts missing under the relocated root: %v", err)
+	}
+}
+
 func TestScanCmd_JSONEnvelopeHasTargetPathAndScanDir(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

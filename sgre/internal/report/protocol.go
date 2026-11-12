@@ -112,10 +112,21 @@ func generateScanID() string {
 }
 
 func NewScanOutput(projectRoot string) *ScanOutput {
+	return NewScanOutputIn(ScansRoot(projectRoot), projectRoot)
+}
+
+// NewScanOutputIn builds a ScanOutput whose per-scan directory lives under the
+// given scans root while RootDir (the display-path base for candidate paths)
+// stays the project root. The scan command passes
+// ScansRootFromDBPath(dbPath) so the artifacts follow the database (issue
+// #264 #14): an explicit --db relocates the scans root with the DB instead of
+// leaving artifacts in the launching cwd, and the canonical layout is
+// unchanged (ScansRootFromDBPath(GetDbPath(root)) == ScansRoot(root)).
+func NewScanOutputIn(scansRoot, rootDir string) *ScanOutput {
 	scanID := generateScanID()
-	scanDir := filepath.Join(projectRoot, CodeagentDir, ProductDir, ScansDir, scanID)
+	scanDir := filepath.Join(scansRoot, scanID)
 	return &ScanOutput{
-		RootDir:             projectRoot,
+		RootDir:             rootDir,
 		ScanDir:             scanDir,
 		SarifPath:           filepath.Join(scanDir, SarifFile),
 		CandidatesSarifPath: filepath.Join(scanDir, CandidatesSarifFile),

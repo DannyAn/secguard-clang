@@ -136,6 +136,11 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	// .codeagent dir (sibling of the scan output), never as a stray sgre.db in
 	// the source tree.
 	dbPath = resolveDBPath(dbExplicit, dbPath, projectRoot)
+	// The scans root follows the database (issue #264 #14): artifacts land
+	// next to the DB they belong to, so an explicit --db relocates them with
+	// the DB instead of leaving them in the launching cwd. For the canonical
+	// layout this is exactly the old ScansRoot(projectRoot).
+	scansRoot := report.ScansRootFromDBPath(dbPath)
 
 	var scanID string
 	var scanDir string
@@ -147,7 +152,7 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 		}
 		scanDir = outputDir
 	} else {
-		so := report.NewScanOutput(projectRoot)
+		so := report.NewScanOutputIn(scansRoot, projectRoot)
 		scanID = so.ScanID
 		scanDir = so.ScanDir
 	}
@@ -179,12 +184,11 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 	// marker into each leftover scan directory (an OOM-killed process never runs
 	// its own failure finalizer, so without this the directory is an unmarked
 	// remnant the user cannot tell apart from a successful scan), then flips the
-	// rows. The scans root is the canonical location, not the parent of an
-	// explicit --output-dir.
+	// rows. The scans root is the canonical location (derived from the DB,
+	// issue #264 #14), not the parent of an explicit --output-dir.
 	if staleIDs, err := store.StaleRunningScanIDs(ctx, scanID); err != nil {
 		defaultLogger().Warn("list stale running scans failed", "error", err)
 	} else {
-		scansRoot := report.ScansRoot(projectRoot)
 		for _, id := range staleIDs {
 			markScanDirFailed(scansRoot, id)
 		}

@@ -64,3 +64,38 @@ func TestWriteDismissed_RoundTrip(t *testing.T) {
 		t.Fatalf("drop summary should be persisted, got %+v", got.ByVulnType[0])
 	}
 }
+
+// TestScansRootFromDBPath pins the issue #264 #14 rule: the scans root is
+// derived from the DB path (its directory is the SgreDir layer), so an
+// explicit --db relocates the scan artifacts with the database instead of
+// leaving them in the launching cwd — and for the canonical layout the
+// result is exactly ScansRoot(projectRoot), keeping the default behavior
+// unchanged.
+func TestScansRootFromDBPath(t *testing.T) {
+	root := t.TempDir()
+	canonical := GetDbPath(root)
+	if got, want := ScansRootFromDBPath(canonical), ScansRoot(root); got != want {
+		t.Errorf("canonical layout: ScansRootFromDBPath(%q) = %q, want %q", canonical, got, want)
+	}
+	if got, want := ScansRootFromDBPath("/tmp/x.db"), "/scans"; got != want {
+		t.Errorf("explicit db: ScansRootFromDBPath = %q, want %q", got, want)
+	}
+}
+
+// TestNewScanOutputIn pins the artifact-follows-DB construction: the per-scan
+// directory lands under the given scans root while RootDir (the display-path
+// base) stays the project root.
+func TestNewScanOutputIn(t *testing.T) {
+	scansRoot := filepath.Join(t.TempDir(), "scans")
+	rootDir := t.TempDir()
+	so := NewScanOutputIn(scansRoot, rootDir)
+	if so.RootDir != rootDir {
+		t.Errorf("RootDir = %q, want %q", so.RootDir, rootDir)
+	}
+	if filepath.Dir(so.ScanDir) != scansRoot {
+		t.Errorf("ScanDir = %q, want a child of %q", so.ScanDir, scansRoot)
+	}
+	if so.SarifPath != filepath.Join(so.ScanDir, SarifFile) {
+		t.Errorf("SarifPath = %q, want inside ScanDir", so.SarifPath)
+	}
+}
