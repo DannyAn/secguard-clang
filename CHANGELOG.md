@@ -4,6 +4,32 @@
 
 ## [未发布]
 
+## [0.12.7] - 2026-11-12
+
+### Issue #255 — 全局容器浅释放导致的字段内存泄漏检测
+
+- 新增跨函数分析链 `global container → element object → 对象持有的堆字段`：repofacts 增加独立于 layout 的指针成员普查（PointerFields），未知布局结构体也能得到声明的指针成员；memory_leak 收集全局容器声明、字段堆存储、create/init wrapper 的参数→字段存储，以及各函数的容器槽位 load/release/clear 与已证明的字段释放。
+- 泄漏字段在删除函数的 **槽位清空行**报告，附完整引用链、浅释放见证与分配/存储见证；候选保持 suspected（不自动确认，因为扫描外的析构函数不可见）。
+- 存储进 wrapper 对象、wrapper 再入容器槽位的分配由 `container_transfer` 释放重归属，create 点不再被报为确定泄漏（修正后的代码不产生候选）。
+- planner/report 新增 `container-field@` / `shallow-free@` / `field-alloc@` hint token、删除路径证据叙述与修复建议；memory-leak SKILL.md 记录该形态。
+- fixture tc183–tc191 覆盖指针的指针、指针数组、单指针、返回 wrapper、参数填充 wrapper、直接槽位释放、深链 helper、借用字段、槽位不清空等正例，以及返回非容器 wrapper 保留 create 点报告的召回护栏。
+
+### Issue #261 — 检测/CLI 反馈整改（5 项落地）
+
+- `report --write-json` 返回 `dismissed_persisted`（`dismissed_written` 的别名），并澄清 dismissed 判定**会**写入 `candidate_verdicts` 而非被丢弃；文档中 candidate_verdicts 去重键由 function 更正为 variable。
+- `status --per-type` 暴露 `seed_count` 与 `pre_ai_collapsed`（raw→final 缩减量），使正数 remaining 不再被误读为未分类工作量；该指标为过滤链 + 同位置去重的总量，非纯去重计数。
+- format-string 在 taint-source 之后运行跨函数常量路径证明，转发格式参数的 logging wrapper 在所有调用点均为字面量时被丢弃。
+- buffer-overflow：经 `&` 传给 dest-writer 参数的下标（如 `memset(&arr[i], ...)`）归类为写，路由到 CWE-787 而非 CWE-125；并新增负数用例钉住只读算术表达式（`arr[i] + arr[j]`）仍为读。
+- memcpy_s/memmove_s 等 `sizeof(cap,count)` 相等即视为不可失败的抑制被**回退**：相等只是必要条件，src/dst 可能为 NULL 或重叠，据此判定失败分支不可达会隐藏真实泄漏；安全修复需要完整的非空 + 非重叠前置条件证明，超出本次范围。
+- issue 中需要更大跨函数/taint/区间工程的条目（1/2/6/7/9）留待后续，item 4 已在 certain-uninit tier 降级。
+
+### Issue #257 / #258 — 报告输出修正
+
+- **上下文感知修复策略**：unchecked-return 不再一律建议 `< 0`（strdup 失败返回 NULL），dangerous-function 不再一律建议 `strncpy_s`（atol/atoi 需换 strtol 家族）；按 callee 名称与禁用调用策略类别渲染针对性修复，空 callee 名有护栏。
+- **SARIF result 结构重组**：`message.text` 改为单行缺陷描述（AI 摘要，或最小 `<type> in <function>` 回退），去掉 `message.markdown` 重复；`confidence` 改为 0.0–1.0 数值；修复策略从 SARIF `fixes`（会被理解为承诺具体补丁）移入 `properties.fix_strategy` 并移除 `fixes` 字段；函数名移至 `properties.function`；指纹改用 DB 的内容寻址指纹（`fingerprints["secguard/v1"]`）与 sink 行真实 SHA-256（`partialFingerprints.primaryLocationLineHash`），替换此前函数:行拼接的伪哈希。finding 模型、检测逻辑与 SARIF 文档顶层结构不变。
+
+验证：`go build ./...`、`go test ./...`（21 包）、`go test -tags nosqlite`（log/planner/db）、`release/check-extension-consistency.py` 全通过。
+
 ## [0.12.6] - 2026-11-10
 
 ### Issue #253 — 超大仓库扫描性能、候选精度与失败可见性（P0/P1/P2 主体 + 检视修正）
