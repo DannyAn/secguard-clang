@@ -26,6 +26,17 @@ void guarded_body(int idx)
     }
 }
 
+void guarded_goto(int idx)
+{
+    int arr[16];
+    for (idx = 0; idx < 32; idx++) {
+        if (idx >= 16) { goto next; }
+        arr[idx] = 7;
+next:
+        ;
+    }
+}
+
 void guarded_wrong_bound(int idx)
 {
     int arr[16];

@@ -930,10 +930,11 @@ func condReferences(condText, name string) bool {
 }
 
 // bodyExits reports whether an if consequence exits the current control flow
-// (return/break/continue) — a true error-exit guard, not a mere assignment.
+// (return/break/continue/goto) — a true error-exit guard, not a mere assignment.
 func bodyExits(node parser.Node) bool {
 	text := node.Text()
-	return strings.Contains(text, "return") || strings.Contains(text, "break") || strings.Contains(text, "continue")
+	return strings.Contains(text, "return") || strings.Contains(text, "break") ||
+		strings.Contains(text, "continue") || strings.Contains(text, "goto")
 }
 
 func isRelationalCondition(text string) bool {
@@ -1144,7 +1145,7 @@ func nodeContainsPosition(n parser.Node, line, column int) bool {
 // a guarded access into a safe one.
 func stmtAlwaysExits(n parser.Node) bool {
 	switch n.Kind() {
-	case "return_statement", "break_statement", "continue_statement":
+	case "return_statement", "break_statement", "continue_statement", "goto_statement":
 		return true
 	case "compound_statement":
 		for _, ch := range n.NamedChildren() {

@@ -336,6 +336,16 @@ int guard_le_positive(G_t *g)
     return -1;
 }
 
+int guard_ge_goto(G_t *g)
+{
+    if (g->idx >= 4) {
+        goto err;
+    }
+    return g->v[g->idx];
+err:
+    return -1;
+}
+
 int pseudo_guard(G_t *g)
 {
     if (g->idx >= 8) {
@@ -352,6 +362,50 @@ func TestUncheckedIndexGuardShapes(t *testing.T) {
 	}
 	if events[0].Function != "pseudo_guard" {
 		t.Errorf("seeded function = %s, want pseudo_guard (the other four are real guards)", events[0].Function)
+	}
+}
+
+// RC2a (issue #269): the capacity guard exits via `goto`, which bodyExits
+// previously missed (it only looked for return/break/continue). The customer's
+// shape is `if (cnt >= SUB_MAX) goto ERR;` followed by a local copy of the field
+// into the index and a member-array write — reported as an unbounded CWE-787.
+const uncheckedIndexGotoGuardFixture = `#define SUB_MAX 5
+
+typedef struct {
+    unsigned int cnt;
+    int event_nodes[SUB_MAX];
+} Mgmt_t;
+
+void add_guarded(Mgmt_t *mgmt)
+{
+    if (mgmt->cnt >= SUB_MAX) {
+        goto ERR;
+    }
+    int index = mgmt->cnt;
+    mgmt->event_nodes[index] = 1;
+    return;
+ERR:
+    return;
+}
+
+void add_unguarded(Mgmt_t *mgmt)
+{
+    int index = mgmt->cnt;
+    mgmt->event_nodes[index] = 1;
+}
+`
+
+func TestUncheckedIndexGotoGuard(t *testing.T) {
+	events := runUncheckedIndexDetect(t, map[string]string{"goto_guard.c": uncheckedIndexGotoGuardFixture})
+	seeded := map[string]bool{}
+	for _, e := range events {
+		seeded[e.Function] = true
+	}
+	if seeded["add_guarded"] {
+		t.Errorf("add_guarded with a goto capacity guard must be suppressed, got %+v", events)
+	}
+	if !seeded["add_unguarded"] {
+		t.Errorf("add_unguarded without a guard must still seed, got %+v", events)
 	}
 }
 
