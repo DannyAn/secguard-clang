@@ -29,7 +29,7 @@ SecGuard v${PKG_VERSION} Installer
     它会自动完成：
       - 检测当前操作系统与 CPU 架构（macOS/Linux/Windows × amd64/arm64），
         从包内选择对应的 secguard 二进制安装到 ~/.local/bin
-        （若 /usr/local/bin 可写则优先装到 /usr/local/bin）；
+        （永不安装到 /usr/local/bin 等系统路径，避免与插件内置 secguard 冲突）；
       - 安装各 AI-agent 平台的扩展。
 
 常用示例：
@@ -46,7 +46,7 @@ Options:
   --target <opencode|opencode-nga|claude-code|claude-cac|all>
                                           安装目标平台（默认 all）
   --prefix <path>                         覆盖安装根目录
-  --bin-dir <path>                        二进制安装目录（默认 /usr/local/bin，不可写时回退 ~/.local/bin）
+  --bin-dir <path>                        二进制安装目录（默认 ~/.local/bin）
   --no-binary                             跳过二进制安装
   --uninstall                             卸载模式
   --verify                                校验安装
@@ -57,7 +57,7 @@ Options:
   OPENCODE_DIR  OpenCode 根目录（默认 ~/.config/opencode）
   CLAUDE_DIR    Claude Code 根目录（默认 ~/.claude）
   CAC_DIR       Claude Code 开源分支根目录（默认 ~/.cac）
-  BIN_DIR       二进制安装目录（默认 /usr/local/bin）
+  BIN_DIR       二进制安装目录（默认 ~/.local/bin）
 EOF
 }
 
@@ -92,7 +92,7 @@ CAC_PREFIX="${PREFIX:-${CAC_DIR:-$HOME/.cac}}"
 if [ -n "$BIN_DIR" ]; then
     : # use explicit
 else
-    BIN_DIR="${BIN_DIR_ENV:-/usr/local/bin}"
+    BIN_DIR="${BIN_DIR_ENV:-$HOME/.local/bin}"
 fi
 OC_TARGET_DIR="$OC_PREFIX/plugins/secguard-clang"
 OC_NGA_TARGET_DIR="$OC_PREFIX/extensions/secguard-clang"
@@ -329,6 +329,7 @@ install_binary() {
         echo "[binary] Installed to $target_bin_dir/secguard"
     fi
     sg_warn_if_not_on_path "$target_bin_dir"
+    sg_warn_stale_system_secguard "$target_bin_dir"
 }
 
 # 生成用户级配置文件模板（若不存在）。配置文件统一在 .codeagent 命名空间下

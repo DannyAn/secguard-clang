@@ -334,18 +334,24 @@ func isArithmeticOp(expr parser.Node) bool {
 
 // nodeInfluenced reports whether an assigned expression derives its value from a
 // call or an already-influenced variable, so the assigned local is caller/attacker
-// influenced (vs. a constant local like `size_t n = 16`).
+// influenced (vs. a constant local like `size_t n = 16`). It walks the AST with
+// an explicit stack rather than recursing, so a deeply nested expression (a long
+// macro-expanded chain) cannot exhaust the goroutine stack.
 func nodeInfluenced(n parser.Node, influenced map[string]bool) bool {
-	switch n.Kind() {
-	case "call_expression":
-		return true
-	case "identifier":
-		return influenced[n.Text()]
-	}
-	for _, c := range n.NamedChildren() {
-		if nodeInfluenced(c, influenced) {
+	stack := []parser.Node{n}
+	for len(stack) > 0 {
+		node := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		switch node.Kind() {
+		case "call_expression":
 			return true
+		case "identifier":
+			if influenced[node.Text()] {
+				return true
+			}
+			continue
 		}
+		stack = append(stack, node.NamedChildren()...)
 	}
 	return false
 }

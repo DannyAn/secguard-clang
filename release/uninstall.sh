@@ -23,7 +23,7 @@ Usage: uninstall.sh [options]
 Options:
   --target <opencode|opencode-nga|claude-code|claude-cac|dsh|all>  Target platform (default: all)
   --prefix <path>                      Override install root
-  --bin-dir <path>                     Binary install dir (default: /usr/local/bin)
+  --bin-dir <path>                     Binary install dir (default: ~/.local/bin)
   --yes, -y                            Skip confirmation prompts
   --help, -h                           Show this help
 
@@ -32,7 +32,7 @@ Environment overrides:
   CLAUDE_DIR     Default: ~/.claude
   CAC_DIR        Default: ~/.cac
   DSH_HOME       Default: ~/.dsh
-  BIN_DIR        Default: /usr/local/bin
+  BIN_DIR        Default: ~/.local/bin
 EOF
 }
 
@@ -54,7 +54,7 @@ OC_PREFIX="${PREFIX:-${OPENCODE_DIR:-$HOME/.config/opencode}}"
 CC_PREFIX="${PREFIX:-${CLAUDE_DIR:-$HOME/.claude}}"
 CAC_PREFIX="${PREFIX:-${CAC_DIR:-$HOME/.cac}}"
 DSH_PREFIX="${PREFIX:-${DSH_HOME:-$HOME/.dsh}}"
-[ -z "$BIN_DIR" ] && BIN_DIR="${BIN_DIR_ENV:-/usr/local/bin}"
+[ -z "$BIN_DIR" ] && BIN_DIR="${BIN_DIR_ENV:-$HOME/.local/bin}"
 OC_MANIFEST="$OC_PREFIX/.secguard-install-manifest"
 OC_NGA_MANIFEST="$OC_PREFIX/.secguard-install-manifest-nga"
 CC_MANIFEST="$CC_PREFIX/.secguard-install-manifest"
