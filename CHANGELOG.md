@@ -37,6 +37,13 @@ v0.12.7 首次发布（2026-11-12，commit `046b41a`）的构建在现网测试�
 - **auto-confirm 误报盲区（issue #263，PR #265）**：uninit 补齐内联汇编输出约束、dest-writer I/O 参数写入契约与 `void *buf[N]` 指针数组识别；stack-address-escape 跨文件收集 typedef 换名视图，opaque typedef 降级为 suspected；`abort`/`exit` 等 process_exit 告警标记为策略类并与安全漏洞 severity 隔离，`*_free`/`*_destroy`/`*_assert*` 等 fail-stop 函数分支内的 abort 默认抑制；新增 `auto_confirm_overturn_rate` 健康指标。
 - **大仓库扫描可靠性（issue #264，PR #266）**：`_index_shards.json` 提供范围→分片权威映射，`status --per-type` 返回 `index_shards`，跨分片范围解析到每个覆盖分片；README/QUICKSTART 记录 `scan` 退出码约定与三条 pipeline 安全信号；`boundedByParam` 增加 10k 深度与嵌套三元回归护栏。
 
+### 二次重发（2026-11-13 晚）— 安装路径与检测器栈溢出
+
+同一版本号再次重发：tag 重新指向包含下述修复的提交，二进制、插件包与 `SHA256SUMS` 由该提交重新构建。
+
+- **安装路径冲突（issue #267，PR #268）**：`install.sh` 不再默认安装到 `/usr/local/bin` —— 系统路径里的旧版 secguard 会遮蔽插件内置二进制并被 PATH 优先解析（现网即由遗留的 v0.12.3 触发栈溢出）。默认安装目录改为 `~/.local/bin`；`sg_resolve_bin_dir` 去掉 `/usr/local/bin` 偏好并要求候选目录可写；安装结束时对遗留的系统路径 secguard 打印显式告警与删除命令；`uninstall.sh` 同步默认值。
+- **integer_overflow 递归栈溢出（issue #267，PR #268）**：`nodeInfluenced` 改用显式栈遍历，长宏展开表达式链不再耗尽 goroutine 栈；新增 200k 深二元链与 200k 深嵌套括号的回归测试。
+
 ## [0.12.6] - 2026-11-10
 
 ### Issue #253 — 超大仓库扫描性能、候选精度与失败可见性（P0/P1/P2 主体 + 检视修正）
