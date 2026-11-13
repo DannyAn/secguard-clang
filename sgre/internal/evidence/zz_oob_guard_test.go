@@ -45,7 +45,7 @@ func TestBufferOverflowGuardBeforeArrayAccess(t *testing.T) {
 		}
 		oobByFunc[fn.Name] = true
 	}
-	for _, fn := range []string{"guarded_continue", "guarded_return_loop", "guarded_body"} {
+	for _, fn := range []string{"guarded_continue", "guarded_return_loop", "guarded_body", "guarded_goto"} {
 		if oobByFunc[fn] {
 			t.Errorf("%s: a dominating bounds guard must suppress the auto-confirmed OOB", fn)
 		}
