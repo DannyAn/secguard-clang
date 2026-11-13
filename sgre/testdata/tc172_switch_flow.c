@@ -110,6 +110,30 @@ void sf14_compound_case(enum Color c, int *out) {
     }
 }
 
+/* Falling into a case whose body is just `return;` is behaviorally identical to
+   a break (issue #269 root cause 5.3): no statement of the next case is shared,
+   so it must NOT be flagged. */
+void sf15_fallthrough_into_return(int *out) {
+    switch (*out) {
+    case 1:
+        do_a();
+    default:
+        return;
+    }
+}
+
+/* The positive control: falling into a case that does work before returning IS
+   a real fallthrough and must stay flagged. */
+void sf16_fallthrough_into_work(int *out) {
+    switch (*out) {
+    case 1:
+        do_a();
+    default:
+        do_b();
+        return;
+    }
+}
+
 int main(void) {
     enum Color c = RED;
     int out = 0;
@@ -121,5 +145,7 @@ int main(void) {
     sf12_int_switch_no_default(1);
     sf13_break_nested(c, 1);
     sf14_compound_case(c, &out);
+    sf15_fallthrough_into_return(&out);
+    sf16_fallthrough_into_work(&out);
     return 0;
 }

@@ -46,10 +46,13 @@ func TestSwitchFlow_Detect(t *testing.T) {
 	if !byFunc["sf02_fallthrough_call"]["fallthrough"] {
 		t.Errorf("sf02_fallthrough_call: expected fallthrough, got %v", byFunc["sf02_fallthrough_call"])
 	}
+	if !byFunc["sf16_fallthrough_into_work"]["fallthrough"] {
+		t.Errorf("sf16_fallthrough_into_work: expected fallthrough (shares next case's work), got %v", byFunc["sf16_fallthrough_into_work"])
+	}
 	if !byFunc["sf03_missing_default"]["missing_default"] {
 		t.Errorf("sf03_missing_default: expected missing_default, got %v", byFunc["sf03_missing_default"])
 	}
-	for _, fn := range []string{"sf10_comment_exempt", "sf11_empty_case_chain", "sf12_int_switch_no_default", "sf14_compound_case"} {
+	for _, fn := range []string{"sf10_comment_exempt", "sf11_empty_case_chain", "sf12_int_switch_no_default", "sf14_compound_case", "sf15_fallthrough_into_return"} {
 		if len(byFunc[fn]) > 0 {
 			t.Errorf("%s: must NOT trigger, got %v", fn, byFunc[fn])
 		}

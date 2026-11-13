@@ -84,6 +84,16 @@ func (d *SwitchFlowDetector) Detect(ctx context.Context) (DetectResult, error) {
 					if isCaseTerminator(last) {
 						continue
 					}
+					// A fallthrough that lands on a case whose body STARTS with a
+					// terminator (`case ADDR: ...; default: return;`) is
+					// behaviorally identical to a `break`: control leaves the
+					// switch immediately, so no statement of the next case is
+					// shared (issue #269 root cause 5.3). A next case that does
+					// work first (`case B: work(); return;`) still shares that
+					// work and stays a real fallthrough.
+					if nb := caseBody(children[next]); len(nb) > 0 && isCaseTerminator(nb[0]) {
+						continue
+					}
 					if hasFallthroughComment(children[i+1 : next]) {
 						continue
 					}
