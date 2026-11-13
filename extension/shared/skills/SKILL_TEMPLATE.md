@@ -58,7 +58,18 @@ the embedded section and the indexed lookup.
 - <a guard/contract that proves safety>
 
 ### Fix Suggestions
-- <paste-ready fix>
+
+Document this type's fix raw material so the auditor can compose a structured,
+evidence-driven `fix_strategy` for each finding (structure is defined in
+`agent-body.md` → "Fix Strategy"; the skill supplies the type-specific content):
+
+- **Recommended fix** for each confirmed shape — the function / variable / guard
+  to change, with a short snippet only where it clarifies the step.
+- **Required conditions** the fix depends on (capacity / length source, ownership
+  contract, lock order) and the wrong shortcuts to call out (`sizeof(pointer)`,
+  truncating the length, NULL-checking an out-of-bounds write).
+- **Validation** specific to this type — original path bounded/guarded, cleanup
+  still correct, re-scan no longer reports the location.
 
 ### Severity Matrix
 

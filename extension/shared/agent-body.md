@@ -563,12 +563,16 @@ type done atomically with its settlement write. Your `processed_types` in the
 Structured Report Protocol block is how you signal completion; the engine's
 resume logic reads that, not a subagent-side `--complete-type` call.
 
-**Keep each field SHORT — your verdicts are JSON that must fit in context, not an
-essay.** `summary` ≤ one line. `reasoning` ≤ 2 short sentences (source → sink →
-the one missing guard; do NOT restate the whole function). `exception_check` ≤
-one line. `fix_strategy` is paste-ready code, not prose. A confirmed finding
-whose detector already proved it (constant OOB, weak crypto, unchecked malloc
-deref) needs ONE sentence of reasoning, not three.
+**Keep `summary`/`reasoning`/`exception_check` SHORT — your verdicts are JSON that
+must fit in context.** `summary` ≤ one line. `reasoning` ≤ 2 short sentences
+(source → sink → the one missing guard; do NOT restate the whole function).
+`exception_check` ≤ one line. A confirmed finding whose detector already proved
+it (constant OOB, weak crypto, unchecked malloc deref) needs ONE sentence of
+reasoning, not three.
+
+`fix_strategy` is the one field that may run longer: it is Markdown guidance for
+the engineer who will fix the code — NOT a single paste-ready snippet, and NOT a
+copy of the Code Context. Follow the Fix Strategy contract in the next section.
 
 Check the write response — the batch `--write-json` path returns `status`
 (`ok`/`partial`), `findings_written` (count), `duplicates` (count of rows that
@@ -589,6 +593,44 @@ missing `scan_id`/`output_dir`), and write that chunk again. (The single-finding
 `per_finding_warning` instead; you use the batch path, so go by `failed_count` +
 `errors`.) Never re-run a write to "verify" — the write is idempotent; re-running
 never duplicates but wastes a turn.
+
+## Fix Strategy (the `fix_strategy` field)
+
+`fix_strategy` tells the engineer what to change, where, under what preconditions,
+and how to verify — written FROM this finding's own Summary / Reasoning /
+Exception Check / Code Context / Evidence. Never a generic template, and never a
+restatement of the whole Code Context or a complete rewritten function.
+
+Use these subsections, scaled to the finding's complexity (a simple finding gets
+one or two sentences + a short snippet; drop any subsection that has nothing to
+say for THIS finding — do not pad):
+
+- **Recommended Fix** — the concrete change, and why it removes this finding's
+  root cause. A short snippet / pseudocode is fine ONLY where it clarifies the key
+  step; do not paste a full function.
+- **Required Conditions** — the preconditions the fix depends on (e.g. "the
+  destination capacity must be obtainable at the caller", "the length must come
+  from the same source that sized the buffer"). If the current Code Context does
+  not show the caller / capacity / lifetime, say so explicitly and name what must
+  be confirmed before the fix is complete — never invent a caller or a capacity.
+- **Implementation Guidance** — the function / variable / call site to change, the
+  callers to trace and update consistently, and any related logic (cleanup paths,
+  lock order) that must stay correct.
+- **Constraints and Pitfalls** — what must be preserved, and the wrong fixes that
+  are tempting for THIS finding (e.g. `sizeof(pointer)` instead of the real
+  capacity, truncating the length to hide the overflow, adding only a NULL check
+  for an out-of-bounds write, silencing the detector). Skip anything irrelevant.
+- **Validation** — how to confirm the fix works for THIS finding: the original
+  path is now bounded/guarded, normal behavior is unchanged, error/cleanup paths
+  still release correctly, and the re-run of the security check no longer reports
+  the original location.
+
+Rules: (1) only state what the finding's evidence and Code Context support — mark
+unverifiable facts as "to confirm", do not assert them; (2) reference the
+function/variable/line names already in the finding instead of re-pasting code;
+(3) a `confirmed` finding's strategy must close the exact root cause the Reasoning
+names, not a nearby symptom; (4) do not suggest suppressing/relaxing the
+detection or lowering the threshold as the "fix".
 
 ## Auto-confirmed findings (machine verdict — verified once, never re-classified)
 
