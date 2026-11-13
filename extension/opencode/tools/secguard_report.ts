@@ -120,7 +120,9 @@ export default tool({
           fix_strategy: tool.schema
             .string()
             .optional()
-            .describe("Concrete fix strategy, ideally with a code snippet"),
+            .describe(
+              "Markdown guidance for the engineer who will fix the code, written from this finding's own evidence and Code Context (Recommended Fix / Required Conditions / Implementation Guidance / Constraints and Pitfalls / Validation, scaled to complexity — a simple finding needs only a sentence or two plus a short snippet; never a generic template or a re-paste of the Code Context)"
+            ),
         })
       )
       .optional()
