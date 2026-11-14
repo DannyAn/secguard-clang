@@ -948,7 +948,11 @@ func candidateFilename(seq int, filePath string, line int) string {
 	return fmt.Sprintf("%03d_%s_%d.md", seq, sanitizeFilename(shortFile(filePath)), line)
 }
 
+// shortFile returns the last two path segments (dir + basename) for the readable
+// short name in report.md's columns. Both `/` and `\` separators are normalized
+// first so a `C:\repo\src\a.c` path also shortens to `src/a.c`.
 func shortFile(path string) string {
+	path = strings.ReplaceAll(path, "\\", "/")
 	parts := strings.Split(path, "/")
 	if len(parts) <= 2 {
 		return path
@@ -956,10 +960,23 @@ func shortFile(path string) string {
 	return strings.Join(parts[len(parts)-2:], "/")
 }
 
+// sanitizeFilename maps an arbitrary path-derived string to a safe filename
+// component: `/`, `\`, `:`, `*`, `?`, `"`, `<`, `>`, `|`, control characters and
+// any other non-whitelist rune become `_`. The result is a valid, stable basename
+// on every platform (issue #275 P1-5: Windows absolute paths used to leak `\` and
+// `:` into candidate/finding filenames).
 func sanitizeFilename(s string) string {
-	s = strings.ReplaceAll(s, "/", "_")
-	s = strings.ReplaceAll(s, ".", "_")
-	return s
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	return b.String()
 }
 
 // markdownCell escapes a source line so it can sit inside a markdown table cell:

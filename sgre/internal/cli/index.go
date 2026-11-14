@@ -128,6 +128,16 @@ func runIndexCmd(ctx context.Context, args []string) int {
 	}
 
 	detectorErrors := evidence.RunAllDetectors(ctx, store, p, logger)
+	// Event-batch flush failures are lost evidence with no per-detector
+	// attribution; surface them as a detector error so the index command does
+	// not report a clean status over a silently-dropped event batch (issue #275
+	// P1-9).
+	if n := evidence.EventFlushFailures(); n > 0 {
+		detectorErrors = append(detectorErrors, evidence.DetectorError{
+			Detector: "event_batch",
+			Err:      fmt.Errorf("%d event batch flush(es) failed; those events were lost", n),
+		})
+	}
 	detErrMap := map[string]string{}
 	for _, de := range detectorErrors {
 		detErrMap[de.Detector] = de.Err.Error()
@@ -149,8 +159,17 @@ func runIndexCmd(ctx context.Context, args []string) int {
 		WriteErrorJSON(fmt.Sprintf("failed to list functions: %v", err))
 		return 1
 	}
+	status := "ok"
+	exitCode := 0
+	if len(detErrMap) > 0 {
+		// A detector or event-batch failure means the evidence set is incomplete;
+		// reading that as "ok" (exit 0) makes CI and the agent read missing
+		// evidence as "clean". Report partial and fail so the caller re-runs.
+		status = "partial"
+		exitCode = 1
+	}
 	WriteJSON(map[string]interface{}{
-		"status":             "ok",
+		"status":             status,
 		"files_indexed":      result.FilesIndexed,
 		"functions_indexed":  result.FunctionsIndexed,
 		"functions_scanned":  result.FunctionsScanned,
@@ -159,7 +178,7 @@ func runIndexCmd(ctx context.Context, args []string) int {
 		"detector_errors":    detErrMap,
 		"suggested_config":   writeSuggestedConfig(ctx, store, projectRoot),
 	})
-	return 0
+	return exitCode
 }
 
 // writeSuggestedConfig discovers project-specific allocator/deallocator names

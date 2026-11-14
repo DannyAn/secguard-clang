@@ -224,6 +224,7 @@ build_master() {
     expand_includes "$EXTENSION_DIR/opencode/commands/metrics.md" "$root/opencode/commands/metrics.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/agents/security-auditor.md" "$root/opencode/agents/security-auditor.md" "$EXTENSION_DIR/shared"
     cp "$EXTENSION_DIR/opencode/tools/"*.ts "$root/opencode/tools/"
+    cp "$EXTENSION_DIR/opencode/findSecguard.ts" "$root/opencode/"
 
     # opencode-nga（OpenCode 开源分支：manifest 改名 codeagent-extension.json，
     # 其余文件与 opencode 完全一致；.codeagent-extension-install.json 的 source 在
@@ -243,6 +244,7 @@ build_master() {
     expand_includes "$EXTENSION_DIR/opencode/commands/metrics.md" "$root/opencode-nga/commands/metrics.md" "$EXTENSION_DIR/shared"
     expand_includes "$EXTENSION_DIR/opencode/agents/security-auditor.md" "$root/opencode-nga/agents/security-auditor.md" "$EXTENSION_DIR/shared"
     cp "$EXTENSION_DIR/opencode/tools/"*.ts "$root/opencode-nga/tools/"
+    cp "$EXTENSION_DIR/opencode/findSecguard.ts" "$root/opencode-nga/"
     cp "$EXTENSION_DIR/opencode-nga/plugins/"*.ts "$root/opencode-nga/plugins/"
 
     # claude-code（官方插件方式，安装到 ~/.claude/plugins/，非 skills/）
@@ -352,6 +354,7 @@ build_plugin_opencode() {
     expand_md_dir "$EXTENSION_DIR/opencode/commands" "$out/commands"
     expand_md_dir "$EXTENSION_DIR/opencode/agents" "$out/agents"
     cp "$EXTENSION_DIR/opencode/tools/"*.ts "$out/tools/"
+    cp "$EXTENSION_DIR/opencode/findSecguard.ts" "$out/"
     copy_skills_to "$out/skills"
     install_plugin_bin "$out"
 }
@@ -372,6 +375,7 @@ build_plugin_opencode_nga() {
     expand_md_dir "$EXTENSION_DIR/opencode/commands" "$out/commands"
     expand_md_dir "$EXTENSION_DIR/opencode/agents" "$out/agents"
     cp "$EXTENSION_DIR/opencode/tools/"*.ts "$out/tools/"
+    cp "$EXTENSION_DIR/opencode/findSecguard.ts" "$out/"
     cp "$EXTENSION_DIR/opencode-nga/plugins/"*.ts "$out/plugins/"
     copy_skills_to "$out/skills"
     install_plugin_bin "$out"

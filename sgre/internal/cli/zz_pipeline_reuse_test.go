@@ -89,6 +89,24 @@ func TestDetectorsCompleteBitset(t *testing.T) {
 	}
 }
 
+// A previous FULL run records every detector. A later run that skips ONE
+// detector shrinks required; the stale events of the skipped detector must not
+// be reused, so the detector stage must re-run (issue #275 P1-2).
+func TestDetectorsComplete_SkipInvalidatesReuse(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	required := requiredDetectors(map[string]bool{})
+	if len(required) < 2 {
+		t.Fatal("registry must have at least two detectors")
+	}
+	if err := store.SetMeta(ctx, "detectors_done", strings.Join(required, ",")); err != nil {
+		t.Fatal(err)
+	}
+	if detectorsComplete(ctx, store, map[string]bool{required[0]: true}) {
+		t.Fatal("skipping a detector after a full run must force a detector re-run, not reuse stale events")
+	}
+}
+
 // End-to-end reuse state machine over a real fixture:
 //  1. full first scan completes graph+detectors;
 //  2. an UNCHANGED second scan reuses them (phase skipped);

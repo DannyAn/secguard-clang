@@ -21,7 +21,7 @@ func writeCandidate(t *testing.T, scanDir, vulnType, name string) string {
 	content := "# Null Deref in f\n\n**CWE:** CWE-476\n\n" +
 		"> Pipeline **candidate evidence** — not a defect and not a verdict.\n" +
 		"> Classified findings live in `" + FindingsDir + "/" + vulnType + "/`.\n\n" +
-		"## Location\n\n- **File:** `/repo/src/a.c:13`\n- **Function:** `f`\n\n" +
+		"## Location\n\n- **File:** `src/a.c:13`\n- **Function:** `f`\n\n" +
 		"## Evidence\n\n- **source:** p assigned a possibly-null value\n\n" +
 		"## Pipeline Assessment\n\n- **Suspicion Level (pipeline prior, not a verdict):** confirmed\n" +
 		"- **AI Verdict:** _unclassified_\n\n" +
@@ -649,5 +649,57 @@ func TestScanOutputWrite_ResetsDerivedTrees(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, CandidatesDir, "null-deref", "001_src_a_c_13.md")); err != nil {
 		t.Errorf("current candidates should be written: %v", err)
+	}
+}
+
+// Two confirmed findings from files with identical last-two-path-segments tails
+// (`/repo/alpha/src/a.c` vs `/repo/beta/src/a.c`) must stay two projection files:
+// the shared short name must not collapse them (issue #275 P1-4).
+func TestReconcileFindings_SameTailDifferentFilesStayDistinct(t *testing.T) {
+	dir := t.TempDir()
+	candDir := filepath.Join(dir, CandidatesDir, "null-deref")
+	if err := os.MkdirAll(candDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	alpha := "/repo/alpha/src/a.c"
+	beta := "/repo/beta/src/a.c"
+	names := []string{"001_src_a_c_3.md", "002_src_a_c_3.md"}
+	for i, path := range []string{alpha, beta} {
+		content := "# Null Deref in main\n\n**CWE:** CWE-476\n\n" +
+			"## Location\n\n- **File:** `" + path + ":3`\n- **Function:** `main`\n- **Variable:** `p`\n\n" +
+			"## Evidence\n\n- **source:** p may be null\n\n" +
+			"## Pipeline Assessment\n\n- **AI Verdict:** _unclassified_\n"
+		if err := os.WriteFile(filepath.Join(candDir, names[i]), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	findings := []*db.Finding{
+		{RuleID: "CWE-476", VulnType: "null-deref", FilePath: alpha, LineNumber: 3, FunctionName: "main", Variable: "p", Status: "confirmed", Severity: "high", Confidence: 0.9},
+		{RuleID: "CWE-476", VulnType: "null-deref", FilePath: beta, LineNumber: 3, FunctionName: "main", Variable: "p", Status: "confirmed", Severity: "high", Confidence: 0.9},
+	}
+	res, err := ReconcileFindings(dir, findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Written != 2 {
+		t.Fatalf("written = %d, want 2 distinct files", res.Written)
+	}
+	got := lsFindings(t, dir, "null-deref")
+	if len(got) != 2 {
+		t.Fatalf("findings dir = %v, want 2 distinct files", got)
+	}
+	// Each file must carry its own full path (not the sibling's).
+	var seen []string
+	for _, name := range got {
+		data, err := os.ReadFile(filepath.Join(dir, FindingsDir, "null-deref", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen = append(seen, candidateFilePath(string(data), ""))
+	}
+	if seen[0] == seen[1] {
+		t.Fatalf("both verdict files record the same path %q; they must differ", seen[0])
 	}
 }

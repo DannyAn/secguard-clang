@@ -58,6 +58,17 @@ func WalkCFiles(rootPath string, exclude []string, excludePaths []string, logger
 			}
 			return nil
 		}
+		// Only regular files are indexable: filepath.Walk uses Lstat, so a
+		// symlink reports ModeSymlink here even though a later ReadFile would
+		// follow it — a symlink pointing outside the scan root would leak host
+		// files into the report, and a FIFO/device/socket would hang or read
+		// unboundedly. Skip everything that is not a regular file.
+		if !info.Mode().IsRegular() {
+			if logger != nil {
+				logger.Warn("walk: skipping non-regular file", "path", path, "mode", info.Mode().String())
+			}
+			return nil
+		}
 		ext := strings.ToLower(filepath.Ext(path))
 		if ext == ".c" || ext == ".h" {
 			files = append(files, path)

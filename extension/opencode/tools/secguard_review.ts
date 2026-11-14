@@ -1,7 +1,7 @@
 import { tool } from "@opencode-ai/plugin"
 import path from "path"
 import fs from "fs"
-import { fileURLToPath } from "url"
+import { findSecguard } from "../findSecguard"
 import { randomUUID } from "crypto"
 
 // withKill bounds a subprocess wait AND terminates the child on expiry: a bare
@@ -18,19 +18,6 @@ async function withKill(proc: { text(): Promise<string>, kill(): void }, ms: num
   }
 }
 
-function findSecguard(context: { worktree?: string; directory?: string }): string {
-  const pluginDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-  const os = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "darwin" : "linux"
-  const arch = process.arch === "x64" ? "amd64" : process.arch
-  const bundled = path.join(pluginDir, "bin", `secguard-${os}-${arch}${os === "windows" ? ".exe" : ""}`)
-  if (fs.existsSync(bundled)) return bundled
-  for (const dir of [context.directory, context.worktree, "."]) {
-    if (!dir || dir === "/") continue
-    const local = path.join(dir, ".opencode/bin/secguard")
-    if (fs.existsSync(local)) return local
-  }
-  return "secguard"
-}
 
 export default tool({
   description:

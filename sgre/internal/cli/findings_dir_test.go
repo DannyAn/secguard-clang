@@ -49,6 +49,9 @@ func findingsFixture(t *testing.T, vulnType, candidateName string) (root, dbPath
 		t.Fatal(err)
 	}
 	s := db.NewStore(d)
+	if _, err := s.InsertFile(ctx, &db.File{Path: filepath.Join(root, "src", "a.c"), LOC: 1}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.InsertScanStat(ctx, &db.ScanStat{
 		ScanID: fixtureScanID, VulnType: vulnType, SeedCount: 1, FinalCount: 1,
 	}); err != nil {

@@ -347,12 +347,18 @@ def check_plugin_packaging():
         if not os.path.isfile(os.path.join(RELEASE, asset)):
             fail(f"release/{asset} missing — required for the market plugin bundle")
 
+    shared = read("opencode/findSecguard.ts")
+    if 'path.join(pluginDir, "bin",' not in shared:
+        fail("opencode/findSecguard.ts: findSecguard no longer resolves the bundled plugin bin/ (market install would miss the binary)")
+
     for fn in os.listdir(os.path.join(EXT, "opencode", "tools")):
         if not fn.endswith(".ts"):
             continue
         text = read(f"opencode/tools/{fn}")
-        if 'path.join(pluginDir, "bin",' not in text:
-            fail(f"opencode/tools/{fn}: findSecguard no longer resolves the bundled plugin bin/ (market install would miss the binary)")
+        if 'from "../findSecguard"' not in text:
+            fail(f"opencode/tools/{fn}: does not import the shared findSecguard resolver")
+        if "function findSecguard" in text:
+            fail(f"opencode/tools/{fn}: must not define its own findSecguard (use the shared resolver)")
 
     print("  plugin packaging: uniform namespace + shim templates + bundled-bin resolution")
 

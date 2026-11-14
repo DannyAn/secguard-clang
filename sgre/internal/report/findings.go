@@ -124,11 +124,14 @@ func findingBase(filePath string, line int) string {
 }
 
 // findingIdentity is the part of a finding's DB identity that can share one
-// file:line: the function, variable, and exact CWE. Two confirmed findings may
-// legitimately share a location (two variables dereferenced on one statement,
-// or two sub-category CWEs of one vuln type), and each must get its own verdict
-// file — otherwise findings/ holds fewer files than the DB/SARIF have results.
+// file:line: the full file path, function, variable, and exact CWE. Two
+// confirmed findings may legitimately share a location (two variables
+// dereferenced on one statement, or two sub-category CWEs of one vuln type), and
+// each must get its own verdict file — otherwise findings/ holds fewer files than
+// the DB/SARIF have results. The full file path disambiguates two files whose
+// last-two-segments tails coincide (issue #275 P1-4).
 type findingIdentity struct {
+	file     string
 	function string
 	variable string
 	cwe      string
@@ -165,6 +168,12 @@ func docCWE(content string) (string, bool) {
 
 // docMatchesIdentity reports whether the file records exactly this finding.
 func docMatchesIdentity(content string, id findingIdentity) bool {
+	if id.file != "" {
+		got := candidateFilePath(content, "")
+		if got == "" || filepath.Clean(got) != filepath.Clean(id.file) {
+			return false
+		}
+	}
 	if id.function != "" && !strings.Contains(content, " in "+id.function+"\n") {
 		return false
 	}
@@ -186,8 +195,14 @@ func docMatchesIdentity(content string, id findingIdentity) bool {
 // docMatchesLegacyLocation matches a file written before identity fields were
 // recorded (no Variable line) so an upgrade updates the old file in place
 // instead of minting a duplicate. A file that already records a different
-// variable is never a fallback match.
+// variable or a different file path is never a fallback match.
 func docMatchesLegacyLocation(content string, id findingIdentity) bool {
+	if id.file != "" {
+		got := candidateFilePath(content, "")
+		if got == "" || filepath.Clean(got) != filepath.Clean(id.file) {
+			return false
+		}
+	}
 	if id.function != "" && !strings.Contains(content, " in "+id.function+"\n") {
 		return false
 	}
@@ -511,7 +526,7 @@ func SyncPerFinding(scanDir, vulnType, filePath string, line int, u PerFindingUp
 	// Candidate evidence files render the type's canonical CWE, not the exact
 	// per-category rule id, so the candidate lookup matches on function+variable
 	// only; the verdict lookup matches the exact CWE as well.
-	candPath := locateByBase(candDir, base, findingIdentity{function: u.FunctionName, variable: u.Variable})
+	candPath := locateByBase(candDir, base, findingIdentity{file: filePath, function: u.FunctionName, variable: u.Variable})
 	candidate := ""
 	if candPath != "" {
 		data, err := os.ReadFile(candPath)
@@ -520,7 +535,7 @@ func SyncPerFinding(scanDir, vulnType, filePath string, line int, u PerFindingUp
 		}
 		candidate = string(data)
 	}
-	id := findingIdentity{function: u.FunctionName, variable: u.Variable, cwe: u.CWE}
+	id := findingIdentity{file: filePath, function: u.FunctionName, variable: u.Variable, cwe: u.CWE}
 	existing := locateByBase(findingsDir, base, id)
 
 	if !actionable(res.Verdict) {
@@ -734,7 +749,7 @@ func latestPerLocation(findings []*db.Finding, res *ReconcileResult) []*db.Findi
 			res.SkippedNoCWE++
 			continue
 		}
-		k := key{vulnType, strings.ToUpper(strings.TrimSpace(f.RuleID)), sanitizeFilename(shortFile(f.FilePath)), f.LineNumber, f.FunctionName, f.Variable}
+		k := key{vulnType, strings.ToUpper(strings.TrimSpace(f.RuleID)), filepath.Clean(f.FilePath), f.LineNumber, f.FunctionName, f.Variable}
 		prev, seen := latest[k]
 		if !seen {
 			order = append(order, k)

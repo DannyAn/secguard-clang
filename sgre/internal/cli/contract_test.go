@@ -329,6 +329,40 @@ func TestReportCmd_WriteJsonFieldValidation(t *testing.T) {
 	}
 }
 
+// An absolute file path that is NOT in the indexed files table must be rejected:
+// otherwise `report --audit` would read that arbitrary local file back into the
+// report (issue #275 P1-6).
+func TestReportCmd_WriteJsonRejectsUnindexedAbsolutePath(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "test.db")
+
+	d, err := db.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := db.NewStore(d)
+	const scanID = "sc_2026-01-01_000000_aaaaaa"
+	if _, err = s.InsertScanStat(ctx, &db.ScanStat{ScanID: scanID, VulnType: "null-deref", SeedCount: 1, FinalCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	writeFile := filepath.Join(root, "findings.json")
+	if err := os.WriteFile(writeFile, []byte(`[{"rule_id":"CWE-476","severity":"high","confidence":55,"status":"confirmed","file":"/etc/hosts","line":1,"function":"f","variable":"hosts"}]`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, code := captureOutput(func() int {
+		return runReportCmd(ctx, []string{"--db", dbPath, "--write-json", writeFile, "--scan-id", scanID})
+	})
+	if code == 0 {
+		t.Fatalf("unindexed absolute path should be rejected, got exit 0; stdout=%s", stdout)
+	}
+	if !bytes.Contains([]byte(stdout), []byte("not an indexed file")) {
+		t.Errorf("expected 'not an indexed file' error, got: %s", stdout)
+	}
+}
+
 func TestFinding_ApplyStructuredFromProperties(t *testing.T) {
 	f := &db.Finding{
 		Properties: `{"variable":"buf","suggestion":"short","summary":"heap overflow","reasoning":"source is user_size, no clamp, reaches strcpy","fix_strategy":"if (user_size < 12) return -1;","exception_check":"no RAII, no safe wrapper"}`,
@@ -962,5 +996,34 @@ func TestReportCmd_RequiresExplicitAction(t *testing.T) {
 	}
 	if !strings.Contains(stdout, `"findings"`) {
 		t.Errorf("--list should return a findings envelope, got: %s", stdout)
+	}
+}
+
+// removeBoolFlag must drop a boolean flag without swallowing the next argument,
+// unlike removeFlag which treats every exact `--flag` as a value flag (issue
+// #275 P2-2: `--dry-run --batch-size 3` dropped `--batch-size` and left a stray
+// `3`).
+func TestRemoveBoolFlag_DoesNotSwallowNextArg(t *testing.T) {
+	got := removeBoolFlag([]string{"--dry-run", "--batch-size", "3", "path"}, "dry-run")
+	want := []string{"--batch-size", "3", "path"}
+	if len(got) != len(want) {
+		t.Fatalf("removeBoolFlag = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("removeBoolFlag = %v, want %v", got, want)
+		}
+	}
+
+	// The `--flag=value` spelling is still dropped.
+	got = removeBoolFlag([]string{"--dry-run=true", "path"}, "dry-run")
+	if len(got) != 1 || got[0] != "path" {
+		t.Fatalf("removeBoolFlag(--dry-run=true) = %v, want [path]", got)
+	}
+
+	// removeFlag still consumes the value of a value flag.
+	got = removeFlag([]string{"--mode", "executor", "path"}, "mode")
+	if len(got) != 1 || got[0] != "path" {
+		t.Fatalf("removeFlag(--mode executor) = %v, want [path]", got)
 	}
 }

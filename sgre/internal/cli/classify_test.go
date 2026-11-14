@@ -43,3 +43,25 @@ func TestUpsertExecutorFinding(t *testing.T) {
 		t.Fatalf("executor finding not persisted correctly: %+v", findings)
 	}
 }
+
+func TestUpsertExecutorDismissal(t *testing.T) {
+	ctx := context.Background()
+	s := db.NewTestStore(t)
+
+	c := planner.EvidenceItem{
+		Type:              "null_deref",
+		VulnerabilityType: "null-deref",
+		SuspicionLevel:    "suspected",
+		Target:            planner.TargetInfo{File: "a.c", Function: "f", Line: 42, Variable: "p"},
+	}
+	if err := upsertExecutorDismissal(ctx, s, "sc_test", "null-deref", c, worker.Verdict{Seq: 1, Status: "dismissed", Reason: "guarded"}); err != nil {
+		t.Fatal(err)
+	}
+	verdicts, err := s.ListCandidateVerdicts(ctx, "sc_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(verdicts) != 1 || verdicts[0].Verdict != "dismissed" || verdicts[0].FilePath != "a.c" {
+		t.Fatalf("executor dismissal not persisted correctly: %+v", verdicts)
+	}
+}
