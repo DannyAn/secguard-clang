@@ -1,7 +1,7 @@
 import { tool } from "@opencode-ai/plugin"
 import path from "path"
 import fs from "fs"
-import { fileURLToPath } from "url"
+import { findSecguard } from "../findSecguard"
 import { randomUUID } from "crypto"
 
 // withKill bounds a subprocess wait AND terminates the child on expiry: the
@@ -34,22 +34,6 @@ function cliErrorJSON(e: any, fallback: Record<string, unknown>): Record<string,
   return { status: "error", ...fallback, error: e?.stderr?.toString()?.trim() || e?.message || String(e) }
 }
 
-function findSecguard(context: { worktree?: string, directory?: string }): string {
-  // Market 安装：优先用插件自带 bin/ 里按 os/arch 选型的二进制（不依赖 PATH）
-  const pluginDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-  const os = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "darwin" : "linux"
-  const arch = process.arch === "x64" ? "amd64" : process.arch
-  const bundled = path.join(pluginDir, "bin", `secguard-${os}-${arch}${os === "windows" ? ".exe" : ""}`)
-  if (fs.existsSync(bundled)) return bundled
-  // 项目级 .opencode/bin/secguard（旧约定）
-  for (const dir of [context.directory, context.worktree, "."]) {
-    if (!dir || dir === "/") continue
-    const local = path.join(dir, ".opencode/bin/secguard")
-    if (fs.existsSync(local)) return local
-  }
-  // 非 Market 安装：PATH 上的 secguard
-  return "secguard"
-}
 
 export default tool({
   description:
@@ -197,9 +181,10 @@ export default tool({
       }
     }
     if (args.action === "stats") {
-      const scanIdFlag = args.scan_id ? `--scan-id ${args.scan_id}` : ""
+      const cmd = [secguardBin, "report", "--db", dbPath, "--stats"]
+      if (args.scan_id) cmd.push("--scan-id", args.scan_id)
       try {
-        const out = await withKill(Bun.$`${secguardBin} report --db ${dbPath} --stats ${scanIdFlag}`
+        const out = await withKill(Bun.$`${cmd}`
           .cwd(workDir)
           .quiet(), 30_000, "secguard report --stats")
         return out.trim()
@@ -332,8 +317,9 @@ export default tool({
       )
     }
 
-    const scanIdFlag = args.scan_id ? `--scan-id ${args.scan_id}` : ""
-    const result = await withKill(Bun.$`${secguardBin} report --db ${dbPath} --list ${scanIdFlag}`
+    const cmd = [secguardBin, "report", "--db", dbPath, "--list"]
+    if (args.scan_id) cmd.push("--scan-id", args.scan_id)
+    const result = await withKill(Bun.$`${cmd}`
       .cwd(workDir)
       .quiet(), 30_000, "secguard report (read)")
       .catch((e: any) => {

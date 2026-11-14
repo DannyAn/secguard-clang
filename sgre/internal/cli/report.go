@@ -199,6 +199,24 @@ func removeFlag(args []string, flag string) []string {
 	return result
 }
 
+// removeBoolFlag removes a boolean flag (`--dry-run`, `--all`, `--list`) and its
+// `--flag=value` spelling WITHOUT consuming the next argument. removeFlag treats
+// every exact `--flag` match as a value flag and swallows the following token, so
+// `--dry-run --batch-size 3` would drop `--batch-size` and leave a stray `3`
+// (issue #275 P2-2).
+func removeBoolFlag(args []string, flag string) []string {
+	flagName := "--" + flag
+	prefix := flagName + "="
+	result := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == flagName || strings.HasPrefix(a, prefix) {
+			continue
+		}
+		result = append(result, a)
+	}
+	return result
+}
+
 // parseExcludeFlag extracts a comma-separated `--exclude` directory list.
 // present reports whether the flag was given at all; when it is, dirs is the
 // (possibly empty) parsed list and the caller overrides the default excludes.
@@ -229,20 +247,31 @@ func splitComma(s string) []string {
 
 // resolveFindingFilePath maps an agent-supplied `file` (absolute, repo-relative,
 // or a truncated tail the agent copied out of report.md's shortFile column) back
-// to the canonical absolute path stored in the files table. The suffix fallback
-// is best-effort: when nothing resolves the input is returned unchanged, so a
-// finding whose source cannot be located degrades to "no code context" in the
-// SARIF/xlsx instead of being silently rewritten to a wrong path.
+// to the canonical absolute path stored in the files table. An ABSOLUTE path
+// that is not one of the indexed files returns "" so the caller can reject it —
+// an unindexed absolute path would otherwise become an arbitrary-file read in
+// `report --audit` (issue #275 P1-6). A relative path that resolves to nothing is
+// best-effort: the input is returned unchanged, so a finding whose source cannot
+// be located degrades to "no code context" instead of being silently rewritten.
 //
 // files is the pre-fetched indexed file list; pass it to amortize ListFiles
 // across a whole --write-json batch. When nil, it is fetched lazily (fine for a
 // single --write call).
 func resolveFindingFilePath(ctx context.Context, store db.Store, file string, files []*db.File) string {
-	if file == "" || filepath.IsAbs(file) {
-		return file
+	if file == "" {
+		return ""
 	}
 	if files == nil {
 		files, _ = store.ListFiles(ctx)
+	}
+	if filepath.IsAbs(file) {
+		clean := filepath.Clean(file)
+		for _, f := range files {
+			if filepath.Clean(f.Path) == clean {
+				return clean
+			}
+		}
+		return ""
 	}
 	needle := string(filepath.Separator) + filepath.Clean(file)
 	var best string
@@ -485,7 +514,13 @@ func runReportCmd(ctx context.Context, args []string) int {
 		// Normalize a relative/truncated agent-supplied file path to the indexed
 		// absolute path, so the verdict markdown, result.sarif and result.xlsx can
 		// all re-locate the source instead of emitting "Unable to find <file>".
+		// An unindexed absolute path resolves to "" and is rejected (issue #275
+		// P1-6): it must not become an arbitrary-file read in a later audit.
 		finding.FilePath = resolveFindingFilePath(ctx, store, finding.FilePath, nil)
+		if finding.FilePath == "" {
+			WriteErrorJSON("file path is not an indexed file of this scan")
+			return 1
+		}
 
 		// Content-addressed identity for cross-scan dedup (incremental review).
 		// Computed from the resolved absolute path (matching the --write-json
@@ -683,6 +718,14 @@ func runReportCmd(ctx context.Context, args []string) int {
 				errs = append(errs, fmt.Sprintf("entry %d: missing location — expected \"file\" (string) and \"line\" (positive integer); the DB column names file_path/line_number are accepted as aliases", i))
 				continue
 			}
+			// A finding's source must be one of the indexed files: an absolute
+			// path that is not in the files table would otherwise be read back by
+			// `report --audit` and embedded into the report (issue #275 P1-6).
+			resolvedFile := resolveFindingFilePath(ctx, store, in.File, allFiles)
+			if resolvedFile == "" {
+				errs = append(errs, fmt.Sprintf("entry %d: file %q is not an indexed file of this scan", i, in.File))
+				continue
+			}
 			confidence := float64(in.Confidence)
 			if confidence > 1.0 {
 				confidence /= 100.0
@@ -725,7 +768,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 							ScanID:       scanID,
 							VulnType:     dismissedType,
 							RuleID:       strings.ToUpper(strings.TrimSpace(in.RuleID)),
-							FilePath:     resolveFindingFilePath(ctx, store, in.File, allFiles),
+							FilePath:     resolvedFile,
 							LineNumber:   in.Line,
 							FunctionName: in.Function,
 							Variable:     in.Variable,
@@ -738,14 +781,14 @@ func runReportCmd(ctx context.Context, args []string) int {
 				}
 				if scanDir := resolveScanDir(remaining, scanID); scanDir != "" {
 					if dismissedType != "" {
-						if _, serr := report.SyncPerFinding(scanDir, dismissedType, in.File, in.Line, report.PerFindingUpdate{
+						if _, serr := report.SyncPerFinding(scanDir, dismissedType, resolvedFile, in.Line, report.PerFindingUpdate{
 							Status:       "dismissed",
 							Reasoning:    in.Reasoning,
 							FunctionName: in.Function,
 							Variable:     in.Variable,
 							CWE:          in.RuleID,
 						}); serr != nil {
-							fmt.Fprintf(os.Stderr, "warning: annotate dismissed candidate %s:%d: %v\n", in.File, in.Line, serr)
+							fmt.Fprintf(os.Stderr, "warning: annotate dismissed candidate %s:%d: %v\n", resolvedFile, in.Line, serr)
 						}
 					}
 				}
@@ -782,7 +825,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 				ExceptionCheck: in.ExceptionCheck,
 				ScanID:         scanID,
 			}
-			f.FilePath = resolveFindingFilePath(ctx, store, f.FilePath, allFiles)
+			f.FilePath = resolvedFile
 			f.Fingerprint = computeFingerprint(f.RuleID, f.FilePath, f.FunctionName, f.LineNumber)
 			pending = append(pending, &pendingWrite{in: in, f: f})
 		}

@@ -383,6 +383,9 @@ func worktreeHeaders(indexedPaths []string) []string {
 				}
 				return nil
 			}
+			if !info.Mode().IsRegular() {
+				return nil
+			}
 			if strings.EqualFold(filepath.Ext(path), ".h") && !indexed[path] {
 				out = append(out, path)
 			}

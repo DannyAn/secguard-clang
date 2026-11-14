@@ -3,6 +3,7 @@ package indexer
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -85,5 +86,38 @@ func TestWalkCFiles_ExcludePathAbsolute(t *testing.T) {
 	}
 	if !got["svc/src/main.c"] {
 		t.Error("svc/src/main.c should be indexed")
+	}
+}
+
+// A .c symlink pointing outside the scan root must be skipped: filepath.Walk
+// surfaces it (Lstat), but a later ReadFile would follow it and leak host file
+// content into the report (issue #275 P1-3).
+func TestWalkCFiles_SkipsSymlinkAndSpecialFiles(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside-secret.c")
+	if err := os.WriteFile(outside, []byte("int secret;\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, root, "real.c")
+
+	if err := os.Symlink(outside, filepath.Join(root, "leak.c")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	// A FIFO must not be picked up either (reading it would block the scan).
+	if err := syscall.Mkfifo(filepath.Join(root, "pipe.c"), 0600); err != nil {
+		// Mkfifo may be unavailable; the symlink half of the test still holds.
+		t.Logf("mkfifo skipped: %v", err)
+	}
+
+	got := walkedRelPaths(t, root, nil)
+
+	if !got["real.c"] {
+		t.Error("real.c should be indexed")
+	}
+	if got["leak.c"] {
+		t.Error("a .c symlink pointing outside the root must not be indexed")
+	}
+	if got["pipe.c"] {
+		t.Error("a FIFO must not be indexed")
 	}
 }

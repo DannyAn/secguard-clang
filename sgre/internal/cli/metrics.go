@@ -52,8 +52,8 @@ func runMetricsCmd(ctx context.Context, args []string) int {
 	scanID := parseStringFlag(remaining, "scan-id")
 	remaining = removeFlag(remaining, "scan-id")
 	listAll := hasFlag(remaining, "all") || hasFlag(remaining, "list")
-	remaining = removeFlag(remaining, "all")
-	remaining = removeFlag(remaining, "list")
+	remaining = removeBoolFlag(remaining, "all")
+	remaining = removeBoolFlag(remaining, "list")
 
 	store, err := openStore(ctx, dbPath)
 	if err != nil {

@@ -686,10 +686,14 @@ func reuseFingerprintUnchanged(ctx context.Context, store db.Store, fingerprint 
 	return stored == fingerprint
 }
 
-// detectorsComplete reports whether every detector required this run is in the
-// completed-detector set recorded at the last detectors run. An empty recorded
-// set (event loss, or a run that pre-dates the marker) is incomplete, so the
-// detectors stage re-runs instead of reusing a partial event stream.
+// detectorsComplete reports whether the recorded completed-detector set is
+// EXACTLY the detector set required this run. An empty recorded set (event loss,
+// or a run that pre-dates the marker) is incomplete, so the detectors stage
+// re-runs instead of reusing a partial event stream. The set must be equal, not
+// merely a superset of required: a previous FULL run recorded every detector,
+// and a later run that skips one (`--skip-detectors hardcoded_secret`) shrinks
+// required — reusing the full run's events would silently keep the skipped
+// detector's stale candidates, so any set-size mismatch forces a re-run.
 func detectorsComplete(ctx context.Context, store db.Store, skipSet map[string]bool) bool {
 	required := requiredDetectors(skipSet)
 	if len(required) == 0 {
@@ -702,6 +706,9 @@ func detectorsComplete(ctx context.Context, store db.Store, skipSet map[string]b
 	done := map[string]bool{}
 	for _, name := range strings.Split(stored, ",") {
 		done[name] = true
+	}
+	if len(done) != len(required) {
+		return false
 	}
 	for _, name := range required {
 		if !done[name] {

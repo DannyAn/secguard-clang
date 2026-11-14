@@ -1300,3 +1300,34 @@ func TestFixSuggestion_DangerousFunctionUnsafeString(t *testing.T) {
 		t.Errorf("strcpy fix suggestion must not carry the strtol template:\n%s", s)
 	}
 }
+
+// Windows absolute paths and illegal filename characters must sanitize to a
+// valid, stable basename on every platform (issue #275 P1-5).
+func TestSanitizeFilename_WindowsAndIllegalChars(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{`C:\repo\src\a.c`, "C__repo_src_a_c"},
+		{`\\server\share\a.c`, "__server_share_a_c"},
+		{`/repo/src/a.c`, "_repo_src_a_c"},
+		{"src/a.c", "src_a_c"},
+		{"a?b*c\"d<e>f|g", "a_b_c_d_e_f_g"},
+		{"line\nbreak", "line_break"},
+	}
+	for _, c := range cases {
+		got := sanitizeFilename(c.in)
+		if got != c.want {
+			t.Errorf("sanitizeFilename(%q) = %q, want %q", c.in, got, c.want)
+		}
+		if strings.ContainsAny(got, `\:*?"<>|`+"\n") {
+			t.Errorf("sanitizeFilename(%q) = %q still contains a separator/illegal rune", c.in, got)
+		}
+	}
+
+	// The Windows absolute path must not shorten incorrectly: shortFile must
+	// normalize separators before taking the last two segments.
+	if got := shortFile(`C:\repo\src\a.c`); got != "src/a.c" {
+		t.Errorf("shortFile(C:\\repo\\src\\a.c) = %q, want src/a.c", got)
+	}
+}

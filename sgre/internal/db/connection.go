@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,14 +41,23 @@ func OpenWithOptions(ctx context.Context, dbPath string, opts OpenOptions) (*sql
 	// storm (up to 8 parallel `secguard report --write-json` processes sharing
 	// one WAL database) has a wider window before the application-layer retry in
 	// InsertEvent/InsertFinding/UpsertFinding engages.
-	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)", absPath)
+	//
+	// The DSN is built with url.URL so a path containing `?`, `#`, `%` or spaces
+	// stays a literal path component instead of re-parsing the query string.
+	u := &url.URL{Scheme: "file", Path: absPath}
+	q := url.Values{}
+	q.Add("_pragma", "busy_timeout(10000)")
+	q.Add("_pragma", "foreign_keys(1)")
+	q.Add("_pragma", "journal_mode(WAL)")
+	q.Add("_pragma", "synchronous(NORMAL)")
 	if opts.CacheSizeKB > 0 {
-		dsn += fmt.Sprintf("&_pragma=cache_size(-%d)", opts.CacheSizeKB)
+		q.Add("_pragma", fmt.Sprintf("cache_size(-%d)", opts.CacheSizeKB))
 	}
 	if opts.MmapSizeBytes > 0 {
-		dsn += fmt.Sprintf("&_pragma=mmap_size(%d)", opts.MmapSizeBytes)
+		q.Add("_pragma", fmt.Sprintf("mmap_size(%d)", opts.MmapSizeBytes))
 	}
-	db, err := sql.Open("sqlite", dsn)
+	u.RawQuery = q.Encode()
+	db, err := sql.Open("sqlite", u.String())
 	if err != nil {
 		return nil, fmt.Errorf("db: open: %w", err)
 	}
@@ -75,19 +85,28 @@ func OpenWithOptions(ctx context.Context, dbPath string, opts OpenOptions) (*sql
 }
 
 // OpenReadOnly opens the database read-only for `secguard db`. The read-only
-// contract is enforced by SQLite itself via `PRAGMA query_only=1`, so ANY write
-// — including a data-modifying CTE like `WITH d AS (DELETE ...) SELECT ...` that
-// a naive SELECT/WITH prefix check would pass — is rejected by the engine. It
-// deliberately skips InitSchema (schema creation is a write and must not run
-// here).
+// contract is enforced by SQLite itself at the ENGINE level via the URI
+// `mode=ro` parameter, which opens the file with SQLITE_OPEN_READONLY: a
+// connection that later runs `PRAGMA query_only=0` (directly or as the second
+// statement of a multi-statement query) still cannot write, because the OS file
+// descriptor is read-only. `_pragma=query_only(1)` remains as a second,
+// belt-and-suspenders layer. The DSN is built with url.URL so a path containing
+// `?`, `#`, `%` or spaces cannot change the URI semantics. It deliberately skips
+// InitSchema (schema creation is a write and must not run here).
 func OpenReadOnly(ctx context.Context, dbPath string) (*sql.DB, error) {
 	absPath, err := filepath.Abs(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("db: open read-only: resolve path: %w", err)
 	}
 
-	dsn := fmt.Sprintf("file:%s?_pragma=query_only(1)&_pragma=busy_timeout(10000)", absPath)
-	db, err := sql.Open("sqlite", dsn)
+	u := &url.URL{Scheme: "file", Path: absPath}
+	q := url.Values{}
+	q.Set("mode", "ro")
+	q.Add("_pragma", "query_only(1)")
+	q.Add("_pragma", "busy_timeout(10000)")
+	u.RawQuery = q.Encode()
+
+	db, err := sql.Open("sqlite", u.String())
 	if err != nil {
 		return nil, fmt.Errorf("db: open read-only: %w", err)
 	}

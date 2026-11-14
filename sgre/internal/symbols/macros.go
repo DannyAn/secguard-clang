@@ -182,6 +182,9 @@ func HeaderFiles(root string) []string {
 			}
 			return nil
 		}
+		if entry.Type()&fs.ModeSymlink != 0 || !entry.Type().IsRegular() {
+			return nil
+		}
 		switch strings.ToLower(filepath.Ext(path)) {
 		case ".h", ".hpp", ".hh", ".hxx", ".inc":
 			out = append(out, path)

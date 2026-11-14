@@ -5,6 +5,8 @@ package db
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -682,5 +684,89 @@ func TestStore_ListEventLocationKeysByType(t *testing.T) {
 	got, err = s.ListEventLocationKeysByType(ctx, "NO_SUCH_EVENT")
 	if err != nil || len(got) != 0 {
 		t.Errorf("no events = (%v, %v), want (map[], nil)", got, err)
+	}
+}
+
+// TestOpenReadOnly_RejectsMultiStatementWrite guards the `secguard db` read-only
+// boundary: opening with only `PRAGMA query_only=1` allowed a multi-statement
+// query (`SELECT 1; PRAGMA query_only=0; DELETE FROM files;`) to re-enable writes
+// on the SAME connection and mutate the DB. `mode=ro` opens the file read-only at
+// the engine level, so the write must fail and no row may change.
+func TestOpenReadOnly_RejectsMultiStatementWrite(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "sgre.db")
+
+	w, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	if _, err := w.ExecContext(ctx, `INSERT INTO files(path) VALUES('a.c')`); err != nil {
+		w.Close()
+		t.Fatalf("seed insert failed: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writable db: %v", err)
+	}
+
+	ro, err := OpenReadOnly(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("OpenReadOnly failed: %v", err)
+	}
+	defer ro.Close()
+
+	var n int
+	if err := ro.QueryRowContext(ctx, `SELECT COUNT(*) FROM files`).Scan(&n); err != nil {
+		t.Fatalf("count before failed: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("count before = %d, want 1", n)
+	}
+
+	if _, err := ro.ExecContext(ctx, `SELECT 1; PRAGMA query_only=0; DELETE FROM files;`); err == nil {
+		t.Fatalf("multi-statement write succeeded on a read-only connection")
+	}
+
+	if err := ro.QueryRowContext(ctx, `SELECT COUNT(*) FROM files`).Scan(&n); err != nil {
+		t.Fatalf("count after failed: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("files table was mutated: count after = %d, want 1", n)
+	}
+}
+
+// TestOpenReadOnly_FileURIEscaping ensures a path containing URI metacharacters
+// is opened as a literal path rather than re-parsed as query parameters.
+func TestOpenReadOnly_FileURIEscaping(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "sgre#db?.db")
+
+	w, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	if _, err := w.ExecContext(ctx, `INSERT INTO files(path) VALUES('a.c')`); err != nil {
+		w.Close()
+		t.Fatalf("seed insert failed: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writable db: %v", err)
+	}
+
+	ro, err := OpenReadOnly(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("OpenReadOnly failed: %v", err)
+	}
+	defer ro.Close()
+
+	var n int
+	if err := ro.QueryRowContext(ctx, `SELECT COUNT(*) FROM files`).Scan(&n); err != nil {
+		t.Fatalf("count failed: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("count = %d, want 1", n)
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("db path not present at expected literal location: %v", err)
 	}
 }
