@@ -53,6 +53,7 @@ the embedded section and the indexed lookup.
 | `malloc(n)` result dereferenced with no NULL check | **confirmed** |
 | `read(fd, ...)` / `recv(...)` return ignored AND the target buffer is used afterward | **confirmed** (a short read / error leaves the buffer uninitialized or partial) |
 | `read(fd, ...)` return ignored but the buffer is never used, or a short read is acceptable | **false-positive** |
+| `write(fd, ...)` / `send(...)` return ignored | **false-positive** (a short write / partial send is a data-integrity or QoS issue, not a memory-safety defect — the ignored return carries no NULL-deref or uninitialized-buffer consequence) |
 | `p = malloc(n); if (!p) return;` | **false-positive** (checked) |
 | `if (malloc(n) == NULL) ...` | **false-positive** (checked inline) |
 | `p = malloc(n); free(p);` — the result's ONLY use is a NULL-safe deallocation | **false-positive** (`free(NULL)` is a no-op; the detector already suppresses this shape, so seeing it means a freeing macro is involved — judge the macro) |

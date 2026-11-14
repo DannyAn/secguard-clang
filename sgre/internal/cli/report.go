@@ -1845,13 +1845,20 @@ func writeAuditReport(auditPath, scanID string, audits []vulnAuditEntry, overvie
 		overview.ScanID = scanID
 	}
 
-	// A type with no converged candidate has nothing to show in the per-skill
-	// table; listing 15 of them as zero rows buries the types that do. They are
-	// folded into one collapsible section and labelled "no evidence" (or "all
-	// filtered out" when the pipeline did receive raw seeds for them).
+	// A type with no converged candidate AND no machine-confirmed finding has
+	// nothing to show in the per-skill table; listing many of them as zero rows
+	// buries the types that do. They are folded into one collapsible section and
+	// labelled "no evidence" (or "all filtered out" when the pipeline did
+	// receive raw seeds for them). A type whose seeds were all auto-confirmed
+	// stays in the table (see the fold predicate below).
 	var withCandidates, noCandidates []vulnAuditEntry
 	for _, a := range audits {
-		if a.FinalCount > 0 {
+		// A type whose seeds were all machine-confirmed (FinalCount == 0 but
+		// AutoConfirmed > 0) has findings to report — it is NOT a "no evidence"
+		// type. Folding it under "all filtered out" would both hide its
+		// auto-confirmed findings from the per-skill table and mislabel a
+		// successful machine proof as a filter drop.
+		if a.FinalCount > 0 || a.AutoConfirmed > 0 || a.AutoReviewedOut > 0 {
 			withCandidates = append(withCandidates, a)
 		} else {
 			noCandidates = append(noCandidates, a)

@@ -585,6 +585,35 @@ func TestWriteAuditReport_FoldsNoCandidateTypes(t *testing.T) {
 	}
 }
 
+func TestWriteAuditReport_AutoConfirmedOnlyTypeStaysInTable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit-report.md")
+	audits := []vulnAuditEntry{
+		{VulnType: "null-deref", SeedCount: 10, FinalCount: 4, AutoConfirmed: 0, AIStageStatus: "done"},
+		{VulnType: "deadlock", SeedCount: 1, FinalCount: 0, AutoConfirmed: 1, AIStageStatus: "done"},
+	}
+	if err := writeAuditReport(path, "test-scan", audits, reportScanOverviewStub(), aiStageTiming{}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(data)
+	// The auto-confirmed-only type must appear in the per-skill table, not be
+	// mislabelled "all filtered out" in the folded no-candidate section.
+	for _, check := range []string{
+		"| deadlock | 1 | 0 | 1 | 0 | done | 100% |",
+	} {
+		if !strings.Contains(out, check) {
+			t.Errorf("audit report missing %q\n---\n%s", check, out)
+		}
+	}
+	if strings.Contains(out, "Types with no converged candidates") {
+		t.Errorf("an auto-confirmed type must not be folded as a no-candidate type:\n%s", out)
+	}
+}
+
 func TestWriteAuditReport_AITimingSection(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "audit-report.md")

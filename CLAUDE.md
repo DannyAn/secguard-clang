@@ -151,7 +151,7 @@ suffix could silently go missing.
 - `sgre/testdata/phase1`–`phase7` — staged fixtures for the pipeline phases.
 - `sgre/testdata/perf/gen_codebase.go` — generates large synthetic codebases for perf testing: `go run testdata/perf/gen_codebase.go testdata/perf/large_codebase 100 50`.
 
-## Supported Vulnerability Types (28)
+## Supported Vulnerability Types (29)
 
 Each is registered as a `VulnTypeSpec` in `internal/planner/registry.go` and has a
 corresponding agent skill under `extension/shared/skills/`. The authoritative runtime list
@@ -167,7 +167,8 @@ at CLI startup (`cli/root.go`), and the TS tool wrappers never hardcode CWE list
 `out-of-bounds`, `divide-by-zero`, `unchecked-return`, `path-traversal`,
 `sizeof-misuse`, `signed-compare`, `signal-handler`, `dangerous-function`,
 `argument-type`, `data-representation`, `implicit-contract`,
-`stack-address-escape`, `invalid-free`, `switch-fallthrough`.
+`stack-address-escape`, `invalid-free`, `switch-fallthrough`,
+`unbounded-length-copy`.
 
 `out-of-bounds` (CWE-125) shares the
 `BUFFER_ACCESS` seed event with `buffer-overflow`: read-flavored categories

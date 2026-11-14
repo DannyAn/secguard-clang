@@ -163,3 +163,46 @@ void use_obsolete(void) { (void)gethostbyname("x"); }
 		t.Errorf("use_obsolete: gethostbyname stays unconditional (obsolete_api), got %v", byFunc["use_obsolete"])
 	}
 }
+
+// TestUncheckedReturn_DiscardOnlyForNameHeuristic pins the discard@ gating: a
+// result that is stored then (void)-cast away is "deliberately discarded" only
+// for a name-heuristic (contract@unknown) callee, whose return value may not be
+// an allocation at all. A known-contract passthrough wrapper still returns an
+// unchecked allocation, so its (void) discard is a genuine CWE-252 defect and
+// must NOT carry the discard fact that the classifier dismisses on sight.
+func TestUncheckedReturn_DiscardOnlyForNameHeuristic(t *testing.T) {
+	_, byFunc := indexDetect(t, `#include <stdlib.h>
+typedef struct { int v; } obj_t;
+obj_t *obj_factory_new(int n);
+
+void *passthrough_wrapper(size_t n) {
+    return malloc(n);
+}
+
+void passthrough_discarded(void) {
+    void *p = passthrough_wrapper(64);
+    (void)p;
+}
+
+void name_heuristic_discarded(void) {
+    obj_t *p = obj_factory_new(1);
+    (void)p;
+}
+`, "unchecked")
+
+	known := byFunc["passthrough_discarded"]
+	if len(known) == 0 {
+		t.Fatalf("passthrough_discarded: (void)-discarded passthrough result must still be reported")
+	}
+	if strings.Contains(known[0], `"consumed":"discard"`) {
+		t.Errorf("passthrough_discarded: a known-contract passthrough result must not carry a discard fact, got %v", known)
+	}
+
+	heur := byFunc["name_heuristic_discarded"]
+	if len(heur) == 0 {
+		t.Fatalf("name_heuristic_discarded: (void)-discarded name-heuristic result must still be reported")
+	}
+	if !strings.Contains(heur[0], `"consumed":"discard"`) {
+		t.Errorf("name_heuristic_discarded: a name-heuristic (void)-discard should carry a discard fact, got %v", heur)
+	}
+}

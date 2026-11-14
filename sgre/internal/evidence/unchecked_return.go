@@ -294,10 +294,18 @@ func (d *UncheckedReturnDetector) Detect(ctx context.Context) (DetectResult, err
 				}
 				// A result whose only observable use is a `(void)` cast is
 				// deliberately discarded: the failure cannot be observed, but the
-				// lead stays (name-heuristic contract) with a discard@ fact so the
-				// AI dismisses from the hint without a source read.
-				if vars := assignedVarsOfCall(call); len(vars) > 0 && resultVoidDiscarded(vars, call, f, ids) {
-					props["consumed"] = "discard"
+				// lead stays with a discard@ fact so the AI dismisses from the hint
+				// without a source read. This "respect the (void) intent" reading
+				// applies ONLY to a name-heuristic match (contract@unknown): the
+				// function may use an out-param/error-code pattern where the return
+				// value is not the allocation result. A known allocator, passthrough
+				// wrapper or unchecked-return API (contract@known) still returns an
+				// unchecked allocation, so `(void)p` there is a genuine CWE-252
+				// defect (unchecked NULL + leaked pointer) — never a discard@.
+				if !contractKnown {
+					if vars := assignedVarsOfCall(call); len(vars) > 0 && resultVoidDiscarded(vars, call, f, ids) {
+						props["consumed"] = "discard"
+					}
 				}
 				if emitEvent(ctx, d.store, d.logger, "UNCHECKED_RETURN", f.ID, &db.Location{FileID: file.ID, Line: call.StartLine(), Column: call.StartColumn()}, props) {
 					result.EventsCreated++
