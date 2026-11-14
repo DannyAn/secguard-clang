@@ -303,8 +303,11 @@ func measureAIStageTiming(rows []*db.SettlementStat) aiStageTiming {
 		end := st.FinishedAt
 		if end <= 0 {
 			// Older rows predate finished_at; the absorption time is the only
-			// timestamp they carry, so it is the honest fallback.
-			end = st.CreatedAt * 1000
+			// timestamp they carry, so it is the honest fallback. finished_at
+			// and created_at share the unix-MILLISECONDS epoch (issue #253
+			// P1-1), so no scale conversion here — the old *1000 turned millis
+			// into fake microseconds and a nonsensical ai_duration_ms.
+			end = st.CreatedAt
 		}
 		if end <= 0 {
 			continue

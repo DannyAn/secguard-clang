@@ -465,7 +465,8 @@ fields, avoiding shell-quoting pitfalls).** Only on a shell-only host without th
 MCP tool, fall back to Bash:
 
 1. Write the JSON array to `<tmpdir>/<type>.json` with the Write/Edit tool
-   (escape every inner `"` as `\"` and every `\` as `\\`).
+   (escape every inner `"` as `\"` and a literal `\` as `\\`; write a newline as
+   a real line break or `\n`, never `\\n`).
 2. `secguard report --write-json <tmpdir>/<type>.json --scan-id <scan_id> --db <db_path>`.
    (If you have the `secguard_report` MCP tool instead, calling it with the
    `findings` array is equivalent and simpler.)

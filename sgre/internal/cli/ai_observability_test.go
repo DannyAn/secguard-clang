@@ -25,7 +25,7 @@ func TestMeasureAIStageTiming(t *testing.T) {
 		{VulnType: "null-deref", Status: "done", FinishedAt: base, QueueMS: 60_000, WorkMS: 240_000},
 		{VulnType: "buffer-overflow", Status: "done", FinishedAt: base + 600_000, QueueMS: 60_000, WorkMS: 120_000},
 		// A claim that never settled must not count.
-		{VulnType: "uninit", Status: "dispatched", CreatedAt: base / 1000},
+		{VulnType: "uninit", Status: "dispatched", CreatedAt: base},
 	}
 	timing := measureAIStageTiming(rows)
 	if timing.TotalMS != 900_000 {
@@ -42,6 +42,26 @@ func TestMeasureAIStageTiming(t *testing.T) {
 	}
 	if timing.Source != "self-measured" {
 		t.Errorf("source = %q, want self-measured", timing.Source)
+	}
+}
+
+// TestMeasureAIStageTimingFallbackUsesMillis guards the finished_at fallback: a
+// done row with no finished_at (an old scan, or a claim range that settled under
+// a sibling range) falls back to created_at, and BOTH are unix MILLISECONDS. The
+// old `created_at * 1000` turned millis into fake microseconds and a nonsensical
+// ai_duration_ms (issue #257 smoke test).
+func TestMeasureAIStageTimingFallbackUsesMillis(t *testing.T) {
+	base := int64(1_700_000_000_000)
+	rows := []*db.SettlementStat{
+		{VulnType: "null-deref", Status: "done", CreatedAt: base},
+		{VulnType: "buffer-overflow", Status: "done", FinishedAt: base + 300_000},
+	}
+	timing := measureAIStageTiming(rows)
+	if timing.TotalMS != 300_000 {
+		t.Fatalf("total = %d, want 300000 (fallback created_at is millis, not micros)", timing.TotalMS)
+	}
+	if timing.TotalMS >= 1_000_000_000_000 {
+		t.Fatalf("total = %d looks like the *1000 unit bug resurfaced", timing.TotalMS)
 	}
 }
 

@@ -56,10 +56,13 @@ This bare array is the contract. The CLI also accepts a single finding object an
 a `{"scan_id": ..., "findings": [...]}` wrapper (so a stray envelope does not lose
 the whole type), but write the array — and never mix shapes in one file.
 
-Escaping: every `"` INSIDE a string value must be escaped as `\"`, and any
-backslash as `\\`. Do NOT hand-write JSON with unescaped inner quotes — the CLI
-will reject it. Prefer writing the JSON file with the Write tool (it does not
-escape for you — escape the quotes yourself), then call `--write-json <path>`.
+Escaping: every `"` INSIDE a string value must be escaped as `\"`, and a literal
+backslash as `\\`. A newline inside a multi-line value (e.g. `fix_strategy`) is a
+REAL line break — or its JSON escape `\n` — never the literal two characters
+`\n` (`\\n` renders as a backslash followed by `n`, not a line break). Do NOT
+hand-write JSON with unescaped inner quotes — the CLI will reject it. Prefer
+writing the JSON file with the Write tool (it does not escape for you — escape
+the quotes yourself), then call `--write-json <path>`.
 
 **Fresh-file writes.** The Write tool refuses to overwrite an existing file you
 have not Read, so "must read before overwriting" means the file ALREADY exists (a
