@@ -4,6 +4,55 @@
 
 ## [未发布]
 
+## [0.12.8] - 2026-11-14
+
+### Issue #269 / #271 — 确认误报削减（buffer-overflow / switch-fallthrough）
+
+- buffer-overflow 的容量守卫若以 `goto` 退出（`if (cnt >= SUB_MAX) goto ERR;`），此前 `bodyExits` / `stmtAlwaysExits` 只识别 return/break/continue，导致已守卫的写入被误报为无界 CWE-787；现将 `goto` 加入两处退出识别器，并新增字段下标 / 局部拷贝 / 数组 OOB 三类 goto 守卫回归 fixture（含必须仍出种子的无守卫正对照）。
+- switch-fallthrough：落入「下一个 case 仅以终止语句开头（`default: return;`）」的穿透在行为上等价于 break（不共享下一个 case 的任何语句），检测器不再误报；下一个 case 在返回前仍有语句的穿透保持上报。新增 sf15（落入 return，抑制）与 sf16（落入有语句的 case，仍报）。
+
+### Issue #270 / #257 / #272 — 结构化、证据驱动的修复策略
+
+- `fix_strategy` 由「可直接粘贴的代码」改为结构化契约（Recommended Fix / Required Conditions / Implementation Guidance / Constraints and Pitfalls / Validation），从该 finding 自身的 Summary/Reasoning/Exception Check/Code Context/Evidence 推导并按 finding 缩放，对无法核实的事实显式声明，不再虚构调用方或容量；`secguard_report` MCP 工具描述与 `SKILL_TEMPLATE` 同步。
+- 25 个类型 skill 的 Fix Suggestions 迁移到该契约；divide-by-zero / signed-compare / sizeof-misuse / unchecked-return 补齐此前缺失的 Fix Suggestions；path-traversal 移除多余代码围栏。
+- 修正 AI 阶段计时单位：`created_at` 已是 unix 毫秒，去掉 `*1000` 造成的假微秒（`ai_duration_ms` 不再出现 16 位量级）；补 `fix_strategy` 换行转义指引（换行是真实换行或 `\n`，绝不为字面 `\\n`），并加回归测试。
+
+### E2E 扫描 round-1 检视修复
+
+- report：仅 auto-confirmed 的类型（deadlock / invalid-free / signal-handler / use-after-free）保留在 per-skill 审计表中，不再折叠为「全部过滤」，避免隐藏机器确认发现并误标为过滤丢弃。
+- evidence：unchecked-return 的 `discard` 事实加 `contract@unknown` 门控，透传分配器结果的 `(void)` 丢弃不再被驳回（基准 UC-03 正对照要求确认）。
+- skills：补 write/send 分类规则，使 skill 列出的证据形态有对应裁决（短写属数据完整性，非内存安全缺陷）。
+- docs：支持类型数 28 → 29（补 unbounded-length-copy）。
+
+### Issue #273 — 深挖报告 CRITICAL/HIGH 修复（#274）
+
+对每一条从 issue #273 回源验证后修复真实本地缺陷，误诊与架构级条目在 PR 描述记录而非过度工程：
+
+- db：`WithTx` 在 panic 时回滚（泄漏的延迟事务会持有连接，写入后更持有 SQLite 写锁，几次 panic 即耗尽 `SetMaxOpenConns(4)` 拖垮管线）；`ReplaceFuncPtrWrites` 的删+插改为单一立即事务（撕裂表会打断下一阶段解析的间接 CALL 边）。
+- planner：`ContractGapFilter` 先判 `fn == nil` 再解引用 `fn.FileID`。
+- graph：别名构建器按名称映射到所有同名函数（每翻译单元的 `static` 同名是合法 C），不再只保留最后一个；悬空返回检测改用 ownership 层的 `releaseFunctions` 表而非硬编码 `free`；复合赋值（`x += f()`、`q += p`）不再被当作直接赋值建立 RETURN 边 / 别名。
+- evidence：bounds-check 退出检测 AST 化（`stmtAlwaysExits`），不再因字符串字面量里的 "return"/"break" 误判退出；null_source 注释与裸 `0`（空指针常量）行为对齐。
+
+### Issue #275 — 深挖报告 P0/P1/P2 修复（#275 / #276）
+
+对每条从 issue #275 回源验证后修复；设计级提示注入得到数据边界 prompt 规则，更大的边界 token / 权限加固记录为后续：
+
+- **P0-1** db 只读绕过：`OpenReadOnly` 改用 SQLite URI `mode=ro`（引擎级只读）+ URI 转义路径，多语句 `PRAGMA query_only=0; DELETE ...` 不再能重开写；`OpenWithOptions` 同样转义 `?`/`#`/`%`。
+- **P0-2** OpenCode 工具会执行工作区 `.opencode/bin/secguard`：`findSecguard` 收敛为单一共享模块，只解析插件内置二进制或 PATH `secguard`，绝不解析工作区相对路径；consistency checker 与 build-packages.sh 携带共享模块，deploy.sh 与 `release/install.sh.tmpl` 同步复制 `findSecguard.ts` 并校验（#276）。
+- **P1-1** suppression/baseline 键补 `variable`（同一行被驳回的 finding 不再吞掉同行另一变量）；旧空 variable 行按通配集保持整位置行为。
+- **P1-2** `--skip-detectors` 复用陈旧事件：`detectorsComplete` 要求记录已完成检测器集合 == 必需集合，跳过检测器后会重跑检测器而非复用其事件。
+- **P1-3** 索引器跟随符号链接/特殊文件越界：`WalkCFiles`（及 repofacts/symbols 头文件普查）跳过一切非常规文件。
+- **P1-4** findings/ 投影按「路径末两段」折叠同尾路径：finding 身份与 latestPerLocation 键改用完整归一化路径。
+- **P1-5** Windows 绝对路径生成非法文件名：`sanitizeFilename` 改为字符白名单，`shortFile` 归一化 `\`，不再泄漏 `\`/`:`/控制字符。
+- **P1-6** report 接受未索引绝对路径：`resolveFindingFilePath` 对索引外绝对路径返回空，两条写路径拒绝，`--audit` 不再嵌入任意本地文件。
+- **P1-7** `classify --dry-run` 会写库 / executor 误标 done：dry-run 跳过 auto-confirm/scan-stat/done/finding 持久化；dismissed 落入 candidate_verdicts；批次错误/缺失/inconclusive/escalation 保持类型 pending 并记录 incomplete task。
+- **P1-8** 未信任源码拼入 prompt：worker prompt 与 agent-body.md 增加不可覆盖的数据边界规则。
+- **P1-9** `index` 在 detector/事件批量落盘失败时仍返回 ok：事件 flush 失败浮出为 detector error，命令非零退出并标记 partial。
+- **P2-1** `secguard_report` stats/read 把 `--scan-id <id>` 当一个 argv：改为 argv 数组。
+- **P2-2** `removeFlag` 吞掉布尔 flag 后的参数：新增 `removeBoolFlag` 处理 `--dry-run`/`--all`/`--list`。
+
+验证：`go build -buildvcs=false ./...`、`go test -buildvcs=false ./...`（24 包）、`go test -buildvcs=false -tags nosqlite ./internal/log/ ./internal/planner/ ./internal/db/`、`release/check-extension-consistency.py` 全通过；样例项目 E2E 扫描（OpenCode 安装）全 29 类型研判完毕、未分类候选 0、无缺失类型。
+
 ## [0.12.7] - 2026-11-12
 
 ### Issue #255 — 全局容器浅释放导致的字段内存泄漏检测
