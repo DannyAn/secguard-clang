@@ -16,6 +16,18 @@ func BinaryOperator(n Node) string {
 	return ""
 }
 
+// AssignmentOperator returns the operator token of an assignment_expression
+// ("=", "+=", "-=", "*=", "/=", "%=", "<<=", ">>=", "&=", "|=", "^="), or ""
+// when there is none. A compound assignment (`x += f()`, `q += p`) is NOT a
+// direct assignment: it neither receives the RHS as a return value nor aliases
+// the RHS, so dataflow/alias builders must skip it.
+func AssignmentOperator(n Node) string {
+	if op := n.ChildByFieldName("operator"); op != nil {
+		return op.Text()
+	}
+	return ""
+}
+
 // IsNullOperand reports whether an operand of a comparison is a null pointer
 // constant (NULL / nullptr / 0 / ((void*)0)). tree-sitter-c parses `NULL` as a
 // `null` literal node, distinct from a plain identifier.

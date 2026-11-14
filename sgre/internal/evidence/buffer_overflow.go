@@ -895,8 +895,10 @@ func hasPrecedingBoundsCheck(bc *bufCtx, f *db.Function, call parser.Node, callN
 			continue
 		}
 		// The guard must actually exit on overflow (return/break/continue); a body
-		// that merely assigns (`y = 1`) is not a guard.
-		if cons := ifNode.ChildByFieldName("consequence"); cons != nil && bodyExits(*cons) {
+		// that merely assigns (`y = 1`) is not a guard. AST-based stmtAlwaysExits,
+		// not the old bodyExits text search (a string literal or identifier
+		// containing "return"/"break" would have been misread as an exit).
+		if cons := ifNode.ChildByFieldName("consequence"); cons != nil && stmtAlwaysExits(*cons) {
 			return true
 		}
 	}
@@ -927,14 +929,6 @@ func condReferences(condText, name string) bool {
 		}
 	}
 	return false
-}
-
-// bodyExits reports whether an if consequence exits the current control flow
-// (return/break/continue/goto) — a true error-exit guard, not a mere assignment.
-func bodyExits(node parser.Node) bool {
-	text := node.Text()
-	return strings.Contains(text, "return") || strings.Contains(text, "break") ||
-		strings.Contains(text, "continue") || strings.Contains(text, "goto")
 }
 
 func isRelationalCondition(text string) bool {

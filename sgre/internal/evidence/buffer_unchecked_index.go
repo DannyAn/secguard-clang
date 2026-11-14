@@ -335,19 +335,19 @@ func hasIndexBoundsGuard(bc *bufCtx, f *db.Function, indexExpr, sourceField stri
 		case ">=":
 			// Surviving values are < bound, so the check only protects the
 			// array when the bound is not larger than its capacity.
-			if bound <= size && cons != nil && bodyExits(*cons) && !inConsequence {
+			if bound <= size && cons != nil && stmtAlwaysExits(*cons) && !inConsequence {
 				return true
 			}
 		case ">":
-			if bound < size && cons != nil && bodyExits(*cons) && !inConsequence {
+			if bound < size && cons != nil && stmtAlwaysExits(*cons) && !inConsequence {
 				return true
 			}
 		case "<":
-			if bound <= size && (inConsequence || (alt != nil && bodyExits(*alt))) {
+			if bound <= size && (inConsequence || (alt != nil && stmtAlwaysExits(*alt))) {
 				return true
 			}
 		case "<=":
-			if bound < size && (inConsequence || (alt != nil && bodyExits(*alt))) {
+			if bound < size && (inConsequence || (alt != nil && stmtAlwaysExits(*alt))) {
 				return true
 			}
 		}

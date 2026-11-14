@@ -34,6 +34,16 @@ func (s *store) WithTx(ctx context.Context, fn func(Store) error) error {
 	if err != nil {
 		return fmt.Errorf("db: with tx: begin: %w", err)
 	}
+	// Any exit path — error, early return, or PANIC — must roll the transaction
+	// back. A leaked deferred transaction holds its connection (and, after the
+	// first write, the SQLite write lock) until the process ends, so a handful of
+	// panics would exhaust SetMaxOpenConns(4) and hang the whole pipeline.
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
 
 	txStore := &store{db: s.db, exec: tx}
 	err = fn(txStore)
@@ -47,6 +57,7 @@ func (s *store) WithTx(ctx context.Context, fn func(Store) error) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("db: with tx: commit: %w", err)
 	}
+	committed = true
 	return nil
 }
 

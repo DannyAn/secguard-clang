@@ -6,8 +6,17 @@ import (
 )
 
 // ReplaceFuncPtrWrites atomically replaces the whole func_ptr_writes table (the
-// FuncPtrWriteBuilder rebuilds it every scan; the DB is ephemeral).
+// FuncPtrWriteBuilder rebuilds it every scan; the DB is ephemeral). The
+// delete-then-insert runs in one immediate transaction so a mid-batch insert
+// failure rolls the whole replacement back instead of leaving a half-populated
+// table (a torn table breaks the indirect CALL edges the next stage resolves).
 func (s *store) ReplaceFuncPtrWrites(ctx context.Context, writes []FuncPtrWrite) error {
+	return s.WithImmediateTx(ctx, func(tx Store) error {
+		return tx.(*store).replaceFuncPtrWrites(ctx, writes)
+	})
+}
+
+func (s *store) replaceFuncPtrWrites(ctx context.Context, writes []FuncPtrWrite) error {
 	if _, err := s.exec.ExecContext(ctx, `DELETE FROM func_ptr_writes`); err != nil {
 		return fmt.Errorf("db: delete func ptr writes: %w", err)
 	}

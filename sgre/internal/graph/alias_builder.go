@@ -55,9 +55,12 @@ func BuildInterproceduralAlias(ctx context.Context, store db.Store, p *parser.Pa
 	for _, f := range files {
 		fileByID[f.ID] = f
 	}
-	fnByName := make(map[string]*db.Function, len(fns))
+	// Same-name functions are legal C (a `static` in each translation unit), so
+	// a name maps to every candidate — a single-value map silently dropped all
+	// but the last and severed their cross-function alias edges.
+	fnByName := make(map[string][]*db.Function, len(fns))
 	for _, fn := range fns {
-		fnByName[fn.Name] = fn
+		fnByName[fn.Name] = append(fnByName[fn.Name], fn)
 	}
 	// File-scope symbol table (indexer): a name → storage-class map per file so
 	// `g = p` is a GLOBAL alias only when g is a declared file-scope name, and a
@@ -241,8 +244,12 @@ func extractFunctionAliases(g *AliasGraph, fn *db.Function, body parser.Node, fn
 			recordAliasFromAssign(g, fn, lhs.Text(), rhs.Text(), locals, fileID, fileScopeVars)
 		}
 	}
-	// Plain assignments: `q = p;` / `q = (T*)p;` / `q = p->f;`.
+	// Plain assignments: `q = p;` / `q = (T*)p;` / `q = p->f;`. A compound
+	// assignment (`q += p`) does NOT alias q to p, so it is skipped.
 	for _, assign := range body.FindAll("assignment_expression") {
+		if parser.AssignmentOperator(assign) != "=" {
+			continue
+		}
 		lhs := assign.ChildByFieldName("left")
 		rhs := assign.ChildByFieldName("right")
 		if lhs == nil || rhs == nil {
@@ -286,70 +293,68 @@ type functionAliasFacts struct {
 // extractCallAliases walks fn's body for call expressions and wires
 // cross-function alias edges: `q = foo()` links q to foo's return-alias
 // sources; `foo(p)` links p to foo's corresponding parameter.
-func extractCallAliases(g *AliasGraph, fn *db.Function, body parser.Node, fnByName map[string]*db.Function, facts map[int64]*functionAliasFacts) {
+func extractCallAliases(g *AliasGraph, fn *db.Function, body parser.Node, fnByName map[string][]*db.Function, facts map[int64]*functionAliasFacts) {
 	for _, call := range body.FindAll("call_expression") {
 		callee := call.ChildByFieldName("function")
 		if callee == nil || callee.Kind() != "identifier" {
 			continue
 		}
 		calleeName := callee.Text()
-		calleeFn, ok := fnByName[calleeName]
-		if !ok {
-			continue
-		}
-		calleeFacts := facts[calleeFn.ID]
-		if calleeFacts == nil {
+		calleeFns := fnByName[calleeName]
+		if len(calleeFns) == 0 {
 			continue
 		}
 		args := call.ChildByFieldName("arguments")
 		if args == nil {
 			continue
 		}
-		// Parameter aliasing: `foo(p)` links p to foo's i-th parameter.
-		argList := args.NamedChildren()
-		for i, arg := range argList {
-			if i >= len(calleeFacts.params) {
-				break
-			}
-			if arg.Kind() != "identifier" {
-				continue
-			}
-			a := AliasKey{FunctionID: fn.ID, Name: arg.Text()}
-			b := AliasKey{FunctionID: calleeFn.ID, Name: calleeFacts.params[i]}
-			g.AddWithKind(a, b, AliasEdgeParam)
-		}
 		// Return aliasing: `q = foo()` links q to foo's return-alias sources.
 		// The parent must be an assignment or init_declarator whose LHS is q.
 		parent := call.Parent()
-		if parent == nil {
-			continue
-		}
 		var lhsText string
-		switch parent.Kind() {
-		case "assignment_expression":
-			if lhs := parent.ChildByFieldName("left"); lhs != nil {
-				lhsText = lhs.Text()
+		if parent != nil {
+			switch parent.Kind() {
+			case "assignment_expression":
+				if lhs := parent.ChildByFieldName("left"); lhs != nil {
+					lhsText = lhs.Text()
+				}
+			case "init_declarator":
+				if d := parent.ChildByFieldName("declarator"); d != nil {
+					lhsText = d.Text()
+				}
 			}
-		case "init_declarator":
-			if d := parent.ChildByFieldName("declarator"); d != nil {
-				lhsText = d.Text()
-			}
-		}
-		if lhsText == "" {
-			continue
 		}
 		name := extractIdentifierFromDeclarator(lhsText)
-		if name == "" {
-			continue
-		}
-		for _, src := range calleeFacts.returnSources {
-			a := AliasKey{FunctionID: fn.ID, Name: name}
-			b := AliasKey{FunctionID: calleeFn.ID, Name: src}
-			kind := AliasEdgeReturn
-			if calleeFacts.danglingReturns[src] {
-				kind = AliasEdgeReturnDangling
+		argList := args.NamedChildren()
+		for _, calleeFn := range calleeFns {
+			calleeFacts := facts[calleeFn.ID]
+			if calleeFacts == nil {
+				continue
 			}
-			g.AddWithKind(a, b, kind)
+			// Parameter aliasing: `foo(p)` links p to foo's i-th parameter.
+			for i, arg := range argList {
+				if i >= len(calleeFacts.params) {
+					break
+				}
+				if arg.Kind() != "identifier" {
+					continue
+				}
+				a := AliasKey{FunctionID: fn.ID, Name: arg.Text()}
+				b := AliasKey{FunctionID: calleeFn.ID, Name: calleeFacts.params[i]}
+				g.AddWithKind(a, b, AliasEdgeParam)
+			}
+			if name == "" {
+				continue
+			}
+			for _, src := range calleeFacts.returnSources {
+				a := AliasKey{FunctionID: fn.ID, Name: name}
+				b := AliasKey{FunctionID: calleeFn.ID, Name: src}
+				kind := AliasEdgeReturn
+				if calleeFacts.danglingReturns[src] {
+					kind = AliasEdgeReturnDangling
+				}
+				g.AddWithKind(a, b, kind)
+			}
 		}
 	}
 }
@@ -510,7 +515,11 @@ func stripCast(s string) string {
 func returnSourceUnconditionallyFreed(body parser.Node, name string) bool {
 	for _, call := range body.FindAll("call_expression") {
 		callee := call.ChildByFieldName("function")
-		if callee == nil || callee.Text() != "free" {
+		if callee == nil {
+			continue
+		}
+		callName := callee.Text()
+		if !releaseFunctions[callName] {
 			continue
 		}
 		args := call.ChildByFieldName("arguments")
@@ -518,10 +527,17 @@ func returnSourceUnconditionallyFreed(body parser.Node, name string) bool {
 			continue
 		}
 		argList := args.NamedChildren()
-		if len(argList) == 0 {
+		// Most release functions free their first argument; freopen and HeapFree
+		// release the third (stream / lpMem), matching OwnershipBuilder's
+		// releaseArgIdentifier.
+		idx := 0
+		if callName == "freopen" || callName == "HeapFree" {
+			idx = 2
+		}
+		if len(argList) <= idx {
 			continue
 		}
-		if stripCast(argList[0].Text()) != name {
+		if stripCast(argList[idx].Text()) != name {
 			continue
 		}
 		if lineInConditional(body, call.StartLine()) {

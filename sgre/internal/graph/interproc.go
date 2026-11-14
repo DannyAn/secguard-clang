@@ -151,7 +151,12 @@ func (b *InterprocBuilder) Build(ctx context.Context) (*BuildResult, error) {
 
 			// RETURN edges: x = f(...) as either a plain assignment (assignment_expression)
 			// or a declaration initializer (init_declarator: int x = f(...)).
+			// A compound assignment (`x += f(...)`) does NOT receive f's return
+			// value, so it is skipped.
 			for _, assign := range nodesInRange(assigns, f.StartLine, f.EndLine) {
+				if parser.AssignmentOperator(assign) != "=" {
+					continue
+				}
 				children := assign.NamedChildren()
 				if len(children) < 2 {
 					continue
