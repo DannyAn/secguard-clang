@@ -448,10 +448,10 @@ func (d *NullSourceDetector) detectMallocResult(ctx context.Context, f *db.Funct
 }
 
 // detectExplicitNull records a DEFINITE null source: `p = NULL` / `p = nullptr`
-// / `p = (void*)0`. Unlike malloc/fopen (which may or may not return NULL),
-// an explicit null assignment means the pointer IS null, so a later dereference
-// is a definite null-deref (the must-analysis tier the AI does not need to
-// re-derive). It deliberately skips bare `0` (ambiguous with a zero int).
+// / `p = (void*)0` / `p = 0`. Unlike malloc/fopen (which may or may not return
+// NULL), an explicit null assignment means the pointer IS null, so a later
+// dereference is a definite null-deref (the must-analysis tier the AI does not
+// need to re-derive). A bare 0 is accepted as C's null pointer constant.
 func (d *NullSourceDetector) detectExplicitNull(ctx context.Context, f *db.Function, file *db.File, assigns, inits []parser.Node, result *DetectResult) {
 	checkNode := func(node parser.Node) {
 		lhs, rhs, ok := node.AssignParts()
@@ -603,9 +603,11 @@ func (d *NullSourceDetector) detectMacroNull(ctx context.Context, f *db.Function
 }
 
 // isNullLiteral reports whether an expression is an explicit null pointer
-// constant (NULL, nullptr, or a pointer-cast zero such as `(T*)NULL` /
-// `(T*)0`). A bare 0 is excluded because it is ambiguous with a zero integer
-// value; only a pointer-typed cast makes it an unambiguous null pointer.
+// constant (NULL, nullptr, or a zero such as `0` / `(T*)0`). A bare 0 IS a null
+// pointer constant in C (`p = 0` is a definite null for a pointer), so it is
+// accepted here; a non-pointer variable assigned 0 yields a NULL_VALUE that
+// never reaches a dereference, and the return-null path applies its own
+// scalar-return-type gate for `int f() { return 0; }`.
 func isNullLiteral(n parser.Node) bool {
 	switch n.Kind() {
 	case "parenthesized_expression":

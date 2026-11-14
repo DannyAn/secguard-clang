@@ -365,6 +365,36 @@ func TestUncheckedIndexGuardShapes(t *testing.T) {
 	}
 }
 
+// A guard body whose text merely CONTAINS "return" (a string literal / variable
+// name) is not an exit: it must not suppress the OOB event. The old bodyExits
+// text search misread `"return value too large"` as an exit guard.
+func TestUncheckedIndexGuardStringLiteralNotExit(t *testing.T) {
+	const fixture = `typedef struct {
+    unsigned int idx;
+    int v[4];
+} G_t;
+
+int string_guard(G_t *g)
+{
+    if (g->idx >= 4) {
+        const char *msg = "return value too large";
+        (void)msg;
+    }
+    return g->v[g->idx];
+}
+`
+	events := runUncheckedIndexDetect(t, map[string]string{"string_guard.c": fixture})
+	seeded := false
+	for _, e := range events {
+		if e.Function == "string_guard" {
+			seeded = true
+		}
+	}
+	if !seeded {
+		t.Fatalf("string_guard must seed an OOB event (its guard body only contains the text \"return\", it does not exit); got %+v", events)
+	}
+}
+
 // RC2a (issue #269): the capacity guard exits via `goto`, which bodyExits
 // previously missed (it only looked for return/break/continue). The customer's
 // shape is `if (cnt >= SUB_MAX) goto ERR;` followed by a local copy of the field

@@ -442,6 +442,31 @@ func TestStore_WithTx_CommitOnSuccess(t *testing.T) {
 	}
 }
 
+func TestStore_WithTx_PanicRollsBack(t *testing.T) {
+	ctx := context.Background()
+	s := NewTestStore(t)
+
+	func() {
+		defer func() { _ = recover() }()
+		_ = s.WithTx(ctx, func(txStore Store) error {
+			if _, err := txStore.InsertFile(ctx, &File{Path: "tx_panic.c"}); err != nil {
+				return err
+			}
+			panic("boom")
+		})
+	}()
+
+	// The transaction must have rolled back on panic: the insert before the
+	// panic must not persist, and the connection must be returned to the pool
+	// (a subsequent insert succeeds instead of hanging on a leaked write lock).
+	if f, _ := s.GetFileByPath(ctx, "tx_panic.c"); f != nil {
+		t.Error("expected file to be rolled back after panic, but it exists")
+	}
+	if _, err := s.InsertFile(ctx, &File{Path: "tx_after_panic.c"}); err != nil {
+		t.Fatalf("connection leaked after panic: subsequent insert failed: %v", err)
+	}
+}
+
 func TestStore_FunctionSummary_Upsert(t *testing.T) {
 	ctx := context.Background()
 	s := NewTestStore(t)

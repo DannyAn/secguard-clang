@@ -110,8 +110,12 @@ func (f *ContractGapFilter) Apply(ctx context.Context, candidates []Candidate) (
 
 	for _, c := range candidates {
 		fn := fnByID[c.FunctionID]
+		if fn == nil {
+			kept = append(kept, c)
+			continue
+		}
 		file := fileByID[fn.FileID]
-		if fn == nil || file == nil {
+		if file == nil {
 			kept = append(kept, c)
 			continue
 		}
