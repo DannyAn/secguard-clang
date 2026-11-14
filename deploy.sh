@@ -196,6 +196,7 @@ install_opencode() {
     done
 
     cp "$EXT_DIR/opencode/tools/"*.ts "$OPENCODE_PLUGIN_DIR/tools/" 2>&1 || true
+    cp "$EXT_DIR/opencode/findSecguard.ts" "$OPENCODE_PLUGIN_DIR/"
 
     install_skills "$OPENCODE_PLUGIN_DIR/skills"
 
@@ -239,6 +240,7 @@ with open(dst, 'w') as f:
     done
 
     cp "$EXT_DIR/opencode/tools/"*.ts "$OPENCODE_EXT_DIR/tools/" 2>&1 || true
+    cp "$EXT_DIR/opencode/findSecguard.ts" "$OPENCODE_EXT_DIR/"
     cp "$EXT_DIR/opencode-nga/plugins/"*.ts "$OPENCODE_EXT_DIR/plugins/" 2>&1 || true
 
     install_skills "$OPENCODE_EXT_DIR/skills"
@@ -713,6 +715,7 @@ case "$PLATFORM" in
         check_file "$OPENCODE_PLUGIN_DIR/agents/security-auditor.md"
         check_file "$OPENCODE_PLUGIN_DIR/tools/secguard_scan.ts"
         check_file "$OPENCODE_PLUGIN_DIR/tools/secguard_db.ts"
+        check_file "$OPENCODE_PLUGIN_DIR/findSecguard.ts"
         check_dir  "$OPENCODE_PLUGIN_DIR/skills/null-deref"
         check_dir  "$OPENCODE_PLUGIN_DIR/skills/buffer-overflow"
         check_dir  "$OPENCODE_PLUGIN_DIR/skills/memory-leak"
@@ -737,6 +740,7 @@ case "$PLATFORM" in
         check_file "$OPENCODE_EXT_DIR/plugins/secguard-context.ts"
         check_file "$OPENCODE_EXT_DIR/tools/secguard_scan.ts"
         check_file "$OPENCODE_EXT_DIR/tools/secguard_db.ts"
+        check_file "$OPENCODE_EXT_DIR/findSecguard.ts"
         check_dir  "$OPENCODE_EXT_DIR/skills/null-deref"
         check_dir  "$OPENCODE_EXT_DIR/skills/buffer-overflow"
         ;;

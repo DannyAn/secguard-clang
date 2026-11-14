@@ -153,6 +153,7 @@ install_opencode() {
     for f in "$src"/commands/*.md; do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/commands/$(basename "$f")"; done
     for f in "$src"/agents/*.md;   do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/agents/$(basename "$f")"; done
     for f in "$src"/tools/*.ts;    do [ -f "$f" ] && sg_cp_record "$f" "$OC_TARGET_DIR/tools/$(basename "$f")"; done
+    [ -f "$src/findSecguard.ts" ]  && sg_cp_record "$src/findSecguard.ts" "$OC_TARGET_DIR/findSecguard.ts"
 
     sg_install_skills "$OC_TARGET_DIR/skills"
 
@@ -200,6 +201,7 @@ with open(dst, 'w') as f:
     for f in "$src"/agents/*.md;   do [ -f "$f" ] && sg_cp_record "$f" "$OC_NGA_TARGET_DIR/agents/$(basename "$f")"; done
     for f in "$src"/tools/*.ts;    do [ -f "$f" ] && sg_cp_record "$f" "$OC_NGA_TARGET_DIR/tools/$(basename "$f")"; done
     for f in "$src"/plugins/*.ts;  do [ -f "$f" ] && sg_cp_record "$f" "$OC_NGA_TARGET_DIR/plugins/$(basename "$f")"; done
+    [ -f "$src/findSecguard.ts" ] && sg_cp_record "$src/findSecguard.ts" "$OC_NGA_TARGET_DIR/findSecguard.ts"
 
     sg_install_skills "$OC_NGA_TARGET_DIR/skills"
 

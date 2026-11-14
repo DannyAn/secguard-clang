@@ -360,6 +360,28 @@ def check_plugin_packaging():
         if "function findSecguard" in text:
             fail(f"opencode/tools/{fn}: must not define its own findSecguard (use the shared resolver)")
 
+    installer = os.path.join(RELEASE, "install.sh.tmpl")
+    with open(installer, encoding="utf-8") as f:
+        installer_text = f.read()
+    for target in ("OC_TARGET_DIR", "OC_NGA_TARGET_DIR"):
+        if f'sg_cp_record "$src/findSecguard.ts" "${target}/findSecguard.ts"' not in installer_text:
+            fail(
+                f"release/install.sh.tmpl does not install findSecguard.ts into {target} — every tool "
+                "imports ../findSecguard, so the plugin fails to resolve, OpenCode silently skips the "
+                "whole plugin, and no commands/tools/agent appear"
+            )
+
+    deploy = os.path.join(os.path.dirname(RELEASE), "deploy.sh")
+    with open(deploy, encoding="utf-8") as f:
+        deploy_text = f.read()
+    for target in ("OPENCODE_PLUGIN_DIR", "OPENCODE_EXT_DIR"):
+        if f'cp "$EXT_DIR/opencode/findSecguard.ts" "${target}/"' not in deploy_text:
+            fail(
+                f"deploy.sh does not install findSecguard.ts into {target} — every tool imports "
+                "../findSecguard, so the plugin fails to resolve, OpenCode silently skips the whole "
+                "plugin, and no commands/tools/agent appear"
+            )
+
     print("  plugin packaging: uniform namespace + shim templates + bundled-bin resolution")
 
 
