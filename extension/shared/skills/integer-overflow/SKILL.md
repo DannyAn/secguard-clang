@@ -141,13 +141,21 @@ emitted — their overflow requires an operand within one bit of the type maximu
 which is implausible, so the detector no longer surfaces them.
 
 ### Fix Suggestions
-- Use `size_t` for all size calculations (never `int`)
-- Check before multiply: `if (count > SIZE_MAX / elem_size) return NULL;`
-- Check before add: `if (a > SIZE_MAX - b) return NULL;`
-- Check before unsigned subtract: `if (consumed > total) return error;`
-- Use compiler builtins: `__builtin_mul_overflow(count, elem_size, &total)`
-- Use checked-allocation wrappers that validate internally
-- Clamp `count` to a reasonable maximum before arithmetic
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Check before the arithmetic that feeds the sink:
+  `if (count > SIZE_MAX / elem_size) return NULL;` (multiply), `if (a > SIZE_MAX -
+  b)` (add), `if (consumed > total) return error;` (subtract); or use
+  `__builtin_mul_overflow(count, elem_size, &total)` / a checked-allocation
+  wrapper.
+- **Required conditions** — The operands' true source ranges (attacker-controlled
+  vs. bounded) must be known; use `size_t` for size math, and clamp `count` to a
+  plausible maximum where the value is external. Do not cast to a wider type to
+  hide the overflow, and do not truncate the result back to the original width.
+- **Validation** — Confirm the checked value is what reaches the sink, normal
+  in-range inputs are unchanged, and the re-scan no longer reports the location.
 
 ### Examples
 

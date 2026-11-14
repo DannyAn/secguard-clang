@@ -160,10 +160,20 @@ real overflow. Trace the size to its source and apply the same attacker-controll
 vs. bounded distinction.
 
 ### Fix Suggestions
-- Replace with safe function: `memcpy_s(dst, sizeof(dst), src, n)`
-- Add bounds check: `if (n > sizeof(dst)) return -1;`
-- Use safe wrapper: `SafeCopy_copy(&buf, src, len)`
-- For arrays: `if (index >= array_size) return -1;`
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Bound the copy/index before the sink: `if (n > sizeof(dst))
+  return -1;` or `if (index >= array_size) return -1;`, or replace with a sized
+  safe call (`memcpy_s(dst, sizeof(dst), src, n)`, `SafeCopy_copy(&buf, src, len)`).
+- **Required conditions** — The capacity and the length must come from the same
+  source that sized the buffer; when the caller's capacity is not in the context,
+  name it as "to confirm" instead of inventing one. Avoid `sizeof(pointer)` where
+  the buffer's real capacity is meant, truncating the length to hide the overflow,
+  or adding only a NULL check for an out-of-bounds write.
+- **Validation** — Confirm the original path is bounded for every input, normal
+  behavior is unchanged, and the re-scan no longer reports the location.
 
 ### Examples
 

@@ -107,11 +107,20 @@ the embedded section and the indexed lookup.
 - `void *`-holding arrays (`void *arr[]`) sorted with a pointer comparator.
 
 ### Fix Suggestions
-- For a `char buf[]` sort, use `(const char *)a` (or `strcmp(a, b)`), not
-  `*(const char **)a`.
-- If elements ARE pointers, declare the base `char *arr[]` (or pass
-  `sizeof(char *)`), so `*(const char **)a` is correct.
-- Remove the erroneous extra indirection level.
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Align the comparator with the element type: for a
+  `char buf[]` (chars) use `(const char *)a` / `strcmp(a, b)`, not
+  `*(const char **)a`; if the elements really are pointers, declare the base
+  `char *arr[]` so `*(const char **)a` is correct. Remove the extra indirection
+  level that misreads the element.
+- **Required conditions** — The element's true representation (a char vs. a
+  `char *`) must be confirmed from the declaration before picking the fix; do not
+  flip the comparator without checking the base array type.
+- **Validation** — Re-run the scan and confirm the location no longer reports;
+  verify the comparator reads each element within its real width.
 
 ### CWE mapping
 `CWE-843` (type confusion) is the **default** mapping for a confirmed

@@ -146,13 +146,21 @@ the embedded section and the indexed lookup.
 - **Precompiled XPath**: `compiled = xmlXPathCompileExpr("//const"); xmlXPathCompiledEval(compiled, ctx)` → **false-positive** (parameterized)
 
 ### Fix Suggestions
-- Command execution: Use `execve` with argument array, never `system()`
-- SQL: Use prepared statements with parameter binding
-- Argument injection: Validate argv elements with `SafeExecArg` or whitelist
-- XML/XPath: Use precompiled XPath expressions with `xmlXPathCompileExpr`
-- CRLF: Strip/escape `\r\n` in header values with `validate_header`
-- Log: Strip/escape newlines in log messages with `escape_newlines`
-- Input validation: Use whitelist, not blacklist
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Replace the tainted sink with the parameterized form the
+  finding names: command → `execve` with an argument array (never `system`); SQL →
+  prepared statements; XML/XPath → `xmlXPathCompileExpr`; CRLF/log → strip or
+  escape newlines (`validate_header` / `escape_newlines`).
+- **Required conditions** — Validate against a whitelist, not a blacklist, and run
+  the sanitizer on every path from the source to the sink. Do not "escape" by
+  deleting dangerous characters in a way that still allows a bypass, and do not
+  keep `system()` while filtering arguments.
+- **Validation** — Confirm the tainted input can no longer reach the sink
+  unsanitized, the whitelist covers the sink's grammar, and the re-scan no longer
+  reports the location.
 
 ### Examples
 

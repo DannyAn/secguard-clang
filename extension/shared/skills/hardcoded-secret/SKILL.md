@@ -65,13 +65,20 @@ the embedded section and the indexed lookup.
 | Short value that is not credential-like | **false-positive** |
 
 ### Fix Suggestions
-- Load secrets from environment variables: `getenv("APP_PASSWORD")`
-- Use a secrets manager (HashiCorp Vault, AWS KMS, Azure Key Vault)
-- Store in config file with `0600` permissions, outside the repo
-- Never commit credentials to source control
-- Add `.gitignore` entries for secret files
-- Rotate any credentials that were previously hardcoded
-- Use `git-secrets` or `trufflehog` to scan for leaked credentials in git history
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Move the secret out of source: load it from an environment
+  variable (`getenv("APP_PASSWORD")`) or a secrets manager (Vault/KMS/Key Vault),
+  or an out-of-repo config file with `0600` permissions.
+- **Required conditions** — The runtime must actually inject the secret (env/CI/
+  secret store) before the code path runs; document that dependency. Always rotate
+  the exposed credential — removing it from source is not enough — and scrub it
+  from git history (`git-secrets`/`trufflehog`).
+- **Validation** — Confirm the code reads the secret from the new source, the
+  literal no longer appears in the tree or history, and the re-scan no longer
+  reports the location.
 
 ### Examples
 

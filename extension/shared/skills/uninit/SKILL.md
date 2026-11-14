@@ -75,10 +75,19 @@ the embedded section and the indexed lookup.
 - Static variables (zero-initialized by C standard)
 
 ### Fix Suggestions
-- Initialize at declaration: `int x = 0;`
-- Initialize on every branch: `if (c) { x = a; } else { x = b; }`
-- Zero a struct before use: `memset(&s, 0, sizeof(s));`
-- Prefer `calloc` over `malloc` for a buffer that is read before a full write
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Initialize before the read: at declaration (`int x = 0;`),
+  on every branch (`if (c) { x = a; } else { x = b; }`), zero a struct
+  (`memset(&s, 0, sizeof(s))`), or `calloc` a buffer that is read before a full
+  write.
+- **Required conditions** — Every path into the read must write the value first;
+  initializing only one branch (or only the declaration) still leaves the other
+  paths uninitialized.
+- **Validation** — Confirm the value is written before every read on every path,
+  normal behavior is unchanged, and the re-scan no longer reports the location.
 
 ### Examples
 

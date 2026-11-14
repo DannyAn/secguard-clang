@@ -65,10 +65,19 @@ never reported — do not re-flag a handler because it calls one of them.
   does not flag the async-signal-safe functions listed above.
 
 ### Fix Suggestions
-- Do only async-signal-safe work in the handler: set a `volatile sig_atomic_t`
-  flag and return; let the main loop do the heavy lifting
-- If logging is required, use `write(fd, ...)` to a pre-opened fd, not `printf`/`syslog`
-- Never allocate or take a lock in a signal handler
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Do only async-signal-safe work in the handler: set a
+  `volatile sig_atomic_t` flag and return, and let the main loop do the heavy
+  lifting; if logging is required, `write(fd, ...)` to a pre-opened fd (never
+  `printf`/`syslog`).
+- **Required conditions** — The handler must not allocate or take a lock (both
+  are async-signal-unsafe); move that work to the main loop that polls the flag.
+- **Validation** — Confirm the handler only touches the flag (and async-signal-safe
+  writes), the main loop drains the flag, and the re-scan no longer reports the
+  location.
 
 ### Examples
 

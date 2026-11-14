@@ -88,11 +88,21 @@ the embedded section and the indexed lookup.
   could not resolve (it skips those)
 
 ### Fix Suggestions
-- Pass an object whose declared type matches the parameter, or widen the object
-  (`uint32_t x` → `uint64_t x`) so the callee reads no more than the object holds.
-- Change the parameter to `void *` (or a byte type) when the callee is a generic
-  consumer that should not assume the object type.
-- Remove the cast and fix the object's declared type so no reinterpretation occurs.
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Make the object's declared type match the parameter (or
+  widen it, `uint32_t x` → `uint64_t x`) so the callee reads no more than the
+  object holds; switch the parameter to `void *`/a byte type when the callee is a
+  generic consumer; remove the cast and correct the declared type when the cast
+  itself is the reinterpretation.
+- **Required conditions** — The callee's real read/write width (its definition or
+  call contract) must be known before widening; confirm it rather than guessing.
+  Do not silence the finding by casting to `void *` when the callee still reads
+  the concrete type.
+- **Validation** — Re-run the scan and confirm the location no longer reports;
+  verify every call site passes an object the callee's reads fit within.
 
 ### Examples
 

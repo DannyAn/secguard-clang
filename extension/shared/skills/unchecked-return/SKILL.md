@@ -68,6 +68,21 @@ the embedded section and the indexed lookup.
 - All consumers entry-guard or positively guard the argument and the results are discarded (`(void)filter_add(f, x)`) or void-internal — a NULL result has no observable consequence
 - Out-param allocator (`asprintf`/`vasprintf`/`getline`/`getdelim`) whose target is only handed to a callee, not dereferenced in-function: `asprintf(&err_msg, ...); return fail(error, err_msg, EXIT_FAILURE);`. The return value is a status code, and a failed call leaves the out-param NULL (glibc semantics); the NULL risk belongs to the null-deref chain (the callee's NULL contract, e.g. `fail` handles `msg == NULL` with a default message), never to unchecked-return. The detector already suppresses this shape — it fires only when the out-param is dereferenced in-function without a guard (`asprintf(&p, ...); p[0] = x;`).
 
+### Fix Suggestions
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Check the return before use: `p = malloc(n); if (!p)
+  return -1;` for allocations, and check the read/recv length before using the
+  buffer (`ssize_t n = read(fd, buf, sizeof buf); if (n < 0) ...`).
+- **Required conditions** — The callee's failure sentinel (NULL / -1 / error code)
+  must be established from its contract before writing the check; match the
+  function's existing error convention. Do not add a check the caller has no way
+  to honor (a `zmalloc`-style wrapper that aborts on OOM needs no NULL check).
+- **Validation** — Confirm the checked result covers every consumer, a failure can
+  no longer reach the use, and the re-scan no longer reports the location.
+
 ### Examples
 
 ```c

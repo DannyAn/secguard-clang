@@ -66,10 +66,20 @@ the embedded section and the indexed lookup.
 - A log/format wrapper whose every in-tree call site passes a string literal (`callsites@N:all-literal`) — the pipeline drops these before they reach you; if one slips through WITH the census token, **dismiss it from that token** (no source read, no `grep`). A vprintf-style wrapper (`vsnprintf(buf, n, fmt, args)` with `fmt` a parameter) is exactly this shape: the parameter being non-literal is NOT the defect when every caller binds it to a literal, and an object-like macro whose body is a string literal (`#define MSG_FMT "%d"`) counts as a literal caller
 
 ### Fix Suggestions
-- Always use string literal as format: `printf("%s", user_input)` instead of `printf(user_input)`
-- Use `fputs()` instead of `printf()` when no formatting is needed
-- Use `snprintf()` with bounded buffer size to prevent overflow
-- Never pass user-controlled data as the format argument
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Pass a literal format and the data as an argument
+  (`printf("%s", user_input)` instead of `printf(user_input)`), or use `fputs` /
+  `snprintf` with a bounded size when no formatting is needed.
+- **Required conditions** — The call's arguments must match the new format
+  specifiers (count and types); never let user-controlled data be the format
+  argument. Do not wrap the input in a literal that still lets an attacker-supplied
+  `%s`/`%n` reach the interpreter.
+- **Validation** — Confirm the format is a compile-time literal at the call, all
+  variadic arguments are typed correctly, and the re-scan no longer reports the
+  location.
 
 ### Examples
 

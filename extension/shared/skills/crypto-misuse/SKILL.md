@@ -85,14 +85,21 @@ the embedded section and the indexed lookup.
 | RSA key ≥ 2048 bits | **false-positive** |
 
 ### Fix Suggestions
-- DES/3DES → AES-256 (CBC or GCM mode)
-- MD5 → SHA-256 or SHA-3; SHA1 → SHA-256 or SHA-3
-- RC4 → AES-256
-- `rand()` → `getrandom()` (Linux), `CryptGenRandom()` (Windows), `RAND_bytes()` (OpenSSL)
-- Use keys of at least 128 bits (256 recommended for long-term security)
-- RSA keys: minimum 2048 bits (3072 recommended for 2030+)
-- Use vetted crypto libraries (OpenSSL, libsodium, BoringSSL) — never roll your own
-- For hashing passwords: use bcrypt, scrypt, or Argon2 (not raw SHA-256)
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Swap the weak primitive for the strong one the finding
+  names: DES/3DES/RC4 → AES-256 (CBC/GCM); MD5/SHA-1 → SHA-256/SHA-3; `rand()`
+  → `getrandom()`/`RAND_bytes()`; password hashing → bcrypt/scrypt/Argon2; key
+  sizes → ≥128 bits symmetric, ≥2048-bit RSA.
+- **Required conditions** — The replacement must preserve the finding's security
+  role (hashing a password ≠ a non-security checksum); use a vetted library
+  (OpenSSL, libsodium, BoringSSL), never a hand-rolled primitive. Do not strengthen
+  a weak checksum when the role is non-security — that is not this finding's fix.
+- **Validation** — Confirm the new primitive satisfies the security role, the
+  call-site key/IV/nonce contract is correct, and the re-scan no longer reports
+  the location.
 
 ### Examples
 

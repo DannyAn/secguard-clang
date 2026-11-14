@@ -154,10 +154,21 @@ An **error-path leak is confirmed, not suspected**: if the function demonstrably
   only when the caller's cleanup does not cover the field.
 
 ### Fix Suggestions
-- Release on every relevant error path, or route every exit through one `goto cleanup`
-- Preserve the original pointer on `realloc` failure: `tmp = realloc(p, n); if (tmp) p = tmp;`
-- Do not overwrite the only reference to a live allocation (`p = malloc(); p = malloc();` leaks the first block)
-- Do not add `free()` blindly: the pointer may be borrowed, already released, pool-managed, or owned elsewhere (risks double-free / use-after-free)
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Release the allocation on every exit path (route them
+  through one `goto cleanup`), and on `realloc` failure keep the original pointer:
+  `tmp = realloc(p, n); if (tmp) p = tmp;`. Do not overwrite the only reference to
+  a live allocation.
+- **Required conditions** — Establish the pointer's ownership before adding a
+  `free`: it may be borrowed, already released, pool-managed, or owned elsewhere,
+  so an unguarded `free` risks double-free / use-after-free. The fix must cover
+  the specific leak path the Reasoning names.
+- **Validation** — Confirm every path (success and error) releases exactly once,
+  no early return skips the cleanup, and the re-scan no longer reports the
+  location.
 
 ### Severity Matrix
 

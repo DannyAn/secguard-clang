@@ -78,9 +78,18 @@ the deciding question is whether the two cases are independent semantic actions.
   when a default is present, even an empty one)
 
 ### Fix Suggestions
-- Terminate each case with `break` (or `return`)
-- Add an explicit `/* fall through */` comment where the fallthrough is intended
-- Add a `default` that handles or rejects unknown enum values
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Terminate each independent case with `break`/`return`, add
+  an explicit `/* fall through */` marker where the fallthrough is intended, and
+  add a `default` that handles or rejects unknown enum values.
+- **Required conditions** — Decide per case whether the fallthrough is intended
+  (a ladder) or a bug; do not blanket-insert `break` into a deliberate fallthrough
+  ladder without marking it.
+- **Validation** — Confirm each case's control flow is as intended, the default
+  covers unknown values, and the re-scan no longer reports the location.
 
 ### Examples
 

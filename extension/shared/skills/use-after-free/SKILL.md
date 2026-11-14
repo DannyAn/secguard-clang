@@ -67,10 +67,18 @@ when the use is after that release.
 - `if (cond) { free(ptr); } ... if (!cond) { ptr->field; }` — mutually exclusive branches
 
 ### Fix Suggestions
-- Set pointer to NULL after free: `free(ptr); ptr = NULL;`
-- Use a wrapper that nulls the pointer: `#define SAFE_FREE(p) do { free(p); p = NULL; } while(0)`
-- Avoid using the freed pointer — restructure code to move use before free
-- Consider using use-after-free sanitizers (ASan) during testing
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Null the pointer after free (`free(p); p = NULL;` or a
+  `SAFE_FREE(p)` wrapper), or restructure the code so the use happens before the
+  free; the freed pointer must not be dereferenced afterward.
+- **Required conditions** — Cover every alias/field still referencing the object,
+  not just the reported pointer; nulling one reference while another is used still
+  uses freed memory. Verify with ASan during testing.
+- **Validation** — Confirm no path uses the pointer after it is freed, cleanup
+  still releases correctly, and the re-scan no longer reports the location.
 
 ### Examples
 

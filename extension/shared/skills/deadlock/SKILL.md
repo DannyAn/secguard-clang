@@ -70,13 +70,21 @@ the embedded section and the indexed lookup.
 | Same lock acquired twice (non-recursive mutex) | **confirmed** |
 
 ### Fix Suggestions
-- Establish a global lock hierarchy and document it; always acquire in order
-- Use `pthread_mutex_timedlock()` to detect and recover from deadlocks
-- Consider a single coarse-grained lock if ordering is hard to maintain
-- Refactor to avoid nested locking (split critical sections)
-- Use lock-free data structures where possible (atomics, RCU)
-- Run with ThreadSanitizer (TSan) to detect lock-order issues at runtime
-- Use lock-ordering linters or static analysis to enforce the hierarchy
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Establish and document a global lock order and acquire
+  every path in that order; where ordering is hard, collapse to a single
+  coarse-grained lock, refactor to avoid nested locking, or use lock-free
+  primitives (atomics/RCU).
+- **Required conditions** — The full acquire set on each concurrent path must be
+  known (the finding's two lock sites and any other locks they take) before the
+  order is chosen; `pthread_mutex_timedlock` only detects/recovers, it does not
+  remove the inversion.
+- **Validation** — Confirm the two conflicting paths now acquire in one order,
+  run ThreadSanitizer / a lock-order linter, and re-scan to confirm the cycle no
+  longer reports.
 
 ### Examples
 

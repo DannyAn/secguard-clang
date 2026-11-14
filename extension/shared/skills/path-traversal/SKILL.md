@@ -110,32 +110,35 @@ one to inspect.
 
 ### Fix Suggestions
 
-Give the developer a concrete, copy-pasteable check — the canonical anti-
-traversal pattern is: **reject `..`/absolute paths → resolve with `realpath` →
-verify the result stays inside the allowed base directory**:
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
 
-```c
-// 1. Reject absolute paths and any '..' component
-if (path[0] == '/' || strstr(path, "..") != NULL) return -1;
-// 2. Build under a fixed base directory
-char safe[PATH_MAX];
-snprintf(safe, sizeof(safe), "%s/%s", BASE_DIR, path);
-// 3. Canonicalize and confirm it stays inside BASE_DIR (note the '/' boundary:
-//    a bare prefix compare would accept /srv/baseevil for BASE_DIR=/srv/base)
-char resolved[PATH_MAX];
-if (realpath(safe, resolved) == NULL) return -1;
-size_t base_len = strlen(BASE_DIR);
-if (strncmp(resolved, BASE_DIR, base_len) != 0 ||
-    (resolved[base_len] != '\0' && resolved[base_len] != '/')) return -1;
-// 4. Only now touch the filesystem
-FILE *f = fopen(resolved, "r");
-```
+- **Recommended fix** — Reject `..`/absolute paths, then resolve and verify the
+  result stays inside the allowed base directory (note the `/` boundary — a bare
+  prefix compare accepts `/srv/baseevil` for `BASE_DIR=/srv/base`):
 
-For write/delete sinks (`unlink`/`rename`/`chmod`), `realpath` fails on a
-not-yet-created target, so anchor the directory instead and use
-`openat(dfd, path, O_NOFOLLOW)` with the `dfd` from `open(BASE_DIR, O_DIRECTORY)`
-— that removes the TOCTOU window and the prefix-bypass at once.
-```
+  ```c
+  if (path[0] == '/' || strstr(path, "..") != NULL) return -1;
+  char safe[PATH_MAX];
+  snprintf(safe, sizeof(safe), "%s/%s", BASE_DIR, path);
+  char resolved[PATH_MAX];
+  if (realpath(safe, resolved) == NULL) return -1;
+  size_t base_len = strlen(BASE_DIR);
+  if (strncmp(resolved, BASE_DIR, base_len) != 0 ||
+      (resolved[base_len] != '\0' && resolved[base_len] != '/')) return -1;
+  FILE *f = fopen(resolved, "r");
+  ```
+
+  For write/delete sinks (`unlink`/`rename`/`chmod`), `realpath` fails on a
+  not-yet-created target: anchor the directory instead and use
+  `openat(dfd, path, O_NOFOLLOW)` with `dfd = open(BASE_DIR, O_DIRECTORY)`.
+- **Required conditions** — `BASE_DIR` must be a trusted, fixed directory the
+  attacker cannot control; confirm the sink's input is the canonicalized path, not
+  the raw one. Do not rely on a bare string-prefix compare, and do not skip the
+  `..`/absolute check.
+- **Validation** — Confirm `../` and absolute inputs are rejected or confined to
+  `BASE_DIR`, symlinks cannot escape via `O_NOFOLLOW`, and the re-scan no longer
+  reports the location.
 
 ### Severity Matrix
 

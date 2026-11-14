@@ -109,10 +109,19 @@ close(fd);
 - Process exit after acquire (OS cleans up)
 
 ### Fix Suggestions
-- Close on every error path: `if (ret != 0) { close(fd); return -1; }`
-- Route every exit through one `goto cleanup` that closes what was acquired
-- Prefer the platform's RAII/cleanup attribute over a manual close
-- Do not hand a raw handle to a callee whose ownership contract is unclear
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Close the handle on every exit path
+  (`if (ret != 0) { close(fd); return -1; }`), route every exit through one
+  `goto cleanup`, or use the platform's RAII/cleanup attribute instead of a manual
+  close.
+- **Required conditions** — Establish the handle's ownership before changing the
+  close: do not hand a raw handle to a callee whose ownership contract is unclear,
+  and make sure the cleanup closes only what was actually acquired on that path.
+- **Validation** — Confirm no early return/error path leaks the handle, the
+  cleanup order stays correct, and the re-scan no longer reports the location.
 
 ### Severity Matrix
 

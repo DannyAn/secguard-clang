@@ -60,6 +60,22 @@ the embedded section and the indexed lookup.
 - `sizeof(char*)` used intentionally (array of pointers)
 - A macro that expands `sizeof(*p)` but is text-matched as `sizeof(p)`
 
+### Fix Suggestions
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Size the object, not the pointer: `sizeof(*p)` /
+  `sizeof(struct foo)` instead of `sizeof(p)` when allocating or `memset`ing the
+  pointee.
+- **Required conditions** — Confirm the intended element is the pointee (values)
+  vs. the pointer itself (pointer slots): `malloc(n * sizeof(p))` is only correct
+  for an array of pointers. Do not keep `sizeof(p)` while adding a compensating
+  multiplier.
+- **Validation** — Confirm the allocation/`memset` size now equals the pointee's
+  real width, the elements are read/written within that width, and the re-scan no
+  longer reports the location.
+
 ### Examples
 
 ```c

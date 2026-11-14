@@ -82,12 +82,21 @@ the embedded section and the indexed lookup.
 | Shared variable reached by ≥ 2 live thread instances — including the SAME thread function started twice via `pthread_create` | **confirmed** when ≥1 write and no common lock/atomic guards every access |
 
 ### Fix Suggestions
-- Replace `access()` + `fopen()` with direct `fopen()` and error check
-- Use `open()` with `O_NOFOLLOW` to reject symlinks
-- Hold the mutex through both check and mutation (don't unlock between)
-- Use `fstat()` on the fd instead of `stat()` on the path
-- For file locking, use `flock()` or `fcntl(F_SETLK)` for atomic lock+check
-- Consider single-threaded design for simple cases
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Remove the TOCTOU gap or close the shared-state race: for
+  files, replace `access()`+`fopen()` with a direct `fopen()`/`open(O_NOFOLLOW)`
+  and error check, `fstat()` the opened fd instead of `stat()` the path, and use
+  `flock`/`fcntl(F_SETLK)`; for shared globals, hold the mutex through both the
+  check and the mutation.
+- **Required conditions** — Every reader/writer of the shared state or file must
+  take the same lock; unlocking between check and use re-opens the race. Confirm
+  the exact interleaving the finding names before choosing the lock granularity.
+- **Validation** — Confirm the check and the use are atomic under one lock (or a
+  single fd), run ThreadSanitizer, and re-scan to confirm the location no longer
+  reports.
 
 ### Examples
 

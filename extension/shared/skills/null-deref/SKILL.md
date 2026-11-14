@@ -254,11 +254,22 @@ pipeline's null-flow proof may be wrong. Verify the macro before confirming:
   — do not dismiss merely because the call site looks opaque.
 
 ### Fix Suggestions
-- Add NULL check before dereference: `if (ptr == NULL) { return -1; }`
-- Use early return pattern: `if (!ptr) return;`
-- For malloc: always check return before use
-- For function returns: check API contract — does it document NULL return?
-- When the Evidence section notes `the same nullable X is also dereferenced at line(s) N, M`, the candidate covers EVERY sink of that variable — the fix must guard all of them, not just the reported line.
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Guard the dereference with a NULL check before use
+  (`if (ptr == NULL) return -1;` / `if (!ptr) return;`); for a `malloc`/call
+  result, check it before use and match the API's documented NULL contract for
+  function returns.
+- **Required conditions** — The guard must sit on the path that reaches the
+  dereference, and must use a return/error convention the caller already supports;
+  when the Evidence section says `the same nullable X is also dereferenced at
+  line(s) N, M`, the fix must guard EVERY sink of that variable, not just the
+  reported line.
+- **Validation** — Confirm the NULL source can no longer reach any dereference,
+  normal non-NULL behavior is unchanged, and the re-scan no longer reports the
+  location.
 
 ### Examples
 

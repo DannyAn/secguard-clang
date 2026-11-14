@@ -150,19 +150,23 @@ while this type answers "is a non-`_s` API used at all". Both are reported.
   `[banned_functions]` at scan time.
 
 ### Fix Suggestions
-- `gets(buf)` → `fgets(buf, sizeof(buf), stdin)`
-- `mktemp(t)` / `tmpnam(t)` → `mkstemp(t)`
-- `gethostbyname(n)` / `gethostbyaddr(...)` → `getaddrinfo(...)` / `getnameinfo(...)`
-- `inet_addr(s)` → `inet_pton(AF_INET, s, &addr)`
-- `memcpy`/`memmove`/`memset` → `memcpy_s`/`memmove_s`/`memset_s`
-- `strcpy`/`strncpy`/`strcat`/`strncat` → `strcpy_s`/`strncpy_s`/`strcat_s`/`strncat_s`
-- `sprintf`/`snprintf`/`vsnprintf` → `sprintf_s`/`snprintf_s`/`vsnprintf_s`
-- `scanf`/`sscanf`/`fscanf` → `scanf_s`/`sscanf_s`/`fscanf_s`
-- `atoi`/`atol`/`atoll`/`atof` → `strtol`/`strtoll`/`strtod`
-- `exit`/`abort` (outside main) → return an error to the caller
-- `alloca` → `malloc`/`free`
-- `setjmp`/`longjmp` → return-value error propagation
-- `realloc` → `malloc` + copy + `free`
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Replace the banned call with the safe equivalent the
+  finding names: `gets` → `fgets(buf, sizeof(buf), stdin)`; `mktemp`/`tmpnam` →
+  `mkstemp`; `gethostbyname` → `getaddrinfo`; `inet_addr` → `inet_pton`;
+  `strcpy`/`strcat`/`sprintf`/`scanf` → their `_s` bounded forms; `atoi` →
+  `strtol`; `alloca` → `malloc`/`free`; `exit`/`abort` (outside main) → return an
+  error; `setjmp`/`longjmp` → return-value propagation.
+- **Required conditions** — The replacement's extra arguments (destination size,
+  buffer count, base pointer) must be the object's real capacity, not a guess;
+  confirm the caller's size is obtainable before writing the fix. Do not swap in an
+  `_s` form whose bounds you cannot express, and do not keep the banned call behind
+  a `(void)` cast.
+- **Validation** — Re-run the scan and confirm the location no longer reports;
+  verify the replacement preserves behavior on the success and error paths.
 
 ### Examples
 

@@ -146,14 +146,21 @@ unchecked channel is deliberately restricted to external field indices so that
 the ordinary loop/parameter shape does not flood the review queue.
 
 ### Fix Suggestions
-- Change the loop to `i < arr_size` or `i <= arr_size - 1`
-- Check the index against the allocation size before dereferencing
-- Use `snprintf`-style sized APIs when reading from formatted buffers
-- Validate an external index at the entry, before any array access:
-  `if (p->actived_index >= COUNT) { return CONTINUE; }` — the check must use the
-  array's real capacity (the same macro/constant its declaration uses)
-- Do not paper over the chain by null-checking the element's pointer member: the
-  element itself is out of range, so the bounds check is the fix
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Bound the index before the access: change the loop to
+  `i < arr_size`, check `i` against the allocation size, validate an external
+  index at entry (`if (p->actived_index >= COUNT) return CONTINUE;`), or use a
+  sized API (`snprintf`) when reading formatted buffers.
+- **Required conditions** — The check must use the array's REAL capacity (the same
+  macro/constant its declaration uses), not a hardcoded guess. Do not paper over
+  the chain by NULL-checking the element's pointer member — the element itself is
+  out of range, so the bounds check is the fix.
+- **Validation** — Confirm the index is bounded on every path into the access,
+  normal in-range behavior is unchanged, and the re-scan no longer reports the
+  location.
 
 ### Severity Matrix
 

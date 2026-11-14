@@ -80,10 +80,20 @@ do NOT transfer ownership — the caller still owns the item and must free it.
 - `may_free` where the helper's condition and the cleanup are mutually exclusive (e.g. the helper's error path returns before the cleanup)
 
 ### Fix Suggestions
-- Set pointer to NULL after free: `free(ptr); ptr = NULL;`
-- Use a safe free macro: `#define SAFE_FREE(p) do { free(p); p = NULL; } while(0)`
-- Track ownership explicitly — only one code path should own the free
-- Use RAII patterns where available
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Null the pointer after the first free
+  (`free(p); p = NULL;` or a `SAFE_FREE(p)` macro) so a second free is a no-op, or
+  restructure so exactly one owner frees each object (RAII where available).
+- **Required conditions** — Confirm every alias/field that still points at the
+  object, not just the reported pointer; nulling one reference while another path
+  frees the same object still double-frees. The fix must cover the ownership
+  contract the Reasoning names, not a single line.
+- **Validation** — Confirm the object is freed exactly once on every path,
+  cleanup paths still release correctly, and the re-scan no longer reports the
+  location.
 
 ### Examples
 

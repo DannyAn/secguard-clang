@@ -84,9 +84,20 @@ confirming such a case.
 - `free(NULL)` and `free(ptr)` are already suppressed at the detector
 
 ### Fix Suggestions
-- Release the object with the correct base pointer, not an interior pointer
-- Remove the deallocator call on stack/global storage entirely
-- Allocate the object on the heap if ownership is genuinely transferred
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Free the correct base pointer (not an interior/offset
+  pointer); drop the deallocator entirely for stack/global storage; heap-allocate
+  when ownership is genuinely transferred.
+- **Required conditions** — Confirm what the pointer actually points at (heap
+  block vs. stack/global/array) before choosing; freeing an interior pointer needs
+  the original base saved, and a stack/global object must never be handed to a
+  deallocator.
+- **Validation** — Confirm the freed pointer is the allocation's base on every
+  path, no stack/global object is passed to a deallocator, and the re-scan no
+  longer reports the location.
 
 ### Examples
 

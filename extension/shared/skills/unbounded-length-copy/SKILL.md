@@ -75,9 +75,19 @@ trust boundary.
   not dismiss on it
 
 ### Fix Suggestions
-- Range-check before use: `if (len > MAX_LEN) return -1;`
-- Clamp the length: `len = min(len, sizeof(buf));`
-- Use a bounded copy: `memcpy(dst, src, min(len, sizeof(dst)))`
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Bound the length before it reaches the allocation/copy:
+  range-check (`if (len > MAX_LEN) return -1;`), clamp (`len = min(len,
+  sizeof(buf))`), or use a bounded copy (`memcpy(dst, src, min(len, sizeof(dst)))`).
+- **Required conditions** — `MAX_LEN`/the clamp bound must be the sink's real
+  capacity, not a guess; do not truncate the length silently in a way that hides a
+  too-large input the caller must reject.
+- **Validation** — Confirm the length is bounded on every path into the sink,
+  oversized inputs are rejected or clamped consistently, and the re-scan no longer
+  reports the location.
 
 ### Examples
 

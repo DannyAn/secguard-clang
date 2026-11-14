@@ -84,6 +84,21 @@ the embedded section and the indexed lookup.
 - A divisor that is checked before the division — `if (n == 0) return;`, `if (!n) goto out;`, `if (n == 0 || i >= count) return INVALID;`, `if (n == 0) n = DEFAULT;` — the guard is in the ±8-line window; when the pipeline does not model it (disjunctive forms, helper predicates), the row still reaches you as `suspected` and the window settles it
 - A divisor reassigned to a provably non-zero constant before the division (`d = 0; d = 1; x / d`) — the convergence range flow proves it non-zero and suppresses it
 
+### Fix Suggestions
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Guard the division against a zero divisor
+  (`if (d == 0) { /* error/sentinel */ }` before `100 / d`), or constrain the
+  divisor so zero is unreachable.
+- **Required conditions** — The function must have a defined error/sentinel result
+  for a zero divisor (the current return type may have no error channel — decide
+  that contract first); do not clamp `d` to 1 (silently changes arithmetic) and do
+  not rely on callers to pre-check without documenting the precondition.
+- **Validation** — Confirm a zero divisor produces the defined result (no SIGFPE),
+  non-zero inputs are unchanged, and the re-scan no longer reports the location.
+
 ### Examples
 
 ```c

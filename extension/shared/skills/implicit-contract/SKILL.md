@@ -121,11 +121,18 @@ the embedded section and the indexed lookup.
   is defensive, not evidence of a reachable NULL.
 
 ### Fix Suggestions
-- Validate the field before the dereference, mirroring the codebase's own
-  convention for that field: `if (obj->P == NULL) { <log/return>; }`.
-- If an empty result is legal, handle it explicitly (early return / skip) rather
-  than dereferencing; do not invent a return code — match the function's existing
-  error/empty conventions.
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Guard the dereference with the codebase's own convention
+  for that field (`if (obj->P == NULL) { <log/return>; }`), or handle an empty
+  result explicitly (early return / skip) when it is legal.
+- **Required conditions** — Match the function's existing error/empty convention
+  instead of inventing a return code; the fix must cover the specific field the
+  finding names, and every dereference of it, not just the reported line.
+- **Validation** — Confirm the NULL path no longer reaches the dereference, normal
+  non-NULL behavior is unchanged, and the re-scan no longer reports the location.
 
 ### Examples
 

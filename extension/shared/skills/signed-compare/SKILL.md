@@ -60,6 +60,21 @@ the embedded section and the indexed lookup.
 - Variables mis-detected as `unsigned` (e.g. a macro type position)
 - Comparisons that are intentional dead-code sentinels
 
+### Fix Suggestions
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Make the comparison's signedness match the value: change
+  the guard to the meaningful check (`if (len == 0) return;` / `if (len > MAX)
+  return;` instead of a dead `if (len < 0)`), or change the variable's type to a
+  signed type when negatives are genuinely possible.
+- **Required conditions** — Confirm whether the variable should ever be negative
+  (a count/length is unsigned by nature; a delta may be signed) before picking the
+  fix; do not just flip the operator, which can invert dead-guard/dead-body.
+- **Validation** — Confirm the branch that was silently dead/alive now behaves
+  correctly for the intended range, and the re-scan no longer reports the location.
+
 ### Examples
 
 ```c

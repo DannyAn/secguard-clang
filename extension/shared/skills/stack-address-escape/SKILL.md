@@ -79,9 +79,20 @@ outlives the frame.
   before the frame dies, or a thread that is `join`ed synchronously
 
 ### Fix Suggestions
-- Return an out-parameter (`int f(int *out)`) instead of the address of a local
-- `static`-qualify the object when a single shared instance is intended
-- Allocate on the heap and document the ownership transfer
+
+Compose a structured, evidence-driven `fix_strategy` per confirmed finding — the
+five subsections in `agent-body.md` → "Fix Strategy". Type-specific raw material:
+
+- **Recommended fix** — Return the value through an out-parameter
+  (`int f(int *out)`) instead of the address of a local; `static`-qualify the
+  object when a single shared instance is intended; or heap-allocate and document
+  the ownership transfer.
+- **Required conditions** — Pick the storage by the object's lifetime: `static`
+  makes one shared instance (not reentrant), heap transfer needs the caller to
+  free it; confirm the intended lifetime before choosing.
+- **Validation** — Confirm no path reads the escaped address after the frame
+  returns, the chosen storage outlives every use, and the re-scan no longer
+  reports the location.
 
 ### Examples
 
