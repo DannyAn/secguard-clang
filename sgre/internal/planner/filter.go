@@ -345,6 +345,13 @@ type Candidate struct {
 	RHSKind          string `json:"rhs_kind,omitempty"`
 	SubRHSInfluenced bool   `json:"sub_rhs_influenced,omitempty"`
 	SubSink          string `json:"sub_sink,omitempty"`
+	// SubCallers is the direct call-site census ("file.c:42, file.c:87") for an
+	// unsigned_sub_underflow candidate whose function has in-tree callers. A
+	// caller-side precondition guard (`if (p->len > off) return;` before the
+	// call) can make the underflow unreachable, and that guard is visible ONLY
+	// at these sites — the classifier must enumerate them instead of judging the
+	// subtraction in isolation. Empty = no in-tree direct call site.
+	SubCallers string `json:"sub_callers,omitempty"`
 	// Subject is the struct-pointer parameter the implicit-contract candidate
 	// is about (e.g. "resp" for resp->group_data).
 	Subject string `json:"subject,omitempty"`

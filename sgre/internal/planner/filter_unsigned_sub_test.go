@@ -116,3 +116,33 @@ func containsWord(s, word string) bool {
 	}
 	return false
 }
+
+// M3: an unguarded subtraction whose function has in-tree callers must carry a
+// callers@ census so the classifier can enumerate the call sites and judge each
+// caller-side precondition guard (which the function-local analysis cannot see).
+func TestUnsignedSubGuard_CallersAttached(t *testing.T) {
+	src := `#include <stdint.h>
+void use(uint32_t v);
+void unguarded(uint32_t total, uint32_t consumed) {
+    use(total - consumed);
+}
+int main(void) {
+    unguarded(100, 50);
+    return 0;
+}
+`
+	result := planUnsignedSub(t, src)
+	c := candidateForFunc(t, result, "unguarded")
+	if c == nil {
+		t.Fatalf("unguarded should be kept, got %v", candidateNames(result))
+	}
+	found := false
+	for _, tok := range c.HintTokens {
+		if strings.HasPrefix(tok, "callers@") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("unguarded hint tokens should carry callers@, got %v", c.HintTokens)
+	}
+}

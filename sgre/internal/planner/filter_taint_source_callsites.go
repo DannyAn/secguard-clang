@@ -232,6 +232,46 @@ func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context, tc *tain
 			}
 		}
 	}
+	// A file-scope `static const char *NAME[N] = {"a", "b"}` is a compile-time
+	// template table: NAME[expr] is always a pointer to a string literal, never
+	// attacker-controlled content, so a format/path argument spelled NAME[i]
+	// must count as literal (not variable). Two passes: declare first, then drop
+	// any array whose element is written anywhere in the tree (a `static` array
+	// cannot be written from another TU, so an in-tree write is the only way its
+	// pointers can stop being the literal initializers — `const char *` keeps the
+	// pointee const, NOT the pointer, so the pointer itself is reassignable).
+	constStringArrays := map[string]bool{}
+	for _, file := range fileByID {
+		root := cache.rootForFile(file)
+		if root.Kind() == "" {
+			continue
+		}
+		for name := range collectConstStringArrays(root, isStringMacro) {
+			constStringArrays[name] = true
+		}
+	}
+	if len(constStringArrays) > 0 {
+		written := map[string]bool{}
+		for _, file := range fileByID {
+			root := cache.rootForFile(file)
+			if root.Kind() == "" {
+				continue
+			}
+			for _, assign := range root.FindAll("assignment_expression") {
+				lhs, _, ok := assign.AssignParts()
+				if !ok {
+					continue
+				}
+				if base := fieldBaseName(lhs.Text()); base != "" && constStringArrays[base] {
+					written[base] = true
+				}
+			}
+		}
+		for name := range written {
+			delete(constStringArrays, name)
+		}
+	}
+
 	scannedRoot := make(map[int64]bool)
 	// The string-macro table is complete here; publish it for the constant-path
 	// prover (a no-op for the census's own classification).
@@ -270,6 +310,8 @@ func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context, tc *tain
 				case isDefinitelyUnTainted(arg):
 					kind = 0
 				case arg.Kind() == "identifier" && isStringMacro(arg.Text()):
+					kind = 0
+				case isConstStringArraySubscript(arg, constStringArrays):
 					kind = 0
 				case (arg.Kind() == "identifier" || arg.Kind() == "field_expression") &&
 					localConstAt(locals, compactIdentText(arg.Text()), call.StartLine(), calls):
@@ -557,4 +599,104 @@ func compactIdentText(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// isConstStringArraySubscript reports whether arg is `NAME[expr]` for a
+// file-scope constant-string array NAME (see collectConstStringArrays). The
+// index is deliberately NOT examined: every element of such an array is a
+// string literal, so the value is a pointer to a literal regardless of expr —
+// a compile-time constant that is never attacker-controlled content.
+func isConstStringArraySubscript(arg parser.Node, constStringArrays map[string]bool) bool {
+	if arg.Kind() != "subscript_expression" || len(constStringArrays) == 0 {
+		return false
+	}
+	base := fieldBaseName(arg.Text())
+	return base != "" && constStringArrays[base]
+}
+
+// collectConstStringArrays returns the names of file-scope constant-string
+// arrays in root: `static char *NAME[N] = {"a", "b"}` (with an optional const
+// qualifier) whose EVERY initializer element is a string literal or string
+// macro. Such an array is a compile-time template table. The caller drops any
+// array written elsewhere in the tree (see computeCallsiteSummary).
+func collectConstStringArrays(root parser.Node, isStringMacro func(string) bool) map[string]bool {
+	out := map[string]bool{}
+	ranges := functionRanges(root)
+	for _, decl := range root.FindAll("declaration") {
+		if inFunction(ranges, decl.StartLine()) {
+			continue
+		}
+		if name, ok := constStringArrayName(decl, isStringMacro); ok {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+// constStringArrayName reports whether decl is a file-scope `static` array of
+// pointers-to-char whose every initializer element is a string literal, and
+// returns the array name. The const qualifier on the char is not required (and
+// not sufficient): the write scan in computeCallsiteSummary closes the pointer
+// reassignment hole instead.
+func constStringArrayName(decl parser.Node, isStringMacro func(string) bool) (string, bool) {
+	static := false
+	char := false
+	for _, child := range decl.NamedChildren() {
+		switch child.Kind() {
+		case "storage_class_specifier":
+			if strings.TrimSpace(child.Text()) == "static" {
+				static = true
+			}
+		case "primitive_type":
+			if strings.TrimSpace(child.Text()) == "char" {
+				char = true
+			}
+		}
+	}
+	if !static || !char {
+		return "", false
+	}
+	for _, init := range decl.FindAll("init_declarator") {
+		if init.FindFirst("array_declarator") == nil || init.FindFirst("pointer_declarator") == nil {
+			continue
+		}
+		name := declaredName(init)
+		if name == "" {
+			continue
+		}
+		il := init.FindFirst("initializer_list")
+		if il == nil {
+			continue
+		}
+		if allStringLiteralInitializer(*il, isStringMacro) {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// allStringLiteralInitializer reports whether an initializer_list consists
+// entirely of string literals, string macros, or nested such lists (so a
+// `{ {"a"}, {"b"} }` or `{ FMT_A, FMT_B }` spelling is recognized).
+func allStringLiteralInitializer(il parser.Node, isStringMacro func(string) bool) bool {
+	children := il.NamedChildren()
+	if len(children) == 0 {
+		return false
+	}
+	for _, child := range children {
+		switch child.Kind() {
+		case "string_literal":
+		case "identifier":
+			if !isStringMacro(strings.TrimSpace(child.Text())) {
+				return false
+			}
+		case "initializer_list":
+			if !allStringLiteralInitializer(child, isStringMacro) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }

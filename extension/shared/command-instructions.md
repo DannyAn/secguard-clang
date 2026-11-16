@@ -970,7 +970,17 @@ claim 行只是 `settlement_stats` 里的 `status='dispatched'` 占位，**不�
       why-safe>"}]`. Rows you keep ALSO need a write — batch them as
       `[{"id":<id>,"review_status":"confirmed","review_reasoning":"<premise holds>"}]`
       in the same `--review-json` call (or a second one), so the
-      `unreviewed_auto_confirmed` warning clears and `result.sarif` is final. On
+      `unreviewed_auto_confirmed` warning clears and `result.sarif` is final. A row you
+       CANNOT settle — the decisive fact is neither in the row nor readable
+       within the step's source budget — is written
+       `"review_status":"needs_more_evidence"` with `review_reasoning` naming the
+       MISSING fact (not "unsafe", not a bare "insufficient context"): it keeps the
+       first-pass (machine) verdict — an inconclusive review must never drop a
+       potential real defect — and is exported with a
+       `review_status: needs_more_evidence` SARIF marker so the inconclusive rate is
+       observable. `needs_more_evidence` is NOT a dismissal and NOT a fresh
+       confirmation; use it only after spending the row + source budget, never as a
+       default. On
       OpenCode, write the same batch through the `secguard_review` tool's `reviews`
       param (it wraps `--review-json`); list the rows through its
       `list_auto_confirmed` param (the auto-confirmed rows carry `review_status`

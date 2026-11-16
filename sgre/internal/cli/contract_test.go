@@ -576,6 +576,65 @@ func TestReportCmd_ReviewJsonFlow(t *testing.T) {
 	}
 }
 
+func TestReportCmd_ReviewJsonNeedsMoreEvidence(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "test.db")
+	const scanID = "sc_2026-01-01_000000_aaaaaa"
+
+	d, err := db.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := db.NewStore(d)
+	if _, err = s.InsertScanStat(ctx, &db.ScanStat{ScanID: scanID, VulnType: "null-deref", SeedCount: 1, FinalCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+	id, ierr := s.UpsertFinding(ctx, &db.Finding{
+		RuleID: "CWE-476", Severity: "medium", Confidence: 1.0,
+		Status: db.StatusAutoConfirmed, FilePath: "x.c", LineNumber: 1,
+		FunctionName: "f", ScanID: scanID,
+	})
+	if ierr != nil {
+		t.Fatal(ierr)
+	}
+	s.Close()
+
+	reviewsFile := filepath.Join(root, "reviews.json")
+	payload, _ := json.Marshal([]map[string]interface{}{
+		{"id": id, "review_status": "needs_more_evidence", "review_reasoning": "missing callee body for the null source"},
+	})
+	if err := os.WriteFile(reviewsFile, payload, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, exitCode := captureOutput(func() int {
+		return runReportCmd(ctx, []string{"--db", dbPath, "--review-json", reviewsFile})
+	})
+	if exitCode != 0 {
+		t.Fatalf("review-json with needs_more_evidence failed: %s", stdout)
+	}
+
+	d2, err := db.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2 := db.NewStore(d2)
+	defer s2.Close()
+	f, err := s2.GetFindingByID(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.ReviewStatus != "needs_more_evidence" {
+		t.Errorf("review_status = %q, want needs_more_evidence", f.ReviewStatus)
+	}
+	// Conservative keep: an inconclusive review never drops a potential real
+	// defect, so the auto-confirmed first-pass verdict still reads "confirmed".
+	if f.EffectiveStatus() != "confirmed" {
+		t.Errorf("effectiveStatus = %q, want confirmed (conservative keep)", f.EffectiveStatus())
+	}
+}
+
 func TestSplitBySuspicion(t *testing.T) {
 	candidates := []planner.EvidenceItem{
 		{SuspicionLevel: "confirmed", Target: planner.TargetInfo{File: "a.c", Line: 1}},

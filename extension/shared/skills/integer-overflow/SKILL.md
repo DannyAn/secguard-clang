@@ -55,6 +55,11 @@ the row alone (no evidence-file open):
   `## Callee Definition`. Judge `total - len` from that body: does the callee cap
   its return / truncate its write, or can `len` grow past `total`? This is the
   decisive cross-function fact — **do not grep the repo for the callee**.
+- `callers@<file:line, ...>` — the function's direct call sites. A caller-side
+  precondition guard (`if (p->len > off) return;` before the call) can make the
+  subtraction unreachable, and it is visible ONLY at these sites. **Enumerate
+  EACH site and judge its guard before confirming** — do not judge the
+  subtraction in isolation.
 - `macro@<name>` — a project macro referenced by the candidate or its callee has
   its `#define` body embedded under `## Macro Definition` (e.g. `GET_STR_LEN`
   decides whether a `sprintf_s` return is a bounded length). Read the expansion;
@@ -88,6 +93,29 @@ The two GAP-06 shift categories carry their own dense facts (both are
   never reported; only a count at/above 32 is UB for them). An unsigned shift
   (`1u << 31`) or a wide type (`uint64_t x; x << 40`) is also well-defined; a
   variable count with no single-point proof is never reported.
+
+### Protocol Questions (answer before confirming)
+
+Before `confirmed` on any `unsigned_sub_underflow` / wraparound row, answer these
+three — each backed by a `file:line` or the embedded `## Callee Definition` /
+`## Macro Definition`. When the decisive fact is absent from the evidence AND the
+source cannot be read within the source budget, output `needs_more_evidence`
+(naming the missing fact), never `confirmed`:
+
+1. **Caller guards (M3):** enumerate the direct call sites (`callers@`). For EACH
+   site, does a caller-side precondition (`if (p->len > off) return;` before the
+   call) make the underflow unreachable there? Confirm only when some call site
+   reaches the subtraction unguarded with an attacker-reachable value.
+2. **Validate-then-commit (M6):** where does the wrapped/overflowed value flow
+   before it is committed or used? Is there a validation that rejects exactly the
+   wrapped result (cite the reject-branch line)? A wraparound that a pre-commit
+   consistency check provably rejects is not a defect.
+3. **Accumulator bound (M8):** what are ALL increment sources of the accumulator
+   operand? Does each source guarantee `value <= remaining capacity` by a cited
+   API contract (e.g. a `*_truncated_s` truncating wrapper whose return is provably
+   bounded)? Confirm only when some source is not so bounded and has no
+   independent guard. Note `snprintf_s`/`vsnprintf_s` return the WOULD-HAVE-WRITTEN
+   count (unbounded), so `off += snprintf_s(...)` does NOT bound `off`.
 
 ### Dangerous Patterns
 
