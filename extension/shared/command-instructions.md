@@ -1068,6 +1068,12 @@ Report the diagnostic conclusion in Chinese, Markdown tables only:
    - 若 `summary.unclassified_candidates > 0`，在摘要后补一句 `另有 <U> 项候选未落库判定，见观察项表。`
 3. 总览表: `| Skill | 类别 | 确认 | 已排除 |`，末行加 `| **合计** | | **<X>** | **<D>** |`（数字须与第 2 段摘要完全一致）
 4. 问题表: `| Skill | 文件:行号 | 函数 | 严重度 | 结论 | 说明 |` (confirmed only)
+   **大量 finding 时的收敛规则（不要把 174 行逐条塞进 CLI 回复）：** 当
+   `summary.confirmed_total > 40` 时，问题表改为**按 Skill 收敛**——每个 Skill 一行
+   `| Skill | <该 skill 最高严重度的一个代表 文件:行号> | <代表函数> | <代表严重度> | confirmed | <说明：该 skill 确认 N 条，含逐类代表 + 最高严重度条目> |`，
+   并紧跟一行 `完整 <X> 条逐条明细见 report.md / result.sarif。`；**不得**因此省略总览表或
+   摘要（数字仍与 `summary` 完全一致），也**不得**在 CLI 里用 "代表条目" 冒充完整问题表——
+   代表性收敛必须显式声明"代表 + 指向完整明细"。`confirmed_total ≤ 40` 时仍逐条列全。
 5. 观察项表 (if some types were not persisted): `| Skill | 说明 |`
    **异常必须对用户可见：** 任何空回（`state=completed` 且 `task_result` 为空）、
    整波重派、或 `failed_types` 重派事件都必须在观察项表里各占一行（类型 + 发生了什么 +

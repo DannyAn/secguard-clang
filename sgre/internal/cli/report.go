@@ -377,8 +377,14 @@ func runReportCmd(ctx context.Context, args []string) int {
 		out := make([]map[string]interface{}, 0, len(findings))
 		for _, f := range findings {
 			entry := map[string]interface{}{
-				"id":        f.ID,
-				"rule_id":   f.RuleID,
+				"id":         f.ID,
+				"rule_id":    f.RuleID,
+				// vuln_type lets a Step 5.5 re-reviewer settle each row against the
+				// RIGHT machine-proof premise (and its per-type count) without
+				// reverse-mapping rule_id→type by hand — a multi-CWE type
+				// (divide-by-zero's int_min_div → CWE-190) made that hand-mapping
+				// wrong and burned the whole review turn re-deriving it.
+				"vuln_type": f.VulnType,
 				"file":      f.FilePath,
 				"line":      f.LineNumber,
 				"function":  f.FunctionName,
@@ -2038,11 +2044,11 @@ func renderAITimingMarkdown(timing aiStageTiming) string {
 	default:
 		fmt.Fprintf(&b, "_Source: %s._\n\n", timing.Source)
 	}
-	b.WriteString("| Scope | Batches | Elapsed |\n")
+	b.WriteString("| Scope | Settled ranges | Elapsed |\n")
 	b.WriteString("|---|---|---|\n")
-	fmt.Fprintf(&b, "| **TOTAL AI stage** | %d | %s |\n", timing.Batches, formatMS(timing.TotalMS))
+	fmt.Fprintf(&b, "| **TOTAL AI stage** | %d | %s |\n", timing.SettledRanges, formatMS(timing.TotalMS))
 	for _, vt := range timing.sortedAITypes() {
-		fmt.Fprintf(&b, "| %s | %d | %s |\n", vt, timing.PerTypeBatches[vt], formatMS(timing.PerTypeMS[vt]))
+		fmt.Fprintf(&b, "| %s | %d | %s |\n", vt, timing.PerTypeRanges[vt], formatMS(timing.PerTypeMS[vt]))
 	}
 	b.WriteString("\n")
 	return b.String()

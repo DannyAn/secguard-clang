@@ -141,6 +141,72 @@ func TestPartialRangeSettlementDoesNotCompleteType(t *testing.T) {
 	}
 }
 
+// A complete verdict ledger (every candidate has a confirmed or dismissed
+// verdict) must read uncovered_ranges EMPTY even when no settlement row is
+// 'done' — the OpenCode shape, where a subagent writes verdicts via
+// secguard_report and never writes a settlement file, leaving only a live
+// 'dispatched' claim. The settlement-coverage view alone would report the whole
+// range as uncovered and drive a spurious re-dispatch of a fully classified
+// range.
+func TestEnrichPerTypeStatusNoUncoveredWhenLedgerComplete(t *testing.T) {
+	ctx := context.Background()
+	store := db.NewTestStore(t)
+	scanID := "sc_2026-01-01_000000_abcdef"
+	if _, err := store.InsertScanStat(ctx, &db.ScanStat{ScanID: scanID, VulnType: "null-deref", SeedCount: 40, FinalCount: 40}); err != nil {
+		t.Fatal(err)
+	}
+	// A live claim, never settled (no 'done' settlement row).
+	if err := store.UpsertSettlementStat(ctx, &db.SettlementStat{
+		ScanID: scanID, VulnType: "null-deref", RangeStr: "all", SubagentID: "b1", Status: "dispatched", CreatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 10 confirmed + 30 dismissed == all 40 candidates classified.
+	for i := 0; i < 10; i++ {
+		if _, err := store.UpsertFinding(ctx, &db.Finding{
+			RuleID: "CWE-476", VulnType: "null-deref", Status: "confirmed", Severity: "high", FilePath: "a.c",
+			LineNumber: 1 + i, Variable: "p", ScanID: scanID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 30; i++ {
+		if _, err := store.UpsertCandidateVerdict(ctx, &db.CandidateVerdict{
+			ScanID: scanID, VulnType: "null-deref", RuleID: "CWE-476", FilePath: "a.c",
+			LineNumber: 100 + i, Variable: "q", Verdict: "dismissed", Reason: "guarded",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	statuses, err := store.ListPerTypeStatus(ctx, scanID, planner.CWEsForType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enriched, err := enrichPerTypeStatus(ctx, store, scanID, statuses)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var e *settlementEnriched
+	for _, item := range enriched {
+		if item.VulnType == "null-deref" {
+			e = item
+		}
+	}
+	if e == nil {
+		t.Fatal("null-deref missing from enriched status")
+	}
+	if e.Remaining != 0 {
+		t.Errorf("remaining = %d, want 0 (10 confirmed + 30 dismissed == 40 candidates)", e.Remaining)
+	}
+	if len(e.UncoveredRanges) != 0 {
+		t.Errorf("uncovered_ranges = %v, want empty (ledger complete despite no 'done' settlement)", e.UncoveredRanges)
+	}
+	if len(e.InFlightRanges) != 1 {
+		t.Errorf("in_flight_ranges = %v, want the live dispatched claim still surfaced", e.InFlightRanges)
+	}
+}
+
 // A legacy worker that wrote its settlement as a fenced code block must still
 // absorb (the bare-JSON contract applies to new writers; old in-flight reports
 // must not stall their claims).

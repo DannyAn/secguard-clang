@@ -33,6 +33,7 @@ The `category` field encodes the confidence tier the pipeline already computed:
 Evidence file fragments:
 - **integer_overflow**: the site, with a category-shaped description (size calculation / unsigned subtraction underflow)
 - **operand_influenced**: the left operand is caller/attacker-controlled (when proved)
+- **call_sites**: the function's direct call sites — a caller-side guard before any of them can make the subtraction unreachable
 - **call_path**: the function is reachable from an entry point
 
 ### Hint Tokens (Verdict Basis)

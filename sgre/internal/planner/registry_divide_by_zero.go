@@ -26,8 +26,16 @@ func init() {
 			return fmt.Sprintf("dbz:%d:%s:%s:%s", c.FileID, c.FunctionName, c.VariableName, c.SuspicionLevel)
 		},
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
+			// int_min_div is NOT a division by zero: it is a certain CWE-190
+			// signed overflow (a 32-bit INT_MIN / -1 overflows to INT_MIN). The
+			// shared "division by zero" wording leaked into its auto-confirmed
+			// summary/reasoning and mislabelled a real overflow as a divide-by-zero.
+			sinkDetail := fmt.Sprintf("possible division by zero in function %s at line %d", c.FunctionName, c.Line)
+			if c.Category == "int_min_div" {
+				sinkDetail = fmt.Sprintf("signed integer overflow (INT_MIN / -1) in function %s at line %d", c.FunctionName, c.Line)
+			}
 			frags := []EvidenceFragment{
-				{Type: "divide_by_zero", Role: "sink", Detail: fmt.Sprintf("possible division by zero in function %s at line %d", c.FunctionName, c.Line)},
+				{Type: "divide_by_zero", Role: "sink", Detail: sinkDetail},
 			}
 			// The range engine's own conclusion for the surviving candidate:
 			// when it computed a tighter-than-top interval that still contains

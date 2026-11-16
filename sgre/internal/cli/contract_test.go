@@ -793,13 +793,24 @@ func TestAutoConfirmedCLIFlow(t *testing.T) {
 		t.Fatalf("--list-auto-confirmed failed: %s", stdout)
 	}
 	var listed struct {
-		Count int `json:"count"`
+		Count    int `json:"count"`
+		Findings []struct {
+			ID       int64  `json:"id"`
+			VulnType string `json:"vuln_type"`
+		} `json:"findings"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &listed); err != nil {
 		t.Fatalf("unmarshal --list-auto-confirmed: %v", err)
 	}
 	if listed.Count != 1 {
 		t.Fatalf("--list-auto-confirmed returned count=%d, want 1 (machine verdict awaiting review)", listed.Count)
+	}
+	// vuln_type must be present so a Step 5.5 re-reviewer settles each row
+	// against the right premise without reverse-mapping rule_id→type by hand
+	// (a multi-CWE type like divide-by-zero's int_min_div → CWE-190 makes that
+	// hand-mapping wrong).
+	if len(listed.Findings) != 1 || listed.Findings[0].VulnType != "memory-leak" {
+		t.Fatalf("--list-auto-confirmed must carry vuln_type per finding, got %+v", listed.Findings)
 	}
 
 	// 2. Audit: the auto-confirmed finding reaches result.sarif as confirmed.

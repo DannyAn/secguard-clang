@@ -1,6 +1,9 @@
 package planner
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestActiveVulnTypes_DisabledSwitch(t *testing.T) {
 	all := AllVulnTypes()
@@ -408,5 +411,43 @@ func TestDivideByZero_EvidenceCarriesIntervalAndCallers(t *testing.T) {
 		if e.Type == "divisor_interval" || e.Type == "param_flow" {
 			t.Errorf("candidate without interval/caller facts must not render them, got %+v", e)
 		}
+	}
+}
+
+// int_min_div is a CWE-190 signed overflow (INT_MIN / -1), NOT a divide-by-zero.
+// Its sink evidence must say "signed integer overflow" — the shared "possible
+// division by zero" wording leaked into the auto-confirmed summary/reasoning and
+// mislabelled a real overflow as a divide-by-zero in result.sarif / report.md.
+func TestDivideByZero_IntMinDivEvidenceWording(t *testing.T) {
+	spec, err := GetVulnTypeSpec("divide-by-zero")
+	if err != nil {
+		t.Fatal(err)
+	}
+	frags := spec.BuildEvidence(Candidate{FunctionName: "im01_const_pair", Line: 2, Category: "int_min_div"})
+	var sink string
+	for _, e := range frags {
+		if e.Role == "sink" {
+			sink = e.Detail
+		}
+	}
+	if sink == "" {
+		t.Fatalf("int_min_div evidence has no sink fragment: %+v", frags)
+	}
+	if strings.Contains(sink, "division by zero") {
+		t.Errorf("int_min_div sink must not claim a divide-by-zero: %q", sink)
+	}
+	if !strings.Contains(sink, "signed integer overflow") {
+		t.Errorf("int_min_div sink must name the signed overflow: %q", sink)
+	}
+
+	plain := spec.BuildEvidence(Candidate{FunctionName: "f", VariableName: "d", Line: 5})
+	var plainSink string
+	for _, e := range plain {
+		if e.Role == "sink" {
+			plainSink = e.Detail
+		}
+	}
+	if !strings.Contains(plainSink, "division by zero") {
+		t.Errorf("non-int_min_div sink must keep the divide-by-zero wording: %q", plainSink)
 	}
 }

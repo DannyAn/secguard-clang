@@ -63,6 +63,7 @@ the embedded section and the indexed lookup.
 | Placeholder value (`"REPLACE_ME"`, `"YOUR_KEY_HERE"`, `"CHANGEME"`, `"xxx"`, empty) | **false-positive** |
 | Test credential (`test_password = "test123"`, a `test/` path) | **dismissed** — but a leaked test key is still a leaked key; dismiss only when the Code Context proves it cannot reach production |
 | Short value that is not credential-like | **false-positive** |
+| **Patterned body** (a repeating/sequential run even with a real-looking prefix: `sk-abcdef1234567890abcdef1234567890`, `AKIA1111222233334444`, `abcdabcd`, `0000…`) | **dismissed** — the prefix alone does not make a placeholder a secret; a real credential is not an obvious run, so a run that repeats or counts up is a synthetic/test value |
 
 ### Fix Suggestions
 
@@ -88,6 +89,10 @@ char *pwd = "admin123";
 
 // DISMISSED — a placeholder, not a live credential
 char *pwd = "REPLACE_ME";
+
+// DISMISSED — a patterned body (repeated run) with a real-looking prefix is
+// still a synthetic/test value, not a credential
+const char *key = "sk-abcdef1234567890abcdef1234567890";
 ```
 
 ### Severity Matrix

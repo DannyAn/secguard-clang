@@ -280,16 +280,19 @@ func writeAbsorbCursor(ctx context.Context, store db.Store, cursor map[string]in
 type aiStageTiming struct {
 	TotalMS   int64            `json:"total_ms"`
 	PerTypeMS map[string]int64 `json:"per_type_ms,omitempty"`
-	// PerTypeBatches is the number of settled batches behind each type's span;
-	// a type split across ranges adds batches without necessarily widening its
-	// span, so the count keeps the timing auditable.
-	PerTypeBatches map[string]int `json:"per_type_batches,omitempty"`
-	Batches        int            `json:"batches"`
-	Source         string         `json:"source,omitempty"`
+	// PerTypeRanges is the number of settled (type, range) settlement rows behind
+	// each type's span. It is NOT a subagent-dispatch count: the engine never
+	// sees the orchestrator's subagent grouping (a multi-type batch is claimed
+	// one range per type), so it can only count settlement ranges. The name
+	// keeps that honest — the old "batches" read as "8 subagents" when it was
+	// really 25 ranges.
+	PerTypeRanges map[string]int `json:"per_type_ranges,omitempty"`
+	SettledRanges int            `json:"settled_ranges"`
+	Source        string         `json:"source,omitempty"`
 }
 
 func measureAIStageTiming(rows []*db.SettlementStat) aiStageTiming {
-	out := aiStageTiming{PerTypeMS: map[string]int64{}, PerTypeBatches: map[string]int{}}
+	out := aiStageTiming{PerTypeMS: map[string]int64{}, PerTypeRanges: map[string]int{}}
 	type span struct{ start, end int64 }
 	spans := map[string]*span{}
 	var first, last int64
@@ -316,6 +319,15 @@ func measureAIStageTiming(rows []*db.SettlementStat) aiStageTiming {
 		if start <= 0 || start > end {
 			start = end
 		}
+		// No queue/work split recorded but the claim time is known: on a host
+		// whose subagents write verdicts via the MCP tool and never produce a
+		// settlement file (OpenCode), complete-type records only finished_at, so
+		// the honest span is claim→complete (created_at → finished_at), not 0 —
+		// otherwise the self-measured AI stage undercounts the real wall clock
+		// by reading only the claim-time spread.
+		if st.QueueMS+st.WorkMS == 0 && st.FinishedAt > 0 && st.CreatedAt > 0 && st.CreatedAt <= end {
+			start = st.CreatedAt
+		}
 		s := spans[st.VulnType]
 		if s == nil {
 			s = &span{start: start, end: end}
@@ -327,8 +339,8 @@ func measureAIStageTiming(rows []*db.SettlementStat) aiStageTiming {
 		if end > s.end {
 			s.end = end
 		}
-		out.PerTypeBatches[st.VulnType]++
-		out.Batches++
+		out.PerTypeRanges[st.VulnType]++
+		out.SettledRanges++
 		if first == 0 || start < first {
 			first = start
 		}
@@ -575,16 +587,25 @@ func enrichPerTypeStatusFromRoot(ctx context.Context, store db.Store, scanID str
 		// Remaining is the verdict-ledger gap (candidate_count − AI confirmed −
 		// dismissed), identical to the audit's unclassified: it is the ONLY
 		// number that can never be gamed by a self-declared settlement. A done
-		// type reads 0. uncovered_ranges (the scheduling view, from settlement
-		// ranges) is still reported for re-dispatch.
+		// type reads 0.
 		cov := deriveTypeCoverage(rowsByType[s.VulnType], s.CandidateCount, nowMS)
 		if s.TerminalState == "done" {
 			e.Remaining = 0
 		} else {
-			if rem := s.CandidateCount - s.WrittenCount - e.DismissedCount; rem > 0 {
+			rem := s.CandidateCount - s.WrittenCount - e.DismissedCount
+			if rem > 0 {
 				e.Remaining = rem
 			}
-			if cov.HasRows {
+			// uncovered_ranges names the exact candidate intervals still missing a
+			// verdict, so it must be EMPTY when the ledger is complete (rem == 0):
+			// a host whose subagents write verdicts via `secguard_report` without
+			// ever writing a settlement file (OpenCode) leaves every claim
+			// 'dispatched', and the settlement-coverage view would then report the
+			// whole range as uncovered even though every candidate already has a
+			// verdict — driving a spurious re-dispatch of a fully classified range.
+			// Only surface the scheduling view when there ARE unclassified
+			// candidates to name.
+			if rem > 0 && cov.HasRows {
 				e.UncoveredRanges = cov.Uncovered
 			}
 		}

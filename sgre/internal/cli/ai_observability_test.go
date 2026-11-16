@@ -31,8 +31,8 @@ func TestMeasureAIStageTiming(t *testing.T) {
 	if timing.TotalMS != 900_000 {
 		t.Fatalf("total = %d, want 900000 (earliest dispatch -> latest finish)", timing.TotalMS)
 	}
-	if timing.Batches != 2 {
-		t.Errorf("batches = %d, want 2 (the dispatched claim does not count)", timing.Batches)
+	if timing.SettledRanges != 2 {
+		t.Errorf("settled_ranges = %d, want 2 (the dispatched claim does not count)", timing.SettledRanges)
 	}
 	if got := timing.PerTypeMS["null-deref"]; got != 300_000 {
 		t.Errorf("null-deref span = %d, want 300000", got)
@@ -42,6 +42,27 @@ func TestMeasureAIStageTiming(t *testing.T) {
 	}
 	if timing.Source != "self-measured" {
 		t.Errorf("source = %q, want self-measured", timing.Source)
+	}
+}
+
+// TestMeasureAIStageTimingClaimToComplete pins the OpenCode shape: a subagent
+// writes verdicts via the MCP tool and never produces a settlement file, so
+// complete-type records only finished_at (no queue/work split). The honest span
+// is then claim→complete (created_at → finished_at), not the ~0 the claim-time
+// spread alone would yield — otherwise the self-measured AI stage undercounts
+// the real wall clock.
+func TestMeasureAIStageTimingClaimToComplete(t *testing.T) {
+	base := int64(1_700_000_000_000)
+	rows := []*db.SettlementStat{
+		// claimed at base, settled by complete-type at base+600_000, no queue/work.
+		{VulnType: "null-deref", Status: "done", CreatedAt: base, FinishedAt: base + 600_000},
+	}
+	timing := measureAIStageTiming(rows)
+	if timing.TotalMS != 600_000 {
+		t.Fatalf("total = %d, want 600000 (claim→complete, not the claim-time spread)", timing.TotalMS)
+	}
+	if got := timing.PerTypeMS["null-deref"]; got != 600_000 {
+		t.Errorf("per-type span = %d, want 600000", got)
 	}
 }
 
@@ -639,11 +660,11 @@ func TestWriteAuditReport_AITimingSection(t *testing.T) {
 	path := filepath.Join(dir, "audit-report.md")
 	audits := []vulnAuditEntry{{VulnType: "null-deref", SeedCount: 10, FinalCount: 4, AIStageStatus: "done"}}
 	timing := aiStageTiming{
-		TotalMS:        900_000,
-		PerTypeMS:      map[string]int64{"null-deref": 300_000},
-		PerTypeBatches: map[string]int{"null-deref": 1},
-		Batches:        2,
-		Source:         "self-measured",
+		TotalMS:       900_000,
+		PerTypeMS:     map[string]int64{"null-deref": 300_000},
+		PerTypeRanges: map[string]int{"null-deref": 1},
+		SettledRanges: 2,
+		Source:        "self-measured",
 	}
 	if err := writeAuditReport(path, "test-scan", audits, reportScanOverviewStub(), timing); err != nil {
 		t.Fatal(err)

@@ -66,7 +66,17 @@ func init() {
 				frags = append(frags, EvidenceFragment{Type: "api", Role: "sink", Detail: fmt.Sprintf("unsafe API: %s", c.APIName)})
 			}
 			if c.Array != "" {
-				frags = append(frags, EvidenceFragment{Type: "buffer", Role: "sink", Detail: fmt.Sprintf("buffer: %s (capacity: %d elements)", c.Array, c.Size)})
+				// A 0 (unknown) size must read "capacity unknown", not "capacity:
+				// 0 elements": 0 is the detector's sentinel for "allocation size
+				// not statically known" (e.g. malloc(user_len)), and rendering it
+				// as a literal zero made the auto-confirmed summary self-contradict
+				// ("capacity: 0 elements" beside "machine-proved: index reaches
+				// past the capacity").
+				cap := "capacity unknown"
+				if c.Size > 0 {
+					cap = fmt.Sprintf("capacity: %d elements", c.Size)
+				}
+				frags = append(frags, EvidenceFragment{Type: "buffer", Role: "sink", Detail: fmt.Sprintf("buffer: %s (%s)", c.Array, cap)})
 			}
 			if c.Index != "" {
 				frags = append(frags, EvidenceFragment{Type: "index", Role: "condition", Detail: fmt.Sprintf("access index/copy size: %s", c.Index)})

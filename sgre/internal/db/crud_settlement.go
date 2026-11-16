@@ -263,11 +263,21 @@ func (s *store) UpsertSettlementStat(ctx context.Context, st *SettlementStat) er
 
 // MarkSettlementStatus updates a settlement row's task status — the executor's
 // dispatched → done/failed lifecycle. It is a no-op when the row does not exist
-// (the caller is expected to have inserted a dispatched row first).
+// (the caller is expected to have inserted a dispatched row first). Closing a
+// claim to 'done' also records finished_at so the self-measured AI stage has a
+// finish anchor even on hosts whose subagents write verdicts via the MCP tool and
+// never produce a settlement file (the OpenCode shape): the claim→complete span
+// is then reconstructible instead of reading ~0.
 func (s *store) MarkSettlementStatus(ctx context.Context, scanID, vulnType, rangeStr, subagentID, status string) error {
-	_, err := s.exec.ExecContext(ctx,
-		`UPDATE settlement_stats SET status = ? WHERE scan_id = ? AND vuln_type = ? AND range_str = ? AND subagent_id = ?`,
-		status, scanID, vulnType, rangeStr, subagentID)
+	query := `UPDATE settlement_stats SET status = ? WHERE scan_id = ? AND vuln_type = ? AND range_str = ? AND subagent_id = ?`
+	args := []interface{}{status, scanID, vulnType, rangeStr, subagentID}
+	if status == "done" {
+		// COALESCE preserves a finished_at a real settlement file already recorded;
+		// a later status --reports absorption must never regress the timing.
+		query = `UPDATE settlement_stats SET status = 'done', finished_at = COALESCE(finished_at, ?) WHERE scan_id = ? AND vuln_type = ? AND range_str = ? AND subagent_id = ?`
+		args = []interface{}{time.Now().UnixMilli(), scanID, vulnType, rangeStr, subagentID}
+	}
+	_, err := s.exec.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("db: mark settlement status: %w", err)
 	}

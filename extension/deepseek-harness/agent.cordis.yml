@@ -55,6 +55,7 @@
         数字**只**取自 `report --audit` 返回的 `summary`：`<X>`=confirmed_total（**已含** auto-confirmed）、`<X1>`=auto_confirmed、`<X2>`=ai_confirmed、`<D>`=dismissed_total。**禁止**拿 `audits` 数组自行相加、禁止用 `ls findings/` 反推（findings/ 里 confirmed 文件数 = auto-confirmed + AI confirmed，多出来的不是漏报）。`<X>` 为 0 时写 `本轮扫描未确认任何问题（<D> 项候选已排除）。`，**不得省略本段**。
       - 总览表：`| Skill | 类别 | 确认 | 已排除 |`，末行加 `| **合计** | | **<X>** | **<D>** |`（必须与摘要一致）
       - 问题表：`| Skill | 文件:行号 | 函数 | 严重度 | 结论 | 说明 |`
+        **大量 finding 收敛规则（不要 174 行逐条塞进回复）：** `summary.confirmed_total > 40` 时改为**按 Skill 收敛**——每 Skill 一行（最高严重度代表 文件:行号 + 函数 + 严重度 + confirmed + 说明「该 skill 确认 N 条」），紧跟一行 `完整 <X> 条逐条明细见 report.md / result.sarif`；`≤ 40` 时仍逐条列全。总览表/摘要数字仍与 `summary` 完全一致，代表收敛必须显式声明"代表 + 指向完整明细"。
       - 不要暴露流水线内部量（seed/final/deduped/截断/scan_id/rule_id/白名单/TP-FP）。
 
       ## 边界
