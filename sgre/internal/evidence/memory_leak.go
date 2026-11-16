@@ -46,6 +46,14 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 	// count as a scalar status code, not an allocation (EL-06).
 	globalTypedefs := buildGlobalTypedefs(ctx, d.store, d.parser)
 
+	// Release-helper summaries (issue #281 M1): a business-named helper
+	// (`table_teardown(t)`) whose body does `free(t)` releases the argument even
+	// though its name carries no free/destroy/delete/cleanup/recycle spelling.
+	// The summaries are the tree-wide ParamDirectFrees facts the other
+	// detectors (UAF / double-free / container-field-leak) already consume;
+	// memory_leak now reads them too instead of relying on the name heuristic.
+	summaries := buildFuncSummaries(ctx, d.store, d.parser, d.logger)
+
 	// Global-container shallow-free analysis (issue #255): the deletion path
 	// releases an object owned by a global container but not the object's
 	// heap-owning fields. It runs before the allocation-centric loop because it
@@ -73,7 +81,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 			localVars := findLocalVarsFrom(decls, f)
 			scalarVars := findScalarVarsFrom(decls, f, typedefs)
 			allocs := d.findAllocations(ctx, f, file, assigns, inits, calls, allocReturns, borrowFuncs, scalarVars, bumpAllocators)
-			frees := d.findFrees(ctx, f, file, calls, macros, inits, assigns)
+			frees := d.findFrees(ctx, f, file, calls, macros, inits, assigns, summaries)
 			returnLines := findReturnLinesFrom(returns, f)
 
 			body := bodies[f.StartLine]
@@ -404,7 +412,7 @@ type freeCall struct {
 	api  string
 }
 
-func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node, macros map[string]macroFreeSummary, inits, assigns []parser.Node) map[string][]freeCall {
+func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file *db.File, calls []parser.Node, macros map[string]macroFreeSummary, inits, assigns []parser.Node, summaries summaryMap) map[string][]freeCall {
 	frees := make(map[string][]freeCall)
 	aliases := findAliases(f, inits, assigns)
 	recordFree := func(name string, line int, api string) {
@@ -435,6 +443,18 @@ func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file
 			continue
 		}
 		if !apikb.IsDeallocator(callName) {
+			// Arbitrarily-named release helper (issue #281 M1 residual): a callee
+			// whose body frees its FIRST parameter directly (`void
+			// table_teardown(T *t){ ...; free(t); }`) releases the argument even
+			// though the name carries no free/destroy spelling. ParamDirectFrees
+			// is the every-path direct-free fact; a field-only free
+			// (ParamFieldFrees) does NOT release the base pointer and stays a
+			// leak, matching the supplement's "helper releases only members" case.
+			if s, ok := summaries[callName]; ok && s.ParamDirectFrees[0] {
+				if args := getCallArgs(call); len(args) > 0 {
+					recordFree(argIdentifier(args[0]), call.StartLine(), callName)
+				}
+			}
 			continue
 		}
 		if args := getCallArgs(call); len(args) > 0 {

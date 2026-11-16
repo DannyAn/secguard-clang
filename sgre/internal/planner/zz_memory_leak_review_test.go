@@ -299,3 +299,53 @@ func keysOf[V any](m map[string]V) []string {
 	}
 	return out
 }
+
+// issue #281 M1 residual: a business-named release helper (`table_teardown`)
+// whose body does `free(t)` releases the argument even though the name carries
+// no free/destroy/delete/cleanup/recycle spelling. It must NOT be reported as a
+// leak (the name heuristic alone missed it).
+func TestMemoryLeakReview_ArbitraryNamedFreeHelper(t *testing.T) {
+	src := `#include <stdlib.h>
+
+typedef struct Table { int *items; } Table;
+
+void table_teardown(Table *t) {
+    free(t);
+}
+
+void build(void) {
+    Table *t = malloc(sizeof(Table));
+    if (!t) return;
+    table_teardown(t);
+}
+`
+	got := planMemoryLeak(t, src)
+	if _, ok := got["build"]; ok {
+		t.Errorf("build: table_teardown(t) frees t directly, must not leak, got %v", keysOf(got))
+	}
+}
+
+// issue #281 M1 residual, supplement §6.1: a helper that releases ONLY a field
+// of its argument (`free(t->items)`) does NOT release the base pointer, so the
+// base allocation still leaks and must be reported.
+func TestMemoryLeakReview_FieldOnlyFreeHelperKeepsLeak(t *testing.T) {
+	src := `#include <stdlib.h>
+
+typedef struct Table { int *items; } Table;
+
+void table_clear(Table *t) {
+    free(t->items);
+}
+
+void build(void) {
+    Table *t = malloc(sizeof(Table));
+    if (!t) return;
+    t->items = malloc(16);
+    table_clear(t);
+}
+`
+	got := planMemoryLeak(t, src)
+	if _, ok := got["build"]; !ok {
+		t.Errorf("build: table_clear(t) frees only t->items, the Table base still leaks, got %v", keysOf(got))
+	}
+}
