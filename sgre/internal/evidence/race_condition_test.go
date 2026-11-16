@@ -113,3 +113,42 @@ func TestRaceCondition_LockWrapperPair(t *testing.T) {
 		}
 	}
 }
+
+// TestRaceCondition_GuardUnlock pins issue #282 F8: a guard-branch early-exit
+// unlock (`if (cond) { unlock(m); return; }`) must not be read as the critical
+// section's end. The write that follows is still protected on the surviving
+// path and must NOT be flagged as toctou_shared_state; a write genuinely after
+// the final unlock must still be flagged.
+func TestRaceCondition_GuardUnlock(t *testing.T) {
+	store := runIndexAndDetect(t, "tc192_race_guard_unlock.c")
+
+	events, err := store.ListEventsByType(context.Background(), "RACE_CONDITION")
+	if err != nil {
+		t.Fatalf("list RACE_CONDITION: %v", err)
+	}
+
+	guardUnlockFlagged := false
+	afterUnlockFlagged := false
+	for _, e := range events {
+		var props struct {
+			Mutex    string `json:"mutex"`
+			Category string `json:"category"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Category != "toctou_shared_state" {
+			continue
+		}
+		switch props.Mutex {
+		case "m1":
+			guardUnlockFlagged = true
+		case "m2":
+			afterUnlockFlagged = true
+		}
+	}
+	if guardUnlockFlagged {
+		t.Errorf("tc192_guard_unlock write is inside the critical section on the surviving path and must not be flagged, got %d events", len(events))
+	}
+	if !afterUnlockFlagged {
+		t.Errorf("tc192_after_unlock write after the final unlock must be flagged as toctou_shared_state, got no matching event")
+	}
+}
